@@ -1,30 +1,44 @@
---------------------------- MODULE QuorumWithGossip ---------------------------
-\* NexKV 元数据层的 Gossip + Quorum 协议建模
-\* 建模目标：验证信息传播和决策一致性的交互
+--------------------------- MODULE QuorumWithGossip5Nodes ---------------------------
+\* NexKV 元数据层的 Gossip + Quorum 协议建模 - 5节点版本
+\* 建模目标：验证协议在更大规模集群下的正确性
+\* Phase 2 任务 T2.1
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS NULL
-ASSUME NULL \notin {"n1", "n2", "n3"}
+ASSUME NULL \notin {"n1", "n2", "n3", "n4", "n5"}
 
-\* 节点集合
-Nodes == {"n1", "n2", "n3"}
-Majority == 2
+\*=============================================================================
+\* 系统配置
+\*=============================================================================
 
-\* 节点的决策状态（简化：只有 commit 和 undecided）
+\* 节点集合（3节点 -> 5节点）
+Nodes == {"n1", "n2", "n3", "n4", "n5"}
+
+\* Quorum 阈值（3节点的2 -> 5节点的3）
+\* 公式：floor(N/2) + 1 = floor(5/2) + 1 = 2 + 1 = 3
+Majority == 3
+
+\* 节点的决策状态
 DecisionState == {"undecided", "committed"}
 
-\* 每个节点的知识（通过 gossip 收集的信息）
-Knowledge == [seen: SUBSET Nodes,           \* 这个节点知道哪些节点已经 ACK
-             version: Nat,                  \* 当前投票的版本号
-             decided: SUBSET Nodes]         \* 这个节点知道哪些节点已经做出决策
+\* 每个节点的知识
+Knowledge == [seen: SUBSET Nodes,
+             version: Nat,
+             decided: SUBSET Nodes]
 
+\*=============================================================================
 \* 全局状态变量
+\*=============================================================================
+
 VARIABLES knowledge,  \* 每个节点的知识集: [node -> Knowledge]
          decision,   \* 每个节点的决策: [node -> DecisionState]
          version     \* 全局投票版本号
 
+\*=============================================================================
 \* 类型不变量
+\*=============================================================================
+
 TypeOK ==
     /\ knowledge \in [Nodes -> Knowledge]
     /\ decision \in [Nodes -> DecisionState]
@@ -43,8 +57,7 @@ Init ==
 \* Gossip 协议动作
 \*=============================================================================
 
-\* 发起投票：节点 n 对版本 v 发起投票
-\* 效果：n 将自己的 ACK 加入自己的知识集
+\* 发起投票
 ProposeVote(n, v) ==
     /\ version = v
     /\ decision[n] = "undecided"
@@ -52,8 +65,7 @@ ProposeVote(n, v) ==
     /\ knowledge' = [knowledge EXCEPT ![n].seen = @ \cup {n}]
     /\ UNCHANGED <<decision, version>>
 
-\* Gossip 交换：节点 p 选择节点 q，交换各自的知识
-\* 效果：两者的 knowledge 取并集（学到新的信息和决策）
+\* Gossip 交换
 GossipExchange(p, q) ==
     /\ p # q
     /\ knowledge[p].version = knowledge[q].version
@@ -70,20 +82,15 @@ GossipExchange(p, q) ==
 \* Quorum 决策动作
 \*=============================================================================
 
-\* 检查是否达到 quorum：如果节点 n 知道的已 ACK 节点数 >= Majority，
-\* 则 n 可以决定 commit
-\* 要求：n 必须先给自己投票（n 在自己的 seen 集合中）
+\* 决策提交（3节点的2 -> 5节点的3）
+\* 修复：只将自己添加到 decided 集合，而不是所有 seen 节点
 DecideCommit(n) ==
     /\ decision[n] = "undecided"
-    /\ n \in knowledge[n].seen              \* 节点必须先给自己投票
+    /\ n \in knowledge[n].seen
     /\ Cardinality(knowledge[n].seen) >= Majority
     /\ decision' = [decision EXCEPT ![n] = "committed"]
-    /\ knowledge' = [knowledge EXCEPT ![n].decided = @ \cup {n}]
+    /\ knowledge' = [knowledge EXCEPT ![n].decided = @ \cup {n}]  \* 只添加自己
     /\ UNCHANGED <<version>>
-
-\* 回滚：在实际系统中，超时由上层处理
-\* 这里简化为：只有 commit 和 undecided 两种状态
-\* DecideRollback(n) == ...
 
 \* 跟随决策（修复：要求节点先给自己投票，并只跟随 committed 决策）
 FollowDecision(n) ==
@@ -105,13 +112,19 @@ Next ==
     \/ ProposeVote("n1", version)
     \/ ProposeVote("n2", version)
     \/ ProposeVote("n3", version)
+    \/ ProposeVote("n4", version)
+    \/ ProposeVote("n5", version)
     \/ \E p, q \in Nodes : GossipExchange(p, q)
     \/ DecideCommit("n1")
     \/ DecideCommit("n2")
     \/ DecideCommit("n3")
+    \/ DecideCommit("n4")
+    \/ DecideCommit("n5")
     \/ FollowDecision("n1")
     \/ FollowDecision("n2")
     \/ FollowDecision("n3")
+    \/ FollowDecision("n4")
+    \/ FollowDecision("n5")
 
 Spec == Init /\ [][Next]_<<knowledge, decision, version>>
 
@@ -119,54 +132,65 @@ Spec == Init /\ [][Next]_<<knowledge, decision, version>>
 \* 安全属性（不变量）
 \*=============================================================================
 
-\* 决策安全性：所有 committed 节点都基于 quorum 知识做决策
-\*（确保没有节点在信息不足时错误地 commit）
+\* 决策安全性（Majority 2 -> 3）
 DecisionSafety ==
     \A n \in Nodes :
         decision[n] = "committed" =>
         Cardinality(knowledge[n].seen) >= Majority
 
-\* 版本一致性：所有节点的 knowledge 版本必须一致
+\* 版本一致性
 VersionConsistency ==
     \A n1, n2 \in Nodes :
         knowledge[n1].version = knowledge[n2].version
 
-\* 决策传播一致性：如果两个节点都知道彼此的决策状态，
-\* 它们看到的决策图应该一致（防止部分节点看到冲突的决策）
+\* 决策传播一致性
 DecisionPropagationConsistency ==
     \A n1, n2 \in Nodes :
         (n1 \in knowledge[n2].decided /\ n2 \in knowledge[n1].decided) =>
         decision[n1] = decision[n2] \/ (decision[n1] # "undecided" /\ decision[n2] # "undecided")
 
-\* 已决策节点的知识完整性：如果一个节点已经 commit，
-\* 它的知识集合中必须包含至少 Majority 个节点（包括自己）
+\* 已决策节点的知识完整性
 CommittedNodeKnowledgeIntegrity ==
     \A n \in Nodes :
         decision[n] = "committed" =>
         n \in knowledge[n].seen /\ Cardinality(knowledge[n].seen) >= Majority
 
 \*=============================================================================
+\* Phase 2 新增性质
+\*=============================================================================
+
+\* 多数派覆盖：任何决策都有多数派支持
+MajorityCoverage ==
+    \A n \in Nodes :
+        decision[n] = "committed" =>
+        Cardinality(knowledge[n].seen) >= Majority
+
+\* Quorum 可达性：这个性质不适用于初始状态，作为辅助定义
+QuorumReachabilityHelper ==
+    version > 0 =>  \* 只在有投票后才检查
+        \A S \in SUBSET Nodes :
+            Cardinality(S) >= Majority =>
+            \E n \in Nodes :
+                n \in S /\ n \in knowledge[n].seen
+
+\*=============================================================================
 \* 辅助定义
 \*=============================================================================
 
-\* 检查是否所有节点都达成一致决策
 AllDecided ==
     \A n \in Nodes : decision[n] # "undecided"
 
-\* 检查是否所有节点都 committed
 AllCommitted ==
     \A n \in Nodes : decision[n] = "committed"
 
-\* 检查是否所有节点都 rolledback
 AllRolledback ==
     \A n \in Nodes : decision[n] = "rolledback"
 
 \*=============================================================================
-\* 约束条件（用于状态空间限制）
+\* 约束条件（状态空间限制）
 \*=============================================================================
 
 VersionConstraint == version <= 3
-\* 限制版本号以防止状态爆炸
 
 ===========================================================
 END

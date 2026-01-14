@@ -1,0 +1,17 @@
+# TLA+ 工具生成的临时文件
+states/
+*.out
+*.stderr
+*.dot
+*.dot.*
+
+# IDE 配置文件
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS 系统文件
+.DS_Store
+

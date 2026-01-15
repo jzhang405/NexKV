@@ -150,13 +150,13 @@ func TestTC038_CrashDuringGossip(t *testing.T) {
 	}
 
 	// 4. 尝试与崩溃节点 Gossip（应该失败）
-	err = cluster.Nodes[1].GossipExchange(cluster.Nodes[0])
+	err = cluster.Nodes[1].GossipExchange(cluster.Nodes[0], cluster)
 	if err == nil {
 		t.Error("Expected gossip with crashed node to fail")
 	}
 
 	// 5. n2, n3 继续 Gossip（应该成功）
-	err = cluster.Nodes[1].GossipExchange(cluster.Nodes[2])
+	err = cluster.Nodes[1].GossipExchange(cluster.Nodes[2], cluster)
 	if err != nil {
 		t.Errorf("Expected gossip between healthy nodes to succeed: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestTC044_GossipVersionMismatch(t *testing.T) {
 	n2.ProposeVote(1)
 
 	// Gossip 交换（版本不匹配，应该不交换）
-	err := n1.GossipExchange(n2)
+	err := n1.GossipExchange(n2, cluster)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -537,13 +537,13 @@ func TestTC050_GossipExchangeAlreadyCrashed(t *testing.T) {
 	}
 
 	// 测试崩溃节点发起 gossip
-	err = n1.GossipExchange(n2)
+	err = n1.GossipExchange(n2, cluster)
 	if err == nil {
 		t.Error("Expected gossip from crashed node to fail")
 	}
 
 	// 测试与崩溃节点 gossip
-	err = n2.GossipExchange(n1)
+	err = n2.GossipExchange(n1, cluster)
 	if err == nil {
 		t.Error("Expected gossip to crashed node to fail")
 	}

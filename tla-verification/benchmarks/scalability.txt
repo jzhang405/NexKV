@@ -1,0 +1,50 @@
+2026/01/15 22:04:28 [Node n1] Crashed at 2026-01-15T22:04:28+08:00 (count=1)
+2026/01/15 22:04:28 [Node n1] Recovered from WAL (version=0, decision=committed)
+2026/01/15 22:04:28 [Node n1] Starting incremental sync
+2026/01/15 22:04:31 [Node n1] Crashed at 2026-01-15T22:04:31+08:00 (count=1)
+2026/01/15 22:04:31 [Node n2] Crashed at 2026-01-15T22:04:31+08:00 (count=1)
+2026/01/15 22:04:31 [Node n3] Crashed at 2026-01-15T22:04:31+08:00 (count=1)
+2026/01/15 22:04:31 [Node n1] Crashed at 2026-01-15T22:04:31+08:00 (count=1)
+2026/01/15 22:04:31 [Node n1] Crashed at 2026-01-15T22:04:31+08:00 (count=1)
+2026/01/15 22:04:31 [Node n1] Recovered from WAL (version=0, decision=undecided)
+2026/01/15 22:04:31 [Node n1] Starting incremental sync
+2026/01/15 22:04:31 [Node n1] Crashed at 2026-01-15T22:04:31+08:00 (count=1)
+2026/01/15 22:04:31 [Node n1] Recovered from WAL (version=0, decision=committed)
+2026/01/15 22:04:31 [Node n1] Starting incremental sync
+2026/01/15 22:04:31 [Node n1] Crashed at 2026-01-15T22:04:31+08:00 (count=1)
+2026/01/15 22:04:31 [Node n1] Crashed at 2026-01-15T22:04:31+08:00 (count=1)
+2026/01/15 22:04:31 [Cluster] Manual partition created: partition1=[n1 n2 n3], partition2=[n4 n5]
+2026/01/15 22:04:31 [Cluster] Manual partition created: partition1=[n1 n2 n3], partition2=[n4 n5]
+2026/01/15 22:04:31 [Cluster] Network partition healed (no auto gossip)
+2026/01/15 22:04:31 [Cluster] Manual partition created: partition1=[n1 n2], partition2=[n3 n4 n5]
+2026/01/15 22:04:31 [Cluster] Network partition detected: unreachable nodes = [n3]
+2026/01/15 22:04:31 [Cluster] Partition created: majority=[n1 n2], minority=[n3]
+2026/01/15 22:04:31 [Cluster] Network healed
+2026/01/15 22:04:31 [Cluster] Manual partition created: partition1=[n1 n2 n3], partition2=[n4 n5]
+2026/01/15 22:04:31 [Cluster] Network partition healed (no auto gossip)
+2026/01/15 22:04:31 [Cluster] Manual partition created: partition1=[n1 n2], partition2=[n3 n4 n5]
+2026/01/15 22:04:31 [Cluster] Network partition healed (no auto gossip)
+Version: 0, Majority: 2
+  Node n1: decision=undecided, version=0, seen=[], decided=[]
+  Node n2: decision=undecided, version=0, seen=[], decided=[]
+goos: darwin
+goarch: arm64
+pkg: github.com/jzhang405/NexKV
+cpu: Apple M2
+BenchmarkScalability_GossipRound/3Nodes-8         	2026/01/15 22:04:32 [Node n1] Incremental sync completed
+2026/01/15 22:04:32 [Node n1] Incremental sync completed
+ 3100542	       759.2 ns/op	     912 B/op	       9 allocs/op
+BenchmarkScalability_GossipRound/5Nodes-8         	  771981	      3000 ns/op	    3088 B/op	      31 allocs/op
+BenchmarkScalability_GossipRound/7Nodes-8         	  338876	      6997 ns/op	    6448 B/op	      64 allocs/op
+BenchmarkScalability_GossipRound/10Nodes-8        	   74473	     32183 ns/op	   34280 B/op	     271 allocs/op
+BenchmarkScalability_DecisionLatency/3Nodes-8     	     181	  12810236 ns/op	    1948 B/op	      43 allocs/op
+BenchmarkScalability_DecisionLatency/5Nodes-8     	     100	  21786936 ns/op	    5166 B/op	     108 allocs/op
+BenchmarkScalability_DecisionLatency/7Nodes-8     	      66	  31116444 ns/op	    9767 B/op	     201 allocs/op
+BenchmarkScalability_DecisionLatency/10Nodes-8    	      46	  43647884 ns/op	   29216 B/op	     459 allocs/op
+BenchmarkScalability_Throughput/3Nodes-8          	 4814880	       484.0 ns/op	     576 B/op	      12 allocs/op
+BenchmarkScalability_Throughput/5Nodes-8          	 1934655	      1206 ns/op	    1488 B/op	      31 allocs/op
+BenchmarkScalability_Throughput/7Nodes-8          	2026/01/15 22:04:58 [Node n1] Incremental sync timeout
+  987278	      2282 ns/op	    2752 B/op	      57 allocs/op
+BenchmarkScalability_Throughput/10Nodes-8         	  486255	      4501 ns/op	    5360 B/op	     111 allocs/op
+PASS
+ok  	github.com/jzhang405/NexKV	35.914s

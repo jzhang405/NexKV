@@ -299,7 +299,7 @@ func (n *Node) incrementalSync(cluster *Cluster) {
 				}
 
 				// 尝试 Gossip 交换
-				if err := n.GossipExchange(other); err == nil {
+				if err := n.GossipExchange(other, cluster); err == nil {
 					changed = true
 				}
 			}
@@ -331,14 +331,14 @@ func (n *Node) ProposeVote(version int) bool {
 }
 
 // GossipExchange gossip 交换（对应 TLA+ 的 GossipExchange）
-// 新增：崩溃节点不参与 Gossip
-func (n *Node) GossipExchange(other *Node) error {
+// 新增：崩溃节点不参与 Gossip，分区网络只允许同分区节点通信
+func (n *Node) GossipExchange(other *Node, cluster *Cluster) error {
 	n.mu.Lock()
 	other.mu.Lock()
 	defer other.mu.Unlock()
 	defer n.mu.Unlock()
 
-	// ===== 新增：崩溃节点检查 =====
+	// ===== 崩溃节点检查 =====
 	if n.IsCrashed {
 		return fmt.Errorf("node %s is crashed, cannot gossip", n.ID)
 	}
@@ -346,7 +346,33 @@ func (n *Node) GossipExchange(other *Node) error {
 		return fmt.Errorf("peer %s is crashed, cannot gossip", other.ID)
 	}
 
-	// 只在同一版本的节点间交换
+	// ===== 分区检查 =====
+	cluster.mu.RLock()
+	canCommunicate := false
+
+	if cluster.NetworkStatus == "normal" {
+		// 正常网络：所有节点可以通信
+		canCommunicate = true
+	} else {
+		// 分区网络：只允许同分区节点通信
+		nPartition, ok1 := cluster.PartitionMap[n.ID]
+		otherPartition, ok2 := cluster.PartitionMap[other.ID]
+
+		if ok1 && ok2 && nPartition == otherPartition {
+			// 同一分区
+			canCommunicate = true
+		} else {
+			// 不同分区
+			canCommunicate = false
+		}
+	}
+	cluster.mu.RUnlock()
+
+	if !canCommunicate {
+		return fmt.Errorf("nodes %s and %s are in different partitions", n.ID, other.ID)
+	}
+
+	// 版本检查：只在同一版本的节点间交换
 	if n.Knowledge.Version != other.Knowledge.Version {
 		return nil
 	}
@@ -355,9 +381,9 @@ func (n *Node) GossipExchange(other *Node) error {
 	newSeen := mergeMaps(n.Knowledge.Seen, other.Knowledge.Seen)
 	newDecided := mergeMaps(n.Knowledge.Decided, other.Knowledge.Decided)
 
+	// 双向更新
 	n.Knowledge.Seen = newSeen
 	n.Knowledge.Decided = newDecided
-
 	other.Knowledge.Seen = newSeen
 	other.Knowledge.Decided = newDecided
 
@@ -459,6 +485,14 @@ type Cluster struct {
 	Nodes   []*Node
 	Version int
 	mu      sync.RWMutex
+
+	// ===== 网络分区相关字段 =====
+	NetworkStatus      string                    // "normal" | "partitioned"
+	Partitions         map[string][]string       // 分区映射：nodeID -> partitionMembers
+	PartitionMap       map[string]string         // 反向映射：nodeID -> partitionID
+	HeartbeatMap       map[string]time.Time      // 心跳时间戳：nodeID -> lastHeartbeat
+	HeartbeatTimeout   time.Duration             // 心跳超时阈值
+	lastPartitionCheck time.Time                 // 上次分区检查时间
 }
 
 // NewCluster 创建新集群
@@ -487,9 +521,21 @@ func NewCluster(nodeIDs []string, dataDir string) *Cluster {
 		}
 	}
 
+	// 初始化心跳映射
+	heartbeatMap := make(map[string]time.Time)
+	for _, id := range nodeIDs {
+		heartbeatMap[id] = time.Now() // 初始化为当前时间
+	}
+
 	return &Cluster{
-		Nodes:   nodes,
-		Version: 0,
+		Nodes:             nodes,
+		Version:           0,
+		NetworkStatus:     "normal",
+		Partitions:        make(map[string][]string),
+		PartitionMap:      make(map[string]string),
+		HeartbeatMap:      heartbeatMap,
+		HeartbeatTimeout:  5 * time.Second, // 默认 5 秒超时
+		lastPartitionCheck: time.Now(),
 	}
 }
 
@@ -526,15 +572,246 @@ func (c *Cluster) GetMajority() int {
 	return len(c.Nodes)/2 + 1
 }
 
+// ===== 网络分区相关方法 =====
+
+// DetectPartition 检测网络分区
+// 原理：通过心跳超时检测节点是否可达
+func (c *Cluster) DetectPartition() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+
+	// 1. 检查所有节点的心跳
+	var unreachable []string
+	for _, node := range c.Nodes {
+		if node.IsCrashed {
+			continue // 跳过崩溃节点
+		}
+
+		lastHeartbeat, ok := c.HeartbeatMap[node.ID]
+		if !ok || now.Sub(lastHeartbeat) > c.HeartbeatTimeout {
+			unreachable = append(unreachable, node.ID)
+		}
+	}
+
+	// 2. 如果没有不可达节点，说明网络正常
+	if len(unreachable) == 0 {
+		if c.NetworkStatus == "partitioned" {
+			log.Printf("[Cluster] Network healed")
+			c.NetworkStatus = "normal"
+			c.Partitions = make(map[string][]string)
+			c.PartitionMap = make(map[string]string)
+		}
+		return nil
+	}
+
+	// 3. 如果已经处于分区状态，不重复检测
+	if c.NetworkStatus == "partitioned" {
+		return nil
+	}
+
+	// 4. 检测到新的分区
+	log.Printf("[Cluster] Network partition detected: unreachable nodes = %v", unreachable)
+
+	// 5. 构建分区映射
+	reachable := make([]string, 0)
+	for _, node := range c.Nodes {
+		if !contains(unreachable, node.ID) && !node.IsCrashed {
+			reachable = append(reachable, node.ID)
+		}
+	}
+
+	// 6. 更新分区状态
+	c.NetworkStatus = "partitioned"
+
+	// 多数派分区
+	for _, nodeID := range reachable {
+		c.Partitions[nodeID] = reachable
+		c.PartitionMap[nodeID] = "majority"
+	}
+
+	// 少数派分区
+	for _, nodeID := range unreachable {
+		c.Partitions[nodeID] = unreachable
+		c.PartitionMap[nodeID] = "minority"
+	}
+
+	log.Printf("[Cluster] Partition created: majority=%v, minority=%v",
+		reachable, unreachable)
+
+	return nil
+}
+
+// CreatePartition 手动创建分区（用于测试）
+// partition1: 第一组节点的 ID 列表
+// partition2: 第二组节点的 ID 列表
+func (c *Cluster) CreatePartition(partition1, partition2 []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 1. 验证所有节点都存在
+	allNodes := make(map[string]bool)
+	for _, node := range c.Nodes {
+		allNodes[node.ID] = true
+	}
+
+	for _, id := range partition1 {
+		if !allNodes[id] {
+			return fmt.Errorf("node %s not found", id)
+		}
+	}
+
+	for _, id := range partition2 {
+		if !allNodes[id] {
+			return fmt.Errorf("node %s not found", id)
+		}
+	}
+
+	// 2. 检查是否有重复节点
+	for _, id := range partition1 {
+		if contains(partition2, id) {
+			return fmt.Errorf("node %s appears in both partitions", id)
+		}
+	}
+
+	// 3. 更新分区状态
+	c.NetworkStatus = "partitioned"
+
+	// 清空旧的分区映射
+	c.Partitions = make(map[string][]string)
+	c.PartitionMap = make(map[string]string)
+
+	// 分配多数派/少数派标签
+	if len(partition1) >= len(partition2) {
+		// partition1 是多数派
+		for _, id := range partition1 {
+			c.Partitions[id] = partition1
+			c.PartitionMap[id] = "majority"
+		}
+		for _, id := range partition2 {
+			c.Partitions[id] = partition2
+			c.PartitionMap[id] = "minority"
+		}
+	} else {
+		// partition2 是多数派
+		for _, id := range partition1 {
+			c.Partitions[id] = partition1
+			c.PartitionMap[id] = "minority"
+		}
+		for _, id := range partition2 {
+			c.Partitions[id] = partition2
+			c.PartitionMap[id] = "majority"
+		}
+	}
+
+	log.Printf("[Cluster] Manual partition created: partition1=%v, partition2=%v",
+		partition1, partition2)
+
+	return nil
+}
+
+// HealPartition 恢复网络分区
+// 后置条件：触发全局 gossip，确保所有节点状态一致
+func (c *Cluster) HealPartition() error {
+	c.mu.Lock()
+	wasPartitioned := c.NetworkStatus == "partitioned"
+	c.NetworkStatus = "normal"
+	c.Partitions = make(map[string][]string)
+	c.PartitionMap = make(map[string]string)
+	c.mu.Unlock()
+
+	if wasPartitioned {
+		log.Printf("[Cluster] Network partition healed")
+
+		// 触发全局 gossip 以同步状态
+		go c.triggerGlobalGossip()
+	}
+
+	return nil
+}
+
+// HealPartitionNoAutoGossip 恢复网络分区（不触发自动 gossip）
+// 用于测试场景，允许手动控制 gossip 时机
+func (c *Cluster) HealPartitionNoAutoGossip() error {
+	c.mu.Lock()
+	wasPartitioned := c.NetworkStatus == "partitioned"
+	c.NetworkStatus = "normal"
+	c.Partitions = make(map[string][]string)
+	c.PartitionMap = make(map[string]string)
+	c.mu.Unlock()
+
+	if wasPartitioned {
+		log.Printf("[Cluster] Network partition healed (no auto gossip)")
+	}
+
+	return nil
+}
+
+// triggerGlobalGossip 触发全局 gossip（分区恢复后使用）
+// 在 goroutine 中运行，进行多轮 gossip 确保收敛
+func (c *Cluster) triggerGlobalGossip() {
+	log.Printf("[Cluster] Starting global gossip for convergence")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	round := 0
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("[Cluster] Global gossip completed after %d rounds", round)
+			return
+
+		case <-ticker.C:
+			round++
+			c.GossipRound()
+		}
+	}
+}
+
+// SendHeartbeat 发送心跳
+func (n *Node) SendHeartbeat(cluster *Cluster) {
+	cluster.mu.Lock()
+	defer cluster.mu.Unlock()
+
+	cluster.HeartbeatMap[n.ID] = time.Now()
+}
+
+// StartHeartbeat 启动心跳发送（在 goroutine 中运行）
+func (n *Node) StartHeartbeat(cluster *Cluster, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		n.SendHeartbeat(cluster)
+	}
+}
+
+// contains 辅助函数：检查字符串切片是否包含某个元素
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
 // GossipRound 一轮 gossip 交换
 func (c *Cluster) GossipRound() {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
+	nodes := make([]*Node, len(c.Nodes))
+	copy(nodes, c.Nodes) // 创建副本，避免在锁内进行 GossipExchange
+	c.mu.RUnlock()
 
 	// 随机选择节点进行 gossip
-	for i := 0; i < len(c.Nodes); i++ {
-		for j := i + 1; j < len(c.Nodes); j++ {
-			_ = c.Nodes[i].GossipExchange(c.Nodes[j]) // 忽略错误，继续执行
+	for i := 0; i < len(nodes); i++ {
+		for j := i + 1; j < len(nodes); j++ {
+			_ = nodes[i].GossipExchange(nodes[j], c) // 忽略错误，继续执行
 		}
 	}
 }

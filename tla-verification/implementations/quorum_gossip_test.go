@@ -158,15 +158,15 @@ func TestTC025_PartitionSafety(t *testing.T) {
 	// 分区1内的节点发起投票
 	partition1[0].ProposeVote(0)
 	partition1[1].ProposeVote(0)
-	_ = partition1[0].GossipExchange(partition1[1])
+	_ = partition1[0].GossipExchange(partition1[1], cluster)
 
 	// 分区2内的节点发起投票
 	partition2[0].ProposeVote(0)
 	partition2[1].ProposeVote(0)
 	partition2[2].ProposeVote(0)
-	_ = partition2[0].GossipExchange(partition2[1])
-	_ = partition2[0].GossipExchange(partition2[2])
-	_ = partition2[1].GossipExchange(partition2[2])
+	_ = partition2[0].GossipExchange(partition2[1], cluster)
+	_ = partition2[0].GossipExchange(partition2[2], cluster)
+	_ = partition2[1].GossipExchange(partition2[2], cluster)
 
 	// 分区1尝试决策：n1 和 n2 看到 2 个节点，但需要 3 个
 	// 应该无法决策（因为无法达到多数派）

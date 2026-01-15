@@ -2,6 +2,7 @@ package implementations
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -38,7 +39,11 @@ func TestTC001_SingleNodeProposeVote(t *testing.T) {
 // TestTC002_QuorumCommitSuccess 测试场景：Quorum 提交成功
 // 对应 TLA+ 验证的 TC_002
 func TestTC002_QuorumCommitSuccess(t *testing.T) {
-	cluster := NewCluster([]string{"n1", "n2", "n3"})
+	tempDir := setupTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	cluster := NewCluster([]string{"n1", "n2", "n3"}, tempDir)
+	defer cluster.Close()
 	majority := cluster.GetMajority()
 
 	// n1 和 n2 发起投票
@@ -49,7 +54,11 @@ func TestTC002_QuorumCommitSuccess(t *testing.T) {
 	cluster.GossipRound()
 
 	// n1 应该能够提交（seen = {n1, n2} >= 2）
-	if !cluster.GetNode("n1").DecideCommit(majority) {
+	success, err := cluster.GetNode("n1").DecideCommit(majority)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !success {
 		t.Error("Expected n1 to be able to commit")
 	}
 
@@ -69,7 +78,11 @@ func TestTC002_QuorumCommitSuccess(t *testing.T) {
 // TestTC003_QuorumTimeoutRollback 测试场景：Quorum 超时回滚
 // 对应 TLA+ 验证的 TC_003
 func TestTC003_QuorumTimeoutRollback(t *testing.T) {
-	cluster := NewCluster([]string{"n1", "n2", "n3"})
+	tempDir := setupTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	cluster := NewCluster([]string{"n1", "n2", "n3"}, tempDir)
+	defer cluster.Close()
 	majority := cluster.GetMajority()
 
 	// 只有 n1 发起投票
@@ -79,7 +92,11 @@ func TestTC003_QuorumTimeoutRollback(t *testing.T) {
 	cluster.GossipRound()
 
 	// n1 不应该能够提交（seen = {n1} < 2）
-	if cluster.GetNode("n1").DecideCommit(majority) {
+	success, err := cluster.GetNode("n1").DecideCommit(majority)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if success {
 		t.Error("Expected n1 to not be able to commit without quorum")
 	}
 
@@ -93,7 +110,11 @@ func TestTC003_QuorumTimeoutRollback(t *testing.T) {
 // TestTC010_ConcurrentVote 创建冲突测试
 // 对应 TLA+ 验证的 TC_010
 func TestTC010_ConcurrentVoteConflict(t *testing.T) {
-	cluster := NewCluster([]string{"n1", "n2", "n3"})
+	tempDir := setupTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	cluster := NewCluster([]string{"n1", "n2", "n3"}, tempDir)
+	defer cluster.Close()
 	majority := cluster.GetMajority()
 
 	var wg sync.WaitGroup
@@ -123,7 +144,11 @@ func TestTC010_ConcurrentVoteConflict(t *testing.T) {
 // TestTC025_PartitionSafety 网络分区安全性测试
 // 对应 TLA+ 验证的 TC_025
 func TestTC025_PartitionSafety(t *testing.T) {
-	cluster := NewCluster([]string{"n1", "n2", "n3", "n4", "n5"})
+	tempDir := setupTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	cluster := NewCluster([]string{"n1", "n2", "n3", "n4", "n5"}, tempDir)
+	defer cluster.Close()
 	majority := cluster.GetMajority()
 
 	// 模拟网络分区：n1,n2 在一个分区，n3,n4,n5 在另一个分区
@@ -133,25 +158,33 @@ func TestTC025_PartitionSafety(t *testing.T) {
 	// 分区1内的节点发起投票
 	partition1[0].ProposeVote(0)
 	partition1[1].ProposeVote(0)
-	partition1[0].GossipExchange(partition1[1])
+	_ = partition1[0].GossipExchange(partition1[1])
 
 	// 分区2内的节点发起投票
 	partition2[0].ProposeVote(0)
 	partition2[1].ProposeVote(0)
 	partition2[2].ProposeVote(0)
-	partition2[0].GossipExchange(partition2[1])
-	partition2[0].GossipExchange(partition2[2])
-	partition2[1].GossipExchange(partition2[2])
+	_ = partition2[0].GossipExchange(partition2[1])
+	_ = partition2[0].GossipExchange(partition2[2])
+	_ = partition2[1].GossipExchange(partition2[2])
 
 	// 分区1尝试决策：n1 和 n2 看到 2 个节点，但需要 3 个
 	// 应该无法决策（因为无法达到多数派）
-	if partition1[0].DecideCommit(majority) {
+	success, err := partition1[0].DecideCommit(majority)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if success {
 		t.Error("Expected partition1 not to reach quorum")
 	}
 
 	// 分区2尝试决策：n3, n4, n5 看到 3 个节点 >= 3
 	// 可以决策
-	if !partition2[0].DecideCommit(majority) {
+	success, err = partition2[0].DecideCommit(majority)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !success {
 		t.Error("Expected partition2 to reach quorum")
 	}
 
@@ -165,7 +198,11 @@ func TestTC025_PartitionSafety(t *testing.T) {
 // TestTC030_GossipConvergence Gossip 收敛性测试
 // 对应 TLA+ 验证的 TC_030
 func TestTC030_GossipConvergence(t *testing.T) {
-	cluster := NewCluster([]string{"n1", "n2", "n3", "n4", "n5"})
+	tempDir := setupTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	cluster := NewCluster([]string{"n1", "n2", "n3", "n4", "n5"}, tempDir)
+	defer cluster.Close()
 	majority := cluster.GetMajority()
 
 	// n1 和 n2 发起投票（5节点需要3个才能提交）
@@ -186,7 +223,11 @@ func TestTC030_GossipConvergence(t *testing.T) {
 	}
 
 	// n1 不应该能够提交（只有2个投票，需要3个）
-	if cluster.GetNode("n1").DecideCommit(majority) {
+	success, err := cluster.GetNode("n1").DecideCommit(majority)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if success {
 		t.Error("Expected n1 to not be able to commit with only 2 votes")
 	}
 
@@ -199,7 +240,11 @@ func TestTC030_GossipConvergence(t *testing.T) {
 	}
 
 	// n1 现在应该能够提交（看到3个投票）
-	if !cluster.GetNode("n1").DecideCommit(majority) {
+	success, err = cluster.GetNode("n1").DecideCommit(majority)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !success {
 		t.Error("Expected n1 to be able to commit with 3 votes")
 	}
 }
@@ -207,7 +252,11 @@ func TestTC030_GossipConvergence(t *testing.T) {
 // TestTC035_NodeRecovery 节点故障恢复测试
 // 对应 TLA+ 验证的 TC_035
 func TestTC035_NodeRecovery(t *testing.T) {
-	cluster := NewCluster([]string{"n1", "n2", "n3"})
+	tempDir := setupTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	cluster := NewCluster([]string{"n1", "n2", "n3"}, tempDir)
+	defer cluster.Close()
 	majority := cluster.GetMajority()
 
 	// n1, n2, n3 都发起投票
@@ -219,7 +268,11 @@ func TestTC035_NodeRecovery(t *testing.T) {
 	cluster.GossipRound()
 
 	// n1 决策
-	if !cluster.GetNode("n1").DecideCommit(majority) {
+	success, err := cluster.GetNode("n1").DecideCommit(majority)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !success {
 		t.Error("Expected n1 to commit")
 	}
 
@@ -233,7 +286,11 @@ func TestTC035_NodeRecovery(t *testing.T) {
 // TestDecisionSafety 决策安全性测试
 // 验证：所有 committed 节点的 seen 集合都 >= majority
 func TestDecisionSafety(t *testing.T) {
-	cluster := NewCluster([]string{"n1", "n2", "n3", "n4", "n5"})
+	tempDir := setupTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	cluster := NewCluster([]string{"n1", "n2", "n3", "n4", "n5"}, tempDir)
+	defer cluster.Close()
 	majority := cluster.GetMajority()
 
 	// 所有节点发起投票
@@ -248,7 +305,11 @@ func TestDecisionSafety(t *testing.T) {
 
 	// 所有节点都应该能够提交
 	for _, node := range cluster.Nodes {
-		if !node.DecideCommit(majority) {
+		success, err := node.DecideCommit(majority)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if !success {
 			t.Errorf("Expected node %s to be able to commit", node.ID)
 		}
 	}
@@ -266,7 +327,11 @@ func TestDecisionSafety(t *testing.T) {
 // TestVersionConsistency 版本一致性测试
 // 验证：所有节点的 knowledge 版本一致
 func TestVersionConsistency(t *testing.T) {
-	cluster := NewCluster([]string{"n1", "n2", "n3"})
+	tempDir := setupTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	cluster := NewCluster([]string{"n1", "n2", "n3"}, tempDir)
+	defer cluster.Close()
 
 	// 初始版本都是 0
 	versions := make(map[int]int)
@@ -328,15 +393,134 @@ func TestMajorityCalculation(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
+		tempDir := setupTempDir(t)
+		defer os.RemoveAll(tempDir)
+
 		nodeIDs := make([]string, tc.nodeCount)
 		for i := 0; i < tc.nodeCount; i++ {
 			nodeIDs[i] = fmt.Sprintf("n%d", i+1)
 		}
-		cluster := NewCluster(nodeIDs)
+		cluster := NewCluster(nodeIDs, tempDir)
+		cluster.Close()
 		majority := cluster.GetMajority()
 		if majority != tc.expected {
 			t.Errorf("Expected majority %d for %d nodes, got %d",
 				tc.expected, tc.nodeCount, majority)
 		}
 	}
+}
+
+// TestFollowDecision 测试跟随决策功能
+func TestFollowDecision(t *testing.T) {
+	tempDir := setupTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	cluster := NewCluster([]string{"n1", "n2", "n3"}, tempDir)
+	defer cluster.Close()
+
+	// n1 提交决策
+	majority := cluster.GetMajority()
+	cluster.GetNode("n1").ProposeVote(0)
+	cluster.GetNode("n2").ProposeVote(0)
+	cluster.GossipRound()
+
+	success, err := cluster.GetNode("n1").DecideCommit(majority)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !success {
+		t.Fatal("Expected n1 to commit")
+	}
+
+	// 再次 gossip，让 n2 知道 n1 已提交
+	cluster.GossipRound()
+
+	// n2 知道 n1 已提交，应该跟随决策
+	if !cluster.GetNode("n2").FollowDecision(majority) {
+		t.Error("Expected n2 to follow n1's decision")
+	}
+
+	// 验证 n2 的状态
+	decision, _, _, _ := cluster.GetNode("n2").GetState()
+	if decision != Committed {
+		t.Errorf("Expected n2 decision to be committed, got %s", decision)
+	}
+}
+
+// TestFollowDecisionCannotFollowWithoutVote 测试未投票节点不能跟随决策
+func TestFollowDecisionCannotFollowWithoutVote(t *testing.T) {
+	tempDir := setupTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	cluster := NewCluster([]string{"n1", "n2", "n3"}, tempDir)
+	defer cluster.Close()
+
+	majority := cluster.GetMajority()
+
+	// n1 和 n2 提交决策
+	cluster.GetNode("n1").ProposeVote(0)
+	cluster.GetNode("n2").ProposeVote(0)
+	cluster.GossipRound()
+
+	success, err := cluster.GetNode("n1").DecideCommit(majority)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !success {
+		t.Fatal("Expected n1 to commit")
+	}
+
+	// n3 未发起投票，不能跟随决策
+	if cluster.GetNode("n3").FollowDecision(majority) {
+		t.Error("Expected n3 to not follow decision without voting")
+	}
+}
+
+// TestFollowDecisionAlreadyCommitted 测试已提交节点不能再次跟随决策
+func TestFollowDecisionAlreadyCommitted(t *testing.T) {
+	tempDir := setupTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	cluster := NewCluster([]string{"n1", "n2"}, tempDir)
+	defer cluster.Close()
+
+	majority := cluster.GetMajority()
+
+	// n1 和 n2 都提交决策
+	cluster.GetNode("n1").ProposeVote(0)
+	cluster.GetNode("n2").ProposeVote(0)
+	cluster.GossipRound()
+
+	success, err := cluster.GetNode("n1").DecideCommit(majority)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !success {
+		t.Fatal("Expected n1 to commit")
+	}
+
+	success, err = cluster.GetNode("n2").DecideCommit(majority)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !success {
+		t.Fatal("Expected n2 to commit")
+	}
+
+	// n1 已提交，不能再次跟随决策
+	if cluster.GetNode("n1").FollowDecision(majority) {
+		t.Error("Expected already committed node to not follow again")
+	}
+}
+
+// TestPrintState 测试 PrintState 功能
+func TestPrintState(t *testing.T) {
+	tempDir := setupTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	cluster := NewCluster([]string{"n1", "n2"}, tempDir)
+	defer cluster.Close()
+
+	// 调用 PrintState，确保不会 panic
+	cluster.PrintState()
 }

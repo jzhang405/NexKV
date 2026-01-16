@@ -263,11 +263,42 @@ func (n *Node) RecoverFromWAL(cluster *Cluster) error {
 	return nil
 }
 
-// incrementalSync 后台增量同步
-func (n *Node) incrementalSync(cluster *Cluster) {
-	log.Printf("[Node %s] Starting incremental sync", n.ID)
+// calculateSyncTimeout 根据集群规模计算增量同步超时时间
+// 优化：动态调整超时，避免小集群等待过久，大集群时间不够
+func calculateSyncTimeout(nodeCount int) time.Duration {
+	const (
+		baseTimeout = 5 * time.Second  // 基础超时：3节点集群5秒
+		perNodeTime = 2 * time.Second  // 每增加一个节点增加2秒
+		minTimeout  = 3 * time.Second  // 最小超时：3秒
+		maxTimeout  = 30 * time.Second // 最大超时：30秒
+	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// 公式：timeout = base + (nodeCount - 3) * perNodeTime
+	// 示例：
+	//   - 3节点：5秒
+	//   - 5节点：9秒
+	//   - 7节点：13秒
+	//   - 10节点：19秒
+	timeout := baseTimeout + time.Duration(nodeCount-3)*perNodeTime
+
+	// 限制在合理范围内
+	if timeout < minTimeout {
+		timeout = minTimeout
+	}
+	if timeout > maxTimeout {
+		timeout = maxTimeout
+	}
+
+	return timeout
+}
+
+// incrementalSync 后台增量同步（优化版：使用动态超时）
+func (n *Node) incrementalSync(cluster *Cluster) {
+	// 计算动态超时时间
+	syncTimeout := calculateSyncTimeout(len(cluster.Nodes))
+	log.Printf("[Node %s] Starting incremental sync (timeout: %v)", n.ID, syncTimeout)
+
+	ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
 	defer cancel()
 
 	ticker := time.NewTicker(1 * time.Second)

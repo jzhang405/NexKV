@@ -4,20 +4,22 @@ import (
 	"math/rand"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 // ===== 故障注入器 =====
 
-// FaultInjector 故障注入器
+// FaultInjector 故障注入器（优化版：使用读写锁提升并发性能）
 type FaultInjector struct {
 	cluster       *Cluster
 	rng           *rand.Rand
 	faultChance   float64 // 故障注入概率 (0.0 - 1.0)
 	maxCrashTime  time.Duration
 	stopCh        chan struct{}
-	mu            sync.Mutex
+	mu            sync.RWMutex // 优化：使用读写锁，提升并发性能
+	stopping      uint32      // 优化：原子标志位，避免 Stop() 持锁时间过长
 }
 
 // NewFaultInjector 创建故障注入器
@@ -46,36 +48,47 @@ func (fi *FaultInjector) StartRandomFaults(interval time.Duration) {
 	}
 }
 
-// Stop 停止故障注入并清理所有故障
+// Stop 停止故障注入并清理所有故障（优化版：减少锁持有时间）
 func (fi *FaultInjector) Stop() {
+	// 1. 设置停止标志（原子操作，无锁）
+	atomic.StoreUint32(&fi.stopping, 1)
+
+	// 2. 关闭 stopCh，通知 goroutine 退出
 	close(fi.stopCh)
 
-	// 立即持有锁，防止任何新的故障注入
+	// 3. 等待一小段时间，让正在进行的 injectRandomFault 完成
+	time.Sleep(50 * time.Millisecond)
+
+	// 4. 使用写锁保护清理操作（此时不会再有新故障注入）
 	fi.mu.Lock()
 	defer fi.mu.Unlock()
 
-	// 等待一小段时间，让正在进行的 injectRandomFault 完成
-	time.Sleep(50 * time.Millisecond)
-
-	// 1. 治愈所有网络分区（持有锁）
+	// 5. 治愈所有网络分区
 	_ = fi.cluster.HealPartition()
 
-	// 2. 恢复所有崩溃的节点（持有锁）
+	// 6. 恢复所有崩溃的节点
 	for _, node := range fi.cluster.Nodes {
-		if node.IsCrashed {
+		node.mu.RLock()
+		isCrashed := node.IsCrashed
+		node.mu.RUnlock()
+
+		if isCrashed {
 			_ = node.Recover(fi.cluster)
 		}
 	}
 }
 
-// injectRandomFault 注入随机故障
+// injectRandomFault 注入随机故障（优化版：减少锁持有时间）
 func (fi *FaultInjector) injectRandomFault() {
-	fi.mu.Lock()
-	defer fi.mu.Unlock()
+	// 快速检查是否正在停止（无锁）
+	if atomic.LoadUint32(&fi.stopping) != 0 {
+		return
+	}
 
-	// 随机选择故障类型
+	// 随机选择故障类型（无锁）
 	faultType := fi.rng.Intn(3)
 
+	// 执行故障注入（各子方法内部管理锁）
 	switch faultType {
 	case 0:
 		// 单节点崩溃
@@ -89,54 +102,67 @@ func (fi *FaultInjector) injectRandomFault() {
 	}
 }
 
-// injectNodeCrash 注入节点崩溃
+// injectNodeCrash 注入节点崩溃（优化版：使用读锁读取状态）
 func (fi *FaultInjector) injectNodeCrash() {
-	// 随机选择一个未崩溃的节点
-	availableNodes := make([]*Node, 0)
-	for _, node := range fi.cluster.Nodes {
+	// 1. 使用读锁快速读取集群节点列表
+	fi.mu.RLock()
+	nodes := fi.cluster.Nodes
+	fi.mu.RUnlock()
+
+	// 2. 遍历节点，使用节点级读锁安全读取 IsCrashed 状态
+	availableNodes := make([]*Node, 0, len(nodes))
+	for _, node := range nodes {
+		node.mu.RLock()
 		if !node.IsCrashed {
 			availableNodes = append(availableNodes, node)
 		}
+		node.mu.RUnlock()
 	}
 
 	if len(availableNodes) == 0 {
 		return // 没有可用节点
 	}
 
+	// 3. 选择节点（无锁）
 	node := availableNodes[fi.rng.Intn(len(availableNodes))]
 
-	// 崩溃节点
+	// 4. 崩溃节点（Node 内部有自己的锁，有幂等性保护）
 	_ = node.Crash()
 
-	// 随机延迟后恢复
+	// 5. 随机延迟后恢复
 	crashDuration := time.Duration(fi.rng.Int63n(int64(fi.maxCrashTime)))
 	time.AfterFunc(crashDuration, func() {
 		_ = node.Recover(fi.cluster)
 	})
 }
 
-// injectNetworkPartition 注入网络分区
+// injectNetworkPartition 注入网络分区（优化版：使用读锁读取状态）
 func (fi *FaultInjector) injectNetworkPartition() {
+	// 1. 使用读锁读取集群节点列表
+	fi.mu.RLock()
 	nodes := fi.cluster.Nodes
-	if len(nodes) < 2 {
+	nodeCount := len(nodes)
+	fi.mu.RUnlock()
+
+	if nodeCount < 2 {
 		return
 	}
 
-	// 随机分区节点
-	shuffled := make([]*Node, len(nodes))
+	// 2. 随机分区节点（无锁操作）
+	shuffled := make([]*Node, nodeCount)
 	copy(shuffled, nodes)
-	fi.rng.Shuffle(len(shuffled), func(i, j int) {
+	fi.rng.Shuffle(nodeCount, func(i, j int) {
 		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
 	})
 
 	// 分成两组
-	mid := len(shuffled) / 2
+	mid := nodeCount / 2
 	if mid == 0 {
 		return
 	}
 
 	partition1 := make([]string, mid)
-	partition2 := make([]string, len(shuffled)-mid)
+	partition2 := make([]string, nodeCount-mid)
 
 	for i, node := range shuffled[:mid] {
 		partition1[i] = node.ID
@@ -145,10 +171,10 @@ func (fi *FaultInjector) injectNetworkPartition() {
 		partition2[i] = node.ID
 	}
 
-	// 创建分区
+	// 3. 创建分区（Cluster 内部有自己的锁）
 	_ = fi.cluster.CreatePartition(partition1, partition2)
 
-	// 随机延迟后恢复
+	// 4. 随机延迟后恢复
 	healTime := time.Duration(fi.rng.Int63n(int64(fi.maxCrashTime)))
 	time.AfterFunc(healTime, func() {
 		_ = fi.cluster.HealPartitionNoAutoGossip()
@@ -194,7 +220,11 @@ func TestFaultInjection_RandomCrashes(t *testing.T) {
 	for time.Now().Before(endTime) {
 		// 重置集群状态
 		for _, node := range cluster.Nodes {
-			if !node.IsCrashed {
+			node.mu.RLock()
+			isCrashed := node.IsCrashed
+			node.mu.RUnlock()
+
+			if !isCrashed {
 				node.mu.Lock()
 				node.Knowledge = Knowledge{
 					Seen:    make(map[string]bool),
@@ -208,7 +238,11 @@ func TestFaultInjection_RandomCrashes(t *testing.T) {
 
 		// 发起投票（仅未崩溃节点）
 		for _, node := range cluster.Nodes {
-			if !node.IsCrashed {
+			node.mu.RLock()
+			isCrashed := node.IsCrashed
+			node.mu.RUnlock()
+
+			if !isCrashed {
 				node.ProposeVote(0)
 			}
 		}
@@ -218,7 +252,11 @@ func TestFaultInjection_RandomCrashes(t *testing.T) {
 
 		// 尝试决策
 		for _, node := range cluster.Nodes {
-			if !node.IsCrashed {
+			node.mu.RLock()
+			isCrashed := node.IsCrashed
+			node.mu.RUnlock()
+
+			if !isCrashed {
 				if success, _ := node.DecideCommit(majority); success {
 					successCount++
 				} else {
@@ -308,8 +346,12 @@ func TestFaultInjection_NetworkPartitions(t *testing.T) {
 			decisionCount++
 		}
 
-		// 检查分区恢复
-		if cluster.NetworkStatus == "normal" {
+		// 检查分区恢复（使用读锁保护）
+		cluster.mu.RLock()
+		isNormal := cluster.NetworkStatus == "normal"
+		cluster.mu.RUnlock()
+
+		if isNormal {
 			healingCount++
 		}
 
@@ -356,11 +398,15 @@ func TestFaultInjection_MixedFaults(t *testing.T) {
 		// 记录初始状态
 		initialCrashed := 0
 		for _, node := range cluster.Nodes {
+			node.mu.RLock()
 			if node.IsCrashed {
 				initialCrashed++
 			}
+			node.mu.RUnlock()
 		}
+		cluster.mu.RLock()
 		wasPartitioned := cluster.NetworkStatus == "partitioned"
+		cluster.mu.RUnlock()
 
 		// 等待一小段时间
 		time.Sleep(80 * time.Millisecond)
@@ -368,11 +414,15 @@ func TestFaultInjection_MixedFaults(t *testing.T) {
 		// 检查恢复
 		currentCrashed := 0
 		for _, node := range cluster.Nodes {
+			node.mu.RLock()
 			if node.IsCrashed {
 				currentCrashed++
 			}
+			node.mu.RUnlock()
 		}
+		cluster.mu.RLock()
 		isPartitioned := cluster.NetworkStatus == "partitioned"
+		cluster.mu.RUnlock()
 
 		// 统计恢复事件
 		if currentCrashed < initialCrashed {
@@ -446,7 +496,11 @@ func TestFaultInjection_LongRunningStability(t *testing.T) {
 	for time.Now().Before(endTime) {
 		// 重置状态
 		for _, node := range cluster.Nodes {
-			if !node.IsCrashed {
+			node.mu.RLock()
+			isCrashed := node.IsCrashed
+			node.mu.RUnlock()
+
+			if !isCrashed {
 				node.mu.Lock()
 				node.Knowledge = Knowledge{
 					Seen:    make(map[string]bool),
@@ -460,7 +514,11 @@ func TestFaultInjection_LongRunningStability(t *testing.T) {
 
 		// 发起投票
 		for _, node := range cluster.Nodes {
-			if !node.IsCrashed {
+			node.mu.RLock()
+			isCrashed := node.IsCrashed
+			node.mu.RUnlock()
+
+			if !isCrashed {
 				node.ProposeVote(0)
 			}
 		}
@@ -470,7 +528,11 @@ func TestFaultInjection_LongRunningStability(t *testing.T) {
 
 		// 尝试决策
 		for _, node := range cluster.Nodes {
-			if !node.IsCrashed {
+			node.mu.RLock()
+			isCrashed := node.IsCrashed
+			node.mu.RUnlock()
+
+			if !isCrashed {
 				_, err := node.DecideCommit(majority)
 				if err != nil {
 					errorCount++
@@ -536,7 +598,11 @@ func TestFaultInjection_StressTest(t *testing.T) {
 	for time.Now().Before(endTime) {
 		// 重置状态
 		for _, node := range cluster.Nodes {
-			if !node.IsCrashed {
+			node.mu.RLock()
+			isCrashed := node.IsCrashed
+			node.mu.RUnlock()
+
+			if !isCrashed {
 				node.mu.Lock()
 				node.Knowledge = Knowledge{
 					Seen:    make(map[string]bool),
@@ -550,7 +616,11 @@ func TestFaultInjection_StressTest(t *testing.T) {
 
 		// 发起投票
 		for _, node := range cluster.Nodes {
-			if !node.IsCrashed {
+			node.mu.RLock()
+			isCrashed := node.IsCrashed
+			node.mu.RUnlock()
+
+			if !isCrashed {
 				node.ProposeVote(0)
 			}
 		}
@@ -560,7 +630,11 @@ func TestFaultInjection_StressTest(t *testing.T) {
 
 		// 尝试决策
 		for _, node := range cluster.Nodes {
-			if !node.IsCrashed {
+			node.mu.RLock()
+			isCrashed := node.IsCrashed
+			node.mu.RUnlock()
+
+			if !isCrashed {
 				if success, _ := node.DecideCommit(majority); success {
 					successCount++
 				}
@@ -779,9 +853,11 @@ func TestFaultInjection_ConcurrentFaults(t *testing.T) {
 		// 验证：所有节点恢复且状态一致
 		crashedCount := 0
 		for _, node := range cluster.Nodes {
+			node.mu.RLock()
 			if node.IsCrashed {
 				crashedCount++
 			}
+			node.mu.RUnlock()
 		}
 
 		if crashedCount > 0 {

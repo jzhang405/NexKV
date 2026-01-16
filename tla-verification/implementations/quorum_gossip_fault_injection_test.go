@@ -1,6 +1,7 @@
 package implementations
 
 import (
+	"fmt"
 	"math/rand"
 	"os"
 	"sync"
@@ -76,6 +77,26 @@ func (fi *FaultInjector) Stop() {
 			_ = node.Recover(fi.cluster)
 		}
 	}
+}
+
+// ParallelRecoverAllNodes 并行恢复所有崩溃节点
+// 使用 RecoveryCoordinator 按批次并行恢复，避免死锁并提升性能
+func (fi *FaultInjector) ParallelRecoverAllNodes() error {
+	// 1. 治愈所有网络分区
+	_ = fi.cluster.HealPartition()
+
+	// 2. 创建恢复协调器
+	coordinator := NewRecoveryCoordinator(fi.cluster)
+
+	// 3. 分析节点依赖关系，构建恢复批次
+	coordinator.AnalyzeDependencies()
+
+	// 4. 按批次并行恢复
+	if err := coordinator.ParallelRecover(); err != nil {
+		return fmt.Errorf("parallel recovery failed: %w", err)
+	}
+
+	return nil
 }
 
 // injectRandomFault 注入随机故障（优化版：减少锁持有时间）

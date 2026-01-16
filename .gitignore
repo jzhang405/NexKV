@@ -36,3 +36,15 @@ go.work.sum
 .claude/
 .docs/
 .spec-workflow
+*.swp
+*.swo
+*~
+
+# TLA+ 工具生成的临时文件
+states/
+*.stderr
+*.dot
+*.dot.*
+
+# macOS 系统文件
+.DS_Store

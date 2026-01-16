@@ -1,0 +1,27 @@
+# 测试报告目录
+reports/
+*.out
+*.test
+
+# Go 覆盖率文件
+coverage.html
+coverage.out
+
+# 编辑器临时文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# 二进制文件
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+test_report_generator
+benchmark_report_generator

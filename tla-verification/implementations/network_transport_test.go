@@ -255,9 +255,10 @@ func TestNetworkTransportMultipleNodes(t *testing.T) {
 func BenchmarkNetworkTransportSend(b *testing.B) {
 	tempDir, nodeIDs := setupTransportTest(&testing.T{})
 
+	// 使用随机端口避免冲突
 	peers := map[string]string{
-		"n1": "localhost:5601",
-		"n2": "localhost:5602",
+		"n1": "localhost:0", // 系统自动分配端口
+		"n2": "localhost:0",
 	}
 
 	nt, err := CreateNetworkTransport("n1", peers)

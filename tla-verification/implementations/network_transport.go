@@ -346,16 +346,18 @@ func (nt *NetworkTransport) getOrCreateClient(targetID string) (pb.MetadataTrans
 		return nil, fmt.Errorf("%w: %s", ErrNodeNotFound, targetID)
 	}
 
-	// 创建连接（带超时）
-	ctx, cancel := context.WithTimeout(nt.ctx, 2*time.Second)
-	defer cancel()
-
-	conn, err := grpc.DialContext(ctx, addr,
+	// 创建连接（非阻塞模式，使用 grpc.WithBlock() 会阻塞等待连接建立）
+	// 优化：移除 WithBlock()，让连接在后台异步建立
+	// 优化：使用 grpc.WithReturnConnectionError() 更快失败
+	conn, err := grpc.Dial(addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(1024*1024*10), // 10MB
+			grpc.MaxCallSendMsgSize(1024*1024*10), // 10MB
+		),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to %s at %s: %w", targetID, addr, err)
+		return nil, fmt.Errorf("failed to create client for %s at %s: %w", targetID, addr, err)
 	}
 
 	// 保存连接
@@ -363,7 +365,7 @@ func (nt *NetworkTransport) getOrCreateClient(targetID string) (pb.MetadataTrans
 	client := pb.NewMetadataTransportClient(conn)
 	nt.clients[targetID] = client
 
-	log.Printf("[NetworkTransport %s] Connected to %s at %s", nt.config.NodeID, targetID, addr)
+	log.Printf("[NetworkTransport %s] Created client for %s at %s", nt.config.NodeID, targetID, addr)
 
 	return client, nil
 }

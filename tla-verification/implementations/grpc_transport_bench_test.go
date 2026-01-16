@@ -10,14 +10,14 @@ import (
 	pb "github.com/jzhang405/NexKV/proto"
 )
 
-// BenchmarkNetworkTransportClientCreation 测试客户端创建性能（优化后）
-func BenchmarkNetworkTransportClientCreation(b *testing.B) {
+// BenchmarkGRPCTransportClientCreation 测试客户端创建性能（优化后）
+func BenchmarkGRPCTransportClientCreation(b *testing.B) {
 	peers := map[string]string{
 		"n1": "localhost:5001",
 		"n2": "localhost:5002",
 	}
 
-	nt, err := CreateNetworkTransport("n1", peers)
+	nt, err := CreateGRPCTransport("n1", peers)
 	if err != nil {
 		b.Fatalf("Failed to create network transport: %v", err)
 	}
@@ -41,14 +41,14 @@ func BenchmarkNetworkTransportClientCreation(b *testing.B) {
 	}
 }
 
-// BenchmarkNetworkTransportSendWithCachedClient 测试使用缓存客户端的发送性能
-func BenchmarkNetworkTransportSendWithCachedClient(b *testing.B) {
+// BenchmarkGRPCTransportSendWithCachedClient 测试使用缓存客户端的发送性能
+func BenchmarkGRPCTransportSendWithCachedClient(b *testing.B) {
 	peers := map[string]string{
 		"n1": "localhost:6001",
 		"n2": "localhost:6002",
 	}
 
-	nt, err := CreateNetworkTransport("n1", peers)
+	nt, err := CreateGRPCTransport("n1", peers)
 	if err != nil {
 		b.Fatalf("Failed to create network transport: %v", err)
 	}

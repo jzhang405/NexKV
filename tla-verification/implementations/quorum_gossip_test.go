@@ -524,3 +524,133 @@ func TestPrintState(t *testing.T) {
 	// 调用 PrintState，确保不会 panic
 	cluster.PrintState()
 }
+
+// === 使用 RunTestsWithAllTransports 的测试版本 ===
+// 以下测试演示如何在三种 Transport（Null, Memory, GRPC）下运行相同的测试逻辑
+
+// TestTC002_QuorumCommitSuccess_WithAllTransports 测试场景：Quorum 提交成功（所有Transport）
+// 对应 TLA+ 验证的 TC_002
+func TestTC002_QuorumCommitSuccess_WithAllTransports(t *testing.T) {
+	RunTestsWithAllTransports(t, "quorum", func(t *testing.T, transport Transport) {
+		// 创建节点
+		nodeIDs := []string{"n1", "n2", "n3"}
+		nodes := createQuorumNodesWithTransport(nodeIDs, transport)
+
+		// n1 和 n2 发起投票
+		nodes[0].ProposeVote(0)
+		nodes[1].ProposeVote(0)
+
+		// 模拟 Gossip 交换：直接更新节点的 Knowledge
+		// n1 知道 n2 也投票了
+		nodes[0].mu.Lock()
+		nodes[0].Knowledge.Seen["n2"] = true
+		nodes[0].mu.Unlock()
+
+		// n2 知道 n1 也投票了
+		nodes[1].mu.Lock()
+		nodes[1].Knowledge.Seen["n1"] = true
+		nodes[1].mu.Unlock()
+
+		// n1 应该能够提交（seen = {n1, n2} >= 2）
+		majority := 2
+		success, err := nodes[0].DecideCommit(majority)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if !success {
+			t.Error("Expected n1 to be able to commit")
+		}
+
+		// 验证 n1 的状态
+		decision, _, seen, decided := nodes[0].GetState()
+		if decision != Committed {
+			t.Errorf("Expected n1 decision to be committed, got %s", decision)
+		}
+		if len(seen) < majority {
+			t.Errorf("Expected seen size >= %d, got %d", majority, len(seen))
+		}
+		if !decided["n1"] {
+			t.Error("Expected n1 to be in decided set")
+		}
+
+		t.Logf("✅ Test passed with %s transport", transport.Status().Type)
+	})
+}
+
+// TestTC003_QuorumTimeoutRollback_WithAllTransports 测试场景：Quorum 超时回滚（所有Transport）
+// 对应 TLA+ 验证的 TC_003
+func TestTC003_QuorumTimeoutRollback_WithAllTransports(t *testing.T) {
+	RunTestsWithAllTransports(t, "quorum", func(t *testing.T, transport Transport) {
+		// 创建节点
+		nodeIDs := []string{"n1", "n2", "n3"}
+		nodes := createQuorumNodesWithTransport(nodeIDs, transport)
+
+		// 只有 n1 发起投票
+		nodes[0].ProposeVote(0)
+
+		// Gossip 交换：n1 知道其他节点的存在，但它们没有投票
+		// n1 只看到自己投票了
+
+		// n1 不应该能够提交（seen = {n1} < 2）
+		majority := 2
+		success, err := nodes[0].DecideCommit(majority)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if success {
+			t.Error("Expected n1 to not be able to commit without quorum")
+		}
+
+		// 验证 n1 的状态仍然是 undecided
+		decision, _, _, _ := nodes[0].GetState()
+		if decision != Undecided {
+			t.Errorf("Expected n1 decision to be undecided, got %s", decision)
+		}
+
+		t.Logf("✅ Test passed with %s transport", transport.Status().Type)
+	})
+}
+
+// TestTC010_ConcurrentVoteConflict_WithAllTransports 创建冲突测试（所有Transport）
+// 对应 TLA+ 验证的 TC_010
+func TestTC010_ConcurrentVoteConflict_WithAllTransports(t *testing.T) {
+	RunTestsWithAllTransports(t, "quorum", func(t *testing.T, transport Transport) {
+		// 创建节点
+		nodeIDs := []string{"n1", "n2", "n3"}
+		nodes := createQuorumNodesWithTransport(nodeIDs, transport)
+
+		var wg sync.WaitGroup
+
+		// 并发发起投票
+		for i := 0; i < 3; i++ {
+			wg.Add(1)
+			go func(node *Node) {
+				defer wg.Done()
+				node.ProposeVote(0)
+			}(nodes[i])
+		}
+		wg.Wait()
+
+		// 模拟 Gossip 交换：所有节点都知道彼此投票了
+		for i := 0; i < 3; i++ {
+			for j := 0; j < 3; j++ {
+				if i != j {
+					nodes[i].mu.Lock()
+					nodes[i].Knowledge.Seen[nodeIDs[j]] = true
+					nodes[i].mu.Unlock()
+				}
+			}
+		}
+
+		// 验证：所有节点都应该在 seen 集合中
+		decision, _, seen, _ := nodes[0].GetState()
+		if decision != Undecided {
+			t.Errorf("Expected n1 decision to be undecided, got %s", decision)
+		}
+		if len(seen) < 2 {
+			t.Errorf("Expected n1 seen size >= 2 after gossip, got %d", len(seen))
+		}
+
+		t.Logf("✅ Test passed with %s transport", transport.Status().Type)
+	})
+}

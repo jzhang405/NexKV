@@ -10,7 +10,7 @@ import (
 // TestTransportInterface 测试 Transport 接口的基本契约
 //
 // 这个测试函数用于验证任何 Transport 实现是否符合接口契约。
-// 可以用于测试 MemoryTransport、NetworkTransport 等实现。
+// 可以用于测试 MemoryTransport、GRPCTransport 等实现。
 func TestTransportInterface(t *testing.T) {
 	// 这是一个模板测试，具体的传输层实现应该：
 	// 1. 创建传输层实例

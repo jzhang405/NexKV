@@ -81,19 +81,23 @@ type Message struct {
 
 // TransportStatus 传输层状态
 type TransportStatus struct {
+	NodeID          string        // 节点 ID
+	Type            string        // Transport 类型（"null", "memory", "grpc"）
 	IsRunning       bool          // 是否正在运行
 	MessageLatency  time.Duration // 消息延迟（用于测试模拟）
 	BytesSent       int64         // 发送字节数
 	BytesReceived   int64         // 接收字节数
 	MessagesSent    int64         // 发送消息数
 	MessagesReceived int64        // 接收消息数
+	Peers           map[string]string // 对等节点列表
 }
 
 // Transport 传输层抽象接口
 //
 // Transport 定义了节点间通信的抽象层，支持：
-// - 内存传输：用于快速测试和验证
-// - 网络传输：用于真实分布式部署
+// - Null 传输：零开销直接调用，用于性能基线测试
+// - 内存传输：通过 channel 通信，用于快速测试和验证
+// - gRPC 传输：真实网络通信，用于分布式部署
 //
 // 所有实现必须保证线程安全。
 type Transport interface {
@@ -204,7 +208,7 @@ func RegisterTransport(name string, factory TransportFactory) {
 // CreateTransport 创建传输层实例
 //
 // 参数：
-//   - transportType: 传输层类型（"memory" 或 "network"）
+//   - transportType: 传输层类型（"null", "memory" 或 "grpc"）
 //   - config: 传输层配置
 //
 // 返回：

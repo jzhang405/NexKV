@@ -52,6 +52,8 @@ func NewMemoryTransport(config *TransportConfig) (Transport, error) {
 		ctx:       ctx,
 		cancel:    cancel,
 		stats: TransportStatus{
+			NodeID:    config.NodeID,
+			Type:      "memory",
 			IsRunning: false,
 		},
 	}, nil

@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// TestNetworkTransportBasicOperations 测试网络传输层基本操作
-func TestNetworkTransportBasicOperations(t *testing.T) {
+// TestGRPCTransportBasicOperations 测试网络传输层基本操作
+func TestGRPCTransportBasicOperations(t *testing.T) {
 	// 设置测试环境
 	tempDir, nodeIDs := setupTransportTest(t)
 
@@ -19,7 +19,7 @@ func TestNetworkTransportBasicOperations(t *testing.T) {
 	}
 
 	// 创建网络传输层
-	nt, err := CreateNetworkTransport("n1", peers)
+	nt, err := CreateGRPCTransport("n1", peers)
 	if err != nil {
 		t.Fatalf("Failed to create network transport: %v", err)
 	}
@@ -58,8 +58,8 @@ func TestNetworkTransportBasicOperations(t *testing.T) {
 	_ = nodeIDs
 }
 
-// TestNetworkTransportConcurrentOperations 测试网络传输层并发操作
-func TestNetworkTransportConcurrentOperations(t *testing.T) {
+// TestGRPCTransportConcurrentOperations 测试网络传输层并发操作
+func TestGRPCTransportConcurrentOperations(t *testing.T) {
 	// 设置测试环境
 	tempDir, nodeIDs := setupTransportTest(t)
 
@@ -71,7 +71,7 @@ func TestNetworkTransportConcurrentOperations(t *testing.T) {
 	}
 
 	// 创建网络传输层
-	nt, err := CreateNetworkTransport("n1", peers)
+	nt, err := CreateGRPCTransport("n1", peers)
 	if err != nil {
 		t.Fatalf("Failed to create network transport: %v", err)
 	}
@@ -96,10 +96,10 @@ func TestNetworkTransportConcurrentOperations(t *testing.T) {
 	_ = nodeIDs
 }
 
-// TestNetworkTransportErrorHandling 测试网络传输层错误处理
-func TestNetworkTransportErrorHandling(t *testing.T) {
+// TestGRPCTransportErrorHandling 测试网络传输层错误处理
+func TestGRPCTransportErrorHandling(t *testing.T) {
 	// 1. 测试配置为 nil
-	_, err := NewNetworkTransport(nil)
+	_, err := NewGRPCTransport(nil)
 	if err == nil {
 		t.Error("Expected error when config is nil")
 	}
@@ -110,7 +110,7 @@ func TestNetworkTransportErrorHandling(t *testing.T) {
 	config.Peers = map[string]string{
 		"n1": "localhost:5001",
 	}
-	_, err = NewNetworkTransport(config)
+	_, err = NewGRPCTransport(config)
 	if err == nil {
 		t.Error("Expected error when node ID is empty")
 	}
@@ -120,13 +120,13 @@ func TestNetworkTransportErrorHandling(t *testing.T) {
 	config.Peers = map[string]string{
 		"n2": "localhost:5002", // n1 的地址未配置
 	}
-	_, err = NewNetworkTransport(config)
+	_, err = NewGRPCTransport(config)
 	if err == nil {
 		t.Error("Expected error when address not configured")
 	}
 
 	// 4. 测试发送到未启动的传输层
-	nt, err := CreateNetworkTransport("n1", map[string]string{
+	nt, err := CreateGRPCTransport("n1", map[string]string{
 		"n1": "localhost:5201",
 		"n2": "localhost:5202",
 	})
@@ -151,10 +151,10 @@ func TestNetworkTransportErrorHandling(t *testing.T) {
 	}
 }
 
-// TestNetworkTransportStatus 测试状态统计
-func TestNetworkTransportStatus(t *testing.T) {
+// TestGRPCTransportStatus 测试状态统计
+func TestGRPCTransportStatus(t *testing.T) {
 	// 创建网络传输层
-	nt, err := CreateNetworkTransport("n1", map[string]string{
+	nt, err := CreateGRPCTransport("n1", map[string]string{
 		"n1": "localhost:5301",
 		"n2": "localhost:5302",
 	})
@@ -189,10 +189,10 @@ func TestNetworkTransportStatus(t *testing.T) {
 	}
 }
 
-// TestNetworkTransportGRPCInterface 测试 gRPC 服务接口
-func TestNetworkTransportGRPCInterface(t *testing.T) {
+// TestGRPCTransportGRPCInterface 测试 gRPC 服务接口
+func TestGRPCTransportGRPCInterface(t *testing.T) {
 	// 创建网络传输层
-	nt, err := CreateNetworkTransport("n1", map[string]string{
+	nt, err := CreateGRPCTransport("n1", map[string]string{
 		"n1": "localhost:5401",
 		"n2": "localhost:5402",
 	})
@@ -216,8 +216,8 @@ func TestNetworkTransportGRPCInterface(t *testing.T) {
 	// 需要创建另一个节点并连接到此节点
 }
 
-// TestNetworkTransportMultipleNodes 测试多节点网络传输
-func TestNetworkTransportMultipleNodes(t *testing.T) {
+// TestGRPCTransportMultipleNodes 测试多节点网络传输
+func TestGRPCTransportMultipleNodes(t *testing.T) {
 	// 这是一个需要真实网络连接的测试
 	// 在实际集成测试中，应该启动多个进程
 
@@ -231,9 +231,9 @@ func TestNetworkTransportMultipleNodes(t *testing.T) {
 		peers[node] = ports[i]
 	}
 
-	var transports []*NetworkTransport
+	var transports []*GRPCTransport
 	for _, node := range nodes {
-		nt, err := CreateNetworkTransport(node, peers)
+		nt, err := CreateGRPCTransport(node, peers)
 		if err != nil {
 			t.Fatalf("Failed to create transport for %s: %v", node, err)
 		}
@@ -251,8 +251,8 @@ func TestNetworkTransportMultipleNodes(t *testing.T) {
 	// TODO: 测试节点间通信
 }
 
-// BenchmarkNetworkTransportSend 网络传输层发送基准测试
-func BenchmarkNetworkTransportSend(b *testing.B) {
+// BenchmarkGRPCTransportSend 网络传输层发送基准测试
+func BenchmarkGRPCTransportSend(b *testing.B) {
 	tempDir, nodeIDs := setupTransportTest(&testing.T{})
 
 	// 使用随机端口避免冲突
@@ -261,7 +261,7 @@ func BenchmarkNetworkTransportSend(b *testing.B) {
 		"n2": "localhost:0",
 	}
 
-	nt, err := CreateNetworkTransport("n1", peers)
+	nt, err := CreateGRPCTransport("n1", peers)
 	if err != nil {
 		b.Fatalf("Failed to create network transport: %v", err)
 	}

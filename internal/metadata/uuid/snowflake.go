@@ -25,12 +25,12 @@ import (
 // 适用场景: 节点 ID、高并发场景、需要短 ID 的场景
 type Snowflake struct {
 	mu           sync.Mutex
-	lastTime     int64  // 上次生成时间戳（毫秒）
-	sequence     int64  // 序列号
-	machineID    int64  // 机器 ID（10 bits: 5 bits 数据中心 + 5 bits 工作节点）
-	maxSequence  int64  // 最大序列号
-	timeShift    uint8  // 时间戳偏移位数
-	machineShift uint8  // 机器 ID 偏移位数
+	lastTime     int64 // 上次生成时间戳（毫秒）
+	sequence     int64 // 序列号
+	machineID    int64 // 机器 ID（10 bits: 5 bits 数据中心 + 5 bits 工作节点）
+	maxSequence  int64 // 最大序列号
+	timeShift    uint8 // 时间戳偏移位数
+	machineShift uint8 // 机器 ID 偏移位数
 }
 
 // Snowflake 配置常量
@@ -49,7 +49,7 @@ const (
 	maxSequence  = (1 << seqBits) - 1     // 4095
 
 	// 偏移位数
-	machineShift = seqBits           // 12
+	machineShift = seqBits                    // 12
 	timeShift    = machineShift + machineBits // 22
 )
 

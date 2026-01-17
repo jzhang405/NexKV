@@ -17,10 +17,11 @@ import (
 //   - c (logical counter): 逻辑计数器，用于处理时间回拨和同一毫秒内的事件
 //
 // 算法: pt' = max(now, pt, eventTime, remoteHLC.pt)
-//       c' = (pt' == pt && pt' == remoteHLC.pt) ? max(c, remoteHLC.c) + 1 : 0
+//
+//	c' = (pt' == pt && pt' == remoteHLC.pt) ? max(c, remoteHLC.c) + 1 : 0
 type HLC struct {
-	pt int64   // 物理时间（毫秒）
-	c  uint16  // 逻辑计数（0-65535）
+	pt int64  // 物理时间（毫秒）
+	c  uint16 // 逻辑计数（0-65535）
 	mu sync.RWMutex
 }
 

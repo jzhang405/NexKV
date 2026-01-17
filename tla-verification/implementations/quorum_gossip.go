@@ -46,9 +46,9 @@ type WALEntry struct {
 
 // WAL Write-Ahead Log 结构
 type WAL struct {
-	file   *os.File
-	path   string
-	mu     sync.Mutex
+	file    *os.File
+	path    string
+	mu      sync.Mutex
 	encoder *gob.Encoder
 	decoder *gob.Decoder
 }
@@ -518,12 +518,12 @@ type Cluster struct {
 	mu      sync.RWMutex
 
 	// ===== 网络分区相关字段 =====
-	NetworkStatus      string                    // "normal" | "partitioned"
-	Partitions         map[string][]string       // 分区映射：nodeID -> partitionMembers
-	PartitionMap       map[string]string         // 反向映射：nodeID -> partitionID
-	HeartbeatMap       map[string]time.Time      // 心跳时间戳：nodeID -> lastHeartbeat
-	HeartbeatTimeout   time.Duration             // 心跳超时阈值
-	lastPartitionCheck time.Time                 // 上次分区检查时间
+	NetworkStatus      string               // "normal" | "partitioned"
+	Partitions         map[string][]string  // 分区映射：nodeID -> partitionMembers
+	PartitionMap       map[string]string    // 反向映射：nodeID -> partitionID
+	HeartbeatMap       map[string]time.Time // 心跳时间戳：nodeID -> lastHeartbeat
+	HeartbeatTimeout   time.Duration        // 心跳超时阈值
+	lastPartitionCheck time.Time            // 上次分区检查时间
 }
 
 // NewCluster 创建新集群
@@ -559,13 +559,13 @@ func NewCluster(nodeIDs []string, dataDir string) *Cluster {
 	}
 
 	return &Cluster{
-		Nodes:             nodes,
-		Version:           0,
-		NetworkStatus:     "normal",
-		Partitions:        make(map[string][]string),
-		PartitionMap:      make(map[string]string),
-		HeartbeatMap:      heartbeatMap,
-		HeartbeatTimeout:  5 * time.Second, // 默认 5 秒超时
+		Nodes:              nodes,
+		Version:            0,
+		NetworkStatus:      "normal",
+		Partitions:         make(map[string][]string),
+		PartitionMap:       make(map[string]string),
+		HeartbeatMap:       heartbeatMap,
+		HeartbeatTimeout:   5 * time.Second, // 默认 5 秒超时
 		lastPartitionCheck: time.Now(),
 	}
 }

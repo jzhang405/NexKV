@@ -86,12 +86,12 @@ func GetVariant(uuid []byte) byte {
 
 // Version UUID 版本
 const (
-	VersionTimeBased    = 1 // v1: 基于时间
-	VersionDCESecurity  = 2 // v2: DCE 安全
-	VersionMD5NameBased = 3 // v3: 基于名称和 MD5
-	VersionRandom       = 4 // v4: 随机
+	VersionTimeBased     = 1 // v1: 基于时间
+	VersionDCESecurity   = 2 // v2: DCE 安全
+	VersionMD5NameBased  = 3 // v3: 基于名称和 MD5
+	VersionRandom        = 4 // v4: 随机
 	VersionSHA1NameBased = 5 // v5: 基于名称和 SHA1
-	Version7TimeBased   = 7 // v7: 基于时间（RFC 9562）
+	Version7TimeBased    = 7 // v7: 基于时间（RFC 9562）
 )
 
 // GetVersion 获取 UUID 版本

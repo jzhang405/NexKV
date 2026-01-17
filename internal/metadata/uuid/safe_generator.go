@@ -155,9 +155,9 @@ func (g *SafeUUIDGenerator) GetStats() map[string]interface{} {
 	defer g.mu.Unlock()
 
 	return map[string]interface{}{
-		"callback_count":   g.callbackCount,
-		"last_time":        g.lastTime,
-		"max_drift":        g.maxDrift,
+		"callback_count":    g.callbackCount,
+		"last_time":         g.lastTime,
+		"max_drift":         g.maxDrift,
 		"max_callback_wait": g.maxCallbackWait,
 	}
 }

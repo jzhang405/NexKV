@@ -548,4 +548,3 @@ func TestTC050_GossipExchangeAlreadyCrashed(t *testing.T) {
 		t.Error("Expected gossip to crashed node to fail")
 	}
 }
-

@@ -10,7 +10,7 @@ import (
 
 var (
 	globalLogger *logrus.Logger
-	once        sync.Once
+	once         sync.Once
 )
 
 // Init 初始化全局日志

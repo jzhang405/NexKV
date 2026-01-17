@@ -5,12 +5,12 @@ import "time"
 
 // Config 是元数据层的完整配置结构
 type Config struct {
-	Cluster   ClusterConfig   `yaml:"cluster" mapstructure:"cluster"`
-	Metadata  MetadataConfig  `yaml:"metadata" mapstructure:"metadata"`
-	Storage   StorageConfig   `yaml:"storage" mapstructure:"storage"`
-	Network   NetworkConfig   `yaml:"network" mapstructure:"network"`
-	Logging   LoggingConfig   `yaml:"logging" mapstructure:"logging"`
-	Clock     ClockConfig     `yaml:"clock" mapstructure:"clock"`
+	Cluster  ClusterConfig  `yaml:"cluster" mapstructure:"cluster"`
+	Metadata MetadataConfig `yaml:"metadata" mapstructure:"metadata"`
+	Storage  StorageConfig  `yaml:"storage" mapstructure:"storage"`
+	Network  NetworkConfig  `yaml:"network" mapstructure:"network"`
+	Logging  LoggingConfig  `yaml:"logging" mapstructure:"logging"`
+	Clock    ClockConfig    `yaml:"clock" mapstructure:"clock"`
 }
 
 // ClusterConfig 集群配置
@@ -31,7 +31,7 @@ type TreeCoordConfig struct {
 
 // MetadataConfig 元数据层配置
 type MetadataConfig struct {
-	DataDir       string        `yaml:"data_dir" mapstructure:"data_dir"`
+	DataDir        string        `yaml:"data_dir" mapstructure:"data_dir"`
 	GossipInterval time.Duration `yaml:"gossip_interval" mapstructure:"gossip_interval"`
 	QuorumTimeout  time.Duration `yaml:"quorum_timeout" mapstructure:"quorum_timeout"`
 	ChangeLogSize  int           `yaml:"change_log_size" mapstructure:"change_log_size"`
@@ -39,9 +39,9 @@ type MetadataConfig struct {
 
 // StorageConfig 存储层配置
 type StorageConfig struct {
-	ShardDataDir string        `yaml:"shard_data_dir" mapstructure:"shard_data_dir"`
-	WALDir       string        `yaml:"wal_dir" mapstructure:"wal_dir"`
-	SnapshotDir  string        `yaml:"snapshot_dir" mapstructure:"snapshot_dir"`
+	ShardDataDir  string        `yaml:"shard_data_dir" mapstructure:"shard_data_dir"`
+	WALDir        string        `yaml:"wal_dir" mapstructure:"wal_dir"`
+	SnapshotDir   string        `yaml:"snapshot_dir" mapstructure:"snapshot_dir"`
 	FlushInterval time.Duration `yaml:"flush_interval" mapstructure:"flush_interval"`
 }
 
@@ -89,7 +89,7 @@ func DefaultConfig() *Config {
 			},
 		},
 		Metadata: MetadataConfig{
-			DataDir:       "./data/metadata",
+			DataDir:        "./data/metadata",
 			GossipInterval: 10 * time.Second,
 			QuorumTimeout:  30 * time.Second,
 			ChangeLogSize:  1000,

@@ -25,7 +25,7 @@ func TestTC041_Partition3vs2(t *testing.T) {
 	// 2. 立即创建分区（在 Gossip 之前）
 	err := cluster.CreatePartition(
 		[]string{"n1", "n2", "n3"}, // 多数派分区
-		[]string{"n4", "n5"},         // 少数派分区
+		[]string{"n4", "n5"},       // 少数派分区
 	)
 	if err != nil {
 		t.Fatalf("Failed to create partition: %v", err)

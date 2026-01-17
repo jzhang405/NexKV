@@ -46,11 +46,11 @@ func demonstrateHLC() {
 	for i := 0; i < 10; i++ {
 		ts := hlc.Now()
 		logging.WithFields(map[string]interface{}{
-			"index":   i + 1,
-			"pt":      ts.PhysicalTime(),
-			"c":       ts.LogicalCounter(),
-			"time":    ts.ToTime().Format("15:04:05.000"),
-			"string":  ts.String(),
+			"index":  i + 1,
+			"pt":     ts.PhysicalTime(),
+			"c":      ts.LogicalCounter(),
+			"time":   ts.ToTime().Format("15:04:05.000"),
+			"string": ts.String(),
 		}).Info("HLC 时间戳")
 		time.Sleep(time.Microsecond * 100)
 	}

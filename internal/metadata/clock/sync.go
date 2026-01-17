@@ -65,10 +65,10 @@ func (g *gossipClockSync) Stop() error {
 
 	// 打印统计信息
 	logging.WithFields(map[string]interface{}{
-		"sync_count":    g.syncCount,
-		"sync_success":  g.syncSuccess,
-		"sync_failed":   g.syncFailed,
-		"max_drift_ms":  g.maxDrift,
+		"sync_count":   g.syncCount,
+		"sync_success": g.syncSuccess,
+		"sync_failed":  g.syncFailed,
+		"max_drift_ms": g.maxDrift,
 	}).Info("时钟同步统计")
 
 	return nil
@@ -104,20 +104,20 @@ func (g *gossipClockSync) SyncWithPeer(ctx context.Context, addr string) error {
 	}
 
 	logging.WithFields(map[string]interface{}{
-		"peer":        addr,
-		"local_pt":    g.hlc.PhysicalTime(),
-		"remote_pt":   remoteHLC.PhysicalTime(),
-		"drift_ms":    drift,
-		"updated_pt":  updatedHLC.PhysicalTime(),
-		"updated_c":   updatedHLC.LogicalCounter(),
+		"peer":       addr,
+		"local_pt":   g.hlc.PhysicalTime(),
+		"remote_pt":  remoteHLC.PhysicalTime(),
+		"drift_ms":   drift,
+		"updated_pt": updatedHLC.PhysicalTime(),
+		"updated_c":  updatedHLC.LogicalCounter(),
 	}).Debug("时钟同步完成")
 
 	// 检测时间回拨
 	if updatedHLC.PhysicalTime() < g.hlc.PhysicalTime() {
 		logging.WithFields(map[string]interface{}{
-			"peer":         addr,
-			"current_pt":   g.hlc.PhysicalTime(),
-			"updated_pt":   updatedHLC.PhysicalTime(),
+			"peer":       addr,
+			"current_pt": g.hlc.PhysicalTime(),
+			"updated_pt": updatedHLC.PhysicalTime(),
 		}).Warn("检测到时间回拨，已自动修正")
 	}
 

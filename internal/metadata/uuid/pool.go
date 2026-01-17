@@ -22,7 +22,7 @@ type UUIDPool struct {
 	mu       sync.Mutex
 	pool     chan string
 	poolSize int
-	uuidType string // "v4", "v7", "snowflake"
+	uuidType string        // "v4", "v7", "snowflake"
 	stopCh   chan struct{} // 停止信号
 
 	// Snowflake 生成器（仅用于 snowflake 类型）

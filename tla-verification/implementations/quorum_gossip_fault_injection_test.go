@@ -14,13 +14,13 @@ import (
 
 // FaultInjector 故障注入器（优化版：使用读写锁提升并发性能）
 type FaultInjector struct {
-	cluster       *Cluster
-	rng           *rand.Rand
-	faultChance   float64 // 故障注入概率 (0.0 - 1.0)
-	maxCrashTime  time.Duration
-	stopCh        chan struct{}
-	mu            sync.RWMutex // 优化：使用读写锁，提升并发性能
-	stopping      uint32      // 优化：原子标志位，避免 Stop() 持锁时间过长
+	cluster      *Cluster
+	rng          *rand.Rand
+	faultChance  float64 // 故障注入概率 (0.0 - 1.0)
+	maxCrashTime time.Duration
+	stopCh       chan struct{}
+	mu           sync.RWMutex // 优化：使用读写锁，提升并发性能
+	stopping     uint32       // 优化：原子标志位，避免 Stop() 持锁时间过长
 }
 
 // NewFaultInjector 创建故障注入器

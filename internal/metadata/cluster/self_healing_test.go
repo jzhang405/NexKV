@@ -160,9 +160,9 @@ func TestSelfHealer_NodeFailureDetection(t *testing.T) {
 	require.NoError(t, err)
 
 	shConfig := &SelfHealingConfig{
-		HealingInterval:     500 * time.Millisecond,
-		MaxRetryAttempts:    2,
-		RetryDelay:          100 * time.Millisecond,
+		HealingInterval:      500 * time.Millisecond,
+		MaxRetryAttempts:     2,
+		RetryDelay:           100 * time.Millisecond,
 		EnableTopologyRepair: true,
 		EnableLeaderElection: false, // 禁用Leader选举以简化测试
 	}
@@ -298,25 +298,25 @@ func TestSelfHealer_LeaderFailure(t *testing.T) {
 	leConfig := &LeaderElectionConfig{
 		ElectionInterval: 100 * time.Millisecond,
 		LeaseTTL:         500 * time.Millisecond,
-		Priority:          10,
-		AutoElection:      true,
+		Priority:         10,
+		AutoElection:     true,
 	}
 	leaderElection, err := NewLeaderElection("node1", trans, leConfig)
 	require.NoError(t, err)
 
 	// 添加候选节点
 	node1 := &Node{
-		NodeID:    "node1",
-		Status:    NodeStatusReady,
-		Priority:  10,
+		NodeID:        "node1",
+		Status:        NodeStatusReady,
+		Priority:      10,
 		LastHeartbeat: time.Now(),
 	}
 	_ = leaderElection.AddCandidate(node1)
 
 	shConfig := &SelfHealingConfig{
-		HealingInterval:     500 * time.Millisecond,
-		MaxRetryAttempts:    2,
-		RetryDelay:          100 * time.Millisecond,
+		HealingInterval:      500 * time.Millisecond,
+		MaxRetryAttempts:     2,
+		RetryDelay:           100 * time.Millisecond,
 		EnableTopologyRepair: false,
 		EnableLeaderElection: true,
 	}
@@ -355,8 +355,8 @@ func TestDefaultSelfHealingConfig(t *testing.T) {
 // TestHealingStatus_String 测试自愈状态字符串表示
 func TestHealingStatus_String(t *testing.T) {
 	testCases := []struct {
-		status    HealingStatus
-		expected  string
+		status   HealingStatus
+		expected string
 	}{
 		{HealingStatusDetecting, "Detecting"},
 		{HealingStatusHealing, "Healing"},

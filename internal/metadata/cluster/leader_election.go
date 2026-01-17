@@ -42,8 +42,8 @@ type LeaderElection struct {
 	candidatesMu sync.RWMutex
 
 	// 当前 Leader
-	currentLeader   atomic.Value // *Node
-	leaderLease     atomic.Int64 // 租约过期时间（Unix 时间戳）
+	currentLeader atomic.Value // *Node
+	leaderLease   atomic.Int64 // 租约过期时间（Unix 时间戳）
 
 	// 选举状态
 	isLeader atomic.Bool
@@ -78,8 +78,8 @@ func DefaultLeaderElectionConfig() *LeaderElectionConfig {
 	return &LeaderElectionConfig{
 		ElectionInterval: 5 * time.Second,
 		LeaseTTL:         15 * time.Second,
-		Priority:          0,
-		AutoElection:      true,
+		Priority:         0,
+		AutoElection:     true,
 	}
 }
 
@@ -120,12 +120,12 @@ func NewLeaderElection(
 	}
 
 	election := &LeaderElection{
-		config:       config,
-		localNodeID:  localNodeID,
-		transport:     transport,
-		candidates:   make(map[string]*Node),
-		stopCh:       make(chan struct{}),
-		stats:        &LeaderElectionStats{},
+		config:      config,
+		localNodeID: localNodeID,
+		transport:   transport,
+		candidates:  make(map[string]*Node),
+		stopCh:      make(chan struct{}),
+		stats:       &LeaderElectionStats{},
 	}
 
 	// 初始化统计信息
@@ -142,8 +142,8 @@ func (le *LeaderElection) Start() error {
 	}
 
 	logging.WithFields(map[string]any{
-		"node_id":      le.localNodeID,
-		"priority":     le.config.Priority,
+		"node_id":       le.localNodeID,
+		"priority":      le.config.Priority,
 		"auto_election": le.config.AutoElection,
 	}).Info("启动 Leader 选举")
 
@@ -183,8 +183,8 @@ func (le *LeaderElection) Stop() error {
 	// 打印统计信息
 	logging.WithFields(map[string]any{
 		"elections_total":     le.stats.ElectionsTotal.Load(),
-		"become_leader_count":  le.stats.BecomeLeaderCount.Load(),
-		"leader_transitions":   le.stats.LeaderTransitions.Load(),
+		"become_leader_count": le.stats.BecomeLeaderCount.Load(),
+		"leader_transitions":  le.stats.LeaderTransitions.Load(),
 	}).Info("Leader 选举统计")
 
 	logging.Info("Leader 选举已停止")
@@ -276,7 +276,7 @@ func (le *LeaderElection) checkAndElect() {
 		// Leader 租约过期，触发重新选举
 		logging.WithFields(map[string]any{
 			"current_leader": currentLeader.NodeID,
-			"lease_expired": true,
+			"lease_expired":  true,
 		}).Warn("Leader 租约过期，触发重新选举")
 	}
 
@@ -360,7 +360,7 @@ func (le *LeaderElection) updateLeader(newLeader *Node) {
 		if le.isLeader.Load() {
 			le.isLeader.Store(false)
 			logging.WithFields(map[string]any{
-				"node_id":   le.localNodeID,
+				"node_id":    le.localNodeID,
 				"new_leader": newLeader.NodeID,
 			}).Info("放弃 Leader 身份")
 		}

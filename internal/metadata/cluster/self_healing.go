@@ -81,9 +81,9 @@ type SelfHealingConfig struct {
 // DefaultSelfHealingConfig 返回默认配置
 func DefaultSelfHealingConfig() *SelfHealingConfig {
 	return &SelfHealingConfig{
-		HealingInterval:     10 * time.Second,
-		MaxRetryAttempts:    3,
-		RetryDelay:          5 * time.Second,
+		HealingInterval:      10 * time.Second,
+		MaxRetryAttempts:     3,
+		RetryDelay:           5 * time.Second,
 		EnableTopologyRepair: true,
 		EnableLeaderElection: true,
 	}
@@ -112,9 +112,9 @@ type HealingStatus int
 
 const (
 	HealingStatusDetecting HealingStatus = iota // 检测中
-	HealingStatusHealing                       // 自愈中
-	HealingStatusRecovered                     // 已恢复
-	HealingStatusFailed                        // 自愈失败
+	HealingStatusHealing                        // 自愈中
+	HealingStatusRecovered                      // 已恢复
+	HealingStatusFailed                         // 自愈失败
 )
 
 // SelfHealingStats 自愈统计信息
@@ -269,10 +269,10 @@ func (sh *SelfHealer) onNodeFailed(nodeID string) {
 	defer sh.healingNodesMu.Unlock()
 
 	sh.healingNodes[nodeID] = &HealingRecord{
-		NodeID:    nodeID,
-		FailedAt:  time.Now(),
+		NodeID:     nodeID,
+		FailedAt:   time.Now(),
 		RetryCount: 0,
-		Status:    HealingStatusDetecting,
+		Status:     HealingStatusDetecting,
 	}
 
 	// 立即触发自愈检查
@@ -406,7 +406,7 @@ func (sh *SelfHealer) repairTopology(failedNodeID string) error {
 	// 如果故障节点有子节点，需要为子节点找新父节点
 	if len(failedNode.ChildrenIDs) > 0 {
 		logging.WithFields(map[string]any{
-			"failed_node":  failedNodeID,
+			"failed_node":    failedNodeID,
 			"children_count": len(failedNode.ChildrenIDs),
 		}).Info("为孤儿节点寻找新父节点")
 
@@ -425,15 +425,15 @@ func (sh *SelfHealer) repairTopology(failedNodeID string) error {
 		for _, childID := range failedNode.ChildrenIDs {
 			if err := sh.reparentChild(childID, newParentID); err != nil {
 				logging.WithFields(map[string]any{
-					"child_id":  childID,
+					"child_id":   childID,
 					"new_parent": newParentID,
-					"error":     err.Error(),
+					"error":      err.Error(),
 				}).Error("重新建立父子关系失败")
 				continue
 			}
 
 			logging.WithFields(map[string]any{
-				"child_id":  childID,
+				"child_id":   childID,
 				"old_parent": failedNodeID,
 				"new_parent": newParentID,
 			}).Info("成功重新建立父子关系")
@@ -506,7 +506,7 @@ func (sh *SelfHealer) reparentChild(childID string, newParentID string) error {
 	// 注意：这是简化实现，实际需要更复杂的协议
 
 	logging.WithFields(map[string]any{
-		"child_id":    childID,
+		"child_id":      childID,
 		"new_parent_id": newParentID,
 	}).Debug("重新建立父子关系")
 

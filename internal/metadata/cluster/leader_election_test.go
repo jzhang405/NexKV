@@ -102,10 +102,10 @@ func TestLeaderElection_AddCandidate(t *testing.T) {
 
 	// 添加候选节点
 	node1 := &Node{
-		NodeID:    "node1",
-		Addr:      "node1:9211",
-		Status:    NodeStatusReady,
-		Priority:  10,
+		NodeID:        "node1",
+		Addr:          "node1:9211",
+		Status:        NodeStatusReady,
+		Priority:      10,
 		LastHeartbeat: time.Now(),
 	}
 
@@ -134,10 +134,10 @@ func TestLeaderElection_RemoveCandidate(t *testing.T) {
 
 	// 添加候选节点
 	node1 := &Node{
-		NodeID:    "node1",
-		Addr:      "node1:9211",
-		Status:    NodeStatusReady,
-		Priority:  10,
+		NodeID:        "node1",
+		Addr:          "node1:9211",
+		Status:        NodeStatusReady,
+		Priority:      10,
 		LastHeartbeat: time.Now(),
 	}
 	_ = election.AddCandidate(node1)
@@ -157,8 +157,8 @@ func TestLeaderElection_CalculateScore(t *testing.T) {
 	config := &LeaderElectionConfig{
 		ElectionInterval: 5 * time.Second,
 		LeaseTTL:         15 * time.Second,
-		Priority:          0,
-		AutoElection:      true,
+		Priority:         0,
+		AutoElection:     true,
 	}
 	election, err := NewLeaderElection("node1", trans, config)
 	require.NoError(t, err)
@@ -171,9 +171,9 @@ func TestLeaderElection_CalculateScore(t *testing.T) {
 		{
 			"高优先级Ready节点",
 			&Node{
-				NodeID:    "high_priority",
-				Status:    NodeStatusReady,
-				Priority:  10,
+				NodeID:        "high_priority",
+				Status:        NodeStatusReady,
+				Priority:      10,
 				LastHeartbeat: time.Now(),
 			},
 			10000 + 500 + 100, // priority*1000 + status + uptime
@@ -181,9 +181,9 @@ func TestLeaderElection_CalculateScore(t *testing.T) {
 		{
 			"低优先级Ready节点",
 			&Node{
-				NodeID:    "low_priority",
-				Status:    NodeStatusReady,
-				Priority:  1,
+				NodeID:        "low_priority",
+				Status:        NodeStatusReady,
+				Priority:      1,
 				LastHeartbeat: time.Now(),
 			},
 			1000 + 500 + 100,
@@ -191,9 +191,9 @@ func TestLeaderElection_CalculateScore(t *testing.T) {
 		{
 			"Joining状态节点",
 			&Node{
-				NodeID:    "joining",
-				Status:    NodeStatusJoining,
-				Priority:  5,
+				NodeID:        "joining",
+				Status:        NodeStatusJoining,
+				Priority:      5,
 				LastHeartbeat: time.Now(),
 			},
 			5000 + 200 + 100,
@@ -201,9 +201,9 @@ func TestLeaderElection_CalculateScore(t *testing.T) {
 		{
 			"Failed状态节点",
 			&Node{
-				NodeID:    "failed",
-				Status:    NodeStatusFailed,
-				Priority:  10,
+				NodeID:        "failed",
+				Status:        NodeStatusFailed,
+				Priority:      10,
 				LastHeartbeat: time.Now(),
 			},
 			10000 + 0 + 100,
@@ -229,21 +229,21 @@ func TestLeaderElection_SelectLeader(t *testing.T) {
 
 	// 添加候选节点
 	node1 := &Node{
-		NodeID:    "node1",
-		Status:    NodeStatusReady,
-		Priority:  5,
+		NodeID:        "node1",
+		Status:        NodeStatusReady,
+		Priority:      5,
 		LastHeartbeat: time.Now(),
 	}
 	node2 := &Node{
-		NodeID:    "node2",
-		Status:    NodeStatusReady,
-		Priority:  10, // 更高优先级
+		NodeID:        "node2",
+		Status:        NodeStatusReady,
+		Priority:      10, // 更高优先级
 		LastHeartbeat: time.Now(),
 	}
 	node3 := &Node{
-		NodeID:    "node3",
-		Status:    NodeStatusReady,
-		Priority:  1,
+		NodeID:        "node3",
+		Status:        NodeStatusReady,
+		Priority:      1,
 		LastHeartbeat: time.Now(),
 	}
 
@@ -275,9 +275,9 @@ func TestLeaderElection_GetCandidates(t *testing.T) {
 
 	// 添加 Ready 状态节点
 	node1 := &Node{
-		NodeID:    "node1",
-		Status:    NodeStatusReady,
-		Priority:  5,
+		NodeID:        "node1",
+		Status:        NodeStatusReady,
+		Priority:      5,
 		LastHeartbeat: time.Now(),
 	}
 	_ = election.AddCandidate(node1)
@@ -287,9 +287,9 @@ func TestLeaderElection_GetCandidates(t *testing.T) {
 
 	// 添加 Joining 状态节点（也应该被返回）
 	node2 := &Node{
-		NodeID:    "node2",
-		Status:    NodeStatusJoining,
-		Priority:  3,
+		NodeID:        "node2",
+		Status:        NodeStatusJoining,
+		Priority:      3,
 		LastHeartbeat: time.Now(),
 	}
 	_ = election.AddCandidate(node2)
@@ -299,9 +299,9 @@ func TestLeaderElection_GetCandidates(t *testing.T) {
 
 	// 添加 Failed 状态节点（不应被返回）
 	node3 := &Node{
-		NodeID:    "node3",
-		Status:    NodeStatusFailed,
-		Priority:  10,
+		NodeID:        "node3",
+		Status:        NodeStatusFailed,
+		Priority:      10,
 		LastHeartbeat: time.Now(),
 	}
 	_ = election.AddCandidate(node3)
@@ -325,9 +325,9 @@ func TestLeaderElection_GetCurrentLeader(t *testing.T) {
 
 	// 添加候选节点并启动选举
 	node1 := &Node{
-		NodeID:    "node1",
-		Status:    NodeStatusReady,
-		Priority:  5,
+		NodeID:        "node1",
+		Status:        NodeStatusReady,
+		Priority:      5,
 		LastHeartbeat: time.Now(),
 	}
 	_ = election.AddCandidate(node1)
@@ -356,9 +356,9 @@ func TestLeaderElection_IsLeader(t *testing.T) {
 
 	// 添加候选节点并启动选举
 	node1 := &Node{
-		NodeID:    "node1",
-		Status:    NodeStatusReady,
-		Priority:  10, // 高优先级
+		NodeID:        "node1",
+		Status:        NodeStatusReady,
+		Priority:      10, // 高优先级
 		LastHeartbeat: time.Now(),
 	}
 	_ = election.AddCandidate(node1)
@@ -390,9 +390,9 @@ func TestLeaderElection_GetLeaseExpiry(t *testing.T) {
 
 	// 添加候选节点并启动选举
 	node1 := &Node{
-		NodeID:    "node1",
-		Status:    NodeStatusReady,
-		Priority:  10,
+		NodeID:        "node1",
+		Status:        NodeStatusReady,
+		Priority:      10,
 		LastHeartbeat: time.Now(),
 	}
 	_ = election.AddCandidate(node1)
@@ -446,9 +446,9 @@ func TestLeaderElection_Campaign(t *testing.T) {
 
 	// 添加候选节点
 	node1 := &Node{
-		NodeID:    "node1",
-		Status:    NodeStatusReady,
-		Priority:  10,
+		NodeID:        "node1",
+		Status:        NodeStatusReady,
+		Priority:      10,
 		LastHeartbeat: time.Now(),
 	}
 	_ = election.AddCandidate(node1)
@@ -481,23 +481,23 @@ func TestLeaderElection_LeaderTransition(t *testing.T) {
 	config := &LeaderElectionConfig{
 		ElectionInterval: 100 * time.Millisecond, // 快速选举
 		LeaseTTL:         500 * time.Millisecond,
-		Priority:          0,
-		AutoElection:      true,
+		Priority:         0,
+		AutoElection:     true,
 	}
 	election, err := NewLeaderElection("node1", trans, config)
 	require.NoError(t, err)
 
 	// 先添加所有候选节点（确保在第一次选举前都在候选列表中）
 	node1 := &Node{
-		NodeID:    "node1",
-		Status:    NodeStatusReady,
-		Priority:  10,
+		NodeID:        "node1",
+		Status:        NodeStatusReady,
+		Priority:      10,
 		LastHeartbeat: time.Now(),
 	}
 	node2 := &Node{
-		NodeID:    "node2",
-		Status:    NodeStatusReady,
-		Priority:  100, // 极高优先级，确保会被选中
+		NodeID:        "node2",
+		Status:        NodeStatusReady,
+		Priority:      100, // 极高优先级，确保会被选中
 		LastHeartbeat: time.Now(),
 	}
 	_ = election.AddCandidate(node1)

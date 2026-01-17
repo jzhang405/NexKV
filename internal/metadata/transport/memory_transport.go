@@ -402,11 +402,11 @@ func (t *MemoryTransport) GetConfig() *TransportConfig {
 }
 
 // Stats 获取统计信息
-func (t *MemoryTransport) Stats() map[string]interface{} {
+func (t *MemoryTransport) Stats() map[string]any {
 	t.nodesMu.RLock()
 	defer t.nodesMu.RUnlock()
 
-	stats := make(map[string]interface{})
+	stats := make(map[string]any)
 	stats["started"] = t.started.Load()
 	stats["stopped"] = t.stopped.Load()
 	stats["local_addr"] = t.localAddr

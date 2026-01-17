@@ -31,12 +31,12 @@ type MetadataStore struct {
 	config *MetadataStoreConfig
 
 	// 依赖
-	gossipService   *GossipService
-	quorumService   *QuorumService
-	twoPCService    *TwoPCService
-	transport       transport.Transport
-	hlc             *clock.HLC
-	uuidGen         uuid.UUIDGenerator
+	gossipService *GossipService
+	quorumService *QuorumService
+	twoPCService  *TwoPCService
+	transport     transport.Transport
+	hlc           *clock.HLC
+	uuidGen       uuid.UUIDGenerator
 
 	// 生命周期
 	started atomic.Bool
@@ -62,9 +62,9 @@ type MetadataStoreConfig struct {
 func DefaultMetadataStoreConfig() *MetadataStoreConfig {
 	return &MetadataStoreConfig{
 		CriticalPrefixes: []string{
-			"shard/",      // 分片元数据
-			"replica/",    // 副本元数据
-			"node/",       // 节点元数据（变更）
+			"shard/",   // 分片元数据
+			"replica/", // 副本元数据
+			"node/",    // 节点元数据（变更）
 		},
 		EnableAutoClassify: true,
 	}
@@ -210,15 +210,15 @@ func (m *MetadataStore) Start() error {
 
 	// 启动 Quorum 服务
 	if err := m.quorumService.Start(); err != nil {
-		m.gossipService.Stop()
+		_ = m.gossipService.Stop()
 		m.started.Store(false)
 		return fmt.Errorf("启动 Quorum 服务失败: %w", err)
 	}
 
 	// 启动 2PC 服务
 	if err := m.twoPCService.Start(); err != nil {
-		m.gossipService.Stop()
-		m.quorumService.Stop()
+		_ = m.gossipService.Stop()
+		_ = m.quorumService.Stop()
 		m.started.Store(false)
 		return fmt.Errorf("启动 2PC 服务失败: %w", err)
 	}
@@ -268,10 +268,10 @@ func (m *MetadataStore) Put(
 	// 选择一致性协议
 	protocol := m.selectProtocol(key, changeType)
 
-	logging.WithFields(map[string]interface{}{
-		"key":              key,
-		"change_type":      changeType,
-		"consensus_proto":   protocol,
+	logging.WithFields(map[string]any{
+		"key":             key,
+		"change_type":     changeType,
+		"consensus_proto": protocol,
 	}).Debug("写入元数据")
 
 	switch protocol {
@@ -302,10 +302,10 @@ func (m *MetadataStore) Delete(
 	// 选择一致性协议
 	protocol := m.selectProtocol(key, changeType)
 
-	logging.WithFields(map[string]interface{}{
-		"key":              key,
-		"change_type":      changeType,
-		"consensus_proto":   protocol,
+	logging.WithFields(map[string]any{
+		"key":             key,
+		"change_type":     changeType,
+		"consensus_proto": protocol,
 	}).Debug("删除元数据")
 
 	switch protocol {
@@ -470,8 +470,8 @@ func (m *MetadataStore) classifyChangeType(
 // selectProtocol 选择一致性协议
 //
 // 规则:
-//   1. 关键前缀匹配 → Quorum
-//   2. 其他 → Gossip
+//  1. 关键前缀匹配 → Quorum
+//  2. 其他 → Gossip
 func (m *MetadataStore) selectProtocol(
 	key string,
 	changeType ChangeType,
@@ -555,32 +555,32 @@ func (m *MetadataStore) RemoveNode(addr string) {
 // ========================================
 
 // GetStats 获取统计信息
-func (m *MetadataStore) GetStats() map[string]interface{} {
+func (m *MetadataStore) GetStats() map[string]any {
 	gossipStats := m.gossipService.GetStats()
 	quorumStats := m.quorumService.GetStats()
 	twoPCStats := m.twoPCService.GetStats()
 
-	return map[string]interface{}{
-		"gossip": map[string]interface{}{
-			"sync_count":          gossipStats.SyncCount.Load(),
-			"sync_success":        gossipStats.SyncSuccess.Load(),
-			"sync_failed":         gossipStats.SyncFailed.Load(),
+	return map[string]any{
+		"gossip": map[string]any{
+			"sync_count":           gossipStats.SyncCount.Load(),
+			"sync_success":         gossipStats.SyncSuccess.Load(),
+			"sync_failed":          gossipStats.SyncFailed.Load(),
 			"change_logs_sent":     gossipStats.ChangeLogsSent.Load(),
 			"change_logs_received": gossipStats.ChangeLogsReceived.Load(),
 			"version":              gossipStats.LastSyncTime.Load(),
 		},
-		"quorum": map[string]interface{}{
-			"proposals_total":     quorumStats.ProposalsTotal.Load(),
-			"proposals_approved":  quorumStats.ProposalsApproved.Load(),
-			"proposals_rejected":  quorumStats.ProposalsRejected.Load(),
-			"proposals_timeout":   quorumStats.ProposalsTimeout.Load(),
-			"avg_vote_latency":    quorumStats.AvgVoteLatency.Load(),
+		"quorum": map[string]any{
+			"proposals_total":    quorumStats.ProposalsTotal.Load(),
+			"proposals_approved": quorumStats.ProposalsApproved.Load(),
+			"proposals_rejected": quorumStats.ProposalsRejected.Load(),
+			"proposals_timeout":  quorumStats.ProposalsTimeout.Load(),
+			"avg_vote_latency":   quorumStats.AvgVoteLatency.Load(),
 		},
-		"twopc": map[string]interface{}{
-			"tx_total":      twoPCStats.TransactionsTotal.Load(),
-			"tx_committed":  twoPCStats.TransactionsCommitted.Load(),
-			"tx_aborted":    twoPCStats.TransactionsAborted.Load(),
-			"tx_timeout":    twoPCStats.TransactionsTimeout.Load(),
+		"twopc": map[string]any{
+			"tx_total":       twoPCStats.TransactionsTotal.Load(),
+			"tx_committed":   twoPCStats.TransactionsCommitted.Load(),
+			"tx_aborted":     twoPCStats.TransactionsAborted.Load(),
+			"tx_timeout":     twoPCStats.TransactionsTimeout.Load(),
 			"avg_tx_latency": twoPCStats.AvgTxLatency.Load(),
 		},
 	}

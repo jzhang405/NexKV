@@ -29,11 +29,11 @@ import (
 //   - HLC 时钟集成：自动同步时钟，检测时间漂移
 //
 // 算法流程:
-//   1. 每隔 10 秒随机选择 2 个节点进行同步
-//   2. 比较本地和远程版本号
-//   3. 本地版本 > 远程版本：发送变更日志
-//   4. 远程版本 > 本地版本：请求变更日志
-//   5. 应用接收到的变更日志
+//  1. 每隔 10 秒随机选择 2 个节点进行同步
+//  2. 比较本地和远程版本号
+//  3. 本地版本 > 远程版本：发送变更日志
+//  4. 远程版本 > 本地版本：请求变更日志
+//  5. 应用接收到的变更日志
 //
 // 收敛时间: O(log N) 轮次，通常 10 秒内完成全网同步
 type GossipService struct {
@@ -41,18 +41,17 @@ type GossipService struct {
 	config *GossipConfig
 
 	// 依赖
-	metaStore  store.MVStore
-	transport  transport.Transport
-	hlc        *clock.HLC
-	clockSync  clock.ClockSync
+	metaStore store.MVStore
+	transport transport.Transport
+	hlc       *clock.HLC
+	clockSync clock.ClockSync
 
 	// 节点列表
 	peers   []string
 	peersMu sync.RWMutex
 
 	// 版本管理
-	version   atomic.Uint64
-	versionMu sync.RWMutex
+	version atomic.Uint64
 
 	// 变更日志缓存（用于增量同步）
 	changeLogs   []*ChangeLog
@@ -60,10 +59,10 @@ type GossipService struct {
 	maxCacheSize int
 
 	// 生命周期
-	started   atomic.Bool
-	stopped   atomic.Bool
-	stopCh    chan struct{}
-	stopWg    sync.WaitGroup
+	started atomic.Bool
+	stopped atomic.Bool
+	stopCh  chan struct{}
+	stopWg  sync.WaitGroup
 
 	// 统计信息
 	stats *GossipStats
@@ -204,15 +203,15 @@ func NewGossipService(
 // Start 启动 Gossip 服务
 func (g *GossipService) Start() error {
 	if !g.started.CompareAndSwap(false, true) {
-		return fmt.Errorf("Gossip 服务已经启动")
+		return fmt.Errorf("gossip 服务已经启动")
 	}
 
-	logging.WithFields(map[string]interface{}{
-		"interval":     g.config.Interval,
-		"fanout":       g.config.Fanout,
-		"peers":        len(g.peers),
-		"clock_sync":   g.config.EnableClockSync,
-		"max_logs":     g.config.MaxChangeLogs,
+	logging.WithFields(map[string]any{
+		"interval":   g.config.Interval,
+		"fanout":     g.config.Fanout,
+		"peers":      len(g.peers),
+		"clock_sync": g.config.EnableClockSync,
+		"max_logs":   g.config.MaxChangeLogs,
 	}).Info("启动 Gossip 服务")
 
 	// 启动时钟同步服务
@@ -258,10 +257,10 @@ func (g *GossipService) Stop() error {
 	g.stopWg.Wait()
 
 	// 打印统计信息
-	logging.WithFields(map[string]interface{}{
-		"sync_count":          g.stats.SyncCount.Load(),
-		"sync_success":        g.stats.SyncSuccess.Load(),
-		"sync_failed":         g.stats.SyncFailed.Load(),
+	logging.WithFields(map[string]any{
+		"sync_count":           g.stats.SyncCount.Load(),
+		"sync_success":         g.stats.SyncSuccess.Load(),
+		"sync_failed":          g.stats.SyncFailed.Load(),
 		"change_logs_sent":     g.stats.ChangeLogsSent.Load(),
 		"change_logs_received": g.stats.ChangeLogsReceived.Load(),
 		"final_version":        g.version.Load(),
@@ -330,9 +329,9 @@ func (g *GossipService) syncWithRandomPeers() {
 // syncToNode 与指定节点同步
 //
 // 核心算法：双向同步
-//   1. 获取本地和远程版本号
-//   2. 如果本地版本 > 远程版本，发送变更日志
-//   3. 如果远程版本 > 本地版本，请求变更日志
+//  1. 获取本地和远程版本号
+//  2. 如果本地版本 > 远程版本，发送变更日志
+//  3. 如果远程版本 > 本地版本，请求变更日志
 func (g *GossipService) syncToNode(ctx context.Context, addr string) error {
 	// 更新统计
 	g.stats.SyncCount.Add(1)
@@ -359,7 +358,7 @@ func (g *GossipService) syncToNode(ctx context.Context, addr string) error {
 	// 响应处理在 messageLoop 中异步进行
 
 	g.stats.SyncSuccess.Add(1)
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"peer":          addr,
 		"local_version": localVersion,
 	}).Debug("Gossip 同步完成")
@@ -418,9 +417,9 @@ func (g *GossipService) handleMessage(msg transport.Message) {
 // handleGossipSync 处理 Gossip 同步请求
 //
 // 双向同步逻辑：
-//   1. 比较本地和远程版本
-//   2. 本地版本 > 远程版本：发送变更日志
-//   3. 远程版本 > 本地版本：请求变更日志（在响应中携带）
+//  1. 比较本地和远程版本
+//  2. 本地版本 > 远程版本：发送变更日志
+//  3. 远程版本 > 本地版本：请求变更日志（在响应中携带）
 func (g *GossipService) handleGossipSync(msg transport.Message) {
 	syncMsg, ok := msg.(*transport.GossipSyncMessage)
 	if !ok {
@@ -431,7 +430,7 @@ func (g *GossipService) handleGossipSync(msg transport.Message) {
 	localVersion := g.version.Load()
 	remoteVersion := syncMsg.Version
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"remote_version": remoteVersion,
 		"local_version":  localVersion,
 	}).Debug("处理 Gossip 同步请求")
@@ -475,7 +474,7 @@ func (g *GossipService) handleGossipSyncReply(msg transport.Message) {
 	remoteVersion := replyMsg.Version
 	localVersion := g.version.Load()
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"remote_version": remoteVersion,
 		"local_version":  localVersion,
 	}).Debug("处理 Gossip 同步响应")
@@ -524,10 +523,10 @@ func (g *GossipService) handleGossipDigestReply(msg transport.Message) {
 	for key, remoteVer := range remoteDigest {
 		if localVer, exists := localDigest[key]; !exists || remoteVer > localVer {
 			// 需要请求这个 key 的最新值
-			logging.WithFields(map[string]interface{}{
-				"key":          key,
-				"remote_ver":   remoteVer,
-				"local_ver":    localVer,
+			logging.WithFields(map[string]any{
+				"key":        key,
+				"remote_ver": remoteVer,
+				"local_ver":  localVer,
 			}).Debug("需要同步元数据")
 		}
 	}
@@ -555,7 +554,7 @@ func (g *GossipService) Put(key string, value []byte) error {
 
 	g.addChangeLog(changeLog)
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"key":     key,
 		"version": changeLog.Version,
 	}).Debug("元数据已写入")
@@ -593,7 +592,7 @@ func (g *GossipService) Delete(key string) error {
 
 	g.addChangeLog(changeLog)
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"key":     key,
 		"version": changeLog.Version,
 	}).Debug("元数据已删除")
@@ -672,7 +671,7 @@ func (g *GossipService) buildMetadataDigest() map[string]uint64 {
 	// 遍历所有 key，获取最新版本号
 	keys, err := g.metaStore.List(0, 0)
 	if err != nil {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"error": err,
 		}).Warn("获取元数据列表失败")
 		return digest
@@ -696,8 +695,8 @@ func (g *GossipService) buildMetadataDigest() map[string]uint64 {
 func (g *GossipService) applyMetadata(metadata map[string][]byte) {
 	for key, value := range metadata {
 		if err := g.metaStore.Put(key, value); err != nil {
-			logging.WithFields(map[string]interface{}{
-				"key": key,
+			logging.WithFields(map[string]any{
+				"key":   key,
 				"error": err,
 			}).Error("应用元数据失败")
 			continue

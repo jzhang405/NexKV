@@ -139,14 +139,14 @@ func (s *Snowflake) MustGenerate() int64 {
 }
 
 // ParseSnowflake 解析 Snowflake ID
-func ParseSnowflake(id int64) map[string]interface{} {
+func ParseSnowflake(id int64) map[string]any {
 	timestamp := (id >> timeShift) + SnowflakeEpoch
 	machineID := (id >> machineShift) & maxMachineID
 	sequence := id & maxSequence
 	datacenterID := (machineID >> 5) & 0x1F
 	workerID := machineID & 0x1F
 
-	return map[string]interface{}{
+	return map[string]any{
 		"id":           id,
 		"timestamp":    timestamp,
 		"datetime":     time.Unix(timestamp/1000, (timestamp%1000)*1e6),

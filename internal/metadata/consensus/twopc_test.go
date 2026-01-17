@@ -86,7 +86,7 @@ func TestTwoPCService_Execute_SingleNode(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 创建事务操作
 	operations := []transport.Operation{
@@ -138,7 +138,7 @@ func TestTwoPCService_Execute_Timeout(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 创建事务操作（包含远程节点）
 	operations := []transport.Operation{
@@ -171,7 +171,7 @@ func TestTwoPCService_Execute_MultiOperation(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 创建多操作事务
 	operations := []transport.Operation{
@@ -227,7 +227,7 @@ func TestTwoPCService_AddRemoveNode(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 添加节点
 	service.AddNode("node3")
@@ -252,7 +252,7 @@ func TestTwoPCService_GetStats(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 执行一些事务
 	operations := []transport.Operation{
@@ -291,7 +291,7 @@ func TestTwoPCService_GetTransactionState(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 创建事务状态
 	txID := "tx_1"
@@ -332,7 +332,7 @@ func TestTwoPCService_CleanupTransaction(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 创建事务状态
 	txID := "tx_1"
@@ -453,8 +453,8 @@ func BenchmarkTwoPCService_Execute(b *testing.B) {
 	nodes := []string{"node1"} // 单节点，避免网络延迟
 
 	service, _ := NewTwoPCService(metaStore, trans, hlc, uuidGen, "node1", nodes, DefaultTwoPCConfig())
-	service.Start()
-	defer service.Stop()
+	_ = service.Start()
+	defer func() { _ = service.Stop() }()
 
 	operations := []transport.Operation{
 		{
@@ -480,8 +480,8 @@ func BenchmarkTwoPCService_Execute_MultiOperation(b *testing.B) {
 	nodes := []string{"node1"}
 
 	service, _ := NewTwoPCService(metaStore, trans, hlc, uuidGen, "node1", nodes, DefaultTwoPCConfig())
-	service.Start()
-	defer service.Stop()
+	_ = service.Start()
+	defer func() { _ = service.Stop() }()
 
 	operations := []transport.Operation{
 		{
@@ -507,4 +507,3 @@ func BenchmarkTwoPCService_Execute_MultiOperation(b *testing.B) {
 		_ = service.Execute(ctx, operations)
 	}
 }
-

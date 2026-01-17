@@ -156,11 +156,11 @@ func (g *SafeUUIDGenerator) generateWithClockBackwardsProtection(generateFunc fu
 }
 
 // GetStats 获取生成器统计信息
-func (g *SafeUUIDGenerator) GetStats() map[string]interface{} {
+func (g *SafeUUIDGenerator) GetStats() map[string]any {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"callback_count":    g.callbackCount,
 		"last_time":         g.lastTime,
 		"max_drift":         g.maxDrift,

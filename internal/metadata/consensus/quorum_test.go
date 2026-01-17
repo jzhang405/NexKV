@@ -83,7 +83,7 @@ func TestQuorumService_Propose_Success(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 发起提案
 	proposal := &transport.QuorumProposeMessage{
@@ -125,7 +125,7 @@ func TestQuorumService_Propose_Timeout(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 发起提案（没有其他节点响应）
 	proposal := &transport.QuorumProposeMessage{
@@ -155,7 +155,7 @@ func TestQuorumService_Vote(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 创建一个提案状态
 	proposal := &transport.QuorumProposeMessage{
@@ -210,7 +210,7 @@ func TestQuorumService_Vote_NonExistentProposal(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 对不存在的提案投票
 	voteMsg := &transport.QuorumVoteMessage{
@@ -280,16 +280,16 @@ func TestQuorumService_getQuorumThreshold(t *testing.T) {
 
 	// 测试不同节点数量的法定人数
 	testCases := []struct {
-		name         string
-		nodeCount    int
-		MinQuorum    int
-		Expected     int32
+		name      string
+		nodeCount int
+		MinQuorum int
+		Expected  int32
 	}{
-		{"3节点，自动计算", 3, 0, 2},      // 3/2 + 1 = 2
-		{"5节点，自动计算", 5, 0, 3},      // 5/2 + 1 = 3
-		{"7节点，自动计算", 7, 0, 4},      // 7/2 + 1 = 4
-		{"5节点，手动设置", 5, 4, 4},      // 使用手动值
-		{"5节点，手动设置2", 5, 2, 2},     // 使用手动值
+		{"3节点，自动计算", 3, 0, 2},  // 3/2 + 1 = 2
+		{"5节点，自动计算", 5, 0, 3},  // 5/2 + 1 = 3
+		{"7节点，自动计算", 7, 0, 4},  // 7/2 + 1 = 4
+		{"5节点，手动设置", 5, 4, 4},  // 使用手动值
+		{"5节点，手动设置2", 5, 2, 2}, // 使用手动值
 	}
 
 	for _, tc := range testCases {
@@ -350,7 +350,7 @@ func TestQuorumService_AddRemoveNode(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 添加节点
 	service.AddNode("node3")
@@ -374,7 +374,7 @@ func TestQuorumService_GetStats(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 获取统计信息
 	stats := service.GetStats()
@@ -400,7 +400,7 @@ func TestQuorumService_GetProposalState(t *testing.T) {
 
 	err = service.Start()
 	require.NoError(t, err)
-	defer service.Stop()
+	defer func() { _ = service.Stop() }()
 
 	// 创建提案状态
 	proposalID := "test_proposal"
@@ -490,8 +490,8 @@ func BenchmarkQuorumService_Propose(b *testing.B) {
 	}
 
 	service, _ := NewQuorumService(metaStore, trans, hlc, "node1", nodes, config)
-	service.Start()
-	defer service.Stop()
+	_ = service.Start()
+	defer func() { _ = service.Stop() }()
 
 	proposal := &transport.QuorumProposeMessage{
 		Key:       "test_key",
@@ -514,8 +514,8 @@ func BenchmarkQuorumService_Vote(b *testing.B) {
 	nodes := []string{"node1", "node2", "node3"}
 
 	service, _ := NewQuorumService(metaStore, trans, hlc, "node1", nodes, DefaultQuorumConfig())
-	service.Start()
-	defer service.Stop()
+	_ = service.Start()
+	defer func() { _ = service.Stop() }()
 
 	// 创建提案状态
 	proposal := &transport.QuorumProposeMessage{
@@ -557,8 +557,8 @@ func BenchmarkQuorumService_generateProposalID(b *testing.B) {
 	nodes := []string{"node1", "node2", "node3"}
 
 	service, _ := NewQuorumService(metaStore, trans, hlc, "node1", nodes, DefaultQuorumConfig())
-	service.Start()
-	defer service.Stop()
+	_ = service.Start()
+	defer func() { _ = service.Stop() }()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

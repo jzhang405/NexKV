@@ -91,9 +91,9 @@ func TestMetadataStore_Put_Quorum(t *testing.T) {
 	store, err := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
 	require.NoError(t, err)
 
-	err = store.Start()
+	_ = store.Start()
 	require.NoError(t, err)
-	defer store.Stop()
+	_ = store.Stop()
 
 	// 写入关键元数据（匹配 shard/ 前缀）
 	key := "shard/test_shard"
@@ -122,9 +122,9 @@ func TestMetadataStore_Put_Gossip(t *testing.T) {
 	store, err := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
 	require.NoError(t, err)
 
-	err = store.Start()
+	_ = store.Start()
 	require.NoError(t, err)
-	defer store.Stop()
+	_ = store.Stop()
 
 	// 写入普通元数据（不匹配关键前缀）
 	key := "status/node1"
@@ -154,9 +154,9 @@ func TestMetadataStore_Delete_Quorum(t *testing.T) {
 	store, err := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
 	require.NoError(t, err)
 
-	err = store.Start()
+	_ = store.Start()
 	require.NoError(t, err)
-	defer store.Stop()
+	_ = store.Stop()
 
 	// 先写入数据
 	key := "shard/test_shard"
@@ -183,9 +183,9 @@ func TestMetadataStore_Delete_Gossip(t *testing.T) {
 	store, err := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
 	require.NoError(t, err)
 
-	err = store.Start()
+	_ = store.Start()
 	require.NoError(t, err)
-	defer store.Stop()
+	_ = store.Stop()
 
 	// 先写入数据
 	key := "status/node1"
@@ -216,9 +216,9 @@ func TestMetadataStore_Get(t *testing.T) {
 	store, err := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
 	require.NoError(t, err)
 
-	err = store.Start()
+	_ = store.Start()
 	require.NoError(t, err)
-	defer store.Stop()
+	_ = store.Stop()
 
 	// 写入数据
 	key := "test_key"
@@ -250,9 +250,9 @@ func TestMetadataStore_ExecuteTransaction(t *testing.T) {
 	store, err := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
 	require.NoError(t, err)
 
-	err = store.Start()
+	_ = store.Start()
 	require.NoError(t, err)
-	defer store.Stop()
+	_ = store.Stop()
 
 	// 创建事务操作
 	operations := []transport.Operation{
@@ -297,9 +297,9 @@ func TestMetadataStore_selectProtocol(t *testing.T) {
 
 	// 测试关键前缀匹配
 	testCases := []struct {
-		name           string
-		key            string
-		changeType     ChangeType
+		name             string
+		key              string
+		changeType       ChangeType
 		expectedProtocol ConsensusProtocol
 	}{
 		{"分片元数据", "shard/test", ChangeTypeCreate, ConsensusProtocolQuorum},
@@ -329,9 +329,9 @@ func TestMetadataStore_classifyChangeType(t *testing.T) {
 	store, err := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
 	require.NoError(t, err)
 
-	err = store.Start()
+	_ = store.Start()
 	require.NoError(t, err)
-	defer store.Stop()
+	_ = store.Stop()
 
 	// 测试创建操作
 	changeType := store.classifyChangeType("new_key", []byte("value"))
@@ -359,9 +359,9 @@ func TestMetadataStore_AddRemoveCriticalPrefix(t *testing.T) {
 	store, err := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
 	require.NoError(t, err)
 
-	err = store.Start()
+	_ = store.Start()
 	require.NoError(t, err)
-	defer store.Stop()
+	_ = store.Stop()
 
 	// 添加关键前缀
 	store.AddCriticalPrefix("custom/")
@@ -396,9 +396,9 @@ func TestMetadataStore_AddRemoveNode(t *testing.T) {
 	store, err := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
 	require.NoError(t, err)
 
-	err = store.Start()
+	_ = store.Start()
 	require.NoError(t, err)
-	defer store.Stop()
+	_ = store.Stop()
 
 	// 添加节点
 	store.AddNode("node3")
@@ -431,9 +431,9 @@ func TestMetadataStore_GetVersion(t *testing.T) {
 	store, err := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
 	require.NoError(t, err)
 
-	err = store.Start()
+	_ = store.Start()
 	require.NoError(t, err)
-	defer store.Stop()
+	_ = store.Stop()
 
 	// 初始版本号
 	version := store.GetVersion()
@@ -460,9 +460,9 @@ func TestMetadataStore_GetChangeLogs(t *testing.T) {
 	store, err := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
 	require.NoError(t, err)
 
-	err = store.Start()
+	_ = store.Start()
 	require.NoError(t, err)
-	defer store.Stop()
+	_ = store.Stop()
 
 	// 写入一些数据
 	ctx := context.Background()
@@ -496,9 +496,9 @@ func TestMetadataStore_GetStats(t *testing.T) {
 	store, err := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
 	require.NoError(t, err)
 
-	err = store.Start()
+	_ = store.Start()
 	require.NoError(t, err)
-	defer store.Stop()
+	_ = store.Stop()
 
 	// 执行一些操作
 	ctx := context.Background()
@@ -514,19 +514,19 @@ func TestMetadataStore_GetStats(t *testing.T) {
 	assert.Contains(t, stats, "twopc")
 
 	// 验证 Gossip 统计
-	gossipStats, ok := stats["gossip"].(map[string]interface{})
+	gossipStats, ok := stats["gossip"].(map[string]any)
 	assert.True(t, ok)
 	assert.Contains(t, gossipStats, "sync_count")
 	assert.Contains(t, gossipStats, "version")
 
 	// 验证 Quorum 统计
-	quorumStats, ok := stats["quorum"].(map[string]interface{})
+	quorumStats, ok := stats["quorum"].(map[string]any)
 	assert.True(t, ok)
 	assert.Contains(t, quorumStats, "proposals_total")
 	assert.Contains(t, quorumStats, "proposals_approved")
 
 	// 验证 2PC 统计
-	twoPCStats, ok := stats["twopc"].(map[string]interface{})
+	twoPCStats, ok := stats["twopc"].(map[string]any)
 	assert.True(t, ok)
 	assert.Contains(t, twoPCStats, "tx_total")
 	assert.Contains(t, twoPCStats, "tx_committed")
@@ -595,8 +595,8 @@ func BenchmarkMetadataStore_Put_Gossip(b *testing.B) {
 	nodes := []string{"node1", "node2"}
 
 	store, _ := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
-	store.Start()
-	defer store.Stop()
+	_ = store.Start()
+	_ = store.Stop()
 
 	ctx := context.Background()
 	key := "status/test"
@@ -617,7 +617,7 @@ func BenchmarkMetadataStore_Get(b *testing.B) {
 	nodes := []string{"node1", "node2"}
 
 	store, _ := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
-	store.Start()
+	_ = store.Start()
 
 	ctx := context.Background()
 	_ = store.Put(ctx, "test_key", []byte("test_value"))
@@ -637,8 +637,8 @@ func BenchmarkMetadataStore_ExecuteTransaction(b *testing.B) {
 	nodes := []string{"node1"}
 
 	store, _ := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
-	store.Start()
-	defer store.Stop()
+	_ = store.Start()
+	_ = store.Stop()
 
 	operations := []transport.Operation{
 		{
@@ -670,8 +670,8 @@ func BenchmarkMetadataStore_selectProtocol(b *testing.B) {
 	nodes := []string{"node1", "node2"}
 
 	store, _ := NewMetadataStore(mvStore, trans, hlc, uuidGen, "node1", nodes, nil)
-	store.Start()
-	defer store.Stop()
+	_ = store.Start()
+	_ = store.Stop()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

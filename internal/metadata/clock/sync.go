@@ -64,7 +64,7 @@ func (g *gossipClockSync) Stop() error {
 	g.wg.Wait()
 
 	// 打印统计信息
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"sync_count":   g.syncCount,
 		"sync_success": g.syncSuccess,
 		"sync_failed":  g.syncFailed,
@@ -103,7 +103,7 @@ func (g *gossipClockSync) SyncWithPeer(ctx context.Context, addr string) error {
 		g.maxDrift = drift
 	}
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"peer":       addr,
 		"local_pt":   g.hlc.PhysicalTime(),
 		"remote_pt":  remoteHLC.PhysicalTime(),
@@ -114,7 +114,7 @@ func (g *gossipClockSync) SyncWithPeer(ctx context.Context, addr string) error {
 
 	// 检测时间回拨
 	if updatedHLC.PhysicalTime() < g.hlc.PhysicalTime() {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"peer":       addr,
 			"current_pt": g.hlc.PhysicalTime(),
 			"updated_pt": updatedHLC.PhysicalTime(),
@@ -178,8 +178,8 @@ func (g *gossipClockSync) selectRandomPeers(count int) []string {
 }
 
 // GetStats 获取同步统计信息
-func (g *gossipClockSync) GetStats() map[string]interface{} {
-	return map[string]interface{}{
+func (g *gossipClockSync) GetStats() map[string]any {
+	return map[string]any{
 		"sync_count":   g.syncCount,
 		"sync_success": g.syncSuccess,
 		"sync_failed":  g.syncFailed,

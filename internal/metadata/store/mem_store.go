@@ -292,7 +292,7 @@ func (m *MemoryMVStore) List(offset, limit int) ([]string, error) {
 	defer m.mu.RUnlock()
 
 	var keys []string
-	m.data.Range(func(key, value interface{}) bool {
+	m.data.Range(func(key, value any) bool {
 		vlist := value.(*versionList)
 		vlist.mu.RLock()
 		hasValue := len(vlist.versions) > 0 && !vlist.versions[len(vlist.versions)-1].deleted
@@ -327,7 +327,7 @@ func (m *MemoryMVStore) ListPrefix(prefix string, offset, limit int) ([]string, 
 	defer m.mu.RUnlock()
 
 	var keys []string
-	m.data.Range(func(key, value interface{}) bool {
+	m.data.Range(func(key, value any) bool {
 		keyStr := key.(string)
 		if len(keyStr) >= len(prefix) && keyStr[:len(prefix)] == prefix {
 			vlist := value.(*versionList)
@@ -440,7 +440,7 @@ func (m *MemoryMVStore) CreateSnapshot() ([]byte, error) {
 
 	snapshot := make(map[string][]*versionEntry)
 
-	m.data.Range(func(key, value interface{}) bool {
+	m.data.Range(func(key, value any) bool {
 		list := value.(*versionList)
 		list.mu.RLock()
 		// 复制版本列表
@@ -466,7 +466,7 @@ func (m *MemoryMVStore) RestoreFromSnapshot(snapshot []byte) error {
 	}
 
 	// 清空当前数据
-	m.data.Range(func(key, value interface{}) bool {
+	m.data.Range(func(key, value any) bool {
 		m.data.Delete(key)
 		return true
 	})
@@ -672,7 +672,7 @@ func (m *MemoryMVStore) Stats() (*Stats, error) {
 	}
 
 	// 统计 key 和版本数量
-	m.data.Range(func(key, value interface{}) bool {
+	m.data.Range(func(key, value any) bool {
 		vlist := value.(*versionList)
 		vlist.mu.RLock()
 		stats.VersionCount += len(vlist.versions)

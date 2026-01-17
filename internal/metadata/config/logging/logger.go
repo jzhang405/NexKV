@@ -35,7 +35,7 @@ func GetLogger() *logrus.Logger {
 }
 
 // WithField 创建带字段的日志条目
-func WithField(key string, value interface{}) *logrus.Entry {
+func WithField(key string, value any) *logrus.Entry {
 	return GetLogger().WithField(key, value)
 }
 
@@ -45,51 +45,51 @@ func WithFields(fields logrus.Fields) *logrus.Entry {
 }
 
 // Debug 记录调试日志
-func Debug(args ...interface{}) {
+func Debug(args ...any) {
 	GetLogger().Debug(args...)
 }
 
 // Debugf 记录格式化调试日志
-func Debugf(format string, args ...interface{}) {
+func Debugf(format string, args ...any) {
 	GetLogger().Debugf(format, args...)
 }
 
 // Info 记录信息日志
-func Info(args ...interface{}) {
+func Info(args ...any) {
 	GetLogger().Info(args...)
 }
 
 // Infof 记录格式化信息日志
-func Infof(format string, args ...interface{}) {
+func Infof(format string, args ...any) {
 	GetLogger().Infof(format, args...)
 }
 
 // Warn 记录警告日志
-func Warn(args ...interface{}) {
+func Warn(args ...any) {
 	GetLogger().Warn(args...)
 }
 
 // Warnf 记录格式化警告日志
-func Warnf(format string, args ...interface{}) {
+func Warnf(format string, args ...any) {
 	GetLogger().Warnf(format, args...)
 }
 
 // Error 记录错误日志
-func Error(args ...interface{}) {
+func Error(args ...any) {
 	GetLogger().Error(args...)
 }
 
 // Errorf 记录格式化错误日志
-func Errorf(format string, args ...interface{}) {
+func Errorf(format string, args ...any) {
 	GetLogger().Errorf(format, args...)
 }
 
 // Fatal 记录致命日志并退出
-func Fatal(args ...interface{}) {
+func Fatal(args ...any) {
 	GetLogger().Fatal(args...)
 }
 
 // Fatalf 记录格式化致命日志并退出
-func Fatalf(format string, args ...interface{}) {
+func Fatalf(format string, args ...any) {
 	GetLogger().Fatalf(format, args...)
 }

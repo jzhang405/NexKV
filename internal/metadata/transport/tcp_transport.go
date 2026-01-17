@@ -568,11 +568,11 @@ func (t *TCPTransport) GetConfig() *TransportConfig {
 }
 
 // Stats 获取统计信息
-func (t *TCPTransport) Stats() map[string]interface{} {
+func (t *TCPTransport) Stats() map[string]any {
 	t.connPool.mu.RLock()
 	defer t.connPool.mu.RUnlock()
 
-	stats := make(map[string]interface{})
+	stats := make(map[string]any)
 	stats["started"] = t.started.Load()
 	stats["stopped"] = t.stopped.Load()
 	stats["listen_addr"] = t.localAddr

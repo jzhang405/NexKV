@@ -554,6 +554,8 @@ func (t *TwoPCService) messageLoop() {
 
 	for {
 		select {
+		case <-t.stopCh:
+			return
 		case msg, ok := <-recvCh:
 			if !ok {
 				logging.Info("接收通道已关闭")
@@ -621,12 +623,12 @@ func (t *TwoPCService) handlePrepare(msg transport.Message) {
 	// 执行预提交
 	if err := t.preCommitLocal(txState); err != nil {
 		// 预提交失败，发送 abort 投票
-		t.sendPrepareReply(prepareMsg, "abort", err.Error())
+		_ = t.sendPrepareReply(prepareMsg, "abort", err.Error())
 		return
 	}
 
 	// 预提交成功，发送 commit 投票
-	t.sendPrepareReply(prepareMsg, "commit", "")
+	_ = t.sendPrepareReply(prepareMsg, "commit", "")
 }
 
 // handleCommit 处理提交消息
@@ -653,7 +655,7 @@ func (t *TwoPCService) handleCommit(msg transport.Message) {
 	logging.WithField("tx_id", txID).Info("事务已提交")
 
 	// 发送响应
-	t.sendCommitReply(commitMsg, true)
+	_ = t.sendCommitReply(commitMsg, true)
 
 	close(txState.doneCh)
 }
@@ -688,7 +690,7 @@ func (t *TwoPCService) handleRollback(msg transport.Message) {
 	t.rollbackOperations(txState.Operations)
 
 	// 发送响应
-	t.sendRollbackReply(rollbackMsg, true)
+	_ = t.sendRollbackReply(rollbackMsg, true)
 
 	close(txState.doneCh)
 }

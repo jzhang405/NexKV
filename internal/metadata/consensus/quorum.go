@@ -95,9 +95,9 @@ type ProposalState struct {
 	totalVotes atomic.Int32 // 总票数
 
 	// 决策状态
-	decided   atomic.Bool
-	approved  atomic.Bool
-	decideCh  chan struct{} // 决策通知
+	decided    atomic.Bool
+	approved   atomic.Bool
+	decideCh   chan struct{} // 决策通知
 	decideOnce sync.Once
 
 	// 时间戳
@@ -153,15 +153,15 @@ func NewQuorumService(
 	}
 
 	service := &QuorumService{
-		config:     config,
-		metaStore:  metaStore,
-		transport:  transport,
-		hlc:        hlc,
-		nodes:      nodes,
-		localAddr:  localAddr,
-		proposals:  make(map[string]*ProposalState),
-		stopCh:     make(chan struct{}),
-		stats:      &QuorumStats{},
+		config:    config,
+		metaStore: metaStore,
+		transport: transport,
+		hlc:       hlc,
+		nodes:     nodes,
+		localAddr: localAddr,
+		proposals: make(map[string]*ProposalState),
+		stopCh:    make(chan struct{}),
+		stats:     &QuorumStats{},
 	}
 
 	return service, nil
@@ -170,18 +170,18 @@ func NewQuorumService(
 // Start 启动 Quorum 服务
 func (q *QuorumService) Start() error {
 	if !q.started.CompareAndSwap(false, true) {
-		return fmt.Errorf("Quorum 服务已经启动")
+		return fmt.Errorf("quorum 服务已经启动")
 	}
 
 	// 计算最小法定人数
 	threshold := q.getQuorumThreshold()
 
-	logging.WithFields(map[string]interface{}{
-		"timeout":      q.config.Timeout,
-		"retry_count":   q.config.RetryCount,
-		"nodes":         len(q.nodes),
-		"threshold":     threshold,
-		"local_addr":    q.localAddr,
+	logging.WithFields(map[string]any{
+		"timeout":     q.config.Timeout,
+		"retry_count": q.config.RetryCount,
+		"nodes":       len(q.nodes),
+		"threshold":   threshold,
+		"local_addr":  q.localAddr,
 	}).Info("启动 Quorum 服务")
 
 	// 启动消息处理协程
@@ -203,7 +203,7 @@ func (q *QuorumService) Stop() error {
 	close(q.stopCh)
 
 	// 打印统计信息
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"proposals_total":    q.stats.ProposalsTotal.Load(),
 		"proposals_approved": q.stats.ProposalsApproved.Load(),
 		"proposals_rejected": q.stats.ProposalsRejected.Load(),
@@ -222,11 +222,11 @@ func (q *QuorumService) Stop() error {
 // Propose 提交提案（发起 Quorum 投票）
 //
 // 流程:
-//   1. 本地持久化提案
-//   2. 并行发送提案到所有节点
-//   3. 等待多数派确认
-//   4. 如果获得多数派批准，提交决策
-//   5. 如果超时或被拒绝，回滚
+//  1. 本地持久化提案
+//  2. 并行发送提案到所有节点
+//  3. 等待多数派确认
+//  4. 如果获得多数派批准，提交决策
+//  5. 如果超时或被拒绝，回滚
 func (q *QuorumService) Propose(
 	ctx context.Context,
 	proposal *transport.QuorumProposeMessage,
@@ -239,9 +239,9 @@ func (q *QuorumService) Propose(
 	// 创建提案状态
 	state := &ProposalState{
 		ProposalID: proposal.ProposalID,
-		Proposal:  proposal,
-		votes:     make(map[string]bool),
-		decideCh:  make(chan struct{}),
+		Proposal:   proposal,
+		votes:      make(map[string]bool),
+		decideCh:   make(chan struct{}),
 		createTime: time.Now(),
 	}
 
@@ -253,7 +253,7 @@ func (q *QuorumService) Propose(
 	// 更新统计
 	q.stats.ProposalsTotal.Add(1)
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"proposal_id": proposal.ProposalID,
 		"key":         proposal.Key,
 		"operation":   proposal.Operation,
@@ -290,21 +290,21 @@ func (q *QuorumService) Propose(
 			return nil
 		} else {
 			// 提案被拒绝，回滚
-			q.rollbackProposal(proposal)
+			_ = q.rollbackProposal(proposal)
 			q.stats.ProposalsRejected.Add(1)
 			return fmt.Errorf("提案被拒绝")
 		}
 
 	case <-timeout:
 		// 超时，回滚
-		q.rollbackProposal(proposal)
+		_ = q.rollbackProposal(proposal)
 		q.cleanupProposal(proposal.ProposalID)
 		q.stats.ProposalsTimeout.Add(1)
 		return fmt.Errorf("提案超时")
 
 	case <-ctx.Done():
 		// 上下文取消
-		q.rollbackProposal(proposal)
+		_ = q.rollbackProposal(proposal)
 		q.cleanupProposal(proposal.ProposalID)
 		return ctx.Err()
 	}
@@ -367,7 +367,7 @@ func (q *QuorumService) broadcastProposal(
 
 		go func(addr string) {
 			if err := q.transport.Send(ctx, addr, proposal); err != nil {
-				logging.WithFields(map[string]interface{}{
+				logging.WithFields(map[string]any{
 					"addr":        addr,
 					"proposal_id": proposal.ProposalID,
 					"error":       err,
@@ -393,9 +393,9 @@ func (q *QuorumService) broadcastDecision(decideMsg *transport.QuorumDecideMessa
 		}
 
 		if err := q.transport.Send(ctx, node, decideMsg); err != nil {
-			logging.WithFields(map[string]interface{}{
-				"addr":    node,
-				"error":   err,
+			logging.WithFields(map[string]any{
+				"addr":     node,
+				"error":    err,
 				"approved": decideMsg.Approved,
 			}).Warn("发送决策失败")
 		}
@@ -453,10 +453,10 @@ func (q *QuorumService) vote(
 	// 更新统计
 	latency := time.Since(state.createTime).Milliseconds()
 	q.stats.AvgVoteLatency.Store(
-		(q.stats.AvgVoteLatency.Load()*latency)/(q.stats.ProposalsTotal.Load()+1),
+		(q.stats.AvgVoteLatency.Load() * latency) / (q.stats.ProposalsTotal.Load() + 1),
 	)
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"proposal_id": state.ProposalID,
 		"voter":       voter,
 		"vote":        approve,
@@ -499,7 +499,7 @@ func (s *ProposalState) decide(approved bool) {
 		// 通知等待者
 		close(s.decideCh)
 
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"proposal_id": s.ProposalID,
 			"approved":    approved,
 			"duration":    time.Since(s.createTime).Milliseconds(),
@@ -552,19 +552,19 @@ func (q *QuorumService) handleQuorumPropose(msg transport.Message) {
 		return
 	}
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"proposal_id": proposal.ProposalID,
 		"proposer":    proposal.Proposer,
-		"key":        proposal.Key,
-		"operation":  proposal.Operation,
+		"key":         proposal.Key,
+		"operation":   proposal.Operation,
 	}).Debug("收到 Quorum 提案")
 
 	// 创建提案状态
 	state := &ProposalState{
 		ProposalID: proposal.ProposalID,
-		Proposal:  proposal,
-		votes:     make(map[string]bool),
-		decideCh:  make(chan struct{}),
+		Proposal:   proposal,
+		votes:      make(map[string]bool),
+		decideCh:   make(chan struct{}),
 		createTime: time.Now(),
 	}
 
@@ -575,12 +575,12 @@ func (q *QuorumService) handleQuorumPropose(msg transport.Message) {
 	// 本地预提交
 	if err := q.prepareProposal(proposal); err != nil {
 		// 预提交失败，投反对票
-		q.sendVote(proposal.ProposalID, false, err.Error())
+		_ = q.sendVote(proposal.ProposalID, false, err.Error())
 		return
 	}
 
 	// 投赞成票
-	q.sendVote(proposal.ProposalID, true, "")
+	_ = q.sendVote(proposal.ProposalID, true, "")
 }
 
 // handleQuorumVote 处理投票消息
@@ -591,7 +591,7 @@ func (q *QuorumService) handleQuorumVote(msg transport.Message) {
 	}
 
 	if err := q.Vote(voteMsg); err != nil {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"error": err,
 		}).Warn("处理投票失败")
 	}
@@ -620,7 +620,7 @@ func (q *QuorumService) handleQuorumDecide(msg transport.Message) {
 		// 提案通过，无需回滚
 	} else {
 		// 提案被拒绝，回滚
-		q.rollbackProposal(state.Proposal)
+		_ = q.rollbackProposal(state.Proposal)
 	}
 
 	q.cleanupProposal(decideMsg.ProposalID)

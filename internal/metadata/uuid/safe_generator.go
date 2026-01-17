@@ -101,6 +101,12 @@ func (g *SafeUUIDGenerator) GenerateNodeID() int64 {
 	return id
 }
 
+// Generate 生成通用 UUID（使用 UUID v4，随机）
+// 实现 UUIDGenerator 接口
+func (g *SafeUUIDGenerator) Generate() string {
+	return GenerateUUIDv4()
+}
+
 // GenerateUUIDv4 生成 UUID v4（随机）
 // 防时钟回拨版本（实际上 v4 不需要防回拨，但接口统一）
 func (g *SafeUUIDGenerator) GenerateUUIDv4() string {

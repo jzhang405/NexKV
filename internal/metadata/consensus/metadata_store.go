@@ -20,11 +20,13 @@ import (
 // MetadataStore 元数据存储服务
 //
 // 统一的元数据 API，自动选择一致性协议：
-//   - 关键变更：Quorum（强一致性，阻塞等待）
+//   - 关键变更：2PC（强一致性，全员commit或rollback）
+//   - 重要变更：Quorum（增强的最终一致性，多数派确认）
 //   - 普通变更：Gossip（最终一致性，异步扩散）
 //
 // 变更类型分类:
-//   - 关键变更：分片创建/删除、主副本切换、节点加入/离开
+//   - 关键变更：分片创建/删除（跨多个分片的事务操作）
+//   - 重要变更：分片创建/删除、主副本切换、节点加入/离开
 //   - 普通变更：节点状态更新、负载信息刷新
 type MetadataStore struct {
 	// 配置
@@ -126,11 +128,14 @@ func (ct ChangeType) String() string {
 type ConsensusProtocol int
 
 const (
-	// ConsensusProtocolGossip Gossip 协议
+	// ConsensusProtocolGossip Gossip 协议（最终一致性）
 	ConsensusProtocolGossip ConsensusProtocol = iota
 
-	// ConsensusProtocolQuorum Quorum 协议
+	// ConsensusProtocolQuorum Quorum 协议（增强的最终一致性）
 	ConsensusProtocolQuorum
+
+	// ConsensusProtocolTwoPC 2PC 协议（强一致性）
+	ConsensusProtocolTwoPC
 )
 
 // String 返回协议类型的字符串表示
@@ -140,6 +145,8 @@ func (p ConsensusProtocol) String() string {
 		return "Gossip"
 	case ConsensusProtocolQuorum:
 		return "Quorum"
+	case ConsensusProtocolTwoPC:
+		return "2PC"
 	default:
 		return "Unknown"
 	}

@@ -571,6 +571,7 @@ func TestConsensusProtocol_String(t *testing.T) {
 	}{
 		{ConsensusProtocolGossip, "Gossip"},
 		{ConsensusProtocolQuorum, "Quorum"},
+		{ConsensusProtocolTwoPC, "2PC"},
 		{ConsensusProtocol(99), "Unknown"},
 	}
 

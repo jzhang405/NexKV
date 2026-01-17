@@ -387,11 +387,6 @@ func (n *memoryNode) Close() error {
 	return nil
 }
 
-// isClosed 检查节点是否已关闭
-func (n *memoryNode) isClosed() bool {
-	return n.closed.Load()
-}
-
 // ========================================
 // 辅助方法
 // ========================================

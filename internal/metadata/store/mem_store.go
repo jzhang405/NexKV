@@ -24,18 +24,18 @@ import (
 //   - MVCC: 多版本支持，使用 HLC 时间戳
 //   - 内存优化：自动清理旧版本
 type MemoryMVStore struct {
-	mu         sync.RWMutex
-	data       sync.Map       // key -> *versionList
-	options    *MVStoreOptions
-	version    atomic.Uint64  // 全局版本号
-	closed     atomic.Bool
-	flushCh    chan struct{}
-	doneCh     chan struct{}
-	hlc        *clock.HLC
-	wal        WAL
-	snapMgr    SnapshotManager
-	lastFlush  atomic.Int64  // 最后刷盘时间戳
-	memSize    atomic.Int64  // 当前内存大小
+	mu        sync.RWMutex
+	data      sync.Map // key -> *versionList
+	options   *MVStoreOptions
+	version   atomic.Uint64 // 全局版本号
+	closed    atomic.Bool
+	flushCh   chan struct{}
+	doneCh    chan struct{}
+	hlc       *clock.HLC
+	wal       WAL
+	snapMgr   SnapshotManager
+	lastFlush atomic.Int64 // 最后刷盘时间戳
+	memSize   atomic.Int64 // 当前内存大小
 }
 
 // versionList 版本列表（按时间戳降序）
@@ -667,7 +667,7 @@ func (m *MemoryMVStore) Stats() (*Stats, error) {
 	}
 
 	stats := &Stats{
-		MemTableSize: m.memSize.Load(),
+		MemTableSize:  m.memSize.Load(),
 		LastFlushTime: m.lastFlush.Load(),
 	}
 

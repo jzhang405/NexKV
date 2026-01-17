@@ -73,9 +73,9 @@ type MVStore interface {
 // VersionInfo 版本信息
 type VersionInfo struct {
 	Timestamp *clock.HLC // 版本时间戳（HLC）
-	Version  uint64      // 版本号
-	Deleted  bool        // 是否为墓碑标记（删除标记）
-	Size     int         // 值的大小
+	Version   uint64     // 版本号
+	Deleted   bool       // 是否为墓碑标记（删除标记）
+	Size      int        // 值的大小
 }
 
 // WALEntry WAL 日志条目
@@ -274,8 +274,8 @@ func DefaultOptions() *MVStoreOptions {
 		DataDir:       "./data/metadata",
 		WALDir:        "./data/wal",
 		MemTableSize:  64 * 1024 * 1024, // 64MB
-		FlushInterval: 5,                 // 5 秒
-		EnableWAL:    true,
+		FlushInterval: 5,                // 5 秒
+		EnableWAL:     true,
 		WALSsyncSize:  1000, // 每 1000 条日志刷盘
 		MaxVersions:   10,   // 最多保留 10 个版本
 	}

@@ -16,9 +16,9 @@ import (
 func TestMemoryMVStore_PutGet(t *testing.T) {
 	tempDir := t.TempDir()
 	options := &MVStoreOptions{
-		DataDir:    tempDir,
-		WALDir:     filepath.Join(tempDir, "wal"),
-		EnableWAL:  false, // 测试时不启用 WAL，加快速度
+		DataDir:     tempDir,
+		WALDir:      filepath.Join(tempDir, "wal"),
+		EnableWAL:   false, // 测试时不启用 WAL，加快速度
 		MaxVersions: 5,
 	}
 
@@ -116,9 +116,9 @@ func TestMemoryMVStore_Exists(t *testing.T) {
 func TestMemoryMVStore_GetVersion(t *testing.T) {
 	tempDir := t.TempDir()
 	options := &MVStoreOptions{
-		DataDir:    tempDir,
-		WALDir:     filepath.Join(tempDir, "wal"),
-		EnableWAL:  false,
+		DataDir:     tempDir,
+		WALDir:      filepath.Join(tempDir, "wal"),
+		EnableWAL:   false,
 		MaxVersions: 10,
 	}
 
@@ -127,13 +127,13 @@ func TestMemoryMVStore_GetVersion(t *testing.T) {
 	defer store.Close()
 
 	// 写入多个版本
-	store.Put("key1", []byte("value1"))
+	require.NoError(t, store.Put("key1", []byte("value1")))
 	time.Sleep(10 * time.Millisecond)
 
-	store.Put("key1", []byte("value2"))
+	require.NoError(t, store.Put("key1", []byte("value2")))
 	time.Sleep(10 * time.Millisecond)
 
-	store.Put("key1", []byte("value3"))
+	require.NoError(t, store.Put("key1", []byte("value3")))
 
 	// 获取所有版本信息，使用实际存储的时间戳
 	infos, err := store.GetAllVersions("key1")
@@ -238,9 +238,9 @@ func TestMemoryMVStore_ListPrefix(t *testing.T) {
 func TestMemoryMVStore_GetVersionCount(t *testing.T) {
 	tempDir := t.TempDir()
 	options := &MVStoreOptions{
-		DataDir:    tempDir,
-		WALDir:     filepath.Join(tempDir, "wal"),
-		EnableWAL:  false,
+		DataDir:     tempDir,
+		WALDir:      filepath.Join(tempDir, "wal"),
+		EnableWAL:   false,
 		MaxVersions: 10,
 	}
 
@@ -268,9 +268,9 @@ func TestMemoryMVStore_GetVersionCount(t *testing.T) {
 func TestMemoryMVStore_GetAllVersions(t *testing.T) {
 	tempDir := t.TempDir()
 	options := &MVStoreOptions{
-		DataDir:    tempDir,
-		WALDir:     filepath.Join(tempDir, "wal"),
-		EnableWAL:  false,
+		DataDir:     tempDir,
+		WALDir:      filepath.Join(tempDir, "wal"),
+		EnableWAL:   false,
 		MaxVersions: 5,
 	}
 
@@ -299,9 +299,9 @@ func TestMemoryMVStore_GetAllVersions(t *testing.T) {
 func TestMemoryMVStore_Concurrent(t *testing.T) {
 	tempDir := t.TempDir()
 	options := &MVStoreOptions{
-		DataDir:    tempDir,
-		WALDir:     filepath.Join(tempDir, "wal"),
-		EnableWAL:  false,
+		DataDir:     tempDir,
+		WALDir:      filepath.Join(tempDir, "wal"),
+		EnableWAL:   false,
 		MaxVersions: 10,
 	}
 
@@ -345,9 +345,9 @@ func TestMemoryMVStore_WAL(t *testing.T) {
 	tempDir := t.TempDir()
 	walDir := filepath.Join(tempDir, "wal")
 	options := &MVStoreOptions{
-		DataDir:    tempDir,
-		WALDir:     walDir,
-		EnableWAL:  true,
+		DataDir:     tempDir,
+		WALDir:      walDir,
+		EnableWAL:   true,
 		MaxVersions: 10,
 	}
 
@@ -423,9 +423,9 @@ func TestMemoryMVStore_Snapshot(t *testing.T) {
 func TestMemoryMVStore_Stats(t *testing.T) {
 	tempDir := t.TempDir()
 	options := &MVStoreOptions{
-		DataDir:    tempDir,
-		WALDir:     filepath.Join(tempDir, "wal"),
-		EnableWAL:  false,
+		DataDir:     tempDir,
+		WALDir:      filepath.Join(tempDir, "wal"),
+		EnableWAL:   false,
 		MaxVersions: 5,
 	}
 
@@ -494,7 +494,7 @@ func BenchmarkMemoryMVStore_Get(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		key := fmt.Sprintf("key%d", i%1000)
-		store.Get(key)
+		_, _ = store.Get(key)
 	}
 }
 
@@ -518,10 +518,10 @@ func BenchmarkMemoryMVStore_Parallel(b *testing.B) {
 			if i%2 == 0 {
 				key := fmt.Sprintf("key%d", i%1000)
 				value := []byte(fmt.Sprintf("value%d", i))
-				store.Put(key, value)
+				_ = store.Put(key, value)
 			} else {
 				key := fmt.Sprintf("key%d", i%1000)
-				store.Get(key)
+				_, _ = store.Get(key)
 			}
 			i++
 		}
@@ -640,7 +640,7 @@ func TestSnapshotManager(t *testing.T) {
 
 	testStore, err := NewMemoryMVStore(storeOptions)
 	require.NoError(t, err)
-	testStore.Put("test", []byte("data"))
+	require.NoError(t, testStore.Put("test", []byte("data")))
 	defer testStore.Close()
 
 	// 创建快照

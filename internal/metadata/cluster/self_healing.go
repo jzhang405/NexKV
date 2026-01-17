@@ -387,7 +387,7 @@ func (sh *SelfHealer) performHealing(nodeID string) error {
 			defer cancel()
 
 			if err := sh.leaderElection.Campaign(ctx); err != nil {
-				return fmt.Errorf("Leader选举失败: %w", err)
+				return fmt.Errorf("leader 选举失败: %w", err)
 			}
 		}
 	}

@@ -138,7 +138,7 @@ func NewLeaderElection(
 // Start 启动 Leader 选举
 func (le *LeaderElection) Start() error {
 	if !le.started.CompareAndSwap(false, true) {
-		return fmt.Errorf("Leader 选举已经启动")
+		return fmt.Errorf("leader 选举已经启动")
 	}
 
 	logging.WithFields(map[string]any{

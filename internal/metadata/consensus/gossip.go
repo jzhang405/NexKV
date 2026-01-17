@@ -2,8 +2,8 @@
 //
 // 包含：
 //   - Gossip 协议：最终一致性，周期性扩散
-//   - Quorum 机制：强一致性，多数派确认
-//   - 2PC 协议：分布式事务协调
+//   - Quorum 机制：增强的最终一致性，多数派确认
+//   - 2PC 协议：强一致性，全员commit或rollback
 package consensus
 
 import (

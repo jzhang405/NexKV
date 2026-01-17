@@ -1,6 +1,6 @@
 // Package consensus 提供一致性协议实现
 //
-// TwoPC (Two-Phase Commit) 协议：无协调者简化版
+// TwoPC (Two-Phase Commit) 协议：强一致性，全员commit或rollback
 package consensus
 
 import (
@@ -20,6 +20,7 @@ import (
 // TwoPCService 两阶段提交服务
 //
 // 核心特性:
+//   - 强一致性：全员 commit 或 rollback（原子性保证）
 //   - 无协调者简化版：发起节点兼任协调者
 //   - 直接预提交：砍掉 Prepare 阶段，无资源锁定
 //   - Gossip 状态同步：异步扩散事务状态

@@ -1,6 +1,6 @@
 // Package consensus 提供一致性协议实现
 //
-// Quorum 机制：强一致性，多数派确认
+// Quorum 机制：增强的最终一致性，多数派确认
 package consensus
 
 import (
@@ -19,16 +19,16 @@ import (
 // QuorumService Quorum 机制服务
 //
 // 核心特性:
-//   - 强一致性：需要多数派确认（N/2 + 1）
+//   - 增强的最终一致性：需要多数派确认（N/2 + 1）
 //   - 超时回滚：超时后自动回滚
 //   - 并行投票：并行发送提案到所有节点
-//   - 防脑裂：通过多数派保证决策唯一性
+//   - 允许脑裂：网络分区时可能出现 n1 commit, n2 rollback
 //
 // 使用场景:
 //   - 分片创建/删除
 //   - 主副本切换
 //   - 节点加入/离开
-//   - 其他关键元数据变更
+//   - 其他重要元数据变更
 type QuorumService struct {
 	// 配置
 	config *QuorumConfig

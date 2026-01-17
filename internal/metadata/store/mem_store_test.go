@@ -214,10 +214,10 @@ func TestMemoryMVStore_ListPrefix(t *testing.T) {
 	defer store.Close()
 
 	// 写入不同前缀的 key
-	store.Put("user:1", []byte("alice"))
-	store.Put("user:2", []byte("bob"))
-	store.Put("order:1", []byte("order1"))
-	store.Put("user:3", []byte("charlie"))
+	require.NoError(t, store.Put("user:1", []byte("alice")))
+	require.NoError(t, store.Put("user:2", []byte("bob")))
+	require.NoError(t, store.Put("order:1", []byte("order1")))
+	require.NoError(t, store.Put("user:3", []byte("charlie")))
 
 	// 查询 user: 前缀
 	keys, err := store.ListPrefix("user:", 0, 0)

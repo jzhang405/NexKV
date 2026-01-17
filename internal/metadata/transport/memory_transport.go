@@ -17,6 +17,13 @@ import (
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
 )
 
+// 全局接收通道注册表
+// 用于在不同 MemoryTransport 实例之间共享接收通道
+var (
+	globalReceiveRegistry = make(map[string]chan Message)
+	globalRegistryMu      sync.RWMutex
+)
+
 // MemoryTransport 内存传输实现
 //
 // 用于测试的传输层实现，不依赖网络
@@ -32,6 +39,10 @@ type MemoryTransport struct {
 	// 通道映射
 	channels   map[string]chan Message // addr -> receive channel
 	channelsMu sync.RWMutex
+
+	// 已断开连接的节点（本地黑名单）
+	disconnectedNodes   map[string]bool
+	disconnectedNodesMu sync.RWMutex
 
 	// 生命周期
 	started atomic.Bool
@@ -58,12 +69,13 @@ type memoryNode struct {
 // NewMemoryTransport 创建内存传输
 func NewMemoryTransport(localAddr string) (*MemoryTransport, error) {
 	t := &MemoryTransport{
-		config:    DefaultTransportConfig(),
-		codec:     NewMessagePackCodec(),
-		nodes:     make(map[string]*memoryNode),
-		channels:  make(map[string]chan Message),
-		stopCh:    make(chan struct{}),
-		localAddr: localAddr,
+		config:             DefaultTransportConfig(),
+		codec:              NewMessagePackCodec(),
+		nodes:              make(map[string]*memoryNode),
+		channels:           make(map[string]chan Message),
+		disconnectedNodes:  make(map[string]bool),
+		stopCh:             make(chan struct{}),
+		localAddr:          localAddr,
 	}
 
 	// 注册本地节点
@@ -80,6 +92,22 @@ func (t *MemoryTransport) Start() error {
 
 	logging.Infof("启动内存传输层，地址: %s", t.localAddr)
 
+	// 获取接收通道
+	t.channelsMu.Lock()
+	ch, exists := t.channels[t.localAddr]
+	if !exists {
+		ch = make(chan Message, 1024)
+		t.channels[t.localAddr] = ch
+	}
+	t.channelsMu.Unlock()
+
+	// 注册接收通道到全局注册表
+	globalRegistryMu.Lock()
+	globalReceiveRegistry[t.localAddr] = ch
+	globalRegistryMu.Unlock()
+
+	logging.Infof("已注册接收通道到全局注册表: %s", t.localAddr)
+
 	// 启动接收协程
 	t.stopWg.Add(1)
 	go t.receiveLoop()
@@ -95,6 +123,13 @@ func (t *MemoryTransport) Stop() error {
 	}
 
 	logging.Info("停止内存传输层...")
+
+	// 从全局注册表注销接收通道
+	globalRegistryMu.Lock()
+	delete(globalReceiveRegistry, t.localAddr)
+	globalRegistryMu.Unlock()
+
+	logging.Infof("已从全局注册表注销: %s", t.localAddr)
 
 	// 关闭停止信号
 	close(t.stopCh)
@@ -128,22 +163,32 @@ func (t *MemoryTransport) Send(ctx context.Context, addr string, msg Message) er
 		return fmt.Errorf("传输层未启动")
 	}
 
-	t.nodesMu.RLock()
-	node, exists := t.nodes[addr]
-	t.nodesMu.RUnlock()
+	// 检查目标节点是否在断开连接黑名单中
+	t.disconnectedNodesMu.RLock()
+	_, disconnected := t.disconnectedNodes[addr]
+	t.disconnectedNodesMu.RUnlock()
+
+	if disconnected {
+		return fmt.Errorf("目标节点不存在: %s", addr)
+	}
+
+	// 从全局注册表查找目标节点的接收通道
+	globalRegistryMu.RLock()
+	targetRecvCh, exists := globalReceiveRegistry[addr]
+	globalRegistryMu.RUnlock()
 
 	if !exists {
-		return fmt.Errorf("节点不存在: %s", addr)
+		return fmt.Errorf("目标节点不存在: %s", addr)
 	}
 
-	if node.isClosed() {
-		return fmt.Errorf("节点已关闭: %s", addr)
+	if targetRecvCh == nil {
+		return fmt.Errorf("目标节点的接收通道未初始化: %s", addr)
 	}
 
-	// 通过通道发送
+	// 直接写入目标节点的接收通道
 	select {
-	case node.sendCh <- msg:
-		logging.Debugf("发送消息: %s to %s", msg.Type(), addr)
+	case targetRecvCh <- msg:
+		logging.Infof("发送消息: %s to %s (直接写入全局接收通道)", msg.Type(), addr)
 		return nil
 	case <-time.After(5 * time.Second):
 		return fmt.Errorf("发送超时")
@@ -194,7 +239,7 @@ func (t *MemoryTransport) registerNode(addr string) *memoryNode {
 	}
 	t.channelsMu.Unlock()
 
-	logging.Debugf("注册内存节点: %s", addr)
+	logging.Infof("注册内存节点: %s", addr)
 	return node
 }
 
@@ -211,17 +256,17 @@ func (t *MemoryTransport) receiveLoop() {
 		return
 	}
 
-	logging.Debugf("开始接收消息: %s", t.localAddr)
+	logging.Infof("开始接收消息: %s", t.localAddr)
 
 	for {
 		select {
 		case <-t.stopCh:
-			logging.Debugf("接收循环停止: %s", t.localAddr)
+			logging.Infof("接收循环停止: %s", t.localAddr)
 			return
 
-		case msg, ok := <-node.sendCh:
+		case msg, ok := <-node.recvCh:
 			if !ok {
-				logging.Debugf("发送通道已关闭: %s", t.localAddr)
+				logging.Infof("接收通道已关闭: %s", t.localAddr)
 				return
 			}
 
@@ -233,14 +278,14 @@ func (t *MemoryTransport) receiveLoop() {
 			if exists {
 				select {
 				case recvCh <- msg:
-					logging.Debugf("接收消息: %s from %s", msg.Type(), t.localAddr)
+					logging.Infof("接收消息: %s from %s", msg.Type(), t.localAddr)
 				case <-time.After(1 * time.Second):
 					logging.Errorf("接收通道阻塞，消息丢弃")
 				}
 			}
 
 		case <-node.closeCh:
-			logging.Debugf("节点已关闭: %s", t.localAddr)
+			logging.Infof("节点已关闭: %s", t.localAddr)
 			return
 		}
 	}
@@ -265,6 +310,13 @@ func (t *MemoryTransport) closeAllNodes() {
 func (t *MemoryTransport) RegisterRemoteNode(addr string) {
 	t.registerNode(addr)
 
+	// 从断开连接黑名单中移除
+	t.disconnectedNodesMu.Lock()
+	delete(t.disconnectedNodes, addr)
+	t.disconnectedNodesMu.Unlock()
+
+	logging.Infof("RegisterRemoteNode: %s 注册远程节点 %s", t.localAddr, addr)
+
 	// 建立双向连接
 	t.nodesMu.RLock()
 	localNode := t.nodes[t.localAddr]
@@ -276,14 +328,21 @@ func (t *MemoryTransport) RegisterRemoteNode(addr string) {
 		t.stopWg.Add(2)
 		go t.forwardMessages(localNode, remoteNode)
 		go t.forwardMessages(remoteNode, localNode)
+		logging.Infof("RegisterRemoteNode: %s 已启动与 %s 的双向转发", t.localAddr, addr)
+	} else {
+		logging.Errorf("RegisterRemoteNode: %s 无法启动与 %s 的转发 (localNode=%v, remoteNode=%v)",
+			t.localAddr, addr, localNode != nil, remoteNode != nil)
 	}
 }
 
 // forwardMessages 转发消息
 //
 // 在两个节点之间转发消息
+// 这个协程从 'to' 节点的 sendCh 读取（Send 写入本地节点的 sendCh，forwardMessages 需要从目标节点的 sendCh 读取）
 func (t *MemoryTransport) forwardMessages(from, to *memoryNode) {
 	defer t.stopWg.Done()
+
+	logging.Infof("启动转发协程: %s.sendCh -> %s.recvCh", from.addr, to.addr)
 
 	for {
 		select {
@@ -291,13 +350,15 @@ func (t *MemoryTransport) forwardMessages(from, to *memoryNode) {
 			return
 		case <-from.closeCh:
 			return
-		case msg, ok := <-from.sendCh:
+		case msg, ok := <-to.sendCh:
 			if !ok {
 				return
 			}
 
+			logging.Infof("转发消息: %s from %s.sendCh -> %s.recvCh", msg.Type(), to.addr, to.addr)
 			select {
-			case to.sendCh <- msg:
+			case to.recvCh <- msg:
+				logging.Infof("消息已转发到 %s.recvCh", to.addr)
 			case <-time.After(1 * time.Second):
 				logging.Errorf("转发超时: %s -> %s", from.addr, to.addr)
 			}
@@ -376,6 +437,11 @@ func (t *MemoryTransport) ConnectTo(remoteAddr string) error {
 		t.RegisterRemoteNode(remoteAddr)
 	}
 
+	// 从断开连接黑名单中移除
+	t.disconnectedNodesMu.Lock()
+	delete(t.disconnectedNodes, remoteAddr)
+	t.disconnectedNodesMu.Unlock()
+
 	logging.Infof("建立连接: %s -> %s", t.localAddr, remoteAddr)
 	return nil
 }
@@ -392,6 +458,11 @@ func (t *MemoryTransport) DisconnectFrom(remoteAddr string) error {
 
 	_ = node.Close()
 	delete(t.nodes, remoteAddr)
+
+	// 添加到断开连接黑名单
+	t.disconnectedNodesMu.Lock()
+	t.disconnectedNodes[remoteAddr] = true
+	t.disconnectedNodesMu.Unlock()
 
 	logging.Infof("断开连接: %s -> %s", t.localAddr, remoteAddr)
 	return nil

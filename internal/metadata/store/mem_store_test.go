@@ -24,7 +24,7 @@ func TestMemoryMVStore_PutGet(t *testing.T) {
 
 	store, err := NewMemoryMVStore(options)
 	require.NoError(t, err)
-	_ = store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 测试 Put
 	err = store.Put("key1", []byte("value1"))
@@ -58,7 +58,7 @@ func TestMemoryMVStore_Delete(t *testing.T) {
 
 	store, err := NewMemoryMVStore(options)
 	require.NoError(t, err)
-	_ = store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Put 一个值
 	err = store.Put("key1", []byte("value1"))
@@ -88,7 +88,7 @@ func TestMemoryMVStore_Exists(t *testing.T) {
 
 	store, err := NewMemoryMVStore(options)
 	require.NoError(t, err)
-	_ = store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 不存在的 key
 	exists, err := store.Exists("key1")
@@ -124,7 +124,7 @@ func TestMemoryMVStore_GetVersion(t *testing.T) {
 
 	store, err := NewMemoryMVStore(options)
 	require.NoError(t, err)
-	_ = store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 写入多个版本
 	require.NoError(t, store.Put("key1", []byte("value1")))
@@ -176,7 +176,7 @@ func TestMemoryMVStore_List(t *testing.T) {
 
 	store, err := NewMemoryMVStore(options)
 	require.NoError(t, err)
-	_ = store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 写入多个 key
 	for i := 1; i <= 10; i++ {
@@ -215,7 +215,7 @@ func TestMemoryMVStore_ListPrefix(t *testing.T) {
 
 	store, err := NewMemoryMVStore(options)
 	require.NoError(t, err)
-	_ = store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 写入不同前缀的 key
 	require.NoError(t, store.Put("user:1", []byte("alice")))
@@ -250,7 +250,7 @@ func TestMemoryMVStore_GetVersionCount(t *testing.T) {
 
 	store, err := NewMemoryMVStore(options)
 	require.NoError(t, err)
-	_ = store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 初始版本数为 0
 	count, err := store.GetVersionCount("key1")
@@ -280,7 +280,7 @@ func TestMemoryMVStore_GetAllVersions(t *testing.T) {
 
 	store, err := NewMemoryMVStore(options)
 	require.NoError(t, err)
-	_ = store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 写入多个版本
 	require.NoError(t, store.Put("key1", []byte("value1")))
@@ -311,7 +311,7 @@ func TestMemoryMVStore_Concurrent(t *testing.T) {
 
 	store, err := NewMemoryMVStore(options)
 	require.NoError(t, err)
-	_ = store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 并发写入
 	const goroutines = 100
@@ -371,7 +371,7 @@ func TestMemoryMVStore_WAL(t *testing.T) {
 	// 第二阶段：从 WAL 恢复
 	store2, err := NewMemoryMVStore(options)
 	require.NoError(t, err)
-	_ = store2.Close()
+	defer func() { _ = store2.Close() }()
 
 	// 验证恢复的数据
 	value, err := store2.Get("key1")
@@ -394,7 +394,7 @@ func TestMemoryMVStore_Snapshot(t *testing.T) {
 
 	store, err := NewMemoryMVStore(options)
 	require.NoError(t, err)
-	_ = store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 写入数据
 	for i := 1; i <= 5; i++ {
@@ -435,7 +435,7 @@ func TestMemoryMVStore_Stats(t *testing.T) {
 
 	store, err := NewMemoryMVStore(options)
 	require.NoError(t, err)
-	_ = store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 写入数据
 	for i := 0; i < 10; i++ {
@@ -574,7 +574,7 @@ func TestWAL_Append_Recover(t *testing.T) {
 	// 重新打开 WAL 并恢复数据
 	wal2, err := NewMetadataWAL(walPath)
 	require.NoError(t, err)
-	_ = wal2.Close()
+	defer func() { _ = wal2.Close() }()
 
 	recovered, err := wal2.Recover()
 	require.NoError(t, err)
@@ -596,7 +596,7 @@ func TestWAL_Truncate(t *testing.T) {
 
 	wal, err := NewMetadataWAL(walPath)
 	require.NoError(t, err)
-	_ = wal.Close()
+	defer func() { _ = wal.Close() }()
 
 	// 写入一些数据
 	hlc := clock.NewHLC()
@@ -632,7 +632,7 @@ func TestSnapshotManager(t *testing.T) {
 
 	snapMgr, err := NewSnapshotManager(tempDir)
 	require.NoError(t, err)
-	_ = snapMgr.Close()
+	defer func() { _ = snapMgr.Close() }()
 
 	// 创建一个临时 store 来生成快照数据
 	storeTempDir := t.TempDir()
@@ -644,8 +644,9 @@ func TestSnapshotManager(t *testing.T) {
 
 	testStore, err := NewMemoryMVStore(storeOptions)
 	require.NoError(t, err)
+	defer func() { _ = testStore.Close() }()
+
 	require.NoError(t, testStore.Put("test", []byte("data")))
-	_ = testStore.Close()
 
 	// 创建快照
 	err = snapMgr.Create(testStore)

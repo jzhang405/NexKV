@@ -241,17 +241,16 @@ func (fr *FrameReader) ReadFrame() (*Frame, error) {
 		return nil, ErrFrameTooLarge
 	}
 
-	// 读取剩余部分 (CRC32 + Data)
-	remainingSize := 4 + int(length) // CRC32(4) + Data
-	remaining := make([]byte, remainingSize)
-	if _, err := io.ReadFull(fr.r, remaining); err != nil {
+	// 读取 Data 部分（帧头的 16 字节已包含 CRC32）
+	data := make([]byte, length)
+	if _, err := io.ReadFull(fr.r, data); err != nil {
 		return nil, err
 	}
 
 	// 组装完整帧数据
-	fullData := make([]byte, FrameHeaderSize+remainingSize)
+	fullData := make([]byte, FrameHeaderSize+length)
 	copy(fullData, header)
-	copy(fullData[FrameHeaderSize:], remaining)
+	copy(fullData[FrameHeaderSize:], data)
 
 	// 解析帧
 	frame := &Frame{}

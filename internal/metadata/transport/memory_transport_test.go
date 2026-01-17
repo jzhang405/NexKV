@@ -56,10 +56,10 @@ func TestMemoryTransport_SendReceive(t *testing.T) {
 
 	// 启动
 	require.NoError(t, trans1.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans1.Stop() }()
 
 	require.NoError(t, trans2.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans2.Stop() }()
 
 	// 注册远程节点
 	trans1.RegisterRemoteNode("node2:9211")
@@ -93,10 +93,10 @@ func TestMemoryTransport_Send_Bidirectional(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, trans1.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans1.Stop() }()
 
 	require.NoError(t, trans2.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans2.Stop() }()
 
 	trans1.RegisterRemoteNode("node2:9211")
 	trans2.RegisterRemoteNode("node1:9211")
@@ -156,7 +156,7 @@ func TestMemoryTransport_Send_NodeNotExist(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, trans1.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans1.Stop() }()
 
 	msg := &GetMessage{Key: "test"}
 	ctx := context.Background()
@@ -176,10 +176,10 @@ func TestMemoryTransport_Send_ContextCancel(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, trans1.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans1.Stop() }()
 
 	require.NoError(t, trans2.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans2.Stop() }()
 
 	trans1.RegisterRemoteNode("node2:9211")
 
@@ -202,10 +202,10 @@ func TestMemoryTransport_ConnectTo(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, trans1.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans1.Stop() }()
 
 	require.NoError(t, trans2.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans2.Stop() }()
 
 	// 连接到远程节点
 	err = trans1.ConnectTo("node2:9211")
@@ -236,10 +236,10 @@ func TestMemoryTransport_DisconnectFrom(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, trans1.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans1.Stop() }()
 
 	require.NoError(t, trans2.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans2.Stop() }()
 
 	// 连接
 	err = trans1.ConnectTo("node2:9211")
@@ -270,13 +270,13 @@ func TestMemoryTransport_Clear(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, trans1.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans1.Stop() }()
 
 	require.NoError(t, trans2.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans2.Stop() }()
 
 	require.NoError(t, trans3.Start())
-	_ = trans2.Stop()
+	defer func() { _ = trans3.Stop() }()
 
 	// 建立连接
 	trans1.RegisterRemoteNode("node2:9211")
@@ -315,10 +315,10 @@ func TestMemoryTransport_MultipleMessages(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, trans1.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans1.Stop() }()
 
 	require.NoError(t, trans2.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans2.Stop() }()
 
 	trans1.RegisterRemoteNode("node2:9211")
 	trans2.RegisterRemoteNode("node1:9211")
@@ -363,10 +363,10 @@ func TestMemoryTransport_Concurrent(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, trans1.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans1.Stop() }()
 
 	require.NoError(t, trans2.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans2.Stop() }()
 
 	trans1.RegisterRemoteNode("node2:9211")
 	trans2.RegisterRemoteNode("node1:9211")
@@ -424,10 +424,10 @@ func TestMemoryTransport_AllMessageTypes(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, trans1.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans1.Stop() }()
 
 	require.NoError(t, trans2.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans2.Stop() }()
 
 	trans1.RegisterRemoteNode("node2:9211")
 	trans2.RegisterRemoteNode("node1:9211")
@@ -490,10 +490,10 @@ func TestMemoryTransport_LargeMessage(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, trans1.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans1.Stop() }()
 
 	require.NoError(t, trans2.Start())
-	_ = trans1.Stop()
+	defer func() { _ = trans2.Stop() }()
 
 	trans1.RegisterRemoteNode("node2:9211")
 	trans2.RegisterRemoteNode("node1:9211")

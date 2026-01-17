@@ -1,0 +1,47 @@
+# NexKV 元数据层默认配置
+
+# 集群配置
+cluster:
+  name: "nexkv-cluster"
+  node_id: "node-1"
+  node_addr: "127.0.0.1:9211"
+
+  # 树形分组配置（5-10个节点，可配置）
+  tree_coord:
+    max_children: 10  # 每个父节点最多子节点数
+    group_size: 5     # 组大小
+
+# 元数据层配置
+metadata:
+  data_dir: "./data/metadata"
+  gossip_interval: "10s"
+  quorum_timeout: "30s"
+  change_log_size: 1000
+
+# 存储层配置
+storage:
+  shard_data_dir: "./data/shards"
+  wal_dir: "./data/wal"
+  snapshot_dir: "./data/snapshots"
+  flush_interval: "5s"
+
+# 网络层配置
+network:
+  listen_addr: "0.0.0.0:9211"
+  transport_type: "tcp"       # tcp, grpc, memory
+  message_pack_type: "msgpack"
+  max_message_size: 10485760  # 10MB
+  connect_timeout: "10s"
+
+# 日志配置
+logging:
+  level: "info"
+  format: "json"              # json, text
+  output: "stdout"            # stdout, file
+  file: ""
+
+# 时钟服务配置
+clock:
+  hlc:
+    max_drift: 100            # 时间回拨检测阈值（毫秒）
+    sync_interval: "10s"      # Gossip 时钟同步间隔

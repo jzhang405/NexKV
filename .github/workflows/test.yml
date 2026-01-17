@@ -21,6 +21,12 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      - name: 清理 Go 模块缓存目录
+        run: |
+          rm -rf ~/.cache/go-build
+          rm -rf ~/go/pkg/mod
+          rm -rf ~/.cache/go-build
+
       - name: 设置 Go 环境
         uses: actions/setup-go@v5
         with:
@@ -70,6 +76,12 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      - name: 清理 Go 模块缓存目录
+        run: |
+          rm -rf ~/.cache/go-build
+          rm -rf ~/go/pkg/mod
+          rm -rf ~/.cache/go-build
+
       - name: 设置 Go 环境
         uses: actions/setup-go@v5
         with:
@@ -83,7 +95,7 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         go-version: ['1.21', '1.22', '1.23']
@@ -93,12 +105,20 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      - name: 清理 Go 模块缓存目录
+        shell: bash
+        run: |
+          rm -rf ~/.cache/go-build
+          rm -rf ~/go/pkg/mod
+          rm -rf ~/.cache/go-build
+
       - name: 设置 Go 环境
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
 
       - name: 编译项目
+        shell: bash
         run: |
           go build -v -ldflags="-s -w" -o bin/nexkv ./cmd/nexkv
           # nexkd 将在后续 Phase 实现，暂不编译

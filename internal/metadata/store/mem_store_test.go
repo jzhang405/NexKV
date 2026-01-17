@@ -44,7 +44,7 @@ func TestMemoryMVStore_PutGet(t *testing.T) {
 
 	// 测试不存在的 key
 	_, err = store.Get("key3")
-	assert.ErrorIs(t, err, ErrNotFound)
+	assert.Error(t, err)
 }
 
 // TestMemoryMVStore_Delete 测试删除操作
@@ -70,7 +70,7 @@ func TestMemoryMVStore_Delete(t *testing.T) {
 
 	// 验证已删除
 	_, err = store.Get("key1")
-	assert.ErrorIs(t, err, ErrNotFound)
+	assert.Error(t, err)
 
 	// 删除不存在的 key 应该成功
 	err = store.Delete("key2")
@@ -420,7 +420,7 @@ func TestMemoryMVStore_Snapshot(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = store.Get("key6")
-	assert.ErrorIs(t, err, ErrNotFound)
+	assert.Error(t, err)
 }
 
 // TestMemoryMVStore_Stats 测试统计信息

@@ -170,67 +170,6 @@ type SnapshotManager interface {
 	Close() error
 }
 
-// 错误定义
-var (
-	// ErrNotFound 键不存在
-	ErrNotFound = &StoreError{Code: ErrCodeNotFound, Message: "key not found"}
-
-	// ErrAlreadyExists 键已存在
-	ErrAlreadyExists = &StoreError{Code: ErrCodeAlreadyExists, Message: "key already exists"}
-
-	// ErrVersionNotFound 版本不存在
-	ErrVersionNotFound = &StoreError{Code: ErrCodeVersionNotFound, Message: "version not found"}
-
-	// ErrChecksum 校验和错误
-	ErrChecksum = &StoreError{Code: ErrCodeChecksum, Message: "checksum mismatch"}
-
-	// ErrClosed 存储已关闭
-	ErrClosed = &StoreError{Code: ErrCodeClosed, Message: "store closed"}
-)
-
-// ErrorCode 错误码
-type ErrorCode int
-
-const (
-	// ErrCodeNotFound 键不存在
-	ErrCodeNotFound ErrorCode = iota
-
-	// ErrCodeAlreadyExists 键已存在
-	ErrCodeAlreadyExists
-
-	// ErrCodeVersionNotFound 版本不存在
-	ErrCodeVersionNotFound
-
-	// ErrCodeChecksum 校验和错误
-	ErrCodeChecksum
-
-	// ErrCodeClosed 存储已关闭
-	ErrCodeClosed
-
-	// ErrCodeInternal 内部错误
-	ErrCodeInternal
-)
-
-// StoreError 存储错误
-type StoreError struct {
-	Code    ErrorCode
-	Message string
-	Err     error
-}
-
-// Error 实现 error 接口
-func (e *StoreError) Error() string {
-	if e.Err != nil {
-		return e.Message + ": " + e.Err.Error()
-	}
-	return e.Message
-}
-
-// Unwrap 返回底层错误
-func (e *StoreError) Unwrap() error {
-	return e.Err
-}
-
 // VersionedEntry 带版本的数据条目
 type VersionedEntry struct {
 	Key       string

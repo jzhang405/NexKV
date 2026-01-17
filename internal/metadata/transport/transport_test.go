@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/metadata/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -427,7 +428,7 @@ func TestDefaultTransportConfig(t *testing.T) {
 
 // TestTransportError_Error 测试传输错误
 func TestTransportError_Error(t *testing.T) {
-	err := &TransportError{
+	err := &errors.TransportError{
 		Op:   "Send",
 		Addr: "localhost:9211",
 		Err:  io.EOF,
@@ -442,7 +443,7 @@ func TestTransportError_Error(t *testing.T) {
 // TestTransportError_Unwrap 测试错误解包
 func TestTransportError_Unwrap(t *testing.T) {
 	originalErr := io.EOF
-	err := &TransportError{
+	err := &errors.TransportError{
 		Op:  "Send",
 		Err: originalErr,
 	}
@@ -454,7 +455,7 @@ func TestTransportError_Unwrap(t *testing.T) {
 func TestTransportError_Timeout(t *testing.T) {
 	// 注意: tempErr 字段是私有的，实际使用中由内部逻辑设置
 	// 这里只测试方法存在性和基本行为
-	err := &TransportError{Op: "test", Err: io.ErrNoProgress}
+	err := &errors.TransportError{Op: "test", Err: io.ErrNoProgress}
 	assert.NotNil(t, err)
 	assert.Contains(t, err.Error(), "test")
 }

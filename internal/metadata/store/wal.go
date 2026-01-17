@@ -15,6 +15,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/metadata/clock"
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/metadata/errors"
 )
 
 // WAL 文件格式:
@@ -26,10 +27,10 @@ import (
 // - ValueLen:     4 bytes  (value 长度)                          [6:10]
 // - TimestampLen: 2 bytes  (HLC 数据长度，值为 10)               [10:12]
 //
-// Entry Data 格式 (变长，紧接 Header):
-// - Timestamp:    10 bytes (HLC 序列化: 8字节 pt + 2字节 c)
+// Entry Data 格式 (变长，紧接 Header，与 Header 字段顺序一致):
 // - Key:          KeyLen  bytes
 // - Value:        ValueLen bytes
+// - Timestamp:    TimestampLen bytes (HLC 序列化: 8字节 pt + 2字节 c)
 //
 // 总 Header: 2 + 4 + 4 + 2 = 12 bytes (4 字节对齐)
 
@@ -56,20 +57,20 @@ type MetadataWAL struct {
 // NewMetadataWAL 创建元数据 WAL
 func NewMetadataWAL(path string) (*MetadataWAL, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return nil, &StoreError{Code: ErrCodeInternal, Message: "创建 WAL 目录失败", Err: err}
+		return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "创建 WAL 目录失败", Err: err}
 	}
 
 	// 以追加模式打开文件
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
-		return nil, &StoreError{Code: ErrCodeInternal, Message: "打开 WAL 文件失败", Err: err}
+		return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "打开 WAL 文件失败", Err: err}
 	}
 
 	// 获取当前文件大小
 	stat, err := file.Stat()
 	if err != nil {
 		_ = file.Close()
-		return nil, &StoreError{Code: ErrCodeInternal, Message: "获取 WAL 文件信息失败", Err: err}
+		return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "获取 WAL 文件信息失败", Err: err}
 	}
 
 	wal := &MetadataWAL{
@@ -84,7 +85,7 @@ func NewMetadataWAL(path string) (*MetadataWAL, error) {
 // Append 追加日志条目
 func (w *MetadataWAL) Append(entry *WALEntry) error {
 	if w.closed {
-		return ErrClosed
+		return errors.NewClosedError("WAL")
 	}
 
 	w.mu.Lock()
@@ -93,7 +94,7 @@ func (w *MetadataWAL) Append(entry *WALEntry) error {
 	// 序列化 Entry
 	data, err := w.encodeEntry(entry)
 	if err != nil {
-		return &StoreError{Code: ErrCodeInternal, Message: "编码 WAL 条目失败", Err: err}
+		return &errors.StoreError{Code: errors.ErrCodeInternal, Message: "编码 WAL 条目失败", Err: err}
 	}
 
 	// 计算校验和
@@ -101,16 +102,16 @@ func (w *MetadataWAL) Append(entry *WALEntry) error {
 
 	// 写入：[Data][Checksum]
 	if _, err := w.file.Write(data); err != nil {
-		return &StoreError{Code: ErrCodeInternal, Message: "写入 WAL 数据失败", Err: err}
+		return &errors.StoreError{Code: errors.ErrCodeInternal, Message: "写入 WAL 数据失败", Err: err}
 	}
 
 	if err := binary.Write(w.file, binary.BigEndian, checksum); err != nil {
-		return &StoreError{Code: ErrCodeInternal, Message: "写入校验和失败", Err: err}
+		return &errors.StoreError{Code: errors.ErrCodeInternal, Message: "写入校验和失败", Err: err}
 	}
 
 	// 强制刷盘
 	if err := w.file.Sync(); err != nil {
-		return &StoreError{Code: ErrCodeInternal, Message: "WAL sync 失败", Err: err}
+		return &errors.StoreError{Code: errors.ErrCodeInternal, Message: "WAL sync 失败", Err: err}
 	}
 
 	w.offset += int64(len(data) + 4)
@@ -128,12 +129,12 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 
 	// 重新打开文件，从头读取
 	if err := w.file.Close(); err != nil {
-		return nil, &StoreError{Code: ErrCodeInternal, Message: "关闭 WAL 文件失败", Err: err}
+		return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "关闭 WAL 文件失败", Err: err}
 	}
 
 	file, err := os.Open(w.path)
 	if err != nil {
-		return nil, &StoreError{Code: ErrCodeInternal, Message: "打开 WAL 文件失败", Err: err}
+		return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "打开 WAL 文件失败", Err: err}
 	}
 	w.file = file
 
@@ -147,7 +148,7 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 			if err == io.EOF {
 				break
 			}
-			return nil, &StoreError{Code: ErrCodeInternal, Message: "读取 WAL header 失败", Err: err}
+			return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "读取 WAL header 失败", Err: err}
 		}
 
 		// 解析 Header
@@ -160,13 +161,13 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 		dataSize := uint32(keyLen) + uint32(valueLen) + uint32(timestampSize)
 		data := make([]byte, dataSize)
 		if _, err := io.ReadFull(reader, data); err != nil {
-			return nil, &StoreError{Code: ErrCodeInternal, Message: "读取 WAL data 失败", Err: err}
+			return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "读取 WAL data 失败", Err: err}
 		}
 
 		// 读取 Checksum
 		var checksum uint32
 		if err := binary.Read(reader, binary.BigEndian, &checksum); err != nil {
-			return nil, &StoreError{Code: ErrCodeInternal, Message: "读取校验和失败", Err: err}
+			return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "读取校验和失败", Err: err}
 		}
 
 		// 验证校验和
@@ -188,12 +189,12 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 
 	// 恢复完成后，重新以追加模式打开文件用于后续写入
 	if err := w.file.Close(); err != nil {
-		return nil, &StoreError{Code: ErrCodeInternal, Message: "关闭 WAL 文件失败", Err: err}
+		return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "关闭 WAL 文件失败", Err: err}
 	}
 
 	file, err = os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
-		return nil, &StoreError{Code: ErrCodeInternal, Message: "重新打开 WAL 文件失败", Err: err}
+		return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "重新打开 WAL 文件失败", Err: err}
 	}
 	w.file = file
 	w.offset = currentOffset
@@ -204,25 +205,25 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 // Truncate 截断 WAL
 func (w *MetadataWAL) Truncate(offset int64) error {
 	if w.closed {
-		return ErrClosed
+		return errors.NewClosedError("WAL")
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	if err := w.file.Close(); err != nil {
-		return &StoreError{Code: ErrCodeInternal, Message: "关闭 WAL 文件失败", Err: err}
+		return &errors.StoreError{Code: errors.ErrCodeInternal, Message: "关闭 WAL 文件失败", Err: err}
 	}
 
 	// 重新创建文件，只保留 offset 之后的内容
 	if err := os.Truncate(w.path, offset); err != nil {
-		return &StoreError{Code: ErrCodeInternal, Message: "截断 WAL 文件失败", Err: err}
+		return &errors.StoreError{Code: errors.ErrCodeInternal, Message: "截断 WAL 文件失败", Err: err}
 	}
 
 	// 重新打开
 	file, err := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
-		return &StoreError{Code: ErrCodeInternal, Message: "重新打开 WAL 文件失败", Err: err}
+		return &errors.StoreError{Code: errors.ErrCodeInternal, Message: "重新打开 WAL 文件失败", Err: err}
 	}
 
 	w.file = file
@@ -234,7 +235,7 @@ func (w *MetadataWAL) Truncate(offset int64) error {
 // Sync 强制刷盘
 func (w *MetadataWAL) Sync() error {
 	if w.closed {
-		return ErrClosed
+		return errors.NewClosedError("WAL")
 	}
 
 	w.mu.Lock()
@@ -255,7 +256,7 @@ func (w *MetadataWAL) Close() error {
 	w.closed = true
 
 	if err := w.file.Close(); err != nil {
-		return &StoreError{Code: ErrCodeInternal, Message: "关闭 WAL 文件失败", Err: err}
+		return &errors.StoreError{Code: errors.ErrCodeInternal, Message: "关闭 WAL 文件失败", Err: err}
 	}
 
 	return nil
@@ -360,7 +361,7 @@ type snapshotManagerImpl struct {
 // NewSnapshotManager 创建快照管理器
 func NewSnapshotManager(dataDir string) (SnapshotManager, error) {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		return nil, &StoreError{Code: ErrCodeInternal, Message: "创建快照目录失败", Err: err}
+		return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "创建快照目录失败", Err: err}
 	}
 
 	return &snapshotManagerImpl{
@@ -374,14 +375,14 @@ func (s *snapshotManagerImpl) Create(store MVStore) error {
 	// 从 store 获取快照数据
 	snapshot, err := store.CreateSnapshot()
 	if err != nil {
-		return &StoreError{Code: ErrCodeInternal, Message: "获取快照数据失败", Err: err}
+		return &errors.StoreError{Code: errors.ErrCodeInternal, Message: "获取快照数据失败", Err: err}
 	}
 
 	snapshotName := fmt.Sprintf("snapshot-%d.json", time.Now().Unix())
 	snapshotPath := filepath.Join(s.dataDir, snapshotName)
 
 	if err := os.WriteFile(snapshotPath, snapshot, 0644); err != nil {
-		return &StoreError{Code: ErrCodeInternal, Message: "写入快照失败", Err: err}
+		return &errors.StoreError{Code: errors.ErrCodeInternal, Message: "写入快照失败", Err: err}
 	}
 
 	// 清理旧快照
@@ -394,7 +395,7 @@ func (s *snapshotManagerImpl) Create(store MVStore) error {
 func (s *snapshotManagerImpl) List() ([]string, error) {
 	entries, err := os.ReadDir(s.dataDir)
 	if err != nil {
-		return nil, &StoreError{Code: ErrCodeInternal, Message: "读取快照目录失败", Err: err}
+		return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "读取快照目录失败", Err: err}
 	}
 
 	var snapshots []string
@@ -413,7 +414,7 @@ func (s *snapshotManagerImpl) Restore(snapshotName string) ([]byte, error) {
 
 	data, err := os.ReadFile(snapshotPath)
 	if err != nil {
-		return nil, &StoreError{Code: ErrCodeInternal, Message: "读取快照失败", Err: err}
+		return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "读取快照失败", Err: err}
 	}
 
 	return data, nil
@@ -424,7 +425,7 @@ func (s *snapshotManagerImpl) Delete(snapshotName string) error {
 	snapshotPath := filepath.Join(s.dataDir, snapshotName)
 
 	if err := os.Remove(snapshotPath); err != nil {
-		return &StoreError{Code: ErrCodeInternal, Message: "删除快照失败", Err: err}
+		return &errors.StoreError{Code: errors.ErrCodeInternal, Message: "删除快照失败", Err: err}
 	}
 
 	return nil
@@ -507,7 +508,7 @@ func (c *WALCheckpoint) CreateCheckpoint() error {
 	}
 
 	if err := c.wal.Append(checkpointEntry); err != nil {
-		return &StoreError{Code: ErrCodeInternal, Message: "写入 checkpoint 失败", Err: err}
+		return &errors.StoreError{Code: errors.ErrCodeInternal, Message: "写入 checkpoint 失败", Err: err}
 	}
 
 	c.lastCheck = c.offset
@@ -529,7 +530,7 @@ func (c *WALCheckpoint) Truncate(offset int64) error {
 func (c *WALCheckpoint) LoadSnapshot() ([]byte, string, error) {
 	snapshots, err := c.snapMgr.List()
 	if err != nil {
-		return nil, "", &StoreError{Code: ErrCodeInternal, Message: "列出快照失败", Err: err}
+		return nil, "", &errors.StoreError{Code: errors.ErrCodeInternal, Message: "列出快照失败", Err: err}
 	}
 
 	if len(snapshots) == 0 {
@@ -540,7 +541,7 @@ func (c *WALCheckpoint) LoadSnapshot() ([]byte, string, error) {
 	latest := snapshots[len(snapshots)-1]
 	data, err := c.snapMgr.Restore(latest)
 	if err != nil {
-		return nil, "", &StoreError{Code: ErrCodeInternal, Message: "恢复快照失败", Err: err}
+		return nil, "", &errors.StoreError{Code: errors.ErrCodeInternal, Message: "恢复快照失败", Err: err}
 	}
 
 	return data, latest, nil
@@ -561,7 +562,7 @@ func (w *MetadataWAL) GetStats() (*WALStats, error) {
 
 	stat, err := w.file.Stat()
 	if err != nil {
-		return nil, &StoreError{Code: ErrCodeInternal, Message: "获取 WAL 文件信息失败", Err: err}
+		return nil, &errors.StoreError{Code: errors.ErrCodeInternal, Message: "获取 WAL 文件信息失败", Err: err}
 	}
 
 	return &WALStats{

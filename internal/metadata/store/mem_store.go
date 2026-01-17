@@ -14,6 +14,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/metadata/clock"
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/metadata/errors"
 )
 
 // MemoryMVStore 内存 MVStore 实现
@@ -106,7 +107,7 @@ func NewMemoryMVStore(options *MVStoreOptions) (*MemoryMVStore, error) {
 // Put 写入键值对
 func (m *MemoryMVStore) Put(key string, value []byte) error {
 	if m.closed.Load() {
-		return ErrClosed
+		return errors.NewClosedError("MemoryMVStore")
 	}
 
 	if key == "" {
@@ -164,12 +165,12 @@ func (m *MemoryMVStore) Put(key string, value []byte) error {
 // Get 获取最新值
 func (m *MemoryMVStore) Get(key string) ([]byte, error) {
 	if m.closed.Load() {
-		return nil, ErrClosed
+		return nil, errors.NewClosedError("MemoryMVStore")
 	}
 
 	vlist, ok := m.data.Load(key)
 	if !ok {
-		return nil, ErrNotFound
+		return nil, errors.NewNotFoundError(key)
 	}
 
 	list := vlist.(*versionList)
@@ -177,13 +178,13 @@ func (m *MemoryMVStore) Get(key string) ([]byte, error) {
 	defer list.mu.RUnlock()
 
 	if len(list.versions) == 0 {
-		return nil, ErrNotFound
+		return nil, errors.NewNotFoundError(key)
 	}
 
 	// 返回最新版本
 	latest := list.versions[len(list.versions)-1]
 	if latest.deleted {
-		return nil, ErrNotFound
+		return nil, errors.NewNotFoundError(key)
 	}
 
 	// 返回值的副本，避免外部修改
@@ -195,7 +196,7 @@ func (m *MemoryMVStore) Get(key string) ([]byte, error) {
 // GetVersion 获取指定 HLC 时间戳的版本
 func (m *MemoryMVStore) GetVersion(key string, hlcTimestamp *clock.HLC) ([]byte, error) {
 	if m.closed.Load() {
-		return nil, ErrClosed
+		return nil, errors.NewClosedError("MemoryMVStore")
 	}
 
 	if hlcTimestamp == nil {
@@ -204,7 +205,7 @@ func (m *MemoryMVStore) GetVersion(key string, hlcTimestamp *clock.HLC) ([]byte,
 
 	vlist, ok := m.data.Load(key)
 	if !ok {
-		return nil, ErrNotFound
+		return nil, errors.NewNotFoundError(key)
 	}
 
 	list := vlist.(*versionList)
@@ -216,7 +217,7 @@ func (m *MemoryMVStore) GetVersion(key string, hlcTimestamp *clock.HLC) ([]byte,
 		v := list.versions[i]
 		if v.timestamp.LessThan(hlcTimestamp) || v.timestamp.Equal(hlcTimestamp) {
 			if v.deleted {
-				return nil, ErrNotFound
+				return nil, errors.NewNotFoundError(key)
 			}
 			result := make([]byte, len(v.value))
 			copy(result, v.value)
@@ -224,13 +225,14 @@ func (m *MemoryMVStore) GetVersion(key string, hlcTimestamp *clock.HLC) ([]byte,
 		}
 	}
 
-	return nil, ErrVersionNotFound
+	version := uint64(hlcTimestamp.PhysicalTime()) // 使用物理时间戳作为版本号
+	return nil, errors.NewVersionNotFoundError(key, version)
 }
 
 // Delete 删除 key
 func (m *MemoryMVStore) Delete(key string) error {
 	if m.closed.Load() {
-		return ErrClosed
+		return errors.NewClosedError("MemoryMVStore")
 	}
 
 	timestamp := m.hlc.Now()
@@ -269,12 +271,13 @@ func (m *MemoryMVStore) Delete(key string) error {
 // Exists 检查 key 是否存在
 func (m *MemoryMVStore) Exists(key string) (bool, error) {
 	if m.closed.Load() {
-		return false, ErrClosed
+		return false, errors.NewClosedError("MemoryMVStore")
 	}
 
 	_, err := m.Get(key)
 	if err != nil {
-		if err == ErrNotFound {
+		// 使用类型断言检查是否为 NotFound 错误
+		if storeErr, ok := err.(*errors.StoreError); ok && storeErr.Code == errors.ErrCodeNotFound {
 			return false, nil
 		}
 		return false, err
@@ -285,7 +288,7 @@ func (m *MemoryMVStore) Exists(key string) (bool, error) {
 // List 列出所有 key
 func (m *MemoryMVStore) List(offset, limit int) ([]string, error) {
 	if m.closed.Load() {
-		return nil, ErrClosed
+		return nil, errors.NewClosedError("MemoryMVStore")
 	}
 
 	m.mu.RLock()
@@ -320,7 +323,7 @@ func (m *MemoryMVStore) List(offset, limit int) ([]string, error) {
 // ListPrefix 列出指定前缀的 key
 func (m *MemoryMVStore) ListPrefix(prefix string, offset, limit int) ([]string, error) {
 	if m.closed.Load() {
-		return nil, ErrClosed
+		return nil, errors.NewClosedError("MemoryMVStore")
 	}
 
 	m.mu.RLock()
@@ -358,7 +361,7 @@ func (m *MemoryMVStore) ListPrefix(prefix string, offset, limit int) ([]string, 
 // GetVersionCount 获取版本数量
 func (m *MemoryMVStore) GetVersionCount(key string) (int, error) {
 	if m.closed.Load() {
-		return 0, ErrClosed
+		return 0, errors.NewClosedError("MemoryMVStore")
 	}
 
 	vlist, ok := m.data.Load(key)
@@ -376,7 +379,7 @@ func (m *MemoryMVStore) GetVersionCount(key string) (int, error) {
 // GetAllVersions 获取所有版本信息
 func (m *MemoryMVStore) GetAllVersions(key string) ([]*VersionInfo, error) {
 	if m.closed.Load() {
-		return nil, ErrClosed
+		return nil, errors.NewClosedError("MemoryMVStore")
 	}
 
 	vlist, ok := m.data.Load(key)
@@ -404,7 +407,7 @@ func (m *MemoryMVStore) GetAllVersions(key string) ([]*VersionInfo, error) {
 // Flush 刷盘
 func (m *MemoryMVStore) Flush() error {
 	if m.closed.Load() {
-		return ErrClosed
+		return errors.NewClosedError("MemoryMVStore")
 	}
 
 	logging.Info("开始刷盘...")
@@ -432,7 +435,7 @@ func (m *MemoryMVStore) Flush() error {
 // CreateSnapshot 创建快照
 func (m *MemoryMVStore) CreateSnapshot() ([]byte, error) {
 	if m.closed.Load() {
-		return nil, ErrClosed
+		return nil, errors.NewClosedError("MemoryMVStore")
 	}
 
 	m.mu.RLock()
@@ -457,7 +460,7 @@ func (m *MemoryMVStore) CreateSnapshot() ([]byte, error) {
 // RestoreFromSnapshot 从快照恢复
 func (m *MemoryMVStore) RestoreFromSnapshot(snapshot []byte) error {
 	if m.closed.Load() {
-		return ErrClosed
+		return errors.NewClosedError("MemoryMVStore")
 	}
 
 	var data map[string][]*versionEntry
@@ -663,7 +666,7 @@ func (m *MemoryMVStore) applyDelete(entry *WALEntry) error {
 // Stats 获取统计信息（实现 StatProvider）
 func (m *MemoryMVStore) Stats() (*Stats, error) {
 	if m.closed.Load() {
-		return nil, ErrClosed
+		return nil, errors.NewClosedError("MemoryMVStore")
 	}
 
 	stats := &Stats{

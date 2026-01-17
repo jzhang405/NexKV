@@ -300,3 +300,53 @@ func TestDefaultTreeCoordinatorConfig(t *testing.T) {
 	assert.True(t, config.AutoDiscovery)
 	assert.True(t, config.EnableSelfHealing)
 }
+
+// TestTreeCoordinator_SingleParentConstraint 测试单父节点约束
+// 验证一个真实节点只能有一个 ParentID
+func TestTreeCoordinator_SingleParentConstraint(t *testing.T) {
+	trans1, err := transport.NewMemoryTransport("node1")
+	require.NoError(t, err)
+
+	trans2, err := transport.NewMemoryTransport("node2")
+	require.NoError(t, err)
+
+	config := DefaultTreeCoordinatorConfig()
+
+	// 创建第一个协调器 node1
+	coordinator1, err := NewTreeCoordinator("node1", "node1:9211", trans1, config)
+	require.NoError(t, err)
+	_ = coordinator1.Start()
+	t.Cleanup(func() { require.NoError(t, coordinator1.Stop()) })
+
+	// 创建第二个协调器 node2
+	coordinator2, err := NewTreeCoordinator("node2", "node2:9211", trans2, config)
+	require.NoError(t, err)
+	_ = coordinator2.Start()
+	t.Cleanup(func() { require.NoError(t, coordinator2.Stop()) })
+
+	// 创建一个共享的子节点信息（模拟全局节点视图）
+	sharedChild := &Node{
+		NodeID:      "child1",
+		Addr:        "child1:9211",
+		ParentID:    "",
+		ChildrenIDs: []string{},
+		Level:       0,
+		Status:      NodeStatusReady,
+	}
+	coordinator1.allNodes["child1"] = sharedChild
+	coordinator2.allNodes["child1"] = sharedChild
+
+	// node1 将 child1 作为子节点（应该成功）
+	err = coordinator1.AddChild("child1")
+	assert.NoError(t, err)
+
+	// 验证 child1 的 ParentID 已设置
+	assert.Equal(t, "node1", sharedChild.ParentID)
+
+	// node2 尝试将 child1 作为子节点（应该失败）
+	err = coordinator2.AddChild("child1")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "已经是")
+	assert.Contains(t, err.Error(), "node1")
+	assert.Contains(t, err.Error(), "不能同时")
+}

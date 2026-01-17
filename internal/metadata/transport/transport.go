@@ -4,7 +4,6 @@ package transport
 
 import (
 	"context"
-	"io"
 	"time"
 )
 
@@ -314,49 +313,3 @@ type Dialer interface {
 	// DialTimeout 建立连接（带超时）
 	DialTimeout(addr string, timeout time.Duration) (Conn, error)
 }
-
-// TransportError 传输层错误
-type TransportError struct {
-	Op      string // 操作类型 (Send、Receive、Accept 等)
-	Addr    string // 目标地址
-	Err     error  // 底层错误
-	tempErr bool   // 是否为临时错误（可重试）
-}
-
-// Error 实现 error 接口
-func (e *TransportError) Error() string {
-	if e.Addr != "" {
-		return e.Op + " " + e.Addr + ": " + e.Err.Error()
-	}
-	return e.Op + ": " + e.Err.Error()
-}
-
-// Unwrap 返回底层错误
-func (e *TransportError) Unwrap() error {
-	return e.Err
-}
-
-// Timeout 判断是否为超时错误
-func (e *TransportError) Timeout() bool {
-	return e.tempErr
-}
-
-// Temporary 判断是否为临时错误
-func (e *TransportError) Temporary() bool {
-	return e.tempErr
-}
-
-// Common errors
-var (
-	// ErrClosed 传输层已关闭
-	ErrClosed = &TransportError{Op: "transport", Err: io.ErrClosedPipe}
-
-	// ErrTimeout 操作超时
-	ErrTimeout = &TransportError{Op: "transport", Err: io.ErrNoProgress}
-
-	// ErrConnectionRefused 连接被拒绝
-	ErrConnectionRefused = &TransportError{Op: "dial", Err: io.ErrNoProgress}
-
-	// ErrNetworkUnreachable 网络不可达
-	ErrNetworkUnreachable = &TransportError{Op: "dial", Err: io.ErrNoProgress}
-)

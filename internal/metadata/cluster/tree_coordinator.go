@@ -443,6 +443,15 @@ func (tc *TreeCoordinator) AddChild(childID string) error {
 		}
 	}
 
+	// 检查 child 是否已经有父节点（确保一个真实节点只能有一个 ParentID）
+	if child, exists := tc.allNodes[childID]; exists {
+		// 如果 child 已经有父节点，且不是当前节点
+		if child.ParentID != "" && child.ParentID != tc.localNode.NodeID {
+			return fmt.Errorf("节点 %s 已经是 %s 的子节点，不能同时作为 %s 的子节点",
+				childID, child.ParentID, tc.localNode.NodeID)
+		}
+	}
+
 	// 添加子节点
 	tc.localNode.ChildrenIDs = append(tc.localNode.ChildrenIDs, childID)
 

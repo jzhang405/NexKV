@@ -255,7 +255,7 @@ func TestMemoryMVStore_GetVersionCount(t *testing.T) {
 
 	// 写入多个版本
 	for i := 0; i < 5; i++ {
-		store.Put("key1", []byte(fmt.Sprintf("value%d", i)))
+		require.NoError(t, store.Put("key1", []byte(fmt.Sprintf("value%d", i))))
 		time.Sleep(5 * time.Millisecond)
 	}
 
@@ -279,9 +279,9 @@ func TestMemoryMVStore_GetAllVersions(t *testing.T) {
 	defer store.Close()
 
 	// 写入多个版本
-	store.Put("key1", []byte("value1"))
-	store.Put("key1", []byte("value2"))
-	store.Put("key1", []byte("value3"))
+	require.NoError(t, store.Put("key1", []byte("value1")))
+	require.NoError(t, store.Put("key1", []byte("value2")))
+	require.NoError(t, store.Put("key1", []byte("value3")))
 
 	// 获取所有版本信息
 	infos, err := store.GetAllVersions("key1")

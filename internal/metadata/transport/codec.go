@@ -213,8 +213,8 @@ type PutMessage struct {
 	Value []byte `msgpack:"value"`
 }
 
-func (m *PutMessage) Type() MessageType { return MessageTypePut }
-func (m *PutMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *PutMessage) Type() MessageType           { return MessageTypePut }
+func (m *PutMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *PutMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *PutMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -226,8 +226,8 @@ type DeleteMessage struct {
 	Key string `msgpack:"key"`
 }
 
-func (m *DeleteMessage) Type() MessageType { return MessageTypeDelete }
-func (m *DeleteMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *DeleteMessage) Type() MessageType           { return MessageTypeDelete }
+func (m *DeleteMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *DeleteMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *DeleteMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -242,8 +242,8 @@ type GetReplyMessage struct {
 	Version uint64 `msgpack:"version"`
 }
 
-func (m *GetReplyMessage) Type() MessageType { return MessageTypeGetReply }
-func (m *GetReplyMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *GetReplyMessage) Type() MessageType           { return MessageTypeGetReply }
+func (m *GetReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *GetReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *GetReplyMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -257,8 +257,8 @@ type PutReplyMessage struct {
 	Version uint64 `msgpack:"version"`
 }
 
-func (m *PutReplyMessage) Type() MessageType { return MessageTypePutReply }
-func (m *PutReplyMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *PutReplyMessage) Type() MessageType           { return MessageTypePutReply }
+func (m *PutReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *PutReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *PutReplyMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -271,8 +271,8 @@ type DeleteReplyMessage struct {
 	Success bool   `msgpack:"success"`
 }
 
-func (m *DeleteReplyMessage) Type() MessageType { return MessageTypeDeleteReply }
-func (m *DeleteReplyMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *DeleteReplyMessage) Type() MessageType           { return MessageTypeDeleteReply }
+func (m *DeleteReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *DeleteReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *DeleteReplyMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -285,13 +285,13 @@ func (m *DeleteReplyMessage) Size() int {
 
 // GossipSyncMessage Gossip 同步消息
 type GossipSyncMessage struct {
-	Version   uint64                 `msgpack:"version"`
-	Metadata  map[string][]byte      `msgpack:"metadata"`
-	Timestamp int64                  `msgpack:"timestamp"`
+	Version   uint64            `msgpack:"version"`
+	Metadata  map[string][]byte `msgpack:"metadata"`
+	Timestamp int64             `msgpack:"timestamp"`
 }
 
-func (m *GossipSyncMessage) Type() MessageType { return MessageTypeGossipSync }
-func (m *GossipSyncMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *GossipSyncMessage) Type() MessageType           { return MessageTypeGossipSync }
+func (m *GossipSyncMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *GossipSyncMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *GossipSyncMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -304,8 +304,8 @@ type GossipSyncReplyMessage struct {
 	Version  uint64 `msgpack:"version"`
 }
 
-func (m *GossipSyncReplyMessage) Type() MessageType { return MessageTypeGossipSyncReply }
-func (m *GossipSyncReplyMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *GossipSyncReplyMessage) Type() MessageType           { return MessageTypeGossipSyncReply }
+func (m *GossipSyncReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *GossipSyncReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *GossipSyncReplyMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -318,8 +318,8 @@ type GossipDigestMessage struct {
 	Digest  map[string]uint64 `msgpack:"digest"`
 }
 
-func (m *GossipDigestMessage) Type() MessageType { return MessageTypeGossipDigest }
-func (m *GossipDigestMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *GossipDigestMessage) Type() MessageType           { return MessageTypeGossipDigest }
+func (m *GossipDigestMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *GossipDigestMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *GossipDigestMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -332,8 +332,8 @@ type GossipDigestReplyMessage struct {
 	Digest  map[string]uint64 `msgpack:"digest"`
 }
 
-func (m *GossipDigestReplyMessage) Type() MessageType { return MessageTypeGossipDigestReply }
-func (m *GossipDigestReplyMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *GossipDigestReplyMessage) Type() MessageType           { return MessageTypeGossipDigestReply }
+func (m *GossipDigestReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *GossipDigestReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *GossipDigestReplyMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -346,16 +346,16 @@ func (m *GossipDigestReplyMessage) Size() int {
 
 // QuorumProposeMessage Quorum 提案消息
 type QuorumProposeMessage struct {
-	ProposalID string      `msgpack:"proposal_id"`
-	Key       string      `msgpack:"key"`
-	Value      []byte      `msgpack:"value"`
-	Operation  string      `msgpack:"operation"` // "put", "delete"
-	Proposer   string      `msgpack:"proposer"`
-	Timestamp  int64       `msgpack:"timestamp"`
+	ProposalID string `msgpack:"proposal_id"`
+	Key        string `msgpack:"key"`
+	Value      []byte `msgpack:"value"`
+	Operation  string `msgpack:"operation"` // "put", "delete"
+	Proposer   string `msgpack:"proposer"`
+	Timestamp  int64  `msgpack:"timestamp"`
 }
 
-func (m *QuorumProposeMessage) Type() MessageType { return MessageTypeQuorumPropose }
-func (m *QuorumProposeMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *QuorumProposeMessage) Type() MessageType           { return MessageTypeQuorumPropose }
+func (m *QuorumProposeMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *QuorumProposeMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *QuorumProposeMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -370,8 +370,8 @@ type QuorumVoteMessage struct {
 	Reason     string `msgpack:"reason,omitempty"`
 }
 
-func (m *QuorumVoteMessage) Type() MessageType { return MessageTypeQuorumVote }
-func (m *QuorumVoteMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *QuorumVoteMessage) Type() MessageType           { return MessageTypeQuorumVote }
+func (m *QuorumVoteMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *QuorumVoteMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *QuorumVoteMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -385,8 +385,8 @@ type QuorumDecideMessage struct {
 	Version    uint64 `msgpack:"version"`
 }
 
-func (m *QuorumDecideMessage) Type() MessageType { return MessageTypeQuorumDecide }
-func (m *QuorumDecideMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *QuorumDecideMessage) Type() MessageType           { return MessageTypeQuorumDecide }
+func (m *QuorumDecideMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *QuorumDecideMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *QuorumDecideMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -399,10 +399,10 @@ func (m *QuorumDecideMessage) Size() int {
 
 // TwoPCPrepareMessage 2PC 准备阶段消息
 type TwoPCPrepareMessage struct {
-	TransactionID string            `msgpack:"transaction_id"`
-	Participants  []string          `msgpack:"participants"`
-	Operations    []Operation       `msgpack:"operations"`
-	Timeout       int64             `msgpack:"timestamp"`
+	TransactionID string      `msgpack:"transaction_id"`
+	Participants  []string    `msgpack:"participants"`
+	Operations    []Operation `msgpack:"operations"`
+	Timeout       int64       `msgpack:"timestamp"`
 }
 
 // Operation 操作定义
@@ -412,8 +412,8 @@ type Operation struct {
 	Value []byte `msgpack:"value,omitempty"`
 }
 
-func (m *TwoPCPrepareMessage) Type() MessageType { return MessageType2PCPrepare }
-func (m *TwoPCPrepareMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *TwoPCPrepareMessage) Type() MessageType           { return MessageType2PCPrepare }
+func (m *TwoPCPrepareMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *TwoPCPrepareMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *TwoPCPrepareMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -428,8 +428,8 @@ type TwoPCPrepareReplyMessage struct {
 	Reason        string `msgpack:"reason,omitempty"`
 }
 
-func (m *TwoPCPrepareReplyMessage) Type() MessageType { return MessageType2PCPrepareReply }
-func (m *TwoPCPrepareReplyMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *TwoPCPrepareReplyMessage) Type() MessageType           { return MessageType2PCPrepareReply }
+func (m *TwoPCPrepareReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *TwoPCPrepareReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *TwoPCPrepareReplyMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -441,8 +441,8 @@ type TwoPCCommitMessage struct {
 	TransactionID string `msgpack:"transaction_id"`
 }
 
-func (m *TwoPCCommitMessage) Type() MessageType { return MessageType2PCCommit }
-func (m *TwoPCCommitMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *TwoPCCommitMessage) Type() MessageType           { return MessageType2PCCommit }
+func (m *TwoPCCommitMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *TwoPCCommitMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *TwoPCCommitMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -455,8 +455,8 @@ type TwoPCRollbackMessage struct {
 	Reason        string `msgpack:"reason,omitempty"`
 }
 
-func (m *TwoPCRollbackMessage) Type() MessageType { return MessageType2PCRollback }
-func (m *TwoPCRollbackMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *TwoPCRollbackMessage) Type() MessageType           { return MessageType2PCRollback }
+func (m *TwoPCRollbackMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *TwoPCRollbackMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *TwoPCRollbackMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -470,8 +470,8 @@ type TwoPCCommitReplyMessage struct {
 	Success       bool   `msgpack:"success"`
 }
 
-func (m *TwoPCCommitReplyMessage) Type() MessageType { return MessageType2PCCommitReply }
-func (m *TwoPCCommitReplyMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *TwoPCCommitReplyMessage) Type() MessageType           { return MessageType2PCCommitReply }
+func (m *TwoPCCommitReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *TwoPCCommitReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *TwoPCCommitReplyMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -485,8 +485,8 @@ type TwoPCRollbackReplyMessage struct {
 	Success       bool   `msgpack:"success"`
 }
 
-func (m *TwoPCRollbackReplyMessage) Type() MessageType { return MessageType2PCRollbackReply }
-func (m *TwoPCRollbackReplyMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *TwoPCRollbackReplyMessage) Type() MessageType           { return MessageType2PCRollbackReply }
+func (m *TwoPCRollbackReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *TwoPCRollbackReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *TwoPCRollbackReplyMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -499,13 +499,13 @@ func (m *TwoPCRollbackReplyMessage) Size() int {
 
 // NodePingMessage 节点心跳消息
 type NodePingMessage struct {
-	NodeID   string `msgpack:"node_id"`
-	Sequence int64  `msgpack:"sequence"`
-	Timestamp int64 `msgpack:"timestamp"`
+	NodeID    string `msgpack:"node_id"`
+	Sequence  int64  `msgpack:"sequence"`
+	Timestamp int64  `msgpack:"timestamp"`
 }
 
-func (m *NodePingMessage) Type() MessageType { return MessageTypeNodePing }
-func (m *NodePingMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *NodePingMessage) Type() MessageType           { return MessageTypeNodePing }
+func (m *NodePingMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *NodePingMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *NodePingMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -519,8 +519,8 @@ type NodePongMessage struct {
 	Status   string `msgpack:"status"` // "ready", "busy", "leaving"
 }
 
-func (m *NodePongMessage) Type() MessageType { return MessageTypeNodePong }
-func (m *NodePongMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *NodePongMessage) Type() MessageType           { return MessageTypeNodePong }
+func (m *NodePongMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *NodePongMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *NodePongMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -529,14 +529,14 @@ func (m *NodePongMessage) Size() int {
 
 // NodeJoinMessage 节点加入消息
 type NodeJoinMessage struct {
-	NodeID    string `msgpack:"node_id"`
-	Addr      string `msgpack:"addr"`
-	Role      string `msgpack:"role"` // "parent", "child"
-	ParentID  string `msgpack:"parent_id,omitempty"`
+	NodeID   string `msgpack:"node_id"`
+	Addr     string `msgpack:"addr"`
+	Role     string `msgpack:"role"` // "parent", "child"
+	ParentID string `msgpack:"parent_id,omitempty"`
 }
 
-func (m *NodeJoinMessage) Type() MessageType { return MessageTypeNodeJoin }
-func (m *NodeJoinMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *NodeJoinMessage) Type() MessageType           { return MessageTypeNodeJoin }
+func (m *NodeJoinMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *NodeJoinMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *NodeJoinMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -549,8 +549,8 @@ type NodeLeaveMessage struct {
 	Reason string `msgpack:"reason,omitempty"`
 }
 
-func (m *NodeLeaveMessage) Type() MessageType { return MessageTypeNodeLeave }
-func (m *NodeLeaveMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *NodeLeaveMessage) Type() MessageType           { return MessageTypeNodeLeave }
+func (m *NodeLeaveMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *NodeLeaveMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *NodeLeaveMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -563,8 +563,8 @@ type NodeSyncMessage struct {
 	Metadata map[string][]byte `msgpack:"metadata"`
 }
 
-func (m *NodeSyncMessage) Type() MessageType { return MessageTypeNodeSync }
-func (m *NodeSyncMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *NodeSyncMessage) Type() MessageType           { return MessageTypeNodeSync }
+func (m *NodeSyncMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *NodeSyncMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *NodeSyncMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -580,8 +580,8 @@ type ClusterStatusMessage struct {
 	NodeID string `msgpack:"node_id"`
 }
 
-func (m *ClusterStatusMessage) Type() MessageType { return MessageTypeClusterStatus }
-func (m *ClusterStatusMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *ClusterStatusMessage) Type() MessageType           { return MessageTypeClusterStatus }
+func (m *ClusterStatusMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *ClusterStatusMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *ClusterStatusMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -603,8 +603,8 @@ type NodeInfo struct {
 	Level    int    `msgpack:"level"`
 }
 
-func (m *ClusterStatusReplyMessage) Type() MessageType { return MessageTypeClusterStatusReply }
-func (m *ClusterStatusReplyMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *ClusterStatusReplyMessage) Type() MessageType           { return MessageTypeClusterStatusReply }
+func (m *ClusterStatusReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *ClusterStatusReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *ClusterStatusReplyMessage) Size() int {
 	bytes, _ := m.Marshal()
@@ -618,8 +618,8 @@ type LeaderElectionMessage struct {
 	Priority   int    `msgpack:"priority"`
 }
 
-func (m *LeaderElectionMessage) Type() MessageType { return MessageTypeLeaderElection }
-func (m *LeaderElectionMessage) Marshal() ([]byte, error) { return msgpack.Marshal(m) }
+func (m *LeaderElectionMessage) Type() MessageType           { return MessageTypeLeaderElection }
+func (m *LeaderElectionMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *LeaderElectionMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *LeaderElectionMessage) Size() int {
 	bytes, _ := m.Marshal()

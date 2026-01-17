@@ -191,7 +191,7 @@ func (f *Frame) Unmarshal(data []byte) error {
 func (f *Frame) verifyChecksum(data []byte) bool {
 	// 重新计算校验和：Magic(0:4) + Type(4:6) + CodecType(6:8) + Length(8:12) + Data(16:end)
 	// 注意：不包括 CRC32 字段本身(12:16)
-	crc := crc32.ChecksumIEEE(data[16:]) // Data
+	crc := crc32.ChecksumIEEE(data[16:])                 // Data
 	crc = crc32.Update(crc, crc32.IEEETable, data[0:12]) // Magic + Type + CodecType + Length
 	calculated := crc
 

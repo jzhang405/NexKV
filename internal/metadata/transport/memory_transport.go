@@ -58,24 +58,24 @@ type MemoryTransport struct {
 //
 // 表示一个虚拟节点
 type memoryNode struct {
-	addr       string
-	sendCh     chan Message
-	recvCh     chan Message
-	closeOnce  sync.Once
-	closeCh    chan struct{}
-	closed     atomic.Bool
+	addr      string
+	sendCh    chan Message
+	recvCh    chan Message
+	closeOnce sync.Once
+	closeCh   chan struct{}
+	closed    atomic.Bool
 }
 
 // NewMemoryTransport 创建内存传输
 func NewMemoryTransport(localAddr string) (*MemoryTransport, error) {
 	t := &MemoryTransport{
-		config:             DefaultTransportConfig(),
-		codec:              NewMessagePackCodec(),
-		nodes:              make(map[string]*memoryNode),
-		channels:           make(map[string]chan Message),
-		disconnectedNodes:  make(map[string]bool),
-		stopCh:             make(chan struct{}),
-		localAddr:          localAddr,
+		config:            DefaultTransportConfig(),
+		codec:             NewMessagePackCodec(),
+		nodes:             make(map[string]*memoryNode),
+		channels:          make(map[string]chan Message),
+		disconnectedNodes: make(map[string]bool),
+		stopCh:            make(chan struct{}),
+		localAddr:         localAddr,
 	}
 
 	// 注册本地节点
@@ -224,9 +224,9 @@ func (t *MemoryTransport) registerNode(addr string) *memoryNode {
 	}
 
 	node = &memoryNode{
-		addr:   addr,
-		sendCh: make(chan Message, 1024),
-		recvCh: make(chan Message, 1024),
+		addr:    addr,
+		sendCh:  make(chan Message, 1024),
+		recvCh:  make(chan Message, 1024),
 		closeCh: make(chan struct{}),
 	}
 

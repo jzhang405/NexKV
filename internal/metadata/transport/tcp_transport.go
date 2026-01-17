@@ -38,20 +38,20 @@ type TCPTransport struct {
 	acceptWg   sync.WaitGroup
 
 	// 客户端连接池
-	connPool   *connPool
-	poolWg     sync.WaitGroup
-	poolDone   chan struct{}
+	connPool *connPool
+	poolWg   sync.WaitGroup
+	poolDone chan struct{}
 
 	// 接收通道
 	recvCh   chan Message
 	recvOnce sync.Once
 
 	// 生命周期
-	started   atomic.Bool
-	stopped   atomic.Bool
-	stopCh    chan struct{}
-	stopOnce  sync.Once
-	stopWg    sync.WaitGroup
+	started  atomic.Bool
+	stopped  atomic.Bool
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	stopWg   sync.WaitGroup
 
 	// 本地节点地址
 	localAddr string
@@ -83,13 +83,13 @@ type tcpConn struct {
 // 使用默认配置
 func NewTCPTransport(listenAddr string) (*TCPTransport, error) {
 	return NewTCPTransportWithConfig(&TransportConfig{
-		ListenAddr:         listenAddr,
-		MaxMessageSize:     1024 * 1024 * 100, // 100MB
-		ReadTimeout:        30 * time.Second,
-		WriteTimeout:       30 * time.Second,
-		KeepAliveInterval:  10 * time.Second,
-		KeepAliveTimeout:   30 * time.Second,
-		BufferSize:         4096,
+		ListenAddr:        listenAddr,
+		MaxMessageSize:    1024 * 1024 * 100, // 100MB
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		KeepAliveInterval: 10 * time.Second,
+		KeepAliveTimeout:  30 * time.Second,
+		BufferSize:        4096,
 	})
 }
 
@@ -107,9 +107,9 @@ func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 		connPool: &connPool{
 			conns: make(map[string]*tcpConn),
 		},
-		poolDone: make(chan struct{}),
-		recvCh:   make(chan Message, 1024),
-		stopCh:   make(chan struct{}),
+		poolDone:  make(chan struct{}),
+		recvCh:    make(chan Message, 1024),
+		stopCh:    make(chan struct{}),
 		localAddr: config.ListenAddr,
 	}
 

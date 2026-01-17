@@ -84,17 +84,17 @@ const (
 
 const (
 	// 元数据操作消息 (100-149)
-	MessageTypeGet        MessageType = 100 // 获取元数据
-	MessageTypePut        MessageType = 101 // 更新元数据
-	MessageTypeDelete     MessageType = 102 // 删除元数据
-	MessageTypeGetReply   MessageType = 103 // Get 响应
-	MessageTypePutReply   MessageType = 104 // Put 响应
+	MessageTypeGet         MessageType = 100 // 获取元数据
+	MessageTypePut         MessageType = 101 // 更新元数据
+	MessageTypeDelete      MessageType = 102 // 删除元数据
+	MessageTypeGetReply    MessageType = 103 // Get 响应
+	MessageTypePutReply    MessageType = 104 // Put 响应
 	MessageTypeDeleteReply MessageType = 105 // Delete 响应
 
 	// Gossip 协议消息 (150-199)
-	MessageTypeGossipSync      MessageType = 150 // Gossip 同步请求
-	MessageTypeGossipSyncReply MessageType = 151 // Gossip 同步响应
-	MessageTypeGossipDigest    MessageType = 152 // Gossip 摘要
+	MessageTypeGossipSync        MessageType = 150 // Gossip 同步请求
+	MessageTypeGossipSyncReply   MessageType = 151 // Gossip 同步响应
+	MessageTypeGossipDigest      MessageType = 152 // Gossip 摘要
 	MessageTypeGossipDigestReply MessageType = 153 // Gossip 摘要响应
 
 	// Quorum 协议消息 (200-249)
@@ -103,24 +103,24 @@ const (
 	MessageTypeQuorumDecide  MessageType = 202 // Quorum 决策
 
 	// 2PC 协议消息 (250-299)
-	MessageType2PCPrepare    MessageType = 250 // 2PC 准备阶段
-	MessageType2PCPrepareReply MessageType = 251 // 2PC 准备响应
-	MessageType2PCCommit     MessageType = 252 // 2PC 提交阶段
-	MessageType2PCRollback   MessageType = 253 // 2PC 回滚阶段
-	MessageType2PCCommitReply MessageType = 254 // 2PC 提交响应
+	MessageType2PCPrepare       MessageType = 250 // 2PC 准备阶段
+	MessageType2PCPrepareReply  MessageType = 251 // 2PC 准备响应
+	MessageType2PCCommit        MessageType = 252 // 2PC 提交阶段
+	MessageType2PCRollback      MessageType = 253 // 2PC 回滚阶段
+	MessageType2PCCommitReply   MessageType = 254 // 2PC 提交响应
 	MessageType2PCRollbackReply MessageType = 255 // 2PC 回滚响应
 
 	// 节点管理消息 (300-349)
-	MessageTypeNodePing      MessageType = 300 // 节点心跳
-	MessageTypeNodePong      MessageType = 301 // 心跳响应
-	MessageTypeNodeJoin      MessageType = 302 // 节点加入
-	MessageTypeNodeLeave     MessageType = 303 // 节点离开
-	MessageTypeNodeSync      MessageType = 304 // 节点同步
+	MessageTypeNodePing  MessageType = 300 // 节点心跳
+	MessageTypeNodePong  MessageType = 301 // 心跳响应
+	MessageTypeNodeJoin  MessageType = 302 // 节点加入
+	MessageTypeNodeLeave MessageType = 303 // 节点离开
+	MessageTypeNodeSync  MessageType = 304 // 节点同步
 
 	// 集群管理消息 (350-399)
-	MessageTypeClusterStatus   MessageType = 350 // 集群状态查询
+	MessageTypeClusterStatus      MessageType = 350 // 集群状态查询
 	MessageTypeClusterStatusReply MessageType = 351 // 集群状态响应
-	MessageTypeLeaderElection MessageType = 352 // Leader 选举
+	MessageTypeLeaderElection     MessageType = 352 // Leader 选举
 )
 
 // String 返回消息类型的字符串表示
@@ -237,13 +237,13 @@ type TransportConfig struct {
 // DefaultTransportConfig 返回默认配置
 func DefaultTransportConfig() *TransportConfig {
 	return &TransportConfig{
-		ListenAddr:         "0.0.0.0:9211",
-		MaxMessageSize:     1024 * 1024 * 100, // 100MB
-		ReadTimeout:        30 * time.Second,
-		WriteTimeout:       30 * time.Second,
-		KeepAliveInterval:  10 * time.Second,
-		KeepAliveTimeout:   30 * time.Second,
-		BufferSize:         4096,
+		ListenAddr:        "0.0.0.0:9211",
+		MaxMessageSize:    1024 * 1024 * 100, // 100MB
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		KeepAliveInterval: 10 * time.Second,
+		KeepAliveTimeout:  30 * time.Second,
+		BufferSize:        4096,
 	}
 }
 

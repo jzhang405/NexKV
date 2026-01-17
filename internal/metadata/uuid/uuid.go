@@ -72,12 +72,12 @@ func GetVariant(uuid []byte) byte {
 
 	v := uuid[8] & 0xC0 // 取高 2 位
 
-	switch {
-	case v == 0x80:
+	switch v {
+	case 0x80:
 		return VariantRFC4122
-	case v == 0xC0:
+	case 0xC0:
 		return VariantMicrosoft
-	case v == 0xE0:
+	case 0xE0:
 		return VariantFuture
 	default:
 		return VariantNCS

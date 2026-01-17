@@ -18,15 +18,20 @@ import (
 )
 
 // WAL 文件格式:
-// [Header 12 bytes][Entry N bytes][Checksum 4 bytes]...
+// [Header 12 bytes][Entry Data N bytes][Checksum 4 bytes]...
 //
-// Header 格式:
-// - Type: 1 byte (WALType)
-// - KeyLen: 4 bytes (key 长度)
-// - ValueLen: 4 bytes (value 长度)
-// - TimestampSize: 2 bytes (HLC 序列化后大小)
+// Header 格式 (固定 12 字节):
+// - Type:         2 bytes  (WALType, uint16)                    [0:2]
+// - KeyLen:       4 bytes  (key 长度)                            [2:6]
+// - ValueLen:     4 bytes  (value 长度)                          [6:10]
+// - TimestampLen: 2 bytes  (HLC 数据长度，值为 10)               [10:12]
 //
-// 总 Header: 1 + 4 + 4 + 2 = 11 bytes，加上对齐到 4 字节 = 12 bytes
+// Entry Data 格式 (变长，紧接 Header):
+// - Timestamp:    10 bytes (HLC 序列化: 8字节 pt + 2字节 c)
+// - Key:          KeyLen  bytes
+// - Value:        ValueLen bytes
+//
+// 总 Header: 2 + 4 + 4 + 2 = 12 bytes (4 字节对齐)
 
 const (
 	walHeaderSize = 12
@@ -63,7 +68,7 @@ func NewMetadataWAL(path string) (*MetadataWAL, error) {
 	// 获取当前文件大小
 	stat, err := file.Stat()
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, &StoreError{Code: ErrCodeInternal, Message: "获取 WAL 文件信息失败", Err: err}
 	}
 
@@ -146,10 +151,10 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 		}
 
 		// 解析 Header
-		typ := WALType(header[0])
-		keyLen := binary.BigEndian.Uint32(header[1:5])
-		valueLen := binary.BigEndian.Uint32(header[5:9])
-		timestampSize := binary.BigEndian.Uint16(header[9:11])
+		typ := WALType(binary.BigEndian.Uint16(header[0:2]))
+		keyLen := binary.BigEndian.Uint32(header[2:6])
+		valueLen := binary.BigEndian.Uint32(header[6:10])
+		timestampSize := binary.BigEndian.Uint16(header[10:12])
 
 		// 读取 Data (修复类型转换)
 		dataSize := uint32(keyLen) + uint32(valueLen) + uint32(timestampSize)
@@ -266,10 +271,10 @@ func (w *MetadataWAL) encodeEntry(entry *WALEntry) ([]byte, error) {
 
 	// 构建 Header
 	header := make([]byte, walHeaderSize)
-	header[0] = byte(entry.Type)
-	binary.BigEndian.PutUint32(header[1:5], uint32(len(entry.Key)))
-	binary.BigEndian.PutUint32(header[5:9], uint32(len(entry.Value)))
-	binary.BigEndian.PutUint16(header[9:11], uint16(len(timestampData)))
+	binary.BigEndian.PutUint16(header[0:2], uint16(entry.Type))
+	binary.BigEndian.PutUint32(header[2:6], uint32(len(entry.Key)))
+	binary.BigEndian.PutUint32(header[6:10], uint32(len(entry.Value)))
+	binary.BigEndian.PutUint16(header[10:12], uint16(len(timestampData)))
 
 	// 构建 Data
 	data := make([]byte, 0, walHeaderSize+len(timestampData)+len(entry.Key)+len(entry.Value))

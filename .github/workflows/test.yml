@@ -1,0 +1,110 @@
+# NexKV CI 工作流
+# 在 push 和 pull request 时自动运行测试
+
+name: Test
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.21', '1.22', '1.23']
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Go 环境
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: 显示 Go 版本
+        run: go version
+
+      - name: 下载依赖
+        run: |
+          go mod download
+          go mod verify
+
+      - name: 运行测试
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: 生成覆盖率报告
+        run: go tool cover -html=coverage.out -o coverage.html
+
+      - name: 显示覆盖率
+        run: go tool cover -func=coverage.out
+
+      - name: 上传覆盖率报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report-go-${{ matrix.go-version }}
+          path: |
+            coverage.out
+            coverage.html
+
+      - name: 运行 go vet
+        run: go vet ./...
+
+      - name: 检查代码格式
+        run: |
+          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
+            echo "以下文件需要格式化:"
+            gofmt -s -l .
+            exit 1
+          fi
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Go 环境
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: 运行 golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.21', '1.22', '1.23']
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Go 环境
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: 编译项目
+        run: |
+          go build -v -ldflags="-s -w" -o bin/nexkv ./cmd/nexkv
+          go build -v -ldflags="-s -w" -o bin/nexkd ./cmd/nexkd
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexkv-${{ matrix.os }}-go${{ matrix.go-version }}
+          path: bin/

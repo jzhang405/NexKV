@@ -488,7 +488,7 @@ func BenchmarkMemoryMVStore_Get(b *testing.B) {
 
 	// 预填充数据
 	for i := 0; i < 1000; i++ {
-		store.Put(fmt.Sprintf("key%d", i), []byte(fmt.Sprintf("value%d", i)))
+		_ = store.Put(fmt.Sprintf("key%d", i), []byte(fmt.Sprintf("value%d", i)))
 	}
 
 	b.ResetTimer()

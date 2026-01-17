@@ -140,20 +140,24 @@ func TestMemoryMVStore_GetVersion(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, infos, 3)
 
-	// 最新版本是 value3
+	// 最新版本是 value3（最后一个版本）
 	value, err := store.Get("key1")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("value3"), value)
 
-	// 获取历史版本 - 使用实际的时间戳
-	// infos[0] 是 value1, infos[1] 是 value2, infos[2] 是 value3
-	value, err = store.GetVersion("key1", infos[1].Timestamp)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("value2"), value)
+	// 验证版本号递增
+	assert.Greater(t, infos[1].Version, infos[0].Version)
+	assert.Greater(t, infos[2].Version, infos[1].Version)
 
+	// 获取历史版本 - 使用第一个版本（最旧）
 	value, err = store.GetVersion("key1", infos[0].Timestamp)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("value1"), value)
+
+	// 获取中间版本 - 使用第二个版本
+	value, err = store.GetVersion("key1", infos[1].Timestamp)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("value2"), value)
 
 	// 测试 nil 时间戳应该返回最新版本
 	value, err = store.GetVersion("key1", nil)

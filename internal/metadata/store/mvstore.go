@@ -106,7 +106,7 @@ type WALEntry struct {
 }
 
 // WALType WAL 操作类型
-type WALType uint8
+type WALType uint16
 
 const (
 	// WALTypePut 写入操作

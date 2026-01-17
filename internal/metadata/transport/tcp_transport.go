@@ -1,0 +1,582 @@
+// Package transport TCP 传输实现
+//
+// 核心特性:
+//   - 自定义帧格式 (13 字节头 + Data)
+//   - MessagePack 序列化
+//   - 连接池管理
+//   - 并发安全
+package transport
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+)
+
+// TCPTransport TCP 传输实现
+//
+// 实现了基于 TCP 的网络传输层，支持：
+//   - 双向通信（服务端 + 客户端）
+//   - 连接池复用
+//   - 心跳保活
+//   - 优雅关闭
+type TCPTransport struct {
+	// 配置
+	config *TransportConfig
+	codec  Codec
+
+	// 服务端
+	listener   net.Listener
+	acceptCh   chan *tcpConn
+	acceptDone chan struct{}
+	acceptWg   sync.WaitGroup
+
+	// 客户端连接池
+	connPool *connPool
+	poolWg   sync.WaitGroup
+	poolDone chan struct{}
+
+	// 接收通道
+	recvCh   chan Message
+	recvOnce sync.Once
+
+	// 生命周期
+	started  atomic.Bool
+	stopped  atomic.Bool
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	stopWg   sync.WaitGroup
+
+	// 本地节点地址
+	localAddr string
+}
+
+// connPool 连接池
+//
+// 管理到远端节点的连接复用
+type connPool struct {
+	mu    sync.RWMutex
+	conns map[string]*tcpConn // addr -> conn
+}
+
+// tcpConn TCP 连接包装
+//
+// 封装 net.Conn 并添加读写超时
+type tcpConn struct {
+	conn       net.Conn
+	remoteAddr string
+	lastUsed   atomic.Int64 // 最后使用时间（Unix timestamp）
+	reader     *MessageReader
+	writer     *MessageWriter
+	closeOnce  sync.Once
+	closeCh    chan struct{}
+}
+
+// NewTCPTransport 创建 TCP 传输
+//
+// 使用默认配置
+func NewTCPTransport(listenAddr string) (*TCPTransport, error) {
+	return NewTCPTransportWithConfig(&TransportConfig{
+		ListenAddr:        listenAddr,
+		MaxMessageSize:    1024 * 1024 * 100, // 100MB
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		KeepAliveInterval: 10 * time.Second,
+		KeepAliveTimeout:  30 * time.Second,
+		BufferSize:        4096,
+	})
+}
+
+// NewTCPTransportWithConfig 创建 TCP 传输（自定义配置）
+func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
+	if config == nil {
+		config = DefaultTransportConfig()
+	}
+
+	t := &TCPTransport{
+		config:     config,
+		codec:      NewMessagePackCodec(),
+		acceptCh:   make(chan *tcpConn, 128),
+		acceptDone: make(chan struct{}),
+		connPool: &connPool{
+			conns: make(map[string]*tcpConn),
+		},
+		poolDone:  make(chan struct{}),
+		recvCh:    make(chan Message, 1024),
+		stopCh:    make(chan struct{}),
+		localAddr: config.ListenAddr,
+	}
+
+	return t, nil
+}
+
+// Start 启动传输层
+//
+// 启动监听器和连接池管理器
+func (t *TCPTransport) Start() error {
+	if !t.started.CompareAndSwap(false, true) {
+		return fmt.Errorf("传输层已经启动")
+	}
+
+	logging.Infof("启动 TCP 传输层，监听地址: %s", t.config.ListenAddr)
+
+	// 启动监听器
+	if err := t.startListener(); err != nil {
+		t.started.Store(false)
+		return fmt.Errorf("启动监听器失败: %w", err)
+	}
+
+	// 启动连接池管理器
+	t.startConnPoolManager()
+
+	logging.Infof("TCP 传输层启动成功，监听地址: %s", t.config.ListenAddr)
+	return nil
+}
+
+// startListener 启动监听器
+func (t *TCPTransport) startListener() error {
+	listener, err := net.Listen("tcp", t.config.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("监听失败: %w", err)
+	}
+
+	t.listener = listener
+
+	t.acceptWg.Add(1)
+	go t.acceptLoop()
+
+	return nil
+}
+
+// acceptLoop 接受连接循环
+func (t *TCPTransport) acceptLoop() {
+	defer t.acceptWg.Done()
+	defer close(t.acceptDone)
+
+	logging.Info("开始接受连接...")
+
+	for {
+		conn, err := t.listener.Accept()
+		if err != nil {
+			select {
+			case <-t.stopCh:
+				// 正常关闭
+				logging.Info("监听器已关闭")
+				return
+			default:
+				logging.Errorf("接受连接失败: %v", err)
+				continue
+			}
+		}
+
+		// 包装连接
+		wrappedConn := t.wrapConn(conn)
+		if wrappedConn == nil {
+			_ = conn.Close()
+			continue
+		}
+
+		// 添加到连接池
+		t.addConnToPool(wrappedConn)
+
+		// 启动接收协程
+		t.stopWg.Add(1)
+		go t.handleConn(wrappedConn)
+
+		logging.Debugf("接受新连接: %s", wrappedConn.remoteAddr)
+	}
+}
+
+// wrapConn 包装连接
+func (t *TCPTransport) wrapConn(conn net.Conn) *tcpConn {
+	remoteAddr := conn.RemoteAddr().String()
+
+	// 设置 TCP 选项
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		// 设置保活
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(t.config.KeepAliveInterval)
+
+		// 设置读写超时
+		_ = conn.SetDeadline(time.Now().Add(t.config.ReadTimeout))
+	}
+
+	return &tcpConn{
+		conn:       conn,
+		remoteAddr: remoteAddr,
+		reader:     NewMessageReader(conn, t.codec),
+		writer:     NewMessageWriter(conn, t.codec),
+		closeCh:    make(chan struct{}),
+	}
+}
+
+// handleConn 处理连接
+func (t *TCPTransport) handleConn(conn *tcpConn) {
+	defer t.stopWg.Done()
+	defer func() {
+		// 连接关闭时从池中移除
+		t.removeConnFromPool(conn.remoteAddr)
+		_ = conn.Close()
+	}()
+
+	logging.Debugf("开始处理连接: %s", conn.remoteAddr)
+
+	for {
+		select {
+		case <-t.stopCh:
+			logging.Debugf("传输层停止，关闭连接: %s", conn.remoteAddr)
+			return
+		case <-conn.closeCh:
+			logging.Debugf("连接已关闭: %s", conn.remoteAddr)
+			return
+		default:
+		}
+
+		// 设置读取超时
+		if err := conn.conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout)); err != nil {
+			logging.Errorf("设置读超时失败: %v", err)
+			return
+		}
+
+		// 读取消息
+		msg, err := conn.reader.ReadMessage()
+		if err != nil {
+			if err != io.EOF && !isTimeoutError(err) {
+				logging.Errorf("读取消息失败: %v", err)
+			}
+			return
+		}
+
+		// 更新最后使用时间
+		conn.lastUsed.Store(time.Now().Unix())
+
+		// 发送到接收通道
+		select {
+		case t.recvCh <- msg:
+		case <-t.stopCh:
+			return
+		case <-time.After(5 * time.Second):
+			logging.Errorf("接收通道阻塞，消息丢弃")
+			return
+		}
+
+		logging.Debugf("接收消息: %s from %s", msg.Type(), conn.remoteAddr)
+	}
+}
+
+// Stop 停止传输层
+//
+// 优雅关闭所有连接和监听器
+func (t *TCPTransport) Stop() error {
+	if !t.stopped.CompareAndSwap(false, true) {
+		return nil // 已经停止
+	}
+
+	t.stopOnce.Do(func() {
+		logging.Info("停止 TCP 传输层...")
+
+		// 关闭监听器
+		if t.listener != nil {
+			_ = t.listener.Close()
+			t.acceptWg.Wait()
+			logging.Info("监听器已关闭")
+		}
+
+		// 关闭停止信号
+		close(t.stopCh)
+
+		// 关闭连接池
+		close(t.poolDone)
+
+		// 关闭所有连接
+		t.closeAllConns()
+
+		// 等待所有协程退出
+		t.stopWg.Wait()
+		t.poolWg.Wait()
+
+		// 关闭接收通道
+		t.recvOnce.Do(func() {
+			close(t.recvCh)
+		})
+
+		logging.Info("TCP 传输层已停止")
+	})
+
+	return nil
+}
+
+// Close 关闭传输层
+//
+// Stop 的别名，为了兼容 Transport 接口
+func (t *TCPTransport) Close() error {
+	return t.Stop()
+}
+
+// Send 发送消息到指定节点
+//
+// 阻塞直到消息发送成功或失败
+func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message) error {
+	if !t.started.Load() {
+		return fmt.Errorf("传输层未启动")
+	}
+
+	// 获取或创建连接
+	conn, err := t.getOrCreateConn(addr)
+	if err != nil {
+		return fmt.Errorf("获取连接失败: %w", err)
+	}
+
+	// 设置写入超时
+	deadline := time.Now().Add(t.config.WriteTimeout)
+	if err := conn.conn.SetWriteDeadline(deadline); err != nil {
+		return fmt.Errorf("设置写超时失败: %w", err)
+	}
+
+	// 发送消息
+	if err := conn.writer.WriteMessage(msg); err != nil {
+		// 发送失败，关闭连接
+		_ = conn.Close()
+		t.removeConnFromPool(addr)
+		return fmt.Errorf("发送消息失败: %w", err)
+	}
+
+	// 更新最后使用时间
+	conn.lastUsed.Store(time.Now().Unix())
+
+	logging.Debugf("发送消息: %s to %s", msg.Type(), addr)
+	return nil
+}
+
+// Receive 返回接收消息的通道
+//
+// 调用者需要持续从通道读取消息
+func (t *TCPTransport) Receive() <-chan Message {
+	return t.recvCh
+}
+
+// ========================================
+// 连接池管理
+// ========================================
+
+// getOrCreateConn 获取或创建连接
+func (t *TCPTransport) getOrCreateConn(addr string) (*tcpConn, error) {
+	// 先从池中查找
+	conn := t.getConnFromPool(addr)
+	if conn != nil && !conn.isClosed() {
+		return conn, nil
+	}
+
+	// 创建新连接
+	return t.dialConn(addr)
+}
+
+// dialConn 拨号创建连接
+func (t *TCPTransport) dialConn(addr string) (*tcpConn, error) {
+	logging.Debugf("拨号连接: %s", addr)
+
+	// 建立连接
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("拨号失败: %w", err)
+	}
+
+	// 包装连接
+	wrappedConn := t.wrapConn(conn)
+	if wrappedConn == nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("包装连接失败")
+	}
+
+	// 添加到池
+	t.addConnToPool(wrappedConn)
+
+	return wrappedConn, nil
+}
+
+// addConnToPool 添加连接到池
+func (t *TCPTransport) addConnToPool(conn *tcpConn) {
+	t.connPool.mu.Lock()
+	defer t.connPool.mu.Unlock()
+
+	// 关闭旧连接
+	if oldConn, exists := t.connPool.conns[conn.remoteAddr]; exists {
+		_ = oldConn.Close()
+	}
+
+	t.connPool.conns[conn.remoteAddr] = conn
+}
+
+// getConnFromPool 从池中获取连接
+func (t *TCPTransport) getConnFromPool(addr string) *tcpConn {
+	t.connPool.mu.RLock()
+	defer t.connPool.mu.RUnlock()
+
+	return t.connPool.conns[addr]
+}
+
+// removeConnFromPool 从池中移除连接
+func (t *TCPTransport) removeConnFromPool(addr string) {
+	t.connPool.mu.Lock()
+	defer t.connPool.mu.Unlock()
+
+	if conn, exists := t.connPool.conns[addr]; exists {
+		delete(t.connPool.conns, addr)
+		_ = conn.Close()
+	}
+}
+
+// closeAllConns 关闭所有连接
+func (t *TCPTransport) closeAllConns() {
+	t.connPool.mu.Lock()
+	defer t.connPool.mu.Unlock()
+
+	for addr, conn := range t.connPool.conns {
+		_ = conn.Close()
+		delete(t.connPool.conns, addr)
+	}
+}
+
+// startConnPoolManager 启动连接池管理器
+//
+// 定期清理空闲连接
+func (t *TCPTransport) startConnPoolManager() {
+	t.poolWg.Add(1)
+	go func() {
+		defer t.poolWg.Done()
+
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				t.cleanupIdleConns()
+			case <-t.poolDone:
+				return
+			}
+		}
+	}()
+}
+
+// cleanupIdleConns 清理空闲连接
+//
+// 关闭超过 2 分钟未使用的连接
+func (t *TCPTransport) cleanupIdleConns() {
+	t.connPool.mu.Lock()
+	defer t.connPool.mu.Unlock()
+
+	now := time.Now().Unix()
+	idleTimeout := int64(120) // 2 分钟
+
+	for addr, conn := range t.connPool.conns {
+		lastUsed := conn.lastUsed.Load()
+		if now-lastUsed > idleTimeout {
+			logging.Debugf("清理空闲连接: %s", addr)
+			_ = conn.Close()
+			delete(t.connPool.conns, addr)
+		}
+	}
+}
+
+// ========================================
+// tcpConn 方法
+// ========================================
+
+// Read 读取数据
+func (c *tcpConn) Read(p []byte) (n int, err error) {
+	return c.conn.Read(p)
+}
+
+// Write 写入数据
+func (c *tcpConn) Write(p []byte) (n int, err error) {
+	return c.conn.Write(p)
+}
+
+// Close 关闭连接
+func (c *tcpConn) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.closeCh)
+	})
+	return c.conn.Close()
+}
+
+// RemoteAddr 返回远程地址
+func (c *tcpConn) RemoteAddr() string {
+	return c.remoteAddr
+}
+
+// LocalAddr 返回本地地址
+func (c *tcpConn) LocalAddr() string {
+	if c.conn == nil {
+		return ""
+	}
+	return c.conn.LocalAddr().String()
+}
+
+// SetDeadline 设置读写超时
+func (c *tcpConn) SetDeadline(t time.Time) error {
+	return c.conn.SetDeadline(t)
+}
+
+// SetReadDeadline 设置读超时
+func (c *tcpConn) SetReadDeadline(t time.Time) error {
+	return c.conn.SetReadDeadline(t)
+}
+
+// SetWriteDeadline 设置写超时
+func (c *tcpConn) SetWriteDeadline(t time.Time) error {
+	return c.conn.SetWriteDeadline(t)
+}
+
+// isClosed 检查连接是否已关闭
+func (c *tcpConn) isClosed() bool {
+	select {
+	case <-c.closeCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// ========================================
+// 工具函数
+// ========================================
+
+// isTimeoutError 判断是否为超时错误
+func isTimeoutError(err error) bool {
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return true
+	}
+	return false
+}
+
+// GetLocalAddr 获取本地地址
+func (t *TCPTransport) GetLocalAddr() string {
+	return t.localAddr
+}
+
+// GetConfig 获取配置
+func (t *TCPTransport) GetConfig() *TransportConfig {
+	return t.config
+}
+
+// Stats 获取统计信息
+func (t *TCPTransport) Stats() map[string]interface{} {
+	t.connPool.mu.RLock()
+	defer t.connPool.mu.RUnlock()
+
+	stats := make(map[string]interface{})
+	stats["started"] = t.started.Load()
+	stats["stopped"] = t.stopped.Load()
+	stats["listen_addr"] = t.localAddr
+	stats["active_connections"] = len(t.connPool.conns)
+
+	return stats
+}

@@ -435,12 +435,12 @@ func TestMemoryMVStore_Stats(t *testing.T) {
 
 	// 写入数据
 	for i := 0; i < 10; i++ {
-		store.Put(fmt.Sprintf("key%d", i), []byte(fmt.Sprintf("value%d", i)))
+		require.NoError(t, store.Put(fmt.Sprintf("key%d", i), []byte(fmt.Sprintf("value%d", i))))
 	}
 
 	// 创建多版本
 	for i := 0; i < 3; i++ {
-		store.Put("key0", []byte(fmt.Sprintf("newvalue%d", i)))
+		require.NoError(t, store.Put("key0", []byte(fmt.Sprintf("newvalue%d", i))))
 	}
 
 	// 获取统计信息
@@ -469,7 +469,7 @@ func BenchmarkMemoryMVStore_Put(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		key := fmt.Sprintf("key%d", i%1000)
 		value := []byte(fmt.Sprintf("value%d", i))
-		store.Put(key, value)
+		_ = store.Put(key, value)
 	}
 }
 

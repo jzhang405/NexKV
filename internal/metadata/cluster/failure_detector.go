@@ -166,10 +166,10 @@ func (fd *FailureDetector) Start() error {
 	}
 
 	logging.WithFields(map[string]any{
-		"node_id":        fd.localNodeID,
-		"interval":       fd.config.Interval,
-		"timeout":        fd.config.Timeout,
-		"phi_threshold":  fd.config.PhiThreshold,
+		"node_id":       fd.localNodeID,
+		"interval":      fd.config.Interval,
+		"timeout":       fd.config.Timeout,
+		"phi_threshold": fd.config.PhiThreshold,
 	}).Info("启动故障检测器")
 
 	// 启动探测循环
@@ -257,6 +257,7 @@ func (fd *FailureDetector) pingNode(nodeID string) {
 	// 这里应该通过 transport 发送心跳请求
 	// 暂时使用超时判断
 
+	// 检查心跳超时（在锁内读取）
 	fd.nodeStatesMu.Lock()
 	state, exists := fd.nodeStates[nodeID]
 	if !exists {
@@ -266,14 +267,14 @@ func (fd *FailureDetector) pingNode(nodeID string) {
 		}
 		fd.nodeStates[nodeID] = state
 	}
-	fd.nodeStatesMu.Unlock()
 
-	// 检查心跳超时
+	// 在锁内读取 LastHeartbeat 避免数据竞争
 	now := time.Now()
 	if !state.LastHeartbeat.IsZero() {
 		elapsed := now.Sub(state.LastHeartbeat)
 
 		if elapsed > fd.config.Timeout {
+			fd.nodeStatesMu.Unlock()
 			fd.stats.PingsFailed.Add(1)
 
 			// 计算 Φ 值
@@ -290,11 +291,13 @@ func (fd *FailureDetector) pingNode(nodeID string) {
 			if phi > fd.config.PhiThreshold {
 				fd.markNodeFailed(state, nodeID)
 			}
+			return
 		} else {
 			fd.stats.PingsSuccess.Add(1)
 			state.IsFailed.Store(false)
 		}
 	}
+	fd.nodeStatesMu.Unlock()
 }
 
 // computePhi 计算 Φ 值

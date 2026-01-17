@@ -163,6 +163,10 @@ func createMessageByType(msgType MessageType) (Message, error) {
 		return &NodeLeaveMessage{}, nil
 	case MessageTypeNodeSync:
 		return &NodeSyncMessage{}, nil
+	case MessageTypeClockSync:
+		return &ClockSyncMessage{}, nil
+	case MessageTypeClockSyncReply:
+		return &ClockSyncReplyMessage{}, nil
 
 	// 集群管理消息
 	case MessageTypeClusterStatus:
@@ -567,6 +571,35 @@ func (m *NodeSyncMessage) Type() MessageType           { return MessageTypeNodeS
 func (m *NodeSyncMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
 func (m *NodeSyncMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
 func (m *NodeSyncMessage) Size() int {
+	bytes, _ := m.Marshal()
+	return len(bytes)
+}
+
+// ClockSyncMessage 时钟同步请求消息
+type ClockSyncMessage struct {
+	Timestamp int64  `msgpack:"timestamp"` // 发送节点的 HLC 时间戳
+	NodeID    string `msgpack:"node_id"`   // 发送节点 ID
+}
+
+func (m *ClockSyncMessage) Type() MessageType           { return MessageTypeClockSync }
+func (m *ClockSyncMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
+func (m *ClockSyncMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
+func (m *ClockSyncMessage) Size() int {
+	bytes, _ := m.Marshal()
+	return len(bytes)
+}
+
+// ClockSyncReplyMessage 时钟同步响应消息
+type ClockSyncReplyMessage struct {
+	Timestamp int64  `msgpack:"timestamp"` // 响应节点的 HLC 时间戳
+	NodeID    string `msgpack:"node_id"`   // 响应节点 ID
+	Drift     int64  `msgpack:"drift"`     // 时间漂移（毫秒）
+}
+
+func (m *ClockSyncReplyMessage) Type() MessageType           { return MessageTypeClockSyncReply }
+func (m *ClockSyncReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
+func (m *ClockSyncReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
+func (m *ClockSyncReplyMessage) Size() int {
 	bytes, _ := m.Marshal()
 	return len(bytes)
 }

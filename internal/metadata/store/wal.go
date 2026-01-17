@@ -1,5 +1,5 @@
 // Package store WAL (Write-Ahead Log) 实现
-// 支持元数据 WAL 和业务 WAL 双层架构
+// 支持元数据 WAL 持久化
 package store
 
 import (
@@ -314,42 +314,6 @@ func (w *MetadataWAL) decodeEntry(typ WALType, keyLen, valueLen uint32, timestam
 	}
 
 	return entry, nil
-}
-
-// BusinessWAL 业务 WAL 实现
-//
-// 与 MetadataWAL 的区别：
-//   - 更长的保留时间（3个月 vs 30天）
-//   - 可能更大的数据量
-//   - 支持批量写入优化
-type BusinessWAL struct {
-	*MetadataWAL
-	batchSize    int
-	batchEntries []*WALEntry
-}
-
-// NewBusinessWAL 创建业务 WAL
-func NewBusinessWAL(path string) (*BusinessWAL, error) {
-	metadataWAL, err := NewMetadataWAL(path)
-	if err != nil {
-		return nil, err
-	}
-
-	return &BusinessWAL{
-		MetadataWAL:  metadataWAL,
-		batchSize:    100,
-		batchEntries: make([]*WALEntry, 0, 100),
-	}, nil
-}
-
-// AppendBatch 批量追加
-func (w *BusinessWAL) AppendBatch(entries []*WALEntry) error {
-	for _, entry := range entries {
-		if err := w.Append(entry); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // snapshotManagerImpl 快照管理器实现

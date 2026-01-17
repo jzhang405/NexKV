@@ -4,14 +4,21 @@
 //   - 环境变量配置
 //   - 自动生成并持久化
 //   - 获取节点数据目录路径
+//
+// NodeID 格式：[环境标识]_[主机名]_[服务名称(可选)]_[固定端口]
+// 示例：
+//   - prod_prod_shop_server_01_shop_service_8080
+//   - prod_prod_shop_server_01_pay_service_8081
 package cluster
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
-	"github.com/jzhang405/NexKV/internal/metadata/uuid"
+	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
 )
 
 // NodeIDProvider 节点 ID 提供者接口
@@ -28,10 +35,24 @@ type NodeIDProvider interface {
 	GetSSTPath() string
 }
 
+// NodeIDConfig 节点 ID 配置
+type NodeIDConfig struct {
+	// Env 环境标识（如: prod, dev, test）
+	Env string
+	// Hostname 主机名（如: prod-shop-server-01）
+	// 如果为空，自动获取系统主机名
+	Hostname string
+	// Service 服务名称（可选，如: shop-service, pay-service）
+	Service string
+	// Port 固定端口（如: 8080, 8081）
+	Port int
+}
+
 // LocalNodeInfo 本地节点信息
 type LocalNodeInfo struct {
 	mu     sync.RWMutex
 	nodeID string
+	config *NodeIDConfig
 	// 数据根目录（例如：/data/nexkv）
 	dataDir string
 }
@@ -39,41 +60,139 @@ type LocalNodeInfo struct {
 // NewLocalNodeInfo 创建本地节点信息
 //
 // 优先级：
-// 1. 环境变量 NEXKV_NODE_ID
-// 2. configNodeID 参数
+// 1. 环境变量 NEXKV_NODE_ID（完整 NodeID）
+// 2. config 参数（NodeIDConfig 结构）
 // 3. 自动生成并持久化到 {dataDir}/node.id
-func NewLocalNodeInfo(dataDir, configNodeID string) (*LocalNodeInfo, error) {
-	nodeID := configNodeID
+func NewLocalNodeInfo(dataDir string, config *NodeIDConfig) (*LocalNodeInfo, error) {
+	var nodeID string
 
-	// 1. 尝试从环境变量读取
+	// 1. 尝试从环境变量读取完整 NodeID
 	if envID := os.Getenv("NEXKV_NODE_ID"); envID != "" {
 		nodeID = envID
+		logging.WithField("node_id", nodeID).Info("从环境变量读取节点 ID")
 	}
 
-	// 2. 如果都没有，尝试从持久化文件读取
-	if nodeID == "" {
-		storedID, err := readStoredNodeID(dataDir)
-		if err == nil && storedID != "" {
-			nodeID = storedID
+	// 2. 如果没有，尝试从配置生成
+	if nodeID == "" && config != nil {
+		generatedID, err := generateNodeID(config)
+		if err != nil {
+			return nil, fmt.Errorf("生成节点 ID 失败: %w", err)
 		}
-	}
-
-	// 3. 如果仍然没有，自动生成并持久化
-	if nodeID == "" {
-		nodeID = uuid.GenerateUUIDv7()
+		nodeID = generatedID
 
 		// 持久化到文件
 		if err := storeNodeID(dataDir, nodeID); err != nil {
 			return nil, err
 		}
+		logging.WithField("node_id", nodeID).Info("从配置生成并持久化节点 ID")
+	}
+
+	// 3. 如果仍然没有，尝试从持久化文件读取
+	if nodeID == "" {
+		storedID, err := readStoredNodeID(dataDir)
+		if err == nil && storedID != "" {
+			nodeID = storedID
+			logging.WithField("node_id", nodeID).Info("从持久化文件读取节点 ID")
+		}
+	}
+
+	// 4. 如果仍然没有，使用默认配置自动生成
+	if nodeID == "" {
+		defaultConfig := getDefaultNodeIDConfig()
+		generatedID, err := generateNodeID(defaultConfig)
+		if err != nil {
+			return nil, fmt.Errorf("生成节点 ID 失败: %w", err)
+		}
+		nodeID = generatedID
+
+		// 持久化到文件
+		if err := storeNodeID(dataDir, nodeID); err != nil {
+			return nil, err
+		}
+		logging.WithField("node_id", nodeID).Info("自动生成并持久化节点 ID")
 	}
 
 	info := &LocalNodeInfo{
 		nodeID:  nodeID,
 		dataDir: dataDir,
+		config:  config,
 	}
 
 	return info, nil
+}
+
+// generateNodeID 根据配置生成节点 ID
+// 格式：[环境]_[主机]_[服务]_[端口]
+// 主机名和服务名内部使用 - 连接，非字母数字字符被替换为 -
+func generateNodeID(config *NodeIDConfig) (string, error) {
+	// 获取主机名
+	hostname := config.Hostname
+	if hostname == "" {
+		var err error
+		hostname, err = os.Hostname()
+		if err != nil {
+			return "", fmt.Errorf("获取主机名失败: %w", err)
+		}
+	}
+
+	// 清理主机名：转小写，非字母数字替换为 -
+	hostname = strings.ToLower(hostname)
+	hostname = sanitizeName(hostname)
+
+	// 清理服务名：转小写，非字母数字替换为 -
+	service := ""
+	if config.Service != "" {
+		service = strings.ToLower(config.Service)
+		service = sanitizeName(service)
+	}
+
+	// 构建节点 ID
+	nodeID := fmt.Sprintf("%s_%s", config.Env, hostname)
+
+	// 如果有服务名称，添加服务名
+	if service != "" {
+		nodeID += "_" + service
+	}
+
+	// 添加端口
+	nodeID += "_" + fmt.Sprintf("%d", config.Port)
+
+	return nodeID, nil
+}
+
+// sanitizeName 将名称中的非字母数字字符替换为 -
+func sanitizeName(name string) string {
+	result := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			result = append(result, c)
+		} else {
+			// 非字母数字字符替换为 -
+			// 跳过开头的特殊字符
+			if len(result) > 0 && result[len(result)-1] != '-' {
+				result = append(result, '-')
+			}
+		}
+	}
+	// 移除末尾可能多余的 -
+	if len(result) > 0 && result[len(result)-1] == '-' {
+		result = result[:len(result)-1]
+	}
+	return string(result)
+}
+
+// getDefaultNodeIDConfig 获取默认节点 ID 配置
+func getDefaultNodeIDConfig() *NodeIDConfig {
+	hostname, _ := os.Hostname()
+	// hostname 会在 generateNodeID 中被清理
+
+	return &NodeIDConfig{
+		Env:      "dev", // 默认开发环境
+		Hostname: hostname,
+		Service:  "nexkv",
+		Port:     8080, // 默认端口
+	}
 }
 
 // GetNodeID 获取节点 ID

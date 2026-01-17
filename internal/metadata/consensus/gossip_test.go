@@ -458,7 +458,6 @@ func TestDefaultGossipConfig(t *testing.T) {
 	assert.Equal(t, 2, config.Fanout)
 	assert.Equal(t, 5*time.Second, config.Timeout)
 	assert.Equal(t, 1000, config.MaxChangeLogs)
-	assert.True(t, config.EnableClockSync)
 }
 
 // ========================================

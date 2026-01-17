@@ -26,7 +26,7 @@ import (
 //   - 最终一致性：通过周期性同步达到最终一致
 //   - 增量同步：只传输变更部分，减少网络开销
 //   - 双向同步：本地更新和远程更新都会被同步
-//   - HLC 时钟集成：自动同步时钟，检测时间漂移
+//   - HLC 时钟集成：使用 HLC 时戳确定变更顺序
 //
 // 算法流程:
 //  1. 每隔 10 秒随机选择 2 个节点进行同步
@@ -44,7 +44,6 @@ type GossipService struct {
 	metaStore store.MVStore
 	transport transport.Transport
 	hlc       *clock.HLC
-	clockSync clock.ClockSync
 
 	// 节点列表
 	peers   []string
@@ -81,19 +80,15 @@ type GossipConfig struct {
 
 	// MaxChangeLogs 最大变更日志数量（单次同步）
 	MaxChangeLogs int
-
-	// EnableClockSync 是否启用时钟同步
-	EnableClockSync bool
 }
 
 // DefaultGossipConfig 返回默认 Gossip 配置
 func DefaultGossipConfig() *GossipConfig {
 	return &GossipConfig{
-		Interval:        10 * time.Second,
-		Fanout:          2,
-		Timeout:         5 * time.Second,
-		MaxChangeLogs:   1000,
-		EnableClockSync: true,
+		Interval:      10 * time.Second,
+		Fanout:        2,
+		Timeout:       5 * time.Second,
+		MaxChangeLogs: 1000,
 	}
 }
 
@@ -176,18 +171,11 @@ func NewGossipService(
 		return nil, fmt.Errorf("hlc 不能为空")
 	}
 
-	// 创建时钟同步服务
-	var clockSync clock.ClockSync
-	if config.EnableClockSync {
-		clockSync = clock.NewClockSync(hlc, clock.DefaultClockSyncConfig(), peers)
-	}
-
 	service := &GossipService{
 		config:       config,
 		metaStore:    metaStore,
 		transport:    transport,
 		hlc:          hlc,
-		clockSync:    clockSync,
 		peers:        peers,
 		stopCh:       make(chan struct{}),
 		maxCacheSize: config.MaxChangeLogs,
@@ -207,20 +195,11 @@ func (g *GossipService) Start() error {
 	}
 
 	logging.WithFields(map[string]any{
-		"interval":   g.config.Interval,
-		"fanout":     g.config.Fanout,
-		"peers":      len(g.peers),
-		"clock_sync": g.config.EnableClockSync,
-		"max_logs":   g.config.MaxChangeLogs,
+		"interval": g.config.Interval,
+		"fanout":   g.config.Fanout,
+		"peers":    len(g.peers),
+		"max_logs": g.config.MaxChangeLogs,
 	}).Info("启动 Gossip 服务")
-
-	// 启动时钟同步服务
-	if g.clockSync != nil {
-		if err := g.clockSync.Start(); err != nil {
-			g.started.Store(false)
-			return fmt.Errorf("启动时钟同步失败: %w", err)
-		}
-	}
 
 	// 启动消息处理协程
 	g.stopWg.Add(1)
@@ -244,11 +223,6 @@ func (g *GossipService) Stop() error {
 	}
 
 	logging.Info("停止 Gossip 服务...")
-
-	// 关闭时钟同步服务
-	if g.clockSync != nil {
-		_ = g.clockSync.Stop()
-	}
 
 	// 关闭停止信号
 	close(g.stopCh)

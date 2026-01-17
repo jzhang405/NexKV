@@ -110,11 +110,13 @@ const (
 	MessageType2PCRollbackReply MessageType = 255 // 2PC 回滚响应
 
 	// 节点管理消息 (300-349)
-	MessageTypeNodePing  MessageType = 300 // 节点心跳
-	MessageTypeNodePong  MessageType = 301 // 心跳响应
-	MessageTypeNodeJoin  MessageType = 302 // 节点加入
-	MessageTypeNodeLeave MessageType = 303 // 节点离开
-	MessageTypeNodeSync  MessageType = 304 // 节点同步
+	MessageTypeNodePing       MessageType = 300 // 节点心跳
+	MessageTypeNodePong       MessageType = 301 // 心跳响应
+	MessageTypeNodeJoin       MessageType = 302 // 节点加入
+	MessageTypeNodeLeave      MessageType = 303 // 节点离开
+	MessageTypeNodeSync       MessageType = 304 // 节点同步
+	MessageTypeClockSync      MessageType = 305 // 时钟同步请求
+	MessageTypeClockSyncReply MessageType = 306 // 时钟同步响应
 
 	// 集群管理消息 (350-399)
 	MessageTypeClusterStatus      MessageType = 350 // 集群状态查询
@@ -173,6 +175,10 @@ func (t MessageType) String() string {
 		return "NodeLeave"
 	case MessageTypeNodeSync:
 		return "NodeSync"
+	case MessageTypeClockSync:
+		return "ClockSync"
+	case MessageTypeClockSyncReply:
+		return "ClockSyncReply"
 	case MessageTypeClusterStatus:
 		return "ClusterStatus"
 	case MessageTypeClusterStatusReply:

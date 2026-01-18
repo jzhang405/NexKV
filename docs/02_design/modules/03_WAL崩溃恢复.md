@@ -70,93 +70,136 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph WAL文件
-        subgraph Header ["Header (64 bytes)"]
-            H1["Magic<br/>4B"]
-            H2["Version<br/>2B"]
-            H3["Checksum<br/>4B"]
-            H4["StartLSN<br/>8B"]
+        subgraph Entry1 ["WALEntry 1"]
+            E1A["Header<br/>12B"]
+            E1B["Timestamp<br/>10B HLC"]
+            E1C["Key<br/>N bytes"]
+            E1D["Value<br/>M bytes"]
+            E1E["Checksum<br/>4B CRC32"]
         end
 
-        subgraph Records ["Log Records"]
-            R1["LSN<br/>8B"]
-            R2["Type<br/>1B"]
-            R3["Length<br/>4B"]
-            R4["Data<br/>Variable"]
-        end
-
-        subgraph Footer ["Footer (可选)"]
-            F1["Checksum<br/>4B"]
-            F2["EndLSN<br/>8B"]
+        subgraph EntryN ["WALEntry N..."]
+            EN["更多日志条目..."]
         end
     end
 
-    Header --> Records --> Footer
+    Entry1 --> EntryN
 
-    style Header fill:#e1f5ff
-    style Records fill:#fff4e1
-    style Footer fill:#f3e5f5
+    style Entry1 fill:#e1f5ff
+    style EntryN fill:#fff4e1
+    style E1A fill:#ffe6e6
+    style E1E fill:#e8f5e9
 ```
+
+**磁盘格式**: 自定义二进制格式（详见 `02_数据结构设计.md` 第 1.2 节）
 
 ---
 
-### 2.2 Log Record 详细格式
+### 2.2 WALEntry 详细格式
 
 ```go
-// WAL 日志记录结构
-type LogRecord struct {
-    LSN           int64     // 日志序列号，全局递增
-    TransactionID int64     // 事务 ID
-    Type          LogType   // 日志类型
-    Checksum      uint32    // CRC32 校验
-    Length        int       // Data 长度
-    Data          []byte    // 序列化数据
+// WALEntry WAL 日志条目（MVStore 元数据存储）
+type WALEntry struct {
+    Timestamp *clock.HLC  // 操作时间戳（HLC，用于版本控制）
+    Type      WALType     // 操作类型
+    Key       string      // 键
+    Value     []byte      // 值（Type = WALTypePut 时有效）
+    OldValue  []byte      // 旧值（用于 MVCC 冲突检测，可选）
+    Checksum  uint32      // 校验和（IEEE CRC32）
+}
 
-    // 变长字段
-    BeforeImage   []byte    // 变更前的值（可选，用于 undo）
-    AfterImage    []byte    // 变更后的值（可选，用于 redo）
+// WALType WAL 操作类型
+type WALType uint16
+
+const (
+    WALTypePut       WALType = iota  // 写入操作
+    WALTypeDelete                      // 删除操作（墓碑标记）
+    WALTypeCheckpoint                  // 检查点操作
+)
+
+// WAL WAL 日志接口
+type WAL interface {
+    Append(entry *WALEntry) error      // 追加日志条目
+    Recover() ([]*WALEntry, error)     // 从 WAL 恢复数据
+    Truncate(offset int64) error       // 截断 WAL
+    Sync() error                       // 强制刷盘
+    Close() error                      // 关闭 WAL
 }
 ```
 
+**磁盘记录格式**:
+```
++--------------+---------------+------------------+
+| Header (12B) | Entry Data(N) | Checksum (4B)   |
++--------------+---------------+------------------+
+
+Header 格式 (固定 12 字节):
++-------------+-------------+-------------+-------------+
+| Type (2B)   | KeyLen (4B) | ValLen (4B) | TsLen (2B)  |
++-------------+-------------+-------------+-------------+
+Type:   WALType (uint16)
+KeyLen: Key 数据长度
+ValLen: Value 数据长度
+TsLen:  HLC 时间戳长度 (固定值 10)
+
+Entry Data 格式 (变长，紧接 Header):
++-------------+-----------+-----------+
+| Key         | Value     | Timestamp |
++-------------+-----------+-----------+
+Key:       KeyLen 字节
+Value:     ValLen 字节
+Timestamp: TsLen 字节 (HLC 序列化: 8B pt + 2B c)
+```
+
 ---
 
-### 2.3 文件格式选择对比
+### 2.3 编码格式说明
 
-| 格式 | 优点 | 缺点 | 推荐场景 |
-|------|------|------|---------|
-| **二进制格式** | 高效、节省空间、解析快 | 可读性差、需工具查看 | 生产环境首选 |
-| **JSON** | 可读性好、易调试 | 体积大、解析慢 | 开发/测试 |
-| **Protocol Buffers** | 高效、可扩展、跨语言 | 需要编译 schema | 分布式系统 |
+**当前实现**: 自定义二进制格式（直接二进制读写）
 
-**NexKV 推荐**：二进制格式 + 独立的解析工具
+**格式优势**:
+- ✅ 高效：固定 Header + 变长 Data，解析快速
+- ✅ 紧凑：最小化磁盘占用
+- ✅ 可靠：CRC32 校验保证数据完整性
+- ✅ 跨语言：二进制格式定义清晰，易于跨语言实现
+
+**编码函数**（参考）:
+```go
+// 详见 docs/02_design/architecture/02_数据结构设计.md 第 1.2 节
+func EncodeWALEntry(entry *WALEntry) ([]byte, error)
+```
 
 ---
 
 ## 三、文件分隔策略
 
-### 3.1 推荐策略
+### 3.1 当前实现
 
 ```mermaid
 flowchart TD
-    subgraph 策略2 ["策略: 按大小分隔<br/>推荐"]
-        S2a["wal_00000001.bin<br/>(64MB)"]
-        S2b["wal_00000002.bin<br/>(64MB)"]
-        S2c["wal_00000003.bin<br/>(当前活跃)"]
-        S2a -->|"优点| P2a[可管理<br/>支持归档删除]
-        S2a -->|"缺点| P2b[略复杂]
+    subgraph 当前 [当前实现: 单文件追加]
+        WAL1[wal.log - 单个日志文件]
+        WAL1 -->|编码方式| ENC[二进制格式: Header+Data+Checksum]
+        WAL1 -->|优点| P1[简单可靠 / 易于实现]
+        WAL1 -->|缺点| P2[文件会增长 / 需定期归档]
     end
 
-    style 策略2 fill:#e1ffe1
-    style S2a fill:#e1f5ff
-    style S2b fill:#e1f5ff
-    style S2c fill:#e1ffe1
+    style 当前 fill:#e1ffe1
+    style WAL1 fill:#e1f5ff
+    style ENC fill:#fff4e1
+    style P1 fill:#e1ffe1
+    style P2 fill:#ffe1e1
 ```
 
-### 3.2 推荐的命名规范
+### 3.2 文件命名规范
 
 ```bash
-# 命名格式: wal_{LSN范围_start}.bin
-wal_00000000000000000001.bin   # LSN 1 ~ 1,000,000
-wal_00000000000010000001.bin   # LSN 1,000,001 ~ 2,000,000
+# 当前实现: 单文件命名
+wal.log              # 主日志文件，所有 WALEntry 追加到此文件
+
+# 未来可选: 按时间或大小分隔
+wal_20260118.log     # 按日期分隔
+wal_0001.log         # 按序号分隔
 ```
 
 ---
@@ -165,12 +208,14 @@ wal_00000000000010000001.bin   # LSN 1,000,001 ~ 2,000,000
 
 ### 4.1 为什么需要 Checkpoint
 
+> **当前状态**: 基础实现使用完整 WAL 重放，Checkpoint 机制为设计目标
+
 ```mermaid
 flowchart LR
-    subgraph 时间线
-        CP1["checkpoint 1"] --> CP2["checkpoint 2"] --> Active["活跃日志"]
-        CP1 -->|"需要恢复| R1["需要恢复的日志"]
-        CP2 -->|"可丢弃| R2["可以丢弃的日志"]
+    subgraph Timeline
+        CP1["checkpoint 1<br/>(future)"] --> CP2["checkpoint 2<br/>(future)"] --> Active["active log<br/>WALEntry sequence"]
+        CP1 -->|"needs recovery"| R1["logs to recover"]
+        CP2 -->|"can discard"| R2["logs to discard"]
     end
 
     style R1 fill:#ffe1e1
@@ -178,47 +223,55 @@ flowchart LR
     style Active fill:#e1f5ff
 ```
 
+**当前实现**: 直接读取 `wal.log` 重放所有 WALEntry
+
+**未来优化**: 实现 Checkpoint 后可跳过已确认的日志条目
+
 ---
 
-### 4.2 Checkpoint 内容
+### 4.2 Checkpoint 设计（未来实现）
+
+> **Snapshot 接口已在 MVStore 中定义**
 
 ```go
-// Checkpoint 记录包含的信息
-type Checkpoint struct {
-    CheckpointLSN     int64              // 检查点 LSN
-    NextLSN           int64              // 下一个可用的 LSN
-    TransactionTable  map[int64]TransactionState  // 活跃事务表
-
-    // Buffer Pool 元数据
-    DirtyPages        map[int]PageState  // 脏页信息
-
-    // 节点特定信息
-    RegionID          int                // Region ID
-    LeaderID          string             // Leader 节点 ID
-    Term              int64              // 当前任期（用于 2PC）
-
-    // 元数据版本
-    MetadataVersion   int64              // 元数据版本号
-    Timestamp         time.Time          // 创建时间
+// SnapshotManager 快照管理接口（已在 mvstore.go 定义）
+type SnapshotManager interface {
+    Create(store MVStore) error           // 创建快照
+    List() ([]string, error)               // 列出所有快照
+    Restore(snapshotName string) ([]byte, error)  // 从快照恢复
+    Delete(snapshotName string) error      // 删除快照
 }
 ```
 
+**快照格式设计**:
+```go
+// Snapshot 快照结构
+type Snapshot struct {
+    Version   uint64            // 快照版本
+    Timestamp int64             // 快照时间
+    Data      map[string][]byte // 数据快照
+    Checksum  uint32            // 校验和
+}
+```
+
+
 ---
 
-### 4.3 Checkpoint 创建流程
+### 4.3 Checkpoint 创建流程（设计稿）
 
 ```mermaid
 flowchart TD
-    A["暂停新的写入<br/>可选"] --> B["将所有脏页刷盘<br/>Buffer Pool Flush"]
-    B --> C["记录当前 LSN<br/>和活跃事务"]
-    C --> D["写入 checkpoint<br/>记录到 WAL"]
-    D --> E["fsync checkpoint 记录"]
-    E --> F["写入检查点文件<br/>独立文件"]
-    F --> G["安全删除此检查点<br/>之前的 WAL 文件"]
+    A["暂停新的写入<br/>可选"] --> B["获取 MVStore 当前状态"]
+    B --> C["序列化所有 Key-Value"]
+    C --> D["计算校验和"]
+    D --> E["写入快照文件"]
+    E --> F["fsync 快照文件"]
+    F --> G["更新快照索引"]
+    G --> H["安全删除此快照<br/>之前的 WAL 段"]
 
     style A fill:#fff4e1
-    style D fill:#e1ffe1
     style E fill:#ff9999
+    style H fill:#e1ffe1
 ```
 
 ---
@@ -244,38 +297,107 @@ const (
 
 ```mermaid
 flowchart TD
-    A["读取最近的<br/>checkpoint"] --> B["加载检查点状态<br/>Buffer Pool、事务表"]
-    B --> C["定位需要恢复的<br/>WAL 起始位置"]
-    C --> D["重放 WAL 日志"]
+    A["打开 WAL 文件<br/>wal.log"] --> B["读取二进制数据"]
+    B --> C["解析 Header<br/>12 bytes"]
+    C --> D{"是否有更多<br/>条目?"}
 
-    subgraph 重放逻辑
-        D --> E{"日志类型?"}
-        E -->|"UPDATE| F["REDO: 应用 AfterImage"]
-        E -->|"COMMIT| G["标记为已提交"]
-        E -->|"ROLLBACK| H["UNDO: 回滚或标记删除"]
-    end
+    D -->|是| E["解析 Entry Data"]
+    D -->|否| I["恢复完成"]
 
-    F --> I["处理未提交事务"]
-    G --> I
-    H --> I
-    I --> J["恢复正常服务"]
+    E --> F{"Type 类型?"}
+    F -->|WALTypePut| G["重放 Put 操作<br/>恢复 Key-Value"]
+    F -->|WALTypeDelete| H["重放 Delete 操作<br/>标记墓碑"]
+    F -->|WALTypeCheckpoint| J["记录 Checkpoint 点<br/>可跳过之前的日志"]
+
+    G --> C
+    H --> C
+    J --> K["跳过已应用的日志"]
+
+    K --> C
+    I --> L["MVStore 恢复完成"]
 
     style A fill:#e1f5ff
-    style D fill:#fff4e1
-    style J fill:#e1ffe1
+    style E fill:#fff4e1
+    style L fill:#e1ffe1
+```
+
+**当前实现**（基于二进制格式）：
+
+```go
+// 从 WAL 恢复数据
+func (w *WAL) Recover() ([]*WALEntry, error) {
+    // 1. 打开 WAL 文件
+    file, err := os.Open(w.path)
+    if err != nil {
+        return nil, err
+    }
+    defer file.Close()
+
+    var entries []*WALEntry
+
+    // 2. 逐条解析二进制格式
+    for {
+        // 读取 Header (12 bytes)
+        header := make([]byte, 12)
+        if _, err := io.ReadFull(file, header); err != nil {
+            if err == io.EOF {
+                break
+            }
+            return nil, err
+        }
+
+        // 解析 Header
+        typ := WALType(binary.BigEndian.Uint16(header[0:2]))   // Type: [0:2]
+        keyLen := binary.BigEndian.Uint32(header[2:6])         // KeyLen: [2:6]
+        valLen := binary.BigEndian.Uint32(header[6:10])         // ValLen: [6:10]
+        tsLen := binary.BigEndian.Uint16(header[10:12])         // TsLen: [10:12]
+
+        // 读取 Entry Data (Key + Value + Timestamp)
+        entryData := make([]byte, int(keyLen)+int(valLen)+int(tsLen))
+        if _, err := io.ReadFull(file, entryData); err != nil {
+            return nil, err
+        }
+
+        // 读取 Checksum (4 bytes)
+        checksumBytes := make([]byte, 4)
+        if _, err := io.ReadFull(file, checksumBytes); err != nil {
+            return nil, err
+        }
+
+        // 解析 Entry Data 字段
+        offset := 0
+        key := string(entryData[offset : offset+int(keyLen)])
+        offset += int(keyLen)
+        value := entryData[offset : offset+int(valLen)]
+        offset += int(valLen)
+        timestampData := entryData[offset : offset+int(tsLen)]
+
+        // 构造 WALEntry
+        entry := &WALEntry{
+            Type:      typ,
+            Key:       key,
+            Value:     value,
+            Checksum:  binary.BigEndian.Uint32(checksumBytes),
+        }
+        entries = append(entries, entry)
+    }
+
+    return entries, nil
+}
 ```
 
 ---
 
-### 5.3 UNDO/REDO 日志对比
+### 5.3 MVCC 与 WAL 结合
 
-| 特性 | UNDO 日志 | REDO 日志 | UNDO+REDO（NexKV 推荐） |
-|------|----------|----------|-------------------------|
-| **原理** | 记录修改前值 | 记录修改后值 | 两者都记录 |
-| **恢复时** | 回滚未提交事务 | 重放已提交事务 | 先UNDO未提交，再REDO已提交 |
-| **存储开销** | 中 | 中 | 高 |
-| **实现复杂度** | 低 | 低 | 中 |
-| **适用场景** | 内存数据库 | 只读场景 | 通用场景 |
+> **MVStore 使用 MVCC（多版本并发控制）**
+
+| 特性 | 说明 | MVStore 实现 |
+|------|------|--------------|
+| **版本管理** | 每次写入创建新版本 | HLC 时间戳作为版本号 |
+| **并发控制** | 读写不互相阻塞 | sync.Map 原子操作 |
+| **WAL 作用** | 崩溃恢复 | 重放操作恢复到一致状态 |
+| **墓碑标记** | 删除操作特殊处理 | WALTypeDelete + Deleted=true |
 
 ---
 
@@ -285,88 +407,73 @@ flowchart TD
 
 ```bash
 storage/
-├── wal/
-│   ├── wal_00000000000000000001.bin    # WAL 文件
-│   ├── wal_00000000000000000002.bin
-│   ├── checkpoint_00000000000000000001.bin  # 检查点文件
-│   └── archive/
-│       ├── wal_00000000000000000001.bin.gz   # 归档的 WAL
-│       └── checkpoint_00000000000000000001.bin.gz
-├── data/
-│   ├── 00000000000000000001.dat       # 数据文件
-│   └── 00000000000000000002.dat
-└── metadata/
-    └── manifest.bin                    # 元数据清单
+└── wal/
+    └── wal.log              # 当前实现: 单个 WAL 日志文件
+
+# 未来扩展:
+# storage/
+# └── wal/
+#     ├── wal.log
+#     └── archive/          # 归档目录
+#         ├── wal_20260101.log.gz
+#         └── wal_20260102.log.gz
 ```
 
 ---
 
-### 6.2 核心代码结构
+### 6.2 核心接口（已定义）
+
+> **WAL 接口已在 `internal/metadata/store/mvstore.go` 定义**
 
 ```go
-// WAL 管理器
-type WALManager struct {
-    dir             string              // WAL 目录
-    currentFile     *WALFile            // 当前活跃文件
-    fileSizeLimit   int64               // 文件大小限制（默认 64MB）
-    nextLSN         int64               // 下一个 LSN
-    checkpointLSN   int64               // 上一个检查点 LSN
+// WAL 接口（已在 mvstore.go 定义）
+type WAL interface {
+    Append(entry *WALEntry) error      // 追加日志条目
+    Recover() ([]*WALEntry, error)     // 从 WAL 恢复数据
+    Truncate(offset int64) error       // 截断 WAL
+    Sync() error                       // 强制刷盘
+    Close() error                      // 关闭 WAL
+}
 
-    // 写入优化
-    buffer          []byte              // 写入缓冲
-    bufferPos       int                 // 缓冲位置
-    flushInterval   time.Duration       // 刷盘间隔
-
-    // 并发控制
-    mu              sync.Mutex
-    writeCond       *sync.Cond
+// MVStore 接口（已在 mvstore.go 定义）
+type MVStore interface {
+    Put(key string, value []byte) error
+    Get(key string) ([]byte, error)
+    GetVersion(key string, hlcTimestamp *clock.HLC) ([]byte, error)
+    Delete(key string) error
+    // ... 更多方法
 }
 ```
 
 ---
 
-### 6.3 写入路径（伪代码）
+### 6.3 写入路径（设计）
 
 ```go
-func (tm *TransactionLogger) WriteUpdate(txID int64, key, before, after []byte) error {
-    // 1. 序列化日志记录
-    record := &LogRecord{
-        LSN:           atomic.AddInt64(&tm.walManager.nextLSN, 1),
-        TransactionID: txID,
-        Type:          LogTypeUpdate,
-        BeforeImage:   before,
-        AfterImage:    after,
-        Checksum:      crc32.ChecksumIEEE(after),
+// MVStore 写入操作（带 WAL）
+func (s *MVStoreImpl) Put(key string, value []byte) error {
+    // 1. 创建 WAL 条目
+    timestamp := s.clock.Now()  // 获取 HLC 时间戳
+    entry := &WALEntry{
+        Timestamp: timestamp,
+        Type:      WALTypePut,
+        Key:       key,
+        Value:     value,
+        Checksum:  0, // 计算校验和
     }
 
-    // 2. 写入缓冲区（不刷盘）
-    tm.walManager.bufferRecord(record)
-
-    // 3. 检查是否需要刷盘（组提交）
-    if tm.walManager.shouldFlush() {
-        tm.walManager.flushBuffer()
+    // 2. 先写 WAL（确保持久化）
+    if err := s.wal.Append(entry); err != nil {
+        return fmt.Errorf("failed to append WAL: %w", err)
     }
 
-    return nil
-}
-
-func (tm *TransactionLogger) Commit(txID int64) error {
-    // 1. 写入提交记录
-    record := &LogRecord{
-        LSN:           atomic.AddInt64(&tm.walManager.nextLSN, 1),
-        TransactionID: txID,
-        Type:          LogTypeCommit,
-    }
-
-    tm.walManager.bufferRecord(record)
-
-    // 2. 【关键】强制刷盘，确保持久化
-    if err := tm.walManager.flushBuffer(); err != nil {
-        return err
-    }
-
-    // 3. 标记事务为已提交
-    tm.transactionTable[txID].Status = Committed
+    // 3. 更新内存表
+    s.data.Store(key, &VersionedValue{
+        Key:       key,
+        Value:     value,
+        Version:   timestamp,
+        Deleted:   false,
+    })
 
     return nil
 }
@@ -374,51 +481,27 @@ func (tm *TransactionLogger) Commit(txID int64) error {
 
 ---
 
-### 6.4 恢复路径（伪代码）
+### 6.4 恢复路径（设计）
 
-```go
-func (tm *TransactionLogger) Recover() error {
-    // 1. 查找并加载最近的 checkpoint
-    checkpoint, err := tm.loadLatestCheckpoint()
-    if err != nil {
-        return err
-    }
+> **详见 5.2 节的崩溃恢复流程**
 
-    // 2. 重放 checkpoint 之后的日志
-    lsn := checkpoint.CheckpointLSN
-    for {
-        record, err := tm.walManager.readRecord(lsn)
-        if err == io.EOF {
-            break  // 读完所有日志
-        }
-        if err != nil {
-            return err
-        }
+**关键步骤**：
+1. 打开 `wal.log` 文件
+2. 逐条解析二进制格式（Header + Data + Checksum）
+3. 根据 Type 重放操作（Put/Delete/Checkpoint）
+4. 恢复 MVStore 状态
 
-        // 根据日志类型处理
-        switch record.Type {
-        case LogTypeUpdate:
-            // REDO：重放已提交事务的修改
-            if tm.transactionTable[record.TransactionID].Status == Committed {
-                tm.applyUpdate(record.AfterImage)
-            }
+---
 
-        case LogTypeCommit:
-            tm.transactionTable[record.TransactionID].Status = Committed
+### 6.4 恢复路径（当前实现）
 
-        case LogTypeRollback:
-            tm.transactionTable[record.TransactionID].Status = RolledBack
-        }
+> 详见 5.2 节的崩溃恢复流程和代码实现
 
-        lsn = record.LSN + int64(record.Length)
-    }
-
-    // 3. 回滚未提交的事务
-    tm.rollbackUncommittedTransactions()
-
-    return nil
-}
-```
+**关键步骤**：
+1. 打开 `wal.log` 文件
+2. 逐条解析二进制格式（Header + Data + Checksum）
+3. 根据 Type 重放操作（Put/Delete/Checkpoint）
+4. 恢复 MVStore 状态
 
 ---
 
@@ -426,28 +509,80 @@ func (tm *TransactionLogger) Recover() error {
 
 | 指标 | 含义 | 告警阈值 |
 |------|------|---------|
-| `wal_size_bytes` | WAL 目录总大小 | > 10GB |
-| `wal_file_count` | 活跃 WAL 文件数 | > 100 |
-| `checkpoint_duration_ms` | Checkpoint 耗时 | > 10s |
+| `wal_file_size` | WAL 文件大小 | > 1GB |
+| `wal_entry_count` | WAL 条目数量 | > 100000 |
 | `recovery_duration_ms` | 恢复耗时 | > 30s |
-| `flush_latency_ms` | 刷盘延迟 | P99 > 100ms |
-| `transaction_active_count` | 活跃事务数 | > 10000 |
+| `append_latency_ms` | 追加延迟 | P99 > 100ms |
 
 ---
 
 ## 八、总结
 
-| 组件 | 关键决策 | NexKV 推荐 |
+| 组件 | 关键决策 | 当前实现 |
 |------|---------|--------------|
-| **文件格式** | 二进制 vs 文本 | 二进制 + 独立解析工具 |
-| **文件分隔** | 单文件 vs 多文件 | 按大小分隔（64MB/文件） |
-| **刷盘策略** | 每次 vs 组提交 | 组提交 + 提交时强制 |
-| **Checkpoint** | 触发策略 | 复合触发（时间+大小+手动） |
-| **恢复策略** | UNDO vs REDO | UNDO+REDO |
-| **目录布局** | 集中 vs 分散 | 按 Region 分目录 |
+| **编码格式** | 自定义二进制 / MessagePack / JSON | ✅ 自定义二进制（Header + Data + Checksum） |
+| **数据结构** | WALEntry 结构 | ✅ 包含 Timestamp(HLC)、Type、Key、Value、OldValue、Checksum |
+| **文件分隔** | 单文件 vs 多文件 | ✅ 当前单文件（wal.log） |
+| **刷盘策略** | 实时 vs 延迟 | ✅ 每次追加后 fsync |
+| **Checkpoint** | 已实现 vs 未实现 | ❌ 当前未实现（直接重放所有日志） |
+| **恢复策略** | 完整重放 | ✅ 逐条解析二进制格式并重放 WALEntry |
 
 ---
 
-**文档版本**: v1.1
-**最后更新**: 2026-01-15
+## 九、未来改进方向
+
+### 9.1 Codec 接口扩展
+
+> **Brainstorm 记录**: 添加 Codec 接口，默认使用 MessagePack
+
+**当前问题**:
+- gob 编码仅限 Go 语言，不支持跨语言访问
+- 缺少可插拔的编码器接口
+
+**改进方案**:
+```go
+// Codec 编码器接口
+type Codec interface {
+    Encode(v interface{}) ([]byte, error)
+    Decode(data []byte, v interface{}) error
+    Name() string
+}
+
+// MessagePack Codec（默认）
+type MessagePackCodec struct{}
+
+func (m *MessagePackCodec) Encode(v interface{}) ([]byte, error) {
+    return msgpack.Marshal(v)
+}
+
+func (m *MessagePackCodec) Decode(data []byte, v interface{}) error {
+    return msgpack.Unmarshal(data, v)
+}
+
+// WAL 结构改进
+type WAL struct {
+    file   *os.File
+    path   string
+    mu     sync.Mutex
+    codec  Codec              // 可插拔编码器
+}
+
+// 使用 MessagePack Codec（默认）
+func NewWAL(dataDir string) (*WAL, error) {
+    return &WAL{
+        codec: &MessagePackCodec{},
+        // ...
+    }, nil
+}
+```
+
+**优势**:
+- ✅ 支持跨语言访问（Python、Java、C++ 等）
+- ✅ 更高效的二进制编码
+- ✅ 保持向后兼容（可选 gob）
+
+---
+
+**文档版本**: v2.0
+**最后更新**: 2026-01-18
 **维护者**: NexKV 开发团队

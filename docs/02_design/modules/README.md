@@ -68,9 +68,9 @@ graph TD
 
 ## 🔗 相关文档
 
-- **架构设计**：见 `../architecture/SAD.md`
-- **协议设计**：见 `../protocols/CPD.md`
-- **API 设计**：见 `../APID.md`
+- **架构设计**：见 `../architecture/01_系统架构设计.md`
+- **协议设计**：见 `../protocols/01_一致性协议设计.md`
+- **API 设计**：见 `../05_API接口设计.md`
 - **核心概念**：见 `../../00_overview/`
 
 ---

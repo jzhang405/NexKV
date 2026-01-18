@@ -1551,12 +1551,12 @@ twopc.SyncState([]*TxStateGossip{
 - `docs/02_design/` 目录下的相关设计文档（接口和数据结构设计）
 
 ### 输出文档
-- `02_design/SAD.md` - 系统架构设计文档
-- `02_design/CPD.md` - 一致性协议设计文档
-- `02_design/DDD.md` - 详细设计文档
+- `architecture/01_系统架构设计.md` - 系统架构设计文档
+- `protocols/01_一致性协议设计.md` - 一致性协议设计文档
+- `modules/01_详细设计文档.md` - 详细设计文档
 
 ### 参考文档
-- `docs/01_requirement_planning/TRD.md` - 技术需求文档
+- `../01_requirement_planning/02_技术需求文档.md` - 技术需求文档
 
 ---
 

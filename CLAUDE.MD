@@ -188,6 +188,154 @@ graph LR
 
 ---
 
+## 开发流程与文档规范
+
+> **重要说明**：NexKV 采用规范化的开发流程，所有文档存储在 `docs/` 目录中，与代码同步提交 Git，确保文档与实现始终保持一致。
+
+### 开发全流程概览
+
+```mermaid
+flowchart TD
+    A[启动阶段] -->|1.需求调研/对齐| B[需求与规划阶段]
+    B -->|2.方案设计/评审| C[架构与详细设计阶段]
+    C -->|3.模块并行开发| D[开发与编码阶段]
+    D -->|4.测试验证/问题修复| E[测试与验收阶段]
+    E -->|5.灰度/全量部署| F[部署与运维阶段]
+    F -->|6.日常运维/迭代| G[长期运维与版本迭代]
+    G -->|新增需求| B
+
+    %% 各阶段文档输出
+    B -.-> B1[输出：PRD、TRD、会议纪要]
+    C -.-> C1[输出：SAD、DDD、SED、CPD、APID]
+    D -.-> D1[输出：CDS、RDD、DRD、单元测试]
+    E -.-> E1[输出：TPD、TCD、TR、Bug清单]
+    F -.-> F1[输出：DM、OM、RD、部署验证]
+    G -.-> G1[输出：运维日志、故障纪要、迭代清单]
+```
+
+### 文档目录结构
+
+所有开发文档统一存放在 `docs/` 目录下，按研发阶段分类：
+
+```
+docs/
+├── 01_requirement_planning/       # 需求与规划阶段
+│   ├── PRD.md                     # 产品需求文档
+│   ├── TRD.md                     # 技术需求文档
+│   ├── requirement_review_minutes.md
+│   └── project_plan.md
+├── 02_design/                     # 架构与详细设计阶段
+│   ├── SAD.md                     # 系统架构设计文档
+│   ├── DDD.md                     # 模块详细设计文档
+│   ├── SED.md                     # 存储引擎设计文档
+│   ├── CPD.md                     # 一致性协议设计文档
+│   ├── APID.md                    # API接口设计文档
+│   └── design_review_minutes.md
+├── 03_development/                # 开发与编码阶段
+│   ├── CDS.md                     # 编码规范文档
+│   ├── RDD.md                     # 实时细节文档
+│   ├── DRD.md                     # 第三方依赖文档
+│   ├── unit_test_report/          # 单元测试报告
+│   └── code_review_records.md
+├── 04_test/                       # 测试与验收阶段
+│   ├── TPD.md                     # 测试计划文档
+│   ├── TCD.md                     # 测试用例文档
+│   ├── TR.md                      # 测试报告文档
+│   ├── bug_list.md
+│   └── acceptance_report.md
+├── 05_deployment_operation/       # 部署与运维阶段
+│   ├── DM.md                      # 部署手册
+│   ├── OM.md                      # 运维手册
+│   ├── RD.md                      # 版本发布文档
+│   └── deployment_verification.md
+├── 06_project_management/         # 项目管理
+│   ├── project_init_report.md
+│   ├── team_division.md
+│   └── meeting_minutes/
+└── README.md                      # docs目录说明
+```
+
+### 文档类型说明
+
+| 缩写 | 全称 | 说明 | 输出时机 |
+|------|------|------|---------|
+| **PRD** | Product Requirements Document | 产品需求文档 | 需求调研结束后3个工作日 |
+| **TRD** | Technical Requirements Document | 技术需求文档 | PRD评审通过后5个工作日 |
+| **SAD** | System Architecture Design | 系统架构设计文档 | 架构设计结束后3个工作日 |
+| **DDD** | Detailed Design Document | 模块详细设计文档 | 模块设计完成后3个工作日 |
+| **CPD** | Consistency Protocol Design | 一致性协议设计文档 | 协议设计完成后3个工作日 |
+| **APID** | API Interface Design | API接口设计文档 | 接口定义完成后3个工作日 |
+| **CDS** | Coding Standards Document | 编码规范文档 | 开发启动前1个工作日 |
+| **RDD** | Runtime Details Document | 实时细节文档 | 核心流程开发完成后2个工作日 |
+| **TPD** | Test Plan Document | 测试计划文档 | 测试启动前3个工作日 |
+| **TCD** | Test Case Document | 测试用例文档 | 测试启动前3个工作日 |
+| **TR** | Test Report | 测试报告文档 | 测试结束后2个工作日 |
+| **DM** | Deployment Manual | 部署手册 | 部署启动前3个工作日 |
+| **OM** | Operation Manual | 运维手册 | 部署启动前3个工作日 |
+| **RD** | Release Document | 版本发布文档 | 版本发布前1个工作日 |
+
+### Feature 开发流程
+
+对于单个 Feature（如新增批量写入功能）的开发流程：
+
+```mermaid
+flowchart LR
+    F0[Feature需求提出] --> F1[需求拆解与评估]
+    F1 --> F2[Feature设计]
+    F2 --> F3[设计评审]
+    F3 -->|评审通过| F4[任务分配与开发]
+    F4 --> F5[代码Review]
+    F5 -->|Review通过| F6[集成测试]
+    F6 -->|测试通过| F7[Feature验收]
+    F7 -->|验收通过| F8[合并主干/版本发布]
+```
+
+**各阶段说明**：
+
+1. **Feature需求提出**（0.5-1天）：明确需求背景、目标、验收标准
+2. **需求拆解与评估**（1天）：评估技术可行性、工时、影响范围
+3. **Feature设计**（1-2天）：接口定义、流程设计、数据结构
+4. **设计评审**（0.5天）：检查可行性、合理性、性能影响
+5. **任务分配与开发**（2-5天）：编码、单元测试、代码注释
+6. **代码Review**（0.5-1天）：代码质量、逻辑正确性检查
+7. **集成测试**（1-2天）：功能验证、兼容性测试、性能测试
+8. **Feature验收**（0.5天）：验收标准检查
+9. **合并主干/发布**（0.5天）：代码合并、文档更新
+
+### 文档管理原则
+
+**关联性**：
+- PRD → TRD → SAD → DDD → APID → 开发编码 → 测试用例
+- 上游文档是下游文档的输入依据
+- 修改上游文档需同步更新下游关联文档
+
+**同步性**：
+- 文档与代码同步提交、同步迭代
+- 修改核心功能后需同步更新对应设计文档
+- Git 提交时注明关联文档变更
+
+**版本管理**：
+- 文档版本变更无需修改文件名，通过 Git 提交记录追溯
+- 核心文档首页注明版本号、修改人、修改日期
+- 提交时备注版本变更内容
+
+**责任人**：
+- 核心文档（SAD、APID、RDD等）由指定责任人维护
+- 业务/技术变更后需及时更新
+- 确保文档与系统实现一致
+
+### 详细开发流程
+
+完整的开发流程定义请参考：`docs/workflow.md`
+
+该文档包含：
+- 总体开发全流程（6个阶段）的详细说明
+- 单个Feature开发流程（9个步骤）
+- 核心文档关联与代码目录存放规范
+- 各阶段时间周期参考和文档输出时机
+
+---
+
 ## 开发指南
 
 ### 环境准备

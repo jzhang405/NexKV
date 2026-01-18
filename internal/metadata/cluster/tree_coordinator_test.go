@@ -98,6 +98,7 @@ func TestTreeCoordinator_AddChild(t *testing.T) {
 
 	config := &TreeCoordinatorConfig{
 		MaxChildren:       2, // 限制为 2 个子节点
+		MaxLevel:          3, // 允许 3 层深度
 		HeartbeatInterval: 1 * time.Second,
 		AutoDiscovery:     false, // 禁用自动发现
 	}

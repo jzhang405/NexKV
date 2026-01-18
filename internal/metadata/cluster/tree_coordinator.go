@@ -656,12 +656,12 @@ func (tc *TreeCoordinator) AddNode(nodeID, addr string) error {
 	tc.stats.LastTopologyUpdate.Store(time.Now())
 
 	logging.WithFields(map[string]any{
-		"node_id":    nodeID,
-		"addr":       addr,
-		"parent_id":  parentID,
-		"level":      newNodeLevel,
-		"max_level":  tc.config.MaxLevel,
-		"max_depth":  tc.config.MaxLevel,
+		"node_id":   nodeID,
+		"addr":      addr,
+		"parent_id": parentID,
+		"level":     newNodeLevel,
+		"max_level": tc.config.MaxLevel,
+		"max_depth": tc.config.MaxLevel,
 	}).Info("添加节点到集群（在线扩容）")
 
 	// TODO: 通过 Gossip 协议扩散拓扑变更

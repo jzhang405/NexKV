@@ -3,6 +3,7 @@ package uuid
 
 import (
 	"fmt"
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 )
 
 // UUIDGenerator UUID 生成器接口
@@ -25,7 +26,7 @@ const (
 // Parse 解析 UUID 字符串
 func Parse(uuidStr string) ([]byte, error) {
 	if len(uuidStr) != UUIDLength {
-		return nil, fmt.Errorf("invalid UUID length: %d", len(uuidStr))
+		return nil, errcodes.NewUUIDFormatError(fmt.Sprintf("invalid UUID length: %d", len(uuidStr)), nil)
 	}
 
 	// 移除连字符
@@ -40,7 +41,7 @@ func Parse(uuidStr string) ([]byte, error) {
 		&uuid[12], &uuid[13], &uuid[14], &uuid[15])
 
 	if err != nil {
-		return nil, fmt.Errorf("invalid UUID format: %w", err)
+		return nil, errcodes.NewUUIDFormatError("invalid UUID format", err)
 	}
 
 	return uuid, nil

@@ -9,7 +9,7 @@ package transport
 
 import (
 	"context"
-	"fmt"
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"io"
 	"net"
 	"sync"
@@ -121,7 +121,7 @@ func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 // 启动监听器和连接池管理器
 func (t *TCPTransport) Start() error {
 	if !t.started.CompareAndSwap(false, true) {
-		return fmt.Errorf("传输层已经启动")
+		return errcodes.NewTransportStateError("已经启动")
 	}
 
 	logging.Infof("启动 TCP 传输层，监听地址: %s", t.config.ListenAddr)
@@ -129,7 +129,7 @@ func (t *TCPTransport) Start() error {
 	// 启动监听器
 	if err := t.startListener(); err != nil {
 		t.started.Store(false)
-		return fmt.Errorf("启动监听器失败: %w", err)
+		return errcodes.NewTransportConnectionError("启动监听器", "", err)
 	}
 
 	// 启动连接池管理器
@@ -143,7 +143,7 @@ func (t *TCPTransport) Start() error {
 func (t *TCPTransport) startListener() error {
 	listener, err := net.Listen("tcp", t.config.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("监听失败: %w", err)
+		return errcodes.NewTransportConnectionError("监听", "", err)
 	}
 
 	t.listener = listener
@@ -162,16 +162,26 @@ func (t *TCPTransport) acceptLoop() {
 	logging.Info("开始接受连接...")
 
 	for {
+		// 检查停止信号（在 Accept 前先检查，避免阻塞）
+		select {
+		case <-t.stopCh:
+			logging.Info("监听器已关闭（收到停止信号）")
+			return
+		default:
+		}
+
 		conn, err := t.listener.Accept()
 		if err != nil {
+			// 接受失败，再次检查是否是正常关闭
 			select {
 			case <-t.stopCh:
 				// 正常关闭
 				logging.Info("监听器已关闭")
 				return
 			default:
+				// 非正常关闭导致的错误，记录但不继续循环
 				logging.Errorf("接受连接失败: %v", err)
-				continue
+				return
 			}
 		}
 
@@ -281,18 +291,20 @@ func (t *TCPTransport) Stop() error {
 	t.stopOnce.Do(func() {
 		logging.Info("停止 TCP 传输层...")
 
-		// 关闭监听器
-		if t.listener != nil {
-			_ = t.listener.Close()
-			t.acceptWg.Wait()
-			logging.Info("监听器已关闭")
-		}
-
-		// 关闭停止信号
+		// 先关闭停止信号，通知所有协程退出
 		close(t.stopCh)
 
-		// 关闭连接池
+		// 关闭连接池管理器
 		close(t.poolDone)
+
+		// 关闭监听器（会触发 Accept() 返回错误）
+		if t.listener != nil {
+			_ = t.listener.Close()
+		}
+
+		// 等待 acceptLoop 退出
+		t.acceptWg.Wait()
+		logging.Info("监听器已关闭")
 
 		// 关闭所有连接
 		t.closeAllConns()
@@ -324,19 +336,19 @@ func (t *TCPTransport) Close() error {
 // 阻塞直到消息发送成功或失败
 func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message) error {
 	if !t.started.Load() {
-		return fmt.Errorf("传输层未启动")
+		return errcodes.NewTransportStateError("未启动")
 	}
 
 	// 获取或创建连接
 	conn, err := t.getOrCreateConn(addr)
 	if err != nil {
-		return fmt.Errorf("获取连接失败: %w", err)
+		return errcodes.NewTransportConnectionError("获取连接", "", err)
 	}
 
 	// 设置写入超时
 	deadline := time.Now().Add(t.config.WriteTimeout)
 	if err := conn.conn.SetWriteDeadline(deadline); err != nil {
-		return fmt.Errorf("设置写超时失败: %w", err)
+		return errcodes.NewTransportConnectionError("设置写超时", "", err)
 	}
 
 	// 发送消息
@@ -344,7 +356,7 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message) error
 		// 发送失败，关闭连接
 		_ = conn.Close()
 		t.removeConnFromPool(addr)
-		return fmt.Errorf("发送消息失败: %w", err)
+		return errcodes.NewTransportSendError(err)
 	}
 
 	// 更新最后使用时间
@@ -384,14 +396,14 @@ func (t *TCPTransport) dialConn(addr string) (*tcpConn, error) {
 	// 建立连接
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("拨号失败: %w", err)
+		return nil, errcodes.NewTransportConnectionError("拨号", "", err)
 	}
 
 	// 包装连接
 	wrappedConn := t.wrapConn(conn)
 	if wrappedConn == nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("包装连接失败")
+		return nil, errcodes.NewTransportConnectionError("包装连接", "", nil)
 	}
 
 	// 添加到池

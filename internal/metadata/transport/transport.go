@@ -4,6 +4,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -212,7 +213,7 @@ type Address struct {
 
 // String 返回地址的字符串表示 (host:port)
 func (a *Address) String() string {
-	return "" // TODO: 实现地址格式化
+	return fmt.Sprintf("%s:%d", a.Host, a.Port)
 }
 
 // TransportConfig 传输层配置

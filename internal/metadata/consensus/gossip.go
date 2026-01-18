@@ -8,7 +8,6 @@ package consensus
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/metadata/clock"
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"github.com/jzhang405/NexKV/internal/metadata/store"
 	"github.com/jzhang405/NexKV/internal/metadata/transport"
 )
@@ -160,15 +160,15 @@ func NewGossipService(
 	}
 
 	if metaStore == nil {
-		return nil, fmt.Errorf("metaStore 不能为空")
+		return nil, errcodes.NewConsensusNilParameterError("metaStore")
 	}
 
 	if transport == nil {
-		return nil, fmt.Errorf("transport 不能为空")
+		return nil, errcodes.NewConsensusNilParameterError("transport")
 	}
 
 	if hlc == nil {
-		return nil, fmt.Errorf("hlc 不能为空")
+		return nil, errcodes.NewConsensusNilParameterError("hlc")
 	}
 
 	service := &GossipService{
@@ -191,7 +191,7 @@ func NewGossipService(
 // Start 启动 Gossip 服务
 func (g *GossipService) Start() error {
 	if !g.started.CompareAndSwap(false, true) {
-		return fmt.Errorf("gossip 服务已经启动")
+		return errcodes.NewConsensusServiceStateError("gossip", "服务已经启动")
 	}
 
 	logging.WithFields(map[string]any{
@@ -325,7 +325,7 @@ func (g *GossipService) syncToNode(ctx context.Context, addr string) error {
 	// 发送版本摘要
 	if err := g.transport.Send(ctx, addr, digestMsg); err != nil {
 		g.stats.SyncFailed.Add(1)
-		return fmt.Errorf("发送版本摘要失败: %w", err)
+		return errcodes.NewConsensusOperationError("发送版本摘要", err)
 	}
 
 	// 等待响应（通过 messageLoop 接收并处理）
@@ -514,7 +514,7 @@ func (g *GossipService) handleGossipDigestReply(msg transport.Message) {
 func (g *GossipService) Put(key string, value []byte) error {
 	// 写入本地存储
 	if err := g.metaStore.Put(key, value); err != nil {
-		return fmt.Errorf("写入元数据失败: %w", err)
+		return errcodes.NewConsensusOperationError("写入元数据", err)
 	}
 
 	// 记录变更日志
@@ -552,7 +552,7 @@ func (g *GossipService) Delete(key string) error {
 
 	// 写入墓碑标记
 	if err := g.metaStore.Delete(key); err != nil {
-		return fmt.Errorf("删除元数据失败: %w", err)
+		return errcodes.NewConsensusOperationError("删除元数据", err)
 	}
 
 	// 记录变更日志

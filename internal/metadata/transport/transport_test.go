@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jzhang405/NexKV/internal/metadata/errors"
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -85,7 +85,12 @@ func TestFrame_Unmarshal_InvalidMagic(t *testing.T) {
 
 	frame := &Frame{}
 	err := frame.Unmarshal(buf)
-	assert.ErrorIs(t, err, ErrInvalidMagic)
+	require.Error(t, err)
+
+	// 检查错误类型
+	if cerr, ok := err.(*errcodes.Error); ok {
+		assert.Equal(t, errcodes.ErrCodeInvalidFrameMagic, cerr.Code)
+	}
 }
 
 // TestFrame_Unmarshal_InvalidSize 测试无效帧大小
@@ -94,7 +99,12 @@ func TestFrame_Unmarshal_InvalidSize(t *testing.T) {
 
 	frame := &Frame{}
 	err := frame.Unmarshal(buf)
-	assert.ErrorIs(t, err, ErrInvalidFrameSize)
+	require.Error(t, err)
+
+	// 检查错误类型
+	if cerr, ok := err.(*errcodes.Error); ok {
+		assert.Equal(t, errcodes.ErrCodeInvalidFrameSize, cerr.Code)
+	}
 }
 
 // TestFrame_VerifyChecksum 测试校验和验证
@@ -112,7 +122,12 @@ func TestFrame_VerifyChecksum(t *testing.T) {
 	// 反序列化应该失败
 	frame2 := &Frame{}
 	err = frame2.Unmarshal(buf)
-	assert.ErrorIs(t, err, ErrChecksum)
+	require.Error(t, err)
+
+	// 检查错误类型
+	if cerr, ok := err.(*errcodes.Error); ok {
+		assert.Equal(t, errcodes.ErrCodeFrameChecksum, cerr.Code)
+	}
 }
 
 // TestFrame_HexDump 测试十六进制转储
@@ -158,7 +173,12 @@ func TestFrameReader_ReadFrame_InvalidMagic(t *testing.T) {
 	reader := NewFrameReader(bytes.NewReader(buf))
 
 	_, err := reader.ReadFrame()
-	assert.ErrorIs(t, err, ErrInvalidMagic)
+	require.Error(t, err)
+
+	// 检查错误类型
+	if cerr, ok := err.(*errcodes.Error); ok {
+		assert.Equal(t, errcodes.ErrCodeInvalidFrameMagic, cerr.Code)
+	}
 }
 
 // TestFrameWriter_WriteFrame 测试帧写入
@@ -422,17 +442,50 @@ func TestDefaultTransportConfig(t *testing.T) {
 	assert.Equal(t, 4096, config.BufferSize)
 }
 
+// TestAddress_String 测试地址字符串格式化
+func TestAddress_String(t *testing.T) {
+	tests := []struct {
+		name     string
+		address  *Address
+		expected string
+	}{
+		{
+			name:     "IPv4地址",
+			address:  &Address{Host: "127.0.0.1", Port: 9211},
+			expected: "127.0.0.1:9211",
+		},
+		{
+			name:     "IPv6地址",
+			address:  &Address{Host: "::1", Port: 8080},
+			expected: "::1:8080",
+		},
+		{
+			name:     "主机名",
+			address:  &Address{Host: "localhost", Port: 9211},
+			expected: "localhost:9211",
+		},
+		{
+			name:     "域名",
+			address:  &Address{Host: "example.com", Port: 443},
+			expected: "example.com:443",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.address.String()
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 // ========================================
 // 错误处理测试
 // ========================================
 
 // TestTransportError_Error 测试传输错误
 func TestTransportError_Error(t *testing.T) {
-	err := &errors.TransportError{
-		Op:   "Send",
-		Addr: "localhost:9211",
-		Err:  io.EOF,
-	}
+	err := errcodes.NewTransportConnectionError("Send", "localhost:9211", io.EOF)
 
 	errMsg := err.Error()
 	assert.Contains(t, errMsg, "Send")
@@ -443,19 +496,14 @@ func TestTransportError_Error(t *testing.T) {
 // TestTransportError_Unwrap 测试错误解包
 func TestTransportError_Unwrap(t *testing.T) {
 	originalErr := io.EOF
-	err := &errors.TransportError{
-		Op:  "Send",
-		Err: originalErr,
-	}
+	err := errcodes.NewTransportConnectionError("Send", "", originalErr)
 
 	assert.Equal(t, originalErr, err.Unwrap())
 }
 
 // TestTransportError_Timeout 测试超时错误
 func TestTransportError_Timeout(t *testing.T) {
-	// 注意: tempErr 字段是私有的，实际使用中由内部逻辑设置
-	// 这里只测试方法存在性和基本行为
-	err := &errors.TransportError{Op: "test", Err: io.ErrNoProgress}
+	err := errcodes.NewTransportTimeoutError("test")
 	assert.NotNil(t, err)
 	assert.Contains(t, err.Error(), "test")
 }

@@ -9,6 +9,7 @@ package cluster
 
 import (
 	"fmt"
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -209,15 +210,15 @@ func NewTreeCoordinator(
 	}
 
 	if transport == nil {
-		return nil, fmt.Errorf("transport 不能为空")
+		return nil, errcodes.NewClusterNilParameterError("transport")
 	}
 
 	if localNodeID == "" {
-		return nil, fmt.Errorf("localNodeID 不能为空")
+		return nil, errcodes.NewClusterNilParameterError("localNodeID")
 	}
 
 	if localAddr == "" {
-		return nil, fmt.Errorf("localAddr 不能为空")
+		return nil, errcodes.NewClusterNilParameterError("localAddr")
 	}
 
 	// 创建本地节点
@@ -253,7 +254,7 @@ func NewTreeCoordinator(
 // Start 启动树形协调器
 func (tc *TreeCoordinator) Start() error {
 	if !tc.started.CompareAndSwap(false, true) {
-		return fmt.Errorf("树形协调器已经启动")
+		return errcodes.NewClusterServiceStateError("树形协调器", "已经启动")
 	}
 
 	tc.state.Store(int32(StateStarting))
@@ -438,29 +439,27 @@ func (tc *TreeCoordinator) AddChild(childID string) error {
 
 	// 检查子节点数量
 	if len(tc.localNode.ChildrenIDs) >= tc.config.MaxChildren {
-		return fmt.Errorf("子节点数量已达上限 %d", tc.config.MaxChildren)
+		return errcodes.NewClusterTreeManagementError(fmt.Sprintf("子节点数量已达上限 %d", tc.config.MaxChildren))
 	}
 
 	// 检查层级限制（新子节点的 Level 不能超过 MaxLevel）
 	newChildLevel := tc.localNode.Level + 1
 	if newChildLevel > tc.config.MaxLevel {
-		return fmt.Errorf("超出树的最大深度限制 %d（当前层级: %d）",
-			tc.config.MaxLevel, newChildLevel)
+		return errcodes.NewClusterTreeManagementError(fmt.Sprintf("超出树的最大深度限制 %d", tc.config.MaxLevel))
 	}
 
 	// 检查是否已存在
 	for _, cid := range tc.localNode.ChildrenIDs {
 		if cid == childID {
-			return fmt.Errorf("子节点已存在: %s", childID)
+			return errcodes.NewClusterTreeManagementError("子节点已存在: " + childID)
 		}
 	}
 
-	// 检查 child 是否已经有父节点（确保一个真实节点只能有一个 ParentID）
+	// 检查 child 是否已经有父节点（确保一个真实节点只能只有一个 ParentID）
 	if child, exists := tc.allNodes[childID]; exists {
 		// 如果 child 已经有父节点，且不是当前节点
 		if child.ParentID != "" && child.ParentID != tc.localNode.NodeID {
-			return fmt.Errorf("节点 %s 已经是 %s 的子节点，不能同时作为 %s 的子节点",
-				childID, child.ParentID, tc.localNode.NodeID)
+			return errcodes.NewClusterTreeManagementError(fmt.Sprintf("%s 已经是 %s 的子节点，不能同时作为 %s 的子节点", childID, child.ParentID, tc.localNode.NodeID))
 		}
 	}
 
@@ -504,7 +503,7 @@ func (tc *TreeCoordinator) RemoveChild(childID string) error {
 	}
 
 	if !found {
-		return fmt.Errorf("子节点不存在: %s", childID)
+		return errcodes.NewClusterTreeManagementError("子节点不存在: " + childID)
 	}
 
 	tc.localNode.ChildrenIDs = newChildren
@@ -532,7 +531,7 @@ func (tc *TreeCoordinator) GetNode(nodeID string) (*Node, error) {
 
 	node, exists := tc.allNodes[nodeID]
 	if !exists {
-		return nil, fmt.Errorf("节点不存在: %s", nodeID)
+		return nil, errcodes.NewClusterNodeNotFoundError(nodeID)
 	}
 
 	return node, nil
@@ -602,7 +601,7 @@ func (tc *TreeCoordinator) IsRunning() bool {
 //  5. 触发后台数据迁移（如果需要）
 func (tc *TreeCoordinator) AddNode(nodeID, addr string) error {
 	if !tc.IsRunning() {
-		return fmt.Errorf("协调器未运行")
+		return errcodes.NewClusterServiceStateError("协调器", "未运行")
 	}
 
 	tc.nodesMu.Lock()
@@ -610,27 +609,26 @@ func (tc *TreeCoordinator) AddNode(nodeID, addr string) error {
 
 	// 检查节点是否已存在
 	if _, exists := tc.allNodes[nodeID]; exists {
-		return fmt.Errorf("节点已存在: %s", nodeID)
+		return errcodes.NewClusterTreeManagementError("节点已存在: " + nodeID)
 	}
 
 	// 为新节点选择父节点（负载均衡）
 	parentID, err := tc.selectParentForNewNode()
 	if err != nil {
-		return fmt.Errorf("选择父节点失败: %w", err)
+		return errcodes.NewClusterCoordinatorError("选择父节点失败", err)
 	}
 
 	// 获取父节点信息，计算新节点的层级
 	parent, exists := tc.allNodes[parentID]
 	if !exists {
-		return fmt.Errorf("父节点不存在: %s", parentID)
+		return errcodes.NewClusterNodeNotFoundError(parentID)
 	}
 
 	newNodeLevel := parent.Level + 1
 
 	// 检查层级限制
 	if newNodeLevel > tc.config.MaxLevel {
-		return fmt.Errorf("超出树的最大深度限制 %d（父节点层级: %d，新节点层级: %d）",
-			tc.config.MaxLevel, parent.Level, newNodeLevel)
+		return errcodes.NewClusterTreeManagementError(fmt.Sprintf("超出树的最大深度限制 %d", tc.config.MaxLevel))
 	}
 
 	// 创建新节点
@@ -645,7 +643,7 @@ func (tc *TreeCoordinator) AddNode(nodeID, addr string) error {
 
 	// 更新父节点的子节点列表
 	if len(parent.ChildrenIDs) >= tc.config.MaxChildren {
-		return fmt.Errorf("父节点 %s 子节点数已达上限 %d", parentID, tc.config.MaxChildren)
+		return errcodes.NewClusterTreeManagementError(fmt.Sprintf("父节点 %s 子节点数已达上限 %d", parentID, tc.config.MaxChildren))
 	}
 	parent.ChildrenIDs = append(parent.ChildrenIDs, nodeID)
 
@@ -681,7 +679,7 @@ func (tc *TreeCoordinator) AddNode(nodeID, addr string) error {
 //  6. 触发后台数据迁移（如果需要）
 func (tc *TreeCoordinator) RemoveNode(nodeID string) error {
 	if !tc.IsRunning() {
-		return fmt.Errorf("协调器未运行")
+		return errcodes.NewClusterServiceStateError("协调器", "未运行")
 	}
 
 	tc.nodesMu.Lock()
@@ -694,7 +692,7 @@ func (tc *TreeCoordinator) RemoveNode(nodeID string) error {
 
 	// 不能移除本地节点
 	if nodeID == tc.localNode.NodeID {
-		return fmt.Errorf("不能移除本地节点")
+		return errcodes.NewClusterNodeManagementError("移除", "本地节点", nil)
 	}
 
 	// 标记为离开中
@@ -743,7 +741,7 @@ func (tc *TreeCoordinator) RemoveNode(nodeID string) error {
 // 批量添加节点，支持大规模扩容
 func (tc *TreeCoordinator) ScaleUp(nodeIDs []string, addrs []string) error {
 	if len(nodeIDs) != len(addrs) {
-		return fmt.Errorf("节点 ID 列表和地址列表长度不一致")
+		return errcodes.NewClusterTreeManagementError("节点 ID 列表和地址列表长度不一致")
 	}
 
 	successCount := 0
@@ -768,7 +766,7 @@ func (tc *TreeCoordinator) ScaleUp(nodeIDs []string, addrs []string) error {
 	}).Info("扩容操作完成")
 
 	if lastErr != nil && successCount == 0 {
-		return fmt.Errorf("扩容失败：%w", lastErr)
+		return errcodes.NewClusterNodeManagementError("扩容", "", lastErr)
 	}
 
 	return nil
@@ -800,7 +798,7 @@ func (tc *TreeCoordinator) ScaleDown(nodeIDs []string) error {
 	}).Info("缩容操作完成")
 
 	if lastErr != nil && successCount == 0 {
-		return fmt.Errorf("缩容失败：%w", lastErr)
+		return errcodes.NewClusterNodeManagementError("缩容", "", lastErr)
 	}
 
 	return nil
@@ -861,7 +859,7 @@ func (tc *TreeCoordinator) selectParentForNewNode() (string, error) {
 	}
 
 	if bestParent == nil {
-		return "", fmt.Errorf("没有可用的父节点（可能已达到树的最大深度 %d）", tc.config.MaxLevel)
+		return "", errcodes.NewClusterTreeManagementError(fmt.Sprintf("没有可用的父节点（可能已达到树的最大深度 %d）", tc.config.MaxLevel))
 	}
 
 	logging.WithFields(map[string]any{

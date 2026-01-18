@@ -65,6 +65,10 @@ type TreeCoordinatorConfig struct {
 	// MaxChildren 最大子节点数（默认 10）
 	MaxChildren int
 
+	// MaxLevel 树的最大深度（默认 4，支持 1000+ 节点）
+	// Level 0-3: 最多 1+10+100+1000=1111 节点
+	MaxLevel int
+
 	// HeartbeatInterval 心跳间隔（默认 5 秒）
 	HeartbeatInterval time.Duration
 
@@ -82,6 +86,7 @@ type TreeCoordinatorConfig struct {
 func DefaultTreeCoordinatorConfig() *TreeCoordinatorConfig {
 	return &TreeCoordinatorConfig{
 		MaxChildren:       10,
+		MaxLevel:          4, // 支持 1000+ 节点 (1+10+100+1000=1111)
 		HeartbeatInterval: 5 * time.Second,
 		HeartbeatTimeout:  15 * time.Second,
 		AutoDiscovery:     true,
@@ -436,6 +441,13 @@ func (tc *TreeCoordinator) AddChild(childID string) error {
 		return fmt.Errorf("子节点数量已达上限 %d", tc.config.MaxChildren)
 	}
 
+	// 检查层级限制（新子节点的 Level 不能超过 MaxLevel）
+	newChildLevel := tc.localNode.Level + 1
+	if newChildLevel > tc.config.MaxLevel {
+		return fmt.Errorf("超出树的最大深度限制 %d（当前层级: %d）",
+			tc.config.MaxLevel, newChildLevel)
+	}
+
 	// 检查是否已存在
 	for _, cid := range tc.localNode.ChildrenIDs {
 		if cid == childID {
@@ -458,15 +470,17 @@ func (tc *TreeCoordinator) AddChild(childID string) error {
 	// 更新子节点信息
 	if child, exists := tc.allNodes[childID]; exists {
 		child.ParentID = tc.localNode.NodeID
-		child.Level = tc.localNode.Level + 1
+		child.Level = newChildLevel
 	}
 
 	tc.stats.LastTopologyUpdate.Store(time.Now())
 
 	logging.WithFields(map[string]any{
-		"parent": tc.localNode.NodeID,
-		"child":  childID,
-		"level":  tc.localNode.Level + 1,
+		"parent":       tc.localNode.NodeID,
+		"child":        childID,
+		"level":        newChildLevel,
+		"max_level":    tc.config.MaxLevel,
+		"max_children": tc.config.MaxChildren,
 	}).Info("添加子节点")
 
 	return nil
@@ -599,30 +613,41 @@ func (tc *TreeCoordinator) AddNode(nodeID, addr string) error {
 		return fmt.Errorf("节点已存在: %s", nodeID)
 	}
 
-	// 创建新节点
-	newNode := &Node{
-		NodeID:   nodeID,
-		Addr:     addr,
-		Status:   NodeStatusJoining,
-		Level:    0,
-		Metadata: make(map[string]string),
-	}
-
 	// 为新节点选择父节点（负载均衡）
 	parentID, err := tc.selectParentForNewNode()
 	if err != nil {
 		return fmt.Errorf("选择父节点失败: %w", err)
 	}
 
-	newNode.ParentID = parentID
+	// 获取父节点信息，计算新节点的层级
+	parent, exists := tc.allNodes[parentID]
+	if !exists {
+		return fmt.Errorf("父节点不存在: %s", parentID)
+	}
+
+	newNodeLevel := parent.Level + 1
+
+	// 检查层级限制
+	if newNodeLevel > tc.config.MaxLevel {
+		return fmt.Errorf("超出树的最大深度限制 %d（父节点层级: %d，新节点层级: %d）",
+			tc.config.MaxLevel, parent.Level, newNodeLevel)
+	}
+
+	// 创建新节点
+	newNode := &Node{
+		NodeID:   nodeID,
+		Addr:     addr,
+		ParentID: parentID,
+		Level:    newNodeLevel,
+		Status:   NodeStatusJoining,
+		Metadata: make(map[string]string),
+	}
 
 	// 更新父节点的子节点列表
-	if parent, exists := tc.allNodes[parentID]; exists {
-		if len(parent.ChildrenIDs) >= tc.config.MaxChildren {
-			return fmt.Errorf("父节点 %s 子节点数已达上限 %d", parentID, tc.config.MaxChildren)
-		}
-		parent.ChildrenIDs = append(parent.ChildrenIDs, nodeID)
+	if len(parent.ChildrenIDs) >= tc.config.MaxChildren {
+		return fmt.Errorf("父节点 %s 子节点数已达上限 %d", parentID, tc.config.MaxChildren)
 	}
+	parent.ChildrenIDs = append(parent.ChildrenIDs, nodeID)
 
 	// 添加节点到拓扑
 	tc.allNodes[nodeID] = newNode
@@ -634,7 +659,9 @@ func (tc *TreeCoordinator) AddNode(nodeID, addr string) error {
 		"node_id":   nodeID,
 		"addr":      addr,
 		"parent_id": parentID,
-		"level":     newNode.Level,
+		"level":     newNodeLevel,
+		"max_level": tc.config.MaxLevel,
+		"max_depth": tc.config.MaxLevel,
 	}).Info("添加节点到集群（在线扩容）")
 
 	// TODO: 通过 Gossip 协议扩散拓扑变更
@@ -783,17 +810,17 @@ func (tc *TreeCoordinator) ScaleDown(nodeIDs []string) error {
 //
 // 选择策略：
 //  1. 优先选择子节点数少的节点
-//  2. 考虑节点层级，避免树过深
-//  3. 优先选择同层级的节点
+//  2. 考虑节点层级，优先选择层级较低的节点（避免树过深）
+//  3. 确保新节点不超过 MaxLevel 限制
 func (tc *TreeCoordinator) selectParentForNewNode() (string, error) {
 	// 如果没有节点，本地节点成为父节点
 	if len(tc.allNodes) == 0 {
 		return tc.localNode.NodeID, nil
 	}
 
-	// 寻找子节点数最少的节点
 	var bestParent *Node
 	minChildren := tc.config.MaxChildren + 1
+	lowestLevel := tc.config.MaxLevel + 1
 
 	for _, node := range tc.allNodes {
 		// 只考虑就绪状态的节点
@@ -801,10 +828,28 @@ func (tc *TreeCoordinator) selectParentForNewNode() (string, error) {
 			continue
 		}
 
+		// 检查层级限制：该节点的子节点不能超过 MaxLevel
+		if node.Level >= tc.config.MaxLevel {
+			continue // 跳过已达到最大层级的节点
+		}
+
 		childrenCount := len(node.ChildrenIDs)
 
-		// 找到子节点数最少的节点
-		if childrenCount < minChildren {
+		// 优先选择层级较低的节点
+		if bestParent == nil || node.Level < lowestLevel {
+			bestParent = node
+			minChildren = childrenCount
+			lowestLevel = node.Level
+
+			// 如果找到既层级低又有空位的节点，直接使用
+			if childrenCount == 0 && node.Level < tc.config.MaxLevel {
+				break
+			}
+			continue
+		}
+
+		// 相同层级下，选择子节点数少的节点
+		if node.Level == lowestLevel && childrenCount < minChildren {
 			bestParent = node
 			minChildren = childrenCount
 
@@ -816,12 +861,14 @@ func (tc *TreeCoordinator) selectParentForNewNode() (string, error) {
 	}
 
 	if bestParent == nil {
-		return "", fmt.Errorf("没有可用的父节点")
+		return "", fmt.Errorf("没有可用的父节点（可能已达到树的最大深度 %d）", tc.config.MaxLevel)
 	}
 
 	logging.WithFields(map[string]any{
 		"parent_id":      bestParent.NodeID,
-		"children_count": minChildren,
+		"parent_level":   bestParent.Level,
+		"children_count": len(bestParent.ChildrenIDs),
+		"max_level":      tc.config.MaxLevel,
 	}).Debug("为新节点选择父节点")
 
 	return bestParent.NodeID, nil

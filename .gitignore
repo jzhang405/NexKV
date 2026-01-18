@@ -34,7 +34,6 @@ go.work.sum
 .idea/
 .vscode/
 .claude/
-.docs/
 .spec-workflow/
 .serena/
 nexkv

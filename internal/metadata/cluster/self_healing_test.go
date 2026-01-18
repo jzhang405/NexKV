@@ -130,6 +130,7 @@ func TestSelfHealer_NodeFailureDetection(t *testing.T) {
 
 	config := &TreeCoordinatorConfig{
 		MaxChildren:       10,
+		MaxLevel:          4, // 支持 1000+ 节点
 		HeartbeatInterval: 1 * time.Second,
 		HeartbeatTimeout:  3 * time.Second,
 		AutoDiscovery:     false,

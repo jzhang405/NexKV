@@ -16,6 +16,275 @@ NexKV 是一个采用**三层架构**设计的分布式数据库系统，实现�
 
 ---
 
+## AI 团队配置
+
+> **🎯 团队模式**：本项目采用**人机协作模式**。👤 **架构师**为真实人员，负责技术决策和最终评审；🤖 其他角色由 AI Agent 充当，通过 Claude Skills 提供专业支持。
+
+### 角色与技能映射
+
+> **✅ 当前状态**：所有技能已安装在 `~/.claude/skills/claude-skills/` 目录
+
+#### 🤖 项目经理（统筹指挥）
+- **主要技能**：Senior PM
+- **技能路径**：`~/.claude/skills/claude-skills/project-management/packaged-skills/senior-pm.zip`
+- **辅助技能**：Scrum Master
+- **核心职责**：
+  - **🎯 统筹指挥**：指挥协调其他 AI Agents（产品经理、架构师、开发、测试、DevOps）
+  - **📋 战略规划**：制定产品路线图、项目组合管理、与业务目标对齐
+  - **👥 利益相关者管理**：向管理层汇报、跨部门协调、期望管理
+  - **⚠️ 风险与预算管理**：风险识别与缓解、预算规划、ROI 分析
+  - **🔄 资源协调**：跨职能团队协调、冲突解决、资源分配
+- **核心功能**：
+  - 项目组合管理和多项目协调
+  - 高管级沟通和汇报
+  - 跨职能团队领导力
+  - 决策框架和升级协议
+- **使用方式**：项目规划、资源协调、进度跟踪、风险管控时自动激活
+- **技能来源**：[alirezarezvani/claude-skills](https://github.com/alirezarezvani/claude-skills)
+
+#### 🤖 产品经理
+- **主要技能**：Product Manager Toolkit
+- **技能路径**：`~/.claude/skills/claude-skills/product-team/product-manager-toolkit/SKILL.md`
+- **负责文档**：01_产品需求文档.md、03_需求评审纪要.md、04_项目计划.md
+- **核心功能**：
+  - RICE 优先级排序（RICE Prioritizer）
+  - 客户访谈分析（Customer Interview Analyzer）
+  - PRD 模板（4种格式）
+  - 发现框架（客户访谈指南、假设模板）
+- **使用方式**：需求讨论、产品规划时自动读取技能文档
+- **技能来源**：[alirezarezvani/claude-skills](https://github.com/alirezarezvani/claude-skills)
+
+#### 👤 架构师（真实人员）
+- **辅助参考**：CTO Advisor、Senior Architect
+- **技能路径**：
+  - `~/.claude/skills/claude-skills/c-level-advisor/cto-advisor/SKILL.md`
+  - `~/.claude/skills/claude-skills/engineering-team/senior-architect/SKILL.md`
+- **负责文档**：01_系统架构设计.md、01_一致性协议设计.md、05_API接口设计.md、01_详细设计文档.md
+- **核心职责**：
+  - 技术架构设计、关键技术决策
+  - 代码 Review、AI Agent 指导
+  - 三层架构设计决策
+- **辅助技能功能**：
+  - **CTO Advisor**：技术债务分析、团队规模计算、工程指标框架
+  - **Senior Architect**：架构图生成、依赖分析、系统设计工作流
+- **工作模式**：真人主导，AI 提供建议和参考
+
+#### 🤖 核心开发工程师 A（存储/一致性）
+- **主要技能**：Senior Backend
+- **技能路径**：`~/.claude/skills/claude-skills/engineering-team/senior-backend/SKILL.md`
+- **辅助技能**：TDD Guide (`~/.claude/skills/claude-skills/engineering-team/tdd-guide/SKILL.md`)
+- **负责模块**：MVStore、WAL、Gossip、Quorum、2PC
+- **核心功能**：
+  - 后端架构设计
+  - API 设计与实现
+  - 测试驱动开发
+- **技术栈**：Go 1.21+、sync.Map、WAL、MessagePack
+- **使用方式**：编码任务、协议实现时读取技能文档
+
+#### 🤖 核心开发工程师 B（网络/集群）
+- **主要技能**：Senior Backend
+- **技能路径**：`~/.claude/skills/claude-skills/engineering-team/senior-backend/SKILL.md`
+- **辅助技能**：Code Reviewer
+- **负责模块**：TCP Transport、消息编解码、节点管理、故障自愈
+- **核心功能**：
+  - 网络编程
+  - 分布式系统设计
+  - 代码质量审查
+- **技术栈**：Go 1.21+、TCP、自定义帧格式、序列化
+- **使用方式**：网络层开发、集群功能实现时读取技能文档
+
+#### 🤖 测试工程师
+- **主要技能**：Senior QA、TDD Guide
+- **技能路径**：
+  - `~/.claude/skills/claude-skills/engineering-team/senior-qa/SKILL.md`
+  - `~/.claude/skills/claude-skills/engineering-team/tdd-guide/SKILL.md`
+- **负责文档**：01_测试计划文档.md、02_测试用例文档.md、03_测试报告.md、04_Bug清单.md
+- **核心功能**：
+  - 测试策略制定
+  - 测试用例设计
+  - 测试覆盖率分析
+  - TDD 实践指导
+- **测试目标**：单元测试覆盖率 > 80%、45 个集成测试用例
+- **使用方式**：测试计划编写、测试用例设计时读取技能文档
+
+#### 🤖 DevOps 工程师
+- **主要技能**：Senior DevOps
+- **技能路径**：`~/.claude/skills/claude-skills/engineering-team/senior-devops/SKILL.md`
+- **负责文档**：01_部署手册.md、02_运维手册.md、03_版本发布文档.md、04_部署验证.md
+- **核心功能**：
+  - CI/CD 流水线设计
+  - 容器化部署
+  - 监控告警配置
+  - 基础设施即代码
+- **技术栈**：GitHub Actions、Docker、Kubernetes、监控告警
+- **使用方式**：部署配置、CI/CD 流水线设计时读取技能文档
+
+---
+
+### 技能使用方式
+
+#### 当前安装状态
+
+所有 NexKV 所需技能已安装在 `~/.claude/skills/claude-skills/`：
+
+```
+claude-skills/
+├── project-management/
+│   └── packaged-skills/senior-pm.zip         ✅
+├── product-team/
+│   └── product-manager-toolkit/SKILL.md      ✅
+├── c-level-advisor/
+│   └── cto-advisor/SKILL.md                   ✅
+└── engineering-team/
+    ├── senior-architect/SKILL.md              ✅
+    ├── senior-backend/SKILL.md                ✅
+    ├── senior-qa/SKILL.md                     ✅
+    ├── senior-devops/SKILL.md                 ✅
+    └── tdd-guide/SKILL.md                     ✅
+```
+
+#### 工作模式
+
+**自动模式**：根据任务类型，我会自动读取对应的 SKILL.md 文件并应用相关知识
+
+| 任务类型 | 读取技能文档 |
+|---------|-------------|
+| **项目规划、资源协调、进度跟踪、风险管控** | `senior-pm.zip`（统筹指挥其他 agents） |
+| 需求讨论、产品规划 | `product-manager-toolkit/SKILL.md` |
+| 架构设计、技术决策 | `senior-architect/SKILL.md` + `cto-advisor/SKILL.md` |
+| 后端开发、API 设计 | `senior-backend/SKILL.md` |
+| 测试计划、TDD 实践 | `senior-qa/SKILL.md` + `tdd-guide/SKILL.md` |
+| CI/CD、部署运维 | `senior-devops/SKILL.md` |
+
+**手动模式**：您也可以明确要求使用特定技能
+
+```
+# 示例请求
+"请使用 senior-architect 技能，帮我设计三层架构"
+"请使用 tdd-guide 技能，为 MVStore 接口生成测试用例"
+```
+
+---
+
+### 人机协作开发流程
+
+#### 阶段 0: 项目统筹（🤖 项目经理指挥）
+1. **🤖 项目经理**（AI + Senior PM）：
+   - **🎯 统筹指挥**：指挥协调所有其他 AI Agents
+   - 制定产品路线图和项目计划
+   - 资源分配和进度跟踪
+   - 风险识别和缓解措施
+   - 向管理层汇报项目状态
+
+#### 阶段 1: 需求与规划
+1. **👤 架构师**（真人）：明确项目目标和技术方向
+2. **🤖 项目经理**（AI + Senior PM）：
+   - **指挥协调**：协调产品经理和架构师的工作
+   - 制定项目组合和时间计划
+   - 识别项目风险和依赖关系
+3. **🤖 产品经理**（AI + Product Manager Toolkit）：
+   - 撰写 PRD（产品需求文档）
+   - 组织需求评审
+   - RICE 优先级排序
+
+#### 阶段 2: 架构与设计
+1. **👤 架构师**（真人）：技术决策、架构评审
+2. **🤖 项目经理**（AI + Senior PM）：
+   - **指挥协调**：协调架构师和开发团队
+   - 确保设计与资源匹配
+   - 跟踪设计进度
+3. **🤖 架构助手**（AI + Senior Architect + CTO Advisor）：
+   - 提供架构建议
+   - 评审设计方案
+   - 识别技术风险
+   - 生成架构图（C4、序列图、组件图）
+
+#### 阶段 3: 开发与编码
+1. **🤖 项目经理**（AI + Senior PM）：
+   - **指挥协调**：分配开发任务，跟踪进度
+   - 协调核心开发 A 和 B 的工作
+   - 处理开发过程中的阻塞问题
+2. **🤖 核心开发 A**（AI + Senior Backend + TDD）：
+   - 实现 MVStore、WAL
+   - 实现 Gossip、Quorum、2PC
+   - 单元测试覆盖率 > 80%
+3. **🤖 核心开发 B**（AI + Senior Backend + Code Reviewer）：
+   - 实现 TCP Transport
+   - 实现节点管理、故障自愈
+   - 代码质量分析和安全扫描
+
+#### 阶段 4: 测试与验收
+1. **🤖 项目经理**（AI + Senior PM）：
+   - **指挥协调**：协调测试和开发团队
+   - 跟踪缺陷修复进度
+   - 确保验收标准达成
+2. **🤖 测试工程师**（AI + Senior QA + TDD）：
+   - 编写测试计划（TPD）
+   - 设计测试用例（TCD）
+   - 执行集成测试（45 个用例）
+   - 生成测试报告（TR）
+
+#### 阶段 5: 部署与运维
+1. **🤖 项目经理**（AI + Senior PM）：
+   - **指挥协调**：协调 DevOps 和各团队
+   - 制定发布计划
+   - 向管理层汇报发布状态
+2. **🤖 DevOps 工程师**（AI + Senior DevOps）：
+   - 编写部署手册（DM）
+   - 配置 CI/CD 流水线（GitHub Actions）
+   - 设置监控告警
+   - 生成版本发布文档（RD）
+
+---
+
+### 技能能力概览
+
+#### Senior PM（项目经理 - 统筹指挥）
+- **战略规划**：产品路线图、项目组合管理、业务目标对齐
+- **利益相关者管理**：高管级沟通、跨部门协调、期望管理
+- **风险与预算管理**：风险识别与缓解、预算规划、ROI 分析
+- **团队领导力**：跨职能团队协调、资源分配、冲突解决
+- **项目组合管理**：多项目协调、优先级排序、依赖管理
+- **决策框架**：升级协议、手off 协议、决策标准
+
+#### Product Manager Toolkit
+- **RICE Prioritizer**：自动功能优先级排序和组合分析
+- **Customer Interview Analyzer**：AI 驱动的用户访谈洞察提取
+- **PRD Templates**：4 种综合格式
+- **Discovery Frameworks**：客户访谈指南、假设模板、机会解决方案树
+
+#### Senior Architect
+- **Architecture Diagram Generator**：创建 C4、序列图和组件图
+- **Project Architect**：搭建架构文档和 ADR
+- **Dependency Analyzer**：分析和可视化依赖关系
+- **Architecture Patterns**：单体、微服务、无服务器、事件驱动模式
+
+#### Senior Backend
+- **API Design Patterns**：RESTful、GraphQL、微服务架构
+- **Database Best Practices**：查询优化、索引、连接池
+- **Backend Security**：认证、授权、数据验证
+- **Performance Optimization**：缓存策略、负载均衡
+
+#### Senior QA
+- **Test Strategy**：测试金字塔、TDD、BDD 方法论
+- **Test Suite Generator**：创建单元、集成、E2E 测试
+- **Coverage Analysis**：分析和报告测试覆盖率
+- **Quality Assurance**：测试计划、测试用例设计
+
+#### Senior DevOps
+- **CI/CD Pipeline**：GitHub Actions/CircleCI 流水线
+- **Infrastructure as Code**：Terraform、Docker、Kubernetes
+- **Deployment Automation**：自动化部署工作流
+- **Monitoring & Alerting**：Prometheus、Grafana、日志聚合
+
+#### TDD Guide
+- **Test Generation**：将需求、用户故事、API 规范转换为可执行测试
+- **Coverage Analysis**：解析 LCOV、JSON、XML 覆盖率报告
+- **Framework Support**：Go testing、testify、gomega
+- **Quality Review**：测试隔离、断言、命名约定、复杂性分析
+
+---
+
 ## 三层架构设计
 
 ### Layer 1: 元数据一致性层（基础层）
@@ -213,6 +482,55 @@ flowchart TD
     G -.-> G1[输出：运维日志、故障纪要、迭代清单]
 ```
 
+### PR 全流程（12步闭环）
+
+> **核心原则**：每个 PR（Pull Request）对应一个完整的开发闭环，包含前置规划文档和后置总结文档，确保从需求到交付的可追溯性。
+
+```mermaid
+flowchart LR
+    A[1.建立新分支] --> B[2.编写Pre文档]
+    B --> C[3.架构师评审]
+    C -->|未通过| D[4.优化Pre文档]
+    D --> C
+    C -->|通过| E[6.架构师预审批]
+    E --> F[7.启动开发]
+    F --> G[8.本地测试]
+    G --> H[9.提交GitHub/触发CI]
+    H -->|CI失败| I[10.修复CI Bug]
+    I --> H
+    H -->|CI通过| J[11.编写Post文档]
+    J --> K[12.Post文档归档]
+
+    style A fill:#e1f5ff
+    style B fill:#fff4e6
+    style C fill:#ffe6e6
+    style E fill:#e8f5e9
+    style K fill:#f3e5f5
+```
+
+**PR 全流程 12 步详解**：
+
+| 步骤 | 名称 | 负责角色 | 交付物 | 关键产出 |
+|------|------|---------|--------|---------|
+| **1** | 建立新分支 | 🤖 核心开发 | Feature 分支 | 分支命名：`feature/XXX-功能描述` |
+| **2** | 编写 Pre 文档 | 🤖 核心开发 + AI | Pre 文档 | 需求、设计、风险评估 |
+| **3** | 架构师评审 | 👤 架构师 | 评审意见 | 技术可行性、架构合理性 |
+| **4** | 优化 Pre 文档 | 🤖 核心开发 + AI | 优化后文档 | 修复评审问题，AI 辅助优化 |
+| **5** | 循环评审 | 👤 架构师 + 🤖 项目经理 | 评审通过记录 | 多轮评审直至通过 |
+| **6** | 架构师预审批 | 👤 架构师 | 预审批确认 | 同意启动开发 |
+| **7** | 启动开发 | 🤖 核心开发 | 代码实现 | 按 Pre 文档落地 |
+| **8** | 本地测试 | 🤖 测试工程师 | 测试报告 | 单元测试、集成测试 |
+| **9** | 提交 GitHub/CI | 🤖 DevOps + 核心开发 | PR 提交 | 触发 CI 流水线 |
+| **10** | 修复 CI Bug | 🤖 核心开发 | 修复记录 | 循环修复直至 CI 通过 |
+| **11** | 编写 Post 文档 | 🤖 核心开发 + AI | Post 文档 | 成果总结、未完成项、ToDo |
+| **12** | Post 文档归档 | 🤖 项目经理 | 归档文档 | 与代码同步版本管理 |
+
+**关键原则**：
+1. **Pre 文档未通过评审前，禁止启动开发**（先明确再动手）
+2. **AI 辅助优化**：Pre 文档优化阶段，AI 辅助梳理逻辑、生成示例代码/流程图、排查潜在风险
+3. **CI 与文档联动**：CI 问题修复后，需同步记录至流程节点
+4. **归档要求**：PR 合并后，全流程文档需补充完整，归档至对应目录
+
 ### 文档目录结构
 
 所有开发文档统一存放在 `docs/` 目录下，按研发阶段分类：
@@ -220,37 +538,79 @@ flowchart TD
 ```
 docs/
 ├── 01_requirement_planning/       # 需求与规划阶段
-│   ├── PRD.md                     # 产品需求文档
-│   ├── TRD.md                     # 技术需求文档
-│   ├── requirement_review_minutes.md
-│   └── project_plan.md
+│   ├── 01_产品需求文档.md
+│   ├── 02_技术需求文档.md
+│   ├── 03_需求评审纪要.md
+│   └── 04_项目计划.md
 ├── 02_design/                     # 架构与详细设计阶段
-│   ├── SAD.md                     # 系统架构设计文档
-│   ├── DDD.md                     # 模块详细设计文档
-│   ├── SED.md                     # 存储引擎设计文档
-│   ├── CPD.md                     # 一致性协议设计文档
-│   ├── APID.md                    # API接口设计文档
-│   └── design_review_minutes.md
+│   ├── architecture/
+│   │   ├── 01_系统架构设计.md
+│   │   └── 02_数据结构设计.md
+│   ├── modules/
+│   │   ├── 01_详细设计文档.md
+│   │   ├── 02_存储引擎设计.md
+│   │   ├── 03_WAL崩溃恢复.md
+│   │   ├── 04_故障恢复.md
+│   │   ├── 05_混合逻辑时钟HLC.md
+│   │   ├── 06_时钟漂移补偿.md
+│   │   ├── 07_树形协调器拓扑同步.md
+│   │   ├── 08_树形协调器自动发现与心跳.md
+│   │   └── 09_网络分区处理.md
+│   ├── protocols/
+│   │   ├── 01_一致性协议设计.md
+│   │   ├── 02_二阶段提交与Gossip状态同步.md
+│   │   ├── 03_Gossip消息响应机制.md
+│   │   └── 04_一致性级别切换.md
+│   ├── 05_API接口设计.md
+│   └── 06_设计评审纪要.md
 ├── 03_development/                # 开发与编码阶段
-│   ├── CDS.md                     # 编码规范文档
-│   ├── RDD.md                     # 实时细节文档
-│   ├── DRD.md                     # 第三方依赖文档
+│   ├── 01_编码规范文档.md
+│   ├── 02_运行时细节文档.md
+│   ├── 03_第三方依赖文档.md
 │   ├── unit_test_report/          # 单元测试报告
 │   └── code_review_records.md
 ├── 04_test/                       # 测试与验收阶段
-│   ├── TPD.md                     # 测试计划文档
-│   ├── TCD.md                     # 测试用例文档
-│   ├── TR.md                      # 测试报告文档
-│   ├── bug_list.md
-│   └── acceptance_report.md
+│   ├── 01_测试计划文档.md
+│   ├── 02_测试用例文档.md
+│   ├── 03_测试报告.md
+│   ├── 04_Bug清单.md
+│   ├── 05_验收报告.md
+│   └── 06_TLA+验证计划与结果.md
 ├── 05_deployment_operation/       # 部署与运维阶段
-│   ├── DM.md                      # 部署手册
-│   ├── OM.md                      # 运维手册
-│   ├── RD.md                      # 版本发布文档
-│   └── deployment_verification.md
+│   ├── 01_部署手册.md
+│   ├── 02_运维手册.md
+│   ├── 03_版本发布文档.md
+│   └── 04_部署验证.md
 ├── 06_project_management/         # 项目管理
-│   ├── project_init_report.md
-│   ├── team_division.md
+│   ├── pr_documents/              # PR全流程文档（Pre+Post整合）
+│   │   ├── templates/             # 统一模板目录
+│   │   │   ├── feature_pr_full_template.md  # 新功能PR模板
+│   │   │   ├── fix_pr_full_template.md      # Bug修复PR模板
+│   │   │   └── doc_pr_full_template.md      # 纯文档PR模板
+│   │   ├── feature/               # 新功能PR归档
+│   │   │   └── YYYY-MM-DD_PR-XXX_工作主题_全流程.md
+│   │   ├── fix/                   # Bug修复PR归档
+│   │   │   └── YYYY-MM-DD_PR-XXX_工作主题_全流程.md
+│   │   └── doc/                   # 纯文档PR归档
+│   │       └── YYYY-MM-DD_PR-XXX_工作主题_全流程.md
+│   ├── brainstorm/               # 头脑风暴与发现记录
+│   │   └── {tag}_YYYY-MM-DD_{topic}.md
+│   │       - **功能定位**：记录开发过程中的发现、问题、建议和待讨论事项
+│   │       - **命名规范**：
+│   │         - tag: 主题标识（metadata/messagepack/doc-review）
+│   │         - YYYY-MM-DD: 创建日期
+│   │         - topic: 简短描述（implementation-findings/serialization-proposal）
+│   │       - **文档类型**：
+│   │         - Findings（发现）：代码审查中发现的问题、实现差异
+│   │         - Proposals（建议）：技术方案建议、架构改进提案
+│   │         - Decisions（决策）：技术决策记录、方案选定理由
+│   │       - **使用流程**：
+│   │         代码审查发现 → 记录到 brainstorm → 团队讨论 → 形成决策
+│   │         技术方案讨论 → 记录到 brainstorm → 评审通过 → 实施落地
+│   │         文档与代码差异 → 记录到 brainstorm → 统一更新 → 避免混淆
+│   ├── 01_项目初始化报告.md
+│   ├── 02_团队分工清单.md
+│   ├── 04_风险评估与缓解.md
 │   └── meeting_minutes/
 └── README.md                      # docs目录说明
 ```
@@ -495,7 +855,7 @@ func (q *QuorumService) PropagateMetadataChange(
 
 ### 测试与验证
 
-参考文档：`.docs/LealoneL1元数据一致性--验证计划.md`
+参考文档：`docs/04_test/06_TLA+验证计划与结果.md`
 
 #### 验证方法
 
@@ -547,6 +907,71 @@ func (q *QuorumService) PropagateMetadataChange(
 - **I**：接口专一
 - **D**：依赖抽象而非具体实现
 
+### 文档图表规范
+
+**📊 核心原则：尽量用 Mermaid**
+
+- **优先使用 Mermaid**：所有能用 Mermaid 表达的图表，必须使用 Mermaid
+- **禁止 ASCII 线框图**：不使用 `+---+`、`│─┐└┘` 等字符绘制的线框图
+- **不合适才用其他**：只有 Mermaid 真的不合适时，才考虑表格或其他格式
+
+**Mermaid 图表类型选择**
+| 图表用途 | Mermaid 类型 | 关键字 | 是否优先用 Mermaid |
+|---------|-------------|--------|------------------|
+| 流程/步骤 | 流程图 | `flowchart TD/LR` | ✅ 是 |
+| 系统架构 | 架构图/子图 | `graph`、`subgraph` | ✅ 是 |
+| 时序交互 | 时序图 | `sequenceDiagram` | ✅ 是 |
+| 状态转换 | 状态图 | `stateDiagram` | ✅ 是 |
+| 实体关系 | ER 图 | `erDiagram` | ✅ 是 |
+| 类关系 | 类图 | `classDiagram` | ✅ 是 |
+| 甘特图 | 进度规划 | `gantt` | ✅ 是 |
+| 数据分层/分层架构 | 层级图 | `graph` + `subgraph` | ✅ 是 |
+| 简单数据结构 | 表格 | Markdown 表格 | ❌ 否（表格更清晰） |
+| 帧格式/字段列表 | 表格 | Markdown 表格 | ❌ 否（表格更清晰） |
+
+**图表编写规范**
+1. **清晰命名**：节点和边的命名要简洁明了，使用中文
+2. **合理布局**：使用方向指示符（`TD`、`LR`）优化图表布局
+3. **样式统一**：同类节点使用相同的样式和颜色
+4. **注释说明**：复杂图表需要配文字说明
+5. **测试渲染**：编写后验证 Mermaid 语法正确性
+
+**示例对比**
+
+❌ **错误（ASCII 线框图 - 严禁使用）**：
+```
+┌─────────────┐
+│  应用层     │
+└─────────────┘
+     ↓
+┌─────────────┐
+│  数据层     │
+└─────────────┘
+```
+
+✅ **正确（Mermaid 流程图 - 用于流程/架构）**：
+```mermaid
+flowchart TD
+    A[应用层] --> B[数据层]
+```
+
+✅ **正确（Mermaid 子图 - 用于分层架构）**：
+```mermaid
+flowchart TD
+    subgraph L3["Layer 3: 事务层"]
+        A["2PC 协议"]
+    end
+    subgraph L2["Layer 2: 数据层"]
+        B["MVStore"]
+    end
+    A --> B
+```
+
+❌ **不合适（表格 - 用于简单数据结构）**：
+| 层级 | 名称 | 描述 |
+|------|------|------|
+| L3 | 事务层 | 2PC 协议 |
+
 ### Git 工作流
 
 - **分支策略**：main（主分支） + feature/*（功能分支）
@@ -562,6 +987,52 @@ func (q *QuorumService) PropagateMetadataChange(
   - 运行 `go test ./...` 确保测试通过
   - 运行 `go fmt ./...` 格式化代码
   - 运行 `go vet ./...` 静态检查
+
+### Brainstorm 文档管理
+
+**功能定位**：`docs/06_project_management/brainstorm/` 目录用于记录开发过程中的发现、问题、建议和待讨论事项，形成从发现问题 → 讨论方案 → 形成决策的完整闭环。
+
+**命名规范**：`{tag}_YYYY-MM-DD_{topic}.md`
+- `tag`：主题标识（如 `metadata`、`messagepack`、`doc-review`）
+- `YYYY-MM-DD`：创建日期
+- `topic`：简短描述（如 `implementation-findings`、`serialization-proposal`）
+
+**文档类型**：
+- **Findings（发现）**：代码审查中发现的问题、实现差异、待改进项
+- **Proposals（建议）**：技术方案建议、架构改进提案、实施计划
+- **Decisions（决策）**：技术决策记录、方案选定理由、权衡分析
+
+**使用流程**：
+```
+1. 代码审查/技术讨论
+   ↓
+2. 记录到 brainstorm（Findings/Proposals）
+   ↓
+3. 团队评审讨论
+   ↓
+4. 形成决策（Decisions）
+   ↓
+5. 实施落地
+   ↓
+6. 关联或归档文档
+```
+
+**创建时机**：
+- ✅ 代码审查发现文档与代码不一致
+- ✅ 技术方案讨论需要记录详细信息
+- ✅ 发现潜在问题或改进机会
+- ✅ 需要记录技术决策和权衡分析
+- ✅ PR 实施过程中的重要发现
+
+**当前示例**：
+- `metadata_2026-01-18_implementation-findings.md` - Metadata 镜像内容实现状态发现（60% 完成度）
+- `messagepack_2026-01-18_metadata-serialization-proposal.md` - MessagePack 序列化方案建议
+
+**注意事项**：
+- 每个 brainstorm 文档应该清晰描述问题/建议
+- 包含具体的代码位置引用（如 `file:line`）
+- 提供可操作的建议或解决方案
+- 标记文档状态（如 `📋 待讨论`、`💡 技术建议`、`✅ 已决策`）
 
 ---
 
@@ -610,20 +1081,18 @@ func (q *QuorumService) PropagateMetadataChange(
 
 ### 核心架构文档
 
-- `.docs/LealoneL1元数据一致性--0.Overview-元数据层总览.md`
-- `.docs/LealoneL2副本数据一致性--0.单机分布式一体.md`
-- `.docs/LealoneL3分布式事务一致性--1.无协调者简化版2PC.md`
+- `docs/00_overview/core-architecture-concept.md` - 核心架构理念
+- `docs/00_overview/standalone-distributed-unified.md` - 单机-分布式一体架构
+- `docs/02_design/protocols/01_一致性协议设计.md` - 一致性协议设计文档
 
 ### 验证计划
 
-- `.docs/LealoneL1元数据一致性--验证计划.md`
+- `docs/04_test/06_TLA+验证计划与结果.md` - TLA+ 验证计划与结果
 
 ### 技术细节
 
-- `.docs/Lealone分布式核心架构解析.md`
-- `.docs/Lealone-distributed模块深度源码解析.md`
-- `.docs/Lealone-sql模块深度源码解析.md`
-- `.docs/Lealone-storage模块深度解析.md`
+- `docs/03_development/` 目录下的开发文档
+- `docs/02_design/` 目录下的设计文档
 
 ---
 

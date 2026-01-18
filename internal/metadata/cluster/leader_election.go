@@ -11,7 +11,7 @@ package cluster
 
 import (
 	"context"
-	"fmt"
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -112,11 +112,11 @@ func NewLeaderElection(
 	}
 
 	if transport == nil {
-		return nil, fmt.Errorf("transport 不能为空")
+		return nil, errcodes.NewClusterNilParameterError("transport")
 	}
 
 	if localNodeID == "" {
-		return nil, fmt.Errorf("localNodeID 不能为空")
+		return nil, errcodes.NewClusterNilParameterError("localNodeID")
 	}
 
 	election := &LeaderElection{
@@ -138,7 +138,7 @@ func NewLeaderElection(
 // Start 启动 Leader 选举
 func (le *LeaderElection) Start() error {
 	if !le.started.CompareAndSwap(false, true) {
-		return fmt.Errorf("leader 选举已经启动")
+		return errcodes.NewClusterServiceStateError("leader 选举", "已经启动")
 	}
 
 	logging.WithFields(map[string]any{
@@ -412,11 +412,11 @@ func (le *LeaderElection) AddCandidate(node *Node) error {
 	defer le.candidatesMu.Unlock()
 
 	if node == nil {
-		return fmt.Errorf("节点不能为空")
+		return errcodes.NewClusterNilParameterError("节点")
 	}
 
 	if _, exists := le.candidates[node.NodeID]; exists {
-		return fmt.Errorf("候选节点已存在: %s", node.NodeID)
+		return errcodes.NewClusterElectionError("候选节点已存在: "+node.NodeID, nil)
 	}
 
 	le.candidates[node.NodeID] = node
@@ -481,7 +481,7 @@ func (le *LeaderElection) GetStats() *LeaderElectionStats {
 // Campaign 竞选 Leader（手动触发选举）
 func (le *LeaderElection) Campaign(ctx context.Context) error {
 	if !le.config.AutoElection {
-		return fmt.Errorf("自动选举未启用")
+		return errcodes.NewClusterElectionError("自动选举未启用", nil)
 	}
 
 	le.conductElection()

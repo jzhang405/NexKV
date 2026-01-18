@@ -8,10 +8,9 @@ package transport
 
 import (
 	"encoding/binary"
-	"encoding/json"
-	"fmt"
 	"io"
 
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -34,13 +33,13 @@ func NewMessagePackCodec() *MessagePackCodec {
 // 格式: [Type:2字节][DataLen:4字节][Data:N字节]
 func (c *MessagePackCodec) Encode(msg Message) ([]byte, error) {
 	if msg == nil {
-		return nil, fmt.Errorf("消息为空")
+		return nil, errcodes.NewCodecInvalidMessageError("消息为空")
 	}
 
 	// 编码消息数据
 	dataBytes, err := msgpack.Marshal(msg)
 	if err != nil {
-		return nil, fmt.Errorf("编码消息数据失败: %w", err)
+		return nil, errcodes.NewCodecEncodeFailedError("Encode", err)
 	}
 
 	// 构建完整的编码数据
@@ -65,10 +64,10 @@ func (c *MessagePackCodec) Encode(msg Message) ([]byte, error) {
 // 格式: [Type:2字节][DataLen:4字节][Data:N字节]
 func (c *MessagePackCodec) Decode(data []byte) (Message, error) {
 	if len(data) == 0 {
-		return nil, fmt.Errorf("数据为空")
+		return nil, errcodes.NewCodecInvalidDataError("Decode", "数据为空")
 	}
 	if len(data) < 6 {
-		return nil, fmt.Errorf("数据长度不足: 需要 %d 字节，实际 %d 字节", 6, len(data))
+		return nil, errcodes.NewCodecInvalidDataError("Decode", "数据长度不足")
 	}
 
 	// 读取 Type (2 字节)
@@ -79,19 +78,19 @@ func (c *MessagePackCodec) Decode(data []byte) (Message, error) {
 
 	// 验证数据长度
 	if len(data) < 6+dataLen {
-		return nil, fmt.Errorf("数据长度不足: 需要 %d 字节，实际 %d 字节", 6+dataLen, len(data))
+		return nil, errcodes.NewCodecInvalidDataError("Decode", "数据长度不足")
 	}
 
 	// 创建消息实例
 	msg, err := createMessageByType(msgType)
 	if err != nil {
-		return nil, fmt.Errorf("创建消息实例失败: %w", err)
+		return nil, errcodes.NewOpErr(errcodes.ErrCodeInternal, "createMessage", "创建消息实例失败", err)
 	}
 
 	// 解码消息数据
 	if dataLen > 0 {
 		if err := msgpack.Unmarshal(data[6:6+dataLen], msg); err != nil {
-			return nil, fmt.Errorf("解码消息数据失败: %w", err)
+			return nil, errcodes.NewCodecDecodeFailedError("Unmarshal", err)
 		}
 	}
 
@@ -177,7 +176,7 @@ func createMessageByType(msgType MessageType) (Message, error) {
 		return &LeaderElectionMessage{}, nil
 
 	default:
-		return nil, fmt.Errorf("未知消息类型: %d", msgType)
+		return nil, errcodes.NewCodecUnknownMessageTypeError(int(msgType))
 	}
 }
 
@@ -518,9 +517,10 @@ func (m *NodePingMessage) Size() int {
 
 // NodePongMessage 心跳响应
 type NodePongMessage struct {
-	NodeID   string `msgpack:"node_id"`
-	Sequence int64  `msgpack:"sequence"`
-	Status   string `msgpack:"status"` // "ready", "busy", "leaving"
+	NodeID    string `msgpack:"node_id"`
+	Sequence  int64  `msgpack:"sequence"`
+	Status    string `msgpack:"status"`    // "ready", "busy", "leaving"
+	Timestamp int64  `msgpack:"timestamp"` // Pong 发送时间戳（用于计算 RTT）
 }
 
 func (m *NodePongMessage) Type() MessageType           { return MessageTypeNodePong }
@@ -660,35 +660,6 @@ func (m *LeaderElectionMessage) Size() int {
 }
 
 // ========================================
-// JSON 编解码器（用于调试和日志）
-// ========================================
-
-// JSONCodec JSON 编解码器（仅用于调试）
-type JSONCodec struct{}
-
-// NewJSONCodec 创建 JSON 编解码器
-func NewJSONCodec() *JSONCodec {
-	return &JSONCodec{}
-}
-
-// Encode 编码消息
-func (c *JSONCodec) Encode(msg Message) ([]byte, error) {
-	return json.Marshal(msg)
-}
-
-// Decode 解码消息
-func (c *JSONCodec) Decode(data []byte) (Message, error) {
-	// JSON 解码需要额外的类型信息
-	// 这里仅用于调试，实际使用 MessagePack
-	return nil, fmt.Errorf("JSON 解码未实现，请使用 MessagePack")
-}
-
-// Name 返回编解码器名称
-func (c *JSONCodec) Name() string {
-	return "json"
-}
-
-// ========================================
 // 编解码器工具函数
 // ========================================
 
@@ -701,7 +672,7 @@ func EncodeFrame(msg Message) (*Frame, error) {
 	// 编码消息
 	data, err := codec.Encode(msg)
 	if err != nil {
-		return nil, fmt.Errorf("编码消息失败: %w", err)
+		return nil, errcodes.NewCodecEncodeFailedError("EncodeFrame", err)
 	}
 
 	// 创建帧 (使用 MessagePack 编解码器)
@@ -714,7 +685,7 @@ func EncodeFrame(msg Message) (*Frame, error) {
 // 从完整帧中解码出消息
 func DecodeFrame(frame *Frame) (Message, error) {
 	if frame == nil {
-		return nil, fmt.Errorf("帧为空")
+		return nil, errcodes.NewCodecInvalidMessageError("帧为空")
 	}
 
 	codec := NewMessagePackCodec()
@@ -722,7 +693,7 @@ func DecodeFrame(frame *Frame) (Message, error) {
 	// 解码消息
 	msg, err := codec.Decode(frame.Data)
 	if err != nil {
-		return nil, fmt.Errorf("解码消息失败: %w", err)
+		return nil, errcodes.NewCodecDecodeFailedError("DecodeFrame", err)
 	}
 
 	return msg, nil
@@ -763,7 +734,7 @@ func (mr *MessageReader) ReadMessage() (Message, error) {
 	// 解码消息
 	msg, err := mr.codec.Decode(frame.Data)
 	if err != nil {
-		return nil, fmt.Errorf("解码消息失败: %w", err)
+		return nil, errcodes.NewCodecDecodeFailedError("ReadMessage", err)
 	}
 
 	return msg, nil
@@ -794,7 +765,7 @@ func (mw *MessageWriter) WriteMessage(msg Message) error {
 	// 编码消息
 	data, err := mw.codec.Encode(msg)
 	if err != nil {
-		return fmt.Errorf("编码消息失败: %w", err)
+		return errcodes.NewCodecEncodeFailedError("WriteMessage", err)
 	}
 
 	// 创建帧 (使用 MessagePack 编解码器)
@@ -802,7 +773,7 @@ func (mw *MessageWriter) WriteMessage(msg Message) error {
 
 	// 写入帧
 	if err := mw.frameWriter.WriteFrame(frame); err != nil {
-		return fmt.Errorf("写入帧失败: %w", err)
+		return errcodes.NewOpErr(errcodes.ErrCodeTransport, "WriteFrame", "写入帧失败", err)
 	}
 
 	return nil

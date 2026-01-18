@@ -5,7 +5,7 @@ package consensus
 
 import (
 	"context"
-	"fmt"
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -180,23 +180,23 @@ func NewTwoPCService(
 	}
 
 	if metaStore == nil {
-		return nil, fmt.Errorf("metaStore 不能为空")
+		return nil, errcodes.NewConsensusNilParameterError("metaStore")
 	}
 
 	if transport == nil {
-		return nil, fmt.Errorf("transport 不能为空")
+		return nil, errcodes.NewConsensusNilParameterError("transport")
 	}
 
 	if hlc == nil {
-		return nil, fmt.Errorf("hlc 不能为空")
+		return nil, errcodes.NewConsensusNilParameterError("hlc")
 	}
 
 	if uuidGen == nil {
-		return nil, fmt.Errorf("uuidGen 不能为空")
+		return nil, errcodes.NewConsensusNilParameterError("uuidGen")
 	}
 
 	if len(nodes) == 0 {
-		return nil, fmt.Errorf("nodes 不能为空")
+		return nil, errcodes.NewConsensusNilParameterError("nodes")
 	}
 
 	service := &TwoPCService{
@@ -218,7 +218,7 @@ func NewTwoPCService(
 // Start 启动 2PC 服务
 func (t *TwoPCService) Start() error {
 	if !t.started.CompareAndSwap(false, true) {
-		return fmt.Errorf("2PC 服务已经启动")
+		return errcodes.NewConsensusServiceStateError("2PC", "服务已经启动")
 	}
 
 	logging.WithFields(map[string]any{
@@ -320,7 +320,7 @@ func (t *TwoPCService) Execute(
 	if err := t.preCommit(ctx, txState); err != nil {
 		t.abortTransaction(txState, err)
 		t.cleanupTransaction(txID)
-		return fmt.Errorf("预提交失败: %w", err)
+		return errcodes.NewConsensusTransactionError("预提交失败", err)
 	}
 
 	// 阶段2：决策
@@ -330,15 +330,15 @@ func (t *TwoPCService) Execute(
 	if decision == "commit" {
 		if err := t.commitTransaction(txState); err != nil {
 			t.stats.TransactionsAborted.Add(1)
-			return fmt.Errorf("提交事务失败: %w", err)
+			return errcodes.NewConsensusOperationError("提交事务", err)
 		}
 
 		t.stats.TransactionsCommitted.Add(1)
 		logging.WithField("tx_id", txID).Info("2PC 事务已提交")
 	} else {
-		t.abortTransaction(txState, fmt.Errorf("决策: %s", decision))
+		t.abortTransaction(txState, errcodes.NewConsensusTransactionError("决策: "+decision, nil))
 		t.stats.TransactionsAborted.Add(1)
-		return fmt.Errorf("事务已中止")
+		return errcodes.NewConsensusTransactionError("事务已中止", nil)
 	}
 
 	// 清理事务状态
@@ -359,7 +359,7 @@ func (t *TwoPCService) preCommit(
 
 	// 本地预提交
 	if err := t.preCommitLocal(txState); err != nil {
-		return fmt.Errorf("本地预提交失败: %w", err)
+		return errcodes.NewConsensusOperationError("本地预提交", err)
 	}
 
 	// 并行发送预提交请求到所有参与者
@@ -383,7 +383,7 @@ func (t *TwoPCService) preCommit(
 			}
 
 		case <-timeout:
-			return fmt.Errorf("预提交超时")
+			return errcodes.NewConsensusTimeoutError("预提交")
 
 		case <-ctx.Done():
 			return ctx.Err()
@@ -392,7 +392,7 @@ func (t *TwoPCService) preCommit(
 
 	// 检查是否所有参与者都成功
 	if preCommitCount != len(txState.Participants) {
-		return fmt.Errorf("部分参与者预提交失败")
+		return errcodes.NewConsensusTransactionError("部分参与者预提交失败", nil)
 	}
 
 	logging.WithField("tx_id", txState.TransactionID).Debug("预提交阶段完成")
@@ -802,7 +802,7 @@ func (t *TwoPCService) executeOperation(op *transport.Operation) error {
 		return t.metaStore.Delete(op.Key)
 
 	default:
-		return fmt.Errorf("未知操作类型: %s", op.Type)
+		return errcodes.NewConsensusUnknownOperationError(op.Type)
 	}
 }
 
@@ -953,7 +953,7 @@ func (t *TwoPCService) RecoverTransaction(txID string) error {
 	t.transactionsMu.RUnlock()
 
 	if !exists {
-		return fmt.Errorf("事务不存在: %s", txID)
+		return errcodes.NewConsensusTransactionError("事务不存在: "+txID, nil)
 	}
 
 	// 检查事务状态
@@ -969,7 +969,7 @@ func (t *TwoPCService) RecoverTransaction(txID string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("未知事务状态: %v", state)
+		return errcodes.NewConsensusOperationError("未知事务状态", nil)
 	}
 }
 
@@ -977,7 +977,7 @@ func (t *TwoPCService) RecoverTransaction(txID string) error {
 func (t *TwoPCService) queryTransactionDecision(txState *TransactionState) error {
 	// 通过 Gossip 查询事务的最终决策
 	// TODO: 实现 Gossip 查询
-	return fmt.Errorf("未实现")
+	return errcodes.NewConsensusOperationError("未实现", nil)
 }
 
 // ========================================

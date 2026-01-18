@@ -14,7 +14,7 @@ package cluster
 
 import (
 	"context"
-	"fmt"
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"sync/atomic"
 	"time"
 
@@ -105,15 +105,15 @@ func NewClockSyncHandler(
 	localNodeID string,
 ) (*ClockSyncHandler, error) {
 	if hlc == nil {
-		return nil, fmt.Errorf("hlc 不能为空")
+		return nil, errcodes.NewClusterNilParameterError("hlc")
 	}
 
 	if transport == nil {
-		return nil, fmt.Errorf("transport 不能为空")
+		return nil, errcodes.NewClusterNilParameterError("transport")
 	}
 
 	if localNodeID == "" {
-		return nil, fmt.Errorf("localNodeID 不能为空")
+		return nil, errcodes.NewClusterNilParameterError("localNodeID")
 	}
 
 	handler := &ClockSyncHandler{
@@ -132,7 +132,7 @@ func NewClockSyncHandler(
 // Start 启动时钟同步处理器
 func (h *ClockSyncHandler) Start(config *ClockSyncConfig) error {
 	if !h.started.CompareAndSwap(false, true) {
-		return fmt.Errorf("时钟同步处理器已经启动")
+		return errcodes.NewClusterServiceStateError("时钟同步处理器", "已经启动")
 	}
 
 	if config == nil {
@@ -282,7 +282,7 @@ func (h *ClockSyncHandler) SendClockSyncRequest(
 	// 发送请求
 	if err := h.transport.Send(ctx, targetAddr, req); err != nil {
 		h.stats.SyncFailed.Add(1)
-		return fmt.Errorf("发送时钟同步请求失败: %w", err)
+		return errcodes.NewClusterCoordinatorError("发送时钟同步请求失败", err)
 	}
 
 	logging.WithFields(map[string]any{

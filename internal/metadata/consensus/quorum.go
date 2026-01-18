@@ -12,6 +12,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/metadata/clock"
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"github.com/jzhang405/NexKV/internal/metadata/store"
 	"github.com/jzhang405/NexKV/internal/metadata/transport"
 )
@@ -137,19 +138,19 @@ func NewQuorumService(
 	}
 
 	if metaStore == nil {
-		return nil, fmt.Errorf("metaStore 不能为空")
+		return nil, errcodes.NewConsensusNilParameterError("metaStore")
 	}
 
 	if transport == nil {
-		return nil, fmt.Errorf("transport 不能为空")
+		return nil, errcodes.NewConsensusNilParameterError("transport")
 	}
 
 	if hlc == nil {
-		return nil, fmt.Errorf("hlc 不能为空")
+		return nil, errcodes.NewConsensusNilParameterError("hlc")
 	}
 
 	if len(nodes) == 0 {
-		return nil, fmt.Errorf("nodes 不能为空")
+		return nil, errcodes.NewConsensusNilParameterError("nodes")
 	}
 
 	service := &QuorumService{
@@ -170,7 +171,7 @@ func NewQuorumService(
 // Start 启动 Quorum 服务
 func (q *QuorumService) Start() error {
 	if !q.started.CompareAndSwap(false, true) {
-		return fmt.Errorf("quorum 服务已经启动")
+		return errcodes.NewConsensusServiceStateError("quorum", "服务已经启动")
 	}
 
 	// 计算最小法定人数
@@ -262,7 +263,7 @@ func (q *QuorumService) Propose(
 	// 1. 本地持久化（预提交）
 	if err := q.prepareProposal(proposal); err != nil {
 		q.cleanupProposal(proposal.ProposalID)
-		return fmt.Errorf("本地预提交失败: %w", err)
+		return errcodes.NewConsensusTransactionError("本地预提交失败", err)
 	}
 
 	// 2. 本地投票（默认赞成）
@@ -282,7 +283,7 @@ func (q *QuorumService) Propose(
 			// 提案通过，执行提交
 			if err := q.commitProposal(proposal); err != nil {
 				q.stats.ProposalsRejected.Add(1)
-				return fmt.Errorf("提交提案失败: %w", err)
+				return errcodes.NewConsensusOperationError("提交提案", err)
 			}
 
 			q.stats.ProposalsApproved.Add(1)
@@ -292,7 +293,7 @@ func (q *QuorumService) Propose(
 			// 提案被拒绝，回滚
 			_ = q.rollbackProposal(proposal)
 			q.stats.ProposalsRejected.Add(1)
-			return fmt.Errorf("提案被拒绝")
+			return errcodes.NewConsensusTransactionError("提案被拒绝", nil)
 		}
 
 	case <-timeout:
@@ -300,7 +301,7 @@ func (q *QuorumService) Propose(
 		_ = q.rollbackProposal(proposal)
 		q.cleanupProposal(proposal.ProposalID)
 		q.stats.ProposalsTimeout.Add(1)
-		return fmt.Errorf("提案超时")
+		return errcodes.NewConsensusTimeoutError("提案")
 
 	case <-ctx.Done():
 		// 上下文取消
@@ -320,7 +321,7 @@ func (q *QuorumService) prepareProposal(proposal *transport.QuorumProposeMessage
 		return q.metaStore.Delete(proposal.Key)
 
 	default:
-		return fmt.Errorf("未知操作类型: %s", proposal.Operation)
+		return errcodes.NewConsensusUnknownOperationError(proposal.Operation)
 	}
 }
 
@@ -418,7 +419,7 @@ func (q *QuorumService) Vote(voteMsg *transport.QuorumVoteMessage) error {
 	q.proposalsMu.RUnlock()
 
 	if !exists {
-		return fmt.Errorf("提案不存在: %s", proposalID)
+		return errcodes.NewConsensusTransactionError("提案不存在: "+proposalID, nil)
 	}
 
 	// 记录投票
@@ -649,7 +650,7 @@ func (q *QuorumService) sendVote(
 	q.proposalsMu.RUnlock()
 
 	if !exists {
-		return fmt.Errorf("提案不存在")
+		return errcodes.NewConsensusTransactionError("提案不存在", nil)
 	}
 
 	proposer := state.Proposal.Proposer

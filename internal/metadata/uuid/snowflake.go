@@ -4,6 +4,7 @@ package uuid
 import (
 	"errors"
 	"fmt"
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"sync"
 	"time"
 )
@@ -91,7 +92,7 @@ func (s *Snowflake) Generate() (int64, error) {
 
 	// 处理时钟回拨
 	if now < s.lastTime {
-		return 0, fmt.Errorf("时钟回拨检测: 当前时间=%d, 上次时间=%d", now, s.lastTime)
+		return 0, errcodes.NewClockOperationError(fmt.Sprintf("时钟回拨检测: 当前时间=%d, 上次时间=%d", now, s.lastTime))
 	}
 
 	// 同一毫秒内，序列号递增

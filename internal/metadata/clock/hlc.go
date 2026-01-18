@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"math"
 	"sync"
 	"time"
@@ -182,7 +183,7 @@ func (h *HLC) ToTime() time.Time {
 // 格式: 8 bytes pt (big-endian) + 2 bytes c (big-endian)
 func (h *HLC) MarshalBinary() ([]byte, error) {
 	if h == nil {
-		return nil, fmt.Errorf("cannot marshal nil HLC")
+		return nil, errcodes.NewClockOperationError("cannot marshal nil HLC")
 	}
 
 	h.mu.RLock()
@@ -206,7 +207,7 @@ func (h *HLC) MarshalBinary() ([]byte, error) {
 // UnmarshalBinary 从二进制反序列化 HLC
 func (h *HLC) UnmarshalBinary(data []byte) error {
 	if len(data) != 10 {
-		return fmt.Errorf("invalid HLC data size: expected 10 bytes, got %d", len(data))
+		return errcodes.NewClockOperationError(fmt.Sprintf("invalid HLC data size: expected 10 bytes, got %d", len(data)))
 	}
 
 	h.mu.Lock()

@@ -4,7 +4,6 @@ package store
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,7 +13,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/metadata/clock"
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
-	"github.com/jzhang405/NexKV/internal/metadata/errors"
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 )
 
 // MemoryMVStore 内存 MVStore 实现
@@ -62,12 +61,12 @@ func NewMemoryMVStore(options *MVStoreOptions) (*MemoryMVStore, error) {
 
 	// 创建数据目录
 	if err := os.MkdirAll(options.DataDir, 0755); err != nil {
-		return nil, fmt.Errorf("创建数据目录失败: %w", err)
+		return nil, errcodes.NewStoreDirectoryCreationError(options.DataDir, err)
 	}
 
 	// 创建 WAL 目录
 	if err := os.MkdirAll(options.WALDir, 0755); err != nil {
-		return nil, fmt.Errorf("创建 WAL 目录失败: %w", err)
+		return nil, errcodes.NewStoreDirectoryCreationError(options.WALDir, err)
 	}
 
 	store := &MemoryMVStore{
@@ -81,7 +80,7 @@ func NewMemoryMVStore(options *MVStoreOptions) (*MemoryMVStore, error) {
 	if options.EnableWAL {
 		wal, err := NewMetadataWAL(filepath.Join(options.WALDir, "metadata.wal"))
 		if err != nil {
-			return nil, fmt.Errorf("初始化 WAL 失败: %w", err)
+			return nil, errcodes.NewStoreWALError("初始化", err)
 		}
 		store.wal = wal
 	}
@@ -89,7 +88,7 @@ func NewMemoryMVStore(options *MVStoreOptions) (*MemoryMVStore, error) {
 	// 初始化快照管理器
 	snapMgr, err := NewSnapshotManager(options.DataDir)
 	if err != nil {
-		return nil, fmt.Errorf("初始化快照管理器失败: %w", err)
+		return nil, errcodes.NewStoreSnapshotError("初始化", err)
 	}
 	store.snapMgr = snapMgr
 
@@ -107,11 +106,11 @@ func NewMemoryMVStore(options *MVStoreOptions) (*MemoryMVStore, error) {
 // Put 写入键值对
 func (m *MemoryMVStore) Put(key string, value []byte) error {
 	if m.closed.Load() {
-		return errors.NewClosedError("MemoryMVStore")
+		return errcodes.NewClosedError("MemoryMVStore")
 	}
 
 	if key == "" {
-		return fmt.Errorf("key 不能为空")
+		return errcodes.NewStoreKeyValidationError("key 不能为空")
 	}
 
 	timestamp := m.hlc.Now()
@@ -134,7 +133,7 @@ func (m *MemoryMVStore) Put(key string, value []byte) error {
 			Value:     value,
 		}
 		if err := m.wal.Append(walEntry); err != nil {
-			return fmt.Errorf("写入 WAL 失败: %w", err)
+			return errcodes.NewStoreWALError("写入", err)
 		}
 	}
 
@@ -165,12 +164,12 @@ func (m *MemoryMVStore) Put(key string, value []byte) error {
 // Get 获取最新值
 func (m *MemoryMVStore) Get(key string) ([]byte, error) {
 	if m.closed.Load() {
-		return nil, errors.NewClosedError("MemoryMVStore")
+		return nil, errcodes.NewClosedError("MemoryMVStore")
 	}
 
 	vlist, ok := m.data.Load(key)
 	if !ok {
-		return nil, errors.NewNotFoundError(key)
+		return nil, errcodes.NewNotFoundError(key)
 	}
 
 	list := vlist.(*versionList)
@@ -178,13 +177,13 @@ func (m *MemoryMVStore) Get(key string) ([]byte, error) {
 	defer list.mu.RUnlock()
 
 	if len(list.versions) == 0 {
-		return nil, errors.NewNotFoundError(key)
+		return nil, errcodes.NewNotFoundError(key)
 	}
 
 	// 返回最新版本
 	latest := list.versions[len(list.versions)-1]
 	if latest.deleted {
-		return nil, errors.NewNotFoundError(key)
+		return nil, errcodes.NewNotFoundError(key)
 	}
 
 	// 返回值的副本，避免外部修改
@@ -196,7 +195,7 @@ func (m *MemoryMVStore) Get(key string) ([]byte, error) {
 // GetVersion 获取指定 HLC 时间戳的版本
 func (m *MemoryMVStore) GetVersion(key string, hlcTimestamp *clock.HLC) ([]byte, error) {
 	if m.closed.Load() {
-		return nil, errors.NewClosedError("MemoryMVStore")
+		return nil, errcodes.NewClosedError("MemoryMVStore")
 	}
 
 	if hlcTimestamp == nil {
@@ -205,7 +204,7 @@ func (m *MemoryMVStore) GetVersion(key string, hlcTimestamp *clock.HLC) ([]byte,
 
 	vlist, ok := m.data.Load(key)
 	if !ok {
-		return nil, errors.NewNotFoundError(key)
+		return nil, errcodes.NewNotFoundError(key)
 	}
 
 	list := vlist.(*versionList)
@@ -217,7 +216,7 @@ func (m *MemoryMVStore) GetVersion(key string, hlcTimestamp *clock.HLC) ([]byte,
 		v := list.versions[i]
 		if v.timestamp.LessThan(hlcTimestamp) || v.timestamp.Equal(hlcTimestamp) {
 			if v.deleted {
-				return nil, errors.NewNotFoundError(key)
+				return nil, errcodes.NewNotFoundError(key)
 			}
 			result := make([]byte, len(v.value))
 			copy(result, v.value)
@@ -226,13 +225,13 @@ func (m *MemoryMVStore) GetVersion(key string, hlcTimestamp *clock.HLC) ([]byte,
 	}
 
 	version := uint64(hlcTimestamp.PhysicalTime()) // 使用物理时间戳作为版本号
-	return nil, errors.NewVersionNotFoundError(key, version)
+	return nil, errcodes.NewVersionNotFoundError(key, version)
 }
 
 // Delete 删除 key
 func (m *MemoryMVStore) Delete(key string) error {
 	if m.closed.Load() {
-		return errors.NewClosedError("MemoryMVStore")
+		return errcodes.NewClosedError("MemoryMVStore")
 	}
 
 	timestamp := m.hlc.Now()
@@ -246,7 +245,7 @@ func (m *MemoryMVStore) Delete(key string) error {
 			Key:       key,
 		}
 		if err := m.wal.Append(walEntry); err != nil {
-			return fmt.Errorf("写入 WAL 失败: %w", err)
+			return errcodes.NewStoreWALError("写入", err)
 		}
 	}
 
@@ -271,13 +270,13 @@ func (m *MemoryMVStore) Delete(key string) error {
 // Exists 检查 key 是否存在
 func (m *MemoryMVStore) Exists(key string) (bool, error) {
 	if m.closed.Load() {
-		return false, errors.NewClosedError("MemoryMVStore")
+		return false, errcodes.NewClosedError("MemoryMVStore")
 	}
 
 	_, err := m.Get(key)
 	if err != nil {
 		// 使用类型断言检查是否为 NotFound 错误
-		if storeErr, ok := err.(*errors.StoreError); ok && storeErr.Code == errors.ErrCodeNotFound {
+		if storeErr, ok := err.(*errcodes.Error); ok && storeErr.Code == errcodes.ErrCodeNotFound {
 			return false, nil
 		}
 		return false, err
@@ -288,7 +287,7 @@ func (m *MemoryMVStore) Exists(key string) (bool, error) {
 // List 列出所有 key
 func (m *MemoryMVStore) List(offset, limit int) ([]string, error) {
 	if m.closed.Load() {
-		return nil, errors.NewClosedError("MemoryMVStore")
+		return nil, errcodes.NewClosedError("MemoryMVStore")
 	}
 
 	m.mu.RLock()
@@ -323,7 +322,7 @@ func (m *MemoryMVStore) List(offset, limit int) ([]string, error) {
 // ListPrefix 列出指定前缀的 key
 func (m *MemoryMVStore) ListPrefix(prefix string, offset, limit int) ([]string, error) {
 	if m.closed.Load() {
-		return nil, errors.NewClosedError("MemoryMVStore")
+		return nil, errcodes.NewClosedError("MemoryMVStore")
 	}
 
 	m.mu.RLock()
@@ -361,7 +360,7 @@ func (m *MemoryMVStore) ListPrefix(prefix string, offset, limit int) ([]string, 
 // GetVersionCount 获取版本数量
 func (m *MemoryMVStore) GetVersionCount(key string) (int, error) {
 	if m.closed.Load() {
-		return 0, errors.NewClosedError("MemoryMVStore")
+		return 0, errcodes.NewClosedError("MemoryMVStore")
 	}
 
 	vlist, ok := m.data.Load(key)
@@ -379,7 +378,7 @@ func (m *MemoryMVStore) GetVersionCount(key string) (int, error) {
 // GetAllVersions 获取所有版本信息
 func (m *MemoryMVStore) GetAllVersions(key string) ([]*VersionInfo, error) {
 	if m.closed.Load() {
-		return nil, errors.NewClosedError("MemoryMVStore")
+		return nil, errcodes.NewClosedError("MemoryMVStore")
 	}
 
 	vlist, ok := m.data.Load(key)
@@ -407,7 +406,7 @@ func (m *MemoryMVStore) GetAllVersions(key string) ([]*VersionInfo, error) {
 // Flush 刷盘
 func (m *MemoryMVStore) Flush() error {
 	if m.closed.Load() {
-		return errors.NewClosedError("MemoryMVStore")
+		return errcodes.NewClosedError("MemoryMVStore")
 	}
 
 	logging.Info("开始刷盘...")
@@ -415,14 +414,14 @@ func (m *MemoryMVStore) Flush() error {
 	// 通过快照管理器保存快照
 	if m.snapMgr != nil {
 		if err := m.snapMgr.Create(m); err != nil {
-			return fmt.Errorf("创建快照失败: %w", err)
+			return errcodes.NewStoreSnapshotError("创建", err)
 		}
 	}
 
 	// WAL checkpoint
 	if m.wal != nil {
 		if err := m.wal.Sync(); err != nil {
-			return fmt.Errorf("WAL sync 失败: %w", err)
+			return errcodes.NewStoreWALError("sync", err)
 		}
 	}
 
@@ -435,7 +434,7 @@ func (m *MemoryMVStore) Flush() error {
 // CreateSnapshot 创建快照
 func (m *MemoryMVStore) CreateSnapshot() ([]byte, error) {
 	if m.closed.Load() {
-		return nil, errors.NewClosedError("MemoryMVStore")
+		return nil, errcodes.NewClosedError("MemoryMVStore")
 	}
 
 	m.mu.RLock()
@@ -460,12 +459,12 @@ func (m *MemoryMVStore) CreateSnapshot() ([]byte, error) {
 // RestoreFromSnapshot 从快照恢复
 func (m *MemoryMVStore) RestoreFromSnapshot(snapshot []byte) error {
 	if m.closed.Load() {
-		return errors.NewClosedError("MemoryMVStore")
+		return errcodes.NewClosedError("MemoryMVStore")
 	}
 
 	var data map[string][]*versionEntry
 	if err := json.Unmarshal(snapshot, &data); err != nil {
-		return fmt.Errorf("反序列化快照失败: %w", err)
+		return errcodes.NewStoreSnapshotError("反序列化", err)
 	}
 
 	// 清空当前数据
@@ -584,7 +583,7 @@ func (m *MemoryMVStore) recoverFromWAL() error {
 
 	entries, err := m.wal.Recover()
 	if err != nil {
-		return fmt.Errorf("读取 WAL 失败: %w", err)
+		return errcodes.NewStoreWALError("读取", err)
 	}
 
 	if len(entries) == 0 {
@@ -666,7 +665,7 @@ func (m *MemoryMVStore) applyDelete(entry *WALEntry) error {
 // Stats 获取统计信息（实现 StatProvider）
 func (m *MemoryMVStore) Stats() (*Stats, error) {
 	if m.closed.Load() {
-		return nil, errors.NewClosedError("MemoryMVStore")
+		return nil, errcodes.NewClosedError("MemoryMVStore")
 	}
 
 	stats := &Stats{

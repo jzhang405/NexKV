@@ -10,7 +10,7 @@
 package cluster
 
 import (
-	"fmt"
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -137,11 +137,11 @@ func NewFailureDetector(
 	}
 
 	if transport == nil {
-		return nil, fmt.Errorf("transport 不能为空")
+		return nil, errcodes.NewClusterNilParameterError("transport")
 	}
 
 	if localNodeID == "" {
-		return nil, fmt.Errorf("localNodeID 不能为空")
+		return nil, errcodes.NewClusterNilParameterError("localNodeID")
 	}
 
 	detector := &FailureDetector{
@@ -162,7 +162,7 @@ func NewFailureDetector(
 // Start 启动故障检测器
 func (fd *FailureDetector) Start() error {
 	if !fd.started.CompareAndSwap(false, true) {
-		return fmt.Errorf("故障检测器已经启动")
+		return errcodes.NewClusterServiceStateError("故障检测器", "已经启动")
 	}
 
 	logging.WithFields(map[string]any{
@@ -458,7 +458,7 @@ func (fd *FailureDetector) GetNodeState(nodeID string) (*NodeState, error) {
 
 	state, exists := fd.nodeStates[nodeID]
 	if !exists {
-		return nil, fmt.Errorf("节点不存在: %s", nodeID)
+		return nil, errcodes.NewClusterNodeNotFoundError(nodeID)
 	}
 
 	return state, nil

@@ -14,10 +14,11 @@ package transport
 import (
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
+
+	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 )
 
 const (
@@ -33,20 +34,6 @@ const (
 
 	// MinFrameSize 最小帧大小
 	MinFrameSize = FrameHeaderSize
-)
-
-var (
-	// ErrInvalidMagic 魔数无效
-	ErrInvalidMagic = errors.New("invalid frame magic")
-
-	// ErrFrameTooLarge 帧过大
-	ErrFrameTooLarge = errors.New("frame too large")
-
-	// ErrChecksum 校验和错误
-	ErrChecksum = errors.New("frame checksum mismatch")
-
-	// ErrInvalidFrameSize 无效的帧大小
-	ErrInvalidFrameSize = errors.New("invalid frame size")
 )
 
 // Frame 自定义帧结构
@@ -107,7 +94,7 @@ func NewFrame(msgType MessageType, codecType CodecType, data []byte) *Frame {
 // Marshal 序列化帧为字节流
 func (f *Frame) Marshal() ([]byte, error) {
 	if f.Length > MaxFrameSize {
-		return nil, ErrFrameTooLarge
+		return nil, errcodes.NewFrameTooLargeError(int(f.Length))
 	}
 
 	// 帧总大小 = Header(16) + Data
@@ -140,13 +127,13 @@ func (f *Frame) Marshal() ([]byte, error) {
 // Unmarshal 从字节流解析帧
 func (f *Frame) Unmarshal(data []byte) error {
 	if len(data) < FrameHeaderSize {
-		return ErrInvalidFrameSize
+		return errcodes.NewInvalidFrameSizeError("帧头不足")
 	}
 
 	// 读取 Magic (0-3)
 	copy(f.Magic[:], data[0:4])
 	if string(f.Magic[:]) != FrameMagic {
-		return ErrInvalidMagic
+		return errcodes.NewFrameInvalidMagicError()
 	}
 
 	// 读取 Type (4-5)
@@ -160,12 +147,12 @@ func (f *Frame) Unmarshal(data []byte) error {
 
 	// 验证帧大小
 	if f.Length > MaxFrameSize {
-		return ErrFrameTooLarge
+		return errcodes.NewFrameTooLargeError(int(f.Length))
 	}
 
 	totalSize := FrameHeaderSize + int(f.Length)
 	if len(data) < totalSize {
-		return ErrInvalidFrameSize
+		return errcodes.NewInvalidFrameSizeError(fmt.Sprintf("需要 %d 字节，实际 %d 字节", totalSize, len(data)))
 	}
 
 	// 读取 CRC32 (12-15)
@@ -181,7 +168,7 @@ func (f *Frame) Unmarshal(data []byte) error {
 
 	// 验证校验和
 	if !f.verifyChecksum(data) {
-		return ErrChecksum
+		return errcodes.NewFrameChecksumError()
 	}
 
 	return nil
@@ -232,13 +219,13 @@ func (fr *FrameReader) ReadFrame() (*Frame, error) {
 
 	// 解析 Magic
 	if string(header[0:4]) != FrameMagic {
-		return nil, ErrInvalidMagic
+		return nil, errcodes.NewFrameInvalidMagicError()
 	}
 
 	// 解析 Length (4 字节，从偏移 8 开始)
 	length := binary.BigEndian.Uint32(header[8:12])
 	if length > MaxFrameSize {
-		return nil, ErrFrameTooLarge
+		return nil, errcodes.NewFrameTooLargeError(int(length))
 	}
 
 	// 读取 Data 部分（帧头的 16 字节已包含 CRC32）

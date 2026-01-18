@@ -15,7 +15,6 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -51,7 +50,6 @@ type ClockSyncHandler struct {
 	// 生命周期
 	started atomic.Bool
 	stopped atomic.Bool
-	mu      sync.RWMutex
 }
 
 // ClockSyncStats 时钟同步统计信息

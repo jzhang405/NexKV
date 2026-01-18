@@ -79,7 +79,6 @@ type VirtualNodeImpl struct {
 
 	// 状态
 	running atomic.Bool
-	mu      sync.RWMutex
 
 	// 目录路径（独立隔离）
 	dataDir     string

@@ -573,3 +573,325 @@ func (tc *TreeCoordinator) GetLocalNode() *Node {
 func (tc *TreeCoordinator) IsRunning() bool {
 	return tc.state.Load() == int32(StateRunning)
 }
+
+// ========================================
+// 动态扩缩容支持（方案 A）
+// ========================================
+
+// AddNode 添加新节点到集群（在线扩容）
+//
+// 动态扩容流程：
+//  1. 验证新节点配置
+//  2. 为新节点分配父节点（负载均衡）
+//  3. 更新本地拓扑
+//  4. 通过 Gossip 协议扩散拓扑变更
+//  5. 触发后台数据迁移（如果需要）
+func (tc *TreeCoordinator) AddNode(nodeID, addr string) error {
+	if !tc.IsRunning() {
+		return fmt.Errorf("协调器未运行")
+	}
+
+	tc.nodesMu.Lock()
+	defer tc.nodesMu.Unlock()
+
+	// 检查节点是否已存在
+	if _, exists := tc.allNodes[nodeID]; exists {
+		return fmt.Errorf("节点已存在: %s", nodeID)
+	}
+
+	// 创建新节点
+	newNode := &Node{
+		NodeID:   nodeID,
+		Addr:     addr,
+		Status:   NodeStatusJoining,
+		Level:    0,
+		Metadata: make(map[string]string),
+	}
+
+	// 为新节点选择父节点（负载均衡）
+	parentID, err := tc.selectParentForNewNode()
+	if err != nil {
+		return fmt.Errorf("选择父节点失败: %w", err)
+	}
+
+	newNode.ParentID = parentID
+
+	// 更新父节点的子节点列表
+	if parent, exists := tc.allNodes[parentID]; exists {
+		if len(parent.ChildrenIDs) >= tc.config.MaxChildren {
+			return fmt.Errorf("父节点 %s 子节点数已达上限 %d", parentID, tc.config.MaxChildren)
+		}
+		parent.ChildrenIDs = append(parent.ChildrenIDs, nodeID)
+	}
+
+	// 添加节点到拓扑
+	tc.allNodes[nodeID] = newNode
+	tc.stats.TotalNodes.Add(1)
+	tc.stats.OnlineNodes.Add(1)
+	tc.stats.LastTopologyUpdate.Store(time.Now())
+
+	logging.WithFields(map[string]any{
+		"node_id":   nodeID,
+		"addr":      addr,
+		"parent_id": parentID,
+		"level":     newNode.Level,
+	}).Info("添加节点到集群（在线扩容）")
+
+	// TODO: 通过 Gossip 协议扩散拓扑变更
+	// TODO: 如果需要数据迁移，触发后台迁移任务
+
+	return nil
+}
+
+// RemoveNode 从集群移除节点（在线缩容）
+//
+// 动态缩容流程：
+//  1. 验证节点存在
+//  2. 将节点标记为离开中
+//  3. 重新分配其子节点到其他父节点
+//  4. 从拓扑中移除
+//  5. 通过 Gossip 协议扩散拓扑变更
+//  6. 触发后台数据迁移（如果需要）
+func (tc *TreeCoordinator) RemoveNode(nodeID string) error {
+	if !tc.IsRunning() {
+		return fmt.Errorf("协调器未运行")
+	}
+
+	tc.nodesMu.Lock()
+	defer tc.nodesMu.Unlock()
+
+	node, exists := tc.allNodes[nodeID]
+	if !exists {
+		return fmt.Errorf("节点不存在: %s", nodeID)
+	}
+
+	// 不能移除本地节点
+	if nodeID == tc.localNode.NodeID {
+		return fmt.Errorf("不能移除本地节点")
+	}
+
+	// 标记为离开中
+	node.Status = NodeStatusLeaving
+
+	// 重新分配子节点
+	if len(node.ChildrenIDs) > 0 {
+		if err := tc.redistributeChildren(node); err != nil {
+			logging.WithField("error", err).Warn("重新分配子节点失败")
+			// 继续执行，不阻塞移除操作
+		}
+	}
+
+	// 从父节点的子节点列表中移除
+	if node.ParentID != "" {
+		if parent, exists := tc.allNodes[node.ParentID]; exists {
+			newChildren := make([]string, 0, len(parent.ChildrenIDs))
+			for _, childID := range parent.ChildrenIDs {
+				if childID != nodeID {
+					newChildren = append(newChildren, childID)
+				}
+			}
+			parent.ChildrenIDs = newChildren
+		}
+	}
+
+	// 从拓扑中移除
+	delete(tc.allNodes, nodeID)
+	tc.stats.TotalNodes.Add(-1)
+	tc.stats.OnlineNodes.Add(-1)
+	tc.stats.LastTopologyUpdate.Store(time.Now())
+
+	logging.WithFields(map[string]any{
+		"node_id":        nodeID,
+		"children_count": len(node.ChildrenIDs),
+	}).Info("从集群移除节点（在线缩容）")
+
+	// TODO: 通过 Gossip 协议扩散拓扑变更
+	// TODO: 如果需要数据迁移，触发后台迁移任务
+
+	return nil
+}
+
+// ScaleUp 扩容操作
+//
+// 批量添加节点，支持大规模扩容
+func (tc *TreeCoordinator) ScaleUp(nodeIDs []string, addrs []string) error {
+	if len(nodeIDs) != len(addrs) {
+		return fmt.Errorf("节点 ID 列表和地址列表长度不一致")
+	}
+
+	successCount := 0
+	var lastErr error
+
+	for i := range nodeIDs {
+		if err := tc.AddNode(nodeIDs[i], addrs[i]); err != nil {
+			logging.WithFields(map[string]any{
+				"node_id": nodeIDs[i],
+				"error":   err,
+			}).Warn("扩容：添加节点失败")
+			lastErr = err
+		} else {
+			successCount++
+		}
+	}
+
+	logging.WithFields(map[string]any{
+		"requested": len(nodeIDs),
+		"success":   successCount,
+		"failed":    len(nodeIDs) - successCount,
+	}).Info("扩容操作完成")
+
+	if lastErr != nil && successCount == 0 {
+		return fmt.Errorf("扩容失败：%w", lastErr)
+	}
+
+	return nil
+}
+
+// ScaleDown 缩容操作
+//
+// 批量移除节点，支持大规模缩容
+func (tc *TreeCoordinator) ScaleDown(nodeIDs []string) error {
+	successCount := 0
+	var lastErr error
+
+	for _, nodeID := range nodeIDs {
+		if err := tc.RemoveNode(nodeID); err != nil {
+			logging.WithFields(map[string]any{
+				"node_id": nodeID,
+				"error":   err,
+			}).Warn("缩容：移除节点失败")
+			lastErr = err
+		} else {
+			successCount++
+		}
+	}
+
+	logging.WithFields(map[string]any{
+		"requested": len(nodeIDs),
+		"success":   successCount,
+		"failed":    len(nodeIDs) - successCount,
+	}).Info("缩容操作完成")
+
+	if lastErr != nil && successCount == 0 {
+		return fmt.Errorf("缩容失败：%w", lastErr)
+	}
+
+	return nil
+}
+
+// selectParentForNewNode 为新节点选择父节点（负载均衡）
+//
+// 选择策略：
+//  1. 优先选择子节点数少的节点
+//  2. 考虑节点层级，避免树过深
+//  3. 优先选择同层级的节点
+func (tc *TreeCoordinator) selectParentForNewNode() (string, error) {
+	// 如果没有节点，本地节点成为父节点
+	if len(tc.allNodes) == 0 {
+		return tc.localNode.NodeID, nil
+	}
+
+	// 寻找子节点数最少的节点
+	var bestParent *Node
+	minChildren := tc.config.MaxChildren + 1
+
+	for _, node := range tc.allNodes {
+		// 只考虑就绪状态的节点
+		if node.Status != NodeStatusReady {
+			continue
+		}
+
+		childrenCount := len(node.ChildrenIDs)
+
+		// 找到子节点数最少的节点
+		if childrenCount < minChildren {
+			bestParent = node
+			minChildren = childrenCount
+
+			// 如果找到有空位的节点，直接使用
+			if childrenCount == 0 {
+				break
+			}
+		}
+	}
+
+	if bestParent == nil {
+		return "", fmt.Errorf("没有可用的父节点")
+	}
+
+	logging.WithFields(map[string]any{
+		"parent_id":      bestParent.NodeID,
+		"children_count": minChildren,
+	}).Debug("为新节点选择父节点")
+
+	return bestParent.NodeID, nil
+}
+
+// redistributeChildren 重新分配子节点
+//
+// 当父节点被移除时，将其子节点重新分配给其他节点
+func (tc *TreeCoordinator) redistributeChildren(parentNode *Node) error {
+	for _, childID := range parentNode.ChildrenIDs {
+		child, exists := tc.allNodes[childID]
+		if !exists {
+			continue
+		}
+
+		// 为子节点选择新的父节点
+		newParentID, err := tc.selectParentForNewNode()
+		if err != nil {
+			logging.WithFields(map[string]any{
+				"child_id": childID,
+				"error":    err,
+			}).Warn("重新分配子节点：选择新父节点失败")
+			continue
+		}
+
+		// 更新子节点的父节点
+		oldParentID := child.ParentID
+		child.ParentID = newParentID
+
+		// 更新新父节点的子节点列表
+		if newParent, exists := tc.allNodes[newParentID]; exists {
+			newParent.ChildrenIDs = append(newParent.ChildrenIDs, childID)
+		}
+
+		logging.WithFields(map[string]any{
+			"child_id":   childID,
+			"old_parent": oldParentID,
+			"new_parent": newParentID,
+		}).Info("重新分配子节点")
+	}
+
+	return nil
+}
+
+// GetTopology 获取当前拓扑结构
+//
+// 返回所有节点及其关系，用于：
+//   - 监控和可视化
+//   - 拓扑同步
+//   - 故障恢复
+func (tc *TreeCoordinator) GetTopology() map[string]*Node {
+	tc.nodesMu.RLock()
+	defer tc.nodesMu.RUnlock()
+
+	// 深拷贝节点信息
+	topology := make(map[string]*Node, len(tc.allNodes))
+	for nodeID, node := range tc.allNodes {
+		nodeCopy := *node
+		nodeCopy.ChildrenIDs = make([]string, len(node.ChildrenIDs))
+		copy(nodeCopy.ChildrenIDs, node.ChildrenIDs)
+
+		if node.Metadata != nil {
+			nodeCopy.Metadata = make(map[string]string, len(node.Metadata))
+			for k, v := range node.Metadata {
+				nodeCopy.Metadata[k] = v
+			}
+		}
+
+		topology[nodeID] = &nodeCopy
+	}
+
+	return topology
+}

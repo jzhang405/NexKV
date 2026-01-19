@@ -9,7 +9,7 @@ package transport
 
 import (
 	"context"
-	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -87,7 +87,7 @@ func NewMemoryTransport(localAddr string) (*MemoryTransport, error) {
 // Start 启动传输层
 func (t *MemoryTransport) Start() error {
 	if !t.started.CompareAndSwap(false, true) {
-		return errcodes.NewTransportStateError("已经启动")
+		return types.NewTransportStateError("已经启动")
 	}
 
 	logging.Infof("启动内存传输层，地址: %s", t.localAddr)
@@ -160,7 +160,7 @@ func (t *MemoryTransport) Close() error {
 // Send 发送消息到指定节点
 func (t *MemoryTransport) Send(ctx context.Context, addr string, msg Message) error {
 	if !t.started.Load() {
-		return errcodes.NewTransportStateError("未启动")
+		return types.NewTransportStateError("未启动")
 	}
 
 	// 检查目标节点是否在断开连接黑名单中
@@ -169,7 +169,7 @@ func (t *MemoryTransport) Send(ctx context.Context, addr string, msg Message) er
 	t.disconnectedNodesMu.RUnlock()
 
 	if disconnected {
-		return errcodes.NewTransportConnectionError("目标节点不存在", addr, nil)
+		return types.NewTransportConnectionError("目标节点不存在", addr, nil)
 	}
 
 	// 从全局注册表查找目标节点的接收通道
@@ -178,11 +178,11 @@ func (t *MemoryTransport) Send(ctx context.Context, addr string, msg Message) er
 	globalRegistryMu.RUnlock()
 
 	if !exists {
-		return errcodes.NewTransportConnectionError("目标节点不存在", addr, nil)
+		return types.NewTransportConnectionError("目标节点不存在", addr, nil)
 	}
 
 	if targetRecvCh == nil {
-		return errcodes.NewTransportStateError("目标节点的接收通道未初始化: " + addr)
+		return types.NewTransportStateError("目标节点的接收通道未初始化: " + addr)
 	}
 
 	// 直接写入目标节点的接收通道
@@ -191,11 +191,11 @@ func (t *MemoryTransport) Send(ctx context.Context, addr string, msg Message) er
 		logging.Infof("发送消息: %s to %s (直接写入全局接收通道)", msg.Type(), addr)
 		return nil
 	case <-time.After(5 * time.Second):
-		return errcodes.NewTransportTimeoutError("发送")
+		return types.NewTransportTimeoutError("发送")
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-t.stopCh:
-		return errcodes.NewTransportStateError("已停止")
+		return types.NewTransportStateError("已停止")
 	}
 }
 
@@ -425,7 +425,7 @@ func (t *MemoryTransport) ConnectTo(remoteAddr string) error {
 	t.nodesMu.RUnlock()
 
 	if !localExists {
-		return errcodes.NewTransportConnectionError("本地节点不存在", t.localAddr, nil)
+		return types.NewTransportConnectionError("本地节点不存在", t.localAddr, nil)
 	}
 
 	if !remoteExists {
@@ -448,7 +448,7 @@ func (t *MemoryTransport) DisconnectFrom(remoteAddr string) error {
 
 	node, exists := t.nodes[remoteAddr]
 	if !exists {
-		return errcodes.NewTransportConnectionError("节点不存在", remoteAddr, nil)
+		return types.NewTransportConnectionError("节点不存在", remoteAddr, nil)
 	}
 
 	_ = node.Close()

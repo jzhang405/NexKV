@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/clock"
-	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"github.com/jzhang405/NexKV/internal/metadata/store"
 	"github.com/jzhang405/NexKV/internal/metadata/transport"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -46,7 +46,7 @@ func (m *mockMVStore) Get(key string) ([]byte, error) {
 	if val, exists := m.data[key]; exists {
 		return val, nil
 	}
-	return nil, errcodes.NewNotFoundError(key)
+	return nil, types.NewNotFoundError(key)
 }
 
 func (m *mockMVStore) GetVersion(key string, hlcTimestamp *clock.HLC) ([]byte, error) {

@@ -4,7 +4,7 @@ package uuid
 import (
 	"crypto/rand"
 	"fmt"
-	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"io"
 	"time"
 )
@@ -90,7 +90,7 @@ func ExtractTimestamp(uuidStr string) (int64, error) {
 
 	// 检查版本
 	if GetVersion(uuid) != Version7TimeBased {
-		return 0, errcodes.NewUUIDFormatError(fmt.Sprintf("不是 UUID v7: version=%d", GetVersion(uuid)), nil)
+		return 0, types.NewUUIDFormatError(fmt.Sprintf("不是 UUID v7: version=%d", GetVersion(uuid)), nil)
 	}
 
 	// 提取前 6 字节作为时间戳

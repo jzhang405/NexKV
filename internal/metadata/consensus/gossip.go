@@ -15,9 +15,9 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/metadata/clock"
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
-	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
 	"github.com/jzhang405/NexKV/internal/metadata/store"
 	"github.com/jzhang405/NexKV/internal/metadata/transport"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
 // GossipService Gossip 协议服务
@@ -160,15 +160,15 @@ func NewGossipService(
 	}
 
 	if metaStore == nil {
-		return nil, errcodes.NewConsensusNilParameterError("metaStore")
+		return nil, types.NewConsensusNilParameterError("metaStore")
 	}
 
 	if transport == nil {
-		return nil, errcodes.NewConsensusNilParameterError("transport")
+		return nil, types.NewConsensusNilParameterError("transport")
 	}
 
 	if hlc == nil {
-		return nil, errcodes.NewConsensusNilParameterError("hlc")
+		return nil, types.NewConsensusNilParameterError("hlc")
 	}
 
 	service := &GossipService{
@@ -191,7 +191,7 @@ func NewGossipService(
 // Start 启动 Gossip 服务
 func (g *GossipService) Start() error {
 	if !g.started.CompareAndSwap(false, true) {
-		return errcodes.NewConsensusServiceStateError("gossip", "服务已经启动")
+		return types.NewConsensusServiceStateError("gossip", "服务已经启动")
 	}
 
 	logging.WithFields(map[string]any{
@@ -325,7 +325,7 @@ func (g *GossipService) syncToNode(ctx context.Context, addr string) error {
 	// 发送版本摘要
 	if err := g.transport.Send(ctx, addr, digestMsg); err != nil {
 		g.stats.SyncFailed.Add(1)
-		return errcodes.NewConsensusOperationError("发送版本摘要", err)
+		return types.NewConsensusOperationError("发送版本摘要", err)
 	}
 
 	// 等待响应（通过 messageLoop 接收并处理）
@@ -514,7 +514,7 @@ func (g *GossipService) handleGossipDigestReply(msg transport.Message) {
 func (g *GossipService) Put(key string, value []byte) error {
 	// 写入本地存储
 	if err := g.metaStore.Put(key, value); err != nil {
-		return errcodes.NewConsensusOperationError("写入元数据", err)
+		return types.NewConsensusOperationError("写入元数据", err)
 	}
 
 	// 记录变更日志
@@ -552,7 +552,7 @@ func (g *GossipService) Delete(key string) error {
 
 	// 写入墓碑标记
 	if err := g.metaStore.Delete(key); err != nil {
-		return errcodes.NewConsensusOperationError("删除元数据", err)
+		return types.NewConsensusOperationError("删除元数据", err)
 	}
 
 	// 记录变更日志

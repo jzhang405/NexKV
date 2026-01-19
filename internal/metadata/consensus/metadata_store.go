@@ -6,7 +6,7 @@ package consensus
 
 import (
 	"context"
-	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"sync"
 	"sync/atomic"
 
@@ -170,21 +170,21 @@ func NewMetadataStore(
 	gossipConfig := DefaultGossipConfig()
 	gossipService, err := NewGossipService(mvStore, transport, hlc, nodes, gossipConfig)
 	if err != nil {
-		return nil, errcodes.NewConsensusOperationError("创建 Gossip 服务", err)
+		return nil, types.NewConsensusOperationError("创建 Gossip 服务", err)
 	}
 
 	// 创建 Quorum 服务
 	quorumConfig := DefaultQuorumConfig()
 	quorumService, err := NewQuorumService(mvStore, transport, hlc, localAddr, nodes, quorumConfig)
 	if err != nil {
-		return nil, errcodes.NewConsensusOperationError("创建 Quorum 服务", err)
+		return nil, types.NewConsensusOperationError("创建 Quorum 服务", err)
 	}
 
 	// 创建 2PC 服务
 	twoPCConfig := DefaultTwoPCConfig()
 	twoPCService, err := NewTwoPCService(mvStore, transport, hlc, uuidGen, localAddr, nodes, twoPCConfig)
 	if err != nil {
-		return nil, errcodes.NewConsensusOperationError("创建 2PC 服务", err)
+		return nil, types.NewConsensusOperationError("创建 2PC 服务", err)
 	}
 
 	service := &MetadataStore{
@@ -204,7 +204,7 @@ func NewMetadataStore(
 // Start 启动元数据存储服务
 func (m *MetadataStore) Start() error {
 	if !m.started.CompareAndSwap(false, true) {
-		return errcodes.NewConsensusServiceStateError("元数据存储", "服务已经启动")
+		return types.NewConsensusServiceStateError("元数据存储", "服务已经启动")
 	}
 
 	logging.Info("启动元数据存储服务")
@@ -212,14 +212,14 @@ func (m *MetadataStore) Start() error {
 	// 启动 Gossip 服务
 	if err := m.gossipService.Start(); err != nil {
 		m.started.Store(false)
-		return errcodes.NewConsensusOperationError("启动 Gossip 服务", err)
+		return types.NewConsensusOperationError("启动 Gossip 服务", err)
 	}
 
 	// 启动 Quorum 服务
 	if err := m.quorumService.Start(); err != nil {
 		_ = m.gossipService.Stop()
 		m.started.Store(false)
-		return errcodes.NewConsensusOperationError("启动 Quorum 服务", err)
+		return types.NewConsensusOperationError("启动 Quorum 服务", err)
 	}
 
 	// 启动 2PC 服务
@@ -227,7 +227,7 @@ func (m *MetadataStore) Start() error {
 		_ = m.gossipService.Stop()
 		_ = m.quorumService.Stop()
 		m.started.Store(false)
-		return errcodes.NewConsensusOperationError("启动 2PC 服务", err)
+		return types.NewConsensusOperationError("启动 2PC 服务", err)
 	}
 
 	logging.Info("元数据存储服务启动成功")
@@ -289,7 +289,7 @@ func (m *MetadataStore) Put(
 		return m.putWithGossip(key, value)
 
 	default:
-		return errcodes.NewConsensusOperationError("未知的一致性协议", nil)
+		return types.NewConsensusOperationError("未知的一致性协议", nil)
 	}
 }
 
@@ -323,7 +323,7 @@ func (m *MetadataStore) Delete(
 		return m.deleteWithGossip(key)
 
 	default:
-		return errcodes.NewConsensusOperationError("未知的一致性协议", nil)
+		return types.NewConsensusOperationError("未知的一致性协议", nil)
 	}
 }
 

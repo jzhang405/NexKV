@@ -9,7 +9,7 @@ package transport
 
 import (
 	"context"
-	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"io"
 	"net"
 	"sync"
@@ -121,7 +121,7 @@ func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 // 启动监听器和连接池管理器
 func (t *TCPTransport) Start() error {
 	if !t.started.CompareAndSwap(false, true) {
-		return errcodes.NewTransportStateError("已经启动")
+		return types.NewTransportStateError("已经启动")
 	}
 
 	logging.Infof("启动 TCP 传输层，监听地址: %s", t.config.ListenAddr)
@@ -129,7 +129,7 @@ func (t *TCPTransport) Start() error {
 	// 启动监听器
 	if err := t.startListener(); err != nil {
 		t.started.Store(false)
-		return errcodes.NewTransportConnectionError("启动监听器", "", err)
+		return types.NewTransportConnectionError("启动监听器", "", err)
 	}
 
 	// 启动连接池管理器
@@ -143,7 +143,7 @@ func (t *TCPTransport) Start() error {
 func (t *TCPTransport) startListener() error {
 	listener, err := net.Listen("tcp", t.config.ListenAddr)
 	if err != nil {
-		return errcodes.NewTransportConnectionError("监听", "", err)
+		return types.NewTransportConnectionError("监听", "", err)
 	}
 
 	t.listener = listener
@@ -336,19 +336,19 @@ func (t *TCPTransport) Close() error {
 // 阻塞直到消息发送成功或失败
 func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message) error {
 	if !t.started.Load() {
-		return errcodes.NewTransportStateError("未启动")
+		return types.NewTransportStateError("未启动")
 	}
 
 	// 获取或创建连接
 	conn, err := t.getOrCreateConn(addr)
 	if err != nil {
-		return errcodes.NewTransportConnectionError("获取连接", "", err)
+		return types.NewTransportConnectionError("获取连接", "", err)
 	}
 
 	// 设置写入超时
 	deadline := time.Now().Add(t.config.WriteTimeout)
 	if err := conn.conn.SetWriteDeadline(deadline); err != nil {
-		return errcodes.NewTransportConnectionError("设置写超时", "", err)
+		return types.NewTransportConnectionError("设置写超时", "", err)
 	}
 
 	// 发送消息
@@ -356,7 +356,7 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message) error
 		// 发送失败，关闭连接
 		_ = conn.Close()
 		t.removeConnFromPool(addr)
-		return errcodes.NewTransportSendError(err)
+		return types.NewTransportSendError(err)
 	}
 
 	// 更新最后使用时间
@@ -396,14 +396,14 @@ func (t *TCPTransport) dialConn(addr string) (*tcpConn, error) {
 	// 建立连接
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
-		return nil, errcodes.NewTransportConnectionError("拨号", "", err)
+		return nil, types.NewTransportConnectionError("拨号", "", err)
 	}
 
 	// 包装连接
 	wrappedConn := t.wrapConn(conn)
 	if wrappedConn == nil {
 		_ = conn.Close()
-		return nil, errcodes.NewTransportConnectionError("包装连接", "", nil)
+		return nil, types.NewTransportConnectionError("包装连接", "", nil)
 	}
 
 	// 添加到池

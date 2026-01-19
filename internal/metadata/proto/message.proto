@@ -1,0 +1,190 @@
+syntax = "proto3";
+
+package nexkv.metadata;
+
+option go_package = "github.com/jzhang405/NexKV/internal/metadata/proto";
+
+// ===== 消息类型枚举 =====
+
+// MessageType 消息类型
+//
+// 消息类型范围分配:
+//   - 100-149: 元数据操作（Put、Delete、Get 等）
+//   - 150-199: Gossip 协议消息
+//   - 200-249: Quorum 协议消息
+//   - 250-299: 2PC 协议消息
+//   - 300-349: 节点管理消息
+//   - 350-399: 集群管理消息
+enum MessageType {
+  // 元数据操作消息 (100-149)
+  MESSAGE_TYPE_UNKNOWN = 0;
+  MESSAGE_TYPE_GET = 100;
+  MESSAGE_TYPE_PUT = 101;
+  MESSAGE_TYPE_DELETE = 102;
+  MESSAGE_TYPE_GET_REPLY = 103;
+  MESSAGE_TYPE_PUT_REPLY = 104;
+  MESSAGE_TYPE_DELETE_REPLY = 105;
+
+  // Gossip 协议消息 (150-199)
+  MESSAGE_TYPE_GOSSIP_SYNC = 150;
+  MESSAGE_TYPE_GOSSIP_SYNC_REPLY = 151;
+  MESSAGE_TYPE_GOSSIP_DIGEST = 152;
+  MESSAGE_TYPE_GOSSIP_DIGEST_REPLY = 153;
+
+  // Quorum 协议消息 (200-249)
+  MESSAGE_TYPE_QUORUM_PROPOSE = 200;
+  MESSAGE_TYPE_QUORUM_VOTE = 201;
+  MESSAGE_TYPE_QUORUM_DECIDE = 202;
+
+  // 2PC 协议消息 (250-299)
+  MESSAGE_TYPE_2PC_PREPARE = 250;
+  MESSAGE_TYPE_2PC_PREPARE_REPLY = 251;
+  MESSAGE_TYPE_2PC_COMMIT = 252;
+  MESSAGE_TYPE_2PC_ROLLBACK = 253;
+  MESSAGE_TYPE_2PC_COMMIT_REPLY = 254;
+  MESSAGE_TYPE_2PC_ROLLBACK_REPLY = 255;
+
+  // 节点管理消息 (300-349)
+  MESSAGE_TYPE_NODE_PING = 300;
+  MESSAGE_TYPE_NODE_PONG = 301;
+  MESSAGE_TYPE_NODE_JOIN = 302;
+  MESSAGE_TYPE_NODE_LEAVE = 303;
+  MESSAGE_TYPE_NODE_SYNC = 304;
+  MESSAGE_TYPE_CLOCK_SYNC = 305;
+  MESSAGE_TYPE_CLOCK_SYNC_REPLY = 306;
+
+  // 集群管理消息 (350-399)
+  MESSAGE_TYPE_CLUSTER_STATUS = 350;
+  MESSAGE_TYPE_CLUSTER_STATUS_REPLY = 351;
+  MESSAGE_TYPE_LEADER_ELECTION = 352;
+}
+
+// ===== 基础消息结构 =====
+
+// TransportMessage 传输消息基础结构
+//
+// 所有消息的通用包装，包含路由信息和时间戳
+message TransportMessage {
+  MessageType type = 1;       // 消息类型
+  uint64 timestamp = 2;       // 时间戳（Unix 毫秒）
+  string from_node = 3;       // 发送节点 ID
+  string to_node = 4;         // 接收节点 ID（可选，广播消息时为空）
+  uint64 request_id = 5;      // 请求 ID（用于匹配请求-响应）
+
+  oneof payload {
+    GossipMessage gossip = 10;       // Gossip 协议消息
+    QuorumMessage quorum = 11;       // Quorum 协议消息
+    TwoPCMessage twopc = 12;         // 2PC 协议消息
+    HeartbeatMessage heartbeat = 13; // 心跳消息
+    ResponseMessage response = 14;   // 通用响应消息
+    MetadataOpMessage metadata = 15; // 元数据操作消息
+  }
+}
+
+// ===== Gossip 协议消息 =====
+
+// GossipMessage Gossip 协议消息
+//
+// 用于节点间元数据的最终一致性同步
+message GossipMessage {
+  string node_id = 1;               // 节点 ID
+  uint64 version = 2;                // 元数据版本号
+  map<string, bytes> metadata = 3;   // 元数据键值对
+  repeated string deleted_keys = 4;  // 已删除的键列表
+  uint32 digest = 5;                 // 摘要（用于快速比较）
+}
+
+// ===== Quorum 协议消息 =====
+
+// QuorumMessage Quorum 协议消息
+//
+// 用于关键元数据的强一致性同步
+message QuorumMessage {
+  string proposal_id = 1;     // 提案 ID（唯一标识）
+  string key = 2;             // 键
+  bytes value = 3;            // 值
+  uint64 version = 4;         // 版本号
+  enum VoteType {
+    VOTE_UNKNOWN = 0;
+    VOTE_APPROVE = 1;   // 同意
+    VOTE_REJECT = 2;    // 拒绝
+  }
+  VoteType vote = 5;          // 投票类型（投票消息时使用）
+  string reason = 6;          // 拒绝原因（可选）
+}
+
+// ===== 2PC 协议消息 =====
+
+// TwoPCMessage 两阶段提交消息
+//
+// 用于跨分片分布式事务
+message TwoPCMessage {
+  string transaction_id = 1;  // 事务 ID
+  repeated string shards = 2;  // 涉及的分片列表
+  map<string, bytes> operations = 3; // 操作列表（key -> operation data）
+  enum PhaseType {
+    PHASE_UNKNOWN = 0;
+    PHASE_PREPARE = 1;   // 准备阶段
+    PHASE_COMMIT = 2;    // 提交阶段
+    PHASE_ROLLBACK = 3;  // 回滚阶段
+  }
+  PhaseType phase = 4;         // 当前阶段
+  enum DecisionType {
+    DECISION_UNKNOWN = 0;
+    DECISION_COMMIT = 1;   // 提交决策
+    DECISION_ABORT = 2;    // 中止决策
+  }
+  DecisionType decision = 5;   // 决策（协调者发送）
+  string reason = 6;           // 失败原因（可选）
+}
+
+// ===== 心跳消息 =====
+
+// HeartbeatMessage 心跳消息
+//
+// 用于节点存活检测和时钟同步
+message HeartbeatMessage {
+  string node_id = 1;         // 节点 ID
+  uint64 timestamp = 2;       // 时间戳（Unix 毫秒）
+  enum StatusType {
+    STATUS_UNKNOWN = 0;
+    STATUS_HEALTHY = 1;   // 健康
+    STATUS_BUSY = 2;      // 繁忙
+    STATUS_DEGRADED = 3;  // 降级
+  }
+  StatusType status = 3;      // 节点状态
+  map<string, uint32> metrics = 4; // 节点指标（CPU、内存等）
+}
+
+// ===== 响应消息 =====
+
+// ResponseMessage 通用响应消息
+//
+// 用于所有请求的响应
+message ResponseMessage {
+  bool success = 1;          // 是否成功
+  uint32 error_code = 2;     // 错误码
+  string error_msg = 3;      // 错误消息
+  bytes data = 4;            // 响应数据（可选）
+}
+
+// ===== 元数据操作消息 =====
+
+// MetadataOpMessage 元数据操作消息
+//
+// 用于元数据的增删改查
+message MetadataOpMessage {
+  enum OpType {
+    OP_UNKNOWN = 0;
+    OP_GET = 1;       // 获取
+    OP_PUT = 2;       // 设置
+    OP_DELETE = 3;    // 删除
+    OP_LIST = 4;      // 列举
+  }
+  OpType op = 1;              // 操作类型
+  string key = 2;             // 键
+  bytes value = 3;            // 值（PUT 时使用）
+  string prefix = 4;          // 前缀（LIST 时使用）
+  int32 offset = 5;           // 偏移量（LIST 时使用）
+  int32 limit = 6;            // 限制数量（LIST 时使用，0 表示不限制）
+}

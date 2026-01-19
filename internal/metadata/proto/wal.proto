@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package nexkv.metadata;
+
+option go_package = "github.com/jzhang405/NexKV/internal/metadata/proto";
+
+// WALType WAL 操作类型
+enum WALType {
+  WAL_TYPE_UNKNOWN = 0;  // 未知类型（占位）
+  WAL_TYPE_PUT = 1;      // 写入操作
+  WAL_TYPE_DELETE = 2;   // 删除操作
+  WAL_TYPE_CHECKPOINT = 3; // 检查点操作
+}
+
+// HLC 混合逻辑时钟
+// HLC = PhysicalTimestamp (8 bytes) + LogicalCounter (2 bytes)
+message HLC {
+  uint64 physical_time = 1;  // 物理时间戳（Unix 毫秒）
+  uint32 logical_counter = 2; // 逻辑计数器
+}
+
+// WALEntry WAL 日志条目
+//
+// WAL (Write-Ahead Log) 用于崩溃恢复：
+//   - 所有写操作先写 WAL，再更新内存表
+//   - 崩溃后通过重放 WAL 恢复数据
+//   - 定期 checkpoint 清理已应用的日志
+message WALEntry {
+  WALType type = 1;           // 操作类型
+  string key = 2;             // 键
+  bytes value = 3;            // 值（Type = WAL_TYPE_PUT 时有效）
+  bytes old_value = 4;        // 旧值（用于 MVCC 冲突检测，可选）
+  HLC timestamp = 5;          // 操作时间戳（HLC）
+  uint32 checksum = 6;        // 校验和（保证数据完整性）
+}
+
+// MetadataStoreData 元数据存储数据
+// 用于快照和完整数据序列化
+message MetadataStoreData {
+  map<string, bytes> data = 1;  // 键值对数据
+  uint64 version = 2;            // 版本号
+}

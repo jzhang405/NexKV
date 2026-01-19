@@ -1396,3 +1396,221 @@ func TestSnapshotManager_Delete_NotExist(t *testing.T) {
 	err = snapMgr.Delete("non_existent_snapshot")
 	assert.Error(t, err, "删除不存在的快照应该返回错误")
 }
+
+// TestMemoryMVStore_IteratorTimestamp 测试迭代器时间戳
+func TestMemoryMVStore_IteratorTimestamp(t *testing.T) {
+	tempDir := t.TempDir()
+	options := &MVStoreOptions{
+		DataDir:   tempDir,
+		WALDir:    filepath.Join(tempDir, "wal"),
+		EnableWAL: false,
+	}
+
+	store, err := NewMemoryMVStore(options)
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+
+	// 写入数据
+	require.NoError(t, store.Put("key1", []byte("value1")))
+
+	// 创建迭代器
+	iter := store.NewIterator()
+	defer iter.Release()
+
+	// 移动到第一个条目
+	require.True(t, iter.Next())
+
+	// 测试 Timestamp() 方法
+	timestamp := iter.Timestamp()
+	assert.NotNil(t, timestamp, "Timestamp 不应该返回 nil")
+}
+
+// TestMVStoreDefaultOptions 测试默认选项
+func TestMVStoreDefaultOptions(t *testing.T) {
+	options := DefaultOptions()
+
+	assert.NotNil(t, options)
+	assert.Equal(t, "./data/metadata", options.DataDir, "默认 DataDir 应该是 ./data/metadata")
+	assert.Equal(t, "./data/wal", options.WALDir, "默认 WALDir 应该是 ./data/wal")
+	assert.True(t, options.EnableWAL, "默认应该启用 WAL")
+	assert.Equal(t, int64(64*1024*1024), options.MemTableSize, "默认内存表大小应该是 64MB")
+	assert.Equal(t, 10, options.MaxVersions, "默认最多保留 10 个版本")
+}
+
+// TestMVStoreWALRecovery_Delete 测试 WAL 恢复删除操作（覆盖 applyDelete）
+func TestMVStoreWALRecovery_Delete(t *testing.T) {
+	tempDir := t.TempDir()
+	walDir := filepath.Join(tempDir, "wal")
+
+	// 第一阶段：创建并写入数据，然后删除
+	options := &MVStoreOptions{
+		DataDir:   tempDir,
+		WALDir:    walDir,
+		EnableWAL: true,
+	}
+
+	store, err := NewMemoryMVStore(options)
+	require.NoError(t, err)
+
+	// 写入数据
+	err = store.Put("key1", []byte("value1"))
+	require.NoError(t, err)
+	err = store.Put("key2", []byte("value2"))
+	require.NoError(t, err)
+
+	// 删除数据
+	err = store.Delete("key1")
+	require.NoError(t, err)
+
+	// 关闭 store（会刷盘并关闭 WAL）
+	err = store.Close()
+	require.NoError(t, err)
+
+	// 第二阶段：重新打开 store，触发 WAL 恢复
+	store2, err := NewMemoryMVStore(options)
+	require.NoError(t, err)
+	defer func() { _ = store2.Close() }()
+
+	// 验证 key1 已被删除（恢复应用了删除操作）
+	_, err = store2.Get("key1")
+	assert.Error(t, err, "key1 应该已被删除")
+
+	// 验证 key2 仍然存在
+	value, err := store2.Get("key2")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("value2"), value, "key2 应该存在")
+}
+
+// TestMVStoreFlushTrigger 测试内存表刷盘触发（覆盖 checkFlush）
+func TestMVStoreFlushTrigger(t *testing.T) {
+	tempDir := t.TempDir()
+	walDir := filepath.Join(tempDir, "wal")
+
+	// 设置小的内存表大小（1KB），使其容易触发刷盘
+	options := &MVStoreOptions{
+		DataDir:     tempDir,
+		WALDir:      walDir,
+		EnableWAL:   true,
+		MemTableSize: 1024, // 1KB
+	}
+
+	store, err := NewMemoryMVStore(options)
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+
+	// 写入足够多的数据以超过 MemTableSize
+	// 每个条目大约 100+ 字节，写入 15 个应该超过 1KB
+	for i := 0; i < 15; i++ {
+		key := fmt.Sprintf("flush_test_key_%d", i)
+		value := make([]byte, 100) // 100 字节值
+		for j := range value {
+			value[j] = byte(i % 256)
+		}
+		err := store.Put(key, value)
+		require.NoError(t, err)
+	}
+
+	// 等待异步刷盘完成
+	time.Sleep(200 * time.Millisecond)
+
+	// 验证数据仍然可以读取（刷盘不影响内存数据）
+	value, err := store.Get("flush_test_key_0")
+	require.NoError(t, err)
+	assert.NotEmpty(t, value, "数据应该仍然可读")
+}
+
+// TestMVStoreStats 测试获取统计信息（覆盖 Stats）
+func TestMVStoreStats(t *testing.T) {
+	tempDir := t.TempDir()
+	options := &MVStoreOptions{
+		DataDir:   tempDir,
+		WALDir:    filepath.Join(tempDir, "wal"),
+		EnableWAL: false,
+	}
+
+	store, err := NewMemoryMVStore(options)
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+
+	// 写入一些数据
+	err = store.Put("key1", []byte("value1"))
+	require.NoError(t, err)
+	err = store.Put("key2", []byte("value2"))
+	require.NoError(t, err)
+
+	// 获取统计信息
+	stats, err := store.Stats()
+	require.NoError(t, err)
+	assert.NotNil(t, stats)
+	assert.Greater(t, stats.MemTableSize, int64(0), "内存表大小应该大于 0")
+}
+
+// TestMVStoreStats_Closed 测试已关闭 store 的 Stats（覆盖错误路径）
+func TestMVStoreStats_Closed(t *testing.T) {
+	tempDir := t.TempDir()
+	options := &MVStoreOptions{
+		DataDir:   tempDir,
+		WALDir:    filepath.Join(tempDir, "wal"),
+		EnableWAL: false,
+	}
+
+	store, err := NewMemoryMVStore(options)
+	require.NoError(t, err)
+
+	// 关闭 store
+	err = store.Close()
+	require.NoError(t, err)
+
+	// 对已关闭的 store 调用 Stats 应该返回错误
+	_, err = store.Stats()
+	assert.Error(t, err, "已关闭的 store 调用 Stats 应该返回错误")
+}
+
+// TestMVStoreNilOptions 测试 nil options 使用默认值（覆盖 NewMemoryMVStore nil 分支）
+func TestMVStoreNilOptions(t *testing.T) {
+	// 传入 nil options，应该使用默认值
+	store, err := NewMemoryMVStore(nil)
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+
+	// 验证 store 创建成功，使用了默认配置
+	assert.NotNil(t, store)
+
+	// 验证可以正常操作
+	err = store.Put("test_key", []byte("test_value"))
+	require.NoError(t, err)
+
+	value, err := store.Get("test_key")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("test_value"), value)
+}
+
+// TestMVStoreClosedOperations 测试已关闭 store 的操作（覆盖 Exists 和 GetVersion 错误路径）
+func TestMVStoreClosedOperations(t *testing.T) {
+	tempDir := t.TempDir()
+	options := &MVStoreOptions{
+		DataDir:   tempDir,
+		WALDir:    filepath.Join(tempDir, "wal"),
+		EnableWAL: false,
+	}
+
+	store, err := NewMemoryMVStore(options)
+	require.NoError(t, err)
+
+	// 写入一些数据
+	err = store.Put("key1", []byte("value1"))
+	require.NoError(t, err)
+
+	// 关闭 store
+	err = store.Close()
+	require.NoError(t, err)
+
+	// 对已关闭的 store 调用 Exists 应该返回错误
+	_, err = store.Exists("key1")
+	assert.Error(t, err, "已关闭的 store 调用 Exists 应该返回错误")
+
+	// 对已关闭的 store 调用 GetVersion 应该返回错误
+	_, err = store.GetVersion("key1", nil)
+	assert.Error(t, err, "已关闭的 store 调用 GetVersion 应该返回错误")
+}
+

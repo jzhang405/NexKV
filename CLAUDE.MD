@@ -728,6 +728,47 @@ storage:
   wal_dir: "./data/wal"
 ```
 
+### 开发工作流程
+
+#### 提交前检查（强制执行）
+
+⚠️ **CI 前必须执行以下检查**，确保本地所有验证通过后再提交：
+
+```bash
+# 步骤 1: 完整的本地验证流程
+make build     # 编译项目（包括 Protobuf 文件）
+make test      # 运行所有测试（含覆盖率）
+make lint      # 代码质量检查（golangci-lint）
+make fmt       # 格式化代码
+
+# 步骤 2: 检查验证结果
+echo $?  # 确保上一个命令返回 0（成功）
+```
+
+**验证说明**：
+- `make build` - 确保项目可编译，自动编译 Protobuf 文件
+- `make test` - 确保所有测试通过，测试覆盖率达标
+- `make lint` - 确保代码符合质量标准（需安装 golangci-lint）
+- `make fmt` - 确保代码格式符合 Go 规范
+
+**快速验证命令**（一行执行）：
+```bash
+make build && make test && make lint && make fmt && echo "✅ 所有检查通过"
+```
+
+#### 常用 Make 命令
+
+| 命令 | 说明 | 使用时机 |
+|------|------|---------|
+| `make build` | 编译项目（含 proto） | 代码修改后 |
+| `make test` | 运行所有测试 | 提交前 |
+| `make test-coverage` | 生成覆盖率报告 | PR 完成时 |
+| `make fmt` | 格式化代码 | 提交前 |
+| `make vet` | 静态检查 | 提交前 |
+| `make lint` | 代码质量检查 | 提交前 |
+| `make proto` | 编译 Protobuf | proto 文件修改后 |
+| `make clean` | 清理编译文件 | 需要重新编译时 |
+
 ### 核心模块实现
 
 #### 1. 元数据存储（MVStore）
@@ -984,9 +1025,25 @@ flowchart TD
   subject: 简短描述（不超过 50 字符）
   ```
 - **提交前检查**：
-  - 运行 `go test ./...` 确保测试通过
-  - 运行 `go fmt ./...` 格式化代码
-  - 运行 `go vet ./...` 静态检查
+  ```bash
+  # 步骤 1: 本地验证（必须全部通过）
+  make build     # 编译项目（包括 Protobuf）
+  make test      # 运行所有测试
+  make lint      # 代码质量检查
+  make fmt       # 格式化代码
+
+  # 步骤 2: 提交代码
+  git add .
+  git commit -m "feat(scope): description"
+  git push
+
+  # 步骤 3: 等待 CI 通过
+  # GitHub Actions 会自动运行：build → test → lint
+  ```
+
+  **重要**：
+  - ⚠️ **CI 前必须执行**：`make build`、`make test`、`make lint`、`make fmt`
+  - ⚠️ **确保本地所有检查通过**后再提交，避免 CI 失败
 
 ### Brainstorm 文档管理
 

@@ -1488,9 +1488,9 @@ func TestMVStoreFlushTrigger(t *testing.T) {
 
 	// 设置小的内存表大小（1KB），使其容易触发刷盘
 	options := &MVStoreOptions{
-		DataDir:     tempDir,
-		WALDir:      walDir,
-		EnableWAL:   true,
+		DataDir:      tempDir,
+		WALDir:       walDir,
+		EnableWAL:    true,
 		MemTableSize: 1024, // 1KB
 	}
 
@@ -1613,4 +1613,3 @@ func TestMVStoreClosedOperations(t *testing.T) {
 	_, err = store.GetVersion("key1", nil)
 	assert.Error(t, err, "已关闭的 store 调用 GetVersion 应该返回错误")
 }
-

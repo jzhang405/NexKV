@@ -192,13 +192,13 @@ flowchart TD
     subgraph CheckpointFile["Checkpoint File - 两段式格式"]
         direction TB
 
-        subgraph Header["文件头（固定 16 bytes）"]
+        subgraph Header["文件头（固定 16B）"]
             direction LR
-            H1["Magic<br/>4 bytes<br/>'NxCP'"]
-            H2["Version<br/>2 bytes<br/>uint16"]
-            H3["Codec Type<br/>2 bytes<br/>uint16"]
-            H4["Length<br/>4 bytes<br/>uint32"]
-            H5["CRC<br/>4 bytes<br/>CRC32"]
+            H1["Magic<br/>4B<br/>'NxCP'"]
+            H2["Version<br/>2B<br/>uint16"]
+            H3["Codec Type<br/>2B<br/>uint16"]
+            H4["Length<br/>4B<br/>uint32"]
+            H5["CRC<br/>4B<br/>CRC32"]
         end
 
         subgraph Data["数据区（变长，Protobuf 编码）"]
@@ -247,23 +247,23 @@ flowchart TD
     subgraph WALEntry["WAL Entry - 两段式格式"]
         direction TB
 
-        subgraph Header["条目头（固定 24 bytes）"]
+        subgraph Header["条目头（固定 24B）"]
             direction LR
-            H1["Magic<br/>4 bytes<br/>'NxWL'"]
-            H2["Type<br/>2 bytes<br/>uint16"]
-            H3["KeyLen<br/>4 bytes<br/>uint32"]
-            H4["ValueLen<br/>4 bytes<br/>uint32"]
-            H5["OldValueLen<br/>4 bytes<br/>uint32"]
-            H6["TimestampLen<br/>2 bytes<br/>uint16"]
-            H7["CRC<br/>4 bytes<br/>CRC32"]
+            H1["Magic<br/>4B<br/>'NxWL'"]
+            H2["Type<br/>2B<br/>uint16"]
+            H3["KeyLen<br/>4B<br/>uint32"]
+            H4["ValueLen<br/>4B<br/>uint32"]
+            H5["OldValueLen<br/>4B<br/>uint32"]
+            H6["TimestampLen<br/>2B<br/>uint16"]
+            H7["CRC<br/>4B<br/>CRC32"]
         end
 
         subgraph Data["数据区（变长）"]
             direction TB
-            D1["Key<br/>KeyLen bytes"]
-            D2["Value<br/>ValueLen bytes"]
-            D3["OldValue<br/>OldValueLen bytes"]
-            D4["Timestamp<br/>TimestampLen bytes (HLC)"]
+            D1["Key<br/>KeyLen"]
+            D2["Value<br/>ValueLen"]
+            D3["OldValue<br/>OldValueLen"]
+            D4["Timestamp<br/>TimestampLen (HLC)"]
         end
 
         Header --> Data
@@ -312,13 +312,13 @@ flowchart TD
     subgraph SnapshotFile["Snapshot File - 两段式格式"]
         direction TB
 
-        subgraph Header["文件头（固定 16 bytes）"]
+        subgraph Header["文件头（固定 16B）"]
             direction LR
-            H1["Magic<br/>4 bytes<br/>'NxSN'"]
-            H2["Version<br/>2 bytes<br/>uint16"]
-            H3["Codec Type<br/>2 bytes<br/>uint16"]
-            H4["Length<br/>4 bytes<br/>uint32"]
-            H5["CRC<br/>4 bytes<br/>CRC32"]
+            H1["Magic<br/>4B<br/>'NxSN'"]
+            H2["Version<br/>2B<br/>uint16"]
+            H3["Codec Type<br/>2B<br/>uint16"]
+            H4["Length<br/>4B<br/>uint32"]
+            H5["CRC<br/>4B<br/>CRC32"]
         end
 
         subgraph Data["数据区（变长，Protobuf 编码）"]

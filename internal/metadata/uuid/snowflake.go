@@ -52,6 +52,13 @@ const (
 	// 偏移位数
 	machineShift = seqBits                    // 12
 	timeShift    = machineShift + machineBits // 22
+
+	// 超时配置
+	sequenceOverflowTimeout = 100 * time.Millisecond // 序列号溢出等待超时
+
+	// ID 类型掩码（用于解析）
+	maxIDPerType = 0x1F // 5 bits，最大值为 31
+	typeIDShift  = 5    // 数据中心/工作节点 ID 位数
 )
 
 // NewSnowflake 创建 Snowflake ID 生成器
@@ -71,7 +78,7 @@ func NewSnowflake(datacenterID, workerID int64) (*Snowflake, error) {
 		return nil, errors.New("工作节点 ID 必须在 0-31 之间")
 	}
 
-	machineID := (datacenterID << 5) | workerID
+	machineID := (datacenterID << typeIDShift) | workerID
 
 	return &Snowflake{
 		lastTime:     0,
@@ -100,10 +107,18 @@ func (s *Snowflake) Generate() (int64, error) {
 		s.sequence = (s.sequence + 1) & s.maxSequence
 		// 序列号溢出，等待下一毫秒
 		if s.sequence == 0 {
-			// 等待下一毫秒
+			// 等待下一毫秒（添加超时保护）
+			timeout := time.After(sequenceOverflowTimeout)
+			ticker := time.NewTicker(time.Microsecond * 100)
+			defer ticker.Stop()
+
 			for now <= s.lastTime {
-				time.Sleep(time.Microsecond * 100)
-				now = time.Now().UnixMilli()
+				select {
+				case <-ticker.C:
+					now = time.Now().UnixMilli()
+				case <-timeout:
+					return 0, types.NewClockOperationError("序列号溢出等待超时")
+				}
 			}
 		}
 	} else {
@@ -131,6 +146,20 @@ func (s *Snowflake) GenerateString() (string, error) {
 }
 
 // MustGenerate 生成 Snowflake ID，失败时 panic
+//
+// ⚠️ Panic 场景：
+//  1. 时钟回拨超过配置的最大漂移量
+//  2. 序列号溢出等待超时（100ms）
+//
+// 使用建议：
+//   - 仅用于初始化阶段或无法处理错误的场景
+//   - 如果时钟问题是可恢复的，应该使用 Generate() 并处理 error
+//   - 在生产环境中，建议使用 SafeUUIDGenerator（带重试机制）
+//
+// 设计理念：
+//
+//	Must 系列函数遵循 Go 语言惯例，在不可恢复的错误时 panic。
+//	这比在关键路径上忽略错误更安全，能快速暴露配置问题。
 func (s *Snowflake) MustGenerate() int64 {
 	id, err := s.Generate()
 	if err != nil {
@@ -144,8 +173,8 @@ func ParseSnowflake(id int64) map[string]any {
 	timestamp := (id >> timeShift) + SnowflakeEpoch
 	machineID := (id >> machineShift) & maxMachineID
 	sequence := id & maxSequence
-	datacenterID := (machineID >> 5) & 0x1F
-	workerID := machineID & 0x1F
+	datacenterID := (machineID >> typeIDShift) & maxIDPerType
+	workerID := machineID & maxIDPerType
 
 	return map[string]any{
 		"id":           id,
@@ -159,7 +188,7 @@ func ParseSnowflake(id int64) map[string]any {
 
 // ExtractMachineID 从配置获取机器 ID
 func ExtractMachineID(datacenterID, workerID int64) int64 {
-	return (datacenterID << 5) | workerID
+	return (datacenterID << typeIDShift) | workerID
 }
 
 // DefaultSnowflake 创建默认 Snowflake ID 生成器

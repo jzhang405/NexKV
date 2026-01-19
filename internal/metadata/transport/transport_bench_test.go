@@ -4,6 +4,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
@@ -65,7 +66,7 @@ func BenchmarkFrame_NewFrame_DifferentSizes(b *testing.B) {
 	sizes := []int{64, 256, 1024, 4096, 16384}
 
 	for _, size := range sizes {
-		b.Run(string(rune(size)), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
 			data := make([]byte, size)
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -289,7 +290,7 @@ func BenchmarkMessagePackCodec_DifferentSizes(b *testing.B) {
 	sizes := []int{64, 256, 1024, 4096, 16384}
 
 	for _, size := range sizes {
-		b.Run(string(rune(size)), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
 			msg := &PutMessage{
 				Key:   "test_key",
 				Value: make([]byte, size),
@@ -310,7 +311,7 @@ func BenchmarkJSONCodec_DifferentSizes(b *testing.B) {
 	sizes := []int{64, 256, 1024, 4096, 16384}
 
 	for _, size := range sizes {
-		b.Run(string(rune(size)), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
 			msg := &PutMessage{
 				Key:   "test_key",
 				Value: make([]byte, size),
@@ -331,7 +332,7 @@ func BenchmarkProtobufCodec_DifferentSizes(b *testing.B) {
 	sizes := []int{64, 256, 1024, 4096, 16384}
 
 	for _, size := range sizes {
-		b.Run(string(rune(size)), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
 			msg := &PutMessage{
 				Key:   "test_key",
 				Value: make([]byte, size),
@@ -417,8 +418,10 @@ func BenchmarkMemoryTransport_Send(b *testing.B) {
 	// 预热
 	for i := 0; i < 100; i++ {
 		_ = trans1.Send(ctx, "node2:9211", msg)
-		for len(trans2.Receive()) > 0 {
-			<-trans2.Receive()
+		// 保存 channel 引用，避免每次调用 Receive() 返回新 channel
+		receiveCh := trans2.Receive()
+		for len(receiveCh) > 0 {
+			<-receiveCh
 		}
 	}
 
@@ -487,7 +490,7 @@ func BenchmarkMemoryTransport_DifferentMessageSizes(b *testing.B) {
 	sizes := []int{64, 256, 1024, 4096, 16384}
 
 	for _, size := range sizes {
-		b.Run(string(rune(size)), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
 			trans1, _ := NewMemoryTransport("node1:9211")
 			trans2, _ := NewMemoryTransport("node2:9211")
 
@@ -541,11 +544,12 @@ func BenchmarkMessageWriter_Writer(b *testing.B) {
 		Key:   "test_key",
 		Value: make([]byte, 1024),
 	}
+	codec, _ := NewCodec(types.CodecTypeProtobuf)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// 这里需要一个 mock writer，实际测试中会被跳过
-		_, _ = msg.Marshal()
+		// 使用 Codec 进行序列化
+		_, _ = codec.Encode(msg)
 	}
 }
 
@@ -636,5 +640,190 @@ func BenchmarkLatency(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = trans1.Send(ctx, "node2:9211", msg)
 		<-trans2.Receive()
+	}
+}
+
+// ========================================
+// 三 Codec 完整性能对比
+// ========================================
+
+// allTestMessages 所有测试消息（完整覆盖）
+var allTestMessages = []Message{
+	// 元数据操作消息 (100-149)
+	&GetMessage{Key: "test_key"},
+	&PutMessage{Key: "test_key", Value: make([]byte, 1024)},
+	&DeleteMessage{Key: "test_key"},
+
+	// Gossip 协议消息 (150-199)
+	&GossipSyncMessage{
+		Version:   100,
+		Metadata:  map[string][]byte{"k1": []byte("v1"), "k2": []byte("v2")},
+		Timestamp: 1705689600000000000,
+	},
+
+	// Quorum 协议消息 (200-249)
+	&QuorumProposeMessage{
+		ProposalID: "prop-123",
+		Key:        "test_key",
+		Value:      []byte("test_value"),
+		Operation:  "put",
+		Proposer:   "node-1",
+		Timestamp:  1705689600000000000,
+	},
+
+	// 2PC 协议消息 (250-299)
+	&TwoPCPrepareMessage{
+		TransactionID: "tx-123",
+		Participants:  []string{"node1", "node2", "node3"},
+		Operations: []Operation{
+			{Type: "put", Key: "k1", Value: []byte("v1")},
+			{Type: "put", Key: "k2", Value: []byte("v2")},
+		},
+		Timeout: 30000,
+	},
+
+	// 节点管理消息 (300-349)
+	&NodePingMessage{
+		NodeID:    "node-1",
+		Sequence:  100,
+		Timestamp: 1705689600000000000,
+	},
+	&NodePongMessage{
+		NodeID:   "node-1",
+		Sequence: 100,
+		Status:   "ready",
+	},
+	&NodeJoinMessage{
+		NodeID:   "node-2",
+		Addr:     "192.168.1.10:9211",
+		Role:     "follower",
+		ParentID: "node-1",
+	},
+	&NodeLeaveMessage{
+		NodeID: "node-3",
+		Reason: "手动下线",
+	},
+
+	// 集群管理消息 (350-399)
+	&LeaderElectionMessage{
+		ElectionID: "election-123",
+		NodeID:     "node-1",
+		Priority:   1,
+	},
+}
+
+// BenchmarkThreeCodec_AllMessages 三种 Codec 所有消息性能对比
+func BenchmarkThreeCodec_AllMessages(b *testing.B) {
+	codecs := []struct {
+		name  string
+		codec Codec
+	}{
+		{"JSON", NewJSONCodec()},
+		{"MessagePack", NewMessagePackCodec()},
+		{"Protobuf", NewProtobufCodec()},
+	}
+
+	for _, tc := range codecs {
+		b.Run(tc.name, func(b *testing.B) {
+			for _, msg := range allTestMessages {
+				b.Run(msg.Type().String(), func(b *testing.B) {
+					data, _ := tc.codec.Encode(msg)
+
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						// 编码
+						encoded, _ := tc.codec.Encode(msg)
+						// 解码
+						_, _ = tc.codec.Decode(encoded)
+					}
+
+					// 报告内存分配
+					b.ReportMetric(float64(len(data)), "bytes")
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkThreeCodec_EncodeOnly 三种 Codec 编码性能对比
+func BenchmarkThreeCodec_EncodeOnly(b *testing.B) {
+	codecs := []struct {
+		name  string
+		codec Codec
+	}{
+		{"JSON", NewJSONCodec()},
+		{"MessagePack", NewMessagePackCodec()},
+		{"Protobuf", NewProtobufCodec()},
+	}
+
+	for _, tc := range codecs {
+		b.Run(tc.name, func(b *testing.B) {
+			for _, msg := range allTestMessages {
+				b.Run(msg.Type().String(), func(b *testing.B) {
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						_, _ = tc.codec.Encode(msg)
+					}
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkThreeCodec_DecodeOnly 三种 Codec 解码性能对比
+func BenchmarkThreeCodec_DecodeOnly(b *testing.B) {
+	codecs := []struct {
+		name  string
+		codec Codec
+	}{
+		{"JSON", NewJSONCodec()},
+		{"MessagePack", NewMessagePackCodec()},
+		{"Protobuf", NewProtobufCodec()},
+	}
+
+	for _, tc := range codecs {
+		b.Run(tc.name, func(b *testing.B) {
+			for _, msg := range allTestMessages {
+				b.Run(msg.Type().String(), func(b *testing.B) {
+					encoded, _ := tc.codec.Encode(msg)
+
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						_, _ = tc.codec.Decode(encoded)
+					}
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkThreeCodec_SerializationSize 三种 Codec 序列化后大小对比
+func BenchmarkThreeCodec_SerializationSize(b *testing.B) {
+	codecs := []struct {
+		name  string
+		codec Codec
+	}{
+		{"JSON", NewJSONCodec()},
+		{"MessagePack", NewMessagePackCodec()},
+		{"Protobuf", NewProtobufCodec()},
+	}
+
+	b.ResetTimer()
+	for _, tc := range codecs {
+		b.Run(tc.name, func(b *testing.B) {
+			for _, msg := range allTestMessages {
+				b.Run(msg.Type().String(), func(b *testing.B) {
+					// 只报告大小，不运行实际 benchmark 循环
+					b.StopTimer()
+					encoded, _ := tc.codec.Encode(msg)
+					b.ReportMetric(float64(len(encoded)), "bytes")
+					b.StartTimer()
+					// 空循环，b.N 由框架控制
+					for i := 0; i < b.N; i++ {
+						// 已在上方编码，此处为空
+					}
+				})
+			}
+		})
 	}
 }

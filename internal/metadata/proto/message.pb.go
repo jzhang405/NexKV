@@ -22,14 +22,6 @@ const (
 )
 
 // MessageType 消息类型
-//
-// 消息类型范围分配:
-//   - 100-149: 元数据操作（Put、Delete、Get 等）
-//   - 150-199: Gossip 协议消息
-//   - 200-249: Quorum 协议消息
-//   - 250-299: 2PC 协议消息
-//   - 300-349: 节点管理消息
-//   - 350-399: 集群管理消息
 type MessageType int32
 
 const (
@@ -166,300 +158,28 @@ func (MessageType) EnumDescriptor() ([]byte, []int) {
 	return file_message_proto_rawDescGZIP(), []int{0}
 }
 
-type QuorumMessage_VoteType int32
-
-const (
-	QuorumMessage_VOTE_TYPE_UNSPECIFIED QuorumMessage_VoteType = 0
-	QuorumMessage_VOTE_TYPE_APPROVE     QuorumMessage_VoteType = 1 // 同意
-	QuorumMessage_VOTE_TYPE_REJECT      QuorumMessage_VoteType = 2 // 拒绝
-)
-
-// Enum value maps for QuorumMessage_VoteType.
-var (
-	QuorumMessage_VoteType_name = map[int32]string{
-		0: "VOTE_TYPE_UNSPECIFIED",
-		1: "VOTE_TYPE_APPROVE",
-		2: "VOTE_TYPE_REJECT",
-	}
-	QuorumMessage_VoteType_value = map[string]int32{
-		"VOTE_TYPE_UNSPECIFIED": 0,
-		"VOTE_TYPE_APPROVE":     1,
-		"VOTE_TYPE_REJECT":      2,
-	}
-)
-
-func (x QuorumMessage_VoteType) Enum() *QuorumMessage_VoteType {
-	p := new(QuorumMessage_VoteType)
-	*p = x
-	return p
-}
-
-func (x QuorumMessage_VoteType) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (QuorumMessage_VoteType) Descriptor() protoreflect.EnumDescriptor {
-	return file_message_proto_enumTypes[1].Descriptor()
-}
-
-func (QuorumMessage_VoteType) Type() protoreflect.EnumType {
-	return &file_message_proto_enumTypes[1]
-}
-
-func (x QuorumMessage_VoteType) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use QuorumMessage_VoteType.Descriptor instead.
-func (QuorumMessage_VoteType) EnumDescriptor() ([]byte, []int) {
-	return file_message_proto_rawDescGZIP(), []int{2, 0}
-}
-
-type TwoPCMessage_PhaseType int32
-
-const (
-	TwoPCMessage_PHASE_TYPE_UNSPECIFIED TwoPCMessage_PhaseType = 0
-	TwoPCMessage_PHASE_TYPE_PREPARE     TwoPCMessage_PhaseType = 1 // 准备阶段
-	TwoPCMessage_PHASE_TYPE_COMMIT      TwoPCMessage_PhaseType = 2 // 提交阶段
-	TwoPCMessage_PHASE_TYPE_ROLLBACK    TwoPCMessage_PhaseType = 3 // 回滚阶段
-)
-
-// Enum value maps for TwoPCMessage_PhaseType.
-var (
-	TwoPCMessage_PhaseType_name = map[int32]string{
-		0: "PHASE_TYPE_UNSPECIFIED",
-		1: "PHASE_TYPE_PREPARE",
-		2: "PHASE_TYPE_COMMIT",
-		3: "PHASE_TYPE_ROLLBACK",
-	}
-	TwoPCMessage_PhaseType_value = map[string]int32{
-		"PHASE_TYPE_UNSPECIFIED": 0,
-		"PHASE_TYPE_PREPARE":     1,
-		"PHASE_TYPE_COMMIT":      2,
-		"PHASE_TYPE_ROLLBACK":    3,
-	}
-)
-
-func (x TwoPCMessage_PhaseType) Enum() *TwoPCMessage_PhaseType {
-	p := new(TwoPCMessage_PhaseType)
-	*p = x
-	return p
-}
-
-func (x TwoPCMessage_PhaseType) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (TwoPCMessage_PhaseType) Descriptor() protoreflect.EnumDescriptor {
-	return file_message_proto_enumTypes[2].Descriptor()
-}
-
-func (TwoPCMessage_PhaseType) Type() protoreflect.EnumType {
-	return &file_message_proto_enumTypes[2]
-}
-
-func (x TwoPCMessage_PhaseType) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use TwoPCMessage_PhaseType.Descriptor instead.
-func (TwoPCMessage_PhaseType) EnumDescriptor() ([]byte, []int) {
-	return file_message_proto_rawDescGZIP(), []int{3, 0}
-}
-
-type TwoPCMessage_DecisionType int32
-
-const (
-	TwoPCMessage_DECISION_TYPE_UNSPECIFIED TwoPCMessage_DecisionType = 0
-	TwoPCMessage_DECISION_TYPE_COMMIT      TwoPCMessage_DecisionType = 1 // 提交决策
-	TwoPCMessage_DECISION_TYPE_ABORT       TwoPCMessage_DecisionType = 2 // 中止决策
-)
-
-// Enum value maps for TwoPCMessage_DecisionType.
-var (
-	TwoPCMessage_DecisionType_name = map[int32]string{
-		0: "DECISION_TYPE_UNSPECIFIED",
-		1: "DECISION_TYPE_COMMIT",
-		2: "DECISION_TYPE_ABORT",
-	}
-	TwoPCMessage_DecisionType_value = map[string]int32{
-		"DECISION_TYPE_UNSPECIFIED": 0,
-		"DECISION_TYPE_COMMIT":      1,
-		"DECISION_TYPE_ABORT":       2,
-	}
-)
-
-func (x TwoPCMessage_DecisionType) Enum() *TwoPCMessage_DecisionType {
-	p := new(TwoPCMessage_DecisionType)
-	*p = x
-	return p
-}
-
-func (x TwoPCMessage_DecisionType) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (TwoPCMessage_DecisionType) Descriptor() protoreflect.EnumDescriptor {
-	return file_message_proto_enumTypes[3].Descriptor()
-}
-
-func (TwoPCMessage_DecisionType) Type() protoreflect.EnumType {
-	return &file_message_proto_enumTypes[3]
-}
-
-func (x TwoPCMessage_DecisionType) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use TwoPCMessage_DecisionType.Descriptor instead.
-func (TwoPCMessage_DecisionType) EnumDescriptor() ([]byte, []int) {
-	return file_message_proto_rawDescGZIP(), []int{3, 1}
-}
-
-type HeartbeatMessage_StatusType int32
-
-const (
-	HeartbeatMessage_STATUS_TYPE_UNSPECIFIED HeartbeatMessage_StatusType = 0
-	HeartbeatMessage_STATUS_TYPE_HEALTHY     HeartbeatMessage_StatusType = 1 // 健康
-	HeartbeatMessage_STATUS_TYPE_BUSY        HeartbeatMessage_StatusType = 2 // 繁忙
-	HeartbeatMessage_STATUS_TYPE_DEGRADED    HeartbeatMessage_StatusType = 3 // 降级
-)
-
-// Enum value maps for HeartbeatMessage_StatusType.
-var (
-	HeartbeatMessage_StatusType_name = map[int32]string{
-		0: "STATUS_TYPE_UNSPECIFIED",
-		1: "STATUS_TYPE_HEALTHY",
-		2: "STATUS_TYPE_BUSY",
-		3: "STATUS_TYPE_DEGRADED",
-	}
-	HeartbeatMessage_StatusType_value = map[string]int32{
-		"STATUS_TYPE_UNSPECIFIED": 0,
-		"STATUS_TYPE_HEALTHY":     1,
-		"STATUS_TYPE_BUSY":        2,
-		"STATUS_TYPE_DEGRADED":    3,
-	}
-)
-
-func (x HeartbeatMessage_StatusType) Enum() *HeartbeatMessage_StatusType {
-	p := new(HeartbeatMessage_StatusType)
-	*p = x
-	return p
-}
-
-func (x HeartbeatMessage_StatusType) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (HeartbeatMessage_StatusType) Descriptor() protoreflect.EnumDescriptor {
-	return file_message_proto_enumTypes[4].Descriptor()
-}
-
-func (HeartbeatMessage_StatusType) Type() protoreflect.EnumType {
-	return &file_message_proto_enumTypes[4]
-}
-
-func (x HeartbeatMessage_StatusType) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use HeartbeatMessage_StatusType.Descriptor instead.
-func (HeartbeatMessage_StatusType) EnumDescriptor() ([]byte, []int) {
-	return file_message_proto_rawDescGZIP(), []int{4, 0}
-}
-
-type MetadataOpMessage_OpType int32
-
-const (
-	MetadataOpMessage_OP_TYPE_UNSPECIFIED MetadataOpMessage_OpType = 0
-	MetadataOpMessage_OP_TYPE_GET         MetadataOpMessage_OpType = 1 // 获取
-	MetadataOpMessage_OP_TYPE_PUT         MetadataOpMessage_OpType = 2 // 设置
-	MetadataOpMessage_OP_TYPE_DELETE      MetadataOpMessage_OpType = 3 // 删除
-	MetadataOpMessage_OP_TYPE_LIST        MetadataOpMessage_OpType = 4 // 列举
-)
-
-// Enum value maps for MetadataOpMessage_OpType.
-var (
-	MetadataOpMessage_OpType_name = map[int32]string{
-		0: "OP_TYPE_UNSPECIFIED",
-		1: "OP_TYPE_GET",
-		2: "OP_TYPE_PUT",
-		3: "OP_TYPE_DELETE",
-		4: "OP_TYPE_LIST",
-	}
-	MetadataOpMessage_OpType_value = map[string]int32{
-		"OP_TYPE_UNSPECIFIED": 0,
-		"OP_TYPE_GET":         1,
-		"OP_TYPE_PUT":         2,
-		"OP_TYPE_DELETE":      3,
-		"OP_TYPE_LIST":        4,
-	}
-)
-
-func (x MetadataOpMessage_OpType) Enum() *MetadataOpMessage_OpType {
-	p := new(MetadataOpMessage_OpType)
-	*p = x
-	return p
-}
-
-func (x MetadataOpMessage_OpType) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (MetadataOpMessage_OpType) Descriptor() protoreflect.EnumDescriptor {
-	return file_message_proto_enumTypes[5].Descriptor()
-}
-
-func (MetadataOpMessage_OpType) Type() protoreflect.EnumType {
-	return &file_message_proto_enumTypes[5]
-}
-
-func (x MetadataOpMessage_OpType) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use MetadataOpMessage_OpType.Descriptor instead.
-func (MetadataOpMessage_OpType) EnumDescriptor() ([]byte, []int) {
-	return file_message_proto_rawDescGZIP(), []int{6, 0}
-}
-
-// TransportMessage 传输消息基础结构
-//
-// 所有消息的通用包装，包含路由信息和时间戳
-type TransportMessage struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	Type      MessageType            `protobuf:"varint,1,opt,name=type,proto3,enum=nexkv.metadata.MessageType" json:"type,omitempty"` // 消息类型
-	Timestamp uint64                 `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                       // 时间戳（Unix 毫秒）
-	FromNode  string                 `protobuf:"bytes,3,opt,name=from_node,json=fromNode,proto3" json:"from_node,omitempty"`          // 发送节点 ID
-	ToNode    string                 `protobuf:"bytes,4,opt,name=to_node,json=toNode,proto3" json:"to_node,omitempty"`                // 接收节点 ID（可选，广播消息时为空）
-	RequestId uint64                 `protobuf:"varint,5,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`      // 请求 ID（用于匹配请求-响应）
-	// Types that are valid to be assigned to Payload:
-	//
-	//	*TransportMessage_Gossip
-	//	*TransportMessage_Quorum
-	//	*TransportMessage_Twopc
-	//	*TransportMessage_Heartbeat
-	//	*TransportMessage_Response
-	//	*TransportMessage_Metadata
-	Payload       isTransportMessage_Payload `protobuf_oneof:"payload"`
+// GetMessageProto 获取元数据消息
+type GetMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *TransportMessage) Reset() {
-	*x = TransportMessage{}
+func (x *GetMessageProto) Reset() {
+	*x = GetMessageProto{}
 	mi := &file_message_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *TransportMessage) String() string {
+func (x *GetMessageProto) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*TransportMessage) ProtoMessage() {}
+func (*GetMessageProto) ProtoMessage() {}
 
-func (x *TransportMessage) ProtoReflect() protoreflect.Message {
+func (x *GetMessageProto) ProtoReflect() protoreflect.Message {
 	mi := &file_message_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -471,342 +191,164 @@ func (x *TransportMessage) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use TransportMessage.ProtoReflect.Descriptor instead.
-func (*TransportMessage) Descriptor() ([]byte, []int) {
+// Deprecated: Use GetMessageProto.ProtoReflect.Descriptor instead.
+func (*GetMessageProto) Descriptor() ([]byte, []int) {
 	return file_message_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *TransportMessage) GetType() MessageType {
-	if x != nil {
-		return x.Type
-	}
-	return MessageType_MESSAGE_TYPE_UNSPECIFIED
-}
-
-func (x *TransportMessage) GetTimestamp() uint64 {
-	if x != nil {
-		return x.Timestamp
-	}
-	return 0
-}
-
-func (x *TransportMessage) GetFromNode() string {
-	if x != nil {
-		return x.FromNode
-	}
-	return ""
-}
-
-func (x *TransportMessage) GetToNode() string {
-	if x != nil {
-		return x.ToNode
-	}
-	return ""
-}
-
-func (x *TransportMessage) GetRequestId() uint64 {
-	if x != nil {
-		return x.RequestId
-	}
-	return 0
-}
-
-func (x *TransportMessage) GetPayload() isTransportMessage_Payload {
-	if x != nil {
-		return x.Payload
-	}
-	return nil
-}
-
-func (x *TransportMessage) GetGossip() *GossipMessage {
-	if x != nil {
-		if x, ok := x.Payload.(*TransportMessage_Gossip); ok {
-			return x.Gossip
-		}
-	}
-	return nil
-}
-
-func (x *TransportMessage) GetQuorum() *QuorumMessage {
-	if x != nil {
-		if x, ok := x.Payload.(*TransportMessage_Quorum); ok {
-			return x.Quorum
-		}
-	}
-	return nil
-}
-
-func (x *TransportMessage) GetTwopc() *TwoPCMessage {
-	if x != nil {
-		if x, ok := x.Payload.(*TransportMessage_Twopc); ok {
-			return x.Twopc
-		}
-	}
-	return nil
-}
-
-func (x *TransportMessage) GetHeartbeat() *HeartbeatMessage {
-	if x != nil {
-		if x, ok := x.Payload.(*TransportMessage_Heartbeat); ok {
-			return x.Heartbeat
-		}
-	}
-	return nil
-}
-
-func (x *TransportMessage) GetResponse() *ResponseMessage {
-	if x != nil {
-		if x, ok := x.Payload.(*TransportMessage_Response); ok {
-			return x.Response
-		}
-	}
-	return nil
-}
-
-func (x *TransportMessage) GetMetadata() *MetadataOpMessage {
-	if x != nil {
-		if x, ok := x.Payload.(*TransportMessage_Metadata); ok {
-			return x.Metadata
-		}
-	}
-	return nil
-}
-
-type isTransportMessage_Payload interface {
-	isTransportMessage_Payload()
-}
-
-type TransportMessage_Gossip struct {
-	Gossip *GossipMessage `protobuf:"bytes,10,opt,name=gossip,proto3,oneof"` // Gossip 协议消息
-}
-
-type TransportMessage_Quorum struct {
-	Quorum *QuorumMessage `protobuf:"bytes,11,opt,name=quorum,proto3,oneof"` // Quorum 协议消息
-}
-
-type TransportMessage_Twopc struct {
-	Twopc *TwoPCMessage `protobuf:"bytes,12,opt,name=twopc,proto3,oneof"` // 2PC 协议消息
-}
-
-type TransportMessage_Heartbeat struct {
-	Heartbeat *HeartbeatMessage `protobuf:"bytes,13,opt,name=heartbeat,proto3,oneof"` // 心跳消息
-}
-
-type TransportMessage_Response struct {
-	Response *ResponseMessage `protobuf:"bytes,14,opt,name=response,proto3,oneof"` // 通用响应消息
-}
-
-type TransportMessage_Metadata struct {
-	Metadata *MetadataOpMessage `protobuf:"bytes,15,opt,name=metadata,proto3,oneof"` // 元数据操作消息
-}
-
-func (*TransportMessage_Gossip) isTransportMessage_Payload() {}
-
-func (*TransportMessage_Quorum) isTransportMessage_Payload() {}
-
-func (*TransportMessage_Twopc) isTransportMessage_Payload() {}
-
-func (*TransportMessage_Heartbeat) isTransportMessage_Payload() {}
-
-func (*TransportMessage_Response) isTransportMessage_Payload() {}
-
-func (*TransportMessage_Metadata) isTransportMessage_Payload() {}
-
-// GossipMessage Gossip 协议消息
-//
-// 用于节点间元数据的最终一致性同步
-type GossipMessage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`                                                                 // 节点 ID
-	Version       uint64                 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`                                                                            // 元数据版本号
-	Metadata      map[string][]byte      `protobuf:"bytes,3,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // 元数据键值对
-	DeletedKeys   []string               `protobuf:"bytes,4,rep,name=deleted_keys,json=deletedKeys,proto3" json:"deleted_keys,omitempty"`                                                  // 已删除的键列表
-	Digest        uint32                 `protobuf:"varint,5,opt,name=digest,proto3" json:"digest,omitempty"`                                                                              // 摘要（用于快速比较）
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GossipMessage) Reset() {
-	*x = GossipMessage{}
-	mi := &file_message_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GossipMessage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GossipMessage) ProtoMessage() {}
-
-func (x *GossipMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_message_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GossipMessage.ProtoReflect.Descriptor instead.
-func (*GossipMessage) Descriptor() ([]byte, []int) {
-	return file_message_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *GossipMessage) GetNodeId() string {
-	if x != nil {
-		return x.NodeId
-	}
-	return ""
-}
-
-func (x *GossipMessage) GetVersion() uint64 {
-	if x != nil {
-		return x.Version
-	}
-	return 0
-}
-
-func (x *GossipMessage) GetMetadata() map[string][]byte {
-	if x != nil {
-		return x.Metadata
-	}
-	return nil
-}
-
-func (x *GossipMessage) GetDeletedKeys() []string {
-	if x != nil {
-		return x.DeletedKeys
-	}
-	return nil
-}
-
-func (x *GossipMessage) GetDigest() uint32 {
-	if x != nil {
-		return x.Digest
-	}
-	return 0
-}
-
-// QuorumMessage Quorum 协议消息
-//
-// 用于关键元数据的强一致性同步
-type QuorumMessage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ProposalId    string                 `protobuf:"bytes,1,opt,name=proposal_id,json=proposalId,proto3" json:"proposal_id,omitempty"`               // 提案 ID（唯一标识）
-	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`                                               // 键
-	Value         []byte                 `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`                                           // 值
-	Version       uint64                 `protobuf:"varint,4,opt,name=version,proto3" json:"version,omitempty"`                                      // 版本号
-	Vote          QuorumMessage_VoteType `protobuf:"varint,5,opt,name=vote,proto3,enum=nexkv.metadata.QuorumMessage_VoteType" json:"vote,omitempty"` // 投票类型（投票消息时使用）
-	Reason        string                 `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`                                         // 拒绝原因（可选）
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *QuorumMessage) Reset() {
-	*x = QuorumMessage{}
-	mi := &file_message_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *QuorumMessage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*QuorumMessage) ProtoMessage() {}
-
-func (x *QuorumMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_message_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use QuorumMessage.ProtoReflect.Descriptor instead.
-func (*QuorumMessage) Descriptor() ([]byte, []int) {
-	return file_message_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *QuorumMessage) GetProposalId() string {
-	if x != nil {
-		return x.ProposalId
-	}
-	return ""
-}
-
-func (x *QuorumMessage) GetKey() string {
+func (x *GetMessageProto) GetKey() string {
 	if x != nil {
 		return x.Key
 	}
 	return ""
 }
 
-func (x *QuorumMessage) GetValue() []byte {
+// PutMessageProto 更新元数据消息
+type PutMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PutMessageProto) Reset() {
+	*x = PutMessageProto{}
+	mi := &file_message_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PutMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PutMessageProto) ProtoMessage() {}
+
+func (x *PutMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PutMessageProto.ProtoReflect.Descriptor instead.
+func (*PutMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *PutMessageProto) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *PutMessageProto) GetValue() []byte {
 	if x != nil {
 		return x.Value
 	}
 	return nil
 }
 
-func (x *QuorumMessage) GetVersion() uint64 {
+// GetReplyMessageProto Get 响应消息
+type GetReplyMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	Found         bool                   `protobuf:"varint,3,opt,name=found,proto3" json:"found,omitempty"`
+	Version       uint64                 `protobuf:"varint,4,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetReplyMessageProto) Reset() {
+	*x = GetReplyMessageProto{}
+	mi := &file_message_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetReplyMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetReplyMessageProto) ProtoMessage() {}
+
+func (x *GetReplyMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetReplyMessageProto.ProtoReflect.Descriptor instead.
+func (*GetReplyMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *GetReplyMessageProto) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *GetReplyMessageProto) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *GetReplyMessageProto) GetFound() bool {
+	if x != nil {
+		return x.Found
+	}
+	return false
+}
+
+func (x *GetReplyMessageProto) GetVersion() uint64 {
 	if x != nil {
 		return x.Version
 	}
 	return 0
 }
 
-func (x *QuorumMessage) GetVote() QuorumMessage_VoteType {
-	if x != nil {
-		return x.Vote
-	}
-	return QuorumMessage_VOTE_TYPE_UNSPECIFIED
-}
-
-func (x *QuorumMessage) GetReason() string {
-	if x != nil {
-		return x.Reason
-	}
-	return ""
-}
-
-// TwoPCMessage 两阶段提交消息
-//
-// 用于跨分片分布式事务
-type TwoPCMessage struct {
-	state         protoimpl.MessageState    `protogen:"open.v1"`
-	TransactionId string                    `protobuf:"bytes,1,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`                                                // 事务 ID
-	Shards        []string                  `protobuf:"bytes,2,rep,name=shards,proto3" json:"shards,omitempty"`                                                                                   // 涉及的分片列表
-	Operations    map[string][]byte         `protobuf:"bytes,3,rep,name=operations,proto3" json:"operations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // 操作列表（key -> operation data）
-	Phase         TwoPCMessage_PhaseType    `protobuf:"varint,4,opt,name=phase,proto3,enum=nexkv.metadata.TwoPCMessage_PhaseType" json:"phase,omitempty"`                                         // 当前阶段
-	Decision      TwoPCMessage_DecisionType `protobuf:"varint,5,opt,name=decision,proto3,enum=nexkv.metadata.TwoPCMessage_DecisionType" json:"decision,omitempty"`                                // 决策（协调者发送）
-	Reason        string                    `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`                                                                                   // 失败原因（可选）
+// PutReplyMessageProto Put 响应消息
+type PutReplyMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Success       bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
+	Version       uint64                 `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *TwoPCMessage) Reset() {
-	*x = TwoPCMessage{}
+func (x *PutReplyMessageProto) Reset() {
+	*x = PutReplyMessageProto{}
 	mi := &file_message_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *TwoPCMessage) String() string {
+func (x *PutReplyMessageProto) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*TwoPCMessage) ProtoMessage() {}
+func (*PutReplyMessageProto) ProtoMessage() {}
 
-func (x *TwoPCMessage) ProtoReflect() protoreflect.Message {
+func (x *PutReplyMessageProto) ProtoReflect() protoreflect.Message {
 	mi := &file_message_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -818,224 +360,154 @@ func (x *TwoPCMessage) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use TwoPCMessage.ProtoReflect.Descriptor instead.
-func (*TwoPCMessage) Descriptor() ([]byte, []int) {
+// Deprecated: Use PutReplyMessageProto.ProtoReflect.Descriptor instead.
+func (*PutReplyMessageProto) Descriptor() ([]byte, []int) {
 	return file_message_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *TwoPCMessage) GetTransactionId() string {
+func (x *PutReplyMessageProto) GetKey() string {
 	if x != nil {
-		return x.TransactionId
+		return x.Key
 	}
 	return ""
 }
 
-func (x *TwoPCMessage) GetShards() []string {
-	if x != nil {
-		return x.Shards
-	}
-	return nil
-}
-
-func (x *TwoPCMessage) GetOperations() map[string][]byte {
-	if x != nil {
-		return x.Operations
-	}
-	return nil
-}
-
-func (x *TwoPCMessage) GetPhase() TwoPCMessage_PhaseType {
-	if x != nil {
-		return x.Phase
-	}
-	return TwoPCMessage_PHASE_TYPE_UNSPECIFIED
-}
-
-func (x *TwoPCMessage) GetDecision() TwoPCMessage_DecisionType {
-	if x != nil {
-		return x.Decision
-	}
-	return TwoPCMessage_DECISION_TYPE_UNSPECIFIED
-}
-
-func (x *TwoPCMessage) GetReason() string {
-	if x != nil {
-		return x.Reason
-	}
-	return ""
-}
-
-// HeartbeatMessage 心跳消息
-//
-// 用于节点存活检测和时钟同步
-type HeartbeatMessage struct {
-	state         protoimpl.MessageState      `protogen:"open.v1"`
-	NodeId        string                      `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`                                                                // 节点 ID
-	Timestamp     uint64                      `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                                                                       // 时间戳（Unix 毫秒）
-	Status        HeartbeatMessage_StatusType `protobuf:"varint,3,opt,name=status,proto3,enum=nexkv.metadata.HeartbeatMessage_StatusType" json:"status,omitempty"`                             // 节点状态
-	Metrics       map[string]uint32           `protobuf:"bytes,4,rep,name=metrics,proto3" json:"metrics,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"` // 节点指标（CPU、内存等）
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *HeartbeatMessage) Reset() {
-	*x = HeartbeatMessage{}
-	mi := &file_message_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *HeartbeatMessage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*HeartbeatMessage) ProtoMessage() {}
-
-func (x *HeartbeatMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_message_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use HeartbeatMessage.ProtoReflect.Descriptor instead.
-func (*HeartbeatMessage) Descriptor() ([]byte, []int) {
-	return file_message_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *HeartbeatMessage) GetNodeId() string {
-	if x != nil {
-		return x.NodeId
-	}
-	return ""
-}
-
-func (x *HeartbeatMessage) GetTimestamp() uint64 {
-	if x != nil {
-		return x.Timestamp
-	}
-	return 0
-}
-
-func (x *HeartbeatMessage) GetStatus() HeartbeatMessage_StatusType {
-	if x != nil {
-		return x.Status
-	}
-	return HeartbeatMessage_STATUS_TYPE_UNSPECIFIED
-}
-
-func (x *HeartbeatMessage) GetMetrics() map[string]uint32 {
-	if x != nil {
-		return x.Metrics
-	}
-	return nil
-}
-
-// ResponseMessage 通用响应消息
-//
-// 用于所有请求的响应
-type ResponseMessage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`                      // 是否成功
-	ErrorCode     uint32                 `protobuf:"varint,2,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"` // 错误码
-	ErrorMsg      string                 `protobuf:"bytes,3,opt,name=error_msg,json=errorMsg,proto3" json:"error_msg,omitempty"`     // 错误消息
-	Data          []byte                 `protobuf:"bytes,4,opt,name=data,proto3" json:"data,omitempty"`                             // 响应数据（可选）
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ResponseMessage) Reset() {
-	*x = ResponseMessage{}
-	mi := &file_message_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ResponseMessage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ResponseMessage) ProtoMessage() {}
-
-func (x *ResponseMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_message_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ResponseMessage.ProtoReflect.Descriptor instead.
-func (*ResponseMessage) Descriptor() ([]byte, []int) {
-	return file_message_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *ResponseMessage) GetSuccess() bool {
+func (x *PutReplyMessageProto) GetSuccess() bool {
 	if x != nil {
 		return x.Success
 	}
 	return false
 }
 
-func (x *ResponseMessage) GetErrorCode() uint32 {
+func (x *PutReplyMessageProto) GetVersion() uint64 {
 	if x != nil {
-		return x.ErrorCode
+		return x.Version
 	}
 	return 0
 }
 
-func (x *ResponseMessage) GetErrorMsg() string {
-	if x != nil {
-		return x.ErrorMsg
-	}
-	return ""
-}
-
-func (x *ResponseMessage) GetData() []byte {
-	if x != nil {
-		return x.Data
-	}
-	return nil
-}
-
-// MetadataOpMessage 元数据操作消息
-//
-// 用于元数据的增删改查
-type MetadataOpMessage struct {
-	state         protoimpl.MessageState   `protogen:"open.v1"`
-	Op            MetadataOpMessage_OpType `protobuf:"varint,1,opt,name=op,proto3,enum=nexkv.metadata.MetadataOpMessage_OpType" json:"op,omitempty"` // 操作类型
-	Key           string                   `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`                                             // 键
-	Value         []byte                   `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`                                         // 值（PUT 时使用）
-	Prefix        string                   `protobuf:"bytes,4,opt,name=prefix,proto3" json:"prefix,omitempty"`                                       // 前缀（LIST 时使用）
-	Offset        int32                    `protobuf:"varint,5,opt,name=offset,proto3" json:"offset,omitempty"`                                      // 偏移量（LIST 时使用）
-	Limit         int32                    `protobuf:"varint,6,opt,name=limit,proto3" json:"limit,omitempty"`                                        // 限制数量（LIST 时使用，0 表示不限制）
+// DeleteMessageProto 删除元数据消息
+type DeleteMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *MetadataOpMessage) Reset() {
-	*x = MetadataOpMessage{}
+func (x *DeleteMessageProto) Reset() {
+	*x = DeleteMessageProto{}
+	mi := &file_message_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteMessageProto) ProtoMessage() {}
+
+func (x *DeleteMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteMessageProto.ProtoReflect.Descriptor instead.
+func (*DeleteMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *DeleteMessageProto) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+// DeleteReplyMessageProto Delete 响应消息
+type DeleteReplyMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Success       bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteReplyMessageProto) Reset() {
+	*x = DeleteReplyMessageProto{}
+	mi := &file_message_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteReplyMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteReplyMessageProto) ProtoMessage() {}
+
+func (x *DeleteReplyMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteReplyMessageProto.ProtoReflect.Descriptor instead.
+func (*DeleteReplyMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *DeleteReplyMessageProto) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *DeleteReplyMessageProto) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+// GossipSyncMessageProto Gossip 同步消息
+type GossipSyncMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Version       uint64                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	Metadata      map[string][]byte      `protobuf:"bytes,2,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Timestamp     int64                  `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GossipSyncMessageProto) Reset() {
+	*x = GossipSyncMessageProto{}
 	mi := &file_message_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *MetadataOpMessage) String() string {
+func (x *GossipSyncMessageProto) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*MetadataOpMessage) ProtoMessage() {}
+func (*GossipSyncMessageProto) ProtoMessage() {}
 
-func (x *MetadataOpMessage) ProtoReflect() protoreflect.Message {
+func (x *GossipSyncMessageProto) ProtoReflect() protoreflect.Message {
 	mi := &file_message_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1047,148 +519,2184 @@ func (x *MetadataOpMessage) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use MetadataOpMessage.ProtoReflect.Descriptor instead.
-func (*MetadataOpMessage) Descriptor() ([]byte, []int) {
+// Deprecated: Use GossipSyncMessageProto.ProtoReflect.Descriptor instead.
+func (*GossipSyncMessageProto) Descriptor() ([]byte, []int) {
 	return file_message_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *MetadataOpMessage) GetOp() MetadataOpMessage_OpType {
+func (x *GossipSyncMessageProto) GetVersion() uint64 {
 	if x != nil {
-		return x.Op
+		return x.Version
 	}
-	return MetadataOpMessage_OP_TYPE_UNSPECIFIED
+	return 0
 }
 
-func (x *MetadataOpMessage) GetKey() string {
+func (x *GossipSyncMessageProto) GetMetadata() map[string][]byte {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *GossipSyncMessageProto) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+// GossipSyncReplyMessageProto Gossip 同步响应
+type GossipSyncReplyMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	Version       uint64                 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GossipSyncReplyMessageProto) Reset() {
+	*x = GossipSyncReplyMessageProto{}
+	mi := &file_message_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GossipSyncReplyMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GossipSyncReplyMessageProto) ProtoMessage() {}
+
+func (x *GossipSyncReplyMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GossipSyncReplyMessageProto.ProtoReflect.Descriptor instead.
+func (*GossipSyncReplyMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *GossipSyncReplyMessageProto) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *GossipSyncReplyMessageProto) GetVersion() uint64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+// GossipDigestMessageProto Gossip 摘要消息
+type GossipDigestMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Version       uint64                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	Digest        map[string]uint64      `protobuf:"bytes,2,rep,name=digest,proto3" json:"digest,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GossipDigestMessageProto) Reset() {
+	*x = GossipDigestMessageProto{}
+	mi := &file_message_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GossipDigestMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GossipDigestMessageProto) ProtoMessage() {}
+
+func (x *GossipDigestMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GossipDigestMessageProto.ProtoReflect.Descriptor instead.
+func (*GossipDigestMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *GossipDigestMessageProto) GetVersion() uint64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *GossipDigestMessageProto) GetDigest() map[string]uint64 {
+	if x != nil {
+		return x.Digest
+	}
+	return nil
+}
+
+// GossipDigestReplyMessageProto Gossip 摘要响应
+type GossipDigestReplyMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Version       uint64                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	Digest        map[string]uint64      `protobuf:"bytes,2,rep,name=digest,proto3" json:"digest,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GossipDigestReplyMessageProto) Reset() {
+	*x = GossipDigestReplyMessageProto{}
+	mi := &file_message_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GossipDigestReplyMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GossipDigestReplyMessageProto) ProtoMessage() {}
+
+func (x *GossipDigestReplyMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GossipDigestReplyMessageProto.ProtoReflect.Descriptor instead.
+func (*GossipDigestReplyMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *GossipDigestReplyMessageProto) GetVersion() uint64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *GossipDigestReplyMessageProto) GetDigest() map[string]uint64 {
+	if x != nil {
+		return x.Digest
+	}
+	return nil
+}
+
+// QuorumProposeMessageProto Quorum 提案消息
+type QuorumProposeMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProposalId    string                 `protobuf:"bytes,1,opt,name=proposal_id,json=proposalId,proto3" json:"proposal_id,omitempty"`
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
+	Operation     string                 `protobuf:"bytes,4,opt,name=operation,proto3" json:"operation,omitempty"` // "put", "delete"
+	Proposer      string                 `protobuf:"bytes,5,opt,name=proposer,proto3" json:"proposer,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,6,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QuorumProposeMessageProto) Reset() {
+	*x = QuorumProposeMessageProto{}
+	mi := &file_message_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QuorumProposeMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QuorumProposeMessageProto) ProtoMessage() {}
+
+func (x *QuorumProposeMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QuorumProposeMessageProto.ProtoReflect.Descriptor instead.
+func (*QuorumProposeMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *QuorumProposeMessageProto) GetProposalId() string {
+	if x != nil {
+		return x.ProposalId
+	}
+	return ""
+}
+
+func (x *QuorumProposeMessageProto) GetKey() string {
 	if x != nil {
 		return x.Key
 	}
 	return ""
 }
 
-func (x *MetadataOpMessage) GetValue() []byte {
+func (x *QuorumProposeMessageProto) GetValue() []byte {
 	if x != nil {
 		return x.Value
 	}
 	return nil
 }
 
-func (x *MetadataOpMessage) GetPrefix() string {
+func (x *QuorumProposeMessageProto) GetOperation() string {
 	if x != nil {
-		return x.Prefix
+		return x.Operation
 	}
 	return ""
 }
 
-func (x *MetadataOpMessage) GetOffset() int32 {
+func (x *QuorumProposeMessageProto) GetProposer() string {
 	if x != nil {
-		return x.Offset
+		return x.Proposer
+	}
+	return ""
+}
+
+func (x *QuorumProposeMessageProto) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
 	}
 	return 0
 }
 
-func (x *MetadataOpMessage) GetLimit() int32 {
+// QuorumVoteMessageProto Quorum 投票消息
+type QuorumVoteMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProposalId    string                 `protobuf:"bytes,1,opt,name=proposal_id,json=proposalId,proto3" json:"proposal_id,omitempty"`
+	Voter         string                 `protobuf:"bytes,2,opt,name=voter,proto3" json:"voter,omitempty"`
+	Vote          bool                   `protobuf:"varint,3,opt,name=vote,proto3" json:"vote,omitempty"`
+	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QuorumVoteMessageProto) Reset() {
+	*x = QuorumVoteMessageProto{}
+	mi := &file_message_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QuorumVoteMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QuorumVoteMessageProto) ProtoMessage() {}
+
+func (x *QuorumVoteMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[11]
 	if x != nil {
-		return x.Limit
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QuorumVoteMessageProto.ProtoReflect.Descriptor instead.
+func (*QuorumVoteMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *QuorumVoteMessageProto) GetProposalId() string {
+	if x != nil {
+		return x.ProposalId
+	}
+	return ""
+}
+
+func (x *QuorumVoteMessageProto) GetVoter() string {
+	if x != nil {
+		return x.Voter
+	}
+	return ""
+}
+
+func (x *QuorumVoteMessageProto) GetVote() bool {
+	if x != nil {
+		return x.Vote
+	}
+	return false
+}
+
+func (x *QuorumVoteMessageProto) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// QuorumDecideMessageProto Quorum 决策消息
+type QuorumDecideMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProposalId    string                 `protobuf:"bytes,1,opt,name=proposal_id,json=proposalId,proto3" json:"proposal_id,omitempty"`
+	Approved      bool                   `protobuf:"varint,2,opt,name=approved,proto3" json:"approved,omitempty"`
+	Version       uint64                 `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QuorumDecideMessageProto) Reset() {
+	*x = QuorumDecideMessageProto{}
+	mi := &file_message_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QuorumDecideMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QuorumDecideMessageProto) ProtoMessage() {}
+
+func (x *QuorumDecideMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QuorumDecideMessageProto.ProtoReflect.Descriptor instead.
+func (*QuorumDecideMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *QuorumDecideMessageProto) GetProposalId() string {
+	if x != nil {
+		return x.ProposalId
+	}
+	return ""
+}
+
+func (x *QuorumDecideMessageProto) GetApproved() bool {
+	if x != nil {
+		return x.Approved
+	}
+	return false
+}
+
+func (x *QuorumDecideMessageProto) GetVersion() uint64 {
+	if x != nil {
+		return x.Version
 	}
 	return 0
 }
+
+// OperationProto 操作定义
+type OperationProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"` // "put", "delete"
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OperationProto) Reset() {
+	*x = OperationProto{}
+	mi := &file_message_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OperationProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OperationProto) ProtoMessage() {}
+
+func (x *OperationProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OperationProto.ProtoReflect.Descriptor instead.
+func (*OperationProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *OperationProto) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *OperationProto) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *OperationProto) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+// TwoPCPrepareMessageProto 2PC 准备阶段消息
+type TwoPCPrepareMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TransactionId string                 `protobuf:"bytes,1,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+	Participants  []string               `protobuf:"bytes,2,rep,name=participants,proto3" json:"participants,omitempty"`
+	Operations    []*OperationProto      `protobuf:"bytes,3,rep,name=operations,proto3" json:"operations,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,4,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TwoPCPrepareMessageProto) Reset() {
+	*x = TwoPCPrepareMessageProto{}
+	mi := &file_message_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TwoPCPrepareMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TwoPCPrepareMessageProto) ProtoMessage() {}
+
+func (x *TwoPCPrepareMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TwoPCPrepareMessageProto.ProtoReflect.Descriptor instead.
+func (*TwoPCPrepareMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *TwoPCPrepareMessageProto) GetTransactionId() string {
+	if x != nil {
+		return x.TransactionId
+	}
+	return ""
+}
+
+func (x *TwoPCPrepareMessageProto) GetParticipants() []string {
+	if x != nil {
+		return x.Participants
+	}
+	return nil
+}
+
+func (x *TwoPCPrepareMessageProto) GetOperations() []*OperationProto {
+	if x != nil {
+		return x.Operations
+	}
+	return nil
+}
+
+func (x *TwoPCPrepareMessageProto) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+// TwoPCPrepareReplyMessageProto 2PC 准备响应
+type TwoPCPrepareReplyMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TransactionId string                 `protobuf:"bytes,1,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+	Participant   string                 `protobuf:"bytes,2,opt,name=participant,proto3" json:"participant,omitempty"`
+	Vote          string                 `protobuf:"bytes,3,opt,name=vote,proto3" json:"vote,omitempty"` // "commit", "abort"
+	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TwoPCPrepareReplyMessageProto) Reset() {
+	*x = TwoPCPrepareReplyMessageProto{}
+	mi := &file_message_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TwoPCPrepareReplyMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TwoPCPrepareReplyMessageProto) ProtoMessage() {}
+
+func (x *TwoPCPrepareReplyMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TwoPCPrepareReplyMessageProto.ProtoReflect.Descriptor instead.
+func (*TwoPCPrepareReplyMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *TwoPCPrepareReplyMessageProto) GetTransactionId() string {
+	if x != nil {
+		return x.TransactionId
+	}
+	return ""
+}
+
+func (x *TwoPCPrepareReplyMessageProto) GetParticipant() string {
+	if x != nil {
+		return x.Participant
+	}
+	return ""
+}
+
+func (x *TwoPCPrepareReplyMessageProto) GetVote() string {
+	if x != nil {
+		return x.Vote
+	}
+	return ""
+}
+
+func (x *TwoPCPrepareReplyMessageProto) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// TwoPCCommitMessageProto 2PC 提交消息
+type TwoPCCommitMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TransactionId string                 `protobuf:"bytes,1,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TwoPCCommitMessageProto) Reset() {
+	*x = TwoPCCommitMessageProto{}
+	mi := &file_message_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TwoPCCommitMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TwoPCCommitMessageProto) ProtoMessage() {}
+
+func (x *TwoPCCommitMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TwoPCCommitMessageProto.ProtoReflect.Descriptor instead.
+func (*TwoPCCommitMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *TwoPCCommitMessageProto) GetTransactionId() string {
+	if x != nil {
+		return x.TransactionId
+	}
+	return ""
+}
+
+// TwoPCRollbackMessageProto 2PC 回滚消息
+type TwoPCRollbackMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TransactionId string                 `protobuf:"bytes,1,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TwoPCRollbackMessageProto) Reset() {
+	*x = TwoPCRollbackMessageProto{}
+	mi := &file_message_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TwoPCRollbackMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TwoPCRollbackMessageProto) ProtoMessage() {}
+
+func (x *TwoPCRollbackMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TwoPCRollbackMessageProto.ProtoReflect.Descriptor instead.
+func (*TwoPCRollbackMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *TwoPCRollbackMessageProto) GetTransactionId() string {
+	if x != nil {
+		return x.TransactionId
+	}
+	return ""
+}
+
+func (x *TwoPCRollbackMessageProto) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// TwoPCCommitReplyMessageProto 2PC 提交响应
+type TwoPCCommitReplyMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TransactionId string                 `protobuf:"bytes,1,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+	Participant   string                 `protobuf:"bytes,2,opt,name=participant,proto3" json:"participant,omitempty"`
+	Success       bool                   `protobuf:"varint,3,opt,name=success,proto3" json:"success,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TwoPCCommitReplyMessageProto) Reset() {
+	*x = TwoPCCommitReplyMessageProto{}
+	mi := &file_message_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TwoPCCommitReplyMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TwoPCCommitReplyMessageProto) ProtoMessage() {}
+
+func (x *TwoPCCommitReplyMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TwoPCCommitReplyMessageProto.ProtoReflect.Descriptor instead.
+func (*TwoPCCommitReplyMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *TwoPCCommitReplyMessageProto) GetTransactionId() string {
+	if x != nil {
+		return x.TransactionId
+	}
+	return ""
+}
+
+func (x *TwoPCCommitReplyMessageProto) GetParticipant() string {
+	if x != nil {
+		return x.Participant
+	}
+	return ""
+}
+
+func (x *TwoPCCommitReplyMessageProto) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+// TwoPCRollbackReplyMessageProto 2PC 回滚响应
+type TwoPCRollbackReplyMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TransactionId string                 `protobuf:"bytes,1,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+	Participant   string                 `protobuf:"bytes,2,opt,name=participant,proto3" json:"participant,omitempty"`
+	Success       bool                   `protobuf:"varint,3,opt,name=success,proto3" json:"success,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TwoPCRollbackReplyMessageProto) Reset() {
+	*x = TwoPCRollbackReplyMessageProto{}
+	mi := &file_message_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TwoPCRollbackReplyMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TwoPCRollbackReplyMessageProto) ProtoMessage() {}
+
+func (x *TwoPCRollbackReplyMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TwoPCRollbackReplyMessageProto.ProtoReflect.Descriptor instead.
+func (*TwoPCRollbackReplyMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *TwoPCRollbackReplyMessageProto) GetTransactionId() string {
+	if x != nil {
+		return x.TransactionId
+	}
+	return ""
+}
+
+func (x *TwoPCRollbackReplyMessageProto) GetParticipant() string {
+	if x != nil {
+		return x.Participant
+	}
+	return ""
+}
+
+func (x *TwoPCRollbackReplyMessageProto) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+// NodePingMessageProto 节点心跳消息
+type NodePingMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Sequence      int64                  `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodePingMessageProto) Reset() {
+	*x = NodePingMessageProto{}
+	mi := &file_message_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodePingMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodePingMessageProto) ProtoMessage() {}
+
+func (x *NodePingMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodePingMessageProto.ProtoReflect.Descriptor instead.
+func (*NodePingMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *NodePingMessageProto) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *NodePingMessageProto) GetSequence() int64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
+func (x *NodePingMessageProto) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+// NodePongMessageProto 心跳响应
+type NodePongMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Sequence      int64                  `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"` // "ready", "busy", "leaving"
+	Timestamp     int64                  `protobuf:"varint,4,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodePongMessageProto) Reset() {
+	*x = NodePongMessageProto{}
+	mi := &file_message_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodePongMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodePongMessageProto) ProtoMessage() {}
+
+func (x *NodePongMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodePongMessageProto.ProtoReflect.Descriptor instead.
+func (*NodePongMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *NodePongMessageProto) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *NodePongMessageProto) GetSequence() int64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
+func (x *NodePongMessageProto) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *NodePongMessageProto) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+// NodeJoinMessageProto 节点加入消息
+type NodeJoinMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Addr          string                 `protobuf:"bytes,2,opt,name=addr,proto3" json:"addr,omitempty"`
+	Role          string                 `protobuf:"bytes,3,opt,name=role,proto3" json:"role,omitempty"` // "parent", "child"
+	ParentId      string                 `protobuf:"bytes,4,opt,name=parent_id,json=parentId,proto3" json:"parent_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeJoinMessageProto) Reset() {
+	*x = NodeJoinMessageProto{}
+	mi := &file_message_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeJoinMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeJoinMessageProto) ProtoMessage() {}
+
+func (x *NodeJoinMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeJoinMessageProto.ProtoReflect.Descriptor instead.
+func (*NodeJoinMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *NodeJoinMessageProto) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *NodeJoinMessageProto) GetAddr() string {
+	if x != nil {
+		return x.Addr
+	}
+	return ""
+}
+
+func (x *NodeJoinMessageProto) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *NodeJoinMessageProto) GetParentId() string {
+	if x != nil {
+		return x.ParentId
+	}
+	return ""
+}
+
+// NodeLeaveMessageProto 节点离开消息
+type NodeLeaveMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeLeaveMessageProto) Reset() {
+	*x = NodeLeaveMessageProto{}
+	mi := &file_message_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeLeaveMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeLeaveMessageProto) ProtoMessage() {}
+
+func (x *NodeLeaveMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeLeaveMessageProto.ProtoReflect.Descriptor instead.
+func (*NodeLeaveMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *NodeLeaveMessageProto) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *NodeLeaveMessageProto) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// NodeSyncMessageProto 节点同步消息
+type NodeSyncMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Version       uint64                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	Metadata      map[string][]byte      `protobuf:"bytes,2,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeSyncMessageProto) Reset() {
+	*x = NodeSyncMessageProto{}
+	mi := &file_message_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeSyncMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeSyncMessageProto) ProtoMessage() {}
+
+func (x *NodeSyncMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeSyncMessageProto.ProtoReflect.Descriptor instead.
+func (*NodeSyncMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *NodeSyncMessageProto) GetVersion() uint64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *NodeSyncMessageProto) GetMetadata() map[string][]byte {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+// ClockSyncMessageProto 时钟同步请求消息
+type ClockSyncMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Timestamp     int64                  `protobuf:"varint,1,opt,name=timestamp,proto3" json:"timestamp,omitempty"`        // 发送节点的 HLC 时间戳
+	NodeId        string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"` // 发送节点 ID
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClockSyncMessageProto) Reset() {
+	*x = ClockSyncMessageProto{}
+	mi := &file_message_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClockSyncMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClockSyncMessageProto) ProtoMessage() {}
+
+func (x *ClockSyncMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClockSyncMessageProto.ProtoReflect.Descriptor instead.
+func (*ClockSyncMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *ClockSyncMessageProto) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+func (x *ClockSyncMessageProto) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+// ClockSyncReplyMessageProto 时钟同步响应消息
+type ClockSyncReplyMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Timestamp     int64                  `protobuf:"varint,1,opt,name=timestamp,proto3" json:"timestamp,omitempty"`        // 响应节点的 HLC 时间戳
+	NodeId        string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"` // 响应节点 ID
+	Drift         int64                  `protobuf:"varint,3,opt,name=drift,proto3" json:"drift,omitempty"`                // 时间漂移（毫秒）
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClockSyncReplyMessageProto) Reset() {
+	*x = ClockSyncReplyMessageProto{}
+	mi := &file_message_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClockSyncReplyMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClockSyncReplyMessageProto) ProtoMessage() {}
+
+func (x *ClockSyncReplyMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClockSyncReplyMessageProto.ProtoReflect.Descriptor instead.
+func (*ClockSyncReplyMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *ClockSyncReplyMessageProto) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+func (x *ClockSyncReplyMessageProto) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *ClockSyncReplyMessageProto) GetDrift() int64 {
+	if x != nil {
+		return x.Drift
+	}
+	return 0
+}
+
+// NodeInfoProto 节点信息
+type NodeInfoProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Addr          string                 `protobuf:"bytes,2,opt,name=addr,proto3" json:"addr,omitempty"`
+	Role          string                 `protobuf:"bytes,3,opt,name=role,proto3" json:"role,omitempty"`
+	ParentId      string                 `protobuf:"bytes,4,opt,name=parent_id,json=parentId,proto3" json:"parent_id,omitempty"`
+	Status        string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"` // "ready", "busy", "leaving"
+	Level         int32                  `protobuf:"varint,6,opt,name=level,proto3" json:"level,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeInfoProto) Reset() {
+	*x = NodeInfoProto{}
+	mi := &file_message_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeInfoProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeInfoProto) ProtoMessage() {}
+
+func (x *NodeInfoProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeInfoProto.ProtoReflect.Descriptor instead.
+func (*NodeInfoProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *NodeInfoProto) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *NodeInfoProto) GetAddr() string {
+	if x != nil {
+		return x.Addr
+	}
+	return ""
+}
+
+func (x *NodeInfoProto) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *NodeInfoProto) GetParentId() string {
+	if x != nil {
+		return x.ParentId
+	}
+	return ""
+}
+
+func (x *NodeInfoProto) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *NodeInfoProto) GetLevel() int32 {
+	if x != nil {
+		return x.Level
+	}
+	return 0
+}
+
+// ClusterStatusMessageProto 集群状态查询
+type ClusterStatusMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClusterStatusMessageProto) Reset() {
+	*x = ClusterStatusMessageProto{}
+	mi := &file_message_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClusterStatusMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClusterStatusMessageProto) ProtoMessage() {}
+
+func (x *ClusterStatusMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClusterStatusMessageProto.ProtoReflect.Descriptor instead.
+func (*ClusterStatusMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *ClusterStatusMessageProto) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+// ClusterStatusReplyMessageProto 集群状态响应
+type ClusterStatusReplyMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Nodes         []*NodeInfoProto       `protobuf:"bytes,1,rep,name=nodes,proto3" json:"nodes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClusterStatusReplyMessageProto) Reset() {
+	*x = ClusterStatusReplyMessageProto{}
+	mi := &file_message_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClusterStatusReplyMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClusterStatusReplyMessageProto) ProtoMessage() {}
+
+func (x *ClusterStatusReplyMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClusterStatusReplyMessageProto.ProtoReflect.Descriptor instead.
+func (*ClusterStatusReplyMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *ClusterStatusReplyMessageProto) GetNodes() []*NodeInfoProto {
+	if x != nil {
+		return x.Nodes
+	}
+	return nil
+}
+
+// LeaderElectionMessageProto Leader 选举消息
+type LeaderElectionMessageProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ElectionId    string                 `protobuf:"bytes,1,opt,name=election_id,json=electionId,proto3" json:"election_id,omitempty"`
+	NodeId        string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Priority      int32                  `protobuf:"varint,3,opt,name=priority,proto3" json:"priority,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LeaderElectionMessageProto) Reset() {
+	*x = LeaderElectionMessageProto{}
+	mi := &file_message_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LeaderElectionMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LeaderElectionMessageProto) ProtoMessage() {}
+
+func (x *LeaderElectionMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LeaderElectionMessageProto.ProtoReflect.Descriptor instead.
+func (*LeaderElectionMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *LeaderElectionMessageProto) GetElectionId() string {
+	if x != nil {
+		return x.ElectionId
+	}
+	return ""
+}
+
+func (x *LeaderElectionMessageProto) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *LeaderElectionMessageProto) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
+// WrapperMessageProto 统一消息包装器
+//
+// 使用 oneof 实现消息类型判别，解决语义丢失问题
+type WrapperMessageProto struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	MessageType uint32                 `protobuf:"varint,1,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"` // MessageType 枚举值
+	// Types that are valid to be assigned to MessageBody:
+	//
+	//	*WrapperMessageProto_GetMsg
+	//	*WrapperMessageProto_PutMsg
+	//	*WrapperMessageProto_GetReplyMsg
+	//	*WrapperMessageProto_PutReplyMsg
+	//	*WrapperMessageProto_DeleteMsg
+	//	*WrapperMessageProto_DeleteReplyMsg
+	//	*WrapperMessageProto_GossipSyncMsg
+	//	*WrapperMessageProto_GossipSyncReplyMsg
+	//	*WrapperMessageProto_GossipDigestMsg
+	//	*WrapperMessageProto_GossipDigestReplyMsg
+	//	*WrapperMessageProto_QuorumProposeMsg
+	//	*WrapperMessageProto_QuorumVoteMsg
+	//	*WrapperMessageProto_QuorumDecideMsg
+	//	*WrapperMessageProto_TwopcPrepareMsg
+	//	*WrapperMessageProto_TwopcPrepareReplyMsg
+	//	*WrapperMessageProto_TwopcCommitMsg
+	//	*WrapperMessageProto_TwopcRollbackMsg
+	//	*WrapperMessageProto_TwopcCommitReplyMsg
+	//	*WrapperMessageProto_TwopcRollbackReplyMsg
+	//	*WrapperMessageProto_NodePingMsg
+	//	*WrapperMessageProto_NodePongMsg
+	//	*WrapperMessageProto_NodeJoinMsg
+	//	*WrapperMessageProto_NodeLeaveMsg
+	//	*WrapperMessageProto_NodeSyncMsg
+	//	*WrapperMessageProto_ClockSyncMsg
+	//	*WrapperMessageProto_ClockSyncReplyMsg
+	//	*WrapperMessageProto_ClusterStatusMsg
+	//	*WrapperMessageProto_ClusterStatusReplyMsg
+	//	*WrapperMessageProto_LeaderElectionMsg
+	MessageBody   isWrapperMessageProto_MessageBody `protobuf_oneof:"message_body"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WrapperMessageProto) Reset() {
+	*x = WrapperMessageProto{}
+	mi := &file_message_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WrapperMessageProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WrapperMessageProto) ProtoMessage() {}
+
+func (x *WrapperMessageProto) ProtoReflect() protoreflect.Message {
+	mi := &file_message_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WrapperMessageProto.ProtoReflect.Descriptor instead.
+func (*WrapperMessageProto) Descriptor() ([]byte, []int) {
+	return file_message_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *WrapperMessageProto) GetMessageType() uint32 {
+	if x != nil {
+		return x.MessageType
+	}
+	return 0
+}
+
+func (x *WrapperMessageProto) GetMessageBody() isWrapperMessageProto_MessageBody {
+	if x != nil {
+		return x.MessageBody
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetGetMsg() *GetMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_GetMsg); ok {
+			return x.GetMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetPutMsg() *PutMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_PutMsg); ok {
+			return x.PutMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetGetReplyMsg() *GetReplyMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_GetReplyMsg); ok {
+			return x.GetReplyMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetPutReplyMsg() *PutReplyMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_PutReplyMsg); ok {
+			return x.PutReplyMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetDeleteMsg() *DeleteMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_DeleteMsg); ok {
+			return x.DeleteMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetDeleteReplyMsg() *DeleteReplyMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_DeleteReplyMsg); ok {
+			return x.DeleteReplyMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetGossipSyncMsg() *GossipSyncMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_GossipSyncMsg); ok {
+			return x.GossipSyncMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetGossipSyncReplyMsg() *GossipSyncReplyMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_GossipSyncReplyMsg); ok {
+			return x.GossipSyncReplyMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetGossipDigestMsg() *GossipDigestMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_GossipDigestMsg); ok {
+			return x.GossipDigestMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetGossipDigestReplyMsg() *GossipDigestReplyMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_GossipDigestReplyMsg); ok {
+			return x.GossipDigestReplyMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetQuorumProposeMsg() *QuorumProposeMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_QuorumProposeMsg); ok {
+			return x.QuorumProposeMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetQuorumVoteMsg() *QuorumVoteMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_QuorumVoteMsg); ok {
+			return x.QuorumVoteMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetQuorumDecideMsg() *QuorumDecideMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_QuorumDecideMsg); ok {
+			return x.QuorumDecideMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetTwopcPrepareMsg() *TwoPCPrepareMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_TwopcPrepareMsg); ok {
+			return x.TwopcPrepareMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetTwopcPrepareReplyMsg() *TwoPCPrepareReplyMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_TwopcPrepareReplyMsg); ok {
+			return x.TwopcPrepareReplyMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetTwopcCommitMsg() *TwoPCCommitMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_TwopcCommitMsg); ok {
+			return x.TwopcCommitMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetTwopcRollbackMsg() *TwoPCRollbackMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_TwopcRollbackMsg); ok {
+			return x.TwopcRollbackMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetTwopcCommitReplyMsg() *TwoPCCommitReplyMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_TwopcCommitReplyMsg); ok {
+			return x.TwopcCommitReplyMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetTwopcRollbackReplyMsg() *TwoPCRollbackReplyMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_TwopcRollbackReplyMsg); ok {
+			return x.TwopcRollbackReplyMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetNodePingMsg() *NodePingMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_NodePingMsg); ok {
+			return x.NodePingMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetNodePongMsg() *NodePongMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_NodePongMsg); ok {
+			return x.NodePongMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetNodeJoinMsg() *NodeJoinMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_NodeJoinMsg); ok {
+			return x.NodeJoinMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetNodeLeaveMsg() *NodeLeaveMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_NodeLeaveMsg); ok {
+			return x.NodeLeaveMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetNodeSyncMsg() *NodeSyncMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_NodeSyncMsg); ok {
+			return x.NodeSyncMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetClockSyncMsg() *ClockSyncMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_ClockSyncMsg); ok {
+			return x.ClockSyncMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetClockSyncReplyMsg() *ClockSyncReplyMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_ClockSyncReplyMsg); ok {
+			return x.ClockSyncReplyMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetClusterStatusMsg() *ClusterStatusMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_ClusterStatusMsg); ok {
+			return x.ClusterStatusMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetClusterStatusReplyMsg() *ClusterStatusReplyMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_ClusterStatusReplyMsg); ok {
+			return x.ClusterStatusReplyMsg
+		}
+	}
+	return nil
+}
+
+func (x *WrapperMessageProto) GetLeaderElectionMsg() *LeaderElectionMessageProto {
+	if x != nil {
+		if x, ok := x.MessageBody.(*WrapperMessageProto_LeaderElectionMsg); ok {
+			return x.LeaderElectionMsg
+		}
+	}
+	return nil
+}
+
+type isWrapperMessageProto_MessageBody interface {
+	isWrapperMessageProto_MessageBody()
+}
+
+type WrapperMessageProto_GetMsg struct {
+	// 元数据操作消息
+	GetMsg *GetMessageProto `protobuf:"bytes,100,opt,name=get_msg,json=getMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_PutMsg struct {
+	PutMsg *PutMessageProto `protobuf:"bytes,101,opt,name=put_msg,json=putMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_GetReplyMsg struct {
+	GetReplyMsg *GetReplyMessageProto `protobuf:"bytes,103,opt,name=get_reply_msg,json=getReplyMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_PutReplyMsg struct {
+	PutReplyMsg *PutReplyMessageProto `protobuf:"bytes,104,opt,name=put_reply_msg,json=putReplyMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_DeleteMsg struct {
+	DeleteMsg *DeleteMessageProto `protobuf:"bytes,102,opt,name=delete_msg,json=deleteMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_DeleteReplyMsg struct {
+	DeleteReplyMsg *DeleteReplyMessageProto `protobuf:"bytes,105,opt,name=delete_reply_msg,json=deleteReplyMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_GossipSyncMsg struct {
+	// Gossip 协议消息
+	GossipSyncMsg *GossipSyncMessageProto `protobuf:"bytes,150,opt,name=gossip_sync_msg,json=gossipSyncMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_GossipSyncReplyMsg struct {
+	GossipSyncReplyMsg *GossipSyncReplyMessageProto `protobuf:"bytes,151,opt,name=gossip_sync_reply_msg,json=gossipSyncReplyMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_GossipDigestMsg struct {
+	GossipDigestMsg *GossipDigestMessageProto `protobuf:"bytes,152,opt,name=gossip_digest_msg,json=gossipDigestMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_GossipDigestReplyMsg struct {
+	GossipDigestReplyMsg *GossipDigestReplyMessageProto `protobuf:"bytes,153,opt,name=gossip_digest_reply_msg,json=gossipDigestReplyMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_QuorumProposeMsg struct {
+	// Quorum 协议消息
+	QuorumProposeMsg *QuorumProposeMessageProto `protobuf:"bytes,200,opt,name=quorum_propose_msg,json=quorumProposeMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_QuorumVoteMsg struct {
+	QuorumVoteMsg *QuorumVoteMessageProto `protobuf:"bytes,201,opt,name=quorum_vote_msg,json=quorumVoteMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_QuorumDecideMsg struct {
+	QuorumDecideMsg *QuorumDecideMessageProto `protobuf:"bytes,202,opt,name=quorum_decide_msg,json=quorumDecideMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_TwopcPrepareMsg struct {
+	// 2PC 协议消息
+	TwopcPrepareMsg *TwoPCPrepareMessageProto `protobuf:"bytes,250,opt,name=twopc_prepare_msg,json=twopcPrepareMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_TwopcPrepareReplyMsg struct {
+	TwopcPrepareReplyMsg *TwoPCPrepareReplyMessageProto `protobuf:"bytes,251,opt,name=twopc_prepare_reply_msg,json=twopcPrepareReplyMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_TwopcCommitMsg struct {
+	TwopcCommitMsg *TwoPCCommitMessageProto `protobuf:"bytes,252,opt,name=twopc_commit_msg,json=twopcCommitMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_TwopcRollbackMsg struct {
+	TwopcRollbackMsg *TwoPCRollbackMessageProto `protobuf:"bytes,253,opt,name=twopc_rollback_msg,json=twopcRollbackMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_TwopcCommitReplyMsg struct {
+	TwopcCommitReplyMsg *TwoPCCommitReplyMessageProto `protobuf:"bytes,254,opt,name=twopc_commit_reply_msg,json=twopcCommitReplyMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_TwopcRollbackReplyMsg struct {
+	TwopcRollbackReplyMsg *TwoPCRollbackReplyMessageProto `protobuf:"bytes,255,opt,name=twopc_rollback_reply_msg,json=twopcRollbackReplyMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_NodePingMsg struct {
+	// 节点管理消息
+	NodePingMsg *NodePingMessageProto `protobuf:"bytes,300,opt,name=node_ping_msg,json=nodePingMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_NodePongMsg struct {
+	NodePongMsg *NodePongMessageProto `protobuf:"bytes,301,opt,name=node_pong_msg,json=nodePongMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_NodeJoinMsg struct {
+	NodeJoinMsg *NodeJoinMessageProto `protobuf:"bytes,302,opt,name=node_join_msg,json=nodeJoinMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_NodeLeaveMsg struct {
+	NodeLeaveMsg *NodeLeaveMessageProto `protobuf:"bytes,303,opt,name=node_leave_msg,json=nodeLeaveMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_NodeSyncMsg struct {
+	NodeSyncMsg *NodeSyncMessageProto `protobuf:"bytes,304,opt,name=node_sync_msg,json=nodeSyncMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_ClockSyncMsg struct {
+	ClockSyncMsg *ClockSyncMessageProto `protobuf:"bytes,305,opt,name=clock_sync_msg,json=clockSyncMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_ClockSyncReplyMsg struct {
+	ClockSyncReplyMsg *ClockSyncReplyMessageProto `protobuf:"bytes,306,opt,name=clock_sync_reply_msg,json=clockSyncReplyMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_ClusterStatusMsg struct {
+	// 集群管理消息
+	ClusterStatusMsg *ClusterStatusMessageProto `protobuf:"bytes,350,opt,name=cluster_status_msg,json=clusterStatusMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_ClusterStatusReplyMsg struct {
+	ClusterStatusReplyMsg *ClusterStatusReplyMessageProto `protobuf:"bytes,351,opt,name=cluster_status_reply_msg,json=clusterStatusReplyMsg,proto3,oneof"`
+}
+
+type WrapperMessageProto_LeaderElectionMsg struct {
+	LeaderElectionMsg *LeaderElectionMessageProto `protobuf:"bytes,352,opt,name=leader_election_msg,json=leaderElectionMsg,proto3,oneof"`
+}
+
+func (*WrapperMessageProto_GetMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_PutMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_GetReplyMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_PutReplyMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_DeleteMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_DeleteReplyMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_GossipSyncMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_GossipSyncReplyMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_GossipDigestMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_GossipDigestReplyMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_QuorumProposeMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_QuorumVoteMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_QuorumDecideMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_TwopcPrepareMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_TwopcPrepareReplyMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_TwopcCommitMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_TwopcRollbackMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_TwopcCommitReplyMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_TwopcRollbackReplyMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_NodePingMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_NodePongMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_NodeJoinMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_NodeLeaveMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_NodeSyncMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_ClockSyncMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_ClockSyncReplyMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_ClusterStatusMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_ClusterStatusReplyMsg) isWrapperMessageProto_MessageBody() {}
+
+func (*WrapperMessageProto_LeaderElectionMsg) isWrapperMessageProto_MessageBody() {}
 
 var File_message_proto protoreflect.FileDescriptor
 
 const file_message_proto_rawDesc = "" +
 	"\n" +
-	"\rmessage.proto\x12\x0enexkv.metadata\"\xab\x04\n" +
-	"\x10TransportMessage\x12/\n" +
-	"\x04type\x18\x01 \x01(\x0e2\x1b.nexkv.metadata.MessageTypeR\x04type\x12\x1c\n" +
-	"\ttimestamp\x18\x02 \x01(\x04R\ttimestamp\x12\x1b\n" +
-	"\tfrom_node\x18\x03 \x01(\tR\bfromNode\x12\x17\n" +
-	"\ato_node\x18\x04 \x01(\tR\x06toNode\x12\x1d\n" +
-	"\n" +
-	"request_id\x18\x05 \x01(\x04R\trequestId\x127\n" +
-	"\x06gossip\x18\n" +
-	" \x01(\v2\x1d.nexkv.metadata.GossipMessageH\x00R\x06gossip\x127\n" +
-	"\x06quorum\x18\v \x01(\v2\x1d.nexkv.metadata.QuorumMessageH\x00R\x06quorum\x124\n" +
-	"\x05twopc\x18\f \x01(\v2\x1c.nexkv.metadata.TwoPCMessageH\x00R\x05twopc\x12@\n" +
-	"\theartbeat\x18\r \x01(\v2 .nexkv.metadata.HeartbeatMessageH\x00R\theartbeat\x12=\n" +
-	"\bresponse\x18\x0e \x01(\v2\x1f.nexkv.metadata.ResponseMessageH\x00R\bresponse\x12?\n" +
-	"\bmetadata\x18\x0f \x01(\v2!.nexkv.metadata.MetadataOpMessageH\x00R\bmetadataB\t\n" +
-	"\apayload\"\x83\x02\n" +
-	"\rGossipMessage\x12\x17\n" +
-	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x18\n" +
-	"\aversion\x18\x02 \x01(\x04R\aversion\x12G\n" +
-	"\bmetadata\x18\x03 \x03(\v2+.nexkv.metadata.GossipMessage.MetadataEntryR\bmetadata\x12!\n" +
-	"\fdeleted_keys\x18\x04 \x03(\tR\vdeletedKeys\x12\x16\n" +
-	"\x06digest\x18\x05 \x01(\rR\x06digest\x1a;\n" +
+	"\rmessage.proto\x12\x18nexkv.metadata.transport\"#\n" +
+	"\x0fGetMessageProto\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\"9\n" +
+	"\x0fPutMessageProto\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\"n\n" +
+	"\x14GetReplyMessageProto\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12\x14\n" +
+	"\x05found\x18\x03 \x01(\bR\x05found\x12\x18\n" +
+	"\aversion\x18\x04 \x01(\x04R\aversion\"\\\n" +
+	"\x14PutReplyMessageProto\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x18\n" +
+	"\asuccess\x18\x02 \x01(\bR\asuccess\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\x04R\aversion\"&\n" +
+	"\x12DeleteMessageProto\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\"E\n" +
+	"\x17DeleteReplyMessageProto\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x18\n" +
+	"\asuccess\x18\x02 \x01(\bR\asuccess\"\xe9\x01\n" +
+	"\x16GossipSyncMessageProto\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\x04R\aversion\x12Z\n" +
+	"\bmetadata\x18\x02 \x03(\v2>.nexkv.metadata.transport.GossipSyncMessageProto.MetadataEntryR\bmetadata\x12\x1c\n" +
+	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\x9a\x02\n" +
-	"\rQuorumMessage\x12\x1f\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"S\n" +
+	"\x1bGossipSyncReplyMessageProto\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\x04R\aversion\"\xc7\x01\n" +
+	"\x18GossipDigestMessageProto\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\x04R\aversion\x12V\n" +
+	"\x06digest\x18\x02 \x03(\v2>.nexkv.metadata.transport.GossipDigestMessageProto.DigestEntryR\x06digest\x1a9\n" +
+	"\vDigestEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\xd1\x01\n" +
+	"\x1dGossipDigestReplyMessageProto\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\x04R\aversion\x12[\n" +
+	"\x06digest\x18\x02 \x03(\v2C.nexkv.metadata.transport.GossipDigestReplyMessageProto.DigestEntryR\x06digest\x1a9\n" +
+	"\vDigestEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\xbc\x01\n" +
+	"\x19QuorumProposeMessageProto\x12\x1f\n" +
 	"\vproposal_id\x18\x01 \x01(\tR\n" +
 	"proposalId\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x03 \x01(\fR\x05value\x12\x18\n" +
-	"\aversion\x18\x04 \x01(\x04R\aversion\x12:\n" +
-	"\x04vote\x18\x05 \x01(\x0e2&.nexkv.metadata.QuorumMessage.VoteTypeR\x04vote\x12\x16\n" +
-	"\x06reason\x18\x06 \x01(\tR\x06reason\"R\n" +
-	"\bVoteType\x12\x19\n" +
-	"\x15VOTE_TYPE_UNSPECIFIED\x10\x00\x12\x15\n" +
-	"\x11VOTE_TYPE_APPROVE\x10\x01\x12\x14\n" +
-	"\x10VOTE_TYPE_REJECT\x10\x02\"\xca\x04\n" +
-	"\fTwoPCMessage\x12%\n" +
-	"\x0etransaction_id\x18\x01 \x01(\tR\rtransactionId\x12\x16\n" +
-	"\x06shards\x18\x02 \x03(\tR\x06shards\x12L\n" +
-	"\n" +
-	"operations\x18\x03 \x03(\v2,.nexkv.metadata.TwoPCMessage.OperationsEntryR\n" +
-	"operations\x12<\n" +
-	"\x05phase\x18\x04 \x01(\x0e2&.nexkv.metadata.TwoPCMessage.PhaseTypeR\x05phase\x12E\n" +
-	"\bdecision\x18\x05 \x01(\x0e2).nexkv.metadata.TwoPCMessage.DecisionTypeR\bdecision\x12\x16\n" +
-	"\x06reason\x18\x06 \x01(\tR\x06reason\x1a=\n" +
-	"\x0fOperationsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"o\n" +
-	"\tPhaseType\x12\x1a\n" +
-	"\x16PHASE_TYPE_UNSPECIFIED\x10\x00\x12\x16\n" +
-	"\x12PHASE_TYPE_PREPARE\x10\x01\x12\x15\n" +
-	"\x11PHASE_TYPE_COMMIT\x10\x02\x12\x17\n" +
-	"\x13PHASE_TYPE_ROLLBACK\x10\x03\"`\n" +
-	"\fDecisionType\x12\x1d\n" +
-	"\x19DECISION_TYPE_UNSPECIFIED\x10\x00\x12\x18\n" +
-	"\x14DECISION_TYPE_COMMIT\x10\x01\x12\x17\n" +
-	"\x13DECISION_TYPE_ABORT\x10\x02\"\x87\x03\n" +
-	"\x10HeartbeatMessage\x12\x17\n" +
-	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1c\n" +
-	"\ttimestamp\x18\x02 \x01(\x04R\ttimestamp\x12C\n" +
-	"\x06status\x18\x03 \x01(\x0e2+.nexkv.metadata.HeartbeatMessage.StatusTypeR\x06status\x12G\n" +
-	"\ametrics\x18\x04 \x03(\v2-.nexkv.metadata.HeartbeatMessage.MetricsEntryR\ametrics\x1a:\n" +
-	"\fMetricsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\"r\n" +
-	"\n" +
-	"StatusType\x12\x1b\n" +
-	"\x17STATUS_TYPE_UNSPECIFIED\x10\x00\x12\x17\n" +
-	"\x13STATUS_TYPE_HEALTHY\x10\x01\x12\x14\n" +
-	"\x10STATUS_TYPE_BUSY\x10\x02\x12\x18\n" +
-	"\x14STATUS_TYPE_DEGRADED\x10\x03\"{\n" +
-	"\x0fResponseMessage\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x1d\n" +
-	"\n" +
-	"error_code\x18\x02 \x01(\rR\terrorCode\x12\x1b\n" +
-	"\terror_msg\x18\x03 \x01(\tR\berrorMsg\x12\x12\n" +
-	"\x04data\x18\x04 \x01(\fR\x04data\"\xa6\x02\n" +
-	"\x11MetadataOpMessage\x128\n" +
-	"\x02op\x18\x01 \x01(\x0e2(.nexkv.metadata.MetadataOpMessage.OpTypeR\x02op\x12\x10\n" +
+	"\x05value\x18\x03 \x01(\fR\x05value\x12\x1c\n" +
+	"\toperation\x18\x04 \x01(\tR\toperation\x12\x1a\n" +
+	"\bproposer\x18\x05 \x01(\tR\bproposer\x12\x1c\n" +
+	"\ttimestamp\x18\x06 \x01(\x03R\ttimestamp\"{\n" +
+	"\x16QuorumVoteMessageProto\x12\x1f\n" +
+	"\vproposal_id\x18\x01 \x01(\tR\n" +
+	"proposalId\x12\x14\n" +
+	"\x05voter\x18\x02 \x01(\tR\x05voter\x12\x12\n" +
+	"\x04vote\x18\x03 \x01(\bR\x04vote\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\"q\n" +
+	"\x18QuorumDecideMessageProto\x12\x1f\n" +
+	"\vproposal_id\x18\x01 \x01(\tR\n" +
+	"proposalId\x12\x1a\n" +
+	"\bapproved\x18\x02 \x01(\bR\bapproved\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\x04R\aversion\"L\n" +
+	"\x0eOperationProto\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x03 \x01(\fR\x05value\x12\x16\n" +
-	"\x06prefix\x18\x04 \x01(\tR\x06prefix\x12\x16\n" +
-	"\x06offset\x18\x05 \x01(\x05R\x06offset\x12\x14\n" +
-	"\x05limit\x18\x06 \x01(\x05R\x05limit\"i\n" +
-	"\x06OpType\x12\x17\n" +
-	"\x13OP_TYPE_UNSPECIFIED\x10\x00\x12\x0f\n" +
-	"\vOP_TYPE_GET\x10\x01\x12\x0f\n" +
-	"\vOP_TYPE_PUT\x10\x02\x12\x12\n" +
-	"\x0eOP_TYPE_DELETE\x10\x03\x12\x10\n" +
-	"\fOP_TYPE_LIST\x10\x04*\xc2\a\n" +
+	"\x05value\x18\x03 \x01(\fR\x05value\"\xcd\x01\n" +
+	"\x18TwoPCPrepareMessageProto\x12%\n" +
+	"\x0etransaction_id\x18\x01 \x01(\tR\rtransactionId\x12\"\n" +
+	"\fparticipants\x18\x02 \x03(\tR\fparticipants\x12H\n" +
+	"\n" +
+	"operations\x18\x03 \x03(\v2(.nexkv.metadata.transport.OperationProtoR\n" +
+	"operations\x12\x1c\n" +
+	"\ttimestamp\x18\x04 \x01(\x03R\ttimestamp\"\x94\x01\n" +
+	"\x1dTwoPCPrepareReplyMessageProto\x12%\n" +
+	"\x0etransaction_id\x18\x01 \x01(\tR\rtransactionId\x12 \n" +
+	"\vparticipant\x18\x02 \x01(\tR\vparticipant\x12\x12\n" +
+	"\x04vote\x18\x03 \x01(\tR\x04vote\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\"@\n" +
+	"\x17TwoPCCommitMessageProto\x12%\n" +
+	"\x0etransaction_id\x18\x01 \x01(\tR\rtransactionId\"Z\n" +
+	"\x19TwoPCRollbackMessageProto\x12%\n" +
+	"\x0etransaction_id\x18\x01 \x01(\tR\rtransactionId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"\x81\x01\n" +
+	"\x1cTwoPCCommitReplyMessageProto\x12%\n" +
+	"\x0etransaction_id\x18\x01 \x01(\tR\rtransactionId\x12 \n" +
+	"\vparticipant\x18\x02 \x01(\tR\vparticipant\x12\x18\n" +
+	"\asuccess\x18\x03 \x01(\bR\asuccess\"\x83\x01\n" +
+	"\x1eTwoPCRollbackReplyMessageProto\x12%\n" +
+	"\x0etransaction_id\x18\x01 \x01(\tR\rtransactionId\x12 \n" +
+	"\vparticipant\x18\x02 \x01(\tR\vparticipant\x12\x18\n" +
+	"\asuccess\x18\x03 \x01(\bR\asuccess\"i\n" +
+	"\x14NodePingMessageProto\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1a\n" +
+	"\bsequence\x18\x02 \x01(\x03R\bsequence\x12\x1c\n" +
+	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\"\x81\x01\n" +
+	"\x14NodePongMessageProto\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1a\n" +
+	"\bsequence\x18\x02 \x01(\x03R\bsequence\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12\x1c\n" +
+	"\ttimestamp\x18\x04 \x01(\x03R\ttimestamp\"t\n" +
+	"\x14NodeJoinMessageProto\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x12\n" +
+	"\x04addr\x18\x02 \x01(\tR\x04addr\x12\x12\n" +
+	"\x04role\x18\x03 \x01(\tR\x04role\x12\x1b\n" +
+	"\tparent_id\x18\x04 \x01(\tR\bparentId\"H\n" +
+	"\x15NodeLeaveMessageProto\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xc7\x01\n" +
+	"\x14NodeSyncMessageProto\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\x04R\aversion\x12X\n" +
+	"\bmetadata\x18\x02 \x03(\v2<.nexkv.metadata.transport.NodeSyncMessageProto.MetadataEntryR\bmetadata\x1a;\n" +
+	"\rMetadataEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"N\n" +
+	"\x15ClockSyncMessageProto\x12\x1c\n" +
+	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\x12\x17\n" +
+	"\anode_id\x18\x02 \x01(\tR\x06nodeId\"i\n" +
+	"\x1aClockSyncReplyMessageProto\x12\x1c\n" +
+	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\x12\x17\n" +
+	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x14\n" +
+	"\x05drift\x18\x03 \x01(\x03R\x05drift\"\x9b\x01\n" +
+	"\rNodeInfoProto\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x12\n" +
+	"\x04addr\x18\x02 \x01(\tR\x04addr\x12\x12\n" +
+	"\x04role\x18\x03 \x01(\tR\x04role\x12\x1b\n" +
+	"\tparent_id\x18\x04 \x01(\tR\bparentId\x12\x16\n" +
+	"\x06status\x18\x05 \x01(\tR\x06status\x12\x14\n" +
+	"\x05level\x18\x06 \x01(\x05R\x05level\"4\n" +
+	"\x19ClusterStatusMessageProto\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\"_\n" +
+	"\x1eClusterStatusReplyMessageProto\x12=\n" +
+	"\x05nodes\x18\x01 \x03(\v2'.nexkv.metadata.transport.NodeInfoProtoR\x05nodes\"r\n" +
+	"\x1aLeaderElectionMessageProto\x12\x1f\n" +
+	"\velection_id\x18\x01 \x01(\tR\n" +
+	"electionId\x12\x17\n" +
+	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x1a\n" +
+	"\bpriority\x18\x03 \x01(\x05R\bpriority\"\xb5\x16\n" +
+	"\x13WrapperMessageProto\x12!\n" +
+	"\fmessage_type\x18\x01 \x01(\rR\vmessageType\x12D\n" +
+	"\aget_msg\x18d \x01(\v2).nexkv.metadata.transport.GetMessageProtoH\x00R\x06getMsg\x12D\n" +
+	"\aput_msg\x18e \x01(\v2).nexkv.metadata.transport.PutMessageProtoH\x00R\x06putMsg\x12T\n" +
+	"\rget_reply_msg\x18g \x01(\v2..nexkv.metadata.transport.GetReplyMessageProtoH\x00R\vgetReplyMsg\x12T\n" +
+	"\rput_reply_msg\x18h \x01(\v2..nexkv.metadata.transport.PutReplyMessageProtoH\x00R\vputReplyMsg\x12M\n" +
+	"\n" +
+	"delete_msg\x18f \x01(\v2,.nexkv.metadata.transport.DeleteMessageProtoH\x00R\tdeleteMsg\x12]\n" +
+	"\x10delete_reply_msg\x18i \x01(\v21.nexkv.metadata.transport.DeleteReplyMessageProtoH\x00R\x0edeleteReplyMsg\x12[\n" +
+	"\x0fgossip_sync_msg\x18\x96\x01 \x01(\v20.nexkv.metadata.transport.GossipSyncMessageProtoH\x00R\rgossipSyncMsg\x12k\n" +
+	"\x15gossip_sync_reply_msg\x18\x97\x01 \x01(\v25.nexkv.metadata.transport.GossipSyncReplyMessageProtoH\x00R\x12gossipSyncReplyMsg\x12a\n" +
+	"\x11gossip_digest_msg\x18\x98\x01 \x01(\v22.nexkv.metadata.transport.GossipDigestMessageProtoH\x00R\x0fgossipDigestMsg\x12q\n" +
+	"\x17gossip_digest_reply_msg\x18\x99\x01 \x01(\v27.nexkv.metadata.transport.GossipDigestReplyMessageProtoH\x00R\x14gossipDigestReplyMsg\x12d\n" +
+	"\x12quorum_propose_msg\x18\xc8\x01 \x01(\v23.nexkv.metadata.transport.QuorumProposeMessageProtoH\x00R\x10quorumProposeMsg\x12[\n" +
+	"\x0fquorum_vote_msg\x18\xc9\x01 \x01(\v20.nexkv.metadata.transport.QuorumVoteMessageProtoH\x00R\rquorumVoteMsg\x12a\n" +
+	"\x11quorum_decide_msg\x18\xca\x01 \x01(\v22.nexkv.metadata.transport.QuorumDecideMessageProtoH\x00R\x0fquorumDecideMsg\x12a\n" +
+	"\x11twopc_prepare_msg\x18\xfa\x01 \x01(\v22.nexkv.metadata.transport.TwoPCPrepareMessageProtoH\x00R\x0ftwopcPrepareMsg\x12q\n" +
+	"\x17twopc_prepare_reply_msg\x18\xfb\x01 \x01(\v27.nexkv.metadata.transport.TwoPCPrepareReplyMessageProtoH\x00R\x14twopcPrepareReplyMsg\x12^\n" +
+	"\x10twopc_commit_msg\x18\xfc\x01 \x01(\v21.nexkv.metadata.transport.TwoPCCommitMessageProtoH\x00R\x0etwopcCommitMsg\x12d\n" +
+	"\x12twopc_rollback_msg\x18\xfd\x01 \x01(\v23.nexkv.metadata.transport.TwoPCRollbackMessageProtoH\x00R\x10twopcRollbackMsg\x12n\n" +
+	"\x16twopc_commit_reply_msg\x18\xfe\x01 \x01(\v26.nexkv.metadata.transport.TwoPCCommitReplyMessageProtoH\x00R\x13twopcCommitReplyMsg\x12t\n" +
+	"\x18twopc_rollback_reply_msg\x18\xff\x01 \x01(\v28.nexkv.metadata.transport.TwoPCRollbackReplyMessageProtoH\x00R\x15twopcRollbackReplyMsg\x12U\n" +
+	"\rnode_ping_msg\x18\xac\x02 \x01(\v2..nexkv.metadata.transport.NodePingMessageProtoH\x00R\vnodePingMsg\x12U\n" +
+	"\rnode_pong_msg\x18\xad\x02 \x01(\v2..nexkv.metadata.transport.NodePongMessageProtoH\x00R\vnodePongMsg\x12U\n" +
+	"\rnode_join_msg\x18\xae\x02 \x01(\v2..nexkv.metadata.transport.NodeJoinMessageProtoH\x00R\vnodeJoinMsg\x12X\n" +
+	"\x0enode_leave_msg\x18\xaf\x02 \x01(\v2/.nexkv.metadata.transport.NodeLeaveMessageProtoH\x00R\fnodeLeaveMsg\x12U\n" +
+	"\rnode_sync_msg\x18\xb0\x02 \x01(\v2..nexkv.metadata.transport.NodeSyncMessageProtoH\x00R\vnodeSyncMsg\x12X\n" +
+	"\x0eclock_sync_msg\x18\xb1\x02 \x01(\v2/.nexkv.metadata.transport.ClockSyncMessageProtoH\x00R\fclockSyncMsg\x12h\n" +
+	"\x14clock_sync_reply_msg\x18\xb2\x02 \x01(\v24.nexkv.metadata.transport.ClockSyncReplyMessageProtoH\x00R\x11clockSyncReplyMsg\x12d\n" +
+	"\x12cluster_status_msg\x18\xde\x02 \x01(\v23.nexkv.metadata.transport.ClusterStatusMessageProtoH\x00R\x10clusterStatusMsg\x12t\n" +
+	"\x18cluster_status_reply_msg\x18\xdf\x02 \x01(\v28.nexkv.metadata.transport.ClusterStatusReplyMessageProtoH\x00R\x15clusterStatusReplyMsg\x12g\n" +
+	"\x13leader_election_msg\x18\xe0\x02 \x01(\v24.nexkv.metadata.transport.LeaderElectionMessageProtoH\x00R\x11leaderElectionMsgB\x0e\n" +
+	"\fmessage_body*\xc2\a\n" +
 	"\vMessageType\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10MESSAGE_TYPE_GET\x10d\x12\x14\n" +
@@ -1233,47 +2741,88 @@ func file_message_proto_rawDescGZIP() []byte {
 	return file_message_proto_rawDescData
 }
 
-var file_message_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_message_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_message_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_message_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
 var file_message_proto_goTypes = []any{
-	(MessageType)(0),                 // 0: nexkv.metadata.MessageType
-	(QuorumMessage_VoteType)(0),      // 1: nexkv.metadata.QuorumMessage.VoteType
-	(TwoPCMessage_PhaseType)(0),      // 2: nexkv.metadata.TwoPCMessage.PhaseType
-	(TwoPCMessage_DecisionType)(0),   // 3: nexkv.metadata.TwoPCMessage.DecisionType
-	(HeartbeatMessage_StatusType)(0), // 4: nexkv.metadata.HeartbeatMessage.StatusType
-	(MetadataOpMessage_OpType)(0),    // 5: nexkv.metadata.MetadataOpMessage.OpType
-	(*TransportMessage)(nil),         // 6: nexkv.metadata.TransportMessage
-	(*GossipMessage)(nil),            // 7: nexkv.metadata.GossipMessage
-	(*QuorumMessage)(nil),            // 8: nexkv.metadata.QuorumMessage
-	(*TwoPCMessage)(nil),             // 9: nexkv.metadata.TwoPCMessage
-	(*HeartbeatMessage)(nil),         // 10: nexkv.metadata.HeartbeatMessage
-	(*ResponseMessage)(nil),          // 11: nexkv.metadata.ResponseMessage
-	(*MetadataOpMessage)(nil),        // 12: nexkv.metadata.MetadataOpMessage
-	nil,                              // 13: nexkv.metadata.GossipMessage.MetadataEntry
-	nil,                              // 14: nexkv.metadata.TwoPCMessage.OperationsEntry
-	nil,                              // 15: nexkv.metadata.HeartbeatMessage.MetricsEntry
+	(MessageType)(0),                       // 0: nexkv.metadata.transport.MessageType
+	(*GetMessageProto)(nil),                // 1: nexkv.metadata.transport.GetMessageProto
+	(*PutMessageProto)(nil),                // 2: nexkv.metadata.transport.PutMessageProto
+	(*GetReplyMessageProto)(nil),           // 3: nexkv.metadata.transport.GetReplyMessageProto
+	(*PutReplyMessageProto)(nil),           // 4: nexkv.metadata.transport.PutReplyMessageProto
+	(*DeleteMessageProto)(nil),             // 5: nexkv.metadata.transport.DeleteMessageProto
+	(*DeleteReplyMessageProto)(nil),        // 6: nexkv.metadata.transport.DeleteReplyMessageProto
+	(*GossipSyncMessageProto)(nil),         // 7: nexkv.metadata.transport.GossipSyncMessageProto
+	(*GossipSyncReplyMessageProto)(nil),    // 8: nexkv.metadata.transport.GossipSyncReplyMessageProto
+	(*GossipDigestMessageProto)(nil),       // 9: nexkv.metadata.transport.GossipDigestMessageProto
+	(*GossipDigestReplyMessageProto)(nil),  // 10: nexkv.metadata.transport.GossipDigestReplyMessageProto
+	(*QuorumProposeMessageProto)(nil),      // 11: nexkv.metadata.transport.QuorumProposeMessageProto
+	(*QuorumVoteMessageProto)(nil),         // 12: nexkv.metadata.transport.QuorumVoteMessageProto
+	(*QuorumDecideMessageProto)(nil),       // 13: nexkv.metadata.transport.QuorumDecideMessageProto
+	(*OperationProto)(nil),                 // 14: nexkv.metadata.transport.OperationProto
+	(*TwoPCPrepareMessageProto)(nil),       // 15: nexkv.metadata.transport.TwoPCPrepareMessageProto
+	(*TwoPCPrepareReplyMessageProto)(nil),  // 16: nexkv.metadata.transport.TwoPCPrepareReplyMessageProto
+	(*TwoPCCommitMessageProto)(nil),        // 17: nexkv.metadata.transport.TwoPCCommitMessageProto
+	(*TwoPCRollbackMessageProto)(nil),      // 18: nexkv.metadata.transport.TwoPCRollbackMessageProto
+	(*TwoPCCommitReplyMessageProto)(nil),   // 19: nexkv.metadata.transport.TwoPCCommitReplyMessageProto
+	(*TwoPCRollbackReplyMessageProto)(nil), // 20: nexkv.metadata.transport.TwoPCRollbackReplyMessageProto
+	(*NodePingMessageProto)(nil),           // 21: nexkv.metadata.transport.NodePingMessageProto
+	(*NodePongMessageProto)(nil),           // 22: nexkv.metadata.transport.NodePongMessageProto
+	(*NodeJoinMessageProto)(nil),           // 23: nexkv.metadata.transport.NodeJoinMessageProto
+	(*NodeLeaveMessageProto)(nil),          // 24: nexkv.metadata.transport.NodeLeaveMessageProto
+	(*NodeSyncMessageProto)(nil),           // 25: nexkv.metadata.transport.NodeSyncMessageProto
+	(*ClockSyncMessageProto)(nil),          // 26: nexkv.metadata.transport.ClockSyncMessageProto
+	(*ClockSyncReplyMessageProto)(nil),     // 27: nexkv.metadata.transport.ClockSyncReplyMessageProto
+	(*NodeInfoProto)(nil),                  // 28: nexkv.metadata.transport.NodeInfoProto
+	(*ClusterStatusMessageProto)(nil),      // 29: nexkv.metadata.transport.ClusterStatusMessageProto
+	(*ClusterStatusReplyMessageProto)(nil), // 30: nexkv.metadata.transport.ClusterStatusReplyMessageProto
+	(*LeaderElectionMessageProto)(nil),     // 31: nexkv.metadata.transport.LeaderElectionMessageProto
+	(*WrapperMessageProto)(nil),            // 32: nexkv.metadata.transport.WrapperMessageProto
+	nil,                                    // 33: nexkv.metadata.transport.GossipSyncMessageProto.MetadataEntry
+	nil,                                    // 34: nexkv.metadata.transport.GossipDigestMessageProto.DigestEntry
+	nil,                                    // 35: nexkv.metadata.transport.GossipDigestReplyMessageProto.DigestEntry
+	nil,                                    // 36: nexkv.metadata.transport.NodeSyncMessageProto.MetadataEntry
 }
 var file_message_proto_depIdxs = []int32{
-	0,  // 0: nexkv.metadata.TransportMessage.type:type_name -> nexkv.metadata.MessageType
-	7,  // 1: nexkv.metadata.TransportMessage.gossip:type_name -> nexkv.metadata.GossipMessage
-	8,  // 2: nexkv.metadata.TransportMessage.quorum:type_name -> nexkv.metadata.QuorumMessage
-	9,  // 3: nexkv.metadata.TransportMessage.twopc:type_name -> nexkv.metadata.TwoPCMessage
-	10, // 4: nexkv.metadata.TransportMessage.heartbeat:type_name -> nexkv.metadata.HeartbeatMessage
-	11, // 5: nexkv.metadata.TransportMessage.response:type_name -> nexkv.metadata.ResponseMessage
-	12, // 6: nexkv.metadata.TransportMessage.metadata:type_name -> nexkv.metadata.MetadataOpMessage
-	13, // 7: nexkv.metadata.GossipMessage.metadata:type_name -> nexkv.metadata.GossipMessage.MetadataEntry
-	1,  // 8: nexkv.metadata.QuorumMessage.vote:type_name -> nexkv.metadata.QuorumMessage.VoteType
-	14, // 9: nexkv.metadata.TwoPCMessage.operations:type_name -> nexkv.metadata.TwoPCMessage.OperationsEntry
-	2,  // 10: nexkv.metadata.TwoPCMessage.phase:type_name -> nexkv.metadata.TwoPCMessage.PhaseType
-	3,  // 11: nexkv.metadata.TwoPCMessage.decision:type_name -> nexkv.metadata.TwoPCMessage.DecisionType
-	4,  // 12: nexkv.metadata.HeartbeatMessage.status:type_name -> nexkv.metadata.HeartbeatMessage.StatusType
-	15, // 13: nexkv.metadata.HeartbeatMessage.metrics:type_name -> nexkv.metadata.HeartbeatMessage.MetricsEntry
-	5,  // 14: nexkv.metadata.MetadataOpMessage.op:type_name -> nexkv.metadata.MetadataOpMessage.OpType
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	33, // 0: nexkv.metadata.transport.GossipSyncMessageProto.metadata:type_name -> nexkv.metadata.transport.GossipSyncMessageProto.MetadataEntry
+	34, // 1: nexkv.metadata.transport.GossipDigestMessageProto.digest:type_name -> nexkv.metadata.transport.GossipDigestMessageProto.DigestEntry
+	35, // 2: nexkv.metadata.transport.GossipDigestReplyMessageProto.digest:type_name -> nexkv.metadata.transport.GossipDigestReplyMessageProto.DigestEntry
+	14, // 3: nexkv.metadata.transport.TwoPCPrepareMessageProto.operations:type_name -> nexkv.metadata.transport.OperationProto
+	36, // 4: nexkv.metadata.transport.NodeSyncMessageProto.metadata:type_name -> nexkv.metadata.transport.NodeSyncMessageProto.MetadataEntry
+	28, // 5: nexkv.metadata.transport.ClusterStatusReplyMessageProto.nodes:type_name -> nexkv.metadata.transport.NodeInfoProto
+	1,  // 6: nexkv.metadata.transport.WrapperMessageProto.get_msg:type_name -> nexkv.metadata.transport.GetMessageProto
+	2,  // 7: nexkv.metadata.transport.WrapperMessageProto.put_msg:type_name -> nexkv.metadata.transport.PutMessageProto
+	3,  // 8: nexkv.metadata.transport.WrapperMessageProto.get_reply_msg:type_name -> nexkv.metadata.transport.GetReplyMessageProto
+	4,  // 9: nexkv.metadata.transport.WrapperMessageProto.put_reply_msg:type_name -> nexkv.metadata.transport.PutReplyMessageProto
+	5,  // 10: nexkv.metadata.transport.WrapperMessageProto.delete_msg:type_name -> nexkv.metadata.transport.DeleteMessageProto
+	6,  // 11: nexkv.metadata.transport.WrapperMessageProto.delete_reply_msg:type_name -> nexkv.metadata.transport.DeleteReplyMessageProto
+	7,  // 12: nexkv.metadata.transport.WrapperMessageProto.gossip_sync_msg:type_name -> nexkv.metadata.transport.GossipSyncMessageProto
+	8,  // 13: nexkv.metadata.transport.WrapperMessageProto.gossip_sync_reply_msg:type_name -> nexkv.metadata.transport.GossipSyncReplyMessageProto
+	9,  // 14: nexkv.metadata.transport.WrapperMessageProto.gossip_digest_msg:type_name -> nexkv.metadata.transport.GossipDigestMessageProto
+	10, // 15: nexkv.metadata.transport.WrapperMessageProto.gossip_digest_reply_msg:type_name -> nexkv.metadata.transport.GossipDigestReplyMessageProto
+	11, // 16: nexkv.metadata.transport.WrapperMessageProto.quorum_propose_msg:type_name -> nexkv.metadata.transport.QuorumProposeMessageProto
+	12, // 17: nexkv.metadata.transport.WrapperMessageProto.quorum_vote_msg:type_name -> nexkv.metadata.transport.QuorumVoteMessageProto
+	13, // 18: nexkv.metadata.transport.WrapperMessageProto.quorum_decide_msg:type_name -> nexkv.metadata.transport.QuorumDecideMessageProto
+	15, // 19: nexkv.metadata.transport.WrapperMessageProto.twopc_prepare_msg:type_name -> nexkv.metadata.transport.TwoPCPrepareMessageProto
+	16, // 20: nexkv.metadata.transport.WrapperMessageProto.twopc_prepare_reply_msg:type_name -> nexkv.metadata.transport.TwoPCPrepareReplyMessageProto
+	17, // 21: nexkv.metadata.transport.WrapperMessageProto.twopc_commit_msg:type_name -> nexkv.metadata.transport.TwoPCCommitMessageProto
+	18, // 22: nexkv.metadata.transport.WrapperMessageProto.twopc_rollback_msg:type_name -> nexkv.metadata.transport.TwoPCRollbackMessageProto
+	19, // 23: nexkv.metadata.transport.WrapperMessageProto.twopc_commit_reply_msg:type_name -> nexkv.metadata.transport.TwoPCCommitReplyMessageProto
+	20, // 24: nexkv.metadata.transport.WrapperMessageProto.twopc_rollback_reply_msg:type_name -> nexkv.metadata.transport.TwoPCRollbackReplyMessageProto
+	21, // 25: nexkv.metadata.transport.WrapperMessageProto.node_ping_msg:type_name -> nexkv.metadata.transport.NodePingMessageProto
+	22, // 26: nexkv.metadata.transport.WrapperMessageProto.node_pong_msg:type_name -> nexkv.metadata.transport.NodePongMessageProto
+	23, // 27: nexkv.metadata.transport.WrapperMessageProto.node_join_msg:type_name -> nexkv.metadata.transport.NodeJoinMessageProto
+	24, // 28: nexkv.metadata.transport.WrapperMessageProto.node_leave_msg:type_name -> nexkv.metadata.transport.NodeLeaveMessageProto
+	25, // 29: nexkv.metadata.transport.WrapperMessageProto.node_sync_msg:type_name -> nexkv.metadata.transport.NodeSyncMessageProto
+	26, // 30: nexkv.metadata.transport.WrapperMessageProto.clock_sync_msg:type_name -> nexkv.metadata.transport.ClockSyncMessageProto
+	27, // 31: nexkv.metadata.transport.WrapperMessageProto.clock_sync_reply_msg:type_name -> nexkv.metadata.transport.ClockSyncReplyMessageProto
+	29, // 32: nexkv.metadata.transport.WrapperMessageProto.cluster_status_msg:type_name -> nexkv.metadata.transport.ClusterStatusMessageProto
+	30, // 33: nexkv.metadata.transport.WrapperMessageProto.cluster_status_reply_msg:type_name -> nexkv.metadata.transport.ClusterStatusReplyMessageProto
+	31, // 34: nexkv.metadata.transport.WrapperMessageProto.leader_election_msg:type_name -> nexkv.metadata.transport.LeaderElectionMessageProto
+	35, // [35:35] is the sub-list for method output_type
+	35, // [35:35] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_message_proto_init() }
@@ -1281,21 +2830,44 @@ func file_message_proto_init() {
 	if File_message_proto != nil {
 		return
 	}
-	file_message_proto_msgTypes[0].OneofWrappers = []any{
-		(*TransportMessage_Gossip)(nil),
-		(*TransportMessage_Quorum)(nil),
-		(*TransportMessage_Twopc)(nil),
-		(*TransportMessage_Heartbeat)(nil),
-		(*TransportMessage_Response)(nil),
-		(*TransportMessage_Metadata)(nil),
+	file_message_proto_msgTypes[31].OneofWrappers = []any{
+		(*WrapperMessageProto_GetMsg)(nil),
+		(*WrapperMessageProto_PutMsg)(nil),
+		(*WrapperMessageProto_GetReplyMsg)(nil),
+		(*WrapperMessageProto_PutReplyMsg)(nil),
+		(*WrapperMessageProto_DeleteMsg)(nil),
+		(*WrapperMessageProto_DeleteReplyMsg)(nil),
+		(*WrapperMessageProto_GossipSyncMsg)(nil),
+		(*WrapperMessageProto_GossipSyncReplyMsg)(nil),
+		(*WrapperMessageProto_GossipDigestMsg)(nil),
+		(*WrapperMessageProto_GossipDigestReplyMsg)(nil),
+		(*WrapperMessageProto_QuorumProposeMsg)(nil),
+		(*WrapperMessageProto_QuorumVoteMsg)(nil),
+		(*WrapperMessageProto_QuorumDecideMsg)(nil),
+		(*WrapperMessageProto_TwopcPrepareMsg)(nil),
+		(*WrapperMessageProto_TwopcPrepareReplyMsg)(nil),
+		(*WrapperMessageProto_TwopcCommitMsg)(nil),
+		(*WrapperMessageProto_TwopcRollbackMsg)(nil),
+		(*WrapperMessageProto_TwopcCommitReplyMsg)(nil),
+		(*WrapperMessageProto_TwopcRollbackReplyMsg)(nil),
+		(*WrapperMessageProto_NodePingMsg)(nil),
+		(*WrapperMessageProto_NodePongMsg)(nil),
+		(*WrapperMessageProto_NodeJoinMsg)(nil),
+		(*WrapperMessageProto_NodeLeaveMsg)(nil),
+		(*WrapperMessageProto_NodeSyncMsg)(nil),
+		(*WrapperMessageProto_ClockSyncMsg)(nil),
+		(*WrapperMessageProto_ClockSyncReplyMsg)(nil),
+		(*WrapperMessageProto_ClusterStatusMsg)(nil),
+		(*WrapperMessageProto_ClusterStatusReplyMsg)(nil),
+		(*WrapperMessageProto_LeaderElectionMsg)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_message_proto_rawDesc), len(file_message_proto_rawDesc)),
-			NumEnums:      6,
-			NumMessages:   10,
+			NumEnums:      1,
+			NumMessages:   36,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

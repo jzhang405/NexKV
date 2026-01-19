@@ -118,6 +118,10 @@ func (r *WALRotationManager) Append(entry *WALEntry) error {
 // 按序号顺序读取所有 WAL 文件
 // 跳过损坏的文件，尽可能恢复数据
 func (r *WALRotationManager) Recover() ([]*WALEntry, error) {
+	if r.closed {
+		return nil, types.NewClosedError("WALRotationManager")
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

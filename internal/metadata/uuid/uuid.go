@@ -2,6 +2,8 @@
 package uuid
 
 import (
+	"bytes"
+	"encoding/hex"
 	"fmt"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
@@ -24,24 +26,28 @@ const (
 )
 
 // Parse 解析 UUID 字符串
+// 使用 encoding/hex 提升性能
+// 验证连字符位置，确保符合 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx 格式
 func Parse(uuidStr string) ([]byte, error) {
 	if len(uuidStr) != UUIDLength {
 		return nil, types.NewUUIDFormatError(fmt.Sprintf("invalid UUID length: %d", len(uuidStr)), nil)
 	}
 
+	// 验证连字符位置
+	if uuidStr[8] != '-' || uuidStr[13] != '-' || uuidStr[18] != '-' || uuidStr[23] != '-' {
+		return nil, types.NewUUIDFormatError("invalid UUID format: hyphen positions are incorrect", nil)
+	}
+
 	// 移除连字符
-	hex := uuidStr[0:8] + uuidStr[9:13] + uuidStr[14:18] + uuidStr[19:23] + uuidStr[24:36]
+	hexStr := uuidStr[0:8] + uuidStr[9:13] + uuidStr[14:18] + uuidStr[19:23] + uuidStr[24:36]
 
-	// 解析为字节
-	uuid := make([]byte, 16)
-	_, err := fmt.Sscanf(hex, "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
-		&uuid[0], &uuid[1], &uuid[2], &uuid[3],
-		&uuid[4], &uuid[5], &uuid[6], &uuid[7],
-		&uuid[8], &uuid[9], &uuid[10], &uuid[11],
-		&uuid[12], &uuid[13], &uuid[14], &uuid[15])
-
+	// 使用 hex.DecodeString 解析（比 fmt.Sscanf 更快）
+	uuid, err := hex.DecodeString(hexStr)
 	if err != nil {
 		return nil, types.NewUUIDFormatError("invalid UUID format", err)
+	}
+	if len(uuid) != 16 {
+		return nil, types.NewUUIDFormatError("invalid UUID hex length", nil)
 	}
 
 	return uuid, nil
@@ -63,6 +69,9 @@ const (
 	VariantRFC4122   = 2 // RFC 4122 标准
 	VariantMicrosoft = 6 // Microsoft 向后兼容
 	VariantFuture    = 7 // 未来保留
+
+	// 变体位掩码（用于从字节中提取变体）
+	variantMask = 0xC0 // 取高 2 位
 )
 
 // GetVariant 获取 UUID 变体
@@ -71,7 +80,7 @@ func GetVariant(uuid []byte) byte {
 		return 0xFF
 	}
 
-	v := uuid[8] & 0xC0 // 取高 2 位
+	v := uuid[8] & variantMask // 取高 2 位
 
 	switch v {
 	case 0x80:
@@ -93,6 +102,9 @@ const (
 	VersionRandom        = 4 // v4: 随机
 	VersionSHA1NameBased = 5 // v5: 基于名称和 SHA1
 	Version7TimeBased    = 7 // v7: 基于时间（RFC 9562）
+
+	// 版本位掩码（用于从字节中提取版本）
+	versionMask = 0xF0 // 取高 4 位
 )
 
 // GetVersion 获取 UUID 版本
@@ -101,20 +113,16 @@ func GetVersion(uuid []byte) byte {
 		return 0
 	}
 
-	return (uuid[6] & 0xF0) >> 4
+	return (uuid[6] & versionMask) >> 4
 }
 
 // IsNil 判断是否为 nil UUID
+// 使用 bytes.Equal 提升性能
 func IsNil(uuid []byte) bool {
 	if len(uuid) != 16 {
 		return false
 	}
 
-	for _, b := range uuid {
-		if b != 0 {
-			return false
-		}
-	}
-
-	return true
+	var nilUUID [16]byte
+	return bytes.Equal(uuid, nilUUID[:])
 }

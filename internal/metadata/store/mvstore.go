@@ -93,7 +93,7 @@ type WALEntry struct {
 	Type WALType
 
 	// Key 键
-	Key string
+	Key []byte
 
 	// Value 值（Type = WALTypePut 时有效）
 	Value []byte

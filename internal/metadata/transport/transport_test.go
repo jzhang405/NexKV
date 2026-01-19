@@ -687,3 +687,171 @@ func TestTransportError_Timeout(t *testing.T) {
 	assert.NotNil(t, err)
 	assert.Contains(t, err.Error(), "test")
 }
+
+// ========================================
+// 三 Codec 一致性测试
+// ========================================
+
+// TestThreeCodecConsistency 测试三种编解码器的一致性
+// 验证 struct → JSON/MsgPack/Protobuf → struct 后数据保持一致
+func TestThreeCodecConsistency(t *testing.T) {
+	testMessages := []Message{
+		&PutMessage{
+			Key:   "test_key",
+			Value: []byte("test_value"),
+		},
+		&GetMessage{
+			Key: "get_key",
+		},
+		&DeleteMessage{
+			Key: "delete_key",
+		},
+		&NodeJoinMessage{
+			NodeID:   "node-1",
+			Addr:     "192.168.1.10:9211",
+			Role:     "follower",
+			ParentID: "node-0",
+		},
+		&NodeLeaveMessage{
+			NodeID: "node-2",
+			Reason: "手动下线",
+		},
+		&NodePingMessage{
+			NodeID:    "node-3",
+			Sequence:  100,
+			Timestamp: 1705689600000000000,
+		},
+		&NodePongMessage{
+			NodeID:   "node-3",
+			Sequence: 100,
+			Status:   "ready",
+		},
+		&GossipSyncMessage{
+			Version:   100,
+			Metadata:  map[string][]byte{"key1": []byte("value1")},
+			Timestamp: 1705689600000000000,
+		},
+		&TwoPCPrepareMessage{
+			TransactionID: "tx-123",
+			Participants:  []string{"node1", "node2"},
+			Operations: []Operation{
+				{Type: "put", Key: "k1", Value: []byte("v1")},
+				{Type: "put", Key: "k2", Value: []byte("v2")},
+			},
+			Timeout: 30000,
+		},
+	}
+
+	for _, originalMsg := range testMessages {
+		t.Run(originalMsg.Type().String(), func(t *testing.T) {
+			// 测试三种 Codec
+			codecs := []struct {
+				name  string
+				codec Codec
+			}{
+				{"JSON", NewJSONCodec()},
+				{"MessagePack", NewMessagePackCodec()},
+				{"Protobuf", NewProtobufCodec()},
+			}
+
+			for _, tc := range codecs {
+				t.Run(tc.name, func(t *testing.T) {
+					// 编码
+					encoded, err := tc.codec.Encode(originalMsg)
+					require.NoError(t, err, "编码失败: %s", tc.name)
+					require.NotNil(t, encoded, "编码结果不应为空")
+
+					// 解码
+					decodedMsg, err := tc.codec.Decode(encoded)
+					require.NoError(t, err, "解码失败: %s", tc.name)
+					require.NotNil(t, decodedMsg, "解码结果不应为空")
+
+					// 验证类型
+					assert.Equal(t, originalMsg.Type(), decodedMsg.Type(),
+						"消息类型不一致: %s", tc.name)
+
+					// 验证内容一致性
+					assertMessagesEqual(t, originalMsg, decodedMsg, tc.name)
+				})
+			}
+		})
+	}
+}
+
+// assertMessagesEqual 验证两个消息内容相等
+func assertMessagesEqual(t *testing.T, expected, actual Message, codecName string) {
+	t.Helper()
+
+	switch exp := expected.(type) {
+	case *PutMessage:
+		act, ok := actual.(*PutMessage)
+		require.True(t, ok, "%s: 应该是 PutMessage", codecName)
+		assert.Equal(t, exp.Key, act.Key, "%s: Key 不一致", codecName)
+		assert.Equal(t, exp.Value, act.Value, "%s: Value 不一致", codecName)
+
+	case *GetMessage:
+		act, ok := actual.(*GetMessage)
+		require.True(t, ok, "%s: 应该是 GetMessage", codecName)
+		assert.Equal(t, exp.Key, act.Key, "%s: Key 不一致", codecName)
+
+	case *DeleteMessage:
+		act, ok := actual.(*DeleteMessage)
+		require.True(t, ok, "%s: 应该是 DeleteMessage", codecName)
+		assert.Equal(t, exp.Key, act.Key, "%s: Key 不一致", codecName)
+
+	case *NodeJoinMessage:
+		act, ok := actual.(*NodeJoinMessage)
+		require.True(t, ok, "%s: 应该是 NodeJoinMessage", codecName)
+		assert.Equal(t, exp.NodeID, act.NodeID, "%s: NodeID 不一致", codecName)
+		assert.Equal(t, exp.Addr, act.Addr, "%s: Addr 不一致", codecName)
+		assert.Equal(t, exp.Role, act.Role, "%s: Role 不一致", codecName)
+		assert.Equal(t, exp.ParentID, act.ParentID, "%s: ParentID 不一致", codecName)
+
+	case *NodeLeaveMessage:
+		act, ok := actual.(*NodeLeaveMessage)
+		require.True(t, ok, "%s: 应该是 NodeLeaveMessage", codecName)
+		assert.Equal(t, exp.NodeID, act.NodeID, "%s: NodeID 不一致", codecName)
+		assert.Equal(t, exp.Reason, act.Reason, "%s: Reason 不一致", codecName)
+
+	case *NodePingMessage:
+		act, ok := actual.(*NodePingMessage)
+		require.True(t, ok, "%s: 应该是 NodePingMessage", codecName)
+		assert.Equal(t, exp.NodeID, act.NodeID, "%s: NodeID 不一致", codecName)
+		assert.Equal(t, exp.Sequence, act.Sequence, "%s: Sequence 不一致", codecName)
+		assert.Equal(t, exp.Timestamp, act.Timestamp, "%s: Timestamp 不一致", codecName)
+
+	case *NodePongMessage:
+		act, ok := actual.(*NodePongMessage)
+		require.True(t, ok, "%s: 应该是 NodePongMessage", codecName)
+		assert.Equal(t, exp.NodeID, act.NodeID, "%s: NodeID 不一致", codecName)
+		assert.Equal(t, exp.Sequence, act.Sequence, "%s: Sequence 不一致", codecName)
+		assert.Equal(t, exp.Status, act.Status, "%s: Status 不一致", codecName)
+
+	case *GossipSyncMessage:
+		act, ok := actual.(*GossipSyncMessage)
+		require.True(t, ok, "%s: 应该是 GossipSyncMessage", codecName)
+		assert.Equal(t, exp.Version, act.Version, "%s: Version 不一致", codecName)
+		assert.Equal(t, exp.Timestamp, act.Timestamp, "%s: Timestamp 不一致", codecName)
+		// Metadata 是 map，比较需要特殊处理
+		assert.Len(t, act.Metadata, len(exp.Metadata), "%s: Metadata 长度不一致", codecName)
+		for k, v := range exp.Metadata {
+			assert.Equal(t, v, act.Metadata[k], "%s: Metadata[%s] 不一致", codecName, k)
+		}
+
+	case *TwoPCPrepareMessage:
+		act, ok := actual.(*TwoPCPrepareMessage)
+		require.True(t, ok, "%s: 应该是 TwoPCPrepareMessage", codecName)
+		assert.Equal(t, exp.TransactionID, act.TransactionID, "%s: TransactionID 不一致", codecName)
+		assert.Equal(t, exp.Participants, act.Participants, "%s: Participants 不一致", codecName)
+		assert.Equal(t, exp.Timeout, act.Timeout, "%s: Timeout 不一致", codecName)
+		assert.Len(t, act.Operations, len(exp.Operations), "%s: Operations 长度不一致", codecName)
+		for i := range exp.Operations {
+			assert.Equal(t, exp.Operations[i].Type, act.Operations[i].Type, "%s: Operations[%d].Type 不一致", codecName, i)
+			assert.Equal(t, exp.Operations[i].Key, act.Operations[i].Key, "%s: Operations[%d].Key 不一致", codecName, i)
+			assert.Equal(t, exp.Operations[i].Value, act.Operations[i].Value, "%s: Operations[%d].Value 不一致", codecName, i)
+		}
+
+	default:
+		t.Fatalf("不支持的消息类型: %T", expected)
+	}
+}

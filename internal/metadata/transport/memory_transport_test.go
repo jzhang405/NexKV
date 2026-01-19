@@ -3,6 +3,7 @@ package transport
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -13,6 +14,18 @@ import (
 // ========================================
 // MemoryTransport 测试
 // ========================================
+
+// TestMain 是测试入口函数，用于全局测试清理
+func TestMain(m *testing.M) {
+	// 运行所有测试
+	exitCode := m.Run()
+
+	// 清理全局注册表，防止测试污染
+	cleanupGlobalRegistry()
+
+	// 退出
+	os.Exit(exitCode)
+}
 
 // TestMemoryTransport_StartStop 测试启动和停止
 func TestMemoryTransport_StartStop(t *testing.T) {

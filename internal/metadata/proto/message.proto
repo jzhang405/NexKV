@@ -1,20 +1,14 @@
 syntax = "proto3";
 
-package nexkv.metadata;
+package nexkv.metadata.transport;
 
 option go_package = "github.com/jzhang405/NexKV/internal/metadata/proto";
 
-// ===== 消息类型枚举 =====
+// ========================================
+// 消息类型枚举
+// ========================================
 
 // MessageType 消息类型
-//
-// 消息类型范围分配:
-//   - 100-149: 元数据操作（Put、Delete、Get 等）
-//   - 150-199: Gossip 协议消息
-//   - 200-249: Quorum 协议消息
-//   - 250-299: 2PC 协议消息
-//   - 300-349: 节点管理消息
-//   - 350-399: 集群管理消息
 enum MessageType {
   // 元数据操作消息 (100-149)
   MESSAGE_TYPE_UNSPECIFIED = 0;
@@ -59,132 +53,290 @@ enum MessageType {
   MESSAGE_TYPE_LEADER_ELECTION = 352;
 }
 
-// ===== 基础消息结构 =====
+// ========================================
+// 元数据操作消息
+// ========================================
 
-// TransportMessage 传输消息基础结构
-//
-// 所有消息的通用包装，包含路由信息和时间戳
-message TransportMessage {
-  MessageType type = 1;       // 消息类型
-  uint64 timestamp = 2;       // 时间戳（Unix 毫秒）
-  string from_node = 3;       // 发送节点 ID
-  string to_node = 4;         // 接收节点 ID（可选，广播消息时为空）
-  uint64 request_id = 5;      // 请求 ID（用于匹配请求-响应）
-
-  oneof payload {
-    GossipMessage gossip = 10;       // Gossip 协议消息
-    QuorumMessage quorum = 11;       // Quorum 协议消息
-    TwoPCMessage twopc = 12;         // 2PC 协议消息
-    HeartbeatMessage heartbeat = 13; // 心跳消息
-    ResponseMessage response = 14;   // 通用响应消息
-    MetadataOpMessage metadata = 15; // 元数据操作消息
-  }
+// GetMessageProto 获取元数据消息
+message GetMessageProto {
+  string key = 1;
 }
 
-// ===== Gossip 协议消息 =====
-
-// GossipMessage Gossip 协议消息
-//
-// 用于节点间元数据的最终一致性同步
-message GossipMessage {
-  string node_id = 1;               // 节点 ID
-  uint64 version = 2;                // 元数据版本号
-  map<string, bytes> metadata = 3;   // 元数据键值对
-  repeated string deleted_keys = 4;  // 已删除的键列表
-  uint32 digest = 5;                 // 摘要（用于快速比较）
+// PutMessageProto 更新元数据消息
+message PutMessageProto {
+  string key = 1;
+  bytes value = 2;
 }
 
-// ===== Quorum 协议消息 =====
-
-// QuorumMessage Quorum 协议消息
-//
-// 用于关键元数据的强一致性同步
-message QuorumMessage {
-  string proposal_id = 1;     // 提案 ID（唯一标识）
-  string key = 2;             // 键
-  bytes value = 3;            // 值
-  uint64 version = 4;         // 版本号
-  enum VoteType {
-    VOTE_TYPE_UNSPECIFIED = 0;
-    VOTE_TYPE_APPROVE = 1;   // 同意
-    VOTE_TYPE_REJECT = 2;    // 拒绝
-  }
-  VoteType vote = 5;          // 投票类型（投票消息时使用）
-  string reason = 6;          // 拒绝原因（可选）
+// GetReplyMessageProto Get 响应消息
+message GetReplyMessageProto {
+  string key = 1;
+  bytes value = 2;
+  bool found = 3;
+  uint64 version = 4;
 }
 
-// ===== 2PC 协议消息 =====
-
-// TwoPCMessage 两阶段提交消息
-//
-// 用于跨分片分布式事务
-message TwoPCMessage {
-  string transaction_id = 1;  // 事务 ID
-  repeated string shards = 2;  // 涉及的分片列表
-  map<string, bytes> operations = 3; // 操作列表（key -> operation data）
-  enum PhaseType {
-    PHASE_TYPE_UNSPECIFIED = 0;
-    PHASE_TYPE_PREPARE = 1;   // 准备阶段
-    PHASE_TYPE_COMMIT = 2;    // 提交阶段
-    PHASE_TYPE_ROLLBACK = 3;  // 回滚阶段
-  }
-  PhaseType phase = 4;         // 当前阶段
-  enum DecisionType {
-    DECISION_TYPE_UNSPECIFIED = 0;
-    DECISION_TYPE_COMMIT = 1;   // 提交决策
-    DECISION_TYPE_ABORT = 2;    // 中止决策
-  }
-  DecisionType decision = 5;   // 决策（协调者发送）
-  string reason = 6;           // 失败原因（可选）
+// PutReplyMessageProto Put 响应消息
+message PutReplyMessageProto {
+  string key = 1;
+  bool success = 2;
+  uint64 version = 3;
 }
 
-// ===== 心跳消息 =====
-
-// HeartbeatMessage 心跳消息
-//
-// 用于节点存活检测和时钟同步
-message HeartbeatMessage {
-  string node_id = 1;         // 节点 ID
-  uint64 timestamp = 2;       // 时间戳（Unix 毫秒）
-  enum StatusType {
-    STATUS_TYPE_UNSPECIFIED = 0;
-    STATUS_TYPE_HEALTHY = 1;   // 健康
-    STATUS_TYPE_BUSY = 2;      // 繁忙
-    STATUS_TYPE_DEGRADED = 3;  // 降级
-  }
-  StatusType status = 3;      // 节点状态
-  map<string, uint32> metrics = 4; // 节点指标（CPU、内存等）
+// DeleteMessageProto 删除元数据消息
+message DeleteMessageProto {
+  string key = 1;
 }
 
-// ===== 响应消息 =====
-
-// ResponseMessage 通用响应消息
-//
-// 用于所有请求的响应
-message ResponseMessage {
-  bool success = 1;          // 是否成功
-  uint32 error_code = 2;     // 错误码
-  string error_msg = 3;      // 错误消息
-  bytes data = 4;            // 响应数据（可选）
+// DeleteReplyMessageProto Delete 响应消息
+message DeleteReplyMessageProto {
+  string key = 1;
+  bool success = 2;
 }
 
-// ===== 元数据操作消息 =====
+// ========================================
+// Gossip 协议消息
+// ========================================
 
-// MetadataOpMessage 元数据操作消息
+// GossipSyncMessageProto Gossip 同步消息
+message GossipSyncMessageProto {
+  uint64 version = 1;
+  map<string, bytes> metadata = 2;
+  int64 timestamp = 3;
+}
+
+// GossipSyncReplyMessageProto Gossip 同步响应
+message GossipSyncReplyMessageProto {
+  bool accepted = 1;
+  uint64 version = 2;
+}
+
+// GossipDigestMessageProto Gossip 摘要消息
+message GossipDigestMessageProto {
+  uint64 version = 1;
+  map<string, uint64> digest = 2;
+}
+
+// GossipDigestReplyMessageProto Gossip 摘要响应
+message GossipDigestReplyMessageProto {
+  uint64 version = 1;
+  map<string, uint64> digest = 2;
+}
+
+// ========================================
+// Quorum 协议消息
+// ========================================
+
+// QuorumProposeMessageProto Quorum 提案消息
+message QuorumProposeMessageProto {
+  string proposal_id = 1;
+  string key = 2;
+  bytes value = 3;
+  string operation = 4; // "put", "delete"
+  string proposer = 5;
+  int64 timestamp = 6;
+}
+
+// QuorumVoteMessageProto Quorum 投票消息
+message QuorumVoteMessageProto {
+  string proposal_id = 1;
+  string voter = 2;
+  bool vote = 3;
+  string reason = 4;
+}
+
+// QuorumDecideMessageProto Quorum 决策消息
+message QuorumDecideMessageProto {
+  string proposal_id = 1;
+  bool approved = 2;
+  uint64 version = 3;
+}
+
+// ========================================
+// 2PC 协议消息
+// ========================================
+
+// OperationProto 操作定义
+message OperationProto {
+  string type = 1; // "put", "delete"
+  string key = 2;
+  bytes value = 3;
+}
+
+// TwoPCPrepareMessageProto 2PC 准备阶段消息
+message TwoPCPrepareMessageProto {
+  string transaction_id = 1;
+  repeated string participants = 2;
+  repeated OperationProto operations = 3;
+  int64 timestamp = 4;
+}
+
+// TwoPCPrepareReplyMessageProto 2PC 准备响应
+message TwoPCPrepareReplyMessageProto {
+  string transaction_id = 1;
+  string participant = 2;
+  string vote = 3; // "commit", "abort"
+  string reason = 4;
+}
+
+// TwoPCCommitMessageProto 2PC 提交消息
+message TwoPCCommitMessageProto {
+  string transaction_id = 1;
+}
+
+// TwoPCRollbackMessageProto 2PC 回滚消息
+message TwoPCRollbackMessageProto {
+  string transaction_id = 1;
+  string reason = 2;
+}
+
+// TwoPCCommitReplyMessageProto 2PC 提交响应
+message TwoPCCommitReplyMessageProto {
+  string transaction_id = 1;
+  string participant = 2;
+  bool success = 3;
+}
+
+// TwoPCRollbackReplyMessageProto 2PC 回滚响应
+message TwoPCRollbackReplyMessageProto {
+  string transaction_id = 1;
+  string participant = 2;
+  bool success = 3;
+}
+
+// ========================================
+// 节点管理消息
+// ========================================
+
+// NodePingMessageProto 节点心跳消息
+message NodePingMessageProto {
+  string node_id = 1;
+  int64 sequence = 2;
+  int64 timestamp = 3;
+}
+
+// NodePongMessageProto 心跳响应
+message NodePongMessageProto {
+  string node_id = 1;
+  int64 sequence = 2;
+  string status = 3; // "ready", "busy", "leaving"
+  int64 timestamp = 4;
+}
+
+// NodeJoinMessageProto 节点加入消息
+message NodeJoinMessageProto {
+  string node_id = 1;
+  string addr = 2;
+  string role = 3; // "parent", "child"
+  string parent_id = 4;
+}
+
+// NodeLeaveMessageProto 节点离开消息
+message NodeLeaveMessageProto {
+  string node_id = 1;
+  string reason = 2;
+}
+
+// NodeSyncMessageProto 节点同步消息
+message NodeSyncMessageProto {
+  uint64 version = 1;
+  map<string, bytes> metadata = 2;
+}
+
+// ClockSyncMessageProto 时钟同步请求消息
+message ClockSyncMessageProto {
+  int64 timestamp = 1; // 发送节点的 HLC 时间戳
+  string node_id = 2;   // 发送节点 ID
+}
+
+// ClockSyncReplyMessageProto 时钟同步响应消息
+message ClockSyncReplyMessageProto {
+  int64 timestamp = 1; // 响应节点的 HLC 时间戳
+  string node_id = 2;   // 响应节点 ID
+  int64 drift = 3;      // 时间漂移（毫秒）
+}
+
+// ========================================
+// 集群管理消息
+// ========================================
+
+// NodeInfoProto 节点信息
+message NodeInfoProto {
+  string node_id = 1;
+  string addr = 2;
+  string role = 3;
+  string parent_id = 4;
+  string status = 5; // "ready", "busy", "leaving"
+  int32 level = 6;
+}
+
+// ClusterStatusMessageProto 集群状态查询
+message ClusterStatusMessageProto {
+  string node_id = 1;
+}
+
+// ClusterStatusReplyMessageProto 集群状态响应
+message ClusterStatusReplyMessageProto {
+  repeated NodeInfoProto nodes = 1;
+}
+
+// LeaderElectionMessageProto Leader 选举消息
+message LeaderElectionMessageProto {
+  string election_id = 1;
+  string node_id = 2;
+  int32 priority = 3;
+}
+
+// ========================================
+// 包装消息（统一入口）
+// ========================================
+
+// WrapperMessageProto 统一消息包装器
 //
-// 用于元数据的增删改查
-message MetadataOpMessage {
-  enum OpType {
-    OP_TYPE_UNSPECIFIED = 0;
-    OP_TYPE_GET = 1;   // 获取
-    OP_TYPE_PUT = 2;   // 设置
-    OP_TYPE_DELETE = 3; // 删除
-    OP_TYPE_LIST = 4;   // 列举
+// 使用 oneof 实现消息类型判别，解决语义丢失问题
+message WrapperMessageProto {
+  uint32 message_type = 1; // MessageType 枚举值
+
+  oneof message_body {
+    // 元数据操作消息
+    GetMessageProto get_msg = 100;
+    PutMessageProto put_msg = 101;
+    GetReplyMessageProto get_reply_msg = 103;
+    PutReplyMessageProto put_reply_msg = 104;
+    DeleteMessageProto delete_msg = 102;
+    DeleteReplyMessageProto delete_reply_msg = 105;
+
+    // Gossip 协议消息
+    GossipSyncMessageProto gossip_sync_msg = 150;
+    GossipSyncReplyMessageProto gossip_sync_reply_msg = 151;
+    GossipDigestMessageProto gossip_digest_msg = 152;
+    GossipDigestReplyMessageProto gossip_digest_reply_msg = 153;
+
+    // Quorum 协议消息
+    QuorumProposeMessageProto quorum_propose_msg = 200;
+    QuorumVoteMessageProto quorum_vote_msg = 201;
+    QuorumDecideMessageProto quorum_decide_msg = 202;
+
+    // 2PC 协议消息
+    TwoPCPrepareMessageProto twopc_prepare_msg = 250;
+    TwoPCPrepareReplyMessageProto twopc_prepare_reply_msg = 251;
+    TwoPCCommitMessageProto twopc_commit_msg = 252;
+    TwoPCRollbackMessageProto twopc_rollback_msg = 253;
+    TwoPCCommitReplyMessageProto twopc_commit_reply_msg = 254;
+    TwoPCRollbackReplyMessageProto twopc_rollback_reply_msg = 255;
+
+    // 节点管理消息
+    NodePingMessageProto node_ping_msg = 300;
+    NodePongMessageProto node_pong_msg = 301;
+    NodeJoinMessageProto node_join_msg = 302;
+    NodeLeaveMessageProto node_leave_msg = 303;
+    NodeSyncMessageProto node_sync_msg = 304;
+    ClockSyncMessageProto clock_sync_msg = 305;
+    ClockSyncReplyMessageProto clock_sync_reply_msg = 306;
+
+    // 集群管理消息
+    ClusterStatusMessageProto cluster_status_msg = 350;
+    ClusterStatusReplyMessageProto cluster_status_reply_msg = 351;
+    LeaderElectionMessageProto leader_election_msg = 352;
   }
-  OpType op = 1;              // 操作类型
-  string key = 2;             // 键
-  bytes value = 3;            // 值（PUT 时使用）
-  string prefix = 4;          // 前缀（LIST 时使用）
-  int32 offset = 5;           // 偏移量（LIST 时使用）
-  int32 limit = 6;            // 限制数量（LIST 时使用，0 表示不限制）
 }

@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
 // Transport 网络传输接口
@@ -39,6 +41,7 @@ type Transport interface {
 	Receive() <-chan Message
 
 	// Close 关闭传输层并释放资源
+	// Deprecated: 使用 Stop() 代替，Close() 仅为兼容性保留
 	Close() error
 }
 
@@ -48,15 +51,6 @@ type Transport interface {
 type Message interface {
 	// Type 返回消息类型
 	Type() MessageType
-
-	// Marshal 序列化消息为字节流
-	Marshal() ([]byte, error)
-
-	// Unmarshal 从字节流反序列化消息
-	Unmarshal(data []byte) error
-
-	// Size 返回消息大小（字节）
-	Size() int
 }
 
 // MessageType 消息类型
@@ -212,18 +206,23 @@ type TransportConfig struct {
 
 	// BufferSize 缓冲区大小
 	BufferSize int
+
+	// ChannelSendTimeout 通道发送超时（P2-2：接收通道阻塞检测）
+	// 说明：当接收通道阻塞超过此时间时，认为消费者处理缓慢，丢弃消息并记录日志
+	ChannelSendTimeout time.Duration
 }
 
 // DefaultTransportConfig 返回默认配置
 func DefaultTransportConfig() *TransportConfig {
 	return &TransportConfig{
-		ListenAddr:        "0.0.0.0:9211",
-		MaxMessageSize:    1024 * 1024 * 100, // 100MB
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		KeepAliveInterval: 10 * time.Second,
-		KeepAliveTimeout:  30 * time.Second,
-		BufferSize:        4096,
+		ListenAddr:         "0.0.0.0:9211",
+		MaxMessageSize:     1024 * 1024 * 100, // 100MB
+		ReadTimeout:        30 * time.Second,
+		WriteTimeout:       30 * time.Second,
+		KeepAliveInterval:  10 * time.Second,
+		KeepAliveTimeout:   30 * time.Second,
+		BufferSize:         4096,
+		ChannelSendTimeout: 5 * time.Second, // P2-2: 默认 5 秒通道发送超时
 	}
 }
 
@@ -239,6 +238,9 @@ type Codec interface {
 
 	// Name 返回编解码器名称
 	Name() string
+
+	// Type 返回编解码器类型
+	Type() types.CodecType
 }
 
 // Conn 连接接口

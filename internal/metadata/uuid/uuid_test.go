@@ -2,6 +2,7 @@
 package uuid
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -139,14 +140,22 @@ func TestSnowflakeConcurrency(t *testing.T) {
 	const idsPerGoroutine = 1000
 
 	idChan := make(chan int64, goroutines*idsPerGoroutine)
+	var wg sync.WaitGroup
+	var errCh = make(chan error, 1) // 用于传递第一个错误
 
 	// 并发生成 ID
 	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			for j := 0; j < idsPerGoroutine; j++ {
 				id, err := snowflake.Generate()
 				if err != nil {
-					t.Errorf("生成 ID 失败: %v", err)
+					select {
+					case errCh <- err:
+					default:
+						// 已经有一个错误在队列中
+					}
 					return
 				}
 				idChan <- id
@@ -154,10 +163,23 @@ func TestSnowflakeConcurrency(t *testing.T) {
 		}()
 	}
 
+	// 在后台等待所有 goroutine 完成
+	go func() {
+		wg.Wait()
+		close(idChan)
+	}()
+
+	// 检查是否有错误发生
+	select {
+	case err := <-errCh:
+		t.Fatalf("生成 ID 失败: %v", err)
+	default:
+		// 没有错误，继续
+	}
+
 	// 收集所有 ID
 	generated := make(map[int64]bool)
-	for i := 0; i < goroutines*idsPerGoroutine; i++ {
-		id := <-idChan
+	for id := range idChan {
 		if generated[id] {
 			t.Errorf("ID 重复: %d", id)
 		}
@@ -189,8 +211,8 @@ func TestSafeUUIDGenerator(t *testing.T) {
 
 	// 检查时钟回拨次数
 	stats := gen.GetStats()
-	if callbackCount, ok := stats["callback_count"].(int); ok {
-		t.Logf("时钟回拨次数: %d", callbackCount)
+	if driftCount, ok := stats["drift_count"].(int); ok {
+		t.Logf("时钟回拨次数: %d", driftCount)
 	}
 }
 

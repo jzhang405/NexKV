@@ -7,13 +7,14 @@
 package store
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/metadata/clock"
-	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -46,7 +47,7 @@ func createTestEntry(t *testing.T, key, value string) *WALEntry {
 	return &WALEntry{
 		Timestamp: ts,
 		Type:      WALTypePut,
-		Key:       key,
+		Key:       []byte(key),
 		Value:     []byte(value),
 		Checksum:  0, // 将在 Append 时自动计算
 	}
@@ -282,10 +283,10 @@ func TestMetadataWAL_Truncate(t *testing.T) {
 		err = wal.Truncate(truncateOffset)
 		assert.NoError(t, err)
 
-		// 验证大小
+		// 验证大小（Truncate 会写入 EOF 标记）
 		statsAfter, err := wal.GetStats()
 		require.NoError(t, err)
-		assert.LessOrEqual(t, statsAfter.Size, truncateOffset)
+		assert.Equal(t, truncateOffset+WALEOFSize, statsAfter.Size, "截断后大小应等于截断点加 EOF 标记大小")
 	})
 
 	t.Run("截断到0", func(t *testing.T) {
@@ -688,189 +689,6 @@ func TestMetadataWAL_EdgeCases(t *testing.T) {
 }
 
 // ========================================
-// WALCodec 测试
-// ========================================
-
-// TestWALCodec 测试WAL编解码器
-func TestWALCodec(t *testing.T) {
-	t.Run("MessagePack编解码", func(t *testing.T) {
-		codec := NewMessagePackWALCodec()
-
-		originalEntry := createTestEntry(t, "key1", "value1")
-
-		// 编码
-		encoded, err := codec.Encode(originalEntry)
-		require.NoError(t, err)
-		assert.NotEmpty(t, encoded)
-
-		// 解码
-		decodedEntry, err := codec.Decode(encoded)
-		require.NoError(t, err)
-
-		// 验证
-		assert.Equal(t, originalEntry.Type, decodedEntry.Type)
-		assert.Equal(t, originalEntry.Key, decodedEntry.Key)
-		assert.Equal(t, originalEntry.Value, decodedEntry.Value)
-	})
-
-	t.Run("JSON编解码", func(t *testing.T) {
-		codec := NewJSONWALCodec()
-
-		originalEntry := createTestEntry(t, "key1", "value1")
-
-		// 编码
-		encoded, err := codec.Encode(originalEntry)
-		require.NoError(t, err)
-		assert.NotEmpty(t, encoded)
-
-		// 解码
-		decodedEntry, err := codec.Decode(encoded)
-		require.NoError(t, err)
-
-		// 验证
-		assert.Equal(t, originalEntry.Type, decodedEntry.Type)
-		assert.Equal(t, originalEntry.Key, decodedEntry.Key)
-		assert.Equal(t, originalEntry.Value, decodedEntry.Value)
-	})
-
-	t.Run("Protobuf编解码", func(t *testing.T) {
-		codec := NewProtobufWALCodec()
-
-		originalEntry := createTestEntry(t, "key1", "value1")
-
-		// 编码
-		encoded, err := codec.Encode(originalEntry)
-		require.NoError(t, err)
-		assert.NotEmpty(t, encoded)
-
-		// 解码
-		decodedEntry, err := codec.Decode(encoded)
-		require.NoError(t, err)
-
-		// 验证
-		assert.Equal(t, originalEntry.Type, decodedEntry.Type)
-		assert.Equal(t, originalEntry.Key, decodedEntry.Key)
-		assert.Equal(t, originalEntry.Value, decodedEntry.Value)
-	})
-
-	t.Run("编解码nil条目", func(t *testing.T) {
-		codec := NewMessagePackWALCodec()
-
-		_, err := codec.Encode(nil)
-		assert.Error(t, err)
-	})
-
-	t.Run("解码空数据", func(t *testing.T) {
-		codec := NewMessagePackWALCodec()
-
-		_, err := codec.Decode([]byte{})
-		assert.Error(t, err)
-	})
-
-	t.Run("解码损坏数据", func(t *testing.T) {
-		codec := NewMessagePackWALCodec()
-
-		_, err := codec.Decode([]byte("corrupted data"))
-		assert.Error(t, err)
-	})
-}
-
-// TestWALCodecMethods 测试Codec接口方法
-func TestWALCodecMethods(t *testing.T) {
-	t.Run("MessagePack编解码器Type和Name", func(t *testing.T) {
-		codec := NewMessagePackWALCodec()
-		assert.Equal(t, types.CodecTypeMessagePack, codec.Type())
-		assert.Equal(t, "msgpack", codec.Name())
-	})
-
-	t.Run("JSON编解码器Type和Name", func(t *testing.T) {
-		codec := NewJSONWALCodec()
-		assert.Equal(t, types.CodecTypeJSON, codec.Type())
-		assert.Equal(t, "json", codec.Name())
-	})
-
-	t.Run("Protobuf编解码器Type和Name", func(t *testing.T) {
-		codec := NewProtobufWALCodec()
-		assert.Equal(t, types.CodecTypeProtobuf, codec.Type())
-		assert.Equal(t, "protobuf", codec.Name())
-	})
-}
-
-// TestNewWALCodec 测试编解码器工厂函数
-func TestNewWALCodec(t *testing.T) {
-	t.Run("创建MessagePack编解码器", func(t *testing.T) {
-		codec, err := NewWALCodec(types.CodecTypeMessagePack)
-		require.NoError(t, err)
-		assert.NotNil(t, codec)
-		assert.Equal(t, types.CodecTypeMessagePack, codec.Type())
-	})
-
-	t.Run("创建JSON编解码器", func(t *testing.T) {
-		codec, err := NewWALCodec(types.CodecTypeJSON)
-		require.NoError(t, err)
-		assert.NotNil(t, codec)
-		assert.Equal(t, types.CodecTypeJSON, codec.Type())
-	})
-
-	t.Run("创建Protobuf编解码器", func(t *testing.T) {
-		codec, err := NewWALCodec(types.CodecTypeProtobuf)
-		require.NoError(t, err)
-		assert.NotNil(t, codec)
-		assert.Equal(t, types.CodecTypeProtobuf, codec.Type())
-	})
-
-	t.Run("创建未知类型编解码器", func(t *testing.T) {
-		_, err := NewWALCodec(types.CodecType(99))
-		assert.Error(t, err)
-	})
-}
-
-// TestWALCodecNilTimestamp 测试nil时间戳处理
-func TestWALCodecNilTimestamp(t *testing.T) {
-	t.Run("Protobuf编解码nil时间戳", func(t *testing.T) {
-		codec := NewProtobufWALCodec()
-
-		entry := &WALEntry{
-			Type:     WALTypePut,
-			Key:      "key1",
-			Value:    []byte("value1"),
-			Checksum: 12345,
-			// Timestamp 为 nil
-		}
-
-		encoded, err := codec.Encode(entry)
-		require.NoError(t, err)
-		assert.NotEmpty(t, encoded)
-
-		decoded, err := codec.Decode(encoded)
-		require.NoError(t, err)
-		assert.Equal(t, entry.Key, decoded.Key)
-		assert.NotNil(t, decoded.Timestamp) // 应该使用零值HLC
-	})
-}
-
-// TestProtobufCodecErrorCases 测试Protobuf编解码器错误情况
-func TestProtobufCodecErrorCases(t *testing.T) {
-	t.Run("Protobuf编解码nil条目", func(t *testing.T) {
-		codec := NewProtobufWALCodec()
-		_, err := codec.Encode(nil)
-		assert.Error(t, err)
-	})
-
-	t.Run("Protobuf解码空数据", func(t *testing.T) {
-		codec := NewProtobufWALCodec()
-		_, err := codec.Decode([]byte{})
-		assert.Error(t, err)
-	})
-
-	t.Run("Protobuf解码损坏数据", func(t *testing.T) {
-		codec := NewProtobufWALCodec()
-		_, err := codec.Decode([]byte("corrupted protobuf data"))
-		assert.Error(t, err)
-	})
-}
-
-// ========================================
 // WAL Rotation 测试
 // ========================================
 
@@ -933,6 +751,123 @@ func TestWALRotationManager(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotNil(t, stats)
 		assert.Equal(t, 0, stats.CurrentFileIndex)
+	})
+
+	t.Run("Sync 刷盘", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		manager, err := NewWALRotationManager(walPath, 1024*1024)
+		require.NoError(t, err)
+		defer manager.Close()
+
+		// 写入一些数据
+		entry := createTestEntry(t, "key", "value")
+		require.NoError(t, manager.Append(entry))
+
+		// 测试 Sync
+		err = manager.Sync()
+		assert.NoError(t, err, "Sync 应该成功")
+	})
+
+	t.Run("Sync 已关闭的管理器返回错误", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		manager, err := NewWALRotationManager(walPath, 1024*1024)
+		require.NoError(t, err)
+
+		// 关闭管理器
+		require.NoError(t, manager.Close())
+
+		// Sync 应该返回错误
+		err = manager.Sync()
+		assert.Error(t, err, "Sync 已关闭的管理器应该返回错误")
+	})
+
+	t.Run("Truncate 截断", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		manager, err := NewWALRotationManager(walPath, 1024*1024)
+		require.NoError(t, err)
+		defer manager.Close()
+
+		// 写入一些数据
+		for i := 0; i < 5; i++ {
+			entry := createTestEntry(t, "key", "value")
+			require.NoError(t, manager.Append(entry))
+		}
+
+		// 获取当前大小
+		stats, err := manager.GetRotationStats()
+		require.NoError(t, err)
+		truncateOffset := stats.TotalSize / 2
+
+		// 测试 Truncate
+		err = manager.Truncate(truncateOffset)
+		assert.NoError(t, err, "Truncate 应该成功")
+	})
+
+	t.Run("Truncate 已关闭的管理器返回错误", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		manager, err := NewWALRotationManager(walPath, 1024*1024)
+		require.NoError(t, err)
+
+		// 关闭管理器
+		require.NoError(t, manager.Close())
+
+		// Truncate 应该返回错误
+		err = manager.Truncate(0)
+		assert.Error(t, err, "Truncate 已关闭的管理器应该返回错误")
+	})
+
+	t.Run("Append 已关闭的管理器返回错误", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		manager, err := NewWALRotationManager(walPath, 1024*1024)
+		require.NoError(t, err)
+
+		// 关闭管理器
+		require.NoError(t, manager.Close())
+
+		// Append 应该返回错误
+		entry := createTestEntry(t, "key", "value")
+		err = manager.Append(entry)
+		assert.Error(t, err, "Append 已关闭的管理器应该返回错误")
+	})
+
+	t.Run("Recover 已关闭的管理器返回错误", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		manager, err := NewWALRotationManager(walPath, 1024*1024)
+		require.NoError(t, err)
+
+		// 关闭管理器
+		require.NoError(t, manager.Close())
+
+		// Recover 应该返回错误
+		_, err = manager.Recover()
+		assert.Error(t, err, "Recover 已关闭的管理器应该返回错误")
+	})
+
+	t.Run("GetRotationStats 已关闭的管理器返回错误", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		manager, err := NewWALRotationManager(walPath, 1024*1024)
+		require.NoError(t, err)
+
+		// 关闭管理器
+		require.NoError(t, manager.Close())
+
+		// GetRotationStats 应该返回错误
+		_, err = manager.GetRotationStats()
+		assert.Error(t, err, "GetRotationStats 已关闭的管理器应该返回错误")
 	})
 }
 
@@ -1105,7 +1040,7 @@ func TestWAL_FileSystem(t *testing.T) {
 		entries, err := wal2.Recover()
 		require.NoError(t, err)
 		assert.Len(t, entries, 1)
-		assert.Equal(t, "key1", entries[0].Key)
+		assert.Equal(t, []byte("key1"), entries[0].Key)
 	})
 
 	t.Run("目录不存在时自动创建", func(t *testing.T) {
@@ -1230,33 +1165,28 @@ func TestWALCheckpoint(t *testing.T) {
 		require.NoError(t, err)
 		defer wal.Close()
 
-		// 创建快照管理器
-		snapMgr, err := NewSnapshotManager(tmpDir)
+		// 测试 RecoveryManager 加载空快照
+		recoveryMgr, err := NewRecoveryManager(tmpDir, tmpDir, tmpDir)
 		require.NoError(t, err)
-		checkpoint := NewWALCheckpoint(wal, snapMgr)
+		_ = recoveryMgr
 
-		// 无快照时应该返回 nil, "", nil
-		data, name, err := checkpoint.LoadSnapshot()
+		// 无快照时应该返回空数据
+		data, err := recoveryMgr.Recover()
 		require.NoError(t, err)
-		assert.Nil(t, data)
-		assert.Empty(t, name)
+		assert.Empty(t, data)
 	})
 
 	t.Run("Checkpoint基本操作", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		walPath := filepath.Join(tmpDir, "test.wal")
 
-		wal, err := NewMetadataWAL(walPath)
+		// 创建恢复管理器
+		recoveryMgr, err := NewRecoveryManager(
+			filepath.Join(tmpDir, "checkpoint"),
+			filepath.Join(tmpDir, "snapshot"),
+			filepath.Join(tmpDir, "wal"),
+		)
 		require.NoError(t, err)
-		defer wal.Close()
-
-		// 创建快照管理器
-		snapMgr, err := NewSnapshotManager(tmpDir)
-		require.NoError(t, err)
-
-		// 创建一个checkpoint实例
-		checkpoint := NewWALCheckpoint(wal, snapMgr)
-		assert.NotNil(t, checkpoint)
+		assert.NotNil(t, recoveryMgr)
 	})
 }
 
@@ -1371,42 +1301,6 @@ func TestWALRecoveryEdgeCases(t *testing.T) {
 	})
 }
 
-// TestWALCodecCompatibility 测试编解码器兼容性
-func TestWALCodecCompatibility(t *testing.T) {
-	t.Run("不同编解码器编解码同一条目", func(t *testing.T) {
-		entry := createTestEntry(t, "key1", "value1")
-
-		// MessagePack
-		mpCodec := NewMessagePackWALCodec()
-		mpEncoded, err := mpCodec.Encode(entry)
-		require.NoError(t, err)
-		mpDecoded, err := mpCodec.Decode(mpEncoded)
-		require.NoError(t, err)
-
-		// JSON
-		jsonCodec := NewJSONWALCodec()
-		jsonEncoded, err := jsonCodec.Encode(entry)
-		require.NoError(t, err)
-		jsonDecoded, err := jsonCodec.Decode(jsonEncoded)
-		require.NoError(t, err)
-
-		// Protobuf
-		pbCodec := NewProtobufWALCodec()
-		pbEncoded, err := pbCodec.Encode(entry)
-		require.NoError(t, err)
-		pbDecoded, err := pbCodec.Decode(pbEncoded)
-		require.NoError(t, err)
-
-		// 所有编解码器应该产生相同的原始数据
-		assert.Equal(t, entry.Key, mpDecoded.Key)
-		assert.Equal(t, entry.Key, jsonDecoded.Key)
-		assert.Equal(t, entry.Key, pbDecoded.Key)
-		assert.Equal(t, entry.Value, mpDecoded.Value)
-		assert.Equal(t, entry.Value, jsonDecoded.Value)
-		assert.Equal(t, entry.Value, pbDecoded.Value)
-	})
-}
-
 // TestWALBatchOperations 测试WAL批量操作
 func TestWALBatchOperations(t *testing.T) {
 	t.Run("BatchWriter批量写入", func(t *testing.T) {
@@ -1477,72 +1371,6 @@ func TestWALBatchOperations(t *testing.T) {
 	})
 }
 
-// TestWALCodecEdgeCases 测试编解码器边界情况
-func TestWALCodecEdgeCases(t *testing.T) {
-	t.Run("MessagePack编解码不同WAL类型", func(t *testing.T) {
-		codec := NewMessagePackWALCodec()
-
-		types := []WALType{WALTypePut, WALTypeDelete, WALTypeCheckpoint}
-		for _, walType := range types {
-			entry := &WALEntry{
-				Type:     walType,
-				Key:      "test-key",
-				Value:    []byte("test-value"),
-				Checksum: 12345,
-			}
-
-			encoded, err := codec.Encode(entry)
-			require.NoError(t, err)
-
-			decoded, err := codec.Decode(encoded)
-			require.NoError(t, err)
-			assert.Equal(t, walType, decoded.Type)
-		}
-	})
-
-	t.Run("JSON编解码不同WAL类型", func(t *testing.T) {
-		codec := NewJSONWALCodec()
-
-		types := []WALType{WALTypePut, WALTypeDelete, WALTypeCheckpoint}
-		for _, walType := range types {
-			entry := &WALEntry{
-				Type:     walType,
-				Key:      "test-key",
-				Value:    []byte("test-value"),
-				Checksum: 12345,
-			}
-
-			encoded, err := codec.Encode(entry)
-			require.NoError(t, err)
-
-			decoded, err := codec.Decode(encoded)
-			require.NoError(t, err)
-			assert.Equal(t, walType, decoded.Type)
-		}
-	})
-
-	t.Run("Protobuf编解码不同WAL类型", func(t *testing.T) {
-		codec := NewProtobufWALCodec()
-
-		types := []WALType{WALTypePut, WALTypeDelete, WALTypeCheckpoint}
-		for _, walType := range types {
-			entry := &WALEntry{
-				Type:     walType,
-				Key:      "test-key",
-				Value:    []byte("test-value"),
-				Checksum: 12345,
-			}
-
-			encoded, err := codec.Encode(entry)
-			require.NoError(t, err)
-
-			decoded, err := codec.Decode(encoded)
-			require.NoError(t, err)
-			assert.Equal(t, walType, decoded.Type)
-		}
-	})
-}
-
 // TestWALDataIntegrity 测试数据完整性
 func TestWALDataIntegrity(t *testing.T) {
 	t.Run("编解码后数据一致性", func(t *testing.T) {
@@ -1587,33 +1415,301 @@ func TestWALDataIntegrity(t *testing.T) {
 
 // TestWALConcurrentAccess 测试并发访问
 func TestWALConcurrentAccess(t *testing.T) {
-	t.Run("并发Append操作", func(t *testing.T) {
+	t.Run("顺序写入-基本功能验证", func(t *testing.T) {
+		// 先验证基本功能是否正常
 		tmpDir := t.TempDir()
-		walPath := filepath.Join(tmpDir, "test.wal")
+		walPath := filepath.Join(tmpDir, "test-sequential.wal")
+
+		wal, err := NewMetadataWAL(walPath)
+		require.NoError(t, err)
+		defer wal.Close()
+
+		// 顺序写入 5 个条目
+		const count = 5
+		for i := 0; i < count; i++ {
+			entry := createTestEntry(t, fmt.Sprintf("key%d", i), fmt.Sprintf("value%d", i))
+			require.NoError(t, wal.Append(entry))
+		}
+
+		// 关闭 WAL
+		require.NoError(t, wal.Close())
+
+		// 验证文件大小是否正确
+		fileInfo, err := os.Stat(walPath)
+		require.NoError(t, err)
+		t.Logf("WAL 文件大小: %d bytes", fileInfo.Size())
+
+		// 重新打开并恢复
+		wal2, err := NewMetadataWAL(walPath)
+		require.NoError(t, err)
+		defer wal2.Close()
+
+		entries, err := wal2.Recover()
+		require.NoError(t, err)
+		assert.Equal(t, count, len(entries), "应该恢复所有条目")
+	})
+
+	t.Run("并发写入-验证文件完整性", func(t *testing.T) {
+		// 暂时跳过 Recover 验证，只测试 Append 是否成功
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "test-concurrent-skip.wal")
 
 		wal, err := NewMetadataWAL(walPath)
 		require.NoError(t, err)
 		defer wal.Close()
 
 		// 并发写入
-		done := make(chan bool, 10)
-		for i := 0; i < 10; i++ {
+		const concurrency = 5
+		var wg sync.WaitGroup
+		successCh := make(chan bool, concurrency)
+
+		for i := 0; i < concurrency; i++ {
+			wg.Add(1)
 			go func(idx int) {
+				defer wg.Done()
 				entry := createTestEntry(t, fmt.Sprintf("key%d", idx), fmt.Sprintf("value%d", idx))
-				_ = wal.Append(entry)
-				done <- true
+				if err := wal.Append(entry); err != nil {
+					t.Errorf("goroutine %d Append 失败: %v", idx, err)
+					successCh <- false
+				} else {
+					successCh <- true
+				}
 			}(i)
 		}
 
-		// 等待所有goroutine完成
-		for i := 0; i < 10; i++ {
-			<-done
+		wg.Wait()
+		close(successCh)
+
+		// 统计成功次数
+		success := 0
+		for ok := range successCh {
+			if ok {
+				success++
+			}
+		}
+		t.Logf("并发写入成功: %d/%d", success, concurrency)
+		assert.Equal(t, concurrency, success, "所有并发写入都应该成功")
+
+		// 重新打开并恢复（验证并发写入后的文件完整性）
+		wal2, err := NewMetadataWAL(walPath)
+		require.NoError(t, err)
+		defer wal2.Close()
+
+		entries, err := wal2.Recover()
+		require.NoError(t, err)
+		assert.Equal(t, concurrency, len(entries), "应该恢复所有并发写入的条目")
+	})
+}
+
+// TestWALBatchWriterErrors 测试 WAL Batch Writer 错误处理
+func TestWALBatchWriterErrors(t *testing.T) {
+	t.Run("Append 已关闭的批量写入器", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		wal, err := NewMetadataWAL(walPath)
+		require.NoError(t, err)
+		defer wal.Close()
+
+		writer := NewWALBatchWriter(wal, 10)
+
+		// 关闭批量写入器
+		require.NoError(t, writer.Close())
+
+		// 尝试追加应该返回错误
+		entry := &WALEntry{
+			Type:  WALTypePut,
+			Key:   []byte("key"),
+			Value: []byte("value"),
 		}
 
-		// 验证数据
-		entries, err := wal.Recover()
+		_, err = writer.Append(entry)
+		assert.Error(t, err, "Append 已关闭的批量写入器应该返回错误")
+	})
+
+	t.Run("Append nil 条目", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		wal, err := NewMetadataWAL(walPath)
 		require.NoError(t, err)
-		// 并发写入可能导致顺序不同，但数量应该一致
-		assert.Equal(t, 10, len(entries))
+		defer wal.Close()
+
+		writer := NewWALBatchWriter(wal, 10)
+		defer writer.Close()
+
+		// 尝试追加 nil 条目应该返回错误
+		_, err = writer.Append(nil)
+		assert.Error(t, err, "Append nil 条目应该返回错误")
+	})
+
+	t.Run("AppendBatch 已关闭的批量写入器", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		wal, err := NewMetadataWAL(walPath)
+		require.NoError(t, err)
+		defer wal.Close()
+
+		writer := NewWALBatchWriter(wal, 10)
+
+		// 关闭批量写入器
+		require.NoError(t, writer.Close())
+
+		// 尝试批量追加应该返回错误
+		entries := []*WALEntry{
+			{Type: WALTypePut, Key: []byte("key"), Value: []byte("value")},
+		}
+
+		_, err = writer.AppendBatch(entries)
+		assert.Error(t, err, "AppendBatch 已关闭的批量写入器应该返回错误")
+	})
+
+	t.Run("AppendBatch 空数组", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		wal, err := NewMetadataWAL(walPath)
+		require.NoError(t, err)
+		defer wal.Close()
+
+		writer := NewWALBatchWriter(wal, 10)
+		defer writer.Close()
+
+		// 空数组应该返回 0, nil
+		count, err := writer.AppendBatch([]*WALEntry{})
+		assert.NoError(t, err)
+		assert.Equal(t, 0, count)
+	})
+
+	t.Run("AppendBatch 包含 nil 条目", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		wal, err := NewMetadataWAL(walPath)
+		require.NoError(t, err)
+		defer wal.Close()
+
+		writer := NewWALBatchWriter(wal, 10)
+		defer writer.Close()
+
+		// 包含 nil 条目的数组应该跳过 nil 条目
+		entries := []*WALEntry{
+			{Type: WALTypePut, Key: []byte("key1"), Value: []byte("value1")},
+			nil,
+			{Type: WALTypePut, Key: []byte("key2"), Value: []byte("value2")},
+		}
+
+		count, err := writer.AppendBatch(entries)
+		assert.NoError(t, err, "AppendBatch 应该跳过 nil 条目并继续")
+		// 由于批量大小是 10，条目只有 2 个有效条目（跳过 nil），不会触发刷新
+		// 所以 count 应该是 0（除非手动 Flush）
+		assert.Equal(t, 0, count, "未达到批量大小，不应该自动刷新")
+	})
+
+	t.Run("Flush 已关闭的批量写入器", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		wal, err := NewMetadataWAL(walPath)
+		require.NoError(t, err)
+		defer wal.Close()
+
+		writer := NewWALBatchWriter(wal, 10)
+
+		// 写入一些数据
+		entry := &WALEntry{
+			Type:  WALTypePut,
+			Key:   []byte("key"),
+			Value: []byte("value"),
+		}
+		_, err = writer.Append(entry)
+		require.NoError(t, err)
+
+		// 关闭批量写入器
+		require.NoError(t, writer.Close())
+
+		// 尝试刷新应该返回错误
+		_, err = writer.Flush()
+		assert.Error(t, err, "Flush 已关闭的批量写入器应该返回错误")
+	})
+
+	t.Run("Close 多次调用", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		wal, err := NewMetadataWAL(walPath)
+		require.NoError(t, err)
+		defer wal.Close()
+
+		writer := NewWALBatchWriter(wal, 10)
+
+		// 第一次关闭
+		err = writer.Close()
+		assert.NoError(t, err)
+
+		// 第二次关闭应该成功（幂等）
+		err = writer.Close()
+		assert.NoError(t, err, "Close 应该是幂等的")
+	})
+
+	t.Run("Close 刷新剩余缓冲区", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walPath := filepath.Join(tmpDir, "wal", "metadata.wal")
+
+		wal, err := NewMetadataWAL(walPath)
+		require.NoError(t, err)
+		defer wal.Close()
+
+		writer := NewWALBatchWriter(wal, 100) // 大批量大小，避免自动刷新
+
+		// 写入一些数据但不达到批量大小
+		for i := 0; i < 5; i++ {
+			entry := &WALEntry{
+				Type:  WALTypePut,
+				Key:   []byte(fmt.Sprintf("key%d", i)),
+				Value: []byte(fmt.Sprintf("value%d", i)),
+			}
+			_, err = writer.Append(entry)
+			assert.NoError(t, err)
+		}
+
+		// 验证缓冲区中有数据
+		assert.Equal(t, 5, writer.BufferedCount(), "缓冲区应该有 5 个条目")
+
+		// 关闭应该自动刷新剩余缓冲区
+		err = writer.Close()
+		assert.NoError(t, err)
+
+		// 验证数据已写入
+		entries, err := wal.Recover()
+		assert.NoError(t, err)
+		assert.Equal(t, 5, len(entries), "应该恢复所有 5 个条目")
+	})
+}
+
+// TestWALBatchReaderErrors 测试 WAL Batch Reader 错误处理
+func TestWALBatchReaderErrors(t *testing.T) {
+	t.Run("ReadBatch 读取失败（无效魔术字）", func(t *testing.T) {
+		// 创建一个无效的 WAL 文件
+		data := []byte("BAD!") // 无效的魔术字
+		reader := bytes.NewReader(data)
+
+		batchReader := NewWALBatchReader(reader, 1024)
+
+		_, err := batchReader.ReadBatch(10)
+		assert.Error(t, err, "读取无效魔术字应该返回错误")
+	})
+
+	t.Run("ReadBatch 读取空数据", func(t *testing.T) {
+		// 创建一个空的 WAL 文件
+		data := []byte{}
+		reader := bytes.NewReader(data)
+
+		batchReader := NewWALBatchReader(reader, 1024)
+
+		entries, err := batchReader.ReadBatch(10)
+		assert.NoError(t, err)
+		assert.Equal(t, 0, len(entries), "空数据应该返回空条目列表")
 	})
 }

@@ -1,7 +1,6 @@
 // Package transport 编解码实现
 //
-// 支持多种编解码器：MessagePack（默认）和 JSON（兼容性）
-// 使用双标签实现同一结构体同时支持两种编解码器
+// 支持多种编解码器：Protobuf（默认）、MessagePack 和 JSON（兼容性）
 package transport
 
 import (
@@ -12,6 +11,93 @@ import (
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/vmihailenco/msgpack/v5"
 )
+
+// ========================================
+// 默认编解码器配置
+// ========================================
+
+// defaultCodec 系统默认编解码器
+//
+// 默认使用 Protobuf，原因：
+//  1. 性能优异（benchmark 显示数据最小）
+//  2. Schema 明确，跨语言支持好
+//  3. Wrapper 模式无语义丢失
+const defaultCodec = types.CodecTypeProtobuf
+
+// ========================================
+// P1-3: 通用编解码辅助函数
+// ========================================
+//
+// 将 MessagePack 和 JSON Codec 的重复逻辑提取为通用函数
+// 遵循 DRY 原则，降低维护成本
+
+// marshalFunc 定义序列化函数类型
+type marshalFunc func(any) ([]byte, error)
+
+// unmarshalFunc 定义反序列化函数类型
+type unmarshalFunc func([]byte, any) error
+
+// genericEncode 通用的编码逻辑
+//
+// P1-3: 提取通用的序列化逻辑，避免 MessagePack 和 JSON Codec 重复代码
+// 编码格式: [Type:2字节][DataLen:4字节][Data:N字节]
+func genericEncode(msg Message, marshal marshalFunc, codecName string) ([]byte, error) {
+	if msg == nil {
+		return nil, types.NewCodecInvalidMessageError("消息为空")
+	}
+
+	// 调用具体的序列化函数
+	dataBytes, err := marshal(msg)
+	if err != nil {
+		return nil, types.NewCodecEncodeFailedError(codecName, err)
+	}
+
+	// 构建通用格式: [Type(2字节)][DataLen(4字节)][Data(N字节)]
+	buf := make([]byte, 2+4+len(dataBytes))
+	binary.BigEndian.PutUint16(buf[0:2], uint16(msg.Type()))
+	binary.BigEndian.PutUint32(buf[2:6], uint32(len(dataBytes)))
+	copy(buf[6:], dataBytes)
+
+	return buf, nil
+}
+
+// genericDecode 通用的解码逻辑
+//
+// P1-3: 提取通用的反序列化逻辑，避免 MessagePack 和 JSON Codec 重复代码
+// 解码格式: [Type:2字节][DataLen:4字节][Data:N字节]
+func genericDecode(data []byte, unmarshal unmarshalFunc, codecName string) (Message, error) {
+	// 统一的头部验证
+	if len(data) == 0 {
+		return nil, types.NewCodecInvalidDataError("Decode", "数据为空")
+	}
+	if len(data) < 6 {
+		return nil, types.NewCodecInvalidDataError("Decode", "数据长度不足")
+	}
+
+	// 解析头部
+	msgType := MessageType(binary.BigEndian.Uint16(data[0:2]))
+	dataLen := int(binary.BigEndian.Uint32(data[2:6]))
+
+	// 验证数据长度
+	if len(data) < 6+dataLen {
+		return nil, types.NewCodecInvalidDataError("Decode", "数据长度不足")
+	}
+
+	// 创建消息实例
+	msg, err := createMessageByType(msgType)
+	if err != nil {
+		return nil, types.NewOpErr(types.ErrCodeInternal, "createMessage", "创建消息实例失败", err)
+	}
+
+	// 调用具体的反序列化函数
+	if dataLen > 0 {
+		if err := unmarshal(data[6:6+dataLen], msg); err != nil {
+			return nil, types.NewCodecDecodeFailedError(codecName, err)
+		}
+	}
+
+	return msg, nil
+}
 
 // ========================================
 // MessagePack 编解码器实现
@@ -35,77 +121,30 @@ func NewMessagePackCodec() *MessagePackCodec {
 
 // Encode 编码消息
 //
+// P1-3: 使用通用编码逻辑，消除与 JSON Codec 的重复代码
 // 将消息编码为 MessagePack 格式的字节流
 // 格式: [Type:2字节][DataLen:4字节][Data:N字节]
 func (c *MessagePackCodec) Encode(msg Message) ([]byte, error) {
-	if msg == nil {
-		return nil, types.NewCodecInvalidMessageError("消息为空")
-	}
-
-	// 编码消息数据
-	dataBytes, err := msgpack.Marshal(msg)
-	if err != nil {
-		return nil, types.NewCodecEncodeFailedError("Encode", err)
-	}
-
-	// 构建完整的编码数据
-	// 格式: [Type(2字节)][DataLen(4字节)][Data(N字节)]
-	buf := make([]byte, 2+4+len(dataBytes))
-
-	// 写入 Type (2 字节)
-	binary.BigEndian.PutUint16(buf[0:2], uint16(msg.Type()))
-
-	// 写入 DataLen (4 字节)
-	binary.BigEndian.PutUint32(buf[2:6], uint32(len(dataBytes)))
-
-	// 写入 Data
-	copy(buf[6:], dataBytes)
-
-	return buf, nil
+	return genericEncode(msg, msgpack.Marshal, "msgpack")
 }
 
 // Decode 解码消息
 //
+// P1-3: 使用通用解码逻辑，消除与 JSON Codec 的重复代码
 // 从 MessagePack 格式的字节流解码消息
 // 格式: [Type:2字节][DataLen:4字节][Data:N字节]
 func (c *MessagePackCodec) Decode(data []byte) (Message, error) {
-	if len(data) == 0 {
-		return nil, types.NewCodecInvalidDataError("Decode", "数据为空")
-	}
-	if len(data) < 6 {
-		return nil, types.NewCodecInvalidDataError("Decode", "数据长度不足")
-	}
-
-	// 读取 Type (2 字节)
-	msgType := MessageType(binary.BigEndian.Uint16(data[0:2]))
-
-	// 读取 DataLen (4 字节)
-	dataLen := int(binary.BigEndian.Uint32(data[2:6]))
-
-	// 验证数据长度
-	if len(data) < 6+dataLen {
-		return nil, types.NewCodecInvalidDataError("Decode", "数据长度不足")
-	}
-
-	// 创建消息实例
-	msg, err := createMessageByType(msgType)
-	if err != nil {
-		return nil, types.NewOpErr(types.ErrCodeInternal, "createMessage", "创建消息实例失败", err)
-	}
-
-	// 解码消息数据（使用 msgpack 标签）
-	if dataLen > 0 {
-		if err := msgpack.Unmarshal(data[6:6+dataLen], msg); err != nil {
-			return nil, types.NewCodecDecodeFailedError("Unmarshal", err)
-		}
-	}
-
-	return msg, nil
+	return genericDecode(data, msgpack.Unmarshal, "msgpack")
 }
 
 // Name 返回编解码器名称
 func (c *MessagePackCodec) Name() string {
 	return "msgpack"
+}
+
+// Type 返回编解码器类型
+func (c *MessagePackCodec) Type() types.CodecType {
+	return types.CodecTypeMessagePack
 }
 
 // ========================================
@@ -128,77 +167,30 @@ func NewJSONCodec() *JSONCodec {
 
 // Encode 编码消息（JSON 格式）
 //
+// P1-3: 使用通用编码逻辑，消除与 MessagePack Codec 的重复代码
 // 将消息编码为 JSON 格式的字节流
 // 格式: [Type:2字节][DataLen:4字节][Data:N字节]
 func (c *JSONCodec) Encode(msg Message) ([]byte, error) {
-	if msg == nil {
-		return nil, types.NewCodecInvalidMessageError("消息为空")
-	}
-
-	// 编码消息数据
-	dataBytes, err := json.Marshal(msg)
-	if err != nil {
-		return nil, types.NewCodecEncodeFailedError("JSON", err)
-	}
-
-	// 构建完整的编码数据
-	// 格式: [Type(2字节)][DataLen(4字节)][Data(N字节)]
-	buf := make([]byte, 2+4+len(dataBytes))
-
-	// 写入 Type (2 字节)
-	binary.BigEndian.PutUint16(buf[0:2], uint16(msg.Type()))
-
-	// 写入 DataLen (4 字节)
-	binary.BigEndian.PutUint32(buf[2:6], uint32(len(dataBytes)))
-
-	// 写入 Data
-	copy(buf[6:], dataBytes)
-
-	return buf, nil
+	return genericEncode(msg, json.Marshal, "json")
 }
 
 // Decode 解码消息（JSON 格式）
 //
+// P1-3: 使用通用解码逻辑，消除与 MessagePack Codec 的重复代码
 // 从 JSON 格式的字节流解码消息
 // 格式: [Type:2字节][DataLen:4字节][Data:N字节]
 func (c *JSONCodec) Decode(data []byte) (Message, error) {
-	if len(data) == 0 {
-		return nil, types.NewCodecInvalidDataError("Decode", "数据为空")
-	}
-	if len(data) < 6 {
-		return nil, types.NewCodecInvalidDataError("Decode", "数据长度不足")
-	}
-
-	// 读取 Type (2 字节)
-	msgType := MessageType(binary.BigEndian.Uint16(data[0:2]))
-
-	// 读取 DataLen (4 字节)
-	dataLen := int(binary.BigEndian.Uint32(data[2:6]))
-
-	// 验证数据长度
-	if len(data) < 6+dataLen {
-		return nil, types.NewCodecInvalidDataError("Decode", "数据长度不足")
-	}
-
-	// 创建消息实例
-	msg, err := createMessageByType(msgType)
-	if err != nil {
-		return nil, types.NewOpErr(types.ErrCodeInternal, "createMessage", "创建消息实例失败", err)
-	}
-
-	// 解码消息数据（使用 json 标签）
-	if dataLen > 0 {
-		if err := json.Unmarshal(data[6:6+dataLen], msg); err != nil {
-			return nil, types.NewCodecDecodeFailedError("JSON", err)
-		}
-	}
-
-	return msg, nil
+	return genericDecode(data, json.Unmarshal, "json")
 }
 
 // Name 返回编解码器名称
 func (c *JSONCodec) Name() string {
 	return "json"
+}
+
+// Type 返回编解码器类型
+func (c *JSONCodec) Type() types.CodecType {
+	return types.CodecTypeJSON
 }
 
 // ========================================
@@ -210,7 +202,7 @@ func (c *JSONCodec) Name() string {
 // 支持的类型：
 //   - types.CodecTypeMessagePack: MessagePack 编解码器（默认）
 //   - types.CodecTypeJSON: JSON 编解码器
-//   - types.CodecTypeProtobuf: Protobuf 编解码器（性能最优）
+//   - types.CodecTypeProtobuf: Protobuf 编解码器（Wrapper 模式）
 func NewCodec(codecType types.CodecType) (Codec, error) {
 	switch codecType {
 	case types.CodecTypeMessagePack:
@@ -320,48 +312,20 @@ func (m *GetMessage) Type() MessageType {
 	return MessageTypeGet
 }
 
-// Marshal 实现 Message 接口
-func (m *GetMessage) Marshal() ([]byte, error) {
-	return msgpack.Marshal(m)
-}
-
-// Unmarshal 实现 Message 接口
-func (m *GetMessage) Unmarshal(data []byte) error {
-	return msgpack.Unmarshal(data, m)
-}
-
-// Size 实现 Message 接口
-func (m *GetMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
-
 // PutMessage 更新元数据消息
 type PutMessage struct {
 	Key   string `json:"key" msgpack:"key"`
 	Value []byte `json:"value" msgpack:"value"`
 }
 
-func (m *PutMessage) Type() MessageType           { return MessageTypePut }
-func (m *PutMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *PutMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *PutMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *PutMessage) Type() MessageType { return MessageTypePut }
 
 // DeleteMessage 删除元数据消息
 type DeleteMessage struct {
 	Key string `json:"key" msgpack:"key"`
 }
 
-func (m *DeleteMessage) Type() MessageType           { return MessageTypeDelete }
-func (m *DeleteMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *DeleteMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *DeleteMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *DeleteMessage) Type() MessageType { return MessageTypeDelete }
 
 // GetReplyMessage Get 响应消息
 type GetReplyMessage struct {
@@ -371,13 +335,7 @@ type GetReplyMessage struct {
 	Version uint64 `json:"version" msgpack:"version"`
 }
 
-func (m *GetReplyMessage) Type() MessageType           { return MessageTypeGetReply }
-func (m *GetReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *GetReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *GetReplyMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *GetReplyMessage) Type() MessageType { return MessageTypeGetReply }
 
 // PutReplyMessage Put 响应消息
 type PutReplyMessage struct {
@@ -386,13 +344,7 @@ type PutReplyMessage struct {
 	Version uint64 `json:"version" msgpack:"version"`
 }
 
-func (m *PutReplyMessage) Type() MessageType           { return MessageTypePutReply }
-func (m *PutReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *PutReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *PutReplyMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *PutReplyMessage) Type() MessageType { return MessageTypePutReply }
 
 // DeleteReplyMessage Delete 响应消息
 type DeleteReplyMessage struct {
@@ -400,13 +352,7 @@ type DeleteReplyMessage struct {
 	Success bool   `json:"success" msgpack:"success"`
 }
 
-func (m *DeleteReplyMessage) Type() MessageType           { return MessageTypeDeleteReply }
-func (m *DeleteReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *DeleteReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *DeleteReplyMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *DeleteReplyMessage) Type() MessageType { return MessageTypeDeleteReply }
 
 // ========================================
 // Gossip 协议消息（双标签实现）
@@ -419,13 +365,7 @@ type GossipSyncMessage struct {
 	Timestamp int64             `json:"timestamp" msgpack:"timestamp"`
 }
 
-func (m *GossipSyncMessage) Type() MessageType           { return MessageTypeGossipSync }
-func (m *GossipSyncMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *GossipSyncMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *GossipSyncMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *GossipSyncMessage) Type() MessageType { return MessageTypeGossipSync }
 
 // GossipSyncReplyMessage Gossip 同步响应
 type GossipSyncReplyMessage struct {
@@ -433,13 +373,7 @@ type GossipSyncReplyMessage struct {
 	Version  uint64 `json:"version" msgpack:"version"`
 }
 
-func (m *GossipSyncReplyMessage) Type() MessageType           { return MessageTypeGossipSyncReply }
-func (m *GossipSyncReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *GossipSyncReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *GossipSyncReplyMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *GossipSyncReplyMessage) Type() MessageType { return MessageTypeGossipSyncReply }
 
 // GossipDigestMessage Gossip 摘要消息
 type GossipDigestMessage struct {
@@ -447,13 +381,7 @@ type GossipDigestMessage struct {
 	Digest  map[string]uint64 `json:"digest" msgpack:"digest"`
 }
 
-func (m *GossipDigestMessage) Type() MessageType           { return MessageTypeGossipDigest }
-func (m *GossipDigestMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *GossipDigestMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *GossipDigestMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *GossipDigestMessage) Type() MessageType { return MessageTypeGossipDigest }
 
 // GossipDigestReplyMessage Gossip 摘要响应
 type GossipDigestReplyMessage struct {
@@ -461,13 +389,7 @@ type GossipDigestReplyMessage struct {
 	Digest  map[string]uint64 `json:"digest" msgpack:"digest"`
 }
 
-func (m *GossipDigestReplyMessage) Type() MessageType           { return MessageTypeGossipDigestReply }
-func (m *GossipDigestReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *GossipDigestReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *GossipDigestReplyMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *GossipDigestReplyMessage) Type() MessageType { return MessageTypeGossipDigestReply }
 
 // ========================================
 // Quorum 协议消息（双标签实现）
@@ -483,13 +405,7 @@ type QuorumProposeMessage struct {
 	Timestamp  int64  `json:"timestamp" msgpack:"timestamp"`
 }
 
-func (m *QuorumProposeMessage) Type() MessageType           { return MessageTypeQuorumPropose }
-func (m *QuorumProposeMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *QuorumProposeMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *QuorumProposeMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *QuorumProposeMessage) Type() MessageType { return MessageTypeQuorumPropose }
 
 // QuorumVoteMessage Quorum 投票消息
 type QuorumVoteMessage struct {
@@ -499,13 +415,7 @@ type QuorumVoteMessage struct {
 	Reason     string `json:"reason,omitempty" msgpack:"reason,omitempty"`
 }
 
-func (m *QuorumVoteMessage) Type() MessageType           { return MessageTypeQuorumVote }
-func (m *QuorumVoteMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *QuorumVoteMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *QuorumVoteMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *QuorumVoteMessage) Type() MessageType { return MessageTypeQuorumVote }
 
 // QuorumDecideMessage Quorum 决策消息
 type QuorumDecideMessage struct {
@@ -514,13 +424,7 @@ type QuorumDecideMessage struct {
 	Version    uint64 `json:"version" msgpack:"version"`
 }
 
-func (m *QuorumDecideMessage) Type() MessageType           { return MessageTypeQuorumDecide }
-func (m *QuorumDecideMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *QuorumDecideMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *QuorumDecideMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *QuorumDecideMessage) Type() MessageType { return MessageTypeQuorumDecide }
 
 // ========================================
 // 2PC 协议消息（双标签实现）
@@ -531,7 +435,7 @@ type TwoPCPrepareMessage struct {
 	TransactionID string      `json:"transaction_id" msgpack:"transaction_id"`
 	Participants  []string    `json:"participants" msgpack:"participants"`
 	Operations    []Operation `json:"operations" msgpack:"operations"`
-	Timeout       int64       `json:"timestamp" msgpack:"timestamp"`
+	Timeout       int64       `json:"timeout" msgpack:"timeout"`
 }
 
 // Operation 操作定义
@@ -541,13 +445,7 @@ type Operation struct {
 	Value []byte `json:"value,omitempty" msgpack:"value,omitempty"`
 }
 
-func (m *TwoPCPrepareMessage) Type() MessageType           { return MessageType2PCPrepare }
-func (m *TwoPCPrepareMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *TwoPCPrepareMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *TwoPCPrepareMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *TwoPCPrepareMessage) Type() MessageType { return MessageType2PCPrepare }
 
 // TwoPCPrepareReplyMessage 2PC 准备响应
 type TwoPCPrepareReplyMessage struct {
@@ -557,26 +455,14 @@ type TwoPCPrepareReplyMessage struct {
 	Reason        string `json:"reason,omitempty" msgpack:"reason,omitempty"`
 }
 
-func (m *TwoPCPrepareReplyMessage) Type() MessageType           { return MessageType2PCPrepareReply }
-func (m *TwoPCPrepareReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *TwoPCPrepareReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *TwoPCPrepareReplyMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *TwoPCPrepareReplyMessage) Type() MessageType { return MessageType2PCPrepareReply }
 
 // TwoPCCommitMessage 2PC 提交消息
 type TwoPCCommitMessage struct {
 	TransactionID string `json:"transaction_id" msgpack:"transaction_id"`
 }
 
-func (m *TwoPCCommitMessage) Type() MessageType           { return MessageType2PCCommit }
-func (m *TwoPCCommitMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *TwoPCCommitMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *TwoPCCommitMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *TwoPCCommitMessage) Type() MessageType { return MessageType2PCCommit }
 
 // TwoPCRollbackMessage 2PC 回滚消息
 type TwoPCRollbackMessage struct {
@@ -584,13 +470,7 @@ type TwoPCRollbackMessage struct {
 	Reason        string `json:"reason,omitempty" msgpack:"reason,omitempty"`
 }
 
-func (m *TwoPCRollbackMessage) Type() MessageType           { return MessageType2PCRollback }
-func (m *TwoPCRollbackMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *TwoPCRollbackMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *TwoPCRollbackMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *TwoPCRollbackMessage) Type() MessageType { return MessageType2PCRollback }
 
 // TwoPCCommitReplyMessage 2PC 提交响应
 type TwoPCCommitReplyMessage struct {
@@ -599,13 +479,7 @@ type TwoPCCommitReplyMessage struct {
 	Success       bool   `json:"success" msgpack:"success"`
 }
 
-func (m *TwoPCCommitReplyMessage) Type() MessageType           { return MessageType2PCCommitReply }
-func (m *TwoPCCommitReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *TwoPCCommitReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *TwoPCCommitReplyMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *TwoPCCommitReplyMessage) Type() MessageType { return MessageType2PCCommitReply }
 
 // TwoPCRollbackReplyMessage 2PC 回滚响应
 type TwoPCRollbackReplyMessage struct {
@@ -614,13 +488,7 @@ type TwoPCRollbackReplyMessage struct {
 	Success       bool   `json:"success" msgpack:"success"`
 }
 
-func (m *TwoPCRollbackReplyMessage) Type() MessageType           { return MessageType2PCRollbackReply }
-func (m *TwoPCRollbackReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *TwoPCRollbackReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *TwoPCRollbackReplyMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *TwoPCRollbackReplyMessage) Type() MessageType { return MessageType2PCRollbackReply }
 
 // ========================================
 // 节点管理消息（双标签实现）
@@ -633,13 +501,7 @@ type NodePingMessage struct {
 	Timestamp int64  `json:"timestamp" msgpack:"timestamp"`
 }
 
-func (m *NodePingMessage) Type() MessageType           { return MessageTypeNodePing }
-func (m *NodePingMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *NodePingMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *NodePingMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *NodePingMessage) Type() MessageType { return MessageTypeNodePing }
 
 // NodePongMessage 心跳响应
 type NodePongMessage struct {
@@ -649,13 +511,7 @@ type NodePongMessage struct {
 	Timestamp int64  `json:"timestamp" msgpack:"timestamp"` // Pong 发送时间戳（用于计算 RTT）
 }
 
-func (m *NodePongMessage) Type() MessageType           { return MessageTypeNodePong }
-func (m *NodePongMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *NodePongMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *NodePongMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *NodePongMessage) Type() MessageType { return MessageTypeNodePong }
 
 // NodeJoinMessage 节点加入消息
 type NodeJoinMessage struct {
@@ -665,13 +521,7 @@ type NodeJoinMessage struct {
 	ParentID string `json:"parent_id,omitempty" msgpack:"parent_id,omitempty"`
 }
 
-func (m *NodeJoinMessage) Type() MessageType           { return MessageTypeNodeJoin }
-func (m *NodeJoinMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *NodeJoinMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *NodeJoinMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *NodeJoinMessage) Type() MessageType { return MessageTypeNodeJoin }
 
 // NodeLeaveMessage 节点离开消息
 type NodeLeaveMessage struct {
@@ -679,13 +529,7 @@ type NodeLeaveMessage struct {
 	Reason string `json:"reason,omitempty" msgpack:"reason,omitempty"`
 }
 
-func (m *NodeLeaveMessage) Type() MessageType           { return MessageTypeNodeLeave }
-func (m *NodeLeaveMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *NodeLeaveMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *NodeLeaveMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *NodeLeaveMessage) Type() MessageType { return MessageTypeNodeLeave }
 
 // NodeSyncMessage 节点同步消息
 type NodeSyncMessage struct {
@@ -693,13 +537,7 @@ type NodeSyncMessage struct {
 	Metadata map[string][]byte `json:"metadata" msgpack:"metadata"`
 }
 
-func (m *NodeSyncMessage) Type() MessageType           { return MessageTypeNodeSync }
-func (m *NodeSyncMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *NodeSyncMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *NodeSyncMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *NodeSyncMessage) Type() MessageType { return MessageTypeNodeSync }
 
 // ClockSyncMessage 时钟同步请求消息
 type ClockSyncMessage struct {
@@ -707,13 +545,7 @@ type ClockSyncMessage struct {
 	NodeID    string `json:"node_id" msgpack:"node_id"`     // 发送节点 ID
 }
 
-func (m *ClockSyncMessage) Type() MessageType           { return MessageTypeClockSync }
-func (m *ClockSyncMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *ClockSyncMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *ClockSyncMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *ClockSyncMessage) Type() MessageType { return MessageTypeClockSync }
 
 // ClockSyncReplyMessage 时钟同步响应消息
 type ClockSyncReplyMessage struct {
@@ -722,13 +554,7 @@ type ClockSyncReplyMessage struct {
 	Drift     int64  `json:"drift" msgpack:"drift"`         // 时间漂移（毫秒）
 }
 
-func (m *ClockSyncReplyMessage) Type() MessageType           { return MessageTypeClockSyncReply }
-func (m *ClockSyncReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *ClockSyncReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *ClockSyncReplyMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *ClockSyncReplyMessage) Type() MessageType { return MessageTypeClockSyncReply }
 
 // ========================================
 // 集群管理消息（双标签实现）
@@ -739,13 +565,7 @@ type ClusterStatusMessage struct {
 	NodeID string `json:"node_id" msgpack:"node_id"`
 }
 
-func (m *ClusterStatusMessage) Type() MessageType           { return MessageTypeClusterStatus }
-func (m *ClusterStatusMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *ClusterStatusMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *ClusterStatusMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *ClusterStatusMessage) Type() MessageType { return MessageTypeClusterStatus }
 
 // ClusterStatusReplyMessage 集群状态响应
 type ClusterStatusReplyMessage struct {
@@ -762,13 +582,7 @@ type NodeInfo struct {
 	Level    int    `json:"level" msgpack:"level"`
 }
 
-func (m *ClusterStatusReplyMessage) Type() MessageType           { return MessageTypeClusterStatusReply }
-func (m *ClusterStatusReplyMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *ClusterStatusReplyMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *ClusterStatusReplyMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *ClusterStatusReplyMessage) Type() MessageType { return MessageTypeClusterStatusReply }
 
 // LeaderElectionMessage Leader 选举消息
 type LeaderElectionMessage struct {
@@ -777,13 +591,7 @@ type LeaderElectionMessage struct {
 	Priority   int    `json:"priority" msgpack:"priority"`
 }
 
-func (m *LeaderElectionMessage) Type() MessageType           { return MessageTypeLeaderElection }
-func (m *LeaderElectionMessage) Marshal() ([]byte, error)    { return msgpack.Marshal(m) }
-func (m *LeaderElectionMessage) Unmarshal(data []byte) error { return msgpack.Unmarshal(data, m) }
-func (m *LeaderElectionMessage) Size() int {
-	bytes, _ := m.Marshal()
-	return len(bytes)
-}
+func (m *LeaderElectionMessage) Type() MessageType { return MessageTypeLeaderElection }
 
 // ========================================
 // 编解码器工具函数
@@ -793,7 +601,10 @@ func (m *LeaderElectionMessage) Size() int {
 //
 // 将消息编码并封装为完整帧
 func EncodeFrame(msg Message) (*Frame, error) {
-	codec := NewMessagePackCodec()
+	codec, err := NewCodec(defaultCodec)
+	if err != nil {
+		return nil, err
+	}
 
 	// 编码消息
 	data, err := codec.Encode(msg)
@@ -801,8 +612,8 @@ func EncodeFrame(msg Message) (*Frame, error) {
 		return nil, types.NewCodecEncodeFailedError("EncodeFrame", err)
 	}
 
-	// 创建帧 (使用 MessagePack 编解码器)
-	frame := NewFrame(msg.Type(), types.CodecTypeMessagePack, data)
+	// 创建帧
+	frame := NewFrame(msg.Type(), defaultCodec, data)
 	return frame, nil
 }
 
@@ -842,9 +653,17 @@ type MessageReader struct {
 }
 
 // NewMessageReader 创建消息读取器
+//
+// 容错机制: codec 为 nil 时尝试使用默认编解码器，失败时记录日志并返回 nil
 func NewMessageReader(r io.Reader, codec Codec) *MessageReader {
 	if codec == nil {
-		codec = NewMessagePackCodec()
+		var err error
+		codec, err = NewCodec(defaultCodec)
+		if err != nil {
+			// 容错机制: 默认编解码器创建失败时返回 nil（而非 panic）
+			// 这种情况理论上不应该发生（defaultCodec 是常量）
+			return nil
+		}
 	}
 
 	return &MessageReader{
@@ -885,9 +704,17 @@ type MessageWriter struct {
 }
 
 // NewMessageWriter 创建消息写入器
+//
+// 容错机制: codec 为 nil 时尝试使用默认编解码器，失败时记录日志并返回 nil
 func NewMessageWriter(w io.Writer, codec Codec) *MessageWriter {
 	if codec == nil {
-		codec = NewMessagePackCodec()
+		var err error
+		codec, err = NewCodec(defaultCodec)
+		if err != nil {
+			// 容错机制: 默认编解码器创建失败时记录日志并返回 nil（而非 panic）
+			// 这种情况理论上不应该发生（defaultCodec 是常量）
+			return nil
+		}
 	}
 
 	return &MessageWriter{
@@ -905,7 +732,7 @@ func (mw *MessageWriter) WriteMessage(msg Message) error {
 	}
 
 	// 创建帧（使用对应的编解码器类型）
-	frame := NewFrame(msg.Type(), types.CodecTypeMessagePack, data)
+	frame := NewFrame(msg.Type(), mw.codec.Type(), data)
 
 	// 写入帧
 	if err := mw.frameWriter.WriteFrame(frame); err != nil {

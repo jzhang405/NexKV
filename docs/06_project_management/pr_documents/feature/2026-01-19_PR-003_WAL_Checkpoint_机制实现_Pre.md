@@ -207,15 +207,16 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    subgraph CheckpointFile["Checkpoint File 完整布局 - 三段式"]
+    subgraph CheckpointFile["Checkpoint File 完整布局 - 两段式"]
         direction TB
 
-        subgraph Header["文件头（固定 12 bytes）"]
+        subgraph Header["文件头（固定 16 bytes）"]
             direction LR
-            H1["Magic<br/>4 bytes<br/>'NChP'"]
+            H1["Magic<br/>4 bytes<br/>'NxCP'"]
             H2["Version<br/>2 bytes<br/>uint16"]
             H3["Codec Type<br/>2 bytes<br/>uint16"]
-            H4["Header CRC<br/>4 bytes<br/>CRC32"]
+            H4["Length<br/>4 bytes<br/>uint32"]
+            H5["CRC<br/>4 bytes<br/>CRC32"]
         end
 
         subgraph Data["数据区（变长，Protobuf 编码）"]
@@ -224,17 +225,11 @@ flowchart TD
             D2["CheckpointData<br/>map<string, bytes>, version"]
         end
 
-        subgraph Trailer["文件尾（固定 4 bytes）"]
-            direction LR
-            T1["Data CRC<br/>4 bytes<br/>CRC32(Header + Data)"]
-        end
-
-        Header --> Data --> Trailer
+        Header --> Data
     end
 
     style Header fill:#e1f5ff
     style Data fill:#fff4e6
-    style Trailer fill:#e8f5e9
     style H3 fill:#f3e5f5
 ```
 
@@ -242,13 +237,12 @@ flowchart TD
 
 | 部分 | 字段 | 类型 | 大小 | 说明 |
 |------|------|------|------|------|
-| **🔵 文件头** | Magic | bytes | 4 B | 魔术字 `"NChP"`（NexKV Checkpoint） |
+| **🔵 文件头** | Magic | bytes | 4 B | 魔术字 `"NxCP"`（NexKV Checkpoint） |
 | | Version | uint16 | 2 B | 格式版本号（当前 = 1） |
 | | Codec Type | uint16 | 2 B | 编解码器类型（与 types.CodecType 对应） |
-| | Header CRC | uint32 | 4 B | 文件头校验和 CRC32(Magic + Version + Codec) |
-| **🟠 数据区** | CheckpointMetadata | message | 变长 | Protobuf 编码的元数据 |
-| | CheckpointData | message | 变长 | Protobuf 编码的数据 |
-| **🟢 文件尾** | Data CRC | uint32 | 4 B | 全文件校验和 CRC32(Header + Data) |
+| | Length | uint32 | 4 B | 数据区字节长度 |
+| | CRC | uint32 | 4 B | 校验和 CRC32(Magic + Version + Codec + Length + Data) |
+| **🟠 数据区** | CheckpointMetadata + Data | message | 变长 | Protobuf 编码（Length 字节） |
 
 **Codec Type 枚举值**：
 - `1` = MessagePack

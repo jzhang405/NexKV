@@ -185,27 +185,11 @@ message CheckpointData {
 | **数据区** | 变长 | 变长 | 变长（Protobuf） |
 | **文件尾** | 无 | CRC（每个条目） | 无 |
 
-##### 高层结构（两段式）
-
-```mermaid
-flowchart LR
-    subgraph File["Checkpoint 文件<br/>统一两段式格式"]
-        direction TB
-        H["<b>文件头<br/>固定 16 bytes<br/>Magic + Version + Codec + Length + CRC"]
-        D["<b>数据区<br/>变长<br/>Protobuf 编码"]
-
-        H --> D
-    end
-
-    style H fill:#e1f5ff
-    style D fill:#fff4e6
-```
-
-##### 完整字节布局
+##### 文件格式
 
 ```mermaid
 flowchart TD
-    subgraph CheckpointFile["Checkpoint File 完整布局 - 两段式"]
+    subgraph CheckpointFile["Checkpoint File - 两段式格式"]
         direction TB
 
         subgraph Header["文件头（固定 16 bytes）"]
@@ -247,32 +231,8 @@ flowchart TD
 - `2` = JSON
 - `3` = Protobuf（默认）
 
-##### 与 Transport 帧格式对比
-
-```mermaid
-flowchart TB
-    subgraph Transport["Transport 帧格式"]
-        direction TB
-        TH["文件头 16B<br/>Magic(4) + Type(2)<br/>+ Codec(2) + Length(4) + CRC(4)"]
-        TD["数据 变长"]
-    end
-
-    subgraph Checkpoint["Checkpoint 文件格式"]
-        direction TB
-        CH["文件头 16B<br/>Magic(4) + Version(2)<br/>+ Codec(2) + Length(4) + CRC(4)"]
-        CD["数据 变长<br/>Protobuf"]
-
-        CH --> CD
-    end
-
-    style TH fill:#e1f5ff
-    style TD fill:#fff4e6
-    style CH fill:#e1f5ff
-    style CD fill:#fff4e6
-```
-
 **一致性改进**：
-- ✅ 文件头都包含 Magic + Type/Version + Codec + Length
+- ✅ 与 Transport 帧格式一致（Magic + Type/Version + Codec + Length + CRC）
 - ✅ 简洁的两段式结构（Header + Data）
 - ✅ CRC 覆盖整个文件（Header + Data）
 

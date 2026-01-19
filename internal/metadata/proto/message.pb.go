@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.33.2
-// source: internal/metadata/proto/message.proto
+// source: message.proto
 
 package proto
 
@@ -34,7 +34,7 @@ type MessageType int32
 
 const (
 	// 元数据操作消息 (100-149)
-	MessageType_MESSAGE_TYPE_UNKNOWN      MessageType = 0
+	MessageType_MESSAGE_TYPE_UNSPECIFIED  MessageType = 0
 	MessageType_MESSAGE_TYPE_GET          MessageType = 100
 	MessageType_MESSAGE_TYPE_PUT          MessageType = 101
 	MessageType_MESSAGE_TYPE_DELETE       MessageType = 102
@@ -74,7 +74,7 @@ const (
 // Enum value maps for MessageType.
 var (
 	MessageType_name = map[int32]string{
-		0:   "MESSAGE_TYPE_UNKNOWN",
+		0:   "MESSAGE_TYPE_UNSPECIFIED",
 		100: "MESSAGE_TYPE_GET",
 		101: "MESSAGE_TYPE_PUT",
 		102: "MESSAGE_TYPE_DELETE",
@@ -106,7 +106,7 @@ var (
 		352: "MESSAGE_TYPE_LEADER_ELECTION",
 	}
 	MessageType_value = map[string]int32{
-		"MESSAGE_TYPE_UNKNOWN":              0,
+		"MESSAGE_TYPE_UNSPECIFIED":          0,
 		"MESSAGE_TYPE_GET":                  100,
 		"MESSAGE_TYPE_PUT":                  101,
 		"MESSAGE_TYPE_DELETE":               102,
@@ -150,11 +150,11 @@ func (x MessageType) String() string {
 }
 
 func (MessageType) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_metadata_proto_message_proto_enumTypes[0].Descriptor()
+	return file_message_proto_enumTypes[0].Descriptor()
 }
 
 func (MessageType) Type() protoreflect.EnumType {
-	return &file_internal_metadata_proto_message_proto_enumTypes[0]
+	return &file_message_proto_enumTypes[0]
 }
 
 func (x MessageType) Number() protoreflect.EnumNumber {
@@ -163,28 +163,28 @@ func (x MessageType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MessageType.Descriptor instead.
 func (MessageType) EnumDescriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_message_proto_rawDescGZIP(), []int{0}
+	return file_message_proto_rawDescGZIP(), []int{0}
 }
 
 type QuorumMessage_VoteType int32
 
 const (
-	QuorumMessage_VOTE_UNKNOWN QuorumMessage_VoteType = 0
-	QuorumMessage_VOTE_APPROVE QuorumMessage_VoteType = 1 // 同意
-	QuorumMessage_VOTE_REJECT  QuorumMessage_VoteType = 2 // 拒绝
+	QuorumMessage_VOTE_TYPE_UNSPECIFIED QuorumMessage_VoteType = 0
+	QuorumMessage_VOTE_TYPE_APPROVE     QuorumMessage_VoteType = 1 // 同意
+	QuorumMessage_VOTE_TYPE_REJECT      QuorumMessage_VoteType = 2 // 拒绝
 )
 
 // Enum value maps for QuorumMessage_VoteType.
 var (
 	QuorumMessage_VoteType_name = map[int32]string{
-		0: "VOTE_UNKNOWN",
-		1: "VOTE_APPROVE",
-		2: "VOTE_REJECT",
+		0: "VOTE_TYPE_UNSPECIFIED",
+		1: "VOTE_TYPE_APPROVE",
+		2: "VOTE_TYPE_REJECT",
 	}
 	QuorumMessage_VoteType_value = map[string]int32{
-		"VOTE_UNKNOWN": 0,
-		"VOTE_APPROVE": 1,
-		"VOTE_REJECT":  2,
+		"VOTE_TYPE_UNSPECIFIED": 0,
+		"VOTE_TYPE_APPROVE":     1,
+		"VOTE_TYPE_REJECT":      2,
 	}
 )
 
@@ -199,11 +199,11 @@ func (x QuorumMessage_VoteType) String() string {
 }
 
 func (QuorumMessage_VoteType) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_metadata_proto_message_proto_enumTypes[1].Descriptor()
+	return file_message_proto_enumTypes[1].Descriptor()
 }
 
 func (QuorumMessage_VoteType) Type() protoreflect.EnumType {
-	return &file_internal_metadata_proto_message_proto_enumTypes[1]
+	return &file_message_proto_enumTypes[1]
 }
 
 func (x QuorumMessage_VoteType) Number() protoreflect.EnumNumber {
@@ -212,31 +212,31 @@ func (x QuorumMessage_VoteType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use QuorumMessage_VoteType.Descriptor instead.
 func (QuorumMessage_VoteType) EnumDescriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_message_proto_rawDescGZIP(), []int{2, 0}
+	return file_message_proto_rawDescGZIP(), []int{2, 0}
 }
 
 type TwoPCMessage_PhaseType int32
 
 const (
-	TwoPCMessage_PHASE_UNKNOWN  TwoPCMessage_PhaseType = 0
-	TwoPCMessage_PHASE_PREPARE  TwoPCMessage_PhaseType = 1 // 准备阶段
-	TwoPCMessage_PHASE_COMMIT   TwoPCMessage_PhaseType = 2 // 提交阶段
-	TwoPCMessage_PHASE_ROLLBACK TwoPCMessage_PhaseType = 3 // 回滚阶段
+	TwoPCMessage_PHASE_TYPE_UNSPECIFIED TwoPCMessage_PhaseType = 0
+	TwoPCMessage_PHASE_TYPE_PREPARE     TwoPCMessage_PhaseType = 1 // 准备阶段
+	TwoPCMessage_PHASE_TYPE_COMMIT      TwoPCMessage_PhaseType = 2 // 提交阶段
+	TwoPCMessage_PHASE_TYPE_ROLLBACK    TwoPCMessage_PhaseType = 3 // 回滚阶段
 )
 
 // Enum value maps for TwoPCMessage_PhaseType.
 var (
 	TwoPCMessage_PhaseType_name = map[int32]string{
-		0: "PHASE_UNKNOWN",
-		1: "PHASE_PREPARE",
-		2: "PHASE_COMMIT",
-		3: "PHASE_ROLLBACK",
+		0: "PHASE_TYPE_UNSPECIFIED",
+		1: "PHASE_TYPE_PREPARE",
+		2: "PHASE_TYPE_COMMIT",
+		3: "PHASE_TYPE_ROLLBACK",
 	}
 	TwoPCMessage_PhaseType_value = map[string]int32{
-		"PHASE_UNKNOWN":  0,
-		"PHASE_PREPARE":  1,
-		"PHASE_COMMIT":   2,
-		"PHASE_ROLLBACK": 3,
+		"PHASE_TYPE_UNSPECIFIED": 0,
+		"PHASE_TYPE_PREPARE":     1,
+		"PHASE_TYPE_COMMIT":      2,
+		"PHASE_TYPE_ROLLBACK":    3,
 	}
 )
 
@@ -251,11 +251,11 @@ func (x TwoPCMessage_PhaseType) String() string {
 }
 
 func (TwoPCMessage_PhaseType) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_metadata_proto_message_proto_enumTypes[2].Descriptor()
+	return file_message_proto_enumTypes[2].Descriptor()
 }
 
 func (TwoPCMessage_PhaseType) Type() protoreflect.EnumType {
-	return &file_internal_metadata_proto_message_proto_enumTypes[2]
+	return &file_message_proto_enumTypes[2]
 }
 
 func (x TwoPCMessage_PhaseType) Number() protoreflect.EnumNumber {
@@ -264,28 +264,28 @@ func (x TwoPCMessage_PhaseType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TwoPCMessage_PhaseType.Descriptor instead.
 func (TwoPCMessage_PhaseType) EnumDescriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_message_proto_rawDescGZIP(), []int{3, 0}
+	return file_message_proto_rawDescGZIP(), []int{3, 0}
 }
 
 type TwoPCMessage_DecisionType int32
 
 const (
-	TwoPCMessage_DECISION_UNKNOWN TwoPCMessage_DecisionType = 0
-	TwoPCMessage_DECISION_COMMIT  TwoPCMessage_DecisionType = 1 // 提交决策
-	TwoPCMessage_DECISION_ABORT   TwoPCMessage_DecisionType = 2 // 中止决策
+	TwoPCMessage_DECISION_TYPE_UNSPECIFIED TwoPCMessage_DecisionType = 0
+	TwoPCMessage_DECISION_TYPE_COMMIT      TwoPCMessage_DecisionType = 1 // 提交决策
+	TwoPCMessage_DECISION_TYPE_ABORT       TwoPCMessage_DecisionType = 2 // 中止决策
 )
 
 // Enum value maps for TwoPCMessage_DecisionType.
 var (
 	TwoPCMessage_DecisionType_name = map[int32]string{
-		0: "DECISION_UNKNOWN",
-		1: "DECISION_COMMIT",
-		2: "DECISION_ABORT",
+		0: "DECISION_TYPE_UNSPECIFIED",
+		1: "DECISION_TYPE_COMMIT",
+		2: "DECISION_TYPE_ABORT",
 	}
 	TwoPCMessage_DecisionType_value = map[string]int32{
-		"DECISION_UNKNOWN": 0,
-		"DECISION_COMMIT":  1,
-		"DECISION_ABORT":   2,
+		"DECISION_TYPE_UNSPECIFIED": 0,
+		"DECISION_TYPE_COMMIT":      1,
+		"DECISION_TYPE_ABORT":       2,
 	}
 )
 
@@ -300,11 +300,11 @@ func (x TwoPCMessage_DecisionType) String() string {
 }
 
 func (TwoPCMessage_DecisionType) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_metadata_proto_message_proto_enumTypes[3].Descriptor()
+	return file_message_proto_enumTypes[3].Descriptor()
 }
 
 func (TwoPCMessage_DecisionType) Type() protoreflect.EnumType {
-	return &file_internal_metadata_proto_message_proto_enumTypes[3]
+	return &file_message_proto_enumTypes[3]
 }
 
 func (x TwoPCMessage_DecisionType) Number() protoreflect.EnumNumber {
@@ -313,31 +313,31 @@ func (x TwoPCMessage_DecisionType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TwoPCMessage_DecisionType.Descriptor instead.
 func (TwoPCMessage_DecisionType) EnumDescriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_message_proto_rawDescGZIP(), []int{3, 1}
+	return file_message_proto_rawDescGZIP(), []int{3, 1}
 }
 
 type HeartbeatMessage_StatusType int32
 
 const (
-	HeartbeatMessage_STATUS_UNKNOWN  HeartbeatMessage_StatusType = 0
-	HeartbeatMessage_STATUS_HEALTHY  HeartbeatMessage_StatusType = 1 // 健康
-	HeartbeatMessage_STATUS_BUSY     HeartbeatMessage_StatusType = 2 // 繁忙
-	HeartbeatMessage_STATUS_DEGRADED HeartbeatMessage_StatusType = 3 // 降级
+	HeartbeatMessage_STATUS_TYPE_UNSPECIFIED HeartbeatMessage_StatusType = 0
+	HeartbeatMessage_STATUS_TYPE_HEALTHY     HeartbeatMessage_StatusType = 1 // 健康
+	HeartbeatMessage_STATUS_TYPE_BUSY        HeartbeatMessage_StatusType = 2 // 繁忙
+	HeartbeatMessage_STATUS_TYPE_DEGRADED    HeartbeatMessage_StatusType = 3 // 降级
 )
 
 // Enum value maps for HeartbeatMessage_StatusType.
 var (
 	HeartbeatMessage_StatusType_name = map[int32]string{
-		0: "STATUS_UNKNOWN",
-		1: "STATUS_HEALTHY",
-		2: "STATUS_BUSY",
-		3: "STATUS_DEGRADED",
+		0: "STATUS_TYPE_UNSPECIFIED",
+		1: "STATUS_TYPE_HEALTHY",
+		2: "STATUS_TYPE_BUSY",
+		3: "STATUS_TYPE_DEGRADED",
 	}
 	HeartbeatMessage_StatusType_value = map[string]int32{
-		"STATUS_UNKNOWN":  0,
-		"STATUS_HEALTHY":  1,
-		"STATUS_BUSY":     2,
-		"STATUS_DEGRADED": 3,
+		"STATUS_TYPE_UNSPECIFIED": 0,
+		"STATUS_TYPE_HEALTHY":     1,
+		"STATUS_TYPE_BUSY":        2,
+		"STATUS_TYPE_DEGRADED":    3,
 	}
 )
 
@@ -352,11 +352,11 @@ func (x HeartbeatMessage_StatusType) String() string {
 }
 
 func (HeartbeatMessage_StatusType) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_metadata_proto_message_proto_enumTypes[4].Descriptor()
+	return file_message_proto_enumTypes[4].Descriptor()
 }
 
 func (HeartbeatMessage_StatusType) Type() protoreflect.EnumType {
-	return &file_internal_metadata_proto_message_proto_enumTypes[4]
+	return &file_message_proto_enumTypes[4]
 }
 
 func (x HeartbeatMessage_StatusType) Number() protoreflect.EnumNumber {
@@ -365,34 +365,34 @@ func (x HeartbeatMessage_StatusType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use HeartbeatMessage_StatusType.Descriptor instead.
 func (HeartbeatMessage_StatusType) EnumDescriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_message_proto_rawDescGZIP(), []int{4, 0}
+	return file_message_proto_rawDescGZIP(), []int{4, 0}
 }
 
 type MetadataOpMessage_OpType int32
 
 const (
-	MetadataOpMessage_OP_UNKNOWN MetadataOpMessage_OpType = 0
-	MetadataOpMessage_OP_GET     MetadataOpMessage_OpType = 1 // 获取
-	MetadataOpMessage_OP_PUT     MetadataOpMessage_OpType = 2 // 设置
-	MetadataOpMessage_OP_DELETE  MetadataOpMessage_OpType = 3 // 删除
-	MetadataOpMessage_OP_LIST    MetadataOpMessage_OpType = 4 // 列举
+	MetadataOpMessage_OP_TYPE_UNSPECIFIED MetadataOpMessage_OpType = 0
+	MetadataOpMessage_OP_TYPE_GET         MetadataOpMessage_OpType = 1 // 获取
+	MetadataOpMessage_OP_TYPE_PUT         MetadataOpMessage_OpType = 2 // 设置
+	MetadataOpMessage_OP_TYPE_DELETE      MetadataOpMessage_OpType = 3 // 删除
+	MetadataOpMessage_OP_TYPE_LIST        MetadataOpMessage_OpType = 4 // 列举
 )
 
 // Enum value maps for MetadataOpMessage_OpType.
 var (
 	MetadataOpMessage_OpType_name = map[int32]string{
-		0: "OP_UNKNOWN",
-		1: "OP_GET",
-		2: "OP_PUT",
-		3: "OP_DELETE",
-		4: "OP_LIST",
+		0: "OP_TYPE_UNSPECIFIED",
+		1: "OP_TYPE_GET",
+		2: "OP_TYPE_PUT",
+		3: "OP_TYPE_DELETE",
+		4: "OP_TYPE_LIST",
 	}
 	MetadataOpMessage_OpType_value = map[string]int32{
-		"OP_UNKNOWN": 0,
-		"OP_GET":     1,
-		"OP_PUT":     2,
-		"OP_DELETE":  3,
-		"OP_LIST":    4,
+		"OP_TYPE_UNSPECIFIED": 0,
+		"OP_TYPE_GET":         1,
+		"OP_TYPE_PUT":         2,
+		"OP_TYPE_DELETE":      3,
+		"OP_TYPE_LIST":        4,
 	}
 )
 
@@ -407,11 +407,11 @@ func (x MetadataOpMessage_OpType) String() string {
 }
 
 func (MetadataOpMessage_OpType) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_metadata_proto_message_proto_enumTypes[5].Descriptor()
+	return file_message_proto_enumTypes[5].Descriptor()
 }
 
 func (MetadataOpMessage_OpType) Type() protoreflect.EnumType {
-	return &file_internal_metadata_proto_message_proto_enumTypes[5]
+	return &file_message_proto_enumTypes[5]
 }
 
 func (x MetadataOpMessage_OpType) Number() protoreflect.EnumNumber {
@@ -420,7 +420,7 @@ func (x MetadataOpMessage_OpType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MetadataOpMessage_OpType.Descriptor instead.
 func (MetadataOpMessage_OpType) EnumDescriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_message_proto_rawDescGZIP(), []int{6, 0}
+	return file_message_proto_rawDescGZIP(), []int{6, 0}
 }
 
 // TransportMessage 传输消息基础结构
@@ -448,7 +448,7 @@ type TransportMessage struct {
 
 func (x *TransportMessage) Reset() {
 	*x = TransportMessage{}
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[0]
+	mi := &file_message_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -460,7 +460,7 @@ func (x *TransportMessage) String() string {
 func (*TransportMessage) ProtoMessage() {}
 
 func (x *TransportMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[0]
+	mi := &file_message_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -473,14 +473,14 @@ func (x *TransportMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TransportMessage.ProtoReflect.Descriptor instead.
 func (*TransportMessage) Descriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_message_proto_rawDescGZIP(), []int{0}
+	return file_message_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *TransportMessage) GetType() MessageType {
 	if x != nil {
 		return x.Type
 	}
-	return MessageType_MESSAGE_TYPE_UNKNOWN
+	return MessageType_MESSAGE_TYPE_UNSPECIFIED
 }
 
 func (x *TransportMessage) GetTimestamp() uint64 {
@@ -628,7 +628,7 @@ type GossipMessage struct {
 
 func (x *GossipMessage) Reset() {
 	*x = GossipMessage{}
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[1]
+	mi := &file_message_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -640,7 +640,7 @@ func (x *GossipMessage) String() string {
 func (*GossipMessage) ProtoMessage() {}
 
 func (x *GossipMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[1]
+	mi := &file_message_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -653,7 +653,7 @@ func (x *GossipMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GossipMessage.ProtoReflect.Descriptor instead.
 func (*GossipMessage) Descriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_message_proto_rawDescGZIP(), []int{1}
+	return file_message_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *GossipMessage) GetNodeId() string {
@@ -708,7 +708,7 @@ type QuorumMessage struct {
 
 func (x *QuorumMessage) Reset() {
 	*x = QuorumMessage{}
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[2]
+	mi := &file_message_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -720,7 +720,7 @@ func (x *QuorumMessage) String() string {
 func (*QuorumMessage) ProtoMessage() {}
 
 func (x *QuorumMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[2]
+	mi := &file_message_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -733,7 +733,7 @@ func (x *QuorumMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuorumMessage.ProtoReflect.Descriptor instead.
 func (*QuorumMessage) Descriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_message_proto_rawDescGZIP(), []int{2}
+	return file_message_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *QuorumMessage) GetProposalId() string {
@@ -768,7 +768,7 @@ func (x *QuorumMessage) GetVote() QuorumMessage_VoteType {
 	if x != nil {
 		return x.Vote
 	}
-	return QuorumMessage_VOTE_UNKNOWN
+	return QuorumMessage_VOTE_TYPE_UNSPECIFIED
 }
 
 func (x *QuorumMessage) GetReason() string {
@@ -795,7 +795,7 @@ type TwoPCMessage struct {
 
 func (x *TwoPCMessage) Reset() {
 	*x = TwoPCMessage{}
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[3]
+	mi := &file_message_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -807,7 +807,7 @@ func (x *TwoPCMessage) String() string {
 func (*TwoPCMessage) ProtoMessage() {}
 
 func (x *TwoPCMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[3]
+	mi := &file_message_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -820,7 +820,7 @@ func (x *TwoPCMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TwoPCMessage.ProtoReflect.Descriptor instead.
 func (*TwoPCMessage) Descriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_message_proto_rawDescGZIP(), []int{3}
+	return file_message_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *TwoPCMessage) GetTransactionId() string {
@@ -848,14 +848,14 @@ func (x *TwoPCMessage) GetPhase() TwoPCMessage_PhaseType {
 	if x != nil {
 		return x.Phase
 	}
-	return TwoPCMessage_PHASE_UNKNOWN
+	return TwoPCMessage_PHASE_TYPE_UNSPECIFIED
 }
 
 func (x *TwoPCMessage) GetDecision() TwoPCMessage_DecisionType {
 	if x != nil {
 		return x.Decision
 	}
-	return TwoPCMessage_DECISION_UNKNOWN
+	return TwoPCMessage_DECISION_TYPE_UNSPECIFIED
 }
 
 func (x *TwoPCMessage) GetReason() string {
@@ -880,7 +880,7 @@ type HeartbeatMessage struct {
 
 func (x *HeartbeatMessage) Reset() {
 	*x = HeartbeatMessage{}
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[4]
+	mi := &file_message_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -892,7 +892,7 @@ func (x *HeartbeatMessage) String() string {
 func (*HeartbeatMessage) ProtoMessage() {}
 
 func (x *HeartbeatMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[4]
+	mi := &file_message_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -905,7 +905,7 @@ func (x *HeartbeatMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatMessage.ProtoReflect.Descriptor instead.
 func (*HeartbeatMessage) Descriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_message_proto_rawDescGZIP(), []int{4}
+	return file_message_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *HeartbeatMessage) GetNodeId() string {
@@ -926,7 +926,7 @@ func (x *HeartbeatMessage) GetStatus() HeartbeatMessage_StatusType {
 	if x != nil {
 		return x.Status
 	}
-	return HeartbeatMessage_STATUS_UNKNOWN
+	return HeartbeatMessage_STATUS_TYPE_UNSPECIFIED
 }
 
 func (x *HeartbeatMessage) GetMetrics() map[string]uint32 {
@@ -951,7 +951,7 @@ type ResponseMessage struct {
 
 func (x *ResponseMessage) Reset() {
 	*x = ResponseMessage{}
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[5]
+	mi := &file_message_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -963,7 +963,7 @@ func (x *ResponseMessage) String() string {
 func (*ResponseMessage) ProtoMessage() {}
 
 func (x *ResponseMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[5]
+	mi := &file_message_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -976,7 +976,7 @@ func (x *ResponseMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseMessage.ProtoReflect.Descriptor instead.
 func (*ResponseMessage) Descriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_message_proto_rawDescGZIP(), []int{5}
+	return file_message_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ResponseMessage) GetSuccess() bool {
@@ -1024,7 +1024,7 @@ type MetadataOpMessage struct {
 
 func (x *MetadataOpMessage) Reset() {
 	*x = MetadataOpMessage{}
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[6]
+	mi := &file_message_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1036,7 +1036,7 @@ func (x *MetadataOpMessage) String() string {
 func (*MetadataOpMessage) ProtoMessage() {}
 
 func (x *MetadataOpMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_metadata_proto_message_proto_msgTypes[6]
+	mi := &file_message_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1049,14 +1049,14 @@ func (x *MetadataOpMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetadataOpMessage.ProtoReflect.Descriptor instead.
 func (*MetadataOpMessage) Descriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_message_proto_rawDescGZIP(), []int{6}
+	return file_message_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *MetadataOpMessage) GetOp() MetadataOpMessage_OpType {
 	if x != nil {
 		return x.Op
 	}
-	return MetadataOpMessage_OP_UNKNOWN
+	return MetadataOpMessage_OP_TYPE_UNSPECIFIED
 }
 
 func (x *MetadataOpMessage) GetKey() string {
@@ -1094,11 +1094,11 @@ func (x *MetadataOpMessage) GetLimit() int32 {
 	return 0
 }
 
-var File_internal_metadata_proto_message_proto protoreflect.FileDescriptor
+var File_message_proto protoreflect.FileDescriptor
 
-const file_internal_metadata_proto_message_proto_rawDesc = "" +
+const file_message_proto_rawDesc = "" +
 	"\n" +
-	"%internal/metadata/proto/message.proto\x12\x0enexkv.metadata\"\xab\x04\n" +
+	"\rmessage.proto\x12\x0enexkv.metadata\"\xab\x04\n" +
 	"\x10TransportMessage\x12/\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x1b.nexkv.metadata.MessageTypeR\x04type\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x04R\ttimestamp\x12\x1b\n" +
@@ -1122,7 +1122,7 @@ const file_internal_metadata_proto_message_proto_rawDesc = "" +
 	"\x06digest\x18\x05 \x01(\rR\x06digest\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\x87\x02\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\x9a\x02\n" +
 	"\rQuorumMessage\x12\x1f\n" +
 	"\vproposal_id\x18\x01 \x01(\tR\n" +
 	"proposalId\x12\x10\n" +
@@ -1130,11 +1130,11 @@ const file_internal_metadata_proto_message_proto_rawDesc = "" +
 	"\x05value\x18\x03 \x01(\fR\x05value\x12\x18\n" +
 	"\aversion\x18\x04 \x01(\x04R\aversion\x12:\n" +
 	"\x04vote\x18\x05 \x01(\x0e2&.nexkv.metadata.QuorumMessage.VoteTypeR\x04vote\x12\x16\n" +
-	"\x06reason\x18\x06 \x01(\tR\x06reason\"?\n" +
-	"\bVoteType\x12\x10\n" +
-	"\fVOTE_UNKNOWN\x10\x00\x12\x10\n" +
-	"\fVOTE_APPROVE\x10\x01\x12\x0f\n" +
-	"\vVOTE_REJECT\x10\x02\"\x9f\x04\n" +
+	"\x06reason\x18\x06 \x01(\tR\x06reason\"R\n" +
+	"\bVoteType\x12\x19\n" +
+	"\x15VOTE_TYPE_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11VOTE_TYPE_APPROVE\x10\x01\x12\x14\n" +
+	"\x10VOTE_TYPE_REJECT\x10\x02\"\xca\x04\n" +
 	"\fTwoPCMessage\x12%\n" +
 	"\x0etransaction_id\x18\x01 \x01(\tR\rtransactionId\x12\x16\n" +
 	"\x06shards\x18\x02 \x03(\tR\x06shards\x12L\n" +
@@ -1146,16 +1146,16 @@ const file_internal_metadata_proto_message_proto_rawDesc = "" +
 	"\x06reason\x18\x06 \x01(\tR\x06reason\x1a=\n" +
 	"\x0fOperationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"W\n" +
-	"\tPhaseType\x12\x11\n" +
-	"\rPHASE_UNKNOWN\x10\x00\x12\x11\n" +
-	"\rPHASE_PREPARE\x10\x01\x12\x10\n" +
-	"\fPHASE_COMMIT\x10\x02\x12\x12\n" +
-	"\x0ePHASE_ROLLBACK\x10\x03\"M\n" +
-	"\fDecisionType\x12\x14\n" +
-	"\x10DECISION_UNKNOWN\x10\x00\x12\x13\n" +
-	"\x0fDECISION_COMMIT\x10\x01\x12\x12\n" +
-	"\x0eDECISION_ABORT\x10\x02\"\xef\x02\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"o\n" +
+	"\tPhaseType\x12\x1a\n" +
+	"\x16PHASE_TYPE_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12PHASE_TYPE_PREPARE\x10\x01\x12\x15\n" +
+	"\x11PHASE_TYPE_COMMIT\x10\x02\x12\x17\n" +
+	"\x13PHASE_TYPE_ROLLBACK\x10\x03\"`\n" +
+	"\fDecisionType\x12\x1d\n" +
+	"\x19DECISION_TYPE_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14DECISION_TYPE_COMMIT\x10\x01\x12\x17\n" +
+	"\x13DECISION_TYPE_ABORT\x10\x02\"\x87\x03\n" +
 	"\x10HeartbeatMessage\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x04R\ttimestamp\x12C\n" +
@@ -1163,37 +1163,34 @@ const file_internal_metadata_proto_message_proto_rawDesc = "" +
 	"\ametrics\x18\x04 \x03(\v2-.nexkv.metadata.HeartbeatMessage.MetricsEntryR\ametrics\x1a:\n" +
 	"\fMetricsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\"Z\n" +
+	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\"r\n" +
 	"\n" +
-	"StatusType\x12\x12\n" +
-	"\x0eSTATUS_UNKNOWN\x10\x00\x12\x12\n" +
-	"\x0eSTATUS_HEALTHY\x10\x01\x12\x0f\n" +
-	"\vSTATUS_BUSY\x10\x02\x12\x13\n" +
-	"\x0fSTATUS_DEGRADED\x10\x03\"{\n" +
+	"StatusType\x12\x1b\n" +
+	"\x17STATUS_TYPE_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13STATUS_TYPE_HEALTHY\x10\x01\x12\x14\n" +
+	"\x10STATUS_TYPE_BUSY\x10\x02\x12\x18\n" +
+	"\x14STATUS_TYPE_DEGRADED\x10\x03\"{\n" +
 	"\x0fResponseMessage\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x1d\n" +
 	"\n" +
 	"error_code\x18\x02 \x01(\rR\terrorCode\x12\x1b\n" +
 	"\terror_msg\x18\x03 \x01(\tR\berrorMsg\x12\x12\n" +
-	"\x04data\x18\x04 \x01(\fR\x04data\"\x89\x02\n" +
+	"\x04data\x18\x04 \x01(\fR\x04data\"\xa6\x02\n" +
 	"\x11MetadataOpMessage\x128\n" +
 	"\x02op\x18\x01 \x01(\x0e2(.nexkv.metadata.MetadataOpMessage.OpTypeR\x02op\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x03 \x01(\fR\x05value\x12\x16\n" +
 	"\x06prefix\x18\x04 \x01(\tR\x06prefix\x12\x16\n" +
 	"\x06offset\x18\x05 \x01(\x05R\x06offset\x12\x14\n" +
-	"\x05limit\x18\x06 \x01(\x05R\x05limit\"L\n" +
-	"\x06OpType\x12\x0e\n" +
-	"\n" +
-	"OP_UNKNOWN\x10\x00\x12\n" +
-	"\n" +
-	"\x06OP_GET\x10\x01\x12\n" +
-	"\n" +
-	"\x06OP_PUT\x10\x02\x12\r\n" +
-	"\tOP_DELETE\x10\x03\x12\v\n" +
-	"\aOP_LIST\x10\x04*\xbe\a\n" +
-	"\vMessageType\x12\x18\n" +
-	"\x14MESSAGE_TYPE_UNKNOWN\x10\x00\x12\x14\n" +
+	"\x05limit\x18\x06 \x01(\x05R\x05limit\"i\n" +
+	"\x06OpType\x12\x17\n" +
+	"\x13OP_TYPE_UNSPECIFIED\x10\x00\x12\x0f\n" +
+	"\vOP_TYPE_GET\x10\x01\x12\x0f\n" +
+	"\vOP_TYPE_PUT\x10\x02\x12\x12\n" +
+	"\x0eOP_TYPE_DELETE\x10\x03\x12\x10\n" +
+	"\fOP_TYPE_LIST\x10\x04*\xc2\a\n" +
+	"\vMessageType\x12\x1c\n" +
+	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10MESSAGE_TYPE_GET\x10d\x12\x14\n" +
 	"\x10MESSAGE_TYPE_PUT\x10e\x12\x17\n" +
 	"\x13MESSAGE_TYPE_DELETE\x10f\x12\x1a\n" +
@@ -1225,20 +1222,20 @@ const file_internal_metadata_proto_message_proto_rawDesc = "" +
 	"\x1cMESSAGE_TYPE_LEADER_ELECTION\x10\xe0\x02B4Z2github.com/jzhang405/NexKV/internal/metadata/protob\x06proto3"
 
 var (
-	file_internal_metadata_proto_message_proto_rawDescOnce sync.Once
-	file_internal_metadata_proto_message_proto_rawDescData []byte
+	file_message_proto_rawDescOnce sync.Once
+	file_message_proto_rawDescData []byte
 )
 
-func file_internal_metadata_proto_message_proto_rawDescGZIP() []byte {
-	file_internal_metadata_proto_message_proto_rawDescOnce.Do(func() {
-		file_internal_metadata_proto_message_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_metadata_proto_message_proto_rawDesc), len(file_internal_metadata_proto_message_proto_rawDesc)))
+func file_message_proto_rawDescGZIP() []byte {
+	file_message_proto_rawDescOnce.Do(func() {
+		file_message_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_message_proto_rawDesc), len(file_message_proto_rawDesc)))
 	})
-	return file_internal_metadata_proto_message_proto_rawDescData
+	return file_message_proto_rawDescData
 }
 
-var file_internal_metadata_proto_message_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_internal_metadata_proto_message_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
-var file_internal_metadata_proto_message_proto_goTypes = []any{
+var file_message_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_message_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_message_proto_goTypes = []any{
 	(MessageType)(0),                 // 0: nexkv.metadata.MessageType
 	(QuorumMessage_VoteType)(0),      // 1: nexkv.metadata.QuorumMessage.VoteType
 	(TwoPCMessage_PhaseType)(0),      // 2: nexkv.metadata.TwoPCMessage.PhaseType
@@ -1256,7 +1253,7 @@ var file_internal_metadata_proto_message_proto_goTypes = []any{
 	nil,                              // 14: nexkv.metadata.TwoPCMessage.OperationsEntry
 	nil,                              // 15: nexkv.metadata.HeartbeatMessage.MetricsEntry
 }
-var file_internal_metadata_proto_message_proto_depIdxs = []int32{
+var file_message_proto_depIdxs = []int32{
 	0,  // 0: nexkv.metadata.TransportMessage.type:type_name -> nexkv.metadata.MessageType
 	7,  // 1: nexkv.metadata.TransportMessage.gossip:type_name -> nexkv.metadata.GossipMessage
 	8,  // 2: nexkv.metadata.TransportMessage.quorum:type_name -> nexkv.metadata.QuorumMessage
@@ -1279,12 +1276,12 @@ var file_internal_metadata_proto_message_proto_depIdxs = []int32{
 	0,  // [0:15] is the sub-list for field type_name
 }
 
-func init() { file_internal_metadata_proto_message_proto_init() }
-func file_internal_metadata_proto_message_proto_init() {
-	if File_internal_metadata_proto_message_proto != nil {
+func init() { file_message_proto_init() }
+func file_message_proto_init() {
+	if File_message_proto != nil {
 		return
 	}
-	file_internal_metadata_proto_message_proto_msgTypes[0].OneofWrappers = []any{
+	file_message_proto_msgTypes[0].OneofWrappers = []any{
 		(*TransportMessage_Gossip)(nil),
 		(*TransportMessage_Quorum)(nil),
 		(*TransportMessage_Twopc)(nil),
@@ -1296,18 +1293,18 @@ func file_internal_metadata_proto_message_proto_init() {
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_metadata_proto_message_proto_rawDesc), len(file_internal_metadata_proto_message_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_message_proto_rawDesc), len(file_message_proto_rawDesc)),
 			NumEnums:      6,
 			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_internal_metadata_proto_message_proto_goTypes,
-		DependencyIndexes: file_internal_metadata_proto_message_proto_depIdxs,
-		EnumInfos:         file_internal_metadata_proto_message_proto_enumTypes,
-		MessageInfos:      file_internal_metadata_proto_message_proto_msgTypes,
+		GoTypes:           file_message_proto_goTypes,
+		DependencyIndexes: file_message_proto_depIdxs,
+		EnumInfos:         file_message_proto_enumTypes,
+		MessageInfos:      file_message_proto_msgTypes,
 	}.Build()
-	File_internal_metadata_proto_message_proto = out.File
-	file_internal_metadata_proto_message_proto_goTypes = nil
-	file_internal_metadata_proto_message_proto_depIdxs = nil
+	File_message_proto = out.File
+	file_message_proto_goTypes = nil
+	file_message_proto_depIdxs = nil
 }

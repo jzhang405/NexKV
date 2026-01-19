@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.33.2
-// source: internal/metadata/proto/wal.proto
+// source: wal.proto
 
 package proto
 
@@ -25,25 +25,25 @@ const (
 type WALType int32
 
 const (
-	WALType_WAL_TYPE_UNKNOWN    WALType = 0 // 未知类型（占位）
-	WALType_WAL_TYPE_PUT        WALType = 1 // 写入操作
-	WALType_WAL_TYPE_DELETE     WALType = 2 // 删除操作
-	WALType_WAL_TYPE_CHECKPOINT WALType = 3 // 检查点操作
+	WALType_WAL_TYPE_UNSPECIFIED WALType = 0 // 未指定（占位）
+	WALType_WAL_TYPE_PUT         WALType = 1 // 写入操作
+	WALType_WAL_TYPE_DELETE      WALType = 2 // 删除操作
+	WALType_WAL_TYPE_CHECKPOINT  WALType = 3 // 检查点操作
 )
 
 // Enum value maps for WALType.
 var (
 	WALType_name = map[int32]string{
-		0: "WAL_TYPE_UNKNOWN",
+		0: "WAL_TYPE_UNSPECIFIED",
 		1: "WAL_TYPE_PUT",
 		2: "WAL_TYPE_DELETE",
 		3: "WAL_TYPE_CHECKPOINT",
 	}
 	WALType_value = map[string]int32{
-		"WAL_TYPE_UNKNOWN":    0,
-		"WAL_TYPE_PUT":        1,
-		"WAL_TYPE_DELETE":     2,
-		"WAL_TYPE_CHECKPOINT": 3,
+		"WAL_TYPE_UNSPECIFIED": 0,
+		"WAL_TYPE_PUT":         1,
+		"WAL_TYPE_DELETE":      2,
+		"WAL_TYPE_CHECKPOINT":  3,
 	}
 )
 
@@ -58,11 +58,11 @@ func (x WALType) String() string {
 }
 
 func (WALType) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_metadata_proto_wal_proto_enumTypes[0].Descriptor()
+	return file_wal_proto_enumTypes[0].Descriptor()
 }
 
 func (WALType) Type() protoreflect.EnumType {
-	return &file_internal_metadata_proto_wal_proto_enumTypes[0]
+	return &file_wal_proto_enumTypes[0]
 }
 
 func (x WALType) Number() protoreflect.EnumNumber {
@@ -71,7 +71,7 @@ func (x WALType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WALType.Descriptor instead.
 func (WALType) EnumDescriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_wal_proto_rawDescGZIP(), []int{0}
+	return file_wal_proto_rawDescGZIP(), []int{0}
 }
 
 // HLC 混合逻辑时钟
@@ -86,7 +86,7 @@ type HLC struct {
 
 func (x *HLC) Reset() {
 	*x = HLC{}
-	mi := &file_internal_metadata_proto_wal_proto_msgTypes[0]
+	mi := &file_wal_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -98,7 +98,7 @@ func (x *HLC) String() string {
 func (*HLC) ProtoMessage() {}
 
 func (x *HLC) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_metadata_proto_wal_proto_msgTypes[0]
+	mi := &file_wal_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -111,7 +111,7 @@ func (x *HLC) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HLC.ProtoReflect.Descriptor instead.
 func (*HLC) Descriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_wal_proto_rawDescGZIP(), []int{0}
+	return file_wal_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *HLC) GetPhysicalTime() uint64 {
@@ -148,7 +148,7 @@ type WALEntry struct {
 
 func (x *WALEntry) Reset() {
 	*x = WALEntry{}
-	mi := &file_internal_metadata_proto_wal_proto_msgTypes[1]
+	mi := &file_wal_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -160,7 +160,7 @@ func (x *WALEntry) String() string {
 func (*WALEntry) ProtoMessage() {}
 
 func (x *WALEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_metadata_proto_wal_proto_msgTypes[1]
+	mi := &file_wal_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -173,14 +173,14 @@ func (x *WALEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WALEntry.ProtoReflect.Descriptor instead.
 func (*WALEntry) Descriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_wal_proto_rawDescGZIP(), []int{1}
+	return file_wal_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *WALEntry) GetType() WALType {
 	if x != nil {
 		return x.Type
 	}
-	return WALType_WAL_TYPE_UNKNOWN
+	return WALType_WAL_TYPE_UNSPECIFIED
 }
 
 func (x *WALEntry) GetKey() string {
@@ -230,7 +230,7 @@ type MetadataStoreData struct {
 
 func (x *MetadataStoreData) Reset() {
 	*x = MetadataStoreData{}
-	mi := &file_internal_metadata_proto_wal_proto_msgTypes[2]
+	mi := &file_wal_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -242,7 +242,7 @@ func (x *MetadataStoreData) String() string {
 func (*MetadataStoreData) ProtoMessage() {}
 
 func (x *MetadataStoreData) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_metadata_proto_wal_proto_msgTypes[2]
+	mi := &file_wal_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -255,7 +255,7 @@ func (x *MetadataStoreData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetadataStoreData.ProtoReflect.Descriptor instead.
 func (*MetadataStoreData) Descriptor() ([]byte, []int) {
-	return file_internal_metadata_proto_wal_proto_rawDescGZIP(), []int{2}
+	return file_wal_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *MetadataStoreData) GetData() map[string][]byte {
@@ -272,11 +272,11 @@ func (x *MetadataStoreData) GetVersion() uint64 {
 	return 0
 }
 
-var File_internal_metadata_proto_wal_proto protoreflect.FileDescriptor
+var File_wal_proto protoreflect.FileDescriptor
 
-const file_internal_metadata_proto_wal_proto_rawDesc = "" +
+const file_wal_proto_rawDesc = "" +
 	"\n" +
-	"!internal/metadata/proto/wal.proto\x12\x0enexkv.metadata\"S\n" +
+	"\twal.proto\x12\x0enexkv.metadata\"S\n" +
 	"\x03HLC\x12#\n" +
 	"\rphysical_time\x18\x01 \x01(\x04R\fphysicalTime\x12'\n" +
 	"\x0flogical_counter\x18\x02 \x01(\rR\x0elogicalCounter\"\xcb\x01\n" +
@@ -292,35 +292,35 @@ const file_internal_metadata_proto_wal_proto_rawDesc = "" +
 	"\aversion\x18\x02 \x01(\x04R\aversion\x1a7\n" +
 	"\tDataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01*_\n" +
-	"\aWALType\x12\x14\n" +
-	"\x10WAL_TYPE_UNKNOWN\x10\x00\x12\x10\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01*c\n" +
+	"\aWALType\x12\x18\n" +
+	"\x14WAL_TYPE_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fWAL_TYPE_PUT\x10\x01\x12\x13\n" +
 	"\x0fWAL_TYPE_DELETE\x10\x02\x12\x17\n" +
 	"\x13WAL_TYPE_CHECKPOINT\x10\x03B4Z2github.com/jzhang405/NexKV/internal/metadata/protob\x06proto3"
 
 var (
-	file_internal_metadata_proto_wal_proto_rawDescOnce sync.Once
-	file_internal_metadata_proto_wal_proto_rawDescData []byte
+	file_wal_proto_rawDescOnce sync.Once
+	file_wal_proto_rawDescData []byte
 )
 
-func file_internal_metadata_proto_wal_proto_rawDescGZIP() []byte {
-	file_internal_metadata_proto_wal_proto_rawDescOnce.Do(func() {
-		file_internal_metadata_proto_wal_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_metadata_proto_wal_proto_rawDesc), len(file_internal_metadata_proto_wal_proto_rawDesc)))
+func file_wal_proto_rawDescGZIP() []byte {
+	file_wal_proto_rawDescOnce.Do(func() {
+		file_wal_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_wal_proto_rawDesc), len(file_wal_proto_rawDesc)))
 	})
-	return file_internal_metadata_proto_wal_proto_rawDescData
+	return file_wal_proto_rawDescData
 }
 
-var file_internal_metadata_proto_wal_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_internal_metadata_proto_wal_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
-var file_internal_metadata_proto_wal_proto_goTypes = []any{
+var file_wal_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_wal_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_wal_proto_goTypes = []any{
 	(WALType)(0),              // 0: nexkv.metadata.WALType
 	(*HLC)(nil),               // 1: nexkv.metadata.HLC
 	(*WALEntry)(nil),          // 2: nexkv.metadata.WALEntry
 	(*MetadataStoreData)(nil), // 3: nexkv.metadata.MetadataStoreData
 	nil,                       // 4: nexkv.metadata.MetadataStoreData.DataEntry
 }
-var file_internal_metadata_proto_wal_proto_depIdxs = []int32{
+var file_wal_proto_depIdxs = []int32{
 	0, // 0: nexkv.metadata.WALEntry.type:type_name -> nexkv.metadata.WALType
 	1, // 1: nexkv.metadata.WALEntry.timestamp:type_name -> nexkv.metadata.HLC
 	4, // 2: nexkv.metadata.MetadataStoreData.data:type_name -> nexkv.metadata.MetadataStoreData.DataEntry
@@ -331,27 +331,27 @@ var file_internal_metadata_proto_wal_proto_depIdxs = []int32{
 	0, // [0:3] is the sub-list for field type_name
 }
 
-func init() { file_internal_metadata_proto_wal_proto_init() }
-func file_internal_metadata_proto_wal_proto_init() {
-	if File_internal_metadata_proto_wal_proto != nil {
+func init() { file_wal_proto_init() }
+func file_wal_proto_init() {
+	if File_wal_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_metadata_proto_wal_proto_rawDesc), len(file_internal_metadata_proto_wal_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wal_proto_rawDesc), len(file_wal_proto_rawDesc)),
 			NumEnums:      1,
 			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_internal_metadata_proto_wal_proto_goTypes,
-		DependencyIndexes: file_internal_metadata_proto_wal_proto_depIdxs,
-		EnumInfos:         file_internal_metadata_proto_wal_proto_enumTypes,
-		MessageInfos:      file_internal_metadata_proto_wal_proto_msgTypes,
+		GoTypes:           file_wal_proto_goTypes,
+		DependencyIndexes: file_wal_proto_depIdxs,
+		EnumInfos:         file_wal_proto_enumTypes,
+		MessageInfos:      file_wal_proto_msgTypes,
 	}.Build()
-	File_internal_metadata_proto_wal_proto = out.File
-	file_internal_metadata_proto_wal_proto_goTypes = nil
-	file_internal_metadata_proto_wal_proto_depIdxs = nil
+	File_wal_proto = out.File
+	file_wal_proto_goTypes = nil
+	file_wal_proto_depIdxs = nil
 }

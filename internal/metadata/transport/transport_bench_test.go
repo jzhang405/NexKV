@@ -123,6 +123,94 @@ func BenchmarkMessagePackCodec_RoundTrip(b *testing.B) {
 	}
 }
 
+// BenchmarkJSONCodec_Encode JSON 编码性能
+func BenchmarkJSONCodec_Encode(b *testing.B) {
+	codec := NewJSONCodec()
+	msg := &PutMessage{
+		Key:   "test_key",
+		Value: make([]byte, 1024),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = codec.Encode(msg)
+	}
+}
+
+// BenchmarkJSONCodec_Decode JSON 解码性能
+func BenchmarkJSONCodec_Decode(b *testing.B) {
+	codec := NewJSONCodec()
+	msg := &PutMessage{
+		Key:   "test_key",
+		Value: make([]byte, 1024),
+	}
+	data, _ := codec.Encode(msg)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = codec.Decode(data)
+	}
+}
+
+// BenchmarkJSONCodec_RoundTrip JSON 编解码往返性能
+func BenchmarkJSONCodec_RoundTrip(b *testing.B) {
+	codec := NewJSONCodec()
+	msg := &PutMessage{
+		Key:   "test_key",
+		Value: make([]byte, 1024),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		data, _ := codec.Encode(msg)
+		_, _ = codec.Decode(data)
+	}
+}
+
+// BenchmarkProtobufCodec_Encode Protobuf 编码性能
+func BenchmarkProtobufCodec_Encode(b *testing.B) {
+	codec := NewProtobufCodec()
+	msg := &PutMessage{
+		Key:   "test_key",
+		Value: make([]byte, 1024),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = codec.Encode(msg)
+	}
+}
+
+// BenchmarkProtobufCodec_Decode Protobuf 解码性能
+func BenchmarkProtobufCodec_Decode(b *testing.B) {
+	codec := NewProtobufCodec()
+	msg := &PutMessage{
+		Key:   "test_key",
+		Value: make([]byte, 1024),
+	}
+	data, _ := codec.Encode(msg)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = codec.Decode(data)
+	}
+}
+
+// BenchmarkProtobufCodec_RoundTrip Protobuf 编解码往返性能
+func BenchmarkProtobufCodec_RoundTrip(b *testing.B) {
+	codec := NewProtobufCodec()
+	msg := &PutMessage{
+		Key:   "test_key",
+		Value: make([]byte, 1024),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		data, _ := codec.Encode(msg)
+		_, _ = codec.Decode(data)
+	}
+}
+
 // BenchmarkMessagePackCodec_AllMessageTypes 所有消息类型编解码性能
 func BenchmarkMessagePackCodec_AllMessageTypes(b *testing.B) {
 	codec := NewMessagePackCodec()
@@ -147,9 +235,99 @@ func BenchmarkMessagePackCodec_AllMessageTypes(b *testing.B) {
 	}
 }
 
+// BenchmarkJSONCodec_AllMessageTypes JSON 所有消息类型编解码性能
+func BenchmarkJSONCodec_AllMessageTypes(b *testing.B) {
+	codec := NewJSONCodec()
+	value := make([]byte, 256)
+
+	messages := []Message{
+		&GetMessage{Key: "test_key"},
+		&PutMessage{Key: "test_key", Value: value},
+		&DeleteMessage{Key: "test_key"},
+		&NodePingMessage{NodeID: "node1", Sequence: 1, Timestamp: 1234567890},
+		&NodePongMessage{NodeID: "node1", Sequence: 1, Status: "ready"},
+	}
+
+	for _, msg := range messages {
+		b.Run(msg.Type().String(), func(b *testing.B) {
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				data, _ := codec.Encode(msg)
+				_, _ = codec.Decode(data)
+			}
+		})
+	}
+}
+
+// BenchmarkProtobufCodec_AllMessageTypes Protobuf 所有消息类型编解码性能
+func BenchmarkProtobufCodec_AllMessageTypes(b *testing.B) {
+	codec := NewProtobufCodec()
+	value := make([]byte, 256)
+
+	messages := []Message{
+		&GetMessage{Key: "test_key"},
+		&PutMessage{Key: "test_key", Value: value},
+		&DeleteMessage{Key: "test_key"},
+		&NodePingMessage{NodeID: "node1", Sequence: 1, Timestamp: 1234567890},
+		&NodePongMessage{NodeID: "node1", Sequence: 1, Status: "ready"},
+	}
+
+	for _, msg := range messages {
+		b.Run(msg.Type().String(), func(b *testing.B) {
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				data, _ := codec.Encode(msg)
+				_, _ = codec.Decode(data)
+			}
+		})
+	}
+}
+
 // BenchmarkMessagePackCodec_DifferentSizes 不同大小消息编解码性能
 func BenchmarkMessagePackCodec_DifferentSizes(b *testing.B) {
 	codec := NewMessagePackCodec()
+	sizes := []int{64, 256, 1024, 4096, 16384}
+
+	for _, size := range sizes {
+		b.Run(string(rune(size)), func(b *testing.B) {
+			msg := &PutMessage{
+				Key:   "test_key",
+				Value: make([]byte, size),
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				data, _ := codec.Encode(msg)
+				_, _ = codec.Decode(data)
+			}
+		})
+	}
+}
+
+// BenchmarkJSONCodec_DifferentSizes JSON 不同大小消息编解码性能
+func BenchmarkJSONCodec_DifferentSizes(b *testing.B) {
+	codec := NewJSONCodec()
+	sizes := []int{64, 256, 1024, 4096, 16384}
+
+	for _, size := range sizes {
+		b.Run(string(rune(size)), func(b *testing.B) {
+			msg := &PutMessage{
+				Key:   "test_key",
+				Value: make([]byte, size),
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				data, _ := codec.Encode(msg)
+				_, _ = codec.Decode(data)
+			}
+		})
+	}
+}
+
+// BenchmarkProtobufCodec_DifferentSizes Protobuf 不同大小消息编解码性能
+func BenchmarkProtobufCodec_DifferentSizes(b *testing.B) {
+	codec := NewProtobufCodec()
 	sizes := []int{64, 256, 1024, 4096, 16384}
 
 	for _, size := range sizes {

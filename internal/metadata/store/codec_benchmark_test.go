@@ -1,6 +1,6 @@
 // Package store 编解码器性能基准测试
 //
-// 对比 MessagePack 和 JSON 两种编解码器的性能差异
+// 对比 MessagePack、JSON 和 Protobuf 三种编解码器的性能差异
 // 测试维度：
 //   - 编码/解码速度（ns/op）
 //   - 内存分配（B/op）
@@ -45,6 +45,17 @@ func BenchmarkWALCodec_JSON_Encode(b *testing.B) {
 	}
 }
 
+// BenchmarkWALCodec_Protobuf_Encode Protobuf 编码性能
+func BenchmarkWALCodec_Protobuf_Encode(b *testing.B) {
+	codec := NewProtobufWALCodec()
+	entry := createTestWALEntry(1024)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = codec.Encode(entry)
+	}
+}
+
 // BenchmarkWALCodec_MessagePack_Decode MessagePack 解码性能
 func BenchmarkWALCodec_MessagePack_Decode(b *testing.B) {
 	codec := NewMessagePackWALCodec()
@@ -69,6 +80,18 @@ func BenchmarkWALCodec_JSON_Decode(b *testing.B) {
 	}
 }
 
+// BenchmarkWALCodec_Protobuf_Decode Protobuf 解码性能
+func BenchmarkWALCodec_Protobuf_Decode(b *testing.B) {
+	codec := NewProtobufWALCodec()
+	entry := createTestWALEntry(1024)
+	data, _ := codec.Encode(entry)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = codec.Decode(data)
+	}
+}
+
 // BenchmarkWALCodec_MessagePack_RoundTrip MessagePack 编解码往返性能
 func BenchmarkWALCodec_MessagePack_RoundTrip(b *testing.B) {
 	codec := NewMessagePackWALCodec()
@@ -84,6 +107,18 @@ func BenchmarkWALCodec_MessagePack_RoundTrip(b *testing.B) {
 // BenchmarkWALCodec_JSON_RoundTrip JSON 编解码往返性能
 func BenchmarkWALCodec_JSON_RoundTrip(b *testing.B) {
 	codec := NewJSONWALCodec()
+	entry := createTestWALEntry(1024)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		data, _ := codec.Encode(entry)
+		_, _ = codec.Decode(data)
+	}
+}
+
+// BenchmarkWALCodec_Protobuf_RoundTrip Protobuf 编解码往返性能
+func BenchmarkWALCodec_Protobuf_RoundTrip(b *testing.B) {
+	codec := NewProtobufWALCodec()
 	entry := createTestWALEntry(1024)
 
 	b.ResetTimer()
@@ -121,6 +156,16 @@ func BenchmarkWALCodec_DifferentSizes(b *testing.B) {
 				_, _ = codec.Encode(entry)
 			}
 		})
+
+		b.Run("Protobuf/Encode", func(b *testing.B) {
+			codec := NewProtobufWALCodec()
+			entry := createTestWALEntry(size)
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = codec.Encode(entry)
+			}
+		})
 	}
 }
 
@@ -144,6 +189,19 @@ func BenchmarkWALCodec_BatchEncode_MessagePack(b *testing.B) {
 // BenchmarkWALCodec_BatchEncode_JSON JSON 批量编码性能
 func BenchmarkWALCodec_BatchEncode_JSON(b *testing.B) {
 	codec := NewJSONWALCodec()
+	entries := createTestWALEntries(100, 1024)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, entry := range entries {
+			_, _ = codec.Encode(entry)
+		}
+	}
+}
+
+// BenchmarkWALCodec_BatchEncode_Protobuf Protobuf 批量编码性能
+func BenchmarkWALCodec_BatchEncode_Protobuf(b *testing.B) {
+	codec := NewProtobufWALCodec()
 	entries := createTestWALEntries(100, 1024)
 
 	b.ResetTimer()
@@ -190,6 +248,24 @@ func BenchmarkWALCodec_BatchDecode_JSON(b *testing.B) {
 	}
 }
 
+// BenchmarkWALCodec_BatchDecode_Protobuf Protobuf 批量解码性能
+func BenchmarkWALCodec_BatchDecode_Protobuf(b *testing.B) {
+	codec := NewProtobufWALCodec()
+	entries := createTestWALEntries(100, 1024)
+	datas := make([][]byte, len(entries))
+
+	for i, entry := range entries {
+		datas[i], _ = codec.Encode(entry)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, data := range datas {
+			_, _ = codec.Decode(data)
+		}
+	}
+}
+
 // ========================================
 // 编码后数据大小对比
 // ========================================
@@ -212,6 +288,21 @@ func BenchmarkWALCodec_EncodedSize_MessagePack(b *testing.B) {
 // BenchmarkWALCodec_EncodedSize_JSON JSON 编码后数据大小
 func BenchmarkWALCodec_EncodedSize_JSON(b *testing.B) {
 	codec := NewJSONWALCodec()
+	entry := createTestWALEntry(1024)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		data, _ := codec.Encode(entry)
+		_ = data
+	}
+
+	// 报告编码后数据大小
+	b.ReportMetric(float64(len(encodeWALEntry(codec, entry))), "bytes")
+}
+
+// BenchmarkWALCodec_EncodedSize_Protobuf Protobuf 编码后数据大小
+func BenchmarkWALCodec_EncodedSize_Protobuf(b *testing.B) {
+	codec := NewProtobufWALCodec()
 	entry := createTestWALEntry(1024)
 
 	b.ResetTimer()
@@ -280,6 +371,32 @@ func BenchmarkWALCodec_AllTypes_JSON(b *testing.B) {
 	}
 }
 
+// BenchmarkWALCodec_AllTypes_Protobuf Protobuf 所有类型编解码性能
+func BenchmarkWALCodec_AllTypes_Protobuf(b *testing.B) {
+	codec := NewProtobufWALCodec()
+
+	typeTest := []struct {
+		name string
+		typ  WALType
+	}{
+		{"Put", WALTypePut},
+		{"Delete", WALTypeDelete},
+		{"Checkpoint", WALTypeCheckpoint},
+	}
+
+	for _, tt := range typeTest {
+		b.Run(tt.name, func(b *testing.B) {
+			entry := createTestWALEntryByType(tt.typ, 1024)
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				data, _ := codec.Encode(entry)
+				_, _ = codec.Decode(data)
+			}
+		})
+	}
+}
+
 // ========================================
 // 并发编解码性能对比
 // ========================================
@@ -310,6 +427,19 @@ func BenchmarkWALCodec_ConcurrentEncode_JSON(b *testing.B) {
 	})
 }
 
+// BenchmarkWALCodec_ConcurrentEncode_Protobuf Protobuf 并发编码性能
+func BenchmarkWALCodec_ConcurrentEncode_Protobuf(b *testing.B) {
+	codec := NewProtobufWALCodec()
+	entry := createTestWALEntry(1024)
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _ = codec.Encode(entry)
+		}
+	})
+}
+
 // BenchmarkWALCodec_ConcurrentDecode_MessagePack MessagePack 并发解码性能
 func BenchmarkWALCodec_ConcurrentDecode_MessagePack(b *testing.B) {
 	codec := NewMessagePackWALCodec()
@@ -327,6 +457,20 @@ func BenchmarkWALCodec_ConcurrentDecode_MessagePack(b *testing.B) {
 // BenchmarkWALCodec_ConcurrentDecode_JSON JSON 并发解码性能
 func BenchmarkWALCodec_ConcurrentDecode_JSON(b *testing.B) {
 	codec := NewJSONWALCodec()
+	entry := createTestWALEntry(1024)
+	data, _ := codec.Encode(entry)
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _ = codec.Decode(data)
+		}
+	})
+}
+
+// BenchmarkWALCodec_ConcurrentDecode_Protobuf Protobuf 并发解码性能
+func BenchmarkWALCodec_ConcurrentDecode_Protobuf(b *testing.B) {
+	codec := NewProtobufWALCodec()
 	entry := createTestWALEntry(1024)
 	data, _ := codec.Encode(entry)
 
@@ -435,14 +579,33 @@ func TestCodecPerformanceSummary(t *testing.T) {
 		jsonData, _ := jsonCodec.Encode(entry)
 		jsonSize := len(jsonData)
 
-		// 计算压缩比
-		ratio := float64(jsonSize) / float64(mpSize)
-		spaceSaving := (1 - float64(mpSize)/float64(jsonSize)) * 100
+		// Protobuf 测试
+		pbCodec := NewProtobufWALCodec()
+		pbData, _ := pbCodec.Encode(entry)
+		pbSize := len(pbData)
+
+		// 计算压缩比和空间节省
+		jsonVsMpRatio := float64(jsonSize) / float64(mpSize)
+		jsonVsMpSaving := (1 - float64(mpSize)/float64(jsonSize)) * 100
+
+		jsonVsPbRatio := float64(jsonSize) / float64(pbSize)
+		jsonVsPbSaving := (1 - float64(pbSize)/float64(jsonSize)) * 100
+
+		mpVsPbRatio := float64(mpSize) / float64(pbSize)
+		mpVsPbSaving := (1 - float64(pbSize)/float64(mpSize)) * 100
 
 		t.Logf("  MessagePack: %d bytes", mpSize)
 		t.Logf("  JSON:        %d bytes", jsonSize)
-		t.Logf("  压缩比:      %.2fx (JSON / MessagePack)", ratio)
-		t.Logf("  空间节省:    %.2f%% (MessagePack vs JSON)", spaceSaving)
+		t.Logf("  Protobuf:    %d bytes", pbSize)
+		t.Logf("  ----------------------------------------")
+		t.Logf("  压缩比 (JSON/MessagePack):      %.2fx", jsonVsMpRatio)
+		t.Logf("  空间节省 (MessagePack vs JSON): %.2f%%", jsonVsMpSaving)
+		t.Logf("  ----------------------------------------")
+		t.Logf("  压缩比 (JSON/Protobuf):        %.2fx", jsonVsPbRatio)
+		t.Logf("  空间节省 (Protobuf vs JSON):    %.2f%%", jsonVsPbSaving)
+		t.Logf("  ----------------------------------------")
+		t.Logf("  压缩比 (MessagePack/Protobuf):  %.2fx", mpVsPbRatio)
+		t.Logf("  空间节省 (Protobuf vs MP):      %.2f%%", mpVsPbSaving)
 	}
 
 	t.Log("\n========================================")
@@ -452,6 +615,11 @@ func TestCodecPerformanceSummary(t *testing.T) {
 	t.Log("  - 生产环境（高性能、低存储）")
 	t.Log("  - 大数据量场景")
 	t.Log("  - 高并发场景")
+	t.Log("")
+	t.Log("Protobuf:")
+	t.Log("  - 生产环境（跨语言、高兼容性）")
+	t.Log("  - 大规模分布式系统")
+	t.Log("  - 需要强类型约束和 Schema 管理")
 	t.Log("")
 	t.Log("JSON:")
 	t.Log("  - 开发调试（可读性好）")
@@ -476,6 +644,11 @@ func TestCodecTypeValidation(t *testing.T) {
 			name:      "JSON Codec",
 			codecType: types.CodecTypeJSON,
 			wantName:  "json",
+		},
+		{
+			name:      "Protobuf Codec",
+			codecType: types.CodecTypeProtobuf,
+			wantName:  "protobuf",
 		},
 	}
 

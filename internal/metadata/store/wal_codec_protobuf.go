@@ -51,7 +51,7 @@ func (c *ProtobufWALCodec) Encode(entry *WALEntry) ([]byte, error) {
 	}
 
 	// 转换 WAL 类型
-	pbType := proto.WALType_WAL_TYPE_UNKNOWN
+	pbType := proto.WALType_WAL_TYPE_UNSPECIFIED
 	switch entry.Type {
 	case WALTypePut:
 		pbType = proto.WALType_WAL_TYPE_PUT

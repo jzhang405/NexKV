@@ -6,10 +6,10 @@ option go_package = "github.com/jzhang405/NexKV/internal/metadata/proto";
 
 // WALType WAL 操作类型
 enum WALType {
-  WAL_TYPE_UNKNOWN = 0;  // 未知类型（占位）
-  WAL_TYPE_PUT = 1;      // 写入操作
-  WAL_TYPE_DELETE = 2;   // 删除操作
-  WAL_TYPE_CHECKPOINT = 3; // 检查点操作
+  WAL_TYPE_UNSPECIFIED = 0;  // 未指定（占位）
+  WAL_TYPE_PUT = 1;          // 写入操作
+  WAL_TYPE_DELETE = 2;       // 删除操作
+  WAL_TYPE_CHECKPOINT = 3;   // 检查点操作
 }
 
 // HLC 混合逻辑时钟

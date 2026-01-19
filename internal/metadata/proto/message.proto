@@ -17,7 +17,7 @@ option go_package = "github.com/jzhang405/NexKV/internal/metadata/proto";
 //   - 350-399: 集群管理消息
 enum MessageType {
   // 元数据操作消息 (100-149)
-  MESSAGE_TYPE_UNKNOWN = 0;
+  MESSAGE_TYPE_UNSPECIFIED = 0;
   MESSAGE_TYPE_GET = 100;
   MESSAGE_TYPE_PUT = 101;
   MESSAGE_TYPE_DELETE = 102;
@@ -105,9 +105,9 @@ message QuorumMessage {
   bytes value = 3;            // 值
   uint64 version = 4;         // 版本号
   enum VoteType {
-    VOTE_UNKNOWN = 0;
-    VOTE_APPROVE = 1;   // 同意
-    VOTE_REJECT = 2;    // 拒绝
+    VOTE_TYPE_UNSPECIFIED = 0;
+    VOTE_TYPE_APPROVE = 1;   // 同意
+    VOTE_TYPE_REJECT = 2;    // 拒绝
   }
   VoteType vote = 5;          // 投票类型（投票消息时使用）
   string reason = 6;          // 拒绝原因（可选）
@@ -123,16 +123,16 @@ message TwoPCMessage {
   repeated string shards = 2;  // 涉及的分片列表
   map<string, bytes> operations = 3; // 操作列表（key -> operation data）
   enum PhaseType {
-    PHASE_UNKNOWN = 0;
-    PHASE_PREPARE = 1;   // 准备阶段
-    PHASE_COMMIT = 2;    // 提交阶段
-    PHASE_ROLLBACK = 3;  // 回滚阶段
+    PHASE_TYPE_UNSPECIFIED = 0;
+    PHASE_TYPE_PREPARE = 1;   // 准备阶段
+    PHASE_TYPE_COMMIT = 2;    // 提交阶段
+    PHASE_TYPE_ROLLBACK = 3;  // 回滚阶段
   }
   PhaseType phase = 4;         // 当前阶段
   enum DecisionType {
-    DECISION_UNKNOWN = 0;
-    DECISION_COMMIT = 1;   // 提交决策
-    DECISION_ABORT = 2;    // 中止决策
+    DECISION_TYPE_UNSPECIFIED = 0;
+    DECISION_TYPE_COMMIT = 1;   // 提交决策
+    DECISION_TYPE_ABORT = 2;    // 中止决策
   }
   DecisionType decision = 5;   // 决策（协调者发送）
   string reason = 6;           // 失败原因（可选）
@@ -147,10 +147,10 @@ message HeartbeatMessage {
   string node_id = 1;         // 节点 ID
   uint64 timestamp = 2;       // 时间戳（Unix 毫秒）
   enum StatusType {
-    STATUS_UNKNOWN = 0;
-    STATUS_HEALTHY = 1;   // 健康
-    STATUS_BUSY = 2;      // 繁忙
-    STATUS_DEGRADED = 3;  // 降级
+    STATUS_TYPE_UNSPECIFIED = 0;
+    STATUS_TYPE_HEALTHY = 1;   // 健康
+    STATUS_TYPE_BUSY = 2;      // 繁忙
+    STATUS_TYPE_DEGRADED = 3;  // 降级
   }
   StatusType status = 3;      // 节点状态
   map<string, uint32> metrics = 4; // 节点指标（CPU、内存等）
@@ -175,11 +175,11 @@ message ResponseMessage {
 // 用于元数据的增删改查
 message MetadataOpMessage {
   enum OpType {
-    OP_UNKNOWN = 0;
-    OP_GET = 1;       // 获取
-    OP_PUT = 2;       // 设置
-    OP_DELETE = 3;    // 删除
-    OP_LIST = 4;      // 列举
+    OP_TYPE_UNSPECIFIED = 0;
+    OP_TYPE_GET = 1;   // 获取
+    OP_TYPE_PUT = 2;   // 设置
+    OP_TYPE_DELETE = 3; // 删除
+    OP_TYPE_LIST = 4;   // 列举
   }
   OpType op = 1;              // 操作类型
   string key = 2;             // 键

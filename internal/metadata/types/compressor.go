@@ -275,20 +275,6 @@ func NewDecompressorReader(reader io.Reader, compressionType CompressionType) (D
 	}
 }
 
-// decompressorReader 解压读取器包装器（提供通用实现）
-type decompressorReader struct {
-	readFunc  func(p []byte) (n int, err error)
-	closeFunc func() error
-}
-
-func (r *decompressorReader) Read(p []byte) (n int, err error) {
-	return r.readFunc(p)
-}
-
-func (r *decompressorReader) Close() error {
-	return r.closeFunc()
-}
-
 // s2DecompressorReader 包装 s2.Reader 以实现 DecompressorReader 接口
 type s2DecompressorReader struct {
 	reader *s2.Reader

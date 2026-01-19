@@ -210,12 +210,15 @@ func (c *JSONCodec) Name() string {
 // 支持的类型：
 //   - types.CodecTypeMessagePack: MessagePack 编解码器（默认）
 //   - types.CodecTypeJSON: JSON 编解码器
+//   - types.CodecTypeProtobuf: Protobuf 编解码器（性能最优）
 func NewCodec(codecType types.CodecType) (Codec, error) {
 	switch codecType {
 	case types.CodecTypeMessagePack:
 		return NewMessagePackCodec(), nil
 	case types.CodecTypeJSON:
 		return NewJSONCodec(), nil
+	case types.CodecTypeProtobuf:
+		return NewProtobufCodec(), nil
 	default:
 		return nil, types.NewStoreInvalidParameterError("不支持的编解码器类型")
 	}

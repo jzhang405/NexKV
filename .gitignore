@@ -37,3 +37,4 @@ go.work.sum
 .spec-workflow/
 .serena/
 nexkv
+internal/metadata/store/data

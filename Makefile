@@ -1,7 +1,7 @@
 # NexKV Makefile
 # 提供 build、test、clean 等常用命令
 
-.PHONY: all build test clean run fmt vet lint docker-build docker-run help
+.PHONY: all build test clean run fmt vet lint docker-build docker-run proto proto-clean help
 
 # 变量定义
 BINARY_NAME=nexkv
@@ -10,11 +10,22 @@ GO=go
 GOFLAGS=-v
 LDFLAGS=-s -w
 
+# Protobuf 配置
+PROTO_DIR=./internal/metadata/proto
+PROTOC=protoc
+PROTO_OPTS=--go_out=. --go_opt=paths=source_relative
+
 # 默认目标
 all: build
 
+## proto: 编译 Protobuf 文件
+proto:
+	@echo "编译 Protobuf 文件..."
+	cd $(PROTO_DIR) && $(PROTOC) $(PROTO_OPTS) *.proto
+	@echo "Protobuf 编译完成"
+
 ## build: 编译项目
-build:
+build: proto
 	@echo "编译 $(BINARY_NAME)..."
 	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) $(MAIN_PATH)/main.go
 
@@ -72,6 +83,12 @@ deps:
 	$(GO) mod download
 	$(GO) mod tidy
 
+## proto-clean: 清理生成的 Protobuf Go 代码
+proto-clean:
+	@echo "清理 Protobuf 生成的文件..."
+	find $(PROTO_DIR) -name "*.pb.go" -delete
+	@echo "Protobuf 清理完成"
+
 ## run: 运行程序
 run: build
 	@echo "运行 $(BINARY_NAME)..."
@@ -90,17 +107,19 @@ docker-run:
 ## help: 显示帮助信息
 help:
 	@echo "可用命令:"
-	@echo "  make build        - 编译项目"
-	@echo "  make test         - 运行所有测试"
-	@echo "  make test-verbose - 运行详细测试"
+	@echo "  make build         - 编译项目"
+	@echo "  make test          - 运行所有测试"
+	@echo "  make test-verbose  - 运行详细测试"
 	@echo "  make test-coverage - 运行测试并生成覆盖率报告"
-	@echo "  make benchmark    - 运行性能基准测试"
-	@echo "  make clean        - 清理编译文件"
-	@echo "  make fmt          - 格式化代码"
-	@echo "  make vet          - 代码静态检查"
-	@echo "  make lint         - 代码质量检查"
-	@echo "  make deps         - 下载依赖"
-	@echo "  make run          - 运行程序"
-	@echo "  make docker-build - 构建 Docker 镜像"
-	@echo "  make docker-run   - 运行 Docker 容器"
-	@echo "  make help         - 显示此帮助信息"
+	@echo "  make benchmark     - 运行性能基准测试"
+	@echo "  make clean         - 清理编译文件"
+	@echo "  make fmt           - 格式化代码"
+	@echo "  make vet           - 代码静态检查"
+	@echo "  make lint          - 代码质量检查"
+	@echo "  make deps          - 下载依赖"
+	@echo "  make proto         - 编译 Protobuf 文件"
+	@echo "  make proto-clean   - 清理 Protobuf 生成的文件"
+	@echo "  make run           - 运行程序"
+	@echo "  make docker-build  - 构建 Docker 镜像"
+	@echo "  make docker-run    - 运行 Docker 容器"
+	@echo "  make help          - 显示此帮助信息"

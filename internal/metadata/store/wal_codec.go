@@ -267,12 +267,15 @@ func (c *JSONWALCodec) Name() string {
 // 支持的类型：
 //   - types.CodecTypeMessagePack: MessagePack 编解码器（默认）
 //   - types.CodecTypeJSON: JSON 编解码器
+//   - types.CodecTypeProtobuf: Protobuf 编解码器（性能最优）
 func NewWALCodec(codecType types.CodecType) (WALCodec, error) {
 	switch codecType {
 	case types.CodecTypeMessagePack:
 		return NewMessagePackWALCodec(), nil
 	case types.CodecTypeJSON:
 		return NewJSONWALCodec(), nil
+	case types.CodecTypeProtobuf:
+		return NewProtobufWALCodec(), nil
 	default:
 		return nil, types.NewStoreInvalidParameterError(fmt.Sprintf("不支持的编解码器类型: %d", codecType))
 	}

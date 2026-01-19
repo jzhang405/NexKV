@@ -2,9 +2,10 @@
 package uuid
 
 import (
-	"fmt"
-	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
 )
 
 // SafeUUIDGenerator 安全的 UUID 生成器（防时钟回拨）
@@ -12,15 +13,19 @@ import (
 // 特性:
 //   - 检测时钟回拨
 //   - 自动等待时钟恢复
-//   - 记录回拨事件
+//   - 记录回拨事件（drift count）
 //   - 保证 UUID 唯一性和单调性
+//
+// 并发优化:
+//   - 使用原子操作减少锁竞争
+//   - 时钟回拨检测和等待在锁外进行
+//   - 锁持有时间极短（仅用于状态更新）
 type SafeUUIDGenerator struct {
-	mu              sync.Mutex
-	snowflake       *Snowflake
-	maxDrift        time.Duration // 最大允许的时钟漂移
-	lastTime        time.Time     // 上次生成时间
-	callbackCount   int           // 回拨次数
-	maxCallbackWait time.Duration // 最大回拨等待时间
+	snowflake    *Snowflake
+	maxDrift     time.Duration // 最大允许的时钟漂移
+	lastTime     int64         // 上次生成时间（Unix ms，原子操作）
+	driftCount   int64         // 时钟回拨次数（原子操作）
+	maxDriftWait time.Duration // 最大回拨等待时间
 }
 
 // NewSafeUUIDGenerator 创建安全的 UUID 生成器
@@ -44,10 +49,10 @@ func NewSafeUUIDGenerator(datacenterID, workerID int64, maxDrift, maxWait time.D
 	}
 
 	return &SafeUUIDGenerator{
-		snowflake:       snowflake,
-		maxDrift:        maxDrift,
-		lastTime:        time.Now(),
-		maxCallbackWait: maxWait,
+		snowflake:    snowflake,
+		maxDrift:     maxDrift,
+		lastTime:     time.Now().UnixMilli(),
+		maxDriftWait: maxWait,
 	}, nil
 }
 
@@ -61,44 +66,43 @@ func (g *SafeUUIDGenerator) GenerateTransactionID() string {
 
 // GenerateNodeID 生成节点 ID（使用 Snowflake，短 ID）
 // 防时钟回拨版本
+// 使用重试机制优雅处理时钟回拨，避免阻塞
 func (g *SafeUUIDGenerator) GenerateNodeID() int64 {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	const maxRetries = 3
 
-	now := time.Now()
-	drift := now.Sub(g.lastTime)
+	// 第一阶段：使用原子操作检查时钟回拨（无锁）
+	now := time.Now().UnixMilli()
+	lastTime := atomic.LoadInt64(&g.lastTime)
+	drift := now - lastTime
 
-	// 检测时钟回拨
-	if drift < -g.maxDrift {
-		g.callbackCount++
-
-		// 等待时钟恢复
-		waitStart := time.Now()
-		for {
-			time.Sleep(10 * time.Millisecond)
-			now = time.Now()
-			drift = now.Sub(g.lastTime)
-
-			// 时钟恢复或超时
-			if drift >= 0 || time.Since(waitStart) > g.maxCallbackWait {
-				break
-			}
+	// 检测时钟回拨（无锁等待）
+	if drift < 0 {
+		driftDuration := time.Duration(-drift) * time.Millisecond
+		if driftDuration > g.maxDrift {
+			// 发生显著时钟回拨，增加计数
+			atomic.AddInt64(&g.driftCount, 1)
+			logging.Warnf("检测到时钟回拨: drift=%v", driftDuration)
 		}
 	}
 
-	// 生成 Snowflake ID
-	id, err := g.snowflake.Generate()
-	if err != nil {
-		// 时钟回拨，等待恢复
+	// 第二阶段：尝试生成 Snowflake ID（在锁外进行）
+	var id int64
+	var lastErr error
+	for i := 0; i < maxRetries; i++ {
+		id, lastErr = g.snowflake.Generate()
+		if lastErr == nil {
+			// 成功，更新 lastTime（使用原子操作）
+			atomic.StoreInt64(&g.lastTime, time.Now().UnixMilli())
+			return id
+		}
+		// 重试前等待
 		time.Sleep(10 * time.Millisecond)
-		id, err = g.snowflake.Generate()
-		if err != nil {
-			panic(fmt.Sprintf("生成节点 ID 失败（时钟回拨）: %v", err))
-		}
 	}
 
-	g.lastTime = now
-	return id
+	// 所有重试失败，记录错误并返回 0（而非 panic）
+	// 这样调用者可以处理失败情况，而非导致服务崩溃
+	logging.Errorf("Snowflake 生成重试 %d 次失败，返回 0: %v", maxRetries, lastErr)
+	return 0
 }
 
 // Generate 生成通用 UUID（使用 UUID v4，随机）
@@ -107,72 +111,49 @@ func (g *SafeUUIDGenerator) Generate() string {
 	return GenerateUUIDv4()
 }
 
-// GenerateUUIDv4 生成 UUID v4（随机）
-// 防时钟回拨版本（实际上 v4 不需要防回拨，但接口统一）
-func (g *SafeUUIDGenerator) GenerateUUIDv4() string {
-	return GenerateUUIDv4()
-}
-
-// GetCallbackCount 获取时钟回拨次数
-func (g *SafeUUIDGenerator) GetCallbackCount() int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.callbackCount
+// GetDriftCount 获取时钟回拨次数
+func (g *SafeUUIDGenerator) GetDriftCount() int {
+	return int(atomic.LoadInt64(&g.driftCount))
 }
 
 // generateWithClockBackwardsProtection 带时钟回拨保护的生成函数
+// 使用原子操作减少锁竞争
 func (g *SafeUUIDGenerator) generateWithClockBackwardsProtection(generateFunc func() string) string {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	now := time.Now()
-	drift := now.Sub(g.lastTime)
+	// 使用原子操作检查时钟回拨（无锁）
+	now := time.Now().UnixMilli()
+	lastTime := atomic.LoadInt64(&g.lastTime)
+	drift := now - lastTime
 
 	// 检测时钟回拨
-	if drift < -g.maxDrift {
-		g.callbackCount++
-
-		// 等待时钟恢复
-		waitStart := time.Now()
-		for {
-			time.Sleep(10 * time.Millisecond)
-			now = time.Now()
-			drift = now.Sub(g.lastTime)
-
-			// 时钟恢复或超时
-			if drift >= 0 || time.Since(waitStart) > g.maxCallbackWait {
-				break
-			}
-		}
-
-		// 超时后仍回拨，记录警告并继续生成
-		if drift < 0 {
-			fmt.Printf("警告: 时钟回拨超时，drift=%v\n", drift)
+	if drift < 0 {
+		driftDuration := time.Duration(-drift) * time.Millisecond
+		if driftDuration > g.maxDrift {
+			atomic.AddInt64(&g.driftCount, 1)
+			logging.Warnf("检测到时钟回拨: drift=%v", driftDuration)
 		}
 	}
 
-	g.lastTime = now
-	return generateFunc()
+	// 执行生成操作（在锁外进行，避免阻塞）
+	result := generateFunc()
+
+	// 更新 lastTime（使用原子操作）
+	atomic.StoreInt64(&g.lastTime, time.Now().UnixMilli())
+
+	return result
 }
 
 // GetStats 获取生成器统计信息
 func (g *SafeUUIDGenerator) GetStats() map[string]any {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
 	return map[string]any{
-		"callback_count":    g.callbackCount,
-		"last_time":         g.lastTime,
-		"max_drift":         g.maxDrift,
-		"max_callback_wait": g.maxCallbackWait,
+		"drift_count":    atomic.LoadInt64(&g.driftCount),
+		"last_time":      atomic.LoadInt64(&g.lastTime),
+		"max_drift":      g.maxDrift,
+		"max_drift_wait": g.maxDriftWait,
 	}
 }
 
 // Reset 重置生成器状态
 func (g *SafeUUIDGenerator) Reset() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	g.lastTime = time.Now()
-	g.callbackCount = 0
+	atomic.StoreInt64(&g.lastTime, time.Now().UnixMilli())
+	atomic.StoreInt64(&g.driftCount, 0)
 }

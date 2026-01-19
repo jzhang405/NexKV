@@ -20,8 +20,8 @@ import (
 // 全局接收通道注册表
 // 用于在不同 MemoryTransport 实例之间共享接收通道
 var (
-	globalReceiveRegistry = make(map[string]chan Message)
-	globalRegistryMu      sync.RWMutex
+	globalReceiveRegistry   = make(map[string]chan Message)
+	globalReceiveRegistryMu sync.RWMutex
 )
 
 // MemoryTransport 内存传输实现
@@ -68,9 +68,15 @@ type memoryNode struct {
 
 // NewMemoryTransport 创建内存传输
 func NewMemoryTransport(localAddr string) (*MemoryTransport, error) {
+	// 使用系统默认编解码器（Protobuf）
+	codec, err := NewCodec(defaultCodec)
+	if err != nil {
+		return nil, err
+	}
+
 	t := &MemoryTransport{
 		config:            DefaultTransportConfig(),
-		codec:             NewMessagePackCodec(),
+		codec:             codec,
 		nodes:             make(map[string]*memoryNode),
 		channels:          make(map[string]chan Message),
 		disconnectedNodes: make(map[string]bool),
@@ -102,9 +108,9 @@ func (t *MemoryTransport) Start() error {
 	t.channelsMu.Unlock()
 
 	// 注册接收通道到全局注册表
-	globalRegistryMu.Lock()
+	globalReceiveRegistryMu.Lock()
 	globalReceiveRegistry[t.localAddr] = ch
-	globalRegistryMu.Unlock()
+	globalReceiveRegistryMu.Unlock()
 
 	logging.Infof("已注册接收通道到全局注册表: %s", t.localAddr)
 
@@ -125,9 +131,9 @@ func (t *MemoryTransport) Stop() error {
 	logging.Info("停止内存传输层...")
 
 	// 从全局注册表注销接收通道
-	globalRegistryMu.Lock()
+	globalReceiveRegistryMu.Lock()
 	delete(globalReceiveRegistry, t.localAddr)
-	globalRegistryMu.Unlock()
+	globalReceiveRegistryMu.Unlock()
 
 	logging.Infof("已从全局注册表注销: %s", t.localAddr)
 
@@ -173,25 +179,42 @@ func (t *MemoryTransport) Send(ctx context.Context, addr string, msg Message) er
 	}
 
 	// 从全局注册表查找目标节点的接收通道
-	globalRegistryMu.RLock()
+	// 使用双重检查模式缩小竞态窗口
+	globalReceiveRegistryMu.RLock()
 	targetRecvCh, exists := globalReceiveRegistry[addr]
-	globalRegistryMu.RUnlock()
+	globalReceiveRegistryMu.RUnlock()
 
-	if !exists {
+	if !exists || targetRecvCh == nil {
 		return types.NewTransportConnectionError("目标节点不存在", addr, nil)
 	}
 
-	if targetRecvCh == nil {
-		return types.NewTransportStateError("目标节点的接收通道未初始化: " + addr)
+	// 先检查停止信号
+	select {
+	case <-t.stopCh:
+		return types.NewTransportStateError("已停止")
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 
-	// 直接写入目标节点的接收通道
+	// P2-3: 发送消息（使用配置的超时时间）
+	channelTimeout := 5 * time.Second // 默认值
+	if t.config != nil && t.config.ChannelSendTimeout > 0 {
+		channelTimeout = t.config.ChannelSendTimeout
+	}
 	select {
 	case targetRecvCh <- msg:
-		logging.Infof("发送消息: %s to %s (直接写入全局接收通道)", msg.Type(), addr)
+		// 发送前再次验证通道仍存在（减少竞态窗口）
+		globalReceiveRegistryMu.RLock()
+		_, stillExists := globalReceiveRegistry[addr]
+		globalReceiveRegistryMu.RUnlock()
+		if !stillExists {
+			return types.NewTransportConnectionError("目标节点在发送过程中断开", addr, nil)
+		}
+		logging.Debugf("发送消息: %s to %s (直接写入全局接收通道)", msg.Type(), addr)
 		return nil
-	case <-time.After(5 * time.Second):
-		return types.NewTransportTimeoutError("发送")
+	case <-time.After(channelTimeout):
+		return types.NewTransportTimeoutError("发送超时")
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-t.stopCh:
@@ -214,7 +237,18 @@ func (t *MemoryTransport) Receive() <-chan Message {
 }
 
 // registerNode 注册节点
+//
+// 简化版：避免嵌套锁，先确保 channel 存在，再注册 node
 func (t *MemoryTransport) registerNode(addr string) *memoryNode {
+	// 先确保接收通道存在（避免嵌套锁）
+	t.channelsMu.Lock()
+	_, chExists := t.channels[addr]
+	if !chExists {
+		t.channels[addr] = make(chan Message, 1024)
+	}
+	t.channelsMu.Unlock()
+
+	// 再注册节点
 	t.nodesMu.Lock()
 	defer t.nodesMu.Unlock()
 
@@ -231,14 +265,6 @@ func (t *MemoryTransport) registerNode(addr string) *memoryNode {
 	}
 
 	t.nodes[addr] = node
-
-	// 创建接收通道
-	t.channelsMu.Lock()
-	if _, exists := t.channels[addr]; !exists {
-		t.channels[addr] = make(chan Message, 1024)
-	}
-	t.channelsMu.Unlock()
-
 	logging.Infof("注册内存节点: %s", addr)
 	return node
 }
@@ -278,7 +304,7 @@ func (t *MemoryTransport) receiveLoop() {
 			if exists {
 				select {
 				case recvCh <- msg:
-					logging.Infof("接收消息: %s from %s", msg.Type(), t.localAddr)
+					logging.Debugf("接收消息: %s from %s", msg.Type(), t.localAddr)
 				case <-time.After(1 * time.Second):
 					logging.Errorf("接收通道阻塞，消息丢弃")
 				}
@@ -361,6 +387,8 @@ func (t *MemoryTransport) forwardMessages(from, to *memoryNode) {
 				logging.Infof("消息已转发到 %s.recvCh", to.addr)
 			case <-time.After(1 * time.Second):
 				logging.Errorf("转发超时: %s -> %s", from.addr, to.addr)
+			case <-t.stopCh:
+				return
 			}
 		}
 	}
@@ -466,20 +494,56 @@ func (t *MemoryTransport) DisconnectFrom(remoteAddr string) error {
 // Clear 清理所有节点
 //
 // 用于测试后的清理
+// P2-4: 清理本地节点在全局注册表中的条目，保留本地节点在 t.nodes 中
 func (t *MemoryTransport) Clear() {
 	t.nodesMu.Lock()
 	defer t.nodesMu.Unlock()
 
-	for addr, node := range t.nodes {
+	// P2-4: 从全局注册表清理本地节点的接收通道
+	// delete 在键不存在时是空操作，无需预先检查
+	globalReceiveRegistryMu.Lock()
+	delete(globalReceiveRegistry, t.localAddr)
+	globalReceiveRegistryMu.Unlock()
+
+	// 关闭并清理所有远程节点
+	remoteAddrs := make([]string, 0, len(t.nodes))
+	for addr := range t.nodes {
 		if addr != t.localAddr {
-			_ = node.Close()
+			remoteAddrs = append(remoteAddrs, addr)
 		}
 	}
 
-	// 保留本地节点，删除其他节点
-	localNode := t.nodes[t.localAddr]
-	t.nodes = make(map[string]*memoryNode)
-	t.nodes[t.localAddr] = localNode
+	for _, addr := range remoteAddrs {
+		if node, exists := t.nodes[addr]; exists {
+			_ = node.Close()
+			delete(t.nodes, addr)
+		}
+	}
 
-	logging.Debug("清理所有远程节点连接")
+	// 保留本地节点在 t.nodes 中（不删除本地节点）
+	logging.Debugf("清理所有远程节点连接，保留本地节点 %s", t.localAddr)
+}
+
+// ========================================
+// 测试辅助函数
+// ========================================
+
+// cleanupGlobalRegistry 清理全局注册表
+//
+// 用于测试清理，防止测试用例之间互相污染状态
+// 注意：仅在测试代码中调用
+func cleanupGlobalRegistry() {
+	globalReceiveRegistryMu.Lock()
+	defer globalReceiveRegistryMu.Unlock()
+
+	// 关闭所有通道并清空注册表
+	for addr, ch := range globalReceiveRegistry {
+		select {
+		case <-ch:
+			// 通道已关闭
+		default:
+			close(ch)
+		}
+		delete(globalReceiveRegistry, addr)
+	}
 }

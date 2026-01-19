@@ -60,11 +60,19 @@ func (w *MetadataWAL) RecoverOptimized() ([]*WALEntry, error) {
 		}
 
 		// 解析 Header
-		typ := WALType(binary.BigEndian.Uint16(header[0:2]))
-		keyLen := binary.BigEndian.Uint32(header[2:6])
-		valueLen := binary.BigEndian.Uint32(header[6:10])
-		timestampSize := binary.BigEndian.Uint16(header[10:12])
-		oldValueLen := binary.BigEndian.Uint32(header[12:16])
+		// Header 格式: Magic(4) + Type(2) + KeyLen(4) + ValueLen(4) + OldValueLen(4) + TimestampLen(2) + CRC(4)
+		magic := string(header[0:4])
+		if magic != walMagic {
+			logging.Warnf("WAL 条目魔术字不匹配: 期望 %s, 实际 %s", walMagic, magic)
+			// 尝试恢复：跳过无效数据
+			continue
+		}
+
+		typ := WALType(binary.BigEndian.Uint16(header[4:6]))
+		keyLen := binary.BigEndian.Uint32(header[6:10])
+		valueLen := binary.BigEndian.Uint32(header[10:14])
+		oldValueLen := binary.BigEndian.Uint32(header[14:18])
+		timestampSize := binary.BigEndian.Uint16(header[18:20])
 
 		// 读取 Data（包含 OldValue）
 		dataSize := uint32(keyLen) + uint32(valueLen) + uint32(timestampSize) + oldValueLen
@@ -73,15 +81,11 @@ func (w *MetadataWAL) RecoverOptimized() ([]*WALEntry, error) {
 			return nil, types.NewInternalError("读取 WAL data 失败", err)
 		}
 
-		// 读取 Checksum
-		var checksum uint32
-		if err := binary.Read(reader, binary.BigEndian, &checksum); err != nil {
-			return nil, types.NewInternalError("读取校验和失败", err)
-		}
-
-		// 验证校验和
-		computedChecksum := crc32.ChecksumIEEE(append(header, data...))
-		if computedChecksum != checksum {
+		// 验证校验和 (覆盖 Header[0:20] + Data)
+		// CRC 位于 header[20:24]
+		headerCRC := binary.BigEndian.Uint32(header[20:24])
+		computedChecksum := crc32.ChecksumIEEE(append(header[:20], data...))
+		if computedChecksum != headerCRC {
 			logging.Warnf("WAL 条目校验和不匹配（offset=%d），跳过", offset)
 			continue
 		}
@@ -124,21 +128,40 @@ func (w *MetadataWAL) RecoverFromOffset(offset int64) ([]*WALEntry, error) {
 	reader := bufio.NewReader(w.file)
 
 	for {
-		// 读取 Header
+		// 读取 Header (24 字节)
 		header := make([]byte, walHeaderSize)
-		if _, err := io.ReadFull(reader, header); err != nil {
-			if err == io.EOF {
+		n, err := io.ReadFull(reader, header)
+		if err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
 			}
 			return nil, types.NewInternalError("读取 WAL header 失败", err)
 		}
+		if n < walHeaderSize {
+			break
+		}
+
+		// 检查是否是 EOF 标记（前 7 字节）
+		if len(header) >= 7 && string(header[:7]) == WALEOFMagic {
+			logging.Infof("检测到 EOF 标记，停止恢复")
+			break
+		}
 
 		// 解析 Header
-		typ := WALType(binary.BigEndian.Uint16(header[0:2]))
-		keyLen := binary.BigEndian.Uint32(header[2:6])
-		valueLen := binary.BigEndian.Uint32(header[6:10])
-		timestampSize := binary.BigEndian.Uint16(header[10:12])
-		oldValueLen := binary.BigEndian.Uint32(header[12:16])
+		// Header 格式: Magic(4) + Type(2) + KeyLen(4) + ValueLen(4) + OldValueLen(4) + TimestampLen(2) + CRC(4)
+		magic := string(header[0:4])
+		if magic != walMagic {
+			logging.Warnf("WAL 条目魔术字不匹配: 期望 %s, 实际 %s", walMagic, magic)
+			// 尝试恢复：跳过无效数据
+			continue
+		}
+
+		typ := WALType(binary.BigEndian.Uint16(header[4:6]))
+		keyLen := binary.BigEndian.Uint32(header[6:10])
+		valueLen := binary.BigEndian.Uint32(header[10:14])
+		oldValueLen := binary.BigEndian.Uint32(header[14:18])
+		timestampSize := binary.BigEndian.Uint16(header[18:20])
+		headerCRC := binary.BigEndian.Uint32(header[20:24])
 
 		// 读取 Data（包含 OldValue）
 		dataSize := uint32(keyLen) + uint32(valueLen) + uint32(timestampSize) + oldValueLen
@@ -147,15 +170,9 @@ func (w *MetadataWAL) RecoverFromOffset(offset int64) ([]*WALEntry, error) {
 			return nil, types.NewInternalError("读取 WAL data 失败", err)
 		}
 
-		// 读取 Checksum
-		var checksum uint32
-		if err := binary.Read(reader, binary.BigEndian, &checksum); err != nil {
-			return nil, types.NewInternalError("读取校验和失败", err)
-		}
-
 		// 验证校验和
-		computedChecksum := crc32.ChecksumIEEE(append(header, data...))
-		if computedChecksum != checksum {
+		computedChecksum := crc32.ChecksumIEEE(append(header[:20], data...))
+		if computedChecksum != headerCRC {
 			logging.Warnf("WAL 条目校验和不匹配，跳过")
 			continue
 		}
@@ -195,53 +212,88 @@ func (w *MetadataWAL) RecoverBatch(maxCount int) ([]*WALEntry, int64, error) {
 	reader := bufio.NewReader(w.file)
 	var nextOffset int64 = 0
 
-	for i := 0; i < maxCount; i++ {
+	for len(entries) < maxCount {
 		// 记录当前读取位置
 		offset, err := w.file.Seek(0, io.SeekCurrent)
 		if err != nil {
 			return nil, 0, types.NewInternalError("获取文件位置失败", err)
 		}
 
-		// 读取 Header
+		// 读取 Header (24 字节)
 		header := make([]byte, walHeaderSize)
-		if _, err := io.ReadFull(reader, header); err != nil {
-			if err == io.EOF {
+		n, err := io.ReadFull(reader, header)
+		if err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
 			}
 			return nil, 0, types.NewInternalError("读取 WAL header 失败", err)
 		}
+		if n < walHeaderSize {
+			break
+		}
+
+		// 检查是否是 EOF 标记（前 7 字节）
+		if len(header) >= 7 && string(header[:7]) == WALEOFMagic {
+			logging.Infof("检测到 EOF 标记，停止恢复")
+			break
+		}
 
 		// 解析 Header
-		typ := WALType(binary.BigEndian.Uint16(header[0:2]))
-		keyLen := binary.BigEndian.Uint32(header[2:6])
-		valueLen := binary.BigEndian.Uint32(header[6:10])
-		timestampSize := binary.BigEndian.Uint16(header[10:12])
-		oldValueLen := binary.BigEndian.Uint32(header[12:16])
+		// Header 格式: Magic(4) + Type(2) + KeyLen(4) + ValueLen(4) + OldValueLen(4) + TimestampLen(2) + CRC(4)
+		magic := string(header[0:4])
+		if magic != walMagic {
+			logging.Warnf("WAL 条目魔术字不匹配（offset=%d）: 期望 %s, 实际 %s，尝试重新同步", offset, walMagic, magic)
+			// 尝试重新同步：查找下一个魔术字
+			// 使用 Seek 跳过 1 字节，然后继续尝试
+			if _, err := w.file.Seek(offset+1, io.SeekStart); err != nil {
+				return nil, 0, types.NewInternalError("Seek 失败", err)
+			}
+			// 重置 reader
+			reader.Reset(w.file)
+			continue
+		}
+
+		// 解析 Header
+		typ := WALType(binary.BigEndian.Uint16(header[4:6]))
+		keyLen := binary.BigEndian.Uint32(header[6:10])
+		valueLen := binary.BigEndian.Uint32(header[10:14])
+		oldValueLen := binary.BigEndian.Uint32(header[14:18])
+		timestampSize := binary.BigEndian.Uint16(header[18:20])
+		headerCRC := binary.BigEndian.Uint32(header[20:24])
 
 		// 读取 Data（包含 OldValue）
 		dataSize := uint32(keyLen) + uint32(valueLen) + uint32(timestampSize) + oldValueLen
 		data := make([]byte, dataSize)
 		if _, err := io.ReadFull(reader, data); err != nil {
+			if err == io.EOF {
+				break
+			}
 			return nil, 0, types.NewInternalError("读取 WAL data 失败", err)
 		}
 
-		// 读取 Checksum
-		var checksum uint32
-		if err := binary.Read(reader, binary.BigEndian, &checksum); err != nil {
-			return nil, 0, types.NewInternalError("读取校验和失败", err)
-		}
-
-		// 验证校验和
-		computedChecksum := crc32.ChecksumIEEE(append(header, data...))
-		if computedChecksum != checksum {
-			logging.Warnf("WAL 条目校验和不匹配（offset=%d），跳过", offset)
+		// 验证校验和 (覆盖 Header[0:20] + Data)
+		// 注意：不包含 header[20:24]（CRC 字段本身）
+		computedChecksum := crc32.ChecksumIEEE(append(header[:20], data...))
+		if computedChecksum != headerCRC {
+			logging.Warnf("WAL 条目校验和不匹配（offset=%d, computed=%d, header=%d），尝试重新同步", offset, computedChecksum, headerCRC)
+			// 重新同步：从当前位置跳过 1 字节
+			currentPos, _ := w.file.Seek(0, io.SeekCurrent)
+			if _, err := w.file.Seek(currentPos+1, io.SeekStart); err != nil {
+				return nil, 0, types.NewInternalError("Seek 失败", err)
+			}
+			reader.Reset(w.file)
 			continue
 		}
 
 		// 解析 Entry
 		entry, err := w.decodeEntry(typ, keyLen, valueLen, oldValueLen, timestampSize, data)
 		if err != nil {
-			logging.Warnf("解码 WAL 条目失败（offset=%d）: %v", offset, err)
+			logging.Warnf("解码 WAL 条目失败（offset=%d）: %v，尝试重新同步", offset, err)
+			currentPos, _ := w.file.Seek(0, io.SeekCurrent)
+			if _, err := w.file.Seek(currentPos+1, io.SeekStart); err != nil {
+				return nil, 0, types.NewInternalError("Seek 失败", err)
+			}
+			reader.Reset(w.file)
 			continue
 		}
 
@@ -285,35 +337,50 @@ func (w *MetadataWAL) ValidateWALFile() (validEntries, corruptedEntries int, err
 	for {
 		// 读取 Header
 		header := make([]byte, walHeaderSize)
-		_, err := io.ReadFull(reader, header)
+		n, err := io.ReadFull(reader, header)
 		if err != nil {
-			if err == io.EOF {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
 			}
 			return 0, 0, types.NewInternalError("读取 WAL header 失败", err)
 		}
+		if n < walHeaderSize {
+			break
+		}
+
+		// 检查是否是 EOF 标记（前 7 字节）
+		if len(header) >= 7 && string(header[:7]) == WALEOFMagic {
+			break
+		}
 
 		// 解析 Header
-		keyLen := binary.BigEndian.Uint32(header[2:6])
-		valueLen := binary.BigEndian.Uint32(header[6:10])
-		timestampSize := binary.BigEndian.Uint16(header[10:12])
+		// Header 格式: Magic(4) + Type(2) + KeyLen(4) + ValueLen(4) + OldValueLen(4) + TimestampLen(2) + CRC(4)
+		magic := string(header[0:4])
+		if magic != walMagic {
+			corruptedEntries++
+			continue
+		}
 
-		// 读取 Data
-		dataSize := uint32(keyLen) + uint32(valueLen) + uint32(timestampSize)
+		keyLen := binary.BigEndian.Uint32(header[6:10])
+		valueLen := binary.BigEndian.Uint32(header[10:14])
+		oldValueLen := binary.BigEndian.Uint32(header[14:18])
+		timestampSize := binary.BigEndian.Uint16(header[18:20])
+		headerCRC := binary.BigEndian.Uint32(header[20:24])
+
+		// 读取 Data（包含 OldValue）
+		dataSize := uint32(keyLen) + uint32(valueLen) + uint32(timestampSize) + oldValueLen
 		data := make([]byte, dataSize)
 		if _, err := io.ReadFull(reader, data); err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				corruptedEntries++
+				break
+			}
 			return 0, 0, types.NewInternalError("读取 WAL data 失败", err)
 		}
 
-		// 读取 Checksum
-		var checksum uint32
-		if err := binary.Read(reader, binary.BigEndian, &checksum); err != nil {
-			return 0, 0, types.NewInternalError("读取校验和失败", err)
-		}
-
-		// 验证校验和
-		computedChecksum := crc32.ChecksumIEEE(append(header, data...))
-		if computedChecksum != checksum {
+		// 验证校验和 (覆盖 Header[0:20] + Data)
+		computedChecksum := crc32.ChecksumIEEE(append(header[:20], data...))
+		if computedChecksum != headerCRC {
 			corruptedEntries++
 		} else {
 			validEntries++

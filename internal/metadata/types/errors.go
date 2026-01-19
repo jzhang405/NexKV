@@ -17,8 +17,12 @@ const (
 	// 存储层错误码
 	// ========================================
 
+	// P2-1 修复：添加占位符，使错误码从 1 开始（而非 0）
+	// 原因：ErrorCode 类型的零值也是 0，无法区分未初始化的 ErrorCode 和有效的 ErrCodeNotFound
+	_ ErrorCode = iota
+
 	// ErrCodeNotFound 键不存在
-	ErrCodeNotFound ErrorCode = iota
+	ErrCodeNotFound
 
 	// ErrCodeAlreadyExists 键已存在
 	ErrCodeAlreadyExists
@@ -79,6 +83,12 @@ const (
 
 	// ErrCodecUnknownMessageType 未知消息类型
 	ErrCodecUnknownMessageType
+
+	// ErrCompressionDecompress 解压失败
+	ErrCompressionDecompress
+
+	// ErrCompressionCompress 压缩失败
+	ErrCompressionCompress
 
 	// ========================================
 	// Store 模块错误码
@@ -683,5 +693,29 @@ func NewClockOperationError(msg string) *Error {
 	return &Error{
 		Code:    ErrClockOperation,
 		Message: msg,
+	}
+}
+
+// ========================================
+// Compression 模块错误构造函数
+// ========================================
+
+// NewCompressionDecompressError 创建解压失败错误
+func NewCompressionDecompressError(op string, err error) *Error {
+	return &Error{
+		Code:    ErrCompressionDecompress,
+		Message: "解压失败",
+		Op:      op,
+		Err:     err,
+	}
+}
+
+// NewCompressionCompressError 创建压缩失败错误
+func NewCompressionCompressError(op string, err error) *Error {
+	return &Error{
+		Code:    ErrCompressionCompress,
+		Message: "压缩失败",
+		Op:      op,
+		Err:     err,
 	}
 }

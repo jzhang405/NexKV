@@ -5,15 +5,11 @@ package store
 import (
 	"bufio"
 	"encoding/binary"
-	"fmt"
 	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
-	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/clock"
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
@@ -43,6 +39,12 @@ import (
 const (
 	walHeaderSize = 24
 	walMagic      = "NxWL"
+
+	// WALEOFMagic WAL EOF 魔术字（7 字节）
+	// 用于标识 WAL 文件的完整结束位置，支持文件截断和恢复验证
+	WALEOFMagic = "NxWLEOF"
+	// WALEOFSize EOF 标记大小（7 字节）
+	WALEOFSize = 7
 )
 
 // MetadataWAL 元数据 WAL 实现
@@ -103,22 +105,16 @@ func (w *MetadataWAL) Append(entry *WALEntry) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// 序列化 Entry
+	// 序列化 Entry（encodeEntry 已经包含 Header 和 CRC）
 	data, err := w.encodeEntry(entry)
 	if err != nil {
 		return types.NewInternalError("编码 WAL 条目失败", err)
 	}
 
-	// 计算校验和
-	checksum := crc32.ChecksumIEEE(data)
-
-	// 写入：[Data][Checksum]
+	// 写入：[Header(含CRC)][Payload]
+	// 注意：encodeEntry 已经在 header 中包含了 CRC，所以不需要额外写入 checksum
 	if _, err := w.file.Write(data); err != nil {
 		return types.NewInternalError("写入 WAL 数据失败", err)
-	}
-
-	if err := binary.Write(w.file, binary.BigEndian, checksum); err != nil {
-		return types.NewInternalError("写入校验和失败", err)
 	}
 
 	// 强制刷盘
@@ -126,13 +122,16 @@ func (w *MetadataWAL) Append(entry *WALEntry) error {
 		return types.NewInternalError("WAL sync 失败", err)
 	}
 
-	w.offset += int64(len(data) + 4)
+	w.offset += int64(len(data))
 	w.entries++
 
 	return nil
 }
 
 // Recover 从 WAL 恢复
+//
+// 恢复过程中会自动检测 EOF 标记，如果遇到 EOF 标记则停止恢复。
+// EOF 标记之后的任何数据都会被忽略（可能是截断后的残留数据）。
 func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -154,19 +153,48 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 	var entries []*WALEntry
 	reader := bufio.NewReader(file)
 
+	// 首先查找 EOF 标记位置
+	eofPos, err := w.getEOFPositionUnlocked()
+	if err != nil {
+		logging.Warnf("查找 EOF 标记失败: %v，继续恢复", err)
+		eofPos = -1
+	}
+
 	for {
+		// 获取当前读取位置
+		currentPos, _ := file.Seek(0, io.SeekCurrent)
+
+		// 如果设置了 EOF 位置且已到达或超过，停止恢复
+		if eofPos > 0 && currentPos >= eofPos {
+			logging.Infof("恢复到达 EOF 标记位置: %d，停止恢复", eofPos)
+			break
+		}
+
 		// 读取 Header (24 bytes)
 		header := make([]byte, walHeaderSize)
-		if _, err := io.ReadFull(reader, header); err != nil {
-			if err == io.EOF {
+		_, err := io.ReadFull(reader, header)
+		if err != nil {
+			// 文件末尾或数据不足（如只有 EOF 标记）时，正常退出
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
 			}
 			return nil, types.NewInternalError("读取 WAL header 失败", err)
 		}
 
+		// 检查是否到达 EOF 标记位置
+		if eofPos > 0 && currentPos+int64(len(header)) > eofPos {
+			logging.Infof("检测到 EOF 标记位置，停止恢复")
+			break
+		}
+
 		// 验证 Magic
 		magic := string(header[0:4])
 		if magic != walMagic {
+			// 检查是否是 EOF 标记
+			if string(header[0:4]) == WALEOFMagic[:4] {
+				logging.Infof("检测到 EOF 标记，停止恢复")
+				break
+			}
 			logging.Warnf("WAL 条目魔术字不匹配: 期望 %s, 实际 %s", walMagic, magic)
 			// 尝试恢复：查找下一个魔术字位置
 			continue
@@ -187,8 +215,22 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 			return nil, types.NewInternalError("读取 WAL data 失败", err)
 		}
 
-		// 验证 CRC (覆盖 Header + Data)
-		computedCRC := crc32.ChecksumIEEE(append(header, data...))
+		// 检查是否超过 EOF 位置
+		if eofPos > 0 {
+			nextPos, _ := file.Seek(0, io.SeekCurrent)
+			if nextPos > eofPos {
+				logging.Infof("数据读取超过 EOF 位置，回退并停止恢复")
+				// 回退到读取数据之前
+				if _, err := file.Seek(currentPos, io.SeekStart); err != nil {
+					logging.Warnf("回退文件位置失败: %v", err)
+				}
+				break
+			}
+		}
+
+		// 验证 CRC (覆盖 Header[0:20] + Data)
+		// 注意：不包含 header[20:24]（CRC 字段本身）
+		computedCRC := crc32.ChecksumIEEE(append(header[:20], data...))
 		if computedCRC != headerCRC {
 			logging.Warnf("WAL 条目校验和不匹配，跳过")
 			continue
@@ -216,10 +258,67 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 	w.file = file
 	w.offset = currentOffset
 
+	logging.Infof("WAL 恢复完成: 恢复 %d 个条目", len(entries))
+
 	return entries, nil
 }
 
+// getEOFPositionUnlocked 获取 EOF 标记位置（不加锁版本，内部使用）
+func (w *MetadataWAL) getEOFPositionUnlocked() (int64, error) {
+	// 获取当前文件大小
+	stat, err := w.file.Stat()
+	if err != nil {
+		return -1, types.NewInternalError("获取 WAL 文件信息失败", err)
+	}
+
+	fileSize := stat.Size()
+
+	// 文件太小，不足以容纳 EOF 标记
+	if fileSize < WALEOFSize {
+		return -1, nil
+	}
+
+	// 从文件末尾向前扫描，查找 EOF 标记
+	const scanChunkSize = 4096
+	buffer := make([]byte, scanChunkSize)
+
+	scanOffset := fileSize
+	for scanOffset > 0 {
+		scanSize := scanChunkSize
+		if scanOffset < scanChunkSize {
+			scanSize = int(scanOffset)
+		}
+		scanOffset -= int64(scanSize)
+
+		if _, err := w.file.ReadAt(buffer[:scanSize], scanOffset); err != nil {
+			return -1, types.NewInternalError("扫描 WAL 文件失败", err)
+		}
+
+		eofBytes := []byte(WALEOFMagic)
+		for i := scanSize - 1; i >= 0; i-- {
+			if i+WALEOFSize <= scanSize {
+				match := true
+				for j := 0; j < WALEOFSize; j++ {
+					if buffer[i+j] != eofBytes[j] {
+						match = false
+						break
+					}
+				}
+				if match {
+					return scanOffset + int64(i), nil
+				}
+			}
+		}
+	}
+
+	return -1, nil
+}
+
 // Truncate 截断 WAL
+//
+// 截断 WAL 文件到指定偏移量，并写入新的 EOF 标记。
+//
+// 注意：截断操作会移除 EOF 标记之后的所有数据，截断完成后会写入新的 EOF 标记。
 func (w *MetadataWAL) Truncate(offset int64) error {
 	if w.closed {
 		return types.NewClosedError("WAL")
@@ -245,6 +344,20 @@ func (w *MetadataWAL) Truncate(offset int64) error {
 
 	w.file = file
 	w.offset = offset
+
+	// 写入新的 EOF 标记
+	if _, err := w.file.WriteString(WALEOFMagic); err != nil {
+		return types.NewInternalError("写入 EOF 标记失败", err)
+	}
+
+	// 强制刷盘
+	if err := w.file.Sync(); err != nil {
+		return types.NewInternalError("EOF 标记 sync 失败", err)
+	}
+
+	w.offset += WALEOFSize
+
+	logging.Infof("WAL 截断完成: offset=%d, EOF offset=%d", offset, w.offset)
 
 	return nil
 }
@@ -279,6 +392,154 @@ func (w *MetadataWAL) Close() error {
 	return nil
 }
 
+// WriteEOFMarker 写入 EOF 标记
+//
+// 在 WAL 文件末尾写入 EOF 魔术字（"NxWLEOF"，8 字节），
+// 用于标识文件的完整结束位置。
+//
+// 应用场景：
+//   - Checkpoint 创建完成后写入 EOF 标记
+//   - WAL 截断后写入新的 EOF 标记
+//   - 文件关闭前写入 EOF 标记
+//
+// 返回错误信息
+func (w *MetadataWAL) WriteEOFMarker() error {
+	if w.closed {
+		return types.NewClosedError("WAL")
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// 在 O_APPEND 模式下，直接使用 Write() 会自动追加到文件末尾
+	// 不需要手动 Seek，因为 O_APPEND 标志会自动处理文件位置
+	if _, err := w.file.Write([]byte(WALEOFMagic)); err != nil {
+		return types.NewInternalError("写入 EOF 标记失败", err)
+	}
+
+	// 强制刷盘
+	if err := w.file.Sync(); err != nil {
+		return types.NewInternalError("EOF 标记 sync 失败", err)
+	}
+
+	// 更新 offset
+	w.offset += WALEOFSize
+
+	return nil
+}
+
+// ValidateEOF 验证 EOF 标记
+//
+// 检查 WAL 文件末尾是否有有效的 EOF 标记。
+// 如果存在有效标记，说明文件完整；否则文件可能不完整或已损坏。
+//
+// 返回验证结果和错误信息
+func (w *MetadataWAL) ValidateEOF() (bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// 获取当前文件大小
+	stat, err := w.file.Stat()
+	if err != nil {
+		return false, types.NewInternalError("获取 WAL 文件信息失败", err)
+	}
+
+	fileSize := stat.Size()
+
+	// 调试：记录文件大小
+	logging.Infof("ValidateEOF: fileSize=%d, WALEOFSize=%d, readAt=%d", fileSize, WALEOFSize, fileSize-WALEOFSize)
+
+	// 文件太小，不足以容纳 EOF 标记
+	if fileSize < WALEOFSize {
+		return false, nil
+	}
+
+	// 读取文件末尾的 8 字节
+	eofMarker := make([]byte, WALEOFSize)
+	if _, err := w.file.ReadAt(eofMarker, fileSize-WALEOFSize); err != nil {
+		return false, types.NewInternalError("读取 EOF 标记失败", err)
+	}
+
+	// 调试：记录实际读取的内容
+	logging.Infof("ValidateEOF: 读取内容 (hex)=%x, (ascii)=%s", eofMarker, string(eofMarker))
+
+	// 验证魔术字
+	valid := string(eofMarker) == WALEOFMagic
+
+	if valid {
+		logging.Infof("WAL EOF 标记验证成功: offset=%d", fileSize-WALEOFSize)
+	} else {
+		logging.Warnf("WAL EOF 标记验证失败: 期望 %s, 实际 %s", WALEOFMagic, string(eofMarker))
+	}
+
+	return valid, nil
+}
+
+// GetEOFPosition 获取 EOF 标记位置
+//
+// 扫描 WAL 文件，查找 EOF 标记的位置。
+// 如果找到 EOF 标记，返回其位置；否则返回 -1。
+//
+// 返回 EOF 标记位置和错误信息
+func (w *MetadataWAL) GetEOFPosition() (int64, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// 获取当前文件大小
+	stat, err := w.file.Stat()
+	if err != nil {
+		return -1, types.NewInternalError("获取 WAL 文件信息失败", err)
+	}
+
+	fileSize := stat.Size()
+
+	// 文件太小，不足以容纳 EOF 标记
+	if fileSize < WALEOFSize {
+		return -1, nil
+	}
+
+	// 从文件末尾向前扫描，查找 EOF 标记
+	// 每次读取 4KB 块，提高大文件扫描效率
+	const scanChunkSize = 4096
+	buffer := make([]byte, scanChunkSize)
+
+	scanOffset := fileSize
+	for scanOffset > 0 {
+		// 计算本次扫描大小
+		scanSize := scanChunkSize
+		if scanOffset < scanChunkSize {
+			scanSize = int(scanOffset)
+		}
+		scanOffset -= int64(scanSize)
+
+		// 读取数据块
+		if _, err := w.file.ReadAt(buffer[:scanSize], scanOffset); err != nil {
+			return -1, types.NewInternalError("扫描 WAL 文件失败", err)
+		}
+
+		// 在数据块中查找 EOF 标记
+		eofBytes := []byte(WALEOFMagic)
+		for i := scanSize - 1; i >= 0; i-- {
+			// 检查是否匹配 EOF 标记
+			if i+WALEOFSize <= scanSize {
+				match := true
+				for j := 0; j < WALEOFSize; j++ {
+					if buffer[i+j] != eofBytes[j] {
+						match = false
+						break
+					}
+				}
+				if match {
+					return scanOffset + int64(i), nil
+				}
+			}
+		}
+	}
+
+	// 未找到 EOF 标记
+	return -1, nil
+}
+
 // encodeEntry 编码 WAL 条目
 func (w *MetadataWAL) encodeEntry(entry *WALEntry) ([]byte, error) {
 	// 序列化 HLC 时间戳（如果为 nil，使用零值 HLC）
@@ -306,24 +567,26 @@ func (w *MetadataWAL) encodeEntry(entry *WALEntry) ([]byte, error) {
 	timestampLen := uint16(len(timestampData))
 
 	// 构建 Data (新格式: key + value + oldvalue + timestamp)
-	data := make([]byte, 0, walHeaderSize+keyLen+valueLen+oldValueLen+int(timestampLen))
-	data = append(data, []byte(entry.Key)...)
+	data := make([]byte, 0, int(keyLen)+int(valueLen)+int(oldValueLen)+int(timestampLen))
+	data = append(data, entry.Key...)
 	data = append(data, entry.Value...)
 	data = append(data, entry.OldValue...)
 	data = append(data, timestampData...)
 
-	// 构建 Header (24 字节): Magic(4) + Type(2) + KeyLen(4) + ValueLen(4) + OldValueLen(4) + TimestampLen(2) + CRC(4)
+	// 构建 Header (20 字节，不含 CRC): Magic(4) + Type(2) + KeyLen(4) + ValueLen(4) + OldValueLen(4) + TimestampLen(2)
 	header := make([]byte, walHeaderSize)
-	copy(header[0:4], []byte(walMagic))                               // Magic: "NxWL"
-	binary.BigEndian.PutUint16(header[4:6], uint16(entry.Type))       // Type
-	binary.BigEndian.PutUint32(header[6:10], keyLen)                  // KeyLen
-	binary.BigEndian.PutUint32(header[10:14], valueLen)               // ValueLen
-	binary.BigEndian.PutUint32(header[14:18], oldValueLen)            // OldValueLen
-	binary.BigEndian.PutUint16(header[18:20], timestampLen)           // TimestampLen
+	copy(header[0:4], []byte(walMagic))                         // Magic: "NxWL"
+	binary.BigEndian.PutUint16(header[4:6], uint16(entry.Type)) // Type
+	binary.BigEndian.PutUint32(header[6:10], keyLen)            // KeyLen
+	binary.BigEndian.PutUint32(header[10:14], valueLen)         // ValueLen
+	binary.BigEndian.PutUint32(header[14:18], oldValueLen)      // OldValueLen
+	binary.BigEndian.PutUint16(header[18:20], timestampLen)     // TimestampLen
+	// header[20:24] 保持为 0（CRC 字段）
 
-	// 计算 CRC (覆盖 Header + Data)
-	crc := crc32.ChecksumIEEE(append(header, data...))
-	binary.BigEndian.PutUint32(header[20:24], crc)                    // CRC
+	// 计算 CRC (覆盖 Header[0:20] + Data)
+	// 注意：不包含 header[20:24]（CRC 字段本身）
+	crc := crc32.ChecksumIEEE(append(header[:20], data...))
+	binary.BigEndian.PutUint32(header[20:24], crc) // CRC
 
 	// 最终数据: Header + Data
 	result := make([]byte, 0, len(header)+len(data))
@@ -342,7 +605,10 @@ func (w *MetadataWAL) decodeEntry(typ WALType, keyLen, valueLen, oldValueLen uin
 	offset := 0
 
 	// 解析 Key (新格式: key 在最前面)
-	entry.Key = string(data[offset : offset+int(keyLen)])
+	if keyLen > 0 {
+		entry.Key = make([]byte, keyLen)
+		copy(entry.Key, data[offset:offset+int(keyLen)])
+	}
 	offset += int(keyLen)
 
 	// 解析 Value
@@ -367,267 +633,6 @@ func (w *MetadataWAL) decodeEntry(typ WALType, keyLen, valueLen, oldValueLen uin
 	}
 
 	return entry, nil
-}
-
-// snapshotManagerImpl 快照管理器实现
-type snapshotManagerImpl struct {
-	dataDir   string
-	retention int // 保留快照数量
-}
-
-const (
-	snapshotMagic     = "NxSN" // NexKV Snapshot
-	snapshotHeaderSize = 16     // Magic(4) + Version(2) + Codec(2) + Length(4) + CRC(4)
-)
-
-// NewSnapshotManager 创建快照管理器
-func NewSnapshotManager(dataDir string) (SnapshotManager, error) {
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		return nil, types.NewInternalError("创建快照目录失败", err)
-	}
-
-	return &snapshotManagerImpl{
-		dataDir:   dataDir,
-		retention: 5, // 保留最近 5 个快照
-	}, nil
-}
-
-// Create 创建快照
-func (s *snapshotManagerImpl) Create(store MVStore) error {
-	// 从 store 获取快照数据（Protobuf 编码）
-	snapshotData, err := store.CreateSnapshot()
-	if err != nil {
-		return types.NewInternalError("获取快照数据失败", err)
-	}
-
-	snapshotName := fmt.Sprintf("metadata-store-checkpoint-%d.snap", time.Now().Unix())
-	snapshotPath := filepath.Join(s.dataDir, snapshotName)
-
-	// 构建文件头（16 字节）
-	header := make([]byte, snapshotHeaderSize)
-	copy(header[0:4], []byte(snapshotMagic))            // Magic: "NxSN"
-	binary.BigEndian.PutUint16(header[4:6], 1)           // Version: 1
-	binary.BigEndian.PutUint16(header[6:8], uint16(types.CodecTypeProtobuf)) // Codec: Protobuf(3)
-	binary.BigEndian.PutUint32(header[8:12], uint32(len(snapshotData)))     // Length
-
-	// 计算 CRC (覆盖 Header + Data)
-	crc := crc32.ChecksumIEEE(append(header, snapshotData...))
-	binary.BigEndian.PutUint32(header[12:16], crc)       // CRC
-
-	// 写入文件：Header + Data
-	fullData := append(header, snapshotData...)
-	if err := os.WriteFile(snapshotPath, fullData, 0644); err != nil {
-		return types.NewInternalError("写入快照失败", err)
-	}
-
-	// 清理旧快照
-	s.cleanupOldSnapshots()
-
-	return nil
-}
-
-// List 列出所有快照
-func (s *snapshotManagerImpl) List() ([]string, error) {
-	entries, err := os.ReadDir(s.dataDir)
-	if err != nil {
-		return nil, types.NewInternalError("读取快照目录失败", err)
-	}
-
-	var snapshots []string
-	for _, entry := range entries {
-		if !entry.IsDir() && isSnapshotFile(entry.Name()) {
-			snapshots = append(snapshots, entry.Name())
-		}
-	}
-
-	return snapshots, nil
-}
-
-// Restore 从快照恢复
-func (s *snapshotManagerImpl) Restore(snapshotName string) ([]byte, error) {
-	snapshotPath := filepath.Join(s.dataDir, snapshotName)
-
-	// 读取整个文件
-	fullData, err := os.ReadFile(snapshotPath)
-	if err != nil {
-		return nil, types.NewInternalError("读取快照失败", err)
-	}
-
-	// 检查文件大小
-	if len(fullData) < snapshotHeaderSize {
-		return nil, types.NewInternalError("快照文件太小", nil)
-	}
-
-	// 解析文件头
-	header := fullData[0:snapshotHeaderSize]
-	magic := string(header[0:4])
-	if magic != snapshotMagic {
-		return nil, types.NewInternalError(fmt.Sprintf("快照魔术字不匹配: 期望 %s, 实际 %s", snapshotMagic, magic), nil)
-	}
-
-	version := binary.BigEndian.Uint16(header[4:6])
-	if version != 1 {
-		return nil, types.NewInternalError(fmt.Sprintf("不支持的快照版本: %d", version), nil)
-	}
-
-	codec := types.CodecType(binary.BigEndian.Uint16(header[6:8]))
-	length := binary.BigEndian.Uint32(header[8:12])
-	headerCRC := binary.BigEndian.Uint32(header[12:16])
-
-	// 提取数据区
-	data := fullData[snapshotHeaderSize:]
-	if uint32(len(data)) != length {
-		return nil, types.NewInternalError(fmt.Sprintf("快照数据长度不匹配: 期望 %d, 实际 %d", length, len(data)), nil)
-	}
-
-	// 验证 CRC
-	computedCRC := crc32.ChecksumIEEE(fullData)
-	if computedCRC != headerCRC {
-		return nil, types.NewInternalError("快照 CRC 校验失败", nil)
-	}
-
-	// 返回数据区（Protobuf 编码）
-	return data, nil
-}
-
-// Delete 删除快照
-func (s *snapshotManagerImpl) Delete(snapshotName string) error {
-	snapshotPath := filepath.Join(s.dataDir, snapshotName)
-
-	if err := os.Remove(snapshotPath); err != nil {
-		return types.NewInternalError("删除快照失败", err)
-	}
-
-	return nil
-}
-
-// Close 关闭快照管理器
-func (s *snapshotManagerImpl) Close() error {
-	return nil
-}
-
-// cleanupOldSnapshots 清理旧快照
-func (s *snapshotManagerImpl) cleanupOldSnapshots() {
-	snapshots, err := s.List()
-	if err != nil {
-		logging.Warnf("列出快照失败: %v", err)
-		return
-	}
-
-	// 按时间排序（旧到新）
-	snapshots = sortSnapshots(snapshots)
-
-	// 删除超过保留数量的快照
-	for i := 0; i < len(snapshots)-s.retention; i++ {
-		if err := s.Delete(snapshots[i]); err != nil {
-			logging.Warnf("删除快照 %s 失败: %v", snapshots[i], err)
-		}
-	}
-}
-
-// isSnapshotFile 检查是否是快照文件
-func isSnapshotFile(name string) bool {
-	// 检查是否符合 "metadata-store-checkpoint-xxx.snap" 格式
-	const prefix = "metadata-store-checkpoint-"
-	const suffix = ".snap"
-	if !strings.HasPrefix(name, prefix) {
-		return false
-	}
-	if !strings.HasSuffix(name, suffix) {
-		return false
-	}
-	// 检查中间是否为数字时间戳
-	timestampStr := strings.TrimPrefix(name, prefix)
-	timestampStr = strings.TrimSuffix(timestampStr, suffix)
-	_, err := strconv.ParseInt(timestampStr, 10, 64)
-	return err == nil
-}
-
-// sortSnapshots 按时间排序快照（旧到新）
-func sortSnapshots(snapshots []string) []string {
-	// 简单实现：基于文件名排序
-	// 实际应该解析时间戳并排序
-	result := make([]string, len(snapshots))
-	copy(result, snapshots)
-
-	// 使用文件名排序（metadata-store-checkpoint-xxx.snap）
-	// 这里简化处理，实际应该解析时间戳
-	for i := 0; i < len(result); i++ {
-		for j := i + 1; j < len(result); j++ {
-			if result[i] > result[j] {
-				result[i], result[j] = result[j], result[i]
-			}
-		}
-	}
-
-	return result
-}
-
-// WALCheckpoint WAL 检查点
-//
-// 定期创建检查点，可以：
-//   - 截断 WAL，删除已应用的日志
-//   - 创建快照，加速恢复
-type WALCheckpoint struct {
-	wal       WAL
-	snapMgr   SnapshotManager
-	offset    int64
-	lastCheck int64
-}
-
-// NewWALCheckpoint 创建检查点管理器
-func NewWALCheckpoint(wal WAL, snapMgr SnapshotManager) *WALCheckpoint {
-	return &WALCheckpoint{
-		wal:     wal,
-		snapMgr: snapMgr,
-	}
-}
-
-// CreateCheckpoint 创建检查点
-func (c *WALCheckpoint) CreateCheckpoint() error {
-	// 写入 checkpoint 条目
-	checkpointEntry := &WALEntry{
-		Type: WALTypeCheckpoint,
-	}
-
-	if err := c.wal.Append(checkpointEntry); err != nil {
-		return types.NewInternalError("写入 checkpoint 失败", err)
-	}
-
-	c.lastCheck = c.offset
-
-	return nil
-}
-
-// Truncate 截断到指定位置
-func (c *WALCheckpoint) Truncate(offset int64) error {
-	if err := c.wal.Truncate(offset); err != nil {
-		return err
-	}
-
-	c.offset = offset
-	return nil
-}
-
-// LoadSnapshot 加载最新快照
-func (c *WALCheckpoint) LoadSnapshot() ([]byte, string, error) {
-	snapshots, err := c.snapMgr.List()
-	if err != nil {
-		return nil, "", types.NewInternalError("列出快照失败", err)
-	}
-
-	if len(snapshots) == 0 {
-		return nil, "", nil
-	}
-
-	// 获取最新快照
-	latest := snapshots[len(snapshots)-1]
-	data, err := c.snapMgr.Restore(latest)
-	if err != nil {
-		return nil, "", types.NewInternalError("恢复快照失败", err)
-	}
-
-	return data, latest, nil
 }
 
 // WALStats WAL 统计信息

@@ -66,39 +66,56 @@ type Frame struct {
 
 // NewFrame 创建新帧
 func NewFrame(msgType MessageType, codecType types.CodecType, data []byte) *Frame {
-	// 计算 Data 长度
 	length := uint32(len(data))
 
-	// 构建帧头（不包含 Data 和 CRC32）
-	header := make([]byte, 12) // Magic(4) + Type(2) + types.CodecType(2) + Length(4)
-	copy(header[0:4], []byte(FrameMagic))
-	binary.BigEndian.PutUint16(header[4:6], uint16(msgType))
-	binary.BigEndian.PutUint16(header[6:8], uint16(codecType))
-	binary.BigEndian.PutUint32(header[8:12], length)
-
-	// 计算校验和 (Magic + Type + CodecType + Length + Data)
-	crc := crc32.ChecksumIEEE(data)
-	crc = crc32.Update(crc, crc32.IEEETable, header)
-	calculatedCRC32 := crc
-
-	return &Frame{
+	frame := &Frame{
 		Magic:     [4]byte{'N', 'x', 'K', 'V'},
 		Type:      msgType,
 		CodecType: codecType,
 		Length:    length,
-		CRC32:     calculatedCRC32,
 		Data:      data,
 	}
+
+	// P2-1 修复：使用统一的 CRC32 计算方法
+	frame.recalculateCRC32()
+
+	return frame
+}
+
+// recalculateCRC32 重新计算帧的 CRC32 校验和
+//
+// P2-1 优化：提取 CRC32 计算逻辑到独立方法，避免在 NewFrame 和 Marshal 中重复
+// 计算范围：Magic + Type + CodecType + Length + Data（不包括 CRC32 字段本身）
+func (f *Frame) recalculateCRC32() {
+	// 构建帧头（不包含 Data 和 CRC32）
+	header := make([]byte, 12) // Magic(4) + Type(2) + CodecType(2) + Length(4)
+	copy(header[0:4], f.Magic[:])
+	binary.BigEndian.PutUint16(header[4:6], uint16(f.Type))
+	binary.BigEndian.PutUint16(header[6:8], uint16(f.CodecType))
+	binary.BigEndian.PutUint32(header[8:12], f.Length)
+
+	// 计算校验和：Header + Data（顺序必须与 verifyChecksum 一致）
+	crc := crc32.ChecksumIEEE(header)                // Header (Magic + Type + CodecType + Length)
+	crc = crc32.Update(crc, crc32.IEEETable, f.Data) // Data
+	f.CRC32 = crc
 }
 
 // Marshal 序列化帧为字节流
 func (f *Frame) Marshal() ([]byte, error) {
+	// 确保 f.Length 与 len(f.Data) 一致
+	dataLen := uint32(len(f.Data))
+	if f.Length != dataLen {
+		// P2-1 修复：Data 长度变化时，需要重新计算 CRC32
+		f.Length = dataLen
+		f.recalculateCRC32()
+	}
+
 	if f.Length > MaxFrameSize {
 		return nil, types.NewFrameTooLargeError(int(f.Length))
 	}
 
 	// 帧总大小 = Header(16) + Data
-	totalSize := FrameHeaderSize + len(f.Data)
+	totalSize := FrameHeaderSize + int(f.Length)
 	buf := make([]byte, totalSize)
 
 	// 写入 Magic (0-3)
@@ -117,7 +134,7 @@ func (f *Frame) Marshal() ([]byte, error) {
 	binary.BigEndian.PutUint32(buf[12:16], f.CRC32)
 
 	// 写入 Data (16-)
-	if len(f.Data) > 0 {
+	if f.Length > 0 {
 		copy(buf[16:], f.Data)
 	}
 
@@ -178,11 +195,15 @@ func (f *Frame) Unmarshal(data []byte) error {
 func (f *Frame) verifyChecksum(data []byte) bool {
 	// 重新计算校验和：Magic(0:4) + Type(4:6) + types.CodecType(6:8) + Length(8:12) + Data(16:end)
 	// 注意：不包括 CRC32 字段本身(12:16)
-	crc := crc32.ChecksumIEEE(data[16:])                 // Data
-	crc = crc32.Update(crc, crc32.IEEETable, data[0:12]) // Magic + Type + CodecType + Length
+	// 顺序必须与 NewFrame() 保持一致：先 Header，后 Data
+	crc := crc32.ChecksumIEEE(data[0:12])               // Magic + Type + CodecType + Length
+	crc = crc32.Update(crc, crc32.IEEETable, data[16:]) // Data
 	calculated := crc
 
-	return f.CRC32 == calculated || f.CRC32 == 0 // CRC32 为 0 表示未启用校验
+	// 严格校验：所有帧必须进行 CRC32 匹配，不允许基于任何值跳过或误判
+	// 修复原因：原逻辑中 CRC32=0 跳过校验存在安全漏洞，允许损坏/伪造帧被接受
+	// 说明：CRC32=0 是合法计算结果（概率约 1/2^32），无需特殊处理，直接参与对比即可
+	return f.CRC32 == calculated
 }
 
 // String 返回帧的字符串表示
@@ -193,7 +214,10 @@ func (f *Frame) String() string {
 
 // HexDump 返回帧的十六进制转储
 func (f *Frame) HexDump() string {
-	data, _ := f.Marshal()
+	data, err := f.Marshal()
+	if err != nil {
+		return fmt.Sprintf("Error marshaling frame: %v", err)
+	}
 	return hex.Dump(data)
 }
 
@@ -268,7 +292,10 @@ func (fw *FrameWriter) WriteFrame(frame *Frame) error {
 	}
 
 	_, err = fw.w.Write(data)
-	return err
+	if err != nil {
+		return types.NewOpErr(types.ErrCodeTransport, "WriteFrame", "写入帧失败", err)
+	}
+	return nil
 }
 
 // ReadFrame 从连接读取一帧

@@ -86,8 +86,8 @@ func NewMemoryMVStore(options *MVStoreOptions) (*MemoryMVStore, error) {
 		store.wal = wal
 	}
 
-	// 初始化快照管理器
-	snapMgr, err := NewSnapshotManager(options.DataDir)
+	// 初始化快照管理器（使用新的 SnapshotFileManager）
+	snapMgr, err := NewSnapshotFileManager(options.DataDir, types.CompressionTypeSnappy)
 	if err != nil {
 		return nil, types.NewStoreSnapshotError("初始化", err)
 	}
@@ -130,7 +130,7 @@ func (m *MemoryMVStore) Put(key string, value []byte) error {
 		walEntry := &WALEntry{
 			Timestamp: timestamp,
 			Type:      WALTypePut,
-			Key:       key,
+			Key:       []byte(key),
 			Value:     value,
 		}
 		if err := m.wal.Append(walEntry); err != nil {
@@ -243,7 +243,7 @@ func (m *MemoryMVStore) Delete(key string) error {
 		walEntry := &WALEntry{
 			Timestamp: timestamp,
 			Type:      WALTypeDelete,
-			Key:       key,
+			Key:       []byte(key),
 		}
 		if err := m.wal.Append(walEntry); err != nil {
 			return types.NewStoreWALError("写入", err)
@@ -630,7 +630,9 @@ func (m *MemoryMVStore) applyPut(entry *WALEntry) error {
 		size:      len(entry.Value),
 	}
 
-	vlist, _ := m.data.LoadOrStore(entry.Key, &versionList{})
+	// 将 []byte key 转换为 string（sync.Map 要求 key 是可哈希类型）
+	keyStr := string(entry.Key)
+	vlist, _ := m.data.LoadOrStore(keyStr, &versionList{})
 	list := vlist.(*versionList)
 
 	list.mu.Lock()
@@ -653,7 +655,9 @@ func (m *MemoryMVStore) applyDelete(entry *WALEntry) error {
 		size:      0,
 	}
 
-	vlist, _ := m.data.LoadOrStore(entry.Key, &versionList{})
+	// 将 []byte key 转换为 string（sync.Map 要求 key 是可哈希类型）
+	keyStr := string(entry.Key)
+	vlist, _ := m.data.LoadOrStore(keyStr, &versionList{})
 	list := vlist.(*versionList)
 
 	list.mu.Lock()

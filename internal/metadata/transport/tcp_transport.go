@@ -9,7 +9,7 @@ package transport
 
 import (
 	"context"
-	"github.com/jzhang405/NexKV/internal/metadata/types"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -17,7 +17,59 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
+
+// TCP 常量配置
+const (
+	// DefaultIdleTimeout 默认空闲连接超时时间（2分钟）
+	DefaultIdleTimeout = 2 * time.Minute
+)
+
+// validateTransportConfig 验证传输层配置的有效性
+//
+// P2-5: 配置验证函数，确保配置值在合理范围内
+func validateTransportConfig(config *TransportConfig) error {
+	// 验证监听地址
+	if config.ListenAddr == "" {
+		return fmt.Errorf("监听地址不能为空")
+	}
+
+	// 验证最大消息大小
+	if config.MaxMessageSize <= 0 {
+		return fmt.Errorf("最大消息大小必须大于 0，当前值: %d", config.MaxMessageSize)
+	}
+	if config.MaxMessageSize > 1024*1024*1024 { // 1GB
+		return fmt.Errorf("最大消息大小不能超过 1GB，当前值: %d", config.MaxMessageSize)
+	}
+
+	// 验证超时配置
+	if config.ReadTimeout < 0 {
+		return fmt.Errorf("读超时不能为负数，当前值: %v", config.ReadTimeout)
+	}
+	if config.WriteTimeout < 0 {
+		return fmt.Errorf("写超时不能为负数，当前值: %v", config.WriteTimeout)
+	}
+	if config.KeepAliveInterval < 0 {
+		return fmt.Errorf("保活间隔不能为负数，当前值: %v", config.KeepAliveInterval)
+	}
+	if config.KeepAliveTimeout < 0 {
+		return fmt.Errorf("保活超时不能为负数，当前值: %v", config.KeepAliveTimeout)
+	}
+	if config.ChannelSendTimeout < 0 {
+		return fmt.Errorf("通道发送超时不能为负数，当前值: %v", config.ChannelSendTimeout)
+	}
+
+	// 验证缓冲区大小
+	if config.BufferSize <= 0 {
+		return fmt.Errorf("缓冲区大小必须大于 0，当前值: %d", config.BufferSize)
+	}
+	if config.BufferSize > 65536 { // 64KB
+		return fmt.Errorf("缓冲区大小不能超过 65536，当前值: %d", config.BufferSize)
+	}
+
+	return nil
+}
 
 // TCPTransport TCP 传输实现
 //
@@ -83,32 +135,53 @@ type tcpConn struct {
 // 使用默认配置
 func NewTCPTransport(listenAddr string) (*TCPTransport, error) {
 	return NewTCPTransportWithConfig(&TransportConfig{
-		ListenAddr:        listenAddr,
-		MaxMessageSize:    1024 * 1024 * 100, // 100MB
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		KeepAliveInterval: 10 * time.Second,
-		KeepAliveTimeout:  30 * time.Second,
-		BufferSize:        4096,
+		ListenAddr:         listenAddr,
+		MaxMessageSize:     1024 * 1024 * 100, // 100MB
+		ReadTimeout:        30 * time.Second,
+		WriteTimeout:       30 * time.Second,
+		KeepAliveInterval:  10 * time.Second,
+		KeepAliveTimeout:   30 * time.Second,
+		BufferSize:         4096,
+		ChannelSendTimeout: 5 * time.Second, // P2-2: 通道发送超时
 	})
 }
 
 // NewTCPTransportWithConfig 创建 TCP 传输（自定义配置）
+//
+// P2-5: 添加配置验证，确保配置值的有效性
 func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 	if config == nil {
 		config = DefaultTransportConfig()
 	}
 
+	// P2-5: 验证配置有效性
+	if err := validateTransportConfig(config); err != nil {
+		return nil, err
+	}
+
+	// acceptCh 用于接受连接，缓冲区可以小一些（连接按需处理）
+	// recvCh 用于接收消息，使用配置的 BufferSize
+	acceptChSize := config.BufferSize / 8
+	if acceptChSize < 32 {
+		acceptChSize = 32
+	}
+
+	// 使用系统默认编解码器（Protobuf）
+	codec, err := NewCodec(defaultCodec)
+	if err != nil {
+		return nil, err
+	}
+
 	t := &TCPTransport{
 		config:     config,
-		codec:      NewMessagePackCodec(),
-		acceptCh:   make(chan *tcpConn, 128),
+		codec:      codec,
+		acceptCh:   make(chan *tcpConn, acceptChSize),
 		acceptDone: make(chan struct{}),
 		connPool: &connPool{
 			conns: make(map[string]*tcpConn),
 		},
 		poolDone:  make(chan struct{}),
-		recvCh:    make(chan Message, 1024),
+		recvCh:    make(chan Message, config.BufferSize),
 		stopCh:    make(chan struct{}),
 		localAddr: config.ListenAddr,
 	}
@@ -148,6 +221,8 @@ func (t *TCPTransport) startListener() error {
 
 	t.listener = listener
 
+	// 预先添加计数（对应 acceptLoop 中的 handleConn 调用）
+	// 注意：这里只添加 acceptLoop 本身的计数
 	t.acceptWg.Add(1)
 	go t.acceptLoop()
 
@@ -195,44 +270,61 @@ func (t *TCPTransport) acceptLoop() {
 		// 添加到连接池
 		t.addConnToPool(wrappedConn)
 
-		// 启动接收协程
-		t.stopWg.Add(1)
+		// 启动接收协程（自己管理 WaitGroup 计数）
 		go t.handleConn(wrappedConn)
 
-		logging.Debugf("接受新连接: %s", wrappedConn.remoteAddr)
+		logging.Infof("接受新连接: %s", wrappedConn.remoteAddr)
 	}
 }
 
 // wrapConn 包装连接
 func (t *TCPTransport) wrapConn(conn net.Conn) *tcpConn {
+	if conn == nil {
+		logging.Warn("wrapConn: conn 参数为 nil，返回 nil")
+		return nil
+	}
 	remoteAddr := conn.RemoteAddr().String()
 
 	// 设置 TCP 选项
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		// 设置保活
-		_ = tcpConn.SetKeepAlive(true)
-		_ = tcpConn.SetKeepAlivePeriod(t.config.KeepAliveInterval)
-
-		// 设置读写超时
-		_ = conn.SetDeadline(time.Now().Add(t.config.ReadTimeout))
+		if err := tcpConn.SetKeepAlive(true); err != nil {
+			logging.Warnf("设置 TCP KeepAlive 失败: %v", err)
+		}
+		if err := tcpConn.SetKeepAlivePeriod(t.config.KeepAliveInterval); err != nil {
+			logging.Warnf("设置 TCP KeepAlivePeriod 失败: %v", err)
+		}
+		// 设置初始读超时
+		if err := conn.SetDeadline(time.Now().Add(t.config.ReadTimeout)); err != nil {
+			logging.Warnf("设置 TCP 读超时失败: %v", err)
+		}
 	}
 
-	return &tcpConn{
+	tc := &tcpConn{
 		conn:       conn,
 		remoteAddr: remoteAddr,
 		reader:     NewMessageReader(conn, t.codec),
 		writer:     NewMessageWriter(conn, t.codec),
 		closeCh:    make(chan struct{}),
 	}
+	// 初始化最后使用时间为当前时间
+	tc.lastUsed.Store(time.Now().Unix())
+
+	return tc
 }
 
 // handleConn 处理连接
 func (t *TCPTransport) handleConn(conn *tcpConn) {
+	// 自己管理 WaitGroup 计数
+	t.stopWg.Add(1)
 	defer t.stopWg.Done()
+
 	defer func() {
 		// 连接关闭时从池中移除
 		t.removeConnFromPool(conn.remoteAddr)
-		_ = conn.Close()
+		if err := conn.Close(); err != nil {
+			logging.Warnf("关闭连接失败: %s, error: %v", conn.remoteAddr, err)
+		}
 	}()
 
 	logging.Debugf("开始处理连接: %s", conn.remoteAddr)
@@ -251,6 +343,8 @@ func (t *TCPTransport) handleConn(conn *tcpConn) {
 		// 设置读取超时
 		if err := conn.conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout)); err != nil {
 			logging.Errorf("设置读超时失败: %v", err)
+			// 设置失败，关闭连接并退出处理循环
+			t.removeConnFromPool(conn.remoteAddr)
 			return
 		}
 
@@ -266,13 +360,17 @@ func (t *TCPTransport) handleConn(conn *tcpConn) {
 		// 更新最后使用时间
 		conn.lastUsed.Store(time.Now().Unix())
 
-		// 发送到接收通道
+		// P2-2: 发送到接收通道（使用配置的超时时间）
+		channelTimeout := 5 * time.Second // 默认值
+		if t.config != nil && t.config.ChannelSendTimeout > 0 {
+			channelTimeout = t.config.ChannelSendTimeout
+		}
 		select {
 		case t.recvCh <- msg:
 		case <-t.stopCh:
 			return
-		case <-time.After(5 * time.Second):
-			logging.Errorf("接收通道阻塞，消息丢弃")
+		case <-time.After(channelTimeout):
+			logging.Errorf("接收通道阻塞超过 %v，消息丢弃", channelTimeout)
 			return
 		}
 
@@ -348,13 +446,15 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message) error
 	// 设置写入超时
 	deadline := time.Now().Add(t.config.WriteTimeout)
 	if err := conn.conn.SetWriteDeadline(deadline); err != nil {
+		// 设置失败，关闭连接并从池中移除
+		_ = conn.Close()
+		t.removeConnFromPool(addr)
 		return types.NewTransportConnectionError("设置写超时", "", err)
 	}
 
 	// 发送消息
 	if err := conn.writer.WriteMessage(msg); err != nil {
-		// 发送失败，关闭连接
-		_ = conn.Close()
+		// 发送失败，从池中移除连接（removeConnFromPool 会关闭连接）
 		t.removeConnFromPool(addr)
 		return types.NewTransportSendError(err)
 	}
@@ -378,19 +478,31 @@ func (t *TCPTransport) Receive() <-chan Message {
 // ========================================
 
 // getOrCreateConn 获取或创建连接
+// 使用双重检查锁定模式避免 TOCTOU 竞态
 func (t *TCPTransport) getOrCreateConn(addr string) (*tcpConn, error) {
-	// 先从池中查找
+	// 第一次检查：快速路径（无锁）
 	conn := t.getConnFromPool(addr)
 	if conn != nil && !conn.isClosed() {
 		return conn, nil
 	}
 
-	// 创建新连接
-	return t.dialConn(addr)
+	// 需要创建新连接，加锁避免重复拨号
+	t.connPool.mu.Lock()
+	defer t.connPool.mu.Unlock()
+
+	// 第二次检查：其他协程可能已创建连接
+	conn = t.connPool.conns[addr]
+	if conn != nil && !conn.isClosed() {
+		return conn, nil
+	}
+
+	// 持有锁的情况下拨号并添加到池
+	return t.dialConnLocked(addr)
 }
 
-// dialConn 拨号创建连接
-func (t *TCPTransport) dialConn(addr string) (*tcpConn, error) {
+// dialConn 拨号创建连接（外部已加锁版本）
+// 注意：调用前必须持有 t.connPool.mu.Lock()
+func (t *TCPTransport) dialConnLocked(addr string) (*tcpConn, error) {
 	logging.Debugf("拨号连接: %s", addr)
 
 	// 建立连接
@@ -406,8 +518,8 @@ func (t *TCPTransport) dialConn(addr string) (*tcpConn, error) {
 		return nil, types.NewTransportConnectionError("包装连接", "", nil)
 	}
 
-	// 添加到池
-	t.addConnToPool(wrappedConn)
+	// 添加到池（调用方已持有锁，直接设置）
+	t.connPool.conns[wrappedConn.remoteAddr] = wrappedConn
 
 	return wrappedConn, nil
 }
@@ -485,7 +597,8 @@ func (t *TCPTransport) cleanupIdleConns() {
 	defer t.connPool.mu.Unlock()
 
 	now := time.Now().Unix()
-	idleTimeout := int64(120) // 2 分钟
+	// 直接使用秒级精度，避免整数除法精度丢失
+	idleTimeout := int64(DefaultIdleTimeout.Seconds())
 
 	for addr, conn := range t.connPool.conns {
 		lastUsed := conn.lastUsed.Load()

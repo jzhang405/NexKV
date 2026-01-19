@@ -297,11 +297,18 @@ func (r *WALBatchReader) ReadBatch(maxCount int) ([]*WALEntry, error) {
 		}
 
 		// 解析 Header
-		typ := WALType(binary.BigEndian.Uint16(header[0:2]))
-		keyLen := binary.BigEndian.Uint32(header[2:6])
-		valueLen := binary.BigEndian.Uint32(header[6:10])
-		timestampSize := binary.BigEndian.Uint16(header[10:12])
-		oldValueLen := binary.BigEndian.Uint32(header[12:16])
+		// Header 格式: Magic(4) + Type(2) + KeyLen(4) + ValueLen(4) + OldValueLen(4) + TimestampLen(2) + CRC(4)
+		magic := string(header[0:4])
+		if magic != walMagic {
+			return nil, types.NewInternalError("WAL 条目魔术字不匹配", nil)
+		}
+
+		typ := WALType(binary.BigEndian.Uint16(header[4:6]))
+		keyLen := binary.BigEndian.Uint32(header[6:10])
+		valueLen := binary.BigEndian.Uint32(header[10:14])
+		oldValueLen := binary.BigEndian.Uint32(header[14:18])
+		timestampSize := binary.BigEndian.Uint16(header[18:20])
+		headerCRC := binary.BigEndian.Uint32(header[20:24])
 
 		// 读取 Data
 		dataSize := uint32(keyLen) + uint32(valueLen) + uint32(timestampSize) + oldValueLen
@@ -313,15 +320,10 @@ func (r *WALBatchReader) ReadBatch(maxCount int) ([]*WALEntry, error) {
 			return nil, types.NewInternalError("读取 WAL data 失败", err)
 		}
 
-		// 读取 Checksum
-		var checksum uint32
-		if err := binary.Read(r.reader, binary.BigEndian, &checksum); err != nil {
-			return nil, types.NewInternalError("读取校验和失败", err)
-		}
-
-		// 验证校验和
-		computedChecksum := crc32.ChecksumIEEE(append(header, data...))
-		if computedChecksum != checksum {
+		// 验证校验和 (覆盖 Header[0:20] + Data)
+		// 注意：不包含 header[20:24]（CRC 字段本身）
+		computedChecksum := crc32.ChecksumIEEE(append(header[:20], data...))
+		if computedChecksum != headerCRC {
 			return nil, types.NewInternalError("WAL 条目校验和不匹配", nil)
 		}
 
@@ -340,6 +342,7 @@ func (r *WALBatchReader) ReadBatch(maxCount int) ([]*WALEntry, error) {
 // decodeEntry 解码 WAL 条目
 //
 // 从 WAL 二进制格式解析 WALEntry
+// 数据格式: key + value + oldvalue + timestamp
 func (r *WALBatchReader) decodeEntry(typ WALType, keyLen, valueLen, oldValueLen uint32, timestampSize uint16, data []byte) (*WALEntry, error) {
 	entry := &WALEntry{
 		Type: typ,
@@ -347,29 +350,32 @@ func (r *WALBatchReader) decodeEntry(typ WALType, keyLen, valueLen, oldValueLen 
 
 	offset := 0
 
-	// 解析时间戳
-	timestampData := data[offset : offset+int(timestampSize)]
-	entry.Timestamp = &clock.HLC{}
-	if err := entry.Timestamp.UnmarshalBinary(timestampData); err != nil {
-		return nil, err
+	// 解析 Key（第一位）
+	if keyLen > 0 {
+		entry.Key = make([]byte, keyLen)
+		copy(entry.Key, data[offset:offset+int(keyLen)])
 	}
-	offset += int(timestampSize)
-
-	// 解析 Key
-	entry.Key = string(data[offset : offset+int(keyLen)])
 	offset += int(keyLen)
 
-	// 解析 Value
+	// 解析 Value（第二位）
 	if valueLen > 0 {
 		entry.Value = make([]byte, valueLen)
 		copy(entry.Value, data[offset:offset+int(valueLen)])
 	}
 	offset += int(valueLen)
 
-	// 解析 OldValue
+	// 解析 OldValue（第三位）
 	if oldValueLen > 0 {
 		entry.OldValue = make([]byte, oldValueLen)
 		copy(entry.OldValue, data[offset:offset+int(oldValueLen)])
+	}
+	offset += int(oldValueLen)
+
+	// 解析时间戳（最后一位）
+	timestampData := data[offset : offset+int(timestampSize)]
+	entry.Timestamp = &clock.HLC{}
+	if err := entry.Timestamp.UnmarshalBinary(timestampData); err != nil {
+		return nil, err
 	}
 
 	return entry, nil

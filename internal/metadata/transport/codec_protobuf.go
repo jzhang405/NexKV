@@ -1,18 +1,15 @@
-// Package transport Transport 层 Protobuf 编解码器实现（简化版）
+// Package transport Transport 层 Protobuf 编解码器实现
 //
-// 提供 Transport 消息的 Protobuf 序列化/反序列化能力
-// 特点：
-//   - protoc 预编译，性能最优
-//   - 数据大小最小，节省网络带宽
-//   - Schema 明确，跨语言支持好
+// 使用 WrapperMessageProto oneof 模式，解决语义丢失问题
 //
-// 注意：当前实现为简化版，直接序列化各个消息类型，不使用 TransportMessage 包装器
-// Protobuf schema 与 Go 消息结构存在差异，需要做字段映射
+// 核心改进：
+//   - 独立的消息类型定义，避免多消息映射到同一 Proto 类型
+//   - oneof 模式实现消息类型判别
+//   - 完整的字段保留，无信息丢失
 package transport
 
 import (
 	"encoding/binary"
-	"encoding/json"
 
 	"github.com/jzhang405/NexKV/internal/metadata/proto"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
@@ -20,16 +17,16 @@ import (
 )
 
 // ========================================
-// ProtobufCodec 实现
+// ProtobufCodec Protobuf 编解码器
 // ========================================
 
 // ProtobufCodec Protobuf 编解码器
 //
 // 特点：
-//   - protoc 预编译，性能最优（编码/解码约为 JSON 的 3-5 倍）
-//   - 数据大小最小，约为 JSON 的 40-60%
+//   - 使用 WrapperMessageProto oneof 模式
+//   - 无语义丢失，完整保留所有字段
+//   - protoc 预编译，性能最优
 //   - Schema 明确，跨语言支持好
-//   - 推荐用于高性能场景
 type ProtobufCodec struct{}
 
 // NewProtobufCodec 创建 Protobuf 编解码器
@@ -46,8 +43,13 @@ func (c *ProtobufCodec) Encode(msg Message) ([]byte, error) {
 		return nil, types.NewCodecInvalidMessageError("消息为空")
 	}
 
-	// 将 Transport Message 转换为 Protobuf 消息并编码
-	dataBytes, err := c.encodeMessage(msg)
+	// 将 Transport Message 转换为 WrapperMessageProto 并编码
+	wrapper, err := c.messageToWrapper(msg)
+	if err != nil {
+		return nil, types.NewCodecEncodeFailedError("Protobuf", err)
+	}
+
+	dataBytes, err := googleproto.Marshal(wrapper)
 	if err != nil {
 		return nil, types.NewCodecEncodeFailedError("Protobuf", err)
 	}
@@ -91,10 +93,21 @@ func (c *ProtobufCodec) Decode(data []byte) (Message, error) {
 		return nil, types.NewCodecInvalidDataError("Decode", "数据长度不足")
 	}
 
-	// 解码消息
-	msg, err := c.decodeMessage(msgType, data[6:6+dataLen])
+	// 解析 WrapperMessageProto
+	wrapper := &proto.WrapperMessageProto{}
+	if err := googleproto.Unmarshal(data[6:6+dataLen], wrapper); err != nil {
+		return nil, types.NewCodecDecodeFailedError("Protobuf", err)
+	}
+
+	// 从 Wrapper 提取消息
+	msg, err := c.wrapperToMessage(wrapper)
 	if err != nil {
 		return nil, types.NewCodecDecodeFailedError("Protobuf", err)
+	}
+
+	// 验证消息类型匹配
+	if msg.Type() != msgType {
+		return nil, types.NewCodecInvalidDataError("Decode", "消息类型不匹配")
 	}
 
 	return msg, nil
@@ -105,584 +118,455 @@ func (c *ProtobufCodec) Name() string {
 	return "protobuf"
 }
 
+// Type 返回编解码器类型
+func (c *ProtobufCodec) Type() types.CodecType {
+	return types.CodecTypeProtobuf
+}
+
 // ========================================
-// 消息编解码函数
+// Message -> WrapperMessageProto 转换
 // ========================================
 
-// encodeMessage 将消息编码为 Protobuf 字节流
-func (c *ProtobufCodec) encodeMessage(msg Message) ([]byte, error) {
+// messageToWrapper 将 Transport Message 转换为 WrapperMessageProto
+func (c *ProtobufCodec) messageToWrapper(msg Message) (*proto.WrapperMessageProto, error) {
+	wrapper := &proto.WrapperMessageProto{
+		MessageType: uint32(msg.Type()),
+	}
+
 	switch m := msg.(type) {
 	case *GetMessage:
-		pbMsg := &proto.MetadataOpMessage{
-			Op:  proto.MetadataOpMessage_OP_TYPE_GET,
-			Key: m.Key,
+		wrapper.MessageBody = &proto.WrapperMessageProto_GetMsg{
+			GetMsg: &proto.GetMessageProto{
+				Key: m.Key,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *PutMessage:
-		pbMsg := &proto.MetadataOpMessage{
-			Op:    proto.MetadataOpMessage_OP_TYPE_PUT,
-			Key:   m.Key,
-			Value: m.Value,
+		wrapper.MessageBody = &proto.WrapperMessageProto_PutMsg{
+			PutMsg: &proto.PutMessageProto{
+				Key:   m.Key,
+				Value: m.Value,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *DeleteMessage:
-		pbMsg := &proto.MetadataOpMessage{
-			Op:  proto.MetadataOpMessage_OP_TYPE_DELETE,
-			Key: m.Key,
+		wrapper.MessageBody = &proto.WrapperMessageProto_DeleteMsg{
+			DeleteMsg: &proto.DeleteMessageProto{
+				Key: m.Key,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *GetReplyMessage:
-		pbMsg := &proto.ResponseMessage{
-			Success: m.Found,
-			Data:    m.Value,
+		wrapper.MessageBody = &proto.WrapperMessageProto_GetReplyMsg{
+			GetReplyMsg: &proto.GetReplyMessageProto{
+				Key:     m.Key,
+				Value:   m.Value,
+				Found:   m.Found,
+				Version: m.Version,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *PutReplyMessage:
-		pbMsg := &proto.ResponseMessage{
-			Success: m.Success,
-			Data:    nil,
+		wrapper.MessageBody = &proto.WrapperMessageProto_PutReplyMsg{
+			PutReplyMsg: &proto.PutReplyMessageProto{
+				Key:     m.Key,
+				Success: m.Success,
+				Version: m.Version,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *DeleteReplyMessage:
-		pbMsg := &proto.ResponseMessage{
-			Success: m.Success,
-			Data:    nil,
+		wrapper.MessageBody = &proto.WrapperMessageProto_DeleteReplyMsg{
+			DeleteReplyMsg: &proto.DeleteReplyMessageProto{
+				Key:     m.Key,
+				Success: m.Success,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *GossipSyncMessage:
-		pbMsg := &proto.GossipMessage{
-			Version:  m.Version,
-			Metadata: m.Metadata,
+		wrapper.MessageBody = &proto.WrapperMessageProto_GossipSyncMsg{
+			GossipSyncMsg: &proto.GossipSyncMessageProto{
+				Version:   m.Version,
+				Metadata:  m.Metadata,
+				Timestamp: m.Timestamp,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *GossipSyncReplyMessage:
-		pbMsg := &proto.GossipMessage{
-			Version:  m.Version,
-			Metadata: make(map[string][]byte),
+		wrapper.MessageBody = &proto.WrapperMessageProto_GossipSyncReplyMsg{
+			GossipSyncReplyMsg: &proto.GossipSyncReplyMessageProto{
+				Accepted: m.Accepted,
+				Version:  m.Version,
+			},
 		}
-		// 将 Accepted 转换为 metadata
-		if m.Accepted {
-			pbMsg.Metadata["accepted"] = []byte{1}
-		}
-		return googleproto.Marshal(pbMsg)
-
 	case *GossipDigestMessage:
-		pbMsg := &proto.GossipMessage{
-			Version:  m.Version,
-			Metadata: make(map[string][]byte),
+		wrapper.MessageBody = &proto.WrapperMessageProto_GossipDigestMsg{
+			GossipDigestMsg: &proto.GossipDigestMessageProto{
+				Version: m.Version,
+				Digest:  m.Digest,
+			},
 		}
-		// 将 Digest 映射需要转换
-		for k, v := range m.Digest {
-			// 将 uint64 转换为 8 字节
-			buf := make([]byte, 8)
-			binary.BigEndian.PutUint64(buf, v)
-			pbMsg.Metadata[k] = buf
-		}
-		return googleproto.Marshal(pbMsg)
-
 	case *GossipDigestReplyMessage:
-		pbMsg := &proto.GossipMessage{
-			Version:  m.Version,
-			Metadata: make(map[string][]byte),
+		wrapper.MessageBody = &proto.WrapperMessageProto_GossipDigestReplyMsg{
+			GossipDigestReplyMsg: &proto.GossipDigestReplyMessageProto{
+				Version: m.Version,
+				Digest:  m.Digest,
+			},
 		}
-		// 将 Digest 映射需要转换
-		for k, v := range m.Digest {
-			buf := make([]byte, 8)
-			binary.BigEndian.PutUint64(buf, v)
-			pbMsg.Metadata[k] = buf
-		}
-		return googleproto.Marshal(pbMsg)
-
 	case *QuorumProposeMessage:
-		pbMsg := &proto.QuorumMessage{
-			ProposalId: m.ProposalID,
-			Key:        m.Key,
-			Value:      m.Value,
-			Version:    uint64(m.Timestamp),
+		wrapper.MessageBody = &proto.WrapperMessageProto_QuorumProposeMsg{
+			QuorumProposeMsg: &proto.QuorumProposeMessageProto{
+				ProposalId: m.ProposalID,
+				Key:        m.Key,
+				Value:      m.Value,
+				Operation:  m.Operation,
+				Proposer:   m.Proposer,
+				Timestamp:  m.Timestamp,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *QuorumVoteMessage:
-		voteType := proto.QuorumMessage_VOTE_TYPE_UNSPECIFIED
-		if m.Vote {
-			voteType = proto.QuorumMessage_VOTE_TYPE_APPROVE
+		wrapper.MessageBody = &proto.WrapperMessageProto_QuorumVoteMsg{
+			QuorumVoteMsg: &proto.QuorumVoteMessageProto{
+				ProposalId: m.ProposalID,
+				Voter:      m.Voter,
+				Vote:       m.Vote,
+				Reason:     m.Reason,
+			},
 		}
-		pbMsg := &proto.QuorumMessage{
-			ProposalId: m.ProposalID,
-			Vote:       voteType,
-			Reason:     m.Reason,
-		}
-		return googleproto.Marshal(pbMsg)
-
 	case *QuorumDecideMessage:
-		pbMsg := &proto.QuorumMessage{
-			ProposalId: m.ProposalID,
-			Version:    m.Version,
+		wrapper.MessageBody = &proto.WrapperMessageProto_QuorumDecideMsg{
+			QuorumDecideMsg: &proto.QuorumDecideMessageProto{
+				ProposalId: m.ProposalID,
+				Approved:   m.Approved,
+				Version:    m.Version,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *TwoPCPrepareMessage:
-		// 转换 Operations 为 map[string][]byte
-		operations := make(map[string][]byte)
-		for _, op := range m.Operations {
-			// 简化：将操作类型编码为值
-			operations[op.Key] = []byte(op.Type)
+		ops := make([]*proto.OperationProto, len(m.Operations))
+		for i, op := range m.Operations {
+			ops[i] = &proto.OperationProto{
+				Type:  op.Type,
+				Key:   op.Key,
+				Value: op.Value,
+			}
 		}
-		pbMsg := &proto.TwoPCMessage{
-			TransactionId: m.TransactionID,
-			Shards:        m.Participants,
-			Operations:    operations,
-			Phase:         proto.TwoPCMessage_PHASE_TYPE_PREPARE,
+		wrapper.MessageBody = &proto.WrapperMessageProto_TwopcPrepareMsg{
+			TwopcPrepareMsg: &proto.TwoPCPrepareMessageProto{
+				TransactionId: m.TransactionID,
+				Participants:  m.Participants,
+				Operations:    ops,
+				Timestamp:     m.Timeout,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *TwoPCPrepareReplyMessage:
-		// 将 Vote ("commit"/"abort") 转换为 Decision 枚举
-		decision := convertTwoPCDecisionTypeToProto(m.Vote)
-		pbMsg := &proto.TwoPCMessage{
-			TransactionId: m.TransactionID,
-			Phase:         proto.TwoPCMessage_PHASE_TYPE_PREPARE,
-			Decision:      decision,
-			Reason:        m.Reason,
+		wrapper.MessageBody = &proto.WrapperMessageProto_TwopcPrepareReplyMsg{
+			TwopcPrepareReplyMsg: &proto.TwoPCPrepareReplyMessageProto{
+				TransactionId: m.TransactionID,
+				Participant:   m.Participant,
+				Vote:          m.Vote,
+				Reason:        m.Reason,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *TwoPCCommitMessage:
-		pbMsg := &proto.TwoPCMessage{
-			TransactionId: m.TransactionID,
-			Phase:         proto.TwoPCMessage_PHASE_TYPE_COMMIT,
+		wrapper.MessageBody = &proto.WrapperMessageProto_TwopcCommitMsg{
+			TwopcCommitMsg: &proto.TwoPCCommitMessageProto{
+				TransactionId: m.TransactionID,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *TwoPCRollbackMessage:
-		pbMsg := &proto.TwoPCMessage{
-			TransactionId: m.TransactionID,
-			Phase:         proto.TwoPCMessage_PHASE_TYPE_ROLLBACK,
-			Reason:        m.Reason,
+		wrapper.MessageBody = &proto.WrapperMessageProto_TwopcRollbackMsg{
+			TwopcRollbackMsg: &proto.TwoPCRollbackMessageProto{
+				TransactionId: m.TransactionID,
+				Reason:        m.Reason,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *TwoPCCommitReplyMessage:
-		pbMsg := &proto.TwoPCMessage{
-			TransactionId: m.TransactionID,
-			Phase:         proto.TwoPCMessage_PHASE_TYPE_COMMIT,
+		wrapper.MessageBody = &proto.WrapperMessageProto_TwopcCommitReplyMsg{
+			TwopcCommitReplyMsg: &proto.TwoPCCommitReplyMessageProto{
+				TransactionId: m.TransactionID,
+				Participant:   m.Participant,
+				Success:       m.Success,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *TwoPCRollbackReplyMessage:
-		pbMsg := &proto.TwoPCMessage{
-			TransactionId: m.TransactionID,
-			Phase:         proto.TwoPCMessage_PHASE_TYPE_ROLLBACK,
+		wrapper.MessageBody = &proto.WrapperMessageProto_TwopcRollbackReplyMsg{
+			TwopcRollbackReplyMsg: &proto.TwoPCRollbackReplyMessageProto{
+				TransactionId: m.TransactionID,
+				Participant:   m.Participant,
+				Success:       m.Success,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *NodePingMessage:
-		pbMsg := &proto.HeartbeatMessage{
-			NodeId:    m.NodeID,
-			Timestamp: uint64(m.Timestamp),
-			Status:    proto.HeartbeatMessage_STATUS_TYPE_HEALTHY,
+		wrapper.MessageBody = &proto.WrapperMessageProto_NodePingMsg{
+			NodePingMsg: &proto.NodePingMessageProto{
+				NodeId:    m.NodeID,
+				Sequence:  m.Sequence,
+				Timestamp: m.Timestamp,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *NodePongMessage:
-		pbMsg := &proto.HeartbeatMessage{
-			NodeId:    m.NodeID,
-			Timestamp: uint64(m.Timestamp),
-			Status:    proto.HeartbeatMessage_STATUS_TYPE_HEALTHY,
+		wrapper.MessageBody = &proto.WrapperMessageProto_NodePongMsg{
+			NodePongMsg: &proto.NodePongMessageProto{
+				NodeId:    m.NodeID,
+				Sequence:  m.Sequence,
+				Status:    m.Status,
+				Timestamp: m.Timestamp,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *NodeJoinMessage:
-		pbMsg := &proto.HeartbeatMessage{
-			NodeId: m.NodeID,
-			Status: proto.HeartbeatMessage_STATUS_TYPE_HEALTHY,
+		wrapper.MessageBody = &proto.WrapperMessageProto_NodeJoinMsg{
+			NodeJoinMsg: &proto.NodeJoinMessageProto{
+				NodeId:   m.NodeID,
+				Addr:     m.Addr,
+				Role:     m.Role,
+				ParentId: m.ParentID,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *NodeLeaveMessage:
-		pbMsg := &proto.HeartbeatMessage{
-			NodeId: m.NodeID,
-			Status: proto.HeartbeatMessage_STATUS_TYPE_HEALTHY,
+		wrapper.MessageBody = &proto.WrapperMessageProto_NodeLeaveMsg{
+			NodeLeaveMsg: &proto.NodeLeaveMessageProto{
+				NodeId: m.NodeID,
+				Reason: m.Reason,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *NodeSyncMessage:
-		pbMsg := &proto.GossipMessage{
-			Version:  m.Version,
-			Metadata: m.Metadata,
+		wrapper.MessageBody = &proto.WrapperMessageProto_NodeSyncMsg{
+			NodeSyncMsg: &proto.NodeSyncMessageProto{
+				Version:  m.Version,
+				Metadata: m.Metadata,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *ClockSyncMessage:
-		pbMsg := &proto.HeartbeatMessage{
-			NodeId: m.NodeID,
-			Status: proto.HeartbeatMessage_STATUS_TYPE_HEALTHY,
+		wrapper.MessageBody = &proto.WrapperMessageProto_ClockSyncMsg{
+			ClockSyncMsg: &proto.ClockSyncMessageProto{
+				Timestamp: m.Timestamp,
+				NodeId:    m.NodeID,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *ClockSyncReplyMessage:
-		pbMsg := &proto.HeartbeatMessage{
-			NodeId: m.NodeID,
-			Status: proto.HeartbeatMessage_STATUS_TYPE_HEALTHY,
+		wrapper.MessageBody = &proto.WrapperMessageProto_ClockSyncReplyMsg{
+			ClockSyncReplyMsg: &proto.ClockSyncReplyMessageProto{
+				Timestamp: m.Timestamp,
+				NodeId:    m.NodeID,
+				Drift:     m.Drift,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *ClusterStatusMessage:
-		pbMsg := &proto.HeartbeatMessage{
-			NodeId: m.NodeID,
+		wrapper.MessageBody = &proto.WrapperMessageProto_ClusterStatusMsg{
+			ClusterStatusMsg: &proto.ClusterStatusMessageProto{
+				NodeId: m.NodeID,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *ClusterStatusReplyMessage:
-		// 将 Nodes 序列化为 JSON 存储到 Data 字段
-		data, err := json.Marshal(m.Nodes)
-		if err != nil {
-			return nil, err
+		nodes := make([]*proto.NodeInfoProto, len(m.Nodes))
+		for i, node := range m.Nodes {
+			nodes[i] = &proto.NodeInfoProto{
+				NodeId:   node.NodeID,
+				Addr:     node.Addr,
+				Role:     node.Role,
+				ParentId: node.ParentID,
+				Status:   node.Status,
+				Level:    int32(node.Level),
+			}
 		}
-		pbMsg := &proto.ResponseMessage{
-			Success: true,
-			Data:    data,
+		wrapper.MessageBody = &proto.WrapperMessageProto_ClusterStatusReplyMsg{
+			ClusterStatusReplyMsg: &proto.ClusterStatusReplyMessageProto{
+				Nodes: nodes,
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	case *LeaderElectionMessage:
-		pbMsg := &proto.HeartbeatMessage{
-			NodeId: m.NodeID,
+		wrapper.MessageBody = &proto.WrapperMessageProto_LeaderElectionMsg{
+			LeaderElectionMsg: &proto.LeaderElectionMessageProto{
+				ElectionId: m.ElectionID, // Proto uses camelCase: election_id
+				NodeId:     m.NodeID,
+				Priority:   int32(m.Priority),
+			},
 		}
-		return googleproto.Marshal(pbMsg)
-
 	default:
 		return nil, types.NewCodecUnknownMessageTypeError(int(msg.Type()))
 	}
+
+	return wrapper, nil
 }
 
-// decodeMessage 从 Protobuf 字节流解码消息
-func (c *ProtobufCodec) decodeMessage(msgType MessageType, data []byte) (Message, error) {
-	// 创建对应类型的消息实例
-	msg, err := createMessageByType(msgType)
-	if err != nil {
-		return nil, err
+// wrapperToMessage 从 WrapperMessageProto 提取 Transport Message
+func (c *ProtobufCodec) wrapperToMessage(wrapper *proto.WrapperMessageProto) (Message, error) {
+	if wrapper.MessageBody == nil {
+		return nil, types.NewCodecInvalidDataError("wrapperToMessage", "消息体为空")
 	}
 
-	// 根据消息类型解码
-	switch m := msg.(type) {
-	case *GetMessage:
-		pbMsg := &proto.MetadataOpMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.Key = pbMsg.Key
-		return m, nil
-
-	case *PutMessage:
-		pbMsg := &proto.MetadataOpMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.Key = pbMsg.Key
-		m.Value = pbMsg.Value
-		return m, nil
-
-	case *DeleteMessage:
-		pbMsg := &proto.MetadataOpMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.Key = pbMsg.Key
-		return m, nil
-
-	case *GetReplyMessage:
-		pbMsg := &proto.ResponseMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.Found = pbMsg.Success
-		m.Value = pbMsg.Data
-		// Version 保持默认值
-		return m, nil
-
-	case *PutReplyMessage:
-		pbMsg := &proto.ResponseMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.Success = pbMsg.Success
-		// Key 和 Version 保持默认值
-		return m, nil
-
-	case *DeleteReplyMessage:
-		pbMsg := &proto.ResponseMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.Success = pbMsg.Success
-		return m, nil
-
-	case *GossipSyncMessage:
-		pbMsg := &proto.GossipMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.Version = pbMsg.Version
-		m.Metadata = pbMsg.Metadata
-		m.Timestamp = 0 // 设置默认值
-		return m, nil
-
-	case *GossipSyncReplyMessage:
-		pbMsg := &proto.GossipMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.Version = pbMsg.Version
-		// 从 metadata 中提取 Accepted
-		if accepted, ok := pbMsg.Metadata["accepted"]; ok && len(accepted) > 0 && accepted[0] == 1 {
-			m.Accepted = true
-		}
-		return m, nil
-
-	case *GossipDigestMessage:
-		pbMsg := &proto.GossipMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.Version = pbMsg.Version
-		m.Digest = make(map[string]uint64)
-		// 将 map[string][]byte 转换回 map[string]uint64
-		for k, v := range pbMsg.Metadata {
-			if len(v) == 8 {
-				m.Digest[k] = binary.BigEndian.Uint64(v)
+	switch body := wrapper.MessageBody.(type) {
+	case *proto.WrapperMessageProto_GetMsg:
+		return &GetMessage{Key: body.GetMsg.Key}, nil
+	case *proto.WrapperMessageProto_PutMsg:
+		return &PutMessage{Key: body.PutMsg.Key, Value: body.PutMsg.Value}, nil
+	case *proto.WrapperMessageProto_DeleteMsg:
+		return &DeleteMessage{Key: body.DeleteMsg.Key}, nil
+	case *proto.WrapperMessageProto_GetReplyMsg:
+		return &GetReplyMessage{
+			Key:     body.GetReplyMsg.Key,
+			Value:   body.GetReplyMsg.Value,
+			Found:   body.GetReplyMsg.Found,
+			Version: body.GetReplyMsg.Version,
+		}, nil
+	case *proto.WrapperMessageProto_PutReplyMsg:
+		return &PutReplyMessage{
+			Key:     body.PutReplyMsg.Key,
+			Success: body.PutReplyMsg.Success,
+			Version: body.PutReplyMsg.Version,
+		}, nil
+	case *proto.WrapperMessageProto_DeleteReplyMsg:
+		return &DeleteReplyMessage{
+			Key:     body.DeleteReplyMsg.Key,
+			Success: body.DeleteReplyMsg.Success,
+		}, nil
+	case *proto.WrapperMessageProto_GossipSyncMsg:
+		return &GossipSyncMessage{
+			Version:   body.GossipSyncMsg.Version,
+			Metadata:  body.GossipSyncMsg.Metadata,
+			Timestamp: body.GossipSyncMsg.Timestamp,
+		}, nil
+	case *proto.WrapperMessageProto_GossipSyncReplyMsg:
+		return &GossipSyncReplyMessage{
+			Accepted: body.GossipSyncReplyMsg.Accepted,
+			Version:  body.GossipSyncReplyMsg.Version,
+		}, nil
+	case *proto.WrapperMessageProto_GossipDigestMsg:
+		return &GossipDigestMessage{
+			Version: body.GossipDigestMsg.Version,
+			Digest:  body.GossipDigestMsg.Digest,
+		}, nil
+	case *proto.WrapperMessageProto_GossipDigestReplyMsg:
+		return &GossipDigestReplyMessage{
+			Version: body.GossipDigestReplyMsg.Version,
+			Digest:  body.GossipDigestReplyMsg.Digest,
+		}, nil
+	case *proto.WrapperMessageProto_QuorumProposeMsg:
+		return &QuorumProposeMessage{
+			ProposalID: body.QuorumProposeMsg.ProposalId,
+			Key:        body.QuorumProposeMsg.Key,
+			Value:      body.QuorumProposeMsg.Value,
+			Operation:  body.QuorumProposeMsg.Operation,
+			Proposer:   body.QuorumProposeMsg.Proposer,
+			Timestamp:  body.QuorumProposeMsg.Timestamp,
+		}, nil
+	case *proto.WrapperMessageProto_QuorumVoteMsg:
+		return &QuorumVoteMessage{
+			ProposalID: body.QuorumVoteMsg.ProposalId,
+			Voter:      body.QuorumVoteMsg.Voter,
+			Vote:       body.QuorumVoteMsg.Vote,
+			Reason:     body.QuorumVoteMsg.Reason,
+		}, nil
+	case *proto.WrapperMessageProto_QuorumDecideMsg:
+		return &QuorumDecideMessage{
+			ProposalID: body.QuorumDecideMsg.ProposalId,
+			Approved:   body.QuorumDecideMsg.Approved,
+			Version:    body.QuorumDecideMsg.Version,
+		}, nil
+	case *proto.WrapperMessageProto_TwopcPrepareMsg:
+		ops := make([]Operation, len(body.TwopcPrepareMsg.Operations))
+		for i, op := range body.TwopcPrepareMsg.Operations {
+			ops[i] = Operation{
+				Type:  op.Type,
+				Key:   op.Key,
+				Value: op.Value,
 			}
 		}
-		return m, nil
-
-	case *GossipDigestReplyMessage:
-		pbMsg := &proto.GossipMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.Version = pbMsg.Version
-		m.Digest = make(map[string]uint64)
-		for k, v := range pbMsg.Metadata {
-			if len(v) == 8 {
-				m.Digest[k] = binary.BigEndian.Uint64(v)
+		return &TwoPCPrepareMessage{
+			TransactionID: body.TwopcPrepareMsg.TransactionId,
+			Participants:  body.TwopcPrepareMsg.Participants,
+			Operations:    ops,
+			Timeout:       body.TwopcPrepareMsg.Timestamp,
+		}, nil
+	case *proto.WrapperMessageProto_TwopcPrepareReplyMsg:
+		return &TwoPCPrepareReplyMessage{
+			TransactionID: body.TwopcPrepareReplyMsg.TransactionId,
+			Participant:   body.TwopcPrepareReplyMsg.Participant,
+			Vote:          body.TwopcPrepareReplyMsg.Vote,
+			Reason:        body.TwopcPrepareReplyMsg.Reason,
+		}, nil
+	case *proto.WrapperMessageProto_TwopcCommitMsg:
+		return &TwoPCCommitMessage{
+			TransactionID: body.TwopcCommitMsg.TransactionId,
+		}, nil
+	case *proto.WrapperMessageProto_TwopcRollbackMsg:
+		return &TwoPCRollbackMessage{
+			TransactionID: body.TwopcRollbackMsg.TransactionId,
+			Reason:        body.TwopcRollbackMsg.Reason,
+		}, nil
+	case *proto.WrapperMessageProto_TwopcCommitReplyMsg:
+		return &TwoPCCommitReplyMessage{
+			TransactionID: body.TwopcCommitReplyMsg.TransactionId,
+			Participant:   body.TwopcCommitReplyMsg.Participant,
+			Success:       body.TwopcCommitReplyMsg.Success,
+		}, nil
+	case *proto.WrapperMessageProto_TwopcRollbackReplyMsg:
+		return &TwoPCRollbackReplyMessage{
+			TransactionID: body.TwopcRollbackReplyMsg.TransactionId,
+			Participant:   body.TwopcRollbackReplyMsg.Participant,
+			Success:       body.TwopcRollbackReplyMsg.Success,
+		}, nil
+	case *proto.WrapperMessageProto_NodePingMsg:
+		return &NodePingMessage{
+			NodeID:    body.NodePingMsg.NodeId,
+			Sequence:  body.NodePingMsg.Sequence,
+			Timestamp: body.NodePingMsg.Timestamp,
+		}, nil
+	case *proto.WrapperMessageProto_NodePongMsg:
+		return &NodePongMessage{
+			NodeID:    body.NodePongMsg.NodeId,
+			Sequence:  body.NodePongMsg.Sequence,
+			Status:    body.NodePongMsg.Status,
+			Timestamp: body.NodePongMsg.Timestamp,
+		}, nil
+	case *proto.WrapperMessageProto_NodeJoinMsg:
+		return &NodeJoinMessage{
+			NodeID:   body.NodeJoinMsg.NodeId,
+			Addr:     body.NodeJoinMsg.Addr,
+			Role:     body.NodeJoinMsg.Role,
+			ParentID: body.NodeJoinMsg.ParentId,
+		}, nil
+	case *proto.WrapperMessageProto_NodeLeaveMsg:
+		return &NodeLeaveMessage{
+			NodeID: body.NodeLeaveMsg.NodeId,
+			Reason: body.NodeLeaveMsg.Reason,
+		}, nil
+	case *proto.WrapperMessageProto_NodeSyncMsg:
+		return &NodeSyncMessage{
+			Version:  body.NodeSyncMsg.Version,
+			Metadata: body.NodeSyncMsg.Metadata,
+		}, nil
+	case *proto.WrapperMessageProto_ClockSyncMsg:
+		return &ClockSyncMessage{
+			Timestamp: body.ClockSyncMsg.Timestamp,
+			NodeID:    body.ClockSyncMsg.NodeId,
+		}, nil
+	case *proto.WrapperMessageProto_ClockSyncReplyMsg:
+		return &ClockSyncReplyMessage{
+			Timestamp: body.ClockSyncReplyMsg.Timestamp,
+			NodeID:    body.ClockSyncReplyMsg.NodeId,
+			Drift:     body.ClockSyncReplyMsg.Drift,
+		}, nil
+	case *proto.WrapperMessageProto_ClusterStatusMsg:
+		return &ClusterStatusMessage{
+			NodeID: body.ClusterStatusMsg.NodeId,
+		}, nil
+	case *proto.WrapperMessageProto_ClusterStatusReplyMsg:
+		nodes := make([]NodeInfo, len(body.ClusterStatusReplyMsg.Nodes))
+		for i, node := range body.ClusterStatusReplyMsg.Nodes {
+			nodes[i] = NodeInfo{
+				NodeID:   node.NodeId,
+				Addr:     node.Addr,
+				Role:     node.Role,
+				ParentID: node.ParentId,
+				Status:   node.Status,
+				Level:    int(node.Level),
 			}
 		}
-		return m, nil
-
-	case *QuorumProposeMessage:
-		pbMsg := &proto.QuorumMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.ProposalID = pbMsg.ProposalId
-		m.Key = pbMsg.Key
-		m.Value = pbMsg.Value
-		m.Timestamp = int64(pbMsg.Version)
-		return m, nil
-
-	case *QuorumVoteMessage:
-		pbMsg := &proto.QuorumMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.ProposalID = pbMsg.ProposalId
-		m.Vote = pbMsg.Vote == proto.QuorumMessage_VOTE_TYPE_APPROVE
-		m.Reason = pbMsg.Reason
-		return m, nil
-
-	case *QuorumDecideMessage:
-		pbMsg := &proto.QuorumMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.ProposalID = pbMsg.ProposalId
-		m.Version = pbMsg.Version
-		return m, nil
-
-	case *TwoPCPrepareMessage:
-		pbMsg := &proto.TwoPCMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.TransactionID = pbMsg.TransactionId
-		m.Participants = pbMsg.Shards
-		// 转换 operations map 回 Operations 切片
-		m.Operations = make([]Operation, 0, len(pbMsg.Operations))
-		for key, opType := range pbMsg.Operations {
-			m.Operations = append(m.Operations, Operation{
-				Type: string(opType),
-				Key:  key,
-			})
-		}
-		return m, nil
-
-	case *TwoPCPrepareReplyMessage:
-		pbMsg := &proto.TwoPCMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.TransactionID = pbMsg.TransactionId
-		m.Vote = convertTwoPCDecisionTypeFromProto(pbMsg.Decision)
-		m.Reason = pbMsg.Reason
-		return m, nil
-
-	case *TwoPCCommitMessage:
-		pbMsg := &proto.TwoPCMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.TransactionID = pbMsg.TransactionId
-		return m, nil
-
-	case *TwoPCRollbackMessage:
-		pbMsg := &proto.TwoPCMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.TransactionID = pbMsg.TransactionId
-		m.Reason = pbMsg.Reason
-		return m, nil
-
-	case *TwoPCCommitReplyMessage:
-		pbMsg := &proto.TwoPCMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.TransactionID = pbMsg.TransactionId
-		return m, nil
-
-	case *TwoPCRollbackReplyMessage:
-		pbMsg := &proto.TwoPCMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.TransactionID = pbMsg.TransactionId
-		return m, nil
-
-	case *NodePingMessage:
-		pbMsg := &proto.HeartbeatMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.NodeID = pbMsg.NodeId
-		m.Timestamp = int64(pbMsg.Timestamp)
-		return m, nil
-
-	case *NodePongMessage:
-		pbMsg := &proto.HeartbeatMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.NodeID = pbMsg.NodeId
-		m.Timestamp = int64(pbMsg.Timestamp)
-		return m, nil
-
-	case *NodeJoinMessage:
-		pbMsg := &proto.HeartbeatMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.NodeID = pbMsg.NodeId
-		return m, nil
-
-	case *NodeLeaveMessage:
-		pbMsg := &proto.HeartbeatMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.NodeID = pbMsg.NodeId
-		return m, nil
-
-	case *NodeSyncMessage:
-		pbMsg := &proto.GossipMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.Version = pbMsg.Version
-		m.Metadata = pbMsg.Metadata
-		return m, nil
-
-	case *ClockSyncMessage:
-		pbMsg := &proto.HeartbeatMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.NodeID = pbMsg.NodeId
-		m.Timestamp = int64(pbMsg.Timestamp)
-		return m, nil
-
-	case *ClockSyncReplyMessage:
-		pbMsg := &proto.HeartbeatMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.NodeID = pbMsg.NodeId
-		m.Timestamp = int64(pbMsg.Timestamp)
-		return m, nil
-
-	case *ClusterStatusMessage:
-		pbMsg := &proto.HeartbeatMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.NodeID = pbMsg.NodeId
-		return m, nil
-
-	case *ClusterStatusReplyMessage:
-		pbMsg := &proto.ResponseMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		// 从 Data 字段反序列化 JSON 为 Nodes
-		if len(pbMsg.Data) > 0 {
-			if err := json.Unmarshal(pbMsg.Data, &m.Nodes); err != nil {
-				return nil, err
-			}
-		}
-		return m, nil
-
-	case *LeaderElectionMessage:
-		pbMsg := &proto.HeartbeatMessage{}
-		if err := googleproto.Unmarshal(data, pbMsg); err != nil {
-			return nil, err
-		}
-		m.NodeID = pbMsg.NodeId
-		return m, nil
-
+		return &ClusterStatusReplyMessage{
+			Nodes: nodes,
+		}, nil
+	case *proto.WrapperMessageProto_LeaderElectionMsg:
+		return &LeaderElectionMessage{
+			ElectionID: body.LeaderElectionMsg.ElectionId, // Proto uses camelCase: election_id
+			NodeID:     body.LeaderElectionMsg.NodeId,
+			Priority:   int(body.LeaderElectionMsg.Priority),
+		}, nil
 	default:
-		return nil, types.NewCodecUnknownMessageTypeError(int(msgType))
-	}
-}
-
-// ========================================
-// TwoPC DecisionType 转换
-// ========================================
-
-func convertTwoPCDecisionTypeToProto(decision string) proto.TwoPCMessage_DecisionType {
-	switch decision {
-	case "commit":
-		return proto.TwoPCMessage_DECISION_TYPE_COMMIT
-	case "abort":
-		return proto.TwoPCMessage_DECISION_TYPE_ABORT
-	default:
-		return proto.TwoPCMessage_DECISION_TYPE_UNSPECIFIED
-	}
-}
-
-func convertTwoPCDecisionTypeFromProto(decision proto.TwoPCMessage_DecisionType) string {
-	switch decision {
-	case proto.TwoPCMessage_DECISION_TYPE_COMMIT:
-		return "commit"
-	case proto.TwoPCMessage_DECISION_TYPE_ABORT:
-		return "abort"
-	default:
-		return "unknown"
+		_ = body // 明确忽略：default 匹配未知类型，body 变量无实际用途
+		return nil, types.NewCodecInvalidDataError("wrapperToMessage", "未知的消息体类型")
 	}
 }

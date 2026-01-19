@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/clock"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -552,19 +553,19 @@ func TestWAL_Append_Recover(t *testing.T) {
 		{
 			Timestamp: hlc.Now(),
 			Type:      WALTypePut,
-			Key:       "key1",
+			Key:       []byte("key1"),
 			Value:     []byte("value1"),
 		},
 		{
 			Timestamp: hlc.Now(),
 			Type:      WALTypePut,
-			Key:       "key2",
+			Key:       []byte("key2"),
 			Value:     []byte("value2"),
 		},
 		{
 			Timestamp: hlc.Now(),
 			Type:      WALTypeDelete,
-			Key:       "key1",
+			Key:       []byte("key1"),
 		},
 	}
 
@@ -587,11 +588,11 @@ func TestWAL_Append_Recover(t *testing.T) {
 
 	// 验证恢复的数据
 	assert.Equal(t, WALTypePut, recovered[0].Type)
-	assert.Equal(t, "key1", recovered[0].Key)
+	assert.Equal(t, []byte("key1"), recovered[0].Key)
 	assert.Equal(t, []byte("value1"), recovered[0].Value)
 
 	assert.Equal(t, WALTypeDelete, recovered[2].Type)
-	assert.Equal(t, "key1", recovered[2].Key)
+	assert.Equal(t, []byte("key1"), recovered[2].Key)
 }
 
 // TestWAL_Truncate 测试 WAL 截断
@@ -609,7 +610,7 @@ func TestWAL_Truncate(t *testing.T) {
 		entry := &WALEntry{
 			Timestamp: hlc.Now(),
 			Type:      WALTypePut,
-			Key:       fmt.Sprintf("key%d", i),
+			Key:       []byte(fmt.Sprintf("key%d", i)),
 			Value:     []byte(fmt.Sprintf("value%d", i)),
 		}
 		err = wal.Append(entry)
@@ -625,17 +626,18 @@ func TestWAL_Truncate(t *testing.T) {
 	err = wal.Truncate(truncateOffset)
 	require.NoError(t, err)
 
-	// 验证截断后的 offset
+	// 验证截断后的 offset（注意：Truncate 会自动写入 EOF 标记）
 	newStats, err := wal.GetStats()
 	require.NoError(t, err)
-	assert.Equal(t, truncateOffset, newStats.Offset)
+	expectedOffset := truncateOffset + WALEOFSize
+	assert.Equal(t, expectedOffset, newStats.Offset)
 }
 
 // TestSnapshotManager 测试快照管理器
 func TestSnapshotManager(t *testing.T) {
 	tempDir := t.TempDir()
 
-	snapMgr, err := NewSnapshotManager(tempDir)
+	snapMgr, err := NewSnapshotFileManager(tempDir, types.CompressionTypeNone)
 	require.NoError(t, err)
 	defer func() { _ = snapMgr.Close() }()
 
@@ -978,7 +980,7 @@ func TestWALBatchReader(t *testing.T) {
 		entry := &WALEntry{
 			Timestamp: hlc.Now(),
 			Type:      WALTypePut,
-			Key:       key,
+			Key:       []byte(key),
 			Value:     []byte(value),
 		}
 		require.NoError(t, wal.Append(entry))
@@ -1011,7 +1013,7 @@ func TestWALBatchReader(t *testing.T) {
 
 		// 验证条目内容
 		for _, entry := range entries {
-			recoveredData[entry.Key] = string(entry.Value)
+			recoveredData[string(entry.Key)] = string(entry.Value)
 		}
 
 		totalCount += len(entries)
@@ -1049,7 +1051,7 @@ func TestWALGroupCommit(t *testing.T) {
 	entry1 := &WALEntry{
 		Timestamp: hlc.Now(),
 		Type:      WALTypePut,
-		Key:       "key1",
+		Key:       []byte("key1"),
 		Value:     []byte("value1"),
 	}
 
@@ -1071,7 +1073,7 @@ func TestWALGroupCommit(t *testing.T) {
 			entry := &WALEntry{
 				Timestamp: hlc.Now(),
 				Type:      WALTypePut,
-				Key:       fmt.Sprintf("batch_key%d", idx),
+				Key:       []byte(fmt.Sprintf("batch_key%d", idx)),
 				Value:     []byte(fmt.Sprintf("batch_value%d", idx)),
 			}
 			if err := gc.Commit(entry); err != nil {
@@ -1110,21 +1112,21 @@ func TestVerifyBatchChecksums(t *testing.T) {
 		{
 			Timestamp: hlc.Now(),
 			Type:      WALTypePut,
-			Key:       "key1",
+			Key:       []byte("key1"),
 			Value:     []byte("value1"),
 			OldValue:  []byte("old_value1"),
 		},
 		{
 			Timestamp: hlc.Now(),
 			Type:      WALTypeDelete,
-			Key:       "key2",
+			Key:       []byte("key2"),
 			Value:     nil,
 			OldValue:  nil,
 		},
 		{
 			Timestamp: hlc.Now(),
 			Type:      WALTypeCheckpoint,
-			Key:       "checkpoint_1",
+			Key:       []byte("checkpoint_1"),
 			Value:     []byte("checkpoint_data"),
 			OldValue:  nil,
 		},
@@ -1159,7 +1161,7 @@ func TestVerifyBatchChecksums_NilTimestamp(t *testing.T) {
 	entry := &WALEntry{
 		Timestamp: nil, // nil 时间戳，应该使用零值 HLC
 		Type:      WALTypePut,
-		Key:       "key1",
+		Key:       []byte("key1"),
 		Value:     []byte("value1"),
 	}
 
@@ -1194,7 +1196,7 @@ func TestWALBatchWriter_BufferedSize(t *testing.T) {
 	entry1 := &WALEntry{
 		Timestamp: hlc.Now(),
 		Type:      WALTypePut,
-		Key:       "key1",
+		Key:       []byte("key1"),
 		Value:     []byte("value1"),
 	}
 
@@ -1209,7 +1211,7 @@ func TestWALBatchWriter_BufferedSize(t *testing.T) {
 	entry2 := &WALEntry{
 		Timestamp: hlc.Now(),
 		Type:      WALTypePut,
-		Key:       "key2",
+		Key:       []byte("key2"),
 		Value:     largeValue,
 	}
 
@@ -1229,53 +1231,37 @@ func TestWALBatchWriter_BufferedSize(t *testing.T) {
 // WALCheckpoint 测试
 // ========================================
 
-// TestWALCheckpoint_FullFlow 测试检查点完整流程
-func TestWALCheckpoint_FullFlow(t *testing.T) {
+// TestRecoveryManager_CreateCheckpoint 测试使用 RecoveryManager 创建检查点
+func TestRecoveryManager_CreateCheckpoint(t *testing.T) {
 	tempDir := t.TempDir()
-	walPath := filepath.Join(tempDir, "test.wal")
 
-	wal, err := NewMetadataWAL(walPath)
+	// 创建恢复管理器
+	recoveryMgr, err := NewRecoveryManager(
+		filepath.Join(tempDir, "checkpoint"),
+		filepath.Join(tempDir, "snapshot"),
+		filepath.Join(tempDir, "wal"),
+	)
 	require.NoError(t, err)
-	defer func() { _ = wal.Close() }()
 
-	// 创建快照管理器
-	snapMgr, err := NewSnapshotManager(tempDir)
-	require.NoError(t, err)
-	defer func() { _ = snapMgr.Close() }()
-
-	// 创建检查点管理器
-	checkpoint := NewWALCheckpoint(wal, snapMgr)
-	assert.NotNil(t, checkpoint)
-
-	// 写入一些 WAL 条目
-	hlc := clock.NewHLC()
-	for i := 0; i < 10; i++ {
-		entry := &WALEntry{
-			Timestamp: hlc.Now(),
-			Type:      WALTypePut,
-			Key:       fmt.Sprintf("key%d", i),
-			Value:     []byte(fmt.Sprintf("value%d", i)),
-		}
-		require.NoError(t, wal.Append(entry))
+	// 准备测试数据
+	data := map[string][]byte{
+		"key1": []byte("value1"),
+		"key2": []byte("value2"),
+		"key3": []byte("value3"),
 	}
 
-	// 获取写入后的 WAL 大小
-	statsBefore, err := wal.GetStats()
+	// 创建检查点（会自动创建 Snapshot 和 Checkpoint）
+	checkpointInfo, err := recoveryMgr.CreateCheckpoint(data, types.CompressionTypeNone, false)
 	require.NoError(t, err)
-	walSizeBefore := statsBefore.Size
+	assert.NotNil(t, checkpointInfo)
+	assert.Greater(t, checkpointInfo.CheckpointVersion, int64(0))
+	assert.NotEmpty(t, checkpointInfo.CheckpointFile)
+	assert.NotEmpty(t, checkpointInfo.SnapshotFile)
 
-	// 创建检查点
-	err = checkpoint.CreateCheckpoint()
-	assert.NoError(t, err, "创建检查点应该成功")
-
-	// 截断 WAL 到当前位置（模拟清理旧日志）
-	err = checkpoint.Truncate(walSizeBefore)
-	assert.NoError(t, err, "截断 WAL 应该成功")
-
-	// 验证 WAL 大小没有增加（被截断了）
-	statsAfter, err := wal.GetStats()
-	require.NoError(t, err)
-	assert.LessOrEqual(t, statsAfter.Size, walSizeBefore, "截断后 WAL 不应该比之前大")
+	t.Logf("Checkpoint 创建成功: version=%d, file=%s, snapshot=%s",
+		checkpointInfo.CheckpointVersion,
+		checkpointInfo.CheckpointFile,
+		checkpointInfo.SnapshotFile)
 }
 
 // ========================================
@@ -1287,7 +1273,7 @@ func TestSnapshotManager_FullFlow(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// 创建快照管理器
-	snapMgr, err := NewSnapshotManager(tempDir)
+	snapMgr, err := NewSnapshotFileManager(tempDir, types.CompressionTypeNone)
 	require.NoError(t, err)
 	defer func() { _ = snapMgr.Close() }()
 
@@ -1317,9 +1303,9 @@ func TestSnapshotManager_FullFlow(t *testing.T) {
 	assert.NoError(t, err, "列出快照应该成功")
 	assert.Greater(t, len(snapshots), 0, "应该有至少 1 个快照")
 
-	// 验证快照文件名格式（新格式：metadata-store-checkpoint-xxx.snap）
+	// 验证快照文件名格式（新格式：snapshot-{timestamp}-{sequence}.snap）
 	latest := snapshots[len(snapshots)-1]
-	assert.Contains(t, latest, "metadata-store-checkpoint", "快照文件名应该包含 metadata-store-checkpoint")
+	assert.Contains(t, latest, "snapshot-", "快照文件名应该包含 snapshot-")
 	assert.True(t, strings.HasSuffix(latest, ".snap"), "快照文件名应该以 .snap 结尾")
 
 	// 恢复快照
@@ -1333,7 +1319,7 @@ func TestSnapshotManager_Delete(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// 创建快照管理器
-	snapMgr, err := NewSnapshotManager(tempDir)
+	snapMgr, err := NewSnapshotFileManager(tempDir, types.CompressionTypeNone)
 	require.NoError(t, err)
 	defer func() { _ = snapMgr.Close() }()
 
@@ -1388,7 +1374,7 @@ func TestSnapshotManager_Delete_NotExist(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// 创建快照管理器
-	snapMgr, err := NewSnapshotManager(tempDir)
+	snapMgr, err := NewSnapshotFileManager(tempDir, types.CompressionTypeNone)
 	require.NoError(t, err)
 	defer func() { _ = snapMgr.Close() }()
 

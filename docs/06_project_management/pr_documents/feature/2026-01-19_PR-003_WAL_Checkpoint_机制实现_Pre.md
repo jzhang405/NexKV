@@ -177,6 +177,57 @@ message CheckpointData {
 
 #### Checkpoint 文件格式设计（统一两段式）
 
+##### 三种文件关系
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant MVStore
+    participant WAL
+    participant Checkpoint
+    participant Snapshot
+
+    Note over Client,Snapshot: 正常运行 - 写入阶段
+    Client->>MVStore: Put(key, value)
+    MVStore->>WAL: Append(Entry: key, value, timestamp)
+    WAL-->>MVStore: written
+    MVStore-->>Client: success
+
+    Note over Client,Snapshot: 周期性 Checkpoint（默认 1 小时或 100MB）
+    Checkpoint->>MVStore: CreateSnapshot()
+    MVStore-->>Checkpoint: snapshot_data
+    Checkpoint->>WAL: GetOffset()
+    WAL-->>Checkpoint: current_offset
+    Checkpoint->>Checkpoint: Write(file: last_wal_offset)
+    Checkpoint->>WAL: Truncate(offset)
+    WAL-->>Checkpoint: old_entries_deleted
+
+    Note over Client,Snapshot: 崩溃恢复流程
+    Client->>Snapshot: LoadLatest()
+    Snapshot-->>MVStore: restore_data
+    MVStore->>Checkpoint: GetLastWALOffset()
+    Checkpoint-->>MVStore: last_wal_offset
+    MVStore->>WAL: Recover(offset)
+    WAL-->>MVStore: entries_after_checkpoint
+    MVStore->>MVStore: Replay(entries)
+    MVStore-->>Client: recovered
+```
+
+**关系说明**：
+
+| 文件 | 作用 | 创建时机 | 使用时机 |
+|------|------|---------|---------|
+| **WAL** | 追加写入所有变更 | 每次 Put/Delete | 崩溃恢复时重放 |
+| **Checkpoint** | 记录 Checkpoint 位置和元数据 | 定时触发（1h/100MB） | 恢复时定位 WAL 起点 |
+| **Snapshot** | MVStore 完整快照 | Checkpoint 时同步创建 | 恢复时快速加载基线数据 |
+
+**数据流向**：
+```
+正常运行:  Client → MVStore → WAL (追加)
+Checkpoint: MVStore → Snapshot + Checkpoint (记录 WAL offset)
+恢复:    Snapshot → MVStore → WAL (重放 Checkpoint 之后的条目)
+```
+
 **设计原则**：与 Transport 帧保持一致的简洁风格
 
 | 格式 | Transport 帧 | WAL 条目 | Checkpoint 文件 | Snapshot 文件 |

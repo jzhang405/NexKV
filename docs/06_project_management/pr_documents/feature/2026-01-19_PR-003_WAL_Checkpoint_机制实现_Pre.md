@@ -175,32 +175,30 @@ message CheckpointData {
 
 ---
 
-#### Checkpoint 文件格式设计（统一三段式）
+#### Checkpoint 文件格式设计（统一两段式）
 
-**设计原则**：与 Transport 帧、WAL 条目保持一致的风格
+**设计原则**：与 Transport 帧保持一致的简洁风格
 
 | 格式 | Transport 帧 | WAL 条目 | Checkpoint 文件 |
 |------|-------------|---------|-----------------|
-| **文件头** | Magic + Type + Codec + Length + CRC | Type + KeyLen + ValueLen + ... | **Magic + Version + Codec + CRC** |
+| **文件头** | Magic + Type + Codec + Length + CRC | Type + KeyLen + ValueLen + ... | **Magic + Version + Codec + Length + CRC** |
 | **数据区** | 变长 | 变长 | 变长（Protobuf） |
-| **文件尾** | 无 | CRC | **CRC** |
+| **文件尾** | 无 | CRC（每个条目） | 无 |
 
-##### 高层结构（三段式）
+##### 高层结构（两段式）
 
 ```mermaid
 flowchart LR
-    subgraph File["Checkpoint 文件<br/>统一三段式格式"]
+    subgraph File["Checkpoint 文件<br/>统一两段式格式"]
         direction TB
-        H["<b>文件头<br/>固定 12 bytes<br/>Magic + Version + Codec + CRC"]
+        H["<b>文件头<br/>固定 16 bytes<br/>Magic + Version + Codec + Length + CRC"]
         D["<b>数据区<br/>变长<br/>Protobuf 编码"]
-        T["<b>文件尾<br/>固定 4 bytes<br/>Data CRC"]
 
-        H --> D --> T
+        H --> D
     end
 
     style H fill:#e1f5ff
     style D fill:#fff4e6
-    style T fill:#e8f5e9
 ```
 
 ##### 完整字节布局
@@ -261,24 +259,22 @@ flowchart TB
 
     subgraph Checkpoint["Checkpoint 文件格式"]
         direction TB
-        CH["文件头 12B<br/>Magic(4) + Version(2)<br/>+ Codec(2) + CRC(4)"]
+        CH["文件头 16B<br/>Magic(4) + Version(2)<br/>+ Codec(2) + Length(4) + CRC(4)"]
         CD["数据 变长<br/>Protobuf"]
-        CT["文件尾 4B<br/>CRC"]
 
-        CH --> CD --> CT
+        CH --> CD
     end
 
     style TH fill:#e1f5ff
     style TD fill:#fff4e6
     style CH fill:#e1f5ff
     style CD fill:#fff4e6
-    style CT fill:#e8f5e9
 ```
 
 **一致性改进**：
-- ✅ 文件头都包含 Magic + Type/Version + Codec
-- ✅ 简洁的三段式结构（去掉复杂的 Trailer）
-- ✅ CRC 用于验证完整性
+- ✅ 文件头都包含 Magic + Type/Version + Codec + Length
+- ✅ 简洁的两段式结构（Header + Data）
+- ✅ CRC 覆盖整个文件（Header + Data）
 
 ##### 文件创建流程
 
@@ -300,7 +296,7 @@ sequenceDiagram
     CM->>CM: 4. 编码 Protobuf Data<br/>（默认 CodecType = PROTOBUF）
 
     CM->>FS: 5. 写入临时文件<br/>checkpoint.XXX.tmp
-    Note over FS: 顺序写入:<br/>1. 文件头（12B）<br/>2. 数据区（Protobuf）<br/>3. 文件尾（4B CRC）
+    Note over FS: 顺序写入:<br/>1. 文件头（16B）<br/>2. 数据区（Protobuf）
 
     CM->>FS: 6. 原子重命名<br/>checkpoint.XXX.tmp → checkpoint.XXX
 
@@ -330,7 +326,7 @@ sequenceDiagram
         CM->>FS: 尝试上一个 Checkpoint
     end
 
-    CM->>CM: 4. 解析文件头<br/>（Magic, Version, Codec Type）
+    CM->>CM: 4. 解析文件头<br/>（Magic, Version, Codec Type, Length）
 
     alt Codec Type = PROTOBUF
         CM->>CM: 使用 ProtobufCodec
@@ -340,10 +336,10 @@ sequenceDiagram
         CM->>CM: 使用 JSONCodec
     end
 
-    CM->>FS: 5. 读取数据区（Protobuf）
+    CM->>FS: 5. 读取数据区（根据 Length 字段）
     CM->>CM: 6. 解码 Protobuf Data
 
-    CM->>FS: 7. 读取并验证文件尾 CRC
+    CM->>CM: 7. 验证 CRC（CRC32(Magic + Version + Codec + Length + Data)）
 
     CM->>MV: 8. 加载到 MVStore
 
@@ -363,9 +359,8 @@ sequenceDiagram
 - 平均 Value：100 bytes
 
 **各部分大小**：
-- 文件头：12 bytes（固定）
+- 文件头：16 bytes（固定）
 - 数据区：~100 MB（Protobuf 编码）
-- 文件尾：4 bytes（固定）
 
 **总计**：约 100 MB/Checkpoint
 

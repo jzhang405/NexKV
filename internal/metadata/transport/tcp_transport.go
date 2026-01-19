@@ -35,37 +35,32 @@ func validateTransportConfig(config *TransportConfig) error {
 		return fmt.Errorf("监听地址不能为空")
 	}
 
-	// 验证最大消息大小
-	if config.MaxMessageSize <= 0 {
-		return fmt.Errorf("最大消息大小必须大于 0，当前值: %d", config.MaxMessageSize)
-	}
-	if config.MaxMessageSize > 1024*1024*1024 { // 1GB
-		return fmt.Errorf("最大消息大小不能超过 1GB，当前值: %d", config.MaxMessageSize)
+	// 验证最大消息大小（必须大于 0 且不超过 1GB）
+	if config.MaxMessageSize <= 0 || config.MaxMessageSize > 1024*1024*1024 {
+		return fmt.Errorf("最大消息大小必须在 (0, 1GB] 范围内，当前值: %d", config.MaxMessageSize)
 	}
 
-	// 验证超时配置
-	if config.ReadTimeout < 0 {
-		return fmt.Errorf("读超时不能为负数，当前值: %v", config.ReadTimeout)
-	}
-	if config.WriteTimeout < 0 {
-		return fmt.Errorf("写超时不能为负数，当前值: %v", config.WriteTimeout)
-	}
-	if config.KeepAliveInterval < 0 {
-		return fmt.Errorf("保活间隔不能为负数，当前值: %v", config.KeepAliveInterval)
-	}
-	if config.KeepAliveTimeout < 0 {
-		return fmt.Errorf("保活超时不能为负数，当前值: %v", config.KeepAliveTimeout)
-	}
-	if config.ChannelSendTimeout < 0 {
-		return fmt.Errorf("通道发送超时不能为负数，当前值: %v", config.ChannelSendTimeout)
+	// 验证超时配置（不能为负数）
+	timeouts := []struct {
+		name  string
+		value time.Duration
+	}{
+		{"读超时", config.ReadTimeout},
+		{"写超时", config.WriteTimeout},
+		{"保活间隔", config.KeepAliveInterval},
+		{"保活超时", config.KeepAliveTimeout},
+		{"通道发送超时", config.ChannelSendTimeout},
 	}
 
-	// 验证缓冲区大小
-	if config.BufferSize <= 0 {
-		return fmt.Errorf("缓冲区大小必须大于 0，当前值: %d", config.BufferSize)
+	for _, t := range timeouts {
+		if t.value < 0 {
+			return fmt.Errorf("%s不能为负数，当前值: %v", t.name, t.value)
+		}
 	}
-	if config.BufferSize > 65536 { // 64KB
-		return fmt.Errorf("缓冲区大小不能超过 65536，当前值: %d", config.BufferSize)
+
+	// 验证缓冲区大小（必须大于 0 且不超过 64KB）
+	if config.BufferSize <= 0 || config.BufferSize > 65536 {
+		return fmt.Errorf("缓冲区大小必须在 (0, 64KB] 范围内，当前值: %d", config.BufferSize)
 	}
 
 	return nil

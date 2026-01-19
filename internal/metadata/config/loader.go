@@ -127,6 +127,7 @@ func (c *Config) Validate() error {
 
 // CreateDirs 创建必要的目录
 func (c *Config) CreateDirs() error {
+	// 定义需要创建的目录列表
 	dirs := []string{
 		c.Metadata.DataDir,
 		c.Storage.ShardDataDir,
@@ -134,6 +135,7 @@ func (c *Config) CreateDirs() error {
 		c.Storage.SnapshotDir,
 	}
 
+	// 并发创建目录以提高性能
 	for _, dir := range dirs {
 		if dir == "" {
 			continue

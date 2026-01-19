@@ -163,24 +163,33 @@ func generateNodeID(config *NodeIDConfig) (string, error) {
 
 // sanitizeName 将名称中的非字母数字字符替换为 -
 func sanitizeName(name string) string {
-	result := make([]byte, 0, len(name))
+	// 使用 strings.Builder 提高性能
+	var result strings.Builder
+	result.Grow(len(name))
+
+	prevWasDash := false
+
 	for i := 0; i < len(name); i++ {
 		c := name[i]
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
-			result = append(result, c)
-		} else {
-			// 非字母数字字符替换为 -
-			// 跳过开头的特殊字符
-			if len(result) > 0 && result[len(result)-1] != '-' {
-				result = append(result, '-')
-			}
+		isAlnum := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+
+		if isAlnum {
+			result.WriteByte(c)
+			prevWasDash = false
+		} else if !prevWasDash && result.Len() > 0 {
+			// 非字母数字字符替换为 -，但避免连续和开头
+			result.WriteByte('-')
+			prevWasDash = true
 		}
 	}
+
 	// 移除末尾可能多余的 -
-	if len(result) > 0 && result[len(result)-1] == '-' {
-		result = result[:len(result)-1]
+	s := result.String()
+	if len(s) > 0 && s[len(s)-1] == '-' {
+		s = s[:len(s)-1]
 	}
-	return string(result)
+
+	return s
 }
 
 // getDefaultNodeIDConfig 获取默认节点 ID 配置

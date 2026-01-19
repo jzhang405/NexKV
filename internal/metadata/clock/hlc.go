@@ -249,13 +249,13 @@ func maxInt64(values ...int64) int64 {
 		return 0
 	}
 
-	max := values[0]
+	maxVal := values[0]
 	for _, v := range values[1:] {
-		if v > max {
-			max = v
+		if v > maxVal {
+			maxVal = v
 		}
 	}
-	return max
+	return maxVal
 }
 
 // maxUint16 返回两个 uint16 中的最大值

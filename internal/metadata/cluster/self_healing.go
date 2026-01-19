@@ -11,7 +11,7 @@ package cluster
 
 import (
 	"context"
-	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -149,19 +149,19 @@ func NewSelfHealer(
 	}
 
 	if transport == nil {
-		return nil, errcodes.NewClusterNilParameterError("transport")
+		return nil, types.NewClusterNilParameterError("transport")
 	}
 
 	if localNodeID == "" {
-		return nil, errcodes.NewClusterNilParameterError("localNodeID")
+		return nil, types.NewClusterNilParameterError("localNodeID")
 	}
 
 	if coordinator == nil {
-		return nil, errcodes.NewClusterNilParameterError("coordinator")
+		return nil, types.NewClusterNilParameterError("coordinator")
 	}
 
 	if failureDetector == nil {
-		return nil, errcodes.NewClusterNilParameterError("failureDetector")
+		return nil, types.NewClusterNilParameterError("failureDetector")
 	}
 
 	healer := &SelfHealer{
@@ -188,7 +188,7 @@ func NewSelfHealer(
 // Start 启动自愈机制
 func (sh *SelfHealer) Start() error {
 	if !sh.started.CompareAndSwap(false, true) {
-		return errcodes.NewClusterServiceStateError("自愈机制", "已经启动")
+		return types.NewClusterServiceStateError("自愈机制", "已经启动")
 	}
 
 	logging.WithFields(map[string]any{
@@ -387,7 +387,7 @@ func (sh *SelfHealer) performHealing(nodeID string) error {
 			defer cancel()
 
 			if err := sh.leaderElection.Campaign(ctx); err != nil {
-				return errcodes.NewClusterElectionError("leader 选举失败", err)
+				return types.NewClusterElectionError("leader 选举失败", err)
 			}
 		}
 	}
@@ -400,7 +400,7 @@ func (sh *SelfHealer) repairTopology(failedNodeID string) error {
 	// 获取故障节点的信息
 	failedNode, err := sh.coordinator.GetNode(failedNodeID)
 	if err != nil {
-		return errcodes.NewClusterFailureDetectionError("获取故障节点信息失败", err)
+		return types.NewClusterFailureDetectionError("获取故障节点信息失败", err)
 	}
 
 	// 如果故障节点有子节点，需要为子节点找新父节点
@@ -413,7 +413,7 @@ func (sh *SelfHealer) repairTopology(failedNodeID string) error {
 		// 查找候选父节点
 		newParentID, err := sh.findNewParent(failedNodeID)
 		if err != nil {
-			return errcodes.NewClusterCoordinatorError("查找新父节点失败", err)
+			return types.NewClusterCoordinatorError("查找新父节点失败", err)
 		}
 
 		if newParentID == "" {

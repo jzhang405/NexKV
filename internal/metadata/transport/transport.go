@@ -70,18 +70,6 @@ type Message interface {
 //   - 350-399: 集群管理消息
 type MessageType uint16
 
-// CodecType 编解码器类型
-type CodecType uint16
-
-const (
-	// CodecTypeMessagePack MessagePack 编解码
-	CodecTypeMessagePack CodecType = 1
-	// CodecTypeJSON JSON 编解码
-	CodecTypeJSON CodecType = 2
-	// CodecTypeProtobuf Protobuf 编解码
-	CodecTypeProtobuf CodecType = 3
-)
-
 const (
 	// 元数据操作消息 (100-149)
 	MessageTypeGet         MessageType = 100 // 获取元数据
@@ -186,20 +174,6 @@ func (t MessageType) String() string {
 		return "ClusterStatusReply"
 	case MessageTypeLeaderElection:
 		return "LeaderElection"
-	default:
-		return "Unknown"
-	}
-}
-
-// String 返回编解码器类型的字符串表示
-func (c CodecType) String() string {
-	switch c {
-	case CodecTypeMessagePack:
-		return "MessagePack"
-	case CodecTypeJSON:
-		return "JSON"
-	case CodecTypeProtobuf:
-		return "Protobuf"
 	default:
 		return "Unknown"
 	}

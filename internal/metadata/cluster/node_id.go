@@ -13,7 +13,7 @@ package cluster
 
 import (
 	"fmt"
-	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,7 +77,7 @@ func NewLocalNodeInfo(dataDir string, config *NodeIDConfig) (*LocalNodeInfo, err
 	if nodeID == "" && config != nil {
 		generatedID, err := generateNodeID(config)
 		if err != nil {
-			return nil, errcodes.NewClusterNodeManagementError("生成节点 ID", "", err)
+			return nil, types.NewClusterNodeManagementError("生成节点 ID", "", err)
 		}
 		nodeID = generatedID
 
@@ -102,7 +102,7 @@ func NewLocalNodeInfo(dataDir string, config *NodeIDConfig) (*LocalNodeInfo, err
 		defaultConfig := getDefaultNodeIDConfig()
 		generatedID, err := generateNodeID(defaultConfig)
 		if err != nil {
-			return nil, errcodes.NewClusterNodeManagementError("生成节点 ID", "", err)
+			return nil, types.NewClusterNodeManagementError("生成节点 ID", "", err)
 		}
 		nodeID = generatedID
 
@@ -132,7 +132,7 @@ func generateNodeID(config *NodeIDConfig) (string, error) {
 		var err error
 		hostname, err = os.Hostname()
 		if err != nil {
-			return "", errcodes.NewClusterNodeManagementError("获取主机名", "", err)
+			return "", types.NewClusterNodeManagementError("获取主机名", "", err)
 		}
 	}
 

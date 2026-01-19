@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"testing"
+
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
 // ========================================
@@ -17,14 +19,14 @@ func BenchmarkFrame_NewFrame(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = NewFrame(MessageTypeGet, CodecTypeMessagePack, data)
+		_ = NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
 	}
 }
 
 // BenchmarkFrame_Marshal 帧序列化性能
 func BenchmarkFrame_Marshal(b *testing.B) {
 	data := make([]byte, 1024)
-	frame := NewFrame(MessageTypeGet, CodecTypeMessagePack, data)
+	frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -35,7 +37,7 @@ func BenchmarkFrame_Marshal(b *testing.B) {
 // BenchmarkFrame_Unmarshal 帧反序列化性能
 func BenchmarkFrame_Unmarshal(b *testing.B) {
 	data := make([]byte, 1024)
-	frame := NewFrame(MessageTypeGet, CodecTypeMessagePack, data)
+	frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
 	buf, _ := frame.Marshal()
 
 	b.ResetTimer()
@@ -51,7 +53,7 @@ func BenchmarkFrame_RoundTrip(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		frame := NewFrame(MessageTypeGet, CodecTypeMessagePack, data)
+		frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
 		buf, _ := frame.Marshal()
 		f := &Frame{}
 		_ = f.Unmarshal(buf)
@@ -67,7 +69,7 @@ func BenchmarkFrame_NewFrame_DifferentSizes(b *testing.B) {
 			data := make([]byte, size)
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = NewFrame(MessageTypeGet, CodecTypeMessagePack, data)
+				_ = NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
 			}
 		})
 	}

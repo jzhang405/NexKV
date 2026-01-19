@@ -18,7 +18,7 @@ import (
 	"hash/crc32"
 	"io"
 
-	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
 const (
@@ -52,7 +52,7 @@ type Frame struct {
 	Type MessageType
 
 	// CodecType 编解码器类型
-	CodecType CodecType
+	CodecType types.CodecType
 
 	// Length 数据长度
 	Length uint32
@@ -65,12 +65,12 @@ type Frame struct {
 }
 
 // NewFrame 创建新帧
-func NewFrame(msgType MessageType, codecType CodecType, data []byte) *Frame {
+func NewFrame(msgType MessageType, codecType types.CodecType, data []byte) *Frame {
 	// 计算 Data 长度
 	length := uint32(len(data))
 
 	// 构建帧头（不包含 Data 和 CRC32）
-	header := make([]byte, 12) // Magic(4) + Type(2) + CodecType(2) + Length(4)
+	header := make([]byte, 12) // Magic(4) + Type(2) + types.CodecType(2) + Length(4)
 	copy(header[0:4], []byte(FrameMagic))
 	binary.BigEndian.PutUint16(header[4:6], uint16(msgType))
 	binary.BigEndian.PutUint16(header[6:8], uint16(codecType))
@@ -94,7 +94,7 @@ func NewFrame(msgType MessageType, codecType CodecType, data []byte) *Frame {
 // Marshal 序列化帧为字节流
 func (f *Frame) Marshal() ([]byte, error) {
 	if f.Length > MaxFrameSize {
-		return nil, errcodes.NewFrameTooLargeError(int(f.Length))
+		return nil, types.NewFrameTooLargeError(int(f.Length))
 	}
 
 	// 帧总大小 = Header(16) + Data
@@ -127,32 +127,32 @@ func (f *Frame) Marshal() ([]byte, error) {
 // Unmarshal 从字节流解析帧
 func (f *Frame) Unmarshal(data []byte) error {
 	if len(data) < FrameHeaderSize {
-		return errcodes.NewInvalidFrameSizeError("帧头不足")
+		return types.NewInvalidFrameSizeError("帧头不足")
 	}
 
 	// 读取 Magic (0-3)
 	copy(f.Magic[:], data[0:4])
 	if string(f.Magic[:]) != FrameMagic {
-		return errcodes.NewFrameInvalidMagicError()
+		return types.NewFrameInvalidMagicError()
 	}
 
 	// 读取 Type (4-5)
 	f.Type = MessageType(binary.BigEndian.Uint16(data[4:6]))
 
 	// 读取 CodecType (6-7)
-	f.CodecType = CodecType(binary.BigEndian.Uint16(data[6:8]))
+	f.CodecType = types.CodecType(binary.BigEndian.Uint16(data[6:8]))
 
 	// 读取 Length (8-11)
 	f.Length = binary.BigEndian.Uint32(data[8:12])
 
 	// 验证帧大小
 	if f.Length > MaxFrameSize {
-		return errcodes.NewFrameTooLargeError(int(f.Length))
+		return types.NewFrameTooLargeError(int(f.Length))
 	}
 
 	totalSize := FrameHeaderSize + int(f.Length)
 	if len(data) < totalSize {
-		return errcodes.NewInvalidFrameSizeError(fmt.Sprintf("需要 %d 字节，实际 %d 字节", totalSize, len(data)))
+		return types.NewInvalidFrameSizeError(fmt.Sprintf("需要 %d 字节，实际 %d 字节", totalSize, len(data)))
 	}
 
 	// 读取 CRC32 (12-15)
@@ -168,7 +168,7 @@ func (f *Frame) Unmarshal(data []byte) error {
 
 	// 验证校验和
 	if !f.verifyChecksum(data) {
-		return errcodes.NewFrameChecksumError()
+		return types.NewFrameChecksumError()
 	}
 
 	return nil
@@ -176,7 +176,7 @@ func (f *Frame) Unmarshal(data []byte) error {
 
 // verifyChecksum 验证帧校验和
 func (f *Frame) verifyChecksum(data []byte) bool {
-	// 重新计算校验和：Magic(0:4) + Type(4:6) + CodecType(6:8) + Length(8:12) + Data(16:end)
+	// 重新计算校验和：Magic(0:4) + Type(4:6) + types.CodecType(6:8) + Length(8:12) + Data(16:end)
 	// 注意：不包括 CRC32 字段本身(12:16)
 	crc := crc32.ChecksumIEEE(data[16:])                 // Data
 	crc = crc32.Update(crc, crc32.IEEETable, data[0:12]) // Magic + Type + CodecType + Length
@@ -219,13 +219,13 @@ func (fr *FrameReader) ReadFrame() (*Frame, error) {
 
 	// 解析 Magic
 	if string(header[0:4]) != FrameMagic {
-		return nil, errcodes.NewFrameInvalidMagicError()
+		return nil, types.NewFrameInvalidMagicError()
 	}
 
 	// 解析 Length (4 字节，从偏移 8 开始)
 	length := binary.BigEndian.Uint32(header[8:12])
 	if length > MaxFrameSize {
-		return nil, errcodes.NewFrameTooLargeError(int(length))
+		return nil, types.NewFrameTooLargeError(int(length))
 	}
 
 	// 读取 Data 部分（帧头的 16 字节已包含 CRC32）

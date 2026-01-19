@@ -1,13 +1,15 @@
-// Package errcodes 提供统一的错误定义
-package errcodes
+// Package types 定义内部通用的数据类型
+//
+// 避免各层之间的循环依赖，提供统一的类型定义
+package types
 
-import "fmt"
+import (
+	"fmt"
+)
 
-// ========================================
-// 错误码定义
-// ========================================
-
-// ErrorCode 统一错误码
+// ErrorCode 统一错误码（从 errcodes 迁移）
+//
+// 为了保持与现有代码的兼容性，使用 int 型枚举
 type ErrorCode int
 
 const (
@@ -191,7 +193,9 @@ const (
 // 统一错误结构
 // ========================================
 
-// Error 统一错误结构
+// Error 统一错误结构（从 errcodes 迁移）
+//
+// 兼容原有 errcodes.Error 结构，包含 Code, Message, Op, Err 字段
 type Error struct {
 	Code    ErrorCode // 错误码
 	Message string    // 错误消息
@@ -213,7 +217,7 @@ func (e *Error) Error() string {
 	return e.Message
 }
 
-// Unwrap 返回底层错误
+// Unwrap 实现 errors.Unwrap 接口，支持错误链
 func (e *Error) Unwrap() error {
 	return e.Err
 }

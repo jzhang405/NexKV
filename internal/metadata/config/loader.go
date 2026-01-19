@@ -3,7 +3,7 @@ package config
 
 import (
 	"fmt"
-	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"os"
 	"path/filepath"
 
@@ -50,7 +50,7 @@ func (l *Loader) Load() (*Config, error) {
 	// 读取配置文件
 	if err := l.viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-			return nil, errcodes.NewConfigLoadError("读取配置文件", err)
+			return nil, types.NewConfigLoadError("读取配置文件", err)
 		}
 		// 配置文件不存在，使用默认配置
 	}
@@ -58,12 +58,12 @@ func (l *Loader) Load() (*Config, error) {
 	// 解析配置到结构体
 	cfg := DefaultConfig()
 	if err := l.viper.Unmarshal(cfg); err != nil {
-		return nil, errcodes.NewConfigLoadError("解析配置", err)
+		return nil, types.NewConfigLoadError("解析配置", err)
 	}
 
 	// 验证配置
 	if err := cfg.Validate(); err != nil {
-		return nil, errcodes.NewConfigValidationError("", "配置验证失败")
+		return nil, types.NewConfigValidationError("", "配置验证失败")
 	}
 
 	return cfg, nil
@@ -82,44 +82,44 @@ func (l *Loader) MustLoad() *Config {
 func (c *Config) Validate() error {
 	// 验证集群配置
 	if c.Cluster.Name == "" {
-		return errcodes.NewConfigValidationError("cluster.name", "不能为空")
+		return types.NewConfigValidationError("cluster.name", "不能为空")
 	}
 	if c.Cluster.NodeID == "" {
-		return errcodes.NewConfigValidationError("cluster.node_id", "不能为空")
+		return types.NewConfigValidationError("cluster.node_id", "不能为空")
 	}
 	if c.Cluster.NodeAddr == "" {
-		return errcodes.NewConfigValidationError("cluster.node_addr", "不能为空")
+		return types.NewConfigValidationError("cluster.node_addr", "不能为空")
 	}
 
 	// 验证树形分组配置
 	if c.Cluster.TreeCoord.MaxChildren < 5 || c.Cluster.TreeCoord.MaxChildren > 10 {
-		return errcodes.NewConfigValidationError("cluster.tree_coord.max_children", "必须在 5-10 之间")
+		return types.NewConfigValidationError("cluster.tree_coord.max_children", "必须在 5-10 之间")
 	}
 	if c.Cluster.TreeCoord.GroupSize < 5 || c.Cluster.TreeCoord.GroupSize > 10 {
-		return errcodes.NewConfigValidationError("cluster.tree_coord.group_size", "必须在 5-10 之间")
+		return types.NewConfigValidationError("cluster.tree_coord.group_size", "必须在 5-10 之间")
 	}
 
 	// 验证元数据配置
 	if c.Metadata.DataDir == "" {
-		return errcodes.NewConfigValidationError("metadata.data_dir", "不能为空")
+		return types.NewConfigValidationError("metadata.data_dir", "不能为空")
 	}
 
 	// 验证存储配置
 	if c.Storage.ShardDataDir == "" {
-		return errcodes.NewConfigValidationError("storage.shard_data_dir", "不能为空")
+		return types.NewConfigValidationError("storage.shard_data_dir", "不能为空")
 	}
 	if c.Storage.WALDir == "" {
-		return errcodes.NewConfigValidationError("storage.wal_dir", "不能为空")
+		return types.NewConfigValidationError("storage.wal_dir", "不能为空")
 	}
 
 	// 验证网络配置
 	if c.Network.ListenAddr == "" {
-		return errcodes.NewConfigValidationError("network.listen_addr", "不能为空")
+		return types.NewConfigValidationError("network.listen_addr", "不能为空")
 	}
 
 	// 创建必要目录
 	if err := c.CreateDirs(); err != nil {
-		return errcodes.NewConfigLoadError("创建目录", err)
+		return types.NewConfigLoadError("创建目录", err)
 	}
 
 	return nil
@@ -139,7 +139,7 @@ func (c *Config) CreateDirs() error {
 			continue
 		}
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return errcodes.NewConfigLoadError("创建目录 "+dir, err)
+			return types.NewConfigLoadError("创建目录 "+dir, err)
 		}
 	}
 

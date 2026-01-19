@@ -14,7 +14,7 @@
 package cluster
 
 import (
-	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"os"
 	"path/filepath"
 	"sync"
@@ -90,19 +90,19 @@ type VirtualNodeImpl struct {
 // NewVirtualNode 创建虚拟节点
 func NewVirtualNode(config *VirtualNodeConfig) (VirtualNode, error) {
 	if config == nil {
-		return nil, errcodes.NewClusterNilParameterError("config")
+		return nil, types.NewClusterNilParameterError("config")
 	}
 
 	if config.VirtualNodeID == "" {
-		return nil, errcodes.NewClusterNilParameterError("virtualNodeID")
+		return nil, types.NewClusterNilParameterError("virtualNodeID")
 	}
 
 	if config.PhysicalNodeID == "" {
-		return nil, errcodes.NewClusterNilParameterError("physicalNodeID")
+		return nil, types.NewClusterNilParameterError("physicalNodeID")
 	}
 
 	if config.RootDataDir == "" {
-		return nil, errcodes.NewClusterNilParameterError("rootDataDir")
+		return nil, types.NewClusterNilParameterError("rootDataDir")
 	}
 
 	// 默认启用数据隔离
@@ -116,7 +116,7 @@ func NewVirtualNode(config *VirtualNodeConfig) (VirtualNode, error) {
 
 	// 初始化目录路径
 	if err := vn.initPaths(); err != nil {
-		return nil, errcodes.NewClusterNodeManagementError("初始化路径", "", err)
+		return nil, types.NewClusterNodeManagementError("初始化路径", "", err)
 	}
 
 	logging.WithFields(map[string]any{
@@ -153,7 +153,7 @@ func (vn *VirtualNodeImpl) initPaths() error {
 
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return errcodes.NewClusterNodeManagementError("创建目录", dir, err)
+			return types.NewClusterNodeManagementError("创建目录", dir, err)
 		}
 	}
 
@@ -193,7 +193,7 @@ func (vn *VirtualNodeImpl) GetSSTDir() string {
 // Start 启动虚拟节点
 func (vn *VirtualNodeImpl) Start() error {
 	if !vn.running.CompareAndSwap(false, true) {
-		return errcodes.NewClusterServiceStateError("虚拟节点", "已经在运行")
+		return types.NewClusterServiceStateError("虚拟节点", "已经在运行")
 	}
 
 	logging.WithField("virtual_node_id", vn.config.VirtualNodeID).Info("启动虚拟节点")
@@ -245,7 +245,7 @@ func (vm *VirtualNodeManager) CreateVirtualNode(virtualNodeID string) (VirtualNo
 
 	// 检查是否已存在
 	if _, exists := vm.virtualNodes[virtualNodeID]; exists {
-		return nil, errcodes.NewClusterTreeManagementError("虚拟节点已存在: " + virtualNodeID)
+		return nil, types.NewClusterTreeManagementError("虚拟节点已存在: " + virtualNodeID)
 	}
 
 	config := &VirtualNodeConfig{
@@ -278,7 +278,7 @@ func (vm *VirtualNodeManager) GetVirtualNode(virtualNodeID string) (VirtualNode,
 
 	vn, exists := vm.virtualNodes[virtualNodeID]
 	if !exists {
-		return nil, errcodes.NewClusterNodeNotFoundError(virtualNodeID)
+		return nil, types.NewClusterNodeNotFoundError(virtualNodeID)
 	}
 
 	return vn, nil
@@ -291,12 +291,12 @@ func (vm *VirtualNodeManager) RemoveVirtualNode(virtualNodeID string) error {
 
 	vn, exists := vm.virtualNodes[virtualNodeID]
 	if !exists {
-		return errcodes.NewClusterNodeNotFoundError(virtualNodeID)
+		return types.NewClusterNodeNotFoundError(virtualNodeID)
 	}
 
 	// 停止节点
 	if err := vn.Stop(); err != nil {
-		return errcodes.NewClusterNodeManagementError("停止虚拟节点", "", err)
+		return types.NewClusterNodeManagementError("停止虚拟节点", "", err)
 	}
 
 	delete(vm.virtualNodes, virtualNodeID)

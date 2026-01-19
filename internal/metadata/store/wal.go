@@ -10,32 +10,35 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/clock"
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
-	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
 // WAL 文件格式:
-// [Header 12 bytes][Entry Data N bytes][Checksum 4 bytes]...
+// [Header 16 bytes][Entry Data N bytes][Checksum 4 bytes]...
 //
-// Header 格式 (固定 12 字节):
+// Header 格式 (固定 16 字节):
 // - Type:         2 bytes  (WALType, uint16)                    [0:2]
 // - KeyLen:       4 bytes  (key 长度)                            [2:6]
 // - ValueLen:     4 bytes  (value 长度)                          [6:10]
 // - TimestampLen: 2 bytes  (HLC 数据长度，值为 10)               [10:12]
+// - OldValueLen:  4 bytes  (old value 长度)                      [12:16]
 //
 // Entry Data 格式 (变长，紧接 Header，与 Header 字段顺序一致):
 // - Key:          KeyLen  bytes
 // - Value:        ValueLen bytes
 // - Timestamp:    TimestampLen bytes (HLC 序列化: 8字节 pt + 2字节 c)
 //
-// 总 Header: 2 + 4 + 4 + 2 = 12 bytes (4 字节对齐)
+// 总 Header: 2 + 4 + 4 + 2 + 4 = 16 bytes (4 字节对齐)
 
 const (
-	walHeaderSize = 12
+	walHeaderSize = 16
 	walMagic      = "NxKVWAL"
 )
 
@@ -47,36 +50,38 @@ const (
 //   - 崩溃恢复：Recover 重放所有日志
 //   - 精简：Truncate 删除旧日志
 type MetadataWAL struct {
-	file   *os.File
-	path   string
-	mu     sync.Mutex
-	offset int64 // 当前写入位置
-	closed bool
+	file    *os.File
+	path    string
+	mu      sync.Mutex
+	offset  int64  // 当前写入位置
+	entries uint64 // 条目计数
+	closed  bool
 }
 
 // NewMetadataWAL 创建元数据 WAL
 func NewMetadataWAL(path string) (*MetadataWAL, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return nil, errcodes.NewInternalError("创建 WAL 目录失败", err)
+		return nil, types.NewInternalError("创建 WAL 目录失败", err)
 	}
 
 	// 以追加模式打开文件
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
-		return nil, errcodes.NewInternalError("打开 WAL 文件失败", err)
+		return nil, types.NewInternalError("打开 WAL 文件失败", err)
 	}
 
 	// 获取当前文件大小
 	stat, err := file.Stat()
 	if err != nil {
 		_ = file.Close()
-		return nil, errcodes.NewInternalError("获取 WAL 文件信息失败", err)
+		return nil, types.NewInternalError("获取 WAL 文件信息失败", err)
 	}
 
 	wal := &MetadataWAL{
-		file:   file,
-		path:   path,
-		offset: stat.Size(),
+		file:    file,
+		path:    path,
+		offset:  stat.Size(),
+		entries: 0,
 	}
 
 	return wal, nil
@@ -85,7 +90,11 @@ func NewMetadataWAL(path string) (*MetadataWAL, error) {
 // Append 追加日志条目
 func (w *MetadataWAL) Append(entry *WALEntry) error {
 	if w.closed {
-		return errcodes.NewClosedError("WAL")
+		return types.NewClosedError("WAL")
+	}
+
+	if entry == nil {
+		return types.NewStoreInvalidParameterError("entry 不能为空")
 	}
 
 	w.mu.Lock()
@@ -94,7 +103,7 @@ func (w *MetadataWAL) Append(entry *WALEntry) error {
 	// 序列化 Entry
 	data, err := w.encodeEntry(entry)
 	if err != nil {
-		return errcodes.NewInternalError("编码 WAL 条目失败", err)
+		return types.NewInternalError("编码 WAL 条目失败", err)
 	}
 
 	// 计算校验和
@@ -102,19 +111,20 @@ func (w *MetadataWAL) Append(entry *WALEntry) error {
 
 	// 写入：[Data][Checksum]
 	if _, err := w.file.Write(data); err != nil {
-		return errcodes.NewInternalError("写入 WAL 数据失败", err)
+		return types.NewInternalError("写入 WAL 数据失败", err)
 	}
 
 	if err := binary.Write(w.file, binary.BigEndian, checksum); err != nil {
-		return errcodes.NewInternalError("写入校验和失败", err)
+		return types.NewInternalError("写入校验和失败", err)
 	}
 
 	// 强制刷盘
 	if err := w.file.Sync(); err != nil {
-		return errcodes.NewInternalError("WAL sync 失败", err)
+		return types.NewInternalError("WAL sync 失败", err)
 	}
 
 	w.offset += int64(len(data) + 4)
+	w.entries++
 
 	return nil
 }
@@ -129,12 +139,12 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 
 	// 重新打开文件，从头读取
 	if err := w.file.Close(); err != nil {
-		return nil, errcodes.NewInternalError("关闭 WAL 文件失败", err)
+		return nil, types.NewInternalError("关闭 WAL 文件失败", err)
 	}
 
 	file, err := os.Open(w.path)
 	if err != nil {
-		return nil, errcodes.NewInternalError("打开 WAL 文件失败", err)
+		return nil, types.NewInternalError("打开 WAL 文件失败", err)
 	}
 	w.file = file
 
@@ -148,7 +158,7 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 			if err == io.EOF {
 				break
 			}
-			return nil, errcodes.NewInternalError("读取 WAL header 失败", err)
+			return nil, types.NewInternalError("读取 WAL header 失败", err)
 		}
 
 		// 解析 Header
@@ -156,18 +166,19 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 		keyLen := binary.BigEndian.Uint32(header[2:6])
 		valueLen := binary.BigEndian.Uint32(header[6:10])
 		timestampSize := binary.BigEndian.Uint16(header[10:12])
+		oldValueLen := binary.BigEndian.Uint32(header[12:16])
 
-		// 读取 Data (修复类型转换)
-		dataSize := uint32(keyLen) + uint32(valueLen) + uint32(timestampSize)
+		// 读取 Data (修复类型转换，包含 OldValue)
+		dataSize := uint32(keyLen) + uint32(valueLen) + uint32(timestampSize) + oldValueLen
 		data := make([]byte, dataSize)
 		if _, err := io.ReadFull(reader, data); err != nil {
-			return nil, errcodes.NewInternalError("读取 WAL data 失败", err)
+			return nil, types.NewInternalError("读取 WAL data 失败", err)
 		}
 
 		// 读取 Checksum
 		var checksum uint32
 		if err := binary.Read(reader, binary.BigEndian, &checksum); err != nil {
-			return nil, errcodes.NewInternalError("读取校验和失败", err)
+			return nil, types.NewInternalError("读取校验和失败", err)
 		}
 
 		// 验证校验和
@@ -178,7 +189,7 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 		}
 
 		// 解析 Entry
-		entry, err := w.decodeEntry(typ, keyLen, valueLen, timestampSize, data)
+		entry, err := w.decodeEntry(typ, keyLen, valueLen, oldValueLen, timestampSize, data)
 		if err != nil {
 			logging.Warnf("解码 WAL 条目失败: %v", err)
 			continue
@@ -189,12 +200,12 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 
 	// 恢复完成后，重新以追加模式打开文件用于后续写入
 	if err := w.file.Close(); err != nil {
-		return nil, errcodes.NewInternalError("关闭 WAL 文件失败", err)
+		return nil, types.NewInternalError("关闭 WAL 文件失败", err)
 	}
 
 	file, err = os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
-		return nil, errcodes.NewInternalError("重新打开 WAL 文件失败", err)
+		return nil, types.NewInternalError("重新打开 WAL 文件失败", err)
 	}
 	w.file = file
 	w.offset = currentOffset
@@ -205,25 +216,25 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 // Truncate 截断 WAL
 func (w *MetadataWAL) Truncate(offset int64) error {
 	if w.closed {
-		return errcodes.NewClosedError("WAL")
+		return types.NewClosedError("WAL")
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	if err := w.file.Close(); err != nil {
-		return errcodes.NewInternalError("关闭 WAL 文件失败", err)
+		return types.NewInternalError("关闭 WAL 文件失败", err)
 	}
 
 	// 重新创建文件，只保留 offset 之后的内容
 	if err := os.Truncate(w.path, offset); err != nil {
-		return errcodes.NewInternalError("截断 WAL 文件失败", err)
+		return types.NewInternalError("截断 WAL 文件失败", err)
 	}
 
 	// 重新打开
 	file, err := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
-		return errcodes.NewInternalError("重新打开 WAL 文件失败", err)
+		return types.NewInternalError("重新打开 WAL 文件失败", err)
 	}
 
 	w.file = file
@@ -235,7 +246,7 @@ func (w *MetadataWAL) Truncate(offset int64) error {
 // Sync 强制刷盘
 func (w *MetadataWAL) Sync() error {
 	if w.closed {
-		return errcodes.NewClosedError("WAL")
+		return types.NewClosedError("WAL")
 	}
 
 	w.mu.Lock()
@@ -256,7 +267,7 @@ func (w *MetadataWAL) Close() error {
 	w.closed = true
 
 	if err := w.file.Close(); err != nil {
-		return errcodes.NewInternalError("关闭 WAL 文件失败", err)
+		return types.NewInternalError("关闭 WAL 文件失败", err)
 	}
 
 	return nil
@@ -264,31 +275,48 @@ func (w *MetadataWAL) Close() error {
 
 // encodeEntry 编码 WAL 条目
 func (w *MetadataWAL) encodeEntry(entry *WALEntry) ([]byte, error) {
-	// 序列化 HLC 时间戳
-	timestampData, err := entry.Timestamp.MarshalBinary()
-	if err != nil {
-		return nil, err
+	// 序列化 HLC 时间戳（如果为 nil，使用零值 HLC）
+	var timestampData []byte
+	if entry.Timestamp != nil {
+		var err error
+		timestampData, err = entry.Timestamp.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// 使用零值 HLC
+		hlc := clock.NewHLC()
+		var err error
+		timestampData, err = hlc.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	// 构建 Header
+	// 获取 OldValue 长度
+	oldValueLen := uint32(len(entry.OldValue))
+
+	// 构建 Header (16 字节)
 	header := make([]byte, walHeaderSize)
 	binary.BigEndian.PutUint16(header[0:2], uint16(entry.Type))
 	binary.BigEndian.PutUint32(header[2:6], uint32(len(entry.Key)))
 	binary.BigEndian.PutUint32(header[6:10], uint32(len(entry.Value)))
 	binary.BigEndian.PutUint16(header[10:12], uint16(len(timestampData)))
+	binary.BigEndian.PutUint32(header[12:16], oldValueLen)
 
 	// 构建 Data
-	data := make([]byte, 0, walHeaderSize+len(timestampData)+len(entry.Key)+len(entry.Value))
+	data := make([]byte, 0, walHeaderSize+len(timestampData)+len(entry.Key)+len(entry.Value)+len(entry.OldValue))
 	data = append(data, header...)
 	data = append(data, timestampData...)
 	data = append(data, []byte(entry.Key)...)
 	data = append(data, entry.Value...)
+	data = append(data, entry.OldValue...)
 
 	return data, nil
 }
 
 // decodeEntry 解码 WAL 条目
-func (w *MetadataWAL) decodeEntry(typ WALType, keyLen, valueLen uint32, timestampSize uint16, data []byte) (*WALEntry, error) {
+func (w *MetadataWAL) decodeEntry(typ WALType, keyLen, valueLen, oldValueLen uint32, timestampSize uint16, data []byte) (*WALEntry, error) {
 	entry := &WALEntry{
 		Type: typ,
 	}
@@ -312,6 +340,13 @@ func (w *MetadataWAL) decodeEntry(typ WALType, keyLen, valueLen uint32, timestam
 		entry.Value = make([]byte, valueLen)
 		copy(entry.Value, data[offset:offset+int(valueLen)])
 	}
+	offset += int(valueLen)
+
+	// 解析 OldValue
+	if oldValueLen > 0 {
+		entry.OldValue = make([]byte, oldValueLen)
+		copy(entry.OldValue, data[offset:offset+int(oldValueLen)])
+	}
 
 	return entry, nil
 }
@@ -325,7 +360,7 @@ type snapshotManagerImpl struct {
 // NewSnapshotManager 创建快照管理器
 func NewSnapshotManager(dataDir string) (SnapshotManager, error) {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		return nil, errcodes.NewInternalError("创建快照目录失败", err)
+		return nil, types.NewInternalError("创建快照目录失败", err)
 	}
 
 	return &snapshotManagerImpl{
@@ -339,14 +374,14 @@ func (s *snapshotManagerImpl) Create(store MVStore) error {
 	// 从 store 获取快照数据
 	snapshot, err := store.CreateSnapshot()
 	if err != nil {
-		return errcodes.NewInternalError("获取快照数据失败", err)
+		return types.NewInternalError("获取快照数据失败", err)
 	}
 
-	snapshotName := fmt.Sprintf("snapshot-%d.json", time.Now().Unix())
+	snapshotName := fmt.Sprintf("metadata-store-checkpoint-%d.snap", time.Now().Unix())
 	snapshotPath := filepath.Join(s.dataDir, snapshotName)
 
 	if err := os.WriteFile(snapshotPath, snapshot, 0644); err != nil {
-		return errcodes.NewInternalError("写入快照失败", err)
+		return types.NewInternalError("写入快照失败", err)
 	}
 
 	// 清理旧快照
@@ -359,7 +394,7 @@ func (s *snapshotManagerImpl) Create(store MVStore) error {
 func (s *snapshotManagerImpl) List() ([]string, error) {
 	entries, err := os.ReadDir(s.dataDir)
 	if err != nil {
-		return nil, errcodes.NewInternalError("读取快照目录失败", err)
+		return nil, types.NewInternalError("读取快照目录失败", err)
 	}
 
 	var snapshots []string
@@ -378,7 +413,7 @@ func (s *snapshotManagerImpl) Restore(snapshotName string) ([]byte, error) {
 
 	data, err := os.ReadFile(snapshotPath)
 	if err != nil {
-		return nil, errcodes.NewInternalError("读取快照失败", err)
+		return nil, types.NewInternalError("读取快照失败", err)
 	}
 
 	return data, nil
@@ -389,7 +424,7 @@ func (s *snapshotManagerImpl) Delete(snapshotName string) error {
 	snapshotPath := filepath.Join(s.dataDir, snapshotName)
 
 	if err := os.Remove(snapshotPath); err != nil {
-		return errcodes.NewInternalError("删除快照失败", err)
+		return types.NewInternalError("删除快照失败", err)
 	}
 
 	return nil
@@ -421,7 +456,20 @@ func (s *snapshotManagerImpl) cleanupOldSnapshots() {
 
 // isSnapshotFile 检查是否是快照文件
 func isSnapshotFile(name string) bool {
-	return len(name) > 12 && name[:9] == "snapshot-"
+	// 检查是否符合 "metadata-store-checkpoint-xxx.snap" 格式
+	const prefix = "metadata-store-checkpoint-"
+	const suffix = ".snap"
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	if !strings.HasSuffix(name, suffix) {
+		return false
+	}
+	// 检查中间是否为数字时间戳
+	timestampStr := strings.TrimPrefix(name, prefix)
+	timestampStr = strings.TrimSuffix(timestampStr, suffix)
+	_, err := strconv.ParseInt(timestampStr, 10, 64)
+	return err == nil
 }
 
 // sortSnapshots 按时间排序快照（旧到新）
@@ -431,7 +479,7 @@ func sortSnapshots(snapshots []string) []string {
 	result := make([]string, len(snapshots))
 	copy(result, snapshots)
 
-	// 使用文件名排序（snapshot-xxx.json）
+	// 使用文件名排序（metadata-store-checkpoint-xxx.snap）
 	// 这里简化处理，实际应该解析时间戳
 	for i := 0; i < len(result); i++ {
 		for j := i + 1; j < len(result); j++ {
@@ -472,7 +520,7 @@ func (c *WALCheckpoint) CreateCheckpoint() error {
 	}
 
 	if err := c.wal.Append(checkpointEntry); err != nil {
-		return errcodes.NewInternalError("写入 checkpoint 失败", err)
+		return types.NewInternalError("写入 checkpoint 失败", err)
 	}
 
 	c.lastCheck = c.offset
@@ -494,7 +542,7 @@ func (c *WALCheckpoint) Truncate(offset int64) error {
 func (c *WALCheckpoint) LoadSnapshot() ([]byte, string, error) {
 	snapshots, err := c.snapMgr.List()
 	if err != nil {
-		return nil, "", errcodes.NewInternalError("列出快照失败", err)
+		return nil, "", types.NewInternalError("列出快照失败", err)
 	}
 
 	if len(snapshots) == 0 {
@@ -505,7 +553,7 @@ func (c *WALCheckpoint) LoadSnapshot() ([]byte, string, error) {
 	latest := snapshots[len(snapshots)-1]
 	data, err := c.snapMgr.Restore(latest)
 	if err != nil {
-		return nil, "", errcodes.NewInternalError("恢复快照失败", err)
+		return nil, "", types.NewInternalError("恢复快照失败", err)
 	}
 
 	return data, latest, nil
@@ -514,7 +562,7 @@ func (c *WALCheckpoint) LoadSnapshot() ([]byte, string, error) {
 // WALStats WAL 统计信息
 type WALStats struct {
 	Size             int64
-	Entries          int
+	Entries          uint64
 	Offset           int64
 	CheckpointOffset int64
 }
@@ -526,11 +574,12 @@ func (w *MetadataWAL) GetStats() (*WALStats, error) {
 
 	stat, err := w.file.Stat()
 	if err != nil {
-		return nil, errcodes.NewInternalError("获取 WAL 文件信息失败", err)
+		return nil, types.NewInternalError("获取 WAL 文件信息失败", err)
 	}
 
 	return &WALStats{
-		Size:   stat.Size(),
-		Offset: w.offset,
+		Size:    stat.Size(),
+		Entries: w.entries,
+		Offset:  w.offset,
 	}, nil
 }

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jzhang405/NexKV/internal/metadata/errcodes"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +20,7 @@ import (
 // TestFrame_NewFrame 测试创建帧
 func TestFrame_NewFrame(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(MessageTypeGet, CodecTypeMessagePack, data)
+	frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
 
 	assert.Equal(t, [4]byte{'N', 'x', 'K', 'V'}, frame.Magic)
 	assert.Equal(t, MessageTypeGet, frame.Type)
@@ -32,7 +32,7 @@ func TestFrame_NewFrame(t *testing.T) {
 // TestFrame_Marshal 测试帧序列化
 func TestFrame_Marshal(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(MessageTypePut, CodecTypeMessagePack, data)
+	frame := NewFrame(MessageTypePut, types.CodecTypeMessagePack, data)
 
 	// 序列化
 	buf, err := frame.Marshal()
@@ -49,7 +49,7 @@ func TestFrame_Marshal(t *testing.T) {
 	assert.Equal(t, uint16(MessageTypePut), binary.BigEndian.Uint16(buf[4:6]))
 
 	// 验证 CodecType (6-7)
-	assert.Equal(t, uint16(CodecTypeMessagePack), binary.BigEndian.Uint16(buf[6:8]))
+	assert.Equal(t, uint16(types.CodecTypeMessagePack), binary.BigEndian.Uint16(buf[6:8]))
 
 	// 验证 Length (8-11)
 	assert.Equal(t, uint32(len(data)), binary.BigEndian.Uint32(buf[8:12]))
@@ -58,7 +58,7 @@ func TestFrame_Marshal(t *testing.T) {
 // TestFrame_Unmarshal 测试帧反序列化
 func TestFrame_Unmarshal(t *testing.T) {
 	data := []byte("test data")
-	frame1 := NewFrame(MessageTypeDelete, CodecTypeMessagePack, data)
+	frame1 := NewFrame(MessageTypeDelete, types.CodecTypeMessagePack, data)
 
 	// 序列化
 	buf, err := frame1.Marshal()
@@ -88,8 +88,8 @@ func TestFrame_Unmarshal_InvalidMagic(t *testing.T) {
 	require.Error(t, err)
 
 	// 检查错误类型
-	if cerr, ok := err.(*errcodes.Error); ok {
-		assert.Equal(t, errcodes.ErrCodeInvalidFrameMagic, cerr.Code)
+	if cerr, ok := err.(*types.Error); ok {
+		assert.Equal(t, types.ErrCodeInvalidFrameMagic, cerr.Code)
 	}
 }
 
@@ -102,15 +102,15 @@ func TestFrame_Unmarshal_InvalidSize(t *testing.T) {
 	require.Error(t, err)
 
 	// 检查错误类型
-	if cerr, ok := err.(*errcodes.Error); ok {
-		assert.Equal(t, errcodes.ErrCodeInvalidFrameSize, cerr.Code)
+	if cerr, ok := err.(*types.Error); ok {
+		assert.Equal(t, types.ErrCodeInvalidFrameSize, cerr.Code)
 	}
 }
 
 // TestFrame_VerifyChecksum 测试校验和验证
 func TestFrame_VerifyChecksum(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(MessageTypeGet, CodecTypeMessagePack, data)
+	frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
 
 	// 序列化
 	buf, err := frame.Marshal()
@@ -125,15 +125,15 @@ func TestFrame_VerifyChecksum(t *testing.T) {
 	require.Error(t, err)
 
 	// 检查错误类型
-	if cerr, ok := err.(*errcodes.Error); ok {
-		assert.Equal(t, errcodes.ErrCodeFrameChecksum, cerr.Code)
+	if cerr, ok := err.(*types.Error); ok {
+		assert.Equal(t, types.ErrCodeFrameChecksum, cerr.Code)
 	}
 }
 
 // TestFrame_HexDump 测试十六进制转储
 func TestFrame_HexDump(t *testing.T) {
 	data := []byte("test")
-	frame := NewFrame(MessageTypeGet, CodecTypeMessagePack, data)
+	frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
 
 	dump := frame.HexDump()
 	assert.Contains(t, dump, "NxKV") // 魔数应该在转储中
@@ -148,7 +148,7 @@ func TestFrame_HexDump(t *testing.T) {
 func TestFrameReader_ReadFrame(t *testing.T) {
 	// 创建测试帧
 	data := []byte("test data")
-	frame := NewFrame(MessageTypeGet, CodecTypeMessagePack, data)
+	frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
 	buf, err := frame.Marshal()
 	require.NoError(t, err)
 
@@ -176,8 +176,8 @@ func TestFrameReader_ReadFrame_InvalidMagic(t *testing.T) {
 	require.Error(t, err)
 
 	// 检查错误类型
-	if cerr, ok := err.(*errcodes.Error); ok {
-		assert.Equal(t, errcodes.ErrCodeInvalidFrameMagic, cerr.Code)
+	if cerr, ok := err.(*types.Error); ok {
+		assert.Equal(t, types.ErrCodeInvalidFrameMagic, cerr.Code)
 	}
 }
 
@@ -185,7 +185,7 @@ func TestFrameReader_ReadFrame_InvalidMagic(t *testing.T) {
 func TestFrameWriter_WriteFrame(t *testing.T) {
 	// 创建测试帧
 	data := []byte("test data")
-	frame := NewFrame(MessageTypePut, CodecTypeMessagePack, data)
+	frame := NewFrame(MessageTypePut, types.CodecTypeMessagePack, data)
 
 	// 创建写入器
 	var buf bytes.Buffer
@@ -485,7 +485,7 @@ func TestAddress_String(t *testing.T) {
 
 // TestTransportError_Error 测试传输错误
 func TestTransportError_Error(t *testing.T) {
-	err := errcodes.NewTransportConnectionError("Send", "localhost:9211", io.EOF)
+	err := types.NewTransportConnectionError("Send", "localhost:9211", io.EOF)
 
 	errMsg := err.Error()
 	assert.Contains(t, errMsg, "Send")
@@ -496,14 +496,14 @@ func TestTransportError_Error(t *testing.T) {
 // TestTransportError_Unwrap 测试错误解包
 func TestTransportError_Unwrap(t *testing.T) {
 	originalErr := io.EOF
-	err := errcodes.NewTransportConnectionError("Send", "", originalErr)
+	err := types.NewTransportConnectionError("Send", "", originalErr)
 
 	assert.Equal(t, originalErr, err.Unwrap())
 }
 
 // TestTransportError_Timeout 测试超时错误
 func TestTransportError_Timeout(t *testing.T) {
-	err := errcodes.NewTransportTimeoutError("test")
+	err := types.NewTransportTimeoutError("test")
 	assert.NotNil(t, err)
 	assert.Contains(t, err.Error(), "test")
 }

@@ -21,25 +21,28 @@ import (
 )
 
 // WAL 文件格式:
-// [Header 16 bytes][Entry Data N bytes][Checksum 4 bytes]...
+// 每个条目都是独立的: [Header 24 bytes][Entry Data N bytes]...
 //
-// Header 格式 (固定 16 字节):
-// - Type:         2 bytes  (WALType, uint16)                    [0:2]
-// - KeyLen:       4 bytes  (key 长度)                            [2:6]
-// - ValueLen:     4 bytes  (value 长度)                          [6:10]
-// - TimestampLen: 2 bytes  (HLC 数据长度，值为 10)               [10:12]
-// - OldValueLen:  4 bytes  (old value 长度)                      [12:16]
+// Header 格式 (固定 24 字节，两段式):
+// - Magic:        4 bytes  (魔术字 "NxWL")                        [0:4]
+// - Type:         2 bytes  (WALType, uint16)                      [4:6]
+// - KeyLen:       4 bytes  (key 长度)                             [6:10]
+// - ValueLen:     4 bytes  (value 长度)                           [10:14]
+// - OldValueLen:  4 bytes  (old value 长度)                       [14:18]
+// - TimestampLen: 2 bytes  (HLC 长度，固定 10)                     [18:20]
+// - CRC:          4 bytes  (CRC32 校验和)                          [20:24]
 //
-// Entry Data 格式 (变长，紧接 Header，与 Header 字段顺序一致):
+// Entry Data 格式 (变长，紧接 Header):
 // - Key:          KeyLen  bytes
 // - Value:        ValueLen bytes
+// - OldValue:     OldValueLen bytes
 // - Timestamp:    TimestampLen bytes (HLC 序列化: 8字节 pt + 2字节 c)
 //
-// 总 Header: 2 + 4 + 4 + 2 + 4 = 16 bytes (4 字节对齐)
+// 总 Header: 4 + 2 + 4 + 4 + 4 + 2 + 4 = 24 bytes (4 字节对齐)
 
 const (
-	walHeaderSize = 16
-	walMagic      = "NxKVWAL"
+	walHeaderSize = 24
+	walMagic      = "NxWL"
 )
 
 // MetadataWAL 元数据 WAL 实现
@@ -152,7 +155,7 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 	reader := bufio.NewReader(file)
 
 	for {
-		// 读取 Header
+		// 读取 Header (24 bytes)
 		header := make([]byte, walHeaderSize)
 		if _, err := io.ReadFull(reader, header); err != nil {
 			if err == io.EOF {
@@ -161,29 +164,32 @@ func (w *MetadataWAL) Recover() ([]*WALEntry, error) {
 			return nil, types.NewInternalError("读取 WAL header 失败", err)
 		}
 
-		// 解析 Header
-		typ := WALType(binary.BigEndian.Uint16(header[0:2]))
-		keyLen := binary.BigEndian.Uint32(header[2:6])
-		valueLen := binary.BigEndian.Uint32(header[6:10])
-		timestampSize := binary.BigEndian.Uint16(header[10:12])
-		oldValueLen := binary.BigEndian.Uint32(header[12:16])
+		// 验证 Magic
+		magic := string(header[0:4])
+		if magic != walMagic {
+			logging.Warnf("WAL 条目魔术字不匹配: 期望 %s, 实际 %s", walMagic, magic)
+			// 尝试恢复：查找下一个魔术字位置
+			continue
+		}
 
-		// 读取 Data (修复类型转换，包含 OldValue)
-		dataSize := uint32(keyLen) + uint32(valueLen) + uint32(timestampSize) + oldValueLen
+		// 解析 Header
+		typ := WALType(binary.BigEndian.Uint16(header[4:6]))
+		keyLen := binary.BigEndian.Uint32(header[6:10])
+		valueLen := binary.BigEndian.Uint32(header[10:14])
+		oldValueLen := binary.BigEndian.Uint32(header[14:18])
+		timestampSize := binary.BigEndian.Uint16(header[18:20])
+		headerCRC := binary.BigEndian.Uint32(header[20:24])
+
+		// 读取 Data (新格式: key + value + oldvalue + timestamp)
+		dataSize := uint32(keyLen) + uint32(valueLen) + oldValueLen + uint32(timestampSize)
 		data := make([]byte, dataSize)
 		if _, err := io.ReadFull(reader, data); err != nil {
 			return nil, types.NewInternalError("读取 WAL data 失败", err)
 		}
 
-		// 读取 Checksum
-		var checksum uint32
-		if err := binary.Read(reader, binary.BigEndian, &checksum); err != nil {
-			return nil, types.NewInternalError("读取校验和失败", err)
-		}
-
-		// 验证校验和
-		computedChecksum := crc32.ChecksumIEEE(append(header, data...))
-		if computedChecksum != checksum {
+		// 验证 CRC (覆盖 Header + Data)
+		computedCRC := crc32.ChecksumIEEE(append(header, data...))
+		if computedCRC != headerCRC {
 			logging.Warnf("WAL 条目校验和不匹配，跳过")
 			continue
 		}
@@ -293,26 +299,38 @@ func (w *MetadataWAL) encodeEntry(entry *WALEntry) ([]byte, error) {
 		}
 	}
 
-	// 获取 OldValue 长度
+	// 获取各字段长度
+	keyLen := uint32(len(entry.Key))
+	valueLen := uint32(len(entry.Value))
 	oldValueLen := uint32(len(entry.OldValue))
+	timestampLen := uint16(len(timestampData))
 
-	// 构建 Header (16 字节)
-	header := make([]byte, walHeaderSize)
-	binary.BigEndian.PutUint16(header[0:2], uint16(entry.Type))
-	binary.BigEndian.PutUint32(header[2:6], uint32(len(entry.Key)))
-	binary.BigEndian.PutUint32(header[6:10], uint32(len(entry.Value)))
-	binary.BigEndian.PutUint16(header[10:12], uint16(len(timestampData)))
-	binary.BigEndian.PutUint32(header[12:16], oldValueLen)
-
-	// 构建 Data
-	data := make([]byte, 0, walHeaderSize+len(timestampData)+len(entry.Key)+len(entry.Value)+len(entry.OldValue))
-	data = append(data, header...)
-	data = append(data, timestampData...)
+	// 构建 Data (新格式: key + value + oldvalue + timestamp)
+	data := make([]byte, 0, walHeaderSize+keyLen+valueLen+oldValueLen+int(timestampLen))
 	data = append(data, []byte(entry.Key)...)
 	data = append(data, entry.Value...)
 	data = append(data, entry.OldValue...)
+	data = append(data, timestampData...)
 
-	return data, nil
+	// 构建 Header (24 字节): Magic(4) + Type(2) + KeyLen(4) + ValueLen(4) + OldValueLen(4) + TimestampLen(2) + CRC(4)
+	header := make([]byte, walHeaderSize)
+	copy(header[0:4], []byte(walMagic))                               // Magic: "NxWL"
+	binary.BigEndian.PutUint16(header[4:6], uint16(entry.Type))       // Type
+	binary.BigEndian.PutUint32(header[6:10], keyLen)                  // KeyLen
+	binary.BigEndian.PutUint32(header[10:14], valueLen)               // ValueLen
+	binary.BigEndian.PutUint32(header[14:18], oldValueLen)            // OldValueLen
+	binary.BigEndian.PutUint16(header[18:20], timestampLen)           // TimestampLen
+
+	// 计算 CRC (覆盖 Header + Data)
+	crc := crc32.ChecksumIEEE(append(header, data...))
+	binary.BigEndian.PutUint32(header[20:24], crc)                    // CRC
+
+	// 最终数据: Header + Data
+	result := make([]byte, 0, len(header)+len(data))
+	result = append(result, header...)
+	result = append(result, data...)
+
+	return result, nil
 }
 
 // decodeEntry 解码 WAL 条目
@@ -323,15 +341,7 @@ func (w *MetadataWAL) decodeEntry(typ WALType, keyLen, valueLen, oldValueLen uin
 
 	offset := 0
 
-	// 解析时间戳
-	timestampData := data[offset : offset+int(timestampSize)]
-	entry.Timestamp = &clock.HLC{}
-	if err := entry.Timestamp.UnmarshalBinary(timestampData); err != nil {
-		return nil, err
-	}
-	offset += int(timestampSize)
-
-	// 解析 Key
+	// 解析 Key (新格式: key 在最前面)
 	entry.Key = string(data[offset : offset+int(keyLen)])
 	offset += int(keyLen)
 
@@ -347,6 +357,14 @@ func (w *MetadataWAL) decodeEntry(typ WALType, keyLen, valueLen, oldValueLen uin
 		entry.OldValue = make([]byte, oldValueLen)
 		copy(entry.OldValue, data[offset:offset+int(oldValueLen)])
 	}
+	offset += int(oldValueLen)
+
+	// 解析 Timestamp (新格式: timestamp 在最后)
+	timestampData := data[offset : offset+int(timestampSize)]
+	entry.Timestamp = &clock.HLC{}
+	if err := entry.Timestamp.UnmarshalBinary(timestampData); err != nil {
+		return nil, err
+	}
 
 	return entry, nil
 }
@@ -356,6 +374,11 @@ type snapshotManagerImpl struct {
 	dataDir   string
 	retention int // 保留快照数量
 }
+
+const (
+	snapshotMagic     = "NxSN" // NexKV Snapshot
+	snapshotHeaderSize = 16     // Magic(4) + Version(2) + Codec(2) + Length(4) + CRC(4)
+)
 
 // NewSnapshotManager 创建快照管理器
 func NewSnapshotManager(dataDir string) (SnapshotManager, error) {
@@ -371,8 +394,8 @@ func NewSnapshotManager(dataDir string) (SnapshotManager, error) {
 
 // Create 创建快照
 func (s *snapshotManagerImpl) Create(store MVStore) error {
-	// 从 store 获取快照数据
-	snapshot, err := store.CreateSnapshot()
+	// 从 store 获取快照数据（Protobuf 编码）
+	snapshotData, err := store.CreateSnapshot()
 	if err != nil {
 		return types.NewInternalError("获取快照数据失败", err)
 	}
@@ -380,7 +403,20 @@ func (s *snapshotManagerImpl) Create(store MVStore) error {
 	snapshotName := fmt.Sprintf("metadata-store-checkpoint-%d.snap", time.Now().Unix())
 	snapshotPath := filepath.Join(s.dataDir, snapshotName)
 
-	if err := os.WriteFile(snapshotPath, snapshot, 0644); err != nil {
+	// 构建文件头（16 字节）
+	header := make([]byte, snapshotHeaderSize)
+	copy(header[0:4], []byte(snapshotMagic))            // Magic: "NxSN"
+	binary.BigEndian.PutUint16(header[4:6], 1)           // Version: 1
+	binary.BigEndian.PutUint16(header[6:8], uint16(types.CodecTypeProtobuf)) // Codec: Protobuf(3)
+	binary.BigEndian.PutUint32(header[8:12], uint32(len(snapshotData)))     // Length
+
+	// 计算 CRC (覆盖 Header + Data)
+	crc := crc32.ChecksumIEEE(append(header, snapshotData...))
+	binary.BigEndian.PutUint32(header[12:16], crc)       // CRC
+
+	// 写入文件：Header + Data
+	fullData := append(header, snapshotData...)
+	if err := os.WriteFile(snapshotPath, fullData, 0644); err != nil {
 		return types.NewInternalError("写入快照失败", err)
 	}
 
@@ -411,11 +447,46 @@ func (s *snapshotManagerImpl) List() ([]string, error) {
 func (s *snapshotManagerImpl) Restore(snapshotName string) ([]byte, error) {
 	snapshotPath := filepath.Join(s.dataDir, snapshotName)
 
-	data, err := os.ReadFile(snapshotPath)
+	// 读取整个文件
+	fullData, err := os.ReadFile(snapshotPath)
 	if err != nil {
 		return nil, types.NewInternalError("读取快照失败", err)
 	}
 
+	// 检查文件大小
+	if len(fullData) < snapshotHeaderSize {
+		return nil, types.NewInternalError("快照文件太小", nil)
+	}
+
+	// 解析文件头
+	header := fullData[0:snapshotHeaderSize]
+	magic := string(header[0:4])
+	if magic != snapshotMagic {
+		return nil, types.NewInternalError(fmt.Sprintf("快照魔术字不匹配: 期望 %s, 实际 %s", snapshotMagic, magic), nil)
+	}
+
+	version := binary.BigEndian.Uint16(header[4:6])
+	if version != 1 {
+		return nil, types.NewInternalError(fmt.Sprintf("不支持的快照版本: %d", version), nil)
+	}
+
+	codec := types.CodecType(binary.BigEndian.Uint16(header[6:8]))
+	length := binary.BigEndian.Uint32(header[8:12])
+	headerCRC := binary.BigEndian.Uint32(header[12:16])
+
+	// 提取数据区
+	data := fullData[snapshotHeaderSize:]
+	if uint32(len(data)) != length {
+		return nil, types.NewInternalError(fmt.Sprintf("快照数据长度不匹配: 期望 %d, 实际 %d", length, len(data)), nil)
+	}
+
+	// 验证 CRC
+	computedCRC := crc32.ChecksumIEEE(fullData)
+	if computedCRC != headerCRC {
+		return nil, types.NewInternalError("快照 CRC 校验失败", nil)
+	}
+
+	// 返回数据区（Protobuf 编码）
 	return data, nil
 }
 

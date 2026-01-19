@@ -179,11 +179,11 @@ message CheckpointData {
 
 **设计原则**：与 Transport 帧保持一致的简洁风格
 
-| 格式 | Transport 帧 | WAL 条目 | Checkpoint 文件 |
-|------|-------------|---------|-----------------|
-| **文件头** | Magic + Type + Codec + Length + CRC | Type + KeyLen + ValueLen + ... | **Magic + Version + Codec + Length + CRC** |
-| **数据区** | 变长 | 变长 | 变长（Protobuf） |
-| **文件尾** | 无 | CRC（每个条目） | 无 |
+| 格式 | Transport 帧 | WAL 条目 | Checkpoint 文件 | Snapshot 文件 |
+|------|-------------|---------|-----------------|----------------|
+| **文件头** | Magic + Type + Codec + Length + CRC | **Magic + Type + KeyLen + ValueLen + OldValueLen + TimestampLen + CRC** | **Magic + Version + Codec + Length + CRC** | **Magic + Version + Codec + Length + CRC** |
+| **数据区** | 变长 | 变长 | 变长（Protobuf） | 变长（Protobuf） |
+| **文件尾** | 无 | 无 | 无 | 无 |
 
 ##### 文件格式
 
@@ -235,6 +235,115 @@ flowchart TD
 - ✅ 与 Transport 帧格式一致（Magic + Type/Version + Codec + Length + CRC）
 - ✅ 简洁的两段式结构（Header + Data）
 - ✅ CRC 覆盖整个文件（Header + Data）
+
+---
+
+#### WAL 条目格式设计（统一两段式）
+
+##### WAL 条目格式
+
+```mermaid
+flowchart TD
+    subgraph WALEntry["WAL Entry - 两段式格式"]
+        direction TB
+
+        subgraph Header["条目头（固定 24 bytes）"]
+            direction LR
+            H1["Magic<br/>4 bytes<br/>'NxWL'"]
+            H2["Type<br/>2 bytes<br/>uint16"]
+            H3["KeyLen<br/>4 bytes<br/>uint32"]
+            H4["ValueLen<br/>4 bytes<br/>uint32"]
+            H5["OldValueLen<br/>4 bytes<br/>uint32"]
+            H6["TimestampLen<br/>2 bytes<br/>uint16"]
+            H7["CRC<br/>4 bytes<br/>CRC32"]
+        end
+
+        subgraph Data["数据区（变长）"]
+            direction TB
+            D1["Key<br/>KeyLen bytes"]
+            D2["Value<br/>ValueLen bytes"]
+            D3["OldValue<br/>OldValueLen bytes"]
+            D4["Timestamp<br/>TimestampLen bytes (HLC)"]
+        end
+
+        Header --> Data
+    end
+
+    style Header fill:#e1f5ff
+    style Data fill:#fff4e6
+    style H1 fill:#f3e5f5
+```
+
+##### 字段详细说明
+
+| 部分 | 字段 | 类型 | 大小 | 说明 |
+|------|------|------|------|------|
+| **🔵 条目头** | Magic | bytes | 4 B | 魔术字 `"NxWL"`（NexKV WAL） |
+| | Type | uint16 | 2 B | 操作类型（PUT/DELETE） |
+| | KeyLen | uint32 | 4 B | Key 长度 |
+| | ValueLen | uint32 | 4 B | Value 长度 |
+| | OldValueLen | uint32 | 4 B | 旧值长度（用于回滚） |
+| | TimestampLen | uint16 | 2 B | HLC 时间戳长度（固定 10） |
+| | CRC | uint32 | 4 B | 校验和 CRC32(Header + Data) |
+| **🟠 数据区** | Key + Value + OldValue + Timestamp | bytes | 变长 | 实际数据 |
+
+**WAL 文件结构**：由多个 WAL Entry 追加组成
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  WAL File                                                  │
+├────────────────────────────────────────────────────────────┤
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │  Entry 1     │  │  Entry 2     │  │  Entry 3...  │     │
+│  │  [24B Header]│  │  [24B Header]│  │              │     │
+│  │  [Data]      │  │  [Data]      │  │              │     │
+│  └──────────────┘  └──────────────┘  └──────────────┘     │
+└────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Snapshot 文件格式设计（统一两段式）
+
+##### Snapshot 文件格式
+
+```mermaid
+flowchart TD
+    subgraph SnapshotFile["Snapshot File - 两段式格式"]
+        direction TB
+
+        subgraph Header["文件头（固定 16 bytes）"]
+            direction LR
+            H1["Magic<br/>4 bytes<br/>'NxSN'"]
+            H2["Version<br/>2 bytes<br/>uint16"]
+            H3["Codec Type<br/>2 bytes<br/>uint16"]
+            H4["Length<br/>4 bytes<br/>uint32"]
+            H5["CRC<br/>4 bytes<br/>CRC32"]
+        end
+
+        subgraph Data["数据区（变长，Protobuf 编码）"]
+            direction TB
+            D1["MVStore Data<br/>map<string, bytes>, version"]
+        end
+
+        Header --> Data
+    end
+
+    style Header fill:#e1f5ff
+    style Data fill:#fff4e6
+    style H1 fill:#f3e5f5
+```
+
+##### 字段详细说明
+
+| 部分 | 字段 | 类型 | 大小 | 说明 |
+|------|------|------|------|------|
+| **🔵 文件头** | Magic | bytes | 4 B | 魔术字 `"NxSN"`（NexKV Snapshot） |
+| | Version | uint16 | 2 B | 格式版本号（当前 = 1） |
+| | Codec Type | uint16 | 2 B | 编解码器类型（默认 Protobuf = 3） |
+| | Length | uint32 | 4 B | 数据区字节长度 |
+| | CRC | uint32 | 4 B | 校验和 CRC32(Header + Data) |
+| **🟠 数据区** | MVStore Data | bytes | 变长 | Protobuf 编码的 MVStore 数据 |
 
 ##### 文件创建流程
 

@@ -588,23 +588,16 @@ func (g *GossipService) selectRandomPeers(count int) []string {
 		return g.peers
 	}
 
-	// 创建索引数组并随机打乱
-	indices := make([]int, peerCount)
-	for i := range indices {
-		indices[i] = i
-	}
+	// 使用 Fisher-Yates 洗牌算法选择随机节点
+	// 先复制所有节点，然后打乱并取前 count 个
+	peers := make([]string, peerCount)
+	copy(peers, g.peers)
 
-	rand.Shuffle(len(indices), func(i, j int) {
-		indices[i], indices[j] = indices[j], indices[i]
+	rand.Shuffle(peerCount, func(i, j int) {
+		peers[i], peers[j] = peers[j], peers[i]
 	})
 
-	// 选择前 count 个
-	selected := make([]string, 0, count)
-	for i := 0; i < count && i < len(indices); i++ {
-		selected = append(selected, g.peers[indices[i]])
-	}
-
-	return selected
+	return peers[:count]
 }
 
 // addChangeLog 添加变更日志
@@ -614,9 +607,8 @@ func (g *GossipService) addChangeLog(log *ChangeLog) {
 
 	g.changeLogs = append(g.changeLogs, log)
 
-	// 限制缓存大小
+	// 限制缓存大小：删除最旧的日志
 	if len(g.changeLogs) > g.maxCacheSize {
-		// 删除最旧的日志
 		g.changeLogs = g.changeLogs[1:]
 	}
 }
@@ -626,7 +618,8 @@ func (g *GossipService) getChangeLogsSince(version uint64) []*ChangeLog {
 	g.changeLogsMu.RLock()
 	defer g.changeLogsMu.RUnlock()
 
-	result := make([]*ChangeLog, 0)
+	// 使用预分配切片提高性能
+	result := make([]*ChangeLog, 0, len(g.changeLogs))
 	for _, log := range g.changeLogs {
 		if log.Version > version {
 			result = append(result, log)
@@ -702,7 +695,8 @@ func (g *GossipService) RemovePeer(addr string) {
 	g.peersMu.Lock()
 	defer g.peersMu.Unlock()
 
-	newPeers := make([]string, 0, len(g.peers))
+	// 过滤掉指定节点
+	newPeers := make([]string, 0, len(g.peers)-1)
 	for _, peer := range g.peers {
 		if peer != addr {
 			newPeers = append(newPeers, peer)

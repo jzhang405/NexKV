@@ -494,21 +494,31 @@ flowchart LR
     D --> C
     C -->|通过| E[6.架构师预审批]
     E --> F[7.启动开发]
-    F --> G[8.本地测试]
-    G --> H[9.提交GitHub/触发CI]
-    H -->|CI失败| I[10.修复CI Bug]
+    F --> G[7.1 代码简化]
+    G --> H[7.2 构建]
+    H -->|失败| I[7.3 修复构建]
     I --> H
-    H -->|CI通过| J[11.编写Post文档]
-    J --> K[12.Post文档归档]
+    H -->|通过| J[7.4 代码检查]
+    J -->|失败| K[7.5 修复Lint]
+    K --> J
+    J -->|通过| L[7.6 运行测试]
+    L -->|失败| M[7.7 修复测试]
+    M --> L
+    L -->|通过| N[7.8 清理]
+    N --> O[8.提交GitHub/CI]
+    O -->|CI失败| P[9.修复CI Bug]
+    P --> O
+    O -->|CI通过| Q[10.编写Post文档]
+    Q --> R[11.Post文档归档]
 
     style A fill:#e1f5ff
     style B fill:#fff4e6
     style C fill:#ffe6e6
     style E fill:#e8f5e9
-    style K fill:#f3e5f5
+    style R fill:#f3e5f5
 ```
 
-**PR 全流程 12 步详解**：
+**PR 全流程详解（含代码简化与构建验证）**：
 
 | 步骤 | 名称 | 负责角色 | 交付物 | 关键产出 |
 |------|------|---------|--------|---------|
@@ -519,17 +529,56 @@ flowchart LR
 | **5** | 循环评审 | 👤 架构师 + 🤖 项目经理 | 评审通过记录 | 多轮评审直至通过 |
 | **6** | 架构师预审批 | 👤 架构师 | 预审批确认 | 同意启动开发 |
 | **7** | 启动开发 | 🤖 核心开发 | 代码实现 | 按 Pre 文档落地 |
-| **8** | 本地测试 | 🤖 测试工程师 | 测试报告 | 单元测试、集成测试 |
-| **9** | 提交 GitHub/CI | 🤖 DevOps + 核心开发 | PR 提交 | 触发 CI 流水线 |
-| **10** | 修复 CI Bug | 🤖 核心开发 | 修复记录 | 循环修复直至 CI 通过 |
-| **11** | 编写 Post 文档 | 🤖 核心开发 + AI | Post 文档 | 成果总结、未完成项、ToDo |
-| **12** | Post 文档归档 | 🤖 项目经理 | 归档文档 | 与代码同步版本管理 |
+| **7.1** | 代码简化 | 🤖 核心开发 + AI | 简化后代码 | 使用 code-simplifier 优化代码 |
+| **7.2** | 构建 | 🤖 核心开发 | 构建结果 | `make build` 编译项目 |
+| **7.3** | 修复构建 | 🤖 核心开发 | 修复记录 | 循环修复直至构建通过 |
+| **7.4** | 代码检查 | 🤖 核心开发 | 检查结果 | `make lint` 代码质量检查 |
+| **7.5** | 修复 Lint | 🤖 核心开发 | 修复记录 | 循环修复直至 lint 通过 |
+| **7.6** | 运行测试 | 🤖 测试工程师 | 测试结果 | `make test` 运行所有测试 |
+| **7.7** | 修复测试 | 🤖 核心开发 | 修复记录 | 循环修复直至测试通过 |
+| **7.8** | 清理 | 🤖 核心开发 | 清理完成 | `make clean` 清理编译文件 |
+| **8** | 提交 GitHub/CI | 🤖 DevOps + 核心开发 | PR 提交 | 触发 CI 流水线 |
+| **9** | 修复 CI Bug | 🤖 核心开发 | 修复记录 | 循环修复直至 CI 通过 |
+| **10** | 编写 Post 文档 | 🤖 核心开发 + AI | Post 文档 | 成果总结、未完成项、ToDo |
+| **11** | Post 文档归档 | 🤖 项目经理 | 归档文档 | 与代码同步版本管理 |
 
 **关键原则**：
 1. **Pre 文档未通过评审前，禁止启动开发**（先明确再动手）
 2. **AI 辅助优化**：Pre 文档优化阶段，AI 辅助梳理逻辑、生成示例代码/流程图、排查潜在风险
-3. **CI 与文档联动**：CI 问题修复后，需同步记录至流程节点
-4. **归档要求**：PR 合并后，全流程文档需补充完整，归档至对应目录
+3. **代码简化优先**：开发完成后，必须先运行 code-simplifier 简化代码
+4. **完整构建验证**：按顺序执行 build → lint → test，确保所有检查通过
+5. **CI 与文档联动**：CI 问题修复后，需同步记录至流程节点
+6. **归档要求**：PR 合并后，全流程文档需补充完整，归档至对应目录
+
+**步骤 7.1-7.8 详细说明**：
+
+```bash
+# 步骤 7.1: 代码简化（使用 code-simplifier agent）
+# 自动优化代码结构、消除重复、统一风格
+
+# 步骤 7.2: 构建项目
+make build
+
+# 步骤 7.3: 如果构建失败，修复并重新构建
+# 循环直到 make build 通过
+
+# 步骤 7.4: 代码质量检查
+make lint
+
+# 步骤 7.5: 如果 lint 失败，修复并重新检查
+# 循环直到 make lint 通过
+
+# 步骤 7.6: 运行测试
+make test
+
+# 步骤 7.7: 如果测试失败，修复并重新测试
+# 循环直到 make test 通过
+
+# 步骤 7.8: 清理编译文件
+make clean
+
+# 所有步骤完成后，提交 PR（步骤 8）
+```
 
 ### 文档目录结构
 
@@ -735,25 +784,41 @@ storage:
 ⚠️ **CI 前必须执行以下检查**，确保本地所有验证通过后再提交：
 
 ```bash
-# 步骤 1: 完整的本地验证流程
-make build     # 编译项目（包括 Protobuf 文件）
-make test      # 运行所有测试（含覆盖率）
-make lint      # 代码质量检查（golangci-lint）
-make fmt       # 格式化代码
+# 步骤 1: 代码简化（使用 code-simplifier agent）
+# 自动优化代码结构、消除重复、统一风格
+# （在 Claude Code 中使用 code-simplifier agent）
 
-# 步骤 2: 检查验证结果
+# 步骤 2: 完整的本地验证流程
+make build     # 编译项目（包括 Protobuf 文件）
+make lint      # 代码质量检查（golangci-lint）
+make test      # 运行所有测试（含覆盖率）
+make fmt       # 格式化代码
+make clean     # 清理编译文件
+
+# 步骤 3: 检查验证结果
 echo $?  # 确保上一个命令返回 0（成功）
 ```
 
+**验证顺序**（必须按此顺序执行）：
+1. **code-simplifier** - 代码简化优化
+2. **make build** - 确保项目可编译
+3. **make lint** - 确保代码质量达标
+4. **make test** - 确保所有测试通过
+5. **make fmt** - 确保代码格式符合规范
+6. **make clean** - 清理编译文件
+
 **验证说明**：
+- **code-simplifier** - 简化代码结构、消除重复、统一风格（必须首先执行）
 - `make build` - 确保项目可编译，自动编译 Protobuf 文件
-- `make test` - 确保所有测试通过，测试覆盖率达标
 - `make lint` - 确保代码符合质量标准（需安装 golangci-lint）
+- `make test` - 确保所有测试通过，测试覆盖率达标
 - `make fmt` - 确保代码格式符合 Go 规范
+- `make clean` - 清理编译文件，保持工作目录整洁
 
 **快速验证命令**（一行执行）：
 ```bash
-make build && make test && make lint && make fmt && echo "✅ 所有检查通过"
+# 注意：code-simplifier 需要在 Claude Code 中单独运行
+make build && make lint && make test && make fmt && make clean && echo "✅ 所有检查通过"
 ```
 
 #### 常用 Make 命令
@@ -1026,23 +1091,28 @@ flowchart TD
   ```
 - **提交前检查**：
   ```bash
-  # 步骤 1: 本地验证（必须全部通过）
-  make build     # 编译项目（包括 Protobuf）
-  make test      # 运行所有测试
-  make lint      # 代码质量检查
-  make fmt       # 格式化代码
+  # 步骤 1: 代码简化（在 Claude Code 中使用 code-simplifier agent）
+  # 自动优化代码结构、消除重复、统一风格
 
-  # 步骤 2: 提交代码
+  # 步骤 2: 本地验证（必须全部通过）
+  make build     # 编译项目（包括 Protobuf）
+  make lint      # 代码质量检查
+  make test      # 运行所有测试
+  make fmt       # 格式化代码
+  make clean     # 清理编译文件
+
+  # 步骤 3: 提交代码
   git add .
   git commit -m "feat(scope): description"
   git push
 
-  # 步骤 3: 等待 CI 通过
+  # 步骤 4: 等待 CI 通过
   # GitHub Actions 会自动运行：build → test → lint
   ```
 
   **重要**：
-  - ⚠️ **CI 前必须执行**：`make build`、`make test`、`make lint`、`make fmt`
+  - ⚠️ **CI 前必须执行**：code-simplifier、`make build`、`make lint`、`make test`、`make fmt`、`make clean`
+  - ⚠️ **按顺序执行**：code-simplifier → build → lint → test → fmt → clean
   - ⚠️ **确保本地所有检查通过**后再提交，避免 CI 失败
 
 ### Brainstorm 文档管理

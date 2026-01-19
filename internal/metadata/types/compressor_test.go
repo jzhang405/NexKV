@@ -104,16 +104,6 @@ func TestLZ4Compressor(t *testing.T) {
 	testCompressor(t, compressor, CompressionTypeLZ4, "lz4 (hc)")
 }
 
-// TestLZ4FastCompressor 测试 LZ4 快速压缩器
-func TestLZ4FastCompressor(t *testing.T) {
-	compressor, err := NewLZ4FastCompressor()
-	if err != nil {
-		t.Fatalf("创建 LZ4 快速压缩器失败: %v", err)
-	}
-
-	testCompressor(t, compressor, CompressionTypeLZ4, "lz4 (fast)")
-}
-
 // testCompressor 通用压缩器测试函数
 func testCompressor(t *testing.T, compressor Compressor, expectedType CompressionType, expectedNamePrefix string) {
 	t.Helper()

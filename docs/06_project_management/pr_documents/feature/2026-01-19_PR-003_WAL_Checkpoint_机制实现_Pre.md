@@ -156,55 +156,49 @@ package nexkv.metadata;
 
 option go_package = "./;proto";
 
-// CodecType 编解码器类型（与 types.CodecType 对应）
-enum CodecType {
-  CODEC_TYPE_UNSPECIFIED = 0;  // 未指定（兼容旧版本）
-  CODEC_TYPE_MSGPACK = 1;      // MessagePack 编解码
-  CODEC_TYPE_JSON = 2;         // JSON 编解码
-  CODEC_TYPE_PROTOBUF = 3;     // Protobuf 编解码（默认）
-}
-
 // CheckpointMetadata Checkpoint 元数据
 message CheckpointMetadata {
   uint64 checkpoint_id = 1;        // Checkpoint ID（单调递增）
   uint64 timestamp = 2;             // 创建时间戳（Unix 毫秒）
   uint64 last_wal_offset = 3;       // Checkpoint 位置对应的 WAL 偏移量（字节）
   uint32 entry_count = 4;           // 快照包含的条目数量
-  uint32 checksum = 5;              // 元数据校验和
-  CodecType codec_type = 6;         // 编解码器类型（默认 PROTOBUF）
 }
 
 // CheckpointData Checkpoint 数据
 message CheckpointData {
-  map<string, bytes> data = 1;      // 键值对数据（已编码）
+  map<string, bytes> data = 1;      // 键值对数据
   uint64 version = 2;                // MVStore 版本号
-}
-
-// CheckpointFile 完整 Checkpoint 文件
-message CheckpointFile {
-  CheckpointMetadata metadata = 1;  // 元数据
-  CheckpointData data = 2;          // 数据
-  bytes trailer = 3;                // 尾部（魔术字 + 校验和）
 }
 ```
 
-#### Checkpoint 文件格式设计
+**说明**：`codec_type` 从 Protobuf 中移除，放在文件头中（与 Transport 保持一致）。
 
-##### 高层结构
+---
+
+#### Checkpoint 文件格式设计（统一三段式）
+
+**设计原则**：与 Transport 帧、WAL 条目保持一致的风格
+
+| 格式 | Transport 帧 | WAL 条目 | Checkpoint 文件 |
+|------|-------------|---------|-----------------|
+| **文件头** | Magic + Type + Codec + Length + CRC | Type + KeyLen + ValueLen + ... | **Magic + Version + Codec + CRC** |
+| **数据区** | 变长 | 变长 | 变长（Protobuf） |
+| **文件尾** | 无 | CRC | **CRC** |
+
+##### 高层结构（三段式）
 
 ```mermaid
 flowchart LR
-    subgraph File["Checkpoint 文件"]
+    subgraph File["Checkpoint 文件<br/>统一三段式格式"]
         direction TB
-        M["<b>Metadata</b><br/>元数据区域<br/>固定大小 ~50 bytes<br/>Protobuf 编码"]
-        D["<b>Data</b><br/>数据区域<br/>变长<br/>取决于 MVStore 大小<br/>Protobuf 编码"]
-        T["<b>Trailer</b><br/>尾部区域<br/>固定大小 16 bytes<br/>原始字节"]
+        H["<b>文件头<br/>固定 12 bytes<br/>Magic + Version + Codec + CRC"]
+        D["<b>数据区<br/>变长<br/>Protobuf 编码"]
+        T["<b>文件尾<br/>固定 4 bytes<br/>Data CRC"]
 
-        M --> D
-        D --> T
+        H --> D --> T
     end
 
-    style M fill:#e1f5ff
+    style H fill:#e1f5ff
     style D fill:#fff4e6
     style T fill:#e8f5e9
 ```
@@ -213,56 +207,84 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    subgraph CheckpointFile["Checkpoint File 完整布局"]
+    subgraph CheckpointFile["Checkpoint File 完整布局 - 三段式"]
         direction TB
 
-        subgraph Metadata["元数据区域<br/>Protobuf 编码<br/>固定大小 ~50 bytes"]
+        subgraph Header["文件头（固定 12 bytes）"]
             direction LR
-            M1["checkpoint_id<br/>8 bytes<br/>uint64"]
-            M2["timestamp<br/>8 bytes<br/>uint64"]
-            M3["last_wal_offset<br/>8 bytes<br/>uint64"]
-            M4["entry_count<br/>4 bytes<br/>uint32"]
-            M5["checksum<br/>4 bytes<br/>uint32"]
-            M6["codec_type<br/>4 bytes<br/>CodecType enum"]
+            H1["Magic<br/>4 bytes<br/>'NChP'"]
+            H2["Version<br/>2 bytes<br/>uint16"]
+            H3["Codec Type<br/>2 bytes<br/>uint16"]
+            H4["Header CRC<br/>4 bytes<br/>CRC32"]
         end
 
-        subgraph Data["数据区域<br/>Protobuf 编码<br/>变长"]
+        subgraph Data["数据区（变长，Protobuf 编码）"]
             direction TB
-            D1["map<string, bytes><br/>键值对数据"]
-            D2["version<br/>8 bytes<br/>uint64"]
+            D1["CheckpointMetadata<br/>checkpoint_id, timestamp,<br/>last_wal_offset, entry_count"]
+            D2["CheckpointData<br/>map<string, bytes>, version"]
         end
 
-        subgraph Trailer["尾部区域<br/>固定 16 bytes"]
+        subgraph Trailer["文件尾（固定 4 bytes）"]
             direction LR
-            T1["Magic Number<br/>8 bytes<br/>'NxKVChkP'"]
-            T2["File Checksum<br/>4 bytes<br/>CRC32"]
-            T3["Reserved<br/>4 bytes<br/>未来扩展"]
+            T1["Data CRC<br/>4 bytes<br/>CRC32(Header + Data)"]
         end
 
-        Metadata --> Data --> Trailer
+        Header --> Data --> Trailer
     end
 
-    style Metadata fill:#e1f5ff
+    style Header fill:#e1f5ff
     style Data fill:#fff4e6
     style Trailer fill:#e8f5e9
-    style M6 fill:#f3e5f5
+    style H3 fill:#f3e5f5
 ```
 
-##### 字典视图（字段说明）
+##### 字段详细说明
 
-| 字段 | 类型 | 大小 | 说明 | 颜色标识 |
-|------|------|------|------|---------|
-| 🔵 checkpoint_id | uint64 | 8 bytes | Checkpoint 唯一标识，单调递增 | 元数据 |
-| 🔵 timestamp | uint64 | 8 bytes | 创建时间戳（Unix 毫秒） | 元数据 |
-| 🔵 last_wal_offset | uint64 | 8 bytes | Checkpoint 对应的 WAL 字节偏移量 | 元数据 |
-| 🔵 entry_count | uint32 | 4 bytes | 快照包含的键值对数量 | 元数据 |
-| 🟢 checksum | uint32 | 4 bytes | 元数据校验和 CRC32 | 验证 |
-| 🟣 codec_type | CodecType | 4 bytes | 数据编码类型（默认 PROTOBUF） | 扩展 |
-| 🟠 data | map<string,bytes> | 变长 | MVStore 键值对数据（已编码） | 数据 |
-| 🟠 version | uint64 | 8 bytes | MVStore 版本号 | 数据 |
-| 🟢 magic | bytes[8] | 8 bytes | 文件魔术字 'NxKVChkP' | 验证 |
-| 🟢 file_checksum | uint32 | 4 bytes | 文件完整性校验 CRC32 | 验证 |
-| 🟣 reserved | uint32 | 4 bytes | 保留字段，未来扩展 | 扩展 |
+| 部分 | 字段 | 类型 | 大小 | 说明 |
+|------|------|------|------|------|
+| **🔵 文件头** | Magic | bytes | 4 B | 魔术字 `"NChP"`（NexKV Checkpoint） |
+| | Version | uint16 | 2 B | 格式版本号（当前 = 1） |
+| | Codec Type | uint16 | 2 B | 编解码器类型（与 types.CodecType 对应） |
+| | Header CRC | uint32 | 4 B | 文件头校验和 CRC32(Magic + Version + Codec) |
+| **🟠 数据区** | CheckpointMetadata | message | 变长 | Protobuf 编码的元数据 |
+| | CheckpointData | message | 变长 | Protobuf 编码的数据 |
+| **🟢 文件尾** | Data CRC | uint32 | 4 B | 全文件校验和 CRC32(Header + Data) |
+
+**Codec Type 枚举值**：
+- `1` = MessagePack
+- `2` = JSON
+- `3` = Protobuf（默认）
+
+##### 与 Transport 帧格式对比
+
+```mermaid
+flowchart TB
+    subgraph Transport["Transport 帧格式"]
+        direction TB
+        TH["文件头 16B<br/>Magic(4) + Type(2)<br/>+ Codec(2) + Length(4) + CRC(4)"]
+        TD["数据 变长"]
+    end
+
+    subgraph Checkpoint["Checkpoint 文件格式"]
+        direction TB
+        CH["文件头 12B<br/>Magic(4) + Version(2)<br/>+ Codec(2) + CRC(4)"]
+        CD["数据 变长<br/>Protobuf"]
+        CT["文件尾 4B<br/>CRC"]
+
+        CH --> CD --> CT
+    end
+
+    style TH fill:#e1f5ff
+    style TD fill:#fff4e6
+    style CH fill:#e1f5ff
+    style CD fill:#fff4e6
+    style CT fill:#e8f5e9
+```
+
+**一致性改进**：
+- ✅ 文件头都包含 Magic + Type/Version + Codec
+- ✅ 简洁的三段式结构（去掉复杂的 Trailer）
+- ✅ CRC 用于验证完整性
 
 ##### 文件创建流程
 
@@ -279,11 +301,12 @@ sequenceDiagram
     CM->>WAL: 2. 获取当前 offset
     WAL-->>CM: wal_offset
 
-    CM->>CM: 3. 构建 Metadata<br/>（checkpoint_id, timestamp,<br/>last_wal_offset, entry_count,<br/>checksum, codec_type=PROTOBUF）
+    CM->>CM: 3. 构建 Protobuf Metadata<br/>（checkpoint_id, timestamp,<br/>last_wal_offset, entry_count）
 
-    CM->>CM: 4. 编码 Data（Protobuf）
+    CM->>CM: 4. 编码 Protobuf Data<br/>（默认 CodecType = PROTOBUF）
 
     CM->>FS: 5. 写入临时文件<br/>checkpoint.XXX.tmp
+    Note over FS: 顺序写入:<br/>1. 文件头（12B）<br/>2. 数据区（Protobuf）<br/>3. 文件尾（4B CRC）
 
     CM->>FS: 6. 原子重命名<br/>checkpoint.XXX.tmp → checkpoint.XXX
 
@@ -307,34 +330,33 @@ sequenceDiagram
     CM->>FS: 2. 列出 Checkpoint 文件
     FS-->>CM: checkpoint_files
 
-    CM->>FS: 3. 读取最新 Checkpoint
-    FS-->>CM: file_bytes
+    CM->>FS: 3. 读取最新 Checkpoint 文件头（12B）
 
-    CM->>CM: 4. 验证 Trailer Magic
-    alt Magic 无效
+    alt Magic 不匹配
         CM->>FS: 尝试上一个 Checkpoint
     end
 
-    CM->>CM: 5. 解析 Metadata<br/>检查 codec_type
+    CM->>CM: 4. 解析文件头<br/>（Magic, Version, Codec Type）
 
-    alt codec_type = PROTOBUF
+    alt Codec Type = PROTOBUF
         CM->>CM: 使用 ProtobufCodec
-    else codec_type = MSGPACK
+    else Codec Type = MSGPACK
         CM->>CM: 使用 MessagePackCodec
-    else codec_type = JSON
+    else Codec Type = JSON
         CM->>CM: 使用 JSONCodec
-    else codec_type = UNSPECIFIED
-        CM->>CM: 使用默认 ProtobufCodec
     end
 
-    CM->>CM: 6. 解码 Data
+    CM->>FS: 5. 读取数据区（Protobuf）
+    CM->>CM: 6. 解码 Protobuf Data
 
-    CM->>MV: 7. 加载到 MVStore
+    CM->>FS: 7. 读取并验证文件尾 CRC
 
-    CM->>WAL: 8. 获取 Checkpoint 之后的 WAL
+    CM->>MV: 8. 加载到 MVStore
+
+    CM->>WAL: 9. 获取 Checkpoint 之后的 WAL（offset > last_wal_offset）
     WAL-->>CM: wal_entries
 
-    CM->>MV: 9. 重放 WAL 条目
+    CM->>MV: 10. 重放 WAL 条目
 
     MV-->>R: ✅ 恢复完成
 ```
@@ -347,9 +369,9 @@ sequenceDiagram
 - 平均 Value：100 bytes
 
 **各部分大小**：
-- Metadata：~50 bytes（固定）
-- Data：~100 MB（1M × 120 bytes × Protobuf 压缩率 ~83%）
-- Trailer：16 bytes（固定）
+- 文件头：12 bytes（固定）
+- 数据区：~100 MB（Protobuf 编码）
+- 文件尾：4 bytes（固定）
 
 **总计**：约 100 MB/Checkpoint
 

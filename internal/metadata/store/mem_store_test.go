@@ -1,5 +1,6 @@
-//nolint:errcheck // 测试代码中 defer Close() 不检查错误是常见做法
 // Package store 存储层测试
+//
+//nolint:errcheck // 测试代码中 defer Close() 不检查错误是常见做法
 package store
 
 import (

@@ -1,8 +1,9 @@
-//nolint:errcheck // 测试代码中 defer Close() 不检查错误是常见做法
 // Package store WAL 单元测试
 //
 // 测试覆盖率目标：>80%
 // 测试 WAL 的核心功能和边界情况
+//
+//nolint:errcheck // 测试代码中 defer Close() 不检查错误是常见做法
 package store
 
 import (

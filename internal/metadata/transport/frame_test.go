@@ -405,7 +405,7 @@ func TestFrame_WithPriority_UsageExamples(t *testing.T) {
 			67890,                           // MsgSeq
 			MessageTypePut,                  // MsgType
 			uint16(types.CodecTypeProtobuf), // CodecID
-			[]byte("metadata data"),          // Data
+			[]byte("metadata data"),         // Data
 		)
 
 		// 设置为高优先级，确保此消息优先处理
@@ -430,8 +430,8 @@ func TestFrame_WithPriority_UsageExamples(t *testing.T) {
 
 		// 链式调用：添加分片信息和优先级
 		frame.WithFragment(0, 3). // 第一个分片，共 3 个分片
-		      WithPriority(types.PriorityHigh).
-		      Finalize()
+						WithPriority(types.PriorityHigh).
+						Finalize()
 
 		// 验证扩展字段
 		assert.Equal(t, 2, len(frame.VarExtHeader.Fields))

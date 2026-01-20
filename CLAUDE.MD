@@ -119,6 +119,31 @@ NexKV 是一个采用**三层架构**设计的分布式数据库系统，实现�
 - **技术栈**：GitHub Actions、Docker、Kubernetes、监控告警
 - **使用方式**：部署配置、CI/CD 流水线设计时读取技能文档
 
+#### 🤖 代码审查工程师
+- **主要技能**：Code Reviewer + Code Simplifier
+- **技能路径**：`~/.claude/skills/claude-skills/pr-review-toolkit/code-reviewer/SKILL.md`
+- **辅助技能**：code-simplifier、comment-analyzer
+- **核心功能**：
+  - **🔍 代码质量审查**：检查代码风格、逻辑错误、安全漏洞
+  - **🧹 代码简化优化**：消除重复、统一风格、提高可读性
+  - **📝 注释质量分析**：验证注释准确性、完整性
+  - **🐛 静态故障检测**：识别 silent failures、不当错误处理
+  - **🔬 类型设计审查**：验证封装、不变式、接口设计
+- **工作流程**：
+  1. 接收代码变更请求
+  2. 全面审查代码质量、安全性、性能
+  3. 生成详细审查报告（P0/P1/P2 优先级分类）
+  4. 提供修复建议和最佳实践
+  5. 使用 code-simplifier 优化代码结构
+- **使用方式**：
+  - PR 提交后自动触发代码审查
+  - 发现安全漏洞时立即反馈
+  - 代码合并前必须通过审查
+- **审查范围**：
+  - **P0（高风险）**：安全漏洞、DoS 风险、数据损坏
+  - **P1（中风险）**：性能问题、资源泄漏、并发安全
+  - **P2（低风险）**：代码风格、注释质量、可读性
+
 ---
 
 ### 技能使用方式
@@ -135,6 +160,13 @@ claude-skills/
 │   └── product-manager-toolkit/SKILL.md      ✅
 ├── c-level-advisor/
 │   └── cto-advisor/SKILL.md                   ✅
+├── pr-review-toolkit/
+│   ├── code-reviewer/SKILL.md                ✅
+│   ├── code-simplifier/SKILL.md              ✅
+│   ├── comment-analyzer/SKILL.md             ✅
+│   ├── pr-test-analyzer/SKILL.md             ✅
+│   ├── silent-failure-hunter/SKILL.md        ✅
+│   └── type-design-analyzer/SKILL.md         ✅
 └── engineering-team/
     ├── senior-architect/SKILL.md              ✅
     ├── senior-backend/SKILL.md                ✅
@@ -153,6 +185,8 @@ claude-skills/
 | 需求讨论、产品规划 | `product-manager-toolkit/SKILL.md` |
 | 架构设计、技术决策 | `senior-architect/SKILL.md` + `cto-advisor/SKILL.md` |
 | 后端开发、API 设计 | `senior-backend/SKILL.md` |
+| **代码审查、质量检查、安全漏洞检测** | `code-reviewer/SKILL.md` + `code-simplifier/SKILL.md` |
+| **代码简化、重构优化** | `code-simplifier/SKILL.md` |
 | 测试计划、TDD 实践 | `senior-qa/SKILL.md` + `tdd-guide/SKILL.md` |
 | CI/CD、部署运维 | `senior-devops/SKILL.md` |
 
@@ -212,6 +246,11 @@ claude-skills/
    - 实现 TCP Transport
    - 实现节点管理、故障自愈
    - 代码质量分析和安全扫描
+4. **🤖 代码审查工程师**（AI + Code Reviewer + Code Simplifier）：
+   - **代码质量审查**：全面审查代码质量、安全性、性能
+   - **生成审查报告**：P0/P1/P2 优先级分类，提供修复建议
+   - **代码简化优化**：消除重复、统一风格、提高可读性
+   - **安全漏洞检测**：DoS 风险、注入攻击、权限绕过、数据泄露
 
 #### 阶段 4: 测试与验收
 1. **🤖 项目经理**（AI + Senior PM）：
@@ -282,6 +321,22 @@ claude-skills/
 - **Coverage Analysis**：解析 LCOV、JSON、XML 覆盖率报告
 - **Framework Support**：Go testing、testify、gomega
 - **Quality Review**：测试隔离、断言、命名约定、复杂性分析
+
+#### Code Reviewer（代码审查工程师）
+- **代码质量审查**：检查代码风格、逻辑错误、安全漏洞、性能问题
+- **优先级分类**：P0（高风险）、P1（中风险）、P2（低风险）
+- **安全漏洞检测**：DoS 风险、注入攻击、权限绕过、数据泄露
+- **并发安全分析**：竞态条件、死锁检测、资源泄漏
+- **错误处理审查**：silent failures、不当错误处理、资源清理
+- **最佳实践建议**：设计模式应用、SOLID 原则验证、重构建议
+
+#### Code Simplifier（代码简化优化）
+- **消除重复代码**：自动识别重复模式、提取公共方法
+- **统一代码风格**：命名规范、注释风格、代码格式一致性
+- **提高可读性**：简化复杂逻辑、拆分长方法、优化命名
+- **保持功能不变**：所有优化后运行测试确保业务逻辑完全保持
+- **性能优化**：减少内存分配、优化算法、降低复杂度
+- **可维护性提升**：单一职责原则、接口设计、模块化
 
 ---
 
@@ -482,131 +537,147 @@ flowchart TD
     G -.-> G1[输出：运维日志、故障纪要、迭代清单]
 ```
 
-### PR 全流程（12步闭环）
+### PR 全流程
 
 > **核心原则**：每个 PR（Pull Request）对应一个完整的开发闭环，包含前置规划文档和后置总结文档，确保从需求到交付的可追溯性。
 
 ```mermaid
 flowchart LR
-    A[1.建立新分支] --> B[2.编写Pre文档]
-    B --> C[3.架构师评审]
-    C -->|未通过| D[4.优化Pre文档]
+    A[1.建立新分支 feature/udp-transport] --> B[2.编写Pre文档<br>需求+设计+风险评估]
+    B --> C[3.等待架构师评审]
+    C -->|未通过| D[3.1 优化Pre文档]
     D --> C
-    C -->|通过| E[6.架构师预审批]
-    E --> F[7.启动开发]
-    F --> G[7.1 代码简化]
-    G --> H[7.2 构建]
-    H -->|失败| I[7.3 修复构建]
-    I --> H
-    H -->|通过| J[7.4 代码检查]
-    J -->|失败| K[7.5 修复Lint]
-    K --> J
-    J -->|通过| L[7.6 运行测试]
-    L -->|失败| M[7.7 修复测试]
-    M --> L
-    L -->|通过| N[7.8 清理]
-    N --> O[7.9 推送分支]
-    O --> P[7.10 等待CI]
-    P -->|CI失败| Q[7.11 修复CI]
-    Q --> O
-    P -->|CI通过| R[7.12 合并主分支]
-    R --> S[8.编写Post文档]
-    S --> T[9.Post文档归档]
+    C -->|通过| E[4.启动开发<br>实现UDP Transport]
+    E --> F[5.代码简化与构建验证<br>人工精简冗余逻辑]
+    
+    %% 新增：Code Simplifier Agent 代码优化闭环
+    F --> G[6. Code Simplifier Agent 优化]
+    G --> H[6.1 自动化代码精简<br>（去冗余/提性能/统一风格）]
+    H --> I[6.2 对接 Code Reviewer 意见]
+    I -->|需修改| J[6.3 人工调整优化结果]
+    J --> G
+    I -->|符合要求| K[7.请 Code Review Agent 评审]
+    
+    %% 原有 Code Review Agent 审查代码
+    K --> L[7.1 Review Code Agent 审查代码]
+    L -->|存在问题| M[7.2 修复代码问题]
+    M --> K
+    L -->|通过| N[8.本地全量测试（Make 流程）]
+    
+    %% 本地 Make 命令测试闭环
+    N --> O[8.1 make lint 代码规范检查]
+    O -->|发现错误| P[8.2 修复 lint 问题]
+    P --> O
+    O -->|通过| Q[8.3 make build 编译构建]
+    Q -->|构建失败| R[8.4 修复构建问题]
+    R --> Q
+    Q -->|通过| S[8.5 make test 单元/集成测试]
+    S -->|测试失败| T[8.6 修复测试问题]
+    T --> S
+    S -->|通过| U[8.7 make clean 清理构建产物]
+    
+    %% 后续流程
+    U --> V[9.编写Post文档<br>开发总结+测试报告]
+    V --> W[9.等待架构师评审]
+    W -->|有评审意见| E
+    W -->|通过| X[10.推送并等待CI]
+    X -->|CI失败| Y[10.1 修复CI问题<br>编译/测试/规范]
+    Y --> X
+    X -->|通过| Z[11.合并到mainline]
+    Z --> AA[12.Post文档归档]
 
-    style A fill:#e1f5ff
-    style B fill:#fff4e6
-    style C fill:#ffe6e6
-    style E fill:#e8f5e9
-    style R fill:#c8e6c9
-    style T fill:#f3e5f5
+    %% 样式定义
+    style A fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style B fill:#fff4e6,stroke:#e65100,stroke-width:2px
+    style C fill:#ffe6e6,stroke:#b71c1c,stroke-width:2px
+    style W fill:#ffe6e6,stroke:#b71c1c,stroke-width:2px
+    style Z fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    style AA fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    %% 新增工具优化步骤高亮
+    style G fill:#f0f8ff,stroke:#0288d1,stroke-width:1.5px
+    
 ```
 
-**PR 全流程详解（含代码简化、构建验证与 CI/合并）**：
+**PR 全流程详解**：
 
 | 步骤 | 名称 | 负责角色 | 交付物 | 关键产出 |
 |------|------|---------|--------|---------|
 | **1** | 建立新分支 | 🤖 核心开发 | Feature 分支 | 分支命名：`feature/XXX-功能描述` |
 | **2** | 编写 Pre 文档 | 🤖 核心开发 + AI | Pre 文档 | 需求、设计、风险评估 |
-| **3** | 架构师评审 | 👤 架构师 | 评审意见 | 技术可行性、架构合理性 |
-| **4** | 优化 Pre 文档 | 🤖 核心开发 + AI | 优化后文档 | 修复评审问题，AI 辅助优化 |
-| **5** | 循环评审 | 👤 架构师 + 🤖 项目经理 | 评审通过记录 | 多轮评审直至通过 |
-| **6** | 架构师预审批 | 👤 架构师 | 预审批确认 | 同意启动开发 |
-| **7** | 启动开发 | 🤖 核心开发 | 代码实现 | 按 Pre 文档落地 |
-| **7.1** | 代码简化 | 🤖 核心开发 + AI | 简化后代码 | 使用 code-simplifier 优化代码 |
-| **7.2** | 构建 | 🤖 核心开发 | 构建结果 | `make build` 编译项目 |
-| **7.3** | 修复构建 | 🤖 核心开发 | 修复记录 | 循环修复直至构建通过 |
-| **7.4** | 代码检查 | 🤖 核心开发 | 检查结果 | `make lint` 代码质量检查 |
-| **7.5** | 修复 Lint | 🤖 核心开发 | 修复记录 | 循环修复直至 lint 通过 |
-| **7.6** | 运行测试 | 🤖 测试工程师 | 测试结果 | `make test` 运行所有测试 |
-| **7.7** | 修复测试 | 🤖 核心开发 | 修复记录 | 循环修复直至测试通过 |
-| **7.8** | 清理 | 🤖 核心开发 | 清理完成 | `make clean` 清理编译文件 |
-| **7.9** | 推送分支 | 🤖 核心开发 | 推送完成 | `git push` 推送到远程 |
-| **7.10** | 等待 CI | 🤖 DevOps | CI 结果 | GitHub Actions 自动运行 |
-| **7.11** | 修复 CI | 🤖 核心开发 | 修复记录 | 循环修复直至 CI 通过 |
-| **7.12** | 合并主分支 | 👤 架构师 | 合并完成 | CI 通过后合并到 main |
-| **8** | 编写 Post 文档 | 🤖 核心开发 + AI | Post 文档 | 成果总结、未完成项、ToDo |
-| **9** | Post 文档归档 | 🤖 项目经理 | 归档文档 | 与代码同步版本管理 |
+| **3** | 等待架构师评审 | 👤 架构师 | 评审意见 | 技术可行性、架构合理性 |
+| **3.1** | 优化 Pre 文档 | 🤖 核心开发 + AI | 优化后文档 | 修复评审问题，循环直至通过 |
+| **4** | 启动开发 | 🤖 核心开发 | 代码实现 | 按 Pre 文档落地 |
+| **5** | 代码简化与构建验证 | 🤖 核心开发 + AI | 验证通过 | code-simplifier + build + lint + test + clean |
+| **6** | 编写 Post 文档 | 🤖 核心开发 + AI | Post 文档 | 成果总结、未完成项、ToDo |
+| **7** | 等待架构师评审 | 👤 架构师 | 评审意见 | 代码质量、文档完整性 |
+| **8** | 推送并等待 CI | 🤖 核心开发 | 推送完成 | `git push` + GitHub Actions |
+| **8.1** | 修复 CI | 🤖 核心开发 | 修复记录 | 循环修复直至 CI 通过 |
+| **9** | 合并到 mainline | 👤 架构师 | 合并完成 | CI 通过后合并到 main |
+| **10** | Post 文档归档 | 🤖 项目经理 | 归档文档 | 与代码同步版本管理 |
 
 **关键原则**：
 1. **Pre 文档未通过评审前，禁止启动开发**（先明确再动手）
-2. **AI 辅助优化**：Pre 文档优化阶段，AI 辅助梳理逻辑、生成示例代码/流程图、排查潜在风险
-3. **代码简化优先**：开发完成后，必须先运行 code-simplifier 简化代码
-4. **完整构建验证**：按顺序执行 build → lint → test → clean，确保所有检查通过
-5. **CI 自动化**：推送后自动触发 CI，CI 通过后才能合并
-6. **CI 与文档联动**：CI 问题修复后，需同步记录至流程节点
-7. **归档要求**：PR 合并后，全流程文档需补充完整，归档至对应目录
+2. **Post 文档也需要架构师评审**：确保代码质量和文档完整性
+3. **评审意见处理**：如果架构师提出评审意见，返回开发阶段修改
+4. **代码简化优先**：开发完成后，必须先运行 code-simplifier 简化代码
+5. **完整构建验证**：按顺序执行 build → lint → test → clean，确保所有检查通过
+6. **评审通过后才推送**：Post 文档评审通过后才能推送到远程
+7. **CI 自动化**：推送后自动触发 CI，CI 通过后才能合并
+8. **归档要求**：PR 合并后，全流程文档需补充完整，归档至对应目录
 
-**步骤 7.1-7.12 详细说明**：
+**步骤 5 详细说明（代码简化与构建验证）**：
 
 ```bash
-# === 本地验证阶段 ===
+# === 步骤 5: 代码简化与构建验证 ===
 
-# 步骤 7.1: 代码简化（使用 code-simplifier agent）
+# 5.1 代码简化（使用 code-simplifier agent）
 # 自动优化代码结构、消除重复、统一风格
 
-# 步骤 7.2: 构建项目
+# 5.2 构建项目
 make build
 
-# 步骤 7.3: 如果构建失败，修复并重新构建
+# 5.3 如果构建失败，修复并重新构建
 # 循环直到 make build 通过
 
-# 步骤 7.4: 代码质量检查
+# 5.4 代码质量检查
 make lint
 
-# 步骤 7.5: 如果 lint 失败，修复并重新检查
+# 5.5 如果 lint 失败，修复并重新检查
 # 循环直到 make lint 通过
 
-# 步骤 7.6: 运行测试
+# 5.6 运行测试
 make test
 
-# 步骤 7.7: 如果测试失败，修复并重新测试
+# 5.7 如果测试失败，修复并重新测试
 # 循环直到 make test 通过
 
-# 步骤 7.8: 清理编译文件
+# 5.8 清理编译文件
 make clean
+```
 
-# === 推送与 CI 阶段 ===
+**步骤 8 详细说明（推送并等待 CI）**：
 
-# 步骤 7.9: 推送分支到远程
+```bash
+# === 步骤 8: 推送并等待 CI ===
+
+# 8.1 推送分支到远程
 git add .
 git commit -m "feat(scope): description"
 git push origin feature/XXX-功能描述
 
-# 步骤 7.10: 等待 CI 自动运行
+# 8.2 等待 CI 自动运行
 # GitHub Actions 会自动运行：build → test → lint
 # 在 GitHub 页面查看 CI 进程
 
-# 步骤 7.11: 如果 CI 失败
+# 8.3 如果 CI 失败
 # - 查看 CI 错误日志
 # - 本地修复问题
 # - 提交修复：git commit --amend 或 git commit -m "fix: ci error"
 # - 重新推送：git push
-# - 回到步骤 7.10
+# - 回到步骤 8.2
 
-# 步骤 7.12: CI 通过后合并到主分支
-# 方式 1: 通过 GitHub PR 页面点击 "Merge pull request"
-# 方式 2: 使用命令行：gh pr merge --merge
-# 方式 3: 本地合并：git checkout main && git merge feature/XXX && git push
+# 8.4 CI 通过后，准备合并到 mainline
+# 等待架构师执行步骤 9
 ```
 
 ### 文档目录结构

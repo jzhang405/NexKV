@@ -60,6 +60,12 @@ type UDPTransport struct {
 	fragmentBuf  *fragmentBuffer // 分片缓冲区（用于大消息重组）
 	msgIDCounter uint64          // 消息 ID 计数器（单调递增）
 
+	// 错误统计（用于监控和调试）
+	parseErrorCount    atomic.Uint64 // 解析错误计数
+	crcErrorCount      atomic.Uint64 // CRC32 校验失败计数
+	fragmentErrorCount atomic.Uint64 // 分片错误计数
+	channelBlockCount  atomic.Uint64 // 接收通道阻塞计数
+
 	// 接收通道
 	recvCh   chan Message
 	recvOnce sync.Once
@@ -243,6 +249,7 @@ func (t *UDPTransport) receiveLoop() {
 				case <-t.stopCh:
 					return
 				case <-time.After(channelTimeout):
+					t.channelBlockCount.Add(1)
 					logging.Errorf("接收通道阻塞超过 %v，消息丢弃", channelTimeout)
 				}
 			}
@@ -257,12 +264,14 @@ func (t *UDPTransport) processReceivedData(data []byte) Message {
 		// 非分片数据包，直接解帧
 		frame, err := t.parseFrame(data)
 		if err != nil {
+			t.parseErrorCount.Add(1)
 			logging.Warnf("解析帧失败: %v", err)
 			return nil
 		}
 		// 从 Frame.Data 解码消息
 		msg, err := t.codec.Decode(frame.Data)
 		if err != nil {
+			t.parseErrorCount.Add(1)
 			logging.Warnf("解码消息失败: %v", err)
 			return nil
 		}
@@ -276,12 +285,14 @@ func (t *UDPTransport) processReceivedData(data []byte) Message {
 		// 不是 UDP 分片协议，尝试直接解帧
 		frame, err := t.parseFrame(data)
 		if err != nil {
+			t.parseErrorCount.Add(1)
 			logging.Warnf("解析帧失败: %v", err)
 			return nil
 		}
 		// 从 Frame.Data 解码消息
 		msg, err := t.codec.Decode(frame.Data)
 		if err != nil {
+			t.parseErrorCount.Add(1)
 			logging.Warnf("解码消息失败: %v", err)
 			return nil
 		}
@@ -297,6 +308,7 @@ func (t *UDPTransport) processReceivedData(data []byte) Message {
 	crc := binary.BigEndian.Uint32(data[28:32])
 
 	if int(dataLen) > len(data)-FragmentHeaderSize {
+		t.fragmentErrorCount.Add(1)
 		logging.Warnf("分片数据长度异常: dataLen=%d, actual=%d", dataLen, len(data)-FragmentHeaderSize)
 		return nil
 	}
@@ -305,13 +317,21 @@ func (t *UDPTransport) processReceivedData(data []byte) Message {
 
 	// 3. 验证 CRC32
 	if crc32.ChecksumIEEE(fragmentData) != crc {
+		t.crcErrorCount.Add(1)
 		logging.Warnf("CRC32 校验失败: nodeID=%d, msgID=%d, index=%d", nodeID, msgID, index)
 		return nil
 	}
 
 	// 4. 存储分片并检查是否完整
 	key := fragmentKey{nodeID: nodeID, msgID: msgID}
-	return t.fragmentBuf.addFragment(key, total, index, fragmentData)
+	msg := t.fragmentBuf.addFragment(key, total, index, fragmentData)
+	if msg == nil {
+		// 分片处理失败（可能是索引越界、重组失败等）
+		// 注意：由于 addFragment 是 fragmentBuffer 的方法，无法直接访问 UDPTransport 的错误计数器
+		// 这里通过返回 nil 来判断是否失败
+		t.fragmentErrorCount.Add(1)
+	}
+	return msg
 }
 
 // parseFrame 解析帧
@@ -320,12 +340,7 @@ func (t *UDPTransport) parseFrame(data []byte) (*Frame, error) {
 	if err := frame.Unmarshal(data); err != nil {
 		return nil, err
 	}
-
-	// 验证 CRC32
-	if crc32.ChecksumIEEE(frame.Data) != frame.CRC32 {
-		return nil, errors.New("CRC32 校验失败")
-	}
-
+	// Frame.Unmarshal 已包含 CRC32 验证
 	return frame, nil
 }
 
@@ -641,6 +656,12 @@ func (t *UDPTransport) Stats() map[string]any {
 		stats["pending_fragments"] = len(t.fragmentBuf.buffers)
 		t.fragmentBuf.mu.RUnlock()
 	}
+
+	// 错误统计（用于监控和调试）
+	stats["parse_errors"] = t.parseErrorCount.Load()
+	stats["crc_errors"] = t.crcErrorCount.Load()
+	stats["fragment_errors"] = t.fragmentErrorCount.Load()
+	stats["channel_blocks"] = t.channelBlockCount.Load()
 
 	return stats
 }

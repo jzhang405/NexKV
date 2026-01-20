@@ -827,3 +827,272 @@ func BenchmarkThreeCodec_SerializationSize(b *testing.B) {
 		})
 	}
 }
+
+// ========================================
+// TCP vs UDP 性能对比基准测试
+// ========================================
+
+// BenchmarkTCPVsUDP_Send 小消息发送性能对比
+func BenchmarkTCPVsUDP_Send(b *testing.B) {
+	ctx := context.Background()
+	msg := &GetMessage{Key: "benchmark-key"}
+
+	b.Run("TCP", func(b *testing.B) {
+		server := createTCPTransportForBench(b)
+		if err := server.Start(); err != nil {
+			b.Fatalf("启动 server 失败: %v", err)
+		}
+		defer func() { _ = server.Stop() }()
+
+		client := createTCPTransportForBench(b)
+		if err := client.Start(); err != nil {
+			b.Fatalf("启动 client 失败: %v", err)
+		}
+		defer func() { _ = client.Stop() }()
+
+		addr := server.GetLocalAddr()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = client.Send(ctx, addr, msg)
+		}
+	})
+
+	b.Run("UDP", func(b *testing.B) {
+		server := createUDPTransportForBench(b)
+		if err := server.Start(); err != nil {
+			b.Fatalf("启动 server 失败: %v", err)
+		}
+		defer func() { _ = server.Stop() }()
+
+		client := createUDPTransportForBench(b)
+		if err := client.Start(); err != nil {
+			b.Fatalf("启动 client 失败: %v", err)
+		}
+		defer func() { _ = client.Stop() }()
+
+		addr := server.GetLocalAddr()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = client.Send(ctx, addr, msg)
+		}
+	})
+}
+
+// BenchmarkTCPVsUDP_SendLarge 大消息发送性能对比（UDP 需要分片）
+func BenchmarkTCPVsUDP_SendLarge(b *testing.B) {
+	ctx := context.Background()
+	largeValue := make([]byte, 2048) // 2KB
+	msg := &PutMessage{Key: "large-key", Value: largeValue}
+
+	b.Run("TCP", func(b *testing.B) {
+		server := createTCPTransportForBench(b)
+		if err := server.Start(); err != nil {
+			b.Fatalf("启动 server 失败: %v", err)
+		}
+		defer func() { _ = server.Stop() }()
+
+		client := createTCPTransportForBench(b)
+		if err := client.Start(); err != nil {
+			b.Fatalf("启动 client 失败: %v", err)
+		}
+		defer func() { _ = client.Stop() }()
+
+		addr := server.GetLocalAddr()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = client.Send(ctx, addr, msg)
+		}
+	})
+
+	b.Run("UDP", func(b *testing.B) {
+		server := createUDPTransportForBench(b)
+		server.SetLocalNodeID(1)
+		if err := server.Start(); err != nil {
+			b.Fatalf("启动 server 失败: %v", err)
+		}
+		defer func() { _ = server.Stop() }()
+
+		client := createUDPTransportForBench(b)
+		client.SetLocalNodeID(2)
+		if err := client.Start(); err != nil {
+			b.Fatalf("启动 client 失败: %v", err)
+		}
+		defer func() { _ = client.Stop() }()
+
+		addr := server.GetLocalAddr()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = client.Send(ctx, addr, msg)
+		}
+	})
+}
+
+// BenchmarkTCPVsUDP_ConcurrentSend 并发发送性能对比
+func BenchmarkTCPVsUDP_ConcurrentSend(b *testing.B) {
+	ctx := context.Background()
+	msg := &GetMessage{Key: "benchmark-key"}
+
+	b.Run("TCP", func(b *testing.B) {
+		server := createTCPTransportForBench(b)
+		if err := server.Start(); err != nil {
+			b.Fatalf("启动 server 失败: %v", err)
+		}
+		defer func() { _ = server.Stop() }()
+
+		client := createTCPTransportForBench(b)
+		if err := client.Start(); err != nil {
+			b.Fatalf("启动 client 失败: %v", err)
+		}
+		defer func() { _ = client.Stop() }()
+
+		addr := server.GetLocalAddr()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				_ = client.Send(ctx, addr, msg)
+			}
+		})
+	})
+
+	b.Run("UDP", func(b *testing.B) {
+		server := createUDPTransportForBench(b)
+		if err := server.Start(); err != nil {
+			b.Fatalf("启动 server 失败: %v", err)
+		}
+		defer func() { _ = server.Stop() }()
+
+		client := createUDPTransportForBench(b)
+		if err := client.Start(); err != nil {
+			b.Fatalf("启动 client 失败: %v", err)
+		}
+		defer func() { _ = client.Stop() }()
+
+		addr := server.GetLocalAddr()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				_ = client.Send(ctx, addr, msg)
+			}
+		})
+	})
+}
+
+// BenchmarkTCPVsUDP_VaryingSizes 不同消息大小性能对比
+func BenchmarkTCPVsUDP_VaryingSizes(b *testing.B) {
+	sizes := []int{64, 256, 1024, 4096, 16384}
+
+	for _, size := range sizes {
+		value := make([]byte, size)
+		msg := &PutMessage{Key: "test-key", Value: value}
+
+		b.Run(fmt.Sprintf("%d_TCP", size), func(b *testing.B) {
+			server := createTCPTransportForBench(b)
+			if err := server.Start(); err != nil {
+				b.Fatalf("启动 server 失败: %v", err)
+			}
+			defer func() { _ = server.Stop() }()
+
+			client := createTCPTransportForBench(b)
+			if err := client.Start(); err != nil {
+				b.Fatalf("启动 client 失败: %v", err)
+			}
+			defer func() { _ = client.Stop() }()
+
+			addr := server.GetLocalAddr()
+			ctx := context.Background()
+
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = client.Send(ctx, addr, msg)
+			}
+		})
+
+		b.Run(fmt.Sprintf("%d_UDP", size), func(b *testing.B) {
+			server := createUDPTransportForBench(b)
+			server.SetLocalNodeID(1)
+			if err := server.Start(); err != nil {
+				b.Fatalf("启动 server 失败: %v", err)
+			}
+			defer func() { _ = server.Stop() }()
+
+			client := createUDPTransportForBench(b)
+			client.SetLocalNodeID(2)
+			if err := client.Start(); err != nil {
+				b.Fatalf("启动 client 失败: %v", err)
+			}
+			defer func() { _ = client.Stop() }()
+
+			addr := server.GetLocalAddr()
+			ctx := context.Background()
+
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = client.Send(ctx, addr, msg)
+			}
+		})
+	}
+}
+
+// ========================================
+// TCP vs UDP 辅助函数
+// ========================================
+
+// createTCPTransportForBench 创建基准测试用的 TCP Transport
+func createTCPTransportForBench(b *testing.B) *TCPTransport {
+	b.Helper()
+	trans, err := NewTCPTransport("127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	return trans
+}
+
+// createUDPTransportForBench 创建基准测试用的 UDP Transport
+func createUDPTransportForBench(b *testing.B) *UDPTransport {
+	b.Helper()
+	trans, err := NewUDPTransport("127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	return trans
+}
+
+/*
+性能对比说明：
+
+预期结果：
+1. 小消息（< 1KB）：
+   - UDP 延迟 < TCP（无连接开销）
+   - UDP 吞吐量 > TCP（无连接池锁竞争）
+
+2. 大消息（> 2KB，需要 UDP 分片）：
+   - TCP 延迟 ≈ UDP（TCP 流式传输 vs UDP 分片重组）
+   - TCP 吞吐量 > UDP（UDP 分片有额外处理开销）
+
+3. 并发场景：
+   - UDP > TCP（无连接池锁竞争）
+
+4. 内存分配：
+   - TCP < UDP（UDP 需要分片缓冲区）
+
+运行基准测试对比：
+  go test -bench=BenchmarkTCPVsUDP -benchmem ./internal/metadata/transport/...
+
+查看详细对比：
+  go test -bench=. -benchmem -cpuprofile=cpu.prof ./internal/metadata/transport/
+  go tool pprof cpu.prof
+*/

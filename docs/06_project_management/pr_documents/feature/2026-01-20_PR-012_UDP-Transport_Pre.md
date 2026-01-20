@@ -99,8 +99,10 @@ type UDPTransport struct {
     conn     *net.UDPConn
     connPool sync.Map // addr -> *net.UDPConn
 
-    // 分片缓冲区（用于大消息重组）
-    fragmentBuf *fragmentBuffer
+    // 分片相关
+    fragmentBuf *fragmentBuffer     // 分片缓冲区（用于大消息重组）
+    msgIDCounter uint64             // 消息 ID 计数器（单调递增）
+    localNodeID  uint64             // 本地节点 ID
 
     // 接收通道
     recvCh   chan Message
@@ -126,14 +128,25 @@ type UDPTransport struct {
 - UDP MTU 限制：通常 1500 字节
 - **UDP 层自动分片**：超过 MTU 的消息自动分片发送
 - **接收端重组**：接收端根据分片 ID 和序号重组消息
-- **分片格式**：
+- **分片格式**（24 字节头 + Data）：
   ```
-  +--------+--------+--------+--------+----------+
-  | MsgID  | Total  | Index  | DataLen |  Data    |
-  | (8B)   | (2B)   | (2B)   |  (4B)   | (≤1400B) |
-  +--------+--------+--------+--------+----------+
+  +--------+--------+--------+--------+--------+--------+--------+----------+
+  | Magic  | NodeID | MsgID  | Total  | Index  |  Len   | CRC32  |  Data    |
+  | (4B)   | (8B)   | (8B)   | (2B)   | (2B)   | (4B)   | (4B)   | (≤1400B) |
+  +--------+--------+--------+--------+--------+--------+--------+----------+
   ```
-- **重组策略**：使用超时机制（默认 5s），超时未收齐的分片丢弃
+  - **Magic**: `"NxUD"` (4B) - 协议魔数，用于识别 UDP 分片协议
+  - **NodeID**: 节点 ID (8B) - 发送节点的唯一标识
+  - **MsgID**: 消息 ID (8B) - 单调递增的消息序号
+  - **Total**: 总分片数 (2B) - 该消息的分片总数
+  - **Index**: 分片索引 (2B) - 当前分片的序号（从 0 开始）
+  - **Len**: 数据长度 (4B) - 当前分片的数据长度
+  - **CRC32**: 校验和 (4B) - Data 字段的 CRC32 校验和
+  - **Data**: 分片数据 (≤1400B) - 实际数据内容
+- **重组策略**：
+  - 使用超时机制（默认 5s），超时未收齐的分片丢弃
+  - CRC32 校验失败的分片丢弃
+  - 相同 (NodeID, MsgID) 的分片归类到同一消息
 - **配置 MaxMessageSize 时需考虑 MTU**
 
 **3. 多地址支持**
@@ -168,8 +181,14 @@ func (t *UDPTransport) Start() error {
 
 ```go
 const (
-    MaxUDPPacketSize = 1400 // 单个 UDP 包最大数据量（留余量给头）
-    FragmentHeaderSize = 16  // MsgID(8) + Total(2) + Index(2) + DataLen(4)
+    // UDP 分片协议魔数
+    FragmentMagic = "NxUD"
+
+    // 单个 UDP 包最大数据量（1500 - IP头20 - UDP头8 - 分片头32 ≈ 1440，保守取 1400）
+    MaxUDPPacketSize = 1400
+
+    // 分片头大小：Magic(4) + NodeID(8) + MsgID(8) + Total(2) + Index(2) + Len(4) + CRC32(4) = 32
+    FragmentHeaderSize = 32
 )
 
 func (t *UDPTransport) Send(ctx context.Context, addr string, msg Message) error {
@@ -183,23 +202,29 @@ func (t *UDPTransport) Send(ctx context.Context, addr string, msg Message) error
     frame := NewFrame(data)
     frameData := frame.Bytes()
 
-    // 3. 分片发送
-    udpAddr, _ := net.ResolveUDPAddr("udp", addr)
+    // 3. 解析目标地址
+    udpAddr, err := net.ResolveUDPAddr("udp", addr)
+    if err != nil {
+        return err
+    }
 
-    // 如果帧大小 <= MaxUDPPacketSize，直接发送
+    // 4. 如果帧大小 <= MaxUDPPacketSize，直接发送（无需分片）
     if len(frameData) <= MaxUDPPacketSize {
         _, err = t.conn.WriteToUDP(frameData, udpAddr)
         return err
     }
 
-    // 4. 大消息分片发送
+    // 5. 大消息分片发送
     return t.sendFragmented(udpAddr, frameData)
 }
 
 // sendFragmented 分片发送大消息
 func (t *UDPTransport) sendFragmented(addr *net.UDPAddr, data []byte) error {
-    // 生成唯一消息 ID（使用 UUID 或 Snowflake）
-    msgID := t.generateMessageID()
+    // 获取本地节点 ID
+    nodeID := t.getLocalNodeID()
+
+    // 生成递增的消息 ID
+    msgID := t.nextMessageID()
 
     // 计算分片数量
     totalFragments := (len(data) + MaxUDPPacketSize - 1) / MaxUDPPacketSize
@@ -211,8 +236,13 @@ func (t *UDPTransport) sendFragmented(addr *net.UDPAddr, data []byte) error {
             end = len(data)
         }
 
+        fragmentData := data[start:end]
+
         // 构造分片数据包
-        fragment := t.buildFragment(msgID, uint16(totalFragments), uint16(i), data[start:end])
+        fragment, err := t.buildFragment(nodeID, msgID, uint16(totalFragments), uint16(i), fragmentData)
+        if err != nil {
+            return err
+        }
 
         // 发送分片
         if _, err := t.conn.WriteToUDP(fragment, addr); err != nil {
@@ -223,30 +253,64 @@ func (t *UDPTransport) sendFragmented(addr *net.UDPAddr, data []byte) error {
     return nil
 }
 
-// buildFragment 构造分片数据包
-func (t *UDPTransport) buildFragment(msgID uint64, total, index uint16, data []byte) []byte {
+// buildFragment 构造分片数据包（新格式）
+func (t *UDPTransport) buildFragment(nodeID, msgID uint64, total, index uint16, data []byte) ([]byte, error) {
     buf := make([]byte, FragmentHeaderSize+len(data))
 
-    // 分片头
-    binary.BigEndian.PutUint64(buf[0:8], msgID)       // MsgID
-    binary.BigEndian.PutUint16(buf[8:10], total)      // Total
-    binary.BigEndian.PutUint16(buf[10:12], index)     // Index
-    binary.BigEndian.PutUint32(buf[12:16], uint32(len(data))) // DataLen
+    // 1. Magic (4B)
+    copy(buf[0:4], FragmentMagic)
 
-    // 分片数据
+    // 2. NodeID (8B)
+    binary.BigEndian.PutUint64(buf[4:12], nodeID)
+
+    // 3. MsgID (8B)
+    binary.BigEndian.PutUint64(buf[12:20], msgID)
+
+    // 4. Total (2B)
+    binary.BigEndian.PutUint16(buf[20:22], total)
+
+    // 5. Index (2B)
+    binary.BigEndian.PutUint16(buf[22:24], index)
+
+    // 6. Len (4B)
+    binary.BigEndian.PutUint32(buf[24:28], uint32(len(data)))
+
+    // 7. Data
     copy(buf[FragmentHeaderSize:], data)
 
-    return buf
+    // 8. CRC32 (4B) - 计算 Data 字段的 CRC32 校验和
+    crc := crc32.ChecksumIEEE(data)
+    binary.BigEndian.PutUint32(buf[28:32], crc)
+
+    return buf, nil
+}
+
+// nextMessageID 生成递增的消息 ID
+func (t *UDPTransport) nextMessageID() uint64 {
+    return atomic.AddUint64(&t.msgIDCounter, 1)
+}
+
+// getLocalNodeID 获取本地节点 ID
+func (t *UDPTransport) getLocalNodeID() uint64 {
+    // 从配置或本地存储获取节点 ID
+    // 这里假设已经预先设置好
+    return t.localNodeID
 }
 ```
 
 #### 3.3.3 Receive - 接收消息（支持分片重组）
 
 ```go
+// fragmentKey 分片标识符（使用 NodeID + MsgID 组合）
+type fragmentKey struct {
+    nodeID uint64
+    msgID  uint64
+}
+
 // fragmentBuffer 分片缓冲区
 type fragmentBuffer struct {
     mu       sync.RWMutex
-    buffers  map[uint64]*partialMessage // msgID -> partialMessage
+    buffers  map[fragmentKey]*partialMessage // (NodeID, MsgID) -> partialMessage
     timeout  time.Duration
     stopCh   chan struct{}
     cleanupWg sync.WaitGroup
@@ -254,9 +318,9 @@ type fragmentBuffer struct {
 
 // partialMessage 部分消息
 type partialMessage struct {
-    total   uint16
-    received uint16
-    fragments [][]byte
+    total      uint16
+    received   uint16
+    fragments  [][]byte
     lastUpdate time.Time
 }
 
@@ -264,7 +328,7 @@ func (t *UDPTransport) Receive() <-chan Message {
     t.recvOnce.Do(func() {
         t.recvCh = make(chan Message, 100)
         t.fragmentBuf = &fragmentBuffer{
-            buffers: make(map[uint64]*partialMessage),
+            buffers: make(map[fragmentKey]*partialMessage),
             timeout: 5 * time.Second,
             stopCh:  make(chan struct{}),
         }
@@ -316,24 +380,45 @@ func (t *UDPTransport) processReceivedData(data []byte) Message {
         return frame.Message
     }
 
-    // 分片数据包，解析分片头
-    msgID := binary.BigEndian.Uint64(data[0:8])
-    total := binary.BigEndian.Uint16(data[8:10])
-    index := binary.BigEndian.Uint16(data[10:12])
-    dataLen := binary.BigEndian.Uint32(data[12:16])
+    // 分片数据包，解析分片头（新格式）
+    // 1. 验证 Magic
+    magic := string(data[0:4])
+    if magic != FragmentMagic {
+        // 不是 UDP 分片协议，尝试直接解帧
+        frame, err := t.parseFrame(data)
+        if err != nil {
+            return nil
+        }
+        return frame.Message
+    }
+
+    // 2. 解析分片头
+    nodeID := binary.BigEndian.Uint64(data[4:12])
+    msgID := binary.BigEndian.Uint64(data[12:20])
+    total := binary.BigEndian.Uint16(data[20:22])
+    index := binary.BigEndian.Uint16(data[22:24])
+    dataLen := binary.BigEndian.Uint32(data[24:28])
+    crc := binary.BigEndian.Uint32(data[28:32])
     fragmentData := data[FragmentHeaderSize : FragmentHeaderSize+int(dataLen)]
 
-    // 存储分片并检查是否完整
-    return t.fragmentBuf.addFragment(msgID, total, index, fragmentData)
+    // 3. 验证 CRC32
+    if crc32.ChecksumIEEE(fragmentData) != crc {
+        // CRC 校验失败，丢弃分片
+        return nil
+    }
+
+    // 4. 存储分片并检查是否完整
+    key := fragmentKey{nodeID: nodeID, msgID: msgID}
+    return t.fragmentBuf.addFragment(key, total, index, fragmentData)
 }
 
 // addFragment 添加分片并检查是否完整
-func (b *fragmentBuffer) addFragment(msgID uint64, total, index uint16, data []byte) Message {
+func (b *fragmentBuffer) addFragment(key fragmentKey, total, index uint16, data []byte) Message {
     b.mu.Lock()
     defer b.mu.Unlock()
 
     // 获取或创建 partialMessage
-    partial, exists := b.buffers[msgID]
+    partial, exists := b.buffers[key]
     if !exists {
         partial = &partialMessage{
             total:      total,
@@ -341,7 +426,12 @@ func (b *fragmentBuffer) addFragment(msgID uint64, total, index uint16, data []b
             fragments:  make([][]byte, total),
             lastUpdate: time.Now(),
         }
-        b.buffers[msgID] = partial
+        b.buffers[key] = partial
+    }
+
+    // 验证分片索引是否有效
+    if int(index) >= int(total) {
+        return nil
     }
 
     // 存储分片
@@ -355,7 +445,7 @@ func (b *fragmentBuffer) addFragment(msgID uint64, total, index uint16, data []b
         reassembled := b.reassembleMessage(partial)
 
         // 删除缓冲区
-        delete(b.buffers, msgID)
+        delete(b.buffers, key)
 
         return reassembled
     }
@@ -411,10 +501,10 @@ func (b *fragmentBuffer) cleanupExpiredFragments() {
     defer b.mu.Unlock()
 
     now := time.Now()
-    for msgID, partial := range b.buffers {
+    for key, partial := range b.buffers {
         if now.Sub(partial.lastUpdate) > b.timeout {
             // 超时，丢弃未收齐的分片
-            delete(b.buffers, msgID)
+            delete(b.buffers, key)
         }
     }
 }
@@ -512,9 +602,20 @@ internal/metadata/transport/
 - **最终决策**：✅ 选项 B（UDP 层自动分片）
 - **架构师评审建议**：选择 B，已在文档中详细论述分片方案
 - **实现方案**：
-  - 分片格式：MsgID(8B) + Total(2B) + Index(2B) + DataLen(4B) + Data(≤1400B)
-  - 重组策略：使用 fragmentBuffer 缓冲区，超时 5s 自动清理
-  - 并发安全：使用 sync.RWMutex 保护缓冲区
+  - **分片格式**（32 字节头 + Data）：
+    - Magic `"NxUD"` (4B) - 协议魔数
+    - NodeID (8B) - 发送节点 ID
+    - MsgID (8B) - 单调递增消息序号
+    - Total (2B) - 分片总数
+    - Index (2B) - 分片索引
+    - Len (4B) - 数据长度
+    - CRC32 (4B) - 数据校验和
+    - Data (≤1400B) - 实际数据
+  - **重组策略**：
+    - 使用 fragmentBuffer 缓冲区，超时 5s 自动清理
+    - 使用 (NodeID, MsgID) 作为 key 归类分片
+    - CRC32 校验失败的分片丢弃
+  - **并发安全**：使用 sync.RWMutex 保护缓冲区
 
 **Q3: 是否需要支持广播？**
 - **选项 A**：支持单播即可
@@ -540,10 +641,11 @@ internal/metadata/transport/
 
 ---
 
-**文档版本**：v1.1
+**文档版本**：v1.2
 **创建日期**：2026-01-20
 **更新日期**：2026-01-20
-**状态**：📋 待架构师二次评审（已根据评审意见优化）
+**状态**：📋 待架构师二次评审（已根据评审意见优化分片格式）
 **更新记录**：
+- v1.2：优化分片格式（添加 Magic/NodeID/CRC32，使用递增 MsgID）
 - v1.1：根据架构师评审意见，添加 UDP 分片/重组详细方案
 - v1.0：初始版本

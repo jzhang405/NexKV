@@ -70,71 +70,15 @@ storage:
 
 ---
 
-## 📚 文档导航
+## 📚 核心文档
 
-### 项目文档（docs/）
+### 核心架构文档（docs/00_overview/）
 
-完整的开发文档按照标准化流程组织：
-
-```
-docs/
-├── CLAUDE.md                           # 文档中心索引
-├── workflow.md                         # 开发流程规范
-│
-├── 01_requirement_planning/            # 需求与规划
-│   ├── 01_产品需求文档.md
-│   ├── 02_技术需求文档.md
-│   ├── 03_需求评审纪要.md
-│   └── 04_项目计划.md
-│
-├── 02_design/                          # 架构与详细设计
-│   ├── architecture/
-│   │   └── 01_系统架构设计.md
-│   ├── modules/
-│   │   └── 01_详细设计文档.md
-│   ├── protocols/
-│   │   └── 01_一致性协议设计.md
-│   ├── 05_API接口设计.md
-│   └── 06_设计评审纪要.md
-│
-├── 03_development/                     # 开发与编码
-│   ├── 01_编码规范文档.md
-│   ├── 02_运行时细节文档.md
-│   ├── 03_第三方依赖文档.md
-│   └── unit_test_report/
-│
-├── 04_test/                            # 测试与验收
-│   ├── 01_测试计划文档.md
-│   ├── 02_测试用例文档.md
-│   ├── 03_测试报告.md
-│   ├── 04_Bug清单.md
-│   └── 05_验收报告.md
-│
-├── 05_deployment_operation/            # 部署与运维
-│   ├── 01_部署手册.md
-│   ├── 02_运维手册.md
-│   ├── 03_版本发布文档.md
-│   └── 04_部署验证.md
-│
-└── 06_project_management/              # 项目管理
-    ├── 01_项目初始化报告.md
-    ├── 02_团队分工清单.md
-    ├── brainstorm/                     # 头脑风暴记录
-    │   ├── messagepack_2026-01-19_triple-codec-proposal.md
-    │   ├── production_2026-01-19_optimization-suggestions.md
-    │   └── ...
-    └── pr_documents/                   # PR 全流程文档
-        ├── feature/2026-01-19_PR-001_WAL优化与增强_全流程.md
-        └── ...
-```
-
-### 快速链接
-
-- 📖 [文档中心](docs/CLAUDE.md) - 完整文档导航索引
-- 🏗️ [系统架构设计](docs/02_design/architecture/01_系统架构设计.md) - 三层架构详细说明
-- 🔧 [API 接口设计](docs/02_design/05_API接口设计.md) - 接口定义和使用示例
-- 📝 [编码规范文档](docs/03_development/01_编码规范文档.md) - 代码风格和最佳实践
-- 📋 [最新 PR 文档](docs/06_project_management/pr_documents/feature/2026-01-19_PR-001_WAL优化与增强_全流程.md) - PR-001 完整记录
+| 文档 | 描述 |
+|------|------|
+| 🏗️ [核心架构概念](docs/00_overview/01_核心架构概念.md) | 三层架构、元数据层、数据层、事务层 |
+| ⚖️ [一致性级别定义](docs/00_overview/02_一致性级别定义.md) | 分层一致性模型：Gossip、Quorum、2PC |
+| 🔀 [单机-分布式一体](docs/00_overview/03_单机分布式一体.md) | 无缝切换、平滑扩展、故障恢复 |
 
 ---
 

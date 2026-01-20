@@ -3,6 +3,7 @@ package transport
 
 import (
 	"bytes"
+	"context"
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
@@ -196,7 +197,7 @@ func TestSegmenterSegment(t *testing.T) {
 	msg := NewTLVMessage(12345, 100, 1, data)
 
 	// 分片
-	segments, err := segmenter.Segment(nil, msg)
+	segments, err := segmenter.Segment(context.TODO(), msg)
 	assert.NoError(t, err, "分片应成功")
 	assert.True(t, len(segments) > 1, "应产生多个分片")
 
@@ -215,7 +216,7 @@ func TestSegmenterSegment(t *testing.T) {
 // TestReassembler 测试重组器
 func TestReassembler(t *testing.T) {
 	reassembler := NewReassembler()
-	defer reassembler.Close()
+	defer func() { _ = reassembler.Close() }()
 
 	// 创建测试分片
 	totalSegments := uint16(5)

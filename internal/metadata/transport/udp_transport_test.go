@@ -1071,7 +1071,7 @@ func TestUDP_P0_MaxFragmentCount(t *testing.T) {
 	crc := make([]byte, 4)
 	binary.BigEndian.PutUint32(crc, crc32.ChecksumIEEE([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}))
 
-	maliciousPacket := bytes.Join([][]byte{magic, nodeID, msgID, total, index, dataLen, crc, []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}}, nil)
+	maliciousPacket := bytes.Join([][]byte{magic, nodeID, msgID, total, index, dataLen, crc, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}}, nil)
 
 	// 处理恶意数据包，应该被拒绝
 	result := trans.processReceivedData(maliciousPacket)

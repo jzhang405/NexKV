@@ -282,6 +282,8 @@ func TestUDPTransport_FragmentBufferTimeout(t *testing.T) {
 // TestUDPTransport_ConcurrentSend 测试并发发送
 func TestUDPTransport_ConcurrentSend(t *testing.T) {
 	ctx := context.Background()
+	recvCtx, cancelRecv := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelRecv()
 
 	client, server, serverAddr := setupTestPair(t)
 	defer func() { _ = client.Stop() }()
@@ -295,12 +297,22 @@ func TestUDPTransport_ConcurrentSend(t *testing.T) {
 	receivedCount := 0
 	var mu sync.Mutex
 
-	// 启动接收协程
+	// 启动接收协程（带超时和退出机制，防止 goroutine 泄漏）
 	go func() {
-		for range server.Receive() {
-			mu.Lock()
-			receivedCount++
-			mu.Unlock()
+		for {
+			select {
+			case msg, ok := <-server.Receive():
+				if !ok {
+					return
+				}
+				if msg != nil {
+					mu.Lock()
+					receivedCount++
+					mu.Unlock()
+				}
+			case <-recvCtx.Done():
+				return
+			}
 		}
 	}()
 

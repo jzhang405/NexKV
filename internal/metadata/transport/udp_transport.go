@@ -49,7 +49,7 @@ const (
 // 实现了基于 UDP 的网络传输层，支持：
 //   - 大消息自动分片/重组
 //   - CRC32 校验和
-//   - 单播、广播、多播
+//   - 单播（点对点发送）
 //   - 优雅关闭
 type UDPTransport struct {
 	// 配置
@@ -369,7 +369,11 @@ func (b *fragmentBuffer) addFragment(key fragmentKey, total, index uint16, data 
 		return nil
 	}
 
-	// 存储分片
+	// 检查并存储分片（防止重复分片）
+	if partial.fragments[index] != nil {
+		logging.Debugf("重复分片: nodeID=%d, msgID=%d, index=%d", key.nodeID, key.msgID, index)
+		return nil
+	}
 	partial.fragments[index] = data
 	partial.received++
 	partial.lastUpdate = time.Now()

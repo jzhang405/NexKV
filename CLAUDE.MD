@@ -680,6 +680,116 @@ git push origin feature/XXX-功能描述
 # 等待架构师执行步骤 9
 ```
 
+---
+
+### ⚠️ 重要：禁止直接合并到 main
+
+> **核心原则**：所有代码变更必须通过 PR 流程，**禁止直接合并到 main 分支**。
+
+#### 禁止的操作
+
+```bash
+# ❌ 以下操作被严格禁止：
+git checkout main
+git merge feature/xxx        # 禁止：直接合并分支
+git push origin main         # 禁止：绕过 PR 流程
+
+git checkout main
+git cherry-pick xxx          # 禁止：直接拣选提交
+git push origin main
+```
+
+#### 后果
+
+| 风险 | 说明 |
+|------|------|
+| **绕过代码审查** | 没有经过 Code Review Agent 审查 |
+| **绕过 CI 检查** | 没有 GitHub Actions 自动化测试 |
+| **违反流程规范** | 不符合 PR-012 制定的 12 步流程 |
+| **难以追溯** | 缺少 Pre/Post 文档记录 |
+| **回滚困难** | 没有独立的 PR 记录 |
+
+#### 正确的合并方式
+
+```mermaid
+flowchart LR
+    A[功能分支 feature/xxx] --> B[创建 Pull Request]
+    B --> C[Code Review 审查]
+    C -->|发现问题| D[修复问题]
+    D --> C
+    C -->|通过| E[GitHub Actions CI]
+    E -->|失败| F[修复 CI 问题]
+    F --> E
+    E -->|通过| G[架构师批准合并]
+    G --> H[合并到 main]
+```
+
+**正确步骤**：
+
+```bash
+# === 1. 开发在功能分支 ===
+git checkout -b feature/your-feature
+# ... 开发、测试、文档编写 ...
+
+# === 2. 推送功能分支 ===
+git push origin feature/your-feature
+
+# === 3. 创建 Pull Request（通过 GitHub UI 或 gh cli）===
+gh pr create \
+  --base main \
+  --head feature/your-feature \
+  --title "feat: 功能描述" \
+  --body "关联 Pre/Post 文档链接"
+
+# === 4. 等待 CI 和审查 ===
+# - GitHub Actions 自动运行
+# - Code Review Agent 审查
+# - 架构师批准
+
+# === 5. 合并 PR（仅限架构师）===
+# 通过 GitHub UI 点击 "Merge pull request"
+# 或使用 gh cli: gh pr merge XXX
+```
+
+#### GitHub 保护规则（建议配置）
+
+为了防止误操作，建议在 GitHub 仓库设置以下保护规则：
+
+```yaml
+# .github/branch-protection-rules.yaml
+保护分支: main
+
+规则:
+  - 需要 PR 审查：至少 1 个 approval
+  - 需要通过 CI: 所有状态检查必须通过
+  - 禁止直接推送: 除了仓库管理员
+  - 合并前必须更新到最新: 确保无冲突
+```
+
+#### 历史教训
+
+**案例**：PR-012 UDP Transport 实现
+- ❌ **错误操作**：直接 `git merge` 到 main 分支
+- ✅ **补救措施**：补充 Post 文档，记录到 brainstorm
+- 📝 **改进方向**：添加 Git 保护规则，下次严格执行 PR 流程
+
+#### AI 助手行为规范
+
+当收到以下指令时，AI 助手应该**主动提醒**用户走 PR 流程：
+
+| 用户指令 | AI 响应 |
+|---------|---------|
+| "合并到 main" | ⚠️ 提醒：需要先创建 PR，经过 CI 和审查 |
+| "merge to mainline" | ⚠️ 提醒：请先创建 Pull Request |
+| "直接推送 main" | ⚠️ 警告：违反流程规范，建议走 PR 流程 |
+| "merge branch" | ⚠️ 确认：是创建 PR 还是直接合并？ |
+
+**例外情况**：
+- 紧急 hotfix：需要架构师明确批准
+- 文档修正：可简化流程，但仍需 PR
+
+---
+
 ### 文档目录结构
 
 所有开发文档统一存放在 `docs/` 目录下，按研发阶段分类：

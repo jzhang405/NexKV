@@ -158,11 +158,6 @@ func (t *MemoryTransport) Stop() error {
 	return nil
 }
 
-// Close 关闭传输层
-func (t *MemoryTransport) Close() error {
-	return t.Stop()
-}
-
 // Send 发送消息到指定节点
 func (t *MemoryTransport) Send(ctx context.Context, addr string, msg Message) error {
 	if !t.started.Load() {

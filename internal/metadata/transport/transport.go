@@ -39,10 +39,6 @@ type Transport interface {
 	// Receive 返回接收消息的通道
 	// 调用者需要持续从通道读取消息
 	Receive() <-chan Message
-
-	// Close 关闭传输层并释放资源
-	// Deprecated: 使用 Stop() 代替，Close() 仅为兼容性保留
-	Close() error
 }
 
 // Message 传输消息接口

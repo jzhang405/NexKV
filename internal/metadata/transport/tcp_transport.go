@@ -417,13 +417,6 @@ func (t *TCPTransport) Stop() error {
 	return nil
 }
 
-// Close 关闭传输层
-//
-// Stop 的别名，为了兼容 Transport 接口
-func (t *TCPTransport) Close() error {
-	return t.Stop()
-}
-
 // Send 发送消息到指定节点
 //
 // 阻塞直到消息发送成功或失败

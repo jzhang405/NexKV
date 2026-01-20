@@ -491,13 +491,6 @@ func (t *UDPTransport) Stop() error {
 	return nil
 }
 
-// Close 关闭传输层
-//
-// Stop 的别名，为了兼容 Transport 接口
-func (t *UDPTransport) Close() error {
-	return t.Stop()
-}
-
 // Send 发送消息到指定节点（支持分片）
 func (t *UDPTransport) Send(ctx context.Context, addr string, msg Message) error {
 	if !t.started.Load() {

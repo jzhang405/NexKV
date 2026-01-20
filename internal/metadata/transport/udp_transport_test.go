@@ -1066,8 +1066,8 @@ func TestUDPFragmentation_PacketLoss(t *testing.T) {
 		_ = trans.processReceivedData(fragmentBytes)
 	}
 
-	// 等待超时清理
-	time.Sleep(6 * time.Second)
+	// 等待超时清理（超时时间是 5 秒，等待 7 秒确保清理协程有足够时间运行）
+	time.Sleep(7 * time.Second)
 
 	trans.fragmentBuf.mu.RLock()
 	pendingCount := len(trans.fragmentBuf.buffers)

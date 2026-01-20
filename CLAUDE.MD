@@ -790,6 +790,190 @@ gh pr create \
 
 ---
 
+### 💡 "我有个想法"工作流程
+
+> **目的**：快速记录、讨论和跟踪团队成员的想法、发现和建议
+
+**适用场景**：
+- 💡 突然想到的功能改进
+- 🔍 代码审查中的发现
+- 📊 架构优化建议
+- ⚠️ 潜在问题预警
+- 🤔 技术方案探讨
+
+#### 想法分类
+
+| 类型 | 图标 | 说明 | 示例 |
+|------|------|------|------|
+| **发现** | 🔍 | 代码审查中发现的问题、实现差异 | "这个函数和文档不一致" |
+| **建议** | 💡 | 技术方案建议、架构改进 | "可以用 MessagePack 优化序列化" |
+| **决策** | 📊 | 技术决策记录、方案选定 | "选择 Protobuf 而非 JSON" |
+
+#### 标准工作流程
+
+```mermaid
+flowchart TD
+    A[1.提出想法] --> B{想法类型?}
+    B -->|🔍 发现| C[记录到 Findings]
+    B -->|💡 建议| D[记录到 Proposals]
+    B -->|📊 决策| E[记录到 Decisions]
+
+    C --> F[创建分支 feature/idea-XXX]
+    D --> F
+    E --> F
+
+    F --> G[记录到 brainstorm/ 目录]
+    G --> H[团队讨论评审]
+    H --> I{评审结果}
+    I -->|需要补充| J[优化文档]
+    J --> H
+    I -->|通过| K[形成决策]
+    I -->|拒绝| L[归档并说明原因]
+
+    K --> M[实施落地]
+    L --> N[保留 brainstorm 记录]
+
+    style A fill:#e1f5ff
+    style G fill:#fff4e6
+    style K fill:#c8e6c9
+    style L fill:#ffcdd2
+```
+
+#### 快速启动模板
+
+**步骤 1: 创建分支**
+
+```bash
+# 根据想法类型命名分支
+git checkout -b feature/idea-<类型>-<简短描述>
+
+# 示例：
+git checkout -b feature/idea-optimization-udp-fragmentation
+git checkout -b feature/idea-fix-memory-leak
+git checkout -b feature/idea-proposal-messagepack-serialization
+```
+
+**步骤 2: 记录到 brainstorm**
+
+```bash
+# 创建 brainstorm 文档（遵循命名规范）
+# 格式：{tag}_YYYY-MM-DD_{topic}.md
+
+# 示例：
+# docs/06_project_management/brainstorm/
+#   ├── transport_2026-01-20_udp-fragmentation-improvements.md
+#   ├── metadata_2026-01-18_strong-typed-proposal.md
+#   └── messagepack_2026-01-18_serialization-proposal.md
+```
+
+**文档模板**：
+
+```markdown
+# [简短标题]
+
+> **文档类型**: 💡 技术建议 / 🔍 发现 / 📊 决策
+> **创建日期**: YYYY-MM-DD
+> **状态**: 📋 待讨论 / ✅ 已决策 / ❌ 已拒绝
+> **优先级**: P0 (高) / P1 (中) / P2 (低)
+
+---
+
+## 背景说明
+
+描述想法的背景和上下文。
+
+## 问题描述
+
+发现的具体问题或建议内容。
+
+## 建议方案
+
+详细的解决方案或改进建议。
+
+## 实施建议
+
+- 是否需要立即实施
+- 预估工作量
+- 风险评估
+
+## 参考资料
+
+相关文档、代码位置、issue 链接等。
+
+---
+
+**维护者**: [你的名字]
+**最后更新**: YYYY-MM-DD
+```
+
+**步骤 3: 团队讨论**
+
+```bash
+# 提交 brainstorm 文档
+git add docs/06_project_management/brainstorm/XXX.md
+git commit -m "docs(brainstorm): 记录 XXX 想法"
+git push origin feature/idea-XXX
+
+# 创建 PR 或团队讨论
+gh pr create --base main --head feature/idea-XXX \
+  --title "💡 想法: XXX" \
+  --body "详见 brainstorm 文档"
+```
+
+**步骤 4: 跟踪状态**
+
+| 状态 | 说明 | 后续操作 |
+|------|------|---------|
+| 📋 待讨论 | 新想法，等待团队评审 | 创建 PR 或开会讨论 |
+| 💡 讨论中 | 正在评估可行性 | 补充技术方案 |
+| ✅ 已决策 | 方案通过，准备实施 | 创建 feature 分支实施 |
+| ❌ 已拒绝 | 方案不可行 | 保留 brainstorm 记录 |
+| 🔄 实施中 | 已进入开发流程 | 转为标准 PR 流程 |
+| ✅ 已完成 | 实施完成 | 链接到相关 PR/commit |
+
+#### brainstorm 目录规范
+
+**目录位置**：`docs/06_project_management/brainstorm/`
+
+**命名规范**：`{tag}_{YYYY-MM-DD}_{topic}.md`
+
+- **tag**: 主题标识（如 `transport`、`metadata`、`messagepack`）
+- **YYYY-MM-DD**: 创建日期
+- **topic**: 简短描述（如 `udp-fragmentation-improvements`）
+
+**当前文档示例**：
+
+```bash
+brainstorm/
+├── transport_2026-01-20_udp-fragmentation-improvements.md   # UDP 分片改进建议
+├── metadata_2026-01-18_strong-typed-proposal.md            # Metadata 强类型方案
+└── messagepack_2026-01-18_serialization-proposal.md        # MessagePack 序列化建议
+```
+
+#### 想法到实施的转换
+
+当 brainstorm 中的想法被采纳后，转换为标准开发流程：
+
+```mermaid
+flowchart LR
+    A[💡 brainstorm 想法] -->|✅ 已决策| B[创建 feature 分支]
+    B --> C[编写 Pre 文档]
+    C --> D[走完整 PR 流程]
+    D --> E[合并到 main]
+    E --> F[更新 brainstorm 状态为 ✅ 已完成]
+```
+
+#### 快速参考
+
+| 触发场景 | 操作 | 产出 |
+|---------|------|------|
+| 💡 "我有个想法" | 创建 feature/idea-XXX 分支 | brainstorm 文档 |
+| 🔍 "代码有问题" | 记录到 brainstorm Findings | 问题分析文档 |
+| 📊 "应该这样改" | 记录到 brainstorm Proposals | 技术方案文档 |
+| ✅ "方案不错" | 评审通过，转为 PR | 实施计划 |
+
+---
+
 ### 文档目录结构
 
 所有开发文档统一存放在 `docs/` 目录下，按研发阶段分类：

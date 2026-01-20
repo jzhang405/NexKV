@@ -119,6 +119,31 @@ NexKV 是一个采用**三层架构**设计的分布式数据库系统，实现�
 - **技术栈**：GitHub Actions、Docker、Kubernetes、监控告警
 - **使用方式**：部署配置、CI/CD 流水线设计时读取技能文档
 
+#### 🤖 代码审查工程师
+- **主要技能**：Code Reviewer + Code Simplifier
+- **技能路径**：`~/.claude/skills/claude-skills/pr-review-toolkit/code-reviewer/SKILL.md`
+- **辅助技能**：code-simplifier、comment-analyzer
+- **核心功能**：
+  - **🔍 代码质量审查**：检查代码风格、逻辑错误、安全漏洞
+  - **🧹 代码简化优化**：消除重复、统一风格、提高可读性
+  - **📝 注释质量分析**：验证注释准确性、完整性
+  - **🐛 静态故障检测**：识别 silent failures、不当错误处理
+  - **🔬 类型设计审查**：验证封装、不变式、接口设计
+- **工作流程**：
+  1. 接收代码变更请求
+  2. 全面审查代码质量、安全性、性能
+  3. 生成详细审查报告（P0/P1/P2 优先级分类）
+  4. 提供修复建议和最佳实践
+  5. 使用 code-simplifier 优化代码结构
+- **使用方式**：
+  - PR 提交后自动触发代码审查
+  - 发现安全漏洞时立即反馈
+  - 代码合并前必须通过审查
+- **审查范围**：
+  - **P0（高风险）**：安全漏洞、DoS 风险、数据损坏
+  - **P1（中风险）**：性能问题、资源泄漏、并发安全
+  - **P2（低风险）**：代码风格、注释质量、可读性
+
 ---
 
 ### 技能使用方式
@@ -135,6 +160,13 @@ claude-skills/
 │   └── product-manager-toolkit/SKILL.md      ✅
 ├── c-level-advisor/
 │   └── cto-advisor/SKILL.md                   ✅
+├── pr-review-toolkit/
+│   ├── code-reviewer/SKILL.md                ✅
+│   ├── code-simplifier/SKILL.md              ✅
+│   ├── comment-analyzer/SKILL.md             ✅
+│   ├── pr-test-analyzer/SKILL.md             ✅
+│   ├── silent-failure-hunter/SKILL.md        ✅
+│   └── type-design-analyzer/SKILL.md         ✅
 └── engineering-team/
     ├── senior-architect/SKILL.md              ✅
     ├── senior-backend/SKILL.md                ✅
@@ -153,6 +185,8 @@ claude-skills/
 | 需求讨论、产品规划 | `product-manager-toolkit/SKILL.md` |
 | 架构设计、技术决策 | `senior-architect/SKILL.md` + `cto-advisor/SKILL.md` |
 | 后端开发、API 设计 | `senior-backend/SKILL.md` |
+| **代码审查、质量检查、安全漏洞检测** | `code-reviewer/SKILL.md` + `code-simplifier/SKILL.md` |
+| **代码简化、重构优化** | `code-simplifier/SKILL.md` |
 | 测试计划、TDD 实践 | `senior-qa/SKILL.md` + `tdd-guide/SKILL.md` |
 | CI/CD、部署运维 | `senior-devops/SKILL.md` |
 
@@ -212,6 +246,11 @@ claude-skills/
    - 实现 TCP Transport
    - 实现节点管理、故障自愈
    - 代码质量分析和安全扫描
+4. **🤖 代码审查工程师**（AI + Code Reviewer + Code Simplifier）：
+   - **代码质量审查**：全面审查代码质量、安全性、性能
+   - **生成审查报告**：P0/P1/P2 优先级分类，提供修复建议
+   - **代码简化优化**：消除重复、统一风格、提高可读性
+   - **安全漏洞检测**：DoS 风险、注入攻击、权限绕过、数据泄露
 
 #### 阶段 4: 测试与验收
 1. **🤖 项目经理**（AI + Senior PM）：
@@ -282,6 +321,22 @@ claude-skills/
 - **Coverage Analysis**：解析 LCOV、JSON、XML 覆盖率报告
 - **Framework Support**：Go testing、testify、gomega
 - **Quality Review**：测试隔离、断言、命名约定、复杂性分析
+
+#### Code Reviewer（代码审查工程师）
+- **代码质量审查**：检查代码风格、逻辑错误、安全漏洞、性能问题
+- **优先级分类**：P0（高风险）、P1（中风险）、P2（低风险）
+- **安全漏洞检测**：DoS 风险、注入攻击、权限绕过、数据泄露
+- **并发安全分析**：竞态条件、死锁检测、资源泄漏
+- **错误处理审查**：silent failures、不当错误处理、资源清理
+- **最佳实践建议**：设计模式应用、SOLID 原则验证、重构建议
+
+#### Code Simplifier（代码简化优化）
+- **消除重复代码**：自动识别重复模式、提取公共方法
+- **统一代码风格**：命名规范、注释风格、代码格式一致性
+- **提高可读性**：简化复杂逻辑、拆分长方法、优化命名
+- **保持功能不变**：所有优化后运行测试确保业务逻辑完全保持
+- **性能优化**：减少内存分配、优化算法、降低复杂度
+- **可维护性提升**：单一职责原则、接口设计、模块化
 
 ---
 
@@ -482,33 +537,65 @@ flowchart TD
     G -.-> G1[输出：运维日志、故障纪要、迭代清单]
 ```
 
-### PR 全流程（10步闭环）
+### PR 全流程
 
 > **核心原则**：每个 PR（Pull Request）对应一个完整的开发闭环，包含前置规划文档和后置总结文档，确保从需求到交付的可追溯性。
 
 ```mermaid
 flowchart LR
-    A[1.建立新分支] --> B[2.编写Pre文档]
+    A[1.建立新分支 feature/udp-transport] --> B[2.编写Pre文档<br>需求+设计+风险评估]
     B --> C[3.等待架构师评审]
     C -->|未通过| D[3.1 优化Pre文档]
     D --> C
-    C -->|通过| E[4.启动开发]
-    E --> F[5.代码简化与构建验证]
-    F --> G[6.编写Post文档]
-    G --> H[7.等待架构师评审]
-    H -->|有评审意见| E
-    H -->|通过| I[8.推送并等待CI]
-    I -->|CI失败| J[8.1 修复CI]
-    J --> I
-    I -->|CI通过| K[9.合并到mainline]
-    K --> L[10.Post文档归档]
+    C -->|通过| E[4.启动开发<br>实现UDP Transport]
+    E --> F[5.代码简化与构建验证<br>人工精简冗余逻辑]
+    
+    %% 新增：Code Simplifier Agent 代码优化闭环
+    F --> G[6. Code Simplifier Agent 优化]
+    G --> H[6.1 自动化代码精简<br>（去冗余/提性能/统一风格）]
+    H --> I[6.2 对接 Code Reviewer 意见]
+    I -->|需修改| J[6.3 人工调整优化结果]
+    J --> G
+    I -->|符合要求| K[7.请 Code Review Agent 评审]
+    
+    %% 原有 Code Review Agent 审查代码
+    K --> L[7.1 Review Code Agent 审查代码]
+    L -->|存在问题| M[7.2 修复代码问题]
+    M --> K
+    L -->|通过| N[8.本地全量测试（Make 流程）]
+    
+    %% 本地 Make 命令测试闭环
+    N --> O[8.1 make lint 代码规范检查]
+    O -->|发现错误| P[8.2 修复 lint 问题]
+    P --> O
+    O -->|通过| Q[8.3 make build 编译构建]
+    Q -->|构建失败| R[8.4 修复构建问题]
+    R --> Q
+    Q -->|通过| S[8.5 make test 单元/集成测试]
+    S -->|测试失败| T[8.6 修复测试问题]
+    T --> S
+    S -->|通过| U[8.7 make clean 清理构建产物]
+    
+    %% 后续流程
+    U --> V[9.编写Post文档<br>开发总结+测试报告]
+    V --> W[9.等待架构师评审]
+    W -->|有评审意见| E
+    W -->|通过| X[10.推送并等待CI]
+    X -->|CI失败| Y[10.1 修复CI问题<br>编译/测试/规范]
+    Y --> X
+    X -->|通过| Z[11.合并到mainline]
+    Z --> AA[12.Post文档归档]
 
-    style A fill:#e1f5ff
-    style B fill:#fff4e6
-    style C fill:#ffe6e6
-    style H fill:#ffe6e6
-    style K fill:#c8e6c9
-    style L fill:#f3e5f5
+    %% 样式定义
+    style A fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style B fill:#fff4e6,stroke:#e65100,stroke-width:2px
+    style C fill:#ffe6e6,stroke:#b71c1c,stroke-width:2px
+    style W fill:#ffe6e6,stroke:#b71c1c,stroke-width:2px
+    style Z fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    style AA fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    %% 新增工具优化步骤高亮
+    style G fill:#f0f8ff,stroke:#0288d1,stroke-width:1.5px
+    
 ```
 
 **PR 全流程详解**：

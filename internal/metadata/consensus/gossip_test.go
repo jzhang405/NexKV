@@ -141,7 +141,7 @@ func (m *mockMVStore) Close() error {
 // TestNewGossipService 测试创建 Gossip 服务
 func TestNewGossipService(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	peers := []string{"node2", "node3"}
@@ -160,7 +160,7 @@ func TestNewGossipService(t *testing.T) {
 // TestGossipService_StartStop 测试启动和停止 Gossip 服务
 func TestGossipService_StartStop(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	peers := []string{"node2", "node3"}
@@ -190,7 +190,7 @@ func TestGossipService_StartStop(t *testing.T) {
 // TestGossipService_Put 测试写入元数据
 func TestGossipService_Put(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	peers := []string{"node2", "node3"}
@@ -220,7 +220,7 @@ func TestGossipService_Put(t *testing.T) {
 // TestGossipService_Delete 测试删除元数据
 func TestGossipService_Delete(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	peers := []string{"node2", "node3"}
@@ -249,7 +249,7 @@ func TestGossipService_Delete(t *testing.T) {
 // TestGossipService_AddRemovePeer 测试添加和移除节点
 func TestGossipService_AddRemovePeer(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	peers := []string{"node2"}
@@ -270,7 +270,7 @@ func TestGossipService_AddRemovePeer(t *testing.T) {
 // TestGossipService_selectRandomPeers 测试随机节点选择
 func TestGossipService_selectRandomPeers(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	peers := []string{"node2", "node3", "node4", "node5", "node6"}
@@ -301,7 +301,7 @@ func TestGossipService_selectRandomPeers(t *testing.T) {
 // TestGossipService_addChangeLog 测试变更日志缓存
 func TestGossipService_addChangeLog(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	peers := []string{"node2"}
@@ -335,7 +335,7 @@ func TestGossipService_addChangeLog(t *testing.T) {
 // TestGossipService_buildMetadataDigest 测试构建元数据摘要
 func TestGossipService_buildMetadataDigest(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	peers := []string{"node2"}
@@ -365,7 +365,7 @@ func TestGossipService_buildMetadataDigest(t *testing.T) {
 // TestGossipService_applyMetadata 测试应用元数据
 func TestGossipService_applyMetadata(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	peers := []string{"node2"}
@@ -397,7 +397,7 @@ func TestGossipService_applyMetadata(t *testing.T) {
 // TestGossipService_GetStats 测试获取统计信息
 func TestGossipService_GetStats(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	peers := []string{"node2"}
@@ -427,7 +427,7 @@ func TestGossipService_GetStats(t *testing.T) {
 // TestGossipService_TriggerSync 测试手动触发同步
 func TestGossipService_TriggerSync(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	peers := []string{"node2"}
@@ -437,9 +437,6 @@ func TestGossipService_TriggerSync(t *testing.T) {
 
 	_ = service.Start()
 	require.NoError(t, err)
-
-	// 注册远程节点
-	trans.RegisterRemoteNode("node2")
 
 	// 手动触发同步
 	service.TriggerSync()
@@ -467,7 +464,7 @@ func TestDefaultGossipConfig(t *testing.T) {
 // BenchmarkGossipService_Put 性能基准测试: 写入元数据
 func BenchmarkGossipService_Put(b *testing.B) {
 	metaStore := newMockMVStore()
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	hlc := clock.NewHLC()
 	peers := []string{"node2", "node3"}
 
@@ -484,7 +481,7 @@ func BenchmarkGossipService_Put(b *testing.B) {
 // BenchmarkGossipService_Get 性能基准测试: 读取元数据
 func BenchmarkGossipService_Get(b *testing.B) {
 	metaStore := newMockMVStore()
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	hlc := clock.NewHLC()
 	peers := []string{"node2", "node3"}
 
@@ -502,7 +499,7 @@ func BenchmarkGossipService_Get(b *testing.B) {
 // BenchmarkGossipService_selectRandomPeers 性能基准测试: 随机选择节点
 func BenchmarkGossipService_selectRandomPeers(b *testing.B) {
 	metaStore := newMockMVStore()
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	hlc := clock.NewHLC()
 
 	// 创建 100 个节点

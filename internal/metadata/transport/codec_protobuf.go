@@ -9,8 +9,6 @@
 package transport
 
 import (
-	"encoding/binary"
-
 	"github.com/jzhang405/NexKV/internal/metadata/proto"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 	googleproto "google.golang.org/protobuf/proto"
@@ -36,8 +34,8 @@ func NewProtobufCodec() *ProtobufCodec {
 
 // Encode 编码消息（Protobuf 格式）
 //
-// 将消息编码为 Protobuf 格式的字节流
-// 格式: [Type:2字节][DataLen:4字节][Data:N字节]
+// 将消息编码为纯 Protobuf 格式的字节流
+// WrapperMessageProto 本身包含 MessageType，无需额外包装
 func (c *ProtobufCodec) Encode(msg Message) ([]byte, error) {
 	if msg == nil {
 		return nil, types.NewCodecInvalidMessageError("消息为空")
@@ -54,48 +52,22 @@ func (c *ProtobufCodec) Encode(msg Message) ([]byte, error) {
 		return nil, types.NewCodecEncodeFailedError("Protobuf", err)
 	}
 
-	// 构建完整的编码数据
-	// 格式: [Type(2字节)][DataLen(4字节)][Data(N字节)]
-	buf := make([]byte, 2+4+len(dataBytes))
-
-	// 写入 Type (2 字节)
-	binary.BigEndian.PutUint16(buf[0:2], uint16(msg.Type()))
-
-	// 写入 DataLen (4 字节)
-	binary.BigEndian.PutUint32(buf[2:6], uint32(len(dataBytes)))
-
-	// 写入 Data
-	copy(buf[6:], dataBytes)
-
-	return buf, nil
+	return dataBytes, nil
 }
 
 // Decode 解码消息（Protobuf 格式）
 //
-// 从 Protobuf 格式的字节流解码消息
-// 格式: [Type:2字节][DataLen:4字节][Data:N字节]
-func (c *ProtobufCodec) Decode(data []byte) (Message, error) {
+// 从纯 Protobuf 格式的字节流解码消息
+// msgType 参数指定消息类型（从 FixedHeader 获取）
+// 注意：WrapperMessageProto 内部仍包含类型，可用于一致性验证
+func (c *ProtobufCodec) Decode(msgType MessageType, data []byte) (Message, error) {
 	if len(data) == 0 {
 		return nil, types.NewCodecInvalidDataError("Decode", "数据为空")
-	}
-	if len(data) < 6 {
-		return nil, types.NewCodecInvalidDataError("Decode", "数据长度不足")
-	}
-
-	// 读取 Type (2 字节)
-	msgType := MessageType(binary.BigEndian.Uint16(data[0:2]))
-
-	// 读取 DataLen (4 字节)
-	dataLen := int(binary.BigEndian.Uint32(data[2:6]))
-
-	// 验证数据长度
-	if len(data) < 6+dataLen {
-		return nil, types.NewCodecInvalidDataError("Decode", "数据长度不足")
 	}
 
 	// 解析 WrapperMessageProto
 	wrapper := &proto.WrapperMessageProto{}
-	if err := googleproto.Unmarshal(data[6:6+dataLen], wrapper); err != nil {
+	if err := googleproto.Unmarshal(data, wrapper); err != nil {
 		return nil, types.NewCodecDecodeFailedError("Protobuf", err)
 	}
 
@@ -105,12 +77,205 @@ func (c *ProtobufCodec) Decode(data []byte) (Message, error) {
 		return nil, types.NewCodecDecodeFailedError("Protobuf", err)
 	}
 
-	// 验证消息类型匹配
-	if msg.Type() != msgType {
-		return nil, types.NewCodecInvalidDataError("Decode", "消息类型不匹配")
+	return msg, nil
+}
+
+// DecodeInto 解码消息到指定实例
+//
+// 从纯 Protobuf 格式数据解码到预先创建的消息实例
+func (c *ProtobufCodec) DecodeInto(data []byte, msg Message) error {
+	if msg == nil {
+		return types.NewCodecInvalidMessageError("消息实例为空")
+	}
+	if len(data) == 0 {
+		return types.NewCodecInvalidDataError("DecodeInto", "数据为空")
 	}
 
-	return msg, nil
+	// 解析 WrapperMessageProto
+	wrapper := &proto.WrapperMessageProto{}
+	if err := googleproto.Unmarshal(data, wrapper); err != nil {
+		return types.NewCodecDecodeFailedError("Protobuf", err)
+	}
+
+	// 从 Wrapper 提取消息并赋值到目标实例
+	decodedMsg, err := c.wrapperToMessage(wrapper)
+	if err != nil {
+		return types.NewCodecDecodeFailedError("Protobuf", err)
+	}
+
+	// 使用 wrapperToMessage 返回的消息填充目标实例
+	// 注意：这里需要根据具体类型进行字段复制
+	// 为了简化，我们直接创建新实例并使用反射或类型断言
+	switch m := msg.(type) {
+	case *GetMessage:
+		if decoded, ok := decodedMsg.(*GetMessage); ok {
+			m.Key = decoded.Key
+		}
+	case *PutMessage:
+		if decoded, ok := decodedMsg.(*PutMessage); ok {
+			m.Key = decoded.Key
+			m.Value = decoded.Value
+		}
+	case *DeleteMessage:
+		if decoded, ok := decodedMsg.(*DeleteMessage); ok {
+			m.Key = decoded.Key
+		}
+	case *GetReplyMessage:
+		if decoded, ok := decodedMsg.(*GetReplyMessage); ok {
+			m.Key = decoded.Key
+			m.Value = decoded.Value
+			m.Found = decoded.Found
+			m.Version = decoded.Version
+		}
+	case *PutReplyMessage:
+		if decoded, ok := decodedMsg.(*PutReplyMessage); ok {
+			m.Key = decoded.Key
+			m.Success = decoded.Success
+			m.Version = decoded.Version
+		}
+	case *DeleteReplyMessage:
+		if decoded, ok := decodedMsg.(*DeleteReplyMessage); ok {
+			m.Key = decoded.Key
+			m.Success = decoded.Success
+		}
+	case *GossipSyncMessage:
+		if decoded, ok := decodedMsg.(*GossipSyncMessage); ok {
+			m.Version = decoded.Version
+			m.Metadata = decoded.Metadata
+			m.Timestamp = decoded.Timestamp
+		}
+	case *GossipSyncReplyMessage:
+		if decoded, ok := decodedMsg.(*GossipSyncReplyMessage); ok {
+			m.Accepted = decoded.Accepted
+			m.Version = decoded.Version
+		}
+	case *GossipDigestMessage:
+		if decoded, ok := decodedMsg.(*GossipDigestMessage); ok {
+			m.Version = decoded.Version
+			m.Digest = decoded.Digest
+		}
+	case *GossipDigestReplyMessage:
+		if decoded, ok := decodedMsg.(*GossipDigestReplyMessage); ok {
+			m.Version = decoded.Version
+			m.Digest = decoded.Digest
+		}
+	case *QuorumProposeMessage:
+		if decoded, ok := decodedMsg.(*QuorumProposeMessage); ok {
+			m.ProposalID = decoded.ProposalID
+			m.Key = decoded.Key
+			m.Value = decoded.Value
+			m.Operation = decoded.Operation
+			m.Proposer = decoded.Proposer
+			m.Timestamp = decoded.Timestamp
+		}
+	case *QuorumVoteMessage:
+		if decoded, ok := decodedMsg.(*QuorumVoteMessage); ok {
+			m.ProposalID = decoded.ProposalID
+			m.Voter = decoded.Voter
+			m.Vote = decoded.Vote
+			m.Reason = decoded.Reason
+		}
+	case *QuorumDecideMessage:
+		if decoded, ok := decodedMsg.(*QuorumDecideMessage); ok {
+			m.ProposalID = decoded.ProposalID
+			m.Approved = decoded.Approved
+			m.Version = decoded.Version
+		}
+	case *TwoPCPrepareMessage:
+		if decoded, ok := decodedMsg.(*TwoPCPrepareMessage); ok {
+			m.TransactionID = decoded.TransactionID
+			m.Participants = decoded.Participants
+			m.Operations = decoded.Operations
+			m.Timeout = decoded.Timeout
+		}
+	case *TwoPCPrepareReplyMessage:
+		if decoded, ok := decodedMsg.(*TwoPCPrepareReplyMessage); ok {
+			m.TransactionID = decoded.TransactionID
+			m.Participant = decoded.Participant
+			m.Vote = decoded.Vote
+			m.Reason = decoded.Reason
+		}
+	case *TwoPCCommitMessage:
+		if decoded, ok := decodedMsg.(*TwoPCCommitMessage); ok {
+			m.TransactionID = decoded.TransactionID
+		}
+	case *TwoPCRollbackMessage:
+		if decoded, ok := decodedMsg.(*TwoPCRollbackMessage); ok {
+			m.TransactionID = decoded.TransactionID
+			m.Reason = decoded.Reason
+		}
+	case *TwoPCCommitReplyMessage:
+		if decoded, ok := decodedMsg.(*TwoPCCommitReplyMessage); ok {
+			m.TransactionID = decoded.TransactionID
+			m.Participant = decoded.Participant
+			m.Success = decoded.Success
+		}
+	case *TwoPCRollbackReplyMessage:
+		if decoded, ok := decodedMsg.(*TwoPCRollbackReplyMessage); ok {
+			m.TransactionID = decoded.TransactionID
+			m.Participant = decoded.Participant
+			m.Success = decoded.Success
+		}
+	case *NodePingMessage:
+		if decoded, ok := decodedMsg.(*NodePingMessage); ok {
+			m.NodeID = decoded.NodeID
+			m.Sequence = decoded.Sequence
+			m.Timestamp = decoded.Timestamp
+		}
+	case *NodePongMessage:
+		if decoded, ok := decodedMsg.(*NodePongMessage); ok {
+			m.NodeID = decoded.NodeID
+			m.Sequence = decoded.Sequence
+			m.Status = decoded.Status
+			m.Timestamp = decoded.Timestamp
+		}
+	case *NodeJoinMessage:
+		if decoded, ok := decodedMsg.(*NodeJoinMessage); ok {
+			m.NodeID = decoded.NodeID
+			m.Addr = decoded.Addr
+			m.Role = decoded.Role
+			m.ParentID = decoded.ParentID
+		}
+	case *NodeLeaveMessage:
+		if decoded, ok := decodedMsg.(*NodeLeaveMessage); ok {
+			m.NodeID = decoded.NodeID
+			m.Reason = decoded.Reason
+		}
+	case *NodeSyncMessage:
+		if decoded, ok := decodedMsg.(*NodeSyncMessage); ok {
+			m.Version = decoded.Version
+			m.Metadata = decoded.Metadata
+		}
+	case *ClockSyncMessage:
+		if decoded, ok := decodedMsg.(*ClockSyncMessage); ok {
+			m.Timestamp = decoded.Timestamp
+			m.NodeID = decoded.NodeID
+		}
+	case *ClockSyncReplyMessage:
+		if decoded, ok := decodedMsg.(*ClockSyncReplyMessage); ok {
+			m.Timestamp = decoded.Timestamp
+			m.NodeID = decoded.NodeID
+			m.Drift = decoded.Drift
+		}
+	case *ClusterStatusMessage:
+		if decoded, ok := decodedMsg.(*ClusterStatusMessage); ok {
+			m.NodeID = decoded.NodeID
+		}
+	case *ClusterStatusReplyMessage:
+		if decoded, ok := decodedMsg.(*ClusterStatusReplyMessage); ok {
+			m.Nodes = decoded.Nodes
+		}
+	case *LeaderElectionMessage:
+		if decoded, ok := decodedMsg.(*LeaderElectionMessage); ok {
+			m.ElectionID = decoded.ElectionID
+			m.NodeID = decoded.NodeID
+			m.Priority = decoded.Priority
+		}
+	default:
+		return types.NewCodecInvalidDataError("DecodeInto", "不支持的消息类型")
+	}
+
+	return nil
 }
 
 // Name 返回编解码器名称

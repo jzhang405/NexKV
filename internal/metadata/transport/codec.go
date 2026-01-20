@@ -4,7 +4,6 @@
 package transport
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"io"
 
@@ -25,86 +24,8 @@ import (
 const defaultCodec = types.CodecTypeProtobuf
 
 // ========================================
-// P1-3: 通用编解码辅助函数
-// ========================================
-//
-// 将 MessagePack 和 JSON Codec 的重复逻辑提取为通用函数
-// 遵循 DRY 原则，降低维护成本
-
-// marshalFunc 定义序列化函数类型
-type marshalFunc func(any) ([]byte, error)
-
-// unmarshalFunc 定义反序列化函数类型
-type unmarshalFunc func([]byte, any) error
-
-// genericEncode 通用的编码逻辑
-//
-// P1-3: 提取通用的序列化逻辑，避免 MessagePack 和 JSON Codec 重复代码
-// 编码格式: [Type:2字节][DataLen:4字节][Data:N字节]
-func genericEncode(msg Message, marshal marshalFunc, codecName string) ([]byte, error) {
-	if msg == nil {
-		return nil, types.NewCodecInvalidMessageError("消息为空")
-	}
-
-	// 调用具体的序列化函数
-	dataBytes, err := marshal(msg)
-	if err != nil {
-		return nil, types.NewCodecEncodeFailedError(codecName, err)
-	}
-
-	// 构建通用格式: [Type(2字节)][DataLen(4字节)][Data(N字节)]
-	buf := make([]byte, 2+4+len(dataBytes))
-	binary.BigEndian.PutUint16(buf[0:2], uint16(msg.Type()))
-	binary.BigEndian.PutUint32(buf[2:6], uint32(len(dataBytes)))
-	copy(buf[6:], dataBytes)
-
-	return buf, nil
-}
-
-// genericDecode 通用的解码逻辑
-//
-// P1-3: 提取通用的反序列化逻辑，避免 MessagePack 和 JSON Codec 重复代码
-// 解码格式: [Type:2字节][DataLen:4字节][Data:N字节]
-func genericDecode(data []byte, unmarshal unmarshalFunc, codecName string) (Message, error) {
-	// 统一的头部验证
-	if len(data) == 0 {
-		return nil, types.NewCodecInvalidDataError("Decode", "数据为空")
-	}
-	if len(data) < 6 {
-		return nil, types.NewCodecInvalidDataError("Decode", "数据长度不足")
-	}
-
-	// 解析头部
-	msgType := MessageType(binary.BigEndian.Uint16(data[0:2]))
-	dataLen := int(binary.BigEndian.Uint32(data[2:6]))
-
-	// 验证数据长度
-	if len(data) < 6+dataLen {
-		return nil, types.NewCodecInvalidDataError("Decode", "数据长度不足")
-	}
-
-	// 创建消息实例
-	msg, err := createMessageByType(msgType)
-	if err != nil {
-		return nil, types.NewOpErr(types.ErrCodeInternal, "createMessage", "创建消息实例失败", err)
-	}
-
-	// 调用具体的反序列化函数
-	if dataLen > 0 {
-		if err := unmarshal(data[6:6+dataLen], msg); err != nil {
-			return nil, types.NewCodecDecodeFailedError(codecName, err)
-		}
-	}
-
-	return msg, nil
-}
-
-// ========================================
 // MessagePack 编解码器实现
 // ========================================
-//
-// Codec 接口定义在 transport.go 中（第 233 行）
-// 此文件提供具体的编解码器实现
 
 // MessagePackCodec MessagePack 编解码器
 //
@@ -112,6 +33,7 @@ func genericDecode(data []byte, unmarshal unmarshalFunc, codecName string) (Mess
 //   - 高效二进制序列化
 //   - 自动处理 Go 类型到 MessagePack 类型的映射
 //   - 支持嵌套结构和切片
+//   - Encode/DecodeInto: 纯 MessagePack 数据（类型在 FixedHeader 中）
 type MessagePackCodec struct{}
 
 // NewMessagePackCodec 创建 MessagePack 编解码器
@@ -121,20 +43,57 @@ func NewMessagePackCodec() *MessagePackCodec {
 
 // Encode 编码消息
 //
-// P1-3: 使用通用编码逻辑，消除与 JSON Codec 的重复代码
-// 将消息编码为 MessagePack 格式的字节流
-// 格式: [Type:2字节][DataLen:4字节][Data:N字节]
+// 将消息编码为纯 MessagePack 格式（不包含类型，类型在 FixedHeader 中）
 func (c *MessagePackCodec) Encode(msg Message) ([]byte, error) {
-	return genericEncode(msg, msgpack.Marshal, "msgpack")
+	if msg == nil {
+		return nil, types.NewCodecInvalidMessageError("消息为空")
+	}
+
+	// 序列化消息（纯 MessagePack 数据）
+	data, err := msgpack.Marshal(msg)
+	if err != nil {
+		return nil, types.NewCodecEncodeFailedError("msgpack", err)
+	}
+
+	return data, nil
 }
 
 // Decode 解码消息
 //
-// P1-3: 使用通用解码逻辑，消除与 JSON Codec 的重复代码
-// 从 MessagePack 格式的字节流解码消息
-// 格式: [Type:2字节][DataLen:4字节][Data:N字节]
-func (c *MessagePackCodec) Decode(data []byte) (Message, error) {
-	return genericDecode(data, msgpack.Unmarshal, "msgpack")
+// 从纯 MessagePack 格式数据解码消息
+// msgType 参数指定消息类型
+func (c *MessagePackCodec) Decode(msgType MessageType, data []byte) (Message, error) {
+	// 创建消息实例
+	msg, err := createMessageByType(msgType)
+	if err != nil {
+		return nil, err
+	}
+
+	// 解码数据到消息实例
+	if err := msgpack.Unmarshal(data, msg); err != nil {
+		return nil, types.NewCodecDecodeFailedError("msgpack", err)
+	}
+
+	return msg, nil
+}
+
+// DecodeInto 解码消息到指定实例
+//
+// 从纯 MessagePack 格式数据解码到预先创建的消息实例
+func (c *MessagePackCodec) DecodeInto(data []byte, msg Message) error {
+	if msg == nil {
+		return types.NewCodecInvalidMessageError("消息实例为空")
+	}
+	if len(data) == 0 {
+		return types.NewCodecInvalidDataError("DecodeInto", "数据为空")
+	}
+
+	// 解码数据到消息实例
+	if err := msgpack.Unmarshal(data, msg); err != nil {
+		return types.NewCodecDecodeFailedError("msgpack", err)
+	}
+
+	return nil
 }
 
 // Name 返回编解码器名称
@@ -158,6 +117,7 @@ func (c *MessagePackCodec) Type() types.CodecType {
 //   - 性能：编码/解码速度相对较慢
 //   - 数据大小：约为 MessagePack 的 2-3 倍
 //   - 推荐用于调试和跨语言兼容场景
+//   - Encode/Decode/DecodeInto: 纯 JSON 序列化数据（类型在 FixedHeader 中）
 type JSONCodec struct{}
 
 // NewJSONCodec 创建 JSON 编解码器
@@ -167,20 +127,57 @@ func NewJSONCodec() *JSONCodec {
 
 // Encode 编码消息（JSON 格式）
 //
-// P1-3: 使用通用编码逻辑，消除与 MessagePack Codec 的重复代码
-// 将消息编码为 JSON 格式的字节流
-// 格式: [Type:2字节][DataLen:4字节][Data:N字节]
+// 将消息编码为纯 JSON 格式（不包含类型，类型在 FixedHeader 中）
 func (c *JSONCodec) Encode(msg Message) ([]byte, error) {
-	return genericEncode(msg, json.Marshal, "json")
+	if msg == nil {
+		return nil, types.NewCodecInvalidMessageError("消息为空")
+	}
+
+	// 序列化消息（纯 JSON 数据）
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return nil, types.NewCodecEncodeFailedError("json", err)
+	}
+
+	return data, nil
 }
 
-// Decode 解码消息（JSON 格式）
+// Decode 解码消息
 //
-// P1-3: 使用通用解码逻辑，消除与 MessagePack Codec 的重复代码
-// 从 JSON 格式的字节流解码消息
-// 格式: [Type:2字节][DataLen:4字节][Data:N字节]
-func (c *JSONCodec) Decode(data []byte) (Message, error) {
-	return genericDecode(data, json.Unmarshal, "json")
+// 从纯 JSON 格式数据解码消息
+// msgType 参数指定消息类型（从 FixedHeader 获取）
+func (c *JSONCodec) Decode(msgType MessageType, data []byte) (Message, error) {
+	// 创建消息实例
+	msg, err := createMessageByType(msgType)
+	if err != nil {
+		return nil, err
+	}
+
+	// 解码数据
+	if err := json.Unmarshal(data, msg); err != nil {
+		return nil, types.NewCodecDecodeFailedError("json", err)
+	}
+
+	return msg, nil
+}
+
+// DecodeInto 解码消息到指定实例
+//
+// 从纯 JSON 格式数据解码到预先创建的消息实例
+func (c *JSONCodec) DecodeInto(data []byte, msg Message) error {
+	if msg == nil {
+		return types.NewCodecInvalidMessageError("消息实例为空")
+	}
+	if len(data) == 0 {
+		return types.NewCodecInvalidDataError("DecodeInto", "数据为空")
+	}
+
+	// 解码数据到消息实例
+	if err := json.Unmarshal(data, msg); err != nil {
+		return types.NewCodecDecodeFailedError("json", err)
+	}
+
+	return nil
 }
 
 // Name 返回编解码器名称
@@ -198,11 +195,6 @@ func (c *JSONCodec) Type() types.CodecType {
 // ========================================
 
 // NewCodec 根据类型创建编解码器
-//
-// 支持的类型：
-//   - types.CodecTypeMessagePack: MessagePack 编解码器（默认）
-//   - types.CodecTypeJSON: JSON 编解码器
-//   - types.CodecTypeProtobuf: Protobuf 编解码器（Wrapper 模式）
 func NewCodec(codecType types.CodecType) (Codec, error) {
 	switch codecType {
 	case types.CodecTypeMessagePack:
@@ -597,47 +589,73 @@ func (m *LeaderElectionMessage) Type() MessageType { return MessageTypeLeaderEle
 // 编解码器工具函数
 // ========================================
 
+// DecodedMessage 解码后的消息
+type DecodedMessage struct {
+	Msg    Message // 解码后的消息
+	NodeID uint64  // 发送节点 ID
+	MsgSeq uint64  // 消息序列号
+}
+
 // EncodeFrame 编码消息为帧
 //
 // 将消息编码并封装为完整帧
-func EncodeFrame(msg Message) (*Frame, error) {
+// MsgType 会被写入 FixedHeader，数据部分只包含序列化后的消息体
+func EncodeFrame(msg Message, nodeID uint64, msgSeq uint64) (*Frame, error) {
 	codec, err := NewCodec(defaultCodec)
 	if err != nil {
 		return nil, err
 	}
 
-	// 编码消息
+	// 编码消息（不包含类型，类型在 FixedHeader 中）
 	data, err := codec.Encode(msg)
 	if err != nil {
 		return nil, types.NewCodecEncodeFailedError("EncodeFrame", err)
 	}
 
-	// 创建帧
-	frame := NewFrame(msg.Type(), defaultCodec, data)
+	// 创建帧（MsgType 现在在 FixedHeader 中）
+	frame := NewFrame(nodeID, msgSeq, msg.Type(), uint16(defaultCodec), data)
+
+	// 计算 CRC32
+	frame = frame.Finalize()
+
 	return frame, nil
 }
 
 // DecodeFrame 从帧解码消息
 //
-// 从完整帧中解码出消息
-func DecodeFrame(frame *Frame) (Message, error) {
+// 从完整帧中解码出消息，同时返回 nodeID 和 msgSeq
+// MsgType 从 FixedHeader 中读取
+func DecodeFrame(frame *Frame) (*DecodedMessage, error) {
 	if frame == nil {
 		return nil, types.NewCodecInvalidMessageError("帧为空")
 	}
 
 	// 根据帧中的编解码器类型选择编解码器
-	codec, err := NewCodec(frame.CodecType)
+	codec, err := NewCodec(types.CodecType(frame.FixedHeader.CodecID))
 	if err != nil {
 		return nil, err
 	}
 
-	// 解码消息
-	msg, err := codec.Decode(frame.Data)
+	// 从 FixedHeader 获取 MsgType
+	msgType := frame.FixedHeader.MsgType
+
+	// 创建对应类型的消息实例
+	msg, err := createMessageByType(msgType)
 	if err != nil {
+		return nil, err
+	}
+
+	// 使用编解码器解码数据（数据不包含类型）
+	if err := codec.DecodeInto(frame.Data, msg); err != nil {
 		return nil, types.NewCodecDecodeFailedError("DecodeFrame", err)
 	}
 
-	return msg, nil
+	// 封装解码结果
+	return &DecodedMessage{
+		Msg:    msg,
+		NodeID: frame.FixedHeader.NodeID,
+		MsgSeq: frame.FixedHeader.MsgSeq,
+	}, nil
 }
 
 // ========================================
@@ -653,15 +671,11 @@ type MessageReader struct {
 }
 
 // NewMessageReader 创建消息读取器
-//
-// 容错机制: codec 为 nil 时尝试使用默认编解码器，失败时记录日志并返回 nil
 func NewMessageReader(r io.Reader, codec Codec) *MessageReader {
 	if codec == nil {
 		var err error
 		codec, err = NewCodec(defaultCodec)
 		if err != nil {
-			// 容错机制: 默认编解码器创建失败时返回 nil（而非 panic）
-			// 这种情况理论上不应该发生（defaultCodec 是常量）
 			return nil
 		}
 	}
@@ -680,39 +694,27 @@ func (mr *MessageReader) ReadMessage() (Message, error) {
 		return nil, err
 	}
 
-	// 根据帧中的编解码器类型选择编解码器
-	codec, err := NewCodec(frame.CodecType)
+	// 使用 DecodeFrame 解码
+	decoded, err := DecodeFrame(frame)
 	if err != nil {
 		return nil, err
 	}
 
-	// 解码消息
-	msg, err := codec.Decode(frame.Data)
-	if err != nil {
-		return nil, types.NewCodecDecodeFailedError("ReadMessage", err)
-	}
-
-	return msg, nil
+	return decoded.Msg, nil
 }
 
 // MessageWriter 消息写入器
-//
-// 用于向连接写入消息
 type MessageWriter struct {
 	frameWriter *FrameWriter
 	codec       Codec
 }
 
 // NewMessageWriter 创建消息写入器
-//
-// 容错机制: codec 为 nil 时尝试使用默认编解码器，失败时记录日志并返回 nil
 func NewMessageWriter(w io.Writer, codec Codec) *MessageWriter {
 	if codec == nil {
 		var err error
 		codec, err = NewCodec(defaultCodec)
 		if err != nil {
-			// 容错机制: 默认编解码器创建失败时记录日志并返回 nil（而非 panic）
-			// 这种情况理论上不应该发生（defaultCodec 是常量）
 			return nil
 		}
 	}
@@ -725,14 +727,11 @@ func NewMessageWriter(w io.Writer, codec Codec) *MessageWriter {
 
 // WriteMessage 写入一条消息
 func (mw *MessageWriter) WriteMessage(msg Message) error {
-	// 编码消息
-	data, err := mw.codec.Encode(msg)
+	// 使用 EncodeFrame 编码
+	frame, err := EncodeFrame(msg, 0, 0)
 	if err != nil {
-		return types.NewCodecEncodeFailedError("WriteMessage", err)
+		return err
 	}
-
-	// 创建帧（使用对应的编解码器类型）
-	frame := NewFrame(msg.Type(), mw.codec.Type(), data)
 
 	// 写入帧
 	if err := mw.frameWriter.WriteFrame(frame); err != nil {

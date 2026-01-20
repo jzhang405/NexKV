@@ -3,12 +3,14 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -157,13 +159,15 @@ func TestTCPTransport_SendReceive(t *testing.T) {
 	go func() {
 		select {
 		case recvMsg := <-server.Receive():
-			if recvMsg.Type() != MessageTypeGet {
-				errCh <- assert.AnError
+			if recvMsg == nil {
+				errCh <- fmt.Errorf("接收到空消息")
+			} else if recvMsg.Type() != MessageTypeGet {
+				errCh <- fmt.Errorf("消息类型不匹配: 期望 %d, 实际 %d", MessageTypeGet, recvMsg.Type())
 			} else {
 				done <- true
 			}
 		case <-time.After(2 * time.Second):
-			errCh <- assert.AnError
+			errCh <- fmt.Errorf("接收超时")
 		}
 	}()
 
@@ -679,4 +683,61 @@ func TestTCPTransport_PingPong(t *testing.T) {
 	}
 
 	t.Log("Ping/Pong 双向通信测试通过")
+}
+
+// TestTCPFrameRoundTrip_Debug 测试帧往返（调试）
+func TestTCPFrameRoundTrip_Debug(t *testing.T) {
+	// 创建帧
+	data := []byte("test data")
+	frame := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeProtobuf), data)
+
+	// 序列化
+	frameData, err := frame.Marshal()
+	require.NoError(t, err)
+
+	t.Logf("帧大小: %d 字节 (FixedHeader=%d)", len(frameData), FixedHeaderLen)
+
+	// 反序列化
+	frame2 := &Frame{}
+	err = frame2.Unmarshal(frameData)
+	require.NoError(t, err)
+
+	// 验证
+	assert.Equal(t, frame.FixedHeader.NodeID, frame2.FixedHeader.NodeID)
+	assert.Equal(t, frame.FixedHeader.Version, frame2.FixedHeader.Version)
+	assert.Equal(t, frame.FixedHeader.MsgSeq, frame2.FixedHeader.MsgSeq)
+	assert.Equal(t, frame.FixedHeader.MsgType, frame2.FixedHeader.MsgType)
+	assert.Equal(t, frame.FixedHeader.CodecID, frame2.FixedHeader.CodecID)
+}
+
+// TestTCPEncodeDecodeRoundTrip 测试 TCP 编码解码往返
+func TestTCPEncodeDecodeRoundTrip(t *testing.T) {
+	// 创建消息
+	msg := &GetMessage{Key: "test-key"}
+
+	// 创建 Frame
+	frame, err := EncodeFrame(msg, 1001, 1)
+	require.NoError(t, err)
+
+	// 序列化
+	frameData, err := frame.Marshal()
+	require.NoError(t, err)
+
+	t.Logf("帧大小: %d 字节", len(frameData))
+
+	// 反序列化
+	frame2 := &Frame{}
+	err = frame2.Unmarshal(frameData)
+	require.NoError(t, err)
+
+	// 解码消息
+	decoded, err := DecodeFrame(frame2)
+	require.NoError(t, err)
+
+	// 验证
+	getMsg, ok := decoded.Msg.(*GetMessage)
+	require.True(t, ok)
+	assert.Equal(t, msg.Key, getMsg.Key)
+	assert.Equal(t, uint64(1001), decoded.NodeID)
+	assert.Equal(t, uint64(1), decoded.MsgSeq)
 }

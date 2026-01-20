@@ -182,3 +182,65 @@ type Compressor interface {
 	// Name 返回压缩算法名称
 	Name() string
 }
+
+// Priority 消息优先级
+//
+// 用于标识消息处理优先级，支持 QoS（服务质量）控制
+// 应用场景：关键消息优先处理、流量控制、负载均衡
+type Priority uint8
+
+const (
+	// PriorityLow 低优先级
+	//
+	// 适用场景：后台同步、非关键元数据更新
+	// 处理策略：在网络拥塞时可能被延迟或丢弃
+	// 示例：Gossip 摘要同步、统计信息上报
+	PriorityLow Priority = 0
+
+	// PriorityNormal 普通优先级（默认）
+	//
+	// 适用场景：常规元数据操作、节点心跳
+	// 处理策略：按先进先出（FIFO）顺序处理
+	// 示例：Get/Put/Delete 请求、NodePing/NodePong
+	PriorityNormal Priority = 1
+
+	// PriorityHigh 高优先级
+	//
+	// 适用场景：重要但非阻塞的操作
+	// 处理策略：优先于普通/低优先级消息处理
+	// 示例：Quorum 提案、Gossip 同步、节点状态变更
+	PriorityHigh Priority = 2
+
+	// PriorityCritical 关键优先级
+	//
+	// 适用场景：系统关键操作、阻塞式协调
+	// 处理策略：最高优先级，立即处理，不丢弃
+	// 示例：2PC 协议消息、Leader 选举、故障恢复
+	PriorityCritical Priority = 3
+)
+
+// String 返回 Priority 的字符串表示
+func (p Priority) String() string {
+	switch p {
+	case PriorityLow:
+		return "low"
+	case PriorityNormal:
+		return "normal"
+	case PriorityHigh:
+		return "high"
+	case PriorityCritical:
+		return "critical"
+	default:
+		return "unknown"
+	}
+}
+
+// Validate 验证 Priority 是否有效
+func (p Priority) Validate() error {
+	switch p {
+	case PriorityLow, PriorityNormal, PriorityHigh, PriorityCritical:
+		return nil
+	default:
+		return NewStoreInvalidParameterError("Priority")
+	}
+}

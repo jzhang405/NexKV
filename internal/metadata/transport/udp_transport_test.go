@@ -2,18 +2,16 @@
 package transport
 
 import (
-	"bytes"
 	"context"
 	"crypto/md5"
 	cryptorand "crypto/rand"
-	"encoding/binary"
 	"fmt"
-	"hash/crc32"
 	"runtime"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -239,6 +237,162 @@ func TestUDPTransport_Fragmentation(t *testing.T) {
 		t.Fatal("接收大消息失败", err)
 	case <-time.After(6 * time.Second):
 		t.Fatal("测试超时")
+	}
+}
+
+// TestUDPTransport_Fragmentation_Sizes 测试不同大小的消息分片
+//
+// 测试场景：
+// 1. 小消息（<1400 字节）- 不分片
+// 2. 中等消息（~2000 字节）- 2 个分片
+// 3. 大消息（~10000 字节）- 8 个分片
+// 4. 超大消息（~100KB）- 约 72 个分片
+func TestUDPTransport_Fragmentation_Sizes(t *testing.T) {
+	ctx := context.Background()
+
+	testSizes := []struct {
+		name     string
+		size     int
+		minFrags int
+		maxFrags int
+	}{
+		{"小消息（不分片）", 1000, 1, 1},
+		{"中等消息（2分片）", 2000, 2, 2},
+		{"大消息（8分片）", 10000, 8, 8},
+		{"超大消息（72分片）", 100 * 1024, 72, 72},
+	}
+
+	for _, tc := range testSizes {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server, serverAddr := setupTestPair(t)
+			client.SetLocalNodeID(2000 + uint64(len(tc.name)))
+			server.SetLocalNodeID(3000 + uint64(len(tc.name)))
+
+			defer func() { _ = client.Stop() }()
+			defer func() { _ = server.Stop() }()
+
+			// 创建指定大小的消息
+			value := make([]byte, tc.size)
+			for i := range value {
+				value[i] = byte(i % 256)
+			}
+
+			msg := &PutMessage{
+				Key:   fmt.Sprintf("frag-test-%s", tc.name),
+				Value: value,
+			}
+
+			// 发送消息
+			err := client.Send(ctx, serverAddr, msg)
+			require.NoError(t, err)
+
+			// 接收并验证
+			receivedCh := make(chan *PutMessage, 1)
+			errCh := make(chan error, 1)
+
+			go func() {
+				for recvMsg := range server.Receive() {
+					if putMsg, ok := recvMsg.(*PutMessage); ok {
+						receivedCh <- putMsg
+						return
+					}
+				}
+			}()
+
+			select {
+			case putMsg := <-receivedCh:
+				assert.Equal(t, tc.size, len(putMsg.Value), "数据长度不匹配")
+				assert.Equal(t, value, putMsg.Value, "数据内容不匹配")
+				t.Logf("✅ %s 测试通过: %d 字节", tc.name, tc.size)
+
+			case err := <-errCh:
+				t.Fatalf("接收失败: %v", err)
+
+			case <-time.After(10 * time.Second):
+				t.Fatalf("接收超时: %s", tc.name)
+			}
+		})
+	}
+}
+
+// TestUDPTransport_Fragmentation_ByteBufferPrecision 测试字节缓冲区精确性
+//
+// 测试场景：
+// 1. 发送包含精确字节数据的消息
+// 2. 验证每个字节在分片和重组后完全一致
+// 3. 测试边界值（1400, 1401, 2800, 2801 等）
+func TestUDPTransport_Fragmentation_ByteBufferPrecision(t *testing.T) {
+	ctx := context.Background()
+
+	// 边界值测试
+	boundarySizes := []int{
+		1399, // 小于 MaxUDPPacketSize
+		1400, // 等于 MaxUDPPacketSize
+		1401, // 大于 MaxUDPPacketSize（2 个分片）
+		2799, // 接近 2 个分片边界
+		2800, // 2 个分片边界
+		2801, // 超过 2 个分片（3 个分片）
+	}
+
+	for _, size := range boundarySizes {
+		t.Run(fmt.Sprintf("size_%d", size), func(t *testing.T) {
+			client, server, serverAddr := setupTestPair(t)
+			client.SetLocalNodeID(5000 + uint64(size))
+			server.SetLocalNodeID(6000 + uint64(size))
+
+			defer func() { _ = client.Stop() }()
+			defer func() { _ = server.Stop() }()
+
+			// 创建精确字节数据
+			value := make([]byte, size)
+			for i := range value {
+				value[i] = byte(i % 256)
+			}
+
+			msg := &PutMessage{
+				Key:   fmt.Sprintf("precision-test-%d", size),
+				Value: value,
+			}
+
+			// 发送消息
+			err := client.Send(ctx, serverAddr, msg)
+			require.NoError(t, err)
+
+			// 接收并精确验证
+			receivedCh := make(chan *PutMessage, 1)
+
+			go func() {
+				for recvMsg := range server.Receive() {
+					if putMsg, ok := recvMsg.(*PutMessage); ok {
+						receivedCh <- putMsg
+						return
+					}
+				}
+			}()
+
+			select {
+			case putMsg := <-receivedCh:
+				assert.Equal(t, size, len(putMsg.Value), "数据长度不匹配")
+
+				// 逐字节验证
+				mismatches := 0
+				for i := 0; i < size; i++ {
+					expected := byte(i % 256)
+					if putMsg.Value[i] != expected {
+						mismatches++
+						if mismatches <= 10 { // 只打印前 10 个错误
+							t.Errorf("字节 #%d 不匹配: 期望 %d, 实际 %d", i, expected, putMsg.Value[i])
+						}
+					}
+				}
+
+				assert.Equal(t, 0, mismatches, "发现 %d 个字节不匹配", mismatches)
+				t.Logf("✅ 精确性测试通过: %d 字节，逐字节验证成功", size)
+
+			case <-time.After(10 * time.Second):
+				t.Fatalf("接收超时: size=%d", size)
+			}
+		})
 	}
 }
 
@@ -517,6 +671,251 @@ func TestUDPTransport_PingPong(t *testing.T) {
 	t.Log("UDP Ping/Pong 通信测试通过")
 }
 
+// TestUDPTransport_PingPong_Bidirectional 双向互发 Ping/Pong 测试
+//
+// 测试场景：
+// 1. 节点 A 和节点 B 互发 Ping
+// 2. 双方都能正确接收对方的 Ping 并回复 Pong
+// 3. 验证 Sequence 匹配和 NodeID 正确性
+func TestUDPTransport_PingPong_Bidirectional(t *testing.T) {
+	ctx := context.Background()
+
+	nodeA, nodeB, nodeBAddr := setupTestPair(t)
+	nodeAAddr := nodeA.GetLocalAddr()
+
+	nodeA.SetLocalNodeID(100)
+	nodeB.SetLocalNodeID(200)
+
+	defer func() { _ = nodeA.Stop() }()
+	defer func() { _ = nodeB.Stop() }()
+
+	t.Log("测试: 双向 Ping/Pong 通信")
+
+	// 节点 A 收到的 Ping 和 Pong
+	nodeAReceivedPing := make(chan *NodePingMessage, 10)
+	nodeAReceivedPong := make(chan *NodePongMessage, 10)
+
+	// 节点 B 收到的 Ping 和 Pong
+	nodeBReceivedPing := make(chan *NodePingMessage, 10)
+	nodeBReceivedPong := make(chan *NodePongMessage, 10)
+
+	// 节点 A 接收协程（自动回复 Pong）
+	go func() {
+		for msg := range nodeA.Receive() {
+			switch m := msg.(type) {
+			case *NodePingMessage:
+				nodeAReceivedPing <- m
+				// 自动回复 Pong
+				pong := &NodePongMessage{
+					NodeID:    "node-a",
+					Sequence:  m.Sequence,
+					Status:    "active",
+					Timestamp: time.Now().UnixMilli(),
+				}
+				_ = nodeA.Send(ctx, nodeBAddr, pong)
+			case *NodePongMessage:
+				nodeAReceivedPong <- m
+			}
+		}
+	}()
+
+	// 节点 B 接收协程（自动回复 Pong）
+	go func() {
+		for msg := range nodeB.Receive() {
+			switch m := msg.(type) {
+			case *NodePingMessage:
+				nodeBReceivedPing <- m
+				// 自动回复 Pong
+				pong := &NodePongMessage{
+					NodeID:    "node-b",
+					Sequence:  m.Sequence,
+					Status:    "active",
+					Timestamp: time.Now().UnixMilli(),
+				}
+				_ = nodeB.Send(ctx, nodeAAddr, pong)
+			case *NodePongMessage:
+				nodeBReceivedPong <- m
+			}
+		}
+	}()
+
+	// 节点 A 发送 Ping 到节点 B
+	pingA := &NodePingMessage{
+		NodeID:    "node-a",
+		Sequence:  1001,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	err := nodeA.Send(ctx, nodeBAddr, pingA)
+	require.NoError(t, err)
+
+	// 节点 B 发送 Ping 到节点 A
+	pingB := &NodePingMessage{
+		NodeID:    "node-b",
+		Sequence:  2001,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	err = nodeB.Send(ctx, nodeAAddr, pingB)
+	require.NoError(t, err)
+
+	// 验证节点 B 收到节点 A 的 Ping
+	select {
+	case recvPing := <-nodeBReceivedPing:
+		assert.Equal(t, "node-a", recvPing.NodeID)
+		assert.Equal(t, int64(1001), recvPing.Sequence)
+		t.Logf("节点 B 收到节点 A 的 Ping: seq=%d", recvPing.Sequence)
+	case <-time.After(2 * time.Second):
+		t.Fatal("节点 B 未收到节点 A 的 Ping")
+	}
+
+	// 验证节点 A 收到节点 B 的 Ping
+	select {
+	case recvPing := <-nodeAReceivedPing:
+		assert.Equal(t, "node-b", recvPing.NodeID)
+		assert.Equal(t, int64(2001), recvPing.Sequence)
+		t.Logf("节点 A 收到节点 B 的 Ping: seq=%d", recvPing.Sequence)
+	case <-time.After(2 * time.Second):
+		t.Fatal("节点 A 未收到节点 B 的 Ping")
+	}
+
+	// 验证节点 A 收到节点 B 的 Pong
+	select {
+	case pong := <-nodeAReceivedPong:
+		assert.Equal(t, "node-b", pong.NodeID)
+		assert.Equal(t, int64(1001), pong.Sequence)
+		assert.Equal(t, "active", pong.Status)
+		t.Logf("节点 A 收到节点 B 的 Pong: seq=%d", pong.Sequence)
+	case <-time.After(2 * time.Second):
+		t.Fatal("节点 A 未收到节点 B 的 Pong")
+	}
+
+	// 验证节点 B 收到节点 A 的 Pong
+	select {
+	case pong := <-nodeBReceivedPong:
+		assert.Equal(t, "node-a", pong.NodeID)
+		assert.Equal(t, int64(2001), pong.Sequence)
+		assert.Equal(t, "active", pong.Status)
+		t.Logf("节点 B 收到节点 A 的 Pong: seq=%d", pong.Sequence)
+	case <-time.After(2 * time.Second):
+		t.Fatal("节点 B 未收到节点 A 的 Pong")
+	}
+
+	t.Log("✅ 双向 Ping/Pong 测试通过")
+}
+
+// TestUDPTransport_PingPong_MultipleRounds 多轮 Ping/Pong 测试
+//
+// 测试场景：
+// 1. 客户端连续发送多轮 Ping
+// 2. 服务端每轮都回复 Pong
+// 3. 验证所有轮次的 Sequence 都正确匹配
+func TestUDPTransport_PingPong_MultipleRounds(t *testing.T) {
+	ctx := context.Background()
+
+	client, server, serverAddr := setupTestPair(t)
+	clientAddr := client.GetLocalAddr()
+
+	client.SetLocalNodeID(300)
+	server.SetLocalNodeID(400)
+
+	defer func() { _ = client.Stop() }()
+	defer func() { _ = server.Stop() }()
+
+	t.Log("测试: 多轮 Ping/Pong 通信")
+
+	const numRounds = 5
+	serverReceivedPings := make(chan *NodePingMessage, numRounds)
+	clientReceivedPongs := make(chan *NodePongMessage, numRounds)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// 服务端接收协程（自动回复 Pong）
+	go func() {
+		defer wg.Done()
+		count := 0
+		for msg := range server.Receive() {
+			if ping, ok := msg.(*NodePingMessage); ok {
+				serverReceivedPings <- ping
+
+				// 自动回复 Pong
+				pong := &NodePongMessage{
+					NodeID:    "server-node",
+					Sequence:  ping.Sequence,
+					Status:    "ready",
+					Timestamp: time.Now().UnixMilli(),
+				}
+				_ = server.Send(ctx, clientAddr, pong)
+
+				count++
+				if count >= numRounds {
+					return
+				}
+			}
+		}
+	}()
+
+	// 客户端接收协程
+	go func() {
+		defer wg.Done()
+		count := 0
+		for msg := range client.Receive() {
+			if pong, ok := msg.(*NodePongMessage); ok {
+				clientReceivedPongs <- pong
+
+				count++
+				if count >= numRounds {
+					return
+				}
+			}
+		}
+	}()
+
+	// 发送多轮 Ping
+	for i := 0; i < numRounds; i++ {
+		ping := &NodePingMessage{
+			NodeID:    "client-node",
+			Sequence:  int64(5000 + i),
+			Timestamp: time.Now().UnixMilli(),
+		}
+
+		err := client.Send(ctx, serverAddr, ping)
+		require.NoError(t, err, "第 %d 轮发送失败", i+1)
+		t.Logf("发送第 %d 轮 Ping: seq=%d", i+1, ping.Sequence)
+
+		// 短暂延迟，避免网络拥塞
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// 等待所有 Pong 到达
+	wg.Wait()
+
+	// 验证所有轮次
+	close(serverReceivedPings)
+	close(clientReceivedPongs)
+
+	receivedPingCount := 0
+	receivedPongCount := 0
+	expectedSequences := make(map[int64]bool)
+
+	for ping := range serverReceivedPings {
+		expectedSequences[ping.Sequence] = true
+		receivedPingCount++
+		t.Logf("服务端收到 Ping: seq=%d", ping.Sequence)
+	}
+
+	for pong := range clientReceivedPongs {
+		if expectedSequences[pong.Sequence] {
+			receivedPongCount++
+			t.Logf("客户端收到 Pong: seq=%d, status=%s", pong.Sequence, pong.Status)
+		}
+	}
+
+	assert.Equal(t, numRounds, receivedPingCount, "应该收到所有 Ping")
+	assert.Equal(t, numRounds, receivedPongCount, "应该收到所有 Pong")
+
+	t.Logf("✅ 多轮 Ping/Pong 测试通过（%d/%d 成功）", receivedPongCount, numRounds)
+}
+
 // ========================================
 // 辅助函数
 // ========================================
@@ -659,12 +1058,16 @@ func TestUDPFragmentation_PacketLoss(t *testing.T) {
 			data[j] = byte(i)
 		}
 
-		fragment, _ := trans.buildFragment(nodeID, msgID, totalFragments, uint16(i), data)
-		_ = trans.processReceivedData(fragment)
+		// 使用 Builder 模式构造带分片扩展的 TLV Frame
+		frame := NewFrame(nodeID, msgID, MessageTypeGossipSync, uint16(trans.codec.Type()), data).
+			WithFragment(uint16(i), totalFragments).
+			Finalize()
+		fragmentBytes, _ := frame.Marshal()
+		_ = trans.processReceivedData(fragmentBytes)
 	}
 
-	// 等待超时清理
-	time.Sleep(6 * time.Second)
+	// 等待超时清理（超时时间是 5 秒，等待 7 秒确保清理协程有足够时间运行）
+	time.Sleep(7 * time.Second)
 
 	trans.fragmentBuf.mu.RLock()
 	pendingCount := len(trans.fragmentBuf.buffers)
@@ -696,8 +1099,12 @@ func TestUDPFragmentation_OutOfOrder(t *testing.T) {
 			fragmentData[j] = byte(seq)
 		}
 
-		fragment, _ := trans.buildFragment(nodeID, msgID, totalFragments, uint16(seq), fragmentData)
-		_ = trans.processReceivedData(fragment)
+		// 使用 Builder 模式构造带分片扩展的 TLV Frame
+		frame := NewFrame(nodeID, msgID, MessageTypeGossipSync, uint16(trans.codec.Type()), fragmentData).
+			WithFragment(uint16(seq), totalFragments).
+			Finalize()
+		fragmentBytes, _ := frame.Marshal()
+		_ = trans.processReceivedData(fragmentBytes)
 		t.Logf("📦 接收乱序分片 #%d/%d", seq+1, totalFragments)
 	}
 
@@ -1056,24 +1463,19 @@ func TestUDP_P0_MaxFragmentCount(t *testing.T) {
 
 	trans.SetLocalNodeID(1001)
 
-	// 构造恶意分片数据包：total = 0（非法值）
-	magic := []byte("NxUD")
-	nodeID := make([]byte, 8)
-	msgID := make([]byte, 8)
-	binary.BigEndian.PutUint64(nodeID, 1001)
-	binary.BigEndian.PutUint64(msgID, 1)
-	total := make([]byte, 2)
-	binary.BigEndian.PutUint16(total, 0) // total = 0
-	index := make([]byte, 2)
-	binary.BigEndian.PutUint16(index, 0)
-	dataLen := make([]byte, 4)
-	binary.BigEndian.PutUint32(dataLen, 10)
-	crc := make([]byte, 4)
-	binary.BigEndian.PutUint32(crc, crc32.ChecksumIEEE([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}))
+	// 构造恶意分片帧：total = 0（非法值）
+	// 使用新的 TLV Frame 格式，包含 ExtFragment 扩展字段
+	frame := NewFrame(1001, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), []byte("test data"))
 
-	maliciousPacket := bytes.Join([][]byte{magic, nodeID, msgID, total, index, dataLen, crc, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}}, nil)
+	// 添加分片扩展字段：index=0, total=0（非法值）
+	fragmentExt := EncodeFragmentExt(0, 0) // total=0 应该被拒绝
+	frame.VarExtHeader.Fields = append(frame.VarExtHeader.Fields, fragmentExt)
 
-	// 处理恶意数据包，应该被拒绝
+	// 序列化帧
+	maliciousPacket, err := frame.Marshal()
+	require.NoError(t, err)
+
+	// 处理恶意数据包，应该被拒绝（total=0 是非法的）
 	result := trans.processReceivedData(maliciousPacket)
 	assert.Nil(t, result, "total=0 的分片应该被拒绝")
 

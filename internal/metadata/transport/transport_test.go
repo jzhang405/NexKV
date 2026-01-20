@@ -14,51 +14,65 @@ import (
 )
 
 // ========================================
-// 帧格式测试
+// TLV 帧格式测试
 // ========================================
 
-// TestFrame_NewFrame 测试创建帧
-func TestFrame_NewFrame(t *testing.T) {
+// TestTLVFrame_NewFrame 测试创建 TLV 帧
+func TestTLVFrame_NewFrame(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
+	frame := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
-	assert.Equal(t, [4]byte{'N', 'x', 'K', 'V'}, frame.Magic)
-	assert.Equal(t, MessageTypeGet, frame.Type)
-	assert.Equal(t, uint32(len(data)), frame.Length)
-	assert.NotEqual(t, uint32(0), frame.CRC32) // CRC32 应该被计算
+	// 验证固定头
+	assert.Equal(t, [4]byte{'N', 'X', 'U', 'T'}, frame.FixedHeader.Magic)
+	assert.Equal(t, uint8(1), frame.FixedHeader.Version) // 验证 Version
+	assert.Equal(t, uint64(12345), frame.FixedHeader.NodeID)
+	assert.Equal(t, uint64(1), frame.FixedHeader.MsgSeq)
+	assert.Equal(t, uint16(types.CodecTypeMessagePack), frame.FixedHeader.CodecID)
 	assert.Equal(t, data, frame.Data)
 }
 
-// TestFrame_Marshal 测试帧序列化
-func TestFrame_Marshal(t *testing.T) {
+// TestTLVFrame_Marshal 测试 TLV 帧序列化
+func TestTLVFrame_Marshal(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(MessageTypePut, types.CodecTypeMessagePack, data)
+	frame := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
 	// 序列化
 	buf, err := frame.Marshal()
 	require.NoError(t, err)
 
-	// 验证大小
-	expectedSize := FrameHeaderSize + len(data)
-	assert.Equal(t, expectedSize, len(buf))
+	// 验证最小大小（FixedHeader 31B + CRC32 4B = 35B，无扩展头）
+	assert.GreaterOrEqual(t, len(buf), 35)
 
 	// 验证 Magic (0-3)
-	assert.Equal(t, []byte("NxKV"), buf[0:4])
+	assert.Equal(t, []byte("NXUT"), buf[0:4])
 
-	// 验证 Type (4-5)
-	assert.Equal(t, uint16(MessageTypePut), binary.BigEndian.Uint16(buf[4:6]))
+	// 验证 Version (4) - 当前协议版本为 1
+	assert.Equal(t, uint8(1), buf[4])
 
-	// 验证 CodecType (6-7)
-	assert.Equal(t, uint16(types.CodecTypeMessagePack), binary.BigEndian.Uint16(buf[6:8]))
+	// 验证 NodeID (5-12)
+	assert.Equal(t, uint64(12345), binary.BigEndian.Uint64(buf[5:13]))
 
-	// 验证 Length (8-11)
-	assert.Equal(t, uint32(len(data)), binary.BigEndian.Uint32(buf[8:12]))
+	// 验证 MsgSeq (13-20)
+	assert.Equal(t, uint64(1), binary.BigEndian.Uint64(buf[13:21]))
+
+	// 验证 MsgType (21-22)
+	assert.Equal(t, uint16(MessageTypeGet), binary.BigEndian.Uint16(buf[21:23]))
+
+	// 验证 CodecID (23-24)
+	assert.Equal(t, uint16(types.CodecTypeMessagePack), binary.BigEndian.Uint16(buf[23:25]))
+
+	// 验证 ExtHeaderLen (25-26) - 无扩展头，应该为 0
+	assert.Equal(t, uint16(0), binary.BigEndian.Uint16(buf[25:27]))
+
+	// 验证 DataLength (27-30) - 数据长度
+	dataLength := binary.BigEndian.Uint32(buf[27:31])
+	assert.Equal(t, uint32(len(data)), dataLength)
 }
 
-// TestFrame_Unmarshal 测试帧反序列化
-func TestFrame_Unmarshal(t *testing.T) {
+// TestTLVFrame_Unmarshal 测试 TLV 帧反序列化
+func TestTLVFrame_Unmarshal(t *testing.T) {
 	data := []byte("test data")
-	frame1 := NewFrame(MessageTypeDelete, types.CodecTypeMessagePack, data)
+	frame1 := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
 	// 序列化
 	buf, err := frame1.Marshal()
@@ -70,18 +84,17 @@ func TestFrame_Unmarshal(t *testing.T) {
 	require.NoError(t, err)
 
 	// 验证
-	assert.Equal(t, frame1.Magic, frame2.Magic)
-	assert.Equal(t, frame1.Type, frame2.Type)
-	assert.Equal(t, frame1.CodecType, frame2.CodecType)
-	assert.Equal(t, frame1.Length, frame2.Length)
+	assert.Equal(t, frame1.FixedHeader.Magic, frame2.FixedHeader.Magic)
+	assert.Equal(t, frame1.FixedHeader.NodeID, frame2.FixedHeader.NodeID)
+	assert.Equal(t, frame1.FixedHeader.MsgSeq, frame2.FixedHeader.MsgSeq)
+	assert.Equal(t, frame1.FixedHeader.CodecID, frame2.FixedHeader.CodecID)
 	assert.Equal(t, frame1.Data, frame2.Data)
 }
 
-// TestFrame_Unmarshal_InvalidMagic 测试无效魔数
-func TestFrame_Unmarshal_InvalidMagic(t *testing.T) {
-	data := []byte("TEST") // 无效魔数
-	buf := make([]byte, FrameHeaderSize)
-	copy(buf[0:4], data)
+// TestTLVFrame_Unmarshal_InvalidMagic 测试无效魔数
+func TestTLVFrame_Unmarshal_InvalidMagic(t *testing.T) {
+	buf := make([]byte, FixedHeaderLen+4) // FixedHeader + CRC32 (无扩展头，无数据)
+	copy(buf[0:4], "TEST")                // 无效魔数
 
 	frame := &Frame{}
 	err := frame.Unmarshal(buf)
@@ -93,9 +106,9 @@ func TestFrame_Unmarshal_InvalidMagic(t *testing.T) {
 	}
 }
 
-// TestFrame_Unmarshal_InvalidSize 测试无效帧大小
-func TestFrame_Unmarshal_InvalidSize(t *testing.T) {
-	buf := make([]byte, FrameHeaderSize-1) // 太小
+// TestTLVFrame_Unmarshal_InvalidSize 测试无效帧大小
+func TestTLVFrame_Unmarshal_InvalidSize(t *testing.T) {
+	buf := make([]byte, FixedHeaderLen-1) // 太小
 
 	frame := &Frame{}
 	err := frame.Unmarshal(buf)
@@ -107,17 +120,17 @@ func TestFrame_Unmarshal_InvalidSize(t *testing.T) {
 	}
 }
 
-// TestFrame_VerifyChecksum 测试校验和验证
-func TestFrame_VerifyChecksum(t *testing.T) {
+// TestTLVFrame_VerifyChecksum 测试校验和验证
+func TestTLVFrame_VerifyChecksum(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
+	frame := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
 	// 序列化
 	buf, err := frame.Marshal()
 	require.NoError(t, err)
 
-	// 修改数据破坏校验和 (修改 Data 部分)
-	buf[16] = 'X'
+	// 修改数据破坏校验和（修改最后一个字节）
+	buf[len(buf)-1] = 'X'
 
 	// 反序列化应该失败
 	frame2 := &Frame{}
@@ -130,14 +143,52 @@ func TestFrame_VerifyChecksum(t *testing.T) {
 	}
 }
 
-// TestFrame_HexDump 测试十六进制转储
-func TestFrame_HexDump(t *testing.T) {
-	data := []byte("test")
-	frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
+// TestTLVFrame_WithExtensions 测试带扩展字段的帧
+func TestTLVFrame_WithExtensions(t *testing.T) {
+	data := []byte("test data")
+	frame := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
-	dump := frame.HexDump()
-	assert.Contains(t, dump, "NxKV") // 魔数应该在转储中
-	assert.NotEmpty(t, dump)
+	// 添加扩展字段（空扩展）
+	frame.VarExtHeader = NewVarExtHeader() // 没有扩展字段
+
+	// 序列化
+	buf, err := frame.Marshal()
+	require.NoError(t, err)
+
+	// 反序列化
+	frame2 := &Frame{}
+	err = frame2.Unmarshal(buf)
+	require.NoError(t, err)
+
+	// 验证
+	assert.Equal(t, frame.FixedHeader.Magic, frame2.FixedHeader.Magic)
+	assert.Equal(t, frame.FixedHeader.NodeID, frame2.FixedHeader.NodeID)
+	assert.Equal(t, frame.FixedHeader.MsgSeq, frame2.FixedHeader.MsgSeq)
+	assert.Equal(t, frame.FixedHeader.CodecID, frame2.FixedHeader.CodecID)
+	assert.Equal(t, frame.Data, frame2.Data)
+}
+
+// TestFixedHeader_SerializeDeserialize 测试固定头序列化/反序列化
+func TestFixedHeader_SerializeDeserialize(t *testing.T) {
+	header := &FixedHeader{
+		Magic:   [4]byte{'N', 'X', 'U', 'T'},
+		NodeID:  12345,
+		MsgSeq:  1,
+		CodecID: uint16(types.CodecTypeMessagePack),
+	}
+
+	// 序列化
+	buf := header.Serialize()
+
+	// 反序列化
+	header2, err := DeserializeFixedHeader(buf)
+	require.NoError(t, err)
+
+	// 验证
+	assert.Equal(t, header.Magic, header2.Magic)
+	assert.Equal(t, header.NodeID, header2.NodeID)
+	assert.Equal(t, header.MsgSeq, header2.MsgSeq)
+	assert.Equal(t, header.CodecID, header2.CodecID)
 }
 
 // ========================================
@@ -148,7 +199,7 @@ func TestFrame_HexDump(t *testing.T) {
 func TestFrameReader_ReadFrame(t *testing.T) {
 	// 创建测试帧
 	data := []byte("test data")
-	frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
+	frame := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 	buf, err := frame.Marshal()
 	require.NoError(t, err)
 
@@ -160,15 +211,16 @@ func TestFrameReader_ReadFrame(t *testing.T) {
 	require.NoError(t, err)
 
 	// 验证
-	assert.Equal(t, frame.Magic, readFrame.Magic)
-	assert.Equal(t, frame.Type, readFrame.Type)
+	assert.Equal(t, frame.FixedHeader.Magic, readFrame.FixedHeader.Magic)
+	assert.Equal(t, frame.FixedHeader.NodeID, readFrame.FixedHeader.NodeID)
 	assert.Equal(t, frame.Data, readFrame.Data)
 }
 
 // TestFrameReader_ReadFrame_InvalidMagic 测试读取无效魔数帧
 func TestFrameReader_ReadFrame_InvalidMagic(t *testing.T) {
-	buf := make([]byte, FrameHeaderSize)
-	copy(buf[0:4], "TEST") // 无效魔数
+	buf := make([]byte, FixedHeaderLen+2+4)   // FixedHeader + ExtTotalLen + CRC32
+	copy(buf[0:4], "TEST")                    // 无效魔数
+	binary.BigEndian.PutUint16(buf[16:18], 2) // ExtTotalLen = 2
 
 	reader := NewFrameReader(bytes.NewReader(buf))
 
@@ -185,7 +237,7 @@ func TestFrameReader_ReadFrame_InvalidMagic(t *testing.T) {
 func TestFrameWriter_WriteFrame(t *testing.T) {
 	// 创建测试帧
 	data := []byte("test data")
-	frame := NewFrame(MessageTypePut, types.CodecTypeMessagePack, data)
+	frame := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
 	// 创建写入器
 	var buf bytes.Buffer
@@ -197,8 +249,8 @@ func TestFrameWriter_WriteFrame(t *testing.T) {
 
 	// 验证写入的数据
 	written := buf.Bytes()
-	assert.Equal(t, FrameHeaderSize+len(data), len(written))
-	assert.Equal(t, []byte("NxKV"), written[0:4])
+	assert.GreaterOrEqual(t, len(written), FixedHeaderLen+2+4) // FixedHeader + ExtTotalLen + CRC32
+	assert.Equal(t, []byte("NXUT"), written[0:4])
 }
 
 // ========================================
@@ -220,7 +272,7 @@ func TestMessagePackCodec_EncodeDecode(t *testing.T) {
 	assert.NotEmpty(t, data)
 
 	// 解码
-	decodedMsg, err := codec.Decode(data)
+	decodedMsg, err := codec.Decode(msg.Type(), data)
 	require.NoError(t, err)
 
 	// 验证
@@ -251,7 +303,7 @@ func TestMessagePackCodec_AllMessageTypes(t *testing.T) {
 			require.NoError(t, err, "编码失败: %s", msg.Type())
 
 			// 解码
-			decodedMsg, err := codec.Decode(data)
+			decodedMsg, err := codec.Decode(msg.Type(), data)
 			require.NoError(t, err, "解码失败: %s", msg.Type())
 
 			// 验证类型
@@ -273,9 +325,10 @@ func TestMessagePackCodec_EncodeNil(t *testing.T) {
 func TestMessagePackCodec_DecodeEmpty(t *testing.T) {
 	codec := NewMessagePackCodec()
 
-	_, err := codec.Decode([]byte{})
+	_, err := codec.Decode(MessageTypeGet, []byte{})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "数据为空")
+	// MessagePack 返回 EOF 错误，包装后的错误消息包含"解码失败"
+	assert.Contains(t, err.Error(), "解码失败")
 }
 
 // ========================================
@@ -297,7 +350,7 @@ func TestProtobufCodec_EncodeDecode(t *testing.T) {
 	assert.NotEmpty(t, data)
 
 	// 解码
-	decodedMsg, err := codec.Decode(data)
+	decodedMsg, err := codec.Decode(msg.Type(), data)
 	require.NoError(t, err)
 
 	// 验证
@@ -326,7 +379,7 @@ func TestProtobufCodec_MetadataMessages(t *testing.T) {
 			require.NoError(t, err, "编码失败: %s", msg.Type())
 
 			// 解码
-			decodedMsg, err := codec.Decode(data)
+			decodedMsg, err := codec.Decode(msg.Type(), data)
 			require.NoError(t, err, "解码失败: %s", msg.Type())
 
 			// 验证类型
@@ -346,7 +399,7 @@ func TestProtobufCodec_GossipMessages(t *testing.T) {
 	}
 	data1, err := codec.Encode(msg1)
 	require.NoError(t, err)
-	decoded1, err := codec.Decode(data1)
+	decoded1, err := codec.Decode(msg1.Type(), data1)
 	require.NoError(t, err)
 	assert.Equal(t, MessageTypeGossipSync, decoded1.Type())
 
@@ -357,7 +410,7 @@ func TestProtobufCodec_GossipMessages(t *testing.T) {
 	}
 	data2, err := codec.Encode(msg2)
 	require.NoError(t, err)
-	decoded2, err := codec.Decode(data2)
+	decoded2, err := codec.Decode(msg1.Type(), data2)
 	require.NoError(t, err)
 	assert.Equal(t, MessageTypeGossipDigest, decoded2.Type())
 }
@@ -386,7 +439,7 @@ func TestProtobufCodec_TwoPCMessages(t *testing.T) {
 			require.NoError(t, err, "编码失败: %s", msg.Type())
 
 			// 解码
-			decodedMsg, err := codec.Decode(data)
+			decodedMsg, err := codec.Decode(msg.Type(), data)
 			require.NoError(t, err, "解码失败: %s", msg.Type())
 
 			// 验证类型
@@ -413,7 +466,7 @@ func TestProtobufCodec_NodeMessages(t *testing.T) {
 			require.NoError(t, err, "编码失败: %s", msg.Type())
 
 			// 解码
-			decodedMsg, err := codec.Decode(data)
+			decodedMsg, err := codec.Decode(msg.Type(), data)
 			require.NoError(t, err, "解码失败: %s", msg.Type())
 
 			// 验证类型
@@ -435,7 +488,7 @@ func TestProtobufCodec_EncodeNil(t *testing.T) {
 func TestProtobufCodec_DecodeEmpty(t *testing.T) {
 	codec := NewProtobufCodec()
 
-	_, err := codec.Decode([]byte{})
+	_, err := codec.Decode(MessageTypeGet, []byte{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "数据为空")
 }
@@ -444,10 +497,11 @@ func TestProtobufCodec_DecodeEmpty(t *testing.T) {
 func TestProtobufCodec_DecodeInvalidLength(t *testing.T) {
 	codec := NewProtobufCodec()
 
-	// 数据不足 6 字节
-	_, err := codec.Decode([]byte{1, 2, 3, 4, 5})
+	// 无效的 Protobuf 数据
+	_, err := codec.Decode(MessageTypeGet, []byte{1, 2, 3, 4, 5})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "数据长度不足")
+	// Protobuf 返回格式错误，包装后的错误消息包含"解码失败"
+	assert.Contains(t, err.Error(), "解码失败")
 }
 
 // TestNewCodec_Protobuf 测试工厂函数创建 Protobuf 编解码器
@@ -506,19 +560,23 @@ func TestEncodeFrame_DecodeFrame(t *testing.T) {
 	}
 
 	// 编码为帧
-	frame, err := EncodeFrame(msg)
+	frame, err := EncodeFrame(msg, 0, 0)
 	require.NoError(t, err)
 	assert.NotNil(t, frame)
-	assert.Equal(t, MessageTypePut, frame.Type)
+	assert.Equal(t, MessageTypePut, msg.Type())
 
 	// 从帧解码
-	decodedMsg, err := DecodeFrame(frame)
+	decoded, err := DecodeFrame(frame)
 	require.NoError(t, err)
 
-	putMsg, ok := decodedMsg.(*PutMessage)
+	putMsg, ok := decoded.Msg.(*PutMessage)
 	require.True(t, ok)
 	assert.Equal(t, msg.Key, putMsg.Key)
 	assert.Equal(t, msg.Value, putMsg.Value)
+
+	// 验证 nodeID 和 msgSeq
+	assert.Equal(t, uint64(0), decoded.NodeID)
+	assert.Equal(t, uint64(0), decoded.MsgSeq)
 }
 
 // TestEncodeFrame_DecodeFrame_AllTypes 测试所有消息类型的帧编解码
@@ -534,15 +592,15 @@ func TestEncodeFrame_DecodeFrame_AllTypes(t *testing.T) {
 	for _, msg := range testCases {
 		t.Run(msg.Type().String(), func(t *testing.T) {
 			// 编码为帧
-			frame, err := EncodeFrame(msg)
+			frame, err := EncodeFrame(msg, 0, 0)
 			require.NoError(t, err)
 
 			// 从帧解码
-			decodedMsg, err := DecodeFrame(frame)
+			decoded, err := DecodeFrame(frame)
 			require.NoError(t, err)
 
 			// 验证类型
-			assert.Equal(t, msg.Type(), decodedMsg.Type())
+			assert.Equal(t, msg.Type(), decoded.Msg.Type())
 		})
 	}
 }
@@ -557,7 +615,7 @@ func TestMessageReader_ReadMessage(t *testing.T) {
 	msg := &GetMessage{Key: "test_key"}
 
 	// 编码为帧
-	frame, err := EncodeFrame(msg)
+	frame, err := EncodeFrame(msg, 0, 0)
 	require.NoError(t, err)
 
 	// 序列化帧
@@ -602,7 +660,8 @@ func TestMessageWriter_WriteMessage(t *testing.T) {
 	err = frame.Unmarshal(frameData)
 	require.NoError(t, err)
 
-	assert.Equal(t, MessageTypePut, frame.Type)
+	// defaultCodec 是 Protobuf，所以 CodecID 应该是 CodecTypeProtobuf
+	assert.Equal(t, uint16(types.CodecTypeProtobuf), frame.FixedHeader.CodecID)
 }
 
 // ========================================
@@ -762,7 +821,7 @@ func TestThreeCodecConsistency(t *testing.T) {
 					require.NotNil(t, encoded, "编码结果不应为空")
 
 					// 解码
-					decodedMsg, err := tc.codec.Decode(encoded)
+					decodedMsg, err := tc.codec.Decode(originalMsg.Type(), encoded)
 					require.NoError(t, err, "解码失败: %s", tc.name)
 					require.NotNil(t, decodedMsg, "解码结果不应为空")
 

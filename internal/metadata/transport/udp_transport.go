@@ -239,71 +239,45 @@ func (t *UDPTransport) receiveLoop() {
 			copy(data, buf[:n])
 
 			msg := t.processReceivedData(data)
-
 			if msg != nil {
-				// 发送到接收通道
-				channelTimeout := 5 * time.Second
-				if t.config != nil && t.config.ChannelSendTimeout > 0 {
-					channelTimeout = t.config.ChannelSendTimeout
-				}
-
-				select {
-				case t.recvCh <- msg:
-					logging.Debugf("接收消息: %s from %s", msg.Type(), addr.String())
-				case <-t.stopCh:
-					return
-				case <-time.After(channelTimeout):
-					t.channelBlockCount.Add(1)
-					logging.Errorf("接收通道阻塞超过 %v，消息丢弃", channelTimeout)
-				}
+				t.sendToReceiveChannel(msg, addr.String())
 			}
 		}
 	}
 }
 
+// sendToReceiveChannel 发送消息到接收通道（带超时和阻塞统计）
+func (t *UDPTransport) sendToReceiveChannel(msg Message, fromAddr string) {
+	channelTimeout := 5 * time.Second
+	if t.config != nil && t.config.ChannelSendTimeout > 0 {
+		channelTimeout = t.config.ChannelSendTimeout
+	}
+
+	select {
+	case t.recvCh <- msg:
+		logging.Debugf("接收消息: %s from %s", msg.Type(), fromAddr)
+	case <-t.stopCh:
+		return
+	case <-time.After(channelTimeout):
+		t.channelBlockCount.Add(1)
+		logging.Errorf("接收通道阻塞超过 %v，消息丢弃", channelTimeout)
+	}
+}
+
 // processReceivedData 处理接收到的数据（分片重组）
 func (t *UDPTransport) processReceivedData(data []byte) Message {
-	// 检查是否为分片数据包（根据长度判断）
-	if len(data) < FragmentHeaderSize {
-		// 非分片数据包，直接解帧
-		frame, err := t.parseFrame(data)
-		if err != nil {
-			t.parseErrorCount.Add(1)
-			logging.Warnf("解析帧失败: %v", err)
-			return nil
-		}
-		// 从 Frame.Data 解码消息
-		msg, err := t.codec.Decode(frame.Data)
-		if err != nil {
-			t.parseErrorCount.Add(1)
-			logging.Warnf("解码消息失败: %v", err)
-			return nil
-		}
-		return msg
+	// 尝试解析为分片数据包
+	if len(data) >= FragmentHeaderSize && string(data[0:4]) == FragmentMagic {
+		return t.processFragment(data)
 	}
 
-	// 分片数据包，解析分片头（新格式）
-	// 1. 验证 Magic
-	magic := string(data[0:4])
-	if magic != FragmentMagic {
-		// 不是 UDP 分片协议，尝试直接解帧
-		frame, err := t.parseFrame(data)
-		if err != nil {
-			t.parseErrorCount.Add(1)
-			logging.Warnf("解析帧失败: %v", err)
-			return nil
-		}
-		// 从 Frame.Data 解码消息
-		msg, err := t.codec.Decode(frame.Data)
-		if err != nil {
-			t.parseErrorCount.Add(1)
-			logging.Warnf("解码消息失败: %v", err)
-			return nil
-		}
-		return msg
-	}
+	// 非分片数据包，直接解帧并解码
+	return t.decodeFrame(data)
+}
 
-	// 2. 解析分片头
+// processFragment 处理分片数据包
+func (t *UDPTransport) processFragment(data []byte) Message {
+	// 解析分片头
 	nodeID := binary.BigEndian.Uint64(data[4:12])
 	msgID := binary.BigEndian.Uint64(data[12:20])
 	total := binary.BigEndian.Uint16(data[20:22])
@@ -318,6 +292,7 @@ func (t *UDPTransport) processReceivedData(data []byte) Message {
 		return nil
 	}
 
+	// 验证数据长度
 	if int(dataLen) > len(data)-FragmentHeaderSize {
 		t.fragmentErrorCount.Add(1)
 		logging.Warnf("分片数据长度异常: dataLen=%d, actual=%d", dataLen, len(data)-FragmentHeaderSize)
@@ -326,22 +301,38 @@ func (t *UDPTransport) processReceivedData(data []byte) Message {
 
 	fragmentData := data[FragmentHeaderSize : FragmentHeaderSize+int(dataLen)]
 
-	// 3. 验证 CRC32
+	// 验证 CRC32
 	if crc32.ChecksumIEEE(fragmentData) != crc {
 		t.crcErrorCount.Add(1)
 		logging.Warnf("CRC32 校验失败: nodeID=%d, msgID=%d, index=%d", nodeID, msgID, index)
 		return nil
 	}
 
-	// 4. 存储分片并检查是否完整
+	// 存储分片并检查是否完整
 	key := fragmentKey{nodeID: nodeID, msgID: msgID}
 	msg := t.fragmentBuf.addFragment(key, total, index, fragmentData)
 	if msg == nil {
-		// 分片处理失败（可能是索引越界、重组失败等）
-		// 注意：由于 addFragment 是 fragmentBuffer 的方法，无法直接访问 UDPTransport 的错误计数器
-		// 这里通过返回 nil 来判断是否失败
 		t.fragmentErrorCount.Add(1)
 	}
+	return msg
+}
+
+// decodeFrame 解析帧并解码消息
+func (t *UDPTransport) decodeFrame(data []byte) Message {
+	frame, err := t.parseFrame(data)
+	if err != nil {
+		t.parseErrorCount.Add(1)
+		logging.Warnf("解析帧失败: %v", err)
+		return nil
+	}
+
+	msg, err := t.codec.Decode(frame.Data)
+	if err != nil {
+		t.parseErrorCount.Add(1)
+		logging.Warnf("解码消息失败: %v", err)
+		return nil
+	}
+
 	return msg
 }
 
@@ -508,42 +499,47 @@ func (t *UDPTransport) Send(ctx context.Context, addr string, msg Message) error
 		return types.NewTransportStateError("未启动")
 	}
 
-	// 1. 编码消息
+	// 编码消息
 	data, err := t.codec.Encode(msg)
 	if err != nil {
 		return types.NewTransportSendError(err)
 	}
 
-	// 2. 封装成帧
+	// 封装成帧
 	frame := NewFrame(msg.Type(), t.codec.Type(), data)
 	frameData, err := frame.Marshal()
 	if err != nil {
 		return types.NewTransportSendError(err)
 	}
 
-	// 3. 解析目标地址
+	// 解析目标地址
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return types.NewTransportConnectionError("解析地址", addr, err)
 	}
 
-	// 4. 如果帧大小 <= MaxUDPPacketSize，直接发送（无需分片）
+	// 小消息直接发送（无需分片）
 	if len(frameData) <= MaxUDPPacketSize {
-		if err := t.conn.SetWriteDeadline(time.Now().Add(t.config.WriteTimeout)); err != nil {
-			return types.NewTransportConnectionError("设置写超时", "", err)
-		}
-
-		_, err = t.conn.WriteToUDP(frameData, udpAddr)
-		if err != nil {
-			return types.NewTransportSendError(err)
-		}
-
-		logging.Debugf("发送消息: %s to %s", msg.Type(), addr)
-		return nil
+		return t.sendDirect(udpAddr, frameData, msg.Type(), addr)
 	}
 
-	// 5. 大消息分片发送
+	// 大消息分片发送
 	return t.sendFragmented(udpAddr, frameData)
+}
+
+// sendDirect 直接发送消息（无需分片）
+func (t *UDPTransport) sendDirect(addr *net.UDPAddr, data []byte, msgType MessageType, originalAddr string) error {
+	if err := t.conn.SetWriteDeadline(time.Now().Add(t.config.WriteTimeout)); err != nil {
+		return types.NewTransportConnectionError("设置写超时", "", err)
+	}
+
+	_, err := t.conn.WriteToUDP(data, addr)
+	if err != nil {
+		return types.NewTransportSendError(err)
+	}
+
+	logging.Debugf("发送消息: %s to %s", msgType, originalAddr)
+	return nil
 }
 
 // sendFragmented 分片发送大消息
@@ -553,17 +549,18 @@ func (t *UDPTransport) sendFragmented(addr *net.UDPAddr, data []byte) error {
 		return types.NewTransportStateError("localNodeID 未设置，必须调用 SetLocalNodeID")
 	}
 
-	// 获取本地节点 ID
 	nodeID := t.localNodeID
-
-	// 生成递增的消息 ID
 	msgID := t.nextMessageID()
-
-	// 计算分片数量
 	totalFragments := (len(data) + MaxUDPPacketSize - 1) / MaxUDPPacketSize
 
 	logging.Debugf("分片发送: total=%d, msgID=%d, nodeID=%d", totalFragments, msgID, nodeID)
 
+	// 设置写超时
+	if err := t.conn.SetWriteDeadline(time.Now().Add(t.config.WriteTimeout)); err != nil {
+		return types.NewTransportConnectionError("设置写超时", "", err)
+	}
+
+	// 发送所有分片
 	for i := 0; i < totalFragments; i++ {
 		start := i * MaxUDPPacketSize
 		end := start + MaxUDPPacketSize
@@ -572,16 +569,9 @@ func (t *UDPTransport) sendFragmented(addr *net.UDPAddr, data []byte) error {
 		}
 
 		fragmentData := data[start:end]
-
-		// 构造分片数据包
 		fragment, err := t.buildFragment(nodeID, msgID, uint16(totalFragments), uint16(i), fragmentData)
 		if err != nil {
 			return types.NewTransportSendError(err)
-		}
-
-		// 发送分片
-		if err := t.conn.SetWriteDeadline(time.Now().Add(t.config.WriteTimeout)); err != nil {
-			return types.NewTransportConnectionError("设置写超时", "", err)
 		}
 
 		if _, err := t.conn.WriteToUDP(fragment, addr); err != nil {

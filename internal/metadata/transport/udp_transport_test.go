@@ -131,29 +131,13 @@ func TestUDPTransport_MultipleStop(t *testing.T) {
 func TestUDPTransport_SendReceive(t *testing.T) {
 	ctx := context.Background()
 
-	// 创建服务端
-	server := createUDPTransport(t)
-	err := server.Start()
-	require.NoError(t, err)
+	client, server, serverAddr := setupTestPair(t)
+	defer func() { _ = client.Stop() }()
 	defer func() { _ = server.Stop() }()
 
-	serverAddr := server.GetLocalAddr()
-
-	// 创建客户端
-	client := createUDPTransport(t)
-	err = client.Start()
-	require.NoError(t, err)
-	defer func() { _ = client.Stop() }()
-
-	// 等待服务端准备就绪
-	time.Sleep(100 * time.Millisecond)
-
 	// 发送消息
-	msg := &GetMessage{
-		Key: "test-key",
-	}
-
-	err = client.Send(ctx, serverAddr, msg)
+	msg := &GetMessage{Key: "test-key"}
+	err := client.Send(ctx, serverAddr, msg)
 	require.NoError(t, err)
 
 	// 接收消息（有超时）
@@ -202,27 +186,14 @@ func TestUDPTransport_Send_NotStarted(t *testing.T) {
 func TestUDPTransport_Fragmentation(t *testing.T) {
 	ctx := context.Background()
 
-	// 创建服务端
-	server := createUDPTransport(t)
-	server.SetLocalNodeID(1001) // 使用 uint64
-	err := server.Start()
-	require.NoError(t, err)
+	client, server, serverAddr := setupTestPair(t)
+	client.SetLocalNodeID(1002)
+	server.SetLocalNodeID(1001)
+
+	defer func() { _ = client.Stop() }()
 	defer func() { _ = server.Stop() }()
 
-	serverAddr := server.GetLocalAddr()
-
-	// 创建客户端
-	client := createUDPTransport(t)
-	client.SetLocalNodeID(1002) // 使用 uint64
-	err = client.Start()
-	require.NoError(t, err)
-	defer func() { _ = client.Stop() }()
-
-	// 等待准备就绪
-	time.Sleep(100 * time.Millisecond)
-
 	// 创建大消息（超过 MaxUDPPacketSize = 1400）
-	// 使用 PutMessage 并设置大 Value
 	largeValue := make([]byte, 2000) // 大于 1400
 	for i := range largeValue {
 		largeValue[i] = byte('a' + (i % 26))
@@ -234,7 +205,7 @@ func TestUDPTransport_Fragmentation(t *testing.T) {
 	}
 
 	// 发送大消息（应该自动分片）
-	err = client.Send(ctx, serverAddr, msg)
+	err := client.Send(ctx, serverAddr, msg)
 	require.NoError(t, err)
 
 	// 接收消息
@@ -312,20 +283,9 @@ func TestUDPTransport_FragmentBufferTimeout(t *testing.T) {
 func TestUDPTransport_ConcurrentSend(t *testing.T) {
 	ctx := context.Background()
 
-	server := createUDPTransport(t)
-	err := server.Start()
-	require.NoError(t, err)
-	defer func() { _ = server.Stop() }()
-
-	serverAddr := server.GetLocalAddr()
-
-	client := createUDPTransport(t)
-	err = client.Start()
-	require.NoError(t, err)
+	client, server, serverAddr := setupTestPair(t)
 	defer func() { _ = client.Stop() }()
-
-	// 等待服务端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	defer func() { _ = server.Stop() }()
 
 	// 并发发送多条消息
 	const numMessages = 50
@@ -467,26 +427,14 @@ func TestUDPTransport_Receive_BeforeStart(t *testing.T) {
 func TestUDPTransport_PingPong(t *testing.T) {
 	ctx := context.Background()
 
-	// 创建服务端
-	server := createUDPTransport(t)
-	err := server.Start()
-	require.NoError(t, err)
-	defer func() { _ = server.Stop() }()
-
-	serverAddr := server.GetLocalAddr()
-	server.SetLocalNodeID(1) // UDP Transport 使用 uint64
-
-	// 创建客户端
-	client := createUDPTransport(t)
-	err = client.Start()
-	require.NoError(t, err)
-	defer func() { _ = client.Stop() }()
-
+	client, server, serverAddr := setupTestPair(t)
 	clientAddr := client.GetLocalAddr()
-	client.SetLocalNodeID(2) // UDP Transport 使用 uint64
 
-	// 等待准备就绪
-	time.Sleep(100 * time.Millisecond)
+	client.SetLocalNodeID(2)
+	server.SetLocalNodeID(1)
+
+	defer func() { _ = client.Stop() }()
+	defer func() { _ = server.Stop() }()
 
 	// 测试：客户端发送 Ping 到服务端
 	t.Log("测试: 客户端 -> Ping -> 服务端 -> Pong -> 客户端")
@@ -530,7 +478,7 @@ func TestUDPTransport_PingPong(t *testing.T) {
 		Timestamp: time.Now().UnixMilli(),
 	}
 
-	err = client.Send(ctx, serverAddr, ping)
+	err := client.Send(ctx, serverAddr, ping)
 	require.NoError(t, err)
 
 	// 验证服务端收到 Ping
@@ -570,6 +518,32 @@ func createUDPTransport(t *testing.T) *UDPTransport {
 	require.NoError(t, err)
 
 	return trans
+}
+
+// startTestTransport 启动测试传输并返回其地址
+func startTestTransport(t *testing.T, trans *UDPTransport) string {
+	t.Helper()
+
+	err := trans.Start()
+	require.NoError(t, err)
+
+	return trans.GetLocalAddr()
+}
+
+// setupTestPair 设置测试用的客户端-服务端对
+func setupTestPair(t *testing.T) (client, server *UDPTransport, serverAddr string) {
+	t.Helper()
+
+	server = createUDPTransport(t)
+	serverAddr = startTestTransport(t, server)
+
+	client = createUDPTransport(t)
+	startTestTransport(t, client)
+
+	// 等待准备就绪
+	time.Sleep(100 * time.Millisecond)
+
+	return client, server, serverAddr
 }
 
 // ========================================

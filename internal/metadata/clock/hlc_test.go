@@ -27,22 +27,74 @@ func TestHLCNow(t *testing.T) {
 }
 
 // TestHLCUpdate 测试 HLC.Update() 算法
+// HLC Update 核心算法：pt' = max(now, pt, eventTime, remoteHLC.pt)
+// 如果 pt' == pt && pt' == remoteHLC.pt，则 c' = max(c, remoteHLC.c) + 1
+// 否则 c' = 0
 func TestHLCUpdate(t *testing.T) {
 	hlc := NewHLC()
+	currentPT := hlc.PhysicalTime()
 
-	// 模拟远程 HLC（物理时间相同，逻辑计数更大）
-	remoteHLC := &HLC{
-		pt: hlc.PhysicalTime(),
-		c:  100,
-	}
+	t.Run("Update后时间戳单调递增", func(t *testing.T) {
+		// 创建远程 HLC，时间戳比本地大
+		remoteHLC := &HLC{
+			pt: currentPT + 100,
+			c:  50,
+		}
 
-	// 更新本地 HLC
-	updated := hlc.Update(time.Now().UnixMilli(), remoteHLC)
+		// 更新本地 HLC
+		updated := hlc.Update(currentPT+50, remoteHLC)
 
-	// 验证逻辑计数增加
-	if updated.LogicalCounter() <= remoteHLC.c {
-		t.Errorf("逻辑计数未正确增加: remote.c=%d, updated.c=%d", remoteHLC.c, updated.LogicalCounter())
-	}
+		// 验证更新后的时间戳不小于原时间戳
+		if updated.LessThan(hlc) {
+			t.Errorf("Update 违反单调性: updated=%v, original=%v", updated, hlc)
+		}
+
+		// 验证物理时间正确（应该取最大值）
+		if updated.PhysicalTime() != remoteHLC.pt {
+			t.Errorf("物理时间未取最大值: updated.pt=%d, remote.pt=%d", updated.PhysicalTime(), remoteHLC.pt)
+		}
+	})
+
+	t.Run("Update后再次Update保持单调性", func(t *testing.T) {
+		// 第一次更新
+		remote1 := &HLC{
+			pt: hlc.PhysicalTime() + 10,
+			c:  5,
+		}
+		updated1 := hlc.Update(hlc.PhysicalTime()+5, remote1)
+
+		// 第二次更新
+		remote2 := &HLC{
+			pt: updated1.PhysicalTime() + 10,
+			c:  10,
+		}
+		updated2 := hlc.Update(updated1.PhysicalTime()+5, remote2)
+
+		// 验证单调递增
+		if updated2.LessThan(updated1) || updated2.Equal(updated1) {
+			t.Errorf("连续 Update 违反单调性: updated1=%v, updated2=%v", updated1, updated2)
+		}
+	})
+
+	t.Run("处理时钟回拨", func(t *testing.T) {
+		// 本地时间前进
+		time.Sleep(2 * time.Millisecond)
+		currentPT2 := hlc.PhysicalTime()
+
+		// 远程 HLC 时间较早（模拟时钟回拨）
+		earlyRemote := &HLC{
+			pt: currentPT2 - 1000,
+			c:  0,
+		}
+
+		// 更新本地 HLC（应该忽略较早的远程时间）
+		updated := hlc.Update(currentPT2-500, earlyRemote)
+
+		// 验证物理时间没有回退
+		if updated.PhysicalTime() < currentPT2 {
+			t.Errorf("Update 导致时间回退: updated.pt=%d, current.pt=%d", updated.PhysicalTime(), currentPT2)
+		}
+	})
 }
 
 // TestHLCClockBackwards 测试时间回拨防护

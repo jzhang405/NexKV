@@ -58,10 +58,12 @@ clean:
 	rm -f coverage.out coverage.html
 	rm -rf data/
 
-## fmt: 格式化代码
+## fmt: 格式化代码并运行静态检查
 fmt:
 	@echo "格式化代码..."
 	$(GO) fmt ./...
+	@echo "运行 go vet..."
+	$(GO) vet ./...
 
 ## vet: 代码静态检查
 vet:
@@ -113,7 +115,7 @@ help:
 	@echo "  make test-coverage - 运行测试并生成覆盖率报告"
 	@echo "  make benchmark     - 运行性能基准测试"
 	@echo "  make clean         - 清理编译文件"
-	@echo "  make fmt           - 格式化代码"
+	@echo "  make fmt           - 格式化代码并运行静态检查"
 	@echo "  make vet           - 代码静态检查"
 	@echo "  make lint          - 代码质量检查"
 	@echo "  make deps          - 下载依赖"

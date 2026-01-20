@@ -16,7 +16,7 @@ import (
 
 // TestNewSelfHealer 测试创建自愈机制
 func TestNewSelfHealer(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
@@ -45,7 +45,7 @@ func TestNewSelfHealer(t *testing.T) {
 
 // TestNewSelfHealer_InvalidParams 测试无效参数
 func TestNewSelfHealer_InvalidParams(t *testing.T) {
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	config := DefaultTreeCoordinatorConfig()
 	coordinator, _ := NewTreeCoordinator("node1", "node1:9211", trans, config)
 	fdConfig := DefaultFailureDetectorConfig()
@@ -86,7 +86,7 @@ func TestNewSelfHealer_InvalidParams(t *testing.T) {
 
 // TestSelfHealer_StartStop 测试启动和停止
 func TestSelfHealer_StartStop(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
@@ -125,7 +125,7 @@ func TestSelfHealer_StartStop(t *testing.T) {
 
 // TestSelfHealer_NodeFailureDetection 测试节点故障检测
 func TestSelfHealer_NodeFailureDetection(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := &TreeCoordinatorConfig{
@@ -191,7 +191,7 @@ func TestSelfHealer_NodeFailureDetection(t *testing.T) {
 
 // TestSelfHealer_GetHealingNodes 测试获取正在自愈的节点
 func TestSelfHealer_GetHealingNodes(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
@@ -225,7 +225,7 @@ func TestSelfHealer_GetHealingNodes(t *testing.T) {
 
 // TestSelfHealer_IsHealing 测试检查节点是否正在自愈
 func TestSelfHealer_IsHealing(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
@@ -256,7 +256,7 @@ func TestSelfHealer_IsHealing(t *testing.T) {
 
 // TestSelfHealer_GetStats 测试获取统计信息
 func TestSelfHealer_GetStats(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
@@ -285,7 +285,7 @@ func TestSelfHealer_GetStats(t *testing.T) {
 
 // TestSelfHealer_LeaderFailure 测试Leader故障处理
 func TestSelfHealer_LeaderFailure(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()

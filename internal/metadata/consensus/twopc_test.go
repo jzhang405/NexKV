@@ -19,7 +19,7 @@ import (
 // TestNewTwoPCService 测试创建 2PC 服务
 func TestNewTwoPCService(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -43,7 +43,7 @@ func TestNewTwoPCService(t *testing.T) {
 // TestTwoPCService_StartStop 测试启动和停止 2PC 服务
 func TestTwoPCService_StartStop(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -75,7 +75,7 @@ func TestTwoPCService_StartStop(t *testing.T) {
 // TestTwoPCService_Execute_SingleNode 测试单节点事务
 func TestTwoPCService_Execute_SingleNode(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -122,7 +122,7 @@ func TestTwoPCService_Execute_SingleNode(t *testing.T) {
 // TestTwoPCService_Execute_Timeout 测试事务超时
 func TestTwoPCService_Execute_Timeout(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -160,7 +160,7 @@ func TestTwoPCService_Execute_Timeout(t *testing.T) {
 // TestTwoPCService_Execute_MultiOperation 测试多操作事务
 func TestTwoPCService_Execute_MultiOperation(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -216,7 +216,7 @@ func TestTwoPCService_Execute_MultiOperation(t *testing.T) {
 // TestTwoPCService_AddRemoveNode 测试添加和移除节点
 func TestTwoPCService_AddRemoveNode(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -241,7 +241,7 @@ func TestTwoPCService_AddRemoveNode(t *testing.T) {
 // TestTwoPCService_GetStats 测试获取统计信息
 func TestTwoPCService_GetStats(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -280,7 +280,7 @@ func TestTwoPCService_GetStats(t *testing.T) {
 // TestTwoPCService_GetTransactionState 测试获取事务状态
 func TestTwoPCService_GetTransactionState(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -321,7 +321,7 @@ func TestTwoPCService_GetTransactionState(t *testing.T) {
 // TestTwoPCService_CleanupTransaction 测试清理事务
 func TestTwoPCService_CleanupTransaction(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -447,7 +447,7 @@ func TestTransactionState_IsFinal(t *testing.T) {
 // BenchmarkTwoPCService_Execute 性能基准测试: 执行事务
 func BenchmarkTwoPCService_Execute(b *testing.B) {
 	metaStore := newMockMVStore()
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
 	nodes := []string{"node1"} // 单节点，避免网络延迟
@@ -474,7 +474,7 @@ func BenchmarkTwoPCService_Execute(b *testing.B) {
 // BenchmarkTwoPCService_Execute_MultiOperation 性能基准测试: 多操作事务
 func BenchmarkTwoPCService_Execute_MultiOperation(b *testing.B) {
 	metaStore := newMockMVStore()
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
 	nodes := []string{"node1"}

@@ -20,14 +20,14 @@ func BenchmarkFrame_NewFrame(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
+		_ = NewFrame(0, 0, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 	}
 }
 
 // BenchmarkFrame_Marshal 帧序列化性能
 func BenchmarkFrame_Marshal(b *testing.B) {
 	data := make([]byte, 1024)
-	frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
+	frame := NewFrame(0, 0, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -38,7 +38,7 @@ func BenchmarkFrame_Marshal(b *testing.B) {
 // BenchmarkFrame_Unmarshal 帧反序列化性能
 func BenchmarkFrame_Unmarshal(b *testing.B) {
 	data := make([]byte, 1024)
-	frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
+	frame := NewFrame(0, 0, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 	buf, _ := frame.Marshal()
 
 	b.ResetTimer()
@@ -54,7 +54,7 @@ func BenchmarkFrame_RoundTrip(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		frame := NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
+		frame := NewFrame(0, 0, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 		buf, _ := frame.Marshal()
 		f := &Frame{}
 		_ = f.Unmarshal(buf)
@@ -70,7 +70,7 @@ func BenchmarkFrame_NewFrame_DifferentSizes(b *testing.B) {
 			data := make([]byte, size)
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = NewFrame(MessageTypeGet, types.CodecTypeMessagePack, data)
+				_ = NewFrame(0, 0, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 			}
 		})
 	}
@@ -105,7 +105,7 @@ func BenchmarkMessagePackCodec_Decode(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = codec.Decode(data)
+		_, _ = codec.Decode(msg.Type(), data)
 	}
 }
 
@@ -120,7 +120,7 @@ func BenchmarkMessagePackCodec_RoundTrip(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		data, _ := codec.Encode(msg)
-		_, _ = codec.Decode(data)
+		_, _ = codec.Decode(msg.Type(), data)
 	}
 }
 
@@ -149,7 +149,7 @@ func BenchmarkJSONCodec_Decode(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = codec.Decode(data)
+		_, _ = codec.Decode(msg.Type(), data)
 	}
 }
 
@@ -164,7 +164,7 @@ func BenchmarkJSONCodec_RoundTrip(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		data, _ := codec.Encode(msg)
-		_, _ = codec.Decode(data)
+		_, _ = codec.Decode(msg.Type(), data)
 	}
 }
 
@@ -193,7 +193,7 @@ func BenchmarkProtobufCodec_Decode(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = codec.Decode(data)
+		_, _ = codec.Decode(msg.Type(), data)
 	}
 }
 
@@ -208,7 +208,7 @@ func BenchmarkProtobufCodec_RoundTrip(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		data, _ := codec.Encode(msg)
-		_, _ = codec.Decode(data)
+		_, _ = codec.Decode(msg.Type(), data)
 	}
 }
 
@@ -230,7 +230,7 @@ func BenchmarkMessagePackCodec_AllMessageTypes(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				data, _ := codec.Encode(msg)
-				_, _ = codec.Decode(data)
+				_, _ = codec.Decode(msg.Type(), data)
 			}
 		})
 	}
@@ -254,7 +254,7 @@ func BenchmarkJSONCodec_AllMessageTypes(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				data, _ := codec.Encode(msg)
-				_, _ = codec.Decode(data)
+				_, _ = codec.Decode(msg.Type(), data)
 			}
 		})
 	}
@@ -278,7 +278,7 @@ func BenchmarkProtobufCodec_AllMessageTypes(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				data, _ := codec.Encode(msg)
-				_, _ = codec.Decode(data)
+				_, _ = codec.Decode(msg.Type(), data)
 			}
 		})
 	}
@@ -299,7 +299,7 @@ func BenchmarkMessagePackCodec_DifferentSizes(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				data, _ := codec.Encode(msg)
-				_, _ = codec.Decode(data)
+				_, _ = codec.Decode(msg.Type(), data)
 			}
 		})
 	}
@@ -320,7 +320,7 @@ func BenchmarkJSONCodec_DifferentSizes(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				data, _ := codec.Encode(msg)
-				_, _ = codec.Decode(data)
+				_, _ = codec.Decode(msg.Type(), data)
 			}
 		})
 	}
@@ -341,7 +341,7 @@ func BenchmarkProtobufCodec_DifferentSizes(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				data, _ := codec.Encode(msg)
-				_, _ = codec.Decode(data)
+				_, _ = codec.Decode(msg.Type(), data)
 			}
 		})
 	}
@@ -360,7 +360,7 @@ func BenchmarkEncodeFrame(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = EncodeFrame(msg)
+		_, _ = EncodeFrame(msg, 0, 0)
 	}
 }
 
@@ -370,7 +370,7 @@ func BenchmarkDecodeFrame(b *testing.B) {
 		Key:   "test_key",
 		Value: make([]byte, 1024),
 	}
-	frame, _ := EncodeFrame(msg)
+	frame, _ := EncodeFrame(msg, 0, 0)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -387,133 +387,8 @@ func BenchmarkFrameEncodeDecodeRoundTrip(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		frame, _ := EncodeFrame(msg)
+		frame, _ := EncodeFrame(msg, 0, 0)
 		_, _ = DecodeFrame(frame)
-	}
-}
-
-// ========================================
-// 内存传输性能基准
-// ========================================
-
-// BenchmarkMemoryTransport_Send 内存传输发送性能
-func BenchmarkMemoryTransport_Send(b *testing.B) {
-	trans1, _ := NewMemoryTransport("node1:9211")
-	trans2, _ := NewMemoryTransport("node2:9211")
-
-	_ = trans1.Start()
-	_ = trans2.Start()
-	trans1.RegisterRemoteNode("node2:9211")
-	trans2.RegisterRemoteNode("node1:9211")
-
-	defer func() { _ = trans1.Stop() }()
-	defer func() { _ = trans2.Stop() }()
-
-	msg := &PutMessage{
-		Key:   "test_key",
-		Value: make([]byte, 1024),
-	}
-	ctx := context.Background()
-
-	// 预热
-	for i := 0; i < 100; i++ {
-		_ = trans1.Send(ctx, "node2:9211", msg)
-		// 保存 channel 引用，避免每次调用 Receive() 返回新 channel
-		receiveCh := trans2.Receive()
-		for len(receiveCh) > 0 {
-			<-receiveCh
-		}
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = trans1.Send(ctx, "node2:9211", msg)
-		<-trans2.Receive() // 清空接收通道
-	}
-}
-
-// BenchmarkMemoryTransport_SendReceive 内存传输往返性能
-func BenchmarkMemoryTransport_SendReceive(b *testing.B) {
-	trans1, _ := NewMemoryTransport("node1:9211")
-	trans2, _ := NewMemoryTransport("node2:9211")
-
-	_ = trans1.Start()
-	_ = trans2.Start()
-	trans1.RegisterRemoteNode("node2:9211")
-	trans2.RegisterRemoteNode("node1:9211")
-
-	defer func() { _ = trans1.Stop() }()
-	defer func() { _ = trans2.Stop() }()
-
-	msg := &PutMessage{
-		Key:   "test_key",
-		Value: make([]byte, 1024),
-	}
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = trans1.Send(ctx, "node2:9211", msg)
-		<-trans2.Receive()
-	}
-}
-
-// BenchmarkMemoryTransport_ConcurrentSend 并发发送性能
-func BenchmarkMemoryTransport_ConcurrentSend(b *testing.B) {
-	trans1, _ := NewMemoryTransport("node1:9211")
-	trans2, _ := NewMemoryTransport("node2:9211")
-
-	_ = trans1.Start()
-	_ = trans2.Start()
-	trans1.RegisterRemoteNode("node2:9211")
-	trans2.RegisterRemoteNode("node1:9211")
-
-	defer func() { _ = trans1.Stop() }()
-	defer func() { _ = trans2.Stop() }()
-
-	msg := &PutMessage{
-		Key:   "test_key",
-		Value: make([]byte, 256),
-	}
-	ctx := context.Background()
-
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			_ = trans1.Send(ctx, "node2:9211", msg)
-		}
-	})
-}
-
-// BenchmarkMemoryTransport_DifferentMessageSizes 不同消息大小性能
-func BenchmarkMemoryTransport_DifferentMessageSizes(b *testing.B) {
-	sizes := []int{64, 256, 1024, 4096, 16384}
-
-	for _, size := range sizes {
-		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
-			trans1, _ := NewMemoryTransport("node1:9211")
-			trans2, _ := NewMemoryTransport("node2:9211")
-
-			_ = trans1.Start()
-			_ = trans2.Start()
-			trans1.RegisterRemoteNode("node2:9211")
-			trans2.RegisterRemoteNode("node1:9211")
-
-			msg := &PutMessage{
-				Key:   "test_key",
-				Value: make([]byte, size),
-			}
-			ctx := context.Background()
-
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				_ = trans1.Send(ctx, "node2:9211", msg)
-				<-trans2.Receive()
-			}
-
-			_ = trans1.Stop()
-			_ = trans2.Stop()
-		})
 	}
 }
 
@@ -527,7 +402,7 @@ func BenchmarkMessageReader_Reader(b *testing.B) {
 		Key:   "test_key",
 		Value: make([]byte, 1024),
 	}
-	frame, _ := EncodeFrame(msg)
+	frame, _ := EncodeFrame(msg, 0, 0)
 	frameData, _ := frame.Marshal()
 
 	reader := NewMessageReader(bytes.NewReader(frameData), nil)
@@ -550,96 +425,6 @@ func BenchmarkMessageWriter_Writer(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// 使用 Codec 进行序列化
 		_, _ = codec.Encode(msg)
-	}
-}
-
-// ========================================
-// 综合性能基准
-// ========================================
-
-// BenchmarkFullStack_EndToEnd 端到端完整流程性能
-func BenchmarkFullStack_EndToEnd(b *testing.B) {
-	trans1, _ := NewMemoryTransport("node1:9211")
-	trans2, _ := NewMemoryTransport("node2:9211")
-
-	_ = trans1.Start()
-	_ = trans2.Start()
-	trans1.RegisterRemoteNode("node2:9211")
-	trans2.RegisterRemoteNode("node1:9211")
-
-	defer func() { _ = trans1.Stop() }()
-	defer func() { _ = trans2.Stop() }()
-
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		// 创建消息
-		msg := &PutMessage{
-			Key:   "test_key",
-			Value: make([]byte, 1024),
-		}
-
-		// 发送消息（包括编码、帧封装、传输）
-		_ = trans1.Send(ctx, "node2:9211", msg)
-
-		// 接收消息（包括帧解析、解码）
-		receivedMsg := <-trans2.Receive()
-		_ = receivedMsg
-	}
-}
-
-// BenchmarkFullPipeline_Throughput 吞吐量测试
-func BenchmarkFullPipeline_Throughput(b *testing.B) {
-	trans1, _ := NewMemoryTransport("node1:9211")
-	trans2, _ := NewMemoryTransport("node2:9211")
-
-	_ = trans1.Start()
-	_ = trans2.Start()
-	trans1.RegisterRemoteNode("node2:9211")
-	trans2.RegisterRemoteNode("node1:9211")
-
-	defer func() { _ = trans1.Stop() }()
-	defer func() { _ = trans2.Stop() }()
-
-	ctx := context.Background()
-	msg := &PutMessage{
-		Key:   "test_key",
-		Value: make([]byte, 1024),
-	}
-
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			_ = trans1.Send(ctx, "node2:9211", msg)
-			<-trans2.Receive()
-		}
-	})
-}
-
-// BenchmarkLatency 单次延迟测试
-func BenchmarkLatency(b *testing.B) {
-	trans1, _ := NewMemoryTransport("node1:9211")
-	trans2, _ := NewMemoryTransport("node2:9211")
-
-	_ = trans1.Start()
-	_ = trans2.Start()
-	trans1.RegisterRemoteNode("node2:9211")
-	trans2.RegisterRemoteNode("node1:9211")
-
-	defer func() { _ = trans1.Stop() }()
-	defer func() { _ = trans2.Stop() }()
-
-	ctx := context.Background()
-	msg := &PutMessage{
-		Key:   "test_key",
-		Value: make([]byte, 256),
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = trans1.Send(ctx, "node2:9211", msg)
-		<-trans2.Receive()
 	}
 }
 
@@ -734,7 +519,7 @@ func BenchmarkThreeCodec_AllMessages(b *testing.B) {
 						// 编码
 						encoded, _ := tc.codec.Encode(msg)
 						// 解码
-						_, _ = tc.codec.Decode(encoded)
+						_, _ = tc.codec.Decode(msg.Type(), encoded)
 					}
 
 					// 报告内存分配
@@ -789,7 +574,7 @@ func BenchmarkThreeCodec_DecodeOnly(b *testing.B) {
 
 					b.ResetTimer()
 					for i := 0; i < b.N; i++ {
-						_, _ = tc.codec.Decode(encoded)
+						_, _ = tc.codec.Decode(msg.Type(), encoded)
 					}
 				})
 			}

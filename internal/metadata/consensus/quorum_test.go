@@ -19,7 +19,7 @@ import (
 // TestNewQuorumService 测试创建 Quorum 服务
 func TestNewQuorumService(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	localAddr := "node1"
@@ -41,7 +41,7 @@ func TestNewQuorumService(t *testing.T) {
 // TestQuorumService_StartStop 测试启动和停止 Quorum 服务
 func TestQuorumService_StartStop(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	nodes := []string{"node1", "node2", "node3"}
@@ -72,7 +72,7 @@ func TestQuorumService_StartStop(t *testing.T) {
 // TestQuorumService_Propose_Success 测试提案成功（单节点场景）
 func TestQuorumService_Propose_Success(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	hlc := clock.NewHLC()
@@ -108,7 +108,7 @@ func TestQuorumService_Propose_Success(t *testing.T) {
 // TestQuorumService_Propose_Timeout 测试提案超时
 func TestQuorumService_Propose_Timeout(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	nodes := []string{"node1", "node2", "node3"}
@@ -145,7 +145,7 @@ func TestQuorumService_Propose_Timeout(t *testing.T) {
 // TestQuorumService_Vote 测试投票处理
 func TestQuorumService_Vote(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	nodes := []string{"node1", "node2", "node3"}
@@ -200,7 +200,7 @@ func TestQuorumService_Vote(t *testing.T) {
 // TestQuorumService_Vote_NonExistentProposal 测试对不存在的提案投票
 func TestQuorumService_Vote_NonExistentProposal(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	nodes := []string{"node1", "node2", "node3"}
@@ -227,7 +227,7 @@ func TestQuorumService_Vote_NonExistentProposal(t *testing.T) {
 // TestQuorumService_checkQuorum 测试法定人数检查
 func TestQuorumService_checkQuorum(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	nodes := []string{"node1", "node2", "node3"}
@@ -274,7 +274,7 @@ func TestQuorumService_checkQuorum(t *testing.T) {
 // TestQuorumService_getQuorumThreshold 测试法定人数阈值计算
 func TestQuorumService_getQuorumThreshold(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 
@@ -315,7 +315,7 @@ func TestQuorumService_getQuorumThreshold(t *testing.T) {
 // TestQuorumService_generateProposalID 测试提案 ID 生成
 func TestQuorumService_generateProposalID(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	nodes := []string{"node1", "node2", "node3"}
@@ -340,7 +340,7 @@ func TestQuorumService_generateProposalID(t *testing.T) {
 // TestQuorumService_AddRemoveNode 测试添加和移除节点
 func TestQuorumService_AddRemoveNode(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	nodes := []string{"node1", "node2"}
@@ -364,7 +364,7 @@ func TestQuorumService_AddRemoveNode(t *testing.T) {
 // TestQuorumService_GetStats 测试获取统计信息
 func TestQuorumService_GetStats(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	nodes := []string{"node1", "node2", "node3"}
@@ -390,7 +390,7 @@ func TestQuorumService_GetStats(t *testing.T) {
 // TestQuorumService_GetProposalState 测试获取提案状态
 func TestQuorumService_GetProposalState(t *testing.T) {
 	metaStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	nodes := []string{"node1", "node2", "node3"}
@@ -479,7 +479,7 @@ func TestProposalState_decide(t *testing.T) {
 // BenchmarkQuorumService_Propose 性能基准测试: 提案
 func BenchmarkQuorumService_Propose(b *testing.B) {
 	metaStore := newMockMVStore()
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	hlc := clock.NewHLC()
 	nodes := []string{"node1", "node2", "node3"}
 
@@ -509,7 +509,7 @@ func BenchmarkQuorumService_Propose(b *testing.B) {
 // BenchmarkQuorumService_Vote 性能基准测试: 投票
 func BenchmarkQuorumService_Vote(b *testing.B) {
 	metaStore := newMockMVStore()
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	hlc := clock.NewHLC()
 	nodes := []string{"node1", "node2", "node3"}
 
@@ -552,7 +552,7 @@ func BenchmarkQuorumService_Vote(b *testing.B) {
 // BenchmarkQuorumService_generateProposalID 性能基准测试: 生成提案 ID
 func BenchmarkQuorumService_generateProposalID(b *testing.B) {
 	metaStore := newMockMVStore()
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	hlc := clock.NewHLC()
 	nodes := []string{"node1", "node2", "node3"}
 

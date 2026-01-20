@@ -18,7 +18,7 @@ import (
 // TestNewMetadataStore 测试创建元数据存储
 func TestNewMetadataStore(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -50,7 +50,7 @@ func TestNewMetadataStore(t *testing.T) {
 // TestMetadataStore_StartStop 测试启动和停止元数据存储
 func TestMetadataStore_StartStop(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -82,7 +82,7 @@ func TestMetadataStore_StartStop(t *testing.T) {
 // TestMetadataStore_Put_Quorum 测试使用 Quorum 写入关键元数据
 func TestMetadataStore_Put_Quorum(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -113,7 +113,7 @@ func TestMetadataStore_Put_Quorum(t *testing.T) {
 // TestMetadataStore_Put_Gossip 测试使用 Gossip 写入普通元数据
 func TestMetadataStore_Put_Gossip(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
@@ -145,7 +145,7 @@ func TestMetadataStore_Put_Gossip(t *testing.T) {
 // TestMetadataStore_Delete_Quorum 测试使用 Quorum 删除关键元数据
 func TestMetadataStore_Delete_Quorum(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -174,7 +174,7 @@ func TestMetadataStore_Delete_Quorum(t *testing.T) {
 // TestMetadataStore_Delete_Gossip 测试使用 Gossip 删除普通元数据
 func TestMetadataStore_Delete_Gossip(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
@@ -207,7 +207,7 @@ func TestMetadataStore_Delete_Gossip(t *testing.T) {
 // TestMetadataStore_Get 测试获取元数据
 func TestMetadataStore_Get(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
@@ -241,7 +241,7 @@ func TestMetadataStore_Get(t *testing.T) {
 // TestMetadataStore_ExecuteTransaction 测试执行分布式事务
 func TestMetadataStore_ExecuteTransaction(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newTestUUIDGenerator(t)
@@ -286,7 +286,7 @@ func TestMetadataStore_ExecuteTransaction(t *testing.T) {
 // TestMetadataStore_selectProtocol 测试协议选择
 func TestMetadataStore_selectProtocol(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
@@ -320,7 +320,7 @@ func TestMetadataStore_selectProtocol(t *testing.T) {
 // TestMetadataStore_classifyChangeType 测试变更类型分类
 func TestMetadataStore_classifyChangeType(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
@@ -350,7 +350,7 @@ func TestMetadataStore_classifyChangeType(t *testing.T) {
 // TestMetadataStore_AddRemoveCriticalPrefix 测试添加和移除关键前缀
 func TestMetadataStore_AddRemoveCriticalPrefix(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
@@ -387,7 +387,7 @@ func TestMetadataStore_AddRemoveCriticalPrefix(t *testing.T) {
 // TestMetadataStore_AddRemoveNode 测试添加和移除节点
 func TestMetadataStore_AddRemoveNode(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
@@ -422,7 +422,7 @@ func TestMetadataStore_AddRemoveNode(t *testing.T) {
 // TestMetadataStore_GetVersion 测试获取版本号
 func TestMetadataStore_GetVersion(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
@@ -451,7 +451,7 @@ func TestMetadataStore_GetVersion(t *testing.T) {
 // TestMetadataStore_GetChangeLogs 测试获取变更日志
 func TestMetadataStore_GetChangeLogs(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
@@ -487,7 +487,7 @@ func TestMetadataStore_GetChangeLogs(t *testing.T) {
 // TestMetadataStore_GetStats 测试获取统计信息
 func TestMetadataStore_GetStats(t *testing.T) {
 	mvStore := newMockMVStore()
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
@@ -590,7 +590,7 @@ func TestConsensusProtocol_String(t *testing.T) {
 // BenchmarkMetadataStore_Put_Gossip 性能基准测试: Gossip 写入
 func BenchmarkMetadataStore_Put_Gossip(b *testing.B) {
 	mvStore := newMockMVStore()
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
 	nodes := []string{"node1", "node2"}
@@ -612,7 +612,7 @@ func BenchmarkMetadataStore_Put_Gossip(b *testing.B) {
 // BenchmarkMetadataStore_Get 性能基准测试: 读取
 func BenchmarkMetadataStore_Get(b *testing.B) {
 	mvStore := newMockMVStore()
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
 	nodes := []string{"node1", "node2"}
@@ -632,7 +632,7 @@ func BenchmarkMetadataStore_Get(b *testing.B) {
 // BenchmarkMetadataStore_ExecuteTransaction 性能基准测试: 执行事务
 func BenchmarkMetadataStore_ExecuteTransaction(b *testing.B) {
 	mvStore := newMockMVStore()
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
 	nodes := []string{"node1"}
@@ -665,7 +665,7 @@ func BenchmarkMetadataStore_ExecuteTransaction(b *testing.B) {
 // BenchmarkMetadataStore_selectProtocol 性能基准测试: 协议选择
 func BenchmarkMetadataStore_selectProtocol(b *testing.B) {
 	mvStore := newMockMVStore()
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	hlc := clock.NewHLC()
 	uuidGen := newBenchmarkUUIDGenerator()
 	nodes := []string{"node1", "node2"}

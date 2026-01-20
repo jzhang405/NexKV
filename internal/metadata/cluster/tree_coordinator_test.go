@@ -16,7 +16,7 @@ import (
 
 // TestNewTreeCoordinator 测试创建树形协调器
 func TestNewTreeCoordinator(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
@@ -33,7 +33,7 @@ func TestNewTreeCoordinator(t *testing.T) {
 
 // TestNewTreeCoordinator_InvalidParams 测试无效参数
 func TestNewTreeCoordinator_InvalidParams(t *testing.T) {
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	config := DefaultTreeCoordinatorConfig()
 
 	testCases := []struct {
@@ -63,7 +63,7 @@ func TestNewTreeCoordinator_InvalidParams(t *testing.T) {
 
 // TestTreeCoordinator_StartStop 测试启动和停止
 func TestTreeCoordinator_StartStop(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
@@ -93,7 +93,7 @@ func TestTreeCoordinator_StartStop(t *testing.T) {
 
 // TestTreeCoordinator_AddChild 测试添加子节点
 func TestTreeCoordinator_AddChild(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := &TreeCoordinatorConfig{
@@ -135,7 +135,7 @@ func TestTreeCoordinator_AddChild(t *testing.T) {
 
 // TestTreeCoordinator_RemoveChild 测试移除子节点
 func TestTreeCoordinator_RemoveChild(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
@@ -163,7 +163,7 @@ func TestTreeCoordinator_RemoveChild(t *testing.T) {
 
 // TestTreeCoordinator_GetNode 测试获取节点
 func TestTreeCoordinator_GetNode(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
@@ -187,7 +187,7 @@ func TestTreeCoordinator_GetNode(t *testing.T) {
 
 // TestTreeCoordinator_ListNodes 测试列出所有节点
 func TestTreeCoordinator_ListNodes(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
@@ -205,7 +205,7 @@ func TestTreeCoordinator_ListNodes(t *testing.T) {
 
 // TestTreeCoordinator_GetTreeDepth 测试获取树深度
 func TestTreeCoordinator_GetTreeDepth(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
@@ -229,7 +229,7 @@ func TestTreeCoordinator_GetTreeDepth(t *testing.T) {
 
 // TestTreeCoordinator_GetStats 测试获取统计信息
 func TestTreeCoordinator_GetStats(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
@@ -250,7 +250,7 @@ func TestTreeCoordinator_GetStats(t *testing.T) {
 
 // TestTreeCoordinator_IsRunning 测试运行状态
 func TestTreeCoordinator_IsRunning(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
@@ -305,10 +305,10 @@ func TestDefaultTreeCoordinatorConfig(t *testing.T) {
 // TestTreeCoordinator_SingleParentConstraint 测试单父节点约束
 // 验证一个真实节点只能有一个 ParentID
 func TestTreeCoordinator_SingleParentConstraint(t *testing.T) {
-	trans1, err := transport.NewMemoryTransport("node1")
+	trans1, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
-	trans2, err := transport.NewMemoryTransport("node2")
+	trans2, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()

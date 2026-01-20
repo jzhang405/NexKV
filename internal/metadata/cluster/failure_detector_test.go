@@ -17,7 +17,7 @@ import (
 
 // TestNewFailureDetector 测试创建故障检测器
 func TestNewFailureDetector(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultFailureDetectorConfig()
@@ -33,7 +33,7 @@ func TestNewFailureDetector(t *testing.T) {
 
 // TestNewFailureDetector_InvalidParams 测试无效参数
 func TestNewFailureDetector_InvalidParams(t *testing.T) {
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	config := DefaultFailureDetectorConfig()
 
 	testCases := []struct {
@@ -63,7 +63,7 @@ func TestNewFailureDetector_InvalidParams(t *testing.T) {
 
 // TestFailureDetector_StartStop 测试启动和停止
 func TestFailureDetector_StartStop(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultFailureDetectorConfig()
@@ -90,7 +90,7 @@ func TestFailureDetector_StartStop(t *testing.T) {
 
 // TestFailureDetector_AddNode 测试添加节点
 func TestFailureDetector_AddNode(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultFailureDetectorConfig()
@@ -110,7 +110,7 @@ func TestFailureDetector_AddNode(t *testing.T) {
 
 // TestFailureDetector_RemoveNode 测试移除节点
 func TestFailureDetector_RemoveNode(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultFailureDetectorConfig()
@@ -131,7 +131,7 @@ func TestFailureDetector_RemoveNode(t *testing.T) {
 
 // TestFailureDetector_RecordHeartbeat 测试记录心跳
 func TestFailureDetector_RecordHeartbeat(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultFailureDetectorConfig()
@@ -158,7 +158,7 @@ func TestFailureDetector_RecordHeartbeat(t *testing.T) {
 
 // TestFailureDetector_IsNodeAlive 测试检查节点存活
 func TestFailureDetector_IsNodeAlive(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := &FailureDetectorConfig{
@@ -186,7 +186,7 @@ func TestFailureDetector_IsNodeAlive(t *testing.T) {
 
 // TestFailureDetector_GetStats 测试获取统计信息
 func TestFailureDetector_GetStats(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultFailureDetectorConfig()
@@ -203,7 +203,7 @@ func TestFailureDetector_GetStats(t *testing.T) {
 
 // TestFailureDetector_SetFailureCallback 测试设置故障回调
 func TestFailureDetector_SetFailureCallback(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := &FailureDetectorConfig{
@@ -256,7 +256,7 @@ func TestDefaultFailureDetectorConfig(t *testing.T) {
 
 // TestNodeState_Statistics 测试节点状态统计
 func TestNodeState_Statistics(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultFailureDetectorConfig()
@@ -283,7 +283,7 @@ func TestNodeState_Statistics(t *testing.T) {
 
 // TestFailureDetector_ConcurrentAccess 测试并发访问
 func TestFailureDetector_ConcurrentAccess(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultFailureDetectorConfig()

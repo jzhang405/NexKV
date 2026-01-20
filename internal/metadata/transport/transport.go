@@ -229,8 +229,12 @@ type Codec interface {
 	// Encode 编码消息
 	Encode(msg Message) ([]byte, error)
 
-	// Decode 解码消息
-	Decode(data []byte) (Message, error)
+	// Decode 解码消息（创建新实例）
+	Decode(msgType MessageType, data []byte) (Message, error)
+
+	// DecodeInto 解码消息到指定实例（避免创建新消息）
+	// 当消息类型已知时（如从 FixedHeader 读取）使用此方法更高效
+	DecodeInto(data []byte, msg Message) error
 
 	// Name 返回编解码器名称
 	Name() string

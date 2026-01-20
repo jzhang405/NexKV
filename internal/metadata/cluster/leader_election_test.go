@@ -17,7 +17,7 @@ import (
 
 // TestNewLeaderElection 测试创建 Leader 选举器
 func TestNewLeaderElection(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultLeaderElectionConfig()
@@ -33,7 +33,7 @@ func TestNewLeaderElection(t *testing.T) {
 
 // TestNewLeaderElection_InvalidParams 测试无效参数
 func TestNewLeaderElection_InvalidParams(t *testing.T) {
-	trans, _ := transport.NewMemoryTransport("node1")
+	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	config := DefaultLeaderElectionConfig()
 
 	testCases := []struct {
@@ -63,7 +63,7 @@ func TestNewLeaderElection_InvalidParams(t *testing.T) {
 
 // TestLeaderElection_StartStop 测试启动和停止
 func TestLeaderElection_StartStop(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultLeaderElectionConfig()
@@ -93,7 +93,7 @@ func TestLeaderElection_StartStop(t *testing.T) {
 
 // TestLeaderElection_AddCandidate 测试添加候选节点
 func TestLeaderElection_AddCandidate(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultLeaderElectionConfig()
@@ -125,7 +125,7 @@ func TestLeaderElection_AddCandidate(t *testing.T) {
 
 // TestLeaderElection_RemoveCandidate 测试移除候选节点
 func TestLeaderElection_RemoveCandidate(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultLeaderElectionConfig()
@@ -151,7 +151,7 @@ func TestLeaderElection_RemoveCandidate(t *testing.T) {
 
 // TestLeaderElection_CalculateScore 测试节点得分计算
 func TestLeaderElection_CalculateScore(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := &LeaderElectionConfig{
@@ -220,7 +220,7 @@ func TestLeaderElection_CalculateScore(t *testing.T) {
 
 // TestLeaderElection_SelectLeader 测试选择 Leader
 func TestLeaderElection_SelectLeader(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultLeaderElectionConfig()
@@ -262,7 +262,7 @@ func TestLeaderElection_SelectLeader(t *testing.T) {
 
 // TestLeaderElection_GetCandidates 测试获取候选节点
 func TestLeaderElection_GetCandidates(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultLeaderElectionConfig()
@@ -312,7 +312,7 @@ func TestLeaderElection_GetCandidates(t *testing.T) {
 
 // TestLeaderElection_GetCurrentLeader 测试获取当前 Leader
 func TestLeaderElection_GetCurrentLeader(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultLeaderElectionConfig()
@@ -344,7 +344,7 @@ func TestLeaderElection_GetCurrentLeader(t *testing.T) {
 
 // TestLeaderElection_IsLeader 测试是否为 Leader
 func TestLeaderElection_IsLeader(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultLeaderElectionConfig()
@@ -375,7 +375,7 @@ func TestLeaderElection_IsLeader(t *testing.T) {
 
 // TestLeaderElection_GetLeaseExpiry 测试获取租约过期时间
 func TestLeaderElection_GetLeaseExpiry(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultLeaderElectionConfig()
@@ -421,7 +421,7 @@ func TestLeaderElection_GetLeaseExpiry(t *testing.T) {
 
 // TestLeaderElection_GetStats 测试获取统计信息
 func TestLeaderElection_GetStats(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultLeaderElectionConfig()
@@ -437,7 +437,7 @@ func TestLeaderElection_GetStats(t *testing.T) {
 
 // TestLeaderElection_Campaign 测试手动竞选
 func TestLeaderElection_Campaign(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := DefaultLeaderElectionConfig()
@@ -475,7 +475,7 @@ func TestDefaultLeaderElectionConfig(t *testing.T) {
 
 // TestLeaderElection_LeaderTransition 测试 Leader 切换
 func TestLeaderElection_LeaderTransition(t *testing.T) {
-	trans, err := transport.NewMemoryTransport("node1")
+	trans, err := transport.NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
 	config := &LeaderElectionConfig{

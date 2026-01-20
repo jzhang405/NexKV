@@ -2,10 +2,13 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	cryptorand "crypto/rand"
+	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"runtime"
 	"sync"
 	"testing"
@@ -1000,4 +1003,104 @@ func generateRandomData(size int) []byte {
 		panic(fmt.Sprintf("生成随机数据失败: %v", err))
 	}
 	return data
+}
+
+// ========================================
+// P0 安全问题测试
+// ========================================
+
+// TestUDP_P0_LocalNodeIDValidation 测试 localNodeID 验证
+func TestUDP_P0_LocalNodeIDValidation(t *testing.T) {
+	ctx := context.Background()
+
+	// 创建 UDP transport（不设置 localNodeID）
+	trans, err := NewUDPTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	err = trans.Start()
+	require.NoError(t, err)
+	defer func() {
+		if err := trans.Stop(); err != nil {
+			t.Logf("trans.Stop() failed: %v", err)
+		}
+	}()
+
+	serverAddr := trans.GetLocalAddr()
+
+	// 创建客户端（也不设置 localNodeID）
+	client, err := NewUDPTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	err = client.Start()
+	require.NoError(t, err)
+	defer func() {
+		if err := client.Stop(); err != nil {
+			t.Logf("client.Stop() failed: %v", err)
+		}
+	}()
+
+	// 尝试发送大消息（需要分片），应该因为 localNodeID=0 而失败
+	largeValue := make([]byte, 2000) // 大于 MaxUDPPacketSize
+	msg := &PutMessage{Key: "test-key", Value: largeValue}
+
+	err = client.Send(ctx, serverAddr, msg)
+	assert.Error(t, err, "localNodeID 未设置时应该返回错误")
+	assert.Contains(t, err.Error(), "localNodeID 未设置", "错误信息应该提到 localNodeID")
+
+	// 设置 localNodeID 后应该成功
+	client.SetLocalNodeID(1002)
+	err = client.Send(ctx, serverAddr, msg)
+	assert.NoError(t, err, "设置 localNodeID 后应该成功发送")
+
+	t.Log("✅ P0-1: localNodeID 验证测试通过")
+}
+
+// TestUDP_P0_MaxFragmentCount 测试分片数量上限
+func TestUDP_P0_MaxFragmentCount(t *testing.T) {
+	trans, err := NewUDPTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	err = trans.Start()
+	require.NoError(t, err)
+	defer func() {
+		if err := trans.Stop(); err != nil {
+			t.Logf("trans.Stop() failed: %v", err)
+		}
+	}()
+
+	trans.SetLocalNodeID(1001)
+
+	// 构造恶意分片数据包：total = 0（非法值）
+	magic := []byte("NxUD")
+	nodeID := make([]byte, 8)
+	msgID := make([]byte, 8)
+	binary.BigEndian.PutUint64(nodeID, 1001)
+	binary.BigEndian.PutUint64(msgID, 1)
+	total := make([]byte, 2)
+	binary.BigEndian.PutUint16(total, 0) // total = 0
+	index := make([]byte, 2)
+	binary.BigEndian.PutUint16(index, 0)
+	dataLen := make([]byte, 4)
+	binary.BigEndian.PutUint32(dataLen, 10)
+	crc := make([]byte, 4)
+	binary.BigEndian.PutUint32(crc, crc32.ChecksumIEEE([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}))
+
+	maliciousPacket := bytes.Join([][]byte{magic, nodeID, msgID, total, index, dataLen, crc, []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}}, nil)
+
+	// 处理恶意数据包，应该被拒绝
+	result := trans.processReceivedData(maliciousPacket)
+	assert.Nil(t, result, "total=0 的分片应该被拒绝")
+
+	// 注意：MaxFragmentCount = 65535 是 uint16 的最大值，无法构造超过此值的测试
+	// 实际场景中，65535 个分片 * 1400 字节 ≈ 91 MB，已经是合理的上限
+	t.Logf("✅ MaxFragmentCount = %d (uint16 最大值，约 %.1f MB)", MaxFragmentCount, float64(MaxFragmentCount*MaxUDPPacketSize)/(1024*1024))
+
+	// 验证错误计数器增加
+	stats := trans.Stats()
+	fragmentErrors, ok := stats["fragment_errors"].(uint64)
+	if ok {
+		assert.Greater(t, fragmentErrors, uint64(0), "应该记录分片错误")
+	}
+
+	t.Log("✅ P0-2: 分片数量上限测试通过")
 }

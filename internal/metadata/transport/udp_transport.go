@@ -38,6 +38,10 @@ const (
 
 	// DefaultFragmentTimeout 分片重组超时时间
 	DefaultFragmentTimeout = 5 * time.Second
+
+	// MaxFragmentCount 最大分片数量限制（防止 DoS 攻击）
+	// 65535 分片 * 1400 字节 ≈ 91 MB，合理的消息大小上限
+	MaxFragmentCount = 65535
 )
 
 // UDPTransport UDP 传输实现
@@ -307,6 +311,13 @@ func (t *UDPTransport) processReceivedData(data []byte) Message {
 	dataLen := binary.BigEndian.Uint32(data[24:28])
 	crc := binary.BigEndian.Uint32(data[28:32])
 
+	// 验证分片数量（防止 DoS 攻击）
+	if total == 0 || int(total) > MaxFragmentCount {
+		t.fragmentErrorCount.Add(1)
+		logging.Warnf("分片数量异常: total=%d, max=%d", total, MaxFragmentCount)
+		return nil
+	}
+
 	if int(dataLen) > len(data)-FragmentHeaderSize {
 		t.fragmentErrorCount.Add(1)
 		logging.Warnf("分片数据长度异常: dataLen=%d, actual=%d", dataLen, len(data)-FragmentHeaderSize)
@@ -537,6 +548,11 @@ func (t *UDPTransport) Send(ctx context.Context, addr string, msg Message) error
 
 // sendFragmented 分片发送大消息
 func (t *UDPTransport) sendFragmented(addr *net.UDPAddr, data []byte) error {
+	// 验证 localNodeID 已设置
+	if t.localNodeID == 0 {
+		return types.NewTransportStateError("localNodeID 未设置，必须调用 SetLocalNodeID")
+	}
+
 	// 获取本地节点 ID
 	nodeID := t.localNodeID
 

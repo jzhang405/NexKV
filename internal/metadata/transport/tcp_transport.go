@@ -105,7 +105,7 @@ type TCPTransport struct {
 	localAddr string
 
 	// 节点标识
-	localNodeID     uint64
+	NodeID          uint64
 	msgSeqGenerator *identity.MsgSeqGenerator
 }
 
@@ -184,8 +184,8 @@ func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 		recvCh:    make(chan Message, config.BufferSize),
 		stopCh:    make(chan struct{}),
 		localAddr: config.ListenAddr,
-		// localNodeID 需要外部通过 SetNodeID() 设置
-		localNodeID:     0,
+		// NodeID 需要外部通过 SetNodeID() 设置
+		NodeID:          0,
 		msgSeqGenerator: identity.NewMsgSeqGenerator(),
 	}
 
@@ -197,7 +197,7 @@ func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 // 参数:
 //   - nodeID: 节点 ID（由外部调用者根据 host:tcpPort:udpPort 生成）
 func (t *TCPTransport) SetNodeID(nodeID uint64) {
-	t.localNodeID = nodeID
+	t.NodeID = nodeID
 }
 
 // Start 启动传输层
@@ -458,7 +458,7 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message) error
 
 	// 发送消息
 	msgSeq := t.msgSeqGenerator.Next()
-	if err := conn.writer.WriteMessage(msg, t.localNodeID, msgSeq); err != nil {
+	if err := conn.writer.WriteMessage(msg, t.NodeID, msgSeq); err != nil {
 		// 发送失败，从池中移除连接（removeConnFromPool 会关闭连接）
 		t.removeConnFromPool(addr)
 		return types.NewTransportSendError(err)

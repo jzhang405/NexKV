@@ -43,9 +43,9 @@ const (
 //   - 优雅关闭
 type UDPTransport struct {
 	// 配置
-	config      *TransportConfig
-	codec       Codec
-	localNodeID uint64
+	config *TransportConfig
+	codec  Codec
+	NodeID uint64
 
 	// UDP 连接
 	conn *net.UDPConn
@@ -135,20 +135,23 @@ func NewUDPTransportWithConfig(config *TransportConfig) (*UDPTransport, error) {
 	}
 
 	t := &UDPTransport{
-		config:      config,
-		codec:       codec,
-		localNodeID: 0, // 需要从配置或外部设置
-		recvCh:      make(chan Message, config.BufferSize),
-		stopCh:      make(chan struct{}),
-		codecCache:  make(map[uint16]Codec), // 初始化 Codec 缓存
+		config:     config,
+		codec:      codec,
+		NodeID:     0, // 需要从配置或外部设置
+		recvCh:     make(chan Message, config.BufferSize),
+		stopCh:     make(chan struct{}),
+		codecCache: make(map[uint16]Codec), // 初始化 Codec 缓存
 	}
 
 	return t, nil
 }
 
-// SetLocalNodeID 设置本地节点 ID
-func (t *UDPTransport) SetLocalNodeID(nodeID uint64) {
-	t.localNodeID = nodeID
+// SetNodeID 设置本地节点 ID
+//
+// 参数:
+//   - nodeID: 节点 ID（由外部调用者根据 host:tcpPort:udpPort 生成）
+func (t *UDPTransport) SetNodeID(nodeID uint64) {
+	t.NodeID = nodeID
 }
 
 // Start 启动传输层
@@ -595,11 +598,11 @@ func (t *UDPTransport) sendDirect(addr *net.UDPAddr, msgData []byte, msgType Mes
 // 接收编码后的纯消息数据，对每个分片创建独立的 Frame
 func (t *UDPTransport) sendFragmented(addr *net.UDPAddr, msgData []byte, msgType MessageType) error {
 	// 验证 localNodeID 已设置
-	if t.localNodeID == 0 {
-		return types.NewTransportStateError("localNodeID 未设置，必须调用 SetLocalNodeID")
+	if t.NodeID == 0 {
+		return types.NewTransportStateError("localNodeID 未设置，必须调用 SetNodeID")
 	}
 
-	nodeID := t.localNodeID
+	nodeID := t.NodeID
 	msgID := t.nextMessageID()
 	totalFragments := (len(msgData) + MaxUDPPacketSize - 1) / MaxUDPPacketSize
 
@@ -669,7 +672,7 @@ func (t *UDPTransport) Stats() map[string]any {
 	stats["started"] = t.started.Load()
 	stats["stopped"] = t.stopped.Load()
 	stats["listen_addr"] = t.GetLocalAddr()
-	stats["local_node_id"] = t.localNodeID
+	stats["local_node_id"] = t.NodeID
 	stats["msg_id_counter"] = atomic.LoadUint64(&t.msgIDCounter)
 
 	// 分片缓冲区统计

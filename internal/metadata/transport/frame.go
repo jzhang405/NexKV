@@ -362,7 +362,7 @@ func (h *VarExtHeader) AddField(field *ExtField) {
 
 // Size 返回扩展头的总大小（字节）
 func (h *VarExtHeader) Size() int {
-	size := 2 // ExtTotalLen
+	size := 0
 	for _, field := range h.Fields {
 		size += 4 + len(field.Value) // Type(2) + Length(2) + Value(N)
 	}

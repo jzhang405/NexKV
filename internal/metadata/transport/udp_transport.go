@@ -203,6 +203,12 @@ func (t *UDPTransport) receiveLoop() {
 
 	buf := make([]byte, t.config.MaxMessageSize)
 
+	// 设置读超时（只设置一次，避免每次循环都设置）
+	if err := t.conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout)); err != nil {
+		logging.Errorf("设置读超时失败: %v", err)
+		return
+	}
+
 	logging.Info("开始接收 UDP 数据...")
 
 	for {
@@ -211,12 +217,6 @@ func (t *UDPTransport) receiveLoop() {
 			logging.Info("UDP 传输层已停止（收到停止信号）")
 			return
 		default:
-			// 设置读取超时
-			if err := t.conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout)); err != nil {
-				logging.Errorf("设置读超时失败: %v", err)
-				return
-			}
-
 			n, addr, err := t.conn.ReadFromUDP(buf)
 			if err != nil {
 				if errors.Is(err, io.EOF) {
@@ -224,7 +224,8 @@ func (t *UDPTransport) receiveLoop() {
 					return
 				}
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					// 读超时，继续循环
+					// 读超时，重置超时继续循环
+					_ = t.conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout))
 					continue
 				}
 				logging.Errorf("读取 UDP 数据失败: %v", err)
@@ -271,9 +272,15 @@ func (t *UDPTransport) processReceivedData(data []byte) Message {
 		return nil
 	}
 
+	// 空指针检查（P2-2）
+	if frame.FixedHeader == nil {
+		t.parseErrorCount.Add(1)
+		logging.Warnf("帧固定头为空")
+		return nil
+	}
+
 	// 检查是否有分片扩展字段
-	fragmentField := frame.VarExtHeader.GetField(ExtFragment)
-	if fragmentField == nil {
+	if frame.VarExtHeader.GetField(ExtFragment) == nil {
 		// 无分片扩展，直接解码消息
 		return t.decodeMessage(frame)
 	}
@@ -305,14 +312,21 @@ func (t *UDPTransport) processFragmentFrame(frame *Frame) Message {
 	}
 
 	// 使用 Frame 的 NodeID 和 MsgSeq 作为分片标识
-	nodeID := frame.FixedHeader.NodeID
-	msgID := uint64(frame.FixedHeader.MsgSeq)
-	msgType := frame.FixedHeader.MsgType
-	codecID := frame.FixedHeader.CodecID
+	key := fragmentKey{
+		nodeID: frame.FixedHeader.NodeID,
+		msgID:  uint64(frame.FixedHeader.MsgSeq),
+	}
 
 	// 存储分片并检查是否完整
-	key := fragmentKey{nodeID: nodeID, msgID: msgID}
-	msg := t.fragmentBuf.addFragment(key, total, index, frame.Data, msgType, codecID, t.getCodec)
+	msg := t.fragmentBuf.addFragment(
+		key,
+		total,
+		index,
+		frame.Data,
+		frame.FixedHeader.MsgType,
+		frame.FixedHeader.CodecID,
+		t.getCodec,
+	)
 	if msg == nil {
 		t.fragmentErrorCount.Add(1)
 	}

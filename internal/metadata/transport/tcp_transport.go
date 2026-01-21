@@ -184,12 +184,20 @@ func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 		recvCh:    make(chan Message, config.BufferSize),
 		stopCh:    make(chan struct{}),
 		localAddr: config.ListenAddr,
-		// 生成节点标识
-		localNodeID:     identity.GenerateNodeID(config.ListenAddr),
+		// localNodeID 需要外部通过 SetNodeID() 设置
+		localNodeID:     0,
 		msgSeqGenerator: identity.NewMsgSeqGenerator(),
 	}
 
 	return t, nil
+}
+
+// SetNodeID 设置本地节点 ID
+//
+// 参数:
+//   - nodeID: 节点 ID（由外部调用者根据 host:tcpPort:udpPort 生成）
+func (t *TCPTransport) SetNodeID(nodeID uint64) {
+	t.localNodeID = nodeID
 }
 
 // Start 启动传输层

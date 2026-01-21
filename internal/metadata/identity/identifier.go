@@ -39,7 +39,9 @@ func GenerateNodeID(listenAddr string) uint64 {
 //   - uint64: 节点 ID（FNV-1a 64-bit 哈希）
 func GenerateNodeIDFromPorts(host string, tcpPort, udpPort int) uint64 {
 	listenAddr := net.JoinHostPort(host, strconv.Itoa(tcpPort)) + ":" + strconv.Itoa(udpPort)
-	return GenerateNodeID(listenAddr)
+	h := fnv.New64a()
+	h.Write([]byte(listenAddr))
+	return h.Sum64()
 }
 
 // MsgSeqGenerator 消息序列号生成器（原子递增）

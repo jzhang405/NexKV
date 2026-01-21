@@ -108,6 +108,11 @@ func (d *MessageDeduplicator) IsDuplicate(nodeID, msgSeq uint64) bool {
 
 	d.mu.RLock()
 	entry, exists := d.nodeMaxSeq[nodeID]
+	// 在持有锁的情况下读取 maxSeq，避免竞态条件
+	var maxSeq uint64
+	if exists {
+		maxSeq = entry.maxSeq
+	}
 	d.mu.RUnlock()
 
 	// 新节点，不是重复消息
@@ -117,7 +122,7 @@ func (d *MessageDeduplicator) IsDuplicate(nodeID, msgSeq uint64) bool {
 
 	// 检查序列号：使用 uint64 相减判断新旧（无需回绕检测）
 	// 如果 msgSeq <= maxSeq，说明是旧消息或重复消息
-	if msgSeq <= entry.maxSeq {
+	if msgSeq <= maxSeq {
 		d.hitCount.Add(1)
 		return true
 	}

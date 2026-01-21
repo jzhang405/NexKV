@@ -45,7 +45,7 @@ type UDPTransport struct {
 	// 配置
 	config *TransportConfig
 	codec  Codec
-	NodeID uint64
+	NodeID atomic.Uint64
 
 	// UDP 连接
 	conn *net.UDPConn
@@ -135,9 +135,9 @@ func NewUDPTransportWithConfig(config *TransportConfig) (*UDPTransport, error) {
 	}
 
 	t := &UDPTransport{
-		config:     config,
-		codec:      codec,
-		NodeID:     0, // 需要从配置或外部设置
+		config: config,
+		codec:  codec,
+		// NodeID 需要从外部设置（atomic.Uint64 默认零值）
 		recvCh:     make(chan Message, config.BufferSize),
 		stopCh:     make(chan struct{}),
 		codecCache: make(map[uint16]Codec), // 初始化 Codec 缓存
@@ -151,7 +151,7 @@ func NewUDPTransportWithConfig(config *TransportConfig) (*UDPTransport, error) {
 // 参数:
 //   - nodeID: 节点 ID（由外部调用者根据 host:tcpPort:udpPort 生成）
 func (t *UDPTransport) SetNodeID(nodeID uint64) {
-	t.NodeID = nodeID
+	t.NodeID.Store(nodeID)
 }
 
 // Start 启动传输层
@@ -598,11 +598,11 @@ func (t *UDPTransport) sendDirect(addr *net.UDPAddr, msgData []byte, msgType Mes
 // 接收编码后的纯消息数据，对每个分片创建独立的 Frame
 func (t *UDPTransport) sendFragmented(addr *net.UDPAddr, msgData []byte, msgType MessageType) error {
 	// 验证 localNodeID 已设置
-	if t.NodeID == 0 {
+	if t.NodeID.Load() == 0 {
 		return types.NewTransportStateError("localNodeID 未设置，必须调用 SetNodeID")
 	}
 
-	nodeID := t.NodeID
+	nodeID := t.NodeID.Load()
 	msgID := t.nextMessageID()
 	totalFragments := (len(msgData) + MaxUDPPacketSize - 1) / MaxUDPPacketSize
 
@@ -672,7 +672,7 @@ func (t *UDPTransport) Stats() map[string]any {
 	stats["started"] = t.started.Load()
 	stats["stopped"] = t.stopped.Load()
 	stats["listen_addr"] = t.GetLocalAddr()
-	stats["local_node_id"] = t.NodeID
+	stats["local_node_id"] = t.NodeID.Load()
 	stats["msg_id_counter"] = atomic.LoadUint64(&t.msgIDCounter)
 
 	// 分片缓冲区统计

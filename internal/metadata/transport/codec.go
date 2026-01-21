@@ -304,6 +304,11 @@ func (m *GetMessage) Type() MessageType {
 	return MessageTypeGet
 }
 
+// Priority 实现 Message 接口
+func (m *GetMessage) Priority() int {
+	return GetPriority(m.Type())
+}
+
 // PutMessage 更新元数据消息
 type PutMessage struct {
 	Key   string `json:"key" msgpack:"key"`
@@ -311,6 +316,7 @@ type PutMessage struct {
 }
 
 func (m *PutMessage) Type() MessageType { return MessageTypePut }
+func (m *PutMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // DeleteMessage 删除元数据消息
 type DeleteMessage struct {
@@ -318,6 +324,7 @@ type DeleteMessage struct {
 }
 
 func (m *DeleteMessage) Type() MessageType { return MessageTypeDelete }
+func (m *DeleteMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // GetReplyMessage Get 响应消息
 type GetReplyMessage struct {
@@ -328,6 +335,7 @@ type GetReplyMessage struct {
 }
 
 func (m *GetReplyMessage) Type() MessageType { return MessageTypeGetReply }
+func (m *GetReplyMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // PutReplyMessage Put 响应消息
 type PutReplyMessage struct {
@@ -337,6 +345,7 @@ type PutReplyMessage struct {
 }
 
 func (m *PutReplyMessage) Type() MessageType { return MessageTypePutReply }
+func (m *PutReplyMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // DeleteReplyMessage Delete 响应消息
 type DeleteReplyMessage struct {
@@ -345,6 +354,7 @@ type DeleteReplyMessage struct {
 }
 
 func (m *DeleteReplyMessage) Type() MessageType { return MessageTypeDeleteReply }
+func (m *DeleteReplyMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // ========================================
 // Gossip 协议消息（双标签实现）
@@ -358,6 +368,7 @@ type GossipSyncMessage struct {
 }
 
 func (m *GossipSyncMessage) Type() MessageType { return MessageTypeGossipSync }
+func (m *GossipSyncMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // GossipSyncReplyMessage Gossip 同步响应
 type GossipSyncReplyMessage struct {
@@ -366,6 +377,7 @@ type GossipSyncReplyMessage struct {
 }
 
 func (m *GossipSyncReplyMessage) Type() MessageType { return MessageTypeGossipSyncReply }
+func (m *GossipSyncReplyMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // GossipDigestMessage Gossip 摘要消息
 type GossipDigestMessage struct {
@@ -374,6 +386,7 @@ type GossipDigestMessage struct {
 }
 
 func (m *GossipDigestMessage) Type() MessageType { return MessageTypeGossipDigest }
+func (m *GossipDigestMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // GossipDigestReplyMessage Gossip 摘要响应
 type GossipDigestReplyMessage struct {
@@ -382,6 +395,7 @@ type GossipDigestReplyMessage struct {
 }
 
 func (m *GossipDigestReplyMessage) Type() MessageType { return MessageTypeGossipDigestReply }
+func (m *GossipDigestReplyMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // ========================================
 // Quorum 协议消息（双标签实现）
@@ -398,6 +412,7 @@ type QuorumProposeMessage struct {
 }
 
 func (m *QuorumProposeMessage) Type() MessageType { return MessageTypeQuorumPropose }
+func (m *QuorumProposeMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // QuorumVoteMessage Quorum 投票消息
 type QuorumVoteMessage struct {
@@ -408,6 +423,7 @@ type QuorumVoteMessage struct {
 }
 
 func (m *QuorumVoteMessage) Type() MessageType { return MessageTypeQuorumVote }
+func (m *QuorumVoteMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // QuorumDecideMessage Quorum 决策消息
 type QuorumDecideMessage struct {
@@ -417,6 +433,7 @@ type QuorumDecideMessage struct {
 }
 
 func (m *QuorumDecideMessage) Type() MessageType { return MessageTypeQuorumDecide }
+func (m *QuorumDecideMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // ========================================
 // 2PC 协议消息（双标签实现）
@@ -438,6 +455,7 @@ type Operation struct {
 }
 
 func (m *TwoPCPrepareMessage) Type() MessageType { return MessageType2PCPrepare }
+func (m *TwoPCPrepareMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // TwoPCPrepareReplyMessage 2PC 准备响应
 type TwoPCPrepareReplyMessage struct {
@@ -448,6 +466,7 @@ type TwoPCPrepareReplyMessage struct {
 }
 
 func (m *TwoPCPrepareReplyMessage) Type() MessageType { return MessageType2PCPrepareReply }
+func (m *TwoPCPrepareReplyMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // TwoPCCommitMessage 2PC 提交消息
 type TwoPCCommitMessage struct {
@@ -455,6 +474,7 @@ type TwoPCCommitMessage struct {
 }
 
 func (m *TwoPCCommitMessage) Type() MessageType { return MessageType2PCCommit }
+func (m *TwoPCCommitMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // TwoPCRollbackMessage 2PC 回滚消息
 type TwoPCRollbackMessage struct {
@@ -463,6 +483,7 @@ type TwoPCRollbackMessage struct {
 }
 
 func (m *TwoPCRollbackMessage) Type() MessageType { return MessageType2PCRollback }
+func (m *TwoPCRollbackMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // TwoPCCommitReplyMessage 2PC 提交响应
 type TwoPCCommitReplyMessage struct {
@@ -472,6 +493,7 @@ type TwoPCCommitReplyMessage struct {
 }
 
 func (m *TwoPCCommitReplyMessage) Type() MessageType { return MessageType2PCCommitReply }
+func (m *TwoPCCommitReplyMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // TwoPCRollbackReplyMessage 2PC 回滚响应
 type TwoPCRollbackReplyMessage struct {
@@ -481,6 +503,7 @@ type TwoPCRollbackReplyMessage struct {
 }
 
 func (m *TwoPCRollbackReplyMessage) Type() MessageType { return MessageType2PCRollbackReply }
+func (m *TwoPCRollbackReplyMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // ========================================
 // 节点管理消息（双标签实现）
@@ -494,6 +517,7 @@ type NodePingMessage struct {
 }
 
 func (m *NodePingMessage) Type() MessageType { return MessageTypeNodePing }
+func (m *NodePingMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // NodePongMessage 心跳响应
 type NodePongMessage struct {
@@ -504,6 +528,7 @@ type NodePongMessage struct {
 }
 
 func (m *NodePongMessage) Type() MessageType { return MessageTypeNodePong }
+func (m *NodePongMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // NodeJoinMessage 节点加入消息
 type NodeJoinMessage struct {
@@ -514,6 +539,7 @@ type NodeJoinMessage struct {
 }
 
 func (m *NodeJoinMessage) Type() MessageType { return MessageTypeNodeJoin }
+func (m *NodeJoinMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // NodeLeaveMessage 节点离开消息
 type NodeLeaveMessage struct {
@@ -522,6 +548,7 @@ type NodeLeaveMessage struct {
 }
 
 func (m *NodeLeaveMessage) Type() MessageType { return MessageTypeNodeLeave }
+func (m *NodeLeaveMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // NodeSyncMessage 节点同步消息
 type NodeSyncMessage struct {
@@ -530,6 +557,7 @@ type NodeSyncMessage struct {
 }
 
 func (m *NodeSyncMessage) Type() MessageType { return MessageTypeNodeSync }
+func (m *NodeSyncMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // ClockSyncMessage 时钟同步请求消息
 type ClockSyncMessage struct {
@@ -538,6 +566,7 @@ type ClockSyncMessage struct {
 }
 
 func (m *ClockSyncMessage) Type() MessageType { return MessageTypeClockSync }
+func (m *ClockSyncMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // ClockSyncReplyMessage 时钟同步响应消息
 type ClockSyncReplyMessage struct {
@@ -547,6 +576,7 @@ type ClockSyncReplyMessage struct {
 }
 
 func (m *ClockSyncReplyMessage) Type() MessageType { return MessageTypeClockSyncReply }
+func (m *ClockSyncReplyMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // ========================================
 // 集群管理消息（双标签实现）
@@ -558,6 +588,7 @@ type ClusterStatusMessage struct {
 }
 
 func (m *ClusterStatusMessage) Type() MessageType { return MessageTypeClusterStatus }
+func (m *ClusterStatusMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // ClusterStatusReplyMessage 集群状态响应
 type ClusterStatusReplyMessage struct {
@@ -575,15 +606,17 @@ type NodeInfo struct {
 }
 
 func (m *ClusterStatusReplyMessage) Type() MessageType { return MessageTypeClusterStatusReply }
+func (m *ClusterStatusReplyMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // LeaderElectionMessage Leader 选举消息
 type LeaderElectionMessage struct {
-	ElectionID string `json:"election_id" msgpack:"election_id"`
-	NodeID     string `json:"node_id" msgpack:"node_id"`
-	Priority   int    `json:"priority" msgpack:"priority"`
+	ElectionID       string `json:"election_id" msgpack:"election_id"`
+	NodeID           string `json:"node_id" msgpack:"node_id"`
+	ElectionPriority int    `json:"priority" msgpack:"priority"` // 选举优先级
 }
 
 func (m *LeaderElectionMessage) Type() MessageType { return MessageTypeLeaderElection }
+func (m *LeaderElectionMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // ========================================
 // 编解码器工具函数
@@ -726,9 +759,14 @@ func NewMessageWriter(w io.Writer, codec Codec) *MessageWriter {
 }
 
 // WriteMessage 写入一条消息
-func (mw *MessageWriter) WriteMessage(msg Message) error {
+//
+// 参数:
+//   - msg: 要写入的消息
+//   - nodeID: 发送节点 ID
+//   - msgSeq: 消息序列号
+func (mw *MessageWriter) WriteMessage(msg Message, nodeID uint64, msgSeq uint64) error {
 	// 使用 EncodeFrame 编码
-	frame, err := EncodeFrame(msg, 0, 0)
+	frame, err := EncodeFrame(msg, nodeID, msgSeq)
 	if err != nil {
 		return err
 	}

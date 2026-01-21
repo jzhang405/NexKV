@@ -185,8 +185,8 @@ func TestUDPTransport_Fragmentation(t *testing.T) {
 	ctx := context.Background()
 
 	client, server, serverAddr := setupTestPair(t)
-	client.SetLocalNodeID(1002)
-	server.SetLocalNodeID(1001)
+	client.SetNodeID(1002)
+	server.SetNodeID(1001)
 
 	defer func() { _ = client.Stop() }()
 	defer func() { _ = server.Stop() }()
@@ -265,8 +265,8 @@ func TestUDPTransport_Fragmentation_Sizes(t *testing.T) {
 	for _, tc := range testSizes {
 		t.Run(tc.name, func(t *testing.T) {
 			client, server, serverAddr := setupTestPair(t)
-			client.SetLocalNodeID(2000 + uint64(len(tc.name)))
-			server.SetLocalNodeID(3000 + uint64(len(tc.name)))
+			client.SetNodeID(2000 + uint64(len(tc.name)))
+			server.SetNodeID(3000 + uint64(len(tc.name)))
 
 			defer func() { _ = client.Stop() }()
 			defer func() { _ = server.Stop() }()
@@ -337,8 +337,8 @@ func TestUDPTransport_Fragmentation_ByteBufferPrecision(t *testing.T) {
 	for _, size := range boundarySizes {
 		t.Run(fmt.Sprintf("size_%d", size), func(t *testing.T) {
 			client, server, serverAddr := setupTestPair(t)
-			client.SetLocalNodeID(5000 + uint64(size))
-			server.SetLocalNodeID(6000 + uint64(size))
+			client.SetNodeID(5000 + uint64(size))
+			server.SetNodeID(6000 + uint64(size))
 
 			defer func() { _ = client.Stop() }()
 			defer func() { _ = server.Stop() }()
@@ -596,8 +596,8 @@ func TestUDPTransport_PingPong(t *testing.T) {
 	client, server, serverAddr := setupTestPair(t)
 	clientAddr := client.GetLocalAddr()
 
-	client.SetLocalNodeID(2)
-	server.SetLocalNodeID(1)
+	client.SetNodeID(2)
+	server.SetNodeID(1)
 
 	defer func() { _ = client.Stop() }()
 	defer func() { _ = server.Stop() }()
@@ -683,8 +683,8 @@ func TestUDPTransport_PingPong_Bidirectional(t *testing.T) {
 	nodeA, nodeB, nodeBAddr := setupTestPair(t)
 	nodeAAddr := nodeA.GetLocalAddr()
 
-	nodeA.SetLocalNodeID(100)
-	nodeB.SetLocalNodeID(200)
+	nodeA.SetNodeID(100)
+	nodeB.SetNodeID(200)
 
 	defer func() { _ = nodeA.Stop() }()
 	defer func() { _ = nodeB.Stop() }()
@@ -814,8 +814,8 @@ func TestUDPTransport_PingPong_MultipleRounds(t *testing.T) {
 	client, server, serverAddr := setupTestPair(t)
 	clientAddr := client.GetLocalAddr()
 
-	client.SetLocalNodeID(300)
-	server.SetLocalNodeID(400)
+	client.SetNodeID(300)
+	server.SetNodeID(400)
 
 	defer func() { _ = client.Stop() }()
 	defer func() { _ = server.Stop() }()
@@ -979,7 +979,7 @@ func TestUDPFragmentation_MD5Integrity(t *testing.T) {
 
 	// 创建服务端
 	server := createUDPTransport(t)
-	server.SetLocalNodeID(9001)
+	server.SetNodeID(9001)
 	err := server.Start()
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
@@ -988,7 +988,7 @@ func TestUDPFragmentation_MD5Integrity(t *testing.T) {
 
 	// 创建客户端
 	client := createUDPTransport(t)
-	client.SetLocalNodeID(9002)
+	client.SetNodeID(9002)
 	err = client.Start()
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
@@ -1145,13 +1145,13 @@ func TestUDPFragmentation_Boundary_MinFragments(t *testing.T) {
 	ctx := context.Background()
 
 	server := createUDPTransport(t)
-	server.SetLocalNodeID(7101)
+	server.SetNodeID(7101)
 	err := server.Start()
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
 	client := createUDPTransport(t)
-	client.SetLocalNodeID(7102)
+	client.SetNodeID(7102)
 	err = client.Start()
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
@@ -1197,13 +1197,13 @@ func TestUDPFragmentation_Boundary_MaxFragments(t *testing.T) {
 	ctx := context.Background()
 
 	server := createUDPTransport(t)
-	server.SetLocalNodeID(7103)
+	server.SetNodeID(7103)
 	err := server.Start()
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
 	client := createUDPTransport(t)
-	client.SetLocalNodeID(7104)
+	client.SetNodeID(7104)
 	err = client.Start()
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
@@ -1265,13 +1265,13 @@ func TestUDPFragmentation_Boundary_EmptyPacket(t *testing.T) {
 	ctx := context.Background()
 
 	server := createUDPTransport(t)
-	server.SetLocalNodeID(7105)
+	server.SetNodeID(7105)
 	err := server.Start()
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
 	client := createUDPTransport(t)
-	client.SetLocalNodeID(7106)
+	client.SetNodeID(7106)
 	err = client.Start()
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
@@ -1322,13 +1322,13 @@ func TestUDPFragmentation_PerformanceReport(t *testing.T) {
 	for _, tc := range testSizes {
 		t.Run(tc.name, func(t *testing.T) {
 			server := createUDPTransport(t)
-			server.SetLocalNodeID(8000 + uint64(len(tc.name)))
+			server.SetNodeID(8000 + uint64(len(tc.name)))
 			err := server.Start()
 			require.NoError(t, err)
 			defer func() { _ = server.Stop() }()
 
 			client := createUDPTransport(t)
-			client.SetLocalNodeID(9000 + uint64(len(tc.name)))
+			client.SetNodeID(9000 + uint64(len(tc.name)))
 			err = client.Start()
 			require.NoError(t, err)
 			defer func() { _ = client.Stop() }()
@@ -1402,11 +1402,11 @@ func generateRandomData(size int) []byte {
 // P0 安全问题测试
 // ========================================
 
-// TestUDP_P0_LocalNodeIDValidation 测试 localNodeID 验证
+// TestUDP_P0_LocalNodeIDValidation 测试 NodeID 验证
 func TestUDP_P0_LocalNodeIDValidation(t *testing.T) {
 	ctx := context.Background()
 
-	// 创建 UDP transport（不设置 localNodeID）
+	// 创建 UDP transport（不设置 NodeID）
 	trans, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
@@ -1420,7 +1420,7 @@ func TestUDP_P0_LocalNodeIDValidation(t *testing.T) {
 
 	serverAddr := trans.GetLocalAddr()
 
-	// 创建客户端（也不设置 localNodeID）
+	// 创建客户端（也不设置 NodeID）
 	client, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
@@ -1432,20 +1432,20 @@ func TestUDP_P0_LocalNodeIDValidation(t *testing.T) {
 		}
 	}()
 
-	// 尝试发送大消息（需要分片），应该因为 localNodeID=0 而失败
+	// 尝试发送大消息（需要分片），应该因为 NodeID=0 而失败
 	largeValue := make([]byte, 2000) // 大于 MaxUDPPacketSize
 	msg := &PutMessage{Key: "test-key", Value: largeValue}
 
 	err = client.Send(ctx, serverAddr, msg)
-	assert.Error(t, err, "localNodeID 未设置时应该返回错误")
-	assert.Contains(t, err.Error(), "localNodeID 未设置", "错误信息应该提到 localNodeID")
+	assert.Error(t, err, "NodeID 未设置时应该返回错误")
+	assert.Contains(t, err.Error(), "NodeID 未设置", "错误信息应该提到 NodeID")
 
-	// 设置 localNodeID 后应该成功
-	client.SetLocalNodeID(1002)
+	// 设置 NodeID 后应该成功
+	client.SetNodeID(1002)
 	err = client.Send(ctx, serverAddr, msg)
-	assert.NoError(t, err, "设置 localNodeID 后应该成功发送")
+	assert.NoError(t, err, "设置 NodeID 后应该成功发送")
 
-	t.Log("✅ P0-1: localNodeID 验证测试通过")
+	t.Log("✅ P0-1: NodeID 验证测试通过")
 }
 
 // TestUDP_P0_MaxFragmentCount 测试分片数量上限
@@ -1461,7 +1461,7 @@ func TestUDP_P0_MaxFragmentCount(t *testing.T) {
 		}
 	}()
 
-	trans.SetLocalNodeID(1001)
+	trans.SetNodeID(1001)
 
 	// 构造恶意分片帧：total = 0（非法值）
 	// 使用新的 TLV Frame 格式，包含 ExtFragment 扩展字段

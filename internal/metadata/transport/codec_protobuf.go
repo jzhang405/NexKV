@@ -269,7 +269,7 @@ func (c *ProtobufCodec) DecodeInto(data []byte, msg Message) error {
 		if decoded, ok := decodedMsg.(*LeaderElectionMessage); ok {
 			m.ElectionID = decoded.ElectionID
 			m.NodeID = decoded.NodeID
-			m.Priority = decoded.Priority
+			m.ElectionPriority = decoded.ElectionPriority
 		}
 	default:
 		return types.NewCodecInvalidDataError("DecodeInto", "不支持的消息类型")
@@ -537,7 +537,7 @@ func (c *ProtobufCodec) messageToWrapper(msg Message) (*proto.WrapperMessageProt
 			LeaderElectionMsg: &proto.LeaderElectionMessageProto{
 				ElectionId: m.ElectionID, // Proto uses camelCase: election_id
 				NodeId:     m.NodeID,
-				Priority:   int32(m.Priority),
+				Priority:   int32(m.ElectionPriority),
 			},
 		}
 	default:
@@ -726,9 +726,9 @@ func (c *ProtobufCodec) wrapperToMessage(wrapper *proto.WrapperMessageProto) (Me
 		}, nil
 	case *proto.WrapperMessageProto_LeaderElectionMsg:
 		return &LeaderElectionMessage{
-			ElectionID: body.LeaderElectionMsg.ElectionId, // Proto uses camelCase: election_id
-			NodeID:     body.LeaderElectionMsg.NodeId,
-			Priority:   int(body.LeaderElectionMsg.Priority),
+			ElectionID:       body.LeaderElectionMsg.ElectionId, // Proto uses camelCase: election_id
+			NodeID:           body.LeaderElectionMsg.NodeId,
+			ElectionPriority: int(body.LeaderElectionMsg.Priority),
 		}, nil
 	default:
 		_ = body // 明确忽略：default 匹配未知类型，body 变量无实际用途

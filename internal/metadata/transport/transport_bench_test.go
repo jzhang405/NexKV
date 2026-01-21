@@ -491,9 +491,9 @@ var allTestMessages = []Message{
 
 	// 集群管理消息 (350-399)
 	&LeaderElectionMessage{
-		ElectionID: "election-123",
-		NodeID:     "node-1",
-		Priority:   1,
+		ElectionID:       "election-123",
+		NodeID:           "node-1",
+		ElectionPriority: 1,
 	},
 }
 
@@ -697,14 +697,14 @@ func BenchmarkTCPVsUDP_SendLarge(b *testing.B) {
 
 	b.Run("UDP", func(b *testing.B) {
 		server := createUDPTransportForBench(b)
-		server.SetLocalNodeID(1)
+		server.SetNodeID(1)
 		if err := server.Start(); err != nil {
 			b.Fatalf("启动 server 失败: %v", err)
 		}
 		defer func() { _ = server.Stop() }()
 
 		client := createUDPTransportForBench(b)
-		client.SetLocalNodeID(2)
+		client.SetNodeID(2)
 		if err := client.Start(); err != nil {
 			b.Fatalf("启动 client 失败: %v", err)
 		}
@@ -807,14 +807,14 @@ func BenchmarkTCPVsUDP_VaryingSizes(b *testing.B) {
 
 		b.Run(fmt.Sprintf("%d_UDP", size), func(b *testing.B) {
 			server := createUDPTransportForBench(b)
-			server.SetLocalNodeID(1)
+			server.SetNodeID(1)
 			if err := server.Start(); err != nil {
 				b.Fatalf("启动 server 失败: %v", err)
 			}
 			defer func() { _ = server.Stop() }()
 
 			client := createUDPTransportForBench(b)
-			client.SetLocalNodeID(2)
+			client.SetNodeID(2)
 			if err := client.Start(); err != nil {
 				b.Fatalf("启动 client 失败: %v", err)
 			}

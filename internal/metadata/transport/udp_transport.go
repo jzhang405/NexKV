@@ -43,9 +43,9 @@ const (
 //   - 优雅关闭
 type UDPTransport struct {
 	// 配置
-	config      *TransportConfig
-	codec       Codec
-	localNodeID uint64
+	config *TransportConfig
+	codec  Codec
+	NodeID atomic.Uint64
 
 	// UDP 连接
 	conn *net.UDPConn
@@ -135,20 +135,23 @@ func NewUDPTransportWithConfig(config *TransportConfig) (*UDPTransport, error) {
 	}
 
 	t := &UDPTransport{
-		config:      config,
-		codec:       codec,
-		localNodeID: 0, // 需要从配置或外部设置
-		recvCh:      make(chan Message, config.BufferSize),
-		stopCh:      make(chan struct{}),
-		codecCache:  make(map[uint16]Codec), // 初始化 Codec 缓存
+		config: config,
+		codec:  codec,
+		// NodeID 需要从外部设置（atomic.Uint64 默认零值）
+		recvCh:     make(chan Message, config.BufferSize),
+		stopCh:     make(chan struct{}),
+		codecCache: make(map[uint16]Codec), // 初始化 Codec 缓存
 	}
 
 	return t, nil
 }
 
-// SetLocalNodeID 设置本地节点 ID
-func (t *UDPTransport) SetLocalNodeID(nodeID uint64) {
-	t.localNodeID = nodeID
+// SetNodeID 设置本地节点 ID
+//
+// 参数:
+//   - nodeID: 节点 ID（由外部调用者根据 host:tcpPort:udpPort 生成）
+func (t *UDPTransport) SetNodeID(nodeID uint64) {
+	t.NodeID.Store(nodeID)
 }
 
 // Start 启动传输层
@@ -203,6 +206,12 @@ func (t *UDPTransport) receiveLoop() {
 
 	buf := make([]byte, t.config.MaxMessageSize)
 
+	// 设置读超时（只设置一次，避免每次循环都设置）
+	if err := t.conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout)); err != nil {
+		logging.Errorf("设置读超时失败: %v", err)
+		return
+	}
+
 	logging.Info("开始接收 UDP 数据...")
 
 	for {
@@ -211,12 +220,6 @@ func (t *UDPTransport) receiveLoop() {
 			logging.Info("UDP 传输层已停止（收到停止信号）")
 			return
 		default:
-			// 设置读取超时
-			if err := t.conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout)); err != nil {
-				logging.Errorf("设置读超时失败: %v", err)
-				return
-			}
-
 			n, addr, err := t.conn.ReadFromUDP(buf)
 			if err != nil {
 				if errors.Is(err, io.EOF) {
@@ -224,7 +227,8 @@ func (t *UDPTransport) receiveLoop() {
 					return
 				}
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					// 读超时，继续循环
+					// 读超时，重置超时继续循环
+					_ = t.conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout))
 					continue
 				}
 				logging.Errorf("读取 UDP 数据失败: %v", err)
@@ -271,9 +275,15 @@ func (t *UDPTransport) processReceivedData(data []byte) Message {
 		return nil
 	}
 
+	// 空指针检查（P2-2）
+	if frame.FixedHeader == nil {
+		t.parseErrorCount.Add(1)
+		logging.Warnf("帧固定头为空")
+		return nil
+	}
+
 	// 检查是否有分片扩展字段
-	fragmentField := frame.VarExtHeader.GetField(ExtFragment)
-	if fragmentField == nil {
+	if frame.VarExtHeader.GetField(ExtFragment) == nil {
 		// 无分片扩展，直接解码消息
 		return t.decodeMessage(frame)
 	}
@@ -305,14 +315,21 @@ func (t *UDPTransport) processFragmentFrame(frame *Frame) Message {
 	}
 
 	// 使用 Frame 的 NodeID 和 MsgSeq 作为分片标识
-	nodeID := frame.FixedHeader.NodeID
-	msgID := uint64(frame.FixedHeader.MsgSeq)
-	msgType := frame.FixedHeader.MsgType
-	codecID := frame.FixedHeader.CodecID
+	key := fragmentKey{
+		nodeID: frame.FixedHeader.NodeID,
+		msgID:  uint64(frame.FixedHeader.MsgSeq),
+	}
 
 	// 存储分片并检查是否完整
-	key := fragmentKey{nodeID: nodeID, msgID: msgID}
-	msg := t.fragmentBuf.addFragment(key, total, index, frame.Data, msgType, codecID, t.getCodec)
+	msg := t.fragmentBuf.addFragment(
+		key,
+		total,
+		index,
+		frame.Data,
+		frame.FixedHeader.MsgType,
+		frame.FixedHeader.CodecID,
+		t.getCodec,
+	)
 	if msg == nil {
 		t.fragmentErrorCount.Add(1)
 	}
@@ -581,11 +598,11 @@ func (t *UDPTransport) sendDirect(addr *net.UDPAddr, msgData []byte, msgType Mes
 // 接收编码后的纯消息数据，对每个分片创建独立的 Frame
 func (t *UDPTransport) sendFragmented(addr *net.UDPAddr, msgData []byte, msgType MessageType) error {
 	// 验证 localNodeID 已设置
-	if t.localNodeID == 0 {
-		return types.NewTransportStateError("localNodeID 未设置，必须调用 SetLocalNodeID")
+	if t.NodeID.Load() == 0 {
+		return types.NewTransportStateError("localNodeID 未设置，必须调用 SetNodeID")
 	}
 
-	nodeID := t.localNodeID
+	nodeID := t.NodeID.Load()
 	msgID := t.nextMessageID()
 	totalFragments := (len(msgData) + MaxUDPPacketSize - 1) / MaxUDPPacketSize
 
@@ -655,7 +672,7 @@ func (t *UDPTransport) Stats() map[string]any {
 	stats["started"] = t.started.Load()
 	stats["stopped"] = t.stopped.Load()
 	stats["listen_addr"] = t.GetLocalAddr()
-	stats["local_node_id"] = t.localNodeID
+	stats["local_node_id"] = t.NodeID.Load()
 	stats["msg_id_counter"] = atomic.LoadUint64(&t.msgIDCounter)
 
 	// 分片缓冲区统计

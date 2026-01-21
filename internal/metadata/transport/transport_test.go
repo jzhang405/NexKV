@@ -647,8 +647,8 @@ func TestMessageWriter_WriteMessage(t *testing.T) {
 	var buf bytes.Buffer
 	writer := NewMessageWriter(&buf, nil)
 
-	// 写入消息
-	err := writer.WriteMessage(msg)
+	// 写入消息（使用测试用的 nodeID 和 msgSeq）
+	err := writer.WriteMessage(msg, 12345, 1)
 	require.NoError(t, err)
 
 	// 验证写入了数据
@@ -662,6 +662,10 @@ func TestMessageWriter_WriteMessage(t *testing.T) {
 
 	// defaultCodec 是 Protobuf，所以 CodecID 应该是 CodecTypeProtobuf
 	assert.Equal(t, uint16(types.CodecTypeProtobuf), frame.FixedHeader.CodecID)
+
+	// 验证 NodeID 和 MsgSeq
+	assert.Equal(t, uint64(12345), frame.FixedHeader.NodeID)
+	assert.Equal(t, uint64(1), frame.FixedHeader.MsgSeq)
 }
 
 // ========================================

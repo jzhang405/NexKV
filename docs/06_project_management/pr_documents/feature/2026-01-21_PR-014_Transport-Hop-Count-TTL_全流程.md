@@ -774,6 +774,8 @@ func (t *UDPTransport) parseMsgExt(rawMsg *Message) MsgExt {
 | 项目 | 内容 |
 |------|------|
 | 文档最终版本 | V1.0 |
-| 归档日期 | 待定 |
+| 归档日期 | 2026-01-21 |
 | 归档路径 | `docs/06_project_management/pr_documents/feature/2026-01-21_PR-014_Transport-Hop-Count-TTL_全流程.md` |
+| GitHub PR | [#15](https://github.com/jzhang405/NexKV/pull/15) |
+| 合并状态 | ✅ 已合并到 mainline |
 | 后续维护人 | @jzhang405 |

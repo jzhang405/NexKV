@@ -195,8 +195,10 @@ const (
 	ExtFragment ExtFieldType = 3
 	// ExtPriority 优先级扩展
 	ExtPriority ExtFieldType = 4
-	// ExtCustom 自定义扩展（>= 5）
-	ExtCustom ExtFieldType = 5
+	// ExtHop 跳数 TTL 扩展（Hop Count：时钟无关的消息传播限制）
+	ExtHop ExtFieldType = 5
+	// ExtCustom 自定义扩展（>= 6）
+	ExtCustom ExtFieldType = 6
 )
 
 // String 返回扩展字段类型的字符串表示
@@ -210,6 +212,8 @@ func (t ExtFieldType) String() string {
 		return "Fragment"
 	case ExtPriority:
 		return "Priority"
+	case ExtHop:
+		return "Hop"
 	default:
 		return fmt.Sprintf("Custom(%d)", t)
 	}
@@ -432,6 +436,12 @@ func (f *Frame) WithEncrypt(encryptID uint16, nonce []byte, version string) *Fra
 // WithPriority 添加优先级扩展字段
 func (f *Frame) WithPriority(priority types.Priority) *Frame {
 	f.VarExtHeader.AddField(EncodePriorityExt(priority))
+	return f
+}
+
+// WithHop 添加跳数 TTL 扩展字段
+func (f *Frame) WithHop(hop, totalHop uint16) *Frame {
+	f.VarExtHeader.AddField(EncodeHopExt(hop, totalHop))
 	return f
 }
 
@@ -847,4 +857,40 @@ func DecodeFragmentExt(field *ExtField) (index, total uint16, err error) {
 	}
 
 	return data.Index, data.Total, nil
+}
+
+// hopExtData 跳数 TTL 扩展数据（MessagePack 序列化用）
+type hopExtData struct {
+	Hop      uint16 `msgpack:"hop"`   // 当前跳数
+	TotalHop uint16 `msgpack:"total"` // 最大跳数
+}
+
+// EncodeHopExt 编码跳数 TTL 扩展
+func EncodeHopExt(hop, totalHop uint16) *ExtField {
+	data := hopExtData{
+		Hop:      hop,
+		TotalHop: totalHop,
+	}
+
+	bytes, err := msgpack.Marshal(data)
+	if err != nil {
+		// 跳数扩展编码失败不应发生，直接panic
+		panic(fmt.Sprintf("序列化跳数扩展失败: %v", err))
+	}
+
+	return &ExtField{
+		Type:  ExtHop,
+		Value: bytes,
+	}
+}
+
+// DecodeHopExt 解码跳数 TTL 扩展
+func DecodeHopExt(field *ExtField) (hop, totalHop uint16, err error) {
+	var data hopExtData
+
+	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
+		return 0, 0, fmt.Errorf("反序列化跳数扩展失败: %w", err)
+	}
+
+	return data.Hop, data.TotalHop, nil
 }

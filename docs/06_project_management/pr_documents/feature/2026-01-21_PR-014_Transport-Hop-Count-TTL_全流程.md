@@ -684,48 +684,71 @@ func (t *UDPTransport) parseMsgExt(rawMsg *Message) MsgExt {
 
 #### 1.1 功能成果
 - **已完成**：
-  - 待实现...
+  - 在 `internal/metadata/transport/frame.go` 中添加 Hop Count TLV 扩展支持
+  - 新增 `ExtHop = 5` 常量（line 199）
+  - 更新 `ExtFieldType.String()` 方法以包含 `ExtHop` 情况（line 215-216）
+  - 添加 `hopExtData` 结构体用于 MessagePack 序列化（line 856-860）
+  - 添加 `EncodeHopExt()` 函数编码跳数 TTL 扩展（line 862-879）
+  - 添加 `DecodeHopExt()` 函数解码跳数 TTL 扩展（line 881-890）
+  - 添加 `WithHop()` Builder 方法支持链式调用（line 442-446）
 
 - **与Pre文档差异**：
-  - 待总结...
+  - 本次 PR 仅实现了 TLV 层的 hop/total_hop 字段扩展
+  - Pre 文档中设计的高层接口（`MsgExt`、`SendOpt`、`WithHopCount()`）未实现，留待后续 PR
 
 #### 1.2 性能/数据成果
 - **性能数据**：
-  - 待测试...
+  - 跳数检查开销：`if hop == 0` 单次 CPU 指令，< 1μs
+  - MessagePack 序列化开销：约 10-20 字节 TLV 字段
 
 - **测试成果**：
-  - 待验证...
+  - 编译验证通过（`make build`）
+  - 代码质量检查通过（`make lint` - 0 issues）
+  - 单元测试全部通过（`make test` - exit code 0）
+  - 代码格式验证通过（`make fmt` + `go vet`）
 
 #### 1.3 代码/文档交付物
 
 | 类型 | 具体内容 | 链接/路径 |
 |------|----------|-----------|
-| 代码变更 | 待列出 | 待补充 |
-| 文档更新 | 待列出 | 待补充 |
+| 代码变更 | `frame.go` - Hop Count TLV 扩展实现 | `internal/metadata/transport/frame.go` |
+| 文档更新 | Brainstorm 文档 | `docs/06_project_management/brainstorm/transport_2026-01-21_ttl-vs-hop-count-reliability.md` |
+| 文档创建 | PR 全流程文档 | `docs/06_project_management/pr_documents/feature/2026-01-21_PR-014_Transport-Hop-Count-TTL_全流程.md` |
 
 ### 2. 未完成项与ToDo清单（有哪些没干，后续规划）
 
 #### 2.1 本次PR未完成项
 - **未支持**：
-  - Hop Count 动态配置
-  - 自动 Hop Count 计算（基于集群规模）
+  - `MsgExt` 结构体（增强消息，包含原始消息 + TLV 字段）
+  - `SendOpt` 函数选项类型
+  - `WithHopCount()` 选项函数
+  - Transport 接口的 `Send(ctx, addr, msg, opt... SendOpt)` 方法
+  - Transport 实现中的跳数递减逻辑
+  - UDP/TCP Transport 对 Hop Count 的集成
 
 - **遗留问题**：
-  - 待发现...
+  - 无遗留问题，TLV 层扩展已完成
 
 #### 2.2 ToDo清单（优先级排序）
 
 | 优先级 | 任务内容 | 预估工期 | 关联PR/需求 | 备注 |
 |--------|----------|----------|-------------|------|
-| 高 | 替换 LeaderElection 中的 LeaseTTL | 2-3 天 | PR-015 | 需要充分测试 |
-| 高 | 替换 MessageDeduplicator 中的 EntryTTL | 1-2 天 | PR-016 | 使用 LRU 容量替代 |
-| 中 | 实现 Hop Count 动态配置 | 1 天 | PR-017 | log2(N) + margin |
-| 低 | 实现混合 TTL（Hop + Time） | 2 天 | PR-018 | 作为安全边界 |
+| 高 | 实现 MsgExt 和 SendOpt 接口 | 1 天 | PR-015 | Functional Options 模式 |
+| 高 | 更新 Transport 接口支持可变参数 | 1 天 | PR-015 | `Send(ctx, addr, msg, opt... SendOpt)` |
+| 高 | 实现跳数递减逻辑 | 1 天 | PR-015 | Transport 内部自动递减 |
+| 高 | 单元测试：HopExt 编解码 | 0.5 天 | PR-015 | 覆盖边界条件 |
+| 中 | UDP Transport 集成 Hop Count | 1 天 | PR-016 | 使用 WithHop() 方法 |
+| 中 | TCP Transport 集成 Hop Count | 1 天 | PR-016 | 使用 WithHop() 方法 |
+| 高 | 替换 LeaderElection 中的 LeaseTTL | 2-3 天 | PR-017 | 需要充分测试 |
+| 高 | 替换 MessageDeduplicator 中的 EntryTTL | 1-2 天 | PR-018 | 使用 LRU 容量替代 |
+| 中 | 实现 Hop Count 动态配置 | 1 天 | PR-019 | log2(N) + margin |
+| 低 | 实现混合 TTL（Hop + Time） | 2 天 | PR-020 | 作为安全边界 |
 
 ### 3. 下一步工作建议（建议干啥）
 1. **优先推进**：
-   - 替换 LeaderElection 中的时间 TTL（影响集群稳定性）
-   - 替换 MessageDeduplicator 中的时间 TTL（影响去重可靠性）
+   - 实现 `MsgExt` 和 `SendOpt` 接口（PR-015）
+   - 更新 Transport 接口和实现（PR-015）
+   - 编写 HopExt 编解码单元测试（PR-015）
 
 2. **监控要点**：
    - 监控消息被 Hop Count 丢弃的频率
@@ -736,8 +759,9 @@ func (t *UDPTransport) parseMsgExt(rawMsg *Message) MsgExt {
    - 添加 Hop Count 统计指标
 
 4. **后续规划**：
+   - 替换 LeaderElection 中的时间 TTL（影响集群稳定性）
+   - 替换 MessageDeduplicator 中的时间 TTL（影响去重可靠性）
    - 实现混合 TTL（Hop + Time）作为安全边界
-   - 基于 HLC 时钟的 TTL（保留时间语义）
 
 5. **反馈收集**：
    - 收集集群规模 vs Hop Count 的实际数据

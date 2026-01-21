@@ -47,6 +47,10 @@ type Transport interface {
 type Message interface {
 	// Type 返回消息类型
 	Type() MessageType
+
+	// Priority 返回消息优先级（0-4，0最低，4最高）
+	// 用于流量控制：接收端过载时优先丢弃低优先级消息
+	Priority() int
 }
 
 // MessageType 消息类型

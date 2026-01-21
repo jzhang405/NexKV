@@ -13,7 +13,7 @@ import (
 // ShouldDrop 判断是否应该丢弃消息（基于优先级和当前状态）
 //
 // 参数:
-//   - msgType: 消息类型
+//   - msg: 消息
 //   - channelUsage: 当前接收通道使用率（0.0-1.0）
 //
 // 返回:
@@ -24,13 +24,13 @@ import (
 //   - 0.8 <= channelUsage < 0.9: 丢弃最低优先级消息
 //   - 0.9 <= channelUsage < 0.95: 丢弃低优先级和最低优先级消息
 //   - channelUsage >= 0.95: 丢弃正常、低优先级和最低优先级消息（仅保留关键消息）
-func ShouldDrop(msgType MessageType, channelUsage float64) bool {
+func ShouldDrop(msg Message, channelUsage float64) bool {
 	// 通道未满载，不丢弃
 	if channelUsage < 0.8 {
 		return false
 	}
 
-	priority := GetPriority(msgType)
+	priority := msg.Priority()
 
 	// 根据通道使用率决定丢弃策略
 	switch {
@@ -70,18 +70,18 @@ func GetPriorityName(priority int) string {
 //
 // 参数:
 //   - event: 事件类型（accept、drop、channel_full）
-//   - msgType: 消息类型
+//   - msg: 消息
 //   - channelUsage: 当前通道使用率
-func LogFlowControlEvent(event string, msgType MessageType, channelUsage float64) {
+func LogFlowControlEvent(event string, msg Message, channelUsage float64) {
 	switch event {
 	case "accept":
 		logging.Debugf("流量控制: 接收消息 type=%d priority=%s usage=%.2f",
-			msgType, GetPriorityName(GetPriority(msgType)), channelUsage)
+			msg.Type(), GetPriorityName(msg.Priority()), channelUsage)
 
 	case "drop":
-		priority := GetPriority(msgType)
+		priority := msg.Priority()
 		logging.Warnf("流量控制: 丢弃消息 type=%d priority=%s usage=%.2f",
-			msgType, GetPriorityName(priority), channelUsage)
+			msg.Type(), GetPriorityName(priority), channelUsage)
 
 	case "channel_full":
 		logging.Warnf("流量控制: 通道满载等待超时，消息可能丢失")

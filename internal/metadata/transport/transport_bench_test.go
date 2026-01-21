@@ -491,9 +491,9 @@ var allTestMessages = []Message{
 
 	// 集群管理消息 (350-399)
 	&LeaderElectionMessage{
-		ElectionID: "election-123",
-		NodeID:     "node-1",
-		Priority:   1,
+		ElectionID:       "election-123",
+		NodeID:           "node-1",
+		ElectionPriority: 1,
 	},
 }
 

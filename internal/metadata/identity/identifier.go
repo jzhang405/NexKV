@@ -13,21 +13,6 @@ import (
 	"time"
 )
 
-// GenerateNodeID 生成节点 ID
-//
-// 使用 FNV-1a 64-bit 哈希算法，基于 listenAddr 生成唯一的节点 ID
-// 输入格式: "host:tcpport:udpport"，未启用的协议端口使用 0
-//
-// 示例:
-//   - 仅 TCP: "127.0.0.1:9211:0"
-//   - 仅 UDP: "127.0.0.1:0:9212"
-//   - TCP+UDP: "127.0.0.1:9211:9212"
-func GenerateNodeID(listenAddr string) uint64 {
-	h := fnv.New64a()
-	h.Write([]byte(listenAddr))
-	return h.Sum64()
-}
-
 // GenerateNodeIDFromPorts 根据主机和端口生成节点 ID
 //
 // 参数:

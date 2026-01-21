@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/metadata/identity"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
@@ -102,6 +103,10 @@ type TCPTransport struct {
 
 	// 本地节点地址
 	localAddr string
+
+	// 节点标识
+	localNodeID     uint64
+	msgSeqGenerator *identity.MsgSeqGenerator
 }
 
 // connPool 连接池
@@ -179,6 +184,9 @@ func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 		recvCh:    make(chan Message, config.BufferSize),
 		stopCh:    make(chan struct{}),
 		localAddr: config.ListenAddr,
+		// 生成节点标识
+		localNodeID:     identity.GenerateNodeID(config.ListenAddr),
+		msgSeqGenerator: identity.NewMsgSeqGenerator(),
 	}
 
 	return t, nil
@@ -441,7 +449,8 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message) error
 	}
 
 	// 发送消息
-	if err := conn.writer.WriteMessage(msg); err != nil {
+	msgSeq := t.msgSeqGenerator.Next()
+	if err := conn.writer.WriteMessage(msg, t.localNodeID, msgSeq); err != nil {
 		// 发送失败，从池中移除连接（removeConnFromPool 会关闭连接）
 		t.removeConnFromPool(addr)
 		return types.NewTransportSendError(err)

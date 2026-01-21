@@ -759,9 +759,14 @@ func NewMessageWriter(w io.Writer, codec Codec) *MessageWriter {
 }
 
 // WriteMessage 写入一条消息
-func (mw *MessageWriter) WriteMessage(msg Message) error {
+//
+// 参数:
+//   - msg: 要写入的消息
+//   - nodeID: 发送节点 ID
+//   - msgSeq: 消息序列号
+func (mw *MessageWriter) WriteMessage(msg Message, nodeID uint64, msgSeq uint64) error {
 	// 使用 EncodeFrame 编码
-	frame, err := EncodeFrame(msg, 0, 0)
+	frame, err := EncodeFrame(msg, nodeID, msgSeq)
 	if err != nil {
 		return err
 	}

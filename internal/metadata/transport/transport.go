@@ -169,6 +169,59 @@ func (t MessageType) String() string {
 	}
 }
 
+// 流量控制优先级常量（从低到高）
+//
+// 使用场景: 接收端过载时，优先丢弃低优先级消息
+const (
+	// PriorityLowest 最低优先级（可丢弃）
+	PriorityLowest = 0
+
+	// PriorityLow 低优先级
+	PriorityLow = 1
+
+	// PriorityNormal 正常优先级
+	PriorityNormal = 2
+
+	// PriorityHigh 高优先级
+	PriorityHigh = 3
+
+	// PriorityCritical 关键优先级（不可丢弃）
+	PriorityCritical = 4
+)
+
+// GetPriority 获取消息优先级
+//
+// 参数:
+//   - msgType: 消息类型
+//
+// 返回:
+//   - int: 优先级等级（0-4，0最低，4最高）
+func GetPriority(msgType MessageType) int {
+	switch msgType {
+	// 最低优先级
+	case MessageTypeGossipDigest, MessageTypeGossipDigestReply:
+		return PriorityLowest
+
+	// 低优先级
+	case MessageTypeGossipSyncReply, MessageTypeNodePing:
+		return PriorityLow
+	case MessageTypeClockSync, MessageTypeClockSyncReply:
+		return PriorityLow
+
+	// 关键优先级
+	case MessageType2PCCommit, MessageType2PCRollback:
+		return PriorityHigh
+	case MessageType2PCCommitReply, MessageType2PCRollbackReply:
+		return PriorityHigh
+	case MessageTypeQuorumDecide:
+		return PriorityCritical
+
+	// 正常优先级
+	default:
+		return PriorityNormal
+	}
+}
+
 // Address 节点地址
 type Address struct {
 	Host string // 主机名或 IP

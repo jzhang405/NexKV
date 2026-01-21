@@ -10,60 +10,6 @@ import (
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
 )
 
-// 流量控制优先级表（从低到高）
-//
-// 使用场景: 接收端过载时，优先丢弃低优先级消息
-// 适用范围: 仅本地测试环境，跨节点场景禁用
-const (
-	// PriorityLowest 最低优先级（可丢弃）
-	PriorityLowest = 0
-
-	// PriorityLow 低优先级
-	PriorityLow = 1
-
-	// PriorityNormal 正常优先级
-	PriorityNormal = 2
-
-	// PriorityHigh 高优先级
-	PriorityHigh = 3
-
-	// PriorityCritical 关键优先级（不可丢弃）
-	PriorityCritical = 4
-)
-
-// getPriority 获取消息优先级
-//
-// 参数:
-//   - msgType: 消息类型
-//
-// 返回:
-//   - int: 优先级等级（0-4，0最低，4最高）
-func getPriority(msgType MessageType) int {
-	switch msgType {
-	// 最低优先级
-	case MessageTypeGossipDigest, MessageTypeGossipDigestReply:
-		return PriorityLowest
-
-	// 低优先级
-	case MessageTypeGossipSyncReply, MessageTypeNodePing:
-		return PriorityLow
-	case MessageTypeClockSync, MessageTypeClockSyncReply:
-		return PriorityLow
-
-	// 关键优先级
-	case MessageType2PCCommit, MessageType2PCRollback:
-		return PriorityHigh
-	case MessageType2PCCommitReply, MessageType2PCRollbackReply:
-		return PriorityHigh
-	case MessageTypeQuorumDecide:
-		return PriorityCritical
-
-	// 正常优先级
-	default:
-		return PriorityNormal
-	}
-}
-
 // ShouldDrop 判断是否应该丢弃消息（基于优先级和当前状态）
 //
 // 参数:
@@ -84,7 +30,7 @@ func ShouldDrop(msgType MessageType, channelUsage float64) bool {
 		return false
 	}
 
-	priority := getPriority(msgType)
+	priority := GetPriority(msgType)
 
 	// 根据通道使用率决定丢弃策略
 	switch {
@@ -130,10 +76,10 @@ func LogFlowControlEvent(event string, msgType MessageType, channelUsage float64
 	switch event {
 	case "accept":
 		logging.Debugf("流量控制: 接收消息 type=%d priority=%s usage=%.2f",
-			msgType, GetPriorityName(getPriority(msgType)), channelUsage)
+			msgType, GetPriorityName(GetPriority(msgType)), channelUsage)
 
 	case "drop":
-		priority := getPriority(msgType)
+		priority := GetPriority(msgType)
 		logging.Warnf("流量控制: 丢弃消息 type=%d priority=%s usage=%.2f",
 			msgType, GetPriorityName(priority), channelUsage)
 

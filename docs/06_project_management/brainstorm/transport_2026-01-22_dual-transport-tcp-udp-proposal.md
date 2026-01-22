@@ -305,6 +305,114 @@ func (dt *DualTransport) BatchForwardMessage(ctx context.Context, addrs []string
 
 **文件**: `internal/metadata/transport/message_router.go`
 
+**⚠️ 架构审核要求：不可降级消息类型配置清单**
+
+为防止关键消息错误降级导致数据一致性问题，增加 `NonFallbackMessageTypes` 配置：
+
+```go
+type RouterConfig struct {
+    DefaultTransport        TransportType
+    CustomRoutes            map[MessageType]TransportType
+    SizeThresholds          map[TransportType]int
+    NonFallbackMessageTypes []MessageType // 🚨 不可降级的关键消息
+}
+
+// 默认不可降级消息类型（强制使用 TCP）
+var defaultNonFallbackMessageTypes = []MessageType{
+    // 2PC 关键决策（不可丢失）
+    MessageType2PCCommit,      // 提交决策绝对不能丢失
+    MessageType2PCRollback,    // 回滚决策绝对不能丢失
+
+    // Quorum 关键决策（不可丢失）
+    MessageTypeQuorumDecide,   // Quorum 最终决策不可降级
+
+    // 集群关键状态变更（不可丢失）
+    MessageTypeLeaderElection, // 领导者选举结果不可丢失
+
+    // 节点生命周期变更（不可丢失）
+    MessageTypeNodeJoin,       // 节点加入需要可靠确认
+    MessageTypeNodeLeave,      // 节点离开需要可靠确认
+}
+```
+
+**路由决策时优先检查不可降级消息**:
+```go
+func (r *MessageRouter) SelectTransport(msg Message, msgData []byte) TransportType {
+    // 0. 🚨 优先检查：不可降级消息强制使用 TCP
+    for _, t := range r.config.NonFallbackMessageTypes {
+        if msg.Type() == t {
+            return TransportTypeTCP
+        }
+    }
+
+    // 1. 检查消息类型映射
+    if transport, ok := r.messageTypeMap[msg.Type()]; ok {
+        return transport
+    }
+
+    // 2. 根据消息大小决策
+    msgSize := len(msgData)
+    if msgSize < 1*1024 { // < 1KB
+        return TransportTypeUDP // 小消息用 UDP（低延迟）
+    }
+
+    // 3. 默认使用 TCP（可靠性）
+    return TransportTypeTCP
+}
+
+// 📡 广播地址识别（UDP 广播/多播强制使用 UDP）
+func (r *MessageRouter) SelectTransportForAddr(msg Message, msgData []byte, addr string) TransportType {
+    // 检查是否为广播地址（TCP 不支持广播）
+    if isBroadcastAddr(addr) || isMulticastAddr(addr) {
+        return TransportTypeUDP
+    }
+
+    // 其他情况使用标准路由决策
+    return r.SelectTransport(msg, msgData)
+}
+
+// 判断是否为 IPv4 广播地址
+func isBroadcastAddr(addr string) bool {
+    // 255.255.255.255 或特定网段广播（如 192.168.1.255）
+    ip := net.ParseIP(addr)
+    if ip == nil {
+        return false
+    }
+
+    // 检查是否为有限广播地址
+    if ip.Equal(net.IPv4bcast) {
+        return true
+    }
+
+    // 检查是否为定向广播地址（主机部分全为 1）
+    if ip.To4() != nil {
+        ipv4 := ip.To4()
+        // 255.255.255.255 或 x.x.x.255
+        if ipv4[3] == 255 {
+            return true
+        }
+    }
+
+    return false
+}
+
+// 判断是否为多播地址
+func isMulticastAddr(addr string) bool {
+    ip := net.ParseIP(addr)
+    if ip == nil {
+        return false
+    }
+
+    // IPv4 多播范围：224.0.0.0 - 239.255.255.255
+    if ipv4 := ip.To4(); ipv4 != nil {
+        return ipv4[0] >= 224 && ipv4[0] <= 239
+    }
+
+    // IPv6 多播范围：ff00::/8
+    return ip.IsMulticast()
+}
+```
+
 **路由规则表**:
 ```go
 var defaultMessageTypeRoutes = map[MessageType]TransportType{
@@ -369,7 +477,72 @@ func (r *MessageRouter) SelectTransport(msg Message, msgData []byte) TransportTy
 
 ### 阶段 3: 降级机制 (2-3 天)
 
-**降级策略**:
+**⚠️ 架构审核要求：细化降级机制的失败判定标准**
+
+UDP 是无连接协议，发送成功不代表接收成功，需明确降级触发条件：
+
+| 协议 | 失败判定标准 | 降级触发时机 | 是否可降级 |
+|------|--------------|--------------|-----------|
+| **UDP** | 1. 系统调用失败（如端口未绑定）<br>2. 分片重组超时（>5s）<br>3. 目标节点不可达（ICMP 错误） | 系统调用失败/分片超时 | ✅ 是（除不可降级消息） |
+| **TCP** | 1. 连接建立失败（超时 30s）<br>2. 发送超时（>10s）<br>3. 连接断开（写入失败） | 连接失败/发送超时 | ❌ 否（TCP 已是最可靠） |
+
+**协议层错误类型定义**:
+```go
+import "errors"
+
+// 协议层错误（触发降级）
+var (
+    ErrUDPFragmentTimeout = errors.New("udp fragment reassembly timeout")
+    ErrUDPSendFailed      = errors.New("udp send system call failed")
+    ErrUDPBindFailed      = errors.New("udp bind port failed")
+    ErrTCPConnFailed      = errors.New("tcp connect failed")
+    ErrTCPConnTimeout     = errors.New("tcp connect timeout")
+    ErrTCPSendTimeout     = errors.New("tcp send timeout")
+    ErrTCPConnBroken      = errors.New("tcp connection broken")
+)
+
+// 业务层错误（不触发降级）
+var (
+    ErrMsgTooLarge        = errors.New("message size exceeds limit")
+    ErrInvalidAddr        = errors.New("invalid address format")
+    ErrCodecFailed        = errors.New("message codec failed")
+    ErrRateLimitExceeded  = errors.New("rate limit exceeded")
+)
+
+// 判断是否为协议层错误（触发降级）
+func isProtocolError(err error) bool {
+    if err == nil {
+        return false
+    }
+
+    // 检查 UDP 协议层错误
+    switch {
+    case errors.Is(err, ErrUDPFragmentTimeout):
+        return true
+    case errors.Is(err, ErrUDPSendFailed):
+        return true
+    case errors.Is(err, ErrUDPBindFailed):
+        return true
+    }
+
+    // 检查 TCP 协议层错误
+    switch {
+    case errors.Is(err, ErrTCPConnFailed):
+        return true
+    case errors.Is(err, ErrTCPConnTimeout):
+        return true
+    case errors.Is(err, ErrTCPSendTimeout):
+        return true
+    case errors.Is(err, ErrTCPConnBroken):
+        return true
+    }
+
+    // 其他错误不触发降级
+    return false
+}
+```
+
+**增强的降级策略（区分协议层/业务层失败）**:
 ```go
 type FallbackStrategy struct {
     Enabled          bool
@@ -392,6 +565,12 @@ func (dt *DualTransport) sendWithFallback(ctx context.Context, addr string, msg 
         return nil
     }
 
+    // 🚨 检查是否为协议层错误（业务层错误不触发降级）
+    if !isProtocolError(err) {
+        logging.Debugf("业务层错误，不触发降级: %v", err)
+        return err
+    }
+
     // 降级到备选协议
     if dt.config.Fallback.Enabled {
         for _, fallbackTransport := range dt.config.Fallback.FallbackOrder {
@@ -404,7 +583,13 @@ func (dt *DualTransport) sendWithFallback(ctx context.Context, addr string, msg 
 
             err := dt.sendViaTransport(ctx, addr, msg, fallbackTransport, opts...)
             if err == nil {
+                dt.stats.RecordFallback() // 记录降级成功
                 return nil
+            }
+
+            // 再次检查是否为协议层错误
+            if !isProtocolError(err) {
+                return err
             }
         }
     }
@@ -415,7 +600,11 @@ func (dt *DualTransport) sendWithFallback(ctx context.Context, addr string, msg 
 
 ### 阶段 4: 统计与监控 (1-2 天)
 
-**统计指标**:
+**⚠️ 架构审核要求：扩展维度化监控**
+
+当前 `TransportStats` 仅统计降级总次数，缺乏**按消息类型/目标节点**的维度监控，不利于定位高频降级场景。
+
+**增强的统计指标（维度化监控）**:
 ```go
 type TransportStats struct {
     // 发送统计
@@ -433,19 +622,344 @@ type TransportStats struct {
     // 错误统计
     TCPErrorCount    atomic.Uint64
     UDPErrorCount    atomic.Uint64
-    FallbackCount    atomic.Uint64 // 降级次数
+    FallbackCount    atomic.Uint64 // 降级总次数
 
     // 性能统计
     TCPLatency       atomic.Uint64 // 微秒
     UDPLatency       atomic.Uint64
+
+    // 📊 维度化监控：按消息类型统计
+    FallbackCountByMsgType sync.Map // map[MessageType]*atomic.Uint64
+
+    // 📊 维度化监控：按目标节点统计
+    FallbackCountByNode   sync.Map // map[string]*atomic.Uint64
+
+    // 📊 维度化监控：按错误类型统计
+    ErrorCountByType      sync.Map // map[string]*atomic.Uint64
+
+    mu sync.RWMutex // 保护 map 的并发访问
 }
 
-func (s *TransportStats) RecordSend(transport TransportType, bytes int, latency time.Duration)
-func (s *TransportStats) RecordRecv(transport TransportType, bytes int)
-func (s *TransportStats) RecordError(transport TransportType)
-func (s *TransportStats) RecordFallback()
-func (s *TransportStats) GetMetrics() map[string]interface{}
+// 记录降级（按消息类型和节点维度）
+func (s *TransportStats) RecordFallbackWithDimensions(msgType MessageType, addr string) {
+    s.FallbackCount.Add(1)
+
+    // 按消息类型统计
+    if val, ok := s.FallbackCountByMsgType.Load(msgType); ok {
+        val.(*atomic.Uint64).Add(1)
+    } else {
+        counter := &atomic.Uint64{}
+        counter.Add(1)
+        s.FallbackCountByMsgType.Store(msgType, counter)
+    }
+
+    // 按目标节点统计
+    if val, ok := s.FallbackCountByNode.Load(addr); ok {
+        val.(*atomic.Uint64).Add(1)
+    } else {
+        counter := &atomic.Uint64{}
+        counter.Add(1)
+        s.FallbackCountByNode.Store(addr, counter)
+    }
+}
+
+// 记录错误（按错误类型维度）
+func (s *TransportStats) RecordErrorWithType(transport TransportType, err error) {
+    if transport == TransportTypeTCP {
+        s.TCPErrorCount.Add(1)
+    } else {
+        s.UDPErrorCount.Add(1)
+    }
+
+    // 按错误类型统计
+    errorType := errorTypeString(err)
+    if val, ok := s.ErrorCountByType.Load(errorType); ok {
+        val.(*atomic.Uint64).Add(1)
+    } else {
+        counter := &atomic.Uint64{}
+        counter.Add(1)
+        s.ErrorCountByType.Store(errorType, counter)
+    }
+}
+
+// 获取维度化指标
+func (s *TransportStats) GetDimensionalMetrics() map[string]interface{} {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+
+    metrics := make(map[string]interface{})
+
+    // 按消息类型统计降级次数
+    fallbackByMsgType := make(map[MessageType]uint64)
+    s.FallbackCountByMsgType.Range(func(key, value interface{}) bool {
+        msgType := key.(MessageType)
+        count := value.(*atomic.Uint64).Load()
+        fallbackByMsgType[msgType] = count
+        return true
+    })
+    metrics["fallback_by_msg_type"] = fallbackByMsgType
+
+    // 按节点统计降级次数
+    fallbackByNode := make(map[string]uint64)
+    s.FallbackCountByNode.Range(func(key, value interface{}) bool {
+        node := key.(string)
+        count := value.(*atomic.Uint64).Load()
+        fallbackByNode[node] = count
+        return true
+    })
+    metrics["fallback_by_node"] = fallbackByNode
+
+    // 按错误类型统计
+    errorByType := make(map[string]uint64)
+    s.ErrorCountByType.Range(func(key, value interface{}) bool {
+        errorType := key.(string)
+        count := value.(*atomic.Uint64).Load()
+        errorByType[errorType] = count
+        return true
+    })
+    metrics["error_by_type"] = errorByType
+
+    return metrics
+}
+
+// 提取错误类型字符串
+func errorTypeString(err error) string {
+    switch {
+    case errors.Is(err, ErrUDPFragmentTimeout):
+        return "udp_fragment_timeout"
+    case errors.Is(err, ErrUDPSendFailed):
+        return "udp_send_failed"
+    case errors.Is(err, ErrTCPConnFailed):
+        return "tcp_conn_failed"
+    case errors.Is(err, ErrTCPSendTimeout):
+        return "tcp_send_timeout"
+    default:
+        return "unknown"
+    }
+}
 ```
+
+### 阶段 5: 帧编解码统一 (1-2 天)
+
+**⚠️ 架构审核要求：明确 MsgFrame 的序列化/反序列化逻辑**
+
+方案中 `Receive()` 方法返回 `MsgFrame`，需说明 TCP/UDP 如何将字节流解析为 `MsgFrame`（尤其是 TCP 粘包问题）。
+
+**帧解码器接口定义**:
+```go
+// 帧解码器接口
+type FrameCodec interface {
+    Encode(frame MsgFrame) ([]byte, error)
+    Decode(data []byte) (MsgFrame, error)
+    DecodeFromStream(reader io.Reader) (MsgFrame, error) // 用于 TCP 流式解码
+}
+```
+
+**TCP 粘包解码器（基于长度前缀）**:
+```go
+// TCP 帧解码器（处理粘包问题）
+type TCPFrameCodec struct {
+    buffer *bytes.Buffer // 缓冲区用于处理粘包
+    mu     sync.Mutex    // 保护缓冲区并发访问
+}
+
+func NewTCPFrameCodec() *TCPFrameCodec {
+    return &TCPFrameCodec{
+        buffer: &bytes.Buffer{},
+    }
+}
+
+// 编码：MsgFrame → 字节流（长度前缀 + TLV 头 + 消息体）
+func (c *TCPFrameCodec) Encode(frame MsgFrame) ([]byte, error) {
+    // 1. 序列化 TLV 头和消息体
+    tlvData := frame.TLVHeader.Serialize()
+    msgData, err := frame.Message.Serialize()
+    if err != nil {
+        return nil, err
+    }
+
+    // 2. 计算总长度
+    totalLength := uint32(len(tlvData) + len(msgData))
+
+    // 3. 构造字节流：4 字节长度前缀（大端序）+ TLV 头 + 消息体
+    buf := new(bytes.Buffer)
+
+    // 写入长度前缀（大端序）
+    if err := binary.Write(buf, binary.BigEndian, totalLength); err != nil {
+        return nil, err
+    }
+
+    // 写入 TLV 头
+    if _, err := buf.Write(tlvData); err != nil {
+        return nil, err
+    }
+
+    // 写入消息体
+    if _, err := buf.Write(msgData); err != nil {
+        return nil, err
+    }
+
+    return buf.Bytes(), nil
+}
+
+// 流式解码：从 TCP 连接中读取完整的帧（处理粘包）
+func (c *TCPFrameCodec) DecodeFromStream(reader io.Reader) (MsgFrame, error) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    // 1. 读取 4 字节长度前缀
+    var lengthPrefix uint32
+    if err := binary.Read(reader, binary.BigEndian, &lengthPrefix); err != nil {
+        return MsgFrame{}, err
+    }
+
+    // 2. 根据长度读取完整的帧数据
+    frameData := make([]byte, lengthPrefix)
+    if _, err := io.ReadFull(reader, frameData); err != nil {
+        return MsgFrame{}, err
+    }
+
+    // 3. 解析帧（复用 TLV 解析逻辑）
+    return c.Decode(frameData)
+}
+
+// 内存解码：从字节缓冲区解码帧
+func (c *TCPFrameCodec) Decode(data []byte) (MsgFrame, error) {
+    if len(data) < 4 {
+        return MsgFrame{}, fmt.Errorf("数据长度不足，无法读取长度前缀")
+    }
+
+    // 读取长度前缀
+    totalLength := binary.BigEndian.Uint32(data[:4])
+    if len(data) < int(4+totalLength) {
+        return MsgFrame{}, fmt.Errorf("数据长度不足，期望 %d 字节，实际 %d 字节", 4+totalLength, len(data))
+    }
+
+    // 跳过长度前缀，解析帧数据
+    frameData := data[4 : 4+totalLength]
+
+    // 解析 TLV 头（前 31 字节为 FixedHeader）
+    if len(frameData) < 31 {
+        return MsgFrame{}, fmt.Errorf("帧数据长度不足，无法解析 FixedHeader")
+    }
+
+    tlvHeader, err := ParseTLVHeader(frameData[:31])
+    if err != nil {
+        return MsgFrame{}, err
+    }
+
+    // 解析消息体
+    msgData := frameData[31:]
+    message, err := ParseMessage(tlvHeader.MessageType, msgData)
+    if err != nil {
+        return MsgFrame{}, err
+    }
+
+    return MsgFrame{
+        TLVHeader: tlvHeader,
+        Message:   message,
+    }, nil
+}
+```
+
+**UDP 解码器（无需粘包处理）**:
+```go
+// UDP 帧解码器（无需粘包处理）
+type UDPFrameCodec struct{}
+
+func NewUDPFrameCodec() *UDPFrameCodec {
+    return &UDPFrameCodec{}
+}
+
+// 编码：MsgFrame → UDP 数据报（TLV 头 + 消息体）
+func (c *UDPFrameCodec) Encode(frame MsgFrame) ([]byte, error) {
+    // 1. 序列化 TLV 头和消息体
+    tlvData := frame.TLVHeader.Serialize()
+    msgData, err := frame.Message.Serialize()
+    if err != nil {
+        return nil, err
+    }
+
+    // 2. UDP 无需长度前缀，直接拼接 TLV 头 + 消息体
+    buf := make([]byte, 0, len(tlvData)+len(msgData))
+    buf = append(buf, tlvData...)
+    buf = append(buf, msgData...)
+
+    return buf, nil
+}
+
+// 解码：UDP 数据报 → MsgFrame（一次 Read 即可获取完整帧）
+func (c *UDPFrameCodec) Decode(data []byte) (MsgFrame, error) {
+    // UDP 数据报无需长度前缀，直接解析帧数据
+
+    // 解析 TLV 头（前 31 字节为 FixedHeader）
+    if len(data) < 31 {
+        return MsgFrame{}, fmt.Errorf("UDP 数据报长度不足，无法解析 FixedHeader")
+    }
+
+    tlvHeader, err := ParseTLVHeader(data[:31])
+    if err != nil {
+        return MsgFrame{}, err
+    }
+
+    // 解析消息体
+    msgData := data[31:]
+    message, err := ParseMessage(tlvHeader.MessageType, msgData)
+    if err != nil {
+        return MsgFrame{}, err
+    }
+
+    return MsgFrame{
+        TLVHeader: tlvHeader,
+        Message:   message,
+    }, nil
+}
+
+// UDP 不支持流式解码
+func (c *UDPFrameCodec) DecodeFromStream(reader io.Reader) (MsgFrame, error) {
+    return MsgFrame{}, fmt.Errorf("UDP 不支持流式解码")
+}
+```
+
+**DualTransport 初始化时绑定解码器**:
+```go
+func NewDualTransport(config *DualTransportConfig) (*DualTransport, error) {
+    // 创建 TCP Transport（绑定 TCP 帧解码器）
+    tcp, err := NewTCPTransport(&TransportConfig{
+        Addr:         config.TCPAddr,
+        MaxMsgSize:   config.TCPMaxMessageSize,
+        FrameCodec:   NewTCPFrameCodec(), // 绑定 TCP 解码器
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    // 创建 UDP Transport（绑定 UDP 帧解码器）
+    udp, err := NewUDPTransport(&TransportConfig{
+        Addr:         config.UDPAddr,
+        MaxMsgSize:   config.UDPMaxMessageSize,
+        FrameCodec:   NewUDPFrameCodec(), // 绑定 UDP 解码器
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    return &DualTransport{
+        tcp:    tcp,
+        udp:    udp,
+        router: NewMessageRouter(&config.Router),
+        config: config,
+        stats:  NewTransportStats(),
+    }, nil
+}
+```
+
+**编解码流程对比**:
+
+| 协议 | 编码 | 解码 | 是否处理粘包 | 长度前缀 |
+|------|------|------|------------|---------|
+| **TCP** | 4 字节长度 + TLV + 消息体 | 先读长度 → 再读完整帧 | ✅ 是（必需） | ✅ 是 |
+| **UDP** | TLV + 消息体 | 直接解析完整帧 | ❌ 否（无连接） | ❌ 否 |
 
 ---
 
@@ -601,13 +1115,14 @@ config := &DualTransportConfig{
 | 阶段 | 任务 | 预估工时 | 优先级 |
 |------|------|---------|--------|
 | **阶段 1** | DualTransport 核心实现 | 3-5 天 | P0 |
-| **阶段 2** | 消息路由规则 | 2-3 天 | P0 |
-| **阶段 3** | 降级机制 | 2-3 天 | P1 |
-| **阶段 4** | 统计与监控 | 1-2 天 | P1 |
-| **阶段 5** | 单元测试 + 集成测试 | 3-5 天 | P0 |
-| **阶段 6** | 性能测试 + 调优 | 2-3 天 | P2 |
+| **阶段 2** | 消息路由规则（含不可降级配置） | 2-3 天 | P0 |
+| **阶段 3** | 降级机制（含失败判定标准） | 2-3 天 | P1 |
+| **阶段 4** | 统计与监控（维度化监控） | 1-2 天 | P1 |
+| **阶段 5** | 帧编解码统一（TCP 粘包处理） | 1-2 天 | P0 |
+| **阶段 6** | 单元测试 + 集成测试 | 3-5 天 | P0 |
+| **阶段 7** | 性能测试 + 调优 | 2-3 天 | P2 |
 
-**总计**: 13-21 天
+**总计**: 14-23 天（含架构审核要求的补充内容）
 
 ---
 
@@ -649,6 +1164,33 @@ config := &DualTransportConfig{
 
 ---
 
+## ✅ 架构审核结论（2026-01-22）
+
+**审核结论**: 方案**整体设计合理、逻辑闭环、贴合 NexKV 分布式数据库的业务场景**，可作为 P0 优先级推进实施。
+
+### 核心优势
+1. **分层抽象清晰**：`DualTransport` 封装 TCP/UDP，上层协议无需感知差异
+2. **消息分类精准**：三维决策矩阵覆盖所有核心场景
+3. **降级机制兜底**：UDP 失败降级到 TCP，提升系统韧性
+4. **配置与监控完善**：支持自定义路由规则和维度化监控
+
+### 已补充的架构要求细节
+1. ✅ **不可降级消息类型配置清单**：`NonFallbackMessageTypes` 强制关键消息使用 TCP
+2. ✅ **细化降级机制的失败判定标准**：区分协议层/业务层错误，仅协议层错误触发降级
+3. ✅ **UDP 广播地址识别逻辑**：`SelectTransportForAddr` 支持广播/多播地址
+4. ✅ **扩展 TransportStats 维度化监控**：按消息类型/节点/错误类型统计降级次数
+5. ✅ **明确 MsgFrame 编解码逻辑**：TCP 粘包处理（长度前缀）vs UDP 直接解码
+
+### 实施建议
+- **优先落地阶段 1-2**：核心 `DualTransport` 和 `MessageRouter` 是基础
+- **阶段 3 重点测试降级场景**：构造 UDP 分片超时、TCP 连接失败等场景
+- **阶段 4 完善监控**：确保所有关键指标可观测
+- **灰度发布**：先测试环境部署，再逐步替换现有独立 Transport
+
+---
+
 **文档创建**: 2026-01-22
 **创建者**: AI Agent
-**状态**: 📋 待评审和实施
+**审核者**: 👤 架构师
+**状态**: ✅ 已通过审核，可进入开发阶段
+**版本**: v2.0（含架构审核补充内容）

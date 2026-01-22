@@ -547,6 +547,86 @@ func (t *TCPTransport) ForwardMessage(ctx context.Context, addr string, msgExt M
 	return uint32(msgSeq), nil
 }
 
+// ========================================
+// 批量转发实现
+// ========================================
+
+const (
+	// maxBatchConcurrency 最大批量转发并发数
+	maxBatchConcurrency = 10
+	// maxBatchSize 最大批量大小
+	maxBatchSize = 100
+)
+
+// BatchForwardMessage 批量转发消息
+//
+// 并发转发消息到多个目标地址，部分失败不影响其他转发
+func (t *TCPTransport) BatchForwardMessage(
+	ctx context.Context,
+	addrs []string,
+	msgExt MsgExt,
+) BatchForwardMessageResult {
+	if !t.started.Load() {
+		// 未启动时返回全部失败的结果
+		results := make([]BatchForwardResult, len(addrs))
+		for i, addr := range addrs {
+			results[i] = BatchForwardResult{
+				Addr:  addr,
+				SeqID: 0,
+				Error: types.NewTransportStateError("未启动"),
+			}
+		}
+		return BatchForwardMessageResult{
+			SuccessCount: 0,
+			FailureCount: len(addrs),
+			Results:      results,
+		}
+	}
+
+	// 限制批量大小
+	if len(addrs) > maxBatchSize {
+		addrs = addrs[:maxBatchSize]
+	}
+
+	results := make([]BatchForwardResult, len(addrs))
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, maxBatchConcurrency)
+
+	for i, addr := range addrs {
+		wg.Add(1)
+		go func(idx int, targetAddr string) {
+			defer wg.Done()
+			semaphore <- struct{}{}        // 获取信号量
+			defer func() { <-semaphore }() // 释放信号量
+
+			seqID, err := t.ForwardMessage(ctx, targetAddr, msgExt)
+			results[idx] = BatchForwardResult{
+				Addr:  targetAddr,
+				SeqID: seqID,
+				Error: err,
+			}
+		}(i, addr)
+	}
+
+	wg.Wait()
+
+	// 统计结果
+	var success, failure int
+	for _, r := range results {
+		if r.Error != nil {
+			failure++
+		} else {
+			success++
+		}
+	}
+
+	return BatchForwardMessageResult{
+		SuccessCount: success,
+		FailureCount: failure,
+		Results:      results,
+	}
+}
+
 // Receive 返回接收消息的通道
 //
 // # Receive 返回接收消息的通道

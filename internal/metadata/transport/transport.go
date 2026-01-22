@@ -384,3 +384,55 @@ type Dialer interface {
 	// DialTimeout 建立连接（带超时）
 	DialTimeout(addr string, timeout time.Duration) (Conn, error)
 }
+
+// ========================================
+// 批量转发相关数据结构和接口
+// ========================================
+
+// BatchForwardMessageResult 批量转发结果
+//
+// 统计批量转发的成功/失败数量
+type BatchForwardMessageResult struct {
+	SuccessCount int                  // 成功数量
+	FailureCount int                  // 失败数量
+	Results      []BatchForwardResult // 详细结果列表
+}
+
+// BatchForwardResult 单次转发结果
+//
+// 记录单个地址的转发结果
+type BatchForwardResult struct {
+	Addr  string // 目标地址
+	SeqID uint32 // 消息序列号（成功时）
+	Error error  // 错误信息（失败时）
+}
+
+// BatchForwardTransport 批量转发传输接口
+//
+// 扩展 Transport 接口，支持批量转发
+type BatchForwardTransport interface {
+	Transport
+
+	// BatchForwardMessage 批量转发消息
+	//
+	// 并发转发消息到多个目标地址，部分失败不影响其他转发
+	//
+	// 参数：
+	//   - ctx: 上下文（支持取消和超时）
+	//   - addrs: 目标地址列表
+	//   - msgExt: 要转发的增强消息
+	//
+	// 返回：
+	//   - BatchForwardMessageResult: 批量转发结果（成功/失败统计）
+	//
+	// 行为：
+	//   1. 并发调用 ForwardMessage 转发到每个地址
+	//   2. 单个地址失败不影响其他转发
+	//   3. 收集所有转发的结果
+	//   4. 返回成功/失败统计
+	//
+	// 使用场景：
+	//   - Gossip 协议批量转发到随机节点
+	//   - 消息广播到集群节点
+	BatchForwardMessage(ctx context.Context, addrs []string, msgExt MsgExt) BatchForwardMessageResult
+}

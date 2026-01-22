@@ -721,14 +721,14 @@ func (fw *FrameWriter) WriteFrame(frame *Frame) error {
 // TLV 扩展字段编解码辅助函数
 // ========================================
 
-// compressExtData 压缩扩展数据（MessagePack 序列化用）
-type compressExtData struct {
+// CompressExt 压缩扩展（MessagePack 序列化 + 便捷访问）
+type CompressExt struct {
 	CompressID uint16 `msgpack:"cid"`
 }
 
 // EncodeCompressExt 编码压缩扩展
 func EncodeCompressExt(compressID uint16) *ExtField {
-	data := compressExtData{CompressID: compressID}
+	data := CompressExt{CompressID: compressID}
 
 	bytes, err := msgpack.Marshal(data)
 	if err != nil {
@@ -742,8 +742,8 @@ func EncodeCompressExt(compressID uint16) *ExtField {
 	}
 }
 
-// encryptExtData 加密扩展数据（MessagePack 序列化用）
-type encryptExtData struct {
+// EncryptExt 加密扩展（MessagePack 序列化 + 便捷访问）
+type EncryptExt struct {
 	EncryptID uint16 `msgpack:"eid"`
 	Nonce     []byte `msgpack:"non"`
 	Version   string `msgpack:"ver"`
@@ -751,7 +751,7 @@ type encryptExtData struct {
 
 // DecodeCompressExt 解码压缩扩展
 func DecodeCompressExt(field *ExtField) (uint16, error) {
-	var data compressExtData
+	var data CompressExt
 
 	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
 		return 0, fmt.Errorf("反序列化压缩扩展失败: %w", err)
@@ -763,7 +763,7 @@ func DecodeCompressExt(field *ExtField) (uint16, error) {
 // EncodeEncryptExt 编码加密扩展（使用 MessagePack）
 func EncodeEncryptExt(encryptID uint16, nonce []byte, version string) (*ExtField, error) {
 	// 使用 MessagePack 序列化
-	data := encryptExtData{
+	data := EncryptExt{
 		EncryptID: encryptID,
 		Nonce:     nonce,
 		Version:   version,
@@ -782,7 +782,7 @@ func EncodeEncryptExt(encryptID uint16, nonce []byte, version string) (*ExtField
 
 // DecodeEncryptExt 解码加密扩展（使用 MessagePack）
 func DecodeEncryptExt(field *ExtField) (encryptID uint16, nonce []byte, version string, err error) {
-	var data encryptExtData
+	var data EncryptExt
 
 	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
 		return 0, nil, "", fmt.Errorf("反序列化加密扩展失败: %w", err)
@@ -791,14 +791,14 @@ func DecodeEncryptExt(field *ExtField) (encryptID uint16, nonce []byte, version 
 	return data.EncryptID, data.Nonce, data.Version, nil
 }
 
-// priorityExtData 优先级扩展数据（MessagePack 序列化用）
-type priorityExtData struct {
+// PriorityExt 优先级扩展（MessagePack 序列化 + 便捷访问）
+type PriorityExt struct {
 	Priority types.Priority `msgpack:"pri"`
 }
 
 // EncodePriorityExt 编码优先级扩展
 func EncodePriorityExt(priority types.Priority) *ExtField {
-	data := priorityExtData{Priority: priority}
+	data := PriorityExt{Priority: priority}
 
 	bytes, err := msgpack.Marshal(data)
 	if err != nil {
@@ -814,7 +814,7 @@ func EncodePriorityExt(priority types.Priority) *ExtField {
 
 // DecodePriorityExt 解码优先级扩展
 func DecodePriorityExt(field *ExtField) (types.Priority, error) {
-	var data priorityExtData
+	var data PriorityExt
 
 	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
 		return 0, fmt.Errorf("反序列化优先级扩展失败: %w", err)
@@ -823,15 +823,15 @@ func DecodePriorityExt(field *ExtField) (types.Priority, error) {
 	return data.Priority, nil
 }
 
-// fragmentExtData 分片扩展数据（MessagePack 序列化用）
-type fragmentExtData struct {
+// SegmentExt 分片扩展（MessagePack 序列化 + 便捷访问）
+type SegmentExt struct {
 	Index uint16 `msgpack:"idx"` // 当前分片索引（从 0 开始）
 	Total uint16 `msgpack:"tot"` // 总分片数
 }
 
 // EncodeFragmentExt 编码分片扩展
 func EncodeFragmentExt(index, total uint16) *ExtField {
-	data := fragmentExtData{
+	data := SegmentExt{
 		Index: index,
 		Total: total,
 	}
@@ -850,7 +850,7 @@ func EncodeFragmentExt(index, total uint16) *ExtField {
 
 // DecodeFragmentExt 解码分片扩展
 func DecodeFragmentExt(field *ExtField) (index, total uint16, err error) {
-	var data fragmentExtData
+	var data SegmentExt
 
 	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
 		return 0, 0, fmt.Errorf("反序列化分片扩展失败: %w", err)
@@ -859,15 +859,15 @@ func DecodeFragmentExt(field *ExtField) (index, total uint16, err error) {
 	return data.Index, data.Total, nil
 }
 
-// hopExtData 跳数 TTL 扩展数据（MessagePack 序列化用）
-type hopExtData struct {
+// HopExt 跳数 TTL 扩展（MessagePack 序列化 + 便捷访问）
+type HopExt struct {
 	Hop      uint16 `msgpack:"hop"`   // 当前跳数
 	TotalHop uint16 `msgpack:"total"` // 最大跳数
 }
 
 // EncodeHopExt 编码跳数 TTL 扩展
 func EncodeHopExt(hop, totalHop uint16) *ExtField {
-	data := hopExtData{
+	data := HopExt{
 		Hop:      hop,
 		TotalHop: totalHop,
 	}
@@ -886,7 +886,7 @@ func EncodeHopExt(hop, totalHop uint16) *ExtField {
 
 // DecodeHopExt 解码跳数 TTL 扩展
 func DecodeHopExt(field *ExtField) (hop, totalHop uint16, err error) {
-	var data hopExtData
+	var data HopExt
 
 	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
 		return 0, 0, fmt.Errorf("反序列化跳数扩展失败: %w", err)

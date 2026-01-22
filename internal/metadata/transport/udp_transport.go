@@ -32,6 +32,14 @@ const (
 	// MaxFragmentCount 最大分片数量限制（防止 DoS 攻击）
 	// 65535 分片 * 1400 字节 ≈ 91 MB，合理的消息大小上限
 	MaxFragmentCount = 65535
+
+	// MaxReassembledMessageSize 重组后的消息最大大小限制（防止 DoS 攻击）
+	// 100 MB 是合理的消息大小上限，防止内存耗尽
+	MaxReassembledMessageSize = 100 * 1024 * 1024
+
+	// MaxCodecCacheSize Codec 缓存最大容量限制（防止 DoS 攻击）
+	// 虽然实际只有 3 种有效的 codecID，但设置上限防止恶意数据包导致缓存无限增长
+	MaxCodecCacheSize = 16
 )
 
 // UDPTransport UDP 传输实现
@@ -64,8 +72,8 @@ type UDPTransport struct {
 	fragmentErrorCount atomic.Uint64 // 分片错误计数
 	channelBlockCount  atomic.Uint64 // 接收通道阻塞计数
 
-	// 接收通道
-	recvCh   chan Message
+	// 接收通道（返回增强消息 MsgExt，包含原始消息和 TLV 扩展字段）
+	recvCh   chan MsgExt
 	recvOnce sync.Once
 
 	// 生命周期
@@ -138,7 +146,7 @@ func NewUDPTransportWithConfig(config *TransportConfig) (*UDPTransport, error) {
 		config: config,
 		codec:  codec,
 		// NodeID 需要从外部设置（atomic.Uint64 默认零值）
-		recvCh:     make(chan Message, config.BufferSize),
+		recvCh:     make(chan MsgExt, config.BufferSize),
 		stopCh:     make(chan struct{}),
 		codecCache: make(map[uint16]Codec), // 初始化 Codec 缓存
 	}
@@ -206,15 +214,15 @@ func (t *UDPTransport) receiveLoop() {
 
 	buf := make([]byte, t.config.MaxMessageSize)
 
-	// 设置读超时（只设置一次，避免每次循环都设置）
-	if err := t.conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout)); err != nil {
-		logging.Errorf("设置读超时失败: %v", err)
-		return
-	}
-
 	logging.Info("开始接收 UDP 数据...")
 
 	for {
+		// 每次循环都设置读超时，确保每次读取都有超时保护
+		if err := t.conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout)); err != nil {
+			logging.Errorf("设置读超时失败: %v", err)
+			return
+		}
+
 		select {
 		case <-t.stopCh:
 			logging.Info("UDP 传输层已停止（收到停止信号）")
@@ -227,8 +235,7 @@ func (t *UDPTransport) receiveLoop() {
 					return
 				}
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					// 读超时，重置超时继续循环
-					_ = t.conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout))
+					// 读超时，继续循环（下次循环会重新设置超时）
 					continue
 				}
 				logging.Errorf("读取 UDP 数据失败: %v", err)
@@ -240,7 +247,7 @@ func (t *UDPTransport) receiveLoop() {
 			copy(data, buf[:n])
 
 			msg := t.processReceivedData(data)
-			if msg != nil {
+			if msg.Message != nil {
 				t.sendToReceiveChannel(msg, addr.String())
 			}
 		}
@@ -248,7 +255,7 @@ func (t *UDPTransport) receiveLoop() {
 }
 
 // sendToReceiveChannel 发送消息到接收通道（带超时和阻塞统计）
-func (t *UDPTransport) sendToReceiveChannel(msg Message, fromAddr string) {
+func (t *UDPTransport) sendToReceiveChannel(msg MsgExt, fromAddr string) {
 	channelTimeout := 5 * time.Second
 	if t.config != nil && t.config.ChannelSendTimeout > 0 {
 		channelTimeout = t.config.ChannelSendTimeout
@@ -256,7 +263,7 @@ func (t *UDPTransport) sendToReceiveChannel(msg Message, fromAddr string) {
 
 	select {
 	case t.recvCh <- msg:
-		logging.Debugf("接收消息: %s from %s", msg.Type(), fromAddr)
+		logging.Debugf("接收消息: %s from %s", msg.GetType(), fromAddr)
 	case <-t.stopCh:
 		return
 	case <-time.After(channelTimeout):
@@ -266,20 +273,20 @@ func (t *UDPTransport) sendToReceiveChannel(msg Message, fromAddr string) {
 }
 
 // processReceivedData 处理接收到的数据（分片重组）
-func (t *UDPTransport) processReceivedData(data []byte) Message {
+func (t *UDPTransport) processReceivedData(data []byte) MsgExt {
 	// 解析 TLV Frame
 	frame, err := t.parseFrame(data)
 	if err != nil {
 		t.parseErrorCount.Add(1)
 		logging.Warnf("解析帧失败: %v", err)
-		return nil
+		return MsgExt{}
 	}
 
 	// 空指针检查（P2-2）
 	if frame.FixedHeader == nil {
 		t.parseErrorCount.Add(1)
 		logging.Warnf("帧固定头为空")
-		return nil
+		return MsgExt{}
 	}
 
 	// 检查是否有分片扩展字段
@@ -293,7 +300,7 @@ func (t *UDPTransport) processReceivedData(data []byte) Message {
 }
 
 // processFragmentFrame 处理带分片扩展的帧
-func (t *UDPTransport) processFragmentFrame(frame *Frame) Message {
+func (t *UDPTransport) processFragmentFrame(frame *Frame) MsgExt {
 	// 解析分片扩展字段
 	fragmentField := frame.VarExtHeader.GetField(ExtFragment)
 	if fragmentField == nil {
@@ -304,14 +311,14 @@ func (t *UDPTransport) processFragmentFrame(frame *Frame) Message {
 	if err != nil {
 		t.fragmentErrorCount.Add(1)
 		logging.Warnf("解析分片扩展失败: %v", err)
-		return nil
+		return MsgExt{}
 	}
 
 	// 验证分片数量（防止 DoS 攻击）
 	if total == 0 || int(total) > MaxFragmentCount {
 		t.fragmentErrorCount.Add(1)
 		logging.Warnf("分片数量异常: total=%d, max=%d", total, MaxFragmentCount)
-		return nil
+		return MsgExt{}
 	}
 
 	// 使用 Frame 的 NodeID 和 MsgSeq 作为分片标识
@@ -321,7 +328,7 @@ func (t *UDPTransport) processFragmentFrame(frame *Frame) Message {
 	}
 
 	// 存储分片并检查是否完整
-	msg := t.fragmentBuf.addFragment(
+	msgExt := t.fragmentBuf.addFragment(
 		key,
 		total,
 		index,
@@ -330,21 +337,46 @@ func (t *UDPTransport) processFragmentFrame(frame *Frame) Message {
 		frame.FixedHeader.CodecID,
 		t.getCodec,
 	)
-	if msg == nil {
+	// 检查返回的 MsgExt 是否有效
+	if msgExt.Message == nil {
 		t.fragmentErrorCount.Add(1)
 	}
-	return msg
+	return msgExt
 }
 
-// decodeMessage 从帧中解码消息
-func (t *UDPTransport) decodeMessage(frame *Frame) Message {
+// buildMsgExt 从原始消息和 TLV 扩展头构建增强消息 MsgExt
+//
+// 参数：
+//   - msg: 原始消息
+//   - extHeader: TLV 扩展头
+//
+// 返回：
+//   - MsgExt: 增强消息（包含原始消息和解析后的 TLV 字段）
+func (t *UDPTransport) buildMsgExt(msg Message, extHeader *VarExtHeader) MsgExt {
+	msgExt := MsgExt{
+		Message: msg,
+		TLVs:    make([]ExtField, 0, len(extHeader.Fields)),
+	}
+
+	// 遍历所有 TLV 字段并解析
+	for _, field := range extHeader.Fields {
+		msgExt.TLVs = append(msgExt.TLVs, *field)
+		parseExtField(&msgExt, field)
+	}
+
+	return msgExt
+}
+
+// decodeMessage 从帧中解码消息，返回增强消息 MsgExt
+func (t *UDPTransport) decodeMessage(frame *Frame) MsgExt {
 	msg, err := t.codec.Decode(frame.FixedHeader.MsgType, frame.Data)
 	if err != nil {
 		t.parseErrorCount.Add(1)
 		logging.Warnf("解码消息失败: %v", err)
-		return nil
+		return MsgExt{}
 	}
-	return msg
+	// 构建 MsgExt（解析 TLV 扩展字段）
+	return t.buildMsgExt(msg, frame.VarExtHeader)
 }
 
 // parseFrame 解析帧
@@ -376,6 +408,12 @@ func (t *UDPTransport) getCodec(codecID uint16) (Codec, error) {
 		return codec, nil
 	}
 
+	// 检查缓存大小（防止 DoS 攻击）
+	if len(t.codecCache) >= MaxCodecCacheSize {
+		return nil, types.NewOpErr(types.ErrCodeInternal, "getCodec",
+			"Codec 缓存已满，可能受到 DoS 攻击", nil)
+	}
+
 	codec, err := NewCodec(types.CodecType(codecID))
 	if err != nil {
 		return nil, err
@@ -387,7 +425,8 @@ func (t *UDPTransport) getCodec(codecID uint16) (Codec, error) {
 
 // addFragment 添加分片并检查是否完整
 // codecGetter: 用于获取 Codec 的函数（支持缓存优化）
-func (b *fragmentBuffer) addFragment(key fragmentKey, total, index uint16, data []byte, msgType MessageType, codecID uint16, codecGetter func(uint16) (Codec, error)) Message {
+// 返回 MsgExt（增强消息），分片重组后的消息不包含原始 TLV 扩展字段（因分片传输中 TLV 信息丢失）
+func (b *fragmentBuffer) addFragment(key fragmentKey, total, index uint16, data []byte, msgType MessageType, codecID uint16, codecGetter func(uint16) (Codec, error)) MsgExt {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -408,13 +447,23 @@ func (b *fragmentBuffer) addFragment(key fragmentKey, total, index uint16, data 
 	// 验证分片索引是否有效
 	if int(index) >= int(total) {
 		logging.Warnf("分片索引越界: index=%d, total=%d", index, total)
-		return nil
+		return MsgExt{}
+	}
+
+	// 验证重组后的消息大小（防止 DoS 攻击）
+	if int(total) > 0 {
+		estimatedSize := int(total) * MaxUDPPacketSize
+		if estimatedSize > MaxReassembledMessageSize {
+			logging.Warnf("拒绝过大的分片消息: nodeID=%d, msgID=%d, total=%d, estimatedSize=%d, max=%d",
+				key.nodeID, key.msgID, total, estimatedSize, MaxReassembledMessageSize)
+			return MsgExt{}
+		}
 	}
 
 	// 检查并存储分片（防止重复分片）
 	if partial.fragments[index] != nil {
 		logging.Debugf("重复分片: nodeID=%d, msgID=%d, index=%d", key.nodeID, key.msgID, index)
-		return nil
+		return MsgExt{}
 	}
 	partial.fragments[index] = data
 	partial.received++
@@ -432,20 +481,24 @@ func (b *fragmentBuffer) addFragment(key fragmentKey, total, index uint16, data 
 		codec, err := codecGetter(partial.codecID)
 		if err != nil {
 			logging.Warnf("创建编解码器失败: %v", err)
-			return nil
+			return MsgExt{}
 		}
 
 		msg, err := codec.Decode(partial.msgType, reassembled)
 		if err != nil {
 			logging.Warnf("解码重组消息失败: %v", err)
-			return nil
+			return MsgExt{}
 		}
 
 		logging.Debugf("分片重组成功: nodeID=%d, msgID=%d, total=%d", key.nodeID, key.msgID, total)
-		return msg
+		// 返回 MsgExt（分片重组后的消息不包含原始 TLV 扩展字段）
+		return MsgExt{
+			Message: msg,
+			TLVs:    make([]ExtField, 0),
+		}
 	}
 
-	return nil
+	return MsgExt{}
 }
 
 // reassembleMessage 重组完整消息
@@ -544,11 +597,20 @@ func (t *UDPTransport) Stop() error {
 	return nil
 }
 
-// Send 发送消息到指定节点（支持分片）
-func (t *UDPTransport) Send(ctx context.Context, addr string, msg Message) error {
+// Send 发送消息到指定节点（支持分片和函数选项）
+//
+// 支持函数选项模式，可动态配置 TLV 扩展字段：
+//
+//	transport.Send(ctx, addr, msg, WithHopCount(10))
+//	transport.Send(ctx, addr, msg, WithCompression(2), WithHopCount(5))
+func (t *UDPTransport) Send(ctx context.Context, addr string, msg Message, opts ...SendOpt) error {
 	if !t.started.Load() {
 		return types.NewTransportStateError("未启动")
 	}
+
+	// 处理发送选项
+	options := processSendOptions(opts...)
+	defer releaseSendOptions(options)
 
 	// 编码消息
 	msgData, err := t.codec.Encode(msg)
@@ -564,17 +626,37 @@ func (t *UDPTransport) Send(ctx context.Context, addr string, msg Message) error
 
 	// 小消息直接发送（无需分片）
 	if len(msgData) <= MaxUDPPacketSize {
-		return t.sendDirect(udpAddr, msgData, msg.Type(), addr)
+		return t.sendDirectWithOptions(udpAddr, msgData, msg.Type(), addr, options)
 	}
 
 	// 大消息分片发送（直接对编码后的消息数据进行分片）
-	return t.sendFragmented(udpAddr, msgData, msg.Type())
+	return t.sendFragmentedWithOptions(udpAddr, msgData, msg.Type(), options)
 }
 
-// sendDirect 直接发送消息（无需分片）
-func (t *UDPTransport) sendDirect(addr *net.UDPAddr, msgData []byte, msgType MessageType, originalAddr string) error {
+// sendDirectWithOptions 直接发送消息（带 TLV 选项，无需分片）
+func (t *UDPTransport) sendDirectWithOptions(addr *net.UDPAddr, msgData []byte, msgType MessageType, originalAddr string, opts *sendOptions) error {
+	nodeID := t.NodeID.Load()
+	msgID := t.nextMessageID()
+
 	// 创建完整帧
-	frame := NewFrame(0, 0, msgType, uint16(t.codec.Type()), msgData)
+	frame := NewFrame(nodeID, msgID, msgType, uint16(t.codec.Type()), msgData)
+
+	// 应用 TLV 扩展字段
+	if opts.hopCount != nil {
+		// 初始化 hop = total_hop
+		frame.WithHop(*opts.hopCount, *opts.hopCount)
+	}
+	if opts.compressID != nil {
+		frame.WithCompress(*opts.compressID)
+	}
+	if opts.priority != nil {
+		frame.WithPriority(*opts.priority)
+	}
+
+	// 完成构建并计算 CRC32
+	frame.Finalize()
+
+	// 序列化发送
 	frameData, err := frame.Marshal()
 	if err != nil {
 		return types.NewTransportSendError(err)
@@ -593,10 +675,10 @@ func (t *UDPTransport) sendDirect(addr *net.UDPAddr, msgData []byte, msgType Mes
 	return nil
 }
 
-// sendFragmented 分片发送大消息
+// sendFragmentedWithOptions 分片发送大消息（带 TLV 选项）
 //
 // 接收编码后的纯消息数据，对每个分片创建独立的 Frame
-func (t *UDPTransport) sendFragmented(addr *net.UDPAddr, msgData []byte, msgType MessageType) error {
+func (t *UDPTransport) sendFragmentedWithOptions(addr *net.UDPAddr, msgData []byte, msgType MessageType, opts *sendOptions) error {
 	// 验证 localNodeID 已设置
 	if t.NodeID.Load() == 0 {
 		return types.NewTransportStateError("localNodeID 未设置，必须调用 SetNodeID")
@@ -623,11 +705,24 @@ func (t *UDPTransport) sendFragmented(addr *net.UDPAddr, msgData []byte, msgType
 
 		fragmentData := msgData[start:end]
 
-		// 每个分片创建独立的 Frame（FixedHeader + Fragment 扩展 + 分片数据 + CRC32）
-		frameBytes, err := NewFrame(nodeID, msgID, msgType, uint16(t.codec.Type()), fragmentData).
-			WithFragment(uint16(i), uint16(totalFragments)).
-			Finalize().
-			Marshal()
+		// 创建 Frame（FixedHeader + Fragment 扩展 + TLV 扩展 + 分片数据 + CRC32）
+		frame := NewFrame(nodeID, msgID, msgType, uint16(t.codec.Type()), fragmentData)
+		frame.WithFragment(uint16(i), uint16(totalFragments))
+
+		// 应用 TLV 扩展字段（注意：分片消息通常不需要 Hop Count）
+		if opts.hopCount != nil {
+			frame.WithHop(*opts.hopCount, *opts.hopCount)
+		}
+		if opts.compressID != nil {
+			frame.WithCompress(*opts.compressID)
+		}
+		if opts.priority != nil {
+			frame.WithPriority(*opts.priority)
+		}
+
+		frame.Finalize()
+
+		frameBytes, err := frame.Marshal()
 		if err != nil {
 			return types.NewTransportSendError(err)
 		}
@@ -648,8 +743,16 @@ func (t *UDPTransport) nextMessageID() uint64 {
 
 // Receive 返回接收消息的通道
 //
-// 调用者需要持续从通道读取消息
-func (t *UDPTransport) Receive() <-chan Message {
+// # Receive 返回接收消息的通道
+//
+// 返回 MsgExt（增强消息），包含原始消息和 TLV 扩展字段：
+//
+//	for msgExt := range transport.Receive() {
+//	    if msgExt.HasHopCount() {
+//	        fmt.Printf("Hop: %d/%d\n", msgExt.HopCount.Hop, msgExt.HopCount.TotalHop)
+//	    }
+//	}
+func (t *UDPTransport) Receive() <-chan MsgExt {
 	return t.recvCh
 }
 

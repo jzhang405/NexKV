@@ -34,11 +34,22 @@ type Transport interface {
 
 	// Send 发送消息到指定节点
 	// 阻塞直到消息发送成功或失败
-	Send(ctx context.Context, addr string, msg Message) error
+	//
+	// 支持函数选项模式，可动态配置 TLV 扩展字段：
+	//   transport.Send(ctx, addr, msg, WithHopCount(10))
+	//   transport.Send(ctx, addr, msg, WithCompression(2), WithHopCount(5))
+	Send(ctx context.Context, addr string, msg Message, opt ...SendOpt) error
 
 	// Receive 返回接收消息的通道
 	// 调用者需要持续从通道读取消息
-	Receive() <-chan Message
+	//
+	// 返回 MsgExt（增强消息），包含原始消息和 TLV 扩展字段：
+	//   for msgExt := range transport.Receive() {
+	//       if msgExt.HasHopCount() {
+	//           fmt.Printf("Hop: %d/%d\n", msgExt.HopCount.Hop, msgExt.HopCount.TotalHop)
+	//       }
+	//   }
+	Receive() <-chan MsgExt
 }
 
 // Message 传输消息接口

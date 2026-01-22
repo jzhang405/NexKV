@@ -212,11 +212,11 @@ func TestUDPTransport_Fragmentation(t *testing.T) {
 	go func() {
 		select {
 		case recvMsg := <-server.Receive():
-			if recvMsg.Type() != MessageTypePut {
+			if recvMsg.GetType() != MessageTypePut {
 				errCh <- assert.AnError
 			} else {
 				// 验证消息内容
-				putMsg, ok := recvMsg.(*PutMessage)
+				putMsg, ok := recvMsg.Message.(*PutMessage)
 				if !ok {
 					errCh <- assert.AnError
 				} else {
@@ -292,7 +292,7 @@ func TestUDPTransport_Fragmentation_Sizes(t *testing.T) {
 
 			go func() {
 				for recvMsg := range server.Receive() {
-					if putMsg, ok := recvMsg.(*PutMessage); ok {
+					if putMsg, ok := recvMsg.Message.(*PutMessage); ok {
 						receivedCh <- putMsg
 						return
 					}
@@ -363,7 +363,7 @@ func TestUDPTransport_Fragmentation_ByteBufferPrecision(t *testing.T) {
 
 			go func() {
 				for recvMsg := range server.Receive() {
-					if putMsg, ok := recvMsg.(*PutMessage); ok {
+					if putMsg, ok := recvMsg.Message.(*PutMessage); ok {
 						receivedCh <- putMsg
 						return
 					}
@@ -459,7 +459,7 @@ func TestUDPTransport_ConcurrentSend(t *testing.T) {
 				if !ok {
 					return
 				}
-				if msg != nil {
+				if msg.Message != nil {
 					mu.Lock()
 					receivedCount++
 					mu.Unlock()
@@ -611,7 +611,7 @@ func TestUDPTransport_PingPong(t *testing.T) {
 	// 服务端接收协程（自动回复 Pong）
 	go func() {
 		for msg := range server.Receive() {
-			if ping, ok := msg.(*NodePingMessage); ok {
+			if ping, ok := msg.Message.(*NodePingMessage); ok {
 				serverReceivedPing <- ping
 
 				// 自动回复 Pong
@@ -630,7 +630,7 @@ func TestUDPTransport_PingPong(t *testing.T) {
 	// 客户端接收协程
 	go func() {
 		for msg := range client.Receive() {
-			if pong, ok := msg.(*NodePongMessage); ok {
+			if pong, ok := msg.Message.(*NodePongMessage); ok {
 				clientReceivedPong <- pong
 				return
 			}
@@ -702,7 +702,7 @@ func TestUDPTransport_PingPong_Bidirectional(t *testing.T) {
 	// 节点 A 接收协程（自动回复 Pong）
 	go func() {
 		for msg := range nodeA.Receive() {
-			switch m := msg.(type) {
+			switch m := msg.Message.(type) {
 			case *NodePingMessage:
 				nodeAReceivedPing <- m
 				// 自动回复 Pong
@@ -722,7 +722,7 @@ func TestUDPTransport_PingPong_Bidirectional(t *testing.T) {
 	// 节点 B 接收协程（自动回复 Pong）
 	go func() {
 		for msg := range nodeB.Receive() {
-			switch m := msg.(type) {
+			switch m := msg.Message.(type) {
 			case *NodePingMessage:
 				nodeBReceivedPing <- m
 				// 自动回复 Pong
@@ -834,7 +834,7 @@ func TestUDPTransport_PingPong_MultipleRounds(t *testing.T) {
 		defer wg.Done()
 		count := 0
 		for msg := range server.Receive() {
-			if ping, ok := msg.(*NodePingMessage); ok {
+			if ping, ok := msg.Message.(*NodePingMessage); ok {
 				serverReceivedPings <- ping
 
 				// 自动回复 Pong
@@ -859,7 +859,7 @@ func TestUDPTransport_PingPong_MultipleRounds(t *testing.T) {
 		defer wg.Done()
 		count := 0
 		for msg := range client.Receive() {
-			if pong, ok := msg.(*NodePongMessage); ok {
+			if pong, ok := msg.Message.(*NodePongMessage); ok {
 				clientReceivedPongs <- pong
 
 				count++
@@ -1011,7 +1011,7 @@ func TestUDPFragmentation_MD5Integrity(t *testing.T) {
 
 	go func() {
 		for receivedMsg := range server.Receive() {
-			if putMsg, ok := receivedMsg.(*PutMessage); ok {
+			if putMsg, ok := receivedMsg.Message.(*PutMessage); ok {
 				receivedCh <- putMsg
 				return
 			}
@@ -1174,7 +1174,7 @@ func TestUDPFragmentation_Boundary_MinFragments(t *testing.T) {
 	receivedCh := make(chan *PutMessage, 1)
 	go func() {
 		for receivedMsg := range server.Receive() {
-			if putMsg, ok := receivedMsg.(*PutMessage); ok {
+			if putMsg, ok := receivedMsg.Message.(*PutMessage); ok {
 				receivedCh <- putMsg
 				return
 			}
@@ -1232,7 +1232,7 @@ func TestUDPFragmentation_Boundary_MaxFragments(t *testing.T) {
 	receivedCh := make(chan *PutMessage, 1)
 	go func() {
 		for receivedMsg := range server.Receive() {
-			if putMsg, ok := receivedMsg.(*PutMessage); ok {
+			if putMsg, ok := receivedMsg.Message.(*PutMessage); ok {
 				receivedCh <- putMsg
 				return
 			}
@@ -1289,7 +1289,7 @@ func TestUDPFragmentation_Boundary_EmptyPacket(t *testing.T) {
 	receivedCh := make(chan *PutMessage, 1)
 	go func() {
 		for receivedMsg := range server.Receive() {
-			if putMsg, ok := receivedMsg.(*PutMessage); ok {
+			if putMsg, ok := receivedMsg.Message.(*PutMessage); ok {
 				receivedCh <- putMsg
 				return
 			}
@@ -1356,7 +1356,7 @@ func TestUDPFragmentation_PerformanceReport(t *testing.T) {
 			receivedCh := make(chan *PutMessage, 1)
 			go func() {
 				for receivedMsg := range server.Receive() {
-					if putMsg, ok := receivedMsg.(*PutMessage); ok {
+					if putMsg, ok := receivedMsg.Message.(*PutMessage); ok {
 						receivedCh <- putMsg
 						return
 					}
@@ -1477,7 +1477,7 @@ func TestUDP_P0_MaxFragmentCount(t *testing.T) {
 
 	// 处理恶意数据包，应该被拒绝（total=0 是非法的）
 	result := trans.processReceivedData(maliciousPacket)
-	assert.Nil(t, result, "total=0 的分片应该被拒绝")
+	assert.Nil(t, result.Message, "total=0 的分片应该被拒绝")
 
 	// 注意：MaxFragmentCount = 65535 是 uint16 的最大值，无法构造超过此值的测试
 	// 实际场景中，65535 个分片 * 1400 字节 ≈ 91 MB，已经是合理的上限

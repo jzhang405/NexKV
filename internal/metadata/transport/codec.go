@@ -299,15 +299,8 @@ type GetMessage struct {
 	Key string `json:"key" msgpack:"key"`
 }
 
-// Type 实现 Message 接口
-func (m *GetMessage) Type() MessageType {
-	return MessageTypeGet
-}
-
-// Priority 实现 Message 接口
-func (m *GetMessage) Priority() int {
-	return GetPriority(m.Type())
-}
+func (m *GetMessage) Type() MessageType { return MessageTypeGet }
+func (m *GetMessage) Priority() int     { return GetPriority(m.Type()) }
 
 // PutMessage 更新元数据消息
 type PutMessage struct {
@@ -624,9 +617,10 @@ func (m *LeaderElectionMessage) Priority() int     { return GetPriority(m.Type()
 
 // DecodedMessage 解码后的消息
 type DecodedMessage struct {
-	Msg    Message // 解码后的消息
-	NodeID uint64  // 发送节点 ID
-	MsgSeq uint64  // 消息序列号
+	Msg          Message       // 解码后的消息
+	NodeID       uint64        // 发送节点 ID
+	MsgSeq       uint64        // 消息序列号
+	VarExtHeader *VarExtHeader // TLV 扩展头（用于构建 MsgExt）
 }
 
 // EncodeFrame 编码消息为帧
@@ -683,11 +677,12 @@ func DecodeFrame(frame *Frame) (*DecodedMessage, error) {
 		return nil, types.NewCodecDecodeFailedError("DecodeFrame", err)
 	}
 
-	// 封装解码结果
+	// 封装解码结果（保留 VarExtHeader 用于构建 MsgExt）
 	return &DecodedMessage{
-		Msg:    msg,
-		NodeID: frame.FixedHeader.NodeID,
-		MsgSeq: frame.FixedHeader.MsgSeq,
+		Msg:          msg,
+		NodeID:       frame.FixedHeader.NodeID,
+		MsgSeq:       frame.FixedHeader.MsgSeq,
+		VarExtHeader: frame.VarExtHeader,
 	}, nil
 }
 
@@ -736,6 +731,35 @@ func (mr *MessageReader) ReadMessage() (Message, error) {
 	return decoded.Msg, nil
 }
 
+// ReadMessageExt 读取一条增强消息（包含 TLV 扩展字段）
+func (mr *MessageReader) ReadMessageExt() (MsgExt, error) {
+	// 读取帧
+	frame, err := mr.frameReader.ReadFrame()
+	if err != nil {
+		return MsgExt{}, err
+	}
+
+	// 使用 DecodeFrame 解码
+	decoded, err := DecodeFrame(frame)
+	if err != nil {
+		return MsgExt{}, err
+	}
+
+	// 构建 MsgExt（解析 TLV 扩展字段）
+	msgExt := MsgExt{
+		Message: decoded.Msg,
+		TLVs:    make([]ExtField, 0, len(decoded.VarExtHeader.Fields)),
+	}
+
+	// 遍历所有 TLV 字段并解析
+	for _, field := range decoded.VarExtHeader.Fields {
+		msgExt.TLVs = append(msgExt.TLVs, *field)
+		parseExtField(&msgExt, field)
+	}
+
+	return msgExt, nil
+}
+
 // MessageWriter 消息写入器
 type MessageWriter struct {
 	frameWriter *FrameWriter
@@ -765,11 +789,45 @@ func NewMessageWriter(w io.Writer, codec Codec) *MessageWriter {
 //   - nodeID: 发送节点 ID
 //   - msgSeq: 消息序列号
 func (mw *MessageWriter) WriteMessage(msg Message, nodeID uint64, msgSeq uint64) error {
-	// 使用 EncodeFrame 编码
+	return mw.WriteMessageWithOptions(msg, nodeID, msgSeq, nil)
+}
+
+// WriteMessageWithOptions 写入一条消息（带 TLV 扩展选项）
+//
+// 参数:
+//   - msg: 要写入的消息
+//   - nodeID: 发送节点 ID
+//   - msgSeq: 消息序列号
+//   - opts: 发送选项（hopCount, compressID, encryptID, priority）
+func (mw *MessageWriter) WriteMessageWithOptions(msg Message, nodeID uint64, msgSeq uint64, opts *sendOptions) error {
+	// 使用 EncodeFrame 编码基础帧
 	frame, err := EncodeFrame(msg, nodeID, msgSeq)
 	if err != nil {
 		return err
 	}
+
+	// 应用 TLV 扩展字段
+	if opts != nil {
+		if opts.hopCount != nil {
+			// 初始化 hop = total_hop
+			frame.WithHop(*opts.hopCount, *opts.hopCount)
+		}
+		if opts.compressID != nil {
+			frame.WithCompress(*opts.compressID)
+		}
+		if opts.encryptID != nil {
+			// 安全检查：不允许使用空 nonce
+			// 加密扩展必须显式指定 nonce，调用方应使用 Frame.WithEncrypt() 方法
+			return types.NewOpErr(types.ErrCodeInternal, "WriteMessageWithOptions",
+				"加密扩展需要显式指定 nonce，请使用 Frame.WithEncrypt() 方法或移除加密选项", nil)
+		}
+		if opts.priority != nil {
+			frame.WithPriority(*opts.priority)
+		}
+	}
+
+	// 完成构建并计算 CRC32
+	frame.Finalize()
 
 	// 写入帧
 	if err := mw.frameWriter.WriteFrame(frame); err != nil {

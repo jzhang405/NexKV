@@ -543,59 +543,51 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A[1.建立新分支 feature/udp-transport] --> B[2.编写Pre文档<br>需求+设计+风险评估]
-    B --> C[3.等待架构师评审]
+    A[1.建立新分支 feature/XXX] --> B[2.编写Pre文档<br>需求+设计+风险评估]
+    B --> C[3.等待架构师评审Pre]
     C -->|未通过| D[3.1 优化Pre文档]
     D --> C
-    C -->|通过| E[4.启动开发<br>实现UDP Transport]
-    E --> F[5.代码简化与构建验证<br>人工精简冗余逻辑]
-    
-    %% 新增：Code Simplifier Agent 代码优化闭环
-    F --> G[6. Code Simplifier Agent 优化]
-    G --> H[6.1 自动化代码精简<br>（去冗余/提性能/统一风格）]
-    H --> I[6.2 对接 Code Reviewer 意见]
-    I -->|需修改| J[6.3 人工调整优化结果]
-    J --> G
-    I -->|符合要求| K[7.请 Code Review Agent 评审]
-    
-    %% 原有 Code Review Agent 审查代码
-    K --> L[7.1 Review Code Agent 审查代码]
-    L -->|存在问题| M[7.2 修复代码问题]
-    M --> K
-    L -->|通过| N[8.本地全量测试（Make 流程）]
-    
+    C -->|通过| E[4.启动开发<br>实现功能]
+    E --> F[5.编写Post文档<br>开发总结+测试报告]
+
+    %% Code Review 流程
+    F --> G[6. Code Review Agent审查]
+    G --> H[7.生成Code Review报告<br>存入docs/06_project_management/code_review]
+    H --> I[8. Code Simplifier优化]
+    I --> J[9.本地验证流程]
+
     %% 本地 Make 命令测试闭环
-    N --> O[8.1 make lint 代码规范检查]
-    O -->|发现错误| P[8.2 修复 lint 问题]
+    J --> K[9.1 make lint]
+    K -->|失败| L[9.2 修复lint问题]
+    L --> K
+    K -->|通过| M[9.3 make build]
+    M -->|失败| N[9.4 修复构建问题]
+    N --> M
+    M -->|通过| O[9.5 make test]
+    O -->|失败| P[9.6 修复测试问题]
     P --> O
-    O -->|通过| Q[8.3 make build 编译构建]
-    Q -->|构建失败| R[8.4 修复构建问题]
-    R --> Q
-    Q -->|通过| S[8.5 make test 单元/集成测试]
-    S -->|测试失败| T[8.6 修复测试问题]
-    T --> S
-    S -->|通过| U[8.7 make clean 清理构建产物]
-    
+    O -->|通过| Q[9.7 make clean]
+
     %% 后续流程
-    U --> V[9.编写Post文档<br>开发总结+测试报告]
-    V --> W[9.等待架构师评审]
-    W -->|有评审意见| E
-    W -->|通过| X[10.推送并等待CI]
-    X -->|CI失败| Y[10.1 修复CI问题<br>编译/测试/规范]
-    Y --> X
-    X -->|通过| Z[11.合并到mainline]
-    Z --> AA[12.Post文档归档]
+    Q --> R[10.等待架构师评审Post]
+    R -->|有评审意见| E
+    R -->|通过| S[11.推送并等待CI]
+    S -->|CI失败| T[11.1 修复CI问题]
+    T --> S
+    S -->|通过| U[12.合并到mainline]
+    U --> V[13.Post文档归档]
 
     %% 样式定义
     style A fill:#e1f5ff,stroke:#01579b,stroke-width:2px
     style B fill:#fff4e6,stroke:#e65100,stroke-width:2px
     style C fill:#ffe6e6,stroke:#b71c1c,stroke-width:2px
-    style W fill:#ffe6e6,stroke:#b71c1c,stroke-width:2px
-    style Z fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
-    style AA fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    %% 新增工具优化步骤高亮
+    style R fill:#ffe6e6,stroke:#b71c1c,stroke-width:2px
+    style U fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    style V fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    %% Code Review 和 Simplifier 步骤高亮
     style G fill:#f0f8ff,stroke:#0288d1,stroke-width:1.5px
-    
+    style H fill:#e8f5e9,stroke:#2e7d32,stroke-width:1.5px
+    style I fill:#f0f8ff,stroke:#0288d1,stroke-width:1.5px
 ```
 
 **PR 全流程详解**：
@@ -604,23 +596,30 @@ flowchart LR
 |------|------|---------|--------|---------|
 | **1** | 建立新分支 | 🤖 核心开发 | Feature 分支 | 分支命名：`feature/XXX-功能描述` |
 | **2** | 编写 Pre 文档 | 🤖 核心开发 + AI | Pre 文档 | 需求、设计、风险评估 |
-| **3** | 等待架构师评审 | 👤 架构师 | 评审意见 | 技术可行性、架构合理性 |
+| **3** | 等待架构师评审 Pre | 👤 架构师 | 评审意见 | 技术可行性、架构合理性 |
 | **3.1** | 优化 Pre 文档 | 🤖 核心开发 + AI | 优化后文档 | 修复评审问题，循环直至通过 |
 | **4** | 启动开发 | 🤖 核心开发 | 代码实现 | 按 Pre 文档落地 |
-| **5** | 代码简化与构建验证 | 🤖 核心开发 + AI | 验证通过 | code-simplifier + build + lint + test + clean |
-| **6** | 编写 Post 文档 | 🤖 核心开发 + AI | Post 文档 | 成果总结、未完成项、ToDo |
-| **7** | 等待架构师评审 | 👤 架构师 | 评审意见 | 代码质量、文档完整性 |
-| **8** | 推送并等待 CI | 🤖 核心开发 | 推送完成 | `git push` + GitHub Actions |
-| **8.1** | 修复 CI | 🤖 核心开发 | 修复记录 | 循环修复直至 CI 通过 |
-| **9** | 合并到 mainline | 👤 架构师 | 合并完成 | CI 通过后合并到 main |
-| **10** | Post 文档归档 | 🤖 项目经理 | 归档文档 | 与代码同步版本管理 |
+| **5** | 编写 Post 文档 | 🤖 核心开发 + AI | Post 文档 | 成果总结、未完成项、ToDo |
+| **6** | Code Review Agent 审查 | 🤖 Code Reviewer | 审查发现 | P0/P1/P2 问题分类和修复建议 |
+| **7** | 生成 Code Review 报告 | 🤖 Code Reviewer | Review 报告 | 存入 `docs/06_project_management/code_review/日期-分支名.md` |
+| **8** | Code Simplifier 优化 | 🤖 Code Simplifier | 优化后代码 | 消除重复、统一风格、提升可读性 |
+| **9** | 本地验证流程 | 🤖 核心开发 | 验证通过 | lint → build → test → clean |
+| **9.1** | make lint | 🤖 核心开发 | lint 通过 | 代码质量检查（0 issues） |
+| **9.2** | make build | 🤖 核心开发 | 编译成功 | 项目编译通过 |
+| **9.3** | make test | 🤖 核心开发 | 测试通过 | 所有测试用例通过 |
+| **9.4** | make clean | 🤖 核心开发 | 清理完成 | 清理构建产物 |
+| **10** | 等待架构师评审 Post | 👤 架构师 | 评审意见 | 代码质量、文档完整性 |
+| **11** | 推送并等待 CI | 🤖 核心开发 | 推送完成 | `git push` + GitHub Actions |
+| **11.1** | 修复 CI | 🤖 核心开发 | 修复记录 | 循环修复直至 CI 通过 |
+| **12** | 合并到 mainline | 👤 架构师 | 合并完成 | CI 通过后合并到 main |
+| **13** | Post 文档归档 | 🤖 项目经理 | 归档文档 | 与代码同步版本管理 |
 
 **关键原则**：
 1. **Pre 文档未通过评审前，禁止启动开发**（先明确再动手）
-2. **Post 文档也需要架构师评审**：确保代码质量和文档完整性
-3. **评审意见处理**：如果架构师提出评审意见，返回开发阶段修改
-4. **代码简化优先**：开发完成后，必须先运行 code-simplifier 简化代码
-5. **完整构建验证**：按顺序执行 build → lint → test → clean，确保所有检查通过
+2. **Post 文档编写后，先 Code Review 再 Code Simplifier**：确保代码质量
+3. **Code Review 报告必须归档**：存入 `docs/06_project_management/code_review/日期-分支名.md`
+4. **本地验证必须全部通过**：lint → build → test → clean，每步都要过
+5. **架构师评审 Post 文档**：确保代码质量和文档完整性
 6. **评审通过后才推送**：Post 文档评审通过后才能推送到远程
 7. **CI 自动化**：推送后自动触发 CI，CI 通过后才能合并
 8. **归档要求**：PR 合并后，全流程文档需补充完整，归档至对应目录

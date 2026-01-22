@@ -159,10 +159,10 @@ func TestTCPTransport_SendReceive(t *testing.T) {
 	go func() {
 		select {
 		case recvMsg := <-server.Receive():
-			if recvMsg == nil {
+			if recvMsg.Message == nil {
 				errCh <- fmt.Errorf("接收到空消息")
-			} else if recvMsg.Type() != MessageTypeGet {
-				errCh <- fmt.Errorf("消息类型不匹配: 期望 %d, 实际 %d", MessageTypeGet, recvMsg.Type())
+			} else if recvMsg.GetType() != MessageTypeGet {
+				errCh <- fmt.Errorf("消息类型不匹配: 期望 %d, 实际 %d", MessageTypeGet, recvMsg.GetType())
 			} else {
 				done <- true
 			}
@@ -467,7 +467,7 @@ func TestTCPTransport_FrameExchange(t *testing.T) {
 	go func() {
 		select {
 		case msg := <-server.Receive():
-			if msg.Type() != MessageTypeGet {
+			if msg.GetType() != MessageTypeGet {
 				errCh <- assert.AnError
 			} else {
 				received <- true
@@ -534,7 +534,7 @@ func TestTCPTransport_PingPong(t *testing.T) {
 	serverReceivedPing := make(chan *NodePingMessage, 1)
 	go func() {
 		for msg := range server.Receive() {
-			if ping, ok := msg.(*NodePingMessage); ok {
+			if ping, ok := msg.Message.(*NodePingMessage); ok {
 				serverReceivedPing <- ping
 
 				// 自动回复 Pong
@@ -555,7 +555,7 @@ func TestTCPTransport_PingPong(t *testing.T) {
 	clientReceivedPong := make(chan *NodePongMessage, 1)
 	go func() {
 		for msg := range client.Receive() {
-			switch m := msg.(type) {
+			switch m := msg.Message.(type) {
 			case *NodePingMessage:
 				clientReceivedPing <- m
 
@@ -620,7 +620,7 @@ func TestTCPTransport_PingPong(t *testing.T) {
 	clientReceivedPing2 := make(chan *NodePingMessage, 1)
 	go func() {
 		for msg := range client.Receive() {
-			switch m := msg.(type) {
+			switch m := msg.Message.(type) {
 			case *NodePingMessage:
 				clientReceivedPing2 <- m
 
@@ -643,7 +643,7 @@ func TestTCPTransport_PingPong(t *testing.T) {
 	serverReceivedPong := make(chan *NodePongMessage, 1)
 	go func() {
 		for msg := range server.Receive() {
-			if pong, ok := msg.(*NodePongMessage); ok {
+			if pong, ok := msg.Message.(*NodePongMessage); ok {
 				serverReceivedPong <- pong
 				return
 			}

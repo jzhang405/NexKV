@@ -90,8 +90,8 @@ type TCPTransport struct {
 	poolWg   sync.WaitGroup
 	poolDone chan struct{}
 
-	// 接收通道
-	recvCh   chan Message
+	// 接收通道（返回增强消息 MsgExt，包含原始消息和 TLV 扩展字段）
+	recvCh   chan MsgExt
 	recvOnce sync.Once
 
 	// 生命周期
@@ -181,7 +181,7 @@ func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 			conns: make(map[string]*tcpConn),
 		},
 		poolDone:  make(chan struct{}),
-		recvCh:    make(chan Message, config.BufferSize),
+		recvCh:    make(chan MsgExt, config.BufferSize),
 		stopCh:    make(chan struct{}),
 		localAddr: config.ListenAddr,
 		// NodeID 需要外部通过 SetNodeID() 设置（atomic.Uint64 默认零值）
@@ -358,8 +358,8 @@ func (t *TCPTransport) handleConn(conn *tcpConn) {
 			return
 		}
 
-		// 读取消息
-		msg, err := conn.reader.ReadMessage()
+		// 读取消息（使用 ReadMessageExt 获取增强消息）
+		msgExt, err := conn.reader.ReadMessageExt()
 		if err != nil {
 			if err != io.EOF && !isTimeoutError(err) {
 				logging.Errorf("读取消息失败: %v", err)
@@ -371,12 +371,12 @@ func (t *TCPTransport) handleConn(conn *tcpConn) {
 		conn.lastUsed.Store(time.Now().Unix())
 
 		// P2-2: 发送到接收通道（使用配置的超时时间）
-		channelTimeout := 5 * time.Second // 默认值
-		if t.config != nil && t.config.ChannelSendTimeout > 0 {
-			channelTimeout = t.config.ChannelSendTimeout
+		channelTimeout := t.config.ChannelSendTimeout
+		if channelTimeout <= 0 {
+			channelTimeout = 5 * time.Second // 默认值
 		}
 		select {
-		case t.recvCh <- msg:
+		case t.recvCh <- msgExt:
 		case <-t.stopCh:
 			return
 		case <-time.After(channelTimeout):
@@ -384,7 +384,7 @@ func (t *TCPTransport) handleConn(conn *tcpConn) {
 			return
 		}
 
-		logging.Debugf("接收消息: %s from %s", msg.Type(), conn.remoteAddr)
+		logging.Debugf("接收消息: %s from %s", msgExt.GetType(), conn.remoteAddr)
 	}
 }
 
@@ -434,11 +434,21 @@ func (t *TCPTransport) Stop() error {
 
 // Send 发送消息到指定节点
 //
+// 支持函数选项模式，可动态配置 TLV 扩展字段：
+//   - WithHopCount(totalHop uint16) - 设置跳数 TTL
+//   - WithCompression(compressID uint16) - 设置压缩算法
+//   - WithEncryption(encryptID uint16) - 设置加密算法
+//   - WithPriority(priority types.Priority) - 设置优先级
+//
 // 阻塞直到消息发送成功或失败
-func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message) error {
+func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message, opts ...SendOpt) error {
 	if !t.started.Load() {
 		return types.NewTransportStateError("未启动")
 	}
+
+	// 处理发送选项
+	options := processSendOptions(opts...)
+	defer releaseSendOptions(options)
 
 	// 获取或创建连接
 	conn, err := t.getOrCreateConn(addr)
@@ -455,9 +465,9 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message) error
 		return types.NewTransportConnectionError("设置写超时", "", err)
 	}
 
-	// 发送消息
+	// 发送消息（带 TLV 选项）
 	msgSeq := t.msgSeqGenerator.Next()
-	if err := conn.writer.WriteMessage(msg, t.NodeID.Load(), msgSeq); err != nil {
+	if err := conn.writer.WriteMessageWithOptions(msg, t.NodeID.Load(), msgSeq, options); err != nil {
 		// 发送失败，从池中移除连接（removeConnFromPool 会关闭连接）
 		t.removeConnFromPool(addr)
 		return types.NewTransportSendError(err)
@@ -472,8 +482,16 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message) error
 
 // Receive 返回接收消息的通道
 //
-// 调用者需要持续从通道读取消息
-func (t *TCPTransport) Receive() <-chan Message {
+// # Receive 返回接收消息的通道
+//
+// 返回 MsgExt（增强消息），包含原始消息和 TLV 扩展字段：
+//
+//	for msgExt := range transport.Receive() {
+//	    if msgExt.HasHopCount() {
+//	        fmt.Printf("Hop: %d/%d\n", msgExt.HopCount.Hop, msgExt.HopCount.TotalHop)
+//	    }
+//	}
+func (t *TCPTransport) Receive() <-chan MsgExt {
 	return t.recvCh
 }
 
@@ -533,9 +551,10 @@ func (t *TCPTransport) addConnToPool(conn *tcpConn) {
 	t.connPool.mu.Lock()
 	defer t.connPool.mu.Unlock()
 
-	// 关闭旧连接
+	// 关闭旧连接（先从池中移除，避免继续使用）
 	if oldConn, exists := t.connPool.conns[conn.remoteAddr]; exists {
-		_ = oldConn.Close()
+		delete(t.connPool.conns, conn.remoteAddr) // 先移除
+		_ = oldConn.Close()                       // 再关闭（触发 handleConn 退出）
 	}
 
 	t.connPool.conns[conn.remoteAddr] = conn

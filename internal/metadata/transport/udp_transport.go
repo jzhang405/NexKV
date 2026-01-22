@@ -855,6 +855,79 @@ func (t *UDPTransport) forwardFragmented(nodeID uint64, msgSeq uint32, forwardMs
 	return msgSeq, nil
 }
 
+// ========================================
+// 批量转发实现
+// ========================================
+
+// BatchForwardMessage 批量转发消息
+//
+// UDP 无连接协议，直接并发发送到多个目标地址
+func (t *UDPTransport) BatchForwardMessage(
+	ctx context.Context,
+	addrs []string,
+	msgExt MsgExt,
+) BatchForwardMessageResult {
+	if !t.started.Load() {
+		// 未启动时返回全部失败的结果
+		results := make([]BatchForwardResult, len(addrs))
+		for i, addr := range addrs {
+			results[i] = BatchForwardResult{
+				Addr:  addr,
+				SeqID: 0,
+				Error: types.NewTransportStateError("未启动"),
+			}
+		}
+		return BatchForwardMessageResult{
+			SuccessCount: 0,
+			FailureCount: len(addrs),
+			Results:      results,
+		}
+	}
+
+	// 限制批量大小
+	if len(addrs) > maxBatchSize {
+		addrs = addrs[:maxBatchSize]
+	}
+
+	results := make([]BatchForwardResult, len(addrs))
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, maxBatchConcurrency)
+
+	for i, addr := range addrs {
+		wg.Add(1)
+		go func(idx int, targetAddr string) {
+			defer wg.Done()
+			semaphore <- struct{}{}        // 获取信号量
+			defer func() { <-semaphore }() // 释放信号量
+
+			seqID, err := t.ForwardMessage(ctx, targetAddr, msgExt)
+			results[idx] = BatchForwardResult{
+				Addr:  targetAddr,
+				SeqID: seqID,
+				Error: err,
+			}
+		}(i, addr)
+	}
+
+	wg.Wait()
+
+	// 统计结果
+	var success, failure int
+	for _, r := range results {
+		if r.Error != nil {
+			failure++
+		} else {
+			success++
+		}
+	}
+
+	return BatchForwardMessageResult{
+		SuccessCount: success,
+		FailureCount: failure,
+		Results:      results,
+	}
+}
+
 // nextMessageID 生成递增的消息 ID
 func (t *UDPTransport) nextMessageID() uint64 {
 	return atomic.AddUint64(&t.msgIDCounter, 1)

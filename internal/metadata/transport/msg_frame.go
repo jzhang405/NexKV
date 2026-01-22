@@ -76,7 +76,7 @@ func getDecoder(fieldType ExtFieldType) (ExtDecoder, bool) {
 //
 // 注意：MsgFrame 按值传递，无缓存机制。每次调用 GetExt() 都会重新解码。
 type MsgFrame struct {
-	FixedHeader // 固定帧头（31 字节）
+	FixedHeader         // 固定帧头（31 字节）
 	TLVs        []TLV   // 扩展头 TLV（可变长度）
 	Message     Message // 消息体（实际业务消息）
 }

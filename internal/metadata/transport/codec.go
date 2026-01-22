@@ -299,8 +299,8 @@ type GetMessage struct {
 	Key string `json:"key" msgpack:"key"`
 }
 
-func (m *GetMessage) Type() MessageType     { return MessageTypeGet }
-func (m *GetMessage) Priority() int         { return GetPriority(MessageTypeGet) }
+func (m *GetMessage) Type() MessageType { return MessageTypeGet }
+func (m *GetMessage) Priority() int     { return GetPriority(MessageTypeGet) }
 
 // PutMessage 更新元数据消息
 type PutMessage struct {
@@ -308,16 +308,16 @@ type PutMessage struct {
 	Value []byte `json:"value" msgpack:"value"`
 }
 
-func (m *PutMessage) Type() MessageType     { return MessageTypePut }
-func (m *PutMessage) Priority() int         { return GetPriority(MessageTypePut) }
+func (m *PutMessage) Type() MessageType { return MessageTypePut }
+func (m *PutMessage) Priority() int     { return GetPriority(MessageTypePut) }
 
 // DeleteMessage 删除元数据消息
 type DeleteMessage struct {
 	Key string `json:"key" msgpack:"key"`
 }
 
-func (m *DeleteMessage) Type() MessageType  { return MessageTypeDelete }
-func (m *DeleteMessage) Priority() int      { return GetPriority(MessageTypeDelete) }
+func (m *DeleteMessage) Type() MessageType { return MessageTypeDelete }
+func (m *DeleteMessage) Priority() int     { return GetPriority(MessageTypeDelete) }
 
 // GetReplyMessage Get 响应消息
 type GetReplyMessage struct {
@@ -327,8 +327,8 @@ type GetReplyMessage struct {
 	Version uint64 `json:"version" msgpack:"version"`
 }
 
-func (m *GetReplyMessage) Type() MessageType  { return MessageTypeGetReply }
-func (m *GetReplyMessage) Priority() int      { return GetPriority(MessageTypeGetReply) }
+func (m *GetReplyMessage) Type() MessageType { return MessageTypeGetReply }
+func (m *GetReplyMessage) Priority() int     { return GetPriority(MessageTypeGetReply) }
 
 // PutReplyMessage Put 响应消息
 type PutReplyMessage struct {
@@ -337,8 +337,8 @@ type PutReplyMessage struct {
 	Version uint64 `json:"version" msgpack:"version"`
 }
 
-func (m *PutReplyMessage) Type() MessageType  { return MessageTypePutReply }
-func (m *PutReplyMessage) Priority() int      { return GetPriority(MessageTypePutReply) }
+func (m *PutReplyMessage) Type() MessageType { return MessageTypePutReply }
+func (m *PutReplyMessage) Priority() int     { return GetPriority(MessageTypePutReply) }
 
 // DeleteReplyMessage Delete 响应消息
 type DeleteReplyMessage struct {
@@ -614,7 +614,6 @@ func (m *LeaderElectionMessage) Priority() int     { return GetPriority(MessageT
 // ========================================
 // 编解码器工具函数
 // ========================================
-
 
 // EncodeFrame 编码消息为帧
 //

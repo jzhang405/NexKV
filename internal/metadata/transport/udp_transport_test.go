@@ -212,7 +212,7 @@ func TestUDPTransport_Fragmentation(t *testing.T) {
 	go func() {
 		select {
 		case recvMsg := <-server.Receive():
-			if recvMsg.GetType() != MessageTypePut {
+			if recvMsg.Type() != MessageTypePut {
 				errCh <- assert.AnError
 			} else {
 				// 验证消息内容

@@ -43,13 +43,15 @@ type Transport interface {
 	// Receive 返回接收消息的通道
 	// 调用者需要持续从通道读取消息
 	//
-	// 返回 MsgExt（增强消息），包含原始消息和 TLV 扩展字段：
-	//   for msgExt := range transport.Receive() {
-	//       if msgExt.HasHopCount() {
-	//           fmt.Printf("Hop: %d/%d\n", msgExt.HopCount.Hop, msgExt.HopCount.TotalHop)
+	// 返回 MsgFrame（网络帧），包含原始消息和 TLV 扩展字段：
+	//   for msgFrame := range transport.Receive() {
+	//       if msgFrame.HasHopCount() {
+	//           if hop, ok := msgFrame.GetHopCount(); ok {
+	//               fmt.Printf("Hop: %d/%d\n", hop.Hop, hop.TotalHop)
+	//           }
 	//       }
 	//   }
-	Receive() <-chan MsgExt
+	Receive() <-chan MsgFrame
 
 	// ForwardMessage 转发消息到指定节点
 	// 自动递减 Hop Count（如果存在），Hop Count 减至 0 时返回错误
@@ -60,16 +62,16 @@ type Transport interface {
 	//   - 节点间消息中继
 	//
 	// 行为：
-	//   1. 检查 msgExt.HopCount 是否存在
+	//   1. 检查 msgFrame 中 Hop Count 是否存在（通过 GetHopCount()）
 	//   2. 如果存在且 Hop > 0，则递减 Hop（NewHop = Hop - 1）
 	//   3. 如果 Hop == 0，返回 ErrHopCountExpired（消息已过期，不再转发）
 	//   4. 如果不存在，直接转发（不添加 Hop Count）
 	//   5. 保留所有 TLV 扩展字段（除 Hop Count 递减外）
 	//
 	// 返回：
-	//   - uint32: 转发的消息序列号
+	//   - uint64: 转发的消息序列号
 	//   - error: 转发失败时返回错误
-	ForwardMessage(ctx context.Context, addr string, msgExt MsgExt) (uint32, error)
+	ForwardMessage(ctx context.Context, addr string, msgExt MsgFrame) (uint64, error)
 }
 
 // Message 传输消息接口
@@ -403,7 +405,7 @@ type BatchForwardMessageResult struct {
 // 记录单个地址的转发结果
 type BatchForwardResult struct {
 	Addr  string // 目标地址
-	SeqID uint32 // 消息序列号（成功时）
+	SeqID uint64 // 消息序列号（成功时）
 	Error error  // 错误信息（失败时）
 }
 
@@ -420,7 +422,7 @@ type BatchForwardTransport interface {
 	// 参数：
 	//   - ctx: 上下文（支持取消和超时）
 	//   - addrs: 目标地址列表
-	//   - msgExt: 要转发的增强消息
+	//   - msgExt: 要转发的网络帧
 	//
 	// 返回：
 	//   - BatchForwardMessageResult: 批量转发结果（成功/失败统计）
@@ -434,5 +436,5 @@ type BatchForwardTransport interface {
 	// 使用场景：
 	//   - Gossip 协议批量转发到随机节点
 	//   - 消息广播到集群节点
-	BatchForwardMessage(ctx context.Context, addrs []string, msgExt MsgExt) BatchForwardMessageResult
+	BatchForwardMessage(ctx context.Context, addrs []string, msgExt MsgFrame) BatchForwardMessageResult
 }

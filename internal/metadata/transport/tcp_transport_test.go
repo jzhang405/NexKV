@@ -161,8 +161,8 @@ func TestTCPTransport_SendReceive(t *testing.T) {
 		case recvMsg := <-server.Receive():
 			if recvMsg.Message == nil {
 				errCh <- fmt.Errorf("接收到空消息")
-			} else if recvMsg.GetType() != MessageTypeGet {
-				errCh <- fmt.Errorf("消息类型不匹配: 期望 %d, 实际 %d", MessageTypeGet, recvMsg.GetType())
+			} else if recvMsg.Type() != MessageTypeGet {
+				errCh <- fmt.Errorf("消息类型不匹配: 期望 %d, 实际 %d", MessageTypeGet, recvMsg.Type())
 			} else {
 				done <- true
 			}
@@ -467,7 +467,7 @@ func TestTCPTransport_FrameExchange(t *testing.T) {
 	go func() {
 		select {
 		case msg := <-server.Receive():
-			if msg.GetType() != MessageTypeGet {
+			if msg.Type() != MessageTypeGet {
 				errCh <- assert.AnError
 			} else {
 				received <- true
@@ -731,13 +731,13 @@ func TestTCPEncodeDecodeRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	// 解码消息
-	decoded, err := DecodeFrame(frame2)
+	msgFrame, err := DecodeFrame(frame2)
 	require.NoError(t, err)
 
 	// 验证
-	getMsg, ok := decoded.Msg.(*GetMessage)
+	getMsg, ok := msgFrame.Message.(*GetMessage)
 	require.True(t, ok)
 	assert.Equal(t, msg.Key, getMsg.Key)
-	assert.Equal(t, uint64(1001), decoded.NodeID)
-	assert.Equal(t, uint64(1), decoded.MsgSeq)
+	assert.Equal(t, uint64(1001), msgFrame.NodeID)
+	assert.Equal(t, uint64(1), msgFrame.MsgSeq)
 }

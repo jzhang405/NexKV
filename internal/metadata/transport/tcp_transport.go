@@ -9,7 +9,6 @@ package transport
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -26,46 +25,6 @@ const (
 	// DefaultIdleTimeout 默认空闲连接超时时间（2分钟）
 	DefaultIdleTimeout = 2 * time.Minute
 )
-
-// validateTransportConfig 验证传输层配置的有效性
-//
-// P2-5: 配置验证函数，确保配置值在合理范围内
-func validateTransportConfig(config *TransportConfig) error {
-	// 验证监听地址
-	if config.ListenAddr == "" {
-		return fmt.Errorf("监听地址不能为空")
-	}
-
-	// 验证最大消息大小（必须大于 0 且不超过 1GB）
-	if config.MaxMessageSize <= 0 || config.MaxMessageSize > 1024*1024*1024 {
-		return fmt.Errorf("最大消息大小必须在 (0, 1GB] 范围内，当前值: %d", config.MaxMessageSize)
-	}
-
-	// 验证超时配置（不能为负数）
-	timeouts := []struct {
-		name  string
-		value time.Duration
-	}{
-		{"读超时", config.ReadTimeout},
-		{"写超时", config.WriteTimeout},
-		{"保活间隔", config.KeepAliveInterval},
-		{"保活超时", config.KeepAliveTimeout},
-		{"通道发送超时", config.ChannelSendTimeout},
-	}
-
-	for _, t := range timeouts {
-		if t.value < 0 {
-			return fmt.Errorf("%s不能为负数，当前值: %v", t.name, t.value)
-		}
-	}
-
-	// 验证缓冲区大小（必须大于 0 且不超过 64KB）
-	if config.BufferSize <= 0 || config.BufferSize > 65536 {
-		return fmt.Errorf("缓冲区大小必须在 (0, 64KB] 范围内，当前值: %d", config.BufferSize)
-	}
-
-	return nil
-}
 
 // TCPTransport TCP 传输实现
 //
@@ -90,8 +49,8 @@ type TCPTransport struct {
 	poolWg   sync.WaitGroup
 	poolDone chan struct{}
 
-	// 接收通道（返回增强消息 MsgExt，包含原始消息和 TLV 扩展字段）
-	recvCh   chan MsgExt
+	// 接收通道（返回增强消息 MsgFrame，包含原始消息和 TLV 扩展字段）
+	recvCh   chan MsgFrame
 	recvOnce sync.Once
 
 	// 生命周期
@@ -181,7 +140,7 @@ func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 			conns: make(map[string]*tcpConn),
 		},
 		poolDone:  make(chan struct{}),
-		recvCh:    make(chan MsgExt, config.BufferSize),
+		recvCh:    make(chan MsgFrame, config.BufferSize),
 		stopCh:    make(chan struct{}),
 		localAddr: config.ListenAddr,
 		// NodeID 需要外部通过 SetNodeID() 设置（atomic.Uint64 默认零值）
@@ -358,8 +317,8 @@ func (t *TCPTransport) handleConn(conn *tcpConn) {
 			return
 		}
 
-		// 读取消息（使用 ReadMessageExt 获取增强消息）
-		msgExt, err := conn.reader.ReadMessageExt()
+		// 读取消息帧
+		msgFrame, err := conn.reader.ReadMsgFrame()
 		if err != nil {
 			if err != io.EOF && !isTimeoutError(err) {
 				logging.Errorf("读取消息失败: %v", err)
@@ -376,7 +335,7 @@ func (t *TCPTransport) handleConn(conn *tcpConn) {
 			channelTimeout = 5 * time.Second // 默认值
 		}
 		select {
-		case t.recvCh <- msgExt:
+		case t.recvCh <- *msgFrame:
 		case <-t.stopCh:
 			return
 		case <-time.After(channelTimeout):
@@ -384,7 +343,7 @@ func (t *TCPTransport) handleConn(conn *tcpConn) {
 			return
 		}
 
-		logging.Debugf("接收消息: %s from %s", msgExt.GetType(), conn.remoteAddr)
+		logging.Debugf("接收消息: %s from %s", msgFrame.Type(), conn.remoteAddr)
 	}
 }
 
@@ -482,7 +441,7 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message, opts 
 
 // ForwardMessage 转发消息到指定节点
 // 自动递减 Hop Count（如果存在），Hop Count 减至 0 时返回错误
-func (t *TCPTransport) ForwardMessage(ctx context.Context, addr string, msgExt MsgExt) (uint32, error) {
+func (t *TCPTransport) ForwardMessage(ctx context.Context, addr string, msgExt MsgFrame) (uint64, error) {
 	if !t.started.Load() {
 		return 0, types.NewTransportStateError("未启动")
 	}
@@ -493,7 +452,7 @@ func (t *TCPTransport) ForwardMessage(ctx context.Context, addr string, msgExt M
 	default:
 	}
 
-	forwardMsg, err := prepareForwardMessage(msgExt)
+	forwardMsg, err := prepareForwardMessage(&msgExt)
 	if err != nil {
 		return 0, err
 	}
@@ -522,7 +481,7 @@ func (t *TCPTransport) ForwardMessage(ctx context.Context, addr string, msgExt M
 	}
 
 	msgSeq := t.msgSeqGenerator.Next()
-	frame := NewFrame(t.NodeID.Load(), msgSeq, forwardMsg.GetType(), uint16(t.codec.Type()), msgData)
+	frame := NewFrame(t.NodeID.Load(), msgSeq, forwardMsg.Type(), uint16(t.codec.Type()), msgData)
 	frame.AddTLVFields(tlvFields)
 	frame.Finalize()
 
@@ -539,12 +498,12 @@ func (t *TCPTransport) ForwardMessage(ctx context.Context, addr string, msgExt M
 	conn.lastUsed.Store(time.Now().Unix())
 
 	logHopCount := uint16(0)
-	if forwardMsg.HopCount != nil {
-		logHopCount = forwardMsg.HopCount.Hop
+	if v, _ := forwardMsg.GetHopCount(); v != nil {
+		logHopCount = v.Hop
 	}
-	logging.Debugf("转发消息: %s to %s, Hop=%d", forwardMsg.GetType(), addr, logHopCount)
+	logging.Debugf("转发消息: %s to %s, Hop=%d", forwardMsg.Type(), addr, logHopCount)
 
-	return uint32(msgSeq), nil
+	return msgSeq, nil
 }
 
 // ========================================
@@ -564,23 +523,10 @@ const (
 func (t *TCPTransport) BatchForwardMessage(
 	ctx context.Context,
 	addrs []string,
-	msgExt MsgExt,
+	msgExt MsgFrame,
 ) BatchForwardMessageResult {
 	if !t.started.Load() {
-		// 未启动时返回全部失败的结果
-		results := make([]BatchForwardResult, len(addrs))
-		for i, addr := range addrs {
-			results[i] = BatchForwardResult{
-				Addr:  addr,
-				SeqID: 0,
-				Error: types.NewTransportStateError("未启动"),
-			}
-		}
-		return BatchForwardMessageResult{
-			SuccessCount: 0,
-			FailureCount: len(addrs),
-			Results:      results,
-		}
+		return createBatchForwardResult(addrs, types.NewTransportStateError("未启动"))
 	}
 
 	// 限制批量大小
@@ -631,14 +577,14 @@ func (t *TCPTransport) BatchForwardMessage(
 //
 // # Receive 返回接收消息的通道
 //
-// 返回 MsgExt（增强消息），包含原始消息和 TLV 扩展字段：
+// 返回 MsgFrame（增强消息），包含原始消息和 TLV 扩展字段：
 //
 //	for msgExt := range transport.Receive() {
 //	    if msgExt.HasHopCount() {
 //	        fmt.Printf("Hop: %d/%d\n", msgExt.HopCount.Hop, msgExt.HopCount.TotalHop)
 //	    }
 //	}
-func (t *TCPTransport) Receive() <-chan MsgExt {
+func (t *TCPTransport) Receive() <-chan MsgFrame {
 	return t.recvCh
 }
 

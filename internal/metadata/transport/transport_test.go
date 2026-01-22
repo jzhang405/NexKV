@@ -566,17 +566,17 @@ func TestEncodeFrame_DecodeFrame(t *testing.T) {
 	assert.Equal(t, MessageTypePut, msg.Type())
 
 	// 从帧解码
-	decoded, err := DecodeFrame(frame)
+	msgFrame, err := DecodeFrame(frame)
 	require.NoError(t, err)
 
-	putMsg, ok := decoded.Msg.(*PutMessage)
+	putMsg, ok := msgFrame.Message.(*PutMessage)
 	require.True(t, ok)
 	assert.Equal(t, msg.Key, putMsg.Key)
 	assert.Equal(t, msg.Value, putMsg.Value)
 
 	// 验证 nodeID 和 msgSeq
-	assert.Equal(t, uint64(0), decoded.NodeID)
-	assert.Equal(t, uint64(0), decoded.MsgSeq)
+	assert.Equal(t, uint64(0), msgFrame.NodeID)
+	assert.Equal(t, uint64(0), msgFrame.MsgSeq)
 }
 
 // TestEncodeFrame_DecodeFrame_AllTypes 测试所有消息类型的帧编解码
@@ -596,11 +596,11 @@ func TestEncodeFrame_DecodeFrame_AllTypes(t *testing.T) {
 			require.NoError(t, err)
 
 			// 从帧解码
-			decoded, err := DecodeFrame(frame)
+			msgFrame, err := DecodeFrame(frame)
 			require.NoError(t, err)
 
 			// 验证类型
-			assert.Equal(t, msg.Type(), decoded.Msg.Type())
+			assert.Equal(t, msg.Type(), msgFrame.Message.Type())
 		})
 	}
 }

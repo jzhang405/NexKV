@@ -3,7 +3,16 @@
 > **文档类型**: Brainstorm / Findings + Proposal
 > **创建日期**: 2026-01-18
 > **相关文档**: `docs/00_overview/01_核心架构概念.md`
-> **状态**: 💡 待评审和实施
+> **状态**: ✅ 部分实现（2026-01-22 更新）
+
+**实现完成度**: 75%
+
+| 功能 | 状态 | 代码位置 | 说明 |
+|------|------|---------|------|
+| 强类型定义 | ✅ 已实现 | `internal/metadata/types/` | ShardMetadata, NodeMetadata, TableMetadata 完整定义 |
+| MessagePack Codec | ✅ 已实现 | `internal/metadata/transport/codec.go` | MessagePackCodec 完整实现 |
+| MetadataStore 扩展 | ❌ 待实施 | - | PutShard/GetShard 等强类型接口待开发 |
+| Gossip 消息对接 | ❌ 待实施 | - | 元数据 Gossip 同步待实现 |
 
 ---
 

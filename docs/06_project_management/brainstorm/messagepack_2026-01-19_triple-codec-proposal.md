@@ -1,9 +1,23 @@
 # 三种编解码（JSON/MessagePack/Protobuf）统一实现方案
 
 > **📋 文档类型**: Proposals（技术方案建议）
-> **🏷️ 主题**: MessagePack/Protobuf 编解码统一架构
+> **🏷️ 主题**: 三种编解码（JSON/MessagePack/Protobuf）统一实现方案
 > **📅 创建日期**: 2026-01-19
-> **✅ 状态**: 待讨论
+> **✅ 状态**: ✅ 已实现（2026-01-22 更新）
+
+**实现完成度**: 100%
+
+| 编解码 | 状态 | 代码位置 | 说明 |
+|--------|------|---------|------|
+| **JSON** | ✅ 已实现 | 标准库 | 用于对外 API 和调试 |
+| **MessagePack** | ✅ 已实现 | `internal/metadata/transport/codec.go` | 用于内部同步 |
+| **Protobuf** | ✅ 已实现 | `internal/metadata/transport/codec_protobuf.go` | 用于高性能传输 |
+
+**Protobuf 实现详情**：
+- **Proto 定义**: `internal/metadata/proto/message.proto` (343 行)
+- **Codec 实现**: `internal/metadata/transport/codec_protobuf.go` (738 行)
+- **生成代码**: `internal/metadata/proto/message.pb.go`
+- **测试文件**: `internal/metadata/transport/codec_protobuf_test.go`
 
 ---
 

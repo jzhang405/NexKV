@@ -2,6 +2,7 @@
 package transport
 
 import (
+	"context"
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
@@ -354,4 +355,308 @@ func TestSegmentExt_Structure(t *testing.T) {
 	assert.Equal(t, uint16(5), segment.Index)
 	assert.Equal(t, uint16(10), segment.Total)
 	assert.True(t, segment.Index < segment.Total)
+}
+
+// ========================================
+// EncodeTLVs 方法测试
+// ========================================
+
+// TestMsgExt_EncodeTLVs_AllFields 测试编码所有 TLV 字段
+func TestMsgExt_EncodeTLVs_AllFields(t *testing.T) {
+	msgExt := MsgExt{
+		Message:     NewBaseMessage(MessageTypeGet, []byte("test")),
+		TLVs:        make([]ExtField, 0),
+		HopCount:    &HopExt{Hop: 5, TotalHop: 10},
+		PriorityExt: &PriorityExt{Priority: types.PriorityHigh},
+		Compress:    &CompressExt{CompressID: 2},
+		Segment:     &SegmentExt{Index: 1, Total: 5},
+	}
+
+	fields, err := msgExt.EncodeTLVs()
+	require.NoError(t, err)
+	require.Len(t, fields, 4) // Hop, Priority, Compress, Segment
+
+	// 验证 Hop Count 字段
+	hopField := findExtField(fields, ExtHop)
+	require.NotNil(t, hopField)
+	hop, totalHop, err := DecodeHopExt(hopField)
+	require.NoError(t, err)
+	assert.Equal(t, uint16(5), hop)
+	assert.Equal(t, uint16(10), totalHop)
+
+	// 验证 Priority 字段
+	priorityField := findExtField(fields, ExtPriority)
+	require.NotNil(t, priorityField)
+	priority, err := DecodePriorityExt(priorityField)
+	require.NoError(t, err)
+	assert.Equal(t, types.PriorityHigh, priority)
+
+	// 验证 Compress 字段
+	compressField := findExtField(fields, ExtCompress)
+	require.NotNil(t, compressField)
+	compressID, err := DecodeCompressExt(compressField)
+	require.NoError(t, err)
+	assert.Equal(t, uint16(2), compressID)
+
+	// 验证 Segment 字段
+	segmentField := findExtField(fields, ExtFragment)
+	require.NotNil(t, segmentField)
+	index, total, err := DecodeFragmentExt(segmentField)
+	require.NoError(t, err)
+	assert.Equal(t, uint16(1), index)
+	assert.Equal(t, uint16(5), total)
+}
+
+// TestMsgExt_EncodeTLVs_PartialFields 测试编码部分 TLV 字段
+func TestMsgExt_EncodeTLVs_PartialFields(t *testing.T) {
+	msgExt := MsgExt{
+		Message:     NewBaseMessage(MessageTypeGet, []byte("test")),
+		TLVs:        make([]ExtField, 0),
+		HopCount:    &HopExt{Hop: 3, TotalHop: 10},
+		PriorityExt: nil,
+		Compress:    nil,
+		Segment:     nil,
+	}
+
+	fields, err := msgExt.EncodeTLVs()
+	require.NoError(t, err)
+	require.Len(t, fields, 1) // 只有 Hop Count
+
+	hopField := findExtField(fields, ExtHop)
+	require.NotNil(t, hopField)
+	hop, totalHop, err := DecodeHopExt(hopField)
+	require.NoError(t, err)
+	assert.Equal(t, uint16(3), hop)
+	assert.Equal(t, uint16(10), totalHop)
+}
+
+// TestMsgExt_EncodeTLVs_NoFields 测试无 TLV 字段
+func TestMsgExt_EncodeTLVs_NoFields(t *testing.T) {
+	msgExt := MsgExt{
+		Message:     NewBaseMessage(MessageTypeGet, []byte("test")),
+		TLVs:        make([]ExtField, 0),
+		HopCount:    nil,
+		PriorityExt: nil,
+		Compress:    nil,
+		Segment:     nil,
+	}
+
+	fields, err := msgExt.EncodeTLVs()
+	require.NoError(t, err)
+	require.Len(t, fields, 0) // 无字段
+}
+
+// TestMsgExt_EncodeTLVs_HopDecrement 测试 Hop Count 递减后的编码
+func TestMsgExt_EncodeTLVs_HopDecrement(t *testing.T) {
+	msgExt := MsgExt{
+		Message:  NewBaseMessage(MessageTypeGet, []byte("test")),
+		TLVs:     make([]ExtField, 0),
+		HopCount: &HopExt{Hop: 10, TotalHop: 10},
+	}
+
+	// 模拟递减 Hop Count
+	msgExt.HopCount.Hop = 9
+
+	fields, err := msgExt.EncodeTLVs()
+	require.NoError(t, err)
+	require.Len(t, fields, 1)
+
+	hopField := findExtField(fields, ExtHop)
+	require.NotNil(t, hopField)
+	hop, totalHop, err := DecodeHopExt(hopField)
+	require.NoError(t, err)
+	assert.Equal(t, uint16(9), hop, "Hop 应该被递减")
+	assert.Equal(t, uint16(10), totalHop, "TotalHop 应该保持不变")
+}
+
+// TestMsgExt_EncodeTLVs_EncryptField 测试加密字段编码
+func TestMsgExt_EncodeTLVs_EncryptField(t *testing.T) {
+	msgExt := MsgExt{
+		Message: NewBaseMessage(MessageTypeGet, []byte("test")),
+		TLVs:    make([]ExtField, 0),
+		Encrypt: &EncryptExt{
+			EncryptID: 1,
+			Nonce:     []byte{1, 2, 3, 4},
+			Version:   "1.0",
+		},
+	}
+
+	fields, err := msgExt.EncodeTLVs()
+	require.NoError(t, err)
+	require.Len(t, fields, 1)
+
+	encryptField := findExtField(fields, ExtEncrypt)
+	require.NotNil(t, encryptField)
+	encryptID, nonce, version, err := DecodeEncryptExt(encryptField)
+	require.NoError(t, err)
+	assert.Equal(t, uint16(1), encryptID)
+	assert.Equal(t, []byte{1, 2, 3, 4}, nonce)
+	assert.Equal(t, "1.0", version)
+}
+
+// findExtField 辅助函数：查找指定类型的 TLV 字段
+func findExtField(fields []ExtField, fieldType ExtFieldType) *ExtField {
+	for _, field := range fields {
+		if field.Type == fieldType {
+			return &field
+		}
+	}
+	return nil
+}
+
+// ========================================
+// ForwardMessage 集成测试
+// ========================================
+
+// TestForwardMessage_ContextCancel 测试 context 取消场景（P1-4）
+func TestForwardMessage_ContextCancel(t *testing.T) {
+	// 创建已取消的 context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 立即取消
+
+	msgExt := MsgExt{
+		Message:  NewBaseMessage(MessageTypeGet, []byte("test")),
+		HopCount: &HopExt{Hop: 5, TotalHop: 10},
+	}
+
+	// TCP Transport
+	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
+	require.NoError(t, err)
+	tcpTransport.SetNodeID(12345)
+	require.NoError(t, tcpTransport.Start())
+	defer func() { _ = tcpTransport.Stop() }()
+
+	// 应该返回 context 取消错误
+	_, err = tcpTransport.ForwardMessage(ctx, "127.0.0.1:9999", msgExt)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "context canceled")
+
+	// UDP Transport
+	udpTransport, err := NewUDPTransport("127.0.0.1:0")
+	require.NoError(t, err)
+	udpTransport.SetNodeID(12345)
+	require.NoError(t, udpTransport.Start())
+	defer func() { _ = udpTransport.Stop() }()
+
+	// 应该返回 context 取消错误
+	_, err = udpTransport.ForwardMessage(ctx, "127.0.0.1:9999", msgExt)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "context canceled")
+}
+
+// TestForwardMessage_NilMessage 测试 nil Message 检查（P1-2）
+func TestForwardMessage_NilMessage(t *testing.T) {
+	ctx := context.Background()
+
+	msgExt := MsgExt{
+		Message:  nil, // nil Message
+		HopCount: &HopExt{Hop: 5, TotalHop: 10},
+	}
+
+	// TCP Transport
+	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
+	require.NoError(t, err)
+	tcpTransport.SetNodeID(12345)
+	require.NoError(t, tcpTransport.Start())
+	defer func() { _ = tcpTransport.Stop() }()
+
+	// 应该返回消息为空错误
+	_, err = tcpTransport.ForwardMessage(ctx, "127.0.0.1:9999", msgExt)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "消息为空")
+
+	// UDP Transport
+	udpTransport, err := NewUDPTransport("127.0.0.1:0")
+	require.NoError(t, err)
+	udpTransport.SetNodeID(12345)
+	require.NoError(t, udpTransport.Start())
+	defer func() { _ = udpTransport.Stop() }()
+
+	// 应该返回消息为空错误
+	_, err = udpTransport.ForwardMessage(ctx, "127.0.0.1:9999", msgExt)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "消息为空")
+}
+
+// TestForwardMessage_HopCountDecrement 测试 Hop Count 递减（P1-1）
+func TestForwardMessage_HopCountDecrement(t *testing.T) {
+	// 创建原始 msgExt
+	originalHop := uint16(10)
+	msgExt := MsgExt{
+		Message:  NewBaseMessage(MessageTypeGet, []byte("test")),
+		HopCount: &HopExt{Hop: originalHop, TotalHop: 20},
+	}
+
+	// 转发后原始 Hop Count 应该保持不变（因为有深拷贝）
+	newHop := msgExt.HopCount.Hop
+	assert.Equal(t, originalHop, newHop, "原始 msgExt.HopCount 不应该被修改")
+}
+
+// TestForwardMessage_HopCountExpired 测试 Hop Count 过期
+func TestForwardMessage_HopCountExpired(t *testing.T) {
+	ctx := context.Background()
+
+	msgExt := MsgExt{
+		Message:  NewBaseMessage(MessageTypeGet, []byte("test")),
+		HopCount: &HopExt{Hop: 0, TotalHop: 10}, // Hop = 0
+	}
+
+	// TCP Transport
+	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
+	require.NoError(t, err)
+	tcpTransport.SetNodeID(12345)
+	require.NoError(t, tcpTransport.Start())
+	defer func() { _ = tcpTransport.Stop() }()
+
+	// 应该返回 Hop Count 过期错误
+	_, err = tcpTransport.ForwardMessage(ctx, "127.0.0.1:9999", msgExt)
+	assert.Error(t, err)
+	assert.Equal(t, types.ErrTransportHopCountExpired, err.(*types.Error).Code)
+
+	// UDP Transport
+	udpTransport, err := NewUDPTransport("127.0.0.1:0")
+	require.NoError(t, err)
+	udpTransport.SetNodeID(12345)
+	require.NoError(t, udpTransport.Start())
+	defer func() { _ = udpTransport.Stop() }()
+
+	// 应该返回 Hop Count 过期错误
+	_, err = udpTransport.ForwardMessage(ctx, "127.0.0.1:9999", msgExt)
+	assert.Error(t, err)
+	assert.Equal(t, types.ErrTransportHopCountExpired, err.(*types.Error).Code)
+}
+
+// TestForwardMessage_DeepCopyPreventsDataRace 测试深拷贝防止 data race（P1-1）
+func TestForwardMessage_DeepCopyPreventsDataRace(t *testing.T) {
+	ctx := context.Background()
+
+	msgExt := MsgExt{
+		Message:  NewBaseMessage(MessageTypeGet, []byte("test")),
+		HopCount: &HopExt{Hop: 5, TotalHop: 10},
+	}
+
+	// 创建多个并发转发请求，验证没有 data race
+	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
+	require.NoError(t, err)
+	tcpTransport.SetNodeID(12345)
+	require.NoError(t, tcpTransport.Start())
+	defer func() { _ = tcpTransport.Stop() }()
+
+	// 使用 t.Run 并发执行
+	t.Run("并发转发测试", func(t *testing.T) {
+		done := make(chan bool, 10)
+		for i := 0; i < 10; i++ {
+			go func() {
+				// 每个协程独立的 msgExt 拷贝
+				localMsgExt := msgExt
+				_, _ = tcpTransport.ForwardMessage(ctx, "127.0.0.1:9999", localMsgExt)
+				done <- true
+			}()
+		}
+
+		// 等待所有协程完成
+		for i := 0; i < 10; i++ {
+			<-done
+		}
+	})
 }

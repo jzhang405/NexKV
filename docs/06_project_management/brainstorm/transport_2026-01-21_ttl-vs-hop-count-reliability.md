@@ -2,9 +2,52 @@
 
 > **文档类型**: 🔍 发现 / 💡 技术建议
 > **创建日期**: 2026-01-21
-> **状态**: 📋 待讨论
+> **状态**: 🔄 部分实现（2026-01-23 更新）
 > **优先级**: P0 (高)
 > **标签**: architecture, reliability, distributed-systems
+
+**实现完成度**: 40%
+
+| 功能 | 状态 | 代码位置 |
+|------|------|---------|
+| **TLV 层 Hop Count** | ✅ 已实现 | `internal/metadata/transport/msg_frame.go:147-298` |
+| WithHopCount 选项 | ✅ 已实现 | `msg_frame.go:445-448` |
+| GetHopCount/HasHopCount | ✅ 已实现 | `msg_frame.go:147-263` |
+| 转发时自动递减 Hop | ✅ 已实现 | `msg_frame.go:372-374` |
+| HopCountExpired 检查 | ✅ 已实现 | `msg_frame.go:298-308` |
+| **高层协议 TTL** | ❌ 待实施 | 详见下方说明 |
+
+---
+
+## 📋 实施状态总结
+
+### ✅ 已完成：TLV 层 Hop Count (跳数 TTL)
+**位置**: `internal/metadata/transport/`
+
+**已实现功能**:
+1. **WithHopCount(totalHop uint16)** - 设置跳数 TTL 选项
+2. **GetHopCount()** - 获取 Hop Count 扩展字段
+3. **HasHopCount()** - 检查是否有 Hop Count 限制
+4. **转发时自动递减** - ForwardMessage 自动递减 Hop Count
+5. **过期检查** - Hop Count 为 0 时返回 `ErrTransportHopCountExpired`
+
+**使用示例**:
+```go
+// 设置 Hop Count 为 10
+transport.Send(ctx, addr, msg, WithHopCount(10))
+
+// 每次转发自动递减
+// Hop=10 → Hop=9 → ... → Hop=0 (过期，不再转发)
+```
+
+### ❌ 待实施：高层协议 TTL 改进
+以下模块仍使用基于时间的 TTL，存在时钟漂移风险：
+
+| 模块 | 位置 | 问题 | 建议 |
+|------|------|------|------|
+| **LeaderElection** | `internal/metadata/cluster/leader_election.go:348` | 使用 `time.Now()` 计算租约过期 | 考虑混合 TTL（时间 + 心跳确认） |
+| **MessageDeduplicator** | `internal/metadata/transport/deduplicator.go:27` | 使用 `time.Now()` 记录访问时间 | 当前实现可接受（单节点内部） |
+| **TCP Transport** | `internal/metadata/transport/tcp_transport.go` | 超时配置基于时间 | 网络层超时，可接受 |
 
 ---
 

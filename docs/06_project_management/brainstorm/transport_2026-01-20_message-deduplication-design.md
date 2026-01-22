@@ -2,8 +2,21 @@
 
 > **文档类型**: 💡 技术建议
 > **创建日期**: 2026-01-20
-> **状态**: 📋 待讨论
+> **状态**: ✅ 已实现（2026-01-23 更新）
 > **优先级**: P0 (高)
+
+**实现完成度**: 100%
+
+| 功能 | 状态 | 代码位置 |
+|------|------|---------|
+| 消息去重器核心实现 | ✅ 已实现 | `internal/metadata/transport/deduplicator.go` |
+| IsDuplicate 检查 | ✅ 已实现 | `deduplicator.go:106` |
+| Record 记录 | ✅ 已实现 | `deduplicator.go:138` |
+| 自动清理过期条目 | ✅ 已实现 | `deduplicator.go:178-219` |
+| 统计指标 | ✅ 已实现 | `deduplicator.go:219-245` |
+| 单元测试 | ✅ 已实现 | `deduplicator_test.go` (9 个测试) |
+| 并发安全测试 | ✅ 已实现 | `deduplicator_test.go:131-177` |
+| 内存泄漏测试 | ✅ 已实现 | `deduplicator_test.go:102-131` |
 
 ---
 

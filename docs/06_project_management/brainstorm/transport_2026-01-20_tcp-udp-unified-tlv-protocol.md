@@ -2,9 +2,49 @@
 
 > **文档类型**: 💡 技术建议 (Proposals)
 > **创建日期**: 2026-01-20
-> **状态**: 📋 待讨论
+> **状态**: ✅ 已实现（2026-01-23 更新）
 > **优先级**: P1 (中优先级 - 核心协议设计)
 > **替代**: 之前的 `transport_2026-01-20_tcp-udp-unified-frame-dual-transport.md`
+
+**实现完成度**: 100%
+
+| 功能 | 状态 | 代码位置 |
+|------|------|---------|
+| FixedHeader (31B) | ✅ 已实现 | `internal/metadata/transport/frame.go:67-140` |
+| VarExtHeader (TLV) | ✅ 已实现 | `internal/metadata/transport/frame.go:230-378` |
+| TLV 扩展字段 | ✅ 已实现 | `frame.go:380-468` (支持 Hop/Compress/Encrypt) |
+| CRC32 校验 | ✅ 已实现 | `frame.go:470-493` |
+| 序列化/反序列化 | ✅ 已实现 | `frame.go:495-630` |
+| 单元测试 | ✅ 已实现 | `frame_test.go` |
+| TCP 粘包处理 | ✅ 已实现 | `tcp_transport.go` (长度前缀) |
+| UDP 无粘包处理 | ✅ 已实现 | `udp_transport.go` (直接帧) |
+
+---
+
+## 📋 实施状态总结
+
+### ✅ 已完成：TLV 协议完整实现
+**位置**: `internal/metadata/transport/frame.go`
+
+**已实现功能**:
+1. **FixedHeader (31 字节)** - 魔术字 + 节点ID + 消息ID + 编码器
+2. **VarExtHeader (变长)** - TLV 格式扩展字段
+3. **TLV 扩展类型**:
+   - HopExt (跳数 TTL)
+   - CompressExt (压缩)
+   - EncryptExt (加密)
+4. **CRC32 校验** - 覆盖扩展头 + 业务数据
+5. **MessagePack 序列化** - TLV Value 使用 MessagePack
+6. **TCP 粘包处理** - 4 字节长度前缀
+7. **UDP 直接帧** - 无粘包处理
+
+**消息结构**:
+```
++==================+==================+==================+==================+
+│ FixedHeader      │ VarExtHeader     │ Data             │ CRC32            │
+│ (31 bytes)       │ (0~65535 bytes)  │ (变长)           │ (4 bytes)        │
++==================+==================+==================+==================+
+```
 
 ---
 

@@ -29,12 +29,12 @@ import (
 //   - TLVs: 原始 ExtField 字段列表
 //   - HopCount/Compress/Encrypt/Segment/PriorityExt: 解析后的便捷访问字段
 type MsgExt struct {
-	Message                // 原始消息（嵌入，继承所有方法）
-	TLVs       []ExtField   // 原始 ExtField 字段列表
-	HopCount   *HopExt      // 跳数 TTL（便捷访问，nil 表示无）
-	Compress   *CompressExt // 压缩配置（便捷访问，nil 表示无）
-	Encrypt    *EncryptExt  // 加密配置（便捷访问，nil 表示无）
-	Segment    *SegmentExt  // 分片配置（便捷访问，nil 表示无）
+	Message                  // 原始消息（嵌入，继承所有方法）
+	TLVs        []ExtField   // 原始 ExtField 字段列表
+	HopCount    *HopExt      // 跳数 TTL（便捷访问，nil 表示无）
+	Compress    *CompressExt // 压缩配置（便捷访问，nil 表示无）
+	Encrypt     *EncryptExt  // 加密配置（便捷访问，nil 表示无）
+	Segment     *SegmentExt  // 分片配置（便捷访问，nil 表示无）
 	PriorityExt *PriorityExt // 优先级（便捷访问，nil 表示无）
 }
 

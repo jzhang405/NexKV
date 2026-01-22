@@ -554,7 +554,7 @@ func (t *TCPTransport) addConnToPool(conn *tcpConn) {
 	// 关闭旧连接（先从池中移除，避免继续使用）
 	if oldConn, exists := t.connPool.conns[conn.remoteAddr]; exists {
 		delete(t.connPool.conns, conn.remoteAddr) // 先移除
-		_ = oldConn.Close()                        // 再关闭（触发 handleConn 退出）
+		_ = oldConn.Close()                       // 再关闭（触发 handleConn 退出）
 	}
 
 	t.connPool.conns[conn.remoteAddr] = conn

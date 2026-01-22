@@ -445,6 +445,21 @@ func (f *Frame) WithHop(hop, totalHop uint16) *Frame {
 	return f
 }
 
+// AddTLVFields 批量添加 TLV 扩展字段
+//
+// 参数:
+//   - fields: TLV 字段列表
+//
+// 说明:
+//   - 用于 ForwardMessage 场景，批量添加已编码的 TLV 字段
+//   - 直接添加到 VarExtHeader，不进行额外的验证
+func (f *Frame) AddTLVFields(fields []ExtField) *Frame {
+	for i := 0; i < len(fields); i++ {
+		f.VarExtHeader.AddField(&fields[i])
+	}
+	return f
+}
+
 // Finalize 完成 Frame 构建并计算 CRC32
 //
 // 在添加所有扩展字段后必须调用此方法

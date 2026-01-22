@@ -736,6 +736,125 @@ func (t *UDPTransport) sendFragmentedWithOptions(addr *net.UDPAddr, msgData []by
 	return nil
 }
 
+// ForwardMessage 转发消息到指定节点
+// 自动递减 Hop Count（如果存在），Hop Count 减至 0 时返回错误
+func (t *UDPTransport) ForwardMessage(ctx context.Context, addr string, msgExt MsgExt) (uint32, error) {
+	if !t.started.Load() {
+		return 0, types.NewTransportStateError("未启动")
+	}
+
+	select {
+	case <-ctx.Done():
+		return 0, types.NewTransportSendError(ctx.Err())
+	default:
+	}
+
+	forwardMsg, err := prepareForwardMessage(msgExt)
+	if err != nil {
+		return 0, err
+	}
+
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return 0, types.NewTransportConnectionError("解析地址", addr, err)
+	}
+
+	msgData, err := t.codec.Encode(forwardMsg.Message)
+	if err != nil {
+		return 0, types.NewTransportSendError(err)
+	}
+
+	tlvFields, err := forwardMsg.EncodeTLVs()
+	if err != nil {
+		return 0, types.NewOpErr(types.ErrCodecEncodeFailed, "ForwardMessage",
+			"编码 TLV 失败", err)
+	}
+
+	frameOverhead := 74
+	maxPayloadSize := MaxUDPPacketSize - frameOverhead
+	msgSeq := uint32(t.nextMessageID())
+	nodeID := t.NodeID.Load()
+
+	if len(msgData) <= maxPayloadSize {
+		return t.forwardDirect(nodeID, msgSeq, forwardMsg, msgData, tlvFields, udpAddr, addr)
+	}
+
+	return t.forwardFragmented(nodeID, msgSeq, forwardMsg, msgData, tlvFields, maxPayloadSize, udpAddr, addr)
+}
+
+// forwardDirect 直接转发消息（无需分片）
+func (t *UDPTransport) forwardDirect(nodeID uint64, msgSeq uint32, forwardMsg MsgExt, msgData []byte, tlvFields []ExtField, udpAddr *net.UDPAddr, originalAddr string) (uint32, error) {
+	frame := NewFrame(nodeID, uint64(msgSeq), forwardMsg.GetType(), uint16(t.codec.Type()), msgData)
+	frame.AddTLVFields(tlvFields)
+	frame.Finalize()
+
+	frameData, err := frame.Marshal()
+	if err != nil {
+		return 0, types.NewTransportSendError(err)
+	}
+
+	if err := t.conn.SetWriteDeadline(time.Now().Add(t.config.WriteTimeout)); err != nil {
+		return 0, types.NewTransportConnectionError("设置写超时", "", err)
+	}
+
+	if _, err := t.conn.WriteToUDP(frameData, udpAddr); err != nil {
+		return 0, types.NewTransportConnectionError("发送", originalAddr, err)
+	}
+
+	logHopCount := uint16(0)
+	if forwardMsg.HopCount != nil {
+		logHopCount = forwardMsg.HopCount.Hop
+	}
+	logging.Debugf("转发消息: %s to %s, Hop=%d", forwardMsg.GetType(), originalAddr, logHopCount)
+
+	return msgSeq, nil
+}
+
+// forwardFragmented 分片转发大消息
+func (t *UDPTransport) forwardFragmented(nodeID uint64, msgSeq uint32, forwardMsg MsgExt, msgData []byte, tlvFields []ExtField, maxPayloadSize int, udpAddr *net.UDPAddr, originalAddr string) (uint32, error) {
+	totalFragments := (len(msgData) + maxPayloadSize - 1) / maxPayloadSize
+
+	for i := 0; i < totalFragments; i++ {
+		start := i * maxPayloadSize
+		end := start + maxPayloadSize
+		if end > len(msgData) {
+			end = len(msgData)
+		}
+
+		fragmentData := msgData[start:end]
+
+		frame := NewFrame(nodeID, uint64(msgSeq), forwardMsg.GetType(), uint16(t.codec.Type()), fragmentData)
+		frame.WithFragment(uint16(i), uint16(totalFragments))
+
+		if i == 0 {
+			frame.AddTLVFields(tlvFields)
+		}
+
+		frame.Finalize()
+
+		frameData, err := frame.Marshal()
+		if err != nil {
+			return 0, types.NewTransportSendError(err)
+		}
+
+		if err := t.conn.SetWriteDeadline(time.Now().Add(t.config.WriteTimeout)); err != nil {
+			return 0, types.NewTransportConnectionError("设置写超时", "", err)
+		}
+
+		if _, err := t.conn.WriteToUDP(frameData, udpAddr); err != nil {
+			return 0, types.NewTransportConnectionError("发送分片", originalAddr, err)
+		}
+	}
+
+	logHopCount := uint16(0)
+	if forwardMsg.HopCount != nil {
+		logHopCount = forwardMsg.HopCount.Hop
+	}
+	logging.Debugf("转发消息: 分片完成 to %s, Hop=%d", originalAddr, logHopCount)
+
+	return msgSeq, nil
+}
+
 // nextMessageID 生成递增的消息 ID
 func (t *UDPTransport) nextMessageID() uint64 {
 	return atomic.AddUint64(&t.msgIDCounter, 1)

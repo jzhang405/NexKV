@@ -50,6 +50,26 @@ type Transport interface {
 	//       }
 	//   }
 	Receive() <-chan MsgExt
+
+	// ForwardMessage 转发消息到指定节点
+	// 自动递减 Hop Count（如果存在），Hop Count 减至 0 时返回错误
+	//
+	// 使用场景：
+	//   - Gossip 协议消息转发
+	//   - 消息广播
+	//   - 节点间消息中继
+	//
+	// 行为：
+	//   1. 检查 msgExt.HopCount 是否存在
+	//   2. 如果存在且 Hop > 0，则递减 Hop（NewHop = Hop - 1）
+	//   3. 如果 Hop == 0，返回 ErrHopCountExpired（消息已过期，不再转发）
+	//   4. 如果不存在，直接转发（不添加 Hop Count）
+	//   5. 保留所有 TLV 扩展字段（除 Hop Count 递减外）
+	//
+	// 返回：
+	//   - uint32: 转发的消息序列号
+	//   - error: 转发失败时返回错误
+	ForwardMessage(ctx context.Context, addr string, msgExt MsgExt) (uint32, error)
 }
 
 // Message 传输消息接口

@@ -480,6 +480,73 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message, opts 
 	return nil
 }
 
+// ForwardMessage 转发消息到指定节点
+// 自动递减 Hop Count（如果存在），Hop Count 减至 0 时返回错误
+func (t *TCPTransport) ForwardMessage(ctx context.Context, addr string, msgExt MsgExt) (uint32, error) {
+	if !t.started.Load() {
+		return 0, types.NewTransportStateError("未启动")
+	}
+
+	select {
+	case <-ctx.Done():
+		return 0, types.NewTransportSendError(ctx.Err())
+	default:
+	}
+
+	forwardMsg, err := prepareForwardMessage(msgExt)
+	if err != nil {
+		return 0, err
+	}
+
+	conn, err := t.getOrCreateConn(addr)
+	if err != nil {
+		return 0, types.NewTransportConnectionError("获取连接", "", err)
+	}
+
+	deadline := time.Now().Add(t.config.WriteTimeout)
+	if err := conn.conn.SetWriteDeadline(deadline); err != nil {
+		_ = conn.Close()
+		t.removeConnFromPool(addr)
+		return 0, types.NewTransportConnectionError("设置写超时", "", err)
+	}
+
+	msgData, err := t.codec.Encode(forwardMsg.Message)
+	if err != nil {
+		return 0, types.NewTransportSendError(err)
+	}
+
+	tlvFields, err := forwardMsg.EncodeTLVs()
+	if err != nil {
+		return 0, types.NewOpErr(types.ErrCodecEncodeFailed, "ForwardMessage",
+			"编码 TLV 失败", err)
+	}
+
+	msgSeq := t.msgSeqGenerator.Next()
+	frame := NewFrame(t.NodeID.Load(), msgSeq, forwardMsg.GetType(), uint16(t.codec.Type()), msgData)
+	frame.AddTLVFields(tlvFields)
+	frame.Finalize()
+
+	frameData, err := frame.Marshal()
+	if err != nil {
+		return 0, types.NewTransportSendError(err)
+	}
+
+	if _, err := conn.conn.Write(frameData); err != nil {
+		t.removeConnFromPool(addr)
+		return 0, types.NewTransportSendError(err)
+	}
+
+	conn.lastUsed.Store(time.Now().Unix())
+
+	logHopCount := uint16(0)
+	if forwardMsg.HopCount != nil {
+		logHopCount = forwardMsg.HopCount.Hop
+	}
+	logging.Debugf("转发消息: %s to %s, Hop=%d", forwardMsg.GetType(), addr, logHopCount)
+
+	return uint32(msgSeq), nil
+}
+
 // Receive 返回接收消息的通道
 //
 // # Receive 返回接收消息的通道

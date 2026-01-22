@@ -178,6 +178,9 @@ const (
 	// ErrTransportReceive 接收失败
 	ErrTransportReceive
 
+	// ErrTransportHopCountExpired Hop Count 过期（消息不再转发）
+	ErrTransportHopCountExpired
+
 	// ========================================
 	// Config 模块错误码
 	// ========================================
@@ -651,6 +654,14 @@ func NewTransportReceiveError(err error) *Error {
 		Code:    ErrTransportReceive,
 		Message: "接收消息失败",
 		Err:     err,
+	}
+}
+
+// NewTransportHopCountExpiredError 创建 Hop Count 过期错误
+func NewTransportHopCountExpiredError() *Error {
+	return &Error{
+		Code:    ErrTransportHopCountExpired,
+		Message: "消息已过期（HopCount=0），不再转发",
 	}
 }
 

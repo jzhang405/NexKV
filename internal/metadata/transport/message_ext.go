@@ -145,6 +145,145 @@ func (m MsgExt) String() string {
 		m.GetType(), len(m.TLVs), m.HopCount, m.Compress, m.Encrypt, m.Segment, m.PriorityExt)
 }
 
+// EncodeTLVs 编码所有 TLV 扩展字段（使用当前字段值）
+//
+// 返回:
+//   - []ExtField: 编码后的 TLV 字段列表
+//   - error: 编码失败时返回错误
+//
+// 说明:
+//   - 用于 ForwardMessage() 场景，重新编码 TLV 字段
+//   - 使用当前 MsgExt 的字段值（可能已被修改，如 HopCount 递减）
+//   - 保留所有非空的 TLV 字段
+func (m *MsgExt) EncodeTLVs() ([]ExtField, error) {
+	var fields []ExtField
+
+	// Hop Count
+	if m.HopCount != nil {
+		fields = append(fields, *EncodeHopExt(m.HopCount.Hop, m.HopCount.TotalHop))
+	}
+
+	// Priority
+	if m.PriorityExt != nil {
+		fields = append(fields, *EncodePriorityExt(m.PriorityExt.Priority))
+	}
+
+	// Compress
+	if m.Compress != nil {
+		fields = append(fields, *EncodeCompressExt(m.Compress.CompressID))
+	}
+
+	// Encrypt
+	if m.Encrypt != nil {
+		encryptField, err := EncodeEncryptExt(m.Encrypt.EncryptID, m.Encrypt.Nonce, m.Encrypt.Version)
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, *encryptField)
+	}
+
+	// Segment
+	if m.Segment != nil {
+		fields = append(fields, *EncodeFragmentExt(m.Segment.Index, m.Segment.Total))
+	}
+
+	return fields, nil
+}
+
+// DeepCopy 创建 MsgExt 的深拷贝，避免修改原始数据造成 data race
+func (m *MsgExt) DeepCopy() MsgExt {
+	result := MsgExt{
+		Message:     m.Message,
+		TLVs:        make([]ExtField, len(m.TLVs)),
+		HopCount:    copyHopExt(m.HopCount),
+		Compress:    copyCompressExt(m.Compress),
+		Encrypt:     copyEncryptExt(m.Encrypt),
+		Segment:     copySegmentExt(m.Segment),
+		PriorityExt: copyPriorityExt(m.PriorityExt),
+	}
+
+	for i := range m.TLVs {
+		result.TLVs[i] = ExtField{
+			Type:  m.TLVs[i].Type,
+			Value: cloneBytes(m.TLVs[i].Value),
+		}
+	}
+
+	return result
+}
+
+// cloneBytes 创建字节数组的副本
+func cloneBytes(src []byte) []byte {
+	if src == nil {
+		return nil
+	}
+	dst := make([]byte, len(src))
+	copy(dst, src)
+	return dst
+}
+
+func copyHopExt(src *HopExt) *HopExt {
+	if src == nil {
+		return nil
+	}
+	return &HopExt{Hop: src.Hop, TotalHop: src.TotalHop}
+}
+
+func copyCompressExt(src *CompressExt) *CompressExt {
+	if src == nil {
+		return nil
+	}
+	return &CompressExt{CompressID: src.CompressID}
+}
+
+func copyEncryptExt(src *EncryptExt) *EncryptExt {
+	if src == nil {
+		return nil
+	}
+	return &EncryptExt{
+		EncryptID: src.EncryptID,
+		Nonce:     cloneBytes(src.Nonce),
+		Version:   src.Version,
+	}
+}
+
+func copySegmentExt(src *SegmentExt) *SegmentExt {
+	if src == nil {
+		return nil
+	}
+	return &SegmentExt{Index: src.Index, Total: src.Total}
+}
+
+func copyPriorityExt(src *PriorityExt) *PriorityExt {
+	if src == nil {
+		return nil
+	}
+	return &PriorityExt{Priority: src.Priority}
+}
+
+// prepareForwardMessage 准备转发消息（深拷贝 + Hop Count 递减）
+//
+// 返回:
+//   - MsgExt: 处理后的消息副本
+//   - error: Hop Count 过期或其他错误
+func prepareForwardMessage(msgExt MsgExt) (MsgExt, error) {
+	if msgExt.Message == nil {
+		return MsgExt{}, types.NewOpErr(types.ErrCodecEncodeFailed, "ForwardMessage",
+			"消息为空", nil)
+	}
+
+	forwardMsg := msgExt.DeepCopy()
+
+	if forwardMsg.HopCount != nil {
+		if forwardMsg.HopCount.Hop == 0 {
+			return MsgExt{}, types.NewTransportHopCountExpiredError()
+		}
+		forwardMsg.HopCount.Hop--
+	}
+
+	return forwardMsg, nil
+}
+
 // ========================================
 // SendOpt 函数选项模式
 // ========================================

@@ -4,7 +4,6 @@ package transport
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
@@ -17,6 +16,7 @@ import (
 //   - 消息传递：异步发送/接收消息
 //   - 连接管理：自动重连、连接池
 //   - 生命周期：Start/Stop 控制
+//   - 消息唯一标识：支持 (NodeID, MsgSeq) 全局唯一标识
 //
 // 使用场景:
 //   - Gossip 协议通信
@@ -26,7 +26,24 @@ import (
 type Transport interface {
 	// Start 启动传输层
 	// 初始化监听器、连接池等资源
-	Start() error
+	//
+	// 扩展参数（可选，传入 nil 表示使用默认值）：
+	//   - nodeID: 节点 ID（全局唯一，用于消息去重和幂等性）
+	//   - msgSeqGenerator: 消息序列号生成器（nil 表示使用默认原子计数器）
+	//
+	// 使用示例：
+	//   // 使用默认值
+	//   transport.Start(nil, nil)
+	//
+	//   // 指定节点 ID
+	//   nodeID := uint64(12345)
+	//   transport.Start(&nodeID, nil)
+	//
+	//   // 自定义序列号生成器
+	//   transport.Start(nil, func() uint64 {
+	//       return uint64(time.Now().UnixNano())
+	//   })
+	Start(nodeID *uint64, msgSeqGenerator func() uint64) error
 
 	// Stop 停止传输层
 	// 优雅关闭所有连接、释放资源
@@ -72,6 +89,18 @@ type Transport interface {
 	//   - uint64: 转发的消息序列号
 	//   - error: 转发失败时返回错误
 	ForwardMessage(ctx context.Context, addr string, msgExt MsgFrame) (uint64, error)
+
+	// GetNodeID 获取当前节点 ID
+	//
+	// 返回:
+	//   - uint64: 节点 ID（全局唯一，用于消息去重和幂等性）
+	GetNodeID() uint64
+
+	// GenerateMsgSeq 生成下一条消息序列号
+	//
+	// 返回:
+	//   - uint64: 消息序列号（单调递增，全局唯一）
+	GenerateMsgSeq() uint64
 }
 
 // Message 传输消息接口
@@ -79,196 +108,26 @@ type Transport interface {
 // 所有传输的消息都需要实现此接口
 type Message interface {
 	// Type 返回消息类型
-	Type() MessageType
+	Type() types.MessageType
 
 	// Priority 返回消息优先级（0-4，0最低，4最高）
 	// 用于流量控制：接收端过载时优先丢弃低优先级消息
 	Priority() int
 }
 
+// 导出 types 包中的类型别名，方便 transport 包使用
+
 // MessageType 消息类型
-//
-// 消息类型范围分配:
-//   - 100-149: 元数据操作（Put、Delete、Get 等）
-//   - 150-199: Gossip 协议消息
-//   - 200-249: Quorum 协议消息
-//   - 250-299: 2PC 协议消息
-//   - 300-349: 节点管理消息
-//   - 350-399: 集群管理消息
-type MessageType uint16
+type MessageType = types.MessageType
 
-const (
-	// 元数据操作消息 (100-149)
-	MessageTypeGet         MessageType = 100 // 获取元数据
-	MessageTypePut         MessageType = 101 // 更新元数据
-	MessageTypeDelete      MessageType = 102 // 删除元数据
-	MessageTypeGetReply    MessageType = 103 // Get 响应
-	MessageTypePutReply    MessageType = 104 // Put 响应
-	MessageTypeDeleteReply MessageType = 105 // Delete 响应
-
-	// Gossip 协议消息 (150-199)
-	MessageTypeGossipSync        MessageType = 150 // Gossip 同步请求
-	MessageTypeGossipSyncReply   MessageType = 151 // Gossip 同步响应
-	MessageTypeGossipDigest      MessageType = 152 // Gossip 摘要
-	MessageTypeGossipDigestReply MessageType = 153 // Gossip 摘要响应
-
-	// Quorum 协议消息 (200-249)
-	MessageTypeQuorumPropose MessageType = 200 // Quorum 提案
-	MessageTypeQuorumVote    MessageType = 201 // Quorum 投票
-	MessageTypeQuorumDecide  MessageType = 202 // Quorum 决策
-
-	// 2PC 协议消息 (250-299)
-	MessageType2PCPrepare       MessageType = 250 // 2PC 准备阶段
-	MessageType2PCPrepareReply  MessageType = 251 // 2PC 准备响应
-	MessageType2PCCommit        MessageType = 252 // 2PC 提交阶段
-	MessageType2PCRollback      MessageType = 253 // 2PC 回滚阶段
-	MessageType2PCCommitReply   MessageType = 254 // 2PC 提交响应
-	MessageType2PCRollbackReply MessageType = 255 // 2PC 回滚响应
-
-	// 节点管理消息 (300-349)
-	MessageTypeNodePing       MessageType = 300 // 节点心跳
-	MessageTypeNodePong       MessageType = 301 // 心跳响应
-	MessageTypeNodeJoin       MessageType = 302 // 节点加入
-	MessageTypeNodeLeave      MessageType = 303 // 节点离开
-	MessageTypeNodeSync       MessageType = 304 // 节点同步
-	MessageTypeClockSync      MessageType = 305 // 时钟同步请求
-	MessageTypeClockSyncReply MessageType = 306 // 时钟同步响应
-
-	// 集群管理消息 (350-399)
-	MessageTypeClusterStatus      MessageType = 350 // 集群状态查询
-	MessageTypeClusterStatusReply MessageType = 351 // 集群状态响应
-	MessageTypeLeaderElection     MessageType = 352 // Leader 选举
-)
-
-// String 返回消息类型的字符串表示
-func (t MessageType) String() string {
-	switch t {
-	case MessageTypeGet:
-		return "Get"
-	case MessageTypePut:
-		return "Put"
-	case MessageTypeDelete:
-		return "Delete"
-	case MessageTypeGetReply:
-		return "GetReply"
-	case MessageTypePutReply:
-		return "PutReply"
-	case MessageTypeDeleteReply:
-		return "DeleteReply"
-	case MessageTypeGossipSync:
-		return "GossipSync"
-	case MessageTypeGossipSyncReply:
-		return "GossipSyncReply"
-	case MessageTypeGossipDigest:
-		return "GossipDigest"
-	case MessageTypeGossipDigestReply:
-		return "GossipDigestReply"
-	case MessageTypeQuorumPropose:
-		return "QuorumPropose"
-	case MessageTypeQuorumVote:
-		return "QuorumVote"
-	case MessageTypeQuorumDecide:
-		return "QuorumDecide"
-	case MessageType2PCPrepare:
-		return "2PCPrepare"
-	case MessageType2PCPrepareReply:
-		return "2PCPrepareReply"
-	case MessageType2PCCommit:
-		return "2PCCommit"
-	case MessageType2PCRollback:
-		return "2PCRollback"
-	case MessageType2PCCommitReply:
-		return "2PCCommitReply"
-	case MessageType2PCRollbackReply:
-		return "2PCRollbackReply"
-	case MessageTypeNodePing:
-		return "NodePing"
-	case MessageTypeNodePong:
-		return "NodePong"
-	case MessageTypeNodeJoin:
-		return "NodeJoin"
-	case MessageTypeNodeLeave:
-		return "NodeLeave"
-	case MessageTypeNodeSync:
-		return "NodeSync"
-	case MessageTypeClockSync:
-		return "ClockSync"
-	case MessageTypeClockSyncReply:
-		return "ClockSyncReply"
-	case MessageTypeClusterStatus:
-		return "ClusterStatus"
-	case MessageTypeClusterStatusReply:
-		return "ClusterStatusReply"
-	case MessageTypeLeaderElection:
-		return "LeaderElection"
-	default:
-		return "Unknown"
-	}
-}
-
-// 流量控制优先级常量（从低到高）
-//
-// 使用场景: 接收端过载时，优先丢弃低优先级消息
-const (
-	// PriorityLowest 最低优先级（可丢弃）
-	PriorityLowest = 0
-
-	// PriorityLow 低优先级
-	PriorityLow = 1
-
-	// PriorityNormal 正常优先级
-	PriorityNormal = 2
-
-	// PriorityHigh 高优先级
-	PriorityHigh = 3
-
-	// PriorityCritical 关键优先级（不可丢弃）
-	PriorityCritical = 4
-)
+// Priority 优先级类型
+type Priority = types.Priority
 
 // GetPriority 获取消息优先级
-//
-// 参数:
-//   - msgType: 消息类型
-//
-// 返回:
-//   - int: 优先级等级（0-4，0最低，4最高）
-func GetPriority(msgType MessageType) int {
-	switch msgType {
-	// 最低优先级
-	case MessageTypeGossipDigest, MessageTypeGossipDigestReply:
-		return PriorityLowest
-
-	// 低优先级
-	case MessageTypeGossipSyncReply, MessageTypeNodePing:
-		return PriorityLow
-	case MessageTypeClockSync, MessageTypeClockSyncReply:
-		return PriorityLow
-
-	// 关键优先级
-	case MessageType2PCCommit, MessageType2PCRollback:
-		return PriorityHigh
-	case MessageType2PCCommitReply, MessageType2PCRollbackReply:
-		return PriorityHigh
-	case MessageTypeQuorumDecide:
-		return PriorityCritical
-
-	// 正常优先级
-	default:
-		return PriorityNormal
-	}
-}
+var GetPriority = types.GetPriority
 
 // Address 节点地址
-type Address struct {
-	Host string // 主机名或 IP
-	Port int    // 端口号
-}
-
-// String 返回地址的字符串表示 (host:port)
-func (a *Address) String() string {
-	return fmt.Sprintf("%s:%d", a.Host, a.Port)
-}
+type Address = types.Address
 
 // TransportConfig 传输层配置
 type TransportConfig struct {
@@ -320,7 +179,7 @@ type Codec interface {
 	Encode(msg Message) ([]byte, error)
 
 	// Decode 解码消息（创建新实例）
-	Decode(msgType MessageType, data []byte) (Message, error)
+	Decode(msgType types.MessageType, data []byte) (Message, error)
 
 	// DecodeInto 解码消息到指定实例（避免创建新消息）
 	// 当消息类型已知时（如从 FixedHeader 读取）使用此方法更高效

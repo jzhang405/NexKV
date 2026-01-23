@@ -27,17 +27,17 @@ func TestProtobufCodec_MessageToWrapper_Metadata(t *testing.T) {
 		{
 			name:     "GetMessage",
 			message:  &GetMessage{Key: "test-key"},
-			wantType: MessageTypeGet,
+			wantType: types.MessageTypeGet,
 		},
 		{
 			name:     "PutMessage",
 			message:  &PutMessage{Key: "test-key", Value: []byte("test-value")},
-			wantType: MessageTypePut,
+			wantType: types.MessageTypePut,
 		},
 		{
 			name:     "DeleteMessage",
 			message:  &DeleteMessage{Key: "test-key"},
-			wantType: MessageTypeDelete,
+			wantType: types.MessageTypeDelete,
 		},
 		{
 			name: "GetReplyMessage",
@@ -47,7 +47,7 @@ func TestProtobufCodec_MessageToWrapper_Metadata(t *testing.T) {
 				Found:   true,
 				Version: 123,
 			},
-			wantType: MessageTypeGetReply,
+			wantType: types.MessageTypeGetReply,
 		},
 		{
 			name: "PutReplyMessage",
@@ -56,7 +56,7 @@ func TestProtobufCodec_MessageToWrapper_Metadata(t *testing.T) {
 				Success: true,
 				Version: 456,
 			},
-			wantType: MessageTypePutReply,
+			wantType: types.MessageTypePutReply,
 		},
 		{
 			name: "DeleteReplyMessage",
@@ -64,7 +64,7 @@ func TestProtobufCodec_MessageToWrapper_Metadata(t *testing.T) {
 				Key:     "test-key",
 				Success: true,
 			},
-			wantType: MessageTypeDeleteReply,
+			wantType: types.MessageTypeDeleteReply,
 		},
 	}
 
@@ -94,7 +94,7 @@ func TestProtobufCodec_MessageToWrapper_Gossip(t *testing.T) {
 				Metadata:  map[string][]byte{"key1": []byte("value1")},
 				Timestamp: 1234567890,
 			},
-			wantType: MessageTypeGossipSync,
+			wantType: types.MessageTypeGossipSync,
 		},
 		{
 			name: "GossipSyncReplyMessage",
@@ -102,7 +102,7 @@ func TestProtobufCodec_MessageToWrapper_Gossip(t *testing.T) {
 				Accepted: true,
 				Version:  200,
 			},
-			wantType: MessageTypeGossipSyncReply,
+			wantType: types.MessageTypeGossipSyncReply,
 		},
 		{
 			name: "GossipDigestMessage",
@@ -110,7 +110,7 @@ func TestProtobufCodec_MessageToWrapper_Gossip(t *testing.T) {
 				Version: 300,
 				Digest:  map[string]uint64{"key1": 100},
 			},
-			wantType: MessageTypeGossipDigest,
+			wantType: types.MessageTypeGossipDigest,
 		},
 		{
 			name: "GossipDigestReplyMessage",
@@ -118,7 +118,7 @@ func TestProtobufCodec_MessageToWrapper_Gossip(t *testing.T) {
 				Version: 400,
 				Digest:  map[string]uint64{"key2": 200},
 			},
-			wantType: MessageTypeGossipDigestReply,
+			wantType: types.MessageTypeGossipDigestReply,
 		},
 	}
 
@@ -151,7 +151,7 @@ func TestProtobufCodec_MessageToWrapper_Quorum(t *testing.T) {
 				Proposer:   "node-1",
 				Timestamp:  1234567890,
 			},
-			wantType: MessageTypeQuorumPropose,
+			wantType: types.MessageTypeQuorumPropose,
 		},
 		{
 			name: "QuorumVoteMessage",
@@ -161,7 +161,7 @@ func TestProtobufCodec_MessageToWrapper_Quorum(t *testing.T) {
 				Vote:       true,
 				Reason:     "OK",
 			},
-			wantType: MessageTypeQuorumVote,
+			wantType: types.MessageTypeQuorumVote,
 		},
 		{
 			name: "QuorumDecideMessage",
@@ -170,7 +170,7 @@ func TestProtobufCodec_MessageToWrapper_Quorum(t *testing.T) {
 				Approved:   true,
 				Version:    500,
 			},
-			wantType: MessageTypeQuorumDecide,
+			wantType: types.MessageTypeQuorumDecide,
 		},
 	}
 
@@ -204,7 +204,7 @@ func TestProtobufCodec_MessageToWrapper_TwoPC(t *testing.T) {
 				},
 				Timeout: 60000,
 			},
-			wantType: MessageType2PCPrepare,
+			wantType: types.MessageType2PCPrepare,
 		},
 		{
 			name: "TwoPCPrepareReplyMessage",
@@ -214,14 +214,14 @@ func TestProtobufCodec_MessageToWrapper_TwoPC(t *testing.T) {
 				Vote:          "commit",
 				Reason:        "OK",
 			},
-			wantType: MessageType2PCPrepareReply,
+			wantType: types.MessageType2PCPrepareReply,
 		},
 		{
 			name: "TwoPCCommitMessage",
 			message: &TwoPCCommitMessage{
 				TransactionID: "txn-123",
 			},
-			wantType: MessageType2PCCommit,
+			wantType: types.MessageType2PCCommit,
 		},
 		{
 			name: "TwoPCRollbackMessage",
@@ -229,7 +229,7 @@ func TestProtobufCodec_MessageToWrapper_TwoPC(t *testing.T) {
 				TransactionID: "txn-123",
 				Reason:        "timeout",
 			},
-			wantType: MessageType2PCRollback,
+			wantType: types.MessageType2PCRollback,
 		},
 		{
 			name: "TwoPCCommitReplyMessage",
@@ -238,7 +238,7 @@ func TestProtobufCodec_MessageToWrapper_TwoPC(t *testing.T) {
 				Participant:   "node-1",
 				Success:       true,
 			},
-			wantType: MessageType2PCCommitReply,
+			wantType: types.MessageType2PCCommitReply,
 		},
 		{
 			name: "TwoPCRollbackReplyMessage",
@@ -247,7 +247,7 @@ func TestProtobufCodec_MessageToWrapper_TwoPC(t *testing.T) {
 				Participant:   "node-1",
 				Success:       true,
 			},
-			wantType: MessageType2PCRollbackReply,
+			wantType: types.MessageType2PCRollbackReply,
 		},
 	}
 
@@ -277,7 +277,7 @@ func TestProtobufCodec_MessageToWrapper_Node(t *testing.T) {
 				Sequence:  123,
 				Timestamp: 1234567890,
 			},
-			wantType: MessageTypeNodePing,
+			wantType: types.MessageTypeNodePing,
 		},
 		{
 			name: "NodePongMessage",
@@ -287,7 +287,7 @@ func TestProtobufCodec_MessageToWrapper_Node(t *testing.T) {
 				Status:    "ready",
 				Timestamp: 1234567890,
 			},
-			wantType: MessageTypeNodePong,
+			wantType: types.MessageTypeNodePong,
 		},
 		{
 			name: "NodeJoinMessage",
@@ -297,7 +297,7 @@ func TestProtobufCodec_MessageToWrapper_Node(t *testing.T) {
 				Role:     "leaf",
 				ParentID: "node-1",
 			},
-			wantType: MessageTypeNodeJoin,
+			wantType: types.MessageTypeNodeJoin,
 		},
 		{
 			name: "NodeLeaveMessage",
@@ -305,7 +305,7 @@ func TestProtobufCodec_MessageToWrapper_Node(t *testing.T) {
 				NodeID: "node-2",
 				Reason: "shutdown",
 			},
-			wantType: MessageTypeNodeLeave,
+			wantType: types.MessageTypeNodeLeave,
 		},
 	}
 
@@ -331,7 +331,7 @@ func TestProtobufCodec_WrapperToMessage_Metadata(t *testing.T) {
 		{
 			name: "GetMessage",
 			wrapper: &proto.WrapperMessageProto{
-				MessageType: uint32(MessageTypeGet),
+				MessageType: uint32(types.MessageTypeGet),
 				MessageBody: &proto.WrapperMessageProto_GetMsg{
 					GetMsg: &proto.GetMessageProto{Key: "test-key"},
 				},
@@ -341,7 +341,7 @@ func TestProtobufCodec_WrapperToMessage_Metadata(t *testing.T) {
 		{
 			name: "PutMessage",
 			wrapper: &proto.WrapperMessageProto{
-				MessageType: uint32(MessageTypePut),
+				MessageType: uint32(types.MessageTypePut),
 				MessageBody: &proto.WrapperMessageProto_PutMsg{
 					PutMsg: &proto.PutMessageProto{
 						Key:   "test-key",
@@ -354,7 +354,7 @@ func TestProtobufCodec_WrapperToMessage_Metadata(t *testing.T) {
 		{
 			name: "DeleteMessage",
 			wrapper: &proto.WrapperMessageProto{
-				MessageType: uint32(MessageTypeDelete),
+				MessageType: uint32(types.MessageTypeDelete),
 				MessageBody: &proto.WrapperMessageProto_DeleteMsg{
 					DeleteMsg: &proto.DeleteMessageProto{Key: "test-key"},
 				},
@@ -400,7 +400,7 @@ func TestProtobufCodec_WrapperToMessage_Gossip(t *testing.T) {
 		{
 			name: "GossipSyncMessage",
 			wrapper: &proto.WrapperMessageProto{
-				MessageType: uint32(MessageTypeGossipSync),
+				MessageType: uint32(types.MessageTypeGossipSync),
 				MessageBody: &proto.WrapperMessageProto_GossipSyncMsg{
 					GossipSyncMsg: &proto.GossipSyncMessageProto{
 						Version:   100,
@@ -418,7 +418,7 @@ func TestProtobufCodec_WrapperToMessage_Gossip(t *testing.T) {
 		{
 			name: "GossipDigestMessage",
 			wrapper: &proto.WrapperMessageProto{
-				MessageType: uint32(MessageTypeGossipDigest),
+				MessageType: uint32(types.MessageTypeGossipDigest),
 				MessageBody: &proto.WrapperMessageProto_GossipDigestMsg{
 					GossipDigestMsg: &proto.GossipDigestMessageProto{
 						Version: 300,
@@ -468,7 +468,7 @@ func TestProtobufCodec_WrapperToMessage_TwoPC(t *testing.T) {
 		{
 			name: "TwoPCPrepareMessage",
 			wrapper: &proto.WrapperMessageProto{
-				MessageType: uint32(MessageType2PCPrepare),
+				MessageType: uint32(types.MessageType2PCPrepare),
 				MessageBody: &proto.WrapperMessageProto_TwopcPrepareMsg{
 					TwopcPrepareMsg: &proto.TwoPCPrepareMessageProto{
 						TransactionId: "txn-123",
@@ -492,7 +492,7 @@ func TestProtobufCodec_WrapperToMessage_TwoPC(t *testing.T) {
 		{
 			name: "TwoPCCommitMessage",
 			wrapper: &proto.WrapperMessageProto{
-				MessageType: uint32(MessageType2PCCommit),
+				MessageType: uint32(types.MessageType2PCCommit),
 				MessageBody: &proto.WrapperMessageProto_TwopcCommitMsg{
 					TwopcCommitMsg: &proto.TwoPCCommitMessageProto{
 						TransactionId: "txn-123",
@@ -539,7 +539,7 @@ func TestProtobufCodec_WrapperToMessage_Node(t *testing.T) {
 		{
 			name: "NodePingMessage",
 			wrapper: &proto.WrapperMessageProto{
-				MessageType: uint32(MessageTypeNodePing),
+				MessageType: uint32(types.MessageTypeNodePing),
 				MessageBody: &proto.WrapperMessageProto_NodePingMsg{
 					NodePingMsg: &proto.NodePingMessageProto{
 						NodeId:    "node-1",
@@ -557,7 +557,7 @@ func TestProtobufCodec_WrapperToMessage_Node(t *testing.T) {
 		{
 			name: "NodePongMessage",
 			wrapper: &proto.WrapperMessageProto{
-				MessageType: uint32(MessageTypeNodePong),
+				MessageType: uint32(types.MessageTypeNodePong),
 				MessageBody: &proto.WrapperMessageProto_NodePongMsg{
 					NodePongMsg: &proto.NodePongMessageProto{
 						NodeId:    "node-1",
@@ -577,7 +577,7 @@ func TestProtobufCodec_WrapperToMessage_Node(t *testing.T) {
 		{
 			name: "NodeJoinMessage",
 			wrapper: &proto.WrapperMessageProto{
-				MessageType: uint32(MessageTypeNodeJoin),
+				MessageType: uint32(types.MessageTypeNodeJoin),
 				MessageBody: &proto.WrapperMessageProto_NodeJoinMsg{
 					NodeJoinMsg: &proto.NodeJoinMessageProto{
 						NodeId:   "node-2",
@@ -597,7 +597,7 @@ func TestProtobufCodec_WrapperToMessage_Node(t *testing.T) {
 		{
 			name: "NodeLeaveMessage",
 			wrapper: &proto.WrapperMessageProto{
-				MessageType: uint32(MessageTypeNodeLeave),
+				MessageType: uint32(types.MessageTypeNodeLeave),
 				MessageBody: &proto.WrapperMessageProto_NodeLeaveMsg{
 					NodeLeaveMsg: &proto.NodeLeaveMessageProto{
 						NodeId: "node-2",
@@ -679,7 +679,7 @@ func TestProtobufCodec_WrapperToMessage_NilBody(t *testing.T) {
 
 	// 测试空消息体
 	wrapper := &proto.WrapperMessageProto{
-		MessageType: uint32(MessageTypeGet),
+		MessageType: uint32(types.MessageTypeGet),
 		MessageBody: nil,
 	}
 
@@ -715,7 +715,7 @@ func TestProtobufCodec_Encode_NilMessage(t *testing.T) {
 func TestProtobufCodec_Decode_EmptyData(t *testing.T) {
 	codec := NewProtobufCodec()
 
-	msg, err := codec.Decode(MessageTypeGet, []byte{})
+	msg, err := codec.Decode(types.MessageTypeGet, []byte{})
 	assert.Error(t, err)
 	assert.Nil(t, msg)
 	if cerr, ok := err.(*types.Error); ok {
@@ -728,7 +728,7 @@ func TestProtobufCodec_Decode_InvalidProtobuf(t *testing.T) {
 	codec := NewProtobufCodec()
 
 	invalidData := []byte{0xFF, 0xFF, 0xFF, 0xFF} // 无效的 Protobuf 数据
-	msg, err := codec.Decode(MessageTypeGet, invalidData)
+	msg, err := codec.Decode(types.MessageTypeGet, invalidData)
 	assert.Error(t, err)
 	assert.Nil(t, msg)
 	if cerr, ok := err.(*types.Error); ok {
@@ -742,12 +742,12 @@ func TestProtobufCodec_Decode_NilBodyInWrapper(t *testing.T) {
 
 	// 创建一个有效的 Wrapper，但 MessageBody 为 nil
 	wrapper := &proto.WrapperMessageProto{
-		MessageType: uint32(MessageTypeGet),
+		MessageType: uint32(types.MessageTypeGet),
 		MessageBody: nil,
 	}
 	data, _ := googleproto.Marshal(wrapper)
 
-	msg, err := codec.Decode(MessageTypeGet, data)
+	msg, err := codec.Decode(types.MessageTypeGet, data)
 	assert.Error(t, err)
 	assert.Nil(t, msg)
 	if cerr, ok := err.(*types.Error); ok {
@@ -802,7 +802,7 @@ func TestProtobufCodec_DecodeInto_NilBodyInWrapper(t *testing.T) {
 
 	// 创建一个有效的 Wrapper，但 MessageBody 为 nil
 	wrapper := &proto.WrapperMessageProto{
-		MessageType: uint32(MessageTypeGet),
+		MessageType: uint32(types.MessageTypeGet),
 		MessageBody: nil,
 	}
 	data, _ := googleproto.Marshal(wrapper)

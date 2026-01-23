@@ -38,27 +38,27 @@ func updateTLVInFrame(frame *MsgFrame, fieldType ExtFieldType, newTLV TLV) {
 
 // TestMsgFrame_BasicCreation 测试 MsgFrame 基本创建
 func TestMsgFrame_BasicCreation(t *testing.T) {
-	baseMsg := NewBaseMessage(MessageTypeGet, []byte("test data"))
-	frame := NewMsgFrame(12345, 1, MessageTypeGet, 1, baseMsg)
+	baseMsg := NewBaseMessage(types.MessageTypeGet, []byte("test data"))
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, baseMsg)
 
-	assert.Equal(t, MessageTypeGet, frame.Type())
-	assert.Equal(t, GetPriority(MessageTypeGet), frame.Priority())
+	assert.Equal(t, types.MessageTypeGet, frame.Type())
+	assert.Equal(t, int(GetPriority(types.MessageTypeGet)), frame.Priority())
 	assert.Equal(t, []byte("test data"), baseMsg.GetPayload())
 }
 
 // TestMsgFrame_NilMessage 安全处理 nil Message
 func TestMsgFrame_NilMessage(t *testing.T) {
-	frame := NewMsgFrame(12345, 1, MessageTypeGet, 1, nil)
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, nil)
 
-	assert.Equal(t, MessageTypeGet, frame.Type()) // 从 FixedHeader 获取
-	assert.Equal(t, PriorityNormal, frame.Priority())
+	assert.Equal(t, types.MessageTypeGet, frame.Type()) // 从 FixedHeader 获取
+	assert.Equal(t, int(types.PriorityNormal), frame.Priority())
 	// 空 TLVs 列表，GetTLV 应该返回 nil
 	assert.Nil(t, frame.GetTLV(ExtHop))
 }
 
 // TestMsgFrame_HopCount 测试 Hop Count 扩展字段
 func TestMsgFrame_HopCount(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加 Hop Count TLV
 	addTLVToFrame(frame, *EncodeHopExt(5, 10))
@@ -79,7 +79,7 @@ func TestMsgFrame_HopCount(t *testing.T) {
 
 // TestMsgFrame_Compression 测试压缩扩展字段
 func TestMsgFrame_Compression(t *testing.T) {
-	frame := createTestFrame(t, MessageTypePut, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypePut, []byte("test"))
 
 	// 添加 Compress TLV
 	addTLVToFrame(frame, *EncodeCompressExt(2)) // Snappy
@@ -93,7 +93,7 @@ func TestMsgFrame_Compression(t *testing.T) {
 
 // TestMsgFrame_Encryption 测试加密扩展字段
 func TestMsgFrame_Encryption(t *testing.T) {
-	frame := createTestFrame(t, MessageTypePut, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypePut, []byte("test"))
 
 	// 添加 Encrypt TLV
 	nonce := []byte{1, 2, 3, 4}
@@ -112,7 +112,7 @@ func TestMsgFrame_Encryption(t *testing.T) {
 
 // TestMsgFrame_Segment 测试分片扩展字段
 func TestMsgFrame_Segment(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加 Segment TLV
 	addTLVToFrame(frame, *EncodeFragmentExt(2, 10))
@@ -127,7 +127,7 @@ func TestMsgFrame_Segment(t *testing.T) {
 
 // TestMsgFrame_Priority 测试优先级扩展字段
 func TestMsgFrame_Priority(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加 Priority TLV
 	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
@@ -139,7 +139,7 @@ func TestMsgFrame_Priority(t *testing.T) {
 
 // TestMsgFrame_GetTLV 测试获取指定类型的 TLV 字段
 func TestMsgFrame_GetTLV(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加多个 TLV
 	extFields := []TLV{
@@ -164,7 +164,7 @@ func TestMsgFrame_GetTLV(t *testing.T) {
 
 // TestMsgFrame_String 测试 String 方法
 func TestMsgFrame_String(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加 TLV
 	addTLVToFrame(frame, *EncodeHopExt(5, 10))
@@ -177,7 +177,7 @@ func TestMsgFrame_String(t *testing.T) {
 
 // TestMsgFrame_GetExt_GenericMethod 测试 GetExt 通用方法
 func TestMsgFrame_GetExt_GenericMethod(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加 Hop TLV
 	addTLVToFrame(frame, *EncodeHopExt(5, 10))
@@ -204,7 +204,7 @@ func TestMsgFrame_GetExt_GenericMethod(t *testing.T) {
 
 // TestMsgFrame_GetExt_NotFound 测试 GetExt 查找不存在的字段
 func TestMsgFrame_GetExt_NotFound(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 查找不存在的字段
 	value, ok := frame.GetExt(ExtHop)
@@ -214,7 +214,7 @@ func TestMsgFrame_GetExt_NotFound(t *testing.T) {
 
 // TestMsgFrame_GetExt_UnknownDecoder 测试未知字段类型
 func TestMsgFrame_GetExt_UnknownDecoder(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加一个未知类型的 TLV（假设类型 999）
 	unknownTLV := TLV{
@@ -231,7 +231,7 @@ func TestMsgFrame_GetExt_UnknownDecoder(t *testing.T) {
 
 // TestMsgFrame_DeepCopy 测试深拷贝功能
 func TestMsgFrame_DeepCopy(t *testing.T) {
-	original := createTestFrame(t, MessageTypeGet, []byte("test"))
+	original := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加多个 TLV
 	addTLVToFrame(original, *EncodeHopExt(5, 10))
@@ -259,7 +259,7 @@ func TestMsgFrame_DeepCopy(t *testing.T) {
 
 // TestMsgFrame_EncodeTLVs 测试 EncodeTLVs 方法
 func TestMsgFrame_EncodeTLVs(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加 TLV 字段
 	addTLVToFrame(frame, *EncodeHopExt(5, 10))
@@ -305,7 +305,7 @@ func TestMsgFrame_EncodeTLVs(t *testing.T) {
 
 // TestMsgFrame_EncodeTLVs_PartialFields 测试编码部分 TLV 字段
 func TestMsgFrame_EncodeTLVs_PartialFields(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 只添加 Hop TLV
 	addTLVToFrame(frame, *EncodeHopExt(3, 10))
@@ -325,7 +325,7 @@ func TestMsgFrame_EncodeTLVs_PartialFields(t *testing.T) {
 
 // TestMsgFrame_EncodeTLVs_NoFields 测试无 TLV 字段
 func TestMsgFrame_EncodeTLVs_NoFields(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 编码
 	fields, err := frame.EncodeTLVs()
@@ -335,7 +335,7 @@ func TestMsgFrame_EncodeTLVs_NoFields(t *testing.T) {
 
 // TestMsgFrame_EncodeTLVs_HopDecrement 测试 Hop Count 递减后的编码
 func TestMsgFrame_EncodeTLVs_HopDecrement(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加 Hop TLV
 	addTLVToFrame(frame, *EncodeHopExt(10, 10))
@@ -358,7 +358,7 @@ func TestMsgFrame_EncodeTLVs_HopDecrement(t *testing.T) {
 
 // TestMsgFrame_EncodeTLVs_EncryptField 测试加密字段编码
 func TestMsgFrame_EncodeTLVs_EncryptField(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加 Encrypt TLV
 	nonce := []byte{1, 2, 3, 4}
@@ -519,20 +519,20 @@ func TestSendOpt_withSendOptions_MultipleOptions(t *testing.T) {
 
 // TestBaseMessage_Creation 测试 BaseMessage 创建
 func TestBaseMessage_Creation(t *testing.T) {
-	msg := NewBaseMessage(MessageTypePut, []byte("test payload"))
+	msg := NewBaseMessage(types.MessageTypePut, []byte("test payload"))
 
-	assert.Equal(t, MessageTypePut, msg.Type())
+	assert.Equal(t, types.MessageTypePut, msg.Type())
 	assert.Equal(t, []byte("test payload"), msg.GetPayload())
-	assert.Equal(t, GetPriority(MessageTypePut), msg.Priority())
+	assert.Equal(t, int(GetPriority(types.MessageTypePut)), msg.Priority())
 }
 
 // TestBaseMessage_SetPriority 测试设置优先级
 func TestBaseMessage_SetPriority(t *testing.T) {
-	msg := NewBaseMessage(MessageTypeGet, []byte("test"))
+	msg := NewBaseMessage(types.MessageTypeGet, []byte("test"))
 
 	originalPriority := msg.Priority()
-	msg.SetPriority(PriorityHigh)
-	assert.Equal(t, PriorityHigh, msg.Priority())
+	msg.SetPriority(int(types.PriorityHigh))
+	assert.Equal(t, int(types.PriorityHigh), msg.Priority())
 
 	// 恢复原始优先级
 	msg.SetPriority(originalPriority)
@@ -611,7 +611,7 @@ func TestSegmentExt_Structure(t *testing.T) {
 
 // TestPrepareForwardMessage_Success 测试准备转发消息成功
 func TestPrepareForwardMessage_Success(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加 Hop TLV
 	addTLVToFrame(frame, *EncodeHopExt(10, 20))
@@ -635,7 +635,7 @@ func TestPrepareForwardMessage_Success(t *testing.T) {
 
 // TestPrepareForwardMessage_HopExpired 测试 Hop Count 过期
 func TestPrepareForwardMessage_HopExpired(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加 Hop=0 的 TLV
 	addTLVToFrame(frame, *EncodeHopExt(0, 10))
@@ -649,7 +649,7 @@ func TestPrepareForwardMessage_HopExpired(t *testing.T) {
 
 // TestPrepareForwardMessage_NilMessage 测试 nil Message
 func TestPrepareForwardMessage_NilMessage(t *testing.T) {
-	frame := NewMsgFrame(12345, 1, MessageTypeGet, 1, nil)
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, nil)
 
 	// 准备转发
 	forwardFrame, err := prepareForwardMessage(frame)
@@ -668,14 +668,14 @@ func TestForwardMessage_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 立即取消
 
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 	addTLVToFrame(frame, *EncodeHopExt(5, 10))
 
 	// TCP Transport
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	tcpTransport.SetNodeID(12345)
-	require.NoError(t, tcpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, tcpTransport.Start(&nodeID, nil))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 应该返回 context 取消错误
@@ -686,8 +686,8 @@ func TestForwardMessage_ContextCancel(t *testing.T) {
 	// UDP Transport
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	udpTransport.SetNodeID(12345)
-	require.NoError(t, udpTransport.Start())
+	udpNodeID := uint64(12345)
+	require.NoError(t, udpTransport.Start(&udpNodeID, nil))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 应该返回 context 取消错误
@@ -700,14 +700,14 @@ func TestForwardMessage_ContextCancel(t *testing.T) {
 func TestForwardMessage_NilMessage(t *testing.T) {
 	ctx := context.Background()
 
-	frame := NewMsgFrame(12345, 1, MessageTypeGet, 1, nil)
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, nil)
 	addTLVToFrame(frame, *EncodeHopExt(5, 10))
 
 	// TCP Transport
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	tcpTransport.SetNodeID(12345)
-	require.NoError(t, tcpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, tcpTransport.Start(&nodeID, nil))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 应该返回消息为空错误
@@ -718,8 +718,8 @@ func TestForwardMessage_NilMessage(t *testing.T) {
 	// UDP Transport
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	udpTransport.SetNodeID(12345)
-	require.NoError(t, udpTransport.Start())
+	udpNodeID := uint64(12345)
+	require.NoError(t, udpTransport.Start(&udpNodeID, nil))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 应该返回消息为空错误
@@ -732,14 +732,14 @@ func TestForwardMessage_NilMessage(t *testing.T) {
 func TestForwardMessage_HopCountExpired(t *testing.T) {
 	ctx := context.Background()
 
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 	addTLVToFrame(frame, *EncodeHopExt(0, 10))
 
 	// TCP Transport
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	tcpTransport.SetNodeID(12345)
-	require.NoError(t, tcpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, tcpTransport.Start(&nodeID, nil))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 应该返回 Hop Count 过期错误
@@ -750,8 +750,8 @@ func TestForwardMessage_HopCountExpired(t *testing.T) {
 	// UDP Transport
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	udpTransport.SetNodeID(12345)
-	require.NoError(t, udpTransport.Start())
+	udpNodeID := uint64(12345)
+	require.NoError(t, udpTransport.Start(&udpNodeID, nil))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 应该返回 Hop Count 过期错误
@@ -764,14 +764,14 @@ func TestForwardMessage_HopCountExpired(t *testing.T) {
 func TestForwardMessage_DeepCopyPreventsDataRace(t *testing.T) {
 	ctx := context.Background()
 
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 	addTLVToFrame(frame, *EncodeHopExt(5, 10))
 
 	// 创建多个并发转发请求，验证没有 data race
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	tcpTransport.SetNodeID(12345)
-	require.NoError(t, tcpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, tcpTransport.Start(&nodeID, nil))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 使用 t.Run 并发执行
@@ -816,7 +816,7 @@ func TestRegisterDecoder(t *testing.T) {
 
 // TestGetExt_MissingDecoder 测试缺少解码器的情况
 func TestGetExt_MissingDecoder(t *testing.T) {
-	frame := createTestFrame(t, MessageTypeGet, []byte("test"))
+	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加一个没有解码器的 TLV 类型
 	unknownTLV := TLV{

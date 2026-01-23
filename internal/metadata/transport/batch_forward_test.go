@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -40,12 +41,11 @@ func createTestMsgFrame(msgType MessageType, payload []byte, hop uint16, totalHo
 
 func TestBatchForwardMessage_TCP_NotStarted(t *testing.T) {
 	ctx := context.Background()
-	msgFrame := createTestMsgFrame(MessageTypeGet, []byte("test"), 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, []byte("test"), 5, 10)
 	addrs := []string{"127.0.0.1:9999", "127.0.0.1:9998"}
 
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	tcpTransport.SetNodeID(12345)
 	// 不启动 Transport
 
 	result := tcpTransport.BatchForwardMessage(ctx, addrs, msgFrame)
@@ -57,13 +57,13 @@ func TestBatchForwardMessage_TCP_NotStarted(t *testing.T) {
 
 func TestBatchForwardMessage_TCP_EmptyAddrs(t *testing.T) {
 	ctx := context.Background()
-	msgFrame := createTestMsgFrame(MessageTypeGet, []byte("test"), 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, []byte("test"), 5, 10)
 	addrs := []string{}
 
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	tcpTransport.SetNodeID(12345)
-	require.NoError(t, tcpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, tcpTransport.Start(&nodeID, nil))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	result := tcpTransport.BatchForwardMessage(ctx, addrs, msgFrame)
@@ -77,13 +77,13 @@ func TestBatchForwardMessage_TCP_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 立即取消
 
-	msgFrame := createTestMsgFrame(MessageTypeGet, []byte("test"), 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, []byte("test"), 5, 10)
 	addrs := []string{"127.0.0.1:9999", "127.0.0.1:9998"}
 
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	tcpTransport.SetNodeID(12345)
-	require.NoError(t, tcpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, tcpTransport.Start(&nodeID, nil))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	result := tcpTransport.BatchForwardMessage(ctx, addrs, msgFrame)
@@ -101,13 +101,13 @@ func TestBatchForwardMessage_TCP_ContextCancel(t *testing.T) {
 
 func TestBatchForwardMessage_TCP_PartialFailure(t *testing.T) {
 	ctx := context.Background()
-	msgFrame := createTestMsgFrame(MessageTypeGet, []byte("test"), 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, []byte("test"), 5, 10)
 	addrs := []string{"127.0.0.1:9999", "127.0.0.1:9998"}
 
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	tcpTransport.SetNodeID(12345)
-	require.NoError(t, tcpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, tcpTransport.Start(&nodeID, nil))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	result := tcpTransport.BatchForwardMessage(ctx, addrs, msgFrame)
@@ -127,7 +127,7 @@ func TestBatchForwardMessage_TCP_PartialFailure(t *testing.T) {
 
 func TestBatchForwardMessage_TCP_MaxBatchSize(t *testing.T) {
 	ctx := context.Background()
-	msgFrame := createTestMsgFrame(MessageTypeGet, []byte("test"), 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, []byte("test"), 5, 10)
 
 	// 创建超过 maxBatchSize 的地址列表
 	addrs := make([]string, maxBatchSize+10)
@@ -137,8 +137,8 @@ func TestBatchForwardMessage_TCP_MaxBatchSize(t *testing.T) {
 
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	tcpTransport.SetNodeID(12345)
-	require.NoError(t, tcpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, tcpTransport.Start(&nodeID, nil))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	result := tcpTransport.BatchForwardMessage(ctx, addrs, msgFrame)
@@ -149,13 +149,13 @@ func TestBatchForwardMessage_TCP_MaxBatchSize(t *testing.T) {
 
 func TestBatchForwardMessage_TCP_ConcurrentSafe(t *testing.T) {
 	ctx := context.Background()
-	msgFrame := createTestMsgFrame(MessageTypeGet, []byte("test"), 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, []byte("test"), 5, 10)
 	addrs := []string{"127.0.0.1:9999", "127.0.0.1:9998"}
 
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	tcpTransport.SetNodeID(12345)
-	require.NoError(t, tcpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, tcpTransport.Start(&nodeID, nil))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 并发调用
@@ -188,12 +188,11 @@ func TestBatchForwardMessage_TCP_ConcurrentSafe(t *testing.T) {
 
 func TestBatchForwardMessage_UDP_NotStarted(t *testing.T) {
 	ctx := context.Background()
-	msgFrame := createTestMsgFrame(MessageTypeGet, []byte("test"), 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, []byte("test"), 5, 10)
 	addrs := []string{"127.0.0.1:9999", "127.0.0.1:9998"}
 
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	udpTransport.SetNodeID(12345)
 	// 不启动 Transport
 
 	result := udpTransport.BatchForwardMessage(ctx, addrs, msgFrame)
@@ -205,13 +204,13 @@ func TestBatchForwardMessage_UDP_NotStarted(t *testing.T) {
 
 func TestBatchForwardMessage_UDP_EmptyAddrs(t *testing.T) {
 	ctx := context.Background()
-	msgFrame := createTestMsgFrame(MessageTypeGet, []byte("test"), 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, []byte("test"), 5, 10)
 	addrs := []string{}
 
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	udpTransport.SetNodeID(12345)
-	require.NoError(t, udpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, udpTransport.Start(&nodeID, nil))
 	defer func() { _ = udpTransport.Stop() }()
 
 	result := udpTransport.BatchForwardMessage(ctx, addrs, msgFrame)
@@ -223,7 +222,7 @@ func TestBatchForwardMessage_UDP_EmptyAddrs(t *testing.T) {
 
 func TestBatchForwardMessage_UDP_Success(t *testing.T) {
 	ctx := context.Background()
-	msgFrame := createTestMsgFrame(MessageTypeGet, nil, 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, nil, 5, 10)
 	// 手动设置 Message 为 GetMessage
 	msgFrame.Message = &GetMessage{Key: "test-key"}
 
@@ -237,8 +236,8 @@ func TestBatchForwardMessage_UDP_Success(t *testing.T) {
 
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	udpTransport.SetNodeID(12345)
-	require.NoError(t, udpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, udpTransport.Start(&nodeID, nil))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 启动接收 goroutine
@@ -267,13 +266,13 @@ func TestBatchForwardMessage_UDP_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 立即取消
 
-	msgFrame := createTestMsgFrame(MessageTypeGet, []byte("test"), 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, []byte("test"), 5, 10)
 	addrs := []string{"127.0.0.1:9999", "127.0.0.1:9998"}
 
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	udpTransport.SetNodeID(12345)
-	require.NoError(t, udpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, udpTransport.Start(&nodeID, nil))
 	defer func() { _ = udpTransport.Stop() }()
 
 	result := udpTransport.BatchForwardMessage(ctx, addrs, msgFrame)
@@ -291,7 +290,7 @@ func TestBatchForwardMessage_UDP_ContextCancel(t *testing.T) {
 
 func TestBatchForwardMessage_UDP_MaxBatchSize(t *testing.T) {
 	ctx := context.Background()
-	msgFrame := createTestMsgFrame(MessageTypeGet, []byte("test"), 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, []byte("test"), 5, 10)
 
 	// 创建超过 maxBatchSize 的地址列表
 	addrs := make([]string, maxBatchSize+10)
@@ -301,8 +300,8 @@ func TestBatchForwardMessage_UDP_MaxBatchSize(t *testing.T) {
 
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	udpTransport.SetNodeID(12345)
-	require.NoError(t, udpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, udpTransport.Start(&nodeID, nil))
 	defer func() { _ = udpTransport.Stop() }()
 
 	result := udpTransport.BatchForwardMessage(ctx, addrs, msgFrame)
@@ -313,13 +312,13 @@ func TestBatchForwardMessage_UDP_MaxBatchSize(t *testing.T) {
 
 func TestBatchForwardMessage_UDP_ConcurrentSafe(t *testing.T) {
 	ctx := context.Background()
-	msgFrame := createTestMsgFrame(MessageTypeGet, []byte("test"), 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, []byte("test"), 5, 10)
 	addrs := []string{"127.0.0.1:9999", "127.0.0.1:9998"}
 
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	udpTransport.SetNodeID(12345)
-	require.NoError(t, udpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, udpTransport.Start(&nodeID, nil))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 并发调用
@@ -352,7 +351,7 @@ func TestBatchForwardMessage_UDP_ConcurrentSafe(t *testing.T) {
 
 func TestBatchForwardMessage_Integration_TCP(t *testing.T) {
 	ctx := context.Background()
-	msgFrame := createTestMsgFrame(MessageTypeGet, nil, 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, nil, 5, 10)
 	// 手动设置 Message 为 GetMessage
 	msgFrame.Message = &GetMessage{Key: "test-key"}
 
@@ -379,8 +378,8 @@ func TestBatchForwardMessage_Integration_TCP(t *testing.T) {
 
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	tcpTransport.SetNodeID(12345)
-	require.NoError(t, tcpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, tcpTransport.Start(&nodeID, nil))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 等待服务器启动
@@ -400,7 +399,7 @@ func TestBatchForwardMessage_Integration_TCP(t *testing.T) {
 
 func TestBatchForwardMessage_Integration_UDP(t *testing.T) {
 	ctx := context.Background()
-	msgFrame := createTestMsgFrame(MessageTypeGet, nil, 5, 10)
+	msgFrame := createTestMsgFrame(types.MessageTypeGet, nil, 5, 10)
 	// 手动设置 Message 为 GetMessage
 	msgFrame.Message = &GetMessage{Key: "test-key"}
 
@@ -422,8 +421,8 @@ func TestBatchForwardMessage_Integration_UDP(t *testing.T) {
 
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
-	udpTransport.SetNodeID(12345)
-	require.NoError(t, udpTransport.Start())
+	nodeID := uint64(12345)
+	require.NoError(t, udpTransport.Start(&nodeID, nil))
 	defer func() { _ = udpTransport.Stop() }()
 
 	result := udpTransport.BatchForwardMessage(ctx, addrs, msgFrame)

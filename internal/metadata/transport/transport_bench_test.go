@@ -20,14 +20,14 @@ func BenchmarkFrame_NewFrame(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = NewFrame(0, 0, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+		_ = NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 	}
 }
 
 // BenchmarkFrame_Marshal 帧序列化性能
 func BenchmarkFrame_Marshal(b *testing.B) {
 	data := make([]byte, 1024)
-	frame := NewFrame(0, 0, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -38,7 +38,7 @@ func BenchmarkFrame_Marshal(b *testing.B) {
 // BenchmarkFrame_Unmarshal 帧反序列化性能
 func BenchmarkFrame_Unmarshal(b *testing.B) {
 	data := make([]byte, 1024)
-	frame := NewFrame(0, 0, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 	buf, _ := frame.Marshal()
 
 	b.ResetTimer()
@@ -54,7 +54,7 @@ func BenchmarkFrame_RoundTrip(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		frame := NewFrame(0, 0, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+		frame := NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 		buf, _ := frame.Marshal()
 		f := &Frame{}
 		_ = f.Unmarshal(buf)
@@ -70,7 +70,7 @@ func BenchmarkFrame_NewFrame_DifferentSizes(b *testing.B) {
 			data := make([]byte, size)
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = NewFrame(0, 0, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+				_ = NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 			}
 		})
 	}
@@ -624,13 +624,13 @@ func BenchmarkTCPVsUDP_Send(b *testing.B) {
 
 	b.Run("TCP", func(b *testing.B) {
 		server := createTCPTransportForBench(b)
-		if err := server.Start(); err != nil {
+		if err := server.Start(nil, nil); err != nil {
 			b.Fatalf("启动 server 失败: %v", err)
 		}
 		defer func() { _ = server.Stop() }()
 
 		client := createTCPTransportForBench(b)
-		if err := client.Start(); err != nil {
+		if err := client.Start(nil, nil); err != nil {
 			b.Fatalf("启动 client 失败: %v", err)
 		}
 		defer func() { _ = client.Stop() }()
@@ -646,13 +646,13 @@ func BenchmarkTCPVsUDP_Send(b *testing.B) {
 
 	b.Run("UDP", func(b *testing.B) {
 		server := createUDPTransportForBench(b)
-		if err := server.Start(); err != nil {
+		if err := server.Start(nil, nil); err != nil {
 			b.Fatalf("启动 server 失败: %v", err)
 		}
 		defer func() { _ = server.Stop() }()
 
 		client := createUDPTransportForBench(b)
-		if err := client.Start(); err != nil {
+		if err := client.Start(nil, nil); err != nil {
 			b.Fatalf("启动 client 失败: %v", err)
 		}
 		defer func() { _ = client.Stop() }()
@@ -675,13 +675,13 @@ func BenchmarkTCPVsUDP_SendLarge(b *testing.B) {
 
 	b.Run("TCP", func(b *testing.B) {
 		server := createTCPTransportForBench(b)
-		if err := server.Start(); err != nil {
+		if err := server.Start(nil, nil); err != nil {
 			b.Fatalf("启动 server 失败: %v", err)
 		}
 		defer func() { _ = server.Stop() }()
 
 		client := createTCPTransportForBench(b)
-		if err := client.Start(); err != nil {
+		if err := client.Start(nil, nil); err != nil {
 			b.Fatalf("启动 client 失败: %v", err)
 		}
 		defer func() { _ = client.Stop() }()
@@ -697,15 +697,15 @@ func BenchmarkTCPVsUDP_SendLarge(b *testing.B) {
 
 	b.Run("UDP", func(b *testing.B) {
 		server := createUDPTransportForBench(b)
-		server.SetNodeID(1)
-		if err := server.Start(); err != nil {
+		serverNodeID := uint64(1)
+		if err := server.Start(&serverNodeID, nil); err != nil {
 			b.Fatalf("启动 server 失败: %v", err)
 		}
 		defer func() { _ = server.Stop() }()
 
 		client := createUDPTransportForBench(b)
-		client.SetNodeID(2)
-		if err := client.Start(); err != nil {
+		clientNodeID := uint64(2)
+		if err := client.Start(&clientNodeID, nil); err != nil {
 			b.Fatalf("启动 client 失败: %v", err)
 		}
 		defer func() { _ = client.Stop() }()
@@ -727,13 +727,13 @@ func BenchmarkTCPVsUDP_ConcurrentSend(b *testing.B) {
 
 	b.Run("TCP", func(b *testing.B) {
 		server := createTCPTransportForBench(b)
-		if err := server.Start(); err != nil {
+		if err := server.Start(nil, nil); err != nil {
 			b.Fatalf("启动 server 失败: %v", err)
 		}
 		defer func() { _ = server.Stop() }()
 
 		client := createTCPTransportForBench(b)
-		if err := client.Start(); err != nil {
+		if err := client.Start(nil, nil); err != nil {
 			b.Fatalf("启动 client 失败: %v", err)
 		}
 		defer func() { _ = client.Stop() }()
@@ -751,13 +751,13 @@ func BenchmarkTCPVsUDP_ConcurrentSend(b *testing.B) {
 
 	b.Run("UDP", func(b *testing.B) {
 		server := createUDPTransportForBench(b)
-		if err := server.Start(); err != nil {
+		if err := server.Start(nil, nil); err != nil {
 			b.Fatalf("启动 server 失败: %v", err)
 		}
 		defer func() { _ = server.Stop() }()
 
 		client := createUDPTransportForBench(b)
-		if err := client.Start(); err != nil {
+		if err := client.Start(nil, nil); err != nil {
 			b.Fatalf("启动 client 失败: %v", err)
 		}
 		defer func() { _ = client.Stop() }()
@@ -784,13 +784,13 @@ func BenchmarkTCPVsUDP_VaryingSizes(b *testing.B) {
 
 		b.Run(fmt.Sprintf("%d_TCP", size), func(b *testing.B) {
 			server := createTCPTransportForBench(b)
-			if err := server.Start(); err != nil {
+			if err := server.Start(nil, nil); err != nil {
 				b.Fatalf("启动 server 失败: %v", err)
 			}
 			defer func() { _ = server.Stop() }()
 
 			client := createTCPTransportForBench(b)
-			if err := client.Start(); err != nil {
+			if err := client.Start(nil, nil); err != nil {
 				b.Fatalf("启动 client 失败: %v", err)
 			}
 			defer func() { _ = client.Stop() }()
@@ -807,15 +807,15 @@ func BenchmarkTCPVsUDP_VaryingSizes(b *testing.B) {
 
 		b.Run(fmt.Sprintf("%d_UDP", size), func(b *testing.B) {
 			server := createUDPTransportForBench(b)
-			server.SetNodeID(1)
-			if err := server.Start(); err != nil {
+			serverNodeID := uint64(1)
+			if err := server.Start(&serverNodeID, nil); err != nil {
 				b.Fatalf("启动 server 失败: %v", err)
 			}
 			defer func() { _ = server.Stop() }()
 
 			client := createUDPTransportForBench(b)
-			client.SetNodeID(2)
-			if err := client.Start(); err != nil {
+			clientNodeID := uint64(2)
+			if err := client.Start(&clientNodeID, nil); err != nil {
 				b.Fatalf("启动 client 失败: %v", err)
 			}
 			defer func() { _ = client.Stop() }()

@@ -570,22 +570,22 @@ func (t *TwoPCService) messageLoop() {
 // handleMessage 处理接收到的消息
 func (t *TwoPCService) handleMessage(msg transport.Message) {
 	switch msg.Type() {
-	case transport.MessageType2PCPrepare:
+	case types.MessageType2PCPrepare:
 		t.handlePrepare(msg)
 
-	case transport.MessageType2PCPrepareReply:
+	case types.MessageType2PCPrepareReply:
 		t.handlePrepareReply(msg)
 
-	case transport.MessageType2PCCommit:
+	case types.MessageType2PCCommit:
 		t.handleCommit(msg)
 
-	case transport.MessageType2PCRollback:
+	case types.MessageType2PCRollback:
 		t.handleRollback(msg)
 
-	case transport.MessageType2PCCommitReply:
+	case types.MessageType2PCCommitReply:
 		t.handleCommitReply(msg)
 
-	case transport.MessageType2PCRollbackReply:
+	case types.MessageType2PCRollbackReply:
 		t.handleRollbackReply(msg)
 	}
 }

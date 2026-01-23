@@ -5,6 +5,26 @@ package types
 
 import "fmt"
 
+// ReliabilityRequirement 可靠性要求
+type ReliabilityRequirement int
+
+const (
+	// BestEffort 尽力而为（容忍丢失）
+	BestEffort ReliabilityRequirement = iota
+	// Reliable 可靠传输（强依赖）
+	Reliable
+)
+
+// ResponseExpectation 响应期望
+type ResponseExpectation int
+
+const (
+	// NoResponse 不需要响应
+	NoResponse ResponseExpectation = iota
+	// ExpectResponse 需要响应
+	ExpectResponse
+)
+
 // MessageType 消息类型
 //
 // 消息类型范围分配:
@@ -164,4 +184,94 @@ type Address struct {
 // String 返回地址的字符串表示 (host:port)
 func (a *Address) String() string {
 	return fmt.Sprintf("%s:%d", a.Host, a.Port)
+}
+
+// ExpectResponse 返回消息是否期望响应
+//
+// 判断逻辑：
+//   - Reply 结尾的消息类型不需要响应（本身是响应）
+//   - Quorum 提案和投票需要响应
+//   - Get/Put/Delete 操作需要响应
+//   - Gossip 消息和心跳不需要响应（单向传播）
+func (t MessageType) ExpectResponse() ResponseExpectation {
+	// Reply 消息本身是响应，不需要再响应
+	if t.isReplyMessage() {
+		return NoResponse
+	}
+
+	// 需要响应的消息类型
+	switch t {
+	case MessageTypeGet, MessageTypePut, MessageTypeDelete,
+		MessageTypeGossipSync, MessageTypeGossipDigest,
+		MessageTypeQuorumPropose, MessageTypeQuorumVote,
+		MessageType2PCPrepare, MessageType2PCCommit, MessageType2PCRollback,
+		MessageTypeNodePing, MessageTypeNodeSync,
+		MessageTypeClockSync, MessageTypeClusterStatus:
+		return ExpectResponse
+	}
+
+	// 默认不需要响应（Gossip 单向传播、状态广播等）
+	return NoResponse
+}
+
+// Reliability 返回消息的可靠性要求
+//
+// 判断逻辑：
+//   - Quorum 协议消息需要可靠传输（提案、投票、决策）
+//   - 2PC 协议消息需要可靠传输（准备、提交、回滚）
+//   - 元数据操作需要可靠传输（Get、Put、Delete）
+//   - Gossip 消息使用尽力而为（最终一致性）
+//   - 心跳消息使用尽力而为（容忍丢失）
+func (t MessageType) Reliability() ReliabilityRequirement {
+	// 需要可靠传输的消息类型
+	switch t {
+	case MessageTypeGet, MessageTypePut, MessageTypeDelete,
+		MessageTypeGetReply, MessageTypePutReply, MessageTypeDeleteReply,
+		MessageTypeQuorumPropose, MessageTypeQuorumVote, MessageTypeQuorumDecide,
+		MessageType2PCPrepare, MessageType2PCPrepareReply,
+		MessageType2PCCommit, MessageType2PCCommitReply,
+		MessageType2PCRollback, MessageType2PCRollbackReply:
+		return Reliable
+	}
+
+	// 默认使用尽力而为（Gossip、心跳、时钟同步等）
+	return BestEffort
+}
+
+// isReplyMessage 判断是否是响应消息
+func (t MessageType) isReplyMessage() bool {
+	switch t {
+	case MessageTypeGetReply, MessageTypePutReply, MessageTypeDeleteReply,
+		MessageTypeGossipSyncReply, MessageTypeGossipDigestReply,
+		MessageType2PCPrepareReply, MessageType2PCCommitReply,
+		MessageType2PCRollbackReply, MessageTypeNodePong,
+		MessageTypeClockSyncReply, MessageTypeClusterStatusReply:
+		return true
+	default:
+		return false
+	}
+}
+
+// ========================================
+// Message 接口定义
+// ========================================
+
+// Message 传输消息接口
+//
+// 所有传输的消息都需要实现此接口
+type Message interface {
+	// Type 返回消息类型
+	Type() MessageType
+
+	// Priority 返回消息优先级（0-4，0最低，4最高）
+	// 用于流量控制：接收端过载时优先丢弃低优先级消息
+	Priority() int
+
+	// ExpectResponse 返回消息是否期望响应
+	// 默认实现：调用 Type().ExpectResponse()
+	ExpectResponse() ResponseExpectation
+
+	// Reliability 返回消息的可靠性要求
+	// 默认实现：调用 Type().Reliability()
+	Reliability() ReliabilityRequirement
 }

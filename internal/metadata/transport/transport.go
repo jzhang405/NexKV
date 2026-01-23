@@ -103,19 +103,10 @@ type Transport interface {
 	GenerateMsgSeq() uint64
 }
 
-// Message 传输消息接口
-//
-// 所有传输的消息都需要实现此接口
-type Message interface {
-	// Type 返回消息类型
-	Type() types.MessageType
-
-	// Priority 返回消息优先级（0-4，0最低，4最高）
-	// 用于流量控制：接收端过载时优先丢弃低优先级消息
-	Priority() int
-}
-
 // 导出 types 包中的类型别名，方便 transport 包使用
+
+// Message 传输消息接口
+type Message = types.Message
 
 // MessageType 消息类型
 type MessageType = types.MessageType

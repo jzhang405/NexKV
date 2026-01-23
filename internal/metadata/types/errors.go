@@ -4,6 +4,7 @@
 package types
 
 import (
+	"errors"
 	"fmt"
 )
 
@@ -729,4 +730,166 @@ func NewCompressionCompressError(op string, err error) *Error {
 		Op:      op,
 		Err:     err,
 	}
+}
+
+// ========================================
+// 传输层错误分类（降级机制）
+// ========================================
+
+// ErrorType 错误类型（用于降级决策）
+type ErrorType int
+
+const (
+	// ProtocolError 协议层错误（触发降级）
+	ProtocolError ErrorType = iota
+	// BusinessError 业务层错误（不触发降级）
+	BusinessError
+	// UnknownError 未知错误（保守策略，触发降级）
+	UnknownError
+)
+
+// ========================================
+// 协议层错误（触发降级）
+// ========================================
+
+var (
+	// ========================================
+	// UDP 错误
+	// ========================================
+
+	// ErrUDPFragmentTimeout UDP 分片重组超时
+	ErrUDPFragmentTimeout = errors.New("udp fragment reassembly timeout")
+
+	// ErrUDPSendFailed UDP 发送系统调用失败
+	ErrUDPSendFailed = errors.New("udp send system call failed")
+
+	// ErrUDPReceiveFailed UDP 接收失败
+	ErrUDPReceiveFailed = errors.New("udp receive failed")
+
+	// ========================================
+	// TCP 错误
+	// ========================================
+
+	// ErrTCPConnFailed TCP 连接失败
+	ErrTCPConnFailed = errors.New("tcp connect failed")
+
+	// ErrTCPSendTimeout TCP 发送超时
+	ErrTCPSendTimeout = errors.New("tcp send timeout")
+
+	// ErrTCPReceiveFailed TCP 接收失败
+	ErrTCPReceiveFailed = errors.New("tcp receive failed")
+
+	// ErrTCPConnReset TCP 连接重置
+	ErrTCPConnReset = errors.New("tcp connection reset")
+
+	// ========================================
+	// 通用协议错误
+	// ========================================
+
+	// ErrProtocolTimeout 协议操作超时
+	ErrProtocolTimeout = errors.New("protocol operation timeout")
+
+	// ErrNetworkUnreachable 网络不可达
+	ErrNetworkUnreachable = errors.New("network unreachable")
+)
+
+// ========================================
+// 帧层错误（触发降级）
+// ========================================
+
+var (
+	// ErrFrameTooLarge 帧过大
+	ErrFrameTooLarge = errors.New("frame size exceeds maximum")
+
+	// ErrInvalidFrameFormat 无效帧格式
+	ErrInvalidFrameFormat = errors.New("invalid frame format")
+
+	// ErrChecksumMismatch 校验和不匹配
+	ErrChecksumMismatch = errors.New("checksum mismatch")
+
+	// ErrInvalidMagicNumber 魔法数字无效
+	ErrInvalidMagicNumber = errors.New("invalid magic number")
+)
+
+// ========================================
+// 业务层错误（不触发降级）
+// ========================================
+
+var (
+	// ErrMsgTooLarge 消息大小超过限制
+	ErrMsgTooLarge = errors.New("message size exceeds limit")
+
+	// ErrInvalidAddr 地址格式无效
+	ErrInvalidAddr = errors.New("invalid address format")
+
+	// ErrCodecFailed 消息编解码失败
+	ErrCodecFailed = errors.New("message codec failed")
+
+	// ErrInvalidMsgType 消息类型无效
+	ErrInvalidMsgType = errors.New("invalid message type")
+
+	// ErrUnauthorized 未授权访问
+	ErrUnauthorized = errors.New("unauthorized access")
+)
+
+// ========================================
+// 错误分类工具函数
+// ========================================
+
+// IsProtocolError 判断是否为协议层错误
+func IsProtocolError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	protocolErrors := []error{
+		// UDP 错误
+		ErrUDPFragmentTimeout,
+		ErrUDPSendFailed,
+		ErrUDPReceiveFailed,
+		// TCP 错误
+		ErrTCPConnFailed,
+		ErrTCPSendTimeout,
+		ErrTCPReceiveFailed,
+		ErrTCPConnReset,
+		// 通用协议错误
+		ErrProtocolTimeout,
+		ErrNetworkUnreachable,
+		// 帧错误
+		ErrFrameTooLarge,
+		ErrInvalidFrameFormat,
+		ErrChecksumMismatch,
+		ErrInvalidMagicNumber,
+	}
+
+	for _, protoErr := range protocolErrors {
+		if errors.Is(err, protoErr) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// IsBusinessError 判断是否为业务层错误
+func IsBusinessError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	businessErrors := []error{
+		ErrMsgTooLarge,
+		ErrInvalidAddr,
+		ErrCodecFailed,
+		ErrInvalidMsgType,
+		ErrUnauthorized,
+	}
+
+	for _, bizErr := range businessErrors {
+		if errors.Is(err, bizErr) {
+			return true
+		}
+	}
+
+	return false
 }

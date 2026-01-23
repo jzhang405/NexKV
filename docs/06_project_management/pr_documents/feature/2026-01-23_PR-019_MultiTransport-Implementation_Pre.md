@@ -94,6 +94,27 @@ NexKV 项目已实现 **TCP Transport** (100%) 和 **UDP Transport** (80%)，但
 - UDP 分片算法优化（已独立实现）
 - 消息序列化优化（已独立完成）
 
+**其他设计影响**（需要同步修改的代码）：
+
+1. **Transport 接口扩展**（`internal/metadata/transport/transport.go`）：
+   - 新增 4 个消息唯一标识方法
+   - 所有 Transport 实现需要支持这些方法
+
+2. **TCPTransport 实现**（`internal/metadata/transport/tcp_transport.go`）：
+   - 实现 `SetNodeID`、`SetMsgSeqGenerator`、`GetNodeID`、`GenerateMsgSeq`
+   - 复用现有的 `localNodeID` 字段
+   - 使用 `msgIDCounter` 作为默认序列号生成器
+
+3. **UDPTransport 实现**（`internal/metadata/transport/udp_transport.go`）：
+   - 实现相同的 4 个方法
+   - 复用现有的 `localNodeID` 和 `msgIDCounter` 字段
+   - 与现有去重机制集成
+
+**实现说明**：
+- MultiTransport 实现 Transport 接口时，自动转发到底层 Transport 实现
+- 例如：`mt.SetNodeID(nodeID)` 会调用所有已注册 Transport 的 `SetNodeID`
+- TCPTransport 和 UDPTransport 已有 `localNodeID` 字段，只需实现接口方法即可
+
 ### 3. 实现方案（怎么干，核心设计）
 
 #### 3.1 整体流程设计
@@ -131,6 +152,41 @@ flowchart TD
 
 #### 3.2 关键设计点
 
+**Transport 接口扩展**（需同步修改 `transport.go`）：
+
+```go
+// Transport 网络传输接口（扩展）
+type Transport interface {
+    // === 现有接口方法 ===
+    Start() error
+    Stop() error
+    Send(ctx context.Context, addr string, msg Message, opt ...SendOpt) error
+    Receive() <-chan MsgFrame
+    ForwardMessage(ctx context.Context, addr string, msgExt MsgFrame) (uint64, error)
+
+    // === 新增：消息唯一标识接口 ===
+    // SetNodeID 设置节点 ID（全局唯一，用于消息去重和幂等性）
+    // 必须在 Start() 之前调用
+    SetNodeID(nodeID uint64)
+
+    // SetMsgSeqGenerator 设置消息序列号生成器（可选，默认使用原子计数器）
+    // 支持自定义生成逻辑，用于测试或特殊场景
+    SetMsgSeqGenerator(generator func() uint64) error
+
+    // GetNodeID 获取当前节点 ID
+    GetNodeID() uint64
+
+    // GenerateMsgSeq 生成下一条消息序列号
+    GenerateMsgSeq() uint64
+}
+
+// BatchForwardTransport 批量转发接口（现有接口，保持不变）
+type BatchForwardTransport interface {
+    Transport
+    BatchForwardMessage(ctx context.Context, addrs []string, msgExt MsgFrame) BatchForwardMessageResult
+}
+```
+
 **接口定义**：
 
 ```go
@@ -161,16 +217,20 @@ type MultiTransport struct {
     msgSeqCounter     atomic.Uint64              // 默认序列号计数器
 }
 
-// 核心接口
+// 核心接口（实现 Transport 接口和 BatchForwardTransport 扩展接口）
 func NewMultiTransport(config *MultiTransportConfig) (*MultiTransport, error)
 func (mt *MultiTransport) Start() error
 func (mt *MultiTransport) Stop() error
+
+// Transport 接口方法（已有）
 func (mt *MultiTransport) Send(ctx context.Context, addr string, msg Message, opts ...SendOpt) error
 func (mt *MultiTransport) Receive() <-chan MsgFrame
 func (mt *MultiTransport) ForwardMessage(ctx context.Context, addr string, msgExt MsgFrame) (uint64, error)
+
+// BatchForwardTransport 扩展接口方法（已有）
 func (mt *MultiTransport) BatchForwardMessage(ctx context.Context, addrs []string, msgExt MsgFrame) BatchForwardMessageResult
 
-// 消息唯一标识接口（实现幂等性和去重）
+// 消息唯一标识接口（实现 Transport 接口新增方法）
 func (mt *MultiTransport) SetNodeID(nodeID uint64)                                        // 设置节点 ID
 func (mt *MultiTransport) SetMsgSeqGenerator(generator func() uint64) error             // 设置消息序列号生成器（可选，默认使用原子计数器）
 func (mt *MultiTransport) GetNodeID() uint64                                             // 获取当前节点 ID
@@ -395,6 +455,7 @@ msgSeq := mt.GenerateMsgSeq()  // 获取下一条消息序列号
 | **预审核** | 2026-01-22 | 👤 架构师 | 5 点架构审核要求：<br>1. 不可降级消息类型配置<br>2. 细化失败判定标准<br>3. UDP 广播地址识别<br>4. 维度化监控扩展<br>5. 帧编解码逻辑澄清 | 已全部整合到设计文档：<br>- 新增 `NonFallbackMessageTypes`<br>- 区分协议层/业务层错误<br>- 广播/多播地址检测<br>- `sync.Map` 维度化监控<br>- `TCPFrameCodec`/`UDPFrameCodec` 分离 | **✅ 完全通过审核** |
 | **正式评审** | 2026-01-23 | 👤 架构师 | **核心肯定项（5 点）**：<br>1. 分层解耦与动态注册机制<br>2. 三维路由决策矩阵<br>3. 协议层/业务层错误区分<br>4. 可观测性设计<br>5. 风险评估全面性<br><br>**待优化点（8 项，4 类）**：<br>• 接口设计（3 项）：MsgID 幂等性、MaxBatchSize 过载保护、RecvChanBufferSize 背压控制<br>• 路由逻辑（2 项）：BroadcastAddrPatterns 广播规则、UpdateRouterConfig 动态更新<br>• 容错机制（2 项）：重试策略（MaxRetryCount/RetryDelay/RetryMode）、TCP 连接池监控<br>• 测试完善（2 项）：接口兼容性测试、性能回归基线<br><br>**补充建议（4 项）**：<br>1. 协议健康检查（HealthCheck）<br>2. 协议优先级配置（ProtocolPriority）<br>3. 链路追踪集成（TraceID）<br>4. 灰度发布能力（SetProtocolWeight） | 已全部整合到 Pre 文档：<br>• **接口增强**：新增 4 个接口方法（UpdateRouterConfig、HealthCheck、SetProtocolWeight、GetTCPConnPoolStats）<br>• **配置扩展**：MultiTransportConfig 增加 MaxBatchSize/RecvChanBufferSize，RouterConfig 增加 BroadcastAddrPatterns/ProtocolPriority，FallbackConfig 增加重试策略字段<br>• **容错扩展**：从 4 项扩展到 8 项，增加降级重试策略、连接池监控、协议健康检查、背压控制<br>• **功能目标扩展**：从 6 项扩展到 10 项，增加接口增强、路由增强、容错增强、生产级特性 | **✅ 完全通过审核** |
 | **方案优化** | 2026-01-23 | 👤 架构师 | **消息唯一标识方案调整**：<br>• 原建议：在 Message 接口增加 `GetMsgID() string` 或 `WithMsgID` 选项<br>• 优化方案：在 Transport 接口中增加 `SetNodeID` + `SetMsgSeqGenerator`<br>• 理由：与现有 UDP Transport 去重机制一致（`(NodeID, MsgSeq)` 组合），避免修改 Message 接口 | 已整合到 Pre 文档：<br>• **接口扩展**：新增 4 个消息唯一标识接口（SetNodeID、SetMsgSeqGenerator、GetNodeID、GenerateMsgSeq）<br>• **结构扩展**：MultiTransport 增加 nodeID、msgSeqGenerator、msgSeqCounter 字段<br>• **配置扩展**：MultiTransportConfig 增加 NodeID 字段<br>• **机制扩展**：新增第 5 项核心机制"消息唯一标识机制"和第 9 项容错设计"消息唯一标识与幂等性保障"<br>• **使用示例**：添加完整的使用示例代码 | **✅ 方案优化完成** |
+| **接口调整** | 2026-01-23 | 👤 架构师 | **Transport 接口方法定位调整**：<br>• 原方案：4 个消息唯一标识方法仅作为 MultiTransport 的方法<br>• 优化方案：将 4 个方法提升为 Transport 基础接口方法<br>• 理由：所有 Transport 实现（TCP/UDP/Multi）都需要支持消息唯一标识，保持接口一致性 | 已整合到 Pre 文档：<br>• **Transport 接口扩展**：在 `transport.go` 中新增 4 个方法到 Transport 接口<br>• **实现影响范围**：TCP/UDP Transport 需要实现这 4 个方法（复用现有字段）<br>• **阶段 1 任务扩展**：增加 Transport 接口扩展任务<br>• **设计影响说明**：新增"其他设计影响"部分，说明需要同步修改的代码 | **✅ 接口调整完成** |
 
 **预审核结论**（来自设计文档）：
 
@@ -502,13 +563,20 @@ msgSeq := mt.GenerateMsgSeq()  // 获取下一条消息序列号
 
 | 阶段 | 任务 | 预估工时 | 优先级 | 核心目标 | 验收标准 |
 |------|------|---------|--------|----------|----------|
-| **阶段 1** | MultiTransport 核心实现 | 3-5 天 | P0 | 实现动态注册机制、统一 Send/Receive 接口 | ✅ 编译通过<br/>✅ 单元测试覆盖率 >80% |
+| **阶段 1** | **Transport 接口扩展 + MultiTransport 核心** | 3-5 天 | P0 | 扩展 Transport 接口（4 个消息唯一标识方法）、实现动态注册机制、统一 Send/Receive 接口 | ✅ Transport 接口扩展完成<br/>✅ TCP/UDP Transport 实现新接口<br/>✅ MultiTransport 编译通过<br/>✅ 单元测试覆盖率 >80% |
 | **阶段 2** | 消息路由规则（含不可降级配置） | 2-3 天 | P0 | 三维决策矩阵、广播地址识别 | ✅ 15 种消息类型路由正确<br/>✅ 广播地址识别准确 |
 | **阶段 3** | 降级机制（含失败判定标准） | 2-3 天 | P1 | 协议层/业务层错误区分、精细化降级 | ✅ 协议层错误触发降级<br/>✅ 业务层错误不触发降级 |
 | **阶段 4** | 统计与监控（维度化监控） | 1-2 天 | P1 | 按消息类型/节点/错误类型统计 | ✅ 三个维度监控数据完整<br/>✅ 监控接口可调用 |
 | **阶段 5** | 帧编解码统一（TCP 粘包处理） | 1-2 天 | P0 | `TCPFrameCodec`/`UDPFrameCodec` 分离 | ✅ TCP 粘包处理正确<br/>✅ UDP 直接帧解析正确 |
 | **阶段 6** | 单元测试 + 集成测试 | 3-5 天 | P0 | 覆盖率 >80%，45 个集成测试用例 | ✅ 单元测试覆盖率 >80%<br/>✅ 45 个集成测试通过 |
 | **阶段 7** | 性能测试 + 调优 | 2-3 天 | P2 | 验证性能指标 | ✅ 心跳延迟 <1ms<br/>✅ Gossip 摘要延迟 <3ms |
+
+**阶段 1 详细任务**（Transport 接口扩展）：
+1. 修改 `transport.go`：在 Transport 接口中新增 4 个消息唯一标识方法
+2. 修改 `tcp_transport.go`：实现 4 个新方法，复用 `localNodeID` 和 `msgIDCounter`
+3. 修改 `udp_transport.go`：实现 4 个新方法，与现有去重机制集成
+4. 实现 `MultiTransport` 核心逻辑：动态注册机制、统一 Send/Receive 接口
+5. 单元测试：覆盖接口实现和核心逻辑
 
 **工期说明**：
 - 正常工期：14-18 天（按各阶段下限估算）
@@ -542,12 +610,13 @@ msgSeq := mt.GenerateMsgSeq()  // 获取下一条消息序列号
 
 **文档创建**: 2026-01-23
 **创建者**: AI Agent
-**审核者**: 👤 架构师（三轮评审：预审核 + 正式评审 + 方案优化）
-**状态**: ✅ Pre 完成，已通过 Code Review Agent 评审和架构师三轮评审
-**版本**: v1.3（整合消息唯一标识方案优化）
+**审核者**: 👤 架构师（四轮评审：预审核 + 正式评审 + 方案优化 + 接口调整）
+**状态**: ✅ Pre 完成，已通过 Code Review Agent 评审和架构师四轮评审
+**版本**: v1.4（整合 Transport 接口方法定位调整）
 
 **版本历史**：
 - v1.0（2026-01-23）：初始 Pre 文档，基于设计方案
 - v1.1（2026-01-23）：应用 Code Review Agent 的 P2 改进（性能测试环境、工期说明、验收标准）
 - v1.2（2026-01-23）：整合架构师正式评审的 8 项优化点和 4 项补充建议（接口增强、路由增强、容错增强、生产级特性）
 - v1.3（2026-01-23）：整合消息唯一标识方案优化（SetNodeID + SetMsgSeqGenerator，替代 Message 接口 GetMsgID 方案）
+- v1.4（2026-01-23）：整合 Transport 接口方法定位调整（4 个方法提升为 Transport 基础接口方法，所有 Transport 实现都需要支持）

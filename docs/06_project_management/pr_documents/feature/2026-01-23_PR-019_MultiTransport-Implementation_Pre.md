@@ -295,6 +295,230 @@ func (mt *MultiTransport) GetTCPConnPoolStats() ConnPoolStats                  /
    - TCP：4 字节长度前缀 + TLV 头 + 消息体（`TCPFrameCodec`）
    - UDP：TLV 头 + 消息体（`UDPFrameCodec`，无长度前缀）
 
+#### 4.1 帧编解码统一设计详解
+
+**设计目标**：
+1. **接口统一**：通过 `FrameCodec` 接口抽象 TCP/UDP 帧编解码差异
+2. **兼容性**：复用现有 `Frame` 结构（`codec.go`），避免重复定义
+3. **粘包处理**：TCP 流式解码器正确处理粘包/半包问题
+4. **可扩展性**：接口设计支持未来添加 QUIC/SCTP 等协议
+
+**架构图**：
+
+```mermaid
+flowchart TD
+    subgraph FrameCodec["FrameCodec 接口"]
+        EncodeFrame["EncodeFrame(frame) → data"]
+        DecodeFrame["DecodeFrame(data) → frame"]
+        EstimateSize["EstimateSize(frame) → int"]
+    end
+
+    subgraph Implementations["实现类"]
+        TCP["TCPFrameCodec"]
+        UDP["UDPFrameCodec"]
+        Auto["AutoDetectCodec"]
+        Stream["TCPFrameStreamDecoder"]
+    end
+
+    subgraph FrameFormat["帧格式"]
+        TCPFrame["TCP: Length 4B | FixedHeader | VarExtHeader | Data | CRC32"]
+        UDPFrame["UDP: FixedHeader | VarExtHeader | Data | CRC32"]
+    end
+
+    FrameCodec --> Implementations
+    TCP --> TCPFrame
+    UDP --> UDPFrame
+    TCP --> Stream
+
+    style FrameCodec fill:#e1f5ff
+    style Implementations fill:#fff4e6
+    style FrameFormat fill:#c8e6c9
+```
+
+**FrameCodec 接口定义**：
+
+```go
+// FrameCodec 帧编解码器接口
+type FrameCodec interface {
+    // EncodeFrame 编码帧
+    EncodeFrame(frame *Frame) ([]byte, error)
+
+    // DecodeFrame 解码帧
+    DecodeFrame(data []byte) (*Frame, error)
+
+    // EstimateSize 估计编码后大小
+    EstimateSize(frame *Frame) int
+}
+```
+
+**TCP vs UDP 帧格式对比**：
+
+| 协议 | 长度前缀 | 帧结构 | 最大帧大小 | 粘包处理 |
+|------|---------|--------|-----------|---------|
+| **TCP** | 4 字节（大端序） | Length + FixedHeader + VarExtHeader + Data + CRC32 | 100 MB | 需要流式解码器 |
+| **UDP** | 无 | FixedHeader + VarExtHeader + Data + CRC32 | 64 KB | 消息边界保证 |
+
+**TCP 帧格式详解**：
+
+```
++--------+--------+------------+-------+------------+
+| Length | Fixed  | VarExt     | Data  | Checksum   |
++--------+--------+------------+-------+------------+
+| 4 bytes| Header | Header     | Msg   | 4 bytes    |
++--------+--------+------------+-------+------------+
+
+字段说明：
+- Length: 帧总长度（不包括 Length 字段本身），大端序 uint32
+- FixedHeader: 固定头（31 字节），包含版本、消息类型、TTL 等
+- VarExtHeader: 变长 TLV 扩展头（可选）
+- Data: 消息体（序列化后的 Message）
+- Checksum: CRC32 校验和（VarExtHeader + Data）
+```
+
+**UDP 帧格式详解**：
+
+```
++--------+------------+-------+------------+
+| Fixed  | VarExt     | Data  | Checksum   |
++--------+------------+-------+------------+
+| Header | Header     | Msg   | 4 bytes    |
++--------+------------+-------+------------+
+
+字段说明：
+- FixedHeader: 固定头（31 字节）
+- VarExtHeader: 变长 TLV 扩展头（可选）
+- Data: 消息体
+- Checksum: CRC32 校验和
+- 无长度前缀（UDP 保证消息边界）
+```
+
+**TCP 编码实现**：
+
+```go
+func (c *TCPFrameCodec) EncodeFrame(frame *Frame) ([]byte, error) {
+    // 1. 使用 Frame 的 Marshal 方法序列化
+    data, err := frame.Marshal()
+    if err != nil {
+        return nil, fmt.Errorf("marshal frame: %w", err)
+    }
+
+    // 2. 检查大小限制
+    if len(data) > c.MaxFrameSize {
+        return nil, fmt.Errorf("frame too large: %d > %d",
+            len(data), c.MaxFrameSize)
+    }
+
+    // 3. 分配缓冲区（4 bytes length + frame data）
+    buf := new(bytes.Buffer)
+    buf.Grow(4 + len(data))
+
+    // 4. 写入长度前缀（大端序）
+    binary.Write(buf, binary.BigEndian, uint32(len(data)))
+
+    // 5. 写入帧数据
+    buf.Write(data)
+
+    return buf.Bytes(), nil
+}
+```
+
+**UDP 编码实现**：
+
+```go
+func (c *UDPFrameCodec) EncodeFrame(frame *Frame) ([]byte, error) {
+    // 1. 使用 Frame 的 Marshal 方法序列化
+    data, err := frame.Marshal()
+    if err != nil {
+        return nil, fmt.Errorf("marshal frame: %w", err)
+    }
+
+    // 2. 检查大小限制（UDP 限制：64KB）
+    if len(data) > c.MaxFrameSize {
+        return nil, fmt.Errorf("frame too large: %d > %d",
+            len(data), c.MaxFrameSize)
+    }
+
+    // 3. 直接返回帧数据（无长度前缀）
+    return data, nil
+}
+```
+
+**TCP 粘包处理（流式解码器）**：
+
+```go
+// TCPFrameStreamDecoder TCP 帧流式解码器
+type TCPFrameStreamDecoder struct {
+    codec  *TCPFrameCodec
+    buffer []byte          // 缓冲区（处理粘包）
+    mu     sync.Mutex
+}
+
+// Feed 喂入数据，返回解码出的完整帧列表
+func (d *TCPFrameStreamDecoder) Feed(data []byte) ([]*Frame, error) {
+    d.mu.Lock()
+    defer d.mu.Unlock()
+
+    // 1. 追加数据到缓冲区
+    d.buffer = append(d.buffer, data...)
+
+    var frames []*Frame
+
+    // 2. 循环解码帧（处理粘包）
+    for len(d.buffer) >= 4 {
+        // 3. 读取帧长度
+        buf := bytes.NewReader(d.buffer)
+        var frameSize uint32
+        binary.Read(buf, binary.BigEndian, &frameSize)
+
+        // 4. 检查帧是否完整（半包处理）
+        totalFrameSize := int(frameSize) + 4
+        if len(d.buffer) < totalFrameSize {
+            // 帧不完整，等待更多数据
+            break
+        }
+
+        // 5. 提取完整帧
+        frameData := d.buffer[:totalFrameSize]
+
+        // 6. 解码帧
+        frame, err := d.codec.DecodeFrame(frameData)
+        if err != nil {
+            d.buffer = nil  // 解码失败，清空缓冲区
+            return nil, err
+        }
+
+        frames = append(frames, frame)
+
+        // 7. 从缓冲区移除已处理的帧
+        d.buffer = d.buffer[totalFrameSize:]
+    }
+
+    return frames, nil
+}
+```
+
+**关键实现要点**：
+
+1. **复用现有 Frame 结构**：
+   - 使用 `Frame.Marshal()` 和 `Frame.Unmarshal()` 方法
+   - 避免重复定义帧结构，保持与 `codec.go` 兼容
+
+2. **TCP 粘包处理三要素**：
+   - **长度前缀**：4 字节大端序，标识帧数据长度
+   - **缓冲区管理**：累积接收数据，处理半包
+   - **循环解码**：一次喂入可能包含多个完整帧（粘包）
+
+3. **边界条件处理**：
+   - 数据太短（< 4 字节）：等待更多数据
+   - 帧不完整（长度 < 声明大小）：等待更多数据
+   - 帧过大（> MaxFrameSize）：返回错误
+   - 解码失败：清空缓冲区，避免状态污染
+
+4. **性能优化**：
+   - `buf.Grow()` 预分配缓冲区，减少内存分配
+   - 使用 `bytes.Reader` 避免数据拷贝
+   - 解码成功后立即从缓冲区移除已处理数据
+
 5. **消息唯一标识机制（实现幂等性和去重）**：
    - **唯一标识组合**：`(NodeID, MsgSeq)` 全局唯一标识一条消息
    - **参数传入**：通过 `Start(nodeID *uint64, msgSeqGenerator func() uint64)` 传入
@@ -634,7 +858,7 @@ msgSeq := mt.GenerateMsgSeq()  // 获取下一条消息序列号
 **创建者**: AI Agent
 **审核者**: 👤 架构师（七轮评审：预审核 + 正式评审 + 方案优化 + 接口调整 + 参数优化 + 幂等性确认 + 范围精简）
 **状态**: ✅ Pre 批准，可启动开发
-**版本**: v1.8（Pre 最终版，架构师批准）
+**版本**: v1.9（Pre 最终版 + 帧编解码统一设计详解）
 
 **版本历史**：
 - v1.0（2026-01-23）：初始 Pre 文档，基于设计方案
@@ -645,4 +869,5 @@ msgSeq := mt.GenerateMsgSeq()  // 获取下一条消息序列号
 - v1.5（2026-01-23）：整合参数优化（Start() 参数传入替代 Setter 方法，接口更简洁，约束自然实现）
 - v1.6（2026-01-23）：标记消息幂等性支持为已完成（通过 `(NodeID, MsgSeq)` 唯一标识实现）
 - v1.7（2026-01-23）：将生产级特性移至 TODO 清单（4 个增强特性：健康检查、优先级配置、链路追踪、灰度发布）
-- **v1.8（2026-01-23）：Pre 最终版，架构师批准，可启动开发**
+- v1.8（2026-01-23）：Pre 最终版，架构师批准，可启动开发
+- **v1.9（2026-01-23）：新增帧编解码统一设计详解（Stage 5 实施细节，含架构图、接口定义、实现代码）**

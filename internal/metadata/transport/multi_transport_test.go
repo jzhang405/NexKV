@@ -653,6 +653,9 @@ func TestMultiTransport_ProtocolFailureCount(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = mt.Stop() }()
 
+	// 禁用自动路由，确保使用默认协议（TCP）
+	mt.UpdateRouterConfig(&RouterConfig{EnableAutoRouting: false})
+
 	// 发送到无效地址（会失败）
 	msg := &PutMessage{Key: "test-key", Value: []byte("test-value")}
 	for i := 0; i < 5; i++ {

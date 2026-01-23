@@ -27,6 +27,16 @@ const (
 	ProtocolGRPC ProtocolType = "grpc"
 )
 
+// MultiTransport 统计键名常量
+const (
+	multiStatKeyStarted         = "started"
+	multiStatKeyStopped         = "stopped"
+	multiStatKeyNodeID          = "node_id"
+	multiStatKeyDefaultProtocol = "default_protocol"
+	multiStatKeyProtocols       = "protocols"
+	multiStatKeyMonitor         = "monitor"
+)
+
 // ProtocolConfig 协议配置
 type ProtocolConfig struct {
 	// ProtocolType 协议类型
@@ -46,10 +56,10 @@ type ProtocolConfig struct {
 
 // ProtocolTransport 协议实例包装
 type ProtocolTransport struct {
-	Config           ProtocolConfig  // 协议配置
-	Active           atomic.Bool     // 是否活跃
-	FailureCount     atomic.Uint64   // 失败计数（用于降级判断）
-	LastFailureTime  atomic.Int64    // 最后一次失败时间
+	Config          ProtocolConfig // 协议配置
+	Active          atomic.Bool    // 是否活跃
+	FailureCount    atomic.Uint64  // 失败计数（用于降级判断）
+	LastFailureTime atomic.Int64   // 最后一次失败时间
 }
 
 // MultiTransport 多协议传输实现
@@ -61,30 +71,30 @@ type ProtocolTransport struct {
 //   - 维度化监控统计
 //   - 帧编解码统一（TCP粘包处理）
 type MultiTransport struct {
-	config              *TransportConfig                    // 配置
-	codec               Codec                               // 编解码器
-	NodeID              atomic.Uint64                        // 节点 ID
-	msgSeqGenerator     atomic.Value                         // 消息序列号生成器 func() uint64
-	defaultSeqCounter   atomic.Uint64                        // 默认序列号计数器
-	protocols           map[ProtocolType]*ProtocolTransport  // 协议管理（key: ProtocolType）
-	protocolsMu         sync.RWMutex                         // 协议锁
-	defaultProtocol     atomic.Value                         // 默认协议（存储 ProtocolType）
-	router              *MessageRouter                       // 消息路由器（三维决策矩阵）
-	degradationManager  *DegradationManager                  // 降级管理器
-	monitor             *DimensionalMonitor                 // 维度化监控器
-	tcpCodec            *TCPFrameCodec                       // TCP 帧编解码器
-	udpCodec            *UDPFrameCodec                       // UDP 帧编解码器
-	tcpStreamDecoder    *TCPFrameStreamDecoder               // TCP 流式解码器
-	recvCh              chan MsgFrame                        // 接收通道（合并所有协议的消息）
-	recvOnce            sync.Once                            // 接收通道单例
-	protocolSwitchMu    sync.Mutex                           // 协议切换锁
-	degradedProtocols   map[ProtocolType]ProtocolType        // 已降级协议缓存
-	degradedProtocolsMu sync.RWMutex                         // 降级协议锁
-	started             atomic.Bool                          // 已启动
-	stopped             atomic.Bool                          // 已停止
-	stopCh              chan struct{}                        // 停止通道
-	stopOnce            sync.Once                            // 停止单例
-	wg                  sync.WaitGroup                       // 等待组
+	config             *TransportConfig                    // 配置
+	codec              Codec                               // 编解码器
+	NodeID             atomic.Uint64                       // 节点 ID
+	msgSeqGenerator    atomic.Value                        // 消息序列号生成器 func() uint64
+	defaultSeqCounter  atomic.Uint64                       // 默认序列号计数器
+	protocols          map[ProtocolType]*ProtocolTransport // 协议管理（key: ProtocolType）
+	protocolsMu        sync.RWMutex                        // 协议锁
+	defaultProtocol    atomic.Value                        // 默认协议（存储 ProtocolType）
+	router             *MessageRouter                      // 消息路由器（三维决策矩阵）
+	degradationManager *DegradationManager                 // 降级管理器
+	monitor            *DimensionalMonitor                 // 维度化监控器
+	tcpCodec           *TCPFrameCodec                      // TCP 帧编解码器
+	udpCodec           *UDPFrameCodec                      // UDP 帧编解码器
+	tcpStreamDecoder   *TCPFrameStreamDecoder              // TCP 流式解码器
+	recvCh             chan MsgFrame                       // 接收通道（合并所有协议的消息）
+	overflowCh         chan MsgFrame                       // 溢出通道（背压机制）
+	recvOnce           sync.Once                           // 接收通道单例
+	stateMu            sync.RWMutex                        // 状态锁（协议切换+降级缓存）
+	degradedProtocols  map[ProtocolType]ProtocolType       // 已降级协议缓存
+	started            atomic.Bool                         // 已启动
+	stopped            atomic.Bool                         // 已停止
+	stopCh             chan struct{}                       // 停止通道
+	stopOnce           sync.Once                           // 停止单例
+	wg                 sync.WaitGroup                      // 等待组
 }
 
 // NewMultiTransport 创建多协议传输
@@ -135,18 +145,19 @@ func NewMultiTransportWithConfig(config *TransportConfig) (*MultiTransport, erro
 	tcpStreamDecoder := NewTCPFrameStreamDecoder()
 
 	mt := &MultiTransport{
-		config:            config,
-		codec:             codec,
-		protocols:         make(map[ProtocolType]*ProtocolTransport),
-		recvCh:            make(chan MsgFrame, config.BufferSize),
-		stopCh:            make(chan struct{}),
-		router:            router,
+		config:             config,
+		codec:              codec,
+		protocols:          make(map[ProtocolType]*ProtocolTransport),
+		recvCh:             make(chan MsgFrame, config.BufferSize),
+		overflowCh:         make(chan MsgFrame, config.BufferSize/2), // 溢出通道为缓冲区的一半
+		stopCh:             make(chan struct{}),
+		router:             router,
 		degradationManager: degradationManager,
-		monitor:           monitor,
-		tcpCodec:          tcpCodec,
-		udpCodec:          udpCodec,
-		tcpStreamDecoder:  tcpStreamDecoder,
-		degradedProtocols: make(map[ProtocolType]ProtocolType),
+		monitor:            monitor,
+		tcpCodec:           tcpCodec,
+		udpCodec:           udpCodec,
+		tcpStreamDecoder:   tcpStreamDecoder,
+		degradedProtocols:  make(map[ProtocolType]ProtocolType),
 	}
 
 	return mt, nil
@@ -293,6 +304,10 @@ func (mt *MultiTransport) Start(nodeID *uint64, msgSeqGenerator func() uint64) e
 		logging.Infof("协议 %s 启动成功", protocolType)
 	}
 
+	// 启动溢出通道处理循环（背压机制）
+	mt.wg.Add(1)
+	go mt.overflowLoop()
+
 	logging.Infof("MultiTransport 启动成功，协议数量: %d", len(mt.protocols))
 	return nil
 }
@@ -326,9 +341,10 @@ func (mt *MultiTransport) Stop() error {
 	// 等待所有协程退出
 	mt.wg.Wait()
 
-	// 关闭接收通道
+	// 关闭接收通道和溢出通道
 	mt.recvOnce.Do(func() {
 		close(mt.recvCh)
+		close(mt.overflowCh)
 	})
 
 	logging.Infof("MultiTransport 停止成功")
@@ -338,6 +354,7 @@ func (mt *MultiTransport) Stop() error {
 // receiveLoop 接收循环（从指定协议接收消息）
 //
 // 集成维度化监控：记录消息接收统计、接收延迟、协议使用情况
+// 使用背压机制：当主通道满时，消息发送到溢出通道，避免阻塞
 func (mt *MultiTransport) receiveLoop(protocolType ProtocolType, recvCh <-chan MsgFrame) {
 	defer mt.wg.Done()
 
@@ -371,35 +388,73 @@ func (mt *MultiTransport) receiveLoop(protocolType ProtocolType, recvCh <-chan M
 			// 记录接收成功（监控）
 			mt.monitor.RecordMessage(msgType, protocolType, nodeAddr, msgSize, 0, true, nil)
 
-			// 发送到统一接收通道（带重试机制）
-			const maxRetries = 3
-			sent := false
-
-		SendLoop:
-			for retry := 0; retry < maxRetries; retry++ {
+			// 使用背压机制：先尝试发送到主通道，满则发送到溢出通道
+			select {
+			case mt.recvCh <- msgFrame:
+				// 主通道发送成功，继续处理下一条消息
+				continue
+			default:
+				// 主通道已满，发送到溢出通道（非阻塞）
 				select {
-				case mt.recvCh <- msgFrame:
-					// 发送成功
-					sent = true
-					break SendLoop
-				case <-time.After(mt.config.ChannelSendTimeout):
-					// 通道阻塞超时，继续重试
-					if retry < maxRetries-1 {
-						logging.Debugf("接收通道阻塞，重试 %d/%d: %s from %s",
-							retry+1, maxRetries, msgFrame.Type(), protocolType)
-						continue
-					}
-					// 最后一次重试仍然失败
-					logging.Warnf("接收通道阻塞超时，丢弃消息（重试 %d 次）: %s from %s",
-						maxRetries, msgFrame.Type(), protocolType)
+				case mt.overflowCh <- msgFrame:
+					// 溢出通道发送成功
+					logging.Debugf("消息发送到溢出通道: %s from %s",
+						msgFrame.Type(), protocolType)
+				case mt.overflowCh <- msgFrame:
+					// 第二次尝试（确保发送成功）
+				default:
+					// 溢出通道也已满，丢弃消息
+					logging.Warnf("接收通道和溢出通道均满，丢弃消息: %s from %s",
+						msgFrame.Type(), protocolType)
 					// 记录丢弃消息到监控
 					mt.monitor.RecordMessage(msgType, protocolType, nodeAddr, msgSize, 0, false,
-						fmt.Errorf("接收通道阻塞超时"))
-				case <-mt.stopCh:
-					return
+						fmt.Errorf("接收通道和溢出通道均满"))
 				}
-				if sent {
-					break
+			}
+		}
+	}
+}
+
+// overflowLoop 溢出通道处理循环
+//
+// 将溢出通道中的消息重新发送到主接收通道
+func (mt *MultiTransport) overflowLoop() {
+	defer mt.wg.Done()
+
+	for {
+		select {
+		case <-mt.stopCh:
+			return
+		case msgFrame, ok := <-mt.overflowCh:
+			if !ok {
+				return
+			}
+
+			// 尝试将溢出消息发送回主通道
+			select {
+			case mt.recvCh <- msgFrame:
+				// 发送成功，继续处理下一个溢出消息
+				continue
+			case <-mt.stopCh:
+				// 停止信号，退出前将消息放回溢出通道
+				select {
+				case mt.overflowCh <- msgFrame:
+					// 成功放回，让其他协程处理
+				default:
+					// 溢出通道也满了，只能丢弃
+					msgType := msgFrame.Type()
+					logging.Warnf("停止时溢出消息无法放回，丢弃: %s", msgType)
+				}
+				return
+			case <-time.After(100 * time.Millisecond):
+				// 主通道仍然满，将消息放回溢出通道末尾
+				select {
+				case mt.overflowCh <- msgFrame:
+					// 成功放回，稍后重试
+				default:
+					// 溢出通道也满了，只能丢弃
+					msgType := msgFrame.Type()
+					logging.Warnf("主通道和溢出通道均满，丢弃溢出消息: %s", msgType)
 				}
 			}
 		}
@@ -427,24 +482,9 @@ func (mt *MultiTransport) Send(ctx context.Context, addr string, msg Message, op
 		msgSize = len(baseMsg.GetPayload())
 	}
 
-	// 2. 判断是否需要回应（基于消息类型）
-	// 请求类型消息通常期待响应，响应类型消息则不需要
-	expectResponse := NoResponse
-	switch msgType {
-	case types.MessageTypeQuorumPropose,
-		types.MessageTypeQuorumVote,
-		types.MessageType2PCPrepare,
-		types.MessageTypeNodePing,
-		types.MessageTypeGet,
-		types.MessageTypeGossipSync,
-		types.MessageTypeClusterStatus,
-		types.MessageTypeClockSync,
-		types.MessageTypeLeaderElection:
-		expectResponse = ExpectResponse
-	}
-
 	// 3. 使用消息路由器进行三维决策（如果路由器启用）
-	routeDecision := mt.router.DecideProtocol(ctx, addr, msgType, msgSize, expectResponse)
+	// 注意：DecideProtocol API 已简化，expectResponse 和 reliability 从 msgType 自动推断
+	routeDecision := mt.router.DecideProtocol(ctx, addr, msgType, msgSize)
 
 	// 4. 选择协议
 	var selectedProtocol ProtocolType
@@ -468,48 +508,37 @@ func (mt *MultiTransport) Send(ctx context.Context, addr string, msg Message, op
 
 	// 5. 检查协议是否需要降级（带锁保护）
 	if routeDecision.ShouldDegrade {
+		// 使用单一状态锁，避免死锁
+		mt.stateMu.Lock()
 		// 检查缓存是否已有降级状态
-		mt.degradedProtocolsMu.RLock()
 		cachedProtocol, hasCache := mt.degradedProtocols[selectedProtocol]
-		mt.degradedProtocolsMu.RUnlock()
 
 		if hasCache {
 			// 使用缓存的降级协议
 			selectedProtocol = cachedProtocol
+			mt.stateMu.Unlock()
 			logging.Debugf("协议降级（缓存）: %s -> %s",
 				routeDecision.ProtocolType, selectedProtocol)
 		} else {
-			// 使用锁保护降级检查和协议切换
-			mt.protocolSwitchMu.Lock()
-			// 双重检查：可能在等待锁期间已被其他 goroutine 切换
-			mt.degradedProtocolsMu.RLock()
-			cachedProtocol, hasCache = mt.degradedProtocols[selectedProtocol]
-			mt.degradedProtocolsMu.RUnlock()
-
-			if hasCache {
-				selectedProtocol = cachedProtocol
-			} else {
-				// 执行降级检查
-				if shouldDegrade, reason := mt.degradationManager.ShouldDegrade(selectedProtocol, nil); shouldDegrade {
-					// 切换到备用协议（TCP -> UDP 或 UDP -> TCP）
-					var fallbackProtocol ProtocolType
-					if selectedProtocol == ProtocolTCP {
-						fallbackProtocol = ProtocolUDP
-					} else {
-						fallbackProtocol = ProtocolTCP
-					}
-
-					// 记录降级状态到缓存
-					mt.degradedProtocolsMu.Lock()
-					mt.degradedProtocols[selectedProtocol] = fallbackProtocol
-					mt.degradedProtocolsMu.Unlock()
-
-					selectedProtocol = fallbackProtocol
-					logging.Debugf("协议降级: %s -> %s, 原因: %s",
-						routeDecision.ProtocolType, selectedProtocol, reason)
+			// 执行降级检查
+			if shouldDegrade, reason := mt.degradationManager.ShouldDegrade(selectedProtocol, nil); shouldDegrade {
+				// 切换到备用协议（TCP -> UDP 或 UDP -> TCP）
+				var fallbackProtocol ProtocolType
+				if selectedProtocol == ProtocolTCP {
+					fallbackProtocol = ProtocolUDP
+				} else {
+					fallbackProtocol = ProtocolTCP
 				}
+
+				// 记录降级状态到缓存
+				mt.degradedProtocols[selectedProtocol] = fallbackProtocol
+				selectedProtocol = fallbackProtocol
+				mt.stateMu.Unlock()
+				logging.Debugf("协议降级: %s -> %s, 原因: %s",
+					routeDecision.ProtocolType, selectedProtocol, reason)
+			} else {
+				mt.stateMu.Unlock()
 			}
-			mt.protocolSwitchMu.Unlock()
 		}
 	}
 
@@ -809,20 +838,20 @@ func (mt *MultiTransport) GetProtocolStats() map[ProtocolType]map[string]any {
 // Stats 获取统计信息
 func (mt *MultiTransport) Stats() map[string]any {
 	stats := make(map[string]any)
-	stats["started"] = mt.started.Load()
-	stats["stopped"] = mt.stopped.Load()
-	stats["node_id"] = mt.NodeID.Load()
+	stats[multiStatKeyStarted] = mt.started.Load()
+	stats[multiStatKeyStopped] = mt.stopped.Load()
+	stats[multiStatKeyNodeID] = mt.NodeID.Load()
 
 	// 获取默认协议
 	if defaultProtocol := mt.defaultProtocol.Load(); defaultProtocol != nil {
-		stats["default_protocol"] = defaultProtocol
+		stats[multiStatKeyDefaultProtocol] = defaultProtocol
 	}
 
 	// 获取协议统计
-	stats["protocols"] = mt.GetProtocolStats()
+	stats[multiStatKeyProtocols] = mt.GetProtocolStats()
 
 	// 获取全局监控统计
-	stats["monitor"] = mt.monitor.GetGlobalStats()
+	stats[multiStatKeyMonitor] = mt.monitor.GetGlobalStats()
 
 	return stats
 }
@@ -843,7 +872,7 @@ func (mt *MultiTransport) GetDegradationStats() *DegradationStats {
 }
 
 // GetProtocolState 获取协议降级状态
-func (mt *MultiTransport) GetProtocolState(protocolType ProtocolType) (*ProtocolState, bool) {
+func (mt *MultiTransport) GetProtocolState(protocolType ProtocolType) (*ProtocolStateSnapshot, bool) {
 	return mt.degradationManager.GetProtocolState(protocolType)
 }
 

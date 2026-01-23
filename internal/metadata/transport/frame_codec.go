@@ -10,21 +10,12 @@ package transport
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"sync"
-)
+	"time"
 
-var (
-	// ErrFrameTooLarge 帧过大
-	ErrFrameTooLarge = errors.New("frame size exceeds maximum")
-	// ErrInvalidFrameFormat 无效帧格式
-	ErrInvalidFrameFormat = errors.New("invalid frame format")
-	// ErrChecksumMismatch 校验和不匹配
-	ErrChecksumMismatch = errors.New("checksum mismatch")
-	// ErrInvalidMagicNumber 魔法数字无效
-	ErrInvalidMagicNumber = errors.New("invalid magic number")
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
 const (
@@ -33,6 +24,9 @@ const (
 
 	// MaxBufferSize 最大缓冲区大小（防止 DoS 攻击）
 	MaxBufferSize int = 10 * 1024 * 1024 // 10MB
+
+	// MaxSingleFeedSize 单次 Feed 最大数据大小（防止慢速攻击）
+	MaxSingleFeedSize int = 64 * 1024 // 64KB
 )
 
 // FrameCodec 帧编解码器接口
@@ -105,7 +99,7 @@ func (c *TCPFrameCodec) EncodeFrame(frame *Frame) ([]byte, error) {
 // DecodeFrame 解码 TCP 帧
 func (c *TCPFrameCodec) DecodeFrame(data []byte) (*Frame, error) {
 	if len(data) < 4 {
-		return nil, fmt.Errorf("%w: data too short (%d < 4)", ErrInvalidFrameFormat, len(data))
+		return nil, fmt.Errorf("%w: data too short (%d < 4)", types.ErrInvalidFrameFormat, len(data))
 	}
 
 	buf := bytes.NewReader(data)
@@ -120,7 +114,7 @@ func (c *TCPFrameCodec) DecodeFrame(data []byte) (*Frame, error) {
 
 	if int(frameSize) > len(data)-4 {
 		return nil, fmt.Errorf("%w: incomplete frame (%d > %d)",
-			ErrInvalidFrameFormat, frameSize, len(data)-4)
+			types.ErrInvalidFrameFormat, frameSize, len(data)-4)
 	}
 
 	frameData := make([]byte, frameSize)
@@ -195,7 +189,7 @@ func (c *UDPFrameCodec) DecodeFrame(data []byte) (*Frame, error) {
 	}
 
 	if len(data) < FixedHeaderLen+CRCLen {
-		return nil, fmt.Errorf("%w: data too short (%d < %d)", ErrInvalidFrameFormat, len(data), FixedHeaderLen+CRCLen)
+		return nil, fmt.Errorf("%w: data too short (%d < %d)", types.ErrInvalidFrameFormat, len(data), FixedHeaderLen+CRCLen)
 	}
 
 	frame := &Frame{}
@@ -214,7 +208,7 @@ func (c *UDPFrameCodec) EstimateSize(frame *Frame) int {
 // checkFrameSize 检查帧大小是否合法
 func checkFrameSize(size int, maxSize int) error {
 	if size > maxSize {
-		return fmt.Errorf("%w: %d > %d", ErrFrameTooLarge, size, maxSize)
+		return fmt.Errorf("%w: %d > %d", types.ErrFrameTooLarge, size, maxSize)
 	}
 	return nil
 }
@@ -288,6 +282,10 @@ type TCPFrameStreamDecoder struct {
 	// buffer 缓冲区（处理粘包）
 	buffer   []byte
 	bufferMu sync.Mutex
+
+	// 超时控制（防止慢速攻击）
+	lastFeed time.Time     // 最后一次 Feed 时间
+	timeout  time.Duration // 连接超时时间
 }
 
 // NewTCPFrameStreamDecoder 创建 TCP 帧流式解码器
@@ -309,19 +307,34 @@ func (d *TCPFrameStreamDecoder) Feed(data []byte) (frames []*Frame, err error) {
 	d.bufferMu.Lock()
 	defer d.bufferMu.Unlock()
 
-	// 1. 检查缓冲区大小限制（防止 DoS 攻击）
+	// 1. 检查单次 Feed 大小（防止慢速攻击）
+	if len(data) > MaxSingleFeedSize {
+		return nil, fmt.Errorf("单次 Feed 数据过大 (%d > %d): %w",
+			len(data), MaxSingleFeedSize, types.ErrFrameTooLarge)
+	}
+
+	// 2. 检查连接超时（防止慢速攻击）
+	if d.timeout > 0 && !d.lastFeed.IsZero() {
+		if time.Since(d.lastFeed) > d.timeout {
+			d.buffer = nil // 超时后清空缓冲区
+			return nil, fmt.Errorf("连接超时 (%v)", d.timeout)
+		}
+	}
+	d.lastFeed = time.Now()
+
+	// 3. 检查缓冲区大小限制（防止 DoS 攻击）
 	newBufferSize := len(d.buffer) + len(data)
 	if newBufferSize > MaxBufferSize {
 		return nil, fmt.Errorf("缓冲区大小超过限制 (%d > %d): %w",
-			newBufferSize, MaxBufferSize, ErrFrameTooLarge)
+			newBufferSize, MaxBufferSize, types.ErrFrameTooLarge)
 	}
 
-	// 2. 追加数据到缓冲区
+	// 4. 追加数据到缓冲区
 	d.buffer = append(d.buffer, data...)
 
-	// 3. 循环解码帧
+	// 5. 循环解码帧
 	for len(d.buffer) >= 4 {
-		// 4. 读取帧长度
+		// 6. 读取帧长度
 		buf := bytes.NewReader(d.buffer)
 		var frameSize uint32
 		if err := binary.Read(buf, binary.BigEndian, &frameSize); err != nil {
@@ -330,17 +343,17 @@ func (d *TCPFrameStreamDecoder) Feed(data []byte) (frames []*Frame, err error) {
 			return nil, fmt.Errorf("parse frame size: %w", err)
 		}
 
-		// 5. 检查帧是否完整
+		// 7. 检查帧是否完整
 		totalFrameSize := int(frameSize) + 4 // +4 for length field
 		if len(d.buffer) < totalFrameSize {
 			// 帧不完整，等待更多数据
 			break
 		}
 
-		// 6. 提取完整帧
+		// 8. 提取完整帧
 		frameData := d.buffer[:totalFrameSize]
 
-		// 7. 解码帧（使用 TCP 编解码器）
+		// 9. 解码帧（使用 TCP 编解码器）
 		frame, err := d.codec.DecodeFrame(frameData)
 		if err != nil {
 			// 解码失败，清空缓冲区
@@ -350,7 +363,7 @@ func (d *TCPFrameStreamDecoder) Feed(data []byte) (frames []*Frame, err error) {
 
 		frames = append(frames, frame)
 
-		// 8. 从缓冲区移除已处理的帧
+		// 10. 从缓冲区移除已处理的帧
 		d.buffer = d.buffer[totalFrameSize:]
 	}
 

@@ -301,6 +301,12 @@ type GetMessage struct {
 
 func (m *GetMessage) Type() MessageType { return types.MessageTypeGet }
 func (m *GetMessage) Priority() int     { return int(GetPriority(types.MessageTypeGet)) }
+func (m *GetMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *GetMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // PutMessage 更新元数据消息
 type PutMessage struct {
@@ -310,6 +316,12 @@ type PutMessage struct {
 
 func (m *PutMessage) Type() MessageType { return types.MessageTypePut }
 func (m *PutMessage) Priority() int     { return int(GetPriority(types.MessageTypePut)) }
+func (m *PutMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *PutMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // DeleteMessage 删除元数据消息
 type DeleteMessage struct {
@@ -318,6 +330,12 @@ type DeleteMessage struct {
 
 func (m *DeleteMessage) Type() MessageType { return types.MessageTypeDelete }
 func (m *DeleteMessage) Priority() int     { return int(GetPriority(types.MessageTypeDelete)) }
+func (m *DeleteMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *DeleteMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // GetReplyMessage Get 响应消息
 type GetReplyMessage struct {
@@ -329,6 +347,12 @@ type GetReplyMessage struct {
 
 func (m *GetReplyMessage) Type() MessageType { return types.MessageTypeGetReply }
 func (m *GetReplyMessage) Priority() int     { return int(GetPriority(types.MessageTypeGetReply)) }
+func (m *GetReplyMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *GetReplyMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // PutReplyMessage Put 响应消息
 type PutReplyMessage struct {
@@ -339,6 +363,12 @@ type PutReplyMessage struct {
 
 func (m *PutReplyMessage) Type() MessageType { return types.MessageTypePutReply }
 func (m *PutReplyMessage) Priority() int     { return int(GetPriority(types.MessageTypePutReply)) }
+func (m *PutReplyMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *PutReplyMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // DeleteReplyMessage Delete 响应消息
 type DeleteReplyMessage struct {
@@ -348,6 +378,12 @@ type DeleteReplyMessage struct {
 
 func (m *DeleteReplyMessage) Type() MessageType { return types.MessageTypeDeleteReply }
 func (m *DeleteReplyMessage) Priority() int     { return int(GetPriority(types.MessageTypeDeleteReply)) }
+func (m *DeleteReplyMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *DeleteReplyMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // ========================================
 // Gossip 协议消息（双标签实现）
@@ -362,6 +398,12 @@ type GossipSyncMessage struct {
 
 func (m *GossipSyncMessage) Type() MessageType { return types.MessageTypeGossipSync }
 func (m *GossipSyncMessage) Priority() int     { return int(GetPriority(types.MessageTypeGossipSync)) }
+func (m *GossipSyncMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *GossipSyncMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // GossipSyncReplyMessage Gossip 同步响应
 type GossipSyncReplyMessage struct {
@@ -373,6 +415,12 @@ func (m *GossipSyncReplyMessage) Type() MessageType { return types.MessageTypeGo
 func (m *GossipSyncReplyMessage) Priority() int {
 	return int(GetPriority(types.MessageTypeGossipSyncReply))
 }
+func (m *GossipSyncReplyMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *GossipSyncReplyMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // GossipDigestMessage Gossip 摘要消息
 type GossipDigestMessage struct {
@@ -382,6 +430,12 @@ type GossipDigestMessage struct {
 
 func (m *GossipDigestMessage) Type() MessageType { return types.MessageTypeGossipDigest }
 func (m *GossipDigestMessage) Priority() int     { return int(GetPriority(types.MessageTypeGossipDigest)) }
+func (m *GossipDigestMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *GossipDigestMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // GossipDigestReplyMessage Gossip 摘要响应
 type GossipDigestReplyMessage struct {
@@ -392,6 +446,12 @@ type GossipDigestReplyMessage struct {
 func (m *GossipDigestReplyMessage) Type() MessageType { return types.MessageTypeGossipDigestReply }
 func (m *GossipDigestReplyMessage) Priority() int {
 	return int(GetPriority(types.MessageTypeGossipDigestReply))
+}
+func (m *GossipDigestReplyMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *GossipDigestReplyMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
 }
 
 // ========================================
@@ -412,6 +472,12 @@ func (m *QuorumProposeMessage) Type() MessageType { return types.MessageTypeQuor
 func (m *QuorumProposeMessage) Priority() int {
 	return int(GetPriority(types.MessageTypeQuorumPropose))
 }
+func (m *QuorumProposeMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *QuorumProposeMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // QuorumVoteMessage Quorum 投票消息
 type QuorumVoteMessage struct {
@@ -423,6 +489,12 @@ type QuorumVoteMessage struct {
 
 func (m *QuorumVoteMessage) Type() MessageType { return types.MessageTypeQuorumVote }
 func (m *QuorumVoteMessage) Priority() int     { return int(GetPriority(types.MessageTypeQuorumVote)) }
+func (m *QuorumVoteMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *QuorumVoteMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // QuorumDecideMessage Quorum 决策消息
 type QuorumDecideMessage struct {
@@ -433,6 +505,12 @@ type QuorumDecideMessage struct {
 
 func (m *QuorumDecideMessage) Type() MessageType { return types.MessageTypeQuorumDecide }
 func (m *QuorumDecideMessage) Priority() int     { return int(GetPriority(types.MessageTypeQuorumDecide)) }
+func (m *QuorumDecideMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *QuorumDecideMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // ========================================
 // 2PC 协议消息（双标签实现）
@@ -455,6 +533,12 @@ type Operation struct {
 
 func (m *TwoPCPrepareMessage) Type() MessageType { return types.MessageType2PCPrepare }
 func (m *TwoPCPrepareMessage) Priority() int     { return int(GetPriority(types.MessageType2PCPrepare)) }
+func (m *TwoPCPrepareMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *TwoPCPrepareMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // TwoPCPrepareReplyMessage 2PC 准备响应
 type TwoPCPrepareReplyMessage struct {
@@ -468,6 +552,12 @@ func (m *TwoPCPrepareReplyMessage) Type() MessageType { return types.MessageType
 func (m *TwoPCPrepareReplyMessage) Priority() int {
 	return int(GetPriority(types.MessageType2PCPrepareReply))
 }
+func (m *TwoPCPrepareReplyMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *TwoPCPrepareReplyMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // TwoPCCommitMessage 2PC 提交消息
 type TwoPCCommitMessage struct {
@@ -476,6 +566,12 @@ type TwoPCCommitMessage struct {
 
 func (m *TwoPCCommitMessage) Type() MessageType { return types.MessageType2PCCommit }
 func (m *TwoPCCommitMessage) Priority() int     { return int(GetPriority(types.MessageType2PCCommit)) }
+func (m *TwoPCCommitMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *TwoPCCommitMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // TwoPCRollbackMessage 2PC 回滚消息
 type TwoPCRollbackMessage struct {
@@ -485,6 +581,12 @@ type TwoPCRollbackMessage struct {
 
 func (m *TwoPCRollbackMessage) Type() MessageType { return types.MessageType2PCRollback }
 func (m *TwoPCRollbackMessage) Priority() int     { return int(GetPriority(types.MessageType2PCRollback)) }
+func (m *TwoPCRollbackMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *TwoPCRollbackMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // TwoPCCommitReplyMessage 2PC 提交响应
 type TwoPCCommitReplyMessage struct {
@@ -497,6 +599,12 @@ func (m *TwoPCCommitReplyMessage) Type() MessageType { return types.MessageType2
 func (m *TwoPCCommitReplyMessage) Priority() int {
 	return int(GetPriority(types.MessageType2PCCommitReply))
 }
+func (m *TwoPCCommitReplyMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *TwoPCCommitReplyMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // TwoPCRollbackReplyMessage 2PC 回滚响应
 type TwoPCRollbackReplyMessage struct {
@@ -508,6 +616,12 @@ type TwoPCRollbackReplyMessage struct {
 func (m *TwoPCRollbackReplyMessage) Type() MessageType { return types.MessageType2PCRollbackReply }
 func (m *TwoPCRollbackReplyMessage) Priority() int {
 	return int(GetPriority(types.MessageType2PCRollbackReply))
+}
+func (m *TwoPCRollbackReplyMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *TwoPCRollbackReplyMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
 }
 
 // ========================================
@@ -523,6 +637,12 @@ type NodePingMessage struct {
 
 func (m *NodePingMessage) Type() MessageType { return types.MessageTypeNodePing }
 func (m *NodePingMessage) Priority() int     { return int(GetPriority(types.MessageTypeNodePing)) }
+func (m *NodePingMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *NodePingMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // NodePongMessage 心跳响应
 type NodePongMessage struct {
@@ -534,6 +654,12 @@ type NodePongMessage struct {
 
 func (m *NodePongMessage) Type() MessageType { return types.MessageTypeNodePong }
 func (m *NodePongMessage) Priority() int     { return int(GetPriority(types.MessageTypeNodePong)) }
+func (m *NodePongMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *NodePongMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // NodeJoinMessage 节点加入消息
 type NodeJoinMessage struct {
@@ -545,6 +671,12 @@ type NodeJoinMessage struct {
 
 func (m *NodeJoinMessage) Type() MessageType { return types.MessageTypeNodeJoin }
 func (m *NodeJoinMessage) Priority() int     { return int(GetPriority(types.MessageTypeNodeJoin)) }
+func (m *NodeJoinMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *NodeJoinMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // NodeLeaveMessage 节点离开消息
 type NodeLeaveMessage struct {
@@ -554,6 +686,12 @@ type NodeLeaveMessage struct {
 
 func (m *NodeLeaveMessage) Type() MessageType { return types.MessageTypeNodeLeave }
 func (m *NodeLeaveMessage) Priority() int     { return int(GetPriority(types.MessageTypeNodeLeave)) }
+func (m *NodeLeaveMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *NodeLeaveMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // NodeSyncMessage 节点同步消息
 type NodeSyncMessage struct {
@@ -563,6 +701,12 @@ type NodeSyncMessage struct {
 
 func (m *NodeSyncMessage) Type() MessageType { return types.MessageTypeNodeSync }
 func (m *NodeSyncMessage) Priority() int     { return int(GetPriority(types.MessageTypeNodeSync)) }
+func (m *NodeSyncMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *NodeSyncMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // ClockSyncMessage 时钟同步请求消息
 type ClockSyncMessage struct {
@@ -572,6 +716,12 @@ type ClockSyncMessage struct {
 
 func (m *ClockSyncMessage) Type() MessageType { return types.MessageTypeClockSync }
 func (m *ClockSyncMessage) Priority() int     { return int(GetPriority(types.MessageTypeClockSync)) }
+func (m *ClockSyncMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *ClockSyncMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // ClockSyncReplyMessage 时钟同步响应消息
 type ClockSyncReplyMessage struct {
@@ -583,6 +733,12 @@ type ClockSyncReplyMessage struct {
 func (m *ClockSyncReplyMessage) Type() MessageType { return types.MessageTypeClockSyncReply }
 func (m *ClockSyncReplyMessage) Priority() int {
 	return int(GetPriority(types.MessageTypeClockSyncReply))
+}
+func (m *ClockSyncReplyMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *ClockSyncReplyMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
 }
 
 // ========================================
@@ -597,6 +753,12 @@ type ClusterStatusMessage struct {
 func (m *ClusterStatusMessage) Type() MessageType { return types.MessageTypeClusterStatus }
 func (m *ClusterStatusMessage) Priority() int {
 	return int(GetPriority(types.MessageTypeClusterStatus))
+}
+func (m *ClusterStatusMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *ClusterStatusMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
 }
 
 // ClusterStatusReplyMessage 集群状态响应
@@ -618,6 +780,12 @@ func (m *ClusterStatusReplyMessage) Type() MessageType { return types.MessageTyp
 func (m *ClusterStatusReplyMessage) Priority() int {
 	return int(GetPriority(types.MessageTypeClusterStatusReply))
 }
+func (m *ClusterStatusReplyMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *ClusterStatusReplyMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
+}
 
 // LeaderElectionMessage Leader 选举消息
 type LeaderElectionMessage struct {
@@ -629,6 +797,12 @@ type LeaderElectionMessage struct {
 func (m *LeaderElectionMessage) Type() MessageType { return types.MessageTypeLeaderElection }
 func (m *LeaderElectionMessage) Priority() int {
 	return int(GetPriority(types.MessageTypeLeaderElection))
+}
+func (m *LeaderElectionMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+func (m *LeaderElectionMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
 }
 
 // ========================================

@@ -23,6 +23,19 @@ import (
 const (
 	// DefaultIdleTimeout 默认空闲连接超时时间（2分钟）
 	DefaultIdleTimeout = 2 * time.Minute
+
+	// MinAcceptChannelSize accept channel 最小缓冲区大小
+	// acceptCh 用于接受连接，不需要太大缓冲区（连接按需处理）
+	MinAcceptChannelSize int = 32
+)
+
+// TCP 统计键名常量
+const (
+	// 状态统计
+	tcpStatKeyStarted           = "started"
+	tcpStatKeyStopped           = "stopped"
+	tcpStatKeyListenAddr        = "listen_addr"
+	tcpStatKeyActiveConnections = "active_connections"
 )
 
 // TCPTransport TCP 传输实现
@@ -121,8 +134,8 @@ func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 	// acceptCh 用于接受连接，缓冲区可以小一些（连接按需处理）
 	// recvCh 用于接收消息，使用配置的 BufferSize
 	acceptChSize := config.BufferSize / 8
-	if acceptChSize < 32 {
-		acceptChSize = 32
+	if acceptChSize < MinAcceptChannelSize {
+		acceptChSize = MinAcceptChannelSize
 	}
 
 	// 使用系统默认编解码器（Protobuf）
@@ -801,10 +814,10 @@ func (t *TCPTransport) Stats() map[string]any {
 	defer t.connPool.mu.RUnlock()
 
 	stats := make(map[string]any)
-	stats["started"] = t.started.Load()
-	stats["stopped"] = t.stopped.Load()
-	stats["listen_addr"] = t.localAddr
-	stats["active_connections"] = len(t.connPool.conns)
+	stats[tcpStatKeyStarted] = t.started.Load()
+	stats[tcpStatKeyStopped] = t.stopped.Load()
+	stats[tcpStatKeyListenAddr] = t.localAddr
+	stats[tcpStatKeyActiveConnections] = len(t.connPool.conns)
 
 	return stats
 }

@@ -4,6 +4,7 @@
 package transport
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +35,11 @@ const (
 //   - 按节点统计
 //   - 按错误类型统计
 //   - 按协议类型统计
+//
+// Goroutine 生命周期管理：
+//   - 方法1：使用 NewDimensionalMonitorWithContext 创建，传入 context.Context
+//   - 方法2：调用 Stop() 方法显式停止
+//   - 推荐：两种方式结合使用，确保资源正确释放
 type DimensionalMonitor struct {
 	// 按消息类型统计
 	byMessageType   map[types.MessageType]*MessageTypeStats
@@ -61,6 +67,10 @@ type DimensionalMonitor struct {
 	// 停止通道（用于优雅关闭 goroutine）
 	stopCh   chan struct{}
 	stopOnce sync.Once
+
+	// context 控制（可选，用于外部控制生命周期）
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // MessageTypeStats 消息类型统计
@@ -75,15 +85,15 @@ type MessageTypeStats struct {
 
 // NodeStats 节点统计
 type NodeStats struct {
-	NodeID            string              // 节点 ID
-	Address           string              // 节点地址
-	MessageCount      atomic.Uint64       // 消息数量
-	SuccessCount      atomic.Uint64       // 成功数量
-	FailureCount      atomic.Uint64       // 失败数量
-	TotalLatency      atomic.Uint64       // 总延迟
-	LastContactTime   atomic.Int64        // 最后联系时间
-	ErrorCounts       map[string]uint64   // 错误计数（按错误类型）
-	ErrorCountsMu     sync.RWMutex        // 错误计数锁
+	NodeID          string            // 节点 ID
+	Address         string            // 节点地址
+	MessageCount    atomic.Uint64     // 消息数量
+	SuccessCount    atomic.Uint64     // 成功数量
+	FailureCount    atomic.Uint64     // 失败数量
+	TotalLatency    atomic.Uint64     // 总延迟
+	LastContactTime atomic.Int64      // 最后联系时间
+	ErrorCounts     map[string]uint64 // 错误计数（按错误类型）
+	ErrorCountsMu   sync.RWMutex      // 错误计数锁
 }
 
 // ErrorTypeStats 错误类型统计
@@ -118,8 +128,36 @@ type GlobalStats struct {
 }
 
 // NewDimensionalMonitor 创建维度化监控器
+//
+// 注意：创建的监控器会启动一个后台 goroutine 更新运行时长。
+// 使用后必须调用 Stop() 方法释放资源，避免 goroutine 泄漏。
+//
+// 推荐使用 defer 确保资源释放：
+//
+//	monitor := transport.NewDimensionalMonitor()
+//	defer monitor.Stop()
 func NewDimensionalMonitor() *DimensionalMonitor {
+	return NewDimensionalMonitorWithContext(context.Background())
+}
+
+// NewDimensionalMonitorWithContext 创建维度化监控器（支持 context 控制）
+//
+// 当 ctx 被取消时，goroutine 会自动停止。同时仍需调用 Stop() 释放资源。
+//
+// 参数:
+//   - ctx: 用于控制监控器生命周期的 context
+//
+// 推荐使用 defer 确保资源释放：
+//
+//	ctx, cancel := context.WithCancel(context.Background())
+//	defer cancel()
+//	monitor := transport.NewDimensionalMonitorWithContext(ctx)
+//	defer monitor.Stop()
+func NewDimensionalMonitorWithContext(ctx context.Context) *DimensionalMonitor {
 	now := time.Now()
+	// 创建可取消的 context
+	monitorCtx, monitorCancel := context.WithCancel(ctx)
+
 	m := &DimensionalMonitor{
 		byMessageType: make(map[types.MessageType]*MessageTypeStats),
 		byNode:        make(map[string]*NodeStats),
@@ -130,6 +168,8 @@ func NewDimensionalMonitor() *DimensionalMonitor {
 			StartTime: now,
 		},
 		stopCh: make(chan struct{}),
+		ctx:    monitorCtx,
+		cancel: monitorCancel,
 	}
 
 	// 启动运行时更新协程
@@ -213,7 +253,7 @@ func (m *DimensionalMonitor) recordMessageTypeStats(
 // recordNodeStats 记录节点统计
 func (m *DimensionalMonitor) recordNodeStats(
 	nodeAddr string,
-	size int,
+	_ int, // size: 预留用于未来按消息大小统计
 	latency int64,
 	success bool,
 	err error,
@@ -255,7 +295,7 @@ func (m *DimensionalMonitor) recordNodeStats(
 // recordProtocolStats 记录协议统计
 func (m *DimensionalMonitor) recordProtocolStats(
 	protocol ProtocolType,
-	size int,
+	_ int, // size: 预留用于未来按消息大小统计
 	latency int64,
 	success bool,
 ) {
@@ -425,6 +465,9 @@ func (m *DimensionalMonitor) updateUptime() {
 			m.globalStats.Uptime.Store(uptime.Nanoseconds())
 		case <-m.stopCh:
 			return
+		case <-m.ctx.Done():
+			// context 被取消，停止 goroutine
+			return
 		}
 	}
 }
@@ -432,7 +475,12 @@ func (m *DimensionalMonitor) updateUptime() {
 // Stop 停止监控器（优雅关闭 goroutine）
 func (m *DimensionalMonitor) Stop() {
 	m.stopOnce.Do(func() {
+		// 关闭 stopCh 通知 updateUptime 停止
 		close(m.stopCh)
+		// 调用 cancel() 释放 context 相关资源
+		if m.cancel != nil {
+			m.cancel()
+		}
 	})
 }
 

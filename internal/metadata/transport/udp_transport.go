@@ -42,6 +42,26 @@ const (
 	MaxCodecCacheSize = 16
 )
 
+// UDP 统计键名常量
+const (
+	// 状态统计
+	udpStatKeyStarted       = "started"
+	udpStatKeyStopped       = "stopped"
+	udpStatKeyListenAddr    = "listen_addr"
+	udpStatKeyLocalNodeID   = "local_node_id"
+	udpStatKeyMsgSeqCounter = "msg_seq_counter"
+
+	// 运行时统计
+	udpStatKeyPendingFragments = "pending_fragments"
+	udpStatKeyCodecCacheSize   = "codec_cache_size"
+
+	// 错误统计
+	udpStatKeyParseErrors    = "parse_errors"
+	udpStatKeyCRCErrors      = "crc_errors"
+	udpStatKeyFragmentErrors = "fragment_errors"
+	udpStatKeyChannelBlocks  = "channel_blocks"
+)
+
 // UDPTransport UDP 传输实现
 //
 // 实现了基于 UDP 的网络传输层，支持：
@@ -927,29 +947,29 @@ func (t *UDPTransport) GetConfig() *TransportConfig {
 // Stats 获取统计信息
 func (t *UDPTransport) Stats() map[string]any {
 	stats := make(map[string]any)
-	stats["started"] = t.started.Load()
-	stats["stopped"] = t.stopped.Load()
-	stats["listen_addr"] = t.GetLocalAddr()
-	stats["local_node_id"] = t.NodeID.Load()
-	stats["msg_seq_counter"] = t.defaultSeqCounter.Load()
+	stats[udpStatKeyStarted] = t.started.Load()
+	stats[udpStatKeyStopped] = t.stopped.Load()
+	stats[udpStatKeyListenAddr] = t.GetLocalAddr()
+	stats[udpStatKeyLocalNodeID] = t.NodeID.Load()
+	stats[udpStatKeyMsgSeqCounter] = t.defaultSeqCounter.Load()
 
 	// 分片缓冲区统计
 	if t.fragmentBuf != nil {
 		t.fragmentBuf.mu.RLock()
-		stats["pending_fragments"] = len(t.fragmentBuf.buffers)
+		stats[udpStatKeyPendingFragments] = len(t.fragmentBuf.buffers)
 		t.fragmentBuf.mu.RUnlock()
 	}
 
 	// Codec 缓存统计（性能优化指标）
 	t.codecCacheMu.RLock()
-	stats["codec_cache_size"] = len(t.codecCache)
+	stats[udpStatKeyCodecCacheSize] = len(t.codecCache)
 	t.codecCacheMu.RUnlock()
 
 	// 错误统计（用于监控和调试）
-	stats["parse_errors"] = t.parseErrorCount.Load()
-	stats["crc_errors"] = t.crcErrorCount.Load()
-	stats["fragment_errors"] = t.fragmentErrorCount.Load()
-	stats["channel_blocks"] = t.channelBlockCount.Load()
+	stats[udpStatKeyParseErrors] = t.parseErrorCount.Load()
+	stats[udpStatKeyCRCErrors] = t.crcErrorCount.Load()
+	stats[udpStatKeyFragmentErrors] = t.fragmentErrorCount.Load()
+	stats[udpStatKeyChannelBlocks] = t.channelBlockCount.Load()
 
 	return stats
 }

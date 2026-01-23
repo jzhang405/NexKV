@@ -794,6 +794,24 @@ var (
 )
 
 // ========================================
+// 帧层错误（触发降级）
+// ========================================
+
+var (
+	// ErrFrameTooLarge 帧过大
+	ErrFrameTooLarge = errors.New("frame size exceeds maximum")
+
+	// ErrInvalidFrameFormat 无效帧格式
+	ErrInvalidFrameFormat = errors.New("invalid frame format")
+
+	// ErrChecksumMismatch 校验和不匹配
+	ErrChecksumMismatch = errors.New("checksum mismatch")
+
+	// ErrInvalidMagicNumber 魔法数字无效
+	ErrInvalidMagicNumber = errors.New("invalid magic number")
+)
+
+// ========================================
 // 业务层错误（不触发降级）
 // ========================================
 
@@ -825,15 +843,23 @@ func IsProtocolError(err error) bool {
 	}
 
 	protocolErrors := []error{
+		// UDP 错误
 		ErrUDPFragmentTimeout,
 		ErrUDPSendFailed,
 		ErrUDPReceiveFailed,
+		// TCP 错误
 		ErrTCPConnFailed,
 		ErrTCPSendTimeout,
 		ErrTCPReceiveFailed,
 		ErrTCPConnReset,
+		// 通用协议错误
 		ErrProtocolTimeout,
 		ErrNetworkUnreachable,
+		// 帧错误
+		ErrFrameTooLarge,
+		ErrInvalidFrameFormat,
+		ErrChecksumMismatch,
+		ErrInvalidMagicNumber,
 	}
 
 	for _, protoErr := range protocolErrors {

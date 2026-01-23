@@ -24,9 +24,9 @@ import (
 //   - tlv: TLV 字段
 //
 // 返回:
-//   - interface{}: 解码后的数据（类型由具体解码器决定）
+//   - any: 解码后的数据（类型由具体解码器决定）
 //   - error: 解码失败时返回错误
-type ExtDecoder func(tlv TLV) (interface{}, error)
+type ExtDecoder func(tlv TLV) (any, error)
 
 // TLV 是 ExtField 的别名，用于解码器接口
 type TLV = ExtField
@@ -102,7 +102,7 @@ func NewMsgFrame(nodeID uint64, msgSeq uint64, msgType MessageType, codecID uint
 // GetExt 获取指定类型的扩展字段（通用方法）
 //
 // 返回解码后的扩展字段和是否存在标志。每次调用都会重新解码。
-func (f *MsgFrame) GetExt(fieldType ExtFieldType) (interface{}, bool) {
+func (f *MsgFrame) GetExt(fieldType ExtFieldType) (any, bool) {
 	// 查找 TLV 字段
 	var tlv *TLV
 	for i := range f.TLVs {
@@ -174,7 +174,7 @@ func (f *MsgFrame) GetPriority() (*PriorityExt, bool) {
 // ========================================
 
 // decodeHopExt 解码跳数 TTL 扩展
-func decodeHopExt(tlv TLV) (interface{}, error) {
+func decodeHopExt(tlv TLV) (any, error) {
 	hop, totalHop, err := DecodeHopExt(&tlv)
 	if err != nil {
 		return nil, err
@@ -183,7 +183,7 @@ func decodeHopExt(tlv TLV) (interface{}, error) {
 }
 
 // decodeCompressExt 解码压缩扩展
-func decodeCompressExt(tlv TLV) (interface{}, error) {
+func decodeCompressExt(tlv TLV) (any, error) {
 	compressID, err := DecodeCompressExt(&tlv)
 	if err != nil {
 		return nil, err
@@ -192,7 +192,7 @@ func decodeCompressExt(tlv TLV) (interface{}, error) {
 }
 
 // decodeEncryptExt 解码加密扩展
-func decodeEncryptExt(tlv TLV) (interface{}, error) {
+func decodeEncryptExt(tlv TLV) (any, error) {
 	encryptID, nonce, version, err := DecodeEncryptExt(&tlv)
 	if err != nil {
 		return nil, err
@@ -201,7 +201,7 @@ func decodeEncryptExt(tlv TLV) (interface{}, error) {
 }
 
 // decodeFragmentExt 解码分片扩展
-func decodeFragmentExt(tlv TLV) (interface{}, error) {
+func decodeFragmentExt(tlv TLV) (any, error) {
 	index, total, err := DecodeFragmentExt(&tlv)
 	if err != nil {
 		return nil, err
@@ -210,7 +210,7 @@ func decodeFragmentExt(tlv TLV) (interface{}, error) {
 }
 
 // decodePriorityExt 解码优先级扩展
-func decodePriorityExt(tlv TLV) (interface{}, error) {
+func decodePriorityExt(tlv TLV) (any, error) {
 	priority, err := DecodePriorityExt(&tlv)
 	if err != nil {
 		return nil, err
@@ -236,6 +236,22 @@ func (f MsgFrame) Priority() int {
 		return int(types.PriorityNormal)
 	}
 	return f.Message.Priority()
+}
+
+// ExpectResponse 返回响应期望（实现 Message 接口）
+func (f MsgFrame) ExpectResponse() types.ResponseExpectation {
+	if f.Message == nil {
+		return f.MsgType.ExpectResponse()
+	}
+	return f.Message.ExpectResponse()
+}
+
+// Reliability 返回可靠性要求（实现 Message 接口）
+func (f MsgFrame) Reliability() types.ReliabilityRequirement {
+	if f.Message == nil {
+		return f.MsgType.Reliability()
+	}
+	return f.Message.Reliability()
 }
 
 // ========================================
@@ -405,7 +421,7 @@ type sendOptions struct {
 var (
 	// sendOptionsPool 用于复用 sendOptions 对象，减少 GC 压力
 	sendOptionsPool = sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			return &sendOptions{}
 		},
 	}
@@ -508,4 +524,14 @@ func (m *BaseMessage) Priority() int {
 // SetPriority 设置消息优先级
 func (m *BaseMessage) SetPriority(priority int) {
 	m.priority = priority
+}
+
+// ExpectResponse 返回响应期望（实现 Message 接口）
+func (m *BaseMessage) ExpectResponse() types.ResponseExpectation {
+	return m.Type().ExpectResponse()
+}
+
+// Reliability 返回可靠性要求（实现 Message 接口）
+func (m *BaseMessage) Reliability() types.ReliabilityRequirement {
+	return m.Type().Reliability()
 }

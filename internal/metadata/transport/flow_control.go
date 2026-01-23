@@ -11,6 +11,20 @@ import (
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
+const (
+	// 流量控制事件类型
+	flowControlEventAccept      = "accept"
+	flowControlEventDrop        = "drop"
+	flowControlEventChannelFull = "channel_full"
+
+	// 优先级名称
+	priorityNameLow      = "LOW"
+	priorityNameNormal   = "NORMAL"
+	priorityNameHigh     = "HIGH"
+	priorityNameCritical = "CRITICAL"
+	priorityNameUnknown  = "UNKNOWN"
+)
+
 // ShouldDrop 判断是否应该丢弃消息（基于优先级和通道使用率）
 //
 // 丢弃策略:
@@ -41,36 +55,36 @@ func ShouldDrop(msg Message, channelUsage float64) bool {
 func GetPriorityName(priority int) string {
 	switch priority {
 	case int(types.PriorityLow):
-		return "LOW" // PriorityLowest 是 PriorityLow 的别名
+		return priorityNameLow // PriorityLowest 是 PriorityLow 的别名
 	case int(types.PriorityNormal):
-		return "NORMAL"
+		return priorityNameNormal
 	case int(types.PriorityHigh):
-		return "HIGH"
+		return priorityNameHigh
 	case int(types.PriorityCritical):
-		return "CRITICAL"
+		return priorityNameCritical
 	default:
-		return "UNKNOWN"
+		return priorityNameUnknown
 	}
 }
 
 // LogFlowControlEvent 记录流量控制事件
 //
 // 参数:
-//   - event: 事件类型（accept、drop、channel_full）
+//   - event: 事件类型（flowControlEventAccept、flowControlEventDrop、flowControlEventChannelFull）
 //   - msg: 消息
 //   - channelUsage: 当前通道使用率
 func LogFlowControlEvent(event string, msg Message, channelUsage float64) {
 	switch event {
-	case "accept":
+	case flowControlEventAccept:
 		logging.Debugf("流量控制: 接收消息 type=%d priority=%s usage=%.2f",
 			msg.Type(), GetPriorityName(msg.Priority()), channelUsage)
 
-	case "drop":
+	case flowControlEventDrop:
 		priority := msg.Priority()
 		logging.Warnf("流量控制: 丢弃消息 type=%d priority=%s usage=%.2f",
 			msg.Type(), GetPriorityName(priority), channelUsage)
 
-	case "channel_full":
+	case flowControlEventChannelFull:
 		logging.Warnf("流量控制: 通道满载等待超时，消息可能丢失")
 	}
 }

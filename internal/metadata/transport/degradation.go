@@ -14,12 +14,12 @@ import (
 )
 
 const (
-	statTotalFailure           = "total_failure"
-	statCooldownSkipped        = "cooldown_skipped"
-	statGlobalLimitReached     = "global_limit_reached"
+	statTotalFailure            = "total_failure"
+	statCooldownSkipped         = "cooldown_skipped"
+	statGlobalLimitReached      = "global_limit_reached"
 	statRecoveryCooldownSkipped = "recovery_cooldown_skipped"
-	statBusinessErrorsSkipped  = "business_errors_skipped"
-	statInsufficientFailures   = "insufficient_failures"
+	statBusinessErrorsSkipped   = "business_errors_skipped"
+	statInsufficientFailures    = "insufficient_failures"
 )
 
 // 错误类型和错误常量已移至 types/errors.go
@@ -52,7 +52,7 @@ func DefaultDegradationConfig() *DegradationConfig {
 		EnableAutoDegradation: true,
 		DegradationCooldown:   30 * time.Second, // 30 秒冷却时间（从 10s 增加到 30s）
 		MaxGlobalDegradations: 10,               // 全局降级计数限制
-		MinRecoveryInterval:  60 * time.Second, // 最小恢复间隔
+		MinRecoveryInterval:   60 * time.Second, // 最小恢复间隔
 	}
 }
 
@@ -60,40 +60,96 @@ func DefaultDegradationConfig() *DegradationConfig {
 //
 // 管理协议降级逻辑：监控协议失败、触发降级、协议恢复
 type DegradationManager struct {
-	config             *DegradationConfig              // 配置
-	configMu           sync.RWMutex                    // 配置锁
-	protocolStates     map[ProtocolType]*ProtocolState // 协议状态
-	protocolStatesMu   sync.RWMutex                    // 协议状态锁
-	stats              *DegradationStats               // 统计信息
-	statsMu            sync.RWMutex                    // 统计锁
-	lastDegradationTime atomic.Int64                   // 降级冷却（纳秒时间戳）
-	lastRecoveryTime   atomic.Int64                    // 恢复冷却（纳秒时间戳）
+	config              *DegradationConfig              // 配置
+	configMu            sync.RWMutex                    // 配置锁
+	protocolStates      map[ProtocolType]*ProtocolState // 协议状态
+	protocolStatesMu    sync.RWMutex                    // 协议状态锁
+	stats               *DegradationStats               // 统计信息
+	statsMu             sync.RWMutex                    // 统计锁
+	lastDegradationTime atomic.Int64                    // 降级冷却（纳秒时间戳）
+	lastRecoveryTime    atomic.Int64                    // 恢复冷却（纳秒时间戳）
 }
 
 // ProtocolState 协议状态
+//
+// 使用互斥锁保护状态更新，确保批量更新的原子性
 type ProtocolState struct {
-	IsDegraded         atomic.Bool  // 是否已降级
-	ConsecutiveFailures atomic.Int64 // 连续失败次数
-	LastFailureTime    atomic.Int64 // 最后一次失败时间
-	LastRecoveryTime   atomic.Int64 // 最后一次恢复时间
-	TotalFailures      atomic.Uint64 // 总失败次数
-	TotalRecoveries    atomic.Uint64 // 总恢复次数
+	mu                  sync.RWMutex // 状态锁
+	IsDegraded          bool         // 是否已降级
+	ConsecutiveFailures int64        // 连续失败次数
+	LastFailureTime     int64        // 最后一次失败时间（纳秒时间戳）
+	LastRecoveryTime    int64        // 最后一次恢复时间（纳秒时间戳）
+	TotalFailures       uint64       // 总失败次数
+	TotalRecoveries     uint64       // 总恢复次数
+}
+
+// recordFailure 批量更新失败状态（原子操作）
+func (s *ProtocolState) recordFailure(now int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.ConsecutiveFailures++
+	s.TotalFailures++
+	s.LastFailureTime = now
+}
+
+// recordRecovery 批量更新恢复状态（原子操作）
+func (s *ProtocolState) recordRecovery(now int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.IsDegraded = false
+	s.ConsecutiveFailures = 0
+	s.LastRecoveryTime = now
+	s.TotalRecoveries++
+}
+
+// setIsDegraded 设置降级状态
+func (s *ProtocolState) setIsDegraded(degraded bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.IsDegraded = degraded
+}
+
+// getSnapshot 获取状态快照（用于外部读取）
+func (s *ProtocolState) getSnapshot() ProtocolStateSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return ProtocolStateSnapshot{
+		IsDegraded:          s.IsDegraded,
+		ConsecutiveFailures: s.ConsecutiveFailures,
+		LastFailureTime:     s.LastFailureTime,
+		LastRecoveryTime:    s.LastRecoveryTime,
+		TotalFailures:       s.TotalFailures,
+		TotalRecoveries:     s.TotalRecoveries,
+	}
+}
+
+// ProtocolStateSnapshot 协议状态快照（不可变）
+type ProtocolStateSnapshot struct {
+	IsDegraded          bool
+	ConsecutiveFailures int64
+	LastFailureTime     int64
+	LastRecoveryTime    int64
+	TotalFailures       uint64
+	TotalRecoveries     uint64
 }
 
 // DegradationStats 降级统计
 type DegradationStats struct {
-	TotalDegradations      uint64                        // 总降级次数
-	TotalRecoveries        uint64                        // 总恢复次数
-	DegradationsByProtocol map[ProtocolType]uint64       // 按协议统计降级次数
-	ErrorsByType           map[string]uint64             // 按错误类型统计
-	LastDegradationTime    time.Time                     // 最后一次降级时间
-	LastRecoveryTime       time.Time                     // 最后一次恢复时间
-	TotalFailures          uint64                        // 总失败次数（所有协议）
-	CooldownSkipped        uint64                        // 冷却期跳过次数
-	GlobalLimitReached     uint64                        // 全局限制达到次数
-	RecoveryCooldownSkipped uint64                       // 恢复冷却跳过次数
-	BusinessErrorsSkipped  uint64                        // 业务错误跳过次数
-	InsufficientFailures   uint64                        // 失败次数不足跳过次数
+	TotalDegradations       uint64                  // 总降级次数
+	TotalRecoveries         uint64                  // 总恢复次数
+	DegradationsByProtocol  map[ProtocolType]uint64 // 按协议统计降级次数
+	ErrorsByType            map[string]uint64       // 按错误类型统计
+	LastDegradationTime     time.Time               // 最后一次降级时间
+	LastRecoveryTime        time.Time               // 最后一次恢复时间
+	TotalFailures           uint64                  // 总失败次数（所有协议）
+	CooldownSkipped         uint64                  // 冷却期跳过次数
+	GlobalLimitReached      uint64                  // 全局限制达到次数
+	RecoveryCooldownSkipped uint64                  // 恢复冷却跳过次数
+	BusinessErrorsSkipped   uint64                  // 业务错误跳过次数
+	InsufficientFailures    uint64                  // 失败次数不足跳过次数
 }
 
 // NewDegradationManager 创建降级管理器
@@ -176,10 +232,9 @@ func (dm *DegradationManager) ShouldDegrade(
 	// 获取或创建协议状态
 	state := dm.getOrCreateProtocolState(protocolType)
 
-	// 更新失败计数
-	state.ConsecutiveFailures.Add(1)
-	state.TotalFailures.Add(1)
-	state.LastFailureTime.Store(time.Now().UnixNano())
+	// 批量更新失败状态（原子操作）
+	now := time.Now().UnixNano()
+	state.recordFailure(now)
 
 	// 记录总失败次数
 	dm.recordStat(statTotalFailure)
@@ -188,21 +243,26 @@ func (dm *DegradationManager) ShouldDegrade(
 	dm.recordError(err)
 
 	// 检查是否达到降级阈值
-	if int(state.ConsecutiveFailures.Load()) >= config.FailureThreshold {
+	snapshot := state.getSnapshot()
+	if snapshot.ConsecutiveFailures >= int64(config.FailureThreshold) {
 		// 检查失败超时
-		lastFailure := time.Unix(0, state.LastFailureTime.Load())
+		lastFailure := time.Unix(0, snapshot.LastFailureTime)
 		if time.Since(lastFailure) <= config.FailureTimeout {
 			// 触发降级
 			return dm.triggerDegradation(protocolType, err)
 		}
 
 		// 超时后重置计数
-		state.ConsecutiveFailures.Store(0)
+		state.mu.Lock()
+		state.ConsecutiveFailures = 0
+		state.mu.Unlock()
 	}
 
 	dm.recordStat(statInsufficientFailures)
+
+	snapshot = state.getSnapshot()
 	return false, fmt.Sprintf("连续失败次数不足 (%d/%d)",
-		state.ConsecutiveFailures.Load(), config.FailureThreshold)
+		snapshot.ConsecutiveFailures, config.FailureThreshold)
 }
 
 // ShouldRecover 判断是否应该恢复协议
@@ -225,12 +285,18 @@ func (dm *DegradationManager) ShouldRecover(
 	state, exists := dm.protocolStates[protocolType]
 	dm.protocolStatesMu.RUnlock()
 
-	if !exists || !state.IsDegraded.Load() {
+	if !exists {
+		return false, "协议未降级"
+	}
+
+	// 检查状态快照
+	snapshot := state.getSnapshot()
+	if !snapshot.IsDegraded {
 		return false, "协议未降级"
 	}
 
 	// 检查恢复超时
-	lastFailure := time.Unix(0, state.LastFailureTime.Load())
+	lastFailure := time.Unix(0, snapshot.LastFailureTime)
 	if time.Since(lastFailure) < config.RecoveryTimeout {
 		return false, "恢复超时未到"
 	}
@@ -292,7 +358,7 @@ func (dm *DegradationManager) triggerDegradation(
 	err error,
 ) (bool, string) {
 	state := dm.getOrCreateProtocolState(protocolType)
-	state.IsDegraded.Store(true)
+	state.setIsDegraded(true)
 
 	// 更新统计
 	dm.statsMu.Lock()
@@ -309,11 +375,12 @@ func (dm *DegradationManager) triggerDegradation(
 	if err != nil {
 		errMsg = err.Error()
 	}
+	snapshot := state.getSnapshot()
 	logging.Infof("协议降级: protocol=%v, error=%v, consecutive_failures=%d",
-		protocolType, errMsg, state.ConsecutiveFailures.Load())
+		protocolType, errMsg, snapshot.ConsecutiveFailures)
 
 	return true, fmt.Sprintf("协议 %s 降级（连续失败 %d 次）",
-		protocolType, state.ConsecutiveFailures.Load())
+		protocolType, snapshot.ConsecutiveFailures)
 }
 
 // triggerRecovery 触发恢复
@@ -321,13 +388,11 @@ func (dm *DegradationManager) triggerRecovery(
 	protocolType ProtocolType,
 ) (bool, string) {
 	state := dm.getOrCreateProtocolState(protocolType)
-	state.IsDegraded.Store(false)
-	state.ConsecutiveFailures.Store(0)
-	state.LastRecoveryTime.Store(time.Now().UnixNano())
-	state.TotalRecoveries.Add(1)
+	now := time.Now().UnixNano()
+	state.recordRecovery(now)
 
 	// 更新最后恢复时间（用于恢复冷却检查）
-	dm.lastRecoveryTime.Store(time.Now().UnixNano())
+	dm.lastRecoveryTime.Store(now)
 
 	// 更新统计
 	dm.statsMu.Lock()
@@ -336,8 +401,9 @@ func (dm *DegradationManager) triggerRecovery(
 	dm.statsMu.Unlock()
 
 	// 记录日志
+	snapshot := state.getSnapshot()
 	logging.Infof("协议恢复: protocol=%v, total_failures=%d",
-		protocolType, state.TotalFailures.Load())
+		protocolType, snapshot.TotalFailures)
 
 	return true, fmt.Sprintf("协议 %s 已恢复", protocolType)
 }
@@ -421,25 +487,25 @@ func (dm *DegradationManager) GetStats() *DegradationStats {
 	defer dm.statsMu.RUnlock()
 
 	return &DegradationStats{
-		TotalDegradations:        dm.stats.TotalDegradations,
-		TotalRecoveries:          dm.stats.TotalRecoveries,
-		DegradationsByProtocol:   copyMap(dm.stats.DegradationsByProtocol),
-		ErrorsByType:             copyMap(dm.stats.ErrorsByType),
-		LastDegradationTime:      dm.stats.LastDegradationTime,
-		LastRecoveryTime:         dm.stats.LastRecoveryTime,
-		TotalFailures:            dm.stats.TotalFailures,
-		CooldownSkipped:          dm.stats.CooldownSkipped,
-		GlobalLimitReached:       dm.stats.GlobalLimitReached,
-		RecoveryCooldownSkipped:  dm.stats.RecoveryCooldownSkipped,
-		BusinessErrorsSkipped:    dm.stats.BusinessErrorsSkipped,
-		InsufficientFailures:     dm.stats.InsufficientFailures,
+		TotalDegradations:       dm.stats.TotalDegradations,
+		TotalRecoveries:         dm.stats.TotalRecoveries,
+		DegradationsByProtocol:  copyMap(dm.stats.DegradationsByProtocol),
+		ErrorsByType:            copyMap(dm.stats.ErrorsByType),
+		LastDegradationTime:     dm.stats.LastDegradationTime,
+		LastRecoveryTime:        dm.stats.LastRecoveryTime,
+		TotalFailures:           dm.stats.TotalFailures,
+		CooldownSkipped:         dm.stats.CooldownSkipped,
+		GlobalLimitReached:      dm.stats.GlobalLimitReached,
+		RecoveryCooldownSkipped: dm.stats.RecoveryCooldownSkipped,
+		BusinessErrorsSkipped:   dm.stats.BusinessErrorsSkipped,
+		InsufficientFailures:    dm.stats.InsufficientFailures,
 	}
 }
 
 // GetProtocolState 获取协议状态
 func (dm *DegradationManager) GetProtocolState(
 	protocolType ProtocolType,
-) (*ProtocolState, bool) {
+) (*ProtocolStateSnapshot, bool) {
 	dm.protocolStatesMu.RLock()
 	defer dm.protocolStatesMu.RUnlock()
 
@@ -448,19 +514,9 @@ func (dm *DegradationManager) GetProtocolState(
 		return nil, false
 	}
 
-	// 返回副本
-	stateCopy := &ProtocolState{
-		TotalFailures:   atomic.Uint64{},
-		TotalRecoveries: atomic.Uint64{},
-	}
-	stateCopy.IsDegraded.Store(state.IsDegraded.Load())
-	stateCopy.ConsecutiveFailures.Store(state.ConsecutiveFailures.Load())
-	stateCopy.LastFailureTime.Store(state.LastFailureTime.Load())
-	stateCopy.LastRecoveryTime.Store(state.LastRecoveryTime.Load())
-	stateCopy.TotalFailures.Store(state.TotalFailures.Load())
-	stateCopy.TotalRecoveries.Store(state.TotalRecoveries.Load())
-
-	return stateCopy, true
+	// 返回不可变快照
+	snapshot := state.getSnapshot()
+	return &snapshot, true
 }
 
 // ResetStats 重置统计

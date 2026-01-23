@@ -2,8 +2,8 @@
 
 > **文档说明**: 本文档将 PR-020 Pre 文档中的风险转化为可执行的开发检查项，确保风险得到有效控制。
 > **创建日期**: 2026-01-23
-> **最后更新**: 2026-01-23（架构师评审更新 v1.1）
-> **状态**: 🔄 跟踪中
+> **最后更新**: 2026-01-23（v1.2 - 补充开发细节检查项）
+> **状态**: ✅ 已批准，准备开发
 
 ---
 
@@ -114,10 +114,67 @@ func addFragment(index uint16, data []byte) {
 
 ---
 
+#### ✅ 检查项 1.4: 快速路径边界条件处理
+**实施阶段**: 阶段 1（位图跟踪机制实现）
+
+**检查内容**:
+- [ ] 实现 `newPartialMessage()` 初始化函数
+- [ ] total > 64 时自动使用 `big.Int`（慢速路径）
+- [ ] total <= 64 时使用 `bitmapFast`（快速路径）
+- [ ] 单元测试验证边界条件（total = 64, 65）
+
+**代码示例**:
+```go
+// 初始化函数 - 自动路径选择
+func newPartialMessage(msgID uint64, total uint16, timeout time.Duration) *partialMessage {
+    pm := &partialMessage{
+        msgID:      msgID,
+        total:      total,
+        fragments:  make([][]byte, total),
+        firstMissing: 0,
+        lastUpdate: time.Now(),
+        timeout:    timeout,
+    }
+
+    // 路径选择：total > 64 触发慢速路径
+    if total > 64 {
+        pm.bitmap = new(big.Int)
+    }
+    // total <= 64 使用快速路径（bitmapFast，默认 0）
+
+    return pm
+}
+```
+
+**验证方法**:
+```go
+func TestFastPathBoundaryConditions(t *testing.T) {
+    tests := []struct {
+        name        string
+        total       uint16
+        expectBig   bool  // 是否使用 big.Int
+    }{
+        {"快速路径边界-63", 63, false},
+        {"快速路径边界-64", 64, false},
+        {"慢速路径边界-65", 65, true},
+        {"慢速路径-100", 100, true},
+    }
+    // ... 测试实现
+}
+```
+
+**通过标准**:
+- total <= 64 时使用 `bitmapFast`（快速路径）
+- total > 64 时使用 `big.Int`（慢速路径）
+- 边界条件测试全部通过
+
+---
+
 ### 风险缓解措施
 1. **使用 `big.Int` 原子操作**: `SetBit()`、`Bit()` 都是原子操作，无锁竞争
-2. **性能测试验证**: 阶段 6 专项性能基准测试
-3. **性能回归监控**: 对比优化前后性能数据
+2. **快速路径优化**: total <= 64 使用 `uint64` 位掩码，O(1) 性能
+3. **性能测试验证**: 阶段 6 专项性能基准测试
+4. **性能回归监控**: 对比优化前后性能数据
 
 ---
 
@@ -218,10 +275,68 @@ const defaultFragmentTimeout = 5 * time.Second
 
 ---
 
+#### ✅ 检查项 2.4: 超时清理锁粒度优化
+**实施阶段**: 阶段 2（超时清理机制）
+
+**检查内容**:
+- [ ] 实现"快照遍历"优化
+- [ ] 先使用读锁复制 keys，减少锁持有时间
+- [ ] 再使用写锁删除超时项
+- [ ] 避免高并发场景下的全局锁竞争
+
+**代码示例**:
+```go
+// 优化：快照遍历，减少锁持有时间
+func (t *UDPTransport) cleanTimeoutFragments() {
+    // 1. 读锁复制 keys（快速释放）
+    t.pendingFragmentsMu.RLock()
+    keys := make([]uint64, 0, len(t.pendingFragments))
+    for k := range t.pendingFragments {
+        keys = append(keys, k)
+    }
+    t.pendingFragmentsMu.RUnlock()
+
+    // 2. 写锁删除超时项（短暂持有）
+    t.pendingFragmentsMu.Lock()
+    defer t.pendingFragmentsMu.Unlock()
+
+    now := time.Now()
+    for _, k := range keys {
+        if pm, ok := t.pendingFragments[k]; ok && now.Sub(pm.lastUpdate) > t.fragmentTimeout {
+            // 详细结构化日志
+            logging.Warnf("分片重组超时 msgID=%d received=%d total=%d duration=%v missing=%v",
+                pm.msgID,
+                pm.received,
+                pm.total,
+                now.Sub(pm.lastUpdate),
+                pm.getMissingIndexes(),
+            )
+
+            t.stats.RecordFragmentTimeout()
+            delete(t.pendingFragments, k)
+        }
+    }
+}
+```
+
+**性能对比**:
+| 方法 | 锁持有时间 | 并发影响 |
+|------|-----------|---------|
+| **优化前** | 遍历 + 删除全持写锁 | 高并发阻塞 |
+| **优化后** | 读锁复制（短）+ 写锁删除（短） | 最小化阻塞 |
+
+**通过标准**:
+- 锁持有时间 < 10ms（1000 个 pendingFragments）
+- 高并发场景无阻塞
+- 通过 `go test -race` 验证
+
+---
+
 ### 风险缓解措施
 1. **保守超时时间**: 5 秒适用于局域网，跨公网可调整
 2. **详细日志记录**: 便于排查误删场景
 3. **统计监控**: 实时监控超时频率
+4. **锁粒度优化**: 快照遍历减少锁竞争（v1.2 新增）
 
 ---
 
@@ -736,53 +851,304 @@ benchstat baseline.txt optimized.txt
 
 ---
 
-#### ✅ 检查项 7.3: 性能回归监控
+#### ✅ 检查项 7.3: 性能基准测试场景覆盖
+**实施阶段**: 阶段 6（性能基准测试）
+
+**检查内容**:
+- [ ] **场景 1：小消息（快速路径）**
+  - total = 50（≤ 64，使用 `bitmapFast`）
+  - 目标：isComplete() < 50ns
+  - 基准测试：`BenchmarkIsComplete_FastPath()`
+
+- [ ] **场景 2：中等消息（慢速路径）**
+  - total = 100（> 64，使用 `big.Int`）
+  - 目标：isComplete() < 1μs
+  - 基准测试：`BenchmarkIsComplete_SlowPath()`
+
+- [ ] **场景 3：极限消息（边界条件）**
+  - total = 65535（最大分片数）
+  - 目标：无性能崩溃，延迟合理
+  - 基准测试：`BenchmarkIsComplete_ExtremePath()`
+
+- [ ] **延迟分位数记录**
+  - 记录 P50（中位数）
+  - 记录 P99（99 分位数）
+  - 记录 P999（99.9 分位数）
+  - 工具：`go test -benchtime=10s -bench` + 自定义统计
+
+**测试代码示例**:
+```go
+// 场景 1: 小消息（快速路径）
+func BenchmarkIsComplete_FastPath(b *testing.B) {
+    pm := newPartialMessage(1, 50, 5*time.Second) // total=50 <= 64
+    fillAllFragments(pm)
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        pm.isComplete()
+    }
+}
+
+// 场景 2: 中等消息（慢速路径）
+func BenchmarkIsComplete_SlowPath(b *testing.B) {
+    pm := newPartialMessage(1, 100, 5*time.Second) // total=100 > 64
+    fillAllFragments(pm)
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        pm.isComplete()
+    }
+}
+
+// 场景 3: 极限消息（边界条件）
+func BenchmarkIsComplete_ExtremePath(b *testing.B) {
+    pm := newPartialMessage(1, 65535, 5*time.Second) // total=65535
+    fillAllFragments(pm)
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        pm.isComplete()
+    }
+}
+```
+
+**性能目标清单**:
+| 场景 | total | 路径 | 目标 | 记录分位数 |
+|------|-------|------|------|-----------|
+| 小消息 | 50 | 快速 | < 50ns | P50/P99/P999 |
+| 中等消息 | 100 | 慢速 | < 1μs | P50/P99/P999 |
+| 极限消息 | 65535 | 慢速 | < 10μs | P50/P99/P999 |
+
+**通过标准**:
+- 所有场景的 P99 延迟达标
+- 极限场景无性能崩溃
+- 性能回归 < 5%
+
+---
+
+#### ✅ 检查项 7.4: 性能回归监控
 **实施阶段**: 阶段 6（代码审查和文档）
 
 **检查内容**:
 - [ ] 性能测试报告包含基准对比
 - [ ] Post 文档记录性能数据
 - [ ] 标记性能目标达成情况
+- [ ] 包含 P50/P99/P999 延迟分位数
 
 **报告模板**:
 ```markdown
 ## 性能测试结果
 
+### 基准对比
 | 指标 | 基准 | 优化后 | 目标 | 达成 |
 |------|------|--------|------|------|
 | UDP ForwardMessage | 1099 ns/op | 1087 ns/op | ≤ 1099 | ✅ |
-| isComplete() (total=100) | N/A | 0.85 μs/op | < 1μs | ✅ |
 | SetBit/Bit | N/A | 45 ns/op | < 100ns | ✅ |
+
+### isComplete() 性能（三类场景）
+| 场景 | total | P50 | P99 | P999 | 目标 | 达成 |
+|------|-------|-----|-----|------|------|------|
+| 小消息 | 50 | 35ns | 42ns | 48ns | < 50ns | ✅ |
+| 中等消息 | 100 | 0.72μs | 0.85μs | 0.94μs | < 1μs | ✅ |
+| 极限消息 | 65535 | 7.2μs | 8.5μs | 9.4μs | < 10μs | ✅ |
 ```
 
 ---
 
 ### 风险缓解措施
 1. **阶段 0 基准测试**: 优化前建立基准
-2. **对比测试**: 优化后对比基准数据
-3. **性能报告**: 记录所有性能数据
+2. **三类场景覆盖**: 小/中/极限消息全覆盖
+3. **延迟分位数记录**: P50/P99/P999 全面监控
+4. **性能报告**: 记录所有性能数据和对比
+
+---
+
+## R-008: 日志与监控不足
+
+### 风险描述
+缺少结构化日志和监控指标，导致生产环境问题排查困难，无法及时发现异常情况（如超时率突增、内存泄漏）。
+
+### 设计目标
+- 结构化日志记录关键信息（msgID、total、received、firstMissing）
+- 监控指标暴露（timeoutCount、pendingFragmentsCount、isCompleteLatency）
+- 支持日志级别切换（INFO/WARNING/ERROR）
+- 日志便于排查和告警
+
+### 开发检查项
+
+#### ✅ 检查项 8.1: 结构化日志实现
+**实施阶段**: 阶段 1-3（位图跟踪 + 超时清理）
+
+**检查内容**:
+- [ ] `addFragment()` 添加 INFO 级别日志
+  - 记录：msgID、total、received、firstMissing
+  - 触发：每接收一个分片
+  - 格式：`logging.Infof("接收分片 msgID=%d total=%d received=%d firstMissing=%d", ...)`
+
+- [ ] `addFragment()` 添加 WARNING 级别日志（超时预警）
+  - 触发：接收到超时风险分片（duration > 3 秒）
+  - 记录：msgID、total、received、duration、missing
+
+- [ ] `cleanTimeoutFragments()` 添加 WARNING 级别日志
+  - 触发：清理超时 partialMessage
+  - 记录：msgID、received、total、duration、missing
+
+**日志格式示例**:
+```go
+// INFO：正常分片接收
+logging.Infof("接收分片 msgID=%d total=%d received=%d firstMissing=%d",
+    pm.msgID, pm.total, pm.received, pm.firstMissing)
+
+// WARNING：超时预警
+if duration > 3*time.Second {
+    logging.Warnf("分片接收超时预警 msgID=%d total=%d received=%d duration=%v missing=%v",
+        pm.msgID, pm.total, pm.received, duration, pm.getMissingIndexes())
+}
+
+// WARNING：超时清理
+logging.Warnf("分片重组超时 msgID=%d received=%d total=%d duration=%v missing=%v",
+    pm.msgID, pm.received, pm.total, duration, pm.getMissingIndexes())
+```
+
+**通过标准**:
+- 所有关键路径都有结构化日志
+- 日志字段包含完整的排查信息
+- 日志级别使用合理（INFO/WARNING/ERROR）
+
+---
+
+#### ✅ 检查项 8.2: 监控指标暴露
+**实施阶段**: 阶段 2-3（超时清理机制）
+
+**检查内容**:
+- [ ] 添加 `timeoutCount` 统计字段
+  - 类型：`atomic.Uint64`
+  - 更新时机：每次超时清理时
+  - 用途：超时率监控和告警
+
+- [ ] 添加 `pendingFragmentsCount` 统计字段
+  - 类型：函数返回值（实时）
+  - 实现方式：读锁保护
+  - 用途：内存泄漏监控
+
+- [ ] 添加 `isCompleteLatency` 统计字段
+  - 类型：直方图或 P50/P99/P999
+  - 更新时机：每次 `isComplete()` 调用时
+  - 用途：性能回归监控
+
+**监控指标示例**:
+```go
+// UDPTransport 统计字段
+type UDPTransportStats struct {
+    timeoutCount          atomic.Uint64  // 超时清理次数
+    totalFragments        atomic.Uint64  // 总接收分片数
+    isCompleteLatency     *LatencyHistogram  // isComplete() 延迟直方图
+}
+
+// 暴露监控接口
+func (t *UDPTransport) GetStats() UDPTransportStats {
+    return UDPTransportStats{
+        TimeoutCount:  t.stats.timeoutCount.Load(),
+        TotalFragments: t.stats.totalFragments.Load(),
+        // ...
+    }
+}
+
+// pendingFragments 数量（内存泄漏监控）
+func (t *UDPTransport) GetPendingFragmentsCount() int {
+    t.pendingFragmentsMu.RLock()
+    defer t.pendingFragmentsMu.RUnlock()
+    return len(t.pendingFragments)
+}
+```
+
+**监控告警规则**:
+| 指标 | 告警条件 | 级别 | 处理建议 |
+|------|---------|------|---------|
+| timeoutCount | 超时率 > 1% | WARNING | 检查网络质量 |
+| pendingFragmentsCount | > 1000 | WARNING | 可能内存泄漏 |
+| isCompleteLatency P99 | > 2μs | WARNING | 性能回归 |
+
+**通过标准**:
+- 所有关键指标都有统计
+- 指标暴露接口可用
+- 告警规则已定义
+
+---
+
+#### ✅ 检查项 8.3: 日志验证与测试
+**实施阶段**: 阶段 4（单元测试）
+
+**检查内容**:
+- [ ] 单元测试验证日志输出
+- [ ] 验证日志字段完整性
+- [ ] 验证日志级别正确性
+
+**测试代码示例**:
+```go
+func TestStructuredLogging(t *testing.T) {
+    // 捕获日志输出
+    logger, hook := test.NewNullLogger()
+    logging.SetLogger(logger)
+
+    transport := setupTestTransport()
+
+    // 发送分片
+    transport.Send(context.Background(), addr, largeMsg)
+
+    // 验证 INFO 日志
+    assert.True(t, hook.LastEntry().Level == log.InfoLevel)
+    assert.Contains(t, hook.LastEntry().Message, "接收分片")
+    assert.Contains(t, hook.LastEntry().Data["msgID"], uint64(1))
+
+    // 验证 WARNING 日志（超时场景）
+    time.Sleep(6 * time.Second)  // 触发超时
+    assert.True(t, hook.Entries[len(hook.Entries)-2].Level == log.WarnLevel)
+    assert.Contains(t, hook.Entries[len(hook.Entries)-2].Message, "分片重组超时")
+}
+```
+
+**通过标准**:
+- 日志测试覆盖率 > 80%
+- 所有关键日志路径有测试
+- 日志字段完整性验证通过
+
+---
+
+### 风险缓解措施
+1. **结构化日志**: 记录关键信息，便于排查
+2. **监控指标**: 实时暴露统计数据
+3. **告警规则**: 超时率、内存泄漏、性能回归
+4. **日志测试**: 验证日志输出完整性
 
 ---
 
 ## 📊 风险跟踪汇总表
 
-| 风险 ID | 检查项总数 | 已完成 | 待完成 | 完成率 |
-|---------|-----------|--------|--------|--------|
-| **R-001** | 3 | 0 | 3 | 0% |
-| **R-002** | 3 | 0 | 3 | 0% |
-| **R-003** | 3 | 0 | 3 | 0% |
-| **R-004** | 4 | 0 | 4 | 0% |
-| **R-005** | 3 | 0 | 3 | 0% |
-| **R-006** | 3 | 0 | 3 | 0% |
-| **R-007** | 3 | 0 | 3 | 0% |
-| **总计** | **22** | **0** | **22** | **0%** |
+| 风险 ID | 风险名称 | 检查项总数 | 已完成 | 待完成 | 完成率 |
+|---------|---------|-----------|--------|--------|--------|
+| **R-001** | 位图性能下降 | 4 | 0 | 4 | 0% |
+| **R-002** | 超时清理误删 | 4 | 0 | 4 | 0% |
+| **R-003** | 协议不兼容 | 3 | 0 | 3 | 0% |
+| **R-004** | 测试覆盖不足 | 4 | 0 | 4 | 0% |
+| **R-005** | 并发安全问题 | 3 | 0 | 3 | 0% |
+| **R-006** | 内存泄漏风险 | 3 | 0 | 3 | 0% |
+| **R-007** | 性能基准不准确 | 4 | 0 | 4 | 0% |
+| **R-008** | 日志与监控不足 | 3 | 0 | 3 | 0% |
+| **总计** | **8 个风险** | **28** | **0** | **28** | **0%** |
 
-> **⚠️ 架构师评审更新 v1.1**：
+> **⚠️ v1.2 更新说明**（补充开发细节检查项）：
+> - **R-001 新增**：检查项 1.4（快速路径边界条件处理）
+> - **R-002 新增**：检查项 2.4（超时清理锁粒度优化）
+> - **R-007 更新**：检查项 7.3（三类场景性能测试）、7.4（性能回归监控含 P50/P99/P999）
+> - **R-008 新增**：日志与监控检查项（8.1 结构化日志、8.2 监控指标、8.3 日志验证）
+> - 检查项总数：22 → 28
+
+> **⚠️ v1.1 更新说明**（架构师评审更新）：
 > - 移除 R-002（反压过于敏感）- 反压机制已移除
 > - 新增 R-005（并发安全）- 3 项检查项
 > - 新增 R-006（内存泄漏）- 3 项检查项
 > - 新增 R-007（性能基准）- 3 项检查项
-> - 检查项总数：16 → 22
+
+> **v1.0 初始版本**：
+> - 初始 16 项检查项，覆盖 5 个核心风险
 
 ---
 
@@ -823,7 +1189,33 @@ benchstat baseline.txt optimized.txt
 ---
 
 **文档创建**: 2026-01-23
-**最后更新**: 2026-01-23（架构师评审更新 v1.1）
+**最后更新**: 2026-01-23（v1.2 - 补充开发细节检查项）
 **创建者**: AI Agent（核心开发工程师 B）
 **维护者**: AI Agent（核心开发工程师 B）
-**状态**: 🔄 跟踪中
+**状态**: ✅ 已批准，准备开发
+
+---
+
+## 📝 版本历史
+
+| 版本 | 日期 | 变更说明 | 检查项数 |
+|------|------|---------|---------|
+| **v1.2** | 2026-01-23 | 补充开发细节检查项 | **28 项** |
+| v1.1 | 2026-01-23 | 架构师评审更新（新增 R-005/006/007） | 22 项 |
+| v1.0 | 2026-01-23 | 初始版本 | 16 项 |
+
+### v1.2 详细变更
+
+**新增检查项**:
+- ✅ 检查项 1.4：快速路径边界条件处理（newPartialMessage 函数）
+- ✅ 检查项 2.4：超时清理锁粒度优化（快照遍历）
+- ✅ 检查项 7.3：性能基准测试场景覆盖（小/中/极限消息 + P50/P99/P999）
+- ✅ 检查项 7.4：性能回归监控（含延迟分位数报告）
+- ✅ 检查项 8.1：结构化日志实现（INFO/WARNING 日志）
+- ✅ 检查项 8.2：监控指标暴露（timeoutCount/pendingFragmentsCount/isCompleteLatency）
+- ✅ 检查项 8.3：日志验证与测试（日志输出测试）
+
+**风险覆盖**:
+- 8 个核心风险
+- 28 项可执行检查项
+- 覆盖性能、安全、测试、监控全方位

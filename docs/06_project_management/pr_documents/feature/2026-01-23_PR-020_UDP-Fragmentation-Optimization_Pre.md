@@ -105,6 +105,18 @@
 - 性能基准测试对比
 - 并发安全测试
 
+**NFR-5: 日志与监控**
+- **结构化日志**：记录关键信息（msgID、total、received、firstMissing）
+- **超时日志**：`addFragment()` 和 `cleanTimeoutFragments()` 中添加详细日志
+- **监控指标**：
+  - `timeoutCount`：超时清理次数（纳入监控告警）
+  - `pendingFragmentsCount`：pendingFragments 大小（监控内存泄漏）
+  - `isCompleteLatency`：isComplete() 延迟分布（P50/P99/P999）
+- **日志级别**：
+  - INFO：正常分片接收
+  - WARNING：分片重组超时
+  - ERROR：分片重组失败（如超时后仍有新分片到达）
+
 ---
 
 ### 4. 设计方案
@@ -230,6 +242,27 @@ func (p *partialMessage) isTimeout() bool {
     defer p.mu.RUnlock()
     return time.Since(p.lastUpdate) > p.timeout
 }
+
+// 初始化 partialMessage（路径选择）
+// ⚠️ 边界条件处理：total > 64 时自动切换到慢速路径
+func newPartialMessage(msgID uint64, total uint16, timeout time.Duration) *partialMessage {
+    pm := &partialMessage{
+        msgID:      msgID,
+        total:      total,
+        fragments:  make([][]byte, total),
+        firstMissing: 0,
+        lastUpdate: time.Now(),
+        timeout:    timeout,
+    }
+
+    // 路径选择：total > 64 时使用 big.Int（慢速路径）
+    if total > 64 {
+        pm.bitmap = new(big.Int)
+    }
+    // total <= 64 时使用 bitmapFast（快速路径，默认值为 0）
+
+    return pm
+}
 ```
 
 #### 4.2 超时清理机制
@@ -264,19 +297,62 @@ func (t *UDPTransport) startTimeoutCleaner() {
 }
 
 // 清理超时的分片
+// ⚠️ 锁粒度优化：使用"快照遍历"避免长时间持有全局锁
 func (t *UDPTransport) cleanTimeoutFragments() {
+    // 1. 读锁拷贝 key，减少锁持有时间
+    t.pendingFragmentsMu.RLock()
+    keys := make([]uint64, 0, len(t.pendingFragments))
+    for k := range t.pendingFragments {
+        keys = append(keys, k)
+    }
+    t.pendingFragmentsMu.RUnlock()
+
+    // 2. 写锁删除超时项（仅持有锁期间访问 pendingFragments）
     t.pendingFragmentsMu.Lock()
     defer t.pendingFragmentsMu.Unlock()
 
     now := time.Now()
-    for key, partial := range t.pendingFragments {
-        if now.Sub(partial.lastUpdate) > t.fragmentTimeout {
+    for _, k := range keys {
+        if pm, ok := t.pendingFragments[k]; ok && now.Sub(pm.lastUpdate) > t.fragmentTimeout {
+            // 记录详细日志
+            logging.Warnf("分片重组超时 msgID=%d received=%d total=%d duration=%v missing=%v",
+                pm.msgID,
+                pm.received,
+                pm.total,
+                now.Sub(pm.lastUpdate),
+                pm.getMissingIndexes(),
+            )
+
             // 记录超时统计
             t.stats.RecordFragmentTimeout()
+
             // 删除 partial
-            delete(t.pendingFragments, key)
+            delete(t.pendingFragments, k)
         }
     }
+}
+
+// 获取缺失分片索引（用于日志记录）
+// ✅ 并发安全：读锁保护
+func (p *partialMessage) getMissingIndexes() []uint16 {
+    p.mu.RLock()
+    defer p.mu.RUnlock()
+
+    var missing []uint16
+    if p.total <= 64 {
+        for i := uint16(0); i < p.total; i++ {
+            if p.bitmapFast&(1<<i) == 0 {
+                missing = append(missing, i)
+            }
+        }
+    } else if p.bitmap != nil {
+        for i := uint16(0); i < p.total; i++ {
+            if p.bitmap.Bit(int(i)) == 0 {
+                missing = append(missing, i)
+            }
+        }
+    }
+    return missing
 }
 ```
 
@@ -354,12 +430,59 @@ func (t *UDPTransport) cleanTimeoutFragments() {
 - [ ] 验证内存泄漏（长时间运行）
 
 **阶段 5: 性能基准测试**
+- [ ] 测试场景 1：小消息（分片数 <= 64）
+  - [ ] 验证快速路径性能 < 50ns
+  - [ ] 记录 P50/P99/P999 延迟
+- [ ] 测试场景 2：中等消息（分片数 = 100）
+  - [ ] 验证慢速路径性能 < 1μs
+  - [ ] 记录 P50/P99/P999 延迟
+- [ ] 测试场景 3：极限消息（分片数 = 65535）
+  - [ ] 验证内存占用合理
+  - [ ] 记录 P50/P99/P999 延迟
 - [ ] 对比优化前后位图操作性能
-- [ ] 验证 `isComplete()` 快速路径 < 50ns
-- [ ] 验证 `isComplete()` 慢速路径 < 1μs（total=100）
 - [ ] 验证 SetBit/Bit 单次操作 < 100ns
 - [ ] 验证 UDP 性能未下降
 - [ ] 测试分片重组成功率提升
+
+**测试场景覆盖说明**：
+```go
+// 场景 1：小消息（快速路径）
+func BenchmarkIsComplete_FastPath(b *testing.B) {
+    pm := newPartialMessage(1, 50, 5*time.Second) // total=50 <= 64
+    // ... 填充分片 ...
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        pm.isComplete()
+    }
+}
+
+// 场景 2：中等消息（慢速路径）
+func BenchmarkIsComplete_SlowPath(b *testing.B) {
+    pm := newPartialMessage(1, 100, 5*time.Second) // total=100 > 64
+    // ... 填充分片 ...
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        pm.isComplete()
+    }
+}
+
+// 场景 3：极限消息（边界条件）
+func BenchmarkIsComplete_ExtremePath(b *testing.B) {
+    pm := newPartialMessage(1, 65535, 5*time.Second) // total=65535
+    // ... 填充分片 ...
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        pm.isComplete()
+    }
+}
+```
+
+**性能指标记录**：
+```bash
+# 使用 benchstat 记录 P50/P99/P999
+go test -bench=. -benchtime=10s -benchmem ./internal/metadata/transport/ | tee results.txt
+benchstat -pctile=50,99,999 results.txt
+```
 
 **阶段 6: 代码审查和文档**
 - [ ] 代码审查（self-review）
@@ -436,9 +559,9 @@ func (t *UDPTransport) cleanTimeoutFragments() {
 
 | 项目 | 内容 |
 |------|------|
-| 文档版本 | v1.1（Pre 阶段 - 根据架构师反馈更新） |
+| 文档版本 | v1.2（Pre 阶段 - 补充开发细节建议） |
 | 创建日期 | 2026-01-23 |
-| 最后更新 | 2026-01-23（架构师评审反馈更新） |
+| 最后更新 | 2026-01-23（补充开发阶段关键细节） |
 | 归档路径 | `docs/06_project_management/pr_documents/feature/2026-01-23_PR-020_UDP-Fragmentation-Optimization_Pre.md` |
 | 后续维护人 | AI Agent（核心开发工程师 B） |
 
@@ -446,5 +569,11 @@ func (t *UDPTransport) cleanTimeoutFragments() {
 
 **创建者**: AI Agent（核心开发工程师 B）
 **审核者**: 👤 架构师
-**状态**: ✅ 有条件通过（需确认文档更新后批准）
+**状态**: ✅ 有条件通过（已补充开发细节，待最终确认）
 **下一步**: 等待架构师最终确认 Pre 文档更新，确认后启动开发
+
+> **v1.2 更新说明**（开发阶段重点关注）：
+> 1. **快速路径边界条件**：添加 `newPartialMessage()` 初始化函数，total > 64 时自动切换慢速路径
+> 2. **超时清理锁粒度优化**：使用"快照遍历"减少锁持有时间，避免高并发锁竞争
+> 3. **性能测试场景覆盖**：小消息（≤64）、中等消息（=100）、极限消息（=65535）三类场景，记录 P50/P99/P999
+> 4. **日志与监控补充**：添加结构化日志，记录 msgID、total、received、firstMissing 等关键信息，timeoutCount 纳入监控告警

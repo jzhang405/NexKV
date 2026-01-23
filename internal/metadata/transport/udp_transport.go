@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math/big"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -56,10 +57,11 @@ const (
 	udpStatKeyCodecCacheSize   = "codec_cache_size"
 
 	// 错误统计
-	udpStatKeyParseErrors    = "parse_errors"
-	udpStatKeyCRCErrors      = "crc_errors"
-	udpStatKeyFragmentErrors = "fragment_errors"
-	udpStatKeyChannelBlocks  = "channel_blocks"
+	udpStatKeyParseErrors      = "parse_errors"
+	udpStatKeyCRCErrors        = "crc_errors"
+	udpStatKeyFragmentErrors   = "fragment_errors"
+	udpStatKeyChannelBlocks    = "channel_blocks"
+	udpStatKeyFragmentTimeouts = "fragment_timeouts" // PR-020：超时统计
 )
 
 // UDPTransport UDP 传输实现
@@ -115,14 +117,15 @@ type fragmentKey struct {
 
 // fragmentBuffer 分片缓冲区
 type fragmentBuffer struct {
-	mu        sync.RWMutex
-	buffers   map[fragmentKey]*partialMessage // (NodeID, MsgSeq) -> partialMessage
-	timeout   time.Duration
-	stopCh    chan struct{}
-	cleanupWg sync.WaitGroup
+	mu           sync.RWMutex
+	buffers      map[fragmentKey]*partialMessage // (NodeID, MsgSeq) -> partialMessage
+	timeout      time.Duration
+	timeoutCount atomic.Uint64 // PR-020：超时清理统计
+	stopCh       chan struct{}
+	cleanupWg    sync.WaitGroup
 }
 
-// partialMessage 部分消息
+// partialMessage 部分消息（使用位图跟踪分片接收状态）
 type partialMessage struct {
 	total      uint16
 	received   uint16
@@ -130,6 +133,15 @@ type partialMessage struct {
 	lastUpdate time.Time
 	msgType    MessageType // 保存消息类型
 	codecID    uint16      // 保存编解码器ID
+
+	// 位图跟踪（PR-020 优化）
+	// 快速路径：total <= 64 时使用 uint64 位图
+	bitmapFast uint64
+	// 慢速路径：total > 64 时使用 big.Int 位图（需并发保护）
+	bitmap *big.Int
+
+	// 并发保护：bitmap 访问需要 mutex 保护（big.Int 非并发安全）
+	bitmapMu sync.RWMutex
 }
 
 // NewUDPTransport 创建 UDP 传输
@@ -455,7 +467,104 @@ func (t *UDPTransport) getCodec(codecID uint16) (Codec, error) {
 	return codec, nil
 }
 
-// addFragment 添加分片并检查是否完整
+// newPartialMessage 创建新的部分消息（PR-020：自动选择快速/慢速路径）
+//
+// 路径选择策略：
+//   - total <= 64：快速路径（uint64 位图）
+//   - total > 64：慢速路径（big.Int 位图）
+func newPartialMessage(total uint16, msgType MessageType, codecID uint16) *partialMessage {
+	pm := &partialMessage{
+		total:      total,
+		received:   0,
+		fragments:  make([][]byte, total),
+		lastUpdate: time.Now(),
+		msgType:    msgType,
+		codecID:    codecID,
+		bitmapFast: 0, // 快速路径默认零值
+	}
+
+	// 路径选择：total > 64 触发慢速路径
+	if total > 64 {
+		pm.bitmap = new(big.Int)
+	}
+	// total <= 64 使用快速路径（bitmapFast，默认 0）
+
+	return pm
+}
+
+// isComplete 检查是否收齐所有分片（PR-020：快速/慢速路径优化）
+//
+// 快速路径（total <= 64）：
+//   - 使用 uint64 位图
+//   - 目标：< 50ns
+//
+// 慢速路径（total > 64）：
+//   - 使用 big.Int 位图（需 mutex 保护）
+//   - 目标：< 1μs（total=100）
+func (p *partialMessage) isComplete() bool {
+	// 快速路径：total <= 64（无锁）
+	if p.total <= 64 {
+		// 检查 bitmapFast 的低 total 位是否全为 1
+		// 使用位掩码：((1 << total) - 1)
+		mask := uint64(1)<<p.total - 1
+		return p.bitmapFast == mask
+	}
+
+	// 慢速路径：total > 64（需锁保护）
+	p.bitmapMu.RLock()
+	defer p.bitmapMu.RUnlock()
+
+	if p.bitmap == nil {
+		return false
+	}
+
+	// 检查位图的低 total 位是否全为 1
+	// big.Int.Cmp 比较位图与预期值
+	expected := new(big.Int)
+	expected.Lsh(big.NewInt(1), uint(p.total)) // 1 << total
+	expected.Sub(expected, big.NewInt(1))      // (1 << total) - 1
+
+	return p.bitmap.Cmp(expected) == 0
+}
+
+// getMissingIndexes 获取缺失分片索引列表（PR-020：用于超时清理日志）
+//
+// 注意：此方法仅供超时清理时调用，非热路径，性能要求不高
+func (p *partialMessage) getMissingIndexes() []uint16 {
+	missing := make([]uint16, 0)
+
+	// 快速路径：total <= 64
+	if p.total <= 64 {
+		for i := uint16(0); i < p.total; i++ {
+			if p.bitmapFast&(1<<i) == 0 {
+				missing = append(missing, i)
+			}
+		}
+		return missing
+	}
+
+	// 慢速路径：total > 64（需锁保护）
+	p.bitmapMu.RLock()
+	defer p.bitmapMu.RUnlock()
+
+	if p.bitmap == nil {
+		// 未初始化，返回全部索引
+		for i := uint16(0); i < p.total; i++ {
+			missing = append(missing, i)
+		}
+		return missing
+	}
+
+	for i := uint16(0); i < p.total; i++ {
+		if p.bitmap.Bit(int(i)) == 0 {
+			missing = append(missing, i)
+		}
+	}
+
+	return missing
+}
+
+// addFragment 添加分片并检查是否完整（PR-020：使用位图跟踪）
 // codecGetter: 用于获取 Codec 的函数（支持缓存优化）
 // 返回 MsgFrame（增强消息），分片重组后的消息不包含原始 TLV 扩展字段（因分片传输中 TLV 信息丢失）
 func (b *fragmentBuffer) addFragment(key fragmentKey, total, index uint16, data []byte, msgType MessageType, codecID uint16, codecGetter func(uint16) (Codec, error)) MsgFrame {
@@ -465,14 +574,8 @@ func (b *fragmentBuffer) addFragment(key fragmentKey, total, index uint16, data 
 	// 获取或创建 partialMessage
 	partial, exists := b.buffers[key]
 	if !exists {
-		partial = &partialMessage{
-			total:      total,
-			received:   0,
-			fragments:  make([][]byte, total),
-			lastUpdate: time.Now(),
-			msgType:    msgType,
-			codecID:    codecID,
-		}
+		// PR-020：使用 newPartialMessage 初始化（自动选择快速/慢速路径）
+		partial = newPartialMessage(total, msgType, codecID)
 		b.buffers[key] = partial
 	}
 
@@ -501,8 +604,19 @@ func (b *fragmentBuffer) addFragment(key fragmentKey, total, index uint16, data 
 	partial.received++
 	partial.lastUpdate = time.Now()
 
-	// 检查是否收齐所有分片
-	if partial.received == partial.total {
+	// PR-020：使用位图跟踪分片接收状态
+	// 快速路径：total <= 64（无锁）
+	if total <= 64 {
+		partial.bitmapFast |= (1 << index)
+	} else {
+		// 慢速路径：total > 64（需锁保护）
+		partial.bitmapMu.Lock()
+		partial.bitmap.SetBit(partial.bitmap, int(index), 1)
+		partial.bitmapMu.Unlock()
+	}
+
+	// PR-020：使用位图检查是否收齐所有分片
+	if partial.isComplete() {
 		// 重组消息（得到完整的编码后的消息数据）
 		reassembled := b.reassembleMessage(partial)
 
@@ -569,19 +683,45 @@ func (b *fragmentBuffer) startCleanup() {
 	}()
 }
 
-// cleanupExpiredFragments 清理超时的分片
+// cleanupExpiredFragments 清理超时的分片（PR-020：增强日志和监控）
 func (b *fragmentBuffer) cleanupExpiredFragments() {
+	// PR-020：快照遍历优化（减少全局锁持有时间）
+
+	// 1. 读锁复制 keys
+	b.mu.RLock()
+	keys := make([]fragmentKey, 0, len(b.buffers))
+	for k := range b.buffers {
+		keys = append(keys, k)
+	}
+	b.mu.RUnlock()
+
+	// 2. 写锁删除超时项
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	now := time.Now()
 	expiredCount := 0
 
-	for key, partial := range b.buffers {
+	for _, k := range keys {
+		partial, exists := b.buffers[k]
+		if !exists {
+			continue // 可能已被其他 goroutine 删除
+		}
+
 		if now.Sub(partial.lastUpdate) > b.timeout {
-			// 超时，丢弃未收齐的分片
-			delete(b.buffers, key)
+			// PR-020：结构化日志（记录关键信息）
+			missing := partial.getMissingIndexes()
+			logging.Warnf("分片重组超时 msgID=%d received=%d total=%d duration=%v missing=%v",
+				k.msgID,
+				partial.received,
+				partial.total,
+				now.Sub(partial.lastUpdate),
+				missing,
+			)
+
+			delete(b.buffers, k)
 			expiredCount++
+			b.timeoutCount.Add(1) // PR-020：更新超时统计
 		}
 	}
 
@@ -957,6 +1097,7 @@ func (t *UDPTransport) Stats() map[string]any {
 	if t.fragmentBuf != nil {
 		t.fragmentBuf.mu.RLock()
 		stats[udpStatKeyPendingFragments] = len(t.fragmentBuf.buffers)
+		stats[udpStatKeyFragmentTimeouts] = t.fragmentBuf.timeoutCount.Load() // PR-020：超时统计
 		t.fragmentBuf.mu.RUnlock()
 	}
 

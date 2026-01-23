@@ -1,7 +1,8 @@
 # PR-020 UDP 分片优化 - 风险跟踪清单
 
-> **文档说明**: 本文档将 PR-020 Pre 文档中的 5 项风险转化为可执行的开发检查项，确保风险得到有效控制。
+> **文档说明**: 本文档将 PR-020 Pre 文档中的风险转化为可执行的开发检查项，确保风险得到有效控制。
 > **创建日期**: 2026-01-23
+> **最后更新**: 2026-01-23（架构师评审更新 v1.1）
 > **状态**: 🔄 跟踪中
 
 ---
@@ -11,10 +12,20 @@
 | 风险 ID | 风险名称 | 概率 | 影响 | 优先级 |
 |---------|---------|------|------|--------|
 | **R-001** | 位图性能下降 | 中 | 中 | P1 |
-| **R-002** | 反压过于敏感 | 中 | 低 | P2 |
-| **R-003** | 超时清理误删 | 低 | 中 | P2 |
-| **R-004** | 协议不兼容 | 低 | 高 | P0 |
-| **R-005** | 测试覆盖不足 | 中 | 中 | P1 |
+| **R-002** | 超时清理误删 | 低 | 中 | P2 |
+| **R-003** | 协议不兼容 | 低 | 高 | P0 |
+| **R-004** | 测试覆盖不足 | 中 | 中 | P1 |
+| **R-005** | 并发安全问题 | **高** | **高** | **P0** ⚠️ |
+| **R-006** | 内存泄漏风险 | 中 | 中 | P1 |
+| **R-007** | 性能基准不准确 | 中 | 中 | P1 |
+
+> **⚠️ 架构师评审新增风险**：
+> - **R-005（并发安全）**：`big.Int` 非并发安全，必须严格 mutex 保护（**P0**）
+> - **R-006（内存泄漏）**：超时清理失效可能导致 partial 消息累积（**P1**）
+> - **R-007（性能基准）**：没有基准数据无法验证优化效果（**P1**）
+>
+> **移除风险**：
+> - ~~R-002 反压过于敏感~~（反压机制已移除，设计无效）
 
 ---
 
@@ -110,111 +121,7 @@ func addFragment(index uint16, data []byte) {
 
 ---
 
-## R-002: 反压过于敏感
-
-### 风险描述
-默认 75% 的通道使用率阈值可能过高，导致反压频繁触发，影响正常消息发送。
-
-### 设计目标
-- 可配置阈值（默认 75%）
-- 支持运行时调整
-- 统计反压触发频率
-
-### 开发检查项
-
-#### ✅ 检查项 2.1: 阈值可配置性
-**实施阶段**: 阶段 2（反压机制实现）
-
-**检查内容**:
-- [ ] 添加配置项 `BackpressureThreshold`（默认 0.75）
-- [ ] 添加配置项 `BackpressureEnabled`（默认 true）
-- [ ] 支持运行时动态调整
-
-**代码示例**:
-```go
-type UDPTransportConfig struct {
-    // ... 现有字段
-    BackpressureEnabled   bool    `json:"backpressure_enabled"`
-    BackpressureThreshold float64 `json:"backpressure_threshold"`
-}
-
-// 默认配置
-const (
-    defaultBackpressureEnabled   = true
-    defaultBackpressureThreshold = 0.75  // 75%
-)
-```
-
----
-
-#### ✅ 检查项 2.2: 反压触发频率统计
-**实施阶段**: 阶段 2（反压机制实现）
-
-**检查内容**:
-- [ ] 添加统计字段 `backpressureTriggered atomic.Uint64`
-- [ ] 每次触发反压时计数
-- [ ] 暴露统计接口 `GetStats()`
-
-**验证方法**:
-```go
-// 单元测试
-func TestBackpressureFrequency(t *testing.T) {
-    transport := setupTestTransport()
-
-    // 模拟高频发送
-    for i := 0; i < 10000; i++ {
-        transport.Send(context.Background(), addr, msg)
-    }
-
-    // 验证反压触发频率合理（< 1%）
-    stats := transport.GetStats()
-    frequency := float64(stats.BackpressureTriggered) / 10000
-    assert.True(t, frequency < 0.01, "反压触发频率过高: %.2f%%", frequency*100)
-}
-```
-
-**通过标准**:
-- 正常负载下反压触发频率 < 1%
-- 极端负载下反压触发频率 < 10%
-
----
-
-#### ✅ 检查项 2.3: 集成测试验证
-**实施阶段**: 阶段 5（集成测试）
-
-**检查内容**:
-- [ ] 测试正常负载（100 msg/s）无反压
-- [ ] 测试高负载（10000 msg/s）适度反压
-- [ ] 测试极端负载（50000 msg/s）积极反压
-- [ ] 验证接收端通道未溢出
-
-**验证方法**:
-```go
-func TestBackpressureIntegration(t *testing.T) {
-    tests := []struct {
-        name         string
-        sendRate     int          // 消息/秒
-        expectBackoff bool         // 是否预期反压
-        maxOverflow  int          // 最大溢出次数
-    }{
-        {"正常负载", 100, false, 0},
-        {"高负载", 10000, true, 10},
-        {"极端负载", 50000, true, 100},
-    }
-    // ...
-}
-```
-
----
-
-### 风险缓解措施
-1. **可配置阈值**: 支持根据部署环境调整
-2. **运行时调整**: 允许动态优化阈值
-3. **统计监控**: 实时监控反压触发频率
-
----
-
-## R-003: 超时清理误删
+## R-002: 超时清理误删
 
 ### 风险描述
 5 秒的超时时间可能过于保守，部分分片因网络延迟到达时，已被清理，导致重组失败。
@@ -559,6 +466,304 @@ go tool cover -func=coverage.out
 
 ---
 
+## R-005: 并发安全问题 ⚠️ P0 高影响风险
+
+### 风险描述
+`big.Int` 在 Go 中**不是并发安全的**，如果多个 goroutine 同时访问位图，会导致数据竞争和不可预测的行为。
+
+### 设计目标
+- 所有 `big.Int` 访问都在 mutex 保护下
+- 通过 `go test -race` 验证无竞态条件
+- 支持高并发分片接收场景
+
+### 开发检查项
+
+#### ✅ 检查项 5.1: Mutex 保护设计
+**实施阶段**: 阶段 1（位图跟踪机制实现）
+
+**检查内容**:
+- [ ] 所有 `big.Int` 访问都在 `p.mu.Lock()` 或 `p.mu.RLock()` 保护下
+- [ ] 添加详细的并发安全注释
+- [ ] 代码审查确认无 unprotected 访问
+
+**代码示例**:
+```go
+// ✅ 正确：在 mutex 保护下访问 big.Int
+func (p *partialMessage) isComplete() bool {
+    p.mu.RLock()
+    defer p.mu.RUnlock()
+
+    for i := 0; i < int(p.total); i++ {
+        if p.bitmap.Bit(i) == 0 {  // 安全：读锁保护
+            return false
+        }
+    }
+    return true
+}
+
+// ❌ 错误：未加锁访问 big.Int
+func (p *partialMessage) isCompleteUnsafe() bool {
+    for i := 0; i < int(p.total); i++ {
+        if p.bitmap.Bit(i) == 0 {  // 危险：无锁保护
+            return false
+        }
+    }
+    return true
+}
+```
+
+---
+
+#### ✅ 检查项 5.2: 竞态检测测试
+**实施阶段**: 阶段 3（单元测试）
+
+**检查内容**:
+- [ ] 运行 `go test -race` 验证无竞态条件
+- [ ] 高并发分片接收测试（1000 并发）
+- [ ] 压力测试（10000 次分片添加）
+
+**验证方法**:
+```bash
+# 运行竞态检测
+go test -race -count=1000 ./internal/metadata/transport/
+
+# 运行高并发测试
+go test -race -run TestConcurrentFragmentReassembly -v ./internal/metadata/transport/
+```
+
+**通过标准**:
+- `go test -race` 无 WARNING 输出
+- 高并发测试无 panic 或数据竞争
+- 压力测试稳定运行
+
+---
+
+#### ✅ 检查项 5.3: 并发安全代码审查
+**实施阶段**: 阶段 6（代码审查和文档）
+
+**检查内容**:
+- [ ] 代码审查确认所有 big.Int 访问都在锁保护下
+- [ ] 代码审查确认无死锁风险
+- [ ] 添加并发安全设计文档
+
+**代码审查清单**:
+```markdown
+## R-005 并发安全检查
+
+- [ ] isComplete(): 使用 RLock 保护 ✅
+- [ ] addFragment(): 使用 Lock 保护 ✅
+- [ ] getFirstMissing(): 使用 RLock 保护 ✅
+- [ ] updateFirstMissingUnsafe(): 内部方法，调用者已持有锁 ✅
+- [ ] isTimeout(): 使用 RLock 保护 ✅
+- [ ] 无 unprotected 的 big.Int 访问 ✅
+- [ ] 无死锁风险 ✅
+```
+
+---
+
+### 风险缓解措施
+1. **Mutex 保护**: 所有 big.Int 访问都在锁保护下
+2. **Race 测试**: 使用 `go test -race` 验证
+3. **代码审查**: 人工审查并发安全设计
+
+---
+
+## R-006: 内存泄漏风险
+
+### 风险描述
+超时清理机制可能失效（如协程停止、清理逻辑错误），导致 `partialMessage` 在 `pendingFragments` 中累积，造成内存泄漏。
+
+### 设计目标
+- 超时清理机制可靠运行
+- 长时间运行无内存泄漏
+- 监控 pendingFragments 大小
+
+### 开发检查项
+
+#### ✅ 检查项 6.1: 超时清理可靠性
+**实施阶段**: 阶段 2（超时清理机制）
+
+**检查内容**:
+- [ ] 清理协程正确启动
+- [ ] 清理协程在 `Stop()` 时正确停止
+- [ ] 清理逻辑无遗漏（遍历所有 pendingFragments）
+
+**代码示例**:
+```go
+// 启动清理协程
+func (t *UDPTransport) startTimeoutCleaner() {
+    t.timeoutCleaner = time.NewTicker(1 * time.Second)
+    go func() {
+        defer t.timeoutCleaner.Stop()
+        for {
+            select {
+            case <-t.timeoutCleaner.C:
+                t.cleanTimeoutFragments()
+            case <-t.timeoutCleanerStop:
+                return
+            }
+        }
+    }()
+}
+
+// 停止清理协程
+func (t *UDPTransport) Stop() error {
+    // ...
+    close(t.timeoutCleanerStop)
+    // ...
+}
+```
+
+---
+
+#### ✅ 检查项 6.2: 内存泄漏测试
+**实施阶段**: 阶段 4（集成测试）
+
+**检查内容**:
+- [ ] 长时间运行测试（24 小时）
+- [ ] 监控 pendingFragments 大小
+- [ ] 监控内存使用情况
+
+**验证方法**:
+```go
+func TestMemoryLeak(t *testing.T) {
+    transport := setupTestTransport()
+
+    // 模拟大量分片（包含超时场景）
+    for i := 0; i < 10000; i++ {
+        transport.Send(context.Background(), addr, largeMsg)
+    }
+
+    // 等待超时清理
+    time.Sleep(10 * time.Second)
+
+    // 验证 pendingFragments 已清理
+    assert.Equal(t, 0, len(transport.GetPendingFragments()))
+}
+```
+
+**通过标准**:
+- 24 小时运行后内存稳定
+- pendingFragments 大小 < 10
+- 无内存持续增长
+
+---
+
+#### ✅ 检查项 6.3: 监控指标暴露
+**实施阶段**: 阶段 2（超时清理机制）
+
+**检查内容**:
+- [ ] 暴露 `GetPendingFragmentsCount()` 方法
+- [ ] 添加超时清理统计
+- [ ] 添加日志记录超时清理事件
+
+**代码示例**:
+```go
+// 获取 pendingFragments 数量
+func (t *UDPTransport) GetPendingFragmentsCount() int {
+    t.pendingFragmentsMu.RLock()
+    defer t.pendingFragmentsMu.RUnlock()
+    return len(t.pendingFragments)
+}
+```
+
+---
+
+### 风险缓解措施
+1. **清理协程可靠性**: 确保正确启动和停止
+2. **长时间测试**: 24 小时运行验证
+3. **监控指标**: 暴露 pendingFragments 大小
+
+---
+
+## R-007: 性能基准不准确
+
+### 风险描述
+没有建立优化前的性能基准数据，无法验证优化效果是否达到预期，可能导致"优化后性能下降"未被发现。
+
+### 设计目标
+- 优化前建立性能基准
+- 对比优化前后性能数据
+- 验证优化效果符合预期
+
+### 开发检查项
+
+#### ✅ 检查项 7.1: 阶段 0 性能基准测试
+**实施阶段**: 阶段 0（性能基准测试）
+
+**检查内容**:
+- [ ] 测量当前 UDP ForwardMessage 性能
+- [ ] 测量当前分片重组性能
+- [ ] 记录当前内存使用情况
+- [ ] 建立性能基准数据文件
+
+**验证方法**:
+```bash
+# 运行性能基准测试
+go test -bench=. -benchmem ./internal/metadata/transport/ > baseline.txt
+```
+
+**基准数据示例**:
+```
+BenchmarkUDPForwardMessage-8    1000000    1099 ns/op    512 B/op    8 allocs/op
+BenchmarkFragmentReassembly-8     100000    8234 ns/op   2048 B/op   16 allocs/op
+```
+
+---
+
+#### ✅ 检查项 7.2: 优化后性能对比
+**实施阶段**: 阶段 5（性能基准测试）
+
+**检查内容**:
+- [ ] 运行优化后性能测试
+- [ ] 对比基准数据，验证性能未下降
+- [ ] 验证新增功能的性能开销
+
+**验证方法**:
+```bash
+# 运行优化后测试
+go test -bench=. -benchmem ./internal/metadata/transport/ > optimized.txt
+
+# 对比结果
+benchstat baseline.txt optimized.txt
+```
+
+**通过标准**:
+- UDP ForwardMessage 性能不下降
+- isComplete() < 1μs（total=100）
+- SetBit/Bit < 100ns
+- 新增功能开销 < 10%
+
+---
+
+#### ✅ 检查项 7.3: 性能回归监控
+**实施阶段**: 阶段 6（代码审查和文档）
+
+**检查内容**:
+- [ ] 性能测试报告包含基准对比
+- [ ] Post 文档记录性能数据
+- [ ] 标记性能目标达成情况
+
+**报告模板**:
+```markdown
+## 性能测试结果
+
+| 指标 | 基准 | 优化后 | 目标 | 达成 |
+|------|------|--------|------|------|
+| UDP ForwardMessage | 1099 ns/op | 1087 ns/op | ≤ 1099 | ✅ |
+| isComplete() (total=100) | N/A | 0.85 μs/op | < 1μs | ✅ |
+| SetBit/Bit | N/A | 45 ns/op | < 100ns | ✅ |
+```
+
+---
+
+### 风险缓解措施
+1. **阶段 0 基准测试**: 优化前建立基准
+2. **对比测试**: 优化后对比基准数据
+3. **性能报告**: 记录所有性能数据
+
+---
+
 ## 📊 风险跟踪汇总表
 
 | 风险 ID | 检查项总数 | 已完成 | 待完成 | 完成率 |
@@ -566,9 +771,18 @@ go tool cover -func=coverage.out
 | **R-001** | 3 | 0 | 3 | 0% |
 | **R-002** | 3 | 0 | 3 | 0% |
 | **R-003** | 3 | 0 | 3 | 0% |
-| **R-004** | 3 | 0 | 3 | 0% |
-| **R-005** | 4 | 0 | 4 | 0% |
-| **总计** | **16** | **0** | **16** | **0%** |
+| **R-004** | 4 | 0 | 4 | 0% |
+| **R-005** | 3 | 0 | 3 | 0% |
+| **R-006** | 3 | 0 | 3 | 0% |
+| **R-007** | 3 | 0 | 3 | 0% |
+| **总计** | **22** | **0** | **22** | **0%** |
+
+> **⚠️ 架构师评审更新 v1.1**：
+> - 移除 R-002（反压过于敏感）- 反压机制已移除
+> - 新增 R-005（并发安全）- 3 项检查项
+> - 新增 R-006（内存泄漏）- 3 项检查项
+> - 新增 R-007（性能基准）- 3 项检查项
+> - 检查项总数：16 → 22
 
 ---
 
@@ -609,6 +823,7 @@ go tool cover -func=coverage.out
 ---
 
 **文档创建**: 2026-01-23
+**最后更新**: 2026-01-23（架构师评审更新 v1.1）
 **创建者**: AI Agent（核心开发工程师 B）
 **维护者**: AI Agent（核心开发工程师 B）
 **状态**: 🔄 跟踪中

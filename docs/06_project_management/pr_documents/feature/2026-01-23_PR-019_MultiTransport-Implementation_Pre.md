@@ -154,6 +154,11 @@ type MultiTransport struct {
     config       *MultiTransportConfig        // 配置
     recvCh       chan MsgFrame                // 接收通道
     started      atomic.Bool
+
+    // 消息唯一标识（实现幂等性和去重）
+    nodeID            uint64                    // 节点 ID（全局唯一）
+    msgSeqGenerator   func() uint64             // 消息序列号生成器（单调递增）
+    msgSeqCounter     atomic.Uint64              // 默认序列号计数器
 }
 
 // 核心接口
@@ -164,6 +169,12 @@ func (mt *MultiTransport) Send(ctx context.Context, addr string, msg Message, op
 func (mt *MultiTransport) Receive() <-chan MsgFrame
 func (mt *MultiTransport) ForwardMessage(ctx context.Context, addr string, msgExt MsgFrame) (uint64, error)
 func (mt *MultiTransport) BatchForwardMessage(ctx context.Context, addrs []string, msgExt MsgFrame) BatchForwardMessageResult
+
+// 消息唯一标识接口（实现幂等性和去重）
+func (mt *MultiTransport) SetNodeID(nodeID uint64)                                        // 设置节点 ID
+func (mt *MultiTransport) SetMsgSeqGenerator(generator func() uint64) error             // 设置消息序列号生成器（可选，默认使用原子计数器）
+func (mt *MultiTransport) GetNodeID() uint64                                             // 获取当前节点 ID
+func (mt *MultiTransport) GenerateMsgSeq() uint64                                        // 生成下一条消息序列号
 
 // 协议注册接口
 func (mt *MultiTransport) RegisterTransport(transportType TransportType, transport Transport) error
@@ -223,6 +234,15 @@ func (mt *MultiTransport) GetTCPConnPoolStats() ConnPoolStats                  /
    - TCP：4 字节长度前缀 + TLV 头 + 消息体（`TCPFrameCodec`）
    - UDP：TLV 头 + 消息体（`UDPFrameCodec`，无长度前缀）
 
+5. **消息唯一标识机制（实现幂等性和去重）**：
+   - **唯一标识组合**：`(NodeID, MsgSeq)` 全局唯一标识一条消息
+   - **NodeID 设置**：通过 `SetNodeID(nodeID uint64)` 设置节点 ID（必须在 Start 前调用）
+   - **MsgSeq 生成**：
+     - 默认：使用原子计数器 `atomic.Uint64` 自动递增
+     - 自定义：通过 `SetMsgSeqGenerator(generator func() uint64)` 注入自定义生成器
+   - **去重集成**：与现有 UDP Transport 去重机制无缝对接
+   - **幂等性保障**：重发消息时复用相同 `(NodeID, MsgSeq)`，接收端可识别重复
+
 **数据结构**：
 
 ```go
@@ -232,6 +252,9 @@ type MultiTransportConfig struct {
     Router             RouterConfig                          // 路由配置
     Fallback           FallbackConfig                        // 降级配置
     StatsEnabled       bool                                  // 统计配置
+
+    // 消息唯一标识配置
+    NodeID             uint64                                // 节点 ID（全局唯一，用于消息去重和幂等性）
 
     // 架构师评审补充配置
     MaxBatchSize        int                                   // 批量发送最大节点数（过载保护）
@@ -312,6 +335,48 @@ type TransportStats struct {
    - 通道满时日志告警（避免消息丢失）
    - 背压情况下优雅降级
 
+9. **消息唯一标识与幂等性保障**（架构师评审补充方案）：
+   - **`(NodeID, MsgSeq)` 唯一标识**：全局唯一标识每条消息
+   - **去重机制集成**：与现有 UDP Transport 去重器无缝对接
+   - **重试幂等性**：重发消息复用相同 `(NodeID, MsgSeq)`，接收端可识别重复
+   - **序列号生成器可插拔**：默认使用原子计数器，支持自定义生成器（测试/特殊场景）
+
+**使用示例**：
+
+```go
+// 创建 MultiTransport
+config := &MultiTransportConfig{
+    NodeID: 12345,  // 设置节点 ID（全局唯一）
+    TransportConfigs: map[TransportType]*TransportConfig{
+        TransportTypeTCP: tcpConfig,
+        TransportTypeUDP: udpConfig,
+    },
+    Router:       defaultRouterConfig,
+    Fallback:     defaultFallbackConfig,
+    StatsEnabled: true,
+}
+mt, err := NewMultiTransport(config)
+if err != nil {
+    log.Fatal(err)
+}
+
+// 可选：设置自定义序列号生成器（默认使用原子计数器）
+mt.SetMsgSeqGenerator(func() uint64 {
+    // 自定义生成逻辑（例如：基于时间戳 + 随机数）
+    return uint64(time.Now().UnixNano()) & 0xFFFFFFFFFF
+})
+
+// 发送消息（自动生成 MsgSeq）
+err = mt.Send(ctx, "127.0.0.1:9211", msg)
+if err != nil {
+    // 重试时复用相同 (NodeID, MsgSeq)，接收端可识别重复
+}
+
+// 获取当前节点 ID 和序列号
+nodeID := mt.GetNodeID()       // 12345
+msgSeq := mt.GenerateMsgSeq()  // 获取下一条消息序列号
+```
+
 ### 4. 风险评估与应对措施
 
 | 风险点 | 影响等级 | 应对措施 |
@@ -329,6 +394,7 @@ type TransportStats struct {
 |----------|----------|------------------|--------------|--------------------------|----------|
 | **预审核** | 2026-01-22 | 👤 架构师 | 5 点架构审核要求：<br>1. 不可降级消息类型配置<br>2. 细化失败判定标准<br>3. UDP 广播地址识别<br>4. 维度化监控扩展<br>5. 帧编解码逻辑澄清 | 已全部整合到设计文档：<br>- 新增 `NonFallbackMessageTypes`<br>- 区分协议层/业务层错误<br>- 广播/多播地址检测<br>- `sync.Map` 维度化监控<br>- `TCPFrameCodec`/`UDPFrameCodec` 分离 | **✅ 完全通过审核** |
 | **正式评审** | 2026-01-23 | 👤 架构师 | **核心肯定项（5 点）**：<br>1. 分层解耦与动态注册机制<br>2. 三维路由决策矩阵<br>3. 协议层/业务层错误区分<br>4. 可观测性设计<br>5. 风险评估全面性<br><br>**待优化点（8 项，4 类）**：<br>• 接口设计（3 项）：MsgID 幂等性、MaxBatchSize 过载保护、RecvChanBufferSize 背压控制<br>• 路由逻辑（2 项）：BroadcastAddrPatterns 广播规则、UpdateRouterConfig 动态更新<br>• 容错机制（2 项）：重试策略（MaxRetryCount/RetryDelay/RetryMode）、TCP 连接池监控<br>• 测试完善（2 项）：接口兼容性测试、性能回归基线<br><br>**补充建议（4 项）**：<br>1. 协议健康检查（HealthCheck）<br>2. 协议优先级配置（ProtocolPriority）<br>3. 链路追踪集成（TraceID）<br>4. 灰度发布能力（SetProtocolWeight） | 已全部整合到 Pre 文档：<br>• **接口增强**：新增 4 个接口方法（UpdateRouterConfig、HealthCheck、SetProtocolWeight、GetTCPConnPoolStats）<br>• **配置扩展**：MultiTransportConfig 增加 MaxBatchSize/RecvChanBufferSize，RouterConfig 增加 BroadcastAddrPatterns/ProtocolPriority，FallbackConfig 增加重试策略字段<br>• **容错扩展**：从 4 项扩展到 8 项，增加降级重试策略、连接池监控、协议健康检查、背压控制<br>• **功能目标扩展**：从 6 项扩展到 10 项，增加接口增强、路由增强、容错增强、生产级特性 | **✅ 完全通过审核** |
+| **方案优化** | 2026-01-23 | 👤 架构师 | **消息唯一标识方案调整**：<br>• 原建议：在 Message 接口增加 `GetMsgID() string` 或 `WithMsgID` 选项<br>• 优化方案：在 Transport 接口中增加 `SetNodeID` + `SetMsgSeqGenerator`<br>• 理由：与现有 UDP Transport 去重机制一致（`(NodeID, MsgSeq)` 组合），避免修改 Message 接口 | 已整合到 Pre 文档：<br>• **接口扩展**：新增 4 个消息唯一标识接口（SetNodeID、SetMsgSeqGenerator、GetNodeID、GenerateMsgSeq）<br>• **结构扩展**：MultiTransport 增加 nodeID、msgSeqGenerator、msgSeqCounter 字段<br>• **配置扩展**：MultiTransportConfig 增加 NodeID 字段<br>• **机制扩展**：新增第 5 项核心机制"消息唯一标识机制"和第 9 项容错设计"消息唯一标识与幂等性保障"<br>• **使用示例**：添加完整的使用示例代码 | **✅ 方案优化完成** |
 
 **预审核结论**（来自设计文档）：
 
@@ -476,11 +542,12 @@ type TransportStats struct {
 
 **文档创建**: 2026-01-23
 **创建者**: AI Agent
-**审核者**: 👤 架构师（两轮评审：预审核 + 正式评审）
-**状态**: ✅ Pre 完成，已通过 Code Review Agent 评审和架构师正式评审
-**版本**: v1.2（整合架构师正式评审的 8 项优化点和 4 项补充建议）
+**审核者**: 👤 架构师（三轮评审：预审核 + 正式评审 + 方案优化）
+**状态**: ✅ Pre 完成，已通过 Code Review Agent 评审和架构师三轮评审
+**版本**: v1.3（整合消息唯一标识方案优化）
 
 **版本历史**：
 - v1.0（2026-01-23）：初始 Pre 文档，基于设计方案
 - v1.1（2026-01-23）：应用 Code Review Agent 的 P2 改进（性能测试环境、工期说明、验收标准）
 - v1.2（2026-01-23）：整合架构师正式评审的 8 项优化点和 4 项补充建议（接口增强、路由增强、容错增强、生产级特性）
+- v1.3（2026-01-23）：整合消息唯一标识方案优化（SetNodeID + SetMsgSeqGenerator，替代 Message 接口 GetMsgID 方案）

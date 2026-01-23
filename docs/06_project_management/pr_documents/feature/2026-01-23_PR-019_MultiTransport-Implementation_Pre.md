@@ -51,7 +51,7 @@ NexKV 项目已实现 **TCP Transport** (100%) 和 **UDP Transport** (80%)，但
 5. 实现帧编解码统一（TCP 粘包处理 vs UDP 直接帧）
 6. 实现维度化监控（按消息类型/节点/错误类型统计）
 7. **接口增强**（架构师评审补充）：
-   - 消息幂等性支持（MsgID/WithMsgID）
+   - ✅ 消息幂等性支持（通过 `(NodeID, MsgSeq)` 唯一标识实现）
    - 批量发送过载保护（MaxBatchSize）
    - 接收通道背压控制（RecvChanBufferSize）
 8. **路由能力增强**（架构师评审补充）：
@@ -630,7 +630,7 @@ msgSeq := mt.GenerateMsgSeq()  // 获取下一条消息序列号
 **创建者**: AI Agent
 **审核者**: 👤 架构师（四轮评审：预审核 + 正式评审 + 方案优化 + 接口调整）
 **状态**: ✅ Pre 完成，已通过 Code Review Agent 评审和架构师五轮评审
-**版本**: v1.5（整合参数优化：使用 Start() 参数替代 Setter 方法）
+**版本**: v1.6（标记消息幂等性支持为已完成）
 
 **版本历史**：
 - v1.0（2026-01-23）：初始 Pre 文档，基于设计方案
@@ -639,3 +639,4 @@ msgSeq := mt.GenerateMsgSeq()  // 获取下一条消息序列号
 - v1.3（2026-01-23）：整合消息唯一标识方案优化（SetNodeID + SetMsgSeqGenerator，替代 Message 接口 GetMsgID 方案）
 - v1.4（2026-01-23）：整合 Transport 接口方法定位调整（4 个方法提升为 Transport 基础接口方法，所有 Transport 实现都需要支持）
 - v1.5（2026-01-23）：整合参数优化（Start() 参数传入替代 Setter 方法，接口更简洁，约束自然实现）
+- v1.6（2026-01-23）：标记消息幂等性支持为已完成（通过 `(NodeID, MsgSeq)` 唯一标识实现）

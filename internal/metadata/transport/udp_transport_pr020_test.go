@@ -136,9 +136,9 @@ func BenchmarkPR020_BitmapBit_SlowPath(b *testing.B) {
 // 验证 R-002 check item 2.1: 快照遍历正确性
 func TestPR020_CleanupTimeout_SnapshotTraversal(t *testing.T) {
 	buf := &fragmentBuffer{
-		buffers:      make(map[fragmentKey]*partialMessage),
-		timeout:      100 * time.Millisecond,
-		stopCh:       make(chan struct{}),
+		buffers: make(map[fragmentKey]*partialMessage),
+		timeout: 100 * time.Millisecond,
+		stopCh:  make(chan struct{}),
 	}
 
 	// 创建 10 个部分消息
@@ -146,7 +146,7 @@ func TestPR020_CleanupTimeout_SnapshotTraversal(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		keys[i] = fragmentKey{nodeID: uint64(i), msgID: uint64(i)}
 		pm := newPartialMessage(10, types.MessageTypeGet, uint16(types.CodecTypeMessagePack))
-		pm.received = 5 // 只接收了一半
+		pm.received = 5                                         // 只接收了一半
 		pm.lastUpdate = time.Now().Add(-200 * time.Millisecond) // 超时
 		buf.buffers[keys[i]] = pm
 	}
@@ -162,9 +162,9 @@ func TestPR020_CleanupTimeout_SnapshotTraversal(t *testing.T) {
 // 验证 R-002 check item 2.3: 并发删除安全性
 func TestPR020_CleanupTimeout_ConcurrentDelete(t *testing.T) {
 	buf := &fragmentBuffer{
-		buffers:      make(map[fragmentKey]*partialMessage),
-		timeout:      100 * time.Millisecond,
-		stopCh:       make(chan struct{}),
+		buffers: make(map[fragmentKey]*partialMessage),
+		timeout: 100 * time.Millisecond,
+		stopCh:  make(chan struct{}),
 	}
 
 	// 创建 100 个部分消息
@@ -196,9 +196,9 @@ func TestPR020_CleanupTimeout_ConcurrentDelete(t *testing.T) {
 // 验证 R-002 check item 2.2: 超时时间精度
 func TestPR020_CleanupTimeout_Stats(t *testing.T) {
 	buf := &fragmentBuffer{
-		buffers:      make(map[fragmentKey]*partialMessage),
-		timeout:      100 * time.Millisecond,
-		stopCh:       make(chan struct{}),
+		buffers: make(map[fragmentKey]*partialMessage),
+		timeout: 100 * time.Millisecond,
+		stopCh:  make(chan struct{}),
 	}
 
 	// 创建 3 个超时的部分消息

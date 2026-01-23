@@ -127,12 +127,12 @@ type fragmentBuffer struct {
 
 // partialMessage 部分消息（使用位图跟踪分片接收状态）
 type partialMessage struct {
-	total        uint16
-	received     uint16
-	fragments    [][]byte
-	lastUpdate   time.Time
-	msgType      MessageType // 保存消息类型
-	codecID      uint16      // 保存编解码器ID
+	total      uint16
+	received   uint16
+	fragments  [][]byte
+	lastUpdate time.Time
+	msgType    MessageType // 保存消息类型
+	codecID    uint16      // 保存编解码器ID
 
 	// 位图跟踪（PR-020 优化）
 	// 快速路径：total <= 64 时使用 uint64 位图
@@ -522,7 +522,7 @@ func (p *partialMessage) isComplete() bool {
 	// big.Int.Cmp 比较位图与预期值
 	expected := new(big.Int)
 	expected.Lsh(big.NewInt(1), uint(p.total)) // 1 << total
-	expected.Sub(expected, big.NewInt(1))     // (1 << total) - 1
+	expected.Sub(expected, big.NewInt(1))      // (1 << total) - 1
 
 	return p.bitmap.Cmp(expected) == 0
 }

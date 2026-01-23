@@ -535,13 +535,13 @@ func (q *QuorumService) messageLoop() {
 // handleMessage 处理接收到的消息
 func (q *QuorumService) handleMessage(msg transport.Message) {
 	switch msg.Type() {
-	case transport.MessageTypeQuorumPropose:
+	case types.MessageTypeQuorumPropose:
 		q.handleQuorumPropose(msg)
 
-	case transport.MessageTypeQuorumVote:
+	case types.MessageTypeQuorumVote:
 		q.handleQuorumVote(msg)
 
-	case transport.MessageTypeQuorumDecide:
+	case types.MessageTypeQuorumDecide:
 		q.handleQuorumDecide(msg)
 	}
 }

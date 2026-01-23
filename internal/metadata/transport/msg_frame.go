@@ -233,7 +233,7 @@ func (f MsgFrame) Type() MessageType {
 // Priority 返回消息优先级（实现 Message 接口）
 func (f MsgFrame) Priority() int {
 	if f.Message == nil {
-		return PriorityNormal
+		return int(types.PriorityNormal)
 	}
 	return f.Message.Priority()
 }
@@ -486,7 +486,7 @@ func NewBaseMessage(msgType MessageType, payload []byte) *BaseMessage {
 	return &BaseMessage{
 		msgType:  msgType,
 		payload:  payload,
-		priority: GetPriority(msgType),
+		priority: int(GetPriority(msgType)),
 	}
 }
 

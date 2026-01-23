@@ -4,7 +4,10 @@
 package transport
 
 import (
+	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -58,6 +61,90 @@ func createBatchForwardResult(addrs []string, err error) BatchForwardMessageResu
 	return BatchForwardMessageResult{
 		SuccessCount: 0,
 		FailureCount: len(addrs),
+		Results:      results,
+	}
+}
+
+// generateMsgSeq 生成消息序列号的公共实现
+//
+// 参数:
+//   - generator: 存储在 atomic.Value 中的序列号生成器函数
+//   - defaultCounter: 默认的原子计数器（当 generator 为 nil 或无效时使用）
+//
+// 返回:
+//   - uint64: 消息序列号
+func generateMsgSeq(generator interface{}, defaultCounter *atomic.Uint64) uint64 {
+	if generator == nil {
+		return defaultCounter.Add(1)
+	}
+
+	fn, ok := generator.(func() uint64)
+	if !ok || fn == nil {
+		return defaultCounter.Add(1)
+	}
+
+	return fn()
+}
+
+// batchForwarder 批量转发函数类型
+type batchForwarder func(ctx context.Context, addr string, msgExt MsgFrame) (uint64, error)
+
+// executeBatchForward 执行批量转发的公共实现
+//
+// 参数:
+//   - ctx: 上下文
+//   - addrs: 目标地址列表
+//   - msgExt: 要转发的消息
+//   - forwarder: 单个转发函数
+//
+// 返回:
+//   - BatchForwardMessageResult: 批量转发结果
+func executeBatchForward(
+	ctx context.Context,
+	addrs []string,
+	msgExt MsgFrame,
+	forwarder batchForwarder,
+) BatchForwardMessageResult {
+	// 限制批量大小
+	if len(addrs) > maxBatchSize {
+		addrs = addrs[:maxBatchSize]
+	}
+
+	results := make([]BatchForwardResult, len(addrs))
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, maxBatchConcurrency)
+
+	for i, addr := range addrs {
+		wg.Add(1)
+		go func(idx int, targetAddr string) {
+			defer wg.Done()
+			semaphore <- struct{}{}        // 获取信号量
+			defer func() { <-semaphore }() // 释放信号量
+
+			seqID, err := forwarder(ctx, targetAddr, msgExt)
+			results[idx] = BatchForwardResult{
+				Addr:  targetAddr,
+				SeqID: seqID,
+				Error: err,
+			}
+		}(i, addr)
+	}
+
+	wg.Wait()
+
+	// 统计结果
+	var success, failure int
+	for _, r := range results {
+		if r.Error != nil {
+			failure++
+		} else {
+			success++
+		}
+	}
+
+	return BatchForwardMessageResult{
+		SuccessCount: success,
+		FailureCount: failure,
 		Results:      results,
 	}
 }

@@ -20,7 +20,7 @@ import (
 // TestTLVFrame_NewFrame 测试创建 TLV 帧
 func TestTLVFrame_NewFrame(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
 	// 验证固定头
 	assert.Equal(t, [4]byte{'N', 'X', 'U', 'T'}, frame.FixedHeader.Magic)
@@ -34,7 +34,7 @@ func TestTLVFrame_NewFrame(t *testing.T) {
 // TestTLVFrame_Marshal 测试 TLV 帧序列化
 func TestTLVFrame_Marshal(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
 	// 序列化
 	buf, err := frame.Marshal()
@@ -56,7 +56,7 @@ func TestTLVFrame_Marshal(t *testing.T) {
 	assert.Equal(t, uint64(1), binary.BigEndian.Uint64(buf[13:21]))
 
 	// 验证 MsgType (21-22)
-	assert.Equal(t, uint16(MessageTypeGet), binary.BigEndian.Uint16(buf[21:23]))
+	assert.Equal(t, uint16(types.MessageTypeGet), binary.BigEndian.Uint16(buf[21:23]))
 
 	// 验证 CodecID (23-24)
 	assert.Equal(t, uint16(types.CodecTypeMessagePack), binary.BigEndian.Uint16(buf[23:25]))
@@ -72,7 +72,7 @@ func TestTLVFrame_Marshal(t *testing.T) {
 // TestTLVFrame_Unmarshal 测试 TLV 帧反序列化
 func TestTLVFrame_Unmarshal(t *testing.T) {
 	data := []byte("test data")
-	frame1 := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame1 := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
 	// 序列化
 	buf, err := frame1.Marshal()
@@ -123,7 +123,7 @@ func TestTLVFrame_Unmarshal_InvalidSize(t *testing.T) {
 // TestTLVFrame_VerifyChecksum 测试校验和验证
 func TestTLVFrame_VerifyChecksum(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
 	// 序列化
 	buf, err := frame.Marshal()
@@ -146,7 +146,7 @@ func TestTLVFrame_VerifyChecksum(t *testing.T) {
 // TestTLVFrame_WithExtensions 测试带扩展字段的帧
 func TestTLVFrame_WithExtensions(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
 	// 添加扩展字段（空扩展）
 	frame.VarExtHeader = NewVarExtHeader() // 没有扩展字段
@@ -199,7 +199,7 @@ func TestFixedHeader_SerializeDeserialize(t *testing.T) {
 func TestFrameReader_ReadFrame(t *testing.T) {
 	// 创建测试帧
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 	buf, err := frame.Marshal()
 	require.NoError(t, err)
 
@@ -237,7 +237,7 @@ func TestFrameReader_ReadFrame_InvalidMagic(t *testing.T) {
 func TestFrameWriter_WriteFrame(t *testing.T) {
 	// 创建测试帧
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
 
 	// 创建写入器
 	var buf bytes.Buffer
@@ -325,7 +325,7 @@ func TestMessagePackCodec_EncodeNil(t *testing.T) {
 func TestMessagePackCodec_DecodeEmpty(t *testing.T) {
 	codec := NewMessagePackCodec()
 
-	_, err := codec.Decode(MessageTypeGet, []byte{})
+	_, err := codec.Decode(types.MessageTypeGet, []byte{})
 	assert.Error(t, err)
 	// MessagePack 返回 EOF 错误，包装后的错误消息包含"解码失败"
 	assert.Contains(t, err.Error(), "解码失败")
@@ -401,7 +401,7 @@ func TestProtobufCodec_GossipMessages(t *testing.T) {
 	require.NoError(t, err)
 	decoded1, err := codec.Decode(msg1.Type(), data1)
 	require.NoError(t, err)
-	assert.Equal(t, MessageTypeGossipSync, decoded1.Type())
+	assert.Equal(t, types.MessageTypeGossipSync, decoded1.Type())
 
 	// GossipDigestMessage
 	msg2 := &GossipDigestMessage{
@@ -412,7 +412,7 @@ func TestProtobufCodec_GossipMessages(t *testing.T) {
 	require.NoError(t, err)
 	decoded2, err := codec.Decode(msg1.Type(), data2)
 	require.NoError(t, err)
-	assert.Equal(t, MessageTypeGossipDigest, decoded2.Type())
+	assert.Equal(t, types.MessageTypeGossipDigest, decoded2.Type())
 }
 
 // TestProtobufCodec_TwoPCMessages 测试 2PC 协议消息
@@ -488,7 +488,7 @@ func TestProtobufCodec_EncodeNil(t *testing.T) {
 func TestProtobufCodec_DecodeEmpty(t *testing.T) {
 	codec := NewProtobufCodec()
 
-	_, err := codec.Decode(MessageTypeGet, []byte{})
+	_, err := codec.Decode(types.MessageTypeGet, []byte{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "数据为空")
 }
@@ -498,7 +498,7 @@ func TestProtobufCodec_DecodeInvalidLength(t *testing.T) {
 	codec := NewProtobufCodec()
 
 	// 无效的 Protobuf 数据
-	_, err := codec.Decode(MessageTypeGet, []byte{1, 2, 3, 4, 5})
+	_, err := codec.Decode(types.MessageTypeGet, []byte{1, 2, 3, 4, 5})
 	assert.Error(t, err)
 	// Protobuf 返回格式错误，包装后的错误消息包含"解码失败"
 	assert.Contains(t, err.Error(), "解码失败")
@@ -522,11 +522,11 @@ func TestCreateMessageByType(t *testing.T) {
 		msgType     MessageType
 		expectedMsg Message
 	}{
-		{MessageTypeGet, &GetMessage{}},
-		{MessageTypePut, &PutMessage{}},
-		{MessageTypeDelete, &DeleteMessage{}},
-		{MessageTypeNodePing, &NodePingMessage{}},
-		{MessageTypeNodePong, &NodePongMessage{}},
+		{types.MessageTypeGet, &GetMessage{}},
+		{types.MessageTypePut, &PutMessage{}},
+		{types.MessageTypeDelete, &DeleteMessage{}},
+		{types.MessageTypeNodePing, &NodePingMessage{}},
+		{types.MessageTypeNodePong, &NodePongMessage{}},
 	}
 
 	for _, tc := range testCases {
@@ -563,7 +563,7 @@ func TestEncodeFrame_DecodeFrame(t *testing.T) {
 	frame, err := EncodeFrame(msg, 0, 0)
 	require.NoError(t, err)
 	assert.NotNil(t, frame)
-	assert.Equal(t, MessageTypePut, msg.Type())
+	assert.Equal(t, types.MessageTypePut, msg.Type())
 
 	// 从帧解码
 	msgFrame, err := DecodeFrame(frame)

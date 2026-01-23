@@ -371,16 +371,16 @@ func (g *GossipService) messageLoop() {
 // handleMessage 处理接收到的消息
 func (g *GossipService) handleMessage(msg transport.Message) {
 	switch msg.Type() {
-	case transport.MessageTypeGossipSync:
+	case types.MessageTypeGossipSync:
 		g.handleGossipSync(msg)
 
-	case transport.MessageTypeGossipSyncReply:
+	case types.MessageTypeGossipSyncReply:
 		g.handleGossipSyncReply(msg)
 
-	case transport.MessageTypeGossipDigest:
+	case types.MessageTypeGossipDigest:
 		g.handleGossipDigest(msg)
 
-	case transport.MessageTypeGossipDigestReply:
+	case types.MessageTypeGossipDigestReply:
 		g.handleGossipDigestReply(msg)
 
 	default:

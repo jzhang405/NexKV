@@ -12,6 +12,8 @@ import (
 	"context"
 	"fmt"
 	"testing"
+
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
 // ========================================
@@ -22,8 +24,8 @@ import (
 // 验证单次转发开销 < 500ns
 func BenchmarkForwardMessage_Single_TCP(b *testing.B) {
 	ctx := context.Background()
-	baseMsg := NewBaseMessage(MessageTypeGet, []byte("test payload"))
-	frame := NewMsgFrame(12345, 1, MessageTypeGet, 1, baseMsg)
+	baseMsg := NewBaseMessage(types.MessageTypeGet, []byte("test payload"))
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, baseMsg)
 	// 添加 Hop Count TLV
 	hopTLV := *EncodeHopExt(5, 10)
 	frame.TLVs = append(frame.TLVs, hopTLV)
@@ -32,8 +34,8 @@ func BenchmarkForwardMessage_Single_TCP(b *testing.B) {
 	if err != nil {
 		b.Fatalf("创建 TCP Transport 失败: %v", err)
 	}
-	tcpTransport.SetNodeID(12345)
-	if err := tcpTransport.Start(); err != nil {
+	nodeID := uint64(12345)
+	if err := tcpTransport.Start(&nodeID, nil); err != nil {
 		b.Fatalf("启动 TCP Transport 失败: %v", err)
 	}
 	defer func() { _ = tcpTransport.Stop() }()
@@ -52,8 +54,8 @@ func BenchmarkForwardMessage_Single_TCP(b *testing.B) {
 // BenchmarkForwardMessage_Single_UDP UDP 单次转发性能测试
 func BenchmarkForwardMessage_Single_UDP(b *testing.B) {
 	ctx := context.Background()
-	baseMsg := NewBaseMessage(MessageTypeGet, []byte("test payload"))
-	frame := NewMsgFrame(12345, 1, MessageTypeGet, 1, baseMsg)
+	baseMsg := NewBaseMessage(types.MessageTypeGet, []byte("test payload"))
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, baseMsg)
 	// 添加 Hop Count TLV
 	hopTLV := *EncodeHopExt(5, 10)
 	frame.TLVs = append(frame.TLVs, hopTLV)
@@ -62,8 +64,8 @@ func BenchmarkForwardMessage_Single_UDP(b *testing.B) {
 	if err != nil {
 		b.Fatalf("创建 UDP Transport 失败: %v", err)
 	}
-	udpTransport.SetNodeID(12345)
-	if err := udpTransport.Start(); err != nil {
+	nodeID := uint64(12345)
+	if err := udpTransport.Start(&nodeID, nil); err != nil {
 		b.Fatalf("启动 UDP Transport 失败: %v", err)
 	}
 	defer func() { _ = udpTransport.Stop() }()
@@ -82,8 +84,8 @@ func BenchmarkForwardMessage_Single_UDP(b *testing.B) {
 // BenchmarkForwardMessage_HopCount Hop Count 递减性能测试
 // 验证 Hop Count 递减开销 < 100ns
 func BenchmarkForwardMessage_HopCount(b *testing.B) {
-	baseMsg := NewBaseMessage(MessageTypeGet, []byte("test payload"))
-	frame := NewMsgFrame(12345, 1, MessageTypeGet, 1, baseMsg)
+	baseMsg := NewBaseMessage(types.MessageTypeGet, []byte("test payload"))
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, baseMsg)
 	// 添加 Hop Count TLV
 	hopTLV := *EncodeHopExt(5, 10)
 	frame.TLVs = append(frame.TLVs, hopTLV)
@@ -102,8 +104,8 @@ func BenchmarkForwardMessage_HopCount(b *testing.B) {
 // BenchmarkForwardMessage_DeepCopy 深拷贝性能测试
 // 验证深拷贝开销 < 200ns
 func BenchmarkForwardMessage_DeepCopy(b *testing.B) {
-	baseMsg := NewBaseMessage(MessageTypeGet, []byte("test payload"))
-	frame := NewMsgFrame(12345, 1, MessageTypeGet, 1, baseMsg)
+	baseMsg := NewBaseMessage(types.MessageTypeGet, []byte("test payload"))
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, baseMsg)
 	// 添加多个 TLV
 	hopTLV := *EncodeHopExt(5, 10)
 	compressTLV := *EncodeCompressExt(2)
@@ -125,12 +127,12 @@ func BenchmarkForwardMessage_DeepCopy(b *testing.B) {
 // BenchmarkForwardMessage_TLV TLV 编码性能测试
 // 验证 TLV 编码开销 < 300ns
 func BenchmarkForwardMessage_TLV(b *testing.B) {
-	baseMsg := NewBaseMessage(MessageTypeGet, []byte("test payload"))
-	frame := NewMsgFrame(12345, 1, MessageTypeGet, 1, baseMsg)
+	baseMsg := NewBaseMessage(types.MessageTypeGet, []byte("test payload"))
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, baseMsg)
 	// 添加多个 TLV
 	hopTLV := *EncodeHopExt(5, 10)
 	compressTLV := *EncodeCompressExt(2)
-	priorityTLV := *EncodePriorityExt(PriorityHigh)
+	priorityTLV := *EncodePriorityExt(types.PriorityHigh)
 	frame.TLVs = append(frame.TLVs, hopTLV, compressTLV, priorityTLV)
 
 	// 预热
@@ -151,8 +153,8 @@ func BenchmarkForwardMessage_TLV(b *testing.B) {
 // BenchmarkBatchForwardMessage_TCP TCP 批量转发性能测试
 func BenchmarkBatchForwardMessage_TCP(b *testing.B) {
 	ctx := context.Background()
-	baseMsg := NewBaseMessage(MessageTypeGet, []byte("test payload"))
-	frame := NewMsgFrame(12345, 1, MessageTypeGet, 1, baseMsg)
+	baseMsg := NewBaseMessage(types.MessageTypeGet, []byte("test payload"))
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, baseMsg)
 	// 添加 Hop Count TLV
 	hopTLV := *EncodeHopExt(5, 10)
 	frame.TLVs = append(frame.TLVs, hopTLV)
@@ -166,8 +168,8 @@ func BenchmarkBatchForwardMessage_TCP(b *testing.B) {
 	if err != nil {
 		b.Fatalf("创建 TCP Transport 失败: %v", err)
 	}
-	tcpTransport.SetNodeID(12345)
-	if err := tcpTransport.Start(); err != nil {
+	nodeID := uint64(12345)
+	if err := tcpTransport.Start(&nodeID, nil); err != nil {
 		b.Fatalf("启动 TCP Transport 失败: %v", err)
 	}
 	defer func() { _ = tcpTransport.Stop() }()
@@ -186,8 +188,8 @@ func BenchmarkBatchForwardMessage_TCP(b *testing.B) {
 // BenchmarkBatchForwardMessage_UDP UDP 批量转发性能测试
 func BenchmarkBatchForwardMessage_UDP(b *testing.B) {
 	ctx := context.Background()
-	baseMsg := NewBaseMessage(MessageTypeGet, []byte("test payload"))
-	frame := NewMsgFrame(12345, 1, MessageTypeGet, 1, baseMsg)
+	baseMsg := NewBaseMessage(types.MessageTypeGet, []byte("test payload"))
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, baseMsg)
 	// 添加 Hop Count TLV
 	hopTLV := *EncodeHopExt(5, 10)
 	frame.TLVs = append(frame.TLVs, hopTLV)
@@ -201,8 +203,8 @@ func BenchmarkBatchForwardMessage_UDP(b *testing.B) {
 	if err != nil {
 		b.Fatalf("创建 UDP Transport 失败: %v", err)
 	}
-	udpTransport.SetNodeID(12345)
-	if err := udpTransport.Start(); err != nil {
+	nodeID := uint64(12345)
+	if err := udpTransport.Start(&nodeID, nil); err != nil {
 		b.Fatalf("启动 UDP Transport 失败: %v", err)
 	}
 	defer func() { _ = udpTransport.Stop() }()
@@ -221,8 +223,8 @@ func BenchmarkBatchForwardMessage_UDP(b *testing.B) {
 // BenchmarkBatchForwardMessage_Scale 批量转发规模性能测试
 func BenchmarkBatchForwardMessage_Scale(b *testing.B) {
 	ctx := context.Background()
-	baseMsg := NewBaseMessage(MessageTypeGet, []byte("test payload"))
-	frame := NewMsgFrame(12345, 1, MessageTypeGet, 1, baseMsg)
+	baseMsg := NewBaseMessage(types.MessageTypeGet, []byte("test payload"))
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, baseMsg)
 	// 添加 Hop Count TLV
 	hopTLV := *EncodeHopExt(5, 10)
 	frame.TLVs = append(frame.TLVs, hopTLV)
@@ -231,8 +233,8 @@ func BenchmarkBatchForwardMessage_Scale(b *testing.B) {
 	if err != nil {
 		b.Fatalf("创建 TCP Transport 失败: %v", err)
 	}
-	tcpTransport.SetNodeID(12345)
-	if err := tcpTransport.Start(); err != nil {
+	nodeID := uint64(12345)
+	if err := tcpTransport.Start(&nodeID, nil); err != nil {
 		b.Fatalf("启动 TCP Transport 失败: %v", err)
 	}
 	defer func() { _ = tcpTransport.Stop() }()

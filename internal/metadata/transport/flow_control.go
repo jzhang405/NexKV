@@ -8,22 +8,15 @@ package transport
 
 import (
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
-// ShouldDrop 判断是否应该丢弃消息（基于优先级和当前状态）
-//
-// 参数:
-//   - msg: 消息
-//   - channelUsage: 当前接收通道使用率（0.0-1.0）
-//
-// 返回:
-//   - bool: true 表示应该丢弃，false 表示应该接收
+// ShouldDrop 判断是否应该丢弃消息（基于优先级和通道使用率）
 //
 // 丢弃策略:
 //   - channelUsage < 0.8: 不丢弃任何消息
-//   - 0.8 <= channelUsage < 0.9: 丢弃最低优先级消息
-//   - 0.9 <= channelUsage < 0.95: 丢弃低优先级和最低优先级消息
-//   - channelUsage >= 0.95: 丢弃正常、低优先级和最低优先级消息（仅保留关键消息）
+//   - 0.8 <= channelUsage < 0.95: 丢弃最低优先级消息
+//   - channelUsage >= 0.95: 丢弃正常及以下优先级消息（仅保留关键消息）
 func ShouldDrop(msg Message, channelUsage float64) bool {
 	// 通道未满载，不丢弃
 	if channelUsage < 0.8 {
@@ -34,32 +27,26 @@ func ShouldDrop(msg Message, channelUsage float64) bool {
 
 	// 根据通道使用率决定丢弃策略
 	switch {
-	case channelUsage < 0.9:
-		// 轻微满载：仅丢弃最低优先级
-		return priority <= PriorityLowest
-
 	case channelUsage < 0.95:
-		// 中度满载：丢弃低优先级和最低优先级
-		return priority <= PriorityLow
+		// 轻微到中度满载：仅丢弃最低优先级（PriorityLow）
+		return priority <= int(types.PriorityLow)
 
 	default:
-		// 严重满载：丢弃正常、低优先级和最低优先级（仅保留关键消息）
-		return priority <= PriorityNormal
+		// 严重满载（>= 0.95）：丢弃正常、低优先级和最低优先级（仅保留关键消息）
+		return priority <= int(types.PriorityNormal)
 	}
 }
 
 // GetPriorityName 获取优先级名称（用于日志）
 func GetPriorityName(priority int) string {
 	switch priority {
-	case PriorityLowest:
-		return "LOWEST"
-	case PriorityLow:
-		return "LOW"
-	case PriorityNormal:
+	case int(types.PriorityLow):
+		return "LOW" // PriorityLowest 是 PriorityLow 的别名
+	case int(types.PriorityNormal):
 		return "NORMAL"
-	case PriorityHigh:
+	case int(types.PriorityHigh):
 		return "HIGH"
-	case PriorityCritical:
+	case int(types.PriorityCritical):
 		return "CRITICAL"
 	default:
 		return "UNKNOWN"

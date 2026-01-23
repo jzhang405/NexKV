@@ -55,12 +55,15 @@ type UDPTransport struct {
 	codec  Codec
 	NodeID atomic.Uint64
 
+	// 节点标识
+	msgSeqGenerator   atomic.Value  // 存储 func() uint64
+	defaultSeqCounter atomic.Uint64 // 默认序列号计数器
+
 	// UDP 连接
 	conn *net.UDPConn
 
 	// 分片相关
-	fragmentBuf  *fragmentBuffer // 分片缓冲区（用于大消息重组）
-	msgIDCounter uint64          // 消息 ID 计数器（单调递增）
+	fragmentBuf *fragmentBuffer // 分片缓冲区（用于大消息重组）
 
 	// Codec 缓存（优化分片重组性能，避免重复创建）
 	codecCache   map[uint16]Codec // codecID -> Codec 实例缓存
@@ -154,23 +157,32 @@ func NewUDPTransportWithConfig(config *TransportConfig) (*UDPTransport, error) {
 	return t, nil
 }
 
-// SetNodeID 设置本地节点 ID
-//
-// 参数:
-//   - nodeID: 节点 ID（由外部调用者根据 host:tcpPort:udpPort 生成）
-func (t *UDPTransport) SetNodeID(nodeID uint64) {
-	t.NodeID.Store(nodeID)
-}
-
 // Start 启动传输层
 //
-// 启动 UDP 监听器和接收协程
-func (t *UDPTransport) Start() error {
+// 扩展参数（可选，传入 nil 表示使用默认值）：
+//   - nodeID: 节点 ID（全局唯一，用于消息去重和幂等性）
+//   - msgSeqGenerator: 消息序列号生成器（nil 表示使用默认原子计数器）
+func (t *UDPTransport) Start(nodeID *uint64, msgSeqGenerator func() uint64) error {
 	if !t.started.CompareAndSwap(false, true) {
 		return types.NewTransportStateError("已经启动")
 	}
 
-	logging.Infof("启动 UDP 传输层，监听地址: %s", t.config.ListenAddr)
+	// 设置节点 ID
+	if nodeID != nil {
+		t.NodeID.Store(*nodeID)
+	}
+
+	// 设置消息序列号生成器
+	if msgSeqGenerator != nil {
+		t.msgSeqGenerator.Store(msgSeqGenerator)
+	} else {
+		// 使用默认原子计数器
+		t.msgSeqGenerator.Store(func() uint64 {
+			return t.defaultSeqCounter.Add(1)
+		})
+	}
+
+	logging.Infof("启动 UDP 传输层，监听地址: %s, NodeID: %d", t.config.ListenAddr, t.NodeID.Load())
 
 	// 监听 UDP 端口
 	addr, err := net.ResolveUDPAddr("udp", t.config.ListenAddr)
@@ -626,17 +638,17 @@ func (t *UDPTransport) Send(ctx context.Context, addr string, msg Message, opts 
 
 	// 小消息直接发送（无需分片）
 	if len(msgData) <= MaxUDPPacketSize {
-		return t.sendDirectWithOptions(udpAddr, msgData, msg.Type(), addr, options)
+		return t.sendDirectWithOptions(udpAddr, msgData, msg.Type(), addr, t.GenerateMsgSeq(), options)
 	}
 
 	// 大消息分片发送（直接对编码后的消息数据进行分片）
-	return t.sendFragmentedWithOptions(udpAddr, msgData, msg.Type(), options)
+	return t.sendFragmentedWithOptions(udpAddr, msgData, msg.Type(), t.GenerateMsgSeq(), options)
 }
 
 // sendDirectWithOptions 直接发送消息（带 TLV 选项，无需分片）
-func (t *UDPTransport) sendDirectWithOptions(addr *net.UDPAddr, msgData []byte, msgType MessageType, originalAddr string, opts *sendOptions) error {
+func (t *UDPTransport) sendDirectWithOptions(addr *net.UDPAddr, msgData []byte, msgType MessageType, originalAddr string, msgSeq uint64, opts *sendOptions) error {
 	nodeID := t.NodeID.Load()
-	msgID := t.nextMessageID()
+	msgID := msgSeq
 
 	// 创建完整帧
 	frame := NewFrame(nodeID, msgID, msgType, uint16(t.codec.Type()), msgData)
@@ -678,14 +690,14 @@ func (t *UDPTransport) sendDirectWithOptions(addr *net.UDPAddr, msgData []byte, 
 // sendFragmentedWithOptions 分片发送大消息（带 TLV 选项）
 //
 // 接收编码后的纯消息数据，对每个分片创建独立的 Frame
-func (t *UDPTransport) sendFragmentedWithOptions(addr *net.UDPAddr, msgData []byte, msgType MessageType, opts *sendOptions) error {
+func (t *UDPTransport) sendFragmentedWithOptions(addr *net.UDPAddr, msgData []byte, msgType MessageType, msgSeq uint64, opts *sendOptions) error {
 	// 验证 localNodeID 已设置
 	if t.NodeID.Load() == 0 {
-		return types.NewTransportStateError("localNodeID 未设置，必须调用 SetNodeID")
+		return types.NewTransportStateError("localNodeID 未设置")
 	}
 
 	nodeID := t.NodeID.Load()
-	msgID := t.nextMessageID()
+	msgID := msgSeq
 	totalFragments := (len(msgData) + MaxUDPPacketSize - 1) / MaxUDPPacketSize
 
 	logging.Debugf("分片发送: total=%d, msgID=%d, nodeID=%d", totalFragments, msgID, nodeID)
@@ -772,7 +784,7 @@ func (t *UDPTransport) ForwardMessage(ctx context.Context, addr string, msgExt M
 
 	frameOverhead := 74
 	maxPayloadSize := MaxUDPPacketSize - frameOverhead
-	msgSeq := t.nextMessageID()
+	msgSeq := t.GenerateMsgSeq()
 	nodeID := t.NodeID.Load()
 
 	if len(msgData) <= maxPayloadSize {
@@ -871,53 +883,17 @@ func (t *UDPTransport) BatchForwardMessage(
 		return createBatchForwardResult(addrs, types.NewTransportStateError("未启动"))
 	}
 
-	// 限制批量大小
-	if len(addrs) > maxBatchSize {
-		addrs = addrs[:maxBatchSize]
-	}
-
-	results := make([]BatchForwardResult, len(addrs))
-	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, maxBatchConcurrency)
-
-	for i, addr := range addrs {
-		wg.Add(1)
-		go func(idx int, targetAddr string) {
-			defer wg.Done()
-			semaphore <- struct{}{}        // 获取信号量
-			defer func() { <-semaphore }() // 释放信号量
-
-			seqID, err := t.ForwardMessage(ctx, targetAddr, msgExt)
-			results[idx] = BatchForwardResult{
-				Addr:  targetAddr,
-				SeqID: seqID,
-				Error: err,
-			}
-		}(i, addr)
-	}
-
-	wg.Wait()
-
-	// 统计结果
-	var success, failure int
-	for _, r := range results {
-		if r.Error != nil {
-			failure++
-		} else {
-			success++
-		}
-	}
-
-	return BatchForwardMessageResult{
-		SuccessCount: success,
-		FailureCount: failure,
-		Results:      results,
-	}
+	return executeBatchForward(ctx, addrs, msgExt, t.ForwardMessage)
 }
 
-// nextMessageID 生成递增的消息 ID
-func (t *UDPTransport) nextMessageID() uint64 {
-	return atomic.AddUint64(&t.msgIDCounter, 1)
+// GetNodeID 获取当前节点 ID
+func (t *UDPTransport) GetNodeID() uint64 {
+	return t.NodeID.Load()
+}
+
+// GenerateMsgSeq 生成下一条消息序列号
+func (t *UDPTransport) GenerateMsgSeq() uint64 {
+	return generateMsgSeq(t.msgSeqGenerator.Load(), &t.defaultSeqCounter)
 }
 
 // Receive 返回接收消息的通道
@@ -955,7 +931,7 @@ func (t *UDPTransport) Stats() map[string]any {
 	stats["stopped"] = t.stopped.Load()
 	stats["listen_addr"] = t.GetLocalAddr()
 	stats["local_node_id"] = t.NodeID.Load()
-	stats["msg_id_counter"] = atomic.LoadUint64(&t.msgIDCounter)
+	stats["msg_seq_counter"] = t.defaultSeqCounter.Load()
 
 	// 分片缓冲区统计
 	if t.fragmentBuf != nil {

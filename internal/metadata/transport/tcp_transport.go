@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
-	"github.com/jzhang405/NexKV/internal/metadata/identity"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
@@ -64,8 +63,9 @@ type TCPTransport struct {
 	localAddr string
 
 	// 节点标识
-	NodeID          atomic.Uint64
-	msgSeqGenerator *identity.MsgSeqGenerator
+	NodeID            atomic.Uint64
+	msgSeqGenerator   atomic.Value  // 存储 func() uint64
+	defaultSeqCounter atomic.Uint64 // 默认序列号计数器（当 msgSeqGenerator 为 nil 时使用）
 }
 
 // connPool 连接池
@@ -143,30 +143,42 @@ func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 		recvCh:    make(chan MsgFrame, config.BufferSize),
 		stopCh:    make(chan struct{}),
 		localAddr: config.ListenAddr,
-		// NodeID 需要外部通过 SetNodeID() 设置（atomic.Uint64 默认零值）
-		msgSeqGenerator: identity.NewMsgSeqGenerator(),
+		// NodeID 和 msgSeqGenerator 通过 Start() 参数传入
+		// NodeID 需要外部通过 Start() 参数设置（atomic.Uint64 默认零值）
+		// msgSeqGenerator 通过 Start() 参数传入（nil 表示使用默认原子计数器）
 	}
 
 	return t, nil
 }
 
-// SetNodeID 设置本地节点 ID
-//
-// 参数:
-//   - nodeID: 节点 ID（由外部调用者根据 host:tcpPort:udpPort 生成）
-func (t *TCPTransport) SetNodeID(nodeID uint64) {
-	t.NodeID.Store(nodeID)
-}
-
 // Start 启动传输层
 //
+// 扩展参数（可选，传入 nil 表示使用默认值）：
+//   - nodeID: 节点 ID（全局唯一，用于消息去重和幂等性）
+//   - msgSeqGenerator: 消息序列号生成器（nil 表示使用默认原子计数器）
+//
 // 启动监听器和连接池管理器
-func (t *TCPTransport) Start() error {
+func (t *TCPTransport) Start(nodeID *uint64, msgSeqGenerator func() uint64) error {
 	if !t.started.CompareAndSwap(false, true) {
 		return types.NewTransportStateError("已经启动")
 	}
 
-	logging.Infof("启动 TCP 传输层，监听地址: %s", t.config.ListenAddr)
+	// 设置节点 ID
+	if nodeID != nil {
+		t.NodeID.Store(*nodeID)
+	}
+
+	// 设置消息序列号生成器
+	if msgSeqGenerator != nil {
+		t.msgSeqGenerator.Store(msgSeqGenerator)
+	} else {
+		// 使用默认原子计数器
+		t.msgSeqGenerator.Store(func() uint64 {
+			return t.defaultSeqCounter.Add(1)
+		})
+	}
+
+	logging.Infof("启动 TCP 传输层，监听地址: %s, NodeID: %d", t.config.ListenAddr, t.NodeID.Load())
 
 	// 启动监听器
 	if err := t.startListener(); err != nil {
@@ -425,7 +437,7 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message, opts 
 	}
 
 	// 发送消息（带 TLV 选项）
-	msgSeq := t.msgSeqGenerator.Next()
+	msgSeq := t.GenerateMsgSeq()
 	if err := conn.writer.WriteMessageWithOptions(msg, t.NodeID.Load(), msgSeq, options); err != nil {
 		// 发送失败，从池中移除连接（removeConnFromPool 会关闭连接）
 		t.removeConnFromPool(addr)
@@ -480,7 +492,7 @@ func (t *TCPTransport) ForwardMessage(ctx context.Context, addr string, msgExt M
 			"编码 TLV 失败", err)
 	}
 
-	msgSeq := t.msgSeqGenerator.Next()
+	msgSeq := t.GenerateMsgSeq()
 	frame := NewFrame(t.NodeID.Load(), msgSeq, forwardMsg.Type(), uint16(t.codec.Type()), msgData)
 	frame.AddTLVFields(tlvFields)
 	frame.Finalize()
@@ -529,48 +541,7 @@ func (t *TCPTransport) BatchForwardMessage(
 		return createBatchForwardResult(addrs, types.NewTransportStateError("未启动"))
 	}
 
-	// 限制批量大小
-	if len(addrs) > maxBatchSize {
-		addrs = addrs[:maxBatchSize]
-	}
-
-	results := make([]BatchForwardResult, len(addrs))
-	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, maxBatchConcurrency)
-
-	for i, addr := range addrs {
-		wg.Add(1)
-		go func(idx int, targetAddr string) {
-			defer wg.Done()
-			semaphore <- struct{}{}        // 获取信号量
-			defer func() { <-semaphore }() // 释放信号量
-
-			seqID, err := t.ForwardMessage(ctx, targetAddr, msgExt)
-			results[idx] = BatchForwardResult{
-				Addr:  targetAddr,
-				SeqID: seqID,
-				Error: err,
-			}
-		}(i, addr)
-	}
-
-	wg.Wait()
-
-	// 统计结果
-	var success, failure int
-	for _, r := range results {
-		if r.Error != nil {
-			failure++
-		} else {
-			success++
-		}
-	}
-
-	return BatchForwardMessageResult{
-		SuccessCount: success,
-		FailureCount: failure,
-		Results:      results,
-	}
+	return executeBatchForward(ctx, addrs, msgExt, t.ForwardMessage)
 }
 
 // Receive 返回接收消息的通道
@@ -801,6 +772,22 @@ func isTimeoutError(err error) bool {
 // GetLocalAddr 获取本地地址
 func (t *TCPTransport) GetLocalAddr() string {
 	return t.localAddr
+}
+
+// GetNodeID 获取当前节点 ID
+//
+// 返回:
+//   - uint64: 节点 ID（全局唯一，用于消息去重和幂等性）
+func (t *TCPTransport) GetNodeID() uint64 {
+	return t.NodeID.Load()
+}
+
+// GenerateMsgSeq 生成下一条消息序列号
+//
+// 返回:
+//   - uint64: 消息序列号（单调递增，全局唯一）
+func (t *TCPTransport) GenerateMsgSeq() uint64 {
+	return generateMsgSeq(t.msgSeqGenerator.Load(), &t.defaultSeqCounter)
 }
 
 // GetConfig 获取配置

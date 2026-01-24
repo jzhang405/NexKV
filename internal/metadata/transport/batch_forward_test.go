@@ -22,14 +22,14 @@ import (
 func createTestMsgFrame(msgType MessageType, payload []byte, hop uint16, totalHop uint16) MsgFrame {
 	var baseMsg Message
 	if payload != nil {
-		baseMsg = NewBaseMessage(msgType, payload)
+		// 使用 GetMessage 作为测试消息
+		baseMsg = &GetMessage{BaseMessage: BaseMessage{MessageType: msgType}, Key: string(payload)}
 	}
 	frame := NewMsgFrame(12345, 1, msgType, 1, baseMsg)
 
-	// 添加 Hop Count TLV
+	// 设置 Hops 字段（FixedHeader）
 	if hop > 0 {
-		hopTLV := *EncodeHopExt(hop, totalHop)
-		frame.TLVs = append(frame.TLVs, hopTLV)
+		frame.Hops = uint8(hop)
 	}
 
 	return *frame

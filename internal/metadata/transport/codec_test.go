@@ -63,8 +63,9 @@ func TestCodec_DecodeInto_Success(t *testing.T) {
 	}
 
 	originalMsg := &PutMessage{
-		Key:   "test-key",
-		Value: []byte("test-value"),
+		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+		Key:         "test-key",
+		Value:       []byte("test-value"),
 	}
 
 	for _, tc := range testCases {
@@ -166,8 +167,9 @@ func TestCodec_DecodeInto_RoundTrip(t *testing.T) {
 	}
 
 	testMsg := &PutMessage{
-		Key:   "test-roundtrip",
-		Value: []byte("test-value-data"),
+		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+		Key:         "test-roundtrip",
+		Value:       []byte("test-value-data"),
 	}
 
 	for _, tc := range testCases {

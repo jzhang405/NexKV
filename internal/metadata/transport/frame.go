@@ -1,17 +1,29 @@
 // Package transport TLV (Type-Length-Value) 协议的帧格式实现
 //
 // 协议格式:
-// [FixedHeader 31 bytes][VarExtHeader ExtHeaderLen bytes][Data DataLength bytes][CRC32 4 bytes]
+// [FixedHeader 42 bytes][VarExtHeader ExtHeaderLen bytes][Data DataLength bytes][CRC32 4 bytes]
 //
-// FixedHeader (31 bytes):
+// FixedHeader (42 bytes):
 //   - Magic: 4 bytes ("NXUT")
 //   - Version: 1 byte (协议版本，当前为 1)
+//   - Flags: 1 byte (消息标志位，定义请求/响应类型)
 //   - NodeID: 8 bytes (发送节点 ID)
 //   - MsgSeq: 8 bytes (消息序列号)
+//   - ForwardNodeID: 8 bytes (转发节点 ID)
+//   - Hops: 1 byte (剩余跳数)
+//   - Reserved: 1 byte (保留字节，用于未来扩展)
 //   - MsgType: 2 bytes (消息类型)
 //   - CodecID: 2 bytes (编码器 ID，指定 Data 使用的编解码器)
 //   - ExtHeaderLen: 2 bytes (扩展头长度，0 表示无扩展头)
 //   - DataLength: 4 bytes (数据长度)
+//
+// ⚠️ 架构关键要求:
+//   - NodeID + MsgSeq 组合确定消息的唯一性（用于请求-响应匹配）
+//   - Flags 定义消息是请求还是响应（无需解析消息体）
+//   - **响应消息必须保留发送方的 NodeID+MsgSeq**，只改变 Flags 从 request 到 response
+//   - 例如：收到请求 (NodeID=100, MsgSeq=123, Flags=0x0B)
+//   - 响应为: (NodeID=100, MsgSeq=123, Flags=0x06)
+//   - 这样接收方才能通过相同的 NodeID+MsgSeq 在 reqTable 中匹配到等待的请求
 //
 // VarExtHeader (变长 TLV 扩展头):
 //   - TLV Fields: N 个 TLV 字段
@@ -42,9 +54,12 @@ import (
 )
 
 const (
-	// FixedHeaderLen 固定头长度（31 字节）
-	// Magic(4) + Version(1) + NodeID(8) + MsgSeq(8) + MsgType(2) + CodecID(2) + ExtHeaderLen(2) + DataLength(4) = 31
-	FixedHeaderLen = 31
+	// FixedHeaderLen 固定头长度（42 字节）
+	// Magic(4) + Version(1) + Flags(1) + NodeID(8) + MsgSeq(8) + ForwardNodeID(8) + Hops(1) + Reserved(1) + MsgType(2) + CodecID(2) + ExtHeaderLen(2) + DataLength(4) = 42
+	FixedHeaderLen = 42
+
+	// MaxHops 最大跳数限制（防止无限转发）
+	MaxHops uint8 = 10
 
 	// MagicNumber TLV 协议魔术字 "NXUT" (0x4E 0x58 0x55 0x54)
 	MagicNumber = 0x4E585554
@@ -63,7 +78,54 @@ const (
 	MaxFrameSize = 10 * 1024 * 1024
 )
 
-// FixedHeader 固定头结构（31 字节）
+// ========================================
+// Flags 标志位常量
+// ========================================
+
+const (
+	// FlagsIsRequest Bit 0: IS (IsRequest) → 1=请求，0=响应
+	FlagsIsRequest uint8 = 0x01
+
+	// FlagsIsResponse Bit 1: IR (IsResponse) → 1=响应，0=请求
+	FlagsIsResponse uint8 = 0x02
+
+	// FlagsIsError Bit 2: IE (IsError) → 1=错误响应，0=正常响应（仅对响应消息有效）
+	FlagsIsError uint8 = 0x04
+
+	// FlagsExpectResponse Bit 3: ER (ExpectResponse) → 1=需要响应，0=不需要响应（仅对请求消息有效）
+	FlagsExpectResponse uint8 = 0x08
+
+	// FlagsIsForward Bit 5: F (IsForward) → 1=转发消息，0=原始消息
+	FlagsIsForward uint8 = 0x20
+)
+
+// ========================================
+// 消息类型快捷组合
+// ========================================
+
+const (
+	// FlagsTwoWayRequest 双向请求（需要响应）
+	// IS=1, ER=1 → 0x0B
+	// 用于普通 RPC 请求，接收方需返回响应
+	FlagsTwoWayRequest uint8 = FlagsIsRequest | FlagsExpectResponse // 0x0B
+
+	// FlagsOneWayRequest 单向请求（无需响应）
+	// IS=1, ER=0 → 0x03
+	// 用于 Gossip 广播/心跳，接收方无需返回响应
+	FlagsOneWayRequest uint8 = FlagsIsRequest // 0x03
+
+	// FlagsNormalResponse 正常响应
+	// IR=1, IE=0 → 0x06
+	// 对双向请求的正常响应
+	FlagsNormalResponse uint8 = FlagsIsResponse // 0x06
+
+	// FlagsErrorResponse 错误响应
+	// IR=1, IE=1 → 0x07
+	// 对双向请求的错误响应（携带错误信息）
+	FlagsErrorResponse uint8 = FlagsIsResponse | FlagsIsError // 0x07
+)
+
+// FixedHeader 固定头结构（42 字节）
 type FixedHeader struct {
 	// Magic 魔术字（固定为 "NXUT"）
 	Magic [4]byte
@@ -71,11 +133,40 @@ type FixedHeader struct {
 	// Version 协议版本（当前为 1，用于协议升级和向后兼容）
 	Version uint8
 
+	// Flags 消息标志位（定义请求/响应类型）
+	// Bit 0 (IS): IsRequest → 1=请求，0=响应
+	// Bit 1 (IR): IsResponse → 1=响应，0=请求
+	// Bit 2 (IE): IsError → 1=错误响应，0=正常响应（仅响应有效）
+	// Bit 3 (ER): ExpectResponse → 1=需要响应，0=不需要响应（仅请求有效）
+	// Bit 4: 预留，暂填 0
+	// Bit 5 (F): IsForward → 1=转发消息，0=原始消息
+	// Bit 6-7: 预留，暂填 0
+	Flags uint8
+
 	// NodeID 发送节点 ID
+	// ⚠️ 架构关键：NodeID + MsgSeq 组合确定消息的唯一性
+	// 响应消息必须保留发送方的 NodeID，只改变 Flags
 	NodeID uint64
 
 	// MsgSeq 消息序列号（用于去重和匹配请求响应）
+	// ⚠️ 架构关键：NodeID + MsgSeq 组合确定消息的唯一性
+	// 响应消息必须保留发送方的 MsgSeq，只改变 Flags
 	MsgSeq uint64
+
+	// ForwardNodeID 转发节点 ID（仅当 Flags Bit 5=1 时有意义）
+	// - 原始消息：ForwardNodeID = 0，Flags Bit 5 = 0
+	// - 转发消息：ForwardNodeID = 转发节点 ID，Flags Bit 5 = 1
+	// 用于追踪消息转发路径，防止循环转发
+	ForwardNodeID uint64
+
+	// Hops 剩余跳数（防止无限转发）
+	// - 初始值由消息类型决定（通常为 MaxHops=10）
+	// - 每次转发减 1，Hops=0 时不再转发
+	// - 替代 TLV ExtHop 扩展字段，简化协议
+	Hops uint8
+
+	// Reserved 保留字节（1B，暂填 0，用于未来扩展）
+	Reserved uint8
 
 	// MsgType 消息类型
 	MsgType MessageType
@@ -92,20 +183,24 @@ type FixedHeader struct {
 
 // NewFixedHeader 创建新的固定头
 // 注意：ExtHeaderLen 和 DataLength 会在 Marshal 时自动计算
-func NewFixedHeader(nodeID uint64, msgSeq uint64, msgType MessageType, codecID uint16) *FixedHeader {
+func NewFixedHeader(nodeID uint64, msgSeq uint64, msgType MessageType, codecID uint16, flags uint8, forwardNodeID uint64, hops uint8) *FixedHeader {
 	return &FixedHeader{
-		Magic:        [4]byte{'N', 'X', 'U', 'T'},
-		Version:      1, // 当前协议版本为 1
-		NodeID:       nodeID,
-		MsgSeq:       msgSeq,
-		MsgType:      msgType,
-		CodecID:      codecID,
-		ExtHeaderLen: 0, // 默认无扩展头
-		DataLength:   0, // Marshal 时计算
+		Magic:         [4]byte{'N', 'X', 'U', 'T'},
+		Version:       1, // 当前协议版本为 1
+		Flags:         flags,
+		NodeID:        nodeID,
+		MsgSeq:        msgSeq,
+		ForwardNodeID: forwardNodeID, // 默认为 0（原始消息）
+		Hops:          hops,          // 默认为 MaxHops
+		Reserved:      0,             // 保留字节，显式初始化为 0
+		MsgType:       msgType,
+		CodecID:       codecID,
+		ExtHeaderLen:  0, // 默认无扩展头
+		DataLength:    0, // Marshal 时计算
 	}
 }
 
-// Serialize 序列化固定头（31 字节）
+// Serialize 序列化固定头（42 字节）
 func (h *FixedHeader) Serialize() []byte {
 	buf := make([]byte, FixedHeaderLen)
 
@@ -115,23 +210,35 @@ func (h *FixedHeader) Serialize() []byte {
 	// 写入 Version (4)
 	buf[4] = h.Version
 
-	// 写入 NodeID (5-12)
-	binary.BigEndian.PutUint64(buf[5:13], h.NodeID)
+	// 写入 Flags (5)
+	buf[5] = h.Flags
 
-	// 写入 MsgSeq (13-20)
-	binary.BigEndian.PutUint64(buf[13:21], h.MsgSeq)
+	// 写入 NodeID (6-13)
+	binary.BigEndian.PutUint64(buf[6:14], h.NodeID)
 
-	// 写入 MsgType (21-22)
-	binary.BigEndian.PutUint16(buf[21:23], uint16(h.MsgType))
+	// 写入 MsgSeq (14-21)
+	binary.BigEndian.PutUint64(buf[14:22], h.MsgSeq)
 
-	// 写入 CodecID (23-24)
-	binary.BigEndian.PutUint16(buf[23:25], h.CodecID)
+	// 写入 ForwardNodeID (22-29)
+	binary.BigEndian.PutUint64(buf[22:30], h.ForwardNodeID)
 
-	// 写入 ExtHeaderLen (25-26)
-	binary.BigEndian.PutUint16(buf[25:27], h.ExtHeaderLen)
+	// 写入 Hops (30)
+	buf[30] = h.Hops
 
-	// 写入 DataLength (27-30)
-	binary.BigEndian.PutUint32(buf[27:31], h.DataLength)
+	// 写入 Reserved (31)
+	buf[31] = h.Reserved
+
+	// 写入 MsgType (32-33)
+	binary.BigEndian.PutUint16(buf[32:34], uint16(h.MsgType))
+
+	// 写入 CodecID (34-35)
+	binary.BigEndian.PutUint16(buf[34:36], h.CodecID)
+
+	// 写入 ExtHeaderLen (36-37)
+	binary.BigEndian.PutUint16(buf[36:38], h.ExtHeaderLen)
+
+	// 写入 DataLength (38-41)
+	binary.BigEndian.PutUint32(buf[38:42], h.DataLength)
 
 	return buf
 }
@@ -156,31 +263,94 @@ func DeserializeFixedHeader(data []byte) (*FixedHeader, error) {
 	// 读取 Version (4)
 	header.Version = data[4]
 
-	// 读取 NodeID (5-12)
-	header.NodeID = binary.BigEndian.Uint64(data[5:13])
+	// 读取 Flags (5)
+	header.Flags = data[5]
 
-	// 读取 MsgSeq (13-20)
-	header.MsgSeq = binary.BigEndian.Uint64(data[13:21])
+	// 读取 NodeID (6-13)
+	header.NodeID = binary.BigEndian.Uint64(data[6:14])
 
-	// 读取 MsgType (21-22)
-	header.MsgType = MessageType(binary.BigEndian.Uint16(data[21:23]))
+	// 读取 MsgSeq (14-21)
+	header.MsgSeq = binary.BigEndian.Uint64(data[14:22])
 
-	// 读取 CodecID (23-24)
-	header.CodecID = binary.BigEndian.Uint16(data[23:25])
+	// 读取 ForwardNodeID (22-29)
+	header.ForwardNodeID = binary.BigEndian.Uint64(data[22:30])
 
-	// 读取 ExtHeaderLen (25-26)
-	header.ExtHeaderLen = binary.BigEndian.Uint16(data[25:27])
+	// 读取 Hops (30)
+	header.Hops = data[30]
 
-	// 读取 DataLength (27-30)
-	header.DataLength = binary.BigEndian.Uint32(data[27:31])
+	// 读取 Reserved (31)
+	header.Reserved = data[31]
+
+	// 读取 MsgType (32-33)
+	header.MsgType = MessageType(binary.BigEndian.Uint16(data[32:34]))
+
+	// 读取 CodecID (34-35)
+	header.CodecID = binary.BigEndian.Uint16(data[34:36])
+
+	// 读取 ExtHeaderLen (36-37)
+	header.ExtHeaderLen = binary.BigEndian.Uint16(data[36:38])
+
+	// 读取 DataLength (38-41)
+	header.DataLength = binary.BigEndian.Uint32(data[38:42])
 
 	return header, nil
 }
 
 // String 返回固定头的字符串表示
 func (h *FixedHeader) String() string {
-	return fmt.Sprintf("FixedHeader{NodeID=%d, MsgSeq=%d, MsgType=%d, CodecID=%d}",
-		h.NodeID, h.MsgSeq, h.MsgType, h.CodecID)
+	return fmt.Sprintf("FixedHeader{NodeID=%d, MsgSeq=%d, ForwardNodeID=%d, Hops=%d, MsgType=%d, CodecID=%d, Flags=0x%02X}",
+		h.NodeID, h.MsgSeq, h.ForwardNodeID, h.Hops, h.MsgType, h.CodecID, h.Flags)
+}
+
+// ValidateFlags 验证 Flags 字段的有效性
+//
+// 返回 nil 表示 Flags 有效，返回 error 表示 Flags 无效
+//
+// 验证规则：
+//   - IS 和 IR 必须互斥（不能同时为 1 或同时为 0）
+//   - IE 仅对响应有效（当 IR=1 时）
+//   - ER 仅对请求有效（当 IS=1 时）
+func ValidateFlags(flags uint8) error {
+	// 提取标志位
+	isRequest := (flags & FlagsIsRequest) != 0
+	isResponse := (flags & FlagsIsResponse) != 0
+	isError := (flags & FlagsIsError) != 0
+	expectResp := (flags & FlagsExpectResponse) != 0
+
+	// 规则 1: IS 和 IR 必须互斥
+	if isRequest && isResponse {
+		return fmt.Errorf("invalid flags: IS and IR are both set (flags=0x%02X)", flags)
+	}
+	if !isRequest && !isResponse {
+		return fmt.Errorf("invalid flags: neither IS nor IR is set (flags=0x%02X)", flags)
+	}
+
+	// 规则 2: IE 仅对响应有效
+	if isRequest && isError {
+		return fmt.Errorf("invalid flags: IE set but message is request (flags=0x%02X)", flags)
+	}
+
+	// 规则 3: ER 仅对请求有效
+	if isResponse && expectResp {
+		return fmt.Errorf("invalid flags: ER set but message is response (flags=0x%02X)", flags)
+	}
+
+	return nil
+}
+
+// ParseFlags 解析 Flags 字段，返回各个标志位的值
+//
+// 返回值：
+//   - isRequest: 是否为请求
+//   - isResponse: 是否为响应
+//   - isError: 是否为错误响应
+//   - expectResponse: 是否需要响应
+func ParseFlags(flags uint8) (isRequest, isResponse, isError, expectResponse bool) {
+	isRequest = (flags & FlagsIsRequest) != 0
+	isResponse = (flags & FlagsIsResponse) != 0
+	isError = (flags & FlagsIsError) != 0
+	expectResponse = (flags & FlagsExpectResponse) != 0
+	return
 }
 
 // ExtFieldType TLV 扩展字段类型
@@ -195,10 +365,9 @@ const (
 	ExtFragment ExtFieldType = 3
 	// ExtPriority 优先级扩展
 	ExtPriority ExtFieldType = 4
-	// ExtHop 跳数 TTL 扩展（Hop Count：时钟无关的消息传播限制）
-	ExtHop ExtFieldType = 5
-	// ExtCustom 自定义扩展（>= 6）
-	ExtCustom ExtFieldType = 6
+	// ExtCustom 自定义扩展（>= 5）
+	// 注意：ExtHop 已移除，hops 现在是 FixedHeader 的一部分
+	ExtCustom ExtFieldType = 5
 )
 
 // String 返回扩展字段类型的字符串表示
@@ -212,8 +381,6 @@ func (t ExtFieldType) String() string {
 		return "Fragment"
 	case ExtPriority:
 		return "Priority"
-	case ExtHop:
-		return "Hop"
 	default:
 		return fmt.Sprintf("Custom(%d)", t)
 	}
@@ -381,9 +548,9 @@ func (h *VarExtHeader) String() string {
 // Frame 协议帧
 //
 // 完整的帧结构：
-// [FixedHeader 31 bytes][VarExtHeader ExtHeaderLen bytes][Data DataLength bytes][CRC32 4 bytes]
+// [FixedHeader 42 bytes][VarExtHeader ExtHeaderLen bytes][Data DataLength bytes][CRC32 4 bytes]
 type Frame struct {
-	// FixedHeader 固定头（31 字节）
+	// FixedHeader 固定头（42 字节）
 	FixedHeader *FixedHeader
 
 	// VarExtHeader 变长扩展头
@@ -397,10 +564,44 @@ type Frame struct {
 }
 
 // NewFrame 创建新的帧
-func NewFrame(nodeID uint64, msgSeq uint64, msgType MessageType, codecID uint16, data []byte) *Frame {
+func NewFrame(nodeID uint64, msgSeq uint64, msgType MessageType, codecID uint16, flags uint8, data []byte) *Frame {
 	return &Frame{
-		FixedHeader:  NewFixedHeader(nodeID, msgSeq, msgType, codecID),
+		FixedHeader:  NewFixedHeader(nodeID, msgSeq, msgType, codecID, flags, 0, MaxHops), // 默认 forwardNodeID=0, hops=MaxHops
 		VarExtHeader: NewVarExtHeader(),
+		Data:         data,
+	}
+}
+
+// NewForwardFrame 创建转发消息的帧（设置 ForwardNodeID 和 IsForward 标志，使用指定 hops）
+func NewForwardFrame(nodeID uint64, msgSeq uint64, msgType MessageType, codecID uint16, flags uint8, forwardNodeID uint64, hops uint8, data []byte) *Frame {
+	// 设置 IsForward 标志位
+	forwardFlags := flags | FlagsIsForward
+	return &Frame{
+		FixedHeader:  NewFixedHeader(nodeID, msgSeq, msgType, codecID, forwardFlags, forwardNodeID, hops),
+		VarExtHeader: NewVarExtHeader(),
+		Data:         data,
+	}
+}
+
+// NewForwardFrameWithHops 创建转发消息的帧（从原始帧递减 hops）
+func NewForwardFrameWithHops(originalFrame *Frame, forwardNodeID uint64, data []byte) *Frame {
+	// 从原始帧获取 hops 并递减
+	newHops := originalFrame.FixedHeader.Hops
+	if newHops > 0 {
+		newHops--
+	}
+
+	return &Frame{
+		FixedHeader: NewFixedHeader(
+			originalFrame.FixedHeader.NodeID,
+			originalFrame.FixedHeader.MsgSeq,
+			originalFrame.FixedHeader.MsgType,
+			originalFrame.FixedHeader.CodecID,
+			originalFrame.FixedHeader.Flags,
+			forwardNodeID,
+			newHops,
+		),
+		VarExtHeader: originalFrame.VarExtHeader,
 		Data:         data,
 	}
 }
@@ -436,12 +637,6 @@ func (f *Frame) WithEncrypt(encryptID uint16, nonce []byte, version string) *Fra
 // WithPriority 添加优先级扩展字段
 func (f *Frame) WithPriority(priority types.Priority) *Frame {
 	f.VarExtHeader.AddField(EncodePriorityExt(priority))
-	return f
-}
-
-// WithHop 添加跳数 TTL 扩展字段
-func (f *Frame) WithHop(hop, totalHop uint16) *Frame {
-	f.VarExtHeader.AddField(EncodeHopExt(hop, totalHop))
 	return f
 }
 
@@ -664,7 +859,7 @@ func NewFrameReader(r io.Reader) *FrameReader {
 
 // ReadFrame 读取一帧
 func (fr *FrameReader) ReadFrame() (*Frame, error) {
-	// 读取固定头（31 字节）
+	// 读取固定头（42 字节）
 	fixedHeaderData := make([]byte, FixedHeaderLen)
 	if _, err := io.ReadFull(fr.r, fixedHeaderData); err != nil {
 		return nil, err
@@ -874,38 +1069,18 @@ func DecodeFragmentExt(field *ExtField) (index, total uint16, err error) {
 	return data.Index, data.Total, nil
 }
 
-// HopExt 跳数 TTL 扩展（MessagePack 序列化 + 便捷访问）
-type HopExt struct {
-	Hop      uint16 `msgpack:"hop"`   // 当前跳数
-	TotalHop uint16 `msgpack:"total"` // 最大跳数
-}
+// ========================================
+// 辅助函数（通用工具）
+// ========================================
 
-// EncodeHopExt 编码跳数 TTL 扩展
-func EncodeHopExt(hop, totalHop uint16) *ExtField {
-	data := HopExt{
-		Hop:      hop,
-		TotalHop: totalHop,
+// FlagsFromMessage 根据 Message 的 ExpectResponse() 属性计算 Flags 值
+//
+// 返回值：
+//   - ExpectResponse → FlagsTwoWayRequest (0x0B)
+//   - NoResponse → FlagsOneWayRequest (0x03)
+func FlagsFromMessage(msg Message) uint8 {
+	if msg.ExpectResponse() == types.ExpectResponse {
+		return FlagsTwoWayRequest // 0x0B
 	}
-
-	bytes, err := msgpack.Marshal(data)
-	if err != nil {
-		// 跳数扩展编码失败不应发生，直接panic
-		panic(fmt.Sprintf("序列化跳数扩展失败: %v", err))
-	}
-
-	return &ExtField{
-		Type:  ExtHop,
-		Value: bytes,
-	}
-}
-
-// DecodeHopExt 解码跳数 TTL 扩展
-func DecodeHopExt(field *ExtField) (hop, totalHop uint16, err error) {
-	var data HopExt
-
-	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
-		return 0, 0, fmt.Errorf("反序列化跳数扩展失败: %w", err)
-	}
-
-	return data.Hop, data.TotalHop, nil
+	return FlagsOneWayRequest // 0x03
 }

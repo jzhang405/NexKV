@@ -134,7 +134,10 @@ func TestUDPTransport_SendReceive(t *testing.T) {
 	defer func() { _ = server.Stop() }()
 
 	// 发送消息
-	msg := &GetMessage{Key: "test-key"}
+	msg := &GetMessage{
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+		Key:         "test-key",
+	}
 	err := client.Send(ctx, serverAddr, msg)
 	require.NoError(t, err)
 
@@ -169,7 +172,10 @@ func TestUDPTransport_Send_NotStarted(t *testing.T) {
 	trans := createUDPTransport(t)
 
 	ctx := context.Background()
-	msg := &GetMessage{Key: "test"}
+	msg := &GetMessage{
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+		Key:         "test",
+	}
 
 	err := trans.Send(ctx, "127.0.0.1:9211", msg)
 	assert.Error(t, err)
@@ -471,7 +477,10 @@ func TestUDPTransport_ConcurrentSend(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			msg := &GetMessage{Key: "test"}
+			msg := &GetMessage{
+				BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+				Key:         "test",
+			}
 			err := client.Send(ctx, serverAddr, msg)
 			if err != nil {
 				errors <- err
@@ -1064,7 +1073,7 @@ func TestUDPFragmentation_PacketLoss(t *testing.T) {
 		}
 
 		// 使用 Builder 模式构造带分片扩展的 TLV Frame
-		frame := NewFrame(nodeID, msgID, types.MessageTypeGossipSync, uint16(trans.codec.Type()), data).
+		frame := NewFrame(nodeID, msgID, types.MessageTypeGossipSync, uint16(trans.codec.Type()), FlagsIsRequest, data).
 			WithFragment(uint16(i), totalFragments).
 			Finalize()
 		fragmentBytes, _ := frame.Marshal()
@@ -1105,7 +1114,7 @@ func TestUDPFragmentation_OutOfOrder(t *testing.T) {
 		}
 
 		// 使用 Builder 模式构造带分片扩展的 TLV Frame
-		frame := NewFrame(nodeID, msgID, types.MessageTypeGossipSync, uint16(trans.codec.Type()), fragmentData).
+		frame := NewFrame(nodeID, msgID, types.MessageTypeGossipSync, uint16(trans.codec.Type()), FlagsIsRequest, fragmentData).
 			WithFragment(uint16(seq), totalFragments).
 			Finalize()
 		fragmentBytes, _ := frame.Marshal()
@@ -1472,7 +1481,7 @@ func TestUDP_P0_MaxFragmentCount(t *testing.T) {
 
 	// 构造恶意分片帧：total = 0（非法值）
 	// 使用新的 TLV Frame 格式，包含 ExtFragment 扩展字段
-	frame := NewFrame(1001, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), []byte("test data"))
+	frame := NewFrame(1001, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), FlagsIsRequest, []byte("test data"))
 
 	// 添加分片扩展字段：index=0, total=0（非法值）
 	fragmentExt := EncodeFragmentExt(0, 0) // total=0 应该被拒绝

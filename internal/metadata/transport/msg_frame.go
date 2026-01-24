@@ -34,7 +34,7 @@ type TLV = ExtField
 var (
 	// decoders 全局解码器注册表
 	decoders = map[ExtFieldType]ExtDecoder{
-		ExtHop:      decodeHopExt,
+		// ExtHop 已移至 FixedHeader，不再作为 TLV 解码
 		ExtCompress: decodeCompressExt,
 		ExtEncrypt:  decodeEncryptExt,
 		ExtFragment: decodeFragmentExt,
@@ -76,7 +76,7 @@ func getDecoder(fieldType ExtFieldType) (ExtDecoder, bool) {
 //
 // 注意：MsgFrame 按值传递，无缓存机制。每次调用 GetExt() 都会重新解码。
 type MsgFrame struct {
-	FixedHeader         // 固定帧头（31 字节）
+	FixedHeader         // 固定帧头（42 字节）
 	TLVs        []TLV   // 扩展头 TLV（可变长度）
 	Message     Message // 消息体（实际业务消息）
 }
@@ -85,14 +85,16 @@ type MsgFrame struct {
 func NewMsgFrame(nodeID uint64, msgSeq uint64, msgType MessageType, codecID uint16, message Message) *MsgFrame {
 	return &MsgFrame{
 		FixedHeader: FixedHeader{
-			Magic:        [4]byte{'N', 'X', 'U', 'T'},
-			Version:      1,
-			NodeID:       nodeID,
-			MsgSeq:       msgSeq,
-			MsgType:      msgType,
-			CodecID:      codecID,
-			ExtHeaderLen: 0,
-			DataLength:   0,
+			Magic:         [4]byte{'N', 'X', 'U', 'T'},
+			Version:       1,
+			NodeID:        nodeID,
+			MsgSeq:        msgSeq,
+			ForwardNodeID: 0,
+			Hops:          MaxHops, // 默认最大跳数
+			MsgType:       msgType,
+			CodecID:       codecID,
+			ExtHeaderLen:  0,
+			DataLength:    0,
 		},
 		TLVs:    make([]TLV, 0),
 		Message: message,
@@ -144,9 +146,11 @@ func GetExtAs[T any](f *MsgFrame, fieldType ExtFieldType) (T, bool) {
 	return typed, ok
 }
 
-// GetHopCount 获取跳数 TTL
-func (f *MsgFrame) GetHopCount() (*HopExt, bool) {
-	return GetExtAs[*HopExt](f, ExtHop)
+// GetHopCount 获取剩余跳数（从 FixedHeader）
+func (f *MsgFrame) GetHopCount() (uint8, bool) {
+	// hops 现在是 FixedHeader 的一部分
+	// 注意：总是返回 hops 值，即使为 0。调用方可以通过 hops == 0 判断是否过期。
+	return f.Hops, true
 }
 
 // GetCompress 获取压缩配置
@@ -172,15 +176,6 @@ func (f *MsgFrame) GetPriority() (*PriorityExt, bool) {
 // ========================================
 // TLV 字段解码器（内部使用）
 // ========================================
-
-// decodeHopExt 解码跳数 TTL 扩展
-func decodeHopExt(tlv TLV) (any, error) {
-	hop, totalHop, err := DecodeHopExt(&tlv)
-	if err != nil {
-		return nil, err
-	}
-	return &HopExt{Hop: hop, TotalHop: totalHop}, nil
-}
 
 // decodeCompressExt 解码压缩扩展
 func decodeCompressExt(tlv TLV) (any, error) {
@@ -268,16 +263,16 @@ func (f *MsgFrame) GetTLV(fieldType ExtFieldType) *TLV {
 	return nil
 }
 
-// HasHopCount 检查是否有 Hop Count 限制（便捷方法）
+// HasHopCount 检查是否有 Hops 限制（便捷方法）
 func (f *MsgFrame) HasHopCount() bool {
-	v, _ := f.GetHopCount()
-	return v != nil
+	hops, _ := f.GetHopCount()
+	return hops > 0
 }
 
-// IsHopExpired 检查 Hop Count 是否过期（便捷方法）
+// IsHopExpired 检查 Hops 是否过期（便捷方法）
 func (f *MsgFrame) IsHopExpired() bool {
-	v, ok := f.GetHopCount()
-	return ok && v.Hop == 0
+	hops, ok := f.GetHopCount()
+	return ok && hops == 0
 }
 
 // HasCompression 检查是否有压缩配置（便捷方法）
@@ -307,13 +302,9 @@ func (f *MsgFrame) String() string {
 // EncodeTLVs 编码所有 TLV 扩展字段
 //
 // 用于 ForwardMessage() 场景，重新编码 TLV 字段。每次调用都会通过 GetExt() 重新解码。
+// 注意：Hops 现在在 FixedHeader 中，不再作为 TLV 编码。
 func (f *MsgFrame) EncodeTLVs() ([]ExtField, error) {
 	var fields []ExtField
-
-	// Hop Count
-	if hop, ok := f.GetHopCount(); ok {
-		fields = append(fields, *EncodeHopExt(hop.Hop, hop.TotalHop))
-	}
 
 	// Priority
 	if priority, ok := f.GetPriority(); ok {
@@ -371,11 +362,11 @@ func cloneBytes(src []byte) []byte {
 	return dst
 }
 
-// prepareForwardMessage 准备转发消息（深拷贝 + Hop Count 递减）
+// prepareForwardMessage 准备转发消息（深拷贝 + Hops 递减）
 //
 // 返回:
 //   - *MsgFrame: 处理后的消息副本
-//   - error: Hop Count 过期或其他错误
+//   - error: Hops 过期或其他错误
 func prepareForwardMessage(frame *MsgFrame) (*MsgFrame, error) {
 	if frame.Message == nil {
 		return nil, types.NewOpErr(types.ErrCodecEncodeFailed, "ForwardMessage",
@@ -384,21 +375,12 @@ func prepareForwardMessage(frame *MsgFrame) (*MsgFrame, error) {
 
 	forwardFrame := frame.DeepCopy()
 
-	// 递减 Hop Count
-	if hop, ok := forwardFrame.GetHopCount(); ok {
-		if hop.Hop == 0 {
-			return nil, types.NewTransportHopCountExpiredError()
-		}
-		hop.Hop--
-
-		// 更新 TLVs 中的 Hop Count
-		for i := range forwardFrame.TLVs {
-			if forwardFrame.TLVs[i].Type == ExtHop {
-				forwardFrame.TLVs[i] = *EncodeHopExt(hop.Hop, hop.TotalHop)
-				break
-			}
-		}
+	// 递减 Hops（从 FixedHeader）
+	hops, _ := forwardFrame.GetHopCount()
+	if hops == 0 {
+		return nil, types.NewTransportHopCountExpiredError()
 	}
+	forwardFrame.Hops = hops - 1
 
 	return forwardFrame, nil
 }
@@ -490,48 +472,88 @@ func WithPriority(priority types.Priority) SendOpt {
 // BaseMessage 基础消息实现
 // ========================================
 
-// BaseMessage 基础消息实现（提供默认的 Message 接口实现）
-type BaseMessage struct {
-	msgType  MessageType
-	payload  []byte
-	priority int
+// ========================================
+// 消息注册表（替代 switch-case 工厂函数）
+// ========================================
+
+// messageFactory 消息工厂函数类型
+type messageFactory func() Message
+
+var (
+	// messageRegistry 消息注册表（msgType -> factory）
+	messageRegistry = map[MessageType]messageFactory{}
+	// registryMutex 保护注册表的并发访问
+	registryMutex sync.RWMutex
+)
+
+// registerMessage 注册消息类型
+//
+// 参数:
+//   - msgType: 消息类型
+//   - factory: 消息工厂函数（返回新的消息实例）
+//
+// 说明:
+//   - 用于初始化阶段注册所有消息类型
+//   - 并发安全：使用 RWMutex 保护
+func registerMessage(msgType MessageType, factory messageFactory) {
+	registryMutex.Lock()
+	defer registryMutex.Unlock()
+	messageRegistry[msgType] = factory
 }
 
-// NewBaseMessage 创建基础消息
-func NewBaseMessage(msgType MessageType, payload []byte) *BaseMessage {
-	return &BaseMessage{
-		msgType:  msgType,
-		payload:  payload,
-		priority: int(GetPriority(msgType)),
+// createMessage 根据消息类型创建消息实例（使用注册表）
+//
+// 替代 codec.go 中的 createMessageByType() 函数
+func createMessage(msgType MessageType) (Message, error) {
+	registryMutex.RLock()
+	factory, ok := messageRegistry[msgType]
+	registryMutex.RUnlock()
+
+	if !ok {
+		return nil, types.NewCodecUnknownMessageTypeError(int(msgType))
 	}
+
+	return factory(), nil
 }
 
-// Type 返回消息类型
+// ========================================
+// BaseMessage 基础消息实现
+// ========================================
+
+// BaseMessage 基础消息实现（提供默认的 Message 接口实现）
+//
+// 用途:
+//   - 作为所有消息类型的内嵌基类，提供统一的接口实现
+//   - 消除重复代码，避免每个消息类型都实现相同的 4 个方法
+//   - 支持通过内嵌 BaseMessage 来自动获得 Message 接口实现
+type BaseMessage struct {
+	// MessageType 消息类型（由具体消息类型在初始化时设置）
+	MessageType MessageType
+}
+
+// Type 返回消息类型（实现 Message 接口）
 func (m *BaseMessage) Type() MessageType {
-	return m.msgType
+	return m.MessageType
 }
 
-// GetPayload 返回消息负载
-func (m *BaseMessage) GetPayload() []byte {
-	return m.payload
-}
-
-// Priority 返回消息优先级
+// Priority 返回消息优先级（实现 Message 接口）
+//
+// 默认实现：从消息类型的优先级配置中获取
+// 具体消息类型可以覆盖此方法以提供自定义优先级
 func (m *BaseMessage) Priority() int {
-	return m.priority
-}
-
-// SetPriority 设置消息优先级
-func (m *BaseMessage) SetPriority(priority int) {
-	m.priority = priority
+	return int(GetPriority(m.MessageType))
 }
 
 // ExpectResponse 返回响应期望（实现 Message 接口）
+//
+// 默认实现：从消息类型的配置中获取
 func (m *BaseMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
+	return m.MessageType.ExpectResponse()
 }
 
 // Reliability 返回可靠性要求（实现 Message 接口）
+//
+// 默认实现：从消息类型的配置中获取
 func (m *BaseMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
+	return m.MessageType.Reliability()
 }

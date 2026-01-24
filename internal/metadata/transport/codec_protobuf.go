@@ -555,71 +555,91 @@ func (c *ProtobufCodec) wrapperToMessage(wrapper *proto.WrapperMessageProto) (Me
 
 	switch body := wrapper.MessageBody.(type) {
 	case *proto.WrapperMessageProto_GetMsg:
-		return &GetMessage{Key: body.GetMsg.Key}, nil
+		return &GetMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+			Key:         body.GetMsg.Key,
+		}, nil
 	case *proto.WrapperMessageProto_PutMsg:
-		return &PutMessage{Key: body.PutMsg.Key, Value: body.PutMsg.Value}, nil
+		return &PutMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+			Key:         body.PutMsg.Key,
+			Value:       body.PutMsg.Value,
+		}, nil
 	case *proto.WrapperMessageProto_DeleteMsg:
-		return &DeleteMessage{Key: body.DeleteMsg.Key}, nil
+		return &DeleteMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeDelete},
+			Key:         body.DeleteMsg.Key,
+		}, nil
 	case *proto.WrapperMessageProto_GetReplyMsg:
 		return &GetReplyMessage{
-			Key:     body.GetReplyMsg.Key,
-			Value:   body.GetReplyMsg.Value,
-			Found:   body.GetReplyMsg.Found,
-			Version: body.GetReplyMsg.Version,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeGetReply},
+			Key:         body.GetReplyMsg.Key,
+			Value:       body.GetReplyMsg.Value,
+			Found:       body.GetReplyMsg.Found,
+			Version:     body.GetReplyMsg.Version,
 		}, nil
 	case *proto.WrapperMessageProto_PutReplyMsg:
 		return &PutReplyMessage{
-			Key:     body.PutReplyMsg.Key,
-			Success: body.PutReplyMsg.Success,
-			Version: body.PutReplyMsg.Version,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypePutReply},
+			Key:         body.PutReplyMsg.Key,
+			Success:     body.PutReplyMsg.Success,
+			Version:     body.PutReplyMsg.Version,
 		}, nil
 	case *proto.WrapperMessageProto_DeleteReplyMsg:
 		return &DeleteReplyMessage{
-			Key:     body.DeleteReplyMsg.Key,
-			Success: body.DeleteReplyMsg.Success,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeDeleteReply},
+			Key:         body.DeleteReplyMsg.Key,
+			Success:     body.DeleteReplyMsg.Success,
 		}, nil
 	case *proto.WrapperMessageProto_GossipSyncMsg:
 		return &GossipSyncMessage{
-			Version:   body.GossipSyncMsg.Version,
-			Metadata:  body.GossipSyncMsg.Metadata,
-			Timestamp: body.GossipSyncMsg.Timestamp,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipSync},
+			Version:     body.GossipSyncMsg.Version,
+			Metadata:    body.GossipSyncMsg.Metadata,
+			Timestamp:   body.GossipSyncMsg.Timestamp,
 		}, nil
 	case *proto.WrapperMessageProto_GossipSyncReplyMsg:
 		return &GossipSyncReplyMessage{
-			Accepted: body.GossipSyncReplyMsg.Accepted,
-			Version:  body.GossipSyncReplyMsg.Version,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipSyncReply},
+			Accepted:    body.GossipSyncReplyMsg.Accepted,
+			Version:     body.GossipSyncReplyMsg.Version,
 		}, nil
 	case *proto.WrapperMessageProto_GossipDigestMsg:
 		return &GossipDigestMessage{
-			Version: body.GossipDigestMsg.Version,
-			Digest:  body.GossipDigestMsg.Digest,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipDigest},
+			Version:     body.GossipDigestMsg.Version,
+			Digest:      body.GossipDigestMsg.Digest,
 		}, nil
 	case *proto.WrapperMessageProto_GossipDigestReplyMsg:
 		return &GossipDigestReplyMessage{
-			Version: body.GossipDigestReplyMsg.Version,
-			Digest:  body.GossipDigestReplyMsg.Digest,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipDigestReply},
+			Version:     body.GossipDigestReplyMsg.Version,
+			Digest:      body.GossipDigestReplyMsg.Digest,
 		}, nil
 	case *proto.WrapperMessageProto_QuorumProposeMsg:
 		return &QuorumProposeMessage{
-			ProposalID: body.QuorumProposeMsg.ProposalId,
-			Key:        body.QuorumProposeMsg.Key,
-			Value:      body.QuorumProposeMsg.Value,
-			Operation:  body.QuorumProposeMsg.Operation,
-			Proposer:   body.QuorumProposeMsg.Proposer,
-			Timestamp:  body.QuorumProposeMsg.Timestamp,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeQuorumPropose},
+			ProposalID:  body.QuorumProposeMsg.ProposalId,
+			Key:         body.QuorumProposeMsg.Key,
+			Value:       body.QuorumProposeMsg.Value,
+			Operation:   body.QuorumProposeMsg.Operation,
+			Proposer:    body.QuorumProposeMsg.Proposer,
+			Timestamp:   body.QuorumProposeMsg.Timestamp,
 		}, nil
 	case *proto.WrapperMessageProto_QuorumVoteMsg:
 		return &QuorumVoteMessage{
-			ProposalID: body.QuorumVoteMsg.ProposalId,
-			Voter:      body.QuorumVoteMsg.Voter,
-			Vote:       body.QuorumVoteMsg.Vote,
-			Reason:     body.QuorumVoteMsg.Reason,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeQuorumVote},
+			ProposalID:  body.QuorumVoteMsg.ProposalId,
+			Voter:       body.QuorumVoteMsg.Voter,
+			Vote:        body.QuorumVoteMsg.Vote,
+			Reason:      body.QuorumVoteMsg.Reason,
 		}, nil
 	case *proto.WrapperMessageProto_QuorumDecideMsg:
 		return &QuorumDecideMessage{
-			ProposalID: body.QuorumDecideMsg.ProposalId,
-			Approved:   body.QuorumDecideMsg.Approved,
-			Version:    body.QuorumDecideMsg.Version,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeQuorumDecide},
+			ProposalID:  body.QuorumDecideMsg.ProposalId,
+			Approved:    body.QuorumDecideMsg.Approved,
+			Version:     body.QuorumDecideMsg.Version,
 		}, nil
 	case *proto.WrapperMessageProto_TwopcPrepareMsg:
 		ops := make([]Operation, len(body.TwopcPrepareMsg.Operations))
@@ -631,6 +651,7 @@ func (c *ProtobufCodec) wrapperToMessage(wrapper *proto.WrapperMessageProto) (Me
 			}
 		}
 		return &TwoPCPrepareMessage{
+			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCPrepare},
 			TransactionID: body.TwopcPrepareMsg.TransactionId,
 			Participants:  body.TwopcPrepareMsg.Participants,
 			Operations:    ops,
@@ -638,6 +659,7 @@ func (c *ProtobufCodec) wrapperToMessage(wrapper *proto.WrapperMessageProto) (Me
 		}, nil
 	case *proto.WrapperMessageProto_TwopcPrepareReplyMsg:
 		return &TwoPCPrepareReplyMessage{
+			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCPrepareReply},
 			TransactionID: body.TwopcPrepareReplyMsg.TransactionId,
 			Participant:   body.TwopcPrepareReplyMsg.Participant,
 			Vote:          body.TwopcPrepareReplyMsg.Vote,
@@ -645,69 +667,81 @@ func (c *ProtobufCodec) wrapperToMessage(wrapper *proto.WrapperMessageProto) (Me
 		}, nil
 	case *proto.WrapperMessageProto_TwopcCommitMsg:
 		return &TwoPCCommitMessage{
+			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCCommit},
 			TransactionID: body.TwopcCommitMsg.TransactionId,
 		}, nil
 	case *proto.WrapperMessageProto_TwopcRollbackMsg:
 		return &TwoPCRollbackMessage{
+			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCRollback},
 			TransactionID: body.TwopcRollbackMsg.TransactionId,
 			Reason:        body.TwopcRollbackMsg.Reason,
 		}, nil
 	case *proto.WrapperMessageProto_TwopcCommitReplyMsg:
 		return &TwoPCCommitReplyMessage{
+			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCCommitReply},
 			TransactionID: body.TwopcCommitReplyMsg.TransactionId,
 			Participant:   body.TwopcCommitReplyMsg.Participant,
 			Success:       body.TwopcCommitReplyMsg.Success,
 		}, nil
 	case *proto.WrapperMessageProto_TwopcRollbackReplyMsg:
 		return &TwoPCRollbackReplyMessage{
+			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCRollbackReply},
 			TransactionID: body.TwopcRollbackReplyMsg.TransactionId,
 			Participant:   body.TwopcRollbackReplyMsg.Participant,
 			Success:       body.TwopcRollbackReplyMsg.Success,
 		}, nil
 	case *proto.WrapperMessageProto_NodePingMsg:
 		return &NodePingMessage{
-			NodeID:    body.NodePingMsg.NodeId,
-			Sequence:  body.NodePingMsg.Sequence,
-			Timestamp: body.NodePingMsg.Timestamp,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+			NodeID:      body.NodePingMsg.NodeId,
+			Sequence:    body.NodePingMsg.Sequence,
+			Timestamp:   body.NodePingMsg.Timestamp,
 		}, nil
 	case *proto.WrapperMessageProto_NodePongMsg:
 		return &NodePongMessage{
-			NodeID:    body.NodePongMsg.NodeId,
-			Sequence:  body.NodePongMsg.Sequence,
-			Status:    body.NodePongMsg.Status,
-			Timestamp: body.NodePongMsg.Timestamp,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+			NodeID:      body.NodePongMsg.NodeId,
+			Sequence:    body.NodePongMsg.Sequence,
+			Status:      body.NodePongMsg.Status,
+			Timestamp:   body.NodePongMsg.Timestamp,
 		}, nil
 	case *proto.WrapperMessageProto_NodeJoinMsg:
 		return &NodeJoinMessage{
-			NodeID:   body.NodeJoinMsg.NodeId,
-			Addr:     body.NodeJoinMsg.Addr,
-			Role:     body.NodeJoinMsg.Role,
-			ParentID: body.NodeJoinMsg.ParentId,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeJoin},
+			NodeID:      body.NodeJoinMsg.NodeId,
+			Addr:        body.NodeJoinMsg.Addr,
+			Role:        body.NodeJoinMsg.Role,
+			ParentID:    body.NodeJoinMsg.ParentId,
 		}, nil
 	case *proto.WrapperMessageProto_NodeLeaveMsg:
 		return &NodeLeaveMessage{
-			NodeID: body.NodeLeaveMsg.NodeId,
-			Reason: body.NodeLeaveMsg.Reason,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeLeave},
+			NodeID:      body.NodeLeaveMsg.NodeId,
+			Reason:      body.NodeLeaveMsg.Reason,
 		}, nil
 	case *proto.WrapperMessageProto_NodeSyncMsg:
 		return &NodeSyncMessage{
-			Version:  body.NodeSyncMsg.Version,
-			Metadata: body.NodeSyncMsg.Metadata,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeSync},
+			Version:     body.NodeSyncMsg.Version,
+			Metadata:    body.NodeSyncMsg.Metadata,
 		}, nil
 	case *proto.WrapperMessageProto_ClockSyncMsg:
 		return &ClockSyncMessage{
-			Timestamp: body.ClockSyncMsg.Timestamp,
-			NodeID:    body.ClockSyncMsg.NodeId,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeClockSync},
+			Timestamp:   body.ClockSyncMsg.Timestamp,
+			NodeID:      body.ClockSyncMsg.NodeId,
 		}, nil
 	case *proto.WrapperMessageProto_ClockSyncReplyMsg:
 		return &ClockSyncReplyMessage{
-			Timestamp: body.ClockSyncReplyMsg.Timestamp,
-			NodeID:    body.ClockSyncReplyMsg.NodeId,
-			Drift:     body.ClockSyncReplyMsg.Drift,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeClockSyncReply},
+			Timestamp:   body.ClockSyncReplyMsg.Timestamp,
+			NodeID:      body.ClockSyncReplyMsg.NodeId,
+			Drift:       body.ClockSyncReplyMsg.Drift,
 		}, nil
 	case *proto.WrapperMessageProto_ClusterStatusMsg:
 		return &ClusterStatusMessage{
-			NodeID: body.ClusterStatusMsg.NodeId,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeClusterStatus},
+			NodeID:      body.ClusterStatusMsg.NodeId,
 		}, nil
 	case *proto.WrapperMessageProto_ClusterStatusReplyMsg:
 		nodes := make([]NodeInfo, len(body.ClusterStatusReplyMsg.Nodes))
@@ -722,11 +756,13 @@ func (c *ProtobufCodec) wrapperToMessage(wrapper *proto.WrapperMessageProto) (Me
 			}
 		}
 		return &ClusterStatusReplyMessage{
-			Nodes: nodes,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeClusterStatusReply},
+			Nodes:       nodes,
 		}, nil
 	case *proto.WrapperMessageProto_LeaderElectionMsg:
 		return &LeaderElectionMessage{
-			ElectionID:       body.LeaderElectionMsg.ElectionId, // Proto uses camelCase: election_id
+			BaseMessage:      BaseMessage{MessageType: types.MessageTypeLeaderElection},
+			ElectionID:       body.LeaderElectionMsg.ElectionId,
 			NodeID:           body.LeaderElectionMsg.NodeId,
 			ElectionPriority: int(body.LeaderElectionMsg.Priority),
 		}, nil

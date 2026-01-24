@@ -25,7 +25,7 @@ func newTestFrame(dataSize int) *Frame {
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
-	return NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), data)
+	return NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, data)
 }
 
 // ========================================

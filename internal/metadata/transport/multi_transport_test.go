@@ -715,3 +715,615 @@ func TestMultiTransport_MultipleProtocols(t *testing.T) {
 	assert.Contains(t, stats, ProtocolUDP)
 	assert.Len(t, stats, 2)
 }
+
+// ========================================
+// ForwardMessage 相关测试
+// ========================================
+
+// TestMultiTransport_ForwardMessage_Success 测试转发消息成功
+func TestMultiTransport_ForwardMessage_Success(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	tcp, _ := NewTCPTransport("127.0.0.1:0")
+	err = mt.RegisterProtocol(ProtocolConfig{
+		ProtocolType: ProtocolTCP,
+		Priority:     10,
+		CanDegrade:   true,
+		Transport:    tcp,
+	})
+	require.NoError(t, err)
+
+	err = mt.Start(nil, nil)
+	require.NoError(t, err)
+	defer func() { _ = mt.Stop() }()
+
+	msgExt := MsgFrame{Message: &PutMessage{Key: "test", Value: []byte("value")}}
+	seqID, err := mt.ForwardMessage(context.Background(), "127.0.0.1:9999", msgExt)
+	// 连接失败是预期的，但应该返回 seqID=0 和错误
+	assert.Equal(t, uint64(0), seqID)
+	assert.Error(t, err)
+}
+
+// TestMultiTransport_ForwardMessage_NotStarted 测试未启动转发
+func TestMultiTransport_ForwardMessage_NotStarted(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	tcp, _ := NewTCPTransport("127.0.0.1:0")
+	err = mt.RegisterProtocol(ProtocolConfig{
+		ProtocolType: ProtocolTCP,
+		Priority:     10,
+		CanDegrade:   true,
+		Transport:    tcp,
+	})
+	require.NoError(t, err)
+
+	msgExt := MsgFrame{Message: &PutMessage{Key: "test", Value: []byte("value")}}
+	seqID, err := mt.ForwardMessage(context.Background(), "127.0.0.1:9999", msgExt)
+	assert.Error(t, err)
+	assert.Equal(t, uint64(0), seqID)
+	assert.Contains(t, err.Error(), "未启动或已停止")
+}
+
+// TestMultiTransport_ForwardMessageWithProtocol_Success 测试指定协议转发
+func TestMultiTransport_ForwardMessageWithProtocol_Success(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	tcp, _ := NewTCPTransport("127.0.0.1:0")
+	err = mt.RegisterProtocol(ProtocolConfig{
+		ProtocolType: ProtocolTCP,
+		Priority:     10,
+		CanDegrade:   true,
+		Transport:    tcp,
+	})
+	require.NoError(t, err)
+
+	err = mt.Start(nil, nil)
+	require.NoError(t, err)
+	defer func() { _ = mt.Stop() }()
+
+	msgExt := MsgFrame{Message: &PutMessage{Key: "test", Value: []byte("value")}}
+	seqID, err := mt.ForwardMessageWithProtocol(context.Background(), "127.0.0.1:9999", msgExt, ProtocolTCP)
+	assert.Error(t, err) // 预期连接失败
+	assert.Equal(t, uint64(0), seqID)
+}
+
+// TestMultiTransport_ForwardMessageWithProtocol_ProtocolNotRegistered 测试指定协议转发未注册协议
+func TestMultiTransport_ForwardMessageWithProtocol_ProtocolNotRegistered(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	tcp, _ := NewTCPTransport("127.0.0.1:0")
+	err = mt.RegisterProtocol(ProtocolConfig{
+		ProtocolType: ProtocolTCP,
+		Priority:     10,
+		CanDegrade:   true,
+		Transport:    tcp,
+	})
+	require.NoError(t, err)
+
+	err = mt.Start(nil, nil)
+	require.NoError(t, err)
+	defer func() { _ = mt.Stop() }()
+
+	msgExt := MsgFrame{Message: &PutMessage{Key: "test", Value: []byte("value")}}
+	seqID, err := mt.ForwardMessageWithProtocol(context.Background(), "127.0.0.1:9999", msgExt, ProtocolUDP)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "未注册")
+	assert.Equal(t, uint64(0), seqID)
+}
+
+// ========================================
+// BatchForwardMessage 相关测试
+// ========================================
+
+// TestMultiTransport_BatchForwardMessage_Success 测试批量转发成功
+func TestMultiTransport_BatchForwardMessage_Success(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	tcp, _ := NewTCPTransport("127.0.0.1:0")
+	err = mt.RegisterProtocol(ProtocolConfig{
+		ProtocolType: ProtocolTCP,
+		Priority:     10,
+		CanDegrade:   true,
+		Transport:    tcp,
+	})
+	require.NoError(t, err)
+
+	err = mt.Start(nil, nil)
+	require.NoError(t, err)
+	defer func() { _ = mt.Stop() }()
+
+	addrs := []string{"127.0.0.1:9999", "127.0.0.1:9998", "127.0.0.1:9997"}
+	msgExt := MsgFrame{Message: &PutMessage{Key: "test", Value: []byte("value")}}
+
+	result := mt.BatchForwardMessage(context.Background(), addrs, msgExt)
+	// 连接失败是预期的
+	assert.Equal(t, 0, result.SuccessCount)
+	assert.Equal(t, 3, result.FailureCount)
+	assert.Len(t, result.Results, 3)
+}
+
+// TestMultiTransport_BatchForwardMessage_EmptyAddrs 测试空地址列表
+func TestMultiTransport_BatchForwardMessage_EmptyAddrs(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	tcp, _ := NewTCPTransport("127.0.0.1:0")
+	err = mt.RegisterProtocol(ProtocolConfig{
+		ProtocolType: ProtocolTCP,
+		Priority:     10,
+		CanDegrade:   true,
+		Transport:    tcp,
+	})
+	require.NoError(t, err)
+
+	err = mt.Start(nil, nil)
+	require.NoError(t, err)
+	defer func() { _ = mt.Stop() }()
+
+	result := mt.BatchForwardMessage(context.Background(), []string{}, MsgFrame{})
+	assert.Equal(t, 0, result.SuccessCount)
+	assert.Equal(t, 0, result.FailureCount)
+	assert.Len(t, result.Results, 0)
+}
+
+// TestMultiTransport_BatchForwardMessage_NotStarted 测试未启动批量转发
+func TestMultiTransport_BatchForwardMessage_NotStarted(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	tcp, _ := NewTCPTransport("127.0.0.1:0")
+	err = mt.RegisterProtocol(ProtocolConfig{
+		ProtocolType: ProtocolTCP,
+		Priority:     10,
+		CanDegrade:   true,
+		Transport:    tcp,
+	})
+	require.NoError(t, err)
+
+	addrs := []string{"127.0.0.1:9999"}
+	result := mt.BatchForwardMessage(context.Background(), addrs, MsgFrame{})
+	assert.Equal(t, 0, result.SuccessCount)
+	assert.Equal(t, 1, result.FailureCount)
+}
+
+// TestMultiTransport_BatchForwardMessageWithProtocol_ProtocolNotRegistered 测试指定协议批量转发未注册协议
+func TestMultiTransport_BatchForwardMessageWithProtocol_ProtocolNotRegistered(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	tcp, _ := NewTCPTransport("127.0.0.1:0")
+	err = mt.RegisterProtocol(ProtocolConfig{
+		ProtocolType: ProtocolTCP,
+		Priority:     10,
+		CanDegrade:   true,
+		Transport:    tcp,
+	})
+	require.NoError(t, err)
+
+	err = mt.Start(nil, nil)
+	require.NoError(t, err)
+	defer func() { _ = mt.Stop() }()
+
+	addrs := []string{"127.0.0.1:9999"}
+	result := mt.BatchForwardMessageWithProtocol(context.Background(), addrs, MsgFrame{}, ProtocolUDP)
+	assert.Equal(t, 0, result.SuccessCount)
+	assert.Equal(t, 1, result.FailureCount)
+	assert.Contains(t, result.Results[0].Error.Error(), "未注册")
+}
+
+// ========================================
+// Router Stats 相关测试
+// ========================================
+
+// TestMultiTransport_GetRouterStats 测试获取路由器统计
+func TestMultiTransport_GetRouterStats(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	stats := mt.GetRouterStats()
+	assert.NotNil(t, stats)
+}
+
+// TestMultiTransport_UpdateRouterConfig 测试更新路由器配置
+func TestMultiTransport_UpdateRouterConfig(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	newConfig := DefaultRouterConfig()
+	newConfig.EnableAutoRouting = false
+	mt.UpdateRouterConfig(newConfig)
+
+	// 验证配置已更新
+	stats := mt.GetRouterStats()
+	assert.NotNil(t, stats)
+}
+
+// ========================================
+// Degradation 相关测试
+// ========================================
+
+// TestMultiTransport_GetDegradationStats 测试获取降级统计
+func TestMultiTransport_GetDegradationStats(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	stats := mt.GetDegradationStats()
+	assert.NotNil(t, stats)
+}
+
+// TestMultiTransport_GetProtocolState 测试获取协议状态
+func TestMultiTransport_GetProtocolState(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	state, ok := mt.GetProtocolState(ProtocolTCP)
+	// 协议未注册时应该返回 false
+	assert.False(t, ok)
+	assert.Nil(t, state)
+}
+
+// TestMultiTransport_ShouldRecoverProtocol 测试判断协议是否应该恢复
+func TestMultiTransport_ShouldRecoverProtocol(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	should, reason := mt.ShouldRecoverProtocol(ProtocolTCP)
+	// 未注册的协议返回 false
+	assert.False(t, should)
+	assert.NotEmpty(t, reason)
+}
+
+// TestMultiTransport_UpdateDegradationConfig 测试更新降级配置
+func TestMultiTransport_UpdateDegradationConfig(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	newConfig := DefaultDegradationConfig()
+	newConfig.FailureThreshold = 20
+	mt.UpdateDegradationConfig(newConfig)
+
+	// 验证配置已更新
+	stats := mt.GetDegradationStats()
+	assert.NotNil(t, stats)
+}
+
+// ========================================
+// Monitor Stats 相关测试
+// ========================================
+
+// TestMultiTransport_GetMonitorStats 测试获取监控统计
+func TestMultiTransport_GetMonitorStats(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	tcp, _ := NewTCPTransport("127.0.0.1:0")
+	err = mt.RegisterProtocol(ProtocolConfig{
+		ProtocolType: ProtocolTCP,
+		Priority:     10,
+		CanDegrade:   true,
+		Transport:    tcp,
+	})
+	require.NoError(t, err)
+
+	// 未启动时，协议统计尚未初始化
+	stats, ok := mt.GetMonitorStats(ProtocolTCP)
+	assert.False(t, ok)
+	assert.Nil(t, stats)
+}
+
+// TestMultiTransport_GetAllMonitorStats 测试获取所有监控统计
+func TestMultiTransport_GetAllMonitorStats(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	stats := mt.GetAllMonitorStats()
+	assert.NotNil(t, stats)
+}
+
+// TestMultiTransport_GetMonitorGlobalStats 测试获取全局监控统计
+func TestMultiTransport_GetMonitorGlobalStats(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	stats := mt.GetMonitorGlobalStats()
+	assert.NotNil(t, stats)
+}
+
+// TestMultiTransport_ResetMonitorStats 测试重置监控统计
+func TestMultiTransport_ResetMonitorStats(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	tcp, _ := NewTCPTransport("127.0.0.1:0")
+	err = mt.RegisterProtocol(ProtocolConfig{
+		ProtocolType: ProtocolTCP,
+		Priority:     10,
+		CanDegrade:   true,
+		Transport:    tcp,
+	})
+	require.NoError(t, err)
+
+	err = mt.Start(nil, nil)
+	require.NoError(t, err)
+
+	// 重置统计
+	mt.ResetMonitorStats()
+
+	stats := mt.GetMonitorGlobalStats()
+	assert.NotNil(t, stats)
+
+	_ = mt.Stop()
+}
+
+// ========================================
+// Message Type Stats 相关测试
+// ========================================
+
+// TestMultiTransport_GetMessageTypeStats 测试获取消息类型统计
+func TestMultiTransport_GetMessageTypeStats(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	// 测试不存在的消息类型应该返回 false
+	stats, ok := mt.GetMessageTypeStats(types.MessageTypeGet)
+	assert.False(t, ok)
+	assert.Nil(t, stats)
+}
+
+// TestMultiTransport_GetAllMessageTypeStats 测试获取所有消息类型统计
+func TestMultiTransport_GetAllMessageTypeStats(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	stats := mt.GetAllMessageTypeStats()
+	assert.NotNil(t, stats)
+}
+
+// ========================================
+// Node Stats 相关测试
+// ========================================
+
+// TestMultiTransport_GetNodeStats 测试获取节点统计
+func TestMultiTransport_GetNodeStats(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	// 测试不存在的节点应该返回 false
+	stats, ok := mt.GetNodeStats("node-1")
+	assert.False(t, ok)
+	assert.Nil(t, stats)
+}
+
+// TestMultiTransport_GetAllNodeStats 测试获取所有节点统计
+func TestMultiTransport_GetAllNodeStats(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	stats := mt.GetAllNodeStats()
+	assert.NotNil(t, stats)
+}
+
+// ========================================
+// Error Type Stats 相关测试
+// ========================================
+
+// TestMultiTransport_GetErrorTypeStats 测试获取错误类型统计
+func TestMultiTransport_GetErrorTypeStats(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	// 测试不存在的错误类型应该返回 false
+	stats, ok := mt.GetErrorTypeStats("connection_failed")
+	assert.False(t, ok)
+	assert.Nil(t, stats)
+}
+
+// TestMultiTransport_GetAllErrorTypeStats 测试获取所有错误类型统计
+func TestMultiTransport_GetAllErrorTypeStats(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	stats := mt.GetAllErrorTypeStats()
+	assert.NotNil(t, stats)
+}
+
+// ========================================
+// Codec Getters 相关测试
+// ========================================
+
+// TestMultiTransport_GetTCPCodec 测试获取 TCP 编解码器
+func TestMultiTransport_GetTCPCodec(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	codec := mt.GetTCPCodec()
+	assert.NotNil(t, codec)
+}
+
+// TestMultiTransport_GetUDPCodec 测试获取 UDP 编解码器
+func TestMultiTransport_GetUDPCodec(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	codec := mt.GetUDPCodec()
+	assert.NotNil(t, codec)
+}
+
+// TestMultiTransport_GetTCPStreamDecoder 测试获取 TCP 流解码器
+func TestMultiTransport_GetTCPStreamDecoder(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	decoder := mt.GetTCPStreamDecoder()
+	assert.NotNil(t, decoder)
+}
+
+// ========================================
+// 边界条件测试
+// ========================================
+
+// TestMultiTransport_InvalidConfig 测试无效配置
+func TestMultiTransport_InvalidConfig(t *testing.T) {
+	config := &TransportConfig{
+		ListenAddr: "", // 空地址
+	}
+
+	mt, err := NewMultiTransportWithConfig(config)
+	assert.Error(t, err)
+	assert.Nil(t, mt)
+}
+
+// TestMultiTransport_SendWithProtocol_ProtocolInactive 测试使用未启动的协议发送
+func TestMultiTransport_SendWithProtocol_ProtocolInactive(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	// 注册但不启动
+	tcp, _ := NewTCPTransport("127.0.0.1:0")
+	err = mt.RegisterProtocol(ProtocolConfig{
+		ProtocolType: ProtocolTCP,
+		Priority:     10,
+		CanDegrade:   true,
+		Transport:    tcp,
+	})
+	require.NoError(t, err)
+
+	msg := &PutMessage{Key: "test", Value: []byte("value")}
+	err = mt.SendWithProtocol(context.Background(), "127.0.0.1:9999", msg, ProtocolTCP)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "未启动")
+}
+
+// TestMultiTransport_GetActiveProtocol_NoDefaultProtocol 测试无默认协议时获取活跃协议
+func TestMultiTransport_GetActiveProtocol_NoDefaultProtocol(t *testing.T) {
+	mt, err := NewMultiTransport("127.0.0.1:0")
+	require.NoError(t, err)
+
+	// 未注册任何协议
+	protocol, err := mt.GetActiveProtocol()
+	assert.Error(t, err)
+	assert.Equal(t, ProtocolType(""), protocol)
+	assert.Contains(t, err.Error(), "未设置默认协议")
+}
+
+// ========================================
+// 集成测试
+// ========================================
+
+// TestMultiTransport_Integration_MultiProtocolScenario 测试多协议集成场景
+func TestMultiTransport_Integration_MultiProtocolScenario(t *testing.T) {
+	t.Run("场景1: TCP + UDP 协议切换", func(t *testing.T) {
+		mt, err := NewMultiTransport("127.0.0.1:0")
+		require.NoError(t, err)
+
+		tcp, _ := NewTCPTransport("127.0.0.1:0")
+		udp, _ := NewUDPTransport("127.0.0.1:0")
+
+		_ = mt.RegisterProtocol(ProtocolConfig{
+			ProtocolType: ProtocolTCP,
+			Priority:     10,
+			CanDegrade:   true,
+			Transport:    tcp,
+		})
+
+		_ = mt.RegisterProtocol(ProtocolConfig{
+			ProtocolType: ProtocolUDP,
+			Priority:     5,
+			CanDegrade:   true,
+			Transport:    udp,
+		})
+
+		nodeID := uint64(1)
+		err = mt.Start(&nodeID, nil)
+		require.NoError(t, err)
+		defer func() { _ = mt.Stop() }()
+
+		// 验证两个协议都已启动
+		stats := mt.GetProtocolStats()
+		assert.True(t, stats[ProtocolTCP]["active"].(bool))
+		assert.True(t, stats[ProtocolUDP]["active"].(bool))
+
+		// 使用 TCP 发送
+		msg := &PutMessage{Key: "test", Value: []byte("value")}
+		err = mt.SendWithProtocol(context.Background(), "127.0.0.1:9999", msg, ProtocolTCP)
+		assert.Error(t, err) // 预期连接失败
+
+		// 切换默认协议到 UDP
+		err = mt.SetDefaultProtocol(ProtocolUDP)
+		require.NoError(t, err)
+
+		defaultProto, _ := mt.GetActiveProtocol()
+		assert.Equal(t, ProtocolUDP, defaultProto)
+	})
+
+	t.Run("场景2: 批量转发与统计", func(t *testing.T) {
+		mt, err := NewMultiTransport("127.0.0.1:0")
+		require.NoError(t, err)
+
+		tcp, _ := NewTCPTransport("127.0.0.1:0")
+		_ = mt.RegisterProtocol(ProtocolConfig{
+			ProtocolType: ProtocolTCP,
+			Priority:     10,
+			CanDegrade:   true,
+			Transport:    tcp,
+		})
+
+		err = mt.Start(nil, nil)
+		require.NoError(t, err)
+		defer func() { _ = mt.Stop() }()
+
+		// 批量转发
+		addrs := []string{"127.0.0.1:9999", "127.0.0.1:9998"}
+		msgExt := MsgFrame{Message: &PutMessage{Key: "test", Value: []byte("value")}}
+
+		result := mt.BatchForwardMessage(context.Background(), addrs, msgExt)
+		assert.Equal(t, 2, result.FailureCount) // 预期全部连接失败
+		assert.Len(t, result.Results, 2)
+
+		// 检查失败计数
+		stats := mt.GetProtocolStats()
+		assert.Equal(t, uint64(2), stats[ProtocolTCP]["failure_count"].(uint64))
+	})
+
+	t.Run("场景3: 监控统计验证", func(t *testing.T) {
+		mt, err := NewMultiTransport("127.0.0.1:0")
+		require.NoError(t, err)
+
+		tcp, _ := NewTCPTransport("127.0.0.1:0")
+		_ = mt.RegisterProtocol(ProtocolConfig{
+			ProtocolType: ProtocolTCP,
+			Priority:     10,
+			CanDegrade:   true,
+			Transport:    tcp,
+		})
+
+		err = mt.Start(nil, nil)
+		require.NoError(t, err)
+		defer func() { _ = mt.Stop() }()
+
+		// 发送一些消息（会失败但会产生监控数据）
+		msg := &PutMessage{Key: "test", Value: []byte("value")}
+		for i := 0; i < 5; i++ {
+			_ = mt.Send(context.Background(), "127.0.0.1:9999", msg)
+		}
+
+		// 检查全局统计
+		globalStats := mt.GetMonitorGlobalStats()
+		assert.NotNil(t, globalStats)
+		assert.Greater(t, globalStats.TotalMessages.Load(), uint64(0))
+
+		// 检查协议统计
+		protocolStats, ok := mt.GetMonitorStats(ProtocolTCP)
+		assert.True(t, ok)
+		assert.NotNil(t, protocolStats)
+
+		// 检查错误类型统计
+		errorStats := mt.GetAllErrorTypeStats()
+		assert.NotNil(t, errorStats)
+	})
+}

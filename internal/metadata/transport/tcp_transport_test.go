@@ -147,7 +147,8 @@ func TestTCPTransport_SendReceive(t *testing.T) {
 
 	// 发送消息
 	msg := &GetMessage{
-		Key: "test-key",
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+		Key:         "test-key",
 	}
 
 	err = client.Send(ctx, serverAddr, msg)
@@ -186,7 +187,10 @@ func TestTCPTransport_Send_NotStarted(t *testing.T) {
 	trans := createTCPTransport(t)
 
 	ctx := context.Background()
-	msg := &GetMessage{Key: "test"}
+	msg := &GetMessage{
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+		Key:         "test",
+	}
 
 	err := trans.Send(ctx, "127.0.0.1:9211", msg)
 	assert.Error(t, err)
@@ -210,7 +214,10 @@ func TestTCPTransport_SendTimeout(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
 
-	msg := &GetMessage{Key: "test"}
+	msg := &GetMessage{
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+		Key:         "test",
+	}
 
 	// 发送到不存在的端口或使用已关闭的连接
 	err = client.Send(ctx, "127.0.0.1:1", msg) // 端口 1 通常未使用
@@ -241,12 +248,18 @@ func TestTCPTransport_ConnectionPool(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// 第一次发送
-	msg1 := &GetMessage{Key: "test1"}
+	msg1 := &GetMessage{
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+		Key:         "test1",
+	}
 	err = client.Send(ctx, serverAddr, msg1)
 	require.NoError(t, err)
 
 	// 第二次发送（应该复用连接）
-	msg2 := &GetMessage{Key: "test2"}
+	msg2 := &GetMessage{
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+		Key:         "test2",
+	}
 	err = client.Send(ctx, serverAddr, msg2)
 	require.NoError(t, err)
 
@@ -284,7 +297,10 @@ func TestTCPTransport_ConcurrentSend(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			msg := &GetMessage{Key: "test"}
+			msg := &GetMessage{
+				BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+				Key:         "test",
+			}
 			err := client.Send(ctx, serverAddr, msg)
 			if err != nil {
 				errors <- err
@@ -488,7 +504,8 @@ func TestTCPTransport_FrameExchange(t *testing.T) {
 
 	// 发送消息
 	msg := &GetMessage{
-		Key: "test-key",
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+		Key:         "test-key",
 	}
 
 	err = client.Send(ctx, serverAddr, msg)
@@ -539,10 +556,11 @@ func TestTCPTransport_PingPong(t *testing.T) {
 
 				// 自动回复 Pong
 				pong := &NodePongMessage{
-					NodeID:    serverNodeID,
-					Sequence:  ping.Sequence,
-					Status:    "ready",
-					Timestamp: time.Now().UnixMilli(),
+					BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+					NodeID:      serverNodeID,
+					Sequence:    ping.Sequence,
+					Status:      "ready",
+					Timestamp:   time.Now().UnixMilli(),
 				}
 				_ = server.Send(ctx, client.listener.Addr().String(), pong)
 				return
@@ -561,10 +579,11 @@ func TestTCPTransport_PingPong(t *testing.T) {
 
 				// 自动回复 Pong
 				pong := &NodePongMessage{
-					NodeID:    clientNodeID,
-					Sequence:  m.Sequence,
-					Status:    "ready",
-					Timestamp: time.Now().UnixMilli(),
+					BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+					NodeID:      clientNodeID,
+					Sequence:    m.Sequence,
+					Status:      "ready",
+					Timestamp:   time.Now().UnixMilli(),
 				}
 				_ = client.Send(ctx, serverAddr, pong)
 
@@ -582,9 +601,10 @@ func TestTCPTransport_PingPong(t *testing.T) {
 	t.Log("测试1: 客户端 -> Ping -> 服务端 -> Pong -> 客户端")
 
 	ping1 := &NodePingMessage{
-		NodeID:    clientNodeID,
-		Sequence:  1001,
-		Timestamp: time.Now().UnixMilli(),
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+		NodeID:      clientNodeID,
+		Sequence:    1001,
+		Timestamp:   time.Now().UnixMilli(),
 	}
 
 	err = client.Send(ctx, serverAddr, ping1)
@@ -626,10 +646,11 @@ func TestTCPTransport_PingPong(t *testing.T) {
 
 				// 自动回复 Pong
 				pong := &NodePongMessage{
-					NodeID:    clientNodeID,
-					Sequence:  m.Sequence,
-					Status:    "ready",
-					Timestamp: time.Now().UnixMilli(),
+					BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+					NodeID:      clientNodeID,
+					Sequence:    m.Sequence,
+					Status:      "ready",
+					Timestamp:   time.Now().UnixMilli(),
 				}
 				_ = client.Send(ctx, serverAddr, pong)
 
@@ -651,9 +672,10 @@ func TestTCPTransport_PingPong(t *testing.T) {
 	}()
 
 	ping2 := &NodePingMessage{
-		NodeID:    serverNodeID,
-		Sequence:  1002,
-		Timestamp: time.Now().UnixMilli(),
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+		NodeID:      serverNodeID,
+		Sequence:    1002,
+		Timestamp:   time.Now().UnixMilli(),
 	}
 
 	err = server.Send(ctx, client.listener.Addr().String(), ping2)
@@ -689,7 +711,7 @@ func TestTCPTransport_PingPong(t *testing.T) {
 func TestTCPFrameRoundTrip_Debug(t *testing.T) {
 	// 创建帧
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeProtobuf), data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeProtobuf), FlagsIsRequest, data)
 
 	// 序列化
 	frameData, err := frame.Marshal()
@@ -713,7 +735,10 @@ func TestTCPFrameRoundTrip_Debug(t *testing.T) {
 // TestTCPEncodeDecodeRoundTrip 测试 TCP 编码解码往返
 func TestTCPEncodeDecodeRoundTrip(t *testing.T) {
 	// 创建消息
-	msg := &GetMessage{Key: "test-key"}
+	msg := &GetMessage{
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+		Key:         "test-key",
+	}
 
 	// 创建 Frame
 	frame, err := EncodeFrame(msg, 1001, 1)

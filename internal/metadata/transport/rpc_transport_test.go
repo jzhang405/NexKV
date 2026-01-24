@@ -3,6 +3,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -861,3 +862,111 @@ func TestRPCTransport_Close_MultipleClose(t *testing.T) {
 	assert.NoError(t, err3)
 	assert.True(t, rpc.closed.Load())
 }
+
+// ========================================
+// P0 Bug 修复验证测试
+// ========================================
+
+// TestRPCParseInvalidExpectResponse 测试 P0-3: 无效的 ExpectResponse 枚举值
+// 验证 decodeMessage 会拒绝 ExpectResponse > 1 的消息
+func TestRPCParseInvalidExpectResponse(t *testing.T) {
+	transport := &mockTransport{}
+	rpc := NewRPCTransport(transport, 5*time.Second)
+	defer func() { _ = rpc.Close() }()
+
+	testCases := []struct {
+		name              string
+		expectResponseVal byte
+		shouldFail        bool
+	}{
+		{"有效值: NoResponse (0)", 0, false},
+		{"有效值: ExpectResponse (1)", 1, false},
+		{"无效值: 2", 2, true},
+		{"无效值: 255", 255, true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 构造测试数据（最小长度 11 字节）
+			data := make([]byte, 11)
+			// MsgSeq = 1
+			data[0] = 0
+			data[1] = 0
+			data[2] = 0
+			data[3] = 0
+			data[4] = 0
+			data[5] = 0
+			data[6] = 0
+			data[7] = 1
+			// IsRequest = true
+			data[8] = 1
+			// IsError = false
+			data[9] = 0
+			// ExpectResponse = tc.expectResponseVal
+			data[10] = tc.expectResponseVal
+
+			// 调用 decodeMessage
+			msg, err := rpc.decodeMessage(data)
+
+			if tc.shouldFail {
+				// 应该返回错误
+				assert.Error(t, err, "ExpectResponse=%d 应该返回错误", tc.expectResponseVal)
+				assert.Nil(t, msg)
+				assert.Contains(t, err.Error(), "invalid ExpectResponse value")
+				assert.Contains(t, err.Error(), fmt.Sprintf("%d", tc.expectResponseVal))
+				assert.Contains(t, err.Error(), "field breakdown")
+			} else {
+				// 应该成功
+				assert.NoError(t, err, "ExpectResponse=%d 应该成功", tc.expectResponseVal)
+				assert.NotNil(t, msg)
+				assert.Equal(t, types.ResponseExpectation(tc.expectResponseVal), msg.ExpectResponse())
+			}
+		})
+	}
+
+	t.Log("✅ P0-3: ExpectResponse 枚举验证测试通过")
+}
+
+// TestRPCParseInvalidLength 测试 P0-3: 无效的数据长度
+// 验证 decodeMessage 会拒绝长度 < 11 的消息
+func TestRPCParseInvalidLength(t *testing.T) {
+	transport := &mockTransport{}
+	rpc := NewRPCTransport(transport, 5*time.Second)
+	defer func() { _ = rpc.Close() }()
+
+	testCases := []struct {
+		name        string
+		dataLength  int
+		shouldFail  bool
+	}{
+		{"长度 0", 0, true},
+		{"长度 10", 10, true},
+		{"长度 11 (最小有效)", 11, false},
+		{"长度 12", 12, false},
+		{"长度 100", 100, false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := make([]byte, tc.dataLength)
+
+			// 调用 decodeMessage
+			msg, err := rpc.decodeMessage(data)
+
+			if tc.shouldFail {
+				// 应该返回错误
+				assert.Error(t, err, "长度=%d 应该返回错误", tc.dataLength)
+				assert.Nil(t, msg)
+				assert.Contains(t, err.Error(), "invalid data length")
+				assert.Contains(t, err.Error(), fmt.Sprintf("%d", tc.dataLength))
+			} else {
+				// 应该成功（至少有 11 字节）
+				assert.NoError(t, err, "长度=%d 应该成功", tc.dataLength)
+				assert.NotNil(t, msg)
+			}
+		})
+	}
+
+	t.Log("✅ P0-3: 数据长度验证测试通过")
+}
+

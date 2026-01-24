@@ -449,7 +449,14 @@ func (r *RPCTransport) decodeMessage(data []byte) (*RPCMessage, error) {
 	msgSeq := binary.BigEndian.Uint64(data[0:8])
 	isRequest := data[8] != 0
 	isError := data[9] != 0
-	expectResponse := types.ResponseExpectation(data[10]) // 解析响应期望
+
+	// P0-3: 验证 ExpectResponse 枚举值（有效值：0=NoResponse, 1=ExpectResponse）
+	expectResponseRaw := data[10]
+	if expectResponseRaw > 1 {
+		return nil, fmt.Errorf("invalid ExpectResponse value: %d (valid: 0=NoResponse, 1=ExpectResponse), field breakdown: MsgSeq=8bytes, IsRequest=1byte, IsError=1byte, ExpectResponse=1byte",
+			expectResponseRaw)
+	}
+	expectResponse := types.ResponseExpectation(expectResponseRaw)
 
 	body := data[11:]
 

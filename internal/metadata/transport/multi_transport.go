@@ -393,8 +393,6 @@ func (mt *MultiTransport) receiveLoop(protocolType ProtocolType, recvCh <-chan M
 					// 溢出通道发送成功
 					logging.Debugf("消息发送到溢出通道: %s from %s",
 						msgFrame.Type(), protocolType)
-				case mt.overflowCh <- msgFrame:
-					// 第二次尝试（确保发送成功）
 				default:
 					// 溢出通道也已满，丢弃消息
 					logging.Warnf("接收通道和溢出通道均满，丢弃消息: %s from %s",

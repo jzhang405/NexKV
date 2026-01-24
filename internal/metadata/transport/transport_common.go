@@ -6,6 +6,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -147,4 +148,38 @@ func executeBatchForward(
 		FailureCount: failure,
 		Results:      results,
 	}
+}
+
+// ========================================
+// 网络连接辅助函数
+// ========================================
+
+// setWriteTimeout 设置写入超时（带零值检查）
+//
+// 参数：
+//   - conn: 网络连接
+//   - timeout: 超时时间（零值或负值表示不设置超时）
+//
+// 返回：
+//   - error: 设置失败时返回错误
+func setWriteTimeout(conn net.Conn, timeout time.Duration) error {
+	if timeout <= 0 {
+		return nil
+	}
+	return conn.SetWriteDeadline(time.Now().Add(timeout))
+}
+
+// setReadTimeout 设置读取超时（带零值检查）
+//
+// 参数：
+//   - conn: 网络连接
+//   - timeout: 超时时间（零值或负值表示不设置超时）
+//
+// 返回：
+//   - error: 设置失败时返回错误
+func setReadTimeout(conn net.Conn, timeout time.Duration) error {
+	if timeout <= 0 {
+		return nil
+	}
+	return conn.SetReadDeadline(time.Now().Add(timeout))
 }

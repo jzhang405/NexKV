@@ -13,23 +13,23 @@ import (
 // 辅助函数：创建测试用的基础 MsgFrame
 func createTestFrame(t *testing.T, msgType MessageType, payload []byte) *MsgFrame {
 	t.Helper()
-	baseMsg := NewBaseMessage(msgType, payload)
-	return NewMsgFrame(12345, 1, msgType, 1, baseMsg)
+	// 使用实际的消息类型而不是 BaseMessage
+	var msg Message
+	switch msgType {
+	case types.MessageTypeGet:
+		msg = &GetMessage{BaseMessage: BaseMessage{MessageType: msgType}, Key: string(payload)}
+	case types.MessageTypePut:
+		msg = &PutMessage{BaseMessage: BaseMessage{MessageType: msgType}, Key: "test", Value: payload}
+	default:
+		// 对于其他消息类型，使用简单的 GetMessage 作为示例
+		msg = &GetMessage{BaseMessage: BaseMessage{MessageType: msgType}, Key: string(payload)}
+	}
+	return NewMsgFrame(12345, 1, msgType, 1, msg)
 }
 
 // 辅助函数：为 frame 添加指定的 TLV 字段
 func addTLVToFrame(frame *MsgFrame, tlv TLV) {
 	frame.TLVs = append(frame.TLVs, tlv)
-}
-
-// 辅助函数：修改 frame 中指定类型的 TLV 字段
-func updateTLVInFrame(frame *MsgFrame, fieldType ExtFieldType, newTLV TLV) {
-	for i := range frame.TLVs {
-		if frame.TLVs[i].Type == fieldType {
-			frame.TLVs[i] = newTLV
-			break
-		}
-	}
 }
 
 // ========================================
@@ -38,12 +38,12 @@ func updateTLVInFrame(frame *MsgFrame, fieldType ExtFieldType, newTLV TLV) {
 
 // TestMsgFrame_BasicCreation 测试 MsgFrame 基本创建
 func TestMsgFrame_BasicCreation(t *testing.T) {
-	baseMsg := NewBaseMessage(types.MessageTypeGet, []byte("test data"))
-	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, baseMsg)
+	msg := &GetMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGet}, Key: "test data"}
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, msg)
 
 	assert.Equal(t, types.MessageTypeGet, frame.Type())
 	assert.Equal(t, int(GetPriority(types.MessageTypeGet)), frame.Priority())
-	assert.Equal(t, []byte("test data"), baseMsg.GetPayload())
+	assert.Equal(t, "test data", msg.Key)
 }
 
 // TestMsgFrame_NilMessage 安全处理 nil Message
@@ -52,28 +52,27 @@ func TestMsgFrame_NilMessage(t *testing.T) {
 
 	assert.Equal(t, types.MessageTypeGet, frame.Type()) // 从 FixedHeader 获取
 	assert.Equal(t, int(types.PriorityNormal), frame.Priority())
-	// 空 TLVs 列表，GetTLV 应该返回 nil
-	assert.Nil(t, frame.GetTLV(ExtHop))
+	// 空 TLVs 列表，GetTLV 应该返回 nil（测试一个未使用的类型）
+	assert.Nil(t, frame.GetTLV(ExtFieldType(999)))
 }
 
-// TestMsgFrame_HopCount 测试 Hop Count 扩展字段
+// TestMsgFrame_HopCount 测试 Hops 字段（FixedHeader）
 func TestMsgFrame_HopCount(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
-	// 添加 Hop Count TLV
-	addTLVToFrame(frame, *EncodeHopExt(5, 10))
+	// 设置 Hops 字段（FixedHeader）
+	frame.Hops = 5
 
 	assert.True(t, frame.HasHopCount())
 	assert.False(t, frame.IsHopExpired())
 
 	// 使用便捷方法获取
-	hop, ok := frame.GetHopCount()
+	hops, ok := frame.GetHopCount()
 	require.True(t, ok)
-	assert.Equal(t, uint16(5), hop.Hop)
-	assert.Equal(t, uint16(10), hop.TotalHop)
+	assert.Equal(t, uint8(5), hops)
 
-	// 测试 Hop=0 的情况（过期）
-	updateTLVInFrame(frame, ExtHop, *EncodeHopExt(0, 10))
+	// 测试 Hops=0 的情况（过期）
+	frame.Hops = 0
 	assert.True(t, frame.IsHopExpired())
 }
 
@@ -141,17 +140,12 @@ func TestMsgFrame_Priority(t *testing.T) {
 func TestMsgFrame_GetTLV(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
-	// 添加多个 TLV
+	// 添加多个 TLV（不包含 ExtHop，因为它已移至 FixedHeader）
 	extFields := []TLV{
-		{Type: ExtHop, Value: []byte{0x05, 0x00, 0x0A, 0x00}},
 		{Type: ExtCompress, Value: []byte{0x02, 0x00}},
 		{Type: ExtEncrypt, Value: []byte{0x01, 0x00}},
 	}
 	frame.TLVs = extFields
-
-	hopField := frame.GetTLV(ExtHop)
-	assert.NotNil(t, hopField)
-	assert.Equal(t, ExtHop, hopField.Type)
 
 	compressField := frame.GetTLV(ExtCompress)
 	assert.NotNil(t, compressField)
@@ -167,7 +161,7 @@ func TestMsgFrame_String(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加 TLV
-	addTLVToFrame(frame, *EncodeHopExt(5, 10))
+	frame.Hops = 5
 	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
 
 	str := frame.String()
@@ -175,39 +169,30 @@ func TestMsgFrame_String(t *testing.T) {
 	assert.Contains(t, str, "TLVs=")
 }
 
-// TestMsgFrame_GetExt_GenericMethod 测试 GetExt 通用方法
+// TestMsgFrame_GetExt_GenericMethod 测试 GetExt 通用方法（使用 Priority 作为示例）
 func TestMsgFrame_GetExt_GenericMethod(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
-	// 添加 Hop TLV
-	addTLVToFrame(frame, *EncodeHopExt(5, 10))
+	// 添加 Priority TLV
+	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
 
 	// 使用通用 GetExt 方法
-	value, ok := frame.GetExt(ExtHop)
+	value, ok := frame.GetExt(ExtPriority)
 	assert.True(t, ok)
 	assert.NotNil(t, value)
 
 	// 类型断言
-	hop, ok := value.(*HopExt)
+	priority, ok := value.(*PriorityExt)
 	assert.True(t, ok)
-	assert.Equal(t, uint16(5), hop.Hop)
-	assert.Equal(t, uint16(10), hop.TotalHop)
-
-	// 测试：每次调用都会重新解码，返回新对象
-	value2, ok2 := frame.GetExt(ExtHop)
-	assert.True(t, ok2)
-	hop2, _ := value2.(*HopExt)
-	assert.Equal(t, hop.Hop, hop2.Hop)
-	assert.Equal(t, hop.TotalHop, hop2.TotalHop)
-	// 注意：由于移除了缓存，指针会不同
+	assert.Equal(t, types.PriorityHigh, priority.Priority)
 }
 
 // TestMsgFrame_GetExt_NotFound 测试 GetExt 查找不存在的字段
 func TestMsgFrame_GetExt_NotFound(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
-	// 查找不存在的字段
-	value, ok := frame.GetExt(ExtHop)
+	// 查找不存在的字段（使用一个未注册的类型）
+	value, ok := frame.GetExt(ExtFieldType(999))
 	assert.False(t, ok)
 	assert.Nil(t, value)
 }
@@ -233,8 +218,8 @@ func TestMsgFrame_GetExt_UnknownDecoder(t *testing.T) {
 func TestMsgFrame_DeepCopy(t *testing.T) {
 	original := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
-	// 添加多个 TLV
-	addTLVToFrame(original, *EncodeHopExt(5, 10))
+	// 添加 TLV 字段
+	original.Hops = 5
 	addTLVToFrame(original, *EncodeCompressExt(2))
 
 	// 执行深拷贝
@@ -262,7 +247,7 @@ func TestMsgFrame_EncodeTLVs(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
 	// 添加 TLV 字段
-	addTLVToFrame(frame, *EncodeHopExt(5, 10))
+	frame.Hops = 5
 	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
 	addTLVToFrame(frame, *EncodeCompressExt(2))
 	addTLVToFrame(frame, *EncodeFragmentExt(1, 5))
@@ -270,15 +255,7 @@ func TestMsgFrame_EncodeTLVs(t *testing.T) {
 	// 编码 TLV
 	fields, err := frame.EncodeTLVs()
 	require.NoError(t, err)
-	require.Len(t, fields, 4) // Hop, Priority, Compress, Segment
-
-	// 验证 Hop Count 字段
-	hopField := findExtField(fields, ExtHop)
-	require.NotNil(t, hopField)
-	hop, totalHop, err := DecodeHopExt(hopField)
-	require.NoError(t, err)
-	assert.Equal(t, uint16(5), hop)
-	assert.Equal(t, uint16(10), totalHop)
+	require.Len(t, fields, 3) // Priority, Compress, Segment (Hops is in FixedHeader)
 
 	// 验证 Priority 字段
 	priorityField := findExtField(fields, ExtPriority)
@@ -307,20 +284,19 @@ func TestMsgFrame_EncodeTLVs(t *testing.T) {
 func TestMsgFrame_EncodeTLVs_PartialFields(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
-	// 只添加 Hop TLV
-	addTLVToFrame(frame, *EncodeHopExt(3, 10))
+	// 添加 Priority TLV
+	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
 
 	// 编码
 	fields, err := frame.EncodeTLVs()
 	require.NoError(t, err)
-	require.Len(t, fields, 1) // 只有 Hop Count
+	require.Len(t, fields, 1) // 只有 Priority
 
-	hopField := findExtField(fields, ExtHop)
-	require.NotNil(t, hopField)
-	hop, totalHop, err := DecodeHopExt(hopField)
+	priorityField := findExtField(fields, ExtPriority)
+	require.NotNil(t, priorityField)
+	priority, err := DecodePriorityExt(priorityField)
 	require.NoError(t, err)
-	assert.Equal(t, uint16(3), hop)
-	assert.Equal(t, uint16(10), totalHop)
+	assert.Equal(t, types.PriorityHigh, priority)
 }
 
 // TestMsgFrame_EncodeTLVs_NoFields 测试无 TLV 字段
@@ -333,27 +309,21 @@ func TestMsgFrame_EncodeTLVs_NoFields(t *testing.T) {
 	require.Len(t, fields, 0) // 无字段
 }
 
-// TestMsgFrame_EncodeTLVs_HopDecrement 测试 Hop Count 递减后的编码
-func TestMsgFrame_EncodeTLVs_HopDecrement(t *testing.T) {
+// TestMsgFrame_EncodeTLVs_HopsInFixedHeader 测试 Hops 在 FixedHeader 中
+func TestMsgFrame_EncodeTLVs_HopsInFixedHeader(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
-	// 添加 Hop TLV
-	addTLVToFrame(frame, *EncodeHopExt(10, 10))
+	// 设置 Hops 字段（FixedHeader）
+	frame.Hops = 9
 
-	// 修改 TLV 中的 Hop 值为 9
-	updateTLVInFrame(frame, ExtHop, *EncodeHopExt(9, 10))
-
-	// 编码
+	// 编码 TLV（应该不包含 Hops）
 	fields, err := frame.EncodeTLVs()
 	require.NoError(t, err)
-	require.Len(t, fields, 1)
+	require.Len(t, fields, 0) // Hops 不在 TLV 中
 
-	hopField := findExtField(fields, ExtHop)
-	require.NotNil(t, hopField)
-	decodedHop, totalHop, err := DecodeHopExt(hopField)
-	require.NoError(t, err)
-	assert.Equal(t, uint16(9), decodedHop, "Hop 应该被递减")
-	assert.Equal(t, uint16(10), totalHop, "TotalHop 应该保持不变")
+	// Hops 应该在 FixedHeader 中
+	hops, _ := frame.GetHopCount()
+	assert.Equal(t, uint8(9), hops)
 }
 
 // TestMsgFrame_EncodeTLVs_EncryptField 测试加密字段编码
@@ -514,61 +484,31 @@ func TestSendOpt_withSendOptions_MultipleOptions(t *testing.T) {
 }
 
 // ========================================
-// BaseMessage 测试
-// ========================================
-
-// TestBaseMessage_Creation 测试 BaseMessage 创建
-func TestBaseMessage_Creation(t *testing.T) {
-	msg := NewBaseMessage(types.MessageTypePut, []byte("test payload"))
-
-	assert.Equal(t, types.MessageTypePut, msg.Type())
-	assert.Equal(t, []byte("test payload"), msg.GetPayload())
-	assert.Equal(t, int(GetPriority(types.MessageTypePut)), msg.Priority())
-}
-
-// TestBaseMessage_SetPriority 测试设置优先级
-func TestBaseMessage_SetPriority(t *testing.T) {
-	msg := NewBaseMessage(types.MessageTypeGet, []byte("test"))
-
-	originalPriority := msg.Priority()
-	msg.SetPriority(int(types.PriorityHigh))
-	assert.Equal(t, int(types.PriorityHigh), msg.Priority())
-
-	// 恢复原始优先级
-	msg.SetPriority(originalPriority)
-	assert.Equal(t, originalPriority, msg.Priority())
-}
-
-// ========================================
 // ExtField 结构体测试
 // ========================================
 
 // TestExtField_Creation 测试 ExtField 创建
 func TestExtField_Creation(t *testing.T) {
 	extField := ExtField{
-		Type:  ExtHop,
-		Value: []byte{0x05, 0x00, 0x0A, 0x00},
+		Type:  ExtPriority,
+		Value: []byte{0x03, 0x00}, // types.PriorityHigh = 3
 	}
 
-	assert.Equal(t, ExtHop, extField.Type)
-	assert.Equal(t, []byte{0x05, 0x00, 0x0A, 0x00}, extField.Value)
+	assert.Equal(t, ExtPriority, extField.Type)
+	assert.Equal(t, []byte{0x03, 0x00}, extField.Value)
 }
 
 // ========================================
 // 扩展字段结构体测试
 // ========================================
 
-// TestHopExt_Structure 测试 HopExt 结构
-func TestHopExt_Structure(t *testing.T) {
-	hop := &HopExt{
-		Hop:      3,
-		TotalHop: 10,
+// TestPriorityExt_Structure 测试 PriorityExt 结构
+func TestPriorityExt_Structure(t *testing.T) {
+	priority := &PriorityExt{
+		Priority: types.PriorityHigh,
 	}
 
-	assert.Equal(t, uint16(3), hop.Hop)
-	assert.Equal(t, uint16(10), hop.TotalHop)
-	assert.True(t, hop.Hop > 0)
-	assert.True(t, hop.Hop <= hop.TotalHop)
+	assert.Equal(t, types.PriorityHigh, priority.Priority)
 }
 
 // TestCompressExt_Structure 测试 CompressExt 结构
@@ -613,32 +553,31 @@ func TestSegmentExt_Structure(t *testing.T) {
 func TestPrepareForwardMessage_Success(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
-	// 添加 Hop TLV
-	addTLVToFrame(frame, *EncodeHopExt(10, 20))
+	// 设置 Hops 字段（FixedHeader）
+	frame.Hops = 10
 
 	// 准备转发
 	forwardFrame, err := prepareForwardMessage(frame)
 	require.NoError(t, err)
 	require.NotNil(t, forwardFrame)
 
-	// 验证 Hop Count 递减
-	hop, ok := forwardFrame.GetHopCount()
+	// 验证 Hops 递减
+	hops, ok := forwardFrame.GetHopCount()
 	require.True(t, ok)
-	assert.Equal(t, uint16(9), hop.Hop, "Hop 应该递减")
-	assert.Equal(t, uint16(20), hop.TotalHop, "TotalHop 不变")
+	assert.Equal(t, uint8(9), hops, "Hops 应该递减")
 
 	// 验证原始 frame 不受影响（深拷贝）
-	originalHop, ok := frame.GetHopCount()
+	originalHops, ok := frame.GetHopCount()
 	require.True(t, ok)
-	assert.Equal(t, uint16(10), originalHop.Hop, "原始 Hop 不应该被修改")
+	assert.Equal(t, uint8(10), originalHops, "原始 Hops 不应该被修改")
 }
 
-// TestPrepareForwardMessage_HopExpired 测试 Hop Count 过期
+// TestPrepareForwardMessage_HopExpired 测试 Hops 过期
 func TestPrepareForwardMessage_HopExpired(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
-	// 添加 Hop=0 的 TLV
-	addTLVToFrame(frame, *EncodeHopExt(0, 10))
+	// 设置 Hops=0（过期）
+	frame.Hops = 0
 
 	// 准备转发
 	forwardFrame, err := prepareForwardMessage(frame)
@@ -669,7 +608,7 @@ func TestForwardMessage_ContextCancel(t *testing.T) {
 	cancel() // 立即取消
 
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
-	addTLVToFrame(frame, *EncodeHopExt(5, 10))
+	frame.Hops = 5
 
 	// TCP Transport
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
@@ -701,7 +640,7 @@ func TestForwardMessage_NilMessage(t *testing.T) {
 	ctx := context.Background()
 
 	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, nil)
-	addTLVToFrame(frame, *EncodeHopExt(5, 10))
+	frame.Hops = 5
 
 	// TCP Transport
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
@@ -733,7 +672,8 @@ func TestForwardMessage_HopCountExpired(t *testing.T) {
 	ctx := context.Background()
 
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
-	addTLVToFrame(frame, *EncodeHopExt(0, 10))
+	// 设置 Hops=0 来触发过期错误
+	frame.Hops = 0
 
 	// TCP Transport
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
@@ -765,7 +705,7 @@ func TestForwardMessage_DeepCopyPreventsDataRace(t *testing.T) {
 	ctx := context.Background()
 
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
-	addTLVToFrame(frame, *EncodeHopExt(5, 10))
+	frame.Hops = 5
 
 	// 创建多个并发转发请求，验证没有 data race
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
@@ -829,4 +769,124 @@ func TestGetExt_MissingDecoder(t *testing.T) {
 	value, ok := frame.GetExt(ExtFieldType(9999))
 	assert.False(t, ok, "缺少解码器应该返回 false")
 	assert.Nil(t, value)
+}
+
+// ========================================
+// ExpectResponse 和 Reliability 测试
+// ========================================
+
+// TestMsgFrame_ExpectResponse_WithMessage 测试有 Message 时的 ExpectResponse
+func TestMsgFrame_ExpectResponse_WithMessage(t *testing.T) {
+	// 创建一个实现了 ExpectResponse 的测试消息
+	testMsg := &testMessageWithExpectResponse{
+		expectResponse: types.ExpectResponse,
+	}
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, testMsg)
+
+	assert.Equal(t, types.ExpectResponse, frame.ExpectResponse())
+}
+
+// TestMsgFrame_ExpectResponse_WithoutMessage 测试无 Message 时的 ExpectResponse
+func TestMsgFrame_ExpectResponse_WithoutMessage(t *testing.T) {
+	// 无 Message，从 MsgType 获取
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, nil)
+
+	// MessageTypeGet 需要 Response
+	assert.Equal(t, types.ExpectResponse, frame.ExpectResponse())
+}
+
+// TestMsgFrame_ExpectResponse_NoResponse 测试不需要响应的消息类型
+func TestMsgFrame_ExpectResponse_NoResponse(t *testing.T) {
+	// 根据 MessageType 的实际行为，某些消息类型不需要响应
+	// 注意：MessageTypeGossipSync 实际上需要响应（根据 types 包的定义）
+	// 这里测试真正不需要响应的消息类型（如果有的话）
+	// 例如：如果类型系统中定义了 NoResponse 的消息类型
+
+	// 由于大多数消息类型都需要响应，这里测试 MsgType 的 ExpectResponse() 方法确实被调用
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGossipSync, 1, nil)
+
+	// MessageTypeGossipSync 返回 ExpectResponse（需要响应）
+	// 这是根据 types.MessageType.ExpectResponse() 的实际实现
+	assert.Equal(t, types.ExpectResponse, frame.ExpectResponse())
+}
+
+// TestMsgFrame_Reliability_WithMessage 测试有 Message 时的 Reliability
+func TestMsgFrame_Reliability_WithMessage(t *testing.T) {
+	testMsg := &testMessageWithReliability{
+		reliability: types.Reliable,
+	}
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, testMsg)
+
+	assert.Equal(t, types.Reliable, frame.Reliability())
+}
+
+// TestMsgFrame_Reliability_WithoutMessage 测试无 Message 时的 Reliability
+func TestMsgFrame_Reliability_WithoutMessage(t *testing.T) {
+	// 无 Message，从 MsgType 获取
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, nil)
+
+	// MessageTypeGet 是 Reliable
+	assert.Equal(t, types.Reliable, frame.Reliability())
+}
+
+// TestMsgFrame_Reliability_BestEffort 测试 BestEffort 消息类型
+func TestMsgFrame_Reliability_BestEffort(t *testing.T) {
+	// GossipSync 是 BestEffort
+	frame := NewMsgFrame(12345, 1, types.MessageTypeGossipSync, 1, nil)
+
+	assert.Equal(t, types.BestEffort, frame.Reliability())
+}
+
+// ========================================
+// 测试辅助类型
+// ========================================
+
+// testMessageWithExpectResponse 实现了 ExpectResponse 的测试消息
+type testMessageWithExpectResponse struct {
+	expectResponse types.ResponseExpectation
+}
+
+func (m *testMessageWithExpectResponse) Type() types.MessageType {
+	return types.MessageTypeGet
+}
+
+func (m *testMessageWithExpectResponse) Priority() int {
+	return int(types.PriorityNormal)
+}
+
+func (m *testMessageWithExpectResponse) ExpectResponse() types.ResponseExpectation {
+	return m.expectResponse
+}
+
+func (m *testMessageWithExpectResponse) Reliability() types.ReliabilityRequirement {
+	return types.Reliable
+}
+
+func (m *testMessageWithExpectResponse) GetPayload() []byte {
+	return []byte("test")
+}
+
+// testMessageWithReliability 实现了 Reliability 的测试消息
+type testMessageWithReliability struct {
+	reliability types.ReliabilityRequirement
+}
+
+func (m *testMessageWithReliability) Type() types.MessageType {
+	return types.MessageTypePut
+}
+
+func (m *testMessageWithReliability) Priority() int {
+	return int(types.PriorityHigh)
+}
+
+func (m *testMessageWithReliability) ExpectResponse() types.ResponseExpectation {
+	return types.ExpectResponse
+}
+
+func (m *testMessageWithReliability) Reliability() types.ReliabilityRequirement {
+	return m.reliability
+}
+
+func (m *testMessageWithReliability) GetPayload() []byte {
+	return []byte("test data")
 }

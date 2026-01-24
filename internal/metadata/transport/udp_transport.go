@@ -262,7 +262,7 @@ func (t *UDPTransport) receiveLoop() {
 
 	for {
 		// 每次循环都设置读超时，确保每次读取都有超时保护
-		if err := t.conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout)); err != nil {
+		if err := setReadTimeout(t.conn, t.config.ReadTimeout); err != nil {
 			logging.Errorf("设置读超时失败: %v", err)
 			return
 		}
@@ -796,27 +796,30 @@ func (t *UDPTransport) Send(ctx context.Context, addr string, msg Message, opts 
 		return types.NewTransportConnectionError("解析地址", addr, err)
 	}
 
+	// 计算消息 Flags（根据 ExpectResponse）
+	flags := FlagsFromMessage(msg)
+
 	// 小消息直接发送（无需分片）
 	if len(msgData) <= MaxUDPPacketSize {
-		return t.sendDirectWithOptions(udpAddr, msgData, msg.Type(), addr, t.GenerateMsgSeq(), options)
+		return t.sendDirectWithOptions(udpAddr, msgData, msg.Type(), addr, t.GenerateMsgSeq(), flags, options)
 	}
 
 	// 大消息分片发送（直接对编码后的消息数据进行分片）
-	return t.sendFragmentedWithOptions(udpAddr, msgData, msg.Type(), t.GenerateMsgSeq(), options)
+	return t.sendFragmentedWithOptions(udpAddr, msgData, msg.Type(), t.GenerateMsgSeq(), flags, options)
 }
 
 // sendDirectWithOptions 直接发送消息（带 TLV 选项，无需分片）
-func (t *UDPTransport) sendDirectWithOptions(addr *net.UDPAddr, msgData []byte, msgType MessageType, originalAddr string, msgSeq uint64, opts *sendOptions) error {
+func (t *UDPTransport) sendDirectWithOptions(addr *net.UDPAddr, msgData []byte, msgType MessageType, originalAddr string, msgSeq uint64, flags uint8, opts *sendOptions) error {
 	nodeID := t.NodeID.Load()
 	msgID := msgSeq
 
-	// 创建完整帧
-	frame := NewFrame(nodeID, msgID, msgType, uint16(t.codec.Type()), msgData)
+	// 创建完整帧（使用 Flags 字段）
+	frame := NewFrame(nodeID, msgID, msgType, uint16(t.codec.Type()), flags, msgData)
 
 	// 应用 TLV 扩展字段
 	if opts.hopCount != nil {
-		// 初始化 hop = total_hop
-		frame.WithHop(*opts.hopCount, *opts.hopCount)
+		// 设置 Hops 字段（FixedHeader）
+		frame.FixedHeader.Hops = uint8(*opts.hopCount)
 	}
 	if opts.compressID != nil {
 		frame.WithCompress(*opts.compressID)
@@ -834,7 +837,7 @@ func (t *UDPTransport) sendDirectWithOptions(addr *net.UDPAddr, msgData []byte, 
 		return types.NewTransportSendError(err)
 	}
 
-	if err := t.conn.SetWriteDeadline(time.Now().Add(t.config.WriteTimeout)); err != nil {
+	if err := setWriteTimeout(t.conn, t.config.WriteTimeout); err != nil {
 		return types.NewTransportConnectionError("设置写超时", "", err)
 	}
 
@@ -850,7 +853,7 @@ func (t *UDPTransport) sendDirectWithOptions(addr *net.UDPAddr, msgData []byte, 
 // sendFragmentedWithOptions 分片发送大消息（带 TLV 选项）
 //
 // 接收编码后的纯消息数据，对每个分片创建独立的 Frame
-func (t *UDPTransport) sendFragmentedWithOptions(addr *net.UDPAddr, msgData []byte, msgType MessageType, msgSeq uint64, opts *sendOptions) error {
+func (t *UDPTransport) sendFragmentedWithOptions(addr *net.UDPAddr, msgData []byte, msgType MessageType, msgSeq uint64, flags uint8, opts *sendOptions) error {
 	// 验证 localNodeID 已设置
 	if t.NodeID.Load() == 0 {
 		return types.NewTransportStateError("localNodeID 未设置")
@@ -863,7 +866,7 @@ func (t *UDPTransport) sendFragmentedWithOptions(addr *net.UDPAddr, msgData []by
 	logging.Debugf("分片发送: total=%d, msgID=%d, nodeID=%d", totalFragments, msgID, nodeID)
 
 	// 设置写超时
-	if err := t.conn.SetWriteDeadline(time.Now().Add(t.config.WriteTimeout)); err != nil {
+	if err := setWriteTimeout(t.conn, t.config.WriteTimeout); err != nil {
 		return types.NewTransportConnectionError("设置写超时", "", err)
 	}
 
@@ -878,12 +881,13 @@ func (t *UDPTransport) sendFragmentedWithOptions(addr *net.UDPAddr, msgData []by
 		fragmentData := msgData[start:end]
 
 		// 创建 Frame（FixedHeader + Fragment 扩展 + TLV 扩展 + 分片数据 + CRC32）
-		frame := NewFrame(nodeID, msgID, msgType, uint16(t.codec.Type()), fragmentData)
+		frame := NewFrame(nodeID, msgID, msgType, uint16(t.codec.Type()), flags, fragmentData)
 		frame.WithFragment(uint16(i), uint16(totalFragments))
 
-		// 应用 TLV 扩展字段（注意：分片消息通常不需要 Hop Count）
+		// 应用 TLV 扩展字段（注意：分片消息通常不需要 Hops）
 		if opts.hopCount != nil {
-			frame.WithHop(*opts.hopCount, *opts.hopCount)
+			// 设置 Hops 字段（FixedHeader）
+			frame.FixedHeader.Hops = uint8(*opts.hopCount)
 		}
 		if opts.compressID != nil {
 			frame.WithCompress(*opts.compressID)
@@ -956,7 +960,22 @@ func (t *UDPTransport) ForwardMessage(ctx context.Context, addr string, msgExt M
 
 // forwardDirect 直接转发消息（无需分片）
 func (t *UDPTransport) forwardDirect(nodeID uint64, msgSeq uint64, forwardMsg MsgFrame, msgData []byte, tlvFields []ExtField, udpAddr *net.UDPAddr, originalAddr string) (uint64, error) {
-	frame := NewFrame(nodeID, msgSeq, forwardMsg.Type(), uint16(t.codec.Type()), msgData)
+	// 获取当前跳数，检查是否可以转发
+	currentHops, hasHops := forwardMsg.GetHopCount()
+	if hasHops && currentHops == 0 {
+		return 0, types.NewTransportHopCountExpiredError()
+	}
+
+	// 计算新的跳数（递减）
+	newHops := currentHops
+	if newHops > 0 {
+		newHops--
+	}
+
+	// 转发消息使用单向请求 Flags（Gossip 类型的消息通常是单向的）
+	// 同时设置 ForwardNodeID 和 IsForward 标志
+	forwardNodeID := t.NodeID.Load() // 转发节点的 ID
+	frame := NewForwardFrame(nodeID, msgSeq, forwardMsg.Type(), uint16(t.codec.Type()), FlagsOneWayRequest, forwardNodeID, newHops, msgData)
 	frame.AddTLVFields(tlvFields)
 	frame.Finalize()
 
@@ -973,18 +992,27 @@ func (t *UDPTransport) forwardDirect(nodeID uint64, msgSeq uint64, forwardMsg Ms
 		return 0, types.NewTransportConnectionError("发送", originalAddr, err)
 	}
 
-	logHopCount := uint16(0)
-	if v, _ := forwardMsg.GetHopCount(); v != nil {
-		logHopCount = v.Hop
-	}
-	logging.Debugf("转发消息: %s to %s, Hop=%d", forwardMsg.Type(), originalAddr, logHopCount)
+	logging.Debugf("转发消息: %s to %s, Hops=%d→%d, ForwardNodeID=%d", forwardMsg.Type(), originalAddr, currentHops, newHops, forwardNodeID)
 
 	return msgSeq, nil
 }
 
 // forwardFragmented 分片转发大消息
 func (t *UDPTransport) forwardFragmented(nodeID uint64, msgSeq uint64, forwardMsg MsgFrame, msgData []byte, tlvFields []ExtField, maxPayloadSize int, udpAddr *net.UDPAddr, originalAddr string) (uint64, error) {
+	// 获取当前跳数，检查是否可以转发
+	currentHops, hasHops := forwardMsg.GetHopCount()
+	if hasHops && currentHops == 0 {
+		return 0, types.NewTransportHopCountExpiredError()
+	}
+
+	// 计算新的跳数（递减）
+	newHops := currentHops
+	if newHops > 0 {
+		newHops--
+	}
+
 	totalFragments := (len(msgData) + maxPayloadSize - 1) / maxPayloadSize
+	forwardNodeID := t.NodeID.Load() // 转发节点的 ID
 
 	for i := 0; i < totalFragments; i++ {
 		start := i * maxPayloadSize
@@ -995,7 +1023,9 @@ func (t *UDPTransport) forwardFragmented(nodeID uint64, msgSeq uint64, forwardMs
 
 		fragmentData := msgData[start:end]
 
-		frame := NewFrame(nodeID, msgSeq, forwardMsg.Type(), uint16(t.codec.Type()), fragmentData)
+		// 转发消息使用单向请求 Flags（Gossip 类型的消息通常是单向的）
+		// 同时设置 ForwardNodeID 和 IsForward 标志
+		frame := NewForwardFrame(nodeID, msgSeq, forwardMsg.Type(), uint16(t.codec.Type()), FlagsOneWayRequest, forwardNodeID, newHops, fragmentData)
 		frame.WithFragment(uint16(i), uint16(totalFragments))
 
 		if i == 0 {
@@ -1018,11 +1048,7 @@ func (t *UDPTransport) forwardFragmented(nodeID uint64, msgSeq uint64, forwardMs
 		}
 	}
 
-	logHopCount := uint16(0)
-	if v, _ := forwardMsg.GetHopCount(); v != nil {
-		logHopCount = v.Hop
-	}
-	logging.Debugf("转发消息: 分片完成 to %s, Hop=%d", originalAddr, logHopCount)
+	logging.Debugf("转发消息: 分片完成 to %s, Hops=%d→%d, ForwardNodeID=%d", originalAddr, currentHops, newHops, forwardNodeID)
 
 	return msgSeq, nil
 }

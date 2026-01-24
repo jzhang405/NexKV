@@ -370,14 +370,7 @@ func (mt *MultiTransport) receiveLoop(protocolType ProtocolType, recvCh <-chan M
 
 			// 记录接收消息（监控）
 			msgType := msgFrame.Type()
-			msgSize := 0
-			// 估算消息大小（从 FixedHeader.DataLength 获取）
-			if msgFrame.Message != nil {
-				// 尝试从消息获取 payload 大小
-				if baseMsg, ok := msgFrame.Message.(*BaseMessage); ok {
-					msgSize = len(baseMsg.GetPayload())
-				}
-			}
+			msgSize := int(msgFrame.DataLength) // 从 FixedHeader.DataLength 获取消息大小
 
 			// 从消息中提取源地址（使用 NodeID）
 			nodeAddr := "unknown"
@@ -476,11 +469,7 @@ func (mt *MultiTransport) Send(ctx context.Context, addr string, msg Message, op
 
 	// 1. 获取消息类型和大小
 	msgType := msg.Type()
-	msgSize := 0
-	// 尝试从消息获取 payload 大小
-	if baseMsg, ok := msg.(*BaseMessage); ok {
-		msgSize = len(baseMsg.GetPayload())
-	}
+	msgSize := 0 // 消息大小由编码器计算，这里传入 0 即可
 
 	// 3. 使用消息路由器进行三维决策（如果路由器启用）
 	// 注意：DecideProtocol API 已简化，expectResponse 和 reliability 从 msgType 自动推断

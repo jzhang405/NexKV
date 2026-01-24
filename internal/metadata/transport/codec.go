@@ -212,254 +212,101 @@ func NewCodec(codecType types.CodecType) (Codec, error) {
 // 消息工厂函数
 // ========================================
 
-// createMessageByType 根据消息类型创建消息实例
+// createMessageByType 根据消息类型创建消息实例（使用注册表）
+//
+// 已重构：使用 msg_frame.go 中的消息注册表替代 switch-case
+// 这样可以消除 76 行重复的 switch-case 代码
 func createMessageByType(msgType MessageType) (Message, error) {
-	switch msgType {
-	// 元数据操作消息
-	case types.MessageTypeGet:
-		return &GetMessage{}, nil
-	case types.MessageTypePut:
-		return &PutMessage{}, nil
-	case types.MessageTypeDelete:
-		return &DeleteMessage{}, nil
-	case types.MessageTypeGetReply:
-		return &GetReplyMessage{}, nil
-	case types.MessageTypePutReply:
-		return &PutReplyMessage{}, nil
-	case types.MessageTypeDeleteReply:
-		return &DeleteReplyMessage{}, nil
-
-	// Gossip 协议消息
-	case types.MessageTypeGossipSync:
-		return &GossipSyncMessage{}, nil
-	case types.MessageTypeGossipSyncReply:
-		return &GossipSyncReplyMessage{}, nil
-	case types.MessageTypeGossipDigest:
-		return &GossipDigestMessage{}, nil
-	case types.MessageTypeGossipDigestReply:
-		return &GossipDigestReplyMessage{}, nil
-
-	// Quorum 协议消息
-	case types.MessageTypeQuorumPropose:
-		return &QuorumProposeMessage{}, nil
-	case types.MessageTypeQuorumVote:
-		return &QuorumVoteMessage{}, nil
-	case types.MessageTypeQuorumDecide:
-		return &QuorumDecideMessage{}, nil
-
-	// 2PC 协议消息
-	case types.MessageType2PCPrepare:
-		return &TwoPCPrepareMessage{}, nil
-	case types.MessageType2PCPrepareReply:
-		return &TwoPCPrepareReplyMessage{}, nil
-	case types.MessageType2PCCommit:
-		return &TwoPCCommitMessage{}, nil
-	case types.MessageType2PCRollback:
-		return &TwoPCRollbackMessage{}, nil
-	case types.MessageType2PCCommitReply:
-		return &TwoPCCommitReplyMessage{}, nil
-	case types.MessageType2PCRollbackReply:
-		return &TwoPCRollbackReplyMessage{}, nil
-
-	// 节点管理消息
-	case types.MessageTypeNodePing:
-		return &NodePingMessage{}, nil
-	case types.MessageTypeNodePong:
-		return &NodePongMessage{}, nil
-	case types.MessageTypeNodeJoin:
-		return &NodeJoinMessage{}, nil
-	case types.MessageTypeNodeLeave:
-		return &NodeLeaveMessage{}, nil
-	case types.MessageTypeNodeSync:
-		return &NodeSyncMessage{}, nil
-	case types.MessageTypeClockSync:
-		return &ClockSyncMessage{}, nil
-	case types.MessageTypeClockSyncReply:
-		return &ClockSyncReplyMessage{}, nil
-
-	// 集群管理消息
-	case types.MessageTypeClusterStatus:
-		return &ClusterStatusMessage{}, nil
-	case types.MessageTypeClusterStatusReply:
-		return &ClusterStatusReplyMessage{}, nil
-	case types.MessageTypeLeaderElection:
-		return &LeaderElectionMessage{}, nil
-
-	default:
-		return nil, types.NewCodecUnknownMessageTypeError(int(msgType))
-	}
+	return createMessage(msgType)
 }
 
 // ========================================
-// 元数据操作消息（双标签实现）
+// 元数据操作消息（使用 BaseMessage 消除重复代码）
 // ========================================
 
 // GetMessage 获取元数据消息
 type GetMessage struct {
+	BaseMessage
 	Key string `json:"key" msgpack:"key"`
-}
-
-func (m *GetMessage) Type() MessageType { return types.MessageTypeGet }
-func (m *GetMessage) Priority() int     { return int(GetPriority(types.MessageTypeGet)) }
-func (m *GetMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *GetMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
 }
 
 // PutMessage 更新元数据消息
 type PutMessage struct {
+	BaseMessage
 	Key   string `json:"key" msgpack:"key"`
 	Value []byte `json:"value" msgpack:"value"`
 }
 
-func (m *PutMessage) Type() MessageType { return types.MessageTypePut }
-func (m *PutMessage) Priority() int     { return int(GetPriority(types.MessageTypePut)) }
-func (m *PutMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *PutMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // DeleteMessage 删除元数据消息
 type DeleteMessage struct {
+	BaseMessage
 	Key string `json:"key" msgpack:"key"`
-}
-
-func (m *DeleteMessage) Type() MessageType { return types.MessageTypeDelete }
-func (m *DeleteMessage) Priority() int     { return int(GetPriority(types.MessageTypeDelete)) }
-func (m *DeleteMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *DeleteMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
 }
 
 // GetReplyMessage Get 响应消息
 type GetReplyMessage struct {
+	BaseMessage
 	Key     string `json:"key" msgpack:"key"`
 	Value   []byte `json:"value" msgpack:"value"`
 	Found   bool   `json:"found" msgpack:"found"`
 	Version uint64 `json:"version" msgpack:"version"`
 }
 
-func (m *GetReplyMessage) Type() MessageType { return types.MessageTypeGetReply }
-func (m *GetReplyMessage) Priority() int     { return int(GetPriority(types.MessageTypeGetReply)) }
-func (m *GetReplyMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *GetReplyMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // PutReplyMessage Put 响应消息
 type PutReplyMessage struct {
+	BaseMessage
 	Key     string `json:"key" msgpack:"key"`
 	Success bool   `json:"success" msgpack:"success"`
 	Version uint64 `json:"version" msgpack:"version"`
 }
 
-func (m *PutReplyMessage) Type() MessageType { return types.MessageTypePutReply }
-func (m *PutReplyMessage) Priority() int     { return int(GetPriority(types.MessageTypePutReply)) }
-func (m *PutReplyMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *PutReplyMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // DeleteReplyMessage Delete 响应消息
 type DeleteReplyMessage struct {
+	BaseMessage
 	Key     string `json:"key" msgpack:"key"`
 	Success bool   `json:"success" msgpack:"success"`
 }
 
-func (m *DeleteReplyMessage) Type() MessageType { return types.MessageTypeDeleteReply }
-func (m *DeleteReplyMessage) Priority() int     { return int(GetPriority(types.MessageTypeDeleteReply)) }
-func (m *DeleteReplyMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *DeleteReplyMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // ========================================
-// Gossip 协议消息（双标签实现）
+// Gossip 协议消息（使用 BaseMessage 消除重复代码）
 // ========================================
 
 // GossipSyncMessage Gossip 同步消息
 type GossipSyncMessage struct {
+	BaseMessage
 	Version   uint64            `json:"version" msgpack:"version"`
 	Metadata  map[string][]byte `json:"metadata" msgpack:"metadata"`
 	Timestamp int64             `json:"timestamp" msgpack:"timestamp"`
 }
 
-func (m *GossipSyncMessage) Type() MessageType { return types.MessageTypeGossipSync }
-func (m *GossipSyncMessage) Priority() int     { return int(GetPriority(types.MessageTypeGossipSync)) }
-func (m *GossipSyncMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *GossipSyncMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // GossipSyncReplyMessage Gossip 同步响应
 type GossipSyncReplyMessage struct {
+	BaseMessage
 	Accepted bool   `json:"accepted" msgpack:"accepted"`
 	Version  uint64 `json:"version" msgpack:"version"`
 }
 
-func (m *GossipSyncReplyMessage) Type() MessageType { return types.MessageTypeGossipSyncReply }
-func (m *GossipSyncReplyMessage) Priority() int {
-	return int(GetPriority(types.MessageTypeGossipSyncReply))
-}
-func (m *GossipSyncReplyMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *GossipSyncReplyMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // GossipDigestMessage Gossip 摘要消息
 type GossipDigestMessage struct {
+	BaseMessage
 	Version uint64            `json:"version" msgpack:"version"`
 	Digest  map[string]uint64 `json:"digest" msgpack:"digest"`
-}
-
-func (m *GossipDigestMessage) Type() MessageType { return types.MessageTypeGossipDigest }
-func (m *GossipDigestMessage) Priority() int     { return int(GetPriority(types.MessageTypeGossipDigest)) }
-func (m *GossipDigestMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *GossipDigestMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
 }
 
 // GossipDigestReplyMessage Gossip 摘要响应
 type GossipDigestReplyMessage struct {
+	BaseMessage
 	Version uint64            `json:"version" msgpack:"version"`
 	Digest  map[string]uint64 `json:"digest" msgpack:"digest"`
 }
 
-func (m *GossipDigestReplyMessage) Type() MessageType { return types.MessageTypeGossipDigestReply }
-func (m *GossipDigestReplyMessage) Priority() int {
-	return int(GetPriority(types.MessageTypeGossipDigestReply))
-}
-func (m *GossipDigestReplyMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *GossipDigestReplyMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // ========================================
-// Quorum 协议消息（双标签实现）
+// Quorum 协议消息（使用 BaseMessage 消除重复代码）
 // ========================================
 
 // QuorumProposeMessage Quorum 提案消息
 type QuorumProposeMessage struct {
+	BaseMessage
 	ProposalID string `json:"proposal_id" msgpack:"proposal_id"`
 	Key        string `json:"key" msgpack:"key"`
 	Value      []byte `json:"value" msgpack:"value"`
@@ -468,305 +315,157 @@ type QuorumProposeMessage struct {
 	Timestamp  int64  `json:"timestamp" msgpack:"timestamp"`
 }
 
-func (m *QuorumProposeMessage) Type() MessageType { return types.MessageTypeQuorumPropose }
-func (m *QuorumProposeMessage) Priority() int {
-	return int(GetPriority(types.MessageTypeQuorumPropose))
-}
-func (m *QuorumProposeMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *QuorumProposeMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // QuorumVoteMessage Quorum 投票消息
 type QuorumVoteMessage struct {
+	BaseMessage
 	ProposalID string `json:"proposal_id" msgpack:"proposal_id"`
 	Voter      string `json:"voter" msgpack:"voter"`
 	Vote       bool   `json:"vote" msgpack:"vote"`
 	Reason     string `json:"reason,omitempty" msgpack:"reason,omitempty"`
 }
 
-func (m *QuorumVoteMessage) Type() MessageType { return types.MessageTypeQuorumVote }
-func (m *QuorumVoteMessage) Priority() int     { return int(GetPriority(types.MessageTypeQuorumVote)) }
-func (m *QuorumVoteMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *QuorumVoteMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // QuorumDecideMessage Quorum 决策消息
 type QuorumDecideMessage struct {
+	BaseMessage
 	ProposalID string `json:"proposal_id" msgpack:"proposal_id"`
 	Approved   bool   `json:"approved" msgpack:"approved"`
 	Version    uint64 `json:"version" msgpack:"version"`
 }
 
-func (m *QuorumDecideMessage) Type() MessageType { return types.MessageTypeQuorumDecide }
-func (m *QuorumDecideMessage) Priority() int     { return int(GetPriority(types.MessageTypeQuorumDecide)) }
-func (m *QuorumDecideMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *QuorumDecideMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // ========================================
-// 2PC 协议消息（双标签实现）
+// 2PC 协议消息（使用 BaseMessage 消除重复代码）
 // ========================================
 
-// TwoPCPrepareMessage 2PC 准备阶段消息
-type TwoPCPrepareMessage struct {
-	TransactionID string      `json:"transaction_id" msgpack:"transaction_id"`
-	Participants  []string    `json:"participants" msgpack:"participants"`
-	Operations    []Operation `json:"operations" msgpack:"operations"`
-	Timeout       int64       `json:"timeout" msgpack:"timeout"`
-}
-
-// Operation 操作定义
+// Operation 操作定义（用于 TwoPCPrepareMessage）
 type Operation struct {
 	Type  string `json:"type" msgpack:"type"` // "put", "delete"
 	Key   string `json:"key" msgpack:"key"`
 	Value []byte `json:"value,omitempty" msgpack:"value,omitempty"`
 }
 
-func (m *TwoPCPrepareMessage) Type() MessageType { return types.MessageType2PCPrepare }
-func (m *TwoPCPrepareMessage) Priority() int     { return int(GetPriority(types.MessageType2PCPrepare)) }
-func (m *TwoPCPrepareMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *TwoPCPrepareMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
+// TwoPCPrepareMessage 2PC 准备阶段消息
+type TwoPCPrepareMessage struct {
+	BaseMessage
+	TransactionID string      `json:"transaction_id" msgpack:"transaction_id"`
+	Participants  []string    `json:"participants" msgpack:"participants"`
+	Operations    []Operation `json:"operations" msgpack:"operations"`
+	Timeout       int64       `json:"timeout" msgpack:"timeout"`
 }
 
 // TwoPCPrepareReplyMessage 2PC 准备响应
 type TwoPCPrepareReplyMessage struct {
+	BaseMessage
 	TransactionID string `json:"transaction_id" msgpack:"transaction_id"`
 	Participant   string `json:"participant" msgpack:"participant"`
 	Vote          string `json:"vote" msgpack:"vote"` // "commit", "abort"
 	Reason        string `json:"reason,omitempty" msgpack:"reason,omitempty"`
 }
 
-func (m *TwoPCPrepareReplyMessage) Type() MessageType { return types.MessageType2PCPrepareReply }
-func (m *TwoPCPrepareReplyMessage) Priority() int {
-	return int(GetPriority(types.MessageType2PCPrepareReply))
-}
-func (m *TwoPCPrepareReplyMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *TwoPCPrepareReplyMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // TwoPCCommitMessage 2PC 提交消息
 type TwoPCCommitMessage struct {
+	BaseMessage
 	TransactionID string `json:"transaction_id" msgpack:"transaction_id"`
-}
-
-func (m *TwoPCCommitMessage) Type() MessageType { return types.MessageType2PCCommit }
-func (m *TwoPCCommitMessage) Priority() int     { return int(GetPriority(types.MessageType2PCCommit)) }
-func (m *TwoPCCommitMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *TwoPCCommitMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
 }
 
 // TwoPCRollbackMessage 2PC 回滚消息
 type TwoPCRollbackMessage struct {
+	BaseMessage
 	TransactionID string `json:"transaction_id" msgpack:"transaction_id"`
 	Reason        string `json:"reason,omitempty" msgpack:"reason,omitempty"`
 }
 
-func (m *TwoPCRollbackMessage) Type() MessageType { return types.MessageType2PCRollback }
-func (m *TwoPCRollbackMessage) Priority() int     { return int(GetPriority(types.MessageType2PCRollback)) }
-func (m *TwoPCRollbackMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *TwoPCRollbackMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // TwoPCCommitReplyMessage 2PC 提交响应
 type TwoPCCommitReplyMessage struct {
+	BaseMessage
 	TransactionID string `json:"transaction_id" msgpack:"transaction_id"`
 	Participant   string `json:"participant" msgpack:"participant"`
 	Success       bool   `json:"success" msgpack:"success"`
-}
-
-func (m *TwoPCCommitReplyMessage) Type() MessageType { return types.MessageType2PCCommitReply }
-func (m *TwoPCCommitReplyMessage) Priority() int {
-	return int(GetPriority(types.MessageType2PCCommitReply))
-}
-func (m *TwoPCCommitReplyMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *TwoPCCommitReplyMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
 }
 
 // TwoPCRollbackReplyMessage 2PC 回滚响应
 type TwoPCRollbackReplyMessage struct {
+	BaseMessage
 	TransactionID string `json:"transaction_id" msgpack:"transaction_id"`
 	Participant   string `json:"participant" msgpack:"participant"`
 	Success       bool   `json:"success" msgpack:"success"`
 }
 
-func (m *TwoPCRollbackReplyMessage) Type() MessageType { return types.MessageType2PCRollbackReply }
-func (m *TwoPCRollbackReplyMessage) Priority() int {
-	return int(GetPriority(types.MessageType2PCRollbackReply))
-}
-func (m *TwoPCRollbackReplyMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *TwoPCRollbackReplyMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // ========================================
-// 节点管理消息（双标签实现）
+// 节点管理消息（使用 BaseMessage 消除重复代码）
 // ========================================
 
 // NodePingMessage 节点心跳消息
 type NodePingMessage struct {
+	BaseMessage
 	NodeID    string `json:"node_id" msgpack:"node_id"`
 	Sequence  int64  `json:"sequence" msgpack:"sequence"`
 	Timestamp int64  `json:"timestamp" msgpack:"timestamp"`
 }
 
-func (m *NodePingMessage) Type() MessageType { return types.MessageTypeNodePing }
-func (m *NodePingMessage) Priority() int     { return int(GetPriority(types.MessageTypeNodePing)) }
-func (m *NodePingMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *NodePingMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // NodePongMessage 心跳响应
 type NodePongMessage struct {
+	BaseMessage
 	NodeID    string `json:"node_id" msgpack:"node_id"`
 	Sequence  int64  `json:"sequence" msgpack:"sequence"`
 	Status    string `json:"status" msgpack:"status"`       // "ready", "busy", "leaving"
 	Timestamp int64  `json:"timestamp" msgpack:"timestamp"` // Pong 发送时间戳（用于计算 RTT）
 }
 
-func (m *NodePongMessage) Type() MessageType { return types.MessageTypeNodePong }
-func (m *NodePongMessage) Priority() int     { return int(GetPriority(types.MessageTypeNodePong)) }
-func (m *NodePongMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *NodePongMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // NodeJoinMessage 节点加入消息
 type NodeJoinMessage struct {
+	BaseMessage
 	NodeID   string `json:"node_id" msgpack:"node_id"`
 	Addr     string `json:"addr" msgpack:"addr"`
 	Role     string `json:"role" msgpack:"role"` // "parent", "child"
 	ParentID string `json:"parent_id,omitempty" msgpack:"parent_id,omitempty"`
 }
 
-func (m *NodeJoinMessage) Type() MessageType { return types.MessageTypeNodeJoin }
-func (m *NodeJoinMessage) Priority() int     { return int(GetPriority(types.MessageTypeNodeJoin)) }
-func (m *NodeJoinMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *NodeJoinMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // NodeLeaveMessage 节点离开消息
 type NodeLeaveMessage struct {
+	BaseMessage
 	NodeID string `json:"node_id" msgpack:"node_id"`
 	Reason string `json:"reason,omitempty" msgpack:"reason,omitempty"`
 }
 
-func (m *NodeLeaveMessage) Type() MessageType { return types.MessageTypeNodeLeave }
-func (m *NodeLeaveMessage) Priority() int     { return int(GetPriority(types.MessageTypeNodeLeave)) }
-func (m *NodeLeaveMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *NodeLeaveMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // NodeSyncMessage 节点同步消息
 type NodeSyncMessage struct {
+	BaseMessage
 	Version  uint64            `json:"version" msgpack:"version"`
 	Metadata map[string][]byte `json:"metadata" msgpack:"metadata"`
 }
 
-func (m *NodeSyncMessage) Type() MessageType { return types.MessageTypeNodeSync }
-func (m *NodeSyncMessage) Priority() int     { return int(GetPriority(types.MessageTypeNodeSync)) }
-func (m *NodeSyncMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *NodeSyncMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // ClockSyncMessage 时钟同步请求消息
 type ClockSyncMessage struct {
+	BaseMessage
 	Timestamp int64  `json:"timestamp" msgpack:"timestamp"` // 发送节点的 HLC 时间戳
 	NodeID    string `json:"node_id" msgpack:"node_id"`     // 发送节点 ID
 }
 
-func (m *ClockSyncMessage) Type() MessageType { return types.MessageTypeClockSync }
-func (m *ClockSyncMessage) Priority() int     { return int(GetPriority(types.MessageTypeClockSync)) }
-func (m *ClockSyncMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *ClockSyncMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // ClockSyncReplyMessage 时钟同步响应消息
 type ClockSyncReplyMessage struct {
+	BaseMessage
 	Timestamp int64  `json:"timestamp" msgpack:"timestamp"` // 响应节点的 HLC 时间戳
 	NodeID    string `json:"node_id" msgpack:"node_id"`     // 响应节点 ID
 	Drift     int64  `json:"drift" msgpack:"drift"`         // 时间漂移（毫秒）
 }
 
-func (m *ClockSyncReplyMessage) Type() MessageType { return types.MessageTypeClockSyncReply }
-func (m *ClockSyncReplyMessage) Priority() int {
-	return int(GetPriority(types.MessageTypeClockSyncReply))
-}
-func (m *ClockSyncReplyMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *ClockSyncReplyMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // ========================================
-// 集群管理消息（双标签实现）
+// 集群管理消息（使用 BaseMessage 消除重复代码）
 // ========================================
 
 // ClusterStatusMessage 集群状态查询
 type ClusterStatusMessage struct {
+	BaseMessage
 	NodeID string `json:"node_id" msgpack:"node_id"`
-}
-
-func (m *ClusterStatusMessage) Type() MessageType { return types.MessageTypeClusterStatus }
-func (m *ClusterStatusMessage) Priority() int {
-	return int(GetPriority(types.MessageTypeClusterStatus))
-}
-func (m *ClusterStatusMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *ClusterStatusMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
 }
 
 // ClusterStatusReplyMessage 集群状态响应
 type ClusterStatusReplyMessage struct {
+	BaseMessage
 	Nodes []NodeInfo `json:"nodes" msgpack:"nodes"`
 }
 
-// NodeInfo 节点信息（双标签实现）
+// NodeInfo 节点信息（用于 ClusterStatusReplyMessage）
 type NodeInfo struct {
 	NodeID   string `json:"node_id" msgpack:"node_id"`
 	Addr     string `json:"addr" msgpack:"addr"`
@@ -776,33 +475,114 @@ type NodeInfo struct {
 	Level    int    `json:"level" msgpack:"level"`
 }
 
-func (m *ClusterStatusReplyMessage) Type() MessageType { return types.MessageTypeClusterStatusReply }
-func (m *ClusterStatusReplyMessage) Priority() int {
-	return int(GetPriority(types.MessageTypeClusterStatusReply))
-}
-func (m *ClusterStatusReplyMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *ClusterStatusReplyMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
-}
-
 // LeaderElectionMessage Leader 选举消息
 type LeaderElectionMessage struct {
+	BaseMessage
 	ElectionID       string `json:"election_id" msgpack:"election_id"`
 	NodeID           string `json:"node_id" msgpack:"node_id"`
 	ElectionPriority int    `json:"priority" msgpack:"priority"` // 选举优先级
 }
 
-func (m *LeaderElectionMessage) Type() MessageType { return types.MessageTypeLeaderElection }
-func (m *LeaderElectionMessage) Priority() int {
-	return int(GetPriority(types.MessageTypeLeaderElection))
-}
-func (m *LeaderElectionMessage) ExpectResponse() types.ResponseExpectation {
-	return m.Type().ExpectResponse()
-}
-func (m *LeaderElectionMessage) Reliability() types.ReliabilityRequirement {
-	return m.Type().Reliability()
+// ========================================
+// 消息注册表初始化
+// ========================================
+
+// init 初始化消息注册表
+//
+// 注册所有消息类型到注册表，替代 switch-case 工厂函数
+func init() {
+	// 元数据操作消息
+	registerMessage(types.MessageTypeGet, func() Message { return &GetMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGet}} })
+	registerMessage(types.MessageTypePut, func() Message { return &PutMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypePut}} })
+	registerMessage(types.MessageTypeDelete, func() Message { return &DeleteMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeDelete}} })
+	registerMessage(types.MessageTypeGetReply, func() Message {
+		return &GetReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGetReply}}
+	})
+	registerMessage(types.MessageTypePutReply, func() Message {
+		return &PutReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypePutReply}}
+	})
+	registerMessage(types.MessageTypeDeleteReply, func() Message {
+		return &DeleteReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeDeleteReply}}
+	})
+
+	// Gossip 协议消息
+	registerMessage(types.MessageTypeGossipSync, func() Message {
+		return &GossipSyncMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipSync}}
+	})
+	registerMessage(types.MessageTypeGossipSyncReply, func() Message {
+		return &GossipSyncReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipSyncReply}}
+	})
+	registerMessage(types.MessageTypeGossipDigest, func() Message {
+		return &GossipDigestMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipDigest}}
+	})
+	registerMessage(types.MessageTypeGossipDigestReply, func() Message {
+		return &GossipDigestReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipDigestReply}}
+	})
+
+	// Quorum 协议消息
+	registerMessage(types.MessageTypeQuorumPropose, func() Message {
+		return &QuorumProposeMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeQuorumPropose}}
+	})
+	registerMessage(types.MessageTypeQuorumVote, func() Message {
+		return &QuorumVoteMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeQuorumVote}}
+	})
+	registerMessage(types.MessageTypeQuorumDecide, func() Message {
+		return &QuorumDecideMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeQuorumDecide}}
+	})
+
+	// 2PC 协议消息
+	registerMessage(types.MessageType2PCPrepare, func() Message {
+		return &TwoPCPrepareMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCPrepare}}
+	})
+	registerMessage(types.MessageType2PCPrepareReply, func() Message {
+		return &TwoPCPrepareReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCPrepareReply}}
+	})
+	registerMessage(types.MessageType2PCCommit, func() Message {
+		return &TwoPCCommitMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCCommit}}
+	})
+	registerMessage(types.MessageType2PCRollback, func() Message {
+		return &TwoPCRollbackMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCRollback}}
+	})
+	registerMessage(types.MessageType2PCCommitReply, func() Message {
+		return &TwoPCCommitReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCCommitReply}}
+	})
+	registerMessage(types.MessageType2PCRollbackReply, func() Message {
+		return &TwoPCRollbackReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCRollbackReply}}
+	})
+
+	// 节点管理消息
+	registerMessage(types.MessageTypeNodePing, func() Message {
+		return &NodePingMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing}}
+	})
+	registerMessage(types.MessageTypeNodePong, func() Message {
+		return &NodePongMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong}}
+	})
+	registerMessage(types.MessageTypeNodeJoin, func() Message {
+		return &NodeJoinMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeJoin}}
+	})
+	registerMessage(types.MessageTypeNodeLeave, func() Message {
+		return &NodeLeaveMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeLeave}}
+	})
+	registerMessage(types.MessageTypeNodeSync, func() Message {
+		return &NodeSyncMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeSync}}
+	})
+	registerMessage(types.MessageTypeClockSync, func() Message {
+		return &ClockSyncMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClockSync}}
+	})
+	registerMessage(types.MessageTypeClockSyncReply, func() Message {
+		return &ClockSyncReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClockSyncReply}}
+	})
+
+	// 集群管理消息
+	registerMessage(types.MessageTypeClusterStatus, func() Message {
+		return &ClusterStatusMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClusterStatus}}
+	})
+	registerMessage(types.MessageTypeClusterStatusReply, func() Message {
+		return &ClusterStatusReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClusterStatusReply}}
+	})
+	registerMessage(types.MessageTypeLeaderElection, func() Message {
+		return &LeaderElectionMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeLeaderElection}}
+	})
 }
 
 // ========================================
@@ -825,8 +605,11 @@ func EncodeFrame(msg Message, nodeID uint64, msgSeq uint64) (*Frame, error) {
 		return nil, types.NewCodecEncodeFailedError("EncodeFrame", err)
 	}
 
+	// 根据 Message.ExpectResponse() 计算 Flags（使用统一函数）
+	flags := FlagsFromMessage(msg)
+
 	// 创建帧（MsgType 现在在 FixedHeader 中）
-	frame := NewFrame(nodeID, msgSeq, msg.Type(), uint16(defaultCodec), data)
+	frame := NewFrame(nodeID, msgSeq, msg.Type(), uint16(defaultCodec), flags, data)
 
 	// 计算 CRC32
 	frame = frame.Finalize()
@@ -985,8 +768,8 @@ func (mw *MessageWriter) WriteMessageWithOptions(msg Message, nodeID uint64, msg
 	// 应用 TLV 扩展字段
 	if opts != nil {
 		if opts.hopCount != nil {
-			// 初始化 hop = total_hop
-			frame.WithHop(*opts.hopCount, *opts.hopCount)
+			// 设置 Hops 字段（FixedHeader）
+			frame.FixedHeader.Hops = uint8(*opts.hopCount)
 		}
 		if opts.compressID != nil {
 			frame.WithCompress(*opts.compressID)

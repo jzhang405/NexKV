@@ -20,7 +20,7 @@ import (
 // TestTLVFrame_NewFrame 测试创建 TLV 帧
 func TestTLVFrame_NewFrame(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), FlagsIsRequest, data)
 
 	// 验证固定头
 	assert.Equal(t, [4]byte{'N', 'X', 'U', 'T'}, frame.FixedHeader.Magic)
@@ -34,14 +34,14 @@ func TestTLVFrame_NewFrame(t *testing.T) {
 // TestTLVFrame_Marshal 测试 TLV 帧序列化
 func TestTLVFrame_Marshal(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), FlagsIsRequest, data)
 
 	// 序列化
 	buf, err := frame.Marshal()
 	require.NoError(t, err)
 
-	// 验证最小大小（FixedHeader 31B + CRC32 4B = 35B，无扩展头）
-	assert.GreaterOrEqual(t, len(buf), 35)
+	// 验证最小大小（FixedHeader 42B + CRC32 4B = 46B，无扩展头）
+	assert.GreaterOrEqual(t, len(buf), 46)
 
 	// 验证 Magic (0-3)
 	assert.Equal(t, []byte("NXUT"), buf[0:4])
@@ -49,30 +49,42 @@ func TestTLVFrame_Marshal(t *testing.T) {
 	// 验证 Version (4) - 当前协议版本为 1
 	assert.Equal(t, uint8(1), buf[4])
 
-	// 验证 NodeID (5-12)
-	assert.Equal(t, uint64(12345), binary.BigEndian.Uint64(buf[5:13]))
+	// 验证 Flags (5) - FlagsIsRequest = 0x01
+	assert.Equal(t, uint8(FlagsIsRequest), buf[5])
 
-	// 验证 MsgSeq (13-20)
-	assert.Equal(t, uint64(1), binary.BigEndian.Uint64(buf[13:21]))
+	// 验证 NodeID (6-13)
+	assert.Equal(t, uint64(12345), binary.BigEndian.Uint64(buf[6:14]))
 
-	// 验证 MsgType (21-22)
-	assert.Equal(t, uint16(types.MessageTypeGet), binary.BigEndian.Uint16(buf[21:23]))
+	// 验证 MsgSeq (14-21)
+	assert.Equal(t, uint64(1), binary.BigEndian.Uint64(buf[14:22]))
 
-	// 验证 CodecID (23-24)
-	assert.Equal(t, uint16(types.CodecTypeMessagePack), binary.BigEndian.Uint16(buf[23:25]))
+	// 验证 ForwardNodeID (22-29) - 原始消息，应该为 0
+	assert.Equal(t, uint64(0), binary.BigEndian.Uint64(buf[22:30]))
 
-	// 验证 ExtHeaderLen (25-26) - 无扩展头，应该为 0
-	assert.Equal(t, uint16(0), binary.BigEndian.Uint16(buf[25:27]))
+	// 验证 Hops (30) - 初始值 MaxHops=10
+	assert.Equal(t, uint8(MaxHops), buf[30])
 
-	// 验证 DataLength (27-30) - 数据长度
-	dataLength := binary.BigEndian.Uint32(buf[27:31])
+	// 验证 Reserved (31) - 保留字段，应该为 0
+	assert.Equal(t, uint8(0), buf[31])
+
+	// 验证 MsgType (32-33)
+	assert.Equal(t, uint16(types.MessageTypeGet), binary.BigEndian.Uint16(buf[32:34]))
+
+	// 验证 CodecID (34-35)
+	assert.Equal(t, uint16(types.CodecTypeMessagePack), binary.BigEndian.Uint16(buf[34:36]))
+
+	// 验证 ExtHeaderLen (36-37) - 无扩展头，应该为 0
+	assert.Equal(t, uint16(0), binary.BigEndian.Uint16(buf[36:38]))
+
+	// 验证 DataLength (38-41) - 数据长度
+	dataLength := binary.BigEndian.Uint32(buf[38:42])
 	assert.Equal(t, uint32(len(data)), dataLength)
 }
 
 // TestTLVFrame_Unmarshal 测试 TLV 帧反序列化
 func TestTLVFrame_Unmarshal(t *testing.T) {
 	data := []byte("test data")
-	frame1 := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame1 := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), FlagsIsRequest, data)
 
 	// 序列化
 	buf, err := frame1.Marshal()
@@ -123,7 +135,7 @@ func TestTLVFrame_Unmarshal_InvalidSize(t *testing.T) {
 // TestTLVFrame_VerifyChecksum 测试校验和验证
 func TestTLVFrame_VerifyChecksum(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), FlagsIsRequest, data)
 
 	// 序列化
 	buf, err := frame.Marshal()
@@ -146,7 +158,7 @@ func TestTLVFrame_VerifyChecksum(t *testing.T) {
 // TestTLVFrame_WithExtensions 测试带扩展字段的帧
 func TestTLVFrame_WithExtensions(t *testing.T) {
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), FlagsIsRequest, data)
 
 	// 添加扩展字段（空扩展）
 	frame.VarExtHeader = NewVarExtHeader() // 没有扩展字段
@@ -199,7 +211,7 @@ func TestFixedHeader_SerializeDeserialize(t *testing.T) {
 func TestFrameReader_ReadFrame(t *testing.T) {
 	// 创建测试帧
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), FlagsIsRequest, data)
 	buf, err := frame.Marshal()
 	require.NoError(t, err)
 
@@ -237,7 +249,7 @@ func TestFrameReader_ReadFrame_InvalidMagic(t *testing.T) {
 func TestFrameWriter_WriteFrame(t *testing.T) {
 	// 创建测试帧
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), FlagsIsRequest, data)
 
 	// 创建写入器
 	var buf bytes.Buffer
@@ -263,7 +275,8 @@ func TestMessagePackCodec_EncodeDecode(t *testing.T) {
 
 	// 创建测试消息
 	msg := &GetMessage{
-		Key: "test_key",
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+		Key:         "test_key",
 	}
 
 	// 编码
@@ -286,14 +299,14 @@ func TestMessagePackCodec_AllMessageTypes(t *testing.T) {
 	codec := NewMessagePackCodec()
 
 	testCases := []Message{
-		&GetMessage{Key: "test"},
-		&PutMessage{Key: "test", Value: []byte("value")},
-		&DeleteMessage{Key: "test"},
-		&GetReplyMessage{Key: "test", Value: []byte("value"), Found: true, Version: 1},
-		&PutReplyMessage{Key: "test", Success: true, Version: 1},
-		&DeleteReplyMessage{Key: "test", Success: true},
-		&GossipSyncMessage{Version: 1, Metadata: map[string][]byte{"key": []byte("value")}, Timestamp: time.Now().Unix()},
-		&NodePingMessage{NodeID: "node1", Sequence: 1, Timestamp: time.Now().Unix()},
+		&GetMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGet}, Key: "test"},
+		&PutMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypePut}, Key: "test", Value: []byte("value")},
+		&DeleteMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeDelete}, Key: "test"},
+		&GetReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGetReply}, Key: "test", Value: []byte("value"), Found: true, Version: 1},
+		&PutReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypePutReply}, Key: "test", Success: true, Version: 1},
+		&DeleteReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeDeleteReply}, Key: "test", Success: true},
+		&GossipSyncMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipSync}, Version: 1, Metadata: map[string][]byte{"key": []byte("value")}, Timestamp: time.Now().Unix()},
+		&NodePingMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing}, NodeID: "node1", Sequence: 1, Timestamp: time.Now().Unix()},
 	}
 
 	for _, msg := range testCases {
@@ -341,7 +354,8 @@ func TestProtobufCodec_EncodeDecode(t *testing.T) {
 
 	// 创建测试消息
 	msg := &GetMessage{
-		Key: "test_key",
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+		Key:         "test_key",
 	}
 
 	// 编码
@@ -364,12 +378,37 @@ func TestProtobufCodec_MetadataMessages(t *testing.T) {
 	codec := NewProtobufCodec()
 
 	testCases := []Message{
-		&GetMessage{Key: "test_key"},
-		&PutMessage{Key: "test_key", Value: []byte("test_value")},
-		&DeleteMessage{Key: "test_key"},
-		&GetReplyMessage{Key: "test_key", Value: []byte("test_value"), Found: true, Version: 1},
-		&PutReplyMessage{Key: "test_key", Success: true, Version: 1},
-		&DeleteReplyMessage{Key: "test_key", Success: true},
+		&GetMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+			Key:         "test_key",
+		},
+		&PutMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+			Key:         "test_key",
+			Value:       []byte("test_value"),
+		},
+		&DeleteMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeDelete},
+			Key:         "test_key",
+		},
+		&GetReplyMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeGetReply},
+			Key:         "test_key",
+			Value:       []byte("test_value"),
+			Found:       true,
+			Version:     1,
+		},
+		&PutReplyMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypePutReply},
+			Key:         "test_key",
+			Success:     true,
+			Version:     1,
+		},
+		&DeleteReplyMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeDeleteReply},
+			Key:         "test_key",
+			Success:     true,
+		},
 	}
 
 	for _, msg := range testCases {
@@ -394,8 +433,9 @@ func TestProtobufCodec_GossipMessages(t *testing.T) {
 
 	// GossipSyncMessage
 	msg1 := &GossipSyncMessage{
-		Version:  123,
-		Metadata: map[string][]byte{"key1": []byte("value1")},
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipSync},
+		Version:     123,
+		Metadata:    map[string][]byte{"key1": []byte("value1")},
 	}
 	data1, err := codec.Encode(msg1)
 	require.NoError(t, err)
@@ -405,8 +445,9 @@ func TestProtobufCodec_GossipMessages(t *testing.T) {
 
 	// GossipDigestMessage
 	msg2 := &GossipDigestMessage{
-		Version: 456,
-		Digest:  map[string]uint64{"key1": 789},
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipDigest},
+		Version:     456,
+		Digest:      map[string]uint64{"key1": 789},
 	}
 	data2, err := codec.Encode(msg2)
 	require.NoError(t, err)
@@ -421,13 +462,16 @@ func TestProtobufCodec_TwoPCMessages(t *testing.T) {
 
 	testCases := []Message{
 		&TwoPCPrepareMessage{
+			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCPrepare},
 			TransactionID: "txn-1",
 			Participants:  []string{"node1", "node2"},
 		},
 		&TwoPCCommitMessage{
+			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCCommit},
 			TransactionID: "txn-1",
 		},
 		&TwoPCRollbackMessage{
+			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCRollback},
 			TransactionID: "txn-1",
 		},
 	}
@@ -453,10 +497,27 @@ func TestProtobufCodec_NodeMessages(t *testing.T) {
 	codec := NewProtobufCodec()
 
 	testCases := []Message{
-		&NodePingMessage{NodeID: "node-1", Sequence: 1, Timestamp: time.Now().Unix()},
-		&NodePongMessage{NodeID: "node-1", Sequence: 1, Timestamp: time.Now().Unix()},
-		&NodeJoinMessage{NodeID: "node-1", Addr: "127.0.0.1:9211"},
-		&NodeLeaveMessage{NodeID: "node-1"},
+		&NodePingMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+			NodeID:      "node-1",
+			Sequence:    1,
+			Timestamp:   time.Now().Unix(),
+		},
+		&NodePongMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+			NodeID:      "node-1",
+			Sequence:    1,
+			Timestamp:   time.Now().Unix(),
+		},
+		&NodeJoinMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeJoin},
+			NodeID:      "node-1",
+			Addr:        "127.0.0.1:9211",
+		},
+		&NodeLeaveMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeLeave},
+			NodeID:      "node-1",
+		},
 	}
 
 	for _, msg := range testCases {
@@ -555,8 +616,9 @@ func TestCreateMessageByType_UnknownType(t *testing.T) {
 func TestEncodeFrame_DecodeFrame(t *testing.T) {
 	// 创建消息
 	msg := &PutMessage{
-		Key:   "test_key",
-		Value: []byte("test_value"),
+		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+		Key:         "test_key",
+		Value:       []byte("test_value"),
 	}
 
 	// 编码为帧
@@ -582,11 +644,31 @@ func TestEncodeFrame_DecodeFrame(t *testing.T) {
 // TestEncodeFrame_DecodeFrame_AllTypes 测试所有消息类型的帧编解码
 func TestEncodeFrame_DecodeFrame_AllTypes(t *testing.T) {
 	testCases := []Message{
-		&GetMessage{Key: "test"},
-		&PutMessage{Key: "test", Value: []byte("value")},
-		&DeleteMessage{Key: "test"},
-		&NodePingMessage{NodeID: "node1", Sequence: 1, Timestamp: time.Now().Unix()},
-		&NodePongMessage{NodeID: "node1", Sequence: 1, Status: "ready"},
+		&GetMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+			Key:         "test",
+		},
+		&PutMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+			Key:         "test",
+			Value:       []byte("value"),
+		},
+		&DeleteMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeDelete},
+			Key:         "test",
+		},
+		&NodePingMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+			NodeID:      "node1",
+			Sequence:    1,
+			Timestamp:   time.Now().Unix(),
+		},
+		&NodePongMessage{
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+			NodeID:      "node1",
+			Sequence:    1,
+			Status:      "ready",
+		},
 	}
 
 	for _, msg := range testCases {
@@ -612,7 +694,10 @@ func TestEncodeFrame_DecodeFrame_AllTypes(t *testing.T) {
 // TestMessageReader_ReadMessage 测试消息读取器
 func TestMessageReader_ReadMessage(t *testing.T) {
 	// 创建消息
-	msg := &GetMessage{Key: "test_key"}
+	msg := &GetMessage{
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+		Key:         "test_key",
+	}
 
 	// 编码为帧
 	frame, err := EncodeFrame(msg, 0, 0)
@@ -760,41 +845,50 @@ func TestTransportError_Timeout(t *testing.T) {
 func TestThreeCodecConsistency(t *testing.T) {
 	testMessages := []Message{
 		&PutMessage{
-			Key:   "test_key",
-			Value: []byte("test_value"),
+			BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+			Key:         "test_key",
+			Value:       []byte("test_value"),
 		},
 		&GetMessage{
-			Key: "get_key",
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+			Key:         "get_key",
 		},
 		&DeleteMessage{
-			Key: "delete_key",
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeDelete},
+			Key:         "delete_key",
 		},
 		&NodeJoinMessage{
-			NodeID:   "node-1",
-			Addr:     "192.168.1.10:9211",
-			Role:     "follower",
-			ParentID: "node-0",
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeJoin},
+			NodeID:      "node-1",
+			Addr:        "192.168.1.10:9211",
+			Role:        "follower",
+			ParentID:    "node-0",
 		},
 		&NodeLeaveMessage{
-			NodeID: "node-2",
-			Reason: "手动下线",
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeLeave},
+			NodeID:      "node-2",
+			Reason:      "手动下线",
 		},
 		&NodePingMessage{
-			NodeID:    "node-3",
-			Sequence:  100,
-			Timestamp: 1705689600000000000,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+			NodeID:      "node-3",
+			Sequence:    100,
+			Timestamp:   1705689600000000000,
 		},
 		&NodePongMessage{
-			NodeID:   "node-3",
-			Sequence: 100,
-			Status:   "ready",
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+			NodeID:      "node-3",
+			Sequence:    100,
+			Status:      "ready",
 		},
 		&GossipSyncMessage{
-			Version:   100,
-			Metadata:  map[string][]byte{"key1": []byte("value1")},
-			Timestamp: 1705689600000000000,
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipSync},
+			Version:     100,
+			Metadata:    map[string][]byte{"key1": []byte("value1")},
+			Timestamp:   1705689600000000000,
 		},
 		&TwoPCPrepareMessage{
+			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCPrepare},
 			TransactionID: "tx-123",
 			Participants:  []string{"node1", "node2"},
 			Operations: []Operation{

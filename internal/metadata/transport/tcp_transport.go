@@ -335,7 +335,7 @@ func (t *TCPTransport) handleConn(conn *tcpConn) {
 		}
 
 		// 设置读取超时
-		if err := conn.conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout)); err != nil {
+		if err := setReadTimeout(conn.conn, t.config.ReadTimeout); err != nil {
 			logging.Errorf("设置读超时失败: %v", err)
 			// 设置失败，关闭连接并退出处理循环
 			t.removeConnFromPool(conn.remoteAddr)
@@ -441,8 +441,7 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message, opts 
 	}
 
 	// 设置写入超时
-	deadline := time.Now().Add(t.config.WriteTimeout)
-	if err := conn.conn.SetWriteDeadline(deadline); err != nil {
+	if err := setWriteTimeout(conn.conn, t.config.WriteTimeout); err != nil {
 		// 设置失败，关闭连接并从池中移除
 		_ = conn.Close()
 		t.removeConnFromPool(addr)
@@ -465,7 +464,7 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message, opts 
 }
 
 // ForwardMessage 转发消息到指定节点
-// 自动递减 Hop Count（如果存在），Hop Count 减至 0 时返回错误
+// 自动递减 Hops（从 FixedHeader），Hops 减至 0 时返回错误
 func (t *TCPTransport) ForwardMessage(ctx context.Context, addr string, msgExt MsgFrame) (uint64, error) {
 	if !t.started.Load() {
 		return 0, types.NewTransportStateError("未启动")
@@ -487,8 +486,7 @@ func (t *TCPTransport) ForwardMessage(ctx context.Context, addr string, msgExt M
 		return 0, types.NewTransportConnectionError("获取连接", "", err)
 	}
 
-	deadline := time.Now().Add(t.config.WriteTimeout)
-	if err := conn.conn.SetWriteDeadline(deadline); err != nil {
+	if err := setWriteTimeout(conn.conn, t.config.WriteTimeout); err != nil {
 		_ = conn.Close()
 		t.removeConnFromPool(addr)
 		return 0, types.NewTransportConnectionError("设置写超时", "", err)
@@ -506,7 +504,8 @@ func (t *TCPTransport) ForwardMessage(ctx context.Context, addr string, msgExt M
 	}
 
 	msgSeq := t.GenerateMsgSeq()
-	frame := NewFrame(t.NodeID.Load(), msgSeq, forwardMsg.Type(), uint16(t.codec.Type()), msgData)
+	// 转发消息使用单向请求 Flags（Gossip 类型的消息通常是单向的）
+	frame := NewFrame(t.NodeID.Load(), msgSeq, forwardMsg.Type(), uint16(t.codec.Type()), FlagsOneWayRequest, msgData)
 	frame.AddTLVFields(tlvFields)
 	frame.Finalize()
 
@@ -522,11 +521,8 @@ func (t *TCPTransport) ForwardMessage(ctx context.Context, addr string, msgExt M
 
 	conn.lastUsed.Store(time.Now().Unix())
 
-	logHopCount := uint16(0)
-	if v, _ := forwardMsg.GetHopCount(); v != nil {
-		logHopCount = v.Hop
-	}
-	logging.Debugf("转发消息: %s to %s, Hop=%d", forwardMsg.Type(), addr, logHopCount)
+	hops, _ := forwardMsg.GetHopCount()
+	logging.Debugf("转发消息: %s to %s, Hops=%d", forwardMsg.Type(), addr, hops)
 
 	return msgSeq, nil
 }

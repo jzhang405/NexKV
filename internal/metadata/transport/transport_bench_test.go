@@ -20,14 +20,14 @@ func BenchmarkFrame_NewFrame(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+		_ = NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), 0, data)
 	}
 }
 
 // BenchmarkFrame_Marshal 帧序列化性能
 func BenchmarkFrame_Marshal(b *testing.B) {
 	data := make([]byte, 1024)
-	frame := NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), 0, data)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -38,7 +38,7 @@ func BenchmarkFrame_Marshal(b *testing.B) {
 // BenchmarkFrame_Unmarshal 帧反序列化性能
 func BenchmarkFrame_Unmarshal(b *testing.B) {
 	data := make([]byte, 1024)
-	frame := NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+	frame := NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), 0, data)
 	buf, _ := frame.Marshal()
 
 	b.ResetTimer()
@@ -54,7 +54,7 @@ func BenchmarkFrame_RoundTrip(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		frame := NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+		frame := NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), 0, data)
 		buf, _ := frame.Marshal()
 		f := &Frame{}
 		_ = f.Unmarshal(buf)
@@ -70,7 +70,7 @@ func BenchmarkFrame_NewFrame_DifferentSizes(b *testing.B) {
 			data := make([]byte, size)
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), data)
+				_ = NewFrame(0, 0, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), 0, data)
 			}
 		})
 	}

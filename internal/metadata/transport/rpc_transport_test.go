@@ -137,7 +137,9 @@ func TestSendRequest_TwoWay_Timeout(t *testing.T) {
 	rpc := NewRPCTransport(transport, 100*time.Millisecond) // 短超时
 	defer func() { _ = rpc.Close() }()
 
-	reqBody := []byte("test-message")
+	// ✅ P0-3 修复: 使用正确的 encodeMockMessage 格式
+	msgSeq := uint64(456)
+	reqBody := encodeMockMessage(msgSeq, true, false, types.ExpectResponse, []byte("test-message"))
 
 	startTime := time.Now()
 	resp, err := rpc.SendRequest("127.0.0.1:9211", reqBody, 100*time.Millisecond)
@@ -174,7 +176,9 @@ func TestSendRequest_TwoWay_DoSProtection(t *testing.T) {
 	}
 
 	// 尝试发送新请求，应该被拒绝
-	reqBody := []byte("test-message")
+	// ✅ P0-3 修复: 使用正确的 encodeMockMessage 格式
+	msgSeq := uint64(789)
+	reqBody := encodeMockMessage(msgSeq, true, false, types.ExpectResponse, []byte("test-message"))
 	_, err := rpc.SendRequest("127.0.0.1:9211", reqBody, 5*time.Second)
 
 	assert.Error(t, err)

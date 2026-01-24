@@ -1339,7 +1339,7 @@ func TestMultiTransportOverflowFull(t *testing.T) {
 	config := &TransportConfig{
 		ListenAddr:     "127.0.0.1:0",
 		MaxMessageSize: 1024,
-		BufferSize:     2,  // 主通道缓冲区 = 2
+		BufferSize:     2, // 主通道缓冲区 = 2
 		ReadTimeout:    30 * time.Second,
 		WriteTimeout:   30 * time.Second,
 	}

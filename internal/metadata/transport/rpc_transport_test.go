@@ -939,9 +939,9 @@ func TestRPCParseInvalidLength(t *testing.T) {
 	defer func() { _ = rpc.Close() }()
 
 	testCases := []struct {
-		name        string
-		dataLength  int
-		shouldFail  bool
+		name       string
+		dataLength int
+		shouldFail bool
 	}{
 		{"长度 0", 0, true},
 		{"长度 10", 10, true},
@@ -973,4 +973,3 @@ func TestRPCParseInvalidLength(t *testing.T) {
 
 	t.Log("✅ P0-3: 数据长度验证测试通过")
 }
-

@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	cryptorand "crypto/rand"
 	"fmt"
+	"math/big"
 	"runtime"
 	"sync"
 	"testing"
@@ -1507,4 +1508,81 @@ func TestUDP_P0_MaxFragmentCount(t *testing.T) {
 	}
 
 	t.Log("✅ P0-2: 分片数量上限测试通过")
+}
+
+// ========================================
+// P0-1: UDP 分片位图溢出修复测试
+// ========================================
+
+// TestUDPFragmentBitmap_Total64 测试 total=64 时的位图溢出修复
+func TestUDPFragmentBitmap_Total64(t *testing.T) {
+	// 创建 partialMessage，total=64（边界条件）
+	pm := &partialMessage{
+		total:      64,
+		bitmapFast: 0,
+	}
+
+	// 初始状态：未收到任何分片，应该不完整
+	assert.False(t, pm.isComplete(), "初始状态应该不完整")
+
+	// 模拟接收所有 64 个分片（设置所有位）
+	pm.bitmapFast = 0xFFFFFFFFFFFFFFFF
+	assert.True(t, pm.isComplete(), "接收全部 64 个分片后应该完整")
+
+	// 模拟缺少一个分片
+	pm.bitmapFast = 0xFFFFFFFFFFFFFFFE // 缺少最后一个分片
+	assert.False(t, pm.isComplete(), "缺少一个分片时应该不完整")
+
+	// 模拟缺少第一个分片
+	pm.bitmapFast = 0x7FFFFFFFFFFFFFFF // 缺少第一个分片
+	assert.False(t, pm.isComplete(), "缺少第一个分片时应该不完整")
+
+	t.Log("✅ P0-1: total=64 位图溢出修复测试通过")
+}
+
+// TestUDPFragmentBitmap_Total65 测试 total>64 时仍正常工作
+func TestUDPFragmentBitmap_Total65(t *testing.T) {
+	// 创建 partialMessage，total=65（使用慢速路径 big.Int）
+	pm := &partialMessage{
+		total:      65,
+		bitmapFast: 0,
+		bitmap:     big.NewInt(0),
+	}
+
+	// 初始状态应该不完整
+	assert.False(t, pm.isComplete(), "初始状态应该不完整")
+
+	// 设置前 64 个分片（手动设置位）
+	for i := uint(0); i < 64; i++ {
+		pm.bitmap = pm.bitmap.SetBit(pm.bitmap, int(i), 1)
+	}
+	assert.False(t, pm.isComplete(), "缺少第 65 个分片时应该不完整")
+
+	// 添加第 65 个分片
+	pm.bitmap = pm.bitmap.SetBit(pm.bitmap, 64, 1)
+	assert.True(t, pm.isComplete(), "接收全部 65 个分片后应该完整")
+
+	t.Log("✅ P0-1: total>64 位图测试通过")
+}
+
+// TestUDPFragmentBitmap_Total63 测试 total<64 时正常工作
+func TestUDPFragmentBitmap_Total63(t *testing.T) {
+	// 创建 partialMessage，total=63
+	pm := &partialMessage{
+		total:      63,
+		bitmapFast: 0,
+	}
+
+	// 设置 mask 验证：63 位全为 1
+	expectedMask := uint64(1)<<63 - 1
+	assert.Equal(t, uint64(0x7FFFFFFFFFFFFFFF), expectedMask, "63 位 mask 验证")
+
+	// 初始状态不完整
+	assert.False(t, pm.isComplete(), "初始状态应该不完整")
+
+	// 设置所有 63 个分片
+	pm.bitmapFast = 0x7FFFFFFFFFFFFFFF
+	assert.True(t, pm.isComplete(), "接收全部 63 个分片后应该完整")
+
+	t.Log("✅ P0-1: total=63 位图测试通过")
 }

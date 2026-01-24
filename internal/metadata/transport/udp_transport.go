@@ -506,6 +506,10 @@ func (p *partialMessage) isComplete() bool {
 	if p.total <= 64 {
 		// 检查 bitmapFast 的低 total 位是否全为 1
 		// 使用位掩码：((1 << total) - 1)
+		// 特殊处理：total=64 时，uint64(1)<<64 会溢出为 0
+		if p.total == 64 {
+			return p.bitmapFast == 0xFFFFFFFFFFFFFFFF
+		}
 		mask := uint64(1)<<p.total - 1
 		return p.bitmapFast == mask
 	}

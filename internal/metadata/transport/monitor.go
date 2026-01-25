@@ -12,20 +12,6 @@ import (
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
-// MetricType 监控指标类型
-type MetricType string
-
-const (
-	// MetricTypeMessageCount 消息数量
-	MetricTypeMessageCount MetricType = "message_count"
-	// MetricTypeMessageLatency 消息延迟
-	MetricTypeMessageLatency MetricType = "message_latency"
-	// MetricTypeMessageSize 消息大小
-	MetricTypeMessageSize MetricType = "message_size"
-	// MetricTypeErrorCount 错误数量
-	MetricTypeErrorCount MetricType = "error_count"
-)
-
 // DimensionalMonitor 维度化监控器
 //
 // 提供多维度统计：

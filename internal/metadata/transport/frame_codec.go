@@ -19,9 +19,6 @@ import (
 )
 
 const (
-	// FrameMagic 魔法数字（"NEXK" 的 ASCII 码）
-	FrameMagic uint32 = 0x4E45584B // N=0x4E, E=0x45, X=0x58, K=0x4B
-
 	// MaxBufferSize 最大缓冲区大小（防止 DoS 攻击）
 	MaxBufferSize int = 10 * 1024 * 1024 // 10MB
 

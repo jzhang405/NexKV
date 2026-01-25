@@ -414,3 +414,51 @@ func setReadTimeout(conn net.Conn, timeout time.Duration) error {
 	}
 	return conn.SetReadDeadline(time.Now().Add(timeout))
 }
+
+// validateListenAddr 验证监听地址的有效性
+//
+// 参数：
+//   - listenAddr: 监听地址（格式：host:port）
+//   - protocol: 协议类型（"tcp" 或 "udp"）
+//
+// 返回：
+//   - string: 验证通过的地址（规范化后的地址）
+//   - error: 验证失败时返回错误
+//
+// 验证规则：
+//   - 地址不能为空
+//   - 地址格式必须为 host:port
+//   - host 必须可以解析（为有效 IP 或可解析的 hostname）
+//   - port 必须为有效端口号（1-65535，0 表示自动分配）
+//
+// 特殊值：
+//   - "*" 或 "0.0.0.0" 表示监听所有网络接口
+//   - port 为 0 表示由系统自动分配端口
+func validateListenAddr(listenAddr, protocol string) (string, error) {
+	// 检查地址是否为空
+	if listenAddr == "" {
+		return "", fmt.Errorf("listenAddr 不能为空")
+	}
+
+	// 根据协议类型解析地址
+	var resolvedAddr string
+
+	switch protocol {
+	case "tcp":
+		tcpAddr, err := net.ResolveTCPAddr("tcp", listenAddr)
+		if err != nil {
+			return "", fmt.Errorf("无效的 TCP 监听地址 %q: %w", listenAddr, err)
+		}
+		resolvedAddr = tcpAddr.String()
+	case "udp":
+		udpAddr, err := net.ResolveUDPAddr("udp", listenAddr)
+		if err != nil {
+			return "", fmt.Errorf("无效的 UDP 监听地址 %q: %w", listenAddr, err)
+		}
+		resolvedAddr = udpAddr.String()
+	default:
+		return "", fmt.Errorf("不支持的协议类型: %s", protocol)
+	}
+
+	return resolvedAddr, nil
+}

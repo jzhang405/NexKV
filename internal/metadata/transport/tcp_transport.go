@@ -181,13 +181,14 @@ func (t *TCPTransport) Start(nodeID *uint64, msgSeqGenerator func() uint64, list
 		return types.NewStoreInvalidParameterError("msgSeqGenerator 不能为空")
 	}
 
-	// 验证监听地址
-	if listenAddr == "" {
-		return types.NewStoreInvalidParameterError("listenAddr 不能为空")
+	// 验证监听地址（格式、host 解析、port 有效性）
+	validatedAddr, err := validateListenAddr(listenAddr, "tcp")
+	if err != nil {
+		return types.NewStoreInvalidParameterError(err.Error())
 	}
 
-	// 更新配置中的监听地址
-	t.config.ListenAddr = listenAddr
+	// 更新配置中的监听地址（使用验证后的地址）
+	t.config.ListenAddr = validatedAddr
 
 	// 设置节点 ID
 	if nodeID != nil {
@@ -197,7 +198,7 @@ func (t *TCPTransport) Start(nodeID *uint64, msgSeqGenerator func() uint64, list
 	// 设置消息序列号生成器
 	t.msgSeqGenerator.Store(msgSeqGenerator)
 
-	logging.Infof("启动 TCP 传输层，监听地址: %s, NodeID: %d", listenAddr, t.NodeID.Load())
+	logging.Infof("启动 TCP 传输层，监听地址: %s, NodeID: %d", validatedAddr, t.NodeID.Load())
 
 	// 启动监听器
 	if err := t.startListener(); err != nil {

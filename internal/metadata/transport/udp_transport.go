@@ -205,13 +205,14 @@ func (t *UDPTransport) Start(nodeID *uint64, msgSeqGenerator func() uint64, list
 		return types.NewStoreInvalidParameterError("msgSeqGenerator 不能为空")
 	}
 
-	// 验证监听地址
-	if listenAddr == "" {
-		return types.NewStoreInvalidParameterError("listenAddr 不能为空")
+	// 验证监听地址（格式、host 解析、port 有效性）
+	validatedAddr, err := validateListenAddr(listenAddr, "udp")
+	if err != nil {
+		return types.NewStoreInvalidParameterError(err.Error())
 	}
 
-	// 更新配置中的监听地址
-	t.config.ListenAddr = listenAddr
+	// 更新配置中的监听地址（使用验证后的地址）
+	t.config.ListenAddr = validatedAddr
 
 	// 设置节点 ID
 	if nodeID != nil {
@@ -221,19 +222,19 @@ func (t *UDPTransport) Start(nodeID *uint64, msgSeqGenerator func() uint64, list
 	// 设置消息序列号生成器
 	t.msgSeqGenerator.Store(msgSeqGenerator)
 
-	logging.Infof("启动 UDP 传输层，监听地址: %s, NodeID: %d", listenAddr, t.NodeID.Load())
+	logging.Infof("启动 UDP 传输层，监听地址: %s, NodeID: %d", validatedAddr, t.NodeID.Load())
 
-	// 监听 UDP 端口
-	addr, err := net.ResolveUDPAddr("udp", listenAddr)
+	// 监听 UDP 端口（使用验证后的地址）
+	addr, err := net.ResolveUDPAddr("udp", validatedAddr)
 	if err != nil {
 		t.started.Store(false)
-		return types.NewTransportConnectionError("解析地址", listenAddr, err)
+		return types.NewTransportConnectionError("解析地址", validatedAddr, err)
 	}
 
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		t.started.Store(false)
-		return types.NewTransportConnectionError("监听", listenAddr, err)
+		return types.NewTransportConnectionError("监听", validatedAddr, err)
 	}
 
 	t.conn = conn
@@ -245,7 +246,7 @@ func (t *UDPTransport) Start(nodeID *uint64, msgSeqGenerator func() uint64, list
 	// 启动分片缓冲区清理
 	t.initFragmentBuffer()
 
-	logging.Infof("UDP 传输层启动成功，监听地址: %s", listenAddr)
+	logging.Infof("UDP 传输层启动成功，监听地址: %s", validatedAddr)
 	return nil
 }
 

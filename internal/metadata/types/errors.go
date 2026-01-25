@@ -67,9 +67,6 @@ const (
 	// 编解码错误码
 	// ========================================
 
-	// ErrCodecInvalidCodec 无效的编解码器
-	ErrCodecInvalidCodec
-
 	// ErrCodecEncodeFailed 编码失败
 	ErrCodecEncodeFailed
 
@@ -255,12 +252,6 @@ func (e *Error) Unwrap() error {
 	return e.Err
 }
 
-// Temporary 返回是否为临时错误（可重试）
-func (e *Error) Temporary() bool {
-	// 某些错误码默认为临时错误
-	return e.Code == ErrCodeTransport
-}
-
 // ========================================
 // 通用错误构造函数
 // ========================================
@@ -358,16 +349,6 @@ func NewInternalError(msg string, err error) *Error {
 // 传输层错误构造函数
 // ========================================
 
-// NewTransportError 创建传输错误
-func NewTransportError(op, addr string, err error) *Error {
-	return &Error{
-		Code:    ErrCodeTransport,
-		Message: "传输错误",
-		Op:      fmt.Sprintf("%s %s", op, addr),
-		Err:     err,
-	}
-}
-
 // ========================================
 // 帧错误构造函数
 // ========================================
@@ -462,14 +443,6 @@ func NewEncryptionKeySizeError(expected int, actual int) *Error {
 	return &Error{
 		Code:    ErrEncryptionKeySize,
 		Message: fmt.Sprintf("AES-256 密钥必须是%d字节，实际为%d字节", expected, actual),
-	}
-}
-
-// NewEncryptionIVSizeError 创建IV大小错误
-func NewEncryptionIVSizeError(expected int, actual int) *Error {
-	return &Error{
-		Code:    ErrEncryptionIVSize,
-		Message: fmt.Sprintf("IV大小不足，需要至少%d字节，实际为%d字节", expected, actual),
 	}
 }
 
@@ -712,15 +685,6 @@ func NewTransportSendError(err error) *Error {
 	}
 }
 
-// NewTransportReceiveError 创建接收失败错误
-func NewTransportReceiveError(err error) *Error {
-	return &Error{
-		Code:    ErrTransportReceive,
-		Message: "接收消息失败",
-		Err:     err,
-	}
-}
-
 // NewTransportHopCountExpiredError 创建 Hop Count 过期错误
 func NewTransportHopCountExpiredError() *Error {
 	return &Error{
@@ -799,18 +763,6 @@ func NewCompressionCompressError(op string, err error) *Error {
 // 传输层错误分类（降级机制）
 // ========================================
 
-// ErrorType 错误类型（用于降级决策）
-type ErrorType int
-
-const (
-	// ProtocolError 协议层错误（触发降级）
-	ProtocolError ErrorType = iota
-	// BusinessError 业务层错误（不触发降级）
-	BusinessError
-	// UnknownError 未知错误（保守策略，触发降级）
-	UnknownError
-)
-
 // ========================================
 // 协议层错误（触发降级）
 // ========================================
@@ -839,21 +791,9 @@ var (
 	// ErrTCPSendTimeout TCP 发送超时
 	ErrTCPSendTimeout = errors.New("tcp send timeout")
 
-	// ErrTCPReceiveFailed TCP 接收失败
-	ErrTCPReceiveFailed = errors.New("tcp receive failed")
-
-	// ErrTCPConnReset TCP 连接重置
-	ErrTCPConnReset = errors.New("tcp connection reset")
-
 	// ========================================
 	// 通用协议错误
 	// ========================================
-
-	// ErrProtocolTimeout 协议操作超时
-	ErrProtocolTimeout = errors.New("protocol operation timeout")
-
-	// ErrNetworkUnreachable 网络不可达
-	ErrNetworkUnreachable = errors.New("network unreachable")
 )
 
 // ========================================
@@ -866,12 +806,6 @@ var (
 
 	// ErrInvalidFrameFormat 无效帧格式
 	ErrInvalidFrameFormat = errors.New("invalid frame format")
-
-	// ErrChecksumMismatch 校验和不匹配
-	ErrChecksumMismatch = errors.New("checksum mismatch")
-
-	// ErrInvalidMagicNumber 魔法数字无效
-	ErrInvalidMagicNumber = errors.New("invalid magic number")
 )
 
 // ========================================
@@ -887,12 +821,6 @@ var (
 
 	// ErrCodecFailed 消息编解码失败
 	ErrCodecFailed = errors.New("message codec failed")
-
-	// ErrInvalidMsgType 消息类型无效
-	ErrInvalidMsgType = errors.New("invalid message type")
-
-	// ErrUnauthorized 未授权访问
-	ErrUnauthorized = errors.New("unauthorized access")
 )
 
 // ========================================
@@ -913,16 +841,9 @@ func IsProtocolError(err error) bool {
 		// TCP 错误
 		ErrTCPConnFailed,
 		ErrTCPSendTimeout,
-		ErrTCPReceiveFailed,
-		ErrTCPConnReset,
-		// 通用协议错误
-		ErrProtocolTimeout,
-		ErrNetworkUnreachable,
 		// 帧错误
 		ErrFrameTooLarge,
 		ErrInvalidFrameFormat,
-		ErrChecksumMismatch,
-		ErrInvalidMagicNumber,
 	}
 
 	for _, protoErr := range protocolErrors {
@@ -944,8 +865,6 @@ func IsBusinessError(err error) bool {
 		ErrMsgTooLarge,
 		ErrInvalidAddr,
 		ErrCodecFailed,
-		ErrInvalidMsgType,
-		ErrUnauthorized,
 	}
 
 	for _, bizErr := range businessErrors {

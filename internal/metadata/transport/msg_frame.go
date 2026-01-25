@@ -35,10 +35,12 @@ var (
 	// decoders 全局解码器注册表
 	decoders = map[ExtFieldType]ExtDecoder{
 		// ExtHop 已移至 FixedHeader，不再作为 TLV 解码
+		// ExtCorrelationID 已移至 FixedHeader (NodeID+MsgSeq)，不再作为 TLV 解码
+		// ExtPriority 已移除，priority 通过 Message.Priority() 获取
+		// 注意：ExtFragment (分片) 保留，用于 UDP 分片处理
 		ExtCompress: decodeCompressExt,
 		ExtEncrypt:  decodeEncryptExt,
 		ExtFragment: decodeFragmentExt,
-		ExtPriority: decodePriorityExt,
 	}
 	// decoderMutex 保护解码器注册表的并发访问
 	decoderMutex sync.RWMutex
@@ -168,11 +170,6 @@ func (f *MsgFrame) GetSegment() (*SegmentExt, bool) {
 	return GetExtAs[*SegmentExt](f, ExtFragment)
 }
 
-// GetPriority 获取优先级
-func (f *MsgFrame) GetPriority() (*PriorityExt, bool) {
-	return GetExtAs[*PriorityExt](f, ExtPriority)
-}
-
 // ========================================
 // TLV 字段解码器（内部使用）
 // ========================================
@@ -195,22 +192,13 @@ func decodeEncryptExt(tlv TLV) (any, error) {
 	return &EncryptExt{EncryptID: encryptID, Nonce: nonce, Version: version}, nil
 }
 
-// decodeFragmentExt 解码分片扩展
+// decodeFragmentExt 解码分片扩展（用于 UDP 分片重组）
 func decodeFragmentExt(tlv TLV) (any, error) {
 	index, total, err := DecodeFragmentExt(&tlv)
 	if err != nil {
 		return nil, err
 	}
 	return &SegmentExt{Index: index, Total: total}, nil
-}
-
-// decodePriorityExt 解码优先级扩展
-func decodePriorityExt(tlv TLV) (any, error) {
-	priority, err := DecodePriorityExt(&tlv)
-	if err != nil {
-		return nil, err
-	}
-	return &PriorityExt{Priority: priority}, nil
 }
 
 // ========================================
@@ -233,6 +221,14 @@ func (f MsgFrame) Priority() int {
 	return f.Message.Priority()
 }
 
+// MsgRole 返回消息角色（实现 Message 接口）
+func (f MsgFrame) MsgRole() types.MsgRole {
+	if f.Message == nil {
+		return f.MsgType.MsgRole()
+	}
+	return f.Message.MsgRole()
+}
+
 // ExpectResponse 返回响应期望（实现 Message 接口）
 func (f MsgFrame) ExpectResponse() types.ResponseExpectation {
 	if f.Message == nil {
@@ -241,39 +237,27 @@ func (f MsgFrame) ExpectResponse() types.ResponseExpectation {
 	return f.Message.ExpectResponse()
 }
 
-// Reliability 返回可靠性要求（实现 Message 接口）
-func (f MsgFrame) Reliability() types.ReliabilityRequirement {
+// ProtocolType 返回传输协议类型（实现 Message 接口）
+func (f MsgFrame) ProtocolType() types.ProtocolType {
 	if f.Message == nil {
-		return f.MsgType.Reliability()
+		return f.MsgType.ProtocolType()
 	}
-	return f.Message.Reliability()
+	return f.Message.ProtocolType()
+}
+
+// CorrelationID 返回全局唯一的关联ID（实现 Message 接口）
+//
+// 自动从 FixedHeader 的 NodeID + MsgSeq 组装生成
+// 格式："{NodeID}:{MsgSeq}"
+// 用途：传输层通过此ID匹配请求-响应，reqTable 核心索引
+func (f MsgFrame) CorrelationID() string {
+	// 自动从 FixedHeader 组装 NodeID:MsgSeq
+	return fmt.Sprintf("%d:%d", f.NodeID, f.MsgSeq)
 }
 
 // ========================================
 // 辅助方法
 // ========================================
-
-// GetTLV 获取指定类型的 TLV 字段（原始数据，未解码）
-func (f *MsgFrame) GetTLV(fieldType ExtFieldType) *TLV {
-	for i := range f.TLVs {
-		if f.TLVs[i].Type == fieldType {
-			return &f.TLVs[i]
-		}
-	}
-	return nil
-}
-
-// HasHopCount 检查是否有 Hops 限制（便捷方法）
-func (f *MsgFrame) HasHopCount() bool {
-	hops, _ := f.GetHopCount()
-	return hops > 0
-}
-
-// IsHopExpired 检查 Hops 是否过期（便捷方法）
-func (f *MsgFrame) IsHopExpired() bool {
-	hops, ok := f.GetHopCount()
-	return ok && hops == 0
-}
 
 // HasCompression 检查是否有压缩配置（便捷方法）
 func (f *MsgFrame) HasCompression() bool {
@@ -303,13 +287,9 @@ func (f *MsgFrame) String() string {
 //
 // 用于 ForwardMessage() 场景，重新编码 TLV 字段。每次调用都会通过 GetExt() 重新解码。
 // 注意：Hops 现在在 FixedHeader 中，不再作为 TLV 编码。
+// 注意：Priority 已移除，priority 通过 Message.Priority() 获取。
 func (f *MsgFrame) EncodeTLVs() ([]ExtField, error) {
 	var fields []ExtField
-
-	// Priority
-	if priority, ok := f.GetPriority(); ok {
-		fields = append(fields, *EncodePriorityExt(priority.Priority))
-	}
 
 	// Compress
 	if compress, ok := f.GetCompress(); ok {
@@ -367,6 +347,29 @@ func cloneBytes(src []byte) []byte {
 // 返回:
 //   - *MsgFrame: 处理后的消息副本
 //   - error: Hops 过期或其他错误
+//
+// validateAndDecrementHops 验证并递减跳数
+//
+// 返回递减后的跳数，如果跳数为 0 则返回错误
+// 此函数用于简化转发逻辑中的跳数处理
+func validateAndDecrementHops(frame MsgFrame) (uint8, error) {
+	currentHops, hasHops := frame.GetHopCount()
+
+	// 如果没有设置跳数，默认为 255（不限制）
+	if !hasHops {
+		return 255, nil
+	}
+
+	// 检查跳数是否已过期
+	if currentHops == 0 {
+		return 0, types.NewTransportHopCountExpiredError()
+	}
+
+	// 递减跳数
+	return currentHops - 1, nil
+}
+
+// prepareForwardMessage 准备转发消息（返回完整的 MsgFrame 副本）
 func prepareForwardMessage(frame *MsgFrame) (*MsgFrame, error) {
 	if frame.Message == nil {
 		return nil, types.NewOpErr(types.ErrCodecEncodeFailed, "ForwardMessage",
@@ -394,10 +397,9 @@ type SendOpt func(*sendOptions)
 
 // sendOptions 发送选项内部结构
 type sendOptions struct {
-	hopCount   *uint16         // 跳数 TTL
-	compressID *uint16         // 压缩算法 ID
-	encryptID  *uint16         // 加密算法 ID
-	priority   *types.Priority // 优先级
+	hopCount   *uint16 // 跳数 TTL
+	compressID *uint16 // 压缩算法 ID
+	encryptID  *uint16 // 加密算法 ID
 }
 
 var (
@@ -412,7 +414,6 @@ var (
 // processSendOptions 处理发送选项（内部使用）
 //
 // 重要：调用方必须使用 defer releaseSendOptions(options) 确保归还对象。
-// 推荐使用 withSendOptions 包装函数自动管理资源。
 func processSendOptions(opts ...SendOpt) *sendOptions {
 	options := sendOptionsPool.Get().(*sendOptions)
 	for _, opt := range opts {
@@ -429,15 +430,6 @@ func releaseSendOptions(opts *sendOptions) {
 		*opts = sendOptions{}
 		sendOptionsPool.Put(opts)
 	}
-}
-
-// withSendOptions 自动管理 sendOptions 生命周期的包装函数
-//
-// 自动从 sync.Pool 获取和归还 options，即使回调函数 panic 也会确保资源归还。
-func withSendOptions(opts []SendOpt, fn func(*sendOptions) error) error {
-	options := processSendOptions(opts...)
-	defer releaseSendOptions(options)
-	return fn(options)
 }
 
 // WithHopCount 设置跳数 TTL
@@ -458,13 +450,6 @@ func WithCompression(compressID uint16) SendOpt {
 func WithEncryption(encryptID uint16) SendOpt {
 	return func(o *sendOptions) {
 		o.encryptID = &encryptID
-	}
-}
-
-// WithPriority 设置优先级
-func WithPriority(priority types.Priority) SendOpt {
-	return func(o *sendOptions) {
-		o.priority = &priority
 	}
 }
 
@@ -524,11 +509,13 @@ func createMessage(msgType MessageType) (Message, error) {
 //
 // 用途:
 //   - 作为所有消息类型的内嵌基类，提供统一的接口实现
-//   - 消除重复代码，避免每个消息类型都实现相同的 4 个方法
+//   - 消除重复代码，避免每个消息类型都实现相同的 7 个方法
 //   - 支持通过内嵌 BaseMessage 来自动获得 Message 接口实现
 type BaseMessage struct {
 	// MessageType 消息类型（由具体消息类型在初始化时设置）
 	MessageType MessageType
+	// correlationID 关联ID（由传输层自动设置，用于请求-响应匹配）
+	correlationID string
 }
 
 // Type 返回消息类型（实现 Message 接口）
@@ -544,6 +531,14 @@ func (m *BaseMessage) Priority() int {
 	return int(GetPriority(m.MessageType))
 }
 
+// MsgRole 返回消息角色（实现 Message 接口）
+//
+// 默认实现：从消息类型的配置中获取
+// 用于快速判断消息是请求还是响应
+func (m *BaseMessage) MsgRole() types.MsgRole {
+	return m.MessageType.MsgRole()
+}
+
 // ExpectResponse 返回响应期望（实现 Message 接口）
 //
 // 默认实现：从消息类型的配置中获取
@@ -551,9 +546,18 @@ func (m *BaseMessage) ExpectResponse() types.ResponseExpectation {
 	return m.MessageType.ExpectResponse()
 }
 
-// Reliability 返回可靠性要求（实现 Message 接口）
+// ProtocolType 返回传输协议类型（实现 Message 接口）
 //
 // 默认实现：从消息类型的配置中获取
-func (m *BaseMessage) Reliability() types.ReliabilityRequirement {
-	return m.MessageType.Reliability()
+func (m *BaseMessage) ProtocolType() types.ProtocolType {
+	return m.MessageType.ProtocolType()
+}
+
+// CorrelationID 返回全局唯一的关联ID（实现 Message 接口）
+//
+// 用途：传输层通过此ID匹配请求-响应，reqTable 核心索引
+// - 请求消息：由发送端生成（如 UUID/节点ID+递增序列）
+// - 响应消息：必须和对应请求的 CorrelationID 一致
+func (m *BaseMessage) CorrelationID() string {
+	return m.correlationID
 }

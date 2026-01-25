@@ -1,7 +1,7 @@
 # NexKV Makefile
 # 提供 build、test、clean 等常用命令
 
-.PHONY: all build test clean run fmt vet lint docker-build docker-run proto proto-clean help
+.PHONY: all build test clean run fmt vet lint docker-build docker-run help
 
 # 变量定义
 BINARY_NAME=nexkv
@@ -10,29 +10,24 @@ GO=go
 GOFLAGS=-v
 LDFLAGS=-s -w
 
-# Protobuf 配置
-PROTO_DIR=./internal/metadata/proto
-PROTOC=protoc
-PROTO_OPTS=--go_out=. --go_opt=paths=source_relative
-
 # 默认目标
 all: build
 
-## proto: 编译 Protobuf 文件
-proto:
-	@echo "编译 Protobuf 文件..."
-	cd $(PROTO_DIR) && $(PROTOC) $(PROTO_OPTS) *.proto
-	@echo "Protobuf 编译完成"
-
 ## build: 编译项目
-build: proto
+build:
 	@echo "编译 $(BINARY_NAME)..."
 	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) $(MAIN_PATH)/main.go
 
 ## test: 运行所有测试
 test:
 	@echo "运行测试..."
-	$(GO) test -v -race -coverprofile=coverage.out ./...
+	$(GO) test -coverprofile=coverage.out ./...
+	$(GO) tool cover -html=coverage.out -o coverage.html
+
+## test-race: 运行带竞态检测的测试
+test-race:
+	@echo "运行带竞态检测的测试..."
+	$(GO) test -race -coverprofile=coverage.out ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
 
 ## test-verbose: 运行详细测试
@@ -85,12 +80,6 @@ deps:
 	$(GO) mod download
 	$(GO) mod tidy
 
-## proto-clean: 清理生成的 Protobuf Go 代码
-proto-clean:
-	@echo "清理 Protobuf 生成的文件..."
-	find $(PROTO_DIR) -name "*.pb.go" -delete
-	@echo "Protobuf 清理完成"
-
 ## run: 运行程序
 run: build
 	@echo "运行 $(BINARY_NAME)..."
@@ -111,6 +100,7 @@ help:
 	@echo "可用命令:"
 	@echo "  make build         - 编译项目"
 	@echo "  make test          - 运行所有测试"
+	@echo "  make test-race     - 运行带竞态检测的测试"
 	@echo "  make test-verbose  - 运行详细测试"
 	@echo "  make test-coverage - 运行测试并生成覆盖率报告"
 	@echo "  make benchmark     - 运行性能基准测试"
@@ -119,8 +109,6 @@ help:
 	@echo "  make vet           - 代码静态检查"
 	@echo "  make lint          - 代码质量检查"
 	@echo "  make deps          - 下载依赖"
-	@echo "  make proto         - 编译 Protobuf 文件"
-	@echo "  make proto-clean   - 清理 Protobuf 生成的文件"
 	@echo "  make run           - 运行程序"
 	@echo "  make docker-build  - 构建 Docker 镜像"
 	@echo "  make docker-run    - 运行 Docker 容器"

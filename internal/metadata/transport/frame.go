@@ -43,7 +43,6 @@ package transport
 
 import (
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -59,7 +58,7 @@ const (
 	FixedHeaderLen = 42
 
 	// MaxHops 最大跳数限制（防止无限转发）
-	MaxHops uint8 = 10
+	MaxHops uint8 = 5
 
 	// MagicNumber TLV 协议魔术字 "NXUT" (0x4E 0x58 0x55 0x54)
 	MagicNumber = 0x4E585554
@@ -302,57 +301,6 @@ func (h *FixedHeader) String() string {
 		h.NodeID, h.MsgSeq, h.ForwardNodeID, h.Hops, h.MsgType, h.CodecID, h.Flags)
 }
 
-// ValidateFlags 验证 Flags 字段的有效性
-//
-// 返回 nil 表示 Flags 有效，返回 error 表示 Flags 无效
-//
-// 验证规则：
-//   - IS 和 IR 必须互斥（不能同时为 1 或同时为 0）
-//   - IE 仅对响应有效（当 IR=1 时）
-//   - ER 仅对请求有效（当 IS=1 时）
-func ValidateFlags(flags uint8) error {
-	// 提取标志位
-	isRequest := (flags & FlagsIsRequest) != 0
-	isResponse := (flags & FlagsIsResponse) != 0
-	isError := (flags & FlagsIsError) != 0
-	expectResp := (flags & FlagsExpectResponse) != 0
-
-	// 规则 1: IS 和 IR 必须互斥
-	if isRequest && isResponse {
-		return fmt.Errorf("invalid flags: IS and IR are both set (flags=0x%02X)", flags)
-	}
-	if !isRequest && !isResponse {
-		return fmt.Errorf("invalid flags: neither IS nor IR is set (flags=0x%02X)", flags)
-	}
-
-	// 规则 2: IE 仅对响应有效
-	if isRequest && isError {
-		return fmt.Errorf("invalid flags: IE set but message is request (flags=0x%02X)", flags)
-	}
-
-	// 规则 3: ER 仅对请求有效
-	if isResponse && expectResp {
-		return fmt.Errorf("invalid flags: ER set but message is response (flags=0x%02X)", flags)
-	}
-
-	return nil
-}
-
-// ParseFlags 解析 Flags 字段，返回各个标志位的值
-//
-// 返回值：
-//   - isRequest: 是否为请求
-//   - isResponse: 是否为响应
-//   - isError: 是否为错误响应
-//   - expectResponse: 是否需要响应
-func ParseFlags(flags uint8) (isRequest, isResponse, isError, expectResponse bool) {
-	isRequest = (flags & FlagsIsRequest) != 0
-	isResponse = (flags & FlagsIsResponse) != 0
-	isError = (flags & FlagsIsError) != 0
-	expectResponse = (flags & FlagsExpectResponse) != 0
-	return
-}
-
 // ExtFieldType TLV 扩展字段类型
 type ExtFieldType uint16
 
@@ -363,11 +311,10 @@ const (
 	ExtEncrypt ExtFieldType = 2
 	// ExtFragment 分片扩展（UDP 分片使用：index + total）
 	ExtFragment ExtFieldType = 3
-	// ExtPriority 优先级扩展
-	ExtPriority ExtFieldType = 4
-	// ExtCustom 自定义扩展（>= 5）
+	// ExtCustom 自定义扩展（>= 4）
 	// 注意：ExtHop 已移除，hops 现在是 FixedHeader 的一部分
-	ExtCustom ExtFieldType = 5
+	// 注意：ExtPriority 已移除，priority 通过 Message.Priority() 获取
+	ExtCustom ExtFieldType = 4
 )
 
 // String 返回扩展字段类型的字符串表示
@@ -379,8 +326,6 @@ func (t ExtFieldType) String() string {
 		return "Encrypt"
 	case ExtFragment:
 		return "Fragment"
-	case ExtPriority:
-		return "Priority"
 	default:
 		return fmt.Sprintf("Custom(%d)", t)
 	}
@@ -503,7 +448,7 @@ func DeserializeVarExtHeader(data []byte) (*VarExtHeader, error) {
 	for offset < len(data) {
 		field, err := DeserializeExtField(data[offset:])
 		if err != nil {
-			return nil, fmt.Errorf("解析扩展字段失败: %w", err)
+			return nil, types.NewFrameParseExtensionFieldError(err)
 		}
 
 		header.Fields = append(header.Fields, field)
@@ -634,12 +579,6 @@ func (f *Frame) WithEncrypt(encryptID uint16, nonce []byte, version string) *Fra
 	return f
 }
 
-// WithPriority 添加优先级扩展字段
-func (f *Frame) WithPriority(priority types.Priority) *Frame {
-	f.VarExtHeader.AddField(EncodePriorityExt(priority))
-	return f
-}
-
 // AddTLVFields 批量添加 TLV 扩展字段
 //
 // 参数:
@@ -729,7 +668,7 @@ func (f *Frame) Unmarshal(data []byte) error {
 	// 解析 FixedHeader (0-30)
 	fixedHeader, err := DeserializeFixedHeader(data[0:FixedHeaderLen])
 	if err != nil {
-		return fmt.Errorf("解析固定头失败: %w", err)
+		return err
 	}
 	f.FixedHeader = fixedHeader
 
@@ -749,7 +688,7 @@ func (f *Frame) Unmarshal(data []byte) error {
 		extHeaderData = data[FixedHeaderLen : FixedHeaderLen+extHeaderLen]
 		varExtHeader, err := DeserializeVarExtHeader(extHeaderData)
 		if err != nil {
-			return fmt.Errorf("解析扩展头失败: %w", err)
+			return types.NewFrameParseExtensionFieldError(err)
 		}
 		f.VarExtHeader = varExtHeader
 	} else {
@@ -838,15 +777,6 @@ func (f *Frame) String() string {
 		f.FixedHeader, f.VarExtHeader, len(f.Data), f.CRC32)
 }
 
-// HexDump 返回帧的十六进制转储
-func (f *Frame) HexDump() string {
-	data, err := f.Marshal()
-	if err != nil {
-		return fmt.Sprintf("Error marshaling frame: %v", err)
-	}
-	return hex.Dump(data)
-}
-
 // FrameReader 帧读取器
 type FrameReader struct {
 	r io.Reader
@@ -868,7 +798,7 @@ func (fr *FrameReader) ReadFrame() (*Frame, error) {
 	// 解析固定头
 	fixedHeader, err := DeserializeFixedHeader(fixedHeaderData)
 	if err != nil {
-		return nil, fmt.Errorf("解析固定头失败: %w", err)
+		return nil, err
 	}
 
 	// 从固定头中获取 ExtHeaderLen 和 DataLength
@@ -887,7 +817,7 @@ func (fr *FrameReader) ReadFrame() (*Frame, error) {
 	// 读取剩余数据（VarExtHeader + Data + CRC32）
 	remainingData := make([]byte, remainingSize)
 	if _, err := io.ReadFull(fr.r, remainingData); err != nil {
-		return nil, fmt.Errorf("读取帧数据失败: %w", err)
+		return nil, types.NewFrameIOReadError("读取帧数据失败", err)
 	}
 
 	// 组装完整帧
@@ -964,7 +894,7 @@ func DecodeCompressExt(field *ExtField) (uint16, error) {
 	var data CompressExt
 
 	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
-		return 0, fmt.Errorf("反序列化压缩扩展失败: %w", err)
+		return 0, types.NewOpErr(types.ErrCompressionDecompress, "反序列化压缩扩展失败", "", err)
 	}
 
 	return data.CompressID, nil
@@ -981,7 +911,7 @@ func EncodeEncryptExt(encryptID uint16, nonce []byte, version string) (*ExtField
 
 	bytes, err := msgpack.Marshal(data)
 	if err != nil {
-		return nil, fmt.Errorf("序列化加密扩展失败: %w", err)
+		return nil, types.NewCodecEncodeFailedError("序列化加密扩展失败", err)
 	}
 
 	return &ExtField{
@@ -995,42 +925,10 @@ func DecodeEncryptExt(field *ExtField) (encryptID uint16, nonce []byte, version 
 	var data EncryptExt
 
 	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
-		return 0, nil, "", fmt.Errorf("反序列化加密扩展失败: %w", err)
+		return 0, nil, "", types.NewCodecDecodeFailedError("反序列化加密扩展失败", err)
 	}
 
 	return data.EncryptID, data.Nonce, data.Version, nil
-}
-
-// PriorityExt 优先级扩展（MessagePack 序列化 + 便捷访问）
-type PriorityExt struct {
-	Priority types.Priority `msgpack:"pri"`
-}
-
-// EncodePriorityExt 编码优先级扩展
-func EncodePriorityExt(priority types.Priority) *ExtField {
-	data := PriorityExt{Priority: priority}
-
-	bytes, err := msgpack.Marshal(data)
-	if err != nil {
-		// 优先级扩展编码失败不应发生，直接panic
-		panic(fmt.Sprintf("序列化优先级扩展失败: %v", err))
-	}
-
-	return &ExtField{
-		Type:  ExtPriority,
-		Value: bytes,
-	}
-}
-
-// DecodePriorityExt 解码优先级扩展
-func DecodePriorityExt(field *ExtField) (types.Priority, error) {
-	var data PriorityExt
-
-	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
-		return 0, fmt.Errorf("反序列化优先级扩展失败: %w", err)
-	}
-
-	return data.Priority, nil
 }
 
 // SegmentExt 分片扩展（MessagePack 序列化 + 便捷访问）
@@ -1063,7 +961,7 @@ func DecodeFragmentExt(field *ExtField) (index, total uint16, err error) {
 	var data SegmentExt
 
 	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
-		return 0, 0, fmt.Errorf("反序列化分片扩展失败: %w", err)
+		return 0, 0, types.NewFrameDefragmentationError(err)
 	}
 
 	return data.Index, data.Total, nil

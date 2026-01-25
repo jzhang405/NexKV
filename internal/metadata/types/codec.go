@@ -23,14 +23,6 @@ const (
 	// 性能：编码/解码速度相对较慢
 	// 数据大小：约为 MessagePack 的 2-3 倍
 	CodecTypeJSON CodecType = 2
-
-	// CodecTypeProtobuf Protobuf 编解码（预留）
-	//
-	// 特点：二进制格式，极致性能，强类型 Schema
-	// 性能：编码/解码速度约为 JSON 的 3-5 倍
-	// 数据大小：约为 JSON 的 40-60%
-	// 状态：PR-002 实现
-	CodecTypeProtobuf CodecType = 3
 )
 
 // String 返回 CodecType 的字符串表示
@@ -40,8 +32,6 @@ func (c CodecType) String() string {
 		return "msgpack"
 	case CodecTypeJSON:
 		return "json"
-	case CodecTypeProtobuf:
-		return "protobuf"
 	default:
 		return "unknown"
 	}
@@ -50,7 +40,7 @@ func (c CodecType) String() string {
 // Validate 验证 CodecType 是否有效
 func (c CodecType) Validate() error {
 	switch c {
-	case CodecTypeMessagePack, CodecTypeJSON, CodecTypeProtobuf:
+	case CodecTypeMessagePack, CodecTypeJSON:
 		return nil
 	default:
 		return NewStoreInvalidParameterError("CodecType")
@@ -183,64 +173,39 @@ type Compressor interface {
 	Name() string
 }
 
-// Priority 消息优先级
+// ProtocolType 传输协议类型
 //
-// 用于标识消息处理优先级，支持 QoS（服务质量）控制
-// 应用场景：关键消息优先处理、流量控制、负载均衡
-type Priority uint8
+// 用于标识网络传输协议类型
+// 应用场景：传输层协议选择、故障降级、协议切换
+type ProtocolType string
 
 const (
-	// PriorityLow 低优先级
+	// ProtocolTCP TCP 协议
 	//
-	// 适用场景：后台同步、非关键元数据更新
-	// 处理策略：在网络拥塞时可能被延迟或丢弃
-	// 示例：Gossip 摘要同步、统计信息上报
-	PriorityLow Priority = 0
+	// 特点：面向连接、可靠传输、有序交付、流量控制
+	// 适用场景：元数据同步、关键消息传递、大文件传输
+	// 性能：相对稳定，延迟略高于 UDP
+	ProtocolTCP ProtocolType = "tcp"
 
-	// PriorityNormal 普通优先级（默认）
+	// ProtocolUDP UDP 协议
 	//
-	// 适用场景：常规元数据操作、节点心跳
-	// 处理策略：按先进先出（FIFO）顺序处理
-	// 示例：Get/Put/Delete 请求、NodePing/NodePong
-	PriorityNormal Priority = 1
-
-	// PriorityHigh 高优先级
-	//
-	// 适用场景：重要但非阻塞的操作
-	// 处理策略：优先于普通/低优先级消息处理
-	// 示例：Quorum 提案、Gossip 同步、节点状态变更
-	PriorityHigh Priority = 2
-
-	// PriorityCritical 关键优先级
-	//
-	// 适用场景：系统关键操作、阻塞式协调
-	// 处理策略：最高优先级，立即处理，不丢弃
-	// 示例：2PC 协议消息、Leader 选举、故障恢复
-	PriorityCritical Priority = 3
+	// 特点：无连接、不可靠、无序交付、低延迟
+	// 适用场景：节点心跳、状态广播、实时探测
+	// 性能：低延迟，但需要应用层重传机制
+	ProtocolUDP ProtocolType = "udp"
 )
 
-// String 返回 Priority 的字符串表示
-func (p Priority) String() string {
-	switch p {
-	case PriorityLow:
-		return "low"
-	case PriorityNormal:
-		return "normal"
-	case PriorityHigh:
-		return "high"
-	case PriorityCritical:
-		return "critical"
-	default:
-		return "unknown"
-	}
+// String 返回 ProtocolType 的字符串表示
+func (p ProtocolType) String() string {
+	return string(p)
 }
 
-// Validate 验证 Priority 是否有效
-func (p Priority) Validate() error {
+// Validate 验证 ProtocolType 是否有效
+func (p ProtocolType) Validate() error {
 	switch p {
-	case PriorityLow, PriorityNormal, PriorityHigh, PriorityCritical:
+	case ProtocolTCP, ProtocolUDP:
 		return nil
 	default:
-		return NewStoreInvalidParameterError("Priority")
+		return NewStoreInvalidParameterError("ProtocolType")
 	}
 }

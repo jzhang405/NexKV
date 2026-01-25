@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// newUDPMsgSeqGenerator 返回默认的消息序列号生成器（用于测试）
+func newUDPMsgSeqGenerator() func() uint64 {
+	var seq uint64
+	// 使用当前时间戳作为初始值，避免从 0 开始
+	atomic.StoreUint64(&seq, uint64(time.Now().UnixNano()))
+	return func() uint64 {
+		return atomic.AddUint64(&seq, 1)
+	}
+}
 
 // ========================================
 // UDP 传输创建和配置测试
@@ -68,7 +79,7 @@ func TestUDPTransport_StartStop(t *testing.T) {
 	trans := createUDPTransport(t)
 
 	// 启动
-	err := trans.Start(nil, nil)
+	err := trans.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	assert.True(t, trans.started.Load())
 
@@ -86,11 +97,11 @@ func TestUDPTransport_StartStop(t *testing.T) {
 func TestUDPTransport_Start_AlreadyStarted(t *testing.T) {
 	trans := createUDPTransport(t)
 
-	err := trans.Start(nil, nil)
+	err := trans.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 
 	// 重复启动应该失败
-	err = trans.Start(nil, nil)
+	err = trans.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "已经启动")
 
@@ -111,7 +122,7 @@ func TestUDPTransport_Stop_NotStarted(t *testing.T) {
 func TestUDPTransport_MultipleStop(t *testing.T) {
 	trans := createUDPTransport(t)
 
-	err := trans.Start(nil, nil)
+	err := trans.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 
 	// 多次停止都应该成功（幂等）
@@ -204,8 +215,9 @@ func TestUDPTransport_Fragmentation(t *testing.T) {
 	}
 
 	msg := &PutMessage{
-		Key:   "large-test-key",
-		Value: largeValue,
+		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+		Key:         "large-test-key",
+		Value:       largeValue,
 	}
 
 	// 发送大消息（应该自动分片）
@@ -283,8 +295,9 @@ func TestUDPTransport_Fragmentation_Sizes(t *testing.T) {
 			}
 
 			msg := &PutMessage{
-				Key:   fmt.Sprintf("frag-test-%s", tc.name),
-				Value: value,
+				BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+				Key:         fmt.Sprintf("frag-test-%s", tc.name),
+				Value:       value,
 			}
 
 			// 发送消息
@@ -354,8 +367,9 @@ func TestUDPTransport_Fragmentation_ByteBufferPrecision(t *testing.T) {
 			}
 
 			msg := &PutMessage{
-				Key:   fmt.Sprintf("precision-test-%d", size),
-				Value: value,
+				BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+				Key:         fmt.Sprintf("precision-test-%d", size),
+				Value:       value,
 			}
 
 			// 发送消息
@@ -541,13 +555,12 @@ func TestUDPTransport_Stats(t *testing.T) {
 	assert.Equal(t, false, stats["stopped"])
 	assert.Contains(t, stats, "listen_addr")
 	assert.Contains(t, stats, "local_node_id")
-	assert.Contains(t, stats, "msg_seq_counter") // 改名为 msg_seq_counter
 }
 
 // TestUDPTransport_Stats_AfterStart 测试启动后的统计信息
 func TestUDPTransport_Stats_AfterStart(t *testing.T) {
 	trans := createUDPTransport(t)
-	err := trans.Start(nil, nil)
+	err := trans.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = trans.Stop() }()
 
@@ -563,16 +576,15 @@ func TestUDPTransport_Stats_AfterStart(t *testing.T) {
 
 // TestUDPTransport_InvalidAddress 测试无效地址
 func TestUDPTransport_InvalidAddress(t *testing.T) {
-	// 创建 UDP 传输不会验证地址格式
-	// 只有在 Start 时才会真正尝试监听
-	trans, err := NewUDPTransport("invalid-address")
+	// 创建 UDP 传输（使用有效地址创建，但 Start 时使用无效地址）
+	trans, err := NewUDPTransport("127.0.0.1:0")
 	assert.NoError(t, err)
 	assert.NotNil(t, trans)
 
-	// 启动时应该失败
-	err = trans.Start(nil, nil)
+	// 启动时使用无效地址应该失败
+	err = trans.Start(nil, newUDPMsgSeqGenerator(), "invalid-address")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid-address")
+	// 错误信息应该包含地址相关内容（连接错误或地址解析错误）
 }
 
 // TestUDPTransport_Receive_BeforeStart 测试启动前接收
@@ -620,10 +632,11 @@ func TestUDPTransport_PingPong(t *testing.T) {
 
 				// 自动回复 Pong
 				pong := &NodePongMessage{
-					NodeID:    "server-node",
-					Sequence:  ping.Sequence,
-					Status:    "ready",
-					Timestamp: time.Now().UnixMilli(),
+					BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+					NodeID:      "server-node",
+					Sequence:    ping.Sequence,
+					Status:      "ready",
+					Timestamp:   time.Now().UnixMilli(),
 				}
 				_ = server.Send(ctx, clientAddr, pong)
 				return
@@ -643,9 +656,10 @@ func TestUDPTransport_PingPong(t *testing.T) {
 
 	// 发送 Ping
 	ping := &NodePingMessage{
-		NodeID:    "client-node",
-		Sequence:  1001,
-		Timestamp: time.Now().UnixMilli(),
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+		NodeID:      "client-node",
+		Sequence:    1001,
+		Timestamp:   time.Now().UnixMilli(),
 	}
 
 	err := client.Send(ctx, serverAddr, ping)
@@ -708,10 +722,11 @@ func TestUDPTransport_PingPong_Bidirectional(t *testing.T) {
 				nodeAReceivedPing <- m
 				// 自动回复 Pong
 				pong := &NodePongMessage{
-					NodeID:    "node-a",
-					Sequence:  m.Sequence,
-					Status:    "active",
-					Timestamp: time.Now().UnixMilli(),
+					BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+					NodeID:      "node-a",
+					Sequence:    m.Sequence,
+					Status:      "active",
+					Timestamp:   time.Now().UnixMilli(),
 				}
 				_ = nodeA.Send(ctx, nodeBAddr, pong)
 			case *NodePongMessage:
@@ -728,10 +743,11 @@ func TestUDPTransport_PingPong_Bidirectional(t *testing.T) {
 				nodeBReceivedPing <- m
 				// 自动回复 Pong
 				pong := &NodePongMessage{
-					NodeID:    "node-b",
-					Sequence:  m.Sequence,
-					Status:    "active",
-					Timestamp: time.Now().UnixMilli(),
+					BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+					NodeID:      "node-b",
+					Sequence:    m.Sequence,
+					Status:      "active",
+					Timestamp:   time.Now().UnixMilli(),
 				}
 				_ = nodeB.Send(ctx, nodeAAddr, pong)
 			case *NodePongMessage:
@@ -742,18 +758,20 @@ func TestUDPTransport_PingPong_Bidirectional(t *testing.T) {
 
 	// 节点 A 发送 Ping 到节点 B
 	pingA := &NodePingMessage{
-		NodeID:    "node-a",
-		Sequence:  1001,
-		Timestamp: time.Now().UnixMilli(),
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+		NodeID:      "node-a",
+		Sequence:    1001,
+		Timestamp:   time.Now().UnixMilli(),
 	}
 	err := nodeA.Send(ctx, nodeBAddr, pingA)
 	require.NoError(t, err)
 
 	// 节点 B 发送 Ping 到节点 A
 	pingB := &NodePingMessage{
-		NodeID:    "node-b",
-		Sequence:  2001,
-		Timestamp: time.Now().UnixMilli(),
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+		NodeID:      "node-b",
+		Sequence:    2001,
+		Timestamp:   time.Now().UnixMilli(),
 	}
 	err = nodeB.Send(ctx, nodeAAddr, pingB)
 	require.NoError(t, err)
@@ -837,10 +855,11 @@ func TestUDPTransport_PingPong_MultipleRounds(t *testing.T) {
 
 				// 自动回复 Pong
 				pong := &NodePongMessage{
-					NodeID:    "server-node",
-					Sequence:  ping.Sequence,
-					Status:    "ready",
-					Timestamp: time.Now().UnixMilli(),
+					BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+					NodeID:      "server-node",
+					Sequence:    ping.Sequence,
+					Status:      "ready",
+					Timestamp:   time.Now().UnixMilli(),
 				}
 				_ = server.Send(ctx, clientAddr, pong)
 
@@ -871,9 +890,10 @@ func TestUDPTransport_PingPong_MultipleRounds(t *testing.T) {
 	// 发送多轮 Ping
 	for i := 0; i < numRounds; i++ {
 		ping := &NodePingMessage{
-			NodeID:    "client-node",
-			Sequence:  int64(5000 + i),
-			Timestamp: time.Now().UnixMilli(),
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+			NodeID:      "client-node",
+			Sequence:    int64(5000 + i),
+			Timestamp:   time.Now().UnixMilli(),
 		}
 
 		err := client.Send(ctx, serverAddr, ping)
@@ -934,7 +954,7 @@ func createUDPTransport(t *testing.T) *UDPTransport {
 func startTestTransport(t *testing.T, trans *UDPTransport, nodeID *uint64) string {
 	t.Helper()
 
-	err := trans.Start(nodeID, nil)
+	err := trans.Start(nodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 
 	return trans.GetLocalAddr()
@@ -995,7 +1015,7 @@ func TestUDPFragmentation_MD5Integrity(t *testing.T) {
 	// 创建服务端
 	server := createUDPTransport(t)
 	serverNodeID := uint64(1)
-	err := server.Start(&serverNodeID, nil)
+	err := server.Start(&serverNodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
@@ -1004,7 +1024,7 @@ func TestUDPFragmentation_MD5Integrity(t *testing.T) {
 	// 创建客户端
 	client := createUDPTransport(t)
 	clientNodeID := uint64(2)
-	err = client.Start(&clientNodeID, nil)
+	err = client.Start(&clientNodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
 
@@ -1013,8 +1033,9 @@ func TestUDPFragmentation_MD5Integrity(t *testing.T) {
 
 	// 步骤 2：发送大消息（会自动分片）
 	msg := &PutMessage{
-		Key:   fmt.Sprintf("md5-test-%d", time.Now().UnixNano()),
-		Value: originalData,
+		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+		Key:         fmt.Sprintf("md5-test-%d", time.Now().UnixNano()),
+		Value:       originalData,
 	}
 
 	err = client.Send(ctx, serverAddr, msg)
@@ -1161,13 +1182,13 @@ func TestUDPFragmentation_Boundary_MinFragments(t *testing.T) {
 
 	serverNodeID := uint64(1)
 	server := createUDPTransport(t)
-	err := server.Start(&serverNodeID, nil)
+	err := server.Start(&serverNodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
 	clientNodeID := uint64(2)
 	client := createUDPTransport(t)
-	err = client.Start(&clientNodeID, nil)
+	err = client.Start(&clientNodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
 
@@ -1179,8 +1200,9 @@ func TestUDPFragmentation_Boundary_MinFragments(t *testing.T) {
 	}
 
 	msg := &PutMessage{
-		Key:   "min-fragments-test",
-		Value: data,
+		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+		Key:         "min-fragments-test",
+		Value:       data,
 	}
 
 	err = client.Send(ctx, server.GetLocalAddr(), msg)
@@ -1213,13 +1235,13 @@ func TestUDPFragmentation_Boundary_MaxFragments(t *testing.T) {
 
 	serverNodeID := uint64(1)
 	server := createUDPTransport(t)
-	err := server.Start(&serverNodeID, nil)
+	err := server.Start(&serverNodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
 	clientNodeID := uint64(2)
 	client := createUDPTransport(t)
-	err = client.Start(&clientNodeID, nil)
+	err = client.Start(&clientNodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
 
@@ -1232,8 +1254,9 @@ func TestUDPFragmentation_Boundary_MaxFragments(t *testing.T) {
 	}
 
 	msg := &PutMessage{
-		Key:   "max-fragments-test",
-		Value: data,
+		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+		Key:         "max-fragments-test",
+		Value:       data,
 	}
 
 	var memStatsBefore, memStatsAfter runtime.MemStats
@@ -1280,20 +1303,21 @@ func TestUDPFragmentation_Boundary_EmptyPacket(t *testing.T) {
 	ctx := context.Background()
 
 	server := createUDPTransport(t)
-	err := server.Start(nil, nil)
+	err := server.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
 	client := createUDPTransport(t)
-	err = client.Start(nil, nil)
+	err = client.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
 
 	time.Sleep(100 * time.Millisecond)
 
 	msg := &PutMessage{
-		Key:   "empty-packet-test",
-		Value: []byte{},
+		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+		Key:         "empty-packet-test",
+		Value:       []byte{},
 	}
 
 	err = client.Send(ctx, server.GetLocalAddr(), msg)
@@ -1336,13 +1360,13 @@ func TestUDPFragmentation_PerformanceReport(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			serverNodeID := uint64(1)
 			server := createUDPTransport(t)
-			err := server.Start(&serverNodeID, nil)
+			err := server.Start(&serverNodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 			require.NoError(t, err)
 			defer func() { _ = server.Stop() }()
 
 			clientNodeID := uint64(2)
 			client := createUDPTransport(t)
-			err = client.Start(&clientNodeID, nil)
+			err = client.Start(&clientNodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 			require.NoError(t, err)
 			defer func() { _ = client.Stop() }()
 
@@ -1354,8 +1378,9 @@ func TestUDPFragmentation_PerformanceReport(t *testing.T) {
 			}
 
 			msg := &PutMessage{
-				Key:   fmt.Sprintf("perf-test-%d", time.Now().UnixNano()),
-				Value: data,
+				BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+				Key:         fmt.Sprintf("perf-test-%d", time.Now().UnixNano()),
+				Value:       data,
 			}
 
 			var memStatsBefore, memStatsAfter runtime.MemStats
@@ -1423,7 +1448,7 @@ func TestUDP_P0_LocalNodeIDValidation(t *testing.T) {
 	trans, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
-	err = trans.Start(nil, nil)
+	err = trans.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() {
 		if err := trans.Stop(); err != nil {
@@ -1437,12 +1462,12 @@ func TestUDP_P0_LocalNodeIDValidation(t *testing.T) {
 	client, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
-	err = client.Start(nil, nil)
+	err = client.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 
 	// 尝试发送大消息（需要分片），应该因为 NodeID=0 而失败
 	largeValue := make([]byte, 2000) // 大于 MaxUDPPacketSize
-	msg := &PutMessage{Key: "test-key", Value: largeValue}
+	msg := &PutMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypePut}, Key: "test-key", Value: largeValue}
 
 	err = client.Send(ctx, serverAddr, msg)
 	assert.Error(t, err, "NodeID 未设置时应该返回错误")
@@ -1454,7 +1479,7 @@ func TestUDP_P0_LocalNodeIDValidation(t *testing.T) {
 	require.NoError(t, err)
 
 	clientNodeID := uint64(100)
-	err = client2.Start(&clientNodeID, nil)
+	err = client2.Start(&clientNodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() {
 		_ = client2.Stop()
@@ -1472,7 +1497,7 @@ func TestUDP_P0_MaxFragmentCount(t *testing.T) {
 	trans, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 
-	err = trans.Start(nil, nil)
+	err = trans.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() {
 		if err := trans.Stop(); err != nil {

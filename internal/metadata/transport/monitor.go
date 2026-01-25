@@ -12,22 +12,6 @@ import (
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
-// MetricType 监控指标类型
-type MetricType string
-
-const (
-	// MetricTypeMessageCount 消息数量
-	MetricTypeMessageCount MetricType = "message_count"
-	// MetricTypeMessageLatency 消息延迟
-	MetricTypeMessageLatency MetricType = "message_latency"
-	// MetricTypeMessageSize 消息大小
-	MetricTypeMessageSize MetricType = "message_size"
-	// MetricTypeErrorCount 错误数量
-	MetricTypeErrorCount MetricType = "error_count"
-	// MetricTypeDegradationCount 降级次数
-	MetricTypeDegradationCount MetricType = "degradation_count"
-)
-
 // DimensionalMonitor 维度化监控器
 //
 // 提供多维度统计：
@@ -54,7 +38,7 @@ type DimensionalMonitor struct {
 	byErrorTypeMu sync.RWMutex
 
 	// 按协议类型统计
-	byProtocol   map[ProtocolType]*ProtocolStats
+	byProtocol   map[types.ProtocolType]*ProtocolStats
 	byProtocolMu sync.RWMutex
 
 	// 全局统计
@@ -107,13 +91,12 @@ type ErrorTypeStats struct {
 
 // ProtocolStats 协议统计
 type ProtocolStats struct {
-	ProtocolType     ProtocolType  // 协议类型
-	MessageCount     atomic.Uint64 // 消息数量
-	SuccessCount     atomic.Uint64 // 成功数量
-	FailureCount     atomic.Uint64 // 失败数量
-	DegradationCount atomic.Uint64 // 降级次数
-	TotalLatency     atomic.Uint64 // 总延迟
-	IsActive         atomic.Bool   // 是否活跃
+	ProtocolType types.ProtocolType // 协议类型
+	MessageCount atomic.Uint64      // 消息数量
+	SuccessCount atomic.Uint64      // 成功数量
+	FailureCount atomic.Uint64      // 失败数量
+	TotalLatency atomic.Uint64      // 总延迟
+	IsActive     atomic.Bool        // 是否活跃
 }
 
 // GlobalStats 全局统计
@@ -162,7 +145,7 @@ func NewDimensionalMonitorWithContext(ctx context.Context) *DimensionalMonitor {
 		byMessageType: make(map[types.MessageType]*MessageTypeStats),
 		byNode:        make(map[string]*NodeStats),
 		byErrorType:   make(map[string]*ErrorTypeStats),
-		byProtocol:    make(map[ProtocolType]*ProtocolStats),
+		byProtocol:    make(map[types.ProtocolType]*ProtocolStats),
 		startTime:     now,
 		globalStats: &GlobalStats{
 			StartTime: now,
@@ -181,7 +164,7 @@ func NewDimensionalMonitorWithContext(ctx context.Context) *DimensionalMonitor {
 // RecordMessage 记录消息
 func (m *DimensionalMonitor) RecordMessage(
 	msgType types.MessageType,
-	protocol ProtocolType,
+	protocol types.ProtocolType,
 	nodeAddr string,
 	size int,
 	latency int64,
@@ -294,7 +277,7 @@ func (m *DimensionalMonitor) recordNodeStats(
 
 // recordProtocolStats 记录协议统计
 func (m *DimensionalMonitor) recordProtocolStats(
-	protocol ProtocolType,
+	protocol types.ProtocolType,
 	_ int, // size: 预留用于未来按消息大小统计
 	latency int64,
 	success bool,
@@ -412,7 +395,7 @@ func (m *DimensionalMonitor) GetAllErrorTypeStats() map[string]*ErrorTypeStats {
 
 // GetProtocolStats 获取协议统计
 func (m *DimensionalMonitor) GetProtocolStats(
-	protocol ProtocolType,
+	protocol types.ProtocolType,
 ) (*ProtocolStats, bool) {
 	m.byProtocolMu.RLock()
 	defer m.byProtocolMu.RUnlock()
@@ -426,7 +409,7 @@ func (m *DimensionalMonitor) GetProtocolStats(
 }
 
 // GetAllProtocolStats 获取所有协议统计
-func (m *DimensionalMonitor) GetAllProtocolStats() map[ProtocolType]*ProtocolStats {
+func (m *DimensionalMonitor) GetAllProtocolStats() map[types.ProtocolType]*ProtocolStats {
 	m.byProtocolMu.RLock()
 	defer m.byProtocolMu.RUnlock()
 
@@ -561,7 +544,6 @@ func copyProtocolStats(stats *ProtocolStats) *ProtocolStats {
 	copy.MessageCount.Store(stats.MessageCount.Load())
 	copy.SuccessCount.Store(stats.SuccessCount.Load())
 	copy.FailureCount.Store(stats.FailureCount.Load())
-	copy.DegradationCount.Store(stats.DegradationCount.Load())
 	copy.TotalLatency.Store(stats.TotalLatency.Load())
 	copy.IsActive.Store(stats.IsActive.Load())
 	return copy
@@ -595,7 +577,7 @@ func (m *DimensionalMonitor) Reset() {
 	m.byErrorTypeMu.Unlock()
 
 	m.byProtocolMu.Lock()
-	m.byProtocol = make(map[ProtocolType]*ProtocolStats)
+	m.byProtocol = make(map[types.ProtocolType]*ProtocolStats)
 	m.byProtocolMu.Unlock()
 
 	m.globalStatsMu.Lock()

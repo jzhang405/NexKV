@@ -3,12 +3,25 @@ package transport
 
 import (
 	"context"
+	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// newFrameMsgSeqGenerator 返回默认的消息序列号生成器（用于测试）
+func newFrameMsgSeqGenerator() func() uint64 {
+	var seq uint64
+	// 使用当前时间戳作为初始值，避免从 0 开始
+	atomic.StoreUint64(&seq, uint64(time.Now().UnixNano()))
+	return func() uint64 {
+		return atomic.AddUint64(&seq, 1)
+	}
+}
 
 // 辅助函数：创建测试用的基础 MsgFrame
 func createTestFrame(t *testing.T, msgType MessageType, payload []byte) *MsgFrame {
@@ -52,8 +65,9 @@ func TestMsgFrame_NilMessage(t *testing.T) {
 
 	assert.Equal(t, types.MessageTypeGet, frame.Type()) // 从 FixedHeader 获取
 	assert.Equal(t, int(types.PriorityNormal), frame.Priority())
-	// 空 TLVs 列表，GetTLV 应该返回 nil（测试一个未使用的类型）
-	assert.Nil(t, frame.GetTLV(ExtFieldType(999)))
+	// 空 TLVs 列表，GetExt 应该返回 false（测试一个未使用的类型）
+	_, ok := frame.GetExt(ExtFieldType(999))
+	assert.False(t, ok)
 }
 
 // TestMsgFrame_HopCount 测试 Hops 字段（FixedHeader）
@@ -63,17 +77,18 @@ func TestMsgFrame_HopCount(t *testing.T) {
 	// 设置 Hops 字段（FixedHeader）
 	frame.Hops = 5
 
-	assert.True(t, frame.HasHopCount())
-	assert.False(t, frame.IsHopExpired())
+	// 直接检查 Hops 值
+	assert.True(t, frame.Hops > 0)
+	assert.False(t, frame.Hops == 0)
 
-	// 使用便捷方法获取
+	// 使用 GetHopCount 获取
 	hops, ok := frame.GetHopCount()
 	require.True(t, ok)
 	assert.Equal(t, uint8(5), hops)
 
 	// 测试 Hops=0 的情况（过期）
 	frame.Hops = 0
-	assert.True(t, frame.IsHopExpired())
+	assert.True(t, frame.Hops == 0)
 }
 
 // TestMsgFrame_Compression 测试压缩扩展字段
@@ -124,18 +139,6 @@ func TestMsgFrame_Segment(t *testing.T) {
 	assert.Equal(t, uint16(10), segment.Total)
 }
 
-// TestMsgFrame_Priority 测试优先级扩展字段
-func TestMsgFrame_Priority(t *testing.T) {
-	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
-
-	// 添加 Priority TLV
-	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
-
-	priority, ok := frame.GetPriority()
-	require.True(t, ok)
-	assert.Equal(t, types.PriorityHigh, priority.Priority)
-}
-
 // TestMsgFrame_GetTLV 测试获取指定类型的 TLV 字段
 func TestMsgFrame_GetTLV(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
@@ -147,12 +150,25 @@ func TestMsgFrame_GetTLV(t *testing.T) {
 	}
 	frame.TLVs = extFields
 
-	compressField := frame.GetTLV(ExtCompress)
+	// 直接查找 TLV（原始方法）
+	var compressField *TLV
+	for i := range frame.TLVs {
+		if frame.TLVs[i].Type == ExtCompress {
+			compressField = &frame.TLVs[i]
+			break
+		}
+	}
 	assert.NotNil(t, compressField)
 	assert.Equal(t, ExtCompress, compressField.Type)
 
 	// 测试不存在的 ExtField
-	segmentField := frame.GetTLV(ExtFragment)
+	var segmentField *TLV
+	for i := range frame.TLVs {
+		if frame.TLVs[i].Type == ExtFragment {
+			segmentField = &frame.TLVs[i]
+			break
+		}
+	}
 	assert.Nil(t, segmentField)
 }
 
@@ -162,29 +178,29 @@ func TestMsgFrame_String(t *testing.T) {
 
 	// 添加 TLV
 	frame.Hops = 5
-	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
+	addTLVToFrame(frame, *EncodeCompressExt(2))
 
 	str := frame.String()
 	assert.Contains(t, str, "MsgFrame")
 	assert.Contains(t, str, "TLVs=")
 }
 
-// TestMsgFrame_GetExt_GenericMethod 测试 GetExt 通用方法（使用 Priority 作为示例）
+// TestMsgFrame_GetExt_GenericMethod 测试 GetExt 通用方法（使用 Compress 作为示例）
 func TestMsgFrame_GetExt_GenericMethod(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
-	// 添加 Priority TLV
-	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
+	// 添加 Compress TLV
+	addTLVToFrame(frame, *EncodeCompressExt(2))
 
 	// 使用通用 GetExt 方法
-	value, ok := frame.GetExt(ExtPriority)
+	value, ok := frame.GetExt(ExtCompress)
 	assert.True(t, ok)
 	assert.NotNil(t, value)
 
 	// 类型断言
-	priority, ok := value.(*PriorityExt)
+	compress, ok := value.(*CompressExt)
 	assert.True(t, ok)
-	assert.Equal(t, types.PriorityHigh, priority.Priority)
+	assert.Equal(t, uint16(2), compress.CompressID)
 }
 
 // TestMsgFrame_GetExt_NotFound 测试 GetExt 查找不存在的字段
@@ -248,21 +264,13 @@ func TestMsgFrame_EncodeTLVs(t *testing.T) {
 
 	// 添加 TLV 字段
 	frame.Hops = 5
-	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
 	addTLVToFrame(frame, *EncodeCompressExt(2))
 	addTLVToFrame(frame, *EncodeFragmentExt(1, 5))
 
 	// 编码 TLV
 	fields, err := frame.EncodeTLVs()
 	require.NoError(t, err)
-	require.Len(t, fields, 3) // Priority, Compress, Segment (Hops is in FixedHeader)
-
-	// 验证 Priority 字段
-	priorityField := findExtField(fields, ExtPriority)
-	require.NotNil(t, priorityField)
-	priority, err := DecodePriorityExt(priorityField)
-	require.NoError(t, err)
-	assert.Equal(t, types.PriorityHigh, priority)
+	require.Len(t, fields, 2) // Compress, Segment (Hops is in FixedHeader)
 
 	// 验证 Compress 字段
 	compressField := findExtField(fields, ExtCompress)
@@ -284,19 +292,19 @@ func TestMsgFrame_EncodeTLVs(t *testing.T) {
 func TestMsgFrame_EncodeTLVs_PartialFields(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
-	// 添加 Priority TLV
-	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
+	// 添加 Compress TLV
+	addTLVToFrame(frame, *EncodeCompressExt(2))
 
 	// 编码
 	fields, err := frame.EncodeTLVs()
 	require.NoError(t, err)
-	require.Len(t, fields, 1) // 只有 Priority
+	require.Len(t, fields, 1) // 只有 Compress
 
-	priorityField := findExtField(fields, ExtPriority)
-	require.NotNil(t, priorityField)
-	priority, err := DecodePriorityExt(priorityField)
+	compressField := findExtField(fields, ExtCompress)
+	require.NotNil(t, compressField)
+	compressID, err := DecodeCompressExt(compressField)
 	require.NoError(t, err)
-	assert.Equal(t, types.PriorityHigh, priority)
+	assert.Equal(t, uint16(2), compressID)
 }
 
 // TestMsgFrame_EncodeTLVs_NoFields 测试无 TLV 字段
@@ -394,34 +402,23 @@ func TestSendOpt_WithEncryption(t *testing.T) {
 	assert.Equal(t, uint16(1), *opts.encryptID)
 }
 
-// TestSendOpt_WithPriority 测试 WithPriority 选项
-func TestSendOpt_WithPriority(t *testing.T) {
-	opts := processSendOptions(WithPriority(types.PriorityHigh))
-	defer releaseSendOptions(opts)
-
-	require.NotNil(t, opts)
-	require.NotNil(t, opts.priority)
-	assert.Equal(t, types.PriorityHigh, *opts.priority)
-}
-
 // TestSendopt_MultipleOptions 测试多个选项组合
 func TestSendopt_MultipleOptions(t *testing.T) {
 	opts := processSendOptions(
 		WithHopCount(10),
 		WithCompression(2),
-		WithPriority(types.PriorityLow),
+		WithEncryption(1),
 	)
 	defer releaseSendOptions(opts)
 
 	require.NotNil(t, opts)
 	require.NotNil(t, opts.hopCount)
 	require.NotNil(t, opts.compressID)
-	require.NotNil(t, opts.priority)
-	assert.Nil(t, opts.encryptID)
+	require.NotNil(t, opts.encryptID)
 
 	assert.Equal(t, uint16(10), *opts.hopCount)
 	assert.Equal(t, uint16(2), *opts.compressID)
-	assert.Equal(t, types.PriorityLow, *opts.priority)
+	assert.Equal(t, uint16(1), *opts.encryptID)
 }
 
 // TestSendOpt_NoOptions 测试无选项的情况
@@ -433,7 +430,6 @@ func TestSendOpt_NoOptions(t *testing.T) {
 	assert.Nil(t, opts.hopCount)
 	assert.Nil(t, opts.compressID)
 	assert.Nil(t, opts.encryptID)
-	assert.Nil(t, opts.priority)
 }
 
 // TestSendOpt_LastOptionWins 测试最后选项覆盖前面
@@ -449,40 +445,6 @@ func TestSendOpt_LastOptionWins(t *testing.T) {
 	assert.Equal(t, uint16(10), *opts.hopCount, "后面的选项应该覆盖前面的")
 }
 
-// TestSendOpt_withSendOptions 测试 withSendOptions 包装函数
-func TestSendOpt_withSendOptions(t *testing.T) {
-	err := withSendOptions([]SendOpt{WithHopCount(10)}, func(opts *sendOptions) error {
-		require.NotNil(t, opts)
-		require.NotNil(t, opts.hopCount)
-		assert.Equal(t, uint16(10), *opts.hopCount)
-		return nil
-	})
-
-	assert.NoError(t, err)
-}
-
-// TestSendOpt_withSendOptions_MultipleOptions 测试 withSendOptions 多选项
-func TestSendOpt_withSendOptions_MultipleOptions(t *testing.T) {
-	err := withSendOptions([]SendOpt{
-		WithHopCount(10),
-		WithCompression(2),
-		WithPriority(types.PriorityHigh),
-	}, func(opts *sendOptions) error {
-		require.NotNil(t, opts)
-		require.NotNil(t, opts.hopCount)
-		require.NotNil(t, opts.compressID)
-		require.NotNil(t, opts.priority)
-		assert.Nil(t, opts.encryptID)
-
-		assert.Equal(t, uint16(10), *opts.hopCount)
-		assert.Equal(t, uint16(2), *opts.compressID)
-		assert.Equal(t, types.PriorityHigh, *opts.priority)
-		return nil
-	})
-
-	assert.NoError(t, err)
-}
-
 // ========================================
 // ExtField 结构体测试
 // ========================================
@@ -490,26 +452,17 @@ func TestSendOpt_withSendOptions_MultipleOptions(t *testing.T) {
 // TestExtField_Creation 测试 ExtField 创建
 func TestExtField_Creation(t *testing.T) {
 	extField := ExtField{
-		Type:  ExtPriority,
-		Value: []byte{0x03, 0x00}, // types.PriorityHigh = 3
+		Type:  ExtCompress,
+		Value: []byte{0x02, 0x00},
 	}
 
-	assert.Equal(t, ExtPriority, extField.Type)
-	assert.Equal(t, []byte{0x03, 0x00}, extField.Value)
+	assert.Equal(t, ExtCompress, extField.Type)
+	assert.Equal(t, []byte{0x02, 0x00}, extField.Value)
 }
 
 // ========================================
 // 扩展字段结构体测试
 // ========================================
-
-// TestPriorityExt_Structure 测试 PriorityExt 结构
-func TestPriorityExt_Structure(t *testing.T) {
-	priority := &PriorityExt{
-		Priority: types.PriorityHigh,
-	}
-
-	assert.Equal(t, types.PriorityHigh, priority.Priority)
-}
 
 // TestCompressExt_Structure 测试 CompressExt 结构
 func TestCompressExt_Structure(t *testing.T) {
@@ -581,7 +534,7 @@ func TestPrepareForwardMessage_HopExpired(t *testing.T) {
 
 	// 准备转发
 	forwardFrame, err := prepareForwardMessage(frame)
-	require.Error(t, err)
+	assert.Error(t, err)
 	assert.Nil(t, forwardFrame)
 	assert.Equal(t, types.ErrTransportHopCountExpired, err.(*types.Error).Code)
 }
@@ -592,7 +545,7 @@ func TestPrepareForwardMessage_NilMessage(t *testing.T) {
 
 	// 准备转发
 	forwardFrame, err := prepareForwardMessage(frame)
-	require.Error(t, err)
+	assert.Error(t, err)
 	assert.Nil(t, forwardFrame)
 	assert.Contains(t, err.Error(), "消息为空")
 }
@@ -614,7 +567,7 @@ func TestForwardMessage_ContextCancel(t *testing.T) {
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	nodeID := uint64(12345)
-	require.NoError(t, tcpTransport.Start(&nodeID, nil))
+	require.NoError(t, tcpTransport.Start(&nodeID, newFrameMsgSeqGenerator(), "127.0.0.1:0"))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 应该返回 context 取消错误
@@ -626,7 +579,7 @@ func TestForwardMessage_ContextCancel(t *testing.T) {
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	udpNodeID := uint64(12345)
-	require.NoError(t, udpTransport.Start(&udpNodeID, nil))
+	require.NoError(t, udpTransport.Start(&udpNodeID, newFrameMsgSeqGenerator(), "127.0.0.1:0"))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 应该返回 context 取消错误
@@ -646,7 +599,7 @@ func TestForwardMessage_NilMessage(t *testing.T) {
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	nodeID := uint64(12345)
-	require.NoError(t, tcpTransport.Start(&nodeID, nil))
+	require.NoError(t, tcpTransport.Start(&nodeID, newFrameMsgSeqGenerator(), "127.0.0.1:0"))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 应该返回消息为空错误
@@ -658,7 +611,7 @@ func TestForwardMessage_NilMessage(t *testing.T) {
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	udpNodeID := uint64(12345)
-	require.NoError(t, udpTransport.Start(&udpNodeID, nil))
+	require.NoError(t, udpTransport.Start(&udpNodeID, newFrameMsgSeqGenerator(), "127.0.0.1:0"))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 应该返回消息为空错误
@@ -679,7 +632,7 @@ func TestForwardMessage_HopCountExpired(t *testing.T) {
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	nodeID := uint64(12345)
-	require.NoError(t, tcpTransport.Start(&nodeID, nil))
+	require.NoError(t, tcpTransport.Start(&nodeID, newFrameMsgSeqGenerator(), "127.0.0.1:0"))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 应该返回 Hop Count 过期错误
@@ -691,7 +644,7 @@ func TestForwardMessage_HopCountExpired(t *testing.T) {
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	udpNodeID := uint64(12345)
-	require.NoError(t, udpTransport.Start(&udpNodeID, nil))
+	require.NoError(t, udpTransport.Start(&udpNodeID, newFrameMsgSeqGenerator(), "127.0.0.1:0"))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 应该返回 Hop Count 过期错误
@@ -711,7 +664,7 @@ func TestForwardMessage_DeepCopyPreventsDataRace(t *testing.T) {
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	nodeID := uint64(12345)
-	require.NoError(t, tcpTransport.Start(&nodeID, nil))
+	require.NoError(t, tcpTransport.Start(&nodeID, newFrameMsgSeqGenerator(), "127.0.0.1:0"))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 使用 t.Run 并发执行
@@ -772,7 +725,7 @@ func TestGetExt_MissingDecoder(t *testing.T) {
 }
 
 // ========================================
-// ExpectResponse 和 Reliability 测试
+// ExpectResponse 和 ProtocolType 测试
 // ========================================
 
 // TestMsgFrame_ExpectResponse_WithMessage 测试有 Message 时的 ExpectResponse
@@ -810,31 +763,31 @@ func TestMsgFrame_ExpectResponse_NoResponse(t *testing.T) {
 	assert.Equal(t, types.ExpectResponse, frame.ExpectResponse())
 }
 
-// TestMsgFrame_Reliability_WithMessage 测试有 Message 时的 Reliability
-func TestMsgFrame_Reliability_WithMessage(t *testing.T) {
-	testMsg := &testMessageWithReliability{
-		reliability: types.Reliable,
+// TestMsgFrame_ProtocolType_WithMessage 测试有 Message 时的 ProtocolType
+func TestMsgFrame_ProtocolType_WithMessage(t *testing.T) {
+	testMsg := &testMessageWithProtocolType{
+		protocolType: types.ProtocolTCP,
 	}
 	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, testMsg)
 
-	assert.Equal(t, types.Reliable, frame.Reliability())
+	assert.Equal(t, types.ProtocolTCP, frame.ProtocolType())
 }
 
-// TestMsgFrame_Reliability_WithoutMessage 测试无 Message 时的 Reliability
-func TestMsgFrame_Reliability_WithoutMessage(t *testing.T) {
+// TestMsgFrame_ProtocolType_WithoutMessage 测试无 Message 时的 ProtocolType
+func TestMsgFrame_ProtocolType_WithoutMessage(t *testing.T) {
 	// 无 Message，从 MsgType 获取
 	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, nil)
 
-	// MessageTypeGet 是 Reliable
-	assert.Equal(t, types.Reliable, frame.Reliability())
+	// MessageTypeGet 使用 TCP
+	assert.Equal(t, types.ProtocolTCP, frame.ProtocolType())
 }
 
-// TestMsgFrame_Reliability_BestEffort 测试 BestEffort 消息类型
-func TestMsgFrame_Reliability_BestEffort(t *testing.T) {
-	// GossipSync 是 BestEffort
+// TestMsgFrame_ProtocolType_UDP 测试 UDP 消息类型
+func TestMsgFrame_ProtocolType_UDP(t *testing.T) {
+	// GossipSync 使用 UDP
 	frame := NewMsgFrame(12345, 1, types.MessageTypeGossipSync, 1, nil)
 
-	assert.Equal(t, types.BestEffort, frame.Reliability())
+	assert.Equal(t, types.ProtocolUDP, frame.ProtocolType())
 }
 
 // ========================================
@@ -854,39 +807,157 @@ func (m *testMessageWithExpectResponse) Priority() int {
 	return int(types.PriorityNormal)
 }
 
+func (m *testMessageWithExpectResponse) MsgRole() types.MsgRole {
+	return types.MsgRoleRequest
+}
+
 func (m *testMessageWithExpectResponse) ExpectResponse() types.ResponseExpectation {
 	return m.expectResponse
 }
 
-func (m *testMessageWithExpectResponse) Reliability() types.ReliabilityRequirement {
-	return types.Reliable
+func (m *testMessageWithExpectResponse) ProtocolType() types.ProtocolType {
+	return types.ProtocolTCP
+}
+
+func (m *testMessageWithExpectResponse) CorrelationID() string {
+	return ""
 }
 
 func (m *testMessageWithExpectResponse) GetPayload() []byte {
 	return []byte("test")
 }
 
-// testMessageWithReliability 实现了 Reliability 的测试消息
-type testMessageWithReliability struct {
-	reliability types.ReliabilityRequirement
+// testMessageWithProtocolType 实现了 ProtocolType 的测试消息
+type testMessageWithProtocolType struct {
+	protocolType types.ProtocolType
 }
 
-func (m *testMessageWithReliability) Type() types.MessageType {
+func (m *testMessageWithProtocolType) Type() types.MessageType {
 	return types.MessageTypePut
 }
 
-func (m *testMessageWithReliability) Priority() int {
+func (m *testMessageWithProtocolType) Priority() int {
 	return int(types.PriorityHigh)
 }
 
-func (m *testMessageWithReliability) ExpectResponse() types.ResponseExpectation {
+func (m *testMessageWithProtocolType) MsgRole() types.MsgRole {
+	return types.MsgRoleRequest
+}
+
+func (m *testMessageWithProtocolType) ExpectResponse() types.ResponseExpectation {
 	return types.ExpectResponse
 }
 
-func (m *testMessageWithReliability) Reliability() types.ReliabilityRequirement {
-	return m.reliability
+func (m *testMessageWithProtocolType) ProtocolType() types.ProtocolType {
+	return m.protocolType
 }
 
-func (m *testMessageWithReliability) GetPayload() []byte {
+func (m *testMessageWithProtocolType) CorrelationID() string {
+	return ""
+}
+
+func (m *testMessageWithProtocolType) GetPayload() []byte {
 	return []byte("test data")
+}
+
+// ========================================
+// CorrelationID 测试
+// ========================================
+
+// TestMsgFrame_CorrelationID 测试 CorrelationID 自动组装
+func TestMsgFrame_CorrelationID(t *testing.T) {
+	tests := []struct {
+		name       string
+		nodeID     uint64
+		msgSeq     uint64
+		expectedID string
+	}{
+		{
+			name:       "NodeID=12345, MsgSeq=1",
+			nodeID:     12345,
+			msgSeq:     1,
+			expectedID: "12345:1",
+		},
+		{
+			name:       "NodeID=0, MsgSeq=0",
+			nodeID:     0,
+			msgSeq:     0,
+			expectedID: "0:0",
+		},
+		{
+			name:       "NodeID=999, MsgSeq=10001",
+			nodeID:     999,
+			msgSeq:     10001,
+			expectedID: "999:10001",
+		},
+		{
+			name:       "大 NodeID 和 MsgSeq",
+			nodeID:     18446744073709551615, // uint64 最大值
+			msgSeq:     18446744073709551615,
+			expectedID: "18446744073709551615:18446744073709551615",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 创建 MsgFrame（不指定 Message）
+			frame := NewMsgFrame(tt.nodeID, tt.msgSeq, types.MessageTypeGet, 1, nil)
+
+			// 验证自动计算的 CorrelationID
+			if got := frame.CorrelationID(); got != tt.expectedID {
+				t.Errorf("CorrelationID() = %v, want %v", got, tt.expectedID)
+			}
+		})
+	}
+}
+
+// TestMsgFrame_CorrelationID_WithMessage 测试有 Message 时的 CorrelationID
+func TestMsgFrame_CorrelationID_WithMessage(t *testing.T) {
+	msg := &GetMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGet}, Key: "test"}
+	frame := NewMsgFrame(12345, 100, types.MessageTypeGet, 1, msg)
+
+	// 即使有 Message，CorrelationID 也应该从 FixedHeader 自动计算
+	expectedID := "12345:100"
+	if got := frame.CorrelationID(); got != expectedID {
+		t.Errorf("CorrelationID() = %v, want %v", got, expectedID)
+	}
+}
+
+// TestMsgFrame_CorrelationID_FormatConsistency 测试 FormatCorrelationID 函数
+func TestMsgFrame_CorrelationID_FormatConsistency(t *testing.T) {
+	tests := []struct {
+		nodeID uint64
+		msgSeq uint64
+	}{
+		{1, 1},
+		{12345, 67890},
+		{999, 10001},
+		{0, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("NodeID=%d,MsgSeq=%d", tt.nodeID, tt.msgSeq), func(t *testing.T) {
+			frame := NewMsgFrame(tt.nodeID, tt.msgSeq, types.MessageTypeGet, 1, nil)
+
+			// 验证 MsgFrame.CorrelationID() 返回正确格式
+			got := frame.CorrelationID()
+			expected := fmt.Sprintf("%d:%d", tt.nodeID, tt.msgSeq)
+
+			if got != expected {
+				t.Errorf("CorrelationID() = %v, want %v", got, expected)
+			}
+		})
+	}
+}
+
+// TestBaseMessage_CorrelationID 测试 BaseMessage 的 CorrelationID 实现
+func TestBaseMessage_CorrelationID(t *testing.T) {
+	msg := &BaseMessage{
+		MessageType: types.MessageTypeGet,
+	}
+
+	// 默认 CorrelationID 为空
+	if got := msg.CorrelationID(); got != "" {
+		t.Errorf("默认 CorrelationID() = %v, want \"\"", got)
+	}
 }

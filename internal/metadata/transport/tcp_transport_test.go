@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +15,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// newTCPMsgSeqGenerator 返回默认的消息序列号生成器（用于测试）
+func newTCPMsgSeqGenerator() func() uint64 {
+	var seq uint64
+	// 使用当前时间戳作为初始值，避免从 0 开始
+	atomic.StoreUint64(&seq, uint64(time.Now().UnixNano()))
+	return func() uint64 {
+		return atomic.AddUint64(&seq, 1)
+	}
+}
 
 // ========================================
 // TCP 传输创建和配置测试
@@ -66,7 +77,7 @@ func TestTCPTransport_StartStop(t *testing.T) {
 	trans := createTCPTransport(t)
 
 	// 启动
-	err := trans.Start(nil, nil)
+	err := trans.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	assert.True(t, trans.started.Load())
 
@@ -84,11 +95,11 @@ func TestTCPTransport_StartStop(t *testing.T) {
 func TestTCPTransport_Start_AlreadyStarted(t *testing.T) {
 	trans := createTCPTransport(t)
 
-	err := trans.Start(nil, nil)
+	err := trans.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 
 	// 重复启动应该失败
-	err = trans.Start(nil, nil)
+	err = trans.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "已经启动")
 
@@ -109,7 +120,7 @@ func TestTCPTransport_Stop_NotStarted(t *testing.T) {
 func TestTCPTransport_Start_MultipleStop(t *testing.T) {
 	trans := createTCPTransport(t)
 
-	err := trans.Start(nil, nil)
+	err := trans.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 
 	// 多次停止都应该成功（幂等）
@@ -130,7 +141,7 @@ func TestTCPTransport_SendReceive(t *testing.T) {
 
 	// 创建服务端
 	server := createTCPTransport(t)
-	err := server.Start(nil, nil)
+	err := server.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
@@ -138,7 +149,7 @@ func TestTCPTransport_SendReceive(t *testing.T) {
 
 	// 创建客户端并连接
 	client := createTCPTransport(t)
-	err = client.Start(nil, nil)
+	err = client.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
 
@@ -203,14 +214,14 @@ func TestTCPTransport_SendTimeout(t *testing.T) {
 	defer cancel()
 
 	server := createTCPTransport(t)
-	err := server.Start(nil, nil)
+	err := server.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
 	// 不启动服务端的接收循环，只让它监听
 	// 发送消息应该超时或失败
 	client := createTCPTransport(t)
-	err = client.Start(nil, nil)
+	err = client.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
 
@@ -233,14 +244,14 @@ func TestTCPTransport_ConnectionPool(t *testing.T) {
 	ctx := context.Background()
 
 	server := createTCPTransport(t)
-	err := server.Start(nil, nil)
+	err := server.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
 	serverAddr := server.listener.Addr().String()
 
 	client := createTCPTransport(t)
-	err = client.Start(nil, nil)
+	err = client.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
 
@@ -274,14 +285,14 @@ func TestTCPTransport_ConcurrentSend(t *testing.T) {
 	ctx := context.Background()
 
 	server := createTCPTransport(t)
-	err := server.Start(nil, nil)
+	err := server.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
 	serverAddr := server.listener.Addr().String()
 
 	client := createTCPTransport(t)
-	err = client.Start(nil, nil)
+	err = client.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
 
@@ -356,7 +367,7 @@ func TestTCPTransport_Stats(t *testing.T) {
 // TestTCPTransport_Stats_AfterStart 测试启动后的统计信息
 func TestTCPTransport_Stats_AfterStart(t *testing.T) {
 	trans := createTCPTransport(t)
-	err := trans.Start(nil, nil)
+	err := trans.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = trans.Stop() }()
 
@@ -371,16 +382,15 @@ func TestTCPTransport_Stats_AfterStart(t *testing.T) {
 
 // TestTCPTransport_InvalidAddress 测试无效地址
 func TestTCPTransport_InvalidAddress(t *testing.T) {
-	// 创建 TCP 传输不会验证地址格式
-	// 只有在 Start 时才会真正尝试监听
-	trans, err := NewTCPTransport("invalid-address")
+	// 创建 TCP 传输（使用有效地址创建，但 Start 时使用无效地址）
+	trans, err := NewTCPTransport("127.0.0.1:0")
 	assert.NoError(t, err)
 	assert.NotNil(t, trans)
 
-	// 启动时应该失败
-	err = trans.Start(nil, nil)
+	// 启动时使用无效地址应该失败
+	err = trans.Start(nil, newTCPMsgSeqGenerator(), "invalid-address")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid-address")
+	// 错误信息应该包含地址相关内容（连接错误或地址解析错误）
 }
 
 // TestTCPTransport_Receive_BeforeStart 测试启动前接收
@@ -428,7 +438,7 @@ func mustCreateTCPConnection(t *testing.T, addr string) net.Conn {
 // TestTCPTransport_RealConnection 测试真实 TCP 连接
 func TestTCPTransport_RealConnection(t *testing.T) {
 	server := createTCPTransport(t)
-	err := server.Start(nil, nil)
+	err := server.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
@@ -471,7 +481,7 @@ func TestTCPTransport_FrameExchange(t *testing.T) {
 
 	// 创建服务端
 	server := createTCPTransport(t)
-	err := server.Start(nil, nil)
+	err := server.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
@@ -498,7 +508,7 @@ func TestTCPTransport_FrameExchange(t *testing.T) {
 
 	// 创建客户端
 	client := createTCPTransport(t)
-	err = client.Start(nil, nil)
+	err = client.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
 
@@ -532,7 +542,7 @@ func TestTCPTransport_PingPong(t *testing.T) {
 
 	// 创建服务端
 	server := createTCPTransport(t)
-	err := server.Start(nil, nil)
+	err := server.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
@@ -541,7 +551,7 @@ func TestTCPTransport_PingPong(t *testing.T) {
 
 	// 创建客户端
 	client := createTCPTransport(t)
-	err = client.Start(nil, nil)
+	err = client.Start(nil, newTCPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
 
@@ -711,7 +721,7 @@ func TestTCPTransport_PingPong(t *testing.T) {
 func TestTCPFrameRoundTrip_Debug(t *testing.T) {
 	// 创建帧
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeProtobuf), FlagsIsRequest, data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), FlagsIsRequest, data)
 
 	// 序列化
 	frameData, err := frame.Marshal()

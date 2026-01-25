@@ -4,6 +4,9 @@ package transport
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"sync"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
@@ -12,7 +15,7 @@ import (
 // Transport 网络传输接口
 //
 // 核心特性:
-//   - 协议抽象：支持 TCP、gRPC、Memory 等多种实现
+//   - 协议抽象：支持 TCP、UDP 等多种实现
 //   - 消息传递：异步发送/接收消息
 //   - 连接管理：自动重连、连接池
 //   - 生命周期：Start/Stop 控制
@@ -27,23 +30,17 @@ type Transport interface {
 	// Start 启动传输层
 	// 初始化监听器、连接池等资源
 	//
-	// 扩展参数（可选，传入 nil 表示使用默认值）：
+	// 参数：
 	//   - nodeID: 节点 ID（全局唯一，用于消息去重和幂等性）
-	//   - msgSeqGenerator: 消息序列号生成器（nil 表示使用默认原子计数器）
+	//   - msgSeqGenerator: 消息序列号生成器（必需，单调递增）
+	//   - listenAddr: 监听地址（必需，如 "0.0.0.0:9211" 或 "0.0.0.0:0" 自动分配端口）
 	//
 	// 使用示例：
-	//   // 使用默认值
-	//   transport.Start(nil, nil)
-	//
-	//   // 指定节点 ID
-	//   nodeID := uint64(12345)
-	//   transport.Start(&nodeID, nil)
-	//
-	//   // 自定义序列号生成器
+	//   var seq uint64
 	//   transport.Start(nil, func() uint64 {
-	//       return uint64(time.Now().UnixNano())
-	//   })
-	Start(nodeID *uint64, msgSeqGenerator func() uint64) error
+	//       return atomic.AddUint64(&seq, 1)
+	//   }, "0.0.0.0:9211")
+	Start(nodeID *uint64, msgSeqGenerator func() uint64, listenAddr string) error
 
 	// Stop 停止传输层
 	// 优雅关闭所有连接、释放资源
@@ -149,9 +146,12 @@ type TransportConfig struct {
 }
 
 // DefaultTransportConfig 返回默认配置
+//
+// 注意：ListenAddr 需要由调用者配置，默认值仅为示例
+// 生产环境应该根据实际网络环境配置合适的监听地址
 func DefaultTransportConfig() *TransportConfig {
 	return &TransportConfig{
-		ListenAddr:         "0.0.0.0:9211",
+		ListenAddr:         "",                // 需要调用者配置（如 "0.0.0.0:0" 自动分配端口）
 		MaxMessageSize:     1024 * 1024 * 100, // 100MB
 		ReadTimeout:        30 * time.Second,
 		WriteTimeout:       30 * time.Second,
@@ -181,60 +181,6 @@ type Codec interface {
 
 	// Type 返回编解码器类型
 	Type() types.CodecType
-}
-
-// Conn 连接接口
-//
-// 表示与远程节点的连接
-type Conn interface {
-	// Read 读取数据
-	Read(p []byte) (n int, err error)
-
-	// Write 写入数据
-	Write(p []byte) (n int, err error)
-
-	// Close 关闭连接
-	Close() error
-
-	// RemoteAddr 返回远程地址
-	RemoteAddr() string
-
-	// LocalAddr 返回本地地址
-	LocalAddr() string
-
-	// SetDeadline 设置读写超时
-	SetDeadline(t time.Time) error
-
-	// SetReadDeadline 设置读超时
-	SetReadDeadline(t time.Time) error
-
-	// SetWriteDeadline 设置写超时
-	SetWriteDeadline(t time.Time) error
-}
-
-// Listener 监听器接口
-//
-// 用于接受传入连接
-type Listener interface {
-	// Accept 接受新连接
-	Accept() (Conn, error)
-
-	// Close 关闭监听器
-	Close() error
-
-	// Addr 返回监听地址
-	Addr() string
-}
-
-// Dialer 拨号器接口
-//
-// 用于建立到远程节点的连接
-type Dialer interface {
-	// Dial 建立连接
-	Dial(addr string) (Conn, error)
-
-	// DialTimeout 建立连接（带超时）
-	DialTimeout(addr string, timeout time.Duration) (Conn, error)
 }
 
 // ========================================
@@ -287,4 +233,230 @@ type BatchForwardTransport interface {
 	//   - Gossip 协议批量转发到随机节点
 	//   - 消息广播到集群节点
 	BatchForwardMessage(ctx context.Context, addrs []string, msgExt MsgFrame) BatchForwardMessageResult
+}
+
+// ========================================
+// 传输层公共实现
+// ========================================
+
+// validateTransportConfig 验证传输层配置的有效性
+//
+// P2-5: 配置验证函数，确保配置值在合理范围内
+//
+// 注意：ListenAddr 的验证延迟到 Start() 时进行，允许配置对象先创建
+func validateTransportConfig(config *TransportConfig) error {
+	// ListenAddr 的验证在 Start() 方法中进行，因为：
+	// 1. 支持延迟配置（如通过配置中心动态获取）
+	// 2. 允许创建配置对象时不立即指定监听地址
+	// 3. 更好的错误提示时机（启动时而非创建时）
+
+	if config.MaxMessageSize <= 0 || config.MaxMessageSize > 1024*1024*1024 {
+		return types.NewConfigValidationError("MaxMessageSize", fmt.Sprintf("必须在 (0, 1GB] 范围内，当前值: %d", config.MaxMessageSize))
+	}
+
+	// 验证超时配置（不能为负数）
+	timeouts := []struct {
+		name  string
+		value time.Duration
+	}{
+		{"ReadTimeout", config.ReadTimeout},
+		{"WriteTimeout", config.WriteTimeout},
+		{"KeepAliveInterval", config.KeepAliveInterval},
+		{"KeepAliveTimeout", config.KeepAliveTimeout},
+		{"ChannelSendTimeout", config.ChannelSendTimeout},
+	}
+
+	for _, t := range timeouts {
+		if t.value < 0 {
+			return types.NewConfigValidationError(t.name, fmt.Sprintf("不能为负数，当前值: %v", t.value))
+		}
+	}
+
+	if config.BufferSize <= 0 || config.BufferSize > 65536 {
+		return types.NewConfigValidationError("BufferSize", fmt.Sprintf("必须在 (0, 64KB] 范围内，当前值: %d", config.BufferSize))
+	}
+
+	return nil
+}
+
+// createBatchForwardResult 创建批量转发失败结果（用于未启动的情况）
+func createBatchForwardResult(addrs []string, err error) BatchForwardMessageResult {
+	results := make([]BatchForwardResult, len(addrs))
+	for i, addr := range addrs {
+		results[i] = BatchForwardResult{
+			Addr:  addr,
+			SeqID: 0,
+			Error: err,
+		}
+	}
+	return BatchForwardMessageResult{
+		SuccessCount: 0,
+		FailureCount: len(addrs),
+		Results:      results,
+	}
+}
+
+// generateMsgSeq 生成消息序列号的公共实现
+//
+// 参数:
+//   - generator: 存储在 atomic.Value 中的序列号生成器函数
+//
+// 返回:
+//   - uint64: 消息序列号
+//
+// 注意：msgSeqGenerator 保证不为 nil（在 Start() 时已验证）
+func generateMsgSeq(generator any) uint64 {
+	fn, ok := generator.(func() uint64)
+	if !ok || fn == nil {
+		// 理论上不应该到达这里（Start() 已验证）
+		// 但作为防御性编程，返回 0 表示错误
+		return 0
+	}
+
+	return fn()
+}
+
+// batchForwarder 批量转发函数类型
+type batchForwarder func(ctx context.Context, addr string, msgExt MsgFrame) (uint64, error)
+
+// executeBatchForward 执行批量转发的公共实现
+//
+// 参数:
+//   - ctx: 上下文
+//   - addrs: 目标地址列表
+//   - msgExt: 要转发的消息
+//   - forwarder: 单个转发函数
+//
+// 返回:
+//   - BatchForwardMessageResult: 批量转发结果
+func executeBatchForward(
+	ctx context.Context,
+	addrs []string,
+	msgExt MsgFrame,
+	forwarder batchForwarder,
+) BatchForwardMessageResult {
+	// 限制批量大小
+	if len(addrs) > maxBatchSize {
+		addrs = addrs[:maxBatchSize]
+	}
+
+	results := make([]BatchForwardResult, len(addrs))
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, maxBatchConcurrency)
+
+	for i, addr := range addrs {
+		wg.Add(1)
+		go func(idx int, targetAddr string) {
+			defer wg.Done()
+			semaphore <- struct{}{}        // 获取信号量
+			defer func() { <-semaphore }() // 释放信号量
+
+			seqID, err := forwarder(ctx, targetAddr, msgExt)
+			results[idx] = BatchForwardResult{
+				Addr:  targetAddr,
+				SeqID: seqID,
+				Error: err,
+			}
+		}(i, addr)
+	}
+
+	wg.Wait()
+
+	// 统计结果
+	var success, failure int
+	for _, r := range results {
+		if r.Error != nil {
+			failure++
+		} else {
+			success++
+		}
+	}
+
+	return BatchForwardMessageResult{
+		SuccessCount: success,
+		FailureCount: failure,
+		Results:      results,
+	}
+}
+
+// ========================================
+// 网络连接辅助函数
+// ========================================
+
+// setWriteTimeout 设置写入超时（带零值检查）
+//
+// 参数：
+//   - conn: 网络连接
+//   - timeout: 超时时间（零值或负值表示不设置超时）
+//
+// 返回：
+//   - error: 设置失败时返回错误
+func setWriteTimeout(conn net.Conn, timeout time.Duration) error {
+	if timeout <= 0 {
+		return nil
+	}
+	return conn.SetWriteDeadline(time.Now().Add(timeout))
+}
+
+// setReadTimeout 设置读取超时（带零值检查）
+//
+// 参数：
+//   - conn: 网络连接
+//   - timeout: 超时时间（零值或负值表示不设置超时）
+//
+// 返回：
+//   - error: 设置失败时返回错误
+func setReadTimeout(conn net.Conn, timeout time.Duration) error {
+	if timeout <= 0 {
+		return nil
+	}
+	return conn.SetReadDeadline(time.Now().Add(timeout))
+}
+
+// validateListenAddr 验证监听地址的有效性
+//
+// 参数：
+//   - listenAddr: 监听地址（格式：host:port）
+//   - protocol: 协议类型（"tcp" 或 "udp"）
+//
+// 返回：
+//   - string: 验证通过的地址（规范化后的地址）
+//   - error: 验证失败时返回错误
+//
+// 验证规则：
+//   - 地址不能为空
+//   - 地址格式必须为 host:port
+//   - host 必须可以解析（为有效 IP 或可解析的 hostname）
+//   - port 必须为有效端口号（1-65535，0 表示自动分配）
+//
+// 特殊值：
+//   - "*" 或 "0.0.0.0" 表示监听所有网络接口
+//   - port 为 0 表示由系统自动分配端口
+func validateListenAddr(listenAddr, protocol string) (string, error) {
+	// 检查地址是否为空
+	if listenAddr == "" {
+		return "", types.NewStoreInvalidParameterError("listenAddr 不能为空")
+	}
+
+	// 根据协议类型解析地址
+	var resolvedAddr string
+
+	switch protocol {
+	case "tcp":
+		tcpAddr, err := net.ResolveTCPAddr("tcp", listenAddr)
+		if err != nil {
+			return "", types.NewTransportInvalidListenAddrError(listenAddr, "TCP 解析失败", err)
+		}
+		resolvedAddr = tcpAddr.String()
+	case "udp":
+		udpAddr, err := net.ResolveUDPAddr("udp", listenAddr)
+		if err != nil {
+			return "", types.NewTransportInvalidListenAddrError(listenAddr, "UDP 解析失败", err)
+		}
+		resolvedAddr = udpAddr.String()
+	default:
+		return "", types.NewTransportUnsupportedProtocolError(protocol)
+	}
+
+	return resolvedAddr, nil
 }

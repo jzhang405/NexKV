@@ -3,8 +3,12 @@ package transport
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -345,235 +349,6 @@ func TestMessagePackCodec_DecodeEmpty(t *testing.T) {
 }
 
 // ========================================
-// Protobuf 编解码器测试
-// ========================================
-
-// TestProtobufCodec_EncodeDecode 测试 Protobuf 编解码
-func TestProtobufCodec_EncodeDecode(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	// 创建测试消息
-	msg := &GetMessage{
-		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
-		Key:         "test_key",
-	}
-
-	// 编码
-	data, err := codec.Encode(msg)
-	require.NoError(t, err)
-	assert.NotEmpty(t, data)
-
-	// 解码
-	decodedMsg, err := codec.Decode(msg.Type(), data)
-	require.NoError(t, err)
-
-	// 验证
-	getMsg, ok := decodedMsg.(*GetMessage)
-	require.True(t, ok)
-	assert.Equal(t, msg.Key, getMsg.Key)
-}
-
-// TestProtobufCodec_MetadataMessages 测试元数据操作消息
-func TestProtobufCodec_MetadataMessages(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	testCases := []Message{
-		&GetMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
-			Key:         "test_key",
-		},
-		&PutMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
-			Key:         "test_key",
-			Value:       []byte("test_value"),
-		},
-		&DeleteMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeDelete},
-			Key:         "test_key",
-		},
-		&GetReplyMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeGetReply},
-			Key:         "test_key",
-			Value:       []byte("test_value"),
-			Found:       true,
-			Version:     1,
-		},
-		&PutReplyMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypePutReply},
-			Key:         "test_key",
-			Success:     true,
-			Version:     1,
-		},
-		&DeleteReplyMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeDeleteReply},
-			Key:         "test_key",
-			Success:     true,
-		},
-	}
-
-	for _, msg := range testCases {
-		t.Run(msg.Type().String(), func(t *testing.T) {
-			// 编码
-			data, err := codec.Encode(msg)
-			require.NoError(t, err, "编码失败: %s", msg.Type())
-
-			// 解码
-			decodedMsg, err := codec.Decode(msg.Type(), data)
-			require.NoError(t, err, "解码失败: %s", msg.Type())
-
-			// 验证类型
-			assert.Equal(t, msg.Type(), decodedMsg.Type())
-		})
-	}
-}
-
-// TestProtobufCodec_GossipMessages 测试 Gossip 协议消息
-func TestProtobufCodec_GossipMessages(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	// GossipSyncMessage
-	msg1 := &GossipSyncMessage{
-		BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipSync},
-		Version:     123,
-		Metadata:    map[string][]byte{"key1": []byte("value1")},
-	}
-	data1, err := codec.Encode(msg1)
-	require.NoError(t, err)
-	decoded1, err := codec.Decode(msg1.Type(), data1)
-	require.NoError(t, err)
-	assert.Equal(t, types.MessageTypeGossipSync, decoded1.Type())
-
-	// GossipDigestMessage
-	msg2 := &GossipDigestMessage{
-		BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipDigest},
-		Version:     456,
-		Digest:      map[string]uint64{"key1": 789},
-	}
-	data2, err := codec.Encode(msg2)
-	require.NoError(t, err)
-	decoded2, err := codec.Decode(msg1.Type(), data2)
-	require.NoError(t, err)
-	assert.Equal(t, types.MessageTypeGossipDigest, decoded2.Type())
-}
-
-// TestProtobufCodec_TwoPCMessages 测试 2PC 协议消息
-func TestProtobufCodec_TwoPCMessages(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	testCases := []Message{
-		&TwoPCPrepareMessage{
-			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCPrepare},
-			TransactionID: "txn-1",
-			Participants:  []string{"node1", "node2"},
-		},
-		&TwoPCCommitMessage{
-			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCCommit},
-			TransactionID: "txn-1",
-		},
-		&TwoPCRollbackMessage{
-			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCRollback},
-			TransactionID: "txn-1",
-		},
-	}
-
-	for _, msg := range testCases {
-		t.Run(msg.Type().String(), func(t *testing.T) {
-			// 编码
-			data, err := codec.Encode(msg)
-			require.NoError(t, err, "编码失败: %s", msg.Type())
-
-			// 解码
-			decodedMsg, err := codec.Decode(msg.Type(), data)
-			require.NoError(t, err, "解码失败: %s", msg.Type())
-
-			// 验证类型
-			assert.Equal(t, msg.Type(), decodedMsg.Type())
-		})
-	}
-}
-
-// TestProtobufCodec_NodeMessages 测试节点管理消息
-func TestProtobufCodec_NodeMessages(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	testCases := []Message{
-		&NodePingMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
-			NodeID:      "node-1",
-			Sequence:    1,
-			Timestamp:   time.Now().Unix(),
-		},
-		&NodePongMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
-			NodeID:      "node-1",
-			Sequence:    1,
-			Timestamp:   time.Now().Unix(),
-		},
-		&NodeJoinMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeJoin},
-			NodeID:      "node-1",
-			Addr:        "127.0.0.1:9211",
-		},
-		&NodeLeaveMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeLeave},
-			NodeID:      "node-1",
-		},
-	}
-
-	for _, msg := range testCases {
-		t.Run(msg.Type().String(), func(t *testing.T) {
-			// 编码
-			data, err := codec.Encode(msg)
-			require.NoError(t, err, "编码失败: %s", msg.Type())
-
-			// 解码
-			decodedMsg, err := codec.Decode(msg.Type(), data)
-			require.NoError(t, err, "解码失败: %s", msg.Type())
-
-			// 验证类型
-			assert.Equal(t, msg.Type(), decodedMsg.Type())
-		})
-	}
-}
-
-// TestProtobufCodec_EncodeNil 测试编码空消息
-func TestProtobufCodec_EncodeNil(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	_, err := codec.Encode(nil)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "消息为空")
-}
-
-// TestProtobufCodec_DecodeEmpty 测试解码空数据
-func TestProtobufCodec_DecodeEmpty(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	_, err := codec.Decode(types.MessageTypeGet, []byte{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "数据为空")
-}
-
-// TestProtobufCodec_DecodeInvalidLength 测试解码无效长度数据
-func TestProtobufCodec_DecodeInvalidLength(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	// 无效的 Protobuf 数据
-	_, err := codec.Decode(types.MessageTypeGet, []byte{1, 2, 3, 4, 5})
-	assert.Error(t, err)
-	// Protobuf 返回格式错误，包装后的错误消息包含"解码失败"
-	assert.Contains(t, err.Error(), "解码失败")
-}
-
-// TestNewCodec_Protobuf 测试工厂函数创建 Protobuf 编解码器
-func TestNewCodec_Protobuf(t *testing.T) {
-	codec, err := NewCodec(types.CodecTypeProtobuf)
-	require.NoError(t, err)
-	assert.NotNil(t, codec)
-	assert.Equal(t, "protobuf", codec.Name())
-}
-
-// ========================================
 // createMessageByType 测试
 // ========================================
 
@@ -611,35 +386,6 @@ func TestCreateMessageByType_UnknownType(t *testing.T) {
 // ========================================
 // 消息辅助函数测试
 // ========================================
-
-// TestEncodeFrame_DecodeFrame 测试帧编解码辅助函数
-func TestEncodeFrame_DecodeFrame(t *testing.T) {
-	// 创建消息
-	msg := &PutMessage{
-		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
-		Key:         "test_key",
-		Value:       []byte("test_value"),
-	}
-
-	// 编码为帧
-	frame, err := EncodeFrame(msg, 0, 0)
-	require.NoError(t, err)
-	assert.NotNil(t, frame)
-	assert.Equal(t, types.MessageTypePut, msg.Type())
-
-	// 从帧解码
-	msgFrame, err := DecodeFrame(frame)
-	require.NoError(t, err)
-
-	putMsg, ok := msgFrame.Message.(*PutMessage)
-	require.True(t, ok)
-	assert.Equal(t, msg.Key, putMsg.Key)
-	assert.Equal(t, msg.Value, putMsg.Value)
-
-	// 验证 nodeID 和 msgSeq
-	assert.Equal(t, uint64(0), msgFrame.NodeID)
-	assert.Equal(t, uint64(0), msgFrame.MsgSeq)
-}
 
 // TestEncodeFrame_DecodeFrame_AllTypes 测试所有消息类型的帧编解码
 func TestEncodeFrame_DecodeFrame_AllTypes(t *testing.T) {
@@ -745,8 +491,8 @@ func TestMessageWriter_WriteMessage(t *testing.T) {
 	err = frame.Unmarshal(frameData)
 	require.NoError(t, err)
 
-	// defaultCodec 是 Protobuf，所以 CodecID 应该是 CodecTypeProtobuf
-	assert.Equal(t, uint16(types.CodecTypeProtobuf), frame.FixedHeader.CodecID)
+	// defaultCodec 是 MessagePack，所以 CodecID 应该是 CodecTypeMessagePack
+	assert.Equal(t, uint16(types.CodecTypeMessagePack), frame.FixedHeader.CodecID)
 
 	// 验证 NodeID 和 MsgSeq
 	assert.Equal(t, uint64(12345), frame.FixedHeader.NodeID)
@@ -761,7 +507,8 @@ func TestMessageWriter_WriteMessage(t *testing.T) {
 func TestDefaultTransportConfig(t *testing.T) {
 	config := DefaultTransportConfig()
 
-	assert.Equal(t, "0.0.0.0:9211", config.ListenAddr)
+	// ListenAddr 需要由调用者配置，默认值为空
+	assert.Equal(t, "", config.ListenAddr, "ListenAddr 应该为空，需要调用者配置")
 	assert.Equal(t, int64(1024*1024*100), config.MaxMessageSize)
 	assert.Equal(t, 30*time.Second, config.ReadTimeout)
 	assert.Equal(t, 30*time.Second, config.WriteTimeout)
@@ -840,8 +587,8 @@ func TestTransportError_Timeout(t *testing.T) {
 // 三 Codec 一致性测试
 // ========================================
 
-// TestThreeCodecConsistency 测试三种编解码器的一致性
-// 验证 struct → JSON/MsgPack/Protobuf → struct 后数据保持一致
+// TestThreeCodecConsistency 测试两种编解码器的一致性
+// 验证 struct → JSON/MsgPack → struct 后数据保持一致
 func TestThreeCodecConsistency(t *testing.T) {
 	testMessages := []Message{
 		&PutMessage{
@@ -901,14 +648,13 @@ func TestThreeCodecConsistency(t *testing.T) {
 
 	for _, originalMsg := range testMessages {
 		t.Run(originalMsg.Type().String(), func(t *testing.T) {
-			// 测试三种 Codec
+			// 测试两种 Codec
 			codecs := []struct {
 				name  string
 				codec Codec
 			}{
 				{"JSON", NewJSONCodec()},
 				{"MessagePack", NewMessagePackCodec()},
-				{"Protobuf", NewProtobufCodec()},
 			}
 
 			for _, tc := range codecs {
@@ -1011,4 +757,714 @@ func assertMessagesEqual(t *testing.T, expected, actual Message, codecName strin
 	default:
 		t.Fatalf("不支持的消息类型: %T", expected)
 	}
+}
+
+// ========================================
+// transport_common 公共实现测试
+// ========================================
+
+// TestValidateTransportConfig_ValidConfig 测试有效配置
+func TestValidateTransportConfig_ValidConfig(t *testing.T) {
+	testCases := []struct {
+		name   string
+		config *TransportConfig
+	}{
+		{
+			name:   "默认配置",
+			config: DefaultTransportConfig(),
+		},
+		{
+			name: "最小有效配置",
+			config: &TransportConfig{
+				ListenAddr:         "127.0.0.1:8080",
+				MaxMessageSize:     1,
+				ReadTimeout:        0,
+				WriteTimeout:       0,
+				KeepAliveInterval:  0,
+				KeepAliveTimeout:   0,
+				BufferSize:         1,
+				ChannelSendTimeout: 0,
+			},
+		},
+		{
+			name: "最大有效配置",
+			config: &TransportConfig{
+				ListenAddr:         "0.0.0.0:9211",
+				MaxMessageSize:     1024 * 1024 * 1024, // 1GB
+				ReadTimeout:        1 * time.Hour,
+				WriteTimeout:       1 * time.Hour,
+				KeepAliveInterval:  1 * time.Hour,
+				KeepAliveTimeout:   1 * time.Hour,
+				BufferSize:         65536, // 64KB
+				ChannelSendTimeout: 1 * time.Hour,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateTransportConfig(tc.config)
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// TestValidateTransportConfig_EmptyListenAddr 测试空监听地址
+//
+// 注意：validateTransportConfig 不再验证 ListenAddr，验证延迟到 Start() 方法
+// 这个测试验证 Start() 方法会拒绝空 listenAddr 参数
+func TestValidateTransportConfig_EmptyListenAddr(t *testing.T) {
+	config := &TransportConfig{
+		ListenAddr:         "", // 配置中的 ListenAddr 可以是空的（由 Start() 参数覆盖）
+		MaxMessageSize:     1024,
+		ReadTimeout:        30 * time.Second,
+		WriteTimeout:       30 * time.Second,
+		KeepAliveInterval:  10 * time.Second,
+		KeepAliveTimeout:   30 * time.Second,
+		BufferSize:         4096,
+		ChannelSendTimeout: 5 * time.Second,
+	}
+
+	// validateTransportConfig 不再验证 ListenAddr，应该通过
+	err := validateTransportConfig(config)
+	assert.NoError(t, err)
+
+	// Start() 方法会验证 listenAddr 参数
+	trans, err := NewTCPTransportWithConfig(config)
+	require.NoError(t, err)
+	require.NotNil(t, trans)
+
+	// 传递空 listenAddr 应该返回错误
+	err = trans.Start(nil, newTCPMsgSeqGenerator(), "")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "listenAddr 不能为空")
+
+	_ = trans.Stop() // 清理
+}
+
+// TestValidateTransportConfig_InvalidMaxMessageSize 测试无效的最大消息大小
+func TestValidateTransportConfig_InvalidMaxMessageSize(t *testing.T) {
+	testCases := []struct {
+		name           string
+		maxMessageSize int64
+		expectedErr    string
+	}{
+		{"零大小", 0, "MaxMessageSize 必须在"},
+		{"负大小", -1, "MaxMessageSize 必须在"},
+		{"超过1GB", 1024*1024*1024 + 1, "MaxMessageSize 必须在"},
+		{"远超限制", 10 * 1024 * 1024 * 1024, "MaxMessageSize 必须在"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := &TransportConfig{
+				ListenAddr:         "127.0.0.1:8080",
+				MaxMessageSize:     tc.maxMessageSize,
+				ReadTimeout:        30 * time.Second,
+				WriteTimeout:       30 * time.Second,
+				KeepAliveInterval:  10 * time.Second,
+				KeepAliveTimeout:   30 * time.Second,
+				BufferSize:         4096,
+				ChannelSendTimeout: 5 * time.Second,
+			}
+
+			err := validateTransportConfig(config)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.expectedErr)
+		})
+	}
+}
+
+// TestValidateTransportConfig_NegativeTimeout 测试负超时值
+func TestValidateTransportConfig_NegativeTimeout(t *testing.T) {
+	timeoutFields := []struct {
+		name        string
+		fieldSetter func(*TransportConfig, time.Duration)
+		expectedErr string
+	}{
+		{"读超时", func(c *TransportConfig, d time.Duration) { c.ReadTimeout = d }, "ReadTimeout 不能为负数"},
+		{"写超时", func(c *TransportConfig, d time.Duration) { c.WriteTimeout = d }, "WriteTimeout 不能为负数"},
+		{"保活间隔", func(c *TransportConfig, d time.Duration) { c.KeepAliveInterval = d }, "KeepAliveInterval 不能为负数"},
+		{"保活超时", func(c *TransportConfig, d time.Duration) { c.KeepAliveTimeout = d }, "KeepAliveTimeout 不能为负数"},
+		{"通道发送超时", func(c *TransportConfig, d time.Duration) { c.ChannelSendTimeout = d }, "ChannelSendTimeout 不能为负数"},
+	}
+
+	for _, tc := range timeoutFields {
+		t.Run(tc.name, func(t *testing.T) {
+			config := &TransportConfig{
+				ListenAddr:         "127.0.0.1:8080",
+				MaxMessageSize:     1024,
+				ReadTimeout:        30 * time.Second,
+				WriteTimeout:       30 * time.Second,
+				KeepAliveInterval:  10 * time.Second,
+				KeepAliveTimeout:   30 * time.Second,
+				BufferSize:         4096,
+				ChannelSendTimeout: 5 * time.Second,
+			}
+
+			tc.fieldSetter(config, -1*time.Second)
+
+			err := validateTransportConfig(config)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.expectedErr)
+		})
+	}
+}
+
+// TestValidateTransportConfig_InvalidBufferSize 测试无效的缓冲区大小
+func TestValidateTransportConfig_InvalidBufferSize(t *testing.T) {
+	testCases := []struct {
+		name        string
+		bufferSize  int
+		expectedErr string
+	}{
+		{"零大小", 0, "BufferSize 必须在"},
+		{"负大小", -1, "BufferSize 必须在"},
+		{"超过64KB", 65536 + 1, "BufferSize 必须在"},
+		{"远超限制", 1000000, "BufferSize 必须在"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := &TransportConfig{
+				ListenAddr:         "127.0.0.1:8080",
+				MaxMessageSize:     1024,
+				ReadTimeout:        30 * time.Second,
+				WriteTimeout:       30 * time.Second,
+				KeepAliveInterval:  10 * time.Second,
+				KeepAliveTimeout:   30 * time.Second,
+				BufferSize:         tc.bufferSize,
+				ChannelSendTimeout: 5 * time.Second,
+			}
+
+			err := validateTransportConfig(config)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tc.expectedErr)
+		})
+	}
+}
+
+// TestValidateTransportConfig_BoundaryValues 测试边界值
+func TestValidateTransportConfig_BoundaryValues(t *testing.T) {
+	testCases := []struct {
+		name   string
+		config *TransportConfig
+		valid  bool
+	}{
+		{
+			name: "MaxMessageSize 边界值 1",
+			config: &TransportConfig{
+				ListenAddr:     "127.0.0.1:8080",
+				MaxMessageSize: 1,
+				BufferSize:     4096,
+			},
+			valid: true,
+		},
+		{
+			name: "MaxMessageSize 边界值 1GB",
+			config: &TransportConfig{
+				ListenAddr:     "127.0.0.1:8080",
+				MaxMessageSize: 1024 * 1024 * 1024,
+				BufferSize:     4096,
+			},
+			valid: true,
+		},
+		{
+			name: "BufferSize 边界值 1",
+			config: &TransportConfig{
+				ListenAddr:     "127.0.0.1:8080",
+				MaxMessageSize: 1024,
+				BufferSize:     1,
+			},
+			valid: true,
+		},
+		{
+			name: "BufferSize 边界值 64KB",
+			config: &TransportConfig{
+				ListenAddr:     "127.0.0.1:8080",
+				MaxMessageSize: 1024,
+				BufferSize:     65536,
+			},
+			valid: true,
+		},
+		{
+			name: "超时零值（有效）",
+			config: &TransportConfig{
+				ListenAddr:         "127.0.0.1:8080",
+				MaxMessageSize:     1024,
+				BufferSize:         4096,
+				ReadTimeout:        0,
+				WriteTimeout:       0,
+				KeepAliveInterval:  0,
+				KeepAliveTimeout:   0,
+				ChannelSendTimeout: 0,
+			},
+			valid: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateTransportConfig(tc.config)
+			if tc.valid {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+			}
+		})
+	}
+}
+
+// TestCreateBatchForwardResult 测试创建批量转发结果
+func TestCreateBatchForwardResult(t *testing.T) {
+	addrs := []string{"127.0.0.1:8080", "127.0.0.1:8081", "127.0.0.1:8082"}
+	testErr := errors.New("test error")
+
+	result := createBatchForwardResult(addrs, testErr)
+
+	assert.Equal(t, 0, result.SuccessCount)
+	assert.Equal(t, 3, result.FailureCount)
+	assert.Len(t, result.Results, 3)
+
+	// 验证每个结果
+	for i, addr := range addrs {
+		assert.Equal(t, addr, result.Results[i].Addr)
+		assert.Equal(t, uint64(0), result.Results[i].SeqID)
+		assert.Equal(t, testErr, result.Results[i].Error)
+	}
+}
+
+// TestCreateBatchForwardResult_EmptyAddrs 测试空地址列表
+func TestCreateBatchForwardResult_EmptyAddrs(t *testing.T) {
+	addrs := []string{}
+	testErr := errors.New("test error")
+
+	result := createBatchForwardResult(addrs, testErr)
+
+	assert.Equal(t, 0, result.SuccessCount)
+	assert.Equal(t, 0, result.FailureCount)
+	assert.Len(t, result.Results, 0)
+}
+
+// TestCreateBatchForwardResult_SingleAddr 测试单个地址
+func TestCreateBatchForwardResult_SingleAddr(t *testing.T) {
+	addrs := []string{"127.0.0.1:8080"}
+	testErr := errors.New("test error")
+
+	result := createBatchForwardResult(addrs, testErr)
+
+	assert.Equal(t, 0, result.SuccessCount)
+	assert.Equal(t, 1, result.FailureCount)
+	assert.Len(t, result.Results, 1)
+	assert.Equal(t, "127.0.0.1:8080", result.Results[0].Addr)
+}
+
+// TestGenerateMsgSeq_CustomGenerator 测试自定义生成器
+func TestGenerateMsgSeq_CustomGenerator(t *testing.T) {
+	customSeq := uint64(1000)
+
+	generator := func() uint64 {
+		customSeq++
+		return customSeq
+	}
+
+	for i := uint64(1); i <= 10; i++ {
+		seq := generateMsgSeq(generator)
+		assert.Equal(t, uint64(1000+i), seq)
+	}
+}
+
+// TestGenerateMsgSeq_InvalidGenerator 测试无效生成器
+// 注意：msgSeqGenerator 在 Start() 时已验证不为 nil，这里只测试防御性编程
+func TestGenerateMsgSeq_InvalidGenerator(t *testing.T) {
+	// 传入非函数类型
+	invalidGenerator := "not a function"
+
+	seq := generateMsgSeq(invalidGenerator)
+	assert.Equal(t, uint64(0), seq) // 无效生成器返回 0
+}
+
+// TestGenerateMsgSeq_NilGeneratorFunction 测试 nil 函数
+// 注意：msgSeqGenerator 在 Start() 时已验证不为 nil，这里只测试防御性编程
+func TestGenerateMsgSeq_NilGeneratorFunction(t *testing.T) {
+	var nilFunc func() uint64
+
+	seq := generateMsgSeq(nilFunc)
+	assert.Equal(t, uint64(0), seq) // nil 函数返回 0
+}
+
+// TestGenerateMsgSeq_Concurrent 测试并发安全性
+func TestGenerateMsgSeq_Concurrent(t *testing.T) {
+	var seqCounter atomic.Uint64
+
+	generator := func() uint64 {
+		return seqCounter.Add(1)
+	}
+
+	done := make(chan bool, 50)
+	sequences := make(chan uint64, 50)
+
+	for i := 0; i < 50; i++ {
+		go func() {
+			seq := generateMsgSeq(generator)
+			sequences <- seq
+			done <- true
+		}()
+	}
+
+	// 等待所有 goroutine 完成
+	for i := 0; i < 50; i++ {
+		<-done
+	}
+	close(sequences)
+
+	// 验证序列号唯一且连续
+	seqMap := make(map[uint64]bool)
+	for seq := range sequences {
+		if seqMap[seq] {
+			t.Errorf("重复的序列号: %d", seq)
+		}
+		seqMap[seq] = true
+	}
+
+	assert.Equal(t, 50, len(seqMap))
+	assert.Equal(t, uint64(50), seqCounter.Load())
+}
+
+// ========================================
+// executeBatchForward 测试辅助类型
+// ========================================
+
+// mockBatchForwarder 模拟批量转发器
+type mockBatchForwarder struct {
+	results map[string]forwardResult
+	delay   time.Duration
+}
+
+type forwardResult struct {
+	seqID uint64
+	err   error
+}
+
+func (m *mockBatchForwarder) forward(ctx context.Context, addr string, msgExt MsgFrame) (uint64, error) {
+	if m.delay > 0 {
+		time.Sleep(m.delay)
+	}
+	if result, ok := m.results[addr]; ok {
+		return result.seqID, result.err
+	}
+	return 0, fmt.Errorf("unknown address: %s", addr)
+}
+
+// TestExecuteBatchForward_AllSuccess 测试全部成功
+func TestExecuteBatchForward_AllSuccess(t *testing.T) {
+	addrs := []string{"127.0.0.1:8080", "127.0.0.1:8081", "127.0.0.1:8082"}
+	msgExt := MsgFrame{}
+
+	mock := &mockBatchForwarder{
+		results: map[string]forwardResult{
+			"127.0.0.1:8080": {seqID: 1, err: nil},
+			"127.0.0.1:8081": {seqID: 2, err: nil},
+			"127.0.0.1:8082": {seqID: 3, err: nil},
+		},
+	}
+
+	result := executeBatchForward(context.Background(), addrs, msgExt, mock.forward)
+
+	assert.Equal(t, 3, result.SuccessCount)
+	assert.Equal(t, 0, result.FailureCount)
+	assert.Len(t, result.Results, 3)
+
+	// 验证结果
+	assert.Equal(t, "127.0.0.1:8080", result.Results[0].Addr)
+	assert.Equal(t, uint64(1), result.Results[0].SeqID)
+	assert.NoError(t, result.Results[0].Error)
+
+	assert.Equal(t, "127.0.0.1:8081", result.Results[1].Addr)
+	assert.Equal(t, uint64(2), result.Results[1].SeqID)
+	assert.NoError(t, result.Results[1].Error)
+
+	assert.Equal(t, "127.0.0.1:8082", result.Results[2].Addr)
+	assert.Equal(t, uint64(3), result.Results[2].SeqID)
+	assert.NoError(t, result.Results[2].Error)
+}
+
+// TestExecuteBatchForward_PartialFailure 测试部分失败
+func TestExecuteBatchForward_PartialFailure(t *testing.T) {
+	addrs := []string{"127.0.0.1:8080", "127.0.0.1:8081", "127.0.0.1:8082"}
+	msgExt := MsgFrame{}
+
+	mock := &mockBatchForwarder{
+		results: map[string]forwardResult{
+			"127.0.0.1:8080": {seqID: 1, err: nil},
+			"127.0.0.1:8081": {seqID: 0, err: errors.New("connection refused")},
+			"127.0.0.1:8082": {seqID: 3, err: nil},
+		},
+	}
+
+	result := executeBatchForward(context.Background(), addrs, msgExt, mock.forward)
+
+	assert.Equal(t, 2, result.SuccessCount)
+	assert.Equal(t, 1, result.FailureCount)
+	assert.Len(t, result.Results, 3)
+
+	// 验证失败地址
+	assert.Equal(t, "127.0.0.1:8081", result.Results[1].Addr)
+	assert.Error(t, result.Results[1].Error)
+	assert.Contains(t, result.Results[1].Error.Error(), "connection refused")
+}
+
+// TestExecuteBatchForward_AllFailure 测试全部失败
+func TestExecuteBatchForward_AllFailure(t *testing.T) {
+	addrs := []string{"127.0.0.1:8080", "127.0.0.1:8081", "127.0.0.1:8082"}
+	msgExt := MsgFrame{}
+
+	mock := &mockBatchForwarder{
+		results: map[string]forwardResult{
+			"127.0.0.1:8080": {seqID: 0, err: errors.New("timeout")},
+			"127.0.0.1:8081": {seqID: 0, err: errors.New("connection refused")},
+			"127.0.0.1:8082": {seqID: 0, err: errors.New("network unreachable")},
+		},
+	}
+
+	result := executeBatchForward(context.Background(), addrs, msgExt, mock.forward)
+
+	assert.Equal(t, 0, result.SuccessCount)
+	assert.Equal(t, 3, result.FailureCount)
+	assert.Len(t, result.Results, 3)
+
+	for _, r := range result.Results {
+		assert.Error(t, r.Error)
+	}
+}
+
+// TestExecuteBatchForward_MaxBatchSize 测试超过最大批量大小
+func TestExecuteBatchForward_MaxBatchSize(t *testing.T) {
+	// 创建超过 maxBatchSize 的地址列表
+	addrs := make([]string, maxBatchSize+10)
+	for i := range addrs {
+		addrs[i] = fmt.Sprintf("127.0.0.1:%d", 8080+i)
+	}
+
+	msgExt := MsgFrame{}
+	mock := &mockBatchForwarder{
+		results: make(map[string]forwardResult),
+	}
+
+	// 添加所有地址的成功结果
+	for _, addr := range addrs {
+		mock.results[addr] = forwardResult{seqID: 1, err: nil}
+	}
+
+	result := executeBatchForward(context.Background(), addrs, msgExt, mock.forward)
+
+	// 应该只处理前 maxBatchSize 个地址
+	assert.Equal(t, maxBatchSize, result.SuccessCount)
+	assert.Len(t, result.Results, maxBatchSize)
+}
+
+// TestExecuteBatchForward_EmptyAddrs 测试空地址列表
+func TestExecuteBatchForward_EmptyAddrs(t *testing.T) {
+	addrs := []string{}
+	msgExt := MsgFrame{}
+
+	mock := &mockBatchForwarder{}
+
+	result := executeBatchForward(context.Background(), addrs, msgExt, mock.forward)
+
+	assert.Equal(t, 0, result.SuccessCount)
+	assert.Equal(t, 0, result.FailureCount)
+	assert.Len(t, result.Results, 0)
+}
+
+// TestExecuteBatchForward_SingleAddr 测试单个地址
+func TestExecuteBatchForward_SingleAddr(t *testing.T) {
+	addrs := []string{"127.0.0.1:8080"}
+	msgExt := MsgFrame{}
+
+	mock := &mockBatchForwarder{
+		results: map[string]forwardResult{
+			"127.0.0.1:8080": {seqID: 42, err: nil},
+		},
+	}
+
+	result := executeBatchForward(context.Background(), addrs, msgExt, mock.forward)
+
+	assert.Equal(t, 1, result.SuccessCount)
+	assert.Equal(t, 0, result.FailureCount)
+	assert.Equal(t, uint64(42), result.Results[0].SeqID)
+}
+
+// TestExecuteBatchForward_ConcurrencyLimit 测试并发限制
+func TestExecuteBatchForward_ConcurrencyLimit(t *testing.T) {
+	// 创建超过 maxBatchConcurrency 的地址列表
+	addrs := make([]string, maxBatchConcurrency*2)
+	for i := range addrs {
+		addrs[i] = fmt.Sprintf("127.0.0.1:%d", 8080+i)
+	}
+
+	msgExt := MsgFrame{}
+	mock := &mockBatchForwarder{
+		delay:   100 * time.Millisecond, // 每个请求需要 100ms
+		results: make(map[string]forwardResult),
+	}
+
+	// 添加所有地址的成功结果
+	for _, addr := range addrs {
+		mock.results[addr] = forwardResult{seqID: 1, err: nil}
+	}
+
+	start := time.Now()
+	result := executeBatchForward(context.Background(), addrs, msgExt, mock.forward)
+	elapsed := time.Since(start)
+
+	// 如果没有并发限制，20个请求串行需要 2000ms
+	// 有并发限制（maxBatchConcurrency=10），最多需要 200ms（2批次）
+	assert.Less(t, elapsed, 500*time.Millisecond, "并发限制应该加速执行")
+	assert.Equal(t, len(addrs), result.SuccessCount)
+}
+
+// TestExecuteBatchForward_ContextCancellation 测试上下文取消
+func TestExecuteBatchForward_ContextCancellation(t *testing.T) {
+	addrs := []string{"127.0.0.1:8080", "127.0.0.1:8081", "127.0.0.1:8082"}
+	msgExt := MsgFrame{}
+
+	mock := &mockBatchForwarder{
+		delay: 1 * time.Second, // 每个请求需要 1s
+		results: map[string]forwardResult{
+			"127.0.0.1:8080": {seqID: 1, err: nil},
+			"127.0.0.1:8081": {seqID: 2, err: nil},
+			"127.0.0.1:8082": {seqID: 3, err: nil},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	result := executeBatchForward(ctx, addrs, msgExt, mock.forward)
+
+	// 由于上下文超时，部分请求可能失败
+	assert.True(t, result.SuccessCount+result.FailureCount > 0, "应该有一些请求被处理")
+}
+
+// TestExecuteBatchForward_ResultOrder 测试结果顺序保持
+func TestExecuteBatchForward_ResultOrder(t *testing.T) {
+	addrs := []string{"addr1", "addr2", "addr3", "addr4", "addr5"}
+	msgExt := MsgFrame{}
+
+	mock := &mockBatchForwarder{
+		results: map[string]forwardResult{
+			"addr1": {seqID: 10, err: nil},
+			"addr2": {seqID: 20, err: nil},
+			"addr3": {seqID: 30, err: nil},
+			"addr4": {seqID: 40, err: nil},
+			"addr5": {seqID: 50, err: nil},
+		},
+	}
+
+	result := executeBatchForward(context.Background(), addrs, msgExt, mock.forward)
+
+	// 验证结果顺序与输入地址顺序一致
+	assert.Equal(t, "addr1", result.Results[0].Addr)
+	assert.Equal(t, "addr2", result.Results[1].Addr)
+	assert.Equal(t, "addr3", result.Results[2].Addr)
+	assert.Equal(t, "addr4", result.Results[3].Addr)
+	assert.Equal(t, "addr5", result.Results[4].Addr)
+
+	// 验证 SeqID 顺序
+	assert.Equal(t, uint64(10), result.Results[0].SeqID)
+	assert.Equal(t, uint64(20), result.Results[1].SeqID)
+	assert.Equal(t, uint64(30), result.Results[2].SeqID)
+	assert.Equal(t, uint64(40), result.Results[3].SeqID)
+	assert.Equal(t, uint64(50), result.Results[4].SeqID)
+}
+
+// TestTransportCommon_Integration 测试公共函数集成场景
+func TestTransportCommon_Integration(t *testing.T) {
+	t.Run("场景1: 配置验证 + 批量转发", func(t *testing.T) {
+		// 验证配置
+		config := &TransportConfig{
+			ListenAddr:         "127.0.0.1:8080",
+			MaxMessageSize:     10 * 1024 * 1024, // 10MB
+			ReadTimeout:        30 * time.Second,
+			WriteTimeout:       30 * time.Second,
+			KeepAliveInterval:  10 * time.Second,
+			KeepAliveTimeout:   30 * time.Second,
+			BufferSize:         8192,
+			ChannelSendTimeout: 5 * time.Second,
+		}
+
+		err := validateTransportConfig(config)
+		require.NoError(t, err)
+
+		// 执行批量转发
+		addrs := []string{"127.0.0.1:8081", "127.0.0.1:8082"}
+		msgExt := MsgFrame{}
+
+		mock := &mockBatchForwarder{
+			results: map[string]forwardResult{
+				"127.0.0.1:8081": {seqID: 1, err: nil},
+				"127.0.0.1:8082": {seqID: 2, err: nil},
+			},
+		}
+
+		result := executeBatchForward(context.Background(), addrs, msgExt, mock.forward)
+
+		assert.Equal(t, 2, result.SuccessCount)
+		assert.Equal(t, 0, result.FailureCount)
+	})
+
+	t.Run("场景2: 序列号生成 + 批量转发", func(t *testing.T) {
+		currentSeq := uint64(0)
+
+		// 使用自定义序列号生成器
+		generator := func() uint64 {
+			currentSeq += 100 // 每次增加 100
+			return currentSeq
+		}
+
+		// 生成序列号
+		seq1 := generateMsgSeq(generator)
+		seq2 := generateMsgSeq(generator)
+
+		assert.Equal(t, uint64(100), seq1)
+		assert.Equal(t, uint64(200), seq2)
+
+		// 执行批量转发（验证序列号未被重置）
+		addrs := []string{"127.0.0.1:8081"}
+		msgExt := MsgFrame{}
+
+		mock := &mockBatchForwarder{
+			results: map[string]forwardResult{
+				"127.0.0.1:8081": {seqID: seq2, err: nil},
+			},
+		}
+
+		result := executeBatchForward(context.Background(), addrs, msgExt, mock.forward)
+
+		assert.Equal(t, 1, result.SuccessCount)
+		assert.Equal(t, uint64(200), result.Results[0].SeqID)
+	})
+
+	t.Run("场景3: 错误处理流程", func(t *testing.T) {
+		// 无效配置
+		invalidConfig := &TransportConfig{
+			ListenAddr: "", // 空地址
+		}
+
+		err := validateTransportConfig(invalidConfig)
+		assert.Error(t, err)
+
+		// 创建批量转发失败结果
+		addrs := []string{"127.0.0.1:8081", "127.0.0.1:8082"}
+		result := createBatchForwardResult(addrs, err)
+
+		assert.Equal(t, 0, result.SuccessCount)
+		assert.Equal(t, 2, result.FailureCount)
+
+		// 验证错误信息传递
+		for _, r := range result.Results {
+			assert.Same(t, err, r.Error)
+		}
+	})
 }

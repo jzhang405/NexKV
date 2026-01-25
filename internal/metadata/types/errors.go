@@ -67,9 +67,6 @@ const (
 	// 编解码错误码
 	// ========================================
 
-	// ErrCodecInvalidCodec 无效的编解码器
-	ErrCodecInvalidCodec
-
 	// ErrCodecEncodeFailed 编码失败
 	ErrCodecEncodeFailed
 
@@ -182,6 +179,12 @@ const (
 	// ErrTransportHopCountExpired Hop Count 过期（消息不再转发）
 	ErrTransportHopCountExpired
 
+	// ErrTransportInvalidListenAddr 监听地址无效
+	ErrTransportInvalidListenAddr
+
+	// ErrTransportUnsupportedProtocol 不支持的协议类型
+	ErrTransportUnsupportedProtocol
+
 	// ========================================
 	// Config 模块错误码
 	// ========================================
@@ -201,6 +204,51 @@ const (
 
 	// ErrClockOperation 时钟操作错误
 	ErrClockOperation
+
+	// ========================================
+	// Encryption 模块错误码
+	// ========================================
+
+	// ErrEncryptionKeySize 加密密钥大小错误
+	ErrEncryptionKeySize
+
+	// ErrEncryptionIVSize 加密IV大小错误
+	ErrEncryptionIVSize
+
+	// ErrEncryptionCiphertextSize 密文大小错误
+	ErrEncryptionCiphertextSize
+
+	// ErrEncryptionPadSize 填充大小错误
+	ErrEncryptionPadSize
+
+	// ErrEncryptionEmptyData 空数据错误
+	ErrEncryptionEmptyData
+
+	// ========================================
+	// Frame IO 模块错误码
+	// ========================================
+
+	// ErrFrameIOWrite 帧写入失败
+	ErrFrameIOWrite
+
+	// ErrFrameIORead 帧读取失败
+	ErrFrameIORead
+
+	// ErrFrameConnectionTimeout 帧连接超时
+	ErrFrameConnectionTimeout
+
+	// ========================================
+	// Frame Parsing 模块错误码
+	// ========================================
+
+	// ErrFrameParseFixedHeader 解析固定头失败
+	ErrFrameParseFixedHeader
+
+	// ErrFrameParseExtensionHeader 解析扩展头失败
+	ErrFrameParseExtensionField
+
+	// ErrFrameDefragmentation 分片反序列化失败
+	ErrFrameDefragmentation
 )
 
 // ========================================
@@ -234,12 +282,6 @@ func (e *Error) Error() string {
 // Unwrap 实现 errors.Unwrap 接口，支持错误链
 func (e *Error) Unwrap() error {
 	return e.Err
-}
-
-// Temporary 返回是否为临时错误（可重试）
-func (e *Error) Temporary() bool {
-	// 某些错误码默认为临时错误
-	return e.Code == ErrCodeTransport
 }
 
 // ========================================
@@ -339,16 +381,6 @@ func NewInternalError(msg string, err error) *Error {
 // 传输层错误构造函数
 // ========================================
 
-// NewTransportError 创建传输错误
-func NewTransportError(op, addr string, err error) *Error {
-	return &Error{
-		Code:    ErrCodeTransport,
-		Message: "传输错误",
-		Op:      fmt.Sprintf("%s %s", op, addr),
-		Err:     err,
-	}
-}
-
 // ========================================
 // 帧错误构造函数
 // ========================================
@@ -382,6 +414,59 @@ func NewInvalidFrameSizeError(msg string) *Error {
 	return &Error{
 		Code:    ErrCodeInvalidFrameSize,
 		Message: fmt.Sprintf("无效的帧大小: %s", msg),
+	}
+}
+
+// NewFrameIOWriteError 创建帧写入失败错误
+func NewFrameIOWriteError(op string, err error) *Error {
+	return &Error{
+		Code:    ErrFrameIOWrite,
+		Message: fmt.Sprintf("帧写入失败: %s", op),
+		Err:     err,
+	}
+}
+
+// NewFrameIOReadError 创建帧读取失败错误
+func NewFrameIOReadError(op string, err error) *Error {
+	return &Error{
+		Code:    ErrFrameIORead,
+		Message: fmt.Sprintf("帧读取失败: %s", op),
+		Err:     err,
+	}
+}
+
+// NewFrameConnectionTimeoutError 创建帧连接超时错误
+func NewFrameConnectionTimeoutError(timeout string) *Error {
+	return &Error{
+		Code:    ErrFrameConnectionTimeout,
+		Message: fmt.Sprintf("连接超时 (%v)", timeout),
+	}
+}
+
+// NewFrameParseFixedHeaderError 创建解析固定头失败错误
+func NewFrameParseFixedHeaderError(err error) *Error {
+	return &Error{
+		Code:    ErrFrameParseFixedHeader,
+		Message: "解析固定头失败",
+		Err:     err,
+	}
+}
+
+// NewFrameParseExtensionFieldError 创建解析扩展字段失败错误
+func NewFrameParseExtensionFieldError(err error) *Error {
+	return &Error{
+		Code:    ErrFrameParseExtensionField,
+		Message: "解析扩展字段失败",
+		Err:     err,
+	}
+}
+
+// NewFrameDefragmentationError 创建分片反序列化失败错误
+func NewFrameDefragmentationError(err error) *Error {
+	return &Error{
+		Code:    ErrFrameDefragmentation,
+		Message: "分片反序列化失败",
+		Err:     err,
 	}
 }
 
@@ -431,6 +516,42 @@ func NewCodecUnknownMessageTypeError(msgType int) *Error {
 	return &Error{
 		Code:    ErrCodecUnknownMessageType,
 		Message: fmt.Sprintf("未知消息类型: %d", msgType),
+	}
+}
+
+// ========================================
+// Encryption 模块错误构造函数
+// ========================================
+
+// NewEncryptionKeySizeError 创建密钥大小错误
+func NewEncryptionKeySizeError(expected int, actual int) *Error {
+	return &Error{
+		Code:    ErrEncryptionKeySize,
+		Message: fmt.Sprintf("AES-256 密钥必须是%d字节，实际为%d字节", expected, actual),
+	}
+}
+
+// NewEncryptionCiphertextSizeError 创建密文大小错误
+func NewEncryptionCiphertextSizeError(msg string) *Error {
+	return &Error{
+		Code:    ErrEncryptionCiphertextSize,
+		Message: msg,
+	}
+}
+
+// NewEncryptionPadSizeError 创建填充大小错误
+func NewEncryptionPadSizeError(msg string) *Error {
+	return &Error{
+		Code:    ErrEncryptionPadSize,
+		Message: msg,
+	}
+}
+
+// NewEncryptionEmptyDataError 创建空数据错误
+func NewEncryptionEmptyDataError(msg string) *Error {
+	return &Error{
+		Code:    ErrEncryptionEmptyData,
+		Message: msg,
 	}
 }
 
@@ -649,20 +770,32 @@ func NewTransportSendError(err error) *Error {
 	}
 }
 
-// NewTransportReceiveError 创建接收失败错误
-func NewTransportReceiveError(err error) *Error {
-	return &Error{
-		Code:    ErrTransportReceive,
-		Message: "接收消息失败",
-		Err:     err,
-	}
-}
-
 // NewTransportHopCountExpiredError 创建 Hop Count 过期错误
 func NewTransportHopCountExpiredError() *Error {
 	return &Error{
 		Code:    ErrTransportHopCountExpired,
 		Message: "消息已过期（HopCount=0），不再转发",
+	}
+}
+
+// NewTransportInvalidListenAddrError 创建监听地址无效错误
+func NewTransportInvalidListenAddrError(addr, reason string, err error) *Error {
+	msg := fmt.Sprintf("无效的监听地址 %q: %s", addr, reason)
+	if err != nil {
+		msg += ": " + err.Error()
+	}
+	return &Error{
+		Code:    ErrTransportInvalidListenAddr,
+		Message: msg,
+		Err:     err,
+	}
+}
+
+// NewTransportUnsupportedProtocolError 创建不支持的协议类型错误
+func NewTransportUnsupportedProtocolError(protocol string) *Error {
+	return &Error{
+		Code:    ErrTransportUnsupportedProtocol,
+		Message: fmt.Sprintf("不支持的协议类型: %s", protocol),
 	}
 }
 
@@ -736,18 +869,6 @@ func NewCompressionCompressError(op string, err error) *Error {
 // 传输层错误分类（降级机制）
 // ========================================
 
-// ErrorType 错误类型（用于降级决策）
-type ErrorType int
-
-const (
-	// ProtocolError 协议层错误（触发降级）
-	ProtocolError ErrorType = iota
-	// BusinessError 业务层错误（不触发降级）
-	BusinessError
-	// UnknownError 未知错误（保守策略，触发降级）
-	UnknownError
-)
-
 // ========================================
 // 协议层错误（触发降级）
 // ========================================
@@ -776,21 +897,9 @@ var (
 	// ErrTCPSendTimeout TCP 发送超时
 	ErrTCPSendTimeout = errors.New("tcp send timeout")
 
-	// ErrTCPReceiveFailed TCP 接收失败
-	ErrTCPReceiveFailed = errors.New("tcp receive failed")
-
-	// ErrTCPConnReset TCP 连接重置
-	ErrTCPConnReset = errors.New("tcp connection reset")
-
 	// ========================================
 	// 通用协议错误
 	// ========================================
-
-	// ErrProtocolTimeout 协议操作超时
-	ErrProtocolTimeout = errors.New("protocol operation timeout")
-
-	// ErrNetworkUnreachable 网络不可达
-	ErrNetworkUnreachable = errors.New("network unreachable")
 )
 
 // ========================================
@@ -803,12 +912,6 @@ var (
 
 	// ErrInvalidFrameFormat 无效帧格式
 	ErrInvalidFrameFormat = errors.New("invalid frame format")
-
-	// ErrChecksumMismatch 校验和不匹配
-	ErrChecksumMismatch = errors.New("checksum mismatch")
-
-	// ErrInvalidMagicNumber 魔法数字无效
-	ErrInvalidMagicNumber = errors.New("invalid magic number")
 )
 
 // ========================================
@@ -824,12 +927,6 @@ var (
 
 	// ErrCodecFailed 消息编解码失败
 	ErrCodecFailed = errors.New("message codec failed")
-
-	// ErrInvalidMsgType 消息类型无效
-	ErrInvalidMsgType = errors.New("invalid message type")
-
-	// ErrUnauthorized 未授权访问
-	ErrUnauthorized = errors.New("unauthorized access")
 )
 
 // ========================================
@@ -850,16 +947,9 @@ func IsProtocolError(err error) bool {
 		// TCP 错误
 		ErrTCPConnFailed,
 		ErrTCPSendTimeout,
-		ErrTCPReceiveFailed,
-		ErrTCPConnReset,
-		// 通用协议错误
-		ErrProtocolTimeout,
-		ErrNetworkUnreachable,
 		// 帧错误
 		ErrFrameTooLarge,
 		ErrInvalidFrameFormat,
-		ErrChecksumMismatch,
-		ErrInvalidMagicNumber,
 	}
 
 	for _, protoErr := range protocolErrors {
@@ -881,8 +971,6 @@ func IsBusinessError(err error) bool {
 		ErrMsgTooLarge,
 		ErrInvalidAddr,
 		ErrCodecFailed,
-		ErrInvalidMsgType,
-		ErrUnauthorized,
 	}
 
 	for _, bizErr := range businessErrors {

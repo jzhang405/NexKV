@@ -22,7 +22,6 @@ func TestCodec_Name(t *testing.T) {
 	}{
 		{"MessagePack", NewMessagePackCodec(), "msgpack"},
 		{"JSON", NewJSONCodec(), "json"},
-		{"Protobuf", NewProtobufCodec(), "protobuf"},
 	}
 
 	for _, tc := range testCases {
@@ -41,7 +40,6 @@ func TestCodec_Type(t *testing.T) {
 	}{
 		{"MessagePack", NewMessagePackCodec(), types.CodecTypeMessagePack},
 		{"JSON", NewJSONCodec(), types.CodecTypeJSON},
-		{"Protobuf", NewProtobufCodec(), types.CodecTypeProtobuf},
 	}
 
 	for _, tc := range testCases {
@@ -59,7 +57,6 @@ func TestCodec_DecodeInto_Success(t *testing.T) {
 	}{
 		{"MessagePack", NewMessagePackCodec()},
 		{"JSON", NewJSONCodec()},
-		{"Protobuf", NewProtobufCodec()},
 	}
 
 	originalMsg := &PutMessage{
@@ -94,7 +91,6 @@ func TestCodec_DecodeInto_EmptyData(t *testing.T) {
 	}{
 		{"MessagePack", NewMessagePackCodec()},
 		{"JSON", NewJSONCodec()},
-		{"Protobuf", NewProtobufCodec()},
 	}
 
 	for _, tc := range testCases {
@@ -117,7 +113,6 @@ func TestCodec_DecodeInto_NilMsg(t *testing.T) {
 	}{
 		{"MessagePack", NewMessagePackCodec()},
 		{"JSON", NewJSONCodec()},
-		{"Protobuf", NewProtobufCodec()},
 	}
 
 	for _, tc := range testCases {
@@ -140,7 +135,6 @@ func TestCodec_DecodeInto_InvalidData(t *testing.T) {
 	}{
 		{"MessagePack", NewMessagePackCodec(), []byte("invalid msgpack data")},
 		{"JSON", NewJSONCodec(), []byte("invalid json data")},
-		{"Protobuf", NewProtobufCodec(), []byte("invalid protobuf data")},
 	}
 
 	for _, tc := range testCases {
@@ -163,7 +157,6 @@ func TestCodec_DecodeInto_RoundTrip(t *testing.T) {
 	}{
 		{"MessagePack", NewMessagePackCodec()},
 		{"JSON", NewJSONCodec()},
-		{"Protobuf", NewProtobufCodec()},
 	}
 
 	testMsg := &PutMessage{
@@ -198,7 +191,6 @@ func TestCodec_Encode_NilMessage(t *testing.T) {
 	}{
 		{"MessagePack", NewMessagePackCodec()},
 		{"JSON", NewJSONCodec()},
-		{"Protobuf", NewProtobufCodec()},
 	}
 
 	for _, tc := range testCases {

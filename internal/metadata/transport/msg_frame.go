@@ -377,7 +377,6 @@ type sendOptions struct {
 	hopCount   *uint16 // 跳数 TTL
 	compressID *uint16 // 压缩算法 ID
 	encryptID  *uint16 // 加密算法 ID
-	// 注意：Priority 已移除，使用 Message.Priority() 代替
 }
 
 var (

@@ -783,11 +783,18 @@ func (t *UDPTransport) Stop() error {
 //
 // 支持函数选项模式，可动态配置 TLV 扩展字段：
 //
-//	transport.Send(ctx, addr, msg, WithHopCount(10))
+//	transport.Send(ctx, addr, msg, WithHopCount(5))
 //	transport.Send(ctx, addr, msg, WithCompression(2), WithHopCount(5))
 func (t *UDPTransport) Send(ctx context.Context, addr string, msg Message, opts ...SendOpt) error {
 	if !t.started.Load() {
 		return types.NewTransportStateError("未启动")
+	}
+
+	// 提前检查 context 是否已取消
+	select {
+	case <-ctx.Done():
+		return types.NewTransportSendError(ctx.Err())
+	default:
 	}
 
 	// 处理发送选项
@@ -811,15 +818,22 @@ func (t *UDPTransport) Send(ctx context.Context, addr string, msg Message, opts 
 
 	// 小消息直接发送（无需分片）
 	if len(msgData) <= MaxUDPPacketSize {
-		return t.sendDirectWithOptions(udpAddr, msgData, msg.Type(), addr, t.GenerateMsgSeq(), flags, options)
+		return t.sendDirectWithOptions(ctx, udpAddr, msgData, msg.Type(), addr, t.GenerateMsgSeq(), flags, options)
 	}
 
 	// 大消息分片发送（直接对编码后的消息数据进行分片）
-	return t.sendFragmentedWithOptions(udpAddr, msgData, msg.Type(), t.GenerateMsgSeq(), flags, options)
+	return t.sendFragmentedWithOptions(ctx, udpAddr, msgData, msg.Type(), t.GenerateMsgSeq(), flags, options)
 }
 
 // sendDirectWithOptions 直接发送消息（带 TLV 选项，无需分片）
-func (t *UDPTransport) sendDirectWithOptions(addr *net.UDPAddr, msgData []byte, msgType MessageType, originalAddr string, msgSeq uint64, flags uint8, opts *sendOptions) error {
+func (t *UDPTransport) sendDirectWithOptions(ctx context.Context, addr *net.UDPAddr, msgData []byte, msgType MessageType, originalAddr string, msgSeq uint64, flags uint8, opts *sendOptions) error {
+	// 在写入前检查 context
+	select {
+	case <-ctx.Done():
+		return types.NewTransportSendError(ctx.Err())
+	default:
+	}
+
 	nodeID := t.NodeID.Load()
 	msgID := msgSeq
 
@@ -860,7 +874,7 @@ func (t *UDPTransport) sendDirectWithOptions(addr *net.UDPAddr, msgData []byte, 
 // sendFragmentedWithOptions 分片发送大消息（带 TLV 选项）
 //
 // 接收编码后的纯消息数据，对每个分片创建独立的 Frame
-func (t *UDPTransport) sendFragmentedWithOptions(addr *net.UDPAddr, msgData []byte, msgType MessageType, msgSeq uint64, flags uint8, opts *sendOptions) error {
+func (t *UDPTransport) sendFragmentedWithOptions(ctx context.Context, addr *net.UDPAddr, msgData []byte, msgType MessageType, msgSeq uint64, flags uint8, opts *sendOptions) error {
 	// 验证 localNodeID 已设置
 	if t.NodeID.Load() == 0 {
 		return types.NewTransportStateError("localNodeID 未设置")
@@ -877,8 +891,15 @@ func (t *UDPTransport) sendFragmentedWithOptions(addr *net.UDPAddr, msgData []by
 		return types.NewTransportConnectionError("设置写超时", "", err)
 	}
 
-	// 发送所有分片
+	// 发送所有分片（每个分片发送前检查 context）
 	for i := 0; i < totalFragments; i++ {
+		// 检查 context 是否已取消（允许中断长消息的分片发送）
+		select {
+		case <-ctx.Done():
+			return types.NewTransportSendError(ctx.Err())
+		default:
+		}
+
 		start := i * MaxUDPPacketSize
 		end := start + MaxUDPPacketSize
 		if end > len(msgData) {

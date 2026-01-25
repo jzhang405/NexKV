@@ -435,6 +435,13 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message, opts 
 		return types.NewTransportStateError("未启动")
 	}
 
+	// 提前检查 context 是否已取消
+	select {
+	case <-ctx.Done():
+		return types.NewTransportSendError(ctx.Err())
+	default:
+	}
+
 	// 处理发送选项
 	options := processSendOptions(opts...)
 	defer releaseSendOptions(options)

@@ -520,6 +520,304 @@ func (r *RPCTransportImpl) OnRecv(nodeID uint64, data []byte) {
 └─────────────────────────────────────────┘
 ```
 
+#### 7.4.1 RPCTransport 实现类说明
+
+**实现类位置**：`internal/metadata/transport/rpc_transport.go`
+
+**类设计**：
+```go
+// RPCTransportImpl 是 RPCTransport 接口的实现类
+// 注意：将现有的 RPCTransport 结构体重命名为 RPCTransportImpl
+type RPCTransportImpl struct {
+    // 底层传输层（TCP/UDP/Multi）
+    transport Transport
+
+    // 请求等待表（msgID -> 等待通道）
+    reqTable sync.Map  // map[uint64]chan RPCResult
+
+    // 消息处理器映射（msgType -> handler）
+    handlers sync.Map  // map[string]func(Message) (Message, error)
+
+    // 默认超时时间
+    defaultTimeout time.Duration
+
+    // 最大请求表大小
+    maxReqTableSize int32
+
+    // 当前请求表大小（原子计数）
+    reqTableSize atomic.Int32
+}
+
+// RPCResult 表示 RPC 调用结果
+type RPCResult struct {
+    RespMsg Message
+    Err     error
+}
+```
+
+**关键方法**：
+```go
+// RPC 发送 RPC 请求并等待响应
+func (r *RPCTransportImpl) RPC(ctx context.Context, targetNode string, reqMsg Message) (Message, error) {
+    // 1. 生成全局唯一的 msgSeq（作为 msgID）
+    msgID := r.transport.GenerateMsgSeq()
+    reqMsg.SetMsgID(msgID)
+
+    // 2. 检查 reqTable 容量
+    if r.reqTableSize.Load() >= r.maxReqTableSize {
+        return nil, fmt.Errorf("请求等待表已满")
+    }
+
+    // 3. 创建等待通道
+    resultCh := make(chan RPCResult, 1)
+    r.reqTable.Store(msgID, resultCh)
+    r.reqTableSize.Add(1)
+
+    defer func() {
+        r.reqTable.Delete(msgID)
+        r.reqTableSize.Add(-1)
+    }()
+
+    // 4. 序列化并发送请求
+    data, err := reqMsg.Encode()
+    if err != nil {
+        return nil, err
+    }
+
+    if err := r.transport.Send(ctx, targetNode, reqMsg); err != nil {
+        return nil, err
+    }
+
+    // 5. 等待响应（带超时）
+    timeout := r.getTimeout(ctx)
+    select {
+    case result := <-resultCh:
+        return result.RespMsg, result.Err
+    case <-time.After(timeout):
+        return nil, fmt.Errorf("RPC 超时")
+    case <-ctx.Done():
+        return nil, ctx.Err()
+    }
+}
+
+// RegisterHandler 注册消息处理器
+func (r *RPCTransportImpl) RegisterHandler(msgType string, handler func(Message) (Message, error)) {
+    r.handlers.Store(msgType, handler)
+}
+
+// OnRecv 接收消息并调用 Handler
+func (r *RPCTransportImpl) OnRecv(nodeID uint64, msgFrame MsgFrame) {
+    // 1. 解析消息类型
+    msgType := msgFrame.Msg.Type()
+
+    // 2. 查找对应的 Handler
+    handlerIntf, ok := r.handlers.Load(msgType)
+    if !ok {
+        return // 没有注册的 Handler
+    }
+
+    handler := handlerIntf.(func(Message) (Message, error))
+
+    // 3. 调用 Handler 处理请求
+    respMsg, err := handler(msgFrame.Msg)
+
+    // 4. 发送响应
+    if err != nil {
+        // 处理失败，发送错误响应
+        // ...
+    } else {
+        // 处理成功，发送响应
+        r.transport.Send(context.Background(), msgFrame.SourceAddr, respMsg)
+    }
+}
+```
+
+#### 7.4.2 类关系图（Mermaid）
+
+```mermaid
+classDiagram
+    class RPCTransport {
+        <<interface>>
+        +RPC(ctx, target, req)~ (resp, err)~
+        +RegisterHandler(type, handler)
+        +Start()~ err~
+        +Stop()~ err~
+        +GetStats()~ map~
+    }
+
+    class RPCTransportImpl {
+        -transport Transport
+        -reqTable sync.Map
+        -handlers sync.Map
+        -defaultTimeout time.Duration
+        -maxReqTableSize int32
+        -reqTableSize atomic.Int32
+        +RPC(ctx, target, req)~ (resp, err)~
+        +RegisterHandler(type, handler)
+        +OnRecv(nodeID, msgFrame)
+        +getTimeout(ctx)~ time.Duration~
+    }
+
+    class Transport {
+        <<interface>>
+        +Start(nodeID, msgSeqGen)~ err~
+        +Stop()~ err~
+        +Send(ctx, addr, msg, opts...)~ err~
+        +Receive()~ ~chan MsgFrame~
+        +ForwardMessage(ctx, addr, msgExt)~ (seq, err)~
+        +GetNodeID()~ uint64~
+        +GenerateMsgSeq()~ uint64~
+    }
+
+    class Message {
+        <<interface>>
+        +Encode()~ ([]byte, error)~
+        +Decode(data)~ error~
+        +MsgType()~ string~
+        +GetMsgID()~ uint64~
+        +SetMsgID(msgID)~
+        +Options()~ *MessageOptions~
+    }
+
+    class MessageOptions {
+        +MaxRemainingHops uint8
+        +CompressEnable bool
+        +CompressAlgo int
+        +Timeout int64
+        +RetryTimes int
+        +NeedResponse bool
+    }
+
+    class TCPTransport {
+        -connPool *ConnectionPool
+        -config *TCPConfig
+        +Start()~ err~
+        +Send(ctx, addr, msg, opts...)~ err~
+        +Receive()~ ~chan MsgFrame~
+        +Stop()~ err~
+    }
+
+    class UDPTransport {
+        -conn *net.UDPConn
+        -fragmentCache sync.Map
+        -config *UDPConfig
+        +Start()~ err~
+        +Send(ctx, addr, msg, opts...)~ err~
+        +Receive()~ ~chan MsgFrame~
+        +Stop()~ err~
+    }
+
+    class RPCResult {
+        +RespMsg Message
+        +Err error
+    }
+
+    RPCTransport <|.. RPCTransportImpl : implements
+    RPCTransportImpl o-- Transport : uses
+    RPCTransportImpl o-- Message : processes
+    RPCTransportImpl o-- MessageOptions : config
+    RPCTransportImpl o-- RPCResult : returns
+    Transport <|.. TCPTransport : implements
+    Transport <|.. UDPTransport : implements
+    Message <|.. MessageOptions : contains
+```
+
+**类关系说明**：
+
+1. **接口-实现关系**：
+   - `RPCTransport` 是接口，`RPCTransportImpl` 是实现类
+   - `Transport` 是接口，`TCPTransport` 和 `UDPTransport` 是实现类
+
+2. **依赖关系**：
+   - `RPCTransportImpl` 依赖 `Transport` 接口（依赖倒置原则）
+   - `RPCTransportImpl` 处理 `Message` 接口（类型安全）
+   - `Message` 包含 `MessageOptions`（传输配置）
+
+3. **数据流**：
+   - `RPCResult` 封装 RPC 调用结果
+   - 通过 `reqTable`（map[uint64]chan RPCResult）实现请求-响应匹配
+
+#### 7.4.3 时序图：RPC 调用流程（Mermaid）
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as 业务层（客户端）
+    participant RPC as RPCTransportImpl
+    participant Transport as Transport（TCP/UDP）
+    participant Server as 服务端 RPCTransportImpl
+    participant Handler as 业务层 Handler
+
+    Note over Client,Handler: RPC 双向通信流程
+
+    %% 客户端发起请求
+    Client->>RPC: RPC(ctx, targetNode, reqMsg)
+
+    %% 生成 msgID
+    RPC->>RPC: msgID = GenerateMsgSeq()
+    RPC->>reqMsg: SetMsgID(msgID)
+
+    %% 创建等待通道
+    RPC->>RPC: resultCh = make(chan RPCResult)
+    RPC->>RPC: reqTable.Store(msgID, resultCh)
+
+    %% 发送请求
+    Client->>Client: reqMsg.Encode()
+    Client->>Transport: Send(ctx, targetNode, reqMsg)
+    Transport->>Transport: 序列化 + Frame 封装
+    Transport-->>Server: 网络传输（MsgFrame）
+
+    %% 服务端接收并处理
+    Server->>Server: Receive() <-chan MsgFrame
+    Server->>Server: 解析 msgType
+
+    %% 查找 Handler
+    Server->>Server: handlers.Load(msgType)
+
+    %% 调用 Handler 处理
+    Server->>Handler: handler(reqMsg)
+
+    %% Handler 处理业务逻辑
+    Handler->>Handler: reqMsgID = reqMsg.GetMsgID()
+    Handler->>Handler: 处理业务逻辑...
+    Handler->>Handler: respMsg = &PingResponse{...}
+    Handler->>respMsg: respMsg.SetMsgID(reqMsgID)
+    Handler-->>Server: return respMsg, nil
+
+    %% 服务端发送响应
+    Server->>Transport: Send(ctx, sourceAddr, respMsg)
+    Transport-->>RPC: 网络传输（MsgFrame）
+
+    %% 客户端接收响应
+    RPC->>RPC: Receive() <-chan MsgFrame
+    RPC->>RPC: 解析 respMsg
+    RPC->>RPC: respMsgID = respMsg.GetMsgID()
+
+    %% 匹配请求并返回结果
+    RPC->>RPC: resultCh = reqTable.Load(respMsgID)
+    RPC->>resultCh: resultCh <- RPCResult{respMsg, nil}
+
+    %% 等待的客户端获取结果
+    RPC-->>Client: return respMsg, nil
+```
+
+**时序图说明**：
+
+| 阶段 | 说明 |
+|------|------|
+| **1. 请求准备** | 生成 msgID、创建等待通道、序列化请求 |
+| **2. 网络传输** | 通过 Transport 接口发送 MsgFrame |
+| **3. 服务处理** | 接收消息、查找 Handler、处理业务逻辑 |
+| **4. Handler 处理** | 获取 reqMsgID、设置 respMsgID、返回响应 |
+| **5. 响应返回** | 发送响应、匹配请求、返回结果 |
+
+**关键点**：
+1. **msgID 匹配**：客户端通过 `reqTable`（map[uint64]chan RPCResult）实现请求-响应匹配
+2. **Handler 责任**：必须从 `reqMsg.GetMsgID()` 获取并设置到 `respMsg.SetMsgID()`
+3. **超时处理**：客户端通过 select 语句实现超时和取消
+
+---
+
 #### 7.5 迁移路径
 
 **阶段 1: 增加新接口（非破坏性）**

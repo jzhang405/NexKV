@@ -180,6 +180,11 @@ func (t *TCPTransport) Start(nodeID *uint64, msgSeqGenerator func() uint64) erro
 		return types.NewStoreInvalidParameterError("msgSeqGenerator 不能为空")
 	}
 
+	// 验证监听地址已配置
+	if t.config.ListenAddr == "" {
+		return types.NewStoreInvalidParameterError("ListenAddr 未配置，请先设置监听地址")
+	}
+
 	// 设置节点 ID
 	if nodeID != nil {
 		t.NodeID.Store(*nodeID)

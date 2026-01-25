@@ -152,9 +152,12 @@ type TransportConfig struct {
 }
 
 // DefaultTransportConfig 返回默认配置
+//
+// 注意：ListenAddr 需要由调用者配置，默认值仅为示例
+// 生产环境应该根据实际网络环境配置合适的监听地址
 func DefaultTransportConfig() *TransportConfig {
 	return &TransportConfig{
-		ListenAddr:         "0.0.0.0:9211",
+		ListenAddr:         "", // 需要调用者配置（如 "0.0.0.0:0" 自动分配端口）
 		MaxMessageSize:     1024 * 1024 * 100, // 100MB
 		ReadTimeout:        30 * time.Second,
 		WriteTimeout:       30 * time.Second,
@@ -245,10 +248,13 @@ type BatchForwardTransport interface {
 // validateTransportConfig 验证传输层配置的有效性
 //
 // P2-5: 配置验证函数，确保配置值在合理范围内
+//
+// 注意：ListenAddr 的验证延迟到 Start() 时进行，允许配置对象先创建
 func validateTransportConfig(config *TransportConfig) error {
-	if config.ListenAddr == "" {
-		return fmt.Errorf("监听地址不能为空")
-	}
+	// ListenAddr 的验证在 Start() 方法中进行，因为：
+	// 1. 支持延迟配置（如通过配置中心动态获取）
+	// 2. 允许创建配置对象时不立即指定监听地址
+	// 3. 更好的错误提示时机（启动时而非创建时）
 
 	if config.MaxMessageSize <= 0 || config.MaxMessageSize > 1024*1024*1024 {
 		return fmt.Errorf("最大消息大小必须在 (0, 1GB] 范围内，当前值: %d", config.MaxMessageSize)

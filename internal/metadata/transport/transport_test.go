@@ -507,7 +507,8 @@ func TestMessageWriter_WriteMessage(t *testing.T) {
 func TestDefaultTransportConfig(t *testing.T) {
 	config := DefaultTransportConfig()
 
-	assert.Equal(t, "0.0.0.0:9211", config.ListenAddr)
+	// ListenAddr 需要由调用者配置，默认值为空
+	assert.Equal(t, "", config.ListenAddr, "ListenAddr 应该为空，需要调用者配置")
 	assert.Equal(t, int64(1024*1024*100), config.MaxMessageSize)
 	assert.Equal(t, 30*time.Second, config.ReadTimeout)
 	assert.Equal(t, 30*time.Second, config.WriteTimeout)
@@ -809,6 +810,9 @@ func TestValidateTransportConfig_ValidConfig(t *testing.T) {
 }
 
 // TestValidateTransportConfig_EmptyListenAddr 测试空监听地址
+//
+// 注意：validateTransportConfig 不再验证 ListenAddr，验证延迟到 Start() 方法
+// 这个测试现在验证 Start() 方法会拒绝空 ListenAddr
 func TestValidateTransportConfig_EmptyListenAddr(t *testing.T) {
 	config := &TransportConfig{
 		ListenAddr:         "",
@@ -821,9 +825,20 @@ func TestValidateTransportConfig_EmptyListenAddr(t *testing.T) {
 		ChannelSendTimeout: 5 * time.Second,
 	}
 
+	// validateTransportConfig 不再验证 ListenAddr，应该通过
 	err := validateTransportConfig(config)
+	assert.NoError(t, err)
+
+	// 但 Start() 方法会验证并拒绝
+	trans, err := NewTCPTransportWithConfig(config)
+	require.NoError(t, err)
+	require.NotNil(t, trans)
+
+	err = trans.Start(nil, newTCPMsgSeqGenerator())
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "监听地址不能为空")
+	assert.Contains(t, err.Error(), "ListenAddr 未配置")
+
+	_ = trans.Stop() // 清理
 }
 
 // TestValidateTransportConfig_InvalidMaxMessageSize 测试无效的最大消息大小

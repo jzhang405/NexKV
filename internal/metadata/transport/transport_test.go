@@ -849,10 +849,10 @@ func TestValidateTransportConfig_InvalidMaxMessageSize(t *testing.T) {
 		maxMessageSize int64
 		expectedErr    string
 	}{
-		{"零大小", 0, "最大消息大小必须在"},
-		{"负大小", -1, "最大消息大小必须在"},
-		{"超过1GB", 1024*1024*1024 + 1, "最大消息大小必须在"},
-		{"远超限制", 10 * 1024 * 1024 * 1024, "最大消息大小必须在"},
+		{"零大小", 0, "MaxMessageSize 必须在"},
+		{"负大小", -1, "MaxMessageSize 必须在"},
+		{"超过1GB", 1024*1024*1024 + 1, "MaxMessageSize 必须在"},
+		{"远超限制", 10 * 1024 * 1024 * 1024, "MaxMessageSize 必须在"},
 	}
 
 	for _, tc := range testCases {
@@ -882,11 +882,11 @@ func TestValidateTransportConfig_NegativeTimeout(t *testing.T) {
 		fieldSetter func(*TransportConfig, time.Duration)
 		expectedErr string
 	}{
-		{"读超时", func(c *TransportConfig, d time.Duration) { c.ReadTimeout = d }, "读超时不能为负数"},
-		{"写超时", func(c *TransportConfig, d time.Duration) { c.WriteTimeout = d }, "写超时不能为负数"},
-		{"保活间隔", func(c *TransportConfig, d time.Duration) { c.KeepAliveInterval = d }, "保活间隔不能为负数"},
-		{"保活超时", func(c *TransportConfig, d time.Duration) { c.KeepAliveTimeout = d }, "保活超时不能为负数"},
-		{"通道发送超时", func(c *TransportConfig, d time.Duration) { c.ChannelSendTimeout = d }, "通道发送超时不能为负数"},
+		{"读超时", func(c *TransportConfig, d time.Duration) { c.ReadTimeout = d }, "ReadTimeout 不能为负数"},
+		{"写超时", func(c *TransportConfig, d time.Duration) { c.WriteTimeout = d }, "WriteTimeout 不能为负数"},
+		{"保活间隔", func(c *TransportConfig, d time.Duration) { c.KeepAliveInterval = d }, "KeepAliveInterval 不能为负数"},
+		{"保活超时", func(c *TransportConfig, d time.Duration) { c.KeepAliveTimeout = d }, "KeepAliveTimeout 不能为负数"},
+		{"通道发送超时", func(c *TransportConfig, d time.Duration) { c.ChannelSendTimeout = d }, "ChannelSendTimeout 不能为负数"},
 	}
 
 	for _, tc := range timeoutFields {
@@ -918,10 +918,10 @@ func TestValidateTransportConfig_InvalidBufferSize(t *testing.T) {
 		bufferSize  int
 		expectedErr string
 	}{
-		{"零大小", 0, "缓冲区大小必须在"},
-		{"负大小", -1, "缓冲区大小必须在"},
-		{"超过64KB", 65536 + 1, "缓冲区大小必须在"},
-		{"远超限制", 1000000, "缓冲区大小必须在"},
+		{"零大小", 0, "BufferSize 必须在"},
+		{"负大小", -1, "BufferSize 必须在"},
+		{"超过64KB", 65536 + 1, "BufferSize 必须在"},
+		{"远超限制", 1000000, "BufferSize 必须在"},
 	}
 
 	for _, tc := range testCases {
@@ -1059,19 +1059,8 @@ func TestCreateBatchForwardResult_SingleAddr(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:8080", result.Results[0].Addr)
 }
 
-// TestGenerateMsgSeq_DefaultCounter 测试默认计数器
-func TestGenerateMsgSeq_DefaultCounter(t *testing.T) {
-	var counter atomic.Uint64
-
-	for i := uint64(1); i <= 10; i++ {
-		seq := generateMsgSeq(nil, &counter)
-		assert.Equal(t, i, seq)
-	}
-}
-
 // TestGenerateMsgSeq_CustomGenerator 测试自定义生成器
 func TestGenerateMsgSeq_CustomGenerator(t *testing.T) {
-	var counter atomic.Uint64
 	customSeq := uint64(1000)
 
 	generator := func() uint64 {
@@ -1080,47 +1069,44 @@ func TestGenerateMsgSeq_CustomGenerator(t *testing.T) {
 	}
 
 	for i := uint64(1); i <= 10; i++ {
-		seq := generateMsgSeq(generator, &counter)
+		seq := generateMsgSeq(generator)
 		assert.Equal(t, uint64(1000+i), seq)
 	}
-
-	// 验证默认计数器未被使用
-	assert.Equal(t, uint64(0), counter.Load())
 }
 
 // TestGenerateMsgSeq_InvalidGenerator 测试无效生成器
+// 注意：msgSeqGenerator 在 Start() 时已验证不为 nil，这里只测试防御性编程
 func TestGenerateMsgSeq_InvalidGenerator(t *testing.T) {
-	var counter atomic.Uint64
-
 	// 传入非函数类型
 	invalidGenerator := "not a function"
 
-	seq := generateMsgSeq(invalidGenerator, &counter)
-	assert.Equal(t, uint64(1), seq)
-	assert.Equal(t, uint64(1), counter.Load())
+	seq := generateMsgSeq(invalidGenerator)
+	assert.Equal(t, uint64(0), seq) // 无效生成器返回 0
 }
 
 // TestGenerateMsgSeq_NilGeneratorFunction 测试 nil 函数
+// 注意：msgSeqGenerator 在 Start() 时已验证不为 nil，这里只测试防御性编程
 func TestGenerateMsgSeq_NilGeneratorFunction(t *testing.T) {
-	var counter atomic.Uint64
-
 	var nilFunc func() uint64
 
-	seq := generateMsgSeq(nilFunc, &counter)
-	assert.Equal(t, uint64(1), seq)
-	assert.Equal(t, uint64(1), counter.Load())
+	seq := generateMsgSeq(nilFunc)
+	assert.Equal(t, uint64(0), seq) // nil 函数返回 0
 }
 
 // TestGenerateMsgSeq_Concurrent 测试并发安全性
 func TestGenerateMsgSeq_Concurrent(t *testing.T) {
-	var counter atomic.Uint64
+	var seqCounter atomic.Uint64
+
+	generator := func() uint64 {
+		return seqCounter.Add(1)
+	}
 
 	done := make(chan bool, 50)
 	sequences := make(chan uint64, 50)
 
 	for i := 0; i < 50; i++ {
 		go func() {
-			seq := generateMsgSeq(nil, &counter)
+			seq := generateMsgSeq(generator)
 			sequences <- seq
 			done <- true
 		}()
@@ -1142,7 +1128,7 @@ func TestGenerateMsgSeq_Concurrent(t *testing.T) {
 	}
 
 	assert.Equal(t, 50, len(seqMap))
-	assert.Equal(t, uint64(50), counter.Load())
+	assert.Equal(t, uint64(50), seqCounter.Load())
 }
 
 // ========================================
@@ -1429,7 +1415,6 @@ func TestTransportCommon_Integration(t *testing.T) {
 	})
 
 	t.Run("场景2: 序列号生成 + 批量转发", func(t *testing.T) {
-		var counter atomic.Uint64
 		currentSeq := uint64(0)
 
 		// 使用自定义序列号生成器
@@ -1439,8 +1424,8 @@ func TestTransportCommon_Integration(t *testing.T) {
 		}
 
 		// 生成序列号
-		seq1 := generateMsgSeq(generator, &counter)
-		seq2 := generateMsgSeq(generator, &counter)
+		seq1 := generateMsgSeq(generator)
+		seq2 := generateMsgSeq(generator)
 
 		assert.Equal(t, uint64(100), seq1)
 		assert.Equal(t, uint64(200), seq2)
@@ -1459,7 +1444,6 @@ func TestTransportCommon_Integration(t *testing.T) {
 
 		assert.Equal(t, 1, result.SuccessCount)
 		assert.Equal(t, uint64(200), result.Results[0].SeqID)
-		assert.Equal(t, uint64(0), counter.Load()) // 默认计数器未被使用
 	})
 
 	t.Run("场景3: 错误处理流程", func(t *testing.T) {

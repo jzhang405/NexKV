@@ -179,6 +179,12 @@ const (
 	// ErrTransportHopCountExpired Hop Count 过期（消息不再转发）
 	ErrTransportHopCountExpired
 
+	// ErrTransportInvalidListenAddr 监听地址无效
+	ErrTransportInvalidListenAddr
+
+	// ErrTransportUnsupportedProtocol 不支持的协议类型
+	ErrTransportUnsupportedProtocol
+
 	// ========================================
 	// Config 模块错误码
 	// ========================================
@@ -217,6 +223,32 @@ const (
 
 	// ErrEncryptionEmptyData 空数据错误
 	ErrEncryptionEmptyData
+
+	// ========================================
+	// Frame IO 模块错误码
+	// ========================================
+
+	// ErrFrameIOWrite 帧写入失败
+	ErrFrameIOWrite
+
+	// ErrFrameIORead 帧读取失败
+	ErrFrameIORead
+
+	// ErrFrameConnectionTimeout 帧连接超时
+	ErrFrameConnectionTimeout
+
+	// ========================================
+	// Frame Parsing 模块错误码
+	// ========================================
+
+	// ErrFrameParseFixedHeader 解析固定头失败
+	ErrFrameParseFixedHeader
+
+	// ErrFrameParseExtensionHeader 解析扩展头失败
+	ErrFrameParseExtensionField
+
+	// ErrFrameDefragmentation 分片反序列化失败
+	ErrFrameDefragmentation
 )
 
 // ========================================
@@ -382,6 +414,59 @@ func NewInvalidFrameSizeError(msg string) *Error {
 	return &Error{
 		Code:    ErrCodeInvalidFrameSize,
 		Message: fmt.Sprintf("无效的帧大小: %s", msg),
+	}
+}
+
+// NewFrameIOWriteError 创建帧写入失败错误
+func NewFrameIOWriteError(op string, err error) *Error {
+	return &Error{
+		Code:    ErrFrameIOWrite,
+		Message: fmt.Sprintf("帧写入失败: %s", op),
+		Err:     err,
+	}
+}
+
+// NewFrameIOReadError 创建帧读取失败错误
+func NewFrameIOReadError(op string, err error) *Error {
+	return &Error{
+		Code:    ErrFrameIORead,
+		Message: fmt.Sprintf("帧读取失败: %s", op),
+		Err:     err,
+	}
+}
+
+// NewFrameConnectionTimeoutError 创建帧连接超时错误
+func NewFrameConnectionTimeoutError(timeout string) *Error {
+	return &Error{
+		Code:    ErrFrameConnectionTimeout,
+		Message: fmt.Sprintf("连接超时 (%v)", timeout),
+	}
+}
+
+// NewFrameParseFixedHeaderError 创建解析固定头失败错误
+func NewFrameParseFixedHeaderError(err error) *Error {
+	return &Error{
+		Code:    ErrFrameParseFixedHeader,
+		Message: "解析固定头失败",
+		Err:     err,
+	}
+}
+
+// NewFrameParseExtensionFieldError 创建解析扩展字段失败错误
+func NewFrameParseExtensionFieldError(err error) *Error {
+	return &Error{
+		Code:    ErrFrameParseExtensionField,
+		Message: "解析扩展字段失败",
+		Err:     err,
+	}
+}
+
+// NewFrameDefragmentationError 创建分片反序列化失败错误
+func NewFrameDefragmentationError(err error) *Error {
+	return &Error{
+		Code:    ErrFrameDefragmentation,
+		Message: "分片反序列化失败",
+		Err:     err,
 	}
 }
 
@@ -690,6 +775,27 @@ func NewTransportHopCountExpiredError() *Error {
 	return &Error{
 		Code:    ErrTransportHopCountExpired,
 		Message: "消息已过期（HopCount=0），不再转发",
+	}
+}
+
+// NewTransportInvalidListenAddrError 创建监听地址无效错误
+func NewTransportInvalidListenAddrError(addr, reason string, err error) *Error {
+	msg := fmt.Sprintf("无效的监听地址 %q: %s", addr, reason)
+	if err != nil {
+		msg += ": " + err.Error()
+	}
+	return &Error{
+		Code:    ErrTransportInvalidListenAddr,
+		Message: msg,
+		Err:     err,
+	}
+}
+
+// NewTransportUnsupportedProtocolError 创建不支持的协议类型错误
+func NewTransportUnsupportedProtocolError(protocol string) *Error {
+	return &Error{
+		Code:    ErrTransportUnsupportedProtocol,
+		Message: fmt.Sprintf("不支持的协议类型: %s", protocol),
 	}
 }
 

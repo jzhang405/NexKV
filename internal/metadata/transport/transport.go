@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
@@ -152,7 +151,7 @@ type TransportConfig struct {
 // 生产环境应该根据实际网络环境配置合适的监听地址
 func DefaultTransportConfig() *TransportConfig {
 	return &TransportConfig{
-		ListenAddr:         "", // 需要调用者配置（如 "0.0.0.0:0" 自动分配端口）
+		ListenAddr:         "",                // 需要调用者配置（如 "0.0.0.0:0" 自动分配端口）
 		MaxMessageSize:     1024 * 1024 * 100, // 100MB
 		ReadTimeout:        30 * time.Second,
 		WriteTimeout:       30 * time.Second,
@@ -252,7 +251,7 @@ func validateTransportConfig(config *TransportConfig) error {
 	// 3. 更好的错误提示时机（启动时而非创建时）
 
 	if config.MaxMessageSize <= 0 || config.MaxMessageSize > 1024*1024*1024 {
-		return fmt.Errorf("最大消息大小必须在 (0, 1GB] 范围内，当前值: %d", config.MaxMessageSize)
+		return types.NewConfigValidationError("MaxMessageSize", fmt.Sprintf("必须在 (0, 1GB] 范围内，当前值: %d", config.MaxMessageSize))
 	}
 
 	// 验证超时配置（不能为负数）
@@ -260,21 +259,21 @@ func validateTransportConfig(config *TransportConfig) error {
 		name  string
 		value time.Duration
 	}{
-		{"读超时", config.ReadTimeout},
-		{"写超时", config.WriteTimeout},
-		{"保活间隔", config.KeepAliveInterval},
-		{"保活超时", config.KeepAliveTimeout},
-		{"通道发送超时", config.ChannelSendTimeout},
+		{"ReadTimeout", config.ReadTimeout},
+		{"WriteTimeout", config.WriteTimeout},
+		{"KeepAliveInterval", config.KeepAliveInterval},
+		{"KeepAliveTimeout", config.KeepAliveTimeout},
+		{"ChannelSendTimeout", config.ChannelSendTimeout},
 	}
 
 	for _, t := range timeouts {
 		if t.value < 0 {
-			return fmt.Errorf("%s不能为负数，当前值: %v", t.name, t.value)
+			return types.NewConfigValidationError(t.name, fmt.Sprintf("不能为负数，当前值: %v", t.value))
 		}
 	}
 
 	if config.BufferSize <= 0 || config.BufferSize > 65536 {
-		return fmt.Errorf("缓冲区大小必须在 (0, 64KB] 范围内，当前值: %d", config.BufferSize)
+		return types.NewConfigValidationError("BufferSize", fmt.Sprintf("必须在 (0, 64KB] 范围内，当前值: %d", config.BufferSize))
 	}
 
 	return nil
@@ -301,18 +300,17 @@ func createBatchForwardResult(addrs []string, err error) BatchForwardMessageResu
 //
 // 参数:
 //   - generator: 存储在 atomic.Value 中的序列号生成器函数
-//   - defaultCounter: 默认的原子计数器（当 generator 为 nil 或无效时使用）
 //
 // 返回:
 //   - uint64: 消息序列号
-func generateMsgSeq(generator interface{}, defaultCounter *atomic.Uint64) uint64 {
-	if generator == nil {
-		return defaultCounter.Add(1)
-	}
-
+//
+// 注意：msgSeqGenerator 保证不为 nil（在 Start() 时已验证）
+func generateMsgSeq(generator any) uint64 {
 	fn, ok := generator.(func() uint64)
 	if !ok || fn == nil {
-		return defaultCounter.Add(1)
+		// 理论上不应该到达这里（Start() 已验证）
+		// 但作为防御性编程，返回 0 表示错误
+		return 0
 	}
 
 	return fn()
@@ -437,7 +435,7 @@ func setReadTimeout(conn net.Conn, timeout time.Duration) error {
 func validateListenAddr(listenAddr, protocol string) (string, error) {
 	// 检查地址是否为空
 	if listenAddr == "" {
-		return "", fmt.Errorf("listenAddr 不能为空")
+		return "", types.NewStoreInvalidParameterError("listenAddr 不能为空")
 	}
 
 	// 根据协议类型解析地址
@@ -447,17 +445,17 @@ func validateListenAddr(listenAddr, protocol string) (string, error) {
 	case "tcp":
 		tcpAddr, err := net.ResolveTCPAddr("tcp", listenAddr)
 		if err != nil {
-			return "", fmt.Errorf("无效的 TCP 监听地址 %q: %w", listenAddr, err)
+			return "", types.NewTransportInvalidListenAddrError(listenAddr, "TCP 解析失败", err)
 		}
 		resolvedAddr = tcpAddr.String()
 	case "udp":
 		udpAddr, err := net.ResolveUDPAddr("udp", listenAddr)
 		if err != nil {
-			return "", fmt.Errorf("无效的 UDP 监听地址 %q: %w", listenAddr, err)
+			return "", types.NewTransportInvalidListenAddrError(listenAddr, "UDP 解析失败", err)
 		}
 		resolvedAddr = udpAddr.String()
 	default:
-		return "", fmt.Errorf("不支持的协议类型: %s", protocol)
+		return "", types.NewTransportUnsupportedProtocolError(protocol)
 	}
 
 	return resolvedAddr, nil

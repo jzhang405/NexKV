@@ -71,7 +71,7 @@ func NewTCPFrameCodec() *TCPFrameCodec {
 func (c *TCPFrameCodec) EncodeFrame(frame *Frame) ([]byte, error) {
 	data, err := frame.Marshal()
 	if err != nil {
-		return nil, fmt.Errorf("marshal frame: %w", err)
+		return nil, types.NewCodecEncodeFailedError("marshal frame", err)
 	}
 
 	if err := checkFrameSize(len(data), c.MaxFrameSize); err != nil {
@@ -83,11 +83,11 @@ func (c *TCPFrameCodec) EncodeFrame(frame *Frame) ([]byte, error) {
 
 	// 写入长度前缀（大端序）
 	if err := binary.Write(buf, binary.BigEndian, uint32(len(data))); err != nil {
-		return nil, fmt.Errorf("write length: %w", err)
+		return nil, types.NewFrameIOWriteError("write length", err)
 	}
 
 	if _, err := buf.Write(data); err != nil {
-		return nil, fmt.Errorf("write frame data: %w", err)
+		return nil, types.NewFrameIOWriteError("write frame data", err)
 	}
 
 	return buf.Bytes(), nil
@@ -102,7 +102,7 @@ func (c *TCPFrameCodec) DecodeFrame(data []byte) (*Frame, error) {
 	buf := bytes.NewReader(data)
 	var frameSize uint32
 	if err := binary.Read(buf, binary.BigEndian, &frameSize); err != nil {
-		return nil, fmt.Errorf("read length: %w", err)
+		return nil, types.NewFrameIOReadError("read length", err)
 	}
 
 	if err := checkFrameSize(int(frameSize), c.MaxFrameSize); err != nil {
@@ -116,12 +116,12 @@ func (c *TCPFrameCodec) DecodeFrame(data []byte) (*Frame, error) {
 
 	frameData := make([]byte, frameSize)
 	if _, err := io.ReadFull(buf, frameData); err != nil {
-		return nil, fmt.Errorf("read frame data: %w", err)
+		return nil, types.NewFrameIOReadError("read frame data", err)
 	}
 
 	frame := &Frame{}
 	if err := frame.Unmarshal(frameData); err != nil {
-		return nil, fmt.Errorf("unmarshal frame: %w", err)
+		return nil, types.NewCodecDecodeFailedError("unmarshal frame", err)
 	}
 
 	return frame, nil
@@ -169,7 +169,7 @@ func NewUDPFrameCodec() *UDPFrameCodec {
 func (c *UDPFrameCodec) EncodeFrame(frame *Frame) ([]byte, error) {
 	data, err := frame.Marshal()
 	if err != nil {
-		return nil, fmt.Errorf("marshal frame: %w", err)
+		return nil, types.NewCodecEncodeFailedError("marshal frame", err)
 	}
 
 	if err := checkFrameSize(len(data), c.MaxFrameSize); err != nil {
@@ -191,7 +191,7 @@ func (c *UDPFrameCodec) DecodeFrame(data []byte) (*Frame, error) {
 
 	frame := &Frame{}
 	if err := frame.Unmarshal(data); err != nil {
-		return nil, fmt.Errorf("unmarshal frame: %w", err)
+		return nil, types.NewCodecDecodeFailedError("unmarshal frame", err)
 	}
 
 	return frame, nil
@@ -255,7 +255,7 @@ func (d *TCPFrameStreamDecoder) Feed(data []byte) (frames []*Frame, err error) {
 	if d.timeout > 0 && !d.lastFeed.IsZero() {
 		if time.Since(d.lastFeed) > d.timeout {
 			d.buffer = nil // 超时后清空缓冲区
-			return nil, fmt.Errorf("连接超时 (%v)", d.timeout)
+			return nil, types.NewFrameConnectionTimeoutError(d.timeout.String())
 		}
 	}
 	d.lastFeed = time.Now()
@@ -278,7 +278,7 @@ func (d *TCPFrameStreamDecoder) Feed(data []byte) (frames []*Frame, err error) {
 		if err := binary.Read(buf, binary.BigEndian, &frameSize); err != nil {
 			// 解析失败，清空缓冲区
 			d.buffer = nil
-			return nil, fmt.Errorf("parse frame size: %w", err)
+			return nil, types.NewCodecDecodeFailedError("parse frame size", err)
 		}
 
 		// 7. 检查帧是否完整
@@ -296,7 +296,7 @@ func (d *TCPFrameStreamDecoder) Feed(data []byte) (frames []*Frame, err error) {
 		if err != nil {
 			// 解码失败，清空缓冲区
 			d.buffer = nil
-			return nil, fmt.Errorf("decode frame: %w", err)
+			return nil, types.NewCodecDecodeFailedError("decode frame", err)
 		}
 
 		frames = append(frames, frame)

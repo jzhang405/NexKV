@@ -46,11 +46,10 @@ const (
 // UDP 统计键名常量
 const (
 	// 状态统计
-	udpStatKeyStarted       = "started"
-	udpStatKeyStopped       = "stopped"
-	udpStatKeyListenAddr    = "listen_addr"
-	udpStatKeyLocalNodeID   = "local_node_id"
-	udpStatKeyMsgSeqCounter = "msg_seq_counter"
+	udpStatKeyStarted     = "started"
+	udpStatKeyStopped     = "stopped"
+	udpStatKeyListenAddr  = "listen_addr"
+	udpStatKeyLocalNodeID = "local_node_id"
 
 	// 运行时统计
 	udpStatKeyPendingFragments = "pending_fragments"
@@ -78,8 +77,7 @@ type UDPTransport struct {
 	NodeID atomic.Uint64
 
 	// 节点标识
-	msgSeqGenerator   atomic.Value  // 存储 func() uint64
-	defaultSeqCounter atomic.Uint64 // 默认序列号计数器
+	msgSeqGenerator atomic.Value // 存储 func() uint64
 
 	// UDP 连接
 	conn *net.UDPConn
@@ -1085,7 +1083,7 @@ func (t *UDPTransport) GetNodeID() uint64 {
 
 // GenerateMsgSeq 生成下一条消息序列号
 func (t *UDPTransport) GenerateMsgSeq() uint64 {
-	return generateMsgSeq(t.msgSeqGenerator.Load(), &t.defaultSeqCounter)
+	return generateMsgSeq(t.msgSeqGenerator.Load())
 }
 
 // Receive 返回接收消息的通道
@@ -1123,7 +1121,6 @@ func (t *UDPTransport) Stats() map[string]any {
 	stats[udpStatKeyStopped] = t.stopped.Load()
 	stats[udpStatKeyListenAddr] = t.GetLocalAddr()
 	stats[udpStatKeyLocalNodeID] = t.NodeID.Load()
-	stats[udpStatKeyMsgSeqCounter] = t.defaultSeqCounter.Load()
 
 	// 分片缓冲区统计
 	if t.fragmentBuf != nil {

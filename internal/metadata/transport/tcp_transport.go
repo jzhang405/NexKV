@@ -76,9 +76,8 @@ type TCPTransport struct {
 	localAddr string
 
 	// 节点标识
-	NodeID            atomic.Uint64
-	msgSeqGenerator   atomic.Value  // 存储 func() uint64
-	defaultSeqCounter atomic.Uint64 // 默认序列号计数器（当 msgSeqGenerator 为 nil 时使用）
+	NodeID          atomic.Uint64
+	msgSeqGenerator atomic.Value // 存储 func() uint64
 }
 
 // connPool 连接池
@@ -802,7 +801,7 @@ func (t *TCPTransport) GetNodeID() uint64 {
 // 返回:
 //   - uint64: 消息序列号（单调递增，全局唯一）
 func (t *TCPTransport) GenerateMsgSeq() uint64 {
-	return generateMsgSeq(t.msgSeqGenerator.Load(), &t.defaultSeqCounter)
+	return generateMsgSeq(t.msgSeqGenerator.Load())
 }
 
 // GetConfig 获取配置

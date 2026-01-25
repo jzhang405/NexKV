@@ -448,7 +448,7 @@ func DeserializeVarExtHeader(data []byte) (*VarExtHeader, error) {
 	for offset < len(data) {
 		field, err := DeserializeExtField(data[offset:])
 		if err != nil {
-			return nil, fmt.Errorf("解析扩展字段失败: %w", err)
+			return nil, types.NewFrameParseExtensionFieldError(err)
 		}
 
 		header.Fields = append(header.Fields, field)
@@ -668,7 +668,7 @@ func (f *Frame) Unmarshal(data []byte) error {
 	// 解析 FixedHeader (0-30)
 	fixedHeader, err := DeserializeFixedHeader(data[0:FixedHeaderLen])
 	if err != nil {
-		return fmt.Errorf("解析固定头失败: %w", err)
+		return err
 	}
 	f.FixedHeader = fixedHeader
 
@@ -688,7 +688,7 @@ func (f *Frame) Unmarshal(data []byte) error {
 		extHeaderData = data[FixedHeaderLen : FixedHeaderLen+extHeaderLen]
 		varExtHeader, err := DeserializeVarExtHeader(extHeaderData)
 		if err != nil {
-			return fmt.Errorf("解析扩展头失败: %w", err)
+			return types.NewFrameParseExtensionFieldError(err)
 		}
 		f.VarExtHeader = varExtHeader
 	} else {
@@ -798,7 +798,7 @@ func (fr *FrameReader) ReadFrame() (*Frame, error) {
 	// 解析固定头
 	fixedHeader, err := DeserializeFixedHeader(fixedHeaderData)
 	if err != nil {
-		return nil, fmt.Errorf("解析固定头失败: %w", err)
+		return nil, err
 	}
 
 	// 从固定头中获取 ExtHeaderLen 和 DataLength
@@ -817,7 +817,7 @@ func (fr *FrameReader) ReadFrame() (*Frame, error) {
 	// 读取剩余数据（VarExtHeader + Data + CRC32）
 	remainingData := make([]byte, remainingSize)
 	if _, err := io.ReadFull(fr.r, remainingData); err != nil {
-		return nil, fmt.Errorf("读取帧数据失败: %w", err)
+		return nil, types.NewFrameIOReadError("读取帧数据失败", err)
 	}
 
 	// 组装完整帧
@@ -894,7 +894,7 @@ func DecodeCompressExt(field *ExtField) (uint16, error) {
 	var data CompressExt
 
 	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
-		return 0, fmt.Errorf("反序列化压缩扩展失败: %w", err)
+		return 0, types.NewOpErr(types.ErrCompressionDecompress, "反序列化压缩扩展失败", "", err)
 	}
 
 	return data.CompressID, nil
@@ -911,7 +911,7 @@ func EncodeEncryptExt(encryptID uint16, nonce []byte, version string) (*ExtField
 
 	bytes, err := msgpack.Marshal(data)
 	if err != nil {
-		return nil, fmt.Errorf("序列化加密扩展失败: %w", err)
+		return nil, types.NewCodecEncodeFailedError("序列化加密扩展失败", err)
 	}
 
 	return &ExtField{
@@ -925,7 +925,7 @@ func DecodeEncryptExt(field *ExtField) (encryptID uint16, nonce []byte, version 
 	var data EncryptExt
 
 	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
-		return 0, nil, "", fmt.Errorf("反序列化加密扩展失败: %w", err)
+		return 0, nil, "", types.NewCodecDecodeFailedError("反序列化加密扩展失败", err)
 	}
 
 	return data.EncryptID, data.Nonce, data.Version, nil
@@ -961,7 +961,7 @@ func DecodeFragmentExt(field *ExtField) (index, total uint16, err error) {
 	var data SegmentExt
 
 	if err := msgpack.Unmarshal(field.Value, &data); err != nil {
-		return 0, 0, fmt.Errorf("反序列化分片扩展失败: %w", err)
+		return 0, 0, types.NewFrameDefragmentationError(err)
 	}
 
 	return data.Index, data.Total, nil

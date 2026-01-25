@@ -555,7 +555,6 @@ func TestUDPTransport_Stats(t *testing.T) {
 	assert.Equal(t, false, stats["stopped"])
 	assert.Contains(t, stats, "listen_addr")
 	assert.Contains(t, stats, "local_node_id")
-	assert.Contains(t, stats, "msg_seq_counter") // 改名为 msg_seq_counter
 }
 
 // TestUDPTransport_Stats_AfterStart 测试启动后的统计信息

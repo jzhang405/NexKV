@@ -91,7 +91,7 @@ func TestDecodeFragmentExt_InvalidData(t *testing.T) {
 			},
 			checkError: func(t *testing.T, err error) {
 				assert.Error(t, err, "空值应该返回错误")
-				assert.Contains(t, err.Error(), "反序列化分片扩展失败", "错误信息应该包含提示")
+				assert.Contains(t, err.Error(), "分片反序列化失败", "错误信息应该包含提示")
 			},
 		},
 		{
@@ -104,7 +104,7 @@ func TestDecodeFragmentExt_InvalidData(t *testing.T) {
 			},
 			checkError: func(t *testing.T, err error) {
 				assert.Error(t, err, "无效的 msgpack 数据应该返回错误")
-				assert.Contains(t, err.Error(), "反序列化分片扩展失败", "错误信息应该包含提示")
+				assert.Contains(t, err.Error(), "分片反序列化失败", "错误信息应该包含提示")
 			},
 		},
 		{
@@ -142,7 +142,7 @@ func TestDecodeFragmentExt_InvalidData(t *testing.T) {
 			},
 			checkError: func(t *testing.T, err error) {
 				assert.Error(t, err, "类型不匹配应该返回错误")
-				assert.Contains(t, err.Error(), "反序列化分片扩展失败", "错误信息应该包含提示")
+				assert.Contains(t, err.Error(), "分片反序列化失败", "错误信息应该包含提示")
 			},
 		},
 	}

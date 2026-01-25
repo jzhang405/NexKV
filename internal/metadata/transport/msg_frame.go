@@ -347,6 +347,28 @@ func cloneBytes(src []byte) []byte {
 // 返回:
 //   - *MsgFrame: 处理后的消息副本
 //   - error: Hops 过期或其他错误
+// validateAndDecrementHops 验证并递减跳数
+//
+// 返回递减后的跳数，如果跳数为 0 则返回错误
+// 此函数用于简化转发逻辑中的跳数处理
+func validateAndDecrementHops(frame MsgFrame) (uint8, error) {
+	currentHops, hasHops := frame.GetHopCount()
+
+	// 如果没有设置跳数，默认为 255（不限制）
+	if !hasHops {
+		return 255, nil
+	}
+
+	// 检查跳数是否已过期
+	if currentHops == 0 {
+		return 0, types.NewTransportHopCountExpiredError()
+	}
+
+	// 递减跳数
+	return currentHops - 1, nil
+}
+
+// prepareForwardMessage 准备转发消息（返回完整的 MsgFrame 副本）
 func prepareForwardMessage(frame *MsgFrame) (*MsgFrame, error) {
 	if frame.Message == nil {
 		return nil, types.NewOpErr(types.ErrCodecEncodeFailed, "ForwardMessage",

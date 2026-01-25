@@ -985,17 +985,12 @@ func (t *UDPTransport) ForwardMessage(ctx context.Context, addr string, msgExt M
 
 // forwardDirect 直接转发消息（无需分片）
 func (t *UDPTransport) forwardDirect(nodeID uint64, msgSeq uint64, forwardMsg MsgFrame, msgData []byte, tlvFields []ExtField, udpAddr *net.UDPAddr, originalAddr string) (uint64, error) {
-	// 获取当前跳数，检查是否可以转发
-	currentHops, hasHops := forwardMsg.GetHopCount()
-	if hasHops && currentHops == 0 {
-		return 0, types.NewTransportHopCountExpiredError()
+	// 验证并递减跳数（公共函数）
+	newHops, err := validateAndDecrementHops(forwardMsg)
+	if err != nil {
+		return 0, err
 	}
-
-	// 计算新的跳数（递减）
-	newHops := currentHops
-	if newHops > 0 {
-		newHops--
-	}
+	currentHops, _ := forwardMsg.GetHopCount() // 用于日志输出
 
 	// 转发消息使用单向请求 Flags（Gossip 类型的消息通常是单向的）
 	// 同时设置 ForwardNodeID 和 IsForward 标志
@@ -1024,17 +1019,12 @@ func (t *UDPTransport) forwardDirect(nodeID uint64, msgSeq uint64, forwardMsg Ms
 
 // forwardFragmented 分片转发大消息
 func (t *UDPTransport) forwardFragmented(nodeID uint64, msgSeq uint64, forwardMsg MsgFrame, msgData []byte, tlvFields []ExtField, maxPayloadSize int, udpAddr *net.UDPAddr, originalAddr string) (uint64, error) {
-	// 获取当前跳数，检查是否可以转发
-	currentHops, hasHops := forwardMsg.GetHopCount()
-	if hasHops && currentHops == 0 {
-		return 0, types.NewTransportHopCountExpiredError()
+	// 验证并递减跳数（公共函数）
+	newHops, err := validateAndDecrementHops(forwardMsg)
+	if err != nil {
+		return 0, err
 	}
-
-	// 计算新的跳数（递减）
-	newHops := currentHops
-	if newHops > 0 {
-		newHops--
-	}
+	currentHops, _ := forwardMsg.GetHopCount() // 用于日志输出
 
 	totalFragments := (len(msgData) + maxPayloadSize - 1) / maxPayloadSize
 	forwardNodeID := t.NodeID.Load() // 转发节点的 ID

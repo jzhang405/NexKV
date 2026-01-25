@@ -965,6 +965,14 @@ const (
 // --------------------------
 type RPCTransport interface {
     // 核心RPC方法：发送业务消息并获取响应
+    //
+    // context metadata 用途：
+    //   - WithNodeID(ctx, nodeID): 设置源节点 ID
+    //   - WithMsgSeq(ctx, seq): 设置消息序列号
+    //   - WithHopCount(ctx, hop, totalHop): 设置转发跳数
+    //   - WithCompression(ctx, algo): 设置压缩算法
+    //   - WithPriority(ctx, priority): 设置消息优先级
+    //
     // 返回 Message 接口（类型安全）
     RPC(ctx context.Context, targetNode string, reqMsg Message) (respMsg Message, err error)
 
@@ -981,6 +989,16 @@ type RPCTransport interface {
 }
 ```
 
+**关键设计：context metadata 传递 Frame 元素**
+
+| Frame 字段 | 传递方式 | 说明 |
+|-----------|---------|------|
+| `FixedHeader.NodeID` | `WithNodeID(ctx, nodeID)` | 源节点 ID |
+| `FixedHeader.MsgSeq` | `WithMsgSeq(ctx, seq)` | 消息序列号（可自动生成） |
+| `FixedHeader.Hops` | `WithHopCount(ctx, hop, total)` | 转发跳数控制 |
+| `VarExtHeader.Compression` | `WithCompression(ctx, algo)` | 压缩算法 |
+| `VarExtHeader.Priority` | `WithPriority(ctx, priority)` | 消息优先级 |
+
 **优势**:
 | 维度 | 当前设计 | 改进后 |
 |------|----------|--------|
@@ -988,6 +1006,78 @@ type RPCTransport interface {
 | **可测试性** | 难以 Mock | 可 Mock 接口 |
 | **业务集成** | TODO 注释待实现 | Handler 模式清晰 |
 | **类型安全** | `[]byte` | `Message` 接口 |
+| **元数据传递** | Frame 字段 | context metadata |
+
+---
+
+#### 提案 2.1: context metadata 辅助函数
+
+**实现示例**:
+```go
+package transport
+
+import "context"
+
+// context key 类型（避免冲突）
+type contextKey string
+
+const (
+    nodeIDKey      contextKey = "nodeID"
+    msgSeqKey      contextKey = "msgSeq"
+    hopCountKey    contextKey = "hopCount"
+    compressionKey contextKey = "compression"
+    priorityKey    contextKey = "priority"
+)
+
+// WithNodeID 设置源节点 ID
+func WithNodeID(ctx context.Context, nodeID uint64) context.Context {
+    return context.WithValue(ctx, nodeIDKey, nodeID)
+}
+
+// WithMsgSeq 设置消息序列号
+func WithMsgSeq(ctx context.Context, seq uint64) context.Context {
+    return context.WithValue(ctx, msgSeqKey, seq)
+}
+
+// WithHopCount 设置转发跳数
+func WithHopCount(ctx context.Context, hop, totalHop uint8) context.Context {
+    return context.WithValue(ctx, hopCountKey, HopCount{Hop: hop, TotalHop: totalHop})
+}
+
+// WithCompression 设置压缩算法
+func WithCompression(ctx context.Context, algo int) context.Context {
+    return context.WithValue(ctx, compressionKey, algo)
+}
+
+// WithPriority 设置消息优先级
+func WithPriority(ctx context.Context, priority int) context.Context {
+    return context.WithValue(ctx, priorityKey, priority)
+}
+
+// HopCount 跳数信息
+type HopCount struct {
+    Hop      uint8
+    TotalHop uint8
+}
+```
+
+**使用示例**:
+```go
+// 业务层调用
+ctx := context.Background()
+ctx = transport.WithNodeID(ctx, nodeID)
+ctx = transport.WithHopCount(ctx, 10, 20)  // 当前第 10 跳，总共 20 跳
+ctx = transport.WithCompression(ctx, transport.CompressLZ4)
+ctx = transport.WithPriority(ctx, types.PriorityHigh)
+
+resp, err := rpcTransport.RPC(ctx, targetNode, reqMsg)
+```
+
+**设计优势**:
+1. **关注点分离**: Message 接口只包含业务数据，Frame 元素通过 context 传递
+2. **符合 Go 惯用法**: 类似 gRPC 的 metadata 传递模式
+3. **灵活性**: 可以在调用链中任何位置添加/修改元数据
+4. **可测试性**: 测试时可以轻松构造带特定元数据的 context
 
 ---
 

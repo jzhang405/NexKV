@@ -255,13 +255,6 @@ const (
 	// 适用场景：节点心跳、状态广播、实时探测
 	// 性能：低延迟，但需要应用层重传机制
 	ProtocolUDP ProtocolType = "udp"
-
-	// ProtocolGRPC gRPC 协议
-	//
-	// 特点：基于 HTTP/2，支持流式传输、ProtoBuf 序列化
-	// 适用场景：RPC 通信、服务间调用、流式数据传输
-	// 性能：高效二进制编码，多路复用
-	ProtocolGRPC ProtocolType = "grpc"
 )
 
 // String 返回 ProtocolType 的字符串表示
@@ -272,7 +265,7 @@ func (p ProtocolType) String() string {
 // Validate 验证 ProtocolType 是否有效
 func (p ProtocolType) Validate() error {
 	switch p {
-	case ProtocolTCP, ProtocolUDP, ProtocolGRPC:
+	case ProtocolTCP, ProtocolUDP:
 		return nil
 	default:
 		return NewStoreInvalidParameterError("ProtocolType")

@@ -503,15 +503,13 @@ func TestGetAllProtocolStats(t *testing.T) {
 	// 记录到不同协议
 	monitor.RecordMessage(types.MessageTypeGet, types.ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
 	monitor.RecordMessage(types.MessageTypePut, types.ProtocolUDP, "127.0.0.1:8081", 512, 500000, false, errors.New("error"))
-	monitor.RecordMessage(types.MessageTypeDelete, types.ProtocolGRPC, "127.0.0.1:8082", 256, 200000, true, nil)
 
 	allStats := monitor.GetAllProtocolStats()
-	assert.Len(t, allStats, 3)
+	assert.Len(t, allStats, 2)
 
 	// 验证协议类型正确
 	assert.Contains(t, allStats, types.ProtocolTCP)
 	assert.Contains(t, allStats, types.ProtocolUDP)
-	assert.Contains(t, allStats, types.ProtocolGRPC)
 
 	// 验证 TCP 统计
 	tcpStats := allStats[types.ProtocolTCP]
@@ -527,7 +525,6 @@ func TestGetAllProtocolStats(t *testing.T) {
 	// 验证所有协议都是活跃的
 	assert.True(t, allStats[types.ProtocolTCP].IsActive.Load())
 	assert.True(t, allStats[types.ProtocolUDP].IsActive.Load())
-	assert.True(t, allStats[types.ProtocolGRPC].IsActive.Load())
 }
 
 // TestGetAllProtocolStats_Empty 测试获取空的协议统计

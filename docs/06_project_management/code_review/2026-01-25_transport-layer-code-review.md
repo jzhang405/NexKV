@@ -845,5 +845,298 @@ if r.reqTableSize.Load() >= r.maxReqTableSize {
 
 ---
 
+## 📌 架构改进建议
+
+### 背景
+
+本次代码审查发现，当前 Transport Layer 的架构存在一些设计上的局限性。以下是基于**依赖倒置原则（SOLID-D）**和**关注点分离**原则的架构改进提案。
+
+---
+
+### 核心问题分析
+
+#### 问题 1: Message 接口缺少行为方法
+
+**当前设计** (`types.Message`):
+```go
+type Message interface {
+    Type() MessageType
+    Priority() int
+    ExpectResponse() ResponseExpectation
+    Reliability() ReliabilityRequirement
+}
+```
+
+**问题**:
+- ❌ **缺少序列化方法**: `Encode()` / `Decode()` 不在 Message 接口中
+- ❌ **职责不清**: 混合了业务属性和传输属性
+- ❌ **扩展困难**: 新增传输选项需要修改 TLV 格式
+
+**后果**:
+- 业务层无法控制序列化逻辑
+- 类型不安全：`SendRequest` 返回 `[]byte` 而非 `Message`
+- 扩展性差：新增字段需要修改 Frame 格式
+
+---
+
+#### 问题 2: RPCTransport 是结构体而非接口
+
+**当前设计**:
+```go
+type RPCTransport struct {
+    transport       Transport
+    reqTable        sync.Map
+    defaultTimeout  time.Duration
+    // ...
+}
+```
+
+**问题**:
+- ❌ **违反依赖倒置原则**: 业务层依赖具体实现
+- ❌ **难以测试**: 无法 Mock RPCTransport
+- ❌ **耦合度高**: 业务层与 Transport 实现绑定
+
+---
+
+### 🎯 改进提案
+
+#### 提案 1: 增强 Message 接口
+
+**新设计**:
+```go
+package transport
+
+import "context"
+
+// --------------------------
+// 传输层控制选项（封装 hops、压缩等配置）
+// --------------------------
+type MessageOptions struct {
+    MaxRemainingHops uint8 // 最大剩余转发跳数（0=禁止转发）
+    CompressEnable   bool  // 是否开启压缩
+    CompressAlgo     int   // 压缩算法（0=无/1=LZ4/2=Snappy/3=Gzip）
+    Timeout          int64 // 超时时间(ms)，0=使用全局默认
+    RetryTimes       int   // 重试次数，-1=使用全局默认/0=禁止重试
+    NeedResponse     bool  // 是否需要响应（单向消息设为false）
+}
+
+// --------------------------
+// 业务消息通用抽象接口
+// --------------------------
+type Message interface {
+    // 业务层负责序列化
+    Encode() ([]byte, error)
+
+    // 业务层负责反序列化
+    Decode(data []byte) error
+
+    // 消息类型（用于路由/处理器匹配）
+    MsgType() string
+
+    // 传输控制选项（hops/压缩等）
+    Options() *MessageOptions
+}
+
+// 压缩算法常量
+const (
+    CompressNone = iota
+    CompressLZ4
+    CompressSnappy
+    CompressGzip
+)
+```
+
+**优势**:
+| 维度 | 当前设计 | 改进后 |
+|------|----------|--------|
+| **序列化职责** | Transport 层 | 业务层 |
+| **类型安全** | `[]byte` | `Message` 接口 |
+| **扩展性** | 修改 TLV 格式 | `MessageOptions` 新增字段 |
+| **测试性** | 需要 Mock Transport | 业务消息独立测试 |
+
+---
+
+#### 提案 2: RPCTransport 改为接口
+
+**新设计**:
+```go
+// --------------------------
+// RPC传输层核心上层接口
+// --------------------------
+type RPCTransport interface {
+    // 核心RPC方法：发送业务消息并获取响应
+    // 返回 Message 接口（类型安全）
+    RPC(ctx context.Context, targetNode string, reqMsg Message) (respMsg Message, err error)
+
+    // 注册消息处理器：匹配 MsgType 处理对应业务消息
+    // 使用 Handler 模式，而非 Transport 调用业务层
+    RegisterHandler(msgType string, handler func(reqMsg Message) (respMsg Message, isError bool))
+
+    // 生命周期管理
+    Start() error
+    Stop() error
+
+    // 获取统计信息
+    GetStats() map[string]interface{}
+}
+```
+
+**优势**:
+| 维度 | 当前设计 | 改进后 |
+|------|----------|--------|
+| **依赖方向** | 业务层 → 结构体 | 业务层 → 接口 |
+| **可测试性** | 难以 Mock | 可 Mock 接口 |
+| **业务集成** | TODO 注释待实现 | Handler 模式清晰 |
+| **类型安全** | `[]byte` | `Message` 接口 |
+
+---
+
+#### 提案 3: MessageOptions 封装传输控制
+
+**设计理念**: 所有传输选项集中在一个结构体中，而非分散在 TLV 扩展字段
+
+```go
+type MessageOptions struct {
+    MaxRemainingHops uint8  // 转发控制
+    CompressEnable   bool   // 压缩控制
+    CompressAlgo     int    // 算法选择
+    Timeout          int64  // 超时控制
+    RetryTimes       int    // 重试策略
+    NeedResponse     bool   // 单向/双向
+}
+```
+
+**价值**:
+1. **向后兼容**: 新增字段不影响现有代码
+2. **配置集中**: 所有传输选项在一个结构体
+3. **支持转发**: `MaxRemainingHops` 实现消息中继
+
+---
+
+### 📊 架构对比
+
+#### 当前架构
+
+```
+┌─────────────────────────────────────────┐
+│           业务层代码                      │
+│  - 类型不安全：SendRequest 返回 []byte   │
+│  - 无法控制序列化                         │
+└─────────────────────────────────────────┘
+                  ↓
+┌─────────────────────────────────────────┐
+│       RPCTransport (结构体)              │
+│  - SendRequest(target, body, timeout)    │
+│  - SendResponse(target, msgID, body)     │
+│  - OnRecv(nodeID, data)                  │
+└─────────────────────────────────────────┘
+                  ↓
+┌─────────────────────────────────────────┐
+│         Transport 接口                   │
+│  - Send(ctx, addr, msg)                  │
+│  - Receive() <-chan MsgFrame             │
+└─────────────────────────────────────────┘
+                  ↓
+┌─────────────────────────────────────────┐
+│    Codec 接口（序列化/反序列化）          │
+│  - Encode(msg) []byte                    │
+│  - Decode(data) Message                  │
+└─────────────────────────────────────────┘
+```
+
+#### 改进后架构
+
+```
+┌─────────────────────────────────────────┐
+│          业务层代码                      │
+│  - 类型安全：RPC 返回 Message 接口       │
+│  - 业务层控制序列化                       │
+│  - 实现 Message 接口                     │
+└─────────────────────────────────────────┘
+                  ↓
+┌─────────────────────────────────────────┐
+│       RPCTransport 接口                  │
+│  - RPC(ctx, target, req) (resp, error)   │
+│  - RegisterHandler(type, handler)        │
+└─────────────────────────────────────────┘
+                  ↓
+┌─────────────────────────────────────────┐
+│    RPCTransport 实现类                   │
+│  - 封装 reqTable 管理                    │
+│  - 封装超时和重试逻辑                     │
+│  - 调用 RegisterHandler 注册的处理器      │
+└─────────────────────────────────────────┘
+                  ↓
+┌─────────────────────────────────────────┐
+│         Transport 接口                   │
+│  - 只负责传输，不负责序列化               │
+└─────────────────────────────────────────┘
+```
+
+---
+
+### 🛠️ 迁移路径
+
+#### 阶段 1: 增加新接口（非破坏性）
+
+1. 在 `transport.go` 中新增 `MessageOptions` 结构体
+2. 在 `types.Message` 中增加 `Encode()` / `Decode()` 方法（可选）
+3. 创建新的 `RPCTransport` 接口
+
+**影响**: 无破坏性变更，现有代码继续工作
+
+#### 阶段 2: 实现 RPCTransport 接口
+
+1. 将现有 `RPCTransport` 结构体重命名为 `RPCTransportImpl`
+2. 实现 `RPCTransport` 接口
+3. 修改 `RPC()` 方法调用底层 `SendRequest`
+
+**影响**: 需要更新业务层调用代码
+
+#### 阶段 3: 业务层迁移
+
+1. 业务层实现 `Message` 接口
+2. 使用 `RPC()` 方法替代 `SendRequest`
+3. 使用 `RegisterHandler` 注册处理器
+
+**影响**: 业务层代码需要更新
+
+---
+
+### ✅ 改进收益
+
+| 收益类型 | 当前设计 | 改进后 |
+|---------|----------|--------|
+| **类型安全** | `[]byte` 返回值 | `Message` 接口返回值 |
+| **依赖倒置** | 依赖结构体 | 依赖接口 |
+| **可测试性** | 难以 Mock | 可 Mock 接口 |
+| **扩展性** | 修改 TLV 格式 | `MessageOptions` 新增字段 |
+| **业务集成** | TODO 注释 | Handler 模式 |
+| **序列化控制** | Transport 层 | 业务层 |
+
+---
+
+### 📋 实施建议
+
+| 优先级 | 任务 | 预估工作量 | 风险 |
+|--------|------|-----------|------|
+| **P1** | 新增 `MessageOptions` 结构体 | 0.5 天 | 低 |
+| **P1** | 创建 `RPCTransport` 接口 | 1 天 | 低 |
+| **P2** | `RPCTransportImpl` 实现接口 | 2 天 | 中 |
+| **P2** | 业务层迁移到新接口 | 3-5 天 | 中 |
+| **P3** | 移除旧的 `SendRequest` 方法 | 1 天 | 高 |
+
+**总计**: 约 8-10 天
+
+---
+
+### 📌 参考资料
+
+- **SOLID 原则**: 依赖倒置原则（D）
+- **Go 接口设计**: [Interface Best Practices](https://go.dev/doc/effective_go#interfaces)
+- **Handler 模式**: HTTP Handler 模式在 RPC 中的应用
+
+---
+
 **关联 PR**: #25
 **下一步**: 根据此报告创建修复任务

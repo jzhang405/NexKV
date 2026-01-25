@@ -156,9 +156,8 @@ func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 		recvCh:    make(chan MsgFrame, config.BufferSize),
 		stopCh:    make(chan struct{}),
 		localAddr: config.ListenAddr,
-		// NodeID 和 msgSeqGenerator 通过 Start() 参数传入
-		// NodeID 需要外部通过 Start() 参数设置（atomic.Uint64 默认零值）
-		// msgSeqGenerator 通过 Start() 参数传入（nil 表示使用默认原子计数器）
+		// NodeID 通过 Start() 参数传入（可选）
+		// msgSeqGenerator 通过 Start() 参数传入（必需）
 	}
 
 	return t, nil
@@ -166,14 +165,19 @@ func NewTCPTransportWithConfig(config *TransportConfig) (*TCPTransport, error) {
 
 // Start 启动传输层
 //
-// 扩展参数（可选，传入 nil 表示使用默认值）：
-//   - nodeID: 节点 ID（全局唯一，用于消息去重和幂等性）
-//   - msgSeqGenerator: 消息序列号生成器（nil 表示使用默认原子计数器）
+// 参数：
+//   - nodeID: 节点 ID（全局唯一，可选，用于消息去重和幂等性）
+//   - msgSeqGenerator: 消息序列号生成器（必需，单调递增）
 //
 // 启动监听器和连接池管理器
 func (t *TCPTransport) Start(nodeID *uint64, msgSeqGenerator func() uint64) error {
 	if !t.started.CompareAndSwap(false, true) {
 		return types.NewTransportStateError("已经启动")
+	}
+
+	// 验证必需参数
+	if msgSeqGenerator == nil {
+		return types.NewStoreInvalidParameterError("msgSeqGenerator 不能为空")
 	}
 
 	// 设置节点 ID
@@ -182,14 +186,7 @@ func (t *TCPTransport) Start(nodeID *uint64, msgSeqGenerator func() uint64) erro
 	}
 
 	// 设置消息序列号生成器
-	if msgSeqGenerator != nil {
-		t.msgSeqGenerator.Store(msgSeqGenerator)
-	} else {
-		// 使用默认原子计数器
-		t.msgSeqGenerator.Store(func() uint64 {
-			return t.defaultSeqCounter.Add(1)
-		})
-	}
+	t.msgSeqGenerator.Store(msgSeqGenerator)
 
 	logging.Infof("启动 TCP 传输层，监听地址: %s, NodeID: %d", t.config.ListenAddr, t.NodeID.Load())
 

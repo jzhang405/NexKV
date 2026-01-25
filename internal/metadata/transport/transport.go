@@ -16,7 +16,7 @@ import (
 // Transport 网络传输接口
 //
 // 核心特性:
-//   - 协议抽象：支持 TCP、gRPC、Memory 等多种实现
+//   - 协议抽象：支持 TCP、UDP 等多种实现
 //   - 消息传递：异步发送/接收消息
 //   - 连接管理：自动重连、连接池
 //   - 生命周期：Start/Stop 控制
@@ -31,17 +31,16 @@ type Transport interface {
 	// Start 启动传输层
 	// 初始化监听器、连接池等资源
 	//
-	// 扩展参数（可选，传入 nil 表示使用默认值）：
+	// 参数：
 	//   - nodeID: 节点 ID（全局唯一，用于消息去重和幂等性）
-	//   - msgSeqGenerator: 消息序列号生成器（nil 表示使用默认原子计数器）
+	//   - msgSeqGenerator: 消息序列号生成器（必需，单调递增）
 	//
 	// 使用示例：
-	//   // 使用默认值
-	//   transport.Start(nil, nil)
-	//
-	//   // 指定节点 ID
-	//   nodeID := uint64(12345)
-	//   transport.Start(&nodeID, nil)
+	//   // 使用默认序列号生成器（原子计数器）
+	//   var seq uint64
+	//   transport.Start(nil, func() uint64 {
+	//       return atomic.AddUint64(&seq, 1)
+	//   })
 	//
 	//   // 自定义序列号生成器
 	//   transport.Start(nil, func() uint64 {

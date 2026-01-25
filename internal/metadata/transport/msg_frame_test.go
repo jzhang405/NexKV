@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+
 // 辅助函数：创建测试用的基础 MsgFrame
 func createTestFrame(t *testing.T, msgType MessageType, payload []byte) *MsgFrame {
 	t.Helper()
@@ -555,7 +556,7 @@ func TestForwardMessage_ContextCancel(t *testing.T) {
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	nodeID := uint64(12345)
-	require.NoError(t, tcpTransport.Start(&nodeID, nil))
+	require.NoError(t, tcpTransport.Start(&nodeID, newDefaultMsgSeqGenerator()))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 应该返回 context 取消错误
@@ -567,7 +568,7 @@ func TestForwardMessage_ContextCancel(t *testing.T) {
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	udpNodeID := uint64(12345)
-	require.NoError(t, udpTransport.Start(&udpNodeID, nil))
+	require.NoError(t, udpTransport.Start(&udpNodeID, newDefaultMsgSeqGenerator()))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 应该返回 context 取消错误
@@ -587,7 +588,7 @@ func TestForwardMessage_NilMessage(t *testing.T) {
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	nodeID := uint64(12345)
-	require.NoError(t, tcpTransport.Start(&nodeID, nil))
+	require.NoError(t, tcpTransport.Start(&nodeID, newDefaultMsgSeqGenerator()))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 应该返回消息为空错误
@@ -599,7 +600,7 @@ func TestForwardMessage_NilMessage(t *testing.T) {
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	udpNodeID := uint64(12345)
-	require.NoError(t, udpTransport.Start(&udpNodeID, nil))
+	require.NoError(t, udpTransport.Start(&udpNodeID, newDefaultMsgSeqGenerator()))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 应该返回消息为空错误
@@ -620,7 +621,7 @@ func TestForwardMessage_HopCountExpired(t *testing.T) {
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	nodeID := uint64(12345)
-	require.NoError(t, tcpTransport.Start(&nodeID, nil))
+	require.NoError(t, tcpTransport.Start(&nodeID, newDefaultMsgSeqGenerator()))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 应该返回 Hop Count 过期错误
@@ -632,7 +633,7 @@ func TestForwardMessage_HopCountExpired(t *testing.T) {
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	udpNodeID := uint64(12345)
-	require.NoError(t, udpTransport.Start(&udpNodeID, nil))
+	require.NoError(t, udpTransport.Start(&udpNodeID, newDefaultMsgSeqGenerator()))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 应该返回 Hop Count 过期错误
@@ -652,7 +653,7 @@ func TestForwardMessage_DeepCopyPreventsDataRace(t *testing.T) {
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	nodeID := uint64(12345)
-	require.NoError(t, tcpTransport.Start(&nodeID, nil))
+	require.NoError(t, tcpTransport.Start(&nodeID, newDefaultMsgSeqGenerator()))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 使用 t.Run 并发执行

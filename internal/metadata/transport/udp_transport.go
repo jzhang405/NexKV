@@ -191,12 +191,17 @@ func NewUDPTransportWithConfig(config *TransportConfig) (*UDPTransport, error) {
 
 // Start 启动传输层
 //
-// 扩展参数（可选，传入 nil 表示使用默认值）：
-//   - nodeID: 节点 ID（全局唯一，用于消息去重和幂等性）
-//   - msgSeqGenerator: 消息序列号生成器（nil 表示使用默认原子计数器）
+// 参数：
+//   - nodeID: 节点 ID（全局唯一，可选，用于消息去重和幂等性）
+//   - msgSeqGenerator: 消息序列号生成器（必需，单调递增）
 func (t *UDPTransport) Start(nodeID *uint64, msgSeqGenerator func() uint64) error {
 	if !t.started.CompareAndSwap(false, true) {
 		return types.NewTransportStateError("已经启动")
+	}
+
+	// 验证必需参数
+	if msgSeqGenerator == nil {
+		return types.NewStoreInvalidParameterError("msgSeqGenerator 不能为空")
 	}
 
 	// 设置节点 ID
@@ -205,14 +210,7 @@ func (t *UDPTransport) Start(nodeID *uint64, msgSeqGenerator func() uint64) erro
 	}
 
 	// 设置消息序列号生成器
-	if msgSeqGenerator != nil {
-		t.msgSeqGenerator.Store(msgSeqGenerator)
-	} else {
-		// 使用默认原子计数器
-		t.msgSeqGenerator.Store(func() uint64 {
-			return t.defaultSeqCounter.Add(1)
-		})
-	}
+	t.msgSeqGenerator.Store(msgSeqGenerator)
 
 	logging.Infof("启动 UDP 传输层，监听地址: %s, NodeID: %d", t.config.ListenAddr, t.NodeID.Load())
 

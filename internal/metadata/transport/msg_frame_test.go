@@ -4,6 +4,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
@@ -11,6 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// newFrameMsgSeqGenerator 返回默认的消息序列号生成器（用于测试）
+func newFrameMsgSeqGenerator() func() uint64 {
+	var seq uint64
+	return func() uint64 {
+		return atomic.AddUint64(&seq, 1)
+	}
+}
 
 // 辅助函数：创建测试用的基础 MsgFrame
 func createTestFrame(t *testing.T, msgType MessageType, payload []byte) *MsgFrame {
@@ -556,7 +564,7 @@ func TestForwardMessage_ContextCancel(t *testing.T) {
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	nodeID := uint64(12345)
-	require.NoError(t, tcpTransport.Start(&nodeID, newDefaultMsgSeqGenerator()))
+	require.NoError(t, tcpTransport.Start(&nodeID, newFrameMsgSeqGenerator()))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 应该返回 context 取消错误
@@ -568,7 +576,7 @@ func TestForwardMessage_ContextCancel(t *testing.T) {
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	udpNodeID := uint64(12345)
-	require.NoError(t, udpTransport.Start(&udpNodeID, newDefaultMsgSeqGenerator()))
+	require.NoError(t, udpTransport.Start(&udpNodeID, newFrameMsgSeqGenerator()))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 应该返回 context 取消错误
@@ -588,7 +596,7 @@ func TestForwardMessage_NilMessage(t *testing.T) {
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	nodeID := uint64(12345)
-	require.NoError(t, tcpTransport.Start(&nodeID, newDefaultMsgSeqGenerator()))
+	require.NoError(t, tcpTransport.Start(&nodeID, newFrameMsgSeqGenerator()))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 应该返回消息为空错误
@@ -600,7 +608,7 @@ func TestForwardMessage_NilMessage(t *testing.T) {
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	udpNodeID := uint64(12345)
-	require.NoError(t, udpTransport.Start(&udpNodeID, newDefaultMsgSeqGenerator()))
+	require.NoError(t, udpTransport.Start(&udpNodeID, newFrameMsgSeqGenerator()))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 应该返回消息为空错误
@@ -621,7 +629,7 @@ func TestForwardMessage_HopCountExpired(t *testing.T) {
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	nodeID := uint64(12345)
-	require.NoError(t, tcpTransport.Start(&nodeID, newDefaultMsgSeqGenerator()))
+	require.NoError(t, tcpTransport.Start(&nodeID, newFrameMsgSeqGenerator()))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 应该返回 Hop Count 过期错误
@@ -633,7 +641,7 @@ func TestForwardMessage_HopCountExpired(t *testing.T) {
 	udpTransport, err := NewUDPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	udpNodeID := uint64(12345)
-	require.NoError(t, udpTransport.Start(&udpNodeID, newDefaultMsgSeqGenerator()))
+	require.NoError(t, udpTransport.Start(&udpNodeID, newFrameMsgSeqGenerator()))
 	defer func() { _ = udpTransport.Stop() }()
 
 	// 应该返回 Hop Count 过期错误
@@ -653,7 +661,7 @@ func TestForwardMessage_DeepCopyPreventsDataRace(t *testing.T) {
 	tcpTransport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	nodeID := uint64(12345)
-	require.NoError(t, tcpTransport.Start(&nodeID, newDefaultMsgSeqGenerator()))
+	require.NoError(t, tcpTransport.Start(&nodeID, newFrameMsgSeqGenerator()))
 	defer func() { _ = tcpTransport.Stop() }()
 
 	// 使用 t.Run 并发执行

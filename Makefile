@@ -1,7 +1,7 @@
 # NexKV Makefile
 # 提供 build、test、clean 等常用命令
 
-.PHONY: all build test clean run fmt vet lint docker-build docker-run proto proto-clean help
+.PHONY: all build test clean run fmt vet lint docker-build docker-run help
 
 # 变量定义
 BINARY_NAME=nexkv
@@ -10,22 +10,11 @@ GO=go
 GOFLAGS=-v
 LDFLAGS=-s -w
 
-# Protobuf 配置
-PROTO_DIR=./internal/metadata/proto
-PROTOC=protoc
-PROTO_OPTS=--go_out=. --go_opt=paths=source_relative
-
 # 默认目标
 all: build
 
-## proto: 编译 Protobuf 文件
-proto:
-	@echo "编译 Protobuf 文件..."
-	cd $(PROTO_DIR) && $(PROTOC) $(PROTO_OPTS) *.proto
-	@echo "Protobuf 编译完成"
-
 ## build: 编译项目
-build: proto
+build:
 	@echo "编译 $(BINARY_NAME)..."
 	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) $(MAIN_PATH)/main.go
 
@@ -91,12 +80,6 @@ deps:
 	$(GO) mod download
 	$(GO) mod tidy
 
-## proto-clean: 清理生成的 Protobuf Go 代码
-proto-clean:
-	@echo "清理 Protobuf 生成的文件..."
-	find $(PROTO_DIR) -name "*.pb.go" -delete
-	@echo "Protobuf 清理完成"
-
 ## run: 运行程序
 run: build
 	@echo "运行 $(BINARY_NAME)..."
@@ -126,8 +109,6 @@ help:
 	@echo "  make vet           - 代码静态检查"
 	@echo "  make lint          - 代码质量检查"
 	@echo "  make deps          - 下载依赖"
-	@echo "  make proto         - 编译 Protobuf 文件"
-	@echo "  make proto-clean   - 清理 Protobuf 生成的文件"
 	@echo "  make run           - 运行程序"
 	@echo "  make docker-build  - 构建 Docker 镜像"
 	@echo "  make docker-run    - 运行 Docker 容器"

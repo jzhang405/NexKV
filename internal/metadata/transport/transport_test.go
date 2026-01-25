@@ -812,10 +812,10 @@ func TestValidateTransportConfig_ValidConfig(t *testing.T) {
 // TestValidateTransportConfig_EmptyListenAddr 测试空监听地址
 //
 // 注意：validateTransportConfig 不再验证 ListenAddr，验证延迟到 Start() 方法
-// 这个测试现在验证 Start() 方法会拒绝空 ListenAddr
+// 这个测试验证 Start() 方法会拒绝空 listenAddr 参数
 func TestValidateTransportConfig_EmptyListenAddr(t *testing.T) {
 	config := &TransportConfig{
-		ListenAddr:         "",
+		ListenAddr:         "", // 配置中的 ListenAddr 可以是空的（由 Start() 参数覆盖）
 		MaxMessageSize:     1024,
 		ReadTimeout:        30 * time.Second,
 		WriteTimeout:       30 * time.Second,
@@ -829,14 +829,15 @@ func TestValidateTransportConfig_EmptyListenAddr(t *testing.T) {
 	err := validateTransportConfig(config)
 	assert.NoError(t, err)
 
-	// 但 Start() 方法会验证并拒绝
+	// Start() 方法会验证 listenAddr 参数
 	trans, err := NewTCPTransportWithConfig(config)
 	require.NoError(t, err)
 	require.NotNil(t, trans)
 
-	err = trans.Start(nil, newTCPMsgSeqGenerator())
+	// 传递空 listenAddr 应该返回错误
+	err = trans.Start(nil, newTCPMsgSeqGenerator(), "")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "ListenAddr 未配置")
+	assert.Contains(t, err.Error(), "listenAddr 不能为空")
 
 	_ = trans.Stop() // 清理
 }

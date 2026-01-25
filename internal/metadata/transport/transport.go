@@ -34,19 +34,14 @@ type Transport interface {
 	// 参数：
 	//   - nodeID: 节点 ID（全局唯一，用于消息去重和幂等性）
 	//   - msgSeqGenerator: 消息序列号生成器（必需，单调递增）
+	//   - listenAddr: 监听地址（必需，如 "0.0.0.0:9211" 或 "0.0.0.0:0" 自动分配端口）
 	//
 	// 使用示例：
-	//   // 使用默认序列号生成器（原子计数器）
 	//   var seq uint64
 	//   transport.Start(nil, func() uint64 {
 	//       return atomic.AddUint64(&seq, 1)
-	//   })
-	//
-	//   // 自定义序列号生成器
-	//   transport.Start(nil, func() uint64 {
-	//       return uint64(time.Now().UnixNano())
-	//   })
-	Start(nodeID *uint64, msgSeqGenerator func() uint64) error
+	//   }, "0.0.0.0:9211")
+	Start(nodeID *uint64, msgSeqGenerator func() uint64, listenAddr string) error
 
 	// Stop 停止传输层
 	// 优雅关闭所有连接、释放资源

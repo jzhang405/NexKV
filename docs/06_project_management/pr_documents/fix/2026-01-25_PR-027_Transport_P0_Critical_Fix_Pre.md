@@ -320,8 +320,12 @@ type RPCTransport interface {
     // 注册消息处理器：匹配 MsgType 处理对应业务消息
     //
     // 关键设计：Handler 如何区分多个相同类型的请求？
-    // 方案 1: Message 接口增加 GetMsgID() 方法，Handler 返回对应 MsgID 的响应
-    // 方案 2: Handler 返回 (respMsg Message, err error)，通过 respMsg.GetMsgID() 对应
+    //
+    // 解决方案（方案 1）：
+    //   - Message 接口提供 GetMsgID() / SetMsgID() 方法
+    //   - Handler 返回 (respMsg Message, err error)
+    //   - Handler 必须在 respMsg 中设置对应的 msgID
+    //   - RPCTransport 通过 respMsg.GetMsgID() 将响应匹配到请求
     //
     // 使用 Handler 模式，而非 Transport 调用业务层
     RegisterHandler(msgType string, handler func(reqMsg Message) (respMsg Message, err error))

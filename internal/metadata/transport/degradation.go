@@ -32,6 +32,16 @@ const (
 	UnknownError  = types.UnknownError  // 未知错误（保守策略，触发降级）
 )
 
+// 传输协议类型已移至 types/codec.go
+// 为了向后兼容，重新导出类型别名
+type ProtocolType = types.ProtocolType
+
+const (
+	ProtocolTCP  = types.ProtocolTCP  // TCP 协议
+	ProtocolUDP  = types.ProtocolUDP  // UDP 协议
+	ProtocolGRPC = types.ProtocolGRPC // gRPC 协议
+)
+
 // DegradationConfig 降级配置
 type DegradationConfig struct {
 	FailureThreshold      int           // 失败阈值（连续失败次数）

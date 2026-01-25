@@ -23,14 +23,6 @@ const (
 	// 性能：编码/解码速度相对较慢
 	// 数据大小：约为 MessagePack 的 2-3 倍
 	CodecTypeJSON CodecType = 2
-
-	// CodecTypeProtobuf Protobuf 编解码（预留）
-	//
-	// 特点：二进制格式，极致性能，强类型 Schema
-	// 性能：编码/解码速度约为 JSON 的 3-5 倍
-	// 数据大小：约为 JSON 的 40-60%
-	// 状态：PR-002 实现
-	CodecTypeProtobuf CodecType = 3
 )
 
 // String 返回 CodecType 的字符串表示
@@ -40,8 +32,6 @@ func (c CodecType) String() string {
 		return "msgpack"
 	case CodecTypeJSON:
 		return "json"
-	case CodecTypeProtobuf:
-		return "protobuf"
 	default:
 		return "unknown"
 	}
@@ -50,7 +40,7 @@ func (c CodecType) String() string {
 // Validate 验证 CodecType 是否有效
 func (c CodecType) Validate() error {
 	switch c {
-	case CodecTypeMessagePack, CodecTypeJSON, CodecTypeProtobuf:
+	case CodecTypeMessagePack, CodecTypeJSON:
 		return nil
 	default:
 		return NewStoreInvalidParameterError("CodecType")
@@ -242,5 +232,49 @@ func (p Priority) Validate() error {
 		return nil
 	default:
 		return NewStoreInvalidParameterError("Priority")
+	}
+}
+
+// ProtocolType 传输协议类型
+//
+// 用于标识网络传输协议类型
+// 应用场景：传输层协议选择、故障降级、协议切换
+type ProtocolType string
+
+const (
+	// ProtocolTCP TCP 协议
+	//
+	// 特点：面向连接、可靠传输、有序交付、流量控制
+	// 适用场景：元数据同步、关键消息传递、大文件传输
+	// 性能：相对稳定，延迟略高于 UDP
+	ProtocolTCP ProtocolType = "tcp"
+
+	// ProtocolUDP UDP 协议
+	//
+	// 特点：无连接、不可靠、无序交付、低延迟
+	// 适用场景：节点心跳、状态广播、实时探测
+	// 性能：低延迟，但需要应用层重传机制
+	ProtocolUDP ProtocolType = "udp"
+
+	// ProtocolGRPC gRPC 协议
+	//
+	// 特点：基于 HTTP/2，支持流式传输、ProtoBuf 序列化
+	// 适用场景：RPC 通信、服务间调用、流式数据传输
+	// 性能：高效二进制编码，多路复用
+	ProtocolGRPC ProtocolType = "grpc"
+)
+
+// String 返回 ProtocolType 的字符串表示
+func (p ProtocolType) String() string {
+	return string(p)
+}
+
+// Validate 验证 ProtocolType 是否有效
+func (p ProtocolType) Validate() error {
+	switch p {
+	case ProtocolTCP, ProtocolUDP, ProtocolGRPC:
+		return nil
+	default:
+		return NewStoreInvalidParameterError("ProtocolType")
 	}
 }

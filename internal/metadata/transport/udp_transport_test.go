@@ -204,8 +204,9 @@ func TestUDPTransport_Fragmentation(t *testing.T) {
 	}
 
 	msg := &PutMessage{
-		Key:   "large-test-key",
-		Value: largeValue,
+		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+		Key:         "large-test-key",
+		Value:       largeValue,
 	}
 
 	// 发送大消息（应该自动分片）
@@ -283,8 +284,9 @@ func TestUDPTransport_Fragmentation_Sizes(t *testing.T) {
 			}
 
 			msg := &PutMessage{
-				Key:   fmt.Sprintf("frag-test-%s", tc.name),
-				Value: value,
+				BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+				Key:         fmt.Sprintf("frag-test-%s", tc.name),
+				Value:       value,
 			}
 
 			// 发送消息
@@ -354,8 +356,9 @@ func TestUDPTransport_Fragmentation_ByteBufferPrecision(t *testing.T) {
 			}
 
 			msg := &PutMessage{
-				Key:   fmt.Sprintf("precision-test-%d", size),
-				Value: value,
+				BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+				Key:         fmt.Sprintf("precision-test-%d", size),
+				Value:       value,
 			}
 
 			// 发送消息
@@ -620,10 +623,11 @@ func TestUDPTransport_PingPong(t *testing.T) {
 
 				// 自动回复 Pong
 				pong := &NodePongMessage{
-					NodeID:    "server-node",
-					Sequence:  ping.Sequence,
-					Status:    "ready",
-					Timestamp: time.Now().UnixMilli(),
+					BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+					NodeID:      "server-node",
+					Sequence:    ping.Sequence,
+					Status:      "ready",
+					Timestamp:   time.Now().UnixMilli(),
 				}
 				_ = server.Send(ctx, clientAddr, pong)
 				return
@@ -643,9 +647,10 @@ func TestUDPTransport_PingPong(t *testing.T) {
 
 	// 发送 Ping
 	ping := &NodePingMessage{
-		NodeID:    "client-node",
-		Sequence:  1001,
-		Timestamp: time.Now().UnixMilli(),
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+		NodeID:      "client-node",
+		Sequence:    1001,
+		Timestamp:   time.Now().UnixMilli(),
 	}
 
 	err := client.Send(ctx, serverAddr, ping)
@@ -708,10 +713,11 @@ func TestUDPTransport_PingPong_Bidirectional(t *testing.T) {
 				nodeAReceivedPing <- m
 				// 自动回复 Pong
 				pong := &NodePongMessage{
-					NodeID:    "node-a",
-					Sequence:  m.Sequence,
-					Status:    "active",
-					Timestamp: time.Now().UnixMilli(),
+					BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+					NodeID:      "node-a",
+					Sequence:    m.Sequence,
+					Status:      "active",
+					Timestamp:   time.Now().UnixMilli(),
 				}
 				_ = nodeA.Send(ctx, nodeBAddr, pong)
 			case *NodePongMessage:
@@ -728,10 +734,11 @@ func TestUDPTransport_PingPong_Bidirectional(t *testing.T) {
 				nodeBReceivedPing <- m
 				// 自动回复 Pong
 				pong := &NodePongMessage{
-					NodeID:    "node-b",
-					Sequence:  m.Sequence,
-					Status:    "active",
-					Timestamp: time.Now().UnixMilli(),
+					BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+					NodeID:      "node-b",
+					Sequence:    m.Sequence,
+					Status:      "active",
+					Timestamp:   time.Now().UnixMilli(),
 				}
 				_ = nodeB.Send(ctx, nodeAAddr, pong)
 			case *NodePongMessage:
@@ -742,18 +749,20 @@ func TestUDPTransport_PingPong_Bidirectional(t *testing.T) {
 
 	// 节点 A 发送 Ping 到节点 B
 	pingA := &NodePingMessage{
-		NodeID:    "node-a",
-		Sequence:  1001,
-		Timestamp: time.Now().UnixMilli(),
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+		NodeID:      "node-a",
+		Sequence:    1001,
+		Timestamp:   time.Now().UnixMilli(),
 	}
 	err := nodeA.Send(ctx, nodeBAddr, pingA)
 	require.NoError(t, err)
 
 	// 节点 B 发送 Ping 到节点 A
 	pingB := &NodePingMessage{
-		NodeID:    "node-b",
-		Sequence:  2001,
-		Timestamp: time.Now().UnixMilli(),
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+		NodeID:      "node-b",
+		Sequence:    2001,
+		Timestamp:   time.Now().UnixMilli(),
 	}
 	err = nodeB.Send(ctx, nodeAAddr, pingB)
 	require.NoError(t, err)
@@ -837,10 +846,11 @@ func TestUDPTransport_PingPong_MultipleRounds(t *testing.T) {
 
 				// 自动回复 Pong
 				pong := &NodePongMessage{
-					NodeID:    "server-node",
-					Sequence:  ping.Sequence,
-					Status:    "ready",
-					Timestamp: time.Now().UnixMilli(),
+					BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
+					NodeID:      "server-node",
+					Sequence:    ping.Sequence,
+					Status:      "ready",
+					Timestamp:   time.Now().UnixMilli(),
 				}
 				_ = server.Send(ctx, clientAddr, pong)
 
@@ -871,9 +881,10 @@ func TestUDPTransport_PingPong_MultipleRounds(t *testing.T) {
 	// 发送多轮 Ping
 	for i := 0; i < numRounds; i++ {
 		ping := &NodePingMessage{
-			NodeID:    "client-node",
-			Sequence:  int64(5000 + i),
-			Timestamp: time.Now().UnixMilli(),
+			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
+			NodeID:      "client-node",
+			Sequence:    int64(5000 + i),
+			Timestamp:   time.Now().UnixMilli(),
 		}
 
 		err := client.Send(ctx, serverAddr, ping)
@@ -1013,8 +1024,9 @@ func TestUDPFragmentation_MD5Integrity(t *testing.T) {
 
 	// 步骤 2：发送大消息（会自动分片）
 	msg := &PutMessage{
-		Key:   fmt.Sprintf("md5-test-%d", time.Now().UnixNano()),
-		Value: originalData,
+		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+		Key:         fmt.Sprintf("md5-test-%d", time.Now().UnixNano()),
+		Value:       originalData,
 	}
 
 	err = client.Send(ctx, serverAddr, msg)
@@ -1179,8 +1191,9 @@ func TestUDPFragmentation_Boundary_MinFragments(t *testing.T) {
 	}
 
 	msg := &PutMessage{
-		Key:   "min-fragments-test",
-		Value: data,
+		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+		Key:         "min-fragments-test",
+		Value:       data,
 	}
 
 	err = client.Send(ctx, server.GetLocalAddr(), msg)
@@ -1232,8 +1245,9 @@ func TestUDPFragmentation_Boundary_MaxFragments(t *testing.T) {
 	}
 
 	msg := &PutMessage{
-		Key:   "max-fragments-test",
-		Value: data,
+		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+		Key:         "max-fragments-test",
+		Value:       data,
 	}
 
 	var memStatsBefore, memStatsAfter runtime.MemStats
@@ -1292,8 +1306,9 @@ func TestUDPFragmentation_Boundary_EmptyPacket(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	msg := &PutMessage{
-		Key:   "empty-packet-test",
-		Value: []byte{},
+		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+		Key:         "empty-packet-test",
+		Value:       []byte{},
 	}
 
 	err = client.Send(ctx, server.GetLocalAddr(), msg)
@@ -1354,8 +1369,9 @@ func TestUDPFragmentation_PerformanceReport(t *testing.T) {
 			}
 
 			msg := &PutMessage{
-				Key:   fmt.Sprintf("perf-test-%d", time.Now().UnixNano()),
-				Value: data,
+				BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
+				Key:         fmt.Sprintf("perf-test-%d", time.Now().UnixNano()),
+				Value:       data,
 			}
 
 			var memStatsBefore, memStatsAfter runtime.MemStats
@@ -1442,7 +1458,7 @@ func TestUDP_P0_LocalNodeIDValidation(t *testing.T) {
 
 	// 尝试发送大消息（需要分片），应该因为 NodeID=0 而失败
 	largeValue := make([]byte, 2000) // 大于 MaxUDPPacketSize
-	msg := &PutMessage{Key: "test-key", Value: largeValue}
+	msg := &PutMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypePut}, Key: "test-key", Value: largeValue}
 
 	err = client.Send(ctx, serverAddr, msg)
 	assert.Error(t, err, "NodeID 未设置时应该返回错误")

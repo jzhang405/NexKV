@@ -201,6 +201,25 @@ const (
 
 	// ErrClockOperation 时钟操作错误
 	ErrClockOperation
+
+	// ========================================
+	// Encryption 模块错误码
+	// ========================================
+
+	// ErrEncryptionKeySize 加密密钥大小错误
+	ErrEncryptionKeySize
+
+	// ErrEncryptionIVSize 加密IV大小错误
+	ErrEncryptionIVSize
+
+	// ErrEncryptionCiphertextSize 密文大小错误
+	ErrEncryptionCiphertextSize
+
+	// ErrEncryptionPadSize 填充大小错误
+	ErrEncryptionPadSize
+
+	// ErrEncryptionEmptyData 空数据错误
+	ErrEncryptionEmptyData
 )
 
 // ========================================
@@ -431,6 +450,50 @@ func NewCodecUnknownMessageTypeError(msgType int) *Error {
 	return &Error{
 		Code:    ErrCodecUnknownMessageType,
 		Message: fmt.Sprintf("未知消息类型: %d", msgType),
+	}
+}
+
+// ========================================
+// Encryption 模块错误构造函数
+// ========================================
+
+// NewEncryptionKeySizeError 创建密钥大小错误
+func NewEncryptionKeySizeError(expected int, actual int) *Error {
+	return &Error{
+		Code:    ErrEncryptionKeySize,
+		Message: fmt.Sprintf("AES-256 密钥必须是%d字节，实际为%d字节", expected, actual),
+	}
+}
+
+// NewEncryptionIVSizeError 创建IV大小错误
+func NewEncryptionIVSizeError(expected int, actual int) *Error {
+	return &Error{
+		Code:    ErrEncryptionIVSize,
+		Message: fmt.Sprintf("IV大小不足，需要至少%d字节，实际为%d字节", expected, actual),
+	}
+}
+
+// NewEncryptionCiphertextSizeError 创建密文大小错误
+func NewEncryptionCiphertextSizeError(msg string) *Error {
+	return &Error{
+		Code:    ErrEncryptionCiphertextSize,
+		Message: msg,
+	}
+}
+
+// NewEncryptionPadSizeError 创建填充大小错误
+func NewEncryptionPadSizeError(msg string) *Error {
+	return &Error{
+		Code:    ErrEncryptionPadSize,
+		Message: msg,
+	}
+}
+
+// NewEncryptionEmptyDataError 创建空数据错误
+func NewEncryptionEmptyDataError(msg string) *Error {
+	return &Error{
+		Code:    ErrEncryptionEmptyData,
+		Message: msg,
 	}
 }
 

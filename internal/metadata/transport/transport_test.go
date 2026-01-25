@@ -345,235 +345,6 @@ func TestMessagePackCodec_DecodeEmpty(t *testing.T) {
 }
 
 // ========================================
-// Protobuf 编解码器测试
-// ========================================
-
-// TestProtobufCodec_EncodeDecode 测试 Protobuf 编解码
-func TestProtobufCodec_EncodeDecode(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	// 创建测试消息
-	msg := &GetMessage{
-		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
-		Key:         "test_key",
-	}
-
-	// 编码
-	data, err := codec.Encode(msg)
-	require.NoError(t, err)
-	assert.NotEmpty(t, data)
-
-	// 解码
-	decodedMsg, err := codec.Decode(msg.Type(), data)
-	require.NoError(t, err)
-
-	// 验证
-	getMsg, ok := decodedMsg.(*GetMessage)
-	require.True(t, ok)
-	assert.Equal(t, msg.Key, getMsg.Key)
-}
-
-// TestProtobufCodec_MetadataMessages 测试元数据操作消息
-func TestProtobufCodec_MetadataMessages(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	testCases := []Message{
-		&GetMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
-			Key:         "test_key",
-		},
-		&PutMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
-			Key:         "test_key",
-			Value:       []byte("test_value"),
-		},
-		&DeleteMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeDelete},
-			Key:         "test_key",
-		},
-		&GetReplyMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeGetReply},
-			Key:         "test_key",
-			Value:       []byte("test_value"),
-			Found:       true,
-			Version:     1,
-		},
-		&PutReplyMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypePutReply},
-			Key:         "test_key",
-			Success:     true,
-			Version:     1,
-		},
-		&DeleteReplyMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeDeleteReply},
-			Key:         "test_key",
-			Success:     true,
-		},
-	}
-
-	for _, msg := range testCases {
-		t.Run(msg.Type().String(), func(t *testing.T) {
-			// 编码
-			data, err := codec.Encode(msg)
-			require.NoError(t, err, "编码失败: %s", msg.Type())
-
-			// 解码
-			decodedMsg, err := codec.Decode(msg.Type(), data)
-			require.NoError(t, err, "解码失败: %s", msg.Type())
-
-			// 验证类型
-			assert.Equal(t, msg.Type(), decodedMsg.Type())
-		})
-	}
-}
-
-// TestProtobufCodec_GossipMessages 测试 Gossip 协议消息
-func TestProtobufCodec_GossipMessages(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	// GossipSyncMessage
-	msg1 := &GossipSyncMessage{
-		BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipSync},
-		Version:     123,
-		Metadata:    map[string][]byte{"key1": []byte("value1")},
-	}
-	data1, err := codec.Encode(msg1)
-	require.NoError(t, err)
-	decoded1, err := codec.Decode(msg1.Type(), data1)
-	require.NoError(t, err)
-	assert.Equal(t, types.MessageTypeGossipSync, decoded1.Type())
-
-	// GossipDigestMessage
-	msg2 := &GossipDigestMessage{
-		BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipDigest},
-		Version:     456,
-		Digest:      map[string]uint64{"key1": 789},
-	}
-	data2, err := codec.Encode(msg2)
-	require.NoError(t, err)
-	decoded2, err := codec.Decode(msg1.Type(), data2)
-	require.NoError(t, err)
-	assert.Equal(t, types.MessageTypeGossipDigest, decoded2.Type())
-}
-
-// TestProtobufCodec_TwoPCMessages 测试 2PC 协议消息
-func TestProtobufCodec_TwoPCMessages(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	testCases := []Message{
-		&TwoPCPrepareMessage{
-			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCPrepare},
-			TransactionID: "txn-1",
-			Participants:  []string{"node1", "node2"},
-		},
-		&TwoPCCommitMessage{
-			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCCommit},
-			TransactionID: "txn-1",
-		},
-		&TwoPCRollbackMessage{
-			BaseMessage:   BaseMessage{MessageType: types.MessageType2PCRollback},
-			TransactionID: "txn-1",
-		},
-	}
-
-	for _, msg := range testCases {
-		t.Run(msg.Type().String(), func(t *testing.T) {
-			// 编码
-			data, err := codec.Encode(msg)
-			require.NoError(t, err, "编码失败: %s", msg.Type())
-
-			// 解码
-			decodedMsg, err := codec.Decode(msg.Type(), data)
-			require.NoError(t, err, "解码失败: %s", msg.Type())
-
-			// 验证类型
-			assert.Equal(t, msg.Type(), decodedMsg.Type())
-		})
-	}
-}
-
-// TestProtobufCodec_NodeMessages 测试节点管理消息
-func TestProtobufCodec_NodeMessages(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	testCases := []Message{
-		&NodePingMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing},
-			NodeID:      "node-1",
-			Sequence:    1,
-			Timestamp:   time.Now().Unix(),
-		},
-		&NodePongMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong},
-			NodeID:      "node-1",
-			Sequence:    1,
-			Timestamp:   time.Now().Unix(),
-		},
-		&NodeJoinMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeJoin},
-			NodeID:      "node-1",
-			Addr:        "127.0.0.1:9211",
-		},
-		&NodeLeaveMessage{
-			BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeLeave},
-			NodeID:      "node-1",
-		},
-	}
-
-	for _, msg := range testCases {
-		t.Run(msg.Type().String(), func(t *testing.T) {
-			// 编码
-			data, err := codec.Encode(msg)
-			require.NoError(t, err, "编码失败: %s", msg.Type())
-
-			// 解码
-			decodedMsg, err := codec.Decode(msg.Type(), data)
-			require.NoError(t, err, "解码失败: %s", msg.Type())
-
-			// 验证类型
-			assert.Equal(t, msg.Type(), decodedMsg.Type())
-		})
-	}
-}
-
-// TestProtobufCodec_EncodeNil 测试编码空消息
-func TestProtobufCodec_EncodeNil(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	_, err := codec.Encode(nil)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "消息为空")
-}
-
-// TestProtobufCodec_DecodeEmpty 测试解码空数据
-func TestProtobufCodec_DecodeEmpty(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	_, err := codec.Decode(types.MessageTypeGet, []byte{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "数据为空")
-}
-
-// TestProtobufCodec_DecodeInvalidLength 测试解码无效长度数据
-func TestProtobufCodec_DecodeInvalidLength(t *testing.T) {
-	codec := NewProtobufCodec()
-
-	// 无效的 Protobuf 数据
-	_, err := codec.Decode(types.MessageTypeGet, []byte{1, 2, 3, 4, 5})
-	assert.Error(t, err)
-	// Protobuf 返回格式错误，包装后的错误消息包含"解码失败"
-	assert.Contains(t, err.Error(), "解码失败")
-}
-
-// TestNewCodec_Protobuf 测试工厂函数创建 Protobuf 编解码器
-func TestNewCodec_Protobuf(t *testing.T) {
-	codec, err := NewCodec(types.CodecTypeProtobuf)
-	require.NoError(t, err)
-	assert.NotNil(t, codec)
-	assert.Equal(t, "protobuf", codec.Name())
-}
-
-// ========================================
 // createMessageByType 测试
 // ========================================
 
@@ -745,8 +516,8 @@ func TestMessageWriter_WriteMessage(t *testing.T) {
 	err = frame.Unmarshal(frameData)
 	require.NoError(t, err)
 
-	// defaultCodec 是 Protobuf，所以 CodecID 应该是 CodecTypeProtobuf
-	assert.Equal(t, uint16(types.CodecTypeProtobuf), frame.FixedHeader.CodecID)
+	// defaultCodec 是 MessagePack，所以 CodecID 应该是 CodecTypeMessagePack
+	assert.Equal(t, uint16(types.CodecTypeMessagePack), frame.FixedHeader.CodecID)
 
 	// 验证 NodeID 和 MsgSeq
 	assert.Equal(t, uint64(12345), frame.FixedHeader.NodeID)
@@ -840,8 +611,8 @@ func TestTransportError_Timeout(t *testing.T) {
 // 三 Codec 一致性测试
 // ========================================
 
-// TestThreeCodecConsistency 测试三种编解码器的一致性
-// 验证 struct → JSON/MsgPack/Protobuf → struct 后数据保持一致
+// TestThreeCodecConsistency 测试两种编解码器的一致性
+// 验证 struct → JSON/MsgPack → struct 后数据保持一致
 func TestThreeCodecConsistency(t *testing.T) {
 	testMessages := []Message{
 		&PutMessage{
@@ -901,14 +672,13 @@ func TestThreeCodecConsistency(t *testing.T) {
 
 	for _, originalMsg := range testMessages {
 		t.Run(originalMsg.Type().String(), func(t *testing.T) {
-			// 测试三种 Codec
+			// 测试两种 Codec
 			codecs := []struct {
 				name  string
 				codec Codec
 			}{
 				{"JSON", NewJSONCodec()},
 				{"MessagePack", NewMessagePackCodec()},
-				{"Protobuf", NewProtobufCodec()},
 			}
 
 			for _, tc := range codecs {

@@ -711,7 +711,7 @@ func TestTCPTransport_PingPong(t *testing.T) {
 func TestTCPFrameRoundTrip_Debug(t *testing.T) {
 	// 创建帧
 	data := []byte("test data")
-	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeProtobuf), FlagsIsRequest, data)
+	frame := NewFrame(12345, 1, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), FlagsIsRequest, data)
 
 	// 序列化
 	frameData, err := frame.Marshal()

@@ -320,7 +320,7 @@ func TestFrame_WithPriority_Chain(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test data"))
+			frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
 
 			// 使用 WithPriority 添加优先级扩展
 			frame.WithPriority(tc.priority)
@@ -340,7 +340,7 @@ func TestFrame_WithPriority_Chain(t *testing.T) {
 
 // TestFrame_WithPriority_MultipleExtensions 测试 WithPriority 与其他扩展字段组合
 func TestFrame_WithPriority_MultipleExtensions(t *testing.T) {
-	frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test data"))
+	frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
 
 	// 链式调用添加多个扩展字段
 	frame.WithFragment(1, 5).
@@ -373,7 +373,7 @@ func TestFrame_WithPriority_RoundTrip(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// 创建带优先级的帧
-			frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test data"))
+			frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
 			frame.WithPriority(tc.priority).Finalize()
 
 			// 序列化
@@ -403,7 +403,7 @@ func TestFrame_WithPriority_UsageExamples(t *testing.T) {
 		frame := NewFrame(12345, // NodeID
 			67890,                              // MsgSeq
 			types.MessageTypePut,               // MsgType
-			uint16(types.CodecTypeProtobuf), 0, // CodecID
+			uint16(types.CodecTypeMessagePack), 0, // CodecID
 			[]byte("metadata data"), // Data
 		)
 
@@ -444,7 +444,7 @@ func TestFrame_WithPriority_UsageExamples(t *testing.T) {
 	t.Run("示例3: 批量创建不同优先级的消息", func(t *testing.T) {
 		// 场景：批量发送消息时，为不同类型的消息设置不同优先级
 		createMessage := func(priority types.Priority) *Frame {
-			return NewFrame(12345, 67890, types.MessageTypeGet, uint16(types.CodecTypeProtobuf), 0, []byte("key")).WithPriority(priority).Finalize()
+			return NewFrame(12345, 67890, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), 0, []byte("key")).WithPriority(priority).Finalize()
 		}
 
 		// 创建三个不同优先级的消息
@@ -487,7 +487,7 @@ func TestFrame_FullRoundTrip(t *testing.T) {
 			nodeID:  12345,
 			msgSeq:  67890,
 			msgType: types.MessageTypePut,
-			codecID: uint16(types.CodecTypeProtobuf),
+			codecID: uint16(types.CodecTypeMessagePack),
 			data:    []byte("test data"),
 		},
 		{
@@ -521,7 +521,7 @@ func TestFrame_FullRoundTrip(t *testing.T) {
 			nodeID:  54321,
 			msgSeq:  98765,
 			msgType: types.MessageTypePut,
-			codecID: uint16(types.CodecTypeProtobuf),
+			codecID: uint16(types.CodecTypeMessagePack),
 			data:    make([]byte, 10000),
 		},
 	}
@@ -567,7 +567,7 @@ func TestFrame_FullRoundTrip(t *testing.T) {
 // TestFrame_CRC32Validation 测试 CRC32 校验
 func TestFrame_CRC32Validation(t *testing.T) {
 	t.Run("正常CRC32校验", func(t *testing.T) {
-		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test data"))
+		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
 
 		// 序列化（会自动计算CRC32）
 		frameData, err := frame.Marshal()
@@ -587,7 +587,7 @@ func TestFrame_CRC32Validation(t *testing.T) {
 	})
 
 	t.Run("截断数据CRC32校验", func(t *testing.T) {
-		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test data"))
+		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
 
 		frameData, err := frame.Marshal()
 		assert.NoError(t, err)
@@ -605,7 +605,7 @@ func TestFrame_CRC32Validation(t *testing.T) {
 // TestFrame_AllExtensionFields 测试所有扩展字段类型
 func TestFrame_AllExtensionFields(t *testing.T) {
 	t.Run("分片扩展字段", func(t *testing.T) {
-		frame := NewFrame(1, 1, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("data"))
+		frame := NewFrame(1, 1, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("data"))
 		frame.VarExtHeader.Fields = append(frame.VarExtHeader.Fields, EncodeFragmentExt(2, 5))
 
 		frameData, err := frame.Marshal()
@@ -626,7 +626,7 @@ func TestFrame_AllExtensionFields(t *testing.T) {
 	})
 
 	t.Run("优先级扩展字段", func(t *testing.T) {
-		frame := NewFrame(1, 1, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("data"))
+		frame := NewFrame(1, 1, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("data"))
 		frame.VarExtHeader.Fields = append(frame.VarExtHeader.Fields, &ExtField{
 			Type:  ExtPriority,
 			Value: []byte{byte(types.PriorityHigh)},
@@ -646,7 +646,7 @@ func TestFrame_AllExtensionFields(t *testing.T) {
 	})
 
 	t.Run("压缩扩展字段", func(t *testing.T) {
-		frame := NewFrame(1, 1, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("data"))
+		frame := NewFrame(1, 1, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("data"))
 		frame.VarExtHeader.Fields = append(frame.VarExtHeader.Fields, &ExtField{
 			Type:  ExtCompress,
 			Value: []byte{1}, // 使用压缩算法 1
@@ -666,7 +666,7 @@ func TestFrame_AllExtensionFields(t *testing.T) {
 	})
 
 	t.Run("加密扩展字段", func(t *testing.T) {
-		frame := NewFrame(1, 1, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("data"))
+		frame := NewFrame(1, 1, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("data"))
 		frame.VarExtHeader.Fields = append(frame.VarExtHeader.Fields, &ExtField{
 			Type:  ExtEncrypt,
 			Value: []byte{2}, // 使用加密算法 2
@@ -688,7 +688,7 @@ func TestFrame_AllExtensionFields(t *testing.T) {
 
 // TestFrame_WithFragment_Chain 测试 WithFragment 链式调用
 func TestFrame_WithFragment_Chain(t *testing.T) {
-	frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test data"))
+	frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
 
 	// 使用 WithFragment 添加分片扩展
 	frame.WithFragment(1, 10)
@@ -708,7 +708,7 @@ func TestFrame_WithFragment_Chain(t *testing.T) {
 // TestFrame_EdgeCases 测试边界情况
 func TestFrame_EdgeCases(t *testing.T) {
 	t.Run("空数据帧", func(t *testing.T) {
-		frame := NewFrame(1, 1, types.MessageTypePut, uint16(types.CodecTypeProtobuf), FlagsOneWayRequest, []byte{})
+		frame := NewFrame(1, 1, types.MessageTypePut, uint16(types.CodecTypeMessagePack), FlagsOneWayRequest, []byte{})
 
 		frameData, err := frame.Marshal()
 		assert.NoError(t, err)
@@ -720,7 +720,7 @@ func TestFrame_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("最大NodeID和MsgSeq", func(t *testing.T) {
-		frame := NewFrame(0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test"))
+		frame := NewFrame(0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test"))
 
 		frameData, err := frame.Marshal()
 		assert.NoError(t, err)
@@ -733,7 +733,7 @@ func TestFrame_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("大量扩展字段", func(t *testing.T) {
-		frame := NewFrame(1, 1, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test"))
+		frame := NewFrame(1, 1, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test"))
 
 		// 添加10个扩展字段
 		for i := 0; i < 10; i++ {
@@ -760,7 +760,7 @@ func TestFrame_EdgeCases(t *testing.T) {
 // TestFrame_ValidateCRC32 测试 ValidateCRC32 方法
 func TestFrame_ValidateCRC32(t *testing.T) {
 	t.Run("正常CRC32校验通过", func(t *testing.T) {
-		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test data"))
+		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
 
 		// Finalize 会自动计算 CRC32
 		frame.Finalize()
@@ -771,7 +771,7 @@ func TestFrame_ValidateCRC32(t *testing.T) {
 	})
 
 	t.Run("CRC32校验失败", func(t *testing.T) {
-		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test data"))
+		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
 
 		// Finalize 会自动计算 CRC32
 		frame.Finalize()
@@ -789,7 +789,7 @@ func TestFrame_ValidateCRC32(t *testing.T) {
 	})
 
 	t.Run("修改数据后CRC32校验失败", func(t *testing.T) {
-		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test data"))
+		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
 
 		// Finalize 会自动计算 CRC32
 		frame.Finalize()
@@ -806,7 +806,7 @@ func TestFrame_ValidateCRC32(t *testing.T) {
 // TestFrame_GetCRCScope 测试 GetCRCScope 方法
 func TestFrame_GetCRCScope(t *testing.T) {
 	t.Run("无扩展头帧的CRC范围", func(t *testing.T) {
-		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test data"))
+		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
 
 		crcScope := frame.GetCRCScope()
 
@@ -820,7 +820,7 @@ func TestFrame_GetCRCScope(t *testing.T) {
 	})
 
 	t.Run("带扩展头帧的CRC范围", func(t *testing.T) {
-		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test data"))
+		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
 		frame.VarExtHeader.Fields = append(frame.VarExtHeader.Fields, EncodeFragmentExt(1, 3))
 
 		crcScope := frame.GetCRCScope()
@@ -842,7 +842,7 @@ func TestFrame_GetCRCScope(t *testing.T) {
 	})
 
 	t.Run("CRC范围不包含FixedHeader", func(t *testing.T) {
-		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test data"))
+		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
 
 		crcScope := frame.GetCRCScope()
 		fixedHeaderData := frame.FixedHeader.Serialize()
@@ -852,7 +852,7 @@ func TestFrame_GetCRCScope(t *testing.T) {
 	})
 
 	t.Run("CRC范围不包含CRC32字段本身", func(t *testing.T) {
-		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, []byte("test data"))
+		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
 		frame.Finalize()
 
 		crcScope := frame.GetCRCScope()
@@ -920,7 +920,7 @@ func TestFrame_CRC32ScopeConsistency(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeProtobuf), 0, tc.data)
+			frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, tc.data)
 			frame.VarExtHeader.Fields = append(frame.VarExtHeader.Fields, tc.extFields...)
 
 			// Finalize 会计算 CRC32

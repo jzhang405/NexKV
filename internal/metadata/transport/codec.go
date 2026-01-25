@@ -1,6 +1,6 @@
 // Package transport 编解码实现
 //
-// 支持多种编解码器：Protobuf（默认）、MessagePack 和 JSON（兼容性）
+// 支持多种编解码器：MessagePack（默认）和 JSON（兼容性）
 package transport
 
 import (
@@ -17,11 +17,12 @@ import (
 
 // defaultCodec 系统默认编解码器
 //
-// 默认使用 Protobuf，原因：
-//  1. 性能优异（benchmark 显示数据最小）
+// 默认使用 MessagePack，原因：
+//  1. 性能优异（二进制格式，紧凑高效）
 //  2. Schema 明确，跨语言支持好
 //  3. Wrapper 模式无语义丢失
-const defaultCodec = types.CodecTypeProtobuf
+//  4. 无需额外的 .proto 文件和代码生成步骤
+const defaultCodec = types.CodecTypeMessagePack
 
 // ========================================
 // MessagePack 编解码器实现
@@ -201,23 +202,9 @@ func NewCodec(codecType types.CodecType) (Codec, error) {
 		return NewMessagePackCodec(), nil
 	case types.CodecTypeJSON:
 		return NewJSONCodec(), nil
-	case types.CodecTypeProtobuf:
-		return NewProtobufCodec(), nil
 	default:
 		return nil, types.NewStoreInvalidParameterError("不支持的编解码器类型")
 	}
-}
-
-// ========================================
-// 消息工厂函数
-// ========================================
-
-// createMessageByType 根据消息类型创建消息实例（使用注册表）
-//
-// 已重构：使用 msg_frame.go 中的消息注册表替代 switch-case
-// 这样可以消除 76 行重复的 switch-case 代码
-func createMessageByType(msgType MessageType) (Message, error) {
-	return createMessage(msgType)
 }
 
 // ========================================
@@ -481,6 +468,15 @@ type LeaderElectionMessage struct {
 	ElectionID       string `json:"election_id" msgpack:"election_id"`
 	NodeID           string `json:"node_id" msgpack:"node_id"`
 	ElectionPriority int    `json:"priority" msgpack:"priority"` // 选举优先级
+}
+
+// ========================================
+// 消息工厂函数
+// ========================================
+
+// createMessageByType 根据消息类型创建消息实例（使用注册表）
+func createMessageByType(msgType MessageType) (Message, error) {
+	return createMessage(msgType)
 }
 
 // ========================================

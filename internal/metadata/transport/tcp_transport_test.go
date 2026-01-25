@@ -19,6 +19,8 @@ import (
 // newTCPMsgSeqGenerator 返回默认的消息序列号生成器（用于测试）
 func newTCPMsgSeqGenerator() func() uint64 {
 	var seq uint64
+	// 使用当前时间戳作为初始值，避免从 0 开始
+	atomic.StoreUint64(&seq, uint64(time.Now().UnixNano()))
 	return func() uint64 {
 		return atomic.AddUint64(&seq, 1)
 	}

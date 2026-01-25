@@ -347,6 +347,7 @@ func cloneBytes(src []byte) []byte {
 // 返回:
 //   - *MsgFrame: 处理后的消息副本
 //   - error: Hops 过期或其他错误
+//
 // validateAndDecrementHops 验证并递减跳数
 //
 // 返回递减后的跳数，如果跳数为 0 则返回错误

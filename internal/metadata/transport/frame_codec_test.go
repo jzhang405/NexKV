@@ -195,8 +195,7 @@ func TestTCPFrameCodec_DecodeFrame_RoundTrip(t *testing.T) {
 			original := createTestCodecFrameWithExt(
 				msgType,
 				[]byte("test payload"),
-				[]*ExtField{
-				},
+				[]*ExtField{},
 			)
 
 			encoded, err := codec.EncodeFrame(original)

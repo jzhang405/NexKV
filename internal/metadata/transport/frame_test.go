@@ -401,8 +401,8 @@ func TestFrame_WithPriority_UsageExamples(t *testing.T) {
 	t.Run("示例1: 创建高优先级消息", func(t *testing.T) {
 		// 场景：发送高优先级的元数据操作请求
 		frame := NewFrame(12345, // NodeID
-			67890,                              // MsgSeq
-			types.MessageTypePut,               // MsgType
+			67890,                                 // MsgSeq
+			types.MessageTypePut,                  // MsgType
 			uint16(types.CodecTypeMessagePack), 0, // CodecID
 			[]byte("metadata data"), // Data
 		)

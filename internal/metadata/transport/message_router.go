@@ -179,7 +179,7 @@ func (r *MessageRouter) threeDimensionalDecision(
 		return r.buildDecision(ProtocolTCP, "大消息，使用 TCP", false)
 	}
 
-	if msgType.Reliability() == types.Reliable {
+	if msgType.ProtocolType() == types.ProtocolTCP {
 		return r.buildDecision(ProtocolTCP, "高可靠性要求，使用 TCP", false)
 	}
 

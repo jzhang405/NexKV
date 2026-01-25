@@ -59,7 +59,7 @@ const (
 	FixedHeaderLen = 42
 
 	// MaxHops 最大跳数限制（防止无限转发）
-	MaxHops uint8 = 10
+	MaxHops uint8 = 5
 
 	// MagicNumber TLV 协议魔术字 "NXUT" (0x4E 0x58 0x55 0x54)
 	MagicNumber = 0x4E585554

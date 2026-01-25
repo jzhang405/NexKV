@@ -3,6 +3,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
@@ -772,7 +773,7 @@ func TestGetExt_MissingDecoder(t *testing.T) {
 }
 
 // ========================================
-// ExpectResponse 和 Reliability 测试
+// ExpectResponse 和 ProtocolType 测试
 // ========================================
 
 // TestMsgFrame_ExpectResponse_WithMessage 测试有 Message 时的 ExpectResponse
@@ -810,31 +811,31 @@ func TestMsgFrame_ExpectResponse_NoResponse(t *testing.T) {
 	assert.Equal(t, types.ExpectResponse, frame.ExpectResponse())
 }
 
-// TestMsgFrame_Reliability_WithMessage 测试有 Message 时的 Reliability
-func TestMsgFrame_Reliability_WithMessage(t *testing.T) {
-	testMsg := &testMessageWithReliability{
-		reliability: types.Reliable,
+// TestMsgFrame_ProtocolType_WithMessage 测试有 Message 时的 ProtocolType
+func TestMsgFrame_ProtocolType_WithMessage(t *testing.T) {
+	testMsg := &testMessageWithProtocolType{
+		protocolType: types.ProtocolTCP,
 	}
 	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, testMsg)
 
-	assert.Equal(t, types.Reliable, frame.Reliability())
+	assert.Equal(t, types.ProtocolTCP, frame.ProtocolType())
 }
 
-// TestMsgFrame_Reliability_WithoutMessage 测试无 Message 时的 Reliability
-func TestMsgFrame_Reliability_WithoutMessage(t *testing.T) {
+// TestMsgFrame_ProtocolType_WithoutMessage 测试无 Message 时的 ProtocolType
+func TestMsgFrame_ProtocolType_WithoutMessage(t *testing.T) {
 	// 无 Message，从 MsgType 获取
 	frame := NewMsgFrame(12345, 1, types.MessageTypeGet, 1, nil)
 
-	// MessageTypeGet 是 Reliable
-	assert.Equal(t, types.Reliable, frame.Reliability())
+	// MessageTypeGet 使用 TCP
+	assert.Equal(t, types.ProtocolTCP, frame.ProtocolType())
 }
 
-// TestMsgFrame_Reliability_BestEffort 测试 BestEffort 消息类型
-func TestMsgFrame_Reliability_BestEffort(t *testing.T) {
-	// GossipSync 是 BestEffort
+// TestMsgFrame_ProtocolType_UDP 测试 UDP 消息类型
+func TestMsgFrame_ProtocolType_UDP(t *testing.T) {
+	// GossipSync 使用 UDP
 	frame := NewMsgFrame(12345, 1, types.MessageTypeGossipSync, 1, nil)
 
-	assert.Equal(t, types.BestEffort, frame.Reliability())
+	assert.Equal(t, types.ProtocolUDP, frame.ProtocolType())
 }
 
 // ========================================
@@ -854,39 +855,157 @@ func (m *testMessageWithExpectResponse) Priority() int {
 	return int(types.PriorityNormal)
 }
 
+func (m *testMessageWithExpectResponse) MsgRole() types.MsgRole {
+	return types.MsgRoleRequest
+}
+
 func (m *testMessageWithExpectResponse) ExpectResponse() types.ResponseExpectation {
 	return m.expectResponse
 }
 
-func (m *testMessageWithExpectResponse) Reliability() types.ReliabilityRequirement {
-	return types.Reliable
+func (m *testMessageWithExpectResponse) ProtocolType() types.ProtocolType {
+	return types.ProtocolTCP
+}
+
+func (m *testMessageWithExpectResponse) CorrelationID() string {
+	return ""
 }
 
 func (m *testMessageWithExpectResponse) GetPayload() []byte {
 	return []byte("test")
 }
 
-// testMessageWithReliability 实现了 Reliability 的测试消息
-type testMessageWithReliability struct {
-	reliability types.ReliabilityRequirement
+// testMessageWithProtocolType 实现了 ProtocolType 的测试消息
+type testMessageWithProtocolType struct {
+	protocolType types.ProtocolType
 }
 
-func (m *testMessageWithReliability) Type() types.MessageType {
+func (m *testMessageWithProtocolType) Type() types.MessageType {
 	return types.MessageTypePut
 }
 
-func (m *testMessageWithReliability) Priority() int {
+func (m *testMessageWithProtocolType) Priority() int {
 	return int(types.PriorityHigh)
 }
 
-func (m *testMessageWithReliability) ExpectResponse() types.ResponseExpectation {
+func (m *testMessageWithProtocolType) MsgRole() types.MsgRole {
+	return types.MsgRoleRequest
+}
+
+func (m *testMessageWithProtocolType) ExpectResponse() types.ResponseExpectation {
 	return types.ExpectResponse
 }
 
-func (m *testMessageWithReliability) Reliability() types.ReliabilityRequirement {
-	return m.reliability
+func (m *testMessageWithProtocolType) ProtocolType() types.ProtocolType {
+	return m.protocolType
 }
 
-func (m *testMessageWithReliability) GetPayload() []byte {
+func (m *testMessageWithProtocolType) CorrelationID() string {
+	return ""
+}
+
+func (m *testMessageWithProtocolType) GetPayload() []byte {
 	return []byte("test data")
+}
+
+// ========================================
+// CorrelationID 测试
+// ========================================
+
+// TestMsgFrame_CorrelationID 测试 CorrelationID 自动组装
+func TestMsgFrame_CorrelationID(t *testing.T) {
+	tests := []struct {
+		name       string
+		nodeID     uint64
+		msgSeq     uint64
+		expectedID string
+	}{
+		{
+			name:       "NodeID=12345, MsgSeq=1",
+			nodeID:     12345,
+			msgSeq:     1,
+			expectedID: "12345:1",
+		},
+		{
+			name:       "NodeID=0, MsgSeq=0",
+			nodeID:     0,
+			msgSeq:     0,
+			expectedID: "0:0",
+		},
+		{
+			name:       "NodeID=999, MsgSeq=10001",
+			nodeID:     999,
+			msgSeq:     10001,
+			expectedID: "999:10001",
+		},
+		{
+			name:       "大 NodeID 和 MsgSeq",
+			nodeID:     18446744073709551615, // uint64 最大值
+			msgSeq:     18446744073709551615,
+			expectedID: "18446744073709551615:18446744073709551615",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 创建 MsgFrame（不指定 Message）
+			frame := NewMsgFrame(tt.nodeID, tt.msgSeq, types.MessageTypeGet, 1, nil)
+
+			// 验证自动计算的 CorrelationID
+			if got := frame.CorrelationID(); got != tt.expectedID {
+				t.Errorf("CorrelationID() = %v, want %v", got, tt.expectedID)
+			}
+		})
+	}
+}
+
+// TestMsgFrame_CorrelationID_WithMessage 测试有 Message 时的 CorrelationID
+func TestMsgFrame_CorrelationID_WithMessage(t *testing.T) {
+	msg := &GetMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGet}, Key: "test"}
+	frame := NewMsgFrame(12345, 100, types.MessageTypeGet, 1, msg)
+
+	// 即使有 Message，CorrelationID 也应该从 FixedHeader 自动计算
+	expectedID := "12345:100"
+	if got := frame.CorrelationID(); got != expectedID {
+		t.Errorf("CorrelationID() = %v, want %v", got, expectedID)
+	}
+}
+
+// TestMsgFrame_CorrelationID_FormatConsistency 测试 FormatCorrelationID 函数
+func TestMsgFrame_CorrelationID_FormatConsistency(t *testing.T) {
+	tests := []struct {
+		nodeID uint64
+		msgSeq uint64
+	}{
+		{1, 1},
+		{12345, 67890},
+		{999, 10001},
+		{0, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("NodeID=%d,MsgSeq=%d", tt.nodeID, tt.msgSeq), func(t *testing.T) {
+			frame := NewMsgFrame(tt.nodeID, tt.msgSeq, types.MessageTypeGet, 1, nil)
+
+			// 验证 MsgFrame.CorrelationID() 返回正确格式
+			got := frame.CorrelationID()
+			expected := fmt.Sprintf("%d:%d", tt.nodeID, tt.msgSeq)
+
+			if got != expected {
+				t.Errorf("CorrelationID() = %v, want %v", got, expected)
+			}
+		})
+	}
+}
+
+// TestBaseMessage_CorrelationID 测试 BaseMessage 的 CorrelationID 实现
+func TestBaseMessage_CorrelationID(t *testing.T) {
+	msg := &BaseMessage{
+		MessageType: types.MessageTypeGet,
+	}
+
+	// 默认 CorrelationID 为空
+	if got := msg.CorrelationID(); got != "" {
+		t.Errorf("默认 CorrelationID() = %v, want \"\"", got)
+	}
 }

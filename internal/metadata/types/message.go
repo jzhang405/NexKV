@@ -5,16 +5,6 @@ package types
 
 import "fmt"
 
-// ReliabilityRequirement 可靠性要求
-type ReliabilityRequirement int
-
-const (
-	// BestEffort 尽力而为（容忍丢失）
-	BestEffort ReliabilityRequirement = iota
-	// Reliable 可靠传输（强依赖）
-	Reliable
-)
-
 // ResponseExpectation 响应期望
 type ResponseExpectation int
 
@@ -24,6 +14,30 @@ const (
 	// ExpectResponse 需要响应
 	ExpectResponse
 )
+
+// MsgRole 消息角色
+//
+// 用于快速判断消息是请求还是响应，避免字符串匹配开销
+type MsgRole int
+
+const (
+	// MsgRoleRequest 请求消息（发起方发送）
+	MsgRoleRequest MsgRole = 0
+	// MsgRoleResponse 响应消息（接收方回复）
+	MsgRoleResponse MsgRole = 1
+)
+
+// String 返回消息角色的字符串表示
+func (r MsgRole) String() string {
+	switch r {
+	case MsgRoleRequest:
+		return "Request"
+	case MsgRoleResponse:
+		return "Response"
+	default:
+		return "Unknown"
+	}
+}
 
 // MessageType 消息类型
 //
@@ -186,6 +200,17 @@ func (a *Address) String() string {
 	return fmt.Sprintf("%s:%d", a.Host, a.Port)
 }
 
+// MsgRole 返回消息角色（请求或响应）
+//
+// 用于快速判断消息类型，避免字符串 "Reply" 后缀匹配
+// 判断逻辑：Reply 结尾的消息类型为响应，其他为请求
+func (t MessageType) MsgRole() MsgRole {
+	if t.isReplyMessage() {
+		return MsgRoleResponse
+	}
+	return MsgRoleRequest
+}
+
 // ExpectResponse 返回消息是否期望响应
 //
 // 判断逻辑：
@@ -214,16 +239,16 @@ func (t MessageType) ExpectResponse() ResponseExpectation {
 	return NoResponse
 }
 
-// Reliability 返回消息的可靠性要求
+// ProtocolType 返回消息使用的传输协议类型
 //
 // 判断逻辑：
-//   - Quorum 协议消息需要可靠传输（提案、投票、决策）
-//   - 2PC 协议消息需要可靠传输（准备、提交、回滚）
-//   - 元数据操作需要可靠传输（Get、Put、Delete）
-//   - Gossip 消息使用尽力而为（最终一致性）
-//   - 心跳消息使用尽力而为（容忍丢失）
-func (t MessageType) Reliability() ReliabilityRequirement {
-	// 需要可靠传输的消息类型
+//   - Quorum 协议消息需要可靠传输（TCP）
+//   - 2PC 协议消息需要可靠传输（TCP）
+//   - 元数据操作需要可靠传输（TCP）
+//   - Gossip 消息使用尽力而为（UDP）
+//   - 心跳消息使用尽力而为（UDP）
+func (t MessageType) ProtocolType() ProtocolType {
+	// 需要可靠传输的消息类型 → 使用 TCP
 	switch t {
 	case MessageTypeGet, MessageTypePut, MessageTypeDelete,
 		MessageTypeGetReply, MessageTypePutReply, MessageTypeDeleteReply,
@@ -231,11 +256,11 @@ func (t MessageType) Reliability() ReliabilityRequirement {
 		MessageType2PCPrepare, MessageType2PCPrepareReply,
 		MessageType2PCCommit, MessageType2PCCommitReply,
 		MessageType2PCRollback, MessageType2PCRollbackReply:
-		return Reliable
+		return ProtocolTCP
 	}
 
-	// 默认使用尽力而为（Gossip、心跳、时钟同步等）
-	return BestEffort
+	// 默认使用 UDP（Gossip、心跳、时钟同步等）
+	return ProtocolUDP
 }
 
 // isReplyMessage 判断是否是响应消息
@@ -267,11 +292,23 @@ type Message interface {
 	// 用于流量控制：接收端过载时优先丢弃低优先级消息
 	Priority() int
 
+	// MsgRole 返回消息角色（请求或响应）
+	// 默认实现：调用 Type().MsgRole()
+	// 用于快速判断消息类型，避免字符串匹配
+	MsgRole() MsgRole
+
 	// ExpectResponse 返回消息是否期望响应
 	// 默认实现：调用 Type().ExpectResponse()
 	ExpectResponse() ResponseExpectation
 
-	// Reliability 返回消息的可靠性要求
-	// 默认实现：调用 Type().Reliability()
-	Reliability() ReliabilityRequirement
+	// ProtocolType 返回消息使用的传输协议类型（TCP 或 UDP）
+	// 默认实现：调用 Type().ProtocolType()
+	ProtocolType() ProtocolType
+
+	// CorrelationID 返回全局唯一的关联ID
+	// 用途：传输层通过此ID匹配请求-响应，reqTable 核心索引
+	// - MsgFrame: 自动从 FixedHeader (NodeID:MsgSeq) 计算，无需手动设置
+	// - BaseMessage: 由传输层自动赋值，业务层无需关心
+	// - 响应消息：必须和对应请求的 CorrelationID 一致
+	CorrelationID() string
 }

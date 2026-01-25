@@ -15,9 +15,9 @@ import (
 
 func TestEncryptionType_String(t *testing.T) {
 	testCases := []struct {
-		name          string
-		encType       EncryptionType
-		expectedName  string
+		name         string
+		encType      EncryptionType
+		expectedName string
 	}{
 		{"None", EncryptionTypeNone, "none"},
 		{"AES256CBC", EncryptionTypeAES256CBC, "AES-256-CBC"},
@@ -215,10 +215,18 @@ func TestAESEncryption_Decrypt_WrongKey(t *testing.T) {
 	ciphertext, err := enc1.Encrypt(ctx, plaintext)
 	require.NoError(t, err)
 
-	// 用 key2 解密（应该失败或得到乱码）
-	_, err = enc2.Decrypt(ctx, ciphertext)
-	// 错误可能是填充错误或其他解密错误
-	assert.Error(t, err)
+	// 用 key2 解密
+	// AES-CBC 没有消息认证，可能返回乱码或填充错误
+	// 无论哪种情况，都不应该得到原始明文
+	decrypted, err := enc2.Decrypt(ctx, ciphertext)
+
+	if err == nil {
+		// 解密成功，但结果应该是乱码（不等于明文）
+		assert.NotEqual(t, plaintext, decrypted, "用错误密钥解密不应得到原始明文")
+	} else {
+		// 解密失败（填充错误等），这也是预期的
+		assert.Error(t, err, "用错误密钥解密可能返回填充错误")
+	}
 }
 
 // ========================================
@@ -302,6 +310,26 @@ func TestAESGCMEncryption_EmptyData(t *testing.T) {
 	require.NoError(t, err)
 	// GCM 对空数据返回 nil（这是正常的）
 	assert.Nil(t, decrypted)
+}
+
+func TestAESGCMEncryption_Decrypt_WrongKey(t *testing.T) {
+	key1 := make([]byte, 32)
+	key2 := make([]byte, 32)
+	key2[0] = 1 // 不同的密钥
+
+	enc1, _ := NewAESGCMEncryption(key1)
+	enc2, _ := NewAESGCMEncryption(key2)
+
+	ctx := context.Background()
+	plaintext := []byte("hello world")
+
+	// 用 key1 加密
+	ciphertext, err := enc1.Encrypt(ctx, plaintext)
+	require.NoError(t, err)
+
+	// 用 key2 解密（GCM 有认证标签，必定失败）
+	_, err = enc2.Decrypt(ctx, ciphertext)
+	assert.Error(t, err, "使用错误密钥解密应该返回认证错误")
 }
 
 func TestAESGCMEncryption_Decrypt_TamperedCiphertext(t *testing.T) {
@@ -481,10 +509,10 @@ func TestPKCS7Pad(t *testing.T) {
 		expectedSize int
 	}{
 		// PKCS7 规范：即使数据长度是块大小的倍数，也要添加一个完整的填充块
-		{"ExactMultiple", []byte("1234567812345678"), 8, 24},  // 正好是倍数，需要完整填充块
-		{"NeedPadding", []byte("1234567"), 8, 8},            // 需要填充1字节
-		{"EmptyData", []byte{}, 16, 16},                     // 空数据需要完整填充
-		{"LargeData", make([]byte, 15), 16, 16},            // 需要1字节填充
+		{"ExactMultiple", []byte("1234567812345678"), 8, 24}, // 正好是倍数，需要完整填充块
+		{"NeedPadding", []byte("1234567"), 8, 8},             // 需要填充1字节
+		{"EmptyData", []byte{}, 16, 16},                      // 空数据需要完整填充
+		{"LargeData", make([]byte, 15), 16, 16},              // 需要1字节填充
 	}
 
 	for _, tc := range testCases {
@@ -498,10 +526,10 @@ func TestPKCS7Pad(t *testing.T) {
 
 func TestPKCS7Unpad(t *testing.T) {
 	testCases := []struct {
-		name         string
-		data         []byte
-		shouldErr    bool
-		expectedLen  int
+		name        string
+		data        []byte
+		shouldErr   bool
+		expectedLen int
 	}{
 		{"ValidPadding", []byte("hello\x03\x03\x03"), false, 5},
 		// 完整填充块：16 字节的 0x10 表示整个 16 字节都是填充

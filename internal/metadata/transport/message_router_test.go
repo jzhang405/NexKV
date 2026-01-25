@@ -227,13 +227,13 @@ func TestThreeDimensionalDecision_LargeMessage(t *testing.T) {
 	assert.False(t, decision.ShouldDegrade)
 }
 
-// TestThreeDimensionalDecision_HighReliability 测试高可靠性要求决策（维度 3）
-func TestThreeDimensionalDecision_HighReliability(t *testing.T) {
+// TestThreeDimensionalDecision_ProtocolUDP 测试 UDP 协议决策（维度 3）
+func TestThreeDimensionalDecision_ProtocolUDP(t *testing.T) {
 	config := DefaultRouterConfig()
 	router := NewMessageRouter(config)
 
-	// 不需要回应，小消息，但尽力而为 → UDP
-	// 使用 MessageTypeGossipSyncReply (响应消息不需要回应，且尽力而为)
+	// 不需要回应，小消息 → UDP
+	// 使用 MessageTypeGossipSyncReply (响应消息不需要回应，且使用 UDP)
 	decision := router.threeDimensionalDecision(512, types.MessageTypeGossipSyncReply, config)
 	assert.Equal(t, ProtocolUDP, decision.ProtocolType)
 	assert.Contains(t, decision.Reason, "UDP")

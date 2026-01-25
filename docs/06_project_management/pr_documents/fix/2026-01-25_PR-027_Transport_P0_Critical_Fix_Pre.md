@@ -283,6 +283,16 @@ type Message interface {
     // 消息类型（用于路由/处理器匹配）
     MsgType() string
 
+    // 获取消息 ID（用于 Handler 的请求-响应对应）
+    // 关键设计：多个相同类型的请求如何区分？
+    // - 发送 2 个相同的 msg（msgType 相同，但 msgID 不同）
+    // - Handler 返回的响应必须包含对应的 msgID
+    // - RPCTransport 通过 msgID 将响应匹配到对应的请求
+    GetMsgID() uint64
+
+    // 设置消息 ID（由 Transport 层调用）
+    SetMsgID(msgID uint64)
+
     // 传输控制选项（hops/压缩等）
     Options() *MessageOptions
 }
@@ -297,19 +307,24 @@ type Message interface {
 type RPCTransport interface {
     // 核心RPC方法：发送业务消息并获取响应
     //
-    // context metadata 用途：
-    //   - WithNodeID(ctx, nodeID): 设置源节点 ID
-    //   - WithMsgSeq(ctx, seq): 设置消息序列号
+    // context metadata 用途（Frame 元素传递）：
     //   - WithHopCount(ctx, hop, totalHop): 设置转发跳数
     //   - WithCompression(ctx, algo): 设置压缩算法
     //   - WithPriority(ctx, priority): 设置消息优先级
+    //
+    // 注意：nodeID 和 msgSeq 由全局生成，RPC 层无感知
     //
     // 返回 Message 接口（类型安全）
     RPC(ctx context.Context, targetNode string, reqMsg Message) (respMsg Message, err error)
 
     // 注册消息处理器：匹配 MsgType 处理对应业务消息
+    //
+    // 关键设计：Handler 如何区分多个相同类型的请求？
+    // 方案 1: Message 接口增加 GetMsgID() 方法，Handler 返回对应 MsgID 的响应
+    // 方案 2: Handler 返回 (respMsg Message, err error)，通过 respMsg.GetMsgID() 对应
+    //
     // 使用 Handler 模式，而非 Transport 调用业务层
-    RegisterHandler(msgType string, handler func(reqMsg Message) (respMsg Message, isError bool))
+    RegisterHandler(msgType string, handler func(reqMsg Message) (respMsg Message, err error))
 
     // 生命周期管理
     Start() error
@@ -331,22 +346,10 @@ import "context"
 type contextKey string
 
 const (
-    nodeIDKey      contextKey = "nodeID"
-    msgSeqKey      contextKey = "msgSeq"
     hopCountKey    contextKey = "hopCount"
     compressionKey contextKey = "compression"
     priorityKey    contextKey = "priority"
 )
-
-// WithNodeID 设置源节点 ID
-func WithNodeID(ctx context.Context, nodeID uint64) context.Context {
-    return context.WithValue(ctx, nodeIDKey, nodeID)
-}
-
-// WithMsgSeq 设置消息序列号
-func WithMsgSeq(ctx context.Context, seq uint64) context.Context {
-    return context.WithValue(ctx, msgSeqKey, seq)
-}
 
 // WithHopCount 设置转发跳数
 func WithHopCount(ctx context.Context, hop, totalHop uint8) context.Context {
@@ -374,13 +377,84 @@ type HopCount struct {
 ```go
 // 业务层调用
 ctx := context.Background()
-ctx = transport.WithNodeID(ctx, nodeID)
 ctx = transport.WithHopCount(ctx, 10, 20)  // 当前第 10 跳，总共 20 跳
 ctx = transport.WithCompression(ctx, transport.CompressLZ4)
 ctx = transport.WithPriority(ctx, types.PriorityHigh)
 
+// nodeID 和 msgSeq 由 RPCTransport 内部自动生成
 resp, err := rpcTransport.RPC(ctx, targetNode, reqMsg)
 ```
+
+**设计说明**:
+- `nodeID` 和 `msgSeq` 由 Transport 层全局生成，RPC 层无需感知
+- `RPC()` 方法内部会自动调用 `transport.GetNodeID()` 和 `transport.GenerateMsgSeq()`
+
+**提案 2.2: Handler 请求-响应对应机制**
+
+**问题场景**：
+```
+客户端同时发送 2 个相同类型的请求：
+  Request A (msgType="ping", msgID=1) → 期望得到 Response A'
+  Request B (msgType="ping", msgID=2) → 期望得到 Response B'
+
+服务端 Handler 收到：
+  Request A → handler 应该生成 Response A' (msgID=1)
+  Request B → handler 应该生成 Response B' (msgID=2)
+```
+
+**解决方案**：Message 接口增加 `GetMsgID()` 和 `SetMsgID()` 方法
+
+**工作流程**：
+```go
+// 服务端 Handler 注册
+rpcTransport.RegisterHandler("ping", func(reqMsg Message) (Message, error) {
+    // 1. 获取请求的 msgID
+    reqMsgID := reqMsg.GetMsgID()  // 例如：msgID=1
+
+    // 2. 处理业务逻辑
+    // ...
+
+    // 3. 创建响应消息（必须设置对应的 msgID）
+    respMsg := &PingResponse{
+        // 业务字段...
+    }
+    respMsg.SetMsgID(reqMsgID)  // 关键：设置相同的 msgID
+
+    return respMsg, nil
+})
+
+// RPCTransport 内部匹配逻辑（伪代码）
+func (r *RPCTransportImpl) OnRecv(nodeID uint64, data []byte) {
+    // 1. 反序列化请求消息
+    reqMsg := decodeMessage(data)
+    reqMsgID := reqMsg.GetMsgID()
+
+    // 2. 调用 Handler
+    respMsg, err := r.handler(reqMsg)
+
+    // 3. 验证响应的 msgID 是否匹配
+    if respMsg.GetMsgID() != reqMsgID {
+        // Handler 未正确设置 msgID，这是编程错误
+        return fmt.Errorf("Handler response msgID mismatch")
+    }
+
+    // 4. 发送响应（通过 msgID 匹配到等待的客户端）
+    r.sendResponse(nodeID, respMsg)
+}
+```
+
+**关键设计点**：
+1. **msgID 生成**：由 RPCTransport 在发送请求时自动生成并设置到 `reqMsg`
+2. **msgID 传递**：Handler 必须从 `reqMsg.GetMsgID()` 获取并设置到 `respMsg`
+3. **msgID 匹配**：RPCTransport 通过 msgID 将响应匹配到对应的请求
+4. **错误处理**：Handler 返回 `(respMsg, error)`，error 非空时表示处理失败
+
+**与 HTTP Handler 的区别**：
+| 维度 | HTTP Handler | RPC Handler |
+|------|-------------|------------|
+| **请求标识** | URL + Method | msgType + msgID |
+| **并发模型** | 每个请求独立 goroutine | 多个请求可能共享同一个 msgType |
+| **响应匹配** | 自动（HTTP 连接） | 需要显式 msgID 匹配 |
 
 #### 7.4 架构对比
 

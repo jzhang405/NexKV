@@ -8,7 +8,6 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -211,263 +210,6 @@ func TestDecodeFragmentExt_EdgeCases(t *testing.T) {
 }
 
 // ========================================
-// Priority 扩展字段测试（P2-PR-001）
-// ========================================
-
-// TestEncodePriorityExt_DecodePriorityExt 测试优先级扩展编码解码往返
-func TestEncodePriorityExt_DecodePriorityExt(t *testing.T) {
-	testCases := []struct {
-		name     string
-		priority types.Priority
-	}{
-		{"低优先级", types.PriorityLow},
-		{"正常优先级", types.PriorityNormal},
-		{"高优先级", types.PriorityHigh},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// 编码
-			field := EncodePriorityExt(tc.priority)
-
-			// 验证字段类型
-			assert.Equal(t, ExtPriority, field.Type, "扩展字段类型应该为 ExtPriority")
-
-			// 解码
-			decodedPriority, err := DecodePriorityExt(field)
-
-			// 验证
-			assert.NoError(t, err, "解码应该成功")
-			assert.Equal(t, tc.priority, decodedPriority, "优先级应该匹配")
-		})
-	}
-}
-
-// TestEncodePriorityExt_AllPriorityValues 测试所有优先级值
-func TestEncodePriorityExt_AllPriorityValues(t *testing.T) {
-	// 测试所有可能的优先级值（0-255）
-	for i := 0; i < 256; i++ {
-		t.Run("", func(t *testing.T) {
-			priority := types.Priority(i)
-
-			// 编码
-			field := EncodePriorityExt(priority)
-
-			// 解码
-			decodedPriority, err := DecodePriorityExt(field)
-
-			// 验证
-			assert.NoError(t, err, "解码应该成功")
-			assert.Equal(t, priority, decodedPriority, "优先级应该保持不变")
-		})
-	}
-}
-
-// TestDecodePriorityExt_InvalidData 测试无效数据解码
-func TestDecodePriorityExt_InvalidData(t *testing.T) {
-	testCases := []struct {
-		name        string
-		createField func() *ExtField
-		checkError  func(t *testing.T, err error)
-	}{
-		{
-			name: "空值",
-			createField: func() *ExtField {
-				return &ExtField{
-					Type:  ExtPriority,
-					Value: []byte{},
-				}
-			},
-			checkError: func(t *testing.T, err error) {
-				assert.Error(t, err, "空值应该返回错误")
-				assert.Contains(t, err.Error(), "反序列化优先级扩展失败", "错误信息应该包含提示")
-			},
-		},
-		{
-			name: "非 MessagePack 数据",
-			createField: func() *ExtField {
-				return &ExtField{
-					Type:  ExtPriority,
-					Value: []byte{0xFF, 0xFF, 0xFF, 0xFF}, // 无效的 msgpack 数据
-				}
-			},
-			checkError: func(t *testing.T, err error) {
-				assert.Error(t, err, "无效的 msgpack 数据应该返回错误")
-				assert.Contains(t, err.Error(), "反序列化优先级扩展失败", "错误信息应该包含提示")
-			},
-		},
-	}
-
-	for _, tt := range testCases {
-		t.Run(tt.name, func(t *testing.T) {
-			field := tt.createField()
-			_, err := DecodePriorityExt(field)
-			tt.checkError(t, err)
-		})
-	}
-}
-
-// TestFrame_WithPriority_Chain 测试 WithPriority 链式调用
-func TestFrame_WithPriority_Chain(t *testing.T) {
-	testCases := []struct {
-		name     string
-		priority types.Priority
-	}{
-		{"低优先级", types.PriorityLow},
-		{"正常优先级", types.PriorityNormal},
-		{"高优先级", types.PriorityHigh},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
-
-			// 使用 WithPriority 添加优先级扩展
-			frame.WithPriority(tc.priority)
-
-			// 验证扩展字段已添加
-			assert.Equal(t, 1, len(frame.VarExtHeader.Fields), "应该有一个扩展字段")
-
-			priorityField := frame.VarExtHeader.GetField(ExtPriority)
-			assert.NotNil(t, priorityField, "应该找到优先级扩展字段")
-
-			decodedPriority, err := DecodePriorityExt(priorityField)
-			assert.NoError(t, err)
-			assert.Equal(t, tc.priority, decodedPriority, "优先级应该匹配")
-		})
-	}
-}
-
-// TestFrame_WithPriority_MultipleExtensions 测试 WithPriority 与其他扩展字段组合
-func TestFrame_WithPriority_MultipleExtensions(t *testing.T) {
-	frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
-
-	// 链式调用添加多个扩展字段
-	frame.WithFragment(1, 5).
-		WithPriority(types.PriorityHigh).
-		WithCompress(1) // 假设有 WithCompress 方法
-
-	// 验证所有扩展字段都已添加
-	assert.Equal(t, 3, len(frame.VarExtHeader.Fields), "应该有三个扩展字段")
-
-	// 验证优先级扩展字段
-	priorityField := frame.VarExtHeader.GetField(ExtPriority)
-	assert.NotNil(t, priorityField, "应该找到优先级扩展字段")
-
-	decodedPriority, err := DecodePriorityExt(priorityField)
-	assert.NoError(t, err)
-	assert.Equal(t, types.PriorityHigh, decodedPriority, "优先级应该是 High")
-}
-
-// TestFrame_WithPriority_RoundTrip 测试 WithPriority 序列化往返
-func TestFrame_WithPriority_RoundTrip(t *testing.T) {
-	testCases := []struct {
-		name     string
-		priority types.Priority
-	}{
-		{"低优先级往返", types.PriorityLow},
-		{"正常优先级往返", types.PriorityNormal},
-		{"高优先级往返", types.PriorityHigh},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// 创建带优先级的帧
-			frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("test data"))
-			frame.WithPriority(tc.priority).Finalize()
-
-			// 序列化
-			frameData, err := frame.Marshal()
-			assert.NoError(t, err, "序列化应该成功")
-
-			// 反序列化
-			decodedFrame := &Frame{}
-			err = decodedFrame.Unmarshal(frameData)
-			assert.NoError(t, err, "反序列化应该成功")
-
-			// 验证优先级扩展字段
-			priorityField := decodedFrame.VarExtHeader.GetField(ExtPriority)
-			assert.NotNil(t, priorityField, "应该找到优先级扩展字段")
-
-			decodedPriority, err := DecodePriorityExt(priorityField)
-			assert.NoError(t, err)
-			assert.Equal(t, tc.priority, decodedPriority, "优先级应该保持不变")
-		})
-	}
-}
-
-// TestFrame_WithPriority_UsageExamples 使用示例
-func TestFrame_WithPriority_UsageExamples(t *testing.T) {
-	t.Run("示例1: 创建高优先级消息", func(t *testing.T) {
-		// 场景：发送高优先级的元数据操作请求
-		frame := NewFrame(12345, // NodeID
-			67890,                                 // MsgSeq
-			types.MessageTypePut,                  // MsgType
-			uint16(types.CodecTypeMessagePack), 0, // CodecID
-			[]byte("metadata data"), // Data
-		)
-
-		// 设置为高优先级，确保此消息优先处理
-		frame.WithPriority(types.PriorityHigh).Finalize()
-
-		// 验证
-		priorityField := frame.VarExtHeader.GetField(ExtPriority)
-		require.NotNil(t, priorityField)
-		priority, _ := DecodePriorityExt(priorityField)
-		assert.Equal(t, types.PriorityHigh, priority)
-	})
-
-	t.Run("示例2: 创建带分片和高优先级的消息", func(t *testing.T) {
-		// 场景：大数据消息需要分片，同时设置为高优先级
-		frame := NewFrame(12345, 67890, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, make([]byte, 2000)) // 大数据需要分片
-
-		// 链式调用：添加分片信息和优先级
-		frame.WithFragment(0, 3). // 第一个分片，共 3 个分片
-						WithPriority(types.PriorityHigh).
-						Finalize()
-
-		// 验证扩展字段
-		assert.Equal(t, 2, len(frame.VarExtHeader.Fields))
-
-		fragmentField := frame.VarExtHeader.GetField(ExtFragment)
-		require.NotNil(t, fragmentField)
-		index, total, _ := DecodeFragmentExt(fragmentField)
-		assert.Equal(t, uint16(0), index)
-		assert.Equal(t, uint16(3), total)
-
-		priorityField := frame.VarExtHeader.GetField(ExtPriority)
-		require.NotNil(t, priorityField)
-		priority, _ := DecodePriorityExt(priorityField)
-		assert.Equal(t, types.PriorityHigh, priority)
-	})
-
-	t.Run("示例3: 批量创建不同优先级的消息", func(t *testing.T) {
-		// 场景：批量发送消息时，为不同类型的消息设置不同优先级
-		createMessage := func(priority types.Priority) *Frame {
-			return NewFrame(12345, 67890, types.MessageTypeGet, uint16(types.CodecTypeMessagePack), 0, []byte("key")).WithPriority(priority).Finalize()
-		}
-
-		// 创建三个不同优先级的消息
-		lowPriorityMsg := createMessage(types.PriorityLow)
-		normalPriorityMsg := createMessage(types.PriorityNormal)
-		highPriorityMsg := createMessage(types.PriorityHigh)
-
-		// 验证优先级
-		lowField := lowPriorityMsg.VarExtHeader.GetField(ExtPriority)
-		lowPriority, _ := DecodePriorityExt(lowField)
-		assert.Equal(t, types.PriorityLow, lowPriority)
-
-		normalField := normalPriorityMsg.VarExtHeader.GetField(ExtPriority)
-		normalPriority, _ := DecodePriorityExt(normalField)
-		assert.Equal(t, types.PriorityNormal, normalPriority)
-
-		highField := highPriorityMsg.VarExtHeader.GetField(ExtPriority)
-		highPriority, _ := DecodePriorityExt(highField)
-		assert.Equal(t, types.PriorityHigh, highPriority)
-	})
-}
-
-// ========================================
 // TLV 协议集成测试（完整序列化/反序列化）
 // ========================================
 
@@ -511,8 +253,8 @@ func TestFrame_FullRoundTrip(t *testing.T) {
 			extFields: []*ExtField{
 				EncodeFragmentExt(1, 5),
 				{
-					Type:  ExtPriority,
-					Value: []byte{byte(types.PriorityHigh)},
+					Type:  ExtCompress,
+					Value: []byte{2},
 				},
 			},
 		},
@@ -623,26 +365,6 @@ func TestFrame_AllExtensionFields(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, uint16(2), index, "分片索引应该匹配")
 		assert.Equal(t, uint16(5), total, "总分片数应该匹配")
-	})
-
-	t.Run("优先级扩展字段", func(t *testing.T) {
-		frame := NewFrame(1, 1, types.MessageTypePut, uint16(types.CodecTypeMessagePack), 0, []byte("data"))
-		frame.VarExtHeader.Fields = append(frame.VarExtHeader.Fields, &ExtField{
-			Type:  ExtPriority,
-			Value: []byte{byte(types.PriorityHigh)},
-		})
-
-		frameData, err := frame.Marshal()
-		assert.NoError(t, err)
-
-		decodedFrame := &Frame{}
-		err = decodedFrame.Unmarshal(frameData)
-		assert.NoError(t, err)
-
-		// 验证优先级扩展字段
-		priorityField := decodedFrame.VarExtHeader.GetField(ExtPriority)
-		assert.NotNil(t, priorityField, "应该找到优先级扩展字段")
-		assert.Equal(t, byte(types.PriorityHigh), priorityField.Value[0], "优先级应该匹配")
 	})
 
 	t.Run("压缩扩展字段", func(t *testing.T) {
@@ -903,8 +625,8 @@ func TestFrame_CRC32ScopeConsistency(t *testing.T) {
 			extFields: []*ExtField{
 				EncodeFragmentExt(1, 5),
 				{
-					Type:  ExtPriority,
-					Value: []byte{byte(types.PriorityHigh)},
+					Type:  ExtCompress,
+					Value: []byte{2},
 				},
 			},
 			data: []byte("test data with extension"),

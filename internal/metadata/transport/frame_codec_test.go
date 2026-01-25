@@ -46,6 +46,52 @@ func createTestCodecFrameWithExt(msgType types.MessageType, data []byte, exts []
 }
 
 // ========================================
+// 测试辅助类型（AutoDetectCodec 仅用于测试）
+// ========================================
+
+// AutoDetectCodec 自动检测编解码器（测试专用）
+type AutoDetectCodec struct {
+	tcpCodec *TCPFrameCodec
+	udpCodec *UDPFrameCodec
+}
+
+// NewAutoDetectCodec 创建自动检测编解码器
+func NewAutoDetectCodec() *AutoDetectCodec {
+	return &AutoDetectCodec{
+		tcpCodec: NewTCPFrameCodec(),
+		udpCodec: NewUDPFrameCodec(),
+	}
+}
+
+// DetectProtocol 检测协议类型
+func (c *AutoDetectCodec) DetectProtocol(data []byte) (FrameCodec, error) {
+	// 数据太短，无法判断
+	if len(data) < FixedHeaderLen+CRCLen {
+		return c.udpCodec, nil
+	}
+
+	// 尝试检测 TCP 帧（4 字节长度前缀）
+	if len(data) >= 8 {
+		buf := bytes.NewReader(data)
+		var frameSize uint32
+		if err := binary.Read(buf, binary.BigEndian, &frameSize); err == nil {
+			remainingData := len(data) - 4
+			minFrameSize := FixedHeaderLen + CRCLen
+			if int(frameSize) >= minFrameSize && int(frameSize) <= remainingData {
+				if remainingData >= 4 {
+					versionByte := data[4]
+					if versionByte >= 1 {
+						return c.tcpCodec, nil
+					}
+				}
+			}
+		}
+	}
+
+	return c.udpCodec, nil
+}
+
+// ========================================
 // TCPFrameCodec 测试
 // ========================================
 
@@ -74,7 +120,6 @@ func TestTCPFrameCodec_EncodeFrame_Normal(t *testing.T) {
 				types.MessageTypeGet,
 				[]byte("data"),
 				[]*ExtField{
-					{Type: ExtPriority, Value: []byte{100}},
 					{Type: ExtFragment, Value: []byte{0, 2}},
 				},
 			),
@@ -151,7 +196,6 @@ func TestTCPFrameCodec_DecodeFrame_RoundTrip(t *testing.T) {
 				msgType,
 				[]byte("test payload"),
 				[]*ExtField{
-					{Type: ExtPriority, Value: []byte{50}},
 				},
 			)
 
@@ -247,8 +291,7 @@ func TestTCPFrameCodec_EstimateSize(t *testing.T) {
 			name: "带扩展头帧",
 			frame: createTestCodecFrameWithExt(
 				types.MessageTypeGet,
-				nil,
-				[]*ExtField{{Type: ExtPriority, Value: []byte{100}}},
+				nil, []*ExtField{},
 			),
 			expectedExtra: 4,
 		},

@@ -776,9 +776,6 @@ func (mw *MessageWriter) WriteMessageWithOptions(msg Message, nodeID uint64, msg
 			return types.NewOpErr(types.ErrCodeInternal, "WriteMessageWithOptions",
 				"加密扩展需要显式指定 nonce，请使用 Frame.WithEncrypt() 方法或移除加密选项", nil)
 		}
-		if opts.priority != nil {
-			frame.WithPriority(*opts.priority)
-		}
 	}
 
 	// 完成构建并计算 CRC32

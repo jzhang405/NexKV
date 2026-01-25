@@ -36,11 +36,11 @@ var (
 	decoders = map[ExtFieldType]ExtDecoder{
 		// ExtHop 已移至 FixedHeader，不再作为 TLV 解码
 		// ExtCorrelationID 已移至 FixedHeader (NodeID+MsgSeq)，不再作为 TLV 解码
+		// ExtPriority 已移除，priority 通过 Message.Priority() 获取
 		// 注意：ExtFragment (分片) 保留，用于 UDP 分片处理
 		ExtCompress: decodeCompressExt,
 		ExtEncrypt:  decodeEncryptExt,
 		ExtFragment: decodeFragmentExt,
-		ExtPriority: decodePriorityExt,
 	}
 	// decoderMutex 保护解码器注册表的并发访问
 	decoderMutex sync.RWMutex
@@ -170,11 +170,6 @@ func (f *MsgFrame) GetSegment() (*SegmentExt, bool) {
 	return GetExtAs[*SegmentExt](f, ExtFragment)
 }
 
-// GetPriority 获取优先级
-func (f *MsgFrame) GetPriority() (*PriorityExt, bool) {
-	return GetExtAs[*PriorityExt](f, ExtPriority)
-}
-
 // ========================================
 // TLV 字段解码器（内部使用）
 // ========================================
@@ -204,15 +199,6 @@ func decodeFragmentExt(tlv TLV) (any, error) {
 		return nil, err
 	}
 	return &SegmentExt{Index: index, Total: total}, nil
-}
-
-// decodePriorityExt 解码优先级扩展
-func decodePriorityExt(tlv TLV) (any, error) {
-	priority, err := DecodePriorityExt(&tlv)
-	if err != nil {
-		return nil, err
-	}
-	return &PriorityExt{Priority: priority}, nil
 }
 
 // ========================================
@@ -273,28 +259,6 @@ func (f MsgFrame) CorrelationID() string {
 // 辅助方法
 // ========================================
 
-// GetTLV 获取指定类型的 TLV 字段（原始数据，未解码）
-func (f *MsgFrame) GetTLV(fieldType ExtFieldType) *TLV {
-	for i := range f.TLVs {
-		if f.TLVs[i].Type == fieldType {
-			return &f.TLVs[i]
-		}
-	}
-	return nil
-}
-
-// HasHopCount 检查是否有 Hops 限制（便捷方法）
-func (f *MsgFrame) HasHopCount() bool {
-	hops, _ := f.GetHopCount()
-	return hops > 0
-}
-
-// IsHopExpired 检查 Hops 是否过期（便捷方法）
-func (f *MsgFrame) IsHopExpired() bool {
-	hops, ok := f.GetHopCount()
-	return ok && hops == 0
-}
-
 // HasCompression 检查是否有压缩配置（便捷方法）
 func (f *MsgFrame) HasCompression() bool {
 	v, _ := f.GetCompress()
@@ -323,13 +287,9 @@ func (f *MsgFrame) String() string {
 //
 // 用于 ForwardMessage() 场景，重新编码 TLV 字段。每次调用都会通过 GetExt() 重新解码。
 // 注意：Hops 现在在 FixedHeader 中，不再作为 TLV 编码。
+// 注意：Priority 已移除，priority 通过 Message.Priority() 获取。
 func (f *MsgFrame) EncodeTLVs() ([]ExtField, error) {
 	var fields []ExtField
-
-	// Priority
-	if priority, ok := f.GetPriority(); ok {
-		fields = append(fields, *EncodePriorityExt(priority.Priority))
-	}
 
 	// Compress
 	if compress, ok := f.GetCompress(); ok {
@@ -414,10 +374,10 @@ type SendOpt func(*sendOptions)
 
 // sendOptions 发送选项内部结构
 type sendOptions struct {
-	hopCount   *uint16         // 跳数 TTL
-	compressID *uint16         // 压缩算法 ID
-	encryptID  *uint16         // 加密算法 ID
-	priority   *types.Priority // 优先级
+	hopCount   *uint16 // 跳数 TTL
+	compressID *uint16 // 压缩算法 ID
+	encryptID  *uint16 // 加密算法 ID
+	// 注意：Priority 已移除，使用 Message.Priority() 代替
 }
 
 var (
@@ -432,7 +392,6 @@ var (
 // processSendOptions 处理发送选项（内部使用）
 //
 // 重要：调用方必须使用 defer releaseSendOptions(options) 确保归还对象。
-// 推荐使用 withSendOptions 包装函数自动管理资源。
 func processSendOptions(opts ...SendOpt) *sendOptions {
 	options := sendOptionsPool.Get().(*sendOptions)
 	for _, opt := range opts {
@@ -449,15 +408,6 @@ func releaseSendOptions(opts *sendOptions) {
 		*opts = sendOptions{}
 		sendOptionsPool.Put(opts)
 	}
-}
-
-// withSendOptions 自动管理 sendOptions 生命周期的包装函数
-//
-// 自动从 sync.Pool 获取和归还 options，即使回调函数 panic 也会确保资源归还。
-func withSendOptions(opts []SendOpt, fn func(*sendOptions) error) error {
-	options := processSendOptions(opts...)
-	defer releaseSendOptions(options)
-	return fn(options)
 }
 
 // WithHopCount 设置跳数 TTL
@@ -478,13 +428,6 @@ func WithCompression(compressID uint16) SendOpt {
 func WithEncryption(encryptID uint16) SendOpt {
 	return func(o *sendOptions) {
 		o.encryptID = &encryptID
-	}
-}
-
-// WithPriority 设置优先级
-func WithPriority(priority types.Priority) SendOpt {
-	return func(o *sendOptions) {
-		o.priority = &priority
 	}
 }
 

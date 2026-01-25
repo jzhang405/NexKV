@@ -387,35 +387,6 @@ func TestCreateMessageByType_UnknownType(t *testing.T) {
 // 消息辅助函数测试
 // ========================================
 
-// TestEncodeFrame_DecodeFrame 测试帧编解码辅助函数
-func TestEncodeFrame_DecodeFrame(t *testing.T) {
-	// 创建消息
-	msg := &PutMessage{
-		BaseMessage: BaseMessage{MessageType: types.MessageTypePut},
-		Key:         "test_key",
-		Value:       []byte("test_value"),
-	}
-
-	// 编码为帧
-	frame, err := EncodeFrame(msg, 0, 0)
-	require.NoError(t, err)
-	assert.NotNil(t, frame)
-	assert.Equal(t, types.MessageTypePut, msg.Type())
-
-	// 从帧解码
-	msgFrame, err := DecodeFrame(frame)
-	require.NoError(t, err)
-
-	putMsg, ok := msgFrame.Message.(*PutMessage)
-	require.True(t, ok)
-	assert.Equal(t, msg.Key, putMsg.Key)
-	assert.Equal(t, msg.Value, putMsg.Value)
-
-	// 验证 nodeID 和 msgSeq
-	assert.Equal(t, uint64(0), msgFrame.NodeID)
-	assert.Equal(t, uint64(0), msgFrame.MsgSeq)
-}
-
 // TestEncodeFrame_DecodeFrame_AllTypes 测试所有消息类型的帧编解码
 func TestEncodeFrame_DecodeFrame_AllTypes(t *testing.T) {
 	testCases := []Message{

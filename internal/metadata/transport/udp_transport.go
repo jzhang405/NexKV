@@ -828,9 +828,6 @@ func (t *UDPTransport) sendDirectWithOptions(addr *net.UDPAddr, msgData []byte, 
 	if opts.compressID != nil {
 		frame.WithCompress(*opts.compressID)
 	}
-	if opts.priority != nil {
-		frame.WithPriority(*opts.priority)
-	}
 
 	// 完成构建并计算 CRC32
 	frame.Finalize()
@@ -895,9 +892,6 @@ func (t *UDPTransport) sendFragmentedWithOptions(addr *net.UDPAddr, msgData []by
 		}
 		if opts.compressID != nil {
 			frame.WithCompress(*opts.compressID)
-		}
-		if opts.priority != nil {
-			frame.WithPriority(*opts.priority)
 		}
 
 		frame.Finalize()

@@ -187,60 +187,6 @@ type Codec interface {
 	Type() types.CodecType
 }
 
-// Conn 连接接口
-//
-// 表示与远程节点的连接
-type Conn interface {
-	// Read 读取数据
-	Read(p []byte) (n int, err error)
-
-	// Write 写入数据
-	Write(p []byte) (n int, err error)
-
-	// Close 关闭连接
-	Close() error
-
-	// RemoteAddr 返回远程地址
-	RemoteAddr() string
-
-	// LocalAddr 返回本地地址
-	LocalAddr() string
-
-	// SetDeadline 设置读写超时
-	SetDeadline(t time.Time) error
-
-	// SetReadDeadline 设置读超时
-	SetReadDeadline(t time.Time) error
-
-	// SetWriteDeadline 设置写超时
-	SetWriteDeadline(t time.Time) error
-}
-
-// Listener 监听器接口
-//
-// 用于接受传入连接
-type Listener interface {
-	// Accept 接受新连接
-	Accept() (Conn, error)
-
-	// Close 关闭监听器
-	Close() error
-
-	// Addr 返回监听地址
-	Addr() string
-}
-
-// Dialer 拨号器接口
-//
-// 用于建立到远程节点的连接
-type Dialer interface {
-	// Dial 建立连接
-	Dial(addr string) (Conn, error)
-
-	// DialTimeout 建立连接（带超时）
-	DialTimeout(addr string, timeout time.Duration) (Conn, error)
-}
-
 // ========================================
 // 批量转发相关数据结构和接口
 // ========================================

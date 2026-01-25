@@ -53,8 +53,9 @@ func TestMsgFrame_NilMessage(t *testing.T) {
 
 	assert.Equal(t, types.MessageTypeGet, frame.Type()) // 从 FixedHeader 获取
 	assert.Equal(t, int(types.PriorityNormal), frame.Priority())
-	// 空 TLVs 列表，GetTLV 应该返回 nil（测试一个未使用的类型）
-	assert.Nil(t, frame.GetTLV(ExtFieldType(999)))
+	// 空 TLVs 列表，GetExt 应该返回 false（测试一个未使用的类型）
+	_, ok := frame.GetExt(ExtFieldType(999))
+	assert.False(t, ok)
 }
 
 // TestMsgFrame_HopCount 测试 Hops 字段（FixedHeader）
@@ -64,17 +65,18 @@ func TestMsgFrame_HopCount(t *testing.T) {
 	// 设置 Hops 字段（FixedHeader）
 	frame.Hops = 5
 
-	assert.True(t, frame.HasHopCount())
-	assert.False(t, frame.IsHopExpired())
+	// 直接检查 Hops 值
+	assert.True(t, frame.Hops > 0)
+	assert.False(t, frame.Hops == 0)
 
-	// 使用便捷方法获取
+	// 使用 GetHopCount 获取
 	hops, ok := frame.GetHopCount()
 	require.True(t, ok)
 	assert.Equal(t, uint8(5), hops)
 
 	// 测试 Hops=0 的情况（过期）
 	frame.Hops = 0
-	assert.True(t, frame.IsHopExpired())
+	assert.True(t, frame.Hops == 0)
 }
 
 // TestMsgFrame_Compression 测试压缩扩展字段
@@ -125,18 +127,6 @@ func TestMsgFrame_Segment(t *testing.T) {
 	assert.Equal(t, uint16(10), segment.Total)
 }
 
-// TestMsgFrame_Priority 测试优先级扩展字段
-func TestMsgFrame_Priority(t *testing.T) {
-	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
-
-	// 添加 Priority TLV
-	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
-
-	priority, ok := frame.GetPriority()
-	require.True(t, ok)
-	assert.Equal(t, types.PriorityHigh, priority.Priority)
-}
-
 // TestMsgFrame_GetTLV 测试获取指定类型的 TLV 字段
 func TestMsgFrame_GetTLV(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
@@ -148,12 +138,25 @@ func TestMsgFrame_GetTLV(t *testing.T) {
 	}
 	frame.TLVs = extFields
 
-	compressField := frame.GetTLV(ExtCompress)
+	// 直接查找 TLV（原始方法）
+	var compressField *TLV
+	for i := range frame.TLVs {
+		if frame.TLVs[i].Type == ExtCompress {
+			compressField = &frame.TLVs[i]
+			break
+		}
+	}
 	assert.NotNil(t, compressField)
 	assert.Equal(t, ExtCompress, compressField.Type)
 
 	// 测试不存在的 ExtField
-	segmentField := frame.GetTLV(ExtFragment)
+	var segmentField *TLV
+	for i := range frame.TLVs {
+		if frame.TLVs[i].Type == ExtFragment {
+			segmentField = &frame.TLVs[i]
+			break
+		}
+	}
 	assert.Nil(t, segmentField)
 }
 
@@ -163,29 +166,29 @@ func TestMsgFrame_String(t *testing.T) {
 
 	// 添加 TLV
 	frame.Hops = 5
-	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
+	addTLVToFrame(frame, *EncodeCompressExt(2))
 
 	str := frame.String()
 	assert.Contains(t, str, "MsgFrame")
 	assert.Contains(t, str, "TLVs=")
 }
 
-// TestMsgFrame_GetExt_GenericMethod 测试 GetExt 通用方法（使用 Priority 作为示例）
+// TestMsgFrame_GetExt_GenericMethod 测试 GetExt 通用方法（使用 Compress 作为示例）
 func TestMsgFrame_GetExt_GenericMethod(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
-	// 添加 Priority TLV
-	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
+	// 添加 Compress TLV
+	addTLVToFrame(frame, *EncodeCompressExt(2))
 
 	// 使用通用 GetExt 方法
-	value, ok := frame.GetExt(ExtPriority)
+	value, ok := frame.GetExt(ExtCompress)
 	assert.True(t, ok)
 	assert.NotNil(t, value)
 
 	// 类型断言
-	priority, ok := value.(*PriorityExt)
+	compress, ok := value.(*CompressExt)
 	assert.True(t, ok)
-	assert.Equal(t, types.PriorityHigh, priority.Priority)
+	assert.Equal(t, uint16(2), compress.CompressID)
 }
 
 // TestMsgFrame_GetExt_NotFound 测试 GetExt 查找不存在的字段
@@ -249,21 +252,13 @@ func TestMsgFrame_EncodeTLVs(t *testing.T) {
 
 	// 添加 TLV 字段
 	frame.Hops = 5
-	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
 	addTLVToFrame(frame, *EncodeCompressExt(2))
 	addTLVToFrame(frame, *EncodeFragmentExt(1, 5))
 
 	// 编码 TLV
 	fields, err := frame.EncodeTLVs()
 	require.NoError(t, err)
-	require.Len(t, fields, 3) // Priority, Compress, Segment (Hops is in FixedHeader)
-
-	// 验证 Priority 字段
-	priorityField := findExtField(fields, ExtPriority)
-	require.NotNil(t, priorityField)
-	priority, err := DecodePriorityExt(priorityField)
-	require.NoError(t, err)
-	assert.Equal(t, types.PriorityHigh, priority)
+	require.Len(t, fields, 2) // Compress, Segment (Hops is in FixedHeader)
 
 	// 验证 Compress 字段
 	compressField := findExtField(fields, ExtCompress)
@@ -285,19 +280,19 @@ func TestMsgFrame_EncodeTLVs(t *testing.T) {
 func TestMsgFrame_EncodeTLVs_PartialFields(t *testing.T) {
 	frame := createTestFrame(t, types.MessageTypeGet, []byte("test"))
 
-	// 添加 Priority TLV
-	addTLVToFrame(frame, *EncodePriorityExt(types.PriorityHigh))
+	// 添加 Compress TLV
+	addTLVToFrame(frame, *EncodeCompressExt(2))
 
 	// 编码
 	fields, err := frame.EncodeTLVs()
 	require.NoError(t, err)
-	require.Len(t, fields, 1) // 只有 Priority
+	require.Len(t, fields, 1) // 只有 Compress
 
-	priorityField := findExtField(fields, ExtPriority)
-	require.NotNil(t, priorityField)
-	priority, err := DecodePriorityExt(priorityField)
+	compressField := findExtField(fields, ExtCompress)
+	require.NotNil(t, compressField)
+	compressID, err := DecodeCompressExt(compressField)
 	require.NoError(t, err)
-	assert.Equal(t, types.PriorityHigh, priority)
+	assert.Equal(t, uint16(2), compressID)
 }
 
 // TestMsgFrame_EncodeTLVs_NoFields 测试无 TLV 字段
@@ -395,34 +390,23 @@ func TestSendOpt_WithEncryption(t *testing.T) {
 	assert.Equal(t, uint16(1), *opts.encryptID)
 }
 
-// TestSendOpt_WithPriority 测试 WithPriority 选项
-func TestSendOpt_WithPriority(t *testing.T) {
-	opts := processSendOptions(WithPriority(types.PriorityHigh))
-	defer releaseSendOptions(opts)
-
-	require.NotNil(t, opts)
-	require.NotNil(t, opts.priority)
-	assert.Equal(t, types.PriorityHigh, *opts.priority)
-}
-
 // TestSendopt_MultipleOptions 测试多个选项组合
 func TestSendopt_MultipleOptions(t *testing.T) {
 	opts := processSendOptions(
 		WithHopCount(10),
 		WithCompression(2),
-		WithPriority(types.PriorityLow),
+		WithEncryption(1),
 	)
 	defer releaseSendOptions(opts)
 
 	require.NotNil(t, opts)
 	require.NotNil(t, opts.hopCount)
 	require.NotNil(t, opts.compressID)
-	require.NotNil(t, opts.priority)
-	assert.Nil(t, opts.encryptID)
+	require.NotNil(t, opts.encryptID)
 
 	assert.Equal(t, uint16(10), *opts.hopCount)
 	assert.Equal(t, uint16(2), *opts.compressID)
-	assert.Equal(t, types.PriorityLow, *opts.priority)
+	assert.Equal(t, uint16(1), *opts.encryptID)
 }
 
 // TestSendOpt_NoOptions 测试无选项的情况
@@ -434,7 +418,6 @@ func TestSendOpt_NoOptions(t *testing.T) {
 	assert.Nil(t, opts.hopCount)
 	assert.Nil(t, opts.compressID)
 	assert.Nil(t, opts.encryptID)
-	assert.Nil(t, opts.priority)
 }
 
 // TestSendOpt_LastOptionWins 测试最后选项覆盖前面
@@ -450,40 +433,6 @@ func TestSendOpt_LastOptionWins(t *testing.T) {
 	assert.Equal(t, uint16(10), *opts.hopCount, "后面的选项应该覆盖前面的")
 }
 
-// TestSendOpt_withSendOptions 测试 withSendOptions 包装函数
-func TestSendOpt_withSendOptions(t *testing.T) {
-	err := withSendOptions([]SendOpt{WithHopCount(10)}, func(opts *sendOptions) error {
-		require.NotNil(t, opts)
-		require.NotNil(t, opts.hopCount)
-		assert.Equal(t, uint16(10), *opts.hopCount)
-		return nil
-	})
-
-	assert.NoError(t, err)
-}
-
-// TestSendOpt_withSendOptions_MultipleOptions 测试 withSendOptions 多选项
-func TestSendOpt_withSendOptions_MultipleOptions(t *testing.T) {
-	err := withSendOptions([]SendOpt{
-		WithHopCount(10),
-		WithCompression(2),
-		WithPriority(types.PriorityHigh),
-	}, func(opts *sendOptions) error {
-		require.NotNil(t, opts)
-		require.NotNil(t, opts.hopCount)
-		require.NotNil(t, opts.compressID)
-		require.NotNil(t, opts.priority)
-		assert.Nil(t, opts.encryptID)
-
-		assert.Equal(t, uint16(10), *opts.hopCount)
-		assert.Equal(t, uint16(2), *opts.compressID)
-		assert.Equal(t, types.PriorityHigh, *opts.priority)
-		return nil
-	})
-
-	assert.NoError(t, err)
-}
-
 // ========================================
 // ExtField 结构体测试
 // ========================================
@@ -491,26 +440,17 @@ func TestSendOpt_withSendOptions_MultipleOptions(t *testing.T) {
 // TestExtField_Creation 测试 ExtField 创建
 func TestExtField_Creation(t *testing.T) {
 	extField := ExtField{
-		Type:  ExtPriority,
-		Value: []byte{0x03, 0x00}, // types.PriorityHigh = 3
+		Type:  ExtCompress,
+		Value: []byte{0x02, 0x00},
 	}
 
-	assert.Equal(t, ExtPriority, extField.Type)
-	assert.Equal(t, []byte{0x03, 0x00}, extField.Value)
+	assert.Equal(t, ExtCompress, extField.Type)
+	assert.Equal(t, []byte{0x02, 0x00}, extField.Value)
 }
 
 // ========================================
 // 扩展字段结构体测试
 // ========================================
-
-// TestPriorityExt_Structure 测试 PriorityExt 结构
-func TestPriorityExt_Structure(t *testing.T) {
-	priority := &PriorityExt{
-		Priority: types.PriorityHigh,
-	}
-
-	assert.Equal(t, types.PriorityHigh, priority.Priority)
-}
 
 // TestCompressExt_Structure 测试 CompressExt 结构
 func TestCompressExt_Structure(t *testing.T) {
@@ -582,7 +522,7 @@ func TestPrepareForwardMessage_HopExpired(t *testing.T) {
 
 	// 准备转发
 	forwardFrame, err := prepareForwardMessage(frame)
-	require.Error(t, err)
+	assert.Error(t, err)
 	assert.Nil(t, forwardFrame)
 	assert.Equal(t, types.ErrTransportHopCountExpired, err.(*types.Error).Code)
 }
@@ -593,7 +533,7 @@ func TestPrepareForwardMessage_NilMessage(t *testing.T) {
 
 	// 准备转发
 	forwardFrame, err := prepareForwardMessage(frame)
-	require.Error(t, err)
+	assert.Error(t, err)
 	assert.Nil(t, forwardFrame)
 	assert.Contains(t, err.Error(), "消息为空")
 }

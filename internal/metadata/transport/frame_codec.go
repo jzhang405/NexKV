@@ -213,65 +213,6 @@ func checkFrameSize(size int, maxSize int) error {
 	return nil
 }
 
-// AutoDetectCodec 自动检测编解码器
-type AutoDetectCodec struct {
-	tcpCodec *TCPFrameCodec
-	udpCodec *UDPFrameCodec
-}
-
-// NewAutoDetectCodec 创建自动检测编解码器
-func NewAutoDetectCodec() *AutoDetectCodec {
-	return &AutoDetectCodec{
-		tcpCodec: NewTCPFrameCodec(),
-		udpCodec: NewUDPFrameCodec(),
-	}
-}
-
-// DetectProtocol 检测协议类型
-// 使用严格的检测逻辑区分 TCP 和 UDP 帧
-func (c *AutoDetectCodec) DetectProtocol(data []byte) (FrameCodec, error) {
-	// 数据太短，无法判断
-	if len(data) < FixedHeaderLen+CRCLen {
-		return c.udpCodec, nil
-	}
-
-	// 尝试检测 TCP 帧（4 字节长度前缀）
-	if len(data) >= 8 {
-		buf := bytes.NewReader(data)
-		var frameSize uint32
-		if err := binary.Read(buf, binary.BigEndian, &frameSize); err == nil {
-			// 长度前缀读取成功
-			// 验证长度值的合理性：
-			// 1. 长度后的剩余数据应该匹配帧大小
-			// 2. 帧大小应该包含至少 FixedHeader + CRC
-			remainingData := len(data) - 4 // 减去长度前缀
-
-			// TCP 帧判断条件：
-			// - 帧大小等于剩余数据（完整帧）
-			// - 帧大小小于等于剩余数据（粘包情况）
-			// - 帧大小至少包含 FixedHeader + CRC
-			minFrameSize := FixedHeaderLen + CRCLen
-			if int(frameSize) >= minFrameSize && int(frameSize) <= remainingData {
-				// 进一步验证：尝试读取 FixedHeader 的某些字段
-				// 检查版本号是否合理（假设版本号在 1-255 之间）
-				if remainingData >= 4 {
-					// FixedHeader 前 4 字节：Magic(4) 或 Version(1) + 其他字段
-					// 这里我们假设 FixedHeader 的第一个字节是版本号
-					// 如果版本号在合理范围内（非零），认为是有效的 TCP 帧
-					versionByte := data[4] // 跳过 4 字节长度前缀
-					if versionByte >= 1 {
-						// 可能是 TCP 帧
-						return c.tcpCodec, nil
-					}
-				}
-			}
-		}
-	}
-
-	// 默认使用 UDP 编解码器
-	return c.udpCodec, nil
-}
-
 // TCPFrameStreamDecoder TCP 帧流式解码器
 //
 // 处理 TCP 粘包问题，从流中正确提取帧

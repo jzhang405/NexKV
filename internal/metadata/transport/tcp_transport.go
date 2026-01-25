@@ -422,7 +422,6 @@ func (t *TCPTransport) Stop() error {
 //   - WithHopCount(totalHop uint16) - 设置跳数 TTL
 //   - WithCompression(compressID uint16) - 设置压缩算法
 //   - WithEncryption(encryptID uint16) - 设置加密算法
-//   - WithPriority(priority types.Priority) - 设置优先级
 //
 // 阻塞直到消息发送成功或失败
 func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message, opts ...SendOpt) error {

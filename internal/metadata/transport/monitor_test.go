@@ -71,7 +71,7 @@ func TestRecordMessage_Success(t *testing.T) {
 
 	monitor.RecordMessage(
 		types.MessageTypeGet,
-		ProtocolTCP,
+		types.ProtocolTCP,
 		"127.0.0.1:8080",
 		1024,
 		1000000, // 1ms latency
@@ -101,7 +101,7 @@ func TestRecordMessage_Success(t *testing.T) {
 	assert.Equal(t, uint64(1), nodeStats.SuccessCount.Load())
 
 	// 验证协议统计
-	protocolStats, exists := monitor.GetProtocolStats(ProtocolTCP)
+	protocolStats, exists := monitor.GetProtocolStats(types.ProtocolTCP)
 	require.True(t, exists)
 	assert.Equal(t, uint64(1), protocolStats.MessageCount.Load())
 	assert.Equal(t, uint64(1), protocolStats.SuccessCount.Load())
@@ -117,7 +117,7 @@ func TestRecordMessage_Failure(t *testing.T) {
 
 	monitor.RecordMessage(
 		types.MessageTypeGet,
-		ProtocolUDP,
+		types.ProtocolUDP,
 		"127.0.0.1:8081",
 		512,
 		500000, // 0.5ms latency
@@ -161,7 +161,7 @@ func TestRecordMessage_MultipleMessages(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		monitor.RecordMessage(
 			types.MessageTypeGet,
-			ProtocolTCP,
+			types.ProtocolTCP,
 			"127.0.0.1:8080",
 			1024,
 			1000000,
@@ -174,7 +174,7 @@ func TestRecordMessage_MultipleMessages(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		monitor.RecordMessage(
 			types.MessageTypePut,
-			ProtocolUDP,
+			types.ProtocolUDP,
 			"127.0.0.1:8081",
 			512,
 			500000,
@@ -196,7 +196,7 @@ func TestRecordMessage_ZeroLatency(t *testing.T) {
 
 	monitor.RecordMessage(
 		types.MessageTypeGet,
-		ProtocolTCP,
+		types.ProtocolTCP,
 		"127.0.0.1:8080",
 		1024,
 		0, // 零延迟
@@ -226,7 +226,7 @@ func TestRecordMessage_NoError(t *testing.T) {
 
 	monitor.RecordMessage(
 		types.MessageTypeGet,
-		ProtocolTCP,
+		types.ProtocolTCP,
 		"127.0.0.1:8080",
 		1024,
 		1000000,
@@ -255,7 +255,7 @@ func TestGetMessageTypeStats_Exists(t *testing.T) {
 
 	monitor.RecordMessage(
 		types.MessageTypeGet,
-		ProtocolTCP,
+		types.ProtocolTCP,
 		"127.0.0.1:8080",
 		1024,
 		1000000,
@@ -285,9 +285,9 @@ func TestGetAllMessageTypeStats(t *testing.T) {
 	defer monitor.Stop()
 
 	// 记录不同类型的消息
-	monitor.RecordMessage(types.MessageTypeGet, ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
-	monitor.RecordMessage(types.MessageTypePut, ProtocolUDP, "127.0.0.1:8081", 512, 500000, true, nil)
-	monitor.RecordMessage(types.MessageTypeDelete, ProtocolTCP, "127.0.0.1:8082", 256, 200000, false, errors.New("error"))
+	monitor.RecordMessage(types.MessageTypeGet, types.ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
+	monitor.RecordMessage(types.MessageTypePut, types.ProtocolUDP, "127.0.0.1:8081", 512, 500000, true, nil)
+	monitor.RecordMessage(types.MessageTypeDelete, types.ProtocolTCP, "127.0.0.1:8082", 256, 200000, false, errors.New("error"))
 
 	allStats := monitor.GetAllMessageTypeStats()
 	assert.Len(t, allStats, 3)
@@ -327,7 +327,7 @@ func TestGetNodeStats_Exists(t *testing.T) {
 
 	monitor.RecordMessage(
 		types.MessageTypeGet,
-		ProtocolTCP,
+		types.ProtocolTCP,
 		"127.0.0.1:8080",
 		1024,
 		1000000,
@@ -359,8 +359,8 @@ func TestGetAllNodeStats(t *testing.T) {
 	defer monitor.Stop()
 
 	// 记录到不同节点
-	monitor.RecordMessage(types.MessageTypeGet, ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
-	monitor.RecordMessage(types.MessageTypePut, ProtocolUDP, "127.0.0.1:8081", 512, 500000, true, nil)
+	monitor.RecordMessage(types.MessageTypeGet, types.ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
+	monitor.RecordMessage(types.MessageTypePut, types.ProtocolUDP, "127.0.0.1:8081", 512, 500000, true, nil)
 
 	allStats := monitor.GetAllNodeStats()
 	assert.Len(t, allStats, 2)
@@ -393,7 +393,7 @@ func TestGetErrorTypeStats_Exists(t *testing.T) {
 
 	monitor.RecordMessage(
 		types.MessageTypeGet,
-		ProtocolTCP,
+		types.ProtocolTCP,
 		"127.0.0.1:8080",
 		1024,
 		1000000,
@@ -427,8 +427,8 @@ func TestGetAllErrorTypeStats(t *testing.T) {
 	protocolErr := fmt.Errorf("connection failed: %w", types.ErrTCPConnFailed)
 	businessErr := types.ErrMsgTooLarge
 
-	monitor.RecordMessage(types.MessageTypeGet, ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, false, protocolErr)
-	monitor.RecordMessage(types.MessageTypePut, ProtocolUDP, "127.0.0.1:8081", 512, 500000, false, businessErr)
+	monitor.RecordMessage(types.MessageTypeGet, types.ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, false, protocolErr)
+	monitor.RecordMessage(types.MessageTypePut, types.ProtocolUDP, "127.0.0.1:8081", 512, 500000, false, businessErr)
 
 	allStats := monitor.GetAllErrorTypeStats()
 	assert.Len(t, allStats, 2)
@@ -468,7 +468,7 @@ func TestGetProtocolStats_Exists(t *testing.T) {
 
 	monitor.RecordMessage(
 		types.MessageTypeGet,
-		ProtocolTCP,
+		types.ProtocolTCP,
 		"127.0.0.1:8080",
 		1024,
 		1000000,
@@ -476,10 +476,10 @@ func TestGetProtocolStats_Exists(t *testing.T) {
 		nil,
 	)
 
-	stats, exists := monitor.GetProtocolStats(ProtocolTCP)
+	stats, exists := monitor.GetProtocolStats(types.ProtocolTCP)
 	assert.True(t, exists)
 	assert.NotNil(t, stats)
-	assert.Equal(t, ProtocolTCP, stats.ProtocolType)
+	assert.Equal(t, types.ProtocolTCP, stats.ProtocolType)
 	assert.Equal(t, uint64(1), stats.MessageCount.Load())
 	assert.Equal(t, uint64(1), stats.SuccessCount.Load())
 	assert.True(t, stats.IsActive.Load())
@@ -501,33 +501,33 @@ func TestGetAllProtocolStats(t *testing.T) {
 	defer monitor.Stop()
 
 	// 记录到不同协议
-	monitor.RecordMessage(types.MessageTypeGet, ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
-	monitor.RecordMessage(types.MessageTypePut, ProtocolUDP, "127.0.0.1:8081", 512, 500000, false, errors.New("error"))
-	monitor.RecordMessage(types.MessageTypeDelete, ProtocolGRPC, "127.0.0.1:8082", 256, 200000, true, nil)
+	monitor.RecordMessage(types.MessageTypeGet, types.ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
+	monitor.RecordMessage(types.MessageTypePut, types.ProtocolUDP, "127.0.0.1:8081", 512, 500000, false, errors.New("error"))
+	monitor.RecordMessage(types.MessageTypeDelete, types.ProtocolGRPC, "127.0.0.1:8082", 256, 200000, true, nil)
 
 	allStats := monitor.GetAllProtocolStats()
 	assert.Len(t, allStats, 3)
 
 	// 验证协议类型正确
-	assert.Contains(t, allStats, ProtocolTCP)
-	assert.Contains(t, allStats, ProtocolUDP)
-	assert.Contains(t, allStats, ProtocolGRPC)
+	assert.Contains(t, allStats, types.ProtocolTCP)
+	assert.Contains(t, allStats, types.ProtocolUDP)
+	assert.Contains(t, allStats, types.ProtocolGRPC)
 
 	// 验证 TCP 统计
-	tcpStats := allStats[ProtocolTCP]
+	tcpStats := allStats[types.ProtocolTCP]
 	assert.Equal(t, uint64(1), tcpStats.MessageCount.Load())
 	assert.Equal(t, uint64(1), tcpStats.SuccessCount.Load())
 	assert.Equal(t, uint64(0), tcpStats.FailureCount.Load())
 
 	// 验证 UDP 统计
-	udpStats := allStats[ProtocolUDP]
+	udpStats := allStats[types.ProtocolUDP]
 	assert.Equal(t, uint64(0), udpStats.SuccessCount.Load())
 	assert.Equal(t, uint64(1), udpStats.FailureCount.Load())
 
 	// 验证所有协议都是活跃的
-	assert.True(t, allStats[ProtocolTCP].IsActive.Load())
-	assert.True(t, allStats[ProtocolUDP].IsActive.Load())
-	assert.True(t, allStats[ProtocolGRPC].IsActive.Load())
+	assert.True(t, allStats[types.ProtocolTCP].IsActive.Load())
+	assert.True(t, allStats[types.ProtocolUDP].IsActive.Load())
+	assert.True(t, allStats[types.ProtocolGRPC].IsActive.Load())
 }
 
 // TestGetAllProtocolStats_Empty 测试获取空的协议统计
@@ -549,8 +549,8 @@ func TestGetGlobalStats(t *testing.T) {
 	defer monitor.Stop()
 
 	// 记录一些消息
-	monitor.RecordMessage(types.MessageTypeGet, ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
-	monitor.RecordMessage(types.MessageTypePut, ProtocolUDP, "127.0.0.1:8081", 512, 500000, false, errors.New("error"))
+	monitor.RecordMessage(types.MessageTypeGet, types.ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
+	monitor.RecordMessage(types.MessageTypePut, types.ProtocolUDP, "127.0.0.1:8081", 512, 500000, false, errors.New("error"))
 
 	globalStats := monitor.GetGlobalStats()
 	assert.NotNil(t, globalStats)
@@ -600,7 +600,7 @@ func TestConcurrentRecordMessage(t *testing.T) {
 
 			monitor.RecordMessage(
 				msgType,
-				ProtocolTCP,
+				types.ProtocolTCP,
 				"127.0.0.1:8080",
 				1024,
 				1000000,
@@ -627,7 +627,7 @@ func TestConcurrentGetStats(t *testing.T) {
 	defer monitor.Stop()
 
 	// 先记录一些数据
-	monitor.RecordMessage(types.MessageTypeGet, ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
+	monitor.RecordMessage(types.MessageTypeGet, types.ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
 
 	done := make(chan bool, 100)
 
@@ -644,7 +644,7 @@ func TestConcurrentGetStats(t *testing.T) {
 			case 3:
 				monitor.GetNodeStats("127.0.0.1:8080")
 			case 4:
-				monitor.GetProtocolStats(ProtocolTCP)
+				monitor.GetProtocolStats(types.ProtocolTCP)
 			}
 			done <- true
 		}(i)
@@ -674,7 +674,7 @@ func TestConcurrentRecordAndGet(t *testing.T) {
 				// 记录消息
 				monitor.RecordMessage(
 					types.MessageTypeGet,
-					ProtocolTCP,
+					types.ProtocolTCP,
 					"127.0.0.1:8080",
 					1024,
 					1000000,
@@ -710,8 +710,8 @@ func TestReset(t *testing.T) {
 
 	// 记录一些数据
 	for i := 0; i < 10; i++ {
-		monitor.RecordMessage(types.MessageTypeGet, ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
-		monitor.RecordMessage(types.MessageTypePut, ProtocolUDP, "127.0.0.1:8081", 512, 500000, false, errors.New("error"))
+		monitor.RecordMessage(types.MessageTypeGet, types.ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
+		monitor.RecordMessage(types.MessageTypePut, types.ProtocolUDP, "127.0.0.1:8081", 512, 500000, false, errors.New("error"))
 	}
 
 	// 验证数据已记录
@@ -752,13 +752,13 @@ func TestReset_AfterContinue(t *testing.T) {
 	defer monitor.Stop()
 
 	// 记录初始数据
-	monitor.RecordMessage(types.MessageTypeGet, ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
+	monitor.RecordMessage(types.MessageTypeGet, types.ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
 
 	// 重置
 	monitor.Reset()
 
 	// 记录新数据
-	monitor.RecordMessage(types.MessageTypePut, ProtocolUDP, "127.0.0.1:8081", 512, 500000, true, nil)
+	monitor.RecordMessage(types.MessageTypePut, types.ProtocolUDP, "127.0.0.1:8081", 512, 500000, true, nil)
 
 	// 验证只包含新数据
 	globalStats := monitor.GetGlobalStats()
@@ -829,7 +829,7 @@ func TestStatsAccuracy_LastMessageTime(t *testing.T) {
 
 	monitor.RecordMessage(
 		types.MessageTypeGet,
-		ProtocolTCP,
+		types.ProtocolTCP,
 		"127.0.0.1:8080",
 		1024,
 		1000000,
@@ -864,9 +864,9 @@ func TestStatsAccuracy_ErrorCounts(t *testing.T) {
 	protocolErr2 := fmt.Errorf("timeout: %w", types.ErrTCPSendTimeout)
 	businessErr := types.ErrInvalidAddr
 
-	monitor.RecordMessage(types.MessageTypeGet, ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, false, protocolErr1)
-	monitor.RecordMessage(types.MessageTypePut, ProtocolTCP, "127.0.0.1:8080", 512, 500000, false, protocolErr2)
-	monitor.RecordMessage(types.MessageTypeDelete, ProtocolUDP, "127.0.0.1:8081", 256, 200000, false, businessErr)
+	monitor.RecordMessage(types.MessageTypeGet, types.ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, false, protocolErr1)
+	monitor.RecordMessage(types.MessageTypePut, types.ProtocolTCP, "127.0.0.1:8080", 512, 500000, false, protocolErr2)
+	monitor.RecordMessage(types.MessageTypeDelete, types.ProtocolUDP, "127.0.0.1:8081", 256, 200000, false, businessErr)
 
 	// 验证节点错误计数
 	nodeStats, exists := monitor.GetNodeStats("127.0.0.1:8080")
@@ -891,7 +891,7 @@ func TestStatsAccuracy_CopyIndependence(t *testing.T) {
 	defer monitor.Stop()
 
 	// 记录一条消息
-	monitor.RecordMessage(types.MessageTypeGet, ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
+	monitor.RecordMessage(types.MessageTypeGet, types.ProtocolTCP, "127.0.0.1:8080", 1024, 1000000, true, nil)
 
 	// 获取统计拷贝
 	stats1, _ := monitor.GetMessageTypeStats(types.MessageTypeGet)
@@ -920,7 +920,7 @@ func TestDimensionalMonitor_Integration(t *testing.T) {
 		// 记录一条消息
 		monitor.RecordMessage(
 			types.MessageTypeGet,
-			ProtocolTCP,
+			types.ProtocolTCP,
 			"127.0.0.1:8080",
 			1024,
 			1000000,
@@ -938,7 +938,7 @@ func TestDimensionalMonitor_Integration(t *testing.T) {
 		nodeStats, _ := monitor.GetNodeStats("127.0.0.1:8080")
 		assert.Equal(t, uint64(1), nodeStats.MessageCount.Load())
 
-		protocolStats, _ := monitor.GetProtocolStats(ProtocolTCP)
+		protocolStats, _ := monitor.GetProtocolStats(types.ProtocolTCP)
 		assert.Equal(t, uint64(1), protocolStats.MessageCount.Load())
 	})
 
@@ -951,7 +951,7 @@ func TestDimensionalMonitor_Integration(t *testing.T) {
 
 		monitor.RecordMessage(
 			types.MessageTypeGet,
-			ProtocolTCP,
+			types.ProtocolTCP,
 			"127.0.0.1:8080",
 			1024,
 			1000000,
@@ -970,7 +970,7 @@ func TestDimensionalMonitor_Integration(t *testing.T) {
 		assert.Equal(t, uint64(1), nodeStats.FailureCount.Load())
 		assert.Equal(t, uint64(1), nodeStats.ErrorCounts["protocol_error"])
 
-		protocolStats, _ := monitor.GetProtocolStats(ProtocolTCP)
+		protocolStats, _ := monitor.GetProtocolStats(types.ProtocolTCP)
 		assert.Equal(t, uint64(1), protocolStats.FailureCount.Load())
 
 		errorStats, _ := monitor.GetErrorTypeStats("protocol_error")
@@ -989,7 +989,7 @@ func TestDimensionalMonitor_Integration(t *testing.T) {
 				defer wg.Done()
 				monitor.RecordMessage(
 					types.MessageTypeGet,
-					ProtocolTCP,
+					types.ProtocolTCP,
 					"127.0.0.1:8080",
 					1024,
 					1000000,
@@ -1015,7 +1015,7 @@ func TestDimensionalMonitor_Integration(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			monitor.RecordMessage(
 				types.MessageTypeGet,
-				ProtocolTCP,
+				types.ProtocolTCP,
 				"127.0.0.1:8080",
 				1024,
 				1000000,

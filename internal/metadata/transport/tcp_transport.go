@@ -563,8 +563,20 @@ func (t *TCPTransport) Reply(ctx context.Context, addr string, msg Message, node
 		if conn == nil {
 			return types.NewTransportSendError(fmt.Errorf("连接已关闭 (ConnID: %s)，无法发送响应", connID))
 		}
-	} else {
-		// 非 RPC 场景：获取或创建连接
+	}
+
+	// === 二次验证：再次检查连接是否仍然有效 ===
+	// 因为从 connMap 获取连接到实际使用之间，连接可能被另一个 goroutine 关闭
+	// 如果 conn != nil 且连接已关闭，返回错误
+	if conn != nil && conn.isClosed() {
+		logging.Warnf("[RPC-Server] 连接在使用前已被关闭 (ConnID: %s, Addr: %s)", connID, addr)
+		return types.NewTransportSendError(fmt.Errorf("连接已关闭 (ConnID: %s)，无法发送响应", connID))
+	}
+
+	// === 非 RPC 场景：获取或创建连接 ===
+	// 如果 connID 为空，说明是客户端发起的普通发送（非 RPC 响应）
+	// 此时需要通过 addr 获取或创建连接
+	if connID == "" {
 		var err error
 		conn, err = t.getOrCreateConn(addr)
 		if err != nil {

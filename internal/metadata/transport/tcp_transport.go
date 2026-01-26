@@ -536,12 +536,6 @@ func (t *TCPTransport) Reply(ctx context.Context, addr string, msg Message, node
 	default:
 	}
 
-	// 验证：如果没有提供 connID，必须提供有效的 addr
-	// 这样可以避免尝试拨号空地址导致的 "missing address" 错误
-	if strings.TrimSpace(connID) == "" && strings.TrimSpace(addr) == "" {
-		return types.NewStoreInvalidParameterError("addr or connID must be provided")
-	}
-
 	// 处理发送选项（不包括 connID，connID 已作为直接参数）
 	options := processSendOptions(opts...)
 	defer releaseSendOptions(options)
@@ -577,6 +571,13 @@ func (t *TCPTransport) Reply(ctx context.Context, addr string, msg Message, node
 	// 如果 connID 为空，说明是客户端发起的普通发送（非 RPC 响应）
 	// 此时需要通过 addr 获取或创建连接
 	if connID == "" {
+		// 验证：在非 RPC 场景下，必须提供有效的 addr
+		// 这样可以避免尝试拨号空地址导致的 "missing address" 错误
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			return types.NewStoreInvalidParameterError("addr must be provided when connID is empty")
+		}
+
 		var err error
 		conn, err = t.getOrCreateConn(addr)
 		if err != nil {

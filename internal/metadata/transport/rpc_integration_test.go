@@ -1008,8 +1008,8 @@ func TestRPCIntegration_ResourceCleanup(t *testing.T) {
 		t.Fatalf("Failed to start server: %v", err)
 	}
 
-	// 等待服务端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
+	time.Sleep(500 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
@@ -1023,8 +1023,8 @@ func TestRPCIntegration_ResourceCleanup(t *testing.T) {
 		t.Fatalf("Failed to start client TCP transport: %v", err)
 	}
 
-	// 等待客户端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待客户端准备就绪（CI 环境需要更长的准备时间）
+	time.Sleep(500 * time.Millisecond)
 
 	// 发送一些请求
 	for i := 0; i < 10; i++ {

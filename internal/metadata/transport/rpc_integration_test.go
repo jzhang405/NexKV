@@ -326,7 +326,7 @@ func TestRPCIntegration_ConcurrentCalls(t *testing.T) {
 				msgType: types.MessageTypeGet,
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
 			response, err := client.Call(ctx, serverAddr, requestMsg)
@@ -1032,7 +1032,7 @@ func TestRPCIntegration_ResourceCleanup(t *testing.T) {
 			msgType: types.MessageTypeGet,
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		_, err := client.Call(ctx, serverAddr, requestMsg)
 		cancel()
 

@@ -419,6 +419,8 @@ func (t *UDPTransport) processFragmentFrame(frame *Frame) MsgFrame {
 //
 // 返回：
 //   - MsgFrame: 增强消息（包含原始消息和解析后的 TLV 字段）
+//
+//nolint:unused // 保留用于未来的消息帧构建场景
 func (t *UDPTransport) buildMsgFrame(msg Message, extHeader *VarExtHeader) MsgFrame {
 	msgFrame := MsgFrame{
 		Message: msg,
@@ -436,6 +438,8 @@ func (t *UDPTransport) buildMsgFrame(msg Message, extHeader *VarExtHeader) MsgFr
 
 // buildMsgFrameFromFrame 从完整的 Frame（含 FixedHeader）构建 MsgFrame
 // === FIX: 确保 FixedHeader 中的 NodeID 和 MsgSeq 被正确传递到 MsgFrame ===
+//
+//nolint:unused // 保留用于未来的消息帧构建场景
 func (t *UDPTransport) buildMsgFrameFromFrame(msg Message, frame *Frame) MsgFrame {
 	msgFrame := MsgFrame{
 		FixedHeader: *frame.FixedHeader, // 解引用并复制 FixedHeader（包含 NodeID 和 MsgSeq）

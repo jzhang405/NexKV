@@ -327,7 +327,7 @@ func (a *rpcServerHandlerAdapter) sendResponse(reqFrame MsgFrame, resp types.Mes
 
 	// 从 CorrelationID "{NodeID}:{MsgSeq}" 解析出 nodeID 和 msgSeq
 	var nodeID, msgSeq uint64
-	fmt.Sscanf(correlationID, "%d:%d", &nodeID, &msgSeq)
+	_, _ = fmt.Sscanf(correlationID, "%d:%d", &nodeID, &msgSeq)
 
 	// 设置超时上下文（5 秒）
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -1064,6 +1064,8 @@ func (t *TCPTransport) GetConnByID(connID string) (net.Conn, error) {
 //
 // 返回:
 //   - error: 发送失败时返回错误
+//
+//nolint:unused // 保留用于未来的直接连接发送场景
 func (t *TCPTransport) sendViaConnection(ctx context.Context, conn net.Conn, msg Message, sourceAddr, correlationID string) error {
 	// 查找对应的 tcpConn（通过 remoteAddr 匹配）
 	var tc *tcpConn

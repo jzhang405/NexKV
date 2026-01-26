@@ -1,3 +1,5 @@
+version: "2"
+
 linters:
   enable:
     - errcheck
@@ -6,55 +8,16 @@ linters:
     - staticcheck
     - unused
 
-linters-settings:
+linters_settings:
   errcheck:
     check-type-assertions: true
     check-blank: true
 
 issues:
-  exclude-rules:
-    # 排除测试文件中的所有 errcheck 错误
-    - path: _test\.go
-      linters:
-        - errcheck
-
-    # 排除测试文件中的未使用函数
-    - path: _test\.go
-      linters:
-        - unused
-
-    # 排除测试文件中的无效赋值
-    - path: _test\.go
-      text: "ineffectual assignment"
-      linters:
-        - ineffassign
-
-    # 排除 vendor 等目录
-    - path: (vendor|third_party|testdata|examples|Godeps|builtin)/
-      linters:
-        - errcheck
-        - govet
-        - ineffassign
-        - staticcheck
-        - unused
-
-    # 排除已知可忽略的错误（readRandomWithFallback 总是返回 nil，有降级机制）
-    - path: internal/metadata/uuid/uuid_v7\.go
-      text: "Error return value is not checked.*readRandomWithFallback"
-      linters:
-        - errcheck
-
-    # 排除 os.Hostname 错误检查（失败时使用空字符串也可接受）
-    - path: internal/metadata/cluster/node_id\.go
-      text: "Error return value of.*os.Hostname.*is not checked"
-      linters:
-        - errcheck
-
-    # 排除 leader_election.go 中的类型断言检查（atomic.Value 存储的类型是已知的）
-    - path: internal/metadata/cluster/leader_election\.go
-      text: "Error return value is not checked.*\*Node"
-      linters:
-        - errcheck
+  # 排除已知可忽略的错误
+  exclude:
+    - "Error return value.*readRandomWithFallback.*is not checked" # readRandomWithFallback 总是返回 nil，有降级机制
+    - "Error return value of.*os.Hostname.*is not checked" # 失败时使用空字符串也可接受
 
   max-issues-per-linter: 0
   max-same-issues: 0

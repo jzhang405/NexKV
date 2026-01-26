@@ -509,6 +509,8 @@ func (g *WALGroupCommit) flushLoop() {
 //
 // 用于批量写入后的完整性验证
 // 返回每个条目的校验和（Header + Data）
+//
+//nolint:unused // 保留用于未来的完整性验证
 func verifyBatchChecksums(entries []*WALEntry) []uint32 {
 	checksums := make([]uint32, len(entries))
 

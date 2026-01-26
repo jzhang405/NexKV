@@ -433,8 +433,8 @@ func BenchmarkConcurrentDispatcherRegistration(b *testing.B) {
 			}
 
 			if err := d.Stop(); err != nil {
-		b.Errorf("d.Stop() failed: %v", err)
-	}
+				b.Errorf("d.Stop() failed: %v", err)
+			}
 			i++
 		}
 	})
@@ -533,10 +533,10 @@ func BenchmarkDispatcherScalability(b *testing.B) {
 				b.Fatalf("Start() failed: %v", err)
 			}
 			defer func() {
-		if err := d.Stop(); err != nil {
-			b.Errorf("d.Stop() failed: %v", err)
-		}
-	}()
+				if err := d.Stop(); err != nil {
+					b.Errorf("d.Stop() failed: %v", err)
+				}
+			}()
 
 			msgChan := make(chan MsgFrame, 1000)
 			d.RegisterConnection("benchmark", msgChan)

@@ -776,3 +776,60 @@ func TestTCPEncodeDecodeRoundTrip(t *testing.T) {
 	assert.Equal(t, uint64(1001), msgFrame.NodeID)
 	assert.Equal(t, uint64(1), msgFrame.MsgSeq)
 }
+
+// TestTCPTransportReply_EmptyAddrAndConnID 测试 Reply 在空地址和空连接 ID 时失败
+// 这可以防止尝试拨号空地址导致的 "missing address" 错误
+func TestTCPTransportReply_EmptyAddrAndConnID(t *testing.T) {
+	config := DefaultTransportConfig()
+	tt, err := NewTCPTransportWithConfig(config)
+	require.NoError(t, err)
+	require.NotNil(t, tt)
+
+	// 创建 msgSeqGenerator
+	var msgSeq uint64
+	msgSeqGenerator := func() uint64 {
+		msgSeq++
+		return msgSeq
+	}
+
+	// 启动传输层
+	err = tt.Start(nil, msgSeqGenerator, "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() {
+		if err := tt.Stop(); err != nil {
+			t.Errorf("tt.Stop() failed: %v", err)
+		}
+	}()
+
+	// 创建测试消息
+	msg := &GetMessage{
+		BaseMessage: BaseMessage{MessageType: types.MessageTypeGet},
+		Key:         "test-key",
+	}
+
+	// 测试 1: 空 addr 和空 connID 应该返回错误
+	t.Run("EmptyAddrAndConnID", func(t *testing.T) {
+		ctx := context.Background()
+		err := tt.Reply(ctx, "", msg, 1, 1, "")
+		require.Error(t, err, "Reply should return error when both addr and connID are empty")
+		require.Contains(t, err.Error(), "addr or connID must be provided",
+			"Error message should indicate that addr or connID is required")
+	})
+
+	// 测试 2: 只有空格的 addr 和空 connID 也应该返回错误
+	t.Run("WhitespaceAddrAndEmptyConnID", func(t *testing.T) {
+		ctx := context.Background()
+		err := tt.Reply(ctx, "   ", msg, 1, 1, "")
+		require.Error(t, err, "Reply should return error for whitespace-only addr")
+		require.Contains(t, err.Error(), "addr or connID must be provided")
+	})
+
+	// 测试 3: 无效的 addr 格式应该在早期验证时失败
+	t.Run("InvalidAddrFormat", func(t *testing.T) {
+		ctx := context.Background()
+		err := tt.Reply(ctx, "99999", msg, 1, 1, "")
+		require.Error(t, err, "Reply should return error for invalid addr format")
+		// 应该在地址验证阶段就失败，而不是在拨号阶段
+		require.Contains(t, err.Error(), "invalid addr")
+	})
+}

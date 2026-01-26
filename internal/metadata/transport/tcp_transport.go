@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -535,6 +536,12 @@ func (t *TCPTransport) Reply(ctx context.Context, addr string, msg Message, node
 	default:
 	}
 
+	// 验证：如果没有提供 connID，必须提供有效的 addr
+	// 这样可以避免尝试拨号空地址导致的 "missing address" 错误
+	if strings.TrimSpace(connID) == "" && strings.TrimSpace(addr) == "" {
+		return types.NewStoreInvalidParameterError("addr or connID must be provided")
+	}
+
 	// 处理发送选项（不包括 connID，connID 已作为直接参数）
 	options := processSendOptions(opts...)
 	defer releaseSendOptions(options)
@@ -784,6 +791,18 @@ func (t *TCPTransport) Receive() <-chan MsgFrame {
 // getOrCreateConn 获取或创建连接
 // 使用双重检查锁定模式避免 TOCTOU 竞态
 func (t *TCPTransport) getOrCreateConn(addr string) (*tcpConn, error) {
+	// 标准化并验证地址
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil, types.NewTransportConnectionError("获取连接", "", fmt.Errorf("empty addr"))
+	}
+
+	// 提前验证地址格式和可解析性（在拨号前失败快速）
+	// 这样可以及早发现无效地址（如 "99999" 这种无效端口）
+	if _, err := net.ResolveTCPAddr("tcp", addr); err != nil {
+		return nil, types.NewTransportConnectionError("获取连接", "", fmt.Errorf("invalid addr: %w", err))
+	}
+
 	// 第一次检查：快速路径（无锁）
 	conn := t.getConnFromPool(addr)
 	if conn != nil && !conn.isClosed() {
@@ -809,8 +828,15 @@ func (t *TCPTransport) getOrCreateConn(addr string) (*tcpConn, error) {
 func (t *TCPTransport) dialConnLocked(addr string) (*tcpConn, error) {
 	logging.Debugf("拨号连接: %s", addr)
 
-	// 建立连接
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	// 解析 TCP 地址以获取规范化形式
+	// 使用规范化后的地址作为连接池的键，避免因地址格式不同导致的重复连接
+	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		return nil, types.NewTransportConnectionError("拨号", "", err)
+	}
+
+	// 使用规范化后的地址进行拨号
+	conn, err := net.DialTimeout("tcp", tcpAddr.String(), 10*time.Second)
 	if err != nil {
 		return nil, types.NewTransportConnectionError("拨号", "", err)
 	}
@@ -822,8 +848,9 @@ func (t *TCPTransport) dialConnLocked(addr string) (*tcpConn, error) {
 		return nil, types.NewTransportConnectionError("包装连接", "", nil)
 	}
 
-	// 添加到池（调用方已持有锁，直接设置）
-	t.connPool.conns[wrappedConn.remoteAddr] = wrappedConn
+	// 使用规范化后的地址作为连接池的键
+	resolvedKey := tcpAddr.String()
+	t.connPool.conns[resolvedKey] = wrappedConn
 
 	return wrappedConn, nil
 }

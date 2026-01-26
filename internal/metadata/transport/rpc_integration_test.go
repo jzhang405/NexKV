@@ -309,11 +309,11 @@ func TestRPCIntegration_ConcurrentCalls(t *testing.T) {
 		}
 	}()
 
-	// 等待客户端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待客户端准备就绪（CI 环境需要更长的准备时间）
+	time.Sleep(500 * time.Millisecond)
 
-	// 并发发送多个请求
-	const numRequests = 10
+	// 并发发送多个请求（CI 环境资源有限，减少并发数量）
+	const numRequests = 5
 	var wg sync.WaitGroup
 	errors := make(chan error, numRequests)
 

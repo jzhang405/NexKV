@@ -52,7 +52,38 @@ type Transport interface {
 	// 支持函数选项模式，可动态配置 TLV 扩展字段：
 	//   transport.Send(ctx, addr, msg, WithHopCount(10))
 	//   transport.Send(ctx, addr, msg, WithCompression(2), WithHopCount(5))
+	//
+	// 注意：此方法使用自动生成的 nodeID 和 msgSeq
+	// 如果需要指定特定的 nodeID 和 msgSeq（如 RPC 场景），请使用 SendWithID()
 	Send(ctx context.Context, addr string, msg Message, opt ...SendOpt) error
+
+	// Reply 发送消息到指定节点（使用指定的 NodeID 和 MsgSeq）
+	// 阻塞直到消息发送成功或失败
+	//
+	// 参数：
+	//   - nodeID: 节点 ID（用于 CorrelationID 匹配）
+	//   - msgSeq: 消息序列号（用于 CorrelationID 匹配）
+	//   - connID: TCP 连接 ID（用于连接复用，UDP 消息传空字符串）
+	//
+	// 使用场景：
+	//   - RPC 客户端：预先生成 CorrelationID，确保请求-响应匹配
+	//   - RPC 服务端：使用请求中的 NodeID 和 MsgSeq 发送响应
+	//   - TCP 连接复用：通过 connID 复用现有连接，避免创建新连接
+	//
+	// CorrelationID 格式："{NodeID}:{MsgSeq}"
+	//
+	// 示例：
+	//   // RPC 客户端发送请求
+	//   msgSeq := transport.GenerateMsgSeq()
+	//   nodeID := transport.GetNodeID()
+	//   correlationID := fmt.Sprintf("%d:%d", nodeID, msgSeq)
+	//   transport.Reply(ctx, addr, msg, nodeID, msgSeq, "")
+	//
+	//   // RPC 服务端发送响应（TCP 连接复用）
+	//   var nodeID, msgSeq uint64
+	//   fmt.Sscanf(correlationID, "%d:%d", &nodeID, &msgSeq)
+	//   transport.Reply(ctx, sourceAddr, resp, nodeID, msgSeq, reqFrame.ConnID)
+	Reply(ctx context.Context, addr string, msg Message, nodeID uint64, msgSeq uint64, connID string, opts ...SendOpt) error
 
 	// Receive 返回接收消息的通道
 	// 调用者需要持续从通道读取消息

@@ -9,6 +9,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -45,6 +46,7 @@ const (
 //   - 连接池复用
 //   - 心跳保活
 //   - 优雅关闭
+//   - RPC 响应发送（连接映射）
 type TCPTransport struct {
 	// 配置
 	config *TransportConfig
@@ -78,6 +80,12 @@ type TCPTransport struct {
 	// 节点标识
 	NodeID          atomic.Uint64
 	msgSeqGenerator atomic.Value // 存储 func() uint64
+
+	// === RPC 响应发送支持（P0-实现） ===
+	// connMap 连接映射表（支持响应发送）
+	// key: connID (string), value: *tcpConn
+	connMap   sync.Map
+	connIDSeq atomic.Uint64 // 连接ID生成器（原子递增）
 }
 
 // connPool 连接池
@@ -92,13 +100,15 @@ type connPool struct {
 //
 // 封装 net.Conn 并添加读写超时
 type tcpConn struct {
-	conn       net.Conn
-	remoteAddr string
-	lastUsed   atomic.Int64 // 最后使用时间（Unix timestamp）
-	reader     *MessageReader
-	writer     *MessageWriter
-	closeOnce  sync.Once
-	closeCh    chan struct{}
+	conn              net.Conn
+	remoteAddr        string
+	connID            string       // 连接ID（用于响应发送）
+	lastUsed          atomic.Int64 // 最后使用时间（Unix timestamp）
+	reader            *MessageReader
+	writer            *MessageWriter
+	closeOnce         sync.Once
+	closeCh           chan struct{}
+	hasResponseReader atomic.Bool // 是否已启动响应读取器（避免重复启动）
 }
 
 // NewTCPTransport 创建 TCP 传输
@@ -284,6 +294,7 @@ func (t *TCPTransport) wrapConn(conn net.Conn) *tcpConn {
 		return nil
 	}
 	remoteAddr := conn.RemoteAddr().String()
+	localAddr := conn.LocalAddr().String()
 
 	// 设置 TCP 选项
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
@@ -300,15 +311,23 @@ func (t *TCPTransport) wrapConn(conn net.Conn) *tcpConn {
 		}
 	}
 
+	// === RPC 响应发送支持：生成连接ID ===
+	seq := t.connIDSeq.Add(1)
+	connID := fmt.Sprintf("%s-%s-%d", localAddr, remoteAddr, seq)
+
 	tc := &tcpConn{
 		conn:       conn,
 		remoteAddr: remoteAddr,
+		connID:     connID,
 		reader:     NewMessageReader(conn, t.codec),
 		writer:     NewMessageWriter(conn, t.codec),
 		closeCh:    make(chan struct{}),
 	}
 	// 初始化最后使用时间为当前时间
 	tc.lastUsed.Store(time.Now().Unix())
+
+	// === RPC 响应发送支持：存储到连接映射表 ===
+	t.connMap.Store(connID, tc)
 
 	return tc
 }
@@ -322,6 +341,12 @@ func (t *TCPTransport) handleConn(conn *tcpConn) {
 	defer func() {
 		// 连接关闭时从池中移除
 		t.removeConnFromPool(conn.remoteAddr)
+
+		// === RPC 响应发送支持：从连接映射表中删除 ===
+		if conn.connID != "" {
+			t.connMap.Delete(conn.connID)
+		}
+
 		if err := conn.Close(); err != nil {
 			logging.Warnf("关闭连接失败: %s, error: %v", conn.remoteAddr, err)
 		}
@@ -359,6 +384,12 @@ func (t *TCPTransport) handleConn(conn *tcpConn) {
 
 		// 更新最后使用时间
 		conn.lastUsed.Store(time.Now().Unix())
+
+		// === RPC 响应发送支持：设置 SourceAddr 和 ConnID ===
+		msgFrame.SourceAddr = conn.remoteAddr
+		msgFrame.ConnID = conn.connID
+		// === 设置接收协议类型（用于响应时选择正确的 Transport） ===
+		msgFrame.SetRecvProtocol(types.ProtocolTCP)
 
 		// P2-2: 发送到接收通道（使用配置的超时时间）
 		channelTimeout := t.config.ChannelSendTimeout
@@ -461,6 +492,7 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message, opts 
 	}
 
 	// 发送消息（带 TLV 选项）
+	// === 使用自动生成的 msgSeq 和本地 NodeID ===
 	msgSeq := t.GenerateMsgSeq()
 	if err := conn.writer.WriteMessageWithOptions(msg, t.NodeID.Load(), msgSeq, options); err != nil {
 		// 发送失败，从池中移除连接（removeConnFromPool 会关闭连接）
@@ -472,7 +504,172 @@ func (t *TCPTransport) Send(ctx context.Context, addr string, msg Message, opts 
 	conn.lastUsed.Store(time.Now().Unix())
 
 	logging.Debugf("发送消息: %s to %s", msg.Type(), addr)
+
+	// === RPC 响应接收支持：启动 goroutine 读取响应 ===
+	// 检查是否已经为这个连接启动了响应读取器
+	if !conn.hasResponseReaderFlag() {
+		go t.readResponsesFromConn(conn)
+	}
+
 	return nil
+}
+
+// Reply 发送消息到指定节点（使用指定的 NodeID 和 MsgSeq）
+//
+// 参数：
+//   - nodeID: 节点 ID（用于 CorrelationID 匹配）
+//   - msgSeq: 消息序列号（用于 CorrelationID 匹配）
+//
+// 使用场景：
+//   - RPC 客户端：预先生成 CorrelationID，确保请求-响应匹配
+//   - RPC 服务端：使用请求中的 NodeID 和 MsgSeq 发送响应
+func (t *TCPTransport) Reply(ctx context.Context, addr string, msg Message, nodeID uint64, msgSeq uint64, connID string, opts ...SendOpt) error {
+	if !t.started.Load() {
+		return types.NewTransportStateError("未启动")
+	}
+
+	// 提前检查 context 是否已取消
+	select {
+	case <-ctx.Done():
+		return types.NewTransportSendError(ctx.Err())
+	default:
+	}
+
+	// 处理发送选项（不包括 connID，connID 已作为直接参数）
+	options := processSendOptions(opts...)
+	defer releaseSendOptions(options)
+
+	// === RPC 响应发送支持：优先复用现有连接 ===
+	var conn *tcpConn
+
+	// 如果提供了 ConnID，尝试从 connMap 中查找现有连接（RPC 场景）
+	if connID != "" {
+		if value, ok := t.connMap.Load(connID); ok {
+			if tc, ok := value.(*tcpConn); ok && !tc.isClosed() {
+				conn = tc
+				logging.Debugf("[RPC-Server] 复用现有连接 (ConnID: %s, Addr: %s)", connID, addr)
+			}
+		}
+
+		// RPC 场景：如果提供了 ConnID 但连接已关闭，不尝试创建新连接
+		// 因为客户端可能已经不再等待响应，创建新连接没有意义
+		if conn == nil {
+			return types.NewTransportSendError(fmt.Errorf("连接已关闭 (ConnID: %s)，无法发送响应", connID))
+		}
+	} else {
+		// 非 RPC 场景：获取或创建连接
+		var err error
+		conn, err = t.getOrCreateConn(addr)
+		if err != nil {
+			return types.NewTransportConnectionError("获取连接", "", err)
+		}
+	}
+
+	// 设置写入超时
+	if err := setWriteTimeout(conn.conn, t.config.WriteTimeout); err != nil {
+		// 设置失败，关闭连接并从池中移除
+		_ = conn.Close()
+		t.removeConnFromPool(addr)
+		return types.NewTransportConnectionError("设置写超时", "", err)
+	}
+
+	// === 验证 NodeID 是否已设置 ===
+	// NodeID 为 0 表示未设置，这会导致消息无法被正确路由
+	if nodeID == 0 {
+		return types.NewStoreInvalidParameterError("指定的 nodeID 不能为 0，请使用有效的 NodeID")
+	}
+
+	// 发送消息（带 TLV 选项）
+	if err := conn.writer.WriteMessageWithOptions(msg, nodeID, msgSeq, options); err != nil {
+		// 发送失败，从池中移除连接（removeConnFromPool 会关闭连接）
+		t.removeConnFromPool(addr)
+		return types.NewTransportSendError(err)
+	}
+
+	// 更新最后使用时间
+	conn.lastUsed.Store(time.Now().Unix())
+
+	logging.Debugf("发送消息: %s to %s", msg.Type(), addr)
+
+	// === RPC 响应接收支持：启动 goroutine 读取响应 ===
+	// 检查是否已经为这个连接启动了响应读取器
+	if !conn.hasResponseReaderFlag() {
+		go t.readResponsesFromConn(conn)
+	}
+
+	return nil
+}
+
+// ========================================
+// RPC 响应接收支持
+// ========================================
+
+// hasResponseReaderFlag 检查是否已启动响应读取器
+func (tc *tcpConn) hasResponseReaderFlag() bool {
+	return tc.hasResponseReader.Load()
+}
+
+// readResponsesFromConn 从连接读取响应（用于 RPC 客户端）
+//
+// 当客户端发送请求后，服务端会通过同一个连接返回响应。
+// 这个 goroutine 负责从连接读取响应消息并发送到 recvCh。
+func (t *TCPTransport) readResponsesFromConn(conn *tcpConn) {
+	// 标记已启动
+	conn.hasResponseReader.Store(true)
+
+	defer func() {
+		// 连接关闭时清理
+		conn.hasResponseReader.Store(false)
+	}()
+
+	// 设置读取超时
+	if err := setReadTimeout(conn.conn, t.config.ReadTimeout); err != nil {
+		logging.Warnf("[RPC-Client] 设置读取超时失败: %v", err)
+		return
+	}
+
+	for {
+		select {
+		case <-conn.closeCh:
+			// 连接已关闭
+			logging.Debugf("[RPC-Client] 连接已关闭，停止读取响应: %s", conn.remoteAddr)
+			return
+
+		case <-t.stopCh:
+			// Transport 已停止
+			logging.Debugf("[RPC-Client] Transport 已停止，停止读取响应: %s", conn.remoteAddr)
+			return
+		default:
+		}
+
+		// 读取消息帧
+		msgFrame, err := conn.reader.ReadMsgFrame()
+		if err != nil {
+			// 读取失败（连接关闭或超时）
+			if !conn.isClosed() {
+				logging.Debugf("[RPC-Client] 读取响应失败: %s, error: %v", conn.remoteAddr, err)
+			}
+			return
+		}
+
+		// 更新最后使用时间
+		conn.lastUsed.Store(time.Now().Unix())
+
+		// 发送到接收通道
+		select {
+		case t.recvCh <- *msgFrame:
+			logging.Debugf("[RPC-Client] 收到响应: %s from %s (CorrelationID: %s)",
+				msgFrame.Message.Type(), conn.remoteAddr, msgFrame.CorrelationID())
+
+		case <-t.stopCh:
+			logging.Debugf("[RPC-Client] Transport 已停止，丢弃响应: %s", conn.remoteAddr)
+			return
+
+		case <-conn.closeCh:
+			logging.Debugf("[RPC-Client] 连接已关闭，丢弃响应: %s", conn.remoteAddr)
+			return
+		}
+	}
 }
 
 // ForwardMessage 转发消息到指定节点
@@ -828,4 +1025,84 @@ func (t *TCPTransport) Stats() map[string]any {
 	stats[tcpStatKeyActiveConnections] = len(t.connPool.conns)
 
 	return stats
+}
+
+// ========================================
+// RPC 响应发送支持（P0-实现）
+// ========================================
+
+// GetConnByID 根据连接ID获取连接（用于响应发送）
+//
+// 参数:
+//   - connID: 连接ID（格式："{localAddr}-{remoteAddr}-{seq}"）
+//
+// 返回:
+//   - net.Conn: 底层网络连接
+//   - error: 连接不存在或已关闭时返回错误
+func (t *TCPTransport) GetConnByID(connID string) (net.Conn, error) {
+	value, ok := t.connMap.Load(connID)
+	if !ok {
+		return nil, fmt.Errorf("connection not found: %s", connID)
+	}
+
+	tc := value.(*tcpConn)
+	if tc.isClosed() {
+		t.connMap.Delete(connID)
+		return nil, fmt.Errorf("connection closed: %s", connID)
+	}
+
+	return tc.conn, nil
+}
+
+// sendViaConnection 直接通过连接发送消息（用于响应发送）
+//
+// 参数:
+//   - ctx: 上下文（支持超时控制）
+//   - conn: 底层网络连接
+//   - msg: 要发送的消息
+//   - sourceAddr: 源地址（用于日志）
+//
+// 返回:
+//   - error: 发送失败时返回错误
+func (t *TCPTransport) sendViaConnection(ctx context.Context, conn net.Conn, msg Message, sourceAddr, correlationID string) error {
+	// 查找对应的 tcpConn（通过 remoteAddr 匹配）
+	var tc *tcpConn
+	t.connMap.Range(func(key, value any) bool {
+		tcpConn := value.(*tcpConn)
+		if tcpConn.conn == conn {
+			tc = tcpConn
+			return false // 找到了，停止遍历
+		}
+		return true
+	})
+
+	if tc == nil {
+		return fmt.Errorf("tcpConn not found for connection")
+	}
+
+	// 设置写入超时
+	if err := setWriteTimeout(conn, t.config.WriteTimeout); err != nil {
+		return fmt.Errorf("设置写超时失败: %w", err)
+	}
+
+	// === RPC 响应发送支持：解析原始 CorrelationID ===
+	// CorrelationID 格式："NodeID:MsgSeq"，例如 "0:12345"
+	// 为了保证请求-响应匹配，响应必须使用请求的原始 NodeID 和 MsgSeq
+	var nodeID uint64
+	var msgSeq uint64
+	_, err := fmt.Sscanf(correlationID, "%d:%d", &nodeID, &msgSeq)
+	if err != nil {
+		return fmt.Errorf("解析 CorrelationID 失败: %w", err)
+	}
+
+	// 发送消息（使用原始 NodeID 和 MsgSeq）
+	if err := tc.writer.WriteMessageWithOptions(msg, nodeID, msgSeq, nil); err != nil {
+		return fmt.Errorf("写入消息失败: %w", err)
+	}
+
+	// 更新最后使用时间
+	tc.lastUsed.Store(time.Now().Unix())
+
+	logging.Debugf("通过连接发送响应: %s to %s (connID: %s, CorrelationID: %s)", msg.Type(), sourceAddr, tc.connID, correlationID)
+	return nil
 }

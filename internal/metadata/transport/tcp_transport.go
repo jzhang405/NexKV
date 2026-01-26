@@ -797,14 +797,18 @@ func (t *TCPTransport) getOrCreateConn(addr string) (*tcpConn, error) {
 		return nil, types.NewTransportConnectionError("获取连接", "", fmt.Errorf("empty addr"))
 	}
 
-	// 提前验证地址格式和可解析性（在拨号前失败快速）
+	// 提前验证地址格式并获取规范化形式
 	// 这样可以及早发现无效地址（如 "99999" 这种无效端口）
-	if _, err := net.ResolveTCPAddr("tcp", addr); err != nil {
+	// 同时获取规范化后的地址作为连接池的键，确保一致性
+	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
 		return nil, types.NewTransportConnectionError("获取连接", "", fmt.Errorf("invalid addr: %w", err))
 	}
+	resolvedAddr := tcpAddr.String()
 
 	// 第一次检查：快速路径（无锁）
-	conn := t.getConnFromPool(addr)
+	// 使用规范化后的地址作为键
+	conn := t.getConnFromPool(resolvedAddr)
 	if conn != nil && !conn.isClosed() {
 		return conn, nil
 	}
@@ -814,29 +818,35 @@ func (t *TCPTransport) getOrCreateConn(addr string) (*tcpConn, error) {
 	defer t.connPool.mu.Unlock()
 
 	// 第二次检查：其他协程可能已创建连接
-	conn = t.connPool.conns[addr]
+	// 使用规范化后的地址作为键
+	conn = t.connPool.conns[resolvedAddr]
 	if conn != nil && !conn.isClosed() {
 		return conn, nil
 	}
 
 	// 持有锁的情况下拨号并添加到池
-	return t.dialConnLocked(addr)
+	return t.dialConnLockedWithResolvedAddr(resolvedAddr)
 }
 
 // dialConn 拨号创建连接（外部已加锁版本）
 // 注意：调用前必须持有 t.connPool.mu.Lock()
 func (t *TCPTransport) dialConnLocked(addr string) (*tcpConn, error) {
-	logging.Debugf("拨号连接: %s", addr)
-
-	// 解析 TCP 地址以获取规范化形式
-	// 使用规范化后的地址作为连接池的键，避免因地址格式不同导致的重复连接
+	// 先解析地址，然后调用带解析地址的版本
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
 		return nil, types.NewTransportConnectionError("拨号", "", err)
 	}
+	return t.dialConnLockedWithResolvedAddr(tcpAddr.String())
+}
+
+// dialConnLockedWithResolvedAddr 拨号创建连接（使用已解析的地址）
+// 注意：调用前必须持有 t.connPool.mu.Lock()
+// 参数 resolvedAddr 已经是 net.ResolveTCPAddr 解析后的规范化地址
+func (t *TCPTransport) dialConnLockedWithResolvedAddr(resolvedAddr string) (*tcpConn, error) {
+	logging.Debugf("拨号连接: %s", resolvedAddr)
 
 	// 使用规范化后的地址进行拨号
-	conn, err := net.DialTimeout("tcp", tcpAddr.String(), 10*time.Second)
+	conn, err := net.DialTimeout("tcp", resolvedAddr, 10*time.Second)
 	if err != nil {
 		return nil, types.NewTransportConnectionError("拨号", "", err)
 	}
@@ -849,8 +859,7 @@ func (t *TCPTransport) dialConnLocked(addr string) (*tcpConn, error) {
 	}
 
 	// 使用规范化后的地址作为连接池的键
-	resolvedKey := tcpAddr.String()
-	t.connPool.conns[resolvedKey] = wrappedConn
+	t.connPool.conns[resolvedAddr] = wrappedConn
 
 	return wrappedConn, nil
 }

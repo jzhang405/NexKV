@@ -72,13 +72,21 @@ func TestRPCIntegration_BasicCall(t *testing.T) {
 	if err := serverTCP.Start(&serverNodeID, newTCPMsgSeqGenerator(), "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start server TCP transport: %v", err)
 	}
-	defer serverTCP.Stop()
+	defer func() {
+		if err := serverTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "serverTCP", err)
+		}
+	}()
 
 	// 启动服务端
 	if err := server.Start(); err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
-	defer server.Stop()
+	defer func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "server", err)
+		}
+	}()
 
 	// 等待服务端准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -94,13 +102,21 @@ func TestRPCIntegration_BasicCall(t *testing.T) {
 	if err := client.Start(); err != nil {
 		t.Fatalf("Failed to start client: %v", err)
 	}
-	defer client.Stop()
+	defer func() {
+		if err := client.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "client", err)
+		}
+	}()
 
 	// 启动客户端 TCP Transport（只用于发送，不需要监听）
 	if err := clientTCP.Start(&clientNodeID, newTCPMsgSeqGenerator(), "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start client TCP transport: %v", err)
 	}
-	defer clientTCP.Stop()
+	defer func() {
+		if err := clientTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "clientTCP", err)
+		}
+	}()
 
 	// 等待客户端准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -138,13 +154,21 @@ func TestRPCIntegration_CallBatch(t *testing.T) {
 	if err := serverTCP.Start(&serverNodeID, newTCPMsgSeqGenerator(), "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start server TCP transport: %v", err)
 	}
-	defer serverTCP.Stop()
+	defer func() {
+		if err := serverTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "serverTCP", err)
+		}
+	}()
 
 	// 启动服务端
 	if err := server.Start(); err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
-	defer server.Stop()
+	defer func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "server", err)
+		}
+	}()
 
 	// 等待服务端准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -160,13 +184,21 @@ func TestRPCIntegration_CallBatch(t *testing.T) {
 	if err := client.Start(); err != nil {
 		t.Fatalf("Failed to start client: %v", err)
 	}
-	defer client.Stop()
+	defer func() {
+		if err := client.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "client", err)
+		}
+	}()
 
 	// 启动客户端 TCP Transport（只用于发送，不需要监听）
 	if err := clientTCP.Start(&clientNodeID, newTCPMsgSeqGenerator(), "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start client TCP transport: %v", err)
 	}
-	defer clientTCP.Stop()
+	defer func() {
+		if err := clientTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "clientTCP", err)
+		}
+	}()
 
 	// 等待客户端准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -231,13 +263,21 @@ func TestRPCIntegration_ConcurrentCalls(t *testing.T) {
 	if err := serverTCP.Start(&serverNodeID, newTCPMsgSeqGenerator(), "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start server TCP transport: %v", err)
 	}
-	defer serverTCP.Stop()
+	defer func() {
+		if err := serverTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "serverTCP", err)
+		}
+	}()
 
 	// 启动服务端
 	if err := server.Start(); err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
-	defer server.Stop()
+	defer func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "server", err)
+		}
+	}()
 
 	// 等待服务端准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -253,13 +293,21 @@ func TestRPCIntegration_ConcurrentCalls(t *testing.T) {
 	if err := client.Start(); err != nil {
 		t.Fatalf("Failed to start client: %v", err)
 	}
-	defer client.Stop()
+	defer func() {
+		if err := client.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "client", err)
+		}
+	}()
 
 	// 启动客户端 TCP Transport（只用于发送，不需要监听）
 	if err := clientTCP.Start(&clientNodeID, newTCPMsgSeqGenerator(), "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start client TCP transport: %v", err)
 	}
-	defer clientTCP.Stop()
+	defer func() {
+		if err := clientTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "clientTCP", err)
+		}
+	}()
 
 	// 等待客户端准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -317,7 +365,7 @@ func TestRPCIntegration_ConcurrentCalls(t *testing.T) {
 
 // TestRPCIntegration_Timeout 测试请求超时
 func TestRPCIntegration_Timeout(t *testing.T) {
-	server, client, serverTCP, clientTCP := setupRPCServerAndClient(t)
+	server, client, serverTCP, clientTCP := setupRPCServerAndClient(t) //nolint:ineffassign,staticcheck
 
 	// 设置 NodeID
 	serverNodeID := uint64(1)
@@ -329,7 +377,8 @@ func TestRPCIntegration_Timeout(t *testing.T) {
 	}
 
 	// 重新创建 server（使用新的 handler）
-	server, err := NewRPCServer(serverTCP, nil, handler, nil)
+	var err error
+	server, err = NewRPCServer(serverTCP, nil, handler, nil)
 	if err != nil {
 		t.Fatalf("Failed to create RPC server: %v", err)
 	}
@@ -338,13 +387,21 @@ func TestRPCIntegration_Timeout(t *testing.T) {
 	if err := serverTCP.Start(&serverNodeID, newTCPMsgSeqGenerator(), "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start server TCP transport: %v", err)
 	}
-	defer serverTCP.Stop()
+	defer func() {
+		if err := serverTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "serverTCP", err)
+		}
+	}()
 
 	// 启动服务端
 	if err := server.Start(); err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
-	defer server.Stop()
+	defer func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "server", err)
+		}
+	}()
 
 	// 等待服务端准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -360,13 +417,21 @@ func TestRPCIntegration_Timeout(t *testing.T) {
 	if err := client.Start(); err != nil {
 		t.Fatalf("Failed to start client: %v", err)
 	}
-	defer client.Stop()
+	defer func() {
+		if err := client.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "client", err)
+		}
+	}()
 
 	// 启动客户端 TCP Transport（只用于发送，不需要监听）
 	if err := clientTCP.Start(&clientNodeID, newTCPMsgSeqGenerator(), "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start client TCP transport: %v", err)
 	}
-	defer clientTCP.Stop()
+	defer func() {
+		if err := clientTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "clientTCP", err)
+		}
+	}()
 
 	// 等待客户端准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -451,19 +516,31 @@ func TestRPCIntegration_DualTransport(t *testing.T) {
 	if err := serverTCP.Start(&serverNodeID, serverMsgSeqGenerator, "127.0.0.1:19201"); err != nil {
 		t.Fatalf("Failed to start server TCP transport: %v", err)
 	}
-	defer serverTCP.Stop()
+	defer func() {
+		if err := serverTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "serverTCP", err)
+		}
+	}()
 
 	// 启动服务端 UDP Transport（使用固定端口）
 	if err := serverUDP.Start(&serverNodeID, serverMsgSeqGenerator, "127.0.0.1:19202"); err != nil {
 		t.Fatalf("Failed to start server UDP transport: %v", err)
 	}
-	defer serverUDP.Stop()
+	defer func() {
+		if err := serverUDP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "serverUDP", err)
+		}
+	}()
 
 	// 启动服务端 RPC Server
 	if err := server.Start(); err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
-	defer server.Stop()
+	defer func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "server", err)
+		}
+	}()
 
 	// 启动客户端 Transport
 	var clientNodeID uint64 = 1
@@ -485,9 +562,15 @@ func TestRPCIntegration_DualTransport(t *testing.T) {
 		t.Fatalf("Failed to start client: %v", err)
 	}
 	defer func() {
-		clientTCP.Stop()
-		clientUDP.Stop()
-		client.Stop()
+		if err := clientTCP.Stop(); err != nil {
+			t.Errorf("clientTCP.Stop() failed: %v", err)
+		}
+		if err := clientUDP.Stop(); err != nil {
+			t.Errorf("clientUDP.Stop() failed: %v", err)
+		}
+		if err := client.Stop(); err != nil {
+			t.Errorf("client.Stop() failed: %v", err)
+		}
 	}()
 
 	// 等待服务端准备就绪
@@ -586,13 +669,21 @@ func TestRPCIntegration_UDPProtocol(t *testing.T) {
 	if err := serverUDP.Start(&serverNodeID, serverMsgSeqGenerator, fmt.Sprintf("127.0.0.1:%d", serverPort)); err != nil {
 		t.Fatalf("Failed to start server UDP transport: %v", err)
 	}
-	defer serverUDP.Stop()
+	defer func() {
+		if err := serverUDP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "serverUDP", err)
+		}
+	}()
 
 	// 启动服务端
 	if err := server.Start(); err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
-	defer server.Stop()
+	defer func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "server", err)
+		}
+	}()
 
 	// 启动客户端 UDP Transport
 	var clientNodeID uint64 = 1
@@ -605,13 +696,21 @@ func TestRPCIntegration_UDPProtocol(t *testing.T) {
 	if err := clientUDP.Start(&clientNodeID, clientMsgSeqGenerator, fmt.Sprintf("127.0.0.1:%d", clientPort)); err != nil {
 		t.Fatalf("Failed to start client UDP transport: %v", err)
 	}
-	defer clientUDP.Stop()
+	defer func() {
+		if err := clientUDP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "clientUDP", err)
+		}
+	}()
 
 	// 启动客户端
 	if err := client.Start(); err != nil {
 		t.Fatalf("Failed to start client: %v", err)
 	}
-	defer client.Stop()
+	defer func() {
+		if err := client.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "client", err)
+		}
+	}()
 
 	// 等待准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -658,7 +757,7 @@ func TestRPCIntegration_UDPProtocol(t *testing.T) {
 
 // TestRPCIntegration_ServerError 测试服务端返回错误
 func TestRPCIntegration_ServerError(t *testing.T) {
-	server, client, serverTCP, clientTCP := setupRPCServerAndClient(t)
+	server, client, serverTCP, clientTCP := setupRPCServerAndClient(t) //nolint:ineffassign,staticcheck
 
 	// 设置 NodeID
 	serverNodeID := uint64(1)
@@ -670,7 +769,8 @@ func TestRPCIntegration_ServerError(t *testing.T) {
 	}
 
 	// 重新创建 server（使用错误 handler）
-	server, err := NewRPCServer(serverTCP, nil, handler, nil)
+	var err error
+	server, err = NewRPCServer(serverTCP, nil, handler, nil)
 	if err != nil {
 		t.Fatalf("Failed to create RPC server: %v", err)
 	}
@@ -679,13 +779,21 @@ func TestRPCIntegration_ServerError(t *testing.T) {
 	if err := serverTCP.Start(&serverNodeID, newTCPMsgSeqGenerator(), "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start server TCP transport: %v", err)
 	}
-	defer serverTCP.Stop()
+	defer func() {
+		if err := serverTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "serverTCP", err)
+		}
+	}()
 
 	// 启动服务端
 	if err := server.Start(); err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
-	defer server.Stop()
+	defer func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "server", err)
+		}
+	}()
 
 	// 等待服务端准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -697,12 +805,20 @@ func TestRPCIntegration_ServerError(t *testing.T) {
 	if err := client.Start(); err != nil {
 		t.Fatalf("Failed to start client: %v", err)
 	}
-	defer client.Stop()
+	defer func() {
+		if err := client.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "client", err)
+		}
+	}()
 
 	if err := clientTCP.Start(&clientNodeID, newTCPMsgSeqGenerator(), "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start client TCP transport: %v", err)
 	}
-	defer clientTCP.Stop()
+	defer func() {
+		if err := clientTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "clientTCP", err)
+		}
+	}()
 
 	// 等待客户端准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -735,12 +851,20 @@ func TestRPCIntegration_InvalidAddress(t *testing.T) {
 	if err := client.Start(); err != nil {
 		t.Fatalf("Failed to start client: %v", err)
 	}
-	defer client.Stop()
+	defer func() {
+		if err := client.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "client", err)
+		}
+	}()
 
 	if err := clientTCP.Start(&clientNodeID, newTCPMsgSeqGenerator(), "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start client TCP transport: %v", err)
 	}
-	defer clientTCP.Stop()
+	defer func() {
+		if err := clientTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "clientTCP", err)
+		}
+	}()
 
 	// 等待客户端准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -779,13 +903,21 @@ func TestRPCIntegration_ConnectionReuseFallback(t *testing.T) {
 	if err := serverTCP.Start(&serverNodeID, newTCPMsgSeqGenerator(), "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start server TCP transport: %v", err)
 	}
-	defer serverTCP.Stop()
+	defer func() {
+		if err := serverTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "serverTCP", err)
+		}
+	}()
 
 	// 启动服务端
 	if err := server.Start(); err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
-	defer server.Stop()
+	defer func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "server", err)
+		}
+	}()
 
 	// 等待服务端准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -797,12 +929,20 @@ func TestRPCIntegration_ConnectionReuseFallback(t *testing.T) {
 	if err := client.Start(); err != nil {
 		t.Fatalf("Failed to start client: %v", err)
 	}
-	defer client.Stop()
+	defer func() {
+		if err := client.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "client", err)
+		}
+	}()
 
 	if err := clientTCP.Start(&clientNodeID, newTCPMsgSeqGenerator(), "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start client TCP transport: %v", err)
 	}
-	defer clientTCP.Stop()
+	defer func() {
+		if err := clientTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "clientTCP", err)
+		}
+	}()
 
 	// 等待客户端准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -902,10 +1042,18 @@ func TestRPCIntegration_ResourceCleanup(t *testing.T) {
 	}
 
 	// 停止客户端和服务器
-	client.Stop()
-	clientTCP.Stop()
-	server.Stop()
-	serverTCP.Stop()
+	if err := client.Stop(); err != nil {
+		t.Errorf("client.Stop() failed: %v", err)
+	}
+	if err := clientTCP.Stop(); err != nil {
+		t.Errorf("clientTCP.Stop() failed: %v", err)
+	}
+	if err := server.Stop(); err != nil {
+		t.Errorf("server.Stop() failed: %v", err)
+	}
+	if err := serverTCP.Stop(); err != nil {
+		t.Errorf("serverTCP.Stop() failed: %v", err)
+	}
 
 	// 等待清理完成
 	time.Sleep(200 * time.Millisecond)
@@ -921,7 +1069,11 @@ func TestRPCIntegration_ResourceCleanup(t *testing.T) {
 	if err := client.Start(); err != nil {
 		t.Fatalf("Failed to restart client: %v", err)
 	}
-	defer client.Stop()
+	defer func() {
+		if err := client.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "client", err)
+		}
+	}()
 
 	t.Log("✅ Resource cleanup test passed")
 }
@@ -985,17 +1137,29 @@ func TestRPCIntegration_ProtocolSelection(t *testing.T) {
 	if err := serverTCP.Start(&serverNodeID, serverMsgSeqGenerator, fmt.Sprintf("127.0.0.1:%d", serverPortTCP)); err != nil {
 		t.Fatalf("Failed to start server TCP transport: %v", err)
 	}
-	defer serverTCP.Stop()
+	defer func() {
+		if err := serverTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "serverTCP", err)
+		}
+	}()
 
 	if err := serverUDP.Start(&serverNodeID, serverMsgSeqGenerator, fmt.Sprintf("127.0.0.1:%d", serverPortUDP)); err != nil {
 		t.Fatalf("Failed to start server UDP transport: %v", err)
 	}
-	defer serverUDP.Stop()
+	defer func() {
+		if err := serverUDP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "serverUDP", err)
+		}
+	}()
 
 	if err := server.Start(); err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
-	defer server.Stop()
+	defer func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "server", err)
+		}
+	}()
 
 	// 启动客户端 Transport
 	var clientNodeID uint64 = 1
@@ -1009,17 +1173,29 @@ func TestRPCIntegration_ProtocolSelection(t *testing.T) {
 	if err := clientTCP.Start(&clientNodeID, clientMsgSeqGenerator, "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start client TCP transport: %v", err)
 	}
-	defer clientTCP.Stop()
+	defer func() {
+		if err := clientTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "clientTCP", err)
+		}
+	}()
 
 	if err := clientUDP.Start(&clientNodeID, clientMsgSeqGenerator, "127.0.0.1:0"); err != nil {
 		t.Fatalf("Failed to start client UDP transport: %v", err)
 	}
-	defer clientUDP.Stop()
+	defer func() {
+		if err := clientUDP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "clientUDP", err)
+		}
+	}()
 
 	if err := client.Start(); err != nil {
 		t.Fatalf("Failed to start client: %v", err)
 	}
-	defer client.Stop()
+	defer func() {
+		if err := client.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "client", err)
+		}
+	}()
 
 	// 等待准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -1133,19 +1309,31 @@ func TestRPCIntegration_DualTransportWithUDP(t *testing.T) {
 	if err := serverTCP.Start(&serverNodeID, serverMsgSeqGenerator, fmt.Sprintf("127.0.0.1:%d", serverPortTCP)); err != nil {
 		t.Fatalf("Failed to start server TCP transport: %v", err)
 	}
-	defer serverTCP.Stop()
+	defer func() {
+		if err := serverTCP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "serverTCP", err)
+		}
+	}()
 
 	// 启动服务端 UDP Transport（使用固定端口）
 	if err := serverUDP.Start(&serverNodeID, serverMsgSeqGenerator, fmt.Sprintf("127.0.0.1:%d", serverPortUDP)); err != nil {
 		t.Fatalf("Failed to start server UDP transport: %v", err)
 	}
-	defer serverUDP.Stop()
+	defer func() {
+		if err := serverUDP.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "serverUDP", err)
+		}
+	}()
 
 	// 启动服务端 RPC Server
 	if err := server.Start(); err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
-	defer server.Stop()
+	defer func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("%s.Stop() failed: %v", "server", err)
+		}
+	}()
 
 	// 启动客户端 Transport
 	var clientNodeID uint64 = 1
@@ -1167,9 +1355,15 @@ func TestRPCIntegration_DualTransportWithUDP(t *testing.T) {
 		t.Fatalf("Failed to start client: %v", err)
 	}
 	defer func() {
-		clientTCP.Stop()
-		clientUDP.Stop()
-		client.Stop()
+		if err := clientTCP.Stop(); err != nil {
+			t.Errorf("clientTCP.Stop() failed: %v", err)
+		}
+		if err := clientUDP.Stop(); err != nil {
+			t.Errorf("clientUDP.Stop() failed: %v", err)
+		}
+		if err := client.Stop(); err != nil {
+			t.Errorf("client.Stop() failed: %v", err)
+		}
 	}()
 
 	// 等待服务端准备就绪

@@ -110,12 +110,6 @@ func (m *mockRPCHandler) HandleRequest(ctx context.Context, req types.Message) (
 	return nil, nil
 }
 
-func (m *mockRPCHandler) handledCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.handledReqs)
-}
-
 // mockTransportForRPC 模拟传输层（用于客户端测试）
 type mockTransportForRPC struct {
 	mu        sync.Mutex
@@ -264,21 +258,6 @@ func (m *mockTransportForServer) GenerateMsgSeq() uint64 {
 // ========================================
 // 测试辅助函数
 // ========================================
-
-// waitForConditionRPC 等待条件满足
-func waitForConditionRPC(t *testing.T, timeout time.Duration, condition func() bool) bool {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return false
-}
-
-// ========================================
 // RPC 客户端测试
 // ========================================
 
@@ -383,8 +362,12 @@ func TestCallBatchFastFail(t *testing.T) {
 		t.Fatalf("Start() failed: %v", err)
 	}
 	defer func() {
-		tcpTransport.Stop() // 先停止 Transport（关闭 channel）
-		client.Stop()       // 再停止客户端
+		if err := tcpTransport.Stop(); err != nil {
+			t.Errorf("tcpTransport.Stop() failed: %v", err)
+		}
+		if err := client.Stop(); err != nil {
+			t.Errorf("client.Stop() failed: %v", err)
+		}
 	}()
 
 	// 创建批量请求（其中一个会失败）
@@ -448,8 +431,12 @@ func TestCallBatchWaitAll(t *testing.T) {
 		t.Fatalf("Start() failed: %v", err)
 	}
 	defer func() {
-		tcpTransport.Stop() // 先停止 Transport（关闭 channel）
-		client.Stop()       // 再停止客户端
+		if err := tcpTransport.Stop(); err != nil {
+			t.Errorf("tcpTransport.Stop() failed: %v", err)
+		}
+		if err := client.Stop(); err != nil {
+			t.Errorf("client.Stop() failed: %v", err)
+		}
 	}()
 
 	// 创建批量请求
@@ -699,7 +686,11 @@ func TestRPCServerDualTransport(t *testing.T) {
 	if err := server.Start(); err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
-	defer server.Stop()
+	defer func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("server.Stop() failed: %v", err)
+		}
+	}()
 
 	// 验证两个 Transport 都已注册
 	stats := server.GetStats()
@@ -730,7 +721,11 @@ func TestGetServerStats(t *testing.T) {
 	if err := server.Start(); err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
-	defer server.Stop()
+	defer func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("server.Stop() failed: %v", err)
+		}
+	}()
 
 	stats = server.GetStats()
 	if !stats.Running {

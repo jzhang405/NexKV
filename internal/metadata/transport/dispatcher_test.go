@@ -48,12 +48,6 @@ func (m *mockHandler) handledCount() int {
 	return len(m.handledMsgs)
 }
 
-func (m *mockHandler) clear() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.handledMsgs = nil
-}
-
 // ========================================
 // 基础功能测试
 // ========================================
@@ -166,7 +160,11 @@ func TestRegisterConnection(t *testing.T) {
 	if err := d.Start(); err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
-	defer d.Stop()
+	defer func() {
+		if err := d.Stop(); err != nil {
+			t.Errorf("d.Stop() failed: %v", err)
+		}
+	}()
 
 	// 注册连接
 	msgChan := make(chan MsgFrame, 10)
@@ -219,7 +217,11 @@ func TestFanInMultipleConnections(t *testing.T) {
 	if err := d.Start(); err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
-	defer d.Stop()
+	defer func() {
+		if err := d.Stop(); err != nil {
+			t.Errorf("d.Stop() failed: %v", err)
+		}
+	}()
 
 	// 模拟 10 个连接
 	connCount := 10
@@ -290,7 +292,11 @@ func TestDispatcherPerformance(t *testing.T) {
 	if err := d.Start(); err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
-	defer d.Stop()
+	defer func() {
+		if err := d.Stop(); err != nil {
+			t.Errorf("d.Stop() failed: %v", err)
+		}
+	}()
 
 	// 模拟 100 个连接
 	connCount := 100
@@ -396,7 +402,9 @@ func TestGetStats(t *testing.T) {
 		t.Error("Expected MsgCount > 0 after sending message")
 	}
 
-	d.Stop()
+	if err := d.Stop(); err != nil {
+		t.Errorf("d.Stop() failed: %v", err)
+	}
 }
 
 // ========================================
@@ -416,7 +424,11 @@ func TestConcurrentRegister(t *testing.T) {
 	if err := d.Start(); err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
-	defer d.Stop()
+	defer func() {
+		if err := d.Stop(); err != nil {
+			t.Errorf("d.Stop() failed: %v", err)
+		}
+	}()
 
 	// 并发注册连接
 	connCount := 100
@@ -470,7 +482,11 @@ func TestBackpressureEnabled(t *testing.T) {
 	if err := d.Start(); err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
-	defer d.Stop()
+	defer func() {
+		if err := d.Stop(); err != nil {
+			t.Errorf("d.Stop() failed: %v", err)
+		}
+	}()
 
 	msgChan := make(chan MsgFrame, 10)
 	cancel := d.RegisterConnection("backpressure-test", msgChan)
@@ -544,7 +560,11 @@ func TestBackpressureDisabled(t *testing.T) {
 	if err := d.Start(); err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
-	defer d.Stop()
+	defer func() {
+		if err := d.Stop(); err != nil {
+			t.Errorf("d.Stop() failed: %v", err)
+		}
+	}()
 
 	msgChan := make(chan MsgFrame, 20)
 	cancel := d.RegisterConnection("no-backpressure-test", msgChan)
@@ -614,7 +634,11 @@ func TestBackpressureCallbackRetry(t *testing.T) {
 	if err := d.Start(); err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
-	defer d.Stop()
+	defer func() {
+		if err := d.Stop(); err != nil {
+			t.Errorf("d.Stop() failed: %v", err)
+		}
+	}()
 
 	msgChan := make(chan MsgFrame, 20)
 	cancel := d.RegisterConnection("retry-test", msgChan)

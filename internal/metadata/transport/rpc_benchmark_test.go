@@ -128,7 +128,11 @@ func BenchmarkDispatcherMessageProcessing(b *testing.B) {
 	if err := d.Start(); err != nil {
 		b.Fatalf("Start() failed: %v", err)
 	}
-	defer d.Stop()
+	defer func() {
+		if err := d.Stop(); err != nil {
+			b.Errorf("d.Stop() failed: %v", err)
+		}
+	}()
 
 	msgChan := make(chan MsgFrame, 1000)
 	d.RegisterConnection("benchmark", msgChan)
@@ -163,7 +167,11 @@ func BenchmarkDispatcherParallelProcessing(b *testing.B) {
 	if err := d.Start(); err != nil {
 		b.Fatalf("Start() failed: %v", err)
 	}
-	defer d.Stop()
+	defer func() {
+		if err := d.Stop(); err != nil {
+			b.Errorf("d.Stop() failed: %v", err)
+		}
+	}()
 
 	msgChan := make(chan MsgFrame, 10000)
 	d.RegisterConnection("benchmark", msgChan)
@@ -369,7 +377,11 @@ func BenchmarkDispatcherThroughput(b *testing.B) {
 	if err := d.Start(); err != nil {
 		b.Fatalf("Start() failed: %v", err)
 	}
-	defer d.Stop()
+	defer func() {
+		if err := d.Stop(); err != nil {
+			b.Errorf("d.Stop() failed: %v", err)
+		}
+	}()
 
 	msgChan := make(chan MsgFrame, 10000)
 	d.RegisterConnection("benchmark", msgChan)
@@ -420,7 +432,9 @@ func BenchmarkConcurrentDispatcherRegistration(b *testing.B) {
 				d.RegisterConnection(addr, msgChan)
 			}
 
-			d.Stop()
+			if err := d.Stop(); err != nil {
+		b.Errorf("d.Stop() failed: %v", err)
+	}
 			i++
 		}
 	})
@@ -461,7 +475,11 @@ func BenchmarkDispatcherLatency(b *testing.B) {
 	if err := d.Start(); err != nil {
 		b.Fatalf("Start() failed: %v", err)
 	}
-	defer d.Stop()
+	defer func() {
+		if err := d.Stop(); err != nil {
+			b.Errorf("d.Stop() failed: %v", err)
+		}
+	}()
 
 	msgChan := make(chan MsgFrame, 100)
 	d.RegisterConnection("benchmark", msgChan)
@@ -514,7 +532,11 @@ func BenchmarkDispatcherScalability(b *testing.B) {
 			if err := d.Start(); err != nil {
 				b.Fatalf("Start() failed: %v", err)
 			}
-			defer d.Stop()
+			defer func() {
+		if err := d.Stop(); err != nil {
+			b.Errorf("d.Stop() failed: %v", err)
+		}
+	}()
 
 			msgChan := make(chan MsgFrame, 1000)
 			d.RegisterConnection("benchmark", msgChan)

@@ -81,6 +81,17 @@ type MsgFrame struct {
 	FixedHeader         // 固定帧头（42 字节）
 	TLVs        []TLV   // 扩展头 TLV（可变长度）
 	Message     Message // 消息体（实际业务消息）
+
+	// === RPC 响应发送支持（P0-实现） ===
+	// SourceAddr 客户端地址（IP:Port），用于回复
+	// ConnID TCP 连接ID（连接复用标识），UDP 消息此字段为空
+	SourceAddr string
+	ConnID     string
+
+	// === 接收协议类型（用于确定响应协议） ===
+	// 记录消息是通过哪个协议接收的，用于决定响应时使用哪个 Transport
+	// 这个字段优先级高于 MessageType 的 ProtocolType，因为同一消息类型可能通过 TCP 或 UDP 接收
+	recvProtocol types.ProtocolType
 }
 
 // NewMsgFrame 创建新的网络帧
@@ -238,11 +249,32 @@ func (f MsgFrame) ExpectResponse() types.ResponseExpectation {
 }
 
 // ProtocolType 返回传输协议类型（实现 Message 接口）
+//
+// 优先使用 recvProtocol（记录消息是通过哪个协议接收的），
+// 如果 recvProtocol 未设置（0），则回退到消息类型的默认协议。
+// 这样可以确保响应使用与请求相同的传输协议。
 func (f MsgFrame) ProtocolType() types.ProtocolType {
+	// 优先使用接收协议（用于响应场景）
+	if f.recvProtocol != "" {
+		return f.recvProtocol
+	}
+	// 回退到消息类型的默认协议
 	if f.Message == nil {
 		return f.MsgType.ProtocolType()
 	}
 	return f.Message.ProtocolType()
+}
+
+// SetRecvProtocol 设置接收协议类型
+//
+// 参数：
+//   - protocol: 接收协议类型（ProtocolTCP 或 ProtocolUDP）
+//
+// 使用场景：
+//   - Transport 在接收到消息后设置此字段
+//   - RPC Server 根据此字段选择正确的 Transport 发送响应
+func (f *MsgFrame) SetRecvProtocol(protocol types.ProtocolType) {
+	f.recvProtocol = protocol
 }
 
 // CorrelationID 返回全局唯一的关联ID（实现 Message 接口）
@@ -319,6 +351,8 @@ func (f *MsgFrame) DeepCopy() *MsgFrame {
 		FixedHeader: f.FixedHeader,
 		TLVs:        make([]TLV, len(f.TLVs)),
 		Message:     f.Message,
+		SourceAddr:  f.SourceAddr, // RPC 响应发送支持
+		ConnID:      f.ConnID,     // RPC 响应发送支持
 	}
 
 	// 深拷贝 TLVs

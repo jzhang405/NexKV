@@ -10,6 +10,7 @@ package transport
 import (
 	"context"
 	"errors"
+	_ "fmt" // 用于注释中的示例代码
 	"io"
 	"math/big"
 	"net"
@@ -267,39 +268,55 @@ func (t *UDPTransport) receiveLoop() {
 	logging.Info("开始接收 UDP 数据...")
 
 	for {
+		// 检查停止状态（在操作连接之前）
+		if t.stopped.Load() {
+			logging.Info("UDP 传输层已停止（stopped 标志）")
+			return
+		}
+
 		// 每次循环都设置读超时，确保每次读取都有超时保护
 		if err := setReadTimeout(t.conn, t.config.ReadTimeout); err != nil {
+			// 连接已关闭时的错误是正常的，不记录为错误
+			if t.stopped.Load() {
+				logging.Info("UDP 传输层已停止（设置读超时检测到停止）")
+				return
+			}
 			logging.Errorf("设置读超时失败: %v", err)
 			return
 		}
 
-		select {
-		case <-t.stopCh:
-			logging.Info("UDP 传输层已停止（收到停止信号）")
-			return
-		default:
-			n, addr, err := t.conn.ReadFromUDP(buf)
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					logging.Info("UDP 连接已关闭")
-					return
-				}
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					// 读超时，继续循环（下次循环会重新设置超时）
-					continue
-				}
-				logging.Errorf("读取 UDP 数据失败: %v", err)
+		n, addr, err := t.conn.ReadFromUDP(buf)
+		if err != nil {
+			// 检查是否因为停止导致的错误
+			if t.stopped.Load() {
+				logging.Info("UDP 传输层已停止（读取检测到停止）")
+				return
+			}
+			if errors.Is(err, io.EOF) {
+				logging.Info("UDP 连接已关闭")
+				return
+			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// 读超时，继续循环（下次循环会重新设置超时）
 				continue
 			}
+			logging.Errorf("读取 UDP 数据失败: %v", err)
+			continue
+		}
 
-			// 处理接收到的数据
-			data := make([]byte, n)
-			copy(data, buf[:n])
+		// 处理接收到的数据
+		data := make([]byte, n)
+		copy(data, buf[:n])
 
-			msg := t.processReceivedData(data)
-			if msg.Message != nil {
-				t.sendToReceiveChannel(msg, addr.String())
-			}
+		msg := t.processReceivedData(data)
+		if msg.Message != nil {
+			// === RPC 响应发送支持：填充 SourceAddr 和 ConnID ===
+			// UDP 无连接协议，SourceAddr 为客户端地址，ConnID 为空
+			msg.SourceAddr = addr.String()
+			msg.ConnID = ""
+			// === 设置接收协议类型（用于响应时选择正确的 Transport） ===
+			msg.SetRecvProtocol(types.ProtocolUDP)
+			t.sendToReceiveChannel(msg, addr.String())
 		}
 	}
 }
@@ -402,6 +419,8 @@ func (t *UDPTransport) processFragmentFrame(frame *Frame) MsgFrame {
 //
 // 返回：
 //   - MsgFrame: 增强消息（包含原始消息和解析后的 TLV 字段）
+//
+//nolint:unused // 保留用于未来的消息帧构建场景
 func (t *UDPTransport) buildMsgFrame(msg Message, extHeader *VarExtHeader) MsgFrame {
 	msgFrame := MsgFrame{
 		Message: msg,
@@ -417,6 +436,26 @@ func (t *UDPTransport) buildMsgFrame(msg Message, extHeader *VarExtHeader) MsgFr
 	return msgFrame
 }
 
+// buildMsgFrameFromFrame 从完整的 Frame（含 FixedHeader）构建 MsgFrame
+// === FIX: 确保 FixedHeader 中的 NodeID 和 MsgSeq 被正确传递到 MsgFrame ===
+//
+//nolint:unused // 保留用于未来的消息帧构建场景
+func (t *UDPTransport) buildMsgFrameFromFrame(msg Message, frame *Frame) MsgFrame {
+	msgFrame := MsgFrame{
+		FixedHeader: *frame.FixedHeader, // 解引用并复制 FixedHeader（包含 NodeID 和 MsgSeq）
+		Message:     msg,
+		TLVs:        make([]ExtField, 0, len(frame.VarExtHeader.Fields)),
+	}
+
+	// 遍历所有 TLV 字段并添加到 MsgFrame
+	// 注意：字段不会立即解析，而是在首次访问 GetExt() 时才解码
+	for _, field := range frame.VarExtHeader.Fields {
+		msgFrame.TLVs = append(msgFrame.TLVs, *field)
+	}
+
+	return msgFrame
+}
+
 // decodeMessage 从帧中解码消息，返回增强消息 MsgFrame
 func (t *UDPTransport) decodeMessage(frame *Frame) MsgFrame {
 	msg, err := t.codec.Decode(frame.FixedHeader.MsgType, frame.Data)
@@ -425,8 +464,9 @@ func (t *UDPTransport) decodeMessage(frame *Frame) MsgFrame {
 		logging.Warnf("解码消息失败: %v", err)
 		return MsgFrame{}
 	}
-	// 构建 MsgFrame（解析 TLV 扩展字段）
-	return t.buildMsgFrame(msg, frame.VarExtHeader)
+	// 构建 MsgFrame（包含 FixedHeader 和 TLV 扩展字段）
+	// === FIX: 使用 buildMsgFrameFromFrame 确保 FixedHeader 被正确传递 ===
+	return t.buildMsgFrameFromFrame(msg, frame)
 }
 
 // parseFrame 解析帧
@@ -816,17 +856,82 @@ func (t *UDPTransport) Send(ctx context.Context, addr string, msg Message, opts 
 	// 计算消息 Flags（根据 ExpectResponse）
 	flags := FlagsFromMessage(msg)
 
+	// === 使用自动生成的 msgSeq 和本地 NodeID ===
+	msgSeq := t.GenerateMsgSeq()
+	nodeID := t.NodeID.Load()
+
+	// === 验证 NodeID 是否已设置 ===
+	// NodeID 为 0 表示未设置，这会导致消息无法被正确路由
+	if nodeID == 0 {
+		return types.NewStoreInvalidParameterError("localNodeID 未设置，请先调用 Start() 设置有效的 NodeID")
+	}
+
 	// 小消息直接发送（无需分片）
 	if len(msgData) <= MaxUDPPacketSize {
-		return t.sendDirectWithOptions(ctx, udpAddr, msgData, msg.Type(), addr, t.GenerateMsgSeq(), flags, options)
+		return t.sendDirectWithOptions(ctx, udpAddr, msgData, msg.Type(), addr, nodeID, msgSeq, flags, options)
 	}
 
 	// 大消息分片发送（直接对编码后的消息数据进行分片）
-	return t.sendFragmentedWithOptions(ctx, udpAddr, msgData, msg.Type(), t.GenerateMsgSeq(), flags, options)
+	return t.sendFragmentedWithOptions(ctx, udpAddr, msgData, msg.Type(), nodeID, msgSeq, flags, options)
+}
+
+// Reply 发送消息到指定节点（使用指定的 NodeID 和 MsgSeq）
+//
+// 参数：
+//   - nodeID: 节点 ID（用于 CorrelationID 匹配）
+//   - msgSeq: 消息序列号（用于 CorrelationID 匹配）
+//
+// 使用场景：
+//   - RPC 客户端：预先生成 CorrelationID，确保请求-响应匹配
+//   - RPC 服务端：使用请求中的 NodeID 和 MsgSeq 发送响应
+func (t *UDPTransport) Reply(ctx context.Context, addr string, msg Message, nodeID uint64, msgSeq uint64, connID string, opts ...SendOpt) error {
+	if !t.started.Load() {
+		return types.NewTransportStateError("未启动")
+	}
+
+	// 提前检查 context 是否已取消
+	select {
+	case <-ctx.Done():
+		return types.NewTransportSendError(ctx.Err())
+	default:
+	}
+
+	// 处理发送选项（connID 在 UDP 中不使用，保留参数以保持接口一致）
+	options := processSendOptions(opts...)
+	defer releaseSendOptions(options)
+
+	// 编码消息
+	msgData, err := t.codec.Encode(msg)
+	if err != nil {
+		return types.NewTransportSendError(err)
+	}
+
+	// 解析目标地址
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return types.NewTransportConnectionError("解析地址", addr, err)
+	}
+
+	// 计算消息 Flags（根据 ExpectResponse）
+	flags := FlagsFromMessage(msg)
+
+	// === 验证 NodeID 是否已设置 ===
+	// NodeID 为 0 表示未设置，这会导致消息无法被正确路由
+	if nodeID == 0 {
+		return types.NewStoreInvalidParameterError("指定的 nodeID 不能为 0，请使用有效的 NodeID")
+	}
+
+	// 小消息直接发送（无需分片）
+	if len(msgData) <= MaxUDPPacketSize {
+		return t.sendDirectWithOptions(ctx, udpAddr, msgData, msg.Type(), addr, nodeID, msgSeq, flags, options)
+	}
+
+	// 大消息分片发送（直接对编码后的消息数据进行分片）
+	return t.sendFragmentedWithOptions(ctx, udpAddr, msgData, msg.Type(), nodeID, msgSeq, flags, options)
 }
 
 // sendDirectWithOptions 直接发送消息（带 TLV 选项，无需分片）
-func (t *UDPTransport) sendDirectWithOptions(ctx context.Context, addr *net.UDPAddr, msgData []byte, msgType MessageType, originalAddr string, msgSeq uint64, flags uint8, opts *sendOptions) error {
+func (t *UDPTransport) sendDirectWithOptions(ctx context.Context, addr *net.UDPAddr, msgData []byte, msgType MessageType, originalAddr string, nodeID uint64, msgSeq uint64, flags uint8, opts *sendOptions) error {
 	// 在写入前检查 context
 	select {
 	case <-ctx.Done():
@@ -834,7 +939,6 @@ func (t *UDPTransport) sendDirectWithOptions(ctx context.Context, addr *net.UDPA
 	default:
 	}
 
-	nodeID := t.NodeID.Load()
 	msgID := msgSeq
 
 	// 创建完整帧（使用 Flags 字段）
@@ -874,13 +978,7 @@ func (t *UDPTransport) sendDirectWithOptions(ctx context.Context, addr *net.UDPA
 // sendFragmentedWithOptions 分片发送大消息（带 TLV 选项）
 //
 // 接收编码后的纯消息数据，对每个分片创建独立的 Frame
-func (t *UDPTransport) sendFragmentedWithOptions(ctx context.Context, addr *net.UDPAddr, msgData []byte, msgType MessageType, msgSeq uint64, flags uint8, opts *sendOptions) error {
-	// 验证 localNodeID 已设置
-	if t.NodeID.Load() == 0 {
-		return types.NewTransportStateError("localNodeID 未设置")
-	}
-
-	nodeID := t.NodeID.Load()
+func (t *UDPTransport) sendFragmentedWithOptions(ctx context.Context, addr *net.UDPAddr, msgData []byte, msgType MessageType, nodeID uint64, msgSeq uint64, flags uint8, opts *sendOptions) error {
 	msgID := msgSeq
 	totalFragments := (len(msgData) + MaxUDPPacketSize - 1) / MaxUDPPacketSize
 

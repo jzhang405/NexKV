@@ -78,8 +78,9 @@ func TestNewUDPTransportWithConfig(t *testing.T) {
 func TestUDPTransport_StartStop(t *testing.T) {
 	trans := createUDPTransport(t)
 
+	nodeID := uint64(1)
 	// 启动
-	err := trans.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
+	err := trans.Start(&nodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	assert.True(t, trans.started.Load())
 
@@ -97,11 +98,12 @@ func TestUDPTransport_StartStop(t *testing.T) {
 func TestUDPTransport_Start_AlreadyStarted(t *testing.T) {
 	trans := createUDPTransport(t)
 
-	err := trans.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
+	nodeID := uint64(1)
+	err := trans.Start(&nodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 
 	// 重复启动应该失败
-	err = trans.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
+	err = trans.Start(&nodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "已经启动")
 
@@ -122,7 +124,8 @@ func TestUDPTransport_Stop_NotStarted(t *testing.T) {
 func TestUDPTransport_MultipleStop(t *testing.T) {
 	trans := createUDPTransport(t)
 
-	err := trans.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
+	nodeID := uint64(1)
+	err := trans.Start(&nodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 
 	// 多次停止都应该成功（幂等）
@@ -960,15 +963,18 @@ func startTestTransport(t *testing.T, trans *UDPTransport, nodeID *uint64) strin
 	return trans.GetLocalAddr()
 }
 
-// setupTestPair 设置测试用的客户端-服务端对（默认 NodeID=0）
+// setupTestPair 设置测试用的客户端-服务端对（使用有效 NodeID）
 func setupTestPair(t *testing.T) (client, server *UDPTransport, serverAddr string) {
 	t.Helper()
 
+	serverNodeID := uint64(1)
+	clientNodeID := uint64(2)
+
 	server = createUDPTransport(t)
-	serverAddr = startTestTransport(t, server, nil)
+	serverAddr = startTestTransport(t, server, &serverNodeID)
 
 	client = createUDPTransport(t)
-	startTestTransport(t, client, nil)
+	startTestTransport(t, client, &clientNodeID)
 
 	// 等待准备就绪
 	time.Sleep(100 * time.Millisecond)
@@ -1302,13 +1308,15 @@ func TestUDPFragmentation_Boundary_MaxFragments(t *testing.T) {
 func TestUDPFragmentation_Boundary_EmptyPacket(t *testing.T) {
 	ctx := context.Background()
 
+	serverNodeID := uint64(1)
 	server := createUDPTransport(t)
-	err := server.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
+	err := server.Start(&serverNodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = server.Stop() }()
 
+	clientNodeID := uint64(2)
 	client := createUDPTransport(t)
-	err = client.Start(nil, newUDPMsgSeqGenerator(), "127.0.0.1:0")
+	err = client.Start(&clientNodeID, newUDPMsgSeqGenerator(), "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = client.Stop() }()
 

@@ -808,20 +808,23 @@ func TestTCPTransportReply_EmptyAddrAndConnID(t *testing.T) {
 	}
 
 	// 测试 1: 空 addr 和空 connID 应该返回错误
+	// 注意：根据新的验证逻辑，当 connID 为空时，必须提供有效的 addr
+	// 错误消息应该是 "addr must be provided when connID is empty"
 	t.Run("EmptyAddrAndConnID", func(t *testing.T) {
 		ctx := context.Background()
 		err := tt.Reply(ctx, "", msg, 1, 1, "")
 		require.Error(t, err, "Reply should return error when both addr and connID are empty")
-		require.Contains(t, err.Error(), "addr or connID must be provided",
-			"Error message should indicate that addr or connID is required")
+		require.Contains(t, err.Error(), "addr must be provided when connID is empty",
+			"Error message should indicate that addr is required when connID is empty")
 	})
 
 	// 测试 2: 只有空格的 addr 和空 connID 也应该返回错误
+	// 注意：新的验证逻辑会先 TrimSpace addr，所以空格会被当作空字符串处理
 	t.Run("WhitespaceAddrAndEmptyConnID", func(t *testing.T) {
 		ctx := context.Background()
 		err := tt.Reply(ctx, "   ", msg, 1, 1, "")
 		require.Error(t, err, "Reply should return error for whitespace-only addr")
-		require.Contains(t, err.Error(), "addr or connID must be provided")
+		require.Contains(t, err.Error(), "addr must be provided when connID is empty")
 	})
 
 	// 测试 3: 无效的 addr 格式应该在早期验证时失败

@@ -563,8 +563,16 @@ func TestBackpressureDisabled(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	stats := d.GetStats()
+
+	// 使用互斥锁保护读取共享变量
+	mu.Lock()
+	actualDroppedCount := droppedCount
+	actualDroppedMessages := make([]MsgFrame, len(droppedMessages))
+	copy(actualDroppedMessages, droppedMessages)
+	mu.Unlock()
+
 	t.Logf("Processed: %d, Dropped: %d (callback invoked: %d)",
-		stats.MsgCount, stats.DropCount, droppedCount)
+		stats.MsgCount, stats.DropCount, actualDroppedCount)
 
 	// 禁用背压时，应该有消息被丢弃
 	if stats.DropCount == 0 {
@@ -579,6 +587,7 @@ func TestBackpressureDisabled(t *testing.T) {
 // TestBackpressureCallbackRetry 测试回调返回 true 时重试发送
 func TestBackpressureCallbackRetry(t *testing.T) {
 	retryCount := 0
+	var mu sync.Mutex
 
 	handler := &mockHandler{
 		handleDelay: 200 * time.Millisecond, // 增加延迟以确保队列满
@@ -588,6 +597,8 @@ func TestBackpressureCallbackRetry(t *testing.T) {
 		QueueSize:          2, // 小队列
 		EnableBackpressure: false,
 		OnDroppedMessage: func(addr string, msg MsgFrame) bool {
+			mu.Lock()
+			defer mu.Unlock()
 			retryCount++
 			t.Logf("Callback invoked for message (retry count: %d)", retryCount)
 			// 前两次重试，第三次放弃
@@ -623,10 +634,16 @@ func TestBackpressureCallbackRetry(t *testing.T) {
 	time.Sleep(1000 * time.Millisecond)
 
 	stats := d.GetStats()
-	t.Logf("Processed: %d, Dropped: %d, Retries: %d",
-		stats.MsgCount, stats.DropCount, retryCount)
 
-	if retryCount == 0 {
+	// 使用互斥锁保护读取共享变量
+	mu.Lock()
+	actualRetryCount := retryCount
+	mu.Unlock()
+
+	t.Logf("Processed: %d, Dropped: %d, Retries: %d",
+		stats.MsgCount, stats.DropCount, actualRetryCount)
+
+	if actualRetryCount == 0 {
 		t.Error("Callback was never invoked - queue may not have filled up")
 	}
 }

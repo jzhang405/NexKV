@@ -828,17 +828,6 @@ func (t *TCPTransport) getOrCreateConn(addr string) (*tcpConn, error) {
 	return t.dialConnLockedWithResolvedAddr(resolvedAddr)
 }
 
-// dialConn 拨号创建连接（外部已加锁版本）
-// 注意：调用前必须持有 t.connPool.mu.Lock()
-func (t *TCPTransport) dialConnLocked(addr string) (*tcpConn, error) {
-	// 先解析地址，然后调用带解析地址的版本
-	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
-	if err != nil {
-		return nil, types.NewTransportConnectionError("拨号", "", err)
-	}
-	return t.dialConnLockedWithResolvedAddr(tcpAddr.String())
-}
-
 // dialConnLockedWithResolvedAddr 拨号创建连接（使用已解析的地址）
 // 注意：调用前必须持有 t.connPool.mu.Lock()
 // 参数 resolvedAddr 已经是 net.ResolveTCPAddr 解析后的规范化地址

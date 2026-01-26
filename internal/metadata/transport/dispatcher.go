@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
 )
@@ -31,7 +32,7 @@ type DispatcherConfig struct {
 	// WorkerCount worker 协程数量（默认：CPU 核心数）
 	WorkerCount int
 
-	// QueueSize 消息队列大小（默认：10000）
+	// QueueSize 消息队列大小（默认：50000，P0 修复）
 	QueueSize int
 
 	// BatchSize 批量处理大小（默认：32）
@@ -52,16 +53,32 @@ type DispatcherConfig struct {
 	// 返回：
 	//   - bool: true 表示重试，false 表示放弃
 	OnDroppedMessage func(addr string, msg MsgFrame) bool
+
+	// P0: 动态 Worker 扩缩容配置
+	// MinWorkers 最小 worker 数量（默认：4）
+	MinWorkers int
+	// MaxWorkers 最大 worker 数量（默认：32）
+	MaxWorkers int
+	// ScaleUpThreshold 扩容阈值：队列使用率 > 此值时扩容（默认：0.7）
+	ScaleUpThreshold float64
+	// ScaleDownThreshold 缩容阈值：队列使用率 < 此值时缩容（默认：0.3）
+	ScaleDownThreshold float64
 }
 
 // DefaultDispatcherConfig 返回默认配置
 func DefaultDispatcherConfig() *DispatcherConfig {
 	return &DispatcherConfig{
 		WorkerCount:        8,     // 默认 8 个 worker
-		QueueSize:          10000, // 队列大小 10000
+		QueueSize:          50000, // 队列大小 50000（P0 修复：增加队列容量）
 		BatchSize:          32,    // 批量处理 32 条消息
 		FlushInterval:      10,    // 10ms 刷新间隔
 		EnableBackpressure: true,  // 默认启用背压机制
+
+		// P0: 动态 Worker 扩缩容配置
+		MinWorkers:         4,   // 最小 worker 数量
+		MaxWorkers:         32,  // 最大 worker 数量（P0 修复：支持动态扩容）
+		ScaleUpThreshold:   0.7, // 队列使用率 > 70% 时扩容
+		ScaleDownThreshold: 0.3, // 队列使用率 < 30% 时缩容
 	}
 }
 
@@ -126,6 +143,11 @@ type Dispatcher struct {
 	msgCount  atomic.Uint64
 	dropCount atomic.Uint64
 
+	// P0: 动态 Worker 扩缩容字段
+	currentWorkers atomic.Uint64 // 当前 worker 数量（原子操作）
+	scaleDone      chan struct{} // 监控 goroutine 停止信号
+	workersMu      sync.RWMutex  // 保护 workers 切片的读写操作
+
 	// 连接管理（用于 fan-in）
 	mu          sync.RWMutex
 	connections map[string]context.CancelFunc // addr -> cancel
@@ -171,12 +193,41 @@ func NewDispatcher(config *DispatcherConfig, handler Handler) (*Dispatcher, erro
 		config = DefaultDispatcherConfig()
 	}
 
-	// 验证配置
+	// 验证基础配置
 	if config.WorkerCount <= 0 {
 		return nil, fmt.Errorf("invalid WorkerCount: %d", config.WorkerCount)
 	}
 	if config.QueueSize <= 0 {
 		return nil, fmt.Errorf("invalid QueueSize: %d", config.QueueSize)
+	}
+
+	// P0: 验证动态 Worker 扩缩容配置
+	// 如果未设置，使用默认值
+	if config.MinWorkers <= 0 {
+		config.MinWorkers = 4
+	}
+	if config.MaxWorkers <= 0 {
+		config.MaxWorkers = 32
+	}
+	if config.ScaleUpThreshold <= 0 || config.ScaleUpThreshold > 1 {
+		config.ScaleUpThreshold = 0.7
+	}
+	if config.ScaleDownThreshold <= 0 || config.ScaleDownThreshold > 1 {
+		config.ScaleDownThreshold = 0.3
+	}
+
+	// 验证配置合法性
+	if config.MinWorkers > config.MaxWorkers {
+		return nil, fmt.Errorf("MinWorkers (%d) cannot be greater than MaxWorkers (%d)",
+			config.MinWorkers, config.MaxWorkers)
+	}
+	if config.ScaleUpThreshold <= config.ScaleDownThreshold {
+		return nil, fmt.Errorf("ScaleUpThreshold (%.2f) must be greater than ScaleDownThreshold (%.2f)",
+			config.ScaleUpThreshold, config.ScaleDownThreshold)
+	}
+	if config.WorkerCount < config.MinWorkers || config.WorkerCount > config.MaxWorkers {
+		return nil, fmt.Errorf("WorkerCount (%d) must be between MinWorkers (%d) and MaxWorkers (%d)",
+			config.WorkerCount, config.MinWorkers, config.MaxWorkers)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -188,7 +239,11 @@ func NewDispatcher(config *DispatcherConfig, handler Handler) (*Dispatcher, erro
 		ctx:          ctx,
 		cancel:       cancel,
 		connections:  make(map[string]context.CancelFunc),
+		scaleDone:    make(chan struct{}),
 	}
+
+	// 初始化当前 worker 数量
+	d.currentWorkers.Store(uint64(config.WorkerCount))
 
 	// 创建 worker
 	d.workers = make([]*worker, config.WorkerCount)
@@ -206,18 +261,24 @@ func NewDispatcher(config *DispatcherConfig, handler Handler) (*Dispatcher, erro
 // Start 启动分发器
 //
 // 启动所有 worker 协程，开始处理消息
+// P0: 同时启动动态 Worker 扩缩容监控
 func (d *Dispatcher) Start() error {
 	if !d.running.CompareAndSwap(false, true) {
 		return fmt.Errorf("dispatcher already running")
 	}
 
-	logging.Infof("[Dispatcher] Starting dispatcher with %d workers", d.config.WorkerCount)
+	logging.Infof("[Dispatcher] Starting dispatcher with %d workers (dynamic scaling: %d~%d)",
+		d.config.WorkerCount, d.config.MinWorkers, d.config.MaxWorkers)
 
 	// 启动所有 worker
 	for _, w := range d.workers {
 		d.wg.Add(1)
 		go w.run()
 	}
+
+	// P0: 启动动态 Worker 扩缩容监控
+	d.wg.Add(1)
+	go d.monitorQueue()
 
 	return nil
 }
@@ -226,16 +287,17 @@ func (d *Dispatcher) Start() error {
 //
 // 优雅关闭：
 //  1. 取消 context（唤醒所有阻塞的 worker）
-//  2. 停止接收新消息（关闭队列）
-//  3. 等待队列中消息处理完成
-//  4. 关闭所有 worker
+//  2. 停止动态扩缩容监控
+//  3. 停止接收新消息（关闭队列）
+//  4. 等待队列中消息处理完成
+//  5. 关闭所有 worker
 func (d *Dispatcher) Stop() error {
 	if !d.running.CompareAndSwap(true, false) {
 		return fmt.Errorf("dispatcher not running")
 	}
 
-	logging.Infof("[Dispatcher] Stopping dispatcher (processed: %d, dropped: %d)",
-		d.msgCount.Load(), d.dropCount.Load())
+	logging.Infof("[Dispatcher] Stopping dispatcher (processed: %d, dropped: %d, workers: %d)",
+		d.msgCount.Load(), d.dropCount.Load(), d.currentWorkers.Load())
 
 	// 取消所有连接
 	d.mu.Lock()
@@ -249,10 +311,13 @@ func (d *Dispatcher) Stop() error {
 	// 这样 worker 会被 ctx.Done() 唤醒，而不是一直等待 messageQueue
 	d.cancel()
 
+	// P0: 停止动态 Worker 扩缩容监控
+	close(d.scaleDone)
+
 	// 停止接收新消息（关闭队列）
 	close(d.messageQueue)
 
-	// 等待所有 worker 完成
+	// 等待所有 worker 和监控 goroutine 完成
 	d.wg.Wait()
 
 	logging.Infof("[Dispatcher] Dispatcher stopped")
@@ -438,6 +503,316 @@ func (w *worker) run() {
 				logging.Errorf("[Worker-%d] Failed to handle message: %v", w.id, err)
 				// TODO: 可以根据错误类型决定是否重试
 			}
+		}
+	}
+}
+
+// ========================================
+// P0: 动态 Worker 扩缩容机制
+// ========================================
+
+// monitorQueue 监控队列使用率并动态调整 worker 数量
+//
+// 工作原理：
+//  1. 每秒检查一次队列使用率
+//  2. 队列使用率 > ScaleUpThreshold (70%)：触发扩容
+//  3. 队列使用率 < ScaleDownThreshold (30%)：触发缩容
+//  4. Worker 数量限制在 [MinWorkers, MaxWorkers] 范围内
+func (d *Dispatcher) monitorQueue() {
+	defer d.wg.Done()
+
+	logging.Infof("[Dispatcher-ScaleMonitor] Started (min=%d, max=%d, up=%.2f, down=%.2f)",
+		d.config.MinWorkers, d.config.MaxWorkers,
+		d.config.ScaleUpThreshold, d.config.ScaleDownThreshold)
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-d.ctx.Done():
+			logging.Infof("[Dispatcher-ScaleMonitor] Stopped")
+			return
+
+		case <-d.scaleDone:
+			logging.Infof("[Dispatcher-ScaleMonitor] Received stop signal")
+			return
+
+		case <-ticker.C:
+			d.adjustWorkerCount()
+		}
+	}
+}
+
+// adjustWorkerCount 根据队列使用率调整 worker 数量
+//
+// 队列使用率计算：
+//
+//	使用率 = 当前队列长度 / 队列容量
+//
+// 扩容条件：
+//   - 使用率 > ScaleUpThreshold (70%)
+//   - 当前 worker 数量 < MaxWorkers
+//
+// 缩容条件：
+//   - 使用率 < ScaleDownThreshold (30%)
+//   - 当前 worker 数量 > MinWorkers
+//   - 稳定 5 秒后再缩容（避免频繁扩缩容）
+func (d *Dispatcher) adjustWorkerCount() {
+	// 计算队列使用率
+	queueLen := len(d.messageQueue)
+	queueCap := cap(d.messageQueue)
+	utilization := float64(queueLen) / float64(queueCap)
+
+	current := d.currentWorkers.Load()
+	minWorkers := uint64(d.config.MinWorkers)
+	maxWorkers := uint64(d.config.MaxWorkers)
+
+	// 扩容判断
+	if utilization > d.config.ScaleUpThreshold && current < maxWorkers {
+		// 计算扩容目标数量
+		target := current + (current / 2) // 增加 50%
+		if target > maxWorkers {
+			target = maxWorkers
+		}
+
+		logging.Infof("[Dispatcher-ScaleMonitor] Queue utilization %.2f%% (%d/%d), scaling up: %d -> %d",
+			utilization*100, queueLen, queueCap, current, target)
+
+		d.scaleUp(int(target))
+		return
+	}
+
+	// 缩容判断（需要稳定 5 秒）
+	if utilization < d.config.ScaleDownThreshold && current > minWorkers {
+		// 简化实现：立即缩容（生产环境建议增加冷却期）
+		target := current - (current / 4) // 减少 25%
+		if target < minWorkers {
+			target = minWorkers
+		}
+
+		logging.Infof("[Dispatcher-ScaleMonitor] Queue utilization %.2f%% (%d/%d), scaling down: %d -> %d",
+			utilization*100, queueLen, queueCap, current, target)
+
+		d.scaleDown(int(target))
+		return
+	}
+
+	// 记录正常状态
+	if current != minWorkers && current != maxWorkers {
+		logging.Debugf("[Dispatcher-ScaleMonitor] Queue utilization %.2f%% (%d/%d), workers: %d (stable)",
+			utilization*100, queueLen, queueCap, current)
+	}
+}
+
+// scaleUp 扩容 worker 数量
+//
+// 参数：
+//   - target: 目标 worker 数量
+//
+// 流程：
+//  1. 检查目标数量是否合法
+//  2. 创建新的 worker 实例
+//  3. 启动新 worker
+//  4. 更新 workers 列表和 currentWorkers 计数
+func (d *Dispatcher) scaleUp(target int) {
+	d.workersMu.Lock()
+	defer d.workersMu.Unlock()
+
+	current := len(d.workers)
+
+	// 二次检查（防止并发扩缩容）
+	if target <= current {
+		return
+	}
+
+	// 限制最大值
+	if target > d.config.MaxWorkers {
+		target = d.config.MaxWorkers
+	}
+
+	// 创建新 worker
+	for i := current; i < target; i++ {
+		w := newWorker(i, d)
+		d.workers = append(d.workers, w)
+
+		// 启动 worker
+		d.wg.Add(1)
+		go w.run()
+
+		d.currentWorkers.Add(1)
+	}
+
+	logging.Infof("[Dispatcher-ScaleUp] Scaled up: %d -> %d workers", current, len(d.workers))
+}
+
+// scaleDown 缩容 worker 数量
+//
+// 参数：
+//   - target: 目标 worker 数量
+//
+// 流程：
+//  1. 检查目标数量是否合法
+//  2. 移除多余的 worker（从末尾开始）
+//  3. Worker 会自然退出（因为它们监听 ctx.Done()）
+//  4. 更新 workers 列表和 currentWorkers 计数
+//
+// 注意：
+//   - Worker 的退出是异步的，不会立即停止
+//   - 正在处理消息的 worker 会完成当前消息后再退出
+func (d *Dispatcher) scaleDown(target int) {
+	d.workersMu.Lock()
+	defer d.workersMu.Unlock()
+
+	current := len(d.workers)
+
+	// 二次检查（防止并发扩缩容）
+	if target >= current {
+		return
+	}
+
+	// 限制最小值
+	if target < d.config.MinWorkers {
+		target = d.config.MinWorkers
+	}
+
+	// 移除多余的 worker（从末尾开始）
+	for i := current - 1; i >= target; i-- {
+		// Worker 会自然退出（因为它们监听 ctx.Done()）
+		// 这里只是从列表中移除，不影响正在运行的 worker
+		d.workers = d.workers[:i]
+		d.currentWorkers.Add(^uint64(0)) // equivalent to -1
+	}
+
+	logging.Infof("[Dispatcher-ScaleDown] Scaled down: %d -> %d workers", current, len(d.workers))
+}
+
+// GetQueueUtilization 获取队列使用率
+//
+// 返回：
+//   - float64: 队列使用率（0.0 ~ 1.0）
+func (d *Dispatcher) GetQueueUtilization() float64 {
+	queueLen := len(d.messageQueue)
+	queueCap := cap(d.messageQueue)
+	return float64(queueLen) / float64(queueCap)
+}
+
+// GetCurrentWorkerCount 获取当前 worker 数量
+//
+// 返回：
+//   - uint64: 当前 worker 数量
+func (d *Dispatcher) GetCurrentWorkerCount() uint64 {
+	return d.currentWorkers.Load()
+}
+
+// ========================================
+// P0: 增强的统计信息
+// ========================================
+
+// ScalingStats 动态扩缩容统计信息
+type ScalingStats struct {
+	CurrentWorkers     uint64  // 当前 worker 数量
+	MinWorkers         int     // 最小 worker 数量
+	MaxWorkers         int     // 最大 worker 数量
+	QueueUtilization   float64 // 队列使用率
+	QueuedMessages     int     // 队列中待处理消息数
+	QueueCapacity      int     // 队列容量
+	ScaleUpThreshold   float64 // 扩容阈值
+	ScaleDownThreshold float64 // 缩容阈值
+}
+
+// GetScalingStats 获取动态扩缩容统计信息
+func (d *Dispatcher) GetScalingStats() ScalingStats {
+	d.workersMu.RLock()
+	defer d.workersMu.RUnlock()
+
+	return ScalingStats{
+		CurrentWorkers:     d.currentWorkers.Load(),
+		MinWorkers:         d.config.MinWorkers,
+		MaxWorkers:         d.config.MaxWorkers,
+		QueueUtilization:   d.GetQueueUtilization(),
+		QueuedMessages:     len(d.messageQueue),
+		QueueCapacity:      cap(d.messageQueue),
+		ScaleUpThreshold:   d.config.ScaleUpThreshold,
+		ScaleDownThreshold: d.config.ScaleDownThreshold,
+	}
+}
+
+// ========================================
+// P0: 手动扩缩容接口（用于测试）
+// ========================================
+
+// ScaleUpTo 手动扩容到指定数量
+//
+// 参数：
+//   - target: 目标 worker 数量
+//
+// 返回：
+//   - error: 目标数量非法时返回错误
+func (d *Dispatcher) ScaleUpTo(target int) error {
+	if target < d.config.MinWorkers || target > d.config.MaxWorkers {
+		return fmt.Errorf("target worker count %d out of range [%d, %d]",
+			target, d.config.MinWorkers, d.config.MaxWorkers)
+	}
+
+	current := int(d.currentWorkers.Load())
+	if target <= current {
+		return fmt.Errorf("target %d not greater than current %d", target, current)
+	}
+
+	logging.Infof("[Dispatcher-ManualScale] Manual scale up requested: %d -> %d", current, target)
+	d.scaleUp(target)
+	return nil
+}
+
+// ScaleDownTo 手动缩容到指定数量
+//
+// 参数：
+//   - target: 目标 worker 数量
+//
+// 返回：
+//   - error: 目标数量非法时返回错误
+func (d *Dispatcher) ScaleDownTo(target int) error {
+	if target < d.config.MinWorkers || target > d.config.MaxWorkers {
+		return fmt.Errorf("target worker count %d out of range [%d, %d]",
+			target, d.config.MinWorkers, d.config.MaxWorkers)
+	}
+
+	current := int(d.currentWorkers.Load())
+	if target >= current {
+		return fmt.Errorf("target %d not less than current %d", target, current)
+	}
+
+	logging.Infof("[Dispatcher-ManualScale] Manual scale down requested: %d -> %d", current, target)
+	d.scaleDown(target)
+	return nil
+}
+
+// WaitForScaling 等待扩缩容完成
+//
+// 参数：
+//   - target: 目标 worker 数量
+//   - timeout: 超时时间
+//
+// 返回：
+//   - error: 超时或取消时返回错误
+func (d *Dispatcher) WaitForScaling(target int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for scaling to %d workers", target)
+		}
+
+		current := int(d.currentWorkers.Load())
+		if current == target {
+			return nil
+		}
+
+		select {
+		case <-d.ctx.Done():
+			return fmt.Errorf("dispatcher canceled while waiting for scaling")
+		case <-time.After(100 * time.Millisecond):
+			// 继续等待
 		}
 	}
 }

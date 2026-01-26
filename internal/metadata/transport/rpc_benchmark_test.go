@@ -115,14 +115,10 @@ func BenchmarkDispatcherCreation(b *testing.B) {
 }
 
 // BenchmarkDispatcherMessageProcessing 测试消息处理性能
+// P0 修复：使用新的默认配置（QueueSize=50000，动态扩缩容 4~32）
 func BenchmarkDispatcherMessageProcessing(b *testing.B) {
 	handler := &mockHandler{}
-	config := &DispatcherConfig{
-		WorkerCount:   8,
-		QueueSize:     10000,
-		BatchSize:     32,
-		FlushInterval: 10,
-	}
+	config := DefaultDispatcherConfig() // 使用新的默认配置
 
 	d, err := NewDispatcher(config, handler)
 	if err != nil {
@@ -152,16 +148,12 @@ func BenchmarkDispatcherMessageProcessing(b *testing.B) {
 }
 
 // BenchmarkDispatcherParallelProcessing 测试并发消息处理性能
+// P0 修复：使用新的默认配置（QueueSize=50000，动态扩缩容 4~32）
 func BenchmarkDispatcherParallelProcessing(b *testing.B) {
 	handler := &mockHandler{
 		handleDelay: 1 * time.Microsecond, // 模拟 1μs 处理延迟
 	}
-	config := &DispatcherConfig{
-		WorkerCount:   8,
-		QueueSize:     10000,
-		BatchSize:     32,
-		FlushInterval: 10,
-	}
+	config := DefaultDispatcherConfig() // 使用新的默认配置
 
 	d, err := NewDispatcher(config, handler)
 	if err != nil {
@@ -367,12 +359,7 @@ func BenchmarkTransportSendQPS(b *testing.B) {
 // BenchmarkDispatcherThroughput 测试 Dispatcher 吞吐量
 func BenchmarkDispatcherThroughput(b *testing.B) {
 	handler := &mockHandler{}
-	config := &DispatcherConfig{
-		WorkerCount:   8,
-		QueueSize:     10000,
-		BatchSize:     32,
-		FlushInterval: 10,
-	}
+	config := DefaultDispatcherConfig() // P0 修复：使用新的默认配置（QueueSize=50000，动态扩缩容 4~32）
 
 	d, err := NewDispatcher(config, handler)
 	if err != nil {
@@ -464,12 +451,7 @@ func BenchmarkDispatcherLatency(b *testing.B) {
 	handler := &mockHandler{
 		handleDelay: 10 * time.Microsecond, // 10μs 处理延迟
 	}
-	config := &DispatcherConfig{
-		WorkerCount:   8,
-		QueueSize:     10000,
-		BatchSize:     32,
-		FlushInterval: 10,
-	}
+	config := DefaultDispatcherConfig() // P0 修复：使用新的默认配置（QueueSize=50000，动态扩缩容 4~32）
 
 	d, err := NewDispatcher(config, handler)
 	if err != nil {
@@ -511,6 +493,7 @@ func BenchmarkDispatcherLatency(b *testing.B) {
 // ========================================
 
 // BenchmarkDispatcherScalability 测试 Dispatcher 扩展性（不同 Worker 数量）
+// P0 修复：使用新的默认配置（QueueSize=50000，动态扩缩容 4~32）
 func BenchmarkDispatcherScalability(b *testing.B) {
 	workerCounts := []int{1, 2, 4, 8, 16, 32}
 
@@ -519,12 +502,9 @@ func BenchmarkDispatcherScalability(b *testing.B) {
 			handler := &mockHandler{
 				handleDelay: 10 * time.Microsecond,
 			}
-			config := &DispatcherConfig{
-				WorkerCount:   workerCount,
-				QueueSize:     10000,
-				BatchSize:     32,
-				FlushInterval: 10,
-			}
+			// P0 修复：基于默认配置，只修改 WorkerCount
+			config := DefaultDispatcherConfig()
+			config.WorkerCount = workerCount
 
 			d, err := NewDispatcher(config, handler)
 			if err != nil {

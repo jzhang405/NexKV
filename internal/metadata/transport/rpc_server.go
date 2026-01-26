@@ -370,11 +370,3 @@ func (a *rpcServerHandlerAdapter) sendResponse(reqFrame MsgFrame, resp types.Mes
 	logging.Infof("[RPC-Server] Response sent via Reply() (CorrelationID: %s)", correlationID)
 	return nil
 }
-
-// ========================================
-// 请求分发循环（已由 Dispatcher 替代）
-// ========================================
-
-// 注意：请求分发逻辑已由 Dispatcher 接管
-// Dispatcher 负责从多个 Transport 接收消息并分发到 worker
-// worker 调用 rpcServerHandlerAdapter.HandleMessage 处理消息

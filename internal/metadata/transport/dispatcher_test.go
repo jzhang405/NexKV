@@ -598,7 +598,7 @@ func TestBackpressureDisabled(t *testing.T) {
 		handleDelay: 200 * time.Millisecond, // 模拟慢处理
 	}
 	config := &DispatcherConfig{
-		WorkerCount:        1,     // 单 worker
+		WorkerCount:        4,     // 最小 worker 数（新配置约束）
 		QueueSize:          2,     // 小队列
 		EnableBackpressure: false, // 禁用背压
 		OnDroppedMessage: func(addr string, msg MsgFrame) bool {
@@ -660,7 +660,7 @@ func TestBackpressureCallbackRetry(t *testing.T) {
 		handleDelay: 150 * time.Millisecond, // 慢处理，确保队列满
 	}
 	config := &DispatcherConfig{
-		WorkerCount:        1,
+		WorkerCount:        4, // 最小 worker 数（新配置约束）
 		QueueSize:          2, // 小队列
 		EnableBackpressure: false,
 		OnDroppedMessage: func(addr string, msg MsgFrame) bool {

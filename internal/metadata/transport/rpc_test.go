@@ -406,7 +406,9 @@ func TestCallBatchFastFail(t *testing.T) {
 	// 模拟第三个请求失败
 	go func() {
 		time.Sleep(100 * time.Millisecond)
+		tcpTransport.mu.Lock()
 		tcpTransport.sendError = errors.New("connection refused")
+		tcpTransport.mu.Unlock()
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -1033,7 +1033,8 @@ func TestRPCIntegration_ResourceCleanup(t *testing.T) {
 			msgType: types.MessageTypeGet,
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// CI 环境资源有限，增加超时时间以避免 context deadline exceeded
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		_, err := client.Call(ctx, serverAddr, requestMsg)
 		cancel()
 

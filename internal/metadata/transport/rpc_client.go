@@ -564,10 +564,10 @@ func (rt *requestTable) get(correlationID string) *requestEntry {
 
 // remove 标记删除（P1-1: 实际删除由清理协程执行）
 func (rt *requestTable) remove(correlationID string) {
-	rt.mu.RLock()
-	entry := rt.table[correlationID]
-	rt.mu.RUnlock()
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
 
+	entry := rt.table[correlationID]
 	if entry != nil {
 		// P1-1: 仅标记完成时间，不立即删除
 		// 实际删除由 cleanupLoop 批量处理

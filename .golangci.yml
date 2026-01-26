@@ -1,0 +1,49 @@
+version: 2
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+linters-settings:
+  errcheck:
+    # 忽略特定模式的错误检查
+    ignore: |
+      (.+)\_test\.go: defer .*\.Stop\(\)
+      (.+)\_test\.go: defer .*\.Close\(\)
+
+issues:
+  exclude-rules:
+    # 排除测试文件中的 defer 返回值检查
+    - source: "defer .*\\.(Stop|Close)\\(\\)"
+      path: _test\.go
+      linters:
+        - errcheck
+
+    # 排除测试文件中的未使用函数
+    - path: _test\.go
+      linters:
+        - unused
+
+    # 排除测试文件中的无效赋值
+    - path: _test\.go
+      text: "ineffectual assignment"
+      linters:
+        - ineffassign
+
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+run:
+  timeout: 5m
+  concurrency: 4
+  skip-dirs:
+    - vendor
+    - third_party
+    - testdata
+    - examples
+    - Godeps
+    - builtin

@@ -94,10 +94,16 @@ func (m *mockRPCHandler) HandleRequest(ctx context.Context, req types.Message) (
 	}
 
 	if m.returnResponse && m.responseMsg != nil {
-		// 复制请求的 CorrelationID 到响应（用于 RPC 请求-响应匹配）
+		// 创建响应副本并复制请求的 CorrelationID（避免 race condition）
+		// 多个 goroutine 可能同时调用 HandleRequest，直接修改共享的 m.responseMsg 会导致数据竞争
 		if mockResp, ok := m.responseMsg.(*mockMessageForRPC); ok {
-			mockResp.correlationID = req.CorrelationID()
+			respCopy := &mockMessageForRPC{
+				msgType:       mockResp.msgType,
+				correlationID: req.CorrelationID(),
+			}
+			return respCopy, nil
 		}
+		// 其他类型消息直接返回（不需要修改 CorrelationID）
 		return m.responseMsg, nil
 	}
 

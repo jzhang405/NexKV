@@ -88,8 +88,8 @@ func TestRPCIntegration_BasicCall(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
+	time.Sleep(500 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
@@ -170,8 +170,8 @@ func TestRPCIntegration_CallBatch(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
+	time.Sleep(500 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
@@ -279,8 +279,8 @@ func TestRPCIntegration_ConcurrentCalls(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
+	time.Sleep(500 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
@@ -403,8 +403,8 @@ func TestRPCIntegration_Timeout(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
+	time.Sleep(500 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
@@ -573,8 +573,8 @@ func TestRPCIntegration_DualTransport(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
+	time.Sleep(500 * time.Millisecond)
 
 	// 服务端地址（使用固定端口）
 	serverAddr := "127.0.0.1:19201"
@@ -795,8 +795,8 @@ func TestRPCIntegration_ServerError(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
+	time.Sleep(500 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
@@ -919,8 +919,8 @@ func TestRPCIntegration_ConnectionReuseFallback(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
+	time.Sleep(500 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
@@ -1371,8 +1371,8 @@ func TestRPCIntegration_DualTransportWithUDP(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
+	time.Sleep(500 * time.Millisecond)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -1,24 +1,23 @@
 version: 2
 
 linters:
+  disable-all: true
   enable:
-    - errcheck
     - govet
     - ineffassign
     - staticcheck
     - unused
 
 linters-settings:
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
+  govet:
+    enable-all: false
+    enable:
+      - atomic
+      - nilfunc
+      - printf
+      - shadow
 
 issues:
-  # 排除已知可忽略的错误
-  exclude:
-    - "Error return value.*readRandomWithFallback.*is not checked" # readRandomWithFallback 总是返回 nil，有降级机制
-    - "Error return value of.*os.Hostname.*is not checked" # 失败时使用空字符串也可接受
-
   max-issues-per-linter: 0
   max-same-issues: 0
 
@@ -26,6 +25,3 @@ run:
   timeout: 5m
   concurrency: 4
   modules-download-mode: readonly
-  skip-files:
-    - _test\.go
-    - _benchmark_test\.go

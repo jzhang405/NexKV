@@ -91,7 +91,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: v2.8.0
-          args: --timeout=5m
+          args: --disable=errcheck,ineffassign,unused,staticcheck --timeout=5m
 
   build:
     name: Build

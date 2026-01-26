@@ -533,7 +533,7 @@ func TestBackpressureEnabled(t *testing.T) {
 		handleDelay: 100 * time.Millisecond, // 模拟慢处理
 	}
 	config := &DispatcherConfig{
-		WorkerCount:        1,    // 单 worker
+		WorkerCount:        4,    // 满足 MinWorkers 约束
 		QueueSize:          2,    // 小队列
 		EnableBackpressure: true, // 启用背压
 	}
@@ -595,7 +595,7 @@ func TestBackpressureDisabled(t *testing.T) {
 	var mu sync.Mutex
 
 	handler := &mockHandler{
-		handleDelay: 200 * time.Millisecond, // 模拟慢处理
+		handleDelay: 500 * time.Millisecond, // 模拟慢处理（增加延迟）
 	}
 	config := &DispatcherConfig{
 		WorkerCount:        4,     // 最小 worker 数（新配置约束）
@@ -622,7 +622,7 @@ func TestBackpressureDisabled(t *testing.T) {
 	}
 	defer d.Stop()
 
-	msgChan := make(chan MsgFrame, 10)
+	msgChan := make(chan MsgFrame, 20)
 	cancel := d.RegisterConnection("no-backpressure-test", msgChan)
 	if cancel == nil {
 		t.Fatal("RegisterConnection() returned nil cancel")
@@ -630,7 +630,7 @@ func TestBackpressureDisabled(t *testing.T) {
 	defer cancel()
 
 	// 快速发送多条消息，超过队列大小
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 20; i++ { // 增加消息数量以触发丢弃
 		msgChan <- newTestMsgFrame(1, uint64(i), types.MessageTypeGet)
 		t.Logf("Sent message %d", i)
 	}
@@ -657,7 +657,7 @@ func TestBackpressureCallbackRetry(t *testing.T) {
 	retryCount := 0
 
 	handler := &mockHandler{
-		handleDelay: 150 * time.Millisecond, // 慢处理，确保队列满
+		handleDelay: 200 * time.Millisecond, // 增加延迟以确保队列满
 	}
 	config := &DispatcherConfig{
 		WorkerCount:        4, // 最小 worker 数（新配置约束）
@@ -681,22 +681,22 @@ func TestBackpressureCallbackRetry(t *testing.T) {
 	}
 	defer d.Stop()
 
-	msgChan := make(chan MsgFrame, 10)
+	msgChan := make(chan MsgFrame, 20)
 	cancel := d.RegisterConnection("retry-test", msgChan)
 	if cancel == nil {
 		t.Fatal("RegisterConnection() returned nil cancel")
 	}
 	defer cancel()
 
-	// 快速发送 5 条消息，超过队列大小 (2)
-	// 前 2 条进入队列，后 3 条触发背压
-	for i := 0; i < 5; i++ {
+	// 快速发送多条消息，超过队列大小 (2)
+	// 由于有 4 个 worker 并行处理，需要发送更多消息才能触发队列满
+	for i := 0; i < 15; i++ {
 		msgChan <- newTestMsgFrame(1, uint64(i), types.MessageTypeGet)
 		t.Logf("Sent message %d", i)
 	}
 
 	// 等待处理
-	time.Sleep(800 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 
 	stats := d.GetStats()
 	t.Logf("Processed: %d, Dropped: %d, Retries: %d",

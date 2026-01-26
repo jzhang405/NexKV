@@ -268,45 +268,55 @@ func (t *UDPTransport) receiveLoop() {
 	logging.Info("开始接收 UDP 数据...")
 
 	for {
+		// 检查停止状态（在操作连接之前）
+		if t.stopped.Load() {
+			logging.Info("UDP 传输层已停止（stopped 标志）")
+			return
+		}
+
 		// 每次循环都设置读超时，确保每次读取都有超时保护
 		if err := setReadTimeout(t.conn, t.config.ReadTimeout); err != nil {
+			// 连接已关闭时的错误是正常的，不记录为错误
+			if t.stopped.Load() {
+				logging.Info("UDP 传输层已停止（设置读超时检测到停止）")
+				return
+			}
 			logging.Errorf("设置读超时失败: %v", err)
 			return
 		}
 
-		select {
-		case <-t.stopCh:
-			logging.Info("UDP 传输层已停止（收到停止信号）")
-			return
-		default:
-			n, addr, err := t.conn.ReadFromUDP(buf)
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					logging.Info("UDP 连接已关闭")
-					return
-				}
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					// 读超时，继续循环（下次循环会重新设置超时）
-					continue
-				}
-				logging.Errorf("读取 UDP 数据失败: %v", err)
+		n, addr, err := t.conn.ReadFromUDP(buf)
+		if err != nil {
+			// 检查是否因为停止导致的错误
+			if t.stopped.Load() {
+				logging.Info("UDP 传输层已停止（读取检测到停止）")
+				return
+			}
+			if errors.Is(err, io.EOF) {
+				logging.Info("UDP 连接已关闭")
+				return
+			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// 读超时，继续循环（下次循环会重新设置超时）
 				continue
 			}
+			logging.Errorf("读取 UDP 数据失败: %v", err)
+			continue
+		}
 
-			// 处理接收到的数据
-			data := make([]byte, n)
-			copy(data, buf[:n])
+		// 处理接收到的数据
+		data := make([]byte, n)
+		copy(data, buf[:n])
 
-			msg := t.processReceivedData(data)
-			if msg.Message != nil {
-				// === RPC 响应发送支持：填充 SourceAddr 和 ConnID ===
-				// UDP 无连接协议，SourceAddr 为客户端地址，ConnID 为空
-				msg.SourceAddr = addr.String()
-				msg.ConnID = ""
-				// === 设置接收协议类型（用于响应时选择正确的 Transport） ===
-				msg.SetRecvProtocol(types.ProtocolUDP)
-				t.sendToReceiveChannel(msg, addr.String())
-			}
+		msg := t.processReceivedData(data)
+		if msg.Message != nil {
+			// === RPC 响应发送支持：填充 SourceAddr 和 ConnID ===
+			// UDP 无连接协议，SourceAddr 为客户端地址，ConnID 为空
+			msg.SourceAddr = addr.String()
+			msg.ConnID = ""
+			// === 设置接收协议类型（用于响应时选择正确的 Transport） ===
+			msg.SetRecvProtocol(types.ProtocolUDP)
+			t.sendToReceiveChannel(msg, addr.String())
 		}
 	}
 }

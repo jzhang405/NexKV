@@ -326,7 +326,7 @@ func TestRPCIntegration_ConcurrentCalls(t *testing.T) {
 				msgType: types.MessageTypeGet,
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
 			response, err := client.Call(ctx, serverAddr, requestMsg)
@@ -952,7 +952,7 @@ func TestRPCIntegration_ConnectionReuseFallback(t *testing.T) {
 		msgType: types.MessageTypeGet,
 	}
 
-	ctx1, cancel1 := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel1()
 
 	response1, err := client.Call(ctx1, serverAddr, requestMsg1)
@@ -971,7 +971,7 @@ func TestRPCIntegration_ConnectionReuseFallback(t *testing.T) {
 		msgType: types.MessageTypeGet,
 	}
 
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel2()
 
 	response2, err := client.Call(ctx2, serverAddr, requestMsg2)

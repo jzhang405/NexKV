@@ -1033,8 +1033,9 @@ func TestRPCIntegration_ResourceCleanup(t *testing.T) {
 			msgType: types.MessageTypeGet,
 		}
 
-		// CI 环境资源有限，增加超时时间以避免 context deadline exceeded
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		// CI 环境资源非常有限，需要很长的超时时间
+		// 本地测试通常 1-2 秒完成，但 CI 环境可能需要 10+ 秒
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		_, err := client.Call(ctx, serverAddr, requestMsg)
 		cancel()
 

@@ -1,4 +1,4 @@
-version: "2"
+version: 2
 
 linters:
   enable:
@@ -8,7 +8,7 @@ linters:
     - staticcheck
     - unused
 
-linters_settings:
+linters-settings:
   errcheck:
     check-type-assertions: true
     check-blank: true
@@ -26,3 +26,6 @@ run:
   timeout: 5m
   concurrency: 4
   modules-download-mode: readonly
+  skip-files:
+    - _test\.go
+    - _benchmark_test\.go

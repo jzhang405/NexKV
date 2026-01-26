@@ -1,27 +1,41 @@
-version: 2
-
+version: "2"
+run:
+  concurrency: 4
+  modules-download-mode: readonly
 linters:
-  disable-all: true
+  default: none
   enable:
     - govet
     - ineffassign
     - staticcheck
     - unused
+    - errcheck # Unhandled errors (critical for Go)
 
-linters-settings:
-  govet:
-    enable-all: false
-    enable:
-      - atomic
-      - nilfunc
-      - printf
-      - shadow
-
+  settings:
+    govet:
+      enable:
+        - atomic
+        - nilfunc
+        - printf
+      enable-all: false
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-
-run:
-  timeout: 5m
-  concurrency: 4
-  modules-download-mode: readonly
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

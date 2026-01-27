@@ -31,6 +31,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
+          cache: false  # 禁用缓存避免缓存恢复失败导致测试不稳定
 
       - name: 显示 Go 版本
         run: go version
@@ -116,6 +117,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
+          cache: false  # 禁用缓存避免缓存恢复失败导致测试不稳定
 
       - name: 编译项目
         shell: bash

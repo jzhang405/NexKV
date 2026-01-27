@@ -21,13 +21,14 @@ import (
 func setupRPCServerAndClient(t *testing.T) (*RPCServer, *RPCClient, *TCPTransport, *TCPTransport) {
 	t.Helper()
 
-	// Go 1.23 的调度器变化 + CI 环境资源有限，需要更长的 TCP 读取超时时间
-	// 从默认的 30 秒增加到 60 秒以适应 Go 1.23 的行为和 CI 环境
+	// Go 1.23 的调度器变化 + CI 环境资源有限 + race detector 显著降低性能
+	// 从默认的 30 秒增加到 120 秒以适应 CI 环境的极端情况
+	// 注意：CI 使用 -race 标志，性能比本地慢 3-5 倍
 	transportConfig := &TransportConfig{
 		ListenAddr:         "127.0.0.1:0",
 		MaxMessageSize:     1024 * 1024 * 100, // 100MB
-		ReadTimeout:        60 * time.Second,     // 从默认的 30 秒增加到 60 秒
-		WriteTimeout:       30 * time.Second,
+		ReadTimeout:        120 * time.Second,    // 从 60 秒增加到 120 秒以适应 CI race detector
+		WriteTimeout:       60 * time.Second,     // 同样增加写超时
 		KeepAliveInterval:  10 * time.Second,
 		KeepAliveTimeout:   30 * time.Second,
 		BufferSize:         4096,
@@ -60,12 +61,13 @@ func setupRPCServerAndClient(t *testing.T) (*RPCServer, *RPCClient, *TCPTranspor
 		t.Fatalf("Failed to create RPC server: %v", err)
 	}
 
-	// 创建 RPC Client（配置更长的超时时间以适应 Go 1.23 的调度器变化）
+	// 创建 RPC Client（配置更长的超时时间以适应 Go 1.23 + CI race detector）
 	// 注意：RequestTimeout 与 context timeout 是独立的两个超时机制
 	// Context timeout 控制整个调用的超时，RequestTimeout 控制等待响应的超时
+	// CI 使用 -race 标志，性能比本地慢 3-5 倍，需要更长的超时时间
 	clientConfig := &RPCClientConfig{
 		DialTimeout:     5 * time.Second,
-		RequestTimeout:  60 * time.Second, // 从默认的 30 秒增加到 60 秒
+		RequestTimeout:  120 * time.Second, // 从 60 秒增加到 120 秒以适应 CI race detector
 		MaxRetries:      3,
 		RetryDelay:      100 * time.Millisecond,
 		EnableFastFail:  true,
@@ -977,9 +979,9 @@ func TestRPCIntegration_ConnectionReuseFallback(t *testing.T) {
 		msgType: types.MessageTypeGet,
 	}
 
-	// Go 1.23 的调度器变化导致并发测试需要更长的超时时间
-	// 从 30 秒增加到 60 秒以适应 Go 1.23 的行为
-	ctx1, cancel1 := context.WithTimeout(context.Background(), 60*time.Second)
+	// Go 1.23 的调度器变化 + CI race detector 导致并发测试需要更长的超时时间
+	// 从 30 秒增加到 120 秒以适应 CI 环境的极端情况
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel1()
 
 	response1, err := client.Call(ctx1, serverAddr, requestMsg1)
@@ -998,9 +1000,9 @@ func TestRPCIntegration_ConnectionReuseFallback(t *testing.T) {
 		msgType: types.MessageTypeGet,
 	}
 
-	// Go 1.23 的调度器变化导致并发测试需要更长的超时时间
-	// 从 30 秒增加到 60 秒以适应 Go 1.23 的行为
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 60*time.Second)
+	// Go 1.23 的调度器变化 + CI race detector 导致并发测试需要更长的超时时间
+	// 从 30 秒增加到 120 秒以适应 CI 环境的极端情况
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel2()
 
 	response2, err := client.Call(ctx2, serverAddr, requestMsg2)

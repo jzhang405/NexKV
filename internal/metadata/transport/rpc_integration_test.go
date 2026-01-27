@@ -964,8 +964,9 @@ func TestRPCIntegration_ConnectionReuseFallback(t *testing.T) {
 		msgType: types.MessageTypeGet,
 	}
 
-	// mainline CI 环境资源极其有限，需要更长的超时时间
-	ctx1, cancel1 := context.WithTimeout(context.Background(), 30*time.Second)
+	// Go 1.23 的调度器变化导致并发测试需要更长的超时时间
+	// 从 30 秒增加到 60 秒以适应 Go 1.23 的行为
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel1()
 
 	response1, err := client.Call(ctx1, serverAddr, requestMsg1)
@@ -984,8 +985,9 @@ func TestRPCIntegration_ConnectionReuseFallback(t *testing.T) {
 		msgType: types.MessageTypeGet,
 	}
 
-	// mainline CI 环境资源极其有限，需要更长的超时时间
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+	// Go 1.23 的调度器变化导致并发测试需要更长的超时时间
+	// 从 30 秒增加到 60 秒以适应 Go 1.23 的行为
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel2()
 
 	response2, err := client.Call(ctx2, serverAddr, requestMsg2)

@@ -106,7 +106,7 @@ func DefaultRPCClientConfig() *RPCClientConfig {
 //   - error: 配置无效时返回错误
 func NewRPCClient(tcpTransport Transport, udpTransport Transport, config *RPCClientConfig) (*RPCClient, error) {
 	if tcpTransport == nil {
-		return nil, fmt.Errorf("tcpTransport is required")
+		return nil, types.NewRPCInvalidMessage("tcpTransport is required")
 	}
 
 	// 使用默认配置
@@ -137,7 +137,7 @@ func NewRPCClient(tcpTransport Transport, udpTransport Transport, config *RPCCli
 // 启动响应处理协程，接收响应并匹配请求
 func (c *RPCClient) Start() error {
 	if !c.running.CompareAndSwap(false, true) {
-		return fmt.Errorf("client already running")
+		return types.NewRPCInvalidMessage("client already running")
 	}
 
 	logging.Infof("[RPC-Client] Starting RPC client (FastFail=%v)", c.config.EnableFastFail)
@@ -157,7 +157,7 @@ func (c *RPCClient) Start() error {
 //  3. 清理请求表
 func (c *RPCClient) Stop() error {
 	if !c.running.CompareAndSwap(true, false) {
-		return fmt.Errorf("client not running")
+		return types.NewRPCInvalidMessage("client not running")
 	}
 
 	logging.Infof("[RPC-Client] Stopping RPC client")
@@ -183,43 +183,28 @@ func (c *RPCClient) Stop() error {
 // ========================================
 
 // Call 发送 RPC 请求并等待响应
-//
-// 参数：
-//   - ctx: 调用上下文（支持超时和取消）
-//   - addr: 目标地址（如 "127.0.0.1:9211"）
-//   - req: 请求消息
-//
-// 返回：
-//   - types.Message: 响应消息
-//   - error: 请求失败时返回错误
 func (c *RPCClient) Call(ctx context.Context, addr string, req types.Message) (types.Message, error) {
-	// 根据消息类型选择传输协议
 	transport := c.selectTransport(req)
-
-	// 预先生成 msgSeq（用于计算 CorrelationID）
-	// === FIX: 使用选中的 transport 的 msgSeq 和 NodeID ===
-	// 这样无论是 TCP 还是 UDP transport，都会使用正确的值
 	msgSeq := transport.GenerateMsgSeq()
 	nodeID := transport.GetNodeID()
-
-	// === DEBUG: 记录 transport 类型和 CorrelationID ===
-	logging.Infof("[RPC-Client] Call: transport=%T, nodeID=%d, msgSeq=%d, correlationID=%d:%d",
-		transport, nodeID, msgSeq, nodeID, msgSeq)
-
 	correlationID := fmt.Sprintf("%d:%d", nodeID, msgSeq)
 
-	// 创建请求条目
+	logging.Debugf("[RPC-Client] Call: transport=%T, nodeID=%d, msgSeq=%d, correlationID=%s",
+		transport, nodeID, msgSeq, correlationID)
+
 	reqEntry := c.reqTable.add(correlationID)
 	defer c.reqTable.remove(correlationID)
 
-	// === RPC CorrelationID 匹配支持：使用 Reply 传递预先生成的 msgSeq 和 nodeID ===
-	// 发送请求时使用预先生成的 msgSeq 和 nodeID，确保 CorrelationID 一致
 	if err := transport.Reply(ctx, addr, req, nodeID, msgSeq, ""); err != nil {
-		return nil, fmt.Errorf("send request failed: %w", err)
+		return nil, types.NewRPCNetworkError(addr, err)
 	}
 
-	// 等待响应（带超时）
-	timer := time.NewTimer(c.config.RequestTimeout)
+	return c.waitForResponse(ctx, reqEntry, c.config.RequestTimeout, addr)
+}
+
+// waitForResponse 等待响应（带超时和上下文取消）
+func (c *RPCClient) waitForResponse(ctx context.Context, reqEntry *requestEntry, timeout time.Duration, addr string) (types.Message, error) {
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	select {
@@ -228,10 +213,8 @@ func (c *RPCClient) Call(ctx context.Context, addr string, req types.Message) (t
 			return nil, respMsg.err
 		}
 		return respMsg.msg, nil
-
 	case <-timer.C:
-		return nil, types.NewRPCRequestTimeout(c.config.RequestTimeout, addr)
-
+		return nil, types.NewRPCRequestTimeout(timeout, addr)
 	case <-ctx.Done():
 		return nil, types.NewRPCContextCanceled(ctx.Err())
 	}
@@ -248,30 +231,11 @@ type RPCBatchRequest struct {
 }
 
 // CallBatch 批量 RPC 调用（P1-2 快速失败优化）
-//
-// 优化前：
-//   - 所有请求并行发送
-//   - 某个请求失败，其他请求仍等待超时
-//   - 总耗时 = max(各请求耗时)
-//
-// 优化后（EnableFastFail=true）：
-//   - 使用 errgroup 管理并发
-//   - 某个请求失败，立即取消其他请求
-//   - 总耗时 = min(首个失败请求耗时, max(各请求耗时))
-//
-// 参数：
-//   - ctx: 调用上下文
-//   - requests: 批量请求列表
-//
-// 返回：
-//   - []types.Message: 响应列表（与请求顺序对应）
-//   - error: 任何请求失败时返回错误
 func (c *RPCClient) CallBatch(ctx context.Context, requests []*RPCBatchRequest) ([]types.Message, error) {
 	if len(requests) == 0 {
-		return nil, fmt.Errorf("no requests")
+		return nil, types.NewRPCInvalidMessage("no requests")
 	}
 
-	// 根据配置选择实现
 	if c.config.EnableFastFail {
 		return c.callBatchFastFail(ctx, requests)
 	}
@@ -280,55 +244,48 @@ func (c *RPCClient) CallBatch(ctx context.Context, requests []*RPCBatchRequest) 
 
 // callBatchFastFail 快速失败实现（P1-2 优化）
 func (c *RPCClient) callBatchFastFail(ctx context.Context, requests []*RPCBatchRequest) ([]types.Message, error) {
-	// 创建带超时的上下文（快速失败超时）
 	ctx, cancel := context.WithTimeout(ctx, c.config.FastFailTimeout)
 	defer cancel()
 
-	// 使用 errgroup 管理并发（任何错误立即返回）
 	g, gctx := errgroup.WithContext(ctx)
-
-	// 结果存储（使用切片保证顺序）
 	responses := make([]types.Message, len(requests))
 	var mu sync.Mutex
 
-	// 并行发送所有请求
 	for i, req := range requests {
-		i, req := i, req // 捕获循环变量
-
+		i, req := i, req
 		g.Go(func() error {
-			// 检查上下文是否已取消
-			select {
-			case <-gctx.Done():
-				// 上下文已取消（其他请求失败），快速返回
-				return fmt.Errorf("request canceled due to fast-fail")
-			default:
-			}
-
-			// 发送请求
-			resp, err := c.Call(gctx, req.Addr, req.Message)
-			if err != nil {
-				// 请求失败，触发 fast-fail
-				logging.Warnf("[RPC-Client] CallBatch fast-fail: request %d to %s failed: %v",
-					i, req.Addr, err)
+			if err := c.checkContextCanceled(gctx); err != nil {
 				return err
 			}
 
-			// 存储响应
+			resp, err := c.Call(gctx, req.Addr, req.Message)
+			if err != nil {
+				logging.Warnf("[RPC-Client] CallBatch fast-fail: request %d to %s failed: %v", i, req.Addr, err)
+				return err
+			}
+
 			mu.Lock()
 			responses[i] = resp
 			mu.Unlock()
-
 			return nil
 		})
 	}
 
-	// 等待所有请求完成（或某个请求失败）
 	if err := g.Wait(); err != nil {
-		// 某个请求失败，快速返回
-		return nil, fmt.Errorf("CallBatch fast-failed: %w", err)
+		return nil, types.NewRPCInvalidMessage(fmt.Sprintf("CallBatch fast-failed: %v", err))
 	}
 
 	return responses, nil
+}
+
+// checkContextCanceled 检查上下文是否已取消
+func (c *RPCClient) checkContextCanceled(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return types.NewRPCContextCanceled(ctx.Err())
+	default:
+		return nil
+	}
 }
 
 // callBatchWaitAll 等待所有请求完成（传统实现）
@@ -338,10 +295,8 @@ func (c *RPCClient) callBatchWaitAll(ctx context.Context, requests []*RPCBatchRe
 	var firstErr error
 	var mu sync.Mutex
 
-	// 并行发送所有请求
 	for i, req := range requests {
 		i, req := i, req
-
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -362,7 +317,6 @@ func (c *RPCClient) callBatchWaitAll(ctx context.Context, requests []*RPCBatchRe
 		}()
 	}
 
-	// 等待所有请求完成
 	wg.Wait()
 
 	if firstErr != nil {
@@ -377,19 +331,15 @@ func (c *RPCClient) callBatchWaitAll(ctx context.Context, requests []*RPCBatchRe
 // ========================================
 
 // responseLoop 响应处理循环
-//
-// 从 Transport 接收响应，匹配请求表中的条目
 func (c *RPCClient) responseLoop() {
 	defer c.wg.Done()
 
-	// 获取所有需要监听的 channel
 	channels := c.getResponseChannels()
 	if len(channels) == 0 {
 		logging.Warnf("[RPC-Client] No transport channels available")
 		return
 	}
 
-	// 使用统一的响应处理循环
 	c.responseLoopUnified(channels)
 }
 
@@ -406,7 +356,22 @@ func (c *RPCClient) getResponseChannels() []<-chan MsgFrame {
 
 // responseLoopUnified 统一的响应处理循环（支持多个 channel）
 func (c *RPCClient) responseLoopUnified(channels []<-chan MsgFrame) {
-	// 使用 reflect.Select 动态处理多个 channel
+	cases := c.buildSelectCases(channels)
+
+	for {
+		chosen, value, ok := reflect.Select(cases)
+		if chosen == 0 || !ok {
+			logging.Debugf("[RPC-Client] Response loop stopped")
+			return
+		}
+
+		msgFrame := value.Interface().(MsgFrame)
+		c.handleResponse(msgFrame)
+	}
+}
+
+// buildSelectCases 构建 reflect.Select 用例
+func (c *RPCClient) buildSelectCases(channels []<-chan MsgFrame) []reflect.SelectCase {
 	cases := make([]reflect.SelectCase, len(channels)+1)
 	cases[0] = reflect.SelectCase{
 		Dir:  reflect.SelectRecv,
@@ -420,37 +385,19 @@ func (c *RPCClient) responseLoopUnified(channels []<-chan MsgFrame) {
 		}
 	}
 
-	for {
-		chosen, value, ok := reflect.Select(cases)
-		if chosen == 0 || !ok {
-			// 上下文取消或 channel 关闭
-			logging.Debugf("[RPC-Client] Response loop stopped")
-			return
-		}
-
-		// 处理响应消息
-		msgFrame := value.Interface().(MsgFrame)
-		c.handleResponse(msgFrame)
-	}
+	return cases
 }
 
 // handleResponse 处理响应消息
 func (c *RPCClient) handleResponse(msgFrame MsgFrame) {
-	// 从 MsgFrame 提取 CorrelationID（NodeID:MsgSeq）
 	correlationID := msgFrame.CorrelationID()
-
-	// 查找请求条目
 	reqEntry := c.reqTable.get(correlationID)
 	if reqEntry == nil {
 		logging.Warnf("[RPC-Client] No matching request for CorrelationID: %s", correlationID)
 		return
 	}
 
-	// MsgFrame 已经包含了解码后的消息
-	resp := msgFrame.Message
-
-	// 发送响应到等待的协程
-	reqEntry.respond(resp, nil)
+	reqEntry.respond(msgFrame.Message, nil)
 }
 
 // ========================================
@@ -486,7 +433,8 @@ type requestEntry struct {
 	deadline      time.Time
 	cancelOnce    sync.Once
 	cancelCh      chan struct{}
-	completedAt   time.Time // P1-1: 完成时间（用于延迟清理）
+	canceled      atomic.Bool // P1-1 修复：使用原子标志防止竞态
+	completedAt   time.Time   // P1-1: 完成时间（用于延迟清理）
 }
 
 // responseMessage 响应消息
@@ -496,16 +444,20 @@ type responseMessage struct {
 }
 
 func (e *requestEntry) respond(msg types.Message, err error) {
-	e.completedAt = time.Now() // P1-1: 记录完成时间
+	if e.canceled.Load() {
+		return
+	}
+
+	e.completedAt = time.Now()
 	select {
 	case e.responseCh <- responseMessage{msg, err}:
 	case <-e.cancelCh:
-		// 请求已取消
 	}
 }
 
 func (e *requestEntry) cancel() {
 	e.cancelOnce.Do(func() {
+		e.canceled.Store(true)
 		close(e.cancelCh)
 	})
 }
@@ -513,27 +465,23 @@ func (e *requestEntry) cancel() {
 // requestTable 请求表（匹配请求-响应）
 //
 // P1-1 优化：延迟清理机制
-//   - 请求响应后不立即删除条目
-//   - 保留一段时间后批量清理
-//   - 减少频繁创建/删除开销
 type requestTable struct {
 	mu              sync.RWMutex
 	table           map[string]*requestEntry
-	cleanupInterval time.Duration // P1-1: 清理间隔（默认：1分钟）
-	cleanupDelay    time.Duration // P1-1: 延迟清理时间（默认：5秒）
-	stopCh          chan struct{} // P1-1: 停止清理协程
-	closeOnce       sync.Once     // 防止重复关闭 stopCh
+	cleanupInterval time.Duration
+	cleanupDelay    time.Duration
+	stopCh          chan struct{}
+	closeOnce       sync.Once
 }
 
 func newRequestTable() *requestTable {
 	rt := &requestTable{
 		table:           make(map[string]*requestEntry),
-		cleanupInterval: 1 * time.Minute, // 默认每分钟清理一次
-		cleanupDelay:    5 * time.Second, // 保留 5 秒后清理
+		cleanupInterval: 1 * time.Minute,
+		cleanupDelay:    5 * time.Second,
 		stopCh:          make(chan struct{}),
 	}
 
-	// 启动清理协程（P1-1）
 	go rt.cleanupLoop()
 
 	return rt
@@ -568,19 +516,12 @@ func (rt *requestTable) remove(correlationID string) {
 	defer rt.mu.Unlock()
 
 	entry := rt.table[correlationID]
-	if entry != nil {
-		// P1-1: 仅标记完成时间，不立即删除
-		// 实际删除由 cleanupLoop 批量处理
-		if entry.completedAt.IsZero() {
-			entry.completedAt = time.Now()
-		}
+	if entry != nil && entry.completedAt.IsZero() {
+		entry.completedAt = time.Now()
 	}
 }
 
 // cleanupLoop 清理协程（P1-1 优化）
-//
-// 定期扫描请求表，删除已完成的条目
-// 减少频繁创建/删除带来的内存分配开销
 func (rt *requestTable) cleanupLoop() {
 	ticker := time.NewTicker(rt.cleanupInterval)
 	defer ticker.Stop()
@@ -604,9 +545,6 @@ func (rt *requestTable) cleanup() {
 	cleaned := 0
 
 	for correlationID, entry := range rt.table {
-		// P1-1: 删除条件：
-		//   1. 已完成（completedAt 非零）
-		//   2. 完成时间超过延迟清理时间
 		if !entry.completedAt.IsZero() && now.Sub(entry.completedAt) > rt.cleanupDelay {
 			delete(rt.table, correlationID)
 			cleaned++

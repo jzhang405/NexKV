@@ -130,10 +130,10 @@ func NewRPCServer(
 	config *RPCServerConfig,
 ) (*RPCServer, error) {
 	if tcpTransport == nil {
-		return nil, fmt.Errorf("tcpTransport is required")
+		return nil, types.NewRPCInvalidMessage("tcpTransport is required")
 	}
 	if handler == nil {
-		return nil, fmt.Errorf("handler is required")
+		return nil, types.NewRPCInvalidMessage("handler is required")
 	}
 
 	// 使用默认配置
@@ -157,7 +157,7 @@ func NewRPCServer(
 	})
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("failed to create dispatcher: %w", err)
+		return nil, types.NewRPCServerError("failed to create dispatcher", err)
 	}
 
 	s := &RPCServer{
@@ -185,7 +185,7 @@ func NewRPCServer(
 // 启动 dispatcher 并注册 Transport 连接
 func (s *RPCServer) Start() error {
 	if !s.running.CompareAndSwap(false, true) {
-		return fmt.Errorf("server already running")
+		return types.NewRPCInvalidMessage("server already running")
 	}
 
 	logging.Infof("[RPC-Server] Starting RPC server (TCP+UDP)")
@@ -193,7 +193,7 @@ func (s *RPCServer) Start() error {
 	// 启动 dispatcher
 	if err := s.dispatcher.Start(); err != nil {
 		s.running.Store(false)
-		return fmt.Errorf("failed to start dispatcher: %w", err)
+		return types.NewRPCServerError("failed to start dispatcher", err)
 	}
 
 	// 注册 TCP Transport 连接
@@ -218,7 +218,7 @@ func (s *RPCServer) Start() error {
 //  3. 关闭 dispatcher
 func (s *RPCServer) Stop() error {
 	if !s.running.CompareAndSwap(true, false) {
-		return fmt.Errorf("server not running")
+		return types.NewRPCInvalidMessage("server not running")
 	}
 
 	logging.Infof("[RPC-Server] Stopping RPC server")
@@ -352,7 +352,7 @@ func (a *rpcServerHandlerAdapter) sendResponse(reqFrame MsgFrame, resp types.Mes
 	}
 
 	if transport == nil {
-		return fmt.Errorf("no transport configured for protocol: %s", reqFrame.ProtocolType())
+		return types.NewRPCInvalidMessage(fmt.Sprintf("no transport configured for protocol: %s", reqFrame.ProtocolType()))
 	}
 
 	// === RPC 响应发送支持：复用现有连接 ===
@@ -364,7 +364,7 @@ func (a *rpcServerHandlerAdapter) sendResponse(reqFrame MsgFrame, resp types.Mes
 	}
 
 	if err := transport.Reply(ctx, sourceAddr, resp, nodeID, msgSeq, connID); err != nil {
-		return fmt.Errorf("failed to send response (CorrelationID: %s): %w", correlationID, err)
+		return types.NewRPCNetworkError(sourceAddr, fmt.Errorf("failed to send response (CorrelationID: %s): %w", correlationID, err))
 	}
 
 	logging.Infof("[RPC-Server] Response sent via Reply() (CorrelationID: %s)", correlationID)

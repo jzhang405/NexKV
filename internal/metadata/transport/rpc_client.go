@@ -106,7 +106,7 @@ func DefaultRPCClientConfig() *RPCClientConfig {
 //   - error: 配置无效时返回错误
 func NewRPCClient(tcpTransport Transport, udpTransport Transport, config *RPCClientConfig) (*RPCClient, error) {
 	if tcpTransport == nil {
-		return nil, fmt.Errorf("tcpTransport is required")
+		return nil, types.NewRPCInvalidMessage("tcpTransport is required")
 	}
 
 	// 使用默认配置
@@ -137,7 +137,7 @@ func NewRPCClient(tcpTransport Transport, udpTransport Transport, config *RPCCli
 // 启动响应处理协程，接收响应并匹配请求
 func (c *RPCClient) Start() error {
 	if !c.running.CompareAndSwap(false, true) {
-		return fmt.Errorf("client already running")
+		return types.NewRPCInvalidMessage("client already running")
 	}
 
 	logging.Infof("[RPC-Client] Starting RPC client (FastFail=%v)", c.config.EnableFastFail)
@@ -157,7 +157,7 @@ func (c *RPCClient) Start() error {
 //  3. 清理请求表
 func (c *RPCClient) Stop() error {
 	if !c.running.CompareAndSwap(true, false) {
-		return fmt.Errorf("client not running")
+		return types.NewRPCInvalidMessage("client not running")
 	}
 
 	logging.Infof("[RPC-Client] Stopping RPC client")
@@ -215,7 +215,7 @@ func (c *RPCClient) Call(ctx context.Context, addr string, req types.Message) (t
 	// === RPC CorrelationID 匹配支持：使用 Reply 传递预先生成的 msgSeq 和 nodeID ===
 	// 发送请求时使用预先生成的 msgSeq 和 nodeID，确保 CorrelationID 一致
 	if err := transport.Reply(ctx, addr, req, nodeID, msgSeq, ""); err != nil {
-		return nil, fmt.Errorf("send request failed: %w", err)
+		return nil, types.NewRPCNetworkError(addr, err)
 	}
 
 	// 等待响应（带超时）
@@ -268,7 +268,7 @@ type RPCBatchRequest struct {
 //   - error: 任何请求失败时返回错误
 func (c *RPCClient) CallBatch(ctx context.Context, requests []*RPCBatchRequest) ([]types.Message, error) {
 	if len(requests) == 0 {
-		return nil, fmt.Errorf("no requests")
+		return nil, types.NewRPCInvalidMessage("no requests")
 	}
 
 	// 根据配置选择实现
@@ -300,7 +300,7 @@ func (c *RPCClient) callBatchFastFail(ctx context.Context, requests []*RPCBatchR
 			select {
 			case <-gctx.Done():
 				// 上下文已取消（其他请求失败），快速返回
-				return fmt.Errorf("request canceled due to fast-fail")
+				return types.NewRPCContextCanceled(gctx.Err())
 			default:
 			}
 
@@ -325,7 +325,7 @@ func (c *RPCClient) callBatchFastFail(ctx context.Context, requests []*RPCBatchR
 	// 等待所有请求完成（或某个请求失败）
 	if err := g.Wait(); err != nil {
 		// 某个请求失败，快速返回
-		return nil, fmt.Errorf("CallBatch fast-failed: %w", err)
+		return nil, types.NewRPCInvalidMessage(fmt.Sprintf("CallBatch fast-failed: %v", err))
 	}
 
 	return responses, nil

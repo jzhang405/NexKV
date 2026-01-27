@@ -21,14 +21,27 @@ import (
 func setupRPCServerAndClient(t *testing.T) (*RPCServer, *RPCClient, *TCPTransport, *TCPTransport) {
 	t.Helper()
 
+	// Go 1.23 的调度器变化 + CI 环境资源有限，需要更长的 TCP 读取超时时间
+	// 从默认的 30 秒增加到 60 秒以适应 Go 1.23 的行为和 CI 环境
+	transportConfig := &TransportConfig{
+		ListenAddr:         "127.0.0.1:0",
+		MaxMessageSize:     1024 * 1024 * 100, // 100MB
+		ReadTimeout:        60 * time.Second,     // 从默认的 30 秒增加到 60 秒
+		WriteTimeout:       30 * time.Second,
+		KeepAliveInterval:  10 * time.Second,
+		KeepAliveTimeout:   30 * time.Second,
+		BufferSize:         4096,
+		ChannelSendTimeout: 5 * time.Second,
+	}
+
 	// 创建服务端 TCP Transport
-	serverTCP, err := NewTCPTransport("127.0.0.1:0")
+	serverTCP, err := NewTCPTransportWithConfig(transportConfig)
 	if err != nil {
 		t.Fatalf("Failed to create server TCP transport: %v", err)
 	}
 
 	// 创建客户端 TCP Transport
-	clientTCP, err := NewTCPTransport("127.0.0.1:0")
+	clientTCP, err := NewTCPTransportWithConfig(transportConfig)
 	if err != nil {
 		t.Fatalf("Failed to create client TCP transport: %v", err)
 	}

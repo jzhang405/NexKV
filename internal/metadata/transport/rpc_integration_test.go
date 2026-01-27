@@ -27,8 +27,8 @@ func setupRPCServerAndClient(t *testing.T) (*RPCServer, *RPCClient, *TCPTranspor
 	transportConfig := &TransportConfig{
 		ListenAddr:         "127.0.0.1:0",
 		MaxMessageSize:     1024 * 1024 * 100, // 100MB
-		ReadTimeout:        120 * time.Second,    // 从 60 秒增加到 120 秒以适应 CI race detector
-		WriteTimeout:       60 * time.Second,     // 同样增加写超时
+		ReadTimeout:        120 * time.Second, // 从 60 秒增加到 120 秒以适应 CI race detector
+		WriteTimeout:       60 * time.Second,  // 同样增加写超时
 		KeepAliveInterval:  10 * time.Second,
 		KeepAliveTimeout:   30 * time.Second,
 		BufferSize:         4096,

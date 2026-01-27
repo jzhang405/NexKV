@@ -660,6 +660,7 @@ func (d *Dispatcher) scaleUp(target int) {
 // 注意：
 //   - Worker 的退出是异步的，不会立即停止
 //   - 正在处理消息的 worker 会完成当前消息后再退出
+//   - P1-5 修复：从切片移除时减少计数，确保 wg 正确完成
 func (d *Dispatcher) scaleDown(target int) {
 	d.workersMu.Lock()
 	defer d.workersMu.Unlock()
@@ -676,15 +677,19 @@ func (d *Dispatcher) scaleDown(target int) {
 		target = d.config.MinWorkers
 	}
 
-	// 移除多余的 worker（从末尾开始）
-	for i := current - 1; i >= target; i-- {
-		// Worker 会自然退出（因为它们监听 ctx.Done()）
-		// 这里只是从列表中移除，不影响正在运行的 worker
-		d.workers = d.workers[:i]
-		d.currentWorkers.Add(^uint64(0)) // equivalent to -1
-	}
+	// === P1-5 修复：计算要移除的 worker 数量 ===
+	// Worker 会在 worker.run() 中调用 wg.Done()
+	// 这里从切片移除时，需要同时减少 currentWorkers 计数
+	toRemove := current - target
 
-	logging.Infof("[Dispatcher-ScaleDown] Scaled down: %d -> %d workers", current, len(d.workers))
+	// 移除多余的 worker（从末尾开始）
+	// 注意：我们只是从切片中移除引用
+	// Worker goroutine 会在下次循环时检查 ctx.Done() 并退出
+	// 它们退出时会调用 wg.Done()
+	d.workers = d.workers[:target]
+	d.currentWorkers.Add(^uint64(toRemove) + 1) // equivalent to -toRemove
+
+	logging.Infof("[Dispatcher-ScaleDown] Scaled down: %d -> %d workers (removed %d)", current, len(d.workers), toRemove)
 }
 
 // GetQueueUtilization 获取队列使用率

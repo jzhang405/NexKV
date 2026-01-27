@@ -486,7 +486,8 @@ type requestEntry struct {
 	deadline      time.Time
 	cancelOnce    sync.Once
 	cancelCh      chan struct{}
-	completedAt   time.Time // P1-1: 完成时间（用于延迟清理）
+	canceled      atomic.Bool // P1-1 修复：使用原子标志防止竞态
+	completedAt   time.Time   // P1-1: 完成时间（用于延迟清理）
 }
 
 // responseMessage 响应消息
@@ -496,16 +497,24 @@ type responseMessage struct {
 }
 
 func (e *requestEntry) respond(msg types.Message, err error) {
+	// P1-1 修复：检查取消状态，避免向已关闭的 channel 发送
+	if e.canceled.Load() {
+		// 请求已取消，不发送响应
+		return
+	}
+
 	e.completedAt = time.Now() // P1-1: 记录完成时间
 	select {
 	case e.responseCh <- responseMessage{msg, err}:
+		// 响应发送成功
 	case <-e.cancelCh:
-		// 请求已取消
+		// 请求在发送过程中被取消
 	}
 }
 
 func (e *requestEntry) cancel() {
 	e.cancelOnce.Do(func() {
+		e.canceled.Store(true) // P1-1 修复：先设置标志
 		close(e.cancelCh)
 	})
 }

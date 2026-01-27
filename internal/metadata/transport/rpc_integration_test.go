@@ -47,8 +47,18 @@ func setupRPCServerAndClient(t *testing.T) (*RPCServer, *RPCClient, *TCPTranspor
 		t.Fatalf("Failed to create RPC server: %v", err)
 	}
 
-	// 创建 RPC Client
-	client, err := NewRPCClient(clientTCP, nil, nil)
+	// 创建 RPC Client（配置更长的超时时间以适应 Go 1.23 的调度器变化）
+	// 注意：RequestTimeout 与 context timeout 是独立的两个超时机制
+	// Context timeout 控制整个调用的超时，RequestTimeout 控制等待响应的超时
+	clientConfig := &RPCClientConfig{
+		DialTimeout:     5 * time.Second,
+		RequestTimeout:  60 * time.Second, // 从默认的 30 秒增加到 60 秒
+		MaxRetries:      3,
+		RetryDelay:      100 * time.Millisecond,
+		EnableFastFail:  true,
+		FastFailTimeout: 5 * time.Second,
+	}
+	client, err := NewRPCClient(clientTCP, nil, clientConfig)
 	if err != nil {
 		t.Fatalf("Failed to create RPC client: %v", err)
 	}

@@ -340,10 +340,17 @@ docs/
 
 #### 开发实施
 
-1. 阅读 `03_development/01_编码规范文档.md` 了解编码规范
-2. 阅读 `02_design/modules/01_详细设计文档.md` 了解详细设计
-3. 参考 `03_development/02_运行时细节文档.md` 了解实现细节
-4. 遵循 `03_development/01_编码规范文档.md` 的 Code Review 流程
+1. **阅读 `workflow.md`** - 📋 **必读第一步**
+   - 完整的 12 步 PR 工作流程规范
+   - Pre/Post 文档模板和评审门禁
+   - 完整验证清单（lint + build + test + test-race + fmt + clean）
+   - 角色与职责定义
+   - ⚠️ **所有 PR 必须严格按照此流程执行**
+
+2. 阅读 `03_development/01_编码规范文档.md` 了解编码规范
+3. 阅读 `02_design/modules/01_详细设计文档.md` 了解详细设计
+4. 参考 `03_development/02_运行时细节文档.md` 了解实现细节
+5. 遵循 `03_development/01_编码规范文档.md` 的 Code Review 流程
 
 #### 测试验证
 
@@ -390,6 +397,30 @@ docs/
 | **03_** | 版本发布文档.md | RD | Release Document |
 | **01_** | 项目初始化报告.md | - | Project Init Report |
 | **02_** | 团队分工清单.md | - | Team Division |
+
+---
+
+### 特殊文档
+
+| 文件名 | 说明 | 适用场景 |
+|--------|------|----------|
+| **workflow.md** | 开发流程规范 | 📋 **所有开发活动必读** |
+| **CLAUDE.md** | 文档中心 | 项目文档导航 |
+
+**workflow.md 核心内容**：
+- ✅ **12 步 PR 工作流程**：从 Pre 文档到合并的完整流程
+- ✅ **Pre/Post 文档模板**：标准化的文档格式
+- ✅ **评审门禁机制**：Pre 和 Post 文档必须通过用户/架构师评审
+- ✅ **完整验证清单**：lint + build + test + test-race + fmt + clean
+- ✅ **CI 通过通知机制**：CI 通过后通知用户/架构师（"make ci passed"）
+- ✅ **角色与职责**：明确架构师、核心开发、代码审查工程师的职责
+
+**⚠️ 重要**：
+- 所有 PR 必须严格按照 `workflow.md` 执行
+- Pre 文档未通过评审前，禁止启动开发
+- Post 文档未通过评审前，禁止推送代码
+- 提交前所有验证必须通过（lint + build + test + test-race + fmt + clean）
+- CI 通过后必须通知用户/架构师，禁止自动合并
 
 ---
 

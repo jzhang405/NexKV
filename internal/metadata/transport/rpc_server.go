@@ -273,27 +273,22 @@ type rpcServerHandlerAdapter struct {
 
 // HandleMessage 实现 Dispatcher.Handler 接口
 func (a *rpcServerHandlerAdapter) HandleMessage(ctx context.Context, msg MsgFrame) error {
-	// 提取请求消息
 	req, err := a.unmarshalRequest(msg)
 	if err != nil {
 		logging.Errorf("[RPC-Server] Failed to unmarshal request: %v", err)
 		return err
 	}
 
-	// 检查是否为请求消息
 	if req.MsgRole() != types.MsgRoleRequest {
-		// 非请求消息，跳过处理
 		return nil
 	}
 
-	// 调用 RPC 处理器
 	resp, err := a.server.handler.HandleRequest(ctx, req)
 	if err != nil {
 		logging.Errorf("[RPC-Server] Failed to handle request: %v", err)
 		return err
 	}
 
-	// 发送响应（如果有）
 	if resp != nil && req.ExpectResponse() == types.ExpectResponse {
 		if err := a.sendResponse(msg, resp); err != nil {
 			logging.Errorf("[RPC-Server] Failed to send response: %v", err)
@@ -306,62 +301,22 @@ func (a *rpcServerHandlerAdapter) HandleMessage(ctx context.Context, msg MsgFram
 
 // unmarshalRequest 反序列化请求
 func (a *rpcServerHandlerAdapter) unmarshalRequest(msgFrame MsgFrame) (types.Message, error) {
-	// MsgFrame 已经包含了解码后的消息
 	return msgFrame.Message, nil
 }
 
 // sendResponse 发送响应到客户端
 //
 // P0-实现：使用 Transport.Reply() 方法自动处理 TCP/UDP 协议差异
-//
-// 参数:
-//   - reqFrame: 请求帧（包含 SourceAddr、ConnID 和 CorrelationID）
-//   - resp: 响应消息
-//
-// 返回:
-//   - error: 发送失败时返回错误
 func (a *rpcServerHandlerAdapter) sendResponse(reqFrame MsgFrame, resp types.Message) error {
-	// 提取请求信息
 	correlationID := reqFrame.CorrelationID()
 	sourceAddr := reqFrame.SourceAddr
 
-	// 从 CorrelationID "{NodeID}:{MsgSeq}" 解析出 nodeID 和 msgSeq
-	var nodeID, msgSeq uint64
-	_, _ = fmt.Sscanf(correlationID, "%d:%d", &nodeID, &msgSeq)
+	nodeID, msgSeq := a.parseCorrelationID(correlationID)
+	transport := a.selectTransportByProtocol(reqFrame.ProtocolType())
+	connID := a.getConnID(reqFrame)
 
-	// 设置超时上下文（5 秒）
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	// === 使用 Reply() 方法发送响应 ===
-	// Reply(nodeID, msgSeq) 方法会自动处理 TCP/UDP 协议差异
-
-	// 根据请求帧的协议类型选择正确的 transport
-	var transport Transport
-	switch reqFrame.ProtocolType() {
-	case types.ProtocolTCP:
-		transport = a.server.tcpTransport
-	case types.ProtocolUDP:
-		transport = a.server.udpTransport
-	default:
-		// 未知协议，优先使用 TCP，回退到 UDP
-		transport = a.server.tcpTransport
-		if transport == nil {
-			transport = a.server.udpTransport
-		}
-	}
-
-	if transport == nil {
-		return types.NewRPCInvalidMessage(fmt.Sprintf("no transport configured for protocol: %s", reqFrame.ProtocolType()))
-	}
-
-	// === RPC 响应发送支持：复用现有连接 ===
-	// 对于 TCP 协议，传递 ConnID 以复用接收请求时已建立的连接
-	// 这避免了为每个响应创建新的出站连接，提高性能
-	connID := ""
-	if reqFrame.ProtocolType() == types.ProtocolTCP {
-		connID = reqFrame.ConnID
-	}
 
 	if err := transport.Reply(ctx, sourceAddr, resp, nodeID, msgSeq, connID); err != nil {
 		return types.NewRPCNetworkError(sourceAddr, fmt.Errorf("failed to send response (CorrelationID: %s): %w", correlationID, err))
@@ -369,4 +324,36 @@ func (a *rpcServerHandlerAdapter) sendResponse(reqFrame MsgFrame, resp types.Mes
 
 	logging.Infof("[RPC-Server] Response sent via Reply() (CorrelationID: %s)", correlationID)
 	return nil
+}
+
+// parseCorrelationID 解析 CorrelationID
+func (a *rpcServerHandlerAdapter) parseCorrelationID(correlationID string) (nodeID, msgSeq uint64) {
+	_, _ = fmt.Sscanf(correlationID, "%d:%d", &nodeID, &msgSeq)
+	return nodeID, msgSeq
+}
+
+// selectTransportByProtocol 根据协议类型选择 transport
+func (a *rpcServerHandlerAdapter) selectTransportByProtocol(protocolType types.ProtocolType) Transport {
+	switch protocolType {
+	case types.ProtocolTCP:
+		return a.server.tcpTransport
+	case types.ProtocolUDP:
+		if a.server.udpTransport != nil {
+			return a.server.udpTransport
+		}
+		return a.server.tcpTransport
+	default:
+		if a.server.tcpTransport != nil {
+			return a.server.tcpTransport
+		}
+		return a.server.udpTransport
+	}
+}
+
+// getConnID 获取连接 ID（仅 TCP 协议）
+func (a *rpcServerHandlerAdapter) getConnID(reqFrame MsgFrame) string {
+	if reqFrame.ProtocolType() == types.ProtocolTCP {
+		return reqFrame.ConnID
+	}
+	return ""
 }

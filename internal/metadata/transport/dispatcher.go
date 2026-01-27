@@ -175,34 +175,51 @@ func (f HandlerFunc) HandleMessage(ctx context.Context, msg MsgFrame) error {
 // ========================================
 
 // NewDispatcher 创建新的分发器
-//
-// 参数：
-//   - config: 分发器配置（nil 时使用默认配置）
-//   - handler: 消息处理器（必需）
-//
-// 返回：
-//   - *Dispatcher: 分发器实例
-//   - error: 配置无效时返回错误
 func NewDispatcher(config *DispatcherConfig, handler Handler) (*Dispatcher, error) {
 	if handler == nil {
 		return nil, fmt.Errorf("handler is required")
 	}
 
-	// 使用默认配置
 	if config == nil {
 		config = DefaultDispatcherConfig()
 	}
 
-	// 验证基础配置
-	if config.WorkerCount <= 0 {
-		return nil, fmt.Errorf("invalid WorkerCount: %d", config.WorkerCount)
-	}
-	if config.QueueSize <= 0 {
-		return nil, fmt.Errorf("invalid QueueSize: %d", config.QueueSize)
+	if err := validateDispatcherConfig(config); err != nil {
+		return nil, err
 	}
 
-	// P0: 验证动态 Worker 扩缩容配置
-	// 如果未设置，使用默认值
+	ctx, cancel := context.WithCancel(context.Background())
+
+	d := &Dispatcher{
+		config:       config,
+		messageQueue: make(chan MsgFrame, config.QueueSize),
+		handler:      handler,
+		ctx:          ctx,
+		cancel:       cancel,
+		connections:  make(map[string]context.CancelFunc),
+		scaleDone:    make(chan struct{}),
+	}
+
+	d.currentWorkers.Store(uint64(config.WorkerCount))
+
+	d.workers = make([]*worker, config.WorkerCount)
+	for i := 0; i < config.WorkerCount; i++ {
+		d.workers[i] = newWorker(i, d)
+	}
+
+	return d, nil
+}
+
+// validateDispatcherConfig 验证分发器配置
+func validateDispatcherConfig(config *DispatcherConfig) error {
+	if config.WorkerCount <= 0 {
+		return fmt.Errorf("invalid WorkerCount: %d", config.WorkerCount)
+	}
+	if config.QueueSize <= 0 {
+		return fmt.Errorf("invalid QueueSize: %d", config.QueueSize)
+	}
+
+	// 设置默认值
 	if config.MinWorkers <= 0 {
 		config.MinWorkers = 4
 	}
@@ -218,40 +235,19 @@ func NewDispatcher(config *DispatcherConfig, handler Handler) (*Dispatcher, erro
 
 	// 验证配置合法性
 	if config.MinWorkers > config.MaxWorkers {
-		return nil, fmt.Errorf("MinWorkers (%d) cannot be greater than MaxWorkers (%d)",
+		return fmt.Errorf("MinWorkers (%d) cannot be greater than MaxWorkers (%d)",
 			config.MinWorkers, config.MaxWorkers)
 	}
 	if config.ScaleUpThreshold <= config.ScaleDownThreshold {
-		return nil, fmt.Errorf("ScaleUpThreshold (%.2f) must be greater than ScaleDownThreshold (%.2f)",
+		return fmt.Errorf("ScaleUpThreshold (%.2f) must be greater than ScaleDownThreshold (%.2f)",
 			config.ScaleUpThreshold, config.ScaleDownThreshold)
 	}
 	if config.WorkerCount < config.MinWorkers || config.WorkerCount > config.MaxWorkers {
-		return nil, fmt.Errorf("WorkerCount (%d) must be between MinWorkers (%d) and MaxWorkers (%d)",
+		return fmt.Errorf("WorkerCount (%d) must be between MinWorkers (%d) and MaxWorkers (%d)",
 			config.WorkerCount, config.MinWorkers, config.MaxWorkers)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	d := &Dispatcher{
-		config:       config,
-		messageQueue: make(chan MsgFrame, config.QueueSize),
-		handler:      handler,
-		ctx:          ctx,
-		cancel:       cancel,
-		connections:  make(map[string]context.CancelFunc),
-		scaleDone:    make(chan struct{}),
-	}
-
-	// 初始化当前 worker 数量
-	d.currentWorkers.Store(uint64(config.WorkerCount))
-
-	// 创建 worker
-	d.workers = make([]*worker, config.WorkerCount)
-	for i := 0; i < config.WorkerCount; i++ {
-		d.workers[i] = newWorker(i, d)
-	}
-
-	return d, nil
+	return nil
 }
 
 // ========================================
@@ -377,10 +373,7 @@ func (d *Dispatcher) RegisterConnection(addr string, msgChan <-chan MsgFrame) co
 // forwardMessages 转发消息到队列（fan-in）
 //
 // P0-3 修复：添加背压机制
-//   - EnableBackpressure=true: 队列满时阻塞发送者，保证消息不丢失
-//   - EnableBackpressure=false: 队列满时丢弃消息，调用回调
 func (d *Dispatcher) forwardMessages(ctx context.Context, addr string, msgChan <-chan MsgFrame) {
-	// 退出时清理连接映射，允许重新注册
 	defer func() {
 		d.mu.Lock()
 		delete(d.connections, addr)
@@ -400,39 +393,43 @@ func (d *Dispatcher) forwardMessages(ctx context.Context, addr string, msgChan <
 				return
 			}
 
-			// 根据配置选择发送策略
 			if d.config.EnableBackpressure {
-				// 背压模式：阻塞发送，保证消息不丢失
-				d.messageQueue <- msg
-				d.msgCount.Add(1)
+				d.sendMessageWithBackpressure(msg)
 			} else {
-				// 非背压模式：尝试发送，失败时调用回调
-				select {
-				case d.messageQueue <- msg:
-					d.msgCount.Add(1)
-				default:
-					// 队列满，处理丢弃
-					d.dropCount.Add(1)
-
-					// 调用回调函数（如果配置了）
-					if d.config.OnDroppedMessage != nil {
-						retry := d.config.OnDroppedMessage(addr, msg)
-						if retry {
-							// 重试：阻塞发送
-							d.messageQueue <- msg
-							d.msgCount.Add(1)
-						} else {
-							// 放弃
-							logging.Warnf("[Dispatcher] Message queue full, dropping message from %s", addr)
-						}
-					} else {
-						// 没有配置回调，静默丢弃
-						logging.Warnf("[Dispatcher] Message queue full, dropping message from %s (no callback configured)", addr)
-					}
-				}
+				d.sendMessageWithoutBackpressure(addr, msg)
 			}
 		}
 	}
+}
+
+// sendMessageWithBackpressure 背压模式发送消息
+func (d *Dispatcher) sendMessageWithBackpressure(msg MsgFrame) {
+	d.messageQueue <- msg
+	d.msgCount.Add(1)
+}
+
+// sendMessageWithoutBackpressure 非背压模式发送消息
+func (d *Dispatcher) sendMessageWithoutBackpressure(addr string, msg MsgFrame) {
+	select {
+	case d.messageQueue <- msg:
+		d.msgCount.Add(1)
+	default:
+		d.dropCount.Add(1)
+		d.handleDroppedMessage(addr, msg)
+	}
+}
+
+// handleDroppedMessage 处理丢弃的消息
+func (d *Dispatcher) handleDroppedMessage(addr string, msg MsgFrame) {
+	if d.config.OnDroppedMessage != nil {
+		if d.config.OnDroppedMessage(addr, msg) {
+			d.messageQueue <- msg
+			d.msgCount.Add(1)
+			return
+		}
+	}
+
+	logging.Warnf("[Dispatcher] Message queue full, dropping message from %s", addr)
 }
 
 // ========================================
@@ -545,21 +542,7 @@ func (d *Dispatcher) monitorQueue() {
 }
 
 // adjustWorkerCount 根据队列使用率调整 worker 数量
-//
-// 队列使用率计算：
-//
-//	使用率 = 当前队列长度 / 队列容量
-//
-// 扩容条件：
-//   - 使用率 > ScaleUpThreshold (70%)
-//   - 当前 worker 数量 < MaxWorkers
-//
-// 缩容条件：
-//   - 使用率 < ScaleDownThreshold (30%)
-//   - 当前 worker 数量 > MinWorkers
-//   - 稳定 5 秒后再缩容（避免频繁扩缩容）
 func (d *Dispatcher) adjustWorkerCount() {
-	// 计算队列使用率
 	queueLen := len(d.messageQueue)
 	queueCap := cap(d.messageQueue)
 	utilization := float64(queueLen) / float64(queueCap)
@@ -568,37 +551,55 @@ func (d *Dispatcher) adjustWorkerCount() {
 	minWorkers := uint64(d.config.MinWorkers)
 	maxWorkers := uint64(d.config.MaxWorkers)
 
-	// 扩容判断
-	if utilization > d.config.ScaleUpThreshold && current < maxWorkers {
-		// 计算扩容目标数量
-		target := current + (current / 2) // 增加 50%
-		if target > maxWorkers {
-			target = maxWorkers
-		}
-
+	if d.shouldScaleUp(utilization, current, maxWorkers) {
+		target := d.calculateScaleUpTarget(current, maxWorkers)
 		logging.Infof("[Dispatcher-ScaleMonitor] Queue utilization %.2f%% (%d/%d), scaling up: %d -> %d",
 			utilization*100, queueLen, queueCap, current, target)
-
 		d.scaleUp(int(target))
 		return
 	}
 
-	// 缩容判断（需要稳定 5 秒）
-	if utilization < d.config.ScaleDownThreshold && current > minWorkers {
-		// 简化实现：立即缩容（生产环境建议增加冷却期）
-		target := current - (current / 4) // 减少 25%
-		if target < minWorkers {
-			target = minWorkers
-		}
-
+	if d.shouldScaleDown(utilization, current, minWorkers) {
+		target := d.calculateScaleDownTarget(current, minWorkers)
 		logging.Infof("[Dispatcher-ScaleMonitor] Queue utilization %.2f%% (%d/%d), scaling down: %d -> %d",
 			utilization*100, queueLen, queueCap, current, target)
-
 		d.scaleDown(int(target))
 		return
 	}
 
-	// 记录正常状态
+	d.logStableState(utilization, queueLen, queueCap, current, minWorkers, maxWorkers)
+}
+
+// shouldScaleUp 判断是否需要扩容
+func (d *Dispatcher) shouldScaleUp(utilization float64, current, maxWorkers uint64) bool {
+	return utilization > d.config.ScaleUpThreshold && current < maxWorkers
+}
+
+// shouldScaleDown 判断是否需要缩容
+func (d *Dispatcher) shouldScaleDown(utilization float64, current, minWorkers uint64) bool {
+	return utilization < d.config.ScaleDownThreshold && current > minWorkers
+}
+
+// calculateScaleUpTarget 计算扩容目标数量
+func (d *Dispatcher) calculateScaleUpTarget(current, maxWorkers uint64) uint64 {
+	target := current + (current / 2)
+	if target > maxWorkers {
+		target = maxWorkers
+	}
+	return target
+}
+
+// calculateScaleDownTarget 计算缩容目标数量
+func (d *Dispatcher) calculateScaleDownTarget(current, minWorkers uint64) uint64 {
+	target := current - (current / 4)
+	if target < minWorkers {
+		target = minWorkers
+	}
+	return target
+}
+
+// logStableState 记录稳定状态
+func (d *Dispatcher) logStableState(utilization float64, queueLen, queueCap int, current, minWorkers, maxWorkers uint64) {
 	if current != minWorkers && current != maxWorkers {
 		logging.Debugf("[Dispatcher-ScaleMonitor] Queue utilization %.2f%% (%d/%d), workers: %d (stable)",
 			utilization*100, queueLen, queueCap, current)
@@ -606,37 +607,24 @@ func (d *Dispatcher) adjustWorkerCount() {
 }
 
 // scaleUp 扩容 worker 数量
-//
-// 参数：
-//   - target: 目标 worker 数量
-//
-// 流程：
-//  1. 检查目标数量是否合法
-//  2. 创建新的 worker 实例
-//  3. 启动新 worker
-//  4. 更新 workers 列表和 currentWorkers 计数
 func (d *Dispatcher) scaleUp(target int) {
 	d.workersMu.Lock()
 	defer d.workersMu.Unlock()
 
 	current := len(d.workers)
 
-	// 二次检查（防止并发扩缩容）
 	if target <= current {
 		return
 	}
 
-	// 限制最大值
 	if target > d.config.MaxWorkers {
 		target = d.config.MaxWorkers
 	}
 
-	// 创建新 worker
 	for i := current; i < target; i++ {
 		w := newWorker(i, d)
 		d.workers = append(d.workers, w)
 
-		// 启动 worker
 		d.wg.Add(1)
 		go w.run()
 
@@ -648,46 +636,24 @@ func (d *Dispatcher) scaleUp(target int) {
 
 // scaleDown 缩容 worker 数量
 //
-// 参数：
-//   - target: 目标 worker 数量
-//
-// 流程：
-//  1. 检查目标数量是否合法
-//  2. 移除多余的 worker（从末尾开始）
-//  3. Worker 会自然退出（因为它们监听 ctx.Done()）
-//  4. 更新 workers 列表和 currentWorkers 计数
-//
-// 注意：
-//   - Worker 的退出是异步的，不会立即停止
-//   - 正在处理消息的 worker 会完成当前消息后再退出
-//   - P1-5 修复：从切片移除时减少计数，确保 wg 正确完成
+// P1-5 修复：从切片移除时减少计数，确保 wg 正确完成
 func (d *Dispatcher) scaleDown(target int) {
 	d.workersMu.Lock()
 	defer d.workersMu.Unlock()
 
 	current := len(d.workers)
 
-	// 二次检查（防止并发扩缩容）
 	if target >= current {
 		return
 	}
 
-	// 限制最小值
 	if target < d.config.MinWorkers {
 		target = d.config.MinWorkers
 	}
 
-	// === P1-5 修复：计算要移除的 worker 数量 ===
-	// Worker 会在 worker.run() 中调用 wg.Done()
-	// 这里从切片移除时，需要同时减少 currentWorkers 计数
 	toRemove := current - target
-
-	// 移除多余的 worker（从末尾开始）
-	// 注意：我们只是从切片中移除引用
-	// Worker goroutine 会在下次循环时检查 ctx.Done() 并退出
-	// 它们退出时会调用 wg.Done()
 	d.workers = d.workers[:target]
-	d.currentWorkers.Add(^uint64(toRemove) + 1) // equivalent to -toRemove
+	d.currentWorkers.Add(^uint64(toRemove) + 1)
 
 	logging.Infof("[Dispatcher-ScaleDown] Scaled down: %d -> %d workers (removed %d)", current, len(d.workers), toRemove)
 }

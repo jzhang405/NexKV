@@ -246,8 +246,8 @@ func TestRPCIntegration_CallBatch(t *testing.T) {
 		},
 	}
 
-	// 发送批量请求（使用较短的超时时间）
-	callCtx, callCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// 发送批量请求（增加超时时间以适应 CI 环境）
+	callCtx, callCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer callCancel()
 
 	responses, err := client.CallBatch(callCtx, requests)

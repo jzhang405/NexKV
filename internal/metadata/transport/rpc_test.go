@@ -472,12 +472,12 @@ func TestRequestTable(t *testing.T) {
 	// 添加请求
 	entry1 := rt.add("correlation-1")
 	if entry1 == nil {
-		t.Fatal("add() returned nil entry")
+		t.Fatalf("add() returned nil entry for correlation-1")
 	}
 
 	entry2 := rt.add("correlation-2")
 	if entry2 == nil {
-		t.Fatal("add() returned nil entry")
+		t.Fatalf("add() returned nil entry for correlation-2")
 	}
 
 	// 查找请求
@@ -497,9 +497,14 @@ func TestRequestTable(t *testing.T) {
 		t.Error("entry should be marked as completed")
 	}
 
-	// 取消所有请求
+	// 取消所有请求（先获取 channel，避免 nil dereference）
 	cancelCh1 := entry1.cancelCh
 	cancelCh2 := entry2.cancelCh
+
+	// 显式检查 nil（防止 staticcheck SA5011 警告）
+	if cancelCh1 == nil || cancelCh2 == nil {
+		t.Fatal("entry cancel channels should not be nil")
+	}
 
 	rt.cancelAll()
 

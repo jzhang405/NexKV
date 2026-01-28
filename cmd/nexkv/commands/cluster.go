@@ -563,7 +563,7 @@ func printTreeNode(node *transport.NodeInfo, children map[string][]*transport.No
 			newPrefix += "├── "
 		}
 
-		printTreeNode(child, children, prefix+"    ", showDetails)
+		printTreeNode(child, children, newPrefix, showDetails)
 	}
 }
 

@@ -2,7 +2,6 @@
 package commands
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"time"
@@ -90,19 +89,6 @@ func initLogging() {
 func Execute() error {
 	app := NewApp()
 	return app.Run(os.Args)
-}
-
-// createRPCContext 创建 RPC 上下文
-func createRPCContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), Timeout)
-}
-
-// handleError 统一错误处理
-func handleError(err error) {
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
-		os.Exit(1)
-	}
 }
 
 // SetVersionInfo 设置版本信息（由 main 包调用）

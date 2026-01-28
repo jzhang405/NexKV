@@ -107,7 +107,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin(t *testing.T) {
 	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
-	defer coordinator.Stop()
+	defer func() { _ = coordinator.Stop() }()
 
 	handler := NewTreeCoordinatorRPCHandler(coordinator)
 	ctx := context.Background()
@@ -151,7 +151,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin_MaxChildren(t *testing
 	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
-	defer coordinator.Stop()
+	defer func() { _ = coordinator.Stop() }()
 
 	handler := NewTreeCoordinatorRPCHandler(coordinator)
 	ctx := context.Background()
@@ -193,7 +193,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeLeave(t *testing.T) {
 	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
-	defer coordinator.Stop()
+	defer func() { _ = coordinator.Stop() }()
 
 	// 先添加子节点
 	err = coordinator.AddChild("child1")
@@ -234,7 +234,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeLeave_NotFound(t *testing.T
 	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
-	defer coordinator.Stop()
+	defer func() { _ = coordinator.Stop() }()
 
 	handler := NewTreeCoordinatorRPCHandler(coordinator)
 	ctx := context.Background()
@@ -298,7 +298,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_ClusterStatus(t *testing.T) {
 	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
-	defer coordinator.Stop()
+	defer func() { _ = coordinator.Stop() }()
 
 	// 添加一些子节点（注意：AddChild 只添加 ID，不创建 Node 对象）
 	err = coordinator.AddChild("child1")
@@ -350,7 +350,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodePing(t *testing.T) {
 	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
-	defer coordinator.Stop()
+	defer func() { _ = coordinator.Stop() }()
 
 	handler := NewTreeCoordinatorRPCHandler(coordinator)
 	ctx := context.Background()
@@ -389,7 +389,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeSync(t *testing.T) {
 	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
-	defer coordinator.Stop()
+	defer func() { _ = coordinator.Stop() }()
 
 	// 添加子节点（注意：只在 localNode.ChildrenIDs 中添加）
 	err = coordinator.AddChild("child1")
@@ -439,7 +439,7 @@ func TestGetNodeRole(t *testing.T) {
 	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
-	defer coordinator.Stop()
+	defer func() { _ = coordinator.Stop() }()
 
 	// 注意：AddChild 只添加 ID 到 ChildrenIDs 列表，不在 allNodes 中创建 Node 对象
 	// 所以 GetNode("child1") 会返回"节点不存在"错误
@@ -460,7 +460,7 @@ func TestGetNodeRole_Root(t *testing.T) {
 	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
-	defer coordinator.Stop()
+	defer func() { _ = coordinator.Stop() }()
 
 	// 本地节点没有父节点，应该是 root
 	localNode := coordinator.localNode

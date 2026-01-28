@@ -46,9 +46,6 @@ type TreeCoordinator struct {
 	// 本地节点信息
 	localNode *Node
 
-	// 传输层（保留，用于底层网络通信）
-	transport transport.Transport
-
 	// RPC 组件（PR-032 架构）
 	RPCClient *transport.RPCClient // RPC 客户端（主动调用）
 	RPCServer *transport.RPCServer // RPC 服务端（接收请求）
@@ -210,15 +207,10 @@ type TreeCoordinatorStats struct {
 func NewTreeCoordinator(
 	localNodeID string,
 	localAddr string,
-	transport transport.Transport,
 	config *TreeCoordinatorConfig,
 ) (*TreeCoordinator, error) {
 	if config == nil {
 		config = DefaultTreeCoordinatorConfig()
-	}
-
-	if transport == nil {
-		return nil, types.NewClusterNilParameterError("transport")
 	}
 
 	if localNodeID == "" {
@@ -244,7 +236,6 @@ func NewTreeCoordinator(
 	coordinator := &TreeCoordinator{
 		config:    config,
 		localNode: localNode,
-		transport: transport,
 		allNodes:  make(map[string]*Node),
 		stopCh:    make(chan struct{}),
 		stats:     &TreeCoordinatorStats{},

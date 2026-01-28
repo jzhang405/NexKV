@@ -27,7 +27,7 @@ import (
 
 var (
 	// Version 版本号（构建时注入）
-	Version = "0.1.0"
+	Version = "0.0.1"
 	// GitCommit Git 提交哈希（构建时注入）
 	GitCommit = "unknown"
 	// BuildTime 构建时间（构建时注入）
@@ -335,7 +335,6 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	coordinator, err := cluster.NewTreeCoordinator(
 		daemonNodeID,
 		cfg.Network.ListenAddr,
-		tcpTransport, // 使用 TCP 传输层
 		coordinatorConfig,
 	)
 	if err != nil {

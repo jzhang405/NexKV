@@ -6,6 +6,7 @@
 package identity
 
 import (
+	"fmt"
 	"hash/fnv"
 	"net"
 	"os"
@@ -17,12 +18,30 @@ import (
 // GenerateNodeIDFromPorts 根据主机和端口生成节点 ID
 //
 // 参数:
-//   - tcpPort: TCP 端口（0 表示未启用）
-//   - udpPort: UDP 端口（0 表示未启用）
+//   - tcpPort: TCP 端口（0 表示未启用，范围 1-65535）
+//   - udpPort: UDP 端口（0 表示未启用，范围 1-65535）
 //
 // 返回:
 //   - uint64: 节点 ID（FNV-1a 64-bit 哈希）
+//   - error: 端口验证失败时返回错误
+//
+// 错误条件:
+//   - 两个端口都为 0
+//   - 端口超出有效范围 (1-65535)
 func GenerateNodeIDFromPorts(tcpPort, udpPort int) (uint64, error) {
+	// 验证端口参数
+	if tcpPort == 0 && udpPort == 0 {
+		return 0, fmt.Errorf("至少需要启用一个端口（TCP 或 UDP）")
+	}
+
+	// 验证端口范围（有效端口：1-65535）
+	if tcpPort < 0 || tcpPort > 65535 {
+		return 0, fmt.Errorf("TCP 端口无效: %d（有效范围: 1-65535）", tcpPort)
+	}
+	if udpPort < 0 || udpPort > 65535 {
+		return 0, fmt.Errorf("UDP 端口无效: %d（有效范围: 1-65535）", udpPort)
+	}
+
 	host, err := os.Hostname()
 	if err != nil {
 		return 0, err

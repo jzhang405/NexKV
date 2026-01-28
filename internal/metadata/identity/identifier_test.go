@@ -5,6 +5,9 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestGenerateNodeIDFromPorts_Consistency 测试 NodeID 生成的一致性
@@ -181,5 +184,104 @@ func BenchmarkMsgSeqGeneratorNext(b *testing.B) {
 	gen := NewMsgSeqGenerator()
 	for i := 0; i < b.N; i++ {
 		gen.Next()
+	}
+}
+
+// TestGenerateNodeIDFromPorts_PortValidation 测试端口验证
+func TestGenerateNodeIDFromPorts_PortValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		tcpPort     int
+		udpPort     int
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:        "两个端口都为 0",
+			tcpPort:     0,
+			udpPort:     0,
+			wantErr:     true,
+			errContains: "至少需要启用一个端口",
+		},
+		{
+			name:        "TCP 端口为负数",
+			tcpPort:     -1,
+			udpPort:     9212,
+			wantErr:     true,
+			errContains: "TCP 端口无效",
+		},
+		{
+			name:        "UDP 端口为负数",
+			tcpPort:     9211,
+			udpPort:     -1,
+			wantErr:     true,
+			errContains: "UDP 端口无效",
+		},
+		{
+			name:        "TCP 端口超出范围",
+			tcpPort:     65536,
+			udpPort:     9212,
+			wantErr:     true,
+			errContains: "TCP 端口无效",
+		},
+		{
+			name:        "UDP 端口超出范围",
+			tcpPort:     9211,
+			udpPort:     65536,
+			wantErr:     true,
+			errContains: "UDP 端口无效",
+		},
+		{
+			name:        "两个端口都超出范围",
+			tcpPort:     65536,
+			udpPort:     65536,
+			wantErr:     true,
+			errContains: "TCP 端口无效",
+		},
+		{
+			name:    "仅 TCP 端口有效",
+			tcpPort: 9211,
+			udpPort: 0,
+			wantErr: false,
+		},
+		{
+			name:    "仅 UDP 端口有效",
+			tcpPort: 0,
+			udpPort: 9212,
+			wantErr: false,
+		},
+		{
+			name:    "TCP 和 UDP 都有效",
+			tcpPort: 9211,
+			udpPort: 9212,
+			wantErr: false,
+		},
+		{
+			name:    "端口边界值（最小有效端口）",
+			tcpPort: 1,
+			udpPort: 0,
+			wantErr: false,
+		},
+		{
+			name:    "端口边界值（最大有效端口）",
+			tcpPort: 0,
+			udpPort: 65535,
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id, err := GenerateNodeIDFromPorts(tt.tcpPort, tt.udpPort)
+
+			if tt.wantErr {
+				require.Error(t, err, "GenerateNodeIDFromPorts() 应该返回错误")
+				assert.Contains(t, err.Error(), tt.errContains, "错误信息应包含指定内容")
+				assert.Equal(t, uint64(0), id, "错误时应返回 0")
+			} else {
+				require.NoError(t, err, "GenerateNodeIDFromPorts() 不应该返回错误")
+				assert.NotZero(t, id, "ID 不应为 0")
+			}
+		})
 	}
 }

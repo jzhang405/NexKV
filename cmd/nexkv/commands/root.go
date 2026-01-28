@@ -18,6 +18,11 @@ var (
 	Timeout time.Duration
 	// Verbose 详细输出
 	Verbose bool
+
+	// 版本信息（由 main 包设置）
+	appVersion   string
+	appGitCommit string
+	appBuildTime string
 )
 
 // NewApp 创建 CLI 应用
@@ -100,6 +105,13 @@ func handleError(err error) {
 	}
 }
 
+// SetVersionInfo 设置版本信息（由 main 包调用）
+func SetVersionInfo(version, gitCommit, buildTime string) {
+	appVersion = version
+	appGitCommit = gitCommit
+	appBuildTime = buildTime
+}
+
 // newVersionCommand 创建版本命令
 func newVersionCommand() *cli.Command {
 	return &cli.Command{
@@ -108,9 +120,9 @@ func newVersionCommand() *cli.Command {
 		Description: `显示 NexKV CLI 和 Daemon 的版本信息`,
 		Action: func(c *cli.Context) error {
 			fmt.Println("NexKV CLI")
-			fmt.Println("Version: 0.1.0")
-			fmt.Println("Git Commit: unknown")
-			fmt.Println("Build Time: unknown")
+			fmt.Printf("Version: %s\n", appVersion)
+			fmt.Printf("Git Commit: %s\n", appGitCommit)
+			fmt.Printf("Build Time: %s\n", appBuildTime)
 			return nil
 		},
 	}

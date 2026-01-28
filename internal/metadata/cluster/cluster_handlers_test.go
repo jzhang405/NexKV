@@ -26,11 +26,9 @@ func TestNewTreeCoordinatorRPCHandler(t *testing.T) {
 
 // TestNewTreeCoordinatorRPCHandler_WithCoordinator 测试带 Coordinator 创建
 func TestNewTreeCoordinatorRPCHandler_WithCoordinator(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 
 	handler := NewTreeCoordinatorRPCHandler(coordinator)
@@ -41,11 +39,9 @@ func TestNewTreeCoordinatorRPCHandler_WithCoordinator(t *testing.T) {
 
 // TestTreeCoordinatorRPCHandler_SetCoordinator 测试设置 Coordinator
 func TestTreeCoordinatorRPCHandler_SetCoordinator(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 
 	handler := NewTreeCoordinatorRPCHandler(nil)
@@ -80,11 +76,9 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NilCoordinator(t *testing.T) {
 
 // TestTreeCoordinatorRPCHandler_HandleRequest_UnsupportedMessageType 测试不支持的消息类型
 func TestTreeCoordinatorRPCHandler_HandleRequest_UnsupportedMessageType(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 
 	handler := NewTreeCoordinatorRPCHandler(coordinator)
@@ -108,11 +102,9 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_UnsupportedMessageType(t *testi
 
 // TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin 测试处理节点加入请求
 func TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer coordinator.Stop()
@@ -148,8 +140,6 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin(t *testing.T) {
 
 // TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin_MaxChildren 测试超过最大子节点数
 func TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin_MaxChildren(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := &TreeCoordinatorConfig{
 		MaxChildren:       1, // 限制为 1 个子节点
@@ -158,7 +148,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin_MaxChildren(t *testing
 		HeartbeatTimeout:  15 * time.Second,
 	}
 
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer coordinator.Stop()
@@ -198,11 +188,9 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin_MaxChildren(t *testing
 
 // TestTreeCoordinatorRPCHandler_HandleRequest_NodeLeave 测试处理节点离开请求
 func TestTreeCoordinatorRPCHandler_HandleRequest_NodeLeave(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer coordinator.Stop()
@@ -241,11 +229,9 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeLeave(t *testing.T) {
 
 // TestTreeCoordinatorRPCHandler_HandleRequest_NodeLeave_NotFound 测试移除不存在的节点
 func TestTreeCoordinatorRPCHandler_HandleRequest_NodeLeave_NotFound(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer coordinator.Stop()
@@ -272,11 +258,9 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeLeave_NotFound(t *testing.T
 
 // TestTreeCoordinatorRPCHandler_HandleRequest_NodeReparent 测试处理重新建立父子关系请求
 func TestTreeCoordinatorRPCHandler_HandleRequest_NodeReparent(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 
 	handler := NewTreeCoordinatorRPCHandler(coordinator)
@@ -309,11 +293,9 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeReparent(t *testing.T) {
 
 // TestTreeCoordinatorRPCHandler_HandleRequest_ClusterStatus 测试处理集群状态查询请求
 func TestTreeCoordinatorRPCHandler_HandleRequest_ClusterStatus(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer coordinator.Stop()
@@ -363,11 +345,9 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_ClusterStatus(t *testing.T) {
 
 // TestTreeCoordinatorRPCHandler_HandleRequest_NodePing 测试处理心跳请求
 func TestTreeCoordinatorRPCHandler_HandleRequest_NodePing(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer coordinator.Stop()
@@ -404,11 +384,9 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodePing(t *testing.T) {
 
 // TestTreeCoordinatorRPCHandler_HandleRequest_NodeSync 测试处理节点同步请求
 func TestTreeCoordinatorRPCHandler_HandleRequest_NodeSync(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer coordinator.Stop()
@@ -456,11 +434,9 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeSync(t *testing.T) {
 
 // TestGetNodeRole 测试节点角色判断
 func TestGetNodeRole(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer coordinator.Stop()
@@ -479,11 +455,9 @@ func TestGetNodeRole(t *testing.T) {
 
 // TestGetNodeRole_Root 测试根节点角色
 func TestGetNodeRole_Root(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer coordinator.Stop()

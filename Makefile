@@ -15,7 +15,15 @@ GOFLAGS=-v
 VERSION ?= 0.0.1
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%S 2>/dev/null || echo "unknown")
-LDFLAGS := -s -w \
+
+# nexkv 版本信息（变量在 main 包中，通过 SetVersionInfo 传递给 commands 包）
+NEXKV_LDFLAGS := -s -w \
+	-X 'main.Version=$(VERSION)' \
+	-X 'main.GitCommit=$(GIT_COMMIT)' \
+	-X 'main.BuildTime=$(BUILD_TIME)'
+
+# nexkvd 版本信息（变量在 main 包中）
+NEXKVD_LDFLAGS := -s -w \
 	-X 'main.Version=$(VERSION)' \
 	-X 'main.GitCommit=$(GIT_COMMIT)' \
 	-X 'main.BuildTime=$(BUILD_TIME)'
@@ -27,8 +35,8 @@ all: build
 build:
 	@echo "编译 $(BINARY_NAME) 和 $(DAEMON_NAME)..."
 	@mkdir -p bin
-	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) $(NEXKV_PATH)/main.go
-	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(DAEMON_NAME) $(NEXKVD_PATH)/main.go
+	$(GO) build $(GOFLAGS) -ldflags "$(NEXKV_LDFLAGS)" -o bin/$(BINARY_NAME) $(NEXKV_PATH)/main.go
+	$(GO) build $(GOFLAGS) -ldflags "$(NEXKVD_LDFLAGS)" -o bin/$(DAEMON_NAME) $(NEXKVD_PATH)/main.go
 
 ## test: 运行所有测试
 test:

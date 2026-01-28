@@ -5,7 +5,9 @@
 
 # 变量定义
 BINARY_NAME=nexkv
-MAIN_PATH=./cmd/nexkv
+DAEMON_NAME=nexkvd
+NEXKV_PATH=./cmd/nexkv
+NEXKVD_PATH=./cmd/nexkvd
 GO=go
 GOFLAGS=-v
 LDFLAGS=-s -w
@@ -13,10 +15,12 @@ LDFLAGS=-s -w
 # 默认目标
 all: build
 
-## build: 编译项目
+## build: 编译项目（nexkv 和 nexkvd）
 build:
-	@echo "编译 $(BINARY_NAME)..."
-	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) $(MAIN_PATH)/main.go
+	@echo "编译 $(BINARY_NAME) 和 $(DAEMON_NAME)..."
+	@mkdir -p bin
+	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) $(NEXKV_PATH)/main.go
+	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(DAEMON_NAME) $(NEXKVD_PATH)/main.go
 
 ## test: 运行所有测试
 test:
@@ -80,10 +84,15 @@ deps:
 	$(GO) mod download
 	$(GO) mod tidy
 
-## run: 运行程序
+## run: 运行 nexkv 客户端
 run: build
 	@echo "运行 $(BINARY_NAME)..."
 	./bin/$(BINARY_NAME) -config configs/config.yaml
+
+## run-daemon: 运行 nexkvd 守护进程
+run-daemon: build
+	@echo "运行 $(DAEMON_NAME)..."
+	./bin/$(DAEMON_NAME) -config configs/config.yaml
 
 ## docker-build: 构建 Docker 镜像
 docker-build:
@@ -98,7 +107,7 @@ docker-run:
 ## help: 显示帮助信息
 help:
 	@echo "可用命令:"
-	@echo "  make build         - 编译项目"
+	@echo "  make build         - 编译项目（nexkv 和 nexkvd）"
 	@echo "  make test          - 运行所有测试"
 	@echo "  make test-race     - 运行带竞态检测的测试"
 	@echo "  make test-verbose  - 运行详细测试"
@@ -109,7 +118,8 @@ help:
 	@echo "  make vet           - 代码静态检查"
 	@echo "  make lint          - 代码质量检查"
 	@echo "  make deps          - 下载依赖"
-	@echo "  make run           - 运行程序"
+	@echo "  make run           - 运行 nexkv 客户端"
+	@echo "  make run-daemon    - 运行 nexkvd 守护进程"
 	@echo "  make docker-build  - 构建 Docker 镜像"
 	@echo "  make docker-run    - 运行 Docker 容器"
 	@echo "  make help          - 显示此帮助信息"

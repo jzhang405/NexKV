@@ -436,6 +436,24 @@ type ClockSyncReplyMessage struct {
 	Drift     int64  `json:"drift" msgpack:"drift"`         // 时间漂移（毫秒）
 }
 
+// NodeReparentMessage 重新建立父子关系消息
+type NodeReparentMessage struct {
+	BaseMessage
+	ChildID     string `json:"child_id" msgpack:"child_id"`           // 子节点ID
+	NewParentID string `json:"new_parent_id" msgpack:"new_parent_id"` // 新父节点ID
+	OldParentID string `json:"old_parent_id" msgpack:"old_parent_id"` // 旧父节点ID（用于日志）
+	Reason      string `json:"reason" msgpack:"reason"`               // 重挂载原因
+}
+
+// NodeReparentReplyMessage 重新建立父子关系响应消息
+type NodeReparentReplyMessage struct {
+	BaseMessage
+	ChildID     string `json:"child_id" msgpack:"child_id"`                 // 子节点ID
+	NewParentID string `json:"new_parent_id" msgpack:"new_parent_id"`       // 新父节点ID
+	Success     bool   `json:"success" msgpack:"success"`                   // 是否成功
+	Reason      string `json:"reason,omitempty" msgpack:"reason,omitempty"` // 失败原因
+}
+
 // ========================================
 // 集群管理消息（使用 BaseMessage 消除重复代码）
 // ========================================
@@ -487,98 +505,115 @@ func createMessageByType(msgType MessageType) (Message, error) {
 //
 // 注册所有消息类型到注册表，替代 switch-case 工厂函数
 func init() {
-	// 元数据操作消息
-	registerMessage(types.MessageTypeGet, func() Message { return &GetMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGet}} })
-	registerMessage(types.MessageTypePut, func() Message { return &PutMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypePut}} })
-	registerMessage(types.MessageTypeDelete, func() Message { return &DeleteMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeDelete}} })
-	registerMessage(types.MessageTypeGetReply, func() Message {
-		return &GetReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGetReply}}
-	})
-	registerMessage(types.MessageTypePutReply, func() Message {
-		return &PutReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypePutReply}}
-	})
-	registerMessage(types.MessageTypeDeleteReply, func() Message {
-		return &DeleteReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeDeleteReply}}
-	})
+	// 定义消息类型与构造函数的映射
+	messageTypes := []struct {
+		msgType     types.MessageType
+		constructor func() Message
+	}{
+		// 元数据操作消息
+		{types.MessageTypeGet, func() Message { return &GetMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGet}} }},
+		{types.MessageTypePut, func() Message { return &PutMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypePut}} }},
+		{types.MessageTypeDelete, func() Message { return &DeleteMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeDelete}} }},
+		{types.MessageTypeGetReply, func() Message {
+			return &GetReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGetReply}}
+		}},
+		{types.MessageTypePutReply, func() Message {
+			return &PutReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypePutReply}}
+		}},
+		{types.MessageTypeDeleteReply, func() Message {
+			return &DeleteReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeDeleteReply}}
+		}},
 
-	// Gossip 协议消息
-	registerMessage(types.MessageTypeGossipSync, func() Message {
-		return &GossipSyncMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipSync}}
-	})
-	registerMessage(types.MessageTypeGossipSyncReply, func() Message {
-		return &GossipSyncReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipSyncReply}}
-	})
-	registerMessage(types.MessageTypeGossipDigest, func() Message {
-		return &GossipDigestMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipDigest}}
-	})
-	registerMessage(types.MessageTypeGossipDigestReply, func() Message {
-		return &GossipDigestReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipDigestReply}}
-	})
+		// Gossip 协议消息
+		{types.MessageTypeGossipSync, func() Message {
+			return &GossipSyncMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipSync}}
+		}},
+		{types.MessageTypeGossipSyncReply, func() Message {
+			return &GossipSyncReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipSyncReply}}
+		}},
+		{types.MessageTypeGossipDigest, func() Message {
+			return &GossipDigestMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipDigest}}
+		}},
+		{types.MessageTypeGossipDigestReply, func() Message {
+			return &GossipDigestReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeGossipDigestReply}}
+		}},
 
-	// Quorum 协议消息
-	registerMessage(types.MessageTypeQuorumPropose, func() Message {
-		return &QuorumProposeMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeQuorumPropose}}
-	})
-	registerMessage(types.MessageTypeQuorumVote, func() Message {
-		return &QuorumVoteMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeQuorumVote}}
-	})
-	registerMessage(types.MessageTypeQuorumDecide, func() Message {
-		return &QuorumDecideMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeQuorumDecide}}
-	})
+		// Quorum 协议消息
+		{types.MessageTypeQuorumPropose, func() Message {
+			return &QuorumProposeMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeQuorumPropose}}
+		}},
+		{types.MessageTypeQuorumVote, func() Message {
+			return &QuorumVoteMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeQuorumVote}}
+		}},
+		{types.MessageTypeQuorumDecide, func() Message {
+			return &QuorumDecideMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeQuorumDecide}}
+		}},
 
-	// 2PC 协议消息
-	registerMessage(types.MessageType2PCPrepare, func() Message {
-		return &TwoPCPrepareMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCPrepare}}
-	})
-	registerMessage(types.MessageType2PCPrepareReply, func() Message {
-		return &TwoPCPrepareReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCPrepareReply}}
-	})
-	registerMessage(types.MessageType2PCCommit, func() Message {
-		return &TwoPCCommitMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCCommit}}
-	})
-	registerMessage(types.MessageType2PCRollback, func() Message {
-		return &TwoPCRollbackMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCRollback}}
-	})
-	registerMessage(types.MessageType2PCCommitReply, func() Message {
-		return &TwoPCCommitReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCCommitReply}}
-	})
-	registerMessage(types.MessageType2PCRollbackReply, func() Message {
-		return &TwoPCRollbackReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCRollbackReply}}
-	})
+		// 2PC 协议消息
+		{types.MessageType2PCPrepare, func() Message {
+			return &TwoPCPrepareMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCPrepare}}
+		}},
+		{types.MessageType2PCPrepareReply, func() Message {
+			return &TwoPCPrepareReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCPrepareReply}}
+		}},
+		{types.MessageType2PCCommit, func() Message {
+			return &TwoPCCommitMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCCommit}}
+		}},
+		{types.MessageType2PCRollback, func() Message {
+			return &TwoPCRollbackMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCRollback}}
+		}},
+		{types.MessageType2PCCommitReply, func() Message {
+			return &TwoPCCommitReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCCommitReply}}
+		}},
+		{types.MessageType2PCRollbackReply, func() Message {
+			return &TwoPCRollbackReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageType2PCRollbackReply}}
+		}},
 
-	// 节点管理消息
-	registerMessage(types.MessageTypeNodePing, func() Message {
-		return &NodePingMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing}}
-	})
-	registerMessage(types.MessageTypeNodePong, func() Message {
-		return &NodePongMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong}}
-	})
-	registerMessage(types.MessageTypeNodeJoin, func() Message {
-		return &NodeJoinMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeJoin}}
-	})
-	registerMessage(types.MessageTypeNodeLeave, func() Message {
-		return &NodeLeaveMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeLeave}}
-	})
-	registerMessage(types.MessageTypeNodeSync, func() Message {
-		return &NodeSyncMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeSync}}
-	})
-	registerMessage(types.MessageTypeClockSync, func() Message {
-		return &ClockSyncMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClockSync}}
-	})
-	registerMessage(types.MessageTypeClockSyncReply, func() Message {
-		return &ClockSyncReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClockSyncReply}}
-	})
+		// 节点管理消息
+		{types.MessageTypeNodePing, func() Message {
+			return &NodePingMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePing}}
+		}},
+		{types.MessageTypeNodePong, func() Message {
+			return &NodePongMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodePong}}
+		}},
+		{types.MessageTypeNodeJoin, func() Message {
+			return &NodeJoinMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeJoin}}
+		}},
+		{types.MessageTypeNodeLeave, func() Message {
+			return &NodeLeaveMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeLeave}}
+		}},
+		{types.MessageTypeNodeSync, func() Message {
+			return &NodeSyncMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeSync}}
+		}},
+		{types.MessageTypeClockSync, func() Message {
+			return &ClockSyncMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClockSync}}
+		}},
+		{types.MessageTypeClockSyncReply, func() Message {
+			return &ClockSyncReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClockSyncReply}}
+		}},
+		{types.MessageTypeNodeReparent, func() Message {
+			return &NodeReparentMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeReparent}}
+		}},
+		{types.MessageTypeNodeReparentReply, func() Message {
+			return &NodeReparentReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeNodeReparentReply}}
+		}},
 
-	// 集群管理消息
-	registerMessage(types.MessageTypeClusterStatus, func() Message {
-		return &ClusterStatusMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClusterStatus}}
-	})
-	registerMessage(types.MessageTypeClusterStatusReply, func() Message {
-		return &ClusterStatusReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClusterStatusReply}}
-	})
-	registerMessage(types.MessageTypeLeaderElection, func() Message {
-		return &LeaderElectionMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeLeaderElection}}
-	})
+		// 集群管理消息
+		{types.MessageTypeClusterStatus, func() Message {
+			return &ClusterStatusMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClusterStatus}}
+		}},
+		{types.MessageTypeClusterStatusReply, func() Message {
+			return &ClusterStatusReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClusterStatusReply}}
+		}},
+		{types.MessageTypeLeaderElection, func() Message {
+			return &LeaderElectionMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeLeaderElection}}
+		}},
+	}
+
+	// 批量注册消息类型
+	for _, mt := range messageTypes {
+		registerMessage(mt.msgType, mt.constructor)
+	}
 }
 
 // ========================================

@@ -284,7 +284,6 @@ func TestDefaultTreeCoordinatorConfig(t *testing.T) {
 // 验证一个真实节点只能有一个 ParentID
 func TestTreeCoordinator_SingleParentConstraint(t *testing.T) {
 
-
 	config := DefaultTreeCoordinatorConfig()
 
 	// 创建第一个协调器 node1

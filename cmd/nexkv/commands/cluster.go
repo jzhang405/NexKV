@@ -421,20 +421,20 @@ func createRPCClient() (*transport.RPCClient, func(), error) {
 
 	rpcClient, err := transport.NewRPCClient(tcpTransport, nil, config)
 	if err != nil {
-		tcpTransport.Stop()
+		_ = tcpTransport.Stop()
 		return nil, nil, fmt.Errorf("创建 RPC 客户端失败: %w", err)
 	}
 
 	// 启动 RPC 客户端
 	if err := rpcClient.Start(); err != nil {
-		tcpTransport.Stop()
+		_ = tcpTransport.Stop()
 		return nil, nil, fmt.Errorf("启动 RPC 客户端失败: %w", err)
 	}
 
 	// 清理函数
 	cleanup := func() {
-		rpcClient.Stop()
-		tcpTransport.Stop()
+		_ = rpcClient.Stop()
+		_ = tcpTransport.Stop()
 	}
 
 	return rpcClient, cleanup, nil

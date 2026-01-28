@@ -231,21 +231,21 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	// 创建 UDP 传输层（用于尽力型消息）
 	udpTransport, err := transport.NewUDPTransport(cfg.Network.ListenAddr)
 	if err != nil {
-		tcpTransport.Stop()
+		_ = tcpTransport.Stop()
 		return fmt.Errorf("创建 UDP 传输失败: %w", err)
 	}
 
 	// 启动 TCP 传输层
 	if err := tcpTransport.Start(&nodeID, msgSeqGen.Next, cfg.Network.ListenAddr); err != nil {
-		tcpTransport.Stop()
-		udpTransport.Stop()
+		_ = tcpTransport.Stop()
+		_ = udpTransport.Stop()
 		return fmt.Errorf("启动 TCP 传输失败: %w", err)
 	}
 
 	// 启动 UDP 传输层
 	if err := udpTransport.Start(&nodeID, msgSeqGen.Next, cfg.Network.ListenAddr); err != nil {
-		tcpTransport.Stop()
-		udpTransport.Stop()
+		_ = tcpTransport.Stop()
+		_ = udpTransport.Stop()
 		return fmt.Errorf("启动 UDP 传输失败: %w", err)
 	}
 
@@ -266,8 +266,8 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 		rpcClientConfig,
 	)
 	if err != nil {
-		tcpTransport.Stop()
-		udpTransport.Stop()
+		_ = tcpTransport.Stop()
+		_ = udpTransport.Stop()
 		return fmt.Errorf("创建 RPC Client 失败: %w", err)
 	}
 
@@ -290,8 +290,8 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 		nil,          // 使用默认配置
 	)
 	if err != nil {
-		tcpTransport.Stop()
-		udpTransport.Stop()
+		_ = tcpTransport.Stop()
+		_ = udpTransport.Stop()
 		return fmt.Errorf("创建 RPC Server 失败: %w", err)
 	}
 
@@ -303,8 +303,8 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	logging.Info("步骤 4: 启动 RPC Server...")
 
 	if err := rpcServer.Start(); err != nil {
-		tcpTransport.Stop()
-		udpTransport.Stop()
+		_ = tcpTransport.Stop()
+		_ = udpTransport.Stop()
 		return fmt.Errorf("启动 RPC Server 失败: %w", err)
 	}
 
@@ -314,9 +314,9 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	logging.Info("步骤 5: 启动 RPC Client...")
 
 	if err := rpcClient.Start(); err != nil {
-		rpcServer.Stop()
-		tcpTransport.Stop()
-		udpTransport.Stop()
+		_ = rpcServer.Stop()
+		_ = tcpTransport.Stop()
+		_ = udpTransport.Stop()
 		return fmt.Errorf("启动 RPC Client 失败: %w", err)
 	}
 
@@ -338,10 +338,10 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 		coordinatorConfig,
 	)
 	if err != nil {
-		rpcClient.Stop()
-		rpcServer.Stop()
-		tcpTransport.Stop()
-		udpTransport.Stop()
+		_ = rpcClient.Stop()
+		_ = rpcServer.Stop()
+		_ = tcpTransport.Stop()
+		_ = udpTransport.Stop()
 		return fmt.Errorf("创建 TreeCoordinator 失败: %w", err)
 	}
 

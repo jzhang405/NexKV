@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jzhang405/NexKV/internal/metadata/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,11 +15,9 @@ import (
 
 // TestNewTreeCoordinator 测试创建树形协调器
 func TestNewTreeCoordinator(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, coordinator)
@@ -33,25 +30,22 @@ func TestNewTreeCoordinator(t *testing.T) {
 
 // TestNewTreeCoordinator_InvalidParams 测试无效参数
 func TestNewTreeCoordinator_InvalidParams(t *testing.T) {
-	trans, _ := transport.NewUDPTransport("127.0.0.1:0")
 	config := DefaultTreeCoordinatorConfig()
 
 	testCases := []struct {
 		name        string
 		nodeID      string
 		addr        string
-		transport   transport.Transport
 		expectError bool
 	}{
-		{"空节点ID", "", "node1:9211", trans, true},
-		{"空地址", "node1", "", trans, true},
-		{"空传输层", "node1", "node1:9211", nil, true},
-		{"有效参数", "node1", "node1:9211", trans, false},
+		{"空节点ID", "", "node1:9211", true},
+		{"空地址", "node1", "", true},
+		{"有效参数", "node1", "node1:9211", false},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewTreeCoordinator(tc.nodeID, tc.addr, tc.transport, config)
+			_, err := NewTreeCoordinator(tc.nodeID, tc.addr, config)
 			if tc.expectError {
 				assert.Error(t, err)
 			} else {
@@ -63,11 +57,9 @@ func TestNewTreeCoordinator_InvalidParams(t *testing.T) {
 
 // TestTreeCoordinator_StartStop 测试启动和停止
 func TestTreeCoordinator_StartStop(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 
 	// 测试启动
@@ -93,8 +85,6 @@ func TestTreeCoordinator_StartStop(t *testing.T) {
 
 // TestTreeCoordinator_AddChild 测试添加子节点
 func TestTreeCoordinator_AddChild(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := &TreeCoordinatorConfig{
 		MaxChildren:       2, // 限制为 2 个子节点
@@ -103,7 +93,7 @@ func TestTreeCoordinator_AddChild(t *testing.T) {
 		AutoDiscovery:     false, // 禁用自动发现
 	}
 
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 
 	_ = coordinator.Start()
@@ -135,11 +125,9 @@ func TestTreeCoordinator_AddChild(t *testing.T) {
 
 // TestTreeCoordinator_RemoveChild 测试移除子节点
 func TestTreeCoordinator_RemoveChild(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 
 	_ = coordinator.Start()
@@ -163,11 +151,9 @@ func TestTreeCoordinator_RemoveChild(t *testing.T) {
 
 // TestTreeCoordinator_GetNode 测试获取节点
 func TestTreeCoordinator_GetNode(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 
 	_ = coordinator.Start()
@@ -187,11 +173,9 @@ func TestTreeCoordinator_GetNode(t *testing.T) {
 
 // TestTreeCoordinator_ListNodes 测试列出所有节点
 func TestTreeCoordinator_ListNodes(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 
 	_ = coordinator.Start()
@@ -205,11 +189,9 @@ func TestTreeCoordinator_ListNodes(t *testing.T) {
 
 // TestTreeCoordinator_GetTreeDepth 测试获取树深度
 func TestTreeCoordinator_GetTreeDepth(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 
 	_ = coordinator.Start()
@@ -229,11 +211,9 @@ func TestTreeCoordinator_GetTreeDepth(t *testing.T) {
 
 // TestTreeCoordinator_GetStats 测试获取统计信息
 func TestTreeCoordinator_GetStats(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 
 	_ = coordinator.Start()
@@ -250,11 +230,9 @@ func TestTreeCoordinator_GetStats(t *testing.T) {
 
 // TestTreeCoordinator_IsRunning 测试运行状态
 func TestTreeCoordinator_IsRunning(t *testing.T) {
-	trans, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", trans, config)
+	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 
 	// 未启动时
@@ -305,22 +283,17 @@ func TestDefaultTreeCoordinatorConfig(t *testing.T) {
 // TestTreeCoordinator_SingleParentConstraint 测试单父节点约束
 // 验证一个真实节点只能有一个 ParentID
 func TestTreeCoordinator_SingleParentConstraint(t *testing.T) {
-	trans1, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
-
-	trans2, err := transport.NewUDPTransport("127.0.0.1:0")
-	require.NoError(t, err)
 
 	config := DefaultTreeCoordinatorConfig()
 
 	// 创建第一个协调器 node1
-	coordinator1, err := NewTreeCoordinator("node1", "node1:9211", trans1, config)
+	coordinator1, err := NewTreeCoordinator("node1", "node1:9211", config)
 	require.NoError(t, err)
 	_ = coordinator1.Start()
 	t.Cleanup(func() { require.NoError(t, coordinator1.Stop()) })
 
 	// 创建第二个协调器 node2
-	coordinator2, err := NewTreeCoordinator("node2", "node2:9211", trans2, config)
+	coordinator2, err := NewTreeCoordinator("node2", "node2:9211", config)
 	require.NoError(t, err)
 	_ = coordinator2.Start()
 	t.Cleanup(func() { require.NoError(t, coordinator2.Stop()) })

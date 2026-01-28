@@ -9,6 +9,9 @@ package cluster
 
 import (
 	"fmt"
+	"maps"
+	"slices"
+
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"sync"
 	"sync/atomic"
@@ -35,6 +38,10 @@ import (
 //   - 松连接：父子关系松散，不严格依赖
 //   - 自组织：节点自动找父，形成树形结构
 //   - 容错性：单节点故障不影响整体
+//
+// RPC 架构（PR-032）：
+//   - RPCClient: 主动调用其他节点的 RPC 方法
+//   - RPCServer: 接收并处理其他节点的 RPC 请求
 type TreeCoordinator struct {
 	// 配置
 	config *TreeCoordinatorConfig
@@ -42,8 +49,9 @@ type TreeCoordinator struct {
 	// 本地节点信息
 	localNode *Node
 
-	// 传输层
-	transport transport.Transport
+	// RPC 组件（PR-032 架构）
+	RPCClient *transport.RPCClient // RPC 客户端（主动调用）
+	RPCServer *transport.RPCServer // RPC 服务端（接收请求）
 
 	// 节点管理
 	allNodes map[string]*Node
@@ -202,15 +210,10 @@ type TreeCoordinatorStats struct {
 func NewTreeCoordinator(
 	localNodeID string,
 	localAddr string,
-	transport transport.Transport,
 	config *TreeCoordinatorConfig,
 ) (*TreeCoordinator, error) {
 	if config == nil {
 		config = DefaultTreeCoordinatorConfig()
-	}
-
-	if transport == nil {
-		return nil, types.NewClusterNilParameterError("transport")
 	}
 
 	if localNodeID == "" {
@@ -236,7 +239,6 @@ func NewTreeCoordinator(
 	coordinator := &TreeCoordinator{
 		config:    config,
 		localNode: localNode,
-		transport: transport,
 		allNodes:  make(map[string]*Node),
 		stopCh:    make(chan struct{}),
 		stats:     &TreeCoordinatorStats{},
@@ -449,10 +451,8 @@ func (tc *TreeCoordinator) AddChild(childID string) error {
 	}
 
 	// 检查是否已存在
-	for _, cid := range tc.localNode.ChildrenIDs {
-		if cid == childID {
-			return types.NewClusterTreeManagementError("子节点已存在: " + childID)
-		}
+	if slices.Contains(tc.localNode.ChildrenIDs, childID) {
+		return types.NewClusterTreeManagementError("子节点已存在: " + childID)
 	}
 
 	// 检查 child 是否已经有父节点（确保一个真实节点只能只有一个 ParentID）
@@ -491,22 +491,12 @@ func (tc *TreeCoordinator) RemoveChild(childID string) error {
 	defer tc.nodesMu.Unlock()
 
 	// 查找并移除子节点
-	newChildren := make([]string, 0, len(tc.localNode.ChildrenIDs))
-	found := false
-
-	for _, cid := range tc.localNode.ChildrenIDs {
-		if cid == childID {
-			found = true
-			continue
-		}
-		newChildren = append(newChildren, cid)
-	}
-
-	if !found {
+	idx := slices.Index(tc.localNode.ChildrenIDs, childID)
+	if idx == -1 {
 		return types.NewClusterTreeManagementError("子节点不存在: " + childID)
 	}
 
-	tc.localNode.ChildrenIDs = newChildren
+	tc.localNode.ChildrenIDs = slices.Delete(tc.localNode.ChildrenIDs, idx, idx+1)
 
 	// 更新子节点信息
 	if child, exists := tc.allNodes[childID]; exists {
@@ -709,13 +699,10 @@ func (tc *TreeCoordinator) RemoveNode(nodeID string) error {
 	// 从父节点的子节点列表中移除
 	if node.ParentID != "" {
 		if parent, exists := tc.allNodes[node.ParentID]; exists {
-			newChildren := make([]string, 0, len(parent.ChildrenIDs))
-			for _, childID := range parent.ChildrenIDs {
-				if childID != nodeID {
-					newChildren = append(newChildren, childID)
-				}
+			idx := slices.Index(parent.ChildrenIDs, nodeID)
+			if idx != -1 {
+				parent.ChildrenIDs = slices.Delete(parent.ChildrenIDs, idx, idx+1)
 			}
-			parent.ChildrenIDs = newChildren
 		}
 	}
 
@@ -930,9 +917,7 @@ func (tc *TreeCoordinator) GetTopology() map[string]*Node {
 
 		if node.Metadata != nil {
 			nodeCopy.Metadata = make(map[string]string, len(node.Metadata))
-			for k, v := range node.Metadata {
-				nodeCopy.Metadata[k] = v
-			}
+			maps.Copy(nodeCopy.Metadata, node.Metadata)
 		}
 
 		topology[nodeID] = &nodeCopy

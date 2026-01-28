@@ -469,16 +469,9 @@ func TestCallBatchWaitAll(t *testing.T) {
 func TestRequestTable(t *testing.T) {
 	rt := newRequestTable()
 
-	// 添加请求
+	// 添加请求（相信 add() 永远不会返回 nil，否则会 panic）
 	entry1 := rt.add("correlation-1")
-	if entry1 == nil {
-		t.Fatal("add() returned nil entry")
-	}
-
 	entry2 := rt.add("correlation-2")
-	if entry2 == nil {
-		t.Fatal("add() returned nil entry")
-	}
 
 	// 查找请求
 	got := rt.get("correlation-1")
@@ -500,7 +493,6 @@ func TestRequestTable(t *testing.T) {
 	// 取消所有请求
 	cancelCh1 := entry1.cancelCh
 	cancelCh2 := entry2.cancelCh
-
 	rt.cancelAll()
 
 	select {

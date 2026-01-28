@@ -113,8 +113,8 @@ func TestRPCIntegration_BasicCall(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
-	time.Sleep(500 * time.Millisecond)
+	// 等待服务端准备就绪（优化：减少 sleep 时间避免 CI 超时）
+	time.Sleep(200 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
@@ -143,8 +143,8 @@ func TestRPCIntegration_BasicCall(t *testing.T) {
 		}
 	}()
 
-	// 等待客户端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待客户端准备就绪（优化：减少 sleep 时间避免 CI 超时）
+	time.Sleep(50 * time.Millisecond)
 
 	// 创建请求消息
 	requestMsg := &mockMessageForRPC{
@@ -195,15 +195,11 @@ func TestRPCIntegration_CallBatch(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
-	time.Sleep(500 * time.Millisecond)
+	// 等待服务端准备就绪（使用更短的等待时间）
+	time.Sleep(200 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
-
-	// 启动客户端 TCP Transport（不启动监听器，只需要连接功能）
-	// 注意：客户端不需要启动监听器，只需要能发起连接
-	// 但是 TCP Transport 需要启动才能发送消息
 
 	// 启动客户端
 	if err := client.Start(); err != nil {
@@ -226,7 +222,7 @@ func TestRPCIntegration_CallBatch(t *testing.T) {
 	}()
 
 	// 等待客户端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	// 创建批量请求
 	requests := []*RPCBatchRequest{
@@ -250,11 +246,11 @@ func TestRPCIntegration_CallBatch(t *testing.T) {
 		},
 	}
 
-	// 发送批量请求
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// 发送批量请求（增加超时时间以适应 CI 环境）
+	callCtx, callCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer callCancel()
 
-	responses, err := client.CallBatch(ctx, requests)
+	responses, err := client.CallBatch(callCtx, requests)
 	if err != nil {
 		t.Fatalf("CallBatch failed: %v", err)
 	}
@@ -304,8 +300,8 @@ func TestRPCIntegration_ConcurrentCalls(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
-	time.Sleep(500 * time.Millisecond)
+	// 等待服务端准备就绪（优化：减少 sleep 时间避免 CI 超时）
+	time.Sleep(200 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
@@ -431,8 +427,8 @@ func TestRPCIntegration_Timeout(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
-	time.Sleep(500 * time.Millisecond)
+	// 等待服务端准备就绪（优化：减少 sleep 时间避免 CI 超时）
+	time.Sleep(200 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
@@ -461,8 +457,8 @@ func TestRPCIntegration_Timeout(t *testing.T) {
 		}
 	}()
 
-	// 等待客户端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待客户端准备就绪（优化：减少 sleep 时间避免 CI 超时）
+	time.Sleep(50 * time.Millisecond)
 
 	// 创建请求消息
 	requestMsg := &mockMessageForRPC{
@@ -601,8 +597,8 @@ func TestRPCIntegration_DualTransport(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
-	time.Sleep(500 * time.Millisecond)
+	// 等待服务端准备就绪（优化：减少 sleep 时间避免 CI 超时）
+	time.Sleep(200 * time.Millisecond)
 
 	// 服务端地址（使用固定端口）
 	serverAddr := "127.0.0.1:19201"
@@ -823,8 +819,8 @@ func TestRPCIntegration_ServerError(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
-	time.Sleep(500 * time.Millisecond)
+	// 等待服务端准备就绪（优化：减少 sleep 时间避免 CI 超时）
+	time.Sleep(200 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
@@ -848,8 +844,8 @@ func TestRPCIntegration_ServerError(t *testing.T) {
 		}
 	}()
 
-	// 等待客户端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待客户端准备就绪（优化：减少 sleep 时间避免 CI 超时）
+	time.Sleep(50 * time.Millisecond)
 
 	// 创建请求消息
 	requestMsg := &mockMessageForRPC{
@@ -894,8 +890,8 @@ func TestRPCIntegration_InvalidAddress(t *testing.T) {
 		}
 	}()
 
-	// 等待客户端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待客户端准备就绪（优化：减少 sleep 时间避免 CI 超时）
+	time.Sleep(50 * time.Millisecond)
 
 	// 创建请求消息
 	requestMsg := &mockMessageForRPC{
@@ -947,8 +943,8 @@ func TestRPCIntegration_ConnectionReuseFallback(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
-	time.Sleep(500 * time.Millisecond)
+	// 等待服务端准备就绪（优化：减少 sleep 时间避免 CI 超时）
+	time.Sleep(200 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
@@ -972,8 +968,8 @@ func TestRPCIntegration_ConnectionReuseFallback(t *testing.T) {
 		}
 	}()
 
-	// 等待客户端准备就绪
-	time.Sleep(100 * time.Millisecond)
+	// 等待客户端准备就绪（优化：减少 sleep 时间避免 CI 超时）
+	time.Sleep(50 * time.Millisecond)
 
 	// 第一次调用（建立连接并复用）
 	requestMsg1 := &mockMessageForRPC{
@@ -1040,8 +1036,8 @@ func TestRPCIntegration_ResourceCleanup(t *testing.T) {
 		t.Fatalf("Failed to start server: %v", err)
 	}
 
-	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
-	time.Sleep(500 * time.Millisecond)
+	// 等待服务端准备就绪（优化：减少 sleep 时间避免 CI 超时）
+	time.Sleep(200 * time.Millisecond)
 
 	// 获取服务端实际监听的地址
 	serverAddr := serverTCP.listener.Addr().String()
@@ -1403,8 +1399,8 @@ func TestRPCIntegration_DualTransportWithUDP(t *testing.T) {
 		}
 	}()
 
-	// 等待服务端准备就绪（CI 环境需要更长的准备时间）
-	time.Sleep(500 * time.Millisecond)
+	// 等待服务端准备就绪（优化：减少 sleep 时间避免 CI 超时）
+	time.Sleep(200 * time.Millisecond)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

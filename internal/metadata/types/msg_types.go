@@ -79,13 +79,15 @@ const (
 	MessageType2PCRollbackReply MessageType = 255 // 2PC 回滚响应
 
 	// 节点管理消息 (300-349)
-	MessageTypeNodePing       MessageType = 300 // 节点心跳
-	MessageTypeNodePong       MessageType = 301 // 心跳响应
-	MessageTypeNodeJoin       MessageType = 302 // 节点加入
-	MessageTypeNodeLeave      MessageType = 303 // 节点离开
-	MessageTypeNodeSync       MessageType = 304 // 节点同步
-	MessageTypeClockSync      MessageType = 305 // 时钟同步请求
-	MessageTypeClockSyncReply MessageType = 306 // 时钟同步响应
+	MessageTypeNodePing          MessageType = 300 // 节点心跳
+	MessageTypeNodePong          MessageType = 301 // 心跳响应
+	MessageTypeNodeJoin          MessageType = 302 // 节点加入
+	MessageTypeNodeLeave         MessageType = 303 // 节点离开
+	MessageTypeNodeSync          MessageType = 304 // 节点同步
+	MessageTypeClockSync         MessageType = 305 // 时钟同步请求
+	MessageTypeClockSyncReply    MessageType = 306 // 时钟同步响应
+	MessageTypeNodeReparent      MessageType = 307 // 重新建立父子关系
+	MessageTypeNodeReparentReply MessageType = 308 // 重新建立父子关系响应
 
 	// 集群管理消息 (350-399)
 	MessageTypeClusterStatus      MessageType = 350 // 集群状态查询
@@ -148,6 +150,10 @@ func (t MessageType) String() string {
 		return "ClockSync"
 	case MessageTypeClockSyncReply:
 		return "ClockSyncReply"
+	case MessageTypeNodeReparent:
+		return "NodeReparent"
+	case MessageTypeNodeReparentReply:
+		return "NodeReparentReply"
 	case MessageTypeClusterStatus:
 		return "ClusterStatus"
 	case MessageTypeClusterStatusReply:
@@ -174,9 +180,10 @@ func GetPriority(msgType MessageType) Priority {
 		MessageTypeClockSync, MessageTypeClockSyncReply:
 		return PriorityLow
 
-	// 高优先级：2PC 提交/回滚
+	// 高优先级：2PC 提交/回滚、节点重挂载
 	case MessageType2PCCommit, MessageType2PCRollback,
-		MessageType2PCCommitReply, MessageType2PCRollbackReply:
+		MessageType2PCCommitReply, MessageType2PCRollbackReply,
+		MessageTypeNodeReparent, MessageTypeNodeReparentReply:
 		return PriorityHigh
 
 	// 关键优先级：Quorum 决策
@@ -230,7 +237,7 @@ func (t MessageType) ExpectResponse() ResponseExpectation {
 		MessageTypeGossipSync, MessageTypeGossipDigest,
 		MessageTypeQuorumPropose, MessageTypeQuorumVote,
 		MessageType2PCPrepare, MessageType2PCCommit, MessageType2PCRollback,
-		MessageTypeNodePing, MessageTypeNodeSync,
+		MessageTypeNodePing, MessageTypeNodeSync, MessageTypeNodeReparent,
 		MessageTypeClockSync, MessageTypeClusterStatus:
 		return ExpectResponse
 	}
@@ -270,6 +277,10 @@ var protocolTypeTable = map[MessageType]ProtocolType{
 	MessageType2PCCommitReply:   ProtocolTCP,
 	MessageType2PCRollback:      ProtocolTCP,
 	MessageType2PCRollbackReply: ProtocolTCP,
+
+	// 节点管理（TCP 可靠传输）
+	MessageTypeNodeReparent:      ProtocolTCP,
+	MessageTypeNodeReparentReply: ProtocolTCP,
 }
 
 // ProtocolType 返回消息使用的传输协议类型
@@ -295,16 +306,23 @@ func (t MessageType) ProtocolType() ProtocolType {
 
 // isReplyMessage 判断是否是响应消息
 func (t MessageType) isReplyMessage() bool {
-	switch t {
-	case MessageTypeGetReply, MessageTypePutReply, MessageTypeDeleteReply,
-		MessageTypeGossipSyncReply, MessageTypeGossipDigestReply,
-		MessageType2PCPrepareReply, MessageType2PCCommitReply,
-		MessageType2PCRollbackReply, MessageTypeNodePong,
-		MessageTypeClockSyncReply, MessageTypeClusterStatusReply:
-		return true
-	default:
-		return false
+	// 定义响应消息类型集合
+	replyMessageTypes := map[MessageType]bool{
+		MessageTypeGetReply:           true,
+		MessageTypePutReply:           true,
+		MessageTypeDeleteReply:        true,
+		MessageTypeGossipSyncReply:    true,
+		MessageTypeGossipDigestReply:  true,
+		MessageType2PCPrepareReply:    true,
+		MessageType2PCCommitReply:     true,
+		MessageType2PCRollbackReply:   true,
+		MessageTypeNodePong:           true,
+		MessageTypeClockSyncReply:     true,
+		MessageTypeClusterStatusReply: true,
+		MessageTypeNodeReparentReply:  true,
 	}
+
+	return replyMessageTypes[t]
 }
 
 // Priority 消息优先级

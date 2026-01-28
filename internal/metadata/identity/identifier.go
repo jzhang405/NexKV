@@ -8,6 +8,7 @@ package identity
 import (
 	"hash/fnv"
 	"net"
+	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -16,17 +17,20 @@ import (
 // GenerateNodeIDFromPorts 根据主机和端口生成节点 ID
 //
 // 参数:
-//   - host: 主机地址（IP 或域名）
 //   - tcpPort: TCP 端口（0 表示未启用）
 //   - udpPort: UDP 端口（0 表示未启用）
 //
 // 返回:
 //   - uint64: 节点 ID（FNV-1a 64-bit 哈希）
-func GenerateNodeIDFromPorts(host string, tcpPort, udpPort int) uint64 {
+func GenerateNodeIDFromPorts(tcpPort, udpPort int) (uint64, error) {
+	host, err := os.Hostname()
+	if err != nil {
+		return 0, err
+	}
 	listenAddr := net.JoinHostPort(host, strconv.Itoa(tcpPort)) + ":" + strconv.Itoa(udpPort)
 	h := fnv.New64a()
 	h.Write([]byte(listenAddr))
-	return h.Sum64()
+	return h.Sum64(), nil
 }
 
 // MsgSeqGenerator 消息序列号生成器（原子递增）

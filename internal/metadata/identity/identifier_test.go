@@ -2,7 +2,6 @@
 package identity
 
 import (
-	"net"
 	"strconv"
 	"sync"
 	"testing"
@@ -12,29 +11,34 @@ import (
 func TestGenerateNodeIDFromPorts_Consistency(t *testing.T) {
 	tests := []struct {
 		name    string
-		host    string
 		tcpPort int
 		udpPort int
 	}{
-		{"仅 TCP", "127.0.0.1", 9211, 0},
-		{"仅 UDP", "127.0.0.1", 0, 9212},
-		{"TCP+UDP", "127.0.0.1", 9211, 9212},
-		{"不同主机", "192.168.1.100", 9211, 9212},
+		{"仅 TCP", 9211, 0},
+		{"仅 UDP", 0, 9212},
+		{"TCP+UDP", 9211, 9212},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id1 := GenerateNodeIDFromPorts(tt.host, tt.tcpPort, tt.udpPort)
-			id2 := GenerateNodeIDFromPorts(tt.host, tt.tcpPort, tt.udpPort)
+			id1, err := GenerateNodeIDFromPorts(tt.tcpPort, tt.udpPort)
+			if err != nil {
+				t.Fatalf("GenerateNodeIDFromPorts(%d, %d) 失败: %v", tt.tcpPort, tt.udpPort, err)
+			}
+
+			id2, err := GenerateNodeIDFromPorts(tt.tcpPort, tt.udpPort)
+			if err != nil {
+				t.Fatalf("GenerateNodeIDFromPorts(%d, %d) 失败: %v", tt.tcpPort, tt.udpPort, err)
+			}
 
 			// 相同输入应生成相同 ID
 			if id1 != id2 {
-				t.Errorf("GenerateNodeIDFromPorts(%s, %d, %d) 不一致: %d != %d", tt.host, tt.tcpPort, tt.udpPort, id1, id2)
+				t.Errorf("GenerateNodeIDFromPorts(%d, %d) 不一致: %d != %d", tt.tcpPort, tt.udpPort, id1, id2)
 			}
 
 			// ID 不应为 0
 			if id1 == 0 {
-				t.Errorf("GenerateNodeIDFromPorts(%s, %d, %d) 返回 0", tt.host, tt.tcpPort, tt.udpPort)
+				t.Errorf("GenerateNodeIDFromPorts(%d, %d) 返回 0", tt.tcpPort, tt.udpPort)
 			}
 		})
 	}
@@ -43,21 +47,21 @@ func TestGenerateNodeIDFromPorts_Consistency(t *testing.T) {
 // TestGenerateNodeIDFromPorts_Uniqueness 测试 NodeID 唯一性
 func TestGenerateNodeIDFromPorts_Uniqueness(t *testing.T) {
 	tests := []struct {
-		host    string
 		tcpPort int
 		udpPort int
 	}{
-		{"127.0.0.1", 9211, 0},
-		{"127.0.0.1", 0, 9212},
-		{"127.0.0.1", 9211, 9212},
-		{"192.168.1.1", 9211, 9212},
-		{"localhost", 9211, 9212},
+		{9211, 0},
+		{0, 9212},
+		{9211, 9212},
 	}
 
 	ids := make(map[uint64]string)
 	for _, tt := range tests {
-		id := GenerateNodeIDFromPorts(tt.host, tt.tcpPort, tt.udpPort)
-		key := net.JoinHostPort(tt.host, strconv.Itoa(tt.tcpPort)) + ":" + strconv.Itoa(tt.udpPort)
+		id, err := GenerateNodeIDFromPorts(tt.tcpPort, tt.udpPort)
+		if err != nil {
+			t.Fatalf("GenerateNodeIDFromPorts(%d, %d) 失败: %v", tt.tcpPort, tt.udpPort, err)
+		}
+		key := strconv.Itoa(tt.tcpPort) + ":" + strconv.Itoa(tt.udpPort)
 		if existing, exists := ids[id]; exists {
 			t.Errorf("NodeID 冲突: %q 和 %q 生成相同 ID %d", existing, key, id)
 		}
@@ -69,22 +73,24 @@ func TestGenerateNodeIDFromPorts_Uniqueness(t *testing.T) {
 func TestGenerateNodeIDFromPorts(t *testing.T) {
 	tests := []struct {
 		name    string
-		host    string
 		tcpPort int
 		udpPort int
 	}{
-		{"仅 TCP", "127.0.0.1", 9211, 0},
-		{"仅 UDP", "127.0.0.1", 0, 9212},
-		{"TCP+UDP", "127.0.0.1", 9211, 9212},
+		{"仅 TCP", 9211, 0},
+		{"仅 UDP", 0, 9212},
+		{"TCP+UDP", 9211, 9212},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id := GenerateNodeIDFromPorts(tt.host, tt.tcpPort, tt.udpPort)
+			id, err := GenerateNodeIDFromPorts(tt.tcpPort, tt.udpPort)
+			if err != nil {
+				t.Fatalf("GenerateNodeIDFromPorts(%d, %d) 失败: %v", tt.tcpPort, tt.udpPort, err)
+			}
 
 			// ID 不应为 0
 			if id == 0 {
-				t.Errorf("GenerateNodeIDFromPorts(%s, %d, %d) 返回 0", tt.host, tt.tcpPort, tt.udpPort)
+				t.Errorf("GenerateNodeIDFromPorts(%d, %d) 返回 0", tt.tcpPort, tt.udpPort)
 			}
 		})
 	}
@@ -166,7 +172,7 @@ func TestMsgSeqGeneratorConcurrency(t *testing.T) {
 // BenchmarkGenerateNodeIDFromPorts 性能测试
 func BenchmarkGenerateNodeIDFromPorts(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		GenerateNodeIDFromPorts("127.0.0.1", 9211, 9212)
+		_, _ = GenerateNodeIDFromPorts(9211, 9212)
 	}
 }
 

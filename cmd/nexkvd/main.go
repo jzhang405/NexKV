@@ -4,11 +4,12 @@
 //   - 启动 RPC Server 接收 CLI 命令
 //   - 初始化并管理所有核心模块
 //   - 处理信号优雅关闭
+//
+// 架构：遵循 PR-032 第 3.8.2 节规范
 package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -21,28 +22,11 @@ import (
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
 	"github.com/jzhang405/NexKV/internal/metadata/identity"
 	"github.com/jzhang405/NexKV/internal/metadata/transport"
-	"github.com/jzhang405/NexKV/internal/rpc/server"
+	"github.com/urfave/cli/v2"
 )
 
 var (
-	// 配置文件路径
-	configPath = flag.String("config", "./config.yaml", "配置文件路径")
-	// 集群名称
-	clusterName = flag.String("cluster", "", "集群名称（覆盖配置文件）")
-	// 节点 ID
-	nodeID = flag.String("node-id", "", "节点 ID（覆盖配置文件）")
-	// 节点地址
-	nodeAddr = flag.String("addr", "", "节点监听地址（覆盖配置文件）")
-	// 环境（dev/cluster）
-	env = flag.String("env", "", "运行环境：dev 或 cluster（覆盖配置文件）")
-	// 日志级别
-	logLevel = flag.String("log-level", "", "日志级别：debug/info/warn/error（覆盖配置文件）")
-	// 显示版本
-	showVersion = flag.Bool("version", false, "显示版本信息")
-)
-
-const (
-	// Version 版本号
+	// Version 版本号（构建时注入）
 	Version = "0.1.0"
 	// GitCommit Git 提交哈希（构建时注入）
 	GitCommit = "unknown"
@@ -50,58 +34,120 @@ const (
 	BuildTime = "unknown"
 )
 
-// Daemon 守护进程
-type Daemon struct {
-	// 配置
-	cfg *config.Config
+// ========================================
+// AppContext 应用上下文（依赖注入容器）
+// ========================================
 
-	// 组件
-	transport   transport.Transport
-	rpcServer   *server.RPCServer
-	coordinator interface{} // TreeCoordinator（使用 interface{} 避免循环依赖）
+// AppContext 应用上下文（遵循 PR-032 第 3.8.2 节规范）
+type AppContext struct {
+	// 配置
+	ConfigPath string
+	Env        string
+
+	// 核心组件
+	Coordinator  *cluster.TreeCoordinator
+	TCPTransport transport.Transport
+	UDPTransport transport.Transport
+
+	// RPC 组件
+	RPCClient *transport.RPCClient // RPC 客户端（主动调用）
+	RPCServer *transport.RPCServer // RPC 服务端（接收请求）
+
+	// 监控组件（预留，待实现）
+	// FailureDetector *cluster.FailureDetector
 
 	// 生命周期
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
-func main() {
-	flag.Parse()
+// ========================================
+// 主函数
+// ========================================
 
-	// 显示版本信息
-	if *showVersion {
-		fmt.Printf("NexKV Daemon %s\n", Version)
-		fmt.Printf("Git Commit: %s\n", GitCommit)
-		fmt.Printf("Build Time: %s\n", BuildTime)
-		os.Exit(0)
+func main() {
+	app := &cli.App{
+		Name:     "nexkvd",
+		Usage:    "NexKV 守护进程 - 长期运行的集群节点服务",
+		Version:  Version,
+		Compiled: time.Now(),
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "config",
+				Aliases: []string{"c"},
+				Usage:   "配置文件路径",
+				Value:   "./config.yaml",
+				EnvVars: []string{"NEXKV_CONFIG"},
+			},
+			&cli.StringFlag{
+				Name:    "cluster",
+				Aliases: []string{"n"},
+				Usage:   "集群名称（覆盖配置文件）",
+				EnvVars: []string{"NEXKV_CLUSTER"},
+			},
+			&cli.StringFlag{
+				Name:    "node-id",
+				Aliases: []string{"i"},
+				Usage:   "节点 ID（覆盖配置文件）",
+				EnvVars: []string{"NEXKV_NODE_ID"},
+			},
+			&cli.StringFlag{
+				Name:    "addr",
+				Aliases: []string{"a"},
+				Usage:   "节点监听地址（覆盖配置文件）",
+				EnvVars: []string{"NEXKV_NODE_ADDR"},
+			},
+			&cli.StringFlag{
+				Name:    "env",
+				Aliases: []string{"e"},
+				Usage:   "运行环境：dev 或 cluster（覆盖配置文件）",
+				EnvVars: []string{"NEXKV_ENV"},
+			},
+			&cli.StringFlag{
+				Name:    "log-level",
+				Aliases: []string{"l"},
+				Usage:   "日志级别：debug/info/warn/error（覆盖配置文件）",
+				EnvVars: []string{"NEXKV_LOG_LEVEL"},
+			},
+		},
+		Action: runDaemon,
 	}
 
-	// 初始化日志
-	if err := initLogging(); err != nil {
-		fmt.Fprintf(os.Stderr, "初始化日志失败: %v\n", err)
+	if err := app.Run(os.Args); err != nil {
+		logging.WithField("error", err).Fatal("守护进程启动失败")
 		os.Exit(1)
+	}
+}
+
+// runDaemon 运行守护进程
+func runDaemon(c *cli.Context) error {
+	// 获取配置参数
+	configPath := c.String("config")
+	env := c.String("env")
+	logLevel := c.String("log-level")
+
+	// 初始化日志
+	if err := initLogging(logLevel); err != nil {
+		return fmt.Errorf("初始化日志失败: %w", err)
 	}
 
 	logging.Info("NexKV Daemon 启动中...")
 
 	// 加载配置
-	cfg, err := loadConfig()
+	cfg, err := loadConfig(c, configPath)
 	if err != nil {
-		logging.WithField("error", err).Fatal("加载配置失败")
-		os.Exit(1)
+		return fmt.Errorf("加载配置失败: %w", err)
 	}
 
-	// 创建守护进程
-	daemon, err := NewDaemon(cfg)
+	// 创建应用上下文
+	appCtx, err := NewAppContext(cfg, env, configPath)
 	if err != nil {
-		logging.WithField("error", err).Fatal("创建守护进程失败")
-		os.Exit(1)
+		return fmt.Errorf("创建应用上下文失败: %w", err)
 	}
 
-	// 启动守护进程
-	if err := daemon.Start(); err != nil {
-		logging.WithField("error", err).Fatal("启动守护进程失败")
-		os.Exit(1)
+	// 初始化所有组件（7 步初始化流程）
+	if err := appCtx.Initialize(cfg); err != nil {
+		return fmt.Errorf("初始化失败: %w", err)
 	}
 
 	logging.WithFields(map[string]any{
@@ -112,44 +158,55 @@ func main() {
 	}).Info("NexKV Daemon 启动成功")
 
 	// 等待信号
-	waitForSignal(daemon)
+	waitForSignal(appCtx)
 
 	// 停止守护进程
-	if err := daemon.Stop(); err != nil {
-		logging.WithField("error", err).Error("停止守护进程失败")
-		os.Exit(1)
+	if err := appCtx.Shutdown(); err != nil {
+		return fmt.Errorf("停止守护进程失败: %w", err)
 	}
 
 	logging.Info("NexKV Daemon 已停止")
+	return nil
 }
 
-// NewDaemon 创建守护进程
-func NewDaemon(cfg *config.Config) (*Daemon, error) {
+// ========================================
+// AppContext 创建
+// ========================================
+
+// NewAppContext 创建应用上下文
+func NewAppContext(cfg *config.Config, env, configPath string) (*AppContext, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("配置不能为空")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &Daemon{
-		cfg:    cfg,
-		ctx:    ctx,
-		cancel: cancel,
+	return &AppContext{
+		ConfigPath: configPath,
+		Env:        env,
+		ctx:        ctx,
+		cancel:     cancel,
 	}, nil
 }
 
-// Start 启动守护进程
-func (d *Daemon) Start() error {
-	logging.Info("初始化传输层...")
+// ========================================
+// 7 步初始化流程（PR-032 第 3.8.2 节）
+// ========================================
 
+// Initialize 初始化所有组件（遵循 7 步流程）
+func (app *AppContext) Initialize(cfg *config.Config) error {
 	// 解析监听地址
-	host, port, err := parseListenAddr(d.cfg.Network.ListenAddr)
+	host, port, err := parseListenAddr(cfg.Network.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("解析监听地址失败: %w", err)
 	}
 
 	// 使用 identity 包生成节点 ID（FNV-1a 64-bit 哈希）
-	nodeID := identity.GenerateNodeIDFromPorts(host, 0, port)
+	// 注意：函数内部使用 os.Hostname() 获取主机名
+	nodeID, err := identity.GenerateNodeIDFromPorts(0, port)
+	if err != nil {
+		return fmt.Errorf("生成节点 ID 失败: %w", err)
+	}
 
 	// 创建消息序列号生成器（原子递增）
 	msgSeqGen := identity.NewMsgSeqGenerator()
@@ -160,43 +217,116 @@ func (d *Daemon) Start() error {
 		"node_id": nodeID,
 	}).Info("节点 ID 生成成功")
 
-	// 创建传输层
-	trans, err := transport.NewUDPTransport(d.cfg.Network.ListenAddr)
+	// =====================================
+	// 步骤 1: 创建 Transport 层（TCP + UDP）
+	// =====================================
+	logging.Info("步骤 1: 创建 Transport 层...")
+
+	// 创建 TCP 传输层（用于可靠消息）
+	tcpTransport, err := transport.NewTCPTransport(cfg.Network.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("创建传输层失败: %w", err)
+		return fmt.Errorf("创建 TCP 传输失败: %w", err)
 	}
 
-	// 启动传输层
-	// 参数：nodeID, msgSeqGenerator, listenAddr
-	if err := trans.Start(&nodeID, msgSeqGen.Next, d.cfg.Network.ListenAddr); err != nil {
-		return fmt.Errorf("启动传输层失败: %w", err)
+	// 创建 UDP 传输层（用于尽力型消息）
+	udpTransport, err := transport.NewUDPTransport(cfg.Network.ListenAddr)
+	if err != nil {
+		tcpTransport.Stop()
+		return fmt.Errorf("创建 UDP 传输失败: %w", err)
 	}
 
-	d.transport = trans
+	// 启动 TCP 传输层
+	if err := tcpTransport.Start(&nodeID, msgSeqGen.Next, cfg.Network.ListenAddr); err != nil {
+		tcpTransport.Stop()
+		udpTransport.Stop()
+		return fmt.Errorf("启动 TCP 传输失败: %w", err)
+	}
 
-	logging.Info("启动 RPC Server...")
+	// 启动 UDP 传输层
+	if err := udpTransport.Start(&nodeID, msgSeqGen.Next, cfg.Network.ListenAddr); err != nil {
+		tcpTransport.Stop()
+		udpTransport.Stop()
+		return fmt.Errorf("启动 UDP 传输失败: %w", err)
+	}
 
-	// 创建 RPC Server
-	rpcServer, err := server.NewRPCServer(&server.Config{
-		Addr:      d.cfg.Network.ListenAddr,
-		Transport: trans,
-	})
+	app.TCPTransport = tcpTransport
+	app.UDPTransport = udpTransport
+
+	// =====================================
+	// 步骤 2: 创建 RPC Client
+	// =====================================
+	logging.Info("步骤 2: 创建 RPC Client...")
+
+	rpcClientConfig := transport.DefaultRPCClientConfig()
+	rpcClientConfig.RequestTimeout = 30 * time.Second
+
+	rpcClient, err := transport.NewRPCClient(
+		tcpTransport, // TCP 用于可靠消息
+		udpTransport, // UDP 用于尽力型消息
+		rpcClientConfig,
+	)
 	if err != nil {
+		tcpTransport.Stop()
+		udpTransport.Stop()
+		return fmt.Errorf("创建 RPC Client 失败: %w", err)
+	}
+
+	app.RPCClient = rpcClient
+
+	// =====================================
+	// 步骤 3: 创建 RPC Server
+	// =====================================
+	logging.Info("步骤 3: 创建 RPC Server...")
+
+	// 注意：此时 coordinator 还未创建，先创建一个空的 handler
+	// 在步骤 6 之后会重新设置 coordinator
+	// 使用 cluster 包中的 RPCHandler 实现
+	rpcHandler := cluster.NewTreeCoordinatorRPCHandler(nil)
+
+	rpcServer, err := transport.NewRPCServer(
+		tcpTransport, // TCP 用于可靠消息
+		udpTransport, // UDP 用于尽力型消息
+		rpcHandler,   // TreeCoordinator RPC 处理器
+		nil,          // 使用默认配置
+	)
+	if err != nil {
+		tcpTransport.Stop()
+		udpTransport.Stop()
 		return fmt.Errorf("创建 RPC Server 失败: %w", err)
 	}
 
-	// 启动 RPC Server
+	app.RPCServer = rpcServer
+
+	// =====================================
+	// 步骤 4: 启动 RPC Server（监听其他节点请求）
+	// =====================================
+	logging.Info("步骤 4: 启动 RPC Server...")
+
 	if err := rpcServer.Start(); err != nil {
+		tcpTransport.Stop()
+		udpTransport.Stop()
 		return fmt.Errorf("启动 RPC Server 失败: %w", err)
 	}
 
-	d.rpcServer = rpcServer
+	// =====================================
+	// 步骤 5: 启动 RPC Client（响应处理协程）
+	// =====================================
+	logging.Info("步骤 5: 启动 RPC Client...")
 
-	// 初始化 TreeCoordinator
-	logging.Info("初始化 TreeCoordinator...")
+	if err := rpcClient.Start(); err != nil {
+		rpcServer.Stop()
+		tcpTransport.Stop()
+		udpTransport.Stop()
+		return fmt.Errorf("启动 RPC Client 失败: %w", err)
+	}
+
+	// =====================================
+	// 步骤 6: 创建 TreeCoordinator（只注入 RPC 接口）
+	// =====================================
+	logging.Info("步骤 6: 创建 TreeCoordinator...")
 
 	// 使用配置的节点 ID，如果为空则生成一个
-	daemonNodeID := d.cfg.Cluster.NodeID
+	daemonNodeID := cfg.Cluster.NodeID
 	if daemonNodeID == "" {
 		daemonNodeID = fmt.Sprintf("node-%d", nodeID)
 	}
@@ -204,27 +334,31 @@ func (d *Daemon) Start() error {
 	coordinatorConfig := cluster.DefaultTreeCoordinatorConfig()
 	coordinator, err := cluster.NewTreeCoordinator(
 		daemonNodeID,
-		d.cfg.Network.ListenAddr,
-		trans,
+		cfg.Network.ListenAddr,
+		tcpTransport, // 使用 TCP 传输层
 		coordinatorConfig,
 	)
 	if err != nil {
+		rpcClient.Stop()
+		rpcServer.Stop()
+		tcpTransport.Stop()
+		udpTransport.Stop()
 		return fmt.Errorf("创建 TreeCoordinator 失败: %w", err)
 	}
 
-	// 启动 TreeCoordinator
+	app.Coordinator = coordinator
+
+	// 更新 RPC Handler 的 coordinator 引用
+	rpcHandler.SetCoordinator(coordinator)
+
+	// =====================================
+	// 步骤 7: 启动 TreeCoordinator
+	// =====================================
+	logging.Info("步骤 7: 启动 TreeCoordinator...")
+
 	if err := coordinator.Start(); err != nil {
 		return fmt.Errorf("启动 TreeCoordinator 失败: %w", err)
 	}
-
-	d.coordinator = coordinator
-
-	// 注册 TreeCoordinator RPC Handlers
-	// TODO: 实现 cluster.RegisterTreeCoordinatorHandlers
-	// logging.Info("注册 TreeCoordinator RPC Handlers...")
-	// if err := cluster.RegisterTreeCoordinatorHandlers(rpcServer, coordinator); err != nil {
-	// 	return fmt.Errorf("注册 TreeCoordinator Handlers 失败: %w", err)
-	// }
 
 	logging.WithFields(map[string]any{
 		"node_id": daemonNodeID,
@@ -233,38 +367,53 @@ func (d *Daemon) Start() error {
 	return nil
 }
 
-// Stop 停止守护进程
-func (d *Daemon) Stop() error {
+// ========================================
+// Shutdown 优雅关闭
+// ========================================
+
+// Shutdown 停止守护进程（逆序关闭组件）
+func (app *AppContext) Shutdown() error {
 	logging.Info("正在停止守护进程...")
 
 	var errs []error
 
-	// 停止 TreeCoordinator
-	if d.coordinator != nil {
-		// 使用类型断言调用 Stop() 方法
-		if coord, ok := d.coordinator.(interface{ Stop() error }); ok {
-			if err := coord.Stop(); err != nil {
-				errs = append(errs, fmt.Errorf("停止 TreeCoordinator 失败: %w", err))
-			}
+	// 按逆序停止组件
+	// 7. 停止 TreeCoordinator
+	if app.Coordinator != nil {
+		if err := app.Coordinator.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("停止 TreeCoordinator 失败: %w", err))
 		}
 	}
 
-	// 停止 RPC Server
-	if d.rpcServer != nil {
-		if err := d.rpcServer.Stop(); err != nil {
+	// 5. 停止 RPC Client
+	if app.RPCClient != nil {
+		if err := app.RPCClient.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("停止 RPC Client 失败: %w", err))
+		}
+	}
+
+	// 4. 停止 RPC Server
+	if app.RPCServer != nil {
+		if err := app.RPCServer.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("停止 RPC Server 失败: %w", err))
 		}
 	}
 
-	// 停止传输层
-	if d.transport != nil {
-		if err := d.transport.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("停止传输层失败: %w", err))
+	// 1. 停止 Transport 层
+	if app.TCPTransport != nil {
+		if err := app.TCPTransport.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("停止 TCP 传输层失败: %w", err))
+		}
+	}
+
+	if app.UDPTransport != nil {
+		if err := app.UDPTransport.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("停止 UDP 传输层失败: %w", err))
 		}
 	}
 
 	// 取消上下文
-	d.cancel()
+	app.cancel()
 
 	if len(errs) > 0 {
 		return fmt.Errorf("停止守护进程时发生错误: %v", errs)
@@ -273,37 +422,41 @@ func (d *Daemon) Stop() error {
 	return nil
 }
 
+// ========================================
+// 辅助函数
+// ========================================
+
 // loadConfig 加载配置
-func loadConfig() (*config.Config, error) {
+func loadConfig(c *cli.Context, configPath string) (*config.Config, error) {
 	// 从文件加载配置
-	cfg, err := config.LoadConfig(*configPath)
+	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return nil, err
 	}
 
 	// 命令行参数覆盖配置文件
-	if *clusterName != "" {
-		cfg.Cluster.Name = *clusterName
+	if c.IsSet("cluster") {
+		cfg.Cluster.Name = c.String("cluster")
 	}
-	if *nodeID != "" {
-		cfg.Cluster.NodeID = *nodeID
+	if c.IsSet("node-id") {
+		cfg.Cluster.NodeID = c.String("node-id")
 	}
-	if *nodeAddr != "" {
-		cfg.Cluster.NodeAddr = *nodeAddr
-		cfg.Network.ListenAddr = *nodeAddr
+	if c.IsSet("addr") {
+		cfg.Cluster.NodeAddr = c.String("addr")
+		cfg.Network.ListenAddr = c.String("addr")
 	}
-	if *logLevel != "" {
-		cfg.Logging.Level = *logLevel
+	if c.IsSet("log-level") {
+		cfg.Logging.Level = c.String("log-level")
 	}
 
-	// 环境变量覆盖（可选）
-	if envName := os.Getenv("NEXKV_CLUSTER"); envName != "" {
+	// 环境变量覆盖（urfave/cli 已自动处理，这里作为备用）
+	if envName := os.Getenv("NEXKV_CLUSTER"); envName != "" && !c.IsSet("cluster") {
 		cfg.Cluster.Name = envName
 	}
-	if envNodeID := os.Getenv("NEXKV_NODE_ID"); envNodeID != "" {
+	if envNodeID := os.Getenv("NEXKV_NODE_ID"); envNodeID != "" && !c.IsSet("node-id") {
 		cfg.Cluster.NodeID = envNodeID
 	}
-	if envNodeAddr := os.Getenv("NEXKV_NODE_ADDR"); envNodeAddr != "" {
+	if envNodeAddr := os.Getenv("NEXKV_NODE_ADDR"); envNodeAddr != "" && !c.IsSet("addr") {
 		cfg.Cluster.NodeAddr = envNodeAddr
 		cfg.Network.ListenAddr = envNodeAddr
 	}
@@ -312,14 +465,14 @@ func loadConfig() (*config.Config, error) {
 }
 
 // initLogging 初始化日志
-func initLogging() error {
+func initLogging(logLevel string) error {
 	// TODO: 实现完整的日志初始化
 	// 目前使用简单的配置，后续根据 cfg.Logging 配置初始化
 
 	// 设置默认日志级别
 	level := "info"
-	if *logLevel != "" {
-		level = *logLevel
+	if logLevel != "" {
+		level = logLevel
 	}
 
 	_ = level // 占位，后续实现
@@ -328,7 +481,7 @@ func initLogging() error {
 }
 
 // waitForSignal 等待系统信号
-func waitForSignal(daemon *Daemon) {
+func waitForSignal(app *AppContext) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
@@ -343,7 +496,7 @@ func waitForSignal(daemon *Daemon) {
 	// 优雅关闭
 	doneCh := make(chan error, 1)
 	go func() {
-		doneCh <- daemon.Stop()
+		doneCh <- app.Shutdown()
 	}()
 
 	select {

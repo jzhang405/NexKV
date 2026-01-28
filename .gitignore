@@ -36,14 +36,6 @@ go.work.sum
 .claude/
 .spec-workflow/
 .serena/
-/nexkv
+bin/nexkv*
+bin/nexkvd*
 internal/metadata/store/data
-
-# Frontend/Node.js
-node_modules/
-bun.lockb
-package-lock.json
-yarn.lock
-*.lock
-dist/
-.cache/

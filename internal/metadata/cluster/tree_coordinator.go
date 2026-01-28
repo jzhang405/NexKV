@@ -35,6 +35,10 @@ import (
 //   - 松连接：父子关系松散，不严格依赖
 //   - 自组织：节点自动找父，形成树形结构
 //   - 容错性：单节点故障不影响整体
+//
+// RPC 架构（PR-032）：
+//   - RPCClient: 主动调用其他节点的 RPC 方法
+//   - RPCServer: 接收并处理其他节点的 RPC 请求
 type TreeCoordinator struct {
 	// 配置
 	config *TreeCoordinatorConfig
@@ -42,8 +46,12 @@ type TreeCoordinator struct {
 	// 本地节点信息
 	localNode *Node
 
-	// 传输层
+	// 传输层（保留，用于底层网络通信）
 	transport transport.Transport
+
+	// RPC 组件（PR-032 架构）
+	RPCClient *transport.RPCClient // RPC 客户端（主动调用）
+	RPCServer *transport.RPCServer // RPC 服务端（接收请求）
 
 	// 节点管理
 	allNodes map[string]*Node

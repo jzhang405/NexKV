@@ -103,8 +103,8 @@ func handleError(err error) {
 // newVersionCommand 创建版本命令
 func newVersionCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "version",
-		Usage: "显示版本信息",
+		Name:        "version",
+		Usage:       "显示版本信息",
 		Description: `显示 NexKV CLI 和 Daemon 的版本信息`,
 		Action: func(c *cli.Context) error {
 			fmt.Println("NexKV CLI")

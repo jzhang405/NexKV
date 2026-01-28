@@ -1,7 +1,7 @@
 # NexKV Makefile
 # 提供 build、test、clean 等常用命令
 
-.PHONY: all build test clean run fmt vet lint docker-build docker-run help
+.PHONY: all build test clean run fmt vet lint docker-build docker-run help version
 
 # 变量定义
 BINARY_NAME=nexkv
@@ -10,7 +10,15 @@ NEXKV_PATH=./cmd/nexkv
 NEXKVD_PATH=./cmd/nexkvd
 GO=go
 GOFLAGS=-v
-LDFLAGS=-s -w
+
+# 版本信息（构建时注入）
+VERSION ?= 0.0.1
+GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%S 2>/dev/null || echo "unknown")
+LDFLAGS := -s -w \
+	-X 'main.Version=$(VERSION)' \
+	-X 'main.GitCommit=$(GIT_COMMIT)' \
+	-X 'main.BuildTime=$(BUILD_TIME)'
 
 # 默认目标
 all: build
@@ -104,6 +112,16 @@ docker-run:
 	@echo "运行 Docker 容器..."
 	docker run -p 9211:9211 nexkv:latest
 
+## version: 显示构建版本信息
+version:
+	@echo "版本信息:"
+	@echo "  VERSION:     $(VERSION)"
+	@echo "  GIT_COMMIT:  $(GIT_COMMIT)"
+	@echo "  BUILD_TIME:  $(BUILD_TIME)"
+	@echo ""
+	@echo "提示: 可以通过 VERSION 变量覆盖版本号"
+	@echo "  示例: make build VERSION=1.0.0"
+
 ## help: 显示帮助信息
 help:
 	@echo "可用命令:"
@@ -122,4 +140,8 @@ help:
 	@echo "  make run-daemon    - 运行 nexkvd 守护进程"
 	@echo "  make docker-build  - 构建 Docker 镜像"
 	@echo "  make docker-run    - 运行 Docker 容器"
+	@echo "  make version       - 显示构建版本信息"
 	@echo "  make help          - 显示此帮助信息"
+	@echo ""
+	@echo "版本信息覆盖:"
+	@echo "  make build VERSION=1.0.0  - 使用指定版本号构建"

@@ -73,10 +73,10 @@ flowchart TD
     end
 
     subgraph NodeLayer["逻辑节点层 (Node Layer)"]
-        N1[Node-1<br/>host_id: server-1<br/>role: Leaf<br/>addr: /ip4/192.168.1.100/tcp/5001]
-        N2[Node-2<br/>host_id: server-1<br/>role: Parent<br/>addr: /ip4/192.168.1.100/tcp/6001]
-        N3[Node-3<br/>host_id: server-2<br/>role: Parent<br/>addr: /ip4/192.168.1.101/tcp/6001]
-        N4[Node-4<br/>host_id: server-2<br/>role: ParentStandby<br/>addr: /ip4/192.168.1.101/tcp/6001]
+        N1[Node-1<br/>host_id: server-1<br/>role: Leaf<br/>tcp: /ip4/192.168.1.100/tcp/5001<br/>udp: /ip4/192.168.1.100/udp/5002]
+        N2[Node-2<br/>host_id: server-1<br/>role: Parent<br/>tcp: /ip4/192.168.1.100/tcp/6001<br/>udp: /ip4/192.168.1.100/udp/6002]
+        N3[Node-3<br/>host_id: server-2<br/>role: Parent<br/>tcp: /ip4/192.168.1.101/tcp/6001<br/>udp: /ip4/192.168.1.101/udp/6002]
+        N4[Node-4<br/>host_id: server-2<br/>role: ParentStandby<br/>tcp: /ip4/192.168.1.101/tcp/6001<br/>udp: /ip4/192.168.1.101/udp/6002]
     end
 
     H1 --> N1
@@ -86,7 +86,7 @@ flowchart TD
 
     style HostLayer fill:#e1f5ff,stroke:#01579b,stroke-width:2px
     style NodeLayer fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-```
+    ```
 
 #### 3.2 关键设计点
 
@@ -207,6 +207,33 @@ flowchart TD
 ### 6. 预审批确认
 
 > **架构师签字/备注**：XXX 202X-XX-XX 该架构调整方案可行，模型清晰，风险可控，同意继续推进设计完善。
+
+---
+
+### 7. 下一步行动（从文档讨论到 Coding）
+
+> **核心原则**：Pre 文档评审通过后，按照本设计文档进行代码实现，严格遵循以下流程：
+
+1. **进入开发阶段**
+   - 在 feature 分支上实现设计文档中定义的数据结构和接口
+   - 优先实现 Host 和 Node 核心结构
+   - 遵循编码规范（`docs/03_development/01_编码规范文档.md`）
+
+2. **实现顺序**
+   - 第1步：实现 Host 和 Node 基础结构
+   - 第2步：实现 HostRole 和 NodeRole 枚举
+   - 第3步：实现 NodeAddress 结构及其方法
+   - 第4步：适配 TreeCoordinator 使用新的 Host/Node 模型
+   - 第5步：编写单元测试验证新模型
+
+3. **质量保证**
+   - 代码编写完成后，使用 code-simplifier 进行代码优化
+   - 运行完整的本地验证流程：`make build → make lint → make test → make clean`
+   - 确保 LSP 诊断无错误
+
+4. **文档同步**
+   - 开发完成后，编写 Post 文档总结实现情况
+   - Post 文档通过架构师评审后，才能推送到 GitHub
 
 ---
 

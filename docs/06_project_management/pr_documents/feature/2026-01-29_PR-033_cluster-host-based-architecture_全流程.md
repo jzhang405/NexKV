@@ -97,7 +97,7 @@ flowchart TD
 
     style HostLayer fill:#e1f5ff,stroke:#01579b,stroke-width:2px
     style NodeLayer fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    ```
+```
 
 #### 3.2 关键设计点
 
@@ -568,13 +568,42 @@ flowchart TD
 
 ### 4. 风险评估与应对措施
 
+#### 4.1 已识别风险
+
 | 风险点 | 影响等级 | 应对措施 |
 |--------|-----------|----------|
 | HostID 与 NodeID 混淆 | 中 | 明确命名规范：HostID 用 hostname 前缀（server-*），NodeID 用 node-* 前缀 |
-| 地址类型转换错误 | 中 | 提供 `TCPAddr()` 和 `UDPAddr()` 方法，统一 IPFS 格式输出 |
+| 地址类型转换错误 | 中 | 统一使用 Host.Hostname + Node.Addr 组合，避免独立 IP 字段 |
 | localhost 场景配置错误 | 中 | 文档明确 localhost 场景的配置示例，通过 host_id 逻辑区分 |
 | Role 类型定义不清晰 | 低 | 枚举定义文档化，配置文件添加注释说明 |
-| NodeAddress 字段缺失（IP、Port） | 中 | 提供 `ParseNodeAddress` 函数，支持 "IP:Port" 和 "IP:TCPPort:UDPPort" 格式解析 |
+| NodeAddress 字段变更 | 中 | 更新所有使用 Addr 的代码，移除 IPAddress 引用 |
+
+#### 4.2 补充风险（本次新增）
+
+| 风险点 | 影响等级 | 应对措施 |
+|--------|-----------|----------|
+| **并发安全风险** | 高 | Host 和 Node 使用独立的锁，通过 NodeID 访问避免锁顺序问题；使用 defer 确保锁释放 |
+| **故障转移误判风险** | 高 | 双重验证机制（心跳超时 + 主动探测）；添加连续失败次数阈值（如 3 次） |
+| **性能回退风险** | 中 | 通过 NodeID 访问 Node 是 O(1) map 查找，性能影响可忽略；添加性能基准测试验证 |
+| **测试覆盖风险** | 中 | 分别测试 localhost 和分布式场景；添加边界条件测试（端口冲突、节点故障） |
+| **一致性风险** | 中 | Host.NodeID 与 Node.NodeID 必须一致；添加一致性检查函数验证 |
+
+#### 4.3 风险缓解计划
+
+**阶段 1：开发阶段**
+- 编写单元测试时覆盖并发场景
+- 使用 race detector 检测数据竞争
+- 添加一致性检查函数
+
+**阶段 2：测试阶段**
+- localhost 场景完整测试
+- 分布式场景完整测试
+- 故障注入测试（网络分区、节点宕机）
+
+**阶段 3：上线阶段**
+- 灰度发布，先在测试环境验证
+- 监控关键指标（故障转移次数、误判率）
+- 准备回滚方案
 
 ---
 
@@ -746,5 +775,5 @@ flowchart TD
 |------|------|
 | 文档最终版本 | v1.0 |
 | 归档日期 | 202X-XX-XX |
-| 归档路径 | `docs/06_project_management/pr_documents/feature/2026-01-29_PR-XXX_cluster-host-based-architecture_全流程.md` |
+| 归档路径 | `docs/06_project_management/pr_documents/feature/2026-01-29_PR-033_cluster-host-based-architecture_全流程.md` |
 | 后续维护人 | 架构师 + AI 团队 |

@@ -101,7 +101,13 @@ flowchart TD
 
 #### 3.2 关键设计点
 
-1. **Host 结构定义**：
+1. **核心约束（无 gRPC/无 Protocol Buffers）**：
+   - **序列化协议**：使用 **MsgPack**（已在项目中使用）
+   - **传输协议**：自定义 TCP 帧格式（参考 `internal/metadata/transport`）
+   - **端口规则**：集群全局约束 `UDPPort = TCPPort + 1`
+   - **禁止依赖**：不引入 gRPC、Protocol Buffers、任何第三方 RPC 框架
+
+2. **Host 结构定义**：
    ```go
    type Host struct {
        HostID       string              // 机器唯一标识（逻辑标识，如 "server-1", "localhost-1"）
@@ -112,6 +118,9 @@ flowchart TD
        LeafNodeID          string        // 必备：叶子节点 ID
        ParentNodeID        string        // 可选：父节点 ID
        ParentStandbyNodeID string        // 可选：父备份节点 ID
+
+       // MsgPack 序列化支持
+       // 使用 msgpack:"fieldname" 标签
 
        // ... 其他字段（状态、心跳、元数据等）
    }
@@ -124,19 +133,35 @@ flowchart TD
    )
    ```
 
-2. **Node 结构定义**：
+3. **Node 结构定义**：
    ```go
    // NodeAddress 只包含端口信息（IP 从 Host.Hostname 获取）
+   // MsgPack 序列化支持
    type NodeAddress struct {
-       TCPPort int    // TCP 端口
-       UDPPort int    // UDP 端口
+       TCPPort int `msgpack:"tcp_port"` // TCP 端口
+       UDPPort int `msgpack:"udp_port"` // UDP 端口（必须 = TCPPort + 1）
+   }
+
+   // Validate 验证端口配置的合法性
+   func (na *NodeAddress) Validate() error {
+       // 规则 1: TCP 端口范围 [1024, 65534]（留 65535 给 UDP）
+       if na.TCPPort < 1024 || na.TCPPort > 65534 {
+           return fmt.Errorf("invalid TCPPort %d: must be in range [1024, 65534]", na.TCPPort)
+       }
+
+       // 规则 2: UDP 端口必须等于 TCP 端口 + 1（集群全局规则）
+       if na.UDPPort != na.TCPPort+1 {
+           return fmt.Errorf("invalid port pair: UDPPort(%d) must equal TCPPort(%d)+1", na.UDPPort, na.TCPPort)
+       }
+
+       return nil
    }
 
    type Node struct {
-       NodeID    string       // 节点唯一标识（如 "node-leaf-1", "node-parent-1"）
-       HostID    string       // 归属物理机器 ID（引用 Host.HostID）
-       Addr       NodeAddress  // 端口信息（IP 从 Host.Hostname 获取）
-       Role       NodeRole     // 节点角色: Leaf, Parent, ParentStandby
+       NodeID    string       `msgpack:"node_id"` // 节点唯一标识（如 "node-leaf-1", "node-parent-1"）
+       HostID    string       `msgpack:"host_id"` // 归属物理机器 ID（引用 Host.HostID）
+       Addr       NodeAddress  `msgpack:"addr"`   // 端口信息（IP 从 Host.Hostname 获取）
+       Role       NodeRole     `msgpack:"role"`   // 节点角色: Leaf, Parent, ParentStandby
 
        // 完整网络地址 = Host.Hostname + Node.Addr
        // TCP: Host.Hostname:Node.Addr.TCPPort
@@ -153,22 +178,422 @@ flowchart TD
    )
    ```
 
-3. **NodeID 格式设计**：
-   - **格式**：`node-{role}-{index}`（如 `node-leaf-1`、`node-parent-1`）
-   - **前缀**：`node-`（明确是节点标识，而非机器标识）
+4. **NodeID/HostID 命名规范**：
+
+   **HostID 格式**：
+   - **格式**：`{prefix}-{index}`（如 `server-1`、`localhost-1`、`test-host-1`）
+   - **前缀规则**：
+     - 生产环境：`server-{index}`
+     - 测试环境：`test-host-{index}`
+     - localhost 场景：`localhost-{index}`
+   - **作用域**：标识一台物理机器（逻辑标识符）
+   - **唯一性**：集群内必须唯一
+
+   **NodeID 格式**：
+   - **格式**：`node-{role}-{index}`（如 `node-leaf-1`、`node-parent-1`、`node-parent-standby-1`）
+   - **前缀规则**：`node-`（明确是节点标识，而非机器标识）
    - **作用域**：全局唯一标识一个逻辑节点
+   - **命名示例**：
+     - Leaf 节点：`node-leaf-1`、`node-leaf-2`
+     - Parent 节点：`node-parent-1`、`node-parent-2`
+     - ParentStandby 节点：`node-parent-standby-1`
 
-4. **HostID 格式设计**：
-   - **格式**：使用 hostname 前缀（如 `server-1`、`server-2`、`test-host-1`）
-   - **类型**：string（便于配置文件读取和日志输出）
-   - **作用域**：标识一台物理机器
+5. **HostRole 到 NodeID 约束规则**：
 
-5. **host_id 与 hostname 的分离**：
-   - **host_id**：逻辑标识符，用于区分部署单元（如 `test-host-1`、`server-1`）
-   - **hostname**：物理地址，用于实际网络通信（如 `127.0.0.1`、`192.168.1.100`）
-   - **localhost 场景**：通过 `host_id` 逻辑区分不同"虚拟物理机"
+   | HostRole | LeafNodeID | ParentNodeID | ParentStandbyNodeID | 说明 |
+   |----------|-----------|--------------|---------------------|------|
+   | `leaf_only` | ✅ 必备 | ❌ 禁止 | ❌ 禁止 | 仅运行 Leaf 节点 |
+   | `leaf_parent` | ✅ 必备 | ✅ 必备 | ❌ 禁止 | 运行 Leaf + Parent |
+   | `leaf_parent_standby` | ✅ 必备 | ✅ 必备 | ✅ 必备 | 运行 Leaf + Parent + 热备 |
 
-6. **配置文件格式**：
+   **验证函数**：
+   ```go
+   func (h *Host) ValidateNodeIDs() error {
+       switch h.Role {
+       case HostRoleLeafOnly:
+           if h.LeafNodeID == "" {
+               return fmt.Errorf("leaf_only: LeafNodeID is required")
+           }
+           if h.ParentNodeID != "" || h.ParentStandbyNodeID != "" {
+               return fmt.Errorf("leaf_only: ParentNodeID/ParentStandbyNodeID must be empty")
+           }
+       case HostRoleLeafParent:
+           if h.LeafNodeID == "" || h.ParentNodeID == "" {
+               return fmt.Errorf("leaf_parent: both LeafNodeID and ParentNodeID are required")
+           }
+           if h.ParentStandbyNodeID != "" {
+               return fmt.Errorf("leaf_parent: ParentStandbyNodeID must be empty")
+           }
+       case HostRoleLeafParentStandby:
+           if h.LeafNodeID == "" || h.ParentNodeID == "" || h.ParentStandbyNodeID == "" {
+               return fmt.Errorf("leaf_parent_standby: all NodeIDs are required")
+           }
+       }
+       return nil
+   }
+   ```
+
+6. **端口分配算法（MD5 + 全局冲突检测）**：
+   ```go
+   import (
+       "crypto/md5"
+       "encoding/binary"
+       "sync"
+   )
+
+   // 全局端口分配表（防止冲突）
+   var (
+       allocatedPorts = sync.Map{} // map[int]bool // tcpPort -> true
+   )
+
+   // AllocTCPPort 基于 host_id 分配 TCP 端口（UDP = TCP + 1）
+   // 使用 MD5 哈希确保确定性：同一 host_id 始终获得相同端口
+   func AllocTCPPort(hostID string) (tcpPort, udpPort int, err error) {
+       // 步骤 1: 计算 MD5 哈希
+       hash := md5.Sum([]byte(hostID))
+
+       // 步骤 2: 取前 4 字节转换为 uint32
+       hashUint32 := binary.BigEndian.Uint32(hash[:4])
+
+       // 步骤 3: 映射到端口范围 [9000, 32767]（避免系统端口和潜在冲突）
+       tcpPort = 9000 + int(hashUint32%23768) // 32767 - 9000 = 23768 个可用端口
+
+       // 步骤 4: UDP 端口 = TCP 端口 + 1（集群全局规则）
+       udpPort = tcpPort + 1
+
+       // 步骤 5: 全局冲突检测（防止多线程分配冲突）
+       if _, exists := allocatedPorts.LoadOrStore(tcpPort, true); exists {
+           // 端口已被分配，重新计算（递增重试）
+           return AllocTCPPort(hostID + "-retry")
+       }
+
+       return tcpPort, udpPort, nil
+   }
+
+   // ReleasePort 释放端口（用于故障转移等场景）
+   func ReleasePort(tcpPort int) {
+       allocatedPorts.Delete(tcpPort)
+   }
+
+   // 使用示例：
+   // tcp, udp, _ := AllocTCPPort("localhost-1")  // -> tcp=9123, udp=9124
+   // tcp, udp, _ := AllocTCPPort("localhost-1")  // -> tcp=9123, udp=9124 (确定性)
+   // tcp, udp, _ := AllocTCPPort("server-1")    // -> tcp=10456, udp=10457
+   ```
+
+   **端口分配规则**：
+   - **确定性**：同一 host_id 始终获得相同的端口对（基于 MD5 哈希）
+   - **范围**：TCP 端口 [9000, 32767]，UDP 端口自动 = TCP + 1
+   - **冲突检测**：全局 `sync.Map` 防止并发分配冲突
+   - **重试机制**：冲突时自动递增 host_id 后缀重试
+
+7. **可配置评分权重（分布式场景）**：
+   ```go
+   // ScoreWeights 定义 Host 评分的权重配置
+   type ScoreWeights struct {
+       CPUWeight      float64 `msgpack:"cpu_weight"`      // CPU 权重
+       MemWeight      float64 `msgpack:"mem_weight"`      // 内存权重
+       LatencyWeight  float64 `msgpack:"latency_weight"`  // 延迟权重
+       LoadWeight     float64 `msgpack:"load_weight"`     // 负载权重
+   }
+
+   // DefaultScoreWeights 默认权重配置
+   var DefaultScoreWeights = ScoreWeights{
+       CPUWeight:      0.3,  // CPU 使用率权重
+       MemWeight:      0.3,  // 内存使用率权重
+       LatencyWeight:  0.3,  // 网络延迟权重
+       LoadWeight:     0.1,  // 已有节点数权重
+   }
+
+   // LocalhostScoreWeights localhost 场景权重配置
+   var LocalhostScoreWeights = ScoreWeights{
+       CPUWeight:      0.0,  // localhost 忽略 CPU
+       MemWeight:      0.0,  // localhost 忽略内存
+       LatencyWeight:  0.0,  // localhost 延迟为 0
+       LoadWeight:     1.0,  // 仅考虑负载均衡
+   }
+
+   // 使用可配置权重计算评分
+   func calculateHostScoreWithWeights(host Host, weights ScoreWeights) HostScore {
+       // 归一化评分（越高越好）
+       cpuScore := 1.0 - host.CPUUsage      // CPU 使用率越低越好
+       memScore := 1.0 - host.MemUsage      // 内存使用率越低越好
+       latencyScore := 1000.0 / (host.NetworkLatency + 1) // 延迟越低越好
+       loadScore := 1.0 / float64(host.ExistingNodes+1) // 负载越低越好
+
+       totalScore := cpuScore*weights.CPUWeight +
+                     memScore*weights.MemWeight +
+                     latencyScore*weights.LatencyWeight +
+                     loadScore*weights.LoadWeight
+
+       return HostScore{
+           HostID:         host.HostID,
+           CPUUsage:      host.CPUUsage,
+           MemUsage:      host.MemUsage,
+           NetworkLatency: host.NetworkLatency,
+           ExistingNodes: host.ExistingNodes,
+           Score:          totalScore,
+       }
+   }
+   ```
+
+8. **TCP+UDP 双重探测机制（故障检测增强）**：
+   ```go
+   // ProbeResult 探测结果
+   type ProbeResult struct {
+       TCPReachable bool      // TCP 可达
+       UDPReachable bool      // UDP 可达
+       RTT          time.Duration // 往返时延
+   }
+
+   // DualProbe 双重探测（TCP + UDP）
+   func (n *Node) DualProbe(timeout time.Duration) (*ProbeResult, error) {
+       result := &ProbeResult{}
+
+       // 步骤 1: TCP 探测（连接性 + 时延）
+       start := time.Now()
+       conn, err := net.DialTimeout("tcp", n.TCPAddr(), timeout)
+       if err == nil {
+           result.TCPReachable = true
+           result.RTT = time.Since(start)
+           conn.Close()
+       }
+
+       // 步骤 2: UDP 探测（轻量级 ping）
+       udpConn, err := net.Dial("udp", n.UDPAddr())
+       if err == nil {
+           // 发送轻量级 ping 消息（使用自定义帧格式）
+           pingMsg := []byte("PING")
+           udpConn.Write(pingMsg)
+
+           // 设置读取超时
+           udpConn.SetReadDeadline(time.Now().Add(timeout))
+
+           // 尝试读取响应
+           buf := make([]byte, 16)
+           _, err := udpConn.Read(buf)
+           if err == nil {
+               result.UDPReachable = true
+           }
+           udpConn.Close()
+       }
+
+       return result, nil
+   }
+
+   // IsFailedWithProbe 双重验证故障检测
+   func (n *Node) IsFailedWithProbe() bool {
+       // 步骤 1: 心跳超时检测
+       if time.Since(n.LastHeartbeat) < 30*time.Second {
+           return false // 心跳正常，未故障
+       }
+
+       // 步骤 2: 双重探测验证（避免误判）
+       result, err := n.DualProbe(5 * time.Second)
+       if err != nil {
+           // 探测失败，判定为故障
+           return true
+       }
+
+       // 步骤 3: 双重可达才判定为正常（容忍单协议失败）
+       return !(result.TCPReachable && result.UDPReachable)
+   }
+   ```
+
+   **双重探测优势**：
+   - **降低误判**：单协议失败不一定代表节点故障
+   - **快速检测**：TCP 探测可测量 RTT，UDP 探测更轻量
+   - **容错能力**：容忍单协议故障（如 UDP 端口被防火墙）
+
+9. **ParentStandby 元数据同步机制**：
+   ```go
+   // MetadataSyncConfig 元数据同步配置
+   type MetadataSyncConfig struct {
+       IncrementalInterval time.Duration // 增量同步间隔
+       FullSyncInterval     time.Duration // 全量同步间隔
+       BatchSize            int           // 批量同步大小
+   }
+
+   // DefaultMetadataSyncConfig 默认同步配置
+   var DefaultMetadataSyncConfig = MetadataSyncConfig{
+       IncrementalInterval: 100 * time.Millisecond, // 增量同步 100ms
+       FullSyncInterval:     5 * time.Second,       // 全量同步 5s
+       BatchSize:            100,                    // 每批最多 100 条变更
+   }
+
+   // ParentStandbySyncer ParentStandby 元数据同步器
+   type ParentStandbySyncer struct {
+       parent          *Node
+       parentStandby   *Node
+       config          MetadataSyncConfig
+       lastSyncVersion uint64
+       stopCh          chan struct{}
+   }
+
+   // Start 启动同步器
+   func (s *ParentStandbySyncer) Start() {
+       // 增量同步协程
+       go s.incrementalSyncLoop()
+
+       // 全量同步协程
+       go s.fullSyncLoop()
+   }
+
+   // incrementalSyncLoop 增量同步循环
+   func (s *ParentStandbySyncer) incrementalSyncLoop() {
+       ticker := time.NewTicker(s.config.IncrementalInterval)
+       defer ticker.Stop()
+
+       for {
+           select {
+           case <-ticker.C:
+               s.syncIncremental()
+           case <-s.stopCh:
+               return
+           }
+       }
+   }
+
+   // fullSyncLoop 全量同步循环
+   func (s *ParentStandbySyncer) fullSyncLoop() {
+       ticker := time.NewTicker(s.config.FullSyncInterval)
+       defer ticker.Stop()
+
+       for {
+           select {
+           case <-ticker.C:
+               s.syncFull()
+           case <-s.stopCh:
+               return
+           }
+       }
+   }
+
+   // syncIncremental 增量同步（仅同步变更部分）
+   func (s *ParentStandbySyncer) syncIncremental() error {
+       // 获取增量变更日志
+       changes, err := s.parent.GetChangeLogs(s.lastSyncVersion)
+       if err != nil {
+           return err
+       }
+
+       // 批量发送到 ParentStandby
+       for len(changes) > 0 {
+           batchSize := min(len(changes), s.config.BatchSize)
+           batch := changes[:batchSize]
+
+           // 使用自定义 TCP 帧格式发送
+           if err := s.sendToParentStandby(batch); err != nil {
+               return err
+           }
+
+           changes = changes[batchSize:]
+       }
+
+       // 更新同步版本
+       if len(changes) > 0 {
+           s.lastSyncVersion = changes[len(changes)-1].Version
+       }
+
+       return nil
+   }
+
+   // syncFull 全量同步（同步完整元数据快照）
+   func (s *ParentStandbySyncer) syncFull() error {
+       // 获取完整元数据快照
+       snapshot, err := s.parent.GetMetadataSnapshot()
+       if err != nil {
+           return err
+       }
+
+       // 发送到 ParentStandby
+       return s.sendSnapshotToParentStandby(snapshot)
+   }
+   ```
+
+   **元数据同步规则**：
+   - **增量同步**：100ms 间隔，仅同步变更部分（高性能）
+   - **全量同步**：5s 间隔，同步完整快照（一致性兜底）
+   - **批量传输**：每批最多 100 条变更（避免单次传输过大）
+   - **版本控制**：基于版本号的增量同步
+
+10. **防脑裂延迟机制（故障转移增强）**：
+   ```go
+   // FailoverConfig 故障转移配置
+   type FailoverConfig struct {
+       DelayDuration         time.Duration // 延迟时长（防止脑裂）
+       ConfirmRequired       bool          // 是否需要确认
+       MaxConsecutiveFails   int           // 最大连续失败次数
+   }
+
+   // DefaultFailoverConfig 默认故障转移配置
+   var DefaultFailoverConfig = FailoverConfig{
+       DelayDuration:       2 * time.Second, // 延迟 2 秒
+       ConfirmRequired:     true,            // 需要确认
+       MaxConsecutiveFails: 3,               // 最多 3 次连续失败
+   }
+
+   // ParentFailoverManager Parent 故障转移管理器
+   type ParentFailoverManager struct {
+       parent           *Node
+       parentStandby    *Node
+       config           FailoverConfig
+       failureCount     int
+       lastFailureTime  time.Time
+       mu               sync.Mutex
+   }
+
+   // DetectFailure 检测故障（带防脑裂延迟）
+   func (m *ParentFailoverManager) DetectFailure() bool {
+       m.mu.Lock()
+       defer m.mu.Unlock()
+
+       // 步骤 1: 双重探测检测
+       if !m.parent.IsFailedWithProbe() {
+           // 未故障，重置失败计数
+           m.failureCount = 0
+           return false
+       }
+
+       // 步骤 2: 记录失败
+       now := time.Now()
+       if now.Sub(m.lastFailureTime) > 10*time.Second {
+           // 距离上次失败超过 10s，重置计数
+           m.failureCount = 0
+       }
+
+       m.failureCount++
+       m.lastFailureTime = now
+
+       // 步骤 3: 检查连续失败次数
+       if m.failureCount < m.config.MaxConsecutiveFails {
+           // 未达到阈值，不触发转移
+           return false
+       }
+
+       // 步骤 4: 防脑裂延迟（关键！）
+       // 等待 2 秒，确认不是网络抖动
+       time.Sleep(m.config.DelayDuration)
+
+       // 步骤 5: 延迟后再次探测
+       if !m.parent.IsFailedWithProbe() {
+           // 延迟后恢复，重置计数
+           m.failureCount = 0
+           return false
+       }
+
+       // 确认故障，触发转移
+       return true
+   }
+   ```
+
+   **防脑裂延迟作用**：
+   - **场景**：Parent 网络抖动 → 短暂不可达 → 恢复正常
+   - **无延迟**：立即触发故障转移 → 可能导致双 Parent（脑裂）
+   - **有延迟**：等待 2 秒 → 再次探测 → 确认真实故障 → 触发转移
+   - **效果**：有效避免网络抖动导致的误判和脑裂
+
+11. **配置文件格式**：
    ```yaml
    hosts:
      - host_id: "server-1"       # 逻辑标识符
@@ -583,10 +1008,12 @@ flowchart TD
 | 风险点 | 影响等级 | 应对措施 |
 |--------|-----------|----------|
 | **并发安全风险** | 高 | Host 和 Node 使用独立的锁，通过 NodeID 访问避免锁顺序问题；使用 defer 确保锁释放 |
-| **故障转移误判风险** | 高 | 双重验证机制（心跳超时 + 主动探测）；添加连续失败次数阈值（如 3 次） |
+| **故障转移误判风险** | 高 | 双重验证机制（心跳超时 + TCP/UDP 主动探测）；添加连续失败次数阈值（3 次）；防脑裂延迟 2 秒 |
 | **性能回退风险** | 中 | 通过 NodeID 访问 Node 是 O(1) map 查找，性能影响可忽略；添加性能基准测试验证 |
 | **测试覆盖风险** | 中 | 分别测试 localhost 和分布式场景；添加边界条件测试（端口冲突、节点故障） |
 | **一致性风险** | 中 | Host.NodeID 与 Node.NodeID 必须一致；添加一致性检查函数验证 |
+| **TCP 连接池耗尽风险** | 低 | 故障探测时使用短连接（探测完立即关闭）；设置连接超时（5 秒）；监控活跃连接数 |
+| **MsgPack 编码兼容性风险** | 低 | MsgPack 是稳定协议，向后兼容；添加版本字段到结构体；编码前后验证字段完整性 |
 
 #### 4.3 风险缓解计划
 
@@ -630,58 +1057,84 @@ flowchart TD
    - 优先实现 Host 和 Node 核心结构
    - 遵循编码规范（`docs/03_development/01_编码规范文档.md`）
 
-2. **实现顺序（自底向上）**
+2. **实现顺序（自底向上，带优先级）**
 
-   **阶段 1：基础结构定义**
-   - [ ] 第1步：定义 Host 结构体（`internal/metadata/cluster/host.go`）
+   **优先级说明**：
+   - **P0（核心）**：必须实现，阻塞后续功能
+   - **P1（重要）**：重要功能，提升可用性
+   - **P2（质量）**：代码质量、文档、性能优化
+
+   **阶段 1：基础结构定义（P0）**
+   - [ ] **第1步（P0）**：定义 Host 结构体（`internal/metadata/cluster/host.go`）
      - HostID、Hostname、Role 字段
      - LeafNodeID、ParentNodeID、ParentStandbyNodeID 字段
-   - [ ] 第2步：定义 Node 结构体（`internal/metadata/cluster/node.go`）
+     - 添加 MsgPack 标签（`msgpack:"fieldname"`）
+   - [ ] **第2步（P0）**：定义 Node 结构体（`internal/metadata/cluster/node.go`）
      - NodeID、HostID、Addr（NodeAddress）、Role 字段
-   - [ ] 第3步：定义 NodeAddress 结构体（只包含端口）
-   - [ ] 第4步：定义 HostRole 和 NodeRole 枚举
-   - [ ] 第5步：编写基础结构单元测试
+     - 添加 MsgPack 标签（`msgpack:"fieldname"`）
+   - [ ] **第3步（P0）**：定义 NodeAddress 结构体（只包含端口）
+     - TCPPort、UDPPort 字段（UDP = TCP + 1）
+     - 实现 `Validate()` 方法（端口范围 1024-65534）
+   - [ ] **第4步（P0）**：定义 HostRole 和 NodeRole 枚举
+   - [ ] **第5步（P0）**：编写基础结构单元测试
 
-   **阶段 2：HostManager 实现**
-   - [ ] 第6步：创建 HostManager（`internal/metadata/cluster/host_manager.go`）
-   - [ ] 第7步：实现 AddHost（添加物理机器）
-   - [ ] 第8步：实现 GetHost（获取机器信息）
-   - [ ] 第9步：实现 RemoveHost（移除物理机器）
-   - [ ] 第10步：实现 GetHostTopology（获取机器拓扑）
-   - [ ] 第11步：编写 HostManager 单元测试
+   **阶段 2：HostManager 实现（P0）**
+   - [ ] **第6步（P0）**：创建 HostManager（`internal/metadata/cluster/host_manager.go`）
+   - [ ] **第7步（P0）**：实现 AddHost（添加物理机器）
+   - [ ] **第8步（P0）**：实现 GetHost（获取机器信息）
+   - [ ] **第9步（P0）**：实现 RemoveHost（移除物理机器）
+   - [ ] **第10步（P0）**：实现 ValidateNodeIDs（验证 HostRole 到 NodeID 约束）
+   - [ ] **第11步（P0）**：编写 HostManager 单元测试
 
-   **阶段 3：TreeCoordinator 调整**
-   - [ ] 第12步：调整 TreeCoordinator 结构（`internal/metadata/cluster/tree_coordinator.go`）
-   - [ ] 第13步：添加 allHosts map 和 localHost 字段
-   - [ ] 第14步：调整 NewTreeCoordinator 构造函数
-   - [ ] 第15步：调整 Start 方法支持双节点启动
-   - [ ] 第16步：调整 sendHeartbeat 方法
-   - [ ] 第17步：编写集成测试
+   **阶段 3：TreeCoordinator 调整（P1）**
+   - [ ] **第12步（P1）**：调整 TreeCoordinator 结构（`internal/metadata/cluster/tree_coordinator.go`）
+   - [ ] **第13步（P1）**：添加 allHosts map 和 localHost 字段
+   - [ ] **第14步（P1）**：调整 NewTreeCoordinator 构造函数
+   - [ ] **第15步（P1）**：调整 Start 方法支持双节点启动
+   - [ ] **第16步（P1）**：调整 sendHeartbeat 方法
+   - [ ] **第17步（P1）**：编写集成测试
 
-   **阶段 4：动态分配算法实现**
-   - [ ] 第18步：实现端口分配函数（基于 host_id 哈希）
-   - [ ] 第19步：实现 localhost host_id 生成（localhost-{序号}）
-   - [ ] 第20步：实现场景判断（localhost vs 分布式）
-   - [ ] 第21步：实现 localhost 场景分配逻辑
-   - [ ] 第22步：实现分布式场景分配逻辑（评分算法）
-   - [ ] 第23步：编写动态分配算法测试
+   **阶段 4：动态分配算法实现（P0）**
+   - [ ] **第18步（P0）**：实现端口分配函数（MD5 哈希 + 全局冲突检测）
+     - 使用 `AllocTCPPort(hostID)` 函数
+     - 全局 `sync.Map` 防止端口冲突
+   - [ ] **第19步（P0）**：实现 localhost host_id 生成（localhost-{序号}）
+   - [ ] **第20步（P0）**：实现场景判断（localhost vs 分布式）
+   - [ ] **第21步（P0）**：实现可配置评分权重（ScoreWeights 结构）
+   - [ ] **第22步（P0）**：实现 localhost 场景分配逻辑（仅负载均衡）
+   - [ ] **第23步（P0）**：实现分布式场景分配逻辑（评分算法）
+   - [ ] **第24步（P0）**：编写动态分配算法测试
 
-   **阶段 5：故障转移机制实现**
-   - [ ] 第24步：实现故障检测（心跳超时 + 主动探测）
-   - [ ] 第25步：实现 ParentStandby 提升逻辑
-   - [ ] 第26步：实现拓扑变更 Gossip 广播
-   - [ ] 第27步：编写故障转移测试
+   **阶段 5：故障转移机制实现（P0）**
+   - [ ] **第25步（P0）**：实现 TCP+UDP 双重探测机制
+     - 实现 `DualProbe(timeout)` 方法
+     - 实现 `IsFailedWithProbe()` 方法
+   - [ ] **第26步（P0）**：实现防脑裂延迟机制（2 秒延迟）
+     - 实现 `ParentFailoverManager`
+     - 连续失败次数阈值（3 次）
+   - [ ] **第27步（P0）**：实现 ParentStandby 元数据同步
+     - 增量同步：100ms 间隔
+     - 全量同步：5s 间隔
+   - [ ] **第28步（P0）**：实现 ParentStandby 提升逻辑
+   - [ ] **第29步（P0）**：实现拓扑变更 Gossip 广播
+   - [ ] **第30步（P0）**：编写故障转移测试
 
-   **阶段 6：质量保证**
-   - [ ] 第28步：使用 code-simplifier 优化代码
-   - [ ] 第29步：运行本地验证：`make build → make lint → make test → make clean`
-   - [ ] 第30步：确保测试覆盖率 > 80%
+   **阶段 6：质量保证（P1/P2）**
+   - [ ] **第31步（P1）**：使用 code-simplifier 优化代码
+   - [ ] **第32步（P1）**：运行本地验证：`make build → make lint → make test → make clean`
+   - [ ] **第33步（P2）**：确保测试覆盖率 > 80%
+   - [ ] **第34步（P2）**：性能基准测试（验证 O(1) 访问性能）
 
-   **阶段 7：文档同步**
-   - [ ] 第31步：编写 Post 文档总结实现情况
-   - [ ] 第32步：更新相关设计文档
-   - [ ] 第33步：架构师评审 Post 文档
-   - [ ] 第34步：推送到 GitHub，等待 CI 通过
+   **阶段 7：文档同步（P2）**
+   - [ ] **第35步（P2）**：编写 Post 文档总结实现情况
+   - [ ] **第36步（P2）**：更新相关设计文档
+   - [ ] **第37步（P2）**：架构师评审 Post 文档
+   - [ ] **第38步（P2）**：推送到 GitHub，等待 CI 通过
+
+   **优先级总结**：
+   - **P0 步骤**：第 1-30 步（核心功能实现）
+   - **P1 步骤**：第 31-32 步（代码质量保证）
+   - **P2 步骤**：第 33-38 步（性能优化和文档）
 
 3. **质量保证**
    - 代码编写完成后，使用 code-simplifier 进行代码优化

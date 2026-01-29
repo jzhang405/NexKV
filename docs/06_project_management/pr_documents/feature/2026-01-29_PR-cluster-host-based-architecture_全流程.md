@@ -177,10 +177,227 @@ flowchart TD
    - 通过 `host_id` 逻辑区分，支持单机多角色测试
 
 8. **核心机制**：
-   - **Host 层**：管理物理机器信息（hostname、部署模式、节点列表指针）
-   - **Node 层**：管理逻辑节点信息（网络地址、角色、归属 HostID）
-   - **地址信息下沉**：Host 不再包含 IP 和端口，这些信息存储在 Node 层
-   - **类型安全**：使用 `NodeAddress` 结构而非 `string`，避免类型错误
+    - **Host 层**：管理物理机器信息（hostname、部署模式、节点列表指针）
+    - **Node 层**：管理逻辑节点信息（网络地址、角色、归属 HostID）
+    - **地址信息下沉**：Host 不再包含 IP 和端口，这些信息存储在 Node 层
+    - **类型安全**：使用 `NodeAddress` 结构而非 `string`，避免类型错误
+
+9. **Parent/ParentStandby 动态分配算法**：
+
+    ```mermaid
+    flowchart TD
+        A[集群启动] --> B{是否存在 Parent 节点?}
+        B -->|否| C[触发动态分配]
+        B -->|是| D[跳过分配<br/>使用现有配置]
+
+        C --> E[扫描所有 Host]
+        E --> F[筛选可用 Host<br/>leaf_parent 或 leaf_parent_standby]
+        F --> G[评估候选 Host]
+        G --> H[选择最优 Host 作为 Parent]
+        H --> I[在选中的 Host 上创建 Parent 节点]
+
+        I --> J{是否需要 HA?}
+        J -->|是| K[选择次优 Host 作为 ParentStandby]
+        J -->|否| L[不创建 ParentStandby]
+
+        K --> M[在选中的 Host 上创建 ParentStandby 节点]
+        L --> N[分配完成]
+        M --> N
+
+        style C fill:#fff4e6,stroke:#e65100,stroke-width:2px
+        style G fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+        style M fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    ```
+
+    **9.1 分配原则**：
+
+    | 分配项 | 说明 | 策略 |
+    |--------|------|------|
+    | **Leaf 节点** | 静态配置，直接在 Host 上启动 | 不参与动态分配 |
+    | **Parent 节点** | 动态分配，选择最优 Host | 基于资源、负载、网络延迟 |
+    | **ParentStandby 节点** | 动态分配，作为 Parent 热备 | 选择次优 Host，确保快速切换 |
+
+    **9.2 动态分配触发时机**：
+
+    ```go
+    type AllocationTrigger int
+    const (
+        AllocationTriggerStartup      AllocationTrigger = iota // 集群启动时
+        AllocationTriggerNodeFailure                      // Parent 节点故障时
+        AllocationTriggerRebalance                     // 负载不均时（可选）
+        AllocationTriggerScaleIn                         // 缩容时
+        AllocationTriggerScaleOut                        // 扩容时
+    )
+    ```
+
+    **9.3 分配算法**：
+
+    ```go
+    // 评估候选 Host 的指标
+    type HostScore struct {
+        HostID         string
+        CPUUsage      float64  // CPU 使用率（0-1）
+        MemUsage      float64  // 内存使用率（0-1）
+        NetworkLatency float64  // 网络延迟（ms）
+        ExistingNodes int       // 已有节点数
+        Score          float64  // 综合评分
+    }
+
+    // 分配决策
+    func AllocateParent(availableHosts []Host) (primary Host, standby Host) {
+        scores := evaluateHosts(availableHosts)
+
+        // 排序：评分最高的优先
+        sort.Slice(scores, func(i, j int) bool {
+            return scores[i].Score > scores[j].Score
+        })
+
+        if len(scores) == 0 {
+            return Host{}, Host{} // 无可用 Host
+        }
+
+        // 最高分作为 Parent
+        primary := scores[0]
+
+        // 次高分作为 ParentStandby（如果需要 HA）
+        var standby Host
+        if len(scores) > 1 {
+            standby = scores[1]
+        }
+
+        return primary, standby
+    }
+
+    // 评分函数（加权综合评估）
+    func evaluateHosts(hosts []Host) []HostScore {
+        var scores []HostScore
+
+        for _, host := range hosts {
+            score := calculateHostScore(host)
+            scores = append(scores, score)
+        }
+
+        return scores
+    }
+
+    func calculateHostScore(host Host) HostScore {
+        // 权重配置（可调整）
+        cpuWeight := 0.3
+        memWeight := 0.3
+        latencyWeight := 0.3
+        loadWeight := 0.1
+
+        // 归一化评分（越高越好）
+        cpuScore := 1.0 - host.CPUUsage      // CPU 使用率越低越好
+        memScore := 1.0 - host.MemUsage      // 内存使用率越低越好
+        latencyScore := 1000.0 / (host.NetworkLatency + 1) // 延迟越低越好
+        loadScore := 1.0 / float64(host.ExistingNodes+1) // 负载越低越好
+
+        totalScore := cpuScore*cpuWeight +
+                     memScore*memWeight +
+                     latencyScore*latencyWeight +
+                     loadScore*loadWeight
+
+        return HostScore{
+            HostID:         host.HostID,
+            CPUUsage:      host.CPUUsage,
+            MemUsage:      host.MemUsage,
+            NetworkLatency: host.NetworkLatency,
+            ExistingNodes: host.ExistingNodes,
+            Score:          totalScore,
+        }
+    }
+    ```
+
+    **9.4 分配流程**：
+
+    **步骤 1：评估候选 Host**
+    - 收集所有角色为 `leaf_parent` 或 `leaf_parent_standby` 的 Host
+    - 收集每个 Host 的资源指标（CPU、内存、网络延迟、已有节点数）
+    - 使用评分函数计算综合得分
+
+    **步骤 2：选择 Parent**
+    - 选择评分最高的 Host 作为 Parent 节点所在机器
+    - 在该 Host 上创建 Parent Node（role = Parent）
+    - 记录分配决策到元数据
+
+    **步骤 3：选择 ParentStandby（可选）**
+    - 如果配置要求 HA（高可用），选择评分次高的 Host
+    - 在该 Host 上创建 ParentStandby Node（role = ParentStandby）
+    - ParentStandby 处于热备状态，实时同步 Parent 的数据
+
+    **步骤 4：更新集群拓扑**
+    - 将新分配的 Parent 和 ParentStandby 节点注册到 TreeCoordinator
+    - 通过 Gossip 协议同步节点信息到整个集群
+    - 重新构建树形拓扑结构
+
+    **9.5 故障转移机制**：
+
+    ```mermaid
+    flowchart TD
+        A[Parent 节点故障] --> B[TreeCoordinator 检测到故障]
+        B --> C{是否存在 ParentStandby?}
+
+        C -->|是| D[触发自动故障转移]
+        C -->|否| E[触发重新分配]
+
+        D --> F[将 ParentStandby 提升为 Parent]
+        F --> G[更新节点 Role: ParentStandby -> Parent]
+        G --> H[更新集群拓扑]
+        H --> I[通知所有 Leaf 节点]
+        I --> J[故障转移完成]
+
+        E --> K[执行动态分配算法]
+        K --> L[选择新的 Host 创建 Parent]
+        L --> M[选择新的 Host 创建 ParentStandby]
+        M --> N[注册到 TreeCoordinator]
+        N --> O[通过 Gossip 同步]
+
+        style D fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+        style F fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+        style K fill:#fff4e6,stroke:#e65100,stroke-width:2px
+    ```
+
+    **故障转移流程**：
+
+    | 阶段 | 操作 | 说明 |
+    |------|------|------|
+    | **检测** | TreeCoordinator 通过心跳或 Gossip 检测 Parent 故障 | 超时阈值：30s 无心跳判定故障 |
+    | **决策** | 检查是否存在可用的 ParentStandby | 有 ParentStandby → 快速切换；无 → 重新分配 |
+    | **切换** | 将 ParentStandby 提升为 Parent，Role 更新为 `Parent` | 切换时间 < 5s |
+    | **通知** | 通过 Gossip 协议向所有 Leaf 节点广播拓扑变更 | 确保最终一致性 |
+
+    **9.6 负载均衡触发（可选）**：
+
+    ```go
+    type RebalanceConfig struct {
+        Enabled           bool     // 是否启用
+        CheckInterval     time.Duration // 检查间隔（如 5 分钟）
+        LoadImbalanceThreshold float64 // 负载不均阈值（如 0.3）
+    }
+
+    func checkRebalance(cluster *Cluster) {
+        if !cluster.RebalanceConfig.Enabled {
+            return
+        }
+
+        parentLoad := cluster.CalculateParentLoad()
+        averageLoad := cluster.CalculateAverageLoad()
+
+        if parentLoad/averageLoad > 1.0+cluster.RebalanceConfig.LoadImbalanceThreshold {
+            // Parent 负载过高，触发重新分配
+            newHosts := selectOptimalHosts(cluster)
+            reallocateParents(newHosts)
+        }
+    }
+    ```
+
+    **9.7 动态分配的优势**：
+
+    1. **资源优化**：根据 Host 的实际资源使用情况选择最优部署位置
+    2. **故障自愈**：Parent 故障时自动触发分配，无需人工干预
+    3. **负载均衡**：避免单点过载，分散压力到多个 Host
+    4. **灵活扩展**：支持动态扩缩容，自动调整拓扑
 
 ---
 

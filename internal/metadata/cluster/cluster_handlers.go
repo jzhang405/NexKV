@@ -163,7 +163,7 @@ func (h *TreeCoordinatorRPCHandler) handleClusterStatus(ctx context.Context, msg
 	for _, node := range nodes {
 		nodeInfos = append(nodeInfos, transport.NodeInfo{
 			NodeID:   node.NodeID,
-			Addr:     node.Addr,
+			Addr:     node.Addr.TCPAddr(),
 			Role:     getNodeRole(h.coordinator, node),
 			Status:   node.Status.String(),
 			Level:    node.Level,
@@ -200,7 +200,7 @@ func (h *TreeCoordinatorRPCHandler) handleNodeSync(ctx context.Context, msg *tra
 	// 将节点信息序列化为 metadata
 	for _, node := range nodes {
 		nodeData := fmt.Sprintf("%s|%s|%s|%d|%s",
-			node.NodeID, node.Addr, node.ParentID, node.Level, node.Status.String())
+			node.NodeID, node.Addr.TCPAddr(), node.ParentID, node.Level, node.Status.String())
 		metadata[node.NodeID] = []byte(nodeData)
 	}
 

@@ -28,7 +28,7 @@ func TestNewTreeCoordinatorRPCHandler(t *testing.T) {
 func TestNewTreeCoordinatorRPCHandler_WithCoordinator(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 
 	handler := NewTreeCoordinatorRPCHandler(coordinator)
@@ -41,7 +41,7 @@ func TestNewTreeCoordinatorRPCHandler_WithCoordinator(t *testing.T) {
 func TestTreeCoordinatorRPCHandler_SetCoordinator(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 
 	handler := NewTreeCoordinatorRPCHandler(nil)
@@ -63,7 +63,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NilCoordinator(t *testing.T) {
 	req := &transport.NodeJoinMessage{
 		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeJoin},
 		NodeID:      "child1",
-		Addr:        "child1:9212",
+		Addr:        "127.0.0.1:9212",
 		Role:        "child",
 	}
 
@@ -78,7 +78,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NilCoordinator(t *testing.T) {
 func TestTreeCoordinatorRPCHandler_HandleRequest_UnsupportedMessageType(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 
 	handler := NewTreeCoordinatorRPCHandler(coordinator)
@@ -104,7 +104,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_UnsupportedMessageType(t *testi
 func TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer func() { _ = coordinator.Stop() }()
@@ -115,7 +115,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin(t *testing.T) {
 	req := &transport.NodeJoinMessage{
 		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeJoin},
 		NodeID:      "child1",
-		Addr:        "child1:9212",
+		Addr:        "127.0.0.1:9212",
 		Role:        "child",
 	}
 
@@ -148,7 +148,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin_MaxChildren(t *testing
 		HeartbeatTimeout:  15 * time.Second,
 	}
 
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer func() { _ = coordinator.Stop() }()
@@ -160,7 +160,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin_MaxChildren(t *testing
 	req1 := &transport.NodeJoinMessage{
 		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeJoin},
 		NodeID:      "child1",
-		Addr:        "child1:9212",
+		Addr:        "127.0.0.1:9212",
 		Role:        "child",
 	}
 
@@ -190,7 +190,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeJoin_MaxChildren(t *testing
 func TestTreeCoordinatorRPCHandler_HandleRequest_NodeLeave(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer func() { _ = coordinator.Stop() }()
@@ -231,7 +231,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeLeave(t *testing.T) {
 func TestTreeCoordinatorRPCHandler_HandleRequest_NodeLeave_NotFound(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer func() { _ = coordinator.Stop() }()
@@ -260,7 +260,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeLeave_NotFound(t *testing.T
 func TestTreeCoordinatorRPCHandler_HandleRequest_NodeReparent(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 
 	handler := NewTreeCoordinatorRPCHandler(coordinator)
@@ -295,7 +295,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeReparent(t *testing.T) {
 func TestTreeCoordinatorRPCHandler_HandleRequest_ClusterStatus(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer func() { _ = coordinator.Stop() }()
@@ -332,7 +332,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_ClusterStatus(t *testing.T) {
 	localNode := findNodeInfo(statusMsg.Nodes, "node1")
 	assert.NotNil(t, localNode)
 	assert.Equal(t, "node1", localNode.NodeID)
-	assert.Equal(t, "node1:9211", localNode.Addr)
+	assert.Equal(t, "/ip4/127.0.0.1/tcp/9211", localNode.Addr)
 	assert.Equal(t, "self", localNode.Role)
 	assert.Equal(t, "Ready", localNode.Status) // Status.String() 返回 "Ready"
 	assert.Equal(t, 0, localNode.Level)
@@ -347,7 +347,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_ClusterStatus(t *testing.T) {
 func TestTreeCoordinatorRPCHandler_HandleRequest_NodePing(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer func() { _ = coordinator.Stop() }()
@@ -386,7 +386,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodePing(t *testing.T) {
 func TestTreeCoordinatorRPCHandler_HandleRequest_NodeSync(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer func() { _ = coordinator.Stop() }()
@@ -421,11 +421,11 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeSync(t *testing.T) {
 	assert.Contains(t, syncMsg.Metadata, "node1")
 	// child1 不在 allNodes 中，所以不会出现在 metadata 中
 
-	// 验证节点数据格式
+	// 验证节点数据格式（序列化格式：node1|/ip4/127.0.0.1/tcp/9211||0|Ready）
 	node1Data := string(syncMsg.Metadata["node1"])
 	assert.Contains(t, node1Data, "node1")
-	assert.Contains(t, node1Data, "node1:9211")
-	assert.Contains(t, node1Data, "Ready") // Status.String() 返回 "Ready"
+	assert.Contains(t, node1Data, "/ip4/127.0.0.1/tcp/9211") // 使用 TCPAddr() 后的格式
+	assert.Contains(t, node1Data, "Ready")                   // Status.String() 返回 "Ready"
 }
 
 // ========================================
@@ -436,7 +436,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeSync(t *testing.T) {
 func TestGetNodeRole(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer func() { _ = coordinator.Stop() }()
@@ -457,7 +457,7 @@ func TestGetNodeRole(t *testing.T) {
 func TestGetNodeRole_Root(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "node1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 	require.NoError(t, coordinator.Start())
 	defer func() { _ = coordinator.Stop() }()

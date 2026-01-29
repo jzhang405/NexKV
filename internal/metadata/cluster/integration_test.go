@@ -87,7 +87,7 @@ func TestIntegration_MultiNodeCluster(t *testing.T) {
 	t.Logf("📊 集群节点列表（共 %d 个）:", len(nodes))
 	for _, node := range nodes {
 		t.Logf("  - %s: %s (Level: %d, Status: %s)",
-			node.NodeID, node.Addr, node.Level, node.Status)
+			node.NodeID, node.Addr.TCPAddr(), node.Level, node.Status)
 	}
 
 	// 验证根节点存在
@@ -316,7 +316,7 @@ func TestIntegration_ListNodes(t *testing.T) {
 	t.Logf("📊 初始节点列表（%d 个）:", len(nodes))
 	for _, node := range nodes {
 		t.Logf("  - %s: %s (Level: %d, Status: %s)",
-			node.NodeID, node.Addr, node.Level, node.Status)
+			node.NodeID, node.Addr.TCPAddr(), node.Level, node.Status)
 	}
 
 	// 添加子节点
@@ -330,13 +330,13 @@ func TestIntegration_ListNodes(t *testing.T) {
 	t.Logf("📊 添加节点后列表（%d 个）:", len(nodes))
 	for _, node := range nodes {
 		t.Logf("  - %s: %s (Level: %d, Status: %s)",
-			node.NodeID, node.Addr, node.Level, node.Status)
+			node.NodeID, node.Addr.TCPAddr(), node.Level, node.Status)
 	}
 
 	// 验证根节点存在
 	rootNode, err := root.GetNode("root")
 	require.NoError(t, err)
 	assert.Equal(t, "root", rootNode.NodeID)
-	assert.Equal(t, "127.0.0.1:9211", rootNode.Addr)
+	assert.Equal(t, "/ip4/127.0.0.1/tcp/9211", rootNode.Addr.TCPAddr())
 	assert.Equal(t, NodeStatusReady, rootNode.Status)
 }

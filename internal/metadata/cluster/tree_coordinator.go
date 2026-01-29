@@ -11,15 +11,181 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
+	"strings"
 
-	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/metadata/types"
+
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
 	"github.com/jzhang405/NexKV/internal/metadata/transport"
 )
+
+// ========================================
+// 核心数据结构（双层架构）
+// ========================================
+
+// NodeAddress 节点地址结构，包含节点的网络地址信息
+// 支持 TCP 和 UDP 两种协议，地址格式采用 IPFS 风格：/ip4/127.0.0.1/tcp/5001
+type NodeAddress struct {
+	Host string // 主机地址（可以是 IP 地址或域名）
+	// 注释：原字段名为 IPAddress，改名为 Host 是因为：
+	//   1. 结构体同时包含 TCP 和 UDP 端口，IPAddress 命名不够准确
+	//   2. Host 更通用，既可以是 IP 地址（如 127.0.0.1）也可以是域名（如 node1.example.com）
+	//   3. 与 TCPAddr() 和 UDPAddr() 方法的实现语义一致，它们使用 na.Host 而非 na.IPAddress
+	TCPPort int // TCP端口
+	UDPPort int // UDP端口
+}
+
+// TCPAddr 返回 TCP 地址字符串（IPFS 格式）
+func (na *NodeAddress) TCPAddr() string {
+	return fmt.Sprintf("/ip4/%s/tcp/%d", na.Host, na.TCPPort)
+}
+
+// UDPAddr 返回 UDP 地址字符串（IPFS 格式）
+func (na *NodeAddress) UDPAddr() string {
+	return fmt.Sprintf("/ip4/%s/udp/%d", na.Host, na.UDPPort)
+}
+
+// ParseNodeAddress 从字符串地址解析出 NodeAddress 结构
+// 支持的格式：IPFS 风格 (/ip4/127.0.0.1/tcp/5001) 或 简化格式 (127.0.0.1:5001，默认 TCP)
+func ParseNodeAddress(addrStr string) (*NodeAddress, error) {
+	if addrStr == "" {
+		return nil, fmt.Errorf("地址字符串不能为空")
+	}
+
+	// 尝试解析 IPFS 风格格式
+	if strings.HasPrefix(addrStr, "/ip4/") {
+		// 格式: /ip4/<ip>/<protocol>/<port>
+		// 示例: /ip4/127.0.0.1/tcp/5001
+		// 注意: / 会分割出空字符串作为第一个元素
+		parts := strings.Split(addrStr, "/")
+		if len(parts) < 4 {
+			return nil, fmt.Errorf("无效的 IPFS 地址格式: %s", addrStr)
+		}
+
+		ip := parts[2]
+		if len(parts) == 4 {
+			// 缺少协议类型: /ip4/127.0.0.1/5001
+			return nil, fmt.Errorf("无效的协议格式: %s", addrStr)
+		}
+
+		protocol := parts[3]
+		portStr := parts[4]
+
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			return nil, fmt.Errorf("无效的端口号: %s", portStr)
+		}
+
+		nodeAddr := &NodeAddress{
+			Host:    ip,
+			TCPPort: 0,
+			UDPPort: 0,
+		}
+
+		if strings.EqualFold(protocol, "tcp") {
+			nodeAddr.TCPPort = port
+		} else if strings.EqualFold(protocol, "udp") {
+			nodeAddr.UDPPort = port
+		} else {
+			return nil, fmt.Errorf("不支持的协议类型: %s", protocol)
+		}
+
+		return nodeAddr, nil
+	}
+
+	// 尝试解析简化的 IP:端口格式
+	lastColon := strings.LastIndex(addrStr, ":")
+	if lastColon == -1 {
+		return nil, fmt.Errorf("无效的地址格式: %s", addrStr)
+	}
+
+	ip := addrStr[:lastColon]
+	portStr := addrStr[lastColon+1:]
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, fmt.Errorf("无效的端口号: %s", portStr)
+	}
+
+	return &NodeAddress{
+		Host:    ip,
+		TCPPort: port,
+		UDPPort: 0,
+	}, nil
+}
+
+// HostRole 物理机器角色类型
+type HostRole int
+
+const (
+	LeafOnly          HostRole = iota // 仅作为叶子节点运行
+	LeafParent                        // 作为叶子节点和父节点双重角色
+	LeafParentStandby                 // 作为叶子节点和父节点备用
+)
+
+// String 返回角色的字符串表示
+func (hr HostRole) String() string {
+	switch hr {
+	case LeafOnly:
+		return "leaf_only"
+	case LeafParent:
+		return "leaf_parent"
+	case LeafParentStandby:
+		return "leaf_parent_standby"
+	default:
+		return "unknown"
+	}
+}
+
+// NodeRole 逻辑节点角色类型
+type NodeRole int
+
+const (
+	Leaf          NodeRole = iota // 叶子节点（负责数据读写）
+	Parent                        // 父节点（负责元数据管理和协调）
+	ParentStandby                 // 父节点备用（故障时接管）
+)
+
+// String 返回角色的字符串表示
+func (nr NodeRole) String() string {
+	switch nr {
+	case Leaf:
+		return "leaf"
+	case Parent:
+		return "parent"
+	case ParentStandby:
+		return "parent_standby"
+	default:
+		return "unknown"
+	}
+}
+
+// Host 物理机器结构
+// Host 物理机器信息（PR-033 扩展）
+type Host struct {
+	// === 现有字段（向后兼容） ===
+	ID       string      `msgpack:"id"`       // Deprecated: 使用 HostID 代替
+	Role     HostRole    `msgpack:"role"`     // 物理机器角色
+	NodeAddr NodeAddress `msgpack:"nodeaddr"` // 网络地址信息
+	Status   string      `msgpack:"status"`   // Deprecated: 使用 HostStatus 代替
+
+	// === PR-033 新增字段 ===
+	HostID              string     `msgpack:"host_id"`                // 机器唯一标识
+	Hostname            string     `msgpack:"hostname"`               // 物理机器地址（IP 或域名）
+	LeafNodeID          string     `msgpack:"leaf_node_id"`           // 关联的叶子节点 ID
+	ParentNodeID        string     `msgpack:"parent_node_id"`         // 关联的父节点 ID
+	ParentStandbyNodeID string     `msgpack:"parent_standby_node_id"` // 关联的备用父节点 ID
+	HostStatus          HostStatus `msgpack:"host_status"`            // 主机状态（枚举）
+	LastHeartbeat       int64      `msgpack:"last_heartbeat"`         // 最后心跳时间戳（Unix 秒）
+	CPUUsage            float64    `msgpack:"cpu_usage"`              // CPU 使用率（0-100）
+	MemUsage            float64    `msgpack:"mem_usage"`              // 内存使用率（0-100）
+	ExistingNodes       int        `msgpack:"existing_nodes"`         // 已存在的节点数量
+}
 
 // TreeCoordinator 树形协调器
 //
@@ -108,8 +274,14 @@ type Node struct {
 	// NodeID 节点唯一标识
 	NodeID string
 
-	// Addr 节点地址
-	Addr string
+	// HostID 所属物理机器 ID（如 server-1）
+	HostID string
+
+	// Role 逻辑节点角色（Leaf/Parent/ParentStandby）
+	Role NodeRole
+
+	// Addr 节点地址（使用 NodeAddress 类型支持 TCP/UDP）
+	Addr NodeAddress
 
 	// ParentID 父节点ID（根节点为空）
 	ParentID string
@@ -225,10 +397,15 @@ func NewTreeCoordinator(
 	}
 
 	// 创建本地节点
+	parsedAddr, err := ParseNodeAddress(localAddr)
+	if err != nil {
+		return nil, types.NewClusterCoordinatorError("解析 localAddr 失败", err)
+	}
+
 	localNode := &Node{
 		NodeID:      localNodeID,
-		Addr:        localAddr,
-		ParentID:    "", // 初始无父节点
+		Addr:        *parsedAddr,
+		ParentID:    "",
 		ChildrenIDs: make([]string, 0),
 		Level:       0,
 		Status:      NodeStatusInit,
@@ -622,9 +799,14 @@ func (tc *TreeCoordinator) AddNode(nodeID, addr string) error {
 	}
 
 	// 创建新节点
+	parsedAddr, err := ParseNodeAddress(addr)
+	if err != nil {
+		return types.NewClusterCoordinatorError("解析 addr 失败", err)
+	}
+
 	newNode := &Node{
 		NodeID:   nodeID,
-		Addr:     addr,
+		Addr:     *parsedAddr,
 		ParentID: parentID,
 		Level:    newNodeLevel,
 		Status:   NodeStatusJoining,
@@ -924,4 +1106,250 @@ func (tc *TreeCoordinator) GetTopology() map[string]*Node {
 	}
 
 	return topology
+}
+
+// ============================================================================
+// PR-033: Host/Node 双层架构扩展
+// ============================================================================
+
+// HostStatus 物理机器状态（PR-033）
+type HostStatus int
+
+const (
+	HostStatusOffline HostStatus = iota // 离线
+	HostStatusOnline                   // 在线
+	HostStatusDegraded                 // 降级（部分功能异常）
+)
+
+// String 返回 HostStatus 的字符串表示
+func (s HostStatus) String() string {
+	switch s {
+	case HostStatusOffline:
+		return "Offline"
+	case HostStatusOnline:
+		return "Online"
+	case HostStatusDegraded:
+		return "Degraded"
+	default:
+		return "Unknown"
+	}
+}
+
+// Validate 验证 NodeAddress 的合法性（PR-033）
+// 规则：
+//   1. TCPPort 和 UDPPort 都在有效范围内 [1024, 65535]
+//   2. 如果两个端口都设置，UDPPort 应该等于 TCPPort + 1
+//   3. 至少有一个端口已设置
+func (na *NodeAddress) Validate() error {
+	const (
+		MinPort   = 1024
+		MaxTCPPort = 65534
+		MaxUDPPort = 65535
+	)
+
+	// 检查 TCP 端口范围
+	if na.TCPPort != 0 {
+		if na.TCPPort < MinPort || na.TCPPort > MaxTCPPort {
+			return fmt.Errorf("TCPPort must be in range [%d, %d], got %d",
+				MinPort, MaxTCPPort, na.TCPPort)
+		}
+	}
+
+	// 检查 UDP 端口范围
+	if na.UDPPort != 0 {
+		if na.UDPPort < MinPort || na.UDPPort > MaxUDPPort {
+			return fmt.Errorf("UDPPort must be in range [%d, %d], got %d",
+				MinPort, MaxUDPPort, na.UDPPort)
+		}
+	}
+
+	// 检查 UDP = TCP + 1 规则（如果两个端口都设置）
+	if na.TCPPort != 0 && na.UDPPort != 0 {
+		if na.UDPPort != na.TCPPort+1 {
+			return fmt.Errorf("UDPPort must equal TCPPort + 1, got TCP=%d UDP=%d",
+				na.TCPPort, na.UDPPort)
+		}
+	}
+
+	// 至少需要设置一个端口
+	if na.TCPPort == 0 && na.UDPPort == 0 {
+		return fmt.Errorf("at least one port (TCP or UDP) must be set")
+	}
+
+	return nil
+}
+
+// GetTCPAddr 获取完整的 TCP 网络地址（PR-033）
+// 格式：hostname:port（如 "192.168.1.100:9000"）
+// 如果 Host 为空，返回 ":port"
+func (na *NodeAddress) GetTCPAddr() string {
+	if na.Host == "" {
+		return fmt.Sprintf(":%d", na.TCPPort)
+	}
+	return fmt.Sprintf("%s:%d", na.Host, na.TCPPort)
+}
+
+// GetUDPAddr 获取完整的 UDP 网络地址（PR-033）
+// 格式：hostname:port（如 "192.168.1.100:9001"）
+// 如果 Host 为空，返回 ":port"
+func (na *NodeAddress) GetUDPAddr() string {
+	if na.Host == "" {
+		return fmt.Sprintf(":%d", na.UDPPort)
+	}
+	return fmt.Sprintf("%s:%d", na.Host, na.UDPPort)
+}
+
+// NewNodeAddress 创建新的 NodeAddress（PR-033）
+// 自动设置 UDPPort = TCPPort + 1
+func NewNodeAddress(host string, tcpPort int) (*NodeAddress, error) {
+	const (
+		MinPort     = 1024
+		MaxTCPPort  = 65534
+	)
+
+	if tcpPort < MinPort || tcpPort > MaxTCPPort {
+		return nil, fmt.Errorf("TCPPort must be in range [%d, %d], got %d",
+			MinPort, MaxTCPPort, tcpPort)
+	}
+
+	// UDP 端口自动 = TCP + 1
+	udpPort := tcpPort + 1
+
+	return &NodeAddress{
+		Host:    host,
+		TCPPort: tcpPort,
+		UDPPort: udpPort,
+	}, nil
+}
+
+// GetTCPAddr 获取节点的 TCP 网络地址（PR-033）
+// 格式：hostname:port
+func (n *Node) GetTCPAddr() string {
+	return n.Addr.GetTCPAddr()
+}
+
+// GetUDPAddr 获取节点的 UDP 网络地址（PR-033）
+// 格式：hostname:port
+func (n *Node) GetUDPAddr() string {
+	return n.Addr.GetUDPAddr()
+}
+
+// Validate 验证 Node 结构的完整性（PR-033）
+func (n *Node) Validate() error {
+	// 验证 NodeID
+	if n.NodeID == "" {
+		return fmt.Errorf("NodeID is required")
+	}
+
+	// 验证 HostID
+	if n.HostID == "" {
+		return fmt.Errorf("HostID is required")
+	}
+
+	// 验证 Addr
+	if err := n.Addr.Validate(); err != nil {
+		return fmt.Errorf("invalid Addr: %w", err)
+	}
+
+	// 验证 Role
+	switch n.Role {
+	case Leaf, Parent, ParentStandby:
+		// 有效角色
+	default:
+		return fmt.Errorf("invalid NodeRole: %d", n.Role)
+	}
+
+	return nil
+}
+
+// IsLeaf 判断是否为叶子节点（PR-033）
+func (n *Node) IsLeaf() bool {
+	return n.Role == Leaf
+}
+
+// IsParent 判断是否为父节点（PR-033）
+func (n *Node) IsParent() bool {
+	return n.Role == Parent
+}
+
+// IsParentStandby 判断是否为父热备节点（PR-033）
+func (n *Node) IsParentStandby() bool {
+	return n.Role == ParentStandby
+}
+
+// IsOnline 判断节点是否在线（PR-033）
+func (n *Node) IsOnline() bool {
+	return n.Status == NodeStatusReady || n.Status == NodeStatusInit
+}
+
+// ============================================================================
+// PR-033: Host 扩展方法
+// ============================================================================
+
+// ValidateNodeIDs 验证 HostRole 到 NodeID 的约束关系（PR-033）
+//
+// 约束规则：
+//   - LeafOnly: 必须有 LeafNodeID
+//   - LeafParent: 必须有 LeafNodeID 和 ParentNodeID
+//   - LeafParentStandby: 必须有 LeafNodeID 和 ParentStandbyNodeID
+func (h *Host) ValidateNodeIDs() error {
+	// 使用 HostID 或 ID（向后兼容）
+	hostID := h.HostID
+	if hostID == "" {
+		hostID = h.ID
+	}
+
+	if hostID == "" {
+		return fmt.Errorf("HostID is required")
+	}
+
+	switch h.Role {
+	case LeafOnly:
+		if h.LeafNodeID == "" {
+			return fmt.Errorf("LeafOnly Host must have LeafNodeID")
+		}
+		// ParentNodeID 和 ParentStandbyNodeID 应该为空
+		if h.ParentNodeID != "" {
+			return fmt.Errorf("LeafOnly Host should not have ParentNodeID")
+		}
+		if h.ParentStandbyNodeID != "" {
+			return fmt.Errorf("LeafOnly Host should not have ParentStandbyNodeID")
+		}
+
+	case LeafParent:
+		if h.LeafNodeID == "" {
+			return fmt.Errorf("LeafParent Host must have LeafNodeID")
+		}
+		if h.ParentNodeID == "" {
+			return fmt.Errorf("LeafParent Host must have ParentNodeID")
+		}
+		// ParentStandbyNodeID 可选
+		if h.ParentStandbyNodeID == h.ParentNodeID {
+			return fmt.Errorf("ParentStandbyNodeID must be different from ParentNodeID")
+		}
+
+	case LeafParentStandby:
+		if h.LeafNodeID == "" {
+			return fmt.Errorf("LeafParentStandby Host must have LeafNodeID")
+		}
+		if h.ParentStandbyNodeID == "" {
+			return fmt.Errorf("LeafParentStandby Host must have ParentStandbyNodeID")
+		}
+		// ParentNodeID 可选
+
+	default:
+		return fmt.Errorf("invalid HostRole: %d", h.Role)
+	}
+
+	return nil
+}
+
+// IsOnline 判断 Host 是否在线（PR-033）
+func (h *Host) IsOnline() bool {
+	return h.HostStatus == HostStatusOnline
+}
+
+// IsDegraded 判断 Host 是否降级（PR-033）
+func (h *Host) IsDegraded() bool {
+	return h.HostStatus == HostStatusDegraded
 }

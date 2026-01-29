@@ -232,6 +232,9 @@ func (t *TCPTransport) startListener() error {
 
 	t.listener = listener
 
+	// 更新本地地址为实际绑定的地址（支持 :0 端口自动分配）
+	t.localAddr = listener.Addr().String()
+
 	// 预先添加计数（对应 acceptLoop 中的 handleConn 调用）
 	// 注意：这里只添加 acceptLoop 本身的计数
 	t.acceptWg.Add(1)

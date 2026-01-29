@@ -137,16 +137,37 @@ func (h *TreeCoordinatorRPCHandler) handleNodeLeave(ctx context.Context, msg *tr
 
 // handleNodeReparent 处理重新建立父子关系请求
 //
-// 当一个节点需要重新分配父节点时调用
+// PR-034 实现：当一个节点需要重新分配父节点时调用
 func (h *TreeCoordinatorRPCHandler) handleNodeReparent(ctx context.Context, msg *transport.NodeReparentMessage) (types.Message, error) {
 	logging.WithFields(map[string]any{
 		"child_id":      msg.ChildID,
 		"new_parent_id": msg.NewParentID,
 		"old_parent_id": msg.OldParentID,
+		"reason":        msg.Reason,
 	}).Info("收到重新建立父子关系请求")
 
-	// TODO: 实现 ReparentChild 逻辑
-	// 目前返回成功响应
+	// 调用 TreeCoordinator 的 ReparentChild 方法
+	err := h.coordinator.ReparentChild(msg.ChildID, msg.NewParentID, msg.OldParentID)
+	if err != nil {
+		logging.WithFields(map[string]any{
+			"child_id":   msg.ChildID,
+			"new_parent": msg.NewParentID,
+			"error":      err,
+		}).Error("重新分配父节点失败")
+
+		return &transport.NodeReparentReplyMessage{
+			BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeReparentReply},
+			Success:     false,
+			Reason:      err.Error(),
+		}, nil
+	}
+
+	logging.WithFields(map[string]any{
+		"child_id":   msg.ChildID,
+		"old_parent": msg.OldParentID,
+		"new_parent": msg.NewParentID,
+	}).Info("重新分配父节点成功")
+
 	return &transport.NodeReparentReplyMessage{
 		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeReparentReply},
 		Success:     true,

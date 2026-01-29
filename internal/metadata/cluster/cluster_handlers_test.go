@@ -263,14 +263,26 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeReparent(t *testing.T) {
 	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
 	require.NoError(t, err)
 
+	// 启动协调器
+	err = coordinator.Start()
+	require.NoError(t, err)
+	defer func() { _ = coordinator.Stop() }()
+
 	handler := NewTreeCoordinatorRPCHandler(coordinator)
 	ctx := context.Background()
 
+	// 步骤 1: 先添加 child1 节点作为 node1 的子节点
+	// 注意：AddChild 会将 child1 添加到 allNodes 中（如果不存在）
+	err = coordinator.AddChild("child1")
+	require.NoError(t, err, "添加子节点应该成功")
+
+	// 步骤 2: 测试将 child1 从 node1 移除（本地节点是旧父节点）
 	req := &transport.NodeReparentMessage{
 		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeReparent},
 		ChildID:     "child1",
-		NewParentID: "node2",
-		OldParentID: "node1",
+		NewParentID: "node2", // 新父节点（不是本地节点）
+		OldParentID: "node1", // 旧父节点（是本地节点）
+		Reason:      "测试重新分配",
 	}
 
 	resp, err := handler.HandleRequest(ctx, req)
@@ -283,8 +295,11 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_NodeReparent(t *testing.T) {
 	assert.True(t, ok, "响应应该是 NodeReparentReplyMessage 类型")
 	assert.NotNil(t, replyMsg)
 	assert.Equal(t, types.MessageTypeNodeReparentReply, replyMsg.MessageType)
-	// TODO: 当实现 ReparentChild 逻辑后，这里应该验证 Success 为 true
-	assert.True(t, replyMsg.Success)
+
+	// PR-034: ReparentChild 逻辑已实现
+	// 本地节点 (node1) 是旧父节点，所以会从子节点列表中移除 child1
+	// 请求处理成功，所以返回 Success: true
+	assert.True(t, replyMsg.Success, "重新分配父节点应该成功")
 }
 
 // ========================================
@@ -300,7 +315,7 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_ClusterStatus(t *testing.T) {
 	require.NoError(t, coordinator.Start())
 	defer func() { _ = coordinator.Stop() }()
 
-	// 添加一些子节点（注意：AddChild 只添加 ID，不创建 Node 对象）
+	// 添加一些子节点（注意：AddChild 现在会在 allNodes 中创建节点）
 	err = coordinator.AddChild("child1")
 	require.NoError(t, err)
 	err = coordinator.AddChild("child2")
@@ -325,8 +340,8 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_ClusterStatus(t *testing.T) {
 	assert.NotNil(t, statusMsg)
 	assert.Equal(t, types.MessageTypeClusterStatusReply, statusMsg.MessageType)
 
-	// 验证节点列表（只有本地节点，因为子节点未在 allNodes 中）
-	assert.Len(t, statusMsg.Nodes, 1) // 只有 node1
+	// 验证节点列表（本地节点 + 两个子节点，因为 AddChild 在 allNodes 中创建了节点）
+	assert.Len(t, statusMsg.Nodes, 3) // node1, child1, child2
 
 	// 验证本地节点信息
 	localNode := findNodeInfo(statusMsg.Nodes, "node1")
@@ -337,6 +352,14 @@ func TestTreeCoordinatorRPCHandler_HandleRequest_ClusterStatus(t *testing.T) {
 	assert.Equal(t, "Ready", localNode.Status) // Status.String() 返回 "Ready"
 	assert.Equal(t, 0, localNode.Level)
 	assert.Equal(t, "", localNode.ParentID)
+
+	// 验证子节点信息
+	child1Node := findNodeInfo(statusMsg.Nodes, "child1")
+	assert.NotNil(t, child1Node)
+	assert.Equal(t, "child1", child1Node.NodeID)
+	assert.Equal(t, "child", child1Node.Role) // 子节点角色为 child
+	assert.Equal(t, "node1", child1Node.ParentID)
+	assert.Equal(t, 1, child1Node.Level)
 }
 
 // ========================================

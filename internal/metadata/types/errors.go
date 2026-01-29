@@ -215,6 +215,9 @@ const (
 	// ErrClusterPortReleaseFailed 端口释放失败
 	ErrClusterPortReleaseFailed
 
+	// ErrClusterPortExhausted 端口耗尽（PR-034 新增）
+	ErrClusterPortExhausted
+
 	// ========================================
 	// PR-033: Failure Detector 错误码
 	// ========================================
@@ -758,6 +761,13 @@ func NewClusterPortAllocationMarshalFailedError(err error) *Error {
 // NewClusterPortReleaseFailedError 创建端口释放失败错误
 func NewClusterPortReleaseFailedError(err error) *Error {
 	return newWithErr(ErrClusterPortReleaseFailed, err, "failed to release port")
+}
+
+// NewClusterPortExhaustedError 创建端口耗尽错误（PR-034 新增）
+func NewClusterPortExhaustedError() *Error {
+	// P1-1 修复：硬编码端口范围，避免跨包访问常量
+	// 端口范围：9000-32767（与 cluster/port_allocator.go 中的定义一致）
+	return newBase(ErrClusterPortExhausted, "端口资源耗尽（范围: 9000-32767）")
 }
 
 // ========================================

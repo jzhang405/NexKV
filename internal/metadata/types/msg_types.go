@@ -237,7 +237,7 @@ func (t MessageType) ExpectResponse() ResponseExpectation {
 		MessageTypeGossipSync, MessageTypeGossipDigest,
 		MessageTypeQuorumPropose, MessageTypeQuorumVote,
 		MessageType2PCPrepare, MessageType2PCCommit, MessageType2PCRollback,
-		MessageTypeNodePing, MessageTypeNodeSync, MessageTypeNodeReparent,
+		MessageTypeNodeJoin, MessageTypeNodePing, MessageTypeNodeSync, MessageTypeNodeReparent,
 		MessageTypeClockSync, MessageTypeClusterStatus:
 		return ExpectResponse
 	}

@@ -1,15 +1,21 @@
-// Package transport 分发器单元测试
+// Package transport dispatcher unit tests
 package transport
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
+
+// ========================================
+// Test helper functions
+// ========================================
 
 // ========================================
 // 测试辅助函数
@@ -298,9 +304,16 @@ func TestDispatcherPerformance(t *testing.T) {
 		}
 	}()
 
-	// 模拟 100 个连接
+	// 模拟连接数和每连接消息数
+	// race 模式下减少负载以避免超时
 	connCount := 100
 	msgsPerConn := 1000
+
+	// 检测 race 模式并调整参数
+	if flag.Lookup("race") != nil || os.Getenv("GORACE") != "" {
+		connCount = 10   // race 模式下减少连接数
+		msgsPerConn = 100 // race 模式下减少每连接消息数
+	}
 
 	startTime := time.Now()
 

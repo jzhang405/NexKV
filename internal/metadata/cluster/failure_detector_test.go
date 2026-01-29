@@ -109,8 +109,6 @@ func Test_FailureDetector_ProbeHost(t *testing.T) {
 
 	// 验证结果
 	assert.False(t, result.TCPReachable, "TCP should not be reachable")
-	// 注意：UDP 是无连接协议，Write 会成功（数据包被发送），但不意味着有服务接收
-	// 所以 UDPReachable 可能为 true（这是预期的）
 	assert.NotNil(t, result.Error, "Should have probe error")
 	assert.Greater(t, result.ProbedAt, int64(0), "Should have probe timestamp")
 }

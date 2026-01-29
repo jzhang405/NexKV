@@ -27,9 +27,12 @@ const (
 )
 
 // ProbeResult 探测结果
+//
+// P1-3 优化：移除 UDPReachable 字段（UDP 探测不可靠）
+// - UDP 是无连接协议，Write 成功不代表服务可达
+// - TCP 探测已经足够验证连接性和时延
 type ProbeResult struct {
 	TCPReachable bool          // TCP 可达
-	UDPReachable bool          // UDP 可达
 	RTT          time.Duration // 往返时延（TCP 连接耗时）
 	ProbedAt     int64         // 探测时间戳（Unix 秒）
 	Error        error         // 探测错误信息
@@ -114,9 +117,13 @@ func (fd *FailureDetector) DetectHeartbeatTimeout() ([]string, error) {
 	return timeoutHosts, nil
 }
 
-// ProbeHost 探测单个 Host（TCP + UDP 双重探测）
+// ProbeHost 探测单个 Host（TCP 探测）
 //
-// 返回探测结果，包含 TCP/UDP 可达性、RTT、错误信息
+// 返回探测结果，包含 TCP 可达性、RTT、错误信息
+//
+// P1-3 优化：移除 UDP 探测（UDP 是无连接协议，Write 成功不代表服务可达）
+// - TCP 探测已经足够验证连接性和时延
+// - UDP 探测在当前架构下没有实际意义
 func (fd *FailureDetector) ProbeHost(hostID string) (*ProbeResult, error) {
 	// 步骤 1: 获取 Host 信息
 	host, err := fd.hostManager.GetHost(hostID)
@@ -131,22 +138,20 @@ func (fd *FailureDetector) ProbeHost(hostID string) (*ProbeResult, error) {
 	}
 
 	tcpPort := allocation.TCPPort
-	udpPort := allocation.UDPPort
 
-	// 步骤 3: 构建 TCP 和 UDP 地址（支持 IPv4 和 IPv6）
+	// 步骤 3: 构建 TCP 地址（支持 IPv4 和 IPv6）
 	hostname := host.Hostname
 	if hostname == "" {
 		return nil, types.NewClusterHostnameRequiredError()
 	}
 
 	tcpAddr := formatAddress(hostname, tcpPort)
-	udpAddr := formatAddress(hostname, udpPort)
 
 	result := &ProbeResult{
 		ProbedAt: time.Now().Unix(),
 	}
 
-	// 步骤 3: TCP 探测（连接性 + 时延）
+	// 步骤 4: TCP 探测（连接性 + 时延）
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", tcpAddr, fd.config.ProbeTimeout)
 	if err == nil {
@@ -155,19 +160,6 @@ func (fd *FailureDetector) ProbeHost(hostID string) (*ProbeResult, error) {
 		conn.Close()
 	} else {
 		result.Error = types.NewClusterTCPProbeFailedError(err)
-	}
-
-	// 步骤 4: UDP 探测（快速可达性检查）
-	// 注意：UDP 是无连接协议，DialTimeout 会立即成功
-	// 需要发送实际数据包来检测可达性，或仅作为辅助参考
-	udpConn, err := net.DialTimeout("udp", udpAddr, fd.config.ProbeTimeout)
-	if err == nil {
-		// 尝试发送一个小数据包
-		_, err = udpConn.Write([]byte("ping"))
-		if err == nil {
-			result.UDPReachable = true
-		}
-		udpConn.Close()
 	}
 
 	// 步骤 5: 缓存探测结果
@@ -182,11 +174,12 @@ func (fd *FailureDetector) ProbeHost(hostID string) (*ProbeResult, error) {
 //
 // 验证步骤：
 //  1. 心跳超时检测
-//  2. TCP/UDP 双重探测
+//  2. TCP 探测（连接性 + 时延）
 //  3. 连续失败次数判断
 //  4. 防脑裂延迟确认
 //
 // P0-3 优化：减少锁持有时间，避免在网络 I/O 期间持有锁
+// P1-3 优化：移除 UDP 探测，只使用 TCP 探测（更可靠）
 func (fd *FailureDetector) IsHostFailed(hostID string) (bool, error) {
 	// 步骤 1: 心跳超时检测（不持有锁，hostManager 有自己的锁）
 	host, err := fd.hostManager.GetHost(hostID)

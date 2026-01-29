@@ -160,6 +160,72 @@ const (
 	ErrClusterNodeNotFound
 
 	// ========================================
+	// PR-033: Host 管理错误码
+	// ========================================
+
+	// ErrClusterHostIDRequired HostID 必填
+	ErrClusterHostIDRequired
+
+	// ErrClusterHostnameRequired Hostname 必填
+	ErrClusterHostnameRequired
+
+	// ErrClusterInvalidNodeIDConstraints 无效的 NodeID 约束
+	ErrClusterInvalidNodeIDConstraints
+
+	// ErrClusterHostMarshalFailed Host 序列化失败
+	ErrClusterHostMarshalFailed
+
+	// ErrClusterHostSaveFailed Host 保存失败
+	ErrClusterHostSaveFailed
+
+	// ErrClusterHostNotFound Host 不存在
+	ErrClusterHostNotFound
+
+	// ErrClusterHostUnmarshalFailed Host 反序列化失败
+	ErrClusterHostUnmarshalFailed
+
+	// ErrClusterHostDeleteFailed Host 删除失败
+	ErrClusterHostDeleteFailed
+
+	// ErrClusterHostListFailed Host 列表获取失败
+	ErrClusterHostListFailed
+
+	// ========================================
+	// PR-033: Port Allocator 错误码
+	// ========================================
+
+	// ErrClusterPortAllocationNotFound 端口分配不存在
+	ErrClusterPortAllocationNotFound
+
+	// ErrClusterPortConflictCheckFailed 端口冲突检查失败
+	ErrClusterPortConflictCheckFailed
+
+	// ErrClusterPortAllocationSaveFailed 端口分配保存失败
+	ErrClusterPortAllocationSaveFailed
+
+	// ErrClusterPortAllocationUnmarshalFailed 端口分配反序列化失败
+	ErrClusterPortAllocationUnmarshalFailed
+
+	// ErrClusterPortAllocationListFailed 端口分配列表获取失败
+	ErrClusterPortAllocationListFailed
+
+	// ErrClusterPortAllocationMarshalFailed 端口分配序列化失败
+	ErrClusterPortAllocationMarshalFailed
+
+	// ErrClusterPortReleaseFailed 端口释放失败
+	ErrClusterPortReleaseFailed
+
+	// ========================================
+	// PR-033: Failure Detector 错误码
+	// ========================================
+
+	// ErrClusterTCPProbeFailed TCP 探测失败
+	ErrClusterTCPProbeFailed
+
+	// ErrClusterNoProbeResult 无探测结果
+	ErrClusterNoProbeResult
+
+	// ========================================
 	// Transport 模块错误码
 	// ========================================
 
@@ -604,6 +670,108 @@ func NewClusterFailureDetectionError(msg string, err error) *Error {
 // NewClusterNodeNotFoundError 创建节点不存在错误
 func NewClusterNodeNotFoundError(nodeID string) *Error {
 	return newBase(ErrClusterNodeNotFound, "节点不存在: %s", nodeID)
+}
+
+// ========================================
+// PR-033: Host 管理错误构造函数
+// ========================================
+
+// NewClusterHostIDRequiredError 创建 HostID 必填错误
+func NewClusterHostIDRequiredError() *Error {
+	return newBase(ErrClusterHostIDRequired, "HostID is required")
+}
+
+// NewClusterHostnameRequiredError 创建 Hostname 必填错误
+func NewClusterHostnameRequiredError() *Error {
+	return newBase(ErrClusterHostnameRequired, "Hostname is required")
+}
+
+// NewClusterInvalidNodeIDConstraintsError 创建无效的 NodeID 约束错误
+func NewClusterInvalidNodeIDConstraintsError(err error) *Error {
+	return newWithErr(ErrClusterInvalidNodeIDConstraints, err, "invalid NodeID constraints")
+}
+
+// NewClusterHostMarshalFailedError 创建 Host 序列化失败错误
+func NewClusterHostMarshalFailedError(err error) *Error {
+	return newWithErr(ErrClusterHostMarshalFailed, err, "failed to marshal host")
+}
+
+// NewClusterHostSaveFailedError 创建 Host 保存失败错误
+func NewClusterHostSaveFailedError(err error) *Error {
+	return newWithErr(ErrClusterHostSaveFailed, err, "failed to save host to MVStore")
+}
+
+// NewClusterHostNotFoundError 创建 Host 不存在错误
+func NewClusterHostNotFoundError(hostID string) *Error {
+	return newBase(ErrClusterHostNotFound, "host not found: %s", hostID)
+}
+
+// NewClusterHostUnmarshalFailedError 创建 Host 反序列化失败错误
+func NewClusterHostUnmarshalFailedError(err error) *Error {
+	return newWithErr(ErrClusterHostUnmarshalFailed, err, "failed to unmarshal host")
+}
+
+// NewClusterHostDeleteFailedError 创建 Host 删除失败错误
+func NewClusterHostDeleteFailedError(err error) *Error {
+	return newWithErr(ErrClusterHostDeleteFailed, err, "failed to delete host from MVStore")
+}
+
+// NewClusterHostListFailedError 创建 Host 列表获取失败错误
+func NewClusterHostListFailedError(err error) *Error {
+	return newWithErr(ErrClusterHostListFailed, err, "failed to list hosts")
+}
+
+// ========================================
+// PR-033: Port Allocator 错误构造函数
+// ========================================
+
+// NewClusterPortAllocationNotFoundError 创建端口分配不存在错误
+func NewClusterPortAllocationNotFoundError(hostID string, err error) *Error {
+	return newWithErr(ErrClusterPortAllocationNotFound, err, "port allocation not found for host %s", hostID)
+}
+
+// NewClusterPortConflictCheckFailedError 创建端口冲突检查失败错误
+func NewClusterPortConflictCheckFailedError(err error) *Error {
+	return newWithErr(ErrClusterPortConflictCheckFailed, err, "failed to check port conflict")
+}
+
+// NewClusterPortAllocationSaveFailedError 创建端口分配保存失败错误
+func NewClusterPortAllocationSaveFailedError(err error) *Error {
+	return newWithErr(ErrClusterPortAllocationSaveFailed, err, "failed to save port allocation")
+}
+
+// NewClusterPortAllocationUnmarshalFailedError 创建端口分配反序列化失败错误
+func NewClusterPortAllocationUnmarshalFailedError(err error) *Error {
+	return newWithErr(ErrClusterPortAllocationUnmarshalFailed, err, "failed to unmarshal port allocation")
+}
+
+// NewClusterPortAllocationListFailedError 创建端口分配列表获取失败错误
+func NewClusterPortAllocationListFailedError(err error) *Error {
+	return newWithErr(ErrClusterPortAllocationListFailed, err, "failed to list port allocations")
+}
+
+// NewClusterPortAllocationMarshalFailedError 创建端口分配序列化失败错误
+func NewClusterPortAllocationMarshalFailedError(err error) *Error {
+	return newWithErr(ErrClusterPortAllocationMarshalFailed, err, "failed to marshal port allocation")
+}
+
+// NewClusterPortReleaseFailedError 创建端口释放失败错误
+func NewClusterPortReleaseFailedError(err error) *Error {
+	return newWithErr(ErrClusterPortReleaseFailed, err, "failed to release port")
+}
+
+// ========================================
+// PR-033: Failure Detector 错误构造函数
+// ========================================
+
+// NewClusterTCPProbeFailedError 创建 TCP 探测失败错误
+func NewClusterTCPProbeFailedError(err error) *Error {
+	return newWithErr(ErrClusterTCPProbeFailed, err, "TCP probe failed")
+}
+
+// NewClusterNoProbeResultError 创建无探测结果错误
+func NewClusterNoProbeResultError(hostID string) *Error {
+	return newBase(ErrClusterNoProbeResult, "no probe result for host: %s", hostID)
 }
 
 // ========================================

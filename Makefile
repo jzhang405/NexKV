@@ -89,7 +89,7 @@ vet:
 lint:
 	@echo "运行 golangci-lint..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --disable=errcheck,ineffassign,unused,staticcheck ./...; \
+		golangci-lint run  ./...; \
 	else \
 		echo "golangci-lint 未安装，跳过 lint"; \
 	fi

@@ -39,3 +39,4 @@ go.work.sum
 bin/nexkv*
 bin/nexkvd*
 internal/metadata/store/data
+thoughts/

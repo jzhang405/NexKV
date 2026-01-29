@@ -8,6 +8,7 @@
 package cluster
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -228,6 +229,9 @@ type TreeCoordinator struct {
 
 	// 统计信息
 	stats *TreeCoordinatorStats
+
+	// 心跳序列号计数器（PR-034：实现心跳机制）
+	heartbeatSeq atomic.Uint64
 
 	// 生命周期
 	started atomic.Bool
@@ -500,13 +504,153 @@ func (tc *TreeCoordinator) Stop() error {
 // ========================================
 
 // discoverAndJoin 发现并加入树形结构
+//
+// PR-034 实现：
+//  1. 通过传输层发现可用节点
+//  2. 选择合适的父节点（Level 最小且未满）
+//  3. 发送加入请求
+//  4. 更新本地节点信息
 func (tc *TreeCoordinator) discoverAndJoin() {
-	// TODO: 实现自动发现和加入逻辑
-	// 1. 通过传输层发现可用节点
-	// 2. 选择合适的父节点
-	// 3. 发送加入请求
-	// 4. 更新本地节点信息
-	logging.Debug("自动发现并加入树形结构")
+	logging.WithField("node_id", tc.localNode.NodeID).Info("开始自动发现并加入树形结构")
+
+	// 检查 RPCClient 是否可用
+	if tc.RPCClient == nil {
+		logging.WithField("node_id", tc.localNode.NodeID).Debug("RPCClient 未初始化，跳过自动发现")
+		return
+	}
+
+	// 步骤 1: 发现可用节点（从配置或种子节点获取）
+	// TODO: 这里可以从配置文件、环境变量或服务发现获取种子节点列表
+	// 当前实现：如果本地节点不是根节点，尝试找到可以连接的节点
+	knownNodes := tc.getKnownNodes()
+	if len(knownNodes) == 0 {
+		logging.WithField("node_id", tc.localNode.NodeID).Debug("没有已知节点，作为根节点启动")
+		tc.localNode.Status = NodeStatusReady
+		return
+	}
+
+	// 步骤 2: 选择合适的父节点
+	// 策略：选择 Level 最小且未达到 MaxChildren 的节点
+	bestParent := tc.selectBestParent(knownNodes)
+	if bestParent == nil {
+		logging.WithField("node_id", tc.localNode.NodeID).Debug("未找到合适的父节点，作为根节点启动")
+		tc.localNode.Status = NodeStatusReady
+		return
+	}
+
+	// 步骤 3: 发送加入请求
+	if err := tc.sendJoinRequest(bestParent); err != nil {
+		logging.WithFields(map[string]any{
+			"node_id":   tc.localNode.NodeID,
+			"parent_id": bestParent.NodeID,
+			"error":     err,
+		}).Warn("发送加入请求失败，作为独立节点启动")
+		tc.localNode.Status = NodeStatusReady
+		return
+	}
+
+	// 步骤 4: 更新本地节点信息
+	tc.localNode.Status = NodeStatusReady
+	tc.localNode.ParentID = bestParent.NodeID
+	tc.localNode.Level = bestParent.Level + 1
+
+	logging.WithFields(map[string]any{
+		"node_id":   tc.localNode.NodeID,
+		"parent_id": bestParent.NodeID,
+		"level":     tc.localNode.Level,
+	}).Info("成功加入树形结构")
+}
+
+// getKnownNodes 获取已知节点列表
+//
+// PR-034 实现：从配置或种子节点获取初始节点列表
+// TODO: 后续可以从配置文件、环境变量或服务发现获取
+func (tc *TreeCoordinator) getKnownNodes() []*Node {
+	// 当前实现：返回 allNodes 中除了本地节点外的所有节点
+	// 实际生产环境中，这里应该从配置文件或服务发现获取种子节点列表
+	tc.nodesMu.RLock()
+	defer tc.nodesMu.RUnlock()
+
+	nodes := make([]*Node, 0, len(tc.allNodes))
+	for _, node := range tc.allNodes {
+		if node.NodeID != tc.localNode.NodeID {
+			nodes = append(nodes, node)
+		}
+	}
+
+	return nodes
+}
+
+// selectBestParent 选择最佳父节点
+//
+// PR-034 实现：
+//   - 优先选择 Level 最小的节点（树的最底层）
+//   - 确保 Level < MaxLevel
+//   - 确保子节点数 < MaxChildren
+func (tc *TreeCoordinator) selectBestParent(nodes []*Node) *Node {
+	var bestParent *Node
+	minLevel := int(^uint(0) >> 1) // 最大 int 值
+
+	for _, node := range nodes {
+		// 跳过不可用的节点
+		if node.Status != NodeStatusReady {
+			continue
+		}
+
+		// 检查 Level 限制
+		if node.Level >= tc.config.MaxLevel {
+			continue
+		}
+
+		// 检查子节点数量限制
+		if len(node.ChildrenIDs) >= tc.config.MaxChildren {
+			continue
+		}
+
+		// 选择 Level 最小的节点
+		if node.Level < minLevel {
+			minLevel = node.Level
+			bestParent = node
+		}
+	}
+
+	return bestParent
+}
+
+// sendJoinRequest 发送加入请求
+//
+// PR-034 实现：向目标节点发送 NodeJoinMessage
+func (tc *TreeCoordinator) sendJoinRequest(targetNode *Node) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 构造加入请求
+	joinMsg := &transport.NodeJoinMessage{
+		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeJoin},
+		NodeID:      tc.localNode.NodeID,
+		Addr:        tc.localNode.Addr.TCPAddr(),
+		Role:        "child",
+	}
+
+	// 构造目标地址
+	targetAddr := fmt.Sprintf("%s:%d", targetNode.Addr.Host, targetNode.Addr.TCPPort)
+
+	// 发送请求
+	resp, err := tc.RPCClient.Call(ctx, targetAddr, joinMsg)
+	if err != nil {
+		return fmt.Errorf("发送加入请求失败: %w", err)
+	}
+
+	// 处理响应
+	if syncMsg, ok := resp.(*transport.NodeSyncMessage); ok {
+		logging.WithFields(map[string]any{
+			"parent_id": string(syncMsg.Metadata["parent_node_id"]),
+			"timestamp": string(syncMsg.Metadata["timestamp"]),
+			"version":   syncMsg.Version,
+		}).Info("收到加入响应")
+	}
+
+	return nil
 }
 
 // heartbeatLoop 心跳循环
@@ -526,15 +670,90 @@ func (tc *TreeCoordinator) heartbeatLoop() {
 }
 
 // sendHeartbeat 发送心跳
+//
+// PR-034 实现：向父节点和子节点发送心跳，用于故障检测
 func (tc *TreeCoordinator) sendHeartbeat() {
-	// 更新本地节点心跳时间
+	// 步骤 1: 更新本地节点心跳时间
 	tc.localNode.LastHeartbeat = time.Now()
 
-	// TODO: 向父节点和子节点发送心跳
+	// 步骤 2: 生成心跳序列号
+	sequence := tc.heartbeatSeq.Add(1)
+	timestamp := time.Now().Unix()
+
+	// 步骤 3: 构造心跳消息
+	pingMsg := &transport.NodePingMessage{
+		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodePing},
+		NodeID:      tc.localNode.NodeID,
+		Sequence:    int64(sequence),
+		Timestamp:   timestamp,
+	}
+
+	// 步骤 4: 向父节点发送心跳（如果存在）
+	if tc.localNode.ParentID != "" {
+		go tc.sendHeartbeatToNode(tc.localNode.ParentID, pingMsg)
+	}
+
+	// 步骤 5: 向所有子节点发送心跳
+	tc.nodesMu.RLock()
+	childrenIDs := make([]string, len(tc.localNode.ChildrenIDs))
+	copy(childrenIDs, tc.localNode.ChildrenIDs)
+	tc.nodesMu.RUnlock()
+
+	for _, childID := range childrenIDs {
+		go tc.sendHeartbeatToNode(childID, pingMsg)
+	}
+
 	logging.WithFields(map[string]any{
-		"node_id": tc.localNode.NodeID,
-		"status":  tc.localNode.Status,
+		"node_id":  tc.localNode.NodeID,
+		"sequence": sequence,
+		"parent":   tc.localNode.ParentID,
+		"children": len(childrenIDs),
 	}).Debug("发送心跳")
+}
+
+// sendHeartbeatToNode 向指定节点发送心跳（独立 goroutine 运行）
+func (tc *TreeCoordinator) sendHeartbeatToNode(targetNodeID string, pingMsg *transport.NodePingMessage) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 获取目标节点信息
+	tc.nodesMu.RLock()
+	targetNode, exists := tc.allNodes[targetNodeID]
+	tc.nodesMu.RUnlock()
+
+	if !exists {
+		logging.WithField("target_node", targetNodeID).Debug("目标节点不存在，跳过心跳")
+		return
+	}
+
+	// 检查 RPCClient 是否可用（测试环境可能为 nil）
+	if tc.RPCClient == nil {
+		logging.WithField("target_node", targetNodeID).Debug("RPCClient 未初始化，跳过心跳发送")
+		return
+	}
+
+	// 构造目标地址
+	targetAddr := fmt.Sprintf("%s:%d", targetNode.Addr.Host, targetNode.Addr.TCPPort)
+
+	// 发送心跳并等待响应
+	resp, err := tc.RPCClient.Call(ctx, targetAddr, pingMsg)
+	if err != nil {
+		logging.WithFields(map[string]any{
+			"target_node": targetNodeID,
+			"error":       err,
+		}).Debug("心跳发送失败")
+		return
+	}
+
+	// 处理心跳响应
+	if pongMsg, ok := resp.(*transport.NodePongMessage); ok {
+		rtt := time.Now().Unix() - pongMsg.Timestamp
+		logging.WithFields(map[string]any{
+			"target_node": targetNodeID,
+			"status":      pongMsg.Status,
+			"rtt_ms":      rtt * 1000,
+		}).Debug("收到心跳响应")
+	}
 }
 
 // failureDetectionLoop 故障检测循环
@@ -588,23 +807,208 @@ func (tc *TreeCoordinator) detectFailures() {
 }
 
 // triggerSelfHealing 触发自愈机制
+//
+// PR-034 实现：
+//  1. 移除故障节点的父子关系
+//  2. 子节点重新寻找父节点
+//  3. 更新树形拓扑
 func (tc *TreeCoordinator) triggerSelfHealing(failedNode *Node) {
-	// TODO: 实现自愈逻辑
-	// 1. 移除故障节点的父子关系
-	// 2. 子节点重新寻找父节点
-	// 3. 更新树形拓扑
 	logging.WithFields(map[string]any{
 		"failed_node": failedNode.NodeID,
 		"level":       failedNode.Level,
 	}).Info("触发自愈机制")
+
+	// 步骤 1: 移除故障节点的父子关系
+	tc.nodesMu.Lock()
+	tc.removeNodeRelationships(failedNode.NodeID)
+	tc.nodesMu.Unlock()
+
+	// 步骤 2: 让故障节点的子节点重新寻找父节点
+	tc.nodesMu.RLock()
+	orphanChildren := make([]*Node, 0, len(failedNode.ChildrenIDs))
+	for _, childID := range failedNode.ChildrenIDs {
+		if child, exists := tc.allNodes[childID]; exists {
+			orphanChildren = append(orphanChildren, child)
+		}
+	}
+	tc.nodesMu.RUnlock()
+
+	// 步骤 3: 为每个孤儿节点重新分配父节点
+	for _, orphanChild := range orphanChildren {
+		if err := tc.reparentNode(orphanChild, failedNode.NodeID); err != nil {
+			logging.WithFields(map[string]any{
+				"orphan_node": orphanChild.NodeID,
+				"old_parent":  failedNode.NodeID,
+				"error":       err,
+			}).Error("重新分配父节点失败")
+		}
+	}
+
+	logging.WithFields(map[string]any{
+		"failed_node":     failedNode.NodeID,
+		"orphan_children": len(orphanChildren),
+	}).Info("自愈机制处理完成")
+}
+
+// removeNodeRelationships 移除节点的父子关系
+func (tc *TreeCoordinator) removeNodeRelationships(nodeID string) {
+	// 步骤 1: 从父节点的子节点列表中移除
+	node, exists := tc.allNodes[nodeID]
+	if !exists {
+		return
+	}
+
+	if node.ParentID != "" {
+		if parent, exists := tc.allNodes[node.ParentID]; exists {
+			parent.ChildrenIDs = slices.DeleteFunc(parent.ChildrenIDs, func(id string) bool {
+				return id == nodeID
+			})
+		}
+	}
+
+	// 步骤 2: 清空故障节点的子节点列表
+	node.ChildrenIDs = nil
+	node.ParentID = ""
+}
+
+// reparentNode 为节点重新分配父节点
+func (tc *TreeCoordinator) reparentNode(node *Node, oldParentID string) error {
+	tc.nodesMu.Lock()
+	defer tc.nodesMu.Unlock()
+
+	// 步骤 1: 查找合适的父节点
+	candidateParents := tc.findCandidateParents(node)
+	if len(candidateParents) == 0 {
+		return fmt.Errorf("没有找到合适的父节点")
+	}
+
+	// 步骤 2: 选择第一个可用的候选父节点
+	newParentID := candidateParents[0]
+
+	// 步骤 3: 更新节点的父节点关系
+	node.ParentID = newParentID
+	newParent := tc.allNodes[newParentID]
+	newParent.ChildrenIDs = append(newParent.ChildrenIDs, node.NodeID)
+
+	// 步骤 4: 更新节点的层级
+	node.Level = newParent.Level + 1
+
+	logging.WithFields(map[string]any{
+		"node":       node.NodeID,
+		"old_parent": oldParentID,
+		"new_parent": newParentID,
+		"new_level":  node.Level,
+	}).Info("重新分配父节点成功")
+
+	return nil
+}
+
+// findCandidateParents 查找候选父节点
+func (tc *TreeCoordinator) findCandidateParents(node *Node) []string {
+	candidates := make([]string, 0)
+
+	// 遍历所有节点，寻找合适的父节点
+	for _, candidate := range tc.allNodes {
+		// 跳过故障节点和自身
+		if candidate.Status == NodeStatusFailed || candidate.NodeID == node.NodeID {
+			continue
+		}
+
+		// 跳过子节点（避免循环依赖）
+		if slices.Contains(node.ChildrenIDs, candidate.NodeID) {
+			continue
+		}
+
+		// 检查层级限制（新父节点的层级 + 1 不能超过 MaxLevel）
+		if candidate.Level+1 > tc.config.MaxLevel {
+			continue
+		}
+
+		// 检查子节点数量限制
+		if len(candidate.ChildrenIDs) >= tc.config.MaxChildren {
+			continue
+		}
+
+		// 优先选择同级或更高级别的节点（保持树的平衡）
+		if candidate.Level < node.Level {
+			candidates = append(candidates, candidate.NodeID)
+		}
+	}
+
+	return candidates
 }
 
 // leaveTree 离开树形结构
+//
+// PR-034 实现：通知父节点和子节点
 func (tc *TreeCoordinator) leaveTree() {
 	tc.localNode.Status = NodeStatusLeaving
 
-	// TODO: 通知父节点和子节点
+	// 步骤 1: 构造离开消息
+	leaveMsg := &transport.NodeLeaveMessage{
+		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeLeave},
+		NodeID:      tc.localNode.NodeID,
+		Reason:      "主动离开",
+	}
+
+	// 步骤 2: 向父节点发送离开消息（如果存在）
+	if tc.localNode.ParentID != "" {
+		go tc.sendLeaveMessage(tc.localNode.ParentID, leaveMsg)
+	}
+
+	// 步骤 3: 向所有子节点发送离开消息
+	tc.nodesMu.RLock()
+	childrenIDs := make([]string, len(tc.localNode.ChildrenIDs))
+	copy(childrenIDs, tc.localNode.ChildrenIDs)
+	tc.nodesMu.RUnlock()
+
+	for _, childID := range childrenIDs {
+		go tc.sendLeaveMessage(childID, leaveMsg)
+	}
+
 	logging.WithField("node_id", tc.localNode.NodeID).Info("离开树形结构")
+}
+
+// sendLeaveMessage 发送离开消息
+func (tc *TreeCoordinator) sendLeaveMessage(targetNodeID string, leaveMsg *transport.NodeLeaveMessage) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 获取目标节点信息
+	tc.nodesMu.RLock()
+	targetNode, exists := tc.allNodes[targetNodeID]
+	tc.nodesMu.RUnlock()
+
+	if !exists {
+		logging.WithField("target_node", targetNodeID).Debug("目标节点不存在，跳过离开通知")
+		return
+	}
+
+	// 检查 RPCClient 是否可用（测试环境可能为 nil）
+	if tc.RPCClient == nil {
+		logging.WithField("target_node", targetNodeID).Debug("RPCClient 未初始化，跳过离开消息发送")
+		return
+	}
+
+	// 构造目标地址
+	targetAddr := fmt.Sprintf("%s:%d", targetNode.Addr.Host, targetNode.Addr.TCPPort)
+
+	// 发送离开消息（NodeLeave 不需要响应，但 Call 方法可以处理）
+	// 注意：即使消息不需要响应，Call 方法也会正确处理，会超时返回
+	_, err := tc.RPCClient.Call(ctx, targetAddr, leaveMsg)
+	if err != nil {
+		// 忽略超时错误（可能接收端不发送响应）
+		// 只记录非超时错误
+		if ctx.Err() != context.DeadlineExceeded {
+			logging.WithFields(map[string]any{
+				"target_node": targetNodeID,
+				"error":       err,
+			}).Debug("发送离开消息失败")
+		}
+		return
+	}
+
+	logging.WithField("target_node", targetNodeID).Debug("发送离开消息成功")
 }
 
 // ========================================
@@ -640,11 +1044,22 @@ func (tc *TreeCoordinator) AddChild(childID string) error {
 		}
 	}
 
-	// 添加子节点
+	// 添加子节点到本地节点列表
 	tc.localNode.ChildrenIDs = append(tc.localNode.ChildrenIDs, childID)
 
-	// 更新子节点信息
-	if child, exists := tc.allNodes[childID]; exists {
+	// 确保子节点存在于 allNodes 中（如果不存在则创建）
+	child, exists := tc.allNodes[childID]
+	if !exists {
+		// 创建新的子节点
+		child = &Node{
+			NodeID:   childID,
+			Status:   NodeStatusReady,
+			ParentID: tc.localNode.NodeID,
+			Level:    newChildLevel,
+		}
+		tc.allNodes[childID] = child
+	} else {
+		// 更新现有子节点的父节点和层级
 		child.ParentID = tc.localNode.NodeID
 		child.Level = newChildLevel
 	}
@@ -687,6 +1102,78 @@ func (tc *TreeCoordinator) RemoveChild(childID string) error {
 		"parent": tc.localNode.NodeID,
 		"child":  childID,
 	}).Info("移除子节点")
+
+	return nil
+}
+
+// ReparentChild 重新分配子节点的父节点
+//
+// PR-034 实现：
+//   - 如果新父节点是本地节点，添加子节点
+//   - 如果旧父节点是本地节点，移除子节点
+//   - 如果两者都不是本地节点，返回成功（由相关节点处理）
+func (tc *TreeCoordinator) ReparentChild(childID, newParentID, oldParentID string) error {
+	tc.nodesMu.Lock()
+	defer tc.nodesMu.Unlock()
+
+	// 步骤 1: 验证节点存在
+	child, exists := tc.allNodes[childID]
+	if !exists {
+		return types.NewClusterNodeNotFoundError(childID)
+	}
+
+	// 步骤 2: 检查是否涉及本地节点
+	involvesLocalNode := (newParentID == tc.localNode.NodeID) || (oldParentID == tc.localNode.NodeID)
+	if !involvesLocalNode {
+		// 不涉及本地节点，返回成功（由相关节点处理）
+		logging.WithFields(map[string]any{
+			"child":      childID,
+			"old_parent": oldParentID,
+			"new_parent": newParentID,
+		}).Debug("重新分配父节点不涉及本地节点，跳过处理")
+		return nil
+	}
+
+	// 步骤 3: 如果新父节点是本地节点，添加子节点
+	if newParentID == tc.localNode.NodeID {
+		// 检查子节点数量
+		if len(tc.localNode.ChildrenIDs) >= tc.config.MaxChildren {
+			return types.NewClusterTreeManagementError(fmt.Sprintf("子节点数量已达上限 %d", tc.config.MaxChildren))
+		}
+
+		// 检查层级限制
+		newChildLevel := tc.localNode.Level + 1
+		if newChildLevel > tc.config.MaxLevel {
+			return types.NewClusterTreeManagementError(fmt.Sprintf("超出树的最大深度限制 %d", tc.config.MaxLevel))
+		}
+
+		// 添加到本地节点的子节点列表
+		if !slices.Contains(tc.localNode.ChildrenIDs, childID) {
+			tc.localNode.ChildrenIDs = append(tc.localNode.ChildrenIDs, childID)
+		}
+
+		// 更新子节点的父节点和层级
+		child.ParentID = tc.localNode.NodeID
+		child.Level = newChildLevel
+	}
+
+	// 步骤 4: 如果旧父节点是本地节点，移除子节点
+	if oldParentID == tc.localNode.NodeID {
+		idx := slices.Index(tc.localNode.ChildrenIDs, childID)
+		if idx != -1 {
+			tc.localNode.ChildrenIDs = slices.Delete(tc.localNode.ChildrenIDs, idx, idx+1)
+		}
+	}
+
+	// 步骤 5: 更新拓扑统计
+	tc.stats.LastTopologyUpdate.Store(time.Now())
+
+	logging.WithFields(map[string]any{
+		"child":      childID,
+		"old_parent": oldParentID,
+		"new_parent": newParentID,
+		"new_level":  child.Level,
+	}).Info("重新分配父节点成功")
 
 	return nil
 }
@@ -834,7 +1321,8 @@ func (tc *TreeCoordinator) AddNode(nodeID, addr string) error {
 		"max_depth": tc.config.MaxLevel,
 	}).Info("添加节点到集群（在线扩容）")
 
-	// TODO: 通过 Gossip 协议扩散拓扑变更
+	// 通过 Gossip 协议扩散拓扑变更
+	go tc.gossipTopologyChange("add", nodeID, parentID, newNodeLevel)
 	// TODO: 如果需要数据迁移，触发后台迁移任务
 
 	return nil
@@ -899,7 +1387,8 @@ func (tc *TreeCoordinator) RemoveNode(nodeID string) error {
 		"children_count": len(node.ChildrenIDs),
 	}).Info("从集群移除节点（在线缩容）")
 
-	// TODO: 通过 Gossip 协议扩散拓扑变更
+	// 通过 Gossip 协议扩散拓扑变更
+	go tc.gossipTopologyChange("remove", nodeID, node.ParentID, node.Level)
 	// TODO: 如果需要数据迁移，触发后台迁移任务
 
 	return nil
@@ -1352,4 +1841,212 @@ func (h *Host) IsOnline() bool {
 // IsDegraded 判断 Host 是否降级（PR-033）
 func (h *Host) IsDegraded() bool {
 	return h.HostStatus == HostStatusDegraded
+}
+
+// ========================================
+// Gossip 拓扑变更扩散 (PR-034)
+// ========================================
+
+// gossipTopologyChange 通过 Gossip 协议扩散拓扑变更
+//
+// PR-034 实现：
+//  1. 随机选择一些节点进行 Gossip
+//  2. 发送拓扑变更消息
+//  3. 最终所有节点都会达到一致的拓扑状态
+//
+// 参数：
+//   - operation: 操作类型（"add", "remove", "reparent"）
+//   - nodeID: 发生变更的节点 ID
+//   - parentID: 父节点 ID（如果有）
+//   - level: 节点层级
+func (tc *TreeCoordinator) gossipTopologyChange(operation, nodeID, parentID string, level int) {
+	// 检查 RPCClient 是否可用
+	if tc.RPCClient == nil {
+		logging.WithField("node_id", tc.localNode.NodeID).Debug("RPCClient 未初始化，跳过 Gossip 扩散")
+		return
+	}
+
+	// 获取所有已知节点
+	tc.nodesMu.RLock()
+	nodes := make([]*Node, 0, len(tc.allNodes))
+	for _, node := range tc.allNodes {
+		if node.NodeID != tc.localNode.NodeID && node.Status == NodeStatusReady {
+			nodes = append(nodes, node)
+		}
+	}
+	tc.nodesMu.RUnlock()
+
+	if len(nodes) == 0 {
+		logging.Debug("没有其他节点，跳过 Gossip 扩散")
+		return
+	}
+
+	// 随机选择一部分节点进行 Gossip（fanout = 2 或 3）
+	fanout := 2
+	if len(nodes) < fanout {
+		fanout = len(nodes)
+	}
+
+	// 构造拓扑变更消息
+	changeMsg := &transport.NodeSyncMessage{
+		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeSync},
+		Version:     uint64(time.Now().Unix()),
+		Metadata: map[string][]byte{
+			"operation": []byte(operation),
+			"node_id":   []byte(nodeID),
+			"parent_id": []byte(parentID),
+			"level":     []byte(fmt.Sprintf("%d", level)),
+			"timestamp": []byte(time.Now().Format(time.RFC3339)),
+		},
+	}
+
+	// 向随机选择的节点发送 Gossip 消息
+	successCount := 0
+	for i := 0; i < fanout; i++ {
+		// 简单的随机选择（生产环境应使用更好的随机算法）
+		targetIdx := i % len(nodes)
+		targetNode := nodes[targetIdx]
+
+		if err := tc.sendGossipMessage(targetNode, changeMsg); err != nil {
+			logging.WithFields(map[string]any{
+				"target_node": targetNode.NodeID,
+				"error":       err,
+			}).Debug("发送 Gossip 消息失败")
+			continue
+		}
+		successCount++
+	}
+
+	logging.WithFields(map[string]any{
+		"operation":     operation,
+		"node_id":       nodeID,
+		"fanout":        fanout,
+		"success_count": successCount,
+	}).Debug("Gossip 拓扑变更扩散完成")
+}
+
+// sendGossipMessage 发送 Gossip 消息到指定节点
+func (tc *TreeCoordinator) sendGossipMessage(targetNode *Node, msg *transport.NodeSyncMessage) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 构造目标地址
+	targetAddr := fmt.Sprintf("%s:%d", targetNode.Addr.Host, targetNode.Addr.TCPPort)
+
+	// 发送 Gossip 消息
+	resp, err := tc.RPCClient.Call(ctx, targetAddr, msg)
+	if err != nil {
+		return fmt.Errorf("发送 Gossip 消息失败: %w", err)
+	}
+
+	// 处理响应
+	if syncMsg, ok := resp.(*transport.NodeSyncMessage); ok {
+		logging.WithFields(map[string]any{
+			"target_node": targetNode.NodeID,
+			"version":     syncMsg.Version,
+		}).Debug("收到 Gossip 响应")
+	}
+
+	return nil
+}
+
+// ========================================
+// Gossip 周期性同步
+// ========================================
+
+// gossipLoop Gossip 周期性同步循环
+//
+// PR-034 实现：周期性地与其他节点同步拓扑信息
+// TODO: PR-034 完成后启用此函数
+/*
+func (tc *TreeCoordinator) gossipLoop() {
+	ticker := time.NewTicker(10 * time.Second) // 默认 10 秒同步一次
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			tc.gossipSync()
+
+		case <-tc.stopCh:
+			return
+		}
+	}
+}
+*/
+
+// gossipSync 周期性同步拓扑信息
+// TODO: PR-034 完成后启用此函数
+/*
+func (tc *TreeCoordinator) gossipSync() {
+	// 检查 RPCClient 是否可用
+	if tc.RPCClient == nil {
+		return
+	}
+
+	// 获取所有已知节点
+	tc.nodesMu.RLock()
+	nodes := make([]*Node, 0, len(tc.allNodes))
+	for _, node := range tc.allNodes {
+		if node.NodeID != tc.localNode.NodeID && node.Status == NodeStatusReady {
+			nodes = append(nodes, node)
+		}
+	}
+	tc.nodesMu.RUnlock()
+
+	if len(nodes) == 0 {
+		return
+	}
+
+	// 随机选择一个节点进行同步
+	targetIdx := int(time.Now().UnixNano()) % len(nodes)
+	targetNode := nodes[targetIdx]
+
+	// 构造同步消息
+	syncMsg := &transport.NodeSyncMessage{
+		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeSync},
+		Version:     uint64(time.Now().Unix()),
+		Metadata:    tc.buildTopologyMetadata(),
+	}
+
+	// 发送同步消息
+	if err := tc.sendGossipMessage(targetNode, syncMsg); err != nil {
+		logging.WithFields(map[string]any{
+			"target_node": targetNode.NodeID,
+			"error":       err,
+		}).Debug("周期性 Gossip 同步失败")
+	}
+}
+*/
+
+// buildTopologyMetadata 构造拓扑元数据
+func (tc *TreeCoordinator) buildTopologyMetadata() map[string][]byte {
+	tc.nodesMu.RLock()
+	defer tc.nodesMu.RUnlock()
+
+	metadata := make(map[string][]byte)
+
+	// 添加本地节点信息
+	localNodeData := fmt.Sprintf("%s|%s|%s|%d|%s",
+		tc.localNode.NodeID,
+		tc.localNode.Addr.TCPAddr(),
+		tc.localNode.ParentID,
+		tc.localNode.Level,
+		tc.localNode.Status.String())
+	metadata[tc.localNode.NodeID] = []byte(localNodeData)
+
+	// 添加子节点信息
+	for _, childID := range tc.localNode.ChildrenIDs {
+		if child, exists := tc.allNodes[childID]; exists {
+			childData := fmt.Sprintf("%s|%s|%s|%d|%s",
+				child.NodeID,
+				child.Addr.TCPAddr(),
+				child.ParentID,
+				child.Level,
+				child.Status.String())
+			metadata[child.NodeID] = []byte(childData)
+		}
+	}
+
+	return metadata
 }

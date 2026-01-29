@@ -409,3 +409,87 @@ func Test_HostManager_GetHostCount(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 3, count)
 }
+
+// ============================================================================
+// Host 方法测试 (IsOnline, IsDegraded)
+// ============================================================================
+
+// Test_Host_IsOnline 测试 Host.IsOnline 方法
+func Test_Host_IsOnline(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   HostStatus
+		expected bool
+	}{
+		{
+			name:     "在线状态",
+			status:   HostStatusOnline,
+			expected: true,
+		},
+		{
+			name:     "离线状态",
+			status:   HostStatusOffline,
+			expected: false,
+		},
+		{
+			name:     "降级状态",
+			status:   HostStatusDegraded,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host := &Host{
+				HostID:     "server-1",
+				Hostname:   "192.168.1.100",
+				Role:       LeafOnly,
+				LeafNodeID: "node-leaf-1",
+				HostStatus: tt.status,
+			}
+
+			result := host.IsOnline()
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// Test_Host_IsDegraded 测试 Host.IsDegraded 方法
+func Test_Host_IsDegraded(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   HostStatus
+		expected bool
+	}{
+		{
+			name:     "降级状态",
+			status:   HostStatusDegraded,
+			expected: true,
+		},
+		{
+			name:     "在线状态",
+			status:   HostStatusOnline,
+			expected: false,
+		},
+		{
+			name:     "离线状态",
+			status:   HostStatusOffline,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host := &Host{
+				HostID:     "server-1",
+				Hostname:   "192.168.1.100",
+				Role:       LeafOnly,
+				LeafNodeID: "node-leaf-1",
+				HostStatus: tt.status,
+			}
+
+			result := host.IsDegraded()
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

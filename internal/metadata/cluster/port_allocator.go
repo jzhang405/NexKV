@@ -11,7 +11,6 @@ package cluster
 import (
 	"crypto/md5"
 	"encoding/binary"
-	"fmt"
 	"sync"
 	"time"
 
@@ -113,9 +112,24 @@ func (pa *PortAllocator) AllocTCPPort(hostID string) (tcpPort, udpPort int, err 
 	}
 
 	if conflict {
-		// 端口已被占用，使用时间戳重试
-		retryHostID := fmt.Sprintf("%s%s%d", hostID, retryHostIDSuffix, time.Now().UnixNano())
-		return pa.AllocTCPPort(retryHostID)
+		// P1-1 修复：端口冲突时递增端口号重试（而不是修改 hostID）
+		// 递增端口号，直到找到可用端口
+		for tcpPort++; tcpPort <= maxTCPPort; tcpPort++ {
+			conflict, _, err := pa.checkPortConflict(tcpPort)
+			if err != nil {
+				return 0, 0, types.NewClusterPortConflictCheckFailedError(err)
+			}
+			if !conflict {
+				// 找到可用端口
+				udpPort = tcpPort + 1
+				break
+			}
+		}
+
+		// 检查是否端口耗尽
+		if tcpPort > maxTCPPort {
+			return 0, 0, types.NewClusterPortExhaustedError()
+		}
 	}
 
 	// 步骤 5: 持久化分配记录

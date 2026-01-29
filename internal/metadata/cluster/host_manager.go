@@ -189,17 +189,53 @@ func (hm *HostManager) GetHostCount() (int, error) {
 	return len(keys), nil
 }
 
-// UpdateHostStatus 更新 Host 状态
+// UpdateHostStatus 更新 Host 状态和心跳时间
+//
+// P1-2 修复：在锁保护下完成整个更新流程，避免数据竞争
+//   - 先从内存缓存查找，未命中则从 MVStore 加载
+//   - 在锁保护下更新字段并持久化
+//   - 避免并发场景下的数据覆盖和丢失
 func (hm *HostManager) UpdateHostStatus(hostID string, status HostStatus, lastHeartbeat int64) error {
-	host, err := hm.GetHost(hostID)
-	if err != nil {
-		return err
+	hm.mu.Lock()
+	defer hm.mu.Unlock()
+
+	// 步骤 1: 从内存缓存查找
+	host, exists := hm.hosts[hostID]
+
+	// 步骤 2: 内存缓存未命中，从 MVStore 加载
+	if !exists {
+		key := hostKeyPrefix + hostID
+		data, err := hm.metadataStore.Get(key)
+		if err != nil {
+			return types.NewClusterHostNotFoundError(hostID)
+		}
+
+		var loadedHost Host
+		if err := msgpack.Unmarshal(data, &loadedHost); err != nil {
+			return types.NewClusterHostUnmarshalFailedError(err)
+		}
+
+		// 更新内存缓存
+		host = &loadedHost
+		hm.hosts[hostID] = host
 	}
 
+	// 步骤 3: 在锁保护下更新字段
 	host.HostStatus = status
 	host.LastHeartbeat = lastHeartbeat
 
-	return hm.AddHost(host)
+	// 步骤 4: 持久化到 MVStore
+	key := hostKeyPrefix + hostID
+	data, err := msgpack.Marshal(host)
+	if err != nil {
+		return types.NewClusterHostMarshalFailedError(err)
+	}
+
+	if err := hm.metadataStore.Put(key, data); err != nil {
+		return types.NewClusterHostSaveFailedError(err)
+	}
+
+	return nil
 }
 
 // GetHostsByRole 根据 HostRole 筛选 Host

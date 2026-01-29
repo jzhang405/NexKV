@@ -168,7 +168,7 @@ func TestMessageType_ExpectResponseAndProtocolType(t *testing.T) {
 		{
 			name:           "NodeJoinMessage",
 			msgType:        MessageTypeNodeJoin,
-			expectResponse: NoResponse,
+			expectResponse: ExpectResponse, // NodeJoin 现在期望响应以支持 E2E 测试
 			protocolType:   ProtocolUDP,
 			msgRole:        MsgRoleRequest,
 		},

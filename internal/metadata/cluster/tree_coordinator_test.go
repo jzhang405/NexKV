@@ -206,9 +206,9 @@ func TestTreeCoordinator_GetTreeDepth(t *testing.T) {
 	// 添加子节点
 	_ = coordinator.AddChild("child1")
 
-	// 深度仍为 0（子节点在本地列表中，但尚未创建完整树）
+	// 深度变为 1（AddChild 在 allNodes 中创建了子节点，Level=1）
 	depth = coordinator.GetTreeDepth()
-	assert.Equal(t, 0, depth)
+	assert.Equal(t, 1, depth)
 }
 
 // TestTreeCoordinator_GetStats 测试获取统计信息
@@ -484,4 +484,258 @@ func TestTreeCoordinator_SingleParentConstraint(t *testing.T) {
 	assert.Contains(t, err.Error(), "已经是")
 	assert.Contains(t, err.Error(), "node1")
 	assert.Contains(t, err.Error(), "不能同时")
+}
+
+// Package cluster TreeCoordinator Gossip 协议测试
+//
+// 测试覆盖：
+// - buildTopologyMetadata: 构造拓扑元数据
+// - gossipTopologyChange: 拓扑变更扩散（无 RPCClient 场景）
+// - gossipSync: 周期性同步（无 RPCClient 场景）
+
+// ============================================================================
+// buildTopologyMetadata 测试
+// ============================================================================
+
+// Test_TreeCoordinator_buildTopologyMetadata 测试构造拓扑元数据
+func Test_TreeCoordinator_buildTopologyMetadata(t *testing.T) {
+	config := DefaultTreeCoordinatorConfig()
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+	require.NoError(t, err)
+
+	// 添加子节点
+	err = coordinator.AddChild("child1")
+	require.NoError(t, err)
+	err = coordinator.AddChild("child2")
+	require.NoError(t, err)
+
+	// 调用 buildTopologyMetadata
+	metadata := coordinator.buildTopologyMetadata()
+
+	// 验证包含本地节点
+	assert.Contains(t, metadata, "node1")
+	localNodeData := string(metadata["node1"])
+	assert.Contains(t, localNodeData, "node1")
+	assert.Contains(t, localNodeData, "/ip4/127.0.0.1/tcp/9211")
+	assert.Contains(t, localNodeData, "Init") // 新创建的 coordinator 状态为 Init
+
+	// 验证包含子节点
+	assert.Contains(t, metadata, "child1")
+	assert.Contains(t, metadata, "child2")
+
+	// 验证子节点数据格式
+	child1Data := string(metadata["child1"])
+	assert.Contains(t, child1Data, "child1")
+	assert.Contains(t, child1Data, "node1") // ParentID
+	assert.Contains(t, child1Data, "1")     // Level
+}
+
+// Test_TreeCoordinator_buildTopologyMetadata_EmptyChildren 测试没有子节点的情况
+func Test_TreeCoordinator_buildTopologyMetadata_EmptyChildren(t *testing.T) {
+	config := DefaultTreeCoordinatorConfig()
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+	require.NoError(t, err)
+
+	// 没有子节点
+	metadata := coordinator.buildTopologyMetadata()
+
+	// 只包含本地节点
+	assert.Len(t, metadata, 1)
+	assert.Contains(t, metadata, "node1")
+}
+
+// Test_TreeCoordinator_buildTopologyMetadata_ChildNotInAllNodes 测试子节点不在 allNodes 的情况
+func Test_TreeCoordinator_buildTopologyMetadata_ChildNotInAllNodes(t *testing.T) {
+	config := DefaultTreeCoordinatorConfig()
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+	require.NoError(t, err)
+
+	// 手动添加子节点 ID（不通过 AddChild）
+	coordinator.nodesMu.Lock()
+	coordinator.localNode.ChildrenIDs = append(coordinator.localNode.ChildrenIDs, "child1")
+	coordinator.nodesMu.Unlock()
+
+	// 调用 buildTopologyMetadata
+	metadata := coordinator.buildTopologyMetadata()
+
+	// 只包含本地节点（child1 不在 allNodes 中）
+	assert.Len(t, metadata, 1)
+	assert.Contains(t, metadata, "node1")
+	assert.NotContains(t, metadata, "child1")
+}
+
+// ============================================================================
+// gossipTopologyChange 测试（无 RPCClient 场景）
+// ============================================================================
+
+// Test_TreeCoordinator_gossipTopologyChange_NoRPCClient 测试没有 RPCClient 的情况
+func Test_TreeCoordinator_gossipTopologyChange_NoRPCClient(t *testing.T) {
+	config := DefaultTreeCoordinatorConfig()
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+	require.NoError(t, err)
+	coordinator.RPCClient = nil // 没有设置 RPCClient
+
+	// 不应该 panic
+	assert.NotPanics(t, func() {
+		coordinator.gossipTopologyChange("add", "node2", "node1", 1)
+	})
+}
+
+// Test_TreeCoordinator_gossipTopologyChange_NoOtherNodes 测试没有其他节点的情况
+func Test_TreeCoordinator_gossipTopologyChange_NoOtherNodes(t *testing.T) {
+	config := DefaultTreeCoordinatorConfig()
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+	require.NoError(t, err)
+
+	// 不应该 panic（没有其他节点）
+	assert.NotPanics(t, func() {
+		coordinator.gossipTopologyChange("add", "node2", "node1", 1)
+	})
+}
+
+// Test_TreeCoordinator_gossipTopologyChange_WithOtherNodes 测试有其他节点但无 RPCClient
+func Test_TreeCoordinator_gossipTopologyChange_WithOtherNodes(t *testing.T) {
+	config := DefaultTreeCoordinatorConfig()
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+	require.NoError(t, err)
+
+	// 添加一些节点到 allNodes（模拟其他节点）
+	coordinator.nodesMu.Lock()
+	coordinator.allNodes["node2"] = &Node{
+		NodeID: "node2",
+		Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9212},
+		Status: NodeStatusReady,
+		Level:  1,
+	}
+	coordinator.allNodes["node3"] = &Node{
+		NodeID: "node3",
+		Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9213},
+		Status: NodeStatusReady,
+		Level:  1,
+	}
+	coordinator.nodesMu.Unlock()
+
+	// RPCClient 为 nil，不应该 panic
+	assert.NotPanics(t, func() {
+		coordinator.gossipTopologyChange("add", "node4", "node1", 1)
+	})
+}
+
+// ============================================================================
+// gossipSync 测试（无 RPCClient 场景）
+// ============================================================================
+
+// Test_TreeCoordinator_gossipSync_NoRPCClient 测试没有 RPCClient 的情况
+func Test_TreeCoordinator_gossipSync_NoRPCClient(t *testing.T) {
+	t.Skip("TODO: PR-034 完成后启用此测试（gossipSync 函数已注释）")
+	// 以下代码在 PR-034 完成后启用
+	/*
+		config := DefaultTreeCoordinatorConfig()
+		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+		require.NoError(t, err)
+		coordinator.RPCClient = nil
+
+		// 不应该 panic
+		assert.NotPanics(t, func() {
+			coordinator.gossipSync()
+		})
+	*/
+}
+
+// Test_TreeCoordinator_gossipSync_NoOtherNodes 测试没有其他节点的情况
+func Test_TreeCoordinator_gossipSync_NoOtherNodes(t *testing.T) {
+	t.Skip("TODO: PR-034 完成后启用此测试（gossipSync 函数已注释）")
+	// 以下代码在 PR-034 完成后启用
+	/*
+		config := DefaultTreeCoordinatorConfig()
+		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+		require.NoError(t, err)
+
+		// 不应该 panic（没有其他节点）
+		assert.NotPanics(t, func() {
+			coordinator.gossipSync()
+		})
+	*/
+}
+
+// Test_TreeCoordinator_gossipSync_WithOtherNodes 测试有其他节点但无 RPCClient
+func Test_TreeCoordinator_gossipSync_WithOtherNodes(t *testing.T) {
+	t.Skip("TODO: PR-034 完成后启用此测试（gossipSync 函数已注释）")
+	// 以下代码在 PR-034 完成后启用
+	/*
+		config := DefaultTreeCoordinatorConfig()
+		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+		require.NoError(t, err)
+
+		// 添加一些节点到 allNodes
+		coordinator.nodesMu.Lock()
+		coordinator.allNodes["node2"] = &Node{
+			NodeID: "node2",
+			Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9212},
+			Status: NodeStatusReady,
+			Level:  1,
+		}
+		coordinator.nodesMu.Unlock()
+
+		// RPCClient 为 nil，不应该 panic
+		assert.NotPanics(t, func() {
+			coordinator.gossipSync()
+		})
+	*/
+}
+
+// ============================================================================
+// Gossip 消息构造测试
+// ============================================================================
+
+// Test_TreeCoordinator_buildTopologyMetadata_Format 测试元数据格式
+func Test_TreeCoordinator_buildTopologyMetadata_Format(t *testing.T) {
+	config := DefaultTreeCoordinatorConfig()
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+	require.NoError(t, err)
+
+	// 添加子节点
+	err = coordinator.AddChild("child1")
+	require.NoError(t, err)
+
+	// 调用 buildTopologyMetadata
+	metadata := coordinator.buildTopologyMetadata()
+
+	// 验证本地节点格式：node1|/ip4/127.0.0.1/tcp/9211||0|Init
+	// 注意：新创建的 coordinator 状态是 Init
+	localNodeData := string(metadata["node1"])
+	parts := splitString(localNodeData, "|")
+	assert.Len(t, parts, 5)
+	assert.Equal(t, "node1", parts[0])                   // NodeID
+	assert.Equal(t, "/ip4/127.0.0.1/tcp/9211", parts[1]) // TCPAddr
+	assert.Equal(t, "", parts[2])                        // ParentID (根节点)
+	assert.Equal(t, "0", parts[3])                       // Level
+	assert.Equal(t, "Init", parts[4])                    // Status (初始状态)
+
+	// 验证子节点格式：child1|/ip4//tcp/0|node1|1|Ready
+	// 注意：AddChild 创建的子节点 Addr 为空，String() 返回 "/ip4//tcp/0"
+	// 子节点状态被设置为 Ready
+	child1Data := string(metadata["child1"])
+	parts = splitString(child1Data, "|")
+	assert.Len(t, parts, 5)
+	assert.Equal(t, "child1", parts[0])      // NodeID
+	assert.Equal(t, "/ip4//tcp/0", parts[1]) // TCPAddr (空 Addr 的 String() 表示)
+	assert.Equal(t, "node1", parts[2])       // ParentID
+	assert.Equal(t, "1", parts[3])           // Level
+	assert.Equal(t, "Ready", parts[4])       // Status (AddChild 设置为 Ready)
+}
+
+// splitString 辅助函数：按分隔符分割字符串
+func splitString(s, sep string) []string {
+	var result []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if i+len(sep) <= len(s) && s[i:i+len(sep)] == sep {
+			result = append(result, s[start:i])
+			start = i + len(sep)
+			i += len(sep) - 1
+		}
+	}
+	result = append(result, s[start:])
+	return result
 }

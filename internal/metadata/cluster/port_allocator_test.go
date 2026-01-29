@@ -77,9 +77,9 @@ func Test_PortAllocator_ConflictRetry(t *testing.T) {
 
 	// 手动创建一个冲突的端口分配
 	conflictingAllocation := &PortAllocation{
-		HostID:     "other-host",
-		TCPPort:    12345, // 假设这是 localhost-1 的哈希结果
-		UDPPort:    12346,
+		HostID:      "other-host",
+		TCPPort:     12345, // 假设这是 localhost-1 的哈希结果
+		UDPPort:     12346,
 		AllocatedAt: time.Now().Unix(),
 	}
 
@@ -273,9 +273,9 @@ func Test_PortAllocator_ReleaseNonExistent(t *testing.T) {
 // Test_PortAllocation_MsgPack 测试 PortAllocation 序列化
 func Test_PortAllocation_MsgPack(t *testing.T) {
 	allocation := &PortAllocation{
-		HostID:     "localhost-1",
-		TCPPort:    12345,
-		UDPPort:    12346,
+		HostID:      "localhost-1",
+		TCPPort:     12345,
+		UDPPort:     12346,
 		AllocatedAt: time.Now().Unix(),
 	}
 

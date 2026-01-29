@@ -296,7 +296,7 @@ func Test_FailureDetector_GetFailureCount(t *testing.T) {
 	assert.Equal(t, 0, count, "Initial failure count should be 0")
 
 	// 第一次检测
-	fd.IsHostFailed("server-1")
+	_, _ = fd.IsHostFailed("server-1")
 	count, err = fd.GetFailureCount("server-1")
 	require.NoError(t, err)
 	assert.Equal(t, 1, count, "Failure count should be 1 after first detection")

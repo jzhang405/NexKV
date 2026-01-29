@@ -23,7 +23,7 @@ const (
 type HostManager struct {
 	metadataStore store.MVStore
 	hosts         map[string]*Host // HostID → Host 映射（内存缓存）
-	mu            sync.RWMutex    // 读写锁，保护 hosts map
+	mu            sync.RWMutex     // 读写锁，保护 hosts map
 }
 
 // NewHostManager 创建 HostManager

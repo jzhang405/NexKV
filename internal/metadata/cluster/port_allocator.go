@@ -37,9 +37,9 @@ type PortAllocation struct {
 
 // PortAllocator 端口分配器（基于 MVStore）
 type PortAllocator struct {
-	metadataStore store.MVStore    // 元数据存储（已有组件）
-	tcpToHostID   map[int]string  // TCP 端口 → HostID 反向索引（内存缓存，O(1) 冲突检测）
-	mu            sync.RWMutex    // 保护 tcpToHostID map
+	metadataStore store.MVStore  // 元数据存储（已有组件）
+	tcpToHostID   map[int]string // TCP 端口 → HostID 反向索引（内存缓存，O(1) 冲突检测）
+	mu            sync.RWMutex   // 保护 tcpToHostID map
 }
 
 // NewPortAllocator 创建端口分配器

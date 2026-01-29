@@ -1116,9 +1116,9 @@ func (tc *TreeCoordinator) GetTopology() map[string]*Node {
 type HostStatus int
 
 const (
-	HostStatusOffline HostStatus = iota // 离线
-	HostStatusOnline                   // 在线
-	HostStatusDegraded                 // 降级（部分功能异常）
+	HostStatusOffline  HostStatus = iota // 离线
+	HostStatusOnline                     // 在线
+	HostStatusDegraded                   // 降级（部分功能异常）
 )
 
 // String 返回 HostStatus 的字符串表示
@@ -1137,12 +1137,12 @@ func (s HostStatus) String() string {
 
 // Validate 验证 NodeAddress 的合法性（PR-033）
 // 规则：
-//   1. TCPPort 和 UDPPort 都在有效范围内 [1024, 65535]
-//   2. 如果两个端口都设置，UDPPort 应该等于 TCPPort + 1
-//   3. 至少有一个端口已设置
+//  1. TCPPort 和 UDPPort 都在有效范围内 [1024, 65535]
+//  2. 如果两个端口都设置，UDPPort 应该等于 TCPPort + 1
+//  3. 至少有一个端口已设置
 func (na *NodeAddress) Validate() error {
 	const (
-		MinPort   = 1024
+		MinPort    = 1024
 		MaxTCPPort = 65534
 		MaxUDPPort = 65535
 	)
@@ -1203,8 +1203,8 @@ func (na *NodeAddress) GetUDPAddr() string {
 // 自动设置 UDPPort = TCPPort + 1
 func NewNodeAddress(host string, tcpPort int) (*NodeAddress, error) {
 	const (
-		MinPort     = 1024
-		MaxTCPPort  = 65534
+		MinPort    = 1024
+		MaxTCPPort = 65534
 	)
 
 	if tcpPort < MinPort || tcpPort > MaxTCPPort {

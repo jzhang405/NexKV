@@ -230,22 +230,104 @@ flowchart TD
     )
     ```
 
-    **9.3 分配算法**：
+     **9.3 分配算法**：
+
+    **9.3.1 localhost 场景特殊处理**：
 
     ```go
-    // 评估候选 Host 的指标
-    type HostScore struct {
-        HostID         string
-        CPUUsage      float64  // CPU 使用率（0-1）
-        MemUsage      float64  // 内存使用率（0-1）
-        NetworkLatency float64  // 网络延迟（ms）
-        ExistingNodes int       // 已有节点数
-        Score          float64  // 综合评分
+    // 判断是否为 localhost 场景
+    func isLocalhostScenario(hosts []Host) bool {
+        if len(hosts) == 0 {
+            return false
+        }
+
+        // 检查所有 Host 的 hostname 是否相同
+        firstHostname := hosts[0].Hostname
+        for _, host := range hosts {
+            if host.Hostname != firstHostname {
+                return false // 存在不同机器，非 localhost 场景
+            }
+        }
+
+        // 所有 hostname 相同，判断是否为 localhost（127.0.0.1 或 0.0.0.0）
+        return isLocalhostAddress(firstHostname)
     }
 
-    // 分配决策
+    func isLocalhostAddress(hostname string) bool {
+        return hostname == "127.0.0.1" ||
+               hostname == "0.0.0.0" ||
+               strings.HasPrefix(hostname, "localhost")
+    }
+
+    // localhost 场景下的 Host 评分
+    func evaluateHostsForLocalhost(hosts []Host) []HostScore {
+        var scores []HostScore
+
+        for _, host := range hosts {
+            score := calculateHostScoreForLocalhost(host)
+            scores = append(scores, score)
+        }
+
+        return scores
+    }
+
+    func calculateHostScoreForLocalhost(host Host) HostScore {
+        // localhost 场景特点：
+        // 1. 网络延迟为 0（同一机器）
+        // 2. 评分主要基于已有节点数（负载均衡）
+        // 3. 忽略 CPU 和内存（因为是同一进程内的不同角色）
+
+        // 评分原则：已有节点数越少越好（负载均衡）
+        loadScore := 1.0 / float64(host.ExistingNodes+1)
+
+        return HostScore{
+            HostID:         host.HostID,
+            CPUUsage:      0, // localhost 下不计算
+            MemUsage:      0, // localhost 下不计算
+            NetworkLatency: 0, // localhost 延迟为 0
+            ExistingNodes: host.ExistingNodes,
+            Score:          loadScore, // 仅考虑负载均衡
+        }
+    }
+
+    // 分配决策（支持 localhost 场景）
     func AllocateParent(availableHosts []Host) (primary Host, standby Host) {
-        scores := evaluateHosts(availableHosts)
+        // 检查是否为 localhost 场景
+        if isLocalhostScenario(availableHosts) {
+            return allocateParentForLocalhost(availableHosts)
+        }
+
+        // 分布式场景：使用完整评分算法
+        return allocateParentForDistributed(availableHosts)
+    }
+
+    // localhost 场景分配逻辑
+    func allocateParentForLocalhost(hosts []Host) (primary Host, standby Host) {
+        scores := evaluateHostsForLocalhost(hosts)
+
+        if len(scores) == 0 {
+            return Host{}, Host{}
+        }
+
+        // 按已有节点数排序（少的优先）
+        sort.Slice(scores, func(i, j int) bool {
+            return scores[i].ExistingNodes < scores[j].ExistingNodes
+        })
+
+        // 选择节点最少的 Host 作为 Parent
+        primary := scores[0]
+
+        var standby Host
+        if len(scores) > 1 {
+            standby = scores[1]
+        }
+
+        return primary, standby
+    }
+
+    // 分布式场景分配逻辑
+    func allocateParentForDistributed(hosts []Host) (primary Host, standby Host) {
+        scores := evaluateHosts(hosts)
 
         // 排序：评分最高的优先
         sort.Slice(scores, func(i, j int) bool {
@@ -309,20 +391,28 @@ flowchart TD
     }
     ```
 
-    **9.4 分配流程**：
+     **9.4 分配流程**：
 
-    **步骤 1：评估候选 Host**
+    **步骤 1：判断部署场景**
+    - 检查所有 Host 的 hostname 是否相同
+    - **localhost 场景**：所有 hostname 为 `127.0.0.1` 或 `0.0.0.0` 或 `localhost`
+    - **分布式场景**：Host hostname 存在差异（如 `192.168.1.100`、`192.168.1.101`）
+
+    **步骤 2：localhost 场景分配流程**
+    - 收集所有角色为 `leaf_parent` 或 `leaf_parent_standby` 的 Host
+    - 按已有节点数排序（节点数少的 Host 优先）
+    - 选择节点最少的 Host 作为 Parent 所在机器
+    - 在该 Host 上创建 Parent Node（role = Parent）
+    - 如果需要 HA，选择次优 Host 创建 ParentStandby
+    - 通过 `host_id` 区分不同"虚拟物理机"
+
+    **步骤 3：分布式场景分配流程**
     - 收集所有角色为 `leaf_parent` 或 `leaf_parent_standby` 的 Host
     - 收集每个 Host 的资源指标（CPU、内存、网络延迟、已有节点数）
-    - 使用评分函数计算综合得分
-
-    **步骤 2：选择 Parent**
+    - 使用评分函数计算综合得分（权重：CPU 30%、内存 30%、延迟 30%、负载 10%）
     - 选择评分最高的 Host 作为 Parent 节点所在机器
     - 在该 Host 上创建 Parent Node（role = Parent）
-    - 记录分配决策到元数据
-
-    **步骤 3：选择 ParentStandby（可选）**
-    - 如果配置要求 HA（高可用），选择评分次高的 Host
+    - 如果配置要求 HA，选择评分次高的 Host
     - 在该 Host 上创建 ParentStandby Node（role = ParentStandby）
     - ParentStandby 处于热备状态，实时同步 Parent 的数据
 
@@ -330,6 +420,11 @@ flowchart TD
     - 将新分配的 Parent 和 ParentStandby 节点注册到 TreeCoordinator
     - 通过 Gossip 协议同步节点信息到整个集群
     - 重新构建树形拓扑结构
+
+    **步骤 5：localhost 场景验证**
+    - 检查 `host_id` 唯一性：确保通过 `test-host-1`、`test-host-2` 等逻辑区分
+    - 检查端口冲突：同一 localhost 不同虚拟机使用不同端口（TCP/UDP）
+    - 检查角色分配：确保每个 Host 上有明确的角色（Leaf/Parent/ParentStandby）
 
     **9.5 故障转移机制**：
 
@@ -358,14 +453,69 @@ flowchart TD
         style K fill:#fff4e6,stroke:#e65100,stroke-width:2px
     ```
 
-    **故障转移流程**：
+     **故障转移流程**：
 
-    | 阶段 | 操作 | 说明 |
-    |------|------|------|
-    | **检测** | TreeCoordinator 通过心跳或 Gossip 检测 Parent 故障 | 超时阈值：30s 无心跳判定故障 |
-    | **决策** | 检查是否存在可用的 ParentStandby | 有 ParentStandby → 快速切换；无 → 重新分配 |
-    | **切换** | 将 ParentStandby 提升为 Parent，Role 更新为 `Parent` | 切换时间 < 5s |
-    | **通知** | 通过 Gossip 协议向所有 Leaf 节点广播拓扑变更 | 确保最终一致性 |
+     | 阶段 | 操作 | 说明 |
+     |------|------|------|
+     | **检测** | TreeCoordinator 通过心跳或 Gossip 检测 Parent 故障 | 超时阈值：30s 无心跳判定故障 |
+     | **决策** | 检查是否存在可用的 ParentStandby | 有 ParentStandby → 快速切换；无 → 重新分配 |
+     | **切换** | 将 ParentStandby 提升为 Parent，Role 更新为 `Parent` | 切换时间 < 5s |
+     | **通知** | 通过 Gossip 协议向所有 Leaf 节点广播拓扑变更 | 确保最终一致性 |
+
+     **9.5.1 localhost 场景故障转移**：
+
+     ```mermaid
+     flowchart TD
+         A[Parent 故障检测<br/>localhost 场景] --> B{判断场景类型}
+         B -->|同一 Host 内故障| C[同一虚拟机内切换<br/>host_id: test-host-1]
+         B -->|不同 Host 间故障| D[跨虚拟机切换<br/>host_id: test-host-1 -> test-host-2]
+
+         C --> E[在 test-host-1 上<br/>检查 ParentStandby]
+         D --> F[在 test-host-2 上<br/>检查可用性]
+
+         E --> G{有 ParentStandby?}
+         F --> H{test-host-2 可用?}
+
+         G -->|是| I[快速切换<br/>ParentStandby -> Parent]
+         G -->|否| J[在同一 Host 内<br/>重新分配]
+
+         H --> K[更新节点 Role]
+         J --> K
+
+         I --> L[通知 Leaf 节点]
+         K --> L
+
+         H -->|是| M[test-host-2 可用]
+         H -->|否| N[test-host-2 不可用<br/>触发跨 Host 分配]
+
+         M --> O{有 ParentStandby?}
+         N --> P[选择新 Host<br/>创建 Parent+ParentStandby]
+
+         O -->|是| Q[使用 ParentStandby]
+         O -->|否| P
+
+         Q --> L
+         P --> L
+
+         style C fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+         style D fill:#fff4e6,stroke:#e65100,stroke-width:2px
+         style P fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+     ```
+
+     **localhost 故障转移策略**：
+
+     | 故障类型 | 判断条件 | 处理方式 | 切换时间 |
+     |----------|----------|---------|---------|
+     | **同一 Host 内故障** | Parent 和 ParentStandby 在同一 `host_id` | 检查是否有 ParentStandby，有则快速切换 | < 1s（同进程内） |
+     | **跨 Host 故障** | Parent 所在 Host 完全不可用 | 检查其他 Host 可用性，选择新 Host 重新分配 | < 5s（跨进程通信） |
+     | **所有 Host 不可用** | 所有 `localhost` Host 都故障 | 触发告警，等待手动恢复或重启 | N/A |
+
+     **localhost 故障转移注意事项**：
+
+     1. **host_id 隔离**：通过 `test-host-1`、`test-host-2` 逻辑区分不同"虚拟物理机"
+     2. **端口隔离**：同一 localhost 上的不同 Host 使用不同端口（TCP/UDP 避免冲突）
+     3. **进程级切换**：同一 Host 内的 ParentStandby 切换到 Parent 实际是同进程内角色变更
+     4. **跨进程通信**：不同 Host 之间的通信通过 `127.0.0.1:port`，需正确处理超时和重试
 
     **9.6 负载均衡触发（可选）**：
 

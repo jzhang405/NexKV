@@ -311,7 +311,7 @@ func TestDispatcherPerformance(t *testing.T) {
 
 	// 检测 race 模式并调整参数
 	if flag.Lookup("race") != nil || os.Getenv("GORACE") != "" {
-		connCount = 10   // race 模式下减少连接数
+		connCount = 10    // race 模式下减少连接数
 		msgsPerConn = 100 // race 模式下减少每连接消息数
 	}
 

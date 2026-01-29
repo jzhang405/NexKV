@@ -630,15 +630,15 @@ func Test_TreeCoordinator_gossipSync_NoRPCClient(t *testing.T) {
 	t.Skip("TODO: PR-034 完成后启用此测试（gossipSync 函数已注释）")
 	// 以下代码在 PR-034 完成后启用
 	/*
-	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
-	require.NoError(t, err)
-	coordinator.RPCClient = nil
+		config := DefaultTreeCoordinatorConfig()
+		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+		require.NoError(t, err)
+		coordinator.RPCClient = nil
 
-	// 不应该 panic
-	assert.NotPanics(t, func() {
-		coordinator.gossipSync()
-	})
+		// 不应该 panic
+		assert.NotPanics(t, func() {
+			coordinator.gossipSync()
+		})
 	*/
 }
 
@@ -647,14 +647,14 @@ func Test_TreeCoordinator_gossipSync_NoOtherNodes(t *testing.T) {
 	t.Skip("TODO: PR-034 完成后启用此测试（gossipSync 函数已注释）")
 	// 以下代码在 PR-034 完成后启用
 	/*
-	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
-	require.NoError(t, err)
+		config := DefaultTreeCoordinatorConfig()
+		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+		require.NoError(t, err)
 
-	// 不应该 panic（没有其他节点）
-	assert.NotPanics(t, func() {
-		coordinator.gossipSync()
-	})
+		// 不应该 panic（没有其他节点）
+		assert.NotPanics(t, func() {
+			coordinator.gossipSync()
+		})
 	*/
 }
 
@@ -663,24 +663,24 @@ func Test_TreeCoordinator_gossipSync_WithOtherNodes(t *testing.T) {
 	t.Skip("TODO: PR-034 完成后启用此测试（gossipSync 函数已注释）")
 	// 以下代码在 PR-034 完成后启用
 	/*
-	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
-	require.NoError(t, err)
+		config := DefaultTreeCoordinatorConfig()
+		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+		require.NoError(t, err)
 
-	// 添加一些节点到 allNodes
-	coordinator.nodesMu.Lock()
-	coordinator.allNodes["node2"] = &Node{
-		NodeID: "node2",
-		Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9212},
-		Status: NodeStatusReady,
-		Level:  1,
-	}
-	coordinator.nodesMu.Unlock()
+		// 添加一些节点到 allNodes
+		coordinator.nodesMu.Lock()
+		coordinator.allNodes["node2"] = &Node{
+			NodeID: "node2",
+			Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9212},
+			Status: NodeStatusReady,
+			Level:  1,
+		}
+		coordinator.nodesMu.Unlock()
 
-	// RPCClient 为 nil，不应该 panic
-	assert.NotPanics(t, func() {
-		coordinator.gossipSync()
-	})
+		// RPCClient 为 nil，不应该 panic
+		assert.NotPanics(t, func() {
+			coordinator.gossipSync()
+		})
 	*/
 }
 

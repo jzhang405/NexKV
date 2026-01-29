@@ -163,11 +163,43 @@ flowchart TD
        Addr       NodeAddress  `msgpack:"addr"`   // 端口信息（IP 从 Host.Hostname 获取）
        Role       NodeRole     `msgpack:"role"`   // 节点角色: Leaf, Parent, ParentStandby
 
+       // Host 引用（用于获取完整网络地址）
+       // 注意：不序列化到 MsgPack（通过 NodeID 关联）
+       host       *Host `msgpack:"-"`
+
        // 完整网络地址 = Host.Hostname + Node.Addr
        // TCP: Host.Hostname:Node.Addr.TCPPort
        // UDP: Host.Hostname:Node.Addr.UDPPort
 
        // ... 其他字段（ParentID、ChildrenIDs、Level、Status 等）
+   }
+
+   // GetTCPAddr 获取完整的 TCP 网络地址
+   // 统一的地址组装方法，避免逻辑分散
+   func (n *Node) GetTCPAddr() string {
+       if n.host == nil {
+           return fmt.Sprintf(":%d", n.Addr.TCPPort)
+       }
+       return fmt.Sprintf("%s:%d", n.host.Hostname, n.Addr.TCPPort)
+   }
+
+   // GetUDPAddr 获取完整的 UDP 网络地址
+   // 统一的地址组装方法，避免逻辑分散
+   func (n *Node) GetUDPAddr() string {
+       if n.host == nil {
+           return fmt.Sprintf(":%d", n.Addr.UDPPort)
+       }
+       return fmt.Sprintf("%s:%d", n.host.Hostname, n.Addr.UDPPort)
+   }
+
+   // SetHost 设置 Host 引用（由 HostManager 调用）
+   func (n *Node) SetHost(host *Host) {
+       n.host = host
+   }
+
+   // GetHost 获取 Host 引用
+   func (n *Node) GetHost() *Host {
+       return n.host
    }
 
    type NodeRole int
@@ -177,6 +209,12 @@ flowchart TD
        NodeRoleParentStandby                    // 父节点备节点：Parent Node 的热备（HA 模式）
    )
    ```
+
+   **地址组装方法优势**：
+   - **统一接口**：所有代码使用 `GetTCPAddr()` 和 `GetUDPAddr()`，避免重复逻辑
+   - **类型安全**：封装地址组装逻辑，减少字符串拼接错误
+   - **易于维护**：地址格式变更只需修改这两个方法
+   - **测试友好**：可以轻松 mock Host 引用进行单元测试
 
 4. **NodeID/HostID 命名规范**：
 
@@ -233,59 +271,141 @@ flowchart TD
    }
    ```
 
-6. **端口分配算法（MD5 + 全局冲突检测）**：
+6. **端口分配算法（MD5 + MVStore 持久化）**：
    ```go
    import (
        "crypto/md5"
        "encoding/binary"
-       "sync"
    )
 
-   // 全局端口分配表（防止冲突）
-   var (
-       allocatedPorts = sync.Map{} // map[int]bool // tcpPort -> true
-   )
+   // PortAllocation 端口分配记录（持久化到 MVStore）
+   type PortAllocation struct {
+       HostID  string `msgpack:"host_id"`
+       TCPPort int    `msgpack:"tcp_port"`
+       UDPPort int    `msgpack:"udp_port"`
+       AllocatedAt int64 `msgpack:"allocated_at"` // 分配时间戳
+   }
+
+   // PortAllocator 端口分配器（基于 MVStore）
+   type PortAllocator struct {
+       metadataStore *MVStore // 元数据存储（已有组件）
+   }
 
    // AllocTCPPort 基于 host_id 分配 TCP 端口（UDP = TCP + 1）
    // 使用 MD5 哈希确保确定性：同一 host_id 始终获得相同端口
-   func AllocTCPPort(hostID string) (tcpPort, udpPort int, err error) {
-       // 步骤 1: 计算 MD5 哈希
+   // 持久化到 MVStore，支持多进程环境
+   func (pa *PortAllocator) AllocTCPPort(hostID string) (tcpPort, udpPort int, err error) {
+       // 步骤 1: 检查是否已分配（从 MVStore 读取）
+       allocated, err := pa.checkExistingAllocation(hostID)
+       if err == nil && allocated != nil {
+           // 已分配，返回现有端口
+           return allocated.TCPPort, allocated.UDPPort, nil
+       }
+
+       // 步骤 2: 计算 MD5 哈希
        hash := md5.Sum([]byte(hostID))
 
-       // 步骤 2: 取前 4 字节转换为 uint32
+       // 步骤 3: 取前 4 字节转换为 uint32
        hashUint32 := binary.BigEndian.Uint32(hash[:4])
 
-       // 步骤 3: 映射到端口范围 [9000, 32767]（避免系统端口和潜在冲突）
+       // 步骤 4: 映射到端口范围 [9000, 32767]（避免系统端口和潜在冲突）
        tcpPort = 9000 + int(hashUint32%23768) // 32767 - 9000 = 23768 个可用端口
 
-       // 步骤 4: UDP 端口 = TCP 端口 + 1（集群全局规则）
+       // 步骤 5: UDP 端口 = TCP 端口 + 1（集群全局规则）
        udpPort = tcpPort + 1
 
-       // 步骤 5: 全局冲突检测（防止多线程分配冲突）
-       if _, exists := allocatedPorts.LoadOrStore(tcpPort, true); exists {
-           // 端口已被分配，重新计算（递增重试）
-           return AllocTCPPort(hostID + "-retry")
+       // 步骤 6: 检查端口冲突（从 MVStore 读取所有分配记录）
+       if conflict, _ := pa.checkPortConflict(tcpPort); conflict {
+           // 端口已被其他 host_id 占用，重新计算（递增重试）
+           return pa.AllocTCPPort(hostID + "-retry")
+       }
+
+       // 步骤 7: 持久化分配记录到 MVStore
+       allocation := &PortAllocation{
+           HostID:     hostID,
+           TCPPort:    tcpPort,
+           UDPPort:    udpPort,
+           AllocatedAt: time.Now().Unix(),
+       }
+
+       if err := pa.saveAllocation(allocation); err != nil {
+           return 0, 0, fmt.Errorf("failed to save port allocation: %w", err)
        }
 
        return tcpPort, udpPort, nil
    }
 
+   // checkExistingAllocation 检查 host_id 是否已分配端口
+   func (pa *PortAllocator) checkExistingAllocation(hostID string) (*PortAllocation, error) {
+       key := fmt.Sprintf("port_allocation:%s", hostID)
+       data, err := pa.metadataStore.Get(key)
+       if err != nil {
+           return nil, err // 未找到记录
+       }
+
+       var allocation PortAllocation
+       if err := msgpack.Unmarshal(data, &allocation); err != nil {
+           return nil, err
+       }
+
+       return &allocation, nil
+   }
+
+   // checkPortConflict 检查端口是否已被占用
+   func (pa *PortAllocator) checkPortConflict(tcpPort int) (bool, error) {
+       // 扫描所有端口分配记录
+       prefix := "port_allocation:"
+       iter := pa.metadataStore.GetPrefix(prefix)
+
+       for iter.Next() {
+           var allocation PortAllocation
+           if err := msgpack.Unmarshal(iter.Value(), &allocation); err != nil {
+               continue
+           }
+
+           if allocation.TCPPort == tcpPort {
+               return true, nil // 发现冲突
+           }
+       }
+
+       return false, nil
+   }
+
+   // saveAllocation 持久化端口分配记录
+   func (pa *PortAllocator) saveAllocation(allocation *PortAllocation) error {
+       key := fmt.Sprintf("port_allocation:%s", allocation.HostID)
+       data, err := msgpack.Marshal(allocation)
+       if err != nil {
+           return err
+       }
+
+       return pa.metadataStore.Put(key, data)
+   }
+
    // ReleasePort 释放端口（用于故障转移等场景）
-   func ReleasePort(tcpPort int) {
-       allocatedPorts.Delete(tcpPort)
+   func (pa *PortAllocator) ReleasePort(hostID string) error {
+       key := fmt.Sprintf("port_allocation:%s", hostID)
+       return pa.metadataStore.Delete(key)
    }
 
    // 使用示例：
-   // tcp, udp, _ := AllocTCPPort("localhost-1")  // -> tcp=9123, udp=9124
-   // tcp, udp, _ := AllocTCPPort("localhost-1")  // -> tcp=9123, udp=9124 (确定性)
-   // tcp, udp, _ := AllocTCPPort("server-1")    // -> tcp=10456, udp=10457
+   // allocator := &PortAllocator{metadataStore: mvstore}
+   // tcp, udp, _ := allocator.AllocTCPPort("localhost-1")  // -> tcp=9123, udp=9124
+   // tcp, udp, _ := allocator.AllocTCPPort("localhost-1")  // -> tcp=9123, udp=9124 (确定性，从 MVStore 读取)
+   // tcp, udp, _ := allocator.AllocTCPPort("server-1")    // -> tcp=10456, udp=10457
    ```
 
    **端口分配规则**：
    - **确定性**：同一 host_id 始终获得相同的端口对（基于 MD5 哈希）
    - **范围**：TCP 端口 [9000, 32767]，UDP 端口自动 = TCP + 1
-   - **冲突检测**：全局 `sync.Map` 防止并发分配冲突
+   - **持久化**：使用 MVStore 持久化分配记录，支持多进程环境
+   - **冲突检测**：扫描 MVStore 中所有分配记录，避免端口冲突
    - **重试机制**：冲突时自动递增 host_id 后缀重试
+
+   **架构优势**：
+   - **多进程安全**：MVStore 支持多进程并发访问，无并发安全问题
+   - **故障恢复**：进程重启后端口分配记录不丢失
+   - **可扩展性**：端口分配记录持久化，支持大规模集群
 
 7. **可配置评分权重（分布式场景）**：
    ```go

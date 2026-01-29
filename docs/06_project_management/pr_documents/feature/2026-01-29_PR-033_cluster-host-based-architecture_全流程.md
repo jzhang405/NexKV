@@ -1143,9 +1143,13 @@ flowchart TD
 - 添加一致性检查函数
 
 **阶段 2：测试阶段**
-- localhost 场景完整测试
-- 分布式场景完整测试
-- 故障注入测试（网络分区、节点宕机）
+- 测试计划文档：`docs/06_project_management/brainstorm/testing_2026-01-29_pr-033_test-plan.md`
+- localhost 场景完整测试（5 个场景用例）
+- 分布式场景完整测试（5 个场景用例）
+- 故障注入测试（6 个混沌测试用例）
+- 性能基准测试（7 个性能测试用例）
+- 单元测试覆盖率目标：> 80%
+- 集成测试覆盖率目标：> 90%
 
 **阶段 3：上线阶段**
 - 灰度发布，先在测试环境验证
@@ -1189,55 +1193,82 @@ flowchart TD
      - HostID、Hostname、Role 字段
      - LeafNodeID、ParentNodeID、ParentStandbyNodeID 字段
      - 添加 MsgPack 标签（`msgpack:"fieldname"`）
+     - **测试用例**：UT-HOST-001 ~ UT-HOST-005
    - [ ] **第2步（P0）**：定义 Node 结构体（`internal/metadata/cluster/node.go`）
      - NodeID、HostID、Addr（NodeAddress）、Role 字段
      - 添加 MsgPack 标签（`msgpack:"fieldname"`）
+     - **测试用例**：UT-NODE-001 ~ UT-NODE-009
    - [ ] **第3步（P0）**：定义 NodeAddress 结构体（只包含端口）
      - TCPPort、UDPPort 字段（UDP = TCP + 1）
      - 实现 `Validate()` 方法（端口范围 1024-65534）
+     - **测试用例**：UT-NODE-002 ~ UT-NODE-004
    - [ ] **第4步（P0）**：定义 HostRole 和 NodeRole 枚举
+     - **测试用例**：UT-HOST-002 ~ UT-HOST-004
    - [ ] **第5步（P0）**：编写基础结构单元测试
+     - **测试覆盖率目标**：> 80%
+     - **测试文档**：`testing_2026-01-29_pr-033_test-plan.md`
 
    **阶段 2：HostManager 实现（P0）**
    - [ ] **第6步（P0）**：创建 HostManager（`internal/metadata/cluster/host_manager.go`）
+     - **测试用例**：IT-HM-001 ~ IT-HM-005
    - [ ] **第7步（P0）**：实现 AddHost（添加物理机器）
+     - **测试用例**：IT-HM-001
    - [ ] **第8步（P0）**：实现 GetHost（获取机器信息）
+     - **测试用例**：IT-HM-002, PT-PERF-001
    - [ ] **第9步（P0）**：实现 RemoveHost（移除物理机器）
+     - **测试用例**：IT-HM-003
    - [ ] **第10步（P0）**：实现 ValidateNodeIDs（验证 HostRole 到 NodeID 约束）
+     - **测试用例**：UT-HOST-002 ~ UT-HOST-004
    - [ ] **第11步（P0）**：编写 HostManager 单元测试
+     - **测试覆盖率目标**：> 90%
 
    **阶段 3：TreeCoordinator 调整（P1）**
    - [ ] **第12步（P1）**：调整 TreeCoordinator 结构（`internal/metadata/cluster/tree_coordinator.go`）
+     - **测试用例**：IT-TC-001 ~ IT-TC-004
    - [ ] **第13步（P1）**：添加 allHosts map 和 localHost 字段
    - [ ] **第14步（P1）**：调整 NewTreeCoordinator 构造函数
    - [ ] **第15步（P1）**：调整 Start 方法支持双节点启动
+     - **测试用例**：IT-TC-001
    - [ ] **第16步（P1）**：调整 sendHeartbeat 方法
+     - **测试用例**：IT-TC-002
    - [ ] **第17步（P1）**：编写集成测试
+     - **测试覆盖率目标**：> 85%
 
    **阶段 4：动态分配算法实现（P0）**
-   - [ ] **第18步（P0）**：实现端口分配函数（MD5 哈希 + 全局冲突检测）
+   - [ ] **第18步（P0）**：实现端口分配函数（MD5 哈希 + MVStore 持久化）
      - 使用 `AllocTCPPort(hostID)` 函数
-     - 全局 `sync.Map` 防止端口冲突
+     - **测试用例**：UT-PORT-001 ~ UT-PORT-006, PT-PERF-002, PT-PERF-007
    - [ ] **第19步（P0）**：实现 localhost host_id 生成（localhost-{序号}）
+     - **测试用例**：ST-LOCAL-002
    - [ ] **第20步（P0）**：实现场景判断（localhost vs 分布式）
    - [ ] **第21步（P0）**：实现可配置评分权重（ScoreWeights 结构）
    - [ ] **第22步（P0）**：实现 localhost 场景分配逻辑（仅负载均衡）
+     - **测试用例**：IT-DA-003, ST-LOCAL-001 ~ ST-LOCAL-005
    - [ ] **第23步（P0）**：实现分布式场景分配逻辑（评分算法）
+     - **测试用例**：IT-DA-001, IT-DA-002, IT-DA-004, ST-DIST-001 ~ ST-DIST-005
    - [ ] **第24步（P0）**：编写动态分配算法测试
+     - **测试覆盖率目标**：> 85%
 
    **阶段 5：故障转移机制实现（P0）**
    - [ ] **第25步（P0）**：实现 TCP+UDP 双重探测机制
      - 实现 `DualProbe(timeout)` 方法
      - 实现 `IsFailedWithProbe()` 方法
+     - **测试用例**：UT-FAIL-001 ~ UT-FAIL-008
    - [ ] **第26步（P0）**：实现防脑裂延迟机制（2 秒延迟）
      - 实现 `ParentFailoverManager`
      - 连续失败次数阈值（3 次）
+     - **测试用例**：UT-FAIL-007 ~ UT-FAIL-008, PT-PERF-004
    - [ ] **第27步（P0）**：实现 ParentStandby 元数据同步
      - 增量同步：100ms 间隔
      - 全量同步：5s 间隔
+     - **测试用例**：PT-PERF-006
    - [ ] **第28步（P0）**：实现 ParentStandby 提升逻辑
+     - **测试用例**：IT-FO-001, IT-FO-003, IT-FO-004
    - [ ] **第29步（P0）**：实现拓扑变更 Gossip 广播
+     - **测试用例**：IT-FO-005, IT-FO-006
    - [ ] **第30步（P0）**：编写故障转移测试
+     - **测试覆盖率目标**：> 90%
+     - **混沌测试**：CT-CHAOS-001 ~ CT-CHAOS-006
 
    **阶段 6：质量保证（P1/P2）**
    - [ ] **第31步（P1）**：使用 code-simplifier 优化代码

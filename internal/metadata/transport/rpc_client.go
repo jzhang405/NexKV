@@ -254,8 +254,10 @@ func (c *RPCClient) callBatchFastFail(ctx context.Context, requests []*RPCBatchR
 	for i, req := range requests {
 		i, req := i, req
 		g.Go(func() error {
-			if err := c.checkContextCanceled(gctx); err != nil {
-				return err
+			select {
+			case <-gctx.Done():
+				return types.NewRPCContextCanceled(gctx.Err())
+			default:
 			}
 
 			resp, err := c.Call(gctx, req.Addr, req.Message)
@@ -276,16 +278,6 @@ func (c *RPCClient) callBatchFastFail(ctx context.Context, requests []*RPCBatchR
 	}
 
 	return responses, nil
-}
-
-// checkContextCanceled 检查上下文是否已取消
-func (c *RPCClient) checkContextCanceled(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return types.NewRPCContextCanceled(ctx.Err())
-	default:
-		return nil
-	}
 }
 
 // callBatchWaitAll 等待所有请求完成（传统实现）
@@ -465,6 +457,7 @@ func (e *requestEntry) cancel() {
 // requestTable 请求表（匹配请求-响应）
 //
 // P1-1 优化：延迟清理机制
+// P1-3 修复：缩短清理间隔从 1 分钟到 15 秒，降低高并发场景下的内存占用
 type requestTable struct {
 	mu              sync.RWMutex
 	table           map[string]*requestEntry
@@ -477,7 +470,7 @@ type requestTable struct {
 func newRequestTable() *requestTable {
 	rt := &requestTable{
 		table:           make(map[string]*requestEntry),
-		cleanupInterval: 1 * time.Minute,
+		cleanupInterval: 15 * time.Second, // P1-3 修复：从 1 分钟缩短到 15 秒
 		cleanupDelay:    5 * time.Second,
 		stopCh:          make(chan struct{}),
 	}

@@ -192,7 +192,7 @@ func setupE2ETestEnvironment(t *testing.T) (*transport.RPCServer, *transport.TCP
 	config := DefaultTreeCoordinatorConfig()
 	config.HeartbeatInterval = 100 * time.Millisecond // 缩短心跳间隔用于测试
 
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
 	require.NoError(t, err)
 
 	// 创建 RPC Handler

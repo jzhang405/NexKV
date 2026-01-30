@@ -22,6 +22,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 
+	metadataconfig "github.com/jzhang405/NexKV/internal/metadata/config"
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
 	"github.com/jzhang405/NexKV/internal/metadata/transport"
 )
@@ -214,6 +215,10 @@ type TreeCoordinator struct {
 	// 配置
 	config *TreeCoordinatorConfig
 
+	// PR-036: 集群配置
+	clusterConfig  *metadataconfig.ClusterConfig  // 集群配置（包含种子节点列表）
+	// TODO: 在后续版本中添加 seedNodesWatcher 支持运行时热更新
+
 	// 本地节点信息
 	localNode *Node
 
@@ -384,10 +389,19 @@ type TreeCoordinatorStats struct {
 }
 
 // NewTreeCoordinator 创建树形协调器
+//
+// PR-036: 添加 clusterConfig 参数支持种子节点配置
+//
+// 参数：
+//   - localNodeID: 本地节点 ID
+//   - localAddr: 本地节点地址（IPFS multiaddr 格式或简化格式）
+//   - config: 树形协调器配置（nil 时使用默认配置）
+//   - clusterConfig: 集群配置（包含种子节点列表，nil 时跳过种子节点配置）
 func NewTreeCoordinator(
 	localNodeID string,
 	localAddr string,
 	config *TreeCoordinatorConfig,
+	clusterConfig *metadataconfig.ClusterConfig,
 ) (*TreeCoordinator, error) {
 	if config == nil {
 		config = DefaultTreeCoordinatorConfig()
@@ -419,11 +433,12 @@ func NewTreeCoordinator(
 	}
 
 	coordinator := &TreeCoordinator{
-		config:    config,
-		localNode: localNode,
-		allNodes:  make(map[string]*Node),
-		stopCh:    make(chan struct{}),
-		stats:     &TreeCoordinatorStats{},
+		config:        config,
+		clusterConfig: clusterConfig,
+		localNode:     localNode,
+		allNodes:      make(map[string]*Node),
+		stopCh:        make(chan struct{}),
+		stats:         &TreeCoordinatorStats{},
 	}
 
 	// 添加本地节点
@@ -431,6 +446,20 @@ func NewTreeCoordinator(
 	coordinator.stats.TotalNodes.Store(1)
 	coordinator.stats.OnlineNodes.Store(1)
 	coordinator.stats.LastTopologyUpdate.Store(time.Now())
+
+	// PR-036: 初始化种子节点监控器（如果提供了集群配置）
+	if clusterConfig != nil && len(clusterConfig.SeedNodes) > 0 {
+		// 从静态配置初始化种子节点（不使用文件监控）
+		// 验证并规范化种子节点配置
+		normalizedSeedNodes, err := metadataconfig.ParseSeedNodes(clusterConfig.SeedNodes)
+		if err != nil {
+			logging.Warnf("[TreeCoordinator] 解析种子节点配置失败: %v（将不使用种子节点）", err)
+		} else {
+			// 更新为规范化后的配置
+			clusterConfig.SeedNodes = normalizedSeedNodes
+			logging.Infof("[TreeCoordinator] 初始化 %d 个种子节点", len(normalizedSeedNodes))
+		}
+	}
 
 	return coordinator, nil
 }
@@ -577,22 +606,81 @@ func (tc *TreeCoordinator) discoverAndJoin() {
 
 // getKnownNodes 获取已知节点列表
 //
-// PR-034 实现：从配置或种子节点获取初始节点列表
-// TODO: 后续可以从配置文件、环境变量或服务发现获取
+// PR-036 实现：从配置和内存中获取已知节点
+//
+// 流程：
+//   1. 从配置中读取种子节点（优先级最高）
+//   2. 自动过滤自身地址（决策 3）
+//   3. 降级处理无效地址（决策 2）
+//   4. 合并内存中的已知节点（向后兼容）
 func (tc *TreeCoordinator) getKnownNodes() []*Node {
-	// 当前实现：返回 allNodes 中除了本地节点外的所有节点
-	// 实际生产环境中，这里应该从配置文件或服务发现获取种子节点列表
-	tc.nodesMu.RLock()
-	defer tc.nodesMu.RUnlock()
+	nodes := make([]*Node, 0)
 
-	nodes := make([]*Node, 0, len(tc.allNodes))
-	for _, node := range tc.allNodes {
-		if node.NodeID != tc.localNode.NodeID {
-			nodes = append(nodes, node)
+	// 1. 从配置中读取种子节点
+	if tc.clusterConfig != nil && len(tc.clusterConfig.SeedNodes) > 0 {
+		for _, addr := range tc.clusterConfig.SeedNodes {
+			// 决策 3: 自动过滤自身地址
+			selfAddr := tc.localNode.Addr.TCPAddr()
+			if addr == selfAddr {
+				logging.Debugf("[TreeCoordinator] 跳过自身地址: %s", addr)
+				continue
+			}
+
+			// 决策 2: 降级处理 - 验证地址格式
+			if err := metadataconfig.ValidateSeedNodeAddress(addr); err != nil {
+				logging.Warnf("[TreeCoordinator] 无效的种子节点地址 %s: %v（跳过）", addr, err)
+				continue
+			}
+
+			// 解析地址并创建节点对象
+			parsedAddr, err := ParseNodeAddress(addr)
+			if err != nil {
+				logging.Warnf("[TreeCoordinator] 解析节点地址失败 %s: %v（跳过）", addr, err)
+				continue
+			}
+
+			node := &Node{
+				NodeID:   "", // 种子节点可能还没有 NodeID
+				Addr:     *parsedAddr,
+				Status:   NodeStatusInit, // 初始状态
+				ParentID: "",
+				Level:    0,
+			}
+
+			// 检查是否已存在（避免重复）
+			if !containsNodeAddr(nodes, addr) {
+				nodes = append(nodes, node)
+			}
 		}
 	}
 
+	// 2. 合并内存中的已知节点（向后兼容 + 降级处理）
+	tc.nodesMu.RLock()
+	for _, node := range tc.allNodes {
+		// 跳过本地节点
+		if node.NodeID == tc.localNode.NodeID {
+			continue
+		}
+
+		// 检查地址是否已存在（避免重复）
+		nodeAddr := node.Addr.TCPAddr()
+		if !containsNodeAddr(nodes, nodeAddr) {
+			nodes = append(nodes, node)
+		}
+	}
+	tc.nodesMu.RUnlock()
+
 	return nodes
+}
+
+// containsNodeAddr 检查节点地址是否已存在于列表中
+func containsNodeAddr(nodes []*Node, addr string) bool {
+	for _, node := range nodes {
+		if node.Addr.TCPAddr() == addr {
+			return true
+		}
+	}
+	return false
 }
 
 // selectBestParent 选择最佳父节点

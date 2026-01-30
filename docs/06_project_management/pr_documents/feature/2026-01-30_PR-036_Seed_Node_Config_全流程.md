@@ -66,10 +66,10 @@
 cluster:
   name: "nexkv-cluster"
   node_id: "node-1"
-  node_addr: "192.168.1.10:9211"
+  node_addr: "/ip4/192.168.1.10/tcp/9211"
   seed_nodes:
-    - "192.168.1.10:9211"
-    - "192.168.1.11:9211"
+    - "/ip4/192.168.1.10/tcp/9211"
+    - "/ip4/192.168.1.11/tcp/9211"
 ```
 
 用户启动第一个节点时，即使 `allNodes` 为空，也能通过配置的种子节点发现集群。
@@ -77,8 +77,8 @@ cluster:
 **场景 2：环境变量覆盖**
 
 ```bash
-# 临时指定不同的种子节点
-export NEXKV_CLUSTER_SEED_NODES="10.0.0.5:9211,10.0.0.6:9211"
+# 临时指定不同的种子节点（使用 multiaddr 格式）
+export NEXKV_CLUSTER_SEED_NODES="/ip4/10.0.0.5/tcp/9211,/ip4/10.0.0.6/tcp/9211"
 ./nexkvd
 ```
 
@@ -164,9 +164,15 @@ type ClusterConfig struct {
 
 | 格式类型 | 示例 | 说明 |
 |---------|------|------|
-| **YAML 数组** | `seed_nodes: ["127.0.0.1:7946", "127.0.0.1:7947"]` | 推荐，格式清晰 |
-| **逗号分隔** | `seed_nodes: "127.0.0.1:7946,127.0.0.1:7947"` | 备用，兼容环境变量 |
-| **环境变量** | `NEXKV_CLUSTER_SEED_NODES=127.0.0.1:7946,127.0.0.1:7947` | 临时覆盖 |
+| **YAML 数组** | `seed_nodes: ["/ip4/127.0.0.1/tcp/7946", "/ip4/127.0.0.1/tcp/7947"]` | 推荐，格式清晰 |
+| **逗号分隔** | `seed_nodes: "/ip4/127.0.0.1/tcp/7946,/ip4/127.0.0.1/tcp/7947"` | 备用，兼容环境变量 |
+| **环境变量** | `NEXKV_CLUSTER_SEED_NODES=/ip4/127.0.0.1/tcp/7946,/ip4/127.0.0.1/tcp/7947` | 临时覆盖 |
+
+**IPFS multiaddr 格式说明**：
+- IPv4: `/ip4/192.168.1.10/tcp/9211`
+- IPv6: `/ip6/::1/tcp/9211`
+- DNS: `/dns4/localhost/tcp/9211`
+- 支持的组合格式：`/ip4/<IP>/tcp/<PORT>`
 
 #### 组件设计
 
@@ -179,18 +185,19 @@ package config
 
 import (
     "fmt"
-    "net"
     "strings"
+
+    "github.com/multiformats/go-multiaddr"
 )
 
 // ParseSeedNodes 解析种子节点配置
 // 支持格式：
-//   - []string: ["127.0.0.1:7946", "127.0.0.1:7947"]
-//   - string: "127.0.0.1:7946,127.0.0.1:7947"
+//   - []string: ["/ip4/127.0.0.1/tcp/7946", "/ip4/127.0.0.1/tcp/7947"]
+//   - string: "/ip4/127.0.0.1/tcp/7946,/ip4/127.0.0.1/tcp/7947"
 func ParseSeedNodes(config interface{}) ([]string, error)
 
 // ValidateSeedNodeAddress 验证单个地址格式
-// 要求：host:port 格式，端口范围 1-65535
+// 要求：IPFS multiaddr 格式，如 /ip4/<IP>/tcp/<PORT>
 func ValidateSeedNodeAddress(addr string) error
 
 // NormalizeSeedNodes 规范化地址列表
@@ -443,16 +450,21 @@ flowchart TD
 cluster:
   name: "nexkv-cluster"
   node_id: "node-1"
-  node_addr: "127.0.0.1:9211"
+  node_addr: "/ip4/127.0.0.1/tcp/9211"
 
-  # 种子节点配置（可选）
+  # 种子节点配置（可选）- 使用 IPFS multiaddr 格式
   # 格式 1: YAML 数组
   seed_nodes:
-    - "127.0.0.1:7946"
-    - "127.0.0.1:7947"
+    - "/ip4/127.0.0.1/tcp/7946"
+    - "/ip4/127.0.0.1/tcp/7947"
 
   # 格式 2: 逗号分隔字符串（备用）
-  # seed_nodes: "127.0.0.1:7946,127.0.0.1:7947"
+  # seed_nodes: "/ip4/127.0.0.1/tcp/7946,/ip4/127.0.0.1/tcp/7947"
+
+  # 支持的 multiaddr 格式：
+  # - IPv4: /ip4/192.168.1.10/tcp/9211
+  # - IPv6: /ip6/::1/tcp/9211
+  # - DNS:  /dns4/localhost/tcp/9211
 
   tree_coord:
     heartbeat_interval: "5s"
@@ -462,8 +474,8 @@ cluster:
 ### B. 环境变量示例
 
 ```bash
-# 设置种子节点环境变量
-export NEXKV_CLUSTER_SEED_NODES="192.168.1.10:7946,192.168.1.11:7946"
+# 设置种子节点环境变量（使用 multiaddr 格式）
+export NEXKV_CLUSTER_SEED_NODES="/ip4/192.168.1.10/tcp/9211,/ip4/192.168.1.11/tcp/9211"
 
 # 启动服务
 ./nexkvd

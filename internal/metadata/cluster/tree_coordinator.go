@@ -216,7 +216,7 @@ type TreeCoordinator struct {
 	config *TreeCoordinatorConfig
 
 	// PR-036: 集群配置
-	clusterConfig  *metadataconfig.ClusterConfig  // 集群配置（包含种子节点列表）
+	clusterConfig *metadataconfig.ClusterConfig // 集群配置（包含种子节点列表）
 	// TODO: 在后续版本中添加 seedNodesWatcher 支持运行时热更新
 
 	// 本地节点信息
@@ -606,13 +606,13 @@ func (tc *TreeCoordinator) discoverAndJoin() {
 
 // getKnownNodes 获取已知节点列表
 //
-// PR-036 实现：从配置和内存中获取已知节点
+// # PR-036 实现：从配置和内存中获取已知节点
 //
 // 流程：
-//   1. 从配置中读取种子节点（优先级最高）
-//   2. 自动过滤自身地址（决策 3）
-//   3. 降级处理无效地址（决策 2）
-//   4. 合并内存中的已知节点（向后兼容）
+//  1. 从配置中读取种子节点（优先级最高）
+//  2. 自动过滤自身地址（决策 3）
+//  3. 降级处理无效地址（决策 2）
+//  4. 合并内存中的已知节点（向后兼容）
 func (tc *TreeCoordinator) getKnownNodes() []*Node {
 	nodes := make([]*Node, 0)
 

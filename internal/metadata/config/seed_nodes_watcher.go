@@ -84,9 +84,9 @@ func NewSeedNodesWatcher(filePath string, callback func([]string)) (*SeedNodesWa
 // Start 启动配置监控
 //
 // 启动后，监控器会：
-//   1. 监控配置文件所在目录
-//   2. 检测文件变化（WRITE、CREATE、REMOVE、RENAME）
-//   3. 重新加载配置并调用回调
+//  1. 监控配置文件所在目录
+//  2. 检测文件变化（WRITE、CREATE、REMOVE、RENAME）
+//  3. 重新加载配置并调用回调
 //
 // 注意：
 //   - 重复调用 Start 会返回错误
@@ -114,9 +114,9 @@ func (w *SeedNodesWatcher) Start() error {
 // Stop 停止配置监控
 //
 // 优雅关闭：
-//   1. 停止监控文件变化
-//   2. 关闭 fsnotify 监控器
-//   3. 释放资源
+//  1. 停止监控文件变化
+//  2. 关闭 fsnotify 监控器
+//  3. 释放资源
 func (w *SeedNodesWatcher) Stop() {
 	w.closeOnce.Do(func() {
 		logging.Infof("[SeedNodesWatcher] 停止配置文件监控")
@@ -192,12 +192,12 @@ func (w *SeedNodesWatcher) watchLoop() {
 // reload 重新加载配置
 //
 // 流程：
-//   1. 读取配置文件
-//   2. 解析 YAML
-//   3. 提取 SeedNodes 字段
-//   4. 验证地址格式
-//   5. 更新内存中的配置
-//   6. 触发回调
+//  1. 读取配置文件
+//  2. 解析 YAML
+//  3. 提取 SeedNodes 字段
+//  4. 验证地址格式
+//  5. 更新内存中的配置
+//  6. 触发回调
 func (w *SeedNodesWatcher) reload() error {
 	// 检查文件是否存在
 	if _, err := os.Stat(w.filePath); os.IsNotExist(err) {

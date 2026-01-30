@@ -14,10 +14,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 
@@ -452,22 +453,35 @@ func (tc *TreeCoordinator) Start() error {
 	tc.localNode.Status = NodeStatusReady
 	tc.localNode.LastHeartbeat = time.Now()
 
-	// 如果启用自动发现，开始寻找父节点
+	// P1-2 修复：启动带 panic 恢复的 goroutine
 	if tc.config.AutoDiscovery {
-		go tc.discoverAndJoin()
+		tc.startGoroutineWithRecovery("discoverAndJoin", tc.discoverAndJoin)
 	}
-
-	// 启动心跳循环
-	go tc.heartbeatLoop()
-
-	// 启动故障检测循环
-	go tc.failureDetectionLoop()
+	tc.startGoroutineWithRecovery("heartbeatLoop", tc.heartbeatLoop)
+	tc.startGoroutineWithRecovery("failureDetectionLoop", tc.failureDetectionLoop)
 
 	tc.state.Store(int32(StateRunning))
 	tc.started.Store(true)
 
 	logging.WithField("node_id", tc.localNode.NodeID).Info("树形协调器启动成功")
 	return nil
+}
+
+// startGoroutineWithRecovery 启动带 panic 恢复的 goroutine（P1-2 修复）
+func (tc *TreeCoordinator) startGoroutineWithRecovery(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logging.WithFields(map[string]any{
+					"node_id":   tc.localNode.NodeID,
+					"goroutine": name,
+					"panic":     r,
+					"stack":     string(debug.Stack()),
+				}).Error("Goroutine panic recovered")
+			}
+		}()
+		fn()
+	}()
 }
 
 // Stop 停止树形协调器

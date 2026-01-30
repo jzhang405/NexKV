@@ -192,46 +192,69 @@ func (hm *HostManager) GetHostCount() (int, error) {
 // UpdateHostStatus 更新 Host 状态和心跳时间
 //
 // P1-2 修复：在锁保护下完成整个更新流程，避免数据竞争
-//   - 先从内存缓存查找，未命中则从 MVStore 加载
-//   - 在锁保护下更新字段并持久化
-//   - 避免并发场景下的数据覆盖和丢失
+// P0-2 修复：添加持久化失败的回滚机制，确保内存-磁盘一致性
 func (hm *HostManager) UpdateHostStatus(hostID string, status HostStatus, lastHeartbeat int64) error {
 	hm.mu.Lock()
 	defer hm.mu.Unlock()
 
-	// 步骤 1: 从内存缓存查找
+	// 获取或加载 Host
 	host, exists := hm.hosts[hostID]
-
-	// 步骤 2: 内存缓存未命中，从 MVStore 加载
 	if !exists {
-		key := hostKeyPrefix + hostID
-		data, err := hm.metadataStore.Get(key)
+		var err error
+		host, err = hm.loadHost(hostID)
 		if err != nil {
-			return types.NewClusterHostNotFoundError(hostID)
+			return err
 		}
-
-		var loadedHost Host
-		if err := msgpack.Unmarshal(data, &loadedHost); err != nil {
-			return types.NewClusterHostUnmarshalFailedError(err)
-		}
-
-		// 更新内存缓存
-		host = &loadedHost
 		hm.hosts[hostID] = host
 	}
 
-	// 步骤 3: 在锁保护下更新字段
+	// 备份旧状态用于回滚
+	oldStatus := host.HostStatus
+	oldHeartbeat := host.LastHeartbeat
+
+	// 更新字段
 	host.HostStatus = status
 	host.LastHeartbeat = lastHeartbeat
 
-	// 步骤 4: 持久化到 MVStore
+	// 持久化到 MVStore（失败则回滚）
+	if err := hm.persistHost(hostID, host, oldStatus, oldHeartbeat); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// loadHost 从 MVStore 加载 Host（辅助方法）
+func (hm *HostManager) loadHost(hostID string) (*Host, error) {
+	key := hostKeyPrefix + hostID
+	data, err := hm.metadataStore.Get(key)
+	if err != nil {
+		return nil, types.NewClusterHostNotFoundError(hostID)
+	}
+
+	var host Host
+	if err := msgpack.Unmarshal(data, &host); err != nil {
+		return nil, types.NewClusterHostUnmarshalFailedError(err)
+	}
+
+	return &host, nil
+}
+
+// persistHost 持久化 Host 到 MVStore，失败时回滚（辅助方法）
+func (hm *HostManager) persistHost(hostID string, host *Host, oldStatus HostStatus, oldHeartbeat int64) error {
 	key := hostKeyPrefix + hostID
 	data, err := msgpack.Marshal(host)
 	if err != nil {
+		// 回滚内存状态
+		host.HostStatus = oldStatus
+		host.LastHeartbeat = oldHeartbeat
 		return types.NewClusterHostMarshalFailedError(err)
 	}
 
 	if err := hm.metadataStore.Put(key, data); err != nil {
+		// 回滚内存状态
+		host.HostStatus = oldStatus
+		host.LastHeartbeat = oldHeartbeat
 		return types.NewClusterHostSaveFailedError(err)
 	}
 

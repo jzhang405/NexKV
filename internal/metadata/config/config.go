@@ -22,9 +22,10 @@ type Config struct {
 
 // ClusterConfig 集群配置
 type ClusterConfig struct {
-	Name     string `yaml:"name" mapstructure:"name"`
-	NodeID   string `yaml:"node_id" mapstructure:"node_id"`
-	NodeAddr string `yaml:"node_addr" mapstructure:"node_addr"`
+	Name      string   `yaml:"name" mapstructure:"name"`
+	NodeID    string   `yaml:"node_id" mapstructure:"node_id"`
+	NodeAddr  string   `yaml:"node_addr" mapstructure:"node_addr"`
+	SeedNodes []string `yaml:"seed_nodes" mapstructure:"seed_nodes"` // PR-036: 种子节点地址列表
 
 	// 树形分组配置
 	TreeCoord TreeCoordConfig `yaml:"tree_coord" mapstructure:"tree_coord"`

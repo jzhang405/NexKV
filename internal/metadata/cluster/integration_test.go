@@ -38,7 +38,7 @@ func TestIntegration_MultiNodeCluster(t *testing.T) {
 		EnableSelfHealing: false,
 	}
 
-	root, err := NewTreeCoordinator("root", "127.0.0.1:9211", rootConfig)
+	root, err := NewTreeCoordinator("root", "127.0.0.1:9211", rootConfig, nil)
 	require.NoError(t, err)
 	require.NoError(t, root.Start())
 	defer func() { require.NoError(t, root.Stop()) }()
@@ -53,7 +53,7 @@ func TestIntegration_MultiNodeCluster(t *testing.T) {
 		nodeID := fmt.Sprintf("child%d", i+1)
 		addr := fmt.Sprintf("127.0.0.1:%d", 9212+i)
 
-		child, err := NewTreeCoordinator(nodeID, addr, rootConfig)
+		child, err := NewTreeCoordinator(nodeID, addr, rootConfig, nil)
 		require.NoError(t, err)
 		require.NoError(t, child.Start())
 		children[i] = child
@@ -137,7 +137,7 @@ func TestIntegration_NodeJoinLeave(t *testing.T) {
 		EnableSelfHealing: false,
 	}
 
-	root, err := NewTreeCoordinator("root", "127.0.0.1:9211", rootConfig)
+	root, err := NewTreeCoordinator("root", "127.0.0.1:9211", rootConfig, nil)
 	require.NoError(t, err)
 	require.NoError(t, root.Start())
 	defer func() { require.NoError(t, root.Stop()) }()
@@ -146,7 +146,7 @@ func TestIntegration_NodeJoinLeave(t *testing.T) {
 
 	// 创建子节点并加入
 
-	child, err := NewTreeCoordinator("child1", "127.0.0.1:9212", rootConfig)
+	child, err := NewTreeCoordinator("child1", "127.0.0.1:9212", rootConfig, nil)
 	require.NoError(t, err)
 	require.NoError(t, child.Start())
 	defer func() { require.NoError(t, child.Stop()) }()
@@ -198,7 +198,7 @@ func TestIntegration_MaxChildrenConstraint(t *testing.T) {
 		AutoDiscovery:     false,
 	}
 
-	root, err := NewTreeCoordinator("root", "127.0.0.1:9211", rootConfig)
+	root, err := NewTreeCoordinator("root", "127.0.0.1:9211", rootConfig, nil)
 	require.NoError(t, err)
 	require.NoError(t, root.Start())
 	defer func() { require.NoError(t, root.Stop()) }()
@@ -254,7 +254,7 @@ func TestIntegration_ClusterStats(t *testing.T) {
 		EnableSelfHealing: false,
 	}
 
-	root, err := NewTreeCoordinator("root", "127.0.0.1:9211", rootConfig)
+	root, err := NewTreeCoordinator("root", "127.0.0.1:9211", rootConfig, nil)
 	require.NoError(t, err)
 	require.NoError(t, root.Start())
 	defer func() { require.NoError(t, root.Stop()) }()
@@ -306,7 +306,7 @@ func TestIntegration_ListNodes(t *testing.T) {
 		EnableSelfHealing: false,
 	}
 
-	root, err := NewTreeCoordinator("root", "127.0.0.1:9211", rootConfig)
+	root, err := NewTreeCoordinator("root", "127.0.0.1:9211", rootConfig, nil)
 	require.NoError(t, err)
 	require.NoError(t, root.Start())
 	defer func() { require.NoError(t, root.Stop()) }()

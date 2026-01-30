@@ -336,6 +336,7 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 		daemonNodeID,
 		cfg.Network.ListenAddr,
 		coordinatorConfig,
+		&cfg.Cluster, // PR-036: 传递集群配置（包含种子节点列表）
 	)
 	if err != nil {
 		_ = rpcClient.Stop()

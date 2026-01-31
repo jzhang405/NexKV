@@ -111,7 +111,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Cluster: ClusterConfig{
 			Name:    "nexkv-cluster",
-			BaseDir: "~/.nexkv/data", // 默认基础目录，可被 NEXKV_BASE_DIR 环境变量覆盖
+			BaseDir: "~/.nexkv", // 默认基础目录，可被 NEXKV_BASE_DIR 环境变量覆盖
 			Hosts: []HostConfig{
 				{
 					HostID:   "host-1",

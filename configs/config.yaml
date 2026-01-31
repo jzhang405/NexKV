@@ -10,8 +10,7 @@
 cluster:
   name: "nexkv-cluster"
   # 基础目录（可被 NEXKV_BASE_DIR 环境变量覆盖）
-  # 默认探索顺序：~/.nexkv/data > ~/var/tmp/nexkv > /var/tmp/nexkv
-  base_dir: "~/.nexkv/data"
+  base_dir: "~/.nexkv"
 
   # Host 级别配置（15 个 Host，每个 1 个 Node）
   hosts:

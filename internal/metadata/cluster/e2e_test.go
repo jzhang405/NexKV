@@ -483,7 +483,7 @@ func SetupTestEnvironmentFromConfig(t *testing.T, configPath string, hostIndex i
 		// 使用配置文件中的 base_dir
 		baseDirValue = cfg.Cluster.BaseDir
 		if baseDirValue == "" {
-			baseDirValue = "~/.nexkv/data"
+			baseDirValue = "~/.nexkv"
 		}
 	}
 

@@ -25,7 +25,7 @@ func TestSnapshotWriter(t *testing.T) {
 	snapshotPath := filepath.Join(tempDir, "snapshot")
 
 	// 测试数据
-	metadata := map[string]interface{}{
+	metadata := map[string]any{
 		"version":     1,
 		"entry_count": 100,
 		"created_at":  "2026-01-19T00:00:00Z",
@@ -88,7 +88,7 @@ func TestSnapshotReader(t *testing.T) {
 	snapshotPath := filepath.Join(tempDir, "snapshot")
 
 	// 准备测试数据
-	metadata := map[string]interface{}{
+	metadata := map[string]any{
 		"version":     1,
 		"entry_count": 2,
 	}
@@ -189,7 +189,7 @@ func TestSnapshotFileManager(t *testing.T) {
 	}
 
 	// 准备测试数据
-	metadata := map[string]interface{}{
+	metadata := map[string]any{
 		"version":     1,
 		"entry_count": 3,
 	}
@@ -394,7 +394,7 @@ func BenchmarkSnapshotWriter(b *testing.B) {
 	tempDir := b.TempDir()
 	snapshotPath := filepath.Join(tempDir, "snapshot")
 
-	metadata := map[string]interface{}{
+	metadata := map[string]any{
 		"version":     1,
 		"entry_count": 1000,
 	}
@@ -762,7 +762,7 @@ func TestSnapshotWriterErrors(t *testing.T) {
 		defer deferClose(writer)
 
 		// 创建包含不支持类型的元数据（channel 不能被 JSON 序列化）
-		invalidMetadata := map[string]interface{}{
+		invalidMetadata := map[string]any{
 			"version": 1,
 			"channel": make(chan int),
 		}
@@ -808,7 +808,7 @@ func TestSnapshotWriterErrors(t *testing.T) {
 		}
 
 		// 写入数据
-		metadata := map[string]interface{}{"version": 1}
+		metadata := map[string]any{"version": 1}
 		data := map[string][]byte{"key1": []byte("value1")}
 
 		if err := writer.WriteMetadata(metadata); err != nil {

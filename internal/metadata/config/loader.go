@@ -3,9 +3,11 @@ package config
 
 import (
 	"fmt"
-	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 
 	"github.com/spf13/viper"
 )
@@ -14,13 +16,16 @@ import (
 type Loader struct {
 	configPath string
 	viper      *viper.Viper
+	hostID     string // PR-037: 指定当前 Host ID
 }
 
 // NewLoader 创建配置加载器
-func NewLoader(configPath string) *Loader {
+// PR-037: hostID 参数指定当前使用的 Host，用于获取对应的数据目录
+func NewLoader(configPath string, hostID string) *Loader {
 	return &Loader{
 		configPath: configPath,
 		viper:      viper.New(),
+		hostID:     hostID,
 	}
 }
 
@@ -61,9 +66,12 @@ func (l *Loader) Load() (*Config, error) {
 		return nil, types.NewConfigLoadError("解析配置", err)
 	}
 
+	// 应用环境变量覆盖
+	applyEnvOverrides(cfg)
+
 	// 验证配置
 	if err := cfg.Validate(); err != nil {
-		return nil, types.NewConfigValidationError("", "配置验证失败")
+		return nil, types.NewConfigValidationError("", "配置验证失败: "+err.Error())
 	}
 
 	return cfg, nil
@@ -78,61 +86,57 @@ func (l *Loader) MustLoad() *Config {
 	return cfg
 }
 
-// Validate 验证配置
+// Validate 验证配置（PR-037: 适配三级配置结构）
 func (c *Config) Validate() error {
-	// 验证集群配置
-	if c.Cluster.Name == "" {
-		return types.NewConfigValidationError("cluster.name", "不能为空")
-	}
-	if c.Cluster.NodeID == "" {
-		return types.NewConfigValidationError("cluster.node_id", "不能为空")
-	}
-	if c.Cluster.NodeAddr == "" {
-		return types.NewConfigValidationError("cluster.node_addr", "不能为空")
-	}
-
-	// 验证树形分组配置
-	if c.Cluster.TreeCoord.MaxChildren < 5 || c.Cluster.TreeCoord.MaxChildren > 10 {
-		return types.NewConfigValidationError("cluster.tree_coord.max_children", "必须在 5-10 之间")
-	}
-	if c.Cluster.TreeCoord.GroupSize < 5 || c.Cluster.TreeCoord.GroupSize > 10 {
-		return types.NewConfigValidationError("cluster.tree_coord.group_size", "必须在 5-10 之间")
-	}
-
-	// 验证元数据配置
-	if c.Metadata.DataDir == "" {
-		return types.NewConfigValidationError("metadata.data_dir", "不能为空")
-	}
-
-	// 验证存储配置
-	if c.Storage.ShardDataDir == "" {
-		return types.NewConfigValidationError("storage.shard_data_dir", "不能为空")
-	}
-	if c.Storage.WALDir == "" {
-		return types.NewConfigValidationError("storage.wal_dir", "不能为空")
-	}
-
-	// 验证网络配置
-	if c.Network.ListenAddr == "" {
-		return types.NewConfigValidationError("network.listen_addr", "不能为空")
-	}
-
-	// 创建必要目录
-	if err := c.CreateDirs(); err != nil {
-		return types.NewConfigLoadError("创建目录", err)
-	}
-
-	return nil
+	// 使用统一的 ValidateConfig 函数
+	return ValidateConfig(c)
 }
 
-// CreateDirs 创建必要的目录
-func (c *Config) CreateDirs() error {
-	// 定义需要创建的目录列表
+// GetHostDir 获取指定 Host 的数据目录（PR-037: 新增）
+// 返回 {base_dir}/{host_id}
+func (c *Config) GetHostDir(hostID string) string {
+	baseDir := c.Cluster.BaseDir
+	// 展开波浪号
+	if strings.HasPrefix(baseDir, "~/") {
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			baseDir = filepath.Join(homeDir, baseDir[2:])
+		}
+	}
+	return filepath.Join(baseDir, hostID)
+}
+
+// GetMetadataDir 获取元数据目录（PR-037: 使用三级配置结构）
+// 返回 {base_dir}/{host_id}/metadata
+func (c *Config) GetMetadataDir(hostID string) string {
+	return filepath.Join(c.GetHostDir(hostID), "metadata")
+}
+
+// GetShardsDir 获取分片数据目录（PR-037: 使用三级配置结构）
+// 返回 {base_dir}/{host_id}/shards
+func (c *Config) GetShardsDir(hostID string) string {
+	return filepath.Join(c.GetHostDir(hostID), "shards")
+}
+
+// GetWALDir 获取 WAL 目录（PR-037: 使用三级配置结构）
+// 返回 {base_dir}/{host_id}/wal
+func (c *Config) GetWALDir(hostID string) string {
+	return filepath.Join(c.GetHostDir(hostID), "wal")
+}
+
+// GetSnapshotsDir 获取快照目录（PR-037: 使用三级配置结构）
+// 返回 {base_dir}/{host_id}/snapshots
+func (c *Config) GetSnapshotsDir(hostID string) string {
+	return filepath.Join(c.GetHostDir(hostID), "snapshots")
+}
+
+// CreateHostDirs 创建指定 Host 的必要目录（PR-037: 新增）
+func (c *Config) CreateHostDirs(hostID string) error {
+	// 定义需要创建的目录列表（基于三级配置结构）
 	dirs := []string{
-		c.Metadata.DataDir,
-		c.Storage.ShardDataDir,
-		c.Storage.WALDir,
-		c.Storage.SnapshotDir,
+		c.GetMetadataDir(hostID),
+		c.GetShardsDir(hostID),
+		c.GetWALDir(hostID),
+		c.GetSnapshotsDir(hostID),
 	}
 
 	// 并发创建目录以提高性能
@@ -140,10 +144,25 @@ func (c *Config) CreateDirs() error {
 		if dir == "" {
 			continue
 		}
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		// P1-6 修复：使用更严格的权限 0700（仅所有者可访问），避免安全风险
+		// 元数据、WAL 日志和分片数据包含敏感信息，不应允许其他用户访问
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			return types.NewConfigLoadError("创建目录 "+dir, err)
 		}
 	}
 
 	return nil
+}
+
+// CreateDirs 创建必要的目录（PR-037: 使用三级配置结构，兼容旧接口）
+func (c *Config) CreateDirs() error {
+	// 如果没有指定 hostID，使用第一个 Host
+	hostID := ""
+	if len(c.Cluster.Hosts) > 0 {
+		hostID = c.Cluster.Hosts[0].HostID
+	}
+	if hostID == "" {
+		return types.NewConfigValidationError("cluster.hosts", "没有可用的 Host")
+	}
+	return c.CreateHostDirs(hostID)
 }

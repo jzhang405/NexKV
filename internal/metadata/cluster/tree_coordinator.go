@@ -57,7 +57,7 @@ func (na *NodeAddress) UDPAddr() string {
 // 支持的格式：IPFS 风格 (/ip4/127.0.0.1/tcp/5001) 或 简化格式 (127.0.0.1:5001，默认 TCP)
 func ParseNodeAddress(addrStr string) (*NodeAddress, error) {
 	if addrStr == "" {
-		return nil, fmt.Errorf("地址字符串不能为空")
+		return nil, types.NewTreeCoordinatorAddrEmptyError()
 	}
 
 	// 尝试解析 IPFS 风格格式
@@ -67,13 +67,13 @@ func ParseNodeAddress(addrStr string) (*NodeAddress, error) {
 		// 注意: / 会分割出空字符串作为第一个元素
 		parts := strings.Split(addrStr, "/")
 		if len(parts) < 4 {
-			return nil, fmt.Errorf("无效的 IPFS 地址格式: %s", addrStr)
+			return nil, types.NewTreeCoordinatorInvalidIPFSAddrError(addrStr)
 		}
 
 		ip := parts[2]
 		if len(parts) == 4 {
 			// 缺少协议类型: /ip4/127.0.0.1/5001
-			return nil, fmt.Errorf("无效的协议格式: %s", addrStr)
+			return nil, types.NewTreeCoordinatorInvalidProtocolError(addrStr)
 		}
 
 		protocol := parts[3]
@@ -81,7 +81,7 @@ func ParseNodeAddress(addrStr string) (*NodeAddress, error) {
 
 		port, err := strconv.Atoi(portStr)
 		if err != nil {
-			return nil, fmt.Errorf("无效的端口号: %s", portStr)
+			return nil, types.NewTreeCoordinatorInvalidPortError(portStr)
 		}
 
 		nodeAddr := &NodeAddress{
@@ -95,7 +95,7 @@ func ParseNodeAddress(addrStr string) (*NodeAddress, error) {
 		} else if strings.EqualFold(protocol, "udp") {
 			nodeAddr.UDPPort = port
 		} else {
-			return nil, fmt.Errorf("不支持的协议类型: %s", protocol)
+			return nil, types.NewTreeCoordinatorUnsupportedProtocolError(protocol)
 		}
 
 		return nodeAddr, nil
@@ -104,7 +104,7 @@ func ParseNodeAddress(addrStr string) (*NodeAddress, error) {
 	// 尝试解析简化的 IP:端口格式
 	lastColon := strings.LastIndex(addrStr, ":")
 	if lastColon == -1 {
-		return nil, fmt.Errorf("无效的地址格式: %s", addrStr)
+		return nil, types.NewTreeCoordinatorInvalidAddrError(addrStr)
 	}
 
 	ip := addrStr[:lastColon]
@@ -112,7 +112,7 @@ func ParseNodeAddress(addrStr string) (*NodeAddress, error) {
 
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		return nil, fmt.Errorf("无效的端口号: %s", portStr)
+		return nil, types.NewTreeCoordinatorInvalidPortError(portStr)
 	}
 
 	return &NodeAddress{
@@ -143,6 +143,29 @@ func (hr HostRole) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// PR-037: 从三级配置结构中提取所有 Host 的 seed_node
+// 辅助函数：从 ClusterConfig 中提取种子节点地址列表
+// P1-6: 对种子节点地址进行去重
+func extractSeedNodesFromConfig(clusterConfig *metadataconfig.ClusterConfig) []string {
+	if clusterConfig == nil || len(clusterConfig.Hosts) == 0 {
+		return nil
+	}
+
+	// P1-6: 使用 map 去重，保持首次出现的顺序
+	seen := make(map[string]bool)
+	seedNodes := make([]string, 0, len(clusterConfig.Hosts))
+
+	for _, host := range clusterConfig.Hosts {
+		if host.SeedNode != "" {
+			if !seen[host.SeedNode] {
+				seen[host.SeedNode] = true
+				seedNodes = append(seedNodes, host.SeedNode)
+			}
+		}
+	}
+	return seedNodes
 }
 
 // NodeRole 逻辑节点角色类型
@@ -447,17 +470,19 @@ func NewTreeCoordinator(
 	coordinator.stats.OnlineNodes.Store(1)
 	coordinator.stats.LastTopologyUpdate.Store(time.Now())
 
-	// PR-036: 初始化种子节点监控器（如果提供了集群配置）
-	if clusterConfig != nil && len(clusterConfig.SeedNodes) > 0 {
-		// 从静态配置初始化种子节点（不使用文件监控）
-		// 验证并规范化种子节点配置
-		normalizedSeedNodes, err := metadataconfig.ParseSeedNodes(clusterConfig.SeedNodes)
-		if err != nil {
-			logging.Warnf("[TreeCoordinator] 解析种子节点配置失败: %v（将不使用种子节点）", err)
-		} else {
-			// 更新为规范化后的配置
-			clusterConfig.SeedNodes = normalizedSeedNodes
-			logging.Infof("[TreeCoordinator] 初始化 %d 个种子节点", len(normalizedSeedNodes))
+	// PR-037: 初始化种子节点（从三级配置结构中提取）
+	if clusterConfig != nil && len(clusterConfig.Hosts) > 0 {
+		// PR-037: 从三级配置结构中提取所有 Host 的 seed_node
+		seedNodes := extractSeedNodesFromConfig(clusterConfig)
+		if len(seedNodes) > 0 {
+			// 验证并规范化种子节点配置
+			normalizedSeedNodes, err := metadataconfig.ParseSeedNodes(seedNodes)
+			if err != nil {
+				logging.Warnf("[TreeCoordinator] 解析种子节点配置失败: %v（将不使用种子节点）", err)
+			} else {
+				// PR-037: 不再写回 clusterConfig（seed_node 现在是每个 Host 的字段）
+				logging.Infof("[TreeCoordinator] 初始化 %d 个种子节点", len(normalizedSeedNodes))
+			}
 		}
 	}
 
@@ -616,9 +641,13 @@ func (tc *TreeCoordinator) discoverAndJoin() {
 func (tc *TreeCoordinator) getKnownNodes() []*Node {
 	nodes := make([]*Node, 0)
 
-	// 1. 从配置中读取种子节点
-	if tc.clusterConfig != nil && len(tc.clusterConfig.SeedNodes) > 0 {
-		for _, addr := range tc.clusterConfig.SeedNodes {
+	// PR-037: 1. 从三级配置结构中读取种子节点
+	if tc.clusterConfig != nil && len(tc.clusterConfig.Hosts) > 0 {
+		seedNodes := extractSeedNodesFromConfig(tc.clusterConfig)
+		if len(seedNodes) == 0 {
+			return nodes
+		}
+		for _, addr := range seedNodes {
 			// 决策 3: 自动过滤自身地址
 			selfAddr := tc.localNode.Addr.TCPAddr()
 			if addr == selfAddr {
@@ -655,20 +684,29 @@ func (tc *TreeCoordinator) getKnownNodes() []*Node {
 	}
 
 	// 2. 合并内存中的已知节点（向后兼容 + 降级处理）
+	// P1-3 修复：先在锁内收集节点地址，然后在锁外进行去重检查，避免死锁
 	tc.nodesMu.RLock()
+	knownNodeAddrs := make([]string, 0, len(tc.allNodes))
+	knownNodesMap := make(map[string]*Node, len(tc.allNodes))
 	for _, node := range tc.allNodes {
 		// 跳过本地节点
 		if node.NodeID == tc.localNode.NodeID {
 			continue
 		}
-
-		// 检查地址是否已存在（避免重复）
 		nodeAddr := node.Addr.TCPAddr()
-		if !containsNodeAddr(nodes, nodeAddr) {
-			nodes = append(nodes, node)
-		}
+		knownNodeAddrs = append(knownNodeAddrs, nodeAddr)
+		knownNodesMap[nodeAddr] = node
 	}
 	tc.nodesMu.RUnlock()
+
+	// 在锁外进行去重检查和合并
+	for _, addr := range knownNodeAddrs {
+		if !containsNodeAddr(nodes, addr) {
+			if node, exists := knownNodesMap[addr]; exists {
+				nodes = append(nodes, node)
+			}
+		}
+	}
 
 	return nodes
 }
@@ -740,7 +778,7 @@ func (tc *TreeCoordinator) sendJoinRequest(targetNode *Node) error {
 	// 发送请求
 	resp, err := tc.RPCClient.Call(ctx, targetAddr, joinMsg)
 	if err != nil {
-		return fmt.Errorf("发送加入请求失败: %w", err)
+		return types.NewTreeCoordinatorSendJoinRequestError(err)
 	}
 
 	// 处理响应
@@ -981,7 +1019,7 @@ func (tc *TreeCoordinator) reparentNode(node *Node, oldParentID string) error {
 	// 步骤 1: 查找合适的父节点
 	candidateParents := tc.findCandidateParents(node)
 	if len(candidateParents) == 0 {
-		return fmt.Errorf("没有找到合适的父节点")
+		return types.NewTreeCoordinatorNoSuitableParentError()
 	}
 
 	// 步骤 2: 选择第一个可用的候选父节点
@@ -1449,7 +1487,7 @@ func (tc *TreeCoordinator) RemoveNode(nodeID string) error {
 
 	node, exists := tc.allNodes[nodeID]
 	if !exists {
-		return fmt.Errorf("节点不存在: %s", nodeID)
+		return types.NewTreeCoordinatorNodeNotFoundError(nodeID)
 	}
 
 	// 不能移除本地节点
@@ -1741,30 +1779,27 @@ func (na *NodeAddress) Validate() error {
 	// 检查 TCP 端口范围
 	if na.TCPPort != 0 {
 		if na.TCPPort < MinPort || na.TCPPort > MaxTCPPort {
-			return fmt.Errorf("TCPPort must be in range [%d, %d], got %d",
-				MinPort, MaxTCPPort, na.TCPPort)
+			return types.NewTreeCoordinatorTCPPortOutOfRangeError(MinPort, MaxTCPPort, na.TCPPort)
 		}
 	}
 
 	// 检查 UDP 端口范围
 	if na.UDPPort != 0 {
 		if na.UDPPort < MinPort || na.UDPPort > MaxUDPPort {
-			return fmt.Errorf("UDPPort must be in range [%d, %d], got %d",
-				MinPort, MaxUDPPort, na.UDPPort)
+			return types.NewTreeCoordinatorUDPPortOutOfRangeError(MinPort, MaxUDPPort, na.UDPPort)
 		}
 	}
 
 	// 检查 UDP = TCP + 1 规则（如果两个端口都设置）
 	if na.TCPPort != 0 && na.UDPPort != 0 {
 		if na.UDPPort != na.TCPPort+1 {
-			return fmt.Errorf("UDPPort must equal TCPPort + 1, got TCP=%d UDP=%d",
-				na.TCPPort, na.UDPPort)
+			return types.NewTreeCoordinatorUDPPortMustBeTCPPlusOneError(na.TCPPort, na.UDPPort)
 		}
 	}
 
 	// 至少需要设置一个端口
 	if na.TCPPort == 0 && na.UDPPort == 0 {
-		return fmt.Errorf("at least one port (TCP or UDP) must be set")
+		return types.NewTreeCoordinatorAtLeastOnePortRequiredError()
 	}
 
 	return nil
@@ -1799,8 +1834,7 @@ func NewNodeAddress(host string, tcpPort int) (*NodeAddress, error) {
 	)
 
 	if tcpPort < MinPort || tcpPort > MaxTCPPort {
-		return nil, fmt.Errorf("TCPPort must be in range [%d, %d], got %d",
-			MinPort, MaxTCPPort, tcpPort)
+		return nil, types.NewTreeCoordinatorTCPPortOutOfRangeError(MinPort, MaxTCPPort, tcpPort)
 	}
 
 	// UDP 端口自动 = TCP + 1
@@ -1829,17 +1863,17 @@ func (n *Node) GetUDPAddr() string {
 func (n *Node) Validate() error {
 	// 验证 NodeID
 	if n.NodeID == "" {
-		return fmt.Errorf("NodeID is required")
+		return types.NewTreeCoordinatorNodeIDRequiredError()
 	}
 
 	// 验证 HostID
 	if n.HostID == "" {
-		return fmt.Errorf("HostID is required")
+		return types.NewTreeCoordinatorHostIDRequiredError()
 	}
 
 	// 验证 Addr
 	if err := n.Addr.Validate(); err != nil {
-		return fmt.Errorf("invalid Addr: %w", err)
+		return types.NewTreeCoordinatorInvalidNodeAddrError(err)
 	}
 
 	// 验证 Role
@@ -1847,7 +1881,7 @@ func (n *Node) Validate() error {
 	case Leaf, Parent, ParentStandby:
 		// 有效角色
 	default:
-		return fmt.Errorf("invalid NodeRole: %d", n.Role)
+		return types.NewTreeCoordinatorInvalidNodeRoleError(int(n.Role))
 	}
 
 	return nil
@@ -1891,45 +1925,45 @@ func (h *Host) ValidateNodeIDs() error {
 	}
 
 	if hostID == "" {
-		return fmt.Errorf("HostID is required")
+		return types.NewTreeCoordinatorHostIDRequiredError()
 	}
 
 	switch h.Role {
 	case LeafOnly:
 		if h.LeafNodeID == "" {
-			return fmt.Errorf("LeafOnly Host must have LeafNodeID")
+			return types.NewTreeCoordinatorLeafNodeIDRequiredError()
 		}
 		// ParentNodeID 和 ParentStandbyNodeID 应该为空
 		if h.ParentNodeID != "" {
-			return fmt.Errorf("LeafOnly Host should not have ParentNodeID")
+			return types.NewTreeCoordinatorLeafOnlyHostShouldNotHaveParentNodeIDError()
 		}
 		if h.ParentStandbyNodeID != "" {
-			return fmt.Errorf("LeafOnly Host should not have ParentStandbyNodeID")
+			return types.NewTreeCoordinatorLeafOnlyHostShouldNotHaveParentStandbyNodeIDError()
 		}
 
 	case LeafParent:
 		if h.LeafNodeID == "" {
-			return fmt.Errorf("LeafParent Host must have LeafNodeID")
+			return types.NewTreeCoordinatorLeafNodeIDRequiredError()
 		}
 		if h.ParentNodeID == "" {
-			return fmt.Errorf("LeafParent Host must have ParentNodeID")
+			return types.NewTreeCoordinatorParentNodeIDRequiredError()
 		}
 		// ParentStandbyNodeID 可选
 		if h.ParentStandbyNodeID == h.ParentNodeID {
-			return fmt.Errorf("ParentStandbyNodeID must be different from ParentNodeID")
+			return types.NewTreeCoordinatorParentStandbyNodeIDMustBeDifferentError()
 		}
 
 	case LeafParentStandby:
 		if h.LeafNodeID == "" {
-			return fmt.Errorf("LeafParentStandby Host must have LeafNodeID")
+			return types.NewTreeCoordinatorLeafNodeIDRequiredError()
 		}
 		if h.ParentStandbyNodeID == "" {
-			return fmt.Errorf("LeafParentStandby Host must have ParentStandbyNodeID")
+			return types.NewTreeCoordinatorParentStandbyNodeIDRequiredError()
 		}
 		// ParentNodeID 可选
 
 	default:
-		return fmt.Errorf("invalid HostRole: %d", h.Role)
+		return types.NewTreeCoordinatorInvalidHostRoleError(int(h.Role))
 	}
 
 	return nil
@@ -2038,7 +2072,7 @@ func (tc *TreeCoordinator) sendGossipMessage(targetNode *Node, msg *transport.No
 	// 发送 Gossip 消息
 	resp, err := tc.RPCClient.Call(ctx, targetAddr, msg)
 	if err != nil {
-		return fmt.Errorf("发送 Gossip 消息失败: %w", err)
+		return types.NewTreeCoordinatorSendGossipMessageError(err)
 	}
 
 	// 处理响应

@@ -106,7 +106,7 @@ func NewSnapshotWriter(path string, compression types.CompressionType, sequence 
 // - metadata: 元数据（map 版本、条目数量等）
 //
 // 返回错误信息
-func (w *SnapshotWriter) WriteMetadata(metadata map[string]interface{}) error {
+func (w *SnapshotWriter) WriteMetadata(metadata map[string]any) error {
 	// 1. 序列化元数据（使用 JSON，简单可读）
 	jsonData, err := json.Marshal(metadata)
 	if err != nil {

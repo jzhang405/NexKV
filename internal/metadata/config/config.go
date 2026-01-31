@@ -1,12 +1,18 @@
 // Package config 提供元数据层的配置管理
+//
+// PR-037: 三级配置重构（Cluster → Host → Node）
+// - Cluster: 集群级别配置（名称、基础目录）
+// - Host: 主机级别配置（每个物理机/容器一个 Host）
+// - Node: 节点级别配置（角色由系统动态分配）
 package config
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,15 +26,25 @@ type Config struct {
 	Clock    ClockConfig    `yaml:"clock" mapstructure:"clock"`
 }
 
-// ClusterConfig 集群配置
+// ClusterConfig 集群配置（PR-037: 三级配置结构）
 type ClusterConfig struct {
-	Name      string   `yaml:"name" mapstructure:"name"`
-	NodeID    string   `yaml:"node_id" mapstructure:"node_id"`
-	NodeAddr  string   `yaml:"node_addr" mapstructure:"node_addr"`
-	SeedNodes []string `yaml:"seed_nodes" mapstructure:"seed_nodes"` // PR-036: 种子节点地址列表
+	Name    string       `yaml:"name" mapstructure:"name"`
+	BaseDir string       `yaml:"base_dir" mapstructure:"base_dir"` // 可被 NEXKV_BASE_DIR 环境变量覆盖
+	Hosts   []HostConfig `yaml:"hosts" mapstructure:"hosts"`       // Host 级别配置列表
+}
 
-	// 树形分组配置
-	TreeCoord TreeCoordConfig `yaml:"tree_coord" mapstructure:"tree_coord"`
+// HostConfig Host 级别配置（PR-037: 新增）
+type HostConfig struct {
+	HostID   string       `yaml:"host_id" mapstructure:"host_id"`     // Host 唯一标识
+	SeedNode string       `yaml:"seed_node" mapstructure:"seed_node"` // 种子节点地址（multiaddr 格式）
+	Nodes    []NodeConfig `yaml:"nodes" mapstructure:"nodes"`         // Node 级别配置列表
+}
+
+// NodeConfig Node 级别配置（PR-037: 新增）
+type NodeConfig struct {
+	NodeID      string `yaml:"node_id" mapstructure:"node_id"`             // Node 唯一标识
+	NodeAddrTCP string `yaml:"node_addr_tcp" mapstructure:"node_addr_tcp"` // TCP 监听地址（multiaddr 格式）
+	NodeAddrUDP string `yaml:"node_addr_udp" mapstructure:"node_addr_udp"` // UDP 监听地址（multiaddr 格式）
 }
 
 // TreeCoordConfig 树形协调器配置
@@ -38,18 +54,24 @@ type TreeCoordConfig struct {
 }
 
 // MetadataConfig 元数据层配置
+// PR-037: data_dir 现在由 {base_dir}/{host_id}/metadata 自动管理，此处仅配置行为参数
 type MetadataConfig struct {
-	DataDir        string        `yaml:"data_dir" mapstructure:"data_dir"`
+	// 注意：data_dir 已废弃，由 {base_dir}/{host_id}/metadata 自动管理
+	// 保留此字段仅为兼容旧配置文件，新配置不应设置此字段
+	DataDir        string        `yaml:"data_dir" mapstructure:"data_dir"` // 已废弃
 	GossipInterval time.Duration `yaml:"gossip_interval" mapstructure:"gossip_interval"`
 	QuorumTimeout  time.Duration `yaml:"quorum_timeout" mapstructure:"quorum_timeout"`
 	ChangeLogSize  int           `yaml:"change_log_size" mapstructure:"change_log_size"`
 }
 
 // StorageConfig 存储层配置
+// PR-037: 目录路径现在由 {base_dir}/{host_id}/{shards|wal|snapshots} 自动管理
 type StorageConfig struct {
-	ShardDataDir  string        `yaml:"shard_data_dir" mapstructure:"shard_data_dir"`
-	WALDir        string        `yaml:"wal_dir" mapstructure:"wal_dir"`
-	SnapshotDir   string        `yaml:"snapshot_dir" mapstructure:"snapshot_dir"`
+	// 注意：以下目录已废弃，由 {base_dir}/{host_id}/ 自动管理
+	// 保留这些字段仅为兼容旧配置文件，新配置不应设置这些字段
+	ShardDataDir  string        `yaml:"shard_data_dir" mapstructure:"shard_data_dir"` // 已废弃
+	WALDir        string        `yaml:"wal_dir" mapstructure:"wal_dir"`               // 已废弃
+	SnapshotDir   string        `yaml:"snapshot_dir" mapstructure:"snapshot_dir"`     // 已废弃
 	FlushInterval time.Duration `yaml:"flush_interval" mapstructure:"flush_interval"`
 }
 
@@ -88,24 +110,30 @@ type HLCConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Cluster: ClusterConfig{
-			Name:     "nexkv-cluster",
-			NodeID:   "node-1",
-			NodeAddr: "127.0.0.1:9211",
-			TreeCoord: TreeCoordConfig{
-				MaxChildren: 10,
-				GroupSize:   5,
+			Name:    "nexkv-cluster",
+			BaseDir: "~/.nexkv/data", // 默认基础目录，可被 NEXKV_BASE_DIR 环境变量覆盖
+			Hosts: []HostConfig{
+				{
+					HostID:   "host-1",
+					SeedNode: "/ip4/127.0.0.1/tcp/9211",
+					Nodes: []NodeConfig{
+						{
+							NodeID:      "node-1",
+							NodeAddrTCP: "/ip4/127.0.0.1/tcp/9211",
+							NodeAddrUDP: "/ip4/127.0.0.1/udp/9212",
+						},
+					},
+				},
 			},
 		},
 		Metadata: MetadataConfig{
-			DataDir:        "./data/metadata",
+			// DataDir 已废弃，由 {base_dir}/{host_id}/metadata 自动管理
 			GossipInterval: 10 * time.Second,
 			QuorumTimeout:  30 * time.Second,
 			ChangeLogSize:  1000,
 		},
 		Storage: StorageConfig{
-			ShardDataDir:  "./data/shards",
-			WALDir:        "./data/wal",
-			SnapshotDir:   "./data/snapshots",
+			// ShardDataDir, WALDir, SnapshotDir 已废弃，由 {base_dir}/{host_id}/ 自动管理
 			FlushInterval: 5 * time.Second,
 		},
 		Network: NetworkConfig{
@@ -135,27 +163,54 @@ func LoadConfig(path string) (*Config, error) {
 	// 检查文件是否存在
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		// 文件不存在，返回默认配置
-		return DefaultConfig(), nil
+		cfg := DefaultConfig()
+		// 应用环境变量覆盖
+		applyEnvOverrides(cfg)
+		return cfg, nil
 	}
 
 	// 读取配置文件
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("读取配置文件失败: %w", err)
+		return nil, types.NewConfigReadFileError(err)
 	}
 
 	// 解析 YAML
 	cfg := DefaultConfig()
 	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("解析配置文件失败: %w", err)
+		return nil, types.NewConfigParseFileError(err)
 	}
+
+	// 应用环境变量覆盖
+	applyEnvOverrides(cfg)
 
 	// 验证配置
 	if err := ValidateConfig(cfg); err != nil {
-		return nil, fmt.Errorf("配置验证失败: %w", err)
+		return nil, types.NewConfigValidateFileError(err)
 	}
 
 	return cfg, nil
+}
+
+// applyEnvOverrides 应用环境变量覆盖
+func applyEnvOverrides(cfg *Config) {
+	// NEXKV_BASE_DIR 环境变量优先级最高
+	if baseDir := os.Getenv("NEXKV_BASE_DIR"); baseDir != "" {
+		// 展开波浪号
+		if strings.HasPrefix(baseDir, "~/") {
+			if homeDir, err := os.UserHomeDir(); err == nil {
+				baseDir = filepath.Join(homeDir, baseDir[2:])
+			}
+		}
+		cfg.Cluster.BaseDir = baseDir
+	} else {
+		// 展开配置中的波浪号
+		if strings.HasPrefix(cfg.Cluster.BaseDir, "~/") {
+			if homeDir, err := os.UserHomeDir(); err == nil {
+				cfg.Cluster.BaseDir = filepath.Join(homeDir, cfg.Cluster.BaseDir[2:])
+			}
+		}
+	}
 }
 
 // ValidateConfig 验证配置有效性
@@ -165,7 +220,6 @@ func ValidateConfig(cfg *Config) error {
 		fn   func(*Config) error
 	}{
 		{"集群配置", validateClusterConfigWrapper},
-		{"树形协调器配置", validateTreeCoordConfigWrapper},
 		{"元数据配置", validateMetadataConfigWrapper},
 		{"存储配置", validateStorageConfigWrapper},
 		{"网络配置", validateNetworkConfigWrapper},
@@ -175,30 +229,66 @@ func ValidateConfig(cfg *Config) error {
 
 	for _, v := range validators {
 		if err := v.fn(cfg); err != nil {
-			return fmt.Errorf("%s验证失败: %w", v.name, err)
+			return err
 		}
 	}
 
 	return nil
 }
 
-// validateClusterConfigWrapper 验证集群配置（包装函数）
+// validateClusterConfigWrapper 验证集群配置（PR-037: 三级配置结构）
+// P1-4 修复：使用 early return 优化性能，减少不必要的验证
 func validateClusterConfigWrapper(cfg *Config) error {
 	if cfg.Cluster.Name == "" {
-		return fmt.Errorf("cluster.name 不能为空")
+		return types.NewConfigClusterNameEmptyError()
 	}
-	if cfg.Cluster.NodeID == "" {
-		return fmt.Errorf("cluster.node_id 不能为空")
+	if cfg.Cluster.BaseDir == "" {
+		return types.NewConfigBaseDirEmptyError()
 	}
-	if cfg.Cluster.NodeAddr == "" {
-		return fmt.Errorf("cluster.node_addr 不能为空")
+	if len(cfg.Cluster.Hosts) == 0 {
+		return types.NewConfigHostsEmptyError()
 	}
-	return nil
-}
 
-// validateTreeCoordConfigWrapper 验证树形协调器配置（包装函数）
-func validateTreeCoordConfigWrapper(cfg *Config) error {
-	return validateTreeCoordConfig(cfg.Cluster.TreeCoord)
+	// 验证每个 Host 配置
+	for i, host := range cfg.Cluster.Hosts {
+		// Early return: 快速失败，避免继续验证无效配置
+		if host.HostID == "" {
+			return types.NewConfigHostIDEmptyError(i)
+		}
+		if host.SeedNode == "" {
+			return types.NewConfigSeedNodeEmptyError(i)
+		}
+		if len(host.Nodes) == 0 {
+			return types.NewConfigNodesEmptyError(i)
+		}
+
+		// 验证每个 Node 配置
+		for j, node := range host.Nodes {
+			// Early return: 快速失败
+			if node.NodeID == "" {
+				return types.NewConfigNodeIDEmptyError(i, j)
+			}
+			if node.NodeAddrTCP == "" {
+				return types.NewConfigNodeAddrTCPEmptyError(i, j)
+			}
+			if node.NodeAddrUDP == "" {
+				return types.NewConfigNodeAddrUDPEmptyError(i, j)
+			}
+
+			// 验证 multiaddr 格式（使用 HasPrefix 进行快速检查）
+			// P1-4 优化：提前计算前缀检查结果
+			tcpValid := strings.HasPrefix(node.NodeAddrTCP, "/ip4/") || strings.HasPrefix(node.NodeAddrTCP, "/ip6/")
+			if !tcpValid {
+				return types.NewConfigNodeAddrTCPInvalidFormatError(i, j)
+			}
+			udpValid := strings.HasPrefix(node.NodeAddrUDP, "/ip4/") || strings.HasPrefix(node.NodeAddrUDP, "/ip6/")
+			if !udpValid {
+				return types.NewConfigNodeAddrUDPInvalidFormatError(i, j)
+			}
+		}
+	}
+
+	return nil
 }
 
 // validateMetadataConfigWrapper 验证元数据配置（包装函数）
@@ -226,53 +316,24 @@ func validateClockConfigWrapper(cfg *Config) error {
 	return validateClockConfig(cfg.Clock.HLC)
 }
 
-// validateTreeCoordConfig 验证树形协调器配置
-func validateTreeCoordConfig(cfg TreeCoordConfig) error {
-	if cfg.MaxChildren < 1 {
-		return fmt.Errorf("max_children 必须 >= 1")
-	}
-	if cfg.MaxChildren > 50 {
-		return fmt.Errorf("max_children 不能超过 50")
-	}
-	if cfg.GroupSize < 1 {
-		return fmt.Errorf("group_size 必须 >= 1")
-	}
-	if cfg.GroupSize > 20 {
-		return fmt.Errorf("group_size 不能超过 20")
-	}
-	return nil
-}
-
 // validateMetadataConfig 验证元数据配置
 func validateMetadataConfig(cfg MetadataConfig) error {
-	if cfg.DataDir == "" {
-		return fmt.Errorf("data_dir 不能为空")
-	}
 	if cfg.GossipInterval < time.Second {
-		return fmt.Errorf("gossip_interval 不能小于 1 秒")
+		return types.NewConfigGossipIntervalInvalidError()
 	}
 	if cfg.QuorumTimeout < time.Second {
-		return fmt.Errorf("quorum_timeout 不能小于 1 秒")
+		return types.NewConfigQuorumTimeoutInvalidError()
 	}
 	if cfg.ChangeLogSize < 100 {
-		return fmt.Errorf("change_log_size 不能小于 100")
+		return types.NewConfigChangeLogSizeInvalidError()
 	}
 	return nil
 }
 
 // validateStorageConfig 验证存储配置
 func validateStorageConfig(cfg StorageConfig) error {
-	if cfg.ShardDataDir == "" {
-		return fmt.Errorf("shard_data_dir 不能为空")
-	}
-	if cfg.WALDir == "" {
-		return fmt.Errorf("wal_dir 不能为空")
-	}
-	if cfg.SnapshotDir == "" {
-		return fmt.Errorf("snapshot_dir 不能为空")
-	}
 	if cfg.FlushInterval < time.Second {
-		return fmt.Errorf("flush_interval 不能小于 1 秒")
+		return types.NewConfigFlushIntervalInvalidError()
 	}
 	return nil
 }
@@ -280,19 +341,19 @@ func validateStorageConfig(cfg StorageConfig) error {
 // validateNetworkConfig 验证网络配置
 func validateNetworkConfig(cfg NetworkConfig) error {
 	if cfg.ListenAddr == "" {
-		return fmt.Errorf("listen_addr 不能为空")
+		return types.NewConfigListenAddrEmptyError()
 	}
 	if cfg.TransportType == "" {
-		return fmt.Errorf("transport_type 不能为空")
+		return types.NewConfigTransportTypeEmptyError()
 	}
 	if cfg.MessagePackType == "" {
-		return fmt.Errorf("message_pack_type 不能为空")
+		return types.NewConfigMessagePackTypeEmptyError()
 	}
 	if cfg.MaxMessageSize < 1024 {
-		return fmt.Errorf("max_message_size 不能小于 1024 字节")
+		return types.NewConfigMaxMessageSizeInvalidError()
 	}
 	if cfg.ConnectTimeout < time.Second {
-		return fmt.Errorf("connect_timeout 不能小于 1 秒")
+		return types.NewConfigConnectTimeoutInvalidError()
 	}
 	return nil
 }
@@ -307,7 +368,7 @@ func validateLoggingConfig(cfg LoggingConfig) error {
 		"fatal": true,
 	}
 	if !validLogLevels[cfg.Level] {
-		return fmt.Errorf("无效的日志级别: %s（必须是 debug/info/warn/error/fatal）", cfg.Level)
+		return types.NewConfigInvalidLogLevelError(cfg.Level)
 	}
 
 	validLogFormats := map[string]bool{
@@ -315,7 +376,7 @@ func validateLoggingConfig(cfg LoggingConfig) error {
 		"text": true,
 	}
 	if !validLogFormats[cfg.Format] {
-		return fmt.Errorf("无效的日志格式: %s（必须是 json/text）", cfg.Format)
+		return types.NewConfigInvalidLogFormatError(cfg.Format)
 	}
 
 	validLogOutputs := map[string]bool{
@@ -323,11 +384,11 @@ func validateLoggingConfig(cfg LoggingConfig) error {
 		"file":   true,
 	}
 	if !validLogOutputs[cfg.Output] {
-		return fmt.Errorf("无效的日志输出: %s（必须是 stdout/file）", cfg.Output)
+		return types.NewConfigInvalidLogOutputError(cfg.Output)
 	}
 
 	if cfg.Output == "file" && cfg.File == "" {
-		return fmt.Errorf("日志输出为 file 时，必须指定 file 路径")
+		return types.NewConfigLogFileRequiredError()
 	}
 
 	return nil
@@ -336,10 +397,10 @@ func validateLoggingConfig(cfg LoggingConfig) error {
 // validateClockConfig 验证时钟配置
 func validateClockConfig(cfg HLCConfig) error {
 	if cfg.MaxDrift < 0 {
-		return fmt.Errorf("max_drift 不能为负数")
+		return types.NewConfigMaxDriftInvalidError()
 	}
 	if cfg.SyncInterval < time.Second {
-		return fmt.Errorf("sync_interval 不能小于 1 秒")
+		return types.NewConfigSyncIntervalInvalidError()
 	}
 	return nil
 }
@@ -348,23 +409,23 @@ func validateClockConfig(cfg HLCConfig) error {
 func SaveConfig(cfg *Config, path string) error {
 	// 验证配置
 	if err := ValidateConfig(cfg); err != nil {
-		return fmt.Errorf("配置验证失败: %w", err)
+		return err
 	}
 
 	// 创建目录
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("创建配置目录失败: %w", err)
+		return types.NewConfigCreateDirError(err)
 	}
 
 	// 序列化为 YAML
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
-		return fmt.Errorf("序列化配置失败: %w", err)
+		return types.NewConfigSerializeError(err)
 	}
 
 	// 写入文件
 	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("写入配置文件失败: %w", err)
+		return types.NewConfigWriteFileError(err)
 	}
 
 	return nil

@@ -162,7 +162,7 @@ func TestCheckpointRecoveryVersionMismatch(t *testing.T) {
 		// 1. 创建 Snapshot (序列号由文件系统生成)
 		snapshotMgr, _ := NewSnapshotFileManager(snapshotDir, types.CompressionTypeNone)
 		data := map[string][]byte{"key": []byte("value")}
-		snapshotInfo, err := snapshotMgr.CreateSnapshot(map[string]interface{}{"version": 1}, data)
+		snapshotInfo, err := snapshotMgr.CreateSnapshot(map[string]any{"version": 1}, data)
 		if err != nil {
 			t.Fatalf("创建 Snapshot 失败: %v", err)
 		}
@@ -184,7 +184,7 @@ func TestCheckpointRecoveryVersionMismatch(t *testing.T) {
 			wrongCheckpointVersion,
 			snapshotInfoInCheckpoint,
 			&WalInfoInCheckpoint{WalStartFile: "wal-0001.bin", WalStartOffset: 0},
-			map[string]interface{}{"version": wrongCheckpointVersion},
+			map[string]any{"version": wrongCheckpointVersion},
 		)
 
 		// 文档化：旧 API 允许版本不匹配
@@ -264,7 +264,7 @@ func TestGlobalSequenceGenerator(t *testing.T) {
 			5,
 			snapshotInfo,
 			&WalInfoInCheckpoint{WalStartFile: "wal-0001.bin", WalStartOffset: 0},
-			map[string]interface{}{"version": 5},
+			map[string]any{"version": 5},
 		)
 		if err != nil {
 			t.Fatalf("创建 Checkpoint 失败: %v", err)

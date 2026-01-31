@@ -212,7 +212,7 @@ func TestCheckpointManager(t *testing.T) {
 		WalStartOffset: 0,
 	}
 
-	metadata := map[string]interface{}{
+	metadata := map[string]any{
 		"version":     1,
 		"entry_count": 100,
 	}
@@ -331,7 +331,7 @@ func TestSnapshotCompression(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// 准备测试数据
-	metadata := map[string]interface{}{
+	metadata := map[string]any{
 		"version":     1,
 		"entry_count": 1000,
 	}

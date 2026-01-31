@@ -22,6 +22,7 @@ import (
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
 	"github.com/jzhang405/NexKV/internal/metadata/identity"
 	"github.com/jzhang405/NexKV/internal/metadata/transport"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/urfave/cli/v2"
 )
 
@@ -39,10 +40,13 @@ var (
 // ========================================
 
 // AppContext 应用上下文（遵循 PR-032 第 3.8.2 节规范）
+// PR-037: 添加 hostID 和 nodeID 用于从三级配置结构中选择节点
 type AppContext struct {
 	// 配置
 	ConfigPath string
 	Env        string
+	HostID     string // PR-037: 主机 ID（用于从三级配置中选择 Host）
+	NodeID     string // PR-037: 节点 ID（用于从三级配置中选择 Node）
 
 	// 核心组件
 	Coordinator  *cluster.TreeCoordinator
@@ -86,6 +90,12 @@ func main() {
 				EnvVars: []string{"NEXKV_CLUSTER"},
 			},
 			&cli.StringFlag{
+				Name:    "host-id",
+				Aliases: []string{"h"},
+				Usage:   "主机 ID（PR-037: 从三级配置结构中指定主机）",
+				EnvVars: []string{"NEXKV_HOST_ID"},
+			},
+			&cli.StringFlag{
 				Name:    "node-id",
 				Aliases: []string{"i"},
 				Usage:   "节点 ID（覆盖配置文件）",
@@ -125,10 +135,11 @@ func runDaemon(c *cli.Context) error {
 	configPath := c.String("config")
 	env := c.String("env")
 	logLevel := c.String("log-level")
+	hostID := c.String("host-id") // PR-037: 获取主机 ID
 
 	// 初始化日志
 	if err := initLogging(logLevel); err != nil {
-		return fmt.Errorf("初始化日志失败: %w", err)
+		return types.NewDaemonInitializeLoggingError(err)
 	}
 
 	logging.Info("NexKV Daemon 启动中...")
@@ -136,24 +147,37 @@ func runDaemon(c *cli.Context) error {
 	// 加载配置
 	cfg, err := loadConfig(c, configPath)
 	if err != nil {
-		return fmt.Errorf("加载配置失败: %w", err)
+		return types.NewDaemonLoadConfigError(err)
 	}
 
 	// 创建应用上下文
-	appCtx, err := NewAppContext(cfg, env, configPath)
+	appCtx, err := NewAppContext(cfg, env, configPath, hostID)
 	if err != nil {
-		return fmt.Errorf("创建应用上下文失败: %w", err)
+		return types.NewDaemonCreateAppContextError(err)
 	}
 
 	// 初始化所有组件（7 步初始化流程）
 	if err := appCtx.Initialize(cfg); err != nil {
-		return fmt.Errorf("初始化失败: %w", err)
+		return types.NewDaemonInitializeError(err)
+	}
+
+	// PR-037: 从三级配置结构中获取节点信息用于日志输出
+	// P1-5 修复：确保 displayNodeID 始终有值，避免输出空的 host_id
+	displayNodeID := hostID
+	if displayNodeID == "" {
+		if len(cfg.Cluster.Hosts) > 0 && cfg.Cluster.Hosts[0].HostID != "" {
+			displayNodeID = cfg.Cluster.Hosts[0].HostID
+		} else {
+			// P1-5 修复：降级处理，使用集群名称作为 fallback
+			displayNodeID = cfg.Cluster.Name + "-unknown"
+			logging.Warnf("无法获取有效的 Host ID，使用 fallback: %s", displayNodeID)
+		}
 	}
 
 	logging.WithFields(map[string]any{
 		"version":     Version,
 		"cluster":     cfg.Cluster.Name,
-		"node_id":     cfg.Cluster.NodeID,
+		"host_id":     displayNodeID,
 		"listen_addr": cfg.Network.ListenAddr,
 	}).Info("NexKV Daemon 启动成功")
 
@@ -162,7 +186,7 @@ func runDaemon(c *cli.Context) error {
 
 	// 停止守护进程
 	if err := appCtx.Shutdown(); err != nil {
-		return fmt.Errorf("停止守护进程失败: %w", err)
+		return types.NewDaemonShutdownError(err)
 	}
 
 	logging.Info("NexKV Daemon 已停止")
@@ -174,9 +198,10 @@ func runDaemon(c *cli.Context) error {
 // ========================================
 
 // NewAppContext 创建应用上下文
-func NewAppContext(cfg *config.Config, env, configPath string) (*AppContext, error) {
+// PR-037: 添加 hostID 参数用于从三级配置结构中选择节点
+func NewAppContext(cfg *config.Config, env, configPath, hostID string) (*AppContext, error) {
 	if cfg == nil {
-		return nil, fmt.Errorf("配置不能为空")
+		return nil, types.NewDaemonConfigNilError()
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -184,6 +209,7 @@ func NewAppContext(cfg *config.Config, env, configPath string) (*AppContext, err
 	return &AppContext{
 		ConfigPath: configPath,
 		Env:        env,
+		HostID:     hostID, // PR-037: 存储主机 ID
 		ctx:        ctx,
 		cancel:     cancel,
 	}, nil
@@ -198,14 +224,14 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	// 解析监听地址
 	host, port, err := parseListenAddr(cfg.Network.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("解析监听地址失败: %w", err)
+		return types.NewDaemonParseListenAddrError(err)
 	}
 
 	// 使用 identity 包生成节点 ID（FNV-1a 64-bit 哈希）
 	// 注意：函数内部使用 os.Hostname() 获取主机名
 	nodeID, err := identity.GenerateNodeIDFromPorts(0, port)
 	if err != nil {
-		return fmt.Errorf("生成节点 ID 失败: %w", err)
+		return types.NewDaemonGenerateNodeIDError(err)
 	}
 
 	// 创建消息序列号生成器（原子递增）
@@ -225,28 +251,28 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	// 创建 TCP 传输层（用于可靠消息）
 	tcpTransport, err := transport.NewTCPTransport(cfg.Network.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("创建 TCP 传输失败: %w", err)
+		return types.NewDaemonCreateTCPTransportError(err)
 	}
 
 	// 创建 UDP 传输层（用于尽力型消息）
 	udpTransport, err := transport.NewUDPTransport(cfg.Network.ListenAddr)
 	if err != nil {
 		_ = tcpTransport.Stop()
-		return fmt.Errorf("创建 UDP 传输失败: %w", err)
+		return types.NewDaemonCreateUDPTransportError(err)
 	}
 
 	// 启动 TCP 传输层
 	if err := tcpTransport.Start(&nodeID, msgSeqGen.Next, cfg.Network.ListenAddr); err != nil {
 		_ = tcpTransport.Stop()
 		_ = udpTransport.Stop()
-		return fmt.Errorf("启动 TCP 传输失败: %w", err)
+		return types.NewDaemonStartTCPTransportError(err)
 	}
 
 	// 启动 UDP 传输层
 	if err := udpTransport.Start(&nodeID, msgSeqGen.Next, cfg.Network.ListenAddr); err != nil {
 		_ = tcpTransport.Stop()
 		_ = udpTransport.Stop()
-		return fmt.Errorf("启动 UDP 传输失败: %w", err)
+		return types.NewDaemonStartUDPTransportError(err)
 	}
 
 	app.TCPTransport = tcpTransport
@@ -268,7 +294,7 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	if err != nil {
 		_ = tcpTransport.Stop()
 		_ = udpTransport.Stop()
-		return fmt.Errorf("创建 RPC Client 失败: %w", err)
+		return types.NewDaemonCreateRPCClientError(err)
 	}
 
 	app.RPCClient = rpcClient
@@ -292,7 +318,7 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	if err != nil {
 		_ = tcpTransport.Stop()
 		_ = udpTransport.Stop()
-		return fmt.Errorf("创建 RPC Server 失败: %w", err)
+		return types.NewDaemonCreateRPCServerError(err)
 	}
 
 	app.RPCServer = rpcServer
@@ -305,7 +331,7 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	if err := rpcServer.Start(); err != nil {
 		_ = tcpTransport.Stop()
 		_ = udpTransport.Stop()
-		return fmt.Errorf("启动 RPC Server 失败: %w", err)
+		return types.NewDaemonStartRPCServerError(err)
 	}
 
 	// =====================================
@@ -317,7 +343,7 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 		_ = rpcServer.Stop()
 		_ = tcpTransport.Stop()
 		_ = udpTransport.Stop()
-		return fmt.Errorf("启动 RPC Client 失败: %w", err)
+		return types.NewDaemonStartRPCClientError(err)
 	}
 
 	// =====================================
@@ -325,10 +351,17 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	// =====================================
 	logging.Info("步骤 6: 创建 TreeCoordinator...")
 
-	// 使用配置的节点 ID，如果为空则生成一个
-	daemonNodeID := cfg.Cluster.NodeID
-	if daemonNodeID == "" {
-		daemonNodeID = fmt.Sprintf("node-%d", nodeID)
+	// P1-3: 始终使用配置中的节点 ID
+	// PR-037: 从三级配置结构中获取节点 ID
+	configNodeID, _, err := selectedNodeInfo(cfg, app.HostID, "")
+	var daemonNodeID string
+	if err != nil {
+		// P1-1 修复：降级处理，使用自动生成的节点 ID
+		// 避免因配置错误导致守护进程崩溃
+		logging.Warnf("从配置获取节点 ID 失败: %v，使用自动生成的 ID", err)
+		daemonNodeID = fmt.Sprintf("%d", nodeID)
+	} else {
+		daemonNodeID = configNodeID
 	}
 
 	coordinatorConfig := cluster.DefaultTreeCoordinatorConfig()
@@ -343,7 +376,7 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 		_ = rpcServer.Stop()
 		_ = tcpTransport.Stop()
 		_ = udpTransport.Stop()
-		return fmt.Errorf("创建 TreeCoordinator 失败: %w", err)
+		return types.NewDaemonCreateTreeCoordinatorError(err)
 	}
 
 	app.Coordinator = coordinator
@@ -357,7 +390,7 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	logging.Info("步骤 7: 启动 TreeCoordinator...")
 
 	if err := coordinator.Start(); err != nil {
-		return fmt.Errorf("启动 TreeCoordinator 失败: %w", err)
+		return types.NewDaemonStartTreeCoordinatorError(err)
 	}
 
 	logging.WithFields(map[string]any{
@@ -381,34 +414,34 @@ func (app *AppContext) Shutdown() error {
 	// 7. 停止 TreeCoordinator
 	if app.Coordinator != nil {
 		if err := app.Coordinator.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("停止 TreeCoordinator 失败: %w", err))
+			errs = append(errs, types.NewDaemonStopTreeCoordinatorError(err))
 		}
 	}
 
 	// 5. 停止 RPC Client
 	if app.RPCClient != nil {
 		if err := app.RPCClient.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("停止 RPC Client 失败: %w", err))
+			errs = append(errs, types.NewDaemonStopRPCClientError(err))
 		}
 	}
 
 	// 4. 停止 RPC Server
 	if app.RPCServer != nil {
 		if err := app.RPCServer.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("停止 RPC Server 失败: %w", err))
+			errs = append(errs, types.NewDaemonStopRPCServerError(err))
 		}
 	}
 
 	// 1. 停止 Transport 层
 	if app.TCPTransport != nil {
 		if err := app.TCPTransport.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("停止 TCP 传输层失败: %w", err))
+			errs = append(errs, types.NewDaemonStopTCPTransportError(err))
 		}
 	}
 
 	if app.UDPTransport != nil {
 		if err := app.UDPTransport.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("停止 UDP 传输层失败: %w", err))
+			errs = append(errs, types.NewDaemonStopUDPTransportError(err))
 		}
 	}
 
@@ -416,7 +449,7 @@ func (app *AppContext) Shutdown() error {
 	app.cancel()
 
 	if len(errs) > 0 {
-		return fmt.Errorf("停止守护进程时发生错误: %v", errs)
+		return types.NewDaemonShutdownMultipleErrorsError(len(errs))
 	}
 
 	return nil
@@ -427,6 +460,7 @@ func (app *AppContext) Shutdown() error {
 // ========================================
 
 // loadConfig 加载配置
+// PR-037: 移除对 NodeID/NodeAddr 的直接赋值，改为通过 host-id 和 node-id 选择
 func loadConfig(c *cli.Context, configPath string) (*config.Config, error) {
 	// 从文件加载配置
 	cfg, err := config.LoadConfig(configPath)
@@ -438,11 +472,9 @@ func loadConfig(c *cli.Context, configPath string) (*config.Config, error) {
 	if c.IsSet("cluster") {
 		cfg.Cluster.Name = c.String("cluster")
 	}
-	if c.IsSet("node-id") {
-		cfg.Cluster.NodeID = c.String("node-id")
-	}
+	// PR-037: 移除 NodeID/NodeAddr 直接赋值，这些值现在从三级配置结构中获取
+	// 保留 addr 标志用于覆盖 Network.ListenAddr
 	if c.IsSet("addr") {
-		cfg.Cluster.NodeAddr = c.String("addr")
 		cfg.Network.ListenAddr = c.String("addr")
 	}
 	if c.IsSet("log-level") {
@@ -453,11 +485,8 @@ func loadConfig(c *cli.Context, configPath string) (*config.Config, error) {
 	if envName := os.Getenv("NEXKV_CLUSTER"); envName != "" && !c.IsSet("cluster") {
 		cfg.Cluster.Name = envName
 	}
-	if envNodeID := os.Getenv("NEXKV_NODE_ID"); envNodeID != "" && !c.IsSet("node-id") {
-		cfg.Cluster.NodeID = envNodeID
-	}
+	// PR-037: 移除 NodeID/NodeAddr 环境变量处理
 	if envNodeAddr := os.Getenv("NEXKV_NODE_ADDR"); envNodeAddr != "" && !c.IsSet("addr") {
-		cfg.Cluster.NodeAddr = envNodeAddr
 		cfg.Network.ListenAddr = envNodeAddr
 	}
 
@@ -515,12 +544,12 @@ func waitForSignal(app *AppContext) {
 // 支持 "host:port" 和 ":port" 格式
 func parseListenAddr(listenAddr string) (host string, port int, err error) {
 	if listenAddr == "" {
-		return "", 0, fmt.Errorf("监听地址不能为空")
+		return "", 0, types.NewDaemonListenAddrEmptyError()
 	}
 
 	h, p, err := net.SplitHostPort(listenAddr)
 	if err != nil {
-		return "", 0, fmt.Errorf("解析地址失败: %w", err)
+		return "", 0, types.NewDaemonSplitHostPortError(listenAddr, err)
 	}
 
 	if h == "" {
@@ -545,8 +574,78 @@ func parsePort(portStr string) (int, error) {
 	var portInt int
 	_, err = fmt.Sscanf(portStr, "%d", &portInt)
 	if err != nil || portInt <= 0 || portInt > 65535 {
-		return 0, fmt.Errorf("无效的端口号: %s", portStr)
+		return 0, types.NewDaemonInvalidPortError(portStr)
 	}
 
 	return portInt, nil
+}
+
+// ========================================
+// PR-037: 三级配置结构辅助函数
+// ========================================
+
+// selectedNodeInfo 从三级配置结构中获取选定的节点信息
+// 返回: nodeID, nodeAddrTCP, error
+func selectedNodeInfo(cfg *config.Config, hostID string, nodeIDOverride string) (string, string, error) {
+	if cfg == nil {
+		return "", "", types.NewDaemonConfigNilError()
+	}
+
+	// P0-1 修复：深度复制配置，避免并发读写导致的竞态条件
+	// 如果配置在运行时被并发修改（例如配置热更新），直接访问会导致数据竞态
+	hosts := make([]config.HostConfig, len(cfg.Cluster.Hosts))
+	for i := range cfg.Cluster.Hosts {
+		// 复制 Host
+		hosts[i] = cfg.Cluster.Hosts[i]
+		// 复制 Host 下的 Nodes 切片
+		if len(cfg.Cluster.Hosts[i].Nodes) > 0 {
+			hosts[i].Nodes = make([]config.NodeConfig, len(cfg.Cluster.Hosts[i].Nodes))
+			copy(hosts[i].Nodes, cfg.Cluster.Hosts[i].Nodes)
+		}
+	}
+
+	// P1-1: 多 Host 配置下应该要求明确指定 host-id
+	if len(hosts) > 1 && hostID == "" {
+		return "", "", types.NewDaemonMultipleHostsError(len(hosts))
+	}
+
+	// 确定使用哪个 Host
+	var selectedHost *config.HostConfig
+	if hostID != "" {
+		for i := range hosts {
+			if hosts[i].HostID == hostID {
+				selectedHost = &hosts[i]
+				break
+			}
+		}
+		if selectedHost == nil {
+			return "", "", types.NewDaemonHostIDNotFoundError(hostID)
+		}
+	} else {
+		if len(hosts) == 0 {
+			return "", "", types.NewDaemonNoHostsError()
+		}
+		selectedHost = &hosts[0]
+	}
+
+	// 确定使用哪个 Node
+	var selectedNode *config.NodeConfig
+	if nodeIDOverride != "" {
+		for i := range selectedHost.Nodes {
+			if selectedHost.Nodes[i].NodeID == nodeIDOverride {
+				selectedNode = &selectedHost.Nodes[i]
+				break
+			}
+		}
+		if selectedNode == nil {
+			return "", "", types.NewDaemonNodeIDNotFoundError(selectedHost.HostID, nodeIDOverride)
+		}
+	} else {
+		if len(selectedHost.Nodes) == 0 {
+			return "", "", types.NewDaemonNoNodesError(selectedHost.HostID)
+		}
+		selectedNode = &selectedHost.Nodes[0]
+	}
+
+	return selectedNode.NodeID, selectedNode.NodeAddrTCP, nil
 }

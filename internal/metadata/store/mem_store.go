@@ -706,7 +706,7 @@ func (m *MemoryMVStore) Stats() (*Stats, error) {
 func (m *MemoryMVStore) NewIterator() Iterator {
 	// 获取所有 key
 	keys := make([]string, 0)
-	m.data.Range(func(key, value interface{}) bool {
+	m.data.Range(func(key, value any) bool {
 		keys = append(keys, key.(string))
 		return true
 	})

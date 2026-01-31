@@ -6,6 +6,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,7 +26,7 @@ import (
 //   - string: "/ip4/127.0.0.1/tcp/7946,/ip4/127.0.0.1/tcp/7947"
 //
 // 返回规范化的地址列表（去重、去空）
-func ParseSeedNodes(config interface{}) ([]string, error) {
+func ParseSeedNodes(config any) ([]string, error) {
 	var nodes []string
 
 	switch v := config.(type) {
@@ -33,8 +34,8 @@ func ParseSeedNodes(config interface{}) ([]string, error) {
 		nodes = v
 	case string:
 		nodes = splitSeedNodesString(v)
-	case []interface{}:
-		// YAML 解析可能返回 []interface{}
+	case []any:
+		// YAML 解析可能返回 []any
 		nodes = make([]string, 0, len(v))
 		for _, item := range v {
 			if str, ok := item.(string); ok {
@@ -342,11 +343,19 @@ func (w *SeedNodesWatcher) watchLoop() {
 
 			logging.Debugf("[SeedNodesWatcher] 检测到配置文件变化: %s (操作: %s)", event.Name, event.Op)
 
-			// 防抖：重置定时器
+			// P1-2 修复：防抖定时器重置，并确保定时器在执行后被清理
 			if debounceTimer != nil {
 				debounceTimer.Stop()
 			}
 			debounceTimer = time.AfterFunc(debounceDelay, func() {
+				// P1-2 修复：确保定时器在执行后被清理
+				defer func() {
+					if debounceTimer != nil {
+						debounceTimer.Stop()
+						debounceTimer = nil
+					}
+				}()
+
 				if err := w.reload(); err != nil {
 					logging.Warnf("[SeedNodesWatcher] 重新加载配置失败: %v", err)
 				}
@@ -370,10 +379,11 @@ func (w *SeedNodesWatcher) watchLoop() {
 
 // reload 重新加载配置
 //
+// PR-037: 适配三级配置结构（Cluster → Host → Node）
 // 流程：
 //  1. 读取配置文件
 //  2. 解析 YAML
-//  3. 提取 SeedNodes 字段
+//  3. 提取所有 Host 的 seed_node 字段（PR-037: 从 hosts 数组中提取）
 //  4. 验证地址格式
 //  5. 更新内存中的配置
 //  6. 触发回调
@@ -389,14 +399,21 @@ func (w *SeedNodesWatcher) reload() error {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
 
-	// 解析种子节点
-	nodes, err := ParseSeedNodes(cfg.Cluster.SeedNodes)
+	// PR-037: 从三级配置结构中提取所有 Host 的 seed_node
+	// 注意：这里使用简单的循环提取，不需要调用 extractSeedNodesFromConfig
+	// 因为后续的 ParseSeedNodes 会进行去重和规范化
+	seedNodeList := make([]string, 0, len(cfg.Cluster.Hosts))
+	for _, host := range cfg.Cluster.Hosts {
+		if host.SeedNode != "" {
+			seedNodeList = append(seedNodeList, host.SeedNode)
+		}
+	}
+
+	// 解析种子节点（包含去重和规范化）
+	nodes, err := ParseSeedNodes(seedNodeList)
 	if err != nil {
 		return fmt.Errorf("解析种子节点失败: %w", err)
 	}
-
-	// 规范化（去重、去空）
-	nodes = NormalizeSeedNodes(nodes)
 
 	// 更新内存配置
 	w.mu.Lock()
@@ -410,8 +427,38 @@ func (w *SeedNodesWatcher) reload() error {
 
 		// 触发回调
 		if w.callback != nil {
-			// 在独立协程中调用回调，避免阻塞监控循环
-			go w.callback(nodes)
+			// P0-2 修复：添加超时控制和 panic 恢复机制，避免 goroutine 泄漏
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logging.Errorf("[SeedNodesWatcher] 回调 panic: %v", r)
+					}
+				}()
+
+				// 设置超时上下文（30 秒超时）
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
+				// 使用 channel 实现超时控制
+				done := make(chan struct{})
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							logging.Errorf("[SeedNodesWatcher] 回调内部 panic: %v", r)
+						}
+						close(done)
+					}()
+					w.callback(nodes)
+				}()
+
+				select {
+				case <-done:
+					// 回调成功完成
+					logging.Debugf("[SeedNodesWatcher] 回调执行成功")
+				case <-ctx.Done():
+					logging.Errorf("[SeedNodesWatcher] 回调超时（30秒）")
+				}
+			}()
 		}
 	}
 

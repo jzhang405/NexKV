@@ -73,7 +73,7 @@ func NewSnapshotFileManager(snapshotDir string, compression types.CompressionTyp
 // - data: MVStore 数据（map[string][]byte）
 //
 // 返回 SnapshotInfo 和错误信息
-func (m *SnapshotFileManager) CreateSnapshot(metadata map[string]interface{}, data map[string][]byte) (*SnapshotInfo, error) {
+func (m *SnapshotFileManager) CreateSnapshot(metadata map[string]any, data map[string][]byte) (*SnapshotInfo, error) {
 	// 1. 生成序列号
 	timestamp := time.Now().Unix()
 	sequence := m.getNextSequence(timestamp)
@@ -146,7 +146,7 @@ func (m *SnapshotFileManager) CreateSnapshot(metadata map[string]interface{}, da
 // - fileName: Snapshot 文件名（如 snapshot-1735689600-0001.snap）
 //
 // 返回元数据、数据和错误信息
-func (m *SnapshotFileManager) LoadSnapshot(fileName string) (map[string]interface{}, map[string][]byte, error) {
+func (m *SnapshotFileManager) LoadSnapshot(fileName string) (map[string]any, map[string][]byte, error) {
 	filePath := filepath.Join(m.snapshotDir, fileName)
 
 	// 1. 创建 Snapshot 读取器
@@ -331,7 +331,7 @@ func (m *SnapshotFileManager) CleanupOldSnapshots(keep int) ([]string, error) {
 //
 // 返回 SnapshotInfo 和错误信息
 func (m *SnapshotFileManager) CreateSnapshotWithVersion(
-	metadata map[string]interface{},
+	metadata map[string]any,
 	data map[string][]byte,
 	version int,
 ) (*SnapshotInfo, error) {
@@ -542,7 +542,7 @@ func (m *SnapshotFileManager) Create(store MVStore) error {
 	}
 
 	// 2. 准备元数据
-	metadata := map[string]interface{}{
+	metadata := map[string]any{
 		"version":     1,
 		"entry_count": 0, // JSON 解析后无法准确统计条目数
 		"created_at":  time.Now().Format(time.RFC3339),

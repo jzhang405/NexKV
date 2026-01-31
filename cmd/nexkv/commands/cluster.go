@@ -467,7 +467,7 @@ func formatStatusAsTable(resp *transport.ClusterStatusReplyMessage, quietMode bo
 }
 
 // formatAsJSON 格式化为 JSON
-func formatAsJSON(data interface{}) error {
+func formatAsJSON(data any) error {
 	jsonData, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("JSON 序列化失败: %w", err)
@@ -477,7 +477,7 @@ func formatAsJSON(data interface{}) error {
 }
 
 // formatAsYAML 格式化为 YAML
-func formatAsYAML(data interface{}) error {
+func formatAsYAML(data any) error {
 	// TODO: 实现 YAML 格式化
 	return fmt.Errorf("YAML 格式暂未实现")
 }

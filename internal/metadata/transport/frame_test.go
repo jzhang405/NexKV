@@ -130,7 +130,7 @@ func TestDecodeFragmentExt_InvalidData(t *testing.T) {
 			name: "类型不匹配（字符串而非整数）",
 			createField: func() *ExtField {
 				// 构造类型错误的数据
-				data := map[string]interface{}{
+				data := map[string]any{
 					"idx": "not-a-number", // 字符串而非 uint16
 					"tot": uint16(3),
 				}

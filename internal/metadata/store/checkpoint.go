@@ -72,7 +72,7 @@ type Checkpoint struct {
 	WalInfo *WalInfoInCheckpoint `json:"wal_info"`
 
 	// Metadata 扩展元数据（KV 对）
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // SnapshotInfoInCheckpoint Snapshot 文件信息
@@ -140,7 +140,7 @@ func (m *CheckpointManager) CreateCheckpoint(
 	checkpointVersion int64,
 	snapshotInfo *SnapshotInfoInCheckpoint,
 	walInfo *WalInfoInCheckpoint,
-	metadata map[string]interface{},
+	metadata map[string]any,
 ) (*Checkpoint, error) {
 	// 1. 构建 Checkpoint 结构
 	checkpoint := &Checkpoint{
@@ -201,7 +201,7 @@ func (m *CheckpointManager) CreateCheckpointWithVersion(
 	checkpointVersion int64,
 	snapshotInfo *SnapshotInfoInCheckpoint,
 	walInfo *WalInfoInCheckpoint,
-	metadata map[string]interface{},
+	metadata map[string]any,
 ) (*Checkpoint, error) {
 	// 1. 构建 Checkpoint 结构
 	checkpoint := &Checkpoint{

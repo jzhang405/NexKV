@@ -95,8 +95,8 @@ func (r *SnapshotReader) readAndValidateHeader() error {
 
 // ReadMetadata 读取并解析元数据段
 //
-// 返回元数据（map[string]interface{}）和错误信息
-func (r *SnapshotReader) ReadMetadata() (map[string]interface{}, error) {
+// 返回元数据（map[string]any）和错误信息
+func (r *SnapshotReader) ReadMetadata() (map[string]any, error) {
 	// 1. 定位到元数据段起始位置（文件头之后）
 	if _, err := r.file.Seek(int64(SnapshotHeaderSize), io.SeekStart); err != nil {
 		return nil, fmt.Errorf("定位元数据段失败: %w", err)
@@ -115,7 +115,7 @@ func (r *SnapshotReader) ReadMetadata() (map[string]interface{}, error) {
 	}
 
 	// 4. JSON 反序列化元数据
-	var metadata map[string]interface{}
+	var metadata map[string]any
 	if err := json.Unmarshal(metadataData, &metadata); err != nil {
 		return nil, fmt.Errorf("反序列化元数据失败: %w", err)
 	}

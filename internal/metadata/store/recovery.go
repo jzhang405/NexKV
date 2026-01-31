@@ -216,7 +216,7 @@ func (r *RecoveryManager) CreateCheckpoint(
 	logging.Infof("预分配序列号: version=%d", nextVersion)
 
 	// 2. 构建 Snapshot 元数据
-	metadata := map[string]interface{}{
+	metadata := map[string]any{
 		"version":     nextVersion,
 		"entry_count": len(data),
 		"created_at":  "2026-01-19T00:00:00Z", // TODO: 使用实际时间

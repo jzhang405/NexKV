@@ -63,7 +63,7 @@ func TestCreateCheckpoint(t *testing.T) {
 		WalStartOffset: 0,
 	}
 
-	metadata := map[string]interface{}{
+	metadata := map[string]any{
 		"version":     1,
 		"entry_count": 100,
 	}
@@ -279,7 +279,7 @@ func TestCheckpointJSONSerialization(t *testing.T) {
 			WalStartFile:   "wal-0001.bin",
 			WalStartOffset: 0,
 		},
-		Metadata: map[string]interface{}{
+		Metadata: map[string]any{
 			"version":     1,
 			"entry_count": 100,
 		},
@@ -305,7 +305,7 @@ func TestCheckpointJSONSerialization(t *testing.T) {
 		require.NoError(t, err)
 
 		// 验证是有效的 JSON
-		var jsonMap map[string]interface{}
+		var jsonMap map[string]any
 		err = json.Unmarshal(data, &jsonMap)
 		require.NoError(t, err)
 

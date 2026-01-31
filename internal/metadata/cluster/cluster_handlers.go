@@ -47,7 +47,7 @@ func (h *TreeCoordinatorRPCHandler) SetCoordinator(coordinator *TreeCoordinator)
 //   - ReparentChild: 重新建立父子关系
 func (h *TreeCoordinatorRPCHandler) HandleRequest(ctx context.Context, req types.Message) (types.Message, error) {
 	if h.coordinator == nil {
-		return nil, fmt.Errorf("coordinator not initialized")
+		return nil, types.NewTreeCoordinatorNotInitializedError()
 	}
 
 	switch msg := req.(type) {
@@ -76,7 +76,7 @@ func (h *TreeCoordinatorRPCHandler) HandleRequest(ctx context.Context, req types
 		return h.handleNodeSync(ctx, msg)
 
 	default:
-		return nil, fmt.Errorf("unsupported message type: %T", req)
+		return nil, types.NewTreeCoordinatorUnsupportedMessageTypeError(fmt.Sprintf("%T", req))
 	}
 }
 
@@ -96,7 +96,7 @@ func (h *TreeCoordinatorRPCHandler) handleNodeJoin(ctx context.Context, msg *tra
 
 	// 将新节点添加为子节点
 	if err := h.coordinator.AddChild(msg.NodeID); err != nil {
-		return nil, fmt.Errorf("failed to add child: %w", err)
+		return nil, types.NewTreeCoordinatorFailedToAddChildError(err)
 	}
 
 	// 返回同步消息作为确认
@@ -121,7 +121,7 @@ func (h *TreeCoordinatorRPCHandler) handleNodeLeave(ctx context.Context, msg *tr
 
 	// 从子节点列表中移除
 	if err := h.coordinator.RemoveChild(msg.NodeID); err != nil {
-		return nil, fmt.Errorf("failed to remove child: %w", err)
+		return nil, types.NewTreeCoordinatorFailedToRemoveChildError(err)
 	}
 
 	// 返回同步消息作为确认

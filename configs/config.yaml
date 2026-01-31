@@ -1,42 +1,170 @@
-# NexKV 集群配置示例（包含种子节点配置）
+# NexKV 集群配置（三级结构：Cluster → Host → Node）
+#
+# PR-037: 三级配置重构
+# - Cluster: 集群级别配置（名称、基础目录）
+# - Host: 主机级别配置（每个物理机/容器一个 Host）
+# - Node: 节点级别配置（角色由系统动态分配）
+#
+# 部署模式：15 个 Host，每个 Host 1 个 Node（完全分布式部署）
 
 cluster:
   name: "nexkv-cluster"
-  node_id: "node-1"
-  # 节点地址使用 IPFS multiaddr 格式（PR-036）
-  node_addr: "/ip4/127.0.0.1/tcp/9211"
+  # 基础目录（可被 NEXKV_BASE_DIR 环境变量覆盖）
+  # 默认探索顺序：~/.nexkv/data > ~/var/tmp/nexkv > /var/tmp/nexkv
+  base_dir: "~/.nexkv/data"
 
-  # 种子节点配置（可选）
-  # 格式 1: YAML 数组
-  seed_nodes:
-    - "/ip4/127.0.0.1/tcp/9211"
+  # Host 级别配置（15 个 Host，每个 1 个 Node）
+  hosts:
+    # Host-1
+    - host_id: "host-1"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"
+      nodes:
+        - node_id: "node-1"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9211"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9212"
 
+    # Host-2
+    - host_id: "host-2"
+      seed_node: "/ip4/127.0.0.1/tcp/9213"
+      nodes:
+        - node_id: "node-2"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9213"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9214"
+
+    # Host-3
+    - host_id: "host-3"
+      seed_node: "/ip4/127.0.0.1/tcp/9215"
+      nodes:
+        - node_id: "node-3"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9215"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9216"
+
+    # Host-4
+    - host_id: "host-4"
+      seed_node: "/ip4/127.0.0.1/tcp/9217"
+      nodes:
+        - node_id: "node-4"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9217"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9218"
+
+    # Host-5
+    - host_id: "host-5"
+      seed_node: "/ip4/127.0.0.1/tcp/9219"
+      nodes:
+        - node_id: "node-5"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9219"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9220"
+
+    # Host-6
+    - host_id: "host-6"
+      seed_node: "/ip4/127.0.0.1/tcp/9221"
+      nodes:
+        - node_id: "node-6"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9221"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9222"
+
+    # Host-7
+    - host_id: "host-7"
+      seed_node: "/ip4/127.0.0.1/tcp/9223"
+      nodes:
+        - node_id: "node-7"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9223"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9224"
+
+    # Host-8
+    - host_id: "host-8"
+      seed_node: "/ip4/127.0.0.1/tcp/9225"
+      nodes:
+        - node_id: "node-8"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9225"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9226"
+
+    # Host-9
+    - host_id: "host-9"
+      seed_node: "/ip4/127.0.0.1/tcp/9227"
+      nodes:
+        - node_id: "node-9"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9227"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9228"
+
+    # Host-10
+    - host_id: "host-10"
+      seed_node: "/ip4/127.0.0.1/tcp/9229"
+      nodes:
+        - node_id: "node-10"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9229"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9230"
+
+    # Host-11
+    - host_id: "host-11"
+      seed_node: "/ip4/127.0.0.1/tcp/9231"
+      nodes:
+        - node_id: "node-11"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9231"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9232"
+
+    # Host-12
+    - host_id: "host-12"
+      seed_node: "/ip4/127.0.0.1/tcp/9233"
+      nodes:
+        - node_id: "node-12"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9233"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9234"
+
+    # Host-13
+    - host_id: "host-13"
+      seed_node: "/ip4/127.0.0.1/tcp/9235"
+      nodes:
+        - node_id: "node-13"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9235"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9236"
+
+    # Host-14
+    - host_id: "host-14"
+      seed_node: "/ip4/127.0.0.1/tcp/9237"
+      nodes:
+        - node_id: "node-14"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9237"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9238"
+
+    # Host-15
+    - host_id: "host-15"
+      seed_node: "/ip4/127.0.0.1/tcp/9239"
+      nodes:
+        - node_id: "node-15"
+          node_addr_tcp: "/ip4/127.0.0.1/tcp/9239"
+          node_addr_udp: "/ip4/127.0.0.1/udp/9240"
+
+# 元数据层配置
 metadata:
-  data_dir: "./data/metadata"
+  # 注意：data_dir 现在由 {base_dir}/{host_id}/metadata 自动管理
+  # 此处仅配置行为参数
   gossip_interval: "10s"
   quorum_timeout: "30s"
   change_log_size: 1000
 
+# 存储层配置
 storage:
-  shard_data_dir: "./data/shards"
-  wal_dir: "./data/wal"
-  snapshot_dir: "./data/snapshots"
+  # 注意：目录路径现在由 {base_dir}/{host_id}/{shards|wal|snapshots} 自动管理
+  # 此处仅配置行为参数
   flush_interval: "5s"
 
+# 网络层配置
 network:
-  listen_addr: "0.0.0.0:9211"
   transport_type: "tcp"
   message_pack_type: "msgpack"
-  max_message_size: 10485760 # 10MB
+  max_message_size: 10485760  # 10MB
   connect_timeout: "10s"
 
+# 日志配置
 logging:
   level: "info"
   format: "json"
   output: "stdout"
   file: ""
 
+# 时钟服务配置
 clock:
   hlc:
-    max_drift: 100 # 100ms
+    max_drift: 100  # 100ms
     sync_interval: "10s"

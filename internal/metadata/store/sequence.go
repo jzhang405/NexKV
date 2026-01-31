@@ -302,7 +302,7 @@ func PersistCheckpointVersion(checkpointDir string, version uint64, snapshotFile
 			WalStartFile:   "",
 			WalStartOffset: 0,
 		},
-		Metadata: map[string]interface{}{
+		Metadata: map[string]any{
 			"version": version,
 		},
 	}

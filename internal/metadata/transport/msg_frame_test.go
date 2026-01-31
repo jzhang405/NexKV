@@ -693,7 +693,7 @@ func TestForwardMessage_DeepCopyPreventsDataRace(t *testing.T) {
 // TestRegisterDecoder 测试解码器注册
 func TestRegisterDecoder(t *testing.T) {
 	// 创建一个自定义解码器
-	customDecoder := func(tlv TLV) (interface{}, error) {
+	customDecoder := func(tlv TLV) (any, error) {
 		return "custom_value", nil
 	}
 

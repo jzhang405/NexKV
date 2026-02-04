@@ -78,13 +78,40 @@
   - ✅ **先验证基本功能**：daemon 启动、CLI 通信、node 管理
   - ⏳ **MVStore 后续完成**：待基本功能验证后再添加持久化
 
-#### 4.3 测试策略与预期输出
+#### 4.3 构建流程
+
+**步骤 1：创建 bin 目录**
+```bash
+mkdir -p bin
+```
+
+**步骤 2：构建 Daemon**
+```bash
+go build -o bin/nexkvd ./cmd/nexkvd
+```
+
+**步骤 3：构建 CLI**
+```bash
+go build -o bin/nexkv ./cmd/nexkv
+```
+
+**构建验证**：
+```bash
+ls -lh bin/
+# 预期输出：
+# -rwxr-xr-x  1 user  staff   1.2M Feb  4 10:00 nexkv
+# -rwxr-xr-x  1 user  staff   2.5M Feb  4 10:00 nexkvd
+```
+
+---
+
+#### 4.4 测试策略与预期输出
 
 ##### 测试 1：Daemon 启动
 
 **命令**：
 ```bash
-./nexkvd --config configs/config.yaml --host-id host-1 --node-id node-1 --mode dev
+./bin/nexkvd --config configs/config.yaml --host-id host-1 --node-id node-1 --mode dev
 ```
 
 **预期输出**：
@@ -152,7 +179,7 @@
 
 **命令**：
 ```bash
-./nexkv node list
+./bin/nexkv node list
 ```
 
 **预期输出**（启动后第一次查询）：
@@ -176,7 +203,7 @@ Total: 1 nodes
 
 **命令**：
 ```bash
-./nexkv node status node-1
+./bin/nexkv node status node-1
 ```
 
 **预期输出**：
@@ -197,7 +224,7 @@ Node: node-1
 
 **命令**：
 ```bash
-./nexkv cluster status
+./bin/nexkv cluster status
 ```
 
 **预期输出**：
@@ -217,7 +244,7 @@ Cluster: nexkv-cluster
 
 **命令**：
 ```bash
-./nexkv cluster topology --format tree
+./bin/nexkv cluster topology --format tree
 ```
 
 **预期输出**：
@@ -233,10 +260,10 @@ nexkv-cluster (1 node)
 **命令**：
 ```bash
 # 在另一个终端启动第二个 daemon
-./nexkvd --config configs/config.yaml --host-id host-2 --node-id node-2 --mode dev
+./bin/nexkvd --config configs/config.yaml --host-id host-2 --node-id node-2 --mode dev
 
 # 在第一个终端执行
-./nexkv node add node-2 --addr /ip4/127.0.0.1/tcp/9213
+./bin/nexkv node add node-2 --addr /ip4/127.0.0.1/tcp/9213
 ```
 
 **预期输出**：
@@ -270,7 +297,7 @@ Total: 2 nodes
 
 **命令**：
 ```bash
-./nexkv node ping node-2
+./bin/nexkv node ping node-2
 ```
 
 **预期输出**：
@@ -287,7 +314,7 @@ PING node-2 (127.0.0.1:9213)
 
 **命令**：
 ```bash
-./nexkv cluster health
+./bin/nexkv cluster health
 ```
 
 **预期输出**：

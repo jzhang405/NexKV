@@ -80,20 +80,16 @@
 
 #### 4.3 构建流程
 
-**步骤 1：创建 bin 目录**
+**步骤 1：使用 Makefile 构建**
 ```bash
-mkdir -p bin
+make build
 ```
 
-**步骤 2：构建 Daemon**
-```bash
-go build -o bin/nexkvd ./cmd/nexkvd
-```
-
-**步骤 3：构建 CLI**
-```bash
-go build -o bin/nexkv ./cmd/nexkv
-```
+**Makefile 会自动**：
+1. 创建 `bin/` 目录
+2. 构建 `bin/nexkv`（CLI 工具）
+3. 构建 `bin/nexkvd`（Daemon 守护进程）
+4. 注入版本信息（VERSION、GIT_COMMIT、BUILD_TIME）
 
 **构建验证**：
 ```bash
@@ -111,7 +107,7 @@ ls -lh bin/
 
 **命令**：
 ```bash
-./bin/nexkvd --config configs/config.yaml --host-id host-1 --node-id node-1 --mode dev
+./bin/nexkvd --config configs/config.yaml --host-id host-1 --node-id node-1 --env dev
 ```
 
 **预期输出**：
@@ -260,7 +256,7 @@ nexkv-cluster (1 node)
 **命令**：
 ```bash
 # 在另一个终端启动第二个 daemon
-./bin/nexkvd --config configs/config.yaml --host-id host-2 --node-id node-2 --mode dev
+./bin/nexkvd --config configs/config.yaml --host-id host-2 --node-id node-2 --env dev
 
 # 在第一个终端执行
 ./bin/nexkv node add node-2 --addr /ip4/127.0.0.1/tcp/9213

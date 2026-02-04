@@ -108,7 +108,7 @@ run: build
 ## run-daemon: 运行 nexkvd 守护进程
 run-daemon: build
 	@echo "运行 $(DAEMON_NAME)..."
-	./bin/$(DAEMON_NAME) --config configs/config.yaml --host-id host-1 --node-id node-1 --env dev
+	./bin/$(DAEMON_NAME) --config configs/config.yaml --env dev
 
 ## docker-build: 构建 Docker 镜像
 docker-build:

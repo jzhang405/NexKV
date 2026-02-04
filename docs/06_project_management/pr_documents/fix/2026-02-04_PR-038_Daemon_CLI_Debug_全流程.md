@@ -64,14 +64,257 @@
 
 ### 4. 修复方案（怎么修）
 
-#### 4.1 修复策略
+#### 4.1 测试环境配置
+- **配置文件**：`configs/config.yaml`
+- **运行模式**：dev（开发模式，详细日志）
+- **测试节点**：host-1 / node-1
+- **监听地址**：127.0.0.1:9211 (TCP), 127.0.0.1:9212 (UDP)
+
+#### 4.2 修复策略
 - **修复方式**：□ 直接修复 ☑ 重构 □ 其他
 - **影响范围**：待确定（根据调试结果）
-- **测试策略**：
-  1. 启动 Daemon 并验证日志输出
-  2. 使用 CLI 执行所有命令并验证响应
-  3. 检查端口绑定和网络通信
-  4. 验证 RPC 消息序列化和反序列化
+- **简化策略**（根据架构师评审意见）：
+  - ✅ **去掉 MVStore**：node 管理只保留在 memory 中
+  - ✅ **先验证基本功能**：daemon 启动、CLI 通信、node 管理
+  - ⏳ **MVStore 后续完成**：待基本功能验证后再添加持久化
+
+#### 4.3 测试策略与预期输出
+
+##### 测试 1：Daemon 启动
+
+**命令**：
+```bash
+./nexkvd --config configs/config.yaml --host-id host-1 --node-id node-1 --mode dev
+```
+
+**预期输出**：
+```
+[INFO] NexKV Daemon v0.1.0 starting...
+[INFO] Configuration loaded from: configs/config.yaml
+[INFO]
+[INFO] ===== Configuration Summary =====
+[INFO] Cluster: nexkv-cluster
+[INFO) Base Directory: /Users/zhangcz/.nexkv
+[INFO] Host ID: host-1
+[INFO] Node ID: node-1
+[INFO]
+[INFO] ===== Step 1/7: Creating Transports =====
+[INFO] TCP Transport: binding to /ip4/127.0.0.1/tcp/9211
+[INFO] UDP Transport: binding to /ip4/127.0.0.1/udp/9212
+[INFO] ✓ Transports created successfully
+[INFO]
+[INFO] ===== Step 2/7: Creating RPC Client =====
+[INFO] RPC Client created
+[INFO] ✓ RPC Client created successfully
+[INFO]
+[INFO] ===== Step 3/7: Creating RPC Server =====
+[INFO] Registering RPC handlers...
+[INFO]   - NodeJoinHandler
+[INFO]   - NodeLeaveHandler
+[INFO]   - ClusterStatusHandler
+[INFO]   - NodePingHandler
+[INFO] ✓ RPC Server created successfully
+[INFO]
+[INFO] ===== Step 4/7: Starting RPC Server =====
+[INFO] RPC Server listening on 127.0.0.1:9211
+[INFO] ✓ RPC Server started successfully
+[INFO]
+[INFO] ===== Step 5/7: Starting RPC Client =====
+[INFO] RPC Client connecting to seed node: /ip4/127.0.0.1/tcp/9211
+[INFO] ✓ RPC Client started successfully
+[INFO]
+[INFO] ===== Step 6/7: Creating TreeCoordinator =====
+[INFO] TreeCoordinator created (mode: memory)
+[INFO] ✓ TreeCoordinator created successfully
+[INFO]
+[INFO] ===== Step 7/7: Starting TreeCoordinator =====
+[INFO] Starting as ROOT node
+[INFO] Node registered: node-1 (role: root)
+[INFO] ✓ TreeCoordinator started successfully
+[INFO]
+[INFO] ===== Daemon Started Successfully =====
+[INFO] Listening on: 127.0.0.1:9211 (TCP)
+[INFO] Node ID: node-1
+[INFO] Role: ROOT
+[INFO] Mode: dev
+[INFO]
+[INFO] Press Ctrl+C to stop
+```
+
+**可能的问题**：
+- ❌ 端口被占用：`bind: address already in use`
+- ❌ 配置文件错误：`failed to load configuration`
+- ❌ RPC Server 启动失败：`failed to start RPC server`
+
+---
+
+##### 测试 2：CLI - node list（空节点列表）
+
+**命令**：
+```bash
+./nexkv node list
+```
+
+**预期输出**（启动后第一次查询）：
+```
+┌────────┬────────────────┬─────────────┬───────────┬────────────┐
+│ NodeID │ Address        │ Role        │ Status    │ Parent     │
+├────────┼────────────────┼─────────────┼───────────┼────────────┤
+│ node-1 │ 127.0.0.1:9211 │ ROOT        │ ALIVE     │ -          │
+└────────┴────────────────┴─────────────┴───────────┴────────────┘
+
+Total: 1 nodes
+```
+
+**可能的问题**：
+- ❌ RPC 连接失败：`failed to connect to daemon`
+- ❌ 响应超时：`request timeout`
+
+---
+
+##### 测试 3：CLI - node status
+
+**命令**：
+```bash
+./nexkv node status node-1
+```
+
+**预期输出**：
+```
+Node: node-1
+├─ Address: 127.0.0.1:9211
+├─ Role: ROOT
+├─ Status: ALIVE
+├─ Parent: (none)
+├─ Children: 0
+├─ Uptime: 5s
+└─ Version: 0.1.0
+```
+
+---
+
+##### 测试 4：CLI - cluster status
+
+**命令**：
+```bash
+./nexkv cluster status
+```
+
+**预期输出**：
+```
+Cluster: nexkv-cluster
+├─ Total Nodes: 1
+├─ Active Nodes: 1
+├─ Root Node: node-1
+├─ Tree Depth: 1
+├─ Tree Status: STABLE
+└─ Mode: dev (memory storage)
+```
+
+---
+
+##### 测试 5：CLI - cluster topology
+
+**命令**：
+```bash
+./nexkv cluster topology --format tree
+```
+
+**预期输出**：
+```
+nexkv-cluster (1 node)
+└─ node-1 [ROOT, ALIVE]
+```
+
+---
+
+##### 测试 6：CLI - node add（添加第二个节点）
+
+**命令**：
+```bash
+# 在另一个终端启动第二个 daemon
+./nexkvd --config configs/config.yaml --host-id host-2 --node-id node-2 --mode dev
+
+# 在第一个终端执行
+./nexkv node add node-2 --addr /ip4/127.0.0.1/tcp/9213
+```
+
+**预期输出**：
+```
+[INFO] Adding node: node-2
+[INFO] Sending NodeJoin request to daemon...
+✓ Node added successfully
+
+Node: node-2
+├─ Address: /ip4/127.0.0.1/tcp/9213
+├─ Role: CHILD
+├─ Parent: node-1
+└─ Status: JOINING
+```
+
+**node list 预期输出**（添加后）：
+```
+┌────────┬────────────────┬─────────────┬───────────┬────────────┐
+│ NodeID │ Address        │ Role        │ Status    │ Parent     │
+├────────┼────────────────┼─────────────┼───────────┼────────────┤
+│ node-1 │ 127.0.0.1:9211 │ ROOT        │ ALIVE     │ -          │
+│ node-2 │ 127.0.0.1:9213 │ CHILD       │ ALIVE     │ node-1     │
+└────────┴────────────────┴─────────────┴───────────┴────────────┘
+
+Total: 2 nodes
+```
+
+---
+
+##### 测试 7：CLI - node ping
+
+**命令**：
+```bash
+./nexkv node ping node-2
+```
+
+**预期输出**：
+```
+PING node-2 (127.0.0.1:9213)
+├─ RTT: 2.3ms
+├─ Status: ALIVE
+└─ Response: pong
+```
+
+---
+
+##### 测试 8：CLI - cluster health
+
+**命令**：
+```bash
+./nexkv cluster health
+```
+
+**预期输出**：
+```
+Cluster Health Check
+├─ Overall Status: HEALTHY
+├─ Total Nodes: 2
+├─ Healthy Nodes: 2
+├─ Unhealthy Nodes: 0
+├─ Tree Depth: 2
+└─ Recommendations: No issues detected
+```
+
+---
+
+#### 4.4 实际输出对比模板
+
+| 测试项 | 预期结果 | 实际结果 | 状态 | 备注 |
+|--------|---------|---------|------|------|
+| Daemon 启动 | 成功，7步初始化完成 | 待测试 | ⏳ | - |
+| node list | 显示 node-1 | 待测试 | ⏳ | - |
+| node status | 显示 node-1 详情 | 待测试 | ⏳ | - |
+| cluster status | 1节点，STABLE | 待测试 | ⏳ | - |
+| cluster topology | 树形结构 | 待测试 | ⏳ | - |
+| node add | 成功添加 node-2 | 待测试 | ⏳ | - |
+| node ping | RTT < 10ms | 待测试 | ⏳ | - |
+| cluster health | HEALTHY | 待测试 | ⏳ | - |
 
 #### 4.2 修复设计
 

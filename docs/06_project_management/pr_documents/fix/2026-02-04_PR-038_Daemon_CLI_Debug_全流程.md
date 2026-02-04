@@ -107,7 +107,7 @@ ls -lh bin/
 
 **命令**：
 ```bash
-./bin/nexkvd --config configs/config.yaml --env dev
+./bin/nexkvd --config configs/config.yaml --env dev/cluster
 ```
 
 **预期输出**：
@@ -256,7 +256,7 @@ nexkv-cluster (1 node)
 **命令**：
 ```bash
 # 在另一个终端启动第二个 daemon
-./bin/nexkvd --config configs/config.yaml --env dev
+./bin/nexkvd --config configs/config.yaml --env dev/cluster
 
 # 在第一个终端执行
 ./bin/nexkv node add node-2 --addr /ip4/127.0.0.1/tcp/9213

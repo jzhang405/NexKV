@@ -4,7 +4,6 @@
 package store
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -35,14 +34,14 @@ func NewRecoveryManager(checkpointDir, snapshotDir, walDir string) (*RecoveryMan
 	// 确保目录存在
 	for _, dir := range []string{checkpointDir, snapshotDir, walDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return nil, fmt.Errorf("创建目录失败: %s (%w)", dir, err)
+			return nil, types.NewStoreRecoveryCreateDirectoryFailedError(dir, err)
 		}
 	}
 
 	// 创建全局序列号生成器（从 Checkpoint 加载当前序列号）
 	seqGen, err := NewSequenceGenerator(checkpointDir)
 	if err != nil {
-		return nil, fmt.Errorf("创建序列号生成器失败: %w", err)
+		return nil, types.NewStoreRecoveryCreateSequenceGeneratorFailedError(err)
 	}
 
 	return &RecoveryManager{
@@ -68,13 +67,13 @@ func (r *RecoveryManager) Recover() (map[string][]byte, error) {
 	// 1. 创建 Checkpoint 管理器
 	checkpointMgr, err := NewCheckpointManager(r.checkpointDir)
 	if err != nil {
-		return nil, fmt.Errorf("创建 Checkpoint 管理器失败: %w", err)
+		return nil, types.NewStoreRecoveryCreateCheckpointManagerFailedError(err)
 	}
 
 	// 2. 加载最新的 Checkpoint
 	checkpoint, err := checkpointMgr.GetLatestCheckpoint()
 	if err != nil {
-		return nil, fmt.Errorf("加载最新 Checkpoint 失败: %w", err)
+		return nil, types.NewStoreRecoveryLoadLatestCheckpointFailedError(err)
 	}
 
 	if checkpoint == nil {
@@ -89,13 +88,13 @@ func (r *RecoveryManager) Recover() (map[string][]byte, error) {
 	// 3. 创建 Snapshot 管理器
 	snapshotMgr, err := NewSnapshotFileManager(r.snapshotDir, types.CompressionTypeNone)
 	if err != nil {
-		return nil, fmt.Errorf("创建 Snapshot 管理器失败: %w", err)
+		return nil, types.NewStoreRecoveryCreateSnapshotManagerFailedError(err)
 	}
 
 	// 4. 加载 Snapshot 指定的数据
 	_, snapshotData, err := snapshotMgr.LoadSnapshot(checkpoint.SnapshotInfo.SnapshotFile)
 	if err != nil {
-		return nil, fmt.Errorf("加载 Snapshot 失败: %w", err)
+		return nil, types.NewStoreRecoveryLoadSnapshotFailedError(err)
 	}
 
 	logging.Infof("加载 Snapshot 成功: 条目数=%d", len(snapshotData))
@@ -104,7 +103,7 @@ func (r *RecoveryManager) Recover() (map[string][]byte, error) {
 	if checkpoint.WalInfo != nil {
 		recoveredData, err := r.replayFromWAL(checkpoint, snapshotData)
 		if err != nil {
-			return nil, fmt.Errorf("重放 WAL 失败: %w", err)
+			return nil, types.NewStoreRecoveryReplayWALFailedError(err)
 		}
 		snapshotData = recoveredData
 	}
@@ -128,7 +127,7 @@ func (r *RecoveryManager) replayFromWAL(checkpoint *Checkpoint, baseData map[str
 	// 2. 打开 WAL
 	wal, err := NewMetadataWAL(walPath)
 	if err != nil {
-		return nil, fmt.Errorf("打开 WAL 失败: %w", err)
+		return nil, types.NewStoreRecoveryOpenWALFailedError(err)
 	}
 	defer func() {
 		if err := wal.Close(); err != nil {
@@ -147,7 +146,7 @@ func (r *RecoveryManager) replayFromWAL(checkpoint *Checkpoint, baseData map[str
 	// 4. 从 WAL 恢复所有日志
 	entries, err := wal.Recover()
 	if err != nil {
-		return nil, fmt.Errorf("恢复 WAL 日志失败: %w", err)
+		return nil, types.NewStoreRecoveryRecoverWALFailedError(err)
 	}
 
 	logging.Infof("从 WAL 恢复 %d 个日志条目", len(entries))
@@ -226,14 +225,14 @@ func (r *RecoveryManager) CreateCheckpoint(
 	snapshotMgr, err := NewSnapshotFileManager(r.snapshotDir, compression)
 	if err != nil {
 		r.seqGen.Rollback() // 回滚序列号
-		return nil, fmt.Errorf("创建 Snapshot 管理器失败: %w", err)
+		return nil, types.NewStoreRecoveryCreateSnapshotManagerFailedError(err)
 	}
 
 	// 4. 创建 Snapshot（使用全局序列号）
 	snapshotInfo, err := snapshotMgr.CreateSnapshotWithVersion(metadata, data, int(nextVersion))
 	if err != nil {
 		r.seqGen.Rollback() // 回滚序列号
-		return nil, fmt.Errorf("创建 Snapshot 失败: %w", err)
+		return nil, types.NewStoreRecoveryCreateSnapshotFailedError(err)
 	}
 
 	logging.Infof("Snapshot 创建成功: %s (sequence=%d)", snapshotInfo.FileName, nextVersion)
@@ -244,8 +243,7 @@ func (r *RecoveryManager) CreateCheckpoint(
 		snapshotPath := filepath.Join(r.snapshotDir, snapshotInfo.FileName)
 		_ = os.Remove(snapshotPath)
 		r.seqGen.Rollback() // 回滚序列号
-		return nil, fmt.Errorf("序列号不一致: 期望 %d, 实际 %d",
-			nextVersion, snapshotInfo.Sequence)
+		return nil, types.NewStoreRecoverySequenceMismatchError(nextVersion, uint64(snapshotInfo.Sequence))
 	}
 
 	// 6. 获取当前 WAL 文件信息
@@ -273,7 +271,7 @@ func (r *RecoveryManager) CreateCheckpoint(
 		snapshotPath := filepath.Join(r.snapshotDir, snapshotInfo.FileName)
 		_ = os.Remove(snapshotPath)
 		r.seqGen.Rollback() // 回滚序列号
-		return nil, fmt.Errorf("创建 Checkpoint 管理器失败: %w", err)
+		return nil, types.NewStoreRecoveryCreateCheckpointManagerFailedError(err)
 	}
 
 	// 9. 创建 Checkpoint（使用全局序列号）
@@ -288,7 +286,7 @@ func (r *RecoveryManager) CreateCheckpoint(
 		snapshotPath := filepath.Join(r.snapshotDir, snapshotInfo.FileName)
 		_ = os.Remove(snapshotPath)
 		r.seqGen.Rollback() // 回滚序列号
-		return nil, fmt.Errorf("创建 Checkpoint 失败: %w", err)
+		return nil, types.NewStoreRecoveryCreateCheckpointFailedError(err)
 	}
 
 	// 10. 验证 Checkpoint 中的序列号一致性
@@ -299,7 +297,7 @@ func (r *RecoveryManager) CreateCheckpoint(
 		_ = os.Remove(snapshotPath)
 		_ = os.Remove(checkpointPath)
 		r.seqGen.Rollback() // 回滚序列号
-		return nil, fmt.Errorf("Checkpoint 序列号验证失败: %w", err)
+		return nil, types.NewStoreRecoveryCheckpointValidationFailedError(err)
 	}
 
 	logging.Infof("Checkpoint 创建成功: 版本=%d, 文件=%s",
@@ -352,30 +350,30 @@ func (r *RecoveryManager) ValidateCheckpoint(checkpointFileName string) (bool, e
 	// 1. 创建 Checkpoint 管理器
 	checkpointMgr, err := NewCheckpointManager(r.checkpointDir)
 	if err != nil {
-		return false, fmt.Errorf("创建 Checkpoint 管理器失败: %w", err)
+		return false, types.NewStoreRecoveryCreateCheckpointManagerFailedError(err)
 	}
 
 	// 2. 加载 Checkpoint
 	checkpoint, err := checkpointMgr.LoadCheckpoint(checkpointFileName)
 	if err != nil {
-		return false, fmt.Errorf("加载 Checkpoint 失败: %w", err)
+		return false, types.NewStoreRecoveryLoadCheckpointFailedError(err)
 	}
 
 	// 3. 检查 Snapshot 文件是否存在
 	snapshotPath := filepath.Join(r.snapshotDir, checkpoint.SnapshotInfo.SnapshotFile)
 	if _, err := os.Stat(snapshotPath); os.IsNotExist(err) {
-		return false, fmt.Errorf("snapshot 文件不存在: %s", checkpoint.SnapshotInfo.SnapshotFile)
+		return false, types.NewStoreRecoverySnapshotFileNotFoundError(checkpoint.SnapshotInfo.SnapshotFile)
 	}
 
 	// 4. 验证 Snapshot 校验和
 	snapshotMgr, err := NewSnapshotFileManager(r.snapshotDir, types.CompressionTypeNone)
 	if err != nil {
-		return false, fmt.Errorf("创建 Snapshot 管理器失败: %w", err)
+		return false, types.NewStoreRecoveryCreateSnapshotManagerFailedError(err)
 	}
 
 	metadata, _, err := snapshotMgr.LoadSnapshot(checkpoint.SnapshotInfo.SnapshotFile)
 	if err != nil {
-		return false, fmt.Errorf("加载 Snapshot 失败: %w", err)
+		return false, types.NewStoreRecoveryLoadSnapshotFailedError(err)
 	}
 
 	// 5. 检查 WAL 文件是否存在（可选，仅警告）
@@ -401,13 +399,13 @@ func (r *RecoveryManager) ListCheckpoints() ([]*Checkpoint, error) {
 	// 1. 创建 Checkpoint 管理器
 	checkpointMgr, err := NewCheckpointManager(r.checkpointDir)
 	if err != nil {
-		return nil, fmt.Errorf("创建 Checkpoint 管理器失败: %w", err)
+		return nil, types.NewStoreRecoveryCreateCheckpointManagerFailedError(err)
 	}
 
 	// 2. 读取目录中的所有 Checkpoint 文件
 	entries, err := os.ReadDir(r.checkpointDir)
 	if err != nil {
-		return nil, fmt.Errorf("读取 Checkpoint 目录失败: %w", err)
+		return nil, types.NewStoreRecoveryReadCheckpointDirectoryFailedError(err)
 	}
 
 	var checkpoints []*Checkpoint

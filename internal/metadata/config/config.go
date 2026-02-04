@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"gopkg.in/yaml.v3"
 )
@@ -237,15 +238,18 @@ func ValidateConfig(cfg *Config) error {
 }
 
 // validateClusterConfigWrapper 验证集群配置（PR-037: 三级配置结构）
-// P1-4 修复：使用 early return 优化性能，减少不必要的验证
+// P1-4 修复：使用 early return 优化性能，添加详细的验证失败日志
 func validateClusterConfigWrapper(cfg *Config) error {
 	if cfg.Cluster.Name == "" {
+		logging.Warn("[ConfigValidation] 集群名称为空")
 		return types.NewConfigClusterNameEmptyError()
 	}
 	if cfg.Cluster.BaseDir == "" {
+		logging.Warn("[ConfigValidation] 基础目录为空")
 		return types.NewConfigBaseDirEmptyError()
 	}
 	if len(cfg.Cluster.Hosts) == 0 {
+		logging.Warn("[ConfigValidation] Hosts 配置为空")
 		return types.NewConfigHostsEmptyError()
 	}
 
@@ -253,12 +257,15 @@ func validateClusterConfigWrapper(cfg *Config) error {
 	for i, host := range cfg.Cluster.Hosts {
 		// Early return: 快速失败，避免继续验证无效配置
 		if host.HostID == "" {
+			logging.Warnf("[ConfigValidation] Host[%d] 的 HostID 为空", i)
 			return types.NewConfigHostIDEmptyError(i)
 		}
 		if host.SeedNode == "" {
+			logging.Warnf("[ConfigValidation] Host[%s] 的 SeedNode 为空", host.HostID)
 			return types.NewConfigSeedNodeEmptyError(i)
 		}
 		if len(host.Nodes) == 0 {
+			logging.Warnf("[ConfigValidation] Host[%s] 的 Nodes 配置为空", host.HostID)
 			return types.NewConfigNodesEmptyError(i)
 		}
 
@@ -266,23 +273,27 @@ func validateClusterConfigWrapper(cfg *Config) error {
 		for j, node := range host.Nodes {
 			// Early return: 快速失败
 			if node.NodeID == "" {
+				logging.Warnf("[ConfigValidation] Host[%s] Node[%d] 的 NodeID 为空", host.HostID, j)
 				return types.NewConfigNodeIDEmptyError(i, j)
 			}
 			if node.NodeAddrTCP == "" {
+				logging.Warnf("[ConfigValidation] Node[%s] 的 NodeAddrTCP 为空", node.NodeID)
 				return types.NewConfigNodeAddrTCPEmptyError(i, j)
 			}
 			if node.NodeAddrUDP == "" {
+				logging.Warnf("[ConfigValidation] Node[%s] 的 NodeAddrUDP 为空", node.NodeID)
 				return types.NewConfigNodeAddrUDPEmptyError(i, j)
 			}
 
 			// 验证 multiaddr 格式（使用 HasPrefix 进行快速检查）
-			// P1-4 优化：提前计算前缀检查结果
 			tcpValid := strings.HasPrefix(node.NodeAddrTCP, "/ip4/") || strings.HasPrefix(node.NodeAddrTCP, "/ip6/")
 			if !tcpValid {
+				logging.Warnf("[ConfigValidation] Node[%s] 的 NodeAddrTCP 格式无效: %s", node.NodeID, node.NodeAddrTCP)
 				return types.NewConfigNodeAddrTCPInvalidFormatError(i, j)
 			}
 			udpValid := strings.HasPrefix(node.NodeAddrUDP, "/ip4/") || strings.HasPrefix(node.NodeAddrUDP, "/ip6/")
 			if !udpValid {
+				logging.Warnf("[ConfigValidation] Node[%s] 的 NodeAddrUDP 格式无效: %s", node.NodeID, node.NodeAddrUDP)
 				return types.NewConfigNodeAddrUDPInvalidFormatError(i, j)
 			}
 		}

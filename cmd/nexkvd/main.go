@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/jzhang405/NexKV/internal/metadata/identity"
 	"github.com/jzhang405/NexKV/internal/metadata/transport"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
+	"github.com/multiformats/go-multiaddr"
 	"github.com/urfave/cli/v2"
 )
 
@@ -50,8 +52,12 @@ type AppContext struct {
 
 	// 核心组件
 	Coordinator  *cluster.TreeCoordinator
-	TCPTransport transport.Transport
+	TCPTransport transport.Transport // 主 Transport（Server Transport，向后兼容）
 	UDPTransport transport.Transport
+
+	// Client Transport（用于 RPC Client，与 Server Transport 分离）
+	ClientTCPTransport transport.Transport // 节点间通信专用（避免响应路由冲突）
+	ClientUDPTransport transport.Transport
 
 	// RPC 组件
 	RPCClient *transport.RPCClient // RPC 客户端（主动调用）
@@ -90,8 +96,8 @@ func main() {
 				EnvVars: []string{"NEXKV_CLUSTER"},
 			},
 			&cli.StringFlag{
-				Name:    "host-id",
-				Aliases: []string{"h"},
+				Name: "host-id",
+				// 移除短选项 "h"，避免与 --help 冲突
 				Usage:   "主机 ID（PR-037: 从三级配置结构中指定主机）",
 				EnvVars: []string{"NEXKV_HOST_ID"},
 			},
@@ -221,8 +227,22 @@ func NewAppContext(cfg *config.Config, env, configPath, hostID string) (*AppCont
 
 // Initialize 初始化所有组件（遵循 7 步流程）
 func (app *AppContext) Initialize(cfg *config.Config) error {
+	// PR-038 Fix: 使用节点特定的监听地址，而不是全局的 cfg.Network.ListenAddr
+	// 从三级配置结构中获取节点 ID 和监听地址（已转换为 "host:port" 格式）
+	configNodeID, nodeListenAddr, err := selectedNodeInfo(cfg, app.HostID, "")
+	var daemonNodeID string
+	var listenAddr string
+
+	if err != nil {
+		// P1-1 修复：降级处理，使用全局配置的地址
+		logging.Warnf("从配置获取节点信息失败: %v，使用全局网络配置", err)
+		listenAddr = cfg.Network.ListenAddr
+	} else {
+		listenAddr = nodeListenAddr
+	}
+
 	// 解析监听地址
-	host, port, err := parseListenAddr(cfg.Network.ListenAddr)
+	host, port, err := parseListenAddr(listenAddr)
 	if err != nil {
 		return types.NewDaemonParseListenAddrError(err)
 	}
@@ -232,6 +252,13 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	nodeID, err := identity.GenerateNodeIDFromPorts(0, port)
 	if err != nil {
 		return types.NewDaemonGenerateNodeIDError(err)
+	}
+
+	// 设置 daemonNodeID
+	if configNodeID != "" {
+		daemonNodeID = configNodeID
+	} else {
+		daemonNodeID = fmt.Sprintf("%d", nodeID)
 	}
 
 	// 创建消息序列号生成器（原子递增）
@@ -244,63 +271,107 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	}).Info("节点 ID 生成成功")
 
 	// =====================================
-	// 步骤 1: 创建 Transport 层（TCP + UDP）
+	// 步骤 1: 创建 Transport 层（Server + Client 分离）
 	// =====================================
 	logging.Info("步骤 1: 创建 Transport 层...")
 
-	// 创建 TCP 传输层（用于可靠消息）
-	tcpTransport, err := transport.NewTCPTransport(cfg.Network.ListenAddr)
+	// ===== Server Transport：用于 RPC Server，使用节点特定的监听地址 =====
+	logging.Infof("启动 TCP 传输层，监听地址: %s, NodeID: %d", listenAddr, nodeID)
+	serverTCPTransport, err := transport.NewTCPTransport(listenAddr)
 	if err != nil {
 		return types.NewDaemonCreateTCPTransportError(err)
 	}
 
-	// 创建 UDP 传输层（用于尽力型消息）
-	udpTransport, err := transport.NewUDPTransport(cfg.Network.ListenAddr)
+	serverUDPTransport, err := transport.NewUDPTransport(listenAddr)
 	if err != nil {
-		_ = tcpTransport.Stop()
+		_ = serverTCPTransport.Stop()
 		return types.NewDaemonCreateUDPTransportError(err)
 	}
 
-	// 启动 TCP 传输层
-	if err := tcpTransport.Start(&nodeID, msgSeqGen.Next, cfg.Network.ListenAddr); err != nil {
-		_ = tcpTransport.Stop()
-		_ = udpTransport.Stop()
+	// 启动 Server Transport
+	if err := serverTCPTransport.Start(&nodeID, msgSeqGen.Next, listenAddr); err != nil {
+		_ = serverTCPTransport.Stop()
+		_ = serverUDPTransport.Stop()
 		return types.NewDaemonStartTCPTransportError(err)
 	}
 
-	// 启动 UDP 传输层
-	if err := udpTransport.Start(&nodeID, msgSeqGen.Next, cfg.Network.ListenAddr); err != nil {
-		_ = tcpTransport.Stop()
-		_ = udpTransport.Stop()
+	if err := serverUDPTransport.Start(&nodeID, msgSeqGen.Next, listenAddr); err != nil {
+		_ = serverTCPTransport.Stop()
+		_ = serverUDPTransport.Stop()
 		return types.NewDaemonStartUDPTransportError(err)
 	}
 
-	app.TCPTransport = tcpTransport
-	app.UDPTransport = udpTransport
+	logging.Infof("TCP 传输层启动成功，监听地址: %s", listenAddr)
+	logging.Infof("UDP 传输层启动成功，监听地址: %s", listenAddr)
+
+	// ===== Client Transport：用于 RPC Client，随机端口用于节点间通信 =====
+	clientTCPTransport, err := transport.NewTCPTransport(":0") // 随机端口
+	if err != nil {
+		_ = serverTCPTransport.Stop()
+		_ = serverUDPTransport.Stop()
+		return types.NewDaemonCreateTCPTransportError(err)
+	}
+
+	clientUDPTransport, err := transport.NewUDPTransport(":0") // 随机端口
+	if err != nil {
+		_ = serverTCPTransport.Stop()
+		_ = serverUDPTransport.Stop()
+		_ = clientTCPTransport.Stop()
+		return types.NewDaemonCreateUDPTransportError(err)
+	}
+
+	// 创建客户端专用的序列号生成器（与 Server Transport 独立）
+	clientMsgSeqGen := identity.NewMsgSeqGenerator()
+
+	// 启动 Client Transport
+	if err := clientTCPTransport.Start(&nodeID, clientMsgSeqGen.Next, ":0"); err != nil {
+		_ = serverTCPTransport.Stop()
+		_ = serverUDPTransport.Stop()
+		_ = clientTCPTransport.Stop()
+		_ = clientUDPTransport.Stop()
+		return types.NewDaemonStartTCPTransportError(err)
+	}
+
+	if err := clientUDPTransport.Start(&nodeID, clientMsgSeqGen.Next, ":0"); err != nil {
+		_ = serverTCPTransport.Stop()
+		_ = serverUDPTransport.Stop()
+		_ = clientTCPTransport.Stop()
+		_ = clientUDPTransport.Stop()
+		return types.NewDaemonStartUDPTransportError(err)
+	}
+
+	// 存储 Transport 到 AppContext
+	app.TCPTransport = serverTCPTransport // 主 Transport（向后兼容）
+	app.UDPTransport = serverUDPTransport
+	app.ClientTCPTransport = clientTCPTransport // Client Transport
+	app.ClientUDPTransport = clientUDPTransport
 
 	// =====================================
-	// 步骤 2: 创建 RPC Client
+	// 步骤 2: 创建 RPC Client（使用 Client Transport）
 	// =====================================
 	logging.Info("步骤 2: 创建 RPC Client...")
 
 	rpcClientConfig := transport.DefaultRPCClientConfig()
 	rpcClientConfig.RequestTimeout = 30 * time.Second
 
+	// RPC Client 使用独立的 Client Transport
 	rpcClient, err := transport.NewRPCClient(
-		tcpTransport, // TCP 用于可靠消息
-		udpTransport, // UDP 用于尽力型消息
+		clientTCPTransport, // TCP 用于可靠消息（独立 Transport）
+		clientUDPTransport, // UDP 用于尽力型消息（独立 Transport）
 		rpcClientConfig,
 	)
 	if err != nil {
-		_ = tcpTransport.Stop()
-		_ = udpTransport.Stop()
+		_ = serverTCPTransport.Stop()
+		_ = serverUDPTransport.Stop()
+		_ = clientTCPTransport.Stop()
+		_ = clientUDPTransport.Stop()
 		return types.NewDaemonCreateRPCClientError(err)
 	}
 
 	app.RPCClient = rpcClient
 
 	// =====================================
-	// 步骤 3: 创建 RPC Server
+	// 步骤 3: 创建 RPC Server（使用 Server Transport）
 	// =====================================
 	logging.Info("步骤 3: 创建 RPC Server...")
 
@@ -309,15 +380,18 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	// 使用 cluster 包中的 RPCHandler 实现
 	rpcHandler := cluster.NewTreeCoordinatorRPCHandler(nil)
 
+	// RPC Server 使用 Server Transport（监听 9211）
 	rpcServer, err := transport.NewRPCServer(
-		tcpTransport, // TCP 用于可靠消息
-		udpTransport, // UDP 用于尽力型消息
-		rpcHandler,   // TreeCoordinator RPC 处理器
-		nil,          // 使用默认配置
+		serverTCPTransport, // TCP 用于可靠消息（Server Transport）
+		serverUDPTransport, // UDP 用于尽力型消息（Server Transport）
+		rpcHandler,         // TreeCoordinator RPC 处理器
+		nil,                // 使用默认配置
 	)
 	if err != nil {
-		_ = tcpTransport.Stop()
-		_ = udpTransport.Stop()
+		_ = serverTCPTransport.Stop()
+		_ = serverUDPTransport.Stop()
+		_ = clientTCPTransport.Stop()
+		_ = clientUDPTransport.Stop()
 		return types.NewDaemonCreateRPCServerError(err)
 	}
 
@@ -329,8 +403,10 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	logging.Info("步骤 4: 启动 RPC Server...")
 
 	if err := rpcServer.Start(); err != nil {
-		_ = tcpTransport.Stop()
-		_ = udpTransport.Stop()
+		_ = serverTCPTransport.Stop()
+		_ = serverUDPTransport.Stop()
+		_ = clientTCPTransport.Stop()
+		_ = clientUDPTransport.Stop()
 		return types.NewDaemonStartRPCServerError(err)
 	}
 
@@ -341,8 +417,10 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 
 	if err := rpcClient.Start(); err != nil {
 		_ = rpcServer.Stop()
-		_ = tcpTransport.Stop()
-		_ = udpTransport.Stop()
+		_ = serverTCPTransport.Stop()
+		_ = serverUDPTransport.Stop()
+		_ = clientTCPTransport.Stop()
+		_ = clientUDPTransport.Stop()
 		return types.NewDaemonStartRPCClientError(err)
 	}
 
@@ -351,35 +429,29 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	// =====================================
 	logging.Info("步骤 6: 创建 TreeCoordinator...")
 
-	// P1-3: 始终使用配置中的节点 ID
-	// PR-037: 从三级配置结构中获取节点 ID
-	configNodeID, _, err := selectedNodeInfo(cfg, app.HostID, "")
-	var daemonNodeID string
-	if err != nil {
-		// P1-1 修复：降级处理，使用自动生成的节点 ID
-		// 避免因配置错误导致守护进程崩溃
-		logging.Warnf("从配置获取节点 ID 失败: %v，使用自动生成的 ID", err)
-		daemonNodeID = fmt.Sprintf("%d", nodeID)
-	} else {
-		daemonNodeID = configNodeID
-	}
-
+	// P1-3: 使用之前获取的节点 ID 和监听地址
+	// PR-038 Fix: 使用节点特定的监听地址，而不是全局的 cfg.Network.ListenAddr
 	coordinatorConfig := cluster.DefaultTreeCoordinatorConfig()
 	coordinator, err := cluster.NewTreeCoordinator(
 		daemonNodeID,
-		cfg.Network.ListenAddr,
+		listenAddr, // 使用节点特定的监听地址
 		coordinatorConfig,
 		&cfg.Cluster, // PR-036: 传递集群配置（包含种子节点列表）
 	)
 	if err != nil {
 		_ = rpcClient.Stop()
 		_ = rpcServer.Stop()
-		_ = tcpTransport.Stop()
-		_ = udpTransport.Stop()
+		_ = serverTCPTransport.Stop()
+		_ = serverUDPTransport.Stop()
+		_ = clientTCPTransport.Stop()
+		_ = clientUDPTransport.Stop()
 		return types.NewDaemonCreateTreeCoordinatorError(err)
 	}
 
 	app.Coordinator = coordinator
+
+	// 设置 TreeCoordinator 的 RPCClient（用于自动发现节点）
+	coordinator.RPCClient = rpcClient
 
 	// 更新 RPC Handler 的 coordinator 引用
 	rpcHandler.SetCoordinator(coordinator)
@@ -433,6 +505,20 @@ func (app *AppContext) Shutdown() error {
 	}
 
 	// 1. 停止 Transport 层
+	// 先停止 Client Transport（用于节点间通信）
+	if app.ClientTCPTransport != nil {
+		if err := app.ClientTCPTransport.Stop(); err != nil {
+			errs = append(errs, types.NewDaemonStopTCPTransportError(err))
+		}
+	}
+
+	if app.ClientUDPTransport != nil {
+		if err := app.ClientUDPTransport.Stop(); err != nil {
+			errs = append(errs, types.NewDaemonStopUDPTransportError(err))
+		}
+	}
+
+	// 再停止 Server Transport（用于接收 CLI 请求）
 	if app.TCPTransport != nil {
 		if err := app.TCPTransport.Stop(); err != nil {
 			errs = append(errs, types.NewDaemonStopTCPTransportError(err))
@@ -591,8 +677,10 @@ func selectedNodeInfo(cfg *config.Config, hostID string, nodeIDOverride string) 
 		return "", "", types.NewDaemonConfigNilError()
 	}
 
-	// P0-1 修复：深度复制配置，避免并发读写导致的竞态条件
-	// 如果配置在运行时被并发修改（例如配置热更新），直接访问会导致数据竞态
+	// P1-1 修复：配置并发访问保护
+	// 配置在启动后只读，不支持运行时热更新
+	// 深度复制配置以避免并发读写导致的竞态条件
+	// （如果后续需要支持热更新，应使用 sync.RWMutex 保护）
 	hosts := make([]config.HostConfig, len(cfg.Cluster.Hosts))
 	for i := range cfg.Cluster.Hosts {
 		// 复制 Host
@@ -647,5 +735,55 @@ func selectedNodeInfo(cfg *config.Config, hostID string, nodeIDOverride string) 
 		selectedNode = &selectedHost.Nodes[0]
 	}
 
-	return selectedNode.NodeID, selectedNode.NodeAddrTCP, nil
+	// PR-038 Fix: 转换 multiaddr 格式为 Transport 层需要的格式
+	// 例如：/ip4/127.0.0.1/tcp/9213 → 127.0.0.1:9213
+	listenAddr, err := convertMultiaddrToListenAddr(selectedNode.NodeAddrTCP)
+	if err != nil {
+		return "", "", fmt.Errorf("转换节点地址失败: %w", err)
+	}
+
+	return selectedNode.NodeID, listenAddr, nil
+}
+
+// convertMultiaddrToListenAddr 将 multiaddr 格式转换为 Transport 层需要的格式
+// 例如：/ip4/127.0.0.1/tcp/9213 → 127.0.0.1:9213
+//
+//	/ip4/0.0.0.0/tcp/9213   → 0.0.0.0:9213
+func convertMultiaddrToListenAddr(multiaddrStr string) (string, error) {
+	// 如果不是 multiaddr 格式（不以 / 开头），直接返回
+	if !strings.HasPrefix(multiaddrStr, "/") {
+		return multiaddrStr, nil
+	}
+
+	// 解析 multiaddr
+	maddr, err := multiaddr.NewMultiaddr(multiaddrStr)
+	if err != nil {
+		return "", fmt.Errorf("无效的 multiaddr 格式: %w", err)
+	}
+
+	// 提取 IP 和端口
+	var host string
+	var portStr string
+
+	// 遍历 multiaddr 的所有组件
+	for _, protocol := range maddr.Protocols() {
+		// ValueForProtocol 需要传入 protocol.Code
+		value, err := maddr.ValueForProtocol(protocol.Code)
+		if err != nil {
+			continue
+		}
+
+		switch protocol.Name {
+		case "ip4", "ip6", "dns4", "dns6":
+			host = value
+		case "tcp":
+			portStr = value
+		}
+	}
+
+	if host == "" || portStr == "" {
+		return "", fmt.Errorf("multiaddr 中缺少 IP 或端口组件: %s", multiaddrStr)
+	}
+
+	return fmt.Sprintf("%s:%s", host, portStr), nil
 }

@@ -558,7 +558,7 @@ func (t *TCPTransport) Reply(ctx context.Context, addr string, msg Message, node
 		// RPC 场景：如果提供了 ConnID 但连接已关闭，不尝试创建新连接
 		// 因为客户端可能已经不再等待响应，创建新连接没有意义
 		if conn == nil {
-			return types.NewTransportSendError(fmt.Errorf("连接已关闭 (ConnID: %s)，无法发送响应", connID))
+			return types.NewTCPConnSendToClosedError(connID)
 		}
 	}
 
@@ -567,7 +567,7 @@ func (t *TCPTransport) Reply(ctx context.Context, addr string, msg Message, node
 	// 如果 conn != nil 且连接已关闭，返回错误
 	if conn != nil && conn.isClosed() {
 		logging.Warnf("[RPC-Server] 连接在使用前已被关闭 (ConnID: %s, Addr: %s)", connID, addr)
-		return types.NewTransportSendError(fmt.Errorf("连接已关闭 (ConnID: %s)，无法发送响应", connID))
+		return types.NewTCPConnSendToClosedError(connID)
 	}
 
 	// === 非 RPC 场景：获取或创建连接 ===
@@ -810,7 +810,7 @@ func (t *TCPTransport) getOrCreateConn(addr string) (*tcpConn, error) {
 	// 标准化并验证地址
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
-		return nil, types.NewTransportConnectionError("获取连接", "", fmt.Errorf("empty addr"))
+		return nil, types.NewTCPConnEmptyAddrError()
 	}
 
 	// 提前验证地址格式并获取规范化形式
@@ -818,7 +818,7 @@ func (t *TCPTransport) getOrCreateConn(addr string) (*tcpConn, error) {
 	// 同时获取规范化后的地址作为连接池的键，确保一致性
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
-		return nil, types.NewTransportConnectionError("获取连接", "", fmt.Errorf("invalid addr: %w", err))
+		return nil, types.NewTCPConnInvalidAddrError(err)
 	}
 	resolvedAddr := tcpAddr.String()
 
@@ -1083,13 +1083,13 @@ func (t *TCPTransport) Stats() map[string]any {
 func (t *TCPTransport) GetConnByID(connID string) (net.Conn, error) {
 	value, ok := t.connMap.Load(connID)
 	if !ok {
-		return nil, fmt.Errorf("connection not found: %s", connID)
+		return nil, types.NewTCPConnNotFoundError(connID)
 	}
 
 	tc := value.(*tcpConn)
 	if tc.isClosed() {
 		t.connMap.Delete(connID)
-		return nil, fmt.Errorf("connection closed: %s", connID)
+		return nil, types.NewTCPConnClosedError(connID)
 	}
 
 	return tc.conn, nil
@@ -1120,12 +1120,12 @@ func (t *TCPTransport) sendViaConnection(ctx context.Context, conn net.Conn, msg
 	})
 
 	if tc == nil {
-		return fmt.Errorf("tcpConn not found for connection")
+		return types.NewTCPConnMappingNotFoundError()
 	}
 
 	// 设置写入超时
 	if err := setWriteTimeout(conn, t.config.WriteTimeout); err != nil {
-		return fmt.Errorf("设置写超时失败: %w", err)
+		return types.NewTCPConnSetWriteTimeoutFailedError(err)
 	}
 
 	// === RPC 响应发送支持：解析原始 CorrelationID ===
@@ -1135,12 +1135,12 @@ func (t *TCPTransport) sendViaConnection(ctx context.Context, conn net.Conn, msg
 	var msgSeq uint64
 	_, err := fmt.Sscanf(correlationID, "%d:%d", &nodeID, &msgSeq)
 	if err != nil {
-		return fmt.Errorf("解析 CorrelationID 失败: %w", err)
+		return types.NewTCPConnParseCorrelationIDFailedError(err)
 	}
 
 	// 发送消息（使用原始 NodeID 和 MsgSeq）
 	if err := tc.writer.WriteMessageWithOptions(msg, nodeID, msgSeq, nil); err != nil {
-		return fmt.Errorf("写入消息失败: %w", err)
+		return types.NewTCPConnWriteMessageFailedError(err)
 	}
 
 	// 更新最后使用时间

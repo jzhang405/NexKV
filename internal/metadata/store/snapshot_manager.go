@@ -52,7 +52,7 @@ type SnapshotFileManager struct {
 func NewSnapshotFileManager(snapshotDir string, compression types.CompressionType) (*SnapshotFileManager, error) {
 	// 确保目录存在
 	if err := os.MkdirAll(snapshotDir, 0755); err != nil {
-		return nil, fmt.Errorf("创建 Snapshot 目录失败: %w", err)
+		return nil, types.NewStoreSnapshotCreateDirectoryFailedError(err)
 	}
 
 	return &SnapshotFileManager{
@@ -85,7 +85,7 @@ func (m *SnapshotFileManager) CreateSnapshot(metadata map[string]any, data map[s
 	// 3. 创建 Snapshot 写入器（传递完整临时文件路径）
 	writer, err := NewSnapshotWriter(tempFilePath, m.compression, sequence)
 	if err != nil {
-		return nil, fmt.Errorf("创建 Snapshot 写入器失败: %w", err)
+		return nil, types.NewStoreSnapshotCreateWriterFailedError(err)
 	}
 	defer func() {
 		if err := writer.Close(); err != nil {
@@ -95,18 +95,18 @@ func (m *SnapshotFileManager) CreateSnapshot(metadata map[string]any, data map[s
 
 	// 4. 写入元数据段
 	if err := writer.WriteMetadata(metadata); err != nil {
-		return nil, fmt.Errorf("写入元数据段失败: %w", err)
+		return nil, types.NewStoreSnapshotWriteMetadataSectionFailedError(err)
 	}
 
 	// 5. 写入数据段
 	if err := writer.WriteData(data); err != nil {
-		return nil, fmt.Errorf("写入数据段失败: %w", err)
+		return nil, types.NewStoreSnapshotWriteDataSectionFailedError(err)
 	}
 
 	// 6. 完成写入（返回临时文件名）
 	tempFileName, err := writer.Finalize()
 	if err != nil {
-		return nil, fmt.Errorf("完成 Snapshot 写入失败: %w", err)
+		return nil, types.NewStoreSnapshotFinalizeFailedError(err)
 	}
 
 	// 7. 生成最终文件名和路径
@@ -117,7 +117,7 @@ func (m *SnapshotFileManager) CreateSnapshot(metadata map[string]any, data map[s
 	tempPath := filepath.Join(m.snapshotDir, tempFileName)
 	if err := os.Rename(tempPath, finalPath); err != nil {
 		_ = os.Remove(tempPath) // 清理临时文件
-		return nil, fmt.Errorf("重命名 Snapshot 文件失败: %w", err)
+		return nil, types.NewStoreSnapshotRenameFailedError(err)
 	}
 
 	// 9. 构建 SnapshotInfo
@@ -152,7 +152,7 @@ func (m *SnapshotFileManager) LoadSnapshot(fileName string) (map[string]any, map
 	// 1. 创建 Snapshot 读取器
 	reader, err := NewSnapshotReader(filePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("创建 Snapshot 读取器失败: %w", err)
+		return nil, nil, types.NewStoreSnapshotCreateReaderFailedError(err)
 	}
 	defer func() {
 		if err := reader.Close(); err != nil {
@@ -163,22 +163,22 @@ func (m *SnapshotFileManager) LoadSnapshot(fileName string) (map[string]any, map
 	// 2. 验证校验和
 	valid, err := reader.ValidateChecksum()
 	if err != nil {
-		return nil, nil, fmt.Errorf("验证校验和失败: %w", err)
+		return nil, nil, types.NewStoreSnapshotVerifyChecksumFailedError(err)
 	}
 	if !valid {
-		return nil, nil, fmt.Errorf("SHA256 校验和不匹配")
+		return nil, nil, types.NewStoreSnapshotChecksumMismatchError()
 	}
 
 	// 3. 读取元数据段
 	metadata, err := reader.ReadMetadata()
 	if err != nil {
-		return nil, nil, fmt.Errorf("读取元数据段失败: %w", err)
+		return nil, nil, types.NewStoreSnapshotReadMetadataSectionFailedError(err)
 	}
 
 	// 4. 读取数据段
 	data, err := reader.ReadData()
 	if err != nil {
-		return nil, nil, fmt.Errorf("读取数据段失败: %w", err)
+		return nil, nil, types.NewStoreSnapshotReadDataSectionFailedError(err)
 	}
 
 	logging.Infof("Snapshot 加载成功: %s", fileName)
@@ -193,7 +193,7 @@ func (m *SnapshotFileManager) ListSnapshots() ([]*SnapshotInfo, error) {
 	// 1. 读取目录中的所有文件
 	entries, err := os.ReadDir(m.snapshotDir)
 	if err != nil {
-		return nil, fmt.Errorf("读取 Snapshot 目录失败: %w", err)
+		return nil, types.NewStoreSnapshotReadDirectoryFailedError(err)
 	}
 
 	// 2. 解析 Snapshot 文件
@@ -263,7 +263,7 @@ func (m *SnapshotFileManager) GetLatestSnapshot() (*SnapshotInfo, error) {
 	}
 
 	if len(snapshots) == 0 {
-		return nil, fmt.Errorf("没有找到 Snapshot 文件")
+		return nil, types.NewStoreSnapshotNoSnapshotFoundError()
 	}
 
 	return snapshots[0], nil
@@ -279,7 +279,7 @@ func (m *SnapshotFileManager) DeleteSnapshot(fileName string) error {
 	filePath := filepath.Join(m.snapshotDir, fileName)
 
 	if err := os.Remove(filePath); err != nil {
-		return fmt.Errorf("删除 Snapshot 文件失败: %w", err)
+		return types.NewStoreSnapshotDeleteFailedError(err)
 	}
 
 	logging.Infof("Snapshot 删除成功: %s", fileName)
@@ -346,7 +346,7 @@ func (m *SnapshotFileManager) CreateSnapshotWithVersion(
 	// 3. 创建 Snapshot 写入器（传递完整临时文件路径）
 	writer, err := NewSnapshotWriter(tempFilePath, m.compression, sequence)
 	if err != nil {
-		return nil, fmt.Errorf("创建 Snapshot 写入器失败: %w", err)
+		return nil, types.NewStoreSnapshotCreateWriterFailedError(err)
 	}
 	defer func() {
 		if err := writer.Close(); err != nil {
@@ -356,18 +356,18 @@ func (m *SnapshotFileManager) CreateSnapshotWithVersion(
 
 	// 4. 写入元数据段
 	if err := writer.WriteMetadata(metadata); err != nil {
-		return nil, fmt.Errorf("写入元数据段失败: %w", err)
+		return nil, types.NewStoreSnapshotWriteMetadataSectionFailedError(err)
 	}
 
 	// 5. 写入数据段
 	if err := writer.WriteData(data); err != nil {
-		return nil, fmt.Errorf("写入数据段失败: %w", err)
+		return nil, types.NewStoreSnapshotWriteDataSectionFailedError(err)
 	}
 
 	// 6. 完成写入（返回临时文件名）
 	tempFileName, err := writer.Finalize()
 	if err != nil {
-		return nil, fmt.Errorf("完成 Snapshot 写入失败: %w", err)
+		return nil, types.NewStoreSnapshotFinalizeFailedError(err)
 	}
 
 	// 7. 生成最终文件名和路径
@@ -378,7 +378,7 @@ func (m *SnapshotFileManager) CreateSnapshotWithVersion(
 	tempPath := filepath.Join(m.snapshotDir, tempFileName)
 	if err := os.Rename(tempPath, finalPath); err != nil {
 		_ = os.Remove(tempPath) // 清理临时文件
-		return nil, fmt.Errorf("重命名 Snapshot 文件失败: %w", err)
+		return nil, types.NewStoreSnapshotRenameFailedError(err)
 	}
 
 	// 9. 构建 SnapshotInfo
@@ -458,7 +458,7 @@ func ParseSnapshotFileName(fileName string) (int64, int, error) {
 	pattern := regexp.MustCompile(SnapshotFilePattern)
 	matches := pattern.FindStringSubmatch(fileName)
 	if matches == nil {
-		return 0, 0, fmt.Errorf("无效的 Snapshot 文件名: %s", fileName)
+		return 0, 0, types.NewStoreSnapshotInvalidFileNameError(fileName)
 	}
 
 	var timestamp int64
@@ -502,21 +502,21 @@ func ValidateSnapshotDir(dir string) (bool, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false, fmt.Errorf("snapshot 目录不存在: %s", dir)
+			return false, types.NewStoreSnapshotDirectoryNotExistError(dir)
 		}
-		return false, fmt.Errorf("无法访问 snapshot 目录: %w", err)
+		return false, types.NewStoreSnapshotDirectoryNotAccessibleError(err)
 	}
 
 	// 2. 检查是否为目录
 	if !info.IsDir() {
-		return false, fmt.Errorf("snapshot 路径不是目录: %s", dir)
+		return false, types.NewStoreSnapshotPathNotDirectoryError(dir)
 	}
 
 	// 3. 检查写权限
 	testFile := filepath.Join(dir, ".write_test")
 	f, err := os.Create(testFile)
 	if err != nil {
-		return false, fmt.Errorf("snapshot 目录没有写权限: %w", err)
+		return false, types.NewStoreSnapshotDirectoryNotWritableError(err)
 	}
 	_ = f.Close()
 	_ = os.Remove(testFile)
@@ -538,7 +538,7 @@ func (m *SnapshotFileManager) Create(store MVStore) error {
 	// 1. 从 MVStore 获取快照数据（JSON 编码）
 	snapshotData, err := store.CreateSnapshot()
 	if err != nil {
-		return fmt.Errorf("获取快照数据失败: %w", err)
+		return types.NewStoreSnapshotGetDataFailedError(err)
 	}
 
 	// 2. 准备元数据
@@ -567,7 +567,7 @@ func (m *SnapshotFileManager) Create(store MVStore) error {
 	// 4. 创建 Snapshot（使用新实现）
 	info, err := m.CreateSnapshot(metadata, data)
 	if err != nil {
-		return fmt.Errorf("创建 Snapshot 失败: %w", err)
+		return types.NewStoreSnapshotCreationFailedError(err)
 	}
 
 	logging.Infof("快照创建成功: %s", info.FileName)
@@ -597,7 +597,7 @@ func (m *SnapshotFileManager) Restore(snapshotName string) ([]byte, error) {
 	// 1. 加载 Snapshot
 	metadata, data, err := m.LoadSnapshot(snapshotName)
 	if err != nil {
-		return nil, fmt.Errorf("加载 Snapshot 失败: %w", err)
+		return nil, types.NewStoreSnapshotLoadFailedError(err)
 	}
 
 	// 2. 检查编码格式
@@ -613,7 +613,7 @@ func (m *SnapshotFileManager) Restore(snapshotName string) ([]byte, error) {
 		if rawData, ok := data["snapshot_data"]; ok {
 			return rawData, nil
 		}
-		return nil, fmt.Errorf("缺少 snapshot_data 字段")
+		return nil, types.NewStoreSnapshotMissingSnapshotDataError()
 	case "json_map", "unknown":
 		// 返回 JSON 编码的数据
 		return json.Marshal(data)

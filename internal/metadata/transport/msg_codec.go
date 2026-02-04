@@ -476,8 +476,26 @@ type NodeInfo struct {
 	Addr     string `json:"addr" msgpack:"addr"`
 	Role     string `json:"role" msgpack:"role"`
 	ParentID string `json:"parent_id,omitempty" msgpack:"parent_id,omitempty"`
-	Status   string `json:"status" msgpack:"status"` // "ready", "busy", "leaving"
+	Status   string `json:"status" msgpack:"status"` // "Ready", "Init", "Leaving"
 	Level    int    `json:"level" msgpack:"level"`
+}
+
+// ClusterHealthFixMessage 集群健康修复请求
+type ClusterHealthFixMessage struct {
+	BaseMessage
+	// 修复选项
+	FixUnreachableNodes bool `json:"fix_unreachable_nodes" msgpack:"fix_unreachable_nodes"` // 修复不可达节点
+	FixConfigMismatch   bool `json:"fix_config_mismatch" msgpack:"fix_config_mismatch"`     // 修复配置不一致
+	ForceSyncGossip     bool `json:"force_sync_gossip" msgpack:"force_sync_gossip"`         // 强制 Gossip 同步
+}
+
+// ClusterHealthFixReplyMessage 集群健康修复响应
+type ClusterHealthFixReplyMessage struct {
+	BaseMessage
+	Success          bool     `json:"success" msgpack:"success"`
+	FixedNodes       []string `json:"fixed_nodes" msgpack:"fixed_nodes"`               // 已修复的节点列表
+	FixedConfigSyncs []string `json:"fixed_config_syncs" msgpack:"fixed_config_syncs"` // 已修复的配置同步
+	ErrorMessage     string   `json:"error_message,omitempty" msgpack:"error_message,omitempty"`
 }
 
 // LeaderElectionMessage Leader 选举消息
@@ -604,6 +622,12 @@ func init() {
 		}},
 		{types.MessageTypeClusterStatusReply, func() Message {
 			return &ClusterStatusReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClusterStatusReply}}
+		}},
+		{types.MessageTypeClusterHealthFix, func() Message {
+			return &ClusterHealthFixMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClusterHealthFix}}
+		}},
+		{types.MessageTypeClusterHealthFixReply, func() Message {
+			return &ClusterHealthFixReplyMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeClusterHealthFixReply}}
 		}},
 		{types.MessageTypeLeaderElection, func() Message {
 			return &LeaderElectionMessage{BaseMessage: BaseMessage{MessageType: types.MessageTypeLeaderElection}}

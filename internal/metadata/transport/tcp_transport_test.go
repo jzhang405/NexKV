@@ -833,6 +833,6 @@ func TestTCPTransportReply_EmptyAddrAndConnID(t *testing.T) {
 		err := tt.Reply(ctx, "99999", msg, 1, 1, "")
 		require.Error(t, err, "Reply should return error for invalid addr format")
 		// 应该在地址验证阶段就失败，而不是在拨号阶段
-		require.Contains(t, err.Error(), "invalid addr")
+		require.Contains(t, err.Error(), "连接地址无效")
 	})
 }

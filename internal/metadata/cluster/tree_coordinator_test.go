@@ -421,21 +421,78 @@ func TestNodeRole_String(t *testing.T) {
 // TestHost_Structure 测试 Host 结构
 func TestHost_Structure(t *testing.T) {
 	host := &Host{
-		ID:   "server-1",
-		Role: LeafParent,
+		HostID: "server-1",
+		Role:   LeafParent,
 		NodeAddr: NodeAddress{
 			Host:    "127.0.0.1",
 			TCPPort: 5001,
 			UDPPort: 5002,
 		},
-		Status: "active",
+		HostStatus: HostStatusOnline,
 	}
 
-	assert.Equal(t, "server-1", host.ID)
+	assert.Equal(t, "server-1", host.HostID)
 	assert.Equal(t, LeafParent, host.Role)
 	assert.Equal(t, "127.0.0.1", host.NodeAddr.Host)
 	assert.Equal(t, 5001, host.NodeAddr.TCPPort)
-	assert.Equal(t, "active", host.Status)
+	assert.Equal(t, HostStatusOnline, host.HostStatus)
+}
+
+// TestHost_ValidateNodeIDs 测试 Host ValidateNodeIDs 方法
+func TestHost_ValidateNodeIDs(t *testing.T) {
+	testCases := []struct {
+		name        string
+		host        *Host
+		expectError bool
+	}{
+		{
+			name: "LeafOnly - 有效配置",
+			host: &Host{
+				HostID:     "server-1",
+				Role:       LeafOnly,
+				LeafNodeID: "leaf-1",
+			},
+			expectError: false,
+		},
+		{
+			name: "LeafOnly - 缺少 LeafNodeID",
+			host: &Host{
+				HostID: "server-1",
+				Role:   LeafOnly,
+			},
+			expectError: true,
+		},
+		{
+			name: "LeafParent - 有效配置",
+			host: &Host{
+				HostID:       "server-1",
+				Role:         LeafParent,
+				LeafNodeID:   "leaf-1",
+				ParentNodeID: "parent-1",
+			},
+			expectError: false,
+		},
+		{
+			name: "LeafParent - 缺少 ParentNodeID",
+			host: &Host{
+				HostID:     "server-1",
+				Role:       LeafParent,
+				LeafNodeID: "leaf-1",
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.host.ValidateNodeIDs()
+			if tc.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }
 
 // TestTreeCoordinator_SingleParentConstraint 测试单父节点约束

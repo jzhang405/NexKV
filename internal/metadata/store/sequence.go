@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
 // SequenceGenerator 全局序列号生成器
@@ -37,7 +38,7 @@ type SequenceGenerator struct {
 func NewSequenceGenerator(checkpointDir string) (*SequenceGenerator, error) {
 	// 确保目录存在
 	if err := os.MkdirAll(checkpointDir, 0755); err != nil {
-		return nil, fmt.Errorf("创建 Checkpoint 目录失败: %w", err)
+		return nil, types.NewStoreDirectoryCreationError(checkpointDir, err)
 	}
 
 	gen := &SequenceGenerator{
@@ -63,13 +64,13 @@ func (g *SequenceGenerator) loadFromLatestCheckpoint() error {
 	// 1. 创建 Checkpoint 管理器
 	checkpointMgr, err := NewCheckpointManager(g.checkpointDir)
 	if err != nil {
-		return fmt.Errorf("创建 Checkpoint 管理器失败: %w", err)
+		return types.NewStoreCheckpointDirectoryReadFailedError(err)
 	}
 
 	// 2. 加载最新 Checkpoint
 	checkpoint, err := checkpointMgr.GetLatestCheckpoint()
 	if err != nil {
-		return fmt.Errorf("加载最新 Checkpoint 失败: %w", err)
+		return types.NewStoreCheckpointDirectoryReadFailedError(err)
 	}
 
 	// 3. 无历史 Checkpoint，使用默认值 0（新节点启动）
@@ -82,17 +83,16 @@ func (g *SequenceGenerator) loadFromLatestCheckpoint() error {
 	// 4. 提取并验证序列号
 	// 核心约束：checkpoint_version ≡ snapshot_sequence
 	if checkpoint.CheckpointVersion <= 0 {
-		return fmt.Errorf("无效的 Checkpoint 版本号: %d", checkpoint.CheckpointVersion)
+		return types.NewStoreCheckpointVersionInvalidError(checkpoint.CheckpointVersion)
 	}
 
 	if checkpoint.SnapshotInfo == nil {
-		return fmt.Errorf("Checkpoint 缺少 SnapshotInfo")
+		return types.NewStoreCheckpointMissingSnapshotInfoError()
 	}
 
 	snapshotSeq := uint64(checkpoint.SnapshotInfo.SnapshotSequence)
 	if checkpoint.CheckpointVersion != int64(snapshotSeq) {
-		return fmt.Errorf("序列号不一致: checkpoint_version=%d, snapshot_sequence=%d",
-			checkpoint.CheckpointVersion, snapshotSeq)
+		return types.NewStoreSequenceMismatchError(checkpoint.CheckpointVersion, int64(checkpoint.SnapshotInfo.SnapshotSequence))
 	}
 
 	// 5. 赋值全局序列号（实现持久化加载）
@@ -132,8 +132,7 @@ func (g *SequenceGenerator) Commit(version uint64) error {
 	defer g.mu.Unlock()
 
 	if version != g.currentVersion {
-		return fmt.Errorf("序列号版本不匹配: 期望 %d, 实际 %d",
-			g.currentVersion, version)
+		return types.NewStoreSequenceVersionMismatchError(g.currentVersion, version)
 	}
 
 	// 序列号已通过 Checkpoint 持久化，无需额外操作
@@ -165,23 +164,22 @@ func (g *SequenceGenerator) Rollback() uint64 {
 // 返回验证结果和错误信息
 func (g *SequenceGenerator) ValidateCheckpoint(checkpoint *Checkpoint) error {
 	if checkpoint == nil {
-		return fmt.Errorf("Checkpoint 为空")
+		return types.NewStoreCheckpointEmptyError()
 	}
 
 	// 验证 1: Checkpoint 版本号必须大于 0
 	if checkpoint.CheckpointVersion <= 0 {
-		return fmt.Errorf("Checkpoint 版本号无效: %d", checkpoint.CheckpointVersion)
+		return types.NewStoreCheckpointVersionInvalidError(checkpoint.CheckpointVersion)
 	}
 
 	// 验证 2: SnapshotInfo 不能为空
 	if checkpoint.SnapshotInfo == nil {
-		return fmt.Errorf("Checkpoint 缺少 SnapshotInfo")
+		return types.NewStoreCheckpointMissingSnapshotInfoError()
 	}
 
 	// 验证 3: 核心约束 - checkpoint_version ≡ snapshot_sequence
 	if checkpoint.CheckpointVersion != int64(checkpoint.SnapshotInfo.SnapshotSequence) {
-		return fmt.Errorf("序列号不一致: checkpoint_version=%d, snapshot_sequence=%d",
-			checkpoint.CheckpointVersion, checkpoint.SnapshotInfo.SnapshotSequence)
+		return types.NewStoreSequenceMismatchError(checkpoint.CheckpointVersion, int64(checkpoint.SnapshotInfo.SnapshotSequence))
 	}
 
 	// 验证 4: 快照文件名中的序列号必须一致
@@ -190,12 +188,11 @@ func (g *SequenceGenerator) ValidateCheckpoint(checkpoint *Checkpoint) error {
 	_, err := fmt.Sscanf(snapshotFile, "snapshot-%d-%04d.snap",
 		new(int64), &snapshotSeqFromFile)
 	if err != nil {
-		return fmt.Errorf("解析快照文件名失败: %s (%w)", snapshotFile, err)
+		return types.NewStoreSnapshotFileNameParseFailedError(snapshotFile, err)
 	}
 
 	if checkpoint.SnapshotInfo.SnapshotSequence != snapshotSeqFromFile {
-		return fmt.Errorf("文件名序列号不一致: snapshot_sequence=%d, filename_sequence=%d",
-			checkpoint.SnapshotInfo.SnapshotSequence, snapshotSeqFromFile)
+		return types.NewStoreSnapshotFileNameSequenceMismatchError(checkpoint.SnapshotInfo.SnapshotSequence, snapshotSeqFromFile)
 	}
 
 	return nil
@@ -207,12 +204,12 @@ func (g *SequenceGenerator) ValidateCheckpoint(checkpoint *Checkpoint) error {
 func (g *SequenceGenerator) GetLatestCheckpointVersion() (uint64, error) {
 	checkpointMgr, err := NewCheckpointManager(g.checkpointDir)
 	if err != nil {
-		return 0, fmt.Errorf("创建 Checkpoint 管理器失败: %w", err)
+		return 0, types.NewStoreCheckpointDirectoryReadFailedError(err)
 	}
 
 	checkpoint, err := checkpointMgr.GetLatestCheckpoint()
 	if err != nil {
-		return 0, fmt.Errorf("加载最新 Checkpoint 失败: %w", err)
+		return 0, types.NewStoreCheckpointDirectoryReadFailedError(err)
 	}
 
 	if checkpoint == nil {
@@ -246,13 +243,13 @@ func LoadCheckpointInfo(checkpointDir string) (*CheckpointInfoForSeqGen, error) 
 	// 1. 创建 Checkpoint 管理器
 	checkpointMgr, err := NewCheckpointManager(checkpointDir)
 	if err != nil {
-		return nil, fmt.Errorf("创建 Checkpoint 管理器失败: %w", err)
+		return nil, types.NewStoreCheckpointDirectoryReadFailedError(err)
 	}
 
 	// 2. 加载最新 Checkpoint
 	checkpoint, err := checkpointMgr.GetLatestCheckpoint()
 	if err != nil {
-		return nil, fmt.Errorf("加载最新 Checkpoint 失败: %w", err)
+		return nil, types.NewStoreCheckpointDirectoryReadFailedError(err)
 	}
 
 	// 3. 无历史 Checkpoint
@@ -310,7 +307,7 @@ func PersistCheckpointVersion(checkpointDir string, version uint64, snapshotFile
 	// 2. 序列化为 JSON
 	jsonData, err := json.MarshalIndent(checkpoint, "", "  ")
 	if err != nil {
-		return fmt.Errorf("序列化 Checkpoint 失败: %w", err)
+		return types.NewStoreCheckpointSerializationFailedError(err)
 	}
 
 	// 3. 生成 Checkpoint 文件名
@@ -320,7 +317,7 @@ func PersistCheckpointVersion(checkpointDir string, version uint64, snapshotFile
 
 	// 4. 写入文件
 	if err := os.WriteFile(filePath, jsonData, 0644); err != nil {
-		return fmt.Errorf("写入 Checkpoint 文件失败: %w", err)
+		return types.NewStoreCheckpointWriteFailedError(err)
 	}
 
 	logging.Infof("Checkpoint 版本号持久化成功: version=%d, file=%s", version, fileName)

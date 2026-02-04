@@ -16,11 +16,12 @@ func newNodeCommand() *cli.Command {
 	return &cli.Command{
 		Name:        "node",
 		Usage:       "节点管理",
-		Description: `管理集群中的节点，包括添加、删除、列表、ping 等操作`,
+		Description: `管理集群中的节点，包括添加、删除、列表、状态、ping 等操作`,
 		Subcommands: []*cli.Command{
 			newNodeAddCommand(),
 			newNodeRemoveCommand(),
 			newNodeListCommand(),
+			newNodeStatusCommand(),
 			newNodePingCommand(),
 		},
 	}
@@ -49,16 +50,16 @@ func newNodeAddCommand() *cli.Command {
 			nodeAddr := c.String("addr")
 
 			if nodeID == "" {
-				return fmt.Errorf("--id 参数不能为空")
+				return types.NewCLINodeIDRequiredError()
 			}
 			if nodeAddr == "" {
-				return fmt.Errorf("--addr 参数不能为空")
+				return types.NewCLINodeAddrRequiredError()
 			}
 
 			// 创建 RPC 客户端
 			client, cleanup, err := createRPCClient()
 			if err != nil {
-				return fmt.Errorf("连接 Daemon 失败: %w", err)
+				return err
 			}
 			defer cleanup()
 
@@ -81,7 +82,7 @@ func newNodeAddCommand() *cli.Command {
 
 			_, err = client.Call(ctx, DaemonAddr, req)
 			if err != nil {
-				return fmt.Errorf("添加节点失败: %w", err)
+				return types.NewCLIAddNodeFailedError(err)
 			}
 
 			fmt.Printf("✓ 节点 %s 添加成功\n", nodeID)
@@ -108,7 +109,7 @@ func newNodeRemoveCommand() *cli.Command {
 			force := c.Bool("force")
 
 			if c.NArg() < 1 {
-				return fmt.Errorf("需要指定节点 ID")
+				return types.NewCLINodeIDRequiredError()
 			}
 
 			nodeID := c.Args().First()
@@ -127,7 +128,7 @@ func newNodeRemoveCommand() *cli.Command {
 			// 创建 RPC 客户端
 			client, cleanup, err := createRPCClient()
 			if err != nil {
-				return fmt.Errorf("连接 Daemon 失败: %w", err)
+				return err
 			}
 			defer cleanup()
 
@@ -149,11 +150,85 @@ func newNodeRemoveCommand() *cli.Command {
 
 			_, err = client.Call(ctx, DaemonAddr, req)
 			if err != nil {
-				return fmt.Errorf("删除节点失败: %w", err)
+				return types.NewCLIRemoveNodeFailedError(err)
 			}
 
 			fmt.Printf("✓ 节点 %s 删除成功\n", nodeID)
 			return nil
+		},
+	}
+}
+
+// newNodeStatusCommand 节点状态命令
+func newNodeStatusCommand() *cli.Command {
+	return &cli.Command{
+		Name:        "status",
+		Usage:       "查看节点状态",
+		Description: `查看指定节点的详细状态信息，包括连接数、负载、健康状态等`,
+		ArgsUsage:   "[node-id]",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "format",
+				Aliases: []string{"o"},
+				Value:   "pretty",
+				Usage:   "输出格式：pretty/json/yaml",
+			},
+		},
+		Action: func(c *cli.Context) error {
+			if c.NArg() < 1 {
+				return types.NewCLINodeIDRequiredError()
+			}
+
+			nodeID := c.Args().First()
+			outputFormat := c.String("format")
+
+			// 创建 RPC 客户端
+			client, cleanup, err := createRPCClient()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			if Verbose {
+				fmt.Printf("连接到 Daemon: %s\n", DaemonAddr)
+				fmt.Printf("查询节点状态: ID=%s\n", nodeID)
+			}
+
+			// 调用 RPC 查询节点状态
+			ctx, cancel := context.WithTimeout(context.Background(), Timeout)
+			defer cancel()
+
+			// 构造 ClusterStatus 消息获取节点状态
+			req := &transport.ClusterStatusMessage{
+				BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeClusterStatus},
+				NodeID:      nodeID,
+			}
+
+			respMsg, err := client.Call(ctx, DaemonAddr, req)
+			if err != nil {
+				return types.NewCLIQueryNodeStatusFailedError(err)
+			}
+
+			resp, ok := respMsg.(*transport.ClusterStatusReplyMessage)
+			if !ok {
+				return types.NewCLIResponseTypeError("ClusterStatusReplyMessage")
+			}
+
+			// 查找目标节点
+			var targetNode *transport.NodeInfo
+			for i := range resp.Nodes {
+				if resp.Nodes[i].NodeID == nodeID {
+					targetNode = &resp.Nodes[i]
+					break
+				}
+			}
+
+			if targetNode == nil {
+				return types.NewCLINodeNotFoundError(nodeID)
+			}
+
+			// 格式化输出
+			return formatNodeStatus(targetNode, outputFormat)
 		},
 	}
 }
@@ -184,7 +259,7 @@ func newNodeListCommand() *cli.Command {
 			// 创建 RPC 客户端
 			client, cleanup, err := createRPCClient()
 			if err != nil {
-				return fmt.Errorf("连接 Daemon 失败: %w", err)
+				return err
 			}
 			defer cleanup()
 
@@ -204,17 +279,17 @@ func newNodeListCommand() *cli.Command {
 
 			respMsg, err := client.Call(ctx, DaemonAddr, req)
 			if err != nil {
-				return fmt.Errorf("查询节点列表失败: %w", err)
+				return types.NewCLIQueryNodeListFailedError(err)
 			}
 
 			resp, ok := respMsg.(*transport.ClusterStatusReplyMessage)
 			if !ok {
-				return fmt.Errorf("响应类型错误: 期望 ClusterStatusReplyMessage")
+				return types.NewCLIResponseTypeError("ClusterStatusReplyMessage")
 			}
 
 			// 格式化输出
 			if err := formatNodeList(resp, verbose, outputFormat); err != nil {
-				return fmt.Errorf("格式化输出失败: %w", err)
+				return types.NewCLIFormatOutputError(err)
 			}
 
 			return nil
@@ -241,7 +316,7 @@ func newNodePingCommand() *cli.Command {
 			count := c.Int("count")
 
 			if c.NArg() < 1 {
-				return fmt.Errorf("需要指定节点 ID")
+				return types.NewCLINodeIDRequiredError()
 			}
 
 			nodeID := c.Args().First()
@@ -249,7 +324,7 @@ func newNodePingCommand() *cli.Command {
 			// 创建 RPC 客户端
 			client, cleanup, err := createRPCClient()
 			if err != nil {
-				return fmt.Errorf("连接 Daemon 失败: %w", err)
+				return err
 			}
 			defer cleanup()
 
@@ -281,11 +356,11 @@ func newNodePingCommand() *cli.Command {
 					fmt.Printf("Ping %s: 超时或失败 (%v)\n", nodeID, err)
 				} else {
 					resp, ok := respMsg.(*transport.NodePongMessage)
-					if ok && resp.NodeID == nodeID {
+					if ok {
 						successCount++
-						fmt.Printf("Ping %s: 成功 (耗时: %v)\n", nodeID, elapsed)
+						fmt.Printf("Ping %s: 成功 (耗时: %v, 来自: %s, 状态: %s)\n", nodeID, elapsed, resp.NodeID, resp.Status)
 					} else {
-						fmt.Printf("Ping %s: 响应格式错误\n", nodeID)
+						fmt.Printf("Ping %s: 响应格式错误 (类型: %T)\n", nodeID, respMsg)
 					}
 				}
 
@@ -318,7 +393,7 @@ func formatNodeList(resp *transport.ClusterStatusReplyMessage, verbose bool, out
 	case "table":
 		return formatNodeListAsTable(resp, verbose)
 	default:
-		return fmt.Errorf("不支持的输出格式: %s", outputFormat)
+		return types.NewCLIUnsupportedOutputFormatError(outputFormat)
 	}
 }
 
@@ -345,6 +420,40 @@ func formatNodeListAsTable(resp *transport.ClusterStatusReplyMessage, verbose bo
 			fmt.Printf("  Level: %d\n", node.Level)
 		}
 	}
+
+	return nil
+}
+
+// formatNodeStatus 格式化节点状态
+func formatNodeStatus(node *transport.NodeInfo, outputFormat string) error {
+	switch outputFormat {
+	case "json":
+		return formatAsJSON(node)
+	case "yaml":
+		return formatAsYAML(node)
+	case "pretty":
+		return formatNodeStatusPretty(node)
+	default:
+		return types.NewCLIUnsupportedOutputFormatError(outputFormat)
+	}
+}
+
+// formatNodeStatusPretty 格式化节点状态为易读格式
+func formatNodeStatusPretty(node *transport.NodeInfo) error {
+	fmt.Printf("📊 节点状态详情\n\n")
+	fmt.Printf("NodeID:    %s\n", node.NodeID)
+	fmt.Printf("Address:    %s\n", node.Addr)
+	fmt.Printf("Role:       %s\n", node.Role)
+	fmt.Printf("Status:     %s\n", node.Status)
+	fmt.Printf("Level:      %d\n", node.Level)
+
+	if node.ParentID != "" {
+		fmt.Printf("Parent:     %s\n", node.ParentID)
+	}
+
+	fmt.Printf("\n💡 提示:\n")
+	fmt.Printf("  使用 --format json 输出 JSON 格式\n")
+	fmt.Printf("  使用 --format yaml 输出 YAML 格式\n")
 
 	return nil
 }

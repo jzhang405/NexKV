@@ -319,7 +319,7 @@ func (a *rpcServerHandlerAdapter) sendResponse(reqFrame MsgFrame, resp types.Mes
 	defer cancel()
 
 	if err := transport.Reply(ctx, sourceAddr, resp, nodeID, msgSeq, connID); err != nil {
-		return types.NewRPCNetworkError(sourceAddr, fmt.Errorf("failed to send response (CorrelationID: %s): %w", correlationID, err))
+		return types.NewRPCNetworkError(sourceAddr, err)
 	}
 
 	logging.Infof("[RPC-Server] Response sent via Reply() (CorrelationID: %s)", correlationID)

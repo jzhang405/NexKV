@@ -50,6 +50,97 @@ const (
 	ErrCodeTransport
 
 	// ========================================
+	// Dispatcher 模块错误码
+	// ========================================
+
+	// ErrDispatcherHandlerRequired handler 参数为空
+	ErrDispatcherHandlerRequired
+
+	// ErrDispatcherInvalidWorkerCount WorkerCount 无效（必须 > 0）
+	ErrDispatcherInvalidWorkerCount
+
+	// ErrDispatcherInvalidQueueSize QueueSize 无效（必须 > 0）
+	ErrDispatcherInvalidQueueSize
+
+	// ErrDispatcherMinMaxWorkersInvalid MinWorkers 不能大于 MaxWorkers
+	ErrDispatcherMinMaxWorkersInvalid
+
+	// ErrDispatcherScaleThresholdInvalid ScaleUpThreshold 必须大于 ScaleDownThreshold
+	ErrDispatcherScaleThresholdInvalid
+
+	// ErrDispatcherWorkerCountOutOfRange WorkerCount 必须在 [MinWorkers, MaxWorkers] 范围内
+	ErrDispatcherWorkerCountOutOfRange
+
+	// ErrDispatcherAlreadyRunning dispatcher 已在运行
+	ErrDispatcherAlreadyRunning
+
+	// ErrDispatcherNotRunning dispatcher 未运行
+	ErrDispatcherNotRunning
+
+	// ErrDispatcherTargetWorkerCountOutOfRange 目标 worker 数量超出范围
+	ErrDispatcherTargetWorkerCountOutOfRange
+
+	// ErrDispatcherTargetNotGreaterThanCurrent 扩容目标必须大于当前数量
+	ErrDispatcherTargetNotGreaterThanCurrent
+
+	// ErrDispatcherTargetNotLessThanCurrent 缩容目标必须小于当前数量
+	ErrDispatcherTargetNotLessThanCurrent
+
+	// ErrDispatcherTimeoutWaitingForScaling 等待扩缩容超时
+	ErrDispatcherTimeoutWaitingForScaling
+
+	// ErrDispatcherCanceledWhileWaiting dispatcher 已取消
+	ErrDispatcherCanceledWhileWaiting
+
+	// ErrNetUtilInvalidEnvType 无效的环境类型
+	ErrNetUtilInvalidEnvType
+
+	// ErrNetUtilInvalidIPAddress 无效的 IP 地址
+	ErrNetUtilInvalidIPAddress
+
+	// ErrNetUtilGetPrivateIPFailed 获取私网 IP 失败
+	ErrNetUtilGetPrivateIPFailed
+
+	// ErrNetUtilNoPrivateIPFound 未找到可用的私网 IP
+	ErrNetUtilNoPrivateIPFound
+
+	// ErrNetUtilGetNetworkInterfacesFailed 获取网络接口失败
+	ErrNetUtilGetNetworkInterfacesFailed
+
+	// ErrNetUtilNoAvailablePort 未找到可用端口
+	ErrNetUtilNoAvailablePort
+
+	// ErrNetUtilIPMismatch 用户指定 IP 与自动绑定 IP 不匹配
+	ErrNetUtilIPMismatch
+
+	// ErrTCPConnNotFound 连接不存在
+	ErrTCPConnNotFound
+
+	// ErrTCPConnClosed 连接已关闭
+	ErrTCPConnClosed
+
+	// ErrTCPConnMappingNotFound TCP 连接映射未找到
+	ErrTCPConnMappingNotFound
+
+	// ErrTCPConnSetWriteTimeoutFailed 设置写超时失败
+	ErrTCPConnSetWriteTimeoutFailed
+
+	// ErrTCPConnParseCorrelationIDFailed 解析 CorrelationID 失败
+	ErrTCPConnParseCorrelationIDFailed
+
+	// ErrTCPConnWriteMessageFailed 写入消息失败
+	ErrTCPConnWriteMessageFailed
+
+	// ErrTCPConnSendToClosedError 发送到已关闭连接失败
+	ErrTCPConnSendToClosedError
+
+	// ErrTCPConnEmptyAddr 连接地址为空
+	ErrTCPConnEmptyAddr
+
+	// ErrTCPConnInvalidAddr 连接地址无效
+	ErrTCPConnInvalidAddr
+
+	// ========================================
 	// 帧错误码
 	// ========================================
 
@@ -108,6 +199,307 @@ const (
 
 	// ErrStoreInvalidParameter 无效参数
 	ErrStoreInvalidParameter
+
+	// ErrStoreCheckpointOperation Checkpoint 操作失败
+	ErrStoreCheckpointOperation
+
+	// ErrStoreCheckpointSerializationFailed Checkpoint 序列化失败
+	ErrStoreCheckpointSerializationFailed
+
+	// ErrStoreCheckpointWriteFailed Checkpoint 写入失败
+	ErrStoreCheckpointWriteFailed
+
+	// ErrStoreCheckpointRenameFailed Checkpoint 重命名失败
+	ErrStoreCheckpointRenameFailed
+
+	// ErrStoreCheckpointReadFailed Checkpoint 读取失败
+	ErrStoreCheckpointReadFailed
+
+	// ErrStoreCheckpointDeserializationFailed Checkpoint 反序列化失败
+	ErrStoreCheckpointDeserializationFailed
+
+	// ErrStoreCheckpointInvalidMagic Checkpoint 魔术字无效
+	ErrStoreCheckpointInvalidMagic
+
+	// ErrStoreCheckpointDirectoryReadFailed Checkpoint 目录读取失败
+	ErrStoreCheckpointDirectoryReadFailed
+
+	// ErrStoreCheckpointDeleteFailed Checkpoint 删除失败
+	ErrStoreCheckpointDeleteFailed
+
+	// ErrStoreSequenceMismatch 序列号不一致
+	ErrStoreSequenceMismatch
+
+	// ErrStoreCheckpointVersionInvalid Checkpoint 版本号无效
+	ErrStoreCheckpointVersionInvalid
+
+	// ErrStoreCheckpointEmpty Checkpoint 为空
+	ErrStoreCheckpointEmpty
+
+	// ErrStoreCheckpointMissingSnapshotInfo Checkpoint 缺少 SnapshotInfo
+	ErrStoreCheckpointMissingSnapshotInfo
+
+	// ErrStoreSnapshotFileNameParseFailed 解析快照文件名失败
+	ErrStoreSnapshotFileNameParseFailed
+
+	// ErrStoreSnapshotFileNameSequenceMismatch 文件名序列号不一致
+	ErrStoreSnapshotFileNameSequenceMismatch
+
+	// ErrStoreSequenceVersionMismatch 序列号版本不匹配
+	ErrStoreSequenceVersionMismatch
+
+	// ========================================
+	// SnapshotReader 模块错误码
+	// ========================================
+
+	// ErrStoreSnapshotOpenFailed 打开 Snapshot 文件失败
+	ErrStoreSnapshotOpenFailed
+
+	// ErrStoreSnapshotReadHeaderFailed 读取文件头失败
+	ErrStoreSnapshotReadHeaderFailed
+
+	// ErrStoreSnapshotParseHeaderFailed 解析文件头失败
+	ErrStoreSnapshotParseHeaderFailed
+
+	// ErrStoreSnapshotInvalidMagic 无效的魔术字
+	ErrStoreSnapshotInvalidMagic
+
+	// ErrStoreSnapshotUnsupportedVersion 不支持的版本号
+	ErrStoreSnapshotUnsupportedVersion
+
+	// ErrStoreSnapshotInvalidCompression 无效的压缩算法类型
+	ErrStoreSnapshotInvalidCompression
+
+	// ErrStoreSnapshotCompressorFailed 创建压缩器失败
+	ErrStoreSnapshotCompressorFailed
+
+	// ErrStoreSnapshotSeekMetadataFailed 定位元数据段失败
+	ErrStoreSnapshotSeekMetadataFailed
+
+	// ErrStoreSnapshotReadMetadataFailed 读取元数据段失败
+	ErrStoreSnapshotReadMetadataFailed
+
+	// ErrStoreSnapshotDecompressMetadataFailed 解压缩元数据失败
+	ErrStoreSnapshotDecompressMetadataFailed
+
+	// ErrStoreSnapshotUnmarshalMetadataFailed 反序列化元数据失败
+	ErrStoreSnapshotUnmarshalMetadataFailed
+
+	// ErrStoreSnapshotSeekDataFailed 定位数据段失败
+	ErrStoreSnapshotSeekDataFailed
+
+	// ErrStoreSnapshotReadDataFailed 读取数据段失败
+	ErrStoreSnapshotReadDataFailed
+
+	// ErrStoreSnapshotDecompressDataFailed 解压缩数据失败
+	ErrStoreSnapshotDecompressDataFailed
+
+	// ErrStoreSnapshotUnmarshalDataFailed 反序列化数据失败
+	ErrStoreSnapshotUnmarshalDataFailed
+
+	// ErrStoreSnapshotGetFileInfoFailed 获取文件信息失败
+	ErrStoreSnapshotGetFileInfoFailed
+
+	// ErrStoreSnapshotSeekChecksumFailed 定位校验和失败
+	ErrStoreSnapshotSeekChecksumFailed
+
+	// ErrStoreSnapshotReadChecksumFailed 读取校验和失败
+	ErrStoreSnapshotReadChecksumFailed
+
+	// ErrStoreSnapshotSeekStartFailed 重置文件指针失败
+	ErrStoreSnapshotSeekStartFailed
+
+	// ErrStoreSnapshotReadDataForHashFailed 读取数据失败（用于计算校验和）
+	ErrStoreSnapshotReadDataForHashFailed
+
+	// ErrStoreSnapshotHashFailed 计算校验和失败
+	ErrStoreSnapshotHashFailed
+
+	// ========================================
+	// SnapshotWriter 模块错误码
+	// ========================================
+
+	// ErrStoreSnapshotCreateTempFileFailed 创建临时文件失败
+	ErrStoreSnapshotCreateTempFileFailed
+
+	// ErrStoreSnapshotMarshalMetadataFailed 序列化元数据失败
+	ErrStoreSnapshotMarshalMetadataFailed
+
+	// ErrStoreSnapshotCompressMetadataFailed 压缩元数据失败
+	ErrStoreSnapshotCompressMetadataFailed
+
+	// ErrStoreSnapshotCacheMetadataFailed 缓存元数据段失败
+	ErrStoreSnapshotCacheMetadataFailed
+
+	// ErrStoreSnapshotMarshalDataFailed 序列化数据失败
+	ErrStoreSnapshotMarshalDataFailed
+
+	// ErrStoreSnapshotCompressDataFailed 压缩数据失败
+	ErrStoreSnapshotCompressDataFailed
+
+	// ErrStoreSnapshotCacheDataFailed 缓存数据段失败
+	ErrStoreSnapshotCacheDataFailed
+
+	// ErrStoreSnapshotAlreadyFinalized Finalize 已调用，不能重复调用
+	ErrStoreSnapshotAlreadyFinalized
+
+	// ErrStoreSnapshotWriteHeaderFailed 写入文件头失败
+	ErrStoreSnapshotWriteHeaderFailed
+
+	// ErrStoreSnapshotWriteMetadataFailed 写入元数据段失败
+	ErrStoreSnapshotWriteMetadataFailed
+
+	// ErrStoreSnapshotWriteDataFailed 写入数据段失败
+	ErrStoreSnapshotWriteDataFailed
+
+	// ErrStoreSnapshotMarshalHeaderFailed 序列化文件头失败
+	ErrStoreSnapshotMarshalHeaderFailed
+
+	// ErrStoreSnapshotHashHeaderFailed 计算文件头哈希失败
+	ErrStoreSnapshotHashHeaderFailed
+
+	// ErrStoreSnapshotHashMetadataFailed 计算元数据段哈希失败
+	ErrStoreSnapshotHashMetadataFailed
+
+	// ErrStoreSnapshotHashDataFailed 计算数据段哈希失败
+	ErrStoreSnapshotHashDataFailed
+
+	// ErrStoreSnapshotSyncFailed 同步数据失败
+	ErrStoreSnapshotSyncFailed
+
+	// ErrStoreSnapshotWriteChecksumFailed 写入校验和失败
+	ErrStoreSnapshotWriteChecksumFailed
+
+	// ErrStoreSnapshotFinalSyncFailed 最终同步失败
+	ErrStoreSnapshotFinalSyncFailed
+
+	// ErrStoreSnapshotCloseFailed 关闭文件失败
+	ErrStoreSnapshotCloseFailed
+
+	// ========================================
+	// SnapshotManager 模块错误码
+	// ========================================
+
+	// ErrStoreSnapshotCreateDirectoryFailed 创建 Snapshot 目录失败
+	ErrStoreSnapshotCreateDirectoryFailed
+
+	// ErrStoreSnapshotCreateWriterFailed 创建 Snapshot 写入器失败
+	ErrStoreSnapshotCreateWriterFailed
+
+	// ErrStoreSnapshotWriteMetadataSectionFailed 写入元数据段失败
+	ErrStoreSnapshotWriteMetadataSectionFailed
+
+	// ErrStoreSnapshotWriteDataSectionFailed 写入数据段失败
+	ErrStoreSnapshotWriteDataSectionFailed
+
+	// ErrStoreSnapshotFinalizeFailed 完成 Snapshot 写入失败
+	ErrStoreSnapshotFinalizeFailed
+
+	// ErrStoreSnapshotRenameFailed 重命名 Snapshot 文件失败
+	ErrStoreSnapshotRenameFailed
+
+	// ErrStoreSnapshotCreateReaderFailed 创建 Snapshot 读取器失败
+	ErrStoreSnapshotCreateReaderFailed
+
+	// ErrStoreSnapshotVerifyChecksumFailed 验证校验和失败
+	ErrStoreSnapshotVerifyChecksumFailed
+
+	// ErrStoreSnapshotChecksumMismatch SHA256 校验和不匹配
+	ErrStoreSnapshotChecksumMismatch
+
+	// ErrStoreSnapshotReadMetadataSectionFailed 读取元数据段失败
+	ErrStoreSnapshotReadMetadataSectionFailed
+
+	// ErrStoreSnapshotReadDataSectionFailed 读取数据段失败
+	ErrStoreSnapshotReadDataSectionFailed
+
+	// ErrStoreSnapshotReadDirectoryFailed 读取 Snapshot 目录失败
+	ErrStoreSnapshotReadDirectoryFailed
+
+	// ErrStoreSnapshotNoSnapshotFound 没有找到 Snapshot 文件
+	ErrStoreSnapshotNoSnapshotFound
+
+	// ErrStoreSnapshotDeleteFailed 删除 Snapshot 文件失败
+	ErrStoreSnapshotDeleteFailed
+
+	// ErrStoreSnapshotInvalidFileName 无效的 Snapshot 文件名
+	ErrStoreSnapshotInvalidFileName
+
+	// ErrStoreSnapshotDirectoryNotExist snapshot 目录不存在
+	ErrStoreSnapshotDirectoryNotExist
+
+	// ErrStoreSnapshotDirectoryNotAccessible 无法访问 snapshot 目录
+	ErrStoreSnapshotDirectoryNotAccessible
+
+	// ErrStoreSnapshotPathNotDirectory snapshot 路径不是目录
+	ErrStoreSnapshotPathNotDirectory
+
+	// ErrStoreSnapshotDirectoryNotWritable snapshot 目录没有写权限
+	ErrStoreSnapshotDirectoryNotWritable
+
+	// ErrStoreSnapshotGetDataFailed 获取快照数据失败
+	ErrStoreSnapshotGetDataFailed
+
+	// ErrStoreSnapshotCreationFailed 创建 Snapshot 失败
+	ErrStoreSnapshotCreationFailed
+
+	// ErrStoreSnapshotLoadFailed 加载 Snapshot 失败
+	ErrStoreSnapshotLoadFailed
+
+	// ErrStoreSnapshotMissingSnapshotData 缺少 snapshot_data 字段
+	ErrStoreSnapshotMissingSnapshotData
+
+	// ========================================
+	// Recovery 模块错误码
+	// ========================================
+
+	// ErrStoreRecoveryCreateDirectoryFailed 创建恢复目录失败
+	ErrStoreRecoveryCreateDirectoryFailed
+
+	// ErrStoreRecoveryCreateSequenceGeneratorFailed 创建序列号生成器失败
+	ErrStoreRecoveryCreateSequenceGeneratorFailed
+
+	// ErrStoreRecoveryCreateCheckpointManagerFailed 创建 Checkpoint 管理器失败
+	ErrStoreRecoveryCreateCheckpointManagerFailed
+
+	// ErrStoreRecoveryLoadLatestCheckpointFailed 加载最新 Checkpoint 失败
+	ErrStoreRecoveryLoadLatestCheckpointFailed
+
+	// ErrStoreRecoveryCreateSnapshotManagerFailed 创建 Snapshot 管理器失败
+	ErrStoreRecoveryCreateSnapshotManagerFailed
+
+	// ErrStoreRecoveryLoadSnapshotFailed 加载 Snapshot 失败
+	ErrStoreRecoveryLoadSnapshotFailed
+
+	// ErrStoreRecoveryReplayWALFailed 重放 WAL 失败
+	ErrStoreRecoveryReplayWALFailed
+
+	// ErrStoreRecoveryOpenWALFailed 打开 WAL 失败
+	ErrStoreRecoveryOpenWALFailed
+
+	// ErrStoreRecoveryRecoverWALFailed 恢复 WAL 日志失败
+	ErrStoreRecoveryRecoverWALFailed
+
+	// ErrStoreRecoveryCreateSnapshotFailed 创建 Snapshot 失败
+	ErrStoreRecoveryCreateSnapshotFailed
+
+	// ErrStoreRecoverySequenceMismatch 序列号不一致
+	ErrStoreRecoverySequenceMismatch
+
+	// ErrStoreRecoveryCreateCheckpointFailed 创建 Checkpoint 失败
+	ErrStoreRecoveryCreateCheckpointFailed
+
+	// ErrStoreRecoveryCheckpointValidationFailed Checkpoint 序列号验证失败
+	ErrStoreRecoveryCheckpointValidationFailed
+
+	// ErrStoreRecoveryLoadCheckpointFailed 加载 Checkpoint 失败
+	ErrStoreRecoveryLoadCheckpointFailed
+
+	// ErrStoreRecoverySnapshotFileNotFound Snapshot 文件不存在
+	ErrStoreRecoverySnapshotFileNotFound
+
+	// ErrStoreRecoveryReadCheckpointDirectoryFailed 读取 Checkpoint 目录失败
+	ErrStoreRecoveryReadCheckpointDirectoryFailed
 
 	// ========================================
 	// Consensus 模块错误码
@@ -276,6 +668,15 @@ const (
 	// ErrClockOperation 时钟操作错误
 	ErrClockOperation
 
+	// ErrIdentifierNoPortEnabled 没有启用任何端口
+	ErrIdentifierNoPortEnabled
+
+	// ErrIdentifierInvalidTCPPort TCP 端口无效
+	ErrIdentifierInvalidTCPPort
+
+	// ErrIdentifierInvalidUDPPort UDP 端口无效
+	ErrIdentifierInvalidUDPPort
+
 	// ========================================
 	// Encryption 模块错误码
 	// ========================================
@@ -294,6 +695,18 @@ const (
 
 	// ErrEncryptionEmptyData 空数据错误
 	ErrEncryptionEmptyData
+
+	// ErrEncryptionCreateCipherFailed 创建 cipher 失败
+	ErrEncryptionCreateCipherFailed
+
+	// ErrEncryptionCreateGCMFailed 创建 GCM 模式失败
+	ErrEncryptionCreateGCMFailed
+
+	// ErrEncryptionGenerateNonceFailed 生成 Nonce 失败
+	ErrEncryptionGenerateNonceFailed
+
+	// ErrEncryptionDecryptFailed 解密失败或认证标签验证失败
+	ErrEncryptionDecryptFailed
 
 	// ========================================
 	// Frame IO 模块错误码
@@ -320,6 +733,64 @@ const (
 
 	// ErrFrameDefragmentation 分片反序列化失败
 	ErrFrameDefragmentation
+
+	// ========================================
+	// CLI 模块错误码（新增）
+	// ========================================
+
+	// ErrCLINodeAddrRequired 节点地址必填
+	ErrCLINodeAddrRequired
+
+	// ErrCLIHealthCheckTimeout 健康检查超时
+	ErrCLIHealthCheckTimeout
+
+	// ErrCLIHealthCheckCanceled 健康检查被取消
+	ErrCLIHealthCheckCanceled
+
+	// ErrCLIFixRequestFailed 修复请求失败
+	ErrCLIFixRequestFailed
+
+	// ErrCLICreateTransportFailed 创建传输层失败
+	ErrCLICreateTransportFailed
+
+	// ErrCLIStartTransportFailed 启动传输层失败
+	ErrCLIStartTransportFailed
+
+	// ErrCLICreateRPCClientFailed 创建 RPC 客户端失败
+	ErrCLICreateRPCClientFailed
+
+	// ErrCLIStartRPCClientFailed 启动 RPC 客户端失败
+	ErrCLIStartRPCClientFailed
+
+	// ErrCLINodeOperationFailed 节点操作失败
+	ErrCLINodeOperationFailed
+
+	// ErrCLINodeNotFound 节点不存在
+	ErrCLINodeNotFound
+
+	// ErrCLIFixResponseTypeError 修复响应类型错误
+	ErrCLIFixResponseTypeError
+
+	// ErrCLIJSONSerializationFailed JSON 序列化失败
+	ErrCLIJSONSerializationFailed
+
+	// ErrCLIYAMLNotImplemented YAML 格式暂未实现
+	ErrCLIYAMLNotImplemented
+
+	// ErrCLINodeIDRequired 节点 ID 必填
+	ErrCLINodeIDRequired
+
+	// ErrCLIAddNodeFailed 添加节点失败
+	ErrCLIAddNodeFailed
+
+	// ErrCLIRemoveNodeFailed 删除节点失败
+	ErrCLIRemoveNodeFailed
+
+	// ErrCLIQueryNodeStatusFailed 查询节点状态失败
+	ErrCLIQueryNodeStatusFailed
+
+	// ErrCLIQueryNodeListFailed 查询节点列表失败
+	ErrCLIQueryNodeListFailed
 )
 
 // ========================================
@@ -560,6 +1031,26 @@ func NewEncryptionEmptyDataError(msg string) *Error {
 	return newBase(ErrEncryptionEmptyData, msg)
 }
 
+// NewEncryptionCreateCipherFailedError 创建 cipher 失败错误
+func NewEncryptionCreateCipherFailedError(err error) *Error {
+	return newWithErr(ErrEncryptionCreateCipherFailed, err, "创建 AES cipher 失败")
+}
+
+// NewEncryptionCreateGCMFailedError 创建 GCM 模式失败错误
+func NewEncryptionCreateGCMFailedError(err error) *Error {
+	return newWithErr(ErrEncryptionCreateGCMFailed, err, "创建 GCM 模式失败")
+}
+
+// NewEncryptionGenerateNonceFailedError 生成 Nonce 失败错误
+func NewEncryptionGenerateNonceFailedError(err error) *Error {
+	return newWithErr(ErrEncryptionGenerateNonceFailed, err, "生成 Nonce 失败")
+}
+
+// NewEncryptionDecryptFailedError 解密失败或认证标签验证失败错误
+func NewEncryptionDecryptFailedError(err error) *Error {
+	return newWithErr(ErrEncryptionDecryptFailed, err, "解密失败或认证标签验证失败")
+}
+
 // ========================================
 // Store 模块错误构造函数
 // ========================================
@@ -587,6 +1078,417 @@ func NewStoreKeyValidationError(msg string) *Error {
 // NewStoreInvalidParameterError 创建无效参数错误
 func NewStoreInvalidParameterError(param string) *Error {
 	return newBase(ErrStoreInvalidParameter, "无效参数: %s", param)
+}
+
+// NewStoreCheckpointOperationError 创建 Checkpoint 操作失败错误
+func NewStoreCheckpointOperationError(op string, err error) *Error {
+	return newWithErr(ErrStoreCheckpointOperation, err, "Checkpoint %s 失败", op)
+}
+
+// NewStoreCheckpointSerializationFailedError 创建 Checkpoint 序列化失败错误
+func NewStoreCheckpointSerializationFailedError(err error) *Error {
+	return newWithErr(ErrStoreCheckpointSerializationFailed, err, "序列化 Checkpoint 失败")
+}
+
+// NewStoreCheckpointWriteFailedError 创建 Checkpoint 写入失败错误
+func NewStoreCheckpointWriteFailedError(err error) *Error {
+	return newWithErr(ErrStoreCheckpointWriteFailed, err, "写入 Checkpoint 临时文件失败")
+}
+
+// NewStoreCheckpointRenameFailedError 创建 Checkpoint 重命名失败错误
+func NewStoreCheckpointRenameFailedError(err error) *Error {
+	return newWithErr(ErrStoreCheckpointRenameFailed, err, "重命名 Checkpoint 文件失败")
+}
+
+// NewStoreCheckpointReadFailedError 创建 Checkpoint 读取失败错误
+func NewStoreCheckpointReadFailedError(err error) *Error {
+	return newWithErr(ErrStoreCheckpointReadFailed, err, "读取 Checkpoint 文件失败")
+}
+
+// NewStoreCheckpointDeserializationFailedError 创建 Checkpoint 反序列化失败错误
+func NewStoreCheckpointDeserializationFailedError(err error) *Error {
+	return newWithErr(ErrStoreCheckpointDeserializationFailed, err, "反序列化 Checkpoint 失败")
+}
+
+// NewStoreCheckpointInvalidMagicError 创建 Checkpoint 魔术字无效错误
+func NewStoreCheckpointInvalidMagicError(magic string) *Error {
+	return newBase(ErrStoreCheckpointInvalidMagic, "无效的 Checkpoint 魔术字: %s", magic)
+}
+
+// NewStoreCheckpointDirectoryReadFailedError 创建 Checkpoint 目录读取失败错误
+func NewStoreCheckpointDirectoryReadFailedError(err error) *Error {
+	return newWithErr(ErrStoreCheckpointDirectoryReadFailed, err, "读取 Checkpoint 目录失败")
+}
+
+// NewStoreCheckpointDeleteFailedError 创建 Checkpoint 删除失败错误
+func NewStoreCheckpointDeleteFailedError(err error) *Error {
+	return newWithErr(ErrStoreCheckpointDeleteFailed, err, "删除 Checkpoint 文件失败")
+}
+
+// ========================================
+// Sequence 模块错误构造函数
+// ========================================
+
+// NewStoreSequenceMismatchError 创建序列号不一致错误
+func NewStoreSequenceMismatchError(checkpointVersion, snapshotSequence int64) *Error {
+	return newBase(ErrStoreSequenceMismatch, "序列号不一致: checkpoint_version=%d, snapshot_sequence=%d", checkpointVersion, snapshotSequence)
+}
+
+// NewStoreCheckpointVersionInvalidError 创建 Checkpoint 版本号无效错误
+func NewStoreCheckpointVersionInvalidError(version int64) *Error {
+	return newBase(ErrStoreCheckpointVersionInvalid, "无效的 Checkpoint 版本号: %d", version)
+}
+
+// NewStoreCheckpointEmptyError 创建 Checkpoint 为空错误
+func NewStoreCheckpointEmptyError() *Error {
+	return newBase(ErrStoreCheckpointEmpty, "Checkpoint 为空")
+}
+
+// NewStoreCheckpointMissingSnapshotInfoError 创建 Checkpoint 缺少 SnapshotInfo 错误
+func NewStoreCheckpointMissingSnapshotInfoError() *Error {
+	return newBase(ErrStoreCheckpointMissingSnapshotInfo, "Checkpoint 缺少 SnapshotInfo")
+}
+
+// NewStoreSnapshotFileNameParseFailedError 创建解析快照文件名失败错误
+func NewStoreSnapshotFileNameParseFailedError(snapshotFile string, err error) *Error {
+	return newWithErr(ErrStoreSnapshotFileNameParseFailed, err, "解析快照文件名失败: %s", snapshotFile)
+}
+
+// NewStoreSnapshotFileNameSequenceMismatchError 创建文件名序列号不一致错误
+func NewStoreSnapshotFileNameSequenceMismatchError(snapshotSequence, filenameSequence int) *Error {
+	return newBase(ErrStoreSnapshotFileNameSequenceMismatch, "文件名序列号不一致: snapshot_sequence=%d, filename_sequence=%d", snapshotSequence, filenameSequence)
+}
+
+// NewStoreSequenceVersionMismatchError 创建序列号版本不匹配错误
+func NewStoreSequenceVersionMismatchError(expected, actual uint64) *Error {
+	return newBase(ErrStoreSequenceVersionMismatch, "序列号版本不匹配: 期望 %d, 实际 %d", expected, actual)
+}
+
+// ========================================
+// SnapshotReader 模块错误构造函数
+// ========================================
+
+// NewStoreSnapshotOpenFailedError 创建打开 Snapshot 文件失败错误
+func NewStoreSnapshotOpenFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotOpenFailed, err, "打开 Snapshot 文件失败")
+}
+
+// NewStoreSnapshotReadHeaderFailedError 创建读取文件头失败错误
+func NewStoreSnapshotReadHeaderFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotReadHeaderFailed, err, "读取文件头失败")
+}
+
+// NewStoreSnapshotParseHeaderFailedError 创建解析文件头失败错误
+func NewStoreSnapshotParseHeaderFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotParseHeaderFailed, err, "解析文件头失败")
+}
+
+// NewStoreSnapshotInvalidMagicError 创建无效的魔术字错误
+func NewStoreSnapshotInvalidMagicError(expected, actual string) *Error {
+	return newBase(ErrStoreSnapshotInvalidMagic, "无效的魔术字: 期望 %s, 实际 %s", expected, actual)
+}
+
+// NewStoreSnapshotUnsupportedVersionError 创建不支持的版本号错误
+func NewStoreSnapshotUnsupportedVersionError(version, supported uint32) *Error {
+	return newBase(ErrStoreSnapshotUnsupportedVersion, "不支持的版本号: %d (当前支持: %d)", version, supported)
+}
+
+// NewStoreSnapshotInvalidCompressionError 创建无效的压缩算法类型错误
+func NewStoreSnapshotInvalidCompressionError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotInvalidCompression, err, "无效的压缩算法类型")
+}
+
+// NewStoreSnapshotCompressorFailedError 创建创建压缩器失败错误
+func NewStoreSnapshotCompressorFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotCompressorFailed, err, "创建压缩器失败")
+}
+
+// NewStoreSnapshotSeekMetadataFailedError 创建定位元数据段失败错误
+func NewStoreSnapshotSeekMetadataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotSeekMetadataFailed, err, "定位元数据段失败")
+}
+
+// NewStoreSnapshotReadMetadataFailedError 创建读取元数据段失败错误
+func NewStoreSnapshotReadMetadataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotReadMetadataFailed, err, "读取元数据段失败")
+}
+
+// NewStoreSnapshotDecompressMetadataFailedError 创建解压缩元数据失败错误
+func NewStoreSnapshotDecompressMetadataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotDecompressMetadataFailed, err, "解压缩元数据失败")
+}
+
+// NewStoreSnapshotUnmarshalMetadataFailedError 创建反序列化元数据失败错误
+func NewStoreSnapshotUnmarshalMetadataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotUnmarshalMetadataFailed, err, "反序列化元数据失败")
+}
+
+// NewStoreSnapshotSeekDataFailedError 创建定位数据段失败错误
+func NewStoreSnapshotSeekDataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotSeekDataFailed, err, "定位数据段失败")
+}
+
+// NewStoreSnapshotReadDataFailedError 创建读取数据段失败错误
+func NewStoreSnapshotReadDataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotReadDataFailed, err, "读取数据段失败")
+}
+
+// NewStoreSnapshotDecompressDataFailedError 创建解压缩数据失败错误
+func NewStoreSnapshotDecompressDataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotDecompressDataFailed, err, "解压缩数据失败")
+}
+
+// NewStoreSnapshotUnmarshalDataFailedError 创建反序列化数据失败错误
+func NewStoreSnapshotUnmarshalDataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotUnmarshalDataFailed, err, "反序列化数据失败")
+}
+
+// NewStoreSnapshotGetFileInfoFailedError 创建获取文件信息失败错误
+func NewStoreSnapshotGetFileInfoFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotGetFileInfoFailed, err, "获取文件信息失败")
+}
+
+// NewStoreSnapshotSeekChecksumFailedError 创建定位校验和失败错误
+func NewStoreSnapshotSeekChecksumFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotSeekChecksumFailed, err, "定位校验和失败")
+}
+
+// NewStoreSnapshotReadChecksumFailedError 创建读取校验和失败错误
+func NewStoreSnapshotReadChecksumFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotReadChecksumFailed, err, "读取校验和失败")
+}
+
+// NewStoreSnapshotSeekStartFailedError 创建重置文件指针失败错误
+func NewStoreSnapshotSeekStartFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotSeekStartFailed, err, "重置文件指针失败")
+}
+
+// NewStoreSnapshotReadDataForHashFailedError 创建读取数据失败错误
+func NewStoreSnapshotReadDataForHashFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotReadDataForHashFailed, err, "读取数据失败")
+}
+
+// NewStoreSnapshotHashFailedError 创建计算校验和失败错误
+func NewStoreSnapshotHashFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotHashFailed, err, "计算校验和失败")
+}
+
+// ========================================
+// SnapshotWriter 模块错误构造函数
+// ========================================
+
+// NewStoreSnapshotCreateTempFileFailedError 创建临时文件失败错误
+func NewStoreSnapshotCreateTempFileFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotCreateTempFileFailed, err, "创建临时文件失败")
+}
+
+// NewStoreSnapshotMarshalMetadataFailedError 创建序列化元数据失败错误
+func NewStoreSnapshotMarshalMetadataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotMarshalMetadataFailed, err, "序列化元数据失败")
+}
+
+// NewStoreSnapshotCompressMetadataFailedError 创建压缩元数据失败错误
+func NewStoreSnapshotCompressMetadataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotCompressMetadataFailed, err, "压缩元数据失败")
+}
+
+// NewStoreSnapshotCacheMetadataFailedError 创建缓存元数据段失败错误
+func NewStoreSnapshotCacheMetadataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotCacheMetadataFailed, err, "缓存元数据段失败")
+}
+
+// NewStoreSnapshotMarshalDataFailedError 创建序列化数据失败错误
+func NewStoreSnapshotMarshalDataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotMarshalDataFailed, err, "序列化数据失败")
+}
+
+// NewStoreSnapshotCompressDataFailedError 创建压缩数据失败错误
+func NewStoreSnapshotCompressDataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotCompressDataFailed, err, "压缩数据失败")
+}
+
+// NewStoreSnapshotCacheDataFailedError 创建缓存数据段失败错误
+func NewStoreSnapshotCacheDataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotCacheDataFailed, err, "缓存数据段失败")
+}
+
+// NewStoreSnapshotAlreadyFinalizedError 创建 Finalize 已调用错误
+func NewStoreSnapshotAlreadyFinalizedError() *Error {
+	return newBase(ErrStoreSnapshotAlreadyFinalized, "Finalize 已调用，不能重复调用")
+}
+
+// NewStoreSnapshotWriteHeaderFailedError 创建写入文件头失败错误
+func NewStoreSnapshotWriteHeaderFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotWriteHeaderFailed, err, "写入文件头失败")
+}
+
+// NewStoreSnapshotWriteMetadataFailedError 创建写入元数据段失败错误
+func NewStoreSnapshotWriteMetadataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotWriteMetadataFailed, err, "写入元数据段失败")
+}
+
+// NewStoreSnapshotWriteDataFailedError 创建写入数据段失败错误
+func NewStoreSnapshotWriteDataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotWriteDataFailed, err, "写入数据段失败")
+}
+
+// NewStoreSnapshotMarshalHeaderFailedError 创建序列化文件头失败错误
+func NewStoreSnapshotMarshalHeaderFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotMarshalHeaderFailed, err, "序列化文件头失败")
+}
+
+// NewStoreSnapshotHashHeaderFailedError 创建计算文件头哈希失败错误
+func NewStoreSnapshotHashHeaderFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotHashHeaderFailed, err, "计算文件头哈希失败")
+}
+
+// NewStoreSnapshotHashMetadataFailedError 创建计算元数据段哈希失败错误
+func NewStoreSnapshotHashMetadataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotHashMetadataFailed, err, "计算元数据段哈希失败")
+}
+
+// NewStoreSnapshotHashDataFailedError 创建计算数据段哈希失败错误
+func NewStoreSnapshotHashDataFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotHashDataFailed, err, "计算数据段哈希失败")
+}
+
+// NewStoreSnapshotSyncFailedError 创建同步数据失败错误
+func NewStoreSnapshotSyncFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotSyncFailed, err, "同步数据失败")
+}
+
+// NewStoreSnapshotWriteChecksumFailedError 创建写入校验和失败错误
+func NewStoreSnapshotWriteChecksumFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotWriteChecksumFailed, err, "写入校验和失败")
+}
+
+// NewStoreSnapshotFinalSyncFailedError 创建最终同步失败错误
+func NewStoreSnapshotFinalSyncFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotFinalSyncFailed, err, "最终同步失败")
+}
+
+// NewStoreSnapshotCloseFailedError 创建关闭文件失败错误
+func NewStoreSnapshotCloseFailedError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotCloseFailed, err, "关闭文件失败")
+}
+
+// ========================================
+// SnapshotManager 模块错误构造函数
+// ========================================
+
+// NewStoreSnapshotCreateDirectoryFailedError 创建 Snapshot 目录失败错误
+func NewStoreSnapshotCreateDirectoryFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotCreateDirectoryFailed, "创建 Snapshot 目录", err, "创建 Snapshot 目录失败")
+}
+
+// NewStoreSnapshotCreateWriterFailedError 创建 Snapshot 写入器失败错误
+func NewStoreSnapshotCreateWriterFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotCreateWriterFailed, "创建 Snapshot 写入器", err, "创建 Snapshot 写入器失败")
+}
+
+// NewStoreSnapshotWriteMetadataSectionFailedError 写入元数据段失败错误
+func NewStoreSnapshotWriteMetadataSectionFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotWriteMetadataSectionFailed, "写入元数据段", err, "写入元数据段失败")
+}
+
+// NewStoreSnapshotWriteDataSectionFailedError 写入数据段失败错误
+func NewStoreSnapshotWriteDataSectionFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotWriteDataSectionFailed, "写入数据段", err, "写入数据段失败")
+}
+
+// NewStoreSnapshotFinalizeFailedError 完成 Snapshot 写入失败错误
+func NewStoreSnapshotFinalizeFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotFinalizeFailed, "完成 Snapshot 写入", err, "完成 Snapshot 写入失败")
+}
+
+// NewStoreSnapshotRenameFailedError 重命名 Snapshot 文件失败错误
+func NewStoreSnapshotRenameFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotRenameFailed, "重命名 Snapshot 文件", err, "重命名 Snapshot 文件失败")
+}
+
+// NewStoreSnapshotCreateReaderFailedError 创建 Snapshot 读取器失败错误
+func NewStoreSnapshotCreateReaderFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotCreateReaderFailed, "创建 Snapshot 读取器", err, "创建 Snapshot 读取器失败")
+}
+
+// NewStoreSnapshotVerifyChecksumFailedError 验证校验和失败错误
+func NewStoreSnapshotVerifyChecksumFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotVerifyChecksumFailed, "验证校验和", err, "验证校验和失败")
+}
+
+// NewStoreSnapshotChecksumMismatchError SHA256 校验和不匹配错误
+func NewStoreSnapshotChecksumMismatchError() *Error {
+	return newBase(ErrStoreSnapshotChecksumMismatch, "SHA256 校验和不匹配")
+}
+
+// NewStoreSnapshotReadMetadataSectionFailedError 读取元数据段失败错误
+func NewStoreSnapshotReadMetadataSectionFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotReadMetadataSectionFailed, "读取元数据段", err, "读取元数据段失败")
+}
+
+// NewStoreSnapshotReadDataSectionFailedError 读取数据段失败错误
+func NewStoreSnapshotReadDataSectionFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotReadDataSectionFailed, "读取数据段", err, "读取数据段失败")
+}
+
+// NewStoreSnapshotReadDirectoryFailedError 读取 Snapshot 目录失败错误
+func NewStoreSnapshotReadDirectoryFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotReadDirectoryFailed, "读取 Snapshot 目录", err, "读取 Snapshot 目录失败")
+}
+
+// NewStoreSnapshotNoSnapshotFoundError 没有找到 Snapshot 文件错误
+func NewStoreSnapshotNoSnapshotFoundError() *Error {
+	return newBase(ErrStoreSnapshotNoSnapshotFound, "没有找到 Snapshot 文件")
+}
+
+// NewStoreSnapshotDeleteFailedError 删除 Snapshot 文件失败错误
+func NewStoreSnapshotDeleteFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotDeleteFailed, "删除 Snapshot 文件", err, "删除 Snapshot 文件失败")
+}
+
+// NewStoreSnapshotInvalidFileNameError 无效的 Snapshot 文件名错误
+func NewStoreSnapshotInvalidFileNameError(fileName string) *Error {
+	return newBase(ErrStoreSnapshotInvalidFileName, "无效的 Snapshot 文件名: %s", fileName)
+}
+
+// NewStoreSnapshotDirectoryNotExistError snapshot 目录不存在错误
+func NewStoreSnapshotDirectoryNotExistError(dir string) *Error {
+	return newBase(ErrStoreSnapshotDirectoryNotExist, "snapshot 目录不存在: %s", dir)
+}
+
+// NewStoreSnapshotDirectoryNotAccessibleError 无法访问 snapshot 目录错误
+func NewStoreSnapshotDirectoryNotAccessibleError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotDirectoryNotAccessible, err, "无法访问 snapshot 目录")
+}
+
+// NewStoreSnapshotPathNotDirectoryError snapshot 路径不是目录错误
+func NewStoreSnapshotPathNotDirectoryError(dir string) *Error {
+	return newBase(ErrStoreSnapshotPathNotDirectory, "snapshot 路径不是目录: %s", dir)
+}
+
+// NewStoreSnapshotDirectoryNotWritableError snapshot 目录没有写权限错误
+func NewStoreSnapshotDirectoryNotWritableError(err error) *Error {
+	return newWithErr(ErrStoreSnapshotDirectoryNotWritable, err, "snapshot 目录没有写权限")
+}
+
+// NewStoreSnapshotGetDataFailedError 获取快照数据失败错误
+func NewStoreSnapshotGetDataFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotGetDataFailed, "获取快照数据", err, "获取快照数据失败")
+}
+
+// NewStoreSnapshotCreationFailedError 创建 Snapshot 失败错误
+func NewStoreSnapshotCreationFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotCreationFailed, "创建 Snapshot", err, "创建 Snapshot 失败")
+}
+
+// NewStoreSnapshotLoadFailedError 加载 Snapshot 失败错误
+func NewStoreSnapshotLoadFailedError(err error) *Error {
+	return newWithOpErr(ErrStoreSnapshotLoadFailed, "加载 Snapshot", err, "加载 Snapshot 失败")
+}
+
+// NewStoreSnapshotMissingSnapshotDataError 缺少 snapshot_data 字段错误
+func NewStoreSnapshotMissingSnapshotDataError() *Error {
+	return newBase(ErrStoreSnapshotMissingSnapshotData, "缺少 snapshot_data 字段")
 }
 
 // ========================================
@@ -846,6 +1748,163 @@ func NewConfigValidationError(field, msg string) *Error {
 }
 
 // ========================================
+// Dispatcher 模块错误构造函数
+// ========================================
+
+// NewDispatcherHandlerRequiredError 创建 handler 参数为空错误
+func NewDispatcherHandlerRequiredError() *Error {
+	return newBase(ErrDispatcherHandlerRequired, "handler 不能为空")
+}
+
+// NewDispatcherInvalidWorkerCountError 创建 WorkerCount 无效错误
+func NewDispatcherInvalidWorkerCountError(count int) *Error {
+	return newBase(ErrDispatcherInvalidWorkerCount, "WorkerCount 必须大于 0，当前值: %d", count)
+}
+
+// NewDispatcherInvalidQueueSizeError 创建 QueueSize 无效错误
+func NewDispatcherInvalidQueueSizeError(size int) *Error {
+	return newBase(ErrDispatcherInvalidQueueSize, "QueueSize 必须大于 0，当前值: %d", size)
+}
+
+// NewDispatcherMinMaxWorkersInvalidError 创建 MinWorkers > MaxWorkers 错误
+func NewDispatcherMinMaxWorkersInvalidError(min, max int) *Error {
+	return newBase(ErrDispatcherMinMaxWorkersInvalid, "MinWorkers (%d) 不能大于 MaxWorkers (%d)", min, max)
+}
+
+// NewDispatcherScaleThresholdInvalidError 创建阈值无效错误
+func NewDispatcherScaleThresholdInvalidError(up, down float64) *Error {
+	return newBase(ErrDispatcherScaleThresholdInvalid, "ScaleUpThreshold (%.2f) 必须大于 ScaleDownThreshold (%.2f)", up, down)
+}
+
+// NewDispatcherWorkerCountOutOfRangeError 创建 WorkerCount 超出范围错误
+func NewDispatcherWorkerCountOutOfRangeError(count, min, max int) *Error {
+	return newBase(ErrDispatcherWorkerCountOutOfRange, "WorkerCount (%d) 必须在 MinWorkers (%d) 和 MaxWorkers (%d) 之间", count, min, max)
+}
+
+// NewDispatcherAlreadyRunningError 创建 dispatcher 已在运行错误
+func NewDispatcherAlreadyRunningError() *Error {
+	return newBase(ErrDispatcherAlreadyRunning, "dispatcher 已在运行")
+}
+
+// NewDispatcherNotRunningError 创建 dispatcher 未运行错误
+func NewDispatcherNotRunningError() *Error {
+	return newBase(ErrDispatcherNotRunning, "dispatcher 未运行")
+}
+
+// NewDispatcherTargetWorkerCountOutOfRangeError 创建目标数量超出范围错误
+func NewDispatcherTargetWorkerCountOutOfRangeError(target, min, max int) *Error {
+	return newBase(ErrDispatcherTargetWorkerCountOutOfRange, "目标 worker 数量 %d 超出范围 [%d, %d]", target, min, max)
+}
+
+// NewDispatcherTargetNotGreaterThanCurrentError 创建扩容目标无效错误
+func NewDispatcherTargetNotGreaterThanCurrentError(target, current int) *Error {
+	return newBase(ErrDispatcherTargetNotGreaterThanCurrent, "扩容目标 %d 必须大于当前数量 %d", target, current)
+}
+
+// NewDispatcherTargetNotLessThanCurrentError 创建缩容目标无效错误
+func NewDispatcherTargetNotLessThanCurrentError(target, current int) *Error {
+	return newBase(ErrDispatcherTargetNotLessThanCurrent, "缩容目标 %d 必须小于当前数量 %d", target, current)
+}
+
+// NewDispatcherTimeoutWaitingForScalingError 创建等待扩缩容超时错误
+func NewDispatcherTimeoutWaitingForScalingError(target int) *Error {
+	return newBase(ErrDispatcherTimeoutWaitingForScaling, "等待扩缩容到 %d 个 worker 超时", target)
+}
+
+// NewDispatcherCanceledWhileWaitingError 创建 dispatcher 已取消错误
+func NewDispatcherCanceledWhileWaitingError() *Error {
+	return newBase(ErrDispatcherCanceledWhileWaiting, "dispatcher 已取消")
+}
+
+// ========================================
+// NetUtil 模块错误构造函数
+// ========================================
+
+// NewNetUtilInvalidEnvTypeError 创建无效的环境类型错误
+func NewNetUtilInvalidEnvTypeError(envType string) *Error {
+	return newBase(ErrNetUtilInvalidEnvType, "无效的环境类型: %s（必须是 dev 或 cluster）", envType)
+}
+
+// NewNetUtilInvalidIPAddressError 创建无效的 IP 地址错误
+func NewNetUtilInvalidIPAddressError(ip string) *Error {
+	return newBase(ErrNetUtilInvalidIPAddress, "无效的 IP 地址: %s", ip)
+}
+
+// NewNetUtilGetPrivateIPFailedError 创建获取私网 IP 失败错误
+func NewNetUtilGetPrivateIPFailedError(err error) *Error {
+	return newWithErr(ErrNetUtilGetPrivateIPFailed, err, "获取私网 IP 失败")
+}
+
+// NewNetUtilNoPrivateIPFoundError 创建未找到可用的私网 IP 错误
+func NewNetUtilNoPrivateIPFoundError() *Error {
+	return newBase(ErrNetUtilNoPrivateIPFound, "未找到可用的私网 IP，请手动指定 --bind-ip 参数")
+}
+
+// NewNetUtilGetNetworkInterfacesFailedError 创建获取网络接口失败错误
+func NewNetUtilGetNetworkInterfacesFailedError(err error) *Error {
+	return newWithErr(ErrNetUtilGetNetworkInterfacesFailed, err, "获取网络接口失败")
+}
+
+// NewNetUtilNoAvailablePortError 创建未找到可用端口错误
+func NewNetUtilNoAvailablePortError(startPort int) *Error {
+	return newBase(ErrNetUtilNoAvailablePort, "未找到可用端口（起始端口: %d）", startPort)
+}
+
+// NewNetUtilIPMismatchError 创建用户指定 IP 与自动绑定 IP 不匹配错误
+func NewNetUtilIPMismatchError(userIP, autoIP string) *Error {
+	return newBase(ErrNetUtilIPMismatch, "用户指定 IP (%s) 与自动绑定 IP (%s) 不匹配，请确保一致", userIP, autoIP)
+}
+
+// ========================================
+// TCP 连接错误构造函数
+// ========================================
+
+// NewTCPConnNotFoundError 创建连接不存在错误
+func NewTCPConnNotFoundError(connID string) *Error {
+	return newBase(ErrTCPConnNotFound, "连接不存在: %s", connID)
+}
+
+// NewTCPConnClosedError 创建连接已关闭错误
+func NewTCPConnClosedError(connID string) *Error {
+	return newBase(ErrTCPConnClosed, "连接已关闭: %s", connID)
+}
+
+// NewTCPConnMappingNotFoundError 创建 TCP 连接映射未找到错误
+func NewTCPConnMappingNotFoundError() *Error {
+	return newBase(ErrTCPConnMappingNotFound, "TCP 连接映射未找到")
+}
+
+// NewTCPConnSetWriteTimeoutFailedError 创建设置写超时失败错误
+func NewTCPConnSetWriteTimeoutFailedError(err error) *Error {
+	return newWithErr(ErrTCPConnSetWriteTimeoutFailed, err, "设置写超时失败")
+}
+
+// NewTCPConnParseCorrelationIDFailedError 创建解析 CorrelationID 失败错误
+func NewTCPConnParseCorrelationIDFailedError(err error) *Error {
+	return newWithErr(ErrTCPConnParseCorrelationIDFailed, err, "解析 CorrelationID 失败")
+}
+
+// NewTCPConnWriteMessageFailedError 创建写入消息失败错误
+func NewTCPConnWriteMessageFailedError(err error) *Error {
+	return newWithErr(ErrTCPConnWriteMessageFailed, err, "写入消息失败")
+}
+
+// NewTCPConnSendToClosedError 创建发送到已关闭连接失败错误
+func NewTCPConnSendToClosedError(connID string) *Error {
+	return newBase(ErrTCPConnSendToClosedError, "连接已关闭 (ConnID: %s)，无法发送响应", connID)
+}
+
+// NewTCPConnEmptyAddrError 创建连接地址为空错误
+func NewTCPConnEmptyAddrError() *Error {
+	return newBase(ErrTCPConnEmptyAddr, "连接地址不能为空")
+}
+
+// NewTCPConnInvalidAddrError 创建连接地址无效错误
+func NewTCPConnInvalidAddrError(err error) *Error {
+	return newWithErr(ErrTCPConnInvalidAddr, err, "连接地址无效")
+}
+
+// ========================================
 // UUID/Clock 模块错误构造函数
 // ========================================
 
@@ -857,6 +1916,21 @@ func NewUUIDFormatError(msg string, err error) *Error {
 // NewClockOperationError 创建时钟操作错误
 func NewClockOperationError(msg string) *Error {
 	return newBase(ErrClockOperation, msg)
+}
+
+// NewIdentifierNoPortEnabledError 创建没有启用任何端口错误
+func NewIdentifierNoPortEnabledError() *Error {
+	return newBase(ErrIdentifierNoPortEnabled, "至少需要启用一个端口（TCP 或 UDP）")
+}
+
+// NewIdentifierInvalidTCPPortError 创建 TCP 端口无效错误
+func NewIdentifierInvalidTCPPortError(port int) *Error {
+	return newBase(ErrIdentifierInvalidTCPPort, "TCP 端口无效: %d（有效范围: 1-65535）", port)
+}
+
+// NewIdentifierInvalidUDPPortError 创建 UDP 端口无效错误
+func NewIdentifierInvalidUDPPortError(port int) *Error {
+	return newBase(ErrIdentifierInvalidUDPPort, "UDP 端口无效: %d（有效范围: 1-65535）", port)
 }
 
 // ========================================
@@ -1965,6 +3039,52 @@ const (
 	// ErrConfigNodesEmpty cluster.hosts[i].nodes 不能为空
 	ErrConfigNodesEmpty
 
+	// ========================================
+	// SeedNode 验证错误码
+	// ========================================
+
+	// ErrSeedNodeUnsupportedConfigType 不支持的种子节点配置类型
+	ErrSeedNodeUnsupportedConfigType
+
+	// ErrSeedNodeAddressEmpty 种子节点地址不能为空
+	ErrSeedNodeAddressEmpty
+
+	// ErrSeedNodeInvalidMultiAddrFormat 无效的 multiaddr 格式
+	ErrSeedNodeInvalidMultiAddrFormat
+
+	// ErrSeedNodeMissingTCPComponent 缺少 TCP 协议组件
+	ErrSeedNodeMissingTCPComponent
+
+	// ErrSeedNodeInvalidTCPPort 无效的 TCP 端口值
+	ErrSeedNodeInvalidTCPPort
+
+	// ErrSeedNodeTCPPortOutOfRange TCP 端口超出范围
+	ErrSeedNodeTCPPortOutOfRange
+
+	// ErrSeedNodeFilePathEmpty 配置文件路径不能为空
+	ErrSeedNodeFilePathEmpty
+
+	// ErrSeedNodeFilePathAbs 获取绝对路径失败
+	ErrSeedNodeFilePathAbs
+
+	// ErrSeedNodeFileCheckFailed 检查配置文件失败
+	ErrSeedNodeFileCheckFailed
+
+	// ErrSeedNodeConfigWatcherFailed 创建文件监控器失败
+	ErrSeedNodeConfigWatcherFailed
+
+	// ErrSeedNodeWatchDirFailed 监控目录失败
+	ErrSeedNodeWatchDirFailed
+
+	// ErrSeedNodeFileNotFound 配置文件不存在
+	ErrSeedNodeFileNotFound
+
+	// ErrSeedNodeLoadConfigFailed 加载配置失败
+	ErrSeedNodeLoadConfigFailed
+
+	// ErrSeedNodeParseFailed 解析种子节点失败
+	ErrSeedNodeParseFailed
+
 	// ErrConfigNodeIDEmpty cluster.hosts[i].nodes[j].node_id 不能为空
 	ErrConfigNodeIDEmpty
 
@@ -2659,6 +3779,100 @@ func NewCLINotImplementedError() *Error {
 }
 
 // ========================================
+// CLI 错误构造函数（新增）
+// ========================================
+
+// NewCLINodeAddrRequiredError 创建节点地址必填错误
+func NewCLINodeAddrRequiredError() *Error {
+	return newBase(ErrCLINodeAddrRequired, "--addr 参数不能为空")
+}
+
+// NewCLIHealthCheckTimeoutError 创建健康检查超时错误
+func NewCLIHealthCheckTimeoutError() *Error {
+	return newBase(ErrCLIHealthCheckTimeout, "健康检查超时")
+}
+
+// NewCLIHealthCheckCanceledError 创建健康检查被取消错误
+func NewCLIHealthCheckCanceledError() *Error {
+	return newBase(ErrCLIHealthCheckCanceled, "健康检查被取消")
+}
+
+// NewCLIFixRequestFailedError 创建修复请求失败错误
+func NewCLIFixRequestFailedError(err error) *Error {
+	return newWithErr(ErrCLIFixRequestFailed, err, "修复请求失败")
+}
+
+// NewCLICreateTransportFailedError 创建传输层失败错误
+func NewCLICreateTransportFailedError(err error) *Error {
+	return newWithErr(ErrCLICreateTransportFailed, err, "创建 TCP 传输失败")
+}
+
+// NewCLIStartTransportFailedError 启动传输层失败错误
+func NewCLIStartTransportFailedError(err error) *Error {
+	return newWithErr(ErrCLIStartTransportFailed, err, "启动 TCP 传输失败")
+}
+
+// NewCLICreateRPCClientFailedError 创建 RPC 客户端失败错误
+func NewCLICreateRPCClientFailedError(err error) *Error {
+	return newWithErr(ErrCLICreateRPCClientFailed, err, "创建 RPC 客户端失败")
+}
+
+// NewCLIStartRPCClientFailedError 启动 RPC 客户端失败错误
+func NewCLIStartRPCClientFailedError(err error) *Error {
+	return newWithErr(ErrCLIStartRPCClientFailed, err, "启动 RPC 客户端失败")
+}
+
+// NewCLINodeOperationFailedError 创建节点操作失败错误
+func NewCLINodeOperationFailedError(operation string, err error) *Error {
+	return newWithOpErr(ErrCLINodeOperationFailed, operation, err, "节点操作失败")
+}
+
+// NewCLINodeNotFoundError 创建节点不存在错误
+func NewCLINodeNotFoundError(nodeID string) *Error {
+	return newBase(ErrCLINodeNotFound, "节点 %s 不存在", nodeID)
+}
+
+// NewCLIFixResponseTypeError 创建修复响应类型错误
+func NewCLIFixResponseTypeError(expectedType string) *Error {
+	return newBase(ErrCLIFixResponseTypeError, "修复响应类型错误: 期望 %s", expectedType)
+}
+
+// NewCLIJSONSerializationFailedError 创建 JSON 序列化失败错误
+func NewCLIJSONSerializationFailedError(err error) *Error {
+	return newWithErr(ErrCLIJSONSerializationFailed, err, "JSON 序列化失败")
+}
+
+// NewCLIYAMLNotImplementedError 创建 YAML 格式暂未实现错误
+func NewCLIYAMLNotImplementedError() *Error {
+	return newBase(ErrCLIYAMLNotImplemented, "YAML 格式暂未实现")
+}
+
+// NewCLINodeIDRequiredError 创建节点 ID 必填错误
+func NewCLINodeIDRequiredError() *Error {
+	return newBase(ErrCLINodeIDRequired, "--id 参数不能为空")
+}
+
+// NewCLIAddNodeFailedError 创建添加节点失败错误
+func NewCLIAddNodeFailedError(err error) *Error {
+	return newWithErr(ErrCLIAddNodeFailed, err, "添加节点失败")
+}
+
+// NewCLIRemoveNodeFailedError 创建删除节点失败错误
+func NewCLIRemoveNodeFailedError(err error) *Error {
+	return newWithErr(ErrCLIRemoveNodeFailed, err, "删除节点失败")
+}
+
+// NewCLIQueryNodeStatusFailedError 创建查询节点状态失败错误
+func NewCLIQueryNodeStatusFailedError(err error) *Error {
+	return newWithErr(ErrCLIQueryNodeStatusFailed, err, "查询节点状态失败")
+}
+
+// NewCLIQueryNodeListFailedError 创建查询节点列表失败错误
+func NewCLIQueryNodeListFailedError(err error) *Error {
+	return newWithErr(ErrCLIQueryNodeListFailed, err, "查询节点列表失败")
+}
+
+// ========================================
 // Network Utility 错误构造函数（新增）
 // ========================================
 
@@ -3061,4 +4275,162 @@ func NewE2ENilResponseError(seq int) *Error {
 // NewE2EWrongResponseTypeError 创建响应类型错误错误
 func NewE2EWrongResponseTypeError(seq int) *Error {
 	return newBase(ErrE2EWrongResponseType, "seq %d: wrong response type", seq)
+}
+
+// ========================================
+// Recovery 模块错误构造函数
+// ========================================
+
+// NewStoreRecoveryCreateDirectoryFailedError 创建恢复目录失败错误
+func NewStoreRecoveryCreateDirectoryFailedError(dir string, err error) *Error {
+	return newWithErr(ErrStoreRecoveryCreateDirectoryFailed, err, "创建目录失败: %s", dir)
+}
+
+// NewStoreRecoveryCreateSequenceGeneratorFailedError 创建序列号生成器失败错误
+func NewStoreRecoveryCreateSequenceGeneratorFailedError(err error) *Error {
+	return newWithErr(ErrStoreRecoveryCreateSequenceGeneratorFailed, err, "创建序列号生成器失败")
+}
+
+// NewStoreRecoveryCreateCheckpointManagerFailedError 创建 Checkpoint 管理器失败错误
+func NewStoreRecoveryCreateCheckpointManagerFailedError(err error) *Error {
+	return newWithErr(ErrStoreRecoveryCreateCheckpointManagerFailed, err, "创建 Checkpoint 管理器失败")
+}
+
+// NewStoreRecoveryLoadLatestCheckpointFailedError 加载最新 Checkpoint 失败错误
+func NewStoreRecoveryLoadLatestCheckpointFailedError(err error) *Error {
+	return newWithErr(ErrStoreRecoveryLoadLatestCheckpointFailed, err, "加载最新 Checkpoint 失败")
+}
+
+// NewStoreRecoveryCreateSnapshotManagerFailedError 创建 Snapshot 管理器失败错误
+func NewStoreRecoveryCreateSnapshotManagerFailedError(err error) *Error {
+	return newWithErr(ErrStoreRecoveryCreateSnapshotManagerFailed, err, "创建 Snapshot 管理器失败")
+}
+
+// NewStoreRecoveryLoadSnapshotFailedError 加载 Snapshot 失败错误
+func NewStoreRecoveryLoadSnapshotFailedError(err error) *Error {
+	return newWithErr(ErrStoreRecoveryLoadSnapshotFailed, err, "加载 Snapshot 失败")
+}
+
+// NewStoreRecoveryReplayWALFailedError 重放 WAL 失败错误
+func NewStoreRecoveryReplayWALFailedError(err error) *Error {
+	return newWithErr(ErrStoreRecoveryReplayWALFailed, err, "重放 WAL 失败")
+}
+
+// NewStoreRecoveryOpenWALFailedError 打开 WAL 失败错误
+func NewStoreRecoveryOpenWALFailedError(err error) *Error {
+	return newWithErr(ErrStoreRecoveryOpenWALFailed, err, "打开 WAL 失败")
+}
+
+// NewStoreRecoveryRecoverWALFailedError 恢复 WAL 日志失败错误
+func NewStoreRecoveryRecoverWALFailedError(err error) *Error {
+	return newWithErr(ErrStoreRecoveryRecoverWALFailed, err, "恢复 WAL 日志失败")
+}
+
+// NewStoreRecoveryCreateSnapshotFailedError 创建 Snapshot 失败错误
+func NewStoreRecoveryCreateSnapshotFailedError(err error) *Error {
+	return newWithErr(ErrStoreRecoveryCreateSnapshotFailed, err, "创建 Snapshot 失败")
+}
+
+// NewStoreRecoverySequenceMismatchError 序列号不一致错误
+func NewStoreRecoverySequenceMismatchError(expected, actual uint64) *Error {
+	return newBase(ErrStoreRecoverySequenceMismatch, "序列号不一致: 期望 %d, 实际 %d", expected, actual)
+}
+
+// NewStoreRecoveryCreateCheckpointFailedError 创建 Checkpoint 失败错误
+func NewStoreRecoveryCreateCheckpointFailedError(err error) *Error {
+	return newWithErr(ErrStoreRecoveryCreateCheckpointFailed, err, "创建 Checkpoint 失败")
+}
+
+// NewStoreRecoveryCheckpointValidationFailedError Checkpoint 序列号验证失败错误
+func NewStoreRecoveryCheckpointValidationFailedError(err error) *Error {
+	return newWithErr(ErrStoreRecoveryCheckpointValidationFailed, err, "Checkpoint 序列号验证失败")
+}
+
+// NewStoreRecoveryLoadCheckpointFailedError 加载 Checkpoint 失败错误
+func NewStoreRecoveryLoadCheckpointFailedError(err error) *Error {
+	return newWithErr(ErrStoreRecoveryLoadCheckpointFailed, err, "加载 Checkpoint 失败")
+}
+
+// NewStoreRecoverySnapshotFileNotFoundError Snapshot 文件不存在错误
+func NewStoreRecoverySnapshotFileNotFoundError(snapshotFile string) *Error {
+	return newBase(ErrStoreRecoverySnapshotFileNotFound, "snapshot 文件不存在: %s", snapshotFile)
+}
+
+// NewStoreRecoveryReadCheckpointDirectoryFailedError 读取 Checkpoint 目录失败错误
+func NewStoreRecoveryReadCheckpointDirectoryFailedError(err error) *Error {
+	return newWithErr(ErrStoreRecoveryReadCheckpointDirectoryFailed, err, "读取 Checkpoint 目录失败")
+}
+
+// ========================================
+// SeedNode 验证错误构造函数
+// ========================================
+
+// NewSeedNodeUnsupportedConfigTypeError 创建不支持的种子节点配置类型错误
+func NewSeedNodeUnsupportedConfigTypeError(configType string) *Error {
+	return newBase(ErrSeedNodeUnsupportedConfigType, "不支持的种子节点配置类型: %s", configType)
+}
+
+// NewSeedNodeAddressEmptyError 创建种子节点地址为空错误
+func NewSeedNodeAddressEmptyError() *Error {
+	return newBase(ErrSeedNodeAddressEmpty, "地址不能为空")
+}
+
+// NewSeedNodeInvalidMultiAddrFormatError 创建无效的 multiaddr 格式错误
+func NewSeedNodeInvalidMultiAddrFormatError(addr string, err error) *Error {
+	return newWithErr(ErrSeedNodeInvalidMultiAddrFormat, err, "无效的 multiaddr 格式: %s", addr)
+}
+
+// NewSeedNodeMissingTCPComponentError 创建缺少 TCP 协议组件错误
+func NewSeedNodeMissingTCPComponentError() *Error {
+	return newBase(ErrSeedNodeMissingTCPComponent, "地址必须包含 TCP 协议组件（如 /tcp/<PORT>）")
+}
+
+// NewSeedNodeInvalidTCPPortError 创建无效的 TCP 端口值错误
+func NewSeedNodeInvalidTCPPortError(portStr string) *Error {
+	return newBase(ErrSeedNodeInvalidTCPPort, "无效的 TCP 端口值: %s", portStr)
+}
+
+// NewSeedNodeTCPPortOutOfRangeError 创建 TCP 端口超出范围错误
+func NewSeedNodeTCPPortOutOfRangeError(port int) *Error {
+	return newBase(ErrSeedNodeTCPPortOutOfRange, "TCP 端口必须在 1-65535 范围内，当前值: %d", port)
+}
+
+// NewSeedNodeFilePathEmptyError 创建配置文件路径为空错误
+func NewSeedNodeFilePathEmptyError() *Error {
+	return newBase(ErrSeedNodeFilePathEmpty, "配置文件路径不能为空")
+}
+
+// NewSeedNodeFilePathAbsError 创建获取绝对路径失败错误
+func NewSeedNodeFilePathAbsError(err error) *Error {
+	return newWithErr(ErrSeedNodeFilePathAbs, err, "获取绝对路径失败")
+}
+
+// NewSeedNodeFileCheckFailedError 创建检查配置文件失败错误
+func NewSeedNodeFileCheckFailedError(err error) *Error {
+	return newWithErr(ErrSeedNodeFileCheckFailed, err, "检查配置文件失败")
+}
+
+// NewSeedNodeConfigWatcherFailedError 创建文件监控器创建失败错误
+func NewSeedNodeConfigWatcherFailedError(err error) *Error {
+	return newWithErr(ErrSeedNodeConfigWatcherFailed, err, "创建文件监控器失败")
+}
+
+// NewSeedNodeWatchDirFailedError 创建监控目录失败错误
+func NewSeedNodeWatchDirFailedError(err error) *Error {
+	return newWithErr(ErrSeedNodeWatchDirFailed, err, "监控目录失败")
+}
+
+// NewSeedNodeFileNotFoundError 创建配置文件不存在错误
+func NewSeedNodeFileNotFoundError(filePath string) *Error {
+	return newBase(ErrSeedNodeFileNotFound, "配置文件不存在: %s", filePath)
+}
+
+// NewSeedNodeLoadConfigFailedError 创建加载配置失败错误
+func NewSeedNodeLoadConfigFailedError(err error) *Error {
+	return newWithErr(ErrSeedNodeLoadConfigFailed, err, "加载配置失败")
+}
+
+// NewSeedNodeParseFailedError 创建解析种子节点失败错误
+func NewSeedNodeParseFailedError(err error) *Error {
+	return newWithErr(ErrSeedNodeParseFailed, err, "解析种子节点失败")
 }

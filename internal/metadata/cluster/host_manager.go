@@ -46,13 +46,7 @@ func (hm *HostManager) AddHost(host *Host) error {
 		return types.NewClusterNilParameterError("host")
 	}
 
-	// 兼容 HostID 和 ID 字段
-	hostID := host.HostID
-	if hostID == "" {
-		hostID = host.ID
-	}
-
-	if hostID == "" {
+	if host.HostID == "" {
 		return types.NewClusterHostIDRequiredError()
 	}
 
@@ -66,7 +60,7 @@ func (hm *HostManager) AddHost(host *Host) error {
 	}
 
 	// 持久化到 MVStore
-	key := hostKeyPrefix + hostID
+	key := hostKeyPrefix + host.HostID
 	data, err := msgpack.Marshal(host)
 	if err != nil {
 		return types.NewClusterHostMarshalFailedError(err)
@@ -78,7 +72,7 @@ func (hm *HostManager) AddHost(host *Host) error {
 
 	// 更新内存缓存（加写锁）
 	hm.mu.Lock()
-	hm.hosts[hostID] = host
+	hm.hosts[host.HostID] = host
 	hm.mu.Unlock()
 
 	return nil
@@ -287,11 +281,7 @@ func (hm *HostManager) GetOnlineHosts() ([]*Host, error) {
 
 	online := make([]*Host, 0)
 	for _, host := range hosts {
-		// 兼容 HostStatus 和 Status 字段
 		if host.HostStatus == HostStatusOnline {
-			online = append(online, host)
-		} else if host.Status == "active" || host.Status == "online" {
-			// 兼容旧的状态字符串
 			online = append(online, host)
 		}
 	}

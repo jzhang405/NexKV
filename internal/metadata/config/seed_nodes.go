@@ -16,6 +16,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/multiformats/go-multiaddr"
 )
 
@@ -43,7 +44,7 @@ func ParseSeedNodes(config any) ([]string, error) {
 			}
 		}
 	default:
-		return nil, fmt.Errorf("不支持的种子节点配置类型: %T", config)
+		return nil, types.NewSeedNodeUnsupportedConfigTypeError(fmt.Sprintf("%T", config))
 	}
 
 	// 规范化地址列表
@@ -52,7 +53,7 @@ func ParseSeedNodes(config any) ([]string, error) {
 	// 验证每个地址
 	for _, addr := range normalized {
 		if err := ValidateSeedNodeAddress(addr); err != nil {
-			return nil, fmt.Errorf("种子节点地址 %s 验证失败: %w", addr, err)
+			return nil, types.NewSeedNodeParseFailedError(err)
 		}
 	}
 
@@ -75,24 +76,24 @@ func ValidateSeedNodeAddress(addr string) error {
 	// 去除首尾空格
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
-		return fmt.Errorf("地址不能为空")
+		return types.NewSeedNodeAddressEmptyError()
 	}
 
 	// 验证以 / 开头
 	if !strings.HasPrefix(addr, "/") {
-		return fmt.Errorf("multiaddr 格式必须以 / 开头")
+		return types.NewSeedNodeInvalidMultiAddrFormatError(addr, fmt.Errorf("multiaddr 格式必须以 / 开头"))
 	}
 
 	// 使用 multiaddr 库解析和验证
 	maddr, err := multiaddr.NewMultiaddr(addr)
 	if err != nil {
-		return fmt.Errorf("无效的 multiaddr 格式: %w", err)
+		return types.NewSeedNodeInvalidMultiAddrFormatError(addr, err)
 	}
 
 	// 检查是否包含 TCP 组件
 	addrStr := maddr.String()
 	if !strings.Contains(addrStr, "/tcp/") {
-		return fmt.Errorf("地址必须包含 TCP 协议组件（如 /tcp/<PORT>）")
+		return types.NewSeedNodeMissingTCPComponentError()
 	}
 
 	// 验证 TCP 端口范围
@@ -108,13 +109,13 @@ func validateTCPPortFromString(addr string) error {
 	// 查找 /tcp/ 的位置
 	tcpIdx := strings.Index(addr, "/tcp/")
 	if tcpIdx == -1 {
-		return fmt.Errorf("未找到 TCP 协议组件")
+		return types.NewSeedNodeInvalidMultiAddrFormatError(addr, fmt.Errorf("未找到 TCP 协议组件"))
 	}
 
 	// 提取 /tcp/ 后面的部分
 	afterTCP := addr[tcpIdx+5:] // +5 跳过 "/tcp/"
 	if afterTCP == "" {
-		return fmt.Errorf("TCP 组件后必须跟端口号")
+		return types.NewSeedNodeInvalidMultiAddrFormatError(addr, fmt.Errorf("TCP 组件后必须跟端口号"))
 	}
 
 	// multiaddr 可能还有其他组件，只取到下一个 / 或字符串结尾
@@ -128,11 +129,11 @@ func validateTCPPortFromString(addr string) error {
 	var port int
 	_, err := fmt.Sscanf(portStr, "%d", &port)
 	if err != nil {
-		return fmt.Errorf("无效的 TCP 端口值: %s", portStr)
+		return types.NewSeedNodeInvalidTCPPortError(portStr)
 	}
 
 	if port < 1 || port > 65535 {
-		return fmt.Errorf("TCP 端口必须在 1-65535 范围内，当前值: %d", port)
+		return types.NewSeedNodeTCPPortOutOfRangeError(port)
 	}
 
 	return nil
@@ -231,24 +232,24 @@ type SeedNodesWatcher struct {
 func NewSeedNodesWatcher(filePath string, callback func([]string)) (*SeedNodesWatcher, error) {
 	// 验证文件路径
 	if filePath == "" {
-		return nil, fmt.Errorf("配置文件路径不能为空")
+		return nil, types.NewSeedNodeFilePathEmptyError()
 	}
 
 	// 转换为绝对路径
 	absPath, err := filepath.Abs(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("获取绝对路径失败: %w", err)
+		return nil, types.NewSeedNodeFilePathAbsError(err)
 	}
 
 	// 检查文件是否存在（可选：允许文件不存在，由后续创建）
 	if _, err := os.Stat(absPath); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("检查配置文件失败: %w", err)
+		return nil, types.NewSeedNodeFileCheckFailedError(err)
 	}
 
 	// 创建 fsnotify 监控器
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		return nil, fmt.Errorf("创建文件监控器失败: %w", err)
+		return nil, types.NewSeedNodeConfigWatcherFailedError(err)
 	}
 
 	sw := &SeedNodesWatcher{
@@ -275,7 +276,7 @@ func (w *SeedNodesWatcher) Start() error {
 	// 监控配置文件所在目录
 	dir := filepath.Dir(w.filePath)
 	if err := w.watcher.Add(dir); err != nil {
-		return fmt.Errorf("监控目录失败: %w", err)
+		return types.NewSeedNodeWatchDirFailedError(err)
 	}
 
 	logging.Infof("[SeedNodesWatcher] 启动配置文件监控: %s", w.filePath)
@@ -390,13 +391,13 @@ func (w *SeedNodesWatcher) watchLoop() {
 func (w *SeedNodesWatcher) reload() error {
 	// 检查文件是否存在
 	if _, err := os.Stat(w.filePath); os.IsNotExist(err) {
-		return fmt.Errorf("配置文件不存在: %s", w.filePath)
+		return types.NewSeedNodeFileNotFoundError(w.filePath)
 	}
 
 	// 加载配置
 	cfg, err := LoadConfig(w.filePath)
 	if err != nil {
-		return fmt.Errorf("加载配置失败: %w", err)
+		return types.NewSeedNodeLoadConfigFailedError(err)
 	}
 
 	// PR-037: 从三级配置结构中提取所有 Host 的 seed_node
@@ -412,7 +413,7 @@ func (w *SeedNodesWatcher) reload() error {
 	// 解析种子节点（包含去重和规范化）
 	nodes, err := ParseSeedNodes(seedNodeList)
 	if err != nil {
-		return fmt.Errorf("解析种子节点失败: %w", err)
+		return types.NewSeedNodeParseFailedError(err)
 	}
 
 	// 更新内存配置
@@ -427,7 +428,7 @@ func (w *SeedNodesWatcher) reload() error {
 
 		// 触发回调
 		if w.callback != nil {
-			// P0-2 修复：添加超时控制和 panic 恢复机制，避免 goroutine 泄漏
+			// P1-2 修复：优化回调超时控制，缩短超时时间并简化逻辑
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
@@ -435,18 +436,18 @@ func (w *SeedNodesWatcher) reload() error {
 					}
 				}()
 
-				// 设置超时上下文（30 秒超时）
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				// 设置超时上下文（5 秒超时，从 30 秒缩短）
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 
 				// 使用 channel 实现超时控制
 				done := make(chan struct{})
 				go func() {
+					defer close(done)
 					defer func() {
 						if r := recover(); r != nil {
 							logging.Errorf("[SeedNodesWatcher] 回调内部 panic: %v", r)
 						}
-						close(done)
 					}()
 					w.callback(nodes)
 				}()
@@ -456,7 +457,7 @@ func (w *SeedNodesWatcher) reload() error {
 					// 回调成功完成
 					logging.Debugf("[SeedNodesWatcher] 回调执行成功")
 				case <-ctx.Done():
-					logging.Errorf("[SeedNodesWatcher] 回调超时（30秒）")
+					logging.Warnf("[SeedNodesWatcher] 回调超时（5秒），可能阻塞配置更新")
 				}
 			}()
 		}

@@ -103,12 +103,12 @@ deps:
 ## run: 运行 nexkv 客户端
 run: build
 	@echo "运行 $(BINARY_NAME)..."
-	./bin/$(BINARY_NAME) -config configs/config.yaml
+	./bin/$(BINARY_NAME) --addr 127.0.0.1:9211
 
 ## run-daemon: 运行 nexkvd 守护进程
 run-daemon: build
 	@echo "运行 $(DAEMON_NAME)..."
-	./bin/$(DAEMON_NAME) -config configs/config.yaml
+	./bin/$(DAEMON_NAME) --config configs/config.yaml --env dev
 
 ## docker-build: 构建 Docker 镜像
 docker-build:

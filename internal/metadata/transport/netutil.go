@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net"
 	"strings"
+
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
 // EnvType 环境类型
@@ -39,7 +41,7 @@ func ParseEnvType(s string) (EnvType, error) {
 	case "cluster":
 		return EnvCluster, nil
 	default:
-		return EnvDev, fmt.Errorf("无效的环境类型: %s（必须是 dev 或 cluster）", s)
+		return EnvDev, types.NewNetUtilInvalidEnvTypeError(s)
 	}
 }
 
@@ -66,7 +68,7 @@ func SelectBindIP(env EnvType, userSpecifyIP string) (string, error) {
 	if userSpecifyIP != "" {
 		// 验证用户指定的 IP 是否合法
 		if net.ParseIP(userSpecifyIP) == nil {
-			return "", fmt.Errorf("无效的 IP 地址: %s", userSpecifyIP)
+			return "", types.NewNetUtilInvalidIPAddressError(userSpecifyIP)
 		}
 		return userSpecifyIP, nil
 	}
@@ -79,11 +81,11 @@ func SelectBindIP(env EnvType, userSpecifyIP string) (string, error) {
 	// 3. Cluster 环境自动选择第一个私网 IP
 	privateIPs, err := GetPrivateIPs()
 	if err != nil {
-		return "", fmt.Errorf("获取私网 IP 失败: %w", err)
+		return "", types.NewNetUtilGetPrivateIPFailedError(err)
 	}
 
 	if len(privateIPs) == 0 {
-		return "", fmt.Errorf("未找到可用的私网 IP，请手动指定 --bind-ip 参数")
+		return "", types.NewNetUtilNoPrivateIPFoundError()
 	}
 
 	return privateIPs[0], nil
@@ -95,7 +97,7 @@ func GetPrivateIPs() ([]string, error) {
 
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		return nil, fmt.Errorf("获取网络接口失败: %w", err)
+		return nil, types.NewNetUtilGetNetworkInterfacesFailedError(err)
 	}
 
 	for _, iface := range interfaces {
@@ -181,7 +183,7 @@ func FindAvailablePort(startPort int) (int, error) {
 			return port, nil
 		}
 	}
-	return 0, fmt.Errorf("未找到可用端口（起始端口: %d）", startPort)
+	return 0, types.NewNetUtilNoAvailablePortError(startPort)
 }
 
 // ValidateIPMismatch 验证用户指定 IP 与自动绑定 IP 是否匹配
@@ -196,7 +198,7 @@ func ValidateIPMismatch(userIP, autoIP string) error {
 	}
 
 	if userIP != autoIP {
-		return fmt.Errorf("用户指定 IP (%s) 与自动绑定 IP (%s) 不匹配，请确保一致", userIP, autoIP)
+		return types.NewNetUtilIPMismatchError(userIP, autoIP)
 	}
 
 	return nil

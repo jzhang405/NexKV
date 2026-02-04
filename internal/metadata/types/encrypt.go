@@ -6,7 +6,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"fmt"
 )
 
 // EncryptionType 加密算法类型
@@ -201,19 +200,19 @@ func (a *AESGCMEncryption) Encrypt(ctx context.Context, plaintext []byte) ([]byt
 	// 1. 创建 AES cipher
 	block, err := aes.NewCipher(a.key)
 	if err != nil {
-		return nil, fmt.Errorf("创建 AES cipher 失败: %w", err)
+		return nil, NewEncryptionCreateCipherFailedError(err)
 	}
 
 	// 2. 创建 GCM 模式
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("创建 GCM 模式失败: %w", err)
+		return nil, NewEncryptionCreateGCMFailedError(err)
 	}
 
 	// 3. 生成随机 Nonce（12字节是 GCM 推荐长度）
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("生成 Nonce 失败: %w", err)
+		return nil, NewEncryptionGenerateNonceFailedError(err)
 	}
 
 	// 4. 加密（GCM 自动处理填充和认证标签）
@@ -227,13 +226,13 @@ func (a *AESGCMEncryption) Decrypt(ctx context.Context, ciphertext []byte) ([]by
 	// 1. 创建 AES cipher
 	block, err := aes.NewCipher(a.key)
 	if err != nil {
-		return nil, fmt.Errorf("创建 AES cipher 失败: %w", err)
+		return nil, NewEncryptionCreateCipherFailedError(err)
 	}
 
 	// 2. 创建 GCM 模式
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("创建 GCM 模式失败: %w", err)
+		return nil, NewEncryptionCreateGCMFailedError(err)
 	}
 
 	// 3. 检查密文长度（至少包含 nonce + 认证标签）
@@ -249,7 +248,7 @@ func (a *AESGCMEncryption) Decrypt(ctx context.Context, ciphertext []byte) ([]by
 	// 5. 解密并验证认证标签
 	plaintext, err := gcm.Open(nil, nonce, actualCiphertext, nil)
 	if err != nil {
-		return nil, fmt.Errorf("解密失败或认证标签验证失败: %w", err)
+		return nil, NewEncryptionDecryptFailedError(err)
 	}
 
 	return plaintext, nil
@@ -281,7 +280,7 @@ func (c *ChaCha20Poly1305Encryption) Encrypt(ctx context.Context, plaintext []by
 	// 1. 生成随机 Nonce（ChaCha20-Poly1305 使用 12 字节 Nonce）
 	nonce := make([]byte, 12)
 	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("生成 Nonce 失败: %w", err)
+		return nil, NewEncryptionGenerateNonceFailedError(err)
 	}
 
 	// 2. 创建 ChaCha20-Poly1305 AEAD
@@ -297,11 +296,11 @@ func (c *ChaCha20Poly1305Encryption) Encrypt(ctx context.Context, plaintext []by
 	// 临时使用 AES-GCM 作为替代实现
 	block, err := aes.NewCipher(c.key)
 	if err != nil {
-		return nil, fmt.Errorf("创建 cipher 失败: %w", err)
+		return nil, NewEncryptionCreateCipherFailedError(err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("创建 GCM 失败: %w", err)
+		return nil, NewEncryptionCreateGCMFailedError(err)
 	}
 	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
 
@@ -312,11 +311,11 @@ func (c *ChaCha20Poly1305Encryption) Decrypt(ctx context.Context, ciphertext []b
 	// 临时使用 AES-GCM 作为替代实现
 	block, err := aes.NewCipher(c.key)
 	if err != nil {
-		return nil, fmt.Errorf("创建 cipher 失败: %w", err)
+		return nil, NewEncryptionCreateCipherFailedError(err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("创建 GCM 失败: %w", err)
+		return nil, NewEncryptionCreateGCMFailedError(err)
 	}
 
 	nonceSize := gcm.NonceSize()
@@ -329,7 +328,7 @@ func (c *ChaCha20Poly1305Encryption) Decrypt(ctx context.Context, ciphertext []b
 
 	plaintext, err := gcm.Open(nil, nonce, actualCiphertext, nil)
 	if err != nil {
-		return nil, fmt.Errorf("解密失败或认证标签验证失败: %w", err)
+		return nil, NewEncryptionDecryptFailedError(err)
 	}
 
 	return plaintext, nil

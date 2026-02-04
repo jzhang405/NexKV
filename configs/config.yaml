@@ -24,7 +24,7 @@ cluster:
 
     # Host-2
     - host_id: "host-2"
-      seed_node: "/ip4/127.0.0.1/tcp/9213"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-2"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9213"
@@ -32,7 +32,7 @@ cluster:
 
     # Host-3
     - host_id: "host-3"
-      seed_node: "/ip4/127.0.0.1/tcp/9215"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-3"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9215"
@@ -40,7 +40,7 @@ cluster:
 
     # Host-4
     - host_id: "host-4"
-      seed_node: "/ip4/127.0.0.1/tcp/9217"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-4"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9217"
@@ -48,7 +48,7 @@ cluster:
 
     # Host-5
     - host_id: "host-5"
-      seed_node: "/ip4/127.0.0.1/tcp/9219"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-5"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9219"
@@ -56,7 +56,7 @@ cluster:
 
     # Host-6
     - host_id: "host-6"
-      seed_node: "/ip4/127.0.0.1/tcp/9221"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-6"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9221"
@@ -64,7 +64,7 @@ cluster:
 
     # Host-7
     - host_id: "host-7"
-      seed_node: "/ip4/127.0.0.1/tcp/9223"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-7"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9223"
@@ -72,7 +72,7 @@ cluster:
 
     # Host-8
     - host_id: "host-8"
-      seed_node: "/ip4/127.0.0.1/tcp/9225"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-8"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9225"
@@ -80,7 +80,7 @@ cluster:
 
     # Host-9
     - host_id: "host-9"
-      seed_node: "/ip4/127.0.0.1/tcp/9227"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-9"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9227"
@@ -88,7 +88,7 @@ cluster:
 
     # Host-10
     - host_id: "host-10"
-      seed_node: "/ip4/127.0.0.1/tcp/9229"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-10"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9229"
@@ -96,7 +96,7 @@ cluster:
 
     # Host-11
     - host_id: "host-11"
-      seed_node: "/ip4/127.0.0.1/tcp/9231"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-11"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9231"
@@ -104,7 +104,7 @@ cluster:
 
     # Host-12
     - host_id: "host-12"
-      seed_node: "/ip4/127.0.0.1/tcp/9233"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-12"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9233"
@@ -112,7 +112,7 @@ cluster:
 
     # Host-13
     - host_id: "host-13"
-      seed_node: "/ip4/127.0.0.1/tcp/9235"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-13"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9235"
@@ -120,7 +120,7 @@ cluster:
 
     # Host-14
     - host_id: "host-14"
-      seed_node: "/ip4/127.0.0.1/tcp/9237"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-14"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9237"
@@ -128,7 +128,7 @@ cluster:
 
     # Host-15
     - host_id: "host-15"
-      seed_node: "/ip4/127.0.0.1/tcp/9239"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"  # 指向种子节点 (host-1)
       nodes:
         - node_id: "node-15"
           node_addr_tcp: "/ip4/127.0.0.1/tcp/9239"

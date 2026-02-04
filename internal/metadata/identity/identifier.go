@@ -6,13 +6,14 @@
 package identity
 
 import (
-	"fmt"
 	"hash/fnv"
 	"net"
 	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
+
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
 // GenerateNodeIDFromPorts 根据主机和端口生成节点 ID
@@ -31,15 +32,15 @@ import (
 func GenerateNodeIDFromPorts(tcpPort, udpPort int) (uint64, error) {
 	// 验证端口参数
 	if tcpPort == 0 && udpPort == 0 {
-		return 0, fmt.Errorf("至少需要启用一个端口（TCP 或 UDP）")
+		return 0, types.NewIdentifierNoPortEnabledError()
 	}
 
 	// 验证端口范围（有效端口：1-65535）
 	if tcpPort < 0 || tcpPort > 65535 {
-		return 0, fmt.Errorf("TCP 端口无效: %d（有效范围: 1-65535）", tcpPort)
+		return 0, types.NewIdentifierInvalidTCPPortError(tcpPort)
 	}
 	if udpPort < 0 || udpPort > 65535 {
-		return 0, fmt.Errorf("UDP 端口无效: %d（有效范围: 1-65535）", udpPort)
+		return 0, types.NewIdentifierInvalidUDPPortError(udpPort)
 	}
 
 	host, err := os.Hostname()

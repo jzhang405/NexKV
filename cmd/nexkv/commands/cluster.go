@@ -4,6 +4,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -80,7 +81,7 @@ func handleClusterStatus(c *cli.Context) error {
 	// 创建 RPC 客户端
 	client, cleanup, err := createRPCClient()
 	if err != nil {
-		return fmt.Errorf("连接 Daemon 失败: %w", err)
+		return types.NewCLIConnectDaemonError(err)
 	}
 	defer cleanup()
 
@@ -116,13 +117,13 @@ func queryAndDisplayStatus(client *transport.RPCClient, nodeID, outputFormat str
 	// 调用 RPC 查询集群状态
 	respMsg, err := client.Call(ctx, DaemonAddr, req)
 	if err != nil {
-		return fmt.Errorf("查询集群状态失败: %w", err)
+		return types.NewCLIQueryClusterStatusError(err)
 	}
 
 	// 类型断言获取响应
 	resp, ok := respMsg.(*transport.ClusterStatusReplyMessage)
 	if !ok {
-		return fmt.Errorf("响应类型错误: 期望 ClusterStatusReplyMessage")
+		return types.NewCLIResponseTypeError("ClusterStatusReplyMessage")
 	}
 
 	// 格式化输出
@@ -132,7 +133,7 @@ func queryAndDisplayStatus(client *transport.RPCClient, nodeID, outputFormat str
 	case "table":
 		return formatStatusAsTable(resp, quietMode)
 	default:
-		return fmt.Errorf("不支持的输出格式: %s", outputFormat)
+		return types.NewCLIUnsupportedOutputFormatError(outputFormat)
 	}
 }
 
@@ -204,7 +205,7 @@ func handleClusterTopology(c *cli.Context) error {
 	// 创建 RPC 客户端
 	client, cleanup, err := createRPCClient()
 	if err != nil {
-		return fmt.Errorf("连接 Daemon 失败: %w", err)
+		return types.NewCLIConnectDaemonError(err)
 	}
 	defer cleanup()
 
@@ -224,12 +225,12 @@ func handleClusterTopology(c *cli.Context) error {
 
 	respMsg, err := client.Call(ctx, DaemonAddr, req)
 	if err != nil {
-		return fmt.Errorf("查询集群拓扑失败: %w", err)
+		return types.NewCLIQueryClusterTopologyError(err)
 	}
 
 	resp, ok := respMsg.(*transport.ClusterStatusReplyMessage)
 	if !ok {
-		return fmt.Errorf("响应类型错误: 期望 ClusterStatusReplyMessage")
+		return types.NewCLIResponseTypeError("ClusterStatusReplyMessage")
 	}
 
 	// 格式化输出
@@ -241,7 +242,7 @@ func handleClusterTopology(c *cli.Context) error {
 	case "tree":
 		return formatTopologyAsTree(resp, showDetails)
 	default:
-		return fmt.Errorf("不支持的输出格式: %s", outputFormat)
+		return types.NewCLIUnsupportedOutputFormatError(outputFormat)
 	}
 }
 
@@ -282,7 +283,7 @@ func handleClusterInfo(c *cli.Context) error {
 	// 创建 RPC 客户端
 	client, cleanup, err := createRPCClient()
 	if err != nil {
-		return fmt.Errorf("连接 Daemon 失败: %w", err)
+		return types.NewCLIConnectDaemonError(err)
 	}
 	defer cleanup()
 
@@ -301,12 +302,12 @@ func handleClusterInfo(c *cli.Context) error {
 
 	respMsg, err := client.Call(ctx, DaemonAddr, req)
 	if err != nil {
-		return fmt.Errorf("查询集群信息失败: %w", err)
+		return types.NewCLIQueryClusterInfoError(err)
 	}
 
 	resp, ok := respMsg.(*transport.ClusterStatusReplyMessage)
 	if !ok {
-		return fmt.Errorf("响应类型错误: 期望 ClusterStatusReplyMessage")
+		return types.NewCLIResponseTypeError("ClusterStatusReplyMessage")
 	}
 
 	// 格式化输出
@@ -318,7 +319,7 @@ func handleClusterInfo(c *cli.Context) error {
 	case "pretty":
 		return formatClusterInfoPretty(resp, verbose)
 	default:
-		return fmt.Errorf("不支持的输出格式: %s", outputFormat)
+		return types.NewCLIUnsupportedOutputFormatError(outputFormat)
 	}
 }
 
@@ -356,21 +357,40 @@ func handleClusterHealth(c *cli.Context) error {
 	tryFix := c.Bool("fix")
 	timeoutSecs := c.Int("timeout")
 
-	// 创建 RPC 客户端
 	client, cleanup, err := createRPCClient()
 	if err != nil {
-		return fmt.Errorf("连接 Daemon 失败: %w", err)
+		return err
 	}
 	defer cleanup()
 
 	fmt.Printf("🔍 NexKV 集群健康检查\n")
 	fmt.Printf("连接到 Daemon: %s\n\n", DaemonAddr)
 
-	// 执行健康检查（通过 Ping 所有节点）
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSecs)*time.Second)
 	defer cancel()
 
-	// 查询集群状态获取所有节点
+	// 查询集群状态
+	resp, err := queryClusterStatus(ctx, client)
+	if err != nil {
+		return err
+	}
+
+	// 如果需要修复，执行修复操作
+	var fixResp *transport.ClusterHealthFixReplyMessage
+	if tryFix {
+		fixResp, err = executeClusterFix(ctx, client, resp)
+		if err != nil {
+			return err
+		}
+	}
+
+	// 显示健康检查结果
+	return formatHealthReport(resp, fixResp)
+}
+
+// queryClusterStatus 查询集群状态
+// P0-2 修复：正确处理 context 超时
+func queryClusterStatus(ctx context.Context, client *transport.RPCClient) (*transport.ClusterStatusReplyMessage, error) {
 	req := &transport.ClusterStatusMessage{
 		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeClusterStatus},
 		NodeID:      "root",
@@ -378,16 +398,60 @@ func handleClusterHealth(c *cli.Context) error {
 
 	respMsg, err := client.Call(ctx, DaemonAddr, req)
 	if err != nil {
-		return fmt.Errorf("健康检查失败: %w", err)
+		// P0-2 修复：检查是否超时
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, types.NewCLIHealthCheckTimeoutError()
+		}
+		if errors.Is(err, context.Canceled) {
+			return nil, types.NewCLIHealthCheckCanceledError()
+		}
+		return nil, types.NewCLIHealthCheckError(err)
 	}
 
 	resp, ok := respMsg.(*transport.ClusterStatusReplyMessage)
 	if !ok {
-		return fmt.Errorf("响应类型错误: 期望 ClusterStatusReplyMessage")
+		return nil, types.NewCLIResponseTypeError("ClusterStatusReplyMessage")
 	}
 
-	// 显示健康检查结果
-	return formatHealthReport(resp, tryFix)
+	return resp, nil
+}
+
+// executeClusterFix 执行集群修复
+func executeClusterFix(ctx context.Context, client *transport.RPCClient, resp *transport.ClusterStatusReplyMessage) (*transport.ClusterHealthFixReplyMessage, error) {
+	fmt.Printf("🔧 尝试自动修复集群问题...\n\n")
+
+	// 检测问题类型
+	hasUnreachable := hasUnreachableNodes(resp.Nodes)
+
+	// 发送修复请求
+	fixReq := &transport.ClusterHealthFixMessage{
+		BaseMessage:         transport.BaseMessage{MessageType: types.MessageTypeClusterHealthFix},
+		FixUnreachableNodes: hasUnreachable,
+		FixConfigMismatch:   true,
+		ForceSyncGossip:     true,
+	}
+
+	fixRespMsg, err := client.Call(ctx, DaemonAddr, fixReq)
+	if err != nil {
+		return nil, types.NewCLIFixRequestFailedError(err)
+	}
+
+	fixResp, ok := fixRespMsg.(*transport.ClusterHealthFixReplyMessage)
+	if !ok {
+		return nil, types.NewCLIFixResponseTypeError("ClusterHealthFixReplyMessage")
+	}
+
+	return fixResp, nil
+}
+
+// hasUnreachableNodes 检查是否有不可达节点
+func hasUnreachableNodes(nodes []transport.NodeInfo) bool {
+	for _, node := range nodes {
+		if node.Status != "Ready" {
+			return true
+		}
+	}
+	return false
 }
 
 // ========================================
@@ -400,7 +464,7 @@ func createRPCClient() (*transport.RPCClient, func(), error) {
 	// 创建 TCP 传输层（客户端模式，不需要监听地址）
 	tcpTransport, err := transport.NewTCPTransport(":0") // :0 表示自动选择端口
 	if err != nil {
-		return nil, nil, fmt.Errorf("创建 TCP 传输失败: %w", err)
+		return nil, nil, types.NewCLICreateTransportFailedError(err)
 	}
 
 	// 序列号生成器（简单递增）
@@ -410,9 +474,12 @@ func createRPCClient() (*transport.RPCClient, func(), error) {
 		return msgSeq
 	}
 
+	// CLI 客户端 NodeID（使用固定值 1，因为客户端不需要全局唯一 ID）
+	clientNodeID := uint64(1)
+
 	// 启动传输层
-	if err := tcpTransport.Start(nil, msgSeqGenerator, ":0"); err != nil {
-		return nil, nil, fmt.Errorf("启动 TCP 传输失败: %w", err)
+	if err := tcpTransport.Start(&clientNodeID, msgSeqGenerator, ":0"); err != nil {
+		return nil, nil, types.NewCLIStartTransportFailedError(err)
 	}
 
 	// 创建 RPC 客户端（不需要 UDP 传输层）
@@ -422,13 +489,13 @@ func createRPCClient() (*transport.RPCClient, func(), error) {
 	rpcClient, err := transport.NewRPCClient(tcpTransport, nil, config)
 	if err != nil {
 		_ = tcpTransport.Stop()
-		return nil, nil, fmt.Errorf("创建 RPC 客户端失败: %w", err)
+		return nil, nil, types.NewCLICreateRPCClientFailedError(err)
 	}
 
 	// 启动 RPC 客户端
 	if err := rpcClient.Start(); err != nil {
 		_ = tcpTransport.Stop()
-		return nil, nil, fmt.Errorf("启动 RPC 客户端失败: %w", err)
+		return nil, nil, types.NewCLIStartRPCClientFailedError(err)
 	}
 
 	// 清理函数
@@ -470,7 +537,7 @@ func formatStatusAsTable(resp *transport.ClusterStatusReplyMessage, quietMode bo
 func formatAsJSON(data any) error {
 	jsonData, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		return fmt.Errorf("JSON 序列化失败: %w", err)
+		return types.NewCLIJSONSerializationFailedError(err)
 	}
 	fmt.Println(string(jsonData))
 	return nil
@@ -479,7 +546,7 @@ func formatAsJSON(data any) error {
 // formatAsYAML 格式化为 YAML
 func formatAsYAML(data any) error {
 	// TODO: 实现 YAML 格式化
-	return fmt.Errorf("YAML 格式暂未实现")
+	return types.NewCLIYAMLNotImplementedError()
 }
 
 // formatTopologyAsDot 格式化为 Graphviz DOT
@@ -585,18 +652,40 @@ func formatClusterInfoPretty(resp *transport.ClusterStatusReplyMessage, verbose 
 }
 
 // formatHealthReport 格式化健康报告
-func formatHealthReport(resp *transport.ClusterStatusReplyMessage, tryFix bool) error {
-	healthyCount := 0
-	unhealthyCount := 0
+func formatHealthReport(resp *transport.ClusterStatusReplyMessage, fixResp *transport.ClusterHealthFixReplyMessage) error {
+	// 统计健康状态
+	healthyCount, unhealthyCount := countNodeStatus(resp.Nodes)
 
-	for _, node := range resp.Nodes {
-		if node.Status == "ready" {
-			healthyCount++
-		} else {
-			unhealthyCount++
-		}
+	// 显示健康状态总览
+	printHealthSummary(unhealthyCount, len(resp.Nodes), healthyCount)
+
+	// 显示异常节点详情
+	if unhealthyCount > 0 {
+		printUnhealthyNodes(resp.Nodes)
 	}
 
+	// 显示修复结果
+	if fixResp != nil {
+		printFixResults(fixResp)
+	}
+
+	return nil
+}
+
+// countNodeStatus 统计节点状态
+func countNodeStatus(nodes []transport.NodeInfo) (healthy, unhealthy int) {
+	for _, node := range nodes {
+		if node.Status == "Ready" {
+			healthy++
+		} else {
+			unhealthy++
+		}
+	}
+	return
+}
+
+// printHealthSummary 打印健康状态摘要
+func printHealthSummary(unhealthyCount, totalNodes, healthyCount int) {
 	fmt.Printf("✅ 集群健康状态: ")
 	if unhealthyCount == 0 {
 		fmt.Printf("健康\n")
@@ -605,13 +694,49 @@ func formatHealthReport(resp *transport.ClusterStatusReplyMessage, tryFix bool) 
 	}
 
 	fmt.Printf("\n节点统计:\n")
-	fmt.Printf("  总节点数: %d\n", len(resp.Nodes))
+	fmt.Printf("  总节点数: %d\n", totalNodes)
 	fmt.Printf("  健康节点: %d\n", healthyCount)
 	fmt.Printf("  异常节点: %d\n", unhealthyCount)
+}
 
-	if unhealthyCount > 0 && tryFix {
-		fmt.Printf("\n⚠️  自动修复功能暂未实现\n")
+// printUnhealthyNodes 打印异常节点列表
+func printUnhealthyNodes(nodes []transport.NodeInfo) {
+	fmt.Printf("\n⚠️  异常节点列表:\n")
+	for _, node := range nodes {
+		if node.Status != "Ready" {
+			fmt.Printf("  - %s: %s (状态: %s)\n", node.NodeID, node.Addr, node.Status)
+		}
+	}
+}
+
+// printFixResults 打印修复结果
+func printFixResults(fixResp *transport.ClusterHealthFixReplyMessage) {
+	fmt.Printf("\n🔧 修复结果:\n")
+
+	if fixResp.Success {
+		fmt.Printf("  ✅ 修复成功\n")
+		printFixedItems(fixResp)
+	} else {
+		fmt.Printf("  ❌ 修复失败\n")
+		if fixResp.ErrorMessage != "" {
+			fmt.Printf("  错误信息: %s\n", fixResp.ErrorMessage)
+		}
+	}
+}
+
+// printFixedItems 打印已修复的节点和配置
+func printFixedItems(fixResp *transport.ClusterHealthFixReplyMessage) {
+	if len(fixResp.FixedNodes) > 0 {
+		fmt.Printf("\n  已修复节点 (%d):\n", len(fixResp.FixedNodes))
+		for _, nodeID := range fixResp.FixedNodes {
+			fmt.Printf("    - %s\n", nodeID)
+		}
 	}
 
-	return nil
+	if len(fixResp.FixedConfigSyncs) > 0 {
+		fmt.Printf("\n  配置同步操作 (%d):\n", len(fixResp.FixedConfigSyncs))
+		for _, op := range fixResp.FixedConfigSyncs {
+			fmt.Printf("    - %s\n", op)
+		}
+	}
 }

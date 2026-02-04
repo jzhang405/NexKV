@@ -194,13 +194,11 @@ func (nr NodeRole) String() string {
 // Host 物理机器结构
 // Host 物理机器信息（PR-033 扩展）
 type Host struct {
-	// === 现有字段（向后兼容） ===
-	ID       string      `msgpack:"id"`       // Deprecated: 使用 HostID 代替
+	// 基础字段
 	Role     HostRole    `msgpack:"role"`     // 物理机器角色
 	NodeAddr NodeAddress `msgpack:"nodeaddr"` // 网络地址信息
-	Status   string      `msgpack:"status"`   // Deprecated: 使用 HostStatus 代替
 
-	// === PR-033 新增字段 ===
+	// PR-033 新增字段
 	HostID              string     `msgpack:"host_id"`                // 机器唯一标识
 	Hostname            string     `msgpack:"hostname"`               // 物理机器地址（IP 或域名）
 	LeafNodeID          string     `msgpack:"leaf_node_id"`           // 关联的叶子节点 ID
@@ -261,6 +259,10 @@ type TreeCoordinator struct {
 
 	// 心跳序列号计数器（PR-034：实现心跳机制）
 	heartbeatSeq atomic.Uint64
+
+	// 集群修复操作（P0-1 修复：添加并发控制）
+	fixMu    sync.Mutex // 修复操作专用锁
+	isFixing bool       // 是否正在执行修复操作
 
 	// 生命周期
 	started atomic.Bool
@@ -583,7 +585,7 @@ func (tc *TreeCoordinator) discoverAndJoin() {
 
 	// 检查 RPCClient 是否可用
 	if tc.RPCClient == nil {
-		logging.WithField("node_id", tc.localNode.NodeID).Debug("RPCClient 未初始化，跳过自动发现")
+		logging.WithField("node_id", tc.localNode.NodeID).Info("RPCClient 未初始化，跳过自动发现")
 		return
 	}
 
@@ -592,19 +594,28 @@ func (tc *TreeCoordinator) discoverAndJoin() {
 	// 当前实现：如果本地节点不是根节点，尝试找到可以连接的节点
 	knownNodes := tc.getKnownNodes()
 	if len(knownNodes) == 0 {
-		logging.WithField("node_id", tc.localNode.NodeID).Debug("没有已知节点，作为根节点启动")
+		logging.WithField("node_id", tc.localNode.NodeID).Info("没有已知节点，作为根节点启动")
 		tc.localNode.Status = NodeStatusReady
 		return
 	}
+	logging.WithFields(map[string]any{
+		"node_id":     tc.localNode.NodeID,
+		"known_count": len(knownNodes),
+	}).Info("发现已知节点")
 
 	// 步骤 2: 选择合适的父节点
 	// 策略：选择 Level 最小且未达到 MaxChildren 的节点
 	bestParent := tc.selectBestParent(knownNodes)
 	if bestParent == nil {
-		logging.WithField("node_id", tc.localNode.NodeID).Debug("未找到合适的父节点，作为根节点启动")
+		logging.WithField("node_id", tc.localNode.NodeID).Info("未找到合适的父节点，作为根节点启动")
 		tc.localNode.Status = NodeStatusReady
 		return
 	}
+	logging.WithFields(map[string]any{
+		"node_id":   tc.localNode.NodeID,
+		"parent_id": bestParent.NodeID,
+		"addr":      bestParent.Addr.TCPAddr(),
+	}).Info("选择父节点")
 
 	// 步骤 3: 发送加入请求
 	if err := tc.sendJoinRequest(bestParent); err != nil {
@@ -671,7 +682,7 @@ func (tc *TreeCoordinator) getKnownNodes() []*Node {
 			node := &Node{
 				NodeID:   "", // 种子节点可能还没有 NodeID
 				Addr:     *parsedAddr,
-				Status:   NodeStatusInit, // 初始状态
+				Status:   NodeStatusReady, // 种子节点假设为可用状态
 				ParentID: "",
 				Level:    0,
 			}
@@ -684,27 +695,20 @@ func (tc *TreeCoordinator) getKnownNodes() []*Node {
 	}
 
 	// 2. 合并内存中的已知节点（向后兼容 + 降级处理）
-	// P1-3 修复：先在锁内收集节点地址，然后在锁外进行去重检查，避免死锁
+	// P1-3 修复：在锁内完成所有操作，确保数据一致性
+	// 使用 defer 确保锁一定会被释放
 	tc.nodesMu.RLock()
-	knownNodeAddrs := make([]string, 0, len(tc.allNodes))
-	knownNodesMap := make(map[string]*Node, len(tc.allNodes))
+	defer tc.nodesMu.RUnlock()
+
 	for _, node := range tc.allNodes {
 		// 跳过本地节点
 		if node.NodeID == tc.localNode.NodeID {
 			continue
 		}
 		nodeAddr := node.Addr.TCPAddr()
-		knownNodeAddrs = append(knownNodeAddrs, nodeAddr)
-		knownNodesMap[nodeAddr] = node
-	}
-	tc.nodesMu.RUnlock()
-
-	// 在锁外进行去重检查和合并
-	for _, addr := range knownNodeAddrs {
-		if !containsNodeAddr(nodes, addr) {
-			if node, exists := knownNodesMap[addr]; exists {
-				nodes = append(nodes, node)
-			}
+		// 去重检查：如果节点地址已存在，则跳过
+		if !containsNodeAddr(nodes, nodeAddr) {
+			nodes = append(nodes, node)
 		}
 	}
 
@@ -731,19 +735,37 @@ func (tc *TreeCoordinator) selectBestParent(nodes []*Node) *Node {
 	var bestParent *Node
 	minLevel := int(^uint(0) >> 1) // 最大 int 值
 
+	logging.WithFields(map[string]any{
+		"candidate_count": len(nodes),
+		"max_level":       tc.config.MaxLevel,
+		"max_children":    tc.config.MaxChildren,
+	}).Info("开始选择父节点")
+
 	for _, node := range nodes {
 		// 跳过不可用的节点
 		if node.Status != NodeStatusReady {
+			logging.WithFields(map[string]any{
+				"addr":   node.Addr.TCPAddr(),
+				"status": node.Status,
+			}).Debug("跳过非 Ready 状态节点")
 			continue
 		}
 
 		// 检查 Level 限制
 		if node.Level >= tc.config.MaxLevel {
+			logging.WithFields(map[string]any{
+				"addr":  node.Addr.TCPAddr(),
+				"level": node.Level,
+			}).Debug("跳过 Level 达到上限的节点")
 			continue
 		}
 
 		// 检查子节点数量限制
 		if len(node.ChildrenIDs) >= tc.config.MaxChildren {
+			logging.WithFields(map[string]any{
+				"addr":           node.Addr.TCPAddr(),
+				"children_count": len(node.ChildrenIDs),
+			}).Debug("跳过子节点数达到上限的节点")
 			continue
 		}
 
@@ -752,6 +774,15 @@ func (tc *TreeCoordinator) selectBestParent(nodes []*Node) *Node {
 			minLevel = node.Level
 			bestParent = node
 		}
+	}
+
+	if bestParent != nil {
+		logging.WithFields(map[string]any{
+			"selected_addr": bestParent.Addr.TCPAddr(),
+			"level":         bestParent.Level,
+		}).Info("选择父节点成功")
+	} else {
+		logging.Info("没有找到合适的父节点")
 	}
 
 	return bestParent
@@ -768,7 +799,7 @@ func (tc *TreeCoordinator) sendJoinRequest(targetNode *Node) error {
 	joinMsg := &transport.NodeJoinMessage{
 		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeJoin},
 		NodeID:      tc.localNode.NodeID,
-		Addr:        tc.localNode.Addr.TCPAddr(),
+		Addr:        tc.localNode.Addr.GetTCPAddr(), // 使用普通格式而非 multiaddr 格式
 		Role:        "child",
 	}
 
@@ -875,13 +906,19 @@ func (tc *TreeCoordinator) sendHeartbeatToNode(targetNodeID string, pingMsg *tra
 	// 构造目标地址
 	targetAddr := fmt.Sprintf("%s:%d", targetNode.Addr.Host, targetNode.Addr.TCPPort)
 
+	logging.WithFields(map[string]any{
+		"target_node": targetNodeID,
+		"target_addr": targetAddr,
+	}).Info("发送心跳")
+
 	// 发送心跳并等待响应
 	resp, err := tc.RPCClient.Call(ctx, targetAddr, pingMsg)
 	if err != nil {
 		logging.WithFields(map[string]any{
 			"target_node": targetNodeID,
+			"target_addr": targetAddr,
 			"error":       err,
-		}).Debug("心跳发送失败")
+		}).Warn("心跳发送失败")
 		return
 	}
 
@@ -892,7 +929,15 @@ func (tc *TreeCoordinator) sendHeartbeatToNode(targetNodeID string, pingMsg *tra
 			"target_node": targetNodeID,
 			"status":      pongMsg.Status,
 			"rtt_ms":      rtt * 1000,
-		}).Debug("收到心跳响应")
+		}).Info("收到心跳响应")
+
+		// P1-1 修复：使用 defer 确保锁一定会被释放
+		tc.nodesMu.Lock()
+		defer tc.nodesMu.Unlock()
+
+		if node, exists := tc.allNodes[targetNodeID]; exists {
+			node.LastHeartbeat = time.Now()
+		}
 	}
 }
 
@@ -1212,6 +1257,77 @@ func (tc *TreeCoordinator) AddChild(childID string) error {
 		"level":        newChildLevel,
 		"max_level":    tc.config.MaxLevel,
 		"max_children": tc.config.MaxChildren,
+	}).Info("添加子节点")
+
+	return nil
+}
+
+// AddChildWithAddr 添加子节点（包含地址信息）
+//
+// 与 AddChild 的区别：
+//   - AddChildWithAddr 会设置节点的 Addr 字段
+//   - 用于处理来自其他节点的加入请求（已知对方地址）
+func (tc *TreeCoordinator) AddChildWithAddr(childID string, addr *NodeAddress) error {
+	tc.nodesMu.Lock()
+	defer tc.nodesMu.Unlock()
+
+	// 检查子节点数量限制
+	if len(tc.localNode.ChildrenIDs) >= tc.config.MaxChildren {
+		return types.NewClusterTreeManagementError(fmt.Sprintf("子节点数量已达上限 %d", tc.config.MaxChildren))
+	}
+
+	// 检查层级限制（新子节点的 Level 不能超过 MaxLevel）
+	newChildLevel := tc.localNode.Level + 1
+	if newChildLevel > tc.config.MaxLevel {
+		return types.NewClusterTreeManagementError(fmt.Sprintf("超出树的最大深度限制 %d", tc.config.MaxLevel))
+	}
+
+	// 检查是否已存在
+	if slices.Contains(tc.localNode.ChildrenIDs, childID) {
+		return types.NewClusterTreeManagementError("子节点已存在: " + childID)
+	}
+
+	// 检查 child 是否已经有父节点（确保一个真实节点只能只有一个 ParentID）
+	if child, exists := tc.allNodes[childID]; exists {
+		// 如果 child 已经有父节点，且不是当前节点
+		if child.ParentID != "" && child.ParentID != tc.localNode.NodeID {
+			return types.NewClusterTreeManagementError(fmt.Sprintf("%s 已经是 %s 的子节点，不能同时作为 %s 的子节点", childID, child.ParentID, tc.localNode.NodeID))
+		}
+	}
+
+	// 添加子节点到本地节点列表
+	tc.localNode.ChildrenIDs = append(tc.localNode.ChildrenIDs, childID)
+
+	// 确保子节点存在于 allNodes 中（如果不存在则创建）
+	child, exists := tc.allNodes[childID]
+	if !exists {
+		// 创建新的子节点（包含地址信息）
+		child = &Node{
+			NodeID:        childID,
+			Addr:          *addr, // 关键：设置节点地址
+			Status:        NodeStatusReady,
+			ParentID:      tc.localNode.NodeID,
+			Level:         newChildLevel,
+			LastHeartbeat: time.Now(), // 初始化心跳时间，避免立即被标记为故障
+		}
+		tc.allNodes[childID] = child
+	} else {
+		// 更新现有子节点的父节点、层级和地址
+		child.ParentID = tc.localNode.NodeID
+		child.Level = newChildLevel
+		child.Addr = *addr               // 更新地址
+		child.LastHeartbeat = time.Now() // 更新心跳时间
+	}
+
+	tc.stats.LastTopologyUpdate.Store(time.Now())
+
+	logging.WithFields(map[string]any{
+		"parent":       tc.localNode.NodeID,
+		"child":        childID,
+		"level":        newChildLevel,
+		"max_level":    tc.config.MaxLevel,
+		"max_children": tc.config.MaxChildren,
+		"addr":         addr.TCPAddr(), // 记录地址信息
 	}).Info("添加子节点")
 
 	return nil
@@ -1918,13 +2034,7 @@ func (n *Node) IsOnline() bool {
 //   - LeafParent: 必须有 LeafNodeID 和 ParentNodeID
 //   - LeafParentStandby: 必须有 LeafNodeID 和 ParentStandbyNodeID
 func (h *Host) ValidateNodeIDs() error {
-	// 使用 HostID 或 ID（向后兼容）
-	hostID := h.HostID
-	if hostID == "" {
-		hostID = h.ID
-	}
-
-	if hostID == "" {
+	if h.HostID == "" {
 		return types.NewTreeCoordinatorHostIDRequiredError()
 	}
 

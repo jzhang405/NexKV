@@ -15,12 +15,12 @@ package transport
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
 // ========================================
@@ -177,7 +177,7 @@ func (f HandlerFunc) HandleMessage(ctx context.Context, msg MsgFrame) error {
 // NewDispatcher 创建新的分发器
 func NewDispatcher(config *DispatcherConfig, handler Handler) (*Dispatcher, error) {
 	if handler == nil {
-		return nil, fmt.Errorf("handler is required")
+		return nil, types.NewDispatcherHandlerRequiredError()
 	}
 
 	if config == nil {
@@ -213,10 +213,10 @@ func NewDispatcher(config *DispatcherConfig, handler Handler) (*Dispatcher, erro
 // validateDispatcherConfig 验证分发器配置
 func validateDispatcherConfig(config *DispatcherConfig) error {
 	if config.WorkerCount <= 0 {
-		return fmt.Errorf("invalid WorkerCount: %d", config.WorkerCount)
+		return types.NewDispatcherInvalidWorkerCountError(config.WorkerCount)
 	}
 	if config.QueueSize <= 0 {
-		return fmt.Errorf("invalid QueueSize: %d", config.QueueSize)
+		return types.NewDispatcherInvalidQueueSizeError(config.QueueSize)
 	}
 
 	// 设置默认值
@@ -235,16 +235,13 @@ func validateDispatcherConfig(config *DispatcherConfig) error {
 
 	// 验证配置合法性
 	if config.MinWorkers > config.MaxWorkers {
-		return fmt.Errorf("MinWorkers (%d) cannot be greater than MaxWorkers (%d)",
-			config.MinWorkers, config.MaxWorkers)
+		return types.NewDispatcherMinMaxWorkersInvalidError(config.MinWorkers, config.MaxWorkers)
 	}
 	if config.ScaleUpThreshold <= config.ScaleDownThreshold {
-		return fmt.Errorf("ScaleUpThreshold (%.2f) must be greater than ScaleDownThreshold (%.2f)",
-			config.ScaleUpThreshold, config.ScaleDownThreshold)
+		return types.NewDispatcherScaleThresholdInvalidError(config.ScaleUpThreshold, config.ScaleDownThreshold)
 	}
 	if config.WorkerCount < config.MinWorkers || config.WorkerCount > config.MaxWorkers {
-		return fmt.Errorf("WorkerCount (%d) must be between MinWorkers (%d) and MaxWorkers (%d)",
-			config.WorkerCount, config.MinWorkers, config.MaxWorkers)
+		return types.NewDispatcherWorkerCountOutOfRangeError(config.WorkerCount, config.MinWorkers, config.MaxWorkers)
 	}
 
 	return nil
@@ -260,7 +257,7 @@ func validateDispatcherConfig(config *DispatcherConfig) error {
 // P0: 同时启动动态 Worker 扩缩容监控
 func (d *Dispatcher) Start() error {
 	if !d.running.CompareAndSwap(false, true) {
-		return fmt.Errorf("dispatcher already running")
+		return types.NewDispatcherAlreadyRunningError()
 	}
 
 	logging.Infof("[Dispatcher] Starting dispatcher with %d workers (dynamic scaling: %d~%d)",
@@ -289,7 +286,7 @@ func (d *Dispatcher) Start() error {
 //  5. 关闭所有 worker
 func (d *Dispatcher) Stop() error {
 	if !d.running.CompareAndSwap(true, false) {
-		return fmt.Errorf("dispatcher not running")
+		return types.NewDispatcherNotRunningError()
 	}
 
 	logging.Infof("[Dispatcher] Stopping dispatcher (processed: %d, dropped: %d, workers: %d)",
@@ -722,13 +719,12 @@ func (d *Dispatcher) GetScalingStats() ScalingStats {
 //   - error: 目标数量非法时返回错误
 func (d *Dispatcher) ScaleUpTo(target int) error {
 	if target < d.config.MinWorkers || target > d.config.MaxWorkers {
-		return fmt.Errorf("target worker count %d out of range [%d, %d]",
-			target, d.config.MinWorkers, d.config.MaxWorkers)
+		return types.NewDispatcherTargetWorkerCountOutOfRangeError(target, d.config.MinWorkers, d.config.MaxWorkers)
 	}
 
 	current := int(d.currentWorkers.Load())
 	if target <= current {
-		return fmt.Errorf("target %d not greater than current %d", target, current)
+		return types.NewDispatcherTargetNotGreaterThanCurrentError(target, current)
 	}
 
 	logging.Infof("[Dispatcher-ManualScale] Manual scale up requested: %d -> %d", current, target)
@@ -745,13 +741,12 @@ func (d *Dispatcher) ScaleUpTo(target int) error {
 //   - error: 目标数量非法时返回错误
 func (d *Dispatcher) ScaleDownTo(target int) error {
 	if target < d.config.MinWorkers || target > d.config.MaxWorkers {
-		return fmt.Errorf("target worker count %d out of range [%d, %d]",
-			target, d.config.MinWorkers, d.config.MaxWorkers)
+		return types.NewDispatcherTargetWorkerCountOutOfRangeError(target, d.config.MinWorkers, d.config.MaxWorkers)
 	}
 
 	current := int(d.currentWorkers.Load())
 	if target >= current {
-		return fmt.Errorf("target %d not less than current %d", target, current)
+		return types.NewDispatcherTargetNotLessThanCurrentError(target, current)
 	}
 
 	logging.Infof("[Dispatcher-ManualScale] Manual scale down requested: %d -> %d", current, target)
@@ -771,7 +766,7 @@ func (d *Dispatcher) WaitForScaling(target int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout waiting for scaling to %d workers", target)
+			return types.NewDispatcherTimeoutWaitingForScalingError(target)
 		}
 
 		current := int(d.currentWorkers.Load())
@@ -781,7 +776,7 @@ func (d *Dispatcher) WaitForScaling(target int, timeout time.Duration) error {
 
 		select {
 		case <-d.ctx.Done():
-			return fmt.Errorf("dispatcher canceled while waiting for scaling")
+			return types.NewDispatcherCanceledWhileWaitingError()
 		case <-time.After(100 * time.Millisecond):
 			// 继续等待
 		}

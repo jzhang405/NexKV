@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
 const (
@@ -119,7 +120,7 @@ type CheckpointManager struct {
 func NewCheckpointManager(checkpointDir string) (*CheckpointManager, error) {
 	// 确保目录存在
 	if err := os.MkdirAll(checkpointDir, 0755); err != nil {
-		return nil, fmt.Errorf("创建 Checkpoint 目录失败: %w", err)
+		return nil, types.NewStoreDirectoryCreationError(checkpointDir, err)
 	}
 
 	return &CheckpointManager{
@@ -155,7 +156,7 @@ func (m *CheckpointManager) CreateCheckpoint(
 	// 2. 序列化为 JSON
 	jsonData, err := json.MarshalIndent(checkpoint, "", "  ")
 	if err != nil {
-		return nil, fmt.Errorf("序列化 Checkpoint 失败: %w", err)
+		return nil, types.NewStoreCheckpointSerializationFailedError(err)
 	}
 
 	// 3. 生成 Checkpoint 文件名
@@ -167,13 +168,13 @@ func (m *CheckpointManager) CreateCheckpoint(
 	// 4. 先写入临时文件
 	tempPath := filePath + ".tmp"
 	if err := os.WriteFile(tempPath, jsonData, 0644); err != nil {
-		return nil, fmt.Errorf("写入 Checkpoint 临时文件失败: %w", err)
+		return nil, types.NewStoreCheckpointWriteFailedError(err)
 	}
 
 	// 5. 原子重命名
 	if err := os.Rename(tempPath, filePath); err != nil {
 		_ = os.Remove(tempPath) // 清理临时文件，忽略错误
-		return nil, fmt.Errorf("重命名 Checkpoint 文件失败: %w", err)
+		return nil, types.NewStoreCheckpointRenameFailedError(err)
 	}
 
 	logging.Infof("Checkpoint 创建成功: %s (版本: %d)", fileName, checkpointVersion)
@@ -216,7 +217,7 @@ func (m *CheckpointManager) CreateCheckpointWithVersion(
 	// 2. 序列化为 JSON
 	jsonData, err := json.MarshalIndent(checkpoint, "", "  ")
 	if err != nil {
-		return nil, fmt.Errorf("序列化 Checkpoint 失败: %w", err)
+		return nil, types.NewStoreCheckpointSerializationFailedError(err)
 	}
 
 	// 3. 生成 Checkpoint 文件名（使用全局序列号）
@@ -228,13 +229,13 @@ func (m *CheckpointManager) CreateCheckpointWithVersion(
 	// 4. 先写入临时文件
 	tempPath := filePath + ".tmp"
 	if err := os.WriteFile(tempPath, jsonData, 0644); err != nil {
-		return nil, fmt.Errorf("写入 Checkpoint 临时文件失败: %w", err)
+		return nil, types.NewStoreCheckpointWriteFailedError(err)
 	}
 
 	// 5. 原子重命名
 	if err := os.Rename(tempPath, filePath); err != nil {
 		_ = os.Remove(tempPath) // 清理临时文件，忽略错误
-		return nil, fmt.Errorf("重命名 Checkpoint 文件失败: %w", err)
+		return nil, types.NewStoreCheckpointRenameFailedError(err)
 	}
 
 	logging.Infof("Checkpoint 创建成功（全局序列号）: %s (版本: %d)", fileName, checkpointVersion)
@@ -257,18 +258,18 @@ func (m *CheckpointManager) LoadCheckpoint(fileName string) (*Checkpoint, error)
 	// 1. 读取文件内容
 	jsonData, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("读取 Checkpoint 文件失败: %w", err)
+		return nil, types.NewStoreCheckpointReadFailedError(err)
 	}
 
 	// 2. 反序列化 JSON
 	var checkpoint Checkpoint
 	if err := json.Unmarshal(jsonData, &checkpoint); err != nil {
-		return nil, fmt.Errorf("反序列化 Checkpoint 失败: %w", err)
+		return nil, types.NewStoreCheckpointDeserializationFailedError(err)
 	}
 
 	// 3. 验证魔术字
 	if checkpoint.Magic != CheckpointMagic {
-		return nil, fmt.Errorf("无效的 Checkpoint 魔术字: %s", checkpoint.Magic)
+		return nil, types.NewStoreCheckpointInvalidMagicError(checkpoint.Magic)
 	}
 
 	logging.Infof("Checkpoint 加载成功: %s (版本: %d)", fileName, checkpoint.CheckpointVersion)
@@ -286,7 +287,7 @@ func (m *CheckpointManager) GetLatestCheckpoint() (*Checkpoint, error) {
 	// 1. 列出所有 Checkpoint 文件
 	entries, err := os.ReadDir(m.checkpointDir)
 	if err != nil {
-		return nil, fmt.Errorf("读取 Checkpoint 目录失败: %w", err)
+		return nil, types.NewStoreCheckpointDirectoryReadFailedError(err)
 	}
 
 	// 2. 找到最新的 Checkpoint 文件
@@ -328,7 +329,7 @@ func (m *CheckpointManager) DeleteCheckpoint(fileName string) error {
 	filePath := filepath.Join(m.checkpointDir, fileName)
 
 	if err := os.Remove(filePath); err != nil {
-		return fmt.Errorf("删除 Checkpoint 文件失败: %w", err)
+		return types.NewStoreCheckpointDeleteFailedError(err)
 	}
 
 	logging.Infof("Checkpoint 删除成功: %s", fileName)

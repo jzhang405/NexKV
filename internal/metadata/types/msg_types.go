@@ -90,9 +90,11 @@ const (
 	MessageTypeNodeReparentReply MessageType = 308 // 重新建立父子关系响应
 
 	// 集群管理消息 (350-399)
-	MessageTypeClusterStatus      MessageType = 350 // 集群状态查询
-	MessageTypeClusterStatusReply MessageType = 351 // 集群状态响应
-	MessageTypeLeaderElection     MessageType = 352 // Leader 选举
+	MessageTypeClusterStatus         MessageType = 350 // 集群状态查询
+	MessageTypeClusterStatusReply    MessageType = 351 // 集群状态响应
+	MessageTypeClusterHealthFix      MessageType = 352 // 集群健康修复
+	MessageTypeClusterHealthFixReply MessageType = 353 // 集群健康修复响应
+	MessageTypeLeaderElection        MessageType = 354 // Leader 选举
 )
 
 // String 返回消息类型的字符串表示
@@ -158,6 +160,10 @@ func (t MessageType) String() string {
 		return "ClusterStatus"
 	case MessageTypeClusterStatusReply:
 		return "ClusterStatusReply"
+	case MessageTypeClusterHealthFix:
+		return "ClusterHealthFix"
+	case MessageTypeClusterHealthFixReply:
+		return "ClusterHealthFixReply"
 	case MessageTypeLeaderElection:
 		return "LeaderElection"
 	default:

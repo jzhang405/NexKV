@@ -62,6 +62,9 @@ func (ds *DiscoveryService) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("创建 mDNS 服务失败: %w", err)
 	}
+	if ds.service == nil {
+		return fmt.Errorf("创建 mDNS 服务失败: 服务为空")
+	}
 
 	// 启动服务
 	if err := ds.service.Start(); err != nil {

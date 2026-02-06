@@ -38,14 +38,8 @@ build:
 	$(GO) build $(GOFLAGS) -ldflags "$(NEXKV_LDFLAGS)" -o bin/$(BINARY_NAME) $(NEXKV_PATH)/main.go
 	$(GO) build $(GOFLAGS) -ldflags "$(NEXKVD_LDFLAGS)" -o bin/$(DAEMON_NAME) $(NEXKVD_PATH)/main.go
 
-## test: 运行所有测试
-test:
-	@echo "运行测试..."
-	$(GO) test -coverprofile=coverage.out ./...
-	$(GO) tool cover -html=coverage.out -o coverage.html
 
-## test-race: 运行带竞态检测的测试
-test-race:
+test:
 	@echo "运行带竞态检测的测试..."
 	$(GO) test -race -coverprofile=coverage.out ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
@@ -135,7 +129,6 @@ help:
 	@echo "可用命令:"
 	@echo "  make build         - 编译项目（nexkv 和 nexkvd）"
 	@echo "  make test          - 运行所有测试"
-	@echo "  make test-race     - 运行带竞态检测的测试"
 	@echo "  make test-verbose  - 运行详细测试"
 	@echo "  make test-coverage - 运行测试并生成覆盖率报告"
 	@echo "  make benchmark     - 运行性能基准测试"

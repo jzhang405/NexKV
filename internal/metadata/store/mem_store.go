@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jzhang405/NexKV/internal/metadata/clock"
+	"github.com/jzhang405/NexKV/internal/clock"
 	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 )

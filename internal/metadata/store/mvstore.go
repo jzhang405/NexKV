@@ -3,7 +3,7 @@
 package store
 
 import (
-	"github.com/jzhang405/NexKV/internal/metadata/clock"
+	"github.com/jzhang405/NexKV/internal/clock"
 )
 
 // MVStore 多版本键值存储接口

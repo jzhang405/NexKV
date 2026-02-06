@@ -383,23 +383,23 @@ func LoadTestConfigFromFile(configPath string) (*testConfig, error) {
 		// 尝试通过查找 go.mod 来定位项目根目录
 		rootDir := findProjectRoot()
 
-		// 标准化配置文件名（如果已包含 configs/ 前缀，则去掉）
-		configFileName := strings.TrimPrefix(configPath, "configs/")
+		// 标准化配置文件名（如果已包含 config/ 前缀，则去掉）
+		configFileName := strings.TrimPrefix(configPath, "config/")
 
 		// 尝试多个可能的位置（从测试目录向上查找）
 		possiblePaths := []string{
-			configPath,                                                 // 直接使用原始路径
-			filepath.Join("configs", configFileName),                   // configs/ 目录
-			filepath.Join("../../../configs", configFileName),          // 从 cluster 目录回退到项目根目录
-			filepath.Join("..", "..", "..", "configs", configFileName), // 使用相对路径
-			filepath.Join("..", "..", "configs", configFileName),       // 从 metadata 目录回退
-			filepath.Join("..", "configs", configFileName),             // 从 internal 目录回退
+			configPath,                                                // 直接使用原始路径
+			filepath.Join("config", configFileName),                   // config/ 目录
+			filepath.Join("../../../config", configFileName),          // 从 cluster 目录回退到项目根目录
+			filepath.Join("..", "..", "..", "config", configFileName), // 使用相对路径
+			filepath.Join("..", "..", "config", configFileName),       // 从 metadata 目录回退
+			filepath.Join("..", "config", configFileName),             // 从 internal 目录回退
 		}
 
 		// 如果找到了项目根目录，优先使用
 		if rootDir != "" {
 			possiblePaths = append([]string{
-				filepath.Join(rootDir, "configs", configFileName),
+				filepath.Join(rootDir, "config", configFileName),
 			}, possiblePaths...)
 		}
 
@@ -451,7 +451,7 @@ func SetupTestEnvironmentFromConfig(t *testing.T, configPath string, hostIndex i
 
 	// 使用默认配置文件路径
 	if configPath == "" {
-		configPath = "configs/config.yaml"
+		configPath = "config/config.yaml"
 	}
 
 	// 加载配置文件

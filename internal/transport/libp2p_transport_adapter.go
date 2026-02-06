@@ -45,10 +45,10 @@ type Transport interface {
 // Libp2pTransportAdapter 适配器：实现现有 Transport 接口
 // 职责：将 NodeID 与 peer.ID 进行双向转换，保持业务层 API 不变
 type Libp2pTransportAdapter struct {
-	host     host.Host
-	protocol *NexKVProtocol
-	mapper   *NodeIDMapper // NodeID ↔ PeerID 双向映射
-	handler  func(string, []byte)
+	host      host.Host
+	protocol  *NexKVProtocol
+	mapper    *NodeIDMapper // NodeID ↔ PeerID 双向映射
+	handler   func(string, []byte)
 	handlerMu sync.RWMutex
 	ctx       context.Context
 	cancel    context.CancelFunc

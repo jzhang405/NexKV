@@ -51,6 +51,7 @@ func NewMessagePackCodec() *MessagePackCodec {
 // +--------+--------+--------+--------+--------+
 func (c *MessagePackCodec) Encode(w io.Writer, msg *Message) error {
 	// 自动生成消息序号（如果未设置）
+	// 注意：如果同一消息被多个 goroutine 并发编码，需要先克隆消息
 	if msg.Seq == 0 {
 		msg.Seq = c.seqGenerator.Add(1)
 	}

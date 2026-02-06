@@ -213,7 +213,9 @@ func (p *NexKVProtocol) BroadcastMessage(ctx context.Context, pids []peer.ID, ms
 		wg.Add(1)
 		go func(target peer.ID) {
 			defer wg.Done()
-			if err := p.SendMessage(ctx, target, msg); err != nil {
+			// 克隆消息以避免并发编码同一消息对象时的竞态条件
+			msgClone := msg.Clone()
+			if err := p.SendMessage(ctx, target, msgClone); err != nil {
 				select {
 				case errChan <- err:
 				default:

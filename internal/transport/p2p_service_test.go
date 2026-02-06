@@ -199,11 +199,11 @@ func TestP2PService_CustomConfig(t *testing.T) {
 	keyPath := filepath.Join(tmpDir, "peer.key")
 
 	cfg := &P2PServiceConfig{
-		ListenAddr:    "9219",
-		KeyPath:       keyPath,
-		LowWater:      50,
-		HighWater:     200,
-		DiscoveryTag:  "custom-nexkv",
+		ListenAddr:     "9219",
+		KeyPath:        keyPath,
+		LowWater:       50,
+		HighWater:      200,
+		DiscoveryTag:   "custom-nexkv",
 		BootstrapPeers: nil,
 	}
 

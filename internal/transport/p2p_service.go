@@ -56,11 +56,11 @@ type P2PServiceConfig struct {
 // DefaultP2PServiceConfig 返回默认配置
 func DefaultP2PServiceConfig(listenAddr string, keyPath string) *P2PServiceConfig {
 	return &P2PServiceConfig{
-		ListenAddr:    listenAddr,
-		KeyPath:       keyPath,
-		LowWater:      100,
-		HighWater:     400,
-		DiscoveryTag:  "nexkv-discovery",
+		ListenAddr:     listenAddr,
+		KeyPath:        keyPath,
+		LowWater:       100,
+		HighWater:      400,
+		DiscoveryTag:   "nexkv-discovery",
 		BootstrapPeers: nil,
 	}
 }

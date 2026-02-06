@@ -9,8 +9,8 @@ import (
 // NodeIDMapper 节点ID映射器（业务层 ↔ 网络层）
 type NodeIDMapper struct {
 	nodeIDToPeerID map[string]peer.ID // node_id -> PeerID
-	peerIDToNodeID map[peer.ID]string  // PeerID -> node_id
-	mu            sync.RWMutex
+	peerIDToNodeID map[peer.ID]string // PeerID -> node_id
+	mu             sync.RWMutex
 }
 
 // NewNodeIDMapper 创建映射器

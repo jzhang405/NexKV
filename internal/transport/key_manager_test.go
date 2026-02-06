@@ -115,3 +115,25 @@ func TestKeyManager_ConcurrentAccess(t *testing.T) {
 		assert.Equal(t, firstPID, pid)
 	}
 }
+
+// TestKeyManager_ExpandPath 测试路径展开
+func TestKeyManager_ExpandPath(t *testing.T) {
+	km := NewKeyManager("")
+
+	// 测试波浪号展开
+	homeDir, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	path := km.ExpandPath("~/test/key.pem")
+	assert.Contains(t, path, homeDir)
+	assert.Contains(t, path, "test/key.pem")
+
+	// 测试环境变量展开
+	os.Setenv("TEST_DIR", "/tmp/test")
+	path = km.ExpandPath("$TEST_DIR/key.pem")
+	assert.Contains(t, path, "/tmp/test/key.pem")
+
+	// 测试普通路径
+	path = km.ExpandPath("/absolute/path/key.pem")
+	assert.Equal(t, "/absolute/path/key.pem", path)
+}

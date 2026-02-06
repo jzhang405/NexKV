@@ -1,9 +1,0 @@
-{
-  "active": true,
-  "iteration": 1,
-  "maxIterations": 0,
-  "completionPromise": "COMPLETE",
-  "prompt": "Read prd.json and execute US-001: Fix UDP bitmap overflow when total=64. The fix is in udp_transport.go around line 509 in the isComplete() method. Add special case: if p.total == 64, return p.bitmapFast == 0xFFFFFFFFFFFFFFFF. Also add unit tests TestUDPFragmentBitmap_Total64 and TestUDPFragmentBitmap_Total65. Run tests to verify.",
-  "startedAt": "2026-01-24T14:15:02.459Z",
-  "model": ""
-}

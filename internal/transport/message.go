@@ -18,33 +18,23 @@ import (
 	"time"
 )
 
-// HopMax 树形拓扑中节点间通信的最大跳数（全局通用）
-const HopMax uint8 = 10 // 可根据集群规模调整（如10跳覆盖1000+节点的树形拓扑）
+// HopMax 树形拓扑中节点间通信的最大跳数
+const HopMax uint8 = 10
 
 // MessageType 消息类型枚举
 type MessageType uint8
 
 const (
-	// MessageTypeUnknown 未知消息类型
 	MessageTypeUnknown MessageType = 0
-	// MessageTypeGet GET 请求
-	MessageTypeGet MessageType = 1
-	// MessageTypePut PUT 请求
-	MessageTypePut MessageType = 2
-	// MessageTypeDelete DELETE 请求
-	MessageTypeDelete MessageType = 3
-	// MessageTypeSync 同步消息
-	MessageTypeSync MessageType = 4
-	// MessageTypeAck 确认消息
-	MessageTypeAck MessageType = 5
-	// MessageTypeNack 拒绝消息
-	MessageTypeNack MessageType = 6
-	// MessageTypeGossip Gossip 消息
-	MessageTypeGossip MessageType = 7
-	// MessageTypeCluster 集群消息
+	MessageTypeGet     MessageType = 1
+	MessageTypePut     MessageType = 2
+	MessageTypeDelete  MessageType = 3
+	MessageTypeSync    MessageType = 4
+	MessageTypeAck     MessageType = 5
+	MessageTypeNack    MessageType = 6
+	MessageTypeGossip  MessageType = 7
 	MessageTypeCluster MessageType = 8
-	// MessageTypeQuorum Quorum 投票消息
-	MessageTypeQuorum MessageType = 9
+	MessageTypeQuorum  MessageType = 9
 )
 
 // String 返回消息类型的字符串表示
@@ -110,19 +100,18 @@ func NewMessage(msgType MessageType) *Message {
 func (m *Message) Clone() *Message {
 	clone := *m
 	// 深拷贝切片字段
-	if m.Key != nil {
-		clone.Key = make([]byte, len(m.Key))
-		copy(clone.Key, m.Key)
-	}
-	if m.Value != nil {
-		clone.Value = make([]byte, len(m.Value))
-		copy(clone.Value, m.Value)
-	}
-	if m.Payload != nil {
-		clone.Payload = make([]byte, len(m.Payload))
-		copy(clone.Payload, m.Payload)
-	}
+	clone.copyBytes(m.Key, &clone.Key)
+	clone.copyBytes(m.Value, &clone.Value)
+	clone.copyBytes(m.Payload, &clone.Payload)
 	return &clone
+}
+
+// copyBytes 复制字节数据
+func (m *Message) copyBytes(src []byte, dest *[]byte) {
+	if src != nil {
+		*dest = make([]byte, len(src))
+		copy(*dest, src)
+	}
 }
 
 // IncrementHopCount 增加跳数（如果超过最大值返回 false）
@@ -156,7 +145,6 @@ func (m *Message) IsValid() bool {
 
 // Size 返回消息的预估大小（字节）
 func (m *Message) Size() int {
-	size := 1 + 8 + 8 + 1 + 8 + len(m.From) + len(m.To) + len(m.Payload) // Type + Seq + Version + HopCount + Timestamp + From + To + Payload
-	size += len(m.Key) + len(m.Value)
-	return size
+	// Type(1) + Seq(8) + Version(8) + HopCount(1) + Timestamp(8) + From + To + Payload
+	return 1 + 8 + 8 + 1 + 8 + len(m.From) + len(m.To) + len(m.Key) + len(m.Value) + len(m.Payload)
 }

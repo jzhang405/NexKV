@@ -39,19 +39,13 @@ type MessagePackCodec struct {
 func NewMessagePackCodec() *MessagePackCodec {
 	seq := atomic.Uint64{}
 	seq.Store(0)
-	return &MessagePackCodec{
-		seqGenerator: &seq,
-	}
+	return &MessagePackCodec{seqGenerator: &seq}
 }
 
 // Encode 编码消息（TLV 格式）
-// 消息格式：
-// +--------+--------+--------+--------+--------+
-// | Type   | Length (2 bytes)           | Value (MessagePack) |
-// +--------+--------+--------+--------+--------+
+// 消息格式：Type(1) + Length(2) + Value(MessagePack)
 func (c *MessagePackCodec) Encode(w io.Writer, msg *Message) error {
-	// 自动生成消息序号（如果未设置）
-	// 注意：如果同一消息被多个 goroutine 并发编码，需要先克隆消息
+	// 自动生成消息序号
 	if msg.Seq == 0 {
 		msg.Seq = c.seqGenerator.Add(1)
 	}
@@ -62,18 +56,12 @@ func (c *MessagePackCodec) Encode(w io.Writer, msg *Message) error {
 		return fmt.Errorf("MessagePack 编码失败: %w", err)
 	}
 
-	// 2. 写入消息类型
-	if err := binary.Write(w, binary.BigEndian, msg.Type); err != nil {
-		return fmt.Errorf("写入消息类型失败: %w", err)
+	// 2. 写入消息头（Type + Length）
+	if err := c.writeHeader(w, msg.Type, uint16(len(msgData))); err != nil {
+		return err
 	}
 
-	// 3. 写入长度（2 字节，大端序）
-	length := uint16(len(msgData))
-	if err := binary.Write(w, binary.BigEndian, length); err != nil {
-		return fmt.Errorf("写入长度失败: %w", err)
-	}
-
-	// 4. 写入消息体
+	// 3. 写入消息体
 	if _, err := w.Write(msgData); err != nil {
 		return fmt.Errorf("写入消息体失败: %w", err)
 	}
@@ -83,31 +71,19 @@ func (c *MessagePackCodec) Encode(w io.Writer, msg *Message) error {
 
 // Decode 解码消息
 func (c *MessagePackCodec) Decode(r io.Reader) (*Message, error) {
-	// 1. 读取消息类型
-	var msgType MessageType
-	if err := binary.Read(r, binary.BigEndian, &msgType); err != nil {
-		return nil, fmt.Errorf("读取消息类型失败: %w", err)
+	// 1. 读取消息头（Type + Length）
+	msgType, length, err := c.readHeader(r)
+	if err != nil {
+		return nil, err
 	}
 
-	// 2. 读取长度
-	var length uint16
-	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
-		return nil, fmt.Errorf("读取长度失败: %w", err)
+	// 2. 读取并解码消息体
+	msgData, err := c.readMessageBody(r, length)
+	if err != nil {
+		return nil, err
 	}
 
-	// 验证长度（防止过大的消息）
-	const maxMessageSize = uint16(10 * 1024) // 最大 10KB（可根据需要调整）
-	if length > maxMessageSize {
-		return nil, fmt.Errorf("消息过大: %d 字节（最大 %d 字节）", length, maxMessageSize)
-	}
-
-	// 3. 读取消息体
-	msgData := make([]byte, length)
-	if _, err := io.ReadFull(r, msgData); err != nil {
-		return nil, fmt.Errorf("读取消息体失败: %w", err)
-	}
-
-	// 4. 解码消息（MessagePack）
+	// 3. 解码 MessagePack 数据
 	var msg Message
 	if err := msgpack.Unmarshal(msgData, &msg); err != nil {
 		return nil, fmt.Errorf("MessagePack 解码失败: %w", err)
@@ -115,7 +91,6 @@ func (c *MessagePackCodec) Decode(r io.Reader) (*Message, error) {
 
 	// 确保消息类型正确
 	msg.Type = msgType
-
 	return &msg, nil
 }
 
@@ -132,6 +107,9 @@ func (c *MessagePackCodec) EncodeToBytes(msg *Message) ([]byte, error) {
 
 	return buf, nil
 }
+
+// const
+const maxMessageSize = uint16(10 * 1024) // 最大 10KB
 
 // DecodeFromBytes 从字节切片解码消息（便捷方法）
 func (c *MessagePackCodec) DecodeFromBytes(data []byte) (*Message, error) {
@@ -174,6 +152,51 @@ func (r *byteSliceReader) Read(p []byte) (n int, err error) {
 	n = copy(p, r.data[r.pos:])
 	r.pos += n
 	return n, nil
+}
+
+// writeHeader 写入消息头（Type + Length）
+func (c *MessagePackCodec) writeHeader(w io.Writer, msgType MessageType, length uint16) error {
+	// 写入消息类型
+	if err := binary.Write(w, binary.BigEndian, msgType); err != nil {
+		return fmt.Errorf("写入消息类型失败: %w", err)
+	}
+	// 写入长度
+	if err := binary.Write(w, binary.BigEndian, length); err != nil {
+		return fmt.Errorf("写入长度失败: %w", err)
+	}
+	return nil
+}
+
+// readHeader 读取消息头（Type + Length）
+func (c *MessagePackCodec) readHeader(r io.Reader) (MessageType, uint16, error) {
+	var msgType MessageType
+	var length uint16
+
+	// 读取消息类型
+	if err := binary.Read(r, binary.BigEndian, &msgType); err != nil {
+		return 0, 0, fmt.Errorf("读取消息类型失败: %w", err)
+	}
+
+	// 读取长度
+	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
+		return 0, 0, fmt.Errorf("读取长度失败: %w", err)
+	}
+
+	// 验证长度
+	if length > maxMessageSize {
+		return 0, 0, fmt.Errorf("消息过大: %d 字节（最大 %d 字节）", length, maxMessageSize)
+	}
+
+	return msgType, length, nil
+}
+
+// readMessageBody 读取消息体
+func (c *MessagePackCodec) readMessageBody(r io.Reader, length uint16) ([]byte, error) {
+	msgData := make([]byte, length)
+	if _, err := io.ReadFull(r, msgData); err != nil {
+		return nil, fmt.Errorf("读取消息体失败: %w", err)
+	}
+	return msgData, nil
 }
 
 // ResetSeqGenerator 重置序号生成器（主要用于测试）

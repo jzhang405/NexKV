@@ -90,24 +90,17 @@ func (a *Libp2pTransportAdapter) RegisterNodeIDFromString(nodeID, peerIDStr stri
 
 // Send 实现 Transport.Send 接口
 func (a *Libp2pTransportAdapter) Send(nodeID string, msg []byte) error {
-	// 查找 NodeID 对应的 PeerID
 	pid, ok := a.mapper.GetPeerID(nodeID)
 	if !ok {
 		return fmt.Errorf("未知节点 ID: %s", nodeID)
 	}
 
-	// 包装成 NexKV 消息格式
 	nexKVMsg := &Message{
 		Type:    MessageTypeCluster,
 		Payload: msg,
 	}
 
-	// 调用 NexKVProtocol 发送消息
-	if err := a.protocol.SendMessage(a.ctx, pid, nexKVMsg); err != nil {
-		return fmt.Errorf("发送消息失败: %w", err)
-	}
-
-	return nil
+	return a.protocol.SendMessage(a.ctx, pid, nexKVMsg)
 }
 
 // Receive 实现 Transport.Receive 接口
@@ -120,30 +113,33 @@ func (a *Libp2pTransportAdapter) Receive(handler func(nodeID string, msg []byte)
 	}
 
 	a.handler = handler
+	a.protocol.RegisterHandler(MessageTypeCluster, a.createMessageHandler())
+	a.started = true
+	return nil
+}
 
-	// 注册消息处理器，将 peer.ID 转回 NodeID
-	a.protocol.RegisterHandler(MessageTypeCluster, MessageHandlerFunc(func(ctx context.Context, from peer.ID, msg *Message) error {
-		// 查找 PeerID 对应的 NodeID
-		nodeID, ok := a.mapper.GetNodeID(from)
-		if !ok {
-			// 未知 peer，使用 PeerID 字符串作为 NodeID
-			nodeID = from.String()
-			// 自动注册映射
-			a.mapper.Register(nodeID, from)
-		}
-
-		// 调用业务层处理器
+// createMessageHandler 创建消息处理器
+func (a *Libp2pTransportAdapter) createMessageHandler() MessageHandler {
+	return MessageHandlerFunc(func(ctx context.Context, from peer.ID, msg *Message) error {
+		nodeID := a.resolveNodeID(from)
 		a.handlerMu.RLock()
 		if a.handler != nil {
 			a.handler(nodeID, msg.Payload)
 		}
 		a.handlerMu.RUnlock()
-
 		return nil
-	}))
+	})
+}
 
-	a.started = true
-	return nil
+// resolveNodeID 解析节点 ID
+func (a *Libp2pTransportAdapter) resolveNodeID(from peer.ID) string {
+	if nodeID, ok := a.mapper.GetNodeID(from); ok {
+		return nodeID
+	}
+	// 未知 peer，使用 PeerID 字符串作为 NodeID
+	nodeID := from.String()
+	a.mapper.Register(nodeID, from)
+	return nodeID
 }
 
 // Close 实现 Transport.Close 接口

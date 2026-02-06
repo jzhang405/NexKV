@@ -110,45 +110,44 @@ func (p *NexKVProtocol) handleStream(s network.Stream) {
 	defer s.Close()
 
 	// 设置读取超时
-	deadline := time.Now().Add(30 * time.Second)
-	if err := s.SetReadDeadline(deadline); err != nil {
+	if err := s.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		p.recordError()
 		return
 	}
 
-	// 解码消息
-	msg, err := p.codec.Decode(s)
+	// 解码并验证消息
+	msg, err := p.decodeAndValidateMessage(s)
 	if err != nil {
 		p.recordError()
 		return
 	}
 
-	// 验证消息
+	// 处理消息
+	p.processMessage(s, msg)
+}
+
+// decodeAndValidateMessage 解码并验证消息
+func (p *NexKVProtocol) decodeAndValidateMessage(s network.Stream) (*Message, error) {
+	msg, err := p.codec.Decode(s)
+	if err != nil {
+		return nil, err
+	}
 	if !msg.IsValid() {
-		p.recordError()
-		return
+		return nil, fmt.Errorf("无效消息")
 	}
+	return msg, nil
+}
 
-	// 获取发送方 Peer ID
+// processMessage 处理消息
+func (p *NexKVProtocol) processMessage(s network.Stream, msg *Message) {
 	from := s.Conn().RemotePeer()
+	p.updateStats(false, msg.Size())
 
-	// 更新统计
-	p.stats.mu.Lock()
-	p.stats.MessagesReceived++
-	p.stats.BytesReceived += uint64(msg.Size())
-	p.stats.mu.Unlock()
-
-	// 查找处理器
-	p.mutex.RLock()
-	handler, ok := p.handlers[msg.Type]
-	p.mutex.RUnlock()
-
-	if !ok {
-		// 未注册的处理器，静默忽略
-		return
+	handler := p.getHandler(msg.Type)
+	if handler == nil {
+		return // 静默忽略未注册的处理器
 	}
 
-	// 处理消息（使用超时上下文）
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -157,15 +156,21 @@ func (p *NexKVProtocol) handleStream(s network.Stream) {
 	}
 }
 
+// getHandler 获取消息处理器
+func (p *NexKVProtocol) getHandler(msgType MessageType) MessageHandler {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	return p.handlers[msgType]
+}
+
 // SendMessage 发送消息到指定节点
-// 利用 libp2p 的自动连接复用，无需手动管理连接
 func (p *NexKVProtocol) SendMessage(ctx context.Context, pid peer.ID, msg *Message) error {
 	// 验证消息
 	if !msg.IsValid() {
 		return fmt.Errorf("无效消息: type=%d", msg.Type)
 	}
 
-	// 创建 Stream（libp2p 自动管理连接）
+	// 创建 Stream
 	s, err := p.host.NewStream(ctx, pid, ProtocolNexKV)
 	if err != nil {
 		p.recordError()
@@ -174,8 +179,7 @@ func (p *NexKVProtocol) SendMessage(ctx context.Context, pid peer.ID, msg *Messa
 	defer s.Close()
 
 	// 设置写入超时
-	deadline := time.Now().Add(10 * time.Second)
-	if err := s.SetWriteDeadline(deadline); err != nil {
+	if err := s.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		p.recordError()
 		return fmt.Errorf("设置写入超时失败: %w", err)
 	}
@@ -187,11 +191,7 @@ func (p *NexKVProtocol) SendMessage(ctx context.Context, pid peer.ID, msg *Messa
 	}
 
 	// 更新统计
-	p.stats.mu.Lock()
-	p.stats.MessagesSent++
-	p.stats.BytesSent += uint64(msg.Size())
-	p.stats.mu.Unlock()
-
+	p.updateStats(true, msg.Size())
 	return nil
 }
 
@@ -271,6 +271,19 @@ func (p *NexKVProtocol) recordError() {
 	p.stats.mu.Lock()
 	defer p.stats.mu.Unlock()
 	p.stats.Errors++
+}
+
+// updateStats 更新统计信息
+func (p *NexKVProtocol) updateStats(sent bool, size int) {
+	p.stats.mu.Lock()
+	defer p.stats.mu.Unlock()
+	if sent {
+		p.stats.MessagesSent++
+		p.stats.BytesSent += uint64(size)
+	} else {
+		p.stats.MessagesReceived++
+		p.stats.BytesReceived += uint64(size)
+	}
 }
 
 // Host 返回底层的 libp2p Host（用于高级操作）

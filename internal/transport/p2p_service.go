@@ -39,29 +39,22 @@ type P2PService struct {
 
 // P2PServiceConfig P2P 服务配置
 type P2PServiceConfig struct {
-	// ListenAddr 监听地址（如 "0.0.0.0:9211"）
-	ListenAddr string
-	// KeyPath 密钥文件路径
-	KeyPath string
-	// LowWater 连接管理器低水位
-	LowWater int
-	// HighWater 连接管理器高水位
-	HighWater int
-	// DiscoveryTag mDNS 发现服务标签
-	DiscoveryTag string
-	// BootstrapPeers 启动时连接的引导节点
-	BootstrapPeers []peer.AddrInfo
+	ListenAddr     string          // 监听地址（如 "0.0.0.0:9211"）
+	KeyPath        string          // 密钥文件路径
+	LowWater       int             // 连接管理器低水位
+	HighWater      int             // 连接管理器高水位
+	DiscoveryTag   string          // mDNS 发现服务标签
+	BootstrapPeers []peer.AddrInfo // 启动时连接的引导节点
 }
 
 // DefaultP2PServiceConfig 返回默认配置
-func DefaultP2PServiceConfig(listenAddr string, keyPath string) *P2PServiceConfig {
+func DefaultP2PServiceConfig(listenAddr, keyPath string) *P2PServiceConfig {
 	return &P2PServiceConfig{
-		ListenAddr:     listenAddr,
-		KeyPath:        keyPath,
-		LowWater:       100,
-		HighWater:      400,
-		DiscoveryTag:   "nexkv-discovery",
-		BootstrapPeers: nil,
+		ListenAddr:   listenAddr,
+		KeyPath:      keyPath,
+		LowWater:     100,
+		HighWater:    400,
+		DiscoveryTag: "nexkv-discovery",
 	}
 }
 

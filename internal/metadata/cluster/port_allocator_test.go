@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vmihailenco/msgpack/v5"
 
-	"github.com/jzhang405/NexKV/internal/metadata/store"
+	"github.com/jzhang405/NexKV/internal/wal"
 )
 
 // mockMVStore 创建用于测试的 MVStore mock

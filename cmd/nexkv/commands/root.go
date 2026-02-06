@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/config/logging"
 	"github.com/urfave/cli/v2"
 )
 

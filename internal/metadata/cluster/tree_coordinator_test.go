@@ -630,7 +630,7 @@ func Test_TreeCoordinator_gossipTopologyChange_NoRPCClient(t *testing.T) {
 	config := DefaultTreeCoordinatorConfig()
 	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
 	require.NoError(t, err)
-	coordinator.RPCClient = nil // 没有设置 RPCClient
+	// RPCClient 已删除（PR-Libp2p-TransportCleanup）
 
 	// 不应该 panic
 	assert.NotPanics(t, func() {
@@ -690,7 +690,7 @@ func Test_TreeCoordinator_gossipSync_NoRPCClient(t *testing.T) {
 		config := DefaultTreeCoordinatorConfig()
 		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
 		require.NoError(t, err)
-		coordinator.RPCClient = nil
+		// RPCClient 已删除（PR-Libp2p-TransportCleanup）
 
 		// 不应该 panic
 		assert.NotPanics(t, func() {

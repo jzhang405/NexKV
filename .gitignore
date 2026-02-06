@@ -38,5 +38,5 @@ go.work.sum
 .serena/
 bin/nexkv*
 bin/nexkvd*
-internal/metadata/store/data
+internal/wal/data
 thoughts/

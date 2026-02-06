@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jzhang405/NexKV/internal/metadata/store"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
+	"github.com/jzhang405/NexKV/internal/wal"
 	"github.com/vmihailenco/msgpack/v5"
 )
 

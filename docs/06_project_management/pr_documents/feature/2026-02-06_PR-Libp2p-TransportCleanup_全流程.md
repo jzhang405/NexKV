@@ -1,0 +1,720 @@
+# 【PR全流程文档】Feature - Transport层清理（TCP + UDP）
+
+> **文档说明**：本文档包含「前置规划」和「后置总结」两部分，记录从需求对齐到开发完成的全流程，一个PR对应一份全流程文档，归档后作为项目追溯依据。
+>
+> **⚠️ 重要说明**：本PR将 **PR-007（删除TCP Transport）** 和 **PR-008（删除UDP Transport）** 合并为一个统一的Transport层清理PR。
+
+---
+
+## 第一部分：前置部分（开工前必完成，架构师评审通过）
+
+### 1. 基础信息（与分支/PR绑定）
+
+| 项目 | 内容 |
+|------|------|
+| 工作类型 | 代码清理（Cleanup） |
+| PR编号 | PR-Libp2p-TransportCleanup（合并 PR-007 + PR-008） |
+| 分支名称 | feature/libp2p-transport-cleanup |
+| 工作主题 | Transport层清理 - 删除TCP和UDP Transport，完全迁移到libp2p |
+| 负责人 | [待定] |
+| 分支创建日期 | 2026-02-06 |
+| 计划开工日期 | 2026-02-06 |
+| 计划CI通过日期 | 2026-02-21 |
+| 关联需求单号 | libp2p迁移完成后的最终清理 |
+| 架构师评审状态 | □ 待评审 □ 评审中 □ 评审通过 □ 需优化（循环记录） |
+| 预审批结果 | □ 未通过 □ 已通过（架构师签字/备注：____________） |
+
+### 2. 背景与目标（为什么干）
+
+#### 2.1 背景
+
+**业务场景**：
+NexKV 已完成 libp2p Transport 迁移，旧的 TCP 和 UDP Transport 不再需要：
+- libp2p Transport 已验证功能完整
+- 所有用户已迁移到 libp2p
+- 保留旧代码增加维护负担
+
+**现有问题**：
+当前保留 TCP/UDP Transport 的问题：
+1. **维护负担**：需要同时维护三套实现（TCP、UDP、libp2p）
+2. **代码混乱**：旧代码影响可读性
+3. **测试负担**：需要维护旧代码的测试
+4. **依赖复杂**：增加编译和依赖管理复杂度
+5. **文档混淆**：文档仍提及 TCP/UDP
+
+**价值**：
+- **简化代码**：大幅减少代码量和复杂度
+- **降低维护**：只需维护一套 libp2p 实现
+- **提高质量**：集中精力于 libp2p 优化
+- **减少混淆**：用户明确使用 libp2p
+- **完成迁移**：彻底完成Transport层迁移
+
+#### 2.2 核心目标（可量化、可验证）
+
+> **⚠️ 重要更新（2026-02-06）**：采用**激进清理方案（方案B）**
+> - 完全删除 `internal/metadata/transport` 目录
+> - 完全删除 `internal/metadata/uuid` 目录（已完成）
+> - 直接删除RPC组件，强制迁移到libp2p Stream
+> - 更新所有引用到新的 `internal/transport` 包
+
+1. **功能目标**：
+   - ✅ 删除 `internal/metadata/uuid` 目录（已完成）
+   - ✅ 删除 `tcp_transport.go`、`udp_transport.go` 及其测试文件（已完成）
+   - 🔄 删除整个 `internal/metadata/transport` 目录（待完成）
+   - 🔄 删除RPC Client/Server组件（待完成）
+   - 🔄 更新 `cmd/nexkvd/main.go` 使用libp2p Transport（待完成）
+   - 🔄 更新所有引用到 `internal/transport` 包（待完成）
+   - 🔄 更新相关文档（待完成）
+   - 目标：代码整洁度 100%
+
+2. **质量目标**：
+   - 无编译错误
+   - 无运行时错误
+   - 测试覆盖率保持或提升
+   - 所有单元测试通过
+
+3. **兼容性目标**：
+   - ⚠️ **破坏性变更**：RPC功能将暂时不可用
+   - 后续PR使用libp2p Stream重写RPC功能
+
+#### 2.3 明确边界（不做什么，避免范围蔓延）
+
+- **本次不支持**：
+  - 不删除 libp2p 实现（保留）
+  - 不删除测试工具（后续 PR）
+  - 不删除配置迁移辅助代码
+
+- **本次不优化**：
+  - 不优化 libp2p 实现（PR-009）
+  - 不重构其他模块
+  - 不删除 PR-006 已迁移的功能
+
+### 3. 实现方案（怎么干，核心设计）
+
+#### 3.1 清理流程设计（方案B：激进清理）
+
+```mermaid
+flowchart TD
+    A["开始Transport层激进清理"] --> B["✅ 删除uuid目录"]
+    B --> C["✅ 删除tcp/udp_transport.go"]
+    C --> D["分析metadata/transport依赖"]
+    D --> E["删除整个metadata/transport目录"]
+    E --> F["更新main.go导入路径"]
+    F --> G["暂时禁用RPC功能"]
+    G --> H["更新所有引用"]
+    H --> I["编译验证"]
+    I --> J{编译成功?}
+    J -- 否 --> K["修复错误"]
+    K --> I
+    J -- 是 --> L["运行测试"]
+    L --> M{测试通过?}
+    M -- 否 --> N["修复测试"]
+    N --> L
+    M -- 是 --> O["验证代码整洁度"]
+    O --> P["提交PR"]
+
+    style B fill:#90EE90
+    style C fill:#90EE90
+    style E fill:#FFB6C1
+    style G fill:#FFB6C1
+```
+
+#### 3.2 关键设计点（方案B：激进清理）
+
+> **⚠️ 破坏性变更**：本方案将导致RPC功能暂时不可用，需要在后续PR中重写
+
+1. **已删除文件**：
+   ```
+   ✅ internal/metadata/uuid/ （整个目录，2026-02-06已删除）
+   ✅ internal/metadata/identity/ （整个目录，2026-02-06已删除）
+   ✅ internal/metadata/transport/tcp_transport.go
+   ✅ internal/metadata/transport/udp_transport.go
+   ✅ internal/metadata/transport/udp_transport_test.go
+   ✅ internal/metadata/transport/tcp_transport_test.go
+   ✅ internal/metadata/transport/cleanup_test.go
+   ```
+
+2. **待删除文件**：
+   ```
+   🔄 internal/metadata/transport/ （整个目录）
+      - rpc_client.go / rpc_server.go （RPC组件）
+      - transport.go （Transport接口）
+      - dispatcher.go （消息分发器）
+      - msg_codec.go / frame.go / msg_frame.go （消息处理）
+      - monitor.go （监控组件）
+      - netutil.go （网络工具）
+      - transport_test.go, rpc_test.go 等（所有测试文件）
+   ```
+
+3. **identity包迁移方案**：
+   - ❌ 删除 `internal/metadata/identity/` 目录
+   - ✅ `MsgSeqGenerator` 迁移到 `cmd/nexkvd/main.go` 内联实现
+   - ✅ `GenerateNodeIDFromPorts()` 替换为 libp2p peer.ID
+
+3. **需要更新的文件**：
+   - `cmd/nexkvd/main.go`（移除Transport创建，暂时禁用RPC）
+   - `cmd/nexkv/commands/cluster.go`（更新导入路径）
+   - `cmd/nexkv/commands/node.go`（更新导入路径）
+   - `internal/metadata/cluster/cluster_handlers.go`（更新导入路径）
+   - `internal/metadata/cluster/tree_coordinator.go`（更新导入路径）
+   - `internal/metadata/cluster/e2e_test.go`（更新导入路径）
+   - 配置文件模板
+   - 文档
+
+4. **破坏性影响**：
+   - ❌ **RPC功能暂时不可用**（需要后续PR重写）
+   - ❌ **CLI命令可能无法正常工作**（依赖RPC）
+   - ❌ **Daemon启动流程需要调整**（移除RPC初始化）
+   - ✅ **libp2p Transport正常工作**
+   - ✅ **核心存储功能不受影响**
+
+5. **后续补救措施**：
+   - 后续PR：使用libp2p Stream重写RPC功能
+   - 后续PR：更新CLI命令，使用新的API
+   - 后续PR：完善Daemon启动流程
+
+#### 3.3 TDD测试策略
+
+##### 3.3.1 删除测试的特殊性
+
+**测试目标**：
+验证旧代码删除后，系统功能完全由libp2p接管，且行为一致。
+
+| 测试类别 | 目的 | 验证内容 |
+|----------|------|----------|
+| **引用检查** | 确保无残留引用 | 编译通过，无未定义引用 |
+| **功能替换** | 验证libp2p替代功能 | 消息发送、接收正常 |
+| **配置兼容** | 验证配置自动迁移 | 旧配置能正常工作 |
+| **性能验证** | 确保性能不退化 | 吞吐量、延迟指标 |
+
+##### 3.3.2 引用完整性测试
+
+**测试文件**：`internal/metadata/transport/cleanup_test.go`
+
+```go
+package transport_test
+
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestNoOldTransportReferences RED: 验证没有残留的TCP/UDP Transport引用
+func TestNoOldTransportReferences(t *testing.T) {
+	projectRoot := "../../"
+	fset := token.NewFileSet()
+
+	packages := []string{
+		"internal/metadata/transport",
+		"internal/metadata/cluster",
+		"cmd/nexkvd",
+	}
+
+	foundReferences := []string{}
+
+	for _, pkgPath := range packages {
+		fullPath := filepath.Join(projectRoot, pkgPath)
+		err := filepath.Walk(fullPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") {
+				return nil
+			}
+
+			// 解析Go文件
+			node, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+			if err != nil {
+				return nil
+			}
+
+			// 检查AST中的引用
+			ast.Inspect(node, func(n ast.Node) bool {
+				if ident, ok := n.(*ast.Ident); ok {
+					if ident.Name == "TCPTransport" || ident.Name == "UDPTransport" ||
+					   ident.Name == "NewTCPTransport" || ident.Name == "NewUDPTransport" {
+						foundReferences = append(foundReferences,
+							fmt.Sprintf("%s:%d - %s", path, fset.Position(ident.Pos()).Line, ident.Name))
+					}
+				}
+				return true
+			})
+
+			return nil
+		})
+
+		require.NoError(t, err)
+	}
+
+	// 断言没有找到任何旧Transport引用
+	if len(foundReferences) > 0 {
+		t.Errorf("发现残留的TCP/UDP Transport引用:\n%s", strings.Join(foundReferences, "\n"))
+	}
+}
+
+// TestLibp2pOnly GREEN: 验证仅使用libp2p Transport
+func TestLibp2pOnly(t *testing.T) {
+	// 验证 cmd/nexkvd/main.go 中不再使用 TCP/UDP Transport
+	mainPath := "../../cmd/nexkvd/main.go"
+	content, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+
+	// 检查不应该有这些引用
+	deprecatedRefs := []string{
+		"TCPTransport",
+		"UDPTransport",
+		"NewTCPTransport",
+		"NewUDPTransport",
+	}
+
+	for _, ref := range deprecatedRefs {
+		if strings.Contains(string(content), ref) {
+			t.Errorf("main.go 中仍然包含 %s 引用", ref)
+		}
+	}
+
+	// 验证使用了 libp2p
+	if !strings.Contains(string(content), "libp2p") {
+		t.Error("main.go 应该使用 libp2p Transport")
+	}
+}
+```
+
+##### 3.3.3 删除验证清单
+
+**编译检查**：
+- [ ] `go build ./...` 成功
+- [ ] `go vet ./...` 无警告
+- [ ] 无未定义的TCP/UDP Transport引用
+
+**功能验证**：
+- [ ] 所有单元测试通过
+- [ ] 集成测试通过
+- [ ] 消息发送/接收正常
+- [ ] libp2p Transport工作正常
+
+**配置验证**：
+- [ ] 旧配置自动迁移
+- [ ] 新配置正常工作
+- [ ] 弃用警告正确显示
+
+**文档验证**：
+- [ ] 更新架构文档
+- [ ] 更新部署文档
+- [ ] 移除TCP/UDP相关说明
+
+**覆盖率目标**：
+- ✅ libp2p代码: ≥ 80%
+- ✅ 配置迁移逻辑: ≥ 85%
+
+#### 3.4 影响范围分析（方案B：激进清理）
+
+**依赖关系**：本PR依赖 **PR-006（文档与配置迁移）** 完成并批准
+
+**影响文件清单（更新）**：
+
+| 文件路径 | 类型 | 影响分析 | 修改方式 |
+|---------|------|----------|----------|
+| `internal/metadata/uuid/` | ✅ 已删除 | UUID包（未被使用） | 已完成 |
+| `internal/metadata/transport/` | 🔄 待删除 | 整个Transport包（含RPC） | 直接删除目录 |
+| `cmd/nexkvd/main.go` | 🔄 待修改 | Daemon主程序 | 移除Transport初始化，暂时禁用RPC |
+| `cmd/nexkv/commands/cluster.go` | 🔄 待修改 | CLI命令 | 更新导入路径 |
+| `cmd/nexkv/commands/node.go` | 🔄 待修改 | CLI命令 | 更新导入路径 |
+| `internal/metadata/cluster/cluster_handlers.go` | 🔄 待修改 | 集群处理器 | 更新导入路径 |
+| `internal/metadata/cluster/tree_coordinator.go` | 🔄 待修改 | 树形协调器 | 更新导入路径 |
+| `internal/metadata/cluster/e2e_test.go` | 🔄 待修改 | E2E测试 | 更新导入路径 |
+| `internal/metadata/cluster/cluster_handlers_test.go` | 🔄 待修改 | 测试文件 | 更新导入路径 |
+
+**破坏性影响分析**：
+
+| 组件 | 影响 | 替代方案 | 状态 |
+|------|------|----------|------|
+| **RPC Client/Server** | ❌ 完全不可用 | 后续PR使用libp2p Stream重写 | 破坏性变更 |
+| **TCP/UDP Transport** | ✅ 已删除 | libp2p Transport替代 | 已完成 |
+| **UUID生成** | ✅ 已删除 | 使用google/uuid标准库 | 无影响 |
+| **libp2p Transport** | ✅ 正常工作 | - | 保持不变 |
+| **核心存储功能** | ✅ 不受影响 | - | 保持不变 |
+
+**依赖分析脚本**：
+
+```bash
+#!/bin/bash
+# scripts/analyze-transport-dependencies.sh
+
+echo "分析 TCP/UDP Transport 依赖关系..."
+
+# 查找所有引用TCP/UDP Transport的Go文件
+echo "=== TCP/UDP Transport 引用 ==="
+grep -r "TCPTransport\|UDPTransport" --include="*.go" . 2>/dev/null | \
+    grep -v "vendor/" | \
+    grep -v "_test.go" | \
+    cut -d: -f1 | sort -u
+
+# 查找所有引用NewTCPTransport/NewUDPTransport的Go文件
+echo ""
+echo "=== NewTCPTransport/NewUDPTransport 引用 ==="
+grep -r "NewTCPTransport\|NewUDPTransport" --include="*.go" . 2>/dev/null | \
+    grep -v "vendor/" | \
+    grep -v "_test.go" | \
+    cut -d: -f1 | sort -u
+
+# 查找配置文件中的TCP/UDP配置
+echo ""
+echo "=== 配置文件中的TCP/UDP配置 ==="
+grep -r "tcp_transport\|udp_transport" --include="*.yaml" --include="*.json" . 2>/dev/null | \
+    cut -d: -f1 | sort -u
+
+echo ""
+echo "分析完成！"
+```
+
+#### 3.5 回滚策略
+
+**场景1：删除后发现严重Bug**
+
+**回滚步骤**：
+1. 从Git历史恢复已删除的文件：
+   ```bash
+   git checkout <commit-before-delete> -- internal/metadata/transport/tcp_transport.go
+   git checkout <commit-before-delete> -- internal/metadata/transport/udp_transport.go
+   git checkout <commit-before-delete> -- internal/metadata/transport/udp_transport_test.go
+   ```
+2. 恢复main.go中的Transport创建代码：
+   ```bash
+   git checkout <commit-before-delete> -- cmd/nexkvd/main.go
+   ```
+3. 重新编译和测试
+4. 提交回滚PR
+
+**预防措施**：
+- 在删除前创建临时分支：`backup/transport-cleanup`
+- 保留删除文件的完整副本在 `archive/` 目录
+- 记录所有修改的文件清单
+
+**场景2：性能严重退化**
+
+**回滚步骤**：
+1. 使用配置开关回退：
+   ```yaml
+   # config.yaml
+   transport:
+     type: "libp2p"  # 应该已是libp2p
+   ```
+2. 重启节点
+3. 分析性能问题根因
+
+#### 3.6 批准条件
+
+| 条件 | 状态 | 说明 |
+|------|------|------|
+| ✅ PR-006已完成 | **已完成** | 文档与配置迁移已完成 |
+| ✅ 影响范围分析完成 | **已完成** | 见3.4节 |
+| ✅ 回滚策略文档完成 | **已完成** | 见3.5节 |
+| ✅ 依赖分析脚本完成 | **已完成** | scripts/analyze-transport-dependencies.sh |
+| ⚠️ 架构师评审 | **待完成** | 等待架构师评审Pre文档 |
+
+### 4. 风险评估与应对措施（方案B：激进清理）
+
+> **⚠️ 高风险变更**：本方案采用激进清理策略，存在破坏性变更
+
+| 风险点 | 影响等级 | 应对措施 | 状态 |
+|--------|----------|----------|------|
+| **RPC功能完全不可用** | 🔴 极高 | 破坏性变更，后续PR使用libp2p Stream重写 | 已知风险 |
+| **CLI命令无法工作** | 🔴 高 | CLI依赖RPC，暂时不可用 | 已知风险 |
+| **Daemon启动失败** | 🔴 高 | 需要修改main.go，移除RPC初始化 | 需要处理 |
+| 遗漏引用导致编译失败 | 🟠 中 | 1. 全局搜索引用<br/>2. 逐个验证<br/>3. 添加编译检查 | 已缓解 |
+| 测试覆盖率下降 | 🟠 中 | 1. 删除旧测试<br/>2. libp2p测试保持完整 | 可接受 |
+| 文档不一致 | 🟡 低 | 1. 更新文档<br/>2. 标记RPC暂时不可用 | 需要处理 |
+
+**风险缓解策略**：
+
+1. **短期措施（本PR）**：
+   - ✅ 删除所有旧代码
+   - 🔄 更新main.go，移除RPC初始化
+   - 🔄 添加TODO注释，说明RPC功能待重写
+   - 🔄 更新文档，说明破坏性变更
+
+2. **长期措施（后续PR）**：
+   - 使用libp2p Stream重写RPC功能
+   - 更新CLI命令，使用新的API
+   - 完善Daemon启动流程
+
+**回滚策略**：
+```bash
+# 如果发现严重问题，可以从Git历史恢复
+git checkout <commit-before-delete> -- internal/metadata/transport/
+git checkout <commit-before-delete> -- internal/metadata/uuid/
+```
+
+### 5. 架构师评审记录（循环优化，直至通过）
+
+| 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施（含AI辅助修改） | 优化结果 |
+|----------|----------|------------------|--------------|--------------------------|----------|
+| 第1轮 | [待定] | [待定] | [待评审] | [待定] | [待定] |
+
+### 6. 预审批确认
+> **架构师签字/备注**：____________ 202X-XX-XX 该Feature方案可行，风险可控，同意启动开发，需严格按照文档落地，确保CI通过后提交Post总结。
+
+---
+
+## 第二部分：流程节点记录（开发/CI过程追溯）
+
+### 1. 开发过程记录
+
+| 节点 | 完成日期 | 具体内容 | 交付物 |
+|------|----------|----------|--------|
+| 启动开发 | [待定] | [待开发] | [代码提交至分支] |
+| 本地测试 | [待定] | [待测试] | [测试报告/覆盖率数据] |
+| Post文档编写 | [待定] | [编写后置总结文档] | [第三部分：后置部分] |
+| 架构师Post批准 | [待定] | [架构师评审Post文档] | [批准签字/备注] |
+| 提交GitHub | [待定] | [推送分支，创建PR] | [GitHub PR链接] |
+
+### 2. CI流程记录（修复Bug直至通过）
+
+| CI轮次 | 触发时间 | 结果 | 问题详情 | 修复措施 | 修复结果 |
+|--------|----------|------|----------|----------|----------|
+| 第1轮 | [待定] | [待定] | [待定] | [待定] | [待定] |
+
+### 3. 合并记录
+
+| 合并时间 | 合并方式 | 审批人 | 备注 |
+|----------|----------|--------|------|
+| [待定] | [待定] | [待定] | [待定] |
+
+---
+
+## 第三部分：后置部分（CI通过后编写，总结/成果/ToDo）
+
+### 1. 核心成果总结（开发了啥，结果怎样）
+
+#### 1.1 功能成果（方案B：激进清理）
+- **已完成**：
+  - [x] 删除 internal/metadata/uuid/ 目录
+  - [x] 删除 tcp_transport.go
+  - [x] 删除 udp_transport.go
+  - [x] 删除 tcp_transport_test.go
+  - [x] 删除 udp_transport_test.go
+  - [ ] 删除整个 internal/metadata/transport/ 目录
+  - [ ] 更新 main.go 移除Transport初始化
+  - [ ] 更新所有导入路径
+  - [ ] 添加TODO注释说明RPC待重写
+  - [ ] 更新文档
+  - [ ] 验证代码整洁度 100%
+  - [ ] 编译和测试通过
+
+- **破坏性变更**：
+  - ❌ RPC功能暂时不可用（需后续PR重写）
+  - ❌ CLI命令暂时不可用（依赖RPC）
+
+- **与Pre文档差异**：采用更激进的方案B，完全删除旧包
+
+#### 1.2 性能/数据成果
+- **代码清理**：
+  - 删除代码行数：____ 行（TCP + UDP）
+  - 删除文件数：____ 个
+
+- **测试成果**：
+  - 编译状态：[待定]
+  - 测试通过率：____ %
+  - 代码整洁度：100%
+
+#### 1.3 代码/文档交付物
+
+| 类型 | 具体内容 | 链接/路径 |
+|------|----------|-----------|
+| 代码变更 | 删除TCP/UDP相关文件 | [GitHub PR链接] |
+| 文档更新 | 更新弃用说明 | [文档路径] |
+| 测试代码 | 添加清理验证测试 | [测试文件路径] |
+
+### 2. 未完成项与ToDo清单（有哪些没干，后续规划）
+
+#### 2.1 本次PR未完成项
+- **未支持**：
+  - 测试工具清理（后续 PR）
+  - 性能优化（PR-009）
+
+- **遗留问题**：
+  - [待开发后填写]
+
+#### 2.2 ToDo清单（优先级排序）
+
+| 优先级 | 任务内容 | 预估工期 | 关联PR/需求 | 备注 |
+|--------|----------|----------|-------------|------|
+| 高 | PR-009: 性能优化与生产就绪 | 3天 | PR-Libp2p-009 | 最后一步 |
+| 中 | 测试工具清理 | 1天 | 待规划 | 代码整洁 |
+| 低 | 代码质量分析 | 2天 | 待规划 | 持续改进 |
+
+### 3. 下一步工作建议（建议干啥）
+
+1. **优先推进**：
+   - 立即开始 PR-009（性能优化与生产就绪），完成迁移的收尾工作
+
+2. **监控要点**：
+   - 编译错误
+   - 测试失败
+   - 用户反馈
+   - 代码整洁度指标
+
+3. **运维补充**：
+   - 更新部署文档
+   - 添加迁移完成检查清单
+
+4. **后续规划**：
+   - PR-009 将完成性能优化，使 libp2p 实现达到生产就绪状态
+
+5. **反馈收集**：
+   - 收集用户对迁移完成的反馈
+   - 关注性能问题
+
+---
+
+## 附录：清理清单
+
+### A.1 文件删除清单
+
+```bash
+# 需要删除的文件
+internal/metadata/transport/tcp_transport.go
+internal/metadata/transport/udp_transport.go
+internal/metadata/transport/udp_transport_test.go
+
+# 可能需要删除的测试辅助文件
+internal/metadata/transport/tcp_test_util.go
+internal/metadata/transport/udp_test_util.go
+```
+
+### A.2 代码搜索清单
+
+```bash
+# 搜索 TCP Transport 引用
+grep -r "TCPTransport" --include="*.go" .
+grep -r "NewTCPTransport" --include="*.go" .
+grep -r "\"tcp\"" --include="*.go" .
+grep -r "tcp_transport" --include="*.go" .
+
+# 搜索 UDP Transport 引用
+grep -r "UDPTransport" --include="*.go" .
+grep -r "NewUDPTransport" --include="*.go" .
+grep -r "\"udp\"" --include="*.go" .
+grep -r "udp_transport" --include="*.go" .
+
+# 搜索所有旧 Transport 引用
+grep -r "TCPTransport\|UDPTransport" --include="*.go" .
+
+# 搜索配置引用
+grep -r "TCPPort\|UDPPort" --include="*.go" .
+grep -r "tcp_port\|udp_port" --include="*.yaml" .
+```
+
+### A.3 验证清单
+
+- [ ] 搜索所有 `TCPTransport` 引用并删除
+- [ ] 搜索所有 `UDPTransport` 引用并删除
+- [ ] 搜索所有 `NewTCPTransport` 调用并删除
+- [ ] 搜索所有 `NewUDPTransport` 调用并删除
+- [ ] 搜索所有 `tcp_transport` 包引用并删除
+- [ ] 搜索所有 `udp_transport` 包引用并删除
+- [ ] 更新配置文件加载器
+- [ ] 更新文档
+- [ ] 编译验证通过
+- [ ] 所有测试通过
+- [ ] 代码覆盖率不下降
+- [ ] 代码整洁度检查通过
+
+### A.4 迁移辅助代码（保留）
+
+```go
+package transport
+
+import (
+    "errors"
+    "log"
+)
+
+// TCPConfig TCP 配置（已弃用）
+// Deprecated: 请使用 Libp2pConfig
+type TCPConfig struct {
+    Host    string
+    TCPPort int
+}
+
+// UDPConfig UDP 配置（已弃用）
+// Deprecated: 请使用 Libp2pConfig
+type UDPConfig struct {
+    Host    string
+    UDPPort int
+}
+
+// NewTCPTransport 创建 TCP Transport（已弃用）
+// Deprecated: 请使用 NewLibp2pTransport
+func NewTCPTransport(config *TCPConfig) (Transport, error) {
+    log.Warning("TCP Transport 已弃用，请迁移到 libp2p Transport")
+    return nil, errors.New("TCP Transport 已弃用，请使用 libp2p Transport")
+}
+
+// NewUDPTransport 创建 UDP Transport（已弃用）
+// Deprecated: 请使用 NewLibp2pTransport
+func NewUDPTransport(config *UDPConfig) (Transport, error) {
+    log.Warning("UDP Transport 已弃用，请迁移到 libp2p Transport")
+    return nil, errors.New("UDP Transport 已弃用，请使用 libp2p Transport")
+}
+
+// MigrateTCPConfig 迁移 TCP 配置到 libp2p
+func MigrateTCPConfig(tcp *TCPConfig) *Libp2pConfig {
+    return &Libp2pConfig{
+        ListenPort: tcp.TCPPort,
+        ListenAddr: tcp.Host,
+    }
+}
+
+// MigrateUDPConfig 迁移 UDP 配置到 libp2p
+func MigrateUDPConfig(udp *UDPConfig) *Libp2pConfig {
+    return &Libp2pConfig{
+        ListenPort: udp.UDPPort,
+        ListenAddr: udp.Host,
+    }
+}
+```
+
+### A.5 最终清理脚本
+
+```bash
+#!/bin/bash
+# cleanup_old_transports.sh - 清理旧 Transport 引用
+
+echo "开始清理旧 Transport 引用..."
+
+# 搜索并报告旧引用
+echo "搜索 TCP/UDP Transport 引用..."
+grep -r "TCPTransport\|UDPTransport" --include="*.go" . || echo "无旧引用"
+
+# 搜索配置引用
+echo "搜索配置文件中的旧引用..."
+grep -r "\"tcp\"\|\"udp\"" --include="*.yaml" . || echo "无旧配置"
+
+# 验证编译
+echo "验证编译..."
+go build ./... || exit 1
+
+# 验证测试
+echo "验证测试..."
+go test ./... || exit 1
+
+echo "清理完成！"
+```
+
+---
+
+## 文档归档信息
+
+| 项目 | 内容 |
+|------|------|
+| 文档最终版本 | V1.0 |
+| 归档日期 | [待定] |
+| 归档路径 | `docs/06_project_management/pr_documents/feature/2026-02-06_PR-Libp2p-TransportCleanup_全流程.md` |
+| 后续维护人 | [待定] |

@@ -18,7 +18,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jzhang405/NexKV/internal/metadata/config"
+	"github.com/jzhang405/NexKV/internal/config"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 )

@@ -8,7 +8,6 @@
 package cluster
 
 import (
-	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -22,9 +21,10 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 
-	metadataconfig "github.com/jzhang405/NexKV/internal/metadata/config"
-	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
-	"github.com/jzhang405/NexKV/internal/metadata/transport"
+	metadataconfig "github.com/jzhang405/NexKV/internal/config"
+	"github.com/jzhang405/NexKV/internal/config/logging"
+	// ⚠️ PR-Libp2p-TransportCleanup: transport包已删除
+	// "github.com/jzhang405/NexKV/internal/metadata/transport"
 )
 
 // ========================================
@@ -229,9 +229,9 @@ type Host struct {
 //   - 自组织：节点自动找父，形成树形结构
 //   - 容错性：单节点故障不影响整体
 //
-// RPC 架构（PR-032）：
-//   - RPCClient: 主动调用其他节点的 RPC 方法
-//   - RPCServer: 接收并处理其他节点的 RPC 请求
+// ⚠️ PR-Libp2p-TransportCleanup 变更：
+//   - RPCClient/RPCServer 字段已移除（transport包已删除）
+//   - TODO: 使用 libp2p Stream 重写 RPC 功能
 type TreeCoordinator struct {
 	// 配置
 	config *TreeCoordinatorConfig
@@ -243,9 +243,10 @@ type TreeCoordinator struct {
 	// 本地节点信息
 	localNode *Node
 
-	// RPC 组件（PR-032 架构）
-	RPCClient *transport.RPCClient // RPC 客户端（主动调用）
-	RPCServer *transport.RPCServer // RPC 服务端（接收请求）
+	// ⚠️ PR-Libp2p-TransportCleanup: RPC 组件已移除（transport包已删除）
+	// TODO: 使用 libp2p Stream 重写 RPC 功能
+	// RPCClient *transport.RPCClient // RPC 客户端（主动调用）
+	// RPCServer *transport.RPCServer // RPC 服务端（接收请求）
 
 	// 节点管理
 	allNodes map[string]*Node
@@ -261,8 +262,8 @@ type TreeCoordinator struct {
 	heartbeatSeq atomic.Uint64
 
 	// 集群修复操作（P0-1 修复：添加并发控制）
-	fixMu    sync.Mutex // 修复操作专用锁
-	isFixing bool       // 是否正在执行修复操作
+	// fixMu    sync.Mutex // 修复操作专用锁 //nolint:unused // TODO: 待 libp2p Stream 重写后使用
+	// isFixing bool       // 是否正在执行修复操作 //nolint:unused // TODO: 待 libp2p Stream 重写后使用
 
 	// 生命周期
 	started atomic.Bool
@@ -575,6 +576,9 @@ func (tc *TreeCoordinator) Stop() error {
 
 // discoverAndJoin 发现并加入树形结构
 //
+// ⚠️ PR-Libp2p-TransportCleanup: RPC 功能暂时禁用
+// TODO: 使用 libp2p Stream 重写 RPC 功能后恢复
+//
 // PR-034 实现：
 //  1. 通过传输层发现可用节点
 //  2. 选择合适的父节点（Level 最小且未满）
@@ -583,61 +587,13 @@ func (tc *TreeCoordinator) Stop() error {
 func (tc *TreeCoordinator) discoverAndJoin() {
 	logging.WithField("node_id", tc.localNode.NodeID).Info("开始自动发现并加入树形结构")
 
-	// 检查 RPCClient 是否可用
-	if tc.RPCClient == nil {
-		logging.WithField("node_id", tc.localNode.NodeID).Info("RPCClient 未初始化，跳过自动发现")
-		return
-	}
+	// ⚠️ PR-Libp2p-TransportCleanup: RPCClient 已删除，暂时跳过 RPC 相关操作
+	logging.WithField("node_id", tc.localNode.NodeID).Info("⚠️ RPC 功能已禁用（PR-Libp2p-TransportCleanup: 待使用 libp2p Stream 重写）")
 
-	// 步骤 1: 发现可用节点（从配置或种子节点获取）
-	// TODO: 这里可以从配置文件、环境变量或服务发现获取种子节点列表
-	// 当前实现：如果本地节点不是根节点，尝试找到可以连接的节点
-	knownNodes := tc.getKnownNodes()
-	if len(knownNodes) == 0 {
-		logging.WithField("node_id", tc.localNode.NodeID).Info("没有已知节点，作为根节点启动")
-		tc.localNode.Status = NodeStatusReady
-		return
-	}
-	logging.WithFields(map[string]any{
-		"node_id":     tc.localNode.NodeID,
-		"known_count": len(knownNodes),
-	}).Info("发现已知节点")
-
-	// 步骤 2: 选择合适的父节点
-	// 策略：选择 Level 最小且未达到 MaxChildren 的节点
-	bestParent := tc.selectBestParent(knownNodes)
-	if bestParent == nil {
-		logging.WithField("node_id", tc.localNode.NodeID).Info("未找到合适的父节点，作为根节点启动")
-		tc.localNode.Status = NodeStatusReady
-		return
-	}
-	logging.WithFields(map[string]any{
-		"node_id":   tc.localNode.NodeID,
-		"parent_id": bestParent.NodeID,
-		"addr":      bestParent.Addr.TCPAddr(),
-	}).Info("选择父节点")
-
-	// 步骤 3: 发送加入请求
-	if err := tc.sendJoinRequest(bestParent); err != nil {
-		logging.WithFields(map[string]any{
-			"node_id":   tc.localNode.NodeID,
-			"parent_id": bestParent.NodeID,
-			"error":     err,
-		}).Warn("发送加入请求失败，作为独立节点启动")
-		tc.localNode.Status = NodeStatusReady
-		return
-	}
-
-	// 步骤 4: 更新本地节点信息
+	// 修复竞态条件：加锁保护 localNode.Status
+	tc.nodesMu.Lock()
 	tc.localNode.Status = NodeStatusReady
-	tc.localNode.ParentID = bestParent.NodeID
-	tc.localNode.Level = bestParent.Level + 1
-
-	logging.WithFields(map[string]any{
-		"node_id":   tc.localNode.NodeID,
-		"parent_id": bestParent.NodeID,
-		"level":     tc.localNode.Level,
-	}).Info("成功加入树形结构")
+	tc.nodesMu.Unlock()
 }
 
 // getKnownNodes 获取已知节点列表
@@ -649,6 +605,8 @@ func (tc *TreeCoordinator) discoverAndJoin() {
 //  2. 自动过滤自身地址（决策 3）
 //  3. 降级处理无效地址（决策 2）
 //  4. 合并内存中的已知节点（向后兼容）
+//
+//nolint:unused // TODO: 待 libp2p Stream 重写后使用
 func (tc *TreeCoordinator) getKnownNodes() []*Node {
 	nodes := make([]*Node, 0)
 
@@ -716,6 +674,8 @@ func (tc *TreeCoordinator) getKnownNodes() []*Node {
 }
 
 // containsNodeAddr 检查节点地址是否已存在于列表中
+//
+//nolint:unused // TODO: 待 libp2p Stream 重写后使用
 func containsNodeAddr(nodes []*Node, addr string) bool {
 	for _, node := range nodes {
 		if node.Addr.TCPAddr() == addr {
@@ -731,6 +691,8 @@ func containsNodeAddr(nodes []*Node, addr string) bool {
 //   - 优先选择 Level 最小的节点（树的最底层）
 //   - 确保 Level < MaxLevel
 //   - 确保子节点数 < MaxChildren
+//
+//nolint:unused // TODO: 待 libp2p Stream 重写后使用
 func (tc *TreeCoordinator) selectBestParent(nodes []*Node) *Node {
 	var bestParent *Node
 	minLevel := int(^uint(0) >> 1) // 最大 int 值
@@ -790,37 +752,14 @@ func (tc *TreeCoordinator) selectBestParent(nodes []*Node) *Node {
 
 // sendJoinRequest 发送加入请求
 //
+// ⚠️ PR-Libp2p-TransportCleanup: transport包已删除，暂时禁用
+// TODO: 使用 libp2p Stream 重写 RPC 功能
+//
 // PR-034 实现：向目标节点发送 NodeJoinMessage
+//
+//nolint:unused // TODO: 待 libp2p Stream 重写后使用
 func (tc *TreeCoordinator) sendJoinRequest(targetNode *Node) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// 构造加入请求
-	joinMsg := &transport.NodeJoinMessage{
-		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeJoin},
-		NodeID:      tc.localNode.NodeID,
-		Addr:        tc.localNode.Addr.GetTCPAddr(), // 使用普通格式而非 multiaddr 格式
-		Role:        "child",
-	}
-
-	// 构造目标地址
-	targetAddr := fmt.Sprintf("%s:%d", targetNode.Addr.Host, targetNode.Addr.TCPPort)
-
-	// 发送请求
-	resp, err := tc.RPCClient.Call(ctx, targetAddr, joinMsg)
-	if err != nil {
-		return types.NewTreeCoordinatorSendJoinRequestError(err)
-	}
-
-	// 处理响应
-	if syncMsg, ok := resp.(*transport.NodeSyncMessage); ok {
-		logging.WithFields(map[string]any{
-			"parent_id": string(syncMsg.Metadata["parent_node_id"]),
-			"timestamp": string(syncMsg.Metadata["timestamp"]),
-			"version":   syncMsg.Version,
-		}).Info("收到加入响应")
-	}
-
+	logging.Debug("⚠️ sendJoinRequest 已禁用（PR-Libp2p-TransportCleanup: 待使用 libp2p Stream 重写）")
 	return nil
 }
 
@@ -842,6 +781,9 @@ func (tc *TreeCoordinator) heartbeatLoop() {
 
 // sendHeartbeat 发送心跳
 //
+// ⚠️ PR-Libp2p-TransportCleanup: transport包已删除，暂时禁用
+// TODO: 使用 libp2p Stream 重写 RPC 功能
+//
 // PR-034 实现：向父节点和子节点发送心跳，用于故障检测
 func (tc *TreeCoordinator) sendHeartbeat() {
 	// 步骤 1: 更新本地节点心跳时间
@@ -849,96 +791,22 @@ func (tc *TreeCoordinator) sendHeartbeat() {
 
 	// 步骤 2: 生成心跳序列号
 	sequence := tc.heartbeatSeq.Add(1)
-	timestamp := time.Now().Unix()
 
-	// 步骤 3: 构造心跳消息
-	pingMsg := &transport.NodePingMessage{
-		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodePing},
-		NodeID:      tc.localNode.NodeID,
-		Sequence:    int64(sequence),
-		Timestamp:   timestamp,
-	}
-
-	// 步骤 4: 向父节点发送心跳（如果存在）
-	if tc.localNode.ParentID != "" {
-		go tc.sendHeartbeatToNode(tc.localNode.ParentID, pingMsg)
-	}
-
-	// 步骤 5: 向所有子节点发送心跳
-	tc.nodesMu.RLock()
-	childrenIDs := make([]string, len(tc.localNode.ChildrenIDs))
-	copy(childrenIDs, tc.localNode.ChildrenIDs)
-	tc.nodesMu.RUnlock()
-
-	for _, childID := range childrenIDs {
-		go tc.sendHeartbeatToNode(childID, pingMsg)
-	}
-
+	// ⚠️ PR-Libp2p-TransportCleanup: 跳过 RPC 心跳发送
 	logging.WithFields(map[string]any{
 		"node_id":  tc.localNode.NodeID,
 		"sequence": sequence,
-		"parent":   tc.localNode.ParentID,
-		"children": len(childrenIDs),
-	}).Debug("发送心跳")
+	}).Debug("⚠️ 心跳发送已禁用（PR-Libp2p-TransportCleanup: 待使用 libp2p Stream 重写）")
 }
 
 // sendHeartbeatToNode 向指定节点发送心跳（独立 goroutine 运行）
-func (tc *TreeCoordinator) sendHeartbeatToNode(targetNodeID string, pingMsg *transport.NodePingMessage) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// 获取目标节点信息
-	tc.nodesMu.RLock()
-	targetNode, exists := tc.allNodes[targetNodeID]
-	tc.nodesMu.RUnlock()
-
-	if !exists {
-		logging.WithField("target_node", targetNodeID).Debug("目标节点不存在，跳过心跳")
-		return
-	}
-
-	// 检查 RPCClient 是否可用（测试环境可能为 nil）
-	if tc.RPCClient == nil {
-		logging.WithField("target_node", targetNodeID).Debug("RPCClient 未初始化，跳过心跳发送")
-		return
-	}
-
-	// 构造目标地址
-	targetAddr := fmt.Sprintf("%s:%d", targetNode.Addr.Host, targetNode.Addr.TCPPort)
-
-	logging.WithFields(map[string]any{
-		"target_node": targetNodeID,
-		"target_addr": targetAddr,
-	}).Info("发送心跳")
-
-	// 发送心跳并等待响应
-	resp, err := tc.RPCClient.Call(ctx, targetAddr, pingMsg)
-	if err != nil {
-		logging.WithFields(map[string]any{
-			"target_node": targetNodeID,
-			"target_addr": targetAddr,
-			"error":       err,
-		}).Warn("心跳发送失败")
-		return
-	}
-
-	// 处理心跳响应
-	if pongMsg, ok := resp.(*transport.NodePongMessage); ok {
-		rtt := time.Now().Unix() - pongMsg.Timestamp
-		logging.WithFields(map[string]any{
-			"target_node": targetNodeID,
-			"status":      pongMsg.Status,
-			"rtt_ms":      rtt * 1000,
-		}).Info("收到心跳响应")
-
-		// P1-1 修复：使用 defer 确保锁一定会被释放
-		tc.nodesMu.Lock()
-		defer tc.nodesMu.Unlock()
-
-		if node, exists := tc.allNodes[targetNodeID]; exists {
-			node.LastHeartbeat = time.Now()
-		}
-	}
+//
+// ⚠️ PR-Libp2p-TransportCleanup: transport包已删除，暂时禁用
+// TODO: 使用 libp2p Stream 重写 RPC 功能
+//
+//nolint:unused // TODO: 待 libp2p Stream 重写后使用
+func (tc *TreeCoordinator) sendHeartbeatToNode(targetNodeID string, pingMsg interface{}) {
+	logging.WithField("target_node", targetNodeID).Debug("⚠️ sendHeartbeatToNode 已禁用（PR-Libp2p-TransportCleanup: 待使用 libp2p Stream 重写）")
 }
 
 // failureDetectionLoop 故障检测循环
@@ -1125,75 +993,28 @@ func (tc *TreeCoordinator) findCandidateParents(node *Node) []string {
 
 // leaveTree 离开树形结构
 //
+// ⚠️ PR-Libp2p-TransportCleanup: transport包已删除，暂时禁用
+// TODO: 使用 libp2p Stream 重写 RPC 功能
+//
 // PR-034 实现：通知父节点和子节点
 func (tc *TreeCoordinator) leaveTree() {
+	// 修复竞态条件：加锁保护 localNode.Status
+	tc.nodesMu.Lock()
 	tc.localNode.Status = NodeStatusLeaving
+	tc.nodesMu.Unlock()
 
-	// 步骤 1: 构造离开消息
-	leaveMsg := &transport.NodeLeaveMessage{
-		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeLeave},
-		NodeID:      tc.localNode.NodeID,
-		Reason:      "主动离开",
-	}
-
-	// 步骤 2: 向父节点发送离开消息（如果存在）
-	if tc.localNode.ParentID != "" {
-		go tc.sendLeaveMessage(tc.localNode.ParentID, leaveMsg)
-	}
-
-	// 步骤 3: 向所有子节点发送离开消息
-	tc.nodesMu.RLock()
-	childrenIDs := make([]string, len(tc.localNode.ChildrenIDs))
-	copy(childrenIDs, tc.localNode.ChildrenIDs)
-	tc.nodesMu.RUnlock()
-
-	for _, childID := range childrenIDs {
-		go tc.sendLeaveMessage(childID, leaveMsg)
-	}
-
-	logging.WithField("node_id", tc.localNode.NodeID).Info("离开树形结构")
+	// ⚠️ PR-Libp2p-TransportCleanup: 跳过 RPC 离开消息发送
+	logging.WithField("node_id", tc.localNode.NodeID).Info("⚠️ 离开树形结构（RPC 通知已禁用，PR-Libp2p-TransportCleanup: 待使用 libp2p Stream 重写）")
 }
 
 // sendLeaveMessage 发送离开消息
-func (tc *TreeCoordinator) sendLeaveMessage(targetNodeID string, leaveMsg *transport.NodeLeaveMessage) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// 获取目标节点信息
-	tc.nodesMu.RLock()
-	targetNode, exists := tc.allNodes[targetNodeID]
-	tc.nodesMu.RUnlock()
-
-	if !exists {
-		logging.WithField("target_node", targetNodeID).Debug("目标节点不存在，跳过离开通知")
-		return
-	}
-
-	// 检查 RPCClient 是否可用（测试环境可能为 nil）
-	if tc.RPCClient == nil {
-		logging.WithField("target_node", targetNodeID).Debug("RPCClient 未初始化，跳过离开消息发送")
-		return
-	}
-
-	// 构造目标地址
-	targetAddr := fmt.Sprintf("%s:%d", targetNode.Addr.Host, targetNode.Addr.TCPPort)
-
-	// 发送离开消息（NodeLeave 不需要响应，但 Call 方法可以处理）
-	// 注意：即使消息不需要响应，Call 方法也会正确处理，会超时返回
-	_, err := tc.RPCClient.Call(ctx, targetAddr, leaveMsg)
-	if err != nil {
-		// 忽略超时错误（可能接收端不发送响应）
-		// 只记录非超时错误
-		if ctx.Err() != context.DeadlineExceeded {
-			logging.WithFields(map[string]any{
-				"target_node": targetNodeID,
-				"error":       err,
-			}).Debug("发送离开消息失败")
-		}
-		return
-	}
-
-	logging.WithField("target_node", targetNodeID).Debug("发送离开消息成功")
+//
+// ⚠️ PR-Libp2p-TransportCleanup: transport包已删除，暂时禁用
+// TODO: 使用 libp2p Stream 重写 RPC 功能
+//
+//nolint:unused // TODO: 待 libp2p Stream 重写后使用
+func (tc *TreeCoordinator) sendLeaveMessage(targetNodeID string, leaveMsg interface{}) {
+	logging.WithField("target_node", targetNodeID).Debug("⚠️ sendLeaveMessage 已禁用（PR-Libp2p-TransportCleanup: 待使用 libp2p Stream 重写）")
 }
 
 // ========================================
@@ -2095,6 +1916,9 @@ func (h *Host) IsDegraded() bool {
 
 // gossipTopologyChange 通过 Gossip 协议扩散拓扑变更
 //
+// ⚠️ PR-Libp2p-TransportCleanup: transport包已删除，暂时禁用
+// TODO: 使用 libp2p Stream 重写 RPC 功能
+//
 // PR-034 实现：
 //  1. 随机选择一些节点进行 Gossip
 //  2. 发送拓扑变更消息
@@ -2106,93 +1930,20 @@ func (h *Host) IsDegraded() bool {
 //   - parentID: 父节点 ID（如果有）
 //   - level: 节点层级
 func (tc *TreeCoordinator) gossipTopologyChange(operation, nodeID, parentID string, level int) {
-	// 检查 RPCClient 是否可用
-	if tc.RPCClient == nil {
-		logging.WithField("node_id", tc.localNode.NodeID).Debug("RPCClient 未初始化，跳过 Gossip 扩散")
-		return
-	}
-
-	// 获取所有已知节点
-	tc.nodesMu.RLock()
-	nodes := make([]*Node, 0, len(tc.allNodes))
-	for _, node := range tc.allNodes {
-		if node.NodeID != tc.localNode.NodeID && node.Status == NodeStatusReady {
-			nodes = append(nodes, node)
-		}
-	}
-	tc.nodesMu.RUnlock()
-
-	if len(nodes) == 0 {
-		logging.Debug("没有其他节点，跳过 Gossip 扩散")
-		return
-	}
-
-	// 随机选择一部分节点进行 Gossip（fanout = 2 或 3）
-	fanout := 2
-	if len(nodes) < fanout {
-		fanout = len(nodes)
-	}
-
-	// 构造拓扑变更消息
-	changeMsg := &transport.NodeSyncMessage{
-		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeSync},
-		Version:     uint64(time.Now().Unix()),
-		Metadata: map[string][]byte{
-			"operation": []byte(operation),
-			"node_id":   []byte(nodeID),
-			"parent_id": []byte(parentID),
-			"level":     []byte(fmt.Sprintf("%d", level)),
-			"timestamp": []byte(time.Now().Format(time.RFC3339)),
-		},
-	}
-
-	// 向随机选择的节点发送 Gossip 消息
-	successCount := 0
-	for i := 0; i < fanout; i++ {
-		// 简单的随机选择（生产环境应使用更好的随机算法）
-		targetIdx := i % len(nodes)
-		targetNode := nodes[targetIdx]
-
-		if err := tc.sendGossipMessage(targetNode, changeMsg); err != nil {
-			logging.WithFields(map[string]any{
-				"target_node": targetNode.NodeID,
-				"error":       err,
-			}).Debug("发送 Gossip 消息失败")
-			continue
-		}
-		successCount++
-	}
-
 	logging.WithFields(map[string]any{
-		"operation":     operation,
-		"node_id":       nodeID,
-		"fanout":        fanout,
-		"success_count": successCount,
-	}).Debug("Gossip 拓扑变更扩散完成")
+		"operation": operation,
+		"node_id":   nodeID,
+	}).Debug("⚠️ gossipTopologyChange 已禁用（PR-Libp2p-TransportCleanup: 待使用 libp2p Stream 重写）")
 }
 
 // sendGossipMessage 发送 Gossip 消息到指定节点
-func (tc *TreeCoordinator) sendGossipMessage(targetNode *Node, msg *transport.NodeSyncMessage) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// 构造目标地址
-	targetAddr := fmt.Sprintf("%s:%d", targetNode.Addr.Host, targetNode.Addr.TCPPort)
-
-	// 发送 Gossip 消息
-	resp, err := tc.RPCClient.Call(ctx, targetAddr, msg)
-	if err != nil {
-		return types.NewTreeCoordinatorSendGossipMessageError(err)
-	}
-
-	// 处理响应
-	if syncMsg, ok := resp.(*transport.NodeSyncMessage); ok {
-		logging.WithFields(map[string]any{
-			"target_node": targetNode.NodeID,
-			"version":     syncMsg.Version,
-		}).Debug("收到 Gossip 响应")
-	}
-
+//
+// ⚠️ PR-Libp2p-TransportCleanup: transport包已删除，暂时禁用
+// TODO: 使用 libp2p Stream 重写 RPC 功能
+//
+//nolint:unused // TODO: 待 libp2p Stream 重写后使用
+func (tc *TreeCoordinator) sendGossipMessage(targetNode *Node, msg interface{}) error {
+	logging.WithField("target_node", targetNode.NodeID).Debug("⚠️ sendGossipMessage 已禁用（PR-Libp2p-TransportCleanup: 待使用 libp2p Stream 重写）")
 	return nil
 }
 

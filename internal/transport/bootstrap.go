@@ -17,6 +17,8 @@ package transport
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -47,12 +49,18 @@ func ConnectToBootstrap(ctx context.Context, h host.Host, cfg *BootstrapConfig) 
 		return nil
 	}
 
-	// 记录成功连接数
-	successCount := 0
+	// 使用原子操作记录成功连接数
+	var successCount int32
+
+	// 使用 WaitGroup 等待所有连接完成
+	var wg sync.WaitGroup
 
 	// 并行连接所有 Bootstrap 节点
 	for _, p := range cfg.Peers {
+		wg.Add(1)
 		go func(pi peer.AddrInfo) {
+			defer wg.Done()
+
 			// 为每个连接设置独立的超时上下文
 			connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
@@ -61,14 +69,12 @@ func ConnectToBootstrap(ctx context.Context, h host.Host, cfg *BootstrapConfig) 
 				// 连接失败，记录但不阻塞
 				return
 			}
-			successCount++
+			atomic.AddInt32(&successCount, 1)
 		}(p)
 	}
 
 	// 等待所有连接尝试完成
-	// 这里简化处理，实际可能需要更复杂的同步机制
-	// 给予一定时间让连接建立
-	time.Sleep(2 * time.Second)
+	wg.Wait()
 
 	// 检查是否至少连接了一个节点
 	if successCount == 0 {

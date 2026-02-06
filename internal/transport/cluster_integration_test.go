@@ -17,6 +17,7 @@ package transport
 import (
 	"context"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -258,10 +259,10 @@ func TestClusterConcurrentOperations(t *testing.T) {
 	err = node1.ConnectToPeer(ctx, peerInfo2)
 	require.NoError(t, err)
 
-	// 注册处理器
-	receivedCount := 0
+	// 注册处理器（使用 atomic 保护 receivedCount 避免竞态条件）
+	var receivedCount int64
 	node2.Protocol().RegisterHandler(MessageTypePut, MessageHandlerFunc(func(ctx context.Context, from peer.ID, msg *Message) error {
-		receivedCount++
+		atomic.AddInt64(&receivedCount, 1)
 		return nil
 	}))
 
@@ -284,9 +285,10 @@ func TestClusterConcurrentOperations(t *testing.T) {
 	// 等待处理完成
 	time.Sleep(500 * time.Millisecond)
 
-	// 验证至少收到部分消息
-	t.Logf("发送 %d 条消息，收到 %d 条响应", messageCount, receivedCount)
-	assert.Greater(t, receivedCount, 0, "应该至少收到部分消息")
+	// 验证至少收到部分消息（使用 atomic.LoadInt64 避免竞态条件）
+	finalCount := atomic.LoadInt64(&receivedCount)
+	t.Logf("发送 %d 条消息，收到 %d 条响应", messageCount, finalCount)
+	assert.Greater(t, finalCount, int64(0), "应该至少收到部分消息")
 }
 
 // TestClusterMessageWithPayload 测试使用结构化 Payload 的集群消息

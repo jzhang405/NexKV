@@ -46,3 +46,9 @@ type ConnectionMgrConfig struct {
 	LowWater  int `yaml:"low_water"`
 	HighWater int `yaml:"high_water"`
 }
+
+// DiscoveryConfig 节点发现配置
+type DiscoveryConfig struct {
+	MDNSEnabled bool `yaml:"mdns_enabled"`
+	DHTEnabled  bool `yaml:"dht_enabled"`
+}

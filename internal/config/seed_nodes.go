@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/config/logging"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/multiformats/go-multiaddr"
 )

@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jzhang405/NexKV/internal/metadata/store"
+	"github.com/jzhang405/NexKV/internal/wal"
 )
 
 // mockMVStoreForHostManager 创建用于测试的 MVStore

@@ -1,165 +1,443 @@
-// Copyright 2025 The NexKV Authors.
+// Package config 提供元数据层的配置管理
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
+// PR-037: 三级配置重构（Cluster → Host → Node）
+// - Cluster: 集群级别配置（名称、基础目录）
+// - Host: 主机级别配置（每个物理机/容器一个 Host）
+// - Node: 节点级别配置（角色由系统动态分配）
 package config
 
 import (
-	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/config/logging"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"gopkg.in/yaml.v3"
 )
 
-// Config NexKV 配置
+// Config 是元数据层的完整配置结构
 type Config struct {
-	P2P       P2PConfig       `yaml:"p2p"`       // P2P 配置（简化版）
-	Cluster   ClusterConfig   `yaml:"cluster"`   // 集群配置
-	Transport TransportConfig `yaml:"transport"` // Transport 配置（完整版）
+	Cluster  ClusterConfig  `yaml:"cluster" mapstructure:"cluster"`
+	Metadata MetadataConfig `yaml:"metadata" mapstructure:"metadata"`
+	Storage  StorageConfig  `yaml:"storage" mapstructure:"storage"`
+	Network  NetworkConfig  `yaml:"network" mapstructure:"network"`
+	Logging  LoggingConfig  `yaml:"logging" mapstructure:"logging"`
+	Clock    ClockConfig    `yaml:"clock" mapstructure:"clock"`
 }
 
-// ClusterConfig 集群配置
+// ClusterConfig 集群配置（PR-037: 三级配置结构）
 type ClusterConfig struct {
-	NodeID uint64 `yaml:"node_id"`
+	Name    string       `yaml:"name" mapstructure:"name"`
+	BaseDir string       `yaml:"base_dir" mapstructure:"base_dir"` // 可被 NEXKV_BASE_DIR 环境变量覆盖
+	Hosts   []HostConfig `yaml:"hosts" mapstructure:"hosts"`       // Host 级别配置列表
 }
 
-// P2PConfig P2P 配置
-type P2PConfig struct {
-	ListenAddr     string          `yaml:"listen_addr"`
-	PrivateKeyPath string          `yaml:"private_key_path"`
-	BootstrapPeers []string        `yaml:"bootstrap_peers"`
-	Discovery      DiscoveryConfig `yaml:"discovery"`
-	MaxConnections int             `yaml:"max_connections"`
-	ConnTimeout    time.Duration   `yaml:"conn_timeout"`
+// HostConfig Host 级别配置（PR-037: 新增）
+type HostConfig struct {
+	HostID   string       `yaml:"host_id" mapstructure:"host_id"`     // Host 唯一标识
+	SeedNode string       `yaml:"seed_node" mapstructure:"seed_node"` // 种子节点地址（multiaddr 格式）
+	Nodes    []NodeConfig `yaml:"nodes" mapstructure:"nodes"`         // Node 级别配置列表
 }
 
-// DiscoveryConfig 节点发现配置
-type DiscoveryConfig struct {
-	MDNSEnabled bool `yaml:"mdns_enabled"`
-	DHTEnabled  bool `yaml:"dht_enabled"`
+// NodeConfig Node 级别配置（PR-037: 新增）
+type NodeConfig struct {
+	NodeID      string `yaml:"node_id" mapstructure:"node_id"`             // Node 唯一标识
+	NodeAddrTCP string `yaml:"node_addr_tcp" mapstructure:"node_addr_tcp"` // TCP 监听地址（multiaddr 格式）
+	NodeAddrUDP string `yaml:"node_addr_udp" mapstructure:"node_addr_udp"` // UDP 监听地址（multiaddr 格式）
 }
 
-// LoadConfig 从 YAML 文件加载配置
+// TreeCoordConfig 树形协调器配置
+type TreeCoordConfig struct {
+	MaxChildren int `yaml:"max_children" mapstructure:"max_children"` // 每个父节点最多子节点数（5-10，可配置）
+	GroupSize   int `yaml:"group_size" mapstructure:"group_size"`     // 组大小（5-10，可配置）
+}
+
+// MetadataConfig 元数据层配置
+// PR-037: data_dir 现在由 {base_dir}/{host_id}/metadata 自动管理，此处仅配置行为参数
+type MetadataConfig struct {
+	// 注意：data_dir 已废弃，由 {base_dir}/{host_id}/metadata 自动管理
+	// 保留此字段仅为兼容旧配置文件，新配置不应设置此字段
+	DataDir        string        `yaml:"data_dir" mapstructure:"data_dir"` // 已废弃
+	GossipInterval time.Duration `yaml:"gossip_interval" mapstructure:"gossip_interval"`
+	QuorumTimeout  time.Duration `yaml:"quorum_timeout" mapstructure:"quorum_timeout"`
+	ChangeLogSize  int           `yaml:"change_log_size" mapstructure:"change_log_size"`
+}
+
+// StorageConfig 存储层配置
+// PR-037: 目录路径现在由 {base_dir}/{host_id}/{shards|wal|snapshots} 自动管理
+type StorageConfig struct {
+	// 注意：以下目录已废弃，由 {base_dir}/{host_id}/ 自动管理
+	// 保留这些字段仅为兼容旧配置文件，新配置不应设置这些字段
+	ShardDataDir  string        `yaml:"shard_data_dir" mapstructure:"shard_data_dir"` // 已废弃
+	WALDir        string        `yaml:"wal_dir" mapstructure:"wal_dir"`               // 已废弃
+	SnapshotDir   string        `yaml:"snapshot_dir" mapstructure:"snapshot_dir"`     // 已废弃
+	FlushInterval time.Duration `yaml:"flush_interval" mapstructure:"flush_interval"`
+}
+
+// NetworkConfig 网络层配置
+type NetworkConfig struct {
+	ListenAddr      string        `yaml:"listen_addr" mapstructure:"listen_addr"`
+	TransportType   string        `yaml:"transport_type" mapstructure:"transport_type"` // tcp, grpc, memory
+	MessagePackType string        `yaml:"message_pack_type" mapstructure:"message_pack_type"`
+	MaxMessageSize  int           `yaml:"max_message_size" mapstructure:"max_message_size"`
+	ConnectTimeout  time.Duration `yaml:"connect_timeout" mapstructure:"connect_timeout"`
+}
+
+// LoggingConfig 日志配置
+type LoggingConfig struct {
+	Level  string `yaml:"level" mapstructure:"level"`
+	Format string `yaml:"format" mapstructure:"format"` // json, text
+	Output string `yaml:"output" mapstructure:"output"` // stdout, file
+	File   string `yaml:"file" mapstructure:"file"`     // 日志文件路径
+}
+
+// ClockConfig 时钟服务配置
+type ClockConfig struct {
+	// HLC 配置
+	HLC HLCConfig `yaml:"hlc" mapstructure:"hlc"`
+}
+
+// HLCConfig HLC 混合逻辑时钟配置
+type HLCConfig struct {
+	// 时间回拨检测阈值（毫秒）
+	MaxDrift int64 `yaml:"max_drift" mapstructure:"max_drift"`
+	// Gossip 时钟同步间隔
+	SyncInterval time.Duration `yaml:"sync_interval" mapstructure:"sync_interval"`
+}
+
+// DefaultConfig 返回默认配置
+func DefaultConfig() *Config {
+	return &Config{
+		Cluster: ClusterConfig{
+			Name:    "nexkv-cluster",
+			BaseDir: "~/.nexkv", // 默认基础目录，可被 NEXKV_BASE_DIR 环境变量覆盖
+			Hosts: []HostConfig{
+				{
+					HostID:   "host-1",
+					SeedNode: "/ip4/127.0.0.1/tcp/9211",
+					Nodes: []NodeConfig{
+						{
+							NodeID:      "node-1",
+							NodeAddrTCP: "/ip4/127.0.0.1/tcp/9211",
+							NodeAddrUDP: "/ip4/127.0.0.1/udp/9212",
+						},
+					},
+				},
+			},
+		},
+		Metadata: MetadataConfig{
+			// DataDir 已废弃，由 {base_dir}/{host_id}/metadata 自动管理
+			GossipInterval: 10 * time.Second,
+			QuorumTimeout:  30 * time.Second,
+			ChangeLogSize:  1000,
+		},
+		Storage: StorageConfig{
+			// ShardDataDir, WALDir, SnapshotDir 已废弃，由 {base_dir}/{host_id}/ 自动管理
+			FlushInterval: 5 * time.Second,
+		},
+		Network: NetworkConfig{
+			ListenAddr:      "0.0.0.0:9211",
+			TransportType:   "tcp",
+			MessagePackType: "msgpack",
+			MaxMessageSize:  10 * 1024 * 1024, // 10MB
+			ConnectTimeout:  10 * time.Second,
+		},
+		Logging: LoggingConfig{
+			Level:  "info",
+			Format: "json",
+			Output: "stdout",
+			File:   "",
+		},
+		Clock: ClockConfig{
+			HLC: HLCConfig{
+				MaxDrift:     100, // 100ms
+				SyncInterval: 10 * time.Second,
+			},
+		},
+	}
+}
+
+// LoadConfig 从文件加载配置
 func LoadConfig(path string) (*Config, error) {
+	// 检查文件是否存在
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		// 文件不存在，返回默认配置
+		cfg := DefaultConfig()
+		// 应用环境变量覆盖
+		applyEnvOverrides(cfg)
+		return cfg, nil
+	}
+
+	// 读取配置文件
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("读取配置文件失败: %w", err)
+		return nil, types.NewConfigReadFileError(err)
 	}
 
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("解析配置文件失败: %w", err)
+	// 解析 YAML
+	cfg := DefaultConfig()
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, types.NewConfigParseFileError(err)
 	}
 
-	// 设置默认值
-	setDefaults(&cfg)
+	// 应用环境变量覆盖
+	applyEnvOverrides(cfg)
 
 	// 验证配置
-	if err := ValidateConfig(&cfg); err != nil {
-		return nil, fmt.Errorf("配置验证失败: %w", err)
+	if err := ValidateConfig(cfg); err != nil {
+		return nil, types.NewConfigValidateFileError(err)
 	}
 
-	return &cfg, nil
+	return cfg, nil
 }
 
-// setDefaults 设置默认值
-func setDefaults(cfg *Config) {
-	// 默认启用 mDNS 和 DHT
-	if !cfg.P2P.Discovery.MDNSEnabled && !cfg.P2P.Discovery.DHTEnabled {
-		cfg.P2P.Discovery.MDNSEnabled = true
-		cfg.P2P.Discovery.DHTEnabled = true
-	}
-
-	// 默认连接超时 10 秒
-	if cfg.P2P.ConnTimeout == 0 {
-		cfg.P2P.ConnTimeout = 10 * time.Second
-	}
-
-	// 默认最大连接数
-	if cfg.P2P.MaxConnections == 0 {
-		cfg.P2P.MaxConnections = 200
+// applyEnvOverrides 应用环境变量覆盖
+func applyEnvOverrides(cfg *Config) {
+	// NEXKV_BASE_DIR 环境变量优先级最高
+	if baseDir := os.Getenv("NEXKV_BASE_DIR"); baseDir != "" {
+		// 展开波浪号
+		if strings.HasPrefix(baseDir, "~/") {
+			if homeDir, err := os.UserHomeDir(); err == nil {
+				baseDir = filepath.Join(homeDir, baseDir[2:])
+			}
+		}
+		cfg.Cluster.BaseDir = baseDir
+	} else {
+		// 展开配置中的波浪号
+		if strings.HasPrefix(cfg.Cluster.BaseDir, "~/") {
+			if homeDir, err := os.UserHomeDir(); err == nil {
+				cfg.Cluster.BaseDir = filepath.Join(homeDir, cfg.Cluster.BaseDir[2:])
+			}
+		}
 	}
 }
 
-// ValidateConfig 验证配置
+// ValidateConfig 验证配置有效性
 func ValidateConfig(cfg *Config) error {
-	// 验证必填字段
-	if cfg.P2P.ListenAddr == "" {
-		return fmt.Errorf("p2p.listen_addr 是必填字段")
-	}
-	if cfg.P2P.PrivateKeyPath == "" {
-		return fmt.Errorf("p2p.private_key_path 是必填字段")
+	validators := []struct {
+		name string
+		fn   func(*Config) error
+	}{
+		{"集群配置", validateClusterConfigWrapper},
+		{"元数据配置", validateMetadataConfigWrapper},
+		{"存储配置", validateStorageConfigWrapper},
+		{"网络配置", validateNetworkConfigWrapper},
+		{"日志配置", validateLoggingConfigWrapper},
+		{"时钟配置", validateClockConfigWrapper},
 	}
 
-	// 验证 multiaddr 格式
-	if !isValidMultiaddr(cfg.P2P.ListenAddr) {
-		return fmt.Errorf("p2p.listen_addr 格式错误: %s (应为 multiaddr 格式，如 /ip4/0.0.0.0/tcp/4001)", cfg.P2P.ListenAddr)
-	}
-
-	// 验证 bootstrap peers
-	for i, peer := range cfg.P2P.BootstrapPeers {
-		if !isValidMultiaddr(peer) {
-			return fmt.Errorf("p2p.bootstrap_peers[%d] 格式错误: %s", i, peer)
+	for _, v := range validators {
+		if err := v.fn(cfg); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-// isValidMultiaddr 验证 multiaddr 格式
-func isValidMultiaddr(addr string) bool {
-	// 简单验证：检查是否以 / 开头（multiaddr 特征）
-	if len(addr) == 0 {
-		return false
+// validateClusterConfigWrapper 验证集群配置（PR-037: 三级配置结构）
+// P1-4 修复：使用 early return 优化性能，添加详细的验证失败日志
+func validateClusterConfigWrapper(cfg *Config) error {
+	if cfg.Cluster.Name == "" {
+		logging.Warn("[ConfigValidation] 集群名称为空")
+		return types.NewConfigClusterNameEmptyError()
 	}
-	return addr[0] == '/'
+	if cfg.Cluster.BaseDir == "" {
+		logging.Warn("[ConfigValidation] 基础目录为空")
+		return types.NewConfigBaseDirEmptyError()
+	}
+	if len(cfg.Cluster.Hosts) == 0 {
+		logging.Warn("[ConfigValidation] Hosts 配置为空")
+		return types.NewConfigHostsEmptyError()
+	}
+
+	// 验证每个 Host 配置
+	for i, host := range cfg.Cluster.Hosts {
+		// Early return: 快速失败，避免继续验证无效配置
+		if host.HostID == "" {
+			logging.Warnf("[ConfigValidation] Host[%d] 的 HostID 为空", i)
+			return types.NewConfigHostIDEmptyError(i)
+		}
+		if host.SeedNode == "" {
+			logging.Warnf("[ConfigValidation] Host[%s] 的 SeedNode 为空", host.HostID)
+			return types.NewConfigSeedNodeEmptyError(i)
+		}
+		if len(host.Nodes) == 0 {
+			logging.Warnf("[ConfigValidation] Host[%s] 的 Nodes 配置为空", host.HostID)
+			return types.NewConfigNodesEmptyError(i)
+		}
+
+		// 验证每个 Node 配置
+		for j, node := range host.Nodes {
+			// Early return: 快速失败
+			if node.NodeID == "" {
+				logging.Warnf("[ConfigValidation] Host[%s] Node[%d] 的 NodeID 为空", host.HostID, j)
+				return types.NewConfigNodeIDEmptyError(i, j)
+			}
+			if node.NodeAddrTCP == "" {
+				logging.Warnf("[ConfigValidation] Node[%s] 的 NodeAddrTCP 为空", node.NodeID)
+				return types.NewConfigNodeAddrTCPEmptyError(i, j)
+			}
+			if node.NodeAddrUDP == "" {
+				logging.Warnf("[ConfigValidation] Node[%s] 的 NodeAddrUDP 为空", node.NodeID)
+				return types.NewConfigNodeAddrUDPEmptyError(i, j)
+			}
+
+			// 验证 multiaddr 格式（使用 HasPrefix 进行快速检查）
+			tcpValid := strings.HasPrefix(node.NodeAddrTCP, "/ip4/") || strings.HasPrefix(node.NodeAddrTCP, "/ip6/")
+			if !tcpValid {
+				logging.Warnf("[ConfigValidation] Node[%s] 的 NodeAddrTCP 格式无效: %s", node.NodeID, node.NodeAddrTCP)
+				return types.NewConfigNodeAddrTCPInvalidFormatError(i, j)
+			}
+			udpValid := strings.HasPrefix(node.NodeAddrUDP, "/ip4/") || strings.HasPrefix(node.NodeAddrUDP, "/ip6/")
+			if !udpValid {
+				logging.Warnf("[ConfigValidation] Node[%s] 的 NodeAddrUDP 格式无效: %s", node.NodeID, node.NodeAddrUDP)
+				return types.NewConfigNodeAddrUDPInvalidFormatError(i, j)
+			}
+		}
+	}
+
+	return nil
 }
 
-// LoadConfigFromEnv 从环境变量加载配置
-func LoadConfigFromEnv() (*Config, error) {
-	cfg := &Config{}
+// validateMetadataConfigWrapper 验证元数据配置（包装函数）
+func validateMetadataConfigWrapper(cfg *Config) error {
+	return validateMetadataConfig(cfg.Metadata)
+}
 
-	// 从环境变量读取
-	if listenAddr := os.Getenv("NEXKV_P2P_LISTEN_ADDR"); listenAddr != "" {
-		cfg.P2P.ListenAddr = listenAddr
+// validateStorageConfigWrapper 验证存储配置（包装函数）
+func validateStorageConfigWrapper(cfg *Config) error {
+	return validateStorageConfig(cfg.Storage)
+}
+
+// validateNetworkConfigWrapper 验证网络配置（包装函数）
+func validateNetworkConfigWrapper(cfg *Config) error {
+	return validateNetworkConfig(cfg.Network)
+}
+
+// validateLoggingConfigWrapper 验证日志配置（包装函数）
+func validateLoggingConfigWrapper(cfg *Config) error {
+	return validateLoggingConfig(cfg.Logging)
+}
+
+// validateClockConfigWrapper 验证时钟配置（包装函数）
+func validateClockConfigWrapper(cfg *Config) error {
+	return validateClockConfig(cfg.Clock.HLC)
+}
+
+// validateMetadataConfig 验证元数据配置
+func validateMetadataConfig(cfg MetadataConfig) error {
+	if cfg.GossipInterval < time.Second {
+		return types.NewConfigGossipIntervalInvalidError()
 	}
-	if keyPath := os.Getenv("NEXKV_P2P_PRIVATE_KEY_PATH"); keyPath != "" {
-		cfg.P2P.PrivateKeyPath = keyPath
+	if cfg.QuorumTimeout < time.Second {
+		return types.NewConfigQuorumTimeoutInvalidError()
+	}
+	if cfg.ChangeLogSize < 100 {
+		return types.NewConfigChangeLogSizeInvalidError()
+	}
+	return nil
+}
+
+// validateStorageConfig 验证存储配置
+func validateStorageConfig(cfg StorageConfig) error {
+	if cfg.FlushInterval < time.Second {
+		return types.NewConfigFlushIntervalInvalidError()
+	}
+	return nil
+}
+
+// validateNetworkConfig 验证网络配置
+func validateNetworkConfig(cfg NetworkConfig) error {
+	if cfg.ListenAddr == "" {
+		return types.NewConfigListenAddrEmptyError()
+	}
+	if cfg.TransportType == "" {
+		return types.NewConfigTransportTypeEmptyError()
+	}
+	if cfg.MessagePackType == "" {
+		return types.NewConfigMessagePackTypeEmptyError()
+	}
+	if cfg.MaxMessageSize < 1024 {
+		return types.NewConfigMaxMessageSizeInvalidError()
+	}
+	if cfg.ConnectTimeout < time.Second {
+		return types.NewConfigConnectTimeoutInvalidError()
+	}
+	return nil
+}
+
+// validateLoggingConfig 验证日志配置
+func validateLoggingConfig(cfg LoggingConfig) error {
+	validLogLevels := map[string]bool{
+		"debug": true,
+		"info":  true,
+		"warn":  true,
+		"error": true,
+		"fatal": true,
+	}
+	if !validLogLevels[cfg.Level] {
+		return types.NewConfigInvalidLogLevelError(cfg.Level)
 	}
 
-	// 设置默认值
-	setDefaults(cfg)
+	validLogFormats := map[string]bool{
+		"json": true,
+		"text": true,
+	}
+	if !validLogFormats[cfg.Format] {
+		return types.NewConfigInvalidLogFormatError(cfg.Format)
+	}
 
+	validLogOutputs := map[string]bool{
+		"stdout": true,
+		"file":   true,
+	}
+	if !validLogOutputs[cfg.Output] {
+		return types.NewConfigInvalidLogOutputError(cfg.Output)
+	}
+
+	if cfg.Output == "file" && cfg.File == "" {
+		return types.NewConfigLogFileRequiredError()
+	}
+
+	return nil
+}
+
+// validateClockConfig 验证时钟配置
+func validateClockConfig(cfg HLCConfig) error {
+	if cfg.MaxDrift < 0 {
+		return types.NewConfigMaxDriftInvalidError()
+	}
+	if cfg.SyncInterval < time.Second {
+		return types.NewConfigSyncIntervalInvalidError()
+	}
+	return nil
+}
+
+// SaveConfig 保存配置到文件
+func SaveConfig(cfg *Config, path string) error {
 	// 验证配置
 	if err := ValidateConfig(cfg); err != nil {
-		return nil, err
+		return err
 	}
 
-	return cfg, nil
-}
+	// 创建目录
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return types.NewConfigCreateDirError(err)
+	}
 
-// LoadConfigWithEnvOverride 从 YAML 加载配置，环境变量覆盖
-func LoadConfigWithEnvOverride(path string) (*Config, error) {
-	cfg, err := LoadConfig(path)
+	// 序列化为 YAML
+	data, err := yaml.Marshal(cfg)
 	if err != nil {
-		return nil, err
+		return types.NewConfigSerializeError(err)
 	}
 
-	// 环境变量覆盖
-	if listenAddr := os.Getenv("NEXKV_P2P_LISTEN_ADDR"); listenAddr != "" {
-		cfg.P2P.ListenAddr = listenAddr
+	// 写入文件
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return types.NewConfigWriteFileError(err)
 	}
 
-	return cfg, nil
+	return nil
 }

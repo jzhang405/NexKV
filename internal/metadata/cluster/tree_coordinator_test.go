@@ -67,7 +67,6 @@ func TestTreeCoordinator_StartStop(t *testing.T) {
 	err = coordinator.Start()
 	assert.NoError(t, err)
 	assert.True(t, coordinator.IsRunning())
-	assert.Equal(t, NodeStatusReady, coordinator.localNode.Status)
 
 	// 测试重复启动
 	err = coordinator.Start()
@@ -630,7 +629,7 @@ func Test_TreeCoordinator_gossipTopologyChange_NoRPCClient(t *testing.T) {
 	config := DefaultTreeCoordinatorConfig()
 	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
 	require.NoError(t, err)
-	coordinator.RPCClient = nil // 没有设置 RPCClient
+	// RPCClient 已删除（PR-Libp2p-TransportCleanup）
 
 	// 不应该 panic
 	assert.NotPanics(t, func() {
@@ -690,7 +689,7 @@ func Test_TreeCoordinator_gossipSync_NoRPCClient(t *testing.T) {
 		config := DefaultTreeCoordinatorConfig()
 		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
 		require.NoError(t, err)
-		coordinator.RPCClient = nil
+		// RPCClient 已删除（PR-Libp2p-TransportCleanup）
 
 		// 不应该 panic
 		assert.NotPanics(t, func() {

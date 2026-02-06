@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jzhang405/NexKV/internal/metadata/config/logging"
+	"github.com/jzhang405/NexKV/internal/config/logging"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 

@@ -63,8 +63,8 @@ func NewSeedNodeIntegration(
 	}
 
 	return &SeedNodeIntegration{
-		host:        h,
-		seedWatcher: watcher,
+		host:          h,
+		seedWatcher:   watcher,
 		onSeedsChange: onSeedsChange,
 	}, nil
 }
@@ -106,15 +106,13 @@ func seedNodesToPeers(seeds []string) []peer.AddrInfo {
 	for _, seed := range seeds {
 		// 尝试解析为完整的 peer.AddrInfo（包含 PeerID）
 		pi, err := peer.AddrInfoFromString(seed)
-		if err == nil {
-			peers = append(peers, pi)
+		if err == nil && pi != nil {
+			peers = append(peers, *pi)
 			continue
 		}
 
-		// 如果不包含 PeerID，创建一个临时 AddrInfo
-		// 注意：这种情况需要后续通过其他方式获取 PeerID
-		// 这里先跳过，因为 libp2p 需要完整的 PeerID
-		continue
+		// 如果不包含 PeerID，跳过
+		// 注意：libp2p 需要完整的 PeerID
 	}
 
 	return peers

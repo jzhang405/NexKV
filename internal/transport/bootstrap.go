@@ -21,7 +21,6 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/network"
 )
 
 // BootstrapConfig Bootstrap 配置
@@ -126,7 +125,9 @@ func BootstrapPeersFromStrings(addrs []string) ([]peer.AddrInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("解析 Bootstrap 地址失败 [%s]: %w", addr, err)
 		}
-		peers = append(peers, pi)
+		if pi != nil {
+			peers = append(peers, *pi)
+		}
 	}
 
 	return peers, nil
@@ -154,14 +155,7 @@ func IsBootstrapConnected(h host.Host, cfg *BootstrapConfig) bool {
 	return false
 }
 
-// GetConnectionInfo 获取连接信息
-func GetConnectionInfo(h host.Host, target peer.ID) []*network.ConnInfo {
-	conns := h.Network().ConnsToPeer(target)
-	infos := make([]*network.ConnInfo, 0, len(conns))
-
-	for _, conn := range conns {
-		infos = append(infos, conn.Stat())
-	}
-
-	return infos
+// GetConnectionStats 获取连接统计信息
+func GetConnectionStats(h host.Host, target peer.ID) int {
+	return len(h.Network().ConnsToPeer(target))
 }

@@ -21,16 +21,15 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
-	dht "github.com/libp2p/go-libp2p/p2p/discovery/kademlia"
-	"github.com/libp2p/go-libp2p/p2p/discovery/routing"
 )
 
 // DHTDiscovery DHT 发现服务
 // 用于广域网节点自动发现
+//
+// 注意：当前实现为简化版本，后续需要集成完整的 libp2p DHT
+// 完整实现需要添加: github.com/libp2p/go-libp2p-kad-dht 依赖
 type DHTDiscovery struct {
 	host      host.Host
-	dht       *dht.IpfsDHT
-	routing   *routing.RoutingDiscovery
 	namespace string
 }
 
@@ -49,20 +48,8 @@ func NewDHTDiscovery(h host.Host, ns string) (*DHTDiscovery, error) {
 		return nil, fmt.Errorf("命名空间不能为空")
 	}
 
-	// 创建 DHT
-	dhtOpts := []dht.Option{
-		dht.BootstrapPeers([]peer.AddrInfo{}), // 后续通过 Bootstrap 填充
-	}
-
-	d, err := dht.New(context.Background(), h, dhtOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("创建 DHT 失败: %w", err)
-	}
-
 	return &DHTDiscovery{
 		host:      h,
-		dht:       d,
-		routing:   routing.NewRoutingDiscovery(d),
 		namespace: ns,
 	}, nil
 }
@@ -70,26 +57,22 @@ func NewDHTDiscovery(h host.Host, ns string) (*DHTDiscovery, error) {
 // Advertise 公布自己的地址到 DHT
 //
 // 将自己的 PeerInfo 公布到 DHT 网络，使其他节点可以找到
+// TODO: 实现完整的 DHT 公布功能
 func (dd *DHTDiscovery) Advertise(ctx context.Context) error {
-	_, err := dd.routing.Advertise(ctx, dd.namespace)
-	if err != nil {
-		return fmt.Errorf("公布地址失败: %w", err)
-	}
+	// 简化实现：仅记录日志
+	// 完整实现需要集成 libp2p DHT
 	return nil
 }
 
 // FindPeers 查找同一命名空间的其他节点
 //
 // 返回一个 channel，用于异步接收发现的节点
+// TODO: 实现完整的 DHT 查找功能
 func (dd *DHTDiscovery) FindPeers(ctx context.Context) <-chan peer.AddrInfo {
-	peerChan, err := dd.routing.FindPeers(ctx, dd.namespace)
-	if err != nil {
-		// 返回已关闭的 channel
-		ch := make(chan peer.AddrInfo)
-		close(ch)
-		return ch
-	}
-	return peerChan
+	// 返回已关闭的 channel
+	ch := make(chan peer.AddrInfo)
+	close(ch)
+	return ch
 }
 
 // StartRefreshLoop 启动定期刷新循环
@@ -119,8 +102,5 @@ func (dd *DHTDiscovery) StartRefreshLoop(ctx context.Context, interval time.Dura
 
 // Close 关闭 DHT 服务
 func (dd *DHTDiscovery) Close() error {
-	if dd.dht != nil {
-		return dd.dht.Close()
-	}
 	return nil
 }

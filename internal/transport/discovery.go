@@ -27,9 +27,9 @@ import (
 // DiscoveryService mDNS 发现服务
 // 用于局域网内节点自动发现
 type DiscoveryService struct {
-	host       host.Host
-	serviceTag string
-	service    *mdns.MdnsService
+	host        host.Host
+	serviceTag  string
+	service     mdns.Service
 	onPeerFound func(peer.AddrInfo)
 }
 
@@ -44,8 +44,8 @@ type DiscoveryService struct {
 //   - *DiscoveryService: 发现服务实例
 func NewDiscoveryService(h host.Host, tag string, onPeerFound func(peer.AddrInfo)) *DiscoveryService {
 	return &DiscoveryService{
-		host:       h,
-		serviceTag: tag,
+		host:        h,
+		serviceTag:  tag,
 		onPeerFound: onPeerFound,
 	}
 }
@@ -58,7 +58,7 @@ func NewDiscoveryService(h host.Host, tag string, onPeerFound func(peer.AddrInfo
 //   - 自动连接发现的节点
 func (ds *DiscoveryService) Start(ctx context.Context) error {
 	var err error
-	ds.service = mdns.NewMdnsService(ds.host, ds.serviceTag, ds.handlePeerFound)
+	ds.service = mdns.NewMdnsService(ds.host, ds.serviceTag, ds)
 	if err != nil {
 		return fmt.Errorf("创建 mDNS 服务失败: %w", err)
 	}
@@ -71,13 +71,13 @@ func (ds *DiscoveryService) Start(ctx context.Context) error {
 	return nil
 }
 
-// handlePeerFound 处理发现的节点
+// HandlePeerFound 处理发现的节点（实现 mdns.Notifee 接口）
 //
 // 流程:
-//   1. 过滤自己
-//   2. 触发回调（如果设置）
-//   3. 自动连接节点
-func (ds *DiscoveryService) handlePeerFound(pi peer.AddrInfo) {
+//  1. 过滤自己
+//  2. 触发回调（如果设置）
+//  3. 自动连接节点
+func (ds *DiscoveryService) HandlePeerFound(pi peer.AddrInfo) {
 	// 过滤自己
 	if pi.ID == ds.host.ID() {
 		return

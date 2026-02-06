@@ -69,7 +69,9 @@ func TestNodeDiscovery_WaitForBootstrap(t *testing.T) {
 	}
 
 	// When: 连接 Bootstrap 并等待
-	go ConnectToBootstrap(ctx, h1, cfg)
+	go func() {
+		_ = ConnectToBootstrap(ctx, h1, cfg)
+	}()
 	err = WaitForBootstrap(ctx, h1, 1, 5*time.Second)
 
 	// Then: 应成功等待

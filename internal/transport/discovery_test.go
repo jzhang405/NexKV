@@ -83,7 +83,7 @@ func TestDiscoveryService_HandlePeerFound(t *testing.T) {
 	ma, _ := multiaddr.NewMultiaddr("/ip4/192.168.1.1/tcp/4001")
 	pi := peer.AddrInfo{ID: pid, Addrs: []multiaddr.Multiaddr{ma}}
 
-	ds.handlePeerFound(pi)
+	ds.HandlePeerFound(pi)
 
 	// Then: 应触发回调
 	select {
@@ -108,7 +108,7 @@ func TestDiscoveryService_SkipSelf(t *testing.T) {
 
 	// When: 处理自己的 PeerInfo
 	pi := h.Peerstore().PeerInfo(h.ID())
-	ds.handlePeerFound(pi)
+	ds.HandlePeerFound(pi)
 
 	// Then: 不应触发回调
 	assert.Equal(t, 0, callCount, "应过滤自己")

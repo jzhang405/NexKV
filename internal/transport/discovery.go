@@ -57,11 +57,7 @@ func NewDiscoveryService(h host.Host, tag string, onPeerFound func(peer.AddrInfo
 //   - 监听其他节点的广播
 //   - 自动连接发现的节点
 func (ds *DiscoveryService) Start(ctx context.Context) error {
-	var err error
 	ds.service = mdns.NewMdnsService(ds.host, ds.serviceTag, ds)
-	if err != nil {
-		return fmt.Errorf("创建 mDNS 服务失败: %w", err)
-	}
 	if ds.service == nil {
 		return fmt.Errorf("创建 mDNS 服务失败: 服务为空")
 	}

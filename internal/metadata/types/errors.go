@@ -868,22 +868,38 @@ func newWithOpErr(code ErrorCode, op string, cause error, format string, args ..
 
 // New 创建新错误
 func New(code ErrorCode, msg string) *Error {
-	return newBase(code, msg)
+	return &Error{
+		Code:    code,
+		Message: msg,
+	}
 }
 
 // NewWithErr 创建带底层错误的错误
 func NewWithErr(code ErrorCode, msg string, err error) *Error {
-	return newWithErr(code, err, msg)
+	return &Error{
+		Code:    code,
+		Message: msg,
+		Err:     err,
+	}
 }
 
 // NewOp 创建带操作信息的错误
 func NewOp(code ErrorCode, op, msg string) *Error {
-	return newWithOp(code, op, msg)
+	return &Error{
+		Code:    code,
+		Message: msg,
+		Op:      op,
+	}
 }
 
 // NewOpErr 创建带操作和底层错误的错误
 func NewOpErr(code ErrorCode, op, msg string, err error) *Error {
-	return newWithOpErr(code, op, err, msg)
+	return &Error{
+		Code:    code,
+		Message: msg,
+		Op:      op,
+		Err:     err,
+	}
 }
 
 // ========================================
@@ -917,7 +933,11 @@ func NewClosedError(resource string) *Error {
 
 // NewInternalError 创建内部错误
 func NewInternalError(msg string, err error) *Error {
-	return newWithErr(ErrCodeInternal, err, msg)
+	return &Error{
+		Code:    ErrCodeInternal,
+		Message: msg,
+		Err:     err,
+	}
 }
 
 // ========================================
@@ -999,7 +1019,10 @@ func NewCodecInvalidDataError(op string, msg string) *Error {
 
 // NewCodecInvalidMessageError 创建无效消息错误
 func NewCodecInvalidMessageError(msg string) *Error {
-	return newBase(ErrCodecInvalidMessage, msg)
+	return &Error{
+		Code:    ErrCodecInvalidMessage,
+		Message: msg,
+	}
 }
 
 // NewCodecUnknownMessageTypeError 创建未知消息类型错误
@@ -1018,17 +1041,26 @@ func NewEncryptionKeySizeError(expected int, actual int) *Error {
 
 // NewEncryptionCiphertextSizeError 创建密文大小错误
 func NewEncryptionCiphertextSizeError(msg string) *Error {
-	return newBase(ErrEncryptionCiphertextSize, msg)
+	return &Error{
+		Code:    ErrEncryptionCiphertextSize,
+		Message: msg,
+	}
 }
 
 // NewEncryptionPadSizeError 创建填充大小错误
 func NewEncryptionPadSizeError(msg string) *Error {
-	return newBase(ErrEncryptionPadSize, msg)
+	return &Error{
+		Code:    ErrEncryptionPadSize,
+		Message: msg,
+	}
 }
 
 // NewEncryptionEmptyDataError 创建空数据错误
 func NewEncryptionEmptyDataError(msg string) *Error {
-	return newBase(ErrEncryptionEmptyData, msg)
+	return &Error{
+		Code:    ErrEncryptionEmptyData,
+		Message: msg,
+	}
 }
 
 // NewEncryptionCreateCipherFailedError 创建 cipher 失败错误
@@ -1072,7 +1104,10 @@ func NewStoreSnapshotError(op string, err error) *Error {
 
 // NewStoreKeyValidationError 创建 Key 验证失败错误
 func NewStoreKeyValidationError(msg string) *Error {
-	return newBase(ErrStoreKeyValidation, msg)
+	return &Error{
+		Code:    ErrStoreKeyValidation,
+		Message: msg,
+	}
 }
 
 // NewStoreInvalidParameterError 创建无效参数错误
@@ -1507,7 +1542,11 @@ func NewConsensusServiceStateError(service, state string) *Error {
 
 // NewConsensusTransactionError 创建事务错误
 func NewConsensusTransactionError(msg string, err error) *Error {
-	return newWithErr(ErrConsensusTransaction, err, msg)
+	return &Error{
+		Code:    ErrConsensusTransaction,
+		Message: msg,
+		Err:     err,
+	}
 }
 
 // NewConsensusOperationError 创建协议操作失败错误
@@ -1554,22 +1593,37 @@ func NewClusterNodeManagementError(op, nodeID string, err error) *Error {
 
 // NewClusterCoordinatorError 创建协调器操作错误
 func NewClusterCoordinatorError(msg string, err error) *Error {
-	return newWithErr(ErrClusterCoordinator, err, msg)
+	return &Error{
+		Code:    ErrClusterCoordinator,
+		Message: msg,
+		Err:     err,
+	}
 }
 
 // NewClusterTreeManagementError 创建树结构管理错误
 func NewClusterTreeManagementError(msg string) *Error {
-	return newBase(ErrClusterTreeManagement, msg)
+	return &Error{
+		Code:    ErrClusterTreeManagement,
+		Message: msg,
+	}
 }
 
 // NewClusterElectionError 创建选举错误
 func NewClusterElectionError(msg string, err error) *Error {
-	return newWithErr(ErrClusterElection, err, msg)
+	return &Error{
+		Code:    ErrClusterElection,
+		Message: msg,
+		Err:     err,
+	}
 }
 
 // NewClusterFailureDetectionError 创建故障检测错误
 func NewClusterFailureDetectionError(msg string, err error) *Error {
-	return newWithErr(ErrClusterFailureDetection, err, msg)
+	return &Error{
+		Code:    ErrClusterFailureDetection,
+		Message: msg,
+		Err:     err,
+	}
 }
 
 // NewClusterNodeNotFoundError 创建节点不存在错误
@@ -1915,7 +1969,10 @@ func NewUUIDFormatError(msg string, err error) *Error {
 
 // NewClockOperationError 创建时钟操作错误
 func NewClockOperationError(msg string) *Error {
-	return newBase(ErrClockOperation, msg)
+	return &Error{
+		Code:    ErrClockOperation,
+		Message: msg,
+	}
 }
 
 // NewIdentifierNoPortEnabledError 创建没有启用任何端口错误

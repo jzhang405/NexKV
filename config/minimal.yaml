@@ -1,0 +1,16 @@
+# NexKV 集群配置 - 最小化配置
+# 仅包含必需的配置项
+
+# P2P 配置
+p2p:
+  # 监听地址（multiaddr 格式）
+  listen_addr: "/ip4/0.0.0.0/tcp/4001"
+
+  # 私钥文件路径
+  private_key_path: "/var/lib/nexkv/libp2p_key"
+
+# 注意：
+# - listen_addr 必须使用 multiaddr 格式（如 /ip4/0.0.0.0/tcp/4001）
+# - private_key_path 指向 libp2p 私钥文件
+# - mDNS 和 DHT 默认启用，用于节点发现
+# - 连接超时默认 10 秒

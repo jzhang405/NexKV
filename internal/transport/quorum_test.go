@@ -326,7 +326,8 @@ func setupCluster(t testing.TB, ctx context.Context, tmpDir string, size int) []
 
 	for i := 0; i < size; i++ {
 		keyPath := filepath.Join(tmpDir, "node"+string(rune('1'+i))+".key")
-		cfg := DefaultP2PServiceConfig("94"+string(rune('0'+i)), keyPath)
+		// 使用端口 0 让系统自动分配，避免固定端口冲突
+		cfg := DefaultP2PServiceConfig("0", keyPath)
 
 		service, err := NewP2PService(cfg)
 		require.NoError(t, err)

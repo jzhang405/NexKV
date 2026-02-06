@@ -130,7 +130,12 @@ func (m *Message) IsValid() bool {
 		return false
 	}
 
-	// 根据消息类型验证必填字段
+	// 如果有 Payload，跳过 Key/Value 检查（使用 Payload 模式）
+	if len(m.Payload) > 0 {
+		return true
+	}
+
+	// 根据消息类型验证必填字段（兼容旧行为）
 	switch m.Type {
 	case MessageTypeGet, MessageTypeDelete:
 		return len(m.Key) > 0

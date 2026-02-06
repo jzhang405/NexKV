@@ -101,20 +101,7 @@ func (si *SeedNodeIntegration) ConnectToSeeds(ctx context.Context) error {
 
 // seedNodesToPeers 将种子节点字符串列表转换为 peer.AddrInfo
 func seedNodesToPeers(seeds []string) []peer.AddrInfo {
-	peers := make([]peer.AddrInfo, 0, len(seeds))
-
-	for _, seed := range seeds {
-		// 尝试解析为完整的 peer.AddrInfo（包含 PeerID）
-		pi, err := peer.AddrInfoFromString(seed)
-		if err == nil && pi != nil {
-			peers = append(peers, *pi)
-			continue
-		}
-
-		// 如果不包含 PeerID，跳过
-		// 注意：libp2p 需要完整的 PeerID
-	}
-
+	peers, _ := parsePeersFromStrings(seeds)
 	return peers
 }
 

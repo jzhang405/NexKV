@@ -108,9 +108,6 @@ func (c *MessagePackCodec) EncodeToBytes(msg *Message) ([]byte, error) {
 	return buf, nil
 }
 
-// const
-const maxMessageSize = uint16(10 * 1024) // 最大 10KB
-
 // DecodeFromBytes 从字节切片解码消息（便捷方法）
 func (c *MessagePackCodec) DecodeFromBytes(data []byte) (*Message, error) {
 	if len(data) < 3 {
@@ -183,8 +180,8 @@ func (c *MessagePackCodec) readHeader(r io.Reader) (MessageType, uint16, error) 
 	}
 
 	// 验证长度
-	if length > maxMessageSize {
-		return 0, 0, fmt.Errorf("消息过大: %d 字节（最大 %d 字节）", length, maxMessageSize)
+	if length > MaxMessageSize {
+		return 0, 0, fmt.Errorf("消息过大: %d 字节（最大 %d 字节）", length, MaxMessageSize)
 	}
 
 	return msgType, length, nil

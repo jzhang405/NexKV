@@ -17,7 +17,7 @@ package transport
 import (
 	"context"
 	"fmt"
-	"time"
+	"sync"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -31,6 +31,10 @@ type DiscoveryService struct {
 	serviceTag  string
 	service     mdns.Service
 	onPeerFound func(peer.AddrInfo)
+	// goroutine 跟踪
+	activeConns sync.WaitGroup
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // NewDiscoveryService 创建 mDNS 发现服务
@@ -43,10 +47,13 @@ type DiscoveryService struct {
 // 返回:
 //   - *DiscoveryService: 发现服务实例
 func NewDiscoveryService(h host.Host, tag string, onPeerFound func(peer.AddrInfo)) *DiscoveryService {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &DiscoveryService{
 		host:        h,
 		serviceTag:  tag,
 		onPeerFound: onPeerFound,
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 }
 
@@ -75,7 +82,7 @@ func (ds *DiscoveryService) Start(ctx context.Context) error {
 // 流程:
 //  1. 过滤自己
 //  2. 触发回调（如果设置）
-//  3. 自动连接节点
+//  3. 自动连接节点（使用 goroutine 跟踪）
 func (ds *DiscoveryService) HandlePeerFound(pi peer.AddrInfo) {
 	// 过滤自己
 	if pi.ID == ds.host.ID() {
@@ -87,12 +94,17 @@ func (ds *DiscoveryService) HandlePeerFound(pi peer.AddrInfo) {
 		ds.onPeerFound(pi)
 	}
 
-	// 自动连接
+	// 自动连接（使用服务上下文和 goroutine 跟踪）
+	ds.activeConns.Add(1)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ds.activeConns.Done()
+
+		ctx, cancel := context.WithTimeout(ds.ctx, DiscoveryConnectTimeout)
 		defer cancel()
+
 		if err := ds.host.Connect(ctx, pi); err != nil {
 			// 连接失败，记录但不阻塞
+			fmt.Printf("连接节点失败: peer=%s, error=%v\n", pi.ID, err)
 			return
 		}
 	}()
@@ -100,6 +112,15 @@ func (ds *DiscoveryService) HandlePeerFound(pi peer.AddrInfo) {
 
 // Close 关闭 mDNS 服务
 func (ds *DiscoveryService) Close() error {
+	// 取消所有活跃连接的上下文
+	if ds.cancel != nil {
+		ds.cancel()
+	}
+
+	// 等待所有 goroutine 完成
+	ds.activeConns.Wait()
+
+	// 关闭 mDNS 服务
 	if ds.service != nil {
 		return ds.service.Close()
 	}

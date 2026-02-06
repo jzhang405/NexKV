@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jzhang405/NexKV/internal/metadata/clock"
+	"github.com/jzhang405/NexKV/internal/clock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

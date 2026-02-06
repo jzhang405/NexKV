@@ -110,7 +110,7 @@ func (p *NexKVProtocol) handleStream(s network.Stream) {
 	defer s.Close()
 
 	// 设置读取超时
-	if err := s.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	if err := s.SetReadDeadline(time.Now().Add(StreamReadTimeout)); err != nil {
 		p.recordError()
 		return
 	}
@@ -145,13 +145,16 @@ func (p *NexKVProtocol) processMessage(s network.Stream, msg *Message) {
 
 	handler := p.getHandler(msg.Type)
 	if handler == nil {
-		return // 静默忽略未注册的处理器
+		// 记录警告，帮助调试
+		fmt.Printf("警告：未注册的消息处理器: type=%d, from=%s\n", msg.Type, from)
+		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), StreamReadTimeout)
 	defer cancel()
 
 	if err := handler.HandleMessage(ctx, from, msg); err != nil {
+		fmt.Printf("消息处理失败: type=%d, from=%s, error=%v\n", msg.Type, from, err)
 		p.recordError()
 	}
 }
@@ -179,7 +182,7 @@ func (p *NexKVProtocol) SendMessage(ctx context.Context, pid peer.ID, msg *Messa
 	defer s.Close()
 
 	// 设置写入超时
-	if err := s.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := s.SetWriteDeadline(time.Now().Add(StreamWriteTimeout)); err != nil {
 		p.recordError()
 		return fmt.Errorf("设置写入超时失败: %w", err)
 	}
@@ -195,7 +198,7 @@ func (p *NexKVProtocol) SendMessage(ctx context.Context, pid peer.ID, msg *Messa
 	return nil
 }
 
-// BroadcastMessage 广播消息到多个节点（并发发送，无信号量限制）
+// BroadcastMessage 广播消息到多个节点（使用信号量限制并发数）
 func (p *NexKVProtocol) BroadcastMessage(ctx context.Context, pids []peer.ID, msg *Message) error {
 	if len(pids) == 0 {
 		return nil
@@ -208,11 +211,16 @@ func (p *NexKVProtocol) BroadcastMessage(ctx context.Context, pids []peer.ID, ms
 
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(pids))
+	sem := make(chan struct{}, MaxConcurrentBroadcasts) // 信号量限制并发
 
 	for _, pid := range pids {
 		wg.Add(1)
 		go func(target peer.ID) {
 			defer wg.Done()
+
+			sem <- struct{}{}        // 获取信号量
+			defer func() { <-sem }() // 释放信号量
+
 			// 克隆消息以避免并发编码同一消息对象时的竞态条件
 			msgClone := msg.Clone()
 			if err := p.SendMessage(ctx, target, msgClone); err != nil {

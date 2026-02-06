@@ -17,7 +17,6 @@ package transport
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -52,9 +51,9 @@ func DefaultP2PServiceConfig(listenAddr, keyPath string) *P2PServiceConfig {
 	return &P2PServiceConfig{
 		ListenAddr:   listenAddr,
 		KeyPath:      keyPath,
-		LowWater:     100,
-		HighWater:    400,
-		DiscoveryTag: "nexkv-discovery",
+		LowWater:     DefaultLowWater,
+		HighWater:    DefaultHighWater,
+		DiscoveryTag: DefaultDiscoveryTag,
 	}
 }
 
@@ -78,7 +77,7 @@ func NewP2PService(cfg *P2PServiceConfig) (*P2PService, error) {
 	cm, err := connmgr.NewConnManager(
 		cfg.LowWater,
 		cfg.HighWater,
-		connmgr.WithGracePeriod(time.Minute),
+		connmgr.WithGracePeriod(GracePeriod),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("连接管理器创建失败: %w", err)

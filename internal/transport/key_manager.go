@@ -34,8 +34,10 @@ func (km *KeyManager) LoadOrGenerate() (crypto.PrivKey, error) {
 
 	// 尝试加载
 	if privKey, err := km.load(); err == nil {
-		// 验证文件权限
-		_ = km.checkAndFixPermissions()
+		// 检查并修复权限，失败时返回错误
+		if err := km.checkAndFixPermissions(); err != nil {
+			return nil, fmt.Errorf("密钥文件权限检查失败: %w", err)
+		}
 		return privKey, nil
 	}
 

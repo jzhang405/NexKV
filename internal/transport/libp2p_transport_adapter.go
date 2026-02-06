@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -131,15 +130,15 @@ func (a *Libp2pTransportAdapter) createMessageHandler() MessageHandler {
 	})
 }
 
-// resolveNodeID 解析节点 ID
+// resolveNodeID 解析节点 ID（只读操作，不修改映射表）
 func (a *Libp2pTransportAdapter) resolveNodeID(from peer.ID) string {
 	if nodeID, ok := a.mapper.GetNodeID(from); ok {
 		return nodeID
 	}
 	// 未知 peer，使用 PeerID 字符串作为 NodeID
-	nodeID := from.String()
-	a.mapper.Register(nodeID, from)
-	return nodeID
+	// 注意：不在这里注册，避免并发安全问题
+	// 注册由 createMessageHandler 中的逻辑处理
+	return from.String()
 }
 
 // Close 实现 Transport.Close 接口
@@ -182,7 +181,7 @@ func (a *Libp2pTransportAdapter) Protocol() *NexKVProtocol {
 
 // ConnectToPeer 连接到指定 peer（辅助方法）
 func (a *Libp2pTransportAdapter) ConnectToPeer(pid peer.ID) error {
-	ctx, cancel := context.WithTimeout(a.ctx, defaultConnectTimeout)
+	ctx, cancel := context.WithTimeout(a.ctx, DefaultConnectTimeout)
 	defer cancel()
 
 	peerInfo := a.host.Peerstore().PeerInfo(pid)
@@ -202,5 +201,3 @@ func (a *Libp2pTransportAdapter) ConnectToNodeID(nodeID string) error {
 
 	return a.ConnectToPeer(pid)
 }
-
-const defaultConnectTimeout = 30 * time.Second

@@ -2,7 +2,6 @@ package transport
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -24,8 +23,8 @@ func NewHostBuilder(listenPort int, keyPath string) *HostBuilder {
 	return &HostBuilder{
 		listenPort: listenPort,
 		keyPath:    keyPath,
-		lowWater:   100,
-		highWater:  400,
+		lowWater:   DefaultLowWater,
+		highWater:  DefaultHighWater,
 		listenAddr: "0.0.0.0",
 	}
 }
@@ -43,7 +42,7 @@ func (hb *HostBuilder) Build() (host.Host, error) {
 	cm, err := connmgr.NewConnManager(
 		hb.lowWater,
 		hb.highWater,
-		connmgr.WithGracePeriod(time.Minute),
+		connmgr.WithGracePeriod(GracePeriod),
 	)
 	if err != nil {
 		return nil, err

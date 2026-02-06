@@ -45,43 +45,43 @@ type BootstrapConfig struct {
 //   - error: 所有连接都失败时返回错误
 func ConnectToBootstrap(ctx context.Context, h host.Host, cfg *BootstrapConfig) error {
 	if cfg == nil || len(cfg.Peers) == 0 {
-		// 无 Bootstrap 节点，直接返回
 		return nil
 	}
 
-	// 使用原子操作记录成功连接数
-	var successCount int32
-
-	// 使用 WaitGroup 等待所有连接完成
-	var wg sync.WaitGroup
-
-	// 并行连接所有 Bootstrap 节点
-	for _, p := range cfg.Peers {
-		wg.Add(1)
-		go func(pi peer.AddrInfo) {
-			defer wg.Done()
-
-			// 为每个连接设置独立的超时上下文
-			connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-
-			if err := h.Connect(connectCtx, pi); err != nil {
-				// 连接失败，记录但不阻塞
-				return
-			}
-			atomic.AddInt32(&successCount, 1)
-		}(p)
-	}
-
-	// 等待所有连接尝试完成
-	wg.Wait()
-
-	// 检查是否至少连接了一个节点
+	successCount := connectToAllPeers(ctx, h, cfg.Peers)
 	if successCount == 0 {
 		return fmt.Errorf("无法连接任何 Bootstrap 节点")
 	}
 
 	return nil
+}
+
+// connectToAllPeers 并行连接所有节点，返回成功连接数
+func connectToAllPeers(ctx context.Context, h host.Host, peers []peer.AddrInfo) int32 {
+	var successCount int32
+	var wg sync.WaitGroup
+
+	for _, p := range peers {
+		wg.Add(1)
+		go func(pi peer.AddrInfo) {
+			defer wg.Done()
+			if connectToPeerWithTimeout(ctx, h, pi) {
+				atomic.AddInt32(&successCount, 1)
+			}
+		}(p)
+	}
+
+	wg.Wait()
+	return successCount
+}
+
+// connectToPeerWithTimeout 连接到单个节点，返回是否成功
+func connectToPeerWithTimeout(ctx context.Context, h host.Host, pi peer.AddrInfo) bool {
+	connectCtx, cancel := context.WithTimeout(ctx, BootstrapConnectTimeout)
+	defer cancel()
+
+	err := h.Connect(connectCtx, pi)
+	return err == nil
 }
 
 // WaitForBootstrap 等待 Bootstrap 连接完成
@@ -91,22 +91,25 @@ func WaitForBootstrap(ctx context.Context, h host.Host, minPeers int, timeout ti
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(BootstrapCheckInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			// 检查连接的节点数
-			peerCount := len(h.Network().Peers())
-			if peerCount >= minPeers {
+			if hasEnoughPeers(h, minPeers) {
 				return nil
 			}
 		case <-ctx.Done():
-			return fmt.Errorf("等待 Bootstrap 超时: 已连接 %d/%d 个节点",
-				len(h.Network().Peers()), minPeers)
+			currentPeers := len(h.Network().Peers())
+			return fmt.Errorf("等待 Bootstrap 超时: 已连接 %d/%d 个节点", currentPeers, minPeers)
 		}
 	}
+}
+
+// hasEnoughPeers 检查是否已连接足够的节点
+func hasEnoughPeers(h host.Host, minPeers int) bool {
+	return len(h.Network().Peers()) >= minPeers
 }
 
 // SetupBootstrapDHT 配置 DHT 的 Bootstrap 节点
@@ -124,19 +127,7 @@ func SetupBootstrapDHT(dhtInstance any, cfg *BootstrapConfig) error {
 //   - /ip4/1.2.3.4/tcp/4001/p2p/QmPeerID
 //   - /dns4/node.example.com/tcp/4001/p2p/QmPeerID
 func BootstrapPeersFromStrings(addrs []string) ([]peer.AddrInfo, error) {
-	var peers []peer.AddrInfo
-
-	for _, addr := range addrs {
-		pi, err := peer.AddrInfoFromString(addr)
-		if err != nil {
-			return nil, fmt.Errorf("解析 Bootstrap 地址失败 [%s]: %w", addr, err)
-		}
-		if pi != nil {
-			peers = append(peers, *pi)
-		}
-	}
-
-	return peers, nil
+	return parsePeersFromStrings(addrs)
 }
 
 // IsBootstrapConnected 检查是否已连接到 Bootstrap 节点
@@ -145,19 +136,29 @@ func IsBootstrapConnected(h host.Host, cfg *BootstrapConfig) bool {
 		return true
 	}
 
-	peers := h.Network().Peers()
-	for _, bp := range cfg.Peers {
-		for _, p := range peers {
-			if p == bp.ID {
-				// 检查连接状态
-				conns := h.Network().ConnsToPeer(p)
-				if len(conns) > 0 {
-					return true
-				}
-			}
+	return isAnyBootstrapPeerConnected(h, cfg.Peers)
+}
+
+// isAnyBootstrapPeerConnected 检查是否有任何 Bootstrap 节点已连接
+func isAnyBootstrapPeerConnected(h host.Host, bootstrapPeers []peer.AddrInfo) bool {
+	connectedPeers := h.Network().Peers()
+
+	for _, bp := range bootstrapPeers {
+		if isPeerConnected(h, connectedPeers, bp.ID) {
+			return true
 		}
 	}
 
+	return false
+}
+
+// isPeerConnected 检查特定节点是否已连接
+func isPeerConnected(h host.Host, connectedPeers []peer.ID, target peer.ID) bool {
+	for _, p := range connectedPeers {
+		if p == target && len(h.Network().ConnsToPeer(p)) > 0 {
+			return true
+		}
+	}
 	return false
 }
 

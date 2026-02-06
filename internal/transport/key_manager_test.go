@@ -15,7 +15,7 @@ import (
 func TestKeyManager_GenerateNewKey(t *testing.T) {
 	// Given: 临时密钥文件
 	keyFile := filepath.Join(os.TempDir(), "test-key.pem")
-	defer os.Remove(keyFile)
+	defer func() { _ = os.Remove(keyFile) }()
 
 	// When: 首次加载（文件不存在）
 	km := NewKeyManager(keyFile)
@@ -49,7 +49,7 @@ func TestKeyManager_LoadExistingKey(t *testing.T) {
 	peerID2, _ := peer.IDFromPrivateKey(privKey2)
 	assert.Equal(t, peerID1, peerID2)
 
-	os.Remove(keyFile)
+	_ = os.Remove(keyFile)
 }
 
 // TestKeyManager_FileCorruptionHandling 测试文件损坏处理
@@ -58,7 +58,7 @@ func TestKeyManager_FileCorruptionHandling(t *testing.T) {
 	keyFile := filepath.Join(os.TempDir(), "test-corrupt-key.pem")
 	err := os.WriteFile(keyFile, []byte("corrupted data"), 0600)
 	require.NoError(t, err)
-	defer os.Remove(keyFile)
+	defer func() { _ = os.Remove(keyFile) }()
 
 	// When: 尝试加载
 	km := NewKeyManager(keyFile)
@@ -76,7 +76,7 @@ func TestKeyManager_FilePermissions(t *testing.T) {
 	km := NewKeyManager(keyFile)
 	_, err := km.LoadOrGenerate()
 	require.NoError(t, err)
-	defer os.Remove(keyFile)
+	defer func() { _ = os.Remove(keyFile) }()
 
 	// When: 检查文件权限
 	info, err := os.Stat(keyFile)
@@ -90,7 +90,7 @@ func TestKeyManager_FilePermissions(t *testing.T) {
 func TestKeyManager_ConcurrentAccess(t *testing.T) {
 	// Given: 共享密钥文件
 	keyFile := filepath.Join(os.TempDir(), "test-concurrent-key.pem")
-	defer os.Remove(keyFile)
+	defer func() { _ = os.Remove(keyFile) }()
 
 	// When: 并发加载
 	km := NewKeyManager(keyFile)
@@ -129,7 +129,7 @@ func TestKeyManager_ExpandPath(t *testing.T) {
 	assert.Contains(t, path, "test/key.pem")
 
 	// 测试环境变量展开
-	os.Setenv("TEST_DIR", "/tmp/test")
+	_ = os.Setenv("TEST_DIR", "/tmp/test")
 	path = km.ExpandPath("$TEST_DIR/key.pem")
 	assert.Contains(t, path, "/tmp/test/key.pem")
 

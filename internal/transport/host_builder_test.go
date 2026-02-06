@@ -17,7 +17,7 @@ import (
 func TestHostBuilder_BuildSuccess(t *testing.T) {
 	// Given: 配置
 	keyFile := filepath.Join(os.TempDir(), "test-host-key.pem")
-	defer os.Remove(keyFile)
+	defer func() { _ = os.Remove(keyFile) }()
 
 	// When: 构建Host
 	hb := NewHostBuilder(4001, keyFile)
@@ -30,14 +30,14 @@ func TestHostBuilder_BuildSuccess(t *testing.T) {
 	assert.NotEmpty(t, builtHost.Addrs())
 
 	// Cleanup
-	builtHost.Close()
+	defer func() { _ = builtHost.Close() }()
 }
 
 // TestHostBuilder_ConnectionManager 测试连接管理器
 func TestHostBuilder_ConnectionManager(t *testing.T) {
 	// Given: 配置连接管理器
 	keyFile := filepath.Join(os.TempDir(), "test-conn-key.pem")
-	defer os.Remove(keyFile)
+	defer func() { _ = os.Remove(keyFile) }()
 
 	hb := NewHostBuilder(4001, keyFile)
 	hb.WithConnectionManager(10, 50)
@@ -50,14 +50,14 @@ func TestHostBuilder_ConnectionManager(t *testing.T) {
 	assert.NotNil(t, builtHost.Network())
 
 	// Cleanup
-	builtHost.Close()
+	defer func() { _ = builtHost.Close() }()
 }
 
 // TestHostBuilder_ListenAddr 测试监听地址
 func TestHostBuilder_ListenAddr(t *testing.T) {
 	// Given: 配置监听地址
 	keyFile := filepath.Join(os.TempDir(), "test-addr-key.pem")
-	defer os.Remove(keyFile)
+	defer func() { _ = os.Remove(keyFile) }()
 
 	hb := NewHostBuilder(4001, keyFile)
 	hb.WithListenAddr("127.0.0.1")
@@ -71,14 +71,14 @@ func TestHostBuilder_ListenAddr(t *testing.T) {
 	assert.NotEmpty(t, addrs)
 
 	// Cleanup
-	builtHost.Close()
+	defer func() { _ = builtHost.Close() }()
 }
 
 // TestHostBuilder_Performance 测试性能
 func TestHostBuilder_Performance(t *testing.T) {
 	// Given: 密钥文件存在
 	keyFile := filepath.Join(os.TempDir(), "test-perf-key.pem")
-	defer os.Remove(keyFile)
+	defer func() { _ = os.Remove(keyFile) }()
 
 	km := NewKeyManager(keyFile)
 	_, err := km.LoadOrGenerate()
@@ -95,7 +95,7 @@ func TestHostBuilder_Performance(t *testing.T) {
 	assert.Less(t, duration.Milliseconds(), int64(100), "Host初始化应 < 100ms")
 
 	// Cleanup
-	builtHost.Close()
+	defer func() { _ = builtHost.Close() }()
 }
 
 // TestHost_Communication 测试节点间通信
@@ -104,19 +104,19 @@ func TestHost_Communication(t *testing.T) {
 	ctx := context.Background()
 	keyFile1 := filepath.Join(os.TempDir(), "test-node1-key.pem")
 	keyFile2 := filepath.Join(os.TempDir(), "test-node2-key.pem")
-	defer os.Remove(keyFile1)
-	defer os.Remove(keyFile2)
+	defer func() { _ = os.Remove(keyFile1) }()
+	defer func() { _ = os.Remove(keyFile2) }()
 
 	hb1 := NewHostBuilder(4001, keyFile1)
 	hb2 := NewHostBuilder(4002, keyFile2)
 
 	host1, err := hb1.Build()
 	require.NoError(t, err)
-	defer host1.Close()
+	defer func() { _ = host1.Close() }()
 
 	host2, err := hb2.Build()
 	require.NoError(t, err)
-	defer host2.Close()
+	defer func() { _ = host2.Close() }()
 
 	// When: 节点1连接节点2
 	pi := host2.Peerstore().PeerInfo(host2.ID())
@@ -144,8 +144,8 @@ func TestHost_MultiNode(t *testing.T) {
 		h, err := hb.Build()
 		require.NoError(t, err)
 		hosts[i] = h
-		defer h.Close()
-		defer os.Remove(keyFile)
+		defer func() { _ = h.Close() }()
+		defer func() { _ = os.Remove(keyFile) }()
 	}
 
 	// When: 连接成链

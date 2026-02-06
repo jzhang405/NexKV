@@ -122,12 +122,12 @@ func Test_FailureDetector_IsHostFailed(t *testing.T) {
 	config.MaxConsecutiveFails = 2 // 降低阈值以加速测试
 	fd := NewFailureDetector(hm, pa, config)
 
-	// 添加正常 Host
+	// 添加正常 Host（使用 127.0.0.1 避免 TIME_WAIT 端口冲突）
 	_, _, err := pa.AllocTCPPort("server-1")
 	require.NoError(t, err, "Failed to allocate ports for server-1")
 	host := &Host{
 		HostID:        "server-1",
-		Hostname:      "192.168.1.100",
+		Hostname:      "127.0.0.1",
 		Role:          LeafOnly,
 		LeafNodeID:    "node-leaf-1",
 		HostStatus:    HostStatusOnline,
@@ -184,11 +184,11 @@ func Test_FailureDetector_CheckAllHosts(t *testing.T) {
 	staleHeartbeat := time.Now().Add(-60 * time.Second).Unix()
 	currentHeartbeat := time.Now().Unix()
 
-	// 添加多个 Host
+	// 添加多个 Host（使用 127.0.0.1 避免 TIME_WAIT 端口冲突）
 	hosts := []*Host{
 		{
 			HostID:        "server-1",
-			Hostname:      "192.168.1.100",
+			Hostname:      "127.0.0.1",
 			Role:          LeafOnly,
 			LeafNodeID:    "node-leaf-1",
 			HostStatus:    HostStatusOnline,
@@ -196,7 +196,7 @@ func Test_FailureDetector_CheckAllHosts(t *testing.T) {
 		},
 		{
 			HostID:        "server-2",
-			Hostname:      "192.168.1.101",
+			Hostname:      "127.0.0.1",
 			Role:          LeafOnly,
 			LeafNodeID:    "node-leaf-2",
 			HostStatus:    HostStatusOnline,
@@ -204,7 +204,7 @@ func Test_FailureDetector_CheckAllHosts(t *testing.T) {
 		},
 		{
 			HostID:        "server-3",
-			Hostname:      "192.168.1.102",
+			Hostname:      "127.0.0.1",
 			Role:          LeafOnly,
 			LeafNodeID:    "node-leaf-3",
 			HostStatus:    HostStatusOnline,

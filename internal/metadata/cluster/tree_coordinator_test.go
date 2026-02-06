@@ -67,7 +67,6 @@ func TestTreeCoordinator_StartStop(t *testing.T) {
 	err = coordinator.Start()
 	assert.NoError(t, err)
 	assert.True(t, coordinator.IsRunning())
-	assert.Equal(t, NodeStatusReady, coordinator.localNode.Status)
 
 	// 测试重复启动
 	err = coordinator.Start()

@@ -255,6 +255,9 @@ type FanoutRequest struct {
     Method string
     Body   []byte
     Peers  []peer.ID
+
+    // 转发控制（防循环）
+    ForwardedPeers map[peer.ID]struct{} // 已转发的 peer 集合
 }
 
 // FanoutResponse 单个 peer 的响应
@@ -263,6 +266,7 @@ type FanoutResponse struct {
     Body    []byte
     Error   error
     Latency time.Duration
+    Hop     uint8 // 当前跳数
 }
 
 // ResponseMode 响应模式
@@ -279,10 +283,29 @@ const (
 
 // FanoutOptions Fanout 选项
 type FanoutOptions struct {
-    Mode         ResponseMode // 响应模式
-    Quorum       int          // Quorum 阈值（N/2+1）
-    Timeout      time.Duration // 超时时间
-    MaxConcurrent int         // 最大并发数
+    // 响应模式
+    Mode ResponseMode
+
+    // Quorum 阈值（默认 len(Peers)/2 + 1）
+    // 若未指定，从集群层全局配置获取
+    Quorum int
+
+    // 超时时间（建议默认 30ms）
+    Timeout time.Duration
+
+    // 单跳最大并发数（默认 10）
+    MaxConcurrent int
+
+    // ===== 新增：Hops 跳数相关配置 =====
+    // 转发跳数，默认 1（仅直连 peer）
+    // > 1 则递归转发 N 层
+    Hops uint8
+
+    // 单跳最大转发 peer 数（默认 20，防过载）
+    MaxForwardPeers uint8
+
+    // 全局最大跳数限制（默认 8，防无限转发）
+    MaxHops uint8
 }
 
 // Fanout 并发发送到多个 peers
@@ -303,6 +326,26 @@ type FanoutResult struct {
 }
 ```
 
+**架构师评审要求**：
+
+1. **Quorum 机制集成**：
+   - 配置透传：Quorum 阈值从集群层全局配置获取
+   - 结果复用：复用集群层现有 Quorum 结果判断逻辑
+   - 错误对齐：复用集群层已定义的错误码
+   - 拓扑适配：优先从集群层获取有效 Quorum 节点集
+
+2. **性能优化**：
+   - **异步非阻塞发送**（Fire-and-Forget 模式）
+   - **goroutine 池并发发送**
+   - **快速失败**（单 peer 超时不阻塞其他 peer）
+   - **连接复用**（复用 StreamCache）
+
+3. **边界控制**：
+   - Hops=0 兜底（自动重置为 1）
+   - 超过 MaxHops 自动截断
+   - 空 Peers 自动获取直连邻居
+   - 转发超时继承
+
 **使用示例**：
 
 ```go
@@ -313,6 +356,7 @@ result := client.Fanout(ctx, &FanoutRequest{
     Peers:  allPeers,
 }, &FanoutOptions{
     Mode:    FireForget,
+    Hops:    2, // 多跳广播
 })
 log.Printf("已广播到 %d 个 peers", result.TotalPeers)
 
@@ -323,8 +367,8 @@ result := client.Fanout(ctx, &FanoutRequest{
     Peers:  replicaPeers,
 }, &FanoutOptions{
     Mode:    Quorum,
-    Quorum:  len(replicaPeers)/2 + 1,
     Timeout: 5 * time.Second,
+    // Quorum 从集群层配置获取，无需手动设置
 })
 if result.Success >= result.Quorum {
     log.Printf("复制成功: %d/%d", result.Success, result.TotalPeers)
@@ -345,15 +389,37 @@ for _, resp := range result.Responses {
         log.Printf("节点 %s 状态: %v", resp.PeerID, status)
     }
 }
+
+// 4. 多跳转发（跨层级元数据同步）
+result := client.Fanout(ctx, &FanoutRequest{
+    Method: "SyncMetadata",
+    Body:   metadata,
+    Peers:  rootPeers,
+}, &FanoutOptions{
+    Mode:           Quorum,
+    Hops:           3,              // 3 层转发
+    MaxForwardPeers: 15,            // 限制单跳转发数
+    Timeout:        10 * time.Second,
+})
 ```
 
-**性能优化**：
-- **并发控制**：限制同时进行的 RPC 调用数量（避免过载）
-- **连接复用**：利用连接池复用 Stream
-- **快速失败**：超时后立即返回，不等待慢节点
-- **结果聚合**：异步收集响应，达到条件后立即返回
+**Hops 转发逻辑**：
 
-**监控指标**：
+```mermaid
+flowchart TB
+    A[发起 Fanout<br/>Hops=3] --> B[第1跳<br/>直连 peers]
+    B --> C[第2跳<br/>转发到邻居]
+    C --> D[第3跳<br/>继续转发]
+    D --> E[Hops=0<br/>停止转发]
+
+    B --> F{防循环检查}
+    C --> F
+    D --> F
+    F -->|已转发| G[跳过该 peer]
+    F -->|未转发| H[继续转发]
+```
+
+**监控指标（更新）**：
 
 ```go
 // FanoutMetrics Fanout 指标
@@ -376,6 +442,12 @@ type FanoutMetrics struct {
     PeerSuccess       *prometheus.CounterVec
     PeerFailed        *prometheus.CounterVec
     PeerTimeout       *prometheus.CounterVec
+
+    // 新增：Hops/转发相关指标
+    FanoutForwardTotal  prometheus.Counter       // 总转发次数
+    FanoutForwardFailed prometheus.Counter       // 转发失败次数
+    HopsDistribution    prometheus.Histogram     // 跳数分布
+    ForwardPerHop       *prometheus.CounterVec   // 每跳的转发数
 }
 ```
 
@@ -515,10 +587,43 @@ func TestRPCRateLimiter(t *testing.T) {
 
 | 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施（含AI辅助修改） | 优化结果 |
 |----------|----------|------------------|--------------|--------------------------|----------|
-| 第1轮 | [待定] | [待定] | [待评审] | [待定] | [待定] |
+| 第1轮 | 2026-02-07 | 👤 架构师 | **整体通过**，补充 5 项要求 | 1. Quorum 机制与集群层集成<br/>2. 新增 Hops 跳数选项<br/>3. 性能优化（异步发送、goroutine 池）<br/>4. 边界控制（防循环、防过载）<br/>5. 错误统一（复用 internal/errs） | ✅ 已整合到文档 |
 
-### 6. 预审批确认
-> **架构师签字/备注**：____________ 202X-XX-XX 该Feature方案可行，风险可控，同意启动开发，需严格按照文档落地，确保CI通过后提交Post总结。
+**第1轮评审详细意见**：
+
+1. **Fanout 三种响应模式**：完全满足 NexKV 核心需求
+   - ✅ Fire-and-Forget：适配心跳广播、Gossip 协议传播
+   - ✅ Quorum：适配元数据复制、配置同步（需与集群层集成）
+   - ✅ WaitAll：适配集群状态全量查询
+
+2. **Quorum 机制集成要求**：
+   - 配置透传：从集群层全局配置获取 Quorum 阈值
+   - 结果复用：复用集群层现有 Quorum 结果判断逻辑
+   - 错误对齐：复用集群层已定义的错误码
+   - 拓扑适配：优先从集群层获取有效 Quorum 节点集
+
+3. **Hops 跳数选项**（新增）：
+   - Hops=1：仅直连 peer（默认）
+   - Hops=N（N>1）：递归转发 N 层
+   - 防循环转发：ForwardedPeers 记录已转发 peer
+   - 防过载：MaxForwardPeers 限制单跳转发数
+   - 防无限转发：MaxHops 全局限制（默认 8）
+
+4. **性能优化要求**：
+   - 异步非阻塞发送（Fire-and-Forget 模式）
+   - goroutine 池并发发送
+   - 快速失败（单 peer 超时不阻塞其他 peer）
+   - 连接复用（复用 StreamCache）
+
+5. **边界控制要求**：
+   - Hops=0 兜底（自动重置为 1）
+   - 超过 MaxHops 自动截断
+   - 空 Peers 自动获取直连邻居
+   - 转发超时继承
+
+**最终审批**：✅ **同意正式启动开发**
+
+> **架构师签字/备注**：👤 架构师 2026-02-07 方案补充细节后，**同意正式启动开发**，需严格按本评审意见落地，确保 CI 通过后提交 Post 总结，重点验证 10 peers 下 Fanout 延迟 P99 < 50ms、多跳转发的正确性和性能。
 
 ---
 

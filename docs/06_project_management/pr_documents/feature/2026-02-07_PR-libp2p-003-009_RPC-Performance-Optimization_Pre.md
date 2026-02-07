@@ -51,11 +51,13 @@ NexKV 已完成基于 libp2p 的 RPC 基础框架（PR-libp2p-002），需要优
    - P99 延迟：< 10ms（本地测试）
    - Stream 复用率：> 90%
    - 内存占用：< 200MB（1000 连接）
+   - **Fanout 延迟**：P99 < 50ms（10 个 peers）
 
 2. **功能目标**：
    - 实现 Stream 缓存和连接池
    - 集成 Prometheus 监控指标
-   - 支持批量 RPC 调用
+   - **支持 Fanout 模式（并发发送到多个 peers）**
+   - **支持三种响应模式：Fire-and-Forget、Quorum、WaitAll**
    - 实现连接限流保护
 
 3. **质量目标**：
@@ -211,7 +213,7 @@ type BatchResponse struct {
     Errors    []error
 }
 
-// CallParallel 并行调用多个 RPC
+// CallParallel 并行调用多个 RPC（单个 peer）
 func (c *Client) CallParallel(
     ctx context.Context,
     peerID peer.ID,
@@ -219,7 +221,165 @@ func (c *Client) CallParallel(
 ) []BatchResponse
 ```
 
-#### 3.5 连接限流设计
+#### 3.5 Fanout 模式设计（并发发送到多个 peers）
+
+**应用场景**：
+- Gossip 协议传播
+- 集群状态同步
+- 元数据复制
+- 广播通知
+
+**三种响应模式**：
+
+```mermaid
+flowchart TB
+    A[FanoutRequest<br/>发送到多个 peers] --> B{响应模式}
+    B --> C[Fire-and-Forget<br/>不等响应]
+    B --> D[Quorum<br/>等待多数派]
+    B --> E[WaitAll<br/>等待全部]
+
+    C --> F[立即返回<br/>最佳性能]
+    D --> G[等待 N/2+1 响应<br/>平衡性能和一致性]
+    E --> H[等待所有响应<br/>最高一致性]
+
+    style C fill:#90EE90
+    style D fill:#FFD700
+    style E fill:#87CEEB
+```
+
+**核心接口设计**：
+
+```go
+// FanoutRequest Fanout 请求
+type FanoutRequest struct {
+    Method string
+    Body   []byte
+    Peers  []peer.ID
+}
+
+// FanoutResponse 单个 peer 的响应
+type FanoutResponse struct {
+    PeerID  peer.ID
+    Body    []byte
+    Error   error
+    Latency time.Duration
+}
+
+// ResponseMode 响应模式
+type ResponseMode int
+
+const (
+    // FireForget 不等待响应
+    FireForget ResponseMode = iota
+    // Quorum 等待多数派响应
+    Quorum
+    // WaitAll 等待所有响应
+    WaitAll
+)
+
+// FanoutOptions Fanout 选项
+type FanoutOptions struct {
+    Mode         ResponseMode // 响应模式
+    Quorum       int          // Quorum 阈值（N/2+1）
+    Timeout      time.Duration // 超时时间
+    MaxConcurrent int         // 最大并发数
+}
+
+// Fanout 并发发送到多个 peers
+func (c *Client) Fanout(
+    ctx context.Context,
+    req *FanoutRequest,
+    opts *FanoutOptions,
+) *FanoutResult
+
+// FanoutResult Fanout 结果
+type FanoutResult struct {
+    Responses   []FanoutResponse
+    Success     int
+    Failed      int
+    Timeout     int
+    TotalPeers  int
+    Duration    time.Duration
+}
+```
+
+**使用示例**：
+
+```go
+// 1. Fire-and-Forget 模式（Gossip 广播）
+result := client.Fanout(ctx, &FanoutRequest{
+    Method: "GossipNotify",
+    Body:   payload,
+    Peers:  allPeers,
+}, &FanoutOptions{
+    Mode:    FireForget,
+})
+log.Printf("已广播到 %d 个 peers", result.TotalPeers)
+
+// 2. Quorum 模式（元数据复制）
+result := client.Fanout(ctx, &FanoutRequest{
+    Method: "MetadataSync",
+    Body:   metadata,
+    Peers:  replicaPeers,
+}, &FanoutOptions{
+    Mode:    Quorum,
+    Quorum:  len(replicaPeers)/2 + 1,
+    Timeout: 5 * time.Second,
+})
+if result.Success >= result.Quorum {
+    log.Printf("复制成功: %d/%d", result.Success, result.TotalPeers)
+}
+
+// 3. WaitAll 模式（集群状态查询）
+result := client.Fanout(ctx, &FanoutRequest{
+    Method: "GetClusterStatus",
+    Body:   query,
+    Peers:  allPeers,
+}, &FanoutOptions{
+    Mode:    WaitAll,
+    Timeout: 10 * time.Second,
+})
+for _, resp := range result.Responses {
+    if resp.Error == nil {
+        status := parseClusterStatus(resp.Body)
+        log.Printf("节点 %s 状态: %v", resp.PeerID, status)
+    }
+}
+```
+
+**性能优化**：
+- **并发控制**：限制同时进行的 RPC 调用数量（避免过载）
+- **连接复用**：利用连接池复用 Stream
+- **快速失败**：超时后立即返回，不等待慢节点
+- **结果聚合**：异步收集响应，达到条件后立即返回
+
+**监控指标**：
+
+```go
+// FanoutMetrics Fanout 指标
+type FanoutMetrics struct {
+    // 调用指标
+    FanoutTotal       prometheus.Counter
+    FanoutSuccess     prometheus.Counter
+    FanoutFailed      prometheus.Counter
+    FanoutTimeout     prometheus.Counter
+
+    // 延迟指标
+    FanoutLatency     prometheus.Histogram
+
+    // 响应模式分布
+    FireForgetCount   prometheus.Counter
+    QuorumCount       prometheus.Counter
+    WaitAllCount      prometheus.Counter
+
+    // Peer 级别指标
+    PeerSuccess       *prometheus.CounterVec
+    PeerFailed        *prometheus.CounterVec
+    PeerTimeout       *prometheus.CounterVec
+}
+```
+
+#### 3.6 连接限流设计
 
 ```go
 // RateLimiter 速率限制器
@@ -265,6 +425,40 @@ func TestRPC_StreamReuse(t *testing.T) {
 // TestRPC_ConnectionPool 测试连接池
 func TestRPC_ConnectionPool(t *testing.T) {
     // 验证连接池正确性
+}
+
+// BenchmarkRPC_Fanout_FireForget 基准测试：Fanout Fire-and-Forget 模式
+func BenchmarkRPC_Fanout_FireForget(b *testing.B) {
+    // 测试广播模式性能（不等响应）
+}
+
+// BenchmarkRPC_Fanout_Quorum 基准测试：Fanout Quorum 模式
+func BenchmarkRPC_Fanout_Quorum(b *testing.B) {
+    // 测试多数派模式性能
+}
+
+// BenchmarkRPC_Fanout_WaitAll 基准测试：Fanout WaitAll 模式
+func BenchmarkRPC_Fanout_WaitAll(b *testing.B) {
+    // 测试等待全部响应性能
+}
+
+// TestRPC_Fanout_FireForget 测试 Fire-and-Forget 模式
+func TestRPC_Fanout_FireForget(t *testing.T) {
+    // 验证立即返回，不等待响应
+}
+
+// TestRPC_Fanout_Quorum 测试 Quorum 模式
+func TestRPC_Fanout_Quorum(t *testing.T) {
+    // 验证等待多数派响应
+    // 验证超时处理
+    // 验证部分失败场景
+}
+
+// TestRPC_Fanout_WaitAll 测试 WaitAll 模式
+func TestRPC_Fanout_WaitAll(t *testing.T) {
+    // 验证等待所有响应
+    // 验证超时处理
+    // 验证错误聚合
 }
 ```
 

@@ -1,0 +1,1521 @@
+# 【PR全流程文档】Feature - RPC 性能优化与生产就绪
+
+> **文档说明**：本文档为 Pre 文档（前置规划），记录需求、设计和风险评估，在开工前完成，需架构师评审通过后才能启动开发。
+
+---
+
+## 第一部分：前置部分（开工前必完成，架构师评审通过）
+
+### 1. 基础信息（与分支/PR绑定）
+
+| 项目 | 内容 |
+|------|------|
+| 工作类型 | 性能优化（Optimization） |
+| PR编号 | PR-libp2p-003 + 009（整合） |
+| 分支名称 | feature/libp2p-rpc-performance-optimization |
+| 工作主题 | RPC 性能优化与生产就绪 - 连接池、监控、批量调用、安全加固 |
+| 负责人 | 🤖 核心开发工程师 A（存储/一致性） |
+| 分支创建日期 | 2026-02-07 |
+| 计划开工日期 | 2026-02-07 |
+| 计划CI通过日期 | 2026-02-18 |
+| 关联需求单号 | [需求单：RPC 性能优化] |
+| 架构师评审状态 | ✅ 评审通过 |
+| 预审批结果 | ✅ 已通过（架构师签字/备注：Pre 文档完整，同意启动开发） |
+
+### 2. 背景与目标（为什么干）
+
+#### 2.1 背景
+
+**业务场景**：
+NexKV 已完成基于 libp2p 的 RPC 基础框架（PR-libp2p-002），需要优化性能以满足生产环境要求：
+- 当前每次 RPC 调用都创建新 Stream，无连接复用
+- 缺少性能监控指标，无法定位性能瓶颈
+- 缺少批量调用支持，高并发场景效率低
+- 缺少安全加固机制（限流、认证）
+
+**现有问题**：
+1. **连接管理低效**：每次 `Call()` 创建新 Stream，延迟高（~5ms）
+2. **无性能监控**：缺少 Prometheus 指标，问题排查困难
+3. **无批量支持**：无法并行调用多个 RPC
+4. **无安全保护**：缺少限流、认证机制
+
+**价值**：
+- **提升性能**：连接复用降低延迟，批量调用提升吞吐量
+- **提高可观测性**：监控指标支持故障排查和性能调优
+- **生产就绪**：安全加固保障生产部署
+
+#### 2.2 核心目标（可量化、可验证）
+
+1. **性能目标**：
+   - RPC 吞吐量：从 3171 calls/sec 提升至 **5000+ calls/sec**
+   - P99 延迟：< 10ms（本地测试）
+   - Stream 复用率：> 90%
+   - 内存占用：< 200MB（1000 连接）
+   - **Fanout 延迟**：P99 < 50ms（10 个 peers）
+
+2. **功能目标**：
+   - 实现 Stream 缓存和连接池
+   - 集成 Prometheus 监控指标
+   - **支持 Fanout 模式（并发发送到多个 peers）**
+   - **支持三种响应模式：Fire-and-Forget、Quorum、WaitAll**
+   - 实现连接限流保护
+
+3. **质量目标**：
+   - 测试覆盖率 ≥ 80%
+   - Race detector 通过
+   - 无内存泄漏
+
+#### 2.3 明确边界（不做什么，避免范围蔓延）
+
+- **本次不支持**：
+  - 不实现新的 RPC 协议（保持 MessagePack）
+  - 不重构 Cluster 层（范围外）
+  - 不实现分布式追踪（后续 PR）
+
+- **本次不优化**：
+  - 不优化 Gossip 协议（Cluster 层）
+  - 不实现压缩算法（后续 PR）
+
+### 3. 实现方案（怎么干，核心设计）
+
+#### 3.1 整体架构
+
+```mermaid
+flowchart TB
+    subgraph 应用层["应用层"]
+        A1[Client.Call]
+        A2[Client.BatchCall]
+        A3[Client.CallParallel]
+    end
+
+    subgraph 连接层["连接层（新增）"]
+        B1[StreamCache<br/>Stream 缓存]
+        B2[ConnectionPool<br/>连接池]
+        B3[RateLimiter<br/>限流器]
+    end
+
+    subgraph RPC层["RPC 层（优化）"]
+        C1[Client]
+        C2[Server]
+        C3[Router]
+    end
+
+    subgraph 监控层["监控层（新增）"]
+        D1[RPCMetrics<br/>指标收集]
+        D2[Prometheus<br/>指标导出]
+        D3[SlowQueryLogger<br/>慢查询日志]
+    end
+
+    subgraph libp2p层["libp2p 层"]
+        E1[Host]
+        E2[Network]
+    end
+
+    A1 --> B1
+    A2 --> B2
+    A3 --> B2
+    B1 --> C1
+    B2 --> C1
+    B3 --> C1
+    C1 --> D1
+    C2 --> D1
+    C1 --> E1
+    C2 --> E1
+    D1 --> D2
+    D1 --> D3
+```
+
+#### 3.2 连接池设计
+
+```mermaid
+flowchart LR
+    A[Client.Call] --> B{StreamCache<br/>缓存命中?}
+    B -->|命中| C[复用 Stream]
+    B -->|未命中| D[ConnectionPool<br/>获取新 Stream]
+    D --> E[创建新 Stream]
+    E --> F[加入缓存]
+    C --> G[发送 RPC 请求]
+    F --> G
+```
+
+**核心数据结构**：
+```go
+// StreamCache Stream 缓存（按 peer ID 分组）
+type StreamCache struct {
+    caches map[peer.ID]*streamEntry
+    mu     sync.RWMutex
+    ttl    time.Duration  // Stream 最大存活时间
+    metrics *CacheMetrics
+}
+
+// streamEntry 单个 Stream 缓存条目
+type streamEntry struct {
+    stream      network.MuxedStream
+    createdAt   time.Time
+    lastUsedAt  time.Time
+    messageCount uint64  // 已处理消息数
+}
+
+// ConnectionPool 连接池
+type ConnectionPool struct {
+    host        host.Host
+    cache       *StreamCache
+    maxStreams  int           // 每个 peer 最大 Stream 数
+    maxMessages uint64        // 单 Stream 最大消息数
+    metrics     *PoolMetrics
+}
+```
+
+#### 3.3 监控指标设计
+
+**Prometheus 指标**：
+```go
+type RPCMetrics struct {
+    // 连接指标
+    StreamsActive     prometheus.Gauge
+    StreamsCreated    prometheus.Counter
+    StreamsReused     prometheus.Counter
+    StreamsExpired    prometheus.Counter
+
+    // 性能指标
+    CallLatency       prometheus.Histogram  // P50, P95, P99
+    CallThroughput    prometheus.Counter
+    CallActive        prometheus.Gauge
+
+    // 错误指标
+    CallErrors        prometheus.Counter
+    CallTimeouts      prometheus.Counter
+    StreamErrors      *prometheus.CounterVec
+
+    // 批量操作指标
+    BatchCalls        prometheus.Counter
+    BatchSize         prometheus.Histogram
+}
+```
+
+**监控仪表盘**：
+- **实时性能**：QPS、延迟（P50/P95/P99）
+- **连接状态**：活跃 Stream、缓存命中率
+- **错误率**：调用错误、超时、Stream 错误
+
+#### 3.4 批量调用设计
+
+```go
+// BatchRequest 批量请求
+type BatchRequest struct {
+    Method string
+    Bodies [][]byte
+}
+
+// BatchResponse 批量响应
+type BatchResponse struct {
+    Responses [][]byte
+    Errors    []error
+}
+
+// CallParallel 并行调用多个 RPC（单个 peer）
+func (c *Client) CallParallel(
+    ctx context.Context,
+    peerID peer.ID,
+    reqs []BatchRequest,
+) []BatchResponse
+```
+
+#### 3.5 Fanout 模式设计（并发发送到多个 peers）
+
+**应用场景**：
+- Gossip 协议传播
+- 集群状态同步
+- 元数据复制
+- 广播通知
+
+**三种响应模式**：
+
+```mermaid
+flowchart TB
+    A[FanoutRequest<br/>发送到多个 peers] --> B{响应模式}
+    B --> C[Fire-and-Forget<br/>不等响应]
+    B --> D[Quorum<br/>等待多数派]
+    B --> E[WaitAll<br/>等待全部]
+
+    C --> F[立即返回<br/>最佳性能]
+    D --> G[等待 N/2+1 响应<br/>平衡性能和一致性]
+    E --> H[等待所有响应<br/>最高一致性]
+
+    style C fill:#90EE90
+    style D fill:#FFD700
+    style E fill:#87CEEB
+```
+
+**核心接口设计**：
+
+```go
+// FanoutRequest Fanout 请求
+type FanoutRequest struct {
+    Method string
+    Body   []byte
+    Peers  []peer.ID
+
+    // 转发控制（防循环）
+    ForwardedPeers map[peer.ID]struct{} // 已转发的 peer 集合
+}
+
+// FanoutResponse 单个 peer 的响应
+type FanoutResponse struct {
+    PeerID  peer.ID
+    Body    []byte
+    Error   error
+    Latency time.Duration
+    Hop     uint8 // 当前跳数
+}
+
+// ResponseMode 响应模式
+type ResponseMode int
+
+const (
+    // FireForget 不等待响应
+    FireForget ResponseMode = iota
+    // Quorum 等待多数派响应
+    Quorum
+    // WaitAll 等待所有响应
+    WaitAll
+)
+
+// FanoutOptions Fanout 选项
+type FanoutOptions struct {
+    // 响应模式
+    Mode ResponseMode
+
+    // Quorum 阈值（默认 len(Peers)/2 + 1）
+    // 若未指定，从集群层全局配置获取
+    Quorum int
+
+    // 超时时间（建议默认 30ms）
+    Timeout time.Duration
+
+    // 单跳最大并发数（默认 10）
+    MaxConcurrent int
+
+    // ===== 新增：Hops 跳数相关配置 =====
+    // 转发跳数，默认 1（仅直连 peer）
+    // > 1 则递归转发 N 层
+    Hops uint8
+
+    // 单跳最大转发 peer 数（默认 20，防过载）
+    MaxForwardPeers uint8
+
+    // 全局最大跳数限制（默认 8，防无限转发）
+    MaxHops uint8
+}
+
+// Fanout 并发发送到多个 peers
+func (c *Client) Fanout(
+    ctx context.Context,
+    req *FanoutRequest,
+    opts *FanoutOptions,
+) *FanoutResult
+
+// FanoutResult Fanout 结果
+type FanoutResult struct {
+    Responses   []FanoutResponse
+    Success     int
+    Failed      int
+    Timeout     int
+    TotalPeers  int
+    Duration    time.Duration
+}
+```
+
+**架构师评审要求**：
+
+1. **Quorum 机制集成**：
+   - 配置透传：Quorum 阈值从集群层全局配置获取
+   - 结果复用：复用集群层现有 Quorum 结果判断逻辑
+   - 错误对齐：复用集群层已定义的错误码
+   - 拓扑适配：优先从集群层获取有效 Quorum 节点集
+
+2. **性能优化**：
+   - **异步非阻塞发送**（Fire-and-Forget 模式）
+   - **goroutine 池并发发送**
+   - **快速失败**（单 peer 超时不阻塞其他 peer）
+   - **连接复用**（复用 StreamCache）
+
+3. **边界控制**：
+   - Hops=0 兜底（自动重置为 1）
+   - 超过 MaxHops 自动截断
+   - 空 Peers 自动获取直连邻居
+   - 转发超时继承
+
+**使用示例**：
+
+```go
+// 1. Fire-and-Forget 模式（Gossip 广播）
+result := client.Fanout(ctx, &FanoutRequest{
+    Method: "GossipNotify",
+    Body:   payload,
+    Peers:  allPeers,
+}, &FanoutOptions{
+    Mode:    FireForget,
+    Hops:    2, // 多跳广播
+})
+log.Printf("已广播到 %d 个 peers", result.TotalPeers)
+
+// 2. Quorum 模式（元数据复制）
+result := client.Fanout(ctx, &FanoutRequest{
+    Method: "MetadataSync",
+    Body:   metadata,
+    Peers:  replicaPeers,
+}, &FanoutOptions{
+    Mode:    Quorum,
+    Timeout: 5 * time.Second,
+    // Quorum 从集群层配置获取，无需手动设置
+})
+if result.Success >= result.Quorum {
+    log.Printf("复制成功: %d/%d", result.Success, result.TotalPeers)
+}
+
+// 3. WaitAll 模式（集群状态查询）
+result := client.Fanout(ctx, &FanoutRequest{
+    Method: "GetClusterStatus",
+    Body:   query,
+    Peers:  allPeers,
+}, &FanoutOptions{
+    Mode:    WaitAll,
+    Timeout: 10 * time.Second,
+})
+for _, resp := range result.Responses {
+    if resp.Error == nil {
+        status := parseClusterStatus(resp.Body)
+        log.Printf("节点 %s 状态: %v", resp.PeerID, status)
+    }
+}
+
+// 4. 多跳转发（跨层级元数据同步）
+result := client.Fanout(ctx, &FanoutRequest{
+    Method: "SyncMetadata",
+    Body:   metadata,
+    Peers:  rootPeers,
+}, &FanoutOptions{
+    Mode:           Quorum,
+    Hops:           3,              // 3 层转发
+    MaxForwardPeers: 15,            // 限制单跳转发数
+    Timeout:        10 * time.Second,
+})
+```
+
+**Hops 转发逻辑**（基于消息头设计，类似 IP TTL）：
+
+```mermaid
+flowchart LR
+    A[发起节点<br/>创建 RPCRequest<br/>Hops=3] --> B[第1跳<br/>Header.Hops=3<br/>递减为 2]
+    B --> C[第2跳<br/>Header.Hops=2<br/>递减为 1]
+    C --> D[第3跳<br/>Header.Hops=1<br/>递减为 0]
+    D --> E[Hops=0<br/>停止转发]
+
+    B --> F{防循环检查}
+    C --> F
+    D --> F
+    F -->|已在路径| G[跳过该 peer]
+    F -->|未在路径| H[继续转发]
+```
+
+**消息头设计**（扩展 RPCRequest）：
+
+```go
+// HopPath 单跳记录（记录转发路径）
+type HopPath struct {
+    PeerID    peer.ID   // 当前跳的 peer ID
+    Timestamp int64     // 到达时间（Unix 纳秒时间戳）
+}
+
+// RPCHeader RPC 消息头（扩展，支持 Hops 转发）
+type RPCHeader struct {
+    // 原有字段
+    RequestID uint64 // 请求ID
+
+    // 新增：Hops 转发相关字段
+    Hops         uint8      // 剩余跳数（类似 IP TTL）
+    MaxHops      uint8      // 最大跳数限制（用于验证）
+    HopPath      []HopPath  // 转发路径记录（可选，用于调试）
+    ForwardedPeers []peer.ID // 已转发的 peer 集合（防循环）
+
+    // 新增：Fanout 控制字段
+    FanoutMode   ResponseMode // 响应模式（FireForget/Quorum/WaitAll）
+    FanoutID     uint64       // Fanout 请求ID（用于关联响应）
+}
+
+// RPCRequest RPC 请求（扩展消息头）
+type RPCRequest struct {
+    Header  RPCHeader     // 消息头
+    Method  string        // 方法名
+    Body    []byte        // 请求体
+    Timeout time.Duration // 请求超时时间
+}
+```
+
+**Hops 转发处理流程**：
+
+```go
+// CanForwardFromHeader 从消息头判断是否可以继续转发
+func CanForwardFromHeader(header *RPCHeader) bool {
+    if header.Hops == 0 {
+        return false
+    }
+    if header.MaxHops > 0 && header.Hops > header.MaxHops {
+        return false
+    }
+    return true
+}
+
+// DecrementHops 递减跳数并记录路径（转发前调用）
+func DecrementHops(header *RPCHeader, currentPeer, fromPeer peer.ID) error {
+    // 验证是否可以转发
+    if !CanForwardFromHeader(header) {
+        return fmt.Errorf("hops 耗尽或超限: current=%d, max=%d", header.Hops, header.MaxHops)
+    }
+
+    // 防循环检查
+    for _, forwardedPeer := range header.ForwardedPeers {
+        if forwardedPeer == currentPeer {
+            return fmt.Errorf("检测到循环转发: peer %s 已在转发路径中", currentPeer)
+        }
+    }
+
+    // 记录当前跳到路径
+    header.HopPath = append(header.HopPath, HopPath{
+        PeerID:    currentPeer,
+        Timestamp: time.Now().UnixNano(),
+    })
+
+    // 添加到已转发集合
+    header.ForwardedPeers = append(header.ForwardedPeers, currentPeer)
+
+    // 递减跳数
+    header.Hops--
+
+    return nil
+}
+
+// ValidateHopsFromHeader 从消息头验证跳数
+func ValidateHopsFromHeader(header *RPCHeader) error {
+    if len(header.HopPath) == 0 {
+        return nil // 直接调用，无转发
+    }
+
+    expectedHops := int(header.MaxHops) - int(header.Hops)
+    actualHops := len(header.HopPath)
+
+    if actualHops != expectedHops {
+        return fmt.Errorf("hops 验证失败: 期望 %d 跳，实际 %d 跳", expectedHops, actualHops)
+    }
+
+    // 验证路径连续性
+    for i := 1; i < len(header.HopPath); i++ {
+        if header.HopPath[i].Timestamp < header.HopPath[i-1].Timestamp {
+            return fmt.Errorf("hops 路径时间戳不连续: 第 %d 跳早于第 %d 跳", i+1, i)
+        }
+    }
+
+    return nil
+}
+```
+
+**Hops 验证流程**：
+
+```mermaid
+sequenceDiagram
+    participant A as 发起节点
+    participant B as 第1跳节点
+    participant C as 第2跳节点
+    participant D as 第3跳节点
+
+    A->>A: 创建 RPCRequest<br/>Header.Hops=3
+    A->>B: 转发消息<br/>Header.Hops=3
+    B->>B: DecrementHops()<br/>Header.Hops=2<br/>记录 peer1 到路径
+    B->>C: 转发消息<br/>Header.Hops=2
+    C->>C: DecrementHops()<br/>Header.Hops=1<br/>记录 peer2 到路径
+    C->>D: 转发消息<br/>Header.Hops=1
+    D->>D: DecrementHops()<br/>Header.Hops=0<br/>记录 peer3 到路径
+    D->>D: CanForwardFromHeader()=false<br/>停止转发
+    D-->>A: 返回响应<br/>包含完整 Header
+    A->>A: ValidateHopsFromHeader()<br/>验证 3 跳完整
+```
+
+**Hops 验证测试用例**（基于消息头）：
+
+```go
+// TestRPCHeader_HopsAccuracy 测试 Hops 转发的精确性
+func TestRPCHeader_HopsAccuracy(t *testing.T) {
+    // 场景 1: Hops=1，仅直连
+    t.Run("Hops=1_OnlyDirectPeers", func(t *testing.T) {
+        header := &RPCHeader{
+            Hops:         1,
+            MaxHops:      1,
+            HopPath:      make([]HopPath, 0, 1),
+            ForwardedPeers: make([]peer.ID, 0, 1),
+        }
+
+        assert.True(t, CanForwardFromHeader(header))
+        assert.NoError(t, DecrementHops(header, peer1, peer0))
+        assert.Equal(t, uint8(0), header.Hops)
+        assert.Len(t, header.HopPath, 1)
+        assert.False(t, CanForwardFromHeader(header))
+        assert.NoError(t, ValidateHopsFromHeader(header))
+    })
+
+    // 场景 2: Hops=3，精确 3 跳
+    t.Run("Hops=3_ExactlyThreeHops", func(t *testing.T) {
+        header := &RPCHeader{
+            Hops:         3,
+            MaxHops:      3,
+            HopPath:      make([]HopPath, 0, 3),
+            ForwardedPeers: make([]peer.ID, 0, 3),
+        }
+
+        // 第 1 跳
+        assert.True(t, CanForwardFromHeader(header))
+        assert.NoError(t, DecrementHops(header, peer1, peer0))
+        assert.Equal(t, uint8(2), header.Hops)
+
+        // 第 2 跳
+        assert.True(t, CanForwardFromHeader(header))
+        assert.NoError(t, DecrementHops(header, peer2, peer1))
+        assert.Equal(t, uint8(1), header.Hops)
+
+        // 第 3 跳
+        assert.True(t, CanForwardFromHeader(header))
+        assert.NoError(t, DecrementHops(header, peer3, peer2))
+        assert.Equal(t, uint8(0), header.Hops)
+
+        // 验证结果
+        assert.False(t, CanForwardFromHeader(header))
+        assert.Len(t, header.HopPath, 3)
+        assert.NoError(t, ValidateHopsFromHeader(header))
+
+        // 验证路径内容
+        assert.Equal(t, peer1, header.HopPath[0].PeerID)
+        assert.Equal(t, peer2, header.HopPath[1].PeerID)
+        assert.Equal(t, peer3, header.HopPath[2].PeerID)
+    })
+
+    // 场景 3: Hops 验证失败（跳数不足）
+    t.Run("Hops=3_OnlyTwoHops_ShouldFail", func(t *testing.T) {
+        header := &RPCHeader{
+            Hops:         3,
+            MaxHops:      3,
+            HopPath:      make([]HopPath, 0),
+            ForwardedPeers: make([]peer.ID, 0),
+        }
+
+        // 只转发 2 跳
+        DecrementHops(header, peer1, peer0)
+        DecrementHops(header, peer2, peer1)
+
+        // 手动设置 Hops 为 1（模拟只转发 2 跳）
+        header.Hops = 1
+
+        // 验证失败：期望 3 跳，实际 2 跳
+        err := ValidateHopsFromHeader(header)
+        assert.Error(t, err)
+        assert.Contains(t, err.Error(), "期望 2 跳，实际 2 跳") // MaxHops - Hops = 3 - 1 = 2
+    })
+
+    // 场景 4: Hops 验证失败（跳数超出）
+    t.Run("Hops=3_AttemptFourthHop_ShouldFail", func(t *testing.T) {
+        header := &RPCHeader{
+            Hops:         3,
+            MaxHops:      3,
+            HopPath:      make([]HopPath, 0, 3),
+            ForwardedPeers: make([]peer.ID, 0, 3),
+        }
+
+        // 转发 3 跳
+        DecrementHops(header, peer1, peer0)
+        DecrementHops(header, peer2, peer1)
+        DecrementHops(header, peer3, peer2)
+
+        // 第 4 跳应该被阻止
+        assert.False(t, CanForwardFromHeader(header))
+
+        err := DecrementHops(header, peer4, peer3)
+        assert.Error(t, err)
+        assert.Contains(t, err.Error(), "hops 耗尽或超限")
+    })
+
+    // 场景 5: 防循环检查
+    t.Run("Hops_CycleDetection", func(t *testing.T) {
+        header := &RPCHeader{
+            Hops:         3,
+            MaxHops:      3,
+            HopPath:      make([]HopPath, 0, 3),
+            ForwardedPeers: []peer.ID{peer1, peer2},
+        }
+
+        // 尝试转发到 peer1（已在路径中）
+        err := DecrementHops(header, peer1, peer0)
+        assert.Error(t, err)
+        assert.Contains(t, err.Error(), "检测到循环转发")
+    })
+
+    // 场景 6: 路径时间戳连续性验证
+    t.Run("Hops_TimestampContinuity", func(t *testing.T) {
+        header := &RPCHeader{
+            Hops:         3,
+            MaxHops:      3,
+            HopPath:      make([]HopPath, 0, 3),
+            ForwardedPeers: make([]peer.ID, 0, 3),
+        }
+
+        // 正确的转发路径
+        DecrementHops(header, peer1, peer0)
+        time.Sleep(10 * time.Millisecond)
+        DecrementHops(header, peer2, peer1)
+        time.Sleep(10 * time.Millisecond)
+        DecrementHops(header, peer3, peer2)
+
+        // 验证时间戳连续性
+        assert.NoError(t, ValidateHopsFromHeader(header))
+        assert.True(t, header.HopPath[1].Timestamp > header.HopPath[0].Timestamp)
+        assert.True(t, header.HopPath[2].Timestamp > header.HopPath[1].Timestamp)
+    })
+}
+```
+
+**Hops 监控指标（增强）**：
+
+```go
+// FanoutMetrics Fanout 指标（增强版）
+type FanoutMetrics struct {
+    // ... 其他指标 ...
+
+    // Hops 验证相关指标
+    HopsValidationTotal    prometheus.Counter       // Hops 验证总次数
+    HopsValidationSuccess  prometheus.Counter       // Hops 验证成功次数
+    HopsValidationFailed   prometheus.Counter       // Hops 验证失败次数
+    HopsExpectedVsActual   *prometheus.GaugeVec     // 期望跳数 vs 实际跳数
+
+    // Hops 性能指标
+    HopsLatencyPerHop      *prometheus.HistogramVec // 每跳延迟分布
+    HopsPathLength         prometheus.Histogram     // 路径长度分布
+
+    // 防循环检测指标
+    CycleDetectedTotal     prometheus.Counter       // 检测到循环转发的次数
+}
+
+// RecordHopsValidation 记录 Hops 验证结果
+func (m *FanoutMetrics) RecordHopsValidation(expected, actual int, success bool) {
+    m.HopsValidationTotal.Inc()
+    if success {
+        m.HopsValidationSuccess.Inc()
+    } else {
+        m.HopsValidationFailed.Inc()
+    }
+    m.HopsExpectedVsActual.WithLabelValues("expected").Set(float64(expected))
+    m.HopsExpectedVsActual.WithLabelValues("actual").Set(float64(actual))
+}
+```
+
+**Hops 调试和排查**（基于消息头）：
+
+```go
+// HeaderString 消息头字符串（用于日志）
+func (h *RPCHeader) HeaderString() string {
+    var sb strings.Builder
+    sb.WriteString(fmt.Sprintf("RequestID: %d\n", h.RequestID))
+    sb.WriteString(fmt.Sprintf("Hops: %d/%d (剩余/最大)\n", h.Hops, h.MaxHops))
+
+    if len(h.HopPath) > 0 {
+        sb.WriteString(fmt.Sprintf("转发路径（共 %d 跳）：\n", len(h.HopPath)))
+        for i, record := range h.HopPath {
+            timeStr := time.Unix(0, record.Timestamp).Format("2006-01-02 15:04:05.000")
+            sb.WriteString(fmt.Sprintf("  第 %d 跳: peer=%s, 时间=%s\n",
+                i+1, record.PeerID, timeStr))
+        }
+    }
+
+    if len(h.ForwardedPeers) > 0 {
+        sb.WriteString(fmt.Sprintf("已转发 peer 数: %d\n", len(h.ForwardedPeers)))
+    }
+
+    return sb.String()
+}
+
+// 示例日志输出：
+// RequestID: 12345
+// Hops: 0/3 (剩余/最大)
+// 转发路径（共 3 跳）：
+//   第 1 跳: peer=QmPeer1, 时间=2026-02-07 10:00:00.123
+//   第 2 跳: peer=QmPeer2, 时间=2026-02-07 10:00:01.456
+//   第 3 跳: peer=QmPeer3, 时间=2026-02-07 10:00:02.789
+// 已转发 peer 数: 3
+```
+
+**消息头大小估算**：
+
+```go
+// 消息头大小计算（MessagePack 序列化后）
+// - RequestID (uint64):       ~9 bytes
+// - Hops (uint8):             ~1 byte
+// - MaxHops (uint8):          ~1 byte
+// - HopPath (每跳):           ~24 bytes/peer (PeerID 16 + Timestamp 8)
+// - ForwardedPeers (每peer):  ~16 bytes/peer
+// - FanoutMode (uint8):       ~1 byte
+// - FanoutID (uint64):        ~9 bytes
+
+// 示例：3 跳转发的消息头大小
+// Base: 9 + 1 + 1 + 1 + 9 = 21 bytes
+// HopPath (3 peers): 24 * 3 = 72 bytes
+// ForwardedPeers (3 peers): 16 * 3 = 48 bytes
+// 总计: ~141 bytes
+
+// 结论：即使 10 跳转发，消息头也在 1KB 以内，可以接受
+```
+
+**与 IP TTL 对比**：
+
+| 特性 | IP TTL | RPC Hops |
+|------|--------|----------|
+| 位置 | IP 包头 | RPC 消息头 |
+| 递减方式 | 每经过一跳 -1 | 每次转发前 -1 |
+| 停止条件 | TTL = 0 | Hops = 0 |
+| 防循环 | 依赖 TTL 耗尽 | ForwardedPeers 显式检测 |
+| 路径记录 | 无（可选的 IP Record Route） | HopPath 完整记录 |
+| 大小开销 | 1 字节 | ~21 + 24×跳数 + 16×已转发 peers 字节 |
+
+**监控指标（更新）**：
+
+```go
+// FanoutMetrics Fanout 指标
+type FanoutMetrics struct {
+    // 调用指标
+    FanoutTotal       prometheus.Counter
+    FanoutSuccess     prometheus.Counter
+    FanoutFailed      prometheus.Counter
+    FanoutTimeout     prometheus.Counter
+
+    // 延迟指标
+    FanoutLatency     prometheus.Histogram
+
+    // 响应模式分布
+    FireForgetCount   prometheus.Counter
+    QuorumCount       prometheus.Counter
+    WaitAllCount      prometheus.Counter
+
+    // Peer 级别指标
+    PeerSuccess       *prometheus.CounterVec
+    PeerFailed        *prometheus.CounterVec
+    PeerTimeout       *prometheus.CounterVec
+
+    // 新增：Hops/转发相关指标
+    FanoutForwardTotal  prometheus.Counter       // 总转发次数
+    FanoutForwardFailed prometheus.Counter       // 转发失败次数
+    HopsDistribution    prometheus.Histogram     // 跳数分布
+    ForwardPerHop       *prometheus.CounterVec   // 每跳的转发数
+}
+```
+
+#### 3.6 连接限流设计
+
+```go
+// RateLimiter 速率限制器
+type RateLimiter struct {
+    maxConns int           // 最大并发连接数
+    maxCalls int           // 每 peer 最大调用速率
+    window   time.Duration // 时间窗口
+    counters map[peer.ID]*callCounter
+    mu       sync.RWMutex
+}
+
+// Acquire 获取调用许可
+func (r *RateLimiter) Acquire(peerID peer.ID) error
+```
+
+#### 3.6 任务分解与依赖关系
+
+##### 3.6.1 任务清单
+
+```mermaid
+gantt
+    title RPC 性能优化任务依赖图
+    dateFormat  YYYY-MM-DD
+    section 基础设施
+    错误码统一和边界控制           :done, p1, 2026-02-07, 1d
+    goroutine池和并发控制          :p2, after p1, 2d
+    section 集成层
+    Quorum集成（集群层）           :p3, after p1, 3d
+    section Fanout实现
+    Fanout模式（含Hops支持）      :p4, after p3, 4d
+    Fanout监控指标                :p5, after p4, 1d
+    section 其他功能
+    Prometheus监控指标            :p6, after p1, 2d
+    批量RPC调用                   :p7, after p1, 2d
+    连接限流器                     :p8, after p1, 2d
+    section 测试与文档
+    监控和限流测试                :p9, after p5, 2d
+    性能基准测试                  :p10, after p9, 2d
+    更新代码注释和文档            :p11, after p10, 1d
+```
+
+##### 3.6.2 任务详细说明
+
+| 任务ID | 任务名称 | 依赖 | 预估工期 | 交付物 | 验收标准 |
+|--------|----------|------|----------|--------|----------|
+| #67 | 错误码统一和边界控制 | 无 | 1天 | `internal/rpc/errors.go` | ✅ Lint 通过<br/>✅ 边界验证函数完整 |
+| #63 | goroutine池和并发控制 | #67 | 2天 | `internal/rpc/workerpool.go` | ✅ 并发控制测试通过<br/>✅ 无 goroutine 泄漏 |
+| #66 | Quorum集成（集群层） | #67 | 3天 | `internal/rpc/quorum.go` | ✅ 配置透传测试通过<br/>✅ 错误码对齐完成 |
+| #65 | Fanout模式（含Hops支持） | #63, #66 | 4天 | `internal/rpc/fanout.go` | ✅ 三种响应模式测试通过<br/>✅ Hops 转发测试通过 |
+| #64 | Fanout监控指标 | #65 | 1天 | `internal/rpc/fanout_metrics.go` | ✅ 指标收集测试通过 |
+| #57 | Prometheus监控指标 | #67 | 2天 | `internal/rpc/metrics.go` | ✅ 指标导出测试通过 |
+| #60 | 批量RPC调用 | #67 | 2天 | `internal/rpc/batch.go` | ✅ 批量调用测试通过 |
+| #55 | 连接限流器 | #67 | 2天 | `internal/rpc/ratelimit.go` | ✅ 限流测试通过 |
+| #52 | 监控和限流测试 | #64, #55 | 2天 | 测试报告 | ✅ 所有测试用例通过<br/>✅ 覆盖率 ≥ 80% |
+| #58 | 性能基准测试 | #52 | 2天 | 基准测试报告 | ✅ P99 < 50ms（10 peers）<br/>✅ 吞吐量 > 5000 calls/sec |
+| #59 | 更新代码注释和文档 | #58 | 1天 | 代码注释 + 文档 | ✅ 所有公共接口有注释<br/>✅ 文档同步更新 |
+
+##### 3.6.3 关键路径分析
+
+**关键路径**：#67 → #63 → #66 → #65 → #64 → #52 → #58 → #59
+
+**总工期**：约 15 个工作日（考虑并行开发）
+
+**并行优化**：
+- 任务 #57、#60、#55 可以与 #63、#66 并行开发
+- 任务 #58 依赖所有其他任务完成
+
+#### 3.7 集群层集成设计
+
+##### 3.7.1 Quorum 配置透传
+
+```go
+// QuorumConfig 集群层 Quorum 配置（定义在 internal/cluster）
+type QuorumConfig struct {
+    Enabled bool
+    DefaultQuorum int  // 默认多数派阈值 (N/2 + 1)
+    Timeout time.Duration
+}
+
+// GetQuorumConfig 从集群层获取 Quorum 配置
+func GetQuorumConfig() *QuorumConfig {
+    // 从集群层全局配置获取
+    return cluster.GetGlobalConfig().Quorum
+}
+```
+
+##### 3.7.2 错误码复用
+
+```go
+// 复用集群层已定义的错误码（定义在 internal/errs）
+const (
+    ErrCodeQuorumNotReached = 3001  // 与集群层一致
+    ErrCodeConflict         = 3002
+    ErrCodeRetryLater       = 3003
+)
+
+// IsQuorumError 判断是否为 Quorum 错误
+func IsQuorumError(err error) bool {
+    return errs.IsQuorumError(err)  // 复用集群层判断逻辑
+}
+```
+
+##### 3.7.3 拓扑适配
+
+```go
+// GetQuorumPeers 从集群层获取有效 Quorum 节点集
+func GetQuorumPeers() []peer.ID {
+    // 优先从集群层获取
+    return cluster.GetActivePeers()
+}
+```
+
+##### 3.8.1 性能测试重点
+
+**测试文件**：`internal/rpc/performance_test.go`
+
+```go
+// BenchmarkRPC_Call 基准测试：单次 RPC 调用
+func BenchmarkRPC_Call(b *testing.B) {
+    // 测试无连接池 vs 有连接池的性能差异
+}
+
+// BenchmarkRPC_BatchCall 基准测试：批量调用
+func BenchmarkRPC_BatchCall(b *testing.B) {
+    // 测试批量调用性能
+}
+
+// BenchmarkRPC_ParallelCalls 基准测试：并发调用
+func BenchmarkRPC_ParallelCalls(b *testing.B) {
+    // 测试并发场景性能
+}
+
+// TestRPC_StreamReuse 测试 Stream 复用
+func TestRPC_StreamReuse(t *testing.T) {
+    // 验证 Stream 缓存命中率 > 80%
+}
+
+// TestRPC_ConnectionPool 测试连接池
+func TestRPC_ConnectionPool(t *testing.T) {
+    // 验证连接池正确性
+}
+
+// BenchmarkRPC_Fanout_FireForget 基准测试：Fanout Fire-and-Forget 模式
+func BenchmarkRPC_Fanout_FireForget(b *testing.B) {
+    // 测试广播模式性能（不等响应）
+}
+
+// BenchmarkRPC_Fanout_Quorum 基准测试：Fanout Quorum 模式
+func BenchmarkRPC_Fanout_Quorum(b *testing.B) {
+    // 测试多数派模式性能
+}
+
+// BenchmarkRPC_Fanout_WaitAll 基准测试：Fanout WaitAll 模式
+func BenchmarkRPC_Fanout_WaitAll(b *testing.B) {
+    // 测试等待全部响应性能
+}
+
+// TestRPC_Fanout_FireForget 测试 Fire-and-Forget 模式
+func TestRPC_Fanout_FireForget(t *testing.T) {
+    // 验证立即返回，不等待响应
+}
+
+// TestRPC_Fanout_Quorum 测试 Quorum 模式
+func TestRPC_Fanout_Quorum(t *testing.T) {
+    // 验证等待多数派响应
+    // 验证超时处理
+    // 验证部分失败场景
+}
+
+// TestRPC_Fanout_WaitAll 测试 WaitAll 模式
+func TestRPC_Fanout_WaitAll(t *testing.T) {
+    // 验证等待所有响应
+    // 验证超时处理
+    // 验证错误聚合
+}
+```
+
+##### 3.8.2 监控测试
+
+```go
+// TestRPCMetricsCollection 测试指标收集
+func TestRPCMetricsCollection(t *testing.T) {
+    // 验证指标被正确收集
+}
+
+// TestRPCPrometheusExport 测试 Prometheus 导出
+func TestRPCPrometheusExport(t *testing.T) {
+    // 验证 Prometheus 格式正确
+}
+```
+
+##### 3.8.3 限流测试
+
+```go
+// TestRPCRateLimiter 测试限流
+func TestRPCRateLimiter(t *testing.T) {
+    // 验证限流生效
+}
+```
+
+##### 3.8.4 TDD 实施清单
+
+**阶段 1: 连接池**：
+- [ ] RED: 编写 Stream 缓存测试
+- [ ] GREEN: 实现 Stream 缓存
+- [ ] REFACTOR: 优化缓存策略
+
+**阶段 2: 监控**：
+- [ ] RED: 编写指标收集测试
+- [ ] GREEN: 实现监控逻辑
+- [ ] REFACTOR: 优化监控开销
+
+**阶段 3: 批量调用**：
+- [ ] RED: 编写批量调用测试
+- [ ] GREEN: 实现批量逻辑
+- [ ] REFACTOR: 优化并发策略
+
+#### 3.9 Pre 文档审查清单
+
+**审查维度**：
+
+##### 3.9.1 需求完整性检查
+- [x] 核心目标明确（性能指标可量化）
+- [x] 边界清晰（不做什么明确说明）
+- [x] 应用场景具体（Fanout 三种模式的适用场景）
+- [x] 验收标准可验证（P99 < 50ms、吞吐量 > 5000 calls/sec）
+
+##### 3.9.2 设计合理性检查
+- [x] 架构图清晰（Mermaid 流程图、数据流图）
+- [x] 接口设计完整（FanoutOptions、FanoutResult、ResponseMode）
+- [x] 错误处理完善（错误码定义、边界控制）
+- [x] 集群层集成明确（Quorum 配置透传、错误码复用、拓扑适配）
+- [x] 性能优化方案可行（goroutine 池、异步发送、连接复用）
+
+##### 3.9.3 实现可行性检查
+- [x] 任务分解合理（11 个任务，依赖关系清晰）
+- [x] 工期估算合理（约 15 个工作日）
+- [x] 关键路径明确（#67 → #63 → #66 → #65 → #64 → #52 → #58 → #59）
+- [x] 并行优化可行（任务 #57、#60、#55 可并行开发）
+- [x] 技术风险评估（4 个风险点，应对措施明确）
+
+##### 3.9.4 测试覆盖度检查
+- [x] 单元测试计划（TDD 红绿重构流程）
+- [x] 集成测试计划（Fanout 三种模式、Hops 转发）
+- [x] 性能测试计划（基准测试、压力测试）
+- [x] 监控指标测试（Prometheus 导出、指标收集）
+- [x] 限流测试（速率限制、并发控制）
+
+##### 3.9.5 文档质量检查
+- [x] 代码示例完整（Stream 缓存、连接池、监控指标）
+- [x] 使用示例清晰（Fire-and-Forget、Quorum、WaitAll、多跳转发）
+- [x] Mermaid 图表正确（Gantt 图、流程图、序列图）
+- [x] 术语一致（ResponseMode、FanoutOptions、Hops）
+- [x] 格式规范（Markdown、代码块、表格）
+
+**Pre 文档审查结果**：
+
+| 审查维度 | 检查项 | 完成度 | 备注 |
+|----------|--------|--------|------|
+| 需求完整性 | 4/4 | ✅ 100% | 核心目标、边界、验收标准明确 |
+| 设计合理性 | 5/5 | ✅ 100% | 架构清晰、集成方案完善 |
+| 实现可行性 | 5/5 | ✅ 100% | 任务分解合理、工期可达成 |
+| 测试覆盖度 | 5/5 | ✅ 100% | TDD 流程完整、测试计划详细 |
+| 文档质量 | 5/5 | ✅ 100% | 示例完整、图表清晰 |
+
+**总体评估**：✅ **Pre 文档完整，可以进入开发阶段**
+
+**架构师审批状态**：
+- 第1轮评审：✅ 通过（补充 5 项要求后）
+- 最终审批：✅ 同意正式启动开发
+
+**下一阶段**：等待架构师最终确认后启动开发
+- [ ] RED: 编写批量调用测试
+- [ ] GREEN: 实现批量逻辑
+- [ ] REFACTOR: 优化并发策略
+
+### 4. 风险评估与应对措施
+
+| 风险点 | 影响等级 | 应对措施 |
+|--------|----------|----------|
+| 连接池 bug 导致资源泄漏 | 高 | 1. 严格测试<br/>2. 资源限制<br/>3. 监控告警 |
+| 性能优化效果不明显 | 中 | 1. 基准测试对比<br/>2. 分阶段验证<br/>3. 回滚机制 |
+| 监控 overhead 影响性能 | 中 | 1. 采样率控制<br/>2. 异步上报<br/>3. 指标聚合 |
+| 限流误杀正常请求 | 低 | 1. 配置验证<br/>2. 动态调整<br/>3. 监控限流效果 |
+
+### 5. 架构师评审记录（循环优化，直至通过）
+
+| 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施（含AI辅助修改） | 优化结果 |
+|----------|----------|------------------|--------------|--------------------------|----------|
+| 第1轮 | 2026-02-07 | 👤 架构师 | **整体通过**，补充 5 项要求 | 1. Quorum 机制与集群层集成<br/>2. 新增 Hops 跳数选项<br/>3. 性能优化（异步发送、goroutine 池）<br/>4. 边界控制（防循环、防过载）<br/>5. 错误统一（复用 internal/errs） | ✅ 已整合到文档 |
+
+**第1轮评审详细意见**：
+
+1. **Fanout 三种响应模式**：完全满足 NexKV 核心需求
+   - ✅ Fire-and-Forget：适配心跳广播、Gossip 协议传播
+   - ✅ Quorum：适配元数据复制、配置同步（需与集群层集成）
+   - ✅ WaitAll：适配集群状态全量查询
+
+2. **Quorum 机制集成要求**：
+   - 配置透传：从集群层全局配置获取 Quorum 阈值
+   - 结果复用：复用集群层现有 Quorum 结果判断逻辑
+   - 错误对齐：复用集群层已定义的错误码
+   - 拓扑适配：优先从集群层获取有效 Quorum 节点集
+
+3. **Hops 跳数选项**（新增）：
+   - Hops=1：仅直连 peer（默认）
+   - Hops=N（N>1）：递归转发 N 层
+   - 防循环转发：ForwardedPeers 记录已转发 peer
+   - 防过载：MaxForwardPeers 限制单跳转发数
+   - 防无限转发：MaxHops 全局限制（默认 8）
+
+4. **性能优化要求**：
+   - 异步非阻塞发送（Fire-and-Forget 模式）
+   - goroutine 池并发发送
+   - 快速失败（单 peer 超时不阻塞其他 peer）
+   - 连接复用（复用 StreamCache）
+
+5. **边界控制要求**：
+   - Hops=0 兜底（自动重置为 1）
+   - 超过 MaxHops 自动截断
+   - 空 Peers 自动获取直连邻居
+   - 转发超时继承
+
+**最终审批**：✅ **同意正式启动开发**
+
+> **架构师签字/备注**：👤 架构师 2026-02-07 方案补充细节后，**同意正式启动开发**，需严格按本评审意见落地，确保 CI 通过后提交 Post 总结，重点验证 10 peers 下 Fanout 延迟 P99 < 50ms、多跳转发的正确性和性能。
+
+---
+
+## 第二部分：流程节点记录（开发/CI过程追溯）
+
+### 1. 开发过程记录
+
+| 节点 | 完成日期 | 具体内容 | 交付物 |
+|------|----------|----------|--------|
+| 启动开发 | [待定] | [待开发] | [代码提交至分支] |
+| 本地测试 | [待定] | [待测试] | [测试报告/覆盖率数据] |
+| Post文档编写 | [待定] | [编写后置总结文档] | [第三部分：后置部分] |
+| 架构师Post批准 | [待定] | [架构师评审Post文档] | [批准签字/备注] |
+| 提交GitHub | [待定] | [推送分支，创建PR] | [GitHub PR链接] |
+
+### 2. CI流程记录（修复Bug直至通过）
+
+| CI轮次 | 触发时间 | 结果 | 问题详情 | 修复措施 | 修复结果 |
+|--------|----------|------|----------|----------|----------|
+| 第1轮 | [待定] | [待定] | [待定] | [待定] | [待定] |
+
+### 3. 合并记录
+
+| 合并时间 | 合并方式 | 审批人 | 备注 |
+|----------|----------|--------|------|
+| [待定] | [待定] | [待定] | [待定] |
+
+---
+
+## 第三部分：后置部分（CI通过后编写，总结/成果/ToDo）
+
+> **说明**：CI 通过后填写本部分内容
+
+### 1. 核心成果总结（开发了啥，结果怎样）
+
+#### 1.1 功能成果
+- **已完成**：
+  - [ ] Stream 缓存实现
+  - [ ] 连接池实现
+  - [ ] Prometheus 监控集成
+  - [ ] 批量 RPC 调用支持
+  - [ ] 连接限流保护
+  - [ ] 慢查询日志
+  - [ ] 性能基准测试
+  - [ ] 单元测试（覆盖率 ≥ 80%）
+
+- **与Pre文档差异**：[待开发后填写]
+
+#### 1.2 性能/数据成果
+- **性能数据**：
+  - RPC 吞吐量：____ calls/sec（目标 > 5000）
+  - P99 延迟：____ ms（目标 < 10）
+  - Stream 复用率：____ %（目标 > 90）
+  - 内存占用：____ MB（目标 < 200）
+
+- **测试成果**：
+  - 压力测试通过：[待定]
+  - 监控指标验证：[待定]
+  - 内存泄漏测试：[待定]
+
+#### 1.3 代码/文档交付物
+
+| 类型 | 具体内容 | 链接/路径 |
+|------|----------|-----------|
+| 代码变更 | 连接池、监控、批量调用 | [GitHub PR链接] |
+| 文档更新 | 性能调优指南、监控文档 | [文档路径] |
+
+### 2. 未完成项与ToDo清单（有哪些没干，后续规划）
+
+#### 2.1 本次PR未完成项
+- **未支持**：
+  - 分布式追踪（后续 PR）
+  - 高级压缩算法（后续 PR）
+
+- **遗留问题**：
+  - [待开发后填写]
+
+#### 2.2 ToDo清单（优先级排序）
+
+| 优先级 | 任务内容 | 预估工期 | 关联PR/需求 | 备注 |
+|--------|----------|----------|-------------|------|
+| 中 | RPC 认证和加密 | 3天 | PR-libp2p-004 | TLS 认证 |
+| 低 | 分布式追踪 | 2天 | 待规划 | OpenTelemetry |
+| 低 | 高级压缩算法 | 3天 | 待规划 | 带宽优化 |
+
+### 3. 下一步工作建议（建议干啥）
+
+1. **优先推进**：
+   - 监控指标在生产环境的验证
+   - 性能调优参数优化
+
+2. **监控要点**：
+   - Stream 缓存命中率
+   - 批量调用使用率
+   - 限流触发频率
+   - 慢查询 Top N
+
+3. **运维补充**：
+   - 编写监控告警规则
+   - 编写性能调优手册
+   - 编写故障排查手册
+
+4. **后续规划**：
+   - 基于监控数据持续优化
+   - 考虑引入认证机制（PR-libp2p-004）
+
+5. **反馈收集**：
+   - 收集生产环境性能数据
+   - 关注用户反馈的问题
+
+---
+
+## 附录：代码示例
+
+### A.1 Stream 缓存实现
+
+```go
+package rpc
+
+import (
+    "context"
+    "sync"
+    "time"
+
+    "github.com/libp2p/go-libp2p/core/host"
+    "github.com/libp2p/go-libp2p/core/network"
+    "github.com/libp2p/go-libp2p/core/peer"
+)
+
+// StreamCache Stream 缓存
+type StreamCache struct {
+    caches map[peer.ID]*streamEntry
+    mu     sync.RWMutex
+    ttl    time.Duration
+    maxMessages uint64
+    metrics *CacheMetrics
+}
+
+// streamEntry 单个 Stream 缓存条目
+type streamEntry struct {
+    stream      network.MuxedStream
+    createdAt   time.Time
+    lastUsedAt  time.Time
+    messageCount uint64
+}
+
+// NewStreamCache 创建 Stream 缓存
+func NewStreamCache(ttl time.Duration, maxMessages uint64) *StreamCache {
+    return &StreamCache{
+        caches:     make(map[peer.ID]*streamEntry),
+        ttl:        ttl,
+        maxMessages: maxMessages,
+        metrics:    NewCacheMetrics(),
+    }
+}
+
+// Get 获取或创建 Stream
+func (c *StreamCache) Get(ctx context.Context, h host.Host, pid peer.ID) (network.MuxedStream, error) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    // 检查缓存
+    if entry, ok := c.caches[pid]; ok && c.isValid(entry) {
+        entry.lastUsedAt = time.Now()
+        entry.messageCount++
+        c.metrics.Hit.Inc()
+        return entry.stream, nil
+    }
+
+    // 创建新 Stream
+    stream, err := h.NewStream(ctx, pid, transport.ProtocolNexKVRPC)
+    if err != nil {
+        c.metrics.Miss.Inc()
+        return nil, err
+    }
+
+    c.caches[pid] = &streamEntry{
+        stream:      stream,
+        createdAt:   time.Now(),
+        lastUsedAt:  time.Now(),
+        messageCount: 1,
+    }
+    c.metrics.Created.Inc()
+    return stream, nil
+}
+
+// isValid 检查 Stream 是否有效
+func (c *StreamCache) isValid(entry *streamEntry) bool {
+    // 检查存活时间
+    if time.Since(entry.createdAt) > c.ttl {
+        return false
+    }
+    // 检查消息数
+    if entry.messageCount >= c.maxMessages {
+        return false
+    }
+    return true
+}
+
+// Cleanup 清理过期 Stream
+func (c *StreamCache) Cleanup() {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    for pid, entry := range c.caches {
+        if !c.isValid(entry) {
+            entry.stream.Close()
+            delete(c.caches, pid)
+            c.metrics.Expired.Inc()
+        }
+    }
+}
+```
+
+### A.2 连接池实现
+
+```go
+package rpc
+
+import (
+    "context"
+    "sync"
+
+    "github.com/libp2p/go-libp2p/core/host"
+    "github.com/libp2p/go-libp2p/core/network"
+    "github.com/libp2p/go-libp2p/core/peer"
+)
+
+// ConnectionPool 连接池
+type ConnectionPool struct {
+    host        host.Host
+    cache       *StreamCache
+    maxStreams  int
+    metrics     *PoolMetrics
+    mu          sync.RWMutex
+}
+
+// NewConnectionPool 创建连接池
+func NewConnectionPool(h host.Host, maxStreams int) *ConnectionPool {
+    return &ConnectionPool{
+        host:       h,
+        cache:      NewStreamCache(5*time.Minute, 1000),
+        maxStreams: maxStreams,
+        metrics:    NewPoolMetrics(),
+    }
+}
+
+// GetStream 获取 Stream（优先从缓存）
+func (p *ConnectionPool) GetStream(ctx context.Context, pid peer.ID) (network.MuxedStream, error) {
+    // 尝试从缓存获取
+    stream, err := p.cache.Get(ctx, p.host, pid)
+    if err == nil {
+        p.metrics.CacheHit.Inc()
+        return stream, nil
+    }
+
+    // 创建新 Stream
+    p.metrics.CacheMiss.Inc()
+    stream, err = p.host.NewStream(ctx, pid, transport.ProtocolNexKVRPC)
+    if err != nil {
+        return nil, err
+    }
+
+    p.metrics.Active.Inc()
+    return stream, nil
+}
+
+// ReturnStream 返回 Stream 到缓存
+func (p *ConnectionPool) ReturnStream(stream network.Stream) {
+    p.cache.Put(stream)
+}
+
+// Cleanup 定期清理
+func (p *ConnectionPool) Cleanup() {
+    p.cache.Cleanup()
+}
+```
+
+### A.3 监控指标
+
+```go
+package rpc
+
+import (
+    "github.com/prometheus/client_golang/prometheus"
+    "github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+// RPCMetrics RPC 指标
+type RPCMetrics struct {
+    // 连接指标
+    StreamsActive    prometheus.Gauge
+    StreamsCreated   prometheus.Counter
+    StreamsReused    prometheus.Counter
+    StreamsExpired   prometheus.Counter
+
+    // 性能指标
+    CallLatency      prometheus.Histogram
+    CallThroughput   prometheus.Counter
+    CallActive       prometheus.Gauge
+
+    // 错误指标
+    CallErrors       prometheus.Counter
+    CallTimeouts     prometheus.Counter
+    StreamErrors     *prometheus.CounterVec
+
+    // 批量操作指标
+    BatchCalls       prometheus.Counter
+    BatchSize        prometheus.Histogram
+}
+
+// NewRPCMetrics 创建 RPC 指标
+func NewRPCMetrics() *RPCMetrics {
+    return &RPCMetrics{
+        StreamsActive: promauto.NewGauge(prometheus.GaugeOpts{
+            Name: "nexkv_rpc_streams_active",
+            Help: "Active streams count",
+        }),
+        StreamsCreated: promauto.NewCounter(prometheus.CounterOpts{
+            Name: "nexkv_rpc_streams_created_total",
+            Help: "Total streams created",
+        }),
+        StreamsReused: promauto.NewCounter(prometheus.CounterOpts{
+            Name: "nexkv_rpc_streams_reused_total",
+            Help: "Total streams reused",
+        }),
+        StreamsExpired: promauto.NewCounter(prometheus.CounterOpts{
+            Name: "nexkv_rpc_streams_expired_total",
+            Help: "Total streams expired",
+        }),
+        CallLatency: promauto.NewHistogram(prometheus.HistogramOpts{
+            Name:    "nexkv_rpc_call_latency_ms",
+            Help:    "RPC call latency in milliseconds",
+            Buckets: []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000},
+        }),
+        CallThroughput: promauto.NewCounter(prometheus.CounterOpts{
+            Name: "nexkv_rpc_calls_total",
+            Help: "Total RPC calls",
+        }),
+        CallActive: promauto.NewGauge(prometheus.GaugeOpts{
+            Name: "nexkv_rpc_calls_active",
+            Help: "Active RPC calls",
+        }),
+        CallErrors: promauto.NewCounter(prometheus.CounterOpts{
+            Name: "nexkv_rpc_errors_total",
+            Help: "Total RPC errors",
+        }),
+        CallTimeouts: promauto.NewCounter(prometheus.CounterOpts{
+            Name: "nexkv_rpc_timeouts_total",
+            Help: "Total RPC timeouts",
+        }),
+        StreamErrors: promauto.NewCounterVec(prometheus.CounterOpts{
+            Name: "nexkv_rpc_stream_errors_total",
+            Help: "Stream errors by type",
+        }, []string{"type"}),
+        BatchCalls: promauto.NewCounter(prometheus.CounterOpts{
+            Name: "nexkv_rpc_batch_calls_total",
+            Help: "Total batch RPC calls",
+        }),
+        BatchSize: promauto.NewHistogram(prometheus.HistogramOpts{
+            Name:    "nexkv_rpc_batch_size",
+            Help:    "Batch RPC call size",
+            Buckets: []float64{1, 2, 5, 10, 20, 50, 100},
+        }),
+    }
+}
+```
+
+---
+
+## 文档归档信息
+
+| 项目 | 内容 |
+|------|------|
+| 文档最终版本 | V1.0 |
+| 归档日期 | [待定] |
+| 归档路径 | `docs/06_project_management/pr_documents/feature/2026-02-07_PR-libp2p-003-009_RPC-Performance-Optimization_Pre.md` |
+| 后续维护人 | [待定] |

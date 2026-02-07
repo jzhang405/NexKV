@@ -51,8 +51,8 @@ PR-Libp2p-TransportCleanup 删除了旧的 TCP/UDP Transport 和相关 RPC 实�
 1. **功能目标**：
    - ✅ 实现 RPC Server（基于 libp2p Stream Handler）
    - ✅ 实现 RPC Client（基于 libp2p Stream）
-   - ✅ 定义 RPC 消息协议（使用 Protobuf/MessagePack）
-   - ✅ 实现请求/响应编解码
+   - ✅ 定义 RPC 消息协议（使用 MessagePack）
+   - ✅ 实现请求/响应编解码（MessagePack）
    - ✅ 恢复 TreeCoordinator RPC 调用
    - ✅ 恢复 CLI 节点管理命令
    - ✅ 恢复 CLI 集群管理命令
@@ -90,23 +90,23 @@ PR-Libp2p-TransportCleanup 删除了旧的 TCP/UDP Transport 和相关 RPC 实�
 flowchart TD
     subgraph "RPC Client (发送方)"
         A1["RPC Client"] --> A2["创建 libp2p Stream"]
-        A2 --> A3["发送请求 (Protobuf)"]
+        A2 --> A3["发送请求 (MessagePack)"]
         A3 --> A4["等待响应"]
         A4 --> A5["解析响应"]
     end
-    
+
     subgraph "RPC Server (接收方)"
         B1["libp2p Host"] --> B2["Stream Handler"]
         B2 --> B3["接收请求"]
-        B3 --> B4["解码 Protobuf"]
+        B3 --> B4["解码 MessagePack"]
         B4 --> B5["调用本地方法"]
         B5 --> B6["编码响应"]
         B6 --> B7["发送响应"]
     end
-    
+
     A3 -->|libp2p Stream| B2
     B7 -->|libp2p Stream| A4
-    
+
     style A1 fill:#e1f5ff
     style B1 fill:#fff4e6
 ```
@@ -176,20 +176,31 @@ type RPCHandler func(ctx context.Context, req []byte) ([]byte, error)
 ##### 3.2.3 RPC 协议
 
 **消息格式**：
+- 复用 `internal/transport.Message` 结构
+- 复用 `internal/transport.MessagePackCodec` 编解码器
+- RPC 请求/响应通过 `Message.Payload` 传递
+
+**RPC 消息封装**：
 ```go
-// RPCMessage RPC 消息格式
-type RPCMessage struct {
-    Version   uint16  // 协议版本
-    Type      uint8   // 消息类型（请求/响应）
-    Method    string  // 方法名
-    RequestID uint64  // 请求ID
-    Body      []byte  // 消息体（Protobuf/MessagePack）
+// RPCRequest RPC 请求封装
+type RPCRequest struct {
+    Method   string      // 方法名（如 "NodeJoin", "ClusterStatus"）
+    RequestID uint64      // 请求ID
+    Body     []byte      // 请求体（MessagePack 序列化的参数）
+}
+
+// RPCResponse RPC 响应封装
+type RPCResponse struct {
+    RequestID uint64      // 请求ID
+    Status   int         // 状态码（0=成功）
+    Body     []byte      // 响应体（MessagePack 序列化的结果）
 }
 ```
 
 **编解码**：
-- 使用 Protobuf 序列化消息体
-- 支持压缩（可选）
+- 复用 `internal/transport.MessagePackCodec`
+- RPC 层只负责方法路由和请求/响应封装
+- 实际数据序列化由 transport 层的 MessagePack 处理
 
 ##### 3.2.4 Stream 管理
 
@@ -202,10 +213,10 @@ type RPCMessage struct {
 
 **阶段 1: RPC 基础框架（2 天）**
 1. 创建 `internal/rpc` 包
-2. 实现 RPCClient 基础框架
-3. 实现 RPCServer 基础框架
-4. 定义 RPC 消息格式
-5. 实现 Protobuf 编解码
+2. 实现 RPCClient（基于 libp2p Stream）
+3. 实现 RPCServer（基于 libp2p Stream Handler）
+4. 实现 RPC 方法路由
+5. 复用 `internal/transport.MessagePackCodec` 编解码
 
 **阶段 2: TreeCoordinator 集成（2 天）**
 1. 更新 TreeCoordinator 使用新的 RPCClient
@@ -225,13 +236,18 @@ type RPCMessage struct {
 
 ```
 internal/rpc/
-├── client.go           # RPCClient 实现
-├── server.go           # RPCServer 实现
-├── codec.go            # 编解码器
-├── protocol.go         # RPC 协议定义
-├── protocol.proto      # Protobuf 定义
+├── client.go           # RPCClient 实现（基于 libp2p Stream）
+├── server.go           # RPCServer 实现（基于 libp2p Stream Handler）
+├── router.go           # RPC 方法路由
+├── types.go            # RPC 请求/响应类型定义
 ├── client_test.go      # Client 测试
 └── server_test.go      # Server 测试
+
+# 复用现有编解码（不重新实现）
+internal/transport/
+├── message.go          # Message 结构（复用）
+├── message_codec.go    # MessagePackCodec（复用）
+└── ...
 ```
 
 #### 3.5 关键技术点
@@ -246,26 +262,41 @@ host.SetStreamHandler(ProtocolID, func(s network.Stream) {
 })
 ```
 
-**2. 消息序列化**
-```protobuf
-// protocol.proto
-syntax = "proto3";
-package nexkv.rpc;
-
-message RPCRequest {
-    string method = 1;
-    uint64 request_id = 2;
-    bytes body = 3;
+**2. RPC 方法路由**
+```go
+// Router RPC 方法路由器
+type Router struct {
+    handlers map[string]RPCHandler
 }
 
-message RPCResponse {
-    uint64 request_id = 1;
-    int32 status_code = 2;
-    bytes body = 3;
-}
+// RPCHandler RPC 处理器函数类型
+type RPCHandler func(ctx context.Context, req []byte) ([]byte, error)
+
+// RegisterMethod 注册 RPC 方法
+func (r *Router) RegisterMethod(method string, handler RPCHandler)
+
+// Route 路由 RPC 请求到对应处理器
+func (r *Router) Route(method string, req []byte) ([]byte, error)
 ```
 
-**3. 错误处理**
+**3. 复用现有编解码**
+```go
+import "github.com/jzhang405/NexKV/internal/transport"
+
+// 使用现有的 MessagePackCodec
+codec := transport.NewMessagePackCodec()
+
+// 编码请求
+msg := transport.NewMessage(transport.MessageTypeCluster)
+msg.Payload = requestBytes // RPC 请求体
+codec.Encode(writer, msg)
+
+// 解码响应
+msg, err := codec.Decode(reader)
+responseBytes := msg.Payload // RPC 响应体
+```
+
+**4. 错误处理**
 ```go
 // RPCError RPC 错误
 type RPCError struct {
@@ -279,6 +310,7 @@ const (
     ErrCodeNotFound    = 404
     ErrCodeTimeout     = 408
     ErrCodeInternal    = 500
+    ErrCodeUnavailable  = 503 // 服务暂时不可用
 )
 ```
 
@@ -295,7 +327,7 @@ const (
 
 | 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施（含AI辅助修改） | 优化结果 |
 |----------|----------|------------------|--------------|--------------------------|----------|
-| 第1轮 | [待定] | [待定] | [待评审] | [待定] | [待定] |
+| 第1轮 | 2026-02-06 | [待定] | 只使用 MessagePack，不使用 Protobuf；复用 internal/transport 的现有编解码实现 | ✅ 移除 Protobuf 相关内容<br>✅ 更新为复用 `internal/transport.MessagePackCodec`<br>✅ 更新目录结构，移除 protocol.proto<br>✅ 更新实现步骤，删除 Protobuf 编解码步骤 | 待评审通过 |
 
 ### 6. 预审批确认
 > **架构师签字/备注**：____________ 202X-XX-XX 该Feature方案可行，风险可控，同意启动开发，需严格按照文档落地，确保CI通过后提交Post总结。

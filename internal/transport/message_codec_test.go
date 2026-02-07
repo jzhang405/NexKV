@@ -26,12 +26,13 @@ import (
 func TestMessageCodec_EncodeDecodeRoundTrip(t *testing.T) {
 	codec := NewMessagePackCodec()
 
-	original := &Message{
-		Type:    MessageTypePut,
+	// 创建原始消息（使用 Payload 模式）
+	original := &Message{}
+	original.MustEncodePayload(&PutPayload{
 		Key:     []byte("user:1001"),
 		Value:   []byte("{\"name\":\"Alice\",\"age\":30}"),
 		Version: 5,
-	}
+	})
 
 	// 编码
 	encoded, err := codec.EncodeToBytes(original)
@@ -44,9 +45,17 @@ func TestMessageCodec_EncodeDecodeRoundTrip(t *testing.T) {
 
 	// 验证字段
 	assert.Equal(t, original.Type, decoded.Type)
-	assert.Equal(t, original.Key, decoded.Key)
-	assert.Equal(t, original.Value, decoded.Value)
-	assert.Equal(t, original.Version, decoded.Version)
+
+	// 解码 Payload
+	payload, err := decoded.DecodePayload()
+	require.NoError(t, err)
+
+	putPayload, ok := payload.(*PutPayload)
+	require.True(t, ok)
+	assert.Equal(t, []byte("user:1001"), putPayload.Key)
+	assert.Equal(t, []byte("{\"name\":\"Alice\",\"age\":30}"), putPayload.Value)
+	assert.Equal(t, uint64(5), putPayload.Version)
+
 	// Seq 应该被自动生成
 	assert.Greater(t, decoded.Seq, uint64(0))
 }
@@ -69,10 +78,52 @@ func TestMessageCodec_EncodeDecode_AllMessageTypes(t *testing.T) {
 
 	for _, msgType := range msgTypes {
 		t.Run(msgType.String(), func(t *testing.T) {
-			msg := &Message{
-				Type:  msgType,
-				Key:   []byte("test-key"),
-				Value: []byte("test-value"),
+			// 创建带有适当 Payload 的消息
+			msg := &Message{Type: msgType}
+
+			// 根据类型添加 Payload
+			switch msgType {
+			case MessageTypeGet:
+				msg.MustEncodePayload(&GetPayload{Key: []byte("test-key")})
+			case MessageTypePut:
+				msg.MustEncodePayload(&PutPayload{
+					Key:   []byte("test-key"),
+					Value: []byte("test-value"),
+				})
+			case MessageTypeDelete:
+				msg.MustEncodePayload(&DeletePayload{Key: []byte("test-key")})
+			case MessageTypeGossip:
+				msg.MustEncodePayload(&GossipPayload{
+					Digest: map[string]uint64{"k1": 1},
+				})
+			case MessageTypeQuorum:
+				msg.MustEncodePayload(&QuorumPayload{
+					Phase:      "propose",
+					ProposalID: "test-proposal",
+					Key:        "test-key",
+				})
+			case MessageTypeSync:
+				msg.MustEncodePayload(&TwoPCPreparePayload{
+					TxID: "test-tx-123",
+					Operations: []Operation{
+						{Type: "put", Key: "k1", Value: []byte("v1")},
+					},
+				})
+			case MessageTypeAck:
+				msg.MustEncodePayload(&TwoPCCommitPayload{
+					TxID:   "test-tx-123",
+					Result: true,
+				})
+			case MessageTypeNack:
+				msg.MustEncodePayload(&TwoPCRollbackPayload{
+					TxID:   "test-tx-123",
+					Reason: "test-failure",
+				})
+			case MessageTypeCluster:
+				msg.MustEncodePayload(&ClusterPayload{
+					Action: "join",
+					NodeID: "node-123",
+				})
 			}
 
 			encoded, err := codec.EncodeToBytes(msg)
@@ -85,27 +136,33 @@ func TestMessageCodec_EncodeDecode_AllMessageTypes(t *testing.T) {
 	}
 }
 
-// TestMessageCodec_EmptyPayload 测试空payload
+// TestMessageCodec_EmptyPayload 测试空 Payload
 func TestMessageCodec_EmptyPayload(t *testing.T) {
 	codec := NewMessagePackCodec()
 
-	msg := &Message{
-		Type:    MessageTypeDelete,
-		Key:     []byte("deleted-key"),
-		Value:   nil,
-		Version: 1,
-	}
+	// 创建带有 DeletePayload 的消息
+	msg := &Message{}
+	msg.MustEncodePayload(&DeletePayload{
+		Key: []byte("deleted-key"),
+	})
 
 	encoded, err := codec.EncodeToBytes(msg)
 	require.NoError(t, err)
 
 	decoded, err := codec.DecodeFromBytes(encoded)
 	require.NoError(t, err)
-	assert.Nil(t, decoded.Value)
+
+	// 解码 Payload 并验证
+	payload, err := decoded.DecodePayload()
+	require.NoError(t, err)
+
+	deletePayload, ok := payload.(*DeletePayload)
+	require.True(t, ok)
+	assert.Equal(t, []byte("deleted-key"), deletePayload.Key)
 	assert.Equal(t, MessageTypeDelete, decoded.Type)
 }
 
-// TestMessageCodec_LargePayload 测试大payload（接近限制）
+// TestMessageCodec_LargePayload 测试大 Payload（接近限制）
 func TestMessageCodec_LargePayload(t *testing.T) {
 	codec := NewMessagePackCodec()
 
@@ -115,20 +172,26 @@ func TestMessageCodec_LargePayload(t *testing.T) {
 		largeValue[i] = byte(i % 256)
 	}
 
-	msg := &Message{
-		Type:    MessageTypePut,
-		Key:     []byte("large-data"),
-		Value:   largeValue,
-		Version: 1,
-	}
+	msg := &Message{}
+	msg.MustEncodePayload(&PutPayload{
+		Key:   []byte("large-data"),
+		Value: largeValue,
+	})
 
 	encoded, err := codec.EncodeToBytes(msg)
 	require.NoError(t, err)
 
 	decoded, err := codec.DecodeFromBytes(encoded)
 	require.NoError(t, err)
-	assert.Equal(t, len(largeValue), len(decoded.Value))
-	assert.Equal(t, largeValue[0:100], decoded.Value[0:100])
+
+	// 解码 Payload 并验证
+	payload, err := decoded.DecodePayload()
+	require.NoError(t, err)
+
+	putPayload, ok := payload.(*PutPayload)
+	require.True(t, ok)
+	assert.Equal(t, len(largeValue), len(putPayload.Value))
+	assert.Equal(t, largeValue[0:100], putPayload.Value[0:100])
 }
 
 // TestMessageCodec_InvalidData 测试无效数据
@@ -175,10 +238,8 @@ func TestMessageCodec_SeqGeneration(t *testing.T) {
 	codec := NewMessagePackCodec()
 	codec.ResetSeqGenerator()
 
-	msg := &Message{
-		Type: MessageTypePut,
-		Key:  []byte("key"),
-	}
+	msg := &Message{}
+	msg.MustEncodePayload(&PutPayload{Key: []byte("key")})
 
 	// 第一次编码
 	_, err := codec.EncodeToBytes(msg)
@@ -186,10 +247,8 @@ func TestMessageCodec_SeqGeneration(t *testing.T) {
 	assert.Equal(t, uint64(1), codec.GetNextSeq()-1)
 
 	// 第二次编码
-	msg2 := &Message{
-		Type: MessageTypeGet,
-		Key:  []byte("key2"),
-	}
+	msg2 := &Message{}
+	msg2.MustEncodePayload(&GetPayload{Key: []byte("key2")})
 	_, err = codec.EncodeToBytes(msg2)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), codec.GetNextSeq()-1)
@@ -200,11 +259,13 @@ func TestMessageCodec_ExistingSeq(t *testing.T) {
 	codec := NewMessagePackCodec()
 
 	msg := &Message{
-		Type:    MessageTypePut,
-		Key:     []byte("key"),
-		Seq:     42, // 预设序号
-		Version: 1,
+		Type: MessageTypePut,
+		Seq:  42, // 预设序号
 	}
+	msg.MustEncodePayload(&PutPayload{
+		Key:     []byte("key"),
+		Version: 1,
+	})
 
 	encoded, err := codec.EncodeToBytes(msg)
 	require.NoError(t, err)
@@ -218,10 +279,26 @@ func TestMessageCodec_ExistingSeq(t *testing.T) {
 func TestMessageCodec_MultipleMessages(t *testing.T) {
 	codec := NewMessagePackCodec()
 
+	// 创建多条消息
 	messages := []*Message{
-		{Type: MessageTypeGet, Key: []byte("key1")},
-		{Type: MessageTypePut, Key: []byte("key2"), Value: []byte("value2")},
-		{Type: MessageTypeDelete, Key: []byte("key3")},
+		func() *Message {
+			m := &Message{Type: MessageTypeGet}
+			m.MustEncodePayload(&GetPayload{Key: []byte("key1")})
+			return m
+		}(),
+		func() *Message {
+			m := &Message{Type: MessageTypePut}
+			m.MustEncodePayload(&PutPayload{
+				Key:   []byte("key2"),
+				Value: []byte("value2"),
+			})
+			return m
+		}(),
+		func() *Message {
+			m := &Message{Type: MessageTypeDelete}
+			m.MustEncodePayload(&DeletePayload{Key: []byte("key3")})
+			return m
+		}(),
 	}
 
 	for _, msg := range messages {
@@ -231,7 +308,6 @@ func TestMessageCodec_MultipleMessages(t *testing.T) {
 		decoded, err := codec.DecodeFromBytes(encoded)
 		require.NoError(t, err)
 		assert.Equal(t, msg.Type, decoded.Type)
-		assert.Equal(t, msg.Key, decoded.Key)
 	}
 }
 
@@ -243,28 +319,27 @@ func TestMessage_Validation(t *testing.T) {
 		wantValid bool
 	}{
 		{
-			name:      "Valid GET message",
-			msg:       &Message{Type: MessageTypeGet, Key: []byte("key")},
+			name: "Valid message with Payload",
+			msg: func() *Message {
+				m := &Message{Type: MessageTypeGet}
+				m.MustEncodePayload(&GetPayload{Key: []byte("key")})
+				return m
+			}(),
 			wantValid: true,
 		},
 		{
-			name:      "Valid PUT message",
-			msg:       &Message{Type: MessageTypePut, Key: []byte("key"), Value: []byte("value")},
+			name:      "Valid ACK message (no Payload needed)",
+			msg:       &Message{Type: MessageTypeAck, Seq: 1},
 			wantValid: true,
 		},
 		{
-			name:      "Valid DELETE message",
-			msg:       &Message{Type: MessageTypeDelete, Key: []byte("key")},
-			wantValid: true,
-		},
-		{
-			name:      "Invalid GET without key",
+			name:      "Invalid GET without Payload",
 			msg:       &Message{Type: MessageTypeGet},
 			wantValid: false,
 		},
 		{
-			name:      "Invalid PUT without key",
-			msg:       &Message{Type: MessageTypePut, Value: []byte("value")},
+			name:      "Invalid PUT without Payload",
+			msg:       &Message{Type: MessageTypePut},
 			wantValid: false,
 		},
 		{
@@ -283,25 +358,26 @@ func TestMessage_Validation(t *testing.T) {
 
 // TestMessage_Clone 测试消息克隆
 func TestMessage_Clone(t *testing.T) {
-	original := &Message{
-		Type:    MessageTypePut,
+	original := &Message{}
+	original.MustEncodePayload(&PutPayload{
 		Key:     []byte("key"),
 		Value:   []byte("value"),
 		Version: 1,
-	}
+	})
 
 	clone := original.Clone()
 
-	// 验证字段相等
+	// 验证基本字段相等
 	assert.Equal(t, original.Type, clone.Type)
-	assert.Equal(t, original.Key, clone.Key)
-	assert.Equal(t, original.Value, clone.Value)
-	assert.Equal(t, original.Version, clone.Version)
+	assert.Equal(t, original.Seq, clone.Seq)
 
-	// 验证深拷贝（修改原消息不影响克隆）
-	original.Key[0] = 'X'
-	assert.NotEqual(t, original.Key, clone.Key)
-	assert.Equal(t, []byte("key"), clone.Key)
+	// 验证 Payload 被深拷贝（使用指针地址比较）
+	assert.NotSame(t, &original.Payload, &clone.Payload)
+	assert.Equal(t, original.Payload, clone.Payload)
+
+	// 修改原消息不影响克隆
+	original.Payload[0] = 'X'
+	assert.NotEqual(t, original.Payload, clone.Payload)
 }
 
 // TestMessage_IncrementHopCount 测试跳数递增
@@ -360,12 +436,12 @@ func binaryWriteUint16(buf *bytes.Buffer, val uint16) {
 func TestMessageCodec_StreamEncodeDecode(t *testing.T) {
 	codec := NewMessagePackCodec()
 
-	msg := &Message{
-		Type:    MessageTypePut,
+	msg := &Message{}
+	msg.MustEncodePayload(&PutPayload{
 		Key:     []byte("stream-key"),
 		Value:   []byte("stream-value"),
 		Version: 1,
-	}
+	})
 
 	// 编码到内存buffer
 	var buf bytes.Buffer
@@ -377,6 +453,13 @@ func TestMessageCodec_StreamEncodeDecode(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, msg.Type, decoded.Type)
-	assert.Equal(t, msg.Key, decoded.Key)
-	assert.Equal(t, msg.Value, decoded.Value)
+
+	// 解码 Payload 并验证
+	payload, err := decoded.DecodePayload()
+	require.NoError(t, err)
+
+	putPayload, ok := payload.(*PutPayload)
+	require.True(t, ok)
+	assert.Equal(t, []byte("stream-key"), putPayload.Key)
+	assert.Equal(t, []byte("stream-value"), putPayload.Value)
 }

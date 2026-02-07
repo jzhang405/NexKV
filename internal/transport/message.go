@@ -64,17 +64,14 @@ func (mt MessageType) String() string {
 }
 
 // Message NexKV 协议消息定义
+//
+// 注意：Key、Value、Version 等业务字段已移至 Payload 中
+// 使用 EncodePayload/DecodePayload 方法进行序列化/反序列化
 type Message struct {
 	// Type 消息类型
 	Type MessageType
 	// Seq 消息序号（单调递增）
 	Seq uint64
-	// Key 键（用于 GET/DELETE）
-	Key []byte
-	// Value 值（用于 PUT）
-	Value []byte
-	// Version 版本号（用于 MVCC）
-	Version uint64
 	// Timestamp 时间戳
 	Timestamp time.Time
 	// From 发送方节点 ID
@@ -83,7 +80,20 @@ type Message struct {
 	To string
 	// HopCount 跳数（用于消息路由）
 	HopCount uint8
-	// Payload 扩展负载（用于自定义消息）
+	// Payload 扩展负载（序列化后的业务数据）
+	//
+	// Payload 类型定义：
+	//   - MessageTypePut:    PutPayload
+	//   - MessageTypeGet:    GetPayload
+	//   - MessageTypeDelete: DeletePayload
+	//   - MessageTypeGossip: GossipPayload
+	//   - MessageTypeQuorum: QuorumPayload
+	//   - MessageTypeSync:   TwoPCPreparePayload
+	//   - MessageTypeAck:    TwoPCCommitPayload
+	//   - MessageTypeNack:   TwoPCRollbackPayload
+	//   - MessageTypeCluster: ClusterPayload
+	//
+	// 使用 EncodePayload/DecodePayload 方法进行类型安全的序列化/反序列化
 	Payload []byte
 }
 
@@ -100,8 +110,6 @@ func NewMessage(msgType MessageType) *Message {
 func (m *Message) Clone() *Message {
 	clone := *m
 	// 深拷贝切片字段
-	clone.copyBytes(m.Key, &clone.Key)
-	clone.copyBytes(m.Value, &clone.Value)
 	clone.copyBytes(m.Payload, &clone.Payload)
 	return &clone
 }
@@ -130,26 +138,23 @@ func (m *Message) IsValid() bool {
 		return false
 	}
 
-	// 如果有 Payload，跳过 Key/Value 检查（使用 Payload 模式）
+	// 如果有 Payload，认为是有效的
 	if len(m.Payload) > 0 {
 		return true
 	}
 
-	// 根据消息类型验证必填字段（兼容旧行为）
+	// 没有 Payload 时，只验证基本字段
 	switch m.Type {
-	case MessageTypeGet, MessageTypeDelete:
-		return len(m.Key) > 0
-	case MessageTypePut:
-		return len(m.Key) > 0 && m.Value != nil
 	case MessageTypeAck, MessageTypeNack:
 		return m.Seq > 0
 	}
 
-	return true
+	// 其他消息类型必须有 Payload
+	return false
 }
 
 // Size 返回消息的预估大小（字节）
 func (m *Message) Size() int {
-	// Type(1) + Seq(8) + Version(8) + HopCount(1) + Timestamp(8) + From + To + Payload
-	return 1 + 8 + 8 + 1 + 8 + len(m.From) + len(m.To) + len(m.Key) + len(m.Value) + len(m.Payload)
+	// Type(1) + Seq(8) + HopCount(1) + Timestamp(8) + From + To + Payload
+	return 1 + 8 + 1 + 8 + len(m.From) + len(m.To) + len(m.Payload)
 }

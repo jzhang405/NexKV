@@ -42,7 +42,14 @@ func NewMessagePackCodec() *MessagePackCodec {
 	return &MessagePackCodec{seqGenerator: &seq}
 }
 
-// Encode 编码消息（TLV 格式）
+// Encode 编码消息并通过 io.Writer 写入（触发网络发送）
+//
+// 方法行为：
+//  1. 使用 MessagePack 编码消息体
+//  2. 写入 TLV 消息头（Type + Length）
+//  3. 写入消息体到 io.Writer
+//
+// 重要说明：如果 w 是网络 Stream（如 libp2p Stream），Write 操作会触发网络发送。
 // 消息格式：Type(1) + Length(2) + Value(MessagePack)
 func (c *MessagePackCodec) Encode(w io.Writer, msg *Message) error {
 	// 自动生成消息序号

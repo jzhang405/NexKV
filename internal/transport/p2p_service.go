@@ -17,6 +17,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -33,6 +34,7 @@ type P2PService struct {
 	discovery *DiscoveryService
 	codec     MessageCodec
 	keyPath   string
+	mu        sync.RWMutex // 保护 started 字段的并发访问
 	started   bool
 }
 
@@ -125,6 +127,9 @@ func NewP2PService(cfg *P2PServiceConfig) (*P2PService, error) {
 
 // Start 启动 P2P 服务
 func (s *P2PService) Start(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.started {
 		return fmt.Errorf("服务已启动")
 	}
@@ -140,6 +145,9 @@ func (s *P2PService) Start(ctx context.Context) error {
 
 // Stop 停止 P2P 服务
 func (s *P2PService) Stop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if !s.started {
 		return nil
 	}
@@ -196,6 +204,8 @@ func (s *P2PService) Close() error {
 
 // IsStarted 返回服务是否已启动
 func (s *P2PService) IsStarted() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.started
 }
 

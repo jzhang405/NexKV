@@ -80,12 +80,12 @@ func TestNexKVProtocol_SendMessage_Success(t *testing.T) {
 		return nil
 	}))
 
-	// 发送消息
-	msg := &Message{
-		Type:  MessageTypePut,
+	// 发送消息（使用 Payload 模式）
+	msg := &Message{}
+	msg.MustEncodePayload(&PutPayload{
 		Key:   []byte("test-key"),
 		Value: []byte("test-value"),
-	}
+	})
 
 	err = protocol1.SendMessage(ctx, h2.ID(), msg)
 	assert.NoError(t, err)
@@ -94,8 +94,13 @@ func TestNexKVProtocol_SendMessage_Success(t *testing.T) {
 	select {
 	case receivedMsg := <-received:
 		assert.Equal(t, MessageTypePut, receivedMsg.Type)
-		assert.Equal(t, []byte("test-key"), receivedMsg.Key)
-		assert.Equal(t, []byte("test-value"), receivedMsg.Value)
+		// 解码 Payload 并验证
+		payload, err := receivedMsg.DecodePayload()
+		require.NoError(t, err)
+		putPayload, ok := payload.(*PutPayload)
+		require.True(t, ok)
+		assert.Equal(t, []byte("test-key"), putPayload.Key)
+		assert.Equal(t, []byte("test-value"), putPayload.Value)
 	case <-time.After(5 * time.Second):
 		t.Fatal("未接收到消息")
 	}
@@ -114,10 +119,12 @@ func TestNexKVProtocol_SendMessage_UnknownPeer(t *testing.T) {
 	defer h1.Close()
 
 	protocol := NewNexKVProtocol(h1, nil)
-	msg := &Message{
-		Type: MessageTypeGet,
-		Key:  []byte("key"),
-	}
+
+	// 使用 Payload 模式创建消息
+	msg := &Message{}
+	msg.MustEncodePayload(&GetPayload{
+		Key: []byte("key"),
+	})
 
 	// 生成一个随机的 peer ID
 	unknownPeerID, _ := peer.Decode("QmInvalidPeerID123456789")
@@ -140,7 +147,7 @@ func TestNexKVProtocol_SendMessage_InvalidMessage(t *testing.T) {
 
 	protocol := NewNexKVProtocol(h1, nil)
 
-	// 无效消息（GET 没有Key）
+	// 无效消息（GET 没有Payload）
 	msg := &Message{
 		Type: MessageTypeGet,
 	}
@@ -181,10 +188,12 @@ func TestNexKVProtocol_BroadcastMessage(t *testing.T) {
 	}
 
 	peers := []peer.ID{hosts[1].ID(), hosts[2].ID()}
-	msg := &Message{
-		Type: MessageTypeSync,
-		Key:  []byte("sync-key"),
-	}
+
+	// 使用 Payload 模式创建消息
+	msg := &Message{}
+	msg.MustEncodePayload(&TwoPCPreparePayload{
+		TxID: "test-sync-tx",
+	})
 
 	err = protocol.BroadcastMessage(ctx, peers, msg)
 	assert.NoError(t, err)
@@ -219,10 +228,11 @@ func TestNexKVProtocol_RegisterHandler(t *testing.T) {
 	// 连接并发送消息
 	_ = h2.Connect(ctx, peer.AddrInfo{ID: h1.ID(), Addrs: h1.Addrs()})
 
-	testMsg := &Message{
-		Type: MessageTypeGet,
-		Key:  []byte("test-key"),
-	}
+	// 使用 Payload 模式创建消息
+	testMsg := &Message{}
+	testMsg.MustEncodePayload(&GetPayload{
+		Key: []byte("test-key"),
+	})
 
 	err = protocol1.SendMessage(ctx, h2.ID(), testMsg)
 	require.NoError(t, err)
@@ -231,7 +241,12 @@ func TestNexKVProtocol_RegisterHandler(t *testing.T) {
 	select {
 	case msg := <-received:
 		assert.Equal(t, MessageTypeGet, msg.Type)
-		assert.Equal(t, []byte("test-key"), msg.Key)
+		// 解码 Payload 并验证
+		payload, err := msg.DecodePayload()
+		require.NoError(t, err)
+		getPayload, ok := payload.(*GetPayload)
+		require.True(t, ok)
+		assert.Equal(t, []byte("test-key"), getPayload.Key)
 	case <-time.After(5 * time.Second):
 		t.Fatal("未接收到消息")
 	}
@@ -284,12 +299,12 @@ func TestNexKVProtocol_Stats(t *testing.T) {
 	stats := protocol1.Stats()
 	assert.Equal(t, uint64(0), stats.MessagesSent)
 
-	// 发送消息
-	msg := &Message{
-		Type:  MessageTypePut,
+	// 使用 Payload 模式发送消息
+	msg := &Message{}
+	msg.MustEncodePayload(&PutPayload{
 		Key:   []byte("key"),
 		Value: []byte("value"),
-	}
+	})
 
 	err = protocol1.SendMessage(ctx, h2.ID(), msg)
 	require.NoError(t, err)
@@ -344,18 +359,18 @@ func TestNexKVProtocol_ConcurrentMessaging(t *testing.T) {
 		return nil
 	}))
 
-	// 并发发送 100 条消息
+	// 并发发送 100 条消息（使用 Payload 模式）
 	concurrency := 100
 	done := make(chan bool, concurrency)
 
 	for i := 0; i < concurrency; i++ {
 		go func(idx int) {
-			msg := &Message{
-				Type:    MessageTypePut,
+			msg := &Message{}
+			msg.MustEncodePayload(&PutPayload{
 				Key:     []byte("concurrent-key"),
 				Value:   []byte("value"),
 				Version: uint64(idx),
-			}
+			})
 			_ = protocol1.SendMessage(ctx, h2.ID(), msg)
 			done <- true
 		}(i)
@@ -400,11 +415,12 @@ func TestNexKVProtocol_MessageWithSeq(t *testing.T) {
 		return nil
 	}))
 
-	msg := &Message{
-		Type:  MessageTypePut,
+	// 使用 Payload 模式创建消息
+	msg := &Message{}
+	msg.MustEncodePayload(&PutPayload{
 		Key:   []byte("key"),
 		Value: []byte("value"),
-	}
+	})
 
 	err = protocol1.SendMessage(ctx, h2.ID(), msg)
 	require.NoError(t, err)
@@ -450,20 +466,40 @@ func TestNexKVProtocol_AllMessageTypes(t *testing.T) {
 			var msg *Message
 			switch msgType {
 			case MessageTypePut:
-				msg = &Message{
-					Type:  msgType,
+				msg = &Message{}
+				msg.MustEncodePayload(&PutPayload{
 					Key:   []byte("test-key"),
 					Value: []byte("test-value"),
-				}
+				})
 			case MessageTypeAck:
+				// ACK 消息不需要 Payload
 				msg = &Message{
 					Type: msgType,
 					Seq:  1,
 				}
+			case MessageTypeGet:
+				msg = &Message{}
+				msg.MustEncodePayload(&GetPayload{
+					Key: []byte("test-key"),
+				})
+			case MessageTypeDelete:
+				msg = &Message{}
+				msg.MustEncodePayload(&DeletePayload{
+					Key: []byte("test-key"),
+				})
+			case MessageTypeSync:
+				msg = &Message{}
+				msg.MustEncodePayload(&TwoPCPreparePayload{
+					TxID: "test-tx",
+				})
+			case MessageTypeGossip:
+				msg = &Message{}
+				msg.MustEncodePayload(&GossipPayload{
+					Digest: map[string]uint64{"k1": 1},
+				})
 			default:
 				msg = &Message{
 					Type: msgType,
-					Key:  []byte("test-key"),
 				}
 			}
 

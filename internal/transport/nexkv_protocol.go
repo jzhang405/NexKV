@@ -187,7 +187,8 @@ func (p *NexKVProtocol) SendMessage(ctx context.Context, pid peer.ID, msg *Messa
 		return fmt.Errorf("设置写入超时失败: %w", err)
 	}
 
-	// 编码并发送消息
+	// 编码并通过 Stream 发送消息
+	// 注意：Encode() 方法内部会调用 Stream.Write()，触发网络发送
 	if err := p.codec.Encode(s, msg); err != nil {
 		p.recordError()
 		return fmt.Errorf("发送消息失败: %w", err)

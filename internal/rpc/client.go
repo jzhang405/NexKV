@@ -21,9 +21,11 @@ var globalRequestID uint64
 // Client 基于 libp2p Stream 的 RPC 客户端
 type Client struct {
 	host           host.Host
+	pool           *ConnectionPool
 	defaultTimeout time.Duration
 	maxMessageSize uint16
 	codec          *transport.MessagePackCodec
+	enablePool     bool // 是否启用连接池
 }
 
 // NewClient 创建 RPC 客户端
@@ -33,7 +35,41 @@ func NewClient(host host.Host) *Client {
 		defaultTimeout: 30 * time.Second,
 		maxMessageSize: transport.MaxMessageSize,
 		codec:          transport.NewMessagePackCodec(),
+		enablePool:     false, // 默认不启用连接池
 	}
+}
+
+// NewClientWithPool 创建带连接池的 RPC 客户端
+func NewClientWithPool(host host.Host, poolCfg *PoolConfig) *Client {
+	pool := NewConnectionPool(host, poolCfg)
+
+	return &Client{
+		host:           host,
+		pool:           pool,
+		defaultTimeout: 30 * time.Second,
+		maxMessageSize: transport.MaxMessageSize,
+		codec:          transport.NewMessagePackCodec(),
+		enablePool:     true, // 启用连接池
+	}
+}
+
+// SetPool 启用或禁用连接池
+func (c *Client) SetPool(enable bool, poolCfg *PoolConfig) {
+	if enable && c.pool == nil {
+		if poolCfg == nil {
+			poolCfg = DefaultPoolConfig()
+		}
+		c.pool = NewConnectionPool(c.host, poolCfg)
+	}
+	c.enablePool = enable
+}
+
+// Close 关闭客户端
+func (c *Client) Close() error {
+	if c.pool != nil {
+		return c.pool.Close()
+	}
+	return nil
 }
 
 // SetDefaultTimeout 设置默认超时时间
@@ -48,12 +84,32 @@ func (c *Client) Call(ctx context.Context, peerID peer.ID, method string, req []
 		return nil, err
 	}
 
-	// 创建 libp2p Stream
-	stream, err := c.host.NewStream(ctx, peerID, transport.ProtocolNexKVRPC)
-	if err != nil {
-		return nil, fmt.Errorf("创建 Stream 失败: %w", err)
+	var stream network.Stream
+	var err error
+
+	// 使用连接池或直接创建 Stream
+	if c.enablePool && c.pool != nil {
+		stream, err = c.pool.GetStream(ctx, peerID)
+		if err != nil {
+			return nil, fmt.Errorf("从连接池获取 Stream 失败: %w", err)
+		}
+	} else {
+		stream, err = c.host.NewStream(ctx, peerID, transport.ProtocolNexKVRPC)
+		if err != nil {
+			return nil, fmt.Errorf("创建 Stream 失败: %w", err)
+		}
 	}
-	defer stream.Close()
+
+	// 确保 Stream 被关闭
+	defer func() {
+		if c.enablePool && c.pool != nil {
+			// 返回到连接池
+			_ = c.pool.ReturnStream(stream)
+		} else {
+			// 直接关闭
+			_ = stream.Close()
+		}
+	}()
 
 	// 设置超时
 	deadline := c.getDeadline(ctx)

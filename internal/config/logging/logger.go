@@ -11,6 +11,7 @@ import (
 var (
 	globalLogger *logrus.Logger
 	once         sync.Once
+	loggerOnce   sync.Once
 )
 
 // Init 初始化全局日志
@@ -20,17 +21,19 @@ func Init(logger *logrus.Logger) {
 	})
 }
 
-// GetLogger 获取全局日志实例
+// GetLogger 获取全局日志实例（线程安全）
 func GetLogger() *logrus.Logger {
-	if globalLogger == nil {
-		// 默认配置
-		globalLogger = logrus.New()
-		globalLogger.SetLevel(logrus.InfoLevel)
-		globalLogger.SetFormatter(&logrus.JSONFormatter{
-			TimestampFormat: "2006-01-02 15:04:05",
-		})
-		globalLogger.SetOutput(os.Stdout)
-	}
+	loggerOnce.Do(func() {
+		if globalLogger == nil {
+			// 默认配置
+			globalLogger = logrus.New()
+			globalLogger.SetLevel(logrus.InfoLevel)
+			globalLogger.SetFormatter(&logrus.JSONFormatter{
+				TimestampFormat: "2006-01-02 15:04:05",
+			})
+			globalLogger.SetOutput(os.Stdout)
+		}
+	})
 	return globalLogger
 }
 

@@ -17,7 +17,7 @@ import (
 func TestNewTreeCoordinator(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, coordinator)
@@ -46,7 +46,7 @@ func TestNewTreeCoordinator_InvalidParams(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewTreeCoordinator(tc.nodeID, tc.addr, config, nil)
+			_, err := NewTreeCoordinator(tc.nodeID, tc.addr, config, nil, nil)
 			if tc.expectError {
 				assert.Error(t, err)
 			} else {
@@ -60,7 +60,7 @@ func TestNewTreeCoordinator_InvalidParams(t *testing.T) {
 func TestTreeCoordinator_StartStop(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	// 测试启动
@@ -93,7 +93,7 @@ func TestTreeCoordinator_AddChild(t *testing.T) {
 		AutoDiscovery:     false, // 禁用自动发现
 	}
 
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	_ = coordinator.Start()
@@ -127,7 +127,7 @@ func TestTreeCoordinator_AddChild(t *testing.T) {
 func TestTreeCoordinator_RemoveChild(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	_ = coordinator.Start()
@@ -153,7 +153,7 @@ func TestTreeCoordinator_RemoveChild(t *testing.T) {
 func TestTreeCoordinator_GetNode(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	_ = coordinator.Start()
@@ -176,7 +176,7 @@ func TestTreeCoordinator_GetNode(t *testing.T) {
 func TestTreeCoordinator_ListNodes(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	_ = coordinator.Start()
@@ -192,7 +192,7 @@ func TestTreeCoordinator_ListNodes(t *testing.T) {
 func TestTreeCoordinator_GetTreeDepth(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	_ = coordinator.Start()
@@ -214,7 +214,7 @@ func TestTreeCoordinator_GetTreeDepth(t *testing.T) {
 func TestTreeCoordinator_GetStats(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	_ = coordinator.Start()
@@ -233,7 +233,7 @@ func TestTreeCoordinator_GetStats(t *testing.T) {
 func TestTreeCoordinator_IsRunning(t *testing.T) {
 
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	// 未启动时
@@ -501,13 +501,13 @@ func TestTreeCoordinator_SingleParentConstraint(t *testing.T) {
 	config := DefaultTreeCoordinatorConfig()
 
 	// 创建第一个协调器 node1
-	coordinator1, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator1, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 	_ = coordinator1.Start()
 	t.Cleanup(func() { require.NoError(t, coordinator1.Stop()) })
 
 	// 创建第二个协调器 node2
-	coordinator2, err := NewTreeCoordinator("node2", "127.0.0.2:9211", config, nil)
+	coordinator2, err := NewTreeCoordinator("node2", "127.0.0.2:9211", config, nil, nil)
 	require.NoError(t, err)
 	_ = coordinator2.Start()
 	t.Cleanup(func() { require.NoError(t, coordinator2.Stop()) })
@@ -556,7 +556,7 @@ func TestTreeCoordinator_SingleParentConstraint(t *testing.T) {
 // Test_TreeCoordinator_buildTopologyMetadata 测试构造拓扑元数据
 func Test_TreeCoordinator_buildTopologyMetadata(t *testing.T) {
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	// 添加子节点
@@ -589,7 +589,7 @@ func Test_TreeCoordinator_buildTopologyMetadata(t *testing.T) {
 // Test_TreeCoordinator_buildTopologyMetadata_EmptyChildren 测试没有子节点的情况
 func Test_TreeCoordinator_buildTopologyMetadata_EmptyChildren(t *testing.T) {
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	// 没有子节点
@@ -603,7 +603,7 @@ func Test_TreeCoordinator_buildTopologyMetadata_EmptyChildren(t *testing.T) {
 // Test_TreeCoordinator_buildTopologyMetadata_ChildNotInAllNodes 测试子节点不在 allNodes 的情况
 func Test_TreeCoordinator_buildTopologyMetadata_ChildNotInAllNodes(t *testing.T) {
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	// 手动添加子节点 ID（不通过 AddChild）
@@ -627,7 +627,7 @@ func Test_TreeCoordinator_buildTopologyMetadata_ChildNotInAllNodes(t *testing.T)
 // Test_TreeCoordinator_gossipTopologyChange_NoRPCClient 测试没有 RPCClient 的情况
 func Test_TreeCoordinator_gossipTopologyChange_NoRPCClient(t *testing.T) {
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 	// RPCClient 已删除（PR-Libp2p-TransportCleanup）
 
@@ -640,7 +640,7 @@ func Test_TreeCoordinator_gossipTopologyChange_NoRPCClient(t *testing.T) {
 // Test_TreeCoordinator_gossipTopologyChange_NoOtherNodes 测试没有其他节点的情况
 func Test_TreeCoordinator_gossipTopologyChange_NoOtherNodes(t *testing.T) {
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	// 不应该 panic（没有其他节点）
@@ -652,7 +652,7 @@ func Test_TreeCoordinator_gossipTopologyChange_NoOtherNodes(t *testing.T) {
 // Test_TreeCoordinator_gossipTopologyChange_WithOtherNodes 测试有其他节点但无 RPCClient
 func Test_TreeCoordinator_gossipTopologyChange_WithOtherNodes(t *testing.T) {
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	// 添加一些节点到 allNodes（模拟其他节点）
@@ -687,7 +687,7 @@ func Test_TreeCoordinator_gossipSync_NoRPCClient(t *testing.T) {
 	// 以下代码在 PR-034 完成后启用
 	/*
 		config := DefaultTreeCoordinatorConfig()
-		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 		require.NoError(t, err)
 		// RPCClient 已删除（PR-Libp2p-TransportCleanup）
 
@@ -704,7 +704,7 @@ func Test_TreeCoordinator_gossipSync_NoOtherNodes(t *testing.T) {
 	// 以下代码在 PR-034 完成后启用
 	/*
 		config := DefaultTreeCoordinatorConfig()
-		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 		require.NoError(t, err)
 
 		// 不应该 panic（没有其他节点）
@@ -720,7 +720,7 @@ func Test_TreeCoordinator_gossipSync_WithOtherNodes(t *testing.T) {
 	// 以下代码在 PR-034 完成后启用
 	/*
 		config := DefaultTreeCoordinatorConfig()
-		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+		coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 		require.NoError(t, err)
 
 		// 添加一些节点到 allNodes
@@ -747,7 +747,7 @@ func Test_TreeCoordinator_gossipSync_WithOtherNodes(t *testing.T) {
 // Test_TreeCoordinator_buildTopologyMetadata_Format 测试元数据格式
 func Test_TreeCoordinator_buildTopologyMetadata_Format(t *testing.T) {
 	config := DefaultTreeCoordinatorConfig()
-	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil)
+	coordinator, err := NewTreeCoordinator("node1", "127.0.0.1:9211", config, nil, nil)
 	require.NoError(t, err)
 
 	// 添加子节点

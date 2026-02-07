@@ -96,26 +96,26 @@ type ClusterPayload struct {
 // ==================== Payload 类型映射 ====================
 
 // PayloadTypeFactory Payload 类型工厂函数（用于创建新实例）
-type PayloadTypeFactory func() interface{}
+type PayloadTypeFactory func() any
 
 // payloadTypeFactories 维护 MessageType 与 Payload 工厂函数的映射
 var payloadTypeFactories = map[MessageType]PayloadTypeFactory{
-	MessageTypePut:     func() interface{} { return &PutPayload{} },
-	MessageTypeGet:     func() interface{} { return &GetPayload{} },
-	MessageTypeDelete:  func() interface{} { return &DeletePayload{} },
-	MessageTypeGossip:  func() interface{} { return &GossipPayload{} },
-	MessageTypeQuorum:  func() interface{} { return &QuorumPayload{} },
-	MessageTypeSync:    func() interface{} { return &TwoPCPreparePayload{} },
-	MessageTypeAck:     func() interface{} { return &TwoPCCommitPayload{} },
-	MessageTypeNack:    func() interface{} { return &TwoPCRollbackPayload{} },
-	MessageTypeCluster: func() interface{} { return &ClusterPayload{} },
+	MessageTypePut:     func() any { return &PutPayload{} },
+	MessageTypeGet:     func() any { return &GetPayload{} },
+	MessageTypeDelete:  func() any { return &DeletePayload{} },
+	MessageTypeGossip:  func() any { return &GossipPayload{} },
+	MessageTypeQuorum:  func() any { return &QuorumPayload{} },
+	MessageTypeSync:    func() any { return &TwoPCPreparePayload{} },
+	MessageTypeAck:     func() any { return &TwoPCCommitPayload{} },
+	MessageTypeNack:    func() any { return &TwoPCRollbackPayload{} },
+	MessageTypeCluster: func() any { return &ClusterPayload{} },
 }
 
 // ==================== Payload 编解码方法 ====================
 
 // EncodePayload 将结构化 Payload 序列化为 []byte
 // 自动绑定 Message.Type 为对应 MessageType
-func (m *Message) EncodePayload(payload interface{}) error {
+func (m *Message) EncodePayload(payload any) error {
 	// 1. 校验 Payload 类型，绑定对应的 MessageType
 	var msgType MessageType
 	switch payload.(type) {
@@ -153,7 +153,7 @@ func (m *Message) EncodePayload(payload interface{}) error {
 
 // DecodePayload 将 Message.Payload 反序列化为对应结构化 Payload
 // 根据 Message.Type 自动匹配 Payload 类型，保证类型安全
-func (m *Message) DecodePayload() (interface{}, error) {
+func (m *Message) DecodePayload() (any, error) {
 	// 1. 检查 MessageType 是否合法
 	factory, ok := payloadTypeFactories[m.Type]
 	if !ok {
@@ -174,14 +174,14 @@ func (m *Message) DecodePayload() (interface{}, error) {
 // ==================== 辅助方法 ====================
 
 // MustEncodePayload 编码 Payload，失败时 panic（仅用于测试）
-func (m *Message) MustEncodePayload(payload interface{}) {
+func (m *Message) MustEncodePayload(payload any) {
 	if err := m.EncodePayload(payload); err != nil {
 		panic(err)
 	}
 }
 
 // MustDecodePayload 解码 Payload，失败时 panic（仅用于测试）
-func (m *Message) MustDecodePayload() interface{} {
+func (m *Message) MustDecodePayload() any {
 	payload, err := m.DecodePayload()
 	if err != nil {
 		panic(err)

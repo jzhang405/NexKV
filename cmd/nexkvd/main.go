@@ -23,6 +23,8 @@ import (
 	"github.com/jzhang405/NexKV/internal/config/logging"
 	"github.com/jzhang405/NexKV/internal/metadata/cluster"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
+	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/urfave/cli/v2"
 )
@@ -56,6 +58,7 @@ type AppContext struct {
 
 	// 核心组件
 	Coordinator *cluster.TreeCoordinator
+	libp2pHost  host.Host // libp2p 主机实例
 
 	// TODO: 待使用 libp2p Stream 重写 RPC 功能
 	// - RPCClient: 使用 libp2p Stream 实现
@@ -288,6 +291,32 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 	}).Info("节点信息初始化成功")
 
 	// =====================================
+	// 步骤 0: 创建 libp2p host
+	// =====================================
+	logging.Info("步骤 0: 创建 libp2p host...")
+
+	// 解析监听地址为 multiaddr
+	maddr, err := multiaddr.NewMultiaddr(listenAddr)
+	if err != nil {
+		return types.NewDaemonParseListenAddrError(fmt.Errorf("解析 multiaddr 失败: %w", err))
+	}
+
+	// 创建 libp2p host
+	libp2pHost, err := libp2p.New(
+		libp2p.ListenAddrs(maddr),
+	)
+	if err != nil {
+		return types.NewDaemonCreateTreeCoordinatorError(fmt.Errorf("创建 libp2p host 失败: %w", err))
+	}
+
+	app.libp2pHost = libp2pHost
+
+	logging.WithFields(map[string]any{
+		"peer_id": libp2pHost.ID(),
+		"addrs":   libp2pHost.Addrs(),
+	}).Info("libp2p host 创建成功")
+
+	// =====================================
 	// 步骤 1: 创建 TreeCoordinator
 	// =====================================
 	logging.Info("步骤 1: 创建 TreeCoordinator...")
@@ -298,6 +327,7 @@ func (app *AppContext) Initialize(cfg *config.Config) error {
 		listenAddr,
 		coordinatorConfig,
 		&cfg.Cluster,
+		libp2pHost,
 	)
 	if err != nil {
 		return types.NewDaemonCreateTreeCoordinatorError(err)
@@ -340,6 +370,13 @@ func (app *AppContext) Shutdown() error {
 	if app.Coordinator != nil {
 		if err := app.Coordinator.Stop(); err != nil {
 			errs = append(errs, types.NewDaemonStopTreeCoordinatorError(err))
+		}
+	}
+
+	// 关闭 libp2p host
+	if app.libp2pHost != nil {
+		if err := app.libp2pHost.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("关闭 libp2p host 失败: %w", err))
 		}
 	}
 

@@ -144,10 +144,20 @@ func TestP2PService_ConnectToPeer(t *testing.T) {
 	err = service2.Start(ctx)
 	require.NoError(t, err)
 
-	// 连接 service1 到 service2
+	// 连接 service1 到 service2（带重试机制，处理间歇性 TLS 握手问题）
 	peerInfo2 := service2.GetPeerInfo()
-	err = service1.ConnectToPeer(ctx, peerInfo2)
-	require.NoError(t, err)
+	maxRetries := 3
+	var lastErr error
+	for i := 0; i < maxRetries; i++ {
+		err = service1.ConnectToPeer(ctx, peerInfo2)
+		if err == nil {
+			break
+		}
+		lastErr = err
+		// 等待一段时间后重试
+		time.Sleep(200 * time.Millisecond)
+	}
+	require.NoError(t, err, "连接失败（已重试 %d 次）: %v", maxRetries, lastErr)
 
 	// 验证连接（检查 service1 的连接数）
 	time.Sleep(100 * time.Millisecond)

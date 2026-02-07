@@ -25,17 +25,17 @@ type ConnectionPool struct {
 
 // PoolConfig 连接池配置
 type PoolConfig struct {
-	MaxStreams    int           // 每个 peer 最大 Stream 数
-	StreamTTL     time.Duration // Stream 最大存活时间
-	MaxMessages   uint64        // 单 Stream 最大消息数
+	MaxStreams  int           // 每个 peer 最大 Stream 数
+	StreamTTL   time.Duration // Stream 最大存活时间
+	MaxMessages uint64        // 单 Stream 最大消息数
 }
 
 // DefaultPoolConfig 返回默认配置
 func DefaultPoolConfig() *PoolConfig {
 	return &PoolConfig{
-		MaxStreams:    10,
-		StreamTTL:     DefaultStreamTTL,
-		MaxMessages:   DefaultMaxMessagesPerStream,
+		MaxStreams:  10,
+		StreamTTL:   DefaultStreamTTL,
+		MaxMessages: DefaultMaxMessagesPerStream,
 	}
 }
 

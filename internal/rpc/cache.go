@@ -27,19 +27,19 @@ const (
 
 // StreamCache Stream 缓存（按 peer ID 分组）
 type StreamCache struct {
-	caches  map[peer.ID]*streamEntry
-	mu      sync.RWMutex
-	ttl     time.Duration
+	caches      map[peer.ID]*streamEntry
+	mu          sync.RWMutex
+	ttl         time.Duration
 	maxMessages uint64
-	metrics *CacheMetrics
-	stopCh  chan struct{}
+	metrics     *CacheMetrics
+	stopCh      chan struct{}
 }
 
 // streamEntry 单个 Stream 缓存条目
 type streamEntry struct {
-	stream      network.Stream
-	createdAt   time.Time
-	lastUsedAt  time.Time
+	stream       network.Stream
+	createdAt    time.Time
+	lastUsedAt   time.Time
 	messageCount uint64
 }
 
@@ -81,11 +81,11 @@ func NewCacheMetrics() *CacheMetrics {
 // NewStreamCache 创建 Stream 缓存
 func NewStreamCache(ttl time.Duration, maxMessages uint64) *StreamCache {
 	cache := &StreamCache{
-		caches:     make(map[peer.ID]*streamEntry),
-		ttl:        ttl,
+		caches:      make(map[peer.ID]*streamEntry),
+		ttl:         ttl,
 		maxMessages: maxMessages,
-		metrics:    NewCacheMetrics(),
-		stopCh:     make(chan struct{}),
+		metrics:     NewCacheMetrics(),
+		stopCh:      make(chan struct{}),
 	}
 
 	// 启动后台清理协程
@@ -116,17 +116,17 @@ func (c *StreamCache) Get(ctx context.Context, h host.Host, pid peer.ID) (networ
 	}
 
 	c.caches[pid] = &streamEntry{
-		stream:      stream,
-		createdAt:   time.Now(),
-		lastUsedAt:  time.Now(),
+		stream:       stream,
+		createdAt:    time.Now(),
+		lastUsedAt:   time.Now(),
 		messageCount: 1,
 	}
 	c.metrics.Created.Inc()
 	c.metrics.Active.Set(float64(len(c.caches)))
 
 	logging.WithFields(map[string]any{
-		"peer_id":     pid,
-		"cache_size":  len(c.caches),
+		"peer_id":    pid,
+		"cache_size": len(c.caches),
 	}).Info("创建新 Stream")
 
 	return stream, nil
@@ -147,9 +147,9 @@ func (c *StreamCache) Put(stream network.Stream) error {
 
 	// 添加到缓存
 	c.caches[pid] = &streamEntry{
-		stream:      stream,
-		createdAt:   time.Now(),
-		lastUsedAt:  time.Now(),
+		stream:       stream,
+		createdAt:    time.Now(),
+		lastUsedAt:   time.Now(),
 		messageCount: 0,
 	}
 	c.metrics.Active.Set(float64(len(c.caches)))

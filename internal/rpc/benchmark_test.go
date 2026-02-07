@@ -303,6 +303,76 @@ func BenchmarkRPC_Throughput(b *testing.B) {
 	b.ReportMetric(float64(totalBytes)/float64(b.N), "B/op")
 }
 
+// BenchmarkRPC_BatchCall 批量 RPC 调用基准测试
+func BenchmarkRPC_BatchCall(b *testing.B) {
+	serverHost, server, client, cleanup := setupBenchmarkEnvironment(b)
+	defer cleanup()
+
+	handler := func(ctx context.Context, req []byte) ([]byte, error) {
+		return req, nil
+	}
+	require.NoError(b, server.RegisterHandlerFunc("Benchmark", handler))
+
+	ctx := context.Background()
+
+	// 准备批量请求
+	batchSize := 10
+	reqs := make([]BatchRequest, batchSize)
+	for i := 0; i < batchSize; i++ {
+		reqs[i] = BatchRequest{
+			Method: "Benchmark",
+			Body:   []byte("benchmark request"),
+			ID:     "test-batch",
+		}
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		result := client.CallParallel(ctx, serverHost.ID(), reqs, nil)
+		if result.Success != batchSize {
+			b.Fatalf("Expected %d successful calls, got %d", batchSize, result.Success)
+		}
+	}
+}
+
+// BenchmarkRPC_BatchCall_Parallel 并发批量 RPC 调用基准测试
+func BenchmarkRPC_BatchCall_Parallel(b *testing.B) {
+	serverHost, server, client, cleanup := setupBenchmarkEnvironment(b)
+	defer cleanup()
+
+	handler := func(ctx context.Context, req []byte) ([]byte, error) {
+		return req, nil
+	}
+	require.NoError(b, server.RegisterHandlerFunc("Benchmark", handler))
+
+	ctx := context.Background()
+
+	// 准备批量请求
+	batchSize := 10
+	reqs := make([]BatchRequest, batchSize)
+	for i := 0; i < batchSize; i++ {
+		reqs[i] = BatchRequest{
+			Method: "Benchmark",
+			Body:   []byte("benchmark request"),
+			ID:     "test-batch",
+		}
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			result := client.CallParallel(ctx, serverHost.ID(), reqs, nil)
+			if result.Success != batchSize {
+				b.Fatalf("Expected %d successful calls, got %d", batchSize, result.Success)
+			}
+		}
+	})
+}
+
 // ========================================
 // 压力测试
 // ========================================

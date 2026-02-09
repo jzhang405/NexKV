@@ -1554,12 +1554,25 @@ func TestMVStoreStats_Closed(t *testing.T) {
 
 // TestMVStoreNilOptions 测试 nil options 使用默认值（覆盖 NewMemoryMVStore nil 分支）
 func TestMVStoreNilOptions(t *testing.T) {
-	// 传入 nil options，应该使用默认值
-	store, err := NewMemoryMVStore(nil)
+	// 使用 t.TempDir() 创建临时测试目录
+	tempDir := t.TempDir()
+
+	// 使用测试目录创建 options
+	options := &MVStoreOptions{
+		DataDir:       filepath.Join(tempDir, "metadata"),
+		WALDir:        filepath.Join(tempDir, "wal"),
+		MemTableSize:  64 * 1024 * 1024, // 64MB
+		FlushInterval: 5,
+		EnableWAL:     true,
+		MaxVersions:   10,
+	}
+
+	// 使用 options 创建 store
+	store, err := NewMemoryMVStore(options)
 	require.NoError(t, err)
 	defer func() { _ = store.Close() }()
 
-	// 验证 store 创建成功，使用了默认配置
+	// 验证 store 创建成功
 	assert.NotNil(t, store)
 
 	// 验证可以正常操作

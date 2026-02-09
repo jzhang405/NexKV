@@ -159,7 +159,7 @@ flowchart TD
   - 预计减少约 50 行代码
 
 - **后续优化**（本次仅清理，不实施）：
-  - 创建 `internal/errs` 包，实现统一结构化错误
+  - 创建 `internal/error` 包，实现统一结构化错误
   - 实现 Error ID 自动生成（格式：`ERR-20260206165030-8f2k`）
   - 实现堆栈自动捕获
   - 添加统一错误构造函数（NewParamError、NewBizError、NewSysError）

@@ -12,5 +12,5 @@ p2p:
 # 注意：
 # - listen_addr 必须使用 multiaddr 格式（如 /ip4/0.0.0.0/tcp/4001）
 # - private_key_path 指向 libp2p 私钥文件
-# - mDNS 和 DHT 默认启用，用于节点发现
+# - mDNS 默认启用，用于局域网节点发现
 # - 连接超时默认 10 秒

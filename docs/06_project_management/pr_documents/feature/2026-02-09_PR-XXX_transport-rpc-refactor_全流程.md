@@ -130,11 +130,40 @@ flowchart TD
   - 检查 `constants.go` 中可内联的常量
   - 统一魔法数字为命名常量
 
-**2. RPC 模块精简（优先级 1）**
+**2. 统一错误处理（优先级 1）**
 
-- **统一错误处理**：
-  - 将分散的错误处理逻辑整合到 `errors.go`
-  - 减少约 300 行重复代码
+- **背景说明**：
+  - 参考 `thoughts/2026-02-06-pr-ERR-unified-define.MD` 中的最佳实践
+  - `internal/metadata/types/errors.go` 中有 10 个未使用的预定义错误变量
+  - 当前错误处理分散，缺少统一 Error ID 生成和堆栈跟踪
+
+- **删除未使用的错误变量**：
+  - **UDP 错误**（3 个）：
+    - `ErrUDPFragmentTimeout` - UDP 分片重组超时
+    - `ErrUDPSendFailed` - UDP 发送系统调用失败
+    - `ErrUDPReceiveFailed` - UDP 接收失败
+  - **TCP 错误**（2 个）：
+    - `ErrTCPConnFailed` - TCP 连接失败
+    - `ErrTCPSendTimeout` - TCP 发送超时
+  - **帧错误**（2 个）：
+    - `ErrFrameTooLarge` - 帧过大
+    - `ErrInvalidFrameFormat` - 无效帧格式
+  - **业务错误**（3 个）：
+    - `ErrMsgTooLarge` - 消息大小超过限制
+    - `ErrInvalidAddr` - 地址格式无效
+    - `ErrCodecFailed` - 消息编解码失败
+
+- **清理冗余代码**：
+  - 删除 `IsProtocolError` 函数（依赖未使用的错误变量）
+  - 清理相关的协议错误分类逻辑
+  - 预计减少约 50 行代码
+
+- **后续优化**（本次仅清理，不实施）：
+  - 创建 `internal/errs` 包，实现统一结构化错误
+  - 实现 Error ID 自动生成（格式：`ERR-20260206165030-8f2k`）
+  - 实现堆栈自动捕获
+  - 添加统一错误构造函数（NewParamError、NewBizError、NewSysError）
+  - 参考 thoughts 文档中的完整方案
 
 - **简化测试逻辑**：
   - `integration_test.go`（719 行）→ 拆分为多个集成测试场景

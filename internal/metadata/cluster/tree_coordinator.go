@@ -694,8 +694,6 @@ func (tc *TreeCoordinator) discoverAndJoin() {
 //  2. 自动过滤自身地址（决策 3）
 //  3. 降级处理无效地址（决策 2）
 //  4. 合并内存中的已知节点（向后兼容）
-//
-//nolint:unused // TODO: 待 libp2p Stream 重写后使用
 func (tc *TreeCoordinator) getKnownNodes() []*Node {
 	nodes := make([]*Node, 0)
 
@@ -763,8 +761,6 @@ func (tc *TreeCoordinator) getKnownNodes() []*Node {
 }
 
 // containsNodeAddr 检查节点地址是否已存在于列表中
-//
-//nolint:unused // TODO: 待 libp2p Stream 重写后使用
 func containsNodeAddr(nodes []*Node, addr string) bool {
 	for _, node := range nodes {
 		if node.Addr.TCPAddr() == addr {
@@ -780,8 +776,6 @@ func containsNodeAddr(nodes []*Node, addr string) bool {
 //   - 优先选择 Level 最小的节点（树的最底层）
 //   - 确保 Level < MaxLevel
 //   - 确保子节点数 < MaxChildren
-//
-//nolint:unused // TODO: 待 libp2p Stream 重写后使用
 func (tc *TreeCoordinator) selectBestParent(nodes []*Node) *Node {
 	var bestParent *Node
 	minLevel := int(^uint(0) >> 1) // 最大 int 值

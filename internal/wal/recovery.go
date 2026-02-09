@@ -6,6 +6,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jzhang405/NexKV/internal/config/logging"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
@@ -218,7 +219,7 @@ func (r *RecoveryManager) CreateCheckpoint(
 	metadata := map[string]any{
 		"version":     nextVersion,
 		"entry_count": len(data),
-		"created_at":  "2026-01-19T00:00:00Z", // TODO: 使用实际时间
+		"created_at":  time.Now().Format(time.RFC3339),
 	}
 
 	// 3. 创建 Snapshot 管理器

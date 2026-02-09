@@ -1,11 +1,18 @@
 # TCP/UDP 统一 TLV 消息协议详细设计文档
 
+> **⚠️ 已废弃**: 本文档描述的自研 TLV 协议已被 **libp2p** 框架替代
+> **废弃日期**: 2026-02-09
+> **归档位置**: [`/docs/06_project_management/brainstorm/archive/README.md`](../06_project_management/brainstorm/archive/README.md)
+> **当前实现**: 使用 libp2p Transport，详见 [`/docs/08_api/transport.md`](../08_api/transport.md)
+
+---
+
 > **文档类型**: 详细设计文档 (DDD)
 > **创建日期**: 2026-01-20
 > **版本**: v2.0 (TLV 协议)
-> **状态**: 📋 待评审
+> **状态**: ⚠️ 已废弃（仅供参考）
 > **维护者**: NexKV 开发团队
-> **相关 Brainstorm**: `transport_2026-01-20_tcp-udp-unified-tlv-protocol.md`
+> **相关 Brainstorm**: [`transport_2026-01-20_tcp-udp-unified-tlv-protocol.md`](../06_project_management/brainstorm/archive/transport_2026-01-20_tcp-udp-unified-tlv-protocol.md)
 
 ---
 

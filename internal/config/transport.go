@@ -50,5 +50,4 @@ type ConnectionMgrConfig struct {
 // DiscoveryConfig 节点发现配置
 type DiscoveryConfig struct {
 	MDNSEnabled bool `yaml:"mdns_enabled"`
-	DHTEnabled  bool `yaml:"dht_enabled"`
 }

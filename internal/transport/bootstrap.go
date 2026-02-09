@@ -112,15 +112,6 @@ func hasEnoughPeers(h host.Host, minPeers int) bool {
 	return len(h.Network().Peers()) >= minPeers
 }
 
-// SetupBootstrapDHT 配置 DHT 的 Bootstrap 节点
-//
-// 将 Bootstrap 配置应用到 DHT 实例
-func SetupBootstrapDHT(dhtInstance any, cfg *BootstrapConfig) error {
-	// TODO: 实现 DHT Bootstrap 配置
-	// 这需要访问 DHT 的 Bootstrap 方法，具体实现取决于使用的 DHT 库
-	return nil
-}
-
 // BootstrapPeersFromStrings 从字符串列表创建 Bootstrap 节点
 //
 // 支持格式:

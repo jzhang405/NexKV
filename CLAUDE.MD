@@ -108,6 +108,81 @@ make build && make lint && make test && make fmt && make clean && echo "✅ 所�
 
 > 📖 **详细流程**：参考 `docs/workflow.md`
 
+### 预研究模式（Spike）
+
+**适用场景**：
+- ✅ 需求不明确，需要先探索可行性
+- ✅ 技术方案不确定，需要验证架构设计
+- ✅ 验证性任务（POC、原型开发）
+- ✅ 学习性任务（研究新技术/框架）
+
+**工作流程**：
+
+```mermaid
+flowchart LR
+    A[1. 创建 spike/* 分支] --> B[2. 轻量级记录探索过程]
+    B --> C{3. 形成结论}
+    C -->|方案可行| D[转入正式 PR 流程<br/>创建 feature/* 分支]
+    C -->|方案不可行| E[记录原因<br/>归档分支]
+    C -->|需要更多调研| F[继续探索]
+```
+
+**具体步骤**：
+
+| 步骤 | 说明 | 产出物 |
+|------|------|--------|
+| **1. 创建 Spike 分支** | 使用 `spike/` 前缀而非 `feature/` | `spike/技术方向-简述` |
+| **2. 技术调研笔记** | 记录调研过程、关键发现 | Markdown 笔记 |
+| **3. 方案对比分析** | 多方案优缺点对比 | 对比表格/决策矩阵 |
+| **4. POC 验证代码（可选）** | 验证关键技术点 | 可运行的 Demo |
+| **5. 形成结论** | 明确下一步行动 | 决策报告 |
+
+**与 PR 流程的区别**：
+
+| 对比项 | PR 流程 | 预研究模式 |
+|--------|---------|------------|
+| **分支命名** | `feature/XXX` | `spike/XXX` |
+| **文档要求** | Pre + Post 完整文档 | 轻量级调研笔记 |
+| **代码审查** | 强制 Code Review | 可选 |
+| **测试覆盖** | 必须 80%+ | 不强制 |
+| **合并策略** | 合并到 main | 归档或转为 feature |
+| **适用场景** | 明确的功能开发 | 技术探索/验证 |
+
+**预研究报告模板**：
+
+```markdown
+# [技术方向] 预研究报告
+
+## 调研目标
+- 核心问题：
+- 预期产出：
+
+## 方案对比
+| 方案 | 优点 | 缺点 | 适用场景 |
+|------|------|------|---------|
+| 方案A | ... | ... | ... |
+| 方案B | ... | ... | ... |
+
+## 技术验证
+- POC 代码位置：
+- 验证结果：
+- 性能数据：
+
+## 结论与建议
+- 推荐方案：
+- 理由：
+- 下一步行动：
+- [ ] 转入正式 PR 流程
+- [ ] 继续深入调研
+- [ ] 放弃该方向
+```
+
+**关键原则**：
+- Spike 分支**不直接合并**到 main
+- 预研究完成后必须**明确下一步**
+- 调研笔记归档到 `docs/07_spike/` 目录
+- 价值验证后及时转入正式开发流程
+
 ---
 
 ## AI 团队与分工
@@ -199,6 +274,75 @@ graph LR
 - ❌ 超大规模集群（>100 节点）
 
 > 📖 **详细设计**：参考 `docs/02_design/` 目录下的架构文档
+
+---
+
+### 双引擎架构
+
+> **决策日期**：2026-02-09
+> **相关文档**：`docs/07_spike/kv-storage-engine-arch-analysis.md` | `docs/02_design/decisions/005_external_kv_engine_selection.md`
+
+NexKV 采用 **双引擎架构**，针对不同数据类型使用不同的存储引擎：
+
+| 组件 | 存储引擎 | 数据类型 | 状态 |
+|------|----------|----------|------|
+| **Metadata KV** | sync.Map + MVStore | 元数据（节点、分片、副本） | ✅ 已实现 |
+| **External KV** | Bf-Tree | 业务数据（应用数据） | 🔄 待实现 |
+
+#### Metadata KV：sync.Map
+
+**使用场景**：元数据管理（节点、分片、副本、锁等）
+
+**存储内容**：
+| 数据类型 | Key 格式 | 示例 |
+|---------|----------|------|
+| Host 元数据 | `host:{hostID}` | `host:node-001` |
+| 分片元数据 | `shard:{shardID}` | `shard:shard-001` |
+| 节点元数据 | `node:{nodeID}` | `node:node-001` |
+
+**访问模式**：
+- 点查询：90%（GetHost、GetShard）
+- 前缀扫描：8%（ListAllHosts）
+- 状态更新：2%（UpdateHostStatus）
+
+**选择理由**：
+- ✅ sync.Map O(1) 哈希查找，点查询最优
+- ✅ Lock-free 并发控制，高并发无锁竞争
+- ✅ 双层缓存架构（内存 + MVStore）
+- ✅ 已验证稳定（`internal/metadata/cluster/host_manager.go`）
+
+#### External KV：Bf-Tree
+
+**使用场景**：业务数据存储（应用数据）
+
+**核心特性**：
+| 特性 | 说明 | 性能指标 |
+|------|------|---------|
+| 写入优化 | WAL + Mini-Page | 200万 ops/s |
+| 读取优化 | 内存优先 | O(1) 内存命中 |
+| 范围查询 | 有序扫描 | O(log N + M) |
+| 并发控制 | Lock-free SMR | 无锁竞争 |
+| 大容量 | SSTable 持久化 | 数据可超出内存 |
+
+**接口设计**：
+```go
+// ExternalStore 外部数据存储接口
+type ExternalStore interface {
+    // 基础 CRUD
+    Put(key string, value []byte) error
+    Get(key string) ([]byte, error)
+    Delete(key string) error
+
+    // 范围查询
+    Scan(start, end string) (KVIterator, error)
+
+    // 批量操作
+    BatchPut(kvs []KeyValue) error
+    BatchGet(keys []string) (map[string][]byte, error)
+}
+```
+
+**实施计划**：预计 4 个月完成移植（参考 ADR 005）
 
 ---
 
@@ -406,6 +550,6 @@ make build && make lint && make test && make fmt && make clean
 
 ---
 
-**文档版本**：v2.1 (精简版 + 技术联合创始人模式)
+**文档版本**：v2.2 (新增预研究模式)
 **最后更新**：2026-02-09
 **维护者**：NexKV 开发团队

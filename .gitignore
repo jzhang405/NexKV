@@ -38,5 +38,3 @@ go.work.sum
 .serena/
 bin/nexkv*
 bin/nexkvd*
-internal/wal/data
-thoughts/

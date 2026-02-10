@@ -208,10 +208,14 @@ type MVStoreOptions struct {
 }
 
 // DefaultOptions 默认配置
+//
+// 注意：DataDir 和 WALDir 应该通过配置来设置
+// 正式环境使用：{NEXKV_BASE_DIR}/{host_id}/metadata 和 {NEXKV_BASE_DIR}/{host_id}/wal
+// 测试环境使用：临时目录（t.TempDir()）
 func DefaultOptions() *MVStoreOptions {
 	return &MVStoreOptions{
-		DataDir:       "./data/metadata",
-		WALDir:        "./data/wal",
+		DataDir:       "",               // 空值表示需要通过配置设置，降级使用 "./data/metadata"
+		WALDir:        "",               // 空值表示需要通过配置设置，降级使用 "./data/wal"
 		MemTableSize:  64 * 1024 * 1024, // 64MB
 		FlushInterval: 5,                // 5 秒
 		EnableWAL:     true,

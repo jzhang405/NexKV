@@ -237,3 +237,7 @@ func (m *MetadataAPI) ListOperations(ctx context.Context) ([]*types.OperationInf
 
 	return ops, nil
 }
+
+// DIP 修复：显式接口实现检查
+// 确保 MetadataAPI 实现了 api.Provider 接口
+var _ Provider = (*MetadataAPI)(nil)

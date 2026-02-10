@@ -11,6 +11,8 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,11 +26,36 @@ import (
 
 	metadataconfig "github.com/jzhang405/NexKV/internal/config"
 	"github.com/jzhang405/NexKV/internal/config/logging"
+	"github.com/jzhang405/NexKV/internal/metadata/api"
+	"github.com/jzhang405/NexKV/internal/metadata/kvstore"
 	"github.com/jzhang405/NexKV/internal/rpc"
+	store "github.com/jzhang405/NexKV/internal/wal"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/vmihailenco/msgpack/v5"
 )
+
+// ========================================
+// 元数据接口（避免循环导入）
+// ========================================
+
+// MetadataNodeInfo 节点元数据接口
+type MetadataNodeInfo interface {
+	GetNodeID() string
+	SetNodeID(string)
+	GetHostID() string
+	SetHostID(string)
+	GetRole() string
+	SetRole(string)
+	GetParentID() string
+	SetParentID(string)
+	GetLevel() int
+	SetLevel(int)
+	GetStatus() string
+	SetStatus(string)
+	GetPriority() int
+	SetPriority(int)
+}
 
 // ========================================
 // 核心数据结构（双层架构）
@@ -254,6 +281,13 @@ type TreeCoordinator struct {
 	allNodes map[string]*Node
 	nodesMu  sync.RWMutex
 
+	// 元数据管理（PR-MetadataKV）
+	//nolint:unused // 阶段 3 集成时使用
+	metadataKV  kvstore.Store // 元数据 KV 存储接口（DIP 修复：依赖抽象）
+	metadataAPI api.Provider  // 元数据 API 接口（DIP 修复：依赖抽象）
+	metadataMu  sync.RWMutex  // 保护元数据字段
+	mvStore     store.MVStore // MVStore 存储引擎（保存引用用于关闭）
+
 	// 状态管理
 	state atomic.Int32 // CoordinatorState
 
@@ -262,6 +296,11 @@ type TreeCoordinator struct {
 
 	// 心跳序列号计数器（PR-034：实现心跳机制）
 	heartbeatSeq atomic.Uint64
+
+	// P0 修复：Goroutine 并发控制信号量
+	// 限制并发 goroutine 数量，防止无限制创建导致资源耗尽
+	gossipSemaphore    chan struct{} // Gossip 并发限制
+	heartbeatSemaphore chan struct{} // 心跳并发限制
 
 	// 集群修复操作（P0-1 修复：添加并发控制）
 	// fixMu    sync.Mutex // 修复操作专用锁 //nolint:unused // TODO: 待 libp2p Stream 重写后使用
@@ -472,6 +511,9 @@ func NewTreeCoordinator(
 		allNodes:      make(map[string]*Node),
 		stopCh:        make(chan struct{}),
 		stats:         &TreeCoordinatorStats{},
+		// P0 修复：初始化 goroutine 并发控制信号量
+		gossipSemaphore:    make(chan struct{}, 20),  // 最多 20 个并发 Gossip goroutine
+		heartbeatSemaphore: make(chan struct{}, 100), // 最多 100 个并发心跳 goroutine
 	}
 
 	// PR-Libp2p-RPC: 初始化 RPC 组件（如果提供了 libp2pHost）
@@ -546,6 +588,17 @@ func (tc *TreeCoordinator) Start() error {
 		}
 
 		logging.WithField("node_id", tc.localNode.NodeID).Info("RPC 服务端启动成功")
+
+		// 注册元数据 RPC 处理器
+		if err := tc.registerMetadataRPCHandlers(); err != nil {
+			logging.WithField("error", err).Warn("注册元数据 RPC 处理器失败")
+		}
+
+		// 初始化元数据存储（使用配置的路径）
+		dataDir := tc.getMetadataDir()
+		if err := tc.setupMetadataStorage(dataDir); err != nil {
+			logging.WithField("error", err).Warn("初始化元数据存储失败，将使用内存节点管理")
+		}
 	}
 
 	// 标记本地节点就绪
@@ -602,6 +655,11 @@ func (tc *TreeCoordinator) Stop() error {
 
 	// 关闭停止信号
 	close(tc.stopCh)
+
+	// 关闭元数据 KV 存储
+	if err := tc.closeMetadataKV(); err != nil {
+		logging.WithField("error", err).Warn("关闭元数据 KV 存储失败")
+	}
 
 	// 离开树形结构
 	tc.leaveTree()
@@ -882,15 +940,16 @@ func (tc *TreeCoordinator) sendJoinRequest(targetNode *Node) error {
 		return types.NewClusterCoordinatorError("加入请求被拒绝", fmt.Errorf("%s", joinResp.Reason))
 	}
 
-	// 更新本地节点信息
+	// 更新本地节点信息并添加父节点到 allNodes（合并锁区域）
 	tc.nodesMu.Lock()
+	defer tc.nodesMu.Unlock()
+
+	// 更新本地节点
 	tc.localNode.ParentID = joinResp.ParentID
 	tc.localNode.Level = joinResp.Level
 	tc.localNode.Status = NodeStatusReady
-	tc.nodesMu.Unlock()
 
 	// 添加父节点到 allNodes
-	tc.nodesMu.Lock()
 	if _, exists := tc.allNodes[joinResp.ParentID]; !exists {
 		tc.allNodes[joinResp.ParentID] = &Node{
 			NodeID: joinResp.ParentID,
@@ -899,7 +958,6 @@ func (tc *TreeCoordinator) sendJoinRequest(targetNode *Node) error {
 			Status: NodeStatusReady,
 		}
 	}
-	tc.nodesMu.Unlock()
 
 	return nil
 }
@@ -958,7 +1016,12 @@ func (tc *TreeCoordinator) sendHeartbeat() {
 		tc.nodesMu.RUnlock()
 
 		if exists {
-			go tc.sendHeartbeatToNode(parent, reqBody)
+			// P0 修复：使用信号量限制并发 goroutine 数量
+			tc.heartbeatSemaphore <- struct{}{}
+			go func(node *Node) {
+				defer func() { <-tc.heartbeatSemaphore }()
+				tc.sendHeartbeatToNode(node, reqBody)
+			}(parent)
 		}
 	}
 
@@ -972,8 +1035,13 @@ func (tc *TreeCoordinator) sendHeartbeat() {
 	}
 	tc.nodesMu.RUnlock()
 
+	// P0 修复：使用信号量限制并发 goroutine 数量
 	for _, child := range children {
-		go tc.sendHeartbeatToNode(child, reqBody)
+		tc.heartbeatSemaphore <- struct{}{}
+		go func(node *Node) {
+			defer func() { <-tc.heartbeatSemaphore }()
+			tc.sendHeartbeatToNode(node, reqBody)
+		}(child)
 	}
 }
 
@@ -1590,6 +1658,36 @@ func (tc *TreeCoordinator) IsRunning() bool {
 }
 
 // ========================================
+// 路径管理（PR-037: 三级配置结构）
+// ========================================
+
+// getMetadataDir 获取元数据目录
+// 返回 {base_dir}/{host_id}/metadata
+// base_dir 从 clusterConfig.BaseDir 获取（支持 NEXKV_BASE_DIR 环境变量）
+func (tc *TreeCoordinator) getMetadataDir() string {
+	if tc.clusterConfig == nil {
+		return "./data/metadata" // 降级到相对路径
+	}
+
+	baseDir := tc.clusterConfig.BaseDir
+
+	// 展开波浪号
+	if strings.HasPrefix(baseDir, "~/") {
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			baseDir = filepath.Join(homeDir, baseDir[2:])
+		}
+	}
+
+	// 使用 localNode.HostID 构建路径
+	hostID := tc.localNode.HostID
+	if hostID == "" {
+		hostID = "default"
+	}
+
+	return filepath.Join(baseDir, hostID, "metadata")
+}
+
+// ========================================
 // 动态扩缩容支持（方案 A）
 // ========================================
 
@@ -1669,7 +1767,7 @@ func (tc *TreeCoordinator) AddNode(nodeID, addr string) error {
 		"max_depth": tc.config.MaxLevel,
 	}).Info("添加节点到集群（在线扩容）")
 
-	// 通过 Gossip 协议扩散拓扑变更
+	// 通过 Gossip 协议扩散拓扑变更（P0 修复：内部已使用信号量控制并发）
 	go tc.gossipTopologyChange("add", nodeID, parentID, newNodeLevel)
 	// TODO: 如果需要数据迁移，触发后台迁移任务
 
@@ -2249,8 +2347,11 @@ func (tc *TreeCoordinator) gossipTopologyChange(operation, nodeID, parentID stri
 	}
 	tc.nodesMu.RUnlock()
 
+	// P0 修复：使用信号量限制并发 goroutine 数量
 	for _, node := range nodes {
+		tc.gossipSemaphore <- struct{}{}
 		go func(n *Node) {
+			defer func() { <-tc.gossipSemaphore }()
 			if err := tc.sendGossipMessage(n, reqBody); err != nil {
 				logging.WithField("error", err).WithField("node", n.NodeID).Debug("发送 Gossip 消息失败")
 			}
@@ -2290,71 +2391,6 @@ func (tc *TreeCoordinator) sendGossipMessage(targetNode *Node, reqBody []byte) e
 // ========================================
 // Gossip 周期性同步
 // ========================================
-
-// gossipLoop Gossip 周期性同步循环
-//
-// PR-034 实现：周期性地与其他节点同步拓扑信息
-// TODO: PR-034 完成后启用此函数
-/*
-func (tc *TreeCoordinator) gossipLoop() {
-	ticker := time.NewTicker(10 * time.Second) // 默认 10 秒同步一次
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			tc.gossipSync()
-
-		case <-tc.stopCh:
-			return
-		}
-	}
-}
-*/
-
-// gossipSync 周期性同步拓扑信息
-// TODO: PR-034 完成后启用此函数
-/*
-func (tc *TreeCoordinator) gossipSync() {
-	// 检查 RPCClient 是否可用
-	if tc.RPCClient == nil {
-		return
-	}
-
-	// 获取所有已知节点
-	tc.nodesMu.RLock()
-	nodes := make([]*Node, 0, len(tc.allNodes))
-	for _, node := range tc.allNodes {
-		if node.NodeID != tc.localNode.NodeID && node.Status == NodeStatusReady {
-			nodes = append(nodes, node)
-		}
-	}
-	tc.nodesMu.RUnlock()
-
-	if len(nodes) == 0 {
-		return
-	}
-
-	// 随机选择一个节点进行同步
-	targetIdx := int(time.Now().UnixNano()) % len(nodes)
-	targetNode := nodes[targetIdx]
-
-	// 构造同步消息
-	syncMsg := &transport.NodeSyncMessage{
-		BaseMessage: transport.BaseMessage{MessageType: types.MessageTypeNodeSync},
-		Version:     uint64(time.Now().Unix()),
-		Metadata:    tc.buildTopologyMetadata(),
-	}
-
-	// 发送同步消息
-	if err := tc.sendGossipMessage(targetNode, syncMsg); err != nil {
-		logging.WithFields(map[string]any{
-			"target_node": targetNode.NodeID,
-			"error":       err,
-		}).Debug("周期性 Gossip 同步失败")
-	}
-}
-*/
 
 // buildTopologyMetadata 构造拓扑元数据
 func (tc *TreeCoordinator) buildTopologyMetadata() map[string][]byte {

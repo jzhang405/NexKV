@@ -184,27 +184,27 @@ func TestMetadataAPI_NodeOperations(t *testing.T) {
 
 	// 添加节点
 	node1 := &types.NodeInfo{
-		NodeID:    "node-001",
-		HostID:    "host-001",
-		Role:      types.NodeRoleLeaf,
-		Addr:      types.NodeAddress{Host: "192.168.1.10", TCPPort: 9000},
-		ParentID:  "parent-001",
-		Level:     2,
-		Status:    types.NodeStatusReady,
-		Priority:  0,
-		Version:   100,
+		NodeID:   "node-001",
+		HostID:   "host-001",
+		Role:     types.NodeRoleLeaf,
+		Addr:     types.NodeAddress{Host: "192.168.1.10", TCPPort: 9000},
+		ParentID: "parent-001",
+		Level:    2,
+		Status:   types.NodeStatusReady,
+		Priority: 0,
+		Version:  100,
 	}
 
 	node2 := &types.NodeInfo{
-		NodeID:    "node-002",
-		HostID:    "host-002",
-		Role:      types.NodeRoleLeaf,
-		Addr:      types.NodeAddress{Host: "192.168.1.11", TCPPort: 9000},
-		ParentID:  "parent-001",
-		Level:     2,
-		Status:    types.NodeStatusReady,
-		Priority:  0,
-		Version:   101,
+		NodeID:   "node-002",
+		HostID:   "host-002",
+		Role:     types.NodeRoleLeaf,
+		Addr:     types.NodeAddress{Host: "192.168.1.11", TCPPort: 9000},
+		ParentID: "parent-001",
+		Level:    2,
+		Status:   types.NodeStatusReady,
+		Priority: 0,
+		Version:  101,
 	}
 
 	err = api.SetNodeInfo(ctx, node1)

@@ -70,20 +70,20 @@ type MetadataError interface {
 	// Key 返回错误相关的键
 	Key() string
 	// Code 返回错误代码
-	Code() string
+	Code() ErrorCode
 }
 
 // metadataError 元数据错误实现
 type metadataError struct {
 	namespace string
 	key       string
-	code      string
+	code      ErrorCode
 	message   string
 	cause     error
 }
 
 // NewMetadataError 创建元数据错误
-func NewMetadataError(namespace, key, code, message string, cause error) MetadataError {
+func NewMetadataError(namespace, key string, code ErrorCode, message string, cause error) MetadataError {
 	return &metadataError{
 		namespace: namespace,
 		key:       key,
@@ -112,7 +112,7 @@ func (e *metadataError) Key() string {
 }
 
 // Code 返回错误代码
-func (e *metadataError) Code() string {
+func (e *metadataError) Code() ErrorCode {
 	return e.code
 }
 
@@ -121,22 +121,30 @@ func (e *metadataError) Unwrap() error {
 	return e.cause
 }
 
+// ErrorCode 错误代码类型
+type ErrorCode string
+
+// String 返回错误代码的字符串表示
+func (c ErrorCode) String() string {
+	return string(c)
+}
+
 // 错误代码常量
 const (
-	ErrCodeNamespaceNotFound  = "NAMESPACE_NOT_FOUND"
-	ErrCodeKeyNotFound        = "KEY_NOT_FOUND"
-	ErrCodeVersionNotFound    = "VERSION_NOT_FOUND"
-	ErrCodeInvalidKeyFormat   = "INVALID_KEY_FORMAT"
-	ErrCodeEncodingFailed     = "ENCODING_FAILED"
-	ErrCodeDecodingFailed     = "DECODING_FAILED"
-	ErrCodeStoreClosed        = "STORE_CLOSED"
-	ErrCodeInvalidNamespace   = "INVALID_NAMESPACE"
-	ErrCodeEmptyKey           = "EMPTY_KEY"
-	ErrCodeNilValue           = "NIL_VALUE"
-	ErrCodeConcurrentWrite    = "CONCURRENT_WRITE"
-	ErrCodeCompressionFailed  = "COMPRESSION_FAILED"
-	ErrCodeDecompressionFailed = "DECOMPRESSION_FAILED"
-	ErrCodeStoreNotInitialized = "STORE_NOT_INITIALIZED"
+	ErrCodeNamespaceNotFound   ErrorCode = "NAMESPACE_NOT_FOUND"
+	ErrCodeKeyNotFound         ErrorCode = "KEY_NOT_FOUND"
+	ErrCodeVersionNotFound     ErrorCode = "VERSION_NOT_FOUND"
+	ErrCodeInvalidKeyFormat    ErrorCode = "INVALID_KEY_FORMAT"
+	ErrCodeEncodingFailed      ErrorCode = "ENCODING_FAILED"
+	ErrCodeDecodingFailed      ErrorCode = "DECODING_FAILED"
+	ErrCodeStoreClosed         ErrorCode = "STORE_CLOSED"
+	ErrCodeInvalidNamespace    ErrorCode = "INVALID_NAMESPACE"
+	ErrCodeEmptyKey            ErrorCode = "EMPTY_KEY"
+	ErrCodeNilValue            ErrorCode = "NIL_VALUE"
+	ErrCodeConcurrentWrite     ErrorCode = "CONCURRENT_WRITE"
+	ErrCodeCompressionFailed   ErrorCode = "COMPRESSION_FAILED"
+	ErrCodeDecompressionFailed ErrorCode = "DECOMPRESSION_FAILED"
+	ErrCodeStoreNotInitialized ErrorCode = "STORE_NOT_INITIALIZED"
 )
 
 // IsNamespaceNotFound 检查是否为命名空间未找到错误

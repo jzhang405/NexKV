@@ -44,20 +44,21 @@ go build -o bin/nexkv cmd/nexkv/main.go
 ### 单机模式启动
 
 ```yaml
-# configs/config.yaml
+# configs/config.yaml (三级配置结构 - PR-037)
 cluster:
   name: "nexkv-cluster"
-  node:
-    id: "node-1"
-    addr: "127.0.0.1:9211"
+  base_dir: "~/.nexkv"  # 可被 NEXKV_BASE_DIR 环境变量覆盖
 
-metadata:
-  dir: "./data/metadata"
-  gossip_interval: "10s"
+  hosts:
+    - host_id: "host-1"
+      seed_node: "/ip4/127.0.0.1/tcp/9211"
 
-storage:
-  data_dir: "./data/shards"
-  wal_dir: "./data/wal"
+      nodes:
+        - node_id: "node-1"
+          role: "leaf"
+
+# 注意：元数据目录现在由 {base_dir}/{host_id}/metadata 自动管理
+# 数据目录现在由 {base_dir}/{host_id}/{shards|wal|snapshots} 自动管理
 ```
 
 ### 分布式模式扩展

@@ -64,8 +64,7 @@ benchmark:
 clean:
 	@echo "清理编译文件..."
 	rm -rf bin/
-	rm -f coverage.out coverage.html
-	rm -rf data/
+	rm -f coverage.out coverage.html coverage_*.out
 
 ## fmt: 格式化代码并运行静态检查
 fmt:

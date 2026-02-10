@@ -98,49 +98,49 @@ type NamespaceInfo struct {
 func GetAllNamespaces() map[string]NamespaceInfo {
 	return map[string]NamespaceInfo{
 		NamespaceCluster: {
-			Prefix:       NamespaceCluster,
-			Description:  "集群级别元数据",
-			ExampleKey:   "meta:cluster:cluster-001",
+			Prefix:      NamespaceCluster,
+			Description: "集群级别元数据",
+			ExampleKey:  "meta:cluster:cluster-001",
 		},
 		NamespaceNode: {
-			Prefix:       NamespaceNode,
-			Description:  "节点元数据",
-			ExampleKey:   "meta:node:node-001",
+			Prefix:      NamespaceNode,
+			Description: "节点元数据",
+			ExampleKey:  "meta:node:node-001",
 		},
 		NamespaceRole: {
-			Prefix:       NamespaceRole,
-			Description:  "角色元数据（含 Standby）",
-			ExampleKey:   "meta:role:role-parent-001",
+			Prefix:      NamespaceRole,
+			Description: "角色元数据（含 Standby）",
+			ExampleKey:  "meta:role:role-parent-001",
 		},
 		NamespaceTopo: {
-			Prefix:       NamespaceTopo,
-			Description:  "拓扑元数据",
-			ExampleKey:   "meta:topo:node-001",
+			Prefix:      NamespaceTopo,
+			Description: "拓扑元数据",
+			ExampleKey:  "meta:topo:node-001",
 		},
 		NamespaceShard: {
-			Prefix:       NamespaceShard,
-			Description:  "分片元数据",
-			ExampleKey:   "meta:shard:shard-001",
+			Prefix:      NamespaceShard,
+			Description: "分片元数据",
+			ExampleKey:  "meta:shard:shard-001",
 		},
 		NamespaceStatic: {
-			Prefix:       NamespaceStatic,
-			Description:  "静态配置元数据",
-			ExampleKey:   "meta:static:max_children",
+			Prefix:      NamespaceStatic,
+			Description: "静态配置元数据",
+			ExampleKey:  "meta:static:max_children",
 		},
 		NamespaceDynamic: {
-			Prefix:       NamespaceDynamic,
-			Description:  "动态状态元数据",
-			ExampleKey:   "meta:dynamic:node-001:cpu_usage",
+			Prefix:      NamespaceDynamic,
+			Description: "动态状态元数据",
+			ExampleKey:  "meta:dynamic:node-001:cpu_usage",
 		},
 		NamespaceOp: {
-			Prefix:       NamespaceOp,
-			Description:  "操作记录元数据",
-			ExampleKey:   "meta:op:op-20250209-001",
+			Prefix:      NamespaceOp,
+			Description: "操作记录元数据",
+			ExampleKey:  "meta:op:op-20250209-001",
 		},
 		NamespaceVersion: {
-			Prefix:       NamespaceVersion,
-			Description:  "版本控制元数据",
-			ExampleKey:   "meta:version:node-001:1234567890",
+			Prefix:      NamespaceVersion,
+			Description: "版本控制元数据",
+			ExampleKey:  "meta:version:node-001:1234567890",
 		},
 	}
 }
@@ -149,14 +149,14 @@ func GetAllNamespaces() map[string]NamespaceInfo {
 func ValidateNamespace(ns string) bool {
 	switch ns {
 	case NamespaceCluster,
-	     NamespaceNode,
-	     NamespaceRole,
-	     NamespaceTopo,
-	     NamespaceShard,
-	     NamespaceStatic,
-	     NamespaceDynamic,
-	     NamespaceOp,
-	     NamespaceVersion:
+		NamespaceNode,
+		NamespaceRole,
+		NamespaceTopo,
+		NamespaceShard,
+		NamespaceStatic,
+		NamespaceDynamic,
+		NamespaceOp,
+		NamespaceVersion:
 		return true
 	default:
 		return false

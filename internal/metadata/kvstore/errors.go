@@ -173,3 +173,8 @@ func IsEncodingFailed(err error) bool {
 func IsDecodingFailed(err error) bool {
 	return errors.Is(err, ErrDecodingFailed)
 }
+
+// IsInvalidNamespace 检查是否为无效命名空间错误
+func IsInvalidNamespace(err error) bool {
+	return errors.Is(err, ErrInvalidNamespace)
+}

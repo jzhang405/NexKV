@@ -1416,8 +1416,8 @@ func TestMVStoreDefaultOptions(t *testing.T) {
 	options := DefaultOptions()
 
 	assert.NotNil(t, options)
-	assert.Equal(t, "./data/metadata", options.DataDir, "默认 DataDir 应该是 ./data/metadata")
-	assert.Equal(t, "./data/wal", options.WALDir, "默认 WALDir 应该是 ./data/wal")
+	assert.Equal(t, "", options.DataDir, "默认 DataDir 应该为空，需要通过配置设置")
+	assert.Equal(t, "", options.WALDir, "默认 WALDir 应该为空，需要通过配置设置")
 	assert.True(t, options.EnableWAL, "默认应该启用 WAL")
 	assert.Equal(t, int64(64*1024*1024), options.MemTableSize, "默认内存表大小应该是 64MB")
 	assert.Equal(t, 10, options.MaxVersions, "默认最多保留 10 个版本")

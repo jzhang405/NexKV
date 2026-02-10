@@ -25,18 +25,20 @@ import (
 //   - MVCC: 多版本支持，使用 HLC 时间戳
 //   - 内存优化：自动清理旧版本
 type MemoryMVStore struct {
-	mu        sync.RWMutex
-	data      sync.Map // key -> *versionList
-	options   *MVStoreOptions
-	version   atomic.Uint64 // 全局版本号
-	closed    atomic.Bool
-	flushCh   chan struct{}
-	doneCh    chan struct{}
-	hlc       *clock.HLC
-	wal       WAL
-	snapMgr   SnapshotManager
-	lastFlush atomic.Int64 // 最后刷盘时间戳
-	memSize   atomic.Int64 // 当前内存大小
+	mu               sync.RWMutex
+	data             sync.Map // key -> *versionList
+	options          *MVStoreOptions
+	version          atomic.Uint64 // 全局版本号
+	closed           atomic.Bool
+	flushCh          chan struct{}
+	doneCh           chan struct{}
+	flushLoopWg      sync.WaitGroup // 等待 flushLoop goroutine 退出
+	flushLoopStarted atomic.Bool    // flushLoop 是否已启动
+	hlc              *clock.HLC
+	wal              WAL
+	snapMgr          SnapshotManager
+	lastFlush        atomic.Int64 // 最后刷盘时间戳
+	memSize          atomic.Int64 // 当前内存大小
 }
 
 // versionList 版本列表（按时间戳降序）
@@ -502,10 +504,20 @@ func (m *MemoryMVStore) Close() error {
 		return nil // 已经关闭
 	}
 
-	// 发送停止信号
-	close(m.doneCh)
+	// 等待 flushLoop 启动并调用 Add(1)
+	for !m.flushLoopStarted.Load() {
+		time.Sleep(1 * time.Millisecond)
+	}
 
-	// 最后刷盘
+	// 使用互斥锁保护 doneCh 的关闭，确保与 flushLoopWg.Add 同步
+	m.mu.Lock()
+	close(m.doneCh)
+	m.mu.Unlock()
+
+	// 等待 flushLoop goroutine 退出
+	m.flushLoopWg.Wait()
+
+	// 最后刷盘（此时 flushLoop 已经退出，不会再有并发访问）
 	if err := m.Flush(); err != nil {
 		logging.Errorf("关闭前刷盘失败: %v", err)
 	}
@@ -530,6 +542,11 @@ func (m *MemoryMVStore) Close() error {
 
 // flushLoop 后台刷盘协程
 func (m *MemoryMVStore) flushLoop() {
+	// 先调用 Add(1)，然后设置 started 标志
+	m.flushLoopWg.Add(1)
+	m.flushLoopStarted.Store(true)
+	defer m.flushLoopWg.Done()
+
 	if m.options.FlushInterval > 0 {
 		// 有定时刷盘间隔
 		ticker := time.NewTicker(time.Duration(m.options.FlushInterval) * time.Second)

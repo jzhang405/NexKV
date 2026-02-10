@@ -9,7 +9,6 @@ package kvstore
 
 import (
 	"context"
-	"encoding/json"
 	"path"
 	"strings"
 	"sync"
@@ -230,12 +229,12 @@ func (m *MetadataKV) Get(ctx context.Context, ns, key string, value any) error {
 	// P1 性能优化：先检查缓存
 	if cached, ok := m.cache.Load(fullKey); ok {
 		entry := cached.(*cachedEntry)
-		// 通过反射将缓存值复制到目标
-		if err := m.copyValue(entry.value, value); err == nil {
-			m.cacheHit.Add(1)
+		m.cacheHit.Add(1)
+		// 从缓存的 data 字节解码
+		if err := m.codec.Decode(entry.data, value); err == nil {
 			return nil
 		}
-		// 缓存复制失败，继续从存储读取
+		// 缓存使用失败，继续从存储读取
 	}
 	m.cacheMiss.Add(1)
 
@@ -578,38 +577,18 @@ func (m *MetadataKV) updateCache(fullKey string, value any, data []byte) {
 	}
 	m.mu.RUnlock()
 
-	// 存储缓存条目（深拷贝值以避免并发问题）
+	// 复制 data 字节（避免后续修改影响）
+	dataCopy := make([]byte, len(data))
+	copy(dataCopy, data)
+
+	// 直接缓存 data 字节，在缓存命中时重新解码
+	// 这样避免了并发修改 value 的问题
 	cached := &cachedEntry{
-		value:   m.deepcopy(value),
-		version: uint64(len(data)), // 简化版本计算
-		data:    make([]byte, len(data)),
+		value:   nil, // 不缓存解码后的值，只缓存原始字节
+		version: uint64(len(dataCopy)),
+		data:    dataCopy,
 	}
-	copy(cached.data, data)
-
 	m.cache.Store(fullKey, cached)
-}
-
-// copyValue 将源值复制到目标值（用于从缓存恢复）
-func (m *MetadataKV) copyValue(src, dst any) error {
-	// 使用 JSON 序列化/反序列化进行深拷贝
-	data, err := json.Marshal(src)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(data, dst)
-}
-
-// deepcopy 创建值的深拷贝
-func (m *MetadataKV) deepcopy(value any) any {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return value
-	}
-	var result any
-	if err := json.Unmarshal(data, &result); err != nil {
-		return value
-	}
-	return result
 }
 
 // GetCacheStats 获取缓存统计信息

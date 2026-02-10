@@ -303,8 +303,17 @@ func TestMetadataAPI_ShardOperations(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, shards, 2)
 
+	// 按分片 ID 查找（避免依赖返回顺序）
+	var shard001 *types.ShardInfo
+	for _, s := range shards {
+		if s.ShardID == "shard-001" {
+			shard001 = s
+			break
+		}
+	}
+	require.NotNil(t, shard001)
+
 	// 验证分片范围
-	shard001 := shards[0]
 	assert.True(t, shard001.IsInRange("key-05000"))
 	assert.False(t, shard001.IsInRange("key-15000"))
 }

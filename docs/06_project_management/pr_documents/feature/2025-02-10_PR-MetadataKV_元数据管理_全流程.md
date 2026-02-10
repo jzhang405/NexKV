@@ -212,7 +212,131 @@ func (m *MetadataAPI) ListNodes(ctx context.Context) ([]*types.NodeInfo, error)
 - **资源管理**：实现 Close 方法，确保资源释放
 - **版本冲突**：通过 MVCC 版本号检测冲突
 
-#### 3.3 文件结构
+#### 3.3 元数据映射设计（更新频率 & 一致性要求）
+
+##### 3.3.1 元数据分类矩阵
+
+| 命名空间 | 元数据类型 | 更新频率 | 一致性要求 | 同步机制 | 键格式示例 |
+|---------|-----------|---------|-----------|---------|-----------|
+| **NamespaceCluster** | 集群配置 | 极低 | 强一致 | Quorum | `meta:cluster:config` |
+| **NamespaceNode** | 节点信息 | 低 | 最终一致 | Gossip | `meta:node:{node_id}` |
+| **NamespaceRole** | 角色信息 | 低 | 最终一致 | Gossip | `meta:role:{role_id}` |
+| **NamespaceTopo** | 拓扑关系 | 中 | 最终一致 | Gossip | `meta:topo:{node_id}` |
+| **NamespaceShard** | 分片信息 | 中 | 强一致 | Quorum | `meta:shard:{shard_id}` |
+| **NamespaceStatic** | 静态配置 | 极低 | 强一致 | Quorum | `meta:static:max_children` |
+| **NamespaceDynamic** | 动态状态 | 高 | 最终一致 | Gossip | `meta:dynamic:{node_id}:cpu` |
+| **NamespaceOp** | 操作记录 | 高 | 最终一致 | Gossip | `meta:op:{op_id}` |
+| **NamespaceVersion** | 版本控制 | 高 | 强一致 | Quorum | `meta:version:{key}:{ver}` |
+
+##### 3.3.2 更新频率定义
+
+| 频率级别 | 定义 | 典型场景 |
+|---------|------|---------|
+| **极低** | 每天几次 → 每月几次 | 集群初始化、配置变更 |
+| **低** | 每小时几次 → 每天几次 | 节点上下线、角色变更 |
+| **中** | 每分钟几次 → 每小时几次 | 分片迁移、拓扑调整 |
+| **高** | 每秒几次 → 每分钟几次 | 心跳更新、负载统计 |
+
+##### 3.3.3 一致性要求定义
+
+| 一致性级别 | 定义 | 同步机制 | 典型场景 |
+|-----------|------|---------|---------|
+| **强一致** | 写入后立即对所有节点可见 | Quorum（多数派确认） | 分片创建、配置变更 |
+| **最终一致** | 写入后异步扩散，秒级一致 | Gossip（随机选点） | 节点状态、负载信息 |
+
+##### 3.3.4 详细元数据映射
+
+**NamespaceCluster - 集群级别元数据**：
+```
+Key:   meta:cluster:config
+Value: {ClusterID, ClusterName, ClusterVersion, State, QuorumThreshold, ...}
+```
+
+**NamespaceNode - 节点元数据**：
+```
+Key:   meta:node:node-001
+Value: {NodeID, HostID, Role, Addr, ParentID, Level, Status, ...}
+```
+
+**NamespaceRole - 角色元数据（含 Standby）**：
+```
+Key:   meta:role:role-parent-001
+Value: {RoleID, RoleType, ActiveNodes, StandbyNodes, CurrentPrimary, ...}
+```
+
+**NamespaceTopo - 拓扑元数据**：
+```
+Key:   meta:topo:node-001
+Value: {NodeID, ParentID, ChildrenIDs, Level, Version}
+```
+
+**NamespaceShard - 分片元数据**：
+```
+Key:   meta:shard:shard-001
+Value: {ShardID, RangeStart, RangeEnd, ReplicaNodes, State, ...}
+```
+
+**NamespaceStatic - 静态配置元数据**：
+```
+Key:   meta:static:max_children
+Value: 10  // MessagePack 编码的 int
+```
+
+**NamespaceDynamic - 动态状态元数据**：
+```
+Key:   meta:dynamic:node-001:cpu
+Value: 45.5  // MessagePack 编码的 float
+```
+
+**NamespaceOp - 操作记录元数据**：
+```
+Key:   meta:op:op-20250210-001
+Value: {OpID, OpType, ShardID, Status, Progress, StartTime, ...}
+```
+
+**NamespaceVersion - 版本控制元数据**：
+```
+Key:   meta:version:node-001:latest
+Value: 1234567890  // MessagePack 编码的 uint64
+```
+
+##### 3.3.5 一致性机制集成
+
+**命名空间到一致性映射**：
+```go
+var consistencyMapping = map[string]ConsistencyLevel{
+    NamespaceCluster:  ConsistencyStrong,  // 集群配置：强一致
+    NamespaceNode:     ConsistencyEventual, // 节点信息：最终一致
+    NamespaceRole:     ConsistencyEventual, // 角色信息：最终一致
+    NamespaceTopo:     ConsistencyEventual, // 拓扑关系：最终一致
+    NamespaceShard:    ConsistencyStrong,   // 分片信息：强一致
+    NamespaceStatic:   ConsistencyStrong,   // 静态配置：强一致
+    NamespaceDynamic:  ConsistencyEventual, // 动态状态：最终一致
+    NamespaceOp:       ConsistencyEventual, // 操作记录：最终一致
+    NamespaceVersion:  ConsistencyStrong,   // 版本控制：强一致
+}
+```
+
+**自动同步触发**：
+```go
+func (m *MetadataKV) Put(ctx context.Context, ns, key string, value any) error {
+    // 1. 写入 MVStore
+    if err := m.store.Put(fullKey, data); err != nil {
+        return err
+    }
+
+    // 2. 根据命名空间选择同步机制
+    if requiresStrongConsistency(ns) {
+        go m.quorumSync(ns, key, version)  // 强一致：Quorum 确认
+    } else {
+        go m.gossipSync(ns, key, version)  // 最终一致：Gossip 扩散
+    }
+
+    return nil
+}
+```
+
+#### 3.4 文件结构
 
 ```
 internal/metadata/
@@ -241,7 +365,7 @@ internal/metadata/
     └── shard_api.go                  # 分片 API
 ```
 
-#### 3.4 与现有系统集成
+#### 3.5 与现有系统集成
 
 **TreeCoordinator 集成点**：
 
@@ -276,7 +400,7 @@ type TreeCoordinator struct {
 
 | 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施（含AI辅助修改） | 优化结果 |
 |----------|----------|------------------|--------------|--------------------------|----------|
-| 第1轮 | 待定 | 👤 架构师 | 待评审 | 待优化 | 待完成 |
+| 第1轮 | 2025-02-10 | 👤 架构师 | 需补充元数据映射说明，包括更新频率和一致性要求 | 1. 新增 3.3 节"元数据映射设计"<br/>2. 添加元数据分类矩阵<br/>3. 定义更新频率和一致性级别<br/>4. 详细说明 9 个命名空间的键值示例<br/>5. 添加一致性机制集成设计 | ☐ 待评审 |
 
 ### 6. 预审批确认
 > **架构师签字/备注**：__________ 2025-__-__ 该Feature方案可行，风险可控，同意启动开发，需严格按照文档落地，确保CI通过后提交Post总结。

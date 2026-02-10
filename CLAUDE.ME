@@ -1,0 +1,119 @@
+# 【Pre 文档】基于KV映射的元数据管理架构
+
+> **分支**: feature/metadata-kv-implementation
+> **PR编号**: PR-MetadataKV
+> **负责人**: 🤖 核心开发 A
+> **创建日期**: 2025-02-10
+
+---
+
+## 1. 背景与目标
+
+### 1.1 背景
+
+NexKV 当前元数据管理存在以下问题：
+- **命名冲突**：不同类型元数据使用相同键前缀，容易冲突
+- **类型不安全**：使用 `map[string]string` 存储，需要类型断言
+- **版本控制缺失**：元数据层没有封装 MVCC 版本控制接口
+- **代码重复**：HostManager、TreeCoordinator 有相似代码
+
+### 1.2 核心目标
+
+1. **功能目标**：
+   - 实现 9 个命名空间隔离（Cluster、Node、Role、Topo、Shard、Static、Dynamic、Op、Version）
+   - 实现 6 种强类型元数据结构
+   - 提供统一的 MetadataKV 封装层和高层 API
+
+2. **性能目标**：
+   - 点查询延迟 < 1ms（P99）
+   - 批量查询吞吐 > 100K ops/s
+
+3. **质量目标**：
+   - 单元测试覆盖率 ≥ 85%
+   - Code Review 无 P0/P1 问题
+
+### 1.3 明确边界
+
+**本次不支持**：
+- 不修改 MVStore 底层实现
+- 不实现新的 Gossip 协议
+- 不实现跨数据中心元数据同步
+
+---
+
+## 2. 实现方案
+
+### 2.1 整体架构
+
+```
+API 层（MetadataAPI、ClusterAPI、NodeAPI、ShardAPI）
+    ↓
+类型层（ClusterInfo、NodeInfo、RoleInfo 等 6 种类型）
+    ↓
+KV 封装层（MetadataKV + MetadataCodec + 错误处理）
+    ↓
+存储层（MVStore + WAL）
+```
+
+### 2.2 关键设计
+
+**命名空间定义**：
+```go
+const (
+    NamespaceCluster  = "meta:cluster:"
+    NamespaceNode     = "meta:node:"
+    NamespaceRole     = "meta:role:"
+    NamespaceTopo     = "meta:topo:"
+    NamespaceShard    = "meta:shard:"
+    NamespaceStatic   = "meta:static:"
+    NamespaceDynamic  = "meta:dynamic:"
+    NamespaceOp       = "meta:op:"
+    NamespaceVersion  = "meta:version:"
+)
+```
+
+**MetadataKV 核心接口**：
+```go
+Put(ctx, ns, key, value) error
+Get(ctx, ns, key, value) error
+GetVersion(ctx, ns, key, hlcTS, value) error
+Delete(ctx, ns, key) error
+Exists(ctx, ns, key) (bool, error)
+ListPrefix(ctx, ns, prefix) ([]string, error)
+```
+
+### 2.3 文件结构
+
+```
+internal/metadata/
+├── kvstore/
+│   ├── namespaces.go       ✅ 已创建
+│   ├── metadata_kv.go      待实现
+│   ├── codec.go            ✅ 已创建
+│   └── errors.go           ✅ 已创建
+├── types/                  待实现
+└── api/                    待实现
+```
+
+---
+
+## 3. 风险评估
+
+| 风险点 | 等级 | 应对措施 |
+|--------|------|----------|
+| 性能下降 | 中 | MessagePack 高效序列化 + 性能基准测试 |
+| 兼容性风险 | 高 | 新架构作为可选层，逐步迁移 |
+| 并发安全 | 中 | sync.RWMutex + 并发测试 |
+| 测试覆盖不足 | 中 | TDD 开发 + 表格驱动测试 |
+
+---
+
+## 4. 预审批确认
+
+> **架构师评审**：☐ 待评审 ☐ 评审通过
+
+**签字/备注**：_________________ 2025-__-__
+
+---
+
+**完整文档**: `docs/06_project_management/pr_documents/feature/2025-02-10_PR-MetadataKV_元数据管理_全流程.md`

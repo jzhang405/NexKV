@@ -252,6 +252,86 @@ Key:   meta:cluster:config
 Value: {ClusterID, ClusterName, ClusterVersion, State, QuorumThreshold, ...}
 ```
 
+**NamespaceNode、NamespaceRole、NamespaceTopo 三者关系图**：
+
+```mermaid
+graph TB
+    subgraph "NamespaceNode: 节点基本信息"
+        N1["node-001<br/>NodeID: node-001<br/>HostID: host-001<br/>Role: Leaf<br/>Addr: 192.168.1.10:9000<br/>Status: Ready"]
+        N2["node-002<br/>NodeID: node-002<br/>HostID: host-002<br/>Role: Leaf<br/>Addr: 192.168.1.11:9000<br/>Status: Ready"]
+        N3["node-003<br/>NodeID: node-003<br/>HostID: host-003<br/>Role: Parent<br/>Addr: 192.168.1.12:9000<br/>Status: Ready"]
+    end
+
+    subgraph "NamespaceRole: 角色与成员关系"
+        R1["role-parent-001<br/>RoleType: Parent<br/>ActiveNodes: [node-003, node-004]<br/>StandbyNodes: [node-005]<br/>CurrentPrimary: node-003"]
+        R2["role-leaf-001<br/>RoleType: Leaf<br/>ActiveNodes: [node-001, node-002]<br/>StandbyNodes: []<br/>CurrentPrimary: N/A"]
+    end
+
+    subgraph "NamespaceTopo: 拓扑层级关系"
+        T1["node-003<br/>ParentID: (root)<br/>ChildrenIDs: [node-001, node-002]<br/>Level: 0"]
+        T2["node-001<br/>ParentID: node-003<br/>ChildrenIDs: []<br/>Level: 1"]
+        T3["node-002<br/>ParentID: node-003<br/>ChildrenIDs: []<br/>Level: 1"]
+    end
+
+    %% 关系连线
+    N1 -.->|属于| R2
+    N2 -.->|属于| R2
+    N3 -.->|属于| R1
+
+    N1 -->|对应| T2
+    N2 -->|对应| T3
+    N3 -->|对应| T1
+
+    T1 -->|父节点| T2
+    T1 -->|父节点| T3
+
+    style N1 fill:#e1f5ff
+    style N2 fill:#e1f5ff
+    style N3 fill:#e1f5ff
+    style R1 fill:#fff3e0
+    style R2 fill:#fff3e0
+    style T1 fill:#f3e5f5
+    style T2 fill:#f3e5f5
+    style T3 fill:#f3e5f5
+```
+
+**关系说明**：
+
+| 关系类型 | 说明 | 示例 |
+|---------|------|------|
+| **Node → Role** | 一个节点属于某个角色（Active 或 Standby） | node-001 属于 role-leaf-001 |
+| **Node → Topo** | 一个节点有拓扑关系（父/子节点） | node-001 的父节点是 node-003 |
+| **Role → Topo** | 角色类型决定节点在拓扑中的层级 | Parent 角色在 Level 0，Leaf 在 Level 1 |
+
+**数据一致性流程**：
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant NodeAPI
+    participant RoleAPI
+    participant TopoAPI
+    participant MVStore
+
+    Client->>NodeAPI: 更新节点状态 (node-001)
+    NodeAPI->>MVStore: Put(meta:node:node-001, ...)
+    MVStore-->>NodeAPI: OK
+
+    Note over NodeAPI,RoleAPI: 节点角色变更时
+
+    Client->>RoleAPI: 节点加入角色 (node-001 → role-leaf-001)
+    RoleAPI->>MVStore: Put(meta:role:role-leaf-001, ...)
+    MVStore-->>RoleAPI: OK
+
+    Note over RoleAPI,TopoAPI: 拓扑关系变更时
+
+    Client->>TopoAPI: 设置父节点 (node-001 → node-003)
+    TopoAPI->>MVStore: Put(meta:topo:node-001, ...)
+    MVStore-->>TopoAPI: OK
+
+    Note over MVStore: Gossip 异步扩散到所有节点
+```
+
 **NamespaceNode - 节点元数据**：
 ```
 Key:   meta:node:node-001

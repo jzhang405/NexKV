@@ -185,8 +185,8 @@ type TwoPCMerkleCoordinator struct {
 
 	// 配置
 	defaultTimeout time.Duration // 默认超时时间（5 秒）
-	maxRetries    int           // 最大重试次数
-	retryDelay    time.Duration // 重试延迟
+	maxRetries     int           // 最大重试次数
+	retryDelay     time.Duration // 重试延迟
 
 	// 状态
 	closed bool
@@ -253,8 +253,8 @@ func NewTwoPCMerkleCoordinator(opts *TwoPCOptions) (*TwoPCMerkleCoordinator, err
 		localNodeID:    "",
 		transactions:   make(map[string]*TwoPCTransaction),
 		defaultTimeout: timeout,
-		maxRetries:    maxRetries,
-		retryDelay:    retryDelay,
+		maxRetries:     maxRetries,
+		retryDelay:     retryDelay,
 	}
 
 	return coordinator, nil
@@ -279,8 +279,8 @@ func NewTwoPCMerkleCoordinatorWithTransport(metadataKV kvstore.Store, merkleTree
 		transport:      transportParam,
 		localNodeID:    localNodeID,
 		transactions:   make(map[string]*TwoPCTransaction),
-		defaultTimeout:  5 * time.Second,
-		maxRetries:     3,            // 默认 3 次重试
+		defaultTimeout: 5 * time.Second,
+		maxRetries:     3,                      // 默认 3 次重试
 		retryDelay:     100 * time.Millisecond, // 默认 100ms
 	}
 
@@ -645,18 +645,6 @@ func (c *TwoPCMerkleCoordinator) sendWithRetry(ctx context.Context, nodeID strin
 		return fmt.Errorf("send failed after %d attempts: %w", c.maxRetries+1, lastErr)
 	}
 	return lastErr
-}
-
-// detectNetworkPartition 检测网络分区
-//
-// 返回：是否发生网络分区
-func (c *TwoPCMerkleCoordinator) detectNetworkPartition(tx *TwoPCTransaction) bool {
-	// 检查是否收到足够的 ACK
-	receivedAcks := len(tx.Acks)
-	requiredAcks := tx.Quorum
-
-	// 如果收到的 ACK 少于需要的数量，可能发生网络分区
-	return receivedAcks < requiredAcks
 }
 
 // ==================== 辅助方法 ====================

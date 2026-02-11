@@ -38,7 +38,7 @@
   3. 拓扑适配：树形拓扑下，同父节点叶子需强一致、跨父节点叶子可弱一致的需求未落地，三种一致性机制无明确分工与协同逻辑。
 
 - **核心价值**：
-  1. 元数据优化：本地读取延迟降至 1-5μs，增量同步节省 80%-99% 带宽，O(log n) 差异检测，支持版本追踪与回滚；
+  1. 元数据优化：本地读取延迟降至 1-5μs，增量同步节省 80%-99% 带宽，O(1) 差异检测，支持版本追踪与回滚；
   2. 一致性优化：实现 2PC→Quorum→Gossip 三级分层，匹配树形拓扑，兼顾强一致可靠性与弱一致高性能；
   3. 生产级适配：解决元数据同步风暴、协调者单点故障等风险，适配 NexKV 分布式场景落地需求。
 
@@ -47,7 +47,7 @@
 #### 2.2.1 元数据 Merkle Tree 目标
 
 1. **功能目标**：实现 Namespace 分层 Merkle 摘要树（适配元数据场景），支持 Global→Namespace→Key 三层差异检测，实现元数据版本链 + Epoch + HLC 时序控制，支持双向同步且无风暴；
-2. **性能目标**：本地元数据读取延迟 1-5μs，差异检测复杂度 O(log n)，单 Key 变更带宽节省 ≥99%，单 Namespace 批量变更带宽节省 ≥80%；
+2. **性能目标**：本地元数据读取延迟 1-5μs，差异检测复杂度 O(1)（Global Root + Namespace Root + Key Hash 均为 O(1) Hash 查找），单 Key 变更带宽节省 ≥99%，单 Namespace 批量变更带宽节省 ≥80%；
 3. **可靠性目标**：Merkle Root 摘要比对准确，版本回溯正常，与一致性机制协同无异常。
 
 #### 2.2.2 一致性分层目标
@@ -164,19 +164,39 @@ Layer 1: Gossip (最终一致) - 普通变更：状态更新
 
 #### 3.3.3 元数据命名空间一致性映射
 
-现有 `internal/metadata/kvstore/metadata_kv.go` 已定义命名空间到一致性级别的映射：
+> **⚠️ 重要说明**：以下展示**目标映射**（本 PR 实施目标）与**现有映射**（当前代码状态）的差异。
 
-| 命名空间 | 一致性级别 | 说明 |
-|---------|-----------|------|
-| **NamespaceCluster** | ConsistencyStrong | 集群配置：强一致（2PC） |
-| **NamespaceNode** | ConsistencyEventual | 节点信息：最终一致（Gossip） |
-| **NamespaceRole** | ConsistencyEventual | 角色信息：最终一致（Gossip） |
-| **NamespaceTopo** | ConsistencyEventual | 拓扑关系：最终一致（Gossip） |
-| **NamespaceShard** | ConsistencyStrong | 分片信息：强一致（2PC） |
-| **NamespaceStatic** | ConsistencyStrong | 静态配置：强一致（2PC） |
-| **NamespaceDynamic** | ConsistencyEventual | 动态状态：最终一致（Gossip） |
-| **NamespaceOp** | ConsistencyEventual | 操作记录：最终一致（Gossip） |
-| **NamespaceVersion** | ConsistencyStrong | 版本控制：强一致（2PC） |
+**目标映射**（本 PR 实施目标）：
+
+| 命名空间 | 一致性级别 | ACK 要求 | 确认公式 | 说明 |
+|---------|-----------|---------|---------|------|
+| **NamespaceCluster** | 强一致 (2PC) | ACK 全部 | need = n | 集群配置：关键变更 |
+| **NamespaceShard** | 强一致 (2PC) | ACK 全部 | need = n | 分片信息：关键变更 |
+| **NamespaceNode** | 最终一致 (Gossip) | 无 ACK | need = 0 | 节点信息：普通变更 |
+| **NamespaceRole** | 增强最终一致 (Quorum) | ACK 大部分 | need = ⌊n/2⌋ + 1 | 角色信息：重要变更 |
+| **NamespaceStatic** | 强一致 (2PC) | ACK 全部 | need = n | 静态配置：关键变更 |
+| **NamespaceTopo** | 最终一致 (Gossip) | 无 ACK | need = 0 | 拓扑关系：普通变更 |
+| **NamespaceDynamic** | 最终一致 (Gossip) | 无 ACK | need = 0 | 动态状态：普通变更 |
+| **NamespaceOp** | 最终一致 (Gossip) | 无 ACK | need = 0 | 操作记录：普通变更 |
+| **NamespaceVersion** | 强一致 (2PC) | ACK 全部 | need = n | 版本控制：关键变更 |
+
+**现有映射**（当前代码 `metadata_kv.go`）：
+
+| 命名空间 | 当前一致性级别 | 目标一致性级别 | 差异 |
+|---------|---------------|---------------|------|
+| **NamespaceCluster** | ConsistencyStrong | 强一致 (2PC) | ✅ 一致 |
+| **NamespaceShard** | ConsistencyStrong | 强一致 (2PC) | ✅ 一致 |
+| **NamespaceNode** | ConsistencyEventual | 最终一致 (Gossip) | ✅ 一致 |
+| **NamespaceRole** | ConsistencyEventual | 增强最终一致 (Quorum) | ⚠️ **需升级** |
+| **NamespaceStatic** | ConsistencyStrong | 强一致 (2PC) | ✅ 一致 |
+| **NamespaceTopo** | ConsistencyEventual | 最终一致 (Gossip) | ✅ 一致 |
+| **NamespaceDynamic** | ConsistencyEventual | 最终一致 (Gossip) | ✅ 一致 |
+| **NamespaceOp** | ConsistencyEventual | 最终一致 (Gossip) | ✅ 一致 |
+| **NamespaceVersion** | ConsistencyStrong | 强一致 (2PC) | ✅ 一致 |
+
+**差异说明**：
+- 本 PR 需在 **Phase 2** 中增加"调整 NamespaceRole 一致性级别"任务
+- NamespaceRole 从 Gossip 升级为 Quorum，增强角色变更的可靠性
 
 ### 3.4 三种一致性机制对比分析
 
@@ -248,6 +268,171 @@ graph TB
 - 2PC 提交完成后，同步更新本地 Merkle Tree 节点哈希，生成新的 Namespace Root；
 - Quorum 确认过程中，同步比对 Merkle Root 摘要，确保组内元数据一致性；
 - Gossip 同步时，优先同步 Merkle Root 差异，再增量同步变更元数据，减少带宽开销。
+
+#### 3.5.2 2PC 与 Merkle Tree 协同逻辑（详细设计）
+
+**协同原则**：
+1. 2PC 提交期间，Merkle Tree 处于 **Pending** 状态，暂存操作但不更新 Root Hash
+2. 2PC Commit 后，批量应用 Pending 操作并重新计算 Root Hash
+3. 2PC Rollback 后，清除 Pending 操作，Merkle Tree 保持不变
+
+```go
+// 2PC 与 Merkle Tree 协同伪代码
+type TwoPCMerkleCoordinator struct {
+    merkle      *NamespacedMerkleTree
+    pendingOps  map[string][]Operation  // txID -> 暂存操作
+    pendingMu   sync.RWMutex
+}
+
+// Pre-Commit 阶段：暂存到 Pending 状态
+func (c *TwoPCMerkleCoordinator) PreCommit(txID string, operations []Operation) error {
+    c.pendingMu.Lock()
+    defer c.pendingMu.Unlock()
+
+    // 暂存操作，但不更新 Merkle Tree
+    c.pendingOps[txID] = operations
+    return nil
+}
+
+// Commit 阶段：批量应用并更新 Hash
+func (c *TwoPCMerkleCoordinator) Commit(txID string) error {
+    c.pendingMu.Lock()
+    defer c.pendingMu.Unlock()
+
+    ops, ok := c.pendingOps[txID]
+    if !ok {
+        return ErrTxNotFound
+    }
+
+    // 批量应用所有操作
+    for _, op := range ops {
+        c.merkle.UpdateKey(op.Namespace, op.Key, op.Value)
+    }
+
+    // 重新计算 Global Root Hash
+    c.merkle.RecomputeGlobalRoot()
+
+    // 清除暂存
+    delete(c.pendingOps, txID)
+    return nil
+}
+
+// Rollback 阶段：清除暂存
+func (c *TwoPCMerkleCoordinator) Rollback(txID string) error {
+    c.pendingMu.Lock()
+    defer c.pendingMu.Unlock()
+
+    // 回滚时清除暂存，Merkle Tree 保持不变
+    delete(c.pendingOps, txID)
+    return nil
+}
+```
+
+**时序图**：
+
+```mermaid
+sequenceDiagram
+    participant C as 协调者
+    participant M as Merkle Tree
+    participant P1 as 参与者 1
+    participant P2 as 参与者 2
+
+    Note over C,P2: 2PC 阶段 1: Pre-Commit
+    C->>M: PreCommit(txID, ops)
+    M->>M: 暂存操作到 Pending
+    M-->>C: OK
+
+    C->>P1: Prepare(txID, ops)
+    C->>P2: Prepare(txID, ops)
+
+    P1->>P1: 暂存到本地 Pending
+    P2->>P2: 暂存到本地 Pending
+
+    P1-->>C: Vote: YES
+    P2-->>C: Vote: YES
+
+    Note over C,P2: 2PC 阶段 2: Commit/Rollback
+    alt 全部 YES
+        C->>M: Commit(txID)
+        M->>M: 批量应用操作
+        M->>M: 重新计算 Root Hash
+        M-->>C: OK
+
+        C->>P1: Commit(txID)
+        C->>P2: Commit(txID)
+
+        P1->>P1: 应用操作 + 更新 Hash
+        P2->>P2: 应用操作 + 更新 Hash
+    else 任一 NO
+        C->>M: Rollback(txID)
+        M->>M: 清除 Pending 操作
+        M-->>C: OK
+
+        C->>P1: Rollback(txID)
+        C->>P2: Rollback(txID)
+
+        P1->>P1: 清除 Pending
+        P2->>P2: 清除 Pending
+    end
+```
+
+#### 3.5.3 Merkle Tree 并发安全性设计
+
+**锁策略**：
+
+| 操作 | 需要锁 | 锁类型 | 与其他操作的兼容性 |
+|------|--------|--------|---------------------|
+| **GetKeyHash** | RLock | 读锁 | 与所有读操作兼容 |
+| **GetGlobalRootHash** | RLock | 读锁 | 与所有读操作兼容 |
+| **GetNamespaceRootHash** | RLock | 读锁 | 与所有读操作兼容 |
+| **UpdateKey** | Lock | 写锁 | 独占，阻塞所有操作 |
+| **RecomputeHash** | Lock | 写锁 | 独占，阻塞所有操作 |
+| **PreCommit** | Lock | 写锁 | 独占，阻塞所有操作 |
+| **Commit** | Lock | 写锁 | 独占，阻塞所有操作 |
+| **Rollback** | Lock | 写锁 | 独占，阻塞所有操作 |
+
+**死锁预防原则**：
+1. **禁止嵌套锁**：持锁期间不调用外部接口
+2. **锁超时机制**：写锁超时 5 秒自动释放
+3. **锁顺序约定**：按 Namespace → Key 顺序加锁
+
+```go
+// 并发安全示例
+func (n *NamespacedMerkleTree) GetKeyHash(ns Namespace, key string) (string, error) {
+    n.mu.RLock()  // 读锁
+    defer n.mu.RUnlock()
+
+    tree, ok := n.namespaces[ns]
+    if !ok {
+        return "", ErrNamespaceNotFound
+    }
+
+    hash, ok := tree.KeyHashes[key]
+    if !ok {
+        return "", ErrKeyNotFound
+    }
+
+    return hash, nil
+}
+
+func (n *NamespacedMerkleTree) UpdateKey(ns Namespace, key string, value []byte) error {
+    n.mu.Lock()  // 写锁
+    defer n.mu.Unlock()
+
+    tree, ok := n.namespaces[ns]
+    if !ok {
+        return ErrNamespaceNotFound
+    }
+
+    // 更新 Key 的 Hash
+    tree.KeyHashes[key] = computeHash(value)
+
+    // 重新计算 Namespace Root Hash
+    n.recomputeNamespaceRootHash(ns)
+
+    return nil
+}
+```
 
 ---
 
@@ -338,7 +523,57 @@ func (n *NamespacedMerkleTree) GetGlobalRootHash() string {
 }
 ```
 
-### 4.3 风险评估与应对措施
+### 4.3 性能分析
+
+#### 4.3.1 带宽节省详细分析
+
+**假设场景**：
+- 元数据总大小：10KB（100 个 Key，每个 100B）
+- 单个 Key 变化：100B
+- Merkle Root Hash：32B（SHA256）
+
+| 场景 | 传统方案传输 | Merkle 方案传输 | 节省率 | 计算过程 |
+|------|-------------|----------------|--------|---------|
+| **单个 Key 变化** | 10KB 全部元数据 | 32B (Root) + 100B (Key) = 132B | 98.7% | (10000 - 132) / 10000 |
+| **单个 Namespace 10 个 Key 变化** | 10KB 全部元数据 | 32B (Root) + 1KB (Namespace) = 1052B | 89.5% | (10000 - 1052) / 10000 |
+| **全集群变化** | 10KB 全部元数据 | 10KB 全部元数据 | 0% | (10000 - 10000) / 10000 |
+
+**测试方法**：
+```
+1. 启动 3 节点集群
+2. 修改 1 个 Key（NamespaceNode）
+3. 抓取 Gossip 流量
+4. 计算带宽节省率 = (传统传输 - Merkle 传输) / 传统传输
+```
+
+#### 4.3.2 内存占用估算
+
+**假设场景（中等规模集群）**：
+- 节点数：50
+- 分片数：500
+- 每个 Shard 元数据：1KB
+- 每个 Node 元数据：500B
+
+**内存占用明细**：
+
+| 数据类型 | 数量 | 单位大小 | 总大小 |
+|---------|------|---------|--------|
+| Shard 元数据 | 500 | 1KB | 500KB |
+| Node 元数据 | 50 | 500B | 25KB |
+| 其他元数据 | - | - | 100KB |
+| Merkle Tree 开销（10%） | - | - | 62.5KB |
+| **总计** | - | - | **~700KB/节点** |
+
+**内存限制约束**（新增架构约束 7）：
+```
+- 单个 Namespace 最多 10000 个 Key
+- KeyHash 条目大小：< 200B（key + hash）
+- 单个 Namespace Tree 内存：< 2MB
+- 全局 Merkle Tree 内存：< 20MB（9 个 Namespace）
+- 超过限制时触发 LRU 淘汰
+```
+
+#### 4.3.3 风险评估与应对措施
 
 | 风险点 | 影响等级 | 应对措施 | 关联模块 |
 |--------|---------|----------|----------|
@@ -355,10 +590,101 @@ func (n *NamespacedMerkleTree) GetGlobalRootHash() string {
 | 阶段 | 内容 | 优先级 | 预估周期 | 产出物 | 里程碑 |
 |------|------|--------|----------|--------|---------|
 | **Phase 1：基础设施** | Merkle Tree 基础结构、一致性协调器接口、消息定义、HLC工具 | P0 | 5 天 | 接口、结构体、工具类可用 | 底层架构就绪 |
-| **Phase 2：核心功能** | Merkle Tree 增量哈希、本地缓存、Gossip同步、Quorum集成 | P0 | 7 天 | 本地读达标、Gossip+Quorum可用 | 弱一致体系完整 |
+| **Phase 2：核心功能** | Merkle Tree 增量哈希、本地缓存、Gossip同步、Quorum集成、调整 NamespaceRole 一致性级别 | P0 | 7 天 | 本地读达标、Gossip+Quorum可用 | 弱一致体系完整 |
 | **Phase 3：强一致集成** | 2PC增强实现、树形拓扑分层策略、Merkle+一致性协同 | P1 | 6 天 | 三级一致性完整、拓扑适配完成 | 强一致体系完整 |
 | **Phase 4：集成验证** | TreeCoordinator整合、故障恢复机制、测试、性能调优 | P1 | 5 天 | 全流程稳定、测试覆盖率>80% | 可合入主干 |
 | **总计** | — | — | **23 天** | 元数据版本+一致性分层完成 | ✅ 生产可用 |
+
+#### 4.4.2 阶段依赖关系图
+
+```mermaid
+graph TD
+    P1[Phase 1: 基础设施<br/>Merkle Tree 基础结构<br/>一致性协调器接口<br/>消息定义 + HLC工具]
+
+    P2[Phase 2: 核心功能<br/>Merkle Tree 增量哈希<br/>本地缓存<br/>Gossip 同步<br/>Quorum 集成<br/>调整 NamespaceRole]
+
+    P3[Phase 3: 强一致集成<br/>2PC 增强实现<br/>树形拓扑分层策略<br/>Merkle + 一致性协同]
+
+    P4[Phase 4: 集成验证<br/>TreeCoordinator 整合<br/>故障恢复机制<br/>测试 + 性能调优]
+
+    P1 -->|依赖接口和结构| P2
+    P2 -->|依赖弱一致体系| P3
+    P3 -->|依赖强一致体系| P4
+
+    style P1 fill:#9cf,stroke:#333,stroke-width:2px
+    style P2 fill:#9f9,stroke:#333,stroke-width:2px
+    style P3 fill:#fc9,stroke:#333,stroke-width:2px
+    style P4 fill:#f96,stroke:#333,stroke-width:2px
+```
+
+#### 4.4.3 测试计划
+
+| 测试分类 | 测试数量 | 测试内容 | 覆盖率目标 |
+|---------|---------|---------|-----------|
+| **单元测试** | 120 个 | Merkle Tree 基础操作、一致性协调器接口 | 90% |
+| **集成测试** | 45 个 | Gossip 双向同步、Quorum 多数派确认、2PC 全员确认 | 85% |
+| **性能测试** | 20 个 | 差异检测延迟、带宽节省验证、内存占用 | 100% |
+| **混沌测试** | 15 个 | 节点故障恢复、网络分区处理、2PC 协调者故障 | 80% |
+| **总计** | **200 个** | - | **> 80%** |
+
+#### 4.4.4 混沌测试具体场景
+
+**场景 1：单节点故障**
+```
+测试步骤：
+1. 启动 3 节点集群（root + parent-001 + leaf-001, leaf-002）
+2. 停止 leaf-001 节点
+3. 验证其他节点继续正常工作
+4. 重启 leaf-001 节点
+5. 验证自动同步元数据（Merkle Root 对比）
+
+验收标准：
+- 其他节点在故障期间正常工作
+- 故障节点重启后自动同步
+- Merkle Tree 一致性恢复
+```
+
+**场景 2：网络分区**
+```
+测试步骤：
+1. 启动 5 节点集群（root + parent-001, parent-002 + leaves）
+2. 分离集群为两组（3 vs 2）
+3. 验证两组内部分别达成一致
+4. 恢复网络连接
+5. 验证自动合并元数据
+
+验收标准：
+- 分区内部分别达成一致（使用 Merkle Root 检测）
+- 网络恢复后自动合并
+- 无数据丢失
+```
+
+**场景 3：2PC 协调者故障**
+```
+测试步骤：
+1. 发起 2PC 事务（分片创建）
+2. 协调者在 Prepare 阶段崩溃
+3. 验证参与者自动回滚或查询状态
+4. 协调者重启后完成事务
+
+验收标准：
+- 参与者自动回滚（使用 Pending 状态）
+- 协调者重启后可恢复事务
+- Merkle Tree 状态一致
+```
+
+**场景 4：Hash 碰撞测试**
+```
+测试步骤：
+1. 注入预设的 Hash 碰撞数据
+2. 验证 Merkle Tree 检测到不一致
+3. 触发增量同步修复
+
+验收标准：
+- Hash 碰撞被检测到
+- 触发增量同步而非全量同步
+- 修复后一致性恢复
+```
 
 ---
 
@@ -377,8 +703,20 @@ func (n *NamespacedMerkleTree) GetGlobalRootHash() string {
 
 - [ ] 单个 Key 变化：节省 99% 带宽
 - [ ] 单个 Namespace 多个 Key 变化：节省 80% 带宽
-- [ ] 差异检测复杂度：O(log n)
+- [ ] 差异检测复杂度：O(1)（Global Root: O(1) + Namespace Root: O(9) = O(1) + Key Hash: O(1)）
 - [ ] 本地元数据读取延迟：1-5μs
+
+**差异检测复杂度分析**：
+```
+差异检测 = Global Root Hash 比较 + Namespace Root Hash 比较 + Key Hash 定位
+         = O(1) + O(9) + O(1)
+         = O(1)
+
+说明：
+- Global Root Hash 比较：O(1) 单次 Hash 比较
+- Namespace Root Hash 比较：O(9) = O(1)（固定 9 个 Namespace）
+- Key Hash 定位：O(1)（Hash Map 查找）
+```
 
 ### 5.3 一致性验收
 
@@ -424,15 +762,41 @@ func (n *NamespacedMerkleTree) GetGlobalRootHash() string {
 ## 附录：架构强制约束（必须遵守）
 
 1. **2PC 只允许在同父子节点组内使用，绝不跨父、绝不跨层**
-2. **2PC 超时必须小于 Gossip 周期，避免事务悬挂**
+2. **2PC 超时必须小于 Gossip 周期，避免事务悬挂**（具体配置：Gossip 周期 10 秒，2PC 超时 5 秒，Quorum 超时 3 秒）
 3. **Merkle Root 只做摘要比对，不做底层数据防篡改**
 4. **Quorum 只用于组内确认，不用于跨组同步**
 5. **同步必须携带 Version/Epoch/HLC，防止旧覆盖新**
 6. **Data 节点只存分片相关元数据，不存全局全量**
+7. **Merkle Tree 内存占用限制**（新增）：
+   - 单个 Namespace 最多 10000 个 Key
+   - KeyHash 条目大小 < 200B（key + hash）
+   - 单个 Namespace Tree 内存 < 2MB
+   - 全局 Merkle Tree 内存 < 20MB（9 个 Namespace）
+   - 超过限制时触发 LRU 淘汰
+8. **Merkle Tree 并发安全性**（新增）：
+   - 所有读操作使用 RLock
+   - 所有写操作使用 Lock
+   - RecomputeHash 期间阻塞所有操作
+   - 禁止在持有锁时调用外部接口（避免死锁）
 
 ---
 
-**文档版本**: v1.0
+**文档版本**: v2.0（根据架构师审查报告更新）
 **创建日期**: 2026-02-11
+**最后更新**: 2026-02-11
 **维护者**: 🤖 核心开发 A
-**状态**: ⏳ 等待架构师评审
+**状态**: ⏳ 等待架构师二次评审
+
+**更新记录**：
+- v2.0 (2026-02-11)：根据架构师审查报告更新
+  - P0-1：修正 O(log n) → O(1) 复杂度描述（三处）
+  - P0-2：增加 Namespace 一致性级别映射差异说明
+  - P0-3：补充 2PC 与 Merkle Tree 协同逻辑（伪代码 + 时序图）
+  - P0-4：增加 Merkle Tree 并发安全性说明（操作矩阵）
+  - P1-1：增加带宽节省详细分析（测试方法）
+  - P1-2：增加内存占用估算（700KB/节点）
+  - P1-3：增加阶段依赖关系图
+  - P1-4：增加混沌测试具体场景（4 个场景）
+  - 新增：架构约束 7（Merkle Tree 内存限制）
+  - 新增：架构约束 8（Merkle Tree 并发安全性）
+- v1.0 (2026-02-11)：初始版本

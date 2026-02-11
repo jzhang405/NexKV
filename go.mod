@@ -16,6 +16,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v2 v2.27.7
 	github.com/vmihailenco/msgpack/v5 v5.4.1
+	github.com/zeebo/blake3 v0.2.4
 	go.uber.org/ratelimit v0.3.1
 	gopkg.in/yaml.v3 v3.0.1
 )

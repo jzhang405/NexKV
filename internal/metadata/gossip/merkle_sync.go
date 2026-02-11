@@ -46,9 +46,9 @@ const (
 //   - 增量传输：只传输变化的数据
 type MerkleGossipSync struct {
 	merkle      *kvstore.NamespacedMerkleTree
-	transport    transport.Transport // libp2p 传输层
-	localNodeID  string              // 本地节点 ID
-	mu           sync.RWMutex
+	transport   transport.Transport // libp2p 传输层
+	localNodeID string              // 本地节点 ID
+	mu          sync.RWMutex
 
 	// Gossip 配置
 	gossipInterval time.Duration // Gossip 周期（默认 10 秒）
@@ -82,7 +82,7 @@ func NewMerkleGossipSync(
 		transport:      transportLayer,
 		localNodeID:    localNodeID,
 		gossipInterval: 10 * time.Second, // 默认 10 秒
-		gossipTimeout:   5 * time.Second,  // 默认 5 秒
+		gossipTimeout:  5 * time.Second,  // 默认 5 秒
 		knownPeers:     make(map[string]struct{}),
 		ctx:            ctx,
 		cancel:         cancel,
@@ -389,13 +389,13 @@ func (s *MerkleGossipSync) sendDiffResponse(
 	if !ok {
 		logging.WithFields(map[string]interface{}{
 			"to":            peerID,
-			"response_size":  len(responseBytes),
+			"response_size": len(responseBytes),
 		}).Info("已发送差异响应（类型断言失败，无法获取 diff_ns_count）")
 	} else {
 		logging.WithFields(map[string]interface{}{
 			"to":            peerID,
-			"diff_ns_count":  len(diffNS),
-			"response_size":  len(responseBytes),
+			"diff_ns_count": len(diffNS),
+			"response_size": len(responseBytes),
 		}).Info("已发送差异响应")
 	}
 
@@ -517,7 +517,7 @@ func (r *SyncResult) GetKeysSentCount() int {
 type GossipDiffResponse struct {
 	FromNodeID      string              // 发送响应的节点 ID
 	GlobalRootHash  string              // 本地 Global Root Hash
-	NamespaceHashes map[string]string      // 本地所有 Namespace Root Hashes
+	NamespaceHashes map[string]string   // 本地所有 Namespace Root Hashes
 	DiffNamespaces  map[string][]string // 差异的 Namespace 及其 Keys（当前为空，待实现）
 	RequestedKeys   map[string][]string // peer 请求的 Keys（如果有）
 }
@@ -568,12 +568,12 @@ func (s *MerkleGossipSync) buildDiffResponse(
 
 	// 转换为可序列化的 map
 	return map[string]interface{}{
-		"type":              "diff_response",
-		"from_node_id":      response.FromNodeID,
-		"global_root_hash":  response.GlobalRootHash,
-		"namespace_hashes":   response.NamespaceHashes,
-		"diff_namespaces":    response.DiffNamespaces,
-		"requested_keys":     response.RequestedKeys,
+		"type":             "diff_response",
+		"from_node_id":     response.FromNodeID,
+		"global_root_hash": response.GlobalRootHash,
+		"namespace_hashes": response.NamespaceHashes,
+		"diff_namespaces":  response.DiffNamespaces,
+		"requested_keys":   response.RequestedKeys,
 	}
 }
 
@@ -631,8 +631,8 @@ func BuildGossipPayload(
 	return map[string]interface{}{
 		"global_root_hash": globalRoot,
 		"namespace_hashes": namespaceHashes,
-		"full_sync":       fullSync,
-		"requested_data":  []map[string]string{}, // 双向同步请求数据
+		"full_sync":        fullSync,
+		"requested_data":   []map[string]string{}, // 双向同步请求数据
 	}
 }
 

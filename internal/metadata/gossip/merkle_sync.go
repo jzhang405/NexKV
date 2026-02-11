@@ -57,6 +57,9 @@ type MerkleGossipSync struct {
 	// 已知的 peer 列表（用于随机选择）
 	knownPeers map[string]struct{}
 
+	// Peer 选择器
+	peerSelector PeerSelector
+
 	// 生命周期管理
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -73,6 +76,7 @@ func NewMerkleGossipSync(
 	metadataKV *kvstore.MetadataKV,
 	transportLayer transport.Transport,
 	localNodeID string,
+	peerSelector PeerSelector,
 ) *MerkleGossipSync {
 	_ = metadataKV // TODO: 待实现增量 Key 检测逻辑时使用
 	ctx, cancel := context.WithCancel(context.Background())
@@ -189,11 +193,10 @@ func (s *MerkleGossipSync) SyncWithPeer(
 	syncResult.BandwidthUsed = bandwidthUsed
 
 	// 计算节省的带宽
-	syncResult.BandwidthSaved = CalculateBandwidthSavings(
-		0, // 使用默认的 fullMetadataSize
-		syncResult.GetKeysReceivedCount(),
-		syncResult.GetKeysSentCount(),
-	)
+	// 更新 Peer 健康度指标（如果配置了选择器）
+	if s.peerSelector != nil {
+		s.peerSelector.Update(peerID, syncResult)
+	}
 
 	s.logSyncComplete(syncResult, peerID, startTime)
 
@@ -239,7 +242,7 @@ func (s *MerkleGossipSync) StartPeriodicGossip(ctx context.Context) {
 	}
 }
 
-// gossipRandomPeer 随机选择一个 peer 进行 Gossip
+// gossipRandomPeer 使用 Peer 选择器随机选择一个 peer 进行 Gossip
 func (s *MerkleGossipSync) gossipRandomPeer(ctx context.Context) {
 	s.mu.RLock()
 	peerCount := len(s.knownPeers)
@@ -250,21 +253,34 @@ func (s *MerkleGossipSync) gossipRandomPeer(ctx context.Context) {
 		return
 	}
 
-	// 随机选择一个 peer（简化实现）
-	// TODO: 实现真正的随机选择
+	// 收集 peer 列表
+	peers := make([]string, 0, len(s.knownPeers))
 	for peerID := range s.knownPeers {
-		result, err := s.SyncWithPeer(ctx, peerID)
-		if err != nil {
-			s.logPeerError("Gossip 同步失败", peerID, err)
-			continue
+		peers = append(peers, peerID)
+	}
+
+	// 使用 Peer 选择器选择一个 peer
+	if s.peerSelector != nil {
+		selectedPeer := s.peerSelector.Select(peers)
+		if selectedPeer == "" {
+			logging.Debug("Peer 选择器未返回有效的 peer")
+			return
 		}
+
+		result, err := s.SyncWithPeer(ctx, selectedPeer)
+		if err != nil {
+			s.logPeerError("Gossip 同步失败", selectedPeer, err)
+			return
+		}
+
+		// 更新 Peer 健康度指标
+		s.peerSelector.Update(selectedPeer, result)
 
 		if result.IsSynced() {
 			s.mu.Lock()
 			s.bandwidthSaved += result.BandwidthSaved
 			s.mu.Unlock()
 		}
-		break // 只 gossip 一个 peer
 	}
 }
 

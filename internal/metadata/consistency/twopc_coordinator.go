@@ -351,7 +351,10 @@ func (c *TwoPCMerkleCoordinator) PreCommit(ctx context.Context, tx *TwoPCTransac
 	// 实际场景：通过网络发送 PreCommit 请求给所有参与者
 	// 本地模式（c.transport == nil）：跳过网络发送，直接进入 PreCommit 状态
 	if c.transport == nil {
-		// 本地测试模式：不需要网络发送
+		// 本地测试模式：模拟所有参与者的 ACK 响应
+		for _, participant := range tx.Participants {
+			tx.Acks[participant] = true
+		}
 		return nil
 	}
 

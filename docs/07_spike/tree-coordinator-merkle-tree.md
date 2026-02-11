@@ -1,18 +1,19 @@
-# TreeCoordinator 树形 Merkle Tree 元数据版本控制预研
+# TreeCoordinator Merkle Tree 元数据版本控制预研（整合版）
 
 > **预研类型**: 树形元数据版本控制
 > **创建日期**: 2026-02-11
-> **状态**: ✅ 已完成
-> **分支**: `spike/tree-coordinator-merkle`
+> **状态**: ✅ 已完成（整合版）
+> **整合文档**: tree-coordinator-merkle-tree.md + node-sync-optimization.md
 
 ---
 
 ## 📋 预研目标
 
 利用 TreeCoordinator 的树形结构，应用 Merkle Tree 实现：
-1. **层级差异快速检测** - O(log n) 定位变化分支
-2. **增量同步优化** - 只传输变化的分支（节省 70%-90% 带宽）
-3. **树形元数据版本控制** - 每个节点维护 SelfHash + ChildHashes
+1. **本地读取**：每个节点都有完整元数据镜像，零延迟读取（1-5μs）
+2. **层级差异快速检测**：O(log n) 定位变化分支（Root → Namespace → Key）
+3. **增量同步优化**：只传输变化的分支（节省 80%-99% 带宽）
+4. **一致性级别差异**：强一致（2PC）vs 最终一致（Gossip）
 
 ---
 
@@ -37,261 +38,86 @@
 
 ---
 
-## 🌳 TreeCoordinator Merkle Tree 方案
+## 🌳 树形 Merkle Tree 架构
 
-### 核心思想
-
-**将 Merkle Tree 直接应用于 TreeCoordinator 的树形结构**：
-
-```
-        Root Hash (H_root)
-              |
-        ┌──────┴──────┐
-   H_parent-001  H_parent-002  H_parent-003
-        │             │             │
-    ┌───┴───┐     ┌───┴───┐     ┌───┴───┐
-H_leaf-001 H_leaf-002 H_leaf-003 H_leaf-004 H_leaf-005 H_leaf-006
-   │        │        │        │        │        │
-Metadata Metadata Metadata Metadata Metadata Metadata
-```
-
-### 关键架构设计
-
-#### 1. 每个节点都有元数据的完整镜像
-
-**每个节点（Node A, Node B, Node C...）都存储完整的集群元数据镜像**：
+### 完整元数据镜像 + Namespace 分层
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │ Node A (本地存储)                                        │
 ├─────────────────────────────────────────────────────────┤
-│  完整的元数据镜像：                                       │
-│  - node:node-001, node:node-002, ..., node:node-N        │
-│  - shard:shard-001, shard:shard-002, ..., shard:shard-M    │
-│  - cluster, role, topology, dynamic, operation 等         │
+│  完整的元数据镜像（9 个 Namespace）：                      │
+│  - NamespaceCluster: cluster:001                        │
+│  - NamespaceShard: shard:001, shard:002, ...             │
+│  - NamespaceNode: node:node-001, node:node-002, ...      │
+│  - ... (其余 6 个 Namespace)                           │
 │                                                         │
-│  每个元数据都有自己的 Hash：                              │
-│  - H(node:node-001) = SHA256(Metadata_node-001)         │
-│  - H(node:node-002) = SHA256(Metadata_node-002)         │
-│  - ...                                                   │
+│  每个 Namespace 一个 Merkle Tree：                        │
+│  - H_GlobalRoot = SHA256(H_cluster + H_shard + H_node + ...)  │
+│  - H_cluster = SHA256(所有 cluster:* key 的 Hash)          │
+│  - H_node = SHA256(所有 node:* key 的 Hash)                │
 │                                                         │
-│  Merkle Tree 结构：                                     │
-│  - Root Hash = SHA256(所有节点 Hash 的组合)             │
+│  本地读取优势：                                            │
+│  - 读元数据 = 读本地内存（1-5μs）                        │
+│  - 无需网络请求                                            │
+│  - 10000x 性能提升                                        │
 └─────────────────────────────────────────────────────────┘
 ```
 
-**本地读取优势**：
-- ✅ **读元数据 = 读本地**，无需联系其他节点
-- ✅ **零延迟**：本地内存读取，微秒级响应
-- ✅ **无网络开销**：不占用 Gossip 带宽
+### 一致性级别差异
 
-#### 2. 每个元数据一致性要求不一样
-
-**不同 Namespace 有不同的一致性级别**：
-
-| Namespace | 说明 | 一致性级别 | Hash 计算时机 |
-|-----------|------|-----------|-------------|
-| `NamespaceCluster` | 集群元数据（ClusterID, RootID） | **强一致** | 变更时立即计算 + 2PC 确认 |
-| `NamespaceShard` | 分片元数据（ShardID, ReplicaList） | **强一致** | 变更时立即计算 + 2PC 确认 |
-| `NamespaceNode` | 节点元数据（NodeID, Status, Address） | **最终一致** | 变更时计算 + Gossip 同步 |
-| `NamespaceRole` | 角色元数据（NodeRole, HostRole） | **最终一致** | 变更时计算 + Gossip 同步 |
-| `NamespaceStatic` | 静态元数据（Version, StartTime） | **强一致** | 变更时立即计算 + 2PC 确认 |
-| `NamespaceTopo` | 拓扑元数据（ParentID, Children） | **最终一致** | 变更时计算 + Gossip 同步 |
-| `NamespaceDynamic` | 动态元数据（Load, Health） | **最终一致** | 周期性更新 + Gossip 同步 |
-| `NamespaceOp` | 运维元数据（Maintenance, Tags） | **最终一致** | 变更时计算 + Gossip 同步 |
-| `NamespaceVersion` | 版本号（HLC, VersionVector） | **强一致** | 变更时立即计算 + 2PC 确认 |
-
-**Hash 计算策略**：
-
-```mermaid
-flowchart TD
-    MetadataChange[元数据变更] --> Classify{一致性级别}
-
-    Classify -->|强一致| Immediate[立即计算 Hash]
-    Classify -->|最终一致| Defer[延迟计算 Hash]
-
-    Immediate --> 2PC[2PC 确认]
-    2PC --> UpdateLocal[更新本地镜像]
-
-    Defer --> Gossip[Gossip 同步]
-    Gossip --> UpdateLocal
-
-    UpdateLocal --> End[完成]
-
-    style Immediate fill:#f96
-    style 2PC fill:#f96
-    style Defer fill:#9cf
-    style Gossip fill:#9cf
-```
-
-#### 3. Merkle Tree 按 Namespace 分层
-
-**每个 Namespace 维护独立的 Merkle Tree**：
-
-```go
-type NamespacedMerkleTree struct {
-    // 每个 Namespace 一个 Merkle Tree
-    trees map[Namespace]*MerkleTree
-
-    // 全局 Root Hash（所有 Namespace Root Hash 的组合）
-    GlobalRootHash string
-}
-
-type MerkleTree struct {
-    Namespace Namespace
-    RootHash  string // 该 Namespace 的 Root Hash
-    Nodes     map[string]*MerkleTreeNode
-}
-```
-
-**分层 Hash 计算**：
-
-```
-GlobalRootHash = SHA256(
-    H_NamespaceCluster +
-    H_NamespaceShard +
-    H_NamespaceNode +
-    ... +
-    H_NamespaceVersion
-)
-```
-
-**每个节点存储**：
-1. **完整的元数据镜像**：所有 Namespace 的所有 key-value
-2. **每个 Namespace 的 Root Hash**：用于检测该 Namespace 的变化
-3. **全局 Root Hash**：用于检测整个集群的变化
-4. **每个元数据的 SelfHash**：用于定位具体变化的 key
+| Namespace | 说明 | 一致性级别 | Hash 计算时机 | 同步机制 |
+|-----------|------|-----------|-------------|---------|
+| `NamespaceCluster` | 集群元数据 | **强一致** | 变更时立即 + 2PC 确认 | 同步返回 |
+| `NamespaceShard` | 分片元数据 | **强一致** | 变更时立即 + 2PC 确认 | 同步返回 |
+| `NamespaceNode` | 节点元数据 | **最终一致** | 变更时计算 + Gossip | 10秒内异步 |
+| `NamespaceRole` | 角色元数据 | **最终一致** | 变更时计算 + Gossip | 10秒内异步 |
+| `NamespaceStatic` | 静态元数据 | **强一致** | 变更时立即 + 2PC 确认 | 同步返回 |
+| `NamespaceTopo` | 拓扑元数据 | **最终一致** | 变更时计算 + Gossip | 10秒内异步 |
+| `NamespaceDynamic` | 动态元数据 | **最终一致** | 周期性更新 + Gossip | 10秒内异步 |
+| `NamespaceOp` | 运维元数据 | **最终一致** | 变更时计算 + Gossip | 10秒内异步 |
+| `NamespaceVersion` | 版本号 | **强一致** | 变更时立即 + 2PC 确认 | 同步返回 |
 
 ---
 
-## 🎯 三大核心目标
+## 🎯 层级差异快速检测
 
-### 1. 树形元数据版本控制
-
-**版本控制机制**：
-
-```go
-type MerkleTreeNode struct {
-    // 基础信息
-    ID       string
-    Type     NodeType // Root, Parent, Leaf
-    ParentID string
-
-    // 元数据（MessagePack 序列化）
-    Metadata map[string]string
-
-    // Merkle 相关
-    SelfHash    string   // 自身 Hash = SHA256(Metadata)
-    ChildHashes []string // 子节点 Hash 列表（按子节点 ID 排序）
-    Version     uint64   // 版本号（HLC）
-    Timestamp   int64    // 更新时间戳
-}
-
-type NodeType string
-
-const (
-    NodeTypeRoot   NodeType = "root"
-    NodeTypeParent NodeType = "parent"
-    NodeTypeLeaf   NodeType = "leaf"
-)
-```
-
-**版本控制流程**：
+### 三层递归检测
 
 ```mermaid
 flowchart TD
-    Start[元数据变更] --> Update[更新本地元数据]
-    Update --> Compute[计算新的 SelfHash]
-    Compute --> Notify[通知父节点]
-    Notify --> ParentUpdate[父节点更新 ChildHashes]
-    ParentUpdate --> ParentCompute[父节点重新计算 Hash]
-    ParentCompute --> Propagate{有父节点?}
-    Propagate -->|是| Notify
-    Propagate -->|否| End[版本更新完成]
+    Start[节点 A 与 节点 B 同步] --> CompareGlobal{比较全局 Root Hash}
+
+    CompareGlobal -->|相同| NoSync[无变化，无需同步]
+    CompareGlobal -->|不同| CompareNamespace[比较 Namespace Root Hash]
+
+    CompareNamespace --> NamespaceDiff{哪个 Namespace Hash 不同?}
+    NamespaceDiff -->|NamespaceNode 不同| DrillDownNode[深入 NamespaceNode]
+    NamespaceDiff -->|NamespaceShard 不同| DrillDownShard[深入 NamespaceShard]
+
+    DrillDownNode --> KeyCompare{比较 Key Hash}
+    DrillDownShard --> KeyCompare
+
+    KeyCompare --> KeyDiff{哪个 Key Hash 不同?}
+    KeyDiff --> Found[找到变化的具体 Key]
+
+    style NoSync fill:#9f9
+    style Found fill:#f96
+    style CompareGlobal fill:#fc9
+    style CompareNamespace fill:#fc9
+    style KeyDiff fill:#fc9
 ```
+
+**复杂度**：
+- O(1) 比较 Global Root Hash
+- O(m) 比较 Namespace Root Hash（m = 9）
+- O(log n) 定位具体变化的 Key
 
 ---
 
-### 2. 层级差异快速检测
+## 🔄 双向同步 + 增量传输
 
-**核心优势**：O(log n) 定位变化分支
-
-```mermaid
-flowchart TD
-    Start[节点 A 与 节点 B 同步] --> CompareRoot{比较 Root Hash}
-    CompareRoot -->|相同| NoChange[无变化，无需同步]
-    CompareRoot -->|不同| CompareParent[比较 Parent 层 Hash]
-
-    CompareParent --> ParentDiff{哪个 Parent Hash 不同?}
-    ParentDiff -->|Parent-001 不同| DrillDown1[深入 Parent-001 子树]
-    ParentDiff -->|Parent-002 不同| DrillDown2[深入 Parent-002 子树]
-    ParentDiff -->|Parent-003 不同| DrillDown3[深入 Parent-003 子树]
-
-    DrillDown1 --> LeafCompare[比较 Leaf 层 Hash]
-    DrillDown2 --> LeafCompare
-    DrillDown3 --> LeafCompare
-
-    LeafCompare --> LeafDiff{哪个 Leaf Hash 不同?}
-    LeafDiff --> Found[找到变化的具体节点]
-```
-
-**复杂度对比**：
-
-| 方案 | 差异检测复杂度 | 说明 |
-|------|---------------|------|
-| **全量对比** | O(n) | 需要对比所有节点 |
-| **Bloom Filter** | O(1) 查询 + O(n) 扫描 | 只能判断存在，无法定位层级 |
-| **Merkle Tree** | O(log n) | 树形递归，快速定位分支 |
-
----
-
-### 3. 本地读取 + 增量同步
-
-#### 3.1 本地读取：零延迟访问元数据
-
-**每个节点都有完整的元数据镜像**：
-
-```go
-type LocalMetadataMirror struct {
-    mu          sync.RWMutex
-    namespaces  map[Namespace]map[string]string // 完整的元数据镜像
-    merkle      *NamespacedMerkleTree          // Merkle Tree 结构
-}
-
-// 读取元数据 - 只读本地，零延迟
-func (m *LocalMetadataMirror) Get(ns Namespace, key string) (string, error) {
-    m.mu.RLock()
-    defer m.mu.RUnlock()
-
-    nsData, ok := m.namespaces[ns]
-    if !ok {
-        return "", ErrNamespaceNotFound
-    }
-
-    value, ok := nsData[key]
-    if !ok {
-        return "", ErrKeyNotFound
-    }
-
-    return value, nil
-}
-
-// 无需联系其他节点！
-// 无需网络请求！
-// 本地内存读取，微秒级响应！
-```
-
-**读取性能对比**：
-
-| 方案 | 延迟 | 网络开销 |
-|------|------|---------|
-| **远程查询** | ~10-50ms | 需要 Gossip 请求 |
-| **本地读取** | ~1-5μs | 无网络开销 |
-| **性能提升** | **10000x** | **节省 100% 带宽** |
-
-#### 3.2 增量同步：按 Namespace 同步变化的元数据
-
-**同步流程**：
+### 同步流程（整合双向机制）
 
 ```mermaid
 sequenceDiagram
@@ -304,35 +130,28 @@ sequenceDiagram
     B-->>A: SyncResponse(相同? 无需同步 : 有差异)
 
     alt GlobalRootHash 不同
-        Note over A,B: Phase 2: Namespace Root Hash 交换
+        Note over A,B: Phase 2: 双向 Namespace Root Hash 交换
         A->>B: GetNamespaceRootHashes()
-        B-->>A: NamespaceRootHashes{
-            NamespaceCluster: H_cluster,
-            NamespaceNode: H_node,
-            ...
-        }
+        B->>A: GetNamespaceRootHashes()
 
-        A->>A: 对比每个 Namespace Root Hash
-        A->>A: 定位不同的 Namespace（如 NamespaceNode）
+        Note over A,B: 双方同时对比差异
+        A->>A: 计算 A 缺失的 Namespace
+        B->>B: 计算 B 缺失的 Namespace
 
-        Note over A,B: Phase 3: 元数据 Key Hash 交换
+        Note over A,B: Phase 3: 双向 Key Hash 交换
         A->>B: GetKeyHashes(NamespaceNode)
-        B-->>A: KeyHashes{
-            "node:node-001": H1,
-            "node:node-002": H2,
-            ...
-        }
+        B->>A: GetKeyHashes(NamespaceCluster)
 
-        A->>A: 对比 Key Hashes
-        A->>A: 定位不同的 Key（如 "node:node-003"）
+        A->>A: 计算 A 缺失的 Key
+        B->>B: 计算 B 缺失的 Key
 
-        Note over A,B: Phase 4: 元数据同步
-        A->>B: GetMetadata(NamespaceNode, "node:node-003")
-        B-->>A: Metadata{Status: "online", ...}
+        Note over A,B: Phase 4: 双向元数据传输
+        A->>B: 发送 A 缺失的元数据
+        B->>A: 发送 B 缺失的元数据
 
         Note over A,B: 本地更新镜像
-        A->>A: 更新本地元数据镜像
-        A->>A: 重新计算 Hash
+        A->>A: 更新本地元数据 + 重新计算 Hash
+        B->>B: 更新本地元数据 + 重新计算 Hash
     end
 ```
 
@@ -344,9 +163,96 @@ sequenceDiagram
 | **单个 Namespace 多个 Key 变化** | 传输全部元数据 | 只传输变化的 Namespace | ~80% |
 | **全集群变化** | 传输全部元数据 | 传输全部元数据 | 0% |
 
-#### 3.3 一致性级别差异处理
+---
 
-**强一致 Namespace（2PC 确认）**：
+## 📊 数据结构设计
+
+### NamespacedMerkleTree
+
+```go
+type NamespacedMerkleTree struct {
+    mu         sync.RWMMutex
+    namespaces map[Namespace]*NamespaceMerkleTree
+}
+
+type NamespaceMerkleTree struct {
+    Namespace Namespace
+    KeyHashes map[string]string // key -> Hash
+    RootHash  string            // SHA256(所有 Key Hash 的组合)
+}
+
+// GetGlobalRootHash 获取全局 Root Hash
+func (n *NamespacedMerkleTree) GetGlobalRootHash() string {
+    n.mu.RLock()
+    defer n.mu.RUnlock()
+
+    var namespaceHashes []string
+    for _, tree := range n.namespaces {
+        namespaceHashes = append(namespaceHashes, tree.RootHash)
+    }
+
+    sort.Strings(namespaceHashes)
+    hash := sha256.Sum256([]byte(strings.Join(namespaceHashes, "")))
+    return hex.EncodeToString(hash[:])
+}
+
+// GetKeyHash 获取单个 Key 的 Hash
+func (n *NamespacedMerkleTree) GetKeyHash(ns Namespace, key string) (string, error) {
+    n.mu.RLock()
+    defer n.mu.RUnlock()
+
+    tree, ok := n.namespaces[ns]
+    if !ok {
+        return "", ErrNamespaceNotFound
+    }
+
+    hash, ok := tree.KeyHashes[key]
+    if !ok {
+        return "", ErrKeyNotFound
+    }
+
+    return hash, nil
+}
+
+// UpdateKey 更新 Key 并重新计算 Hash
+func (n *NamespacedMerkleTree) UpdateKey(ns Namespace, key string, metadata map[string]string) error {
+    n.mu.Lock()
+    defer n.mu.Unlock()
+
+    tree, ok := n.namespaces[ns]
+    if !ok {
+        return ErrNamespaceNotFound
+    }
+
+    // 更新 Key 的 Hash
+    tree.KeyHashes[key] = computeHash(metadata)
+
+    // 重新计算 Namespace Root Hash
+    n.recomputeNamespaceRootHash(ns)
+
+    return nil
+}
+
+// 重新计算 Namespace Root Hash
+func (n *NamespacedMerkleTree) recomputeNamespaceRootHash(ns Namespace) {
+    tree := n.namespaces[ns]
+
+    var keyHashes []string
+    for _, hash := range tree.KeyHashes {
+        keyHashes = append(keyHashes, hash)
+    }
+
+    sort.Strings(keyHashes)
+    hash := sha256.Sum256([]byte(strings.Join(keyHashes, "")))
+    tree.RootHash = hex.EncodeToString(hash[:])
+}
+```
+
+---
+
+## 🎯 强一致 vs 最终一致
+
+### 强一致 Namespace（2PC）
 
 ```mermaid
 sequenceDiagram
@@ -372,9 +278,11 @@ sequenceDiagram
     C->>N1: 2PC Commit
     C->>N2: 2PC Commit
     C->>N3: 2PC Commit
+
+    Note over C,N3: 所有节点确认后，本地镜像才对用户可见
 ```
 
-**最终一致 Namespace（Gossip 异步同步）**：
+### 最终一致 Namespace（Gossip）
 
 ```mermaid
 sequenceDiagram
@@ -385,7 +293,7 @@ sequenceDiagram
     Note over N1,N3: 最终一致元数据变更（如 NamespaceNode）
 
     N1->>N1: 更新本地镜像 + 计算新 Hash
-    N1->>N1: 更新本地 Root Hash
+    N1->>N1: 立即可读（本地已更新）
 
     loop 每 10 秒 Gossip
         N1->>N2: Gossip NamespaceRootHashes
@@ -398,98 +306,8 @@ sequenceDiagram
             N2->>N2: 更新本地镜像
         end
     end
-```
 
-**读取时的一致性保证**：
-
-```go
-// 读取元数据 - 总是读本地
-func (m *LocalMetadataMirror) Get(ns Namespace, key string) (string, error) {
-    // 强一致 Namespace：读本地，2PC 保证已是最新
-    // 最终一致 Namespace：读本地，可能稍旧但 10 秒内一致
-    // 无论哪种，都无需网络请求！
-
-    m.mu.RLock()
-    defer m.mu.RUnlock()
-
-    return m.namespaces[ns][key], nil
-}
-```
-
----
-
-## 📊 数据结构设计
-
-### MerkleTreeMetadata
-
-```go
-type MerkleTreeMetadata struct {
-    mu    sync.RWMutex
-    nodes map[string]*MerkleTreeNode
-    RootID string
-}
-
-// 获取节点的 Hash
-func (m *MerkleTreeMetadata) GetHash(nodeID string) (string, error)
-
-// 获取子节点的 Hash 列表
-func (m *MerkleTreeMetadata) GetChildHashes(parentID string) ([]string, error)
-
-// 更新元数据并重新计算 Hash
-func (m *MerkleTreeMetadata) Update(nodeID string, metadata map[string]string) error
-
-// 计算元数据的 Hash
-func computeHash(metadata map[string]string) string {
-    data, _ := msgpack.Marshal(metadata)
-    hash := sha256.Sum256(data)
-    return hex.EncodeToString(hash[:])
-}
-```
-
----
-
-## 🔄 与 TreeCoordinator 集成
-
-### TreeCoordinator 扩展
-
-```go
-type TreeCoordinator struct {
-    // 现有字段
-    nodes   map[string]*Node
-    rootID  string
-
-    // 新增字段
-    merkle *MerkleTreeMetadata
-}
-
-// 获取节点的 Merkle Hash
-func (tc *TreeCoordinator) GetNodeHash(nodeID string) (string, error) {
-    return tc.merkle.GetHash(nodeID)
-}
-
-// 获取子节点的 Hash 列表
-func (tc *TreeCoordinator) GetChildHashes(parentID string) ([]string, error) {
-    return tc.merkle.GetChildHashes(parentID)
-}
-```
-
----
-
-## 📡 Gossip 协议扩展
-
-### MerkleTreeGossipPayload
-
-```go
-type MerkleTreeGossipPayload struct {
-    // 基础字段
-    FromNodeID string
-    ToNodeID   string
-
-    // Merkle Tree 数据
-    RootHash       string            // Root Hash
-    ParentHashes   map[string]string // ParentID -> Hash
-    RequestedNodes []string          // 请求的节点 ID 列表
-}
+    Note over N1,N3: 10秒内最终一致
 ```
 
 ---
@@ -500,17 +318,91 @@ type MerkleTreeGossipPayload struct {
 
 | 操作 | 传统方案 | Merkle Tree 方案 |
 |------|---------|-----------------|
-| **差异检测** | O(n) 全量对比 | O(log n) 树形递归 |
+| **差异检测** | O(n) 线性扫描 | O(1) Global + O(m) Namespace + O(log n) Key |
 | **变更传播** | 传播全部元数据 | 只传播变化分支 |
 | **版本比较** | 比较每个字段 | 只比较 Hash |
+| **读取元数据** | 远程查询（10-50ms） | 本地读取（1-5μs） |
 
 ### 网络传输对比
 
 | 场景 | 传统方案 | Merkle Tree 方案 | 节省 |
 |------|---------|-----------------|------|
-| **单个 Leaf 变化** | ~10KB 全部元数据 | ~1KB 单个 Leaf | 90% |
-| **单个 Parent 分支变化** | ~10KB 全部元数据 | ~3KB Parent 分支 | 70% |
-| **全树变化** | ~10KB 全部元数据 | ~10KB 全部元数据 | 0% |
+| **单个 Key 变化** | ~10KB 全部元数据 | ~100B 单个 Key | ~99% |
+| **单个 Namespace 多个 Key 变化** | ~10KB 全部元数据 | ~2KB Namespace | ~80% |
+| **全集群变化** | ~10KB 全部元数据 | ~10KB 全部元数据 | 0% |
+| **读取元数据** | 每次远程查询 | 本地读取，零网络开销 | 100% |
+
+---
+
+## 🔗 与现有代码集成
+
+### 扩展 MetadataKV
+
+```go
+type MetadataKV struct {
+    // 现有字段
+    store      *mvstore.MVStore
+    namespaces map[Namespace]*namespaceData
+
+    // 新增字段
+    merkle *NamespacedMerkleTree
+}
+
+// Get - 本地读取，零延迟
+func (mkv *MetadataKV) Get(ns Namespace, key string) ([]byte, uint64, error) {
+    // 总是读本地，无需网络请求！
+    mkv.mu.RLock()
+    defer mkv.mu.RUnlock()
+
+    nsData, ok := mkv.namespaces[ns]
+    if !ok {
+        return nil, 0, ErrNamespaceNotFound
+    }
+
+    entry, ok := nsData.data[key]
+    if !ok {
+        return nil, 0, ErrKeyNotFound
+    }
+
+    return entry.Value, entry.Version, nil
+}
+
+// Put - 根据一致性级别选择同步机制
+func (mkv *MetadataKV) Put(ns Namespace, key string, value []byte) error {
+    // 根据一致性级别处理
+    if isStrongConsistency(ns) {
+        return mkv.putWith2PC(ns, key, value)
+    } else {
+        return mkv.putWithGossip(ns, key, value)
+    }
+}
+```
+
+### 扩展 GossipPayload
+
+```go
+type GossipPayload struct {
+    // 原有字段
+    Digest       map[string]uint64 `msgpack:"digest"`
+    VersionDelta uint64            `msgpack:"version_delta"`
+    FullSync     bool              `msgpack:"full_sync"`
+
+    // 双向同步字段（来自 node-sync-optimization.md）
+    BloomFilter  []byte  `msgpack:"bloom_filter,omitempty"`  // 保留兼容性（可选）
+    BFVersion    uint64  `msgpack:"bf_version,omitempty"`
+    BFKeyCount   uint32  `msgpack:"bf_key_count,omitempty"`
+
+    // Namespace Merkle Tree 字段
+    GlobalRootHash string            `msgpack:"global_root_hash"` // 全局 Root Hash
+    NamespaceHashes map[string]string `msgpack:"namespace_hashes"` // Namespace -> Root Hash
+    RequestedData  []SyncRequest      `msgpack:"requested_data,omitempty"` // 双向请求数据
+}
+
+type SyncRequest struct {
+    Namespace Namespace `msgpack:"namespace"`
+    Key       string   `msgpack:"key"`
+}
+```
 
 ---
 
@@ -520,24 +412,42 @@ type MerkleTreeGossipPayload struct {
 
 **TreeCoordinator + Merkle Tree 树形元数据版本控制**：
 
-1. ✅ **无需 Bloom Filter**：树形结构本身提供层级信息
-2. ✅ **O(log n) 差异检测**：快速定位变化分支
-3. ✅ **增量同步**：只传输变化的分支
-4. ✅ **天然适配**：与 TreeCoordinator 的树形结构完美匹配
+1. ✅ **完整元数据镜像**：每个节点都有所有元数据副本，本地读取零延迟
+2. ✅ **Namespace 分层**：9 个 Namespace，每个一个 Merkle Tree
+3. ✅ **一致性级别差异**：强一致（2PC）vs 最终一致（Gossip）
+4. ✅ **三层递归检测**：Global → Namespace → Key，O(log n) 定位变化
+5. ✅ **双向同步**：双方同时交换差异，各自发送缺失数据
+6. ✅ **增量传输**：只传输变化的数据，节省 80%-99% 带宽
+
+### 与 node-sync-optimization.md 的整合
+
+**吸收**：
+- 双向同步机制（Phase 2）
+- GossipPayload 扩展字段
+
+**替代**：
+- Bloom Filter：明确说明不适合树形拓扑
+- 平面 Merkle Tree：改为 Namespace 分层 Merkle Tree
+
+**新增**：
+- 完整元数据镜像（本地读取）
+- 一致性级别差异（强一致 vs 最终一致）
+- Namespace 分层结构
 
 ### 实施建议
 
 | 阶段 | 内容 | 优先级 | 周期 |
 |------|------|--------|------|
-| **Phase 1** | 实现 MerkleTreeNode 基础结构 | P0 | 3 天 |
-| **Phase 2** | 集成到 TreeCoordinator | P0 | 2 天 |
-| **Phase 3** | 扩展 Gossip 协议 | P1 | 4 天 |
-| **Phase 4** | 性能测试与优化 | P1 | 2 天 |
-| **总计** | - | - | **11 天** |
+| **Phase 1** | 实现 NamespacedMerkleTree 基础结构 | P0 | 3 天 |
+| **Phase 2** | 集成到 MetadataKV（本地读取） | P0 | 2 天 |
+| **Phase 3** | 扩展 Gossip 协议（双向同步 + Namespace 分层） | P1 | 4 天 |
+| **Phase 4** | 强一致 Namespace 的 2PC 实现 | P1 | 3 天 |
+| **Phase 5** | 性能测试与优化 | P1 | 2 天 |
+| **总计** | - | - | **14 天** |
 
 ---
 
-**文档版本**: v1.0
+**文档版本**: v2.0（整合版）
 **创建日期**: 2026-02-11
 **维护者**: NexKV 开发团队
 **状态**: ✅ 预研完成

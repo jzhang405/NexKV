@@ -367,3 +367,134 @@ func BenchmarkGetKeyHash(b *testing.B) {
 		nmt.GetKeyHash(NamespaceNode, key)
 	}
 }
+
+// ==================== P1 性能优化：缓存和增量哈希测试 ====================
+
+// TestGetCacheStats 测试缓存统计
+func TestGetCacheStats(t *testing.T) {
+	hlc := clock.NewHLC()
+	nmt := NewNamespacedMerkleTree(hlc)
+
+	// 初始统计应该都是 0
+	stats := nmt.GetCacheStats()
+	if stats["hit_count"].(int64) != 0 {
+		t.Errorf("expected initial hit_count 0, got %d", stats["hit_count"])
+	}
+	if stats["miss_count"].(int64) != 0 {
+		t.Errorf("expected initial miss_count 0, got %d", stats["miss_count"])
+	}
+
+	// 第一次调用应该是 cache miss（没有缓存）
+	nmt.GetGlobalRootHash()
+	stats = nmt.GetCacheStats()
+	if stats["miss_count"].(int64) != 1 {
+		t.Errorf("expected miss_count 1 after first call, got %d", stats["miss_count"])
+	}
+
+	// 第二次调用应该是 cache hit（没有脏 Namespace）
+	nmt.GetGlobalRootHash()
+	stats = nmt.GetCacheStats()
+	if stats["hit_count"].(int64) != 1 {
+		t.Errorf("expected hit_count 1 after second call, got %d", stats["hit_count"])
+	}
+}
+
+// TestIsNamespaceDirty 测试 Namespace 脏标记
+func TestIsNamespaceDirty(t *testing.T) {
+	hlc := clock.NewHLC()
+	nmt := NewNamespacedMerkleTree(hlc)
+
+	// 初始状态下，所有 Namespace 都不是脏
+	if nmt.IsNamespaceDirty(NamespaceNode) {
+		t.Error("expected NamespaceNode to not be dirty initially")
+	}
+
+	// 更新 Key 后，Namespace 应该被标记为脏
+	metadata := map[string]string{"key": "value"}
+	_ = nmt.UpdateKey(NamespaceNode, "test-key", metadata)
+
+	if !nmt.IsNamespaceDirty(NamespaceNode) {
+		t.Error("expected NamespaceNode to be dirty after update")
+	}
+
+	// 获取 Global Root 后，脏标记应该被清除
+	nmt.GetGlobalRootHash()
+
+	if nmt.IsNamespaceDirty(NamespaceNode) {
+		t.Error("expected NamespaceNode to not be dirty after GetGlobalRootHash")
+	}
+}
+
+// TestForceRecomputeGlobalRoot 测试强制重新计算 Global Root
+func TestForceRecomputeGlobalRoot(t *testing.T) {
+	hlc := clock.NewHLC()
+	nmt := NewNamespacedMerkleTree(hlc)
+
+	// 获取初始 Global Root
+	initialRoot := nmt.GetGlobalRootHash()
+
+	// 更新一个 Key
+	metadata := map[string]string{"key": "value"}
+	_ = nmt.UpdateKey(NamespaceNode, "test-key", metadata)
+
+	// 获取新的 Global Root（应该不同）
+	newRoot := nmt.GetGlobalRootHash()
+	if newRoot == initialRoot {
+		t.Error("expected Global Root to change after update")
+	}
+
+	// 强制重新计算应该得到相同的结果
+	forceRoot := nmt.ForceRecomputeGlobalRoot()
+	if forceRoot != newRoot {
+		t.Errorf("expected force recompute to return same root, got %s vs %s", forceRoot, newRoot)
+	}
+}
+
+// TestCacheHitRate 测试缓存命中率
+func TestCacheHitRate(t *testing.T) {
+	hlc := clock.NewHLC()
+	nmt := NewNamespacedMerkleTree(hlc)
+
+	// 重置统计
+	nmt.ResetCacheStats()
+
+	// 连续调用 100 次 GetGlobalRootHash（没有更新操作）
+	for i := 0; i < 100; i++ {
+		nmt.GetGlobalRootHash()
+	}
+
+	stats := nmt.GetCacheStats()
+	hitRate := stats["hit_rate"].(float64)
+
+	// 缓存命中率应该很高（99%以上，第一次是 miss，后续都是 hit）
+	if hitRate < 0.99 {
+		t.Errorf("expected cache hit rate >= 0.99, got %f", hitRate)
+	}
+}
+
+// BenchmarkGetGlobalRootHash_WithCache 性能测试：带缓存的 Global Root 获取
+func BenchmarkGetGlobalRootHash_WithCache(b *testing.B) {
+	hlc := clock.NewHLC()
+	nmt := NewNamespacedMerkleTree(hlc)
+
+	// 预先调用一次以建立缓存
+	nmt.GetGlobalRootHash()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		nmt.GetGlobalRootHash()
+	}
+}
+
+// BenchmarkUpdateKey_WithIncrementalHash 性能测试：增量哈希优化
+func BenchmarkUpdateKey_WithIncrementalHash(b *testing.B) {
+	hlc := clock.NewHLC()
+	nmt := NewNamespacedMerkleTree(hlc)
+
+	metadata := map[string]string{"key": "value"}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := "node-" + string(rune(i%1000))
+		nmt.UpdateKey(NamespaceNode, key, metadata)
+	}
+}

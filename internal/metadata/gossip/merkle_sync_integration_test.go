@@ -30,9 +30,9 @@ import (
 
 // mockTransport 模拟 Transport 层（用于测试）
 type mockTransport struct {
-	mu            sync.RWMutex
-	receivedMsgs  map[string][]byte // nodeID -> messages
-	sentMsgs      map[string][]byte // nodeID -> messages
+	mu             sync.RWMutex
+	receivedMsgs   map[string][]byte // nodeID -> messages
+	sentMsgs       map[string][]byte // nodeID -> messages
 	messageHandler func(string, []byte)
 }
 
@@ -59,17 +59,6 @@ func (m *mockTransport) Receive(handler func(string, []byte)) error {
 
 func (m *mockTransport) Close() error {
 	return nil
-}
-
-// simulateReceive 模拟接收消息（用于测试）
-func (m *mockTransport) simulateReceive(fromNodeID string, msg []byte) {
-	m.mu.RLock()
-	handler := m.messageHandler
-	m.mu.RUnlock()
-
-	if handler != nil {
-		handler(fromNodeID, msg)
-	}
 }
 
 // TestMerkleGossipSync_Integration 测试 Merkle Gossip 同步集成
@@ -197,7 +186,7 @@ func TestMerkleGossipSync_Performance(t *testing.T) {
 	startTime := time.Now()
 	for i := 0; i < 1000; i++ {
 		metadata := map[string]string{
-			"id":   fmt.Sprintf("data-%d", i),
+			"id":    fmt.Sprintf("data-%d", i),
 			"index": fmt.Sprintf("%d", i),
 		}
 		key := fmt.Sprintf("node-%04d", i)
@@ -236,11 +225,11 @@ func TestMerkleGossipSync_Performance(t *testing.T) {
 // TestMerkleGossipSync_BandwidthSavings 测试带宽节省
 func TestMerkleGossipSync_BandwidthSavings(t *testing.T) {
 	tests := []struct {
-		name              string
-		totalSize         int
-		keysReceived      int
-		keysSent          int
-		minExpectedSaved  uint64
+		name             string
+		totalSize        int
+		keysReceived     int
+		keysSent         int
+		minExpectedSaved uint64
 	}{
 		{
 			name:             "单个 Key 变化",
@@ -261,7 +250,7 @@ func TestMerkleGossipSync_BandwidthSavings(t *testing.T) {
 			totalSize:        10000,
 			keysReceived:     100,
 			keysSent:         50,
-			minExpectedSaved: 0,    // 全量变化无节省
+			minExpectedSaved: 0, // 全量变化无节省
 		},
 	}
 
@@ -296,7 +285,7 @@ func TestMerkleGossipSync_CacheOptimization(t *testing.T) {
 	startTime := time.Now()
 	for i := 0; i < 100; i++ {
 		peerID := peer.ID(fmt.Sprintf("peer-%d", i%10)).String()
-		sync.SyncWithPeer(ctx, peerID)
+		_, _ = sync.SyncWithPeer(ctx, peerID)
 	}
 	duration := time.Since(startTime)
 

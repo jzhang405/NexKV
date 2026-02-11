@@ -6,6 +6,7 @@ require (
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/klauspost/compress v1.18.3
 	github.com/libp2p/go-libp2p v0.47.0
+	github.com/minio/sha256-simd v1.0.1
 	github.com/multiformats/go-multiaddr v0.16.1
 	github.com/pierrec/lz4/v4 v4.1.25
 	github.com/prometheus/client_golang v1.22.0
@@ -50,7 +51,6 @@ require (
 	github.com/miekg/dns v1.1.66 // indirect
 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b // indirect
 	github.com/mikioh/tcpopt v0.0.0-20190314235656-172688c1accc // indirect
-	github.com/minio/sha256-simd v1.0.1 // indirect
 	github.com/mr-tron/base58 v1.2.0 // indirect
 	github.com/multiformats/go-base32 v0.1.0 // indirect
 	github.com/multiformats/go-base36 v0.2.0 // indirect

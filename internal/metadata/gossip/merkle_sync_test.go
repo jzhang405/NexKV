@@ -9,15 +9,19 @@ import (
 	"github.com/jzhang405/NexKV/internal/metadata/kvstore"
 )
 
-// TestNewMerkleGossipSync 测试创建 Merkle Gossip 同步服务
-func TestNewMerkleGossipSync(t *testing.T) {
+// setupMerkleGossipSync 创建测试用的 Merkle Gossip 同步服务
+func setupMerkleGossipSync(t *testing.T) *MerkleGossipSync {
+	t.Helper()
 	hlc := clock.NewHLC()
 	merkle := kvstore.NewNamespacedMerkleTree(hlc)
-
-	// 创建一个模拟的 MetadataKV（仅用于测试）
-	// 注意：实际使用时需要真实的 MVStore
-
 	sync := NewMerkleGossipSync(merkle, nil, nil, "node-1")
+	t.Cleanup(func() { _ = sync.Close() })
+	return sync
+}
+
+// TestNewMerkleGossipSync 测试创建 Merkle Gossip 同步服务
+func TestNewMerkleGossipSync(t *testing.T) {
+	sync := setupMerkleGossipSync(t)
 
 	if sync == nil {
 		t.Fatal("NewMerkleGossipSync returned nil")
@@ -34,10 +38,7 @@ func TestNewMerkleGossipSync(t *testing.T) {
 
 // TestSyncWithPeer_NoDifference 测试无差异同步
 func TestSyncWithPeer_NoDifference(t *testing.T) {
-	hlc := clock.NewHLC()
-	merkle := kvstore.NewNamespacedMerkleTree(hlc)
-	sync := NewMerkleGossipSync(merkle, nil, nil, "node-1")
-
+	sync := setupMerkleGossipSync(t)
 	ctx := context.Background()
 
 	// 使用相同的 Global Root 进行同步（应该检测到无差异）
@@ -62,13 +63,11 @@ func TestSyncWithPeer_NoDifference(t *testing.T) {
 
 // TestSyncWithPeer_WithDifference 测试有差异同步
 func TestSyncWithPeer_WithDifference(t *testing.T) {
-	hlc := clock.NewHLC()
-	merkle := kvstore.NewNamespacedMerkleTree(hlc)
-	sync := NewMerkleGossipSync(merkle, nil, nil, "node-1")
+	sync := setupMerkleGossipSync(t)
 
 	// 更新本地数据
 	metadata := map[string]string{"key": "value"}
-	err := merkle.UpdateKey(kvstore.NamespaceNode, "test-node", metadata)
+	err := sync.merkle.UpdateKey(kvstore.NamespaceNode, "test-node", metadata)
 	if err != nil {
 		t.Fatalf("UpdateKey failed: %v", err)
 	}
@@ -89,9 +88,7 @@ func TestSyncWithPeer_WithDifference(t *testing.T) {
 
 // TestFindDiffNamespaces 测试查找差异 Namespace
 func TestFindDiffNamespaces(t *testing.T) {
-	hlc := clock.NewHLC()
-	merkle := kvstore.NewNamespacedMerkleTree(hlc)
-	sync := NewMerkleGossipSync(merkle, nil, nil, "node-1")
+	sync := setupMerkleGossipSync(t)
 
 	localHashes := map[string]string{
 		"ns-1": "hash-1",
@@ -101,7 +98,7 @@ func TestFindDiffNamespaces(t *testing.T) {
 
 	peerHashes := map[string]string{
 		"ns-1": "hash-1-different", // 差异
-		"ns-2": "hash-2-same",     // 相同
+		"ns-2": "hash-2-same",      // 相同
 		"ns-4": "hash-4-peer-only", // peer 有但本地没有
 	}
 
@@ -126,32 +123,32 @@ func TestFindDiffNamespaces(t *testing.T) {
 // TestCalculateBandwidthSavings 测试带宽节省计算
 func TestCalculateBandwidthSavings(t *testing.T) {
 	tests := []struct {
-		name              string
-		totalSize         int
-		keysReceived      int
-		keysSent          int
-		expectedSaved     uint64
+		name          string
+		totalSize     int
+		keysReceived  int
+		keysSent      int
+		expectedSaved uint64
 	}{
 		{
 			name:          "单个 Key 变化",
-			totalSize:     10000, // 10KB 全量元数据
-			keysReceived:  1,     // 接收 1 个 Key
+			totalSize:     10000,
+			keysReceived:  1,
 			keysSent:      0,
-			expectedSaved: 9580,  // 10000 - (32 + 288 + 100) = 9580
+			expectedSaved: 9580,
 		},
 		{
 			name:          "多个 Key 变化",
 			totalSize:     10000,
 			keysReceived:  10,
 			keysSent:      5,
-			expectedSaved: 8180,  // 10000 - (32 + 288 + 1500) = 8180
+			expectedSaved: 8180,
 		},
 		{
 			name:          "全量变化",
 			totalSize:     10000,
 			keysReceived:  100,
 			keysSent:      50,
-			expectedSaved: 0,    // 全量变化无节省 (15000 > 10000)
+			expectedSaved: 0,
 		},
 	}
 
@@ -171,8 +168,8 @@ func TestEstimateBandwidthUsage(t *testing.T) {
 		keyCount      int
 		expectedBytes uint64
 	}{
-		{0, 64},     // 32 (Global) + 32 (Namespace)
-		{1, 164},    // 64 + 100
+		{0, 64},      // 32 (Global) + 32 (Namespace)
+		{1, 164},     // 64 + 100
 		{10, 1064},   // 64 + 1000
 		{100, 10064}, // 64 + 10000
 	}
@@ -214,7 +211,7 @@ func TestBuildGossipPayload(t *testing.T) {
 // TestParseGossipPayload 测试解析 Gossip Payload
 func TestParseGossipPayload(t *testing.T) {
 	validPayload := map[string]interface{}{
-		"global_root_hash":   "test_root_hash",
+		"global_root_hash": "test_root_hash",
 		"namespace_hashes": map[string]string{
 			"ns-1": "hash-1",
 			"ns-2": "hash-2",
@@ -248,9 +245,7 @@ func TestParseGossipPayload(t *testing.T) {
 
 // TestGetStats 测试获取统计信息
 func TestGetStats(t *testing.T) {
-	hlc := clock.NewHLC()
-	merkle := kvstore.NewNamespacedMerkleTree(hlc)
-	sync := NewMerkleGossipSync(merkle, nil, nil, "node-1")
+	sync := setupMerkleGossipSync(t)
 
 	stats := sync.GetStats()
 
@@ -281,7 +276,7 @@ func BenchmarkSyncWithPeer(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		sync.SyncWithPeer(ctx, "peer-1")
+		_, _ = sync.SyncWithPeer(ctx, "peer-1")
 	}
 }
 

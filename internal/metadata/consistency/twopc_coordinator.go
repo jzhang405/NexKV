@@ -62,16 +62,16 @@ func (s TransactionState) String() string {
 // PendingOperation 暂存的操作（PreCommit 阶段）
 type PendingOperation struct {
 	// 基础信息
-	TxID        string    // 事务 ID
-	NS          string    // 命名空间
-	Key         string    // 键
-	Value       []byte    // 值（编码后）
-	Version     uint64    // 版本号
-	CreateTime  time.Time // 创建时间
+	TxID       string    // 事务 ID
+	NS         string    // 命名空间
+	Key        string    // 键
+	Value      []byte    // 值（编码后）
+	Version    uint64    // 版本号
+	CreateTime time.Time // 创建时间
 
 	// Merkle 相关
-	MerkleHash  string    // Merkle Hash（Commit 时计算）
-	ShouldUpdate bool     // 是否更新 Merkle Tree
+	MerkleHash   string // Merkle Hash（Commit 时计算）
+	ShouldUpdate bool   // 是否更新 Merkle Tree
 }
 
 // ==================== 2PC 事务 ====================
@@ -83,20 +83,20 @@ type TwoPCTransaction struct {
 	Operations []*PendingOperation // 暂存的操作列表
 
 	// 参与者
-	Participants []string          // 参与者节点 ID 列表
-	Acks         map[string]bool   // participantID -> ACK 状态
+	Participants []string        // 参与者节点 ID 列表
+	Acks         map[string]bool // participantID -> ACK 状态
 
 	// 时间戳
-	CreateTime  time.Time          // 创建时间
-	PreCommitTime time.Time         // PreCommit 时间
-	CommitTime  time.Time          // Commit 时间
+	CreateTime    time.Time // 创建时间
+	PreCommitTime time.Time // PreCommit 时间
+	CommitTime    time.Time // Commit 时间
 
 	// 配置
-	Timeout     time.Duration      // 超时时间（默认 5 秒）
-	Quorum      int                // 需要的 ACK 数量（默认全部）
+	Timeout time.Duration // 超时时间（默认 5 秒）
+	Quorum  int           // 需要的 ACK 数量（默认全部）
 
 	// 错误
-	LastError   error              // 最后一次错误
+	LastError error // 最后一次错误
 }
 
 // NewTwoPCTransaction 创建新的 2PC 事务
@@ -147,7 +147,6 @@ func (tx *TwoPCTransaction) HasAllAcks() bool {
 		return false
 	}
 
-	// 检查所有参与者都已确认
 	for _, participant := range tx.Participants {
 		if !tx.Acks[participant] {
 			return false
@@ -170,15 +169,15 @@ type TwoPCMerkleCoordinator struct {
 	mu sync.RWMutex
 
 	// 核心组件
-	metadataKV   kvstore.Store      // 元数据 KV 存储
-	merkleTree   *kvstore.NamespacedMerkleTree // Merkle Tree
-	hlc          *clock.HLC         // HLC 时钟
+	metadataKV kvstore.Store                 // 元数据 KV 存储
+	merkleTree *kvstore.NamespacedMerkleTree // Merkle Tree
+	hlc        *clock.HLC                    // HLC 时钟
 
 	// 事务管理
 	transactions map[string]*TwoPCTransaction // 进行中的事务
 
 	// 配置
-	defaultTimeout time.Duration      // 默认超时时间（5 秒）
+	defaultTimeout time.Duration // 默认超时时间（5 秒）
 
 	// 状态
 	closed bool
@@ -204,22 +203,18 @@ func NewTwoPCMerkleCoordinator(opts *TwoPCOptions) (*TwoPCMerkleCoordinator, err
 	if opts == nil {
 		return nil, fmt.Errorf("options cannot be nil")
 	}
-
 	if opts.MetadataKV == nil {
 		return nil, fmt.Errorf("MetadataKV cannot be nil")
 	}
-
 	if opts.MerkleTree == nil {
 		return nil, fmt.Errorf("MerkleTree cannot be nil")
 	}
 
-	// 默认 HLC 时钟
 	hlc := opts.HLC
 	if hlc == nil {
 		hlc = clock.NewHLC()
 	}
 
-	// 默认超时 5 秒
 	timeout := opts.DefaultTimeout
 	if timeout == 0 {
 		timeout = 5 * time.Second
@@ -231,7 +226,6 @@ func NewTwoPCMerkleCoordinator(opts *TwoPCOptions) (*TwoPCMerkleCoordinator, err
 		hlc:            hlc,
 		transactions:   make(map[string]*TwoPCTransaction),
 		defaultTimeout: timeout,
-		closed:         false,
 	}, nil
 }
 
@@ -344,7 +338,7 @@ func (c *TwoPCMerkleCoordinator) Commit(ctx context.Context, tx *TwoPCTransactio
 		if op.ShouldUpdate {
 			if err := c.merkleTree.UpdateKeyFromBytes(op.NS, op.Key, op.Value); err != nil {
 				tx.State = TxStateRolledBack
-				tx.LastError = fmt.Errorf("Merkle UpdateKey failed for key %s: %w", op.Key, err)
+				tx.LastError = fmt.Errorf("merkle UpdateKey failed for key %s: %w", op.Key, err)
 				c.rollbackTransaction(tx)
 				return tx.LastError
 			}
@@ -403,12 +397,10 @@ func (c *TwoPCMerkleCoordinator) generateTxID() string {
 func (c *TwoPCMerkleCoordinator) precomputeMerkleHash(tx *TwoPCTransaction) error {
 	for _, op := range tx.Operations {
 		if op.ShouldUpdate {
-			// 计算单个 Key 的 Hash
 			hash, err := c.merkleTree.GetKeyHash(op.NS, op.Key)
 			if err == nil {
 				op.MerkleHash = hash
 			}
-			// 如果 Key 不存在，hash 为空，这是正常的
 		}
 	}
 	return nil
@@ -471,11 +463,8 @@ func (c *TwoPCMerkleCoordinator) Close() error {
 
 	c.closed = true
 
-	// 回滚所有进行中的事务
-	for txID := range c.transactions {
-		if tx, ok := c.transactions[txID]; ok {
-			c.rollbackTransaction(tx)
-		}
+	for _, tx := range c.transactions {
+		c.rollbackTransaction(tx)
 	}
 
 	return nil

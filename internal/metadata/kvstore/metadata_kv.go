@@ -52,15 +52,15 @@ const (
 //
 // ⚠️ Phase 2 更新：NamespaceRole 从 ConsistencyEventual 升级为 ConsistencyEnhancedEventual
 var consistencyMapping = map[string]ConsistencyLevel{
-	NamespaceCluster: ConsistencyStrong,            // 集群配置：强一致（2PC）
+	NamespaceCluster: ConsistencyStrong,           // 集群配置：强一致（2PC）
 	NamespaceNode:    ConsistencyEventual,         // 节点信息：最终一致（Gossip）
 	NamespaceRole:    ConsistencyEnhancedEventual, // 角色信息：增强最终一致（Quorum）⚠️ 从 Gossip 升级
 	NamespaceTopo:    ConsistencyEventual,         // 拓扑关系：最终一致（Gossip）
-	NamespaceShard:   ConsistencyStrong,            // 分片信息：强一致（2PC）
-	NamespaceStatic:  ConsistencyStrong,            // 静态配置：强一致（2PC）
+	NamespaceShard:   ConsistencyStrong,           // 分片信息：强一致（2PC）
+	NamespaceStatic:  ConsistencyStrong,           // 静态配置：强一致（2PC）
 	NamespaceDynamic: ConsistencyEventual,         // 动态状态：最终一致（Gossip）
 	NamespaceOp:      ConsistencyEventual,         // 操作记录：最终一致（Gossip）
-	NamespaceVersion: ConsistencyStrong,            // 版本控制：强一致（2PC）
+	NamespaceVersion: ConsistencyStrong,           // 版本控制：强一致（2PC）
 }
 
 // PutOptions 写入选项

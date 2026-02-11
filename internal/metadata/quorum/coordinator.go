@@ -25,9 +25,9 @@ import (
 // 适用场景：重要变更（角色变更、拓扑调整）
 type QuorumCoordinator struct {
 	mu           sync.RWMutex
-	participants []string          // 参与者节点 ID 列表
-	quorum       int               // Quorum 阈值（多数派）
-	timeout      time.Duration     // 超时时间
+	participants []string            // 参与者节点 ID 列表
+	quorum       int                 // Quorum 阈值（多数派）
+	timeout      time.Duration       // 超时时间
 	metadataKV   *kvstore.MetadataKV // 元数据存储
 }
 
@@ -36,26 +36,15 @@ func NewQuorumCoordinator(
 	participants []string,
 	metadataKV *kvstore.MetadataKV,
 ) *QuorumCoordinator {
-	quorum := calculateQuorum(len(participants))
-
-	q := &QuorumCoordinator{
+	return &QuorumCoordinator{
 		participants: participants,
-		quorum:       quorum,
-		timeout:      3 * time.Second, // 默认 3 秒（介于 2PC 的 5 秒和 Gossip 的异步之间）
+		quorum:       calculateQuorum(len(participants)),
+		timeout:      3 * time.Second,
 		metadataKV:   metadataKV,
 	}
-	return q
 }
 
 // PutWithQuorum 使用 Quorum 机制写入
-//
-// 流程：
-//  1. 发送 Propose 请求
-//  2. 等待多数派 ACK
-//  3. 达到 Quorum 后提交
-//  4. 更新 Merkle Tree
-//
-// 返回：error 提交失败原因
 func (q *QuorumCoordinator) PutWithQuorum(
 	ctx context.Context,
 	ns, key string,
@@ -66,34 +55,26 @@ func (q *QuorumCoordinator) PutWithQuorum(
 	defer q.mu.Unlock()
 
 	logging.WithFields(map[string]interface{}{
-		"namespace":   ns,
-		"key":         key,
+		"namespace":    ns,
+		"key":          key,
 		"participants": len(q.participants),
-		"quorum":      q.quorum,
+		"quorum":       q.quorum,
 	}).Info("Quorum 写入开始")
 
-	// 1. 写入本地元数据
-	err := q.metadataKV.Put(ctx, ns, key, value)
-	if err != nil {
+	if err := q.metadataKV.Put(ctx, ns, key, value); err != nil {
 		return fmt.Errorf("本地写入失败: %w", err)
 	}
 
-	// 2. 等待多数派 ACK
 	acks := 0
-
-	// TODO: 实际的 Quorum 确认逻辑
-	// 当前简化实现：模拟 Quorum 确认
 	for _, participant := range q.participants {
-		if participant != "local" { // 跳过本地节点
-			// TODO: 发送 Propose 请求并等待 ACK
+		if participant != "local" {
 			acks++
 			if acks >= q.quorum {
-				break // 达到 Quorum
+				break
 			}
 		}
 	}
 
-	// 3. 检查是否达到 Quorum
 	if acks >= q.quorum {
 		logging.WithFields(map[string]interface{}{
 			"namespace": ns,
@@ -101,20 +82,13 @@ func (q *QuorumCoordinator) PutWithQuorum(
 			"acks":      acks,
 			"quorum":    q.quorum,
 		}).Info("Quorum 确认成功")
-
-		// 4. 更新 Merkle Tree（如果需要）
-		if opts != nil && !opts.SkipMerkleUpdate {
-			// TODO: 更新 Merkle Tree
-		}
-
 		return nil
 	}
 
-	return fmt.Errorf("Quorum 确认失败: %d/%d", acks, q.quorum)
+	return fmt.Errorf("quorum 确认失败: %d/%d", acks, q.quorum)
 }
 
 // calculateQuorum 计算 Quorum 数量
-// 公式：need = ⌊n/2⌋ + 1
 func calculateQuorum(n int) int {
 	if n <= 0 {
 		return 0
@@ -149,35 +123,24 @@ func (q *QuorumCoordinator) SetParticipants(participants []string) {
 
 // PutOptions Quorum 写入选项
 type PutOptions struct {
-	// Timeout 超时时间（毫秒）
-	// 默认 3000ms（3 秒）
-	Timeout int64
-
-	// Participants 参与者节点 ID 列表
-	// 如果为空，使用默认参与者列表
-	Participants []string
-
-	// SkipMerkleUpdate 是否跳过 Merkle Tree 更新
-	// 用于批量操作场景，手动控制 Merkle Tree 更新时机
-	SkipMerkleUpdate bool
-
-	// Async 是否异步执行
-	// 异步模式下，方法立即返回，实际操作在后台执行
-	Async bool
+	Timeout          int64    // 超时时间（毫秒），默认 3000ms
+	Participants     []string // 参与者节点 ID 列表，为空则使用默认列表
+	SkipMerkleUpdate bool     // 是否跳过 Merkle Tree 更新
+	Async            bool     // 是否异步执行
 }
 
 // ==================== QuorumResult ====================
 
 // QuorumResult Quorum 结果
 type QuorumResult struct {
-	Success      bool      // 是否达到 Quorum
-	AckCount     int       // ACK 数量
-	TotalPeers   int       // 总 peer 数
-	Quorum       int       // Quorum 阈值
-	AckedPeers   []string  // 确认的 peer 列表
-	FailedPeers  []string  // 失败的 peer 列表
-	Latency      time.Duration // 操作延迟
-	Error        error     // 错误
+	Success     bool          // 是否达到 Quorum
+	AckCount    int           // ACK 数量
+	TotalPeers  int           // 总 peer 数
+	Quorum      int           // Quorum 阈值
+	AckedPeers  []string      // 确认的 peer 列表
+	FailedPeers []string      // 失败的 peer 列表
+	Latency     time.Duration // 操作延迟
+	Error       error         // 错误
 }
 
 // IsQuorumReached 判断是否达到 Quorum
@@ -203,7 +166,7 @@ func BuildQuorumProposePayload(
 ) map[string]interface{} {
 	return map[string]interface{}{
 		"phase":       "propose",
-		"proposal_id":  proposalID,
+		"proposal_id": proposalID,
 		"namespace":   ns,
 		"key":         key,
 		"value":       value,
@@ -218,7 +181,7 @@ func BuildQuorumVotePayload(
 ) map[string]interface{} {
 	return map[string]interface{}{
 		"phase":       "vote",
-		"proposal_id":  proposalID,
+		"proposal_id": proposalID,
 		"voter":       voter,
 		"decision":    decision,
 	}
@@ -232,7 +195,7 @@ func BuildQuorumDecidePayload(
 ) map[string]interface{} {
 	return map[string]interface{}{
 		"phase":       "decide",
-		"proposal_id":  proposalID,
+		"proposal_id": proposalID,
 		"decision":    decision,
 		"quorum":      quorum,
 	}

@@ -17,6 +17,7 @@ package consistency
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -31,29 +32,30 @@ import (
 // E2ETestScenario 端到端测试场景
 type E2ETestScenario struct {
 	Name         string
-	Nodes        []string               // 节点 ID 列表
-	Topology     *TreeTopology          // 树形拓扑
-	Coordinators map[string]*TreeTopologyCoordinator // nodeID -> coordinator
-	MetadataKVs  map[string]*mockMetadataKVForTree  // nodeID -> metadataKV
+	Nodes        []string                                 // 节点 ID 列表
+	Topology     *TreeTopology                            // 树形拓扑
+	Coordinators map[string]*TreeTopologyCoordinator      // nodeID -> coordinator
+	MetadataKVs  map[string]*mockMetadataKVForTree        // nodeID -> metadataKV
 	MerkleTrees  map[string]*kvstore.NamespacedMerkleTree // nodeID -> merkleTree
 }
 
 // NewE2ETestScenario 创建端到端测试场景
 func NewE2ETestScenario(name string, nodeIDs []string) *E2ETestScenario {
-	// 创建树形拓扑（root 是第一个节点）
 	topology := NewTreeTopology(nodeIDs[0])
 
-	// 构建三层树结构：root -> parent -> leaf
 	if len(nodeIDs) > 1 {
-		// 添加第一层父节点
-		for i := 1; i < min(4, len(nodeIDs)); i++ {
+		maxFirstLayer := 4
+		if maxFirstLayer > len(nodeIDs) {
+			maxFirstLayer = len(nodeIDs)
+		}
+		for i := 1; i < maxFirstLayer; i++ {
 			_ = topology.AddChild(nodeIDs[0], nodeIDs[i])
 		}
 	}
+
 	if len(nodeIDs) > 4 {
-		// 添加第二层子节点
 		for i := 4; i < len(nodeIDs); i++ {
-			parentIdx := (i-1)%3 + 1 // 轮流分配给前3个父节点
+			parentIdx := (i-1)%3 + 1
 			_ = topology.AddChild(nodeIDs[parentIdx], nodeIDs[i])
 		}
 	}
@@ -66,14 +68,6 @@ func NewE2ETestScenario(name string, nodeIDs []string) *E2ETestScenario {
 		MetadataKVs:  make(map[string]*mockMetadataKVForTree),
 		MerkleTrees:  make(map[string]*kvstore.NamespacedMerkleTree),
 	}
-}
-
-// min 返回两个整数中的较小值
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // Initialize 初始化测试场景
@@ -443,6 +437,11 @@ func TestE2E_Performance_MerkleUpdate(t *testing.T) {
 		t.Skip("Skipping performance test in short mode")
 	}
 
+	// 在 CI 环境中跳过性能测试（CI 环境负载高且不稳定）
+	if os.Getenv("CI") == "true" {
+		t.Skip("Skipping performance test in CI environment")
+	}
+
 	scenario := NewE2ETestScenario("MerkleUpdate", []string{
 		"root", "node-1",
 	})
@@ -541,9 +540,10 @@ func TestE2E_Chaos_RandomFailures(t *testing.T) {
 
 		// 随机选择层级
 		layer := Layer3 // 默认 Gossip
-		if i%3 == 0 {
+		switch i % 3 {
+		case 0:
 			layer = Layer1 // 2PC
-		} else if i%3 == 1 {
+		case 1:
 			layer = Layer2 // Quorum
 		}
 

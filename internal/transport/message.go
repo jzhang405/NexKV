@@ -207,9 +207,9 @@ type GossipPayload struct {
 	FullSync     bool              `msgpack:"full_sync"`     // 是否全量同步
 
 	// Merkle Tree 字段（新增）
-	GlobalRootHash   string            `msgpack:"global_root_hash,omitempty"`   // 全局 Root Hash
-	NamespaceHashes  map[string]string `msgpack:"namespace_hashes,omitempty"`  // Namespace -> Root Hash
-	RequestedData    []SyncRequest      `msgpack:"requested_data,omitempty"`    // 双向请求数据
+	GlobalRootHash  string            `msgpack:"global_root_hash,omitempty"` // 全局 Root Hash
+	NamespaceHashes map[string]string `msgpack:"namespace_hashes,omitempty"` // Namespace -> Root Hash
+	RequestedData   []SyncRequest     `msgpack:"requested_data,omitempty"`   // 双向请求数据
 }
 
 // SyncRequest 双向同步请求

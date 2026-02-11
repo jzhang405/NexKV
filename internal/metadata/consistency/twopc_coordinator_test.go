@@ -135,9 +135,9 @@ func TestNewTwoPCMerkleCoordinator(t *testing.T) {
 	metadataKV := newMockMetadataKV()
 
 	coordinator, err := NewTwoPCMerkleCoordinator(&TwoPCOptions{
-		MetadataKV:    metadataKV,
-		MerkleTree:    merkleTree,
-		HLC:           hlc,
+		MetadataKV:     metadataKV,
+		MerkleTree:     merkleTree,
+		HLC:            hlc,
 		DefaultTimeout: 5 * time.Second,
 	})
 

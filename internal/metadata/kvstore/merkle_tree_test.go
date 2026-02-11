@@ -6,10 +6,15 @@ import (
 	"github.com/jzhang405/NexKV/internal/clock"
 )
 
+// setupMerkleTree 创建测试用的 Merkle Tree
+func setupMerkleTree() *NamespacedMerkleTree {
+	hlc := clock.NewHLC()
+	return NewNamespacedMerkleTree(hlc)
+}
+
 // TestNewNamespacedMerkleTree 测试创建 NamespacedMerkleTree
 func TestNewNamespacedMerkleTree(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	if nmt == nil {
 		t.Fatal("NewNamespacedMerkleTree returned nil")
@@ -33,8 +38,7 @@ func TestNewNamespacedMerkleTree(t *testing.T) {
 
 // TestGetGlobalRootHash 测试获取全局 Root Hash
 func TestGetGlobalRootHash(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	// 初始全局 Root Hash
 	globalRoot := nmt.GetGlobalRootHash()
@@ -51,8 +55,7 @@ func TestGetGlobalRootHash(t *testing.T) {
 
 // TestGetNamespaceRootHash 测试获取 Namespace Root Hash
 func TestGetNamespaceRootHash(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	tests := []string{
 		NamespaceCluster,
@@ -85,19 +88,18 @@ func TestGetNamespaceRootHash(t *testing.T) {
 
 // TestUpdateKey 测试更新 Key
 func TestUpdateKey(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	// 初始 Root Hash
 	initialRoot, _ := nmt.GetNamespaceRootHash(NamespaceNode)
 
 	// 更新一个 Key
 	metadata := map[string]string{
-		"node_id":  "node-001",
-		"address":  "192.168.1.10:8080",
-		"status":   "online",
-		"role":     "leaf",
-		"parent":   "parent-001",
+		"node_id": "node-001",
+		"address": "192.168.1.10:8080",
+		"status":  "online",
+		"role":    "leaf",
+		"parent":  "parent-001",
 	}
 	err := nmt.UpdateKey(NamespaceNode, "node-001", metadata)
 	if err != nil {
@@ -127,8 +129,7 @@ func TestUpdateKey(t *testing.T) {
 
 // TestGetKeyHash 测试获取 Key Hash
 func TestGetKeyHash(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	// 添加一个 Key
 	metadata := map[string]string{"key": "value"}
@@ -161,8 +162,7 @@ func TestGetKeyHash(t *testing.T) {
 
 // TestDeleteKey 测试删除 Key
 func TestDeleteKey(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	// 添加一个 Key
 	metadata := map[string]string{"key": "value"}
@@ -192,8 +192,7 @@ func TestDeleteKey(t *testing.T) {
 
 // TestGetAllNamespaceRootHashes 测试获取所有 Namespace Root Hash
 func TestGetAllNamespaceRootHashes(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	allHashes := nmt.GetAllNamespaceRootHashes()
 
@@ -210,8 +209,7 @@ func TestGetAllNamespaceRootHashes(t *testing.T) {
 
 // TestUpdateKeyFromBytes 测试从字节数组更新 Key
 func TestUpdateKeyFromBytes(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	data := []byte(`{"node_id":"node-001","status":"online"}`)
 	err := nmt.UpdateKeyFromBytes(NamespaceNode, "node-001", data)
@@ -231,8 +229,7 @@ func TestUpdateKeyFromBytes(t *testing.T) {
 
 // TestGetNamespaceVersion 测试获取 Namespace 版本号
 func TestGetNamespaceVersion(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	// 初始版本号应该是 0
 	version, err := nmt.GetNamespaceVersion(NamespaceNode)
@@ -245,7 +242,9 @@ func TestGetNamespaceVersion(t *testing.T) {
 
 	// 更新 Key 后版本号应该增加
 	metadata := map[string]string{"key": "value"}
-	nmt.UpdateKey(NamespaceNode, "test-key", metadata)
+	if err := nmt.UpdateKey(NamespaceNode, "test-key", metadata); err != nil {
+		t.Errorf("UpdateKey failed: %v", err)
+	}
 
 	version, err = nmt.GetNamespaceVersion(NamespaceNode)
 	if err != nil {
@@ -258,15 +257,12 @@ func TestGetNamespaceVersion(t *testing.T) {
 
 // TestIncrementEpoch 测试增加 Epoch
 func TestIncrementEpoch(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
-	// 初始 Epoch 应该是 0
 	if nmt.GetEpoch() != 0 {
 		t.Errorf("expected initial epoch 0, got %d", nmt.GetEpoch())
 	}
 
-	// 增加 Epoch
 	nmt.IncrementEpoch()
 	if nmt.GetEpoch() != 1 {
 		t.Errorf("expected epoch 1 after IncrementEpoch, got %d", nmt.GetEpoch())
@@ -280,8 +276,7 @@ func TestIncrementEpoch(t *testing.T) {
 
 // TestConcurrentAccess 测试并发访问
 func TestConcurrentAccess(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	// 并发读写
 	done := make(chan bool)
@@ -303,7 +298,7 @@ func TestConcurrentAccess(t *testing.T) {
 			metadata := map[string]string{"key": "value"}
 			for j := 0; j < 50; j++ {
 				key := "node-" + string(rune(idx))
-				nmt.UpdateKey(NamespaceNode, key, metadata)
+				_ = nmt.UpdateKey(NamespaceNode, key, metadata)
 			}
 			done <- true
 		}(i)
@@ -323,9 +318,7 @@ func TestConcurrentAccess(t *testing.T) {
 
 // BenchmarkGetGlobalRootHash 性能测试：获取全局 Root Hash
 func BenchmarkGetGlobalRootHash(b *testing.B) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
-
+	nmt := setupMerkleTree()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		nmt.GetGlobalRootHash()
@@ -334,8 +327,7 @@ func BenchmarkGetGlobalRootHash(b *testing.B) {
 
 // BenchmarkUpdateKey 性能测试：更新 Key
 func BenchmarkUpdateKey(b *testing.B) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 	metadata := map[string]string{
 		"node_id": "node-001",
 		"address": "192.168.1.10:8080",
@@ -345,26 +337,24 @@ func BenchmarkUpdateKey(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		key := "node-" + string(rune(i%1000))
-		nmt.UpdateKey(NamespaceNode, key, metadata)
+		_ = nmt.UpdateKey(NamespaceNode, key, metadata)
 	}
 }
 
 // BenchmarkGetKeyHash 性能测试：获取 Key Hash
 func BenchmarkGetKeyHash(b *testing.B) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
-	// 预先添加一些 Key
 	metadata := map[string]string{"key": "value"}
 	for i := 0; i < 1000; i++ {
 		key := "node-" + string(rune(i))
-		nmt.UpdateKey(NamespaceNode, key, metadata)
+		_ = nmt.UpdateKey(NamespaceNode, key, metadata)
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		key := "node-" + string(rune(i%1000))
-		nmt.GetKeyHash(NamespaceNode, key)
+		_, _ = nmt.GetKeyHash(NamespaceNode, key)
 	}
 }
 
@@ -372,8 +362,7 @@ func BenchmarkGetKeyHash(b *testing.B) {
 
 // TestGetCacheStats 测试缓存统计
 func TestGetCacheStats(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	// 初始统计应该都是 0
 	stats := nmt.GetCacheStats()
@@ -401,8 +390,7 @@ func TestGetCacheStats(t *testing.T) {
 
 // TestIsNamespaceDirty 测试 Namespace 脏标记
 func TestIsNamespaceDirty(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	// 初始状态下，所有 Namespace 都不是脏
 	if nmt.IsNamespaceDirty(NamespaceNode) {
@@ -427,8 +415,7 @@ func TestIsNamespaceDirty(t *testing.T) {
 
 // TestForceRecomputeGlobalRoot 测试强制重新计算 Global Root
 func TestForceRecomputeGlobalRoot(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	// 获取初始 Global Root
 	initialRoot := nmt.GetGlobalRootHash()
@@ -452,8 +439,7 @@ func TestForceRecomputeGlobalRoot(t *testing.T) {
 
 // TestCacheHitRate 测试缓存命中率
 func TestCacheHitRate(t *testing.T) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
+	nmt := setupMerkleTree()
 
 	// 重置统计
 	nmt.ResetCacheStats()
@@ -474,12 +460,8 @@ func TestCacheHitRate(t *testing.T) {
 
 // BenchmarkGetGlobalRootHash_WithCache 性能测试：带缓存的 Global Root 获取
 func BenchmarkGetGlobalRootHash_WithCache(b *testing.B) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
-
-	// 预先调用一次以建立缓存
+	nmt := setupMerkleTree()
 	nmt.GetGlobalRootHash()
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		nmt.GetGlobalRootHash()
@@ -488,13 +470,11 @@ func BenchmarkGetGlobalRootHash_WithCache(b *testing.B) {
 
 // BenchmarkUpdateKey_WithIncrementalHash 性能测试：增量哈希优化
 func BenchmarkUpdateKey_WithIncrementalHash(b *testing.B) {
-	hlc := clock.NewHLC()
-	nmt := NewNamespacedMerkleTree(hlc)
-
+	nmt := setupMerkleTree()
 	metadata := map[string]string{"key": "value"}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		key := "node-" + string(rune(i%1000))
-		nmt.UpdateKey(NamespaceNode, key, metadata)
+		_ = nmt.UpdateKey(NamespaceNode, key, metadata)
 	}
 }

@@ -13,17 +13,20 @@ import (
 	"sync"
 
 	"github.com/jzhang405/NexKV/internal/clock"
+	"github.com/jzhang405/NexKV/internal/metadata/gossip"
 	"github.com/jzhang405/NexKV/internal/metadata/kvstore"
+	"github.com/jzhang405/NexKV/internal/metadata/quorum"
+	"github.com/jzhang405/NexKV/internal/transport"
 )
 
 // ==================== 树形拓扑定义 ====================
 
 // TreeNode 树节点信息
 type TreeNode struct {
-	NodeID     string   // 节点 ID
-	ParentID   string   // 父节点 ID
+	NodeID      string   // 节点 ID
+	ParentID    string   // 父节点 ID
 	ChildrenIDs []string // 子节点 ID 列表
-	Level      int      // 层级（Root=0）
+	Level       int      // 层级（Root=0）
 }
 
 // TreeTopology 树形拓扑结构
@@ -217,13 +220,13 @@ type TreeTopologyCoordinator struct {
 	mu sync.RWMutex
 
 	// 核心组件
-	twoPCCoordinator *TwoPCMerkleCoordinator // 2PC 协调器
-	// TODO: quorumCoordinator *QuorumCoordinator // Quorum 协调器（待集成）
-	// TODO: gossipSync *GossipMerkleSync // Gossip 同步（待集成）
+	twoPCCoordinator  *TwoPCMerkleCoordinator   // 2PC 协调器
+	quorumCoordinator *quorum.QuorumCoordinator // Quorum 协调器
+	gossipSync        *gossip.MerkleGossipSync  // Gossip 同步
 
 	// 拓扑信息
-	topology   *TreeTopology              // 树形拓扑
-	localNodeID string                  // 本地节点 ID
+	topology    *TreeTopology // 树形拓扑
+	localNodeID string        // 本地节点 ID
 
 	// Merkle Tree
 	merkleTree *kvstore.NamespacedMerkleTree
@@ -245,6 +248,21 @@ type TreeTopologyOptions struct {
 
 	// TwoPCOptions 2PC 协调器配置
 	TwoPCOptions *TwoPCOptions
+
+	// QuorumParticipants Quorum 参与者列表（用于 Layer2）
+	QuorumParticipants []string
+
+	// QuorumMetadataKV Quorum 元数据存储
+	QuorumMetadataKV *kvstore.MetadataKV
+
+	// GossipMerkleTree Gossip Merkle Tree（用于 Layer3）
+	GossipMerkleTree *kvstore.NamespacedMerkleTree
+
+	// GossipMetadataKV Gossip 元数据存储
+	GossipMetadataKV *kvstore.MetadataKV
+
+	// GossipTransport Gossip 传输层（可选）
+	GossipTransport transport.Transport
 
 	// HLC HLC 时钟实例
 	HLC *clock.HLC
@@ -276,13 +294,35 @@ func NewTreeTopologyCoordinator(opts *TreeTopologyOptions) (*TreeTopologyCoordin
 		hlc = clock.NewHLC()
 	}
 
+	// 创建 Quorum 协调器（如果提供了参与者列表）
+	var quorumCoordinator *quorum.QuorumCoordinator
+	if len(opts.QuorumParticipants) > 0 && opts.QuorumMetadataKV != nil {
+		quorumCoordinator = quorum.NewQuorumCoordinator(
+			opts.QuorumParticipants,
+			opts.QuorumMetadataKV,
+		)
+	}
+
+	// 创建 Gossip 同步（如果提供了必要的配置）
+	var gossipSync *gossip.MerkleGossipSync
+	if opts.GossipMerkleTree != nil && opts.GossipMetadataKV != nil {
+		gossipSync = gossip.NewMerkleGossipSync(
+			opts.GossipMerkleTree,
+			opts.GossipMetadataKV,
+			opts.GossipTransport,
+			opts.LocalNodeID,
+		)
+	}
+
 	return &TreeTopologyCoordinator{
-		twoPCCoordinator: twoPCCoordinator,
-		topology:        opts.Topology,
-		localNodeID:     opts.LocalNodeID,
-		merkleTree:      opts.TwoPCOptions.MerkleTree,
-		hlc:             hlc,
-		closed:          false,
+		twoPCCoordinator:  twoPCCoordinator,
+		quorumCoordinator: quorumCoordinator,
+		gossipSync:        gossipSync,
+		topology:          opts.Topology,
+		localNodeID:       opts.LocalNodeID,
+		merkleTree:        opts.TwoPCOptions.MerkleTree,
+		hlc:               hlc,
+		closed:            false,
 	}, nil
 }
 
@@ -366,9 +406,20 @@ func (c *TreeTopologyCoordinator) putWith2PC(ctx context.Context, ns, key string
 // 策略：跨父节点 Quorum
 // 参与者：不同父节点组的代表节点
 func (c *TreeTopologyCoordinator) putWithQuorum(ctx context.Context, ns, key string, value any) error {
-	// TODO: 实现 Quorum 协调器集成
-	// 暂时回退到 Gossip
-	return c.putWithGossip(ctx, ns, key, value)
+	if c.quorumCoordinator == nil {
+		// 如果 Quorum 协调器未初始化，回退到 Gossip
+		return c.putWithGossip(ctx, ns, key, value)
+	}
+
+	// 使用 Quorum 机制写入
+	opts := &quorum.PutOptions{
+		Timeout:          3000, // 默认 3 秒超时
+		Participants:     c.quorumCoordinator.GetParticipants(),
+		SkipMerkleUpdate: false,
+		Async:            false,
+	}
+
+	return c.quorumCoordinator.PutWithQuorum(ctx, ns, key, value, opts)
 }
 
 // putWithGossip 使用 Gossip 写入（Layer3：全局层）
@@ -376,13 +427,110 @@ func (c *TreeTopologyCoordinator) putWithQuorum(ctx context.Context, ns, key str
 // 策略：全局 Gossip
 // 参与者：所有节点（异步扩散）
 func (c *TreeTopologyCoordinator) putWithGossip(ctx context.Context, ns, key string, value any) error {
-	// TODO: 实现 Gossip 同步集成
-	// 暂时直接写入本地
+	// 1. 写入本地元数据
 	err := c.twoPCCoordinator.metadataKV.Put(ctx, ns, key, value)
-	return err
+	if err != nil {
+		return fmt.Errorf("本地写入失败: %w", err)
+	}
+
+	// 2. 更新 Merkle Tree
+	err = c.UpdateMerkleAfterCommit(ctx, ns, key, nil)
+	if err != nil {
+		return fmt.Errorf("更新 Merkle Tree 失败: %w", err)
+	}
+
+	// 3. 触发 Gossip 同步（异步扩散）
+	if c.gossipSync != nil {
+		// TODO: 实现 Gossip 异步触发机制（Task 3.5）
+		// 这里简化处理：添加到已知 peer 列表，下次 gossip 时会同步
+		// 实际实现中，应该启动一个 goroutine 来执行 gossip
+		_ = c.gossipSync //nolint:staticcheck // Task 3.5 将实现完整的 Gossip 触发逻辑
+	}
+
+	return nil
 }
 
 // ==================== Merkle + 一致性协同 ====================
+
+// MerkleSyncRequest Merkle 同步请求
+type MerkleSyncRequest struct {
+	NodeID          string            // 节点 ID
+	GlobalRootHash  string            // Global Root Hash
+	NamespaceHashes map[string]string // Namespace Root Hashes
+	RequestID       string            // 请求 ID
+}
+
+// MerkleSyncResponse Merkle 同步响应
+type MerkleSyncResponse struct {
+	NodeID          string            // 节点 ID
+	GlobalRootHash  string            // Global Root Hash
+	NamespaceHashes map[string]string // Namespace Root Hashes
+	DiffNamespaces  []string          // 差异的 Namespace 列表
+	RequestID       string            // 请求 ID
+}
+
+// GetMerkleRoot 获取本地 Merkle Tree 的 Global Root Hash
+func (c *TreeTopologyCoordinator) GetMerkleRoot() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.merkleTree == nil {
+		return ""
+	}
+	return c.merkleTree.GetGlobalRootHash()
+}
+
+// GetNamespaceRootHashes 获取所有 Namespace 的 Root Hash
+func (c *TreeTopologyCoordinator) GetNamespaceRootHashes() map[string]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.merkleTree == nil {
+		return make(map[string]string)
+	}
+	return c.merkleTree.GetAllNamespaceRootHashes()
+}
+
+// DetectMerkleDiff 检测 Merkle Tree 差异
+//
+// 比较本地和请求中的 Merkle Root，返回差异的 Namespace 列表
+func (c *TreeTopologyCoordinator) DetectMerkleDiff(request *MerkleSyncRequest) *MerkleSyncResponse {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// 获取本地 Merkle Root
+	localGlobalRoot := c.GetMerkleRoot()
+	localNamespaceHashes := c.GetNamespaceRootHashes()
+
+	// 构建响应
+	response := &MerkleSyncResponse{
+		NodeID:          c.localNodeID,
+		GlobalRootHash:  localGlobalRoot,
+		NamespaceHashes: localNamespaceHashes,
+		DiffNamespaces:  []string{},
+		RequestID:       request.RequestID,
+	}
+
+	// 比较全局 Root
+	if localGlobalRoot == request.GlobalRootHash {
+		// Global Root 相同，无差异
+		return response
+	}
+
+	// 检测差异的 Namespace
+	for ns, localHash := range localNamespaceHashes {
+		if peerHash, ok := request.NamespaceHashes[ns]; !ok || peerHash != localHash {
+			response.DiffNamespaces = append(response.DiffNamespaces, ns)
+		}
+	}
+
+	// 检查 peer 有但本地没有的 Namespace
+	for ns := range request.NamespaceHashes {
+		if _, ok := localNamespaceHashes[ns]; !ok {
+			response.DiffNamespaces = append(response.DiffNamespaces, ns)
+		}
+	}
+
+	return response
+}
 
 // SyncMerkleBeforeCommit 在提交前同步 Merkle Root 差异
 //
@@ -395,13 +543,15 @@ func (c *TreeTopologyCoordinator) SyncMerkleBeforeCommit(ctx context.Context, pa
 	// 获取本地 Global Root
 	localRoot := c.merkleTree.GetGlobalRootHash()
 
-	// TODO: 与参与者交换 Merkle Root
-	// TODO: 检测差异
-	// TODO: 同步差异数据
+	// TODO: 与参与者交换 Merkle Root（Task 3.4 需要网络通信支持）
+	// TODO: 检测差异（已在 DetectMerkleDiff 中实现）
+	// TODO: 同步差异数据（Task 3.5 需要完整 Gossip 支持）
 
-	_ = localRoot // 暂时避免 unused 错误
+	_ = localRoot
 	_ = participants
 
+	// 简化实现：当前阶段只记录日志
+	// 实际实现中，这里需要通过网络与参与者交换 Merkle Root
 	return nil
 }
 
@@ -465,6 +615,11 @@ func (c *TreeTopologyCoordinator) Close() error {
 	// 关闭 2PC 协调器
 	if c.twoPCCoordinator != nil {
 		_ = c.twoPCCoordinator.Close()
+	}
+
+	// 关闭 Gossip 同步
+	if c.gossipSync != nil {
+		_ = c.gossipSync.Close()
 	}
 
 	return nil

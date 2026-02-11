@@ -10,7 +10,6 @@
 package kvstore
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"sort"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"sync/atomic"
 
 	"github.com/jzhang405/NexKV/internal/clock"
+	"github.com/jzhang405/NexKV/internal/metadata/kvstore/hash"
 )
 
 // ==================== NamespacedMerkleTree ====================
@@ -25,10 +25,12 @@ import (
 // NamespacedMerkleTree Namespace 分层 Merkle 摘要树
 //
 // 结构：
-//   GlobalRootHash = SHA256(NamespaceCluster.RootHash + NamespaceShard.RootHash + ...)
+//
+//	GlobalRootHash = SHA256(NamespaceCluster.RootHash + NamespaceShard.RootHash + ...)
 //
 // 每个 Namespace 一个独立的 Merkle Tree：
-//   NamespaceRootHash = SHA256(KeyHash1 + KeyHash2 + ...)
+//
+//	NamespaceRootHash = SHA256(KeyHash1 + KeyHash2 + ...)
 //
 // 核心特性：
 //   - O(1) 差异检测：Global Root → Namespace Root → Key Hash
@@ -38,13 +40,13 @@ import (
 //   - 缓存高频 Namespace：减少重复计算开销
 type NamespacedMerkleTree struct {
 	mu         sync.RWMutex
-	epoch      uint64                                  // 全局逻辑时钟
-	version    uint64                                  // 全局版本
-	namespaces map[string]*NamespaceMerkleTree         // 9个Namespace独立树（使用 string 作为键）
-	hlc        *clock.HLC                              // HLC 时钟
+	epoch      uint64                          // 全局逻辑时钟
+	version    uint64                          // 全局版本
+	namespaces map[string]*NamespaceMerkleTree // 9个Namespace独立树（使用 string 作为键）
+	hlc        *clock.HLC                      // HLC 时钟
 
 	// P1 性能优化：增量哈希和缓存
-	dirtyNamespaces map[string]bool  // 脏 Namespace 标记（需要重新计算 Global Root）
+	dirtyNamespaces  map[string]bool // 脏 Namespace 标记（需要重新计算 Global Root）
 	cachedGlobalRoot atomic.Value    // 缓存的 Global Root Hash（atomic.Value 存储 string）
 	cacheHitCount    atomic.Int64    // 缓存命中计数
 	cacheMissCount   atomic.Int64    // 缓存未命中计数
@@ -61,7 +63,7 @@ func NewNamespacedMerkleTree(hlc *clock.HLC) *NamespacedMerkleTree {
 		version:         0,
 		namespaces:      make(map[string]*NamespaceMerkleTree),
 		hlc:             hlc,
-		dirtyNamespaces: make(map[string]bool),  // 初始化脏标记
+		dirtyNamespaces: make(map[string]bool), // 初始化脏标记
 	}
 
 	// 初始化缓存为空值
@@ -163,8 +165,8 @@ func (n *NamespacedMerkleTree) GetGlobalRootHash() string {
 		}
 	}
 
-	hash := sha256.Sum256([]byte(strings.Join(namespaceHashes, "")))
-	globalRoot := hex.EncodeToString(hash[:])
+	sum256 := hash.Sum256([]byte(strings.Join(namespaceHashes, "")))
+	globalRoot := hex.EncodeToString(sum256[:])
 
 	// 更新缓存
 	n.cachedGlobalRoot.Store(globalRoot)
@@ -322,8 +324,8 @@ func (n *NamespacedMerkleTree) recomputeNamespaceRootHash(ns string) {
 	if len(keyHashes) == 0 {
 		tree.RootHash = computeEmptyHash()
 	} else {
-		hash := sha256.Sum256([]byte(strings.Join(keyHashes, "")))
-		tree.RootHash = hex.EncodeToString(hash[:])
+		sum256 := hash.Sum256([]byte(strings.Join(keyHashes, "")))
+		tree.RootHash = hex.EncodeToString(sum256[:])
 	}
 
 	// 更新 Namespace 版本号
@@ -440,8 +442,8 @@ func (n *NamespacedMerkleTree) ForceRecomputeGlobalRoot() string {
 		}
 	}
 
-	hash := sha256.Sum256([]byte(strings.Join(namespaceHashes, "")))
-	globalRoot := hex.EncodeToString(hash[:])
+	sum256 := hash.Sum256([]byte(strings.Join(namespaceHashes, "")))
+	globalRoot := hex.EncodeToString(sum256[:])
 
 	// 更新缓存
 	n.cachedGlobalRoot.Store(globalRoot)
@@ -477,18 +479,18 @@ func computeHashFromMetadata(metadata map[string]string) string {
 	}
 
 	data := strings.Join(parts, ",")
-	hash := sha256.Sum256([]byte(data))
-	return hex.EncodeToString(hash[:])
+	sum256 := hash.Sum256([]byte(data))
+	return hex.EncodeToString(sum256[:])
 }
 
 // computeHashFromBytes 从字节数组计算 Hash
 func computeHashFromBytes(data []byte) string {
-	hash := sha256.Sum256(data)
-	return hex.EncodeToString(hash[:])
+	sum256 := hash.Sum256(data)
+	return hex.EncodeToString(sum256[:])
 }
 
 // computeEmptyHash 计算空数据的 Hash
 func computeEmptyHash() string {
-	hash := sha256.Sum256([]byte(""))
-	return hex.EncodeToString(hash[:])
+	sum256 := hash.Sum256([]byte(""))
+	return hex.EncodeToString(sum256[:])
 }

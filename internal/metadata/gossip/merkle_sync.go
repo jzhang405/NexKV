@@ -28,11 +28,11 @@ import (
 //   - 双向同步：双方同时交换差异
 //   - 增量传输：只传输变化的数据
 type MerkleGossipSync struct {
-	merkle     *kvstore.NamespacedMerkleTree
-	metadataKV *kvstore.MetadataKV
-	transport  transport.Transport // libp2p 传输层
-	localNodeID string             // 本地节点 ID
-	mu         sync.RWMutex
+	merkle      *kvstore.NamespacedMerkleTree
+	metadataKV  *kvstore.MetadataKV
+	transport   transport.Transport // libp2p 传输层
+	localNodeID string              // 本地节点 ID
+	mu          sync.RWMutex
 
 	// Gossip 配置
 	gossipInterval time.Duration // Gossip 周期（默认 10 秒）
@@ -40,6 +40,10 @@ type MerkleGossipSync struct {
 
 	// 已知的 peer 列表（用于随机选择）
 	knownPeers map[string]struct{}
+
+	// 生命周期管理
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	// 统计
 	syncCount      uint64 // 同步次数
@@ -54,6 +58,8 @@ func NewMerkleGossipSync(
 	transportLayer transport.Transport,
 	localNodeID string,
 ) *MerkleGossipSync {
+	ctx, cancel := context.WithCancel(context.Background())
+
 	sync := &MerkleGossipSync{
 		merkle:         merkle,
 		metadataKV:     metadataKV,
@@ -62,6 +68,8 @@ func NewMerkleGossipSync(
 		gossipInterval: 10 * time.Second, // 默认 10 秒
 		gossipTimeout:  5 * time.Second,  // 默认 5 秒
 		knownPeers:     make(map[string]struct{}),
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 
 	// 注册消息处理器（如果提供了 transport）
@@ -110,7 +118,10 @@ func (s *MerkleGossipSync) SyncWithPeer(
 
 	// 3. 比较本地和 peer 的 Global Root Hash
 	localGlobalRoot := s.merkle.GetGlobalRootHash()
-	peerGlobalRoot, _ := localPayload["global_root_hash"].(string)
+	peerGlobalRoot, ok := localPayload["global_root_hash"].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid global_root_hash type in peer payload")
+	}
 
 	if localGlobalRoot == peerGlobalRoot {
 		// 无差异，无需同步
@@ -125,7 +136,10 @@ func (s *MerkleGossipSync) SyncWithPeer(
 
 	// 4. 计算差异的 Namespace
 	localNamespaceHashes := s.merkle.GetAllNamespaceRootHashes()
-	peerNamespaceHashes, _ := localPayload["namespace_hashes"].(map[string]string)
+	peerNamespaceHashes, ok := localPayload["namespace_hashes"].(map[string]string)
+	if !ok {
+		return nil, fmt.Errorf("invalid namespace_hashes type in peer payload")
+	}
 
 	diffNamespaces := s.findDiffNamespaces(localNamespaceHashes, peerNamespaceHashes)
 	if len(diffNamespaces) == 0 {
@@ -139,13 +153,13 @@ func (s *MerkleGossipSync) SyncWithPeer(
 
 	// 5. 对每个差异的 Namespace，交换 Key Hashes
 	syncResult := &SyncResult{
-		PeerID:           peerID,
-		Synced:           true,
-		DiffNamespaces:   diffNamespaces,
-		KeysReceived:     make(map[string][]string),
-		KeysSent:         make(map[string][]string),
-		BandwidthUsed:    uint64(32 + (9 * 32)),
-		BandwidthSaved:   0,
+		PeerID:         peerID,
+		Synced:         true,
+		DiffNamespaces: diffNamespaces,
+		KeysReceived:   make(map[string][]string),
+		KeysSent:       make(map[string][]string),
+		BandwidthUsed:  uint64(32 + (9 * 32)),
+		BandwidthSaved: 0,
 	}
 
 	// 计算实际使用的带宽
@@ -154,7 +168,7 @@ func (s *MerkleGossipSync) SyncWithPeer(
 		// 简化实现：记录需要同步的 Namespace
 		syncResult.KeysReceived[ns] = []string{} // 待实现：从 peer 获取
 		syncResult.KeysSent[ns] = []string{}     // 待实现：发送给 peer
-		bandwidthUsed += 100 // 假设每个 Namespace 100B
+		bandwidthUsed += 100                     // 假设每个 Namespace 100B
 	}
 	syncResult.BandwidthUsed = bandwidthUsed
 
@@ -273,6 +287,17 @@ func (s *MerkleGossipSync) startMessageHandler() {
 			}).Error("注册 Gossip 消息处理器失败")
 		}
 	}
+
+	// 等待 context 取消
+	<-s.ctx.Done()
+	logging.Info("消息处理器 goroutine 已停止")
+}
+
+// Close 关闭 Gossip 同步服务，清理资源
+func (s *MerkleGossipSync) Close() error {
+	s.cancel()
+	logging.Info("MerkleGossipSync 已关闭")
+	return nil
 }
 
 // handleIncomingMessage 处理接收到的 Gossip 消息
@@ -320,11 +345,11 @@ func (s *MerkleGossipSync) GetStats() map[string]interface{} {
 	defer s.mu.RUnlock()
 
 	return map[string]interface{}{
-		"sync_count":       s.syncCount,
-		"diff_detected":    s.diffDetected,
-		"bandwidth_saved":   s.bandwidthSaved,
-		"gossip_interval":  s.gossipInterval.String(),
-		"gossip_timeout":   s.gossipTimeout.String(),
+		"sync_count":      s.syncCount,
+		"diff_detected":   s.diffDetected,
+		"bandwidth_saved": s.bandwidthSaved,
+		"gossip_interval": s.gossipInterval.String(),
+		"gossip_timeout":  s.gossipTimeout.String(),
 	}
 }
 
@@ -332,15 +357,15 @@ func (s *MerkleGossipSync) GetStats() map[string]interface{} {
 
 // SyncResult 同步结果
 type SyncResult struct {
-	PeerID         string            // Peer ID
-	Synced         bool              // 是否进行了同步
-	Reason         string            // 未同步的原因
-	DiffNamespaces map[string]bool   // 差异的 Namespace
+	PeerID         string              // Peer ID
+	Synced         bool                // 是否进行了同步
+	Reason         string              // 未同步的原因
+	DiffNamespaces map[string]bool     // 差异的 Namespace
 	KeysReceived   map[string][]string // 从 peer 接收的 Keys（按 Namespace）
 	KeysSent       map[string][]string // 发送给 peer 的 Keys（按 Namespace）
-	BandwidthUsed  uint64            // 使用的带宽（字节）
-	BandwidthSaved uint64            // 节省的带宽（字节）
-	Error          error             // 错误
+	BandwidthUsed  uint64              // 使用的带宽（字节）
+	BandwidthSaved uint64              // 节省的带宽（字节）
+	Error          error               // 错误
 }
 
 // IsSynced 是否进行了同步
@@ -401,9 +426,9 @@ func CalculateBandwidthSavings(
 //
 // 用于计算传输指定数量的 Keys 所需的带宽
 func EstimateBandwidthUsage(keyCount int) uint64 {
-	const merkleRootSize = 32      // Global Root Hash
-	const namespaceHashSize = 32   // Namespace Root Hash
-	const avgKeySize = 100          // 平均 Key 元数据大小
+	const merkleRootSize = 32    // Global Root Hash
+	const namespaceHashSize = 32 // Namespace Root Hash
+	const avgKeySize = 100       // 平均 Key 元数据大小
 
 	return uint64(merkleRootSize + namespaceHashSize + keyCount*avgKeySize)
 }
@@ -421,10 +446,10 @@ func BuildGossipPayload(
 	namespaceHashes := merkle.GetAllNamespaceRootHashes()
 
 	return map[string]interface{}{
-		"global_root_hash":   globalRoot,
-		"namespace_hashes":  namespaceHashes,
-		"full_sync":          fullSync,
-		"requested_data":     []map[string]string{}, // 双向同步请求数据
+		"global_root_hash": globalRoot,
+		"namespace_hashes": namespaceHashes,
+		"full_sync":        fullSync,
+		"requested_data":   []map[string]string{}, // 双向同步请求数据
 	}
 }
 

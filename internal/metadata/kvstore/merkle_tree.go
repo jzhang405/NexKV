@@ -165,7 +165,7 @@ func (n *NamespacedMerkleTree) GetGlobalRootHash() string {
 		}
 	}
 
-	sum256 := hash.Sum256([]byte(strings.Join(namespaceHashes, "")))
+	sum256 := hash.DefaultHasher.Sum256([]byte(strings.Join(namespaceHashes, "")))
 	globalRoot := hex.EncodeToString(sum256[:])
 
 	// 更新缓存
@@ -324,7 +324,7 @@ func (n *NamespacedMerkleTree) recomputeNamespaceRootHash(ns string) {
 	if len(keyHashes) == 0 {
 		tree.RootHash = computeEmptyHash()
 	} else {
-		sum256 := hash.Sum256([]byte(strings.Join(keyHashes, "")))
+		sum256 := hash.DefaultHasher.Sum256([]byte(strings.Join(keyHashes, "")))
 		tree.RootHash = hex.EncodeToString(sum256[:])
 	}
 
@@ -442,7 +442,7 @@ func (n *NamespacedMerkleTree) ForceRecomputeGlobalRoot() string {
 		}
 	}
 
-	sum256 := hash.Sum256([]byte(strings.Join(namespaceHashes, "")))
+	sum256 := hash.DefaultHasher.Sum256([]byte(strings.Join(namespaceHashes, "")))
 	globalRoot := hex.EncodeToString(sum256[:])
 
 	// 更新缓存
@@ -479,18 +479,18 @@ func computeHashFromMetadata(metadata map[string]string) string {
 	}
 
 	data := strings.Join(parts, ",")
-	sum256 := hash.Sum256([]byte(data))
+	sum256 := hash.DefaultHasher.Sum256([]byte(data))
 	return hex.EncodeToString(sum256[:])
 }
 
 // computeHashFromBytes 从字节数组计算 Hash
 func computeHashFromBytes(data []byte) string {
-	sum256 := hash.Sum256(data)
+	sum256 := hash.DefaultHasher.Sum256(data)
 	return hex.EncodeToString(sum256[:])
 }
 
 // computeEmptyHash 计算空数据的 Hash
 func computeEmptyHash() string {
-	sum256 := hash.Sum256([]byte(""))
+	sum256 := hash.DefaultHasher.Sum256([]byte(""))
 	return hex.EncodeToString(sum256[:])
 }

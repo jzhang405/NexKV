@@ -9,12 +9,15 @@ package consistency
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/clock"
 	"github.com/jzhang405/NexKV/internal/metadata/kvstore"
+	"github.com/jzhang405/NexKV/internal/transport"
 )
 
 // ==================== 2PC 状态定义 ====================
@@ -172,12 +175,18 @@ type TwoPCMerkleCoordinator struct {
 	metadataKV kvstore.Store                 // 元数据 KV 存储
 	merkleTree *kvstore.NamespacedMerkleTree // Merkle Tree
 	hlc        *clock.HLC                    // HLC 时钟
+	transport  transport.Transport           // 网络传输层
+
+	// 本地节点标识
+	localNodeID string
 
 	// 事务管理
 	transactions map[string]*TwoPCTransaction // 进行中的事务
 
 	// 配置
 	defaultTimeout time.Duration // 默认超时时间（5 秒）
+	maxRetries     int           // 最大重试次数
+	retryDelay     time.Duration // 重试延迟
 
 	// 状态
 	closed bool
@@ -196,9 +205,15 @@ type TwoPCOptions struct {
 
 	// DefaultTimeout 默认超时时间（默认 5 秒）
 	DefaultTimeout time.Duration
+
+	// MaxRetries 最大重试次数（默认 3）
+	MaxRetries int
+
+	// RetryDelay 重试延迟（默认 100ms）
+	RetryDelay time.Duration
 }
 
-// NewTwoPCMerkleCoordinator 创建新的 2PC 协调器
+// NewTwoPCMerkleCoordinator 创建新的 2PC 协调器（仅本地测试，不启用网络）
 func NewTwoPCMerkleCoordinator(opts *TwoPCOptions) (*TwoPCMerkleCoordinator, error) {
 	if opts == nil {
 		return nil, fmt.Errorf("options cannot be nil")
@@ -220,13 +235,61 @@ func NewTwoPCMerkleCoordinator(opts *TwoPCOptions) (*TwoPCMerkleCoordinator, err
 		timeout = 5 * time.Second
 	}
 
-	return &TwoPCMerkleCoordinator{
+	maxRetries := opts.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = 3 // 默认 3 次重试
+	}
+
+	retryDelay := opts.RetryDelay
+	if retryDelay == 0 {
+		retryDelay = 100 * time.Millisecond // 默认 100ms
+	}
+
+	coordinator := &TwoPCMerkleCoordinator{
 		metadataKV:     opts.MetadataKV,
 		merkleTree:     opts.MerkleTree,
 		hlc:            hlc,
+		transport:      nil, // 本地模式，无网络
+		localNodeID:    "",
 		transactions:   make(map[string]*TwoPCTransaction),
 		defaultTimeout: timeout,
-	}, nil
+		maxRetries:     maxRetries,
+		retryDelay:     retryDelay,
+	}
+
+	return coordinator, nil
+}
+
+// NewTwoPCMerkleCoordinatorWithTransport 创建带 Transport 的协调器（便捷函数）
+func NewTwoPCMerkleCoordinatorWithTransport(metadataKV kvstore.Store, merkleTree *kvstore.NamespacedMerkleTree, hlc *clock.HLC, transportParam transport.Transport, localNodeID string) (*TwoPCMerkleCoordinator, error) {
+	if metadataKV == nil {
+		return nil, fmt.Errorf("MetadataKV cannot be nil")
+	}
+	if merkleTree == nil {
+		return nil, fmt.Errorf("MerkleTree cannot be nil")
+	}
+	if hlc == nil {
+		hlc = clock.NewHLC()
+	}
+
+	coordinator := &TwoPCMerkleCoordinator{
+		metadataKV:     metadataKV,
+		merkleTree:     merkleTree,
+		hlc:            hlc,
+		transport:      transportParam,
+		localNodeID:    localNodeID,
+		transactions:   make(map[string]*TwoPCTransaction),
+		defaultTimeout: 5 * time.Second,
+		maxRetries:     3,                      // 默认 3 次重试
+		retryDelay:     100 * time.Millisecond, // 默认 100ms
+	}
+
+	// 注册消息接收处理器（ACK 响应）
+	if transportParam != nil {
+		_ = transportParam.Receive(coordinator.handlePreCommitResponse)
+	}
+
+	return coordinator, nil
 }
 
 // ==================== 核心 2PC 流程 ====================
@@ -285,11 +348,107 @@ func (c *TwoPCMerkleCoordinator) PreCommit(ctx context.Context, tx *TwoPCTransac
 		return fmt.Errorf("precompute Merkle Hash failed: %w", err)
 	}
 
-	// TODO: 实际场景中，这里需要通过网络发送 PreCommit 请求给所有参与者
-	// 模拟：假设所有参与者都会 ACK
-	for _, participant := range tx.Participants {
-		tx.Acks[participant] = true
+	// 实际场景：通过网络发送 PreCommit 请求给所有参与者
+	// 本地模式（c.transport == nil）：跳过网络发送，直接进入 PreCommit 状态
+	if c.transport == nil {
+		// 本地测试模式：模拟所有参与者的 ACK 响应
+		for _, participant := range tx.Participants {
+			tx.Acks[participant] = true
+		}
+		return nil
 	}
+
+	// 构建并发送 PreCommit 消息
+	// 直接转换操作为传输层格式
+	operations := make([]transport.Operation, len(tx.Operations))
+	for i, op := range tx.Operations {
+		operations[i] = transport.Operation{
+			Type:  "put", // 目前只支持 put 操作
+			Key:   op.Key,
+			Value: op.Value,
+		}
+	}
+
+	preparePayload := &transport.TwoPCPreparePayload{
+		TxID:        tx.TxID,
+		Operations:  operations,
+		Timeout:     int64(tx.Timeout.Milliseconds()),
+		Coordinator: c.localNodeID,
+	}
+
+	msg := &transport.Message{
+		Type:    transport.MessageTypeSync, // MessageTypeSync = TwoPCPreparePayload
+		From:    c.localNodeID,
+		Payload: nil, // 将在 EncodePayload 中填充
+	}
+
+	// 编码 Payload
+	if err := msg.EncodePayload(preparePayload); err != nil {
+		tx.State = TxStateRolledBack
+		tx.LastError = err
+		return fmt.Errorf("编码 PreCommit 消息失败: %w", err)
+	}
+
+	// 并发发送给所有参与者（带重试机制）
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successCount := 0
+	failureCount := 0
+
+	for _, participant := range tx.Participants {
+		wg.Add(1)
+		go func(nodeID string) {
+			defer wg.Done()
+
+			// 设置目标节点
+			msgClone := *msg
+			msgClone.To = nodeID
+
+			// 使用 sendWithRetry 发送 PreCommit 请求
+			if err := c.sendWithRetry(ctx, nodeID, msgClone.Payload); err != nil {
+				mu.Lock()
+				failureCount++
+				mu.Unlock()
+
+				// 检查是否需要回滚
+				mu.Lock()
+				canContinue := (failureCount < len(tx.Participants)-1) // 仍有其他节点可用
+				mu.Unlock()
+
+				if !canContinue {
+					// 大部分节点失败，无法继续
+					tx.State = TxStateRolledBack
+					tx.LastError = fmt.Errorf("PreCommit 失败：多数派节点不可达")
+					return
+				}
+				return
+			}
+
+			// 成功发送
+			mu.Lock()
+			successCount++
+			mu.Unlock()
+		}(participant)
+	}
+
+	// 等待所有发送完成
+	wg.Wait()
+
+	// 检查结果
+	if successCount == 0 {
+		tx.State = TxStateRolledBack
+		tx.LastError = fmt.Errorf("PreCommit 失败：所有节点发送失败")
+		return fmt.Errorf("PreCommit 失败：所有节点发送失败")
+	}
+
+	if successCount < len(tx.Participants) {
+		// 部分节点失败，记录警告但不回滚（等待响应处理）
+		fmt.Printf("警告：PreCommit 阶段部分失败：%d/%d 节点成功\n", successCount, len(tx.Participants))
+	}
+
+	// 等待 ACK 响应（通过 Receive 处理器处理）
+	// 注意：这里不阻塞等待，而是异步处理响应
+	// 实际的 ACK 收集在 handlePreCommitResponse 中处理
 
 	return nil
 }
@@ -383,6 +542,112 @@ func (c *TwoPCMerkleCoordinator) rollbackTransaction(tx *TwoPCTransaction) {
 
 	// 清除事务
 	delete(c.transactions, tx.TxID)
+}
+
+// handlePreCommitResponse 处理 PreCommit ACK 响应
+// 接收参与者返回的投票（YES/NO），更新事务状态
+func (c *TwoPCMerkleCoordinator) handlePreCommitResponse(nodeID string, msg []byte) {
+	codec := transport.NewMessagePackCodec()
+	message, err := codec.DecodeFromBytes(msg)
+	if err != nil {
+		return
+	}
+
+	payload, err := message.DecodePayload()
+	if err != nil {
+		return
+	}
+
+	switch message.Type {
+	case transport.MessageTypeAck: // TwoPCCommitPayload
+		commitPayload, ok := payload.(*transport.TwoPCCommitPayload)
+		if !ok {
+			return
+		}
+
+		c.mu.Lock()
+		tx, ok := c.transactions[commitPayload.TxID]
+		c.mu.Unlock()
+
+		if ok {
+			tx.Acks[nodeID] = commitPayload.Result
+		}
+
+	case transport.MessageTypeNack: // TwoPCRollbackPayload
+		rollbackPayload, ok := payload.(*transport.TwoPCRollbackPayload)
+		if !ok {
+			return
+		}
+
+		c.mu.Lock()
+		tx, ok := c.transactions[rollbackPayload.TxID]
+		c.mu.Unlock()
+
+		if ok {
+			tx.Acks[nodeID] = false
+			tx.LastError = fmt.Errorf("节点 %s 拒绝: %s", nodeID, rollbackPayload.Reason)
+		}
+	}
+}
+
+// ==================== 重试机制辅助方法 ====================
+
+// isRetryableError 判断错误是否可重试
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// 网络超时可重试
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	// 上下文取消不可重试
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+
+	// 连接相关错误可重试
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "connection") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "temporary")
+}
+
+// sendWithRetry 带重试的消息发送
+func (c *TwoPCMerkleCoordinator) sendWithRetry(ctx context.Context, nodeID string, payload []byte) error {
+	var lastErr error
+
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		if attempt > 0 {
+			// 等待重试延迟
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(c.retryDelay):
+				// 继续重试
+			}
+		}
+
+		// 尝试发送
+		err := c.transport.Send(nodeID, payload)
+		if err == nil {
+			return nil // 发送成功
+		}
+
+		lastErr = err
+
+		// 检查是否可重试
+		if !isRetryableError(err) {
+			break // 不可重试，直接返回
+		}
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("send failed after %d attempts: %w", c.maxRetries+1, lastErr)
+	}
+	return lastErr
 }
 
 // ==================== 辅助方法 ====================

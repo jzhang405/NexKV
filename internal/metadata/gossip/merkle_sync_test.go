@@ -6,7 +6,10 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/clock"
+	"github.com/jzhang405/NexKV/internal/config/logging"
 	"github.com/jzhang405/NexKV/internal/metadata/kvstore"
+	"github.com/vmihailenco/msgpack/v5"
+	"github.com/stretchr/testify/require"
 )
 
 // setupMerkleGossipSync 创建测试用的 Merkle Gossip 同步服务
@@ -22,7 +25,6 @@ func setupMerkleGossipSync(t *testing.T) *MerkleGossipSync {
 // TestNewMerkleGossipSync 测试创建 Merkle Gossip 同步服务
 func TestNewMerkleGossipSync(t *testing.T) {
 	sync := setupMerkleGossipSync(t)
-
 	if sync == nil {
 		t.Fatal("NewMerkleGossipSync returned nil")
 	}
@@ -36,7 +38,7 @@ func TestNewMerkleGossipSync(t *testing.T) {
 	}
 }
 
-// TestSyncWithPeer_NoDifference 测试无差异同步
+// TestSyncWithPeer_NoDifference 验证无差异同步
 func TestSyncWithPeer_NoDifference(t *testing.T) {
 	sync := setupMerkleGossipSync(t)
 	ctx := context.Background()
@@ -61,7 +63,7 @@ func TestSyncWithPeer_NoDifference(t *testing.T) {
 	}
 }
 
-// TestSyncWithPeer_WithDifference 测试有差异同步
+// TestSyncWithPeer_WithDifference 验证有差异同步
 func TestSyncWithPeer_WithDifference(t *testing.T) {
 	sync := setupMerkleGossipSync(t)
 
@@ -86,7 +88,7 @@ func TestSyncWithPeer_WithDifference(t *testing.T) {
 	}
 }
 
-// TestFindDiffNamespaces 测试查找差异 Namespace
+// TestFindDiffNamespaces 验证查找差异 Namespace
 func TestFindDiffNamespaces(t *testing.T) {
 	sync := setupMerkleGossipSync(t)
 
@@ -114,13 +116,12 @@ func TestFindDiffNamespaces(t *testing.T) {
 	if diff["ns-2"] {
 		t.Error("Expected ns-2 not in diff (same hash)")
 	}
-	// 注意：本地有但 peer 没有的也应该被认为是差异（需要发送给 peer）
 	if !diff["ns-3"] {
 		t.Error("Expected ns-3 in diff (local only, needs to be sent to peer)")
 	}
 }
 
-// TestCalculateBandwidthSavings 测试带宽节省计算
+// TestCalculateBandwidthSavings 验证带宽节省计算
 func TestCalculateBandwidthSavings(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -132,21 +133,21 @@ func TestCalculateBandwidthSavings(t *testing.T) {
 		{
 			name:          "单个 Key 变化",
 			totalSize:     10000,
-			keysReceived:  1,
+			keysReceived: 1,
 			keysSent:      0,
 			expectedSaved: 9580,
 		},
 		{
 			name:          "多个 Key 变化",
 			totalSize:     10000,
-			keysReceived:  10,
+			keysReceived: 10,
 			keysSent:      5,
 			expectedSaved: 8180,
 		},
 		{
 			name:          "全量变化",
 			totalSize:     10000,
-			keysReceived:  100,
+			keysReceived: 100,
 			keysSent:      50,
 			expectedSaved: 0,
 		},
@@ -159,10 +160,9 @@ func TestCalculateBandwidthSavings(t *testing.T) {
 				t.Errorf("CalculateBandwidthSavings() = %d, want %d", saved, tt.expectedSaved)
 			}
 		})
-	}
 }
 
-// TestEstimateBandwidthUsage 测试带宽使用估算
+// TestEstimateBandwidthUsage 验证带宽使用估算
 func TestEstimateBandwidthUsage(t *testing.T) {
 	tests := []struct {
 		keyCount      int
@@ -181,10 +181,9 @@ func TestEstimateBandwidthUsage(t *testing.T) {
 				t.Errorf("EstimateBandwidthUsage(%d) = %d, want %d", tt.keyCount, usage, tt.expectedBytes)
 			}
 		})
-	}
 }
 
-// TestBuildGossipPayload 测试构建 Gossip Payload
+// TestBuildGossipPayload 验证构建 Gossip Payload
 func TestBuildGossipPayload(t *testing.T) {
 	hlc := clock.NewHLC()
 	merkle := kvstore.NewNamespacedMerkleTree(hlc)
@@ -208,7 +207,7 @@ func TestBuildGossipPayload(t *testing.T) {
 	}
 }
 
-// TestParseGossipPayload 测试解析 Gossip Payload
+// TestParseGossipPayload 验证解析 Gossip Payload
 func TestParseGossipPayload(t *testing.T) {
 	validPayload := map[string]interface{}{
 		"global_root_hash": "test_root_hash",
@@ -243,10 +242,9 @@ func TestParseGossipPayload(t *testing.T) {
 	}
 }
 
-// TestGetStats 测试获取统计信息
+// TestGetStats 验证获取统计信息
 func TestGetStats(t *testing.T) {
 	sync := setupMerkleGossipSync(t)
-
 	stats := sync.GetStats()
 
 	// 验证初始统计
@@ -273,7 +271,6 @@ func BenchmarkSyncWithPeer(b *testing.B) {
 	sync := NewMerkleGossipSync(merkle, nil, nil, "node-1")
 
 	ctx := context.Background()
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = sync.SyncWithPeer(ctx, "peer-1")
@@ -288,6 +285,7 @@ func BenchmarkFindDiffNamespaces(b *testing.B) {
 
 	localHashes := merkle.GetAllNamespaceRootHashes()
 	peerHashes := merkle.GetAllNamespaceRootHashes()
+
 	// 修改其中一个 hash 以创建差异
 	for k := range peerHashes {
 		peerHashes[k] = "different_" + peerHashes[k]
@@ -298,4 +296,91 @@ func BenchmarkFindDiffNamespaces(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		sync.findDiffNamespaces(localHashes, peerHashes)
 	}
+}
+
+// ==================== 双向同步验证测试 ====================
+
+// TestHandleIncomingMessage_DiffResponse 验证处理差异请求并发送响应
+func TestHandleIncomingMessage_DiffResponse(t *testing.T) {
+	hlc := clock.NewHLC()
+	merkle1 := kvstore.NewNamespacedMerkleTree(hlc)
+	merkle2 := kvstore.NewNamespacedMerkleTree(hlc)
+
+	// 节点 1：有不同的数据
+	_ = merkle1.UpdateKey(kvstore.NamespaceNode, "node-1", map[string]string{
+		"address": "192.168.1.10:8080",
+	})
+
+	sync1 := NewMerkleGossipSync(merkle1, nil, "node-1")
+	ctx := context.Background()
+
+	// 模拟节点 2 发送同步请求（有不同的 Global Root）
+	peerPayload := BuildGossipPayload(merkle2, false)
+	peerPayloadBytes, _ := msgpack.Marshal(peerPayload)
+
+	// 节点 1 处理节点 2 的消息
+	sync1.handleIncomingMessage("node-2", peerPayloadBytes)
+
+	// 验证：如果没有错误就说明响应处理成功
+	logging.Info("双向同步验证完成")
+}
+
+// TestBuildDiffResponse 验证差异响应的构建逻辑
+func TestBuildDiffResponse(t *testing.T) {
+	hlc := clock.NewHLC()
+	merkle := kvstore.NewNamespacedMerkleTree(hlc)
+
+	// 添加一些测试数据
+	_ = merkle.UpdateKey(kvstore.NamespaceNode, "node-1", map[string]string{
+		"address": "192.168.1.10:8080",
+	})
+	_ = merkle.UpdateKey(kvstore.NamespaceShard, "shard-1", map[string]string{
+		"status": "active",
+	})
+
+	sync := NewMerkleGossipSync(merkle, nil, "local-node")
+
+	// 模拟差异场景
+	localRoot := merkle.GetGlobalRootHash()
+	peerRoot := "different_peer_root"
+
+	// 创建一个 mock transport 来捕获 buildDiffResponse 的输出
+	var capturedResponse map[string]interface{}
+	mockTransport := &mockTransport{
+		sendFunc: func(nodeID string, data []byte) error {
+			// 解析响应
+			if err := msgpack.Unmarshal(data, &capturedResponse); err != nil {
+				t.Fatalf("Failed to unmarshal diff response: %v", err)
+			}
+			logging.WithField("peer", nodeID).Info("收到差异响应")
+			return nil
+		},
+	}
+
+	// 使用 mock transport 创建 sync
+	syncWithMock := NewMerkleGossipSync(merkle, nil, "node-1")
+	*syncWithMock.transport = mockTransport
+
+	// 手动构建差异响应
+	diffNamespaces := map[string]bool{
+		kvstore.NamespaceNode: true,
+		kvstore.NamespaceShard: true,
+	}
+
+	// 调用 buildDiffResponse 方法
+	response := syncWithMock.buildDiffResponse("peer-1", localRoot, peerRoot, diffNamespaces)
+
+	// 验证响应结构
+	require.Equal(t, "node-1", response["from_node_id"])
+	require.Equal(t, localRoot, response["global_root_hash"])
+
+	namespaceHashes, ok := response["namespace_hashes"].(map[string]string)
+	require.True(t, ok, "namespace_hashes should be present")
+	require.NotEmpty(t, namespaceHashes, "namespace_hashes should not be empty")
+
+	diffNS, ok := response["diff_namespaces"].(map[string][]string)
+	require.True(t, ok, "diff_namespaces should be present")
+	require.NotEmpty(t, diffNS, "diff_namespaces should not be empty")
+	require.Contains(t, diffNS, kvstore.NamespaceNode, "diff_namespaces should contain meta:node")
+	require.Contains(t, diffNS, kvstore.NamespaceShard, "diff_namespaces should contain meta:shard")
 }

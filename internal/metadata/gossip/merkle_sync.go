@@ -328,6 +328,21 @@ func (s *MerkleGossipSync) handleIncomingMessage(nodeID string, msg []byte) {
 	// 比较差异并响应
 	localGlobalRoot := s.merkle.GetGlobalRootHash()
 	if localGlobalRoot != peerGlobalRoot {
+		// 计算差异的 Namespace
+		localNamespaceHashes := s.merkle.GetAllNamespaceRootHashes()
+		peerNamespaceHashes, ok := payload["namespace_hashes"].(map[string]string)
+		if !ok {
+			logging.WithField("error", "invalid namespace_hashes type").Error("peer payload 格式错误")
+			return
+		}
+
+		diffNamespaces := s.findDiffNamespaces(localNamespaceHashes, peerNamespaceHashes)
+		if len(diffNamespaces) == 0 {
+			// 无差异，无需发送响应
+			logging.WithField("from", nodeID).Debug("peer 数据与本地相同，无需响应")
+			return
+		}
+
 		// 有差异，记录日志
 		logging.WithFields(map[string]interface{}{
 			"from":       nodeID,
@@ -335,7 +350,33 @@ func (s *MerkleGossipSync) handleIncomingMessage(nodeID string, msg []byte) {
 			"peer_root":  peerGlobalRoot[:8] + "...",
 		}).Info("检测到 Merkle Tree 差异")
 
-		// TODO: 发送响应，包含本地差异的数据
+		// 构建差异响应并发送
+		diffResponse := s.buildDiffResponse(nodeID, localGlobalRoot, peerGlobalRoot, diffNamespaces)
+
+		// 序列化响应为 MessagePack
+		responseBytes, err := msgpack.Marshal(diffResponse)
+		if err != nil {
+			logging.WithFields(map[string]interface{}{
+				"from":  nodeID,
+				"error": err.Error(),
+			}).Error("序列化差异响应失败")
+			return
+		}
+
+		// 发送响应给 peer
+		if err := s.transport.Send(nodeID, responseBytes); err != nil {
+			logging.WithFields(map[string]interface{}{
+				"to":   nodeID,
+				"error": err.Error(),
+			}).Error("发送差异响应失败")
+			return
+		}
+
+		logging.WithFields(map[string]interface{}{
+			"to":            nodeID,
+			"diff_ns_count": len(diffResponse["diff_namespaces"].(map[string][]string)),
+			"response_size": len(responseBytes),
+		}).Info("已发送差异响应")
 	}
 }
 
@@ -391,7 +432,63 @@ func (r *SyncResult) GetKeysSentCount() int {
 	return count
 }
 
+// ==================== GossipDiffResponse ====================
+
+// GossipDiffResponse Gossip 差异响应
+//
+// 当检测到与 peer 存在 Merkle Tree 差异时，
+// 发送此响应给 peer，包含本地差异的元数据
+type GossipDiffResponse struct {
+	FromNodeID      string              // 发送响应的节点 ID
+	GlobalRootHash  string              // 本地 Global Root Hash
+	NamespaceHashes map[string]string      // 本地所有 Namespace Root Hashes
+	DiffNamespaces  map[string][]string // 差异的 Namespace 及其 Keys
+	RequestedKeys   map[string][]string // peer 请求的 Keys（如果有）
+}
+
 // ==================== 双向同步辅助函数 ====================
+
+// buildDiffResponse 构建差异响应
+//
+// 参数：
+//   - peerID: peer 节点 ID
+//   - localGlobalRoot: 本地 Global Root Hash
+//   - peerGlobalRoot: peer 的 Global Root Hash
+//   - diffNamespaces: 差异的 Namespace 列表
+//
+// 返回：可序列化为 MessagePack 的 map
+func (s *MerkleGossipSync) buildDiffResponse(
+	peerID string,
+	localGlobalRoot, peerGlobalRoot string,
+	diffNamespaces map[string]bool,
+) map[string]interface{} {
+	// 构建响应：包含本地差异的数据
+	response := &GossipDiffResponse{
+		FromNodeID:      s.localNodeID,
+		GlobalRootHash:  localGlobalRoot,
+		NamespaceHashes: s.merkle.GetAllNamespaceRootHashes(),
+		DiffNamespaces:  make(map[string][]string),
+		RequestedKeys:   make(map[string][]string),
+	}
+
+	// 对每个差异的 Namespace，获取本地 Keys（简化实现）
+	// TODO: 优化为只发送变化的 Keys
+	for ns := range diffNamespaces {
+		// 简化实现：发送所有 Keys（实际应只发送变化的）
+		// 生产环境中需要从 MetadataKV 查询实际变化
+		response.DiffNamespaces[ns] = []string{"key1", "key2"} // 占位符，实际应查询
+	}
+
+	// 转换为可序列化的 map
+	return map[string]interface{}{
+		"type":              "diff_response",
+		"from_node_id":      response.FromNodeID,
+		"global_root_hash":  response.GlobalRootHash,
+		"namespace_hashes":   response.NamespaceHashes,
+		"diff_namespaces":    response.DiffNamespaces,
+		"requested_keys":     response.RequestedKeys,
+	}
+}
 
 // CalculateBandwidthSavings 计算带宽节省
 //

@@ -260,8 +260,10 @@ func NewTwoPCMerkleCoordinatorWithTransport(metadataKV kvstore.Store, merkleTree
 		defaultTimeout: 5 * time.Second,
 	}
 
-	// 暂时不注册处理器，等后续实现
-	_ = coordinator
+	// 注册消息接收处理器（ACK 响应）
+	if transportParam != nil {
+		_ = transportParam.Receive(coordinator.handlePreCommitResponse)
+	}
 
 	return coordinator, nil
 }
@@ -513,6 +515,52 @@ func (c *TwoPCMerkleCoordinator) rollbackTransaction(tx *TwoPCTransaction) {
 
 	// 清除事务
 	delete(c.transactions, tx.TxID)
+}
+
+// handlePreCommitResponse 处理 PreCommit ACK 响应
+// 接收参与者返回的投票（YES/NO），更新事务状态
+func (c *TwoPCMerkleCoordinator) handlePreCommitResponse(nodeID string, msg []byte) {
+	codec := transport.NewMessagePackCodec()
+	message, err := codec.DecodeFromBytes(msg)
+	if err != nil {
+		return
+	}
+
+	payload, err := message.DecodePayload()
+	if err != nil {
+		return
+	}
+
+	switch message.Type {
+	case transport.MessageTypeAck: // TwoPCCommitPayload
+		commitPayload, ok := payload.(*transport.TwoPCCommitPayload)
+		if !ok {
+			return
+		}
+
+		c.mu.Lock()
+		tx, ok := c.transactions[commitPayload.TxID]
+		c.mu.Unlock()
+
+		if ok {
+			tx.Acks[nodeID] = commitPayload.Result
+		}
+
+	case transport.MessageTypeNack: // TwoPCRollbackPayload
+		rollbackPayload, ok := payload.(*transport.TwoPCRollbackPayload)
+		if !ok {
+			return
+		}
+
+		c.mu.Lock()
+		tx, ok := c.transactions[rollbackPayload.TxID]
+		c.mu.Unlock()
+
+		if ok {
+			tx.Acks[nodeID] = false
+			tx.LastError = fmt.Errorf("节点 %s 拒绝: %s", nodeID, rollbackPayload.Reason)
+		}
+	}
 }
 
 // ==================== 辅助方法 ====================

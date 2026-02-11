@@ -19,6 +19,23 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
+// ==================== 常量定义 ====================
+
+const (
+	// hashDisplayPrefixLen Hash 显示时的前缀长度
+	hashDisplayPrefixLen = 8
+	// defaultResponseTimeout 默认响应超时时间
+	defaultResponseTimeout = 30 * time.Second
+	// defaultBandwidthUsage 默认带宽使用估算（字节）
+	defaultBandwidthUsage = 32 + (9 * 32)
+	// avgKeySize 平均 Key 元数据大小（字节）
+	avgKeySize = 100
+	// avgNamespaceSize 平均 Namespace 大小（字节）
+	avgNamespaceSize = 100
+	// fullMetadataSize 全量元数据大小（字节）
+	fullMetadataSize = 10000
+)
+
 // ==================== MerkleGossipSync ====================
 
 // MerkleGossipSync Merkle Tree Gossip 同步服务
@@ -29,10 +46,9 @@ import (
 //   - 增量传输：只传输变化的数据
 type MerkleGossipSync struct {
 	merkle      *kvstore.NamespacedMerkleTree
-	metadataKV  *kvstore.MetadataKV
-	transport   transport.Transport // libp2p 传输层
-	localNodeID string              // 本地节点 ID
-	mu          sync.RWMutex
+	transport    transport.Transport // libp2p 传输层
+	localNodeID  string              // 本地节点 ID
+	mu           sync.RWMutex
 
 	// Gossip 配置
 	gossipInterval time.Duration // Gossip 周期（默认 10 秒）
@@ -58,15 +74,15 @@ func NewMerkleGossipSync(
 	transportLayer transport.Transport,
 	localNodeID string,
 ) *MerkleGossipSync {
+	_ = metadataKV // TODO: 待实现增量 Key 检测逻辑时使用
 	ctx, cancel := context.WithCancel(context.Background())
 
 	sync := &MerkleGossipSync{
 		merkle:         merkle,
-		metadataKV:     metadataKV,
 		transport:      transportLayer,
 		localNodeID:    localNodeID,
 		gossipInterval: 10 * time.Second, // 默认 10 秒
-		gossipTimeout:  5 * time.Second,  // 默认 5 秒
+		gossipTimeout:   5 * time.Second,  // 默认 5 秒
 		knownPeers:     make(map[string]struct{}),
 		ctx:            ctx,
 		cancel:         cancel,
@@ -147,7 +163,7 @@ func (s *MerkleGossipSync) SyncWithPeer(
 			PeerID:        peerID,
 			Synced:        false,
 			Reason:        "Namespace Root Hashes 相同",
-			BandwidthUsed: 32 + (9 * 32), // Global + 9 Namespace Hashes
+			BandwidthUsed: defaultBandwidthUsage,
 		}, nil
 	}
 
@@ -158,36 +174,28 @@ func (s *MerkleGossipSync) SyncWithPeer(
 		DiffNamespaces: diffNamespaces,
 		KeysReceived:   make(map[string][]string),
 		KeysSent:       make(map[string][]string),
-		BandwidthUsed:  uint64(32 + (9 * 32)),
+		BandwidthUsed:  defaultBandwidthUsage,
 		BandwidthSaved: 0,
 	}
 
 	// 计算实际使用的带宽
-	bandwidthUsed := uint64(32 + (9 * 32))
+	bandwidthUsed := uint64(defaultBandwidthUsage)
 	for ns := range diffNamespaces {
 		// 简化实现：记录需要同步的 Namespace
 		syncResult.KeysReceived[ns] = []string{} // 待实现：从 peer 获取
 		syncResult.KeysSent[ns] = []string{}     // 待实现：发送给 peer
-		bandwidthUsed += 100                     // 假设每个 Namespace 100B
+		bandwidthUsed += avgNamespaceSize
 	}
 	syncResult.BandwidthUsed = bandwidthUsed
 
-	// 计算节省的带宽（假设全量同步需要 10KB）
-	totalSize := 10000 // 10KB 全量元数据
+	// 计算节省的带宽
 	syncResult.BandwidthSaved = CalculateBandwidthSavings(
-		totalSize,
+		0, // 使用默认的 fullMetadataSize
 		syncResult.GetKeysReceivedCount(),
 		syncResult.GetKeysSentCount(),
 	)
 
-	logging.WithFields(map[string]interface{}{
-		"peer_id":    peerID,
-		"synced":     syncResult.Synced,
-		"diff_ns":    len(diffNamespaces),
-		"bandwidth":  syncResult.BandwidthUsed,
-		"saved":      syncResult.BandwidthSaved,
-		"latency_ms": time.Since(startTime).Milliseconds(),
-	}).Info("Gossip 同步完成")
+	s.logSyncComplete(syncResult, peerID, startTime)
 
 	return syncResult, nil
 }
@@ -247,10 +255,7 @@ func (s *MerkleGossipSync) gossipRandomPeer(ctx context.Context) {
 	for peerID := range s.knownPeers {
 		result, err := s.SyncWithPeer(ctx, peerID)
 		if err != nil {
-			logging.WithFields(map[string]interface{}{
-				"peer_id": peerID,
-				"error":   err.Error(),
-			}).Warn("Gossip 同步失败")
+			s.logPeerError("Gossip 同步失败", peerID, err)
 			continue
 		}
 
@@ -282,9 +287,7 @@ func (s *MerkleGossipSync) startMessageHandler() {
 	// 注册消息处理器到 transport
 	if s.transport != nil {
 		if err := s.transport.Receive(s.handleIncomingMessage); err != nil {
-			logging.WithFields(map[string]interface{}{
-				"error": err.Error(),
-			}).Error("注册 Gossip 消息处理器失败")
+			s.logError("注册 Gossip 消息处理器失败", "", err)
 		}
 	}
 
@@ -302,23 +305,21 @@ func (s *MerkleGossipSync) Close() error {
 
 // handleIncomingMessage 处理接收到的 Gossip 消息
 func (s *MerkleGossipSync) handleIncomingMessage(nodeID string, msg []byte) {
+	// 添加超时控制
+	ctx, cancel := context.WithTimeout(s.ctx, defaultResponseTimeout)
+	defer cancel()
+
 	// 解析 Gossip Payload
 	payload, err := ParseGossipPayloadFromBytes(msg)
 	if err != nil {
-		logging.WithFields(map[string]interface{}{
-			"from":  nodeID,
-			"error": err.Error(),
-		}).Error("解析 Gossip Payload 失败")
+		s.logPeerError("解析 Gossip Payload 失败", nodeID, err)
 		return
 	}
 
 	// 提取 Merkle Tree 信息
 	peerGlobalRoot, _, err := ParseGossipPayload(payload)
 	if err != nil {
-		logging.WithFields(map[string]interface{}{
-			"from":  nodeID,
-			"error": err.Error(),
-		}).Error("解析 Merkle Tree 信息失败")
+		s.logPeerError("解析 Merkle Tree 信息失败", nodeID, err)
 		return
 	}
 
@@ -332,7 +333,7 @@ func (s *MerkleGossipSync) handleIncomingMessage(nodeID string, msg []byte) {
 		localNamespaceHashes := s.merkle.GetAllNamespaceRootHashes()
 		peerNamespaceHashes, ok := payload["namespace_hashes"].(map[string]string)
 		if !ok {
-			logging.WithField("error", "invalid namespace_hashes type").Error("peer payload 格式错误")
+			s.logError("peer payload 格式错误", nodeID, fmt.Errorf("invalid namespace_hashes type"))
 			return
 		}
 
@@ -344,40 +345,61 @@ func (s *MerkleGossipSync) handleIncomingMessage(nodeID string, msg []byte) {
 		}
 
 		// 有差异，记录日志
-		logging.WithFields(map[string]interface{}{
-			"from":       nodeID,
-			"local_root": localGlobalRoot[:8] + "...",
-			"peer_root":  peerGlobalRoot[:8] + "...",
-		}).Info("检测到 Merkle Tree 差异")
+		s.logDiffDetected(nodeID, localGlobalRoot, peerGlobalRoot)
 
 		// 构建差异响应并发送
-		diffResponse := s.buildDiffResponse(nodeID, localGlobalRoot, peerGlobalRoot, diffNamespaces)
-
-		// 序列化响应为 MessagePack
-		responseBytes, err := msgpack.Marshal(diffResponse)
-		if err != nil {
-			logging.WithFields(map[string]interface{}{
-				"from":  nodeID,
-				"error": err.Error(),
-			}).Error("序列化差异响应失败")
+		if err := s.sendDiffResponse(ctx, nodeID, localGlobalRoot, peerGlobalRoot, diffNamespaces); err != nil {
+			s.logPeerError("发送差异响应失败", nodeID, err)
 			return
 		}
+	}
+}
 
-		// 发送响应给 peer
-		if err := s.transport.Send(nodeID, responseBytes); err != nil {
-			logging.WithFields(map[string]interface{}{
-				"to":   nodeID,
-				"error": err.Error(),
-			}).Error("发送差异响应失败")
-			return
-		}
+// sendDiffResponse 发送差异响应
+func (s *MerkleGossipSync) sendDiffResponse(
+	ctx context.Context,
+	peerID string,
+	localGlobalRoot, peerGlobalRoot string,
+	diffNamespaces map[string]bool,
+) error {
+	// 构建差异响应
+	diffResponse := s.buildDiffResponse(peerID, localGlobalRoot, peerGlobalRoot, diffNamespaces)
 
+	// 序列化响应为 MessagePack
+	responseBytes, err := msgpack.Marshal(diffResponse)
+	if err != nil {
+		return fmt.Errorf("序列化差异响应失败: %w", err)
+	}
+
+	// 检查是否已超时
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("发送响应超时")
+	default:
+		// 继续发送
+	}
+
+	// 发送响应给 peer
+	if err := s.transport.Send(peerID, responseBytes); err != nil {
+		return fmt.Errorf("transport.Send 失败: %w", err)
+	}
+
+	// 记录成功日志（安全地获取 diff_ns_count）
+	diffNS, ok := diffResponse["diff_namespaces"].(map[string][]string)
+	if !ok {
 		logging.WithFields(map[string]interface{}{
-			"to":            nodeID,
-			"diff_ns_count": len(diffResponse["diff_namespaces"].(map[string][]string)),
-			"response_size": len(responseBytes),
+			"to":            peerID,
+			"response_size":  len(responseBytes),
+		}).Info("已发送差异响应（类型断言失败，无法获取 diff_ns_count）")
+	} else {
+		logging.WithFields(map[string]interface{}{
+			"to":            peerID,
+			"diff_ns_count":  len(diffNS),
+			"response_size":  len(responseBytes),
 		}).Info("已发送差异响应")
 	}
+
+	return nil
 }
 
 // GetStats 获取统计信息
@@ -392,6 +414,60 @@ func (s *MerkleGossipSync) GetStats() map[string]interface{} {
 		"gossip_interval": s.gossipInterval.String(),
 		"gossip_timeout":  s.gossipTimeout.String(),
 	}
+}
+
+// ==================== 日志辅助函数 ====================
+
+// logPeerError 记录 peer 相关错误
+func (s *MerkleGossipSync) logPeerError(msg string, peerID string, err error) {
+	logging.WithFields(map[string]interface{}{
+		"peer_id": peerID,
+		"error":   err.Error(),
+	}).Error(msg)
+}
+
+// logError 记录一般错误
+func (s *MerkleGossipSync) logError(msg string, nodeID string, err error) {
+	if nodeID != "" {
+		logging.WithFields(map[string]interface{}{
+			"from":  nodeID,
+			"error": err.Error(),
+		}).Error(msg)
+	} else {
+		logging.WithFields(map[string]interface{}{
+			"error": err.Error(),
+		}).Error(msg)
+	}
+}
+
+// logDiffDetected 记录差异检测日志
+func (s *MerkleGossipSync) logDiffDetected(nodeID, localRoot, peerRoot string) {
+	localPrefix := localRoot
+	peerPrefix := peerRoot
+	if len(localPrefix) > hashDisplayPrefixLen {
+		localPrefix = localPrefix[:hashDisplayPrefixLen] + "..."
+	}
+	if len(peerPrefix) > hashDisplayPrefixLen {
+		peerPrefix = peerPrefix[:hashDisplayPrefixLen] + "..."
+	}
+
+	logging.WithFields(map[string]interface{}{
+		"from":       nodeID,
+		"local_root": localPrefix,
+		"peer_root":  peerPrefix,
+	}).Info("检测到 Merkle Tree 差异")
+}
+
+// logSyncComplete 记录同步完成日志
+func (s *MerkleGossipSync) logSyncComplete(result *SyncResult, peerID string, startTime time.Time) {
+	logging.WithFields(map[string]interface{}{
+		"peer_id":    peerID,
+		"synced":     result.Synced,
+		"diff_ns":    len(result.DiffNamespaces),
+		"bandwidth":  result.BandwidthUsed,
+		"saved":      result.BandwidthSaved,
+		"latency_ms": time.Since(startTime).Milliseconds(),
+	}).Info("Gossip 同步完成")
 }
 
 // ==================== SyncResult ====================
@@ -442,7 +518,7 @@ type GossipDiffResponse struct {
 	FromNodeID      string              // 发送响应的节点 ID
 	GlobalRootHash  string              // 本地 Global Root Hash
 	NamespaceHashes map[string]string      // 本地所有 Namespace Root Hashes
-	DiffNamespaces  map[string][]string // 差异的 Namespace 及其 Keys
+	DiffNamespaces  map[string][]string // 差异的 Namespace 及其 Keys（当前为空，待实现）
 	RequestedKeys   map[string][]string // peer 请求的 Keys（如果有）
 }
 
@@ -457,26 +533,37 @@ type GossipDiffResponse struct {
 //   - diffNamespaces: 差异的 Namespace 列表
 //
 // 返回：可序列化为 MessagePack 的 map
+//
+// 并发安全：调用时持有读锁，确保数据一致性
 func (s *MerkleGossipSync) buildDiffResponse(
 	peerID string,
 	localGlobalRoot, peerGlobalRoot string,
 	diffNamespaces map[string]bool,
 ) map[string]interface{} {
+	// 获取 Merkle Tree 快照（并发安全）
+	s.mu.RLock()
+	localNodeID := s.localNodeID
+	namespaceHashes := s.merkle.GetAllNamespaceRootHashes()
+	s.mu.RUnlock()
+
 	// 构建响应：包含本地差异的数据
 	response := &GossipDiffResponse{
-		FromNodeID:      s.localNodeID,
+		FromNodeID:      localNodeID,
 		GlobalRootHash:  localGlobalRoot,
-		NamespaceHashes: s.merkle.GetAllNamespaceRootHashes(),
+		NamespaceHashes: namespaceHashes,
 		DiffNamespaces:  make(map[string][]string),
 		RequestedKeys:   make(map[string][]string),
 	}
 
-	// 对每个差异的 Namespace，获取本地 Keys（简化实现）
-	// TODO: 优化为只发送变化的 Keys
+	// 对每个差异的 Namespace，获取本地 Keys
+	// TODO: 从 MetadataKV 查询该 Namespace 下实际变化的 Keys
+	// 当前实现：返回空列表，待实现增量 Key 检测逻辑
+	// 生产环境中需要：
+	//   1. 实现 MetadataKV 的 GetKeysInNamespace(ns string) ([]string, error) 方法
+	//   2. 调用该方法获取实际变化的 Keys
+	//   3. 只发送变化的 Keys，而非全部 Keys
 	for ns := range diffNamespaces {
-		// 简化实现：发送所有 Keys（实际应只发送变化的）
-		// 生产环境中需要从 MetadataKV 查询实际变化
-		response.DiffNamespaces[ns] = []string{"key1", "key2"} // 占位符，实际应查询
+		response.DiffNamespaces[ns] = []string{} // 空：待实现
 	}
 
 	// 转换为可序列化的 map
@@ -492,10 +579,10 @@ func (s *MerkleGossipSync) buildDiffResponse(
 
 // CalculateBandwidthSavings 计算带宽节省
 //
-// 假设：
-//   - 全量元数据大小：10KB
-//   - Merkle Root Hash：32B
-//   - 单个 Key 元数据：100B
+// 参数：
+//   - totalMetadataSize: 全量元数据大小（字节），0 表示使用默认值
+//   - keysReceivedCount: 接收的 Key 数量
+//   - keysSentCount: 发送的 Key 数量
 //
 // 返回：节省的带宽（字节）
 func CalculateBandwidthSavings(
@@ -503,14 +590,14 @@ func CalculateBandwidthSavings(
 	keysReceivedCount int,
 	keysSentCount int,
 ) uint64 {
-	// 假设平均每个 Key 元数据 100B
-	const avgKeySize = 100
+	// 如果未指定全量大小，使用默认值
+	fullSize := totalMetadataSize
+	if fullSize == 0 {
+		fullSize = fullMetadataSize
+	}
 
 	// 实际传输的大小
-	actualSize := 32 + (9 * 32) + (keysReceivedCount+keysSentCount)*avgKeySize
-
-	// 全量传输的大小
-	fullSize := totalMetadataSize
+	actualSize := defaultBandwidthUsage + (keysReceivedCount+keysSentCount)*avgKeySize
 
 	if actualSize >= fullSize {
 		return 0
@@ -525,7 +612,6 @@ func CalculateBandwidthSavings(
 func EstimateBandwidthUsage(keyCount int) uint64 {
 	const merkleRootSize = 32    // Global Root Hash
 	const namespaceHashSize = 32 // Namespace Root Hash
-	const avgKeySize = 100       // 平均 Key 元数据大小
 
 	return uint64(merkleRootSize + namespaceHashSize + keyCount*avgKeySize)
 }
@@ -545,8 +631,8 @@ func BuildGossipPayload(
 	return map[string]interface{}{
 		"global_root_hash": globalRoot,
 		"namespace_hashes": namespaceHashes,
-		"full_sync":        fullSync,
-		"requested_data":   []map[string]string{}, // 双向同步请求数据
+		"full_sync":       fullSync,
+		"requested_data":  []map[string]string{}, // 双向同步请求数据
 	}
 }
 

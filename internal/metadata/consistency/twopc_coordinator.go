@@ -9,7 +9,9 @@ package consistency
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -183,6 +185,8 @@ type TwoPCMerkleCoordinator struct {
 
 	// 配置
 	defaultTimeout time.Duration // 默认超时时间（5 秒）
+	maxRetries    int           // 最大重试次数
+	retryDelay    time.Duration // 重试延迟
 
 	// 状态
 	closed bool
@@ -201,6 +205,12 @@ type TwoPCOptions struct {
 
 	// DefaultTimeout 默认超时时间（默认 5 秒）
 	DefaultTimeout time.Duration
+
+	// MaxRetries 最大重试次数（默认 3）
+	MaxRetries int
+
+	// RetryDelay 重试延迟（默认 100ms）
+	RetryDelay time.Duration
 }
 
 // NewTwoPCMerkleCoordinator 创建新的 2PC 协调器（仅本地测试，不启用网络）
@@ -225,6 +235,16 @@ func NewTwoPCMerkleCoordinator(opts *TwoPCOptions) (*TwoPCMerkleCoordinator, err
 		timeout = 5 * time.Second
 	}
 
+	maxRetries := opts.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = 3 // 默认 3 次重试
+	}
+
+	retryDelay := opts.RetryDelay
+	if retryDelay == 0 {
+		retryDelay = 100 * time.Millisecond // 默认 100ms
+	}
+
 	coordinator := &TwoPCMerkleCoordinator{
 		metadataKV:     opts.MetadataKV,
 		merkleTree:     opts.MerkleTree,
@@ -233,6 +253,8 @@ func NewTwoPCMerkleCoordinator(opts *TwoPCOptions) (*TwoPCMerkleCoordinator, err
 		localNodeID:    "",
 		transactions:   make(map[string]*TwoPCTransaction),
 		defaultTimeout: timeout,
+		maxRetries:    maxRetries,
+		retryDelay:    retryDelay,
 	}
 
 	return coordinator, nil
@@ -257,7 +279,9 @@ func NewTwoPCMerkleCoordinatorWithTransport(metadataKV kvstore.Store, merkleTree
 		transport:      transportParam,
 		localNodeID:    localNodeID,
 		transactions:   make(map[string]*TwoPCTransaction),
-		defaultTimeout: 5 * time.Second,
+		defaultTimeout:  5 * time.Second,
+		maxRetries:     3,            // 默认 3 次重试
+		retryDelay:     100 * time.Millisecond, // 默认 100ms
 	}
 
 	// 注册消息接收处理器（ACK 响应）
@@ -362,7 +386,7 @@ func (c *TwoPCMerkleCoordinator) PreCommit(ctx context.Context, tx *TwoPCTransac
 		return fmt.Errorf("编码 PreCommit 消息失败: %w", err)
 	}
 
-	// 并发发送给所有参与者（带超时控制）
+	// 并发发送给所有参与者（带重试机制）
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	successCount := 0
@@ -377,8 +401,8 @@ func (c *TwoPCMerkleCoordinator) PreCommit(ctx context.Context, tx *TwoPCTransac
 			msgClone := *msg
 			msgClone.To = nodeID
 
-			// 发送 PreCommit 请求（注意：Transport.Send 不需要 ctx）
-			if err := c.transport.Send(nodeID, msgClone.Payload); err != nil {
+			// 使用 sendWithRetry 发送 PreCommit 请求
+			if err := c.sendWithRetry(ctx, nodeID, msgClone.Payload); err != nil {
 				mu.Lock()
 				failureCount++
 				mu.Unlock()
@@ -561,6 +585,78 @@ func (c *TwoPCMerkleCoordinator) handlePreCommitResponse(nodeID string, msg []by
 			tx.LastError = fmt.Errorf("节点 %s 拒绝: %s", nodeID, rollbackPayload.Reason)
 		}
 	}
+}
+
+// ==================== 重试机制辅助方法 ====================
+
+// isRetryableError 判断错误是否可重试
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// 网络超时可重试
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	// 上下文取消不可重试
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+
+	// 连接相关错误可重试
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "connection") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "temporary")
+}
+
+// sendWithRetry 带重试的消息发送
+func (c *TwoPCMerkleCoordinator) sendWithRetry(ctx context.Context, nodeID string, payload []byte) error {
+	var lastErr error
+
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		if attempt > 0 {
+			// 等待重试延迟
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(c.retryDelay):
+				// 继续重试
+			}
+		}
+
+		// 尝试发送
+		err := c.transport.Send(nodeID, payload)
+		if err == nil {
+			return nil // 发送成功
+		}
+
+		lastErr = err
+
+		// 检查是否可重试
+		if !isRetryableError(err) {
+			break // 不可重试，直接返回
+		}
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("send failed after %d attempts: %w", c.maxRetries+1, lastErr)
+	}
+	return lastErr
+}
+
+// detectNetworkPartition 检测网络分区
+//
+// 返回：是否发生网络分区
+func (c *TwoPCMerkleCoordinator) detectNetworkPartition(tx *TwoPCTransaction) bool {
+	// 检查是否收到足够的 ACK
+	receivedAcks := len(tx.Acks)
+	requiredAcks := tx.Quorum
+
+	// 如果收到的 ACK 少于需要的数量，可能发生网络分区
+	return receivedAcks < requiredAcks
 }
 
 // ==================== 辅助方法 ====================

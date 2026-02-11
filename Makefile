@@ -41,8 +41,13 @@ build:
 
 test:
 	@echo "运行带竞态检测的测试..."
-	$(GO) test -race -coverprofile=coverage.out ./...
+	CI=true $(GO) test -race -coverprofile=coverage.out ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
+
+## test-perf: 运行性能测试（不含竞态检测）
+test-perf:
+	@echo "运行性能测试..."
+	$(GO) test -run TestE2E_Performance -v ./internal/metadata/consistency
 
 ## test-verbose: 运行详细测试
 test-verbose:

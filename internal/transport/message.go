@@ -195,10 +195,27 @@ type DeletePayload struct {
 }
 
 // GossipPayload Gossip 协议专属 Payload
+//
+// 扩展字段（Phase 1: Merkle Tree 集成）：
+//   - GlobalRootHash: 全局 Merkle Root Hash（用于快速差异检测）
+//   - NamespaceHashes: Namespace -> Root Hash 映射
+//   - RequestedData: 双向同步请求数据
 type GossipPayload struct {
+	// 原有字段
 	Digest       map[string]uint64 `msgpack:"digest"`        // key -> version
 	VersionDelta uint64            `msgpack:"version_delta"` // 版本增量
 	FullSync     bool              `msgpack:"full_sync"`     // 是否全量同步
+
+	// Merkle Tree 字段（新增）
+	GlobalRootHash  string            `msgpack:"global_root_hash,omitempty"` // 全局 Root Hash
+	NamespaceHashes map[string]string `msgpack:"namespace_hashes,omitempty"` // Namespace -> Root Hash
+	RequestedData   []SyncRequest     `msgpack:"requested_data,omitempty"`   // 双向请求数据
+}
+
+// SyncRequest 双向同步请求
+type SyncRequest struct {
+	Namespace string `msgpack:"namespace"` // Namespace
+	Key       string `msgpack:"key"`       // 请求的 Key
 }
 
 // QuorumPayload Quorum 协议专属 Payload

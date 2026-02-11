@@ -374,7 +374,7 @@ func TestMetadataKV_GetConsistencyLevel(t *testing.T) {
 	}{
 		{"Cluster 强一致", NamespaceCluster, ConsistencyStrong},
 		{"Node 最终一致", NamespaceNode, ConsistencyEventual},
-		{"Role 最终一致", NamespaceRole, ConsistencyEventual},
+		{"Role 增强最终一致（Quorum）", NamespaceRole, ConsistencyEnhancedEventual}, // ⚠️ Phase 2 升级
 		{"Topo 最终一致", NamespaceTopo, ConsistencyEventual},
 		{"Shard 强一致", NamespaceShard, ConsistencyStrong},
 		{"Static 强一致", NamespaceStatic, ConsistencyStrong},

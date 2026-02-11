@@ -29,28 +29,38 @@ type cachedEntry struct {
 type ConsistencyLevel int
 
 const (
-	// ConsistencyStrong 强一致（Quorum）
+	// ConsistencyStrong 强一致（2PC）
+	// ACK 要求：ACK 全部（need = n）
 	// 写入后立即对所有节点可见
 	// 适用于：集群配置、分片信息、静态配置、版本控制
 	ConsistencyStrong ConsistencyLevel = iota
 
+	// ConsistencyEnhancedEventual 增强最终一致（Quorum）
+	// ACK 要求：ACK 大部分（need = ⌊n/2⌋ + 1）
+	// 写入后等待多数派确认
+	// 适用于：角色信息（⚠️ Phase 2 从 Gossip 升级）
+	ConsistencyEnhancedEventual
+
 	// ConsistencyEventual 最终一致（Gossip）
+	// ACK 要求：无 ACK（need = 0）
 	// 写入后异步扩散，秒级一致
-	// 适用于：节点信息、角色信息、拓扑关系、动态状态、操作记录
+	// 适用于：节点信息、拓扑关系、动态状态、操作记录
 	ConsistencyEventual
 )
 
 // consistencyMapping 命名空间到一致性级别的映射
+//
+// ⚠️ Phase 2 更新：NamespaceRole 从 ConsistencyEventual 升级为 ConsistencyEnhancedEventual
 var consistencyMapping = map[string]ConsistencyLevel{
-	NamespaceCluster: ConsistencyStrong,   // 集群配置：强一致
-	NamespaceNode:    ConsistencyEventual, // 节点信息：最终一致
-	NamespaceRole:    ConsistencyEventual, // 角色信息：最终一致
-	NamespaceTopo:    ConsistencyEventual, // 拓扑关系：最终一致
-	NamespaceShard:   ConsistencyStrong,   // 分片信息：强一致
-	NamespaceStatic:  ConsistencyStrong,   // 静态配置：强一致
-	NamespaceDynamic: ConsistencyEventual, // 动态状态：最终一致
-	NamespaceOp:      ConsistencyEventual, // 操作记录：最终一致
-	NamespaceVersion: ConsistencyStrong,   // 版本控制：强一致
+	NamespaceCluster: ConsistencyStrong,           // 集群配置：强一致（2PC）
+	NamespaceNode:    ConsistencyEventual,         // 节点信息：最终一致（Gossip）
+	NamespaceRole:    ConsistencyEnhancedEventual, // 角色信息：增强最终一致（Quorum）⚠️ 从 Gossip 升级
+	NamespaceTopo:    ConsistencyEventual,         // 拓扑关系：最终一致（Gossip）
+	NamespaceShard:   ConsistencyStrong,           // 分片信息：强一致（2PC）
+	NamespaceStatic:  ConsistencyStrong,           // 静态配置：强一致（2PC）
+	NamespaceDynamic: ConsistencyEventual,         // 动态状态：最终一致（Gossip）
+	NamespaceOp:      ConsistencyEventual,         // 操作记录：最终一致（Gossip）
+	NamespaceVersion: ConsistencyStrong,           // 版本控制：强一致（2PC）
 }
 
 // PutOptions 写入选项
@@ -415,6 +425,11 @@ func (m *MetadataKV) Close() error {
 }
 
 // triggerSync 触发同步（根据一致性级别）
+//
+// 支持三级一致性：
+//   - ConsistencyStrong：2PC 强一致（ACK 全部）- Phase 3 实现
+//   - ConsistencyEnhancedEventual：Quorum 增强最终一致（ACK 大部分）- Phase 2 实现
+//   - ConsistencyEventual：Gossip 最终一致（无 ACK）
 func (m *MetadataKV) triggerSync(ns, key string, version uint64, consistency ConsistencyLevel) {
 	// 再次检查 closed 状态，防止在 Close() 后继续执行
 	m.mu.RLock()
@@ -425,13 +440,25 @@ func (m *MetadataKV) triggerSync(ns, key string, version uint64, consistency Con
 		return
 	}
 
-	if consistency == ConsistencyStrong {
-		// 强一致：触发 Quorum 确认
+	switch consistency {
+	case ConsistencyStrong:
+		// 强一致：触发 2PC（Phase 3 实现）
+		// TODO: 实现 2PC 协调器调用
+		if m.quorumCallback != nil {
+			m.quorumCallback(ns, key, version) // 暂时使用 Quorum 回调
+		}
+	case ConsistencyEnhancedEventual:
+		// 增强最终一致：触发 Quorum 确认
 		if m.quorumCallback != nil {
 			m.quorumCallback(ns, key, version)
 		}
-	} else {
+	case ConsistencyEventual:
 		// 最终一致：触发 Gossip 扩散
+		if m.gossipCallback != nil {
+			m.gossipCallback(ns, key, version)
+		}
+	default:
+		// 默认使用 Gossip
 		if m.gossipCallback != nil {
 			m.gossipCallback(ns, key, version)
 		}

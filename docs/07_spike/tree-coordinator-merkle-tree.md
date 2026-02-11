@@ -66,17 +66,22 @@
 
 ### 一致性级别差异
 
-| Namespace | 说明 | 一致性级别 | Hash 计算时机 | 同步机制 |
-|-----------|------|-----------|-------------|---------|
-| `NamespaceCluster` | 集群元数据 | **强一致** | 变更时立即 + 2PC 确认 | 同步返回 |
-| `NamespaceShard` | 分片元数据 | **强一致** | 变更时立即 + 2PC 确认 | 同步返回 |
-| `NamespaceNode` | 节点元数据 | **最终一致** | 变更时计算 + Gossip | 10秒内异步 |
-| `NamespaceRole` | 角色元数据 | **最终一致** | 变更时计算 + Gossip | 10秒内异步 |
-| `NamespaceStatic` | 静态元数据 | **强一致** | 变更时立即 + 2PC 确认 | 同步返回 |
-| `NamespaceTopo` | 拓扑元数据 | **最终一致** | 变更时计算 + Gossip | 10秒内异步 |
-| `NamespaceDynamic` | 动态元数据 | **最终一致** | 周期性更新 + Gossip | 10秒内异步 |
-| `NamespaceOp` | 运维元数据 | **最终一致** | 变更时计算 + Gossip | 10秒内异步 |
-| `NamespaceVersion` | 版本号 | **强一致** | 变更时立即 + 2PC 确认 | 同步返回 |
+| Namespace | 说明 | 一致性级别 | ACK 要求 | Hash 计算时机 | 同步机制 |
+|-----------|------|-----------|---------|-------------|---------|
+| `NamespaceCluster` | 集群元数据 | **强一致 (2PC)** | ACK 全部 | 变更时立即 + 2PC 确认 | 同步返回 |
+| `NamespaceShard` | 分片元数据 | **强一致 (2PC)** | ACK 全部 | 变更时立即 + 2PC 确认 | 同步返回 |
+| `NamespaceNode` | 节点元数据 | **最终一致 (Gossip)** | 无 ACK | 变更时计算 + Gossip | 10秒内异步 |
+| `NamespaceRole` | 角色元数据 | **增强最终一致 (Quorum)** | ACK 大部分 | 变更时计算 + Quorum | 多数派确认 |
+| `NamespaceStatic` | 静态元数据 | **强一致 (2PC)** | ACK 全部 | 变更时立即 + 2PC 确认 | 同步返回 |
+| `NamespaceTopo` | 拓扑元数据 | **最终一致 (Gossip)** | 无 ACK | 变更时计算 + Gossip | 10秒内异步 |
+| `NamespaceDynamic` | 动态元数据 | **最终一致 (Gossip)** | 无 ACK | 周期性更新 + Gossip | 10秒内异步 |
+| `NamespaceOp` | 运维元数据 | **最终一致 (Gossip)** | 无 ACK | 变更时计算 + Gossip | 10秒内异步 |
+| `NamespaceVersion` | 版本号 | **强一致 (2PC)** | ACK 全部 | 变更时立即 + 2PC 确认 | 同步返回 |
+
+> **ACK 要求说明**：
+> - **ACK 全部 (2PC)**：need = n，所有参与者必须确认，任一失败则回滚
+> - **ACK 大部分 (Quorum)**：need = ⌊n/2⌋ + 1，多数派确认即可
+> - **无 ACK (Gossip)**：异步扩散，最终一致
 
 ---
 
@@ -254,6 +259,10 @@ func (n *NamespacedMerkleTree) recomputeNamespaceRootHash(ns Namespace) {
 
 ### 强一致 Namespace（2PC）
 
+**核心特征**：**ACK 全部** - 所有参与者必须确认，任一失败则全部回滚
+
+**确认公式**：`need = n`（100% 参与者确认）
+
 ```mermaid
 sequenceDiagram
     participant C as Coordinator
@@ -262,6 +271,7 @@ sequenceDiagram
     participant N3 as Node 3
 
     Note over C,N3: 强一致元数据变更（如 NamespaceShard）
+    Note over C,N3: 2PC: ACK 全部（3/3）
 
     C->>N1: 2PC Prepare + 元数据
     C->>N2: 2PC Prepare + 元数据
@@ -275,6 +285,7 @@ sequenceDiagram
     N2-->>C: Vote: YES
     N3-->>C: Vote: YES
 
+    Note over C: 收到全部 ACK（3/3）
     C->>N1: 2PC Commit
     C->>N2: 2PC Commit
     C->>N3: 2PC Commit
@@ -371,8 +382,13 @@ func (mkv *MetadataKV) Get(ns Namespace, key string) ([]byte, uint64, error) {
 func (mkv *MetadataKV) Put(ns Namespace, key string, value []byte) error {
     // 根据一致性级别处理
     if isStrongConsistency(ns) {
+        // 强一致：2PC - ACK 全部
         return mkv.putWith2PC(ns, key, value)
+    } else if isEnhancedEventualConsistency(ns) {
+        // 增强最终一致：Quorum - ACK 大部分
+        return mkv.putWithQuorum(ns, key, value)
     } else {
+        // 最终一致：Gossip - 无 ACK
         return mkv.putWithGossip(ns, key, value)
     }
 }
@@ -414,7 +430,10 @@ type SyncRequest struct {
 
 1. ✅ **完整元数据镜像**：每个节点都有所有元数据副本，本地读取零延迟
 2. ✅ **Namespace 分层**：9 个 Namespace，每个一个 Merkle Tree
-3. ✅ **一致性级别差异**：强一致（2PC）vs 最终一致（Gossip）
+3. ✅ **一致性级别差异**：
+   - **强一致 (2PC)**：ACK 全部 (need = n)，任一失败则回滚
+   - **增强最终一致 (Quorum)**：ACK 大部分 (need = ⌊n/2⌋ + 1)
+   - **最终一致 (Gossip)**：无 ACK，异步扩散
 4. ✅ **三层递归检测**：Global → Namespace → Key，O(log n) 定位变化
 5. ✅ **双向同步**：双方同时交换差异，各自发送缺失数据
 6. ✅ **增量传输**：只传输变化的数据，节省 80%-99% 带宽
@@ -431,7 +450,7 @@ type SyncRequest struct {
 
 **新增**：
 - 完整元数据镜像（本地读取）
-- 一致性级别差异（强一致 vs 最终一致）
+- 一致性级别差异（2PC: ACK 全部 vs Quorum: ACK 大部分 vs Gossip: 无 ACK）
 - Namespace 分层结构
 
 ### 实施建议
@@ -441,7 +460,7 @@ type SyncRequest struct {
 | **Phase 1** | 实现 NamespacedMerkleTree 基础结构 | P0 | 3 天 |
 | **Phase 2** | 集成到 MetadataKV（本地读取） | P0 | 2 天 |
 | **Phase 3** | 扩展 Gossip 协议（双向同步 + Namespace 分层） | P1 | 4 天 |
-| **Phase 4** | 强一致 Namespace 的 2PC 实现 | P1 | 3 天 |
+| **Phase 4** | 多一致性级别实现（2PC: ACK 全部, Quorum: ACK 大部分） | P1 | 3 天 |
 | **Phase 5** | 性能测试与优化 | P1 | 2 天 |
 | **总计** | - | - | **14 天** |
 

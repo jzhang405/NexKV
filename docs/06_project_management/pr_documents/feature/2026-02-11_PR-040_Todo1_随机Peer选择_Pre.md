@@ -54,12 +54,29 @@ for peerID := range s.knownPeers {
 
 #### 质量目标
 
-| 指标 | 目标值 |
-|------|--------|
-| 测试覆盖率 | ≥ 80% |
-| Lint issues | 0 |
-| 编译状态 | 通过 |
-| 性能 | 选择耗时 < 1ms |
+| 指标 | 目标值 | 当前状态 |
+|------|--------|----------|
+| 测试覆盖率 | ≥ 80% | ~45% (需提升) |
+| Lint issues | 0 | 待验证 |
+| 编译状态 | 通过 | 待验证 |
+| 性能 | 选择耗时 < 1ms | 待验证 |
+
+**当前 metadata 目录覆盖率分析**：
+
+| 模块 | 覆盖率 | 优先级 |
+|--------|---------|--------|
+| internal/metadata/api | 58.9% | 中 |
+| internal/metadata/cluster | 58.9% | 中 |
+| internal/metadata/gossip | 21.9% | **高** 🔴 |
+| internal/metadata/kvstore | 77.4% | 低 |
+| internal/metadata/kvstore/hash | 11.1% | **高** 🔴 |
+| internal/metadata/quorum | 58.3% | 中 |
+| internal/metadata/types | 31.4% | **高** 🔴 |
+
+**测试覆盖率提升策略**：
+- 恢复 gossip 模块单元测试（merkle_sync_test.go）
+- 重点关注 gossip、kvstore/hash、types 模块
+- 目标：整体提升到 80%
 
 #### 验收标准
 

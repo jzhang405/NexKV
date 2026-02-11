@@ -492,7 +492,7 @@ func TestGetConsistencyLevel(t *testing.T) {
 	}{
 		{"Cluster 强一致", kvstore.NamespaceCluster, kvstore.ConsistencyStrong},
 		{"Node 最终一致", kvstore.NamespaceNode, kvstore.ConsistencyEventual},
-		{"Role 最终一致", kvstore.NamespaceRole, kvstore.ConsistencyEventual},
+		{"Role 增强最终一致（Quorum）", kvstore.NamespaceRole, kvstore.ConsistencyEnhancedEventual}, // Phase 2 升级
 		{"Topo 最终一致", kvstore.NamespaceTopo, kvstore.ConsistencyEventual},
 		{"Shard 强一致", kvstore.NamespaceShard, kvstore.ConsistencyStrong},
 		{"Static 强一致", kvstore.NamespaceStatic, kvstore.ConsistencyStrong},

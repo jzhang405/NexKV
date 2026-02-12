@@ -14,7 +14,6 @@ import (
 	"github.com/jzhang405/NexKV/internal/config/logging"
 )
 
-
 // PeerSelector Peer 选择器接口
 //
 // 提供从候选 peer 列表中选择一个 peer 的策略

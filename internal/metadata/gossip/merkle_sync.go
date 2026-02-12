@@ -46,6 +46,7 @@ const (
 //   - 增量传输：只传输变化的数据
 type MerkleGossipSync struct {
 	merkle      *kvstore.NamespacedMerkleTree
+	metadataKV  *kvstore.MetadataKV // 元数据 KV 存储（用于增量 Key 检测）
 	transport   transport.Transport // libp2p 传输层
 	localNodeID string              // 本地节点 ID
 	mu          sync.RWMutex
@@ -56,6 +57,9 @@ type MerkleGossipSync struct {
 
 	// 已知的 peer 列表（用于随机选择）
 	knownPeers map[string]struct{}
+
+	// Peer 选择器
+	peerSelector PeerSelector
 
 	// 生命周期管理
 	ctx    context.Context
@@ -73,12 +77,13 @@ func NewMerkleGossipSync(
 	metadataKV *kvstore.MetadataKV,
 	transportLayer transport.Transport,
 	localNodeID string,
+	peerSelector PeerSelector,
 ) *MerkleGossipSync {
-	_ = metadataKV // TODO: 待实现增量 Key 检测逻辑时使用
 	ctx, cancel := context.WithCancel(context.Background())
 
 	sync := &MerkleGossipSync{
 		merkle:         merkle,
+		metadataKV:     metadataKV,
 		transport:      transportLayer,
 		localNodeID:    localNodeID,
 		gossipInterval: 10 * time.Second, // 默认 10 秒
@@ -189,11 +194,10 @@ func (s *MerkleGossipSync) SyncWithPeer(
 	syncResult.BandwidthUsed = bandwidthUsed
 
 	// 计算节省的带宽
-	syncResult.BandwidthSaved = CalculateBandwidthSavings(
-		0, // 使用默认的 fullMetadataSize
-		syncResult.GetKeysReceivedCount(),
-		syncResult.GetKeysSentCount(),
-	)
+	// 更新 Peer 健康度指标（如果配置了选择器）
+	if s.peerSelector != nil {
+		s.peerSelector.Update(peerID, syncResult)
+	}
 
 	s.logSyncComplete(syncResult, peerID, startTime)
 
@@ -239,7 +243,7 @@ func (s *MerkleGossipSync) StartPeriodicGossip(ctx context.Context) {
 	}
 }
 
-// gossipRandomPeer 随机选择一个 peer 进行 Gossip
+// gossipRandomPeer 使用 Peer 选择器随机选择一个 peer 进行 Gossip
 func (s *MerkleGossipSync) gossipRandomPeer(ctx context.Context) {
 	s.mu.RLock()
 	peerCount := len(s.knownPeers)
@@ -250,21 +254,34 @@ func (s *MerkleGossipSync) gossipRandomPeer(ctx context.Context) {
 		return
 	}
 
-	// 随机选择一个 peer（简化实现）
-	// TODO: 实现真正的随机选择
+	// 收集 peer 列表
+	peers := make([]string, 0, len(s.knownPeers))
 	for peerID := range s.knownPeers {
-		result, err := s.SyncWithPeer(ctx, peerID)
-		if err != nil {
-			s.logPeerError("Gossip 同步失败", peerID, err)
-			continue
+		peers = append(peers, peerID)
+	}
+
+	// 使用 Peer 选择器选择一个 peer
+	if s.peerSelector != nil {
+		selectedPeer := s.peerSelector.Select(peers)
+		if selectedPeer == "" {
+			logging.Debug("Peer 选择器未返回有效的 peer")
+			return
 		}
+
+		result, err := s.SyncWithPeer(ctx, selectedPeer)
+		if err != nil {
+			s.logPeerError("Gossip 同步失败", selectedPeer, err)
+			return
+		}
+
+		// 更新 Peer 健康度指标
+		s.peerSelector.Update(selectedPeer, result)
 
 		if result.IsSynced() {
 			s.mu.Lock()
 			s.bandwidthSaved += result.BandwidthSaved
 			s.mu.Unlock()
 		}
-		break // 只 gossip 一个 peer
 	}
 }
 
@@ -402,6 +419,14 @@ func (s *MerkleGossipSync) sendDiffResponse(
 	return nil
 }
 
+// SetGossipInterval 设置 Gossip 周期（用于测试）
+func (s *MerkleGossipSync) SetGossipInterval(interval time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gossipInterval = interval
+	logging.WithField("gossip_interval", interval).Info("Gossip 周期已更新")
+}
+
 // GetStats 获取统计信息
 func (s *MerkleGossipSync) GetStats() map[string]interface{} {
 	s.mu.RLock()
@@ -411,6 +436,7 @@ func (s *MerkleGossipSync) GetStats() map[string]interface{} {
 		"sync_count":      s.syncCount,
 		"diff_detected":   s.diffDetected,
 		"bandwidth_saved": s.bandwidthSaved,
+		"peer_count":      len(s.knownPeers),
 		"gossip_interval": s.gossipInterval.String(),
 		"gossip_timeout":  s.gossipTimeout.String(),
 	}
@@ -556,14 +582,18 @@ func (s *MerkleGossipSync) buildDiffResponse(
 	}
 
 	// 对每个差异的 Namespace，获取本地 Keys
-	// TODO: 从 MetadataKV 查询该 Namespace 下实际变化的 Keys
-	// 当前实现：返回空列表，待实现增量 Key 检测逻辑
-	// 生产环境中需要：
-	//   1. 实现 MetadataKV 的 GetKeysInNamespace(ns string) ([]string, error) 方法
-	//   2. 调用该方法获取实际变化的 Keys
-	//   3. 只发送变化的 Keys，而非全部 Keys
+	// 使用 MetadataKV.ListPrefix 获取该 Namespace 下的所有 Keys
+	// 注意：当前实现获取全部 Keys，未来可优化为只获取变化的 Keys
 	for ns := range diffNamespaces {
-		response.DiffNamespaces[ns] = []string{} // 空：待实现
+		// 使用空字符串前缀获取 Namespace 下的所有 Keys
+		keys, err := s.metadataKV.ListPrefix(s.ctx, ns, "")
+		if err != nil {
+			logging.WithField("error", err).WithField("namespace", ns).Error("获取 Namespace Keys 失败")
+			// 发送空列表作为降级处理
+			response.DiffNamespaces[ns] = []string{}
+			continue
+		}
+		response.DiffNamespaces[ns] = keys
 	}
 
 	// 转换为可序列化的 map

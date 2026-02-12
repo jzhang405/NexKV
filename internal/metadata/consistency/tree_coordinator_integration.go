@@ -306,11 +306,14 @@ func NewTreeTopologyCoordinator(opts *TreeTopologyOptions) (*TreeTopologyCoordin
 	// 创建 Gossip 同步（如果提供了必要的配置）
 	var gossipSync *gossip.MerkleGossipSync
 	if opts.GossipMerkleTree != nil && opts.GossipMetadataKV != nil {
+		// 使用默认的随机 Peer 选择器
+		peerSelector := gossip.NewRandomPeerSelector()
 		gossipSync = gossip.NewMerkleGossipSync(
 			opts.GossipMerkleTree,
 			opts.GossipMetadataKV,
 			opts.GossipTransport,
 			opts.LocalNodeID,
+			peerSelector,
 		)
 	}
 

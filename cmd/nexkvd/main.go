@@ -26,6 +26,7 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 )
 
@@ -429,19 +430,42 @@ func loadConfig(c *cli.Context, configPath string) (*config.Config, error) {
 	return cfg, nil
 }
 
-// initLogging 初始化日志
+// initLogging 初始化日志系统
 func initLogging(logLevel string) error {
-	// TODO: 实现完整的日志初始化
-	// 目前使用简单的配置，后续根据 cfg.Logging 配置初始化
-
 	// 设置默认日志级别
 	level := "info"
 	if logLevel != "" {
-		level = logLevel
+		level = strings.ToLower(logLevel)
 	}
 
-	_ = level // 占位，后续实现
+	// 创建新的 logger 实例
+	logger := logrus.New()
 
+	// 设置日志级别
+	switch level {
+	case "debug":
+		logger.SetLevel(logrus.DebugLevel)
+	case "info":
+		logger.SetLevel(logrus.InfoLevel)
+	case "warn", "warning":
+		logger.SetLevel(logrus.WarnLevel)
+	case "error":
+		logger.SetLevel(logrus.ErrorLevel)
+	default:
+		logger.SetLevel(logrus.InfoLevel)
+	}
+
+	// 设置日志格式（JSON 格式便于解析）
+	logger.SetFormatter(&logrus.JSONFormatter{
+		TimestampFormat: "2006-01-02 15:04:05",
+	})
+
+	logger.SetOutput(os.Stdout)
+
+	// 初始化全局日志
+	logging.Init(logger)
+
+	logging.Infof("日志系统初始化完成，级别: %s", level)
 	return nil
 }
 

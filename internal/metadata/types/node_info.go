@@ -1,7 +1,10 @@
 // Package types 元数据类型定义
 package types
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // NodeRole 节点角色
 type NodeRole string
@@ -41,6 +44,95 @@ type NodeAddress struct {
 
 	// UDPPort UDP 端口
 	UDPPort int `msgpack:"udp_port"`
+}
+
+// TCPAddr 返回 TCP 地址字符串（IPFS 格式）
+func (na *NodeAddress) TCPAddr() string {
+	return fmt.Sprintf("/ip4/%s/tcp/%d", na.Host, na.TCPPort)
+}
+
+// UDPAddr 返回 UDP 地址字符串（IPFS 格式）
+func (na *NodeAddress) UDPAddr() string {
+	return fmt.Sprintf("/ip4/%s/udp/%d", na.Host, na.UDPPort)
+}
+
+// Validate 验证 NodeAddress 的端口范围
+func (na *NodeAddress) Validate() error {
+	const (
+		MinPort    = 1024
+		MaxTCPPort = 65534
+		MaxUDPPort = 65535
+	)
+
+	// 检查 TCP 端口范围
+	if na.TCPPort != 0 {
+		if na.TCPPort < MinPort || na.TCPPort > MaxTCPPort {
+			return NewTreeCoordinatorTCPPortOutOfRangeError(MinPort, MaxTCPPort, na.TCPPort)
+		}
+	}
+
+	// 检查 UDP 端口范围
+	if na.UDPPort != 0 {
+		if na.UDPPort < MinPort || na.UDPPort > MaxUDPPort {
+			return NewTreeCoordinatorUDPPortOutOfRangeError(MinPort, MaxUDPPort, na.UDPPort)
+		}
+	}
+
+	// 检查 UDP = TCP + 1 规则（如果两个端口都设置）
+	if na.TCPPort != 0 && na.UDPPort != 0 {
+		if na.UDPPort != na.TCPPort+1 {
+			return NewTreeCoordinatorUDPPortMustBeTCPPlusOneError(na.TCPPort, na.UDPPort)
+		}
+	}
+
+	// 至少需要一个端口（TCP 或 UDP）
+	if na.TCPPort == 0 && na.UDPPort == 0 {
+		return NewTreeCoordinatorAtLeastOnePortRequiredError()
+	}
+
+	return nil
+}
+
+// GetTCPAddr 获取完整的 TCP 网络地址
+// 格式：hostname:port（如 "192.168.1.1:5000"）
+// 如果 Host 为空，返回 ":port"
+func (na *NodeAddress) GetTCPAddr() string {
+	if na.Host == "" {
+		return fmt.Sprintf(":%d", na.TCPPort)
+	}
+	return fmt.Sprintf("%s:%d", na.Host, na.TCPPort)
+}
+
+// GetUDPAddr 获取完整的 UDP 网络地址
+// 格式：hostname:port（如 "192.168.1.100:9001"）
+// 如果 Host 为空，返回 ":port"
+func (na *NodeAddress) GetUDPAddr() string {
+	if na.Host == "" {
+		return fmt.Sprintf(":%d", na.UDPPort)
+	}
+	return fmt.Sprintf("%s:%d", na.Host, na.UDPPort)
+}
+
+// NewNodeAddress 创建新的 NodeAddress
+// 自动设置 UDPPort = TCPPort + 1
+func NewNodeAddress(host string, tcpPort int) (*NodeAddress, error) {
+	const (
+		MinPort    = 1024
+		MaxTCPPort = 65534
+	)
+
+	if tcpPort < MinPort || tcpPort > MaxTCPPort {
+		return nil, NewTreeCoordinatorTCPPortOutOfRangeError(MinPort, MaxTCPPort, tcpPort)
+	}
+
+	// UDP 端口自动 = TCP + 1
+	udpPort := tcpPort + 1
+
+	return &NodeAddress{
+		Host:    host,
+		TCPPort: tcpPort,
+		UDPPort: udpPort,
+	}, nil
 }
 
 // NodeInfo 节点元数据

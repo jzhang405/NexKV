@@ -4,6 +4,7 @@ package rpc
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/jzhang405/NexKV/internal/config/logging"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -19,16 +20,6 @@ type QuorumConfig struct {
 	DefaultQuorum int  // 默认多数派阈值 (N/2 + 1)
 	Timeout       int  // Quorum 超时时间（毫秒）
 	MinQuorum     int  // 最小 Quorum 值
-}
-
-// DefaultQuorumConfig 返回默认 Quorum 配置
-func DefaultQuorumConfig() *QuorumConfig {
-	return &QuorumConfig{
-		Enabled:       true,
-		DefaultQuorum: 0,    // 0 表示动态计算 (N/2 + 1)
-		Timeout:       5000, // 5 秒
-		MinQuorum:     1,    // 至少需要 1 个响应
-	}
 }
 
 // QuorumResult Quorum 结果
@@ -82,6 +73,16 @@ func NewQuorumManager(config *QuorumConfig) *QuorumManager {
 		config:    config,
 		metrics:   &QuorumMetrics{},
 		peerCache: make([]peer.ID, 0),
+	}
+}
+
+// DefaultQuorumConfig 返回默认 Quorum 配置
+func DefaultQuorumConfig() *QuorumConfig {
+	return &QuorumConfig{
+		Enabled:       true,
+		DefaultQuorum: 0, // 动态计算多数派
+		Timeout:       5000,
+		MinQuorum:     1, // 最小 Quorum 为 1
 	}
 }
 
@@ -259,28 +260,35 @@ type ClusterService interface {
 	IsPeerAvailable(peerID peer.ID) bool
 }
 
-// SetClusterService 设置集群服务（集成时调用）
-var globalClusterService ClusterService
+// globalClusterService 全局集群服务（支持运行时更新）
+// 使用 atomic.Value 保证并发安全，支持多次更新（如热重启、故障转移）
+var globalClusterService atomic.Value
 
 // SetClusterService 设置全局集群服务
 func SetClusterService(service ClusterService) {
-	globalClusterService = service
+	globalClusterService.Store(service)
 	logging.Info("集群服务已设置")
 }
 
 // GetClusterService 获取全局集群服务
+// 注意：返回 nil 表示未初始化，调用处需要处理
 func GetClusterService() ClusterService {
-	return globalClusterService
+	v := globalClusterService.Load()
+	if v == nil {
+		return nil
+	}
+	return v.(ClusterService)
 }
 
 // SyncQuorumConfigFromCluster 从集群层同步 Quorum 配置
 func (m *QuorumManager) SyncQuorumConfigFromCluster() error {
-	if globalClusterService == nil {
+	svc := GetClusterService()
+	if svc == nil {
 		// 集群服务未设置，使用默认配置
 		return nil
 	}
 
-	config := globalClusterService.GetQuorumConfig()
+	config := svc.GetQuorumConfig()
 	if config != nil {
 		m.SetConfig(config)
 		logging.Info("已从集群层同步 Quorum 配置")
@@ -291,13 +299,14 @@ func (m *QuorumManager) SyncQuorumConfigFromCluster() error {
 
 // SyncPeersFromCluster 从集群层同步 peer 列表
 func (m *QuorumManager) SyncPeersFromCluster() error {
-	if globalClusterService == nil {
+	svc := GetClusterService()
+	if svc == nil {
 		// 集群服务未设置，清空缓存
 		m.UpdatePeerCache(nil)
 		return nil
 	}
 
-	peers := globalClusterService.GetActivePeers()
+	peers := svc.GetActivePeers()
 	m.UpdatePeerCache(peers)
 
 	logging.WithField("peer_count", len(peers)).Info("已从集群层同步 peer 列表")

@@ -286,12 +286,21 @@ func NewConcurrencyMetrics() *ConcurrencyMetrics {
 }
 
 // NewConcurrencyLimiter 创建并发限制器
+// 使用带缓冲 channel 作为 semaphore：
+// - 初始时 channel 满载 maxConcurrent 个空的 struct{}
+// - Acquire 从 channel 接收（取走一个许可）
+// - Release 向 channel 发送（放回一个许可）
 func NewConcurrencyLimiter(maxConcurrent int32) *ConcurrencyLimiter {
-	return &ConcurrencyLimiter{
+	c := &ConcurrencyLimiter{
 		maxConcurrent: maxConcurrent,
 		semaphore:     make(chan struct{}, maxConcurrent),
 		metrics:       NewConcurrencyMetrics(),
 	}
+	// 预填充 semaphore（channel 满表示所有许可都可用）
+	for i := int32(0); i < maxConcurrent; i++ {
+		c.semaphore <- struct{}{}
+	}
+	return c
 }
 
 // Acquire 获取并发许可（阻塞直到获取成功或上下文取消）
@@ -311,7 +320,7 @@ func (c *ConcurrencyLimiter) Acquire(ctx context.Context) error {
 	}()
 
 	select {
-	case c.semaphore <- struct{}{}:
+	case <-c.semaphore: // 从 channel 接收，表示取走一个许可
 		acquired = true
 		atomic.AddInt32(&c.current, 1)
 		c.metrics.ConcurrentActive.Inc()
@@ -336,7 +345,7 @@ func (c *ConcurrencyLimiter) AcquireWithTimeout(timeout time.Duration) error {
 // TryAcquire 尝试获取并发许可（非阻塞）
 func (c *ConcurrencyLimiter) TryAcquire() bool {
 	select {
-	case c.semaphore <- struct{}{}:
+	case <-c.semaphore: // 从 channel 接收，表示取走一个许可
 		atomic.AddInt32(&c.current, 1)
 		c.metrics.ConcurrentActive.Inc()
 		c.metrics.AcquireSuccess.Inc()
@@ -349,13 +358,25 @@ func (c *ConcurrencyLimiter) TryAcquire() bool {
 
 // Release 释放并发许可
 func (c *ConcurrencyLimiter) Release() {
+	// 先减少当前计数
+	newCurrent := atomic.AddInt32(&c.current, -1)
+	if newCurrent < 0 {
+		// 防止计数为负（异常情况）
+		atomic.AddInt32(&c.current, 1)
+		return
+	}
+
+	// 更新指标
+	c.metrics.ConcurrentActive.Dec()
+	c.metrics.ReleaseTotal.Inc()
+
+	// 向 semaphore 发送信号（放回一个许可）
+	// 如果 channel 满了，会阻塞直到有 Acquire 取走值
 	select {
-	case <-c.semaphore:
-		atomic.AddInt32(&c.current, -1)
-		c.metrics.ConcurrentActive.Dec()
-		c.metrics.ReleaseTotal.Inc()
+	case c.semaphore <- struct{}{}:
+		// 成功放回许可
 	default:
-		// 已经释放，忽略
+		// 不应该到达这里，因为 Release 前必有 Acquire
 	}
 }
 

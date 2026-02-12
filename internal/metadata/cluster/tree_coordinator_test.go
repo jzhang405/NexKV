@@ -7,6 +7,7 @@ import (
 	"time"
 
 	metadataconfig "github.com/jzhang405/NexKV/internal/config"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/jzhang405/NexKV/internal/rpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -291,7 +292,7 @@ func TestDefaultTreeCoordinatorConfig(t *testing.T) {
 
 // TestNodeAddress_TCPAddr 测试 TCPAddr 方法
 func TestNodeAddress_TCPAddr(t *testing.T) {
-	addr := &NodeAddress{
+	addr := &types.NodeAddress{
 		Host:    "127.0.0.1",
 		TCPPort: 5001,
 		UDPPort: 5002,
@@ -302,7 +303,7 @@ func TestNodeAddress_TCPAddr(t *testing.T) {
 
 // TestNodeAddress_UDPAddr 测试 UDPAddr 方法
 func TestNodeAddress_UDPAddr(t *testing.T) {
-	addr := &NodeAddress{
+	addr := &types.NodeAddress{
 		Host:    "192.168.1.100",
 		TCPPort: 5001,
 		UDPPort: 5002,
@@ -426,7 +427,7 @@ func TestHost_Structure(t *testing.T) {
 	host := &Host{
 		HostID: "server-1",
 		Role:   LeafParent,
-		NodeAddr: NodeAddress{
+		NodeAddr: types.NodeAddress{
 			Host:    "127.0.0.1",
 			TCPPort: 5001,
 			UDPPort: 5002,
@@ -663,13 +664,13 @@ func Test_TreeCoordinator_gossipTopologyChange_WithOtherNodes(t *testing.T) {
 	coordinator.nodesMu.Lock()
 	coordinator.allNodes["node2"] = &Node{
 		NodeID: "node2",
-		Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9212},
+		Addr:   types.NodeAddress{Host: "127.0.0.1", TCPPort: 9212},
 		Status: NodeStatusReady,
 		Level:  1,
 	}
 	coordinator.allNodes["node3"] = &Node{
 		NodeID: "node3",
-		Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9213},
+		Addr:   types.NodeAddress{Host: "127.0.0.1", TCPPort: 9213},
 		Status: NodeStatusReady,
 		Level:  1,
 	}
@@ -731,7 +732,7 @@ func Test_TreeCoordinator_gossipSync_WithOtherNodes(t *testing.T) {
 		coordinator.nodesMu.Lock()
 		coordinator.allNodes["node2"] = &Node{
 			NodeID: "node2",
-			Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9212},
+			Addr:   types.NodeAddress{Host: "127.0.0.1", TCPPort: 9212},
 			Status: NodeStatusReady,
 			Level:  1,
 		}
@@ -1247,14 +1248,14 @@ func TestSelectBestParent(t *testing.T) {
 		candidates := []*Node{
 			{
 				NodeID: "node2",
-				Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
+				Addr:   types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
 				Level:  0,
 				Status: NodeStatusInit,
 				Role:   Parent,
 			},
 			{
 				NodeID: "node3",
-				Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9202},
+				Addr:   types.NodeAddress{Host: "127.0.0.1", TCPPort: 9202},
 				Level:  0,
 				Status: NodeStatusJoining,
 				Role:   Parent,
@@ -1279,7 +1280,7 @@ func TestSelectBestParent(t *testing.T) {
 		candidates := []*Node{
 			{
 				NodeID: "node2",
-				Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
+				Addr:   types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
 				Level:  1, // 等于 MaxLevel
 				Status: NodeStatusReady,
 				Role:   Parent,
@@ -1304,7 +1305,7 @@ func TestSelectBestParent(t *testing.T) {
 		candidates := []*Node{
 			{
 				NodeID:      "node2",
-				Addr:        NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
+				Addr:        types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
 				Level:       0,
 				Status:      NodeStatusReady,
 				Role:        Parent,
@@ -1498,7 +1499,7 @@ func TestAddChildWithAddr(t *testing.T) {
 	defer func() { _ = coordinator.Stop() }()
 
 	t.Run("添加带地址的子节点", func(t *testing.T) {
-		addr := &NodeAddress{
+		addr := &types.NodeAddress{
 			Host:    "192.168.1.100",
 			TCPPort: 7001,
 			UDPPort: 7002,
@@ -1525,7 +1526,7 @@ func TestAddChildWithAddr(t *testing.T) {
 		require.NoError(t, err)
 		defer func() { _ = coordinator2.Stop() }()
 
-		addr := &NodeAddress{Host: "127.0.0.1", TCPPort: 7001}
+		addr := &types.NodeAddress{Host: "127.0.0.1", TCPPort: 7001}
 
 		_ = coordinator2.AddChild("child1")
 		_ = coordinator2.AddChild("child2")
@@ -1762,7 +1763,7 @@ func TestSendHeartbeat_NoRPCClient(t *testing.T) {
 	coordinator.localNode.ChildrenIDs = []string{"child1"}
 	coordinator.allNodes["parent1"] = &Node{
 		NodeID: "parent1",
-		Addr: NodeAddress{
+		Addr: types.NodeAddress{
 			Host:    "127.0.0.1",
 			TCPPort: 9201,
 		},
@@ -1770,7 +1771,7 @@ func TestSendHeartbeat_NoRPCClient(t *testing.T) {
 	}
 	coordinator.allNodes["child1"] = &Node{
 		NodeID: "child1",
-		Addr: NodeAddress{
+		Addr: types.NodeAddress{
 			Host:    "127.0.0.1",
 			TCPPort: 9202,
 		},
@@ -1798,7 +1799,7 @@ func TestSendHeartbeatToNode_NoRPCClient(t *testing.T) {
 
 	targetNode := &Node{
 		NodeID: "target1",
-		Addr: NodeAddress{
+		Addr: types.NodeAddress{
 			Host:    "127.0.0.1",
 			TCPPort: 9201,
 		},
@@ -1824,7 +1825,7 @@ func TestSendLeaveMessage_NoRPCClient(t *testing.T) {
 
 	targetNode := &Node{
 		NodeID: "target1",
-		Addr: NodeAddress{
+		Addr: types.NodeAddress{
 			Host:    "127.0.0.1",
 			TCPPort: 9201,
 		},
@@ -1850,7 +1851,7 @@ func TestSendJoinRequest_NoRPCClient(t *testing.T) {
 
 	targetNode := &Node{
 		NodeID: "parent1",
-		Addr: NodeAddress{
+		Addr: types.NodeAddress{
 			Host:    "127.0.0.1",
 			TCPPort: 9201,
 		},
@@ -1961,10 +1962,10 @@ func TestSendGossipMessage_Basic(t *testing.T) {
 	defer func() { _ = coordinator.Stop() }()
 
 	// 添加一些子节点（需要使用带地址的方法）
-	addr1 := &NodeAddress{Host: "127.0.0.1", TCPPort: 9201}
+	addr1 := &types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201}
 	_ = coordinator.AddChildWithAddr("child1", addr1)
 
-	addr2 := &NodeAddress{Host: "127.0.0.1", TCPPort: 9202}
+	addr2 := &types.NodeAddress{Host: "127.0.0.1", TCPPort: 9202}
 	_ = coordinator.AddChildWithAddr("child2", addr2)
 
 	// 创建目标节点和消息体
@@ -2079,7 +2080,7 @@ func TestAddChildWithAddr_WithNodeAddress(t *testing.T) {
 	defer func() { _ = coordinator.Stop() }()
 
 	t.Run("成功添加带地址的子节点", func(t *testing.T) {
-		addr := &NodeAddress{Host: "127.0.0.1", TCPPort: 9201}
+		addr := &types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201}
 		err := coordinator.AddChildWithAddr("child1", addr)
 		assert.NoError(t, err)
 
@@ -2100,8 +2101,8 @@ func TestAddChildWithAddr_WithNodeAddress(t *testing.T) {
 // TestContainsNodeAddr_Helper 测试检查节点地址是否存在（辅助函数）
 func TestContainsNodeAddr_Helper(t *testing.T) {
 	nodes := []*Node{
-		{NodeID: "node1", Addr: NodeAddress{Host: "127.0.0.1", TCPPort: 9211}},
-		{NodeID: "node2", Addr: NodeAddress{Host: "127.0.0.1", TCPPort: 9212}},
+		{NodeID: "node1", Addr: types.NodeAddress{Host: "127.0.0.1", TCPPort: 9211}},
+		{NodeID: "node2", Addr: types.NodeAddress{Host: "127.0.0.1", TCPPort: 9212}},
 	}
 
 	t.Run("地址存在", func(t *testing.T) {
@@ -2182,7 +2183,7 @@ func TestSendJoinRequest_WithMockRPC(t *testing.T) {
 
 	targetNode := &Node{
 		NodeID: "parent1",
-		Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
+		Addr:   types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
 	}
 
 	// 没有 RPC 客户端，应该返回错误
@@ -2274,7 +2275,7 @@ func TestSendLeaveMessage_WithTargetNode(t *testing.T) {
 
 	targetNode := &Node{
 		NodeID: "parent1",
-		Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
+		Addr:   types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
 	}
 
 	reqBody := []byte("test-leave-message")
@@ -2300,7 +2301,7 @@ func TestSendHeartbeat_WithParent(t *testing.T) {
 	coordinator.localNode.ParentID = "parent1"
 	coordinator.allNodes["parent1"] = &Node{
 		NodeID: "parent1",
-		Addr:   NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
+		Addr:   types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
 		Status: NodeStatusReady,
 	}
 	coordinator.nodesMu.Unlock()
@@ -2325,10 +2326,10 @@ func TestSendHeartbeat_WithChildren(t *testing.T) {
 	defer func() { _ = coordinator.Stop() }()
 
 	// 添加子节点
-	addr1 := &NodeAddress{Host: "127.0.0.1", TCPPort: 9201}
+	addr1 := &types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201}
 	_ = coordinator.AddChildWithAddr("child1", addr1)
 
-	addr2 := &NodeAddress{Host: "127.0.0.1", TCPPort: 9202}
+	addr2 := &types.NodeAddress{Host: "127.0.0.1", TCPPort: 9202}
 	_ = coordinator.AddChildWithAddr("child2", addr2)
 
 	// 测试发送心跳（没有 RPC 客户端，不应该 panic）
@@ -2357,7 +2358,7 @@ func TestAddChildWithAddr_LevelLimit(t *testing.T) {
 	coordinator.localNode.Level = 2 // 已经是 MaxLevel
 	coordinator.nodesMu.Unlock()
 
-	addr := &NodeAddress{Host: "127.0.0.1", TCPPort: 9201}
+	addr := &types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201}
 	err = coordinator.AddChildWithAddr("child1", addr)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "超出树的最大深度限制")
@@ -2554,7 +2555,7 @@ func TestRedistributeChildren(t *testing.T) {
 	// 创建一个中间节点，带子节点
 	parentNode := &Node{
 		NodeID:      "parent1",
-		Addr:        NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
+		Addr:        types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
 		ParentID:    "node1",
 		Level:       1,
 		Status:      NodeStatusReady,
@@ -2564,7 +2565,7 @@ func TestRedistributeChildren(t *testing.T) {
 
 	child1 := &Node{
 		NodeID:   "child1",
-		Addr:     NodeAddress{Host: "127.0.0.1", TCPPort: 9202},
+		Addr:     types.NodeAddress{Host: "127.0.0.1", TCPPort: 9202},
 		ParentID: "parent1",
 		Level:    2,
 		Status:   NodeStatusReady,
@@ -2573,7 +2574,7 @@ func TestRedistributeChildren(t *testing.T) {
 
 	child2 := &Node{
 		NodeID:   "child2",
-		Addr:     NodeAddress{Host: "127.0.0.1", TCPPort: 9203},
+		Addr:     types.NodeAddress{Host: "127.0.0.1", TCPPort: 9203},
 		ParentID: "parent1",
 		Level:    2,
 		Status:   NodeStatusReady,
@@ -2630,7 +2631,7 @@ func TestSelectParentForNewNode(t *testing.T) {
 
 	t.Run("选择有空位的节点", func(t *testing.T) {
 		// 添加一个子节点
-		addr := &NodeAddress{Host: "127.0.0.1", TCPPort: 9201}
+		addr := &types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201}
 		_ = coordinator.AddChildWithAddr("node2", addr)
 
 		parentID, err := coordinator.selectParentForNewNode()
@@ -2686,7 +2687,7 @@ func TestAddChild_EdgeCases(t *testing.T) {
 		// 创建一个已经有父节点的子节点
 		childNode := &Node{
 			NodeID:   "child1",
-			Addr:     NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
+			Addr:     types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
 			Status:   NodeStatusReady,
 			ParentID: "other-parent", // 已有其他父节点
 			Level:    1,
@@ -2715,7 +2716,7 @@ func TestAddChild_EdgeCases(t *testing.T) {
 		// 创建一个在 allNodes 中但没有父节点的子节点
 		childNode := &Node{
 			NodeID:   "child1",
-			Addr:     NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
+			Addr:     types.NodeAddress{Host: "127.0.0.1", TCPPort: 9201},
 			Status:   NodeStatusReady,
 			ParentID: "", // 没有父节点
 			Level:    0,

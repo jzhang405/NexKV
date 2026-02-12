@@ -734,7 +734,7 @@ func TestTreeCoordinator_nodeToNodeInfo(t *testing.T) {
 		NodeID: "test-node",
 		HostID: "test-host",
 		Role:   Leaf,
-		Addr: NodeAddress{
+		Addr: types.NodeAddress{
 			Host:    "192.168.1.1",
 			TCPPort: 7001,
 			UDPPort: 7002,

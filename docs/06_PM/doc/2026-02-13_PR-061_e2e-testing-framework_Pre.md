@@ -332,22 +332,201 @@ nexkv-e2e verify --watch --interval 10s
 
 ---
 
-## 8. 待确认问题（修订版）
+## 8. 技术方案详细设计
 
-### ✅ 已确认
+### 8.1 网络控制实现方案（基于 libp2p）
 
-1. **Phase 2.5 独立性**: ✅ **确认为独立阶段**
-   - 理由：便于单独评审和验收，测试目标明确
+**确定方案**: 使用 libp2p 原生 API 进行故障注入，无需 root 权限。
 
-### ⏳ 待确认
+**核心故障场景**:
 
-2. ~~**网络控制实现**: 使用 tc/iptables 还是更高层的抽象？~~
-   - ✅ **已确定**: 使用 **libp2p 原生 API** 进行故障注入
+| 场景 | 实现方式 | 代码位置 |
+|------|---------|---------|
+| **连接断开** | `conn.Close()` | `network.go` |
+| **流关闭** | `stream.Close()` | `network.go` |
+| **流延迟** | 包装 `Stream` 注入延迟 | `network.go` |
+| **协议协商失败** | 使用不存在的协议 ID | `network.go` |
+| **节点下线** | `host.Close()` | `daemon.go` |
+| **NAT 穿透失败** | `libp2p.NoNatPortMap()` | `config.go` |
 
-3. ~~**数据验证策略**: 如何验证分布式一致性？~~
-   - ✅ **已确定**: 三层验证架构
+**故障注入器设计**:
 
-### 9.2 分布式一致性验证方案
+```go
+// Libp2pFaultInjector libp2p 故障注入器
+type Libp2pFaultInjector struct {
+    host    libp2p.Host
+    enabled bool
+}
+
+// 故障类型
+type FaultType int
+
+const (
+    FaultConnClose  FaultType = iota // 连接关闭
+    FaultStreamClose                  // 流关闭
+    FaultStreamLatency                // 流延迟
+    FaultProtocolNegotiationFailed   // 协议协商失败
+    FaultNodeCrash                    // 节点崩溃
+)
+
+// InjectFault 注入故障
+func (fi *Libp2pFaultInjector) InjectFault(
+    faultType FaultType,
+    target peer.ID,
+    params ...interface{},
+) error
+```
+
+**使用示例**:
+
+```go
+// E2E 测试中使用故障注入器
+func TestNetworkPartition(t *testing.T) {
+    cluster := framework.NewTestCluster(3)
+    cluster.Start(ctx)
+    defer cluster.Stop()
+
+    // 获取节点 A 的故障注入器
+    injector := cluster.Nodes[0].FaultInjector
+    injector.Enable()
+
+    // 注入连接关闭故障（断开与节点 B 的连接）
+    err := injector.InjectFault(
+        framework.FaultConnClose,
+        cluster.Nodes[1].PeerID,
+    )
+    require.NoError(t, err)
+
+    // 验证集群行为
+    // ...
+}
+```
+
+**libp2p 故障注入核心代码示例**:
+
+```go
+// 场景1: 模拟连接主动断开
+func TestFault_CloseConnection(t *testing.T) {
+    hostA, hostB, cleanup := setupTwoNodes(t)
+    defer cleanup()
+
+    // 验证初始连接存在
+    assert.True(t, hostA.Network().Connectedness(hostB.ID()) == network.Connected)
+
+    // 故障注入：关闭节点A到B的所有连接
+    for _, conn := range hostA.Network().ConnsToPeer(hostB.ID()) {
+        _ = conn.Close()
+    }
+
+    // 验证连接已断开
+    time.Sleep(100 * time.Millisecond)
+    assert.True(t, hostA.Network().Connectedness(hostB.ID()) == network.NotConnected)
+}
+
+// 场景2: 模拟流超时/主动关闭流
+func TestFault_StreamClose(t *testing.T) {
+    hostA, hostB, cleanup := setupTwoNodes(t)
+    defer cleanup()
+
+    protocolID := "/test/1.0.0"
+    hostB.SetStreamHandler(protocolID, func(stream network.Stream) {
+        defer stream.Close()
+        buf := make([]byte, 1024)
+        _, err := stream.Read(buf)
+        assert.Error(t, err) // 预期读取失败
+    })
+
+    stream, err := hostA.NewStream(context.Background(), hostB.ID(), protocolID)
+    assert.NoError(t, err)
+
+    // 故障注入：写入部分数据后主动关闭流
+    _, err = stream.Write([]byte("partial data"))
+    assert.NoError(t, err)
+    _ = stream.Close()
+
+    assert.True(t, stream.Closed())
+}
+
+// 场景3: 注入流延迟（模拟网络卡顿）
+type DelayedStream struct {
+    network.Stream
+    delay time.Duration
+}
+
+func (ds *DelayedStream) Write(b []byte) (n int, err error) {
+    time.Sleep(ds.delay) // 注入延迟
+    return ds.Stream.Write(b)
+}
+
+func TestFault_StreamLatency(t *testing.T) {
+    hostA, hostB, cleanup := setupTwoNodes(t)
+    defer cleanup()
+
+    protocolID := "/test/latency/1.0.0"
+    hostB.SetStreamHandler(protocolID, func(stream network.Stream) {
+        defer stream.Close()
+        buf := make([]byte, 1024)
+        n, _ := stream.Read(buf)
+        _ = stream.Write(buf[:n])
+    })
+
+    stream, err := hostA.NewStream(context.Background(), hostB.ID(), protocolID)
+    assert.NoError(t, err)
+
+    // 故障注入：包装流，注入2秒延迟
+    delayedStream := &DelayedStream{Stream: stream, delay: 2 * time.Second}
+
+    // 验证超时逻辑
+    ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+    defer cancel()
+    _, err = delayedStream.Write([]byte("test latency"))
+    assert.ErrorContains(t, err, "deadline exceeded")
+}
+
+// 场景4: 模拟协议协商失败
+func TestFault_ProtocolNegotiationFailed(t *testing.T) {
+    hostA, hostB, cleanup := setupTwoNodes(t)
+    defer cleanup()
+
+    validProtocol := "/valid/1.0.0"
+    hostB.SetStreamHandler(validProtocol, func(stream network.Stream) {
+        defer stream.Close()
+    })
+
+    // 故障注入：使用不存在的协议ID
+    invalidProtocol := "/invalid/1.0.0"
+    stream, err := hostA.NewStream(context.Background(), hostB.ID(), invalidProtocol)
+
+    assert.Error(t, err)
+    assert.Nil(t, stream)
+    assert.ErrorContains(t, err, "protocol not supported")
+}
+
+// 场景5: 模拟节点突然下线
+func TestFault_NodeCrash(t *testing.T) {
+    hostA, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+    assert.NoError(t, err)
+    defer hostA.Close()
+
+    hostB, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+    assert.NoError(t, err)
+
+    err = hostA.Connect(context.Background(), peer.AddrInfo{ID: hostB.ID(), Addrs: hostB.Addrs()})
+    assert.NoError(t, err)
+    assert.True(t, hostA.Network().Connectedness(hostB.ID()) == network.Connected)
+
+    // 故障注入：模拟节点B崩溃
+    _ = hostB.Close()
+
+    // 验证节点A感知到节点B下线
+    time.Sleep(500 * time.Millisecond)
+    assert.True(t, hostA.Network().Connectedness(hostB.ID()) == network.NotConnected)
+}
+```
+
+---
+
+### 8.2 分布式一致性验证方案
 
 **确定方案**: 三层验证架构（核心层 + 调试层 + 排查层）
 
@@ -440,6 +619,34 @@ nexkv-e2e log-query --node node-1 --event data_update
 | **时序容错** | 设置 30s 收敛等待时间后再校验 |
 | **日志粒度** | 仅核心操作（更新/同步/冲突）打日志 |
 
+**使用场景**:
+
+| 场景 | 操作方式 |
+|------|---------|
+| 开发调试 | CLI 工具手动校验 |
+| 自动化测试 | 测试用例中调用 VerifyConsistency |
+| 生产监控 | 定时执行验证组件，失败告警 |
+| 异常排查 | CLI 确认范围 → 日志分析定位根因 |
+| 合规审计 | 留存验证报告 + 日志文件 |
+
+---
+
+## 9. 待确认问题（修订版）
+
+### ✅ 已确认
+
+1. **Phase 2.5 独立性**: ✅ **确认为独立阶段**
+   - 理由：便于单独评审和验收，测试目标明确
+
+2. **网络控制实现**: ✅ **使用 libp2p 原生 API**
+   - 无需 root 权限
+   - 支持 5 种核心故障类型
+
+3. **数据验证策略**: ✅ **三层验证架构**
+   - 核心层：DataVerifier 组件
+   - 调试层：CLI 工具
+   - 排查层：日志分析
+
 ### ⏳ 待确认
 
 4. **性能基准**: 性能测试的具体指标是什么？
@@ -450,87 +657,19 @@ nexkv-e2e log-query --node node-1 --event data_update
 
 ---
 
-### 9.1 网络控制实现方案（基于 libp2p）
-
-**确定方案**: 使用 libp2p 原生 API 进行故障注入，无需 root 权限。
-
-**核心故障场景**:
-
-| 场景 | 实现方式 | 代码位置 |
-|------|---------|---------|
-| **连接断开** | `conn.Close()` | `network.go` |
-| **流关闭** | `stream.Close()` | `network.go` |
-| **流延迟** | 包装 `Stream` 注入延迟 | `network.go` |
-| **协议协商失败** | 使用不存在的协议 ID | `network.go` |
-| **节点下线** | `host.Close()` | `daemon.go` |
-| **NAT 穿透失败** | `libp2p.NoNatPortMap()` | `config.go` |
-
-**故障注入器设计**:
-
-```go
-// Libp2pFaultInjector libp2p 故障注入器
-type Libp2pFaultInjector struct {
-    host    libp2p.Host
-    enabled bool
-}
-
-// 故障类型
-type FaultType int
-
-const (
-    FaultConnClose  FaultType = iota // 连接关闭
-    FaultStreamClose                  // 流关闭
-    FaultStreamLatency                // 流延迟
-    FaultProtocolNegotiationFailed   // 协议协商失败
-    FaultNodeCrash                    // 节点崩溃
-)
-
-// InjectFault 注入故障
-func (fi *Libp2pFaultInjector) InjectFault(
-    faultType FaultType,
-    target peer.ID,
-    params ...interface{},
-) error
-```
-
-**使用示例**:
-
-```go
-// E2E 测试中使用故障注入器
-func TestNetworkPartition(t *testing.T) {
-    cluster := framework.NewTestCluster(3)
-    cluster.Start(ctx)
-    defer cluster.Stop()
-
-    // 获取节点 A 的故障注入器
-    injector := cluster.Nodes[0].FaultInjector
-    injector.Enable()
-
-    // 注入连接关闭故障（断开与节点 B 的连接）
-    err := injector.InjectFault(
-        framework.FaultConnClose,
-        cluster.Nodes[1].PeerID,
-    )
-    require.NoError(t, err)
-
-    // 验证集群行为
-    // ...
-}
-```
-
----
-
-## 9. 变更记录
+## 10. 变更记录
 
 | 版本 | 日期 | 变更内容 |
 |------|------|---------|
 | v1.0 | 2026-02-13 | 初始版本 |
 | v1.1 | 2026-02-13 | 根据架构评审意见修订<br/>- 新增 Phase 2.5 详细测试用例<br/>- 新增 4 个框架组件<br/>- 细化 P0 条件和验收标准<br/>- 扩展实施计划 |
+| v1.2 | 2026-02-13 | 确定技术方案<br/>- Phase 2.5 确认为独立阶段<br/>- 网络控制使用 libp2p API<br/>- 数据验证采用三层架构<br/>- 新增详细代码示例 |
 
 ---
 
-**文档版本**: v1.1
+**文档版本**: v1.2
 **创建日期**: 2026-02-13
 **修订日期**: 2026-02-13
 **创建者**: 🤖 AI 核心开发
 **状态**: ⏳ 待架构师评审
+

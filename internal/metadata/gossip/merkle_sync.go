@@ -46,6 +46,7 @@ const (
 //   - 增量传输：只传输变化的数据
 type MerkleGossipSync struct {
 	merkle      *kvstore.NamespacedMerkleTree
+	metadataKV  *kvstore.MetadataKV // 元数据 KV 存储（用于增量 Key 检测）
 	transport   transport.Transport // libp2p 传输层
 	localNodeID string              // 本地节点 ID
 	mu          sync.RWMutex
@@ -78,11 +79,11 @@ func NewMerkleGossipSync(
 	localNodeID string,
 	peerSelector PeerSelector,
 ) *MerkleGossipSync {
-	_ = metadataKV // TODO: 待实现增量 Key 检测逻辑时使用
 	ctx, cancel := context.WithCancel(context.Background())
 
 	sync := &MerkleGossipSync{
 		merkle:         merkle,
+		metadataKV:     metadataKV,
 		transport:      transportLayer,
 		localNodeID:    localNodeID,
 		gossipInterval: 10 * time.Second, // 默认 10 秒
@@ -418,6 +419,14 @@ func (s *MerkleGossipSync) sendDiffResponse(
 	return nil
 }
 
+// SetGossipInterval 设置 Gossip 周期（用于测试）
+func (s *MerkleGossipSync) SetGossipInterval(interval time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gossipInterval = interval
+	logging.WithField("gossip_interval", interval).Info("Gossip 周期已更新")
+}
+
 // GetStats 获取统计信息
 func (s *MerkleGossipSync) GetStats() map[string]interface{} {
 	s.mu.RLock()
@@ -427,6 +436,7 @@ func (s *MerkleGossipSync) GetStats() map[string]interface{} {
 		"sync_count":      s.syncCount,
 		"diff_detected":   s.diffDetected,
 		"bandwidth_saved": s.bandwidthSaved,
+		"peer_count":      len(s.knownPeers),
 		"gossip_interval": s.gossipInterval.String(),
 		"gossip_timeout":  s.gossipTimeout.String(),
 	}
@@ -572,14 +582,18 @@ func (s *MerkleGossipSync) buildDiffResponse(
 	}
 
 	// 对每个差异的 Namespace，获取本地 Keys
-	// TODO: 从 MetadataKV 查询该 Namespace 下实际变化的 Keys
-	// 当前实现：返回空列表，待实现增量 Key 检测逻辑
-	// 生产环境中需要：
-	//   1. 实现 MetadataKV 的 GetKeysInNamespace(ns string) ([]string, error) 方法
-	//   2. 调用该方法获取实际变化的 Keys
-	//   3. 只发送变化的 Keys，而非全部 Keys
+	// 使用 MetadataKV.ListPrefix 获取该 Namespace 下的所有 Keys
+	// 注意：当前实现获取全部 Keys，未来可优化为只获取变化的 Keys
 	for ns := range diffNamespaces {
-		response.DiffNamespaces[ns] = []string{} // 空：待实现
+		// 使用空字符串前缀获取 Namespace 下的所有 Keys
+		keys, err := s.metadataKV.ListPrefix(s.ctx, ns, "")
+		if err != nil {
+			logging.WithField("error", err).WithField("namespace", ns).Error("获取 Namespace Keys 失败")
+			// 发送空列表作为降级处理
+			response.DiffNamespaces[ns] = []string{}
+			continue
+		}
+		response.DiffNamespaces[ns] = keys
 	}
 
 	// 转换为可序列化的 map

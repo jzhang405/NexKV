@@ -104,12 +104,22 @@ test/e2e/
 
 **新增组件说明**:
 
-| 组件 | 职责 | 优先级 |
-|------|------|--------|
-| `network.go` | 网络分区、延迟、丢包模拟 | P0 |
-| `metrics.go` | CPU、内存、网络指标采集 | P1 |
-| `log_analyzer.go` | 日志错误、警告分析 | P1 |
-| `data_verifier.go` | 数据一致性验证 | P0 |
+| 组件 | 职责 | 优先级 | 实现方案 |
+|------|------|--------|---------|
+| `network.go` | 基于 libp2p 的故障注入 | P0 | Libp2pFaultInjector |
+| `metrics.go` | CPU、内存、网络指标采集 | P1 | 待定 |
+| `log_analyzer.go` | 日志错误、警告分析 | P1 | 待定 |
+| `data_verifier.go` | 数据一致性验证 | P0 | 待定 |
+
+**Libp2pFaultInjector 核心能力**:
+
+| 故障类型 | 方法 | 验证目标 |
+|---------|------|---------|
+| 连接关闭 | `InjectConnClose(peerID)` | 重连机制 |
+| 流关闭 | `InjectStreamClose(stream)` | 通信容错 |
+| 流延迟 | `InjectStreamLatency(delay)` | 超时处理 |
+| 协议失败 | `InjectProtocolFailure(protocolID)` | 协议兼容性 |
+| 节点崩溃 | `InjectNodeCrash()` | 故障感知 |
 
 ---
 
@@ -259,10 +269,8 @@ test/e2e/
 
 ### ⏳ 待确认
 
-2. **网络控制实现**: 使用 tc/iptables 还是更高层的抽象？
-   - 选项 A: 使用 tc 命令（需要 root 权限）
-   - 选项 B: 使用 Go 库（如 `vishvananda/netlink`）
-   - 选项 C: 应用层模拟（在 RPC 层添加延迟）
+2. ~~**网络控制实现**: 使用 tc/iptables 还是更高层的抽象？~~
+   - ✅ **已确定**: 使用 **libp2p 原生 API** 进行故障注入
 
 3. **数据验证策略**: 如何验证分布式一致性？
    - 选项 A: 使用 DataVerifier 组件
@@ -274,6 +282,76 @@ test/e2e/
 
 5. **实施周期**: 4 周是否可接受？是否需要拆分为多个 PR？
    - 建议：保持单个 PR，但分阶段提交
+
+---
+
+### 9.1 网络控制实现方案（基于 libp2p）
+
+**确定方案**: 使用 libp2p 原生 API 进行故障注入，无需 root 权限。
+
+**核心故障场景**:
+
+| 场景 | 实现方式 | 代码位置 |
+|------|---------|---------|
+| **连接断开** | `conn.Close()` | `network.go` |
+| **流关闭** | `stream.Close()` | `network.go` |
+| **流延迟** | 包装 `Stream` 注入延迟 | `network.go` |
+| **协议协商失败** | 使用不存在的协议 ID | `network.go` |
+| **节点下线** | `host.Close()` | `daemon.go` |
+| **NAT 穿透失败** | `libp2p.NoNatPortMap()` | `config.go` |
+
+**故障注入器设计**:
+
+```go
+// Libp2pFaultInjector libp2p 故障注入器
+type Libp2pFaultInjector struct {
+    host    libp2p.Host
+    enabled bool
+}
+
+// 故障类型
+type FaultType int
+
+const (
+    FaultConnClose  FaultType = iota // 连接关闭
+    FaultStreamClose                  // 流关闭
+    FaultStreamLatency                // 流延迟
+    FaultProtocolNegotiationFailed   // 协议协商失败
+    FaultNodeCrash                    // 节点崩溃
+)
+
+// InjectFault 注入故障
+func (fi *Libp2pFaultInjector) InjectFault(
+    faultType FaultType,
+    target peer.ID,
+    params ...interface{},
+) error
+```
+
+**使用示例**:
+
+```go
+// E2E 测试中使用故障注入器
+func TestNetworkPartition(t *testing.T) {
+    cluster := framework.NewTestCluster(3)
+    cluster.Start(ctx)
+    defer cluster.Stop()
+
+    // 获取节点 A 的故障注入器
+    injector := cluster.Nodes[0].FaultInjector
+    injector.Enable()
+
+    // 注入连接关闭故障（断开与节点 B 的连接）
+    err := injector.InjectFault(
+        framework.FaultConnClose,
+        cluster.Nodes[1].PeerID,
+    )
+    require.NoError(t, err)
+
+    // 验证集群行为
+    // ...
+}
+```
 
 ---
 

@@ -14,7 +14,6 @@ import (
 	"github.com/jzhang405/NexKV/internal/metadata/api"
 	"github.com/jzhang405/NexKV/internal/metadata/kvstore"
 	"github.com/jzhang405/NexKV/internal/metadata/types"
-	metadatarpc "github.com/jzhang405/NexKV/internal/rpc"
 	store "github.com/jzhang405/NexKV/internal/wal"
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -387,7 +386,7 @@ func (tc *TreeCoordinator) gossipNodeMetadata(ns, key string, version uint64) {
 	}
 
 	// 构造元数据变更通知
-	notification := metadatarpc.NewMetadataChangeNotification(ns, key, "put", version)
+	notification := types.NewMetadataChangeNotification(ns, key, "put", version)
 
 	// 序列化通知
 	reqBody, err := msgpack.Marshal(notification)
@@ -470,7 +469,7 @@ func (tc *TreeCoordinator) quorumMetadataChange(ns, key string, version uint64) 
 	}).Debug("等待 Quorum 确认")
 
 	// 构造元数据变更通知
-	notification := metadatarpc.NewMetadataChangeNotification(ns, key, "put", version)
+	notification := types.NewMetadataChangeNotification(ns, key, "put", version)
 	reqBody, err := msgpack.Marshal(notification)
 	if err != nil {
 		logging.WithField("error", err).Error("序列化元数据变更通知失败")
@@ -563,9 +562,9 @@ func (tc *TreeCoordinator) quorumMetadataChange(ns, key string, version uint64) 
 //nolint:unused // 阶段 3 集成时使用
 func (tc *TreeCoordinator) HandleMetadataSyncRequest(ctx context.Context, req []byte) ([]byte, error) {
 	// 解析请求
-	var syncReq metadatarpc.MetadataSyncRequest
+	var syncReq types.MetadataSyncRequest
 	if err := msgpack.Unmarshal(req, &syncReq); err != nil {
-		return nil, metadatarpc.NewRPCError(metadatarpc.ErrCodeBadRequest, "invalid metadata sync request")
+		return nil, fmt.Errorf("invalid metadata sync request: %w", err)
 	}
 
 	logging.WithFields(map[string]any{
@@ -575,7 +574,7 @@ func (tc *TreeCoordinator) HandleMetadataSyncRequest(ctx context.Context, req []
 	}).Debug("收到元数据同步请求")
 
 	// 构造响应
-	syncResp := &metadatarpc.MetadataSyncResponse{
+	syncResp := &types.MetadataSyncResponse{
 		Namespace: syncReq.Namespace,
 		Metadata:  make(map[string][]byte),
 		Version:   syncReq.Version,
@@ -607,9 +606,9 @@ func (tc *TreeCoordinator) HandleMetadataSyncRequest(ctx context.Context, req []
 //nolint:unused // 阶段 3 集成时使用
 func (tc *TreeCoordinator) HandleMetadataChangeNotification(ctx context.Context, req []byte) ([]byte, error) {
 	// 解析通知
-	var notification metadatarpc.MetadataChangeNotification
+	var notification types.MetadataChangeNotification
 	if err := msgpack.Unmarshal(req, &notification); err != nil {
-		return nil, metadatarpc.NewRPCError(metadatarpc.ErrCodeBadRequest, "invalid metadata change notification")
+		return nil, fmt.Errorf("invalid metadata change notification: %w", err)
 	}
 
 	logging.WithFields(map[string]any{
@@ -623,7 +622,7 @@ func (tc *TreeCoordinator) HandleMetadataChangeNotification(ctx context.Context,
 	go tc.fetchMetadataAfterNotification(notification.Namespace, notification.Key)
 
 	// 返回成功响应
-	resp := &metadatarpc.MetadataSyncResponse{
+	resp := &types.MetadataSyncResponse{
 		Namespace: notification.Namespace,
 		Metadata:  make(map[string][]byte),
 		Version:   notification.Version,
@@ -650,7 +649,12 @@ func (tc *TreeCoordinator) fetchMetadataAfterNotification(ns, key string) {
 	targetNode := targetNodes[0]
 
 	// 构造同步请求
-	syncReq := metadatarpc.NewMetadataSyncRequest(ns, []string{key}, 0)
+	syncReq := &types.MetadataSyncRequest{
+		Namespace: ns,
+		Keys:      []string{key},
+		Version:   0,
+		Timestamp: time.Now().UnixNano(),
+	}
 	reqBody, err := msgpack.Marshal(syncReq)
 	if err != nil {
 		logging.WithField("error", err).Error("序列化元数据同步请求失败")
@@ -674,7 +678,7 @@ func (tc *TreeCoordinator) fetchMetadataAfterNotification(ns, key string) {
 	}
 
 	// 解析响应
-	var syncResp metadatarpc.MetadataSyncResponse
+	var syncResp types.MetadataSyncResponse
 	if err := msgpack.Unmarshal(respBody, &syncResp); err != nil {
 		logging.WithField("error", err).Error("解析元数据同步响应失败")
 		return
@@ -993,7 +997,7 @@ func (tc *TreeCoordinator) gossipMetadataChangeWithRetry(ns, key string, version
 	}
 
 	// 构造元数据变更通知
-	notification := metadatarpc.NewMetadataChangeNotification(ns, key, "put", version)
+	notification := types.NewMetadataChangeNotification(ns, key, "put", version)
 	reqBody, err := msgpack.Marshal(notification)
 	if err != nil {
 		logging.WithField("error", err).Error("序列化元数据变更通知失败")
@@ -1099,7 +1103,7 @@ func (tc *TreeCoordinator) quorumMetadataChangeOnce(ns, key string, version uint
 	quorumThreshold := totalNodes/2 + 1 // 简单多数派
 
 	// 构造元数据变更通知
-	notification := metadatarpc.NewMetadataChangeNotification(ns, key, "put", version)
+	notification := types.NewMetadataChangeNotification(ns, key, "put", version)
 	reqBody, err := msgpack.Marshal(notification)
 	if err != nil {
 		return &QuorumResult{

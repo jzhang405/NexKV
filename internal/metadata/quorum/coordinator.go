@@ -39,7 +39,26 @@ func NewQuorumCoordinator(
 	return &QuorumCoordinator{
 		participants: participants,
 		quorum:       calculateQuorum(len(participants)),
-		timeout:      3 * time.Second,
+		timeout:      5 * time.Second, // 默认 5 秒超时（Phase 4: P4 超时配置化）
+		metadataKV:   metadataKV,
+	}
+}
+
+// NewQuorumCoordinatorWithOptions 使用选项创建 Quorum 协调器
+func NewQuorumCoordinatorWithOptions(
+	participants []string,
+	metadataKV *kvstore.MetadataKV,
+	opts *PutOptions,
+) *QuorumCoordinator {
+	timeout := 5 * time.Second // 默认 5 秒
+	if opts != nil && opts.Timeout > 0 {
+		timeout = time.Duration(opts.Timeout) * time.Millisecond
+	}
+
+	return &QuorumCoordinator{
+		participants: participants,
+		quorum:       calculateQuorum(len(participants)),
+		timeout:      timeout,
 		metadataKV:   metadataKV,
 	}
 }
@@ -51,6 +70,19 @@ func (q *QuorumCoordinator) PutWithQuorum(
 	value any,
 	opts *PutOptions,
 ) error {
+	// 应用选项（使用默认值）
+	if opts == nil {
+		opts = DefaultPutOptions()
+	}
+
+	// 创建带超时的上下文（Phase 4: P4 超时配置化）
+	timeout := q.timeout
+	if opts.Timeout > 0 {
+		timeout = time.Duration(opts.Timeout) * time.Millisecond
+	}
+	quorumCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -59,9 +91,15 @@ func (q *QuorumCoordinator) PutWithQuorum(
 		"key":          key,
 		"participants": len(q.participants),
 		"quorum":       q.quorum,
+		"timeout":      timeout.String(),
 	}).Info("Quorum 写入开始")
 
-	if err := q.metadataKV.Put(ctx, ns, key, value); err != nil {
+	// 检查上下文是否已取消
+	if err := quorumCtx.Err(); err != nil {
+		return fmt.Errorf("quorum 操作被取消: %w", err)
+	}
+
+	if err := q.metadataKV.Put(quorumCtx, ns, key, value); err != nil {
 		return fmt.Errorf("本地写入失败: %w", err)
 	}
 
@@ -110,6 +148,22 @@ func (q *QuorumCoordinator) GetParticipants() []string {
 	return q.participants
 }
 
+// GetTimeout 获取超时时间
+func (q *QuorumCoordinator) GetTimeout() time.Duration {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return q.timeout
+}
+
+// SetTimeout 设置超时时间（Phase 4: P4 超时配置化）
+func (q *QuorumCoordinator) SetTimeout(timeout time.Duration) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	q.timeout = timeout
+	logging.WithField("timeout", timeout.String()).Info("Quorum 超时已更新")
+}
+
 // SetParticipants 设置参与者列表
 func (q *QuorumCoordinator) SetParticipants(participants []string) {
 	q.mu.Lock()
@@ -120,6 +174,15 @@ func (q *QuorumCoordinator) SetParticipants(participants []string) {
 }
 
 // ==================== PutOptions ====================
+
+// DefaultPutOptions 返回默认的 Quorum 写入选项
+func DefaultPutOptions() *PutOptions {
+	return &PutOptions{
+		Timeout:          5000, // 5 秒（与 QuorumCoordinator 默认超时一致）
+		SkipMerkleUpdate: false,
+		Async:            false,
+	}
+}
 
 // PutOptions Quorum 写入选项
 type PutOptions struct {

@@ -210,7 +210,7 @@ type GossipPayload struct {
 	NamespaceHashes map[string]string `msgpack:"namespace_hashes,omitempty"` // Namespace -> Root Hash
 	RequestedData   []SyncRequest     `msgpack:"requested_data,omitempty"`   // 双向请求数据
 	// 消息去重字段（Phase 3: P3-1.3 消息去重）
-	MessageID     uint64            `msgpack:"message_id,omitempty"` // 消息唯一 ID（发送方生成，接收方用于去重）
+	MessageID uint64 `msgpack:"message_id,omitempty"` // 消息唯一 ID（发送方生成，接收方用于去重）
 }
 
 // SyncRequest 双向同步请求
@@ -228,7 +228,7 @@ type QuorumPayload struct {
 	Voter      string `msgpack:"voter,omitempty"`    // 投票节点
 	Decision   bool   `msgpack:"decision,omitempty"` // 决策结果
 
-	MessageID  uint64            `msgpack:"message_id,omitempty"` // 消息唯一 ID（发送方生成，接收方用于去重）
+	MessageID uint64 `msgpack:"message_id,omitempty"` // 消息唯一 ID（发送方生成，接收方用于去重）
 }
 
 // Operation 2PC 操作定义

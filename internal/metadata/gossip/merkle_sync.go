@@ -15,9 +15,9 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/config/logging"
 	"github.com/jzhang405/NexKV/internal/metadata/kvstore"
-	"golang.org/x/time/rate"
 	"github.com/jzhang405/NexKV/internal/transport"
 	"github.com/vmihailenco/msgpack/v5"
+	"golang.org/x/time/rate"
 )
 
 // ==================== 常量定义 ====================
@@ -58,12 +58,12 @@ type MerkleGossipSync struct {
 
 	// 已知的 peer 列表（用于随机选择）
 	knownPeers map[string]struct{}
-	
+
 	// 消息去重字段（Phase 3: P3-1.3 消息去重）
-	recentMessageIDs   []uint64    // 最近收到的消息 ID 缓存（用于去重）
-	recentMessageTimes []time.Time  // 消息 ID 对应的时间戳（用于过期清理）
-	messageIDMutex    sync.RWMutex // 消息 ID 缓存保护锁
-	rateLimiter       *rate.Limiter // 速率限制器（每秒最多处理 100 条消息）
+	recentMessageIDs   []uint64      // 最近收到的消息 ID 缓存（用于去重）
+	recentMessageTimes []time.Time   // 消息 ID 对应的时间戳（用于过期清理）
+	messageIDMutex     sync.RWMutex  // 消息 ID 缓存保护锁
+	rateLimiter        *rate.Limiter // 速率限制器（每秒最多处理 100 条消息）
 
 	// Peer 选择器
 	peerSelector PeerSelector
@@ -97,12 +97,12 @@ func NewMerkleGossipSync(
 		gossipTimeout:  5 * time.Second,  // 默认 5 秒
 		knownPeers:     make(map[string]struct{}),
 		// 消息去重字段（Phase 3: P3-1.3 消息去重）
-		recentMessageIDs:   make([]uint64, 0, 1000),    // 最近 1000 条消息 ID 缓存（用于去重）
-		recentMessageTimes: make([]time.Time, 0, 1000), // 消息时间戳缓存（用于过期清理）
-		messageIDMutex:    sync.RWMutex{},               // 消息 ID 缓存保护锁
-		rateLimiter:     rate.NewLimiter(rate.Every(time.Second), 100),  // 每秒最多处理 100 条消息
-		ctx:            ctx,
-		cancel:         cancel,
+		recentMessageIDs:   make([]uint64, 0, 1000),                       // 最近 1000 条消息 ID 缓存（用于去重）
+		recentMessageTimes: make([]time.Time, 0, 1000),                    // 消息时间戳缓存（用于过期清理）
+		messageIDMutex:     sync.RWMutex{},                                // 消息 ID 缓存保护锁
+		rateLimiter:        rate.NewLimiter(rate.Every(time.Second), 100), // 每秒最多处理 100 条消息
+		ctx:                ctx,
+		cancel:             cancel,
 	}
 
 	// 注册消息处理器（如果提供了 transport）
@@ -725,7 +725,7 @@ func BuildGossipPayload(
 		"namespace_hashes": namespaceHashes,
 		"full_sync":        fullSync,
 		"requested_data":   []map[string]string{}, // 双向同步请求数据
-		"message_id":      messageID,           // 消息唯一 ID
+		"message_id":       messageID,             // 消息唯一 ID
 	}
 }
 

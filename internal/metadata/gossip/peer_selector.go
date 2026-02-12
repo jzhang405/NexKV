@@ -8,14 +8,12 @@
 package gossip
 
 import (
-	"math/rand"
 	"sync"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/config/logging"
 )
 
-// ==================== PeerSelector 接口 ====================
 
 // PeerSelector Peer 选择器接口
 //
@@ -62,11 +60,11 @@ type PeerHealthMetrics struct {
 // NewPeerHealthMetrics 创建 Peer 健康度指标
 func NewPeerHealthMetrics() *PeerHealthMetrics {
 	return &PeerHealthMetrics{
-		latency:       make(map[string]time.Duration),
-		successRate:   make(map[string]float64),
-		load:          make(map[string]uint64),
-		lastSyncTime:  make(map[string]time.Time),
-		scores:        make(map[string]float64),
+		latency:      make(map[string]time.Duration),
+		successRate:  make(map[string]float64),
+		load:         make(map[string]uint64),
+		lastSyncTime: make(map[string]time.Time),
+		scores:       make(map[string]float64),
 	}
 }
 
@@ -100,23 +98,18 @@ func (p *PeerHealthMetrics) Update(peerID string, result *SyncResult) {
 
 // calculateScore 计算综合评分
 func (p *PeerHealthMetrics) calculateScore(peerID string) float64 {
-	if score, ok := p.scores[peerID]; ok {
-		return score
-	}
-
 	latency := p.getLatencyScore(peerID)
 	success := p.getSuccessRateScore(peerID)
 	load := p.getLoadScore(peerID)
 	freshness := p.getFreshnessScore(peerID)
 
-	// 加权平均
-	// 延迟 30% + 成功率 30% + 负载 20% + 新鲜度 20%
+	// 加权平均：延迟 30% + 成功率 30% + 负载 20% + 新鲜度 20%
 	score := latency*0.3 + success*0.3 + load*0.2 + freshness*0.2
 
 	logging.WithFields(map[string]interface{}{
-		"peer_id":  peerID,
+		"peer_id":   peerID,
 		"score":     score,
-		"latency":  latency,
+		"latency":   latency,
 		"success":   success,
 		"load":      load,
 		"freshness": freshness,
@@ -134,13 +127,13 @@ func (p *PeerHealthMetrics) getLatencyScore(peerID string) float64 {
 
 	ms := latency.Milliseconds()
 	switch {
-	case ms < 10:
+	case ms <= 10:
 		return 100.0
-	case ms < 50:
+	case ms <= 50:
 		return 80.0
-	case ms < 100:
+	case ms <= 100:
 		return 60.0
-	case ms < 500:
+	case ms <= 500:
 		return 40.0
 	default:
 		return 20.0
@@ -165,12 +158,12 @@ func (p *PeerHealthMetrics) getLoadScore(peerID string) float64 {
 		return 80.0 // 默认中等负载
 	}
 
-	// 0 = 100 分 (空闲), 10000+ = 0 分 (过载)
+	// 0-10000 分 (空闲), 10000+ = 0 分 (过载)
 	// 线性反转
 	if load >= 10000 {
 		return 0.0
 	}
-	return 100.0 - (float64(load) / 100.0 * 100)
+	return 100.0 - (float64(load) / 10000.0 * 100)
 }
 
 // getFreshnessScore 新鲜度评分（0-100）
@@ -181,17 +174,17 @@ func (p *PeerHealthMetrics) getFreshnessScore(peerID string) float64 {
 	}
 
 	// 根据最后同步时间计算新鲜度
-	// < 1 分钟 = 100 分
-	// < 5 分钟 = 80 分
-	// < 30 分钟 = 60 分
-	// >= 30 分钟 = 40 分
+	// <= 1 分钟 = 100 分
+	// <= 5 分钟 = 80 分
+	// <= 30 分钟 = 60 分
+	// > 30 分钟 = 40 分
 	elapsed := time.Since(lastSync)
 	switch {
-	case elapsed < 1*time.Minute:
+	case elapsed <= 1*time.Minute:
 		return 100.0
-	case elapsed < 5*time.Minute:
+	case elapsed <= 5*time.Minute:
 		return 80.0
-	case elapsed < 30*time.Minute:
+	case elapsed <= 30*time.Minute:
 		return 60.0
 	default:
 		return 40.0
@@ -219,12 +212,19 @@ func NewRandomPeerSelector() *RandomPeerSelector {
 	return &RandomPeerSelector{}
 }
 
-// Select 从候选 peer 中随机选择一个
+// Select 从候选 peer 中随机选择一个（使用密码学安全的随机数）
 func (r *RandomPeerSelector) Select(peers []string) string {
 	if len(peers) == 0 {
 		return ""
 	}
-	return peers[rand.Intn(len(peers))]
+
+	n, err := cryptoRandInt(int64(len(peers)))
+	if err != nil {
+		logging.WithField("error", err).Error("生成随机数失败，使用默认选择")
+		return peers[0]
+	}
+
+	return peers[n]
 }
 
 // Update 更新 peer 健康度（纯随机不需要健康度）
@@ -259,25 +259,47 @@ func (w *WeightedRandomPeerSelector) Select(peers []string) string {
 
 	// 计算总权重
 	totalWeight := 0.0
-	for _, peerID := range peers {
-		totalWeight += w.metrics.GetScore(peerID)
+	weights := make([]float64, len(peers))
+	for i, peerID := range peers {
+		weights[i] = w.metrics.GetScore(peerID)
+		totalWeight += weights[i]
 	}
 
+	// 边界情况：如果总权重为 0，使用纯随机选择
+	if totalWeight == 0 {
+		n, err := cryptoRandInt(int64(len(peers)))
+		if err != nil {
+			return peers[0]
+		}
+		return peers[n]
+	}
+
+	// 生成 [0, totalWeight) 范围内的随机数
+	// 使用 1000 倍精度避免整数截断
+	randMax := int64(totalWeight * 1000)
+	randInt, err := cryptoRandInt(randMax)
+	if err != nil {
+		logging.WithField("error", err).Error("生成随机数失败，使用默认选择")
+		return peers[0]
+	}
+
+	// 归一化到 [0, totalWeight)
+	r := float64(randInt) / 1000.0
+
 	// 轮盘赌选择
-	r := rand.Float64() * totalWeight
-	for _, peerID := range peers {
-		r -= w.metrics.GetScore(peerID)
+	for i, peerID := range peers {
+		r -= weights[i]
 		if r <= 0 {
 			logging.WithFields(map[string]interface{}{
-				"peer_id":     peerID,
-				"score":       w.metrics.GetScore(peerID),
-				"total_weight": totalWeight,
+				"peer_id": peerID,
+				"score":   weights[i],
 			}).Debug("加权随机选择 peer")
 			return peerID
 		}
 	}
 
-	return ""
+	// 由于浮点数精度问题，可能循环结束仍未返回，返回最后一个
+	return peers[len(peers)-1]
 }
 
 // Update 更新 peer 健康度指标
@@ -327,9 +349,9 @@ func (r *RoundRobinPeerSelector) Select(peers []string) string {
 	r.index = (r.index + 1) % len(r.peers)
 
 	logging.WithFields(map[string]interface{}{
-		"peer_id":      peer,
-		"index":        r.index,
-		"total_peers":  len(r.peers),
+		"peer_id":     peer,
+		"index":       r.index,
+		"total_peers": len(r.peers),
 	}).Debug("轮询选择 peer")
 
 	return peer
@@ -340,15 +362,19 @@ func equalPeers(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	aMap := make(map[string]bool)
+
+	// 使用 map 检查元素是否相等
+	seen := make(map[string]bool, len(a))
 	for _, peer := range a {
-		aMap[peer] = true
+		seen[peer] = true
 	}
+
 	for _, peer := range b {
-		if !aMap[peer] {
+		if !seen[peer] {
 			return false
 		}
 	}
+
 	return true
 }
 

@@ -68,8 +68,9 @@ func NewPeerHealthMetrics() *PeerHealthMetrics {
 }
 
 // Update 更新 peer 指标
+// P2-8 修复：基于实际测量更新延迟和负载
 func (p *PeerHealthMetrics) Update(peerID string, result *SyncResult) {
-	if result == nil || !result.IsSynced() {
+	if result == nil {
 		return
 	}
 
@@ -79,16 +80,39 @@ func (p *PeerHealthMetrics) Update(peerID string, result *SyncResult) {
 	// 更新最后同步时间
 	p.lastSyncTime[peerID] = time.Now()
 
-	// TODO: 实际测量延迟和负载
-	// 当前使用默认值
-	if _, exists := p.latency[peerID]; !exists {
-		p.latency[peerID] = 50 * time.Millisecond // 默认 50ms
-	}
-	if _, exists := p.successRate[peerID]; !exists {
-		p.successRate[peerID] = 0.8 // 默认 80% 成功率
-	}
-	if _, exists := p.load[peerID]; !exists {
-		p.load[peerID] = 1000 // 默认负载 1000
+	if result.IsSynced() {
+		// P2-8: 使用实际测量的延迟
+		if result.Latency > 0 {
+			p.latency[peerID] = result.Latency
+		} else if _, exists := p.latency[peerID]; !exists {
+			p.latency[peerID] = 50 * time.Millisecond // 默认 50ms
+		}
+
+		// P2-8: 基于同步的 Key 数量估算负载
+		keyCount := result.GetKeysReceivedCount() + result.GetKeysSentCount()
+		if keyCount > 0 {
+			// 估算负载: Key 数量 * 系数 (10)
+			estimatedLoad := uint64(keyCount * 10)
+			p.load[peerID] = estimatedLoad
+		} else if _, exists := p.load[peerID]; !exists {
+			p.load[peerID] = 1000 // 默认负载 1000
+		}
+
+		// 更新成功率（同步成功）
+		// 使用指数移动平均平滑成功率
+		if currentRate, exists := p.successRate[peerID]; exists {
+			// EMA: newRate = 0.9 * oldRate + 0.1 * 1.0
+			p.successRate[peerID] = currentRate*0.9 + 0.1*1.0
+		} else {
+			p.successRate[peerID] = 0.8 // 初始 80% 成功率
+		}
+	} else {
+		// 同步失败，降低成功率
+		if currentRate, exists := p.successRate[peerID]; exists {
+			// EMA: newRate = 0.9 * oldRate + 0.1 * 0.0
+			p.successRate[peerID] = currentRate * 0.9
+		}
+		// 不更新延迟和负载（保留上次测量值）
 	}
 
 	// 重新计算评分

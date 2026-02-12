@@ -3,7 +3,6 @@
 // 测试覆盖 PR-033 新增的方法和功能：
 // - NodeAddress.Validate() - 端口验证
 // - NodeAddress.GetTCPAddr() - TCP 地址组装
-// - NodeAddress.GetUDPAddr() - UDP 地址组装
 // - types.NewNodeAddress() - 工厂方法
 // - Node.Validate() - 节点验证
 // - Node 辅助方法 - IsLeaf, IsParent, IsParentStandby, IsOnline
@@ -36,7 +35,6 @@ func Test_NodeAddress_Validate_TCPRange(t *testing.T) {
 			addr: types.NodeAddress{
 				Host:    "192.168.1.100",
 				TCPPort: 1023,
-				UDPPort: 1024,
 			},
 			wantErr: true,
 			errMsg:  "TCPPort must be in range",
@@ -46,7 +44,6 @@ func Test_NodeAddress_Validate_TCPRange(t *testing.T) {
 			addr: types.NodeAddress{
 				Host:    "192.168.1.100",
 				TCPPort: 65535,
-				UDPPort: 0,
 			},
 			wantErr: true,
 			errMsg:  "TCPPort must be in range",
@@ -56,7 +53,6 @@ func Test_NodeAddress_Validate_TCPRange(t *testing.T) {
 			addr: types.NodeAddress{
 				Host:    "192.168.1.100",
 				TCPPort: 1024,
-				UDPPort: 0,
 			},
 			wantErr: false,
 		},
@@ -65,7 +61,6 @@ func Test_NodeAddress_Validate_TCPRange(t *testing.T) {
 			addr: types.NodeAddress{
 				Host:    "192.168.1.100",
 				TCPPort: 65534,
-				UDPPort: 0,
 			},
 			wantErr: false,
 		},
@@ -74,7 +69,6 @@ func Test_NodeAddress_Validate_TCPRange(t *testing.T) {
 			addr: types.NodeAddress{
 				Host:    "192.168.1.100",
 				TCPPort: 9000,
-				UDPPort: 0,
 			},
 			wantErr: false,
 		},
@@ -93,92 +87,11 @@ func Test_NodeAddress_Validate_TCPRange(t *testing.T) {
 	}
 }
 
-// Test_NodeAddress_Validate_UDPRule UT-NODE-003: NodeAddress Validate - UDP 规则
-func Test_NodeAddress_Validate_UDPRule(t *testing.T) {
-	tests := []struct {
-		name    string
-		addr    types.NodeAddress
-		wantErr bool
-		errMsg  string
-	}{
-		{
-			name: "错误 - UDP != TCP + 1",
-			addr: types.NodeAddress{
-				Host:    "192.168.1.100",
-				TCPPort: 9000,
-				UDPPort: 9002, // 应该是 9001
-			},
-			wantErr: true,
-			errMsg:  "UDPPort must equal TCPPort + 1",
-		},
-		{
-			name: "错误 - UDP 端口过小",
-			addr: types.NodeAddress{
-				Host:    "192.168.1.100",
-				TCPPort: 9000,
-				UDPPort: 1023,
-			},
-			wantErr: true,
-			errMsg:  "UDPPort must be in range",
-		},
-		{
-			name: "正常 - UDP = TCP + 1",
-			addr: types.NodeAddress{
-				Host:    "192.168.1.100",
-				TCPPort: 9000,
-				UDPPort: 9001,
-			},
-			wantErr: false,
-		},
-		{
-			name: "正常 - 仅设置 TCP 端口",
-			addr: types.NodeAddress{
-				Host:    "192.168.1.100",
-				TCPPort: 9000,
-				UDPPort: 0, // 未设置
-			},
-			wantErr: false,
-		},
-		{
-			name: "正常 - 仅设置 UDP 端口",
-			addr: types.NodeAddress{
-				Host:    "192.168.1.100",
-				TCPPort: 0, // 未设置
-				UDPPort: 9001,
-			},
-			wantErr: false,
-		},
-		{
-			name: "错误 - 两个端口都未设置",
-			addr: types.NodeAddress{
-				Host:    "192.168.1.100",
-				TCPPort: 0,
-				UDPPort: 0,
-			},
-			wantErr: true,
-			errMsg:  "at least one port",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.addr.Validate()
-			if tt.wantErr {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), tt.errMsg)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
-// Test_NodeAddress_Validate_Normal UT-NODE-004: NodeAddress Validate - 正常
+// Test_NodeAddress_Validate_Normal UT-NODE-003: NodeAddress Validate - 正常
 func Test_NodeAddress_Validate_Normal(t *testing.T) {
 	addr := types.NodeAddress{
 		Host:    "192.168.1.100",
 		TCPPort: 9000,
-		UDPPort: 9001,
 	}
 
 	err := addr.Validate()
@@ -190,7 +103,6 @@ func Test_NodeAddress_GetTCPAddr_WithHost(t *testing.T) {
 	addr := types.NodeAddress{
 		Host:    "192.168.1.100",
 		TCPPort: 9000,
-		UDPPort: 9001,
 	}
 
 	tcpAddr := addr.GetTCPAddr()
@@ -202,35 +114,10 @@ func Test_NodeAddress_GetTCPAddr_WithoutHost(t *testing.T) {
 	addr := types.NodeAddress{
 		Host:    "",
 		TCPPort: 9000,
-		UDPPort: 0,
 	}
 
 	tcpAddr := addr.GetTCPAddr()
 	assert.Equal(t, ":9000", tcpAddr)
-}
-
-// Test_NodeAddress_GetUDPAddr_WithHost UT-NODE-007: GetUDPAddr - 有 Host
-func Test_NodeAddress_GetUDPAddr_WithHost(t *testing.T) {
-	addr := types.NodeAddress{
-		Host:    "127.0.0.1",
-		TCPPort: 9000,
-		UDPPort: 9001,
-	}
-
-	udpAddr := addr.GetUDPAddr()
-	assert.Equal(t, "127.0.0.1:9001", udpAddr)
-}
-
-// Test_NodeAddress_GetUDPAddr_WithoutHost UT-NODE-006: GetUDPAddr - 无 Host
-func Test_NodeAddress_GetUDPAddr_WithoutHost(t *testing.T) {
-	addr := types.NodeAddress{
-		Host:    "",
-		TCPPort: 0,
-		UDPPort: 9001,
-	}
-
-	udpAddr := addr.GetUDPAddr()
-	assert.Equal(t, ":9001", udpAddr)
 }
 
 // ============================================================================
@@ -245,7 +132,6 @@ func Test_Node_GetTCPAddr(t *testing.T) {
 		Addr: types.NodeAddress{
 			Host:    "192.168.1.100",
 			TCPPort: 9000,
-			UDPPort: 9001,
 		},
 		Role: Leaf,
 	}
@@ -254,24 +140,6 @@ func Test_Node_GetTCPAddr(t *testing.T) {
 	assert.Equal(t, "192.168.1.100:9000", tcpAddr)
 }
 
-// Test_Node_GetUDPAddr 测试 Node.GetUDPAddr()
-func Test_Node_GetUDPAddr(t *testing.T) {
-	node := &Node{
-		NodeID: "node-leaf-1",
-		HostID: "server-1",
-		Addr: types.NodeAddress{
-			Host:    "192.168.1.100",
-			TCPPort: 9000,
-			UDPPort: 9001,
-		},
-		Role: Leaf,
-	}
-
-	udpAddr := node.GetUDPAddr()
-	assert.Equal(t, "192.168.1.100:9001", udpAddr)
-}
-
-// Test_Node_Validate 测试 Node.Validate()
 func Test_Node_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -287,7 +155,6 @@ func Test_Node_Validate(t *testing.T) {
 				Addr: types.NodeAddress{
 					Host:    "192.168.1.100",
 					TCPPort: 9000,
-					UDPPort: 9001,
 				},
 				Role: Leaf,
 			},
@@ -301,7 +168,6 @@ func Test_Node_Validate(t *testing.T) {
 				Addr: types.NodeAddress{
 					Host:    "192.168.1.100",
 					TCPPort: 9000,
-					UDPPort: 9001,
 				},
 				Role: Leaf,
 			},
@@ -316,7 +182,6 @@ func Test_Node_Validate(t *testing.T) {
 				Addr: types.NodeAddress{
 					Host:    "192.168.1.100",
 					TCPPort: 9000,
-					UDPPort: 9001,
 				},
 				Role: Leaf,
 			},
@@ -331,7 +196,6 @@ func Test_Node_Validate(t *testing.T) {
 				Addr: types.NodeAddress{
 					Host:    "192.168.1.100",
 					TCPPort: 1023, // 无效端口
-					UDPPort: 0,
 				},
 				Role: Leaf,
 			},
@@ -346,7 +210,6 @@ func Test_Node_Validate(t *testing.T) {
 				Addr: types.NodeAddress{
 					Host:    "192.168.1.100",
 					TCPPort: 9000,
-					UDPPort: 9001,
 				},
 				Role: NodeRole(99), // 无效角色
 			},
@@ -410,7 +273,6 @@ func Test_NewNodeAddress(t *testing.T) {
 		tcpPort int
 		wantErr bool
 		wantTCP int
-		wantUDP int
 		errMsg  string
 	}{
 		{
@@ -419,7 +281,6 @@ func Test_NewNodeAddress(t *testing.T) {
 			tcpPort: 9000,
 			wantErr: false,
 			wantTCP: 9000,
-			wantUDP: 9001,
 		},
 		{
 			name:    "正常 - 最小端口",
@@ -427,7 +288,6 @@ func Test_NewNodeAddress(t *testing.T) {
 			tcpPort: 1024,
 			wantErr: false,
 			wantTCP: 1024,
-			wantUDP: 1025,
 		},
 		{
 			name:    "正常 - 最大端口",
@@ -435,7 +295,6 @@ func Test_NewNodeAddress(t *testing.T) {
 			tcpPort: 65534,
 			wantErr: false,
 			wantTCP: 65534,
-			wantUDP: 65535,
 		},
 		{
 			name:    "正常 - 空 Host",
@@ -443,7 +302,6 @@ func Test_NewNodeAddress(t *testing.T) {
 			tcpPort: 9000,
 			wantErr: false,
 			wantTCP: 9000,
-			wantUDP: 9001,
 		},
 		{
 			name:    "错误 - 端口过小",
@@ -471,23 +329,13 @@ func Test_NewNodeAddress(t *testing.T) {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.host, addr.Host)
 				assert.Equal(t, tt.wantTCP, addr.TCPPort)
-				assert.Equal(t, tt.wantUDP, addr.UDPPort)
 			}
 		})
 	}
 }
 
-// Test_NewNodeAddress_AutoUDP 测试 UDP 自动设置为 TCP + 1
-func Test_NewNodeAddress_AutoUDP(t *testing.T) {
-	addr, err := types.NewNodeAddress("192.168.1.100", 9000)
-	require.NoError(t, err)
-
-	assert.Equal(t, 9000, addr.TCPPort)
-	assert.Equal(t, 9001, addr.UDPPort)
-}
-
 // ============================================================================
-// MsgPack 序列化测试 (UT-NODE-008)
+// MsgPack 序列化测试 (UT-NODE-004)
 // ============================================================================
 
 // Test_Node_MsgPack UT-NODE-008: Node MsgPack 序列化
@@ -499,7 +347,6 @@ func Test_Node_MsgPack(t *testing.T) {
 		Addr: types.NodeAddress{
 			Host:    "192.168.1.100",
 			TCPPort: 9000,
-			UDPPort: 9001,
 		},
 		ParentID:    "",
 		ChildrenIDs: []string{},
@@ -524,7 +371,6 @@ func Test_Node_MsgPack(t *testing.T) {
 	assert.Equal(t, original.HostID, decoded.HostID)
 	assert.Equal(t, original.Addr.Host, decoded.Addr.Host)
 	assert.Equal(t, original.Addr.TCPPort, decoded.Addr.TCPPort)
-	assert.Equal(t, original.Addr.UDPPort, decoded.Addr.UDPPort)
 	assert.Equal(t, original.Role, decoded.Role)
 	assert.Equal(t, original.Status, decoded.Status)
 }
@@ -534,7 +380,6 @@ func Test_NodeAddress_MsgPack(t *testing.T) {
 	original := &types.NodeAddress{
 		Host:    "192.168.1.100",
 		TCPPort: 9000,
-		UDPPort: 9001,
 	}
 
 	// 序列化
@@ -550,7 +395,6 @@ func Test_NodeAddress_MsgPack(t *testing.T) {
 	// 验证字段
 	assert.Equal(t, original.Host, decoded.Host)
 	assert.Equal(t, original.TCPPort, decoded.TCPPort)
-	assert.Equal(t, original.UDPPort, decoded.UDPPort)
 }
 
 // ============================================================================

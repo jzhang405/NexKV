@@ -295,41 +295,17 @@ func TestNodeAddress_TCPAddr(t *testing.T) {
 	addr := &types.NodeAddress{
 		Host:    "127.0.0.1",
 		TCPPort: 5001,
-		UDPPort: 5002,
 	}
 	result := addr.TCPAddr()
 	assert.Equal(t, "/ip4/127.0.0.1/tcp/5001", result)
 }
 
-// TestNodeAddress_UDPAddr 测试 UDPAddr 方法
-func TestNodeAddress_UDPAddr(t *testing.T) {
-	addr := &types.NodeAddress{
-		Host:    "192.168.1.100",
-		TCPPort: 5001,
-		UDPPort: 5002,
-	}
-	result := addr.UDPAddr()
-	assert.Equal(t, "/ip4/192.168.1.100/udp/5002", result)
-}
-
-// TestParseNodeAddress_IPFS_TCP 测试解析 IPFS 风格 TCP 地址
 func TestParseNodeAddress_IPFS_TCP(t *testing.T) {
 	result, err := ParseNodeAddress("/ip4/127.0.0.1/tcp/5001")
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.Equal(t, "127.0.0.1", result.Host)
 	assert.Equal(t, 5001, result.TCPPort)
-	assert.Equal(t, 0, result.UDPPort)
-}
-
-// TestParseNodeAddress_IPFS_UDP 测试解析 IPFS 风格 UDP 地址
-func TestParseNodeAddress_IPFS_UDP(t *testing.T) {
-	result, err := ParseNodeAddress("/ip4/192.168.1.100/udp/6002")
-	assert.NoError(t, err)
-	assert.NotNil(t, result)
-	assert.Equal(t, "192.168.1.100", result.Host)
-	assert.Equal(t, 0, result.TCPPort)
-	assert.Equal(t, 6002, result.UDPPort)
 }
 
 // TestParseNodeAddress_SimpleFormat 测试解析简化格式（默认 TCP）
@@ -339,7 +315,6 @@ func TestParseNodeAddress_SimpleFormat(t *testing.T) {
 	assert.NotNil(t, result)
 	assert.Equal(t, "127.0.0.1", result.Host)
 	assert.Equal(t, 5001, result.TCPPort)
-	assert.Equal(t, 0, result.UDPPort)
 }
 
 // TestParseNodeAddress_EmptyString 测试空地址字符串
@@ -430,7 +405,6 @@ func TestHost_Structure(t *testing.T) {
 		NodeAddr: types.NodeAddress{
 			Host:    "127.0.0.1",
 			TCPPort: 5001,
-			UDPPort: 5002,
 		},
 		HostStatus: HostStatusOnline,
 	}
@@ -1502,7 +1476,6 @@ func TestAddChildWithAddr(t *testing.T) {
 		addr := &types.NodeAddress{
 			Host:    "192.168.1.100",
 			TCPPort: 7001,
-			UDPPort: 7002,
 		}
 
 		err := coordinator.AddChildWithAddr("child1", addr)

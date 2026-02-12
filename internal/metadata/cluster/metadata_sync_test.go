@@ -54,7 +54,6 @@ func TestMetadataKV_RawByteAccess(t *testing.T) {
 		Addr: types.NodeAddress{
 			Host:    "127.0.0.1",
 			TCPPort: 5001,
-			UDPPort: 5002,
 		},
 		Status:        types.NodeStatusReady,
 		Priority:      1,
@@ -86,7 +85,6 @@ func TestMetadataKV_RawByteAccess(t *testing.T) {
 		Addr: types.NodeAddress{
 			Host:    "127.0.0.1",
 			TCPPort: 5003,
-			UDPPort: 5004,
 		},
 		Status:        types.NodeStatusReady,
 		Priority:      2,
@@ -150,7 +148,6 @@ func TestMetadataKV_BatchGetRaw(t *testing.T) {
 			Addr: types.NodeAddress{
 				Host:    "127.0.0.1",
 				TCPPort: 5001,
-				UDPPort: 5002,
 			},
 			Status:        types.NodeStatusReady,
 			Priority:      1,
@@ -242,7 +239,6 @@ func TestMetadataKV_Concurrency(t *testing.T) {
 					Addr: types.NodeAddress{
 						Host:    "127.0.0.1",
 						TCPPort: 5001 + goroutineID,
-						UDPPort: 6001 + goroutineID,
 					},
 					Status:        types.NodeStatusReady,
 					Priority:      j,
@@ -321,7 +317,6 @@ func TestMetadataKV_ConsistencyLevels(t *testing.T) {
 		Addr: types.NodeAddress{
 			Host:    "127.0.0.1",
 			TCPPort: 5001,
-			UDPPort: 5002,
 		},
 		Status:        types.NodeStatusReady,
 		Priority:      1,
@@ -400,7 +395,6 @@ func TestMetadataKV_Persistence(t *testing.T) {
 			Addr: types.NodeAddress{
 				Host:    "127.0.0.1",
 				TCPPort: 5001,
-				UDPPort: 5002,
 			},
 			Status:        types.NodeStatusReady,
 			Priority:      1,
@@ -532,7 +526,6 @@ func TestTreeCoordinator_MetadataNodeInfo(t *testing.T) {
 			Addr: types.NodeAddress{
 				Host:    "127.0.0.1",
 				TCPPort: 6001,
-				UDPPort: 6002,
 			},
 			Status:        types.NodeStatusReady,
 			Priority:      1,
@@ -737,7 +730,6 @@ func TestTreeCoordinator_nodeToNodeInfo(t *testing.T) {
 		Addr: types.NodeAddress{
 			Host:    "192.168.1.1",
 			TCPPort: 7001,
-			UDPPort: 7002,
 		},
 		Status:        NodeStatusReady,
 		Priority:      5,
@@ -753,7 +745,6 @@ func TestTreeCoordinator_nodeToNodeInfo(t *testing.T) {
 	assert.Equal(t, types.NodeRoleLeaf, nodeInfo.Role)
 	assert.Equal(t, "192.168.1.1", nodeInfo.Addr.Host)
 	assert.Equal(t, 7001, nodeInfo.Addr.TCPPort)
-	assert.Equal(t, 7002, nodeInfo.Addr.UDPPort)
 	assert.Equal(t, types.NodeStatusReady, nodeInfo.Status)
 	assert.Equal(t, 5, nodeInfo.Priority)
 }

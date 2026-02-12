@@ -2,9 +2,12 @@
 package rpc
 
 import (
+	"context"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jzhang405/NexKV/internal/config/logging"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -20,6 +23,12 @@ type QuorumConfig struct {
 	DefaultQuorum int  // 默认多数派阈值 (N/2 + 1)
 	Timeout       int  // Quorum 超时时间（毫秒）
 	MinQuorum     int  // 最小 Quorum 值
+
+	// 指数退避配置（Phase 3: P3-2.2 Quorum 重试机制）
+	MaxRetries      int           // 最大重试次数（默认 3）
+	InitialBackoff  time.Duration // 初始退避延迟（默认 1s）
+	MaxBackoff      time.Duration // 最大退避延迟（默认 30s）
+	BackoffFactor   float64       // 退避因子（默认 2.0）
 }
 
 // QuorumResult Quorum 结果
@@ -61,6 +70,18 @@ type QuorumMetrics struct {
 	QuorumTimeout    int // Quorum 超时次数
 	PeerSuccessTotal int // Peer 级别成功次数
 	PeerFailedTotal  int // Peer 级别失败次数
+	// 重试指标（Phase 3: P3-2.2 Quorum 重试机制）
+	RetryTotal     int // 重试总次数
+	RetrySuccess   int // 重试后成功次数
+	RetryFailed    int // 重试后仍失败次数
+}
+
+// RetryState 重试状态（用于跟踪 Quorum 重试）
+type RetryState struct {
+	AttemptCount    int           // 当前重试次数
+	LastAttemptTime time.Time     // 上次尝试时间
+	NextBackoff     time.Duration // 下次退避延迟
+	Context         context.Context // 用于取消重试
 }
 
 // NewQuorumManager 创建 Quorum 管理器
@@ -83,6 +104,11 @@ func DefaultQuorumConfig() *QuorumConfig {
 		DefaultQuorum: 0, // 动态计算多数派
 		Timeout:       5000,
 		MinQuorum:     1, // 最小 Quorum 为 1
+		// 指数退避配置（Phase 3: P3-2.2 Quorum 重试机制）
+		MaxRetries:      3,            // 最多重试 3 次
+		InitialBackoff:  1 * time.Second, // 初始延迟 1 秒
+		MaxBackoff:      30 * time.Second, // 最大延迟 30 秒
+		BackoffFactor:   2.0,          // 退避因子 2.0
 	}
 }
 
@@ -341,6 +367,124 @@ func (m *QuorumManager) ValidateAndNormalizeWithQuorum(opts *FanoutOptions, peer
 }
 
 // ========================================
+// 指数退避重试机制（Phase 3: P3-2.2 Quorum 重试机制）
+// ========================================
+
+// CalculateBackoff 计算指数退避延迟
+// 使用公式: min(initial * factor^attempt, max)
+func (m *QuorumManager) CalculateBackoff(attempt int) time.Duration {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if attempt < 0 {
+		attempt = 0
+	}
+
+	// 计算指数延迟: initial * factor^attempt
+	exponentialDelay := time.Duration(
+		float64(m.config.InitialBackoff) *
+			math.Pow(m.config.BackoffFactor, float64(attempt)),
+	)
+
+	// 限制最大延迟
+	if exponentialDelay > m.config.MaxBackoff {
+		exponentialDelay = m.config.MaxBackoff
+	}
+
+	return exponentialDelay
+}
+
+// ShouldRetry 判断是否应该重试
+func (m *QuorumManager) ShouldRetry(attempt int, lastError error) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// 超过最大重试次数
+	if attempt >= m.config.MaxRetries {
+		return false
+	}
+
+	// 可根据错误类型决定是否重试
+	// 例如：超时错误可重试，但参数错误不应重试
+	return lastError != nil
+}
+
+// ExecuteWithRetry 执行 Quorum 操作并支持指数退避重试
+func (m *QuorumManager) ExecuteWithRetry(
+	ctx context.Context,
+	operation func(ctx context.Context) (*QuorumResult, error),
+) (*QuorumResult, error) {
+	var lastErr error
+	var result *QuorumResult
+
+	for attempt := 0; attempt <= m.config.MaxRetries; attempt++ {
+		// 检查上下文是否已取消
+		if ctx.Err() != nil {
+			m.mu.Lock()
+			m.metrics.RetryTotal++
+			m.mu.Unlock()
+			return nil, fmt.Errorf("Quorum 重试已取消: %w", ctx.Err())
+		}
+
+		// 首次尝试或后续重试
+		if attempt > 0 {
+			backoff := m.CalculateBackoff(attempt - 1)
+			logging.WithFields(map[string]interface{}{
+				"attempt":      attempt,
+				"backoff":      backoff.String(),
+				"max_retries":   m.config.MaxRetries,
+				"previous_error": lastErr,
+			}).Info("Quorum 重试前等待退避延迟")
+
+			// 等待退避延迟或上下文取消
+			select {
+			case <-ctx.Done():
+				m.mu.Lock()
+				m.metrics.RetryTotal++
+				m.mu.Unlock()
+				return nil, fmt.Errorf("Quorum 重试已取消: %w", ctx.Err())
+			case <-time.After(backoff):
+				// 退避延迟结束，继续重试
+			}
+		}
+
+		// 执行操作
+		result, lastErr = operation(ctx)
+
+		// 如果成功或不应重试，返回结果
+		if lastErr == nil || !m.ShouldRetry(attempt, lastErr) {
+			if attempt > 0 && result != nil && result.Success {
+				m.mu.Lock()
+				m.metrics.RetryTotal++
+				m.metrics.RetrySuccess++
+				m.mu.Unlock()
+
+				logging.WithFields(map[string]interface{}{
+					"attempt":    attempt,
+					"total_retry": m.metrics.RetryTotal,
+				}).Info("Quorum 重试成功")
+			}
+			return result, lastErr
+		}
+
+		// 记录失败并继续重试
+		logging.WithFields(map[string]interface{}{
+			"attempt":      attempt,
+			"error":        lastErr,
+			"next_backoff": m.CalculateBackoff(attempt).String(),
+		}).Warn("Quorum 尝试失败，将重试")
+	}
+
+	// 所有重试都失败
+	m.mu.Lock()
+	m.metrics.RetryTotal++
+	m.metrics.RetryFailed++
+	m.mu.Unlock()
+
+	return nil, fmt.Errorf("Quorum 操作失败，已达最大重试次数 (%d): %w", m.config.MaxRetries, lastErr)
+}
+
+// ========================================
 // 使用示例
 // ========================================
 
@@ -355,6 +499,11 @@ func ExampleQuorumUsage() {
 		DefaultQuorum: 0, // 动态计算
 		Timeout:       5000,
 		MinQuorum:     2,
+		// 指数退避配置
+		MaxRetries:      3,
+		InitialBackoff:  1 * time.Second,
+		MaxBackoff:      30 * time.Second,
+		BackoffFactor:   2.0,
 	})
 
 	// 更新 peer 缓存
@@ -378,4 +527,23 @@ func ExampleQuorumUsage() {
 	// 获取指标
 	metrics := manager.GetMetrics()
 	fmt.Printf("Quorum 成功率: %d/%d\n", metrics.QuorumSuccess, metrics.QuorumTotal)
+
+	// 使用指数退避重试（Phase 3: P3-2.2 Quorum 重试机制）
+	ctx := context.Background()
+	resultWithRetry, err := manager.ExecuteWithRetry(ctx, func(ctx context.Context) (*QuorumResult, error) {
+		// 模拟 Quorum 操作
+		// 在实际使用中，这里应该是实际的 RPC 调用
+		return result, nil
+	})
+
+	if err != nil {
+		fmt.Printf("Quorum 操作失败: %v\n", err)
+	} else {
+		fmt.Printf("Quorum 操作成功: %+v\n", resultWithRetry)
+	}
+
+	// 打印重试指标
+	retryMetrics := manager.GetMetrics()
+	fmt.Printf("重试统计: 总计=%d, 成功=%d, 失败=%d\n",
+		retryMetrics.RetryTotal, retryMetrics.RetrySuccess, retryMetrics.RetryFailed)
 }

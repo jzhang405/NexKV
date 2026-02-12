@@ -15,6 +15,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/config/logging"
 	"github.com/jzhang405/NexKV/internal/metadata/kvstore"
+	"golang.org/x/time/rate"
 	"github.com/jzhang405/NexKV/internal/transport"
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -57,6 +58,12 @@ type MerkleGossipSync struct {
 
 	// 已知的 peer 列表（用于随机选择）
 	knownPeers map[string]struct{}
+	
+	// 消息去重字段（Phase 3: P3-1.3 消息去重）
+	recentMessageIDs   []uint64    // 最近收到的消息 ID 缓存（用于去重）
+	recentMessageTimes []time.Time  // 消息 ID 对应的时间戳（用于过期清理）
+	messageIDMutex    sync.RWMutex // 消息 ID 缓存保护锁
+	rateLimiter       *rate.Limiter // 速率限制器（每秒最多处理 100 条消息）
 
 	// Peer 选择器
 	peerSelector PeerSelector
@@ -89,6 +96,11 @@ func NewMerkleGossipSync(
 		gossipInterval: 10 * time.Second, // 默认 10 秒
 		gossipTimeout:  5 * time.Second,  // 默认 5 秒
 		knownPeers:     make(map[string]struct{}),
+		// 消息去重字段（Phase 3: P3-1.3 消息去重）
+		recentMessageIDs:   make([]uint64, 0, 1000),    // 最近 1000 条消息 ID 缓存（用于去重）
+		recentMessageTimes: make([]time.Time, 0, 1000), // 消息时间戳缓存（用于过期清理）
+		messageIDMutex:    sync.RWMutex{},               // 消息 ID 缓存保护锁
+		rateLimiter:     rate.NewLimiter(rate.Every(time.Second), 100),  // 每秒最多处理 100 条消息
 		ctx:            ctx,
 		cancel:         cancel,
 	}
@@ -331,6 +343,53 @@ func (s *MerkleGossipSync) handleIncomingMessage(nodeID string, msg []byte) {
 	if err != nil {
 		s.logPeerError("解析 Gossip Payload 失败", nodeID, err)
 		return
+	}
+
+	messageID, ok := payload["message_id"].(uint64)
+	if !ok {
+		s.logPeerError("Gossip Payload 缺少 message_id 字段", nodeID, fmt.Errorf("missing message_id field"))
+		return
+	}
+
+	// 检查是否已处理过此消息
+	s.messageIDMutex.Lock()
+	defer s.messageIDMutex.Unlock()
+
+	// 清理过期的消息 ID（超过 10 秒）
+	now := time.Now()
+	validIDs := make([]uint64, 0, len(s.recentMessageIDs))
+	for i, id := range s.recentMessageIDs {
+		if now.Sub(s.recentMessageTimes[i]) > 10*time.Second {
+			continue // 跳过已过期的 ID
+		}
+		validIDs = append(validIDs, id)
+	}
+
+	// 检查是否重复
+	for _, id := range validIDs {
+		if id == messageID {
+			logging.WithField("from", nodeID).WithFields(map[string]interface{}{
+				"message_id": messageID,
+				"reason":     "duplicate",
+			}).Debug("检测到重复 Gossip 消息，忽略")
+			return // 重复消息，不处理
+		}
+	}
+
+	// 等待速率限制器（每秒最多 100 条消息）
+	if err := s.rateLimiter.Wait(ctx); err != nil {
+		s.logPeerError("速率限制等待失败", nodeID, err)
+		return
+	}
+
+	// 添加到缓存
+	s.recentMessageIDs = append(s.recentMessageIDs, messageID)
+	s.recentMessageTimes = append(s.recentMessageTimes, now)
+
+	// 保持缓存大小不超过 1000
+	if len(s.recentMessageIDs) > 1000 {
+		s.recentMessageIDs = s.recentMessageIDs[1:]
+		s.recentMessageTimes = s.recentMessageTimes[1:]
 	}
 
 	// 提取 Merkle Tree 信息
@@ -658,11 +717,15 @@ func BuildGossipPayload(
 	globalRoot := merkle.GetGlobalRootHash()
 	namespaceHashes := merkle.GetAllNamespaceRootHashes()
 
+	// 生成消息唯一 ID（用于去重）
+	messageID := uint64(time.Now().UnixNano())
+
 	return map[string]interface{}{
 		"global_root_hash": globalRoot,
 		"namespace_hashes": namespaceHashes,
 		"full_sync":        fullSync,
 		"requested_data":   []map[string]string{}, // 双向同步请求数据
+		"message_id":      messageID,           // 消息唯一 ID
 	}
 }
 

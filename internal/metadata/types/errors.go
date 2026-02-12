@@ -791,6 +791,144 @@ const (
 )
 
 // ========================================
+// 哨兵错误（P4-1: 错误类型简化）
+// ========================================
+//
+// 使用 Go 1.13+ 哨兵错误模式，配合 errors.Is/As 使用
+//
+// 推荐用法：
+//   1. 定义哨兵错误（见下方）
+//   2. 使用 errors.Is(err, ErrNotFound) 检查错误
+//   3. 使用 fmt.Errorf("context: %w", ErrNotFound) 包装错误
+
+// 核心业务错误
+var (
+	// ErrNotFound 键/资源不存在
+	ErrNotFound = errors.New("not found")
+
+	// ErrAlreadyExists 键/资源已存在
+	ErrAlreadyExists = errors.New("already exists")
+
+	// ErrInvalidInput 无效输入
+	ErrInvalidInput = errors.New("invalid input")
+
+	// ErrClosed 资源已关闭
+	ErrClosed = errors.New("closed")
+
+	// ErrInternal 内部错误
+	ErrInternal = errors.New("internal error")
+)
+
+// ========================================
+// 错误包装辅助函数（P4-1: 简化错误构造）
+// ========================================
+//
+// 这些函数提供了比 434 个专用构造函数更简洁的错误创建方式
+
+// Wrap 包装哨兵错误并添加上下文
+func Wrap(err error, format string, args ...any) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", fmt.Sprintf(format, args...), err)
+}
+
+// WrapOp 包装哨兵错误并添加操作上下文
+func WrapOp(err error, op string, format string, args ...any) error {
+	if err == nil {
+		return nil
+	}
+	msg := fmt.Sprintf(format, args...)
+	if op != "" {
+		return fmt.Errorf("%s: %s: %w", op, msg, err)
+	}
+	return fmt.Errorf("%s: %w", msg, err)
+}
+
+// Is 检查错误链中是否包含目标错误
+// 简化 errors.Is 的使用
+func Is(err, target error) bool {
+	return errors.Is(err, target)
+}
+
+// As 检查错误链中是否包含特定类型的错误
+// 简化 errors.As 的使用
+func As(err error, target any) bool {
+	return errors.As(err, target)
+}
+
+// ========================================
+// 哨兵错误便捷函数（P4-1: 简化常见错误创建）
+// ========================================
+//
+// 这些函数创建了包装哨兵错误的 *Error 类型，保持与现有代码兼容
+
+// NotFound 创建"未找到"错误
+// 用法: return NotFound("key", key)
+func NotFound(context string, args ...any) *Error {
+	msg := fmt.Sprintf("%s not found", context)
+	if len(args) > 0 {
+		msg = fmt.Sprintf("%s: %v", context, args[0])
+	}
+	return &Error{
+		Code:    ErrCodeNotFound,
+		Message: msg,
+		Err:     ErrNotFound,
+	}
+}
+
+// AlreadyExists 创建"已存在"错误
+// 用法: return AlreadyExists("key", key)
+func AlreadyExists(context string, args ...any) *Error {
+	msg := fmt.Sprintf("%s already exists", context)
+	if len(args) > 0 {
+		msg = fmt.Sprintf("%s: %v", context, args[0])
+	}
+	return &Error{
+		Code:    ErrCodeAlreadyExists,
+		Message: msg,
+		Err:     ErrAlreadyExists,
+	}
+}
+
+// InvalidInput 创建"无效输入"错误
+// 用法: return InvalidInput("port", port)
+func InvalidInput(field string, value any) *Error {
+	return &Error{
+		Code:    ErrStoreInvalidParameter,
+		Message: fmt.Sprintf("invalid %s: %v", field, value),
+		Err:     ErrInvalidInput,
+	}
+}
+
+// Closed 创建"已关闭"错误
+// 用法: return Closed("store")
+func Closed(resource string) *Error {
+	return &Error{
+		Code:    ErrCodeClosed,
+		Message: fmt.Sprintf("%s is closed", resource),
+		Err:     ErrClosed,
+	}
+}
+
+// Internal 创建"内部错误"
+// 用法: return Internal("failed to write data", err)
+func Internal(msg string, cause error) *Error {
+	if cause != nil {
+		return &Error{
+			Code:    ErrCodeInternal,
+			Message: msg,
+			Err:     fmt.Errorf("%s: %w", msg, cause),
+		}
+	}
+	return &Error{
+		Code:    ErrCodeInternal,
+		Message: msg,
+		Err:     ErrInternal,
+	}
+}
+
+// ========================================
 // 统一错误结构
 // ========================================
 

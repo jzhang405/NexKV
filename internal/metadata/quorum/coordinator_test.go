@@ -49,8 +49,8 @@ func TestNewQuorumCoordinator(t *testing.T) {
 		t.Errorf("Expected quorum %d, got %d", expectedQuorum, coordinator.quorum)
 	}
 
-	// 验证默认超时
-	expectedTimeout := 3 * time.Second
+	// 验证默认超时（Phase 4: P4 超时配置化 - 默认 5 秒）
+	expectedTimeout := 5 * time.Second
 	if coordinator.timeout != expectedTimeout {
 		t.Errorf("Expected timeout %v, got %v", expectedTimeout, coordinator.timeout)
 	}

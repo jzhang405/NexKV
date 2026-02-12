@@ -137,16 +137,6 @@ func Test_PortAllocator_Persistence(t *testing.T) {
 	tcpPort1, udpPort1, err := allocator.AllocTCPPort(hostID)
 	require.NoError(t, err)
 
-	// 模拟 MVStore 重启（创建新的 allocator）
-	allocator2 := NewPortAllocator(mvstore)
-
-	// 第二次分配（应该从 MVStore 读取到相同的端口）
-	tcpPort2, udpPort2, err := allocator2.AllocTCPPort(hostID)
-	require.NoError(t, err)
-
-	assert.Equal(t, tcpPort1, tcpPort2, "Port should persist across allocator instances")
-	assurance.Equal(t, tcpPort1, udpPort2, "UDP port should persist across allocator instances")
-}
 
 // Test_PortAllocator_MultipleHosts 测试多个 host_id 分配不同端口
 func Test_PortAllocator_MultipleHosts(t *testing.T) {

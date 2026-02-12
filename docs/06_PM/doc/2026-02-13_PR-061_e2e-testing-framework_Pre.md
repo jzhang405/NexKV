@@ -203,11 +203,66 @@ nexkv-e2e verify --watch --interval 10s
 
 | 任务 | 产出 | 验收标准 |
 |------|------|---------|
-| 网络控制 | `network.go` | 能模拟网络分区 |
+| 网络控制 | `network.go` + `Libp2pFaultInjector` | 能模拟网络分区 |
 | 集群测试 | Phase 2 扩展 | 集群形成、拓扑 |
+| **数据验证组件** | `data_verifier.go` + CLI | 能验证数据一致性 |
 | Gossip 测试 | 3 个用例 | 收敛 < 50s |
 | Quorum 测试 | 5 个用例 | 多数派/少数派/超时 |
 | 2PC 测试 | 5 个用例 | 提交/回滚/恢复 |
+
+**数据验证组件详细设计**:
+
+```go
+// data_verifier.go
+package framework
+
+// LightDataVerifier 轻量级数据一致性验证器
+type LightDataVerifier struct {
+    clients []DataClient
+    timeout  time.Duration
+}
+
+// DataClient 数据客户端接口
+type DataClient interface {
+    GetID() string
+    GetState(ctx context.Context) (map[string]interface{}, error)
+    GetUpdateSeq(ctx context.Context) (uint64, error)
+}
+
+// VerifyFinalConsistency 验证最终一致性
+func (v *LightDataVerifier) VerifyFinalConsistency(
+    ctx context.Context,
+) *ConsistencyResult {
+    // 并发读取所有节点数据
+    // 校验序列号
+    // 校验状态一致性
+    // 返回结构化结果
+}
+
+// CLI 工具集成
+type CLIVerifier struct {
+    daemonAddr string
+}
+
+func (cv *CLIVerifier) VerifyKeys(ctx context.Context, keys []string) (*ConsistencyResult, error) {
+    // 通过 CLI 查询多个节点的数据
+    // 对比验证
+    // 返回结果
+}
+```
+
+**CLI 命令示例**:
+
+```bash
+# 验证指定键的一致性
+nexkv-e2e verify --keys key1,key2 --nodes node-1,node-2,node-3
+
+# 验证所有数据的一致性
+nexkv-e2e verify --all --timeout 30s
+
+# 实时监控一致性状态
+nexkv-e2e verify --watch --interval 10s
+```
 
 ---
 
@@ -307,75 +362,83 @@ nexkv-e2e verify --watch --interval 10s
 ```go
 // DataVerifier 数据一致性验证器
 type DataVerifier struct {
-    nodes       []*DaemonProcess
-    timeout     time.Duration
+    clients []DataClient // 待验证节点的客户端列表
+    timeout time.Duration
     convergeWait time.Duration  // 收敛等待时间
 }
 
-// VerifyConsistency 验证数据一致性
-func (dv *DataVerifier) VerifyConsistency(
-    ctx context.Context,
-    keys []string,
-) *ConsistencyResult
+// DataClient 通用数据客户端接口（业务侧适配）
+type DataClient interface {
+    GetID() string                 // 节点唯一标识
+    GetState(ctx context.Context) (map[string]interface{}, error)
+    GetUpdateSeq(ctx context.Context) (uint64, error)
+}
 
 // ConsistencyResult 一致性验证结果
 type ConsistencyResult struct {
-    Consistent   bool                    // 是否一致
-    TotalNodes   int                     // 总节点数
-    ConsistentNodes int                  // 一致节点数
-    InconsistentNodes []string           // 不一致节点列表
-    Details       map[string]interface{} // 详细信息
+    Consistent     bool                   // 是否一致
+    TotalNodes     int                    // 总节点数
+    ConsistentNodes int                   // 一致节点数
+    InconsistentNodes []string            // 不一致节点列表
+    Details        map[string]interface{} // 详细信息
 }
+
+// VerifyFinalConsistency 验证最终一致性
+func (dv *DataVerifier) VerifyFinalConsistency(
+    ctx context.Context,
+) *ConsistencyResult
 ```
 
-**验证接口定义**:
+**CLI 工具命令**:
 
-```go
-// NodeDataReader 节点数据读取接口（统一适配层）
-type NodeDataReader interface {
-    // GetData 读取指定键的数据
-    GetData(ctx context.Context, keys []string) (map[string][]byte, error)
+```bash
+# 验证所有节点的一致性
+nexkv-e2e verify --all --timeout 30s
 
-    // GetSequence 获取更新序列号
-    GetSequence(ctx context.Context) (uint64, error)
+# 验证指定键的一致性
+nexkv-e2e verify --keys key1,key2 --nodes node-1,node-2,node-3
 
-    // GetNodeStatus 获取节点状态
-    GetNodeStatus(ctx context.Context) (*NodeStatus, error)
+# 实时监控一致性状态
+nexkv-e2e verify --watch --interval 10s
+
+# 查看序列号状态
+nexkv-e2e seq-verify --nodes node-1,node-2,node-3
+
+# 查询节点日志
+nexkv-e2e log-query --node node-1 --event data_update
+```
+
+**结构化日志格式**:
+
+```json
+{
+  "timestamp": "2024-05-21T12:00:00Z",
+  "node_id": "node-1",
+  "event": "data_update",
+  "key": "user_123",
+  "value": "v3",
+  "seq": 101,
+  "sync_to": ["node-2", "node-3"],
+  "sync_result": "success"
 }
 ```
 
 **分阶段实施计划**:
 
-| 阶段 | 内容 | 预计工作量 |
-|------|------|-----------|
-| **阶段1** | 基础验证组件 + CLI 工具 | 1-2 周 |
-| **阶段2** | 场景适配 + 日志分析 | 2-3 周 |
-| **阶段3** | CI/CD 集成 + 定时校验 | 1-2 周 |
+| 阶段 | 内容 | 交付物 | 预计工作量 |
+|------|------|--------|-----------|
+| **阶段1** | 基础验证组件 + CLI 工具 | DataVerifier 代码 + CLI 可执行文件 | 1-2 周 |
+| **阶段2** | 场景适配 + 日志分析 | 分区一致性验证 + 日志分析脚本 | 2-3 周 |
+| **阶段3** | CI/CD 集成 + 定时校验 | CI 配置 + 定时任务 | 1-2 周 |
 
-**使用场景**:
+**关键注意事项**:
 
-| 场景 | 操作方式 |
-|------|---------|
-| 开发调试 | CLI 工具手动校验 |
-| 自动化测试 | 测试用例中调用 VerifyConsistency |
-| 生产监控 | 定时执行验证组件，失败告警 |
-| 异常排查 | CLI 确认范围 → 日志分析定位根因 |
-
-### 9.3 CLI 调试工具设计
-
-```bash
-# 验证指定键的一致性
-nexkv-e2e verify --keys key1,key2 --nodes node-1,node-2,node-3
-
-# 验证所有数据的一致性
-nexkv-e2e verify --all --timeout 30s
-
-# 查看不一致详情
-nexkv-e2e verify --keys key1 --show-details
-
-# 实时监控一致性状态
-nexkv-e2e verify --watch --interval 10s
-```
+| 注意事项 | 说明 |
+|---------|------|
+| **接口解耦** | DataClient 接口适配业务，避免耦合具体存储 |
+| **性能控制** | 并发校验节点数 ≤ 20 |
+| **时序容错** | 设置 30s 收敛等待时间后再校验 |
+| **日志粒度** | 仅核心操作（更新/同步/冲突）打日志 |
 
 ### ⏳ 待确认
 

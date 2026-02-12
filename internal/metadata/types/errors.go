@@ -3896,9 +3896,6 @@ func NewTreeCoordinatorTCPPortOutOfRangeError(minPort, maxPort, port int) *Error
 	return newBase(ErrTreeCoordinatorTCPPortOutOfRange, "TCPPort must be in range [%d, %d], got %d", minPort, maxPort, port)
 }
 
-// NewTreeCoordinatorUDPPortOutOfRangeError 创建 UDP 端口范围错误
-
-// NewTreeCoordinatorUDPPortMustBeTCPPlusOneError 创建 UDP端口必须等于TCP端口+1错误
 
 // NewTreeCoordinatorAtLeastOnePortRequiredError 创建至少需要一个端口错误
 func NewTreeCoordinatorAtLeastOnePortRequiredError() *Error {
@@ -3979,9 +3976,6 @@ func NewIdentityInvalidTCPPortError(port int) *Error {
 	return newBase(ErrIdentityInvalidTCPPort, "TCP 端口无效: %d（有效范围: 1-65535）", port)
 }
 
-// NewIdentityInvalidUDPPortError 创建 UDP 端口无效错误
-
-// ========================================
 // Config 详细验证错误构造函数（新增）
 // ========================================
 

@@ -85,6 +85,11 @@ func (na *NodeAddress) Validate() error {
 		}
 	}
 
+	// 至少需要一个端口（TCP 或 UDP）
+	if na.TCPPort == 0 && na.UDPPort == 0 {
+		return NewTreeCoordinatorAtLeastOnePortRequiredError()
+	}
+
 	return nil
 }
 

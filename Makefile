@@ -1,9 +1,7 @@
 # NexKV Makefile
 # 提供 build、test、clean 等常用命令
 
-.PHONY: all build test clean run fmt vet lint docker-build docker-run help version
-# TODO: E2E 测试目标将在 PR-061 实施后添加
-# test-e2e test-e2e-phase1 test-e2e-phase2 test-e2e-phase3 test-e2e-phase4 test-e2e-phase5
+.PHONY: all build test test-unit test-intg test-e2e clean run fmt vet lint docker-build docker-run help version
 
 # 变量定义
 BINARY_NAME=nexkv
@@ -41,15 +39,30 @@ build:
 	$(GO) build $(GOFLAGS) -ldflags "$(NEXKVD_LDFLAGS)" -o bin/$(DAEMON_NAME) $(NEXKVD_PATH)/main.go
 
 
-test:
-	@echo "运行带竞态检测的测试..."
-	CI=true $(GO) test -race -coverprofile=coverage.out ./...
-	$(GO) tool cover -html=coverage.out -o coverage.html
+## test: 运行所有测试（单元测试 + 集成测试）
+test: test-unit test-intg
+
+## test-unit: 运行单元测试（组件级测试，快速反馈）
+test-unit:
+	@echo "运行单元测试..."
+	$(GO) test -short -race ./internal/... -run "Test[^I].*"
+
+## test-intg: 运行集成测试（Layer 1 组件协作，多节点场景）
+test-intg:
+	@echo "运行集成测试..."
+	$(GO) test -race -timeout 10m ./internal/metadata/... -run "TestIntegration.*"
+	$(GO) test -race -timeout 10m ./internal/transport/... -run "TestIntegration.*"
+	$(GO) test -race -timeout 10m ./internal/rpc/... -run "TestIntegration.*"
+
+## test-e2e: 运行 E2E 测试（完整系统验证，待实现）
+test-e2e:
+	@echo "E2E 测试待 CLI/daemon 完成后实现"
+	@echo "参考: docs/06_PM/doc/2026-02-13_PR-061_e2e-testing-framework_Pre.md"
 
 ## test-perf: 运行性能测试（不含竞态检测）
 test-perf:
 	@echo "运行性能测试..."
-	$(GO) test -run TestE2E_Performance -v ./internal/metadata/consistency
+	$(GO) test -run TestIntegration_Performance -v ./internal/metadata/consistency
 
 ## test-verbose: 运行详细测试
 test-verbose:
@@ -66,16 +79,6 @@ test-coverage:
 benchmark:
 	@echo "运行性能基准测试..."
 	$(GO) test -bench=. -benchmem ./...
-
-## TODO: E2E 测试目标将在 PR-061 实施后添加
-## 参考: docs/06_PM/doc/2026-02-13_PR-061_e2e-testing-framework_Pre.md
-##
-## test-e2e: 运行所有 E2E 测试
-## test-e2e-phase1: 运行 Phase 1 测试（单节点基础）
-## test-e2e-phase2: 运行 Phase 2 测试（多节点集群）
-## test-e2e-phase3: 运行 Phase 3 测试（故障注入）
-## test-e2e-phase4: 运行 Phase 4 测试（并发场景）
-## test-e2e-phase5: 运行 Phase 5 测试（性能测试）
 
 ## clean: 清理编译文件
 clean:

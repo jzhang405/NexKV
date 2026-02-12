@@ -4,26 +4,32 @@
 > **创建日期**: 2026-02-13
 > **关联问题**: 独立需求，提升 NexKV 分布式测试能力
 > **Pre 文档状态**: ⏳ 待架构师评审
-> **文档版本**: v2.0（文档优先策略）
+> **文档版本**: v3.0（分阶段文档）
 
 ---
 
-## 📌 重要说明（v2.0）
+## 📌 文档结构（v3.0）
 
-### 文档优先策略
+为便于分阶段评审和实施，PR-061 Pre 文档已拆分为以下独立文档：
 
-**这是一个大型项目**，预计实施周期 4 周（20 个工作日），涉及：
-- 6 个测试阶段（Phase 1 → Phase 2 → Phase 2.5 → Phase 3 → Phase 4 → Phase 5）
-- 7 个框架组件（Daemon、CLI、Cluster、Config、Network、Metrics、Verifier）
-- 26+ 个测试用例
+### 主文档（本文件）
+- 需求概述
+- 技术栈
+- 分阶段测试策略概览
+- 总体实施计划
+- 风险评估
+- 变更记录
 
-**执行策略**：
-1. ✅ **文档先行**：先完成完整的技术设计和评审，暂不编写代码
-2. 🔄 **分阶段讨论**：分 3 个阶段进行技术评审，确保方案可行
-3. 📝 **迭代完善**：根据评审意见迭代文档，直到架构师认可
-4. 💻 **代码后置**：文档完全批准后，再开始编码实现
+### 阶段文档
 
-**当前阶段**：📋 **Phase 1 - 基础设计文档评审**
+| 阶段 | 文档 | 内容 |
+|------|------|------|
+| **Phase 1** | [phase1.md](./2026-02-13_PR-061_e2e-testing-phase1.md) | 单节点基础测试 |
+| **Phase 2** | [phase2.md](./2026-02-13_PR-061_e2e-testing-phase2.md) | 多节点集群测试 |
+| **Phase 3.1** | [phase3.1-consistency.md](./2026-02-13_PR-061_e2e-testing-phase3/2026-02-13_PR-061_e2e-testing-phase3.1-consistency.md) | 一致性协议测试 |
+| **Phase 3.2** | [phase3.2-fault-injection.md](./2026-02-13_PR-061_e2e-testing-phase3/2026-02-13_PR-061_e2e-testing-phase3.2-fault-injection.md) | 故障注入测试 |
+| **Phase 4** | [phase4.md](./2026-02-13_PR-061_e2e-testing-phase4.md) | 并发场景测试 |
+| **Phase 5** | [phase5.md](./2026-02-13_PR-061_e2e-testing-phase5.md) | 性能测试 |
 
 ---
 
@@ -59,9 +65,33 @@ NexKV 项目目前缺少端到端（E2E）测试，无法验证：
 
 ---
 
-## 2. 设计方案
+## 2. 分阶段测试策略
 
-### 2.1 技术栈
+```mermaid
+flowchart LR
+    A[Phase 1: 单节点基础<br/>5 min] --> B[Phase 2: 多节点集群<br/>10 min]
+    B --> C[Phase 3.1: 一致性协议<br/>15 min]
+    C --> D[Phase 3.2: 故障注入<br/>20 min]
+    D --> E[Phase 4: 并发场景<br/>20 min]
+    E --> F[Phase 5: 性能测试<br/>30 min]
+
+    style C fill:#fff3cd
+```
+
+**阶段概览**：
+
+| 阶段 | 目标 | 测试数量 | 预计耗时 | 文档 |
+|------|------|---------|---------|------|
+| **Phase 1** | 单节点基础 | 8 | 5 min | [phase1.md](./2026-02-13_PR-061_e2e-testing-phase1.md) |
+| **Phase 2** | 多节点集群 | 6 | 10 min | [phase2.md](./2026-02-13_PR-061_e2e-testing-phase2.md) |
+| **Phase 3.1** | 一致性协议 | 13 | 15 min | [phase3.1-consistency.md](./2026-02-13_PR-061_e2e-testing-phase3/2026-02-13_PR-061_e2e-testing-phase3.1-consistency.md) |
+| **Phase 3.2** | 故障注入 | 5 | 20 min | [phase3.2-fault-injection.md](./2026-02-13_PR-061_e2e-testing-phase3/2026-02-13_PR-061_e2e-testing-phase3.2-fault-injection.md) |
+| **Phase 4** | 并发场景 | 4 | 20 min | [phase4.md](./2026-02-13_PR-061_e2e-testing-phase4.md) |
+| **Phase 5** | 性能测试 | 3 | 30 min | [phase5.md](./2026-02-13_PR-061_e2e-testing-phase5.md) |
+
+---
+
+## 3. 技术栈
 
 | 组件 | 选型 | 理由 |
 |------|------|------|
@@ -71,41 +101,9 @@ NexKV 项目目前缺少端到端（E2E）测试，无法验证：
 | **故障注入** | libp2p Native API | 无需 root 权限 |
 | **数据验证** | 三层架构（核心+调试+排查） | 分层验证，职责清晰 |
 
-### 2.2 分阶段测试策略
+---
 
-```mermaid
-flowchart LR
-    A[Phase 1: 单节点基础<br/>5 min] --> B[Phase 2: 多节点集群<br/>10 min]
-    B --> C[Phase 2.5: 一致性协议<br/>15 min]
-    C --> D[Phase 3: 故障注入<br/>20 min]
-    D --> E[Phase 4: 并发场景<br/>20 min]
-    E --> F[Phase 5: 性能测试<br/>30 min]
-
-    style C fill:#fff3cd
-```
-
-**Phase 2.5: 一致性协议专项测试**（核心亮点）
-
-| 测试用例 | 验证目标 | 预计耗时 |
-|---------|---------|---------|
-| **Gossip 测试** | | |
-| TestGossipConvergence7Nodes | 7 节点 Gossip 收敛 < 50s | 2 min |
-| TestGossipWithNodeFailure | 节点故障时 Gossip 继续工作 | 2 min |
-| TestGossipWithNetworkDelay | 网络延迟时的 Gossip 收敛 | 2 min |
-| **Quorum 测试** | | |
-| TestQuorumMajority | 3 节点 Quorum 达成 | 1 min |
-| TestQuorumMinorityBlock | 2/5 节点无法达成 Quorum | 1 min |
-| TestQuorumTimeout | Quorum 超时回滚 | 2 min |
-| TestQuorumSplitBrain | 脑裂场景验证 | 3 min |
-| TestQuorumWithPartialFailure | 部分节点故障时的 Quorum | 2 min |
-| **2PC 测试** | | |
-| Test2PCAllCommit | 所有节点提交 | 2 min |
-| Test2PCOneRollback | 一个节点回滚 | 2 min |
-| Test2PCCoordinatorCrash | 协调者崩溃后恢复 | 3 min |
-| Test2PCParticipantCrash | 参与者崩溃后补偿 | 3 min |
-| Test2PCGossipSync | 2PC 状态 Gossip 同步 | 2 min |
-
-### 2.3 框架分层设计
+## 4. 框架分层设计
 
 ```
 test/e2e/
@@ -122,7 +120,7 @@ test/e2e/
 ├── phases/             # 分阶段测试
 │   ├── phase1_single_node/
 │   ├── phase2_cluster/
-│   ├── phase2_5_consistency/  # 一致性协议专项
+│   ├── phase3_consistency/
 │   ├── phase3_fault_injection/
 │   ├── phase4_concurrency/
 │   └── phase5_performance/
@@ -135,160 +133,6 @@ test/e2e/
 
 ---
 
-## 3. 分阶段技术评审
-
-### 3.1 Phase 1：基础设计文档评审（当前阶段）
-
-**评审范围**：
-- [x] 6 阶段测试策略设计
-- [x] 框架分层架构
-- [x] Phase 2.5 测试用例设计
-- [x] 技术栈选型
-- [x] 目录结构规划
-
-**评审要点**：
-- 测试覆盖度是否满足需求？
-- 架构设计是否合理？
-- Phase 2.5 独立成阶段是否必要？
-- 技术选型是否合适？
-
-### 3.2 Phase 2：核心技术方案评审（待启动）
-
-**评审范围**：
-- [ ] 网络控制实现方案（libp2p 故障注入）
-- [ ] 分布式一致性验证方案（三层架构）
-- [ ] 性能基准定义
-- [ ] 实施周期规划
-
-**评审要点**：
-- libp2p API 是否满足故障注入需求？
-- 三层验证架构是否可行？
-- 性能指标是否合理？
-- 4 周周期是否可行？
-
-### 3.3 Phase 3：实施细节评审（待启动）
-
-**评审范围**：
-- [ ] 单 PR + 分阶段提交策略
-- [ ] 风险缓解措施
-- [ ] CI 集成方案
-- [ ] 文档交付清单
-
-**评审要点**：
-- 单 PR 策略是否合适？
-- 风险是否可控？
-- CI 配置是否完整？
-- 交付物是否齐全？
-
----
-
-## 4. 核心技术方案
-
-### 4.1 网络控制实现方案（基于 libp2p）
-
-**设计目标**：无需 root 权限，支持 5 种核心故障类型
-
-| 故障类型 | 实现方式 | 验证目标 |
-|---------|---------|---------|
-| **连接断开** | `conn.Close()` | 重连机制 |
-| **流关闭** | `stream.Close()` | 通信容错 |
-| **流延迟** | 包装 `Stream` 注入延迟 | 超时处理 |
-| **协议失败** | 使用不存在的协议 ID | 协议兼容性 |
-| **节点下线** | `host.Close()` | 故障感知 |
-
-**故障注入器接口设计**：
-
-```go
-// Libp2pFaultInjector libp2p 故障注入器
-type Libp2pFaultInjector struct {
-    host    libp2p.Host
-    enabled bool
-}
-
-// 故障类型
-type FaultType int
-
-const (
-    FaultConnClose  FaultType = iota // 连接关闭
-    FaultStreamClose                  // 流关闭
-    FaultStreamLatency                // 流延迟
-    FaultProtocolNegotiationFailed   // 协议协商失败
-    FaultNodeCrash                    // 节点崩溃
-)
-
-// InjectFault 注入故障
-func (fi *Libp2pFaultInjector) InjectFault(
-    faultType FaultType,
-    target peer.ID,
-    params ...interface{},
-) error
-```
-
-### 4.2 分布式一致性验证方案
-
-**设计目标**：三层验证架构，覆盖自动化测试、调试、排查场景
-
-| 层级 | 核心能力 | 适用场景 |
-|------|---------|---------|
-| **核心层** | 自动化一致性校验、异常告警 | 生产监控、自动化测试 |
-| **调试层** | 手动快速验证、指定范围校验 | 开发调试、临时问题排查 |
-| **排查层** | 日志采集分析、根因定位 | 一致性异常复盘、合规审计 |
-
-**核心组件设计**：
-
-```go
-// DataVerifier 数据一致性验证器
-type DataVerifier struct {
-    clients []DataClient // 待验证节点的客户端列表
-    timeout time.Duration
-    convergeWait time.Duration  // 收敛等待时间
-}
-
-// DataClient 通用数据客户端接口（业务侧适配）
-type DataClient interface {
-    GetID() string                 // 节点唯一标识
-    GetState(ctx context.Context) (map[string]interface{}, error)
-    GetUpdateSeq(ctx context.Context) (uint64, error)
-}
-
-// ConsistencyResult 一致性验证结果
-type ConsistencyResult struct {
-    Consistent     bool                   // 是否一致
-    TotalNodes     int                    // 总节点数
-    ConsistentNodes int                   // 一致节点数
-    InconsistentNodes []string            // 不一致节点列表
-    Details        map[string]interface{} // 详细信息
-}
-
-// VerifyFinalConsistency 验证最终一致性
-func (dv *DataVerifier) VerifyFinalConsistency(
-    ctx context.Context,
-) *ConsistencyResult
-```
-
-**CLI 工具命令**：
-
-```bash
-# 验证所有节点的一致性
-nexkv-e2e verify --all --timeout 30s
-
-# 验证指定键的一致性
-nexkv-e2e verify --keys key1,key2 --nodes node-1,node-2,node-3
-
-# 实时监控一致性状态
-nexkv-e2e verify --watch --interval 10s
-```
-
-### 4.3 性能基准定义
-
-| 场景类型 | 吞吐量阈值 | 延迟阈值 | 资源占用 |
-|---------|-----------|---------|---------|
-| **开发调试（CLI）** | ≥50 批次/分钟 | ≤500ms avg, ≤1s P99 | CPU≤20%, 内存≤512MB |
-| **自动化测试** | ≥1000 任务/小时 | ≤1s avg, ≤3s P99 | CPU≤20%, 内存≤512MB |
-| **生产定时校验** | ≤10 分钟/次完成 | - | CPU≤20%, 内存≤512MB |
-
----
-
 ## 5. 实施计划
 
 ### 5.1 4 周分阶段计划
@@ -296,8 +140,8 @@ nexkv-e2e verify --watch --interval 10s
 | 周次 | 内容 | 详细任务分解 |
 |------|------|-------------|
 | **Week 1** | 框架基础设施 + Phase 1 | Day 1-2: 配置生成、端口管理<br/>Day 3-4: Daemon 完善、健康检查<br/>Day 5: Phase 1 测试 |
-| **Week 2** | Phase 2 + Phase 2.5 | Day 1-2: 集群编排、网络控制<br/>Day 3: Phase 2 基础测试<br/>Day 4-5: Phase 2.5 一致性协议测试 |
-| **Week 3** | Phase 3 + Phase 4 | Day 1-2: Phase 3 故障注入<br/>Day 3: Phase 4 并发测试<br/>Day 4-5: 2PC 测试完善 |
+| **Week 2** | Phase 2 + Phase 3.1 | Day 1-2: 集群编排、网络控制<br/>Day 3: Phase 2 基础测试<br/>Day 4-5: Phase 3.1 一致性协议测试 |
+| **Week 3** | Phase 3.2 + Phase 4 | Day 1-2: Phase 3.2 故障注入<br/>Day 3: Phase 4 并发测试<br/>Day 4-5: 2PC 测试完善 |
 | **Week 4** | Phase 5 + CI 集成 | Day 1-2: Phase 5 性能测试<br/>Day 3: CI 集成<br/>Day 4-5: 文档完善、Code Review |
 
 ### 5.2 单 PR + 分阶段提交策略
@@ -320,52 +164,55 @@ nexkv-e2e verify --watch --interval 10s
 | **进程清理不彻底** | 高 | 僵尸进程、端口占用 | 进程池 + 强制清理脚本 |
 | **测试不稳定** | 中 | CI 频繁失败 | 重试机制、优化超时 |
 | **框架实现复杂** | 高 | 延期完成 | 先完成最小可用版本 |
-| **网络控制实现困难** | 中 | Phase 2.5 延期 | 使用 libp2p API（已验证可行） |
+| **网络控制实现困难** | 中 | Phase 3.1 延期 | 使用 libp2p API（已验证可行） |
 | **文档迭代周期长** | 中 | 影响开发进度 | 分 3 阶段评审，快速迭代 |
 
 ---
 
-## 7. 验收标准
+## 7. 分阶段技术评审
 
-### 7.1 最小可用版本（MVP）
+### 7.1 Phase 1：基础设计文档评审（当前阶段）
 
-- [ ] 框架基础设施完整（配置生成、健康检查、CLI 解析）
-- [ ] Phase 1 测试用例全部通过（8/8）
-- [ ] `make test-e2e-phase1` 可运行
+**评审范围**：
+- [x] 6 阶段测试策略设计
+- [x] 框架分层架构
+- [x] Phase 3.1 测试用例设计
+- [x] 技术栈选型
+- [x] 目录结构规划
 
-### 7.2 Phase 2 验收标准
+**评审要点**：
+- 测试覆盖度是否满足需求？
+- 架构设计是否合理？
+- Phase 3.1 独立成阶段是否必要？
+- 技术选型是否合适？
 
-- [ ] 多节点集群形成测试通过
-- [ ] 节点发现测试通过
-- [ ] 拓扑形成测试通过
+### 7.2 Phase 2：核心技术方案评审（待启动）
 
-### 7.3 Phase 2.5 验收标准（核心亮点）
+**评审范围**：
+- [ ] 网络控制实现方案（libp2p 故障注入）
+- [ ] 分布式一致性验证方案（三层架构）
+- [ ] 性能基准定义
+- [ ] 实施周期规划
 
-**Gossip 测试**:
-- [ ] 7 节点 Gossip 收敛时间 < 50s
-- [ ] 节点故障时 Gossip 继续工作
-- [ ] 网络延迟下 Gossip 最终收敛
+**评审要点**：
+- libp2p API 是否满足故障注入需求？
+- 三层验证架构是否可行？
+- 性能指标是否合理？
+- 4 周周期是否可行？
 
-**Quorum 测试**:
-- [ ] 3 节点 Quorum 多数派达成
-- [ ] 2/5 节点无法达成 Quorum（阻塞）
-- [ ] Quorum 超时正确回滚
-- [ ] 脑裂场景下少数派独立运行
-- [ ] 部分节点故障时 Quorum 行为正确
+### 7.3 Phase 3：实施细节评审（待启动）
 
-**2PC 测试**:
-- [ ] 所有节点正常提交
-- [ ] 单个节点回滚不影响其他节点
-- [ ] 协调者崩溃后可恢复
-- [ ] 参与者崩溃后可补偿
-- [ ] 2PC 状态通过 Gossip 同步
+**评审范围**：
+- [ ] 单 PR + 分阶段提交策略
+- [ ] 风险缓解措施
+- [ ] CI 集成方案
+- [ ] 文档交付清单
 
-### 7.4 完整版本
-
-- [ ] Phase 1-5 测试用例全部通过
-- [ ] `make test-e2e` 可运行
-- [ ] CI 集成完成
-- [ ] 性能指标达标
+**评审要点**：
+- 单 PR 策略是否合适？
+- 风险是否可控？
+- CI 配置是否完整？
+- 交付物是否齐全？
 
 ---
 
@@ -387,28 +234,8 @@ nexkv-e2e verify --watch --interval 10s
 **评审要点**:
 - [ ] 6 阶段测试策略覆盖度
 - [ ] 框架分层架构合理性
-- [ ] Phase 2.5 独立成阶段必要性
+- [ ] Phase 3.1 独立成阶段必要性
 - [ ] 技术选型合适性
-
-### 9.2 Phase 2 评审：核心技术方案（待启动）
-
-**评审状态**: ⏳ 待启动
-
-**评审要点**:
-- [ ] libp2p API 可行性
-- [ ] 三层验证架构合理性
-- [ ] 性能指标合理性
-- [ ] 4 周周期可行性
-
-### 9.3 Phase 3 评审：实施细节（待启动）
-
-**评审状态**: ⏳ 待启动
-
-**评审要点**:
-- [ ] 单 PR 策略合适性
-- [ ] 风险可控性
-- [ ] CI 配置完整性
-- [ ] 交付物齐全性
 
 ---
 
@@ -418,11 +245,12 @@ nexkv-e2e verify --watch --interval 10s
 |------|------|---------|
 | v1.0 | 2026-02-13 | 初始版本 |
 | v1.1-v1.5 | 2026-02-13 | 多次迭代，完善技术方案 |
-| v2.0 | 2026-02-13 | **文档优先策略**<br/>- 移除所有现有代码<br/>- 分 3 阶段技术评审<br/>- 强调文档先行<br/>- 当前处于 Phase 1 评审阶段 |
+| v2.0 | 2026-02-13 | 文档优先策略 - 移除代码，分 3 阶段评审 |
+| v3.0 | 2026-02-13 | **分阶段文档** - 拆分为独立阶段文档 |
 
 ---
 
-**文档版本**: v2.0
+**文档版本**: v3.0
 **创建日期**: 2026-02-13
 **修订日期**: 2026-02-13
 **创建者**: 🤖 AI 核心开发

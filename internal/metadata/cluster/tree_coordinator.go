@@ -98,14 +98,10 @@ func ParseNodeAddress(addrStr string) (*types.NodeAddress, error) {
 		nodeAddr := &types.NodeAddress{
 			Host:    ip,
 			TCPPort: 0,
-			UDPPort: 0,
 		}
 
 		if strings.EqualFold(protocol, "tcp") {
 			nodeAddr.TCPPort = port
-		} else if strings.EqualFold(protocol, "udp") {
-			nodeAddr.UDPPort = port
-		} else {
 			return nil, types.NewTreeCoordinatorUnsupportedProtocolError(protocol)
 		}
 
@@ -129,7 +125,6 @@ func ParseNodeAddress(addrStr string) (*types.NodeAddress, error) {
 	return &types.NodeAddress{
 		Host:    ip,
 		TCPPort: port,
-		UDPPort: 0,
 	}, nil
 }
 
@@ -2074,12 +2069,6 @@ func (s HostStatus) String() string {
 // 格式：hostname:port
 func (n *Node) GetTCPAddr() string {
 	return n.Addr.GetTCPAddr()
-}
-
-// GetUDPAddr 获取节点的 UDP 网络地址（PR-033）
-// 格式：hostname:port
-func (n *Node) GetUDPAddr() string {
-	return n.Addr.GetUDPAddr()
 }
 
 // Validate 验证 Node 结构的完整性（PR-033）

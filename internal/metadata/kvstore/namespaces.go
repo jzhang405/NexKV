@@ -19,7 +19,7 @@ const (
 	// NamespaceNode 节点元数据
 	// 用于存储：
 	//   - 节点基本信息（NodeID、HostID、Role）
-	//   - 节点地址（Addr、TCPPort、UDPPort）
+	//   - 节点地址（Addr、TCPPort）
 	//   - 节点状态（Status、Level、Priority）
 	// 键格式：meta:node:{node_id}
 	NamespaceNode = "meta:node:"

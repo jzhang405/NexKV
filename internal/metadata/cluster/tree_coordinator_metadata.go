@@ -731,7 +731,6 @@ func (tc *TreeCoordinator) migrateNodeFromLegacy(ctx context.Context, node *Node
 		Addr: types.NodeAddress{
 			Host:    node.Addr.Host,
 			TCPPort: node.Addr.TCPPort,
-			UDPPort: node.Addr.UDPPort,
 		},
 		ParentID:      node.ParentID,
 		Level:         node.Level,
@@ -814,7 +813,6 @@ func (tc *TreeCoordinator) nodeToNodeInfo(node *Node) *types.NodeInfo {
 		Addr: types.NodeAddress{
 			Host:    node.Addr.Host,
 			TCPPort: node.Addr.TCPPort,
-			UDPPort: node.Addr.UDPPort,
 		},
 		ParentID:      node.ParentID,
 		Level:         node.Level,

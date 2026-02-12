@@ -674,9 +674,6 @@ const (
 	// ErrIdentifierInvalidTCPPort TCP 端口无效
 	ErrIdentifierInvalidTCPPort
 
-	// ErrIdentifierInvalidUDPPort UDP 端口无效
-	ErrIdentifierInvalidUDPPort
-
 	// ========================================
 	// Encryption 模块错误码
 	// ========================================
@@ -1977,17 +1974,12 @@ func NewClockOperationError(msg string) *Error {
 
 // NewIdentifierNoPortEnabledError 创建没有启用任何端口错误
 func NewIdentifierNoPortEnabledError() *Error {
-	return newBase(ErrIdentifierNoPortEnabled, "至少需要启用一个端口（TCP 或 UDP）")
+	return newBase(ErrIdentifierNoPortEnabled, "至少需要启用一个端口（TCP）")
 }
 
 // NewIdentifierInvalidTCPPortError 创建 TCP 端口无效错误
 func NewIdentifierInvalidTCPPortError(port int) *Error {
 	return newBase(ErrIdentifierInvalidTCPPort, "TCP 端口无效: %d（有效范围: 1-65535）", port)
-}
-
-// NewIdentifierInvalidUDPPortError 创建 UDP 端口无效错误
-func NewIdentifierInvalidUDPPortError(port int) *Error {
-	return newBase(ErrIdentifierInvalidUDPPort, "UDP 端口无效: %d（有效范围: 1-65535）", port)
 }
 
 // ========================================
@@ -2693,14 +2685,10 @@ const (
 	// ErrDaemonCreateTCPTransport 创建 TCP 传输失败
 	ErrDaemonCreateTCPTransport
 
-	// ErrDaemonCreateUDPTransport 创建 UDP 传输失败
-	ErrDaemonCreateUDPTransport
 
 	// ErrDaemonStartTCPTransport 启动 TCP 传输失败
 	ErrDaemonStartTCPTransport
 
-	// ErrDaemonStartUDPTransport 启动 UDP 传输失败
-	ErrDaemonStartUDPTransport
 
 	// ErrDaemonCreateRPCClient 创建 RPC Client 失败
 	ErrDaemonCreateRPCClient
@@ -2732,8 +2720,6 @@ const (
 	// ErrDaemonStopTCPTransport 停止 TCP 传输层失败
 	ErrDaemonStopTCPTransport
 
-	// ErrDaemonStopUDPTransport 停止 UDP 传输层失败
-	ErrDaemonStopUDPTransport
 
 	// ErrDaemonStopWithErrors 停止守护进程时发生错误
 	ErrDaemonStopWithErrors
@@ -2894,11 +2880,7 @@ const (
 	// ErrTreeCoordinatorTCPPortOutOfRange TCP端口范围错误
 	ErrTreeCoordinatorTCPPortOutOfRange
 
-	// ErrTreeCoordinatorUDPPortOutOfRange UDP端口范围错误
-	ErrTreeCoordinatorUDPPortOutOfRange
 
-	// ErrTreeCoordinatorUDPPortMustBeTCPPlusOne UDP端口必须等于TCP端口+1
-	ErrTreeCoordinatorUDPPortMustBeTCPPlusOne
 
 	// ErrTreeCoordinatorAtLeastOnePortRequired 至少需要一个端口
 	ErrTreeCoordinatorAtLeastOnePortRequired
@@ -2949,8 +2931,6 @@ const (
 	// ErrIdentityInvalidTCPPort TCP 端口无效
 	ErrIdentityInvalidTCPPort
 
-	// ErrIdentityInvalidUDPPort UDP 端口无效
-	ErrIdentityInvalidUDPPort
 
 	// ========================================
 	// Config 详细验证错误码（新增）
@@ -3035,14 +3015,10 @@ const (
 	// ErrConfigNodeAddrTCPEmpty cluster.hosts[i].nodes[j].node_addr_tcp 不能为空
 	ErrConfigNodeAddrTCPEmpty
 
-	// ErrConfigNodeAddrUDPEmpty cluster.hosts[i].nodes[j].node_addr_udp 不能为空
-	ErrConfigNodeAddrUDPEmpty
 
 	// ErrConfigNodeAddrTCPInvalidFormat cluster.hosts[i].nodes[j].node_addr_tcp 格式错误
 	ErrConfigNodeAddrTCPInvalidFormat
 
-	// ErrConfigNodeAddrUDPInvalidFormat cluster.hosts[i].nodes[j].node_addr_udp 格式错误
-	ErrConfigNodeAddrUDPInvalidFormat
 
 	// ErrConfigGossipIntervalInvalid gossip_interval 不能小于 1 秒
 	ErrConfigGossipIntervalInvalid
@@ -3499,9 +3475,6 @@ func NewDaemonCreateTCPTransportError(err error) *Error {
 }
 
 // NewDaemonCreateUDPTransportError 创建创建 UDP 传输失败错误
-func NewDaemonCreateUDPTransportError(err error) *Error {
-	return newWithErr(ErrDaemonCreateUDPTransport, err, "创建 UDP 传输失败")
-}
 
 // NewDaemonStartTCPTransportError 创建启动 TCP 传输失败错误
 func NewDaemonStartTCPTransportError(err error) *Error {
@@ -3509,9 +3482,6 @@ func NewDaemonStartTCPTransportError(err error) *Error {
 }
 
 // NewDaemonStartUDPTransportError 创建启动 UDP 传输失败错误
-func NewDaemonStartUDPTransportError(err error) *Error {
-	return newWithErr(ErrDaemonStartUDPTransport, err, "启动 UDP 传输失败")
-}
 
 // NewDaemonCreateRPCClientError 创建创建 RPC Client 失败错误
 func NewDaemonCreateRPCClientError(err error) *Error {
@@ -3564,9 +3534,6 @@ func NewDaemonStopTCPTransportError(err error) *Error {
 }
 
 // NewDaemonStopUDPTransportError 创建停止 UDP 传输层失败错误
-func NewDaemonStopUDPTransportError(err error) *Error {
-	return newWithErr(ErrDaemonStopUDPTransport, err, "停止 UDP 传输层失败")
-}
 
 // NewDaemonStopWithErrorsError 创建停止守护进程时发生错误错误
 func NewDaemonStopWithErrorsError(errs []error) *Error {
@@ -3930,14 +3897,8 @@ func NewTreeCoordinatorTCPPortOutOfRangeError(minPort, maxPort, port int) *Error
 }
 
 // NewTreeCoordinatorUDPPortOutOfRangeError 创建 UDP 端口范围错误
-func NewTreeCoordinatorUDPPortOutOfRangeError(minPort, maxPort, port int) *Error {
-	return newBase(ErrTreeCoordinatorUDPPortOutOfRange, "UDPPort must be in range [%d, %d], got %d", minPort, maxPort, port)
-}
 
 // NewTreeCoordinatorUDPPortMustBeTCPPlusOneError 创建 UDP端口必须等于TCP端口+1错误
-func NewTreeCoordinatorUDPPortMustBeTCPPlusOneError(tcpPort, udpPort int) *Error {
-	return newBase(ErrTreeCoordinatorUDPPortMustBeTCPPlusOne, "UDPPort must equal TCPPort + 1, got TCP=%d UDP=%d", tcpPort, udpPort)
-}
 
 // NewTreeCoordinatorAtLeastOnePortRequiredError 创建至少需要一个端口错误
 func NewTreeCoordinatorAtLeastOnePortRequiredError() *Error {
@@ -4019,9 +3980,6 @@ func NewIdentityInvalidTCPPortError(port int) *Error {
 }
 
 // NewIdentityInvalidUDPPortError 创建 UDP 端口无效错误
-func NewIdentityInvalidUDPPortError(port int) *Error {
-	return newBase(ErrIdentityInvalidUDPPort, "UDP 端口无效: %d（有效范围: 1-65535）", port)
-}
 
 // ========================================
 // Config 详细验证错误构造函数（新增）
@@ -4082,19 +4040,9 @@ func NewConfigNodeAddrTCPEmptyError(i, j int) *Error {
 	return newBase(ErrConfigNodeAddrTCPEmpty, "cluster.hosts[%d].nodes[%d].node_addr_tcp 不能为空", i, j)
 }
 
-// NewConfigNodeAddrUDPEmptyError 创建 cluster.hosts[i].nodes[j].node_addr_udp 不能为空错误
-func NewConfigNodeAddrUDPEmptyError(i, j int) *Error {
-	return newBase(ErrConfigNodeAddrUDPEmpty, "cluster.hosts[%d].nodes[%d].node_addr_udp 不能为空", i, j)
-}
-
 // NewConfigNodeAddrTCPInvalidFormatError 创建 cluster.hosts[i].nodes[j].node_addr_tcp 格式错误错误
 func NewConfigNodeAddrTCPInvalidFormatError(i, j int) *Error {
 	return newBase(ErrConfigNodeAddrTCPInvalidFormat, "cluster.hosts[%d].nodes[%d].node_addr_tcp 格式错误，应为 multiaddr 格式（如 /ip4/127.0.0.1/tcp/9211）", i, j)
-}
-
-// NewConfigNodeAddrUDPInvalidFormatError 创建 cluster.hosts[i].nodes[j].node_addr_udp 格式错误错误
-func NewConfigNodeAddrUDPInvalidFormatError(i, j int) *Error {
-	return newBase(ErrConfigNodeAddrUDPInvalidFormat, "cluster.hosts[%d].nodes[%d].node_addr_udp 格式错误，应为 multiaddr 格式（如 /ip4/127.0.0.1/udp/9212）", i, j)
 }
 
 // NewConfigGossipIntervalInvalidError 创建 gossip_interval 不能小于 1 秒错误

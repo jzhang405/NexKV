@@ -61,31 +61,12 @@ type MetadataNodeInfo interface {
 // 核心数据结构（双层架构）
 // ========================================
 
-// NodeAddress 节点地址结构，包含节点的网络地址信息
-// 支持 TCP 和 UDP 两种协议，地址格式采用 IPFS 风格：/ip4/127.0.0.1/tcp/5001
-type NodeAddress struct {
-	Host string // 主机地址（可以是 IP 地址或域名）
-	// 注释：原字段名为 IPAddress，改名为 Host 是因为：
-	//   1. 结构体同时包含 TCP 和 UDP 端口，IPAddress 命名不够准确
-	//   2. Host 更通用，既可以是 IP 地址（如 127.0.0.1）也可以是域名（如 node1.example.com）
-	//   3. 与 TCPAddr() 和 UDPAddr() 方法的实现语义一致，它们使用 na.Host 而非 na.IPAddress
-	TCPPort int // TCP端口
-	UDPPort int // UDP端口
-}
-
-// TCPAddr 返回 TCP 地址字符串（IPFS 格式）
-func (na *NodeAddress) TCPAddr() string {
-	return fmt.Sprintf("/ip4/%s/tcp/%d", na.Host, na.TCPPort)
-}
-
-// UDPAddr 返回 UDP 地址字符串（IPFS 格式）
-func (na *NodeAddress) UDPAddr() string {
-	return fmt.Sprintf("/ip4/%s/udp/%d", na.Host, na.UDPPort)
-}
+// NodeAddress 节点地址结构已迁移到 types.NodeAddress
+// 使用 import "github.com/jzhang405/NexKV/internal/metadata/types" 引入
 
 // ParseNodeAddress 从字符串地址解析出 NodeAddress 结构
 // 支持的格式：IPFS 风格 (/ip4/127.0.0.1/tcp/5001) 或 简化格式 (127.0.0.1:5001，默认 TCP)
-func ParseNodeAddress(addrStr string) (*NodeAddress, error) {
+func ParseNodeAddress(addrStr string) (*types.NodeAddress, error) {
 	if addrStr == "" {
 		return nil, types.NewTreeCoordinatorAddrEmptyError()
 	}
@@ -114,7 +95,7 @@ func ParseNodeAddress(addrStr string) (*NodeAddress, error) {
 			return nil, types.NewTreeCoordinatorInvalidPortError(portStr)
 		}
 
-		nodeAddr := &NodeAddress{
+		nodeAddr := &types.NodeAddress{
 			Host:    ip,
 			TCPPort: 0,
 			UDPPort: 0,
@@ -145,7 +126,7 @@ func ParseNodeAddress(addrStr string) (*NodeAddress, error) {
 		return nil, types.NewTreeCoordinatorInvalidPortError(portStr)
 	}
 
-	return &NodeAddress{
+	return &types.NodeAddress{
 		Host:    ip,
 		TCPPort: port,
 		UDPPort: 0,
@@ -225,8 +206,8 @@ func (nr NodeRole) String() string {
 // Host 物理机器信息（PR-033 扩展）
 type Host struct {
 	// 基础字段
-	Role     HostRole    `msgpack:"role"`     // 物理机器角色
-	NodeAddr NodeAddress `msgpack:"nodeaddr"` // 网络地址信息
+	Role     HostRole         `msgpack:"role"`     // 物理机器角色
+	NodeAddr types.NodeAddress `msgpack:"nodeaddr"` // 网络地址信息
 
 	// PR-033 新增字段
 	HostID              string     `msgpack:"host_id"`                // 机器唯一标识
@@ -357,8 +338,8 @@ type Node struct {
 	// Role 逻辑节点角色（Leaf/Parent/ParentStandby）
 	Role NodeRole
 
-	// Addr 节点地址（使用 NodeAddress 类型支持 TCP/UDP）
-	Addr NodeAddress
+	// Addr 节点地址（使用 types.NodeAddress 支持 TCP/UDP）
+	Addr types.NodeAddress
 
 	// ParentID 父节点ID（根节点为空）
 	ParentID string
@@ -1427,7 +1408,7 @@ func (tc *TreeCoordinator) AddChild(childID string) error {
 // 与 AddChild 的区别：
 //   - AddChildWithAddr 会设置节点的 Addr 字段
 //   - 用于处理来自其他节点的加入请求（已知对方地址）
-func (tc *TreeCoordinator) AddChildWithAddr(childID string, addr *NodeAddress) error {
+func (tc *TreeCoordinator) AddChildWithAddr(childID string, addr *types.NodeAddress) error {
 	tc.nodesMu.Lock()
 	defer tc.nodesMu.Unlock()
 
@@ -2088,87 +2069,6 @@ func (s HostStatus) String() string {
 }
 
 // Validate 验证 NodeAddress 的合法性（PR-033）
-// 规则：
-//  1. TCPPort 和 UDPPort 都在有效范围内 [1024, 65535]
-//  2. 如果两个端口都设置，UDPPort 应该等于 TCPPort + 1
-//  3. 至少有一个端口已设置
-func (na *NodeAddress) Validate() error {
-	const (
-		MinPort    = 1024
-		MaxTCPPort = 65534
-		MaxUDPPort = 65535
-	)
-
-	// 检查 TCP 端口范围
-	if na.TCPPort != 0 {
-		if na.TCPPort < MinPort || na.TCPPort > MaxTCPPort {
-			return types.NewTreeCoordinatorTCPPortOutOfRangeError(MinPort, MaxTCPPort, na.TCPPort)
-		}
-	}
-
-	// 检查 UDP 端口范围
-	if na.UDPPort != 0 {
-		if na.UDPPort < MinPort || na.UDPPort > MaxUDPPort {
-			return types.NewTreeCoordinatorUDPPortOutOfRangeError(MinPort, MaxUDPPort, na.UDPPort)
-		}
-	}
-
-	// 检查 UDP = TCP + 1 规则（如果两个端口都设置）
-	if na.TCPPort != 0 && na.UDPPort != 0 {
-		if na.UDPPort != na.TCPPort+1 {
-			return types.NewTreeCoordinatorUDPPortMustBeTCPPlusOneError(na.TCPPort, na.UDPPort)
-		}
-	}
-
-	// 至少需要设置一个端口
-	if na.TCPPort == 0 && na.UDPPort == 0 {
-		return types.NewTreeCoordinatorAtLeastOnePortRequiredError()
-	}
-
-	return nil
-}
-
-// GetTCPAddr 获取完整的 TCP 网络地址（PR-033）
-// 格式：hostname:port（如 "192.168.1.100:9000"）
-// 如果 Host 为空，返回 ":port"
-func (na *NodeAddress) GetTCPAddr() string {
-	if na.Host == "" {
-		return fmt.Sprintf(":%d", na.TCPPort)
-	}
-	return fmt.Sprintf("%s:%d", na.Host, na.TCPPort)
-}
-
-// GetUDPAddr 获取完整的 UDP 网络地址（PR-033）
-// 格式：hostname:port（如 "192.168.1.100:9001"）
-// 如果 Host 为空，返回 ":port"
-func (na *NodeAddress) GetUDPAddr() string {
-	if na.Host == "" {
-		return fmt.Sprintf(":%d", na.UDPPort)
-	}
-	return fmt.Sprintf("%s:%d", na.Host, na.UDPPort)
-}
-
-// NewNodeAddress 创建新的 NodeAddress（PR-033）
-// 自动设置 UDPPort = TCPPort + 1
-func NewNodeAddress(host string, tcpPort int) (*NodeAddress, error) {
-	const (
-		MinPort    = 1024
-		MaxTCPPort = 65534
-	)
-
-	if tcpPort < MinPort || tcpPort > MaxTCPPort {
-		return nil, types.NewTreeCoordinatorTCPPortOutOfRangeError(MinPort, MaxTCPPort, tcpPort)
-	}
-
-	// UDP 端口自动 = TCP + 1
-	udpPort := tcpPort + 1
-
-	return &NodeAddress{
-		Host:    host,
-		TCPPort: tcpPort,
-		UDPPort: udpPort,
-	}, nil
-}
 
 // GetTCPAddr 获取节点的 TCP 网络地址（PR-033）
 // 格式：hostname:port

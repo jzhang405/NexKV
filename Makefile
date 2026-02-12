@@ -1,7 +1,9 @@
 # NexKV Makefile
 # 提供 build、test、clean 等常用命令
 
-.PHONY: all build test clean run fmt vet lint docker-build docker-run help version test-e2e test-e2e-phase1 test-e2e-phase2 test-e2e-phase3 test-e2e-phase4 test-e2e-phase5
+.PHONY: all build test clean run fmt vet lint docker-build docker-run help version
+# TODO: E2E 测试目标将在 PR-061 实施后添加
+# test-e2e test-e2e-phase1 test-e2e-phase2 test-e2e-phase3 test-e2e-phase4 test-e2e-phase5
 
 # 变量定义
 BINARY_NAME=nexkv
@@ -65,35 +67,15 @@ benchmark:
 	@echo "运行性能基准测试..."
 	$(GO) test -bench=. -benchmem ./...
 
+## TODO: E2E 测试目标将在 PR-061 实施后添加
+## 参考: docs/06_PM/doc/2026-02-13_PR-061_e2e-testing-framework_Pre.md
+##
 ## test-e2e: 运行所有 E2E 测试
-test-e2e: build
-	@echo "运行 E2E 测试..."
-	@$(GO) test -v -timeout 1h ./test/e2e/...
-
 ## test-e2e-phase1: 运行 Phase 1 测试（单节点基础）
-test-e2e-phase1: build
-	@echo "运行 Phase 1: 单节点基础测试..."
-	@$(GO) test -v -timeout 10m ./test/e2e/phases/phase1_single_node/...
-
 ## test-e2e-phase2: 运行 Phase 2 测试（多节点集群）
-test-e2e-phase2: build
-	@echo "运行 Phase 2: 多节点集群测试..."
-	@$(GO) test -v -timeout 20m ./test/e2e/phases/phase2_cluster/...
-
 ## test-e2e-phase3: 运行 Phase 3 测试（故障注入）
-test-e2e-phase3: build
-	@echo "运行 Phase 3: 故障注入测试..."
-	@$(GO) test -v -timeout 30m ./test/e2e/phases/phase3_fault_injection/...
-
 ## test-e2e-phase4: 运行 Phase 4 测试（并发场景）
-test-e2e-phase4: build
-	@echo "运行 Phase 4: 并发场景测试..."
-	@$(GO) test -v -timeout 30m ./test/e2e/phases/phase4_concurrency/...
-
 ## test-e2e-phase5: 运行 Phase 5 测试（性能测试）
-test-e2e-phase5: build
-	@echo "运行 Phase 5: 性能测试..."
-	@$(GO) test -v -timeout 1h ./test/e2e/phases/phase5_performance/...
 
 ## clean: 清理编译文件
 clean:
@@ -178,13 +160,7 @@ help:
 	@echo "  make version       - 显示构建版本信息"
 	@echo "  make help          - 显示此帮助信息"
 	@echo ""
-	@echo "E2E 测试命令:"
-	@echo "  make test-e2e          - 运行所有 E2E 测试"
-	@echo "  make test-e2e-phase1   - 运行 Phase 1: 单节点基础测试"
-	@echo "  make test-e2e-phase2   - 运行 Phase 2: 多节点集群测试"
-	@echo "  make test-e2e-phase3   - 运行 Phase 3: 故障注入测试"
-	@echo "  make test-e2e-phase4   - 运行 Phase 4: 并发场景测试"
-	@echo "  make test-e2e-phase5   - 运行 Phase 5: 性能测试"
+	@echo "TODO: E2E 测试命令将在 PR-061 实施后添加 (docs/06_PM/doc/2026-02-13_PR-061_e2e-testing-framework_Pre.md)"
 	@echo ""
 	@echo "版本信息覆盖:"
 	@echo "  make build VERSION=1.0.0  - 使用指定版本号构建"

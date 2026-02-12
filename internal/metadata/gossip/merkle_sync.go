@@ -76,6 +76,11 @@ type MerkleGossipSync struct {
 	syncCount      uint64 // 同步次数
 	diffDetected   uint64 // 差异检测次数
 	bandwidthSaved uint64 // 节省的带宽（字节）
+
+	// P2-9: 队列监控
+	queueDepth    uint64       // 当前队列深度（待处理的消息数）
+	maxQueueDepth uint64       // 历史最大队列深度
+	queueDepthMu  sync.RWMutex // 队列深度保护锁
 }
 
 // NewMerkleGossipSync 创建 Merkle Gossip 同步服务
@@ -128,6 +133,10 @@ func (s *MerkleGossipSync) SyncWithPeer(
 	s.syncCount++
 	s.mu.Unlock()
 
+	// P2-9: 增加队列深度（开始处理同步请求）
+	s.incrementQueueDepth()
+	defer s.decrementQueueDepth() // 确保完成后减少队列深度
+
 	startTime := time.Now()
 
 	// 1. 构建本地 Gossip Payload（包含 Merkle Tree 信息）
@@ -158,11 +167,14 @@ func (s *MerkleGossipSync) SyncWithPeer(
 
 	if localGlobalRoot == peerGlobalRoot {
 		// 无差异，无需同步
+		// P2-8: 记录同步延迟
+		latency := time.Since(startTime)
 		return &SyncResult{
 			PeerID:        peerID,
 			Synced:        false,
 			Reason:        "Global Root Hash 相同",
 			BandwidthUsed: 32, // 只传输了 Global Root Hash
+			Latency:       latency,
 		}, nil
 	}
 	s.diffDetected++
@@ -176,11 +188,14 @@ func (s *MerkleGossipSync) SyncWithPeer(
 
 	diffNamespaces := s.findDiffNamespaces(localNamespaceHashes, peerNamespaceHashes)
 	if len(diffNamespaces) == 0 {
+		// P2-8: 记录同步延迟
+		latency := time.Since(startTime)
 		return &SyncResult{
 			PeerID:        peerID,
 			Synced:        false,
 			Reason:        "Namespace Root Hashes 相同",
 			BandwidthUsed: defaultBandwidthUsage,
+			Latency:       latency,
 		}, nil
 	}
 
@@ -206,6 +221,9 @@ func (s *MerkleGossipSync) SyncWithPeer(
 	syncResult.BandwidthUsed = bandwidthUsed
 
 	// 计算节省的带宽
+	// P2-8: 记录同步延迟
+	syncResult.Latency = time.Since(startTime)
+
 	// 更新 Peer 健康度指标（如果配置了选择器）
 	if s.peerSelector != nil {
 		s.peerSelector.Update(peerID, syncResult)
@@ -567,6 +585,7 @@ type SyncResult struct {
 	KeysSent       map[string][]string // 发送给 peer 的 Keys（按 Namespace）
 	BandwidthUsed  uint64              // 使用的带宽（字节）
 	BandwidthSaved uint64              // 节省的带宽（字节）
+	Latency        time.Duration       // 同步延迟（P2-8: 实际测量）
 	Error          error               // 错误
 }
 
@@ -757,4 +776,69 @@ func ParseGossipPayloadFromBytes(data []byte) (map[string]interface{}, error) {
 	// 实际实现需要根据 transport 层的具体编码方式调整
 
 	return map[string]interface{}{}, fmt.Errorf("需要根据 transport 层实现调整")
+}
+
+// ========================================
+// P2-9: 队列监控方法
+// ========================================
+
+const (
+	// QueueDepthWarning 告警阈值
+	QueueDepthWarning = 1000
+	// QueueDepthCritical 严重告警阈值
+	QueueDepthCritical = 5000
+)
+
+// GetQueueDepth 获取当前队列深度
+func (s *MerkleGossipSync) GetQueueDepth() uint64 {
+	s.queueDepthMu.RLock()
+	defer s.queueDepthMu.RUnlock()
+	return s.queueDepth
+}
+
+// incrementQueueDepth 增加队列深度
+func (s *MerkleGossipSync) incrementQueueDepth() {
+	s.queueDepthMu.Lock()
+	defer s.queueDepthMu.Unlock()
+
+	s.queueDepth++
+	if s.queueDepth > s.maxQueueDepth {
+		s.maxQueueDepth = s.queueDepth
+	}
+
+	// P2-9: 检查是否需要告警
+	s.checkQueueDepth()
+}
+
+// decrementQueueDepth 减少队列深度
+func (s *MerkleGossipSync) decrementQueueDepth() {
+	s.queueDepthMu.Lock()
+	defer s.queueDepthMu.Unlock()
+
+	if s.queueDepth > 0 {
+		s.queueDepth--
+	}
+}
+
+// checkQueueDepth 检查队列深度并告警
+func (s *MerkleGossipSync) checkQueueDepth() {
+	if s.queueDepth > QueueDepthCritical {
+		logging.WithFields(map[string]interface{}{
+			"queue_depth":     s.queueDepth,
+			"max_queue_depth": s.maxQueueDepth,
+		}).Error("Gossip 队列深度严重过高")
+		// TODO: 触发告警（如发送到监控系统）
+	} else if s.queueDepth > QueueDepthWarning {
+		logging.WithFields(map[string]interface{}{
+			"queue_depth":     s.queueDepth,
+			"max_queue_depth": s.maxQueueDepth,
+		}).Warn("Gossip 队列深度过高")
+	}
+}
+
+// GetMaxQueueDepth 获取历史最大队列深度
+func (s *MerkleGossipSync) GetMaxQueueDepth() uint64 {
+	s.queueDepthMu.RLock()
+	defer s.queueDepthMu.RUnlock()
+	return s.maxQueueDepth
 }

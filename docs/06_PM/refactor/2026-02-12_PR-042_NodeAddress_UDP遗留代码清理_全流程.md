@@ -4,7 +4,7 @@
 > **创建日期**: 2026-02-12
 > **作者**: AI 开发团队
 > **状态**: 🔄 草稿
-> **标签**: `spike` `refactor` `types` `metadata`
+> **标签**: `refactor` `types` `metadata`
 
 ---
 

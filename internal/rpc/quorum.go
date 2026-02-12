@@ -22,16 +22,6 @@ type QuorumConfig struct {
 	MinQuorum     int  // 最小 Quorum 值
 }
 
-// DefaultQuorumConfig 返回默认 Quorum 配置
-func DefaultQuorumConfig() *QuorumConfig {
-	return &QuorumConfig{
-		Enabled:       true,
-		DefaultQuorum: 0,    // 0 表示动态计算 (N/2 + 1)
-		Timeout:       5000, // 5 秒
-		MinQuorum:     1,    // 至少需要 1 个响应
-	}
-}
-
 // QuorumResult Quorum 结果
 type QuorumResult struct {
 	Success      bool      // 是否达到 Quorum
@@ -83,6 +73,16 @@ func NewQuorumManager(config *QuorumConfig) *QuorumManager {
 		config:    config,
 		metrics:   &QuorumMetrics{},
 		peerCache: make([]peer.ID, 0),
+	}
+}
+
+// DefaultQuorumConfig 返回默认 Quorum 配置
+func DefaultQuorumConfig() *QuorumConfig {
+	return &QuorumConfig{
+		Enabled:       true,
+		DefaultQuorum: 0, // 动态计算多数派
+		Timeout:       5000,
+		MinQuorum:     1, // 最小 Quorum 为 1
 	}
 }
 

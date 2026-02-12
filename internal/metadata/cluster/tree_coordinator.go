@@ -206,7 +206,7 @@ func (nr NodeRole) String() string {
 // Host 物理机器信息（PR-033 扩展）
 type Host struct {
 	// 基础字段
-	Role     HostRole         `msgpack:"role"`     // 物理机器角色
+	Role     HostRole          `msgpack:"role"`     // 物理机器角色
 	NodeAddr types.NodeAddress `msgpack:"nodeaddr"` // 网络地址信息
 
 	// PR-033 新增字段

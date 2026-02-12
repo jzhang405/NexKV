@@ -274,6 +274,9 @@ docs/
   - **当前文档**：
     - `metadata_2026-01-18_strong-typed-proposal.md` - Metadata 强类型序列化改进方案（问题 + MessagePack 方案）
     - `merkle-tree_2026-01-18_gossip-optimization.md` - Merkle Tree 优化 Gossip 增量同步方案
+    - `fix/2026-02-12_PR-041_并发安全与Phase0问题修复_Pre.md` - PR-041: 并发安全与 Phase 0 问题修复（Pre 文档）
+    - `fix/2026-02-12_PR-041_并发安全与Phase0问题修复_Post.md` - PR-041: 并发安全与 Phase 0 问题修复（Post 文档）
+    - `node-address-udp-cleanup_2026-02-12.md` - Spike: NodeAddress 与 UDP 遗留代码清理分析
 
 **适用场景**:
 - 项目管理和跟踪

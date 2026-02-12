@@ -2,14 +2,16 @@
 //
 // HostManager：物理机器层拓扑管理器
 //   - 管理物理机器（Host）的注册、删除、查询
-//   - 维护 HostID → Host 映射
 //   - 提供拓扑查询接口
-//   - 持久化到 MVStore
+//   - 持久化到 MVStore（单一数据源）
+//
+// 架构优化（P2-5）：
+//   - 移除内存 map 缓存，使用 MVStore 作为唯一数据源
+//   - MVStore (MemoryMVStore) 本身使用 sync.Map，已是高性能内存存储
+//   - 简化代码，消除"缓存上的缓存"带来的复杂度和一致性问题
 package cluster
 
 import (
-	"sync"
-
 	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"github.com/jzhang405/NexKV/internal/wal"
 	"github.com/vmihailenco/msgpack/v5"
@@ -20,27 +22,29 @@ const (
 )
 
 // HostManager 物理机器拓扑管理器
+//
+// 架构优化（P2-5）：使用 MVStore 作为单一数据源，无额外缓存
 type HostManager struct {
-	metadataStore store.MVStore
-	hosts         map[string]*Host // HostID → Host 映射（内存缓存）
-	mu            sync.RWMutex     // 读写锁，保护 hosts map
+	metadataStore store.MVStore // 唯一数据源（MVStore 本身已是 sync.Map 实现）
 }
 
 // NewHostManager 创建 HostManager
+//
+// 架构优化（P2-5）：简化初始化，无需额外缓存
 func NewHostManager(metadataStore store.MVStore) *HostManager {
 	return &HostManager{
 		metadataStore: metadataStore,
-		hosts:         make(map[string]*Host),
 	}
 }
 
 // AddHost 添加物理机器
 //
 // 流程：
-//  1. 验证 Host 参数（HostID、Hostname、Role）
-//  2. 验证 HostRole 到 NodeID 约束（调用 ValidateNodeIDs）
-//  3. 持久化到 MVStore（key: host:{hostID}）
-//  4. 更新内存缓存
+// 1. 验证 Host 参数（HostID、Hostname、Role）
+// 2. 验证 HostRole 到 NodeID 约束（调用 ValidateNodeIDs）
+// 3. 持久化到 MVStore（key: host:{hostID}）
+//
+// 架构优化（P2-5）：移除缓存更新逻辑，直接持久化到 MVStore
 func (hm *HostManager) AddHost(host *Host) error {
 	if host == nil {
 		return types.NewClusterNilParameterError("host")
@@ -59,7 +63,7 @@ func (hm *HostManager) AddHost(host *Host) error {
 		return types.NewClusterInvalidNodeIDConstraintsError(err)
 	}
 
-	// 持久化到 MVStore
+	// 持久化到 MVStore（直接写入，无需缓存更新）
 	key := hostKeyPrefix + host.HostID
 	data, err := msgpack.Marshal(host)
 	if err != nil {
@@ -70,27 +74,14 @@ func (hm *HostManager) AddHost(host *Host) error {
 		return types.NewClusterHostSaveFailedError(err)
 	}
 
-	// 更新内存缓存（加写锁）
-	hm.mu.Lock()
-	hm.hosts[host.HostID] = host
-	hm.mu.Unlock()
-
 	return nil
 }
 
 // GetHost 获取物理机器信息
 //
-// 先查询内存缓存，未命中再查询 MVStore
+// 架构优化（P2-5）：直接从 MVStore 读取（已是内存操作，O(1)）
 func (hm *HostManager) GetHost(hostID string) (*Host, error) {
-	// 查询内存缓存（加读锁）
-	hm.mu.RLock()
-	if host, exists := hm.hosts[hostID]; exists {
-		hm.mu.RUnlock()
-		return host, nil
-	}
-	hm.mu.RUnlock()
-
-	// 查询 MVStore
+	// 从 MVStore 读取（MVStore.Get 是 sync.Map 操作，高性能）
 	key := hostKeyPrefix + hostID
 	data, err := hm.metadataStore.Get(key)
 	if err != nil {
@@ -102,29 +93,20 @@ func (hm *HostManager) GetHost(hostID string) (*Host, error) {
 		return nil, types.NewClusterHostUnmarshalFailedError(err)
 	}
 
-	// 更新内存缓存（加写锁）
-	hm.mu.Lock()
-	hm.hosts[hostID] = &host
-	hm.mu.Unlock()
-
 	return &host, nil
 }
 
 // RemoveHost 移除物理机器
 //
 // 流程：
-//  1. 从 MVStore 删除
-//  2. 从内存缓存删除
+// 1. 从 MVStore 删除
+//
+// 架构优化（P2-5）：移除缓存删除逻辑
 func (hm *HostManager) RemoveHost(hostID string) error {
 	key := hostKeyPrefix + hostID
 	if err := hm.metadataStore.Delete(key); err != nil {
 		return types.NewClusterHostDeleteFailedError(err)
 	}
-
-	// 从内存缓存删除（加写锁）
-	hm.mu.Lock()
-	delete(hm.hosts, hostID)
-	hm.mu.Unlock()
 
 	return nil
 }
@@ -185,40 +167,30 @@ func (hm *HostManager) GetHostCount() (int, error) {
 
 // UpdateHostStatus 更新 Host 状态和心跳时间
 //
-// P1-2 修复：在锁保护下完成整个更新流程，避免数据竞争
-// P0-2 修复：添加持久化失败的回滚机制，确保内存-磁盘一致性
+// 架构优化（P2-5）：简化为直接读写 MVStore，移除复杂锁和回滚逻辑
+//
+// 优化理由：
+// 1. MVStore 本身是并发安全的（sync.Map）
+// 2. 不再需要手动维护内存缓存与磁盘的一致性
+// 3. 持久化失败时 MVStore 会保证内部一致性
 func (hm *HostManager) UpdateHostStatus(hostID string, status HostStatus, lastHeartbeat int64) error {
-	hm.mu.Lock()
-	defer hm.mu.Unlock()
-
-	// 获取或加载 Host
-	host, exists := hm.hosts[hostID]
-	if !exists {
-		var err error
-		host, err = hm.loadHost(hostID)
-		if err != nil {
-			return err
-		}
-		hm.hosts[hostID] = host
+	// 先加载现有 Host
+	host, err := hm.loadHost(hostID)
+	if err != nil {
+		return err
 	}
-
-	// 备份旧状态用于回滚
-	oldStatus := host.HostStatus
-	oldHeartbeat := host.LastHeartbeat
 
 	// 更新字段
 	host.HostStatus = status
 	host.LastHeartbeat = lastHeartbeat
 
-	// 持久化到 MVStore（失败则回滚）
-	if err := hm.persistHost(hostID, host, oldStatus, oldHeartbeat); err != nil {
-		return err
-	}
-
-	return nil
+	// 持久化到 MVStore
+	return hm.persistHost(host)
 }
 
 // loadHost 从 MVStore 加载 Host（辅助方法）
+//
+// 架构优化（P2-5）：简化的加载方法，无缓存层
 func (hm *HostManager) loadHost(hostID string) (*Host, error) {
 	key := hostKeyPrefix + hostID
 	data, err := hm.metadataStore.Get(key)
@@ -234,21 +206,18 @@ func (hm *HostManager) loadHost(hostID string) (*Host, error) {
 	return &host, nil
 }
 
-// persistHost 持久化 Host 到 MVStore，失败时回滚（辅助方法）
-func (hm *HostManager) persistHost(hostID string, host *Host, oldStatus HostStatus, oldHeartbeat int64) error {
-	key := hostKeyPrefix + hostID
+// persistHost 持久化 Host 到 MVStore（辅助方法）
+//
+// 架构优化（P2-5）：简化的持久化方法，无需回滚
+// 理由：MVStore 内部保证一致性，无需应用层回滚机制
+func (hm *HostManager) persistHost(host *Host) error {
+	key := hostKeyPrefix + host.HostID
 	data, err := msgpack.Marshal(host)
 	if err != nil {
-		// 回滚内存状态
-		host.HostStatus = oldStatus
-		host.LastHeartbeat = oldHeartbeat
 		return types.NewClusterHostMarshalFailedError(err)
 	}
 
 	if err := hm.metadataStore.Put(key, data); err != nil {
-		// 回滚内存状态
-		host.HostStatus = oldStatus
-		host.LastHeartbeat = oldHeartbeat
 		return types.NewClusterHostSaveFailedError(err)
 	}
 

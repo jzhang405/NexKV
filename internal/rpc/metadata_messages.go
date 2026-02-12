@@ -1,85 +1,52 @@
 // Package rpc 元数据同步 RPC 消息定义
 //
-// 定义元数据 Gossip 同步的消息类型
+// 架构优化（P2-3）：使用类型别名引用 internal/metadata/types 中的消息定义
+// 修复依赖方向：rpc → types（符合分层架构）
 package rpc
 
+import (
+	"time"
+
+	"github.com/jzhang405/NexKV/internal/metadata/types"
+)
+
 // ========================================
-// 元数据同步消息
+// 元数据同步消息类型别名
 // ========================================
+//
+// 以下类型别名指向 internal/metadata/types 中的定义
+// 保持向后兼容的同时，修正依赖方向
 
 // MetadataSyncRequest 元数据同步请求
-//
-// 用于节点间同步元数据变更
-type MetadataSyncRequest struct {
-	// Namespace 命名空间（meta:node、meta:role 等）
-	Namespace string `msgpack:"namespace"`
-
-	// Keys 需要同步的键列表
-	Keys []string `msgpack:"keys"`
-
-	// Version 版本号
-	Version uint64 `msgpack:"version"`
-
-	// Timestamp 时间戳
-	Timestamp int64 `msgpack:"timestamp"`
-}
+type MetadataSyncRequest = types.MetadataSyncRequest
 
 // MetadataSyncResponse 元数据同步响应
-type MetadataSyncResponse struct {
-	// Namespace 命名空间
-	Namespace string `msgpack:"namespace"`
-
-	// Metadata 元数据（键值对）
-	Metadata map[string][]byte `msgpack:"metadata"`
-
-	// Version 响应版本号
-	Version uint64 `msgpack:"version"`
-
-	// Timestamp 时间戳
-	Timestamp int64 `msgpack:"timestamp"`
-}
+type MetadataSyncResponse = types.MetadataSyncResponse
 
 // MetadataChangeNotification 元数据变更通知
-//
-// 用于通知其他节点元数据发生变更
-type MetadataChangeNotification struct {
-	// Namespace 命名空间
-	Namespace string `msgpack:"namespace"`
-
-	// Key 变更的键
-	Key string `msgpack:"key"`
-
-	// Operation 操作类型（put、delete）
-	Operation string `msgpack:"operation"`
-
-	// Version 版本号
-	Version uint64 `msgpack:"version"`
-
-	// Timestamp 时间戳
-	Timestamp int64 `msgpack:"timestamp"`
-}
+type MetadataChangeNotification = types.MetadataChangeNotification
 
 // ========================================
-// 辅助构造函数
+// 辅助构造函数（保持向后兼容）
 // ========================================
 
 // NewMetadataSyncRequest 创建元数据同步请求
 func NewMetadataSyncRequest(namespace string, keys []string, version uint64) *MetadataSyncRequest {
-	return &MetadataSyncRequest{
+	return &types.MetadataSyncRequest{
 		Namespace: namespace,
 		Keys:      keys,
 		Version:   version,
-		Timestamp: nowTimestamp(),
+		Timestamp: time.Now().UnixNano(),
 	}
 }
 
 // NewMetadataChangeNotification 创建元数据变更通知
 func NewMetadataChangeNotification(namespace, key, operation string, version uint64) *MetadataChangeNotification {
-	return &MetadataChangeNotification{
+	return &types.MetadataChangeNotification{
 		Namespace: namespace,
 		Key:       key,
 		Operation: operation,
 		Version:   version,
-		Timestamp: nowTimestamp(),
+		Timestamp: time.Now().UnixNano(),
 	}
 }

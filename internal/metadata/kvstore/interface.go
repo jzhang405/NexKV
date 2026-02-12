@@ -31,8 +31,27 @@ type Store interface {
 	// Close 关闭存储
 	Close() error
 
-	// 原始字节访问接口（用于元数据同步）
+	// GetRaw 获取原始字节数据
+	//
+	// 用途：元数据网络传输优化，避免二次编解码开销
+	// 调用层：RPC 层元数据同步
+	// 设计决策：虽然职责不纯粹，但有实际性能价值（避免 Object→[]byte→Network→[]byte→Object）
+	// 注意：返回的是存储层的原始字节（通常为 MessagePack 格式）
 	GetRaw(ctx context.Context, ns, key string) ([]byte, error)
+
+	// PutRaw 写入原始字节数据
+	//
+	// 用途：元数据网络传输优化，避免二次编解码开销
+	// 调用层：RPC 层元数据同步
+	// 设计决策：虽然职责不纯粹，但有实际性能价值（避免 Object→[]byte→Network→[]byte→Object）
+	// 注意：直接存储字节，跳过对象编解码
 	PutRaw(ctx context.Context, ns, key string, data []byte) error
+
+	// BatchGetRaw 批量获取原始字节数据
+	//
+	// 用途：元数据网络传输优化，避免二次编解码开销
+	// 调用层：RPC 层元数据同步
+	// 设计决策：虽然职责不纯粹，但有实际性能价值（避免 Object→[]byte→Network→[]byte→Object）
+	// 注意：返回 map[key]rawBytes，跳过对象反序列化
 	BatchGetRaw(ctx context.Context, ns string, keys []string) (map[string][]byte, error)
 }

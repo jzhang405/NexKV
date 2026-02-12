@@ -15,13 +15,21 @@ docs/
 ├── 03_development/            # 开发与编码（3 个文档）
 ├── 04_test/                   # 测试与验收（5 个文档）
 ├── 05_deployment_operation/   # 部署与运维（3 个文档）
-├── 06_PM/                     # 项目管理（7 个子目录）
-│   ├── pr_documents/          # PR 文档
-│   ├── brainstorm/            # 头脑风暴与技术发现
-│   └── refactor/             # 代码审查与重构建议
-│       ├── CLAUDE.md          # 📋 文档中心（本文件）
-│       ├── monitoring.md        # RPC 监控指标说明
-│       └── performance-tuning.md # RPC 性能调优指南
+├── 06_PM/                     # 项目管理
+│   ├── 01_项目初始化报告.md    # 项目初始化报告
+│   ├── 02_团队分工清单.md      # AI 团队分工
+│   ├── 04_风险评估与缓解.md    # 风险评估与缓解
+│   ├── doc/                   # PR 文档（实际 PR 文件）
+│   ├── feature/               # Feature 相关文档
+│   ├── fix/                   # Fix 相关文档
+│   ├── refactor/              # 重构相关文档
+│   │   ├── CLAUDE.md          # 📋 文档中心（本文件）
+│   │   ├── monitoring.md      # RPC 监控指标说明
+│   │   └── performance-tuning.md # RPC 性能调优指南
+│   └── templates/             # PR 文档模板
+│       ├── feature_pr_full_template.md
+│       ├── fix_pr_full_template.md
+│       └── doc_pr_full_template.md
 ├── 07_spike/                  # 预研究（技术探索）
 ├── 08_api/                     # API 文档（3 个文档）
 ├── 09_code-review/            # Code Review 报告
@@ -125,13 +133,16 @@ docs/
 > **定位**: 项目初始化报告、团队分工、头脑风暴和协作机制
 
 **子目录结构**:
-- **pr_documents/**: PR Pre/Post 文档（按年月组织：`YYYY/MM-DD.md`）
-- **brainstorm/**: 技术发现、方案讨论、决策记录（`{tag}_YYYY-MM-DD_{topic}.md`）
-- **refactor/**: 代码审查与重构建议（含本文件）
+- **templates/**: PR 文档模板（feature、fix、doc 三种类型）
+- **doc/**: 实际 PR Pre/Post 文档（按日期命名：`YYYY-MM-DD_PR-{编号}_{类型}_{标题}.md`）
+- **feature/**: Feature 相关 PR 文档
+- **fix/**: Fix 相关 PR 文档
+- **refactor/**: 重构相关文档（含代码审查、监控、性能调优）
 
 **文档清单**:
 - **01_项目初始化报告.md** - 项目初始化报告
 - **02_团队分工清单.md** - AI 团队分工
+- **04_风险评估与缓解.md** - 风险评估与缓解
 
 **适用场景**:
 - 项目管理和跟踪
@@ -162,7 +173,7 @@ docs/
 
 #### 📖 架构师
 
-- **PR 评审**: `docs/06_PM/pr_documents/` → 查找最新 Pre/Post 文档
+- **PR 评审**: `docs/06_PM/doc/` → 查找最新 Pre/Post 文档
 - **决策记录**: `docs/02_design/06_设计决策.md`
 - **团队分工**: `docs/06_PM/02_团队分工清单.md`
 
@@ -259,14 +270,14 @@ docs/
 - ✅ **完整验证清单**：lint + build + test + test-race + fmt + clean
 - ✅ **CI 通过通知机制**：CI 通过后通知架构师
 - ✅ **角色与职责**：明确架构师、核心开发、代码审查工程师的职责
-- ✅ **子目录结构**：reflect 子目录按类型组织（06_PM 子目录包含 pr_documents、brainstorm、refactor）
+- ✅ **子目录结构**：06_PM 子目录包含 templates（PR 模板）、doc（实际 PR 文档）、feature、fix、refactor
 
 ### 文档版本管理
 
 所有文档遵循以下版本管理规范：
 
 ```markdown
-> **文档版本**: v2.1
+> **文档版本**: v2.2
 > **创建日期**: 2026-02-12
 > **最后更新**: 2026-02-12
 > **维护者**: 👤 架构师 + 🤖 AI 团队
@@ -357,7 +368,7 @@ docs/
 
 ---
 
-**文档版本**: v2.1
+**文档版本**: v2.2
 **创建日期**: 2026-02-12
 **最后更新**: 2026-02-12
 **维护者**: 👤 架构师 + 🤖 AI 团队

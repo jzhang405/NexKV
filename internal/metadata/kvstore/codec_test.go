@@ -22,7 +22,6 @@ func TestMetadataCodec_EncodeDecode(t *testing.T) {
 			Addr: types.NodeAddress{
 				Host:    "127.0.0.1",
 				TCPPort: 5001,
-				UDPPort: 5002,
 			},
 			Status:        types.NodeStatusReady,
 			Priority:      1,
@@ -46,7 +45,6 @@ func TestMetadataCodec_EncodeDecode(t *testing.T) {
 		assert.Equal(t, original.Role, decoded.Role)
 		assert.Equal(t, original.Addr.Host, decoded.Addr.Host)
 		assert.Equal(t, original.Addr.TCPPort, decoded.Addr.TCPPort)
-		assert.Equal(t, original.Addr.UDPPort, decoded.Addr.UDPPort)
 		assert.Equal(t, original.Status, decoded.Status)
 		assert.Equal(t, original.Priority, decoded.Priority)
 		assert.Equal(t, original.Version, decoded.Version)

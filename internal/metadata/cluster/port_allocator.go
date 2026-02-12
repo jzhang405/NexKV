@@ -1,8 +1,8 @@
 // Package cluster 提供端口分配器实现
 //
 // PortAllocator：基于 MVStore 的确定性端口分配器
-//   - 确定性：同一 host_id 始终获得相同的端口对
-//   - 范围：TCP 端口 [9000, 32767]，UDP 端口自动 = TCP + 1
+//   - 确定性：同一 host_id 始终获得相同的端口
+//   - 范围：TCP 端口 [9000, 32767]
 //   - 持久化：使用 MVStore 持久化分配记录，支持多进程环境
 //   - 冲突检测：自动检测并避免端口冲突
 //   - 重试机制：冲突时自动重试
@@ -30,7 +30,6 @@ const (
 type PortAllocation struct {
 	HostID      string `msgpack:"host_id"`      // 机器唯一标识
 	TCPPort     int    `msgpack:"tcp_port"`     // 分配的 TCP 端口
-	UDPPort     int    `msgpack:"udp_port"`     // 分配的 UDP 端口（UDP = TCP + 1）
 	AllocatedAt int64  `msgpack:"allocated_at"` // 分配时间戳（Unix 秒）
 }
 
@@ -79,22 +78,21 @@ func (pa *PortAllocator) loadExistingAllocations() {
 	}
 }
 
-// AllocTCPPort 基于 host_id 分配 TCP 端口（UDP = TCP + 1）
+// AllocTCPPort 基于 host_id 分配 TCP 端口
 //
 // 分配流程：
 //  1. 检查是否已分配（从 MVStore 读取）
 //  2. 计算 MD5 哈希
 //  3. 映射到端口范围 [9000, 32767]
-//  4. UDP 端口 = TCP 端口 + 1
-//  5. 检查端口冲突
-//  6. 持久化分配记录到 MVStore
-func (pa *PortAllocator) AllocTCPPort(hostID string) (tcpPort, udpPort int, err error) {
+//  4. 检查端口冲突
+//  5. 持久化分配记录到 MVStore
+func (pa *PortAllocator) AllocTCPPort(hostID string) (tcpPort int, err error) {
 	portRange := maxTCPPort - minTCPPort + 1
 
 	// 步骤 1: 检查是否已分配
 	allocated, err := pa.checkExistingAllocation(hostID)
 	if err == nil && allocated != nil {
-		return allocated.TCPPort, allocated.UDPPort, nil
+		return allocated.TCPPort, nil
 	}
 
 	// 步骤 2: 计算 MD5 哈希并映射到端口范围
@@ -102,13 +100,10 @@ func (pa *PortAllocator) AllocTCPPort(hostID string) (tcpPort, udpPort int, err 
 	hashUint32 := binary.BigEndian.Uint32(hash[:4])
 	tcpPort = minTCPPort + int(hashUint32%uint32(portRange))
 
-	// 步骤 3: UDP 端口 = TCP 端口 + 1
-	udpPort = tcpPort + 1
-
-	// 步骤 4: 检查端口冲突
+	// 步骤 3: 检查端口冲突
 	conflict, _, err := pa.checkPortConflict(tcpPort)
 	if err != nil {
-		return 0, 0, types.NewClusterPortConflictCheckFailedError(err)
+		return 0, types.NewClusterPortConflictCheckFailedError(err)
 	}
 
 	if conflict {
@@ -117,34 +112,32 @@ func (pa *PortAllocator) AllocTCPPort(hostID string) (tcpPort, udpPort int, err 
 		for tcpPort++; tcpPort <= maxTCPPort; tcpPort++ {
 			conflict, _, err := pa.checkPortConflict(tcpPort)
 			if err != nil {
-				return 0, 0, types.NewClusterPortConflictCheckFailedError(err)
+				return 0, types.NewClusterPortConflictCheckFailedError(err)
 			}
 			if !conflict {
 				// 找到可用端口
-				udpPort = tcpPort + 1
 				break
 			}
 		}
 
 		// 检查是否端口耗尽
 		if tcpPort > maxTCPPort {
-			return 0, 0, types.NewClusterPortExhaustedError()
+			return 0, types.NewClusterPortExhaustedError()
 		}
 	}
 
-	// 步骤 5: 持久化分配记录
+	// 步骤 4: 持久化分配记录
 	allocation := &PortAllocation{
 		HostID:      hostID,
 		TCPPort:     tcpPort,
-		UDPPort:     udpPort,
 		AllocatedAt: time.Now().Unix(),
 	}
 
 	if err := pa.saveAllocation(allocation); err != nil {
-		return 0, 0, types.NewClusterPortAllocationSaveFailedError(err)
+		return 0, types.NewClusterPortAllocationSaveFailedError(err)
 	}
 
-	return tcpPort, udpPort, nil
+	return tcpPort, nil
 }
 
 // checkExistingAllocation 检查 host_id 是否已分配端口

@@ -281,8 +281,8 @@ func validateClusterConfigWrapper(cfg *Config) error {
 				return types.NewConfigNodeAddrTCPEmptyError(i, j)
 			}
 			if node.NodeAddrUDP == "" {
-				logging.Warnf("[ConfigValidation] Node[%s] 的 NodeAddrUDP 为空", node.NodeID)
-				return types.NewConfigNodeAddrUDPEmptyError(i, j)
+				logging.Warnf("[ConfigValidation] Node[%s] 的 NodeAddrTCP 为空", node.NodeID)
+				return types.NewConfigNodeAddrTCPEmptyError(i, j)
 			}
 
 			// 验证 multiaddr 格式（使用 HasPrefix 进行快速检查）
@@ -293,8 +293,8 @@ func validateClusterConfigWrapper(cfg *Config) error {
 			}
 			udpValid := strings.HasPrefix(node.NodeAddrUDP, "/ip4/") || strings.HasPrefix(node.NodeAddrUDP, "/ip6/")
 			if !udpValid {
-				logging.Warnf("[ConfigValidation] Node[%s] 的 NodeAddrUDP 格式无效: %s", node.NodeID, node.NodeAddrUDP)
-				return types.NewConfigNodeAddrUDPInvalidFormatError(i, j)
+				logging.Warnf("[ConfigValidation] Node[%s] 的 NodeAddrTCP 格式无效: %s", node.NodeID, node.NodeAddrUDP)
+				return types.NewConfigNodeAddrTCPInvalidFormatError(i, j)
 			}
 		}
 	}

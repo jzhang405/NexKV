@@ -96,7 +96,7 @@ func (q *QuorumCoordinator) PutWithQuorum(
 
 	// 检查上下文是否已取消
 	if err := quorumCtx.Err(); err != nil {
-		return fmt.Errorf("Quorum 操作被取消: %w", err)
+		return fmt.Errorf("quorum 操作被取消: %w", err)
 	}
 
 	if err := q.metadataKV.Put(quorumCtx, ns, key, value); err != nil {

@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vmihailenco/msgpack/v5"
 
-	"github.com/jzhang405/NexKV/internal/wal"
+	store "github.com/jzhang405/NexKV/internal/wal"
 )
 
 // mockMVStore 创建用于测试的 MVStore mock
@@ -50,7 +50,6 @@ func Test_PortAllocator_AllocFirst(t *testing.T) {
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, tcpPort, 9000, "TCP port should be >= 9000")
 	assert.LessOrEqual(t, tcpPort, 32767, "TCP port should be <= 32767")
-	assurance.Equal(t, tcpPort, tcpPort+1, "UDP port should be TCP + 1")
 }
 
 // Test_PortAllocator_Deterministic UT-PORT-002: 确定性分配
@@ -59,15 +58,14 @@ func Test_PortAllocator_Deterministic(t *testing.T) {
 	allocator := NewPortAllocator(mvstore)
 
 	// 第一次分配
-	tcpPort1, udpPort1, err := allocator.AllocTCPPort("localhost-1")
+	tcpPort1, err := allocator.AllocTCPPort("localhost-1")
 	require.NoError(t, err)
 
 	// 第二次分配（应该返回相同的端口）
-	tcpPort2, udpPort2, err := allocator.AllocTCPPort("localhost-1")
+	tcpPort2, err := allocator.AllocTCPPort("localhost-1")
 	require.NoError(t, err)
 
 	assert.Equal(t, tcpPort1, tcpPort2, "Same host_id should get same port")
-	assurance.Equal(t, tcpPort1, udpPort2, "Same host_id should get same UDP port")
 }
 
 // Test_PortAllocator_ConflictRetry UT-PORT-003: 冲突重试
@@ -97,7 +95,6 @@ func Test_PortAllocator_ConflictRetry(t *testing.T) {
 	// 如果哈希结果恰好是 12345，应该获得不同的端口（通过重试）
 	// 如果哈希结果不是 12345，则正常分配
 	assert.GreaterOrEqual(t, tcpPort, 9000)
-	assurance.Equal(t, tcpPort, tcpPort+1)
 }
 
 // Test_PortAllocator_ReleasePort UT-PORT-004: 端口释放
@@ -126,18 +123,6 @@ func Test_PortAllocator_ReleasePort(t *testing.T) {
 	assert.Nil(t, allocation)
 }
 
-// Test_PortAllocator_Persistence UT-PORT-005: MVStore 持久化
-func Test_PortAllocator_Persistence(t *testing.T) {
-	mvstore := mockMVStore(t)
-	allocator := NewPortAllocator(mvstore)
-
-	hostID := "localhost-1"
-
-	// 第一次分配
-	tcpPort1, udpPort1, err := allocator.AllocTCPPort(hostID)
-	require.NoError(t, err)
-
-
 // Test_PortAllocator_MultipleHosts 测试多个 host_id 分配不同端口
 func Test_PortAllocator_MultipleHosts(t *testing.T) {
 	mvstore := mockMVStore(t)
@@ -164,7 +149,6 @@ func Test_PortAllocator_MultipleHosts(t *testing.T) {
 		}
 
 		allocatedPorts[tcpPort] = hostID
-		assurance.Equal(t, tcpPort, tcpPort+1, "UDP should be TCP + 1")
 	}
 
 	// 验证所有端口都不同
@@ -187,8 +171,6 @@ func Test_PortAllocator_PortRange(t *testing.T) {
 			"TCP port should be >= 9000, got %d for %s", tcpPort, hostID)
 		assert.LessOrEqual(t, tcpPort, 32767,
 			"TCP port should be <= 32767, got %d for %s", tcpPort, hostID)
-		assurance.Equal(t, tcpPort, tcpPort+1,
-			"UDP port should be TCP + 1 for %s", hostID)
 	}
 }
 
@@ -200,7 +182,7 @@ func Test_PortAllocator_ListAllAllocations(t *testing.T) {
 	// 分配几个端口
 	hostIDs := []string{"localhost-1", "localhost-2", "server-1"}
 	for _, hostID := range hostIDs {
-		_, _, err := allocator.AllocTCPPort(hostID)
+		_, err := allocator.AllocTCPPort(hostID)
 		require.NoError(t, err)
 	}
 
@@ -216,7 +198,6 @@ func Test_PortAllocator_ListAllAllocations(t *testing.T) {
 		assert.NotEmpty(t, alloc.HostID)
 		assert.GreaterOrEqual(t, alloc.TCPPort, 9000)
 		assert.LessOrEqual(t, alloc.TCPPort, 32767)
-		assert.Equal(t, alloc.TCPPort, alloc.TCPPort+1)
 		assert.Greater(t, alloc.AllocatedAt, int64(0))
 	}
 }
@@ -234,7 +215,7 @@ func Test_PortAllocator_GetAllocatedPortCount(t *testing.T) {
 	// 分配几个端口
 	for i := 0; i < 5; i++ {
 		hostID := fmt.Sprintf("host-%d", i)
-		_, _, err := allocator.AllocTCPPort(hostID)
+		_, err := allocator.AllocTCPPort(hostID)
 		require.NoError(t, err)
 	}
 

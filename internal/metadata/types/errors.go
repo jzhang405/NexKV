@@ -2685,10 +2685,8 @@ const (
 	// ErrDaemonCreateTCPTransport 创建 TCP 传输失败
 	ErrDaemonCreateTCPTransport
 
-
 	// ErrDaemonStartTCPTransport 启动 TCP 传输失败
 	ErrDaemonStartTCPTransport
-
 
 	// ErrDaemonCreateRPCClient 创建 RPC Client 失败
 	ErrDaemonCreateRPCClient
@@ -2719,7 +2717,6 @@ const (
 
 	// ErrDaemonStopTCPTransport 停止 TCP 传输层失败
 	ErrDaemonStopTCPTransport
-
 
 	// ErrDaemonStopWithErrors 停止守护进程时发生错误
 	ErrDaemonStopWithErrors
@@ -2880,8 +2877,6 @@ const (
 	// ErrTreeCoordinatorTCPPortOutOfRange TCP端口范围错误
 	ErrTreeCoordinatorTCPPortOutOfRange
 
-
-
 	// ErrTreeCoordinatorAtLeastOnePortRequired 至少需要一个端口
 	ErrTreeCoordinatorAtLeastOnePortRequired
 
@@ -2930,7 +2925,6 @@ const (
 
 	// ErrIdentityInvalidTCPPort TCP 端口无效
 	ErrIdentityInvalidTCPPort
-
 
 	// ========================================
 	// Config 详细验证错误码（新增）
@@ -3015,10 +3009,8 @@ const (
 	// ErrConfigNodeAddrTCPEmpty cluster.hosts[i].nodes[j].node_addr_tcp 不能为空
 	ErrConfigNodeAddrTCPEmpty
 
-
 	// ErrConfigNodeAddrTCPInvalidFormat cluster.hosts[i].nodes[j].node_addr_tcp 格式错误
 	ErrConfigNodeAddrTCPInvalidFormat
-
 
 	// ErrConfigGossipIntervalInvalid gossip_interval 不能小于 1 秒
 	ErrConfigGossipIntervalInvalid
@@ -3895,7 +3887,6 @@ func NewTreeCoordinatorNodeNotFoundError(nodeID string) *Error {
 func NewTreeCoordinatorTCPPortOutOfRangeError(minPort, maxPort, port int) *Error {
 	return newBase(ErrTreeCoordinatorTCPPortOutOfRange, "TCPPort must be in range [%d, %d], got %d", minPort, maxPort, port)
 }
-
 
 // NewTreeCoordinatorAtLeastOnePortRequiredError 创建至少需要一个端口错误
 func NewTreeCoordinatorAtLeastOnePortRequiredError() *Error {

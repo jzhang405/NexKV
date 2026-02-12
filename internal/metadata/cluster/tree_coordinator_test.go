@@ -308,15 +308,6 @@ func TestParseNodeAddress_IPFS_TCP(t *testing.T) {
 	assert.Equal(t, 5001, result.TCPPort)
 }
 
-// TestParseNodeAddress_IPFS_UDP 测试解析 IPFS 风格 UDP 地址
-func TestParseNodeAddress_IPFS_UDP(t *testing.T) {
-	result, err := ParseNodeAddress("/ip4/192.168.1.100/udp/6002")
-	assert.NoError(t, err)
-	assert.NotNil(t, result)
-	assert.Equal(t, "192.168.1.100", result.Host)
-	assert.Equal(t, 0, result.TCPPort)
-}
-
 // TestParseNodeAddress_SimpleFormat 测试解析简化格式（默认 TCP）
 func TestParseNodeAddress_SimpleFormat(t *testing.T) {
 	result, err := ParseNodeAddress("127.0.0.1:5001")

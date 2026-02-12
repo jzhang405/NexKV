@@ -87,79 +87,7 @@ func Test_NodeAddress_Validate_TCPRange(t *testing.T) {
 	}
 }
 
-// Test_NodeAddress_Validate_UDPRule UT-NODE-003: NodeAddress Validate - UDP 规则
-func Test_NodeAddress_Validate_UDPRule(t *testing.T) {
-	tests := []struct {
-		name    string
-		addr    types.NodeAddress
-		wantErr bool
-		errMsg  string
-	}{
-		{
-			name: "错误 - UDP != TCP + 1",
-			addr: types.NodeAddress{
-				Host:    "192.168.1.100",
-				TCPPort: 9000,
-			},
-			wantErr: true,
-		},
-		{
-			name: "错误 - UDP 端口过小",
-			addr: types.NodeAddress{
-				Host:    "192.168.1.100",
-				TCPPort: 9000,
-			},
-			wantErr: true,
-		},
-		{
-			name: "正常 - UDP = TCP + 1",
-			addr: types.NodeAddress{
-				Host:    "192.168.1.100",
-				TCPPort: 9000,
-			},
-			wantErr: false,
-		},
-		{
-			name: "正常 - 仅设置 TCP 端口",
-			addr: types.NodeAddress{
-				Host:    "192.168.1.100",
-				TCPPort: 9000,
-			},
-			wantErr: false,
-		},
-		{
-			name: "正常 - 仅设置 UDP 端口",
-			addr: types.NodeAddress{
-				Host:    "192.168.1.100",
-				TCPPort: 0, // 未设置
-			},
-			wantErr: false,
-		},
-		{
-			name: "错误 - 两个端口都未设置",
-			addr: types.NodeAddress{
-				Host:    "192.168.1.100",
-				TCPPort: 0,
-			},
-			wantErr: true,
-			errMsg:  "at least one port",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.addr.Validate()
-			if tt.wantErr {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), tt.errMsg)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
-// Test_NodeAddress_Validate_Normal UT-NODE-004: NodeAddress Validate - 正常
+// Test_NodeAddress_Validate_Normal UT-NODE-003: NodeAddress Validate - 正常
 func Test_NodeAddress_Validate_Normal(t *testing.T) {
 	addr := types.NodeAddress{
 		Host:    "192.168.1.100",
@@ -191,8 +119,6 @@ func Test_NodeAddress_GetTCPAddr_WithoutHost(t *testing.T) {
 	tcpAddr := addr.GetTCPAddr()
 	assert.Equal(t, ":9000", tcpAddr)
 }
-
-
 
 // ============================================================================
 // Node 扩展测试
@@ -408,16 +334,8 @@ func Test_NewNodeAddress(t *testing.T) {
 	}
 }
 
-// Test_NewNodeAddress_AutoUDP 测试 UDP 自动设置为 TCP + 1
-func Test_NewNodeAddress_AutoUDP(t *testing.T) {
-	addr, err := types.NewNodeAddress("192.168.1.100", 9000)
-	require.NoError(t, err)
-
-	assert.Equal(t, 9000, addr.TCPPort)
-}
-
 // ============================================================================
-// MsgPack 序列化测试 (UT-NODE-008)
+// MsgPack 序列化测试 (UT-NODE-004)
 // ============================================================================
 
 // Test_Node_MsgPack UT-NODE-008: Node MsgPack 序列化

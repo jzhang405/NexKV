@@ -102,10 +102,10 @@ func ParseNodeAddress(addrStr string) (*types.NodeAddress, error) {
 
 		if strings.EqualFold(protocol, "tcp") {
 			nodeAddr.TCPPort = port
-			return nil, types.NewTreeCoordinatorUnsupportedProtocolError(protocol)
+			return nodeAddr, nil
 		}
 
-		return nodeAddr, nil
+		return nil, types.NewTreeCoordinatorUnsupportedProtocolError(protocol)
 	}
 
 	// 尝试解析简化的 IP:端口格式

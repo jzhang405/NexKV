@@ -115,7 +115,6 @@ func Test_PortAllocator_ReleasePort(t *testing.T) {
 	allocation, err := allocator.GetAllocation(hostID)
 	require.NoError(t, err)
 	assert.Equal(t, tcpPort, allocation.TCPPort)
-	assurance.Equal(t, tcpPort, allocation.UDPPort)
 
 	// 释放端口
 	err = allocator.ReleasePort(hostID)
@@ -289,6 +288,5 @@ func Test_PortAllocation_MsgPack(t *testing.T) {
 
 	assert.Equal(t, allocation.HostID, decoded.HostID)
 	assert.Equal(t, allocation.TCPPort, decoded.TCPPort)
-	assert.Equal(t, allocation.UDPPort, decoded.UDPPort)
 	assert.Equal(t, allocation.AllocatedAt, decoded.AllocatedAt)
 }

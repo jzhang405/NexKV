@@ -109,7 +109,24 @@ test/e2e/
 | `network.go` | 基于 libp2p 的故障注入 | P0 | Libp2pFaultInjector |
 | `metrics.go` | CPU、内存、网络指标采集 | P1 | 待定 |
 | `log_analyzer.go` | 日志错误、警告分析 | P1 | 待定 |
-| `data_verifier.go` | 数据一致性验证 | P0 | 待定 |
+| `data_verifier.go` | 数据一致性验证 | P0 | DataVerifier + CLI |
+
+**DataVerifier 核心能力**:
+
+| 能力 | 方法 | 使用场景 |
+|------|------|---------|
+| 一致性校验 | `VerifyConsistency(keys)` | 自动化测试 |
+| 节点数据读取 | `GetData(ctx, keys)` | 数据对比 |
+| 序列号校验 | `GetSequence(ctx)` | 增量同步验证 |
+| 收敛等待 | `WaitConverge(ctx, timeout)` | 最终一致性验证 |
+
+**CLI 工具命令**:
+
+```bash
+nexkv-e2e verify --keys key1,key2 --nodes node-1,node-2,node-3
+nexkv-e2e verify --all --timeout 30s
+nexkv-e2e verify --watch --interval 10s
+```
 
 **Libp2pFaultInjector 核心能力**:
 
@@ -272,10 +289,95 @@ test/e2e/
 2. ~~**网络控制实现**: 使用 tc/iptables 还是更高层的抽象？~~
    - ✅ **已确定**: 使用 **libp2p 原生 API** 进行故障注入
 
-3. **数据验证策略**: 如何验证分布式一致性？
-   - 选项 A: 使用 DataVerifier 组件
-   - 选项 B: 通过 CLI 查询验证
-   - 选项 C: 分析日志文件
+3. ~~**数据验证策略**: 如何验证分布式一致性？~~
+   - ✅ **已确定**: 三层验证架构
+
+### 9.2 分布式一致性验证方案
+
+**确定方案**: 三层验证架构（核心层 + 调试层 + 排查层）
+
+| 层级 | 核心能力 | 适用场景 |
+|------|---------|---------|
+| **核心层** | 自动化一致性校验、异常告警 | 生产监控、自动化测试 |
+| **调试层** | 手动快速验证、指定范围校验 | 开发调试、临时问题排查 |
+| **排查层** | 日志采集分析、根因定位 | 一致性异常复盘、合规审计 |
+
+**核心组件设计**:
+
+```go
+// DataVerifier 数据一致性验证器
+type DataVerifier struct {
+    nodes       []*DaemonProcess
+    timeout     time.Duration
+    convergeWait time.Duration  // 收敛等待时间
+}
+
+// VerifyConsistency 验证数据一致性
+func (dv *DataVerifier) VerifyConsistency(
+    ctx context.Context,
+    keys []string,
+) *ConsistencyResult
+
+// ConsistencyResult 一致性验证结果
+type ConsistencyResult struct {
+    Consistent   bool                    // 是否一致
+    TotalNodes   int                     // 总节点数
+    ConsistentNodes int                  // 一致节点数
+    InconsistentNodes []string           // 不一致节点列表
+    Details       map[string]interface{} // 详细信息
+}
+```
+
+**验证接口定义**:
+
+```go
+// NodeDataReader 节点数据读取接口（统一适配层）
+type NodeDataReader interface {
+    // GetData 读取指定键的数据
+    GetData(ctx context.Context, keys []string) (map[string][]byte, error)
+
+    // GetSequence 获取更新序列号
+    GetSequence(ctx context.Context) (uint64, error)
+
+    // GetNodeStatus 获取节点状态
+    GetNodeStatus(ctx context.Context) (*NodeStatus, error)
+}
+```
+
+**分阶段实施计划**:
+
+| 阶段 | 内容 | 预计工作量 |
+|------|------|-----------|
+| **阶段1** | 基础验证组件 + CLI 工具 | 1-2 周 |
+| **阶段2** | 场景适配 + 日志分析 | 2-3 周 |
+| **阶段3** | CI/CD 集成 + 定时校验 | 1-2 周 |
+
+**使用场景**:
+
+| 场景 | 操作方式 |
+|------|---------|
+| 开发调试 | CLI 工具手动校验 |
+| 自动化测试 | 测试用例中调用 VerifyConsistency |
+| 生产监控 | 定时执行验证组件，失败告警 |
+| 异常排查 | CLI 确认范围 → 日志分析定位根因 |
+
+### 9.3 CLI 调试工具设计
+
+```bash
+# 验证指定键的一致性
+nexkv-e2e verify --keys key1,key2 --nodes node-1,node-2,node-3
+
+# 验证所有数据的一致性
+nexkv-e2e verify --all --timeout 30s
+
+# 查看不一致详情
+nexkv-e2e verify --keys key1 --show-details
+
+# 实时监控一致性状态
+nexkv-e2e verify --watch --interval 10s
+```
+
+### ⏳ 待确认
 
 4. **性能基准**: 性能测试的具体指标是什么？
    - 需要定义吞吐量、延迟、资源占用的阈值

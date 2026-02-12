@@ -453,6 +453,33 @@ make build && make lint && make test && make fmt && make clean
 
 ---
 
+## Claude Code 上下文交接
+
+### PreCompact 自动交接
+
+**自动触发的流程：**
+
+当 Claude Code 即将自动紧凑（因内存不足而压缩对话）时，PreCompact 钩子会被触发，并执行以下操作：
+
+1. 读取仍完整的完整对话记录
+2. 将其发送到一个全新的 Claude 实例（`claude -p`），并指示生成交接摘要
+3. 将摘要保存为项目文件夹中的 `docs/10_handover/HANDOVER-YYYY-MM-DD.md` 文件
+
+**关键说明：**
+- `auto` 匹配器意味着：**仅在自动紧凑时触发**
+- 手动执行 `./compact` 时，**不会**触发此钩子
+- 这样，当你主动紧凑对话时，就不会生成交接文档
+
+**手动触发交接：**
+
+你仍然可以使用 `./handover` 命令 —— 手动技能依然有效，如果你想在任何时候（而不仅是紧凑前）生成交接文档，都可以随时执行。
+
+**创建/修改的文件：**
+- `.claude/hooks/pre-compact-handover.py` —— 生成交接文档的脚本
+- `.claude/settings.local.json` —— 添加了 PreCompact 钩子配置
+
+---
+
 ## 参考文档
 
 ### 核心架构文档

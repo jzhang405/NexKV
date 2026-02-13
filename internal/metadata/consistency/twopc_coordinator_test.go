@@ -1169,8 +1169,12 @@ func TestPersistTransaction(t *testing.T) {
 	// 添加操作
 	tx.AddOperation("ns1", "key1", []byte("value1"), 1)
 
-	// 手动调用持久化
+	// 手动调用持久化（通过缓冲区）
 	err = coordinator.persistTransaction(tx)
+	require.NoError(t, err)
+
+	// 强制刷新缓冲区（强制优化 7.2: 测试需要立即刷新）
+	err = coordinator.persistenceBuffer.Flush()
 	require.NoError(t, err)
 
 	// 验证数据已持久化
@@ -1204,6 +1208,10 @@ func TestLoadTransaction(t *testing.T) {
 	require.NoError(t, err)
 	tx.State = TxStatePreCommit
 	err = coordinator.persistTransaction(tx)
+	require.NoError(t, err)
+
+	// 强制刷新缓冲区（强制优化 7.2: 测试需要立即刷新）
+	err = coordinator.persistenceBuffer.Flush()
 	require.NoError(t, err)
 
 	// 加载事务

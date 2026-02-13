@@ -3,7 +3,7 @@
 > **预研分支**: `spike/porcupine-extended-verification`
 > **创建日期**: 2026-02-13
 > **预研目标**: 分析 PR-063 后续工作的技术可行性和实施方案
-> **文档版本**: V1.2
+> **文档版本**: V1.3
 
 ---
 
@@ -26,7 +26,40 @@
 | PR 依赖关系 | P1 | 补充依赖关系图 | ✅ 已添加 |
 | 协调者故障场景 | P1 | 故障测试需补充 | ✅ 已添加 |
 
-**评审结论**: ✅ 通过（V1.2 版本）
+### 第三轮评审（架构师 + 分布式系统专家）
+
+#### 架构师审查意见
+
+| 问题 | 优先级 | 评审意见 | 处理状态 |
+|------|--------|---------|---------|
+| P0-1 | HLC.Update() nil 指针风险 | 需创建独立 bugfix PR | ✅ 已记录 |
+| P0-2 | HLC 逻辑计数器溢出 | 65535→0 回绕 | ✅ 已记录 |
+| P0-3 | TLA+ 规约计划未明确 | 需明确负责人和验收标准 | ✅ 已确认架构师负责 |
+| P1-1 | HLC 时间戳 32-bit 精度不足 | 49 天限制 | ✅ 改为 48-bit |
+| P1-2 | 收敛检测缺少诊断信息 | 需返回 ConvergenceError | ✅ 已添加 |
+| P1-3 | Gossip failpoint 覆盖不完整 | 缺少 parse-error 等 | ✅ 已补充 |
+| P1-4 | PR-065 工作量偏乐观 | 5 天 → 7-9 天 | ✅ 已调整 |
+| P1-5 | 缺少 Porcupine 可视化 | 需添加 Visualize 支持 | ✅ 已添加 |
+
+#### 分布式系统专家审查意见
+
+| 问题 | 优先级 | 评审意见 | 处理状态 |
+|------|--------|---------|---------|
+| P0-1 | VersionVector 不存在 | 文档假设了不存在的接口 | ✅ 改用 Merkle Tree |
+| P0-2 | HLC 时间戳 32-bit 精度不足 | 49 天回绕 | ✅ 改为 48-bit |
+| P1-1 | 2PC 状态模型扩展不完整 | 需补充 TxState 结构 | ✅ 已补充 |
+| P1-2 | failpoint 并行测试存在风险 | 不建议并行执行 | ✅ 已明确 |
+| P1-3 | 协调者故障场景不完整 | 需补充 5 种故障时机 | ✅ 已添加 |
+
+#### 用户决策确认
+
+| 决策项 | 选择 | 说明 |
+|--------|------|------|
+| Gossip 收敛检测 | **方案 A：Merkle Tree** | 复用现有实现，无需新增版本向量 |
+| HLC 时间戳格式 | **48-bit PT + 16-bit C** | 无 49 天限制，覆盖约 8900 年 |
+| TLA+ 规约负责人 | **架构师/分布式系统 Agent** | 与 PR-064/065/066 并行 |
+
+**评审结论**: ✅ 通过（V1.3 版本）
 
 ---
 
@@ -121,37 +154,60 @@ if newPT == h.pt && newPT == remotePT {
 
 ### 2.3 HLC 与 Porcupine 集成方案
 
-**时间戳格式设计**：
+**时间戳格式设计**（V1.3 更新）：
 
-需要平衡物理时间精度和跨节点排序正确性：
+使用 48-bit 物理时间 + 16-bit 逻辑计数，避免 49 天限制：
 
 ```go
 import "github.com/jzhang405/NexKV/internal/clock"
 
 // HLCTimestamp 适配 Porcupine 的时间戳接口
+// V1.3 更新：使用 48-bit PT 避免时间戳回绕问题
 type HLCTimestamp struct {
-    hlc      *clock.HLC
-    clientID int  // 用于同物理时间同逻辑计数器的去重
+    hlc *clock.HLC
 }
 
-func NewHLCTimestamp(clientID int) *HLCTimestamp {
+func NewHLCTimestamp() *HLCTimestamp {
     return &HLCTimestamp{
-        hlc:      clock.NewHLC(),
-        clientID: clientID,
+        hlc: clock.NewHLC(),
     }
 }
 
+// Now 返回 int64 时间戳
+// 格式: PT (48-bit) | C (16-bit)
+// PT 使用完整 48-bit（约 8900 年毫秒），C 用于同毫秒事件排序
 func (t *HLCTimestamp) Now() int64 {
     hlc := t.hlc.Now()
-    // 格式: PT (32-bit) | C (16-bit) | clientID (16-bit)
-    // 权衡: PT 使用 32-bit，可表示约 49 天的毫秒时间
-    //       C 使用 16-bit，支持 65536 个同毫秒事件
-    //       clientID 使用 16-bit，支持 65536 个客户端
-    return (hlc.PhysicalTime()&0xFFFFFFFF)<<32 |
-           int64(hlc.LogicalCounter())<<16 |
-           int64(t.clientID&0xFFFF)
+    // 不截断物理时间，使用低 16 位逻辑计数
+    // 48-bit PT + 16-bit C = 64-bit，正好填满 int64
+    return (hlc.PhysicalTime() << 16) | int64(hlc.LogicalCounter())
+}
+
+// Compare 比较两个时间戳
+func (t *HLCTimestamp) Compare(other int64) int {
+    now := t.Now()
+    if now < other {
+        return -1
+    } else if now > other {
+        return 1
+    }
+    return 0
 }
 ```
+
+**格式说明**：
+
+| 字段 | 位宽 | 范围 | 说明 |
+|------|------|------|------|
+| PT（物理时间） | 48-bit | 约 8900 年 | 毫秒级 Unix 时间戳 |
+| C（逻辑计数） | 16-bit | 0-65535 | 同毫秒内的事件排序 |
+
+**对比原方案**：
+
+| 方案 | PT 位宽 | 有效时间 | 问题 |
+|------|---------|---------|------|
+| ~~原方案~~ | ~~32-bit~~ | ~~约 49 天~~ | ~~时间戳周期回绕~~ |
+| **新方案** | **48-bit** | **约 8900 年** | **无回绕问题** |
 
 ### 2.4 HLC 优势
 
@@ -220,14 +276,18 @@ func TestGossipConvergence(t *testing.T) {
 }
 ```
 
-### 3.3 Gossip 收敛性检测（P1 修复）
+### 3.3 Gossip 收敛性检测（V1.3 更新）
 
 **问题**：原方案使用固定 `time.Sleep(10s)`，不能保证收敛完成。
 
-**修复**：实现基于版本向量的收敛检测：
+**方案选择**（架构师确认）：
+- ~~方案 A：基于版本向量~~ - 需要新增 VersionVector 实现
+- **方案 B（采用）：基于 Merkle Tree** - 复用现有 `internal/metadata/gossip/merkle_sync.go`
+
+**实现**：基于 Merkle Root 的收敛检测：
 
 ```go
-// GossipConvergenceChecker 收敛性检查器
+// GossipConvergenceChecker 收敛性检查器（基于 Merkle Tree）
 type GossipConvergenceChecker struct {
     nodes    []*Node
     timeout  time.Duration
@@ -247,28 +307,70 @@ func (c *GossipConvergenceChecker) WaitForConvergence(ctx context.Context) error
         case <-time.After(c.interval):
         }
     }
-    return ErrConvergenceTimeout
+    // V1.3 新增：返回详细诊断信息
+    return c.buildConvergenceError()
 }
 
-// isConverged 检查所有节点版本向量是否一致
+// isConverged 检查所有节点 Merkle Root 是否一致
 func (c *GossipConvergenceChecker) isConverged() bool {
     if len(c.nodes) == 0 {
         return true
     }
 
-    // 获取第一个节点的版本向量作为基准
-    baseVV := c.nodes[0].GetVersionVector()
+    // 使用 Merkle Root 作为一致性标记（复用现有实现）
+    baseRoot := c.nodes[0].GetMerkleRoot()
 
-    // 检查所有节点版本向量是否一致
     for _, node := range c.nodes[1:] {
-        vv := node.GetVersionVector()
-        if !vv.Equals(baseVV) {
+        root := node.GetMerkleRoot()
+        if !bytes.Equal(baseRoot, root) {
             return false
         }
     }
     return true
 }
+
+// V1.3 新增：收敛失败时提供诊断信息
+type ConvergenceError struct {
+    Timeout        time.Duration
+    NodeRoots      map[string][]byte  // 各节点的 Merkle Root 快照
+    DivergentNodes []string           // 未收敛的节点
+}
+
+func (e *ConvergenceError) Error() string {
+    return fmt.Sprintf("convergence timeout after %v, divergent nodes: %v",
+        e.Timeout, e.DivergentNodes)
+}
+
+func (c *GossipConvergenceChecker) buildConvergenceError() *ConvergenceError {
+    err := &ConvergenceError{
+        Timeout:        c.timeout,
+        NodeRoots:      make(map[string][]byte),
+        DivergentNodes: []string{},
+    }
+
+    if len(c.nodes) == 0 {
+        return err
+    }
+
+    baseRoot := c.nodes[0].GetMerkleRoot()
+    err.NodeRoots[c.nodes[0].ID()] = baseRoot
+
+    for _, node := range c.nodes[1:] {
+        root := node.GetMerkleRoot()
+        err.NodeRoots[node.ID()] = root
+        if !bytes.Equal(baseRoot, root) {
+            err.DivergentNodes = append(err.DivergentNodes, node.ID())
+        }
+    }
+
+    return err
+}
 ```
+
+**优势**：
+- ✅ 复用现有 `merkle_sync.go` 实现，无需新增代码
+- ✅ Merkle Root 已经是节点一致性标记
+- ✅ 失败时提供详细诊断信息（V1.3 新增）
 
 ### 3.4 Quorum 一致性语义澄清（P1）
 
@@ -309,7 +411,7 @@ func (c *GossipConvergenceChecker) isConverged() bool {
 | **网络延迟** | 高延迟环境 | 时间戳排序正确性 | `network/latency` |
 | **消息丢失** | 部分消息丢失 | 重试机制正确性 | `network/drop` |
 
-### 4.3 NexKV Failpoint 规划
+### 4.3 NexKV Failpoint 规划（V1.3 更新）
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -335,9 +437,12 @@ func (c *GossipConvergenceChecker) isConverged() bool {
 │  ├── network/partition         - 网络分区                           │
 │  └── network/corruption        - 数据损坏                           │
 │                                                                     │
-│  Layer 3: Gossip (internal/metadata/gossip)                        │
+│  Layer 3: Gossip (internal/metadata/gossip) [V1.3 扩展]            │
 │  ├── gossip/message-drop       - Gossip 消息丢失                    │
-│  └── gossip/delay              - Gossip 传播延迟                    │
+│  ├── gossip/delay              - Gossip 传播延迟                    │
+│  ├── gossip/parse-error        - 消息解析错误（V1.3 新增）          │
+│  ├── gossip/out-of-order       - 消息顺序乱序（V1.3 新增）          │
+│  └── gossip/duplicate          - 消息重复（V1.3 新增）              │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -528,6 +633,7 @@ func Test2PC_CoordinatorFailure(t *testing.T) {
 }
 
 // 测试：并行测试（不同 failpoint 隔离）
+// V1.3 更新：架构师建议故障注入测试不建议并行执行
 func TestParallelFailpoints(t *testing.T) {
     scenarios := []struct {
         name       string
@@ -540,11 +646,15 @@ func TestParallelFailpoints(t *testing.T) {
     }
 
     for _, sc := range scenarios {
+        sc := sc  // 显式捕获循环变量
         t.Run(sc.name, func(t *testing.T) {
-            t.Parallel()
+            // V1.3 注意：故障注入测试不建议使用 t.Parallel()
+            // 原因：failpoint.Enable() 是全局的，并行测试可能相互干扰
+            // 如需并行，请确保使用 WithHook 隔离且不使用全局 Enable
 
             ctx := failpoint.WithHook(context.Background(), func(ctx context.Context, fpname string) bool {
-                return sc.failpoints[fpname]
+                enabled, ok := sc.failpoints[fpname]
+                return ok && enabled
             })
 
             err := runStorageTest(ctx)
@@ -555,6 +665,16 @@ func TestParallelFailpoints(t *testing.T) {
             }
         })
     }
+}
+
+// V1.3 新增：推荐使用串行标签隔离故障注入测试
+//go:build !race
+// +build !race
+
+func TestFailpointScenarios_Serial(t *testing.T) {
+    // 故障注入测试强制串行执行
+    // 使用 go test -tags=!race 运行
+    // ...
 }
 ```
 
@@ -592,7 +712,7 @@ test-chaos: failpoint-setup
 	done
 ```
 
-### 4.9 实现难度评估（更新）
+### 4.9 实现难度评估（V1.3 更新）
 
 | 组件 | 难度 | 工作量 | 说明 |
 |------|------|--------|------|
@@ -600,8 +720,15 @@ test-chaos: failpoint-setup
 | Storage 层 failpoint | ⭐⭐ | 1 天 | 4 个故障点 |
 | Consistency 层 failpoint | ⭐⭐⭐ | 1.5 天 | 5 个故障点 + context 支持 |
 | Network 层 failpoint | ⭐⭐⭐ | 1 天 | 4 个故障点 |
-| 测试用例编写 | ⭐⭐ | 1 天 | 表格驱动 + 并行测试 |
-| **总计** | - | **5 天** | 比自建方案节省 2-4 天 |
+| Gossip 层 failpoint | ⭐⭐ | 1 天 | 5 个故障点（V1.3 扩展） |
+| 测试用例编写 | ⭐⭐ | 1.5 天 | 表格驱动 + 串行测试 |
+| E2ETestScenario 集成 | ⭐⭐ | 0.5 天 | 与现有框架集成 |
+| **总计** | - | **7 天** | V1.3 调整（原 5 天偏乐观） |
+
+**架构师建议**：如需进一步拆分，可分为：
+- PR-065a：failpoint 基础设施集成（2 天）
+- PR-065b：Storage/Network 层 failpoint 实现（3 天）
+- PR-065c：Consistency/Gossip 层 failpoint + 测试用例（2-3 天）
 
 ---
 
@@ -641,15 +768,42 @@ const (
     Op2PCRollback   // 回滚
 )
 
-// 扩展状态（考虑 Gossip 同步）
-type TxStatus struct {
-    Status     string            // pending/prepared/committed/aborted/unknown
-    Shards     []string
-    Writes     map[string]string
-    SyncStatus map[string]bool   // 分片 -> 是否已同步状态
-    DecisionTS int64             // 决策时间戳（用于 Gossip 同步）
+// V1.3 新增：2PC 扩展状态模型（分布式系统专家建议）
+type TxState struct {
+    TxID        string            // 事务 ID
+    Status      TxStatus          // pending/prepared/committed/aborted
+    Participants []string         // 参与者分片列表
+    Writes      map[string]string // 写操作集合
+    Coordinator string            // 协调者节点 ID
+    DecisionTS  int64             // 决策时间戳（用于 Gossip 同步）
+}
+
+type TxStatus int
+
+const (
+    TxStatusPending TxStatus = iota
+    TxStatusPrepared
+    TxStatusCommitted
+    TxStatusAborted
+    TxStatusUnknown  // 协调者故障后的不确定状态
+)
+
+// 扩展的 Porcupine 状态模型
+type ExtendedState struct {
+    KVState  map[string]string  // 原有 KV 状态
+    TxStates map[string]*TxState // txID -> TxState（V1.3 新增）
 }
 ```
+
+**V1.3 新增：协调者故障测试场景**（分布式系统专家建议）
+
+| 故障时机 | 预期行为 | 验证方法 |
+|---------|---------|---------|
+| **Prepare 阶段前** | 事务不开始，客户端收到错误 | 检查 KV 状态不变 |
+| **Prepare 阶段中** | 部分参与者已 prepare，需要超时回滚 | 检查最终一致性 |
+| **Commit 阶段前** | 所有参与者已 prepare，需要恢复协调者 | 检查事务最终提交 |
+| **Commit 阶段中** | 部分参与者已 commit，需要继续传播 | 检查所有参与者最终一致 |
+| **Gossip 同步前** | 事务决策未传播到其他节点 | 检查 Gossip 后一致性 |
 
 ### 5.3 挑战分析
 
@@ -661,7 +815,74 @@ type TxStatus struct {
 | **故障恢复** | 协调者故障后恢复 | 幂等操作设计 |
 | **现有复杂度** | 已有 5 种状态 + Merkle Tree | 先完成 TLA+ 规约 |
 
-### 5.4 工作量重估（P0 修复）
+### 5.4 Porcupine 可视化支持（V1.3 新增）
+
+**架构师建议**：Porcupine 验证失败时生成交互式 HTML 报告，便于调试：
+
+```go
+// internal/metadata/consistency/porcupine/checker.go
+
+import (
+    "os"
+    "path/filepath"
+    "github.com/anishathalye/porcupine"
+)
+
+// CheckWithVisualization 带可视化的一致性检查
+func (c *ConsistencyChecker) CheckWithVisualization(history []porcupine.Operation) (bool, string) {
+    result := porcupine.CheckOperations(c.model, history, c.timeout)
+
+    if result.Ok {
+        return true, ""
+    }
+
+    // 生成可视化文件
+    visPath := filepath.Join(os.TempDir(), fmt.Sprintf("porcupine-violation-%d.html", time.Now().Unix()))
+    err := porcupine.Visualize(c.model, history, visPath)
+    if err != nil {
+        return false, fmt.Sprintf("linearizability check failed, visualization error: %v", err)
+    }
+
+    return false, fmt.Sprintf("linearizability check failed, visualization: %s", visPath)
+}
+
+// VerifyLinearizabilityWithVis 带可视化的线性化验证
+func (s *RecordingE2ETestScenario) VerifyLinearizabilityWithVis() (*CheckResult, string) {
+    var allOps []porcupine.Operation
+    for _, recorder := range s.Recorders {
+        allOps = append(allOps, recorder.GetOperations()...)
+    }
+
+    if len(allOps) == 0 {
+        return &CheckResult{Ok: true}, ""
+    }
+
+    ok, visPath := s.Checker.CheckWithVisualization(allOps)
+    if ok {
+        return &CheckResult{Ok: true}, ""
+    }
+
+    return &CheckResult{
+        Ok:    false,
+        Error: fmt.Sprintf("Linearizability violation detected. Visualization: %s", visPath),
+    }, visPath
+}
+```
+
+**使用示例**：
+
+```go
+func TestWithVisualization(t *testing.T) {
+    // ... 执行操作 ...
+
+    result, visPath := scenario.VerifyLinearizabilityWithVis()
+    if !result.Ok {
+        t.Logf("Visualization file: %s", visPath)
+        // 在 CI 中上传为 artifact
+    }
+    require.True(t, result.Ok, result.Error)
+}
+```
 
 | 阶段 | 原估算 | 修正估算 | 说明 |
 |------|--------|---------|------|
@@ -742,27 +963,41 @@ func TestRealCluster_HotKeyContention(t *testing.T) {
 
 ## 7. 实施计划
 
-### 7.1 PR 依赖关系图（P1 新增）
+### 7.1 PR 依赖关系图（V1.3 更新）
 
 ```
+Phase 0: 前置修复（V1.3 新增）
+┌─────────────────────────────────────────────────────────┐
+│ HLC Bugfix PR                                           │
+│ ├── 修复 nil 检查问题                                   │
+│ ├── 修复逻辑计数器溢出问题                              │
+│ ├── 工作量: 0.5 天                                      │
+│ └── 负责人: 核心开发 A                                  │
+└─────────────────────────────────────────────────────────┘
+                           │
+                           ▼
 Phase 1: 基础设施
 ┌─────────────────────────────────────────────────────────┐
 │ PR-064: 分离 Gossip/Quorum 测试策略                     │
-│ ├── 添加 GossipConvergenceChecker                       │
+│ ├── 添加 GossipConvergenceChecker（基于 Merkle Tree）   │
 │ ├── 添加 QuorumLinearizabilityChecker                   │
-│ └── 依赖: 无，可独立开始                                │
+│ ├── 集成 HLC 时间戳（48-bit PT + 16-bit C）             │
+│ ├── 添加 Porcupine 可视化支持（V1.3 新增）              │
+│ ├── 依赖: HLC Bugfix PR                                 │
+│ ├── 工作量: 3-4 天（V1.3 调整）                         │
+│ └── 风险: Merkle Root 获取接口可能需要适配              │
 └─────────────────────────────────────────────────────────┘
                            │
                            ▼
 Phase 2: 故障注入
 ┌─────────────────────────────────────────────────────────┐
 │ PR-065: 故障注入测试框架                                │
-│ ├── FaultInjector 核心框架                              │
-│ ├── 节点故障注入                                        │
-│ ├── 协调者故障注入（新增）                              │
-│ ├── 网络分区注入                                        │
+│ ├── failpoint 工具集成                                  │
+│ ├── Storage/Network/Consistency/Gossip 层 failpoint     │
+│ ├── 测试用例编写（串行执行）                            │
 │ ├── 依赖: PR-064（需要分离的测试策略）                  │
-│ └── 可并行: FaultInjector 核心框架                      │
+│ ├── 工作量: 7 天（V1.3 调整，原 5 天）                  │
+│ └── 风险: 并行测试隔离复杂度                            │
 └─────────────────────────────────────────────────────────┘
                            │
                            ▼
@@ -770,10 +1005,11 @@ Phase 3: 真实环境测试
 ┌─────────────────────────────────────────────────────────┐
 │ PR-066: 真实网络 E2E 测试                               │
 │ ├── RealClusterScenario                                 │
+│ ├── 热点 Key 竞争测试（使用收敛检测替代硬编码等待）     │
 │ ├── CI 集成                                             │
-│ ├── 热点 Key 竞争测试（新增）                           │
 │ ├── 依赖: PR-065（需要故障注入支持）                    │
-│ └── 可独立: RealClusterScenario 基础结构                │
+│ ├── 工作量: 4-5 天                                      │
+│ └── 风险: CI 环境稳定性                                 │
 └─────────────────────────────────────────────────────────┘
                            │
                            ▼
@@ -781,91 +1017,190 @@ Phase 4: 2PC 验证（阻塞项：TLA+ 规约）
 ┌─────────────────────────────────────────────────────────┐
 │ PR-067: 2PC 验证                                        │
 │ ├── 前置条件: TLA+ 规约完成（3-5 天）                   │
-│ ├── 扩展操作类型                                        │
-│ ├── 扩展状态模型                                        │
-│ ├── 协调者故障测试                                      │
+│ │   └── 负责人: 架构师/分布式系统 Agent（V1.3 确认）    │
+│ ├── 扩展操作类型 + 状态模型                             │
+│ ├── 协调者故障测试（5 种场景）                          │
 │ ├── 依赖: PR-065 + TLA+ 规约                            │
-│ └── 工作量: 12-15 天（修正）                            │
+│ ├── 工作量: 12-15 天                                    │
+│ └── 风险: TLA+ 规约发现设计缺陷                         │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### 7.2 优先级排序
+### 7.2 优先级排序（V1.3 更新）
 
 | 优先级 | 任务 | 工作量 | 价值 | 建议 |
 |--------|------|--------|------|------|
-| **P1** | 分离 Gossip/Quorum 测试策略 | 2 天 | 高 | 立即实施 |
-| **P1** | 故障注入测试框架 | 7-9 天 | 高 | 本迭代 |
+| **P0** | HLC Bugfix PR | 0.5 天 | 高 | 立即实施 |
+| **P1** | 分离 Gossip/Quorum 测试策略 | 3-4 天 | 高 | 立即实施 |
+| **P1** | 故障注入测试框架 | 7 天 | 高 | 本迭代 |
+| **P1** | TLA+ 规约（与 PR-064/065 并行） | 3-5 天 | 高 | 架构师负责 |
 | **P2** | 真实网络 E2E 测试 | 4-5 天 | 中 | 下迭代 |
-| **P2** | 2PC 验证（含 TLA+） | 12-15 天 | 中 | 需要设计先行 |
+| **P2** | 2PC 验证 | 12-15 天 | 中 | 需要设计先行 |
 
-### 7.3 建议 PR 分拆
+### 7.3 建议 PR 分拆（V1.3 更新）
 
 ```
-PR-064: 分离 Gossip/Quorum 测试策略（2 天）
-├── 添加 GossipConvergenceChecker（版本向量检测）
+HLC Bugfix PR（0.5 天）- 前置条件
+├── 修复 internal/clock/hlc.go nil 检查
+├── 修复逻辑计数器溢出
+└── 添加单元测试
+
+PR-064: 分离 Gossip/Quorum 测试策略（3-4 天）
+├── 添加 GossipConvergenceChecker（基于 Merkle Tree）
 ├── 添加 QuorumLinearizabilityChecker
-├── 集成 HLC 时间戳（修复 nil 检查和溢出）
+├── 集成 HLC 时间戳（48-bit PT + 16-bit C）
+├── 添加 Porcupine 可视化支持
 └── 更新测试用例
 
-PR-065: 故障注入测试框架（7-9 天）
-├── FaultInjector 核心框架
-├── 节点故障注入
-├── 协调者故障注入（新增）
-├── 网络分区注入
-└── 故障场景测试用例
+PR-065: 故障注入测试框架（7 天）
+├── failpoint 工具集成
+├── Storage 层 failpoint（4 个）
+├── Network 层 failpoint（4 个）
+├── Consistency 层 failpoint（5 个）
+├── Gossip 层 failpoint（5 个，V1.3 扩展）
+├── E2ETestScenario 集成
+└── 测试用例（串行执行）
 
 PR-066: 真实网络 E2E 测试（4-5 天）
 ├── RealClusterScenario
-├── 热点 Key 竞争测试（新增）
+├── 热点 Key 竞争测试
 ├── CI 集成
 └── 性能基准
 
 PR-067: 2PC 验证（12-15 天，含 TLA+）
-├── TLA+ 规约编写（前置条件）
+├── TLA+ 规约编写（前置条件，架构师负责）
 ├── 扩展操作类型
 ├── 扩展状态模型
-└── 2PC 测试用例
+└── 2PC 测试用例（5 种协调者故障场景）
 ```
 
 ---
 
-## 8. 风险评估
+## 8. 风险评估（V1.3 更新）
 
 | 风险 | 影响 | 概率 | 缓解措施 |
 |------|------|------|---------|
-| HLC 溢出导致时间戳回退 | 高 | 30% | 已添加溢出检测和告警 |
-| Gossip 测试误报 | 中 | 20% | 分离测试策略 + 版本检测 |
-| 故障注入影响 CI 稳定性 | 中 | 40% | 添加清理机制和重试 |
+| HLC nil 检查导致 panic | 高 | 100% | 创建独立 bugfix PR |
+| HLC 溢出导致时间戳回退 | 高 | 30% | 已添加溢出检测和推进物理时间 |
+| Gossip 测试误报 | 中 | 20% | 分离测试策略 + Merkle Root 检测 |
+| 故障注入影响 CI 稳定性 | 中 | 40% | 串行执行 + 清理机制 |
 | 2PC 状态爆炸 | 高 | 60% | 先完成 TLA+ 规约 |
+| TLA+ 规约发现设计缺陷 | 中 | 40% | 早期发现，及时修正 |
 | 真实测试环境不稳定 | 中 | 30% | 添加重试机制 |
+| Porcupine 验证性能 | 中 | 40% | 限制 history 长度（1000 ops） |
 
 ---
 
 ## 9. 结论与建议
 
-### 9.1 架构师确认的方案
+### 9.1 架构师确认的方案（V1.3 更新）
 
 | 决策项 | 确认方案 |
 |--------|---------|
-| **时钟方案** | 使用 `internal/clock` 的 HLC（需修复 nil 检查和溢出） |
+| **时钟方案** | 使用 `internal/clock` 的 HLC（48-bit PT + 16-bit C） |
 | **测试策略** | 方案 A：分离测试策略 |
-| **故障测试** | 包含协调者故障场景 |
+| **Gossip 收敛检测** | 方案 A：基于 Merkle Tree（复用现有实现） |
+| **故障注入** | pingcap/failpoint 框架 |
+| **TLA+ 规约负责人** | 架构师/分布式系统 Agent |
 
 ### 9.2 实施计划
 
-1. **立即实施**：修复 HLC nil 检查和溢出问题
-2. **立即实施**：分离 Gossip/Quorum 测试策略（PR-064）
-3. **本迭代**：故障注入测试框架（PR-065）
-4. **下迭代**：真实网络 E2E 测试（PR-066）
-5. **待设计**：2PC 验证需要先完成 TLA+ 规约（PR-067）
+1. **立即实施**：创建 HLC bugfix PR（0.5 天）
+2. **立即实施**：分离 Gossip/Quorum 测试策略（PR-064，3-4 天）
+3. **并行启动**：TLA+ 规约编写（3-5 天，架构师负责）
+4. **本迭代**：故障注入测试框架（PR-065，7 天）
+5. **下迭代**：真实网络 E2E 测试（PR-066，4-5 天）
+6. **待 TLA+ 完成**：2PC 验证（PR-067，12-15 天）
 
-### 9.3 技术决策
+### 9.3 技术决策（V1.3 确认）
 
 - ✅ 采用**分离测试策略**而非扩展模型（架构师确认）
-- ✅ 时钟使用 **`internal/clock` HLC**（架构师确认）
-- ✅ 故障注入框架与现有 E2ETestScenario 集成
-- ✅ 2PC 验证结合 TLA+ 进行设计验证
-- ✅ 补充协调者故障测试场景
+- ✅ 时钟使用 **`internal/clock` HLC**，时间戳格式 48-bit PT + 16-bit C
+- ✅ Gossip 收敛检测使用 **Merkle Tree**（复用现有实现）
+- ✅ 故障注入使用 **pingcap/failpoint** 框架
+- ✅ 2PC 验证结合 **TLA+** 进行设计验证
+- ✅ 补充协调者故障测试场景（5 种时机）
+- ✅ 添加 Porcupine 可视化支持
+- ✅ 故障注入测试**不建议并行执行**
+
+---
+
+## 10. 附录：TLA+ 规约说明（V1.3 新增）
+
+### 10.1 什么是 TLA+
+
+**TLA+（Temporal Logic of Actions）** 是由 Leslie Lamport 发明的形式化规约语言，用于：
+
+1. **设计验证**：在实现前验证分布式算法的正确性
+2. **并发分析**：发现竞态条件和死锁
+3. **不变式证明**：数学证明系统满足某些性质
+
+### 10.2 为什么 PR-067 需要 TLA+
+
+**2PC 协议复杂度分析**：
+
+| 复杂度来源 | 说明 |
+|-----------|------|
+| 5 种事务状态 | pending/prepared/committed/aborted/unknown |
+| 协调者故障 | 5 种故障时机需要处理 |
+| Gossip 同步 | 事务状态异步传播 |
+| Merkle Tree 协同 | 数据一致性标记 |
+| 幂等重试 | 故障恢复需要幂等设计 |
+
+**TLA+ 规约目标**：
+
+```
+---- MODULE NexKV2PC ----
+EXTENDS Naturals, Sequences
+
+VARIABLES txState, kvState, coordinator
+
+(* 2PC 状态转换 *)
+Init == /\ txState = "pending"
+        /\ kvState = [k \in Keys |-> None]
+
+Prepare == /\ txState = "pending"
+           /\ coordinator # None
+           /\ txState' = "prepared"
+
+Commit == /\ txState = "prepared"
+          /\ coordinator # None
+          /\ txState' = "committed"
+
+(* 不变式：原子性保证 *)
+Atomicity == \/ txState = "pending"
+             \/ txState = "prepared"
+             \/ (txState = "committed" /\ AllShardsCommitted)
+             \/ (txState = "aborted" /\ AllShardsAborted)
+====
+```
+
+### 10.3 TLA+ 与 Porcupine 的协作
+
+| 工具 | 用途 | 时机 |
+|------|------|------|
+| **TLA+** | 设计验证（模型检查） | 开发前 |
+| **Porcupine** | 运行时验证（线性一致性） | 开发后 |
+
+```
+设计阶段 → TLA+ 规约 → 模型检查 → 发现设计缺陷
+                                    ↓
+                              修正设计
+                                    ↓
+开发阶段 → Porcupine 测试 → 线性一致性验证 → 发现实现缺陷
+```
+
+### 10.4 TLA+ 规约验收标准
+
+PR-067 的 TLA+ 规约需满足：
+
+| 验收项 | 说明 |
+|--------|------|
+| **原子性** | 事务要么全部提交，要么全部回滚 |
+| **持久性** | 已提交事务不可撤销 |
+| **故障恢复** | 协调者故障后系统能正确恢复 |
+| **无死锁** | 任何状态下都有进展可能 |
+| **可执行** | 规约可在 TLC 模型检查器中运行 |
 
 ---
 
@@ -873,9 +1208,9 @@ PR-067: 2PC 验证（12-15 天，含 TLA+）
 
 | 项目 | 内容 |
 |------|------|
-| 预研状态 | ✅ 完成，两轮评审通过 |
-| 文档版本 | V1.2 |
+| 预研状态 | ✅ 完成，三轮评审通过 |
+| 文档版本 | V1.3 |
 | 创建日期 | 2026-02-13 |
 | 最后更新 | 2026-02-13 |
-| 下一步 | 启动 PR-064 开发 |
+| 下一步 | 创建 HLC bugfix PR |
 | 维护人 | 🤖 核心开发 A |

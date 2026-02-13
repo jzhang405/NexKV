@@ -51,7 +51,7 @@ func (t *HLCTimestamp) Update(eventTime int64, remoteTS int64) int64 {
 	defer t.mu.Unlock()
 
 	// 从远程时间戳解析物理时间和逻辑计数（用于信息记录）
-	_ = remoteTS >> 16       // remotePT
+	_ = remoteTS >> 16            // remotePT
 	_ = uint16(remoteTS & 0xFFFF) // remoteC
 
 	// 更新本地 HLC（简化处理：不使用远程 HLC）

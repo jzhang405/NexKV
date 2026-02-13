@@ -281,123 +281,327 @@ func (c *GossipConvergenceChecker) isConverged() bool {
 
 ---
 
-## 4. 故障注入测试方案
+## 4. 故障注入测试方案（采用 pingcap/failpoint）
 
-### 4.1 需求分析
+> **技术选型**: 采用工业级 `pingcap/failpoint` 框架（TiDB/TiKV 验证）
+> **参考文档**: `thoughts/pingcap-failpoint代码级故障注入完全指南.md`
+
+### 4.1 为什么选择 pingcap/failpoint
+
+| 对比项 | 自定义 FaultInjector | pingcap/failpoint |
+|--------|---------------------|-------------------|
+| **成熟度** | 概念设计 | 工业级（TiDB/TiKV 生产验证） |
+| **代码形式** | 自定义 API | 合法 Go 代码（非注释） |
+| **编译检查** | 运行时 | ✅ 编译时检查 |
+| **并行测试** | 需设计 | ✅ `InjectContext` + `WithHook` |
+| **CI 集成** | 需自建 | ✅ `-toolexec` 无缝集成 |
+| **开发工作量** | 7-9 天 | 3-5 天 |
+
+### 4.2 需求分析
 
 需要验证以下故障场景的一致性：
 
-| 故障类型 | 场景描述 | 验证目标 | 优先级 |
-|---------|---------|---------|--------|
-| **节点故障** | 单节点 crash 后恢复 | 数据不丢失、一致性保持 | P1 |
-| **协调者故障** | 2PC 协调者 crash | 事务正确恢复 | P1（新增） |
-| **网络分区** | 脑裂场景 | Quorum 操作正确性 | P1 |
-| **网络延迟** | 高延迟环境 | 时间戳排序正确性 | P2 |
-| **消息丢失** | 部分消息丢失 | 重试机制正确性 | P2 |
+| 故障类型 | 场景描述 | 验证目标 | failpoint 名称 |
+|---------|---------|---------|----------------|
+| **磁盘故障** | 写入失败、磁盘满 | 错误处理正确 | `storage/disk-full`, `storage/write-error` |
+| **协调者故障** | 2PC 协调者 crash | 事务正确恢复 | `2pc/coordinator-failure` |
+| **网络分区** | 脑裂场景 | Quorum 操作正确性 | `network/partition` |
+| **网络延迟** | 高延迟环境 | 时间戳排序正确性 | `network/latency` |
+| **消息丢失** | 部分消息丢失 | 重试机制正确性 | `network/drop` |
 
-### 4.2 技术方案
+### 4.3 NexKV Failpoint 规划
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    NexKV Failpoint 规划                              │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Layer 0: Storage (internal/storage)                               │
+│  ├── storage/disk-full         - 磁盘满                             │
+│  ├── storage/write-error       - 写入错误                           │
+│  ├── storage/read-corruption   - 读取数据损坏                       │
+│  └── storage/sync-error        - fsync 错误                         │
+│                                                                     │
+│  Layer 1: Consistency (internal/metadata/consistency)              │
+│  ├── 2pc/prepare-timeout       - 2PC prepare 超时                   │
+│  ├── 2pc/commit-error          - 2PC commit 错误                    │
+│  ├── 2pc/coordinator-failure   - 协调者故障                         │
+│  ├── quorum/not-reached        - Quorum 未达成                      │
+│  └── merkle/mismatch           - Merkle Tree 校验失败               │
+│                                                                     │
+│  Layer 2: Network (internal/transport)                             │
+│  ├── network/drop              - 消息丢失                           │
+│  ├── network/latency           - 网络延迟                           │
+│  ├── network/partition         - 网络分区                           │
+│  └── network/corruption        - 数据损坏                           │
+│                                                                     │
+│  Layer 3: Gossip (internal/metadata/gossip)                        │
+│  ├── gossip/message-drop       - Gossip 消息丢失                    │
+│  └── gossip/delay              - Gossip 传播延迟                    │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.4 Storage Layer 实现
 
 ```go
-// 故障注入控制器
-type FaultInjector struct {
-    mu              sync.Mutex
-    nodeFailures    map[string]bool
-    partitions      []*NetworkPartition
-    latency         map[string]time.Duration
+// internal/storage/disk.go
+package storage
+
+import (
+    "errors"
+    "github.com/pingcap/failpoint"
+)
+
+var (
+    ErrDiskFull    = errors.New("disk full")
+    ErrWriteError  = errors.New("write error")
+    ErrSyncError   = errors.New("sync error")
+)
+
+// Write 写入数据到磁盘
+func (s *Storage) Write(key string, value []byte) error {
+    // 故障注入点：磁盘满
+    failpoint.Inject("storage/disk-full", func() {
+        failpoint.Return(ErrDiskFull)
+    })
+
+    // 故障注入点：写入错误
+    failpoint.Inject("storage/write-error", func() {
+        failpoint.Return(ErrWriteError)
+    })
+
+    return s.writeToDisk(key, value)
 }
 
-// 故障注入测试场景
-type FaultInjectionScenario struct {
-    *RecordingE2ETestScenario
-    injector *FaultInjector
-}
+// Sync 强制同步到磁盘
+func (s *Storage) Sync() error {
+    failpoint.Inject("storage/sync-error", func() {
+        failpoint.Return(ErrSyncError)
+    })
 
-// 注入节点故障
-func (s *FaultInjectionScenario) InjectNodeFailure(nodeID string) {
-    s.injector.nodeFailures[nodeID] = true
-    s.Nodes[nodeID].Stop()
-}
-
-// 恢复节点
-func (s *FaultInjectionScenario) RecoverNode(nodeID string) {
-    delete(s.injector.nodeFailures, nodeID)
-    s.Nodes[nodeID].Start()
+    return s.file.Sync()
 }
 ```
 
-### 4.3 协调者故障测试（P1 新增）
+### 4.5 Consistency Layer 实现（支持并行测试）
 
 ```go
-// 测试：2PC 协调者故障后的一致性
-func TestLinearizability_CoordinatorFailure(t *testing.T) {
-    scenario := NewFaultInjectionScenario([]string{"coordinator", "participant-1", "participant-2"})
+// internal/metadata/consistency/twopc_coordinator.go
+package consistency
 
-    // 开始 2PC 事务
-    txID := scenario.BeginTransaction("coordinator", []string{"p1", "p2"})
+import (
+    "context"
+    "time"
 
-    // 预提交阶段
-    scenario.Prepare(txID, "participant-1")
-    scenario.Prepare(txID, "participant-2")
+    "github.com/pingcap/failpoint"
+)
 
-    // 注入协调者故障（在 Commit 前）
-    scenario.InjectNodeFailure("coordinator")
+// TwoPhaseCommit 执行两阶段提交
+func (c *Coordinator) TwoPhaseCommit(ctx context.Context, tx *Transaction) error {
+    // 使用 InjectContext 支持并行测试隔离
+    failpoint.InjectContext(ctx, "2pc/prepare-timeout", func() {
+        time.Sleep(30 * time.Second)
+        failpoint.Return(ErrPrepareTimeout)
+    })
 
-    // 参与者应该超时等待
-    // 恢复协调者后应该能正确决策
+    failpoint.InjectContext(ctx, "2pc/coordinator-failure", func() {
+        // 模拟协调者故障
+        failpoint.Return(ErrCoordinatorFailure)
+    })
 
-    // 恢复协调者
-    scenario.RecoverNode("coordinator")
+    // Phase 1: Prepare
+    if err := c.prepare(ctx, tx); err != nil {
+        return c.rollback(ctx, tx)
+    }
 
-    // 验证事务最终状态正确
-    txState := scenario.GetTransactionState(txID)
-    require.Contains(t, []string{"committed", "aborted"}, txState.Status)
+    // Phase 2: Commit
+    failpoint.InjectContext(ctx, "2pc/commit-error", func() {
+        failpoint.Return(ErrCommitFailed)
+    })
 
-    // 验证线性化
-    result := scenario.VerifyLinearizability()
-    require.True(t, result.Ok)
+    return c.commit(ctx, tx)
+}
+
+// CheckQuorum 检查是否达成 Quorum
+func (c *Coordinator) CheckQuorum(shard *Shard) (bool, error) {
+    failpoint.Inject("quorum/not-reached", func() {
+        failpoint.Return(false, ErrQuorumNotReached)
+    })
+
+    responses := c.broadcastCheck(shard)
+    return len(responses) >= shard.Quorum, nil
 }
 ```
 
-### 4.4 网络分区测试
+### 4.6 Network Layer 实现
 
 ```go
-// 测试：网络分区场景
-func TestLinearizability_NetworkPartition(t *testing.T) {
-    scenario := NewFaultInjectionScenario([]string{"node-1", "node-2", "node-3", "node-4", "node-5"})
+// internal/transport/transport.go
+package transport
 
-    // 注入分区：{1,2} vs {3,4,5}
-    scenario.InjectPartition(
-        []string{"node-1", "node-2"},
-        []string{"node-3", "node-4", "node-5"},
-    )
+import (
+    "context"
+    "time"
 
-    // 少数派操作（应该失败或超时）
-    err := client1.QuorumPut(ctx, "ns", "key", []byte("value-from-minority"))
-    require.Error(t, err) // 验证确实被拒绝
+    "github.com/pingcap/failpoint"
+)
 
-    // 多数派操作（应该成功）
-    err = client3.QuorumPut(ctx, "ns", "key", []byte("value-from-majority"))
-    require.NoError(t, err)
+// SendMessage 发送网络消息
+func (t *Transport) SendMessage(ctx context.Context, msg *Message) error {
+    // 故障注入：消息丢失
+    failpoint.InjectContext(ctx, "network/drop", func(val failpoint.Value) {
+        dropRate := val.(float64)
+        if rand.Float64() < dropRate {
+            failpoint.Return(nil) // 静默丢弃
+        }
+    })
 
-    // 恢复分区
-    scenario.HealPartition()
+    // 故障注入：网络延迟
+    failpoint.InjectContext(ctx, "network/latency", func(val failpoint.Value) {
+        latency := time.Duration(val.(int)) * time.Millisecond
+        time.Sleep(latency)
+    })
 
-    // 验证多数派数据同步到少数派
-    time.Sleep(1 * time.Second)
-    val, _ := client1.Get(ctx, "ns", "key")
-    require.Equal(t, []byte("value-from-majority"), val)
+    // 故障注入：网络分区
+    failpoint.InjectContext(ctx, "network/partition", func(val failpoint.Value) {
+        partitionedNodes := val.([]string)
+        for _, node := range partitionedNodes {
+            if msg.Target == node {
+                failpoint.Return(ErrNetworkPartition)
+            }
+        }
+    })
+
+    return t.doSend(ctx, msg)
 }
 ```
 
-### 4.5 实现难度评估
+### 4.7 测试用例
 
-| 组件 | 难度 | 工作量 | 依赖 |
+```go
+// internal/metadata/consistency/porcupine/failpoint_test.go
+package porcupine_test
+
+import (
+    "context"
+    "testing"
+
+    "github.com/pingcap/failpoint"
+    "github.com/stretchr/testify/require"
+)
+
+// 测试：磁盘满场景
+func TestStorageWrite_DiskFull(t *testing.T) {
+    s := storage.NewTestStorage(t)
+    defer s.Close()
+
+    // 激活 failpoint
+    require.NoError(t, failpoint.Enable(
+        "github.com/jzhang405/NexKV/internal/storage/storage/disk-full",
+        "return(true)",
+    ))
+    defer failpoint.Disable("github.com/jzhang405/NexKV/internal/storage/storage/disk-full")
+
+    err := s.Write("key1", []byte("value1"))
+    require.ErrorIs(t, err, storage.ErrDiskFull)
+}
+
+// 测试：2PC 协调者故障（使用 WithHook 隔离）
+func Test2PC_CoordinatorFailure(t *testing.T) {
+    // 创建带 hook 的 context，只激活特定 failpoint
+    ctx := failpoint.WithHook(context.Background(), func(ctx context.Context, fpname string) bool {
+        return fpname == "2pc/coordinator-failure"
+    })
+
+    require.NoError(t, failpoint.Enable(
+        "github.com/jzhang405/NexKV/internal/metadata/consistency/2pc/coordinator-failure",
+        "return(true)",
+    ))
+    defer failpoint.Disable("github.com/jzhang405/NexKV/internal/metadata/consistency/2pc/coordinator-failure")
+
+    coord := NewTestCoordinator(t)
+    tx := NewTestTransaction(t, []string{"node-1", "node-2", "node-3"})
+
+    err := coord.TwoPhaseCommit(ctx, tx)
+    require.ErrorIs(t, err, consistency.ErrCoordinatorFailure)
+}
+
+// 测试：并行测试（不同 failpoint 隔离）
+func TestParallelFailpoints(t *testing.T) {
+    scenarios := []struct {
+        name       string
+        failpoints map[string]bool
+        expectErr  bool
+    }{
+        {"normal", map[string]bool{}, false},
+        {"disk-full", map[string]bool{"storage/disk-full": true}, true},
+        {"network-partition", map[string]bool{"network/partition": true}, true},
+    }
+
+    for _, sc := range scenarios {
+        t.Run(sc.name, func(t *testing.T) {
+            t.Parallel()
+
+            ctx := failpoint.WithHook(context.Background(), func(ctx context.Context, fpname string) bool {
+                return sc.failpoints[fpname]
+            })
+
+            err := runStorageTest(ctx)
+            if sc.expectErr {
+                require.Error(t, err)
+            } else {
+                require.NoError(t, err)
+            }
+        })
+    }
+}
+```
+
+### 4.8 Makefile 集成
+
+```makefile
+# Makefile with failpoint support
+
+FAILPOINT_TOOLEXEC := $(shell pwd)/tools/failpoint-toolexec
+GOCACHE_FAILPOINT := /tmp/nexkv-failpoint-cache
+
+# 初始化 failpoint 工具
+failpoint-setup:
+	@echo "Setting up failpoint tools..."
+	@if [ ! -f $(FAILPOINT_TOOLEXEC) ]; then \
+		go install github.com/pingcap/failpoint/failpoint-toolexec@latest && \
+		mkdir -p tools && \
+		cp $(shell which failpoint-toolexec) $(FAILPOINT_TOOLEXEC); \
+	fi
+
+# 运行所有测试（包含 failpoint）
+test-failpoint: failpoint-setup
+	@echo "Running tests with failpoint support..."
+	GOCACHE=$(GOCACHE_FAILPOINT) \
+	go test -toolexec $(FAILPOINT_TOOLEXEC) -v -race ./...
+
+# 运行故障注入测试
+test-chaos: failpoint-setup
+	@echo "Running chaos tests..."
+	@for fp in storage/disk-full storage/write-error network/partition; do \
+		echo "Testing failpoint: $$fp"; \
+		GOCACHE=$(GOCACHE_FAILPOINT) \
+		GO_FAILPOINTS="github.com/jzhang405/NexKV/internal/$$fp=50%return(true)" \
+		go test -toolexec $(FAILPOINT_TOOLEXEC) -v ./... || exit 1; \
+	done
+```
+
+### 4.9 实现难度评估（更新）
+
+| 组件 | 难度 | 工作量 | 说明 |
 |------|------|--------|------|
-| FaultInjector 核心框架 | ⭐⭐⭐ | 2-3 天 | 无 |
-| 节点故障注入 | ⭐⭐ | 1 天 | Node 生命周期管理 |
-| 协调者故障注入 | ⭐⭐⭐⭐ | 2-3 天 | 2PC 状态管理 |
-| 网络分区注入 | ⭐⭐⭐⭐ | 3-4 天 | Transport 层拦截 |
-| 测试用例编写 | ⭐⭐ | 2 天 | 无 |
+| failpoint 工具集成 | ⭐ | 0.5 天 | `go install` + Makefile |
+| Storage 层 failpoint | ⭐⭐ | 1 天 | 4 个故障点 |
+| Consistency 层 failpoint | ⭐⭐⭐ | 1.5 天 | 5 个故障点 + context 支持 |
+| Network 层 failpoint | ⭐⭐⭐ | 1 天 | 4 个故障点 |
+| 测试用例编写 | ⭐⭐ | 1 天 | 表格驱动 + 并行测试 |
+| **总计** | - | **5 天** | 比自建方案节省 2-4 天 |
 
 ---
 

@@ -19,7 +19,7 @@ func TestSequenceAlignment(t *testing.T) {
 	snapshotDir := filepath.Join(tempDir, "snapshot")
 	walDir := filepath.Join(tempDir, "wal")
 
-	recoveryMgr, err := NewRecoveryManager(checkpointDir, snapshotDir, walDir)
+	recoveryMgr, err := NewRecoveryManager(checkpointDir, snapshotDir, walDir, walDir)
 	if err != nil {
 		t.Fatalf("创建恢复管理器失败: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestCheckpointRecoveryVersionMismatch(t *testing.T) {
 
 		// 创建新的 RecoveryManager 验证新实现
 		walDir := filepath.Join(tempDir, "wal")
-		recoveryMgr, err := NewRecoveryManager(checkpointDir, snapshotDir, walDir)
+		recoveryMgr, err := NewRecoveryManager(checkpointDir, snapshotDir, walDir, walDir)
 		if err != nil {
 			t.Fatalf("创建 RecoveryManager 失败: %v", err)
 		}

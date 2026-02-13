@@ -20,7 +20,7 @@ func TestRecoveryFlow(t *testing.T) {
 	walDir := filepath.Join(tempDir, "wal")
 
 	// 创建恢复管理器
-	recoveryMgr, err := NewRecoveryManager(checkpointDir, snapshotDir, walDir)
+	recoveryMgr, err := NewRecoveryManager(checkpointDir, snapshotDir, walDir, walDir)
 	if err != nil {
 		t.Fatalf("创建恢复管理器失败: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestRecoveryWithWAL(t *testing.T) {
 	}
 
 	// 创建恢复管理器
-	recoveryMgr, err := NewRecoveryManager(checkpointDir, snapshotDir, walDir)
+	recoveryMgr, err := NewRecoveryManager(checkpointDir, snapshotDir, walDir, walDir)
 	if err != nil {
 		t.Fatalf("创建恢复管理器失败: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestRecoveryWithEmptyData(t *testing.T) {
 	walDir := filepath.Join(tempDir, "wal")
 
 	// 创建恢复管理器
-	recoveryMgr, err := NewRecoveryManager(checkpointDir, snapshotDir, walDir)
+	recoveryMgr, err := NewRecoveryManager(checkpointDir, snapshotDir, walDir, walDir)
 	if err != nil {
 		t.Fatalf("创建恢复管理器失败: %v", err)
 	}
@@ -521,7 +521,7 @@ func TestFullCheckpointWorkflow(t *testing.T) {
 	}
 
 	// 步骤 2: 创建 Checkpoint
-	recoveryMgr, err := NewRecoveryManager(checkpointDir, snapshotDir, walDir)
+	recoveryMgr, err := NewRecoveryManager(checkpointDir, snapshotDir, walDir, walDir)
 	if err != nil {
 		t.Fatalf("创建恢复管理器失败: %v", err)
 	}

@@ -1240,6 +1240,7 @@ func TestRecoveryManager_CreateCheckpoint(t *testing.T) {
 		filepath.Join(tempDir, "checkpoint"),
 		filepath.Join(tempDir, "snapshot"),
 		filepath.Join(tempDir, "wal"),
+		filepath.Join(tempDir, "wal"),
 	)
 	require.NoError(t, err)
 

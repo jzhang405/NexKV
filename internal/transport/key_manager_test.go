@@ -9,6 +9,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 // TestKeyManager_GenerateNewKey 测试密钥生成（RED）
@@ -18,7 +19,7 @@ func TestKeyManager_GenerateNewKey(t *testing.T) {
 	defer func() { _ = os.Remove(keyFile) }()
 
 	// When: 首次加载（文件不存在）
-	km := NewKeyManager(keyFile)
+	km := NewKeyManager(keyFile, zap.NewNop())
 	privKey, err := km.LoadOrGenerate()
 
 	// Then: 应生成新密钥
@@ -34,14 +35,14 @@ func TestKeyManager_GenerateNewKey(t *testing.T) {
 func TestKeyManager_LoadExistingKey(t *testing.T) {
 	// Given: 已存在的密钥文件
 	keyFile := filepath.Join(os.TempDir(), "test-existing-key.pem")
-	km1 := NewKeyManager(keyFile)
+	km1 := NewKeyManager(keyFile, zap.NewNop())
 	privKey1, err := km1.LoadOrGenerate()
 	require.NoError(t, err)
 
 	peerID1, _ := peer.IDFromPrivateKey(privKey1)
 
 	// When: 再次加载
-	km2 := NewKeyManager(keyFile)
+	km2 := NewKeyManager(keyFile, zap.NewNop())
 	privKey2, err := km2.LoadOrGenerate()
 
 	// Then: 应返回相同密钥
@@ -61,7 +62,7 @@ func TestKeyManager_FileCorruptionHandling(t *testing.T) {
 	defer func() { _ = os.Remove(keyFile) }()
 
 	// When: 尝试加载
-	km := NewKeyManager(keyFile)
+	km := NewKeyManager(keyFile, zap.NewNop())
 	privKey, err := km.LoadOrGenerate()
 
 	// Then: 应生成新密钥（容错）
@@ -73,7 +74,7 @@ func TestKeyManager_FileCorruptionHandling(t *testing.T) {
 func TestKeyManager_FilePermissions(t *testing.T) {
 	// Given: 创建密钥
 	keyFile := filepath.Join(os.TempDir(), "test-perm-key.pem")
-	km := NewKeyManager(keyFile)
+	km := NewKeyManager(keyFile, zap.NewNop())
 	_, err := km.LoadOrGenerate()
 	require.NoError(t, err)
 	defer func() { _ = os.Remove(keyFile) }()
@@ -93,7 +94,7 @@ func TestKeyManager_ConcurrentAccess(t *testing.T) {
 	defer func() { _ = os.Remove(keyFile) }()
 
 	// When: 并发加载
-	km := NewKeyManager(keyFile)
+	km := NewKeyManager(keyFile, zap.NewNop())
 	var wg sync.WaitGroup
 	results := make([]peer.ID, 10)
 
@@ -118,7 +119,7 @@ func TestKeyManager_ConcurrentAccess(t *testing.T) {
 
 // TestKeyManager_ExpandPath 测试路径展开
 func TestKeyManager_ExpandPath(t *testing.T) {
-	km := NewKeyManager("")
+	km := NewKeyManager("", zap.NewNop())
 
 	// 测试波浪号展开
 	homeDir, err := os.UserHomeDir()

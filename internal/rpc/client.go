@@ -23,7 +23,7 @@ type Client struct {
 	host           host.Host
 	pool           *ConnectionPool
 	defaultTimeout time.Duration
-	maxMessageSize uint16
+	maxMessageSize int
 	codec          *transport.MessagePackCodec
 	enablePool     bool // 是否启用连接池
 }

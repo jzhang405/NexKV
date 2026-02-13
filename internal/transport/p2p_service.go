@@ -24,6 +24,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/multiformats/go-multiaddr"
+	"go.uber.org/zap"
 )
 
 // P2PService 完整的 P2P 服务（统一入口）
@@ -66,7 +67,7 @@ func NewP2PService(cfg *P2PServiceConfig) (*P2PService, error) {
 	}
 
 	// 1. 密钥管理（复用 PR-001）
-	km := NewKeyManager(cfg.KeyPath)
+	km := NewKeyManager(cfg.KeyPath, zap.NewNop())
 	// 展开路径
 	cfg.KeyPath = km.ExpandPath(cfg.KeyPath)
 

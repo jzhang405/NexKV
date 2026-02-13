@@ -6,6 +6,9 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/config/logging"
@@ -20,6 +23,7 @@ type RecoveryManager struct {
 	checkpointDir string
 	snapshotDir   string
 	walDir        string
+	walBasePath   string             // WAL 文件基础路径（不含序号，用于生成 {basePath}.{index} 格式的文件名）
 	seqGen        *SequenceGenerator // 全局序列号生成器
 }
 
@@ -29,9 +33,10 @@ type RecoveryManager struct {
 // - checkpointDir: Checkpoint 文件存储目录
 // - snapshotDir: Snapshot 文件存储目录
 // - walDir: WAL 文件存储目录
+// - walBasePath: WAL 文件基础路径（不含序号，用于生成 {basePath}.{index} 格式的文件名）
 //
 // 返回 RecoveryManager 实例和错误信息
-func NewRecoveryManager(checkpointDir, snapshotDir, walDir string) (*RecoveryManager, error) {
+func NewRecoveryManager(checkpointDir, snapshotDir, walDir, walBasePath string) (*RecoveryManager, error) {
 	// 确保目录存在
 	for _, dir := range []string{checkpointDir, snapshotDir, walDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -49,8 +54,76 @@ func NewRecoveryManager(checkpointDir, snapshotDir, walDir string) (*RecoveryMan
 		checkpointDir: checkpointDir,
 		snapshotDir:   snapshotDir,
 		walDir:        walDir,
+		walBasePath:   walBasePath,
 		seqGen:        seqGen,
 	}, nil
+}
+
+// findLatestWALFile 查找最新的 WAL 文件
+//
+// 使用与 WALRotationManager 相同的命名约定：{basePath}.{index}
+func (r *RecoveryManager) findLatestWALFile() (string, int64, error) {
+	dir := filepath.Dir(r.walBasePath)
+	baseName := filepath.Base(r.walBasePath)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", 0, types.NewInternalError("读取 WAL 目录", err)
+	}
+
+	var files []*walFileInfo
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		if !strings.HasPrefix(name, baseName) {
+			continue
+		}
+
+		// 解析序号（文件名格式: basename.index）
+		suffix := strings.TrimPrefix(name, baseName)
+		if suffix == "" {
+			// 没有序号后缀，当作序号 0
+			files = append(files, &walFileInfo{
+				path:  filepath.Join(dir, name),
+				index: 0,
+			})
+			continue
+		}
+
+		if suffix[0] != '.' {
+			continue
+		}
+
+		indexStr := suffix[1:]
+		index, err := strconv.Atoi(indexStr)
+		if err != nil {
+			continue
+		}
+
+		files = append(files, &walFileInfo{
+			path:  filepath.Join(dir, name),
+			index: index,
+		})
+	}
+
+	if len(files) == 0 {
+		// 没有现有文件，从序号 0 开始
+		return filepath.Join(dir, baseName+".0"), 0, nil
+	}
+
+	// 按序号排序
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].index < files[j].index
+	})
+
+	latest := files[len(files)-1]
+	logging.Infof("找到最新的 WAL 文件: %s (index=%d)", latest.path, latest.index)
+
+	return latest.path, int64(latest.index), nil
 }
 
 // Recover 执行完整的崩溃恢复流程
@@ -248,9 +321,12 @@ func (r *RecoveryManager) CreateCheckpoint(
 	}
 
 	// 6. 获取当前 WAL 文件信息
-	// TODO: 从 WAL 管理器获取当前 WAL 文件和偏移量
-	walStartFile := "wal-0001.bin" // TODO: 动态获取
-	walStartOffset := int64(0)     // TODO: 动态获取
+	walStartFile, _, err := r.findLatestWALFile()
+	if err != nil {
+		r.seqGen.Rollback() // 回滚序列号
+		return nil, types.NewInternalError("查找最新WAL文件失败", err)
+	}
+	walStartOffset := int64(0) // TODO: 从 WAL 文件偏移量获取
 
 	// 7. 构建 Checkpoint 信息
 	snapshotInfoInCheckpoint := &SnapshotInfoInCheckpoint{

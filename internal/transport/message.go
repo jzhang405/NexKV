@@ -35,16 +35,17 @@ const HopMax uint8 = 10
 type MessageType uint8
 
 const (
-	MessageTypeUnknown MessageType = 0
-	MessageTypeGet     MessageType = 1
-	MessageTypePut     MessageType = 2
-	MessageTypeDelete  MessageType = 3
-	MessageTypeSync    MessageType = 4
-	MessageTypeAck     MessageType = 5
-	MessageTypeNack    MessageType = 6
-	MessageTypeGossip  MessageType = 7
-	MessageTypeCluster MessageType = 8
-	MessageTypeQuorum  MessageType = 9
+	MessageTypeUnknown     MessageType = 0
+	MessageTypeGet         MessageType = 1
+	MessageTypePut         MessageType = 2
+	MessageTypeDelete      MessageType = 3
+	MessageTypeSync        MessageType = 4
+	MessageTypeAck         MessageType = 5
+	MessageTypeNack        MessageType = 6
+	MessageTypeGossip      MessageType = 7
+	MessageTypeCluster     MessageType = 8
+	MessageTypeQuorum      MessageType = 9
+	MessageTypeTwoPCGossip MessageType = 10 // P0-1: 2PC Gossip 状态同步
 )
 
 // String 返回消息类型的字符串表示
@@ -68,6 +69,8 @@ func (mt MessageType) String() string {
 		return "CLUSTER"
 	case MessageTypeQuorum:
 		return "QUORUM"
+	case MessageTypeTwoPCGossip:
+		return "TWOPC_GOSSIP"
 	default:
 		return "UNKNOWN"
 	}
@@ -146,7 +149,7 @@ func (m *Message) IncrementHopCount() bool {
 // IsValid 验证消息有效性
 func (m *Message) IsValid() bool {
 	// 检查消息类型
-	if m.Type == MessageTypeUnknown || m.Type > MessageTypeQuorum {
+	if m.Type == MessageTypeUnknown || m.Type > MessageTypeTwoPCGossip {
 		return false
 	}
 
@@ -265,6 +268,26 @@ type ClusterPayload struct {
 	Metadata map[string]string `msgpack:"metadata"` // 元数据
 }
 
+// TwoPCGossipPayload 2PC Gossip 状态同步专属 Payload（P0-1）
+//
+// 用于协调者故障时，参与者通过 Gossip 查询事务决策
+// Phase 字段区分三种消息类型：
+//   - "state": 周期性 Gossip 状态扩散
+//   - "query": Gossip 查询事务决策
+//   - "reply": Gossip 响应查询
+type TwoPCGossipPayload struct {
+	Phase       string `msgpack:"phase"`                 // "state", "query", "reply"
+	TxID        string `msgpack:"tx_id"`                 // 事务ID
+	State       string `msgpack:"state,omitempty"`       // 事务状态（TxStateInit/TxStatePreCommit/TxStateCommitted/TxStateRolledBack/TxStateTimeout）
+	Coordinator string `msgpack:"coordinator,omitempty"` // 协调者地址
+	Timestamp   int64  `msgpack:"timestamp,omitempty"`   // HLC 时间戳
+	Success     bool   `msgpack:"success,omitempty"`     // 查询是否成功（仅用于 reply）
+	Requester   string `msgpack:"requester,omitempty"`   // 查询发起者（仅用于 query/reply）
+
+	// 消息去重字段
+	MessageID uint64 `msgpack:"message_id,omitempty"` // 消息唯一 ID（发送方生成，接收方用于去重）
+}
+
 // ==================== Payload 类型映射 ====================
 
 // PayloadTypeFactory Payload 类型工厂函数（用于创建新实例）
@@ -272,15 +295,16 @@ type PayloadTypeFactory func() any
 
 // payloadTypeFactories 维护 MessageType 与 Payload 工厂函数的映射
 var payloadTypeFactories = map[MessageType]PayloadTypeFactory{
-	MessageTypePut:     func() any { return &PutPayload{} },
-	MessageTypeGet:     func() any { return &GetPayload{} },
-	MessageTypeDelete:  func() any { return &DeletePayload{} },
-	MessageTypeGossip:  func() any { return &GossipPayload{} },
-	MessageTypeQuorum:  func() any { return &QuorumPayload{} },
-	MessageTypeSync:    func() any { return &TwoPCPreparePayload{} },
-	MessageTypeAck:     func() any { return &TwoPCCommitPayload{} },
-	MessageTypeNack:    func() any { return &TwoPCRollbackPayload{} },
-	MessageTypeCluster: func() any { return &ClusterPayload{} },
+	MessageTypePut:         func() any { return &PutPayload{} },
+	MessageTypeGet:         func() any { return &GetPayload{} },
+	MessageTypeDelete:      func() any { return &DeletePayload{} },
+	MessageTypeGossip:      func() any { return &GossipPayload{} },
+	MessageTypeQuorum:      func() any { return &QuorumPayload{} },
+	MessageTypeSync:        func() any { return &TwoPCPreparePayload{} },
+	MessageTypeAck:         func() any { return &TwoPCCommitPayload{} },
+	MessageTypeNack:        func() any { return &TwoPCRollbackPayload{} },
+	MessageTypeCluster:     func() any { return &ClusterPayload{} },
+	MessageTypeTwoPCGossip: func() any { return &TwoPCGossipPayload{} }, // P0-1: 2PC Gossip 状态同步
 }
 
 // ==================== Payload 编解码方法 ====================
@@ -309,6 +333,8 @@ func (m *Message) EncodePayload(payload any) error {
 		msgType = MessageTypeNack
 	case *ClusterPayload:
 		msgType = MessageTypeCluster
+	case *TwoPCGossipPayload:
+		msgType = MessageTypeTwoPCGossip // P0-1: 2PC Gossip 状态同步
 	default:
 		return errors.New("unsupported payload type")
 	}
@@ -527,7 +553,9 @@ func (c *MessagePackCodec) readHeader(r io.Reader) (MessageType, uint16, error) 
 	}
 
 	// 验证长度
-	if length > MaxMessageSize {
+	// 由于协议使用 uint16 存储长度，最大值为 65535
+	// 如果 MaxMessageSize 小于 65535，则进行验证
+	if MaxMessageSize <= 65535 && int(length) > MaxMessageSize {
 		return 0, 0, fmt.Errorf("消息过大: %d 字节（最大 %d 字节）", length, MaxMessageSize)
 	}
 

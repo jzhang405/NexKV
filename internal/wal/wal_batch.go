@@ -188,12 +188,17 @@ func (w *WALBatchWriter) flush() (int, error) {
 
 // writeBatch 批量写入底层 WAL
 func (w *WALBatchWriter) writeBatch(entries []*WALEntry) error {
-	// 使用底层 WAL 的 Append 方法逐条写入
-	// TODO: 优化为单次 fsync 写入多条
+	// 使用 appendNoSync 批量写入所有条目
+	// 避免每个条目都触发一次 fsync，大幅提升写入性能
 	for _, entry := range entries {
-		if err := w.wal.Append(entry); err != nil {
+		if err := w.wal.appendNoSync(entry); err != nil {
 			return types.NewStoreWALError("批量写入", err)
 		}
+	}
+
+	// 批量写入完成后，只执行一次 Sync
+	if err := w.wal.Sync(); err != nil {
+		return types.NewStoreWALError("批量刷盘", err)
 	}
 
 	return nil
@@ -394,8 +399,10 @@ type WALGroupCommit struct {
 	pending     []*commitRequest
 	mu          sync.Mutex
 	flushCh     chan struct{}
+	closeCh     chan struct{} // 关闭信号通道
 	batchSize   int
 	batchWaitMs int // 批次等待时间（毫秒）
+	closed      bool
 }
 
 type commitRequest struct {
@@ -409,6 +416,7 @@ func NewWALGroupCommit(wal WAL, batchSize int) *WALGroupCommit {
 		wal:         wal,
 		pending:     make([]*commitRequest, 0, batchSize),
 		flushCh:     make(chan struct{}, 1),
+		closeCh:     make(chan struct{}),
 		batchSize:   batchSize,
 		batchWaitMs: 10, // 默认等待 10ms
 	}
@@ -483,12 +491,20 @@ func (g *WALGroupCommit) flush() {
 // 两种触发方式：
 //  1. 达到 batchSize，通过 flushCh 触发立即 flush
 //  2. 超过 batchWaitMs，定时器触发延迟 flush
+//
+// 退出方式：
+//  3. 通过 closeCh 接收关闭信号，正常退出协程
 func (g *WALGroupCommit) flushLoop() {
 	timer := time.NewTimer(time.Duration(g.batchWaitMs) * time.Millisecond)
 	defer timer.Stop()
 
 	for {
 		select {
+		case <-g.closeCh:
+			// 关闭信号：先 flush 剩余数据再退出
+			g.flush()
+			return
+
 		case <-g.flushCh:
 			// 立即 flush（达到批量大小）
 			if !timer.Stop() {
@@ -498,11 +514,26 @@ func (g *WALGroupCommit) flushLoop() {
 			timer.Reset(time.Duration(g.batchWaitMs) * time.Millisecond)
 
 		case <-timer.C:
-			// 延迟 flush（超时）
+			// 延迟 flush（timeout）
 			g.flush()
 			timer.Reset(time.Duration(g.batchWaitMs) * time.Millisecond)
 		}
 	}
+}
+
+// Close 关闭组提交管理器
+//
+// 发送关闭信号给 flushLoop，优雅退出
+func (g *WALGroupCommit) Close() {
+	g.mu.Lock()
+	if g.closed {
+		g.mu.Unlock()
+		return
+	}
+	g.closed = true
+	g.mu.Unlock()
+
+	g.closeCh <- struct{}{}
 }
 
 // verifyBatchChecksums 验证批量条目的校验和

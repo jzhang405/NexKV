@@ -128,6 +128,43 @@ func (w *MetadataWAL) Append(entry *WALEntry) error {
 	return nil
 }
 
+// Sync 强制刷盘
+func (w *MetadataWAL) Sync() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.file.Sync()
+}
+
+// appendNoSync 追加日志条目（内部方法，不触发 Sync）
+//
+// 用于批量写入优化，避免每个条目都触发一次 fsync
+// 调用者需要在批量写入完成后自行调用 Sync()
+func (w *MetadataWAL) appendNoSync(entry *WALEntry) error {
+	if w.closed {
+		return types.NewClosedError("WAL")
+	}
+
+	if entry == nil {
+		return types.NewStoreInvalidParameterError("entry 不能为空")
+	}
+
+	// 序列化 Entry
+	data, err := w.encodeEntry(entry)
+	if err != nil {
+		return types.NewInternalError("编码 WAL 条目失败", err)
+	}
+
+	// 写入数据（不调用 Sync）
+	if _, err := w.file.Write(data); err != nil {
+		return types.NewInternalError("写入 WAL 数据失败", err)
+	}
+
+	w.offset += int64(len(data))
+	w.entries++
+
+	return nil
+}
+
 // Recover 从 WAL 恢复
 //
 // 恢复过程中会自动检测 EOF 标记，如果遇到 EOF 标记则停止恢复。
@@ -360,18 +397,6 @@ func (w *MetadataWAL) Truncate(offset int64) error {
 	logging.Infof("WAL 截断完成: offset=%d, EOF offset=%d", offset, w.offset)
 
 	return nil
-}
-
-// Sync 强制刷盘
-func (w *MetadataWAL) Sync() error {
-	if w.closed {
-		return types.NewClosedError("WAL")
-	}
-
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	return w.file.Sync()
 }
 
 // Close 关闭 WAL

@@ -3,6 +3,8 @@
 package store
 
 import (
+	"sync"
+
 	"github.com/jzhang405/NexKV/internal/clock"
 )
 
@@ -132,6 +134,10 @@ type WAL interface {
 	// 必须持久化到磁盘后才能返回
 	Append(entry *WALEntry) error
 
+	// appendNoSync 追加日志条目（内部方法，不触发 Sync）
+	// 用于批量写入优化，调用者需自行在批量写入完成后调用 Sync()
+	appendNoSync(entry *WALEntry) error
+
 	// Recover 从 WAL 恢复数据
 	// 重放所有日志条目，返回操作序列
 	Recover() ([]*WALEntry, error)
@@ -168,6 +174,21 @@ type SnapshotManager interface {
 
 	// Close 关闭快照管理器
 	Close() error
+}
+
+// versionEntry 单个版本条目
+type versionEntry struct {
+	timestamp *clock.HLC
+	version   uint64
+	value     []byte
+	deleted   bool
+	size      int
+}
+
+// versionList 版本列表
+type versionList struct {
+	versions []*versionEntry
+	mu       sync.RWMutex
 }
 
 // VersionedEntry 带版本的数据条目

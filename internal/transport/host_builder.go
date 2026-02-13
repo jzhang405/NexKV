@@ -7,6 +7,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/multiformats/go-multiaddr"
+	"go.uber.org/zap"
 )
 
 // HostBuilder libp2p Host 构建器
@@ -32,7 +33,7 @@ func NewHostBuilder(listenPort int, keyPath string) *HostBuilder {
 // Build 构建 libp2p Host
 func (hb *HostBuilder) Build() (host.Host, error) {
 	// 密钥管理
-	km := NewKeyManager(hb.keyPath)
+	km := NewKeyManager(hb.keyPath, zap.NewNop())
 	privKey, err := km.LoadOrGenerate()
 	if err != nil {
 		return nil, err

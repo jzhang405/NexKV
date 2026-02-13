@@ -24,8 +24,12 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 )
 
-// DiscoveryService mDNS 发现服务
-// 用于局域网内节点自动发现
+// DiscoveryLoggingTag 日志标签
+const DiscoveryLoggingTag = "[NexKV-Discovery]"
+
+// DiscoveryLogPrefix 日志前缀模板
+const DiscoveryLogPrefix = DiscoveryLoggingTag + " peer=%s error=%v"
+
 type DiscoveryService struct {
 	host        host.Host
 	serviceTag  string
@@ -103,8 +107,7 @@ func (ds *DiscoveryService) HandlePeerFound(pi peer.AddrInfo) {
 		defer cancel()
 
 		if err := ds.host.Connect(ctx, pi); err != nil {
-			// 连接失败，记录但不阻塞
-			fmt.Printf("连接节点失败: peer=%s, error=%v\n", pi.ID, err)
+			// 连接失败，记录但不Block
 			return
 		}
 	}()

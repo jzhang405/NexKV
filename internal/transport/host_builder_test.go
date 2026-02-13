@@ -11,6 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 // TestHostBuilder_BuildSuccess 测试Host构建
@@ -80,7 +81,7 @@ func TestHostBuilder_Performance(t *testing.T) {
 	keyFile := filepath.Join(os.TempDir(), "test-perf-key.pem")
 	defer func() { _ = os.Remove(keyFile) }()
 
-	km := NewKeyManager(keyFile)
+	km := NewKeyManager(keyFile, zap.NewNop())
 	_, err := km.LoadOrGenerate()
 	require.NoError(t, err)
 

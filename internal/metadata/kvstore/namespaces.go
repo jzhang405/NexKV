@@ -80,6 +80,15 @@ const (
 	//   - 冲突解决记录（ConflictResolution）
 	// 键格式：meta:version:{key}:{version}
 	NamespaceVersion = "meta:version:"
+
+	// NamespaceTx 事务状态元数据（P0-2: 事务状态持久化）
+	// 用于存储：
+	//   - 事务基本信息（TxID、State、Timestamp）
+	//   - 参与者列表（Participants）
+	//   - 操作列表（Operations）
+	//   - 协调者信息（Coordinator）
+	// 键格式：meta:tx:{tx_id}
+	NamespaceTx = "meta:tx:"
 )
 
 // NamespaceInfo 命名空间信息
@@ -142,6 +151,11 @@ func GetAllNamespaces() map[string]NamespaceInfo {
 			Description: "版本控制元数据",
 			ExampleKey:  "meta:version:node-001:1234567890",
 		},
+		NamespaceTx: {
+			Prefix:      NamespaceTx,
+			Description: "事务状态元数据",
+			ExampleKey:  "meta:tx:tx-1739451520000-1",
+		},
 	}
 }
 
@@ -156,7 +170,8 @@ func ValidateNamespace(ns string) bool {
 		NamespaceStatic,
 		NamespaceDynamic,
 		NamespaceOp,
-		NamespaceVersion:
+		NamespaceVersion,
+		NamespaceTx:
 		return true
 	default:
 		return false
@@ -180,6 +195,7 @@ func ParseKey(fullKey string) (namespace, key string, ok bool) {
 		NamespaceDynamic,
 		NamespaceOp,
 		NamespaceVersion,
+		NamespaceTx,
 	} {
 		if len(fullKey) > len(ns) && fullKey[:len(ns)] == ns {
 			return ns, fullKey[len(ns):], true

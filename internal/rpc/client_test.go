@@ -26,7 +26,7 @@ func TestNewClient(t *testing.T) {
 	assert.NotNil(t, client)
 	assert.Equal(t, host, client.host)
 	assert.Equal(t, 30*time.Second, client.defaultTimeout)
-	assert.Equal(t, uint16(transport.MaxMessageSize), client.maxMessageSize)
+	assert.Equal(t, int(transport.MaxMessageSize), client.maxMessageSize)
 	assert.NotNil(t, client.codec)
 }
 

@@ -313,6 +313,12 @@ func NewTwoPCMerkleCoordinatorWithTransport(metadataKV kvstore.Store, merkleTree
 		fmt.Printf("[INFO] Gossip message handler registered (TODO: implement message dispatcher)\n")
 	}
 
+	// P0-2: 启动时恢复未完成事务
+	if err := coordinator.recoverTransactions(); err != nil {
+		// 恢复失败不阻塞启动，只记录警告
+		fmt.Printf("[WARN] Failed to recover transactions: %v\n", err)
+	}
+
 	// P0-1: 启动周期性 Gossip 状态同步任务
 	coordinator.startGossipTask()
 
@@ -370,6 +376,12 @@ func (c *TwoPCMerkleCoordinator) PreCommit(ctx context.Context, tx *TwoPCTransac
 	// 更新状态为 PreCommit
 	tx.State = TxStatePreCommit
 	tx.PreCommitTime = time.Now()
+
+	// P0-2: 持久化 PreCommit 状态（关键：用于故障恢复）
+	if err := c.persistTransaction(tx); err != nil {
+		// 持久化失败记录日志，但不阻塞事务（内存优先）
+		fmt.Printf("[WARN] Failed to persist PreCommit state for tx %s: %v\n", tx.TxID, err)
+	}
 
 	// 计算 Merkle Hash（预提交阶段先计算）
 	if err := c.precomputeMerkleHash(tx); err != nil {
@@ -538,6 +550,9 @@ func (c *TwoPCMerkleCoordinator) Commit(ctx context.Context, tx *TwoPCTransactio
 	tx.State = TxStateCommitted
 	tx.CommitTime = time.Now()
 
+	// P0-2: 持久化事务状态（可选：清理时删除）
+	_ = c.persistTransaction(tx) // 忽略错误，不阻塞提交流程
+
 	// 清除事务
 	delete(c.transactions, tx.TxID)
 
@@ -569,6 +584,9 @@ func (c *TwoPCMerkleCoordinator) rollbackTransaction(tx *TwoPCTransaction) {
 	tx.State = TxStateRolledBack
 	tx.Operations = nil
 	tx.Acks = nil
+
+	// P0-2: 持久化回滚状态（可选：清理时删除）
+	_ = c.persistTransaction(tx) // 忽略错误，不阻塞回滚流程
 
 	// 清除事务
 	delete(c.transactions, tx.TxID)
@@ -1055,4 +1073,131 @@ func (c *TwoPCMerkleCoordinator) Close() error {
 	}
 
 	return nil
+}
+
+// ==================== P0-2: 事务状态持久化 ====================
+
+// persistTransaction 持久化事务状态到 MetadataKV
+//
+// 容错设计：
+//   - 持久化失败：记录错误日志，继续内存操作
+//   - 序列化失败：记录错误，不影响其他事务
+func (c *TwoPCMerkleCoordinator) persistTransaction(tx *TwoPCTransaction) error {
+	if c.metadataKV == nil {
+		return nil // 无持久化存储，跳过
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 使用 Store 接口的 Put 方法（自动序列化）
+	err := c.metadataKV.Put(ctx, kvstore.NamespaceTx, tx.TxID, tx)
+	if err != nil {
+		// 记录错误日志，但不阻塞事务流程
+		fmt.Printf("[ERROR] Failed to persist transaction %s: %v\n", tx.TxID, err)
+		return err
+	}
+
+	return nil
+}
+
+// loadTransaction 从 MetadataKV 加载事务状态
+//
+// 容错设计：
+//   - 加载失败：返回错误，调用者决定是否跳过
+//   - 反序列化失败：返回错误
+func (c *TwoPCMerkleCoordinator) loadTransaction(txID string) (*TwoPCTransaction, error) {
+	if c.metadataKV == nil {
+		return nil, errors.New("metadataKV is nil")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var tx TwoPCTransaction
+	err := c.metadataKV.Get(ctx, kvstore.NamespaceTx, txID, &tx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &tx, nil
+}
+
+// recoverTransactions 启动时恢复未完成事务
+//
+// 恢复策略：
+//   - 只恢复 PreCommit 状态的事务（非终态）
+//   - 跳过已提交/已回滚/已超时的事务
+//
+// 容错设计：
+//   - 加载失败：跳过该事务，不影响其他事务恢复
+//   - 列出失败：返回错误，上层决定是否继续启动
+func (c *TwoPCMerkleCoordinator) recoverTransactions() error {
+	if c.metadataKV == nil {
+		return nil // 无持久化存储，跳过恢复
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// 列出所有事务键
+	keys, err := c.metadataKV.ListPrefix(ctx, kvstore.NamespaceTx, "")
+	if err != nil {
+		return fmt.Errorf("failed to list transactions: %w", err)
+	}
+
+	recovered := 0
+	skipped := 0
+
+	for _, key := range keys {
+		// key 格式：meta:tx:{tx_id}，这里 key 已经是完整键
+		// 提取 txID（去掉命名空间前缀）
+		txID := strings.TrimPrefix(key, kvstore.NamespaceTx)
+		if txID == key {
+			// 没有命名空间前缀，跳过
+			continue
+		}
+
+		// 加载事务
+		tx, err := c.loadTransaction(txID)
+		if err != nil {
+			fmt.Printf("[WARN] Failed to load transaction %s: %v\n", txID, err)
+			skipped++
+			continue
+		}
+
+		// 只恢复 PreCommit 状态的事务（非终态）
+		// 终态事务（Committed/RolledBack/Timeout）不需要恢复
+		if tx.State != TxStatePreCommit {
+			fmt.Printf("[DEBUG] Skipping transaction %s with state %v\n", txID, tx.State)
+			skipped++
+			continue
+		}
+
+		// 恢复到内存中
+		c.mu.Lock()
+		c.transactions[tx.TxID] = tx
+		c.mu.Unlock()
+
+		recovered++
+		fmt.Printf("[INFO] Recovered transaction %s (state=%v, participants=%d)\n",
+			tx.TxID, tx.State, len(tx.Participants))
+	}
+
+	fmt.Printf("[INFO] Transaction recovery completed: recovered=%d, skipped=%d\n", recovered, skipped)
+	return nil
+}
+
+// deleteTransaction 删除持久化的事务记录
+//
+// 用于清理已完成的事务，释放存储空间
+func (c *TwoPCMerkleCoordinator) deleteTransaction(txID string) error {
+	if c.metadataKV == nil {
+		return nil // 无持久化存储，跳过
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	return c.metadataKV.Delete(ctx, kvstore.NamespaceTx, txID)
 }

@@ -173,6 +173,7 @@ func (tx *TwoPCTransaction) HasAllAcks() bool {
 //   - 与 Merkle Tree 协同：提交后更新 Hash
 //   - Pending 操作暂存：支持批量操作
 //   - 超时与重试：5秒超时，自动回滚
+//   - Gossip 状态同步：周期性扩散事务状态，支持故障恢复（P0-1）
 type TwoPCMerkleCoordinator struct {
 	mu sync.RWMutex
 
@@ -192,6 +193,11 @@ type TwoPCMerkleCoordinator struct {
 	defaultTimeout time.Duration // 默认超时时间（5 秒）
 	maxRetries     int           // 最大重试次数
 	retryDelay     time.Duration // 重试延迟
+
+	// P0-1: Gossip 状态同步
+	gossipInterval  time.Duration  // Gossip 间隔（默认 5 秒）
+	gossipStopChan  chan struct{}  // 停止 Gossip 任务信号
+	gossipWaitGroup sync.WaitGroup // 等待 Gossip goroutine 退出
 
 	// 状态
 	closed bool
@@ -251,15 +257,17 @@ func NewTwoPCMerkleCoordinator(opts *TwoPCOptions) (*TwoPCMerkleCoordinator, err
 	}
 
 	coordinator := &TwoPCMerkleCoordinator{
-		metadataKV:     opts.MetadataKV,
-		merkleTree:     opts.MerkleTree,
-		hlc:            hlc,
-		transport:      nil, // 本地模式，无网络
-		localNodeID:    "",
-		transactions:   make(map[string]*TwoPCTransaction),
-		defaultTimeout: timeout,
-		maxRetries:     maxRetries,
-		retryDelay:     retryDelay,
+		metadataKV:      opts.MetadataKV,
+		merkleTree:      opts.MerkleTree,
+		hlc:             hlc,
+		transport:       nil, // 本地模式，无网络
+		localNodeID:     "",
+		transactions:    make(map[string]*TwoPCTransaction),
+		defaultTimeout:  timeout,
+		maxRetries:      maxRetries,
+		retryDelay:      retryDelay,
+		gossipInterval:  5 * time.Second,     // P0-1: Gossip 间隔
+		gossipStopChan:  make(chan struct{}), // P0-1: 初始化停止信号
 	}
 
 	return coordinator, nil
@@ -278,21 +286,33 @@ func NewTwoPCMerkleCoordinatorWithTransport(metadataKV kvstore.Store, merkleTree
 	}
 
 	coordinator := &TwoPCMerkleCoordinator{
-		metadataKV:     metadataKV,
-		merkleTree:     merkleTree,
-		hlc:            hlc,
-		transport:      transportParam,
-		localNodeID:    localNodeID,
-		transactions:   make(map[string]*TwoPCTransaction),
-		defaultTimeout: 5 * time.Second,
-		maxRetries:     3,                      // 默认 3 次重试
-		retryDelay:     100 * time.Millisecond, // 默认 100ms
+		metadataKV:      metadataKV,
+		merkleTree:      merkleTree,
+		hlc:             hlc,
+		transport:       transportParam,
+		localNodeID:     localNodeID,
+		transactions:    make(map[string]*TwoPCTransaction),
+		defaultTimeout:  5 * time.Second,
+		maxRetries:      3,                      // 默认 3 次重试
+		retryDelay:      100 * time.Millisecond, // 默认 100ms
+		gossipInterval:  5 * time.Second,        // P0-1: 默认 5 秒 Gossip 间隔
+		gossipStopChan:  make(chan struct{}),    // P0-1: 初始化停止信号
 	}
 
-	// 注册消息接收处理器（ACK 响应）
+	// 注册消息接收处理器
 	if transportParam != nil {
+		// 注册 2PC ACK 响应处理器（原有逻辑）
 		_ = transportParam.Receive(coordinator.handlePreCommitResponse)
+
+		// P0-1: 注册 Gossip 消息处理器（需要根据 MessageType 分发）
+		// 注意：Transport.Receive 只能注册一个处理器
+		// 这里需要修改为统一的消息分发器，或者使用包装器
+		// 暂时使用注释标记，TODO: 实现消息分发器
+		fmt.Printf("[INFO] Gossip message handler registered (TODO: implement message dispatcher)\n")
 	}
+
+	// P0-1: 启动周期性 Gossip 状态同步任务
+	coordinator.startGossipTask()
 
 	return coordinator, nil
 }
@@ -313,6 +333,9 @@ func (c *TwoPCMerkleCoordinator) BeginTransaction(participants []string) (*TwoPC
 
 	// 创建新事务
 	tx := NewTwoPCTransaction(txID, participants, c.defaultTimeout)
+
+	// P0-1: 设置协调者信息（本地节点为协调者）
+	tx.Coordinator = c.localNodeID
 
 	// 存储事务
 	c.transactions[txID] = tx
@@ -977,6 +1000,89 @@ func (c *TwoPCMerkleCoordinator) handleGossipReplyMessage(nodeID string, msgByte
 	return nil
 }
 
+// handleGossipMessage 统一的 Gossip 消息处理器
+//
+// 根据 Phase 字段分发到不同的处理器
+func (c *TwoPCMerkleCoordinator) handleGossipMessage(nodeID string, msgBytes []byte) {
+	// 快速解码消息以获取 Phase
+	codec := transport.NewMessagePackCodec()
+	msg, err := codec.DecodeFromBytes(msgBytes)
+	if err != nil {
+		fmt.Printf("[WARN] Failed to decode gossip message from %s: %v\n", nodeID, err)
+		return
+	}
+
+	payload, err := msg.DecodePayload()
+	if err != nil {
+		fmt.Printf("[WARN] Failed to decode gossip payload from %s: %v\n", nodeID, err)
+		return
+	}
+
+	gossipPayload, ok := payload.(*transport.TwoPCGossipPayload)
+	if !ok {
+		fmt.Printf("[WARN] Invalid gossip payload from %s\n", nodeID)
+		return
+	}
+
+	// 根据 Phase 分发到不同的处理器
+	switch gossipPayload.Phase {
+	case "state":
+		if err := c.handleGossipStateMessage(nodeID, msgBytes); err != nil {
+			fmt.Printf("[DEBUG] Failed to handle gossip state message from %s: %v\n", nodeID, err)
+		}
+	case "query":
+		if err := c.handleGossipQueryMessage(nodeID, msgBytes); err != nil {
+			fmt.Printf("[DEBUG] Failed to handle gossip query message from %s: %v\n", nodeID, err)
+		}
+	case "reply":
+		if err := c.handleGossipReplyMessage(nodeID, msgBytes); err != nil {
+			fmt.Printf("[DEBUG] Failed to handle gossip reply message from %s: %v\n", nodeID, err)
+		}
+	default:
+		fmt.Printf("[WARN] Unknown gossip phase '%s' from %s\n", gossipPayload.Phase, nodeID)
+	}
+}
+
+// startGossipTask 启动周期性 Gossip 状态同步任务
+func (c *TwoPCMerkleCoordinator) startGossipTask() {
+	if c.transport == nil {
+		// 本地模式，无需 Gossip
+		return
+	}
+
+	c.gossipWaitGroup.Add(1)
+	go func() {
+		defer c.gossipWaitGroup.Done()
+
+		ticker := time.NewTicker(c.gossipInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-c.gossipStopChan:
+				// 收到停止信号
+				return
+			case <-ticker.C:
+				// 周期性 Gossip 状态扩散
+				if err := c.gossipTransactionStates(); err != nil {
+					fmt.Printf("[DEBUG] Gossip transaction states failed: %v\n", err)
+				}
+			}
+		}
+	}()
+
+	fmt.Printf("[INFO] Started gossip task with interval %v\n", c.gossipInterval)
+}
+
+// stopGossipTask 停止 Gossip 状态同步任务
+func (c *TwoPCMerkleCoordinator) stopGossipTask() {
+	if c.gossipStopChan != nil {
+		close(c.gossipStopChan)
+		c.gossipWaitGroup.Wait()
+		fmt.Printf("[INFO] Stopped gossip task\n")
+	}
+}
+
 // Close 关闭协调器
 func (c *TwoPCMerkleCoordinator) Close() error {
 	c.mu.Lock()
@@ -987,6 +1093,9 @@ func (c *TwoPCMerkleCoordinator) Close() error {
 	}
 
 	c.closed = true
+
+	// P0-1: 停止 Gossip 任务
+	c.stopGossipTask()
 
 	for _, tx := range c.transactions {
 		c.rollbackTransaction(tx)

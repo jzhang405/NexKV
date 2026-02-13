@@ -3,6 +3,7 @@ module github.com/jzhang405/NexKV
 go 1.24.6
 
 require (
+	github.com/anishathalye/porcupine v1.1.0
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/klauspost/compress v1.18.3
 	github.com/libp2p/go-libp2p v0.47.0

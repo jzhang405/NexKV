@@ -58,8 +58,8 @@ func (t *MonotonicTimestamp) Now() int64 {
 // - 高 16 位：客户端 ID（支持最多 65535 个客户端）
 // - 低 48 位：本地序列号（支持约 281 万亿次操作）
 type LogicalTimestamp struct {
-	clientID int64  // 客户端 ID（高 16 位）
-	seq      int64  // 本地序列号（原子操作）
+	clientID int64 // 客户端 ID（高 16 位）
+	seq      int64 // 本地序列号（原子操作）
 }
 
 // NewLogicalTimestamp 创建逻辑时间戳生成器

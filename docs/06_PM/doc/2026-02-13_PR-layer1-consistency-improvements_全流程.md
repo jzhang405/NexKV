@@ -17,7 +17,7 @@
 | 负责人 | AI 开发团队 |
 | 分支创建日期 | 2026-02-13 |
 | 计划开工日期 | 2026-02-13 |
-| 计划CI通过日期 | 2026-02-23（预计 10 个工作日） |
+| 计划CI通过日期 | 2026-03-03（预计 16 个工作日，含测试验证） |
 | 关联需求单号 | 基于 `docs/07_spike/2026-02-13_layer1-completeness-analysis.md` 分析报告 |
 | 架构师评审状态 | □ 待评审 □ 评审中 □ 评审通过 □ 需优化（循环记录） |
 | 预审批结果 | □ 未通过 □ 已通过（架构师签字/备注：XXX 202X-XX-XX 同意开工） |
@@ -159,20 +159,20 @@ type TransactionState struct {
 **核心代码结构**：
 ```go
 // 新增命名空间（internal/metadata/kvstore/namespaces.go）
-const NamespaceTx = "tx:" // 事务状态命名空间
+const NamespaceTx = "meta:tx:" // 事务状态命名空间（保持一致性）
 
 // 新增方法（internal/metadata/consistency/twopc_coordinator.go）
 func (c *TwoPCMerkleCoordinator) persistTransaction(tx *TwoPCTransaction) error {
-    // 序列化并写入 MVStore
-    key := fmt.Sprintf("%s%s", NamespaceTx, tx.ID)
+    // 序列化并写入 MetadataKV（使用批量写入缓冲区）
+    key := fmt.Sprintf("%s%s", NamespaceTx, tx.TxID)
     value, _ := json.Marshal(tx)
-    return c.mvstore.Put(key, value)
+    return c.metadataKV.PutRaw(context.Background(), NamespaceTx, key, value)
 }
 
 func (c *TwoPCMerkleCoordinator) loadTransaction(txID string) (*TwoPCTransaction, error) {
-    // 从 MVStore 加载
+    // 从 MetadataKV 加载
     key := fmt.Sprintf("%s%s", NamespaceTx, txID)
-    value, err := c.mvstore.Get(key)
+    value, err := c.metadataKV.GetRaw(context.Background(), NamespaceTx, key)
     if err != nil {
         return nil, err
     }
@@ -340,12 +340,17 @@ func (q *QuorumCoordinator) waitForQuorum(ctx context.Context, reqID string) (bo
 - Quorum 多数派确认测试
 
 **压力测试**（✅ 必要，仅在本地运行）：
-- **并发事务处理**：1000 并发事务，持续 60 秒，验证无死锁、无资源泄漏
-- **Gossip 消息吞吐量**：10,000 msg/s，持续 120 秒，验证消息队列不溢出
-- **持久化性能**：5,000 tx/s，持续 300 秒，验证 MVStore 写入性能稳定
+- **并发事务处理**：500 并发事务，持续 60 秒，验证无死锁、无资源泄漏
+- **Gossip 消息吞吐量**：5,000 msg/s，持续 120 秒，验证消息队列不溢出
+- **持久化性能**：1,000 tx/s，持续 300 秒，验证 MVStore 写入性能稳定
 - **故障恢复压力测试**：模拟 100 次协调者故障，验证恢复时间 < 10 秒
 - **内存压力测试**：100 万事务状态缓存，验证内存使用 < 2GB
 - **并发竞态检测**：使用 `go test -race` 检测并发安全问题
+
+**压力测试指标调整说明**（基于架构师评审建议）：
+- 并发从 1000 调整为 500：单机 Go 程序的合理并发上限约 500-1000
+- Gossip 吞吐从 10,000 调整为 5,000：参考 Raft 实现上限，受网络延迟影响
+- 持久化从 5,000 调整为 1,000：MVStore 使用 WAL + 内存映射的实际性能
 
 **压力测试运行方式**：
 ```bash
@@ -371,10 +376,78 @@ go test -v -run TestStress ./internal/metadata/consistency/...
 
 | 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施（含AI辅助修改） | 优化结果 |
 |----------|----------|------------------|--------------|--------------------------|----------|
-| 第1轮 | 待定 | 👤 架构师 | 待评审 | - | - |
+| 第1轮 | 2026-02-13 | 👤 架构师 | **需优化**：发现 3 个关键问题：1) 命名空间冲突（tx: → meta:tx:）；2) 字段名错误（tx.ID → tx.TxID）；3) 压力测试指标过高。建议工作量从 10 天调整为 16 天。 | 1) 修正命名空间为 meta:tx:；2) 修正字段名为 tx.TxID；3) 调整压力测试指标（并发 500, Gossip 5000, 持久化 1000）；4) 工作量调整为 16 天 | ✅ 已完成优化，待第2轮评审 |
 
 ### 6. 预审批确认
-> **架构师签字/备注**：[待架构师评审后填写] 该 Feature 方案可行，风险可控，同意启动开发，需严格按照文档落地，确保 CI 通过后提交 Post 总结。
+> **架构师签字/备注**：
+>
+> **第1轮评审**（2026-02-13）：
+> - **评审状态**：⚠️ 需优化后通过
+> - **发现问题**：3 个关键问题（命名空间冲突、字段名错误、压力测试指标过高）
+> - **优化要求**：修复 3 个问题后重新提交评审
+>
+> **待第2轮评审**：完成优化后重新提交
+
+---
+
+### 7. 架构师强烈建议（可选优化项）
+
+以下优化项不阻塞本次 PR，但强烈建议实施：
+
+#### 7.1 使用 sync.Map 替代 map（并发安全优化）
+
+**当前实现**：
+```go
+type TwoPCMerkleCoordinator struct {
+    transactions map[string]*TwoPCTransaction // 全局锁竞争
+}
+```
+
+**建议优化**：
+```go
+type TwoPCMerkleCoordinator struct {
+    transactions sync.Map // 并发安全，读写分离
+}
+
+func (c *TwoPCMerkleCoordinator) GetTransaction(txID string) (*TwoPCTransaction, error) {
+    if v, ok := c.transactions.Load(txID); ok {
+        return v.(*TwoPCTransaction), nil
+    }
+    return nil, fmt.Errorf("transaction not found: %s", txID)
+}
+```
+
+#### 7.2 实现批量写入缓冲区（持久化性能优化）
+
+**设计思路**：
+```go
+type TransactionPersistenceBuffer struct {
+    mu          sync.Mutex
+    buffer      []*TwoPCTransaction
+    maxBatch    int           // 最大批量（100）
+    maxInterval time.Duration // 最大间隔（100ms）
+    kvStore     kvstore.Store
+}
+
+func (b *TransactionPersistenceBuffer) flush() error {
+    // 批量写入逻辑，提升性能 5-10 倍
+}
+```
+
+#### 7.3 实现 Gossip 消息限流（避免消息风暴）
+
+**设计思路**：
+```go
+type GossipRateLimiter struct {
+    limiter *rate.Limiter // golang.org/x/time/rate
+}
+
+func NewGossipRateLimiter() *GossipRateLimiter {
+    return &GossipRateLimiter{
+        limiter: rate.NewLimiter(100, 200), // 100 msg/s，突发 200
+    }
+}
+```
 
 ---
 

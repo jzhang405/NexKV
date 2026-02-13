@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vmihailenco/msgpack/v5"
+
 	"github.com/jzhang405/NexKV/internal/clock"
 	"github.com/jzhang405/NexKV/internal/metadata/kvstore"
 	"github.com/jzhang405/NexKV/internal/transport"
@@ -838,22 +840,10 @@ func (c *TwoPCMerkleCoordinator) queryTransactionDecision(txID string, timeout t
 //
 // 其他节点扩散的事务状态，用于本地更新和决策
 func (c *TwoPCMerkleCoordinator) handleGossipStateMessage(nodeID string, msgBytes []byte) error {
-	// 解码消息
-	codec := transport.NewMessagePackCodec()
-	msg, err := codec.DecodeFromBytes(msgBytes)
-	if err != nil {
-		return fmt.Errorf("failed to decode gossip state message: %w", err)
-	}
-
-	// 解码 Payload
-	payload, err := msg.DecodePayload()
-	if err != nil {
+	// 直接解码 Payload（Transport 传递的是 msg.Payload，不包含 TLV 头）
+	var gossipPayload transport.TwoPCGossipPayload
+	if err := msgpack.Unmarshal(msgBytes, &gossipPayload); err != nil {
 		return fmt.Errorf("failed to decode gossip state payload: %w", err)
-	}
-
-	gossipPayload, ok := payload.(*transport.TwoPCGossipPayload)
-	if !ok {
-		return errors.New("invalid gossip state message payload")
 	}
 
 	// 验证消息类型
@@ -888,22 +878,10 @@ func (c *TwoPCMerkleCoordinator) handleGossipStateMessage(nodeID string, msgByte
 //
 // 其他节点查询事务决策，本地有则返回
 func (c *TwoPCMerkleCoordinator) handleGossipQueryMessage(nodeID string, msgBytes []byte) error {
-	// 解码消息
-	codec := transport.NewMessagePackCodec()
-	msg, err := codec.DecodeFromBytes(msgBytes)
-	if err != nil {
-		return fmt.Errorf("failed to decode gossip query message: %w", err)
-	}
-
-	// 解码 Payload
-	payload, err := msg.DecodePayload()
-	if err != nil {
+	// 直接解码 Payload（Transport 传递的是 msg.Payload，不包含 TLV 头）
+	var gossipPayload transport.TwoPCGossipPayload
+	if err := msgpack.Unmarshal(msgBytes, &gossipPayload); err != nil {
 		return fmt.Errorf("failed to decode gossip query payload: %w", err)
-	}
-
-	gossipPayload, ok := payload.(*transport.TwoPCGossipPayload)
-	if !ok {
-		return errors.New("invalid gossip query message payload")
 	}
 
 	// 验证消息类型
@@ -950,22 +928,10 @@ func (c *TwoPCMerkleCoordinator) handleGossipQueryMessage(nodeID string, msgByte
 //
 // 其他节点返回的查询结果
 func (c *TwoPCMerkleCoordinator) handleGossipReplyMessage(nodeID string, msgBytes []byte) error {
-	// 解码消息
-	codec := transport.NewMessagePackCodec()
-	msg, err := codec.DecodeFromBytes(msgBytes)
-	if err != nil {
-		return fmt.Errorf("failed to decode gossip reply message: %w", err)
-	}
-
-	// 解码 Payload
-	payload, err := msg.DecodePayload()
-	if err != nil {
+	// 直接解码 Payload（Transport 传递的是 msg.Payload，不包含 TLV 头）
+	var gossipPayload transport.TwoPCGossipPayload
+	if err := msgpack.Unmarshal(msgBytes, &gossipPayload); err != nil {
 		return fmt.Errorf("failed to decode gossip reply payload: %w", err)
-	}
-
-	gossipPayload, ok := payload.(*transport.TwoPCGossipPayload)
-	if !ok {
-		return errors.New("invalid gossip reply message payload")
 	}
 
 	// 验证消息类型
@@ -1004,23 +970,10 @@ func (c *TwoPCMerkleCoordinator) handleGossipReplyMessage(nodeID string, msgByte
 //
 // 根据 Phase 字段分发到不同的处理器
 func (c *TwoPCMerkleCoordinator) handleGossipMessage(nodeID string, msgBytes []byte) {
-	// 快速解码消息以获取 Phase
-	codec := transport.NewMessagePackCodec()
-	msg, err := codec.DecodeFromBytes(msgBytes)
-	if err != nil {
-		fmt.Printf("[WARN] Failed to decode gossip message from %s: %v\n", nodeID, err)
-		return
-	}
-
-	payload, err := msg.DecodePayload()
-	if err != nil {
+	// 快速解码 payload 以获取 Phase（Transport 传递的是 msg.Payload，不包含 TLV 头）
+	var gossipPayload transport.TwoPCGossipPayload
+	if err := msgpack.Unmarshal(msgBytes, &gossipPayload); err != nil {
 		fmt.Printf("[WARN] Failed to decode gossip payload from %s: %v\n", nodeID, err)
-		return
-	}
-
-	gossipPayload, ok := payload.(*transport.TwoPCGossipPayload)
-	if !ok {
-		fmt.Printf("[WARN] Invalid gossip payload from %s\n", nodeID)
 		return
 	}
 

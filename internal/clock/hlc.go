@@ -50,7 +50,13 @@ func (h *HLC) Now() *HLC {
 	}
 
 	// 物理时间相同或回拨，增加逻辑计数
+	// P0-2 修复: 处理逻辑计数器溢出
 	h.c++
+	if h.c == 0 { // 溢出检测：65535 + 1 = 0
+		// 溢出时推进物理时间，重置逻辑计数
+		h.pt++
+		h.c = 0
+	}
 	return &HLC{pt: h.pt, c: h.c}
 }
 
@@ -63,7 +69,7 @@ func (h *HLC) Now() *HLC {
 //
 // 参数:
 //   - eventTime: 事件发生时间（毫秒）
-//   - remoteHLC: 远程节点的 HLC 时间戳
+//   - remoteHLC: 远程节点的 HLC 时间戳（可以为 nil）
 //
 // 返回更新后的 HLC 时间戳
 func (h *HLC) Update(eventTime int64, remoteHLC *HLC) *HLC {
@@ -72,13 +78,28 @@ func (h *HLC) Update(eventTime int64, remoteHLC *HLC) *HLC {
 
 	now := time.Now().UnixMilli()
 
-	// 核心算法: pt' = max(now, pt, eventTime, remoteHLC.pt)
-	newPT := maxInt64(now, h.pt, eventTime, remoteHLC.pt)
+	// P0-1 修复: 处理 remoteHLC 为 nil 的情况
+	remotePT := int64(0)
+	remoteC := uint16(0)
+	if remoteHLC != nil {
+		remotePT = remoteHLC.pt
+		remoteC = remoteHLC.c
+	}
+
+	// 核心算法: pt' = max(now, pt, eventTime, remotePT)
+	newPT := maxInt64(now, h.pt, eventTime, remotePT)
 
 	// 如果物理时间没有前进，需要增加逻辑计数
-	if newPT == h.pt && newPT == remoteHLC.pt {
+	if newPT == h.pt && newPT == remotePT {
 		// 相同物理时间，逻辑计数取最大值 + 1
-		h.c = maxUint16(h.c, remoteHLC.c) + 1
+		// P0-2 修复: 处理逻辑计数器溢出
+		newC := maxUint16(h.c, remoteC) + 1
+		if newC == 0 { // 溢出检测：65535 + 1 = 0
+			// 溢出时推进物理时间，重置逻辑计数
+			newPT++
+			newC = 0
+		}
+		h.c = newC
 	} else {
 		// 物理时间前进，重置逻辑计数
 		h.c = 0

@@ -17,9 +17,9 @@
 | 负责人 | 🤖 核心开发 A |
 | 分支创建日期 | 2026-02-13 |
 | 计划开工日期 | 2026-02-14 |
-| 计划CI通过日期 | 2026-02-21 |
+| 计划CI通过日期 | 2026-02-25 |
 | 关联需求单号 | Layer 1 元数据一致性层验证 |
-| 架构师评审状态 | □ 待评审 |
+| 架构师评审状态 | ☑ 评审中 |
 | 预审批结果 | □ 未通过 |
 
 ### 2. 背景与目标（为什么干）
@@ -66,8 +66,10 @@ NexKV 作为分布式键值存储系统，提供三种一致性保证：
 3. **测试目标**：
    - 基础线性化测试 100% 通过
    - 并发线性化测试 100% 通过
-   - Quorum 线性化测试 95%+ 通过
+   - Quorum 线性化测试 100% 通过
    - 测试覆盖率 > 80%
+
+   > **说明**：线性一致性验证是全有或全无的（binary），如果测试失败，必须定位并修复问题，不接受部分通过。
 
 #### 2.3 明确边界（不做什么，避免范围蔓延）
 
@@ -127,7 +129,88 @@ flowchart TB
 
 #### 3.2 关键设计点
 
-##### 3.2.1 目录结构
+##### 3.2.1 时间戳精度保证（P0-2）
+
+**问题背景**：
+- ARM 架构时间戳可能不稳定
+- 并发操作时间戳可能重叠
+- 多节点时钟不同步
+
+**解决方案 1：单机单调时间戳**
+
+```go
+// MonotonicTimestamp 单调时间戳生成器
+// 使用原子操作确保时间戳单调递增，解决时间戳回退问题
+type MonotonicTimestamp struct {
+    last int64
+}
+
+// NewMonotonicTimestamp 创建单调时间戳生成器
+func NewMonotonicTimestamp() *MonotonicTimestamp {
+    return &MonotonicTimestamp{
+        last: time.Now().UnixNano(),
+    }
+}
+
+// Now 获取单调递增的时间戳
+func (t *MonotonicTimestamp) Now() int64 {
+    for {
+        last := atomic.LoadInt64(&t.last)
+        now := time.Now().UnixNano()
+        // 确保时间戳单调递增
+        if now <= last {
+            now = last + 1
+        }
+        if atomic.CompareAndSwapInt64(&t.last, last, now) {
+            return now
+        }
+    }
+}
+```
+
+**解决方案 2：多节点逻辑时间戳**
+
+```go
+// LogicalTimestamp 逻辑时间戳
+// 避免跨机器时钟同步问题
+type LogicalTimestamp struct {
+    clientID int
+    seq      int64
+}
+
+// Now 生成逻辑时间戳
+// 格式: (clientID << 48) | localSeq
+func (t *LogicalTimestamp) Now() int64 {
+    newSeq := atomic.AddInt64(&t.seq, 1)
+    return int64(t.clientID)<<48 | newSeq
+}
+```
+
+**时间戳单元测试**：
+
+```go
+func TestMonotonicTimestamp_NeverDecreases(t *testing.T) {
+    ts := NewMonotonicTimestamp()
+    last := ts.Now()
+    for i := 0; i < 100000; i++ {
+        now := ts.Now()
+        require.True(t, now > last, "Timestamp must be monotonically increasing")
+        last = now
+    }
+}
+
+func TestLogicalTimestamp_ClientIsolation(t *testing.T) {
+    ts1 := NewLogicalTimestamp(1)
+    ts2 := NewLogicalTimestamp(2)
+
+    // 不同客户端的时间戳不会冲突
+    ts1_val := ts1.Now()
+    ts2_val := ts2.Now()
+    require.NotEqual(t, ts1_val, ts2_val)
+}
+```
+
+##### 3.2.2 目录结构
 
 ```
 internal/metadata/consistency/
@@ -241,7 +324,7 @@ graph TB
         AC1[覆盖率 > 80%]
         AC2[基础测试 100% 通过]
         AC3[并发测试 100% 通过]
-        AC4[Quorum 测试 95%+ 通过]
+        AC4[Quorum 测试 100% 通过]
     end
 
     UT1 --> AC1
@@ -256,7 +339,7 @@ graph TB
     style AC1 fill:#c8e6c9
     style AC2 fill:#c8e6c9
     style AC3 fill:#c8e6c9
-    style AC4 fill:#fff59d
+    style AC4 fill:#c8e6c9
 ```
 
 #### 3.4 依赖变更
@@ -272,27 +355,57 @@ require (
 
 | 风险点 | 影响等级 | 概率 | 应对措施 |
 |--------|----------|------|----------|
-| **时间戳精度问题** | 高 | 中 | 实现单调时间戳生成器，使用原子操作确保递增 |
+| **时间戳精度问题** | 高 | 中 | 实现单调时间戳生成器，使用原子操作确保递增（见 3.2.1） |
+| **多节点时钟不同步** | 高 | 高 | 使用逻辑时间戳，为每个 client 分配独立 ID，避免跨机器时钟依赖 |
 | **大规模历史检查慢** | 中 | 高 | 使用 P-compositionality 分区检查，限制单次操作数 |
 | **并发记录竞争** | 高 | 低 | 使用 sync.Mutex 保护事件列表，原子操作生成 ID |
-| **内存占用增长** | 中 | 中 | 定期清理历史，实现增量检查模式 |
+| **内存占用增长** | 中 | 中 | 实现增量检查模式（见下方代码），定期清理历史 |
+| **模型定义错误导致误报** | 高 | 中 | 添加模型正确性验证测试，覆盖所有状态转移 |
 | **Porcupine API 变更** | 低 | 低 | 锁定 Porcupine 版本 v0.1.4 |
 | **与现有测试冲突** | 低 | 中 | 使用独立的测试文件，不影响现有测试 |
 
+**增量检查模式（P1-1）**：
+
+```go
+// IncrementalChecker 增量检查器
+// 定期清理历史，避免内存无限增长
+type IncrementalChecker struct {
+    checker     *ConsistencyChecker
+    maxHistory  int           // 最大历史长度（默认 1000）
+    eventBuffer []porcupine.Event
+}
+
+// RecordAndCheck 记录事件并定期检查
+func (ic *IncrementalChecker) RecordAndCheck(event porcupine.Event) *CheckResult {
+    ic.eventBuffer = append(ic.eventBuffer, event)
+
+    // 达到阈值时执行检查并清空缓冲
+    if len(ic.eventBuffer) >= ic.maxHistory {
+        result := ic.checker.Check(ic.eventBuffer)
+        ic.eventBuffer = ic.eventBuffer[:0] // 清空缓冲
+        return result
+    }
+    return nil
+}
+```
+
 ### 5. 实施计划
 
-| 阶段 | 日期 | 任务 | 交付物 |
-|------|------|------|--------|
-| **Day 1-2** | 2026-02-14 ~ 02-15 | 基础设施搭建 | 添加依赖、创建目录结构 |
-| **Day 3-5** | 2026-02-16 ~ 02-18 | 核心组件实现 | model.go, recorder.go, checker.go, recording_client.go |
-| **Day 6-7** | 2026-02-19 ~ 02-20 | 测试用例编写 | 单元测试 + 集成测试 |
-| **Day 8-10** | 2026-02-21 | CI 集成与验证 | CI 配置、文档完善 |
+| 里程碑 | 日期 | 任务 | 交付物 | 验收标准 | 依赖 |
+|--------|------|------|--------|---------|------|
+| **M1: 基础设施** | Day 1-2 | 基础设施搭建 | 目录结构 + 依赖 + timestamp.go | `go mod tidy` 成功，`TestMonotonicTimestamp` 通过 | - |
+| **M2: 核心组件** | Day 3-5 | 核心组件实现 | model.go + recorder.go + checker.go + recording_client.go | 单元测试 100% 通过，覆盖率 >80% | M1 |
+| **M3: 集成验证** | Day 6-7 | 验证集成测试框架兼容性 | 更新 recording_client.go | `RecordingClient` 可注入 `E2ETestScenario` | M2 |
+| **M4: 测试用例** | Day 8-10 | 线性化测试编写 | linearizability_test.go | 基础测试 100% 通过，并发测试 100% 通过，Quorum 测试 100% 通过 | M3 |
+| **M5: CI 集成** | Day 11-12 | CI 配置与文档 | CI 配置 + 文档完善 | CI 测试通过 | M4 |
+
+**工期调整说明**：根据架构师建议，工期从 10 天调整为 **12 天**，额外 2 天用于时间戳验证和集成测试框架兼容性验证。
 
 ### 6. 架构师评审记录（循环优化，直至通过）
 
 | 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施 | 优化结果 |
 |----------|----------|------------------|--------------|----------|----------|
-| 第1轮 | - | 👤 架构师 | 待评审 | - | - |
+| 第1轮 | 2026-02-13 | 👤 架构师 | 1. 测试通过率目标不一致（95% vs 100%）<br/>2. 缺少时间戳精度解决方案<br/>3. 缺少多节点时钟同步风险<br/>4. 里程碑不够清晰<br/>5. 增量检查缺少具体方案 | 1. 修改为 100% 通过 ✅<br/>2. 添加 3.2.1 时间戳精度保证 ✅<br/>3. 添加风险和应对措施 ✅<br/>4. 优化里程碑定义，添加验收标准 ✅<br/>5. 补充增量检查代码示例 ✅ | 待第2轮评审确认 |
 
 ### 7. 预审批确认
 
@@ -346,7 +459,8 @@ require (
 
 | 项目 | 内容 |
 |------|------|
-| 文档版本 | V1.0-Pre |
+| 文档版本 | V1.1-Pre（根据第1轮评审修改） |
 | 创建日期 | 2026-02-13 |
+| 最后更新 | 2026-02-13 |
 | 归档路径 | `docs/06_PM/feature/2026-02-13_PR-063_Porcupine-Linearizability-Verification_Pre.md` |
 | 后续维护人 | 🤖 核心开发 A |

@@ -55,7 +55,7 @@ func (fi *FaultInjector) RestoreNode(nodeID string) error
 ## 4. 验收标准
 
 - [ ] 5/5 测试用例通过
-- [ ] `make test-e2e-phase3-fault` 可运行
+- [ ] `make test-e2e-phase4` 可运行
 - [ ] 节点故障能在 10s 内检测
 - [ ] 节点恢复后数据自动同步
 - [ ] Leader 故障后 5s 内重新选举

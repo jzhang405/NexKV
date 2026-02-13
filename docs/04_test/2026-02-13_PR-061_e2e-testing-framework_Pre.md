@@ -119,9 +119,9 @@ test/e2e/
 │   ├── phase1_single_node/
 │   ├── phase2_cluster/
 │   ├── phase3_consistency/
-│   ├── phase3_fault_injection/
-│   ├── phase4_concurrency/
-│   └── phase5_performance/
+│   ├── phase4_fault_injection/
+│   ├── phase5_concurrency/
+│   └── phase6_performance/
 ├── scripts/            # 辅助脚本
 │   ├── cleanup.sh      # 清理僵尸进程
 │   ├── setup_env.sh    # 环境准备

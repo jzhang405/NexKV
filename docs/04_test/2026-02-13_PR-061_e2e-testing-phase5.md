@@ -53,7 +53,7 @@ func (r *ConcurrencyTestRunner) RunConcurrentWrites(
 ## 4. 验收标准
 
 - [ ] 3/3 测试用例通过
-- [ ] `make test-e2e-phase4` 可运行
+- [ ] `make test-e2e-phase5` 可运行
 - [ ] 并发写入无数据损坏
 - [ ] 并发读取结果一致
 - [ ] 混合负载下系统稳定

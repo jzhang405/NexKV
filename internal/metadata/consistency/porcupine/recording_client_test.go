@@ -5,6 +5,7 @@ package porcupine
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,8 +14,9 @@ import (
 // errKeyNotFound key 不存在错误
 var errKeyNotFound = errors.New(ErrKeyNotFound)
 
-// mockKVClient 模拟 KV 客户端
+// mockKVClient 模拟 KV 客户端（线程安全）
 type mockKVClient struct {
+	mu   sync.RWMutex
 	data map[string][]byte
 }
 
@@ -25,11 +27,15 @@ func newMockKVClient() *mockKVClient {
 }
 
 func (m *mockKVClient) Put(ctx context.Context, ns, key string, value []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.data[ns+":"+key] = value
 	return nil
 }
 
 func (m *mockKVClient) Get(ctx context.Context, ns, key string) ([]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	val, ok := m.data[ns+":"+key]
 	if !ok {
 		return nil, errKeyNotFound
@@ -38,6 +44,8 @@ func (m *mockKVClient) Get(ctx context.Context, ns, key string) ([]byte, error) 
 }
 
 func (m *mockKVClient) Delete(ctx context.Context, ns, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.data, ns+":"+key)
 	return nil
 }

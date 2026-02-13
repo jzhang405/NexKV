@@ -4,13 +4,15 @@ package porcupine
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-// mockScenarioKV 模拟 E2ETestScenario 中的 KV
+// mockScenarioKV 模拟 E2ETestScenario 中的 KV（线程安全）
 type mockScenarioKV struct {
+	mu   sync.RWMutex
 	data map[string][]byte
 }
 
@@ -21,11 +23,15 @@ func newMockScenarioKV() *mockScenarioKV {
 }
 
 func (m *mockScenarioKV) Put(ctx context.Context, ns, key string, value any) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.data[ns+":"+key] = value.([]byte)
 	return nil
 }
 
 func (m *mockScenarioKV) Get(ctx context.Context, ns, key string) (any, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	val, ok := m.data[ns+":"+key]
 	if !ok {
 		return nil, errKeyNotFound
@@ -34,6 +40,8 @@ func (m *mockScenarioKV) Get(ctx context.Context, ns, key string) (any, error) {
 }
 
 func (m *mockScenarioKV) Delete(ctx context.Context, ns, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.data, ns+":"+key)
 	return nil
 }

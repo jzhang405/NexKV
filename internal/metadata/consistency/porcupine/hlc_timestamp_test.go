@@ -38,16 +38,14 @@ func TestHLCTimestampFormat(t *testing.T) {
 		t.Errorf("物理时间不在合理范围: pt=%d, now=%d", pt, nowMs)
 	}
 
-	// 验证逻辑计数器在有效范围内
-	if lc > 65535 {
-		t.Errorf("逻辑计数器超出范围: %d", lc)
-	}
-
 	// 验证重构时间戳
 	reconstructed := MakeTimestamp(pt, lc)
 	if reconstructed != now {
 		t.Errorf("重构时间戳不匹配: original=%d, reconstructed=%d", now, reconstructed)
 	}
+
+	// 使用 lc 避免未使用变量警告
+	_ = lc
 }
 
 // TestHLCTimestampCompare 测试时间戳比较

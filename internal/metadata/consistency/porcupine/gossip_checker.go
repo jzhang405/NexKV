@@ -5,6 +5,7 @@ package porcupine
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -156,6 +157,7 @@ func (e *ConvergenceError) GetDiagnostics() string {
 
 // SimpleConvergenceNode 简单的 ConvergenceNode 实现（用于测试）
 type SimpleConvergenceNode struct {
+	mu         sync.RWMutex
 	nodeID     string
 	merkleRoot string
 }
@@ -175,10 +177,14 @@ func (n *SimpleConvergenceNode) GetNodeID() string {
 
 // GetMerkleRoot 实现 MerkleRootProvider 接口
 func (n *SimpleConvergenceNode) GetMerkleRoot() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return n.merkleRoot
 }
 
 // SetMerkleRoot 设置 Merkle Root（用于测试）
 func (n *SimpleConvergenceNode) SetMerkleRoot(root string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	n.merkleRoot = root
 }

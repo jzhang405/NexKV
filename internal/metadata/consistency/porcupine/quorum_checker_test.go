@@ -77,10 +77,12 @@ func TestRecordingQuorumScenario_VerifyLinearizability(t *testing.T) {
 	ctx := context.Background()
 
 	// 执行线性化操作序列
-	scenario.Client.Put(ctx, "ns1", "key1", []byte("value1"))
-	scenario.Client.Get(ctx, "ns1", "key1")
-	scenario.Client.Put(ctx, "ns1", "key1", []byte("value2"))
-	scenario.Client.Get(ctx, "ns1", "key1")
+	require.NoError(t, scenario.Client.Put(ctx, "ns1", "key1", []byte("value1")))
+	_, err := scenario.Client.Get(ctx, "ns1", "key1")
+	require.NoError(t, err)
+	require.NoError(t, scenario.Client.Put(ctx, "ns1", "key1", []byte("value2")))
+	_, err = scenario.Client.Get(ctx, "ns1", "key1")
+	require.NoError(t, err)
 
 	// 验证线性一致性
 	result := scenario.VerifyLinearizability()
@@ -95,8 +97,9 @@ func TestRecordingQuorumScenario_VerifyLinearizabilityWithVis(t *testing.T) {
 	ctx := context.Background()
 
 	// 执行操作
-	scenario.Client.Put(ctx, "ns1", "key1", []byte("value1"))
-	scenario.Client.Get(ctx, "ns1", "key1")
+	require.NoError(t, scenario.Client.Put(ctx, "ns1", "key1", []byte("value1")))
+	_, err := scenario.Client.Get(ctx, "ns1", "key1")
+	require.NoError(t, err)
 
 	// 验证线性一致性（带可视化）
 	result, visPath := scenario.VerifyLinearizabilityWithVis()
@@ -126,7 +129,7 @@ func TestRecordingQuorumScenario_Clear(t *testing.T) {
 	ctx := context.Background()
 
 	// 执行操作
-	scenario.Client.Put(ctx, "ns1", "key1", []byte("value1"))
+	require.NoError(t, scenario.Client.Put(ctx, "ns1", "key1", []byte("value1")))
 
 	// 清空
 	scenario.Clear()
@@ -144,8 +147,8 @@ func TestRecordingQuorumScenario_Delete(t *testing.T) {
 	ctx := context.Background()
 
 	// 执行删除操作
-	scenario.Client.Put(ctx, "ns1", "key1", []byte("value1"))
-	scenario.Client.Delete(ctx, "ns1", "key1")
+	require.NoError(t, scenario.Client.Put(ctx, "ns1", "key1", []byte("value1")))
+	require.NoError(t, scenario.Client.Delete(ctx, "ns1", "key1"))
 
 	// 验证线性一致性
 	result := scenario.VerifyLinearizability()
@@ -170,8 +173,8 @@ func BenchmarkRecordingQuorumScenario(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		scenario.Client.Put(ctx, "ns1", "key1", []byte("value1"))
-		scenario.Client.Get(ctx, "ns1", "key1")
+		_ = scenario.Client.Put(ctx, "ns1", "key1", []byte("value1"))
+		_, _ = scenario.Client.Get(ctx, "ns1", "key1")
 		scenario.Clear()
 	}
 }

@@ -50,21 +50,11 @@ func (t *HLCTimestamp) Update(eventTime int64, remoteTS int64) int64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// 从远程时间戳解析物理时间和逻辑计数
-	remotePT := remoteTS >> 16
-	remoteC := uint16(remoteTS & 0xFFFF)
+	// 从远程时间戳解析物理时间和逻辑计数（用于信息记录）
+	_ = remoteTS >> 16       // remotePT
+	_ = uint16(remoteTS & 0xFFFF) // remoteC
 
-	// 创建远程 HLC 用于更新
-	remoteHLC := &clock.HLC{}
-	remoteHLC.UnmarshalBinary(make([]byte, 10)) // 初始化
-	// 直接设置值（绕过序列化）
-	// 注意：这里我们使用 HLC 的内部状态更新
-
-	// 简化处理：使用 eventTime 更新本地 HLC
-	_ = remotePT
-	_ = remoteC
-
-	// 更新本地 HLC
+	// 更新本地 HLC（简化处理：不使用远程 HLC）
 	updated := t.hlc.Update(eventTime, nil)
 
 	return (updated.PhysicalTime() << 16) | int64(updated.LogicalCounter())

@@ -72,15 +72,22 @@ func TestGossipConvergenceChecker_EventualConvergence(t *testing.T) {
 	nodes := []ConvergenceNode{node1, node2, node3}
 	checker := NewGossipConvergenceChecker(nodes, 500*time.Millisecond, 20*time.Millisecond)
 
+	// 使用通道同步，避免竞态条件
+	done := make(chan struct{})
+
 	// 启动 goroutine 模拟 Gossip 同步
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		// node2 同步到相同状态
 		node2.SetMerkleRoot("root-abc")
+		close(done)
 	}()
 
 	err := checker.WaitForConvergence(context.Background())
 	require.NoError(t, err, "最终应该收敛")
+
+	// 等待 goroutine 完成
+	<-done
 }
 
 // TestGossipConvergenceChecker_ContextCancellation 测试上下文取消

@@ -89,6 +89,10 @@ type TwoPCTransaction struct {
 	Participants []string        // 参与者节点 ID 列表
 	Acks         map[string]bool // participantID -> ACK 状态
 
+	// P0-1: Gossip 状态同步新增字段
+	Coordinator     string          // 协调者节点 ID（用于 Gossip 查询）
+	Acknowledgments map[string]bool // 响应追踪（participantID -> 是否响应）
+
 	// 时间戳
 	CreateTime    time.Time // 创建时间
 	PreCommitTime time.Time // PreCommit 时间
@@ -109,14 +113,15 @@ func NewTwoPCTransaction(txID string, participants []string, timeout time.Durati
 	}
 
 	return &TwoPCTransaction{
-		TxID:         txID,
-		State:        TxStateInit,
-		Operations:   make([]*PendingOperation, 0),
-		Participants: participants,
-		Acks:         make(map[string]bool),
-		CreateTime:   time.Now(),
-		Timeout:      timeout,
-		Quorum:       len(participants), // 2PC 需要全部 ACK
+		TxID:            txID,
+		State:           TxStateInit,
+		Operations:      make([]*PendingOperation, 0),
+		Participants:    participants,
+		Acks:            make(map[string]bool),
+		Acknowledgments: make(map[string]bool), // P0-1: 初始化响应追踪
+		CreateTime:      time.Now(),
+		Timeout:         timeout,
+		Quorum:          len(participants), // 2PC 需要全部 ACK
 	}
 }
 
@@ -715,6 +720,261 @@ func (c *TwoPCMerkleCoordinator) CleanupTimeoutTransactions() int {
 	}
 
 	return cleaned
+}
+
+// ==================== P0-1: Gossip 状态同步 ====================
+
+// gossipTransactionStates 周期性 Gossip 状态扩散
+//
+// 每 5 秒向其他节点扩散当前节点的事务状态，用于故障恢复场景
+// 协调者故障时，参与者可以通过 Gossip 查询事务决策
+func (c *TwoPCMerkleCoordinator) gossipTransactionStates() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// 没有进行中的事务，跳过
+	if len(c.transactions) == 0 {
+		return nil
+	}
+
+	// 遍历所有进行中的事务
+	for _, tx := range c.transactions {
+		// 只扩散非终态的事务
+		if tx.State == TxStateCommitted || tx.State == TxStateRolledBack {
+			continue
+		}
+
+		// 构造 Gossip 状态消息
+		payload := &transport.TwoPCGossipPayload{
+			Phase:       "state",
+			TxID:        tx.TxID,
+			State:       tx.State.String(),
+			Coordinator: tx.Coordinator,
+			Timestamp:   time.Now().UnixNano(), // 使用纳秒时间戳
+			MessageID:   uint64(time.Now().UnixNano()),
+		}
+
+		// 序列化消息
+		msg := transport.NewMessage(transport.MessageTypeTwoPCGossip)
+		msg.From = c.localNodeID
+		if err := msg.EncodePayload(payload); err != nil {
+			// 记录错误，继续处理下一个事务
+			fmt.Printf("[WARN] Failed to encode gossip state message for tx %s: %v\n", tx.TxID, err)
+			continue
+		}
+
+		// 广播给所有参与者（排除自己）
+		for _, participant := range tx.Participants {
+			if participant == c.localNodeID {
+				continue
+			}
+
+			// 使用异步发送，避免阻塞
+			go func(nodeID string, msgPayload []byte) {
+				if err := c.transport.Send(nodeID, msgPayload); err != nil {
+					fmt.Printf("[DEBUG] Failed to send gossip state to %s for tx %s: %v\n", nodeID, tx.TxID, err)
+				}
+			}(participant, msg.Payload)
+		}
+	}
+
+	return nil
+}
+
+// queryTransactionDecision 通过 Gossip 查询事务决策
+//
+// 协调者故障时，参与者调用此方法向其他节点查询事务的最终决策
+// timeout: 查询超时时间（默认 10 秒）
+func (c *TwoPCMerkleCoordinator) queryTransactionDecision(txID string, timeout time.Duration) (TransactionState, error) {
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+
+	// 先检查本地是否有该事务
+	c.mu.RLock()
+	if tx, ok := c.transactions[txID]; ok {
+		// 本地有事务，直接返回状态
+		state := tx.State
+		c.mu.RUnlock()
+		return state, nil
+	}
+	c.mu.RUnlock()
+
+	// 本地没有事务，向其他节点查询
+	// TODO: 实现集群节点查询
+	// 需要：
+	// 1. 从 ClusterManager 获取所有在线节点
+	// 2. 广播查询消息
+	// 3. 等待第一个响应或超时
+	// 4. 返回查询结果
+
+	return TxStateInit, errors.New("gossip query not implemented: no cluster manager integration")
+}
+
+// handleGossipStateMessage 处理接收到的 Gossip 状态消息
+//
+// 其他节点扩散的事务状态，用于本地更新和决策
+func (c *TwoPCMerkleCoordinator) handleGossipStateMessage(nodeID string, msgBytes []byte) error {
+	// 解码消息
+	codec := transport.NewMessagePackCodec()
+	msg, err := codec.DecodeFromBytes(msgBytes)
+	if err != nil {
+		return fmt.Errorf("failed to decode gossip state message: %w", err)
+	}
+
+	// 解码 Payload
+	payload, err := msg.DecodePayload()
+	if err != nil {
+		return fmt.Errorf("failed to decode gossip state payload: %w", err)
+	}
+
+	gossipPayload, ok := payload.(*transport.TwoPCGossipPayload)
+	if !ok {
+		return errors.New("invalid gossip state message payload")
+	}
+
+	// 验证消息类型
+	if gossipPayload.Phase != "state" {
+		return fmt.Errorf("expected phase 'state', got '%s'", gossipPayload.Phase)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 检查本地是否有该事务
+	tx, ok := c.transactions[gossipPayload.TxID]
+	if !ok {
+		// 本地没有该事务，记录日志并忽略
+		fmt.Printf("[DEBUG] Received gossip state for unknown tx %s from %s\n", gossipPayload.TxID, nodeID)
+		return nil
+	}
+
+	// 本地有该事务，更新协调者信息（如果本地没有）
+	if tx.Coordinator == "" && gossipPayload.Coordinator != "" {
+		tx.Coordinator = gossipPayload.Coordinator
+		fmt.Printf("[INFO] Updated coordinator for tx %s to %s\n", gossipPayload.TxID, gossipPayload.Coordinator)
+	}
+
+	// 如果远程状态比本地新，考虑更新（需要状态转换验证，P1-2 实现）
+	// TODO: 使用 HLC 时间戳比较和状态转换验证（P1-2）
+
+	return nil
+}
+
+// handleGossipQueryMessage 处理接收到的 Gossip 查询消息
+//
+// 其他节点查询事务决策，本地有则返回
+func (c *TwoPCMerkleCoordinator) handleGossipQueryMessage(nodeID string, msgBytes []byte) error {
+	// 解码消息
+	codec := transport.NewMessagePackCodec()
+	msg, err := codec.DecodeFromBytes(msgBytes)
+	if err != nil {
+		return fmt.Errorf("failed to decode gossip query message: %w", err)
+	}
+
+	// 解码 Payload
+	payload, err := msg.DecodePayload()
+	if err != nil {
+		return fmt.Errorf("failed to decode gossip query payload: %w", err)
+	}
+
+	gossipPayload, ok := payload.(*transport.TwoPCGossipPayload)
+	if !ok {
+		return errors.New("invalid gossip query message payload")
+	}
+
+	// 验证消息类型
+	if gossipPayload.Phase != "query" {
+		return fmt.Errorf("expected phase 'query', got '%s'", gossipPayload.Phase)
+	}
+
+	c.mu.RLock()
+	tx, ok := c.transactions[gossipPayload.TxID]
+	c.mu.RUnlock()
+
+	// 构造响应消息
+	replyPayload := &transport.TwoPCGossipPayload{
+		Phase:     "reply",
+		TxID:      gossipPayload.TxID,
+		Requester: gossipPayload.Requester,
+		Success:   ok, // 是否找到事务
+		MessageID: uint64(time.Now().UnixNano()),
+	}
+
+	// 如果找到事务，填充状态信息
+	if ok {
+		replyPayload.State = tx.State.String()
+		replyPayload.Coordinator = tx.Coordinator
+		replyPayload.Timestamp = time.Now().UnixNano()
+	}
+
+	// 发送响应
+	replyMsg := transport.NewMessage(transport.MessageTypeTwoPCGossip)
+	replyMsg.From = c.localNodeID
+	if err := replyMsg.EncodePayload(replyPayload); err != nil {
+		return fmt.Errorf("failed to encode gossip reply message: %w", err)
+	}
+
+	// 同步发送响应（查询需要及时响应）
+	if err := c.transport.Send(nodeID, replyMsg.Payload); err != nil {
+		return fmt.Errorf("failed to send gossip reply to %s: %w", nodeID, err)
+	}
+
+	return nil
+}
+
+// handleGossipReplyMessage 处理接收到的 Gossip 响应消息
+//
+// 其他节点返回的查询结果
+func (c *TwoPCMerkleCoordinator) handleGossipReplyMessage(nodeID string, msgBytes []byte) error {
+	// 解码消息
+	codec := transport.NewMessagePackCodec()
+	msg, err := codec.DecodeFromBytes(msgBytes)
+	if err != nil {
+		return fmt.Errorf("failed to decode gossip reply message: %w", err)
+	}
+
+	// 解码 Payload
+	payload, err := msg.DecodePayload()
+	if err != nil {
+		return fmt.Errorf("failed to decode gossip reply payload: %w", err)
+	}
+
+	gossipPayload, ok := payload.(*transport.TwoPCGossipPayload)
+	if !ok {
+		return errors.New("invalid gossip reply message payload")
+	}
+
+	// 验证消息类型
+	if gossipPayload.Phase != "reply" {
+		return fmt.Errorf("expected phase 'reply', got '%s'", gossipPayload.Phase)
+	}
+
+	// 验证是否是发给我的响应
+	if gossipPayload.Requester != c.localNodeID {
+		// 不是发给我的，忽略
+		return nil
+	}
+
+	// 如果查询成功，更新本地事务状态（如果有）
+	if gossipPayload.Success {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
+		if tx, ok := c.transactions[gossipPayload.TxID]; ok {
+			// 更新协调者信息
+			if tx.Coordinator == "" && gossipPayload.Coordinator != "" {
+				tx.Coordinator = gossipPayload.Coordinator
+			}
+
+			// TODO: 使用 HLC 时间戳比较和状态转换验证（P1-2）
+			// 如果远程状态比本地新，考虑更新
+			fmt.Printf("[INFO] Received gossip reply for tx %s: state=%s from %s\n",
+				gossipPayload.TxID, gossipPayload.State, nodeID)
+		}
+	}
+
+	return nil
 }
 
 // Close 关闭协调器

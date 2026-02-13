@@ -298,3 +298,127 @@ func BenchmarkHLCConcurrent(b *testing.B) {
 		}
 	})
 }
+
+// TestHLCUpdateWithNilRemote 测试 P0-1 修复: Update 接受 nil remoteHLC
+func TestHLCUpdateWithNilRemote(t *testing.T) {
+	hlc := NewHLC()
+	initialPT := hlc.PhysicalTime()
+
+	// P0-1 修复测试: nil remoteHLC 不应该导致 panic
+	updated := hlc.Update(time.Now().UnixMilli(), nil)
+
+	// 验证: 即使 remoteHLC 为 nil，时间戳也应该单调递增
+	if updated.PhysicalTime() < initialPT {
+		t.Errorf("Update with nil remoteHLC caused time regression: initial=%d, updated=%d",
+			initialPT, updated.PhysicalTime())
+	}
+
+	// 验证: 多次使用 nil 调用 Update 仍然正常工作
+	for i := 0; i < 100; i++ {
+		prev := updated
+		updated = hlc.Update(time.Now().UnixMilli(), nil)
+		if updated.LessThan(prev) {
+			t.Errorf("Update with nil remoteHLC not monotonic: prev=%v, updated=%v", prev, updated)
+		}
+	}
+}
+
+// TestHLCUpdateNilRemoteWithFixedTime 测试 P0-1: 固定事件时间 + nil remoteHLC
+// 当 remoteHLC 为 nil 时，Update 只考虑本地时间和事件时间
+// 如果两者都等于当前物理时间，逻辑计数器不会增加（这是正确行为）
+func TestHLCUpdateNilRemoteWithFixedTime(t *testing.T) {
+	hlc := NewHLC()
+	fixedPT := time.Now().UnixMilli()
+
+	// 使用相同事件时间和 nil remoteHLC
+	// 由于 remotePT=0，条件 newPT == h.pt && newPT == remotePT 永远不满足
+	// 所以逻辑计数器会保持为 0，物理时间会取最大值
+	for i := 0; i < 10; i++ {
+		updated := hlc.Update(fixedPT, nil)
+		// 验证: 不会导致 panic，且时间戳有效
+		if updated.PhysicalTime() < 0 {
+			t.Errorf("Invalid physical time: %d", updated.PhysicalTime())
+		}
+	}
+}
+
+// TestHLCLogicalCounterOverflowInUpdate 测试 P0-2 修复: Update 中的逻辑计数器溢出
+func TestHLCLogicalCounterOverflowInUpdate(t *testing.T) {
+	// 创建一个逻辑计数器接近最大值的 HLC
+	hlc := &HLC{
+		pt: time.Now().UnixMilli(),
+		c:  MaxLogicalCounter - 1, // 65534
+	}
+
+	initialPT := hlc.PhysicalTime()
+
+	// 使用相同物理时间的远程 HLC 触发溢出
+	remote := &HLC{
+		pt: initialPT,
+		c:  MaxLogicalCounter, // 65535
+	}
+
+	// P0-2 修复测试: 溢出应该推进物理时间而非回绕
+	updated := hlc.Update(initialPT, remote)
+
+	// 验证: 物理时间应该推进（因为逻辑计数溢出）
+	if updated.PhysicalTime() <= initialPT {
+		t.Errorf("Overflow should advance physical time: initial=%d, updated=%d",
+			initialPT, updated.PhysicalTime())
+	}
+
+	// 验证: 逻辑计数应该重置为 0
+	if updated.LogicalCounter() != 0 {
+		t.Errorf("Logical counter should be reset after overflow: got=%d, expected=0",
+			updated.LogicalCounter())
+	}
+}
+
+// TestHLCLogicalCounterOverflowInNow 测试 P0-2 修复: Now() 中的逻辑计数器溢出
+func TestHLCLogicalCounterOverflowInNow(t *testing.T) {
+	// 创建一个逻辑计数器在最大值的 HLC
+	pt := time.Now().UnixMilli()
+	hlc := &HLC{
+		pt: pt,
+		c:  MaxLogicalCounter, // 65535
+	}
+
+	// P0-2 修复测试: Now() 中的 h.c++ 溢出应该推进物理时间
+	now := hlc.Now()
+
+	// 验证: 物理时间应该推进（因为逻辑计数溢出）
+	if hlc.PhysicalTime() <= pt {
+		t.Errorf("Now() overflow should advance physical time: initial=%d, after=%d",
+			pt, hlc.PhysicalTime())
+	}
+
+	// 验证: 返回的时间戳应该大于初始值
+	if now.PhysicalTime() < pt {
+		t.Errorf("Now() returned timestamp with lower physical time: initial=%d, returned=%d",
+			pt, now.PhysicalTime())
+	}
+}
+
+// TestHLCOverflowMonotonicity 测试溢出后的单调性
+func TestHLCOverflowMonotonicity(t *testing.T) {
+	// 从接近溢出的状态开始
+	hlc := &HLC{
+		pt: time.Now().UnixMilli(),
+		c:  MaxLogicalCounter - 100,
+	}
+
+	var last *HLC
+	// 触发多次溢出
+	for i := 0; i < 300; i++ {
+		remote := &HLC{
+			pt: hlc.PhysicalTime(),
+			c:  MaxLogicalCounter,
+		}
+		updated := hlc.Update(hlc.PhysicalTime(), remote)
+
+		if last != nil && (updated.LessThan(last) || updated.Equal(last)) {
+			t.Errorf("Monotonicity violated after overflow: last=%v, updated=%v", last, updated)
+		}
+		last = updated
+	}
+}

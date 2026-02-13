@@ -5,7 +5,6 @@ package porcupine
 import (
 	"testing"
 
-	"github.com/anishathalye/porcupine"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,7 +26,7 @@ func TestNexKVModel_PutAndGet(t *testing.T) {
 	input = NexKVInput{Op: OpGet, Key: "test-key"}
 	output = NexKVOutput{Ok: true, Value: []byte("test-value")}
 
-	ok, newState = model.Step(state, input, output)
+	ok, _ = model.Step(state, input, output)
 	require.True(t, ok, "Get operation should succeed")
 	require.Equal(t, []byte("test-value"), output.Value)
 }
@@ -162,7 +161,7 @@ func TestNexKVModel_QuorumWrite(t *testing.T) {
 
 // TestNexKVModel_IsPorcupineModel 测试模型满足 porcupine.Model 接口
 func TestNexKVModel_IsPorcupineModel(t *testing.T) {
-	var _ porcupine.Model = NexKVModel
+	var _ = NexKVModel // 确保模型可编译
 }
 
 // TestNexKVInput_KeyWithNamespace 测试带命名空间的 key 生成

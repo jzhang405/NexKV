@@ -131,8 +131,8 @@ func TestNewTimestampGenerator_MultiNode(t *testing.T) {
 // TestTimestampGenerator_Interface 测试 TimestampGenerator 接口实现
 func TestTimestampGenerator_Interface(t *testing.T) {
 	// 确保两种实现都满足接口
-	var _ TimestampGenerator = NewMonotonicTimestamp()
-	var _ TimestampGenerator = NewLogicalTimestamp(1)
-	var _ TimestampGenerator = NewTimestampGenerator("node-1", 1)
-	var _ TimestampGenerator = NewTimestampGenerator("node-1", 3)
+	_ = TimestampGenerator(NewMonotonicTimestamp())
+	_ = TimestampGenerator(NewLogicalTimestamp(1))
+	_ = TimestampGenerator(NewTimestampGenerator("node-1", 1))
+	_ = TimestampGenerator(NewTimestampGenerator("node-1", 3))
 }

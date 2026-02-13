@@ -1,19 +1,20 @@
-# PR-061 Phase 4: 并发场景测试
+# PR-061 Phase 4: 故障注入测试
 
 > **父文档**: [PR-061 Pre 文档](../2026-02-13_PR-061_e2e-testing-framework_Pre.md)
 > **阶段**: Phase 4
-> **目标**: 验证并发场景下的稳定性
+> **目标**: 验证故障场景下的自愈能力
 > **预计耗时**: 20 min
-> **依赖**: Phase 3.2
+> **依赖**: Phase 3
 
 ---
 
 ## 1. 阶段目标
 
-验证系统在高并发场景下的稳定性和一致性：
-- 并发写入
-- 并发读取
-- 混合读写负载
+验证系统在故障场景下的自愈和容错能力：
+- 节点故障检测和恢复
+- 网络分区容错
+- 脑裂场景处理
+- 故障节点重启后数据同步
 
 ---
 
@@ -21,11 +22,13 @@
 
 | 测试用例 | 验证目标 | 预计耗时 | 优先级 |
 |---------|---------|---------|--------|
-| TestConcurrentWrites | 10 个客户端并发写入 | 5 min | P0 |
-| TestConcurrentReads | 20 个客户端并发读取 | 5 min | P0 |
-| TestMixedWorkload | 50 个客户端混合负载 | 10 min | P1 |
+| TestSingleNodeFailure | 单节点故障检测 | 3 min | P0 |
+| TestNodeRecovery | 节点故障后恢复 | 3 min | P0 |
+| TestMultipleNodeFailures | 多节点同时故障 | 4 min | P1 |
+| TestLeaderFailure | Leader 故障自动选举 | 4 min | P0 |
+| TestFullClusterRestart | 集群全部重启后恢复 | 6 min | P1 |
 
-**总计**: 3 个测试用例，预计 20 分钟
+**总计**: 5 个测试用例，预计 20 分钟
 
 ---
 
@@ -33,43 +36,46 @@
 
 | 组件 | 接口 | 实现状态 |
 |------|------|---------|
-| **ConcurrencyTestRunner** | `RunConcurrentWrites()`, `RunConcurrentReads()` | ⚠️ 待实现 |
+| **FaultInjector** | `KillNode()`, `PartitionNetwork()`, `RestoreNode()` | ⚠️ 待实现 |
+| **RecoveryVerifier** | `VerifyDataSync()`, `VerifyTopologyRecovery()` | ⚠️ 待实现 |
 
-**ConcurrencyTestRunner 核心接口**：
+**FaultInjector 核心接口**：
 ```go
-type ConcurrencyTestRunner struct {
+type FaultInjector struct {
     cluster *TestCluster
-    clients []*CLIExecutor
 }
 
-func (r *ConcurrencyTestRunner) RunConcurrentWrites(
-    ctx context.Context,
-    numClients, writesPerClient int,
-) error
+func (fi *FaultInjector) KillNode(nodeID string) error
+func (fi *FaultInjector) PartitionNetwork(nodeA, nodeB string) error
+func (fi *FaultInjector) RestoreNode(nodeID string) error
 ```
 
 ---
 
 ## 4. 验收标准
 
-- [ ] 3/3 测试用例通过
-- [ ] `make test-e2e-phase4` 可运行
-- [ ] 并发写入无数据损坏
-- [ ] 并发读取结果一致
-- [ ] 混合负载下系统稳定
+- [ ] 5/5 测试用例通过
+- [ ] `make test-e2e-phase3-fault` 可运行
+- [ ] 节点故障能在 10s 内检测
+- [ ] 节点恢复后数据自动同步
+- [ ] Leader 故障后 5s 内重新选举
+- [ ] 网络分区恢复后集群自动愈合
 
 ---
 
 ## 5. 实施依赖
 
 **前置条件**：
-- [ ] Phase 3.2 故障注入测试通过
-- [ ] 并发控制机制实现
+- [ ] Phase 3 一致性协议测试通过
+- [ ] 故障检测机制实现
+- [ ] 节点重启逻辑实现
 
-**后续阶段**：Phase 5（性能测试）
+**后续阶段**：Phase 5（并发场景）
 
 ---
 
 ## 6. 相关文档
 
 - 主文档: [PR-061 Pre 文档](../2026-02-13_PR-061_e2e-testing-framework_Pre.md)
+- Phase 3: [一致性协议测试](../2026-02-13_PR-061_e2e-testing-phase3.md)
+- Phase 5: [并发场景测试](../2026-02-13_PR-061_e2e-testing-phase5.md)

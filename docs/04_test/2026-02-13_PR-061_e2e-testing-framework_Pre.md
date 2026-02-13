@@ -26,10 +26,10 @@
 |------|------|------|
 | **Phase 1** | [phase1.md](./2026-02-13_PR-061_e2e-testing-phase1.md) | 单节点基础测试 |
 | **Phase 2** | [phase2.md](./2026-02-13_PR-061_e2e-testing-phase2.md) | 多节点集群测试 |
-| **Phase 3.1** | [phase3.1-consistency.md](./2026-02-13_PR-061_e2e-testing-phase3/2026-02-13_PR-061_e2e-testing-phase3.1-consistency.md) | 一致性协议测试 |
-| **Phase 3.2** | [phase3.2-fault-injection.md](./2026-02-13_PR-061_e2e-testing-phase3/2026-02-13_PR-061_e2e-testing-phase3.2-fault-injection.md) | 故障注入测试 |
-| **Phase 4** | [phase4.md](./2026-02-13_PR-061_e2e-testing-phase4.md) | 并发场景测试 |
-| **Phase 5** | [phase5.md](./2026-02-13_PR-061_e2e-testing-phase5.md) | 性能测试 |
+| **Phase 3** | [phase3.md](./2026-02-13_PR-061_e2e-testing-phase3.md) | 一致性协议测试 |
+| **Phase 4** | [phase4.md](./2026-02-13_PR-061_e2e-testing-phase4.md) | 故障注入测试 |
+| **Phase 5** | [phase5.md](./2026-02-13_PR-061_e2e-testing-phase5.md) | 并发场景测试 |
+| **Phase 6** | [phase6.md](./2026-02-13_PR-061_e2e-testing-phase6.md) | 性能测试 |
 
 ---
 
@@ -70,12 +70,10 @@ NexKV 项目目前缺少端到端（E2E）测试，无法验证：
 ```mermaid
 flowchart LR
     A[Phase 1: 单节点基础<br/>5 min] --> B[Phase 2: 多节点集群<br/>10 min]
-    B --> C[Phase 3.1: 一致性协议<br/>15 min]
-    C --> D[Phase 3.2: 故障注入<br/>20 min]
-    D --> E[Phase 4: 并发场景<br/>20 min]
-    E --> F[Phase 5: 性能测试<br/>30 min]
-
-    style C fill:#fff3cd
+    B --> C[Phase 3: 一致性协议<br/>15 min]
+    C --> D[Phase 4: 故障注入<br/>20 min]
+    D --> E[Phase 5: 并发场景<br/>20 min]
+    E --> F[Phase 6: 性能测试<br/>30 min]
 ```
 
 **阶段概览**：
@@ -83,11 +81,11 @@ flowchart LR
 | 阶段 | 目标 | 测试数量 | 预计耗时 | 文档 |
 |------|------|---------|---------|------|
 | **Phase 1** | 单节点基础 | 8 | 5 min | [phase1.md](./2026-02-13_PR-061_e2e-testing-phase1.md) |
-| **Phase 2** | 多节点集群 | 6 | 10 min | [phase2.md](./2026-02-13_PR-061_e2e-testing-phase2.md) |
-| **Phase 3.1** | 一致性协议 | 13 | 15 min | [phase3.1-consistency.md](./2026-02-13_PR-061_e2e-testing-phase3/2026-02-13_PR-061_e2e-testing-phase3.1-consistency.md) |
-| **Phase 3.2** | 故障注入 | 5 | 20 min | [phase3.2-fault-injection.md](./2026-02-13_PR-061_e2e-testing-phase3/2026-02-13_PR-061_e2e-testing-phase3.2-fault-injection.md) |
-| **Phase 4** | 并发场景 | 4 | 20 min | [phase4.md](./2026-02-13_PR-061_e2e-testing-phase4.md) |
-| **Phase 5** | 性能测试 | 3 | 30 min | [phase5.md](./2026-02-13_PR-061_e2e-testing-phase5.md) |
+| **Phase 2** | 多节点集群 | 7 | 10 min | [phase2.md](./2026-02-13_PR-061_e2e-testing-phase2.md) |
+| **Phase 3** | 一致性协议 | 13 | 15 min | [phase3.md](./2026-02-13_PR-061_e2e-testing-phase3.md) |
+| **Phase 4** | 故障注入 | 5 | 20 min | [phase4.md](./2026-02-13_PR-061_e2e-testing-phase4.md) |
+| **Phase 5** | 并发场景 | 3 | 20 min | [phase5.md](./2026-02-13_PR-061_e2e-testing-phase5.md) |
+| **Phase 6** | 性能测试 | 3 | 30 min | [phase6.md](./2026-02-13_PR-061_e2e-testing-phase6.md) |
 
 ---
 

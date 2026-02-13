@@ -1,7 +1,7 @@
-# PR-061 Phase 3.1: 一致性协议测试
+# PR-061 Phase 3: 一致性协议测试
 
 > **父文档**: [PR-061 Pre 文档](../2026-02-13_PR-061_e2e-testing-framework_Pre.md)
-> **阶段**: Phase 3.1（原 Phase 2.5）
+> **阶段**: Phase 3
 > **目标**: 验证 Gossip、Quorum、2PC 协议正确性
 > **预计耗时**: 15 min
 > **依赖**: Phase 2
@@ -118,12 +118,12 @@ func (dv *DataVerifier) VerifyFinalConsistency(
 - [ ] Quorum 机制实现完成
 - [ ] 2PC 协议实现完成
 
-**后续阶段**：Phase 3.2（故障注入）
+**后续阶段**：Phase 4（故障注入）
 
 ---
 
 ## 6. 相关文档
 
 - 主文档: [PR-061 Pre 文档](../2026-02-13_PR-061_e2e-testing-framework_Pre.md)
-- 架构设计: [E2E 测试架构设计](../07_E2E测试架构设计.md)
 - Phase 2: [多节点集群测试](../2026-02-13_PR-061_e2e-testing-phase2.md)
+- Phase 4: [故障注入测试](../2026-02-13_PR-061_e2e-testing-phase4.md)

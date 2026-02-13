@@ -184,12 +184,12 @@ func (c *TwoPCMerkleCoordinator) loadTransaction(txID string) (*TwoPCTransaction
 
 func (c *TwoPCMerkleCoordinator) recoverTransactions() error {
     // 启动时恢复未完成事务
-    keys, _ := c.mvstore.Scan(NamespaceTx, "")
+    keys, _ := c.metadataKV.ScanRaw(context.Background(), NamespaceTx, "")
     for _, key := range keys {
         tx, _ := c.loadTransaction(strings.TrimPrefix(key, NamespaceTx))
         if tx.State == TxStatePreCommit {
-            // 恢复预提交状态的事务
-            c.transactions[tx.ID] = tx
+            // 恢复预提交状态的事务（使用 sync.Map，强制优化项 7.1）
+            c.transactions.Store(tx.TxID, tx)
         }
     }
 }
@@ -377,7 +377,8 @@ go test -v -run TestStress ./internal/metadata/consistency/...
 
 | 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施（含AI辅助修改） | 优化结果 |
 |----------|----------|------------------|--------------|--------------------------|----------|
-| 第1轮 | 2026-02-13 | 👤 架构师 | **需优化**：发现 3 个关键问题：1) 命名空间冲突（tx: → meta:tx:）；2) 字段名错误（tx.ID → tx.TxID）；3) 压力测试指标过高。建议工作量从 10 天调整为 16 天。**强制要求**：3 个优化项（sync.Map、批量写入、Gossip 限流）改为必选。 | 1) 修正命名空间为 meta:tx:；2) 修正字段名为 tx.TxID；3) 调整压力测试指标（并发 500, Gossip 5000, 持久化 1000）；4) 工作量调整为 18 天（新增 2 天强制优化项）；5) 将架构师强烈建议改为必须实施项 | ✅ 已完成优化，待第2轮评审 |
+| 第1轮 | 2026-02-13 | 👤 架构师 | **需优化**：发现 3 个关键问题：1) 命名空间冲突（tx: → meta:tx:）；2) 字段名错误（tx.ID → tx.TxID）；3) 压力测试指标过高。建议工作量从 10 天调整为 16 天。**强制要求**：3 个优化项（sync.Map、批量写入、Gossip 限流）改为必选。 | 1) 修正命名空间为 meta:tx:；2) 修正字段名为 tx.TxID；3) 调整压力测试指标（并发 500, Gossip 5000, 持久化 1000）；4) 工作量调整为 18 天（新增 2 天强制优化项）；5) 将架构师强烈建议改为必须实施项 | ✅ 已完成优化，进入第2轮评审 |
+| 第2轮 | 2026-02-13 | 👤 架构师 | **需优化**：发现 2 处遗留代码错误：1) recoverTransactions() 使用错误的存储字段（c.mvstore.Scan → c.metadataKV.ScanRaw）；2) 使用错误的字段名和存储方式（c.transactions[tx.ID] → c.transactions.Store(tx.TxID, tx)）。 | 1) 修正 recoverTransactions() 的存储字段为 c.metadataKV.ScanRaw；2) 修正存储方式为 c.transactions.Store(tx.TxID, tx)（符合强制优化项 7.1） | ✅ 已完成优化，待架构师签字通过 |
 
 ### 6. 预审批确认
 > **架构师签字/备注**：
@@ -387,7 +388,12 @@ go test -v -run TestStress ./internal/metadata/consistency/...
 > - **发现问题**：3 个关键问题（命名空间冲突、字段名错误、压力测试指标过高）
 > - **优化要求**：修复 3 个问题后重新提交评审
 >
-> **待第2轮评审**：完成优化后重新提交
+> **第2轮评审**（2026-02-13）：
+> - **评审状态**：⚠️ 需优化后通过
+> - **发现问题**：2 处遗留代码错误（recoverTransactions 存储字段和存储方式）
+> - **优化要求**：修复 2 处代码错误后可立即签字通过
+>
+> **待第3轮评审**：完成最终修复后申请签字通过
 
 ---
 

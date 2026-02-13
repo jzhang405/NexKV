@@ -1,7 +1,7 @@
 # NexKV Makefile
 # 提供 build、test、clean 等常用命令
 
-.PHONY: all build test clean run fmt vet lint docker-build docker-run help version
+.PHONY: all build test test-unit test-intg test-e2e clean run fmt vet lint docker-build docker-run help version
 
 # 变量定义
 BINARY_NAME=nexkv
@@ -39,15 +39,30 @@ build:
 	$(GO) build $(GOFLAGS) -ldflags "$(NEXKVD_LDFLAGS)" -o bin/$(DAEMON_NAME) $(NEXKVD_PATH)/main.go
 
 
-test:
-	@echo "运行带竞态检测的测试..."
-	CI=true $(GO) test -race -coverprofile=coverage.out ./...
-	$(GO) tool cover -html=coverage.out -o coverage.html
+## test: 运行所有测试（单元测试 + 集成测试）
+test: test-unit test-intg
+
+## test-unit: 运行单元测试（组件级测试，快速反馈）
+test-unit:
+	@echo "运行单元测试..."
+	$(GO) test -short -race ./internal/... -run "Test[^I].*"
+
+## test-intg: 运行集成测试（Layer 1 组件协作，多节点场景）
+test-intg:
+	@echo "运行集成测试..."
+	$(GO) test -race -timeout 10m ./internal/metadata/... -run "TestIntegration.*"
+	$(GO) test -race -timeout 10m ./internal/transport/... -run "TestIntegration.*"
+	$(GO) test -race -timeout 10m ./internal/rpc/... -run "TestIntegration.*"
+
+## test-e2e: 运行 E2E 测试（完整系统验证，待实现）
+test-e2e:
+	@echo "E2E 测试待 CLI/daemon 完成后实现"
+	@echo "参考: docs/06_PM/doc/2026-02-13_PR-061_e2e-testing-framework_Pre.md"
 
 ## test-perf: 运行性能测试（不含竞态检测）
 test-perf:
 	@echo "运行性能测试..."
-	$(GO) test -run TestE2E_Performance -v ./internal/metadata/consistency
+	$(GO) test -run TestIntegration_Performance -v ./internal/metadata/consistency
 
 ## test-verbose: 运行详细测试
 test-verbose:
@@ -147,6 +162,8 @@ help:
 	@echo "  make docker-run    - 运行 Docker 容器"
 	@echo "  make version       - 显示构建版本信息"
 	@echo "  make help          - 显示此帮助信息"
+	@echo ""
+	@echo "TODO: E2E 测试命令将在 PR-061 实施后添加 (docs/06_PM/doc/2026-02-13_PR-061_e2e-testing-framework_Pre.md)"
 	@echo ""
 	@echo "版本信息覆盖:"
 	@echo "  make build VERSION=1.0.0  - 使用指定版本号构建"

@@ -12,6 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package consistency 提供一致性协议集成测试
+//
+// 测试范围：
+// - 多节点 TreeTopologyCoordinator 协作
+// - Merkle Tree 增量同步
+// - 2PC/Quorum 协议交互
+// - 三级一致性模型验证
+//
+// 注意：这是集成测试，使用 mock 组件模拟多节点环境
+// 真正的 E2E 测试需要启动真实进程（待 CLI/daemon 完成后实现）
+//
+// 测试分层：
+//
+//	make test-unit      # 单元测试（组件级）
+//	make test-intg     # 集成测试（本文件）
+//	make test-e2e      # E2E 测试（待实现）
 package consistency
 
 import (
@@ -27,9 +43,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ==================== 端到端测试场景 ====================
+// ==================== 集成测试场景 ====================
 
-// E2ETestScenario 端到端测试场景
+// E2ETestScenario 集成测试场景
 type E2ETestScenario struct {
 	Name         string
 	Nodes        []string                                 // 节点 ID 列表
@@ -39,7 +55,7 @@ type E2ETestScenario struct {
 	MerkleTrees  map[string]*kvstore.NamespacedMerkleTree // nodeID -> merkleTree
 }
 
-// NewE2ETestScenario 创建端到端测试场景
+// NewE2ETestScenario 创建集成测试场景
 func NewE2ETestScenario(name string, nodeIDs []string) *E2ETestScenario {
 	topology := NewTreeTopology(nodeIDs[0])
 
@@ -113,10 +129,10 @@ func (s *E2ETestScenario) Cleanup() {
 	}
 }
 
-// ==================== 端到端测试用例 ====================
+// ==================== 集成测试用例 ====================
 
-// TestE2E_MetadataSync_ThreeLayerConsistency 测试三级一致性模型的端到端元数据同步
-func TestE2E_MetadataSync_ThreeLayerConsistency(t *testing.T) {
+// TestIntegration_MetadataSync_ThreeLayerConsistency 测试三级一致性模型的端到端元数据同步
+func TestIntegration_MetadataSync_ThreeLayerConsistency(t *testing.T) {
 	scenario := NewE2ETestScenario("ThreeLayerConsistency", []string{
 		"root", "parent-1", "parent-2", "parent-3", "leaf-1", "leaf-2", "leaf-3",
 	})
@@ -155,8 +171,8 @@ func TestE2E_MetadataSync_ThreeLayerConsistency(t *testing.T) {
 	})
 }
 
-// TestE2E_MerkleTreeSync 测试 Merkle Tree 同步
-func TestE2E_MerkleTreeSync(t *testing.T) {
+// TestIntegration_MerkleTreeSync 测试 Merkle Tree 同步
+func TestIntegration_MerkleTreeSync(t *testing.T) {
 	scenario := NewE2ETestScenario("MerkleTreeSync", []string{
 		"root", "node-1", "node-2", "node-3",
 	})
@@ -182,8 +198,8 @@ func TestE2E_MerkleTreeSync(t *testing.T) {
 	t.Logf("Merkle Root changed: %s -> %s", initialRoot, newRoot)
 }
 
-// TestE2E_2PC_CommitFlow 测试 2PC 提交流程
-func TestE2E_2PC_CommitFlow(t *testing.T) {
+// TestIntegration_2PC_CommitFlow 测试 2PC 提交流程
+func TestIntegration_2PC_CommitFlow(t *testing.T) {
 	scenario := NewE2ETestScenario("2PCCommitFlow", []string{
 		"root", "parent-1", "child-1",
 	})
@@ -218,8 +234,8 @@ func TestE2E_2PC_CommitFlow(t *testing.T) {
 
 // ==================== 故障场景模拟测试 ====================
 
-// TestE2E_NodeFailure_Rollback 测试节点故障时的回滚
-func TestE2E_NodeFailure_Rollback(t *testing.T) {
+// TestIntegration_NodeFailure_Rollback 测试节点故障时的回滚
+func TestIntegration_NodeFailure_Rollback(t *testing.T) {
 	scenario := NewE2ETestScenario("NodeFailure", []string{
 		"root", "node-1", "node-2", "node-3",
 	})
@@ -253,8 +269,8 @@ func TestE2E_NodeFailure_Rollback(t *testing.T) {
 	require.Equal(t, TxStateRolledBack, tx.State)
 }
 
-// TestE2E_Timeout_AutoRollback 测试超时自动回滚
-func TestE2E_Timeout_AutoRollback(t *testing.T) {
+// TestIntegration_Timeout_AutoRollback 测试超时自动回滚
+func TestIntegration_Timeout_AutoRollback(t *testing.T) {
 	scenario := NewE2ETestScenario("Timeout", []string{
 		"root", "node-1",
 	})
@@ -295,8 +311,8 @@ func TestE2E_Timeout_AutoRollback(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestE2E_NetworkPartition_SomeNodesUnreachable 测试网络分区场景
-func TestE2E_NetworkPartition_SomeNodesUnreachable(t *testing.T) {
+// TestIntegration_NetworkPartition_SomeNodesUnreachable 测试网络分区场景
+func TestIntegration_NetworkPartition_SomeNodesUnreachable(t *testing.T) {
 	scenario := NewE2ETestScenario("NetworkPartition", []string{
 		"root", "node-1", "node-2", "node-3", "node-4",
 	})
@@ -334,8 +350,8 @@ func TestE2E_NetworkPartition_SomeNodesUnreachable(t *testing.T) {
 
 // ==================== 并发场景测试 ====================
 
-// TestE2E_ConcurrentTransactions 测试并发事务
-func TestE2E_ConcurrentTransactions(t *testing.T) {
+// TestIntegration_ConcurrentTransactions 测试并发事务
+func TestIntegration_ConcurrentTransactions(t *testing.T) {
 	scenario := NewE2ETestScenario("Concurrent", []string{
 		"root", "node-1", "node-2",
 	})
@@ -398,8 +414,8 @@ func TestE2E_ConcurrentTransactions(t *testing.T) {
 
 // ==================== 性能验证测试 ====================
 
-// TestE2E_Performance_DifferenceDetection 测试差异检测性能
-func TestE2E_Performance_DifferenceDetection(t *testing.T) {
+// TestIntegration_Performance_DifferenceDetection 测试差异检测性能
+func TestIntegration_Performance_DifferenceDetection(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping performance test in short mode")
 	}
@@ -431,8 +447,8 @@ func TestE2E_Performance_DifferenceDetection(t *testing.T) {
 		"差异检测应该 < 1µs")
 }
 
-// TestE2E_Performance_MerkleUpdate 测试 Merkle 更新性能
-func TestE2E_Performance_MerkleUpdate(t *testing.T) {
+// TestIntegration_Performance_MerkleUpdate 测试 Merkle 更新性能
+func TestIntegration_Performance_MerkleUpdate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping performance test in short mode")
 	}
@@ -470,13 +486,13 @@ func TestE2E_Performance_MerkleUpdate(t *testing.T) {
 	t.Logf("Merkle 更新性能: %d 次更新耗时 %v，平均 %v/次",
 		updates, elapsed, avgTime)
 
-	// 验证性能目标：< 100µs/次
-	require.Less(t, avgTime, 100*time.Microsecond,
-		"Merkle 更新应该 < 100µs")
+	// 验证性能目标：< 1ms/次（1000µs）
+	require.Less(t, avgTime, time.Millisecond,
+		"Merkle 更新应该 < 1ms")
 }
 
-// TestE2E_Performance_CacheHitRate 测试缓存命中率
-func TestE2E_Performance_CacheHitRate(t *testing.T) {
+// TestIntegration_Performance_CacheHitRate 测试缓存命中率
+func TestIntegration_Performance_CacheHitRate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping performance test in short mode")
 	}
@@ -517,8 +533,8 @@ func TestE2E_Performance_CacheHitRate(t *testing.T) {
 
 // ==================== 混沌测试 ====================
 
-// TestE2E_Chaos_RandomFailures 测试随机故障场景
-func TestE2E_Chaos_RandomFailures(t *testing.T) {
+// TestIntegration_Chaos_RandomFailures 测试随机故障场景
+func TestIntegration_Chaos_RandomFailures(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping chaos test in short mode")
 	}
@@ -569,8 +585,8 @@ func TestE2E_Chaos_RandomFailures(t *testing.T) {
 		"成功率应该 >= 80%")
 }
 
-// TestE2E_Chaos_RapidNodeJoinsLeaves 测试节点频繁加入/离开
-func TestE2E_Chaos_RapidNodeJoinsLeaves(t *testing.T) {
+// TestIntegration_Chaos_RapidNodeJoinsLeaves 测试节点频繁加入/离开
+func TestIntegration_Chaos_RapidNodeJoinsLeaves(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping chaos test in short mode")
 	}

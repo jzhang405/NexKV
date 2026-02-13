@@ -76,7 +76,7 @@ NexKV 作为分布式键值存储系统，提供三种一致性保证：
 **本次支持**：
 - ✅ NexKV 基础操作（Put/Get/Delete）的线性化验证
 - ✅ Quorum 写入操作的线性化验证
-- ✅ 并发操作的线性化验证
+- ✅ 并发操作的线性化验证（最多 **10 个并发客户端**）
 - ✅ 可视化报告生成
 
 **本次不支持**：
@@ -303,6 +303,125 @@ func (c *ConsistencyChecker) Check(events []porcupine.Event) *CheckResult {
 }
 ```
 
+##### 3.2.5 集成测试框架兼容性验证（P1-3）
+
+**现有 E2ETestScenario 结构分析**：
+
+```go
+// E2ETestScenario 现有集成测试场景定义
+// 位置: internal/metadata/consistency/integration_test.go
+type E2ETestScenario struct {
+    Name        string
+    Description string
+    Setup       func(*testing.T, *E2ETestEnv)   // 环境初始化
+    Execute     func(*testing.T, *E2ETestEnv)   // 执行测试
+    Validate    func(*testing.T, *E2ETestEnv)   // 验证结果
+    Cleanup     func(*testing.T, *E2ETestEnv)   // 清理资源
+}
+
+// E2ETestEnv 测试环境
+type E2ETestEnv struct {
+    Nodes       []*TestNode         // 测试节点
+    KVStores    []*MetadataKV       // KV 存储实例
+    Coordinator *QuorumCoordinator  // Quorum 协调器
+    Ctx         context.Context     // 上下文
+}
+```
+
+**RecordingClient 集成设计**：
+
+```go
+// RecordingClient 记录客户端
+// 包装 MetadataKV 和 QuorumCoordinator，记录所有操作到 HistoryRecorder
+type RecordingClient struct {
+    kv          *MetadataKV           // 原始 KV 客户端
+    coordinator *QuorumCoordinator    // Quorum 协调器
+    recorder    *HistoryRecorder      // 历史记录器
+    timestamp   *MonotonicTimestamp   // 时间戳生成器
+}
+
+// RecordingE2ETestEnv 带记录功能的测试环境
+// 扩展现有 E2ETestEnv，添加 Porcupine 验证支持
+type RecordingE2ETestEnv struct {
+    *E2ETestEnv                       // 嵌入现有环境
+    RecordingClients []*RecordingClient  // 记录客户端列表
+    Checker          *ConsistencyChecker // 一致性检查器
+}
+```
+
+**集成适配器实现**：
+
+```go
+// WithRecording 为现有 E2ETestEnv 添加记录功能
+// 这是一个适配器模式，不修改现有测试框架
+func WithRecording(env *E2ETestEnv) *RecordingE2ETestEnv {
+    recEnv := &RecordingE2ETestEnv{
+        E2ETestEnv:       env,
+        RecordingClients: make([]*RecordingClient, len(env.KVStores)),
+        Checker:          NewConsistencyChecker(NexKVModel),
+    }
+
+    // 包装所有 KV 客户端
+    for i, kv := range env.KVStores {
+        recEnv.RecordingClients[i] = NewRecordingClient(
+            kv,
+            env.Coordinator,
+            NewHistoryRecorder(i),  // 每个 client 独立 ID
+        )
+    }
+
+    return recEnv
+}
+
+// WrapScenario 包装现有测试场景，添加线性化验证
+func WrapScenario(scenario E2ETestScenario) E2ETestScenario {
+    return E2ETestScenario{
+        Name:        scenario.Name + " (Linearizability)",
+        Description: scenario.Description + " with Porcupine verification",
+        Setup: func(t *testing.T, env *E2ETestEnv) {
+            scenario.Setup(t, env)
+        },
+        Execute: func(t *testing.T, env *E2ETestEnv) {
+            // 使用带记录的环境
+            recEnv := WithRecording(env)
+            scenario.Execute(t, recEnv.E2ETestEnv)
+
+            // 执行后验证线性化
+            for _, client := range recEnv.RecordingClients {
+                events := client.recorder.GetEvents()
+                result := recEnv.Checker.Check(events)
+                if !result.Ok {
+                    t.Errorf("Linearizability check failed: %s", result.Error)
+                    t.Logf("Report saved to: %s", result.ReportPath)
+                }
+            }
+        },
+        Validate: scenario.Validate,
+        Cleanup:  scenario.Cleanup,
+    }
+}
+```
+
+**兼容性验证检查清单**：
+
+| 检查项 | 验证方法 | 预期结果 |
+|--------|----------|----------|
+| `E2ETestEnv` 嵌入兼容性 | 编译检查 | `RecordingE2ETestEnv` 可访问所有 `E2ETestEnv` 字段 |
+| `MetadataKV` 接口匹配 | 单元测试 | `RecordingClient` 完全实现 `MetadataKV` 接口 |
+| `QuorumCoordinator` 包装 | 单元测试 | `RecordingClient.PutWithQuorum` 正确记录事件 |
+| 场景包装器工作 | 集成测试 | `WrapScenario` 生成的场景可正常运行 |
+| 时间戳不冲突 | 并发测试 | 多客户端并发操作时间戳单调递增 |
+
+**M3 里程碑验收标准**：
+
+```bash
+# Day 6-7 集成验证清单
+make test-recording-client   # RecordingClient 单元测试通过
+make test-scenario-wrapper   # WrapScenario 集成测试通过
+make test-concurrent-ts      # 并发时间戳测试通过
+go vet ./internal/metadata/consistency/porcupine/...  # 无警告
+```
+
 #### 3.3 测试策略
 
 ```mermaid
@@ -405,7 +524,7 @@ func (ic *IncrementalChecker) RecordAndCheck(event porcupine.Event) *CheckResult
 
 | 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施 | 优化结果 |
 |----------|----------|------------------|--------------|----------|----------|
-| 第1轮 | 2026-02-13 | 👤 架构师 | 1. 测试通过率目标不一致（95% vs 100%）<br/>2. 缺少时间戳精度解决方案<br/>3. 缺少多节点时钟同步风险<br/>4. 里程碑不够清晰<br/>5. 增量检查缺少具体方案 | 1. 修改为 100% 通过 ✅<br/>2. 添加 3.2.1 时间戳精度保证 ✅<br/>3. 添加风险和应对措施 ✅<br/>4. 优化里程碑定义，添加验收标准 ✅<br/>5. 补充增量检查代码示例 ✅ | 待第2轮评审确认 |
+| 第1轮 | 2026-02-13 | 👤 架构师 | **P0问题**：<br/>1. 测试通过率目标不一致（95% vs 100%）<br/>2. 缺少时间戳精度解决方案<br/>3. 缺少多节点时钟同步风险<br/>**P1问题**：<br/>4. 里程碑不够清晰<br/>5. 增量检查缺少具体方案<br/>6. 缺少集成测试框架兼容性验证<br/>**P2问题**：<br/>7. 并发客户端数量未明确 | **P0修复**：<br/>1. 修改为 100% 通过 ✅<br/>2. 添加 3.2.1 时间戳精度保证（MonotonicTimestamp + LogicalTimestamp） ✅<br/>3. 添加风险和应对措施（逻辑时间戳方案） ✅<br/>**P1修复**：<br/>4. 优化里程碑定义，添加验收标准和依赖列 ✅<br/>5. 补充 3.2.4 后增量检查代码示例（IncrementalChecker） ✅<br/>6. 添加 3.2.5 集成测试框架兼容性验证（RecordingE2ETestEnv + WrapScenario） ✅<br/>**P2修复**：<br/>7. 明确并发客户端数量（最多 10 个） ✅ | 待第2轮评审确认 |
 
 ### 7. 预审批确认
 
@@ -459,7 +578,7 @@ func (ic *IncrementalChecker) RecordAndCheck(event porcupine.Event) *CheckResult
 
 | 项目 | 内容 |
 |------|------|
-| 文档版本 | V1.1-Pre（根据第1轮评审修改） |
+| 文档版本 | V1.2-Pre（完成 P0/P1/P2 全部修复） |
 | 创建日期 | 2026-02-13 |
 | 最后更新 | 2026-02-13 |
 | 归档路径 | `docs/06_PM/feature/2026-02-13_PR-063_Porcupine-Linearizability-Verification_Pre.md` |

@@ -313,14 +313,12 @@ func NewTwoPCMerkleCoordinatorWithTransport(metadataKV kvstore.Store, merkleTree
 		gossipStopChan:  make(chan struct{}),    // P0-1: 初始化停止信号
 	}
 
-	// 强制优化 7.2: 初始化事务持久化缓冲区
-	if metadataKV != nil {
-		coordinator.persistenceBuffer = NewTransactionPersistenceBuffer(TransactionPersistenceBufferConfig{
-			MaxBatch:    100,                // 最大批量 100 个事务
-			MaxInterval: 100 * time.Millisecond, // 最大间隔 100ms
-			KVStore:     metadataKV,
-		})
-	}
+	// 强制优化 7.2: 初始化事务持久化缓冲区（metadataKV 已在上方验证非 nil）
+	coordinator.persistenceBuffer = NewTransactionPersistenceBuffer(TransactionPersistenceBufferConfig{
+		MaxBatch:    100,                    // 最大批量 100 个事务
+		MaxInterval: 100 * time.Millisecond, // 最大间隔 100ms
+		KVStore:     metadataKV,
+	})
 
 	// 注册消息接收处理器
 	if transportParam != nil {

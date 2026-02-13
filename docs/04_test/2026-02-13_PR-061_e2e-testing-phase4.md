@@ -77,5 +77,6 @@ func (fi *FaultInjector) RestoreNode(nodeID string) error
 ## 6. 相关文档
 
 - 主文档: [PR-061 Pre 文档](../2026-02-13_PR-061_e2e-testing-framework_Pre.md)
+- 架构设计: [E2E 测试架构设计](../07_E2E测试架构设计.md)
 - Phase 3: [一致性协议测试](../2026-02-13_PR-061_e2e-testing-phase3.md)
 - Phase 5: [并发场景测试](../2026-02-13_PR-061_e2e-testing-phase5.md)

@@ -3,6 +3,16 @@
 > **预研分支**: `spike/porcupine-extended-verification`
 > **创建日期**: 2026-02-13
 > **预研目标**: 分析 PR-063 后续工作的技术可行性和实施方案
+> **架构师评审**: ✅ 已通过
+
+---
+
+## 架构师评审意见
+
+| 序号 | 评审意见 | 处理状态 |
+|------|---------|---------|
+| 1 | 时钟使用 `internal/clock` 的 HLC | ✅ 已采纳 |
+| 2 | 采用方案 A：分离测试策略 | ✅ 已确认 |
 
 ---
 
@@ -33,7 +43,78 @@ PR-063 已完成 Porcupine 线性一致性验证框架的基础集成：
 
 ---
 
-## 2. 技术方案分析
+## 2. 时钟方案：使用 HLC
+
+### 2.1 现有 HLC 实现
+
+NexKV 已有 `internal/clock/hlc.go` 实现了完整的 HLC（混合逻辑时钟）：
+
+```go
+// HLC 结构: 48-bit 物理时间 + 16-bit 逻辑计数
+type HLC struct {
+    pt int64  // 物理时间（毫秒）
+    c  uint16 // 逻辑计数（0-65535）
+}
+
+// 核心方法
+func (h *HLC) Now() *HLC                    // 获取当前时间
+func (h *HLC) Update(eventTime, remoteHLC)  // 更新时间（核心算法）
+func (h *HLC) Compare(other *HLC) int       // 比较
+func (h *HLC) MarshalBinary() ([]byte, error) // 序列化
+```
+
+### 2.2 架构师评审意见
+
+> **时钟使用 `internal/clock` 的 HLC**
+
+### 2.3 集成方案
+
+当前 Porcupine 模块使用自定义的 `LogicalTimestamp`，需要改为使用 HLC：
+
+**当前实现** (`timestamp.go`):
+```go
+type LogicalTimestamp struct {
+    clientID  int64
+    seq       int64
+}
+
+func (t *LogicalTimestamp) Now() int64 {
+    newSeq := atomic.AddInt64(&t.seq, 1)
+    return t.clientID<<48 | (newSeq & 0xFFFFFFFFFFFF)
+}
+```
+
+**改为使用 HLC**:
+```go
+import "github.com/jzhang405/NexKV/internal/clock"
+
+type HLCTimestamp struct {
+    hlc *clock.HLC
+}
+
+func NewHLCTimestamp() *HLCTimestamp {
+    return &HLCTimestamp{
+        hlc: clock.NewHLC(),
+    }
+}
+
+func (t *HLCTimestamp) Now() int64 {
+    hlc := t.hlc.Now()
+    // 将 HLC 转换为 int64 时间戳
+    // 格式: pt (48-bit) | c (16-bit)
+    return hlc.PhysicalTime()<<16 | int64(hlc.LogicalCounter())
+}
+```
+
+### 2.4 HLC 优势
+
+| 特性 | LogicalTimestamp | HLC |
+|------|-----------------|-----|
+| 物理时间关联 | ❌ 无 | ✅ 有 |
+| 跨节点同步 | ⚠️ clientID 区分 | ✅ Update 算法 |
+| 时钟回拨处理 | ❌ 无 | ✅ 自动处理 |
+| 序列化支持 | ⚠️ 自定义 | ✅ 原生支持 |
+| 分布式友好 | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
 
 ### 2.1 分层一致性验证方案
 
@@ -129,10 +210,10 @@ func Step(state, input, output interface{}) []interface{} {
 
 | 方案 | 优点 | 缺点 | 推荐度 |
 |------|------|------|--------|
-| A: 分离测试策略 | 简单、清晰、易维护 | 需要手动区分测试 | ⭐⭐⭐⭐⭐ |
+| A: 分离测试策略 | 简单、清晰、易维护 | 需要手动区分测试 | ⭐⭐⭐⭐⭐ **已确认** |
 | B: 扩展模型 | 统一框架、自动化 | 复杂、Porcupine 不原生支持最终一致 | ⭐⭐⭐☆☆ |
 
-**建议**：采用**方案 A**，分离测试策略。
+**架构师决策**：✅ 采用**方案 A**，分离测试策略。
 
 ---
 
@@ -492,16 +573,24 @@ PR-067: 2PC 验证（需要 TLA+ 设计先行）
 
 ## 5. 结论与建议
 
-### 5.1 推荐方案
+### 5.1 架构师确认的方案
+
+| 决策项 | 确认方案 |
+|--------|---------|
+| **时钟方案** | 使用 `internal/clock` 的 HLC |
+| **测试策略** | 方案 A：分离测试策略 |
+
+### 5.2 实施计划
 
 1. **立即实施**：分离 Gossip/Quorum 测试策略（PR-064）
 2. **本迭代**：故障注入测试框架（PR-065）
 3. **下迭代**：真实网络 E2E 测试（PR-066）
 4. **待设计**：2PC 验证需要先完成 TLA+ 规约
 
-### 5.2 技术决策
+### 5.3 技术决策
 
-- ✅ 采用**分离测试策略**而非扩展模型
+- ✅ 采用**分离测试策略**而非扩展模型（架构师确认）
+- ✅ 时钟使用 **`internal/clock` HLC**（架构师确认）
 - ✅ 故障注入框架与现有 E2ETestScenario 集成
 - ✅ 2PC 验证结合 TLA+ 进行设计验证
 
@@ -511,6 +600,16 @@ PR-067: 2PC 验证（需要 TLA+ 设计先行）
 
 | 项目 | 内容 |
 |------|------|
-| 预研状态 | ✅ 完成 |
-| 下一步 | 启动 PR-064 或等待架构师审批 |
+| 预研状态 | ✅ 完成，架构师评审通过 |
+| 架构师评审 | ✅ 2026-02-13 |
+| 下一步 | 启动 PR-064 开发 |
 | 维护人 | 🤖 核心开发 A |
+
+---
+
+## 评审记录
+
+| 评审日期 | 评审人 | 意见 | 处理 |
+|---------|--------|------|------|
+| 2026-02-13 | 👤 架构师 | 1. 时钟使用 internal/clock 的 HLC | ✅ 已采纳 |
+| 2026-02-13 | 👤 架构师 | 2. 采用方案 A：分离测试策略 | ✅ 已确认 |

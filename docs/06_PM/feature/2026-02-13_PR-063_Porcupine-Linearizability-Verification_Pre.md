@@ -513,7 +513,7 @@ graph TB
 ```go
 // go.mod 新增依赖
 require (
-    github.com/anishathalye/porcupine v0.1.4
+    github.com/anishathalye/porcupine v1.1.0
 )
 ```
 
@@ -527,7 +527,7 @@ require (
 | **并发记录竞争** | 高 | 低 | 使用 sync.Mutex 保护事件列表，原子操作生成 ID |
 | **内存占用增长** | 中 | 中 | 实现增量检查模式（见下方代码），定期清理历史 |
 | **模型定义错误导致误报** | 高 | 中 | 添加模型正确性验证测试，覆盖所有状态转移 |
-| **Porcupine API 变更** | 低 | 低 | 锁定 Porcupine 版本 v0.1.4 |
+| **Porcupine API 变更** | 低 | 低 | 锁定 Porcupine 版本 v1.1.0 |
 | **与现有测试冲突** | 低 | 中 | 使用独立的测试文件，不影响现有测试 |
 
 **增量检查模式（P1-1）**：

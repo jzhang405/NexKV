@@ -5,6 +5,8 @@ package porcupine
 import (
 	"context"
 	"fmt"
+
+	"github.com/anishathalye/porcupine"
 )
 
 // ScenarioKV 场景 KV 接口
@@ -108,15 +110,13 @@ func (s *RecordingE2ETestScenario) GetAllOperations() []interface{} {
 }
 
 // VerifyLinearizability 验证所有操作的线性一致性
+// 收集所有节点的操作历史，进行全局线性化验证
 // 返回检查结果
 func (s *RecordingE2ETestScenario) VerifyLinearizability() *CheckResult {
-	// 收集所有操作
-	var allOps []interface{}
+	// 收集所有节点的操作
+	var allOps []porcupine.Operation
 	for _, recorder := range s.Recorders {
-		ops := recorder.GetOperations()
-		for _, op := range ops {
-			allOps = append(allOps, op)
-		}
+		allOps = append(allOps, recorder.GetOperations()...)
 	}
 
 	// 如果没有操作，直接返回成功
@@ -124,16 +124,8 @@ func (s *RecordingE2ETestScenario) VerifyLinearizability() *CheckResult {
 		return &CheckResult{Ok: true}
 	}
 
-	// 转换为 Operation 切片
-	// 注意：这里假设 allOps 已经是 porcupine.Operation 类型
-	// 实际使用时需要确保类型正确
-
-	// 使用第一个 recorder 的 checker 进行检查
-	for _, recorder := range s.Recorders {
-		return s.Checker.CheckFromRecorder(recorder)
-	}
-
-	return &CheckResult{Ok: true}
+	// 全局验证所有操作的线性一致性
+	return s.Checker.CheckOperations(allOps)
 }
 
 // Clear 清空所有记录

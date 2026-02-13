@@ -24,9 +24,10 @@
 // 真正的 E2E 测试需要启动真实进程（待 CLI/daemon 完成后实现）
 //
 // 测试分层：
-//   make test-unit      # 单元测试（组件级）
-//   make test-intg     # 集成测试（本文件）
-//   make test-e2e      # E2E 测试（待实现）
+//
+//	make test-unit      # 单元测试（组件级）
+//	make test-intg     # 集成测试（本文件）
+//	make test-e2e      # E2E 测试（待实现）
 package consistency
 
 import (

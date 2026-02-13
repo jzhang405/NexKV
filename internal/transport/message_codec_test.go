@@ -215,7 +215,7 @@ func TestMessageCodec_InvalidData(t *testing.T) {
 	}
 }
 
-// TestMessageCodec_MessageTooLarge 测试超大消息拒绝
+// TestMessageCodec_MessageTooLarge 测试消息长度与实际数据不匹配
 func TestMessageCodec_MessageTooLarge(t *testing.T) {
 	codec := NewMessagePackCodec()
 
@@ -223,14 +223,16 @@ func TestMessageCodec_MessageTooLarge(t *testing.T) {
 	buf := new(bytes.Buffer)
 	// 写入类型
 	buf.WriteByte(byte(MessageTypePut))
-	// 写入长度（15KB，超过限制）
+	// 写入长度（15KB，但实际数据不足）
 	binaryWriteUint16(buf, 15*1024)
 	// 只写入少量数据
 	buf.Write([]byte{0x01, 0x02, 0x03})
 
 	_, err := codec.Decode(buf)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "消息过大")
+	// 由于 MaxMessageSize (10MB) 大于 uint16 最大值 (65535)，
+	// 不会触发"消息过大"错误，而是读取数据不足导致 EOF
+	assert.Contains(t, err.Error(), "读取消息体失败")
 }
 
 // TestMessageCodec_SeqGeneration 测试序号自动生成

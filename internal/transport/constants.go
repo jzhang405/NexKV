@@ -50,8 +50,8 @@ const (
 
 // 消息大小常量
 const (
-	// MaxMessageSize 最大消息大小（10KB）
-	MaxMessageSize = 10 * 1024
+	// MaxMessageSize 最大消息大小（10MB）
+	MaxMessageSize = 10 * 1024 * 1024
 	// MaxConcurrentBroadcasts 最大并发广播数（防止 DoS）
 	MaxConcurrentBroadcasts = 50
 )

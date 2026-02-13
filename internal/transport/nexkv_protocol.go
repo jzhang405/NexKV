@@ -24,6 +24,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"go.uber.org/zap"
 )
 
 // Protocol ID 常量
@@ -60,6 +61,7 @@ type NexKVProtocol struct {
 	handlers map[MessageType]MessageHandler
 	mutex    sync.RWMutex
 	stats    *ProtocolStats
+	logger   *zap.Logger
 }
 
 // ProtocolStats 协议统计信息
@@ -83,12 +85,18 @@ func NewNexKVProtocol(h host.Host, codec MessageCodec) *NexKVProtocol {
 		codec:    codec,
 		handlers: make(map[MessageType]MessageHandler),
 		stats:    &ProtocolStats{},
+		logger:   zap.NewNop(), // 默认 no-op logger，可在生产环境替换
 	}
 
 	// 注册 Stream 处理器（libp2p 标准模式）
 	h.SetStreamHandler(ProtocolNexKV, p.handleStream)
 
 	return p
+}
+
+// SetLogger 设置日志处理器（生产环境调用）
+func (p *NexKVProtocol) SetLogger(logger *zap.Logger) {
+	p.logger = logger
 }
 
 // RegisterHandler 注册消息处理器
@@ -109,15 +117,35 @@ func (p *NexKVProtocol) UnregisterHandler(msgType MessageType) {
 func (p *NexKVProtocol) handleStream(s network.Stream) {
 	defer s.Close()
 
+	peerID := s.Conn().RemotePeer()
+
 	// 设置读取超时
 	if err := s.SetReadDeadline(time.Now().Add(StreamReadTimeout)); err != nil {
+		p.logger.Warn("failed to set read deadline", zap.String("peer", peerID.String()), zap.Error(err))
 		p.recordError()
 		return
 	}
 
+	// P0-001: 验证消息大小（防止 DoS 攻击）
+	// 注意：无法在此预检查消息大小，因为需要先解码才能知道大小
+	// 验证在 decodeAndValidateMessage 后进行
+
 	// 解码并验证消息
 	msg, err := p.decodeAndValidateMessage(s)
 	if err != nil {
+		p.logger.Warn("message validation failed",
+			zap.String("peer", peerID.String()),
+			zap.Error(err))
+		p.recordError()
+		return
+	}
+
+	// P0-001: 解码后再次验证消息大小
+	if msg.Size() > MaxMessageSize {
+		p.logger.Warn("message exceeds max size",
+			zap.String("peer", peerID.String()),
+			zap.Int("size", msg.Size()),
+			zap.Int("maxSize", MaxMessageSize))
 		p.recordError()
 		return
 	}
@@ -145,16 +173,22 @@ func (p *NexKVProtocol) processMessage(s network.Stream, msg *Message) {
 
 	handler := p.getHandler(msg.Type)
 	if handler == nil {
-		// 记录警告，帮助调试
-		fmt.Printf("警告：未注册的消息处理器: type=%d, from=%s\n", msg.Type, from)
+		// P0-002: 使用结构化日志记录未注册处理器警告
+		p.logger.Warn("unregistered message handler",
+			zap.String("peer", from.String()),
+			zap.Uint8("type", uint8(msg.Type)))
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), StreamReadTimeout)
 	defer cancel()
 
+	// P0-002: 使用结构化日志记录处理失败
 	if err := handler.HandleMessage(ctx, from, msg); err != nil {
-		fmt.Printf("消息处理失败: type=%d, from=%s, error=%v\n", msg.Type, from, err)
+		p.logger.Warn("message handling failed",
+			zap.String("peer", from.String()),
+			zap.Uint8("type", uint8(msg.Type)),
+			zap.Error(err))
 		p.recordError()
 	}
 }

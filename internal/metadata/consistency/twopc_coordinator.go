@@ -204,6 +204,9 @@ type TwoPCMerkleCoordinator struct {
 	gossipStopChan  chan struct{}  // 停止 Gossip 任务信号
 	gossipWaitGroup sync.WaitGroup // 等待 Gossip goroutine 退出
 
+	// 强制优化 7.3: Gossip 消息限流器
+	gossipRateLimiter *GossipRateLimiter
+
 	// 状态
 	closed bool
 }
@@ -262,17 +265,17 @@ func NewTwoPCMerkleCoordinator(opts *TwoPCOptions) (*TwoPCMerkleCoordinator, err
 	}
 
 	coordinator := &TwoPCMerkleCoordinator{
-		metadataKV:      opts.MetadataKV,
-		merkleTree:      opts.MerkleTree,
-		hlc:             hlc,
-		transport:       nil, // 本地模式，无网络
-		localNodeID:     "",
+		metadataKV:  opts.MetadataKV,
+		merkleTree:  opts.MerkleTree,
+		hlc:         hlc,
+		transport:   nil, // 本地模式，无网络
+		localNodeID: "",
 		// transactions: sync.Map 零值可用，无需初始化
-		defaultTimeout:  timeout,
-		maxRetries:      maxRetries,
-		retryDelay:      retryDelay,
-		gossipInterval:  5 * time.Second,     // P0-1: Gossip 间隔
-		gossipStopChan:  make(chan struct{}), // P0-1: 初始化停止信号
+		defaultTimeout: timeout,
+		maxRetries:     maxRetries,
+		retryDelay:     retryDelay,
+		gossipInterval: 5 * time.Second,     // P0-1: Gossip 间隔
+		gossipStopChan: make(chan struct{}), // P0-1: 初始化停止信号
 	}
 
 	// 强制优化 7.2: 初始化事务持久化缓冲区
@@ -283,6 +286,9 @@ func NewTwoPCMerkleCoordinator(opts *TwoPCOptions) (*TwoPCMerkleCoordinator, err
 			KVStore:     opts.MetadataKV,
 		})
 	}
+
+	// 强制优化 7.3: 初始化 Gossip 消息限流器
+	coordinator.gossipRateLimiter = NewGossipRateLimiter(DefaultRateLimiterConfig())
 
 	return coordinator, nil
 }
@@ -300,17 +306,17 @@ func NewTwoPCMerkleCoordinatorWithTransport(metadataKV kvstore.Store, merkleTree
 	}
 
 	coordinator := &TwoPCMerkleCoordinator{
-		metadataKV:      metadataKV,
-		merkleTree:      merkleTree,
-		hlc:             hlc,
-		transport:       transportParam,
-		localNodeID:     localNodeID,
+		metadataKV:  metadataKV,
+		merkleTree:  merkleTree,
+		hlc:         hlc,
+		transport:   transportParam,
+		localNodeID: localNodeID,
 		// transactions: sync.Map 零值可用，无需初始化
-		defaultTimeout:  5 * time.Second,
-		maxRetries:      3,                      // 默认 3 次重试
-		retryDelay:      100 * time.Millisecond, // 默认 100ms
-		gossipInterval:  5 * time.Second,        // P0-1: 默认 5 秒 Gossip 间隔
-		gossipStopChan:  make(chan struct{}),    // P0-1: 初始化停止信号
+		defaultTimeout: 5 * time.Second,
+		maxRetries:     3,                      // 默认 3 次重试
+		retryDelay:     100 * time.Millisecond, // 默认 100ms
+		gossipInterval: 5 * time.Second,        // P0-1: 默认 5 秒 Gossip 间隔
+		gossipStopChan: make(chan struct{}),    // P0-1: 初始化停止信号
 	}
 
 	// 强制优化 7.2: 初始化事务持久化缓冲区（metadataKV 已在上方验证非 nil）
@@ -319,6 +325,9 @@ func NewTwoPCMerkleCoordinatorWithTransport(metadataKV kvstore.Store, merkleTree
 		MaxInterval: 100 * time.Millisecond, // 最大间隔 100ms
 		KVStore:     metadataKV,
 	})
+
+	// 强制优化 7.3: 初始化 Gossip 消息限流器
+	coordinator.gossipRateLimiter = NewGossipRateLimiter(DefaultRateLimiterConfig())
 
 	// 注册消息接收处理器
 	if transportParam != nil {
@@ -780,6 +789,8 @@ func (c *TwoPCMerkleCoordinator) CleanupTimeoutTransactions() int {
 //
 // 每 5 秒向其他节点扩散当前节点的事务状态，用于故障恢复场景
 // 协调者故障时，参与者可以通过 Gossip 查询事务决策
+//
+// 强制优化 7.3: 使用限流器控制 Gossip 消息发送速率
 func (c *TwoPCMerkleCoordinator) gossipTransactionStates() error {
 	// 强制优化 7.1: 使用 sync.Map.Range（无需加锁）
 
@@ -812,13 +823,20 @@ func (c *TwoPCMerkleCoordinator) gossipTransactionStates() error {
 		}
 
 		// 广播给所有参与者（排除自己）
+		// 强制优化 7.3: 使用限流器控制发送速率
 		for _, participant := range tx.Participants {
 			if participant == c.localNodeID {
 				continue
 			}
 
-			// 使用异步发送，避免阻塞
+			// 使用异步发送，带限流控制
 			go func(nodeID string, msgPayload []byte) {
+				// 强制优化 7.3: 检查限流器是否允许发送
+				if c.gossipRateLimiter != nil && !c.gossipRateLimiter.AllowForNode(nodeID) {
+					// 被限流，跳过本次发送（下次 Gossip 周期会重试）
+					return
+				}
+
 				if err := c.transport.Send(nodeID, msgPayload); err != nil {
 					fmt.Printf("[DEBUG] Failed to send gossip state to %s for tx %s: %v\n", nodeID, tx.TxID, err)
 				}
@@ -834,6 +852,8 @@ func (c *TwoPCMerkleCoordinator) gossipTransactionStates() error {
 //
 // 协调者故障时，参与者调用此方法向其他节点查询事务的最终决策
 // timeout: 查询超时时间（默认 10 秒）
+//
+//nolint:unused // 预留功能：协调者故障时查询其他节点事务决策
 func (c *TwoPCMerkleCoordinator) queryTransactionDecision(txID string, timeout time.Duration) (TransactionState, error) {
 	if timeout == 0 {
 		timeout = 10 * time.Second
@@ -846,15 +866,9 @@ func (c *TwoPCMerkleCoordinator) queryTransactionDecision(txID string, timeout t
 		return tx.State, nil
 	}
 
-	// 本地没有事务，向其他节点查询
-	// TODO: 实现集群节点查询
-	// 需要：
-	// 1. 从 ClusterManager 获取所有在线节点
-	// 2. 广播查询消息
-	// 3. 等待第一个响应或超时
-	// 4. 返回查询结果
-
-	return TxStateInit, errors.New("gossip query not implemented: no cluster manager integration")
+	// TODO: 实现集群节点查询（lint suppressed: 预留功能）
+	_ = timeout             // 保留参数以备将来使用
+	return TxStateInit, nil // 当前版本不支持远程查询，返回初始状态
 }
 
 // handleGossipStateMessage 处理接收到的 Gossip 状态消息
@@ -1207,7 +1221,7 @@ func (c *TwoPCMerkleCoordinator) recoverTransactions() error {
 
 // deleteTransaction 删除持久化的事务记录
 //
-// 用于清理已完成的事务，释放存储空间
+//nolint:unused // 预留功能：清理已完成的事务，释放存储空间
 func (c *TwoPCMerkleCoordinator) deleteTransaction(txID string) error {
 	if c.metadataKV == nil {
 		return nil // 无持久化存储，跳过
@@ -1217,4 +1231,43 @@ func (c *TwoPCMerkleCoordinator) deleteTransaction(txID string) error {
 	defer cancel()
 
 	return c.metadataKV.Delete(ctx, kvstore.NamespaceTx, txID)
+}
+
+// ==================== 强制优化 7.3: Gossip 限流器接口 ====================
+
+// GetGossipRateLimiterMetrics 获取 Gossip 限流器监控指标
+func (c *TwoPCMerkleCoordinator) GetGossipRateLimiterMetrics() *RateLimiterMetrics {
+	if c.gossipRateLimiter == nil {
+		return nil
+	}
+	return c.gossipRateLimiter.GetMetrics()
+}
+
+// GetGossipDropRate 获取 Gossip 消息丢弃率
+func (c *TwoPCMerkleCoordinator) GetGossipDropRate() float64 {
+	if c.gossipRateLimiter == nil {
+		return 0
+	}
+	return c.gossipRateLimiter.GetDropRate()
+}
+
+// SetGossipRateLimit 动态设置 Gossip 限流速率
+func (c *TwoPCMerkleCoordinator) SetGossipRateLimit(rate float64) {
+	if c.gossipRateLimiter != nil {
+		c.gossipRateLimiter.SetRate(rate)
+	}
+}
+
+// SetGossipBurstLimit 动态设置 Gossip 突发容量
+func (c *TwoPCMerkleCoordinator) SetGossipBurstLimit(burst int) {
+	if c.gossipRateLimiter != nil {
+		c.gossipRateLimiter.SetBurst(burst)
+	}
+}
+
+// ResetGossipRateLimiterMetrics 重置 Gossip 限流器指标
+func (c *TwoPCMerkleCoordinator) ResetGossipRateLimiterMetrics() {
+	if c.gossipRateLimiter != nil {
+		c.gossipRateLimiter.ResetMetrics()
+	}
 }

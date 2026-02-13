@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/config/logging"
@@ -87,9 +88,11 @@ func (m *SnapshotFileManager) CreateSnapshot(metadata map[string]any, data map[s
 	if err != nil {
 		return nil, types.NewStoreSnapshotCreateWriterFailedError(err)
 	}
+	// 确保临时文件在函数退出时被清理（P0-005 修复）
 	defer func() {
-		if err := writer.Close(); err != nil {
-			logging.Warnf("关闭 Snapshot 写入器失败: %v", err)
+		_ = os.Remove(tempFilePath)
+		if cerr := writer.Close(); cerr != nil {
+			logging.Warnf("关闭 Snapshot 写入器失败: %v", cerr)
 		}
 	}()
 
@@ -348,9 +351,11 @@ func (m *SnapshotFileManager) CreateSnapshotWithVersion(
 	if err != nil {
 		return nil, types.NewStoreSnapshotCreateWriterFailedError(err)
 	}
+	// 确保临时文件在函数退出时被清理（P0-005 修复）
 	defer func() {
-		if err := writer.Close(); err != nil {
-			logging.Warnf("关闭 Snapshot 写入器失败: %v", err)
+		_ = os.Remove(tempFilePath)
+		if cerr := writer.Close(); cerr != nil {
+			logging.Warnf("关闭 Snapshot 写入器失败: %v", cerr)
 		}
 	}()
 
@@ -631,7 +636,27 @@ func (m *SnapshotFileManager) Delete(snapshotName string) error {
 
 // Close 关闭快照管理器（实现 SnapshotManager 接口）
 //
-// 适配说明：新实现无需显式关闭，此方法为空操作
+// 适配说明：清理临时 Snapshot 文件，然后返回
 func (m *SnapshotFileManager) Close() error {
+	// 清理目录中的临时文件（P0-006 修复）
+	entries, err := os.ReadDir(m.snapshotDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		// 临时文件格式：snapshot-{timestamp}-{sequence}（没有 .snap 后缀）
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".snap") && strings.HasPrefix(name, "snapshot-") {
+			tempPath := filepath.Join(m.snapshotDir, name)
+			if err := os.Remove(tempPath); err != nil {
+				logging.Warnf("清理临时 Snapshot 文件失败: %s (%v)", tempPath, err)
+			} else {
+				logging.Infof("清理临时 Snapshot 文件成功: %s", tempPath)
+			}
+		}
+	}
 	return nil
 }

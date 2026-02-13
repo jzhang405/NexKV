@@ -39,24 +39,9 @@ type MemoryMVStore struct {
 	snapMgr          SnapshotManager
 	lastFlush        atomic.Int64 // 最后刷盘时间戳
 	memSize          atomic.Int64 // 当前内存大小
+	flushTriggered   int32        // flush 是否已触发（用于防止竞态）
 }
 
-// versionList 版本列表（按时间戳降序）
-type versionList struct {
-	versions []*versionEntry
-	mu       sync.RWMutex
-}
-
-// versionEntry 版本条目
-type versionEntry struct {
-	timestamp *clock.HLC
-	version   uint64
-	value     []byte
-	deleted   bool
-	size      int
-}
-
-// NewMemoryMVStore 创建内存 MVStore
 func NewMemoryMVStore(options *MVStoreOptions) (*MemoryMVStore, error) {
 	if options == nil {
 		options = DefaultOptions()
@@ -417,6 +402,7 @@ func (m *MemoryMVStore) Flush() error {
 	// 通过快照管理器保存快照
 	if m.snapMgr != nil {
 		if err := m.snapMgr.Create(m); err != nil {
+			m.resetFlushTriggered()
 			return types.NewStoreSnapshotError("创建", err)
 		}
 	}
@@ -424,6 +410,7 @@ func (m *MemoryMVStore) Flush() error {
 	// WAL checkpoint
 	if m.wal != nil {
 		if err := m.wal.Sync(); err != nil {
+			m.resetFlushTriggered()
 			return types.NewStoreWALError("sync", err)
 		}
 	}
@@ -431,6 +418,8 @@ func (m *MemoryMVStore) Flush() error {
 	m.lastFlush.Store(time.Now().Unix())
 	logging.Info("刷盘完成")
 
+	// 重置触发标志，允许下次触发
+	m.resetFlushTriggered()
 	return nil
 }
 
@@ -584,11 +573,21 @@ func (m *MemoryMVStore) flushLoop() {
 // checkFlush 检查是否需要刷盘
 func (m *MemoryMVStore) checkFlush() {
 	if m.options.MemTableSize > 0 && m.memSize.Load() >= m.options.MemTableSize {
-		select {
-		case m.flushCh <- struct{}{}:
-		default:
+		// 使用 CAS 防止竞态：只触发一次刷盘
+		if atomic.CompareAndSwapInt32(&m.flushTriggered, 0, 1) {
+			select {
+			case m.flushCh <- struct{}{}:
+			default:
+				// channel 满了，重置标志位让下次尝试
+				atomic.StoreInt32(&m.flushTriggered, 0)
+			}
 		}
 	}
+}
+
+// resetFlushTriggered 重置 flushTriggered 标志（在 Flush 完成后调用）
+func (m *MemoryMVStore) resetFlushTriggered() {
+	atomic.StoreInt32(&m.flushTriggered, 0)
 }
 
 // recoverFromWAL 从 WAL 恢复

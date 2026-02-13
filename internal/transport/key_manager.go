@@ -9,17 +9,22 @@ import (
 	"sync"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"go.uber.org/zap"
 )
 
 // KeyManager 密钥管理器
 type KeyManager struct {
 	keyPath string
 	mu      sync.Mutex
+	logger  *zap.Logger
 }
 
 // NewKeyManager 创建密钥管理器
-func NewKeyManager(keyPath string) *KeyManager {
-	return &KeyManager{keyPath: keyPath}
+func NewKeyManager(keyPath string, logger *zap.Logger) *KeyManager {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	return &KeyManager{keyPath: keyPath, logger: logger}
 }
 
 // LoadOrGenerate 加载或生成密钥
@@ -103,8 +108,11 @@ func (km *KeyManager) checkAndFixPermissions() error {
 	// 检查权限
 	perm := info.Mode().Perm()
 	if perm != 0600 {
-		// 记录警告
-		fmt.Printf("警告：密钥文件权限不安全 (%o)，正在修复为 0600\n", perm)
+		// P0-003: 使用结构化日志记录权限警告
+		km.logger.Warn("insecure key file permissions, fixing",
+			zap.String("path", km.keyPath),
+			zap.Uint32("currentPerm", uint32(perm)),
+			zap.Uint32("expectedPerm", uint32(0600)))
 		// 修复权限
 		return os.Chmod(km.keyPath, 0600)
 	}

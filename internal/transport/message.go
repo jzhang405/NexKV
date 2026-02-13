@@ -553,7 +553,9 @@ func (c *MessagePackCodec) readHeader(r io.Reader) (MessageType, uint16, error) 
 	}
 
 	// 验证长度
-	if length > MaxMessageSize {
+	// 由于协议使用 uint16 存储长度，最大值为 65535
+	// 如果 MaxMessageSize 小于 65535，则进行验证
+	if MaxMessageSize <= 65535 && int(length) > MaxMessageSize {
 		return 0, 0, fmt.Errorf("消息过大: %d 字节（最大 %d 字节）", length, MaxMessageSize)
 	}
 

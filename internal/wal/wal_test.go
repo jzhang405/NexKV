@@ -1166,7 +1166,7 @@ func TestWALCheckpoint(t *testing.T) {
 		defer wal.Close()
 
 		// 测试 RecoveryManager 加载空快照
-		recoveryMgr, err := NewRecoveryManager(tmpDir, tmpDir, tmpDir)
+		recoveryMgr, err := NewRecoveryManager(tmpDir, tmpDir, tmpDir, tmpDir)
 		require.NoError(t, err)
 		_ = recoveryMgr
 
@@ -1183,6 +1183,7 @@ func TestWALCheckpoint(t *testing.T) {
 		recoveryMgr, err := NewRecoveryManager(
 			filepath.Join(tmpDir, "checkpoint"),
 			filepath.Join(tmpDir, "snapshot"),
+			filepath.Join(tmpDir, "wal"),
 			filepath.Join(tmpDir, "wal"),
 		)
 		require.NoError(t, err)

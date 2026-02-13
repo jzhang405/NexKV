@@ -286,6 +286,9 @@ type TreeCoordinator struct {
 	started atomic.Bool
 	stopped atomic.Bool
 	stopCh  chan struct{}
+
+	// 2PC/Quorum 协调者状态
+	coordState coordinatorState
 }
 
 // TreeCoordinatorConfig 树形协调器配置

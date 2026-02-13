@@ -31,10 +31,10 @@ type TransactionPersistenceBuffer struct {
 	kvStore     kvstore.Store // 底层 KV 存储
 
 	// 后台刷新控制
-	flushChan  chan struct{}
-	closeChan  chan struct{}
-	waitGroup  sync.WaitGroup
-	isRunning  bool
+	flushChan chan struct{}
+	closeChan chan struct{}
+	waitGroup sync.WaitGroup
+	isRunning bool
 }
 
 // TransactionPersistenceBufferConfig 缓冲区配置

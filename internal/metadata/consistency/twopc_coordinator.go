@@ -188,8 +188,8 @@ type TwoPCMerkleCoordinator struct {
 	// 本地节点标识
 	localNodeID string
 
-	// 事务管理
-	transactions map[string]*TwoPCTransaction // 进行中的事务
+	// 事务管理（强制优化 7.1: 使用 sync.Map 替代 map，减少锁竞争）
+	transactions sync.Map // txID -> *TwoPCTransaction
 
 	// 配置
 	defaultTimeout time.Duration // 默认超时时间（5 秒）
@@ -264,7 +264,7 @@ func NewTwoPCMerkleCoordinator(opts *TwoPCOptions) (*TwoPCMerkleCoordinator, err
 		hlc:             hlc,
 		transport:       nil, // 本地模式，无网络
 		localNodeID:     "",
-		transactions:    make(map[string]*TwoPCTransaction),
+		// transactions: sync.Map 零值可用，无需初始化
 		defaultTimeout:  timeout,
 		maxRetries:      maxRetries,
 		retryDelay:      retryDelay,
@@ -293,7 +293,7 @@ func NewTwoPCMerkleCoordinatorWithTransport(metadataKV kvstore.Store, merkleTree
 		hlc:             hlc,
 		transport:       transportParam,
 		localNodeID:     localNodeID,
-		transactions:    make(map[string]*TwoPCTransaction),
+		// transactions: sync.Map 零值可用，无需初始化
 		defaultTimeout:  5 * time.Second,
 		maxRetries:      3,                      // 默认 3 次重试
 		retryDelay:      100 * time.Millisecond, // 默认 100ms
@@ -329,12 +329,12 @@ func NewTwoPCMerkleCoordinatorWithTransport(metadataKV kvstore.Store, merkleTree
 
 // BeginTransaction 开始新事务
 func (c *TwoPCMerkleCoordinator) BeginTransaction(participants []string) (*TwoPCTransaction, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	c.mu.RLock()
 	if c.closed {
+		c.mu.RUnlock()
 		return nil, fmt.Errorf("coordinator is closed")
 	}
+	c.mu.RUnlock()
 
 	// 生成事务 ID
 	txID := c.generateTxID()
@@ -345,8 +345,8 @@ func (c *TwoPCMerkleCoordinator) BeginTransaction(participants []string) (*TwoPC
 	// P0-1: 设置协调者信息（本地节点为协调者）
 	tx.Coordinator = c.localNodeID
 
-	// 存储事务
-	c.transactions[txID] = tx
+	// 存储事务（强制优化 7.1: 使用 sync.Map.Store）
+	c.transactions.Store(txID, tx)
 
 	return tx, nil
 }
@@ -553,8 +553,8 @@ func (c *TwoPCMerkleCoordinator) Commit(ctx context.Context, tx *TwoPCTransactio
 	// P0-2: 持久化事务状态（可选：清理时删除）
 	_ = c.persistTransaction(tx) // 忽略错误，不阻塞提交流程
 
-	// 清除事务
-	delete(c.transactions, tx.TxID)
+	// 清除事务（强制优化 7.1: 使用 sync.Map.Delete）
+	c.transactions.Delete(tx.TxID)
 
 	return nil
 }
@@ -579,7 +579,7 @@ func (c *TwoPCMerkleCoordinator) Rollback(ctx context.Context, tx *TwoPCTransact
 	return nil
 }
 
-// rollbackTransaction 内部回滚方法（调用前必须持有锁）
+// rollbackTransaction 内部回滚方法
 func (c *TwoPCMerkleCoordinator) rollbackTransaction(tx *TwoPCTransaction) {
 	tx.State = TxStateRolledBack
 	tx.Operations = nil
@@ -588,8 +588,8 @@ func (c *TwoPCMerkleCoordinator) rollbackTransaction(tx *TwoPCTransaction) {
 	// P0-2: 持久化回滚状态（可选：清理时删除）
 	_ = c.persistTransaction(tx) // 忽略错误，不阻塞回滚流程
 
-	// 清除事务
-	delete(c.transactions, tx.TxID)
+	// 清除事务（强制优化 7.1: 使用 sync.Map.Delete）
+	c.transactions.Delete(tx.TxID)
 }
 
 // handlePreCommitResponse 处理 PreCommit ACK 响应
@@ -613,11 +613,9 @@ func (c *TwoPCMerkleCoordinator) handlePreCommitResponse(nodeID string, msg []by
 			return
 		}
 
-		c.mu.Lock()
-		tx, ok := c.transactions[commitPayload.TxID]
-		c.mu.Unlock()
-
-		if ok {
+		// 强制优化 7.1: 使用 sync.Map.Load（无需加锁）
+		if v, ok := c.transactions.Load(commitPayload.TxID); ok {
+			tx := v.(*TwoPCTransaction)
 			tx.Acks[nodeID] = commitPayload.Result
 		}
 
@@ -627,11 +625,9 @@ func (c *TwoPCMerkleCoordinator) handlePreCommitResponse(nodeID string, msg []by
 			return
 		}
 
-		c.mu.Lock()
-		tx, ok := c.transactions[rollbackPayload.TxID]
-		c.mu.Unlock()
-
-		if ok {
+		// 强制优化 7.1: 使用 sync.Map.Load（无需加锁）
+		if v, ok := c.transactions.Load(rollbackPayload.TxID); ok {
+			tx := v.(*TwoPCTransaction)
 			tx.Acks[nodeID] = false
 			tx.LastError = fmt.Errorf("节点 %s 拒绝: %s", nodeID, rollbackPayload.Reason)
 		}
@@ -721,27 +717,21 @@ func (c *TwoPCMerkleCoordinator) precomputeMerkleHash(tx *TwoPCTransaction) erro
 
 // GetTransaction 获取事务
 func (c *TwoPCMerkleCoordinator) GetTransaction(txID string) (*TwoPCTransaction, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	tx, ok := c.transactions[txID]
-	if !ok {
-		return nil, fmt.Errorf("transaction not found: %s", txID)
+	// 强制优化 7.1: 使用 sync.Map.Load
+	if v, ok := c.transactions.Load(txID); ok {
+		return v.(*TwoPCTransaction), nil
 	}
-
-	return tx, nil
+	return nil, fmt.Errorf("transaction not found: %s", txID)
 }
 
 // GetAllTransactions 获取所有进行中的事务
 func (c *TwoPCMerkleCoordinator) GetAllTransactions() map[string]*TwoPCTransaction {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	result := make(map[string]*TwoPCTransaction, len(c.transactions))
-	for k, v := range c.transactions {
-		result[k] = v
-	}
-
+	result := make(map[string]*TwoPCTransaction)
+	// 强制优化 7.1: 使用 sync.Map.Range
+	c.transactions.Range(func(key, value any) bool {
+		result[key.(string)] = value.(*TwoPCTransaction)
+		return true
+	})
 	return result
 }
 
@@ -749,18 +739,18 @@ func (c *TwoPCMerkleCoordinator) GetAllTransactions() map[string]*TwoPCTransacti
 //
 // 返回：清理的事务数量
 func (c *TwoPCMerkleCoordinator) CleanupTimeoutTransactions() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	cleaned := 0
 
-	for _, tx := range c.transactions {
+	// 强制优化 7.1: 使用 sync.Map.Range
+	c.transactions.Range(func(key, value any) bool {
+		tx := value.(*TwoPCTransaction)
 		if tx.IsTimedOut() {
 			tx.State = TxStateTimeout
 			c.rollbackTransaction(tx)
 			cleaned++
 		}
-	}
+		return true
+	})
 
 	return cleaned
 }
@@ -772,19 +762,15 @@ func (c *TwoPCMerkleCoordinator) CleanupTimeoutTransactions() int {
 // 每 5 秒向其他节点扩散当前节点的事务状态，用于故障恢复场景
 // 协调者故障时，参与者可以通过 Gossip 查询事务决策
 func (c *TwoPCMerkleCoordinator) gossipTransactionStates() error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	// 没有进行中的事务，跳过
-	if len(c.transactions) == 0 {
-		return nil
-	}
+	// 强制优化 7.1: 使用 sync.Map.Range（无需加锁）
 
 	// 遍历所有进行中的事务
-	for _, tx := range c.transactions {
+	c.transactions.Range(func(key, value any) bool {
+		tx := value.(*TwoPCTransaction)
+
 		// 只扩散非终态的事务
 		if tx.State == TxStateCommitted || tx.State == TxStateRolledBack {
-			continue
+			return true
 		}
 
 		// 构造 Gossip 状态消息
@@ -803,7 +789,7 @@ func (c *TwoPCMerkleCoordinator) gossipTransactionStates() error {
 		if err := msg.EncodePayload(payload); err != nil {
 			// 记录错误，继续处理下一个事务
 			fmt.Printf("[WARN] Failed to encode gossip state message for tx %s: %v\n", tx.TxID, err)
-			continue
+			return true
 		}
 
 		// 广播给所有参与者（排除自己）
@@ -819,7 +805,8 @@ func (c *TwoPCMerkleCoordinator) gossipTransactionStates() error {
 				}
 			}(participant, msg.Payload)
 		}
-	}
+		return true
+	})
 
 	return nil
 }
@@ -833,15 +820,12 @@ func (c *TwoPCMerkleCoordinator) queryTransactionDecision(txID string, timeout t
 		timeout = 10 * time.Second
 	}
 
-	// 先检查本地是否有该事务
-	c.mu.RLock()
-	if tx, ok := c.transactions[txID]; ok {
+	// 先检查本地是否有该事务（强制优化 7.1: 使用 sync.Map.Load）
+	if v, ok := c.transactions.Load(txID); ok {
 		// 本地有事务，直接返回状态
-		state := tx.State
-		c.mu.RUnlock()
-		return state, nil
+		tx := v.(*TwoPCTransaction)
+		return tx.State, nil
 	}
-	c.mu.RUnlock()
 
 	// 本地没有事务，向其他节点查询
 	// TODO: 实现集群节点查询
@@ -869,21 +853,17 @@ func (c *TwoPCMerkleCoordinator) handleGossipStateMessage(nodeID string, msgByte
 		return fmt.Errorf("expected phase 'state', got '%s'", gossipPayload.Phase)
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// 检查本地是否有该事务
-	tx, ok := c.transactions[gossipPayload.TxID]
-	if !ok {
+	// 强制优化 7.1: 使用 sync.Map.Load（无需加锁）
+	if v, ok := c.transactions.Load(gossipPayload.TxID); ok {
+		tx := v.(*TwoPCTransaction)
+		// 本地有该事务，更新协调者信息（如果本地没有）
+		if tx.Coordinator == "" && gossipPayload.Coordinator != "" {
+			tx.Coordinator = gossipPayload.Coordinator
+			fmt.Printf("[INFO] Updated coordinator for tx %s to %s\n", gossipPayload.TxID, gossipPayload.Coordinator)
+		}
+	} else {
 		// 本地没有该事务，记录日志并忽略
 		fmt.Printf("[DEBUG] Received gossip state for unknown tx %s from %s\n", gossipPayload.TxID, nodeID)
-		return nil
-	}
-
-	// 本地有该事务，更新协调者信息（如果本地没有）
-	if tx.Coordinator == "" && gossipPayload.Coordinator != "" {
-		tx.Coordinator = gossipPayload.Coordinator
-		fmt.Printf("[INFO] Updated coordinator for tx %s to %s\n", gossipPayload.TxID, gossipPayload.Coordinator)
 	}
 
 	// 如果远程状态比本地新，考虑更新（需要状态转换验证，P1-2 实现）
@@ -907,9 +887,13 @@ func (c *TwoPCMerkleCoordinator) handleGossipQueryMessage(nodeID string, msgByte
 		return fmt.Errorf("expected phase 'query', got '%s'", gossipPayload.Phase)
 	}
 
-	c.mu.RLock()
-	tx, ok := c.transactions[gossipPayload.TxID]
-	c.mu.RUnlock()
+	// 强制优化 7.1: 使用 sync.Map.Load（无需加锁）
+	var tx *TwoPCTransaction
+	var ok bool
+	if v, loaded := c.transactions.Load(gossipPayload.TxID); loaded {
+		tx = v.(*TwoPCTransaction)
+		ok = true
+	}
 
 	// 构造响应消息
 	replyPayload := &transport.TwoPCGossipPayload{
@@ -965,10 +949,9 @@ func (c *TwoPCMerkleCoordinator) handleGossipReplyMessage(nodeID string, msgByte
 
 	// 如果查询成功，更新本地事务状态（如果有）
 	if gossipPayload.Success {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-
-		if tx, ok := c.transactions[gossipPayload.TxID]; ok {
+		// 强制优化 7.1: 使用 sync.Map.Load（无需加锁）
+		if v, ok := c.transactions.Load(gossipPayload.TxID); ok {
+			tx := v.(*TwoPCTransaction)
 			// 更新协调者信息
 			if tx.Coordinator == "" && gossipPayload.Coordinator != "" {
 				tx.Coordinator = gossipPayload.Coordinator
@@ -1057,20 +1040,22 @@ func (c *TwoPCMerkleCoordinator) stopGossipTask() {
 // Close 关闭协调器
 func (c *TwoPCMerkleCoordinator) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.closed {
+		c.mu.Unlock()
 		return nil
 	}
-
 	c.closed = true
+	c.mu.Unlock()
 
 	// P0-1: 停止 Gossip 任务
 	c.stopGossipTask()
 
-	for _, tx := range c.transactions {
+	// 强制优化 7.1: 使用 sync.Map.Range 回滚所有事务
+	c.transactions.Range(func(key, value any) bool {
+		tx := value.(*TwoPCTransaction)
 		c.rollbackTransaction(tx)
-	}
+		return true
+	})
 
 	return nil
 }
@@ -1174,10 +1159,8 @@ func (c *TwoPCMerkleCoordinator) recoverTransactions() error {
 			continue
 		}
 
-		// 恢复到内存中
-		c.mu.Lock()
-		c.transactions[tx.TxID] = tx
-		c.mu.Unlock()
+		// 恢复到内存中（强制优化 7.1: 使用 sync.Map.Store）
+		c.transactions.Store(tx.TxID, tx)
 
 		recovered++
 		fmt.Printf("[INFO] Recovered transaction %s (state=%v, participants=%d)\n",

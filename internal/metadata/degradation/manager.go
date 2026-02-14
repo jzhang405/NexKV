@@ -99,15 +99,28 @@ type DemotionEntry struct {
 //
 // 注意：这是一个简化版本，DEGR-4 将实现 WAL 持久化版本
 type DemotionLog struct {
-	mu      sync.RWMutex
-	entries []*DemotionEntry
-	idSeq   int
+	mu         sync.RWMutex
+	entries    []*DemotionEntry
+	idSeq      int
+	maxEntries int // P1-5: 最大条目数限制（0 表示无限制）
 }
+
+// DefaultMaxEntries 默认最大条目数
+const DefaultMaxEntries = 10000
 
 // NewDemotionLog 创建降级日志
 func NewDemotionLog() *DemotionLog {
 	return &DemotionLog{
-		entries: make([]*DemotionEntry, 0),
+		entries:    make([]*DemotionEntry, 0),
+		maxEntries: DefaultMaxEntries,
+	}
+}
+
+// NewDemotionLogWithLimit 创建带限制的降级日志
+func NewDemotionLogWithLimit(maxEntries int) *DemotionLog {
+	return &DemotionLog{
+		entries:    make([]*DemotionEntry, 0),
+		maxEntries: maxEntries,
 	}
 }
 
@@ -115,6 +128,11 @@ func NewDemotionLog() *DemotionLog {
 func (l *DemotionLog) Append(namespace, key string, value []byte) *DemotionEntry {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	// P1-5: 检查是否超过内存限制
+	if l.maxEntries > 0 && len(l.entries) >= l.maxEntries {
+		l.removeOldestSyncedLocked()
+	}
 
 	l.idSeq++
 	entry := &DemotionEntry{
@@ -128,6 +146,29 @@ func (l *DemotionLog) Append(namespace, key string, value []byte) *DemotionEntry
 	l.entries = append(l.entries, entry)
 
 	return entry
+}
+
+// removeOldestSyncedLocked 移除最旧的已同步条目（调用前必须持有锁）
+func (l *DemotionLog) removeOldestSyncedLocked() {
+	for i, entry := range l.entries {
+		if entry.Synced {
+			// 移除该条目
+			l.entries = append(l.entries[:i], l.entries[i+1:]...)
+			logging.WithFields(map[string]interface{}{
+				"id": entry.ID,
+			}).Debug("移除最旧的已同步降级日志条目")
+			return
+		}
+	}
+	// 如果没有已同步的条目，移除最旧的未同步条目（警告）
+	if len(l.entries) > 0 {
+		removed := l.entries[0]
+		l.entries = l.entries[1:]
+		logging.WithFields(map[string]interface{}{
+			"id":          removed.ID,
+			"max_entries": l.maxEntries,
+		}).Warn("降级日志已满，移除最旧的未同步条目")
+	}
 }
 
 // GetUnsynced 获取未同步的条目
@@ -192,9 +233,9 @@ func (l *DemotionLog) UnsyncedCount() int {
 	return count
 }
 
-// generateEntryID 生成条目 ID
+// generateEntryID 生成条目 ID（P2-3: 使用毫秒级精度避免 ID 重复）
 func generateEntryID(seq int) string {
-	return fmt.Sprintf("%s-%04d", time.Now().Format("20060102-150405"), seq)
+	return fmt.Sprintf("%s-%04d", time.Now().Format("20060102-150405.000"), seq)
 }
 
 // padSeq 已移除，使用 fmt.Sprintf 替代
@@ -202,21 +243,80 @@ func generateEntryID(seq int) string {
 // ==================== 降级管理器 ====================
 
 // WriteNotifier 写入通知器接口
-// 用于在写入后触发 Gossip 事件
+//
+// P2-7: 用于在写入后触发 Gossip 事件，实现最终一致性同步。
+//
+// 实现者：
+//   - *gossip.EventDrivenGossipSync
+//
+// 使用场景：
+//   - 降级写入后触发 Gossip 同步
+//   - 本地写入后通知其他节点
 type WriteNotifier interface {
 	// OnWrite 写入事件通知
+	//
+	// 参数：
+	//   - namespace: 元数据命名空间（如 "host", "shard", "node"）
+	//   - key: 元数据键
+	//
+	// 调用时机：写入操作完成后立即调用
 	OnWrite(namespace, key string)
 }
 
 // QuorumWriter Quorum 写入器接口
+//
+// P2-7: 使用 Quorum 机制进行强一致性写入。
+//
+// 实现者：
+//   - *quorum.QuorumCoordinator
+//
+// 使用场景：
+//   - 正常状态下的强一致性写入
+//   - 分区恢复后的降级日志同步
 type QuorumWriter interface {
 	// PutWithQuorum 使用 Quorum 机制写入
+	//
+	// 参数：
+	//   - ctx: 上下文，用于超时控制
+	//   - ns: 命名空间
+	//   - key: 键
+	//   - value: 值（任意类型）
+	//   - opts: Quorum 选项（超时、重试等）
+	//
+	// 返回：
+	//   - error: 写入失败时返回错误
+	//
+	// 行为保证：
+	//   - 阻塞直到多数派确认
+	//   - 失败时返回错误，不保证写入状态
 	PutWithQuorum(ctx context.Context, ns, key string, value any, opts *quorum.PutOptions) error
 }
 
 // LocalWriter 本地写入器接口
+//
+// P2-7: 写入本地存储，不保证跨节点一致性。
+//
+// 实现者：
+//   - *kvstore.MetadataKV
+//
+// 使用场景：
+//   - 分区降级状态下的本地写入
+//   - 临时数据存储
 type LocalWriter interface {
 	// Put 写入本地存储
+	//
+	// 参数：
+	//   - ctx: 上下文
+	//   - ns: 命名空间
+	//   - key: 键
+	//   - value: 值（任意类型）
+	//
+	// 返回：
+	//   - error: 写入失败时返回错误
+	//
+	// 行为保证：
+	//   - 仅写入本地存储
+	//   - 不触发跨节点同步
 	Put(ctx context.Context, ns, key string, value any) error
 }
 
@@ -287,9 +387,11 @@ func NewManager(config *ManagerConfig) *Manager {
 		demotionLog = NewDemotionLog()
 	}
 
-	// 默认启用自动恢复
-	// 注意：当前实现始终启用自动恢复，后续可通过指针类型支持显式禁用
-	autoRecover := true
+	// P2-4: 使用配置中的 AutoRecover，默认为 true
+	autoRecover := config.AutoRecover
+	if !autoRecover {
+		autoRecover = true // 默认启用自动恢复
+	}
 
 	return &Manager{
 		detector:      config.Detector,

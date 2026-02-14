@@ -235,9 +235,11 @@ func (o *BandwidthOptimizer) CompressIfNeeded(data []byte) ([]byte, bool, error)
 	writer := gzip.NewWriter(&buf)
 
 	if _, err := writer.Write(data); err != nil {
+		writer.Close() // P1-1: 错误时显式关闭
 		return nil, false, err
 	}
 
+	// Close 完成 Flush 并写入 footer，必须调用
 	if err := writer.Close(); err != nil {
 		return nil, false, err
 	}

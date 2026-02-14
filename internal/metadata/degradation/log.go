@@ -280,13 +280,59 @@ func (l *WALDemotionLog) MarkSynced(id string) error {
 	return nil
 }
 
-// MarkSyncedBatch 批量标记为已同步
+// MarkSyncedBatch 批量标记为已同步（P1-4: 优化为单次加锁批量处理）
 func (l *WALDemotionLog) MarkSyncedBatch(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	ctx := context.Background()
+	var errors []string
+
 	for _, id := range ids {
-		if err := l.MarkSynced(id); err != nil {
-			return err
+		entry, exists := l.entries[id]
+		if !exists {
+			continue
+		}
+
+		if entry.Synced {
+			continue // 已经是同步状态
+		}
+
+		// 更新内存状态
+		entry.Synced = true
+		entry.SyncedAt = time.Now().Format(time.RFC3339Nano)
+		l.unsyncedCount--
+
+		// 序列化并更新持久化存储
+		data, err := json.Marshal(entry)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: marshal failed: %s", id, err.Error()))
+			continue
+		}
+
+		storeKey := "demotion:" + id
+		if err := l.store.Put(ctx, storeKey, data); err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %s", id, err.Error()))
+			logging.WithFields(map[string]interface{}{
+				"id":    id,
+				"error": err.Error(),
+			}).Warn("批量标记同步失败")
 		}
 	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("部分条目同步失败: %s", strings.Join(errors, ", "))
+	}
+
+	logging.WithFields(map[string]interface{}{
+		"batch_size": len(ids),
+		"unsynced":   l.unsyncedCount,
+	}).Debug("降级日志批量标记已同步")
+
 	return nil
 }
 

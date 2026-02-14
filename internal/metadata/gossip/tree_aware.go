@@ -369,9 +369,11 @@ func (s *TreeAwareGossipSync) runPriorityLoop() {
 					s.processTreeAwareEvent(event)
 					starvationCounter = 0
 				} else {
-					// 放回队列或丢弃
+					// P1-3: 不满足条件时，将事件放回队列等待下次处理
+					// 外层的 default + time.After 已确保不会 CPU 空转
 					select {
 					case s.lowPriority <- event:
+						// 成功放回队列
 					default:
 						s.mu.Lock()
 						s.lowPriorityDrop++
@@ -380,7 +382,8 @@ func (s *TreeAwareGossipSync) runPriorityLoop() {
 				}
 
 			case <-time.After(100 * time.Millisecond):
-				// 短暂等待后继续
+				// 空闲时重置饥饿计数器，避免低优先级事件永久饥饿
+				starvationCounter = 0
 			}
 		}
 	}

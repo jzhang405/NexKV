@@ -263,7 +263,6 @@ func (l *DemotionLog) removeOldestSyncedLocked() {
 | ID | 问题 | 状态 |
 |----|------|------|
 | P2-2 | 日志级别配置 | ⏳ 待修复（需全局重构） |
-| P2-7 | 接口文档 | ⏳ 待补充 |
 
 ### 已修复的 P2 问题
 
@@ -274,12 +273,13 @@ func (l *DemotionLog) removeOldestSyncedLocked() {
 | P2-4 | 配置一致性 | ✅ 使用 `config.AutoRecover` 而非硬编码 |
 | P2-5 | 前缀匹配效率 | ✅ 已在 Code Simplifier 阶段修复 |
 | P2-6 | 未使用变量 | ✅ 已在 Code Simplifier 阶段修复 |
+| P2-7 | 接口文档 | ✅ 补充 WriteNotifier/QuorumWriter/LocalWriter 注释 |
 | P2-8 | 覆盖率统计 | ✅ 已存在 (`make test-coverage`) |
 
 ---
 
-**文档版本**: v1.2
+**文档版本**: v1.3
 **创建日期**: 2026-02-14
-**最后更新**: 2026-02-14（P2 修复）
+**最后更新**: 2026-02-14（P2-7 修复）
 **作者**: 🤖 核心开发 A
 **状态**: ✅ 待评审

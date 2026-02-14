@@ -243,21 +243,80 @@ func generateEntryID(seq int) string {
 // ==================== 降级管理器 ====================
 
 // WriteNotifier 写入通知器接口
-// 用于在写入后触发 Gossip 事件
+//
+// P2-7: 用于在写入后触发 Gossip 事件，实现最终一致性同步。
+//
+// 实现者：
+//   - *gossip.EventDrivenGossipSync
+//
+// 使用场景：
+//   - 降级写入后触发 Gossip 同步
+//   - 本地写入后通知其他节点
 type WriteNotifier interface {
 	// OnWrite 写入事件通知
+	//
+	// 参数：
+	//   - namespace: 元数据命名空间（如 "host", "shard", "node"）
+	//   - key: 元数据键
+	//
+	// 调用时机：写入操作完成后立即调用
 	OnWrite(namespace, key string)
 }
 
 // QuorumWriter Quorum 写入器接口
+//
+// P2-7: 使用 Quorum 机制进行强一致性写入。
+//
+// 实现者：
+//   - *quorum.QuorumCoordinator
+//
+// 使用场景：
+//   - 正常状态下的强一致性写入
+//   - 分区恢复后的降级日志同步
 type QuorumWriter interface {
 	// PutWithQuorum 使用 Quorum 机制写入
+	//
+	// 参数：
+	//   - ctx: 上下文，用于超时控制
+	//   - ns: 命名空间
+	//   - key: 键
+	//   - value: 值（任意类型）
+	//   - opts: Quorum 选项（超时、重试等）
+	//
+	// 返回：
+	//   - error: 写入失败时返回错误
+	//
+	// 行为保证：
+	//   - 阻塞直到多数派确认
+	//   - 失败时返回错误，不保证写入状态
 	PutWithQuorum(ctx context.Context, ns, key string, value any, opts *quorum.PutOptions) error
 }
 
 // LocalWriter 本地写入器接口
+//
+// P2-7: 写入本地存储，不保证跨节点一致性。
+//
+// 实现者：
+//   - *kvstore.MetadataKV
+//
+// 使用场景：
+//   - 分区降级状态下的本地写入
+//   - 临时数据存储
 type LocalWriter interface {
 	// Put 写入本地存储
+	//
+	// 参数：
+	//   - ctx: 上下文
+	//   - ns: 命名空间
+	//   - key: 键
+	//   - value: 值（任意类型）
+	//
+	// 返回：
+	//   - error: 写入失败时返回错误
+	//
+	// 行为保证：
+	//   - 仅写入本地存储
+	//   - 不触发跨节点同步
 	Put(ctx context.Context, ns, key string, value any) error
 }
 

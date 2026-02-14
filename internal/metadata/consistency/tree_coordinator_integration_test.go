@@ -392,7 +392,7 @@ func TestTreeTopologyCoordinator_GetLayerForNamespace(t *testing.T) {
 		{kvstore.NamespaceStatic, Layer1},  // 2PC 强一致
 		{kvstore.NamespaceVersion, Layer1}, // 2PC 强一致
 		{kvstore.NamespaceRole, Layer2},    // Quorum 增强最终一致
-		{kvstore.NamespaceTopo, Layer2},    // Quorum 增强最终一致
+		{kvstore.NamespaceTopo, Layer3},    // Gossip 最终一致 (P0-4 fix)
 		{kvstore.NamespaceNode, Layer3},    // Gossip 最终一致
 		{kvstore.NamespaceDynamic, Layer3}, // Gossip 最终一致
 		{kvstore.NamespaceOp, Layer3},      // Gossip 最终一致

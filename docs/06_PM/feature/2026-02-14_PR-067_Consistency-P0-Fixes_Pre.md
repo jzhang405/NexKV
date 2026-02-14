@@ -34,9 +34,55 @@
 
 ### 2.1 Fencing Token 实现（脑裂防护）
 
-**问题**：当网络分区恢复后，可能存在多个 Leader 同时写入，导致数据损坏。
+#### 2.1.1 原理解释
 
-**方案**：实现 Fencing Token 机制
+**Fencing Token** 是一种分布式系统中防止脑裂（Split-Brain）导致数据损坏的机制。
+
+**核心原理**：
+1. **单调递增的 Token**：每次 Leader 选举产生新 Leader 时，Token（Term）必须递增
+2. **Token 验证**：存储层拒绝 Token 值小于当前已见过的最大 Token 的写入
+3. **持久化保证**：Token 必须持久化，节点重启后不会丢失
+
+```mermaid
+graph TB
+    subgraph "Fencing Token 原理"
+        A[Leader 选举] --> B[Term 递增]
+        B --> C[写入时携带 Term]
+        C --> D{存储层验证}
+        D -->|Term > current| E[接受写入]
+        D -->|Term <= current| F[拒绝写入]
+        E --> G[更新 current Term]
+    end
+
+    style A fill:#bbdefb
+    style E fill:#c8e6c9
+    style F fill:#ffcdd2
+```
+
+**为什么有效**：
+- 旧 Leader 在网络分区期间不知道新 Leader 的 Term
+- 当分区恢复后，旧 Leader 的 Term 必然小于新 Leader
+- 存储层通过比较 Term，拒绝旧 Leader 的写入
+
+#### 2.1.2 功能说明
+
+| 功能 | 说明 |
+|------|------|
+| **Term 管理** | 全局单调递增的任期号，每次选举 +1 |
+| **Token 验证** | 存储层验证写入的 Token 是否有效 |
+| **持久化** | Term 持久化到 NamespaceCluster，重启不丢失 |
+| **租约机制** | Leader 持有租约，过期后自动降级 |
+
+#### 2.1.3 应用场景
+
+| 场景 | Token 行为 | 结果 |
+|------|-----------|------|
+| **正常写入** | Leader 使用当前 Term | ✅ 成功 |
+| **脑裂恢复** | 旧 Leader 使用过期 Term | ❌ 拒绝 |
+| **Leader 切换** | 新 Leader 使用 Term+1 | ✅ 成功 |
+| **节点重启** | 从持久化恢复 Term | ✅ 防护有效 |
+
+#### 2.1.4 时序图
 
 ```mermaid
 sequenceDiagram
@@ -56,7 +102,7 @@ sequenceDiagram
     Leader2-->>Client: Error: Not Leader
 ```
 
-**核心代码设计**：
+#### 2.1.5 核心代码设计
 
 ```go
 // FencingToken 防脑裂令牌
@@ -66,10 +112,45 @@ type FencingToken struct {
     IssuedAt time.Time // 签发时间
 }
 
+// TermStorage Term 持久化存储（关键！）
+type TermStorage struct {
+    kv kvstore.MetadataKV
+}
+
+// GetCurrentTerm 获取当前 Term（从 NamespaceCluster 读取）
+func (t *TermStorage) GetCurrentTerm() (uint64, error) {
+    data, err := t.kv.Get(kvstore.NamespaceCluster, "current_term")
+    if err != nil {
+        return 0, err
+    }
+    return binary.BigEndian.Uint64(data), nil
+}
+
+// AdvanceTerm 推进 Term（新 Leader 上任时调用，必须持久化）
+func (t *TermStorage) AdvanceTerm() (uint64, error) {
+    t.mu.Lock()
+    defer t.mu.Unlock()
+
+    current, err := t.GetCurrentTerm()
+    if err != nil {
+        return 0, err
+    }
+
+    newTerm := current + 1
+    data := make([]byte, 8)
+    binary.BigEndian.PutUint64(data, newTerm)
+
+    if err := t.kv.Put(kvstore.NamespaceCluster, "current_term", data); err != nil {
+        return 0, err
+    }
+    return newTerm, nil
+}
+
 // FencingStore 带防护的存储
 type FencingStore struct {
     mu        sync.RWMutex
     current   *FencingToken
+    termStore *TermStorage  // Term 持久化
     storage   KVStore
 }
 
@@ -91,12 +172,12 @@ func (s *FencingStore) Write(ctx context.Context, key string, value []byte, toke
 }
 ```
 
-**文件变更**：
+#### 2.1.6 文件变更
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `internal/metadata/consistency/fencing.go` | 新增 | FencingToken + FencingStore 实现 |
-| `internal/metadata/consistency/fencing_test.go` | 新增 | 单元测试 |
+| `internal/metadata/consistency/fencing.go` | 新增 | FencingToken + TermStorage + FencingStore |
+| `internal/metadata/consistency/fencing_test.go` | 新增 | 单元测试（含重启场景） |
 | `internal/metadata/consistency/twopc_coordinator.go` | 修改 | 集成 Fencing Token |
 
 ### 2.2 2PC 阻塞恢复
@@ -217,9 +298,19 @@ func (g *EventDrivenGossip) Run(ctx context.Context) {
 
 ### 2.4 NamespaceTopo 层级修复
 
-**问题**：代码中 `NamespaceTopo` 被归类到 Layer1，但设计文档应为 Layer2。
+**问题**：代码中存在两处 `NamespaceTopo` 的定义不一致：
 
-**方案**：修改代码中的层级定义
+| 位置 | 当前定义 | 问题 |
+|------|---------|------|
+| `tree_coordinator_integration.go:589` | `Layer2` (Quorum) | TreeTopologyCoordinator 的定义 |
+| `coordinator.go:176` + `metadata_kv.go:58` | `ConsistencyEventual` (Gossip) | 底层 KV 的定义 |
+
+**分析**：
+- `NamespaceTopo` 存储拓扑信息，更新频繁
+- 拓扑短暂不一致不影响系统正确性
+- 应统一为 **Layer3**（Gossip 最终一致），提高可用性
+
+**方案**：统一代码中的层级定义
 
 ```go
 // GetLayerForNamespace 修复后的层级选择
@@ -231,9 +322,11 @@ func (c *TreeTopologyCoordinator) GetLayerForNamespace(ns string) Layer {
          kvstore.NamespaceVersion:
         return Layer1 // 2PC 强一致
 
-    case kvstore.NamespaceRole,
-         kvstore.NamespaceTopo:  // 修复：NamespaceTopo 应为 Layer2
+    case kvstore.NamespaceRole:
         return Layer2 // Quorum 增强最终一致
+
+    case kvstore.NamespaceTopo:  // 修复：NamespaceTopo 统一为 Layer3
+        return Layer3 // Gossip 最终一致（更新频繁，可容忍短暂不一致）
 
     default:
         return Layer3 // Gossip 最终一致
@@ -245,7 +338,9 @@ func (c *TreeTopologyCoordinator) GetLayerForNamespace(ns string) Layer {
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `internal/metadata/consistency/tree_coordinator_integration.go` | 修改 | 修复层级定义 |
+| `internal/metadata/consistency/tree_coordinator_integration.go` | 修改 | NamespaceTopo → Layer3 |
+| `internal/metadata/consistency/coordinator.go` | 修改 | 统一一致性定义 |
+| `internal/metadata/consistency/tree_coordinator_integration_test.go` | 修改 | 更新测试 |
 | `internal/metadata/consistency/tree_coordinator_integration_test.go` | 修改 | 更新测试 |
 
 ---
@@ -256,22 +351,28 @@ func (c *TreeTopologyCoordinator) GetLayerForNamespace(ns string) Layer {
 
 | 任务 | 工期 | 依赖 | 产出物 |
 |------|------|------|--------|
-| **Task 1**: Fencing Token 实现 | 2 天 | - | fencing.go + 测试 |
-| **Task 2**: 2PC 超时机制 | 1 天 | - | twopc_coordinator.go |
+| **Task 1**: Fencing Token 实现 | 2.5 天 | - | fencing.go + TermStorage + 测试 |
+| **Task 2**: 2PC 超时机制 | 1.5 天 | - | twopc_coordinator.go |
 | **Task 3**: Gossip 事件驱动 | 1.5 天 | - | event_driven.go |
 | **Task 4**: NamespaceTopo 修复 | 0.5 天 | - | 层级修复 |
-| **Task 5**: 集成测试 | 1 天 | Task 1-4 | 集成测试 |
+| **Task 5**: 集成测试 | 1.5 天 | Task 1-4 | 集成测试 |
 | **Task 6**: 文档更新 | 0.5 天 | Task 1-5 | 更新设计文档 |
-| **总计** | **6.5 天** | | |
+| **总计** | **8 天** | | |
+
+> **工期说明**：相比初始估算（6.5天）增加 1.5 天，原因：
+> - Fencing Token 需要实现 Term 持久化（+0.5天）
+> - 2PC 超时需要处理竞态条件（+0.5天）
+> - 集成测试场景覆盖更全面（+0.5天）
 
 ### 3.2 里程碑
 
 | 里程碑 | 完成标准 | 预计日期 |
 |--------|---------|---------|
-| **M1**: Fencing Token | 脑裂测试通过 | Day 2 |
-| **M2**: 2PC 超时 | 超时恢复测试通过 | Day 3 |
-| **M3**: Gossip 事件驱动 | 延迟 < 5s 测试通过 | Day 4.5 |
-| **M4**: 集成完成 | 所有测试通过 | Day 6 |
+| **M1**: Fencing Token | 脑裂测试 + 重启恢复测试通过 | Day 2.5 |
+| **M2**: 2PC 超时 | 超时恢复测试通过 | Day 4 |
+| **M3**: Gossip 事件驱动 | 延迟 < 5s 测试通过 | Day 5.5 |
+| **M4**: 集成完成 | 所有测试通过 | Day 7.5 |
+| **M5**: 文档更新 | 文档审查通过 | Day 8 |
 
 ---
 

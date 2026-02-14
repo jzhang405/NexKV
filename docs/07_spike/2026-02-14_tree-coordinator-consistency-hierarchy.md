@@ -576,6 +576,7 @@ func (d *SlowNodeDetector) IsSlowNode(nodeID string) bool {
 | [PACELC 定理研究](./2026-02-14_pacelc-theorem-research.md) | 分区/非分区一致性权衡理论 |
 | [CosmosDB 一致性层级](./2026-02-14_cosmosdb-consistency-levels-research.md) | 工业界五层一致性参考 |
 | [CRDT 冲突解决](./2026-02-14_crdt-conflict-resolution-research.md) | 无协调冲突解决方案 |
+| [**CRDT 价值评估**](./2026-02-14_crdt-value-assessment.md) | ⭐❌ **批判性分析：不建议引入 CRDT** |
 | [验证框架设计](./2026-02-14_tree-coordinator-verification-framework.md) | Porcupine + TLA+ + Go 测试组合验证 |
 | [Porcupine 运行时验证](./2026-02-14_porcupine-runtime-verification.md) | Porcupine 应用到 Tree Coordinator 详细指南 |
 | [TLA+ 验证指南](./2026-02-14_tlaplus-verification-guide.md) | TLA+ 形式化验证应用到 Tree Coordinator |

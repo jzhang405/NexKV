@@ -32,6 +32,8 @@ const (
 	EventPeerJoin
 	// EventPeerLeave 节点离开事件
 	EventPeerLeave
+	// EventBatch 批量事件
+	EventBatch
 )
 
 // GossipEvent Gossip 事件
@@ -39,6 +41,7 @@ type GossipEvent struct {
 	Type      GossipEventType // 事件类型
 	Namespace string          // Namespace（可选）
 	Key       string          // Key（可选）
+	Value     []byte          // Value（可选，用于批量事件）
 	NodeID    string          // 节点 ID（可选）
 	Timestamp time.Time       // 事件时间戳
 }
@@ -246,33 +249,31 @@ func (s *EventDrivenGossipSync) triggerGossip() {
 
 // gossipRandomPeer 与随机 Peer 同步（复用 MerkleGossipSync）
 func (s *EventDrivenGossipSync) gossipRandomPeer(ctx context.Context) {
-	// 委托给内部的 MerkleGossipSync
-	if s.merkleSync != nil && s.merkleSync.peerSelector != nil {
-		s.merkleSync.mu.RLock()
-		peerCount := len(s.merkleSync.knownPeers)
-		s.merkleSync.mu.RUnlock()
-
-		if peerCount == 0 {
-			return
-		}
-
-		// 收集 peer 列表
-		s.merkleSync.mu.RLock()
-		peers := make([]string, 0, len(s.merkleSync.knownPeers))
-		for peerID := range s.merkleSync.knownPeers {
-			peers = append(peers, peerID)
-		}
-		s.merkleSync.mu.RUnlock()
-
-		// 选择 peer
-		selectedPeer := s.merkleSync.peerSelector.Select(peers)
-		if selectedPeer == "" {
-			return
-		}
-
-		// 执行同步
-		_, _ = s.merkleSync.SyncWithPeer(ctx, selectedPeer)
+	if s.merkleSync == nil || s.merkleSync.peerSelector == nil {
+		return
 	}
+
+	// 收集 peer 列表
+	s.merkleSync.mu.RLock()
+	if len(s.merkleSync.knownPeers) == 0 {
+		s.merkleSync.mu.RUnlock()
+		return
+	}
+
+	peers := make([]string, 0, len(s.merkleSync.knownPeers))
+	for peerID := range s.merkleSync.knownPeers {
+		peers = append(peers, peerID)
+	}
+	s.merkleSync.mu.RUnlock()
+
+	// 选择 peer
+	selectedPeer := s.merkleSync.peerSelector.Select(peers)
+	if selectedPeer == "" {
+		return
+	}
+
+	// 执行同步
+	_, _ = s.merkleSync.SyncWithPeer(ctx, selectedPeer)
 }
 
 // ==================== 公共 API ====================
@@ -370,8 +371,6 @@ func (s *EventDrivenGossipSync) RemoveKnownPeer(peerID string) {
 // GetStats 获取统计信息
 func (s *EventDrivenGossipSync) GetStats() map[string]interface{} {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	stats := map[string]interface{}{
 		"events_received":    s.eventsReceived,
 		"events_processed":   s.eventsProcessed,
@@ -382,6 +381,7 @@ func (s *EventDrivenGossipSync) GetStats() map[string]interface{} {
 		"event_chan_size":    s.eventChanSize,
 		"ticker_delay":       s.tickerDelay.String(),
 	}
+	s.mu.RUnlock()
 
 	// 合并 MerkleGossipSync 的统计
 	if s.merkleSync != nil {

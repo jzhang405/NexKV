@@ -218,9 +218,10 @@ func TestFencing_ConcurrentWrite(t *testing.T) {
 			err := fencingStore.Write(context.Background(), kvstore.NamespaceCluster, "key1", "value1", token)
 
 			mu.Lock()
-			if err == nil {
+			switch err {
+			case nil:
 				successCount++
-			} else if err == ErrStaleToken {
+			case ErrStaleToken:
 				failCount++
 			}
 			mu.Unlock()

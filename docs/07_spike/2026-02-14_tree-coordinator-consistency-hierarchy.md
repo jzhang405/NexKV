@@ -580,6 +580,11 @@ func (d *SlowNodeDetector) IsSlowNode(nodeID string) bool {
 | [Porcupine 运行时验证](./2026-02-14_porcupine-runtime-verification.md) | Porcupine 应用到 Tree Coordinator 详细指南 |
 | [TLA+ 验证指南](./2026-02-14_tlaplus-verification-guide.md) | TLA+ 形式化验证应用到 Tree Coordinator |
 | [**实施评审报告**](./2026-02-14_consistency-implementation-review.md) | ⭐ 双 Agent 审查意见整合 + 15 天实施路线图 |
+| [**Leader HA 设计**](./2026-02-14_leader-ha-design.md) | ⭐ 父节点天然 Leader + Standby HA + Fencing Token |
+| [**跨层级事务**](./2026-02-14_cross-layer-transaction.md) | ⭐ Saga 补偿模式 + 故障恢复 |
+| [**HLC 时钟设计**](./2026-02-14_hlc-clock-design.md) | ⭐ 混合逻辑时钟 + 树感知 Gossip |
+| [**分区降级策略**](./2026-02-14_partition-degradation.md) | ⭐ Phi Accrual 检测 + PA/EC 降级 |
+| [**Porcupine 增强模型**](./2026-02-14_porcupine-enhanced-models.md) | ⭐ 拓扑感知 + 失败恢复 + 跨层事务验证 |
 | [一致性协议设计](../02_design/protocols/01_一致性协议设计.md) | 现有一致性设计文档 |
 | [TLA+ 验证报告](../../tla-verification/README.md) | 形式化验证结果 |
 

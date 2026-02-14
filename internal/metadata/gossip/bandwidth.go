@@ -233,11 +233,18 @@ func (o *BandwidthOptimizer) CompressIfNeeded(data []byte) ([]byte, bool, error)
 	// 使用 gzip 压缩
 	var buf bytes.Buffer
 	writer := gzip.NewWriter(&buf)
+	defer writer.Close() // P1-1: 确保 gzip writer 资源释放
 
 	if _, err := writer.Write(data); err != nil {
 		return nil, false, err
 	}
 
+	// 显式 Flush 确保数据写入 buffer
+	if err := writer.Flush(); err != nil {
+		return nil, false, err
+	}
+
+	// 关闭 writer 以完成压缩
 	if err := writer.Close(); err != nil {
 		return nil, false, err
 	}

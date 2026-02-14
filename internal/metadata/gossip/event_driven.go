@@ -253,18 +253,11 @@ func (s *EventDrivenGossipSync) gossipRandomPeer(ctx context.Context) {
 		return
 	}
 
-	// 收集 peer 列表
-	s.merkleSync.mu.RLock()
-	if len(s.merkleSync.knownPeers) == 0 {
-		s.merkleSync.mu.RUnlock()
+	// P1-2: 一次性获取 peer 快照，减少锁获取次数
+	peers := s.getPeerSnapshot()
+	if len(peers) == 0 {
 		return
 	}
-
-	peers := make([]string, 0, len(s.merkleSync.knownPeers))
-	for peerID := range s.merkleSync.knownPeers {
-		peers = append(peers, peerID)
-	}
-	s.merkleSync.mu.RUnlock()
 
 	// 选择 peer
 	selectedPeer := s.merkleSync.peerSelector.Select(peers)
@@ -274,6 +267,26 @@ func (s *EventDrivenGossipSync) gossipRandomPeer(ctx context.Context) {
 
 	// 执行同步
 	_, _ = s.merkleSync.SyncWithPeer(ctx, selectedPeer)
+}
+
+// getPeerSnapshot 一次性获取 peer 列表快照（P1-2: 优化并发访问）
+func (s *EventDrivenGossipSync) getPeerSnapshot() []string {
+	if s.merkleSync == nil {
+		return nil
+	}
+
+	s.merkleSync.mu.RLock()
+	defer s.merkleSync.mu.RUnlock()
+
+	if len(s.merkleSync.knownPeers) == 0 {
+		return nil
+	}
+
+	peers := make([]string, 0, len(s.merkleSync.knownPeers))
+	for peerID := range s.merkleSync.knownPeers {
+		peers = append(peers, peerID)
+	}
+	return peers
 }
 
 // ==================== 公共 API ====================

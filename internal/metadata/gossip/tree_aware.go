@@ -369,9 +369,12 @@ func (s *TreeAwareGossipSync) runPriorityLoop() {
 					s.processTreeAwareEvent(event)
 					starvationCounter = 0
 				} else {
-					// 放回队列或丢弃
+					// P1-3: 添加短暂等待避免 CPU 空转
+					// 不满足条件时，将事件放回队列并短暂休眠
+					time.Sleep(10 * time.Millisecond)
 					select {
 					case s.lowPriority <- event:
+						// 成功放回队列
 					default:
 						s.mu.Lock()
 						s.lowPriorityDrop++

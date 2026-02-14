@@ -99,15 +99,28 @@ type DemotionEntry struct {
 //
 // 注意：这是一个简化版本，DEGR-4 将实现 WAL 持久化版本
 type DemotionLog struct {
-	mu      sync.RWMutex
-	entries []*DemotionEntry
-	idSeq   int
+	mu         sync.RWMutex
+	entries    []*DemotionEntry
+	idSeq      int
+	maxEntries int // P1-5: 最大条目数限制（0 表示无限制）
 }
+
+// DefaultMaxEntries 默认最大条目数
+const DefaultMaxEntries = 10000
 
 // NewDemotionLog 创建降级日志
 func NewDemotionLog() *DemotionLog {
 	return &DemotionLog{
-		entries: make([]*DemotionEntry, 0),
+		entries:    make([]*DemotionEntry, 0),
+		maxEntries: DefaultMaxEntries,
+	}
+}
+
+// NewDemotionLogWithLimit 创建带限制的降级日志
+func NewDemotionLogWithLimit(maxEntries int) *DemotionLog {
+	return &DemotionLog{
+		entries:    make([]*DemotionEntry, 0),
+		maxEntries: maxEntries,
 	}
 }
 
@@ -115,6 +128,11 @@ func NewDemotionLog() *DemotionLog {
 func (l *DemotionLog) Append(namespace, key string, value []byte) *DemotionEntry {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	// P1-5: 检查是否超过内存限制
+	if l.maxEntries > 0 && len(l.entries) >= l.maxEntries {
+		l.removeOldestSyncedLocked()
+	}
 
 	l.idSeq++
 	entry := &DemotionEntry{
@@ -128,6 +146,29 @@ func (l *DemotionLog) Append(namespace, key string, value []byte) *DemotionEntry
 	l.entries = append(l.entries, entry)
 
 	return entry
+}
+
+// removeOldestSyncedLocked 移除最旧的已同步条目（调用前必须持有锁）
+func (l *DemotionLog) removeOldestSyncedLocked() {
+	for i, entry := range l.entries {
+		if entry.Synced {
+			// 移除该条目
+			l.entries = append(l.entries[:i], l.entries[i+1:]...)
+			logging.WithFields(map[string]interface{}{
+				"id": entry.ID,
+			}).Debug("移除最旧的已同步降级日志条目")
+			return
+		}
+	}
+	// 如果没有已同步的条目，移除最旧的未同步条目（警告）
+	if len(l.entries) > 0 {
+		removed := l.entries[0]
+		l.entries = l.entries[1:]
+		logging.WithFields(map[string]interface{}{
+			"id":          removed.ID,
+			"max_entries": l.maxEntries,
+		}).Warn("降级日志已满，移除最旧的未同步条目")
+	}
 }
 
 // GetUnsynced 获取未同步的条目

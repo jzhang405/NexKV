@@ -44,6 +44,17 @@ const (
 	TxStateTimeout
 )
 
+// ==================== P0-2: 超时错误定义 ====================
+
+var (
+	// ErrPrepareTimeout PreCommit 阶段超时
+	ErrPrepareTimeout = errors.New("2PC PreCommit timeout")
+	// ErrCommitTimeout Commit 阶段超时
+	ErrCommitTimeout = errors.New("2PC Commit timeout")
+	// ErrAckTimeout 等待 ACK 超时
+	ErrAckTimeout = errors.New("2PC ACK wait timeout")
+)
+
 // String 返回状态的字符串表示
 func (s TransactionState) String() string {
 	switch s {
@@ -94,6 +105,10 @@ type TwoPCTransaction struct {
 	// P0-1: Gossip 状态同步新增字段
 	Coordinator     string          // 协调者节点 ID（用于 Gossip 查询）
 	Acknowledgments map[string]bool // 响应追踪（participantID -> 是否响应）
+
+	// P0-2: 超时机制新增字段
+	mu           sync.Mutex    // 保护 ackCollector 的互斥锁
+	ackCollector *AckCollector // ACK 收集器（用于 PreCommitWithTimeout）
 
 	// 时间戳
 	CreateTime    time.Time // 创建时间
@@ -645,6 +660,13 @@ func (c *TwoPCMerkleCoordinator) handlePreCommitResponse(nodeID string, msg []by
 		if v, ok := c.transactions.Load(commitPayload.TxID); ok {
 			tx := v.(*TwoPCTransaction)
 			tx.Acks[nodeID] = commitPayload.Result
+
+			// P0-2: 通知 ackCollector（如果存在）
+			tx.mu.Lock()
+			if tx.ackCollector != nil {
+				tx.ackCollector.ReceiveACK(nodeID, commitPayload.Result)
+			}
+			tx.mu.Unlock()
 		}
 
 	case transport.MessageTypeNack: // TwoPCRollbackPayload
@@ -658,6 +680,13 @@ func (c *TwoPCMerkleCoordinator) handlePreCommitResponse(nodeID string, msg []by
 			tx := v.(*TwoPCTransaction)
 			tx.Acks[nodeID] = false
 			tx.LastError = fmt.Errorf("节点 %s 拒绝: %s", nodeID, rollbackPayload.Reason)
+
+			// P0-2: 通知 ackCollector（如果存在）
+			tx.mu.Lock()
+			if tx.ackCollector != nil {
+				tx.ackCollector.ReceiveACK(nodeID, false)
+			}
+			tx.mu.Unlock()
 		}
 	}
 }
@@ -1269,5 +1298,121 @@ func (c *TwoPCMerkleCoordinator) SetGossipBurstLimit(burst int) {
 func (c *TwoPCMerkleCoordinator) ResetGossipRateLimiterMetrics() {
 	if c.gossipRateLimiter != nil {
 		c.gossipRateLimiter.ResetMetrics()
+	}
+}
+
+// ==================== P0-2: PreCommitWithTimeout 超时机制 ====================
+
+// PreCommitWithTimeout 带超时的 PreCommit（P0-2 修复）
+//
+// 与 PreCommit 的区别：
+//   - PreCommit：发送请求后立即返回，不等待 ACK（异步模式）
+//   - PreCommitWithTimeout：发送请求后阻塞等待 ACK，超时自动 Abort（同步模式）
+//
+// 超时处理流程：
+//  1. 发送 PreCommit 请求给所有参与者
+//  2. 等待所有 ACK（使用 AckCollector）
+//  3. 超时后自动 Abort 事务
+//  4. 处理竞态条件（Abort 时可能正在收到 ACK）
+//
+// 返回：
+//   - error: nil=成功，ErrPrepareTimeout=超时，其他=失败
+func (c *TwoPCMerkleCoordinator) PreCommitWithTimeout(ctx context.Context, tx *TwoPCTransaction, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = c.defaultTimeout
+	}
+
+	// 创建带超时的上下文
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// 创建 ACK 收集器
+	ackCollector := NewAckCollector(len(tx.Participants), timeout)
+
+	// 注册 ACK 收集器到事务（用于 handlePreCommitResponse 回调）
+	tx.mu.Lock()
+	tx.ackCollector = ackCollector
+	tx.mu.Unlock()
+
+	// 清理回调
+	defer func() {
+		tx.mu.Lock()
+		tx.ackCollector = nil
+		tx.mu.Unlock()
+	}()
+
+	// 调用原始 PreCommit（发送请求）
+	if err := c.PreCommit(ctx, tx); err != nil {
+		return err
+	}
+
+	// 本地模式：PreCommit 已经模拟了所有 ACK
+	if c.transport == nil {
+		return nil
+	}
+
+	// 等待所有 ACK 或超时
+	_, failedCount, success, waitErr := ackCollector.WaitWithContext(ctx)
+
+	if waitErr != nil || ctx.Err() != nil {
+		// 上下文取消或超时，执行 Abort
+		go c.abortTransactionAsync(tx)
+		return ErrPrepareTimeout
+	}
+
+	if !success {
+		// ACK 收集失败（有节点拒绝或超时）
+		if failedCount > 0 {
+			// 有节点明确拒绝
+			c.rollbackTransaction(tx)
+			return fmt.Errorf("PreCommit rejected by %d participants", failedCount)
+		}
+		// 超时但上下文未取消（边界情况）
+		go c.abortTransactionAsync(tx)
+		return ErrPrepareTimeout
+	}
+
+	// 成功收到所有 ACK
+	return nil
+}
+
+// abortTransactionAsync 异步 Abort 事务（避免阻塞）
+func (c *TwoPCMerkleCoordinator) abortTransactionAsync(tx *TwoPCTransaction) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := c.Rollback(ctx, tx); err != nil {
+		fmt.Printf("[WARN] Failed to abort transaction %s: %v\n", tx.TxID, err)
+	}
+}
+
+// CommitWithTimeout 带超时的 Commit（P0-2 修复）
+//
+// 超时处理流程：
+//  1. 检查 ACK 状态
+//  2. 执行 Commit
+//  3. 超时后回滚
+func (c *TwoPCMerkleCoordinator) CommitWithTimeout(ctx context.Context, tx *TwoPCTransaction, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 3 * time.Second // 默认 3 秒
+	}
+
+	// 创建带超时的上下文
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// 使用 channel 实现 Commit 超时
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Commit(ctx, tx)
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		// 超时，执行回滚
+		c.rollbackTransaction(tx)
+		return ErrCommitTimeout
 	}
 }

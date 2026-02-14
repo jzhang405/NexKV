@@ -17,9 +17,9 @@
 | 负责人 | 🤖 核心开发 A |
 | 分支创建日期 | 2026-02-14 |
 | 计划开工日期 | 2026-02-14 |
-| 计划CI通过日期 | 2026-02-18 |
+| 计划CI通过日期 | 2026-02-17 |
 | 关联需求单号 | TLA+ 5节点模型替代方案 |
-| 架构师评审状态 | ⏳ 待评审 |
+| 架构师评审状态 | ⏳ 待第二轮评审 |
 | 预审批结果 | ⏳ 待评审 |
 
 ### 2. 背景与目标（为什么干）
@@ -31,7 +31,7 @@ NexKV 的 TLA+ 验证在 3 节点模型上已全部通过（10个性质、31个�
 
 **现有问题**：
 - ❌ **5节点场景验证空白**：TLA+ 5节点模型无法完成，需要替代方案
-- ❌ **测试覆盖不足**：现有 Go 测试仅覆盖 3 节点场景
+- ❌ **现有测试仅覆盖 3 节点**：`quorum_gossip_test.go` 等使用 `[]string{"n1", "n2", "n3"}`
 - ❌ **故障容错验证缺失**：5节点容错能力（2节点故障）未验证
 
 **价值**：
@@ -42,119 +42,127 @@ NexKV 的 TLA+ 验证在 3 节点模型上已全部通过（10个性质、31个�
 #### 2.2 核心目标（可量化、可验证）
 
 1. **功能目标**：
-   - 实现 5 节点 Quorum 测试（5个用例）
-   - 实现 5 节点 Gossip 测试（4个用例）
-   - 实现 5 节点故障注入测试（5个用例）
-   - 总计 14+ 新增测试用例
+   - 扩展现有测试文件，添加 5 节点专属测试用例
+   - 实现 5 节点 Quorum 测试（3个用例）
+   - 实现 5 节点 Gossip 测试（2个用例）
+   - 实现 5 节点故障注入测试（3个用例）
+   - 总计 8 个新增测试用例
 
 2. **性能目标**：
-   - 5 节点 Quorum 决策延迟 < 10ms
-   - 5 节点 Gossip 收敛时间 < 20s
-   - 5 节点故障恢复时间 < 100ms
+   - 记录 5 节点实际性能数据，与 3 节点对比分析
 
 3. **测试目标**：
    - 新增测试 100% 通过
-   - 测试覆盖率 > 80%
    - 无数据竞争（go test -race）
 
 ### 3. 技术设计
 
 #### 3.1 架构设计
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    5节点测试架构                                      │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │ 测试框架层                                                    │   │
-│  │ ├── New5NodeCluster(t) - 5节点集群创建                        │   │
-│  │ ├── Assert5NodeMajority(t, cluster, node) - 多数派断言       │   │
-│  │ └── WaitFor5NodeConvergence(t, cluster, timeout) - 收敛等待   │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │ 测试用例层                                                    │   │
-│  │ ├── quorum_gossip_5nodes_test.go - Quorum 5节点测试           │   │
-│  │ ├── gossip_5nodes_test.go - Gossip 5节点测试                  │   │
-│  │ └── fault_injection_5nodes_test.go - 故障注入测试             │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │ 核心实现层（复用现有）                                         │   │
-│  │ ├── quorum_gossip.go - Quorum+Gossip 实现                     │   │
-│  │ ├── Cluster - 集群管理（已支持动态节点数）                     │   │
-│  │ └── WAL - 故障恢复                                            │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph 测试框架层
+        A1["New5NodeCluster(t)<br/>5节点集群创建辅助函数"]
+        A2["Assert5NodeMajority(t, cluster)<br/>多数派=3 断言"]
+        A3["WaitFor5NodeConvergence(t, cluster)<br/>5节点收敛等待"]
+    end
+
+    subgraph 现有测试文件扩展
+        B1["quorum_gossip_test.go<br/>+ 5节点 Quorum 测试"]
+        B2["quorum_gossip_crash_test.go<br/>+ 5节点崩溃测试"]
+        B3["quorum_gossip_partition_test.go<br/>+ 5节点分区测试"]
+    end
+
+    subgraph 核心实现层复用
+        C1["quorum_gossip.go<br/>Cluster 已支持动态节点数"]
+        C2["GetMajority()<br/>自动计算多数派"]
+        C3["WAL<br/>故障恢复"]
+    end
+
+    A1 --> B1
+    A2 --> B1
+    A3 --> B1
+    B1 --> C1
+    B2 --> C2
+    B3 --> C3
 ```
 
-#### 3.2 里程碑规划
+#### 3.2 现有测试清单（3节点）
+
+> **说明**：现有测试均使用 3 节点（`[]string{"n1", "n2", "n3"}`），多数派=2
+
+| 文件 | 测试函数 | 节点数 | 覆盖场景 |
+|------|---------|-------|---------|
+| `quorum_gossip_test.go` | TestTC001_SingleNodeProposeVote | 1 | 单节点投票 |
+| `quorum_gossip_test.go` | TestTC002_QuorumCommitSuccess | 3 | Quorum 提交成功 |
+| `quorum_gossip_test.go` | TestTC003_QuorumTimeoutRollback | 3 | Quorum 超时回滚 |
+| `quorum_gossip_test.go` | TestTC010_ConcurrentVoteConflict | 3 | 并发投票冲突 |
+| `quorum_gossip_test.go` | TestTC025_PartitionSafety | 3 | 分区安全性 |
+| `quorum_gossip_test.go` | TestTC030_GossipConvergence | 3 | Gossip 收敛 |
+| `quorum_gossip_test.go` | TestTC035_NodeRecovery | 3 | 节点恢复 |
+| `quorum_gossip_crash_test.go` | TestTC036-TC050 | 3 | 崩溃相关测试（15个） |
+| `quorum_gossip_partition_test.go` | TestTC041-TC045 | 3 | 分区测试（5个） |
+| `quorum_gossip_fault_injection_test.go` | TestFaultInjection_* | 3 | 故障注入测试（7个） |
+
+**关键发现**：现有测试均使用 3 节点，**未覆盖 5 节点场景**。
+
+#### 3.3 文件组织策略
+
+> **决策**：**扩展现有文件**，而非新增独立文件
+
+**理由**：
+1. 避免文件碎片化，保持测试代码集中
+2. 便于对比 3 节点 vs 5 节点行为
+3. 复用现有测试辅助函数和 setup 逻辑
+4. 现有文件行数适中（<800行），有扩展空间
+
+| 文件 | 当前行数 | 新增内容 | 预计行数 |
+|------|---------|---------|---------|
+| `quorum_gossip_test.go` | ~400 | +5节点 Quorum 测试 | ~500 |
+| `quorum_gossip_crash_test.go` | ~530 | +5节点崩溃测试 | ~620 |
+| `quorum_gossip_partition_test.go` | ~340 | +5节点分区测试 | ~420 |
+
+#### 3.4 里程碑规划
 
 | 里程碑 | 内容 | 预计工期 | 产出物 |
 |--------|------|---------|--------|
-| **M1** | 测试框架扩展 | 0.5天 | `cluster_5nodes_test.go` |
-| **M2** | Quorum 5节点测试 | 0.5天 | `quorum_gossip_5nodes_test.go` |
-| **M3** | Gossip 5节点测试 | 0.5天 | `gossip_5nodes_test.go` |
-| **M4** | 故障注入测试 | 1天 | `fault_injection_5nodes_test.go` |
-| **M5** | 验证与文档 | 0.5天 | Post 文档、性能报告 |
+| **M1** | 测试框架辅助函数 | 0.25天 | `New5NodeCluster()` 等 |
+| **M2** | 5节点 Quorum + Gossip 测试 | 0.5天 | 5个新增测试用例 |
+| **M3** | 5节点故障注入测试 | 0.5天 | 3个新增测试用例 |
+| **M4** | 验证与文档 | 0.25天 | Post 文档、性能数据 |
+| **总计** | - | **1.5天** | 8个新增测试用例 |
 
-#### 3.3 测试用例设计
+#### 3.5 新增测试用例设计
 
-##### M2: Quorum 5节点测试
+##### M2: Quorum + Gossip 测试（5节点）
 
-| 测试用例 | 说明 | 预期结果 |
-|---------|------|---------|
-| `Test_5Nodes_QuorumCommit_3Votes` | 3票达成多数派 | ✅ 提交成功 |
-| `Test_5Nodes_QuorumCommit_2Votes` | 2票不足多数派 | ❌ 提交失败 |
-| `Test_5Nodes_QuorumCommit_5Votes` | 全员投票 | ✅ 提交成功 |
-| `Test_5Nodes_QuorumTimeout` | 超时未达多数派 | ❌ 回滚 |
-| `Test_5Nodes_QuorumDecisionPropagation` | 决策传播 | 所有节点最终一致 |
+| 测试用例 | 文件 | 差异化价值 |
+|---------|------|-----------|
+| `Test_5Nodes_QuorumCommit_3Votes` | quorum_gossip_test.go | 验证 5 节点多数派=3 |
+| `Test_5Nodes_QuorumCommit_2Votes_Fail` | quorum_gossip_test.go | 验证 2 票不足以提交 |
+| `Test_5Nodes_QuorumCommit_4Votes` | quorum_gossip_test.go | 验证超多数派场景 |
+| `Test_5Nodes_GossipConvergence` | quorum_gossip_test.go | 5 节点收敛时间 |
+| `Test_5Nodes_GossipWithOneCrash` | quorum_gossip_test.go | 4 节点收敛 |
 
-##### M3: Gossip 5节点测试
+##### M3: 故障注入测试（5节点）
 
-| 测试用例 | 说明 | 预期结果 |
-|---------|------|---------|
-| `Test_5Nodes_GossipConvergence` | 5节点信息扩散 | <20s 全部收敛 |
-| `Test_5Nodes_GossipWithDelay` | 网络延迟 100ms | 收敛时间增加但仍成功 |
-| `Test_5Nodes_GossipPartialFailure` | 1节点崩溃 | 4节点收敛 |
-| `Test_5Nodes_GossipIncrementalSync` | 增量同步 | 恢复节点追赶最新状态 |
+| 测试用例 | 文件 | 差异化价值 |
+|---------|------|-----------|
+| `Test_5Nodes_DoubleNodeCrash` | quorum_gossip_crash_test.go | 验证 2 节点故障容忍 |
+| `Test_5Nodes_Partition_3v2` | quorum_gossip_partition_test.go | 5 节点 3v2 分区 |
+| `Test_5Nodes_CoordinatorCrashAndReelect` | quorum_gossip_crash_test.go | 协调者崩溃重选 |
 
-##### M4: 故障注入测试
-
-| 测试用例 | 说明 | 预期结果 |
-|---------|------|---------|
-| `Test_5Nodes_SingleNodeCrash` | 1节点崩溃 | 4节点继续，恢复后同步 |
-| `Test_5Nodes_DoubleNodeCrash` | 2节点崩溃 | 3节点刚好多数派 |
-| `Test_5Nodes_Partition_3v2` | 3v2 分区 | 3节点区继续工作 |
-| `Test_5Nodes_CoordinatorCrash` | 协调者崩溃 | 重新选举 |
-| `Test_5Nodes_CascadingFailure` | 级联故障 | 系统自愈或安全降级 |
-
-#### 3.4 多数派计算
+#### 3.6 多数派计算
 
 ```go
-// 5节点集群配置
-const (
-    NodeCount5     = 5
-    Majority5      = 3  // (5/2)+1 = 3
-    FaultTolerance = 2  // 5节点可容忍2节点故障
-)
-
-// 动态多数派计算
-func CalculateMajority(nodeCount int) int {
-    return (nodeCount / 2) + 1
+// 现有实现已支持动态节点数
+func (c *Cluster) GetMajority() int {
+    return (len(c.nodeIDs) / 2) + 1
 }
+
+// 5节点配置
+// NodeCount = 5, Majority = 3, FaultTolerance = 2
 ```
-
-#### 3.5 文件变更清单
-
-| 操作 | 文件路径 | 说明 |
-|------|---------|------|
-| **新增** | `tla-verification/implementations/cluster_5nodes_test.go` | 5节点测试框架 |
-| **新增** | `tla-verification/implementations/quorum_gossip_5nodes_test.go` | Quorum 5节点测试 |
-| **新增** | `tla-verification/implementations/gossip_5nodes_test.go` | Gossip 5节点测试 |
-| **新增** | `tla-verification/implementations/fault_injection_5nodes_test.go` | 故障注入测试 |
 
 ### 4. 风险评估
 
@@ -162,33 +170,31 @@ func CalculateMajority(nodeCount int) int {
 
 | 风险 | 影响 | 概率 | 缓解措施 |
 |------|------|------|---------|
-| **测试框架不兼容** | 中 | 低 | 复用现有 Cluster 实现 |
-| **故障注入复杂** | 中 | 中 | 参考现有 fault_injection_test.go |
+| **5节点性能下降** | 中 | 中 | 记录实际数据，与 3 节点对比 |
 | **并发 Bug** | 高 | 中 | 使用 -race 标志检测 |
-| **性能不达标** | 低 | 低 | 5节点性能已有基准数据 |
+| **测试覆盖统计口径** | 低 | 低 | 统一使用 go test -cover |
 
 #### 4.2 依赖关系
 
 ```mermaid
 graph LR
     subgraph "前置依赖（已完成）"
-        D1[PR #64 HLC Bugfix ✅]
-        D2[PR #65 Porcupine 分离测试 ✅]
-        D3[TLA+ 3节点验证 ✅]
+        D1["PR #64 HLC Bugfix ✅"]
+        D2["PR #65 Porcupine 分离测试 ✅"]
+        D3["TLA+ 3节点验证 ✅"]
     end
 
     subgraph "本 PR"
-        P1[M1 测试框架]
-        P2[M2 Quorum 测试]
-        P3[M3 Gossip 测试]
-        P4[M4 故障注入]
+        P1["M1 辅助函数"]
+        P2["M2 Quorum+Gossip"]
+        P3["M3 故障注入"]
     end
 
     D1 --> P2
-    D2 --> P3
+    D2 --> P2
     D3 --> P1
 
-    P1 --> P2 --> P3 --> P4
+    P1 --> P2 --> P3
 
     style D1 fill:#c8e6c9
     style D2 fill:#c8e6c9
@@ -201,19 +207,18 @@ graph LR
 
 | 验收项 | 标准 | 验证方式 |
 |--------|------|---------|
-| **Quorum 5节点测试** | 5个用例全部通过 | `go test -run Test_5Nodes_Quorum` |
-| **Gossip 5节点测试** | 4个用例全部通过 | `go test -run Test_5Nodes_Gossip` |
-| **故障注入测试** | 5个用例全部通过 | `go test -run Test_5Nodes_Fault` |
-| **测试覆盖率** | > 80% | `go test -cover` |
+| **5节点 Quorum 测试** | 3个用例全部通过 | `go test -run Test_5Nodes_Quorum` |
+| **5节点 Gossip 测试** | 2个用例全部通过 | `go test -run Test_5Nodes_Gossip` |
+| **5节点故障测试** | 3个用例全部通过 | `go test -run Test_5Nodes_.*Crash\|Partition` |
 | **无数据竞争** | 0 race detected | `go test -race` |
 
-#### 5.2 性能验收
+#### 5.2 性能验收（待实测验证）
 
-| 指标 | 3节点基准 | 5节点目标 | 说明 |
-|------|----------|----------|------|
-| **Quorum 决策延迟** | <5ms | <10ms | 允许增加 |
-| **Gossip 收敛时间** | <10s | <20s | 节点增多 |
-| **故障恢复时间** | <50ms | <100ms | 允许增加 |
+| 指标 | 3节点基准 | 5节点目标 | 验收方式 |
+|------|----------|----------|---------|
+| **Quorum 决策延迟** | 待实测记录 | 与 3 节点对比 | Benchmark |
+| **Gossip 收敛时间** | 待实测记录 | 与 3 节点对比 | 实际测量 |
+| **故障恢复时间** | 待实测记录 | 与 3 节点对比 | 实际测量 |
 
 ### 6. 关联文档
 
@@ -221,7 +226,6 @@ graph LR
 |------|------|------|
 | **Spike 预研报告** | `docs/07_spike/2026-02-14_go-testing-5nodes-research.md` | 详细技术方案 |
 | **TLA+ Spike 研究** | `docs/07_spike/2026-02-14_tla-verification-research.md` | TLA+ 与 Porcupine 互补关系 |
-| **PR #65 Pre 文档** | `docs/06_PM/feature/2026-02-13_PR-064_Porcupine-Separated-Test-Strategy_Pre.md` | Porcupine 分离测试策略 |
 | **TLA+ README** | `tla-verification/README.md` | TLA+ 验证完整报告 |
 
 ---
@@ -232,9 +236,25 @@ graph LR
 
 ### 评审记录
 
-#### 第一轮评审
+#### 第一轮评审（2026-02-14）
 
-| 评审日期 | 2026-02-14 |
+| 问题 | 优先级 | 评审意见 | 处理状态 |
+|------|--------|---------|---------|
+| **P0-1** | 文件规划与现有代码重复 | P0 | 采用**扩展现有文件**策略，理由见 3.3 | ✅ 已修复 |
+| **P0-2** | 测试用例与现有测试重叠 | P0 | 补充现有测试清单（3.2），明确差异化价值（3.5） | ✅ 已修复 |
+| **P1-1** | 性能指标来源不明确 | P1 | 改为"待实测验证"，记录对比数据 | ✅ 已修复 |
+| **P1-2** | M4 故障注入测试重叠 | P1 | 调整为 3 个差异化测试用例 | ✅ 已修复 |
+| **P1-3** | ASCII 图应改为 Mermaid | P1 | 已转换为 Mermaid flowchart | ✅ 已修复 |
+| **P2-1** | 代码示例缺乏边界检查 | P2 | 使用现有 `GetMajority()` 实现 | ✅ 已确认 |
+| **P2-2** | 依赖关系描述 | P2 | 已确认依赖关系正确 | ✅ 已确认 |
+
+**第一轮评审结论**：⏳ 需修改后重新评审
+
+---
+
+#### 第二轮评审
+
+| 评审日期 | ⏳ 待评审 |
 |---------|-----------|
 | 评审人 | 👤 架构师 |
 | 评审状态 | ⏳ 待评审 |
@@ -247,8 +267,8 @@ graph LR
 
 ---
 
-**文档版本**: v1.0
+**文档版本**: v1.1
 **创建日期**: 2026-02-14
 **最后更新**: 2026-02-14
 **维护者**: 🤖 核心开发 A
-**状态**: ⏳ 待架构师评审
+**状态**: ⏳ 第二轮待评审

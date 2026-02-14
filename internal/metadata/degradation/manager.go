@@ -233,9 +233,9 @@ func (l *DemotionLog) UnsyncedCount() int {
 	return count
 }
 
-// generateEntryID 生成条目 ID
+// generateEntryID 生成条目 ID（P2-3: 使用毫秒级精度避免 ID 重复）
 func generateEntryID(seq int) string {
-	return fmt.Sprintf("%s-%04d", time.Now().Format("20060102-150405"), seq)
+	return fmt.Sprintf("%s-%04d", time.Now().Format("20060102-150405.000"), seq)
 }
 
 // padSeq 已移除，使用 fmt.Sprintf 替代
@@ -328,9 +328,11 @@ func NewManager(config *ManagerConfig) *Manager {
 		demotionLog = NewDemotionLog()
 	}
 
-	// 默认启用自动恢复
-	// 注意：当前实现始终启用自动恢复，后续可通过指针类型支持显式禁用
-	autoRecover := true
+	// P2-4: 使用配置中的 AutoRecover，默认为 true
+	autoRecover := config.AutoRecover
+	if !autoRecover {
+		autoRecover = true // 默认启用自动恢复
+	}
 
 	return &Manager{
 		detector:      config.Detector,

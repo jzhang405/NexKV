@@ -585,9 +585,13 @@ func (c *TreeTopologyCoordinator) GetLayerForNamespace(ns string) Layer {
 		kvstore.NamespaceVersion:
 		return Layer1 // 2PC 强一致
 
-	case kvstore.NamespaceRole,
-		kvstore.NamespaceTopo:
+	case kvstore.NamespaceRole:
 		return Layer2 // Quorum 增强最终一致
+
+	case kvstore.NamespaceTopo:
+		// P0-4: NamespaceTopo 统一为 Layer3
+		// 理由：拓扑信息更新频繁，可容忍短暂不一致
+		return Layer3 // Gossip 最终一致
 
 	default:
 		return Layer3 // Gossip 最终一致

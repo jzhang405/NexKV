@@ -1270,3 +1270,164 @@ func TestRecoverTransactions(t *testing.T) {
 	_, err = coordinator.GetTransaction("tx-recover-3")
 	require.Error(t, err, "RolledBack 事务不应该被恢复")
 }
+
+// ==================== P0-2: PreCommitWithTimeout Tests ====================
+
+// TestTwoPCMerkleCoordinator_PreCommitWithTimeout_Local 测试本地模式下的 PreCommitWithTimeout
+func TestTwoPCMerkleCoordinator_PreCommitWithTimeout_Local(t *testing.T) {
+	hlc := clock.NewHLC()
+	merkleTree := kvstore.NewNamespacedMerkleTree(hlc)
+	metadataKV := newMockMetadataKV()
+
+	coordinator, _ := NewTwoPCMerkleCoordinator(&TwoPCOptions{
+		MetadataKV: metadataKV,
+		MerkleTree: merkleTree,
+		HLC:        hlc,
+	})
+
+	participants := []string{"node-1", "node-2"}
+	tx, _ := coordinator.BeginTransaction(participants)
+
+	// 添加操作
+	value := []byte(`{"status": "active"}`)
+	tx.AddOperation(kvstore.NamespaceNode, "node-001", value, 1)
+
+	// PreCommitWithTimeout（本地模式应该立即成功）
+	ctx := context.Background()
+	err := coordinator.PreCommitWithTimeout(ctx, tx, 5*time.Second)
+
+	require.NoError(t, err)
+	require.Equal(t, TxStatePreCommit, tx.State)
+
+	// 后续 Commit 应该成功
+	err = coordinator.Commit(ctx, tx)
+	require.NoError(t, err)
+	require.Equal(t, TxStateCommitted, tx.State)
+}
+
+// TestTwoPCMerkleCoordinator_CommitWithTimeout 测试 CommitWithTimeout
+func TestTwoPCMerkleCoordinator_CommitWithTimeout(t *testing.T) {
+	hlc := clock.NewHLC()
+	merkleTree := kvstore.NewNamespacedMerkleTree(hlc)
+	metadataKV := newMockMetadataKV()
+
+	coordinator, _ := NewTwoPCMerkleCoordinator(&TwoPCOptions{
+		MetadataKV: metadataKV,
+		MerkleTree: merkleTree,
+		HLC:        hlc,
+	})
+
+	participants := []string{"node-1"}
+	tx, _ := coordinator.BeginTransaction(participants)
+
+	// 添加操作
+	value := []byte(`{"status": "active"}`)
+	tx.AddOperation(kvstore.NamespaceNode, "node-001", value, 1)
+
+	// PreCommit
+	ctx := context.Background()
+	_ = coordinator.PreCommit(ctx, tx)
+
+	// CommitWithTimeout
+	err := coordinator.CommitWithTimeout(ctx, tx, 3*time.Second)
+
+	require.NoError(t, err)
+	require.Equal(t, TxStateCommitted, tx.State)
+}
+
+// TestTwoPCMerkleCoordinator_PreCommitWithTimeout_ContextCancel 测试上下文取消
+// 注意：本地模式下 PreCommit 立即成功，无法测试取消场景
+// 此测试验证已取消的上下文传递给方法时的行为
+func TestTwoPCMerkleCoordinator_PreCommitWithTimeout_ContextCancel(t *testing.T) {
+	hlc := clock.NewHLC()
+	merkleTree := kvstore.NewNamespacedMerkleTree(hlc)
+	metadataKV := newMockMetadataKV()
+
+	coordinator, _ := NewTwoPCMerkleCoordinator(&TwoPCOptions{
+		MetadataKV: metadataKV,
+		MerkleTree: merkleTree,
+		HLC:        hlc,
+	})
+
+	participants := []string{"node-1", "node-2"}
+	tx, _ := coordinator.BeginTransaction(participants)
+
+	// 添加操作
+	value := []byte(`{"status": "active"}`)
+	tx.AddOperation(kvstore.NamespaceNode, "node-001", value, 1)
+
+	// 使用已取消的上下文
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// PreCommitWithTimeout 在本地模式下会立即成功
+	// 因为 PreCommit 在本地模式不等待网络响应
+	err := coordinator.PreCommitWithTimeout(ctx, tx, 5*time.Second)
+	// 本地模式：立即成功（无网络等待）
+	require.NoError(t, err)
+}
+
+// TestAckCollector_WaitWithContext 测试 AckCollector 的 WaitWithContext
+func TestAckCollector_WaitWithContext(t *testing.T) {
+	collector := NewAckCollector(3, 2*time.Second)
+
+	// 模拟接收 ACK
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		collector.ReceiveACK("node-1", true)
+		time.Sleep(100 * time.Millisecond)
+		collector.ReceiveACK("node-2", true)
+		time.Sleep(100 * time.Millisecond)
+		collector.ReceiveACK("node-3", true)
+	}()
+
+	ctx := context.Background()
+	successCount, failedCount, success, err := collector.WaitWithContext(ctx)
+
+	require.NoError(t, err)
+	require.True(t, success)
+	require.Equal(t, 3, successCount)
+	require.Equal(t, 0, failedCount)
+}
+
+// TestAckCollector_WaitWithContext_Timeout 测试 AckCollector 超时
+func TestAckCollector_WaitWithContext_Timeout(t *testing.T) {
+	// 设置很短的超时时间
+	collector := NewAckCollector(3, 200*time.Millisecond)
+
+	// 模拟只接收部分 ACK
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		collector.ReceiveACK("node-1", true)
+		// node-2 和 node-3 不响应
+	}()
+
+	ctx := context.Background()
+	successCount, failedCount, success, err := collector.WaitWithContext(ctx)
+
+	require.NoError(t, err)   // WaitWithContext 在超时时返回 nil error
+	require.False(t, success) // 应该失败
+	require.Equal(t, 1, successCount)
+	require.Equal(t, 0, failedCount)
+}
+
+// TestAckCollector_WaitWithContext_FailedAck 测试 AckCollector 接收失败 ACK
+func TestAckCollector_WaitWithContext_FailedAck(t *testing.T) {
+	collector := NewAckCollector(3, 2*time.Second)
+
+	// 模拟接收 ACK，其中一个失败
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		collector.ReceiveACK("node-1", true)
+		time.Sleep(50 * time.Millisecond)
+		collector.ReceiveACK("node-2", false) // 失败
+	}()
+
+	ctx := context.Background()
+	successCount, failedCount, success, err := collector.WaitWithContext(ctx)
+
+	require.NoError(t, err)
+	require.False(t, success) // 应该失败
+	require.Equal(t, 1, successCount)
+	require.Equal(t, 1, failedCount)
+}

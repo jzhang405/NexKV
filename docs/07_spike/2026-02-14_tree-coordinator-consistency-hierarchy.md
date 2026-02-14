@@ -611,24 +611,61 @@ func (d *SlowNodeDetector) IsSlowNode(nodeID string) bool {
 
 > **如何为现有的三层一致性模型提供理论基础和安全保证？**
 
-### 9.2 三个研究方向
+### 9.2 Tree Coordinator 关键设计洞察
+
+```mermaid
+graph TB
+    subgraph "设计洞察 1: 父节点是天然 Leader"
+        L1["父节点 = 天然 Leader<br/>无需 Raft/Paxos 选举"]
+        S1["Standby 父节点 = HA 备份"]
+        F1["Fencing Token 防脑裂"]
+    end
+
+    subgraph "设计洞察 2: 树感知 Gossip 传播"
+        D1["叶子节点 → 父节点（向上）"]
+        D2["父节点 → 子节点（向下）"]
+        D3["越靠近叶子节点越快<br/>Root 节点最慢"]
+    end
+
+    L1 --> S1 --> F1
+    D1 --> D2 --> D3
+
+    style L1 fill:#c8e6c9
+    style D1 fill:#bbdefb
+    style D3 fill:#fff59d
+```
+
+| 洞察 | 说明 | 文档 |
+|------|------|------|
+| **父节点 = 天然 Leader** | 利用树拓扑，无需复杂选举 | [Leader HA 设计](./2026-02-14_leader-ha-design.md) |
+| **Standby 父节点做 HA** | 预定义优先级，快速故障转移 | [Leader HA 设计](./2026-02-14_leader-ha-design.md) |
+| **树感知 Gossip** | 叶→父传播，减少冗余消息 | [HLC 时钟设计](./2026-02-14_hlc-clock-design.md) |
+| **HLC 时间戳** | 解决时钟漂移，保证因果一致 | [HLC 时钟设计](./2026-02-14_hlc-clock-design.md) |
+
+### 9.3 三个研究方向
 
 1. **PACELC 定理**：为一致性选择提供理论框架
 2. **CosmosDB 一致性层级**：参考工业界最佳实践
 3. **CRDT**：为弱一致域提供无协调冲突解决方案
 
-### 9.3 下一步行动
+### 9.4 下一步行动
 
 - [x] 创建 PACELC 定理 Spike 文档
 - [x] 创建 CosmosDB 一致性层级 Spike 文档
 - [x] 创建 CRDT 冲突解决 Spike 文档
+- [x] 创建双 Agent 实施评审文档
+- [x] 创建 Leader HA 设计文档
+- [x] 创建跨层级事务 Saga 设计文档
+- [x] 创建 HLC 时钟 + 树感知 Gossip 设计文档
+- [x] 创建分区降级策略设计文档
+- [x] 创建 Porcupine 增强模型设计文档
 - [ ] 完成理论证明
-- [ ] 实现 CRDT 原型
+- [ ] 实现 CRDT 原型（单独研究）
 
 ---
 
-**文档版本**: v2.0
+**文档版本**: v2.1
 **创建日期**: 2026-02-14
 **最后更新**: 2026-02-14
 **维护者**: 🤖 核心开发 A
-**状态**: 🔄 进行中
+**状态**: ✅ 已完成

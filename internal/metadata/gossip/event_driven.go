@@ -40,7 +40,7 @@ type GossipEvent struct {
 	Namespace string          // Namespace（可选）
 	Key       string          // Key（可选）
 	NodeID    string          // 节点 ID（可选）
-	Timestamp time.Time        // 事件时间戳
+	Timestamp time.Time       // 事件时间戳
 }
 
 // ==================== EventDrivenGossipSync ====================

@@ -1405,8 +1405,8 @@ func TestAckCollector_WaitWithContext_Timeout(t *testing.T) {
 	ctx := context.Background()
 	successCount, failedCount, success, err := collector.WaitWithContext(ctx)
 
-	require.NoError(t, err)     // WaitWithContext 在超时时返回 nil error
-	require.False(t, success)   // 应该失败
+	require.NoError(t, err)   // WaitWithContext 在超时时返回 nil error
+	require.False(t, success) // 应该失败
 	require.Equal(t, 1, successCount)
 	require.Equal(t, 0, failedCount)
 }

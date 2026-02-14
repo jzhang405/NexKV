@@ -110,8 +110,8 @@ func Test2PC_PreCommitWithTimeout_Success(t *testing.T) {
 
 	coordinator, err := NewTwoPCMerkleCoordinator(&TwoPCOptions{
 		MetadataKV: metadataKV,
-		MerkleTree:  merkleTree,
-		HLC:         hlc,
+		MerkleTree: merkleTree,
+		HLC:        hlc,
 	})
 	require.NoError(t, err)
 	defer coordinator.Close()
@@ -143,8 +143,8 @@ func Test2PC_CommitWithTimeout(t *testing.T) {
 
 	coordinator, err := NewTwoPCMerkleCoordinator(&TwoPCOptions{
 		MetadataKV: metadataKV,
-		MerkleTree:  merkleTree,
-		HLC:         hlc,
+		MerkleTree: merkleTree,
+		HLC:        hlc,
 	})
 	require.NoError(t, err)
 	defer coordinator.Close()
@@ -315,8 +315,8 @@ func TestStress_ConcurrentTransactions(t *testing.T) {
 
 	coordinator, err := NewTwoPCMerkleCoordinator(&TwoPCOptions{
 		MetadataKV: metadataKV,
-		MerkleTree:  merkleTree,
-		HLC:         hlc,
+		MerkleTree: merkleTree,
+		HLC:        hlc,
 	})
 	require.NoError(t, err)
 	defer coordinator.Close()
@@ -364,8 +364,8 @@ func Benchmark2PC_PreCommitWithTimeout(b *testing.B) {
 
 	coordinator, _ := NewTwoPCMerkleCoordinator(&TwoPCOptions{
 		MetadataKV: metadataKV,
-		MerkleTree:  merkleTree,
-		HLC:         hlc,
+		MerkleTree: merkleTree,
+		HLC:        hlc,
 	})
 	defer coordinator.Close()
 

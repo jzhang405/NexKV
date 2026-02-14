@@ -271,8 +271,8 @@ type LeaderManager struct {
 	mu sync.RWMutex
 
 	// 当前 Leader 信息
-	leaderID  string
-	isLeader  bool
+	leaderID    string
+	isLeader    bool
 	currentTerm uint64
 
 	// 依赖

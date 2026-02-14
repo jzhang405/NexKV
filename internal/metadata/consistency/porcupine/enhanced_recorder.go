@@ -312,6 +312,17 @@ func (r *EnhancedHistoryRecorder) PendingLen() int {
 	return len(r.pending)
 }
 
+// Trim 修剪历史记录（P1-03 内存控制）
+// 保留最新的 maxOps 个操作，删除旧操作
+func (r *EnhancedHistoryRecorder) Trim(maxOps int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(r.ops) > maxOps {
+		r.ops = r.ops[len(r.ops)-maxOps:]
+	}
+}
+
 // Stats 获取统计信息
 func (r *EnhancedHistoryRecorder) Stats() EnhancedRecorderStats {
 	r.mu.Lock()

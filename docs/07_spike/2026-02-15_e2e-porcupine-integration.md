@@ -975,6 +975,209 @@ E2E 测试框架（独立核心）
 
 ---
 
-**文档版本**: v1.4
+## 24. E2E 测试框架具体设计
+
+### 24.1 主进程启动方式
+
+**nexkvd 启动参数**：
+
+```bash
+# 基本启动
+./bin/nexkvd --config config/config.yaml --env dev --log-level info
+
+# 参数覆盖
+./bin/nexkvd \
+  --config custom-config.yaml \
+  --cluster my-cluster \
+  --host-id host-1 \
+  --node-id node-1 \
+  --addr 0.0.0.0:9211 \
+  --env dev \
+  --log-level debug
+```
+
+**支持的启动选项**：
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--config, -c` | 配置文件路径 | `./config.yaml` |
+| `--cluster, -n` | 集群名称 | 从配置读取 |
+| `--host-id` | 主机 ID | 从配置读取 |
+| `--node-id, -i` | 节点 ID | 从配置读取 |
+| `--addr, -a` | 节点监听地址 | 从配置读取 |
+| `--env, -e` | 运行环境 | `dev` |
+| `--log-level, -l` | 日志级别 | `info` |
+
+### 24.2 E2E 测试框架架构
+
+```
+NexKV E2E 测试框架
+├── 1. 测试套件层 (Testify Suite)
+│   ├── SetupSuite / TearDownSuite
+│   ├── BeforeTest / AfterTest
+│   └── 测试用例组织
+├── 2. 管理层
+│   ├── ProcessManager (进程管理)
+│   ├── PortAllocator (端口分配)
+│   ├── DataDirManager (数据目录)
+│   └── LogCollector (日志收集)
+├── 3. 基础设施层
+│   ├── HTTP Client
+│   ├── RPC Client
+│   └── Test Client
+└── 4. 工具层
+    ├── Assertions (testify/assert)
+    ├── Wait Utilities
+    └── Cleanup Utilities
+```
+
+### 24.3 核心组件设计
+
+#### 24.3.1 进程管理器
+
+```go
+// ProcessManager 进程管理器
+type ProcessManager struct {
+    processes map[string]*ManagedProcess
+    logger    *log.Logger
+    mu        sync.RWMutex
+}
+
+// ManagedProcess 管理的进程
+type ManagedProcess struct {
+    Cmd       *exec.Cmd
+    ID        string
+    State     ProcessState
+    StartedAt time.Time
+    Stdout    io.Reader
+    Stderr    io.Reader
+}
+
+// 关键方法
+func (pm *ProcessManager) StartWithConfig(id string, config ProcessConfig) error
+func (pm *ProcessManager) GracefulShutdown(id string, timeout time.Duration) error
+func (pm *ProcessManager) monitorProcess(id string, cmd *exec.Cmd)
+```
+
+#### 24.3.2 端口分配器
+
+```go
+// PortAllocator 端口分配器
+type PortAllocator struct {
+    basePort    int           // 起始端口（如 10000）
+    allocated   map[int]string
+    mu          sync.RWMutex
+}
+
+// 关键方法
+func (pa *PortAllocator) AllocatePort(testID string) (int, error)
+func (pa *PortAllocator) ReleasePort(port int)
+```
+
+#### 24.3.3 数据目录管理器
+
+```go
+// DataDirectoryManager 数据目录管理器
+type DataDirectoryManager struct {
+    baseDir     string        // 如 /tmp/nexkv-e2e
+    testDirs    map[string]string
+    mu          sync.RWMutex
+}
+
+// 关键方法
+func (ddm *DataDirectoryManager) CreateTestDir(testID string) (string, error)
+func (ddm *DataDirectoryManager) CleanupTestDir(testID string) error
+```
+
+### 24.4 测试目录结构
+
+```
+test/e2e/
+├── suite.go                 # 基础测试套件
+├── cluster.go               # 集群管理
+├── client.go                # 测试客户端
+├── utils/
+│   ├── process.go          # 进程管理
+│   ├── network.go          # 网络工具
+│   ├── data.go             # 数据工具
+│   └── wait.go             # 等待工具
+├── scenarios/
+│   ├── basic_kv_test.go    # 基本 KV 操作
+│   ├── gossip_test.go      # Gossip 协议测试
+│   ├── quorum_test.go      # Quorum 机制测试
+│   └── failover_test.go    # 故障转移（可选）
+└── fixtures/
+    ├── config.yaml         # 测试配置模板
+    └── data/               # 测试数据
+```
+
+### 24.5 测试用例示例
+
+```go
+// test/e2e/scenarios/basic_kv_test.go
+type BasicKVTestSuite struct {
+    suite.Suite
+    cluster *TestCluster
+    client  *TestClient
+}
+
+func (s *BasicKVTestSuite) SetupSuite() {
+    // 启动测试集群
+    s.cluster = NewTestCluster(DefaultConfig())
+    s.Require().NoError(s.cluster.Start())
+    s.client = NewTestClient(s.cluster.Nodes[0].APIAddress)
+}
+
+func (s *BasicKVTestSuite) TearDownSuite() {
+    s.cluster.Stop()
+}
+
+func (s *BasicKVTestSuite) TestPutGetDelete() {
+    // Put
+    err := s.client.Put("key1", []byte("value1"))
+    s.Require().NoError(err)
+
+    // Get
+    value, err := s.client.Get("key1")
+    s.Require().NoError(err)
+    s.Equal([]byte("value1"), value)
+
+    // Delete
+    err = s.client.Delete("key1")
+    s.Require().NoError(err)
+}
+```
+
+### 24.6 关键设计决策
+
+| 决策点 | 选择 | 理由 |
+|--------|------|------|
+| **测试框架** | Testify Suite | 生命周期管理清晰，项目已依赖 |
+| **进程管理** | exec.Cmd + 监控 | 轻量级，Go 原生支持 |
+| **端口分配** | 动态分配 | 避免冲突，支持并行 |
+| **数据隔离** | 临时目录 | 每个测试独立目录 |
+| **Porcupine** | 不依赖 | 阶段 3 可选增强 |
+
+### 24.7 分阶段实施
+
+| 阶段 | 文件 | 功能 | 工作量 |
+|------|------|------|--------|
+| **阶段 1** | `suite.go` | 基础套件 | 2h |
+| | `process.go` | 进程管理 | 3h |
+| | `basic_test.go` | 基础测试 | 2h |
+| **阶段 2** | `cluster.go` | 集群管理 | 3h |
+| | `gossip_test.go` | Gossip 测试 | 2h |
+| | `quorum_test.go` | Quorum 测试 | 2h |
+| **阶段 3** | Porcupine 集成 | 可选增强 | 3h |
+| **总计** | | | **17h (2-3天)** |
+
+### 24.8 待确认事项
+
+1. **nexkvd 测试模式**：是否需要添加 `--test-mode` 参数？
+2. **健康检查端点**：是否需要添加 HTTP 健康检查？
+3. **CLI/daemon 完成度**：当前主进程是否可稳定启动？
+
+---
+
+**文档版本**: v1.5
 **最后更新**: 2026-02-15
-**状态**: ✅ 方向修正完成 - E2E 测试优先
+**状态**: ✅ E2E 框架设计完成

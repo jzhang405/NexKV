@@ -1178,6 +1178,235 @@ func (s *BasicKVTestSuite) TestPutGetDelete() {
 
 ---
 
-**文档版本**: v1.5
+## 25. Agents 审查报告汇总
+
+### 25.1 架构师审查
+
+**评级**：**有条件通过**
+
+| 维度 | 评价 | 问题 |
+|------|------|------|
+| 技术可行性 | ✅ 基本可行 | - |
+| 进程管理器设计 | ⚠️ 需完善 | 缺少健康检查、重启机制 |
+| 端口分配策略 | ⚠️ 有隐患 | 建议使用 OS 动态分配 |
+| 工作量估算 | ⚠️ 偏乐观 | 17h → 28h (3.5-4天) |
+
+**关键改进建议**：
+1. 补充进程管理器的健康检查和重启机制
+2. 修改端口分配策略为 OS 动态分配
+3. 添加 `TestEnvironment` 抽象
+
+### 25.2 测试工程师审查
+
+**综合评分**：**7.4/10**
+
+| 维度 | 评分 | 说明 |
+|------|------|------|
+| 测试完整性 | 6/10 | 缺少并发、边界、错误路径测试 |
+| 可维护性 | 7/10 | 结构清晰，但缺少辅助工具 |
+| 执行可行性 | 7/10 | 基础可行，但并行支持不足 |
+| 文档质量 | 8/10 | 架构设计清晰 |
+
+**🔴 缺失的关键测试场景**：
+- 并发写入一致性
+- 并发读写竞争
+- 端口耗尽边界
+- 网络分区恢复
+
+### 25.3 核心开发审查
+
+**评价**：**✅ 通过（附改进建议）**
+
+| 检查项 | 结果 |
+|--------|------|
+| 与现有代码集成 | ✅ 高度可行 |
+| 启动参数 | ⚠️ 需补充 `--host-id` |
+| 代码复杂度 | ✅ 可控 |
+| 依赖关系 | ✅ 无新增外部依赖 |
+
+### 25.4 共识结论
+
+| 方面 | 结论 |
+|------|------|
+| **技术可行性** | ✅ 可行 |
+| **转入 PR 流程** | ✅ 建议 |
+| **工作量修正** | 17h → **28h (3.5-4天)** |
+| **优先级** | 并发测试 > 边界测试 > 性能测试 |
+
+---
+
+## 26. 审查后的改进清单
+
+### 26.1 必须修复（P0）
+
+| 序号 | 问题 | 解决方案 | 预计时间 |
+|------|------|---------|---------|
+| 1 | 缺少 `--host-id` 参数文档 | 补充第 24.1 节启动参数表格 | 0.5h |
+| 2 | 端口分配策略有隐患 | 改用 `net.Listen(":0")` 动态分配 | 1h |
+| 3 | 缺少并发写入测试 | 添加 `concurrency_test.go` | 2h |
+| 4 | 进程管理器缺少健康检查 | 添加 `HealthCheckConfig` | 2h |
+
+### 26.2 强烈建议（P1）
+
+| 序号 | 问题 | 解决方案 | 预计时间 |
+|------|------|---------|---------|
+| 5 | 缺少端口耗尽测试 | 添加边界条件测试 | 1h |
+| 6 | 清理机制不完善 | 增强 `CleanupManager` | 2h |
+| 7 | 并行测试支持弱 | 添加全局端口分配器 | 3h |
+| 8 | 缺少网络分区测试 | 添加故障注入工具 | 3h |
+
+### 26.3 可选优化（P2）
+
+| 序号 | 问题 | 解决方案 | 预计时间 |
+|------|------|---------|---------|
+| 9 | 缺少性能监控 | 添加 `PerformanceMonitor` | 2h |
+| 10 | 审计日志非必需 | 配置可选，默认禁用 | 0.5h |
+| 11 | 安全措施可简化 | 测试环境简化配置 | 1h |
+
+---
+
+## 27. 修正后的工作量估算
+
+| 任务 | 原估算 | 修正后 | 理由 |
+|------|--------|--------|------|
+| 基础套件 + 进程管理 | 5h | 8h | 需添加健康检查、信号处理 |
+| 集群管理 + 配置生成 | 3h | 6h | 动态端口、配置模板 |
+| 测试用例编写 | 4h | 8h | 补充并发、边界测试 |
+| Porcupine 集成 | 3h | 4h | 已有序列化支持 |
+| Debug/CI 集成 | 2h | 2h | 无变化 |
+| **总计** | **17h** | **28h (3.5-4天)** | |
+
+---
+
+## 28. 修正后的启动参数
+
+**完整的 nexkvd 启动参数**（补充 `--host-id`）：
+
+| 参数 | 说明 | 默认值 | 来源 |
+|------|------|--------|------|
+| `--config, -c` | 配置文件路径 | `./config.yaml` | - |
+| `--cluster, -n` | 集群名称 | 从配置读取 | - |
+| `--host-id` | 主机 ID | 从配置读取 | **PR-037 新增** |
+| `--node-id, -i` | 节点 ID | 从配置读取 | - |
+| `--addr, -a` | 节点监听地址 | 从配置读取 | - |
+| `--env, -e` | 运行环境 | `dev` | - |
+| `--log-level, -l` | 日志级别 | `info` | - |
+
+---
+
+## 29. 修正后的端口分配策略
+
+**问题**：原设计 `basePort + offset` 假设端口可用，但系统可能已占用。
+
+**修正方案**：使用 OS 动态分配
+
+```go
+// 推荐方案：让 OS 动态分配端口
+func (pa *PortAllocator) AllocatePort(testID string) (int, error) {
+    // 1. 监听 :0 获取随机可用端口
+    listener, err := net.Listen("tcp", ":0")
+    if err != nil {
+        return 0, err
+    }
+    port := listener.Addr().(*net.TCPAddr).Port
+
+    // 2. 立即关闭（仅用于探测）
+    listener.Close()
+
+    // 3. 记录分配
+    pa.mu.Lock()
+    pa.allocated[port] = testID
+    pa.mu.Unlock()
+
+    return port, nil
+}
+```
+
+---
+
+## 30. 补充的测试场景
+
+### 30.1 并发写入测试
+
+```go
+// test/e2e/scenarios/concurrency_test.go
+func (s *ConcurrencyTestSuite) TestConcurrentWrites_100Clients() {
+    const numClients = 100
+    const numOpsPerClient = 100
+
+    var wg sync.WaitGroup
+    errors := make([]error, numClients)
+
+    for i := 0; i < numClients; i++ {
+        wg.Add(1)
+        go func(clientID int) {
+            defer wg.Done()
+            for j := 0; j < numOpsPerClient; j++ {
+                key := fmt.Sprintf("key-%d", clientID)
+                value := []byte(fmt.Sprintf("value-%d-%d", clientID, j))
+                if err := s.client.Put(key, value); err != nil {
+                    errors[clientID] = err
+                    return
+                }
+            }
+        }(i)
+    }
+
+    wg.Wait()
+
+    // 验证无错误
+    for i, err := range errors {
+        s.Require().NoError(err, "Client %d failed", i)
+    }
+}
+```
+
+### 30.2 端口耗尽测试
+
+```go
+// test/e2e/scenarios/boundary_test.go
+func (s *BoundaryTestSuite) TestPortExhaustion() {
+    allocator := s.cluster.PortAllocator
+
+    // 消耗所有端口（假设范围 10000-32767）
+    for i := 0; i < 22768; i++ {
+        hostID := fmt.Sprintf("host-%d", i)
+        _, err := allocator.AllocatePort(hostID)
+        s.Require().NoError(err)
+    }
+
+    // 验证端口耗尽错误
+    _, err := allocator.AllocatePort("host-exhausted")
+    s.Require().Error(err)
+    s.Contains(err.Error(), "no available ports")
+}
+```
+
+---
+
+## 31. 下一步行动
+
+### 31.1 Spike 阶段完成
+
+- [x] 技术可行性验证
+- [x] CRITICAL 问题解决（序列化、安全）
+- [x] E2E 框架设计
+- [x] Agents 审查
+- [x] 审查意见整合
+
+### 31.2 转入正式 PR 流程
+
+**建议创建**：
+1. `feature/e2e-test-framework` 分支
+2. PR-XXX Pre 文档（包含本 Spike 的核心结论）
+
+**Pre 文档应包含**：
+- 修正后的工作量估算：28h (3.5-4天)
+- P0 必须修复项清单
+- 分阶段实施计划（阶段 0-3）
+
+---
+
+**文档版本**: v1.6
 **最后更新**: 2026-02-15
-**状态**: ✅ E2E 框架设计完成
+**状态**: ✅ Agents 审查完成，建议转入 PR 流程

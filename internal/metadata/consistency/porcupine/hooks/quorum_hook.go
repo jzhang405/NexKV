@@ -153,12 +153,11 @@ func (h *QuorumHook) Flush() {
 		Error: "timeout",
 	}
 
-	h.pending.Range(func(opID int, op *PendingOp) bool {
+	h.pending.RangeAndDelete(func(opID int, op *PendingOp) (bool, bool) {
 		if topologyOp, ok := op.CallData.(porcupine.TopologyOperation); ok {
 			internalOpID := h.base.Recorder().RecordTopologyCall(topologyOp)
 			h.base.Recorder().RecordTopologyReturn(internalOpID, output)
 		}
-		h.pending.Remove(opID)
-		return true
+		return true, true // continue, delete
 	})
 }

@@ -220,12 +220,11 @@ func (h *LeaderHook) Flush() {
 		Error: "timeout",
 	}
 
-	h.pending.Range(func(opID int, op *PendingOp) bool {
+	h.pending.RangeAndDelete(func(opID int, op *PendingOp) (bool, bool) {
 		if leaderOp, ok := op.CallData.(porcupine.LeaderHAOperation); ok {
 			internalOpID := h.base.Recorder().RecordLeaderHACall(leaderOp)
 			h.base.Recorder().RecordLeaderHAReturn(internalOpID, output)
 		}
-		h.pending.Remove(opID)
-		return true
+		return true, true // continue, delete
 	})
 }

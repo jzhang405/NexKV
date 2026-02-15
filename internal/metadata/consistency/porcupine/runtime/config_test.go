@@ -66,9 +66,9 @@ func TestVerifierConfig_Custom(t *testing.T) {
 
 func TestVerificationResult_AllPassed(t *testing.T) {
 	tests := []struct {
-		name          string
-		result        *VerificationResult
-		expectedPass  bool
+		name         string
+		result       *VerificationResult
+		expectedPass bool
 	}{
 		{"all pass", &VerificationResult{TopologyPass: true, FailurePass: true, LeaderHAPass: true}, true},
 		{"topology fail", &VerificationResult{TopologyPass: false, FailurePass: true, LeaderHAPass: true}, false},
@@ -110,12 +110,12 @@ func TestVerificationResult_Summary(t *testing.T) {
 func TestVerificationResult_Fields(t *testing.T) {
 	now := time.Now()
 	result := &VerificationResult{
-		Timestamp:    now,
-		Duration:     100 * time.Millisecond,
-		TotalOps:     100,
-		TopologyMsg:  "topology message",
-		FailureMsg:   "failure message",
-		LeaderHAMsg:  "leader HA message",
+		Timestamp:   now,
+		Duration:    100 * time.Millisecond,
+		TotalOps:    100,
+		TopologyMsg: "topology message",
+		FailureMsg:  "failure message",
+		LeaderHAMsg: "leader HA message",
 	}
 
 	if !result.Timestamp.Equal(now) {

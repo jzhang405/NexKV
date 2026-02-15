@@ -1407,6 +1407,175 @@ func (s *BoundaryTestSuite) TestPortExhaustion() {
 
 ---
 
-**文档版本**: v1.6
+## 32. CI 集成详细设计
+
+### 32.1 E2E 测试 CI 需求
+
+| 资源 | 需求 | 说明 |
+|------|------|------|
+| CPU | 4+ cores | 每个节点约 1 CPU |
+| 内存 | 8+ GB | 每个节点约 1-2GB |
+| 磁盘 | 20+ GB | WAL 存储空间 |
+| 网络 | 100 Mbps+ | 节点间通信 |
+
+### 32.2 时间限制策略
+
+```yaml
+test_limits:
+  single_node:    2m    # 单节点基础测试
+  three_nodes:    5m    # 3节点集群测试
+  five_nodes:     10m   # 5节点集群测试
+  fault_injection: 8m   # 故障注入测试
+  total_e2e:      30m   # 总体 E2E 测试
+```
+
+### 32.3 Artifact 收集
+
+```yaml
+artifacts:
+  - path: "**/*.log"
+    name: test-logs
+    retention-days: 30
+  - path: "**/coverage*.out"
+    name: coverage-reports
+    retention-days: 90
+  - path: "**/porcupine-*"
+    name: porcupine-results
+    retention-days: 90
+```
+
+### 32.4 GitHub Actions 工作流
+
+```yaml
+# .github/workflows/e2e-testing.yml
+jobs:
+  e2e-3nodes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Run 3-node E2E tests
+        run: |
+          ./scripts/e2e-setup-cluster.sh 3
+          timeout 25m go test -v -run TestE2E_3Nodes ./test/e2e/
+          ./scripts/e2e-cleanup-cluster.sh
+```
+
+### 32.5 失败诊断脚本
+
+```bash
+#!/bin/bash
+# ci-diagnose.sh
+function diagnose_failure() {
+    # 1. 检查日志
+    tail -n 50 "$test_dir/test.log"
+    # 2. 检查资源使用
+    ps aux | grep nexkvd
+    # 3. 检查端口占用
+    netstat -tuln | grep -E "921[1-5]"
+}
+```
+
+---
+
+## 33. 故障注入机制设计
+
+### 33.1 技术选型：github.com/pingcap/failpoint
+
+> **详细指南**: [`docs/07_spike/2026-02-13_pingcap-failpoint代码级故障注入完全指南.md`](./2026-02-13_pingcap-failpoint代码级故障注入完全指南.md)
+
+**选用理由**：
+- ✅ PingCAP 官方维护，TiDB 等生产项目验证
+- ✅ 代码级注入，无需系统权限
+- ✅ CI 环境完全兼容
+- ✅ 与 Go 测试框架原生集成
+
+### 33.2 NexKV 故障点规划
+
+| 模块 | Failpoint 名称 | 场景 |
+|------|---------------|------|
+| Gossip | `gossip-broadcast-error` | 广播失败 |
+| Gossip | `gossip-delay` | 消息延迟 |
+| Quorum | `quorum-write-error` | 写入失败 |
+| Quorum | `quorum-timeout` | 超时 |
+| 2PC | `2pc-prepare-error` | Prepare 失败 |
+| 2PC | `2pc-commit-error` | Commit 失败 |
+| Storage | `storage-disk-full` | 磁盘满 |
+| Cluster | `node-crash` | 节点崩溃 |
+
+### 33.3 E2E 测试中的使用示例
+
+```go
+func (s *E2ETestSuite) TestGossipError() {
+    // 启用故障点
+    failpoint.Enable("github.com/jzhang405/NexKV/internal/metadata/cluster/gossip-broadcast-error", "return(true)")
+    defer failpoint.Disable("github.com/jzhang405/NexKV/internal/metadata/cluster/gossip-broadcast-error")
+
+    // 验证错误处理
+    err := s.cluster.Put("key", []byte("value"))
+    s.Assert().Error(err)
+}
+```
+
+### 33.4 与 iptables 方案对比
+
+| 对比项 | Failpoint | iptables |
+|--------|-----------|----------|
+| **权限要求** | 无 | CAP_NET_ADMIN |
+| **CI 兼容** | ✅ 完全兼容 | ⚠️ 需要特权 |
+| **注入粒度** | 代码级 | 网络级 |
+| **适用场景** | 逻辑故障 | 网络分区 |
+
+**结论**：主要使用 Failpoint，网络分区场景可选 iptables。
+
+---
+
+## 34. 测试报告生成
+
+### 34.1 报告格式
+
+| 格式 | 用途 | 生成方式 |
+|------|------|---------|
+| HTML | 人工查看 | 模板生成 |
+| JUnit XML | CI 集成 | 标准格式 |
+| JSON | 自动化处理 | 结构化输出 |
+
+### 34.2 HTML 报告示例
+
+```go
+type TestReport struct {
+    StartTime     time.Time
+    Duration      time.Duration
+    Results       []TestResult
+    PorcupineData *PorcupineVerificationReport
+}
+```
+
+---
+
+## 35. 补充的改进清单
+
+### 35.1 新增 P1 项目
+
+| 序号 | 问题 | 解决方案 | 预计时间 |
+|------|------|---------|---------|
+| 12 | CI 集成配置 | 创建 `e2e-testing.yml` | 2h |
+| 13 | 故障注入框架 | 实现 `FaultInjector` | 4h |
+| 14 | 测试报告生成 | HTML/JUnit 报告 | 2h |
+| 15 | 集群管理脚本 | `e2e-setup-cluster.sh` | 1h |
+
+### 35.2 更新后的工作量
+
+| 任务 | 原估算 | 修正后 |
+|------|--------|--------|
+| 基础套件 + 进程管理 | 8h | 8h |
+| 集群管理 + 配置生成 | 6h | 6h |
+| 测试用例编写 | 8h | 8h |
+| Porcupine 集成 | 4h | 4h |
+| **CI 集成 + 故障注入** | - | **9h** |
+| **总计** | **28h** | **37h (4.5-5天)** |
+
+---
+
+**文档版本**: v1.7
 **最后更新**: 2026-02-15
-**状态**: ✅ Agents 审查完成，建议转入 PR 流程
+**状态**: ✅ CI 集成和故障注入设计完成

@@ -493,6 +493,426 @@ CRITICAL 问题已全部解决，可以转入正式 PR 流程。
 
 ---
 
-**文档版本**: v1.2
+## 13. 核心问题：开发与验证脱节
+
+### 13.1 问题描述
+
+**用户关注的核心问题**：开发和 Porcupine 验证是脱节的
+
+经过深入探索发现：
+1. **Porcupine 验证系统完整实现** - RuntimeVerifier、5种Hook、Debug API 都已实现
+2. **但完全未与生产代码集成** - TwoPCMerkleCoordinator、TreeCoordinator 等核心组件没有任何 Porcupine 集成
+3. **测试与生产代码巨大差距** - 测试中使用 Porcupine 正常，生产代码完全没有使用
+
+### 13.2 脱节问题具体表现
+
+| 组件 | Porcupine 支持 | 实际集成 | 状态 |
+|------|---------------|---------|------|
+| TwoPCMerkleCoordinator | ✅ QuorumHook 可用 | ❌ 未注入 | **脱节** |
+| TreeCoordinator | ✅ GossipHook 可用 | ❌ 未注入 | **脱节** |
+| QuorumCoordinator | ✅ QuorumHook 可用 | ❌ 未注入 | **脱节** |
+| Gossip 模块 | ✅ GossipHook 可用 | ❌ 未注入 | **脱节** |
+| 主进程 nexkvd | ✅ Debug API 可用 | ❌ 未启动 | **脱节** |
+
+### 13.3 脱节的根本原因
+
+```mermaid
+flowchart TD
+    subgraph "测试代码"
+        A[测试用例] -->|手动创建| B[RuntimeVerifier]
+        B -->|手动注入| C[模拟组件]
+        C -->|调用| D[Hook 记录]
+        D -->|验证| E[Porcupine Check]
+    end
+
+    subgraph "生产代码"
+        F[main.go] -->|创建| G[真实组件]
+        G -->|无 Verifier| H[业务逻辑]
+        H -->|无记录| I[无验证]
+    end
+
+    style A fill:#c8e6c9
+    style G fill:#ffcdd2
+    style I fill:#ffcdd2
+```
+
+**关键问题**：
+1. **组件初始化**：主进程 `cmd/nexkvd/main.go` 未创建 RuntimeVerifier
+2. **接口设计**：现有组件（TreeCoordinator、TwoPCMerkleCoordinator）没有预留 Hook 参数
+3. **配置缺失**：没有 Porcupine 相关配置段
+4. **依赖注入**：没有机制管理 Verifier 生命周期
+
+---
+
+## 14. E2E 测试框架现状详细分析
+
+### 14.1 目录结构现状
+
+```
+NexKV/
+├── test/
+│   └── e2e/                    # ❌ 不存在
+│
+├── internal/metadata/consistency/
+│   ├── *_integration_test.go   # ✅ 9 个集成测试文件
+│   └── integration_test.go     # ✅ E2ETestScenario 基础结构
+```
+
+**结论**：当前**没有真实进程级别的 E2E 测试框架**
+
+### 14.2 现有集成测试模式
+
+| 特性 | 当前状态 | 说明 |
+|------|---------|------|
+| **测试类型** | 单元/集成测试 | 使用 mock 组件 |
+| **进程模式** | 单进程内 | 不是真实多进程 |
+| **节点模拟** | Mock 节点 | `MockTransport` 等 |
+| **Porcupine 使用** | ✅ 有使用 | 在测试代码中手动创建 |
+| **验证方式** | 代码内断言 | 非远程 Debug API |
+
+### 14.3 CI/CD 集成现状
+
+| Make 目标 | 状态 | 说明 |
+|-----------|------|------|
+| `make test-unit` | ✅ 已有 | 单元测试 |
+| `make test-intg` | ✅ 已有 | 集成测试 |
+| `make test-e2e` | ❌ 待实现 | E2E 测试 |
+| `make test-porcupine` | ❌ 待实现 | Porcupine 验证 |
+
+---
+
+## 15. 解决脱节问题的方案
+
+### 15.1 方案 A: 最小侵入集成（推荐）
+
+**思路**：不修改现有业务代码，通过包装器/拦截器方式集成
+
+```mermaid
+flowchart LR
+    subgraph "业务层（无修改）"
+        A[TreeCoordinator]
+        B[TwoPCMerkleCoordinator]
+        C[Gossip Module]
+    end
+
+    subgraph "拦截层（新增）"
+        D[VerificationWrapper]
+        E[Hook 拦截器]
+    end
+
+    subgraph "验证层（已有）"
+        F[RuntimeVerifier]
+        G[Debug API]
+    end
+
+    A --> D
+    B --> D
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+```
+
+**实现方式**：
+1. 创建 `VerificationWrapper` 包装器
+2. 在包装器中注入 RuntimeVerifier
+3. 通过配置决定是否启用验证
+4. 生产环境默认禁用
+
+**优点**：
+- ✅ 不修改现有业务代码
+- ✅ 可配置启用/禁用
+- ✅ 向后兼容
+- ✅ 渐进式迁移
+
+**缺点**：
+- ⚠️ 需要额外的包装层
+- ⚠️ 可能漏掉某些操作路径
+
+### 15.2 方案 B: 直接注入集成
+
+**思路**：修改现有组件，直接注入 RuntimeVerifier
+
+```mermaid
+flowchart LR
+    subgraph "修改后的组件"
+        A[TreeCoordinator<br/>+ Verifier 字段]
+        B[TwoPCMerkleCoordinator<br/>+ Verifier 字段]
+        C[Gossip Module<br/>+ Verifier 字段]
+    end
+
+    subgraph "验证层"
+        D[RuntimeVerifier]
+        E[Debug API]
+    end
+
+    A -->|直接调用| D
+    B -->|直接调用| D
+    C -->|直接调用| D
+    D --> E
+```
+
+**实现方式**：
+1. 修改组件构造函数，添加 `*RuntimeVerifier` 参数
+2. 在每个操作点调用 `verifier.Record()`
+3. 修改 `main.go` 初始化 Verifier
+
+**优点**：
+- ✅ 直接集成，验证数据精确
+- ✅ 不需要包装层
+
+**缺点**：
+- ❌ 需要修改多个组件
+- ❌ 业务代码耦合验证逻辑
+- ❌ 不符合单一职责原则
+
+### 15.3 方案对比
+
+| 对比项 | 方案 A（最小侵入） | 方案 B（直接注入） |
+|--------|-------------------|-------------------|
+| **代码改动量** | 低（仅新增） | 高（修改现有） |
+| **业务侵入性** | 无 | 高 |
+| **验证精度** | 中等 | 高 |
+| **维护成本** | 低 | 高 |
+| **向后兼容** | ✅ 完全兼容 | ⚠️ 需要适配 |
+| **推荐度** | ⭐⭐⭐ | ⭐ |
+
+**推荐选择**：**方案 A - 最小侵入集成**
+
+---
+
+## 16. E2E Porcupine 集成目标
+
+### 16.1 要达到的效果
+
+```
+E2E 测试流程:
+1. 启动真实 nexkvd 进程（带 Porcupine 验证）
+2. 执行业务操作（Gossip/Quorum/2PC）
+3. 通过 Debug API 收集操作历史
+4. 使用 Porcupine 验证线性一致性
+5. 生成验证报告
+```
+
+### 16.2 核心能力
+
+| 能力 | 描述 | 价值 |
+|------|------|------|
+| **运行时验证** | 在真实操作中自动采集历史 | 实时发现一致性问题 |
+| **E2E 断言** | 测试用例中可直接断言一致性 | 自动化测试集成 |
+| **Debug API** | 通过 HTTP 获取验证数据 | 运维排查问题 |
+| **CI 集成** | 自动运行一致性验证 | 持续质量保证 |
+
+---
+
+## 17. 使用方式设计
+
+### 17.1 E2E 测试使用示例
+
+```go
+// test/e2e/porcupine_test.go
+func TestE2EGossipConsistency(t *testing.T) {
+    // 1. 创建验证客户端
+    client := e2e.NewE2EVerifierClient(e2e.E2EVerifierClientConfig{
+        Nodes: map[string]string{
+            "node-1": "127.0.0.1:8081",
+            "node-2": "127.0.0.1:8082",
+            "node-3": "127.0.0.1:8083",
+        },
+        Timeout:   10 * time.Second,
+        AuthToken: "test-token",
+    })
+
+    // 2. 执行业务操作（通过真实客户端）
+    // ... 业务代码 ...
+
+    // 3. 验证集群一致性
+    ctx := context.Background()
+    result, err := client.VerifyCluster(ctx, porcupine.OpTypeTopology)
+    require.NoError(t, err)
+    require.True(t, result.AllPassed, "集群一致性验证失败")
+
+    // 4. 检查各节点结果
+    for nodeID, nodeResult := range result.NodeResults {
+        t.Logf("Node %s: %d ops, passed=%v",
+            nodeID, nodeResult.OpsCount, nodeResult.Passed)
+    }
+}
+```
+
+### 17.2 运维使用示例
+
+```bash
+# 检查节点健康状态
+curl -H "X-Debug-Token: $TOKEN" http://127.0.0.1:8081/debug/porcupine/health
+
+# 获取操作历史
+curl -H "X-Debug-Token: $TOKEN" http://127.0.0.1:8081/debug/porcupine/history
+
+# 获取统计信息
+curl -H "X-Debug-Token: $TOKEN" http://127.0.0.1:8081/debug/porcupine/stats
+```
+
+---
+
+## 18. CI 集成设计
+
+### 18.1 GitHub Actions 配置
+
+```yaml
+# .github/workflows/e2e-porcupine.yml
+name: E2E Porcupine Verification
+
+on:
+  push:
+    branches: [main, feature/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  e2e-porcupine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build nexkvd
+        run: make build
+
+      - name: Start Test Cluster
+        run: |
+          ./scripts/start-test-cluster.sh --with-verification &
+          sleep 10  # 等待集群启动
+
+      - name: Run E2E Tests
+        run: go test -v ./test/e2e/... -tags=e2e
+
+      - name: Collect Verification Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: porcupine-reports
+          path: test-results/
+
+      - name: Cleanup
+        if: always()
+        run: ./scripts/stop-test-cluster.sh
+```
+
+### 18.2 Make 目标
+
+```makefile
+# Makefile
+.PHONY: test-e2e
+test-e2e:
+	@echo "Running E2E tests with Porcupine verification..."
+	go test -v ./test/e2e/... -tags=e2e -timeout 30m
+
+.PHONY: test-cluster-start
+test-cluster-start:
+	@echo "Starting test cluster..."
+	./scripts/start-test-cluster.sh --with-verification
+
+.PHONY: test-cluster-stop
+test-cluster-stop:
+	@echo "Stopping test cluster..."
+	./scripts/stop-test-cluster.sh
+```
+
+---
+
+## 19. 关键文件（待修改/创建）
+
+### 19.1 需要修改的文件
+
+| 文件 | 修改内容 | 优先级 |
+|------|---------|--------|
+| `cmd/nexkvd/main.go` | 添加 RuntimeVerifier 初始化 | P0 |
+| `configs/config.yaml` | 添加 verification 配置段 | P0 |
+| `internal/metadata/cluster/tree_coordinator.go` | 添加 Verifier 注入点 | P1 |
+
+### 19.2 需要创建的文件
+
+| 文件 | 说明 | 优先级 |
+|------|------|--------|
+| `test/e2e/porcupine_test.go` | E2E 一致性验证测试 | P0 |
+| `test/e2e/test_helper.go` | 测试辅助函数 | P0 |
+| `.github/workflows/e2e-porcupine.yml` | CI 配置 | P1 |
+| `scripts/start-test-cluster.sh` | 启动测试集群脚本 | P1 |
+| `scripts/stop-test-cluster.sh` | 停止测试集群脚本 | P1 |
+
+---
+
+## 20. 验证方法
+
+### 20.1 本地验证
+
+```bash
+# 1. 启动带验证的测试集群
+make test-cluster-start WITH_VERIFICATION=true
+
+# 2. 运行 E2E 测试
+make test-e2e
+
+# 3. 查看验证报告
+ls test-results/
+
+# 4. 停止集群
+make test-cluster-stop
+```
+
+### 20.2 CI 自动验证
+
+- GitHub Actions 自动运行
+- Artifacts 查看验证报告
+- 失败时自动通知
+
+---
+
+## 21. 待确认问题
+
+1. **集成方案选择**：方案 A（最小侵入）还是方案 B（直接注入）？
+   - **推荐**：方案 A
+
+2. **性能要求**：验证对业务性能的影响容忍度？
+   - **建议**：测试环境启用，生产环境禁用
+
+3. **CI 环境**：是否需要在 CI 中启动真实多进程集群？
+   - **建议**：是，使用 Docker Compose 或 Kind
+
+---
+
+## 22. 结论与建议
+
+### 22.1 核心结论
+
+1. **脱节问题严重**：Porcupine 验证系统完整但未集成到生产代码
+2. **方案 A 可行**：最小侵入集成方案，改动小、风险低
+3. **工作量可控**：预计 2-3 天完成核心集成
+
+### 22.2 推荐实施顺序
+
+| 顺序 | 任务 | 预计时间 |
+|------|------|---------|
+| 1 | 创建 `test/e2e/` 目录和测试框架 | 2h |
+| 2 | 修改 `main.go` 添加 Verifier 初始化 | 2h |
+| 3 | 实现 VerificationWrapper 包装器 | 3h |
+| 4 | 编写 E2E 测试用例 | 3h |
+| 5 | 配置 CI 集成 | 2h |
+| **总计** | | **12h (1.5天)** |
+
+### 22.3 下一步行动
+
+- [ ] 用户确认集成方案（方案 A 推荐）
+- [ ] 创建正式 PR-XXX Pre 文档
+- [ ] 开始实施
+
+---
+
+**文档版本**: v1.3
 **最后更新**: 2026-02-15
-**状态**: ✅ CRITICAL 问题已解决
+**状态**: ✅ 脱节问题分析完成，待用户确认方案

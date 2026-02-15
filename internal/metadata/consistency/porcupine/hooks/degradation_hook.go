@@ -159,12 +159,11 @@ func (h *DegradationHook) Flush() {
 		Error: "timeout",
 	}
 
-	h.pending.Range(func(opID int, op *PendingOp) bool {
+	h.pending.RangeAndDelete(func(opID int, op *PendingOp) (bool, bool) {
 		if failureOp, ok := op.CallData.(porcupine.FailureRecoveryOperation); ok {
 			internalOpID := h.base.Recorder().RecordFailureRecoveryCall(failureOp)
 			h.base.Recorder().RecordFailureRecoveryReturn(internalOpID, output)
 		}
-		h.pending.Remove(opID)
-		return true
+		return true, true // continue, delete
 	})
 }

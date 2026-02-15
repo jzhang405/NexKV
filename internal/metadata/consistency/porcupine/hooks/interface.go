@@ -289,12 +289,29 @@ func (m *PendingOpsManager) Remove(opID int) {
 }
 
 // Range 遍历所有 pending 操作
+// 注意：回调中不应该调用 Remove，否则会死锁
 func (m *PendingOpsManager) Range(fn func(opID int, op *PendingOp) bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	for opID, op := range m.pending {
 		if !fn(opID, op) {
+			break
+		}
+	}
+}
+
+// RangeAndDelete 遍历并删除 pending 操作（支持在回调中删除）
+func (m *PendingOpsManager) RangeAndDelete(fn func(opID int, op *PendingOp) (bool, bool)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for opID, op := range m.pending {
+		shouldContinue, shouldDelete := fn(opID, op)
+		if shouldDelete {
+			delete(m.pending, opID)
+		}
+		if !shouldContinue {
 			break
 		}
 	}

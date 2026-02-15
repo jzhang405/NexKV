@@ -392,3 +392,107 @@ graph LR
 **文档版本**: v1.1
 **最后更新**: 2026-02-15
 **状态**: ✅ 预研完成
+
+---
+
+## 9. CRITICAL 问题解决方案
+
+### 9.1 序列化问题 ✅ 已解决
+
+**问题**: `porcupine.Operation` 使用 `interface{}` 类型，直接 JSON 序列化会丢失类型信息
+
+**解决方案**: 创建 `OperationSerializer` 类型感知序列化器
+
+**实现位置**: `internal/metadata/consistency/porcupine/serialization.go`
+
+```go
+// SerializableOperation JSON 可序列化的操作记录
+type SerializableOperation struct {
+    ClientID  int             `json:"client_id"`
+    Input     json.RawMessage `json:"input"`     // 序列化后的 EnhancedInput
+    Output    json.RawMessage `json:"output"`    // 序列化后的 EnhancedOutput
+    Call      int64           `json:"call"`
+    Return    int64           `json:"return"`
+    ModelType EnhancedOpType  `json:"model_type"` // 标记属于哪种模型
+}
+
+// OperationSerializer 操作序列化器
+type OperationSerializer struct{}
+
+func (s *OperationSerializer) SerializeOperation(op porcupine.Operation) (*SerializableOperation, error)
+func (s *OperationSerializer) DeserializeOperation(serialized *SerializableOperation) (porcupine.Operation, error)
+```
+
+**测试验证**: 510 个测试全部通过
+
+### 9.2 安全问题 ✅ 已解决
+
+**问题**: Debug API 缺乏认证机制，可能泄露敏感数据
+
+**解决方案**: 实现多层级安全防护
+
+**实现位置**: `internal/metadata/consistency/porcupine/e2e/debug_api.go`
+
+#### 安全措施清单
+
+| 安全措施 | 实现 | 配置 |
+|---------|------|------|
+| **认证** | Token 认证 | `AuthToken` |
+| **本地访问限制** | IP 检查 | `RequireLocal: true` |
+| **速率限制** | 每分钟请求上限 | `RateLimit: 10` |
+| **响应大小限制** | 最大响应字节数 | `MaxResponseSize: 10MB` |
+| **数据脱敏** | 截断大 Value | `SanitizeData: true` |
+| **审计日志** | 记录所有访问 | `auditLog` |
+
+#### 默认安全配置
+
+```go
+func DefaultDebugAPIConfig() DebugAPIConfig {
+    return DebugAPIConfig{
+        Enabled:         false,            // 默认禁用
+        Endpoint:        "127.0.0.1:0",    // 仅绑定本地
+        RequireLocal:    true,             // 仅本地访问
+        RequestTimeout:  10 * time.Second, // 10 秒超时
+        RateLimit:       10,               // 每分钟 10 次
+        MaxResponseSize: 10 * 1024 * 1024, // 10MB
+        SanitizeData:    true,             // 默认脱敏
+    }
+}
+```
+
+---
+
+## 10. 新增文件清单
+
+| 文件 | 说明 | 代码行数 |
+|------|------|---------|
+| `porcupine/serialization.go` | 操作序列化器 | ~600 |
+| `porcupine/serialization_test.go` | 序列化测试 | ~250 |
+| `porcupine/e2e/debug_api.go` | Debug API 服务器 | ~350 |
+| `porcupine/e2e/verifier_client.go` | E2E 验证客户端 | ~420 |
+
+---
+
+## 11. 验证结果
+
+```
+✓ Go build: Success
+✓ Go test: 510 passed in 4 packages
+```
+
+---
+
+## 12. 下一步
+
+CRITICAL 问题已全部解决，可以转入正式 PR 流程。
+
+建议工作量更新：
+- 原估算: 1.5 天
+- 安全措施实现: +1 天
+- **调整后: 2.5 天**
+
+---
+
+**文档版本**: v1.2
+**最后更新**: 2026-02-15
+**状态**: ✅ CRITICAL 问题已解决

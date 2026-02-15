@@ -1576,6 +1576,454 @@ type TestReport struct {
 
 ---
 
-**文档版本**: v1.7
+## 36. 测试数据管理设计
+
+### 36.1 Fixtures 设计
+
+```go
+// test/e2e/fixtures/fixtures.go
+package fixtures
+
+// TestConfigTemplate 测试配置模板
+type TestConfigTemplate struct {
+    ClusterName   string              `json:"cluster_name"`
+    Nodes         []NodeConfig        `json:"nodes"`
+    MetadataStore MetadataStoreConfig `json:"metadata_store"`
+    RPC           RPCConfig           `json:"rpc"`
+}
+
+// TestDataGenerator 测试数据生成器
+type TestDataGenerator struct {
+    dataDir string
+}
+
+// GenerateTestData 生成测试数据集
+// 场景: small (快速测试), medium (压力测试), large (性能基准)
+func (g *TestDataGenerator) GenerateTestData(scenario string, size int) (map[string][]byte, error)
+```
+
+### 36.2 Mock 数据管理
+
+```go
+// test/e2e/fixtures/mock_data.go
+package fixtures
+
+// MockKVStore 模拟 KV 存储（用于测试隔离）
+type MockKVStore struct {
+    mu    sync.RWMutex
+    data  map[string][]byte
+    stats *MockStats
+}
+
+// 模拟网络延迟和偶发错误
+func (m *MockKVStore) Get(ctx context.Context, key string) ([]byte, error) {
+    // 模拟偶尔的错误 (1% 概率)
+    if randIntn(100) < 1 {
+        return nil, errors.New("mock network error")
+    }
+    // ...
+}
+```
+
+### 36.3 测试数据场景
+
+| 场景 | 数据量 | 适用场景 |
+|------|--------|---------|
+| small | 100-1000 条 | 快速验证测试 |
+| medium | 10K-100K 条 | 压力测试、边界测试 |
+| large | 1M+ 条 | 性能基准测试 |
+| random | 随机大小 | 混合负载测试 |
+
+---
+
+## 37. 错误处理和重试机制
+
+### 37.1 重试策略设计
+
+```go
+// test/e2e/utils/retry.go
+package utils
+
+// RetryPolicy 重试策略
+type RetryPolicy struct {
+    MaxAttempts      int           // 最大重试次数 (默认 3)
+    InitialDelay    time.Duration  // 初始延迟 (默认 100ms)
+    MaxDelay        time.Duration  // 最大延迟 (默认 5s)
+    BackoffFactor   float64       // 退避因子 (默认 2.0)
+    MaxJitter       time.Duration  // 最大抖动 (默认 100ms)
+}
+
+// 执行重试逻辑
+func (r *RetryPolicy) Do(fn func() (interface{}, error)) (*RetryResult, error)
+```
+
+### 37.2 错误分类
+
+| 错误类型 | 判断条件 | 是否重试 |
+|---------|---------|---------|
+| TIMEOUT | 包含 "timeout" | ✅ |
+| NETWORK | 包含 "connection"/"network" | ✅ |
+| NOT_FOUND | 包含 "not found" | ❌ |
+| PERMISSION | 包含 "permission"/"access" | ❌ |
+| CONFLICT | 包含 "conflict" | ⚠️ 视情况 |
+
+### 37.3 进程崩溃重试
+
+```go
+// ProcessRetryConfig 进程重试配置
+type ProcessRetryConfig struct {
+    MaxRetries      int           // 最大重试次数
+    RestartDelay    time.Duration  // 重启延迟
+    HealthCheck     func() error   // 健康检查函数
+    ShutdownTimeout time.Duration  // 关闭超时
+    ForceKillAfter  time.Duration  // 强制杀死时间
+}
+```
+
+---
+
+## 38. 测试隔离策略
+
+### 38.1 数据隔离
+
+```go
+// test/e2e/isolation/data_isolation.go
+package isolation
+
+// DataIsolator 数据隔离器
+type DataIsolator struct {
+    baseDir     string              // 基础目录 (如 /tmp/nexkv-e2e)
+    testDirs    map[string]string   // 测试 ID -> 目录路径
+    activeTests map[string]bool     // 活跃测试
+    cleanup     bool                // 是否自动清理
+}
+
+// CreateTestDir 为每个测试创建隔离目录
+func (d *DataIsolator) CreateTestDir(testID string) (string, error)
+```
+
+**目录结构**:
+```
+/tmp/nexkv-e2e/
+├── test-001/
+│   ├── 20260215-143000/
+│   │   ├── data/     # 数据目录
+│   │   ├── wal/      # WAL 日志
+│   │   └── logs/     # 运行日志
+│   └── ...
+└── test-002/
+    └── ...
+```
+
+### 38.2 网络隔离（可选）
+
+```go
+// test/e2e/isolation/network_isolation.go
+package isolation
+
+// NetworkIsolator 网络隔离器 (使用 iptables)
+type NetworkIsolator struct {
+    activeRules map[string]bool
+    cleanup     bool
+}
+
+// BlockNetworkPartition 模拟网络分区
+func (n *NetworkIsolator) BlockNetworkPartition(node1, node2 string) error
+
+// RestoreNetworkPartition 恢复网络连接
+func (n *NetworkIsolator) RestoreNetworkPartition(node1, node2 string) error
+```
+
+**注意**: 需要 CAP_NET_ADMIN 权限，CI 环境可能需要特权模式。
+
+### 38.3 进程隔离
+
+```go
+// test/e2e/isolation/process_isolation.go
+package isolation
+
+// ProcessIsolator 进程隔离器
+type ProcessIsolator struct {
+    processes  map[string]*isolatedProcess
+    namespaces bool  // 是否使用 Linux Namespace
+}
+
+// 启动隔离进程（进程组隔离）
+cmd.SysProcAttr = &syscall.SysProcAttr{
+    Setpgid: true,  // 创建新进程组
+}
+```
+
+---
+
+## 39. 并行测试执行
+
+### 39.1 并行测试配置
+
+```go
+// test/e2e/parallel/manager.go
+package parallel
+
+// ParallelTestConfig 并行测试配置
+type ParallelTestConfig struct {
+    MaxWorkers        int           // 最大工作线程数
+    TestTimeout       time.Duration  // 单个测试超时
+    GlobalTimeout     time.Duration  // 全局超时
+    EnableParallelism bool          // 是否启用并行
+    IsolationLevel    IsolationLevel // 隔离级别
+}
+
+// IsolationLevel 隔离级别
+const (
+    IsolationNone    IsolationLevel = iota // 无隔离
+    IsolationProcess                       // 进程隔离
+    IsolationNetwork                       // 网络隔离
+    IsolationFull                          // 完全隔离
+)
+```
+
+### 39.2 资源竞争处理
+
+```go
+// ResourceManager 资源管理器
+type ResourceManager struct {
+    resources map[string]*Resource
+    available chan string           // 可用资源队列
+    allocated map[string]time.Time  // 已分配资源
+}
+
+// AcquireResource 获取资源（阻塞直到可用）
+func (rm *ResourceManager) AcquireResource(ctx context.Context, rType string) (string, error)
+
+// ReleaseResource 释放资源
+func (rm *ResourceManager) ReleaseResource(id string)
+```
+
+### 39.3 并行测试示例
+
+```go
+// 资源配置: 4 个节点，每个节点容量 1
+for i := 1; i <= 4; i++ {
+    resourceManager.AddResource(fmt.Sprintf("node-%d", i), "process", 1)
+}
+
+// 测试用例根据需要获取资源
+tests := []TestCase{
+    {
+        Name: "quorum_test",
+        Fn: func(ctx context.Context) error {
+            // 获取 3 个节点
+            node1, _ := resourceManager.AcquireResource(ctx, "process")
+            defer resourceManager.ReleaseResource(node1)
+            // ...
+        },
+    },
+}
+```
+
+---
+
+## 40. 性能基准测试设计
+
+### 40.1 基准测试框架
+
+```go
+// test/e2e/performance/benchmark.go
+package performance
+
+// BenchmarkConfig 基准测试配置
+type BenchmarkConfig struct {
+    Name        string            // 测试名称
+    Duration    time.Duration     // 测试持续时间
+    Warmup      time.Duration     // 预热时间
+    Workers     int               // 并发工作线程
+    OpTypes     []OpType          // 操作类型（混合负载）
+    Target      TargetConfig      // 目标配置
+}
+
+// OpType 操作类型
+type OpType struct {
+    Name    string  // 操作名称 (read/write)
+    Weight  int     // 权重 (如 70% 读 30% 写)
+    Fn      OpFunc  // 操作函数
+}
+```
+
+### 40.2 吞吐量测试
+
+```go
+// ThroughputTest 吞吐量测试
+// 目标: 测量最大 ops/s
+
+config := BenchmarkConfig{
+    Duration: 5 * time.Minute,
+    Workers:  runtime.NumCPU(),
+    OpTypes: []OpType{
+        {Name: "read", Weight: 70, Fn: throughputRead},
+        {Name: "write", Weight: 30, Fn: throughputWrite},
+    },
+    Target: TargetConfig{
+        Throughput: 10000,  // 目标 10K ops/s
+    },
+}
+```
+
+### 40.3 延迟测试
+
+```go
+// LatencyTest 延迟测试
+// 目标: 测量延迟分布 (P50/P95/P99)
+
+config := BenchmarkConfig{
+    Duration: 3 * time.Minute,
+    OpTypes: []OpType{
+        {Name: "get_latency", Weight: 100, Fn: latencyGet},
+    },
+    Target: TargetConfig{
+        LatencyP99: 50 * time.Millisecond,  // P99 < 50ms
+    },
+}
+```
+
+### 40.4 结果分析
+
+```go
+// BenchmarkResult 基准测试结果
+type BenchmarkResult struct {
+    Name       string        // 测试名称
+    Duration   time.Duration // 总持续时间
+    OpsCount   int64         // 总操作数
+    Throughput float64       // 吞吐量 (ops/s)
+    Latency    LatencyStats  // 延迟统计
+    Memory     MemoryStats   // 内存统计
+    CPU        CPUStats      // CPU 统计
+}
+
+// LatencyStats 延迟统计
+type LatencyStats struct {
+    Min, Max, Mean, Median time.Duration
+    P95, P99, StdDev       time.Duration
+}
+```
+
+---
+
+## 41. 新增文件清单（完整版）
+
+### 41.1 核心框架文件
+
+```
+test/e2e/
+├── suite.go              # 基础测试套件
+├── cluster.go            # 集群管理
+├── client.go             # 测试客户端
+├── fixtures/
+│   ├── fixtures.go       # 测试数据和 fixtures
+│   └── mock_data.go      # Mock 数据管理
+├── utils/
+│   ├── retry.go          # 重试机制
+│   ├── error_wrapper.go  # 错误包装
+│   ├── process_retry.go  # 进程重试
+│   └── isolation/
+│       ├── data_isolation.go
+│       ├── network_isolation.go
+│       └── process_isolation.go
+├── parallel/
+│   ├── manager.go        # 并行测试管理器
+│   └── resource_manager.go
+├── performance/
+│   ├── benchmark.go      # 基准测试框架
+│   ├── throughput.go     # 吞吐量测试
+│   ├── latency.go        # 延迟测试
+│   └── analyzer.go       # 结果分析
+└── scenarios/
+    ├── basic_kv_test.go  # 基本 KV 操作
+    ├── concurrency_test.go # 并发测试
+    ├── gossip_test.go    # Gossip 协议测试
+    └── quorum_test.go    # Quorum 机制测试
+```
+
+### 41.2 配置和脚本文件
+
+```
+scripts/
+├── e2e-setup-cluster.sh   # 启动测试集群
+├── e2e-cleanup-cluster.sh # 清理测试集群
+└── e2e-run-tests.sh       # 运行 E2E 测试
+
+configs/
+└── e2e.yaml               # E2E 测试配置
+```
+
+---
+
+## 42. 更新后的工作量估算
+
+### 42.1 分阶段实施计划
+
+| 阶段 | 任务 | 文件 | 预计时间 |
+|------|------|------|---------|
+| **阶段 1** | 基础套件 + 进程管理 | suite.go, process.go | 8h |
+| **阶段 2** | 集群管理 + 配置生成 | cluster.go, fixtures/ | 6h |
+| **阶段 3** | 隔离和重试机制 | isolation/, retry.go | 6h |
+| **阶段 4** | 测试用例编写 | scenarios/*_test.go | 8h |
+| **阶段 5** | 并行测试支持 | parallel/ | 4h |
+| **阶段 6** | 性能基准测试 | performance/ | 5h |
+| **阶段 7** | CI 集成 + Porcupine | .github/, porcupine/ | 6h |
+| **总计** | | | **43h (5-6天)** |
+
+### 42.2 优先级排序
+
+| 优先级 | 阶段 | 必要性 |
+|--------|------|--------|
+| P0 | 阶段 1-2 (基础框架) | 必须 |
+| P0 | 阶段 4 (基础测试用例) | 必须 |
+| P1 | 阶段 3 (隔离和重试) | 强烈建议 |
+| P1 | 阶段 7 (CI 集成) | 强烈建议 |
+| P2 | 阶段 5 (并行测试) | 可选 |
+| P2 | 阶段 6 (性能测试) | 可选 |
+
+---
+
+## 43. 实施建议
+
+### 43.1 分阶段实施
+
+```
+阶段 1-2 (14h): 基础 E2E 框架
+├── 能启动/停止真实 nexkvd 进程
+├── 基础 Put/Get/Delete 测试
+└── 不依赖 Porcupine
+
+阶段 3 (6h): 隔离和重试机制
+├── 数据隔离（每个测试独立目录）
+├── 进程隔离（进程组）
+└── 网络隔离（可选）
+
+阶段 4 (8h): 测试用例编写
+├── basic_kv_test.go
+├── gossip_test.go
+├── quorum_test.go
+└── concurrency_test.go
+
+阶段 5-6 (9h): 并行和性能（可选）
+├── 并行测试支持
+└── 性能基准测试
+
+阶段 7 (6h): CI 集成 + Porcupine
+├── GitHub Actions 配置
+└── Porcupine 一致性验证
+```
+
+### 43.2 CI 集成建议
+
+- 先在本地验证
+- 逐步添加到 CI 流水线
+- 从单节点测试开始，扩展到多节点
+- 性能测试作为独立 job
+
+---
+
+**文档版本**: v1.8
 **最后更新**: 2026-02-15
-**状态**: ✅ CI 集成和故障注入设计完成
+**状态**: ✅ 完整 E2E 测试框架设计完成

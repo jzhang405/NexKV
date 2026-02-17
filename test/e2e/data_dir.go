@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -41,6 +42,11 @@ func (dm *DataDirManager) SetSubDirs(subDirs []string) {
 
 // CreateTestDir 为测试创建独立数据目录
 func (dm *DataDirManager) CreateTestDir(testID string) (string, error) {
+	// 验证 testID（防止路径遍历）
+	if err := dm.validateTestID(testID); err != nil {
+		return "", err
+	}
+
 	// 生成带时间戳的目录名
 	timestamp := time.Now().Format("20060102-150405.000")
 	testDir := filepath.Join(dm.baseDir, testID, timestamp)
@@ -136,4 +142,29 @@ func (dm *DataDirManager) ActiveCount() int {
 		count += len(dirs)
 	}
 	return count
+}
+
+// validateTestID 验证测试 ID（防止路径遍历攻击）
+func (dm *DataDirManager) validateTestID(testID string) error {
+	if testID == "" {
+		return fmt.Errorf("testID cannot be empty")
+	}
+
+	// 检查路径遍历字符
+	if strings.Contains(testID, "..") {
+		return fmt.Errorf("testID contains invalid path traversal: %s", testID)
+	}
+
+	// 检查绝对路径
+	if filepath.IsAbs(testID) {
+		return fmt.Errorf("testID cannot be absolute path: %s", testID)
+	}
+
+	// 清理路径并比较
+	cleaned := filepath.Clean(testID)
+	if cleaned != testID {
+		return fmt.Errorf("testID contains suspicious path elements: %s", testID)
+	}
+
+	return nil
 }

@@ -8,7 +8,9 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -95,6 +97,11 @@ func NewProcessManager(logger *log.Logger) *ProcessManager {
 
 // Start 启动进程
 func (pm *ProcessManager) Start(config ProcessConfig) error {
+	// 验证配置（防止命令注入）
+	if err := pm.validateConfig(&config); err != nil {
+		return err
+	}
+
 	if config.StopTimeout == 0 {
 		config.StopTimeout = 10 * time.Second
 	}
@@ -235,11 +242,15 @@ func (pm *ProcessManager) forceKill(process *ManagedProcess) {
 		// Unix 系统：杀死整个进程组
 		if process.cmd.Process != nil {
 			// 使用负 PID 杀死进程组
-			syscall.Kill(-process.cmd.Process.Pid, syscall.SIGKILL)
+			if err := syscall.Kill(-process.cmd.Process.Pid, syscall.SIGKILL); err != nil {
+				pm.logger.Printf("Failed to kill process group %d: %v", process.cmd.Process.Pid, err)
+			}
 		}
 	}
 	// 作为后备，直接杀死进程
-	process.cmd.Process.Kill()
+	if err := process.cmd.Process.Kill(); err != nil {
+		pm.logger.Printf("Failed to kill process: %v", err)
+	}
 }
 
 // StopAll 停止所有进程
@@ -293,6 +304,60 @@ func (pm *ProcessManager) ProcessCount() int {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 	return len(pm.processes)
+}
+
+// Close 清理进程管理器（停止所有进程）
+func (pm *ProcessManager) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return pm.StopAll(ctx)
+}
+
+// validateConfig 验证进程配置（防止命令注入）
+func (pm *ProcessManager) validateConfig(config *ProcessConfig) error {
+	if config.ID == "" {
+		return fmt.Errorf("process ID cannot be empty")
+	}
+
+	// 验证二进制路径（必须是绝对路径）
+	if !filepath.IsAbs(config.Binary) {
+		return fmt.Errorf("binary path must be absolute: %s", config.Binary)
+	}
+
+	// 检查二进制文件是否存在
+	if _, err := os.Stat(config.Binary); os.IsNotExist(err) {
+		return fmt.Errorf("binary not found: %s", config.Binary)
+	}
+
+	// 验证工作目录
+	if config.WorkDir != "" {
+		if _, err := os.Stat(config.WorkDir); err != nil {
+			return fmt.Errorf("work directory invalid: %w", err)
+		}
+	}
+
+	// 检查敏感环境变量
+	pm.validateEnv(config.Env)
+
+	return nil
+}
+
+// validateEnv 验证环境变量（记录敏感信息警告）
+func (pm *ProcessManager) validateEnv(env map[string]string) {
+	if env == nil {
+		return
+	}
+
+	sensitivePrefixes := []string{"API_KEY", "SECRET", "PASSWORD", "TOKEN", "PRIVATE"}
+
+	for key := range env {
+		upperKey := strings.ToUpper(key)
+		for _, prefix := range sensitivePrefixes {
+			if strings.HasPrefix(upperKey, prefix) {
+				pm.logger.Printf("WARNING: Sensitive env var detected: %s", key)
+			}
+		}
+	}
 }
 
 // monitorProcess 监控进程状态

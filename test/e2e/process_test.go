@@ -168,7 +168,7 @@ func TestProcessManager_StartDuplicate(t *testing.T) {
 	// 清理
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	pm.Stop(ctx, "test-dup")
+	_ = pm.Stop(ctx, "test-dup")
 }
 
 func TestProcessManager_StopNonExistent(t *testing.T) {
@@ -212,7 +212,7 @@ func TestProcessManager_ProcessCount(t *testing.T) {
 	// 停止进程
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	pm.Stop(ctx, "test-count")
+	_ = pm.Stop(ctx, "test-count")
 
 	// 验证进程状态为 Stopped
 	status := pm.Status("test-count")

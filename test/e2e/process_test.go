@@ -4,12 +4,20 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// getSleepBinary 获取 sleep 命令的绝对路径
+func getSleepBinary(t *testing.T) string {
+	path, err := exec.LookPath("sleep")
+	require.NoError(t, err, "sleep command should be available")
+	return path
+}
 
 func TestProcessManager_StartAndStop(t *testing.T) {
 	if testing.Short() {
@@ -20,7 +28,7 @@ func TestProcessManager_StartAndStop(t *testing.T) {
 
 	config := ProcessConfig{
 		ID:      "test-node-1",
-		Binary:  "sleep",
+		Binary:  getSleepBinary(t),
 		Args:    []string{"10"},
 		WorkDir: t.TempDir(),
 	}
@@ -55,7 +63,7 @@ func TestProcessManager_GracefulShutdown(t *testing.T) {
 
 	config := ProcessConfig{
 		ID:          "test-graceful",
-		Binary:      "sleep",
+		Binary:      getSleepBinary(t),
 		Args:        []string{"30"},
 		WorkDir:     t.TempDir(),
 		StopTimeout: 2 * time.Second,
@@ -83,10 +91,11 @@ func TestProcessManager_StopAll(t *testing.T) {
 	pm := NewProcessManager(nil)
 
 	// 启动多个进程
+	sleepBin := getSleepBinary(t)
 	for i := 1; i <= 3; i++ {
 		config := ProcessConfig{
 			ID:      fmt.Sprintf("test-node-%d", i),
-			Binary:  "sleep",
+			Binary:  sleepBin,
 			Args:    []string{"10"},
 			WorkDir: t.TempDir(),
 		}
@@ -129,7 +138,8 @@ func TestProcessManager_StartInvalidBinary(t *testing.T) {
 
 	err := pm.Start(config)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to start process")
+	// 错误可能来自文件不存在检查或进程启动失败
+	assert.Contains(t, err.Error(), "binary not found")
 }
 
 func TestProcessManager_StartDuplicate(t *testing.T) {
@@ -141,7 +151,7 @@ func TestProcessManager_StartDuplicate(t *testing.T) {
 
 	config := ProcessConfig{
 		ID:      "test-dup",
-		Binary:  "sleep",
+		Binary:  getSleepBinary(t),
 		Args:    []string{"10"},
 		WorkDir: t.TempDir(),
 	}
@@ -190,7 +200,7 @@ func TestProcessManager_ProcessCount(t *testing.T) {
 	// 启动进程
 	config := ProcessConfig{
 		ID:      "test-count",
-		Binary:  "sleep",
+		Binary:  getSleepBinary(t),
 		Args:    []string{"10"},
 		WorkDir: t.TempDir(),
 	}

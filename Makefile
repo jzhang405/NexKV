@@ -54,10 +54,23 @@ test-intg:
 	$(GO) test -race -timeout 10m ./internal/transport/... -run "TestIntegration.*"
 	$(GO) test -race -timeout 10m ./internal/rpc/... -run "TestIntegration.*"
 
-## test-e2e: 运行 E2E 测试（完整系统验证，待实现）
+## test-e2e: 运行 E2E 测试框架测试
 test-e2e:
-	@echo "E2E 测试待 CLI/daemon 完成后实现"
-	@echo "参考: docs/06_PM/doc/2026-02-13_PR-061_e2e-testing-framework_Pre.md"
+	@echo "运行 E2E 测试框架测试..."
+	$(GO) test -v -timeout 5m ./test/e2e/...
+
+## test-e2e-short: 运行 E2E 短测试（跳过需要真实进程的测试）
+test-e2e-short:
+	@echo "运行 E2E 短测试..."
+	$(GO) test -v -short -timeout 1m ./test/e2e/...
+
+## test-e2e-coverage: 运行 E2E 测试并生成覆盖率报告
+test-e2e-coverage:
+	@echo "运行 E2E 测试并生成覆盖率报告..."
+	$(GO) test -coverprofile=e2e-coverage.out ./test/e2e/...
+	$(GO) tool cover -func=e2e-coverage.out
+	$(GO) tool cover -html=e2e-coverage.out -o e2e-coverage.html
+	@echo "覆盖率报告已生成: e2e-coverage.html"
 
 ## test-perf: 运行性能测试（不含竞态检测）
 test-perf:

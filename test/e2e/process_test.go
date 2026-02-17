@@ -228,7 +228,7 @@ func TestProcessManager_EmptyProcessID(t *testing.T) {
 	pm := NewProcessManager(nil)
 
 	config := ProcessConfig{
-		ID:     "",  // 空 ID
+		ID:     "", // 空 ID
 		Binary: getSleepBinary(t),
 		Args:   []string{"1"},
 	}
@@ -279,7 +279,7 @@ func TestProcessManager_EmptyEnvKey(t *testing.T) {
 		ID:     "test-empty-env",
 		Binary: getSleepBinary(t),
 		Args:   []string{"1"},
-		Env:    map[string]string{"": "value"},  // 空键名
+		Env:    map[string]string{"": "value"}, // 空键名
 	}
 
 	err := pm.Start(config)
@@ -447,7 +447,7 @@ func TestProcessManager_StopTimeout(t *testing.T) {
 		Binary:      getSleepBinary(t),
 		Args:        []string{"60"},
 		WorkDir:     t.TempDir(),
-		StopTimeout: 500 * time.Millisecond,  // 500ms 超时
+		StopTimeout: 500 * time.Millisecond, // 500ms 超时
 	}
 
 	require.NoError(t, pm.Start(config))

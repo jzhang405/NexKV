@@ -10,17 +10,17 @@ import (
 
 // PortBinding 端口绑定信息
 type PortBinding struct {
-	TestID      string         // 测试 ID
-	Port        int            // 端口号
-	Listener    net.Listener   // 持有的 Listener（防止端口泄露）
-	AllocatedAt time.Time      // 分配时间
+	TestID      string       // 测试 ID
+	Port        int          // 端口号
+	Listener    net.Listener // 持有的 Listener（防止端口泄露）
+	AllocatedAt time.Time    // 分配时间
 }
 
 // TestPortAllocator 测试专用端口分配器
 // 使用 OS 动态分配策略 + Listener 持有策略，避免端口泄露
 type TestPortAllocator struct {
 	mu        sync.RWMutex
-	allocated map[int]*PortBinding  // port -> binding
+	allocated map[int]*PortBinding // port -> binding
 }
 
 // NewTestPortAllocator 创建测试端口分配器
@@ -46,7 +46,7 @@ func (pa *TestPortAllocator) AllocatePort(testID string) (int, error) {
 	binding := &PortBinding{
 		TestID:      testID,
 		Port:        port,
-		Listener:    listener,  // 持有 Listener
+		Listener:    listener, // 持有 Listener
 		AllocatedAt: time.Now(),
 	}
 
@@ -66,7 +66,7 @@ func (pa *TestPortAllocator) ReleasePort(port int) error {
 
 	binding, exists := pa.allocated[port]
 	if !exists {
-		return nil  // 不存在则忽略
+		return nil // 不存在则忽略
 	}
 
 	// 关闭 Listener

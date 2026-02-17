@@ -68,19 +68,19 @@ type ProcessStatus struct {
 
 // ManagedProcess 管理的进程
 type ManagedProcess struct {
-	config       ProcessConfig
-	cmd          *exec.Cmd
-	state        ProcessState
-	startedAt    time.Time
-	exitCode     int
-	err          error
-	stdout       io.Reader
-	stderr       io.Reader
-	mu           sync.RWMutex
-	stateOnce    sync.Once      // 确保状态只更新一次
-	stopped      atomic.Bool    // 标记是否已停止
-	monitoring   atomic.Bool    // 标记是否正在监控
-	waitDone     chan struct{}  // Wait 完成信号
+	config     ProcessConfig
+	cmd        *exec.Cmd
+	state      ProcessState
+	startedAt  time.Time
+	exitCode   int
+	err        error
+	stdout     io.Reader
+	stderr     io.Reader
+	mu         sync.RWMutex
+	stateOnce  sync.Once     // 确保状态只更新一次
+	stopped    atomic.Bool   // 标记是否已停止
+	monitoring atomic.Bool   // 标记是否正在监控
+	waitDone   chan struct{} // Wait 完成信号
 }
 
 // updateStateOnce 安全地更新进程状态（仅一次）
@@ -110,10 +110,10 @@ func WithStrictEnvCheck() ProcessManagerOption {
 
 // ProcessManager 进程管理器
 type ProcessManager struct {
-	processes     map[string]*ManagedProcess
-	logger        *log.Logger
-	mu            sync.RWMutex
-	strictEnvCheck bool  // 严格模式下拒绝敏感环境变量
+	processes      map[string]*ManagedProcess
+	logger         *log.Logger
+	mu             sync.RWMutex
+	strictEnvCheck bool // 严格模式下拒绝敏感环境变量
 }
 
 // NewProcessManager 创建进程管理器
@@ -156,8 +156,8 @@ func (pm *ProcessManager) Start(config ProcessConfig) error {
 	// 设置进程组（用于优雅停止）- 仅 Unix 系统
 	if runtime.GOOS != "windows" {
 		cmd.SysProcAttr = &syscall.SysProcAttr{
-			Setpgid: true,  // 创建新进程组
-			Pgid:    0,     // 子进程成为进程组 leader
+			Setpgid: true, // 创建新进程组
+			Pgid:    0,    // 子进程成为进程组 leader
 		}
 	}
 
@@ -251,7 +251,7 @@ func (pm *ProcessManager) Stop(ctx context.Context, id string) error {
 		// 上下文超时，强制杀死
 		pm.logger.Printf("Process %s timeout, force killing", id)
 		pm.forceKill(process)
-		<-process.waitDone  // 等待 monitorProcess 完成
+		<-process.waitDone // 等待 monitorProcess 完成
 		process.updateStateOnce(ProcessStateStopped, ctx.Err())
 	case <-process.waitDone:
 		// 进程已退出
@@ -357,17 +357,16 @@ func (pm *ProcessManager) Close() error {
 
 // validateConfig 验证进程配置（防止命令注入）
 func (pm *ProcessManager) validateConfig(config *ProcessConfig) error {
+	// 验证基本信息
 	if config.ID == "" {
 		return errors.New("process ID cannot be empty")
 	}
 
-	// 验证二进制路径（必须是绝对路径）
+	// 验证二进制路径
 	if !filepath.IsAbs(config.Binary) {
 		return fmt.Errorf("binary path must be absolute: %s", config.Binary)
 	}
-
-	// 检查二进制文件是否存在
-	if _, err := os.Stat(config.Binary); os.IsNotExist(err) {
+	if _, err := os.Stat(config.Binary); err != nil {
 		return fmt.Errorf("binary not found: %s", config.Binary)
 	}
 
@@ -378,72 +377,54 @@ func (pm *ProcessManager) validateConfig(config *ProcessConfig) error {
 		}
 	}
 
-	// 验证环境变量
-	if err := pm.validateEnv(config.Env); err != nil {
-		return err
-	}
-
-	// 验证命令行参数
-	if err := pm.validateArgs(config.Args); err != nil {
+	// 验证环境变量和参数
+	if err := pm.validateEnvAndArgs(config.Env, config.Args); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// validateEnv 验证环境变量
-func (pm *ProcessManager) validateEnv(env map[string]string) error {
-	if env == nil {
-		return nil
-	}
+// validateEnvAndArgs 统一验证环境变量和命令行参数
+func (pm *ProcessManager) validateEnvAndArgs(env map[string]string, args []string) error {
+	// 验证环境变量
+	if env != nil {
+		sensitivePrefixes := []string{"API_KEY", "SECRET", "PASSWORD", "TOKEN", "PRIVATE"}
 
-	sensitivePrefixes := []string{"API_KEY", "SECRET", "PASSWORD", "TOKEN", "PRIVATE"}
+		for key := range env {
+			// 验证键名格式（合并验证逻辑）
+			if key == "" {
+				return errors.New("env key cannot be empty")
+			}
+			if strings.ContainsAny(key, "=\x00") {
+				return fmt.Errorf("env key contains invalid characters: %s", key)
+			}
 
-	for key := range env {
-		// 验证键名格式
-		if err := validateEnvKey(key); err != nil {
-			return err
-		}
-
-		// 检查敏感环境变量
-		upperKey := strings.ToUpper(key)
-		for _, prefix := range sensitivePrefixes {
-			if strings.HasPrefix(upperKey, prefix) {
-				if pm.strictEnvCheck {
-					return fmt.Errorf("sensitive env var not allowed in strict mode: %s", key)
+			// 检查敏感环境变量
+			upperKey := strings.ToUpper(key)
+			for _, prefix := range sensitivePrefixes {
+				if strings.HasPrefix(upperKey, prefix) {
+					if pm.strictEnvCheck {
+						return fmt.Errorf("sensitive env var not allowed in strict mode: %s", key)
+					}
+					pm.logger.Printf("WARNING: Sensitive env var detected: %s", key)
+					break // 只需记录一次
 				}
-				pm.logger.Printf("WARNING: Sensitive env var detected: %s", key)
 			}
 		}
 	}
-	return nil
-}
 
-// validateEnvKey 验证环境变量键名格式
-func validateEnvKey(key string) error {
-	if key == "" {
-		return errors.New("env key cannot be empty")
-	}
-	if strings.Contains(key, "=") {
-		return fmt.Errorf("env key cannot contain '=': %s", key)
-	}
-	if strings.Contains(key, "\x00") {
-		return fmt.Errorf("env key cannot contain null character: %s", key)
-	}
-	return nil
-}
-
-// validateArgs 验证命令行参数
-func (pm *ProcessManager) validateArgs(args []string) error {
-	// 记录包含 shell 元字符的参数（警告但不阻止）
+	// 验证命令行参数（记录可疑内容但不阻止）
 	shellMetachars := []string{";", "|", "&", "$", "`", "(", ")", "<", ">", "\n"}
 	for _, arg := range args {
 		for _, char := range shellMetachars {
 			if strings.Contains(arg, char) {
 				pm.logger.Printf("WARNING: Arg contains shell metachar '%s': %s", char, arg)
+				break // 每个 arg 只需记录一次
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -485,7 +466,11 @@ func isSignalTermination(err error) bool {
 
 	// 检查是否为 signal: terminated 或 signal: killed
 	errStr := err.Error()
-	return strings.Contains(errStr, "signal:") ||
-		strings.Contains(errStr, "terminated") ||
-		strings.Contains(errStr, "killed")
+	signalKeywords := []string{"signal:", "terminated", "killed"}
+	for _, keyword := range signalKeywords {
+		if strings.Contains(errStr, keyword) {
+			return true
+		}
+	}
+	return false
 }

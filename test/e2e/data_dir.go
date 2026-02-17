@@ -163,29 +163,19 @@ func (dm *DataDirManager) validateTestID(testID string) error {
 		return ErrEmptyTestID
 	}
 
-	// 检查路径遍历字符
+	// 检查危险字符（按优先级检查）
 	if strings.Contains(testID, "..") {
 		return fmt.Errorf("%w: %s", ErrPathTraversal, testID)
 	}
-
-	// 检查绝对路径
 	if filepath.IsAbs(testID) {
 		return fmt.Errorf("%w: %s", ErrAbsolutePath, testID)
 	}
-
-	// 检查路径分隔符（不允许在 testID 中使用）
-	if strings.ContainsAny(testID, "/\\") {
+	if strings.ContainsAny(testID, "/\\\x00") {
 		return fmt.Errorf("%w: %s", ErrSuspiciousPath, testID)
 	}
 
-	// 检查 null 字符
-	if strings.Contains(testID, "\x00") {
-		return fmt.Errorf("%w: %s", ErrSuspiciousPath, testID)
-	}
-
-	// 清理路径并比较
-	cleaned := filepath.Clean(testID)
-	if cleaned != testID {
+	// 清理路径并比较（确保没有隐藏的危险字符）
+	if cleaned := filepath.Clean(testID); cleaned != testID {
 		return fmt.Errorf("%w: %s", ErrSuspiciousPath, testID)
 	}
 

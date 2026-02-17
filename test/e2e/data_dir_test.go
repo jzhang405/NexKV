@@ -167,13 +167,13 @@ func TestDataDirManager_PathTraversalProtection(t *testing.T) {
 		{"../../../etc/passwd", ErrPathTraversal},
 		{"..\\..\\windows", ErrPathTraversal},
 		{"/etc/passwd", ErrAbsolutePath},
-		{"test/../..", ErrPathTraversal},  // 包含 ".."
+		{"test/../..", ErrPathTraversal}, // 包含 ".."
 		{"test/../../../tmp", ErrPathTraversal},
 		{"", ErrEmptyTestID},
 		{"/absolute/path", ErrAbsolutePath},
 		{"./relative", ErrSuspiciousPath},
 		{"test/.", ErrSuspiciousPath},
-		{"sub/test", ErrSuspiciousPath},  // 包含路径分隔符
+		{"sub/test", ErrSuspiciousPath}, // 包含路径分隔符
 	}
 
 	for _, tc := range maliciousIDs {

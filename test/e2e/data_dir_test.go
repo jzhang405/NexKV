@@ -2,8 +2,11 @@
 package e2e
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -148,4 +151,150 @@ func TestDataDirManager_DuplicateCreate(t *testing.T) {
 
 	// ActiveCount 应该为 2（两次创建都记录了）
 	assert.Equal(t, 2, manager.ActiveCount())
+}
+
+// =============================================================================
+// 路径遍历安全测试
+// =============================================================================
+
+func TestDataDirManager_PathTraversalProtection(t *testing.T) {
+	manager := NewDataDirManager(t.TempDir())
+
+	maliciousIDs := []struct {
+		id       string
+		expected error
+	}{
+		{"../../../etc/passwd", ErrPathTraversal},
+		{"..\\..\\windows", ErrPathTraversal},
+		{"/etc/passwd", ErrAbsolutePath},
+		{"test/../..", ErrPathTraversal},  // 包含 ".."
+		{"test/../../../tmp", ErrPathTraversal},
+		{"", ErrEmptyTestID},
+		{"/absolute/path", ErrAbsolutePath},
+		{"./relative", ErrSuspiciousPath},
+		{"test/.", ErrSuspiciousPath},
+		{"sub/test", ErrSuspiciousPath},  // 包含路径分隔符
+	}
+
+	for _, tc := range maliciousIDs {
+		t.Run(fmt.Sprintf("id=%q", tc.id), func(t *testing.T) {
+			_, err := manager.CreateTestDir(tc.id)
+			require.Error(t, err, "应拒绝恶意 testID: %s", tc.id)
+			assert.True(t, errors.Is(err, tc.expected),
+				"错误类型应为 %v，实际: %v", tc.expected, err)
+		})
+	}
+}
+
+func TestDataDirManager_ValidTestIDs(t *testing.T) {
+	manager := NewDataDirManager(t.TempDir())
+
+	validIDs := []string{
+		"test-001",
+		"my_test",
+		"test123",
+		"TEST-UPPERCASE",
+		"test.with.dots",
+		"test-with-dashes",
+	}
+
+	for _, id := range validIDs {
+		t.Run(id, func(t *testing.T) {
+			_, err := manager.CreateTestDir(id)
+			require.NoError(t, err, "应接受有效 testID: %s", id)
+		})
+	}
+}
+
+// =============================================================================
+// 并发安全测试
+// =============================================================================
+
+func TestDataDirManager_ConcurrentAccess(t *testing.T) {
+	manager := NewDataDirManager(t.TempDir())
+
+	const numGoroutines = 50
+	const numOpsPerGoroutine = 5
+
+	var wg sync.WaitGroup
+	errors := make(chan error, numGoroutines*numOpsPerGoroutine)
+
+	// 并发创建
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < numOpsPerGoroutine; j++ {
+				testID := fmt.Sprintf("concurrent-%d-%d", id, j)
+				_, err := manager.CreateTestDir(testID)
+				if err != nil {
+					errors <- fmt.Errorf("create failed: %w", err)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// 检查错误
+	for err := range errors {
+		t.Errorf("并发操作失败: %v", err)
+	}
+
+	expectedCount := numGoroutines * numOpsPerGoroutine
+	assert.Equal(t, expectedCount, manager.ActiveCount(),
+		"应创建 %d 个目录", expectedCount)
+
+	// 并发清理
+	wg.Add(numGoroutines)
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < numOpsPerGoroutine; j++ {
+				testID := fmt.Sprintf("concurrent-%d-%d", id, j)
+				_ = manager.CleanupTestDir(testID)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	assert.Equal(t, 0, manager.ActiveCount(), "所有目录应被清理")
+}
+
+func TestDataDirManager_ConcurrentCreateAndCleanup(t *testing.T) {
+	manager := NewDataDirManager(t.TempDir())
+
+	const numWorkers = 20
+	var wg sync.WaitGroup
+	stopCh := make(chan struct{})
+
+	// 创建 worker
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			counter := 0
+			for {
+				select {
+				case <-stopCh:
+					return
+				default:
+					testID := fmt.Sprintf("worker-%d-test-%d", id, counter)
+					_, err := manager.CreateTestDir(testID)
+					if err == nil {
+						// 稍后清理
+						time.Sleep(time.Microsecond)
+						_ = manager.CleanupTestDir(testID)
+					}
+					counter++
+				}
+			}
+		}(i)
+	}
+
+	// 运行一段时间
+	time.Sleep(100 * time.Millisecond)
+	close(stopCh)
+	wg.Wait()
 }

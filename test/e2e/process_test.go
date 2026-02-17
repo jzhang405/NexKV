@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"sync"
 	"testing"
 	"time"
 
@@ -217,4 +218,247 @@ func TestProcessManager_ProcessCount(t *testing.T) {
 	// 验证进程状态为 Stopped
 	status := pm.Status("test-count")
 	assert.Equal(t, ProcessStateStopped, status.State)
+}
+
+// =============================================================================
+// 边界条件测试
+// =============================================================================
+
+func TestProcessManager_EmptyProcessID(t *testing.T) {
+	pm := NewProcessManager(nil)
+
+	config := ProcessConfig{
+		ID:     "",  // 空 ID
+		Binary: getSleepBinary(t),
+		Args:   []string{"1"},
+	}
+
+	err := pm.Start(config)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be empty")
+}
+
+func TestProcessManager_SpecialCharProcessID(t *testing.T) {
+	pm := NewProcessManager(nil)
+
+	// 特殊字符 ID 应该被接受（只要路径验证通过）
+	specialIDs := []string{
+		"test-with-dash",
+		"test_with_underscore",
+		"test.with.dots",
+	}
+
+	sleepBin := getSleepBinary(t)
+	for _, id := range specialIDs {
+		t.Run(id, func(t *testing.T) {
+			if testing.Short() {
+				t.Skip("跳过需要真实进程的测试")
+			}
+
+			config := ProcessConfig{
+				ID:      id,
+				Binary:  sleepBin,
+				Args:    []string{"1"},
+				WorkDir: t.TempDir(),
+			}
+
+			err := pm.Start(config)
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = pm.Stop(ctx, id)
+		})
+	}
+}
+
+func TestProcessManager_EmptyEnvKey(t *testing.T) {
+	pm := NewProcessManager(nil)
+
+	config := ProcessConfig{
+		ID:     "test-empty-env",
+		Binary: getSleepBinary(t),
+		Args:   []string{"1"},
+		Env:    map[string]string{"": "value"},  // 空键名
+	}
+
+	err := pm.Start(config)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "env key cannot be empty")
+}
+
+func TestProcessManager_InvalidEnvKey(t *testing.T) {
+	pm := NewProcessManager(nil)
+
+	invalidKeys := []string{"KEY=VALUE", "KEY\x00NAME"}
+
+	for _, key := range invalidKeys {
+		t.Run(fmt.Sprintf("key=%q", key), func(t *testing.T) {
+			config := ProcessConfig{
+				ID:     "test-invalid-env",
+				Binary: getSleepBinary(t),
+				Args:   []string{"1"},
+				Env:    map[string]string{key: "value"},
+			}
+
+			err := pm.Start(config)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestProcessManager_SensitiveEnvWarning(t *testing.T) {
+	pm := NewProcessManager(nil)
+
+	config := ProcessConfig{
+		ID:     "test-sensitive-env",
+		Binary: getSleepBinary(t),
+		Args:   []string{"1"},
+		Env:    map[string]string{"API_KEY": "secret123"},
+	}
+
+	// 默认模式下应该只是警告，不阻止
+	err := pm.Start(config)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = pm.Stop(ctx, "test-sensitive-env")
+}
+
+func TestProcessManager_StrictEnvCheck(t *testing.T) {
+	pm := NewProcessManager(nil, WithStrictEnvCheck())
+
+	config := ProcessConfig{
+		ID:     "test-strict-env",
+		Binary: getSleepBinary(t),
+		Args:   []string{"1"},
+		Env:    map[string]string{"SECRET_KEY": "secret123"},
+	}
+
+	// 严格模式下应该拒绝
+	err := pm.Start(config)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sensitive env var not allowed")
+}
+
+// =============================================================================
+// 并发安全测试
+// =============================================================================
+
+func TestProcessManager_ConcurrentStartStop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("跳过需要真实进程的测试")
+	}
+
+	pm := NewProcessManager(nil)
+	sleepBin := getSleepBinary(t)
+
+	const numGoroutines = 10
+	var wg sync.WaitGroup
+	errCh := make(chan error, numGoroutines*2)
+
+	// 并发启动和停止
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+
+			processID := fmt.Sprintf("concurrent-%d", id)
+			config := ProcessConfig{
+				ID:      processID,
+				Binary:  sleepBin,
+				Args:    []string{"10"},
+				WorkDir: t.TempDir(),
+			}
+
+			// 启动
+			if err := pm.Start(config); err != nil {
+				errCh <- fmt.Errorf("start failed for %s: %w", processID, err)
+				return
+			}
+
+			// 立即停止
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			if err := pm.Stop(ctx, processID); err != nil {
+				errCh <- fmt.Errorf("stop failed for %s: %w", processID, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Errorf("并发操作失败: %v", err)
+	}
+}
+
+func TestProcessManager_ConcurrentStatusQuery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("跳过需要真实进程的测试")
+	}
+
+	pm := NewProcessManager(nil)
+	sleepBin := getSleepBinary(t)
+
+	// 启动一个进程
+	config := ProcessConfig{
+		ID:      "status-test",
+		Binary:  sleepBin,
+		Args:    []string{"5"},
+		WorkDir: t.TempDir(),
+	}
+	require.NoError(t, pm.Start(config))
+
+	const numQueries = 100
+	var wg sync.WaitGroup
+
+	// 并发查询状态
+	for i := 0; i < numQueries; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = pm.Status("status-test")
+			_ = pm.ProcessCount()
+		}()
+	}
+
+	wg.Wait()
+
+	// 停止进程
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = pm.Stop(ctx, "status-test")
+}
+
+func TestProcessManager_StopTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("跳过需要真实进程的测试")
+	}
+
+	pm := NewProcessManager(nil)
+
+	// 设置很短的超时
+	config := ProcessConfig{
+		ID:          "test-timeout",
+		Binary:      getSleepBinary(t),
+		Args:        []string{"60"},
+		WorkDir:     t.TempDir(),
+		StopTimeout: 500 * time.Millisecond,  // 500ms 超时
+	}
+
+	require.NoError(t, pm.Start(config))
+
+	// 使用没有超时的 context，应该使用配置的 StopTimeout
+	ctx := context.Background()
+	start := time.Now()
+	err := pm.Stop(ctx, "test-timeout")
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	// 应该在配置的超时时间内完成（加上一些余量）
+	assert.Less(t, elapsed, 2*time.Second, "应使用配置的 StopTimeout")
 }

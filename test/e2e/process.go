@@ -3,6 +3,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -66,33 +68,67 @@ type ProcessStatus struct {
 
 // ManagedProcess 管理的进程
 type ManagedProcess struct {
-	config    ProcessConfig
-	cmd       *exec.Cmd
-	state     ProcessState
-	startedAt time.Time
-	exitCode  int
-	err       error
-	stdout    io.Reader
-	stderr    io.Reader
-	mu        sync.RWMutex
+	config       ProcessConfig
+	cmd          *exec.Cmd
+	state        ProcessState
+	startedAt    time.Time
+	exitCode     int
+	err          error
+	stdout       io.Reader
+	stderr       io.Reader
+	mu           sync.RWMutex
+	stateOnce    sync.Once      // 确保状态只更新一次
+	stopped      atomic.Bool    // 标记是否已停止
+	monitoring   atomic.Bool    // 标记是否正在监控
+	waitDone     chan struct{}  // Wait 完成信号
+}
+
+// updateStateOnce 安全地更新进程状态（仅一次）
+func (mp *ManagedProcess) updateStateOnce(newState ProcessState, err error) {
+	mp.stateOnce.Do(func() {
+		mp.mu.Lock()
+		mp.state = newState
+		if err != nil {
+			mp.err = err
+		}
+		if mp.cmd.ProcessState != nil {
+			mp.exitCode = mp.cmd.ProcessState.ExitCode()
+		}
+		mp.mu.Unlock()
+	})
+}
+
+// ProcessManagerOption 进程管理器选项
+type ProcessManagerOption func(*ProcessManager)
+
+// WithStrictEnvCheck 启用严格环境变量检查
+func WithStrictEnvCheck() ProcessManagerOption {
+	return func(pm *ProcessManager) {
+		pm.strictEnvCheck = true
+	}
 }
 
 // ProcessManager 进程管理器
 type ProcessManager struct {
-	processes map[string]*ManagedProcess
-	logger    *log.Logger
-	mu        sync.RWMutex
+	processes     map[string]*ManagedProcess
+	logger        *log.Logger
+	mu            sync.RWMutex
+	strictEnvCheck bool  // 严格模式下拒绝敏感环境变量
 }
 
 // NewProcessManager 创建进程管理器
-func NewProcessManager(logger *log.Logger) *ProcessManager {
+func NewProcessManager(logger *log.Logger, opts ...ProcessManagerOption) *ProcessManager {
 	if logger == nil {
 		logger = log.New(os.Stderr, "[ProcessManager] ", log.LstdFlags)
 	}
-	return &ProcessManager{
+	pm := &ProcessManager{
 		processes: make(map[string]*ManagedProcess),
 		logger:    logger,
 	}
+	for _, opt := range opts {
+		opt(pm)
+	}
+	return pm
 }
 
 // Start 启动进程
@@ -159,36 +195,48 @@ func (pm *ProcessManager) Start(config ProcessConfig) error {
 		startedAt: time.Now(),
 		stdout:    stdout,
 		stderr:    stderr,
+		waitDone:  make(chan struct{}),
 	}
 
 	pm.processes[config.ID] = process
 
 	// 监控进程
-	go pm.monitorProcess(config.ID)
+	process.monitoring.Store(true)
+	go pm.monitorProcess(config.ID, process)
 
 	return nil
 }
 
 // Stop 停止进程（优雅停止）
 func (pm *ProcessManager) Stop(ctx context.Context, id string) error {
-	pm.mu.Lock()
+	pm.mu.RLock()
 	process, exists := pm.processes[id]
+	pm.mu.RUnlock()
+
 	if !exists {
-		pm.mu.Unlock()
 		return fmt.Errorf("process %s not found", id)
+	}
+
+	// 检查是否已停止
+	if process.stopped.Load() {
+		return nil
 	}
 
 	// 更新状态
 	process.mu.Lock()
 	if process.state != ProcessStateRunning {
 		process.mu.Unlock()
-		pm.mu.Unlock()
 		return nil
 	}
 	process.state = ProcessStateStopping
 	process.mu.Unlock()
 
-	pm.mu.Unlock()
+	// 如果 ctx 没有截止时间，使用配置的超时
+	var cancel context.CancelFunc
+	if _, ok := ctx.Deadline(); !ok && process.config.StopTimeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, process.config.StopTimeout)
+		defer cancel()
+	}
 
 	pm.logger.Printf("Stopping process %s (PID: %d)", id, process.cmd.Process.Pid)
 
@@ -197,32 +245,26 @@ func (pm *ProcessManager) Stop(ctx context.Context, id string) error {
 		pm.logger.Printf("Failed to send interrupt signal: %v", err)
 	}
 
-	// 等待进程退出或超时
-	done := make(chan error, 1)
-	go func() {
-		done <- process.cmd.Wait()
-	}()
-
+	// 等待进程退出或超时（使用 waitDone channel 避免重复调用 Wait）
 	select {
 	case <-ctx.Done():
 		// 上下文超时，强制杀死
 		pm.logger.Printf("Process %s timeout, force killing", id)
 		pm.forceKill(process)
-		<-done
-	case err := <-done:
-		if err != nil {
-			pm.logger.Printf("Process %s exited with error: %v", id, err)
+		<-process.waitDone  // 等待 monitorProcess 完成
+		process.updateStateOnce(ProcessStateStopped, ctx.Err())
+	case <-process.waitDone:
+		// 进程已退出
+		process.mu.RLock()
+		exitErr := process.err
+		process.mu.RUnlock()
+		if exitErr != nil {
+			pm.logger.Printf("Process %s exited with error: %v", id, exitErr)
 		}
+		// 状态已由 monitorProcess 更新
 	}
 
-	// 更新状态
-	process.mu.Lock()
-	process.state = ProcessStateStopped
-	if process.cmd.ProcessState != nil {
-		process.exitCode = process.cmd.ProcessState.ExitCode()
-	}
-	process.mu.Unlock()
-
+	process.stopped.Store(true)
 	return nil
 }
 
@@ -316,7 +358,7 @@ func (pm *ProcessManager) Close() error {
 // validateConfig 验证进程配置（防止命令注入）
 func (pm *ProcessManager) validateConfig(config *ProcessConfig) error {
 	if config.ID == "" {
-		return fmt.Errorf("process ID cannot be empty")
+		return errors.New("process ID cannot be empty")
 	}
 
 	// 验证二进制路径（必须是绝对路径）
@@ -336,53 +378,114 @@ func (pm *ProcessManager) validateConfig(config *ProcessConfig) error {
 		}
 	}
 
-	// 检查敏感环境变量
-	pm.validateEnv(config.Env)
+	// 验证环境变量
+	if err := pm.validateEnv(config.Env); err != nil {
+		return err
+	}
+
+	// 验证命令行参数
+	if err := pm.validateArgs(config.Args); err != nil {
+		return err
+	}
 
 	return nil
 }
 
-// validateEnv 验证环境变量（记录敏感信息警告）
-func (pm *ProcessManager) validateEnv(env map[string]string) {
+// validateEnv 验证环境变量
+func (pm *ProcessManager) validateEnv(env map[string]string) error {
 	if env == nil {
-		return
+		return nil
 	}
 
 	sensitivePrefixes := []string{"API_KEY", "SECRET", "PASSWORD", "TOKEN", "PRIVATE"}
 
 	for key := range env {
+		// 验证键名格式
+		if err := validateEnvKey(key); err != nil {
+			return err
+		}
+
+		// 检查敏感环境变量
 		upperKey := strings.ToUpper(key)
 		for _, prefix := range sensitivePrefixes {
 			if strings.HasPrefix(upperKey, prefix) {
+				if pm.strictEnvCheck {
+					return fmt.Errorf("sensitive env var not allowed in strict mode: %s", key)
+				}
 				pm.logger.Printf("WARNING: Sensitive env var detected: %s", key)
 			}
 		}
 	}
+	return nil
+}
+
+// validateEnvKey 验证环境变量键名格式
+func validateEnvKey(key string) error {
+	if key == "" {
+		return errors.New("env key cannot be empty")
+	}
+	if strings.Contains(key, "=") {
+		return fmt.Errorf("env key cannot contain '=': %s", key)
+	}
+	if strings.Contains(key, "\x00") {
+		return fmt.Errorf("env key cannot contain null character: %s", key)
+	}
+	return nil
+}
+
+// validateArgs 验证命令行参数
+func (pm *ProcessManager) validateArgs(args []string) error {
+	// 记录包含 shell 元字符的参数（警告但不阻止）
+	shellMetachars := []string{";", "|", "&", "$", "`", "(", ")", "<", ">", "\n"}
+	for _, arg := range args {
+		for _, char := range shellMetachars {
+			if strings.Contains(arg, char) {
+				pm.logger.Printf("WARNING: Arg contains shell metachar '%s': %s", char, arg)
+			}
+		}
+	}
+	return nil
 }
 
 // monitorProcess 监控进程状态
-func (pm *ProcessManager) monitorProcess(id string) {
-	pm.mu.RLock()
-	process, exists := pm.processes[id]
-	pm.mu.RUnlock()
-
-	if !exists {
-		return
-	}
-
+// 接收 process 参数避免竞态条件
+func (pm *ProcessManager) monitorProcess(id string, process *ManagedProcess) {
 	err := process.cmd.Wait()
 
-	process.mu.Lock()
-	if err != nil {
-		process.state = ProcessStateFailed
-		process.err = err
+	// 判断退出原因
+	var state ProcessState
+	if err == nil {
+		state = ProcessStateStopped
+	} else if isSignalTermination(err) {
+		// 被信号终止（SIGTERM/SIGKILL）视为正常停止
+		state = ProcessStateStopped
 	} else {
-		process.state = ProcessStateStopped
+		state = ProcessStateFailed
 	}
-	if process.cmd.ProcessState != nil {
-		process.exitCode = process.cmd.ProcessState.ExitCode()
-	}
-	process.mu.Unlock()
 
-	pm.logger.Printf("Process %s exited with code %d", id, process.exitCode)
+	// 使用 updateStateOnce 确保状态只更新一次（避免与 Stop 竞争）
+	process.updateStateOnce(state, err)
+
+	process.mu.RLock()
+	exitCode := process.exitCode
+	process.mu.RUnlock()
+
+	pm.logger.Printf("Process %s exited with code %d", id, exitCode)
+	process.monitoring.Store(false)
+
+	// 通知 Wait 完成
+	close(process.waitDone)
+}
+
+// isSignalTermination 判断是否为信号终止
+func isSignalTermination(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// 检查是否为 signal: terminated 或 signal: killed
+	errStr := err.Error()
+	return strings.Contains(errStr, "signal:") ||
+		strings.Contains(errStr, "terminated") ||
+		strings.Contains(errStr, "killed")
 }

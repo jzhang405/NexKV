@@ -2,12 +2,21 @@
 package e2e
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+)
+
+// 数据目录相关错误
+var (
+	ErrEmptyTestID    = errors.New("testID cannot be empty")
+	ErrPathTraversal  = errors.New("testID contains path traversal characters")
+	ErrAbsolutePath   = errors.New("testID cannot be absolute path")
+	ErrSuspiciousPath = errors.New("testID contains suspicious path elements")
 )
 
 // DataDirManager 数据目录管理器
@@ -17,7 +26,7 @@ type DataDirManager struct {
 	testDirs    map[string][]string // testID -> []dirPath（支持重复创建）
 	subDirs     []string            // 子目录列表
 	mu          sync.RWMutex
-	autoCleanup bool                // 是否自动清理
+	autoCleanup bool // 是否自动清理
 }
 
 // NewDataDirManager 创建数据目录管理器
@@ -87,7 +96,7 @@ func (dm *DataDirManager) CleanupTestDir(testID string) error {
 		return nil // 不存在则忽略
 	}
 
-	// 删除所有相关目录
+	// 删除所有相关目录（在锁外执行，避免长时间持锁）
 	var lastErr error
 	for _, testDir := range dirs {
 		if err := os.RemoveAll(testDir); err != nil {
@@ -104,18 +113,22 @@ func (dm *DataDirManager) CleanupTestDir(testID string) error {
 
 // CleanupAll 清理所有测试目录
 func (dm *DataDirManager) CleanupAll() error {
+	// 先复制数据并清空 map，尽早释放锁
 	dm.mu.Lock()
-	defer dm.mu.Unlock()
-
-	var lastErr error
-	for testID := range dm.testDirs {
-		for _, testDir := range dm.testDirs[testID] {
-			if err := os.RemoveAll(testDir); err != nil {
-				lastErr = err
-			}
-		}
+	dirsToDelete := make([]string, 0)
+	for _, dirs := range dm.testDirs {
+		dirsToDelete = append(dirsToDelete, dirs...)
 	}
 	dm.testDirs = make(map[string][]string)
+	dm.mu.Unlock()
+
+	// 在锁外执行删除操作，避免长时间持锁
+	var lastErr error
+	for _, dir := range dirsToDelete {
+		if err := os.RemoveAll(dir); err != nil {
+			lastErr = err
+		}
+	}
 
 	return lastErr
 }
@@ -147,23 +160,33 @@ func (dm *DataDirManager) ActiveCount() int {
 // validateTestID 验证测试 ID（防止路径遍历攻击）
 func (dm *DataDirManager) validateTestID(testID string) error {
 	if testID == "" {
-		return fmt.Errorf("testID cannot be empty")
+		return ErrEmptyTestID
 	}
 
 	// 检查路径遍历字符
 	if strings.Contains(testID, "..") {
-		return fmt.Errorf("testID contains invalid path traversal: %s", testID)
+		return fmt.Errorf("%w: %s", ErrPathTraversal, testID)
 	}
 
 	// 检查绝对路径
 	if filepath.IsAbs(testID) {
-		return fmt.Errorf("testID cannot be absolute path: %s", testID)
+		return fmt.Errorf("%w: %s", ErrAbsolutePath, testID)
+	}
+
+	// 检查路径分隔符（不允许在 testID 中使用）
+	if strings.ContainsAny(testID, "/\\") {
+		return fmt.Errorf("%w: %s", ErrSuspiciousPath, testID)
+	}
+
+	// 检查 null 字符
+	if strings.Contains(testID, "\x00") {
+		return fmt.Errorf("%w: %s", ErrSuspiciousPath, testID)
 	}
 
 	// 清理路径并比较
 	cleaned := filepath.Clean(testID)
 	if cleaned != testID {
-		return fmt.Errorf("testID contains suspicious path elements: %s", testID)
+		return fmt.Errorf("%w: %s", ErrSuspiciousPath, testID)
 	}
 
 	return nil

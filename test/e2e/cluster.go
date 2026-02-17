@@ -3,8 +3,10 @@ package e2e
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"sync"
 )
 
 // ClusterConfig 集群配置
@@ -26,12 +28,13 @@ type TestNode struct {
 
 // TestCluster 测试集群
 type TestCluster struct {
-	Config          *ClusterConfig
-	Nodes           []*TestNode
-	PortAllocator   *TestPortAllocator
-	DataDirManager  *DataDirManager
-	ProcessManager  *ProcessManager
-	Logger          *log.Logger
+	Config         *ClusterConfig
+	Nodes          []*TestNode
+	PortAllocator  *TestPortAllocator
+	DataDirManager *DataDirManager
+	ProcessManager *ProcessManager
+	Logger         *log.Logger
+	mu             sync.RWMutex // 保护 Nodes 并发访问
 }
 
 // NewTestCluster 创建测试集群
@@ -90,6 +93,9 @@ func NewTestCluster(
 
 // GetNode 获取指定 ID 的节点
 func (c *TestCluster) GetNode(nodeID string) *TestNode {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	for _, node := range c.Nodes {
 		if node.ID == nodeID {
 			return node
@@ -100,12 +106,39 @@ func (c *TestCluster) GetNode(nodeID string) *TestNode {
 
 // NodeCount 返回节点数量
 func (c *TestCluster) NodeCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return len(c.Nodes)
+}
+
+// AddNode 添加节点（线程安全）
+func (c *TestCluster) AddNode(node *TestNode) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Nodes = append(c.Nodes, node)
+}
+
+// RemoveNode 移除节点（线程安全）
+func (c *TestCluster) RemoveNode(nodeID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i, node := range c.Nodes {
+		if node.ID == nodeID {
+			c.Nodes = append(c.Nodes[:i], c.Nodes[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // Start 启动集群（预留接口，当前仅记录日志）
 func (c *TestCluster) Start() error {
-	c.Logger.Printf("Starting cluster %s with %d nodes", c.Config.Name, len(c.Nodes))
+	c.mu.RLock()
+	nodeCount := len(c.Nodes)
+	c.mu.RUnlock()
+
+	c.Logger.Printf("Starting cluster %s with %d nodes", c.Config.Name, nodeCount)
 	// TODO: 实现真实的进程启动（需要 nexkvd 二进制）
 	return nil
 }
@@ -116,3 +149,11 @@ func (c *TestCluster) Stop() error {
 	// TODO: 实现真实的进程停止
 	return nil
 }
+
+// Close 实现 io.Closer 接口，便于 defer 调用
+func (c *TestCluster) Close() error {
+	return c.Stop()
+}
+
+// 确保实现 io.Closer 接口
+var _ io.Closer = (*TestCluster)(nil)

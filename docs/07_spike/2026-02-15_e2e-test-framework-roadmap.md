@@ -1066,7 +1066,104 @@ graph LR
 
 ---
 
-**文档版本**: v1.0
+## 9. 当前进度与后续计划
+
+> **更新日期**: 2026-02-17
+
+### 9.1 已完成工作（阶段 1）
+
+**PR #72 已合并到 mainline**
+
+| 组件 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| **ProcessManager** | `process.go` | ✅ 完成 | 进程生命周期管理、优雅停止、竞态修复 |
+| **PortAllocator** | `port.go` | ✅ 完成 | OS 动态端口分配 |
+| **DataDirManager** | `data_dir.go` | ✅ 完成 | 数据目录隔离、路径遍历防护 |
+| **TestCluster** | `cluster.go` | ✅ 完成 | 集群配置管理（预留进程启动） |
+| **E2ETestSuite** | `suite.go` | ✅ 完成 | Testify 测试套件基类 |
+| **Makefile** | `Makefile` | ✅ 完成 | E2E 测试目标 |
+
+**安全增强**（Code Review 修复）:
+- ✅ `sync.Once` 解决 `updateStateOnce` 竞态条件
+- ✅ `waitDone` channel 避免重复 `cmd.Wait()`
+- ✅ `WithStrictEnvCheck()` 敏感环境变量严格模式
+- ✅ 路径遍历攻击防护 (`ErrPathTraversal`, `ErrAbsolutePath`, `ErrSuspiciousPath`)
+- ✅ `CleanupAll` 优化锁释放
+- ✅ `TestCluster` 并发安全 (`sync.RWMutex`)
+
+**测试覆盖**:
+- 67 个测试用例全部通过
+- 并发安全测试 (`ConcurrentStartStop`, `ConcurrentStatusQuery`)
+- 路径遍历安全测试 (`PathTraversalProtection`)
+- CI 通过（Build + Test + Lint）
+
+### 9.2 后续计划选项
+
+#### 选项 A：继续 E2E 框架开发（阶段 2）
+
+继续实现分布式场景测试：
+
+```
+test/e2e/
+├── gossip_test.go      # Gossip 协议测试
+├── quorum_test.go      # Quorum 机制测试
+└── cluster_test.go     # 多节点集群测试
+```
+
+**前提条件**：
+- nexkvd 主进程需要能够启动真实服务
+- 需要确认网络端口配置
+
+#### 选项 B：完成 CLI/Daemon 开发
+
+E2E 测试框架需要真实进程来测试，当前 `TestCluster.Start()` 只是占位符：
+
+```go
+// cluster.go:142
+func (c *TestCluster) Start() error {
+    // TODO: 实现真实的进程启动（需要 nexkvd 二进制）
+    return nil
+}
+```
+
+#### 选项 C：回到其他功能开发
+
+当前 E2E 框架已可用于未来的测试，可以先处理其他优先功能。
+
+### 9.3 建议的下一步
+
+**推荐：选项 B → 选项 A**
+
+1. **先完成 CLI/Daemon**：让 nexkvd 能作为独立进程启动
+2. **再完善 E2E 测试**：用真实进程进行端到端测试
+
+### 9.4 阶段完成标准更新
+
+#### 阶段 1 完成标准
+
+- [x] `make test-e2e-short` 通过
+- [x] 端口分配器测试通过
+- [x] 数据目录管理器测试通过
+- [x] 进程管理器测试通过
+- [x] 基础测试套件可运行
+- [x] 67 个测试用例全部通过
+- [x] CI 检查通过
+
+#### 阶段 2 完成标准
+
+- [ ] 集群管理器可启动真实 nexkvd 进程
+- [ ] 测试客户端基础功能可用
+- [ ] 基础 KV 测试场景可运行
+
+#### 阶段 3 完成标准（可选）
+
+- [ ] Porcupine 验证客户端可用
+- [ ] 一致性验证测试通过
+
+---
+
+**文档版本**: v1.1
 **创建日期**: 2026-02-15
+**最后更新**: 2026-02-17
 **预计工作量**: 28h (3.5-4天)
-**状态**: 📋 路线图规划完成
+**状态**: ✅ 阶段 1 已完成，阶段 2 待启动

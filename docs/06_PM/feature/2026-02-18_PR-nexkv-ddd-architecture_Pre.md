@@ -3,7 +3,7 @@
 > **PR 类型**: feature（重大架构升级）
 > **创建日期**: 2026-02-18
 > **最后更新**: 2026-02-18
-> **文档版本**: v1.2（局域网部署环境修订）⭐
+> **文档版本**: v1.3（DDD 目录设计与迁移策略）⭐
 > **状态**: ✅ 已批准（架构师评审通过 2026-02-18）
 > **Spike 文档**:
 > - `docs/07_spike/2026-02-18_spike-nexkv-ddd-roadmap.md`（实施路线图）
@@ -102,6 +102,413 @@ NexKV 项目当前处于架构升级阶段，需要基于 DDD（领域驱动设�
 - ADR 006 显示 Bf-Tree 移植 MVP 需要 10-12周
 - 原 Pre 文档 Phase 2 仅分配 6周，存在 4-6周时间缺口
 - 调整后总周期从 24周延长到 30-32周
+
+### 2.4 DDD 文件目录设计 ⭐ v1.3 新增
+
+#### 2.4.1 当前目录结构（功能模块划分）
+
+```
+nexkv/
+├── cmd/kvserver/main.go
+└── internal/
+    ├── clock/           # HLC 时钟
+    ├── config/          # 配置管理
+    ├── metadata/        # 元数据管理
+    │   ├── api/
+    │   ├── cluster/
+    │   ├── consistency/
+    │   ├── gossip/
+    │   ├── kvstore/
+    │   ├── partition/
+    │   └── quorum/
+    ├── rpc/             # RPC 通信
+    ├── transport/       # 网络传输
+    └── wal/             # WAL 日志
+```
+
+**问题**：
+- ❌ 按功能模块划分，缺少清晰的层次边界
+- ❌ 依赖关系不明确（如 rpc 直接依赖 metadata）
+- ❌ 难以实现依赖倒置（DIP）
+
+#### 2.4.2 DDD 目标目录结构（5层架构）
+
+```
+nexkv/
+├── cmd/
+│   └── kvserver/
+│       └── main.go              # 启动入口（DI 组装）
+│
+├── internal/
+│   │
+│   │── ① domain/                # 领域层（无外部依赖）⭐ 核心
+│   │   ├── model/               # 领域模型（12个文件）
+│   │   │   ├── errors.go        # 结构化错误（分层错误码）
+│   │   │   ├── value_objects.go # 值对象（NodeID/ShardID/TxID）
+│   │   │   ├── kv.go            # KV 模型
+│   │   │   ├── tx.go            # 事务模型
+│   │   │   ├── node.go          # 节点模型
+│   │   │   ├── shard.go         # 分片模型
+│   │   │   ├── replica.go       # 副本模型
+│   │   │   ├── message.go       # 消息模型
+│   │   │   ├── block.go         # 块设备模型
+│   │   │   ├── futures.go       # 统一 AsyncOperation[T]
+│   │   │   ├── async_result.go  # 异步结果模型
+│   │   │   └── event.go         # 事件模型（Channel 模式）
+│   │   │
+│   │   ├── repository/          # 仓库接口（3个文件）
+│   │   │   ├── node_repository.go   # NodeRepository 接口
+│   │   │   ├── shard_repository.go  # ShardRepository 接口
+│   │   │   └── tx_repository.go     # TxRepository 接口
+│   │   │
+│   │   └── service/             # 47个接口定义（按5层组织）⭐
+│   │       │
+│   │       │—— ① API层接口 (2个)
+│   │       │   └── client.go            # KVClient, TxClient
+│   │       │
+│   │       │—— ② 控制平面层接口 (14个)
+│   │       │   ├── cluster.go           # 7个接口
+│   │       │   ├── shard.go             # ShardManager, ShardRouter
+│   │       │   ├── partition.go         # Partitioner
+│   │       │   ├── election.go          # Election
+│   │       │   ├── balance.go           # LoadBalancer
+│   │       │   ├── broadcast.go         # Broadcaster
+│   │       │   └── security.go          # SecurityLayer
+│   │       │
+│   │       │—— ③ 数据平面层接口 (6个)
+│   │       │   ├── replication.go       # 4个接口
+│   │       │   └── tx.go                # TxManager, TxCoordinator
+│   │       │
+│   │       │—— ④ 存储引擎层接口 (9个)
+│   │       │   ├── storage.go           # 5个接口
+│   │       │   └── blockdevice.go       # 4个接口
+│   │       │
+│   │       └—— ⑤ 基础设施层接口 (16个)
+│   │           ├── transport.go         # 6个接口
+│   │           ├── middleware.go        # 2个接口
+│   │           ├── performance.go       # 3个接口
+│   │           ├── resilience.go        # 3个接口
+│   │           └── extension.go         # 2个接口
+│   │
+│   │—— ② application/            # 应用层（只依赖 domain）
+│   │   ├── service/              # 5个应用服务
+│   │   │   ├── kv_service.go     # KV 应用服务
+│   │   │   ├── tx_service.go     # 事务应用服务
+│   │   │   ├── cluster_service.go # 集群应用服务
+│   │   │   ├── shard_service.go  # 分片应用服务
+│   │   │   └── admin_service.go  # 管理应用服务
+│   │   │
+│   │   ├── dto/                  # 4个 DTO
+│   │   │   ├── kv_dto.go         # KV DTO
+│   │   │   ├── tx_dto.go         # 事务 DTO
+│   │   │   ├── cluster_dto.go    # 集群 DTO
+│   │   │   └── metrics_dto.go    # 监控 DTO
+│   │   │
+│   │   └── usecase/              # 5个用例
+│   │       ├── put_kv.go         # Put KV 用例
+│   │       ├── get_kv.go         # Get KV 用例
+│   │       ├── commit_tx.go      # 提交事务用例
+│   │       ├── migrate_shard.go  # 分片迁移用例
+│   │       └── add_node.go       # 添加节点用例
+│   │
+│   └—— ③ infrastructure/         # 基础设施层（接口实现）
+│       │
+│       │—— ① API层实现 (8个文件)
+│       │   └── client/
+│       │       ├── kv_client_impl.go     # KVClient 实现
+│       │       ├── client_tx_impl.go     # TxClient 实现
+│       │       ├── client_future_impl.go # ClientFuture 实现
+│       │       ├── batch_future_impl.go  # BatchGetFuture 实现
+│       │       ├── router.go             # 客户端路由器
+│       │       ├── failover.go           # 故障转移
+│       │       ├── retry.go              # 重试策略
+│       │       └── event_channel.go      # 事件 Channel
+│       │
+│       │—— ② 控制平面层实现 (23个文件)
+│       │   ├── cluster/           # 14个文件
+│       │   │   ├── tree_coordinator_impl.go
+│       │   │   ├── node_manager_impl.go
+│       │   │   ├── topology_impl.go
+│       │   │   ├── ha_controller_impl.go
+│       │   │   ├── metadata_store_impl.go
+│       │   │   ├── heartbeat_impl.go
+│       │   │   ├── group_manager_impl.go
+│       │   │   ├── partitioner_impl.go   # ⭐ v17.0 新增
+│       │   │   ├── election_impl.go      # ⭐ v17.0 新增
+│       │   │   ├── loadbalancer_impl.go  # ⭐ v17.0 新增
+│       │   │   └── ... (其他文件)
+│       │   │
+│       │   └── shard/             # 9个文件
+│       │       ├── shard_manager_impl.go
+│       │       ├── shard_router_impl.go
+│       │       ├── shard_future_impl.go
+│       │       ├── split_future_impl.go
+│       │       ├── merge_future_impl.go
+│       │       ├── move_future_impl.go
+│       │       ├── migrator.go
+│       │       ├── splitter.go
+│       │       └── event_channel.go
+│       │
+│       │—— ③ 数据平面层实现 (20个文件)
+│       │   ├── replication/       # 12个文件
+│       │   │   ├── replicator_impl.go
+│       │   │   ├── replication_future_impl.go
+│       │   │   ├── quorum.go
+│       │   │   ├── hlc/hlc.go
+│       │   │   ├── conflict_resolver.go
+│       │   │   ├── catchup.go
+│       │   │   ├── ec_strategy_impl.go
+│       │   │   ├── event_channel.go
+│       │   │   └── ... (其他文件)
+│       │   │
+│       │   └── tx/                # 8个文件
+│       │       ├── tx_manager_impl.go
+│       │       ├── tx_coordinator_impl.go
+│       │       ├── transaction_impl.go
+│       │       ├── tx_future_impl.go
+│       │       ├── commit_future_impl.go
+│       │       ├── lock_manager.go
+│       │       ├── tx_logger.go
+│       │       └── event_channel.go
+│       │
+│       │—— ④ 存储引擎层实现 (19个文件)
+│       │   ├── storage/           # 11个文件
+│       │   │   ├── bftree_store.go         # Bf-Tree 实现
+│       │   │   ├── storage_future_impl.go  # AsyncOperation[T]
+│       │   │   ├── wal_impl.go             # WAL 实现
+│       │   │   ├── btree_impl.go           # B+树实现
+│       │   │   ├── iterator_impl.go        # 迭代器实现
+│       │   │   ├── local_tx_impl.go        # 本地事务实现
+│       │   │   └── ... (其他文件)
+│       │   │
+│       │   └── blockdevice/       # 8个文件
+│       │       ├── local_storage_impl.go   # 本地存储实现
+│       │       ├── block_future_impl.go    # AsyncOperation[T]
+│       │       ├── cloud_storage_impl.go   # 云存储实现
+│       │       ├── distributed_storage_impl.go
+│       │       └── ... (其他文件)
+│       │
+│       └—— ⑤ 基础设施层实现 (16个文件)
+│           ├── transport/         # 10个文件
+│           │   ├── libp2p_transport_impl.go  # libp2p 实现
+│           │   ├── message_impl.go           # Message 实现
+│           │   ├── stream_impl.go            # Stream 实现
+│           │   ├── channel_impl.go           # Channel 实现
+│           │   ├── requestor_impl.go         # Requestor 实现
+│           │   ├── codec_impl.go             # MessagePack 实现
+│           │   ├── security_layer_impl.go    # TLS/Noise 实现
+│           │   ├── tls_manager_impl.go       # TLS 专用
+│           │   ├── noise_manager_impl.go     # Noise 专用
+│           │   └── middleware_impl.go        # 中间件链
+│           │
+│           ├── performance/       # 3个文件
+│           │   ├── batch_replicator_impl.go
+│           │   ├── pipeline_impl.go
+│           │   └── cache_layer_impl.go
+│           │
+│           ├── resilience/        # 3个文件
+│           │   ├── circuit_breaker_impl.go
+│           │   ├── retry_policy_impl.go
+│           │   └── chaos_monkey_impl.go
+│           │
+│           └── extension/         # 2个文件
+│               ├── plugin_impl.go
+│               └── dynamic_config_impl.go
+│
+├── pkg/                         # 公共库（可选）
+│   └── utils/
+│       ├── logger.go            # 日志工具
+│       └── metrics.go           # 监控工具
+│
+└── wire/                        # DI 依赖注入
+    ├── wire.go                  # Wire 定义
+    └── wire_gen.go              # Wire 生成
+```
+
+#### 2.4.3 目录设计原则
+
+**1. 依赖倒置原则（DIP）**
+```
+domain/（无外部依赖）
+   ↑
+application/（只依赖 domain）
+   ↑
+infrastructure/（实现 domain 接口）
+```
+
+**2. 单一职责原则（SRP）**
+- 每个文件只负责一个接口或一个实现
+- 文件大小控制在 200-400 行（最大 800 行）
+
+**3. 接口与实现分离**
+```
+domain/service/transport.go      # Transport 接口定义
+infrastructure/transport/libp2p_transport_impl.go  # Transport 实现
+```
+
+**4. 按领域划分，不按技术划分**
+```
+❌ 错误：internal/rpc/、internal/tcp/
+✅ 正确：domain/service/transport.go、infrastructure/transport/
+```
+
+---
+
+### 2.5 现有代码迁移与重构策略 ⭐ v1.3 新增
+
+#### 2.5.1 迁移策略：渐进式重构（Strangler Pattern）
+
+**核心原则**：不进行一次性大重构，而是分阶段渐进迁移，保证系统始终可运行。
+
+#### 2.5.2 迁移阶段规划
+
+**阶段 0：准备阶段（Week 0，1周）**
+
+**目标**：建立 DDD 目录结构，不影响现有代码
+
+**任务**：
+1. [ ] 创建 DDD 目录结构
+   ```bash
+   mkdir -p internal/domain/{model,repository,service}
+   mkdir -p internal/application/{service,dto,usecase}
+   mkdir -p internal/infrastructure/{client,cluster,shard,replication,tx,storage,blockdevice,transport,performance,resilience,extension}
+   ```
+
+2. [ ] 创建第一个 domain 接口（示例：Transport）
+   ```go
+   // internal/domain/service/transport.go
+   type Transport interface {
+       Listen(ctx context.Context) error
+       Close() error
+       // ...
+   }
+   ```
+
+3. [ ] 创建对应的 infrastructure 实现（适配器模式）
+   ```go
+   // internal/infrastructure/transport/libp2p_transport_adapter.go
+   type Libp2pTransportAdapter struct {
+       legacyTransport *transport.Libp2pTransport  // 包装现有实现
+   }
+
+   func (a *Libp2pTransportAdapter) Listen(ctx context.Context) error {
+       return a.legacyTransport.Listen()
+   }
+   ```
+
+**验收标准**：
+- [x] DDD 目录结构创建完成
+- [x] 至少 1 个 domain 接口定义
+- [x] 对应的 infrastructure 适配器实现
+- [x] 现有代码继续正常运行（零影响）
+
+---
+
+**阶段 1：基础设施层迁移（Week 1-4，4周）**
+
+**目标**：将现有 `internal/transport/` 和 `internal/rpc/` 迁移到 DDD 架构
+
+**迁移映射表**：
+
+| 现有代码 | DDD 目标位置 | 迁移策略 |
+|---------|-------------|----------|
+| `internal/transport/libp2p_transport_adapter.go` | `infrastructure/transport/libp2p_transport_impl.go` | ✅ 直接迁移 |
+| `internal/transport/discovery.go` | `infrastructure/transport/discovery_impl.go` | ✅ 直接迁移 |
+| `internal/rpc/client.go` | `infrastructure/transport/requestor_impl.go` | 🔄 重构适配 |
+| `internal/rpc/server.go` | `infrastructure/transport/server_impl.go` | 🔄 重构适配 |
+| `internal/rpc/types.go` | `domain/model/message.go` | 🔄 抽象到 domain |
+
+**具体步骤**：
+
+**Week 1：Transport 接口迁移**
+1. [ ] 定义 `domain/service/transport.go`（6个接口）
+2. [ ] 迁移 `internal/transport/` 到 `infrastructure/transport/`
+3. [ ] 创建适配器，保持向后兼容
+   ```go
+   // 旧代码继续工作
+   legacyTransport := transport.NewLibp2pTransport()
+
+   // 新代码使用 DDD 接口
+   var transportService domain.Transport = infrastructure.NewLibp2pTransportImpl()
+   ```
+
+**Week 2：RPC 迁移为 Requestor**
+1. [ ] 定义 `domain/service/transport.go` 中的 Requestor 接口
+2. [ ] 重构 `internal/rpc/client.go` → `infrastructure/transport/requestor_impl.go`
+3. [ ] 迁移 RPC 消息类型到 `domain/model/message.go`
+
+**Week 3：中间件和容错机制**
+1. [ ] 定义 `domain/service/middleware.go`（2个接口）
+2. [ ] 实现中间件链（`infrastructure/transport/middleware_impl.go`）
+3. [ ] 实现熔断器（`infrastructure/resilience/circuit_breaker_impl.go`）
+
+**Week 4：集成测试与清理**
+1. [ ] 验证所有 transport 接口工作正常
+2. [ ] 删除旧代码（`internal/transport/`、`internal/rpc/`）
+3. [ ] 更新所有引用
+
+**验收标准**：
+- [x] 16个基础设施层接口全部迁移
+- [x] 旧代码删除，无编译错误
+- [x] 所有测试通过
+
+---
+
+**阶段 2：存储引擎层迁移（Week 5-16，10-12周）**
+
+**迁移映射表**：
+
+| 现有代码 | DDD 目标位置 | 迁移策略 |
+|---------|-------------|----------|
+| `internal/wal/wal.go` | `infrastructure/storage/wal_impl.go` | ✅ 直接迁移 |
+| `internal/wal/mvstore.go` | `infrastructure/storage/bftree_store.go` | 🔄 重构适配 Bf-Tree |
+| `internal/clock/hlc.go` | `domain/model/hlc.go` | 🔄 抽象到 domain |
+
+**关键决策**：
+- **Bf-Tree 移植**：从微软官方移植，替代现有 MVStore
+- **Week 8 检查点**：未达 P0 性能目标 → 启用 Badger
+
+---
+
+**阶段 3-5：数据平面、控制平面、API 层迁移（Week 17-26，10周）**
+
+**迁移映射表**：
+
+| 现有代码 | DDD 目标位置 | 说明 |
+|---------|-------------|------|
+| `internal/metadata/cluster/` | `infrastructure/cluster/` | 集群管理实现 |
+| `internal/metadata/consistency/` | `infrastructure/replication/` | 复制一致性实现 |
+| `internal/metadata/gossip/` | `infrastructure/cluster/gossip_impl.go` | Gossip 实现 |
+| `internal/metadata/kvstore/` | `infrastructure/storage/` | KV 存储实现 |
+| `internal/metadata/partition/` | `infrastructure/shard/partitioner_impl.go` | 分片路由实现 |
+| `internal/metadata/quorum/` | `infrastructure/replication/quorum.go` | Quorum 实现 |
+
+---
+
+#### 2.5.3 迁移风险与缓解
+
+| 风险 | 影响 | 缓解措施 |
+|------|------|----------|
+| **破坏现有功能** | 高 | 1. 渐进式迁移（Strangler Pattern）<br/>2. 保持向后兼容<br/>3. 每个阶段充分测试 |
+| **迁移周期过长** | 中 | 1. 并行迁移多个模块<br/>2. 自动化测试<br/>3. 代码生成工具（Wire） |
+| **团队学习成本** | 中 | 1. DDD 培训<br/>2. 代码示例<br/>3. 结对编程 |
+
+#### 2.5.4 迁移检查清单
+
+**每个阶段完成后**：
+- [ ] 新目录结构正确
+- [ ] domain 接口定义完整
+- [ ] infrastructure 实现正确
+- [ ] 所有测试通过（单元测试 + 集成测试）
+- [ ] 旧代码已删除
+- [ ] 文档已更新
+
+**整个迁移完成后**：
+- [ ] 47个接口全部迁移
+- [ ] 89个实现文件全部完成
+- [ ] 性能目标达成（P0/P1/P2）
+- [ ] 代码覆盖率 ≥ 80%
+- [ ] 无技术债务遗留
 
 ---
 
@@ -345,7 +752,7 @@ NexKV 项目当前处于架构升级阶段，需要基于 DDD（领域驱动设�
 
 ---
 
-**文档版本**: v1.2 ⭐（局域网部署环境修订）
+**文档版本**: v1.3 ⭐（DDD 目录设计与迁移策略）
 **创建日期**: 2026-02-18
 **最后更新**: 2026-02-18
 **批准日期**: 2026-02-18
@@ -355,6 +762,28 @@ NexKV 项目当前处于架构升级阶段，需要基于 DDD（领域驱动设�
 ---
 
 ## 九、版本历史
+
+### v1.3（2026-02-18）⭐
+
+**修订原因**：补充 DDD 文件目录设计和现有代码迁移策略
+
+**修订内容**：
+1. ✅ **2.4 DDD 文件目录设计**
+   - 当前目录结构（功能模块划分）
+   - DDD 目标目录结构（5层架构，详细到文件级别）
+   - 目录设计原则（DIP、SRP、接口分离、按领域划分）
+
+2. ✅ **2.5 现有代码迁移与重构策略**
+   - 迁移策略：渐进式重构（Strangler Pattern）
+   - 迁移阶段规划（阶段 0-5，共 26 周）
+   - 迁移映射表（现有代码 → DDD 目标位置）
+   - 迁移风险与缓解措施
+   - 迁移检查清单
+
+**关键改进**：
+- 明确了从现有功能模块架构到 DDD 5层架构的迁移路径
+- 详细的文件级别目录结构（89个实现文件）
+- 分阶段迁移计划，保证系统始终可运行
 
 ### v1.2（2026-02-18）⭐
 

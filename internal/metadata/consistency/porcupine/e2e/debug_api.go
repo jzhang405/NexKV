@@ -191,7 +191,7 @@ func (s *DebugAPIServer) handleGetHistory(w http.ResponseWriter, r *http.Request
 
 	// 6. 返回响应
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(respBytes)
+	_, _ = w.Write(respBytes)
 	s.audit(r, "GetHistory", "success", "")
 }
 
@@ -208,7 +208,7 @@ func (s *DebugAPIServer) handleGetStats(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 	s.audit(r, "GetStats", "success", "")
 }
 
@@ -227,7 +227,7 @@ func (s *DebugAPIServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(health)
+	_ = json.NewEncoder(w).Encode(health)
 }
 
 // ==================== 安全检查 ====================
@@ -432,5 +432,5 @@ func (s *DebugAPIServer) writeError(w http.ResponseWriter, code int, format stri
 		"code":      code,
 		"timestamp": time.Now().Unix(),
 	}
-	json.NewEncoder(w).Encode(errorResp)
+	_ = json.NewEncoder(w).Encode(errorResp)
 }

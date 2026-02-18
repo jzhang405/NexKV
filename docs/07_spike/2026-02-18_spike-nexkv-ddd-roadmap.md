@@ -22,7 +22,7 @@
 |------|------|------|
 | **语言** | Go 1.21+ | 泛型支持、高性能并发 |
 | **Transport** | libp2p | 去中心化、NAT穿透 |
-| **KVStore** | Badger | 高写入吞吐、内置压缩 |
+| **KVStore** | Bf-Tree (Go port) | 高性能 B+tree、WAL 优化、范围扫描 |
 | **序列化** | MessagePack | 高性能、自描述 |
 | **DI容器** | Wire | 编译时检查 |
 | **日志** | Zap | 结构化日志 |
@@ -143,7 +143,7 @@ graph LR
 
 | 周次 | 任务 | 交付物 | 验收标准 |
 |------|------|--------|----------|
-| **Week 5** | Badger KVStore 实现 | `infrastructure/storage/badger_store_impl.go` | Get/Put/Delete 正常 |
+| **Week 5** | Bf-Tree KVStore 实现 | `infrastructure/storage/bftree_store_impl.go` | Get/Put/Delete 正常 |
 | **Week 6** | WAL 实现（同步模式） | `infrastructure/storage/wal_impl.go` | 写入和 Replay 正常 |
 | **Week 7** | WAL 异步模式 + BTree | `infrastructure/storage/wal_impl.go`, `btree_impl.go` | 异步写入正常 |
 | **Week 8** | Iterator + LocalTx | `infrastructure/storage/iterator_impl.go`, `local_tx_impl.go` | 范围查询正常 |
@@ -154,7 +154,7 @@ graph LR
 
 | 接口 | 包路径 | 实现文件 | 优先级 | 依赖 |
 |------|--------|----------|--------|------|
-| KVStore | `infrastructure/storage` | `badger_store_impl.go` | P0 | Transport |
+| KVStore | `infrastructure/storage` | `bftree_store_impl.go` | P0 | Transport |
 | WAL | `infrastructure/storage` | `wal_impl.go` | P0 | Transport |
 | BTree | `infrastructure/storage` | `btree_impl.go` | P1 | - |
 | Iterator | `infrastructure/storage` | `iterator_impl.go` | P1 | KVStore |

@@ -11,7 +11,7 @@
 **核心目标**: 基于 Go 语言，按 DDD（领域驱动设计）+ DI（依赖倒置）思想，落地一套完整的分布式 KV 数据库系统
 
 **架构**: DDD + DI（严格分层、依赖倒置）
-**技术栈**: Go 1.21+、libp2p、Badger、MessagePack、Wire
+**技术栈**: Go 1.21+、libp2p、Bf-Tree (Go port from Microsoft)、MessagePack、Wire
 **异步支持**: 19个核心接口完整支持 AsyncOperation[T] + Callback + Channel 三种异步模式（v18.0精化）
 
 **5层精简架构**:
@@ -164,8 +164,8 @@ nexkv/
 │   │   │       └── event_channel.go          # 事务事件Channel
 │   │   │
 │   │   │—— ④ 存储引擎层实现 (9个接口)
-│   │   │   ├── storage/              # 11个文件（Badger + Future）
-│   │   │   │   ├── badger_store.go          # Badger存储实现（同步+异步）
+│   │   │   ├── storage/              # 11个文件（Bf-Tree + Future）
+│   │   │   │   ├── bftree_store.go          # Bf-Tree存储实现（同步+异步）
 │   │   │   │   ├── storage_future_impl.go   # AsyncOperation[T] Future实现
 │   │   │   │   ├── wal_impl.go              # WAL实现（同步+异步）
 │   │   │   │   ├── btree_impl.go            # B+树实现
@@ -415,7 +415,7 @@ Replicator.ReplicateWrite() → 获取副本组
     ↓
 Transport.RPC.Call() → MessagePack序列化
     ↓
-KVStore.Set() → 先WAL再Badger
+KVStore.Set() → 先WAL再Bf-Tree
     ↓
 BlockDevice.Write() → Direct I/O + fsync
     ↓
@@ -466,7 +466,7 @@ Replicator.ReplicateRead() → 选择最佳副本
     ↓
 Transport.RPC.Call() → 发送读请求
     ↓
-KVStore.Get() → 检查缓存 → 读取Badger
+KVStore.Get() → 检查缓存 → 读取Bf-Tree
     ↓
 返回value + timestamp
 ```
@@ -678,7 +678,7 @@ wg.Wait()
 - `internal/domain/service/blockdevice.go` - BlockDevice接口定义
 - `internal/infrastructure/blockdevice/local_storage_impl.go` - 本地存储实现（同步）
 - `internal/domain/service/storage.go` - Storage接口定义
-- `internal/infrastructure/storage/badger_store.go` - Badger存储实现（同步）
+- `internal/infrastructure/storage/bftree_store.go` - Bf-Tree存储实现（同步）
 - `internal/infrastructure/storage/wal_impl.go` - WAL实现（同步）
 - `internal/domain/service/transport.go` - Transport接口定义
 - `internal/infrastructure/transport/libp2p_transport_impl.go` - libp2p实现
@@ -838,7 +838,7 @@ type Container struct {
     replicatorImpl  *replication.ReplicatorImpl
     clusterImpl     *cluster.ClusterImpl
     transportImpl   *transport.Libp2pTransport
-    kvStoreImpl     *storage.BadgerStore
+    kvStoreImpl     *storage.BfTreeStore
     blockDevImpl    *blockdevice.LocalStorage
 }
 
@@ -855,7 +855,7 @@ func NewContainer(cfg *config.Config) (*Container, error) {
     c.blockDevImpl = blockDev
 
     // 2. Storage（依赖BlockDevice）
-    kvStore, err := storage.NewBadgerStore(cfg.Storage, blockDev)
+    kvStore, err := storage.NewBfTreeStore(cfg.Storage, blockDev)
     if err != nil {
         return nil, err
     }
@@ -1172,7 +1172,7 @@ go test ./test/chaos/... -v
 | 组件 | 选型 | 理由 |
 |------|------|------|
 | **Transport** | libp2p | 支持多种协议、NAT穿透、去中心化 |
-| **KVStore** | Badger (LSM-tree) | 高写入吞吐、内置压缩 |
+| **KVStore** | Bf-Tree (Go port from Microsoft) | 高性能 B+tree、WAL 优化、范围扫描 |
 | **序列化** | MessagePack | 性能高、自描述、动态类型 |
 | **服务发现** | 内置Gossip | 去中心化、减少依赖 |
 | **配置管理** | Viper | 支持多种格式、热加载 |
@@ -1233,7 +1233,7 @@ node:
 
 storage:
   path: /data/nexkv
-  engine: badger
+  engine: bftree
   cache_size: 1GB
 
 transport:
@@ -2091,7 +2091,7 @@ func (op *asyncOp[T]) execute() {
 
 ```go
 // ====== 示例1：异步Get操作 ======
-func (s *BadgerStore) GetAsync(ctx context.Context, key []byte) AsyncOperation[[]byte] {
+func (s *BfTreeStore) GetAsync(ctx context.Context, key []byte) AsyncOperation[[]byte] {
     return async.NewAsyncOp(func() ([]byte, error) {
         return s.Get(ctx, key)
     })
@@ -2113,7 +2113,7 @@ case async.StatusCanceled:
 }
 
 // ====== 示例2：异步Put操作 ======
-func (s *BadgerStore) SetAsync(ctx context.Context, key, value []byte) AsyncOperation[hlc.Timestamp] {
+func (s *BfTreeStore) SetAsync(ctx context.Context, key, value []byte) AsyncOperation[hlc.Timestamp] {
     return async.NewAsyncOp(func() (hlc.Timestamp, error) {
         return s.Set(ctx, key, value)
     })

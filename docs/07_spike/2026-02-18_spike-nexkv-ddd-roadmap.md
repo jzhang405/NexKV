@@ -60,7 +60,7 @@ pkg/domain/service/extension.go      (2个) - Plugin, DynamicConfig
 ```mermaid
 graph LR
     subgraph "Phase 1 基础设施层"
-        A[AsyncOperation[T]] --> B[Transport]
+        A["AsyncOperation[T]"] --> B[Transport]
         B --> C[Message/Stream/Channel]
         B --> D[Requestor/Codec]
         C --> E[MiddlewareChain]

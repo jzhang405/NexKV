@@ -86,7 +86,7 @@ git checkout -b feature/update-workflow-validation
 
 #### 步骤 2：编写 Pre 文档（前置规划）
 
-**文档位置**：`docs/06_project_management/pr_documents/{type}/{YYYY-MM-DD}_PR-{简短标题}_Pre.md`
+**文档位置**：`docs/06_PM/{type}/{YYYY-MM-DD}_PR-{简短标题}_Pre.md`
 
 **文档内容**：
 ```markdown
@@ -165,7 +165,7 @@ git checkout -b feature/update-workflow-validation
 **评审流程**：
 1. 提交 Pre 文档
    ```bash
-   git add docs/06_project_management/pr_documents/...Pre.md
+   git add docs/06_PM/{type}/...Pre.md
    git commit -m "docs(pr): 编写 Pre 文档"
    ```
 
@@ -177,7 +177,7 @@ git checkout -b feature/update-workflow-validation
      --body "Pre 文档待评审"
 
    # 方式 2: 直接请求评审
-   echo "Pre 文档已完成，请评审：docs/06_project_management/pr_documents/...Pre.md"
+   echo "Pre 文档已完成，请评审：docs/06_PM/{type}/...Pre.md"
    ```
 
 3. 等待评审反馈
@@ -301,13 +301,13 @@ metadata       82.3%    80%     ✅
 **评审流程**：
 1. 提交 Post 文档
    ```bash
-   git add docs/06_project_management/pr_documents/...Pre.md
+   git add docs/06_PM/{type}/...Pre.md
    git commit -m "docs(pr): 完善 Post 文档"
    ```
 
 2. 请求评审
    ```bash
-   echo "Post 文档已完成，请评审：docs/06_project_management/pr_documents/...Pre.md"
+   echo "Post 文档已完成，请评审：docs/06_PM/{type}/...Pre.md"
    ```
 
 3. 等待评审反馈
@@ -400,7 +400,7 @@ git commit -m "feat(scope): description
 
 详细说明（可选）
 
-关联 Pre 文档：docs/06_project_management/pr_documents/..."
+关联 Pre 文档：docs/06_PM/{type}/..."
 ```
 
 **提交类型**：
@@ -527,7 +527,7 @@ git push origin --delete feature/{功能描述}
 
 #### 步骤 12：文档归档
 
-**归档位置**：`docs/06_project_management/pr_documents/{type}/{YYYY-MM-DD}_PR-{标题}_全流程.md`
+**归档位置**：`docs/06_PM/{type}/{YYYY-MM-DD}_PR-{标题}_全流程.md`
 
 **归档内容**：
 1. Pre 文档（前置规划）
@@ -818,7 +818,7 @@ git commit -m "feat(rpc): 完善错误类型定义
 - 修复 rpc_server.go 中 7 处错误处理
 - 统一使用 types.NewRPC* 系列函数
 
-关联 Pre 文档：docs/06_project_management/pr_documents/..."
+关联 Pre 文档：docs/06_PM/{type}/..."
 ```
 
 ### 禁止操作
@@ -944,7 +944,7 @@ gh pr comment --body "✅ CI 已通过，请评审并批准合并"
 ### 相关文档
 
 - `docs/CLAUDE.md` - NexKV 项目指南
-- `docs/06_project_management/pr_documents/` - PR 文档归档
+- `docs/06_PM/` - PR 文档归档（子目录：feature/、fix/、refactor/、doc/）
 - `docs/03_development/01_编码规范文档.md` - 编码规范
 - `docs/04_test/01_测试计划文档.md` - 测试指南
 

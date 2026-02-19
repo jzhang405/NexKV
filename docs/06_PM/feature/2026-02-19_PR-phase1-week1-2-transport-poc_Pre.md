@@ -550,7 +550,31 @@ func (s *Libp2pStream) Close() error {
 }
 ```
 
-##### 3.4.8 Libp2pChannel 实现示例
+##### 3.4.8 错误定义
+
+```go
+// internal/infrastructure/transport/errors.go
+
+package transport
+
+import "errors"
+
+var (
+    // ErrChannelClosed 通道已关闭
+    ErrChannelClosed = errors.New("channel is closed")
+    // ErrMessageTooLarge 消息过大
+    ErrMessageTooLarge = errors.New("message size exceeds limit")
+)
+
+const (
+    // DefaultBufferSize 默认缓冲区大小 (4KB)
+    DefaultBufferSize = 4096
+    // MaxMessageSize 最大消息大小 (1MB)
+    MaxMessageSize = 1024 * 1024
+)
+```
+
+##### 3.4.9 Libp2pChannel 实现示例
 
 ```go
 // internal/infrastructure/transport/libp2p_channel.go
@@ -611,8 +635,8 @@ func (c *Libp2pChannel) Recv(ctx context.Context) ([]byte, error) {
         return nil, ErrChannelClosed
     }
 
-    // 读取并解码
-    buf := make([]byte, 4096)
+    // 读取并解码（使用可配置的最大消息大小）
+    buf := make([]byte, MaxMessageSize)
     n, err := c.stream.Read(buf)
     if err != nil {
         return nil, err
@@ -654,7 +678,7 @@ func (c *Libp2pChannel) Close() error {
 | **RPC 延迟** | 本地回环 P99 < 2ms，局域网 P99 < 5ms | `go test -bench=BenchmarkRPC` |
 | **旧代码兼容** | 164 个旧测试全部通过 | `go test ./internal/transport/...` |
 
-#### 3.6 开发原则总结 ⭐
+#### 3.7 开发原则总结 ⭐
 
 | 原则 | 说明 |
 |------|------|
@@ -700,7 +724,8 @@ func (c *Libp2pChannel) Close() error {
 | 第3轮 | 2026-02-19 | 👤 架构师 | 接口不匹配，映射表不完整 | 提供 Option A/B | ✅ 完成 |
 | 第4轮 | 2026-02-19 | 👤 架构师 | **采用 Option B - 新接口** | ✅ 已更新 | ✅ 完成 |
 | 第5轮 | 2026-02-19 | Code Reviewer | V1.5 评分 9.0/10，P1/P2 问题 | 优化文档 | ✅ 完成 |
-| 第6轮 | - | 👤 架构师 | [待评审] | - | - |
+| 第6轮 | 2026-02-19 | Code Reviewer | V1.6 评分 9.5/10，次要问题 | 修复次要问题 | ✅ 完成 |
+| 第7轮 | - | 👤 架构师 | [待最终审批] | - | - |
 
 ### 7. 预审批确认
 
@@ -764,7 +789,7 @@ func (c *Libp2pChannel) Close() error {
 
 | 项目 | 内容 |
 |------|------|
-| 文档最终版本 | V1.6 |
+| 文档最终版本 | V1.7 |
 | 归档日期 | - |
 | 归档路径 | docs/06_PM/feature/2026-02-19_PR-phase1-week1-2-transport-poc_Pre.md |
 | 后续维护人 | 🤖 核心开发 A + B |
@@ -790,3 +815,4 @@ func (c *Libp2pChannel) Close() error {
 | V1.4 | 2026-02-19 | **Option B: 采用新接口**（架构师决策） |
 | V1.5 | 2026-02-19 | **明确开发原则**：直接编写新 DDD 代码，借鉴旧代码逻辑，删除旧代码待定 |
 | V1.6 | 2026-02-19 | **根据 Review 优化**：添加新旧接口对比、Stream/Channel 实现、量化验收标准 |
+| V1.7 | 2026-02-19 | **修复次要问题**：添加错误定义、缓冲区配置化、修正小节编号 |

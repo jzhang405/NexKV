@@ -161,6 +161,7 @@ internal/
 | `domain/model/peer.go` | struct | `PeerID` | 节点标识符 |
 | `domain/model/peer.go` | struct | `PeerAddr` | 节点地址 |
 | `domain/model/message.go` | interface | `Message` | 消息接口 |
+| `domain/model/message.go` | interface | `Extensions` | 可扩展 KV |
 | `domain/model/message.go` | struct | `MessageType` | 消息类型枚举 |
 | `domain/service/transport.go` | interface | `Transport` | 传输层核心接口 ⭐ |
 | `domain/service/transport.go` | interface | `Stream` | 流式通信接口 |
@@ -204,20 +205,26 @@ const (
     MessageTypeEvent                        // 事件消息
 )
 
+// Extensions 可扩展 KV 接口
+type Extensions interface {
+    Set(key string, value any)
+    Get(key string) (any, bool)
+    GetString(key string) (string, bool)
+    GetInt(key string) (int64, bool)
+    GetBytes(key string) ([]byte, bool)
+    Has(key string) bool
+    All() map[string]any
+}
+
 // Message 消息接口
 type Message interface {
-    // ID 返回消息 ID
     ID() string
-    // Type 返回消息类型
     Type() MessageType
-    // Source 返回发送方节点 ID
     Source() PeerID
-    // Target 返回目标节点 ID
     Target() PeerID
-    // Payload 返回消息内容
     Payload() []byte
-    // SetPayload 设置消息内容
     SetPayload(data []byte)
+    Exts() Extensions // 可扩展 KV
 }
 ```
 
@@ -1765,6 +1772,110 @@ func TestInputValidation(t *testing.T) {
 | 高 | Week 3-4: RPC 迁移为 Requestor | 2周 | PR-078 | 下一阶段 |
 | 高 | Week 3-4: 中间件和容错机制 | 2周 | PR-078 | 下一阶段 |
 | 中 | 逐步迁移业务代码使用新接口 | 持续 | - | 渐进迁移 |
+| 中 | **连接/流数量限制** | 1周 | - | P1 DoS 防护 |
+| 低 | **AsyncChannel 异步通道** | 1周 | - | ✅ 已实现 |
+| 低 | **AsyncStream 异步流** | 1周 | - | ✅ 已实现 |
+| 低 | **代码复用优化** | 3天 | - | P2 AsyncChannel/AsyncStream 抽取公共基类 |
+| 低 | **配置化超时** | 1天 | - | P2 硬编码超时提取为配置 |
+| 低 | **可观测性支持** | 1周 | - | P2 Prometheus metrics + OpenTelemetry |
+| 低 | **IsClosed() 查询方法** | 1天 | - | P2 添加状态查询接口 |
+
+#### 2.1 连接/流数量限制（P1 DoS 防护）
+
+**背景**：恶意节点可建立大量连接或打开大量流，导致资源耗尽。
+
+**设计方案**：
+```go
+type Config struct {
+    // ... 现有配置
+    MaxConnectionsPerPeer int // 每节点最大连接数
+    MaxStreamsPerPeer     int // 每节点最大流数
+    MaxTotalConnections   int // 总最大连接数
+}
+
+type Libp2pTransport struct {
+    // ... 现有字段
+    connCounter  map[peer.ID]int
+    streamCounter map[peer.ID]int
+    counterMu    sync.Mutex
+}
+```
+
+**实施时机**：Phase 2 或根据性能测试结果决定。
+
+#### 2.2 异步流接口规划详情（✅ 已实现）
+
+**背景**：AsyncChannel 适用于消息级通信，但底层流式数据需要 AsyncStream 接口。
+
+**✅ 已实现方案: AsyncStream（Go Channel 风格）**
+```go
+// ReadResult 异步读取结果
+type ReadResult struct {
+    Data []byte
+    Err  error
+}
+
+// WriteRequest 异步写入请求
+type WriteRequest struct {
+    Data []byte
+    Err  chan error // 写入完成后发送错误（nil 表示成功）
+}
+
+// AsyncStream 异步流接口
+type AsyncStream interface {
+    ReadChan() <-chan ReadResult
+    WriteChan() chan<- WriteRequest
+    Close() error
+    WaitWrite() error
+    WaitWriteWithTimeout(timeout time.Duration) error
+}
+```
+
+**与 AsyncChannel 的区别**：
+| 特性 | AsyncChannel | AsyncStream |
+|------|-------------|-------------|
+| 抽象级别 | 消息（完整帧） | 流（字节流） |
+| 写入确认 | 无 | 通过 `WriteRequest.Err` |
+| 适用场景 | 请求-响应、RPC | 文件传输、流媒体 |
+
+**实施时机**：✅ 已实现，4 个测试通过
+
+#### 2.3 异步通道接口规划详情（✅ 已实现）
+
+**背景**：当前 Stream/Channel 接口为同步阻塞模式，高吞吐场景下可能成为瓶颈。
+
+**✅ 已实现方案: Channel 风格（Go 惯用）**
+```go
+// AsyncChannel 异步通道接口
+type AsyncChannel interface {
+    // 返回 channel，后台异步处理
+    SendChan() chan<- []byte
+    RecvChan() <-chan MsgOrError
+}
+
+type MsgOrError struct {
+    Msg []byte
+    Err error
+}
+```
+
+**方案 2: 回调风格**
+```go
+// AsyncStream 异步流接口
+type AsyncStream interface {
+    ReadAsync(cb func([]byte, error))
+    WriteAsync(p []byte, cb func(int, error))
+}
+```
+
+**适用场景**：
+| 场景 | 推荐方案 |
+|------|---------|
+| 单连接低吞吐 | 当前同步接口足够 |
+| 多连接高吞吐 | AsyncChannel（方案1） |
+| 流式数据处理 | io.Reader/Writer 兼容扩展 |
+
+**实施时机**：待 Phase 1 完成后，根据性能测试结果决定是否实施。
 
 ### 3. 下一步工作建议
 1. **优先推进**：实现新接口的 Libp2pTransport
@@ -1777,7 +1888,7 @@ func TestInputValidation(t *testing.T) {
 
 | 项目 | 内容 |
 |------|------|
-| 文档最终版本 | V2.0 |
+| 文档最终版本 | V2.5 |
 | 归档日期 | - |
 | 归档路径 | docs/06_PM/feature/2026-02-19_PR-phase1-week1-2-transport-poc_Pre.md |
 | 后续维护人 | 🤖 核心开发 A + B |
@@ -1807,3 +1918,13 @@ func TestInputValidation(t *testing.T) {
 | V1.8 | 2026-02-19 | **根据架构师 Review P0 优化**：(1) 添加 LengthPrefixedCodec 解决粘包问题；(2) Libp2pTransport 并发控制；(3) Libp2pChannel 长度前缀编解码；(4) 资源泄漏测试用例；(5) 错误定义参考 spike v18.0 标准错误 |
 | V1.9 | 2026-02-19 | **统一错误包设计**：新增 `pkg/errors` 包，支持错误码 + 错误链 + 详情，按模块分类（通用/通信/存储/异步） |
 | V2.0 | 2026-02-19 | **⭐ P0/P1 全面修复**：(1) 错误定义对齐 spike v18.0 sentinel error 模式；(2) Transport 接口添加 OpenStream/OpenChannel；(3) Libp2pStream 添加 Deadline 方法；(4) 长度前缀编解码器 DoS 防护 + 完整写入；(5) Libp2pTransport Close() 死锁修复 + 输入验证 + nil 检查 + panic 恢复；(6) Libp2pChannel Context 取消传播增强；(7) 添加并发安全测试用例 |
+| V2.1 | 2026-02-19 | **添加 Future Work**：Stream/Channel 异步接口规划（高吞吐场景优化） |
+| V2.2 | 2026-02-19 | **⭐ 异步接口已实现**：AsyncChannel + MsgOrError，Channel 风格（Go 惯用），4 个测试通过 |
+| V2.3 | 2026-02-19 | **⭐ P1 代码修复 + TODO 规划**：(1) 类型断言安全检查；(2) AcceptStream handler 清理；(3) WaitSendWithTimeout；(4) 连接/流数量限制加入 TODO |
+| V2.4 | 2026-02-19 | **⭐ AsyncStream 已实现**：ReadChan/WriteChan + WriteRequest 确认机制，4 个测试通过；重命名 discovery.go → libp2p_discovery.go |
+| V2.5 | 2026-02-19 | **⭐ P0/P1 修复完成**：Close() 超时处理 + 日志、测试类型断言安全、WriteRequest.Err 超时保护、P2 TODO 规划 |
+| V2.6 | 2026-02-19 | **⭐ CRITICAL goroutine leak 修复**：AsyncChannel.sendLoop ctx.Done() 直接退出，不尝试发送剩余消息（避免阻塞 I/O 导致 goroutine 泄漏）|
+| V2.7 | 2026-02-19 | **⭐ P0/P1 全面修复**：(1) Close() 超时返回错误；(2) WriteWithCodec 添加 SetWriteDeadline；(3) sendWriteError 非阻塞发送；(4) 配置参数验证；(5) drainWriteQueue 检查 channel 关闭；(6) WaitSend/WaitWrite 语义文档化；(7) 提取公共函数 async_common.go |
+| V2.8 | 2026-02-19 | **⭐ 引入 conc 库**：使用 `conc.WaitGroup` 替代 `sync.WaitGroup`，重构 AsyncLifecycle 生命周期管理，代码更简洁 |
+| V2.9 | 2026-02-19 | **⭐ 引入 logrus 结构化日志**：替代标准库 `log`，支持字段化日志输出（async_component、timeout 等），便于日志分析和监控 |
+| V2.10 | 2026-02-19 | **⭐ 补充缺失的 model/message.go**：实现 `Message` 接口 + `MessageType` 枚举 + `Extensions` 可扩展 KV（对齐 spike 文档），使用 `maps.Copy` 优化；移除 `MsgMode`（RPC 层再实现）|

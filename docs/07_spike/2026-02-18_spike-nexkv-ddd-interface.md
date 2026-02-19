@@ -2,8 +2,18 @@
 
 **文档目的**: 从DDD角度组织分布式KV存储系统的Go interface设计
 **数据来源**: doubao-chat-nexkv-ddd.md 完整对话（21,647行）
-**文档版本**: v18.0 Refined | **最后更新**: 2026-02-18
-**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化**
+**文档版本**: v18.1 Refined | **最后更新**: 2026-02-19
+**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口**
+
+> **📋 v18.1 变更说明 (2026-02-19)**：
+> - **新增 AsyncStream 接口**：
+>   - `ReadChan() <-chan ReadResult` 异步读取
+>   - `WriteChan() chan<- WriteRequest` 异步写入（带确认）
+>   - `WaitWrite()` / `WaitWriteWithTimeout()` 等待写入完成
+> - **新增 AsyncChannel 接口**：
+>   - `SendChan() chan<- []byte` 异步发送
+>   - `RecvChan() <-chan MsgOrError` 异步接收
+>   - `WaitSend()` / `WaitSendWithTimeout()` 等待发送完成
 
 > **📋 v18.0 变更说明 (2026-02-18)**：
 > - **AsyncOperation 接口精化**：
@@ -448,10 +458,43 @@ type MultiRPC interface {
 
 ```go
 type Stream interface {
-    SendStream(ctx context.Context, to PeerID, 
+    SendStream(ctx context.Context, to PeerID,
                chunks <-chan []byte) error
-    OnStream(handler func(ctx context.Context, from PeerID, 
+    OnStream(handler func(ctx context.Context, from PeerID,
                           chunks <-chan []byte))
+}
+
+// AsyncStream 异步流接口（Go Channel 风格）- v18.1 新增
+type ReadResult struct {
+    Data []byte
+    Err  error
+}
+
+type WriteRequest struct {
+    Data []byte
+    Err  chan error // 写入完成后发送错误（nil 表示成功）
+}
+
+type AsyncStream interface {
+    ReadChan() <-chan ReadResult
+    WriteChan() chan<- WriteRequest
+    Close() error
+    WaitWrite() error
+    WaitWriteWithTimeout(timeout time.Duration) error
+}
+
+// AsyncChannel 异步通道接口（Go Channel 风格）- v18.1 新增
+type MsgOrError struct {
+    Msg []byte
+    Err error
+}
+
+type AsyncChannel interface {
+    SendChan() chan<- []byte
+    RecvChan() <-chan MsgOrError
+    Close() error
+    WaitSend() error
+    WaitSendWithTimeout(timeout time.Duration) error
 }
 
 type Topic string

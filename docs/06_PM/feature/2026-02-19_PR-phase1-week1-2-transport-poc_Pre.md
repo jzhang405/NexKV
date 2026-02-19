@@ -74,15 +74,21 @@
 
 ### 3. 迁移方案（核心设计）⭐
 
-#### 3.1 迁移策略：Option B - 新接口设计
+#### 3.1 迁移策略：Option B - 直接编写新 DDD 代码 ⭐
 
-**决策**：采用 Option B（新接口设计，现有代码作为适配器）
+**决策**：采用 Option B（新接口设计，直接编写新代码）
+
+**开发原则**（架构师确认）：
+1. ✅ **直接编写新 DDD 代码**：不基于旧代码修改，从头编写
+2. ✅ **借鉴旧实现逻辑**：参考 `internal/transport/` 的实现思路，但不是复制
+3. ⏳ **删除旧代码**：待定，不是当前任务
+4. ✅ **旧代码保留**：`internal/transport/` 暂时保留，不影响新开发
 
 **理由**：
 1. 新接口更符合 DDD 设计原则
-2. 提供更清晰的连接管理能力
+2. 直接编写新代码更干净，避免历史包袱
 3. 支持中间件扩展
-4. 现有代码作为适配器保持向后兼容
+4. 旧代码作为参考，后续删除时间待定
 
 ```mermaid
 flowchart TD
@@ -129,31 +135,38 @@ internal/
 └── transport/                     # 现有代码（保留，渐进迁移）
 ```
 
-#### 3.3 完整迁移映射表
+#### 3.3 开发任务清单 ⭐
 
-| 现有代码 | DDD 目标位置 | 迁移策略 | 阶段 |
-|---------|-------------|----------|------|
-| **新接口定义** | `domain/service/transport.go` | ✅ 新建 | Week 1-2 |
-| **新实现** | `infrastructure/transport/libp2p_transport.go` | ✅ 新建 | Week 1-2 |
-| `internal/transport/libp2p_transport_adapter.go` | `infrastructure/transport/libp2p_transport_adapter.go` | ✅ 保留（适配器） | Week 1-2 |
-| `internal/transport/discovery.go` | `infrastructure/transport/discovery.go` | ✅ 移动 | Week 1-2 |
-| `internal/transport/p2p_service.go` | `infrastructure/transport/p2p_service.go` | ✅ 移动 | Week 1-2 |
-| `internal/transport/nexkv_protocol.go` | `infrastructure/transport/nexkv_protocol.go` | ✅ 移动 | Week 1-2 |
-| `internal/transport/message.go` | `infrastructure/transport/message.go` | ✅ 移动 | Week 1-2 |
-| `internal/transport/message_codec.go` | `infrastructure/transport/message_codec.go` | ✅ 移动 | Week 1-2 |
-| `internal/transport/key_manager.go` | `infrastructure/transport/key_manager.go` | ✅ 移动 | Week 1-2 |
-| `internal/transport/key_mapper.go` | `infrastructure/transport/key_mapper.go` | ✅ 移动 | Week 1-2 |
-| `internal/transport/host_builder.go` | `infrastructure/transport/host_builder.go` | ✅ 移动 | Week 1-2 |
-| `internal/transport/constants.go` | `infrastructure/transport/constants.go` | ✅ 移动 | Week 1-2 |
-| `internal/transport/errors.go` | `infrastructure/transport/errors.go` | ✅ 移动 | Week 1-2 |
-| `internal/transport/peer_id.go` | `infrastructure/transport/peer_id.go` | ✅ 移动 | Week 1-2 |
-| `internal/transport/peer_utils.go` | `infrastructure/transport/peer_utils.go` | ✅ 移动 | Week 1-2 |
-| `internal/transport/seed_integration.go` | `infrastructure/transport/seed_integration.go` | ✅ 移动 | Week 1-2 |
-| `internal/transport/bootstrap.go` | `infrastructure/transport/bootstrap.go` | ✅ 移动 | Week 1-2 |
+| 任务 | 文件位置 | 开发方式 | 阶段 |
+|------|----------|----------|------|
+| **定义 domain 模型** | `domain/model/peer.go` | ✅ 新建 | Week 1-2 |
+| **定义 Transport 接口** | `domain/service/transport.go` | ✅ 新建 | Week 1-2 |
+| **实现 Libp2pTransport** | `infrastructure/transport/libp2p_transport.go` | ✅ 新建（借鉴旧代码） | Week 1-2 |
+| **实现 DiscoveryService** | `infrastructure/transport/discovery.go` | ✅ 新建（借鉴旧代码） | Week 1-2 |
+| **实现消息编解码** | `infrastructure/transport/codec.go` | ✅ 新建（借鉴旧代码） | Week 1-2 |
+| **编写单元测试** | `infrastructure/transport/*_test.go` | ✅ 新建 | Week 1-2 |
+| **旧代码** | `internal/transport/` | ⏳ 保留（删除待定） | - |
 
-#### 3.4 新接口设计 ⭐
+**开发原则**：
+- 新代码直接写在 `internal/domain/` 和 `internal/infrastructure/`
+- 借鉴 `internal/transport/` 的实现逻辑，但不是复制粘贴
+- 旧代码暂时保留，删除时间待定
 
-##### 3.4.1 Domain 模型定义
+#### 3.4 接口与实现清单 ⭐
+
+##### 3.4.1 Domain 层 - 接口定义
+
+| 文件 | 类型 | 名称 | 说明 |
+|------|------|------|------|
+| `domain/model/peer.go` | struct | `PeerID` | 节点标识符 |
+| `domain/model/peer.go` | struct | `PeerAddr` | 节点地址 |
+| `domain/model/message.go` | interface | `Message` | 消息接口 |
+| `domain/model/message.go` | struct | `MessageType` | 消息类型枚举 |
+| `domain/service/transport.go` | interface | `Transport` | 传输层核心接口 ⭐ |
+| `domain/service/transport.go` | interface | `Stream` | 流式通信接口 |
+| `domain/service/transport.go` | interface | `Channel` | 双向通道接口 |
+
+##### 3.4.2 Domain 模型定义
 
 ```go
 // internal/domain/model/peer.go
@@ -177,7 +190,38 @@ func (p PeerAddr) String() string {
 }
 ```
 
-##### 3.4.2 Transport 接口（新设计）⭐
+```go
+// internal/domain/model/message.go
+
+package model
+
+// MessageType 消息类型
+type MessageType int
+
+const (
+    MessageTypeRequest  MessageType = iota // 请求消息
+    MessageTypeResponse                     // 响应消息
+    MessageTypeEvent                        // 事件消息
+)
+
+// Message 消息接口
+type Message interface {
+    // ID 返回消息 ID
+    ID() string
+    // Type 返回消息类型
+    Type() MessageType
+    // Source 返回发送方节点 ID
+    Source() PeerID
+    // Target 返回目标节点 ID
+    Target() PeerID
+    // Payload 返回消息内容
+    Payload() []byte
+    // SetPayload 设置消息内容
+    SetPayload(data []byte)
+}
+```
+
+##### 3.4.3 Transport 接口定义（新设计）⭐
 
 ```go
 // internal/domain/service/transport.go
@@ -246,7 +290,18 @@ type Channel interface {
 }
 ```
 
-##### 3.4.3 新接口实现
+##### 3.4.4 Infrastructure 层 - 实现清单
+
+| 文件 | 类型 | 名称 | 实现接口 | 说明 |
+|------|------|------|----------|------|
+| `infrastructure/transport/libp2p_transport.go` | struct | `Libp2pTransport` | `service.Transport` | libp2p 传输实现 ⭐ |
+| `infrastructure/transport/libp2p_stream.go` | struct | `Libp2pStream` | `service.Stream` | libp2p 流实现 |
+| `infrastructure/transport/libp2p_channel.go` | struct | `Libp2pChannel` | `service.Channel` | libp2p 通道实现 |
+| `infrastructure/transport/discovery.go` | struct | `DiscoveryService` | - | mDNS 节点发现 |
+| `infrastructure/transport/codec.go` | struct | `MessageCodec` | - | 消息编解码 |
+| `infrastructure/transport/config.go` | struct | `Config` | - | 配置结构 |
+
+##### 3.4.5 新接口实现（从头编写）
 
 ```go
 // internal/infrastructure/transport/libp2p_transport.go
@@ -259,7 +314,9 @@ import (
 
     "github.com/jzhang405/NexKV/internal/domain/model"
     "github.com/jzhang405/NexKV/internal/domain/service"
+    "github.com/libp2p/go-libp2p"
     "github.com/libp2p/go-libp2p/core/host"
+    "github.com/libp2p/go-libp2p/core/network"
     "github.com/libp2p/go-libp2p/core/peer"
     "github.com/multiformats/go-multiaddr"
 )
@@ -268,30 +325,43 @@ import (
 var _ service.Transport = (*Libp2pTransport)(nil)
 
 // Libp2pTransport 实现 domain.Transport 新接口
+// 开发原则：从头编写，借鉴旧代码逻辑，不复制粘贴
 type Libp2pTransport struct {
     host      host.Host
     discovery *DiscoveryService
-    protocol  *NexKVProtocol
+    codec     *MessageCodec
+}
+
+// Config 传输层配置
+type Config struct {
+    ListenAddr     string // 监听地址
+    DiscoveryTag   string // mDNS 发现标签
+    EnableDiscovery bool  // 是否启用 mDNS 发现
 }
 
 // NewLibp2pTransport 创建新的 libp2p 传输实现
 func NewLibp2pTransport(ctx context.Context, cfg *Config) (*Libp2pTransport, error) {
-    // 使用现有的 host builder 创建 libp2p host
-    h, err := BuildHost(cfg)
+    // 1. 创建 libp2p host（借鉴旧代码的 host_builder.go 逻辑）
+    h, err := libp2p.New(
+        libp2p.ListenAddrStrings(cfg.ListenAddr),
+    )
     if err != nil {
-        return nil, fmt.Errorf("build host: %w", err)
+        return nil, fmt.Errorf("create libp2p host: %w", err)
     }
 
-    // 创建 discovery 服务
-    discovery := NewDiscoveryService(h, cfg.DiscoveryTag, nil)
+    // 2. 创建 discovery 服务（借鉴旧代码的 discovery.go 逻辑）
+    var discovery *DiscoveryService
+    if cfg.EnableDiscovery {
+        discovery = NewDiscoveryService(h, cfg.DiscoveryTag)
+    }
 
-    // 创建协议处理器
-    protocol := NewNexKVProtocol(h, nil)
+    // 3. 创建编解码器（借鉴旧代码的 message_codec.go 逻辑）
+    codec := NewMessageCodec()
 
     return &Libp2pTransport{
         host:      h,
         discovery: discovery,
-        protocol:  protocol,
+        codec:     codec,
     }, nil
 }
 
@@ -302,7 +372,7 @@ func (t *Libp2pTransport) Self() model.PeerID {
 
 // Connect 连接到指定地址的节点
 func (t *Libp2pTransport) Connect(ctx context.Context, addr string) (model.PeerID, error) {
-    // 解析多地址
+    // 解析多地址（借鉴旧代码逻辑）
     maddr, err := multiaddr.NewMultiaddr(addr)
     if err != nil {
         return "", fmt.Errorf("parse multiaddr: %w", err)
@@ -370,100 +440,28 @@ func (t *Libp2pTransport) Close() error {
 }
 ```
 
-##### 3.4.4 旧接口适配器（保持向后兼容）
+#### 3.5 测试计划
 
-```go
-// internal/infrastructure/transport/libp2p_transport_adapter.go
-// 保留现有实现，提供旧接口兼容
-
-package transport
-
-// LegacyTransport 旧接口（保持向后兼容）
-type LegacyTransport interface {
-    Send(nodeID string, msg []byte) error
-    Receive(handler func(nodeID string, msg []byte)) error
-    Close() error
-}
-
-// Libp2pTransportAdapter 旧接口适配器（保留现有实现）
-type Libp2pTransportAdapter struct {
-    host      host.Host
-    protocol  *NexKVProtocol
-    mapper    *NodeIDMapper
-    // ... 现有字段保持不变
-}
-
-// 现有实现保持不变
-func (a *Libp2pTransportAdapter) Send(nodeID string, msg []byte) error { ... }
-func (a *Libp2pTransportAdapter) Receive(handler func(nodeID string, msg []byte)) error { ... }
-func (a *Libp2pTransportAdapter) Close() error { ... }
-```
-
-##### 3.4.5 适配器桥接（新接口 → 旧实现）
-
-```go
-// internal/infrastructure/transport/transport_adapter.go
-
-package transport
-
-import (
-    "github.com/jzhang405/NexKV/internal/domain/service"
-)
-
-// TransportAdapter 将旧适配器包装为新接口
-type TransportAdapter struct {
-    legacy *Libp2pTransportAdapter
-}
-
-// NewTransportAdapter 从旧适配器创建新接口实现
-func NewTransportAdapter(legacy *Libp2pTransportAdapter) service.Transport {
-    return &TransportAdapter{legacy: legacy}
-}
-
-// Self 返回本地节点 ID
-func (a *TransportAdapter) Self() model.PeerID {
-    return model.PeerID(a.legacy.host.ID().String())
-}
-
-// Connect 连接到指定地址的节点
-func (a *TransportAdapter) Connect(ctx context.Context, addr string) (model.PeerID, error) {
-    // 使用现有的连接逻辑
-    // ...
-}
-
-// ... 其他方法实现
-```
-
-#### 3.5 测试迁移计划
-
-| 测试类型 | 位置 | 迁移策略 | 数量 |
+| 测试类型 | 位置 | 开发方式 | 数量 |
 |---------|-----|----------|------|
-| 新接口测试 | `infrastructure/transport/libp2p_transport_test.go` | ✅ 新建 | 待编写 |
-| 旧接口测试 | `infrastructure/transport/*_test.go` | ✅ 保留 | 164 个 |
+| Transport 接口测试 | `infrastructure/transport/libp2p_transport_test.go` | ✅ 新建 | 待编写 |
+| Discovery 测试 | `infrastructure/transport/discovery_test.go` | ✅ 新建 | 待编写 |
+| Stream 测试 | `infrastructure/transport/libp2p_stream_test.go` | ✅ 新建 | 待编写 |
+| 集成测试 | `infrastructure/transport/integration_test.go` | ✅ 新建 | 待编写 |
 
 **验收标准**：
 - [ ] 新接口实现完成
-- [ ] 旧接口测试全部通过（164 个）
-- [ ] 新接口测试覆盖率 ≥ 80%
-- [ ] POC 验证通过
+- [ ] 新测试覆盖率 ≥ 80%
+- [ ] POC 验证通过（mDNS 发现 + 直连通信 + RPC 延迟）
 
-#### 3.6 向后兼容性保证
+#### 3.6 开发原则总结 ⭐
 
-**渐进迁移策略**：
-1. **Week 1-2**：新接口 + 旧适配器并存
-2. **Week 3-4**：逐步迁移业务代码使用新接口
-3. **Week 4+**：旧接口标记为 deprecated，最终移除
-
-```go
-// 新代码使用新接口
-var transport service.Transport = infrastructure.NewLibp2pTransport(ctx, cfg)
-
-// 旧代码继续使用旧接口
-var legacyTransport LegacyTransport = infrastructure.NewLibp2pTransportAdapter(...)
-
-// 或通过适配器桥接
-var transport service.Transport = infrastructure.NewTransportAdapter(legacyTransport)
-```
+| 原则 | 说明 |
+|------|------|
+| **直接编写新代码** | 在 `internal/domain/` 和 `internal/infrastructure/` 中从头编写 |
+| **借鉴旧代码逻辑** | 参考 `internal/transport/` 的实现思路，但不是复制粘贴 |
+| **旧代码保留** | `internal/transport/` 暂时保留，删除时间待定 |
+| **TDD 开发** | 先写测试，再写实现 |
 
 ---
 
@@ -565,7 +563,7 @@ var transport service.Transport = infrastructure.NewTransportAdapter(legacyTrans
 
 | 项目 | 内容 |
 |------|------|
-| 文档最终版本 | V1.4 |
+| 文档最终版本 | V1.5 |
 | 归档日期 | - |
 | 归档路径 | docs/06_PM/feature/2026-02-19_PR-phase1-week1-2-transport-poc_Pre.md |
 | 后续维护人 | 🤖 核心开发 A + B |
@@ -589,3 +587,4 @@ var transport service.Transport = infrastructure.NewTransportAdapter(legacyTrans
 | V1.2 | 2026-02-19 | 对齐主 PR 迁移策略 |
 | V1.3 | 2026-02-19 | Option A: 保持现有接口 |
 | V1.4 | 2026-02-19 | **Option B: 采用新接口**（架构师决策） |
+| V1.5 | 2026-02-19 | **明确开发原则**：直接编写新 DDD 代码，借鉴旧代码逻辑，删除旧代码待定 |

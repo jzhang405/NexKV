@@ -221,7 +221,36 @@ type Message interface {
 }
 ```
 
-##### 3.4.3 Transport 接口定义（新设计）⭐
+##### 3.4.3 新旧接口对比与演进说明 ⭐
+
+**旧接口问题**（`internal/transport/libp2p_transport_adapter.go`）：
+1. ❌ 缺少连接管理（无法显式连接/断开节点）
+2. ❌ 缺少连接状态查询（无法检查节点是否已连接）
+3. ❌ Send/Receive 模型过于简单，不支持流式通信
+4. ❌ 缺少节点发现机制（需要外部注册 NodeID）
+
+**新接口优势**：
+1. ✅ 完整的连接管理（Connect/Disconnect/ConnectedPeers/IsConnected）
+2. ✅ 支持流式通信（Stream 接口）
+3. ✅ 支持双向通道（Channel 接口）
+4. ✅ 更好的可扩展性（支持中间件、熔断器等）
+
+**接口映射关系**：
+
+| 旧接口方法 | 新接口方法 | 说明 |
+|-----------|-----------|------|
+| `Send(nodeID, msg)` | `Channel.Send(ctx, msg)` | 消息发送迁移到 Channel |
+| `Receive(handler)` | `Channel.Recv(ctx)` | 消息接收迁移到 Channel |
+| `Close()` | `Transport.Close()` | 关闭逻辑一致 |
+| - | `Transport.Self()` | 新增：获取本地节点 ID |
+| - | `Transport.Connect(ctx, addr)` | 新增：显式连接 |
+| - | `Transport.Disconnect(peer)` | 新增：显式断开 |
+| - | `Transport.ConnectedPeers()` | 新增：连接查询 |
+| - | `Transport.IsConnected(peer)` | 新增：状态检查 |
+
+---
+
+##### 3.4.4 Transport 接口定义（新设计）⭐
 
 ```go
 // internal/domain/service/transport.go
@@ -290,13 +319,13 @@ type Channel interface {
 }
 ```
 
-##### 3.4.4 Infrastructure 层 - 实现清单
+##### 3.4.5 Infrastructure 层 - 实现清单
 
 | 文件 | 类型 | 名称 | 实现接口 | 说明 |
 |------|------|------|----------|------|
 | `infrastructure/transport/libp2p_transport.go` | struct | `Libp2pTransport` | `service.Transport` | libp2p 传输实现 ⭐ |
-| `infrastructure/transport/libp2p_stream.go` | struct | `Libp2pStream` | `service.Stream` | libp2p 流实现 |
-| `infrastructure/transport/libp2p_channel.go` | struct | `Libp2pChannel` | `service.Channel` | libp2p 通道实现 |
+| `infrastructure/transport/libp2p_stream.go` | struct | `Libp2pStream` | `service.Stream` | libp2p 流实现 ⭐ |
+| `infrastructure/transport/libp2p_channel.go` | struct | `Libp2pChannel` | `service.Channel` | libp2p 通道实现 ⭐ |
 | `infrastructure/transport/discovery.go` | struct | `DiscoveryService` | - | mDNS 节点发现 |
 | `infrastructure/transport/codec.go` | struct | `MessageCodec` | - | 消息编解码 |
 | `infrastructure/transport/config.go` | struct | `Config` | - | 配置结构 |
@@ -429,30 +458,201 @@ func (t *Libp2pTransport) IsConnected(peerID model.PeerID) bool {
     return t.host.Network().Connectedness(pid) == network.Connected
 }
 
-// Close 关闭传输层
+// Close 关闭传输层（完整实现，包含错误处理）
 func (t *Libp2pTransport) Close() error {
-    // 关闭 discovery
+    var errs []error
+
+    // 1. 关闭 discovery
     if t.discovery != nil {
-        t.discovery.Close()
+        if err := t.discovery.Close(); err != nil {
+            errs = append(errs, fmt.Errorf("close discovery: %w", err))
+        }
     }
-    // 关闭 host
-    return t.host.Close()
+
+    // 2. 关闭 codec
+    if t.codec != nil {
+        if err := t.codec.Close(); err != nil {
+            errs = append(errs, fmt.Errorf("close codec: %w", err))
+        }
+    }
+
+    // 3. 关闭 host
+    if err := t.host.Close(); err != nil {
+        errs = append(errs, fmt.Errorf("close host: %w", err))
+    }
+
+    // 4. 返回组合错误
+    if len(errs) > 0 {
+        return fmt.Errorf("close transport failed: %v", errs)
+    }
+    return nil
 }
 ```
 
-#### 3.5 测试计划
+##### 3.4.7 Libp2pStream 实现示例
 
-| 测试类型 | 位置 | 开发方式 | 数量 |
-|---------|-----|----------|------|
-| Transport 接口测试 | `infrastructure/transport/libp2p_transport_test.go` | ✅ 新建 | 待编写 |
-| Discovery 测试 | `infrastructure/transport/discovery_test.go` | ✅ 新建 | 待编写 |
-| Stream 测试 | `infrastructure/transport/libp2p_stream_test.go` | ✅ 新建 | 待编写 |
-| 集成测试 | `infrastructure/transport/integration_test.go` | ✅ 新建 | 待编写 |
+```go
+// internal/infrastructure/transport/libp2p_stream.go
 
-**验收标准**：
-- [ ] 新接口实现完成
-- [ ] 新测试覆盖率 ≥ 80%
-- [ ] POC 验证通过（mDNS 发现 + 直连通信 + RPC 延迟）
+package transport
+
+import (
+    "github.com/jzhang405/NexKV/internal/domain/model"
+    "github.com/jzhang405/NexKV/internal/domain/service"
+    "github.com/libp2p/go-libp2p/core/network"
+)
+
+// 确保实现 service.Stream 接口
+var _ service.Stream = (*Libp2pStream)(nil)
+
+// Libp2pStream 实现 Stream 接口
+type Libp2pStream struct {
+    stream   network.Stream
+    protocol string
+}
+
+// NewLibp2pStream 创建新的 Stream
+func NewLibp2pStream(stream network.Stream, protocol string) *Libp2pStream {
+    return &Libp2pStream{
+        stream:   stream,
+        protocol: protocol,
+    }
+}
+
+// ID 返回流 ID
+func (s *Libp2pStream) ID() string {
+    return s.stream.ID()
+}
+
+// Protocol 返回协议名称
+func (s *Libp2pStream) Protocol() string {
+    return s.protocol
+}
+
+// RemotePeer 返回远程节点 ID
+func (s *Libp2pStream) RemotePeer() model.PeerID {
+    return model.PeerID(s.stream.Conn().RemotePeer().String())
+}
+
+// Read 读取数据
+func (s *Libp2pStream) Read(p []byte) (n int, err error) {
+    return s.stream.Read(p)
+}
+
+// Write 写入数据
+func (s *Libp2pStream) Write(p []byte) (n int, err error) {
+    return s.stream.Write(p)
+}
+
+// Close 关闭流
+func (s *Libp2pStream) Close() error {
+    return s.stream.Close()
+}
+```
+
+##### 3.4.8 Libp2pChannel 实现示例
+
+```go
+// internal/infrastructure/transport/libp2p_channel.go
+
+package transport
+
+import (
+    "context"
+    "sync"
+
+    "github.com/jzhang405/NexKV/internal/domain/service"
+)
+
+// 确保实现 service.Channel 接口
+var _ service.Channel = (*Libp2pChannel)(nil)
+
+// Libp2pChannel 实现 Channel 接口
+type Libp2pChannel struct {
+    stream *Libp2pStream
+    codec  *MessageCodec
+    mu     sync.Mutex
+    closed bool
+}
+
+// NewLibp2pChannel 创建新的 Channel
+func NewLibp2pChannel(stream *Libp2pStream, codec *MessageCodec) *Libp2pChannel {
+    return &Libp2pChannel{
+        stream: stream,
+        codec:  codec,
+    }
+}
+
+// Send 发送消息
+func (c *Libp2pChannel) Send(ctx context.Context, msg []byte) error {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    if c.closed {
+        return ErrChannelClosed
+    }
+
+    // 使用 codec 编码并发送
+    encoded, err := c.codec.Encode(msg)
+    if err != nil {
+        return err
+    }
+
+    _, err = c.stream.Write(encoded)
+    return err
+}
+
+// Recv 接收消息
+func (c *Libp2pChannel) Recv(ctx context.Context) ([]byte, error) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    if c.closed {
+        return nil, ErrChannelClosed
+    }
+
+    // 读取并解码
+    buf := make([]byte, 4096)
+    n, err := c.stream.Read(buf)
+    if err != nil {
+        return nil, err
+    }
+
+    return c.codec.Decode(buf[:n])
+}
+
+// Close 关闭通道
+func (c *Libp2pChannel) Close() error {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    c.closed = true
+    return c.stream.Close()
+}
+```
+
+#### 3.5 测试计划（量化）
+
+| 测试类型 | 位置 | 开发方式 | 预估用例数 | 优先级 |
+|---------|-----|----------|-----------|--------|
+| Transport 接口测试 | `libp2p_transport_test.go` | ✅ 新建 | 15-20 个 | P0 |
+| Discovery 测试 | `discovery_test.go` | ✅ 新建 | 10-15 个 | P0 |
+| Stream 测试 | `libp2p_stream_test.go` | ✅ 新建 | 10-15 个 | P1 |
+| Channel 测试 | `libp2p_channel_test.go` | ✅ 新建 | 10-15 个 | P1 |
+| 集成测试 | `integration_test.go` | ✅ 新建 | 8-10 个 | P1 |
+
+**总计**：53-75 个测试用例，覆盖率目标 ≥ 80%
+
+#### 3.6 验收标准（量化）
+
+| 验收项 | 标准 | 验证方法 |
+|--------|------|----------|
+| **接口实现完成度** | 6 个 Domain 接口 + 6 个 Infrastructure 实现全部完成 | 代码审查 |
+| **测试覆盖率** | 新代码测试覆盖率 ≥ 80% | `go test -cover` |
+| **mDNS 节点发现** | 3 节点局域网发现时间 < 5 秒 | `go test -run TestDiscovery` |
+| **直连通信** | TCP 连接建立时间 < 1 秒 | `go test -bench=BenchmarkConnect` |
+| **RPC 延迟** | 本地回环 P99 < 2ms，局域网 P99 < 5ms | `go test -bench=BenchmarkRPC` |
+| **旧代码兼容** | 164 个旧测试全部通过 | `go test ./internal/transport/...` |
 
 #### 3.6 开发原则总结 ⭐
 
@@ -499,7 +699,8 @@ func (t *Libp2pTransport) Close() error {
 | 第2轮 | 2026-02-19 | Code Reviewer | 评分 7.8/10，迁移策略不一致 | 对齐主 PR | ✅ 完成 |
 | 第3轮 | 2026-02-19 | 👤 架构师 | 接口不匹配，映射表不完整 | 提供 Option A/B | ✅ 完成 |
 | 第4轮 | 2026-02-19 | 👤 架构师 | **采用 Option B - 新接口** | ✅ 已更新 | ✅ 完成 |
-| 第5轮 | - | 👤 架构师 | [待评审] | - | - |
+| 第5轮 | 2026-02-19 | Code Reviewer | V1.5 评分 9.0/10，P1/P2 问题 | 优化文档 | ✅ 完成 |
+| 第6轮 | - | 👤 架构师 | [待评审] | - | - |
 
 ### 7. 预审批确认
 
@@ -563,7 +764,7 @@ func (t *Libp2pTransport) Close() error {
 
 | 项目 | 内容 |
 |------|------|
-| 文档最终版本 | V1.5 |
+| 文档最终版本 | V1.6 |
 | 归档日期 | - |
 | 归档路径 | docs/06_PM/feature/2026-02-19_PR-phase1-week1-2-transport-poc_Pre.md |
 | 后续维护人 | 🤖 核心开发 A + B |
@@ -588,3 +789,4 @@ func (t *Libp2pTransport) Close() error {
 | V1.3 | 2026-02-19 | Option A: 保持现有接口 |
 | V1.4 | 2026-02-19 | **Option B: 采用新接口**（架构师决策） |
 | V1.5 | 2026-02-19 | **明确开发原则**：直接编写新 DDD 代码，借鉴旧代码逻辑，删除旧代码待定 |
+| V1.6 | 2026-02-19 | **根据 Review 优化**：添加新旧接口对比、Stream/Channel 实现、量化验收标准 |

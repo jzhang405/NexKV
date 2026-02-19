@@ -790,15 +790,15 @@ infrastructure/transport/libp2p_transport_impl.go  # Transport 实现
 
 **Week 1-4：Phase 1 基础设施层开发 + POC 验证（4周）🔄 进行中** ⭐ v1.6
 
-1. 🔄 **Week 1-2：Transport 接口实现 + 核心 POC 验证**
+1. ✅ **Week 1-2：Transport 接口实现 + 核心 POC 验证** ⭐ 已完成
    - 实现 Transport、Message、Stream、Channel 接口
    - **核心 POC 验证**：
-     - mDNS 节点发现（局域网）
-     - 节点间直连通信
-     - RPC 调用（延迟 < 5ms）
-   - 验收标准：核心功能单元测试通过
+     - ✅ mDNS 节点发现（局域网）
+     - ✅ 节点间直连通信
+     - ✅ RPC 调用（延迟 < 5ms）
+   - 验收标准：✅ 核心功能单元测试通过（164 个测试 + 13 个集成测试）
 
-2. ⏳ **Week 3-4：Requestor/Codec + 扩展 POC 验证**
+2. 🔄 **Week 3-4：Requestor/Codec + 扩展 POC 验证** ⭐ 进行中
    - 实现 Requestor、Codec 接口
    - **扩展 POC 验证**：
      - 3 节点集群通信

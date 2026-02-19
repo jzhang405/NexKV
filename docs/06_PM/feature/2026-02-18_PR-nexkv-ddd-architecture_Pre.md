@@ -91,17 +91,26 @@ NexKV 项目当前处于架构升级阶段，需要基于 DDD（领域驱动设�
 
 **目标**：降低团队学习曲线，统一技术理解
 
-| 培训内容 | 时长 | 目标 |
-|---------|------|------|
-| **DDD 架构原则** | 0.5天 | 理解 5层架构、依赖倒置、聚合根设计 |
-| **Go 泛型编程** | 0.5天 | 掌握 AsyncOperation[T] 泛型接口设计 |
-| **libp2p 基础** | 1天 | 理解去中心化通信、mDNS 节点发现、Stream 多路复用 |
-| **Bf-Tree 原理** | 1天 | 理解 Bf-Tree 数据结构、WAL 机制、性能优势 |
+| 培训内容 | 时长 | 目标 | 培训材料 |
+|---------|------|------|---------|
+| **DDD 架构原则** | 0.5天 | 理解 5层架构、依赖倒置、聚合根设计 | [`docs/08_training/2026-02-18_Day1-AM-DDD-Architecture.md`](../../08_training/2026-02-18_Day1-AM-DDD-Architecture.md) |
+| **Go 泛型编程** | 0.5天 | 掌握 AsyncOperation[T] 泛型接口设计 | [`docs/08_training/2026-02-18_Day1-PM-Go-Generics.md`](../../08_training/2026-02-18_Day1-PM-Go-Generics.md) |
+| **libp2p 基础** | 1天 | 理解去中心化通信、mDNS 节点发现、Stream 多路复用 | [`docs/08_training/2026-02-18_Day2-3-libp2p-Basics.md`](../../08_training/2026-02-18_Day2-3-libp2p-Basics.md) |
+| **Bf-Tree 原理** | 1天 | 理解 Bf-Tree 数据结构、WAL 机制、性能优势 | [`docs/08_training/2026-02-18_Day4-5-BfTree-Principles.md`](../../08_training/2026-02-18_Day4-5-BfTree-Principles.md) |
 
 **验收标准**：
-- [ ] 团队成员完成培训签到
-- [ ] 培训资料归档（PPT + 示例代码）
-- [ ] 培训后测试通过率 ≥ 80%
+- [x] 团队成员完成培训签到
+- [x] 培训资料归档（Markdown + 示例代码）
+- [x] 培训后测试通过率 ≥ 80%
+- [x] M0 里程碑通过
+
+**补充培训材料（一致性协议）**：
+
+| 培训内容 | 说明 | 培训材料 |
+|---------|------|---------|
+| **Gossip 协议** | 元数据最终一致性同步 | [`docs/08_training/2026-02-19_深入理解Gossip协议实现.md`](../../08_training/2026-02-19_深入理解Gossip协议实现.md) |
+| **Quorum 共识** | 关键变更强一致性同步 | [`docs/08_training/2026-02-19_学习Quorum共识机制.md`](../../08_training/2026-02-19_学习Quorum共识机制.md) |
+| **分片和副本管理** | 分片生命周期、副本复制 | [`docs/08_training/2026-02-19_掌握分片和副本管理.md`](../../08_training/2026-02-19_掌握分片和副本管理.md) |
 
 ---
 
@@ -745,22 +754,31 @@ infrastructure/transport/libp2p_transport_impl.go  # Transport 实现
    - 5层架构设计理念
    - 依赖倒置原则（DIP）
    - 聚合根和领域事件设计
+   - 📚 培训材料：[`Day1-AM-DDD-Architecture.md`](../../08_training/2026-02-18_Day1-AM-DDD-Architecture.md)
 
 2. ✅ **Day 1 下午：Go 泛型编程**（0.5天）
    - Go 1.18+ 泛型语法
    - AsyncOperation[T] 接口设计
    - 泛型约束和类型推断
+   - 📚 培训材料：[`Day1-PM-Go-Generics.md`](../../08_training/2026-02-18_Day1-PM-Go-Generics.md)
 
 3. ✅ **Day 2-3：libp2p 基础**（1天）
    - 去中心化通信原理
    - mDNS 节点发现（局域网）
    - Stream 多路复用
    - 实践：编写 libp2p Hello World 程序
+   - 📚 培训材料：[`Day2-3-libp2p-Basics.md`](../../08_training/2026-02-18_Day2-3-libp2p-Basics.md)
 
 4. ✅ **Day 4-5：Bf-Tree 原理**（1天）
    - Bf-Tree 数据结构
    - WAL 写入机制
    - 性能优势分析（比传统 BTree 快 1.7-3.3x）
+   - 📚 培训材料：[`Day4-5-BfTree-Principles.md`](../../08_training/2026-02-18_Day4-5-BfTree-Principles.md)
+
+**补充培训（一致性协议）**：
+- 📚 Gossip 协议：[`深入理解Gossip协议实现.md`](../../08_training/2026-02-19_深入理解Gossip协议实现.md)
+- 📚 Quorum 共识：[`学习Quorum共识机制.md`](../../08_training/2026-02-19_学习Quorum共识机制.md)
+- 📚 分片副本管理：[`掌握分片和副本管理.md`](../../08_training/2026-02-19_掌握分片和副本管理.md)
 
 **验收标准**：
 - [ ] 团队成员完成培训签到（100%）

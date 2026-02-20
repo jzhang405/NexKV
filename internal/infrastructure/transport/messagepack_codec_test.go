@@ -428,3 +428,42 @@ func TestMessagePackCodec_ImplementsInterface(t *testing.T) {
 	var _ service.Codec = NewMessagePackCodec()
 	var _ service.StreamCodec = NewMessagePackStreamCodec()
 }
+
+// TestEncodeToBuffer 测试编码到 buffer
+func TestEncodeToBuffer(t *testing.T) {
+	codec := NewMessagePackCodec()
+	msg := createTestMessage("buffer-001", model.MessageTypeRequest, []byte("test data"))
+
+	buf, err := EncodeToBuffer(codec, msg)
+	if err != nil {
+		t.Fatalf("EncodeToBuffer() error = %v", err)
+	}
+
+	if buf == nil {
+		t.Fatal("EncodeToBuffer() returned nil buffer")
+	}
+
+	if buf.Len() == 0 {
+		t.Error("EncodeToBuffer() returned empty buffer")
+	}
+
+	// 验证可以解码
+	decoded, err := codec.Decode(buf.Bytes())
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+
+	if decoded.ID() != msg.ID() {
+		t.Errorf("Decoded ID = %v, want %v", decoded.ID(), msg.ID())
+	}
+}
+
+// TestEncodeToBuffer_NilMessage 测试编码 nil 消息
+func TestEncodeToBuffer_NilMessage(t *testing.T) {
+	codec := NewMessagePackCodec()
+
+	_, err := EncodeToBuffer(codec, nil)
+	if err == nil {
+		t.Error("EncodeToBuffer() with nil message should return error")
+	}
+}

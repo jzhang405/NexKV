@@ -537,8 +537,12 @@ func (r *Libp2pRPC) broadcastAndWait(
 	var wg sync.WaitGroup
 	var resultMu sync.Mutex
 
-	// P2 修复：使用信号量限制并发
-	sem := make(chan struct{}, r.config.MaxConcurrentCalls)
+	// P2 修复：使用信号量限制并发（0 表示无限制）
+	maxConcurrent := r.config.MaxConcurrentCalls
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1000 // 默认值
+	}
+	sem := make(chan struct{}, maxConcurrent)
 
 	// 并发发送请求
 	for i, peer := range to {

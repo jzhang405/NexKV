@@ -2,8 +2,63 @@
 
 **文档目的**: 从DDD角度组织分布式KV存储系统的Go interface设计
 **数据来源**: doubao-chat-nexkv-ddd.md 完整对话（21,647行）
-**文档版本**: v18.1 Refined | **最后更新**: 2026-02-19
-**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口**
+**文档版本**: v18.8 Unified | **最后更新**: 2026-02-20
+**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口** + **统一 RPC 接口** + **ResponseStrategy 广播策略** + **BroadcastTracker 完整追踪** + **WriteVResult 统一返回值**
+
+> **📋 v18.8 变更说明 (2026-02-20)**：
+> - **新增 `RecordSuccess()` / `RecordFailure()` 方法**：RPC 实现调用，更新 tracker 状态
+> - **新增 `checkFullDone()` 内部方法**：自动关闭 channel
+> - **完整的生命周期管理**：状态更新 → channel 关闭 → 等待返回
+
+> **📋 v18.7 变更说明 (2026-02-20)**：
+> - **删除 `Reset()` 方法**：避免 channel 泄漏，tracker 改为一次性使用
+> - **优化 `WaitMajority()`**：添加 `majorityDone` channel，零 CPU 开销
+> - **添加时间回退检测**：`RequestIDGenerator` 处理时钟漂移
+> - **补充负面测试用例**：targets 为空、ctx 取消、时钟回退等
+
+> **📋 v18.6 变更说明 (2026-02-20)**：
+> - **BroadcastTracker 方法增强**：
+>   - `WaitMajority()`: 等待多数派（> N/2）
+>   - `WaitStrategy()`: 通用等待方法
+>   - `IsMajorityReached()`: 检查是否已达多数派
+>   - `IsFullDone()`: 检查是否全部完成
+> - **新增错误码**：`ErrStrategyNotMajority` / `ErrInvalidStrategy`
+> - **与 ResponseStrategy 完全对应**：每个策略都有对应的等待和检查方法
+
+> **📋 v18.5 变更说明 (2026-02-20)**：
+> - **新增 BroadcastTracker 结构体**：
+>   - `WaitFull()`: 等待全部节点响应（包括失败的）
+>   - `Stats()`: 实时统计成功/失败/待处理数量
+>   - `IsDone()`: 检查策略是否已满足
+>   - `Reset()`: 清理状态，释放内存
+> - **新增 WriteVResult 结构体**：统一批量写入返回值风格
+> - **新增 RPC 错误码定义**：ErrMajorityFailed/ErrAllFailed/ErrTimeout 等
+> - **更新 RPC 接口签名**：广播方法添加 `tracker *BroadcastTracker` 参数
+> - **WriteVCall 返回值**：`map[PeerID]Message` → `WriteVResult`
+> - **使用场景**：支持追踪广播进度、异步监控
+
+> **📋 v18.4 变更说明 (2026-02-20)**：
+> - **新增 ResponseStrategy 枚举**：
+>   - `ResponseAll`: 等待全部响应（事务提交）
+>   - `ResponseMajority`: 等待多数派（3副本写2）
+>   - `ResponseNone`: 不等待（日志广播）
+> - **新增 BroadcastResult 结构体**：包含成功/失败节点列表
+> - **更新 BroadcastCall/BroadcastAsync/WriteVCall 签名**：添加 strategy 参数
+
+> **📋 v18.3 变更说明 (2026-02-20)**：
+> - **Codec 接口签名统一**：
+>   - `Encode(msg Message) ([]byte, error)` - 返回字节切片
+>   - `Decode(data []byte) (Message, error)` - 返回 Message
+>   - 新增 `StreamCodec` 接口（支持分帧）
+
+> **📋 v18.2 变更说明 (2026-02-20)**：
+> - **合并 RPC 和 MultiRPC 接口**：
+>   - 统一为单一 `RPC` 接口
+>   - 包含单播方法：`Call()`, `CallAsync()`, `OnRequest()`, `OnRequestChan()`
+>   - 包含广播方法：`BroadcastCall()`, `BroadcastAsync()`, `WriteV()`, `WriteVCall()`
+>   - 接口数量从 2 个减少到 1 个
+>   - 更新 `FullTransport` 接口（移除 `MultiRPC` 嵌入）
+> - **设计理由**：单播和广播是 RPC 的不同调用方式，不是不同的抽象
 
 > **📋 v18.1 变更说明 (2026-02-19)**：
 > - **新增 AsyncStream 接口**：
@@ -254,8 +309,10 @@ graph LR
 | **② 控制平面层** | 11个 | `TreeCoordinator`, `NodeManager`, `TopologyManager`, `HAController`, `MetadataStore`, `HeartbeatManager`, `GroupManager`, `ShardManager`, `ShardRouter`, `Broadcaster`, `SecurityLayer` | 分片路由、选举、分布式锁、负载均衡 |
 | **③ 数据平面层** | 6个 | `Replicator`, `QuorumReplicator`, `ECManager`, `ReplicationStrategy`, `TxManager`, `TxCoordinator` | 复制/一致性、事务、副本管理 |
 | **④ 存储引擎层** | 9个 | `KVStore`, `WAL`, `BTree`, `Iterator`, `LocalTx`, `BlockDevice`, `LocalStorage`, `CloudStorage`, `DistributedStorage` | 单机 KV、WAL、元数据管理 |
-| **⑤ 基础设施层** | 16个 | `Transport`, `Message`, `Stream`, `Channel`, `Requestor`, `Codec`, `Middleware`, `MiddlewareChain`, `BatchReplicator`, `PipelineReplicator`, `CacheLayer`, `CircuitBreaker`, `RetryPolicy`, `ChaosMonkey`, `Plugin`, `DynamicConfig`, `HotReloader` | 网络通信、对象存储、异步能力、扩展能力 |
-| **总计** | **44个** | **44个完整接口** | **完整分布式KV系统** |
+| **⑤ 基础设施层** | 15个 | `Transport`, `Message`, `Stream`, `Channel`, `RPC`⭐, `Codec`, `Middleware`, `MiddlewareChain`, `BatchReplicator`, `PipelineReplicator`, `CacheLayer`, `CircuitBreaker`, `RetryPolicy`, `Plugin`, `DynamicConfig` | 网络通信、对象存储、异步能力、扩展能力 |
+| **总计** | **43个** | **43个完整接口** | **完整分布式KV系统** |
+
+> ⭐ v18.2: 合并 RPC + MultiRPC → 统一 RPC 接口（-1 个接口）
 
 ### 1.4 分层依赖规则
 
@@ -398,27 +455,263 @@ type Extensions interface {
 }
 ```
 
-#### 2.2.4 RPC - 单播请求响应（同步+异步+Channel）
+#### 2.2.4 RPC - 统一 RPC 接口（单播 + 广播）⭐ v18.5 BroadcastTracker
 
 ```go
-// RPC 接口：同步 + 异步 + Channel
-type RPC interface {
-    // 同步调用（阻塞等响应）
-    Call(ctx context.Context, to PeerID, req Message) (Message, error)
-    
-    // 异步调用（不阻塞，回调返回）
-    CallAsync(ctx context.Context, to PeerID, req Message, 
-              cb func(Message, error)) error
-    
-    // 函数式处理
-    OnRequest(handler func(ctx context.Context, from PeerID, 
-                           req Message) Message)
-    
-    // Channel模式接收请求
-    OnRequestChan() <-chan RequestMsg
+// ResponseStrategy 广播响应策略 ⭐ v18.4
+type ResponseStrategy int
+
+const (
+    // ResponseAll 等待所有节点响应（默认）
+    // 适用场景：事务提交、配置变更（强一致性）
+    ResponseAll ResponseStrategy = iota
+
+    // ResponseMajority 等待多数派响应（> N/2）
+    // 适用场景：3副本写入（W=2）、分片同步
+    ResponseMajority
+
+    // ResponseNone 不等待响应（单向发送）
+    // 适用场景：日志广播、监控数据（高吞吐）
+    ResponseNone
+)
+
+// BroadcastResult 广播结果（同消息广播）⭐ v18.4
+type BroadcastResult struct {
+    Responses    []Message  // 成功响应（有序列表）
+    SuccessPeers []PeerID   // 成功节点
+    FailedPeers  []PeerID   // 失败/超时节点
 }
 
-// RequestMsg 用于channel接收
+// WriteVResult 批量写入结果（不同消息）⭐ v18.5
+type WriteVResult struct {
+    Responses    map[PeerID]Message // 成功响应（按节点映射）
+    SuccessPeers []PeerID           // 成功节点
+    FailedPeers  []PeerID           // 失败/超时节点
+}
+
+// BroadcastTracker 可选的广播追踪器（一次性使用）⭐ v18.7
+//
+// 设计原则：Tracker 是一次性的，不复用
+// - 避免 channel 泄漏风险
+// - 简化并发模型
+// - Tracker 本身很轻量，不复用没有性能问题
+type BroadcastTracker struct {
+    taskID       string              // 任务 ID（用于日志）
+    targets      []PeerID            // 目标节点列表
+    responses    map[PeerID]Message  // 成功响应
+    failures     map[PeerID]error    // 失败记录
+    mu           sync.RWMutex        // 保护并发访问
+    done         chan struct{}       // 策略满足时关闭
+    fullDone     chan struct{}       // 全部完成时关闭
+    majorityDone chan struct{}       // 多数派完成时关闭 ⭐ v18.7
+}
+
+// NewBroadcastTracker 创建广播追踪器 ⭐ v18.7
+func NewBroadcastTracker(taskID string, targets []PeerID) *BroadcastTracker {
+    // 保护性拷贝，防止外部修改
+    targetsCopy := make([]PeerID, len(targets))
+    copy(targetsCopy, targets)
+
+    return &BroadcastTracker{
+        taskID:       taskID,
+        targets:      targetsCopy, // 使用拷贝
+        responses:    make(map[PeerID]Message),
+        failures:     make(map[PeerID]error),
+        done:         make(chan struct{}),
+        fullDone:     make(chan struct{}),
+        majorityDone: make(chan struct{}),
+    }
+}
+
+// WaitFull 等待所有节点响应（包括失败的） ⭐ v18.5
+func (t *BroadcastTracker) WaitFull(ctx context.Context) error {
+    select {
+    case <-t.fullDone:
+        return nil
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
+
+// WaitMajority 等待多数派（> N/2）节点响应 ⭐ v18.7 优化
+// 优化：使用 channel 而非轮询，零 CPU 开销
+func (t *BroadcastTracker) WaitMajority(ctx context.Context) error {
+    // 快速路径：先检查当前状态
+    t.mu.RLock()
+    majority := len(t.targets)/2 + 1
+    if len(t.responses) >= majority || len(t.targets) == 0 {
+        t.mu.RUnlock()
+        return nil
+    }
+    t.mu.RUnlock()
+
+    // 等待 majorityDone channel（零 CPU 开销）
+    select {
+    case <-t.majorityDone:
+        return nil
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
+
+// WaitStrategy 等待指定策略满足 ⭐ v18.6
+func (t *BroadcastTracker) WaitStrategy(ctx context.Context, strategy ResponseStrategy) error {
+    switch strategy {
+    case ResponseAll:
+        return t.WaitFull(ctx)
+    case ResponseMajority:
+        return t.WaitMajority(ctx)
+    case ResponseNone:
+        return nil
+    default:
+        return ErrInvalidStrategy
+    }
+}
+
+// Stats 获取实时统计信息 ⭐ v18.5
+func (t *BroadcastTracker) Stats() (success, failed, pending int) {
+    t.mu.RLock()
+    defer t.mu.RUnlock()
+    return len(t.responses), len(t.failures),
+        len(t.targets) - len(t.responses) - len(t.failures)
+}
+
+// IsDone 检查策略是否已满足 ⭐ v18.5
+func (t *BroadcastTracker) IsDone() bool {
+    select {
+    case <-t.done:
+        return true
+    default:
+        return false
+    }
+}
+
+// IsMajorityReached 检查是否已达到多数派 ⭐ v18.6
+func (t *BroadcastTracker) IsMajorityReached() bool {
+    t.mu.RLock()
+    defer t.mu.RUnlock()
+    majority := len(t.targets)/2 + 1
+    return len(t.responses) >= majority
+}
+
+// IsFullDone 检查是否全部完成 ⭐ v18.6
+func (t *BroadcastTracker) IsFullDone() bool {
+    select {
+    case <-t.fullDone:
+        return true
+    default:
+        return false
+    }
+}
+
+// ====== 内部方法（由 RPC 实现调用）⭐ v18.8 ======
+
+// RecordSuccess 记录成功响应（由 RPC 实现调用）
+func (t *BroadcastTracker) RecordSuccess(peer PeerID, resp Message) {
+    t.mu.Lock()
+    defer t.mu.Unlock()
+    t.responses[peer] = resp
+    majority := len(t.targets)/2 + 1
+    if len(t.responses) >= majority {
+        select {
+        case <-t.majorityDone:
+        default:
+            close(t.majorityDone)
+        }
+    }
+    t.checkFullDone()
+}
+
+// RecordFailure 记录失败响应（由 RPC 实现调用）
+func (t *BroadcastTracker) RecordFailure(peer PeerID, err error) {
+    t.mu.Lock()
+    defer t.mu.Unlock()
+    t.failures[peer] = err
+    t.checkFullDone()
+}
+
+// checkFullDone 检查是否全部完成（内部方法）
+func (t *BroadcastTracker) checkFullDone() {
+    if len(t.responses)+len(t.failures) == len(t.targets) {
+        select {
+        case <-t.fullDone:
+        default:
+            close(t.fullDone)
+        }
+        majority := len(t.targets)/2 + 1
+        if len(t.responses) >= majority {
+            select {
+            case <-t.done:
+            default:
+                close(t.done)
+            }
+        }
+    }
+}
+
+// ============================================================================
+// RPC 错误码定义 ⭐ v18.5
+// ============================================================================
+
+var (
+    ErrMajorityFailed      = errors.New("rpc: majority quorum not reached")
+    ErrAllFailed           = errors.New("rpc: all nodes failed")
+    ErrTimeout             = errors.New("rpc: request timeout")
+    ErrCanceled            = errors.New("rpc: request canceled")
+    ErrPeerUnreachable     = errors.New("rpc: peer unreachable")
+    ErrNoHandler           = errors.New("rpc: no handler registered")
+    ErrMessageTooLarge     = errors.New("rpc: message too large")
+    ErrCodecFailure        = errors.New("rpc: codec failure")
+    ErrStrategyNotMajority = errors.New("rpc: strategy satisfied but not majority")  // ⭐ v18.6
+    ErrInvalidStrategy     = errors.New("rpc: invalid response strategy")            // ⭐ v18.6
+)
+
+// RPC 统一的 RPC 接口（合并原 RPC 和 MultiRPC）
+//
+// 统一了单播和广播两种通信模式，简化接口设计。
+// - 单播：Call/CallAsync/OnRequest/OnRequestChan
+// - 广播：BroadcastCall/BroadcastAsync/WriteV/WriteVCall（支持 ResponseStrategy + BroadcastTracker）
+type RPC interface {
+    // ====== 单播 ======
+    // 同步调用（阻塞等响应）
+    Call(ctx context.Context, to PeerID, req Message) (Message, error)
+
+    // 异步调用（不阻塞，回调返回）
+    CallAsync(ctx context.Context, to PeerID, req Message,
+              cb func(Message, error)) error
+
+    // 函数式处理
+    OnRequest(handler func(ctx context.Context, from PeerID,
+                           req Message) Message)
+
+    // Channel 模式接收请求
+    OnRequestChan() <-chan RequestMsg
+
+    // ====== 广播 ======
+    // 同消息广播：支持响应策略 + 可选追踪器 ⭐ v18.5 添加 tracker 参数
+    // - strategy: 响应策略（All/Majority/None）
+    // - tracker: 可选追踪器，nil 表示不追踪
+    BroadcastCall(ctx context.Context, to []PeerID, req Message,
+                  strategy ResponseStrategy, tracker *BroadcastTracker) (BroadcastResult, error)
+
+    // 同消息广播：异步回调 + 可选追踪器 ⭐ v18.5 添加 tracker 参数
+    BroadcastAsync(ctx context.Context, to []PeerID, req Message,
+                   strategy ResponseStrategy, tracker *BroadcastTracker,
+                   cb func(from PeerID, resp Message, err error)) error
+
+    // 不同消息群发：WriteV（单向，等价于 ResponseNone）⭐ v18.5 添加 tracker 参数
+    WriteV(ctx context.Context, targets []PeerID, msgs []Message,
+           tracker *BroadcastTracker) error
+
+    // 不同消息群发：支持响应策略 + 可选追踪器 ⭐ v18.5 添加 tracker 参数
+    WriteVCall(ctx context.Context, targets []PeerID, msgs []Message,
+               strategy ResponseStrategy, tracker *BroadcastTracker) (WriteVResult, error)
+
+    // ====== 生命周期 ======
+    Close() error
+}
+
+// RequestMsg 用于 channel 接收
 type RequestMsg struct {
     Ctx    context.Context
     From   PeerID
@@ -432,29 +725,13 @@ type ResponseMsg struct {
 }
 ```
 
-#### 2.2.5 MultiRPC - 广播+WriteV
+**设计理由**:
+- 单播和广播是 RPC 的不同调用方式，不是不同的抽象
+- 接口数量从 2 个减少到 1 个，简化使用
+- **BroadcastTracker**：可选追踪器，支持实时监控和全部完成通知
+- 与 spike 文档 15.3.1 节的统一 RPC 接口设计一致
 
-```go
-type MultiRPC interface {
-    // 同消息广播：同步等全部回
-    BroadcastCall(ctx context.Context, to []PeerID, 
-                  req Message) ([]Message, error)
-    
-    // 同消息广播：异步回调
-    BroadcastAsync(ctx context.Context, to []PeerID, req Message,
-                   cb func(from PeerID, resp Message, err error)) error
-    
-    // 不同消息群发：WriteV（单向）
-    WriteV(ctx context.Context, targets []PeerID, 
-           msgs []Message) error
-    
-    // 不同消息群发：等待所有响应
-    WriteVCall(ctx context.Context, targets []PeerID, msgs []Message,
-               ) (map[PeerID]Message, error)
-}
-```
-
-#### 2.2.6 Stream & PubSub
+#### 2.2.5 Stream & PubSub
 
 ```go
 type Stream interface {
@@ -510,12 +787,39 @@ type PubSub interface {
 #### 2.2.7 Codec - 编解码
 
 ```go
+// Codec 消息编解码接口
+// 支持多种序列化格式：MessagePack（默认）、Protobuf、Thrift
 type Codec interface {
-    Encode(msg Message) error
-    Decode(data []byte, msg Message) error
+    // Encode 编码消息为字节切片
+    Encode(msg Message) ([]byte, error)
+
+    // Decode 解码字节切片为消息
+    Decode(data []byte) (Message, error)
+
+    // Name 返回编解码器名称（如 "msgpack"、"protobuf"、"thrift"）
     Name() string
+
+    // Version 返回编解码器版本（如 "v1"），用于协议协商 ⭐ v18.2
+    Version() string
+}
+
+// StreamCodec 流式编解码接口（支持分帧）
+type StreamCodec interface {
+    Codec
+
+    // EncodeToWriter 编码并写入 Writer
+    EncodeToWriter(w io.Writer, msg Message) error
+
+    // DecodeFromReader 从 Reader 解码
+    DecodeFromReader(r io.Reader) (Message, error)
 }
 ```
+
+**支持的编解码器**：
+
+| Codec | 名称 | 优势 | 适用场景 |
+|-------|------|------|---------|
+| **MessagePack**（默认） | `msgpack` | 二进制紧凑、跨语言支持好、无 schema | 通用场景、快速开发 |
 
 #### 2.2.8 SecurityLayer - 安全传输层（通用化设计）
 
@@ -5046,16 +5350,15 @@ type Transport interface {
     IsConnected(peer PeerID) bool
     Close() error
 }
+// RPC 统一接口（合并 RPC + MultiRPC）⭐ v18.2
 type RPC interface {
+    // 单播
     Call(ctx context.Context, to PeerID, req Message) (Message, error)
-    CallAsync(ctx context.Context, to PeerID, req Message, 
-              cb func(Message, error)) error
+    CallAsync(ctx context.Context, to PeerID, req Message, cb func(Message, error)) error
     OnRequestChan() <-chan RequestMsg
-}
-type MultiRPC interface {
+    // 广播
     BroadcastCall(ctx context.Context, to []PeerID, req Message) ([]Message, error)
-    BroadcastAsync(ctx context.Context, to []PeerID, req Message,
-                   cb func(PeerID, Message, error)) error
+    BroadcastAsync(ctx context.Context, to []PeerID, req Message, cb func(PeerID, Message, error)) error
     WriteV(ctx context.Context, targets []PeerID, msgs []Message) error
 }
 type Stream interface {
@@ -5068,7 +5371,6 @@ type PubSub interface {
 type FullTransport interface {
     Transport
     RPC
-    MultiRPC
     Stream
     PubSub
     Codec() Codec
@@ -5079,24 +5381,22 @@ type FullTransport interface {
 
 1. **职责分离原则**:
    - Transport: 只负责**连接管理** (Connect/Disconnect/ConnectedPeers)
-   - RPC: 只负责**请求-响应**模式 (Call/CallAsync/OnRequestChan)
-   - MultiRPC: 只负责**广播/群发**模式 (BroadcastCall/WriteV)
+   - RPC: 负责**请求-响应**（单播 + 广播）⭐ v18.2 统一接口
    - Stream: 只负责**流式传输** (SendStream)
    - PubSub: 只负责**发布订阅** (Publish/SubscribeChan)
    - FullTransport: **组合所有能力**的完整接口
 
 2. **使用场景明确**:
    - **Transport**: 网络层连接管理 → `Connect()`, `Disconnect()`, `ConnectedPeers()`
-   - **RPC**: 1对1同步/异步调用 → `Call()`, `CallAsync()`, `OnRequestChan()`
-   - **MultiRPC**: 1对N广播 → `BroadcastCall()`, `BroadcastAsync()`, `WriteV()`
+   - **RPC**: 1对1/1对N调用 → `Call()`, `CallAsync()`, `BroadcastCall()`, `WriteV()` ⭐ v18.2 合并
    - **Stream**: 大文件/数据流 → `SendStream(ctx, to, <-chan []byte)`
    - **PubSub**: 事件通知 → `Publish()`, `SubscribeChan()`
    - **FullTransport**: 完整网络能力 → 所有上层都依赖这个
 
 3. **交互关系**:
    ```
-   Replication层 → FullTransport.RPC() (写复制请求)
-   Cluster层 → FullTransport.BroadcastCall() (广播心跳)
+   Replication层 → FullTransport.RPC().Call() (写复制请求)
+   Cluster层 → FullTransport.RPC().BroadcastCall() (广播心跳) ⭐ v18.2
    Gossip → FullTransport.PubSub() (跨组同步)
    Storage → FullTransport.Stream() (大文件传输)
    ```

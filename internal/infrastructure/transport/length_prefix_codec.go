@@ -72,7 +72,7 @@ func (c *LengthPrefixedCodec) Decode(r io.Reader) ([]byte, error) {
 	return data, nil
 }
 
-// writeFull 确保完整写入（处理部分写入情况）
+// writeFull ensures complete write (handles partial writes)
 func writeFull(w io.Writer, buf []byte) (int, error) {
 	total := 0
 	for total < len(buf) {
@@ -80,6 +80,9 @@ func writeFull(w io.Writer, buf []byte) (int, error) {
 		total += n
 		if err != nil {
 			return total, err
+		}
+		if n == 0 {
+			return total, errors.ErrInvalidMessage
 		}
 	}
 	return total, nil

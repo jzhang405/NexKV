@@ -3,6 +3,13 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -208,3 +215,566 @@ type AsyncStream interface {
 	// WaitClosedWithTimeout 带超时的等待流关闭
 	WaitClosedWithTimeout(timeout time.Duration) error
 }
+
+// ============================================================================
+// RPC 接口定义
+// ============================================================================
+
+// ResponseStrategy 广播响应策略
+type ResponseStrategy int
+
+const (
+	// ResponseAll 等待所有节点响应（默认）
+	// 适用场景：事务提交、配置变更（强一致性）
+	ResponseAll ResponseStrategy = iota
+
+	// ResponseMajority 等待多数派响应（> N/2）
+	// 适用场景：3副本写入（W=2）、分片同步
+	ResponseMajority
+
+	// ResponseNone 不等待响应（单向发送）
+	// 适用场景：日志广播、监控数据（高吞吐）
+	ResponseNone
+)
+
+// BroadcastResult 广播结果（同消息广播）
+type BroadcastResult struct {
+	Responses    []model.Message // 成功响应（有序列表）
+	SuccessPeers []model.PeerID  // 成功节点
+	FailedPeers  []model.PeerID  // 失败/超时节点
+}
+
+// WriteVResult 批量写入结果（不同消息）
+type WriteVResult struct {
+	Responses    map[model.PeerID]model.Message // 成功响应（按节点映射）
+	SuccessPeers []model.PeerID                 // 成功节点
+	FailedPeers  []model.PeerID                 // 失败/超时节点
+}
+
+// BroadcastTracker 可选的广播追踪器（一次性使用）
+//
+// 设计原则：Tracker 是一次性的，不复用
+// - 避免 channel 泄漏风险
+// - 简化并发模型
+// - Tracker 本身很轻量（几十字节），不复用没有性能问题
+type BroadcastTracker struct {
+	taskID       string                         // 任务 ID（用于日志）
+	targets      []model.PeerID                 // 目标节点列表
+	responses    map[model.PeerID]model.Message // 成功响应
+	failures     map[model.PeerID]error         // 失败记录
+	mu           sync.RWMutex                   // 保护并发访问
+	done         chan struct{}                  // 策略满足时关闭
+	fullDone     chan struct{}                  // 全部完成时关闭
+	majorityDone chan struct{}                  // 多数派完成时关闭
+}
+
+// NewBroadcastTracker 创建广播追踪器
+func NewBroadcastTracker(taskID string, targets []model.PeerID) *BroadcastTracker {
+	// 保护性拷贝，防止外部修改
+	targetsCopy := make([]model.PeerID, len(targets))
+	copy(targetsCopy, targets)
+
+	return &BroadcastTracker{
+		taskID:       taskID,
+		targets:      targetsCopy,
+		responses:    make(map[model.PeerID]model.Message),
+		failures:     make(map[model.PeerID]error),
+		done:         make(chan struct{}),
+		fullDone:     make(chan struct{}),
+		majorityDone: make(chan struct{}),
+	}
+}
+
+// WaitFull 等待所有节点响应（包括失败的）
+// 适用场景：集群关闭、全局同步
+func (t *BroadcastTracker) WaitFull(ctx context.Context) error {
+	select {
+	case <-t.fullDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// WaitMajority 等待多数派（> N/2）节点响应
+// 适用场景：与 ResponseMajority 策略配合
+// 优化：使用 channel 而非轮询，零 CPU 开销
+func (t *BroadcastTracker) WaitMajority(ctx context.Context) error {
+	// 快速路径：先检查当前状态
+	t.mu.RLock()
+	majority := len(t.targets)/2 + 1
+	if len(t.responses) >= majority || len(t.targets) == 0 {
+		t.mu.RUnlock()
+		return nil
+	}
+	t.mu.RUnlock()
+
+	// 等待 majorityDone channel（零 CPU 开销）
+	select {
+	case <-t.majorityDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// WaitStrategy 等待指定策略满足
+// 通用方法，根据传入的 strategy 等待
+func (t *BroadcastTracker) WaitStrategy(ctx context.Context, strategy ResponseStrategy) error {
+	switch strategy {
+	case ResponseAll:
+		return t.WaitFull(ctx)
+	case ResponseMajority:
+		return t.WaitMajority(ctx)
+	case ResponseNone:
+		return nil // 立即返回
+	default:
+		return ErrInvalidStrategy
+	}
+}
+
+// Stats 获取实时统计信息
+func (t *BroadcastTracker) Stats() (success, failed, pending int) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return len(t.responses), len(t.failures),
+		len(t.targets) - len(t.responses) - len(t.failures)
+}
+
+// IsDone 检查策略是否已满足
+func (t *BroadcastTracker) IsDone() bool {
+	select {
+	case <-t.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsMajorityReached 检查是否已达到多数派
+func (t *BroadcastTracker) IsMajorityReached() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	majority := len(t.targets)/2 + 1
+	return len(t.responses) >= majority
+}
+
+// IsFullDone 检查是否全部完成
+func (t *BroadcastTracker) IsFullDone() bool {
+	select {
+	case <-t.fullDone:
+		return true
+	default:
+		return false
+	}
+}
+
+// RecordSuccess 记录成功响应（由 RPC 实现调用）
+// 线程安全，自动更新状态并关闭 channel
+func (t *BroadcastTracker) RecordSuccess(peer model.PeerID, resp model.Message) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// 1. 记录响应
+	t.responses[peer] = resp
+
+	// 2. 检查是否满足 Majority 策略
+	majority := len(t.targets)/2 + 1
+	if len(t.responses) >= majority {
+		// 关闭 majorityDone channel（仅关闭一次）
+		select {
+		case <-t.majorityDone:
+			// 已经关闭，跳过
+		default:
+			close(t.majorityDone)
+		}
+	}
+
+	// 3. 检查是否全部完成
+	t.checkFullDoneLocked()
+}
+
+// RecordFailure 记录失败响应（由 RPC 实现调用）
+// 线程安全，自动更新状态并关闭 channel
+func (t *BroadcastTracker) RecordFailure(peer model.PeerID, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// 1. 记录失败
+	t.failures[peer] = err
+
+	// 2. 检查是否全部完成
+	t.checkFullDoneLocked()
+}
+
+// checkFullDoneLocked 检查是否全部完成（内部方法，需持锁调用）
+func (t *BroadcastTracker) checkFullDoneLocked() {
+	if len(t.responses)+len(t.failures) == len(t.targets) {
+		// 关闭 fullDone channel
+		select {
+		case <-t.fullDone:
+		default:
+			close(t.fullDone)
+		}
+
+		// 检查是否满足策略（关闭 done channel）
+		majority := len(t.targets)/2 + 1
+		if len(t.responses) >= majority {
+			select {
+			case <-t.done:
+			default:
+				close(t.done)
+			}
+		}
+	}
+}
+
+// RPC 错误码定义
+var (
+	// ErrMajorityFailed 多数派未达成（ResponseMajority 策略）
+	// 场景：3 节点广播，仅 1 个成功（需要 > N/2）
+	ErrMajorityFailed = errors.New("rpc: majority quorum not reached")
+
+	// ErrAllFailed 全部节点失败（ResponseAll 策略）
+	// 场景：任一节点失败，请求整体失败
+	ErrAllFailed = errors.New("rpc: all nodes failed")
+
+	// ErrTimeout 请求超时
+	ErrTimeout = errors.New("rpc: request timeout")
+
+	// ErrCanceled 请求被取消（context 取消）
+	ErrCanceled = errors.New("rpc: request canceled")
+
+	// ErrPeerUnreachable 节点不可达
+	ErrPeerUnreachable = errors.New("rpc: peer unreachable")
+
+	// ErrNoHandler 无处理器（服务端未注册）
+	ErrNoHandler = errors.New("rpc: no handler registered")
+
+	// ErrMessageTooLarge 消息过大
+	ErrMessageTooLarge = errors.New("rpc: message too large")
+
+	// ErrCodecFailure 编解码失败
+	ErrCodecFailure = errors.New("rpc: codec failure")
+
+	// ErrStrategyNotMajority 策略满足但不是 Majority
+	// 场景：WaitMajority 被调用，但策略满足时不是多数派
+	ErrStrategyNotMajority = errors.New("rpc: strategy satisfied but not majority")
+
+	// ErrInvalidStrategy 无效的策略
+	ErrInvalidStrategy = errors.New("rpc: invalid response strategy")
+)
+
+// RPC 统一的 RPC 接口（合并原 RPC 和 MultiRPC）
+//
+// 统一了单播和广播两种通信模式，简化接口设计。
+// - 单播：Call/CallAsync/OnRequest/OnRequestChan
+// - 广播：BroadcastCall/BroadcastAsync/WriteV/WriteVCall（支持 ResponseStrategy + BroadcastTracker）
+type RPC interface {
+	// ====== 单播 ======
+	// 同步调用（阻塞等响应）
+	Call(ctx context.Context, to model.PeerID, req model.Message) (model.Message, error)
+
+	// 异步调用（不阻塞，回调返回）
+	CallAsync(ctx context.Context, to model.PeerID, req model.Message, cb func(model.Message, error)) error
+
+	// 函数式处理（服务端注册处理器）
+	OnRequest(handler func(ctx context.Context, from model.PeerID, req model.Message) model.Message) error
+
+	// Channel 模式接收请求
+	OnRequestChan() <-chan RequestMsg
+
+	// ====== 广播 ======
+	// 同消息广播：支持响应策略 + 可选追踪器
+	// - strategy: 响应策略（All/Majority/None）
+	// - tracker: 可选追踪器，nil 表示不追踪
+	BroadcastCall(
+		ctx context.Context,
+		to []model.PeerID,
+		req model.Message,
+		strategy ResponseStrategy,
+		tracker *BroadcastTracker,
+	) (BroadcastResult, error)
+
+	// 同消息广播：异步回调 + 可选追踪器
+	BroadcastAsync(
+		ctx context.Context,
+		to []model.PeerID,
+		req model.Message,
+		strategy ResponseStrategy,
+		tracker *BroadcastTracker,
+		cb func(from model.PeerID, resp model.Message, err error),
+	) error
+
+	// 不同消息群发：WriteV（单向，不等待响应，等价于 ResponseNone）
+	// 注意：WriteV 是 "Write Vector" 的缩写，表示批量写入多个目标节点
+	WriteV(ctx context.Context, targets []model.PeerID, msgs []model.Message, tracker *BroadcastTracker) error
+
+	// 不同消息群发：支持响应策略 + 可选追踪器
+	WriteVCall(
+		ctx context.Context,
+		targets []model.PeerID,
+		msgs []model.Message,
+		strategy ResponseStrategy,
+		tracker *BroadcastTracker,
+	) (WriteVResult, error)
+
+	// ====== 生命周期 ======
+	Close() error
+}
+
+// RequestMsg 用于 Channel 接收请求
+type RequestMsg struct {
+	Ctx    context.Context
+	From   model.PeerID
+	Req    model.Message
+	RespCh chan ResponseMsg
+}
+
+// ResponseMsg 响应消息
+type ResponseMsg struct {
+	Msg model.Message
+	Err error
+}
+
+// ============================================================================
+// RequestID 生成器
+// ============================================================================
+
+// RequestID 请求唯一标识符
+// 格式: {NodeID}-{Timestamp:08x}-{Sequence:04x}
+// 示例: node-001-65d4a3f0-0001
+//
+// 设计说明：
+// - nodeID: 节点唯一标识，确保跨节点不冲突
+// - timestamp: Unix 时间戳（16 进制，8 位），支持跨节点时间排序
+// - sequence: 自增序列号（16 进制，4 位），每秒最多 65535 个请求
+//
+// 优势：
+// - 固定宽度：便于解析和索引
+// - 16 进制：减少长度（vs 10 进制）
+// - 时间排序：支持分布式追踪按时间排序
+type RequestID string
+
+// RequestIDGenerator 请求 ID 生成器（线程安全 + 时钟漂移保护）
+type RequestIDGenerator struct {
+	nodeID     string        // 节点 ID（启动时分配）
+	lastSecond atomic.Int64  // 上次生成时间戳（秒）
+	secondSeq  atomic.Uint32 // 当前秒内序列号
+}
+
+// NewRequestIDGenerator 创建请求 ID 生成器
+func NewRequestIDGenerator(nodeID string) *RequestIDGenerator {
+	return &RequestIDGenerator{
+		nodeID:     nodeID,
+		lastSecond: atomic.Int64{},
+		secondSeq:  atomic.Uint32{},
+	}
+}
+
+// Next 生成下一个请求 ID（线程安全 + 时钟漂移保护）
+//
+// 时钟回退处理策略：
+// - 当检测到系统时间回退（now < lastSecond）时，使用 lastSecond 作为时间戳
+// - 这保证了 RequestID 单调递增，避免 ID 冲突
+// - 场景：NTP 同步、闰秒、手动修改系统时间
+func (g *RequestIDGenerator) Next() RequestID {
+	now := time.Now().Unix()
+
+	// 时钟漂移保护：检测时间回退
+	for {
+		lastSec := g.lastSecond.Load()
+
+		if now > lastSec {
+			// 时间前进：正常跨秒
+			if g.lastSecond.CompareAndSwap(lastSec, now) {
+				g.secondSeq.Store(0)
+				break
+			}
+			// CAS 失败，重试
+			continue
+		}
+
+		if now == lastSec {
+			// 同一秒：继续递增序列号
+			break
+		}
+
+		// now < lastSec：时间回退！
+		// 策略：使用 lastSec 保证单调递增
+		now = lastSec
+		break
+	}
+
+	// 原子递增序列号
+	seq := g.secondSeq.Add(1)
+
+	// 格式化：{NodeID}-{Timestamp:08x}-{Sequence:04x}
+	return RequestID(fmt.Sprintf("%s-%08x-%04x", g.nodeID, now, seq))
+}
+
+// ParseRequestID 解析请求 ID（用于日志和调试）
+func ParseRequestID(id RequestID) (nodeID string, timestamp int64, sequence uint32, err error) {
+	parts := strings.Split(string(id), "-")
+	if len(parts) < 3 {
+		return "", 0, 0, errors.New("invalid request ID format: expected {NodeID}-{Timestamp}-{Sequence}")
+	}
+
+	// 解析时间戳（倒数第二部分）
+	tsHex := parts[len(parts)-2]
+	ts, err := strconv.ParseInt(tsHex, 16, 64)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("invalid timestamp: %w", err)
+	}
+
+	// 解析序列号（最后一部分）
+	seqHex := parts[len(parts)-1]
+	seq, err := strconv.ParseUint(seqHex, 16, 32)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("invalid sequence: %w", err)
+	}
+
+	// 节点 ID（前面所有部分）
+	nodeID = strings.Join(parts[:len(parts)-2], "-")
+
+	return nodeID, ts, uint32(seq), nil
+}
+
+// Time 返回请求 ID 中的时间戳（用于排序）
+func (id RequestID) Time() time.Time {
+	_, ts, _, err := ParseRequestID(id)
+	if err != nil {
+		return time.Time{}
+	}
+	return time.Unix(ts, 0)
+}
+
+// ============================================================================
+// RPC 配置
+// ============================================================================
+
+// RPCConfig RPC 默认配置
+type RPCConfig struct {
+	// 超时配置
+	CallTimeout      time.Duration // 单播调用超时，默认 30s
+	BroadcastTimeout time.Duration // 广播调用超时，默认 60s
+	ConnectTimeout   time.Duration // 连接超时，默认 10s
+
+	// 重试配置
+	MaxRetries   int           // 最大重试次数，默认 3
+	RetryBackoff time.Duration // 重试退避时间，默认 1s
+
+	// 并发配置
+	MaxConcurrentCalls int // 最大并发调用数，默认 1000
+	RequestBufferSize  int // 请求缓冲区大小，默认 256
+}
+
+// DefaultRPCConfig 返回默认配置
+func DefaultRPCConfig() *RPCConfig {
+	return &RPCConfig{
+		CallTimeout:        30 * time.Second,
+		BroadcastTimeout:   60 * time.Second,
+		ConnectTimeout:     10 * time.Second,
+		MaxRetries:         3,
+		RetryBackoff:       time.Second,
+		MaxConcurrentCalls: 1000,
+		RequestBufferSize:  256,
+	}
+}
+
+// ============================================================================
+// Codec 接口定义
+// ============================================================================
+
+// Codec 消息编解码接口
+type Codec interface {
+	// Encode 编码消息为字节切片
+	Encode(msg model.Message) ([]byte, error)
+
+	// Decode 解码字节切片为消息
+	Decode(data []byte) (model.Message, error)
+
+	// Name 返回编解码器名称（如 "msgpack"）
+	Name() string
+
+	// Version 返回编解码器版本（如 "v1"），用于协议协商
+	Version() string
+}
+
+// StreamCodec 流式编解码接口（支持分帧）
+type StreamCodec interface {
+	Codec
+
+	// EncodeToWriter 编码并写入 Writer
+	EncodeToWriter(w io.Writer, msg model.Message) error
+
+	// DecodeFromReader 从 Reader 解码
+	DecodeFromReader(r io.Reader) (model.Message, error)
+}
+
+// ============================================================================
+// Middleware 接口定义
+// ============================================================================
+
+// SendFunc 发送函数签名
+type SendFunc func(ctx context.Context, peer model.PeerID, msg model.Message) error
+
+// ReceiveFunc 接收函数签名
+type ReceiveFunc func(ctx context.Context, peer model.PeerID, msg model.Message) error
+
+// Middleware 中间件接口（拦截器模式）
+type Middleware interface {
+	// Name 中间件名称
+	Name() string
+
+	// InterceptSend 拦截发送消息
+	InterceptSend(ctx context.Context, peer model.PeerID, msg model.Message, next SendFunc) error
+
+	// InterceptReceive 拦截接收消息
+	InterceptReceive(ctx context.Context, peer model.PeerID, msg model.Message, next ReceiveFunc) error
+}
+
+// MiddlewareChain 中间件链管理器
+//
+// 并发安全策略：
+// 1. 使用读写锁（sync.RWMutex）保护中间件列表
+// 2. Execute 时获取快照执行，避免持锁时间过长
+// 3. 提供 Freeze 方法，冻结后禁止修改（高性能场景）
+type MiddlewareChain interface {
+	// Use 添加中间件到链尾
+	Use(middleware Middleware) error
+
+	// UseFirst 添加中间件到链头（优先执行）
+	// 场景：日志中间件通常需要在最外层
+	UseFirst(middleware Middleware) error
+
+	// UseAt 在指定位置插入中间件
+	// index=0 表示链头，index=len 表示链尾
+	UseAt(index int, middleware Middleware) error
+
+	// Remove 移除指定名称的中间件
+	Remove(name string) error
+
+	// List 获取所有中间件列表（返回快照）
+	List() []Middleware
+
+	// Freeze 冻结中间件链，禁止后续修改
+	// 冻结后 Use/UseFirst/UseAt/Remove/Clear 返回 ErrChainFrozen
+	// 适用场景：启动完成后调用，避免运行时修改开销
+	Freeze()
+
+	// IsFrozen 检查是否已冻结
+	IsFrozen() bool
+
+	// ExecuteSend 执行发送中间件链
+	ExecuteSend(ctx context.Context, peer model.PeerID, msg model.Message, final SendFunc) error
+
+	// ExecuteReceive 执行接收中间件链
+	ExecuteReceive(ctx context.Context, peer model.PeerID, msg model.Message, final ReceiveFunc) error
+
+	// Clear 清空所有中间件（冻结后返回错误）
+	Clear() error
+}
+
+// ErrChainFrozen 中间件链已冻结错误
+var ErrChainFrozen = errors.New("middleware chain is frozen")

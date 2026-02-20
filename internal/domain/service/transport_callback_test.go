@@ -141,7 +141,7 @@ func ExampleSimpleCallback() {
 
 // ExampleBroadcastTracker_enableDisable 动态启用/禁用回调示例
 // 场景：在测试环境临时禁用回调
-func Example() {
+func ExampleBroadcastTracker() {
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 	tracker := NewBroadcastTracker("task-004", targets)
 

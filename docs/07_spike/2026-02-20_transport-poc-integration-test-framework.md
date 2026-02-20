@@ -3,7 +3,7 @@
 > **文档类型**: Spike 研究文档
 > **创建日期**: 2026-02-20
 > **最后更新**: 2026-02-20
-> **文档版本**: v2.7（含 Goroutine 池推荐）
+> **文档版本**: v2.10（添加 Kahn 算法背景知识）
 > **关联文档**:
 > - `docs/06_PM/feature/2026-02-18_PR-nexkv-ddd-architecture_Pre.md`
 > - `docs/06_PM/feature/2026-02-19_PR-phase1-week1-2-transport-poc_Pre.md`
@@ -30,23 +30,32 @@
 
 ---
 
-## 📋 组件实现状态
+## 📋 DDD 重构状态说明
 
-本文档设计的**新框架**支持多个组件，但当前实现状态不同：
+> **⚠️ 重要背景**: DDD（领域驱动设计）是一次大的架构重构，目标是重构整个代码库。当前状态：
 
-| 组件 | 状态 | 说明 |
-|------|------|------|
-| **Transport** | ✅ 新框架已实现 | libp2p 传输层，支持节点发现和 RPC 通信 |
-| **Storage** | 📝 新框架计划中 | Phase 2 实现，包含 WAL 和 Bf-Tree 适配器 |
-| **Replication** | 📝 新框架计划中 | Phase 3 实现，包含 Raft 复制适配器 |
-| **Cluster** | 📝 新框架计划中 | Phase 4 实现，包含成员管理和分片适配器 |
+| 层级 | 新架构 (DDD) | 旧代码 | 说明 |
+|------|--------------|--------|------|
+| **Transport** | ✅ 已实现 | - | 新的 DDD 架构，接口定义在 `internal/domain/service/transport.go` |
+| **Storage** | ❌ 未实现 | 存在 | 旧代码在 `internal/infrastructure/storage/`，未迁移到新架构 |
+| **Replication** | ❌ 未实现 | 存在 | 旧代码在 `internal/infrastructure/replication/`，未迁移 |
+| **Cluster** | ❌ 未实现 | 存在 | 旧代码在 `internal/infrastructure/cluster/`，未迁移 |
 
-**当前阶段**: Phase 1 (Transport POC) - 仅 Transport 适配器已实现，其他组件为设计预览。
+### 测试覆盖说明
 
-**⚠️ 注意区分**: 
-- **新框架** (`pkg/test/framework/`): 本文档设计的通用集成测试框架
-- **旧测试** (`test/e2e/`): 现有的端到端测试，使用不同的实现方式
-- **生产代码** (`internal/infrastructure/`): 实际业务逻辑，与测试框架独立
+> **本框架测试覆盖统计只计算新架构部分，旧代码不计入。**
+
+- **Transport 接口**: 11 个方法，当前测试覆盖 ~45% (5/11)
+- **Storage/Replication/Cluster**: 旧代码，待 DDD 迁移后计入
+
+### 当前阶段
+
+**Phase 1**: 仅 Transport POC
+- 新框架适配器: `pkg/test/framework/`
+- 生产接口: `internal/domain/service/transport.go`
+- 旧代码 (`test/e2e/`): **不计入**本框架统计
+
+---
 
 **依赖关系声明**:
 - `pkg/test/framework/` 是**完全独立**的，不依赖 `test/e2e/` 的任何代码
@@ -69,6 +78,22 @@
 | v2.5 | 2026-02-20 | 最终审查版：版本号统一、CI/CD 配置、故障排查、命名规范 | AI Agent |
 | v2.6 | 2026-02-20 | Code Review 修复：P0/P1/P2 问题全面修复 | AI Agent |
 | v2.7 | 2026-02-20 | 添加"并发控制与 Goroutine 池"章节，推荐 ants 库 | AI Agent |
+| v2.8 | 2026-02-20 | Code Review v2：P0/P1/P2 全面修复（Goroutine 泄漏、资源清理、边界条件） | AI Agent |
+| v2.9 | 2026-02-20 | Code Review v3：修复 P1-6/P2-5/P2-6（百分位数排序、边界条件） | AI Agent |
+| v2.10 | 2026-02-20 | 添加 Kahn 算法背景知识（拓扑排序原理、图解示例、复杂度分析） | AI Agent |
+
+---
+
+## ⚠️ v2.8 变更影响分析
+
+| 变更内容 | 影响范围 | 向后兼容性 |
+|---------|---------|-----------|
+| NetworkPartitionController 添加 context 取消 | 🟡 使用延迟注入的测试 | ✅ 兼容（新增字段） |
+| TopologicalSort 临时组件清理 | 🟡 拓扑排序调用 | ✅ 兼容（行为修复） |
+| DataGenerator 边界条件处理 | 🟡 数据生成逻辑 | ✅ 兼容（行为修复） |
+| isReady 优化健康检查 | 🟡 集群就绪检查 | ✅ 兼容（性能优化） |
+| ForceCleanup 信号处理可配置 | 🟢 紧急清理逻辑 | ✅ 兼容（新增配置） |
+| calculatePercentile 添加排序 | 🟢 指标计算 | ✅ 兼容（行为修复） |
 
 ---
 
@@ -146,7 +171,7 @@ NexKV 项目需要验证多个层次的组件集成：
 
 ### 2.1 整体架构图
 
-<!-- P2 修复 (v2.6)：将 ASCII 图表替换为 Mermaid -->
+<!-- 架构图使用 Mermaid 渲染，符合项目规范 -->
 
 ```mermaid
 graph TB
@@ -252,6 +277,7 @@ type EnvironmentStatus int
 const (
     EnvironmentStatusUnknown EnvironmentStatus = iota
     EnvironmentStatusCreating
+    EnvironmentStatusCreated   // P2-3 修复 (v2.8)：添加缺失的 Created 状态
     EnvironmentStatusStarting
     EnvironmentStatusRunning
     EnvironmentStatusStopping
@@ -504,6 +530,141 @@ func (r *ComponentRegistry) Create(
     return factory(config)
 }
 
+// ============================================================================
+// 拓扑排序背景知识：Kahn 算法
+// ============================================================================
+
+/*
+### 什么是拓扑排序？
+
+拓扑排序（Topological Sorting）是一种对有向无环图（DAG）的顶点进行排序的算法，
+使得对于图中的每一条有向边 (u, v)，顶点 u 在排序结果中都出现在顶点 v 之前。
+
+**应用场景**：
+- 任务调度：确定任务的执行顺序
+- 依赖解析：包管理器、构建系统
+- 课程安排：先修课程顺序
+- **组件启动顺序**：本框架中确保组件按依赖顺序启动
+
+### Kahn 算法原理
+
+Kahn 算法（1962年，Arthur B. Kahn）是一种基于入度的拓扑排序算法。
+
+**核心思想**：
+1. 维护每个顶点的**入度**（指向该顶点的边的数量）
+2. 入度为 0 的顶点没有依赖，可以优先处理
+3. 处理完一个顶点后，将其所有邻居的入度减 1
+4. 重复直到所有顶点都被处理，或发现循环依赖
+
+### 算法步骤
+
+```
+输入：有向图 G = (V, E)
+输出：拓扑排序序列（如果存在）
+
+1. 计算所有顶点的入度
+2. 将所有入度为 0 的顶点加入队列 Q
+3. while Q 非空:
+     a. 取出队首顶点 u，加入结果序列
+     b. 对于 u 的每个邻居 v:
+        - 将 v 的入度减 1
+        - 如果 v 的入度变为 0，将 v 加入 Q
+4. 如果结果序列长度 < 顶点数，说明存在循环依赖
+```
+
+### 图解示例
+
+假设组件依赖关系如下：
+
+```
+Transport (无依赖)
+    ↓
+Storage (依赖 Transport)
+    ↓
+Replication (依赖 Transport + Storage)
+    ↓
+Cluster (依赖 Storage + Replication)
+```
+
+**对应的 DAG 图**：
+
+```mermaid
+graph LR
+    T[Transport] --> S[Storage]
+    T --> R[Replication]
+    S --> R
+    S --> C[Cluster]
+    R --> C
+```
+
+**Kahn 算法执行过程**：
+
+```
+初始入度：Transport=0, Storage=1, Replication=2, Cluster=2
+队列 Q：[Transport]
+
+Step 1: 处理 Transport
+  - 结果：[Transport]
+  - 更新入度：Storage=0, Replication=1
+  - Q：[Storage]
+
+Step 2: 处理 Storage
+  - 结果：[Transport, Storage]
+  - 更新入度：Replication=0, Cluster=1
+  - Q：[Replication]
+
+Step 3: 处理 Replication
+  - 结果：[Transport, Storage, Replication]
+  - 更新入度：Cluster=0
+  - Q：[Cluster]
+
+Step 4: 处理 Cluster
+  - 结果：[Transport, Storage, Replication, Cluster]
+  - Q：[]
+
+最终启动顺序：Transport → Storage → Replication → Cluster
+```
+
+### 循环依赖检测
+
+如果存在循环依赖：
+
+```
+A → B → C → A  （循环）
+```
+
+**执行过程**：
+```
+初始入度：A=1, B=1, C=1
+队列 Q：[]  （没有入度为 0 的顶点！）
+
+结果：无法开始，检测到循环依赖
+```
+
+### 复杂度分析
+
+| 指标 | 复杂度 | 说明 |
+|------|--------|------|
+| **时间复杂度** | O(V + E) | V = 顶点数，E = 边数 |
+| **空间复杂度** | O(V + E) | 邻接表 + 入度表 |
+
+**vs DFS 拓扑排序**：
+- Kahn 算法：更适合检测循环依赖（无法完成时即存在环）
+- DFS 算法：更适合单次遍历，但需要额外标记数组
+
+### 本框架中的应用
+
+在组件启动场景中：
+- **顶点**：组件（Transport, Storage, Replication, Cluster）
+- **边**：依赖关系（A → B 表示 B 依赖 A，A 需要先启动）
+- **入度**：组件的依赖数量
+- **结果序列**：组件的启动顺序
+
+**关键修复（v2.6）**：
+- 邻接表构建方向：dep → comp（依赖完成后才能启动当前组件）
+- 入度更新：减少邻居的入度，确保 O(V+E) 而非 O(V²)
+*/
+
 // TopologicalSort 对组件进行拓扑排序，检测循环依赖
 // 返回按依赖顺序排序的组件类型列表
 //
@@ -537,6 +698,14 @@ func (r *ComponentRegistry) TopologicalSort(
         }
 
         deps := tempComp.GetDependencies()
+
+        // P0-3 修复 (v2.8)：清理临时组件，防止资源泄漏
+        if stopper, ok := tempComp.(interface{ Stop(context.Context) error }); ok {
+            ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+            stopper.Stop(ctx)
+            cancel()
+        }
+
         for _, dep := range deps {
             if _, exists := inDegree[dep]; exists {
                 graph[dep] = append(graph[dep], comp) // dep -> comp 的边
@@ -1557,10 +1726,13 @@ type DefaultTestCluster struct {
     components  map[string]ComponentType
     mutex       sync.RWMutex
     status      EnvironmentStatus
-    
+
+    // P2-1 修复 (v2.8)：添加日志字段
+    logger      *slog.Logger
+
     // 网络模拟
     partitions  map[string]*NetworkPartition
-    
+
     // 资源管理
     portAllocator *PortAllocator
     tempDir       string
@@ -1591,6 +1763,7 @@ func NewTestCluster(
         partitions:    make(map[string]*NetworkPartition),
         portAllocator: NewPortAllocator(10000, 20000),
         tempDir:       generateTempDir(),
+        logger:        slog.Default(),  // P2-1 修复 (v2.8)：初始化日志字段
     }
     
     // 创建所有节点
@@ -1942,17 +2115,27 @@ func (c *DefaultTestCluster) cleanup() {
 }
 
 // ForceCleanup 强制清理（用于测试中断时的紧急清理）
+//
+// P1-4 修复 (v2.8)：信号处理可选，避免影响并行测试
+// 注意：并行测试时应禁用信号处理，使用 TestMain 统一管理
 func (c *DefaultTestCluster) ForceCleanup() {
-    // 注册信号处理，确保在测试中断时也能清理
-    sigChan := make(chan os.Signal, 1)
-    signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+    c.ForceCleanupWithSignal(true)
+}
 
-    go func() {
-        <-sigChan
-        c.logger.Info("received interrupt signal, forcing cleanup")
-        c.cleanup()
-        os.Exit(1)
-    }()
+// ForceCleanupWithSignal 带信号处理配置的强制清理
+func (c *DefaultTestCluster) ForceCleanupWithSignal(enableSignalHandler bool) {
+    // P1-4 修复 (v2.8)：信号处理可选
+    if enableSignalHandler {
+        sigChan := make(chan os.Signal, 1)
+        signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+        go func() {
+            <-sigChan
+            c.logger.Info("received interrupt signal, forcing cleanup")
+            c.cleanup()
+            os.Exit(1)
+        }()
+    }
 
     // 执行正常清理
     c.cleanup()
@@ -2019,19 +2202,27 @@ func (c *DefaultTestCluster) WaitForReady(
 }
 
 func (c *DefaultTestCluster) isReady(ctx context.Context) bool {
+    // P1-2 修复 (v2.8)：使用统一的超时 context，避免频繁创建
+    checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+    defer cancel()
+
     for _, node := range c.nodes {
         if node.status != NodeStatusRunning {
             return false
         }
 
-        // 检查所有组件健康（使用传入的上下文）
+        // 检查所有组件健康
         for _, comp := range node.components {
-            healthCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-            if err := comp.HealthCheck(healthCtx); err != nil {
-                cancel()
+            // 检查是否已取消
+            select {
+            case <-checkCtx.Done():
+                return false
+            default:
+            }
+
+            if err := comp.HealthCheck(checkCtx); err != nil {
                 return false
             }
-            cancel()
         }
     }
     return true
@@ -2039,24 +2230,30 @@ func (c *DefaultTestCluster) isReady(ctx context.Context) bool {
 
 // NetworkPartitionController 网络分区控制器
 // 提供完整的分区模拟能力，包括消息阻塞、延迟注入、丢包等
+//
+// P0-2 修复 (v2.8)：添加 context 取消机制，防止 goroutine 泄漏
 type NetworkPartitionController struct {
     cluster         *DefaultTestCluster
     partitionID     string
     partitionNodes  map[string]bool
-    
+
     // 分区状态
     isActive        bool
     startTime       time.Time
-    
+
     // 消息控制
     blockedMessages []PartitionedMessage  // 被阻塞的消息
     droppedMessages []PartitionedMessage  // 被丢弃的消息
-    
+
     // 网络模拟参数
     latencyInjection time.Duration         // 延迟注入
     packetLossRate   float64               // 丢包率 (0.0 - 1.0)
     bandwidthLimit   int64                 // 带宽限制 (bytes/sec)
-    
+
+    // P0-2 修复 (v2.8)：添加取消机制
+    ctx    context.Context
+    cancel context.CancelFunc
+
     mutex           sync.RWMutex
 }
 
@@ -2084,12 +2281,17 @@ func NewNetworkPartitionController(
     partitionID string,
     nodeIndices []int,
 ) (*NetworkPartitionController, error) {
+    // P0-2 修复 (v2.8)：创建可取消的上下文
+    ctx, cancel := context.WithCancel(context.Background())
+
     controller := &NetworkPartitionController{
         cluster:        cluster,
         partitionID:    partitionID,
         partitionNodes: make(map[string]bool),
         blockedMessages: make([]PartitionedMessage, 0),
         droppedMessages: make([]PartitionedMessage, 0),
+        ctx:    ctx,
+        cancel: cancel,
     }
     
     // 构建分区节点集合
@@ -2144,11 +2346,14 @@ func (pc *NetworkPartitionController) Apply() error {
 func (pc *NetworkPartitionController) Heal() error {
     pc.mutex.Lock()
     defer pc.mutex.Unlock()
-    
+
     if !pc.isActive {
         return fmt.Errorf("partition %s is not active", pc.partitionID)
     }
-    
+
+    // P0-2 修复 (v2.8)：取消所有延迟发送的 goroutine
+    pc.cancel()
+
     // 1. 移除消息拦截器
     if err := pc.removeMessageInterceptor(); err != nil {
         return fmt.Errorf("failed to remove message interceptor: %w", err)
@@ -2281,16 +2486,19 @@ func (pc *NetworkPartitionController) installMessageInterceptor() error {
 }
 
 func (pc *NetworkPartitionController) interceptMessage(from string, msg *Message) error {
-    pc.mutex.Lock()
-    defer pc.mutex.Unlock()
-    
-    if !pc.isActive {
-        return nil // 分区未激活，不拦截
-    }
-    
+    // P1-5 修复 (v2.8)：快速释放锁，避免阻塞其他消息处理
+    pc.mutex.RLock()
+    isActive := pc.isActive
     fromInPartition := pc.partitionNodes[from]
     toInPartition := pc.partitionNodes[msg.To]
-    
+    latency := pc.latencyInjection
+    lossRate := pc.packetLossRate
+    partitionID := pc.partitionID
+    pc.mutex.RUnlock()
+
+    if !isActive {
+        return nil // 分区未激活，不拦截
+    }
     // 同分区消息不拦截
     if fromInPartition == toInPartition {
         return nil
@@ -2303,30 +2511,40 @@ func (pc *NetworkPartitionController) interceptMessage(from string, msg *Message
         Payload:   msg.Payload,
         Timestamp: time.Now(),
     }
-    
+
+    // P1-5 修复 (v2.8)：使用局部变量，快速释放锁
     // 根据配置决定如何处理
-    if pc.packetLossRate > 0 && rand.Float64() < pc.packetLossRate {
+    if lossRate > 0 && rand.Float64() < lossRate {
         // 模拟丢包
         partitionedMsg.Action = PartitionActionDrop
+        pc.mutex.Lock()
         pc.droppedMessages = append(pc.droppedMessages, partitionedMsg)
-        return fmt.Errorf("message dropped due to partition: %s", pc.partitionID)
+        pc.mutex.Unlock()
+        return fmt.Errorf("message dropped due to partition: %s", partitionID)
     }
-    
-    if pc.latencyInjection > 0 {
-        // 模拟延迟（异步延迟发送）
+
+    if latency > 0 {
+        // P0-2 修复 (v2.8)：使用 context 取消机制，避免 goroutine 泄漏
         partitionedMsg.Action = PartitionActionDelay
         go func() {
-            time.Sleep(pc.latencyInjection)
-            // 延迟后尝试重新发送
-            // transport.Send(msg)
+            select {
+            case <-time.After(latency):
+                // 延迟后尝试重新发送
+                // transport.Send(msg)
+            case <-pc.ctx.Done():
+                // 分区恢复时取消
+                return
+            }
         }()
         return nil
     }
-    
+
     // 默认：阻塞消息
     partitionedMsg.Action = PartitionActionBlock
+    pc.mutex.Lock()
     pc.blockedMessages = append(pc.blockedMessages, partitionedMsg)
-    return fmt.Errorf("message blocked by partition: %s", pc.partitionID)
+    pc.mutex.Unlock()
+    return fmt.Errorf("message blocked by partition: %s", partitionID)
 }
 
 func (pc *NetworkPartitionController) removeMessageInterceptor() error {
@@ -2593,6 +2811,14 @@ func (g *BaseDataGenerator) SetSeed(seed int64) {
 }
 
 func (g *BaseDataGenerator) GenerateKeys(ctx context.Context, count int) ([][]byte, error) {
+	// P1-3 修复 (v2.8)：边界条件处理
+	if count <= 0 {
+		return [][]byte{}, nil
+	}
+	if count > 1000000 {
+		return nil, fmt.Errorf("count %d exceeds maximum limit 1000000", count)
+	}
+
 	keys := make([][]byte, count)
 
 	for i := 0; i < count; i++ {
@@ -2623,6 +2849,22 @@ func (g *BaseDataGenerator) GenerateKeys(ctx context.Context, count int) ([][]by
 }
 
 func (g *BaseDataGenerator) GenerateValues(ctx context.Context, count int, size int) ([][]byte, error) {
+	// P2-5 修复 (v2.8)：添加边界条件检查
+	if count <= 0 {
+		return [][]byte{}, nil
+	}
+	if count > 1000000 {
+		return nil, fmt.Errorf("count %d exceeds maximum limit 1000000", count)
+	}
+
+	// size 边界检查
+	if size <= 0 {
+		size = 1024 // 默认 1KB
+	}
+	if size > 10*1024*1024 { // 10MB
+		return nil, fmt.Errorf("size %d exceeds maximum limit 10MB", size)
+	}
+
 	values := make([][]byte, count)
 
 	for i := 0; i < count; i++ {
@@ -2862,24 +3104,30 @@ func calculatePercentile(values []time.Duration, percentile float64) time.Durati
 	if len(values) == 0 {
 		return 0
 	}
-	
-	// 简单实现：排序后取对应位置的值
+
+	// P2-2 修复 (v2.8)：添加排序，确保百分位数计算正确
 	sorted := make([]time.Duration, len(values))
 	copy(sorted, values)
-	
-	// 使用快速排序或标准库排序
-	// 这里简化处理
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i] < sorted[j]
+	})
+
 	index := int(float64(len(sorted)-1) * percentile)
 	return sorted[index]
 }
 
+// P1-6 修复 (v2.8)：添加排序，确保浮点数百分位数计算正确
 func calculateFloatPercentile(values []float64, percentile float64) float64 {
 	if len(values) == 0 {
 		return 0
 	}
-	
-	index := int(float64(len(values)-1) * percentile)
-	return values[index]
+
+	sorted := make([]float64, len(values))
+	copy(sorted, values)
+	sort.Float64s(sorted)
+
+	index := int(float64(len(sorted)-1) * percentile)
+	return sorted[index]
 }
 ```
 

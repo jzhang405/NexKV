@@ -9,7 +9,7 @@
 > - `docs/07_spike/2026-02-18_spike-nexkv-ddd-roadmap.md`（实施路线图）
 > - `docs/07_spike/2026-02-18_spike-nexkv-ddd-implement.md`（实施方案）
 > - `docs/07_spike/2026-02-18_spike-nexkv-ddd-interface.md`（接口定义 v18.0）
-> - `docs/07_spike/2026-02-20_transport-poc-integration-test-framework.md`（集成测试框架设计 v2.7）
+> - `docs/07_spike/2026-02-20_transport-poc-integration-test-framework.md`（集成测试框架设计 v2.10）
 > - `docs/07_spike/2026-02-20_goroutine-pool-library-recommendation.md`（Goroutine 池库选型：推荐 ants）
 
 ---

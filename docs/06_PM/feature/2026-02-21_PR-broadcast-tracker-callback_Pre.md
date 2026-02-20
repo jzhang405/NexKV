@@ -109,7 +109,8 @@
 
 **文档验收**:
 1. ✅ 代码注释完整（接口、方法、字段）
-2. ✅ 使用示例清晰（日志记录、指标上报）
+2. ✅ 使用示例清晰（日志记录、指标上报、错误处理）
+3. ✅ 性能基准测试结果（回调开销 < 100μs）
 
 ---
 
@@ -221,7 +222,7 @@ type BroadcastStats struct {
 
 **阶段 5：文档与示例（0.5 小时）**
 - [ ] 编写代码注释
-- [ ] 编写使用示例（日志记录、指标上报）
+- [ ] 编写使用示例（日志记录、指标上报、错误处理）
 
 **预计总时间**: 6.5 小时
 
@@ -259,13 +260,187 @@ type BroadcastStats struct {
 
 ### 5.3 性能测试
 
+**基准测试**：
+1. **BenchmarkBroadcastCallback_Overhead** - 测试回调开销
+   - 目标：回调开销 < 100μs（99 分位）
+   - 场景：1000 次广播调用，对比有无回调的性能差异
+
+2. **BenchmarkBroadcastCallback_Concurrent** - 测试并发性能
+   - 目标：并发回调不阻塞主流程
+   - 场景：10 个并发广播调用，每个广播 10 个节点
+
 **测试指标**：
-- 回调执行时间 < 1ms
-- 回调不阻塞主流程（对比有无回调的性能差异）
+- 回调执行时间 < 1ms（平均值）
+- 回调开销 < 100μs（99 分位）
+- 回调不阻塞主流程（吞吐量下降 < 5%）
 
 ---
 
-## 6. 参考资料
+## 6. 使用示例
+
+### 6.1 日志记录场景
+
+```go
+type LogCallback struct {
+    logger *slog.Logger
+}
+
+func (cb *LogCallback) OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats) {
+    cb.logger.Info("response received",
+        "peer", peer,
+        "progress", fmt.Sprintf("%d/%d", stats.Success+stats.Failed, stats.Total))
+}
+
+func (cb *LogCallback) OnFailure(peer model.PeerID, err error, stats BroadcastStats) {
+    cb.logger.Warn("request failed",
+        "peer", peer,
+        "error", err,
+        "progress", fmt.Sprintf("%d/%d", stats.Success+stats.Failed, stats.Total))
+}
+
+func (cb *LogCallback) OnMajorityReached(stats BroadcastStats) {
+    cb.logger.Info("🎯 MAJORITY REACHED!",
+        "success_rate", stats.SuccessRate,
+        "elapsed", stats.ElapsedTime)
+}
+
+func (cb *LogCallback) OnFullDone(stats BroadcastStats) {
+    cb.logger.Info("✅ ALL DONE",
+        "success", stats.Success,
+        "failed", stats.Failed,
+        "total_time", stats.ElapsedTime)
+}
+
+// 使用
+tracker := NewBroadcastTracker("task-001", replicas)
+tracker.SetCallback(&LogCallback{logger: slog.Default()})
+rpc.BroadcastCall(ctx, replicas, req, ResponseMajority, tracker)
+```
+
+### 6.2 指标上报场景
+
+```go
+type MetricsCallback struct {
+    metricsClient MetricsClient
+}
+
+func (cb *MetricsCallback) OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats) {
+    cb.metricsClient.Gauge("broadcast.progress", stats.SuccessRate)
+}
+
+func (cb *MetricsCallback) OnFailure(peer model.PeerID, err error, stats BroadcastStats) {
+    cb.metricsClient.Counter("broadcast.failures", 1)
+}
+
+func (cb *MetricsCallback) OnMajorityReached(stats BroadcastStats) {
+    cb.metricsClient.Counter("broadcast.majority_reached", 1)
+    cb.metricsClient.Histogram("broadcast.majority_latency", stats.ElapsedTime)
+}
+
+func (cb *MetricsCallback) OnFullDone(stats BroadcastStats) {
+    cb.metricsClient.Histogram("broadcast.total_latency", stats.ElapsedTime)
+}
+```
+
+### 6.3 错误处理场景
+
+```go
+type ErrorHandlingCallback struct {
+    retryQueue chan model.PeerID
+    logger     *slog.Logger
+}
+
+func (cb *ErrorHandlingCallback) OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats) {
+    cb.logger.Info("request succeeded", "peer", peer)
+}
+
+func (cb *ErrorHandlingCallback) OnFailure(peer model.PeerID, err error, stats BroadcastStats) {
+    cb.logger.Warn("request failed, adding to retry queue",
+        "peer", peer,
+        "error", err)
+
+    // 失败时加入重试队列（非阻塞）
+    select {
+    case cb.retryQueue <- peer:
+        cb.logger.Info("peer added to retry queue", "peer", peer)
+    default:
+        cb.logger.Warn("retry queue is full, dropping peer", "peer", peer)
+    }
+}
+
+func (cb *ErrorHandlingCallback) OnMajorityReached(stats BroadcastStats) {
+    cb.logger.Info("majority reached, starting retry processing")
+    // 可以在这里触发重试逻辑
+}
+
+func (cb *ErrorHandlingCallback) OnFullDone(stats BroadcastStats) {
+    cb.logger.Info("all requests completed",
+        "success", stats.Success,
+        "failed", stats.Failed,
+        "success_rate", stats.SuccessRate)
+
+    // 如果失败率过高，触发告警
+    if stats.SuccessRate < 0.8 {
+        cb.logger.Warn("low success rate detected", "success_rate", stats.SuccessRate)
+        // 触发告警逻辑
+    }
+}
+
+// 使用
+retryQueue := make(chan model.PeerID, 100)
+tracker := NewBroadcastTracker("task-001", replicas)
+tracker.SetCallback(&ErrorHandlingCallback{
+    retryQueue: retryQueue,
+    logger:     slog.Default(),
+})
+rpc.BroadcastCall(ctx, replicas, req, ResponseMajority, tracker)
+
+// 后台重试处理
+go func() {
+    for peer := range retryQueue {
+        // 重试逻辑
+        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        err := rpc.RetryCall(ctx, peer, req)
+        cancel()
+        if err != nil {
+            slog.Warn("retry failed", "peer", peer, "error", err)
+        }
+    }
+}()
+```
+
+### 6.4 流水线触发场景
+
+```go
+type PipelineCallback struct {
+    nextStage chan<- string
+    logger    *slog.Logger
+}
+
+func (cb *PipelineCallback) OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats) {
+    // 可选：处理每个响应
+}
+
+func (cb *PipelineCallback) OnFailure(peer model.PeerID, err error, stats BroadcastStats) {
+    // 可选：处理失败
+}
+
+func (cb *PipelineCallback) OnMajorityReached(stats BroadcastStats) {
+    cb.logger.Info("majority reached, triggering next stage")
+    // 多数派达成，触发下一阶段处理
+    cb.nextStage <- "majority_ready"
+}
+
+func (cb *PipelineCallback) OnFullDone(stats BroadcastStats) {
+    cb.logger.Info("all done, triggering final confirmation")
+    // 全部完成，触发最终确认
+    cb.nextStage <- "all_done"
+}
+```
+
+---
+
+## 7. 参考资料
 
 ### 6.1 相关文档
 
@@ -281,9 +456,9 @@ type BroadcastStats struct {
 
 ---
 
-## 7. 后续工作（可选）
+## 8. 后续工作（可选）
 
-### 7.1 可选增强（非本次 PR 范围）
+### 8.1 可选增强（非本次 PR 范围）
 
 **函数模式支持**：
 ```go
@@ -299,7 +474,7 @@ func (t *BroadcastTracker) SetOnSuccess(fn OnSuccessFunc) { ... }
 
 **适用场景**：简单日志、指标上报，不需要定义结构体
 
-### 7.2 后续优化方向
+### 8.2 后续优化方向
 
 1. **异步回调队列**（如果回调执行慢）
 2. **回调超时控制**（防止回调长时间阻塞）
@@ -307,8 +482,8 @@ func (t *BroadcastTracker) SetOnSuccess(fn OnSuccessFunc) { ... }
 
 ---
 
-**Pre 文档版本**: v1.0
+**Pre 文档版本**: v1.1
 **创建日期**: 2026-02-21
 **最后更新**: 2026-02-21
 **作者**: 🤖 AI Agent
-**状态**: 📋 待架构师评审
+**状态**: ✅ 已通过架构师评审

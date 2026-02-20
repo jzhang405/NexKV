@@ -186,6 +186,26 @@ type BroadcastStats struct {
   - `OnSuccess` 的 `resp` 不会为 nil（成功响应一定有内容）
   - `OnFailure` 的 `err` 不会为 nil（失败一定有错误信息）
 
+**回调执行顺序**（针对每个响应）：
+```
+1. OnSuccess / OnFailure（每次响应）
+   ↓
+2. OnMajorityReached（达到多数派时，仅一次）
+   ↓
+3. OnFullDone（全部完成时，仅一次）
+```
+
+**特殊场景**：
+- `OnMajorityReached` 和 `OnFullDone` 可能在**同一次** `RecordSuccess` 中顺序触发
+- **示例**：3 个节点，前 2 个成功后触发 `OnMajorityReached`，第 3 个成功后同时触发 `OnMajorityReached`（已触发，跳过）和 `OnFullDone`
+- **关键**：无论哪种场景，都保证顺序执行（OnSuccess → OnMajorityReached → OnFullDone）
+
+**回调实现注意事项**：
+1. **避免死锁**：回调在锁外执行，但应避免调用 `BroadcastTracker` 的方法（防止死锁）
+2. **快速返回**：回调应快速返回（< 10ms），长时间处理应启动 goroutine
+3. **线程安全**：回调可能被并发调用（`OnSuccess`/`OnFailure`），实现需线程安全
+4. **顺序独立性**：不要依赖回调的调用顺序（除文档明确保证的之外）
+
 **实现要点**：
 
 1. **锁外执行回调**（P0 修复）：
@@ -615,8 +635,112 @@ func (t *BroadcastTracker) SetOnSuccess(fn OnSuccessFunc) { ... }
 
 ---
 
-**Pre 文档版本**: v1.3
+## 九、版本历史
+
+### v1.4（2026-02-21）⭐ **补充执行顺序和注意事项**
+
+**修订原因**：补充回调执行顺序和实现注意事项（架构师评审意见）
+
+**新增内容**：
+
+1. ✅ **回调执行顺序**（针对每个响应）：
+   ```
+   1. OnSuccess / OnFailure（每次响应）
+      ↓
+   2. OnMajorityReached（达到多数派时，仅一次）
+      ↓
+   3. OnFullDone（全部完成时，仅一次）
+   ```
+
+2. ✅ **特殊场景说明**：
+   - `OnMajorityReached` 和 `OnFullDone` 可能在**同一次** `RecordSuccess` 中顺序触发
+   - 示例：3 个节点，第 3 个成功后同时触发两个回调
+   - 保证顺序执行（OnSuccess → OnMajorityReached → OnFullDone）
+
+3. ✅ **回调实现注意事项**（4 点）：
+   - **避免死锁**：回调在锁外执行，但应避免调用 `BroadcastTracker` 的方法
+   - **快速返回**：回调应快速返回（< 10ms），长时间处理应启动 goroutine
+   - **线程安全**：回调可能被并发调用，实现需线程安全
+   - **顺序独立性**：不要依赖回调的调用顺序（除文档明确保证的之外）
+
+**关键改进**：
+- ✅ 明确了回调执行顺序（避免实现者误解）
+- ✅ 说明了特殊场景（Majority 和 FullDone 同时触发）
+- ✅ 提供了实现注意事项（防止常见陷阱）
+
+---
+
+### v1.3（2026-02-21）⭐ **采纳全部建议并澄清关键问题**
+
+**修订原因**：采纳架构师全部建议，澄清 Nil 参数行为、触发条件、仅触发一次机制
+
+**新增内容**：
+
+1. ✅ **Nil 参数行为明确**：
+   - `OnSuccess` 的 `resp` 不会为 nil
+   - `OnFailure` 的 `err` 不会为 nil（含具体错误类型说明）
+
+2. ✅ **OnMajorityReached 触发条件明确**：
+   - 只在 RecordSuccess 时检查，RecordFailure 不会触发
+   - 3 个节点，2 个成功即触发（即使 1 个失败）
+
+3. ✅ **"仅触发一次"机制**：
+   - 添加标志位（`majorityCallbackTriggered`、`fullDoneCallbackTriggered`）
+   - 锁内判断 + 锁外触发双重检查
+
+4. ✅ **SuccessRate 除零保护**：
+   - 添加 `if total > 0` 检查
+
+5. ✅ **测试用例补充**：
+   - 新增 4 个边界场景测试（空 targets、全部失败、先 Majority 后 FullDone、并发）
+
+6. ✅ **时间估算调整**：
+   - 回调触发逻辑：2h → 3h
+   - 单元测试：2h → 2.5h
+   - 集成测试：1h → 1.5h
+   - 总时间：6.5h → 7.5h
+
+7. ✅ **风险评估补充**：
+   - 新增：回调重复触发、Nil 参数处理、并发安全问题
+
+---
+
+### v1.2（2026-02-21）⭐ **采纳架构师建议 1 和 2**
+
+**修订原因**：采纳架构师建议，补充错误处理示例和性能基准测试
+
+**新增内容**：
+
+1. ✅ **错误处理场景**：添加 `ErrorHandlingCallback` 示例
+2. ✅ **性能基准测试**：添加 `BenchmarkBroadcastCallback_Overhead` 和 `BenchmarkBroadcastCallback_Concurrent`
+
+---
+
+### v1.1（2026-02-21）⭐ **采纳架构师初步建议**
+
+**修订原因**：采纳架构师初步建议，补充使用示例和时间戳统计
+
+**新增内容**：
+
+1. ✅ **第 6 章使用示例**：补充 4 个场景（日志、指标、错误处理、流水线）
+2. ✅ **BroadcastStats 时间戳**：添加 `FirstResponseTime`、`MajorityReachTime`
+
+---
+
+### v1.0（2026-02-21）⭐ **初始版本**
+
+**创建日期**：初始版本，基于 Spike 研究文档
+
+**核心内容**：
+- 接口定义（BroadcastCallback + BroadcastStats）
+- 实施计划（5 个阶段，6.5 小时）
+- 测试计划（7 个测试用例）
+- 风险评估（5 个风险）
+
+---
+
+**Pre 文档版本**: v1.4
 **创建日期**: 2026-02-21
 **最后更新**: 2026-02-21
 **作者**: 🤖 AI Agent
-**状态**: ✅ 已通过架构师评审（已采纳全部建议并澄清关键问题）
+**状态**: ✅ 已通过架构师评审（已采纳全部建议并补充执行顺序和注意事项）

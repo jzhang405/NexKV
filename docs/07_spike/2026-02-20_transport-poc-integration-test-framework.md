@@ -3,11 +3,12 @@
 > **文档类型**: Spike 研究文档
 > **创建日期**: 2026-02-20
 > **最后更新**: 2026-02-20
-> **文档版本**: v2.6（P0/P1/P2 问题已修复版）
+> **文档版本**: v2.7（含 Goroutine 池推荐）
 > **关联文档**:
 > - `docs/06_PM/feature/2026-02-18_PR-nexkv-ddd-architecture_Pre.md`
 > - `docs/06_PM/feature/2026-02-19_PR-phase1-week1-2-transport-poc_Pre.md`
 > - `docs/06_PM/milestones/2026-02-20_M1-infrastructure-layer-acceptance.md`
+> - `docs/07_spike/2026-02-20_goroutine-pool-library-recommendation.md`（Goroutine 池详细选型）
 
 ---
 
@@ -67,6 +68,7 @@
 | v2.4 | 2026-02-20 | Code Review 修复：废弃 GlobalRegistry、添加验证清单、清理策略 | AI Agent |
 | v2.5 | 2026-02-20 | 最终审查版：版本号统一、CI/CD 配置、故障排查、命名规范 | AI Agent |
 | v2.6 | 2026-02-20 | Code Review 修复：P0/P1/P2 问题全面修复 | AI Agent |
+| v2.7 | 2026-02-20 | 添加"并发控制与 Goroutine 池"章节，推荐 ants 库 | AI Agent |
 
 ---
 
@@ -78,6 +80,7 @@
 | 删除 `init()` 全局注册模式 | 🔴 所有使用 `RegisterComponent()` 的代码 | ❌ **破坏性变更** |
 | 健康检查超时控制 | 🟡 所有组件的健康检查实现 | ✅ 兼容（新增规范） |
 | 资源泄漏修复 | 🟡 涉及节点重启的测试场景 | ✅ 兼容（行为修复） |
+| 添加 Goroutine 池章节 | 🟢 性能测试实现 | ✅ 兼容（新增功能） |
 
 ---
 
@@ -90,10 +93,11 @@
 5. [测试集群实现](#五测试集群实现)
 6. [测试场景实现](#六测试场景实现)
 7. [使用示例](#七使用示例)
-8. [目录结构](#八目录结构)
-9. [测试数据生成器](#九测试数据生成器)
-10. [分布式系统指标](#十分布式系统指标)
-11. [总结](#十一总结)
+8. [并发控制与 Goroutine 池](#八并发控制与-goroutine-池)
+9. [目录结构](#九目录结构)
+10. [测试数据生成器](#十测试数据生成器)
+11. [分布式系统指标](#十一分布式系统指标)
+12. [总结](#十二总结)
 
 ---
 
@@ -3504,7 +3508,254 @@ func TestNodeFailure(t *testing.T) {
 
 ---
 
-## 八、目录结构
+## 八、并发控制与 Goroutine 池
+
+### 8.1 为什么需要 Goroutine 池
+
+在集成测试框架的性能测试场景中，需要并发执行大量 RPC 调用。无限制创建 goroutine 会导致：
+
+| 问题 | 影响 |
+|------|------|
+| 内存耗尽 | 每个 goroutine 栈 ~8KB，100万 goroutine ≈ 8GB |
+| 调度器压力 | Go 调度器需要管理大量 goroutine |
+| 系统不稳定 | 可能导致 OOM 或响应变慢 |
+
+### 8.2 选型对比
+
+| 特性 | ants | tunny | workerpool | pond |
+|------|------|-------|------------|------|
+| **GitHub Stars** | 13k+ | 3.5k | 400 | 500 |
+| **维护状态** | ✅ 活跃 | ⚠️ 较少 | ⚠️ 较少 | ✅ 活跃 |
+| **性能** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **易用性** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **动态扩缩容** | ✅ | ❌ | ❌ | ✅ |
+| **任务优先级** | ✅ | ❌ | ❌ | ❌ |
+| **超时控制** | ✅ | ✅ | ❌ | ✅ |
+| **生产验证** | ✅ 字节跳动 | ✅ | ⚠️ | ⚠️ |
+
+### 8.3 首选推荐：ants
+
+> **ants** 是目前 Go 生态中最流行的 goroutine 池库，由**字节跳动**开源。
+
+**核心特点**：
+- 🚀 **高性能**：比原生 goroutine 快 10x（大量短任务场景）
+- 🎯 **易用**：API 简洁，5 分钟上手
+- 🔧 **功能全**：动态扩缩容、优先级、超时、取消
+- 📊 **可观测**：内置指标监控
+- 🏭 **生产验证**：字节跳动内部广泛使用
+
+**安装**：
+```bash
+go get -u github.com/panjf2000/ants/v2
+```
+
+### 8.4 基础用法
+
+#### 8.4.1 简单任务池
+
+```go
+package main
+
+import (
+    "fmt"
+    "time"
+
+    "github.com/panjf2000/ants/v2"
+)
+
+func main() {
+    // 创建固定大小的池（100 workers）
+    pool, err := ants.NewPool(100)
+    if err != nil {
+        panic(err)
+    }
+    defer pool.Release() // 程序结束时释放资源
+
+    // 提交任务
+    for i := 0; i < 1000; i++ {
+        taskID := i
+        err := pool.Submit(func() {
+            fmt.Printf("Task %d executed\n", taskID)
+            time.Sleep(100 * time.Millisecond)
+        })
+        if err != nil {
+            fmt.Printf("Submit failed: %v\n", err)
+        }
+    }
+
+    // 等待所有任务完成
+    fmt.Printf("Running workers: %d\n", pool.Running())
+}
+```
+
+#### 8.4.2 带参数的任务函数
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+
+    "github.com/panjf2000/ants/v2"
+)
+
+func main() {
+    var wg sync.WaitGroup
+
+    // 创建带参数的任务池
+    pool, _ := ants.NewPoolWithFunc(10, func(i interface{}) {
+        taskID := i.(int)
+        fmt.Printf("Processing task %d\n", taskID)
+        wg.Done()
+    })
+    defer pool.Release()
+
+    // 提交任务
+    for i := 0; i < 100; i++ {
+        wg.Add(1)
+        _ = pool.Invoke(i)
+    }
+
+    wg.Wait()
+    fmt.Println("All tasks completed")
+}
+```
+
+### 8.5 性能测试集成示例
+
+```go
+// pkg/test/framework/benchmark.go
+
+package framework
+
+import (
+    "context"
+    "sync"
+
+    "github.com/panjf2000/ants/v2"
+)
+
+// RPCLoadTester RPC 负载测试器
+type RPCLoadTester struct {
+    pool   *ants.PoolWithFunc
+    config *BenchmarkConfig
+}
+
+// BenchmarkConfig 性能测试配置
+type BenchmarkConfig struct {
+    WorkerCount    int           // worker 数量
+    TaskQueueSize  int           // 任务队列大小
+    WarmupDuration time.Duration // 预热时间
+}
+
+// RPCTask RPC 测试任务
+type RPCTask struct {
+    ctx      context.Context
+    node     TestNode
+    payload  []byte
+    wg       *sync.WaitGroup
+}
+
+// Execute 执行 RPC 任务
+func (t *RPCTask) Execute() {
+    _, _ = t.node.SendRPC(t.ctx, "benchmark", t.payload)
+}
+
+func NewRPCLoadTester(config *BenchmarkConfig) (*RPCLoadTester, error) {
+    tester := &RPCLoadTester{config: config}
+
+    pool, err := ants.NewPoolWithFunc(config.WorkerCount, func(i interface{}) {
+        task := i.(*RPCTask)
+        task.Execute()
+        task.wg.Done()
+    }, ants.WithPreAlloc(true))
+    if err != nil {
+        return nil, err
+    }
+
+    tester.pool = pool
+    return tester, nil
+}
+
+// Run 执行负载测试
+func (t *RPCLoadTester) Run(ctx context.Context, tasks []*RPCTask) {
+    var wg sync.WaitGroup
+
+    for _, task := range tasks {
+        select {
+        case <-ctx.Done():
+            return
+        default:
+            wg.Add(1)
+            task.wg = &wg
+            _ = t.pool.Invoke(task)
+        }
+    }
+
+    wg.Wait()
+}
+
+// Close 释放资源
+func (t *RPCLoadTester) Close() {
+    t.pool.Release()
+}
+```
+
+### 8.6 配置选项
+
+```go
+pool, err := ants.NewPoolWithFunc(100, func(i interface{}) {
+    // 任务处理逻辑
+},
+    // 核心配置
+    ants.WithPreAlloc(true),                    // 预分配 goroutine（减少动态分配开销）
+    ants.WithNonblocking(true),                 // 非阻塞模式（任务队列满时不阻塞）
+    ants.WithPanicHandler(func(err interface{}) { // panic 恢复
+        // 处理 panic
+    }),
+    ants.WithExpiryDuration(10*time.Second),    // 空闲 worker 过期时间
+    ants.WithMaxBlockingTasks(1000),            // 最大阻塞任务数
+)
+```
+
+### 8.7 池大小选择建议
+
+```go
+import "runtime"
+
+// CPU 密集型任务
+cpuBoundPoolSize := runtime.NumCPU()
+
+// I/O 密集型任务（RPC 调用属于此类）
+ioBoundPoolSize := runtime.NumCPU() * 10
+
+// 混合型任务
+mixedPoolSize := runtime.NumCPU() * 5
+```
+
+### 8.8 最佳实践
+
+| 实践 | 说明 |
+|------|------|
+| **使用 defer 释放** | `defer pool.Release()` 确保资源释放 |
+| **PanicHandler** | 配置 panic 处理，避免 worker 退出 |
+| **背压控制** | 使用 `ants.WithMaxBlockingTasks` 限制排队 |
+| **监控指标** | 定期检查 `pool.Running()` 和 `pool.Waiting()` |
+
+### 8.9 NexKV 使用计划
+
+| 阶段 | 场景 | 配置 |
+|------|------|------|
+| Phase 1 | 集成测试性能测试 | 100 workers, 非阻塞 |
+| Phase 2 | RPC 并发控制 | 动态扩缩容, 背压 |
+| Phase 3 | 后台任务处理 | 优先级队列 |
+
+> **详细文档**: `docs/07_spike/2026-02-20_goroutine-pool-library-recommendation.md`
+
+---
+
+## 九、目录结构
 
 > **推荐结构**: 与现有 `test/e2e/` 物理分离，职责清晰
 
@@ -4947,16 +5198,16 @@ scenarios/
 | **ComponentRegistry** | 组件注册表，管理组件工厂和依赖关系 |
 | **Network Partition** | 网络分区，模拟节点间网络隔离 |
 
-### 15.2 参考资料
+### 15.3 参考资料
 
-1. [Go Testing Patterns](https://github.com/golang/go/wiki/TestComments)
+1. [Go Testing patterns](https://github.com/golang/go/wiki/TestComments)
 2. [Chaos Engineering Principles](https://principlesofchaos.org/)
 3. [libp2p Go Documentation](https://docs.libp2p.io/reference/go/)
 4. [Kahn's Algorithm](https://en.wikipedia.org/wiki/Topological_sorting#Kahn's_algorithm)
 
 ---
 
-### 15.3 版本兼容性策略
+### 15.4 版本兼容性策略
 
 框架接口遵循语义化版本控制（Semantic Versioning）：
 
@@ -4977,7 +5228,7 @@ scenarios/
 
 ---
 
-**文档版本**: v2.5
+**文档版本**: v2.6
 **创建日期**: 2026-02-20
 **最后更新**: 2026-02-20
 **作者**: AI Agent

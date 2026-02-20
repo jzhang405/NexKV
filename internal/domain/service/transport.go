@@ -319,6 +319,32 @@ type BroadcastStats struct {
 	MajorityReachTime  time.Duration  // 达到多数派耗时（从任务开始到多数派达成）
 }
 
+// NoOpCallback 空实现的 BroadcastCallback
+// 可用于嵌入到自定义 Callback 中，只重写需要的方法
+//
+// 使用示例:
+//
+//	type MyCallback struct {
+//	    NoOpCallback // 嵌入所有空实现
+//	}
+//
+//	// 只重写关心的方法
+//	func (m *MyCallback) OnFullDone(stats BroadcastStats) {
+//	    fmt.Printf("广播完成！成功率: %.2f%%\n", stats.SuccessRate*100)
+//	}
+type NoOpCallback struct{}
+
+// OnSuccess 空实现
+func (n NoOpCallback) OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats) {}
+
+// OnFailure 空实现
+func (n NoOpCallback) OnFailure(peer model.PeerID, err error, stats BroadcastStats) {}
+
+// OnMajorityReached 空实现
+func (n NoOpCallback) OnMajorityReached(stats BroadcastStats) {}
+
+// OnFullDone 空实现
+func (n NoOpCallback) OnFullDone(stats BroadcastStats) {}
 
 // BroadcastTracker 可选的广播追踪器（一次性使用）
 //

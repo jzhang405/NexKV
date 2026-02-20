@@ -92,7 +92,7 @@
 
 - **性能指标**:
   - 回调执行不阻塞主流程（锁外执行）
-  - 回调执行时间 < 1ms（建议值，非强制）
+  - 回调执行时间 < 10ms（建议值，非强制，便于测试和性能优化）
 
 ### 3.3 验收标准
 
@@ -130,34 +130,77 @@
 // BroadcastCallback 广播进度回调接口
 type BroadcastCallback interface {
     // OnSuccess 每次收到成功响应时调用
+    // 参数说明：
+    //   - peer: 响应节点 ID
+    //   - resp: 成功响应消息（不会为 nil）
+    //   - stats: 当前统计信息
     OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats)
 
     // OnFailure 每次收到失败响应时调用
+    // 参数说明：
+    //   - peer: 失败节点 ID
+    //   - err: 错误信息（不会为 nil，包含具体错误类型）
+    //          - 超时错误：context.DeadlineExceeded
+    //          - 网络错误：net.Error
+    //          - 业务错误：业务逻辑返回的错误
+    //   - stats: 当前统计信息
     OnFailure(peer model.PeerID, err error, stats BroadcastStats)
 
     // OnMajorityReached 达到多数派时调用（仅调用一次）
+    // 触发条件：
+    //   - 成功响应数 >= majority（len(targets)/2 + 1）
+    //   - 只在 RecordSuccess 时检查，RecordFailure 不会触发
+    //   - 例如：3 个节点，2 个成功即触发（即使 1 个失败）
+    // 参数说明：
+    //   - stats: 达到多数派时的统计信息
     OnMajorityReached(stats BroadcastStats)
 
     // OnFullDone 全部完成时调用（仅调用一次）
+    // 触发条件：
+    //   - 成功数 + 失败数 == 总节点数
+    // 参数说明：
+    //   - stats: 全部完成时的统计信息
     OnFullDone(stats BroadcastStats)
 }
 
 // BroadcastStats 广播统计信息
 type BroadcastStats struct {
-    TaskID       string
-    Total        int           // 总节点数
-    Success      int           // 成功数
-    Failed       int           // 失败数
-    Pending      int           // 待响应数
-    SuccessRate  float64       // 成功率
-    ElapsedTime  time.Duration // 已耗时
+    TaskID             string
+    Total              int           // 总节点数
+    Success            int           // 成功数
+    Failed             int           // 失败数
+    Pending            int           // 待响应数
+    SuccessRate        float64       // 成功率
+    ElapsedTime        time.Duration // 已耗时（从任务开始到现在）
+    FirstResponseTime  time.Duration // 首个响应耗时（从任务开始到首个响应）
+    MajorityReachTime  time.Duration // 达到多数派耗时（从任务开始到多数派达成）
 }
 ```
+
+**设计决策**：
+- **方法命名**：保留 `OnSuccess/OnFailure`（而非 `OnResponse/OnError`），因为：
+  1. 语义更清晰（成功/失败 vs 响应/错误）
+  2. 已通过 Spike 验证
+  3. 与 Spike 文档保持一致
+- **Nil 参数处理**：
+  - `OnSuccess` 的 `resp` 不会为 nil（成功响应一定有内容）
+  - `OnFailure` 的 `err` 不会为 nil（失败一定有错误信息）
 
 **实现要点**：
 
 1. **锁外执行回调**（P0 修复）：
    ```go
+   type BroadcastTracker struct {
+       // ... 现有字段 ...
+       callback                  BroadcastCallback
+       callbacksEnabled          bool // 回调启用/禁用开关
+
+       // 新增：确保"仅触发一次"的标志位
+       majorityCallbackTriggered bool // OnMajorityReached 是否已触发
+       fullDoneCallbackTriggered bool // OnFullDone 是否已触发
+       firstResponseRecorded     bool // 是否已记录首个响应
+   }
+
    func (t *BroadcastTracker) RecordSuccess(peer model.PeerID, resp model.Message) {
        var callback BroadcastCallback
        var stats BroadcastStats
@@ -167,17 +210,53 @@ type BroadcastStats struct {
        // === 锁内：只做状态更新 ===
        t.mu.Lock()
        t.responses[peer] = resp
-       // ... 检查 Majority 和 FullDone ...
+
+       // 记录首个响应时间（仅一次）
+       if !t.firstResponseRecorded {
+           t.firstResponseTime = time.Now()
+           t.firstResponseRecorded = true
+       }
+
+       // 检查 Majority（仅在成功时检查）
+       majority := len(t.targets)/2 + 1
+       if len(t.responses) >= majority && !t.majorityCallbackTriggered {
+           t.majorityCallbackTriggered = true
+           shouldTriggerMajority = true
+       }
+
+       // 检查 FullDone
+       if len(t.responses)+len(t.failures) == len(t.targets) && !t.fullDoneCallbackTriggered {
+           t.fullDoneCallbackTriggered = true
+           shouldTriggerFullDone = true
+       }
+
+       // 准备回调数据
        callback = t.callback
        stats = t.buildStatsLocked()
        t.mu.Unlock()
        // === 锁外：执行回调，避免死锁 ===
 
-       if callback != nil {
+       if callback == nil || !t.callbacksEnabled {
+           return
+       }
+
+       // 触发 OnSuccess 回调
+       safeCallback(func() {
+           callback.OnSuccess(peer, resp, stats)
+       })
+
+       // 触发 OnMajorityReached 回调（仅一次）
+       if shouldTriggerMajority {
            safeCallback(func() {
-               callback.OnSuccess(peer, resp, stats)
+               callback.OnMajorityReached(stats)
            })
-           // ... 触发其他回调 ...
+       }
+
+       // 触发 OnFullDone 回调（仅一次）
+       if shouldTriggerFullDone {
+           safeCallback(func() {
+               callback.OnFullDone(stats)
+           })
        }
    }
    ```
@@ -187,10 +266,39 @@ type BroadcastStats struct {
    func safeCallback(fn func()) {
        defer func() {
            if r := recover(); r != nil {
-               log.Printf("[BroadcastTracker] callback panic recovered: %v", r)
+               // 使用 slog.Error 记录 panic，便于监控和告警
+               slog.Error("[BroadcastTracker] callback panic recovered",
+                   "panic", r,
+                   "stack", string(debug.Stack()))
            }
        }()
        fn()
+   }
+   ```
+
+3. **除零保护**：
+   ```go
+   func (t *BroadcastTracker) buildStatsLocked() BroadcastStats {
+       success := len(t.responses)
+       failed := len(t.failures)
+       total := len(t.targets)
+
+       // P2 修复：避免除零
+       var successRate float64
+       if total > 0 {
+           successRate = float64(success) / float64(total)
+       }
+
+       return BroadcastStats{
+           TaskID:      t.taskID,
+           Total:       total,
+           Success:     success,
+           Failed:      failed,
+           Pending:     total - success - failed,
+           SuccessRate: successRate,
+           ElapsedTime: time.Since(t.startTime),
+           // 其他时间戳字段...
+       }
    }
    ```
 
@@ -198,33 +306,49 @@ type BroadcastStats struct {
 
 **阶段 1：接口定义（1 小时）**
 - [ ] 定义 `BroadcastCallback` 接口
-- [ ] 定义 `BroadcastStats` 结构
-- [ ] 在 `BroadcastTracker` 中添加 `callback` 字段
+- [ ] 定义 `BroadcastStats` 结构（含时间戳字段）
+- [ ] 在 `BroadcastTracker` 中添加 `callback` 和 `callbacksEnabled` 字段
 - [ ] 实现 `SetCallback` 方法
+- [ ] 实现 `EnableCallbacks` 方法（可选，便于测试）
 
-**阶段 2：回调触发逻辑（2 小时）**
+**阶段 2：回调触发逻辑（3 小时）**
 - [ ] 修改 `RecordSuccess`，添加回调触发
 - [ ] 修改 `RecordFailure`，添加回调触发
-- [ ] 实现 `buildStatsLocked` 方法
-- [ ] 实现 `safeCallback` 包装函数
+- [ ] 实现 `buildStatsLocked` 方法（含除零保护）
+- [ ] 实现 `safeCallback` 包装函数（含 slog.Error 日志）
+- [ ] 添加时间戳统计（FirstResponseTime、MajorityReachTime）
+- [ ] 实现"仅触发一次"机制（标志位 + 双重检查）
+- [ ] 添加 `EnableCallbacks` 方法（可选，便于测试）
 
-**阶段 3：单元测试（2 小时）**
-- [ ] 测试成功响应回调
-- [ ] 测试失败响应回调
-- [ ] 测试多数派回调
-- [ ] 测试全部完成回调
-- [ ] 测试并发安全性
-- [ ] 测试 Panic 保护
+**阶段 3：单元测试（2.5 小时）**
+- [ ] 测试成功响应回调（OnSuccess）
+- [ ] 测试失败响应回调（OnFailure）
+- [ ] 测试多数派回调（OnMajorityReached）
+- [ ] 测试全部完成回调（OnFullDone）
+- [ ] 测试并发安全性（并发 RecordSuccess）
+- [ ] 测试 Panic 保护（safeCallback）
+- [ ] **边界场景测试**：
+  - [ ] 空 targets（targets=[]）
+  - [ ] 全部失败（验证 OnFailure + OnFullDone 触发）
+  - [ ] 先达到 Majority 后全部完成（验证两个回调顺序触发）
+  - [ ] 并发 RecordSuccess（验证回调只触发一次）
 
-**阶段 4：集成测试（1 小时）**
+**阶段 4：集成测试（1.5 小时）**
 - [ ] 在实际广播调用中测试回调
 - [ ] 性能测试（确保回调不阻塞主流程）
+- [ ] 基准测试（BenchmarkBroadcastCallback_Overhead）
+- [ ] 并发性能测试（BenchmarkBroadcastCallback_Concurrent）
 
 **阶段 5：文档与示例（0.5 小时）**
 - [ ] 编写代码注释
 - [ ] 编写使用示例（日志记录、指标上报、错误处理）
 
-**预计总时间**: 6.5 小时
+**预计总时间**: 7.5 小时
+
+**可选功能**（非必须，可根据实际需求添加）：
+- `EnableCallbacks(enabled bool)` - 启用/禁用回调开关
+  - 用途：便于测试时禁用回调，或在运行时临时关闭
+  - 优先级：P2（可在后续 PR 中添加）
 
 ### 4.3 风险评估
 
@@ -234,7 +358,10 @@ type BroadcastStats struct {
 | **Panic 影响** | 低 | 中 | ✅ 使用 `safeCallback` 包装，捕获 panic |
 | **性能影响** | 低 | 中 | ✅ 回调应快速返回，长时间处理应启动 goroutine |
 | **回调执行慢** | 中 | 低 | ✅ 文档中明确建议回调应快速返回 |
-| **除零错误** | 低 | 低 | ✅ 在计算 SuccessRate 时添加除零保护 |
+| **除零错误** | 低 | 低 | ✅ 在计算 SuccessRate 时添加 `if total > 0` 检查 |
+| **回调日志级别错误** | 低 | 低 | ✅ Panic 使用 `slog.Error` 级别，便于监控告警 |
+| **回调重复触发** | 低 | 高 | ✅ 使用标志位（majorityCallbackTriggered、fullDoneCallbackTriggered）确保仅触发一次 |
+| **Nil 参数处理** | 低 | 中 | ✅ 文档明确 resp 和 err 不会为 nil，回调实现无需检查 |
 
 ---
 
@@ -250,6 +377,12 @@ type BroadcastStats struct {
 5. **TestBroadcastCallback_ConcurrentSafety** - 测试并发安全性
 6. **TestBroadcastCallback_PanicRecovery** - 测试 Panic 保护
 7. **TestBroadcastStats_Accuracy** - 测试统计信息准确性
+
+**边界场景测试**：
+8. **TestBroadcastCallback_EmptyTargets** - 测试空 targets（targets=[]）
+9. **TestBroadcastCallback_AllFailed** - 测试全部失败（验证 OnFailure + OnFullDone 触发）
+10. **TestBroadcastCallback_MajorityThenFullDone** - 测试先达到 Majority 后全部完成（验证两个回调顺序触发）
+11. **TestBroadcastCallback_ConcurrentRecordSuccess** - 测试并发 RecordSuccess（验证回调只触发一次）
 
 ### 5.2 集成测试
 
@@ -270,7 +403,7 @@ type BroadcastStats struct {
    - 场景：10 个并发广播调用，每个广播 10 个节点
 
 **测试指标**：
-- 回调执行时间 < 1ms（平均值）
+- 回调执行时间 < 10ms（平均值，更实际的阈值）
 - 回调开销 < 100μs（99 分位）
 - 回调不阻塞主流程（吞吐量下降 < 5%）
 
@@ -482,8 +615,8 @@ func (t *BroadcastTracker) SetOnSuccess(fn OnSuccessFunc) { ... }
 
 ---
 
-**Pre 文档版本**: v1.1
+**Pre 文档版本**: v1.3
 **创建日期**: 2026-02-21
 **最后更新**: 2026-02-21
 **作者**: 🤖 AI Agent
-**状态**: ✅ 已通过架构师评审
+**状态**: ✅ 已通过架构师评审（已采纳全部建议并澄清关键问题）

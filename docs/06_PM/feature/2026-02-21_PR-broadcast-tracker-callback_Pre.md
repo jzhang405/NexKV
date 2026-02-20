@@ -595,13 +595,13 @@ func (cb *PipelineCallback) OnFullDone(stats BroadcastStats) {
 
 ## 7. 参考资料
 
-### 6.1 相关文档
+### 7.1 相关文档
 
 - **Spike 文档**: `docs/07_spike/2026-02-20_broadcast-tracker-callback-mechanism.md`
 - **RPC 中间件设计**: `docs/06_PM/feature/2026-02-18_PR-phase1-week3-4-rpc-codec-middleware_Pre.md`
 - **编码规范**: `docs/03_development/01_编码规范文档.md`
 
-### 6.2 相关代码
+### 7.2 相关代码
 
 - `internal/transport/tracker.go` - BroadcastTracker 实现
 - `internal/transport/broadcast.go` - 广播调用逻辑
@@ -635,7 +635,7 @@ func (t *BroadcastTracker) SetOnSuccess(fn OnSuccessFunc) { ... }
 
 ---
 
-## 九、版本历史
+## 9. 版本历史
 
 ### v1.4（2026-02-21）⭐ **补充执行顺序和注意事项**
 

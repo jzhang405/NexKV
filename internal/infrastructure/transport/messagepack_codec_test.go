@@ -9,11 +9,6 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
-// createTestMessage 创建测试消息的辅助函数
-func createTestMessage(id string, msgType model.MessageType, payload []byte) *model.BaseMessage {
-	return model.NewMessage(id, msgType, "node-1", "node-2", payload)
-}
-
 // TestMessagePackCodec_EncodeDecode 测试基本编解码
 func TestMessagePackCodec_EncodeDecode(t *testing.T) {
 	codec := NewMessagePackCodec()

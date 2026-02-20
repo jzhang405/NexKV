@@ -74,6 +74,11 @@ func (r *Libp2pRPC) Call(ctx context.Context, to model.PeerID, req model.Message
 		return nil, service.ErrCanceled
 	}
 
+	// P1 修复：检查 nil 消息
+	if req == nil {
+		return nil, service.ErrInvalidMessage
+	}
+
 	// 生成请求 ID
 	requestID := string(r.idGenerator.Next())
 	reqWithID := r.setMessageID(req, requestID)

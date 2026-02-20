@@ -9,6 +9,7 @@
 > - `docs/07_spike/2026-02-18_spike-nexkv-ddd-roadmap.md`（实施路线图）
 > - `docs/07_spike/2026-02-18_spike-nexkv-ddd-implement.md`（实施方案）
 > - `docs/07_spike/2026-02-18_spike-nexkv-ddd-interface.md`（接口定义 v18.0）
+> - `docs/07_spike/2026-02-20_goroutine-pool-library-recommendation.md`（Goroutine 池库选型：推荐 ants）
 
 ---
 
@@ -61,6 +62,7 @@ NexKV 项目当前处于架构升级阶段，需要基于 DDD（领域驱动设�
 | **序列化** | MessagePack | 高性能、自描述 |
 | **DI容器** | Wire | 编译时检查 |
 | **日志** | Zap | 结构化日志 |
+| **Goroutine 池** | ants | 字节跳动开源，高性能 + 功能全 |
 
 **⭐ v1.2 部署环境说明**：
 - **当前环境**：局域网（LAN）部署，节点间直连

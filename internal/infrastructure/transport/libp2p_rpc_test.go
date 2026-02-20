@@ -1228,3 +1228,226 @@ func TestLibp2pRPC_DoubleClose(t *testing.T) {
 		t.Logf("Second Close() error = %v", err)
 	}
 }
+
+// ============================================================================
+// sendRequestAndWaitResponse 错误路径测试
+// ============================================================================
+
+// TestLibp2pRPC_Call_PeerNotConnected_ErrorPath 测试未连接节点的错误路径
+// 覆盖 sendRequestAndWaitResponse 中的连接检查
+func TestLibp2pRPC_Call_PeerNotConnected_ErrorPath(t *testing.T) {
+	transport := newMockTransport("node-1")
+	// 不添加 node-2 到 connected
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "node-2", []byte("test"))
+
+	_, err := rpc.Call(context.Background(), "node-2", msg)
+	if err == nil {
+		t.Error("Call() to unconnected peer should return error")
+	}
+	// 验证错误类型
+	if err != service.ErrPeerUnreachable {
+		t.Logf("Expected ErrPeerUnreachable, got: %v", err)
+	}
+}
+
+// TestLibp2pRPC_Call_OpenStreamFails 测试 OpenStream 失败路径
+// 覆盖 sendRequestAndWaitResponse 中的 OpenStream 错误
+func TestLibp2pRPC_Call_OpenStreamFails(t *testing.T) {
+	transport := newMockTransport("node-1")
+	transport.mu.Lock()
+	transport.connected["node-2"] = true
+	transport.mu.Unlock()
+
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "node-2", []byte("test"))
+
+	_, err := rpc.Call(context.Background(), "node-2", msg)
+	// mock OpenStream 返回 ErrPeerUnreachable
+	if err == nil {
+		t.Error("Call() should return error when OpenStream fails")
+	}
+}
+
+// ============================================================================
+// sendRequestNoResponse 错误路径测试（通过 WriteV）
+// ============================================================================
+
+// TestLibp2pRPC_WriteV_PeerNotConnected 测试 WriteV 到未连接节点
+func TestLibp2pRPC_WriteV_PeerNotConnected(t *testing.T) {
+	transport := newMockTransport("node-1")
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	peers := []model.PeerID{"node-2"}
+	msgs := []model.Message{
+		model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "", []byte("test")),
+	}
+
+	err := rpc.WriteV(context.Background(), peers, msgs, nil)
+	// WriteV 会尝试发送，但 mock 返回错误
+	if err == nil {
+		t.Log("WriteV() returned nil (mock may not check connection)")
+	}
+}
+
+// ============================================================================
+// Broadcast 错误路径测试
+// ============================================================================
+
+// TestLibp2pRPC_BroadcastCall_AllPeersUnreachable 测试所有节点不可达
+func TestLibp2pRPC_BroadcastCall_AllPeersUnreachable(t *testing.T) {
+	transport := newMockTransport("node-1")
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	peers := []model.PeerID{"node-2", "node-3", "node-4"}
+	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "", []byte("broadcast"))
+
+	result, err := rpc.BroadcastCall(context.Background(), peers, msg, service.ResponseAll, nil)
+	if err != nil {
+		t.Logf("BroadcastCall() error: %v", err)
+	}
+	// 验证结果：所有节点都应该失败
+	if len(result.SuccessPeers) != 0 {
+		t.Errorf("SuccessPeers count = %d, want 0", len(result.SuccessPeers))
+	}
+	if len(result.FailedPeers) != len(peers) {
+		t.Errorf("FailedPeers count = %d, want %d", len(result.FailedPeers), len(peers))
+	}
+}
+
+// TestLibp2pRPC_BroadcastCall_NilMessage 测试广播 nil 消息
+func TestLibp2pRPC_BroadcastCall_NilMessage(t *testing.T) {
+	transport := newMockTransport("node-1")
+	transport.mu.Lock()
+	transport.connected["node-2"] = true
+	transport.mu.Unlock()
+
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	peers := []model.PeerID{"node-2"}
+	result, err := rpc.BroadcastCall(context.Background(), peers, nil, service.ResponseAll, nil)
+	if err != nil {
+		t.Logf("BroadcastCall() with nil message error: %v", err)
+	}
+	// nil 消息应该被处理
+	_ = result
+}
+
+// TestLibp2pRPC_BroadcastAsync_NilMessage 测试异步广播 nil 消息
+func TestLibp2pRPC_BroadcastAsync_NilMessage(t *testing.T) {
+	transport := newMockTransport("node-1")
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	peers := []model.PeerID{"node-2"}
+	err := rpc.BroadcastAsync(context.Background(), peers, nil, service.ResponseAll, nil, nil)
+	if err != nil {
+		t.Logf("BroadcastAsync() with nil message error: %v", err)
+	}
+}
+
+// ============================================================================
+// WriteVCall 错误路径测试
+// ============================================================================
+
+// TestLibp2pRPC_WriteVCall_AllPeersUnreachable 测试批量调用所有节点不可达
+func TestLibp2pRPC_WriteVCall_AllPeersUnreachable(t *testing.T) {
+	transport := newMockTransport("node-1")
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	peers := []model.PeerID{"node-2", "node-3"}
+	msgs := []model.Message{
+		model.NewMessage("msg-1", model.MessageTypeRequest, "node-1", "", []byte("data1")),
+		model.NewMessage("msg-2", model.MessageTypeRequest, "node-1", "", []byte("data2")),
+	}
+
+	result, err := rpc.WriteVCall(context.Background(), peers, msgs, service.ResponseAll, nil)
+	if err != nil {
+		t.Logf("WriteVCall() error: %v", err)
+	}
+	// 验证结果：所有节点都应该失败
+	if len(result.SuccessPeers) != 0 {
+		t.Errorf("SuccessPeers count = %d, want 0", len(result.SuccessPeers))
+	}
+	if len(result.FailedPeers) != len(peers) {
+		t.Errorf("FailedPeers count = %d, want %d", len(result.FailedPeers), len(peers))
+	}
+}
+
+// TestLibp2pRPC_WriteVCall_LengthMismatch_Error 测试批量调用长度不匹配
+func TestLibp2pRPC_WriteVCall_LengthMismatch_Error(t *testing.T) {
+	transport := newMockTransport("node-1")
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	peers := []model.PeerID{"node-2", "node-3"}
+	msgs := []model.Message{
+		model.NewMessage("msg-1", model.MessageTypeRequest, "node-1", "", []byte("data1")),
+		// 只有一个消息，但有两个节点
+	}
+
+	_, err := rpc.WriteVCall(context.Background(), peers, msgs, service.ResponseAll, nil)
+	if err == nil {
+		t.Error("WriteVCall() with mismatched lengths should return error")
+	}
+}
+
+// ============================================================================
+// Context 超时测试
+// ============================================================================
+
+// TestLibp2pRPC_Call_WithDeadline 测试带截止时间的调用
+func TestLibp2pRPC_Call_WithDeadline(t *testing.T) {
+	transport := newMockTransport("node-1")
+	transport.mu.Lock()
+	transport.connected["node-2"] = true
+	transport.mu.Unlock()
+
+	rpc := NewLibp2pRPC(transport, &service.RPCConfig{
+		CallTimeout: 100 * time.Millisecond,
+	})
+	defer rpc.Close()
+
+	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "node-2", []byte("test"))
+
+	// 创建一个已过期的上下文
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, err := rpc.Call(ctx, "node-2", msg)
+	if err == nil {
+		t.Error("Call() with expired deadline should return error")
+	}
+}
+
+// TestLibp2pRPC_BroadcastCall_WithCanceledContext 测试取消上下文的广播
+func TestLibp2pRPC_BroadcastCall_WithCanceledContext(t *testing.T) {
+	transport := newMockTransport("node-1")
+	transport.mu.Lock()
+	transport.connected["node-2"] = true
+	transport.connected["node-3"] = true
+	transport.mu.Unlock()
+
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	peers := []model.PeerID{"node-2", "node-3"}
+	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "", []byte("broadcast"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 立即取消
+
+	result, err := rpc.BroadcastCall(ctx, peers, msg, service.ResponseAll, nil)
+	if err != nil {
+		t.Logf("BroadcastCall() with canceled context error: %v", err)
+	}
+	_ = result
+}

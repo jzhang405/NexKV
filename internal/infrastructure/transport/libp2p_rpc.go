@@ -3,9 +3,9 @@ package transport
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
@@ -38,9 +38,7 @@ type Libp2pRPC struct {
 // pendingCall 等待响应的调用
 type pendingCall struct {
 	responseCh chan service.ResponseMsg
-	ctx        context.Context
-	cancel     context.CancelFunc
-	done       atomic.Bool // P0 修复：添加完成标记，防止向已关闭 channel 发送
+	done       atomic.Bool
 }
 
 // NewLibp2pRPC 创建 libp2p RPC 实例
@@ -133,8 +131,28 @@ func (r *Libp2pRPC) OnRequest(handler func(ctx context.Context, from model.PeerI
 }
 
 // OnRequestChan 返回请求通道
+// P2-3 修复：添加使用说明
+//
+// 注意：RPC 关闭时此 channel 不会关闭，需要配合 CloseCh() 使用
+//
+// 使用示例:
+//
+//	for {
+//	    select {
+//	    case req := <-rpc.OnRequestChan():
+//	        // 处理请求
+//	    case <-rpc.CloseCh():
+//	        return
+//	    }
+//	}
 func (r *Libp2pRPC) OnRequestChan() <-chan service.RequestMsg {
 	return r.requestChan
+}
+
+// CloseCh 返回关闭信号通道
+// P2-3 修复：提供关闭检测方法
+func (r *Libp2pRPC) CloseCh() <-chan struct{} {
+	return r.closeCh
 }
 
 // ============================================================================
@@ -206,7 +224,7 @@ func (r *Libp2pRPC) BroadcastAsync(
 // WriteV 不同消息群发：单向发送
 func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []model.Message, tracker *service.BroadcastTracker) error {
 	if len(targets) != len(msgs) {
-		return fmt.Errorf("targets and messages length mismatch: %d vs %d", len(targets), len(msgs))
+		return service.Wrapf(service.ErrInvalidParam, "targets and messages length mismatch: %d vs %d", len(targets), len(msgs))
 	}
 
 	for i, target := range targets {
@@ -237,7 +255,7 @@ func (r *Libp2pRPC) WriteVCall(
 	}
 
 	if len(targets) != len(msgs) {
-		return service.WriteVResult{}, fmt.Errorf("targets and messages length mismatch: %d vs %d", len(targets), len(msgs))
+		return service.WriteVResult{}, service.Wrapf(service.ErrInvalidParam, "targets and messages length mismatch: %d vs %d", len(targets), len(msgs))
 	}
 
 	// P2 修复：添加并发控制
@@ -285,18 +303,8 @@ func (r *Libp2pRPC) WriteVCall(
 	wg.Wait()
 
 	// 根据策略判断是否成功
-	switch strategy {
-	case service.ResponseAll:
-		if len(result.FailedPeers) > 0 {
-			return result, service.ErrAllFailed
-		}
-	case service.ResponseMajority:
-		majority := len(targets)/2 + 1
-		if len(result.SuccessPeers) < majority {
-			return result, service.ErrMajorityFailed
-		}
-	case service.ResponseNone:
-		// 不检查结果
+	if err := validateStrategy(strategy, len(targets), len(result.SuccessPeers), len(result.FailedPeers)); err != nil {
+		return result, err
 	}
 
 	return result, nil
@@ -314,12 +322,19 @@ func (r *Libp2pRPC) Close() error {
 
 	r.closeOnce.Do(func() {
 		close(r.closeCh)
-		close(r.requestChan)
+		// P0-3 修复：不关闭 requestChan，避免 HandleIncomingStream 写入时 panic
+		// requestChan 会在 RPC 实例被 GC 时自动回收
+		// 关闭 closeCh 通知所有 goroutine 退出
 
-		// 取消所有等待中的调用
+		// P0-1 修复：取消所有等待中的调用并清理 map，防止内存泄漏
 		r.pendingCallsMu.Lock()
-		for _, call := range r.pendingCalls {
-			call.cancel()
+		for id, call := range r.pendingCalls {
+			call.done.Store(true)
+			select {
+			case call.responseCh <- service.ResponseMsg{Err: service.ErrCanceled}:
+			default:
+			}
+			delete(r.pendingCalls, id)
 		}
 		r.pendingCallsMu.Unlock()
 	})
@@ -344,34 +359,30 @@ func (r *Libp2pRPC) sendRequestAndWaitResponse(ctx context.Context, to model.Pee
 		return service.ErrPeerUnreachable
 	}
 
-	// 编码消息
-	data, err := r.codec.Encode(req)
-	if err != nil {
-		return err
-	}
-
 	// 打开流
 	stream, err := r.transport.OpenStream(ctx, to, "/nexkv/rpc/1.0.0")
 	if err != nil {
-		return fmt.Errorf("%w: %v", service.ErrPeerUnreachable, err)
-	}
-	defer stream.Close()
-
-	// 写入请求
-	if _, err := stream.Write(data); err != nil {
-		return fmt.Errorf("%w: %v", service.ErrCodecFailure, err)
+		return service.Wrapf(service.ErrPeerUnreachable, "%v", err)
 	}
 
-	// 异步读取响应
+	// P1-5 修复：使用 StreamCodec 编码请求（支持大消息和分帧）
+	if err := r.streamCodec.EncodeToWriter(stream, req); err != nil {
+		stream.Close()
+		return service.Wrapf(service.ErrCodecFailure, "%v", err)
+	}
+
+	// 异步读取响应（使用 StreamCodec 支持大消息）
 	go func() {
-		buf := make([]byte, 64*1024)
-		n, err := stream.Read(buf)
-		if err != nil {
+		defer stream.Close()
+
+		// P2-2 修复：设置读取超时，避免 goroutine 无限阻塞
+		if err := stream.SetReadDeadline(time.Now().Add(r.config.CallTimeout)); err != nil {
 			r.handleResponse(req.ID(), service.ResponseMsg{Msg: nil, Err: err})
 			return
 		}
 
-		resp, err := r.codec.Decode(buf[:n])
+		// P1-5 修复：使用 StreamCodec 读取响应（支持大消息和分帧）
+		resp, err := r.streamCodec.DecodeFromReader(stream)
 		if err != nil {
 			r.handleResponse(req.ID(), service.ResponseMsg{Msg: nil, Err: err})
 			return
@@ -399,13 +410,13 @@ func (r *Libp2pRPC) sendRequestNoResponse(ctx context.Context, to model.PeerID, 
 	// 打开流
 	stream, err := r.transport.OpenStream(ctx, to, "/nexkv/rpc/1.0.0")
 	if err != nil {
-		return fmt.Errorf("%w: %v", service.ErrPeerUnreachable, err)
+		return service.Wrapf(service.ErrPeerUnreachable, "%v", err)
 	}
 	defer stream.Close()
 
 	// 写入数据
 	if _, err := stream.Write(data); err != nil {
-		return fmt.Errorf("%w: %v", service.ErrCodecFailure, err)
+		return service.Wrapf(service.ErrCodecFailure, "%v", err)
 	}
 
 	return nil
@@ -439,13 +450,9 @@ func (r *Libp2pRPC) handleResponse(requestID string, resp service.ResponseMsg) {
 }
 
 // registerPendingCall 注册等待响应的调用
-func (r *Libp2pRPC) registerPendingCall(requestID string, ctx context.Context) *pendingCall {
-	callCtx, cancel := context.WithCancel(ctx)
-
+func (r *Libp2pRPC) registerPendingCall(requestID string, callCtx context.Context) *pendingCall {
 	call := &pendingCall{
 		responseCh: make(chan service.ResponseMsg, 1),
-		ctx:        callCtx,
-		cancel:     cancel,
 	}
 
 	r.pendingCallsMu.Lock()
@@ -459,8 +466,6 @@ func (r *Libp2pRPC) registerPendingCall(requestID string, ctx context.Context) *
 func (r *Libp2pRPC) unregisterPendingCall(requestID string) {
 	r.pendingCallsMu.Lock()
 	if call, ok := r.pendingCalls[requestID]; ok {
-		call.cancel()
-		// 标记为已完成，防止后续响应发送
 		call.done.Store(true)
 		delete(r.pendingCalls, requestID)
 	}
@@ -570,26 +575,12 @@ func (r *Libp2pRPC) broadcastAndWait(
 	wg.Wait()
 
 	// 根据策略判断是否成功
-	switch strategy {
-	case service.ResponseAll:
-		if len(result.FailedPeers) > 0 {
-			return result, service.ErrAllFailed
-		}
-	case service.ResponseMajority:
-		majority := len(to)/2 + 1
-		if len(result.SuccessPeers) < majority {
-			return result, service.ErrMajorityFailed
-		}
+	if err := validateStrategy(strategy, len(to), len(result.SuccessPeers), len(result.FailedPeers)); err != nil {
+		return result, err
 	}
 
 	// 清理 responses 中的 nil
-	cleanResponses := make([]model.Message, 0, len(result.SuccessPeers))
-	for _, resp := range result.Responses {
-		if resp != nil {
-			cleanResponses = append(cleanResponses, resp)
-		}
-	}
-	result.Responses = cleanResponses
+	result.Responses = cleanNilResponses(result.Responses)
 
 	return result, nil
 }
@@ -599,22 +590,23 @@ func (r *Libp2pRPC) broadcastAndWait(
 func (r *Libp2pRPC) HandleIncomingStream(stream service.Stream) error {
 	defer stream.Close()
 
-	// 读取数据
-	buf := make([]byte, 64*1024) // 64KB buffer
-	n, err := stream.Read(buf)
-	if err != nil {
-		return err
-	}
+	// P2-1 修复：创建可取消的上下文，关联 RPC 关闭状态
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// 解码消息
-	msg, err := r.codec.Decode(buf[:n])
+	go func() {
+		<-r.closeCh
+		cancel()
+	}()
+
+	// P1-5 修复：使用 StreamCodec 读取消息（支持大消息和分帧）
+	msg, err := r.streamCodec.DecodeFromReader(stream)
 	if err != nil {
 		return err
 	}
 
 	// P0 修复：检查是否是响应消息
 	if msg.Type() == model.MessageTypeResponse {
-		// 查找 pending call 并发送响应
 		r.handleResponse(msg.ID(), service.ResponseMsg{Msg: msg, Err: nil})
 		return nil
 	}
@@ -625,40 +617,66 @@ func (r *Libp2pRPC) HandleIncomingStream(stream service.Stream) error {
 	r.handlerMu.RUnlock()
 
 	if handler != nil {
-		// 同步处理请求
-		resp := handler(context.Background(), stream.RemotePeer(), msg)
+		// P2-1 修复：使用可取消的上下文
+		resp := handler(ctx, stream.RemotePeer(), msg)
 		if resp != nil {
-			// 编码响应
-			respData, err := r.codec.Encode(resp)
-			if err != nil {
-				return err
-			}
-			// 发送响应
-			if _, err := stream.Write(respData); err != nil {
+			// P0-2 修复：确保响应携带与请求相同的 ID
+			respWithID := r.setMessageID(resp, msg.ID())
+
+			// 编码响应（使用 StreamCodec）
+			if err := r.streamCodec.EncodeToWriter(stream, respWithID); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 
-	// 发送到请求通道（非阻塞）
+	// P0-3 修复：发送到请求通道前检查关闭状态（非阻塞 + 关闭检查）
 	select {
+	case <-r.closeCh:
+		return nil // RPC 已关闭，丢弃请求
 	case r.requestChan <- service.RequestMsg{
-		Ctx:    context.Background(),
+		Ctx:    ctx, // P2-1 修复：使用可取消的上下文
 		From:   stream.RemotePeer(),
 		Req:    msg,
 		RespCh: make(chan service.ResponseMsg, 1),
 	}:
 		return nil
 	default:
-		// 通道满，丢弃请求
-		return nil
+		return nil // 通道满，丢弃请求
 	}
 }
 
 // GetMiddleware 获取中间件链
 func (r *Libp2pRPC) GetMiddleware() service.MiddlewareChain {
 	return r.middleware
+}
+
+// validateStrategy 验证广播策略是否满足
+func validateStrategy(strategy service.ResponseStrategy, total, success, failed int) error {
+	switch strategy {
+	case service.ResponseAll:
+		if failed > 0 {
+			return service.ErrAllFailed
+		}
+	case service.ResponseMajority:
+		majority := total/2 + 1
+		if success < majority {
+			return service.ErrMajorityFailed
+		}
+	}
+	return nil
+}
+
+// cleanNilResponses 清理响应列表中的 nil 值
+func cleanNilResponses(responses []model.Message) []model.Message {
+	clean := make([]model.Message, 0, len(responses))
+	for _, resp := range responses {
+		if resp != nil {
+			clean = append(clean, resp)
+		}
+	}
+	return clean
 }
 
 // 确保实现 RPC 接口

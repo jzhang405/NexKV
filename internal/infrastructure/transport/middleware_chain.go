@@ -33,6 +33,11 @@ func (c *middlewareChain) Use(middleware service.Middleware) error {
 		return service.ErrChainFrozen
 	}
 
+	// P1-3 修复：nil 中间件保护
+	if middleware == nil {
+		return nil // 忽略 nil 中间件，不报错
+	}
+
 	c.middlewares = append(c.middlewares, middleware)
 	return nil
 }
@@ -46,6 +51,11 @@ func (c *middlewareChain) UseFirst(middleware service.Middleware) error {
 		return service.ErrChainFrozen
 	}
 
+	// P1-3 修复：nil 中间件保护
+	if middleware == nil {
+		return nil // 忽略 nil 中间件，不报错
+	}
+
 	c.middlewares = append([]service.Middleware{middleware}, c.middlewares...)
 	return nil
 }
@@ -57,6 +67,11 @@ func (c *middlewareChain) UseAt(index int, middleware service.Middleware) error 
 
 	if c.frozen {
 		return service.ErrChainFrozen
+	}
+
+	// P1-3 修复：nil 中间件保护
+	if middleware == nil {
+		return nil // 忽略 nil 中间件，不报错
 	}
 
 	// 边界检查

@@ -446,23 +446,6 @@ func TestBroadcastTracker_IsFullDone(t *testing.T) {
 	}
 }
 
-func TestBroadcastTracker_WaitStrategy(t *testing.T) {
-	targets := []model.PeerID{"node-1", "node-2", "node-3"}
-	tracker := service.NewBroadcastTracker("test-001", targets)
-
-	// ResponseNone 应该立即返回
-	err := tracker.WaitStrategy(context.Background(), service.ResponseNone)
-	if err != nil {
-		t.Errorf("WaitStrategy(ResponseNone) error = %v", err)
-	}
-
-	// 无效策略应该返回错误
-	err = tracker.WaitStrategy(context.Background(), service.ResponseStrategy(99))
-	if err != service.ErrInvalidStrategy {
-		t.Errorf("WaitStrategy(invalid) error = %v, want ErrInvalidStrategy", err)
-	}
-}
-
 func TestBroadcastTracker_WaitFull_ContextCancellation(t *testing.T) {
 	targets := []model.PeerID{"node-1", "node-2"}
 	tracker := service.NewBroadcastTracker("test-001", targets)

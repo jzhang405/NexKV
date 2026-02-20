@@ -11,7 +11,6 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
-	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -80,7 +79,7 @@ func NewLibp2pTransport(ctx context.Context, cfg *Config) (*Libp2pTransport, err
 
 	h, err := libp2p.New(libp2p.ListenAddrStrings(cfg.ListenAddr))
 	if err != nil {
-		return nil, errors.Wrap(err, "create libp2p host")
+		return nil, service.Wrap(err, "create libp2p host")
 	}
 
 	childCtx, cancel := context.WithCancel(ctx)
@@ -105,20 +104,20 @@ func NewLibp2pTransport(ctx context.Context, cfg *Config) (*Libp2pTransport, err
 
 func validatePeerID(peerID model.PeerID) error {
 	if len(peerID) == 0 {
-		return errors.Wrap(errors.ErrPeerIDInvalid, "empty")
+		return service.Wrap(service.ErrPeerIDInvalid, "empty")
 	}
 	if len(peerID) > MaxPeerIDLength {
-		return errors.Wrapf(errors.ErrPeerIDInvalid, "too long: %d > %d", len(peerID), MaxPeerIDLength)
+		return service.Wrapf(service.ErrPeerIDInvalid, "too long: %d > %d", len(peerID), MaxPeerIDLength)
 	}
 	return nil
 }
 
 func validateAddr(addr string) error {
 	if len(addr) == 0 {
-		return errors.Wrap(errors.ErrAddrInvalid, "empty")
+		return service.Wrap(service.ErrAddrInvalid, "empty")
 	}
 	if len(addr) > MaxAddrLength {
-		return errors.Wrapf(errors.ErrAddrTooLong, "%d > %d", len(addr), MaxAddrLength)
+		return service.Wrapf(service.ErrAddrTooLong, "%d > %d", len(addr), MaxAddrLength)
 	}
 	return nil
 }
@@ -151,29 +150,29 @@ func (t *Libp2pTransport) Connect(ctx context.Context, addr string) (model.PeerI
 	defer t.mu.Unlock()
 
 	if t.closed.Load() {
-		return "", errors.ErrTransportClosed
+		return "", service.ErrTransportClosed
 	}
 
 	if t.host == nil || t.host.Network() == nil {
-		return "", errors.ErrTransportClosed
+		return "", service.ErrTransportClosed
 	}
 
 	maddr, err := multiaddr.NewMultiaddr(addr)
 	if err != nil {
-		return "", errors.Wrap(errors.ErrAddrInvalid, err.Error())
+		return "", service.Wrap(service.ErrAddrInvalid, err.Error())
 	}
 
 	info, err := peer.AddrInfoFromP2pAddr(maddr)
 	if err != nil {
-		return "", errors.Wrap(errors.ErrAddrInvalid, err.Error())
+		return "", service.Wrap(service.ErrAddrInvalid, err.Error())
 	}
 
 	if t.host.Network().Connectedness(info.ID) == network.Connected {
-		return model.PeerID(info.ID.String()), errors.ErrAlreadyConnected
+		return model.PeerID(info.ID.String()), service.ErrAlreadyConnected
 	}
 
 	if err := t.host.Connect(ctx, *info); err != nil {
-		return "", errors.Wrapf(errors.ErrConnectionFailed, "peer=%s, reason=%v", info.ID.String(), err)
+		return "", service.Wrapf(service.ErrConnectionFailed, "peer=%s, reason=%v", info.ID.String(), err)
 	}
 
 	return model.PeerID(info.ID.String()), nil
@@ -189,26 +188,26 @@ func (t *Libp2pTransport) Disconnect(peerID model.PeerID) error {
 	defer t.mu.Unlock()
 
 	if t.closed.Load() {
-		return errors.ErrTransportClosed
+		return service.ErrTransportClosed
 	}
 
 	pid, err := peer.Decode(peerID.String())
 	if err != nil {
-		return errors.Wrap(errors.ErrPeerIDInvalid, err.Error())
+		return service.Wrap(service.ErrPeerIDInvalid, err.Error())
 	}
 
 	if t.host == nil || t.host.Network() == nil {
-		return errors.ErrTransportClosed
+		return service.ErrTransportClosed
 	}
 
 	if t.host.Network().Connectedness(pid) != network.Connected {
-		return errors.ErrNotConnected
+		return service.ErrNotConnected
 	}
 
 	conns := t.host.Network().ConnsToPeer(pid)
 	for _, conn := range conns {
 		if err := conn.Close(); err != nil {
-			return errors.Wrap(err, "close connection")
+			return service.Wrap(err, "close connection")
 		}
 	}
 	return nil
@@ -273,25 +272,25 @@ func (t *Libp2pTransport) OpenStream(ctx context.Context, peerID model.PeerID, p
 	defer t.mu.RUnlock()
 
 	if t.closed.Load() {
-		return nil, errors.ErrTransportClosed
+		return nil, service.ErrTransportClosed
 	}
 
 	if t.host == nil {
-		return nil, errors.ErrTransportClosed
+		return nil, service.ErrTransportClosed
 	}
 
 	pid, err := peer.Decode(peerID.String())
 	if err != nil {
-		return nil, errors.Wrap(errors.ErrPeerIDInvalid, err.Error())
+		return nil, service.Wrap(service.ErrPeerIDInvalid, err.Error())
 	}
 
 	if !t.IsConnected(peerID) {
-		return nil, errors.ErrNotConnected
+		return nil, service.ErrNotConnected
 	}
 
 	stream, err := t.host.NewStream(ctx, pid, protocol.ID(proto))
 	if err != nil {
-		return nil, errors.Wrapf(errors.ErrConnectionFailed, "open stream: %v", err)
+		return nil, service.Wrapf(service.ErrConnectionFailed, "open stream: %v", err)
 	}
 
 	return NewLibp2pStream(stream, proto), nil
@@ -337,7 +336,7 @@ func (a *streamAcceptor) AcceptStream(ctx context.Context, proto string) (networ
 	case stream := <-ch:
 		return stream, nil
 	case <-ctx.Done():
-		return nil, errors.ErrCanceled
+		return nil, service.ErrCanceled
 	}
 }
 
@@ -375,7 +374,7 @@ func (t *Libp2pTransport) OpenChannel(ctx context.Context, peerID model.PeerID, 
 
 	libp2pStream, ok := stream.(*Libp2pStream)
 	if !ok {
-		return nil, errors.Wrap(errors.ErrInvalidParam, "unexpected stream type")
+		return nil, service.Wrap(service.ErrInvalidParam, "unexpected stream type")
 	}
 	return NewLibp2pChannel(libp2pStream, DefaultChannelConfig()), nil
 }
@@ -389,7 +388,7 @@ func (t *Libp2pTransport) OpenAsyncChannel(ctx context.Context, peerID model.Pee
 
 	libp2pStream, ok := stream.(*Libp2pStream)
 	if !ok {
-		return nil, errors.Wrap(errors.ErrInvalidParam, "unexpected stream type")
+		return nil, service.Wrap(service.ErrInvalidParam, "unexpected stream type")
 	}
 	return NewLibp2pAsyncChannel(libp2pStream, DefaultAsyncChannelConfig()), nil
 }
@@ -403,7 +402,7 @@ func (t *Libp2pTransport) OpenAsyncStream(ctx context.Context, peerID model.Peer
 
 	libp2pStream, ok := stream.(*Libp2pStream)
 	if !ok {
-		return nil, errors.Wrap(errors.ErrInvalidParam, "unexpected stream type")
+		return nil, service.Wrap(service.ErrInvalidParam, "unexpected stream type")
 	}
 	return NewLibp2pAsyncStream(libp2pStream, DefaultAsyncStreamConfig()), nil
 }
@@ -418,8 +417,9 @@ func (t *Libp2pTransport) SetStreamHandler(proto string, handler func(service.St
 		// panic 恢复，防止节点崩溃
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("[Transport] panic in stream handler: %v\n%s", r, debug.Stack())
-				_ = errors.Wrapf(errors.ErrCallbackPanic, "stream=%s, panic=%v", s.ID(), r)
+				// 记录 panic 信息到日志（便于问题追踪）
+				panicErr := service.Wrapf(service.ErrCallbackPanic, "stream=%s, panic=%v", s.ID(), r)
+				log.Printf("[Transport] %v\n%s", panicErr, debug.Stack())
 				if err := s.Reset(); err != nil {
 					transportLog.WithField("error", err).Warn("failed to reset stream after panic")
 				}
@@ -462,7 +462,7 @@ func (t *Libp2pTransport) Close() error {
 	// 3.2 关闭 discovery
 	if t.discovery != nil {
 		if err := t.discovery.Close(); err != nil {
-			errs = append(errs, errors.Wrap(err, "close discovery"))
+			errs = append(errs, service.Wrap(err, "close discovery"))
 		}
 	}
 
@@ -475,20 +475,20 @@ func (t *Libp2pTransport) Close() error {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		errs = append(errs, errors.Wrap(errors.ErrTimeout, "wait goroutines"))
+		errs = append(errs, service.Wrap(service.ErrTimeout, "wait goroutines"))
 	}
 
 	// 3.3 关闭 host
 	if t.host != nil {
 		if err := t.host.Close(); err != nil {
-			errs = append(errs, errors.Wrap(err, "close host"))
+			errs = append(errs, service.Wrap(err, "close host"))
 		}
 	}
 
 	// 4. 错误信息不暴露内部细节
 	if len(errs) > 0 {
 		log.Printf("[Transport] close failed: %v", errs)
-		return errors.ErrTransportClosed
+		return service.ErrTransportClosed
 	}
 	return nil
 }

@@ -3,7 +3,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -253,17 +252,33 @@ type WriteVResult struct {
 
 // BroadcastTracker 可选的广播追踪器（一次性使用）
 //
-// 设计原则：Tracker 是一次性的，不复用
-// - 避免 channel 泄漏风险
-// - 简化并发模型
-// - Tracker 本身很轻量（几十字节），不复用没有性能问题
+// 设计原则：
+// 1. Tracker 是一次性的，不复用（避免 channel 泄漏）
+// 2. Tracker 是**独立的监控工具**，与 RPC 调用的 ResponseStrategy **解耦**
+// 3. 无论 RPC 使用什么策略（All/Majority/None），Tracker 都可以：
+//   - WaitFull(): 等待所有节点响应
+//   - WaitMajority(): 等待多数派响应
+//   - Stats(): 实时查看进度
+//
+// 典型使用场景：
+//
+//	// 场景 1：RPC 用 ResponseMajority，tracker 后台监控 full completion
+//	tracker := NewBroadcastTracker("task-001", replicas)
+//	rpc.BroadcastCall(ctx, replicas, req, ResponseMajority, tracker)
+//	// RPC 返回后，异步等待全部完成
+//	go func() { tracker.WaitFull(ctx) }()
+//
+//	// 场景 2：RPC 用 ResponseNone，tracker 监控所有响应
+//	tracker := NewBroadcastTracker("task-002", replicas)
+//	rpc.BroadcastCall(ctx, replicas, req, ResponseNone, tracker)
+//	// 后台等待全部或多数派完成
+//	tracker.WaitMajority(ctx)
 type BroadcastTracker struct {
 	taskID       string                         // 任务 ID（用于日志）
 	targets      []model.PeerID                 // 目标节点列表
 	responses    map[model.PeerID]model.Message // 成功响应
 	failures     map[model.PeerID]error         // 失败记录
 	mu           sync.RWMutex                   // 保护并发访问
-	done         chan struct{}                  // 策略满足时关闭
 	fullDone     chan struct{}                  // 全部完成时关闭
 	majorityDone chan struct{}                  // 多数派完成时关闭
 }
@@ -279,7 +294,6 @@ func NewBroadcastTracker(taskID string, targets []model.PeerID) *BroadcastTracke
 		targets:      targetsCopy,
 		responses:    make(map[model.PeerID]model.Message),
 		failures:     make(map[model.PeerID]error),
-		done:         make(chan struct{}),
 		fullDone:     make(chan struct{}),
 		majorityDone: make(chan struct{}),
 	}
@@ -297,8 +311,8 @@ func (t *BroadcastTracker) WaitFull(ctx context.Context) error {
 }
 
 // WaitMajority 等待多数派（> N/2）节点响应
-// 适用场景：与 ResponseMajority 策略配合
-// 优化：使用 channel 而非轮询，零 CPU 开销
+// 适用场景：需要确认多数派完成的场景（如 3 副本写入确认 W=2）
+// 注意：与 RPC 调用的 ResponseStrategy 无关，可独立使用
 func (t *BroadcastTracker) WaitMajority(ctx context.Context) error {
 	// 快速路径：先检查当前状态
 	t.mu.RLock()
@@ -318,37 +332,12 @@ func (t *BroadcastTracker) WaitMajority(ctx context.Context) error {
 	}
 }
 
-// WaitStrategy 等待指定策略满足
-// 通用方法，根据传入的 strategy 等待
-func (t *BroadcastTracker) WaitStrategy(ctx context.Context, strategy ResponseStrategy) error {
-	switch strategy {
-	case ResponseAll:
-		return t.WaitFull(ctx)
-	case ResponseMajority:
-		return t.WaitMajority(ctx)
-	case ResponseNone:
-		return nil // 立即返回
-	default:
-		return ErrInvalidStrategy
-	}
-}
-
 // Stats 获取实时统计信息
 func (t *BroadcastTracker) Stats() (success, failed, pending int) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return len(t.responses), len(t.failures),
 		len(t.targets) - len(t.responses) - len(t.failures)
-}
-
-// IsDone 检查策略是否已满足
-func (t *BroadcastTracker) IsDone() bool {
-	select {
-	case <-t.done:
-		return true
-	default:
-		return false
-	}
 }
 
 // IsMajorityReached 检查是否已达到多数派
@@ -416,54 +405,8 @@ func (t *BroadcastTracker) checkFullDoneLocked() {
 		default:
 			close(t.fullDone)
 		}
-
-		// 检查是否满足策略（关闭 done channel）
-		majority := len(t.targets)/2 + 1
-		if len(t.responses) >= majority {
-			select {
-			case <-t.done:
-			default:
-				close(t.done)
-			}
-		}
 	}
 }
-
-// RPC 错误码定义
-var (
-	// ErrMajorityFailed 多数派未达成（ResponseMajority 策略）
-	// 场景：3 节点广播，仅 1 个成功（需要 > N/2）
-	ErrMajorityFailed = errors.New("rpc: majority quorum not reached")
-
-	// ErrAllFailed 全部节点失败（ResponseAll 策略）
-	// 场景：任一节点失败，请求整体失败
-	ErrAllFailed = errors.New("rpc: all nodes failed")
-
-	// ErrTimeout 请求超时
-	ErrTimeout = errors.New("rpc: request timeout")
-
-	// ErrCanceled 请求被取消（context 取消）
-	ErrCanceled = errors.New("rpc: request canceled")
-
-	// ErrPeerUnreachable 节点不可达
-	ErrPeerUnreachable = errors.New("rpc: peer unreachable")
-
-	// ErrNoHandler 无处理器（服务端未注册）
-	ErrNoHandler = errors.New("rpc: no handler registered")
-
-	// ErrMessageTooLarge 消息过大
-	ErrMessageTooLarge = errors.New("rpc: message too large")
-
-	// ErrCodecFailure 编解码失败
-	ErrCodecFailure = errors.New("rpc: codec failure")
-
-	// ErrStrategyNotMajority 策略满足但不是 Majority
-	// 场景：WaitMajority 被调用，但策略满足时不是多数派
-	ErrStrategyNotMajority = errors.New("rpc: strategy satisfied but not majority")
-
-	// ErrInvalidStrategy 无效的策略
-	ErrInvalidStrategy = errors.New("rpc: invalid response strategy")
-)
 
 // RPC 统一的 RPC 接口（合并原 RPC 和 MultiRPC）
 //
@@ -572,52 +515,69 @@ func NewRequestIDGenerator(nodeID string) *RequestIDGenerator {
 	}
 }
 
-// Next 生成下一个请求 ID（线程安全 + 时钟漂移保护）
+// Next 生成下一个请求 ID（线程安全 + 时钟漂移保护 + 序列号溢出保护）
 //
 // 时钟回退处理策略：
 // - 当检测到系统时间回退（now < lastSecond）时，使用 lastSecond 作为时间戳
 // - 这保证了 RequestID 单调递增，避免 ID 冲突
 // - 场景：NTP 同步、闰秒、手动修改系统时间
+//
+// P1-1 修复：序列号溢出保护
+// - 序列号格式为 4 位 16 进制（最大 0xFFFF = 65535）
+// - 当序列号超过 65535 时，等待下一秒再生成
+// - 这样可以保持 ID 格式的一致性
 func (g *RequestIDGenerator) Next() RequestID {
-	now := time.Now().Unix()
+	const maxSeq uint32 = 0xFFFF // 4 位 16 进制最大值
 
-	// 时钟漂移保护：检测时间回退
 	for {
-		lastSec := g.lastSecond.Load()
+		now := time.Now().Unix()
 
-		if now > lastSec {
-			// 时间前进：正常跨秒
-			if g.lastSecond.CompareAndSwap(lastSec, now) {
-				g.secondSeq.Store(0)
+		// 时钟漂移保护：检测时间回退
+		for {
+			lastSec := g.lastSecond.Load()
+
+			if now > lastSec {
+				// 时间前进：正常跨秒
+				if g.lastSecond.CompareAndSwap(lastSec, now) {
+					g.secondSeq.Store(0)
+					break
+				}
+				// CAS 失败，重试
+				continue
+			}
+
+			if now == lastSec {
+				// 同一秒：继续递增序列号
 				break
 			}
-			// CAS 失败，重试
-			continue
-		}
 
-		if now == lastSec {
-			// 同一秒：继续递增序列号
+			// now < lastSec：时间回退！
+			// 策略：使用 lastSec 保证单调递增
+			now = lastSec
 			break
 		}
 
-		// now < lastSec：时间回退！
-		// 策略：使用 lastSec 保证单调递增
-		now = lastSec
-		break
+		// 原子递增序列号
+		seq := g.secondSeq.Add(1)
+
+		// P1-1 修复：序列号溢出保护
+		// 如果序列号超过 65535，等待下一秒再生成
+		if seq > maxSeq {
+			// 等待下一秒（最多 1 秒）
+			time.Sleep(time.Until(time.Unix(now+1, 0)))
+			continue
+		}
+
+		// 格式化：{NodeID}-{Timestamp:08x}-{Sequence:04x}
+		return RequestID(fmt.Sprintf("%s-%08x-%04x", g.nodeID, now, seq))
 	}
-
-	// 原子递增序列号
-	seq := g.secondSeq.Add(1)
-
-	// 格式化：{NodeID}-{Timestamp:08x}-{Sequence:04x}
-	return RequestID(fmt.Sprintf("%s-%08x-%04x", g.nodeID, now, seq))
 }
 
 // ParseRequestID 解析请求 ID（用于日志和调试）
 func ParseRequestID(id RequestID) (nodeID string, timestamp int64, sequence uint32, err error) {
 	parts := strings.Split(string(id), "-")
 	if len(parts) < 3 {
-		return "", 0, 0, errors.New("invalid request ID format: expected {NodeID}-{Timestamp}-{Sequence}")
+		return "", 0, 0, fmt.Errorf("invalid request ID format: expected {NodeID}-{Timestamp}-{Sequence}")
 	}
 
 	// 解析时间戳（倒数第二部分）
@@ -775,6 +735,3 @@ type MiddlewareChain interface {
 	// Clear 清空所有中间件（冻结后返回错误）
 	Clear() error
 }
-
-// ErrChainFrozen 中间件链已冻结错误
-var ErrChainFrozen = errors.New("middleware chain is frozen")

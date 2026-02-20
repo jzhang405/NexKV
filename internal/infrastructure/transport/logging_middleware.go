@@ -59,33 +59,29 @@ func (m *LoggingMiddleware) Name() string {
 
 // InterceptSend 拦截发送消息
 func (m *LoggingMiddleware) InterceptSend(ctx context.Context, peer model.PeerID, msg model.Message, next service.SendFunc) error {
+	// P1 修复：nil ctx 和 next 保护
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if next == nil {
+		return service.ErrInvalidParam
+	}
+
 	start := time.Now()
+	msgID, msgType, payloadLen := extractMsgInfo(msg)
 
 	// P3 修复：先检查日志级别再记录
 	if m.logger.IsLevelEnabled(m.level) {
-		m.logger.WithFields(logrus.Fields{
-			"component":   "rpc",
-			"middleware":  "logging",
-			"direction":   "send",
-			"peer":        peer,
-			"msg_id":      msg.ID(),
-			"msg_type":    msg.Type().String(),
-			"payload_len": len(msg.Payload()),
-		}).Log(m.level, "Sending message")
+		m.logger.WithFields(buildLogFields("send", peer, msgID, msgType, payloadLen, 0)).
+			Log(m.level, "Sending message")
 	}
 
 	// 执行下一个中间件
 	err := next(ctx, peer, msg)
 
 	// 记录发送结果
-	fields := logrus.Fields{
-		"component":   "rpc",
-		"middleware":  "logging",
-		"direction":   "send",
-		"peer":        peer,
-		"msg_id":      msg.ID(),
-		"duration_ms": time.Since(start).Milliseconds(),
-	}
+	duration := time.Since(start).Milliseconds()
+	fields := buildLogFields("send", peer, msgID, msgType, payloadLen, duration)
 
 	if err != nil {
 		fields["error"] = err.Error()
@@ -99,33 +95,29 @@ func (m *LoggingMiddleware) InterceptSend(ctx context.Context, peer model.PeerID
 
 // InterceptReceive 拦截接收消息
 func (m *LoggingMiddleware) InterceptReceive(ctx context.Context, peer model.PeerID, msg model.Message, next service.ReceiveFunc) error {
+	// P1 修复：nil ctx 和 next 保护
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if next == nil {
+		return service.ErrInvalidParam
+	}
+
 	start := time.Now()
+	msgID, msgType, payloadLen := extractMsgInfo(msg)
 
 	// P3 修复：先检查日志级别再记录
 	if m.logger.IsLevelEnabled(m.level) {
-		m.logger.WithFields(logrus.Fields{
-			"component":   "rpc",
-			"middleware":  "logging",
-			"direction":   "receive",
-			"peer":        peer,
-			"msg_id":      msg.ID(),
-			"msg_type":    msg.Type().String(),
-			"payload_len": len(msg.Payload()),
-		}).Log(m.level, "Receiving message")
+		m.logger.WithFields(buildLogFields("receive", peer, msgID, msgType, payloadLen, 0)).
+			Log(m.level, "Receiving message")
 	}
 
 	// 执行下一个中间件
 	err := next(ctx, peer, msg)
 
 	// 记录接收结果
-	fields := logrus.Fields{
-		"component":   "rpc",
-		"middleware":  "logging",
-		"direction":   "receive",
-		"peer":        peer,
-		"msg_id":      msg.ID(),
-		"duration_ms": time.Since(start).Milliseconds(),
-	}
+	duration := time.Since(start).Milliseconds()
+	fields := buildLogFields("receive", peer, msgID, msgType, payloadLen, duration)
 
 	if err != nil {
 		fields["error"] = err.Error()
@@ -135,6 +127,31 @@ func (m *LoggingMiddleware) InterceptReceive(ctx context.Context, peer model.Pee
 	}
 
 	return err
+}
+
+// extractMsgInfo 提取消息基本信息（P1-4/P1-5 修复：nil 安全）
+func extractMsgInfo(msg model.Message) (msgID, msgType string, payloadLen int) {
+	if msg == nil {
+		return "", "", 0
+	}
+	return msg.ID(), msg.Type().String(), len(msg.Payload())
+}
+
+// buildLogFields 构建日志字段
+func buildLogFields(direction string, peer model.PeerID, msgID, msgType string, payloadLen int, durationMs int64) logrus.Fields {
+	fields := logrus.Fields{
+		"component":   "rpc",
+		"middleware":  "logging",
+		"direction":   direction,
+		"peer":        peer,
+		"msg_id":      msgID,
+		"msg_type":    msgType,
+		"payload_len": payloadLen,
+	}
+	if durationMs > 0 {
+		fields["duration_ms"] = durationMs
+	}
+	return fields
 }
 
 // 确保实现 Middleware 接口

@@ -39,7 +39,7 @@
 | 关联需求单号 | [NexKV DDD 架构实施 PR](./2026-02-18_PR-nexkv-ddd-architecture_Pre.md) |
 | 关联里程碑 | [M1 - 基础设施层验收](../milestones/2026-02-20_M1-infrastructure-layer-acceptance.md) |
 | Spike 文档 | [集成测试框架设计 v2.10](../../07_spike/2026-02-20_transport-poc-integration-test-framework.md) |
-| 架构师评审状态 | 🔄 评审中（v1.3 Spike 对齐修复）⭐ |
+| 架构师评审状态 | 🔄 评审中（v1.5 Agent Review 修复）⭐ |
 | 预审批结果 | ⏳ 待定 |
 
 ---
@@ -191,11 +191,13 @@ const (
     ComponentTypeMetadata    ComponentType = "metadata"
 )
 
-// TestEnvironment 测试环境接口 ⭐ v1.3 补充（Spike 第 254-272 行）
+// TestEnvironment 测试环境接口 ⭐ v1.5 补充 Init/Close
 type TestEnvironment interface {
     ID() string
+    Init(ctx context.Context) error   // ⭐ v1.5 补充：初始化环境
     Start(ctx context.Context) error
     Stop(ctx context.Context) error
+    Close() error                     // ⭐ v1.5 补充：释放资源
     Status() EnvironmentStatus
     GetComponent(name string) (TestComponent, error)
     ListComponents() []TestComponent
@@ -261,6 +263,24 @@ type TestCluster interface {
     Cleanup() error
 }
 
+// TestNode 测试节点接口 ⭐ v1.5 补充
+type TestNode interface {
+    ID() string
+    Start(ctx context.Context) error
+    Stop(ctx context.Context) error
+    IsRunning() bool
+    AddComponent(comp TestComponent) error
+    GetComponent(name string) (TestComponent, error)
+}
+
+// NodeConfig 节点配置 ⭐ v1.5 补充
+type NodeConfig struct {
+    ID       string
+    Host     string
+    Port     int
+    Metadata map[string]string
+}
+
 // TestScenario 测试场景接口
 type TestScenario interface {
     Name() string
@@ -320,20 +340,47 @@ func (c *TransportAdapter) Start(ctx context.Context) error {
     return nil
 }
 
-// HealthCheck 实现示例（带重试）⭐ v1.3 对齐 Spike
+// HealthCheck 实现示例（带重试 + context 取消）⭐ v1.5 修复并发问题
 func (c *TransportAdapter) HealthCheck(ctx context.Context) error {
     config := c.GetHealthCheckConfig()
 
     var lastErr error
     for i := 0; i < config.RetryCount; i++ {
-        if err := c.doHealthCheck(ctx); err == nil {
+        // 检查 context 取消 ⭐ v1.5 修复
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        default:
+        }
+
+        // 执行健康检查（内联实现，不依赖未定义的方法）
+        checkCtx, cancel := context.WithTimeout(ctx, config.Timeout)
+        err := c.checkTransportHealth(checkCtx)
+        cancel()
+
+        if err == nil {
             return nil
-        } else {
-            lastErr = err
-            time.Sleep(config.RetryInterval)
+        }
+        lastErr = err
+
+        // 可中断的等待 ⭐ v1.5 修复
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        case <-time.After(config.RetryInterval):
         }
     }
     return fmt.Errorf("health check failed after %d retries: %w", config.RetryCount, lastErr)
+}
+
+// checkTransportHealth 内部健康检查方法
+func (c *TransportAdapter) checkTransportHealth(ctx context.Context) error {
+    // 检查 transport 是否已启动且可连接
+    if c.transport == nil {
+        return fmt.Errorf("transport not initialized")
+    }
+    // 具体健康检查逻辑...
+    return nil
 }
 ```
 
@@ -400,60 +447,97 @@ func (c *TransportAdapter) HealthCheck(ctx context.Context) error {
 ```go
 import swarmtesting "github.com/libp2p/go-libp2p/p2p/net/swarm/testing"
 
-// TransportAdapter 集成官方 MockConnectionGater
+// TransportAdapter 集成官方 MockConnectionGater ⭐ v1.5 完善结构体
 type TransportAdapter struct {
-    host      host.Host
-    connGater *swarmtesting.MockConnectionGater  // 复用官方工具
+    host         host.Host
+    connGater    *swarmtesting.MockConnectionGater
+    env          TestEnvironment           // ⭐ v1.5 补充
+    dependencies []TestComponent           // ⭐ v1.5 补充
+    transport    *Libp2pTransport          // ⭐ v1.5 补充
+    blockedPeers map[peer.ID]bool          // ⭐ v1.5 补充：并发安全阻塞列表
+    mu           sync.RWMutex              // ⭐ v1.5 补充：并发保护
 }
 
 // NewTransportAdapter 创建适配器（注入 MockConnectionGater）
-func NewTransportAdapter(t testing.TB) (*TransportAdapter, error) {
+func NewTransportAdapter(t testing.TB) (adapter *TransportAdapter, err error) {
+    t.Helper()  // 标记为测试辅助函数
+
     connGater := swarmtesting.DefaultMockConnectionGater()
 
     h, err := libp2p.New(
         libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-        libp2p.ConnectionGater(connGater),  // 注入连接控制器
+        libp2p.ConnectionGater(connGater),
     )
     if err != nil {
-        return nil, err
+        return nil, fmt.Errorf("create libp2p host: %w", err)
     }
 
     return &TransportAdapter{
-        host:      h,
-        connGater: connGater,
+        host:         h,
+        connGater:    connGater,
+        blockedPeers: make(map[peer.ID]bool),
     }, nil
 }
 
-// BlockPeer 阻塞指定节点（封装官方 API）
+// BlockPeer 阻塞指定节点（并发安全）⭐ v1.5 修复
 func (a *TransportAdapter) BlockPeer(peerID peer.ID) {
-    originalPeerDial := a.connGater.PeerDial
+    a.mu.Lock()
+    defer a.mu.Unlock()
+
+    a.blockedPeers[peerID] = true
+
+    // 更新连接控制器的拦截逻辑
     a.connGater.PeerDial = func(p peer.ID) bool {
-        if p == peerID {
-            return false  // 阻止连接
-        }
-        return originalPeerDial(p)
+        a.mu.RLock()
+        defer a.mu.RUnlock()
+        return !a.blockedPeers[p]  // 被阻塞的 peer 返回 false
     }
 }
 
-// UnblockPeer 恢复连接
+// UnblockPeer 恢复连接（并发安全）⭐ v1.5 修复
 func (a *TransportAdapter) UnblockPeer(peerID peer.ID) {
-    a.connGater.PeerDial = swarmtesting.DefaultMockConnectionGater().PeerDial
+    a.mu.Lock()
+    defer a.mu.Unlock()
+
+    delete(a.blockedPeers, peerID)
+    // 闭包会自动读取最新的 blockedPeers 状态，无需额外操作
+}
+
+// Close 释放资源 ⭐ v1.5 补充
+func (a *TransportAdapter) Close(ctx context.Context) error {
+    a.mu.Lock()
+    defer a.mu.Unlock()
+
+    if a.host != nil {
+        return a.host.Close()
+    }
+    return nil
 }
 ```
 
 **测试用例示例**：
 
 ```go
-func TestTransport_NetworkPartition_Reconnect(t *testing.T) {
+func TestTransport_NetworkPartition_Reconnect_Success(t *testing.T) {
+    ctx := context.Background()
+
     // 1. 创建 3 个节点（使用 MockConnectionGater）
-    node1, _ := framework.NewTransportAdapter(t)
-    node2, _ := framework.NewTransportAdapter(t)
-    node3, _ := framework.NewTransportAdapter(t)
+    node1, err := framework.NewTransportAdapter(t)
+    require.NoError(t, err)
+    defer node1.Close(ctx)  // ⭐ v1.5 补充：确保资源清理
+
+    node2, err := framework.NewTransportAdapter(t)
+    require.NoError(t, err)
+    defer node2.Close(ctx)
+
+    node3, err := framework.NewTransportAdapter(t)
+    require.NoError(t, err)
+    defer node3.Close(ctx)
 
     // 2. 连接所有节点
-    node1.Connect(node2.Addr())
-    node1.Connect(node3.Addr())
-    node2.Connect(node3.Addr())
+    require.NoError(t, node1.Connect(node2.Addr()))
+    require.NoError(t, node1.Connect(node3.Addr()))
+    require.NoError(t, node2.Connect(node3.Addr()))
 
     // 3. 模拟网络分区：隔离 node3
     node1.BlockPeer(node3.ID())
@@ -535,6 +619,153 @@ func TestBroadcastTracker_WithPacketLoss(t *testing.T) {
 |------|------|------|
 | **Phase 1（当前）** | `swarm/testing`（内置） | 覆盖率 75%，基础网络测试 |
 | **Phase 2（后续）** | `libp2p-testing/net` | Chaos 测试，验证异常网络表现 |
+
+---
+
+#### 4.6 BroadcastTracker 完整测试示例 ⭐ v1.5 补充
+
+> **参考示例**：验证网络分区场景下多数派回调是否正确触发
+
+```go
+package integration_test
+
+import (
+    "context"
+    "fmt"
+    "sync/atomic"
+    "testing"
+    "time"
+
+    "github.com/libp2p/go-libp2p"
+    "github.com/libp2p/go-libp2p/core/network"
+    "github.com/libp2p/go-libp2p/core/peer"
+    "github.com/libp2p/go-libp2p/core/protocol"
+    swarmtesting "github.com/libp2p/go-libp2p/p2p/net/swarm/testing"
+    "github.com/stretchr/testify/require"
+
+    "github.com/jzhang405/NexKV/internal/domain/model"
+    "github.com/jzhang405/NexKV/internal/infrastructure/tracker"
+)
+
+// TestBroadcastTracker_MajorityCallback_WithNetworkPartition
+// 验证：网络分区场景下，多数派回调能否正确触发
+func TestBroadcastTracker_MajorityCallback_WithNetworkPartition(t *testing.T) {
+    t.Parallel()
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+
+    // 1. 初始化 libp2p 模拟网络
+    mn := swarmtesting.New(ctx)
+    require.NotNil(t, mn)
+
+    // 2. 创建 5 个节点（多数派 = 3）
+    nodeCount := 5
+    majority := nodeCount/2 + 1 // 3
+    var peers []peer.ID
+
+    for i := 0; i < nodeCount; i++ {
+        host, err := mn.GenPeer(libp2p.Identity(swarmtesting.RandTestKeyPair()))
+        require.NoError(t, err)
+        peers = append(peers, host.ID())
+
+        // 注册测试协议处理器
+        host.SetStreamHandler(protocol.ID("/broadcast/test/1.0.0"), func(stream network.Stream) {
+            defer stream.Close()
+            // 模拟处理请求
+        })
+    }
+
+    // 3. 初始状态：所有节点互相连接
+    require.NoError(t, mn.LinkAll())
+
+    // 4. 创建 BroadcastTracker
+    taskID := "test-task-001"
+    bt := tracker.NewBroadcastTracker(taskID, peers)
+
+    // 回调状态标记
+    var majorityTriggered atomic.Bool
+    var majorityStats tracker.BroadcastStats
+
+    // 设置回调
+    callback := &tracker.LogCallback{
+        OnMajorityReached: func(stats tracker.BroadcastStats) {
+            majorityTriggered.Store(true)
+            majorityStats = stats
+            t.Logf("多数派回调触发！成功=%d, 失败=%d, 总数=%d",
+                stats.Success, stats.Failed, stats.Total)
+        },
+        OnSuccess: func(peerID model.PeerID, resp model.Message, stats tracker.BroadcastStats) {
+            t.Logf("节点 %s 响应成功，进度: %d/%d", peerID, stats.Success+stats.Failed, stats.Total)
+        },
+        OnFailure: func(peerID model.PeerID, err error, stats tracker.BroadcastStats) {
+            t.Logf("节点 %s 响应失败: %v", peerID, err)
+        },
+    }
+    bt.SetCallback(callback)
+
+    // 5. 制造网络分区：断开最后 2 个节点
+    partitionedPeers := peers[3:] // 节点 4、5
+    for _, p := range partitionedPeers {
+        require.NoError(t, mn.UnlinkFromAll(p))
+    }
+
+    // 6. 执行广播调用
+    broadcastCall(ctx, t, mn, peers[0], peers, taskID, bt)
+
+    // 7. 验证多数派回调
+    select {
+    case <-bt.MajorityDone():
+        require.True(t, majorityTriggered.Load(), "多数派回调未触发")
+        require.Equal(t, 3, majorityStats.Success, "成功数应为 3")
+        require.Equal(t, 2, majorityStats.Failed, "失败数应为 2")
+        require.Equal(t, majority, majorityStats.Success, "多数派数量不匹配")
+    case <-time.After(3 * time.Second):
+        t.Fatal("超时：多数派未达成")
+    }
+
+    // 8. 恢复网络分区，验证全部完成
+    require.NoError(t, mn.LinkAll())
+    // ... 继续测试全部完成回调
+}
+
+// broadcastCall 模拟广播调用
+func broadcastCall(
+    ctx context.Context,
+    t *testing.T,
+    mn *swarmtesting.Mocknet,
+    sender peer.ID,
+    targets []peer.ID,
+    taskID string,
+    bt *tracker.BroadcastTracker,
+) {
+    senderHost, err := mn.Host(sender)
+    require.NoError(t, err)
+
+    for _, target := range targets {
+        target := target
+        go func() {
+            stream, err := senderHost.NewStream(ctx, target, protocol.ID("/broadcast/test/1.0.0"))
+            if err != nil {
+                bt.RecordFailure(model.PeerID(target), fmt.Errorf("stream failed: %w", err))
+                return
+            }
+            defer stream.Close()
+
+            // 模拟成功响应
+            bt.RecordSuccess(model.PeerID(target), model.Message{TaskID: taskID})
+        }()
+    }
+}
+```
+
+**测试验证点**：
+
+| 验证项 | 预期结果 |
+|--------|---------|
+| 多数派触发 | 前 3 个节点成功后，`OnMajorityReached` 触发 |
+| 统计准确性 | `Success=3, Failed=2, Total=5` |
+| 分区恢复 | 恢复连接后，全部完成回调触发 |
+| 并发安全 | 使用 `atomic.Bool` 保证回调标记安全 |
 
 ---
 
@@ -707,7 +938,7 @@ jobs:
 
 ---
 
-**文档版本**: v1.4（复用官方工具优化版）⭐
+**文档版本**: v1.5（Agent Review 修复版）⭐
 **创建日期**: 2026-02-21
 **最后更新**: 2026-02-21
 **作者**: 🤖 AI Agent
@@ -721,7 +952,21 @@ jobs:
 | v1.1 | 2026-02-21 | 🤖 AI Agent | 调整为 3 周，补充网络分区实现、调试指南、性能基准 | ✅ 第一轮通过 |
 | v1.2 | 2026-02-21 | 👤 架构师 | 时间线不一致、目录结构不一致、接口类型安全问题 | ✅ 已修复 |
 | v1.3 | 2026-02-21 | 👤 架构师 | ComponentType 类型、方法命名、Init 签名、HealthCheckConfig | ✅ 已修复 |
-| v1.4 | 2026-02-21 | 🤖 AI Agent | 复用 libp2p 官方 swarm/testing，移除自研 NetworkPartitionController | 🔄 修复中 |
+| v1.4 | 2026-02-21 | 🤖 AI Agent | 复用 libp2p 官方 swarm/testing，添加 libp2p-testing/net 扩展 | ✅ 已完成 |
+| v1.5 | 2026-02-21 | 🤖 多 Agent | 并发安全、接口完整性、资源清理、context 取消 | 🔄 修复中 |
+
+### v1.5 变更摘要（Agent Review 修复）
+
+| 问题编号 | 来源 | 问题描述 | 修复内容 |
+|---------|------|---------|---------|
+| **P0-1** | Code Reviewer | `UnblockPeer` 并发安全问题 | ✅ 添加 `sync.RWMutex` + `blockedPeers map` |
+| **P0-2** | Code Reviewer | `HealthCheck` 未检查 context 取消 | ✅ 添加 `select { case <-ctx.Done() }` |
+| **P1-1** | Architect | `TestEnvironment` 缺少 `Close()` | ✅ 补充接口定义 |
+| **P1-2** | Architect | `TestEnvironment` 缺少 `Init()` | ✅ 补充接口定义 |
+| **P1-3** | Architect | 缺少 `TestNode` 接口 | ✅ 补充接口定义 |
+| **P1-4** | Code Reviewer | `TransportAdapter` 结构体字段不完整 | ✅ 补充 env/dependencies/blockedPeers/mu |
+| **P1-5** | Code Reviewer | 测试用例缺少 defer 清理 | ✅ 添加 `defer node.Close(ctx)` |
+| **P2** | Code Reviewer | 测试命名未遵循规范 | ✅ `TestTransport_NetworkPartition_Reconnect_Success` |
 
 ### v1.4 变更摘要（复用官方工具优化）
 
@@ -729,14 +974,4 @@ jobs:
 |--------|------|------|
 | **网络分区实现** | 自研 `NetworkPartitionController` (~100行) | 复用官方 `swarm/testing.MockConnectionGater` (~10行) |
 | **目录结构** | 包含 `network_partition.go` | 移除，封装到 `transport_adapter.go` |
-| **技术风险** | "网络分区实现困难"（中概率/高影响） | 降低为"低概率/中影响" |
-| **维护成本** | 高（自己维护） | 无（官方维护） |
-
-### v1.3 变更摘要（Spike 完全对齐）
-
-| 问题编号 | 严重程度 | 问题描述 | 修复内容 |
-|---------|---------|---------|---------|
-| **P0-1** | 🔴 严重 | `ComponentType` 类型不一致（int vs string） | ✅ 改为 `string` 类型 |
-| **P1-2** | 🟡 中等 | 方法命名不一致 | ✅ 去除 Get 前缀 |
-| **P1-3** | 🟡 中等 | `Init()` 签名缺少 `env` | ✅ 补充 `env` 参数 |
-| **P1-4** | 🟡 中等 | 缺少 `GetHealthCheckConfig()` | ✅ 补充方法 + 结构体 |
+| **高级网络模拟** | 无 | 添加 `libp2p-testing/net`（Phase 2） |

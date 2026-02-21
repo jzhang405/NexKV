@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/panjf2000/ants/v2"
 )
 
@@ -73,7 +74,7 @@ func NewTestContextWithSeed(seed int64) (*TestContext, error) {
 	// 使用种子重新生成临时目录
 	if ctx.TempDir, err = generateTempDirWithSeed(seed); err != nil {
 		ctx.Close()
-		return nil, fmt.Errorf("failed to create temp directory: %w", err)
+		return nil, errors.Wrap(err, "failed to create temp directory")
 	}
 	return ctx, nil
 }
@@ -87,13 +88,13 @@ func NewTestContextWithIsolation(level IsolationLevel) (*TestContext, error) {
 func newTestContext(level IsolationLevel, _ int64) (*TestContext, error) {
 	goroutinePool, err := ants.NewPool(DefaultGoroutinePoolSize, ants.WithPreAlloc(true))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create goroutine pool: %w", err)
+		return nil, errors.Wrap(err, "failed to create goroutine pool")
 	}
 
 	tempDir, err := generateTempDir()
 	if err != nil {
 		goroutinePool.Release()
-		return nil, fmt.Errorf("failed to create temp directory: %w", err)
+		return nil, errors.Wrap(err, "failed to create temp directory")
 	}
 
 	return &TestContext{
@@ -189,7 +190,7 @@ func generateTempDir() (string, error) {
 
 	// 创建目录（检查错误）
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create temp directory %s: %w", tempDir, err)
+		return "", errors.Wrapf(err, "failed to create temp directory %s", tempDir)
 	}
 
 	return tempDir, nil
@@ -208,7 +209,7 @@ func generateTempDirWithSeed(seed int64) (string, error) {
 
 	// 创建目录（检查错误）
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create temp directory %s: %w", tempDir, err)
+		return "", errors.Wrapf(err, "failed to create temp directory %s", tempDir)
 	}
 
 	return tempDir, nil

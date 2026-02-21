@@ -3,11 +3,11 @@ package scenarios
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/jzhang405/NexKV/pkg/test/framework"
 	"github.com/jzhang405/NexKV/pkg/test/framework/adapters"
 )
@@ -33,24 +33,24 @@ func (s *TwoNodesConnectScenario) Setup(ctx context.Context, cluster framework.T
 	// 创建第一个节点
 	node1, err := adapters.NewTransportAdapter(nil)
 	if err != nil {
-		return fmt.Errorf("failed to create node1: %w", err)
+		return errors.Wrap(err, "failed to create node1")
 	}
 	s.node1 = node1
 
 	// 创建第二个节点
 	node2, err := adapters.NewTransportAdapter(nil)
 	if err != nil {
-		return fmt.Errorf("failed to create node2: %w", err)
+		return errors.Wrap(err, "failed to create node2")
 	}
 	s.node2 = node2
 
 	// 启动节点
 	if err := s.node1.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start node1: %w", err)
+		return errors.Wrap(err, "failed to start node1")
 	}
 
 	if err := s.node2.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start node2: %w", err)
+		return errors.Wrap(err, "failed to start node2")
 	}
 
 	return nil
@@ -60,7 +60,7 @@ func (s *TwoNodesConnectScenario) Setup(ctx context.Context, cluster framework.T
 func (s *TwoNodesConnectScenario) Execute(ctx context.Context, cluster framework.TestCluster) error {
 	// Node1 连接到 Node2
 	if err := s.node1.ConnectTo(ctx, s.node2); err != nil {
-		return fmt.Errorf("node1 failed to connect to node2: %w", err)
+		return errors.Wrap(err, "node1 failed to connect to node2")
 	}
 
 	// 等待连接建立
@@ -73,22 +73,22 @@ func (s *TwoNodesConnectScenario) Execute(ctx context.Context, cluster framework
 func (s *TwoNodesConnectScenario) Verify(ctx context.Context, cluster framework.TestCluster) error {
 	// 验证 Node1 已连接到 Node2
 	if !s.node1.IsConnectedTo(s.node2.ID()) {
-		return fmt.Errorf("node1 is not connected to node2")
+		return errors.Wrap(errors.ErrConnectionFailed, "node1 is not connected to node2")
 	}
 
 	// 验证 Node2 已连接到 Node1（双向连接）
 	if !s.node2.IsConnectedTo(s.node1.ID()) {
-		return fmt.Errorf("node2 is not connected to node1")
+		return errors.Wrap(errors.ErrConnectionFailed, "node2 is not connected to node1")
 	}
 
 	// 验证 Node1 的连接列表包含 Node2
 	peers := s.node1.GetConnectedPeers()
 	if len(peers) == 0 {
-		return fmt.Errorf("node1 has no connected peers")
+		return errors.Wrap(errors.ErrConnectionFailed, "node1 has no connected peers")
 	}
 
 	if !slices.Contains(peers, s.node2.ID()) {
-		return fmt.Errorf("node2 not found in node1's connected peers")
+		return errors.Wrap(errors.ErrConnectionFailed, "node2 not found in node1's connected peers")
 	}
 
 	return nil
@@ -109,21 +109,7 @@ func (s *TwoNodesConnectScenario) Teardown(ctx context.Context, cluster framewor
 
 // TestIntegration_TwoNodesConnect_Success 测试双节点连接成功
 func TestIntegration_TwoNodesConnect_Success(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// 创建测试上下文
-	testCtx, err := framework.NewTestContext()
-	if err != nil {
-		t.Fatalf("Failed to create test context: %v", err)
-	}
-	defer testCtx.Close()
-
-	// 创建集群
-	cluster := framework.NewDefaultCluster("test-cluster", testCtx.Registry)
-
-	// 创建场景执行器
-	executor := framework.NewScenarioExecutor(cluster)
+	ctx, _, executor := setupIntegrationTest(t, 30*time.Second)
 
 	// 执行测试场景
 	scenario := NewTwoNodesConnectScenario()
@@ -142,21 +128,7 @@ func TestIntegration_TwoNodesConnect_Success(t *testing.T) {
 
 // TestIntegration_TwoNodesConnect_Timeout 测试双节点连接超时
 func TestIntegration_TwoNodesConnect_Timeout(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
-	defer cancel()
-
-	// 创建测试上下文
-	testCtx, err := framework.NewTestContext()
-	if err != nil {
-		t.Fatalf("Failed to create test context: %v", err)
-	}
-	defer testCtx.Close()
-
-	// 创建集群
-	cluster := framework.NewDefaultCluster("test-cluster", testCtx.Registry)
-
-	// 创建场景执行器
-	executor := framework.NewScenarioExecutor(cluster)
+	ctx, _, executor := setupIntegrationTest(t, 1*time.Nanosecond)
 
 	// 执行测试场景（应该因超时而失败）
 	scenario := NewTwoNodesConnectScenario()

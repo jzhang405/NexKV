@@ -9,6 +9,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/jzhang405/NexKV/pkg/test/framework"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -96,7 +97,7 @@ func NewTransportAdapter(config *TransportAdapterConfig) (*TransportAdapter, err
 		libp2p.ConnectionGater(connGater),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create libp2p host: %w", err)
+		return nil, errors.Wrap(err, "failed to create libp2p host")
 	}
 
 	// ⭐ P0-1 修复：在初始化时一次性设置 PeerDial 闭包
@@ -220,7 +221,7 @@ func (a *TransportAdapter) GetComponent(name string) (framework.TestComponent, e
 			return dep, nil
 		}
 	}
-	return nil, fmt.Errorf("component %s not found", name)
+	return nil, errors.Wrapf(errors.ErrComponentNotFound, "component %s not found", name)
 }
 
 // IsHealthy 检查节点健康状态
@@ -230,21 +231,24 @@ func (a *TransportAdapter) IsHealthy(ctx context.Context) bool {
 
 // ConnectTo 连接到另一个节点
 func (a *TransportAdapter) ConnectTo(ctx context.Context, target framework.TestNode) error {
+	if target == nil {
+		return errors.Wrap(errors.ErrInvalidParam, "target node cannot be nil")
+	}
 	targetAddr := target.Address()
 	if targetAddr == "" {
-		return fmt.Errorf("target node has no address")
+		return errors.Wrap(errors.ErrInvalidParam, "target node has no address")
 	}
 
 	// 解析多地址
 	maddr, err := multiaddr.NewMultiaddr(targetAddr)
 	if err != nil {
-		return fmt.Errorf("invalid address %s: %w", targetAddr, err)
+		return errors.Wrapf(err, "invalid address %s", targetAddr)
 	}
 
 	// 从多地址中提取 Peer ID
 	info, err := peer.AddrInfoFromP2pAddr(maddr)
 	if err != nil {
-		return fmt.Errorf("failed to extract peer info: %w", err)
+		return errors.Wrap(err, "failed to extract peer info")
 	}
 
 	// 添加到 peerstore
@@ -256,10 +260,13 @@ func (a *TransportAdapter) ConnectTo(ctx context.Context, target framework.TestN
 
 // DisconnectFrom 断开与另一个节点的连接
 func (a *TransportAdapter) DisconnectFrom(ctx context.Context, target framework.TestNode) error {
+	if target == nil {
+		return errors.Wrap(errors.ErrInvalidParam, "target node cannot be nil")
+	}
 	targetID := target.ID()
 	pid, err := peer.Decode(targetID)
 	if err != nil {
-		return fmt.Errorf("invalid peer ID %s: %w", targetID, err)
+		return errors.Wrapf(err, "invalid peer ID %s", targetID)
 	}
 
 	return a.host.Network().ClosePeer(pid)
@@ -385,20 +392,20 @@ func (a *TransportAdapter) HealthCheck(ctx context.Context) error {
 		}
 	}
 
-	return fmt.Errorf("health check failed after %d retries: %w", config.RetryCount, lastErr)
+	return errors.Wrapf(lastErr, "health check failed after %d retries", config.RetryCount)
 }
 
 // doHealthCheck 执行实际的健康检查逻辑
 func (a *TransportAdapter) doHealthCheck(ctx context.Context) error {
 	// 检查 host 是否有效
 	if a.host == nil {
-		return fmt.Errorf("host not initialized")
+		return errors.Wrap(errors.ErrNotInitialized, "host not initialized")
 	}
 
 	// 检查是否有监听地址
 	addrs := a.host.Addrs()
 	if len(addrs) == 0 {
-		return fmt.Errorf("no listen addresses")
+		return errors.Wrap(errors.ErrNotInitialized, "no listen addresses")
 	}
 
 	return nil
@@ -479,31 +486,31 @@ func (t *transportWrapper) IsConnected(peerID model.PeerID) bool {
 // OpenStream 打开到指定节点的流式连接
 // 注意：此方法在测试适配器中不支持，请使用 ConnectTo/IsConnectedTo 进行连接测试
 func (t *transportWrapper) OpenStream(ctx context.Context, peerID model.PeerID, protocol string) (service.Stream, error) {
-	return nil, fmt.Errorf("OpenStream not supported in TransportAdapter: use ConnectTo/IsConnectedTo for connection testing")
+	return nil, errors.Wrap(errors.ErrNotImplemented, "OpenStream not supported in TransportAdapter: use ConnectTo/IsConnectedTo for connection testing")
 }
 
 // AcceptStream 接受指定协议的入站流
 // 注意：此方法在测试适配器中不支持
 func (t *transportWrapper) AcceptStream(protocol string) (service.Stream, error) {
-	return nil, fmt.Errorf("AcceptStream not supported in TransportAdapter: testing focuses on connection management")
+	return nil, errors.Wrap(errors.ErrNotImplemented, "AcceptStream not supported in TransportAdapter: testing focuses on connection management")
 }
 
 // OpenChannel 打开到指定节点的双向通道
 // 注意：此方法在测试适配器中不支持
 func (t *transportWrapper) OpenChannel(ctx context.Context, peerID model.PeerID, protocol string) (service.Channel, error) {
-	return nil, fmt.Errorf("OpenChannel not supported in TransportAdapter: use ConnectTo/GetConnectedPeers for connection testing")
+	return nil, errors.Wrap(errors.ErrNotImplemented, "OpenChannel not supported in TransportAdapter: use ConnectTo/GetConnectedPeers for connection testing")
 }
 
 // OpenAsyncChannel 打开到指定节点的异步双向通道
 // 注意：此方法在测试适配器中不支持
 func (t *transportWrapper) OpenAsyncChannel(ctx context.Context, peerID model.PeerID, protocol string) (service.AsyncChannel, error) {
-	return nil, fmt.Errorf("OpenAsyncChannel not supported in TransportAdapter: use ConnectTo/GetConnectedPeers for connection testing")
+	return nil, errors.Wrap(errors.ErrNotImplemented, "OpenAsyncChannel not supported in TransportAdapter: use ConnectTo/GetConnectedPeers for connection testing")
 }
 
 // OpenAsyncStream 打开到指定节点的异步流
 // 注意：此方法在测试适配器中不支持
 func (t *transportWrapper) OpenAsyncStream(ctx context.Context, peerID model.PeerID, protocol string) (service.AsyncStream, error) {
-	return nil, fmt.Errorf("OpenAsyncStream not supported in TransportAdapter: use ConnectTo/GetConnectedPeers for connection testing")
+	return nil, errors.Wrap(errors.ErrNotImplemented, "OpenAsyncStream not supported in TransportAdapter: use ConnectTo/GetConnectedPeers for connection testing")
 }
 
 // SetStreamHandler 设置流处理器

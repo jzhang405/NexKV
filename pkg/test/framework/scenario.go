@@ -2,8 +2,9 @@ package framework
 
 import (
 	"context"
-	"fmt"
 	"time"
+
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ScenarioResult 场景执行结果
@@ -75,7 +76,7 @@ func (e *ScenarioExecutor) Execute(ctx context.Context, scenario TestScenario) *
 	// Phase 1: Setup
 	setupStart := time.Now()
 	if err := scenario.Setup(ctx, e.cluster); err != nil {
-		result.Error = fmt.Errorf("setup failed: %w", err)
+		result.Error = errors.Wrap(err, "setup failed")
 		result.SetupDuration = time.Since(setupStart)
 		// 即使 Setup 失败也尝试 Teardown
 		_ = scenario.Teardown(ctx, e.cluster)
@@ -86,7 +87,7 @@ func (e *ScenarioExecutor) Execute(ctx context.Context, scenario TestScenario) *
 	// Phase 2: Execute
 	executeStart := time.Now()
 	if err := scenario.Execute(ctx, e.cluster); err != nil {
-		result.Error = fmt.Errorf("execute failed: %w", err)
+		result.Error = errors.Wrap(err, "execute failed")
 		result.ExecuteDuration = time.Since(executeStart)
 		_ = scenario.Teardown(ctx, e.cluster)
 		return result
@@ -96,7 +97,7 @@ func (e *ScenarioExecutor) Execute(ctx context.Context, scenario TestScenario) *
 	// Phase 3: Verify
 	verifyStart := time.Now()
 	if err := scenario.Verify(ctx, e.cluster); err != nil {
-		result.Error = fmt.Errorf("verify failed: %w", err)
+		result.Error = errors.Wrap(err, "verify failed")
 		result.VerifyDuration = time.Since(verifyStart)
 		_ = scenario.Teardown(ctx, e.cluster)
 		return result
@@ -106,7 +107,7 @@ func (e *ScenarioExecutor) Execute(ctx context.Context, scenario TestScenario) *
 	// Phase 4: Teardown
 	teardownStart := time.Now()
 	if err := scenario.Teardown(ctx, e.cluster); err != nil {
-		result.Error = fmt.Errorf("teardown failed: %w", err)
+		result.Error = errors.Wrap(err, "teardown failed")
 		result.TeardownDuration = time.Since(teardownStart)
 		return result
 	}

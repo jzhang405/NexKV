@@ -3,11 +3,11 @@ package scenarios
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/jzhang405/NexKV/pkg/test/framework"
 	"github.com/jzhang405/NexKV/pkg/test/framework/adapters"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -36,7 +36,7 @@ func (s *NetworkPartitionScenario) Setup(ctx context.Context, cluster framework.
 	for i := range 3 {
 		node, err := adapters.NewTransportAdapter(nil)
 		if err != nil {
-			return fmt.Errorf("failed to create node%d: %w", i+1, err)
+			return errors.Wrapf(err, "failed to create node%d", i+1)
 		}
 		s.nodes = append(s.nodes, node)
 	}
@@ -44,7 +44,7 @@ func (s *NetworkPartitionScenario) Setup(ctx context.Context, cluster framework.
 	// 启动所有节点
 	for i, node := range s.nodes {
 		if err := node.Start(ctx); err != nil {
-			return fmt.Errorf("failed to start node%d: %w", i+1, err)
+			return errors.Wrapf(err, "failed to start node%d", i+1)
 		}
 	}
 
@@ -53,7 +53,7 @@ func (s *NetworkPartitionScenario) Setup(ctx context.Context, cluster framework.
 		for j, target := range s.nodes {
 			if i != j {
 				if err := source.ConnectTo(ctx, target); err != nil {
-					return fmt.Errorf("node%d failed to connect to node%d: %w", i+1, j+1, err)
+					return errors.Wrapf(err, "node%d failed to connect to node%d", i+1, j+1)
 				}
 			}
 		}
@@ -113,12 +113,32 @@ func TestIntegration_NetworkPartition_SingleNode(t *testing.T) {
 		nodes[1].BlockPeer(node0ID)
 
 		// 主动断开现有连接
-		_ = nodes[0].DisconnectFrom(ctx, nodes[1]) //nolint:errcheck // test code
-		_ = nodes[1].DisconnectFrom(ctx, nodes[0]) //nolint:errcheck // test code
+		if err := nodes[0].DisconnectFrom(ctx, nodes[1]); err != nil {
+			t.Logf("Warning: node0 failed to disconnect from node1: %v", err)
+		}
+		if err := nodes[1].DisconnectFrom(ctx, nodes[0]); err != nil {
+			t.Logf("Warning: node1 failed to disconnect from node0: %v", err)
+		}
 		nodes[2].BlockPeer(node0ID)
+		if err := nodes[0].DisconnectFrom(ctx, nodes[2]); err != nil {
+			t.Logf("Warning: node0 failed to disconnect from node2: %v", err)
+		}
+		if err := nodes[2].DisconnectFrom(ctx, nodes[0]); err != nil {
+			t.Logf("Warning: node2 failed to disconnect from node0: %v", err)
+		}
 
 		t.Logf("Partitioned node0 from node1 and node2")
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(PartitionStabilizeWait)
+
+		// 验证分区生效
+		if nodes[0].IsConnectedTo(nodes[1].ID()) {
+			return errors.Wrap(errors.ErrConnectionFailed, "partition should have disconnected node0 from node1")
+		}
+		if nodes[0].IsConnectedTo(nodes[2].ID()) {
+			return errors.Wrap(errors.ErrConnectionFailed, "partition should have disconnected node0 from node2")
+		}
+		t.Logf("Verified partition effectiveness: node0 disconnected from node1 and node2")
+
 		return nil
 	}
 
@@ -126,10 +146,10 @@ func TestIntegration_NetworkPartition_SingleNode(t *testing.T) {
 	scenario.verifyFunc = func(ctx context.Context, nodes []*adapters.TransportAdapter) error {
 		// Node1 和 Node2 应该仍然互连
 		if !nodes[1].IsConnectedTo(nodes[2].ID()) {
-			return fmt.Errorf("node1 should still be connected to node2")
+			return errors.Wrap(errors.ErrConnectionFailed, "node1 should still be connected to node2")
 		}
 		if !nodes[2].IsConnectedTo(nodes[1].ID()) {
-			return fmt.Errorf("node2 should still be connected to node1")
+			return errors.Wrap(errors.ErrConnectionFailed, "node2 should still be connected to node1")
 		}
 
 		t.Logf("Verified: node1<->node2 still connected")
@@ -170,11 +190,22 @@ func TestIntegration_NetworkPartition_Bidirectional(t *testing.T) {
 		nodes[1].BlockPeer(node0ID)
 
 		// 主动断开现有连接
-		_ = nodes[0].DisconnectFrom(ctx, nodes[1]) //nolint:errcheck // test code
-		_ = nodes[1].DisconnectFrom(ctx, nodes[0]) //nolint:errcheck // test code
+		if err := nodes[0].DisconnectFrom(ctx, nodes[1]); err != nil {
+			t.Logf("Warning: node0 failed to disconnect from node1: %v", err)
+		}
+		if err := nodes[1].DisconnectFrom(ctx, nodes[0]); err != nil {
+			t.Logf("Warning: node1 failed to disconnect from node0: %v", err)
+		}
 
 		t.Logf("Created bidirectional partition between node0 and node1")
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(PartitionStabilizeWait)
+
+		// 验证分区生效
+		if nodes[0].IsConnectedTo(nodes[1].ID()) {
+			return errors.Wrap(errors.ErrConnectionFailed, "partition should have disconnected node0 from node1")
+		}
+		t.Logf("Verified partition effectiveness: node0<->node1 disconnected")
+
 		return nil
 	}
 
@@ -182,17 +213,17 @@ func TestIntegration_NetworkPartition_Bidirectional(t *testing.T) {
 	scenario.verifyFunc = func(ctx context.Context, nodes []*adapters.TransportAdapter) error {
 		// Node0 和 Node1 应该不连接
 		if nodes[0].IsConnectedTo(nodes[1].ID()) {
-			return fmt.Errorf("node0 should not be connected to node1 after partition")
+			return errors.Wrap(errors.ErrConnectionFailed, "node0 should not be connected to node1 after partition")
 		}
 
 		// Node0 和 Node2 应该仍然连接
 		if !nodes[0].IsConnectedTo(nodes[2].ID()) {
-			return fmt.Errorf("node0 should still be connected to node2")
+			return errors.Wrap(errors.ErrConnectionFailed, "node0 should still be connected to node2")
 		}
 
 		// Node1 和 Node2 应该仍然连接
 		if !nodes[1].IsConnectedTo(nodes[2].ID()) {
-			return fmt.Errorf("node1 should still be connected to node2")
+			return errors.Wrap(errors.ErrConnectionFailed, "node1 should still be connected to node2")
 		}
 
 		t.Logf("Verified: node0<->node1 partitioned, node0<->node2 and node1<->node2 connected")
@@ -237,14 +268,18 @@ func TestIntegration_NetworkPartition_Reconnect(t *testing.T) {
 		nodes[0].BlockPeer(pid1)
 		nodes[1].BlockPeer(pid0)
 		// 主动断开现有连接
-		_ = nodes[0].DisconnectFrom(ctx, nodes[1]) //nolint:errcheck // test code
-		_ = nodes[1].DisconnectFrom(ctx, nodes[0]) //nolint:errcheck // test code
+		if err := nodes[0].DisconnectFrom(ctx, nodes[1]); err != nil {
+			t.Logf("Warning: node0 failed to disconnect from node1: %v", err)
+		}
+		if err := nodes[1].DisconnectFrom(ctx, nodes[0]); err != nil {
+			t.Logf("Warning: node1 failed to disconnect from node0: %v", err)
+		}
 		t.Logf("Step 1: Created partition")
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(PartitionStabilizeWait)
 
 		// Step 2: 验证分区生效
 		if nodes[0].IsConnectedTo(node1ID) {
-			return fmt.Errorf("partition should have disconnected node0 and node1")
+			return errors.Wrap(errors.ErrConnectionFailed, "partition should have disconnected node0 and node1")
 		}
 		t.Logf("Step 2: Verified partition")
 
@@ -257,7 +292,7 @@ func TestIntegration_NetworkPartition_Reconnect(t *testing.T) {
 		if err := nodes[0].ConnectTo(ctx, nodes[1]); err != nil {
 			t.Logf("Warning: reconnect failed: %v", err)
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(PartitionStabilizeWait)
 
 		return nil
 	}
@@ -314,7 +349,7 @@ func TestIntegration_NetworkPartition_PartialMesh(t *testing.T) {
 			}
 		}
 	}
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(PartitionStabilizeWait)
 
 	// 验证初始连接
 	for i, node := range nodes {
@@ -343,7 +378,7 @@ func TestIntegration_NetworkPartition_PartialMesh(t *testing.T) {
 	nodes[3].BlockPeer(node0ID)
 	nodes[3].BlockPeer(node1ID)
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(PartitionStabilizeWait)
 
 	// 验证分区效果
 	// Node0 应该只连接 Node1

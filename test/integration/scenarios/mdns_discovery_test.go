@@ -30,7 +30,7 @@ import (
 func skipIfNoMulticast(t *testing.T) {
 	t.Helper()
 	// CI 环境跳过（由 build tag 处理，但额外保护）
-	if os.Getenv("CI") != "" {
+	if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") == "true" {
 		t.Skip("Skipping mDNS test in CI environment")
 	}
 	// short 模式跳过
@@ -40,6 +40,15 @@ func skipIfNoMulticast(t *testing.T) {
 	// VPN 环境可能不支持多播
 	if os.Getenv("VPN_CONNECTED") != "" {
 		t.Skip("Skipping mDNS test with VPN")
+	}
+}
+
+// skipInCI 在 CI 环境中跳过测试
+// 用于需要实际 mDNS 多播网络的测试，这些测试在 CI 中不可靠
+func skipInCI(t *testing.T) {
+	t.Helper()
+	if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Skip("Skipping mDNS test in CI environment - mDNS requires multicast network")
 	}
 }
 
@@ -137,7 +146,9 @@ func (s *MDNSDiscoveryScenario) Teardown(ctx context.Context, cluster framework.
 }
 
 // TestIntegration_MDNSDiscovery_Basic 测试基本的 mDNS 发现
+// 此测试需要实际 mDNS 多播网络，在 CI 中不可靠，必须跳过
 func TestIntegration_MDNSDiscovery_Basic(t *testing.T) {
+	skipInCI(t) // CI 环境中必须跳过，因为 mDNS 多播不可靠
 	skipIfNoMulticast(t)
 
 	scenario := NewMDNSDiscoveryScenario()
@@ -157,7 +168,9 @@ func TestIntegration_MDNSDiscovery_Basic(t *testing.T) {
 }
 
 // TestIntegration_MDNSDiscovery_DirectDiscovery 直接测试 mDNS 发现
+// 此测试需要实际 mDNS 多播网络，在 CI 中不可靠，必须跳过
 func TestIntegration_MDNSDiscovery_DirectDiscovery(t *testing.T) {
+	skipInCI(t) // CI 环境中必须跳过，因为 mDNS 多播不可靠
 	skipIfNoMulticast(t)
 
 	ctx := context.Background()
@@ -195,7 +208,12 @@ func TestIntegration_MDNSDiscovery_DirectDiscovery(t *testing.T) {
 }
 
 // TestIntegration_DiscoveryService_Lifecycle 测试 Discovery 服务生命周期
+// 此测试不依赖实际 mDNS 多播，可以在 CI 中运行
 func TestIntegration_DiscoveryService_Lifecycle(t *testing.T) {
+	// 仅在 short 模式下跳过
+	if testing.Short() {
+		t.Skip("Skipping in short mode")
+	}
 	ctx := t.Context()
 
 	// 创建 transport
@@ -209,7 +227,9 @@ func TestIntegration_DiscoveryService_Lifecycle(t *testing.T) {
 }
 
 // TestIntegration_DiscoveryService_MultipleTags 测试不同标签的发现服务
+// 此测试需要实际 mDNS 多播网络，在 CI 中不可靠，必须跳过
 func TestIntegration_DiscoveryService_MultipleTags(t *testing.T) {
+	skipInCI(t) // CI 环境中必须跳过，因为 mDNS 多播不可靠
 	skipIfNoMulticast(t)
 
 	ctx := context.Background()
@@ -260,8 +280,9 @@ func TestIntegration_DiscoveryService_MultipleTags(t *testing.T) {
 }
 
 // TestIntegration_Discovery_HandlePeerFound 测试 HandlePeerFound 直接调用
+// 此测试不依赖实际 mDNS 多播（使用手动连接），可以在 CI 中运行
 func TestIntegration_Discovery_HandlePeerFound(t *testing.T) {
-	// 此测试不依赖 mDNS，只在 short 模式下跳过
+	// 仅在 short 模式下跳过
 	if testing.Short() {
 		t.Skip("Skipping in short mode")
 	}
@@ -307,7 +328,10 @@ func TestIntegration_Discovery_HandlePeerFound(t *testing.T) {
 }
 
 // TestIntegration_Discovery_NetworkPartition 测试网络分区后的重新发现
+// 此测试使用手动连接而非 mDNS 发现，但仍创建启用发现的节点
+// 为确保 CI 稳定性，在 CI 中跳过
 func TestIntegration_Discovery_NetworkPartition(t *testing.T) {
+	skipInCI(t) // CI 环境中跳过，因为启用了 mDNS 发现功能
 	skipIfNoMulticast(t)
 
 	ctx := context.Background()

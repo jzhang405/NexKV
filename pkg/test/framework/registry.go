@@ -3,9 +3,10 @@ package framework
 import (
 	"container/list"
 	"context"
-	"fmt"
 	"io"
 	"sync"
+
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ComponentFactory 组件工厂函数类型
@@ -31,7 +32,7 @@ func (r *ComponentRegistry) Register(componentType ComponentType, factory Compon
 	defer r.mu.Unlock()
 
 	if _, exists := r.factories[componentType]; exists {
-		return fmt.Errorf("component type %s already registered", componentType)
+		return errors.Wrapf(errors.ErrComponentExists, "component type %s already registered", componentType)
 	}
 
 	r.factories[componentType] = factory
@@ -45,7 +46,7 @@ func (r *ComponentRegistry) GetFactory(componentType ComponentType) (ComponentFa
 
 	factory, exists := r.factories[componentType]
 	if !exists {
-		return nil, fmt.Errorf("component type %s not registered", componentType)
+		return nil, errors.Wrapf(errors.ErrComponentNotFound, "component type %s not registered", componentType)
 	}
 
 	return factory, nil
@@ -97,12 +98,12 @@ func (r *ComponentRegistry) ResolveDependencies(componentTypes []ComponentType) 
 	for _, ct := range componentTypes {
 		factory, exists := r.factories[ct]
 		if !exists {
-			return nil, fmt.Errorf("component type %s not registered", ct)
+			return nil, errors.Wrapf(errors.ErrComponentNotFound, "component type %s not registered", ct)
 		}
 
 		comp, err := factory()
 		if err != nil {
-			return nil, fmt.Errorf("failed to create component %s: %w", ct, err)
+			return nil, errors.Wrapf(err, "failed to create component %s", ct)
 		}
 
 		// 清理临时组件实例
@@ -112,7 +113,7 @@ func (r *ComponentRegistry) ResolveDependencies(componentTypes []ComponentType) 
 
 		for _, dep := range comp.GetDependencies() {
 			if !typeSet[dep] {
-				return nil, fmt.Errorf("component %s depends on %s which is not in the input set", ct, dep)
+				return nil, errors.Wrapf(errors.ErrDependencyNotMet, "component %s depends on %s which is not in the input set", ct, dep)
 			}
 			graph[dep] = append(graph[dep], ct)
 			inDegree[ct]++
@@ -146,7 +147,7 @@ func (r *ComponentRegistry) ResolveDependencies(componentTypes []ComponentType) 
 
 	// 检测循环依赖
 	if len(result) != len(componentTypes) {
-		return nil, fmt.Errorf("circular dependency detected in component graph")
+		return nil, errors.Wrap(errors.ErrCircularDependency, "circular dependency detected in component graph")
 	}
 
 	return result, nil
@@ -157,7 +158,7 @@ func (r *ComponentRegistry) ResolveDependencies(componentTypes []ComponentType) 
 func (r *ComponentRegistry) CreateAll(ctx context.Context, componentTypes []ComponentType) (map[ComponentType]TestComponent, error) {
 	sortedTypes, err := r.ResolveDependencies(componentTypes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve dependencies: %w", err)
+		return nil, errors.Wrap(err, "failed to resolve dependencies")
 	}
 
 	components := make(map[ComponentType]TestComponent)
@@ -177,7 +178,7 @@ func (r *ComponentRegistry) CreateAll(ctx context.Context, componentTypes []Comp
 
 		comp, err := r.CreateComponent(ct)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create component %s: %w", ct, err)
+			return nil, errors.Wrapf(err, "failed to create component %s", ct)
 		}
 		components[ct] = comp
 	}

@@ -3,10 +3,10 @@ package scenarios
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/jzhang405/NexKV/pkg/test/framework"
 	"github.com/jzhang405/NexKV/pkg/test/framework/adapters"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -34,7 +34,7 @@ func (s *ThreeNodesClusterScenario) Setup(ctx context.Context, cluster framework
 	for i := range 3 {
 		node, err := adapters.NewTransportAdapter(nil)
 		if err != nil {
-			return fmt.Errorf("failed to create node%d: %w", i+1, err)
+			return errors.Wrapf(err, "failed to create node%d", i+1)
 		}
 		s.nodes = append(s.nodes, node)
 	}
@@ -42,7 +42,7 @@ func (s *ThreeNodesClusterScenario) Setup(ctx context.Context, cluster framework
 	// 启动所有节点
 	for i, node := range s.nodes {
 		if err := node.Start(ctx); err != nil {
-			return fmt.Errorf("failed to start node%d: %w", i+1, err)
+			return errors.Wrapf(err, "failed to start node%d", i+1)
 		}
 	}
 
@@ -63,7 +63,7 @@ func (s *ThreeNodesClusterScenario) Execute(ctx context.Context, cluster framewo
 			}
 
 			if err := source.ConnectTo(ctx, target); err != nil {
-				return fmt.Errorf("node%d failed to connect to node%d: %w", i+1, j+1, err)
+				return errors.Wrapf(err, "node%d failed to connect to node%d", i+1, j+1)
 			}
 		}
 	}
@@ -80,7 +80,7 @@ func (s *ThreeNodesClusterScenario) Verify(ctx context.Context, cluster framewor
 	for i, node := range s.nodes {
 		peers := node.GetConnectedPeers()
 		if len(peers) != 2 {
-			return fmt.Errorf("node%d should have 2 peers, got %d", i+1, len(peers))
+			return errors.Wrapf(errors.ErrConnectionFailed, "node%d should have 2 peers, got %d", i+1, len(peers))
 		}
 	}
 
@@ -92,7 +92,7 @@ func (s *ThreeNodesClusterScenario) Verify(ctx context.Context, cluster framewor
 			}
 
 			if !node.IsConnectedTo(target.ID()) {
-				return fmt.Errorf("node%d is not connected to node%d", i+1, j+1)
+				return errors.Wrapf(errors.ErrConnectionFailed, "node%d is not connected to node%d", i+1, j+1)
 			}
 		}
 	}
@@ -112,20 +112,7 @@ func (s *ThreeNodesClusterScenario) Teardown(ctx context.Context, cluster framew
 
 // TestIntegration_ThreeNodesCluster_Success 测试三节点集群成功
 func TestIntegration_ThreeNodesCluster_Success(t *testing.T) {
-	ctx := t.Context()
-
-	// 创建测试上下文
-	testCtx, err := framework.NewTestContext()
-	if err != nil {
-		t.Fatalf("Failed to create test context: %v", err)
-	}
-	defer testCtx.Close()
-
-	// 创建集群
-	cluster := framework.NewDefaultCluster("test-cluster", testCtx.Registry)
-
-	// 创建场景执行器
-	executor := framework.NewScenarioExecutor(cluster)
+	ctx, _, executor := setupIntegrationTest(t, 30*time.Second)
 
 	// 执行测试场景
 	scenario := NewThreeNodesClusterScenario()

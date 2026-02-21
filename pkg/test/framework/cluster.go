@@ -5,8 +5,9 @@ package framework
 
 import (
 	"context"
-	"fmt"
 	"sync"
+
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // NodeConfig 节点配置
@@ -122,7 +123,7 @@ func (c *DefaultCluster) Init(ctx context.Context) error {
 	defer c.mu.Unlock()
 
 	if c.status != EnvironmentStatusCreated {
-		return fmt.Errorf("cluster must be in created state to init, current: %s", c.status)
+		return errors.Wrapf(errors.ErrInvalidState, "cluster must be in created state to init, current: %s", c.status)
 	}
 
 	c.status = EnvironmentStatusCreating
@@ -137,7 +138,7 @@ func (c *DefaultCluster) Start(ctx context.Context) error {
 	defer c.mu.Unlock()
 
 	if c.status != EnvironmentStatusCreated && c.status != EnvironmentStatusStopped {
-		return fmt.Errorf("cluster must be in created or stopped state to start, current: %s", c.status)
+		return errors.Wrapf(errors.ErrInvalidState, "cluster must be in created or stopped state to start, current: %s", c.status)
 	}
 
 	c.status = EnvironmentStatusStarting
@@ -155,7 +156,7 @@ func (c *DefaultCluster) Stop(ctx context.Context) error {
 	defer c.mu.Unlock()
 
 	if c.status != EnvironmentStatusRunning {
-		return fmt.Errorf("cluster must be in running state to stop, current: %s", c.status)
+		return errors.Wrapf(errors.ErrInvalidState, "cluster must be in running state to stop, current: %s", c.status)
 	}
 
 	c.status = EnvironmentStatusStopping
@@ -187,7 +188,7 @@ func (c *DefaultCluster) Status() EnvironmentStatus {
 
 // GetComponent 获取组件（集群级别）
 func (c *DefaultCluster) GetComponent(name string) (TestComponent, error) {
-	return nil, fmt.Errorf("component lookup not supported at cluster level, use node.GetComponent")
+	return nil, errors.Wrap(errors.ErrComponentNotFound, "component lookup not supported at cluster level, use node.GetComponent")
 }
 
 // ListComponents 列出所有组件（集群级别）
@@ -201,11 +202,11 @@ func (c *DefaultCluster) AddNode(config NodeConfig) (TestNode, error) {
 	defer c.mu.Unlock()
 
 	if _, exists := c.nodes[config.ID]; exists {
-		return nil, fmt.Errorf("node %s already exists", config.ID)
+		return nil, errors.Wrapf(errors.ErrComponentExists, "node %s already exists", config.ID)
 	}
 
 	// 创建节点（具体实现由子类提供）
-	return nil, fmt.Errorf("AddNode must be implemented by subclass")
+	return nil, errors.Wrap(errors.ErrNotImplemented, "AddNode must be implemented by subclass")
 }
 
 // GetNode 获取指定 ID 的节点
@@ -215,7 +216,7 @@ func (c *DefaultCluster) GetNode(id string) (TestNode, error) {
 
 	node, exists := c.nodes[id]
 	if !exists {
-		return nil, fmt.Errorf("node %s not found", id)
+		return nil, errors.Wrapf(errors.ErrTestNodeNotFound, "node %s not found", id)
 	}
 	return node, nil
 }
@@ -227,14 +228,14 @@ func (c *DefaultCluster) RemoveNode(id string) error {
 
 	node, exists := c.nodes[id]
 	if !exists {
-		return fmt.Errorf("node %s not found", id)
+		return errors.Wrapf(errors.ErrTestNodeNotFound, "node %s not found", id)
 	}
 
 	// 停止节点
 	if node.IsRunning() {
 		ctx := context.Background()
 		if err := node.Stop(ctx); err != nil {
-			return fmt.Errorf("failed to stop node %s: %w", id, err)
+			return errors.Wrapf(err, "failed to stop node %s", id)
 		}
 	}
 
@@ -272,7 +273,7 @@ func (c *DefaultCluster) StartAll(ctx context.Context) error {
 
 		if !node.IsRunning() {
 			if err := node.Start(ctx); err != nil {
-				return fmt.Errorf("failed to start node %s: %w", node.ID(), err)
+				return errors.Wrapf(err, "failed to start node %s", node.ID())
 			}
 		}
 	}
@@ -297,7 +298,7 @@ func (c *DefaultCluster) StopAll(ctx context.Context) error {
 
 		if node.IsRunning() {
 			if err := node.Stop(ctx); err != nil {
-				return fmt.Errorf("failed to stop node %s: %w", node.ID(), err)
+				return errors.Wrapf(err, "failed to stop node %s", node.ID())
 			}
 		}
 	}

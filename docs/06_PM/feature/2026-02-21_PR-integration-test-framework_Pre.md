@@ -12,8 +12,11 @@
 |------|------------|----------|----------|
 | **目录结构** | `internal/infrastructure/transport/test/` | `pkg/test/framework/` | 支持独立的可复用测试框架包 |
 | **接口设计** | `GetType()` 仅此方法 | 补充 `Init()` + `HealthCheck()` | 更完整的生命周期管理 |
-| **依赖类型** | `[]ComponentType`（type-safe） | `[]string`（原设计） | **v1.2 修正**：采用 Spike 的 type-safe 设计 |
+| **依赖类型** | `[]ComponentType`（type-safe） | `[]string`（原设计） | **v1.3 修正**：完全对齐 Spike |
 | **测试命名** | 未统一 | `Test{Component}_{Scenario}_{Expected}` | 统一命名规范 |
+| **Init 签名** | `Init(ctx, env TestEnvironment)` | `Init(ctx)` | **v1.3 修正**：补充 env 参数 |
+| **方法命名** | `Name()`/`Type()` | `GetName()`/`GetType()` | **v1.3 修正**：去除 Get 前缀 |
+| **HealthCheckConfig** | 有 `GetHealthCheckConfig()` | 缺失 | **v1.3 补充** |
 
 ---
 
@@ -34,8 +37,8 @@
 | 关联需求单号 | [NexKV DDD 架构实施 PR](./2026-02-18_PR-nexkv-ddd-architecture_Pre.md) |
 | 关联里程碑 | [M1 - 基础设施层验收](../milestones/2026-02-20_M1-infrastructure-layer-acceptance.md) |
 | Spike 文档 | [集成测试框架设计 v2.10](../../07_spike/2026-02-20_transport-poc-integration-test-framework.md) |
-| 架构师评审状态 | ✅ 已通过（2026-02-21 v1.2 终审）⭐ |
-| 预审批结果 | ✅ 通过 |
+| 架构师评审状态 | 🔄 评审中（v1.3 Spike 对齐修复）⭐ |
+| 预审批结果 | ⏳ 待定 |
 
 ---
 
@@ -168,36 +171,82 @@ test/integration/                  # NexKV 专属集成测试
     └── network_partition.go       # TestTransport_NetworkPartition_Reconnect
 ```
 
-#### 3.3 核心接口设计 ⭐ v1.2 审核修正
+#### 3.3 核心接口设计 ⭐ v1.3 完全对齐 Spike
 
-基于 Spike 文档，核心接口定义如下（对齐 Spike 的 type-safe 设计）：
+基于 Spike 文档 v2.10，核心接口定义如下（完全对齐）：
 
 ```go
-// ComponentType 组件类型枚举（type-safe）⭐ v1.2 采用 Spike 设计
-type ComponentType int
+// ComponentType 组件类型（type-safe，使用 string）⭐ v1.3 完全对齐 Spike
+type ComponentType string
 
 const (
-    ComponentTypeTransport ComponentType = iota
-    ComponentTypeStorage
-    ComponentTypeReplication
-    ComponentTypeCluster
+    ComponentTypeTransport   ComponentType = "transport"
+    ComponentTypeStorage     ComponentType = "storage"
+    ComponentTypeReplication ComponentType = "replication"
+    ComponentTypeCluster     ComponentType = "cluster"
+    ComponentTypeTransaction ComponentType = "transaction"
+    ComponentTypeMetadata    ComponentType = "metadata"
 )
 
-// TestComponent 可测试组件接口 ⭐ v1.2 补充 Init/HealthCheck
+// TestEnvironment 测试环境接口 ⭐ v1.3 补充（Spike 第 254-272 行）
+type TestEnvironment interface {
+    ID() string
+    Start(ctx context.Context) error
+    Stop(ctx context.Context) error
+    Status() EnvironmentStatus
+    GetComponent(name string) (TestComponent, error)
+    ListComponents() []TestComponent
+}
+
+// EnvironmentStatus 环境状态
+type EnvironmentStatus int
+
+const (
+    EnvironmentStatusUnknown EnvironmentStatus = iota
+    EnvironmentStatusCreating
+    EnvironmentStatusCreated
+    EnvironmentStatusStarting
+    EnvironmentStatusRunning
+    EnvironmentStatusStopping
+    EnvironmentStatusStopped
+    EnvironmentStatusError
+)
+
+// TestComponent 可测试组件接口 ⭐ v1.3 完全对齐 Spike（第 290-320 行）
 type TestComponent interface {
-    // 基础信息
-    GetName() string
-    GetType() ComponentType          // ⭐ type-safe 设计
-    GetDependencies() []ComponentType // ⭐ type-safe 设计
+    // 基础信息（去除 Get 前缀，与 Spike 一致）
+    Name() string                        // ⭐ v1.3: Name() 而非 GetName()
+    Type() ComponentType                 // ⭐ v1.3: Type() 而非 GetType()
+    GetDependencies() []ComponentType    // type-safe 设计
 
     // 生命周期管理
-    Init(ctx context.Context) error   // ⭐ v1.2 补充
+    Init(ctx context.Context, env TestEnvironment) error // ⭐ v1.3: 补充 env 参数
     Start(ctx context.Context) error
     Stop(ctx context.Context) error
 
     // 健康检查
-    IsReady(ctx context.Context) bool
-    HealthCheck(ctx context.Context) error // ⭐ v1.2 补充
+    HealthCheck(ctx context.Context) error               // 深度健康检查
+    GetHealthCheckConfig() *HealthCheckConfig            // ⭐ v1.3 补充
+}
+
+// HealthCheckConfig 健康检查配置 ⭐ v1.3 补充（Spike 第 323-344 行）
+type HealthCheckConfig struct {
+    Timeout       time.Duration // 默认: 5s
+    Interval      time.Duration // 默认: 10s
+    RetryCount    int           // 默认: 3
+    RetryInterval time.Duration // 默认: 1s
+    Critical      bool          // 默认: true
+}
+
+// DefaultHealthCheckConfig 返回默认健康检查配置
+func DefaultHealthCheckConfig() *HealthCheckConfig {
+    return &HealthCheckConfig{
+        Timeout:       5 * time.Second,
+        Interval:      10 * time.Second,
+        RetryCount:    3,
+        RetryInterval: 1 * time.Second,
+        Critical:      true,
+    }
 }
 
 // TestCluster 测试集群接口
@@ -219,22 +268,46 @@ type TestScenario interface {
 }
 ```
 
-**与 Spike 文档对齐** ⭐：
-- `GetType()` 返回 `ComponentType` 而非 `string`
-- `GetDependencies()` 返回 `[]ComponentType` 而非 `[]string`
-- 补充 `Init()` 方法用于初始化
-- 补充 `HealthCheck()` 方法用于深度健康检查
+**与 Spike 文档 v2.10 完全对齐** ⭐ v1.3：
 
-**错误处理策略** ⭐ v1.1 评审补充：
+| 项目 | Spike 文档 | Pre v1.2 | Pre v1.3 |
+|------|------------|----------|----------|
+| `ComponentType` 底层类型 | `string` | ❌ `int` | ✅ `string` |
+| `Name()`/`Type()` 方法 | 无 Get 前缀 | ❌ `GetName()`/`GetType()` | ✅ `Name()`/`Type()` |
+| `Init()` 签名 | `(ctx, env TestEnvironment)` | ❌ `(ctx)` | ✅ `(ctx, env)` |
+| `GetHealthCheckConfig()` | 有 | ❌ 无 | ✅ 有 |
+| `HealthCheckConfig` 结构体 | 有 | ❌ 无 | ✅ 有 |
+| `TestEnvironment` 接口 | 有 | ❌ 无 | ✅ 有 |
+| `IsReady()` 方法 | 无（由 HealthCheck 覆盖） | 有 | ✅ 移除（语义重复） |
+
+**错误处理策略** ⭐ v1.3 对齐 Spike：
 
 | 场景 | 策略 | 说明 |
 |------|------|------|
+| `Init()` 失败 | **Fail Fast** | 立即返回错误，不重试 |
 | `Start()` 失败 | **Fail Fast** | 立即返回错误，不重试 |
 | `Stop()` 失败 | **记录日志 + 继续** | 不影响其他组件停止 |
-| `IsReady()` 超时 | **返回 false** | 由调用方决定是否重试 |
+| `HealthCheck()` 失败 | **重试 + 超时** | 根据 `HealthCheckConfig` 配置重试 |
 | 依赖组件未就绪 | **等待 + 超时** | 等待依赖组件启动，超时后失败 |
 
 ```go
+// Init 实现示例（Fail Fast 策略）⭐ v1.3 更新签名
+func (c *TransportAdapter) Init(ctx context.Context, env TestEnvironment) error {
+    // 保存环境引用
+    c.env = env
+
+    // 初始化依赖组件
+    for _, depType := range c.GetDependencies() {
+        dep, err := env.GetComponent(string(depType))
+        if err != nil {
+            return fmt.Errorf("get dependency %s failed: %w", depType, err)
+        }
+        c.dependencies = append(c.dependencies, dep)
+    }
+
+    return nil
+}
+
 // Start 实现示例（Fail Fast 策略）
 func (c *TransportAdapter) Start(ctx context.Context) error {
     if err := c.transport.Start(ctx); err != nil {
@@ -242,6 +315,22 @@ func (c *TransportAdapter) Start(ctx context.Context) error {
         return fmt.Errorf("transport start failed: %w", err)
     }
     return nil
+}
+
+// HealthCheck 实现示例（带重试）⭐ v1.3 对齐 Spike
+func (c *TransportAdapter) HealthCheck(ctx context.Context) error {
+    config := c.GetHealthCheckConfig()
+
+    var lastErr error
+    for i := 0; i < config.RetryCount; i++ {
+        if err := c.doHealthCheck(ctx); err == nil {
+            return nil
+        } else {
+            lastErr = err
+            time.Sleep(config.RetryInterval)
+        }
+    }
+    return fmt.Errorf("health check failed after %d retries: %w", config.RetryCount, lastErr)
 }
 ```
 
@@ -551,11 +640,11 @@ jobs:
 
 ---
 
-**文档版本**: v1.2（第二轮审核修复版）⭐
+**文档版本**: v1.3（Spike 完全对齐版）⭐
 **创建日期**: 2026-02-21
 **最后更新**: 2026-02-21
 **作者**: 🤖 AI Agent
-**状态**: ✅ 架构师评审通过（v1.2 终审）
+**状态**: 🔄 评审中
 
 ### 评审记录
 
@@ -563,7 +652,19 @@ jobs:
 |------|------|--------|---------|------|
 | v1.0 | 2026-02-21 | 👤 架构师 | 时间估算过于乐观，补充网络分区细节、调试指南 | 🔄 需调整 |
 | v1.1 | 2026-02-21 | 🤖 AI Agent | 调整为 3 周，补充网络分区实现、调试指南、性能基准 | ✅ 第一轮通过 |
-| v1.2 | 2026-02-21 | 👤 架构师 | 时间线不一致、目录结构不一致、接口类型安全问题 | ✅ 已修复并通过 |
+| v1.2 | 2026-02-21 | 👤 架构师 | 时间线不一致、目录结构不一致、接口类型安全问题 | ✅ 已修复 |
+| v1.3 | 2026-02-21 | 👤 架构师 | ComponentType 类型、方法命名、Init 签名、HealthCheckConfig | 🔄 修复中 |
+
+### v1.3 变更摘要（第三轮审核 - Spike 完全对齐）
+
+| 问题编号 | 严重程度 | 问题描述 | 修复内容 |
+|---------|---------|---------|---------|
+| **P0-1** | 🔴 严重 | `ComponentType` 类型不一致（int vs string） | ✅ 改为 `string` 类型，与 Spike 一致 |
+| **P1-2** | 🟡 中等 | 方法命名不一致（GetName vs Name） | ✅ 去除 Get 前缀，使用 `Name()`/`Type()` |
+| **P1-3** | 🟡 中等 | `Init()` 签名缺少 `env TestEnvironment` | ✅ 补充 `env` 参数 |
+| **P1-4** | 🟡 中等 | 缺少 `GetHealthCheckConfig()` 方法 | ✅ 补充方法 + `HealthCheckConfig` 结构体 |
+| **P2-5** | 🟢 轻微 | `IsReady()` 与 `HealthCheck()` 语义重复 | ✅ 移除 `IsReady()`，由 `HealthCheck()` 覆盖 |
+| **P2-6** | 🟢 轻微 | 缺少 `TestEnvironment` 接口定义 | ✅ 补充完整接口定义 |
 
 ### v1.2 变更摘要（第二轮审核修复）
 
@@ -573,10 +674,6 @@ jobs:
 | **问题2** | 目录结构不一致 | 新增"与 Spike 文档的差异说明"章节 |
 | **问题3** | 文档状态矛盾 | 评审状态改为"🔄 评审中" |
 | **问题4** | 覆盖率目标不统一 | 明确：75% 最低目标，80% 理想目标 |
-| **问题5** | TestComponent 接口缺失 | 补充 `Init()` + `HealthCheck()` 方法 |
-| **问题6** | 类型安全问题 | 采用 Spike 的 `ComponentType` 枚举设计 |
-| **建议1** | 架构决策说明 | 新增"与 Spike 文档的差异说明"章节 |
-| **建议2** | 术语定义 | 新增 6.3 术语表 |
 
 ### v1.1 变更摘要
 
@@ -586,6 +683,3 @@ jobs:
 | 网络分区实现 | 无细节 | 完整代码示例 |
 | 调试指南 | 无 | 新增 5.5 节 |
 | 性能基准 | 无 | 新增 5.4 节 |
-| 错误处理策略 | 无 | 新增 3.3 节补充 |
-| 目录结构说明 | 简单 | 补充职责说明 |
-| 测试命名规范 | 不统一 | `Test{Component}_{Scenario}_{Expected}` 格式 |

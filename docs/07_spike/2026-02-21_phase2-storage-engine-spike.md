@@ -1,0 +1,291 @@
+# Phase 2 存储引擎层预研报告
+
+> **预研类型**: Spike
+> **创建日期**: 2026-02-21
+> **分支**: `spike/phase2-storage-engine`
+> **状态**: 🔄 进行中
+
+---
+
+## 一、预研目标
+
+评估 Phase 2 存储引擎层的实施方案，重点分析：
+1. Bf-Tree MVP 实施计划与路线图的协调
+2. 现有 WAL 实现的复用可行性
+3. 接口设计与依赖关系
+
+---
+
+## 二、现有资源盘点
+
+### 2.1 已完成的预研文档
+
+| 文档 | 位置 | 状态 |
+|------|------|------|
+| Bf-Tree MVP 实施计划 | `docs/07_spike/bftree/bftree-mvp-implementation-plan.md` | ✅ 已批准 |
+| ADR 006 批准文档 | `docs/02_design/decisions/006_bftree_mvp_approval.md` | ✅ 已批准 |
+| Bf-Tree WAL 分析 | `docs/07_spike/bftree/bftree-wal-analysis.md` | 🔄 进行中 |
+| Bf-Tree 源码分析 | `docs/07_spike/bftree/bftree-source-code-analysis.md` | ✅ 完成 |
+| Bf-Tree 研究总结 | `docs/07_spike/bftree/bftree-research-summary.md` | ✅ 完成 |
+
+### 2.2 现有 WAL 实现
+
+| 文件 | 功能 | 复用评估 |
+|------|------|---------|
+| `internal/wal/wal.go` | WAL 核心实现 | ✅ 可复用 |
+| `internal/wal/wal_batch.go` | 批量写入 | ✅ 可复用 |
+| `internal/wal/wal_rotation.go` | 日志轮转 | ✅ 可复用 |
+| `internal/wal/wal_recover.go` | 崩溃恢复 | ✅ 可复用 |
+
+---
+
+## 三、时间线对比分析
+
+### 3.1 路线图 Phase 2（6 周）
+
+| 周次 | 任务 | 交付物 |
+|------|------|--------|
+| Week 5 | Bf-Tree KVStore 实现 | `bftree_store_impl.go` |
+| Week 6 | WAL 实现（同步模式） | `wal_impl.go` |
+| Week 7 | WAL 异步模式 + BTree | `wal_impl.go`, `btree_impl.go` |
+| Week 8 | Iterator + LocalTx | `iterator_impl.go`, `local_tx_impl.go` |
+| Week 9 | BlockDevice + LocalStorage | `local_storage_impl.go` |
+| Week 10 | CloudStorage + DistributedStorage | `cloud_*.go` |
+
+### 3.2 Bf-Tree MVP 计划（10-12 周）
+
+| 阶段 | 周次 | 任务 |
+|------|------|------|
+| Phase 1 | 1-2 | 基础设施 + 表元数据接口 |
+| Phase 2 | 3-5 | 核心节点（LeafNode/InnerNode/PageTable） |
+| Phase 3 | 6-8 | 树结构 + CRUD + 范围扫描 |
+| Phase 4 | 9-10 | Mini-Page 机制 |
+| Phase 5 | 11-12 | 持久化（WAL/Snapshot） |
+| Phase 6 | 13-15 | 测试与优化 |
+
+### 3.3 差异分析
+
+| 维度 | 路线图 Phase 2 | Bf-Tree MVP | 建议 |
+|------|---------------|-------------|------|
+| **周期** | 6 周 | 10-12 周 | 采用 MVP 周期 |
+| **范围** | 仅存储引擎 | 完整 Bf-Tree | MVP 更全面 |
+| **WAL** | 新实现 | 扩展现有 | ✅ 复用现有 |
+| **Mini-Page** | 未提及 | 3 级 | MVP 方案 |
+
+**结论**：以 Bf-Tree MVP 计划为主，复用现有 WAL 实现。
+
+---
+
+## 四、接口设计
+
+### 4.1 Domain 层接口定义
+
+**位置**: `internal/domain/service/storage.go`
+
+```go
+// KVStore 单机 KV 存储接口
+type KVStore interface {
+    // 基础 CRUD
+    Get(ctx context.Context, key []byte) ([]byte, error)
+    Put(ctx context.Context, key, value []byte) error
+    Delete(ctx context.Context, key []byte) error
+
+    // 批量操作
+    BatchGet(ctx context.Context, keys [][]byte) (map[string][]byte, error)
+    BatchPut(ctx context.Context, kvs []KeyValue) error
+
+    // 范围查询
+    Scan(start, end []byte) (Iterator, error)
+}
+
+// Iterator 迭代器接口
+type Iterator interface {
+    Next() bool
+    Key() []byte
+    Value() []byte
+    Error() error
+    Close()
+}
+
+// LocalTx 本地事务接口
+type LocalTx interface {
+    Begin() error
+    Commit() error
+    Rollback() error
+    Get(key []byte) ([]byte, error)
+    Put(key, value []byte) error
+    Delete(key []byte) error
+}
+```
+
+### 4.2 依赖关系
+
+```mermaid
+graph LR
+    A[Transport] --> B[KVStore]
+    A --> C[WAL]
+    B --> D[BfTree]
+    B --> E[Iterator]
+    B --> F[LocalTx]
+    C --> D
+    D --> G[PageTable]
+    D --> H[MiniPage]
+```
+
+---
+
+## 五、实施建议
+
+### 5.1 分阶段实施
+
+| 阶段 | 内容 | 周期 | 优先级 |
+|------|------|------|--------|
+| **Phase 2.1** | Bf-Tree 核心（无持久化） | 4 周 | P0 |
+| **Phase 2.2** | WAL 集成 + Snapshot | 3 周 | P0 |
+| **Phase 2.3** | Iterator + LocalTx | 2 周 | P1 |
+| **Phase 2.4** | BlockDevice 抽象 | 2 周 | P1 |
+| **Phase 2.5** | Cloud/Distributed Storage | 2 周 | P2 |
+
+**总计**: 10-13 周（与 MVP 计划一致）
+
+### 5.2 关键决策点
+
+| 决策 | 选项 | 建议 |
+|------|------|------|
+| **并发控制** | Lock-free SMR vs sync.RWMutex | sync.RWMutex（MVP） |
+| **内存管理** | 手动 vs GC | sync.Pool + GC（MVP） |
+| **Mini-Page 级别** | 3 级 vs 6+ 级 | 3 级（MVP） |
+| **WAL 实现** | 新写 vs 复用 | 复用现有 WAL |
+
+---
+
+## 六、风险与缓解
+
+| 风险 | 可能性 | 影响 | 缓解措施 |
+|------|--------|------|---------|
+| Bf-Tree 移植复杂度超预期 | 中 | 高 | 采用简化 MVP 策略 |
+| 性能不达标 | 中 | 中 | 分级性能目标（P0/P1/P2） |
+| WAL 集成困难 | 低 | 中 | 现有 WAL 已验证 |
+| 内存占用过高 | 中 | 中 | Mini-Page 分级管理 |
+
+---
+
+## 七、现有资源详细分析
+
+### 7.1 Bf-Tree MVP 实施计划（已批准）
+
+| 阶段 | 周次 | 任务 | 交付物 |
+|------|------|------|--------|
+| **Phase 1** | Week 1-2 | 基础设施 + 表元数据接口 | `config.go`, `bits.go` |
+| **Phase 2** | Week 2-4 | 核心节点（LeafNode/InnerNode/PageTable） | `leaf_node.go`, `inner_node.go`, `pagetable.go` |
+| **Phase 3** | Week 4-6 | 树结构 + CRUD + 范围扫描 | `tree.go`, `scan.go` |
+| **Phase 4** | Week 6-8 | Mini-Page 机制（3 级） | `mini_page.go` |
+| **Phase 5** | Week 8-10 | 持久化（WAL/Snapshot） | `bftree_wal.go`, `snapshot.go` |
+| **Phase 6** | Week 10-12 | 测试与优化 | `*_test.go`, `benchmark_test.go` |
+
+**关键简化策略**：
+- 并发控制：`sync.RWMutex`（替代 Lock-free SMR）
+- 内存管理：`sync.Pool` + GC（替代 FreeList）
+- Mini-Page：3 级（64B, 512B, 2KB）
+- WAL：扩展现有实现
+
+### 7.2 WAL 复用方案
+
+**现有 WAL 位置**：`internal/wal/wal.go`
+
+**扩展策略**：
+```go
+// 扩展 WALType（推荐方案 A）
+const (
+    WALTypePut WALType = iota
+    WALTypeDelete
+    WALTypeCheckpoint
+    WALTypeInsertMiniPage      // 新增
+    WALTypeDeleteMiniPage      // 新增
+    WALTypeUpgradeToFullPage   // 新增
+)
+```
+
+**优点**：
+- ✅ 复用现有 WAL 实现（已有批量写入、日志轮转、崩溃恢复）
+- ✅ 保持一致性
+- ✅ 无需重写
+
+### 7.3 性能目标（分级验收）
+
+| 操作 | P0（最低） | P1（推荐） | P2（理想） |
+|------|-----------|-----------|-----------|
+| **点查询** | < 30μs | < 25μs | < 20μs |
+| **写入吞吐** | > 50万 ops/s | > 75万 ops/s | > 100万 ops/s |
+| **范围查询** | O(log N + M) | O(log N + M) | O(log N + M) |
+
+---
+
+## 八、下一步行动
+
+### 8.1 立即行动（Week 1）
+
+1. **创建 Pre 文档** - Phase 2.1 Bf-Tree 核心实现
+   - 参考：`docs/07_spike/bftree/bftree-mvp-implementation-plan.md`
+   - 范围：Phase 1 + Phase 2（基础设施 + 核心节点）
+
+2. **定义接口** - `internal/domain/service/storage.go`
+   ```go
+   // KVStore 单机 KV 存储接口
+   type KVStore interface {
+       Get(ctx context.Context, key []byte) ([]byte, error)
+       Put(ctx context.Context, key, value []byte) error
+       Delete(ctx context.Context, key []byte) error
+       Scan(start, end []byte) (Iterator, error)
+   }
+   ```
+
+3. **搭建骨架** - 目录结构和基础类型定义
+   ```
+   internal/storage/bftree/
+   ├── config.go        # 配置模块
+   ├── bits.go          # 位操作工具
+   ├── errors.go        # 错误定义
+   ├── leaf_node.go     # 叶子节点
+   ├── inner_node.go    # 内节点
+   ├── pagetable.go     # 页面表
+   └── tree.go          # BfTree 主结构
+   ```
+
+### 8.2 Phase 2.1 详细任务（Week 1-4）
+
+| 任务 | 优先级 | 预计时间 |
+|------|--------|----------|
+| Config 模块 | P0 | 1 天 |
+| 位操作工具 | P0 | 2 天 |
+| 表元数据接口集成 | P0 | 3 天 |
+| LeafNode 实现 | P0 | 7 天 |
+| InnerNode 实现 | P0 | 3 天 |
+| 分片验证逻辑 | P0 | 2 天 |
+| PageTable 存储 | P0 | 5 天 |
+
+### 8.3 决策点
+
+| 决策 | 选项 | 建议 | 状态 |
+|------|------|------|------|
+| **WAL 实现** | 新写 vs 复用 | ✅ 复用现有 WAL | 已确定 |
+| **并发控制** | Lock-free SMR vs sync.RWMutex | sync.RWMutex（MVP） | 已确定 |
+| **内存管理** | 手动 vs GC | sync.Pool + GC（MVP） | 已确定 |
+| **Mini-Page 级别** | 3 级 vs 6+ 级 | 3 级（MVP） | 已确定 |
+
+---
+
+## 八、参考文献
+
+- `docs/07_spike/bftree/bftree-mvp-implementation-plan.md`
+- `docs/02_design/decisions/006_bftree_mvp_approval.md`
+- `docs/07_spike/2026-02-18_spike-nexkv-ddd-roadmap.md`
+- `internal/wal/wal.go`
+
+---
+
+**文档版本**: v1.1
+**创建日期**: 2026-02-21
+**最后更新**: 2026-02-21
+**维护者**: AI Agent
+**状态**: 🔄 进行中

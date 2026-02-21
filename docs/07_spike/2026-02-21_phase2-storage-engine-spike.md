@@ -275,16 +275,42 @@ const (
 
 ---
 
-## 八、参考文献
+## 八、关联预研文档
+
+### 8.1 Go B 树库对比实验
+
+> **文档**: [Go B 树库对比实验 Spike](./2026-02-21_go-btree-comparison-spike.md)
+
+**目标**: 对主流 Go B 树库进行性能对比，为 Bf-Tree 移植提供参考基准
+
+**对比库**:
+| 库 | 变形类型 | 选择理由 |
+|----|----------|----------|
+| `google/btree` | 标准B树 | 基准参考（官方实现） |
+| `tidwall/btree` | B树/B+树 | 高性能候选 |
+| `cznic/b` | B/B+/B*树 | 持久化+MVCC候选 |
+
+**对比维度**:
+- 性能基准（读写吞吐量、延迟）
+- 内存占用
+- 并发性能
+- 功能特性（持久化、MVCC、事务）
+
+---
+
+## 九、参考文献
 
 - `docs/07_spike/bftree/bftree-mvp-implementation-plan.md`
 - `docs/02_design/decisions/006_bftree_mvp_approval.md`
 - `docs/07_spike/2026-02-18_spike-nexkv-ddd-roadmap.md`
 - `internal/wal/wal.go`
+- [google/btree](https://github.com/google/btree)
+- [tidwall/btree](https://github.com/tidwall/btree)
+- [cznic/b](https://github.com/cznic/b)
 
 ---
 
-**文档版本**: v1.1
+**文档版本**: v1.2
 **创建日期**: 2026-02-21
 **最后更新**: 2026-02-21
 **维护者**: AI Agent

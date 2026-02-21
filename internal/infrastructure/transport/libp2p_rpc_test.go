@@ -1525,8 +1525,9 @@ func TestLibp2pRPC_BroadcastAsync_WithCallback(t *testing.T) {
 	err := rpc.BroadcastAsync(context.Background(), peers, msg, service.ResponseAll, nil, func(from model.PeerID, resp model.Message, err error) {
 		mu.Lock()
 		callbackCount++
+		count := callbackCount
 		mu.Unlock()
-		t.Logf("Callback received: from=%s, err=%v", from, err)
+		t.Logf("Callback received: from=%s, err=%v, count=%d", from, err, count)
 	})
 	if err != nil {
 		t.Logf("BroadcastAsync() error: %v", err)
@@ -1534,7 +1535,11 @@ func TestLibp2pRPC_BroadcastAsync_WithCallback(t *testing.T) {
 
 	// 等待回调完成
 	time.Sleep(100 * time.Millisecond)
-	t.Logf("Callback count: %d", callbackCount)
+
+	mu.Lock()
+	finalCount := callbackCount
+	mu.Unlock()
+	t.Logf("Callback count: %d", finalCount)
 }
 
 // TestLibp2pRPC_BroadcastCall_AllPeersFail 测试广播所有节点失败

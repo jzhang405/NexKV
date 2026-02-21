@@ -15,6 +15,7 @@ type DiscoveryService struct {
 	host    host.Host
 	tag     string
 	ctx     context.Context
+	cancel  context.CancelFunc
 	wg      *sync.WaitGroup
 	notifee *discoveryNotifee
 	mdnsSvc mdns.Service
@@ -36,15 +37,19 @@ func (n *discoveryNotifee) HandlePeerFound(pi peer.AddrInfo) {
 }
 
 // NewDiscoveryService 创建发现服务
-func NewDiscoveryService(h host.Host, tag string, ctx context.Context, wg *sync.WaitGroup) *DiscoveryService {
+func NewDiscoveryService(h host.Host, tag string, parentCtx context.Context, wg *sync.WaitGroup) *DiscoveryService {
 	notifee := &discoveryNotifee{host: h}
 
 	mdnsSvc := mdns.NewMdnsService(h, tag, notifee)
+
+	// 创建独立的上下文，便于关闭控制
+	ctx, cancel := context.WithCancel(parentCtx)
 
 	d := &DiscoveryService{
 		host:    h,
 		tag:     tag,
 		ctx:     ctx,
+		cancel:  cancel,
 		wg:      wg,
 		notifee: notifee,
 		mdnsSvc: mdnsSvc,
@@ -66,6 +71,12 @@ func NewDiscoveryService(h host.Host, tag string, ctx context.Context, wg *sync.
 
 // Close 关闭发现服务
 func (d *DiscoveryService) Close() error {
+	// 先取消上下文，让 goroutine 退出
+	if d.cancel != nil {
+		d.cancel()
+	}
+
+	// 关闭 mDNS 服务
 	if d.mdnsSvc != nil {
 		return d.mdnsSvc.Close()
 	}

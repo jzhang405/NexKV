@@ -26,7 +26,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
-          cache: true
+          cache: false
 
       - name: 显示 Go 版本
         run: go version
@@ -87,7 +87,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.23'
-          cache: true
+          cache: false
 
       - name: 运行 golangci-lint
         uses: golangci/golangci-lint-action@v7
@@ -111,7 +111,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
-          cache: true
+          cache: false
 
       - name: 编译项目
         shell: bash

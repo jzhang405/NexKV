@@ -11,7 +11,7 @@
 | 项目 | 内容 |
 |------|------|
 | 工作类型 | Feature（新功能） |
-| PR编号 | PR-XXX（创建GitHub PR后补充完整） |
+| PR编号 | PR-081（[#81](https://github.com/jzhang405/NexKV/pull/81)） |
 | 分支名称 | feature/integration-test-framework-implementation |
 | 工作主题 | 集成测试框架实施（基于 Spike 成果） |
 | 负责人 | 🤖 核心开发 A + 测试工程师 |

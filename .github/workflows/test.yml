@@ -22,17 +22,11 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 清理 Go 模块缓存目录
-        run: |
-          rm -rf ~/.cache/go-build
-          rm -rf ~/go/pkg/mod
-          rm -rf ~/.cache/go-build
-
       - name: 设置 Go 环境
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
-          cache: false  # 禁用缓存避免缓存恢复失败导致测试不稳定
+          cache: true
 
       - name: 显示 Go 版本
         run: go version
@@ -89,16 +83,11 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 清理 Go 模块缓存目录
-        run: |
-          rm -rf ~/.cache/go-build
-          rm -rf ~/go/pkg/mod
-          rm -rf ~/.cache/go-build
-
       - name: 设置 Go 环境
         uses: actions/setup-go@v5
         with:
           go-version: '1.23'
+          cache: true
 
       - name: 运行 golangci-lint
         uses: golangci/golangci-lint-action@v7
@@ -118,18 +107,11 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 清理 Go 模块缓存目录
-        shell: bash
-        run: |
-          rm -rf ~/.cache/go-build
-          rm -rf ~/go/pkg/mod
-          rm -rf ~/.cache/go-build
-
       - name: 设置 Go 环境
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
-          cache: false  # 禁用缓存避免缓存恢复失败导致测试不稳定
+          cache: true
 
       - name: 编译项目
         shell: bash

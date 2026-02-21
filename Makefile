@@ -45,7 +45,7 @@ test: test-unit integration-test-race
 ## test-unit: 运行单元测试（组件级测试，快速反馈）
 test-unit:
 	@echo "运行单元测试..."
-	$(GO) test -short -race ./internal/... -run "Test[^I].*"
+	$(GO) test -v -short -race ./internal/... -run "Test[^I].*"
 
 ## test-e2e: 运行 E2E 测试框架测试
 test-e2e:

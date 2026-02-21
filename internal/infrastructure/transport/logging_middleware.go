@@ -57,6 +57,11 @@ func (m *LoggingMiddleware) Name() string {
 	return "logging"
 }
 
+// Priority 返回中间件优先级
+func (m *LoggingMiddleware) Priority() int {
+	return service.MiddlewarePriorityLogging
+}
+
 // InterceptSend 拦截发送消息
 func (m *LoggingMiddleware) InterceptSend(ctx context.Context, peer model.PeerID, msg model.Message, next service.SendFunc) error {
 	// P1 修复：nil ctx 和 next 保护

@@ -46,7 +46,16 @@ var (
 	ErrInvalidStrategy     = stderrors.New("rpc: invalid response strategy")
 
 	// Middleware 层错误
-	ErrChainFrozen = stderrors.New("middleware: chain is frozen")
+	ErrChainFrozen        = stderrors.New("middleware: chain is frozen")
+	ErrRateLimitExceeded  = stderrors.New("middleware: rate limit exceeded")
+	ErrCircuitBreakerOpen = stderrors.New("middleware: circuit breaker is open")
+	ErrInvalidCompression = stderrors.New("middleware: invalid or unsupported compression")
+
+	// Compressor 层错误
+	ErrCompressionFailed   = stderrors.New("compressor: compression failed")
+	ErrDecompressionFailed = stderrors.New("compressor: decompression failed")
+	ErrUnsupportedType     = stderrors.New("compressor: unsupported compression type")
+	ErrDecompressionTooBig = stderrors.New("compressor: decompressed data exceeds size limit")
 
 	// Test Framework 层错误
 	ErrTestSetupFailed    = stderrors.New("test: setup failed")

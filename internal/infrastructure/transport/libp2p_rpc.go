@@ -358,7 +358,17 @@ func (r *Libp2pRPC) setMessageID(msg model.Message, id string) model.Message {
 }
 
 // sendRequestAndWaitResponse P1 修复：发送请求并等待响应（流式双向通信）
+// P0 中间件集成：在发送前执行中间件链
 func (r *Libp2pRPC) sendRequestAndWaitResponse(ctx context.Context, to model.PeerID, req model.Message, call *pendingCall) error {
+	// P0 中间件集成：执行发送中间件链
+	finalSend := func(ctx context.Context, peer model.PeerID, msg model.Message) error {
+		return r.doSendRequestAndWaitResponse(ctx, peer, msg, call)
+	}
+	return r.middleware.ExecuteSend(ctx, to, req, finalSend)
+}
+
+// doSendRequestAndWaitResponse 实际的发送请求并等待响应逻辑
+func (r *Libp2pRPC) doSendRequestAndWaitResponse(ctx context.Context, to model.PeerID, req model.Message, call *pendingCall) error {
 	// 检查连接
 	if !r.transport.IsConnected(to) {
 		return service.ErrPeerUnreachable
@@ -400,7 +410,17 @@ func (r *Libp2pRPC) sendRequestAndWaitResponse(ctx context.Context, to model.Pee
 }
 
 // sendRequestNoResponse 发送请求但不等待响应（单向）
+// P0 中间件集成：在发送前执行中间件链
 func (r *Libp2pRPC) sendRequestNoResponse(ctx context.Context, to model.PeerID, req model.Message) error {
+	// P0 中间件集成：执行发送中间件链
+	finalSend := func(ctx context.Context, peer model.PeerID, msg model.Message) error {
+		return r.doSendRequestNoResponse(ctx, peer, msg)
+	}
+	return r.middleware.ExecuteSend(ctx, to, req, finalSend)
+}
+
+// doSendRequestNoResponse 实际的发送请求逻辑（不等待响应）
+func (r *Libp2pRPC) doSendRequestNoResponse(ctx context.Context, to model.PeerID, req model.Message) error {
 	// 检查连接
 	if !r.transport.IsConnected(to) {
 		return service.ErrPeerUnreachable
@@ -659,6 +679,12 @@ func (r *Libp2pRPC) HandleIncomingStream(stream service.Stream) error {
 // GetMiddleware 获取中间件链
 func (r *Libp2pRPC) GetMiddleware() service.MiddlewareChain {
 	return r.middleware
+}
+
+// Use 添加中间件到链尾（便捷方法）
+// P0 中间件集成：提供便捷的中间件添加方法
+func (r *Libp2pRPC) Use(middleware service.Middleware) error {
+	return r.middleware.Use(middleware)
 }
 
 // validateStrategy 验证广播策略是否满足

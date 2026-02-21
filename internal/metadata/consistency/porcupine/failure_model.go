@@ -85,10 +85,10 @@ type FailureRecoveryOutput struct {
 // ==================== 处理函数 ====================
 
 // handleFRInit 处理初始化
-func handleFRInit(st *FailureRecoveryState, op FailureRecoveryOperation, output FailureRecoveryOutput) []interface{} {
+func handleFRInit(st *FailureRecoveryState, op FailureRecoveryOperation, output FailureRecoveryOutput) []any {
 	if len(op.AllNodes) == 0 {
 		if output.Ok {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -112,13 +112,13 @@ func handleFRInit(st *FailureRecoveryState, op FailureRecoveryOperation, output 
 	}
 
 	if output.Ok {
-		return []interface{}{newState}
+		return []any{newState}
 	}
 	return nil
 }
 
 // handleNodeFail 处理节点故障
-func handleNodeFail(st *FailureRecoveryState, op FailureRecoveryOperation, output FailureRecoveryOutput) []interface{} {
+func handleNodeFail(st *FailureRecoveryState, op FailureRecoveryOperation, output FailureRecoveryOutput) []any {
 	if op.NodeID == "" {
 		return nil
 	}
@@ -128,13 +128,13 @@ func handleNodeFail(st *FailureRecoveryState, op FailureRecoveryOperation, outpu
 	delete(newSt.RecoveredNodes, op.NodeID)
 
 	if output.Ok {
-		return []interface{}{newSt}
+		return []any{newSt}
 	}
 	return nil
 }
 
 // handleNodeRecover 处理节点恢复
-func handleNodeRecover(st *FailureRecoveryState, op FailureRecoveryOperation, output FailureRecoveryOutput) []interface{} {
+func handleNodeRecover(st *FailureRecoveryState, op FailureRecoveryOperation, output FailureRecoveryOutput) []any {
 	if op.NodeID == "" {
 		return nil
 	}
@@ -143,7 +143,7 @@ func handleNodeRecover(st *FailureRecoveryState, op FailureRecoveryOperation, ou
 	if !st.FailedNodes[op.NodeID] {
 		// 节点未故障，无需恢复
 		if output.Ok {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -153,14 +153,14 @@ func handleNodeRecover(st *FailureRecoveryState, op FailureRecoveryOperation, ou
 	newSt.RecoveredNodes[op.NodeID] = true
 
 	if output.Ok {
-		return []interface{}{newSt}
+		return []any{newSt}
 	}
 	return nil
 }
 
 // handleQuorumWithFailure 处理带故障的 Quorum 写入
 // P1-01: 添加失败回滚逻辑
-func handleQuorumWithFailure(st *FailureRecoveryState, op FailureRecoveryOperation, output FailureRecoveryOutput) []interface{} {
+func handleQuorumWithFailure(st *FailureRecoveryState, op FailureRecoveryOperation, output FailureRecoveryOutput) []any {
 	// 过滤故障节点
 	var healthyParticipants []string
 	for _, pID := range op.Participants {
@@ -177,7 +177,7 @@ func handleQuorumWithFailure(st *FailureRecoveryState, op FailureRecoveryOperati
 	if len(healthyParticipants) < quorum {
 		// P1-01: Quorum 不可达时返回失败状态，不修改任何状态
 		if output.Error == "quorum_failed" {
-			return []interface{}{st} // 返回原状态（回滚）
+			return []any{st} // 返回原状态（回滚）
 		}
 		return nil
 	}
@@ -192,25 +192,25 @@ func handleQuorumWithFailure(st *FailureRecoveryState, op FailureRecoveryOperati
 		// P1-01: 检查版本冲突
 		if existing, exists := store[op.Key]; exists && existing.Version >= op.Version {
 			// 版本冲突，回滚到原状态
-			return []interface{}{st}
+			return []any{st}
 		}
 		store[op.Key] = VersionedValue{Value: op.Value, Version: op.Version}
 	}
 
 	// 成功返回新状态
 	if output.Ok {
-		return []interface{}{newSt}
+		return []any{newSt}
 	}
 	// 输出不匹配，回滚
-	return []interface{}{st}
+	return []any{st}
 }
 
 // handleFRGet 处理失败恢复场景下的读取
-func handleFRGet(st *FailureRecoveryState, op FailureRecoveryOperation, output FailureRecoveryOutput) []interface{} {
+func handleFRGet(st *FailureRecoveryState, op FailureRecoveryOperation, output FailureRecoveryOutput) []any {
 	// 检查节点是否故障
 	if st.FailedNodes[op.NodeID] {
 		if output.Error == "node_failed" {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -218,7 +218,7 @@ func handleFRGet(st *FailureRecoveryState, op FailureRecoveryOperation, output F
 	store, exists := st.NodeStores[op.NodeID]
 	if !exists {
 		if output.Error == "key not found" || output.Error == "node not found" {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -226,7 +226,7 @@ func handleFRGet(st *FailureRecoveryState, op FailureRecoveryOperation, output F
 	value, exists := store[op.Key]
 	if !exists {
 		if output.Error == "key not found" {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -242,13 +242,13 @@ func handleFRGet(st *FailureRecoveryState, op FailureRecoveryOperation, output F
 		return nil
 	}
 
-	return []interface{}{st}
+	return []any{st}
 }
 
 // ==================== 状态比较 ====================
 
 // failureRecoveryStateEqual 深度比较两个失败恢复状态
-func failureRecoveryStateEqual(state1, state2 interface{}) bool {
+func failureRecoveryStateEqual(state1, state2 any) bool {
 	s1, ok1 := state1.(*FailureRecoveryState)
 	s2, ok2 := state2.(*FailureRecoveryState)
 	if !ok1 || !ok2 {
@@ -274,9 +274,9 @@ func failureRecoveryStateEqual(state1, state2 interface{}) bool {
 // newFailureRecoveryNondeterministicModel 创建非确定性失败恢复模型
 func newFailureRecoveryNondeterministicModel() *porcupine.NondeterministicModel {
 	return &porcupine.NondeterministicModel{
-		// Init 返回 []interface{}
-		Init: func() []interface{} {
-			return []interface{}{&FailureRecoveryState{
+		// Init 返回 []any
+		Init: func() []any {
+			return []any{&FailureRecoveryState{
 				NodeStores:     make(map[string]map[string]VersionedValue),
 				FailedNodes:    make(map[string]bool),
 				RecoveredNodes: make(map[string]bool),
@@ -284,7 +284,7 @@ func newFailureRecoveryNondeterministicModel() *porcupine.NondeterministicModel 
 		},
 
 		// Step 返回所有可能的状态
-		Step: func(state, input, output interface{}) []interface{} {
+		Step: func(state, input, output any) []any {
 			st, ok := state.(*FailureRecoveryState)
 			if !ok {
 				return nil
@@ -321,14 +321,14 @@ func newFailureRecoveryNondeterministicModel() *porcupine.NondeterministicModel 
 		Equal: failureRecoveryStateEqual,
 
 		// DescribeOperation 描述操作（用于可视化）
-		DescribeOperation: func(input, output interface{}) string {
+		DescribeOperation: func(input, output any) string {
 			op, _ := input.(FailureRecoveryOperation)
 			out, _ := output.(FailureRecoveryOutput)
 			return fmt.Sprintf("%s -> ok=%v", op.Type, out.Ok)
 		},
 
 		// DescribeState 描述状态（用于可视化）
-		DescribeState: func(state interface{}) string {
+		DescribeState: func(state any) string {
 			st, _ := state.(*FailureRecoveryState)
 			if st == nil {
 				return "<nil>"

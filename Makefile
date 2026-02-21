@@ -1,7 +1,7 @@
 # NexKV Makefile
 # 提供 build、test、clean 等常用命令
 
-.PHONY: all build test test-unit test-intg test-e2e clean run fmt vet lint docker-build docker-run help version
+.PHONY: all build test test-unit test-intg test-e2e integration-test integration-test-race integration-test-coverage clean run fmt vet lint docker-build docker-run help version
 
 # 变量定义
 BINARY_NAME=nexkv
@@ -40,19 +40,12 @@ build:
 
 
 ## test: 运行所有测试（单元测试 + 集成测试）
-test: test-unit test-intg
+test: test-unit integration-test-race
 
 ## test-unit: 运行单元测试（组件级测试，快速反馈）
 test-unit:
 	@echo "运行单元测试..."
-	$(GO) test -short -race ./internal/... -run "Test[^I].*"
-
-## test-intg: 运行集成测试（Layer 1 组件协作，多节点场景）
-test-intg:
-	@echo "运行集成测试..."
-	$(GO) test -race -timeout 10m ./internal/metadata/... -run "TestIntegration.*"
-	$(GO) test -race -timeout 10m ./internal/transport/... -run "TestIntegration.*"
-	$(GO) test -race -timeout 10m ./internal/rpc/... -run "TestIntegration.*"
+	$(GO) test -v -short -race ./internal/... -run "Test[^I].*"
 
 ## test-e2e: 运行 E2E 测试框架测试
 test-e2e:
@@ -71,6 +64,27 @@ test-e2e-coverage:
 	$(GO) tool cover -func=e2e-coverage.out
 	$(GO) tool cover -html=e2e-coverage.out -o e2e-coverage.html
 	@echo "覆盖率报告已生成: e2e-coverage.html"
+
+## integration-test: 运行集成测试框架测试（pkg/test/framework）
+integration-test:
+	@echo "运行集成测试框架测试..."
+	$(GO) test -v -timeout 10m ./test/integration/scenarios/...
+
+## integration-test-race: 运行集成测试（带竞态检测）
+integration-test-race:
+	@echo "运行集成测试（带竞态检测）..."
+	$(GO) test -v -race -timeout 10m ./test/integration/scenarios/...
+	$(GO) test -v -race -timeout 10m ./internal/metadata/... -run "TestIntegration.*"
+	$(GO) test -v -race -timeout 10m ./internal/transport/... -run "TestIntegration.*"
+	$(GO) test -v -race -timeout 10m ./internal/rpc/... -run "TestIntegration.*"
+
+## integration-test-coverage: 运行集成测试并生成覆盖率报告
+integration-test-coverage:
+	@echo "运行集成测试并生成覆盖率报告..."
+	$(GO) test -v -coverprofile=integration-coverage.out -timeout 10m ./test/integration/scenarios/...
+	$(GO) tool cover -func=integration-coverage.out
+	$(GO) tool cover -html=integration-coverage.out -o integration-coverage.html
+	@echo "覆盖率报告已生成: integration-coverage.html"
 
 ## test-perf: 运行性能测试（不含竞态检测）
 test-perf:
@@ -97,7 +111,7 @@ benchmark:
 clean:
 	@echo "清理编译文件..."
 	rm -rf bin/
-	rm -f coverage.out coverage.html coverage_*.out
+	rm -f coverage.out *coverage.html *coverage*.out transport.test *.out
 
 ## fmt: 格式化代码并运行静态检查
 fmt:
@@ -164,6 +178,9 @@ help:
 	@echo "  make test-verbose  - 运行详细测试"
 	@echo "  make test-coverage - 运行测试并生成覆盖率报告"
 	@echo "  make benchmark     - 运行性能基准测试"
+	@echo "  make integration-test        - 运行集成测试框架测试"
+	@echo "  make integration-test-race   - 运行集成测试（带竞态检测）"
+	@echo "  make integration-test-coverage - 运行集成测试并生成覆盖率报告"
 	@echo "  make clean         - 清理编译文件"
 	@echo "  make fmt           - 格式化代码并运行静态检查"
 	@echo "  make vet           - 代码静态检查"

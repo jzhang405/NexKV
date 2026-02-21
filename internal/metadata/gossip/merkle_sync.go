@@ -386,7 +386,7 @@ func (s *MerkleGossipSync) handleIncomingMessage(nodeID string, msg []byte) {
 	// 检查是否重复
 	for _, id := range validIDs {
 		if id == messageID {
-			logging.WithField("from", nodeID).WithFields(map[string]interface{}{
+			logging.WithField("from", nodeID).WithFields(map[string]any{
 				"message_id": messageID,
 				"reason":     "duplicate",
 			}).Debug("检测到重复 Gossip 消息，忽略")
@@ -481,12 +481,12 @@ func (s *MerkleGossipSync) sendDiffResponse(
 	// 记录成功日志（安全地获取 diff_ns_count）
 	diffNS, ok := diffResponse["diff_namespaces"].(map[string][]string)
 	if !ok {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"to":            peerID,
 			"response_size": len(responseBytes),
 		}).Info("已发送差异响应（类型断言失败，无法获取 diff_ns_count）")
 	} else {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"to":            peerID,
 			"diff_ns_count": len(diffNS),
 			"response_size": len(responseBytes),
@@ -505,11 +505,11 @@ func (s *MerkleGossipSync) SetGossipInterval(interval time.Duration) {
 }
 
 // GetStats 获取统计信息
-func (s *MerkleGossipSync) GetStats() map[string]interface{} {
+func (s *MerkleGossipSync) GetStats() map[string]any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"sync_count":      s.syncCount,
 		"diff_detected":   s.diffDetected,
 		"bandwidth_saved": s.bandwidthSaved,
@@ -523,7 +523,7 @@ func (s *MerkleGossipSync) GetStats() map[string]interface{} {
 
 // logPeerError 记录 peer 相关错误
 func (s *MerkleGossipSync) logPeerError(msg string, peerID string, err error) {
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"peer_id": peerID,
 		"error":   err.Error(),
 	}).Error(msg)
@@ -532,12 +532,12 @@ func (s *MerkleGossipSync) logPeerError(msg string, peerID string, err error) {
 // logError 记录一般错误
 func (s *MerkleGossipSync) logError(msg string, nodeID string, err error) {
 	if nodeID != "" {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"from":  nodeID,
 			"error": err.Error(),
 		}).Error(msg)
 	} else {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"error": err.Error(),
 		}).Error(msg)
 	}
@@ -554,7 +554,7 @@ func (s *MerkleGossipSync) logDiffDetected(nodeID, localRoot, peerRoot string) {
 		peerPrefix = peerPrefix[:hashDisplayPrefixLen] + "..."
 	}
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"from":       nodeID,
 		"local_root": localPrefix,
 		"peer_root":  peerPrefix,
@@ -563,7 +563,7 @@ func (s *MerkleGossipSync) logDiffDetected(nodeID, localRoot, peerRoot string) {
 
 // logSyncComplete 记录同步完成日志
 func (s *MerkleGossipSync) logSyncComplete(result *SyncResult, peerID string, startTime time.Time) {
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"peer_id":    peerID,
 		"synced":     result.Synced,
 		"diff_ns":    len(result.DiffNamespaces),
@@ -643,7 +643,7 @@ func (s *MerkleGossipSync) buildDiffResponse(
 	peerID string,
 	localGlobalRoot, peerGlobalRoot string,
 	diffNamespaces map[string]bool,
-) map[string]interface{} {
+) map[string]any {
 	// 获取 Merkle Tree 快照（并发安全）
 	s.mu.RLock()
 	localNodeID := s.localNodeID
@@ -675,7 +675,7 @@ func (s *MerkleGossipSync) buildDiffResponse(
 	}
 
 	// 转换为可序列化的 map
-	return map[string]interface{}{
+	return map[string]any{
 		"type":             "diff_response",
 		"from_node_id":     response.FromNodeID,
 		"global_root_hash": response.GlobalRootHash,
@@ -732,14 +732,14 @@ func EstimateBandwidthUsage(keyCount int) uint64 {
 func BuildGossipPayload(
 	merkle *kvstore.NamespacedMerkleTree,
 	fullSync bool,
-) map[string]interface{} {
+) map[string]any {
 	globalRoot := merkle.GetGlobalRootHash()
 	namespaceHashes := merkle.GetAllNamespaceRootHashes()
 
 	// 生成消息唯一 ID（用于去重）
 	messageID := uint64(time.Now().UnixNano())
 
-	return map[string]interface{}{
+	return map[string]any{
 		"global_root_hash": globalRoot,
 		"namespace_hashes": namespaceHashes,
 		"full_sync":        fullSync,
@@ -751,7 +751,7 @@ func BuildGossipPayload(
 // ParseGossipPayload 解析 Gossip Payload（提取 Merkle Tree 信息）
 //
 // 从 peer 接收的 Gossip Payload 中提取 Merkle Tree 信息
-func ParseGossipPayload(payload map[string]interface{}) (string, map[string]string, error) {
+func ParseGossipPayload(payload map[string]any) (string, map[string]string, error) {
 	globalRoot, ok := payload["global_root_hash"].(string)
 	if !ok {
 		return "", nil, fmt.Errorf("missing global_root_hash")
@@ -768,14 +768,14 @@ func ParseGossipPayload(payload map[string]interface{}) (string, map[string]stri
 // ParseGossipPayloadFromBytes 从字节数组解析 Gossip Payload
 //
 // 用于处理从网络接收到的原始消息
-func ParseGossipPayloadFromBytes(data []byte) (map[string]interface{}, error) {
-	// 简化实现：假设 data 已经是 MessagePack 编码的 map[string]interface{}
+func ParseGossipPayloadFromBytes(data []byte) (map[string]any, error) {
+	// 简化实现：假设 data 已经是 MessagePack 编码的 map[string]any
 	// 实际使用中应该使用 msgpack.Unmarshal
 
 	// 由于 transport.Receive 已经解码了 Payload，这里返回一个空 map 作为占位符
 	// 实际实现需要根据 transport 层的具体编码方式调整
 
-	return map[string]interface{}{}, fmt.Errorf("需要根据 transport 层实现调整")
+	return map[string]any{}, fmt.Errorf("需要根据 transport 层实现调整")
 }
 
 // ========================================
@@ -823,13 +823,13 @@ func (s *MerkleGossipSync) decrementQueueDepth() {
 // checkQueueDepth 检查队列深度并告警
 func (s *MerkleGossipSync) checkQueueDepth() {
 	if s.queueDepth > QueueDepthCritical {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"queue_depth":     s.queueDepth,
 			"max_queue_depth": s.maxQueueDepth,
 		}).Error("Gossip 队列深度严重过高")
 		// TODO: 触发告警（如发送到监控系统）
 	} else if s.queueDepth > QueueDepthWarning {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"queue_depth":     s.queueDepth,
 			"max_queue_depth": s.maxQueueDepth,
 		}).Warn("Gossip 队列深度过高")

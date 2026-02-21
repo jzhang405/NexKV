@@ -413,7 +413,7 @@ func (s *TreeAwareGossipSync) processTreeAwareEvent(event TreeAwareEvent) {
 func (s *TreeAwareGossipSync) sendToNode(event GossipEvent, targetNode string, priority PriorityLevel) {
 	// 使用底层 Gossip 同步器发送
 	// 这里简化实现，实际应该通过 transport 发送
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"event_type": event.Type,
 		"namespace":  event.Namespace,
 		"key":        event.Key,
@@ -470,7 +470,7 @@ func (s *TreeAwareGossipSync) propagateToParent(event GossipEvent) {
 		s.highPriorityDrop++
 		s.mu.Unlock()
 
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"event_type": event.Type,
 			"namespace":  event.Namespace,
 			"key":        event.Key,
@@ -502,7 +502,7 @@ func (s *TreeAwareGossipSync) broadcastToChildren(event GossipEvent) {
 		s.normalPriorityDrop++
 		s.mu.Unlock()
 
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"event_type":  event.Type,
 			"namespace":   event.Namespace,
 			"key":         event.Key,
@@ -531,7 +531,7 @@ func (s *TreeAwareGossipSync) broadcastToAll(event GossipEvent) {
 		s.lowPriorityDrop++
 		s.mu.Unlock()
 
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"event_type": event.Type,
 			"namespace":  event.Namespace,
 			"key":        event.Key,
@@ -598,7 +598,7 @@ func (s *TreeAwareGossipSync) OnPeerLeave(nodeID string) {
 func (s *TreeAwareGossipSync) UpdateTopology(parent string, children []string, depth int) {
 	s.topology.UpdateTopology(parent, children, depth)
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"node_type":   s.topology.GetNodeType().String(),
 		"parent":      parent,
 		"child_count": len(children),

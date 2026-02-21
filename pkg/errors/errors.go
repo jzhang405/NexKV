@@ -47,6 +47,21 @@ var (
 
 	// Middleware 层错误
 	ErrChainFrozen = stderrors.New("middleware: chain is frozen")
+
+	// Test Framework 层错误
+	ErrTestSetupFailed    = stderrors.New("test: setup failed")
+	ErrTestExecuteFailed  = stderrors.New("test: execute failed")
+	ErrTestVerifyFailed   = stderrors.New("test: verify failed")
+	ErrTestTeardownFailed = stderrors.New("test: teardown failed")
+	ErrComponentNotFound  = stderrors.New("test: component not found")
+	ErrComponentExists    = stderrors.New("test: component already exists")
+	ErrDependencyNotMet   = stderrors.New("test: dependency not met")
+	ErrCircularDependency = stderrors.New("test: circular dependency detected")
+	ErrClusterNotRunning  = stderrors.New("test: cluster not running")
+	ErrTestNodeNotFound   = stderrors.New("test: node not found")
+	ErrInvalidState       = stderrors.New("test: invalid cluster state")
+	ErrNotImplemented     = stderrors.New("test: not implemented")
+	ErrNotInitialized     = stderrors.New("test: not initialized")
 )
 
 // ===========================

@@ -164,7 +164,7 @@ func NewEventDrivenGossipSync(config *EventDrivenConfig) *EventDrivenGossipSync 
 	sync.wg.Add(1)
 	go sync.runEventLoop()
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"event_chan_size": eventChanSize,
 		"ticker_delay":    tickerDelay.String(),
 	}).Info("事件驱动 Gossip 同步已启动")
@@ -309,7 +309,7 @@ func (s *EventDrivenGossipSync) OnWrite(namespace, key string) {
 		s.eventsDropped++
 		s.mu.Unlock()
 
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"namespace": namespace,
 			"key":       key,
 		}).Debug("Gossip 事件通道满，丢弃事件")
@@ -382,9 +382,9 @@ func (s *EventDrivenGossipSync) RemoveKnownPeer(peerID string) {
 }
 
 // GetStats 获取统计信息
-func (s *EventDrivenGossipSync) GetStats() map[string]interface{} {
+func (s *EventDrivenGossipSync) GetStats() map[string]any {
 	s.mu.RLock()
-	stats := map[string]interface{}{
+	stats := map[string]any{
 		"events_received":    s.eventsReceived,
 		"events_processed":   s.eventsProcessed,
 		"events_dropped":     s.eventsDropped,

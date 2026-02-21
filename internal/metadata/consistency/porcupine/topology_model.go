@@ -243,10 +243,10 @@ func GetNodeExpectedDelay(topology *Topology, nodeID string) time.Duration {
 // ==================== 处理函数 ====================
 
 // handleInitTopology 处理拓扑初始化
-func handleInitTopology(st *TopologyState, op TopologyOperation, output TopologyOutput) []interface{} {
+func handleInitTopology(st *TopologyState, op TopologyOperation, output TopologyOutput) []any {
 	if len(op.Nodes) == 0 {
 		if output.Ok {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -291,7 +291,7 @@ func handleInitTopology(st *TopologyState, op TopologyOperation, output Topology
 	}
 
 	if output.Ok {
-		return []interface{}{newState}
+		return []any{newState}
 	}
 	return nil
 }
@@ -301,7 +301,7 @@ func handleInitTopology(st *TopologyState, op TopologyOperation, output Topology
 // - Leaf 节点：只发父节点
 // - Middle 节点：向上发父节点 + 向下广播子节点
 // - Root 节点：只广播子节点
-func handleTreeAwareGossip(st *TopologyState, op TopologyOperation, output TopologyOutput) []interface{} {
+func handleTreeAwareGossip(st *TopologyState, op TopologyOperation, output TopologyOutput) []any {
 	if st.Topology == nil {
 		return nil
 	}
@@ -374,14 +374,14 @@ func handleTreeAwareGossip(st *TopologyState, op TopologyOperation, output Topol
 	}
 
 	if output.Ok {
-		return []interface{}{newSt}
+		return []any{newSt}
 	}
 	return nil
 }
 
 // handle2PCWrite 处理 2PC 写入（拓扑感知）
 // 参与者：本地节点 + 父节点 + 兄弟节点
-func handle2PCWrite(st *TopologyState, op TopologyOperation, output TopologyOutput) []interface{} {
+func handle2PCWrite(st *TopologyState, op TopologyOperation, output TopologyOutput) []any {
 	if st.Topology == nil {
 		return nil
 	}
@@ -413,7 +413,7 @@ func handle2PCWrite(st *TopologyState, op TopologyOperation, output TopologyOutp
 		if existing, exists := store[op.Key]; exists {
 			if existing.Version >= op.Version {
 				// 版本冲突，返回原状态
-				return []interface{}{st}
+				return []any{st}
 			}
 		}
 		store[op.Key] = VersionedValue{
@@ -424,13 +424,13 @@ func handle2PCWrite(st *TopologyState, op TopologyOperation, output TopologyOutp
 
 	// 返回成功状态
 	if output.Ok {
-		return []interface{}{newSt}
+		return []any{newSt}
 	}
-	return []interface{}{st}
+	return []any{st}
 }
 
 // handleQuorumWrite 处理 Quorum 写入
-func handleQuorumWrite(st *TopologyState, op TopologyOperation, output TopologyOutput) []interface{} {
+func handleQuorumWrite(st *TopologyState, op TopologyOperation, output TopologyOutput) []any {
 	if st.Topology == nil {
 		return nil
 	}
@@ -457,7 +457,7 @@ func handleQuorumWrite(st *TopologyState, op TopologyOperation, output TopologyO
 	// 特殊处理：空参与者列表
 	if len(participants) == 0 {
 		if output.Error == "quorum_failed" {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -483,16 +483,16 @@ func handleQuorumWrite(st *TopologyState, op TopologyOperation, output TopologyO
 	}
 
 	if successCount >= quorum && output.Ok {
-		return []interface{}{newSt}
+		return []any{newSt}
 	}
 	if successCount < quorum && output.Error == "quorum_failed" {
-		return []interface{}{st}
+		return []any{st}
 	}
 	return nil
 }
 
 // handleTopologyGet 处理拓扑感知读取
-func handleTopologyGet(st *TopologyState, op TopologyOperation, output TopologyOutput) []interface{} {
+func handleTopologyGet(st *TopologyState, op TopologyOperation, output TopologyOutput) []any {
 	if st.Topology == nil {
 		return nil
 	}
@@ -505,7 +505,7 @@ func handleTopologyGet(st *TopologyState, op TopologyOperation, output TopologyO
 	store, exists := st.NodeStores[op.NodeID]
 	if !exists {
 		if output.Error == "key not found" {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -513,7 +513,7 @@ func handleTopologyGet(st *TopologyState, op TopologyOperation, output TopologyO
 	value, exists := store[op.Key]
 	if !exists {
 		if output.Error == "key not found" {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -529,13 +529,13 @@ func handleTopologyGet(st *TopologyState, op TopologyOperation, output TopologyO
 		return nil
 	}
 
-	return []interface{}{st}
+	return []any{st}
 }
 
 // ==================== 状态比较 ====================
 
 // topologyStateEqual 深度比较两个拓扑状态
-func topologyStateEqual(state1, state2 interface{}) bool {
+func topologyStateEqual(state1, state2 any) bool {
 	s1, ok1 := state1.(*TopologyState)
 	s2, ok2 := state2.(*TopologyState)
 	if !ok1 || !ok2 {
@@ -557,9 +557,9 @@ func topologyStateEqual(state1, state2 interface{}) bool {
 // newTopologyAwareNondeterministicModel 创建非确定性拓扑感知模型
 func newTopologyAwareNondeterministicModel() *porcupine.NondeterministicModel {
 	return &porcupine.NondeterministicModel{
-		// Init 返回 []interface{}
-		Init: func() []interface{} {
-			return []interface{}{&TopologyState{
+		// Init 返回 []any
+		Init: func() []any {
+			return []any{&TopologyState{
 				NodeStores:    make(map[string]map[string]VersionedValue),
 				Topology:      nil,
 				CurrentLeader: "",
@@ -568,7 +568,7 @@ func newTopologyAwareNondeterministicModel() *porcupine.NondeterministicModel {
 		},
 
 		// Step 返回所有可能的状态
-		Step: func(state, input, output interface{}) []interface{} {
+		Step: func(state, input, output any) []any {
 			st, ok := state.(*TopologyState)
 			if !ok {
 				return nil
@@ -605,14 +605,14 @@ func newTopologyAwareNondeterministicModel() *porcupine.NondeterministicModel {
 		Equal: topologyStateEqual,
 
 		// DescribeOperation 描述操作（用于可视化）
-		DescribeOperation: func(input, output interface{}) string {
+		DescribeOperation: func(input, output any) string {
 			op, _ := input.(TopologyOperation)
 			out, _ := output.(TopologyOutput)
 			return fmt.Sprintf("%s(%s:%s) -> ok=%v", op.Type, op.NodeID, op.Key, out.Ok)
 		},
 
 		// DescribeState 描述状态（用于可视化）
-		DescribeState: func(state interface{}) string {
+		DescribeState: func(state any) string {
 			st, _ := state.(*TopologyState)
 			if st == nil {
 				return "<nil>"

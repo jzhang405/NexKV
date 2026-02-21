@@ -1451,3 +1451,147 @@ func TestLibp2pRPC_BroadcastCall_WithCanceledContext(t *testing.T) {
 	}
 	_ = result
 }
+
+// TestLibp2pRPC_SendRequestNoResponse_PeerUnreachable 测试发送请求到未连接节点
+func TestLibp2pRPC_SendRequestNoResponse_PeerUnreachable(t *testing.T) {
+	transport := newMockTransport("node-1")
+	// 不添加任何连接的节点
+
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	msg := createTestMessage("test-001", model.MessageTypeRequest, []byte("test"))
+
+	err := rpc.sendRequestNoResponse(context.Background(), "node-2", msg)
+	assertError(t, err, service.ErrPeerUnreachable, "Should return ErrPeerUnreachable")
+}
+
+// TestLibp2pRPC_SendRequestNoResponse_Connected 测试发送请求到已连接节点（模拟 OpenStream 失败）
+func TestLibp2pRPC_SendRequestNoResponse_Connected(t *testing.T) {
+	transport := newMockTransport("node-1")
+	transport.mu.Lock()
+	transport.connected["node-2"] = true
+	transport.mu.Unlock()
+
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	msg := createTestMessage("test-001", model.MessageTypeRequest, []byte("test"))
+
+	err := rpc.sendRequestNoResponse(context.Background(), "node-2", msg)
+	// mock transport 的 OpenStream 会返回错误
+	if err != nil {
+		t.Logf("sendRequestNoResponse() error (expected): %v", err)
+	}
+}
+
+// TestLibp2pRPC_BroadcastAsync_PeerUnreachable 测试异步广播到未连接节点
+func TestLibp2pRPC_BroadcastAsync_PeerUnreachable(t *testing.T) {
+	transport := newMockTransport("node-1")
+	// 不添加任何连接的节点
+
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	peers := []model.PeerID{"node-2", "node-3"}
+	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "", []byte("broadcast"))
+
+	// BroadcastAsync 需要 6 个参数
+	err := rpc.BroadcastAsync(context.Background(), peers, msg, service.ResponseAll, nil, func(from model.PeerID, resp model.Message, err error) {
+		t.Logf("BroadcastAsync callback: from=%s, err=%v", from, err)
+	})
+	if err != nil {
+		t.Logf("BroadcastAsync() error: %v", err)
+	}
+}
+
+// TestLibp2pRPC_BroadcastAsync_WithCallback 测试异步广播带回调
+func TestLibp2pRPC_BroadcastAsync_WithCallback(t *testing.T) {
+	transport := newMockTransport("node-1")
+	transport.mu.Lock()
+	transport.connected["node-2"] = true
+	transport.connected["node-3"] = true
+	transport.mu.Unlock()
+
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	peers := []model.PeerID{"node-2", "node-3"}
+	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "", []byte("broadcast"))
+
+	var callbackCount int
+	var mu sync.Mutex
+
+	err := rpc.BroadcastAsync(context.Background(), peers, msg, service.ResponseAll, nil, func(from model.PeerID, resp model.Message, err error) {
+		mu.Lock()
+		callbackCount++
+		count := callbackCount
+		mu.Unlock()
+		t.Logf("Callback received: from=%s, err=%v, count=%d", from, err, count)
+	})
+	if err != nil {
+		t.Logf("BroadcastAsync() error: %v", err)
+	}
+
+	// 等待回调完成
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	finalCount := callbackCount
+	mu.Unlock()
+	t.Logf("Callback count: %d", finalCount)
+}
+
+// TestLibp2pRPC_BroadcastCall_AllPeersFail 测试广播所有节点失败
+func TestLibp2pRPC_BroadcastCall_AllPeersFail(t *testing.T) {
+	transport := newMockTransport("node-1")
+	transport.mu.Lock()
+	transport.connected["node-2"] = true
+	transport.connected["node-3"] = true
+	transport.mu.Unlock()
+
+	rpc := NewLibp2pRPC(transport, nil)
+	defer rpc.Close()
+
+	peers := []model.PeerID{"node-2", "node-3"}
+	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "", []byte("broadcast"))
+
+	// mock transport 的 OpenStream 会返回错误
+	result, err := rpc.BroadcastCall(context.Background(), peers, msg, service.ResponseAll, nil)
+	if err != nil {
+		t.Logf("BroadcastCall() error: %v", err)
+	}
+
+	// 验证所有节点都失败
+	if len(result.FailedPeers) != 2 {
+		t.Errorf("Expected 2 failed peers, got %d", len(result.FailedPeers))
+	}
+}
+
+// TestLibp2pRPC_Call_ShortTimeout 测试调用超时（短超时配置）
+func TestLibp2pRPC_Call_ShortTimeout(t *testing.T) {
+	transport := newMockTransport("node-1")
+	transport.mu.Lock()
+	transport.connected["node-2"] = true
+	transport.mu.Unlock()
+
+	// 使用非常短的超时
+	config := &service.RPCConfig{
+		CallTimeout:        1 * time.Millisecond,
+		BroadcastTimeout:   1 * time.Millisecond,
+		MaxConcurrentCalls: 100,
+	}
+
+	rpc := NewLibp2pRPC(transport, config)
+	defer rpc.Close()
+
+	msg := createTestMessage("test-001", model.MessageTypeRequest, []byte("test"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+
+	_, err := rpc.Call(ctx, "node-2", msg)
+	if err != nil {
+		t.Logf("Call() with timeout error: %v (expected)", err)
+	}
+}

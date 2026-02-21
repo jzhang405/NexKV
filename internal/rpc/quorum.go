@@ -429,7 +429,7 @@ func (m *QuorumManager) ExecuteWithRetry(
 		// 首次尝试或后续重试
 		if attempt > 0 {
 			backoff := m.CalculateBackoff(attempt - 1)
-			logging.WithFields(map[string]interface{}{
+			logging.WithFields(map[string]any{
 				"attempt":        attempt,
 				"backoff":        backoff.String(),
 				"max_retries":    m.config.MaxRetries,
@@ -459,7 +459,7 @@ func (m *QuorumManager) ExecuteWithRetry(
 				m.metrics.RetrySuccess++
 				m.mu.Unlock()
 
-				logging.WithFields(map[string]interface{}{
+				logging.WithFields(map[string]any{
 					"attempt":     attempt,
 					"total_retry": m.metrics.RetryTotal,
 				}).Info("Quorum 重试成功")
@@ -468,7 +468,7 @@ func (m *QuorumManager) ExecuteWithRetry(
 		}
 
 		// 记录失败并继续重试
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"attempt":      attempt,
 			"error":        lastErr,
 			"next_backoff": m.CalculateBackoff(attempt).String(),

@@ -377,7 +377,7 @@ func (n *NamespacedMerkleTree) GetNamespaceVersion(ns string) (uint64, error) {
 //   - hit_count: 缓存命中次数
 //   - miss_count: 缓存未命中次数
 //   - hit_rate: 缓存命中率（0.0 - 1.0）
-func (n *NamespacedMerkleTree) GetCacheStats() map[string]interface{} {
+func (n *NamespacedMerkleTree) GetCacheStats() map[string]any {
 	hitCount := n.cacheHitCount.Load()
 	missCount := n.cacheMissCount.Load()
 	total := hitCount + missCount
@@ -387,7 +387,7 @@ func (n *NamespacedMerkleTree) GetCacheStats() map[string]interface{} {
 		hitRate = float64(hitCount) / float64(total)
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"hit_count":  hitCount,
 		"miss_count": missCount,
 		"hit_rate":   hitRate,

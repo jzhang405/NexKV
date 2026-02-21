@@ -168,7 +168,7 @@ func (s *DebugAPIServer) handleGetHistory(w http.ResponseWriter, r *http.Request
 	}
 
 	// 4. 构建响应
-	response := map[string]interface{}{
+	response := map[string]any{
 		"node_id":    "local", // TODO: 从配置获取
 		"operations": serialized,
 		"count":      len(serialized),
@@ -202,7 +202,7 @@ func (s *DebugAPIServer) handleGetStats(w http.ResponseWriter, r *http.Request) 
 	}
 
 	stats := s.verifier.Stats()
-	response := map[string]interface{}{
+	response := map[string]any{
 		"stats":     stats,
 		"timestamp": time.Now().Unix(),
 	}
@@ -219,7 +219,7 @@ func (s *DebugAPIServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	stats := s.verifier.Stats()
 	lastResult := s.verifier.GetLastResult()
 
-	health := map[string]interface{}{
+	health := map[string]any{
 		"status":         "ok",
 		"total_ops":      stats.TotalOps,
 		"pending_ops":    stats.PendingOps,
@@ -341,19 +341,19 @@ func (s *DebugAPIServer) getClientIP(r *http.Request) string {
 // sanitizeOperation 脱敏操作数据
 func (s *DebugAPIServer) sanitizeOperation(op *porcupine.SerializableOperation) {
 	// 脱敏 Input 中的 Value 字段
-	var input map[string]interface{}
+	var input map[string]any
 	if err := json.Unmarshal(op.Input, &input); err == nil {
-		if topologyOp, ok := input["topology_op"].(map[string]interface{}); ok {
+		if topologyOp, ok := input["topology_op"].(map[string]any); ok {
 			if value, ok := topologyOp["value"].(string); ok && len(value) > 100 {
 				topologyOp["value"] = value[:50] + "...[REDACTED]"
 			}
 		}
-		if frOp, ok := input["failure_recovery_op"].(map[string]interface{}); ok {
+		if frOp, ok := input["failure_recovery_op"].(map[string]any); ok {
 			if value, ok := frOp["value"].(string); ok && len(value) > 100 {
 				frOp["value"] = value[:50] + "...[REDACTED]"
 			}
 		}
-		if leaderOp, ok := input["leader_ha_op"].(map[string]interface{}); ok {
+		if leaderOp, ok := input["leader_ha_op"].(map[string]any); ok {
 			if value, ok := leaderOp["value"].(string); ok && len(value) > 100 {
 				leaderOp["value"] = value[:50] + "...[REDACTED]"
 			}
@@ -364,19 +364,19 @@ func (s *DebugAPIServer) sanitizeOperation(op *porcupine.SerializableOperation) 
 	}
 
 	// 脱敏 Output 中的 Value 字段
-	var output map[string]interface{}
+	var output map[string]any
 	if err := json.Unmarshal(op.Output, &output); err == nil {
-		if topologyOut, ok := output["topology_out"].(map[string]interface{}); ok {
+		if topologyOut, ok := output["topology_out"].(map[string]any); ok {
 			if value, ok := topologyOut["value"].(string); ok && len(value) > 100 {
 				topologyOut["value"] = value[:50] + "...[REDACTED]"
 			}
 		}
-		if frOut, ok := output["failure_recovery_out"].(map[string]interface{}); ok {
+		if frOut, ok := output["failure_recovery_out"].(map[string]any); ok {
 			if value, ok := frOut["value"].(string); ok && len(value) > 100 {
 				frOut["value"] = value[:50] + "...[REDACTED]"
 			}
 		}
-		if leaderOut, ok := output["leader_ha_out"].(map[string]interface{}); ok {
+		if leaderOut, ok := output["leader_ha_out"].(map[string]any); ok {
 			if value, ok := leaderOut["value"].(string); ok && len(value) > 100 {
 				leaderOut["value"] = value[:50] + "...[REDACTED]"
 			}
@@ -423,11 +423,11 @@ func (s *DebugAPIServer) GetAuditLog() []AuditEntry {
 // ==================== 辅助方法 ====================
 
 // writeError 写入错误响应
-func (s *DebugAPIServer) writeError(w http.ResponseWriter, code int, format string, args ...interface{}) {
+func (s *DebugAPIServer) writeError(w http.ResponseWriter, code int, format string, args ...any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 
-	errorResp := map[string]interface{}{
+	errorResp := map[string]any{
 		"error":     fmt.Sprintf(format, args...),
 		"code":      code,
 		"timestamp": time.Now().Unix(),

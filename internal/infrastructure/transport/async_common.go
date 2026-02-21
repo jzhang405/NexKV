@@ -28,10 +28,10 @@ const (
 	DefaultTimeout = 30 * time.Second
 	// DefaultMaxMessageSize 默认最大消息大小 (10MB)
 	DefaultMaxMessageSize = 10 * 1024 * 1024
-	// CloseTimeout 关闭超时
-	CloseTimeout = 5 * time.Second
+	// CloseTimeout 关闭超时（CI 环境使用更短的超时）
+	CloseTimeout = 1 * time.Second
 	// CloseFinalTimeout 最终关闭超时
-	CloseFinalTimeout = 1 * time.Second
+	CloseFinalTimeout = 500 * time.Millisecond
 )
 
 // ValidateBufferSize 验证缓冲区大小

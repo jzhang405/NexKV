@@ -186,7 +186,7 @@ func decodeMessage(data []byte) (*QuorumMessage, error) {
 }
 
 // decodePayload 根据 message type 解码 payload
-func decodePayload(msg *QuorumMessage) (interface{}, error) {
+func decodePayload(msg *QuorumMessage) (any, error) {
 	switch msg.Type {
 	case MessageTypeQuorumPut:
 		var payload QuorumPutPayload
@@ -224,7 +224,7 @@ func decodePayload(msg *QuorumMessage) (interface{}, error) {
 }
 
 // newQuorumMessage 创建带 payload 的消息
-func newQuorumMessage(msgType MessageType, payload interface{}) (*QuorumMessage, error) {
+func newQuorumMessage(msgType MessageType, payload any) (*QuorumMessage, error) {
 	payloadBytes, err := msgpack.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -236,7 +236,7 @@ func newQuorumMessage(msgType MessageType, payload interface{}) (*QuorumMessage,
 }
 
 // newQuorumMessageAndEncode 创建消息并编码（便捷函数）
-func newQuorumMessageAndEncode(msgType MessageType, payload interface{}) ([]byte, error) {
+func newQuorumMessageAndEncode(msgType MessageType, payload any) ([]byte, error) {
 	msg, err := newQuorumMessage(msgType, payload)
 	if err != nil {
 		return nil, err
@@ -359,7 +359,7 @@ func (ni *NetworkIntegrator) PutWithQuorumNetwork(
 
 	successCount, failedCount, success := collector.WaitAll()
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"tx_id":      txID,
 		"namespace":  ns,
 		"key":        key,
@@ -459,7 +459,7 @@ func (ni *NetworkIntegrator) GetWithQuorumNetwork(
 func (ni *NetworkIntegrator) handleMessage(nodeID string, msg []byte) {
 	quorumMsg, err := decodeMessage(msg)
 	if err != nil {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"node_id": nodeID,
 			"error":   err,
 		}).Debug("Quorum 消息解码失败")
@@ -469,7 +469,7 @@ func (ni *NetworkIntegrator) handleMessage(nodeID string, msg []byte) {
 	// 解码 payload
 	payload, err := decodePayload(quorumMsg)
 	if err != nil {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"node_id": nodeID,
 			"type":    quorumMsg.Type,
 			"error":   err,
@@ -492,7 +492,7 @@ func (ni *NetworkIntegrator) handleMessage(nodeID string, msg []byte) {
 }
 
 // handleQuorumPut 处理 Quorum 写入请求
-func (ni *NetworkIntegrator) handleQuorumPut(nodeID string, payload interface{}) {
+func (ni *NetworkIntegrator) handleQuorumPut(nodeID string, payload any) {
 	putPayload, ok := payload.(*QuorumPutPayload)
 	if !ok {
 		return
@@ -500,7 +500,7 @@ func (ni *NetworkIntegrator) handleQuorumPut(nodeID string, payload interface{})
 
 	success := true
 
-	var responsePayload interface{}
+	var responsePayload any
 	var msgType MessageType
 
 	if success {
@@ -528,7 +528,7 @@ func (ni *NetworkIntegrator) handleQuorumPut(nodeID string, payload interface{})
 }
 
 // handleQuorumAck 处理 ACK 响应
-func (ni *NetworkIntegrator) handleQuorumAck(nodeID string, payload interface{}) {
+func (ni *NetworkIntegrator) handleQuorumAck(nodeID string, payload any) {
 	ackPayload, ok := payload.(*QuorumAckPayload)
 	if !ok {
 		return
@@ -545,7 +545,7 @@ func (ni *NetworkIntegrator) handleQuorumAck(nodeID string, payload interface{})
 }
 
 // handleQuorumNack 处理 NACK 响应
-func (ni *NetworkIntegrator) handleQuorumNack(nodeID string, payload interface{}) {
+func (ni *NetworkIntegrator) handleQuorumNack(nodeID string, payload any) {
 	nackPayload, ok := payload.(*QuorumNackPayload)
 	if !ok {
 		return
@@ -560,7 +560,7 @@ func (ni *NetworkIntegrator) handleQuorumNack(nodeID string, payload interface{}
 		ackCollector.ReceiveACK(nodeID, false)
 	}
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"tx_id":   nackPayload.TxID,
 		"node_id": nodeID,
 		"reason":  nackPayload.Reason,
@@ -568,7 +568,7 @@ func (ni *NetworkIntegrator) handleQuorumNack(nodeID string, payload interface{}
 }
 
 // handleQuorumGet 处理读取请求
-func (ni *NetworkIntegrator) handleQuorumGet(nodeID string, payload interface{}) {
+func (ni *NetworkIntegrator) handleQuorumGet(nodeID string, payload any) {
 	getPayload, ok := payload.(*QuorumGetPayload)
 	if !ok {
 		return
@@ -591,7 +591,7 @@ func (ni *NetworkIntegrator) handleQuorumGet(nodeID string, payload interface{})
 }
 
 // handleQuorumGetResponse 处理读取响应
-func (ni *NetworkIntegrator) handleQuorumGetResponse(nodeID string, payload interface{}) {
+func (ni *NetworkIntegrator) handleQuorumGetResponse(nodeID string, payload any) {
 	respPayload, ok := payload.(*QuorumGetResponsePayload)
 	if !ok {
 		return

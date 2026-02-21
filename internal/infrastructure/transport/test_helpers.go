@@ -114,7 +114,7 @@ func createTestMessageWithPeer(id string, msgType model.MessageType, source, tar
 // ============================================================================
 
 // assertError asserts that an error occurred
-func assertError(t *testing.T, err error, expected error, msgAndArgs ...interface{}) {
+func assertError(t *testing.T, err error, expected error, msgAndArgs ...any) {
 	t.Helper()
 	if err == nil {
 		t.Errorf("Expected error %v, got nil. %v", expected, msgAndArgs)
@@ -126,7 +126,7 @@ func assertError(t *testing.T, err error, expected error, msgAndArgs ...interfac
 }
 
 // assertNoError asserts that no error occurred
-func assertNoError(t *testing.T, err error, msgAndArgs ...interface{}) {
+func assertNoError(t *testing.T, err error, msgAndArgs ...any) {
 	t.Helper()
 	if err != nil {
 		t.Errorf("Unexpected error: %v. %v", err, msgAndArgs)
@@ -134,7 +134,7 @@ func assertNoError(t *testing.T, err error, msgAndArgs ...interface{}) {
 }
 
 // assertEqual asserts that two values are equal
-func assertEqual(t *testing.T, expected, actual interface{}, msgAndArgs ...interface{}) {
+func assertEqual(t *testing.T, expected, actual any, msgAndArgs ...any) {
 	t.Helper()
 	if expected != actual {
 		t.Errorf("Expected %v, got %v. %v", expected, actual, msgAndArgs)
@@ -142,7 +142,7 @@ func assertEqual(t *testing.T, expected, actual interface{}, msgAndArgs ...inter
 }
 
 // assertNotEqual asserts that two values are not equal
-func assertNotEqual(t *testing.T, expected, actual interface{}, msgAndArgs ...interface{}) {
+func assertNotEqual(t *testing.T, expected, actual any, msgAndArgs ...any) {
 	t.Helper()
 	if expected == actual {
 		t.Errorf("Expected %v to not equal %v. %v", expected, actual, msgAndArgs)
@@ -150,7 +150,7 @@ func assertNotEqual(t *testing.T, expected, actual interface{}, msgAndArgs ...in
 }
 
 // assertTrue asserts that a condition is true
-func assertTrue(t *testing.T, condition bool, msgAndArgs ...interface{}) {
+func assertTrue(t *testing.T, condition bool, msgAndArgs ...any) {
 	t.Helper()
 	if !condition {
 		t.Errorf("Expected condition to be true. %v", msgAndArgs)
@@ -158,7 +158,7 @@ func assertTrue(t *testing.T, condition bool, msgAndArgs ...interface{}) {
 }
 
 // assertFalse asserts that a condition is false
-func assertFalse(t *testing.T, condition bool, msgAndArgs ...interface{}) {
+func assertFalse(t *testing.T, condition bool, msgAndArgs ...any) {
 	t.Helper()
 	if condition {
 		t.Errorf("Expected condition to be false. %v", msgAndArgs)
@@ -170,7 +170,7 @@ func assertFalse(t *testing.T, condition bool, msgAndArgs ...interface{}) {
 // ============================================================================
 
 // waitWithTimeout 等待条件满足或超时
-func waitWithTimeout(t *testing.T, timeout time.Duration, condition func() bool, msgAndArgs ...interface{}) {
+func waitWithTimeout(t *testing.T, timeout time.Duration, condition func() bool, msgAndArgs ...any) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

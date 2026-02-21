@@ -308,15 +308,15 @@ type BroadcastCallback interface {
 
 // BroadcastStats 广播统计信息
 type BroadcastStats struct {
-	TaskID             string         // 任务 ID
-	Total              int            // 总节点数
-	Success            int            // 成功数
-	Failed             int            // 失败数
-	Pending            int            // 待响应数
-	SuccessRate        float64        // 成功率
-	ElapsedTime        time.Duration  // 已耗时（从任务开始到现在）
-	FirstResponseTime  time.Duration  // 首个响应耗时（从任务开始到首个响应）
-	MajorityReachTime  time.Duration  // 达到多数派耗时（从任务开始到多数派达成）
+	TaskID            string        // 任务 ID
+	Total             int           // 总节点数
+	Success           int           // 成功数
+	Failed            int           // 失败数
+	Pending           int           // 待响应数
+	SuccessRate       float64       // 成功率
+	ElapsedTime       time.Duration // 已耗时（从任务开始到现在）
+	FirstResponseTime time.Duration // 首个响应耗时（从任务开始到首个响应）
+	MajorityReachTime time.Duration // 达到多数派耗时（从任务开始到多数派达成）
 }
 
 // NoOpCallback 空实现的 BroadcastCallback
@@ -404,7 +404,7 @@ func NewBroadcastTracker(taskID string, targets []model.PeerID) *BroadcastTracke
 		majorityDone: make(chan struct{}),
 
 		// Callback 机制初始化
-		callbacksEnabled: true,  // 默认启用回调
+		callbacksEnabled: true, // 默认启用回调
 		startTime:        time.Now(),
 	}
 }

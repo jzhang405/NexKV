@@ -3,6 +3,7 @@ package transport
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -25,6 +26,7 @@ func NewMiddlewareChain() service.MiddlewareChain {
 }
 
 // Use 添加中间件到链尾
+// 注意：中间件会按 Priority 自动排序，数字越小越先执行
 func (c *middlewareChain) Use(middleware service.Middleware) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -39,54 +41,12 @@ func (c *middlewareChain) Use(middleware service.Middleware) error {
 	}
 
 	c.middlewares = append(c.middlewares, middleware)
-	return nil
-}
 
-// UseFirst 添加中间件到链头（优先执行）
-func (c *middlewareChain) UseFirst(middleware service.Middleware) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// 按优先级排序（数字越小越先执行）
+	sort.Slice(c.middlewares, func(i, j int) bool {
+		return c.middlewares[i].Priority() < c.middlewares[j].Priority()
+	})
 
-	if c.frozen {
-		return service.ErrChainFrozen
-	}
-
-	// P1-3 修复：nil 中间件保护
-	if middleware == nil {
-		return nil // 忽略 nil 中间件，不报错
-	}
-
-	c.middlewares = append([]service.Middleware{middleware}, c.middlewares...)
-	return nil
-}
-
-// UseAt 在指定位置插入中间件
-func (c *middlewareChain) UseAt(index int, middleware service.Middleware) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.frozen {
-		return service.ErrChainFrozen
-	}
-
-	// P1-3 修复：nil 中间件保护
-	if middleware == nil {
-		return nil // 忽略 nil 中间件，不报错
-	}
-
-	// 边界检查
-	if index < 0 {
-		index = 0
-	}
-	if index > len(c.middlewares) {
-		index = len(c.middlewares)
-	}
-
-	// 插入中间件
-	c.middlewares = append(
-		c.middlewares[:index],
-		append([]service.Middleware{middleware}, c.middlewares[index:]...)...,
-	)
 	return nil
 }
 
@@ -136,21 +96,12 @@ func (c *middlewareChain) IsFrozen() bool {
 
 // ExecuteSend 执行发送中间件链
 func (c *middlewareChain) ExecuteSend(ctx context.Context, peer model.PeerID, msg model.Message, final service.SendFunc) error {
-	// 1. 获取快照（读锁）
-	c.mu.RLock()
-	middlewares := make([]service.Middleware, len(c.middlewares))
-	copy(middlewares, c.middlewares)
-	c.mu.RUnlock()
-
-	// 2. 构建责任链（从后向前）
+	// 获取快照并构建责任链（从后向前）
+	middlewares := c.snapshot()
 	next := final
 	for i := len(middlewares) - 1; i >= 0; i-- {
-		mw := middlewares[i]
-		// 捕获当前中间件和 next
-		next = createSendChainLink(mw, next)
+		next = createSendChainLink(middlewares[i], next)
 	}
-
-	// 3. 执行链
 	return next(ctx, peer, msg)
 }
 
@@ -162,23 +113,26 @@ func createSendChainLink(mw service.Middleware, next service.SendFunc) service.S
 }
 
 // ExecuteReceive 执行接收中间件链
+// 注意：Receive 链的执行顺序与 Send 链相反
+// - Send: RateLimit → CB → Compression → Retry → Final
+// - Receive: Retry → Compression → CB → RateLimit → Final（反向）
 func (c *middlewareChain) ExecuteReceive(ctx context.Context, peer model.PeerID, msg model.Message, final service.ReceiveFunc) error {
-	// 1. 获取快照（读锁）
-	c.mu.RLock()
-	middlewares := make([]service.Middleware, len(c.middlewares))
-	copy(middlewares, c.middlewares)
-	c.mu.RUnlock()
-
-	// 2. 构建责任链（从后向前）
+	// 获取快照并构建责任链（从前向后，与 Send 相反）
+	middlewares := c.snapshot()
 	next := final
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		mw := middlewares[i]
-		// 捕获当前中间件和 next
-		next = createReceiveChainLink(mw, next)
+	for i := 0; i < len(middlewares); i++ {
+		next = createReceiveChainLink(middlewares[i], next)
 	}
-
-	// 3. 执行链
 	return next(ctx, peer, msg)
+}
+
+// snapshot 获取中间件链快照（线程安全）
+func (c *middlewareChain) snapshot() []service.Middleware {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	result := make([]service.Middleware, len(c.middlewares))
+	copy(result, c.middlewares)
+	return result
 }
 
 // createReceiveChainLink 创建接收链的链接（避免闭包问题）

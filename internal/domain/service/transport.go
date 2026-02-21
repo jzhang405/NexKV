@@ -957,12 +957,32 @@ type Middleware interface {
 	// Name 中间件名称
 	Name() string
 
+	// Priority 中间件优先级（数字越小越先执行）
+	// 固定优先级：
+	// - RateLimit: 10
+	// - CircuitBreaker: 20
+	// - Compression: 30
+	// - Retry: 40
+	// - Logging/Metrics: 5（最外层）
+	Priority() int
+
 	// InterceptSend 拦截发送消息
 	InterceptSend(ctx context.Context, peer model.PeerID, msg model.Message, next SendFunc) error
 
 	// InterceptReceive 拦截接收消息
 	InterceptReceive(ctx context.Context, peer model.PeerID, msg model.Message, next ReceiveFunc) error
 }
+
+// MiddlewarePriority 中间件优先级常量
+// 数字越小越先执行（越外层）
+const (
+	MiddlewarePriorityLogging        = 5  // 日志（最外层）
+	MiddlewarePriorityMetrics        = 6  // 指标
+	MiddlewarePriorityRateLimit      = 10 // 限流
+	MiddlewarePriorityCircuitBreaker = 20 // 熔断
+	MiddlewarePriorityCompression    = 30 // 压缩
+	MiddlewarePriorityRetry          = 40 // 重试（最内层）
+)
 
 // MiddlewareChain 中间件链管理器
 //
@@ -971,16 +991,8 @@ type Middleware interface {
 // 2. Execute 时获取快照执行，避免持锁时间过长
 // 3. 提供 Freeze 方法，冻结后禁止修改（高性能场景）
 type MiddlewareChain interface {
-	// Use 添加中间件到链尾
+	// Use 添加中间件（自动按 Priority() 排序）
 	Use(middleware Middleware) error
-
-	// UseFirst 添加中间件到链头（优先执行）
-	// 场景：日志中间件通常需要在最外层
-	UseFirst(middleware Middleware) error
-
-	// UseAt 在指定位置插入中间件
-	// index=0 表示链头，index=len 表示链尾
-	UseAt(index int, middleware Middleware) error
 
 	// Remove 移除指定名称的中间件
 	Remove(name string) error
@@ -989,7 +1001,7 @@ type MiddlewareChain interface {
 	List() []Middleware
 
 	// Freeze 冻结中间件链，禁止后续修改
-	// 冻结后 Use/UseFirst/UseAt/Remove/Clear 返回 ErrChainFrozen
+	// 冻结后 Use/Remove/Clear 返回 ErrChainFrozen
 	// 适用场景：启动完成后调用，避免运行时修改开销
 	Freeze()
 

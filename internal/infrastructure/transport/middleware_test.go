@@ -46,48 +46,6 @@ func TestMiddlewareChain_Use(t *testing.T) {
 	}
 }
 
-func TestMiddlewareChain_UseFirst(t *testing.T) {
-	chain := NewMiddlewareChain()
-
-	mw1 := &testMiddleware{name: "mw1"}
-	mw2 := &testMiddleware{name: "mw2"}
-
-	_ = chain.Use(mw1)
-	if err := chain.UseFirst(mw2); err != nil {
-		t.Fatalf("UseFirst() error = %v", err)
-	}
-
-	list := chain.List()
-	if len(list) != 2 {
-		t.Errorf("List() length = %d, want 2", len(list))
-	}
-	if list[0].Name() != "mw2" {
-		t.Errorf("List()[0] = %s, want mw2 (should be first)", list[0].Name())
-	}
-}
-
-func TestMiddlewareChain_UseAt(t *testing.T) {
-	chain := NewMiddlewareChain()
-
-	mw1 := &testMiddleware{name: "mw1"}
-	mw2 := &testMiddleware{name: "mw2"}
-	mw3 := &testMiddleware{name: "mw3"}
-
-	_ = chain.Use(mw1)
-	_ = chain.Use(mw3)
-	if err := chain.UseAt(1, mw2); err != nil {
-		t.Fatalf("UseAt() error = %v", err)
-	}
-
-	list := chain.List()
-	if len(list) != 3 {
-		t.Errorf("List() length = %d, want 3", len(list))
-	}
-	if list[1].Name() != "mw2" {
-		t.Errorf("List()[1] = %s, want mw2 (should be at index 1)", list[1].Name())
-	}
-}
-
 func TestMiddlewareChain_Remove(t *testing.T) {
 	chain := NewMiddlewareChain()
 
@@ -127,12 +85,6 @@ func TestMiddlewareChain_Freeze(t *testing.T) {
 	// 冻结后不能添加
 	if err := chain.Use(&testMiddleware{name: "mw2"}); err != service.ErrChainFrozen {
 		t.Errorf("Use() after freeze error = %v, want ErrChainFrozen", err)
-	}
-	if err := chain.UseFirst(&testMiddleware{name: "mw3"}); err != service.ErrChainFrozen {
-		t.Errorf("UseFirst() after freeze error = %v, want ErrChainFrozen", err)
-	}
-	if err := chain.UseAt(0, &testMiddleware{name: "mw4"}); err != service.ErrChainFrozen {
-		t.Errorf("UseAt() after freeze error = %v, want ErrChainFrozen", err)
 	}
 	if err := chain.Remove("mw"); err != service.ErrChainFrozen {
 		t.Errorf("Remove() after freeze error = %v, want ErrChainFrozen", err)
@@ -209,8 +161,8 @@ func TestMiddlewareChain_ExecuteReceive(t *testing.T) {
 		t.Error("Final function was not called")
 	}
 
-	// 验证执行顺序
-	expected := []string{"mw1", "mw2", "final"}
+	// 验证执行顺序（Receive 是反向执行：mw2 → mw1 → final）
+	expected := []string{"mw2", "mw1", "final"}
 	if len(order) != len(expected) {
 		t.Fatalf("Execution order length = %d, want %d", len(order), len(expected))
 	}
@@ -272,6 +224,102 @@ func TestMiddlewareChain_ConcurrentAccess(t *testing.T) {
 	list := chain.List()
 	if len(list) != numGoroutines {
 		t.Errorf("List() length = %d, want %d", len(list), numGoroutines)
+	}
+}
+
+// TestMiddlewareChain_PriorityOrdering 测试优先级排序
+// 验证中间件按 Priority 值从小到大排序（数字越小越先执行）
+func TestMiddlewareChain_PriorityOrdering(t *testing.T) {
+	chain := NewMiddlewareChain()
+
+	// 以非优先顺序添加中间件
+	mwRetry := &testMiddleware{name: "retry", priority: 40}          // 最内层
+	mwRateLimit := &testMiddleware{name: "rate-limit", priority: 10} // 最外层
+	mwCompression := &testMiddleware{name: "compression", priority: 30}
+	mwCircuitBreaker := &testMiddleware{name: "circuit-breaker", priority: 20}
+
+	// 以随机顺序添加
+	_ = chain.Use(mwRetry)
+	_ = chain.Use(mwRateLimit)
+	_ = chain.Use(mwCompression)
+	_ = chain.Use(mwCircuitBreaker)
+
+	// 验证排序后的顺序
+	list := chain.List()
+	expectedOrder := []string{"rate-limit", "circuit-breaker", "compression", "retry"}
+	for i, mw := range list {
+		if mw.Name() != expectedOrder[i] {
+			t.Errorf("Position %d: got %s, want %s", i, mw.Name(), expectedOrder[i])
+		}
+	}
+}
+
+// TestMiddlewareChain_PriorityOrderingWithRealMiddleware 测试真实中间件优先级
+func TestMiddlewareChain_PriorityOrderingWithRealMiddleware(t *testing.T) {
+	chain := NewMiddlewareChain()
+
+	// 以非优先顺序添加真实中间件
+	_ = chain.Use(NewRetryMiddleware(DefaultRetryConfig()))                   // 40
+	_ = chain.Use(NewRateLimitMiddleware(DefaultRateLimitConfig()))           // 10
+	_ = chain.Use(NewCompressionMiddleware(DefaultCompressionConfig()))       // 30
+	_ = chain.Use(NewCircuitBreakerMiddleware(DefaultCircuitBreakerConfig())) // 20
+
+	// 验证排序后的顺序
+	list := chain.List()
+	expectedOrder := []string{"rate-limit", "circuit-breaker", "compression", "retry"}
+	for i, mw := range list {
+		if mw.Name() != expectedOrder[i] {
+			t.Errorf("Position %d: got %s, want %s", i, mw.Name(), expectedOrder[i])
+		}
+	}
+}
+
+// TestMiddlewareChain_ReceiveReverseOrder 测试 Receive 链反向执行
+// 验证 Send 和 Receive 的执行顺序是相反的
+func TestMiddlewareChain_ReceiveReverseOrder(t *testing.T) {
+	chain := NewMiddlewareChain()
+
+	var sendOrder, receiveOrder []string
+
+	// 添加中间件，按优先级排序后顺序为：mw10, mw20, mw30
+	_ = chain.Use(&orderMiddleware{name: "mw30", order: &sendOrder, priority: 30})
+	_ = chain.Use(&orderMiddleware{name: "mw10", order: &sendOrder, priority: 10})
+	_ = chain.Use(&orderMiddleware{name: "mw20", order: &sendOrder, priority: 20})
+
+	// 测试 Send 顺序：mw10 → mw20 → mw30
+	sendOrder = nil
+	_ = chain.ExecuteSend(context.Background(), "peer", createTestMessageForMiddleware(), func(ctx context.Context, peer model.PeerID, msg model.Message) error {
+		return nil
+	})
+	expectedSendOrder := []string{"mw10", "mw20", "mw30"}
+	if len(sendOrder) != len(expectedSendOrder) {
+		t.Fatalf("Send order length = %d, want %d", len(sendOrder), len(expectedSendOrder))
+	}
+	for i, name := range expectedSendOrder {
+		if sendOrder[i] != name {
+			t.Errorf("Send order[%d] = %s, want %s", i, sendOrder[i], name)
+		}
+	}
+
+	// 测试 Receive 顺序：mw30 → mw20 → mw10（反向）
+	// 更新 orderMiddleware 的 order 指针
+	receiveOrder = nil
+	for _, mw := range chain.List() {
+		if om, ok := mw.(*orderMiddleware); ok {
+			om.order = &receiveOrder
+		}
+	}
+	_ = chain.ExecuteReceive(context.Background(), "peer", createTestMessageForMiddleware(), func(ctx context.Context, peer model.PeerID, msg model.Message) error {
+		return nil
+	})
+	expectedReceiveOrder := []string{"mw30", "mw20", "mw10"} // 反向
+	if len(receiveOrder) != len(expectedReceiveOrder) {
+		t.Fatalf("Receive order length = %d, want %d", len(receiveOrder), len(expectedReceiveOrder))
+	}
+	for i, name := range expectedReceiveOrder {
+		if receiveOrder[i] != name {
+			t.Errorf("Receive order[%d] = %s, want %s", i, receiveOrder[i], name)
+		}
 	}
 }
 
@@ -472,10 +520,12 @@ func TestDefaultMetricsCollector_Reset(t *testing.T) {
 
 // testMiddleware 简单测试中间件
 type testMiddleware struct {
-	name string
+	name     string
+	priority int
 }
 
-func (m *testMiddleware) Name() string { return m.name }
+func (m *testMiddleware) Name() string  { return m.name }
+func (m *testMiddleware) Priority() int { return m.priority }
 func (m *testMiddleware) InterceptSend(ctx context.Context, peer model.PeerID, msg model.Message, next service.SendFunc) error {
 	return next(ctx, peer, msg)
 }
@@ -485,11 +535,13 @@ func (m *testMiddleware) InterceptReceive(ctx context.Context, peer model.PeerID
 
 // orderMiddleware 记录执行顺序的中间件
 type orderMiddleware struct {
-	name  string
-	order *[]string
+	name     string
+	order    *[]string
+	priority int
 }
 
-func (m *orderMiddleware) Name() string { return m.name }
+func (m *orderMiddleware) Name() string  { return m.name }
+func (m *orderMiddleware) Priority() int { return m.priority }
 func (m *orderMiddleware) InterceptSend(ctx context.Context, peer model.PeerID, msg model.Message, next service.SendFunc) error {
 	*m.order = append(*m.order, m.name)
 	return next(ctx, peer, msg)
@@ -504,7 +556,8 @@ type errorMiddleware struct {
 	err error
 }
 
-func (m *errorMiddleware) Name() string { return "error" }
+func (m *errorMiddleware) Name() string  { return "error" }
+func (m *errorMiddleware) Priority() int { return 50 }
 func (m *errorMiddleware) InterceptSend(ctx context.Context, peer model.PeerID, msg model.Message, next service.SendFunc) error {
 	return m.err
 }

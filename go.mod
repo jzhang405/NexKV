@@ -4,8 +4,10 @@ go 1.24.6
 
 require (
 	github.com/anishathalye/porcupine v1.1.0
+	github.com/avast/retry-go/v4 v4.7.0
 	github.com/fsnotify/fsnotify v1.7.0
-	github.com/klauspost/compress v1.18.3
+	github.com/golang/snappy v1.0.0
+	github.com/klauspost/compress v1.18.4
 	github.com/libp2p/go-libp2p v0.47.0
 	github.com/minio/sha256-simd v1.0.1
 	github.com/multiformats/go-multiaddr v0.16.1
@@ -14,6 +16,7 @@ require (
 	github.com/prometheus/client_golang v1.22.0
 	github.com/prometheus/client_model v0.6.2
 	github.com/sirupsen/logrus v1.9.4
+	github.com/sony/gobreaker v1.0.0
 	github.com/sourcegraph/conc v0.3.0
 	github.com/spf13/viper v1.20.0-alpha.6
 	github.com/stretchr/testify v1.11.1

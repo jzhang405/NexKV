@@ -45,40 +45,39 @@ func (m *MetricsMiddleware) Name() string {
 	return "metrics"
 }
 
+// Priority 返回中间件优先级
+func (m *MetricsMiddleware) Priority() int {
+	return service.MiddlewarePriorityMetrics
+}
+
 // InterceptSend 拦截发送消息
 func (m *MetricsMiddleware) InterceptSend(ctx context.Context, peer model.PeerID, msg model.Message, next service.SendFunc) error {
-	start := time.Now()
-	payloadLen := len(msg.Payload())
-
-	// 记录消息大小
-	m.collector.RecordSize("send", payloadLen)
-
-	// 执行下一个中间件
-	err := next(ctx, peer, msg)
-
-	// 记录延迟和结果
-	duration := time.Since(start)
-	m.collector.RecordLatency("send", duration)
-	m.collector.RecordCount("send", err == nil)
-
-	return err
+	return m.recordMetrics("send", func() error {
+		return next(ctx, peer, msg)
+	}, msg)
 }
 
 // InterceptReceive 拦截接收消息
 func (m *MetricsMiddleware) InterceptReceive(ctx context.Context, peer model.PeerID, msg model.Message, next service.ReceiveFunc) error {
+	return m.recordMetrics("receive", func() error {
+		return next(ctx, peer, msg)
+	}, msg)
+}
+
+// recordMetrics 记录操作指标
+func (m *MetricsMiddleware) recordMetrics(operation string, fn func() error, msg model.Message) error {
 	start := time.Now()
-	payloadLen := len(msg.Payload())
+	payloadLen := 0
+	if msg != nil {
+		payloadLen = len(msg.Payload())
+	}
 
-	// 记录消息大小
-	m.collector.RecordSize("receive", payloadLen)
+	m.collector.RecordSize(operation, payloadLen)
+	err := fn()
 
-	// 执行下一个中间件
-	err := next(ctx, peer, msg)
-
-	// 记录延迟和结果
 	duration := time.Since(start)
-	m.collector.RecordLatency("receive", duration)
-	m.collector.RecordCount("receive", err == nil)
+	m.collector.RecordLatency(operation, duration)
+	m.collector.RecordCount(operation, err == nil)
 
 	return err
 }
@@ -129,19 +128,15 @@ func (c *DefaultMetricsCollector) RecordLatency(operation string, duration time.
 
 // RecordCount 记录计数
 func (c *DefaultMetricsCollector) RecordCount(operation string, success bool) {
-	switch operation {
-	case "send":
-		if success {
-			c.sendSuccess.Add(1)
-		} else {
-			c.sendFailure.Add(1)
-		}
-	case "receive":
-		if success {
-			c.receiveSuccess.Add(1)
-		} else {
-			c.receiveFailure.Add(1)
-		}
+	switch {
+	case operation == "send" && success:
+		c.sendSuccess.Add(1)
+	case operation == "send":
+		c.sendFailure.Add(1)
+	case operation == "receive" && success:
+		c.receiveSuccess.Add(1)
+	case operation == "receive":
+		c.receiveFailure.Add(1)
 	}
 }
 

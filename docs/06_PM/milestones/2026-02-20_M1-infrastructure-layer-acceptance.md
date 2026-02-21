@@ -211,6 +211,32 @@
 |----|------|------|---------|
 | #76 | Transport 层实现（Week 1-2） | ✅ 已合并 | 2026-02-19 |
 | #79 | RPC/Codec/Middleware 实现（Week 3-4） | ✅ 已合并 | 2026-02-20 |
+| #82 | 测试覆盖率 + 性能基准 + 中间件完善 | 🔄 开发中 | - |
+
+### 6.1 PR #82 详细内容
+
+**Pre 文档**: `docs/06_PM/feature/2026-02-21_PR-test-coverage-benchmark-middleware_Pre.md`
+
+**主要改进**:
+| 版本 | 改进内容 |
+|------|---------|
+| v1.7 | 优先级机制 `Priority()` + Receive 链反向执行 |
+| v1.8 | 移除 UseFirst/UseAt + 压缩炸弹保护 + 代码简化 |
+| v1.9 | P1-1 RateLimit 配置上限验证 |
+
+**P1-1 修复**（已应用）:
+- 添加 `MaxRequestsPerSecond = 100000`（最大 10万 QPS）
+- 添加 `MaxBurst = 10000`（最大突发流量）
+
+**P1-2 延迟**（下一版本）:
+- 节点数量维度的限流（高优先级需求，延迟到下一版本）
+
+**代码审查结果**:
+| Agent | 结论 | 关键发现 |
+|-------|------|---------|
+| code-reviewer | ✅ 无 CRITICAL | 1 个 HIGH 建议（可选优化） |
+| security-reviewer | 🟡 MEDIUM 风险 | 2 个 P1 问题（1 个已修复） |
+| code-simplifier | ✅ 已优化 | 减少 29-30% 重复代码 |
 
 ---
 

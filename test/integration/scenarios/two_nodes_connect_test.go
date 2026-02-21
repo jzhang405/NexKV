@@ -107,8 +107,8 @@ func (s *TwoNodesConnectScenario) Teardown(ctx context.Context, cluster framewor
 	return nil
 }
 
-// TestTransport_TwoNodesConnect_Success 测试双节点连接成功
-func TestTransport_TwoNodesConnect_Success(t *testing.T) {
+// TestIntegration_TwoNodesConnect_Success 测试双节点连接成功
+func TestIntegration_TwoNodesConnect_Success(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -140,8 +140,8 @@ func TestTransport_TwoNodesConnect_Success(t *testing.T) {
 		result.SetupDuration, result.ExecuteDuration, result.VerifyDuration, result.TeardownDuration)
 }
 
-// TestTransport_TwoNodesConnect_Timeout 测试双节点连接超时
-func TestTransport_TwoNodesConnect_Timeout(t *testing.T) {
+// TestIntegration_TwoNodesConnect_Timeout 测试双节点连接超时
+func TestIntegration_TwoNodesConnect_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
 	defer cancel()
 
@@ -170,8 +170,8 @@ func TestTransport_TwoNodesConnect_Timeout(t *testing.T) {
 	t.Logf("Scenario correctly failed: %v", result.Error)
 }
 
-// TestTransport_TwoNodesConnect_HealthCheck 测试节点健康检查
-func TestTransport_TwoNodesConnect_HealthCheck(t *testing.T) {
+// TestIntegration_TwoNodesConnect_HealthCheck 测试节点健康检查
+func TestIntegration_TwoNodesConnect_HealthCheck(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

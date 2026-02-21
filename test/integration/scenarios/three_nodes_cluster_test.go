@@ -110,8 +110,8 @@ func (s *ThreeNodesClusterScenario) Teardown(ctx context.Context, cluster framew
 	return nil
 }
 
-// TestTransport_ThreeNodesCluster_Success 测试三节点集群成功
-func TestTransport_ThreeNodesCluster_Success(t *testing.T) {
+// TestIntegration_ThreeNodesCluster_Success 测试三节点集群成功
+func TestIntegration_ThreeNodesCluster_Success(t *testing.T) {
 	ctx := t.Context()
 
 	// 创建测试上下文
@@ -142,8 +142,8 @@ func TestTransport_ThreeNodesCluster_Success(t *testing.T) {
 		result.SetupDuration, result.ExecuteDuration, result.VerifyDuration, result.TeardownDuration)
 }
 
-// TestTransport_ThreeNodesCluster_NetworkPartition 测试网络分区
-func TestTransport_ThreeNodesCluster_NetworkPartition(t *testing.T) {
+// TestIntegration_ThreeNodesCluster_NetworkPartition 测试网络分区
+func TestIntegration_ThreeNodesCluster_NetworkPartition(t *testing.T) {
 	ctx := t.Context()
 
 	// 创建三个节点
@@ -209,8 +209,8 @@ func TestTransport_ThreeNodesCluster_NetworkPartition(t *testing.T) {
 	t.Logf("Network partition test passed")
 }
 
-// TestTransport_ThreeNodesCluster_NodeRestart 测试节点重启
-func TestTransport_ThreeNodesCluster_NodeRestart(t *testing.T) {
+// TestIntegration_ThreeNodesCluster_NodeRestart 测试节点重启
+func TestIntegration_ThreeNodesCluster_NodeRestart(t *testing.T) {
 	ctx := t.Context()
 
 	// 创建三个节点
@@ -283,8 +283,8 @@ func TestTransport_ThreeNodesCluster_NodeRestart(t *testing.T) {
 	t.Logf("Node restart test passed")
 }
 
-// TestTransport_ThreeNodesCluster_HealthCheckAll 测试所有节点健康检查
-func TestTransport_ThreeNodesCluster_HealthCheckAll(t *testing.T) {
+// TestIntegration_ThreeNodesCluster_HealthCheckAll 测试所有节点健康检查
+func TestIntegration_ThreeNodesCluster_HealthCheckAll(t *testing.T) {
 	ctx := t.Context()
 
 	// 创建三个节点

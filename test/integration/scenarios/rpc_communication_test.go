@@ -92,8 +92,8 @@ func (s *RPCCommunicationScenario) Teardown(ctx context.Context, cluster framewo
 	return nil
 }
 
-// TestRPCCommunication_Basic 测试基本 RPC 通信
-func TestRPCCommunication_Basic(t *testing.T) {
+// TestIntegration_RPCCommunication_Basic 测试基本 RPC 通信
+func TestIntegration_RPCCommunication_Basic(t *testing.T) {
 	scenario := NewRPCCommunicationScenario()
 	ctx := context.Background()
 
@@ -114,8 +114,8 @@ func TestRPCCommunication_Basic(t *testing.T) {
 	}
 }
 
-// TestRPCCommunication_WithHandler 测试带处理器的 RPC 通信
-func TestRPCCommunication_WithHandler(t *testing.T) {
+// TestIntegration_RPCCommunication_WithHandler 测试带处理器的 RPC 通信
+func TestIntegration_RPCCommunication_WithHandler(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建服务端
@@ -252,8 +252,8 @@ func (s *NetworkReconnectScenario) Teardown(ctx context.Context, cluster framewo
 	return nil
 }
 
-// TestNetworkReconnect 测试网络重连
-func TestNetworkReconnect(t *testing.T) {
+// TestIntegration_NetworkReconnect 测试网络重连
+func TestIntegration_NetworkReconnect(t *testing.T) {
 	scenario := NewNetworkReconnectScenario()
 	ctx := context.Background()
 
@@ -273,8 +273,8 @@ func TestNetworkReconnect(t *testing.T) {
 	t.Log("Network reconnect test passed")
 }
 
-// TestNetworkTimeout 测试网络超时
-func TestNetworkTimeout(t *testing.T) {
+// TestIntegration_NetworkTimeout 测试网络超时
+func TestIntegration_NetworkTimeout(t *testing.T) {
 	ctx := context.Background()
 
 	node1, err := adapters.NewTransportAdapter(nil)
@@ -397,8 +397,8 @@ func (s *StreamCommunicationScenario) Teardown(ctx context.Context, cluster fram
 	return nil
 }
 
-// TestStreamCommunication 测试流通信
-func TestStreamCommunication(t *testing.T) {
+// TestIntegration_StreamCommunication 测试流通信
+func TestIntegration_StreamCommunication(t *testing.T) {
 	scenario := NewStreamCommunicationScenario()
 	ctx := context.Background()
 
@@ -418,8 +418,8 @@ func TestStreamCommunication(t *testing.T) {
 	t.Log("Stream communication test passed")
 }
 
-// TestMultipleNodesCommunication 测试多节点通信
-func TestMultipleNodesCommunication(t *testing.T) {
+// TestIntegration_MultipleNodesCommunication 测试多节点通信
+func TestIntegration_MultipleNodesCommunication(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建 3 个节点
@@ -470,8 +470,8 @@ func TestMultipleNodesCommunication(t *testing.T) {
 		nodes[0].ID()[:8], nodes[1].ID()[:8], nodes[2].ID()[:8])
 }
 
-// TestMessagePropagation 测试消息传播
-func TestMessagePropagation(t *testing.T) {
+// TestIntegration_MessagePropagation 测试消息传播
+func TestIntegration_MessagePropagation(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建两个节点

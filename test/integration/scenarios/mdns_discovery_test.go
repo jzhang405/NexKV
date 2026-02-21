@@ -136,8 +136,8 @@ func (s *MDNSDiscoveryScenario) Teardown(ctx context.Context, cluster framework.
 	return nil
 }
 
-// TestMDNSDiscovery_Basic 测试基本的 mDNS 发现
-func TestMDNSDiscovery_Basic(t *testing.T) {
+// TestIntegration_MDNSDiscovery_Basic 测试基本的 mDNS 发现
+func TestIntegration_MDNSDiscovery_Basic(t *testing.T) {
 	skipIfNoMulticast(t)
 
 	scenario := NewMDNSDiscoveryScenario()
@@ -156,8 +156,8 @@ func TestMDNSDiscovery_Basic(t *testing.T) {
 	t.Log("MDNS discovery test completed")
 }
 
-// TestMDNSDiscovery_DirectDiscovery 直接测试 mDNS 发现
-func TestMDNSDiscovery_DirectDiscovery(t *testing.T) {
+// TestIntegration_MDNSDiscovery_DirectDiscovery 直接测试 mDNS 发现
+func TestIntegration_MDNSDiscovery_DirectDiscovery(t *testing.T) {
 	skipIfNoMulticast(t)
 
 	ctx := context.Background()
@@ -194,8 +194,8 @@ func TestMDNSDiscovery_DirectDiscovery(t *testing.T) {
 	t.Log("MDNS direct discovery test completed")
 }
 
-// TestDiscoveryService_Lifecycle 测试 Discovery 服务生命周期
-func TestDiscoveryService_Lifecycle(t *testing.T) {
+// TestIntegration_DiscoveryService_Lifecycle 测试 Discovery 服务生命周期
+func TestIntegration_DiscoveryService_Lifecycle(t *testing.T) {
 	ctx := t.Context()
 
 	// 创建 transport
@@ -208,8 +208,8 @@ func TestDiscoveryService_Lifecycle(t *testing.T) {
 	t.Log("Discovery service lifecycle test completed")
 }
 
-// TestDiscoveryService_MultipleTags 测试不同标签的发现服务
-func TestDiscoveryService_MultipleTags(t *testing.T) {
+// TestIntegration_DiscoveryService_MultipleTags 测试不同标签的发现服务
+func TestIntegration_DiscoveryService_MultipleTags(t *testing.T) {
 	skipIfNoMulticast(t)
 
 	ctx := context.Background()
@@ -259,8 +259,8 @@ func TestDiscoveryService_MultipleTags(t *testing.T) {
 	t.Log("Multiple tags discovery test completed")
 }
 
-// TestDiscovery_HandlePeerFound 测试 HandlePeerFound 直接调用
-func TestDiscovery_HandlePeerFound(t *testing.T) {
+// TestIntegration_Discovery_HandlePeerFound 测试 HandlePeerFound 直接调用
+func TestIntegration_Discovery_HandlePeerFound(t *testing.T) {
 	// 此测试不依赖 mDNS，只在 short 模式下跳过
 	if testing.Short() {
 		t.Skip("Skipping in short mode")
@@ -306,8 +306,8 @@ func TestDiscovery_HandlePeerFound(t *testing.T) {
 	t.Log("HandlePeerFound test completed")
 }
 
-// TestDiscovery_NetworkPartition 测试网络分区后的重新发现
-func TestDiscovery_NetworkPartition(t *testing.T) {
+// TestIntegration_Discovery_NetworkPartition 测试网络分区后的重新发现
+func TestIntegration_Discovery_NetworkPartition(t *testing.T) {
 	skipIfNoMulticast(t)
 
 	ctx := context.Background()

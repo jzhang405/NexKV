@@ -89,8 +89,8 @@ func (s *NetworkPartitionScenario) Teardown(ctx context.Context, cluster framewo
 	return nil
 }
 
-// TestTransport_NetworkPartition_SingleNode 测试单节点隔离
-func TestTransport_NetworkPartition_SingleNode(t *testing.T) {
+// TestIntegration_NetworkPartition_SingleNode 测试单节点隔离
+func TestIntegration_NetworkPartition_SingleNode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -144,8 +144,8 @@ func TestTransport_NetworkPartition_SingleNode(t *testing.T) {
 	t.Logf("Duration: %v", result.Duration)
 }
 
-// TestTransport_NetworkPartition_Bidirectional 测试双向分区
-func TestTransport_NetworkPartition_Bidirectional(t *testing.T) {
+// TestIntegration_NetworkPartition_Bidirectional 测试双向分区
+func TestIntegration_NetworkPartition_Bidirectional(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -207,8 +207,8 @@ func TestTransport_NetworkPartition_Bidirectional(t *testing.T) {
 	t.Logf("Duration: %v", result.Duration)
 }
 
-// TestTransport_NetworkPartition_Reconnect 测试分区恢复
-func TestTransport_NetworkPartition_Reconnect(t *testing.T) {
+// TestIntegration_NetworkPartition_Reconnect 测试分区恢复
+func TestIntegration_NetworkPartition_Reconnect(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -283,8 +283,8 @@ func TestTransport_NetworkPartition_Reconnect(t *testing.T) {
 	t.Logf("Duration: %v", result.Duration)
 }
 
-// TestTransport_NetworkPartition_PartialMesh 测试部分 mesh 分区
-func TestTransport_NetworkPartition_PartialMesh(t *testing.T) {
+// TestIntegration_NetworkPartition_PartialMesh 测试部分 mesh 分区
+func TestIntegration_NetworkPartition_PartialMesh(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -355,8 +355,8 @@ func TestTransport_NetworkPartition_PartialMesh(t *testing.T) {
 	t.Logf("Partial mesh partition test completed")
 }
 
-// TestTransport_NetworkPartition_BlockSubnet 测试子网阻止
-func TestTransport_NetworkPartition_BlockSubnet(t *testing.T) {
+// TestIntegration_NetworkPartition_BlockSubnet 测试子网阻止
+func TestIntegration_NetworkPartition_BlockSubnet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -407,8 +407,8 @@ func TestTransport_NetworkPartition_BlockSubnet(t *testing.T) {
 	t.Logf("BlockSubnet test completed")
 }
 
-// TestTransport_NetworkPartition_IsBlocked 测试阻止状态检查
-func TestTransport_NetworkPartition_IsBlocked(t *testing.T) {
+// TestIntegration_NetworkPartition_IsBlocked 测试阻止状态检查
+func TestIntegration_NetworkPartition_IsBlocked(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

@@ -18,6 +18,7 @@
 | **方法命名** | `Name()`/`Type()` | `GetName()`/`GetType()` | **v1.3 修正**：去除 Get 前缀 |
 | **HealthCheckConfig** | 有 `GetHealthCheckConfig()` | 缺失 | **v1.3 补充** |
 | **网络分区实现** | 自研 `NetworkPartitionController` | 官方 `swarm/testing.MockConnectionGater` | **v1.4 优化**：复用官方工具，避免重复造轮子 |
+| **高级网络模拟** | 无 | `libp2p-testing/net`（Phase 2） | **v1.4 补充**：丢包/带宽/抖动模拟 |
 
 ---
 
@@ -480,6 +481,61 @@ func TestTransport_NetworkPartition_Reconnect(t *testing.T) {
 | 功能完整性 | 基础 | 完整（5 个拦截点） |
 | 依赖 | 无 | 无（libp2p 内置） |
 
+#### 4.5 高级网络模拟扩展（Phase 2）⭐ v1.4 补充
+
+> **定位**：当前 PR 使用内置 `swarm/testing`，Phase 2 按需引入 `libp2p-testing/net`
+
+**`libp2p-testing/net` 核心能力**：
+
+| 能力 | API | 适用场景 |
+|------|-----|---------|
+| **丢包模拟** | `SetPacketLoss(0.15)` | 验证重传机制 |
+| **带宽限制** | `SetBandwidthLimit(nodeID, 1024*1024)` | 验证大消息传输 |
+| **网络抖动** | 动态延迟设置 | 验证超时处理 |
+| **动态分区** | 运行时切换分区 | 验证故障恢复 |
+
+**依赖引入**（Phase 2）：
+```bash
+go get github.com/libp2p/go-libp2p-testing/net
+```
+
+**使用示例**（Phase 2 参考）：
+```go
+import mocknet "github.com/libp2p/go-libp2p-testing/net"
+
+func TestBroadcastTracker_WithPacketLoss(t *testing.T) {
+    // 1. 创建模拟网络（带丢包）
+    mn := mocknet.New(ctx)
+    mn.SetPacketLoss(0.15)  // 15% 丢包率
+
+    // 2. 创建节点
+    node1, _ := mn.GenPeer()
+    node2, _ := mn.GenPeer()
+    node3, _ := mn.GenPeer()
+
+    // 3. 设置带宽限制
+    mn.SetBandwidthLimit(node1.ID(), peer.ID(""), 1024*1024)  // 1MB/s
+
+    // 4. 测试 BroadcastTracker 在丢包环境下的表现
+    // ...
+}
+```
+
+**适用场景**（Phase 2）：
+
+| 场景 | 模拟方式 | 验证目标 |
+|------|---------|---------|
+| BroadcastTracker 回调 | 丢包 + 延迟 | 回调可靠性 |
+| SyncService 2PC | 分区 + 丢包 | 数据一致性 |
+| 大消息传输 | 带宽限制 | 分片/流控 |
+
+**分阶段策略**：
+
+| 阶段 | 工具 | 目标 |
+|------|------|------|
+| **Phase 1（当前）** | `swarm/testing`（内置） | 覆盖率 75%，基础网络测试 |
+| **Phase 2（后续）** | `libp2p-testing/net` | Chaos 测试，验证异常网络表现 |
+
 ---
 
 ### 5. 验收标准
@@ -571,10 +627,11 @@ lsof -i :10000-10100
 
 #### 6.1 外部依赖
 
-| 依赖 | 版本 | 用途 |
-|------|------|------|
-| `github.com/libp2p/go-libp2p` | v0.33.0 | P2P 通信（与项目现有版本一致 ✅） |
-| `github.com/panjf2000/ants` | v2.9.0 | Goroutine 池 |
+| 依赖 | 版本 | 用途 | 阶段 |
+|------|------|------|------|
+| `github.com/libp2p/go-libp2p` | v0.33.0 | P2P 通信（与项目现有版本一致 ✅） | Phase 1 |
+| `github.com/panjf2000/ants` | v2.9.0 | Goroutine 池 | Phase 1 |
+| `github.com/libp2p/go-libp2p-testing/net` | latest | 高级网络模拟（丢包/带宽/抖动） | Phase 2 ⭐ |
 
 #### 6.2 内部依赖
 

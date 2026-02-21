@@ -4,6 +4,19 @@
 
 ---
 
+## 与 Spike 文档的差异说明 ⭐ v1.2 审核补充
+
+> 本 Pre 文档基于 [Spike v2.10](../../07_spike/2026-02-20_transport-poc-integration-test-framework.md)，在以下方面做了有意偏离：
+
+| 方面 | Spike 文档 | Pre 文档 | 偏离原因 |
+|------|------------|----------|----------|
+| **目录结构** | `internal/infrastructure/transport/test/` | `pkg/test/framework/` | 支持独立的可复用测试框架包 |
+| **接口设计** | `GetType()` 仅此方法 | 补充 `Init()` + `HealthCheck()` | 更完整的生命周期管理 |
+| **依赖类型** | `[]ComponentType`（type-safe） | `[]string`（原设计） | **v1.2 修正**：采用 Spike 的 type-safe 设计 |
+| **测试命名** | 未统一 | `Test{Component}_{Scenario}_{Expected}` | 统一命名规范 |
+
+---
+
 ## 第一部分：前置部分（开工前必完成，架构师评审通过）
 
 ### 1. 基础信息（与分支/PR绑定）
@@ -21,8 +34,8 @@
 | 关联需求单号 | [NexKV DDD 架构实施 PR](./2026-02-18_PR-nexkv-ddd-architecture_Pre.md) |
 | 关联里程碑 | [M1 - 基础设施层验收](../milestones/2026-02-20_M1-infrastructure-layer-acceptance.md) |
 | Spike 文档 | [集成测试框架设计 v2.10](../../07_spike/2026-02-20_transport-poc-integration-test-framework.md) |
-| 架构师评审状态 | ✅ 已通过（2026-02-21）⭐ |
-| 预审批结果 | ✅ 通过 |
+| 架构师评审状态 | 🔄 评审中（v1.2 修复中）⭐ |
+| 预审批结果 | ⏳ 待定 |
 
 ---
 
@@ -31,6 +44,11 @@
 #### 2.1 背景
 
 **核心问题**：M1 里程碑验收报告显示测试覆盖率为 **67.2%**，未达 80% 目标。
+
+**覆盖率目标说明** ⭐ v1.2 审核补充：
+- **最低目标**：75%（本 PR 必须达到）
+- **理想目标**：80%（后续持续优化）
+- 本 PR 聚焦于框架实现和基础测试用例，覆盖率 75% 为最低验收标准
 
 **低覆盖原因**：
 | 模块 | 覆盖率 | 原因 |
@@ -150,18 +168,36 @@ test/integration/                  # NexKV 专属集成测试
     └── network_partition.go       # TestTransport_NetworkPartition_Reconnect
 ```
 
-#### 3.3 核心接口设计 ⭐ v1.1 评审补充
+#### 3.3 核心接口设计 ⭐ v1.2 审核修正
 
-基于 Spike 文档，核心接口定义如下：
+基于 Spike 文档，核心接口定义如下（对齐 Spike 的 type-safe 设计）：
 
 ```go
-// TestComponent 可测试组件接口
+// ComponentType 组件类型枚举（type-safe）⭐ v1.2 采用 Spike 设计
+type ComponentType int
+
+const (
+    ComponentTypeTransport ComponentType = iota
+    ComponentTypeStorage
+    ComponentTypeReplication
+    ComponentTypeCluster
+)
+
+// TestComponent 可测试组件接口 ⭐ v1.2 补充 Init/HealthCheck
 type TestComponent interface {
-    Name() string
-    Dependencies() []string
+    // 基础信息
+    GetName() string
+    GetType() ComponentType          // ⭐ type-safe 设计
+    GetDependencies() []ComponentType // ⭐ type-safe 设计
+
+    // 生命周期管理
+    Init(ctx context.Context) error   // ⭐ v1.2 补充
     Start(ctx context.Context) error
     Stop(ctx context.Context) error
+
+    // 健康检查
     IsReady(ctx context.Context) bool
+    HealthCheck(ctx context.Context) error // ⭐ v1.2 补充
 }
 
 // TestCluster 测试集群接口
@@ -182,6 +218,12 @@ type TestScenario interface {
     Teardown(ctx context.Context, cluster TestCluster) error
 }
 ```
+
+**与 Spike 文档对齐** ⭐：
+- `GetType()` 返回 `ComponentType` 而非 `string`
+- `GetDependencies()` 返回 `[]ComponentType` 而非 `[]string`
+- 补充 `Init()` 方法用于初始化
+- 补充 `HealthCheck()` 方法用于深度健康检查
 
 **错误处理策略** ⭐ v1.1 评审补充：
 
@@ -444,6 +486,19 @@ lsof -i :10000-10100
 
 ---
 
+### 6.3 术语表 ⭐ v1.2 审核补充
+
+| 术语 | 定义 |
+|------|------|
+| **适配器 (Adapter)** | 将外部组件（如 Libp2pTransport）封装为 TestComponent 接口的组件 |
+| **组件类型 (ComponentType)** | 枚举类型，用于类型安全地标识组件种类（Transport/Storage/Replication/Cluster） |
+| **测试场景 (TestScenario)** | 定义测试生命周期的接口：Setup → Execute → Verify → Teardown |
+| **测试集群 (TestCluster)** | 管理多个 TestNode 的集群，提供节点生命周期管理 |
+| **测试上下文 (TestContext)** | 提供测试隔离、资源管理和清理功能 |
+| **网络分区 (Network Partition)** | 模拟网络隔离的混沌测试技术 |
+
+---
+
 ## 第二部分：后置部分（CI通过后补充）
 
 ### 7. 开发总结
@@ -464,18 +519,32 @@ lsof -i :10000-10100
 
 ---
 
-**文档版本**: v1.1（评审调整版）⭐
+**文档版本**: v1.2（第二轮审核修复版）⭐
 **创建日期**: 2026-02-21
 **最后更新**: 2026-02-21
 **作者**: 🤖 AI Agent
-**状态**: ✅ 架构师评审通过
+**状态**: 🔄 评审中
 
 ### 评审记录
 
 | 版本 | 日期 | 评审人 | 评审意见 | 状态 |
 |------|------|--------|---------|------|
 | v1.0 | 2026-02-21 | 👤 架构师 | 时间估算过于乐观，补充网络分区细节、调试指南 | 🔄 需调整 |
-| v1.1 | 2026-02-21 | 🤖 AI Agent | 调整为 3 周，补充网络分区实现、调试指南、性能基准 | ✅ 通过 |
+| v1.1 | 2026-02-21 | 🤖 AI Agent | 调整为 3 周，补充网络分区实现、调试指南、性能基准 | ✅ 第一轮通过 |
+| v1.2 | 2026-02-21 | 👤 架构师 | 时间线不一致、目录结构不一致、接口类型安全问题 | 🔄 修复中 |
+
+### v1.2 变更摘要（第二轮审核修复）
+
+| 问题编号 | 问题描述 | 修复内容 |
+|---------|---------|---------|
+| **问题1** | 时间线前后不一致 | 统一为 **3 周**，在计划表中明确说明 |
+| **问题2** | 目录结构不一致 | 新增"与 Spike 文档的差异说明"章节 |
+| **问题3** | 文档状态矛盾 | 评审状态改为"🔄 评审中" |
+| **问题4** | 覆盖率目标不统一 | 明确：75% 最低目标，80% 理想目标 |
+| **问题5** | TestComponent 接口缺失 | 补充 `Init()` + `HealthCheck()` 方法 |
+| **问题6** | 类型安全问题 | 采用 Spike 的 `ComponentType` 枚举设计 |
+| **建议1** | 架构决策说明 | 新增"与 Spike 文档的差异说明"章节 |
+| **建议2** | 术语定义 | 新增 6.3 术语表 |
 
 ### v1.1 变更摘要
 

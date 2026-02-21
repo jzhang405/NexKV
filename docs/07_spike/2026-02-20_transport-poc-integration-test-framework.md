@@ -2,9 +2,10 @@
 
 > **文档类型**: Spike 研究文档
 > **创建日期**: 2026-02-20
-> **最后更新**: 2026-02-20
-> **文档版本**: v2.10（添加 Kahn 算法背景知识）
+> **最后更新**: 2026-02-21
+> **文档版本**: v2.11（同步 Pre v1.5：TestEnvironment Init/Close、TestNode 接口、MockConnectionGater、并发安全）
 > **关联文档**:
+> - `docs/06_PM/feature/2026-02-21_PR-integration-test-framework_Pre.md`（Pre 文档 v1.5）
 > - `docs/06_PM/feature/2026-02-18_PR-nexkv-ddd-architecture_Pre.md`
 > - `docs/06_PM/feature/2026-02-19_PR-phase1-week1-2-transport-poc_Pre.md`
 > - `docs/06_PM/milestones/2026-02-20_M1-infrastructure-layer-acceptance.md`
@@ -81,6 +82,21 @@
 | v2.8 | 2026-02-20 | Code Review v2：P0/P1/P2 全面修复（Goroutine 泄漏、资源清理、边界条件） | AI Agent |
 | v2.9 | 2026-02-20 | Code Review v3：修复 P1-6/P2-5/P2-6（百分位数排序、边界条件） | AI Agent |
 | v2.10 | 2026-02-20 | 添加 Kahn 算法背景知识（拓扑排序原理、图解示例、复杂度分析） | AI Agent |
+| v2.11 | 2026-02-21 | 同步 Pre v1.5：TestEnvironment Init/Close、TestNode 完整接口、MockConnectionGater、并发安全修复 | AI Agent |
+
+---
+
+## ⚠️ v2.11 变更影响分析
+
+> **同步来源**: `docs/06_PM/feature/2026-02-21_PR-integration-test-framework_Pre.md` v1.5
+
+| 变更内容 | 影响范围 | 向后兼容性 | 优先级 |
+|---------|---------|-----------|--------|
+| TestEnvironment 添加 Init/Close | 🟡 所有实现 TestEnvironment 的代码 | ✅ 兼容（新增方法） | P1-1/P1-2 |
+| TestNode 接口补充完整 | 🟡 所有实现 TestNode 的代码 | ✅ 兼容（新增方法） | P1-3 |
+| TransportAdapter 并发安全 | 🔴 UnblockPeer 等阻塞操作 | ✅ 兼容（行为修复） | P0-1 |
+| HealthCheck context 取消 | 🟡 所有健康检查实现 | ✅ 兼容（行为修复） | P0-2 |
+| 使用 swarm/testing.MockConnectionGater | 🟢 网络分区测试 | ✅ 兼容（实现替换） | 架构优化 |
 
 ---
 
@@ -251,22 +267,32 @@ import (
 
 // TestEnvironment 通用测试环境接口
 // 所有组件集成测试的基础接口
+//
+// v2.11 更新：添加 Init 和 Close 方法（同步 Pre v1.5 P1-1/P1-2 修复）
 type TestEnvironment interface {
     // ID 返回环境唯一标识
     ID() string
-    
+
+    // Init 初始化测试环境资源（v2.11 新增）
+    // 在 Start 之前调用，用于预分配资源、创建目录等
+    Init(ctx context.Context) error
+
     // Start 启动测试环境
     Start(ctx context.Context) error
-    
+
     // Stop 停止测试环境并清理资源
     Stop(ctx context.Context) error
-    
+
+    // Close 释放所有环境资源（v2.11 新增）
+    // 在测试完成后调用，用于释放 Init 中分配的资源
+    Close() error
+
     // Status 返回环境状态
     Status() EnvironmentStatus
-    
+
     // GetComponent 获取指定类型的组件
     GetComponent(name string) (TestComponent, error)
-    
+
     // ListComponents 列出所有已注册的组件
     ListComponents() []TestComponent
 }
@@ -418,30 +444,69 @@ type TestCluster interface {
 }
 
 // TestNode 测试节点接口
+//
+// v2.11 更新：添加完整生命周期方法（同步 Pre v1.5 P1-3 修复）
 type TestNode interface {
     // ID 返回节点唯一标识
     ID() string
-    
+
     // Address 返回节点地址
     Address() string
-    
+
+    // Start 启动节点（v2.11 新增）
+    Start(ctx context.Context) error
+
+    // Stop 停止节点（v2.11 新增）
+    Stop(ctx context.Context) error
+
+    // IsRunning 检查节点是否运行（v2.11 新增）
+    IsRunning() bool
+
+    // AddComponent 添加组件到节点（v2.11 新增）
+    AddComponent(comp TestComponent) error
+
     // GetComponent 获取节点上的组件实例
     GetComponent(name string) (TestComponent, error)
-    
+
     // IsHealthy 检查节点健康状态
     IsHealthy(ctx context.Context) bool
-    
+
     // ConnectTo 连接到另一个节点
     ConnectTo(ctx context.Context, target TestNode) error
-    
+
     // DisconnectFrom 断开与另一个节点的连接
     DisconnectFrom(ctx context.Context, target TestNode) error
-    
+
     // IsConnectedTo 检查是否连接到指定节点
     IsConnectedTo(nodeID string) bool
-    
+
     // GetConnectedPeers 获取已连接的节点列表
     GetConnectedPeers() []string
+}
+
+// NodeConfig 节点配置（v2.11 新增）
+// 用于创建测试节点时的配置
+type NodeConfig struct {
+    // ID 节点唯一标识
+    ID string
+
+    // Index 节点在集群中的索引
+    Index int
+
+    // ClusterID 所属集群ID
+    ClusterID string
+
+    // BaseDir 节点数据目录
+    BaseDir string
+
+    // IsBootstrap 是否为引导节点
+    IsBootstrap bool
+
+    // Components 节点包含的组件类型列表
+    Components []ComponentType
+
+    // Properties 额外配置属性
+    Properties map[string]interface{}
 }
 
 // NetworkTopology 网络拓扑信息
@@ -1207,6 +1272,147 @@ func (e *ScenarioExecutor) runScenario(
 
 ## 四、组件适配器实现
 
+### 4.0 libp2p 官方测试工具（v2.11 新增）
+
+> **来源**: Pre 文档 v1.5 架构决策
+> **优先级**: 架构优化（使用官方工具替代自实现）
+
+NexKV 集成测试框架推荐使用 libp2p 官方测试工具进行网络模拟：
+
+```go
+// 导入 libp2p 官方测试工具
+import swarmtesting "github.com/libp2p/go-libp2p/p2p/net/swarm/testing"
+```
+
+#### 4.0.1 MockConnectionGater
+
+`swarm/testing.MockConnectionGater` 是 libp2p 提供的连接控制器，用于模拟网络分区：
+
+```go
+// pkg/test/framework/transport_adapter.go
+
+package framework
+
+import (
+    "context"
+    "sync"
+
+    "github.com/libp2p/go-libp2p/core/host"
+    "github.com/libp2p/go-libp2p/core/peer"
+    swarmtesting "github.com/libp2p/go-libp2p/p2p/net/swarm/testing"
+)
+
+// TransportAdapter Transport 层测试适配器
+// 封装 libp2p Host 和 MockConnectionGater，提供网络分区模拟能力
+//
+// v2.11 更新：
+// - 使用 swarm/testing.MockConnectionGater 替代自实现
+// - 添加并发安全保护（P0-1 修复）
+type TransportAdapter struct {
+    host         host.Host
+    connGater    *swarmtesting.MockConnectionGater  // libp2p 官方连接控制器
+    env          TestEnvironment
+    dependencies []TestComponent
+    transport    *Libp2pTransport
+
+    // 并发安全字段（P0-1 修复）
+    blockedPeers map[peer.ID]bool
+    mu           sync.RWMutex
+}
+
+// NewTransportAdapter 创建 Transport 适配器
+func NewTransportAdapter(env TestEnvironment) (*TransportAdapter, error) {
+    // 创建 libp2p 官方 MockConnectionGater
+    connGater := swarmtesting.NewMockConnectionGater()
+
+    // 创建 libp2p Host（使用 MockConnectionGater）
+    h, err := newLibp2pHostWithConnGater(connGater)
+    if err != nil {
+        return nil, err
+    }
+
+    return &TransportAdapter{
+        host:         h,
+        connGater:    connGater,
+        env:          env,
+        blockedPeers: make(map[peer.ID]bool),
+    }, nil
+}
+
+// BlockPeer 阻止与指定节点的连接（网络分区模拟）
+func (a *TransportAdapter) BlockPeer(pid peer.ID) {
+    a.mu.Lock()
+    defer a.mu.Unlock()
+    a.blockedPeers[pid] = true
+    a.connGater.BlockPeer(pid)
+}
+
+// UnblockPeer 解除对指定节点的连接阻止
+// P0-1 修复：保持其他 blocked 状态，避免状态丢失
+func (a *TransportAdapter) UnblockPeer(pid peer.ID) {
+    a.mu.Lock()
+    defer a.mu.Unlock()
+    delete(a.blockedPeers, pid)
+    a.connGater.UnblockPeer(pid)
+}
+
+// IsBlocked 检查节点是否被阻止
+func (a *TransportAdapter) IsBlocked(pid peer.ID) bool {
+    a.mu.RLock()
+    defer a.mu.RUnlock()
+    return a.blockedPeers[pid]
+}
+
+// BlockSubnet 阻止整个子网（批量分区）
+func (a *TransportAdapter) BlockSubnet(peers []peer.ID) {
+    a.mu.Lock()
+    defer a.mu.Unlock()
+    for _, pid := range peers {
+        a.blockedPeers[pid] = true
+        a.connGater.BlockPeer(pid)
+    }
+}
+
+// UnblockAll 解除所有阻止（恢复网络）
+func (a *TransportAdapter) UnblockAll() {
+    a.mu.Lock()
+    defer a.mu.Unlock()
+    for pid := range a.blockedPeers {
+        a.connGater.UnblockPeer(pid)
+    }
+    a.blockedPeers = make(map[peer.ID]bool)
+}
+```
+
+#### 4.0.2 MockConnectionGater API 参考
+
+| 方法 | 说明 | 用途 |
+|------|------|------|
+| `BlockPeer(pid)` | 阻止指定节点 | 模拟单向网络分区 |
+| `UnblockPeer(pid)` | 解除节点阻止 | 恢复网络连接 |
+| `BlockAddr(addr)` | 阻止指定地址 | 按 IP/端口分区 |
+| `UnblockAddr(addr)` | 解除地址阻止 | 恢复地址连接 |
+| `BlockSubnet(cidr)` | 阻止整个子网 | 批量网络隔离 |
+| `UnblockSubnet(cidr)` | 解除子网阻止 | 批量恢复 |
+
+#### 4.0.3 扩展工具（Phase 2）
+
+对于更高级的网络模拟（丢包、带宽限制、延迟抖动），可在 Phase 2 集成 `libp2p-testing/net`：
+
+```go
+// Phase 2 扩展（可选）
+import "github.com/libp2p/go-libp2p-testing/net"
+
+// 高级网络模拟
+// - 丢包模拟
+// - 带宽限制
+// - 延迟注入
+```
+
+> **决策**: Phase 1 使用 `swarm/testing` 满足基本需求，Phase 2 可选集成 `libp2p-testing/net`。
+
+---
+
 ### 4.1 Transport 组件适配器
 
 ```go
@@ -1217,7 +1423,8 @@ package transport_test
 import (
     "context"
     "fmt"
-    
+    "time"
+
     "github.com/jzhang405/NexKV/internal/domain/service"
     "github.com/jzhang405/NexKV/pkg/test/framework"
 )
@@ -1321,30 +1528,62 @@ func (c *TransportComponent) Stop(ctx context.Context) error {
 func (c *TransportComponent) HealthCheck(ctx context.Context) error {
     // 使用带超时的上下文
     config := c.GetHealthCheckConfig()
-    
+
     ctx, cancel := context.WithTimeout(ctx, config.Timeout)
     defer cancel()
-    
+
+    // P0-2 修复 (v2.11)：添加重试逻辑和 context 取消检查
+    var lastErr error
+    for i := 0; i < config.RetryCount; i++ {
+        // 检查 context 是否已取消
+        select {
+        case <-ctx.Done():
+            return ctx.Err() // 立即返回，不继续重试
+        default:
+        }
+
+        // 执行健康检查
+        if err := c.doHealthCheck(ctx); err == nil {
+            return nil
+        } else {
+            lastErr = err
+        }
+
+        // 可中断的重试等待（最后一次不需要等待）
+        if i < config.RetryCount-1 {
+            select {
+            case <-time.After(config.RetryInterval):
+            case <-ctx.Done():
+                return ctx.Err()
+            }
+        }
+    }
+
+    return fmt.Errorf("health check failed after %d retries: %w", config.RetryCount, lastErr)
+}
+
+// doHealthCheck 执行实际的健康检查逻辑
+func (c *TransportComponent) doHealthCheck(ctx context.Context) error {
     // 检查 Transport 是否初始化
     if c.transport == nil {
         return fmt.Errorf("transport not initialized")
     }
-    
+
     // 检查 RPC 是否初始化
     if c.rpc == nil {
         return fmt.Errorf("rpc not initialized")
     }
-    
+
     // 检查 Transport 健康状态
     if err := c.transport.HealthCheck(ctx); err != nil {
         return fmt.Errorf("transport health check failed: %w", err)
     }
-    
+
     // 检查监听地址是否有效
     if c.transport.ListenAddr() == "" {
         return fmt.Errorf("transport listen address is empty")
     }
-    
+
     return nil
 }
 
@@ -2232,6 +2471,25 @@ func (c *DefaultTestCluster) isReady(ctx context.Context) bool {
 // 提供完整的分区模拟能力，包括消息阻塞、延迟注入、丢包等
 //
 // P0-2 修复 (v2.8)：添加 context 取消机制，防止 goroutine 泄漏
+//
+// v2.11 更新：推荐使用 TransportAdapter 中的 swarm/testing.MockConnectionGater
+// 本控制器作为高层封装，内部可使用 MockConnectionGater 实现基础分区功能
+//
+// 架构关系：
+// ┌─────────────────────────────────────────────────────────────┐
+// │  NetworkPartitionController (高层封装)                      │
+// │  - 提供分区/恢复的便捷 API                                   │
+// │  - 管理分区状态、消息记录                                    │
+// │  - 支持延迟注入、丢包模拟等高级功能                          │
+// └─────────────────────────────────────────────────────────────┘
+//                          │
+//                          ▼
+// ┌─────────────────────────────────────────────────────────────┐
+// │  TransportAdapter.connGater (底层实现)                      │
+// │  - swarm/testing.MockConnectionGater                        │
+// │  - 提供连接级别的阻止/恢复                                   │
+// │  - libp2p 官方实现，经过充分测试                            │
+// └─────────────────────────────────────────────────────────────┘
 type NetworkPartitionController struct {
     cluster         *DefaultTestCluster
     partitionID     string
@@ -2249,6 +2507,10 @@ type NetworkPartitionController struct {
     latencyInjection time.Duration         // 延迟注入
     packetLossRate   float64               // 丢包率 (0.0 - 1.0)
     bandwidthLimit   int64                 // 带宽限制 (bytes/sec)
+
+    // v2.11 新增：可选的 MockConnectionGater 引用
+    // 用于底层连接控制（如果 TransportAdapter 已初始化）
+    connGater       *swarmtesting.MockConnectionGater
 
     // P0-2 修复 (v2.8)：添加取消机制
     ctx    context.Context

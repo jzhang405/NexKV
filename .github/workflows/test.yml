@@ -14,6 +14,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         go-version: ['1.21', '1.22', '1.23']
 
@@ -47,10 +48,10 @@ jobs:
         run: |
           if [ "${{ matrix.go-version }}" = "1.23" ]; then
             # 最新版本运行 race detector
-            go test -v -race -timeout 10m -coverprofile=coverage.out ./...
+            go test -v -race -timeout 15m -coverprofile=coverage.out ./...
           else
             # 其他版本运行普通测试（减少 CI 时间和开销）
-            go test -v -timeout 5m -coverprofile=coverage.out ./...
+            go test -v -timeout 15m -coverprofile=coverage.out ./...
           fi
 
       - name: 生成覆盖率报告

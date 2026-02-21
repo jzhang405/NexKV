@@ -7,6 +7,52 @@
 
 ---
 
+## 〇、术语澄清：Bf-Tree vs B 树变体
+
+### 0.1 NexKV 选择的 Bf-Tree（Buffer-Friendly Tree）
+
+**定义**：微软研究院开发的读写优化并发 B+ 树变体
+
+**论文**：[Bf-Tree: A Modern Read-Write-Optimized Concurrent Range Index (VLDB 2024)](https://badrish.net/papers/bftree-vldb2024.pdf)
+
+**核心特性**：
+| 特性 | 说明 |
+|------|------|
+| **Mini-Page** | 增量更新页面（64B-4KB 多级），减少小写入开销 |
+| **Delta Chain** | Mini-Page 链式结构，支持多版本增量 |
+| **Promotion** | 概率提升 Mini-Page → Full-Page，平衡读写 |
+| **Lock-free SMR** | 无锁安全内存回收（MVP 简化为 sync.RWMutex） |
+| **WAL 持久化** | 预写日志支持崩溃恢复 |
+
+**性能目标**（Rust 原版 vs Go MVP）：
+| 操作 | Rust 原版 | Go MVP P0 | Go MVP P1 | Go MVP P2 |
+|------|----------|----------|----------|----------|
+| 点查询 | 10μs | < 30μs | < 25μs | < 20μs |
+| 写入吞吐 | 200万 ops/s | > 50万 | > 75万 | > 100万 |
+
+### 0.2 其他 B 树变体对比
+
+| 名称 | 全称 | 核心特征 | 典型场景 |
+|------|------|----------|----------|
+| **B+ Tree** | B+树 | 叶子节点链表串联，内部节点仅存 key | 数据库索引、分布式 KV |
+| **B* Tree** | B*树 | 节点分裂时优先重分配，减少碎片 | 磁盘存储优化 |
+| **Bε-Tree** | Bε树（ε-optimized） | 基于 ε 因子优化节点填充率 | 高内存利用率 KV |
+| **BF+Tree** | Bloom Filter + B树 | B 树前置布隆过滤器 | 海量数据快速过滤 |
+| **Bf-Tree** | Buffer-Friendly Tree | Mini-Page + Delta Chain + Promotion | 高并发读写优化（NexKV 选择） |
+
+### 0.3 NexKV 选择 Bf-Tree 的理由
+
+| 维度 | B+ Tree | Bε-Tree | BF+Tree | **Bf-Tree（选择）** |
+|------|---------|---------|---------|-------------------|
+| **写入性能** | 中 | 中 | 中 | **高**（Mini-Page 增量写） |
+| **读取性能** | 高 | 高 | 高（BF 过滤） | **高**（内存优先） |
+| **范围查询** | ✅ 优秀 | ✅ 优秀 | ✅ 优秀 | ✅ O(log N + M) |
+| **并发控制** | 复杂 | 复杂 | 复杂 | **可简化**（RWMutex MVP） |
+| **持久化** | 需自研 | 需自研 | 需自研 | **WAL 可复用** |
+| **适用场景** | 通用 | 内存优化 | 过滤优化 | **分布式 KV** |
+
+---
+
 ## 一、预研目标
 
 评估 Phase 2 存储引擎层的实施方案，重点分析：
@@ -310,7 +356,7 @@ const (
 
 ---
 
-**文档版本**: v1.2
+**文档版本**: v1.3
 **创建日期**: 2026-02-21
 **最后更新**: 2026-02-21
 **维护者**: AI Agent

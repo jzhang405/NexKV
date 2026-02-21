@@ -28,6 +28,10 @@ import (
 
 // TestClusterIntegration 测试 Cluster 层集成
 func TestClusterIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
 	ctx := context.Background()
 
 	// 创建 3 个 P2PService 模拟集群节点

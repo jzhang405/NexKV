@@ -154,7 +154,7 @@ func (l *DemotionLog) removeOldestSyncedLocked() {
 		if entry.Synced {
 			// 移除该条目
 			l.entries = append(l.entries[:i], l.entries[i+1:]...)
-			logging.WithFields(map[string]interface{}{
+			logging.WithFields(map[string]any{
 				"id": entry.ID,
 			}).Debug("移除最旧的已同步降级日志条目")
 			return
@@ -164,7 +164,7 @@ func (l *DemotionLog) removeOldestSyncedLocked() {
 	if len(l.entries) > 0 {
 		removed := l.entries[0]
 		l.entries = l.entries[1:]
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"id":          removed.ID,
 			"max_entries": l.maxEntries,
 		}).Warn("降级日志已满，移除最旧的未同步条目")
@@ -427,7 +427,7 @@ func (m *Manager) writeWithQuorum(ctx context.Context, ns, key string, value []b
 	// 如果之前是降级状态，尝试恢复
 	if m.isDegraded && m.autoRecover {
 		if err := m.tryRecover(ctx); err != nil {
-			logging.WithFields(map[string]interface{}{
+			logging.WithFields(map[string]any{
 				"namespace": ns,
 				"key":       key,
 				"error":     err.Error(),
@@ -437,7 +437,7 @@ func (m *Manager) writeWithQuorum(ctx context.Context, ns, key string, value []b
 
 	err := m.quorumWriter.PutWithQuorum(ctx, ns, key, value, nil)
 	if err != nil {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"namespace": ns,
 			"key":       key,
 			"error":     err.Error(),
@@ -460,7 +460,7 @@ func (m *Manager) writeWithDegradation(ctx context.Context, ns, key string, valu
 	if !m.isDegraded {
 		m.isDegraded = true
 		m.degradedSince = time.Now()
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"namespace": ns,
 			"key":       key,
 		}).Warn("进入降级模式")
@@ -469,7 +469,7 @@ func (m *Manager) writeWithDegradation(ctx context.Context, ns, key string, valu
 
 	// 写入本地存储
 	if err := m.localWriter.Put(ctx, ns, key, value); err != nil {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"namespace": ns,
 			"key":       key,
 			"error":     err.Error(),
@@ -485,7 +485,7 @@ func (m *Manager) writeWithDegradation(ctx context.Context, ns, key string, valu
 		m.notifier.OnWrite(ns, key)
 	}
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"namespace": ns,
 		"key":       key,
 		"pending":   m.demotionLog.UnsyncedCount(),
@@ -503,14 +503,14 @@ func (m *Manager) tryRecover(ctx context.Context) error {
 		return nil
 	}
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"count": len(unsynced),
 	}).Info("开始同步降级日志")
 
 	syncedCount := 0
 	for _, entry := range unsynced {
 		if err := m.quorumWriter.PutWithQuorum(ctx, entry.Namespace, entry.Key, entry.Value, nil); err != nil {
-			logging.WithFields(map[string]interface{}{
+			logging.WithFields(map[string]any{
 				"id":        entry.ID,
 				"namespace": entry.Namespace,
 				"key":       entry.Key,
@@ -522,7 +522,7 @@ func (m *Manager) tryRecover(ctx context.Context) error {
 		syncedCount++
 	}
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"total":  len(unsynced),
 		"synced": syncedCount,
 		"failed": len(unsynced) - syncedCount,
@@ -556,7 +556,7 @@ func (m *Manager) ResetDegraded() {
 
 	if m.isDegraded {
 		duration := time.Since(m.degradedSince)
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"duration": duration.String(),
 		}).Info("退出降级模式")
 	}

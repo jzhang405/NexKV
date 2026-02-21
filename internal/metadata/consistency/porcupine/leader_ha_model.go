@@ -180,7 +180,7 @@ type LeaderHAOutput struct {
 // ==================== 处理函数 ====================
 
 // handleLeaderHAInit 处理初始化
-func handleLeaderHAInit(st *LeaderHAState, op LeaderHAOperation, output LeaderHAOutput) []interface{} {
+func handleLeaderHAInit(st *LeaderHAState, op LeaderHAOperation, output LeaderHAOutput) []any {
 	// 构建拓扑
 	topology := &Topology{
 		Nodes:    make(map[string]*NodeInfo),
@@ -204,18 +204,18 @@ func handleLeaderHAInit(st *LeaderHAState, op LeaderHAOperation, output LeaderHA
 		if output.Term > 0 && output.Term != newState.CurrentTerm {
 			return nil
 		}
-		return []interface{}{newState}
+		return []any{newState}
 	}
 	return nil
 }
 
 // handleLeaderChange 处理 Leader 切换
-func handleLeaderChange(st *LeaderHAState, op LeaderHAOperation, output LeaderHAOutput) []interface{} {
+func handleLeaderChange(st *LeaderHAState, op LeaderHAOperation, output LeaderHAOutput) []any {
 	// 验证新 Leader 的 Term
 	if op.Term < st.CurrentTerm {
 		// Term 回退，拒绝
 		if output.Error == "stale_term" {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -235,7 +235,7 @@ func handleLeaderChange(st *LeaderHAState, op LeaderHAOperation, output LeaderHA
 	if newLeader == "" {
 		// 无可用 Standby
 		if output.Error == "no_standby" {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -267,16 +267,16 @@ func handleLeaderChange(st *LeaderHAState, op LeaderHAOperation, output LeaderHA
 		return nil
 	}
 
-	return []interface{}{newSt}
+	return []any{newSt}
 }
 
 // handleLeaderHAWrite 处理带 Term 验证的写入
-func handleLeaderHAWrite(st *LeaderHAState, op LeaderHAOperation, output LeaderHAOutput) []interface{} {
+func handleLeaderHAWrite(st *LeaderHAState, op LeaderHAOperation, output LeaderHAOutput) []any {
 	// Fencing Token 验证
 	if op.Term < st.CurrentTerm {
 		// 旧 Leader 尝试写入，拒绝
 		if output.Error == "stale_term" {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -284,7 +284,7 @@ func handleLeaderHAWrite(st *LeaderHAState, op LeaderHAOperation, output LeaderH
 	// 只有 Active Leader 可以写入
 	if op.NodeID != st.ActiveLeader {
 		if output.Error == "not_leader" {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -299,7 +299,7 @@ func handleLeaderHAWrite(st *LeaderHAState, op LeaderHAOperation, output LeaderH
 		if existing.Version >= op.Version {
 			// 版本冲突
 			if output.Error == "version_conflict" {
-				return []interface{}{st}
+				return []any{st}
 			}
 			return nil
 		}
@@ -316,18 +316,18 @@ func handleLeaderHAWrite(st *LeaderHAState, op LeaderHAOperation, output LeaderH
 	}
 
 	if output.Ok {
-		return []interface{}{newSt}
+		return []any{newSt}
 	}
 	return nil
 }
 
 // handleLeaderHAGet 处理读取
-func handleLeaderHAGet(st *LeaderHAState, op LeaderHAOperation, output LeaderHAOutput) []interface{} {
+func handleLeaderHAGet(st *LeaderHAState, op LeaderHAOperation, output LeaderHAOutput) []any {
 	// 检查节点存储
 	store, exists := st.NodeStores[op.NodeID]
 	if !exists {
 		if output.Error == "node not found" {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -335,7 +335,7 @@ func handleLeaderHAGet(st *LeaderHAState, op LeaderHAOperation, output LeaderHAO
 	value, exists := store[op.Key]
 	if !exists {
 		if output.Error == "key not found" {
-			return []interface{}{st}
+			return []any{st}
 		}
 		return nil
 	}
@@ -351,13 +351,13 @@ func handleLeaderHAGet(st *LeaderHAState, op LeaderHAOperation, output LeaderHAO
 		return nil
 	}
 
-	return []interface{}{st}
+	return []any{st}
 }
 
 // ==================== 状态比较 ====================
 
 // leaderHAStateEqual 深度比较两个 Leader HA 状态
-func leaderHAStateEqual(state1, state2 interface{}) bool {
+func leaderHAStateEqual(state1, state2 any) bool {
 	s1, ok1 := state1.(*LeaderHAState)
 	s2, ok2 := state2.(*LeaderHAState)
 	if !ok1 || !ok2 {
@@ -380,9 +380,9 @@ func leaderHAStateEqual(state1, state2 interface{}) bool {
 // newLeaderHANondeterministicModel 创建非确定性 Leader HA 模型
 func newLeaderHANondeterministicModel() *porcupine.NondeterministicModel {
 	return &porcupine.NondeterministicModel{
-		// Init 返回 []interface{}
-		Init: func() []interface{} {
-			return []interface{}{&LeaderHAState{
+		// Init 返回 []any
+		Init: func() []any {
+			return []any{&LeaderHAState{
 				NodeStores:     make(map[string]map[string]VersionedValue),
 				Topology:       nil,
 				ActiveLeader:   "",
@@ -392,7 +392,7 @@ func newLeaderHANondeterministicModel() *porcupine.NondeterministicModel {
 		},
 
 		// Step 返回所有可能的状态
-		Step: func(state, input, output interface{}) []interface{} {
+		Step: func(state, input, output any) []any {
 			st, ok := state.(*LeaderHAState)
 			if !ok {
 				return nil
@@ -427,7 +427,7 @@ func newLeaderHANondeterministicModel() *porcupine.NondeterministicModel {
 		Equal: leaderHAStateEqual,
 
 		// DescribeOperation 描述操作（用于可视化）
-		DescribeOperation: func(input, output interface{}) string {
+		DescribeOperation: func(input, output any) string {
 			op, _ := input.(LeaderHAOperation)
 			out, _ := output.(LeaderHAOutput)
 			return fmt.Sprintf("%s(node=%s,term=%d) -> ok=%v,term=%d",
@@ -435,7 +435,7 @@ func newLeaderHANondeterministicModel() *porcupine.NondeterministicModel {
 		},
 
 		// DescribeState 描述状态（用于可视化）
-		DescribeState: func(state interface{}) string {
+		DescribeState: func(state any) string {
 			st, _ := state.(*LeaderHAState)
 			if st == nil {
 				return "<nil>"

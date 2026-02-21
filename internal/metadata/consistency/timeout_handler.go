@@ -99,7 +99,7 @@ type ConditionWaiter struct {
 	mu     sync.Mutex
 	cond   *sync.Cond
 	done   bool
-	result interface{}
+	result any
 	err    error
 }
 
@@ -200,7 +200,7 @@ func (w *ConditionWaiter) WaitWithContext(ctx context.Context, checkFn func() bo
 }
 
 // Signal 发送信号表示条件已满足
-func (w *ConditionWaiter) Signal(result interface{}, err error) {
+func (w *ConditionWaiter) Signal(result any, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -211,7 +211,7 @@ func (w *ConditionWaiter) Signal(result interface{}, err error) {
 }
 
 // GetResult 获取结果
-func (w *ConditionWaiter) GetResult() (interface{}, error) {
+func (w *ConditionWaiter) GetResult() (any, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 

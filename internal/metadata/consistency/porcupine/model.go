@@ -88,13 +88,13 @@ func newNondeterministicModel() *porcupine.NondeterministicModel {
 	return &porcupine.NondeterministicModel{
 		// Init 初始化状态
 		// 返回初始状态列表（这里只有一个空状态）
-		Init: func() []interface{} {
-			return []interface{}{make(map[string]string)}
+		Init: func() []any {
+			return []any{make(map[string]string)}
 		},
 
 		// Step 状态转移函数
 		// 返回所有可能的下一状态
-		Step: func(state, input, output interface{}) []interface{} {
+		Step: func(state, input, output any) []any {
 			kvState, ok := state.(map[string]string)
 			if !ok {
 				return nil
@@ -120,7 +120,7 @@ func newNondeterministicModel() *porcupine.NondeterministicModel {
 				if !exists {
 					// key 不存在，output 应该表示失败
 					if !kvOutput.Ok && kvOutput.Error == ErrKeyNotFound {
-						return []interface{}{state}
+						return []any{state}
 					}
 					return nil
 				}
@@ -131,7 +131,7 @@ func newNondeterministicModel() *porcupine.NondeterministicModel {
 				if value != string(kvOutput.Value) {
 					return nil
 				}
-				return []interface{}{state}
+				return []any{state}
 
 			case OpPut, OpQuorumPut:
 				// Put 操作：更新状态
@@ -144,7 +144,7 @@ func newNondeterministicModel() *porcupine.NondeterministicModel {
 					newState[k] = v
 				}
 				newState[fullKey] = string(kvInput.Value)
-				return []interface{}{newState}
+				return []any{newState}
 
 			case OpDelete:
 				// Delete 操作：从状态中删除 key
@@ -157,7 +157,7 @@ func newNondeterministicModel() *porcupine.NondeterministicModel {
 						newState[k] = v
 					}
 				}
-				return []interface{}{newState}
+				return []any{newState}
 
 			default:
 				return nil
@@ -166,7 +166,7 @@ func newNondeterministicModel() *porcupine.NondeterministicModel {
 
 		// Equal 自定义状态比较函数
 		// 用于比较两个 map 是否相等
-		Equal: func(state1, state2 interface{}) bool {
+		Equal: func(state1, state2 any) bool {
 			m1, ok1 := state1.(map[string]string)
 			m2, ok2 := state2.(map[string]string)
 			if !ok1 || !ok2 {
@@ -184,14 +184,14 @@ func newNondeterministicModel() *porcupine.NondeterministicModel {
 		},
 
 		// DescribeOperation 描述操作（用于可视化）
-		DescribeOperation: func(input, output interface{}) string {
+		DescribeOperation: func(input, output any) string {
 			kvInput, _ := input.(NexKVInput)
 			kvOutput, _ := output.(NexKVOutput)
 			return fmt.Sprintf("%s(%s:%s) -> %v", kvInput.Op, kvInput.Namespace, kvInput.Key, kvOutput.Ok)
 		},
 
 		// DescribeState 描述状态（用于可视化）
-		DescribeState: func(state interface{}) string {
+		DescribeState: func(state any) string {
 			kvState, _ := state.(map[string]string)
 			return fmt.Sprintf("%v", kvState)
 		},

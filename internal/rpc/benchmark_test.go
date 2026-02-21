@@ -128,7 +128,7 @@ func BenchmarkRPC_MessagePackSerialization(b *testing.B) {
 	// 准备测试数据
 	requests := []struct {
 		name string
-		req  interface{}
+		req  any
 	}{
 		{
 			name: "SmallRequest",
@@ -193,7 +193,7 @@ func BenchmarkRPC_MessagePackDeserialization(b *testing.B) {
 	cases := []struct {
 		name string
 		data []byte
-		typ  interface{}
+		typ  any
 	}{
 		{"SmallRequest", smallData, &RPCRequest{}},
 		{"ClusterStatusResponse", largeData, &ClusterStatusResponse{}},

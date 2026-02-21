@@ -84,8 +84,8 @@ const (
 // AsyncOp 异步操作
 type AsyncOp struct {
 	OpType   AsyncOpType // 操作类型（Call/Return）
-	CallOp   interface{} // Call 操作（TopologyOperation/FailureRecoveryOperation/LeaderHAOperation）
-	ReturnOp interface{} // Return 操作（TopologyOutput/FailureRecoveryOutput/LeaderHAOutput）
+	CallOp   any         // Call 操作（TopologyOperation/FailureRecoveryOperation/LeaderHAOperation）
+	ReturnOp any         // Return 操作（TopologyOutput/FailureRecoveryOutput/LeaderHAOutput）
 	OpID     int         // 操作 ID（Return 时使用）
 	CallTime int64       // Call 时间戳
 }
@@ -238,7 +238,7 @@ func (p *AsyncProcessor) processLoop() {
 // PendingOp 通用的待完成操作结构
 type PendingOp struct {
 	CallTime int64
-	CallData interface{}
+	CallData any
 }
 
 // PendingOpsManager 管理 pending 操作的通用结构
@@ -257,7 +257,7 @@ func NewPendingOpsManager() *PendingOpsManager {
 }
 
 // Add 添加 pending 操作，返回 opID
-func (m *PendingOpsManager) Add(callTime int64, callData interface{}) int {
+func (m *PendingOpsManager) Add(callTime int64, callData any) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

@@ -140,7 +140,7 @@ func TestMsgpackPayloadTypes(t *testing.T) {
 	tests := []struct {
 		name    string
 		msgType MessageType
-		payload interface{}
+		payload any
 	}{
 		{
 			name:    "QuorumPut",
@@ -549,7 +549,7 @@ func TestNetworkIntegrator_HandleMessage(t *testing.T) {
 		tests := []struct {
 			name    string
 			msgType MessageType
-			payload interface{}
+			payload any
 		}{
 			{"QuorumPut", MessageTypeQuorumPut, &QuorumPutPayload{TxID: "tx-1", NS: "ns", Key: "key", Value: []byte("val")}},
 			{"QuorumGet", MessageTypeQuorumGet, &QuorumGetPayload{RequestID: "req-1", NS: "ns", Key: "key"}},

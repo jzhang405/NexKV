@@ -64,7 +64,7 @@ func (m *mockTransport) Close() error {
 // ==================== 测试辅助函数 ====================
 
 // getStatInt 安全地从 stats map 中获取 int 类型的值
-func getStatInt(t *testing.T, stats map[string]interface{}, key string) int {
+func getStatInt(t *testing.T, stats map[string]any, key string) int {
 	t.Helper()
 	val, ok := stats[key]
 	if !ok {
@@ -80,7 +80,7 @@ func getStatInt(t *testing.T, stats map[string]interface{}, key string) int {
 }
 
 // getStatUint64 安全地从 stats map 中获取 uint64 类型的值
-func getStatUint64(t *testing.T, stats map[string]interface{}, key string) uint64 {
+func getStatUint64(t *testing.T, stats map[string]any, key string) uint64 {
 	t.Helper()
 	val, ok := stats[key]
 	if !ok {

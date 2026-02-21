@@ -44,7 +44,7 @@ func NewMetadataCodec(compression CompressionType) *MetadataCodec {
 	return &MetadataCodec{
 		compression: compression,
 		pool: sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				return msgpack.NewEncoder(nil)
 			},
 		},

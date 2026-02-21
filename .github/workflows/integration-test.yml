@@ -1,0 +1,126 @@
+# NexKV Integration Test Workflow
+# 运行集成测试框架测试
+
+name: Integration Tests
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'pkg/test/**'
+      - 'test/integration/**'
+      - 'internal/transport/**'
+      - 'internal/rpc/**'
+      - 'go.mod'
+      - 'go.sum'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'pkg/test/**'
+      - 'test/integration/**'
+      - 'internal/transport/**'
+      - 'internal/rpc/**'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  integration-test:
+    name: Integration Tests (Go ${{ matrix.go-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ['1.22', '1.23']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Build
+        run: make build
+
+      - name: Run integration tests
+        run: make integration-test-race
+        env:
+          GO_TEST_TIMEOUT: 15m
+
+      - name: Generate coverage report
+        if: matrix.go-version == '1.23'
+        run: |
+          go test -v -coverprofile=integration-coverage.out -timeout 10m ./test/integration/scenarios/...
+          go tool cover -func=integration-coverage.out
+
+      - name: Upload coverage report
+        if: matrix.go-version == '1.23'
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-coverage-report
+          path: integration-coverage.out
+          retention-days: 7
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results-go${{ matrix.go-version }}
+          path: |
+            *.out
+            *.html
+          retention-days: 7
+
+  network-partition-test:
+    name: Network Partition Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: integration-test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run network partition tests
+        run: |
+          go test -v -timeout 10m ./test/integration/scenarios/... -run "TestTransport_NetworkPartition"
+
+  test-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [integration-test, network-partition-test]
+    if: always()
+
+    steps:
+      - name: Check test results
+        run: |
+          echo "Integration Tests: ${{ needs.integration-test.result }}"
+          echo "Network Partition Tests: ${{ needs.network-partition-test.result }}"
+
+          if [[ "${{ needs.integration-test.result }}" == "failure" ]] || \
+             [[ "${{ needs.network-partition-test.result }}" == "failure" ]]; then
+            echo "::error::Some tests failed"
+            exit 1
+          fi
+
+          echo "All tests passed!"

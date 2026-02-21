@@ -13,7 +13,7 @@ import (
 // ==================== 可序列化操作定义 ====================
 
 // SerializableOperation JSON 可序列化的操作记录
-// 解决 porcupine.Operation 的 interface{} 序列化问题
+// 解决 porcupine.Operation 的 any 序列化问题
 type SerializableOperation struct {
 	ClientID  int             `json:"client_id"`
 	Input     json.RawMessage `json:"input"`  // 序列化后的 EnhancedInput

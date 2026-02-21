@@ -129,7 +129,7 @@ func (p *PeerHealthMetrics) calculateScore(peerID string) float64 {
 	// 加权平均：延迟 30% + 成功率 30% + 负载 20% + 新鲜度 20%
 	score := latency*0.3 + success*0.3 + load*0.2 + freshness*0.2
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"peer_id":   peerID,
 		"score":     score,
 		"latency":   latency,
@@ -313,7 +313,7 @@ func (w *WeightedRandomPeerSelector) Select(peers []string) string {
 	for i, peerID := range peers {
 		r -= weights[i]
 		if r <= 0 {
-			logging.WithFields(map[string]interface{}{
+			logging.WithFields(map[string]any{
 				"peer_id": peerID,
 				"score":   weights[i],
 			}).Debug("加权随机选择 peer")
@@ -371,7 +371,7 @@ func (r *RoundRobinPeerSelector) Select(peers []string) string {
 	peer := r.peers[r.index]
 	r.index = (r.index + 1) % len(r.peers)
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"peer_id":     peer,
 		"index":       r.index,
 		"total_peers": len(r.peers),

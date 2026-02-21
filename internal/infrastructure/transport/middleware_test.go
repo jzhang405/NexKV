@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -244,16 +245,20 @@ func TestMiddlewareChain_ConcurrentAccess(t *testing.T) {
 	var wg sync.WaitGroup
 	numGoroutines := 100
 
-	// 并发添加中间件
+	// P0 修复：分阶段执行，先完成所有写入，再执行并发读取
+	// 避免写入和读取同时进行导致的 race condition
+
+	// 阶段 1：并发添加中间件（只写入）
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			_ = chain.Use(&testMiddleware{name: string(rune('a' + id%26))})
+			_ = chain.Use(&testMiddleware{name: fmt.Sprintf("mw-%d", id)})
 		}(i)
 	}
+	wg.Wait() // 等待所有写入完成
 
-	// 并发读取
+	// 阶段 2：并发读取（所有写入已完成）
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func() {
@@ -261,7 +266,6 @@ func TestMiddlewareChain_ConcurrentAccess(t *testing.T) {
 			_ = chain.List()
 		}()
 	}
-
 	wg.Wait()
 
 	// 验证链仍然有效

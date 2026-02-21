@@ -143,7 +143,7 @@ func (o *BandwidthOptimizer) Submit(event GossipEvent) {
 		o.mu.Unlock()
 	default:
 		// 队列满，记录丢弃
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"event_type": event.Type,
 			"namespace":  event.Namespace,
 			"key":        event.Key,

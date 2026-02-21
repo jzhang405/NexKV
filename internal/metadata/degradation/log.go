@@ -152,7 +152,7 @@ func (l *WALDemotionLog) recover() error {
 	for key, value := range data {
 		var entry WALDemotionEntry
 		if err := json.Unmarshal(value, &entry); err != nil {
-			logging.WithFields(map[string]interface{}{
+			logging.WithFields(map[string]any{
 				"key":   key,
 				"error": err.Error(),
 			}).Warn("反序列化降级日志条目失败")
@@ -171,7 +171,7 @@ func (l *WALDemotionLog) recover() error {
 		}
 	}
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"total":    len(l.entries),
 		"unsynced": l.unsyncedCount,
 	}).Info("降级日志恢复完成")
@@ -215,7 +215,7 @@ func (l *WALDemotionLog) Append(namespace, key string, value []byte) (*WALDemoti
 	l.entries[entry.ID] = entry
 	l.unsyncedCount++
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"id":        entry.ID,
 		"namespace": namespace,
 		"key":       key,
@@ -272,7 +272,7 @@ func (l *WALDemotionLog) MarkSynced(id string) error {
 
 	l.unsyncedCount--
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"id":       id,
 		"unsynced": l.unsyncedCount,
 	}).Debug("降级日志条目已标记为同步")
@@ -317,7 +317,7 @@ func (l *WALDemotionLog) MarkSyncedBatch(ids []string) error {
 		storeKey := "demotion:" + id
 		if err := l.store.Put(ctx, storeKey, data); err != nil {
 			errors = append(errors, fmt.Sprintf("%s: %s", id, err.Error()))
-			logging.WithFields(map[string]interface{}{
+			logging.WithFields(map[string]any{
 				"id":    id,
 				"error": err.Error(),
 			}).Warn("批量标记同步失败")
@@ -328,7 +328,7 @@ func (l *WALDemotionLog) MarkSyncedBatch(ids []string) error {
 		return fmt.Errorf("部分条目同步失败: %s", strings.Join(errors, ", "))
 	}
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"batch_size": len(ids),
 		"unsynced":   l.unsyncedCount,
 	}).Debug("降级日志批量标记已同步")
@@ -348,7 +348,7 @@ func (l *WALDemotionLog) ClearSynced() error {
 		if entry.Synced {
 			storeKey := "demotion:" + id
 			if err := l.store.Delete(ctx, storeKey); err != nil {
-				logging.WithFields(map[string]interface{}{
+				logging.WithFields(map[string]any{
 					"id":    id,
 					"error": err.Error(),
 				}).Warn("删除已同步降级日志条目失败")
@@ -360,7 +360,7 @@ func (l *WALDemotionLog) ClearSynced() error {
 	}
 
 	if deleted > 0 {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"deleted": deleted,
 			"remain":  len(l.entries),
 		}).Info("已清理同步完成的降级日志条目")
@@ -400,7 +400,7 @@ func (l *WALDemotionLog) Compaction() error {
 
 	l.lastCompaction = time.Now()
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"checkpoint":  newCheckpointID,
 		"deleted":     deleted,
 		"remain":      len(l.entries),

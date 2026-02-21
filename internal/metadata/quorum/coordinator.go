@@ -86,7 +86,7 @@ func (q *QuorumCoordinator) PutWithQuorum(
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"namespace":    ns,
 		"key":          key,
 		"participants": len(q.participants),
@@ -114,7 +114,7 @@ func (q *QuorumCoordinator) PutWithQuorum(
 	}
 
 	if acks >= q.quorum {
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"namespace": ns,
 			"key":       key,
 			"acks":      acks,
@@ -226,8 +226,8 @@ func BuildQuorumProposePayload(
 	proposalID string,
 	ns, key string,
 	value []byte,
-) map[string]interface{} {
-	return map[string]interface{}{
+) map[string]any {
+	return map[string]any{
 		"phase":       "propose",
 		"proposal_id": proposalID,
 		"namespace":   ns,
@@ -241,8 +241,8 @@ func BuildQuorumVotePayload(
 	proposalID string,
 	voter string,
 	decision bool,
-) map[string]interface{} {
-	return map[string]interface{}{
+) map[string]any {
+	return map[string]any{
 		"phase":       "vote",
 		"proposal_id": proposalID,
 		"voter":       voter,
@@ -255,8 +255,8 @@ func BuildQuorumDecidePayload(
 	proposalID string,
 	decision bool,
 	quorum int,
-) map[string]interface{} {
-	return map[string]interface{}{
+) map[string]any {
+	return map[string]any{
 		"phase":       "decide",
 		"proposal_id": proposalID,
 		"decision":    decision,

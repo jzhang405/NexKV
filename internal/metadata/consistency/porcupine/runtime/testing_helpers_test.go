@@ -35,7 +35,7 @@ func assertVerifierCreated(t *testing.T, verifier *RuntimeVerifier) {
 }
 
 // assertHookNotNil 验证 Hook 非空
-func assertHookNotNil(t *testing.T, hook interface{}, name string) {
+func assertHookNotNil(t *testing.T, hook any, name string) {
 	if hook == nil {
 		t.Errorf("Expected non-nil %s", name)
 	}

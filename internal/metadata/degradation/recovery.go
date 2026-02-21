@@ -160,7 +160,7 @@ func (r *RecoveryManager) SyncDemotionLog(ctx context.Context) (*RecoveryResult,
 	// 按时间戳排序（确保顺序同步）
 	sortedEntries := r.sortByTimestamp(unsynced)
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"count":  len(sortedEntries),
 		"method": "SyncDemotionLog",
 	}).Info("开始同步降级日志")
@@ -196,7 +196,7 @@ func (r *RecoveryManager) SyncDemotionLog(ctx context.Context) (*RecoveryResult,
 	r.totalFailed += result.FailedCount
 	r.mu.Unlock()
 
-	logging.WithFields(map[string]interface{}{
+	logging.WithFields(map[string]any{
 		"total":    result.TotalEntries,
 		"synced":   result.SyncedCount,
 		"failed":   result.FailedCount,
@@ -234,7 +234,7 @@ func (r *RecoveryManager) syncEntry(ctx context.Context, entry *DemotionEntry) b
 			return true
 		}
 
-		logging.WithFields(map[string]interface{}{
+		logging.WithFields(map[string]any{
 			"id":        entry.ID,
 			"namespace": entry.Namespace,
 			"key":       entry.Key,
@@ -267,11 +267,11 @@ func (r *RecoveryManager) sortByTimestamp(entries []*DemotionEntry) []*DemotionE
 }
 
 // GetStats 获取恢复统计
-func (r *RecoveryManager) GetStats() map[string]interface{} {
+func (r *RecoveryManager) GetStats() map[string]any {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"last_recovery_time": r.lastRecoveryTime.Format(time.RFC3339),
 		"recovery_count":     r.recoveryCount,
 		"total_synced":       r.totalSynced,

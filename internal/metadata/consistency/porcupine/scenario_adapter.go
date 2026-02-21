@@ -98,8 +98,8 @@ func (s *RecordingE2ETestScenario) AddNode(nodeID string, kv ScenarioKV) {
 }
 
 // GetAllOperations 获取所有节点的操作历史
-func (s *RecordingE2ETestScenario) GetAllOperations() []interface{} {
-	var allOps []interface{}
+func (s *RecordingE2ETestScenario) GetAllOperations() []any {
+	var allOps []any
 	for _, recorder := range s.Recorders {
 		ops := recorder.GetOperations()
 		for _, op := range ops {
@@ -147,7 +147,7 @@ func (s *RecordingE2ETestScenario) Clear() {
 //	    client := recScenario.RecordingClients["node-1"]
 //	    client.Put(ctx, "ns1", "key", []byte("value"))
 //	})
-func RunWithVerification(t interface{}, scenario *RecordingE2ETestScenario, testFunc func()) {
+func RunWithVerification(t any, scenario *RecordingE2ETestScenario, testFunc func()) {
 	// 执行测试函数
 	testFunc()
 
@@ -157,7 +157,7 @@ func RunWithVerification(t interface{}, scenario *RecordingE2ETestScenario, test
 	// 如果测试框架支持，报告结果
 	if result != nil && !result.Ok {
 		// 使用 Error 方法报告错误（如果 t 实现了 Error 方法）
-		if tb, ok := t.(interface{ Error(args ...interface{}) }); ok {
+		if tb, ok := t.(interface{ Error(args ...any) }); ok {
 			tb.Error("Linearizability check failed: ", result.Error)
 		}
 	}

@@ -273,12 +273,28 @@ type TestNode interface {
     GetComponent(name string) (TestComponent, error)
 }
 
-// NodeConfig 节点配置 ⭐ v1.5 补充
+// NodeConfig 节点配置 ⭐ v1.6 统一与 Spike 文档一致（P1-3 修复）
 type NodeConfig struct {
-    ID       string
-    Host     string
-    Port     int
-    Metadata map[string]string
+    // ID 节点唯一标识
+    ID string
+
+    // Index 节点在集群中的索引
+    Index int
+
+    // ClusterID 所属集群ID
+    ClusterID string
+
+    // BaseDir 节点数据目录
+    BaseDir string
+
+    // IsBootstrap 是否为引导节点
+    IsBootstrap bool
+
+    // Components 节点包含的组件类型列表
+    Components []ComponentType
+
+    // Properties 额外配置属性
+    Properties map[string]interface{}
 }
 
 // TestScenario 测试场景接口
@@ -340,13 +356,17 @@ func (c *TransportAdapter) Start(ctx context.Context) error {
     return nil
 }
 
-// HealthCheck 实现示例（带重试 + context 取消）⭐ v1.5 修复并发问题
+// HealthCheck 实现示例（带重试 + context 取消）⭐ v1.6 修复 timer 泄漏
 func (c *TransportAdapter) HealthCheck(ctx context.Context) error {
     config := c.GetHealthCheckConfig()
 
+    // ⭐ v1.6 修复 P0-2：使用 time.Timer 避免 goroutine 泄漏
+    retryTimer := time.NewTimer(config.RetryInterval)
+    defer retryTimer.Stop()  // 确保函数退出时清理 timer
+
     var lastErr error
     for i := 0; i < config.RetryCount; i++ {
-        // 检查 context 取消 ⭐ v1.5 修复
+        // 检查 context 取消
         select {
         case <-ctx.Done():
             return ctx.Err()
@@ -363,11 +383,23 @@ func (c *TransportAdapter) HealthCheck(ctx context.Context) error {
         }
         lastErr = err
 
-        // 可中断的等待 ⭐ v1.5 修复
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
-        case <-time.After(config.RetryInterval):
+        // 可中断的等待（最后一次不需要等待）
+        if i < config.RetryCount-1 {
+            // ⭐ v1.6：重置 timer 而非创建新的 time.After
+            if !retryTimer.Stop() {
+                select {
+                case <-retryTimer.C:
+                default:
+                }
+            }
+            retryTimer.Reset(config.RetryInterval)
+
+            select {
+            case <-ctx.Done():
+                return ctx.Err()
+            case <-retryTimer.C:
+                // 继续下一次重试
+            }
         }
     }
     return fmt.Errorf("health check failed after %d retries: %w", config.RetryCount, lastErr)
@@ -445,9 +477,20 @@ func (c *TransportAdapter) checkTransportHealth(ctx context.Context) error {
 **实现方式**：
 
 ```go
-import swarmtesting "github.com/libp2p/go-libp2p/p2p/net/swarm/testing"
+import (
+    "context"
+    "fmt"
+    "sync"
 
-// TransportAdapter 集成官方 MockConnectionGater ⭐ v1.5 完善结构体
+    "github.com/libp2p/go-libp2p"
+    "github.com/libp2p/go-libp2p/core/host"
+    "github.com/libp2p/go-libp2p/core/peer"
+    "github.com/libp2p/go-libp2p/core/network"
+    "github.com/multiformats/go-multiaddr"
+    swarmtesting "github.com/libp2p/go-libp2p/p2p/net/swarm/testing"
+)
+
+// TransportAdapter 集成官方 MockConnectionGater ⭐ v1.6 完善实现
 type TransportAdapter struct {
     host         host.Host
     connGater    *swarmtesting.MockConnectionGater
@@ -459,10 +502,24 @@ type TransportAdapter struct {
 }
 
 // NewTransportAdapter 创建适配器（注入 MockConnectionGater）
+// ⭐ v1.6 修复 P0-1：一次性设置 PeerDial 闭包，避免竞态条件
 func NewTransportAdapter(t testing.TB) (adapter *TransportAdapter, err error) {
     t.Helper()  // 标记为测试辅助函数
 
+    // 先创建 adapter 结构体（用于闭包捕获）
+    adapter = &TransportAdapter{
+        blockedPeers: make(map[peer.ID]bool),
+    }
+
     connGater := swarmtesting.DefaultMockConnectionGater()
+
+    // ⭐ v1.6 关键修复：在初始化时一次性设置 PeerDial 闭包
+    // 闭包捕获 adapter 引用，动态读取 blockedPeers 状态
+    connGater.PeerDial = func(p peer.ID) bool {
+        adapter.mu.RLock()
+        defer adapter.mu.RUnlock()
+        return !adapter.blockedPeers[p]  // 被阻塞的 peer 返回 false
+    }
 
     h, err := libp2p.New(
         libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
@@ -472,39 +529,72 @@ func NewTransportAdapter(t testing.TB) (adapter *TransportAdapter, err error) {
         return nil, fmt.Errorf("create libp2p host: %w", err)
     }
 
-    return &TransportAdapter{
-        host:         h,
-        connGater:    connGater,
-        blockedPeers: make(map[peer.ID]bool),
-    }, nil
+    adapter.host = h
+    adapter.connGater = connGater
+
+    // ⭐ v1.6 补充：自动注册清理函数，避免资源泄漏
+    t.Cleanup(func() {
+        if err := adapter.Close(); err != nil {
+            t.Logf("warning: close transport adapter: %v", err)
+        }
+    })
+
+    return adapter, nil
 }
 
-// BlockPeer 阻塞指定节点（并发安全）⭐ v1.5 修复
+// BlockPeer 阻塞指定节点（并发安全）⭐ v1.6 简化实现
 func (a *TransportAdapter) BlockPeer(peerID peer.ID) {
     a.mu.Lock()
     defer a.mu.Unlock()
-
     a.blockedPeers[peerID] = true
-
-    // 更新连接控制器的拦截逻辑
-    a.connGater.PeerDial = func(p peer.ID) bool {
-        a.mu.RLock()
-        defer a.mu.RUnlock()
-        return !a.blockedPeers[p]  // 被阻塞的 peer 返回 false
-    }
+    // 无需重新设置 PeerDial，闭包会自动读取最新状态
 }
 
-// UnblockPeer 恢复连接（并发安全）⭐ v1.5 修复
+// UnblockPeer 恢复连接（并发安全）⭐ v1.6 简化实现
 func (a *TransportAdapter) UnblockPeer(peerID peer.ID) {
     a.mu.Lock()
     defer a.mu.Unlock()
-
     delete(a.blockedPeers, peerID)
-    // 闭包会自动读取最新的 blockedPeers 状态，无需额外操作
+    // 无需额外操作，闭包会自动读取最新状态
 }
 
-// Close 释放资源 ⭐ v1.5 补充
-func (a *TransportAdapter) Close(ctx context.Context) error {
+// IsBlocked 检查节点是否被阻塞 ⭐ v1.6 新增
+func (a *TransportAdapter) IsBlocked(peerID peer.ID) bool {
+    a.mu.RLock()
+    defer a.mu.RUnlock()
+    return a.blockedPeers[peerID]
+}
+
+// ID 返回节点 Peer ID ⭐ v1.6 新增 P1-4 修复
+func (a *TransportAdapter) ID() peer.ID {
+    return a.host.ID()
+}
+
+// Addr 返回节点监听地址 ⭐ v1.6 新增 P1-4 修复
+func (a *TransportAdapter) Addr() multiaddr.Multiaddr {
+    addrs := a.host.Addrs()
+    if len(addrs) == 0 {
+        return nil
+    }
+    return addrs[0]  // 简化实现，返回第一个地址
+}
+
+// Connect 连接到目标节点 ⭐ v1.6 新增 P1-4 修复
+func (a *TransportAdapter) Connect(ctx context.Context, addr multiaddr.Multiaddr) error {
+    peerInfo, err := peer.AddrInfoFromP2pAddr(addr)
+    if err != nil {
+        return fmt.Errorf("parse addr: %w", err)
+    }
+    return a.host.Connect(ctx, *peerInfo)
+}
+
+// IsConnected 检查是否已连接到目标节点 ⭐ v1.6 新增
+func (a *TransportAdapter) IsConnected(peerID peer.ID) bool {
+    return a.host.Network().Connectedness(peerID) == network.Connected
+}
+
+// Close 释放资源 ⭐ v1.6 修复 P1-2：统一签名为无参数
+func (a *TransportAdapter) Close() error {
     a.mu.Lock()
     defer a.mu.Unlock()
 
@@ -519,32 +609,40 @@ func (a *TransportAdapter) Close(ctx context.Context) error {
 
 ```go
 func TestTransport_NetworkPartition_Reconnect_Success(t *testing.T) {
-    ctx := context.Background()
+    // ⭐ v1.6 修复：添加超时控制
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
 
     // 1. 创建 3 个节点（使用 MockConnectionGater）
+    // ⭐ v1.6：NewTransportAdapter 已自动注册 t.Cleanup，无需手动 defer Close
     node1, err := framework.NewTransportAdapter(t)
     require.NoError(t, err)
-    defer node1.Close(ctx)  // ⭐ v1.5 补充：确保资源清理
 
     node2, err := framework.NewTransportAdapter(t)
     require.NoError(t, err)
-    defer node2.Close(ctx)
 
     node3, err := framework.NewTransportAdapter(t)
     require.NoError(t, err)
-    defer node3.Close(ctx)
 
     // 2. 连接所有节点
-    require.NoError(t, node1.Connect(node2.Addr()))
-    require.NoError(t, node1.Connect(node3.Addr()))
-    require.NoError(t, node2.Connect(node3.Addr()))
+    require.NoError(t, node1.Connect(ctx, node2.Addr()))
+    require.NoError(t, node1.Connect(ctx, node3.Addr()))
+    require.NoError(t, node2.Connect(ctx, node3.Addr()))
+
+    // 2.1 验证连接状态（等待连接建立）⭐ v1.6 新增
+    require.Eventually(t, func() bool {
+        return node1.IsConnected(node2.ID()) &&
+               node1.IsConnected(node3.ID()) &&
+               node2.IsConnected(node3.ID())
+    }, 5*time.Second, 100*time.Millisecond, "节点连接超时")
 
     // 3. 模拟网络分区：隔离 node3
     node1.BlockPeer(node3.ID())
     node2.BlockPeer(node3.ID())
 
     // 4. 验证：node1, node2 能通信，node3 被隔离
-    // ... 测试逻辑 ...
+    require.False(t, node1.IsConnected(node3.ID()), "node1 不应连接到 node3")
+    require.False(t, node2.IsConnected(node3.ID()), "node2 不应连接到 node3")
 
     // 5. 恢复连接
     node1.UnblockPeer(node3.ID())
@@ -728,7 +826,7 @@ func TestBroadcastTracker_MajorityCallback_WithNetworkPartition(t *testing.T) {
     // ... 继续测试全部完成回调
 }
 
-// broadcastCall 模拟广播调用
+// broadcastCall 模拟广播调用 ⭐ v1.6 修复 P1-5：使用 WaitGroup 避免 goroutine 泄漏
 func broadcastCall(
     ctx context.Context,
     t *testing.T,
@@ -738,12 +836,19 @@ func broadcastCall(
     taskID string,
     bt *tracker.BroadcastTracker,
 ) {
+    t.Helper()  // ⭐ v1.6 添加：标记为测试辅助函数
+
     senderHost, err := mn.Host(sender)
     require.NoError(t, err)
 
+    var wg sync.WaitGroup  // ⭐ v1.6 添加：等待所有 goroutine 完成
+
     for _, target := range targets {
         target := target
+        wg.Add(1)
         go func() {
+            defer wg.Done()  // ⭐ v1.6 添加：确保 goroutine 完成时通知
+
             stream, err := senderHost.NewStream(ctx, target, protocol.ID("/broadcast/test/1.0.0"))
             if err != nil {
                 bt.RecordFailure(model.PeerID(target), fmt.Errorf("stream failed: %w", err))
@@ -755,6 +860,8 @@ func broadcastCall(
             bt.RecordSuccess(model.PeerID(target), model.Message{TaskID: taskID})
         }()
     }
+
+    wg.Wait()  // ⭐ v1.6 添加：等待所有广播调用完成
 }
 ```
 
@@ -861,10 +968,138 @@ lsof -i :10000-10100
 | 依赖 | 版本 | 用途 | 阶段 |
 |------|------|------|------|
 | `github.com/libp2p/go-libp2p` | v0.33.0 | P2P 通信（与项目现有版本一致 ✅） | Phase 1 |
-| `github.com/panjf2000/ants` | v2.9.0 | Goroutine 池 | Phase 1 |
-| `github.com/libp2p/go-libp2p-testing/net` | latest | 高级网络模拟（丢包/带宽/抖动） | Phase 2 ⭐ |
+| `github.com/panjf2000/ants` | v2.9.0 | Goroutine 池（高性能协程池） | Phase 1 |
+| `github.com/sourcegraph/conc` | v0.3.0 | 结构化并发（WaitGroup/Pool/Stream） | Phase 1 ⭐ v1.6 |
+| `github.com/libp2p/go-libp2p-testing/net` | latest | 高级网络模拟（丢包/带宽/抖动） | Phase 2 |
 
-#### 6.2 内部依赖
+#### 6.2 并发控制库使用指南 ⭐ v1.6 补充
+
+> **为什么需要并发控制库**：测试框架需要大量并发操作（节点启动、RPC 调用、健康检查等），无限制的 goroutine 创建会导致：
+> - 内存爆炸（每个 goroutine ~2KB 栈空间）
+> - 调度器压力（CPU 浪费在上下文切换）
+> - 资源泄漏（goroutine 无法被 GC 回收）
+
+**ants vs conc 选型对比**：
+
+| 特性 | ants | conc |
+|------|------|------|
+| **核心能力** | Goroutine 池（复用 goroutine） | 结构化并发（panics 传播、context 取消） |
+| **适用场景** | 大量短任务（如并发 RPC 调用） | 需要错误收集和 panic 处理的场景 |
+| **性能** | ⭐⭐⭐⭐⭐（复用 goroutine，零分配） | ⭐⭐⭐⭐（轻量封装） |
+| **API 风格** | `pool.Submit(func())` | `pool.Wait().FirstError()` |
+| **panic 处理** | 需手动配置 | 自动捕获并传播 |
+
+**推荐用法**：
+
+```go
+import (
+    "github.com/panjf2000/ants/v2"
+    "github.com/sourcegraph/conc/pool"
+)
+
+// ============================================
+// 场景 1：大量短任务（使用 ants）- 如并发 RPC 调用
+// ============================================
+
+type TestCluster struct {
+    rpcPool *ants.Pool  // 复用 goroutine
+}
+
+func NewTestCluster() (*TestCluster, error) {
+    rpcPool, err := ants.NewPoolWithFunc(100, func(i interface{}) {
+        task := i.(*RPCTask)
+        task.execute()
+    }, ants.WithExpiryDuration(10*time.Second))
+    if err != nil {
+        return nil, err
+    }
+
+    return &TestCluster{rpcPool: rpcPool}, nil
+}
+
+func (c *TestCluster) BroadcastRPC(ctx context.Context, req Message) error {
+    // 使用 ants 池提交任务（复用 goroutine）
+    for _, node := range c.nodes {
+        task := &RPCTask{ctx: ctx, target: node, req: req}
+        if err := c.rpcPool.Invoke(task); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+
+// ============================================
+// 场景 2：需要错误收集（使用 conc）- 如健康检查
+// ============================================
+
+func (c *TestCluster) HealthCheckAll(ctx context.Context) error {
+    p := pool.New().WithMaxGoroutines(len(c.nodes)).WithErrors()
+
+    for _, node := range c.nodes {
+        node := node  // 捕获循环变量
+        p.Go(func() error {
+            return node.HealthCheck(ctx)
+        })
+    }
+
+    // 等待所有任务完成，返回第一个错误
+    return p.Wait()
+}
+
+// ============================================
+// 场景 3：需要 panic 恢复（使用 conc）- 如用户测试场景
+// ============================================
+
+func (e *ScenarioExecutor) runWithRecovery(scenario TestScenario) (err error) {
+    defer func() {
+        if r := recover(); r != nil {
+            err = fmt.Errorf("scenario %s panicked: %v", scenario.Name(), r)
+        }
+    }()
+
+    return scenario.Execute(context.Background(), e.cluster)
+}
+```
+
+**框架集成建议**：
+
+```go
+// pkg/test/framework/context.go
+
+type TestContext struct {
+    Registry       *ComponentRegistry
+
+    // 并发控制
+    GoroutinePool  *ants.Pool       // 高性能任务池
+    ErrorCollector *pool.ErrorPool   // 错误收集器
+
+    TempDir        string
+    IsolationLevel IsolationLevel
+}
+
+func NewTestContext() (*TestContext, error) {
+    // 创建 ants 池（复用 goroutine）
+    goroutinePool, err := ants.NewPool(100, ants.WithExpiryDuration(10*time.Second))
+    if err != nil {
+        return nil, fmt.Errorf("create goroutine pool: %w", err)
+    }
+
+    return &TestContext{
+        Registry:       NewComponentRegistry(),
+        GoroutinePool:  goroutinePool,
+        ErrorCollector: pool.New().WithErrors(),
+        TempDir:        generateTempDir(),
+    }, nil
+}
+
+func (ctx *TestContext) Close() error {
+    // 释放 goroutine 池
+    ctx.GoroutinePool.Release()
+    return nil
+}
+```
+
+#### 6.3 内部依赖
 
 | 依赖 | 状态 | 说明 |
 |------|------|------|
@@ -938,7 +1173,7 @@ jobs:
 
 ---
 
-**文档版本**: v1.5（Agent Review 修复版）⭐
+**文档版本**: v1.6（多 Agent Review P0 修复版）⭐
 **创建日期**: 2026-02-21
 **最后更新**: 2026-02-21
 **作者**: 🤖 AI Agent
@@ -953,7 +1188,20 @@ jobs:
 | v1.2 | 2026-02-21 | 👤 架构师 | 时间线不一致、目录结构不一致、接口类型安全问题 | ✅ 已修复 |
 | v1.3 | 2026-02-21 | 👤 架构师 | ComponentType 类型、方法命名、Init 签名、HealthCheckConfig | ✅ 已修复 |
 | v1.4 | 2026-02-21 | 🤖 AI Agent | 复用 libp2p 官方 swarm/testing，添加 libp2p-testing/net 扩展 | ✅ 已完成 |
-| v1.5 | 2026-02-21 | 🤖 多 Agent | 并发安全、接口完整性、资源清理、context 取消 | 🔄 修复中 |
+| v1.5 | 2026-02-21 | 🤖 多 Agent | 并发安全、接口完整性、资源清理、context 取消 | ✅ 已修复 |
+| v1.6 | 2026-02-21 | 🤖 多 Agent | P0 修复 + 并发控制库（conc/ants） | ✅ 已修复 |
+
+### v1.6 变更摘要（多 Agent Review P0 修复 + 并发库补充）⭐
+
+| 问题编号 | 来源 | 问题描述 | 修复内容 |
+|---------|------|---------|---------|
+| **P0-1** | Code Reviewer + Backend | `BlockPeer` 每次调用覆盖 `PeerDial` 闭包，存在竞态 | ✅ 在 `NewTransportAdapter` 中一次性设置闭包 |
+| **P0-2** | Code Reviewer | `HealthCheck` 使用 `time.After` 可能导致 timer goroutine 泄漏 | ✅ 改用 `time.Timer` + `defer timer.Stop()` |
+| **P1-2** | Architect + Code Reviewer | `TransportAdapter.Close(ctx)` 签名与接口不一致 | ✅ 统一为 `Close()` 无参数 |
+| **P1-3** | Architect | `NodeConfig` 与 Spike 文档定义不一致 | ✅ 统一为 Spike 版本（Index/ClusterID/BaseDir/IsBootstrap/Components） |
+| **P1-4** | Backend | `TransportAdapter` 缺少 `Connect`/`Addr`/`ID`/`IsConnected` 方法 | ✅ 补充完整接口实现 |
+| **P1-5** | Code Reviewer | `broadcastCall` goroutine 泄漏风险 | ✅ 添加 `sync.WaitGroup` 等待 |
+| **Enhancement** | 用户反馈 | 缺少并发控制库使用指南 | ✅ 补充 `conc` + `ants` 库使用指南（第 6.2 节） |
 
 ### v1.5 变更摘要（Agent Review 修复）
 

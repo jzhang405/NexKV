@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -370,23 +372,28 @@ func (n NoOpCallback) OnFullDone(stats BroadcastStats) {}
 //	// 后台等待全部或多数派完成
 //	tracker.WaitMajority(ctx)
 type BroadcastTracker struct {
-	taskID       string                         // 任务 ID（用于日志）
-	targets      []model.PeerID                 // 目标节点列表
-	responses    map[model.PeerID]model.Message // 成功响应
-	failures     map[model.PeerID]error         // 失败记录
-	mu           sync.RWMutex                   // 保护并发访问
-	fullDone     chan struct{}                  // 全部完成时关闭
-	majorityDone chan struct{}                  // 多数派完成时关闭
+	// 基础字段
+	taskID    string                         // 任务 ID（用于日志）
+	targets   []model.PeerID                 // 目标节点列表
+	responses map[model.PeerID]model.Message // 成功响应
+	failures  map[model.PeerID]error         // 失败记录
 
-	// ====== Callback 机制（v1.4）======
+	// 同步原语
+	mu           sync.RWMutex  // 保护并发访问
+	fullDone     chan struct{} // 全部完成时关闭
+	majorityDone chan struct{} // 多数派完成时关闭
+
+	// Callback 机制（v1.4）
 	callback                  BroadcastCallback // 回调接口（可选）
 	callbacksEnabled          bool              // 回调启用/禁用开关
 	majorityCallbackTriggered bool              // OnMajorityReached 是否已触发
 	fullDoneCallbackTriggered bool              // OnFullDone 是否已触发
-	firstResponseRecorded     bool              // 是否已记录首个响应
-	startTime                 time.Time         // 任务开始时间
-	firstResponseTime         time.Time         // 首个响应时间
-	majorityReachTime         time.Time         // 达到多数派时间
+
+	// 时间统计
+	startTime             time.Time // 任务开始时间
+	firstResponseTime     time.Time // 首个响应时间
+	majorityReachTime     time.Time // 达到多数派时间
+	firstResponseRecorded bool      // 是否已记录首个响应
 }
 
 // NewBroadcastTracker 创建广播追踪器
@@ -662,9 +669,10 @@ func (t *BroadcastTracker) buildStatsLocked() BroadcastStats {
 func safeCallback(fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
-			// 使用 fmt.Printf 记录 panic（项目未使用 slog）
-			// 注意：生产环境建议使用 slog.Error 或日志框架
-			fmt.Printf("[BroadcastTracker] callback panic recovered: %v\n", r)
+			// 使用 slog.Error 记录 panic，便于监控和告警
+			slog.Error("[BroadcastTracker] callback panic recovered",
+				"panic", r,
+				"stack", string(debug.Stack()))
 		}
 	}()
 	fn()

@@ -1,4 +1,3 @@
-// Package service 定义领域服务接口
 package service
 
 import (
@@ -7,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
@@ -588,5 +588,198 @@ func BenchmarkBroadcastCallback_OnSuccess(b *testing.B) {
 		atomic.StoreInt32(&callback.onSuccessCount, 0)
 
 		tracker.RecordSuccess("node-1", msg)
+	}
+}
+
+// ========================================
+// 补充测试：提升覆盖率至 80%
+// ========================================
+
+// TestBroadcastCallback_NoOpCallback 测试 NoOpCallback 空实现
+func TestBroadcastCallback_NoOpCallback(t *testing.T) {
+	peers := []model.PeerID{"node-1", "node-2"}
+	tracker := NewBroadcastTracker("test-task", peers)
+	tracker.SetCallback(NoOpCallback{}) // 使用空实现
+
+	// 执行：不应 panic
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+	tracker.RecordFailure("node-2", context.DeadlineExceeded)
+
+	// 验证：状态正常更新
+	if !tracker.IsFullDone() {
+		t.Error("Tracker should be full done")
+	}
+}
+
+// TestBroadcastTracker_WaitMajority 测试 WaitMajority 方法
+func TestBroadcastTracker_WaitMajority(t *testing.T) {
+	peers := []model.PeerID{"node-1", "node-2", "node-3"}
+	tracker := NewBroadcastTracker("test-task", peers)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// 异步记录响应
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+		time.Sleep(50 * time.Millisecond)
+		tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
+	}()
+
+	// 等待多数派
+	err := tracker.WaitMajority(ctx)
+	if err != nil {
+		t.Errorf("WaitMajority failed: %v", err)
+	}
+
+	if !tracker.IsMajorityReached() {
+		t.Error("Majority should be reached")
+	}
+}
+
+// TestBroadcastTracker_WaitFull 测试 WaitFull 方法
+func TestBroadcastTracker_WaitFull(t *testing.T) {
+	peers := []model.PeerID{"node-1", "node-2"}
+	tracker := NewBroadcastTracker("test-task", peers)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// 异步记录响应
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+		time.Sleep(50 * time.Millisecond)
+		tracker.RecordFailure("node-2", context.DeadlineExceeded)
+	}()
+
+	// 等待全部完成
+	err := tracker.WaitFull(ctx)
+	if err != nil {
+		t.Errorf("WaitFull failed: %v", err)
+	}
+
+	if !tracker.IsFullDone() {
+		t.Error("Tracker should be full done")
+	}
+}
+
+// TestBroadcastTracker_Stats 测试 Stats 方法
+func TestBroadcastTracker_Stats(t *testing.T) {
+	peers := []model.PeerID{"node-1", "node-2", "node-3"}
+	tracker := NewBroadcastTracker("test-task", peers)
+
+	// 记录响应
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+	tracker.RecordFailure("node-2", context.DeadlineExceeded)
+
+	// 获取统计信息
+	success, failed, pending := tracker.Stats()
+
+	// 验证统计信息
+	if success != 1 {
+		t.Errorf("Expected Success=1, got %d", success)
+	}
+	if failed != 1 {
+		t.Errorf("Expected Failed=1, got %d", failed)
+	}
+	if pending != 1 {
+		t.Errorf("Expected Pending=1, got %d", pending)
+	}
+}
+
+// TestBroadcastTracker_IsFullDone_NotClosed 测试 IsFullDone 未关闭分支
+func TestBroadcastTracker_IsFullDone_NotClosed(t *testing.T) {
+	peers := []model.PeerID{"node-1", "node-2", "node-3"}
+	tracker := NewBroadcastTracker("test-task", peers)
+
+	// 未记录任何响应时，IsFullDone 应返回 false
+	if tracker.IsFullDone() {
+		t.Error("IsFullDone should return false when not all responses received")
+	}
+
+	// 记录部分响应
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+
+	if tracker.IsFullDone() {
+		t.Error("IsFullDone should return false when only partial responses received")
+	}
+}
+
+// TestBroadcastCallback_RecordFailure_Disabled 测试禁用回调时的 RecordFailure
+func TestBroadcastCallback_RecordFailure_Disabled(t *testing.T) {
+	peers := []model.PeerID{"node-1"}
+	tracker := NewBroadcastTracker("test-task", peers)
+	callback := NewMockCallback()
+	tracker.SetCallback(callback)
+	tracker.EnableCallbacks(false) // 禁用回调
+
+	tracker.RecordFailure("node-1", context.DeadlineExceeded)
+
+	// 验证：回调不应触发
+	if count := callback.GetFailureCount(); count != 0 {
+		t.Errorf("OnFailure should not be called when callbacks disabled, got %d", count)
+	}
+}
+
+// TestBroadcastTracker_WaitMajority_AlreadyReached 测试已达到多数派的快速路径
+func TestBroadcastTracker_WaitMajority_AlreadyReached(t *testing.T) {
+	peers := []model.PeerID{"node-1", "node-2", "node-3"}
+	tracker := NewBroadcastTracker("test-task", peers)
+
+	// 先记录足够的成功响应
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+	tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// 调用 WaitMajority 应立即返回（快速路径）
+	start := time.Now()
+	err := tracker.WaitMajority(ctx)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Errorf("WaitMajority should succeed immediately, got error: %v", err)
+	}
+
+	// 验证快速路径：应该几乎立即返回（< 10ms）
+	if elapsed > 10*time.Millisecond {
+		t.Errorf("WaitMajority took too long for fast path: %v", elapsed)
+	}
+}
+
+// TestBroadcastTracker_WaitMajority_EmptyPeers 测试空节点列表
+func TestBroadcastTracker_WaitMajority_EmptyPeers(t *testing.T) {
+	peers := []model.PeerID{} // 空列表
+	tracker := NewBroadcastTracker("test-task", peers)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// 调用 WaitMajority 应立即返回（空列表的特殊情况）
+	err := tracker.WaitMajority(ctx)
+	if err != nil {
+		t.Errorf("WaitMajority should succeed for empty peers, got error: %v", err)
+	}
+}
+
+// TestBroadcastTracker_WaitFull_Timeout 测试 WaitFull 超时
+func TestBroadcastTracker_WaitFull_Timeout(t *testing.T) {
+	peers := []model.PeerID{"node-1", "node-2"}
+	tracker := NewBroadcastTracker("test-task", peers)
+
+	// 使用已经过期的 context
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	cancel() // 立即取消
+
+	// 调用 WaitFull 应立即返回 context 错误
+	err := tracker.WaitFull(ctx)
+	if err == nil {
+		t.Error("WaitFull should fail with canceled context")
+	}
+	if err != context.Canceled {
+		t.Errorf("Expected context.Canceled, got: %v", err)
 	}
 }

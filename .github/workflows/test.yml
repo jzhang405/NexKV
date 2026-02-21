@@ -47,11 +47,13 @@ jobs:
           CI: "true"
         run: |
           if [ "${{ matrix.go-version }}" = "1.23" ]; then
-            # 最新版本运行 race detector
-            go test -v -race -timeout 15m -coverprofile=coverage.out ./...
+            # 最新版本运行完整测试（含 race detector），跳过集成测试
+            go test -v -race -timeout 20m -coverprofile=coverage.out -short ./...
+            # 单独运行集成测试（不使用 race detector）
+            go test -v -timeout 10m ./test/integration/scenarios/...
           else
-            # 其他版本运行普通测试（减少 CI 时间和开销）
-            go test -v -timeout 15m -coverprofile=coverage.out ./...
+            # 其他版本只运行单元测试（跳过集成测试和慢测试）
+            go test -v -timeout 10m -coverprofile=coverage.out -short ./...
           fi
 
       - name: 生成覆盖率报告

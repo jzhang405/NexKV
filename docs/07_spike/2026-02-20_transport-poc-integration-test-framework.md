@@ -3,9 +3,9 @@
 > **文档类型**: Spike 研究文档
 > **创建日期**: 2026-02-20
 > **最后更新**: 2026-02-21
-> **文档版本**: v2.11（同步 Pre v1.5：TestEnvironment Init/Close、TestNode 接口、MockConnectionGater、并发安全）
+> **文档版本**: v2.12（同步 Pre v1.6：HealthCheck timer 修复、TestContext conc/ants 集成）
 > **关联文档**:
-> - `docs/06_PM/feature/2026-02-21_PR-integration-test-framework_Pre.md`（Pre 文档 v1.5）
+> - `docs/06_PM/feature/2026-02-21_PR-integration-test-framework_Pre.md`（Pre 文档 v1.6）
 > - `docs/06_PM/feature/2026-02-18_PR-nexkv-ddd-architecture_Pre.md`
 > - `docs/06_PM/feature/2026-02-19_PR-phase1-week1-2-transport-poc_Pre.md`
 > - `docs/06_PM/milestones/2026-02-20_M1-infrastructure-layer-acceptance.md`
@@ -83,6 +83,19 @@
 | v2.9 | 2026-02-20 | Code Review v3：修复 P1-6/P2-5/P2-6（百分位数排序、边界条件） | AI Agent |
 | v2.10 | 2026-02-20 | 添加 Kahn 算法背景知识（拓扑排序原理、图解示例、复杂度分析） | AI Agent |
 | v2.11 | 2026-02-21 | 同步 Pre v1.5：TestEnvironment Init/Close、TestNode 完整接口、MockConnectionGater、并发安全修复 | AI Agent |
+| v2.12 | 2026-02-21 | 同步 Pre v1.6：HealthCheck timer 修复、TestContext conc/ants 集成、NewErrorPool 方法 | AI Agent |
+
+---
+
+## ⚠️ v2.12 变更影响分析
+
+> **同步来源**: `docs/06_PM/feature/2026-02-21_PR-integration-test-framework_Pre.md` v1.6
+
+| 变更内容 | 影响范围 | 向后兼容性 | 优先级 |
+|---------|---------|-----------|--------|
+| HealthCheck 使用 time.Timer | 🟡 所有健康检查实现 | ✅ 兼容（行为修复） | P0-2 |
+| TestContext 集成 conc/ants | 🟡 并发测试场景 | ⚠️ 返回值改为 error | 新增功能 |
+| NewErrorPool 方法 | 🟢 需要错误收集的并发测试 | ✅ 兼容（新增方法） | 增强 |
 
 ---
 
@@ -964,41 +977,78 @@ func (i IsolationLevel) String() string {
 
 // TestContext 测试上下文，支持测试隔离
 // 每个测试用例应创建独立的 TestContext
+//
+// v2.12 更新：集成 conc/ants 并发控制（同步 Pre v1.6）
 type TestContext struct {
     Registry       *ComponentRegistry
+
+    // 并发控制（v2.12 新增）
+    GoroutinePool  *ants.Pool  // 高性能任务池（复用 goroutine）
+    maxGoroutines  int         // conc 池的最大 goroutine 数
+
     RandomSeed     int64
     TempDir        string
     IsolationLevel IsolationLevel // 隔离级别
 }
 
 // NewTestContext 创建测试上下文（默认无隔离）
-func NewTestContext() *TestContext {
+func NewTestContext() (*TestContext, error) {
+    // 创建 ants 高性能 goroutine 池
+    goroutinePool, err := ants.NewPool(100, ants.WithPreAlloc(true))
+    if err != nil {
+        return nil, fmt.Errorf("failed to create goroutine pool: %w", err)
+    }
+
     return &TestContext{
         Registry:       NewComponentRegistry(),
+        GoroutinePool:  goroutinePool,
+        maxGoroutines:  100,
         RandomSeed:     time.Now().UnixNano(),
         TempDir:        generateTempDir(),
         IsolationLevel: IsolationNone,
-    }
+    }, nil
+}
+
+// NewErrorPool 创建带错误收集的并发池（按需创建，不存储）
+// ⭐ v2.12 修正：conc 库的 pool 需要按需创建，不是持久化字段
+func (ctx *TestContext) NewErrorPool() *pool.ContextPool {
+    return pool.New().
+        WithMaxGoroutines(ctx.maxGoroutines).
+        WithErrors()
 }
 
 // NewTestContextWithSeed 创建指定随机种子的测试上下文（用于可重复测试）
-func NewTestContextWithSeed(seed int64) *TestContext {
+func NewTestContextWithSeed(seed int64) (*TestContext, error) {
+    goroutinePool, err := ants.NewPool(100, ants.WithPreAlloc(true))
+    if err != nil {
+        return nil, fmt.Errorf("failed to create goroutine pool: %w", err)
+    }
+
     return &TestContext{
         Registry:       NewComponentRegistry(),
+        GoroutinePool:  goroutinePool,
+        maxGoroutines:  100,
         RandomSeed:     seed,
         TempDir:        generateTempDir(),
         IsolationLevel: IsolationNone,
-    }
+    }, nil
 }
 
 // NewTestContextWithIsolation 创建指定隔离级别的测试上下文
-func NewTestContextWithIsolation(level IsolationLevel) *TestContext {
+func NewTestContextWithIsolation(level IsolationLevel) (*TestContext, error) {
+    goroutinePool, err := ants.NewPool(100, ants.WithPreAlloc(true))
+    if err != nil {
+        return nil, fmt.Errorf("failed to create goroutine pool: %w", err)
+    }
+
     return &TestContext{
         Registry:       NewComponentRegistry(),
+        GoroutinePool:  goroutinePool,
+        maxGoroutines:  100,
         RandomSeed:     time.Now().UnixNano(),
         TempDir:        generateTempDir(),
         IsolationLevel: level,
-    }
+    }, nil
 }
 
 // 注意：全局注册表已废弃，请使用 TestContext.Registry 实现完全隔离
@@ -1532,7 +1582,10 @@ func (c *TransportComponent) HealthCheck(ctx context.Context) error {
     ctx, cancel := context.WithTimeout(ctx, config.Timeout)
     defer cancel()
 
-    // P0-2 修复 (v2.11)：添加重试逻辑和 context 取消检查
+    // P0-2 修复 (v2.12)：使用 time.Timer 替代 time.After，避免 goroutine 泄漏
+    retryTimer := time.NewTimer(config.RetryInterval)
+    defer retryTimer.Stop()
+
     var lastErr error
     for i := 0; i < config.RetryCount; i++ {
         // 检查 context 是否已取消
@@ -1551,8 +1604,17 @@ func (c *TransportComponent) HealthCheck(ctx context.Context) error {
 
         // 可中断的重试等待（最后一次不需要等待）
         if i < config.RetryCount-1 {
+            // 安全地重置 timer
+            if !retryTimer.Stop() {
+                select {
+                case <-retryTimer.C:
+                default:
+                }
+            }
+            retryTimer.Reset(config.RetryInterval)
+
             select {
-            case <-time.After(config.RetryInterval):
+            case <-retryTimer.C:
             case <-ctx.Done():
                 return ctx.Err()
             }

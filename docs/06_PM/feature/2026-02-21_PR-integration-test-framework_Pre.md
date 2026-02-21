@@ -1066,19 +1066,28 @@ func (e *ScenarioExecutor) runWithRecovery(scenario TestScenario) (err error) {
 ```go
 // pkg/test/framework/context.go
 
+import (
+    "context"
+    "fmt"
+    "time"
+
+    "github.com/panjf2000/ants/v2"
+    "github.com/sourcegraph/conc/pool"
+)
+
 type TestContext struct {
     Registry       *ComponentRegistry
 
     // 并发控制
-    GoroutinePool  *ants.Pool       // 高性能任务池
-    ErrorCollector *pool.ErrorPool   // 错误收集器
+    GoroutinePool  *ants.Pool  // 高性能任务池（复用 goroutine）
+    maxGoroutines  int         // conc 池的最大 goroutine 数
 
     TempDir        string
     IsolationLevel IsolationLevel
 }
 
 func NewTestContext() (*TestContext, error) {
-    // 创建 ants 池（复用 goroutine）
+    // 创建 ants 池（复用 goroutine，适合大量短任务）
     goroutinePool, err := ants.NewPool(100, ants.WithExpiryDuration(10*time.Second))
     if err != nil {
         return nil, fmt.Errorf("create goroutine pool: %w", err)
@@ -1087,9 +1096,34 @@ func NewTestContext() (*TestContext, error) {
     return &TestContext{
         Registry:       NewComponentRegistry(),
         GoroutinePool:  goroutinePool,
-        ErrorCollector: pool.New().WithErrors(),
+        maxGoroutines:  100,
         TempDir:        generateTempDir(),
     }, nil
+}
+
+// NewErrorPool 创建带错误收集的并发池（按需创建，不存储）
+// ⭐ v1.6 修正：conc 库的 pool 需要按需创建，不是持久化字段
+func (ctx *TestContext) NewErrorPool() *pool.ContextPool {
+    return pool.New().
+        WithMaxGoroutines(ctx.maxGoroutines).
+        WithErrors()
+}
+
+// HealthCheckAll 并发执行所有组件的健康检查（使用 conc 池）
+func (ctx *TestContext) HealthCheckAll(parentCtx context.Context) error {
+    components := ctx.Registry.ListComponents()
+    p := pool.New().WithMaxGoroutines(len(components)).WithErrors()
+
+    for _, comp := range components {
+        comp := comp  // 捕获循环变量
+        p.Go(func() error {
+            checkCtx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
+            defer cancel()
+            return comp.HealthCheck(checkCtx)
+        })
+    }
+
+    return p.Wait()  // 返回第一个错误（如果有）
 }
 
 func (ctx *TestContext) Close() error {

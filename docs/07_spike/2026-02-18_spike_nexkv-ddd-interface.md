@@ -2,8 +2,25 @@
 
 **文档目的**: 从DDD角度组织分布式KV存储系统的Go interface设计
 **数据来源**: doubao-chat-nexkv-ddd.md 完整对话（21,647行）
-**文档版本**: v18.8 Unified | **最后更新**: 2026-02-20
-**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口** + **统一 RPC 接口** + **ResponseStrategy 广播策略** + **BroadcastTracker 完整追踪** + **WriteVResult 统一返回值**
+**文档版本**: v19.0 Unified | **最后更新**: 2026-02-22
+**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口** + **统一 RPC 接口** + **ResponseStrategy 广播策略** + **BroadcastTracker 完整追踪** + **WriteVResult 统一返回值** + **双存储引擎策略**
+
+> **📋 v19.0 变更说明 (2026-02-22)**：
+> - **AsyncOperation 接口增强**：
+>   - 新增 `Discard()` 方法：丢弃异步操作结果，释放资源
+>   - 新增 `IsStarted()` 方法：检查操作是否已启动
+>   - 新增 `StatusRunning` 状态：区分"待执行"和"运行中"
+>   - 新增 `StatusDiscarded` 状态：标识已丢弃的操作
+> - **回调机制完善**：支持函数式回调和接口式回调两种风格
+> - **适配器模式**：提供 `ToCallback()` 和 `AdaptCallback()` 方法，与现有代码兼容
+
+> **📋 v18.9 变更说明 (2026-02-22)**：
+> - **双存储引擎策略**：Metadata KV（sync.Map）+ External KV（Bf-Tree）
+> - **统一接口，分层实现**：KVStore 接口统一，底层实现各司其职
+> - **架构决策**：存储结构跟着场景走，而非强行统一
+> - **实现映射**：
+>   - `MetadataKVStore`：`internal/infrastructure/storage/metadata/` → sync.Map + MVStore
+>   - `ExternalKVStore`：`internal/infrastructure/storage/bftree/` → Bf-Tree
 
 > **📋 v18.8 变更说明 (2026-02-20)**：
 > - **新增 `RecordSuccess()` / `RecordFailure()` 方法**：RPC 实现调用，更新 tracker 状态
@@ -89,7 +106,7 @@
 | **② 控制平面层** | 14个 | 分片路由、选举、分布式锁、负载均衡、集群管理 | cluster, transport, shard, partition, election, balance | ✅ Callback+Channel |
 | **③ 数据平面层** | 6个 | 复制/一致性、事务、副本管理 | replication, tx | ✅ AsyncOp+Callback+Channel |
 | **④ 存储引擎层** | 9个 | 单机 KV、WAL、元数据管理 | storage, blockdevice | ✅ AsyncOp+Callback+Channel |
-| **⑤ 基础设施层** | 16个 | 网络通信、对象存储、异步能力、扩展能力 | transport, performance, resilience, extension | ✅ 多种模式 |
+| **⑤ 基础设施层** | 16个 | 网络通信、对象存储、异步能力、扩展能力、并发管理 | transport, performance, resilience, extension, concurrency | ✅ 多种模式 |
 | **总计** | **47个** | **完整分布式KV系统** | - | **19个接口支持完整异步** |
 
 **5层架构映射关系**：
@@ -111,6 +128,7 @@
 ✅ **5层精简架构** (API → 控制平面 → 数据平面 → 存储引擎 → 基础设施)
 ✅ **同步异步统一** (19个核心接口支持 AsyncOperation[T] + Callback + Channel 三种异步模式)
 ✅ **安全协议通用化** (支持TLS 1.3和Noise Protocol)
+✅ **双存储引擎策略** (Metadata KV: sync.Map + External KV: Bf-Tree)
 ✅ **存储引擎可插拔** (B+tree、LSM-tree、微软Bf-Tree)
 ✅ **生产级质量** (架构评分9.9/10)
 
@@ -309,10 +327,14 @@ graph LR
 | **② 控制平面层** | 11个 | `TreeCoordinator`, `NodeManager`, `TopologyManager`, `HAController`, `MetadataStore`, `HeartbeatManager`, `GroupManager`, `ShardManager`, `ShardRouter`, `Broadcaster`, `SecurityLayer` | 分片路由、选举、分布式锁、负载均衡 |
 | **③ 数据平面层** | 6个 | `Replicator`, `QuorumReplicator`, `ECManager`, `ReplicationStrategy`, `TxManager`, `TxCoordinator` | 复制/一致性、事务、副本管理 |
 | **④ 存储引擎层** | 9个 | `KVStore`, `WAL`, `BTree`, `Iterator`, `LocalTx`, `BlockDevice`, `LocalStorage`, `CloudStorage`, `DistributedStorage` | 单机 KV、WAL、元数据管理 |
-| **⑤ 基础设施层** | 15个 | `Transport`, `Message`, `Stream`, `Channel`, `RPC`⭐, `Codec`, `Middleware`, `MiddlewareChain`, `BatchReplicator`, `PipelineReplicator`, `CacheLayer`, `CircuitBreaker`, `RetryPolicy`, `Plugin`, `DynamicConfig` | 网络通信、对象存储、异步能力、扩展能力 |
-| **总计** | **43个** | **43个完整接口** | **完整分布式KV系统** |
+| **⑤ 基础设施层** | 16个 | `Transport`, `Message`, `Stream`, `Channel`, `RPC`⭐, `Codec`, `Middleware`, `MiddlewareChain`, `BatchReplicator`, `PipelineReplicator`, `CacheLayer`, `CircuitBreaker`, `RetryPolicy`, `Plugin`, `DynamicConfig`, `GoroutineProvider`⭐ | 网络通信、对象存储、异步能力、扩展能力、并发管理 |
+| **总计** | **44个** | **44个完整接口** | **完整分布式KV系统** |
 
 > ⭐ v18.2: 合并 RPC + MultiRPC → 统一 RPC 接口（-1 个接口）
+>
+> **接口统计说明**：
+> - ⑤ 基础设施层：16个接口（含 GoroutineProvider）
+> - GoroutineProvider 已纳入 16 个接口计数，实现参见 [ddd-implement.md#54-并发管理层实现](2026-02-18_spike_nexkv-ddd-implement.md#54-并发管理层实现)
 
 ### 1.4 分层依赖规则
 
@@ -1520,6 +1542,36 @@ STORAGE ENGINE   <--- B+tree / LSM-tree / 微软Bf-Tree 在这里
 
 ### 2.2 Interface定义
 
+#### 2.2.0 双存储引擎策略
+
+> **核心决策**：存储结构跟着场景走，而非强行统一
+
+NexKV 采用**双存储引擎策略**，针对不同数据类型使用不同的存储引擎：
+
+| 存储类型 | 底层实现 | 数据类型 | 访问模式 | 性能特点 |
+|---------|---------|---------|---------|---------|
+| **Metadata KV** | `sync.Map` + MVStore | 元数据（节点、分片、副本、锁） | 点查询 90%，前缀扫描 8% | O(1) 哈希查找，Lock-free 并发 |
+| **External KV** | Bf-Tree（B+树变体） | 业务数据（应用数据） | 点查询 + 范围查询 | O(log N) 有序存储，范围扫描 |
+
+**为什么不统一？**
+
+| 维度 | Metadata（元数据） | External KV（业务数据） |
+|------|-------------------|------------------------|
+| **数据特征** | 量小（<1000条）、读写高频 | 量大、需范围查询、持久化 |
+| **核心诉求** | 极致读写性能（O(1)） | 有序存储、范围查询、崩溃恢复 |
+| **工程复杂度** | 无持久化/事务需求 | 需 WAL、并发控制、持久化 |
+
+**实现位置**：
+```
+internal/infrastructure/storage/
+├── metadata/           # Metadata KV 实现
+│   └── metadata_kv.go  # sync.Map + MVStore
+└── bftree/             # External KV 实现
+    ├── tree.go         # Bf-Tree 主结构
+    ├── scan.go         # 范围扫描
+    └── ...
+```
+
 #### 2.2.1 KVStore - 存储引擎核心接口
 
 ```go
@@ -1592,15 +1644,15 @@ type KVStore interface {
 //   - Storage负责：内存+磁盘文件的数据组织
 //
 // 故障恢复流程：
-//   1. 系统启动时，先读取WAL
+//   1. 系统启动时，先读取WAL（调用Recover）
 //   2. 重放WAL中的所有操作
 //   3. 恢复到故障前的状态
 //   4. 然后才开始正常服务
 //
 // 使用场景：
-//   - 每次写操作前，先写WAL
+//   - 每次写操作前，先写WAL（调用Append）
 //   - 定期Truncate旧日志（已持久化的数据）
-//   - 系统重启后，Replay恢复数据
+//   - 系统重启后，Recover恢复数据
 //
 // 性能考虑：
 //   - WAL写入是顺序写，性能极高
@@ -1608,22 +1660,47 @@ type KVStore interface {
 //   - 异步写入可以批量提交，进一步提高吞吐
 type WAL interface {
     // ====== 同步写日志 ======
-    Write(ctx context.Context, key, value []byte, isDelete bool) (LogIndex, error)
+    Append(entry WALEntry) error
+    Sync() error
 
     // ====== 异步写日志 ======
-    WriteAsync(ctx context.Context, key, value []byte, isDelete bool) WriteFuture
-    WriteBatchAsync(ctx context.Context, entries []WALEntry) WriteFuture
+    AppendAsync(entry WALEntry) WriteFuture
 
-    // ====== 重放和截断 ======
-    Replay(ctx context.Context, sink func(key, value []byte, isDelete bool)) error
-    Truncate(index LogIndex) error
-    TruncateAsync(index LogIndex) WriteFuture
+    // ====== 恢复和截断 ======
+    Recover() ([]WALEntry, error)
+    Truncate(lsn uint64) error
+    TruncateAsync(lsn uint64) WriteFuture
 
+    // ====== 生命周期 ======
     Close() error
 }
 
-// LogIndex 日志索引
-type LogIndex int64
+// WALEntry 定义 WAL 条目结构（完整元数据）
+type WALEntry struct {
+    LSN       uint64      // 日志序列号
+    TxID      uint64      // 事务ID（TxID = 0 表示非事务的单 KV 操作；TxID > 0 表示属于某事务）
+    Timestamp int64       // Unix 时间戳（微秒），用于恢复和调试
+    Type      WALType     // 日志类型
+    Key       []byte      // 键
+    Value     []byte      // 值
+    PrevLSN   uint64      // 前一条日志的 LSN（用于链式恢复）
+}
+
+// WALType 定义日志类型
+type WALType uint8
+
+const (
+    WALTypeInsert WALType = iota
+    WALTypeDelete
+    WALTypeTxBegin      // 事务开始
+    WALTypeCommit       // 事务提交
+    WALTypeTxRollback   // 事务回滚
+    WALTypeCheckpoint   // 检查点
+    // Bf-Tree 扩展类型
+    WALTypeInsertMiniPage
+    WALTypeDeleteMiniPage
+    WALTypeUpgradeToFullPage
+)
 ```
 
 #### 2.2.3 BTree - B+tree专用接口
@@ -1652,13 +1729,13 @@ type LogIndex int64
 //   - 异步方法：适合批量页加载、预取等高并发场景
 type BTree interface {
     // ====== 同步页管理 ======
-    LoadPage(ctx context.Context, pageID int) (Page, error)
+    LoadPage(ctx context.Context, pageID uint32) (Page, error)
     WritePage(ctx context.Context, page Page) error
 
     // ====== 异步页管理 ======
-    LoadPageAsync(ctx context.Context, pageID int) PageFuture
+    LoadPageAsync(ctx context.Context, pageID uint32) PageFuture
     WritePageAsync(ctx context.Context, page Page) WriteFuture
-    PrefetchPages(ctx context.Context, pageIDs []int) WriteFuture
+    PrefetchPages(ctx context.Context, pageIDs []uint32) WriteFuture
 
     // ====== 同步B+tree操作 ======
     Insert(key, value []byte) error
@@ -1689,7 +1766,7 @@ type BTreeConfig struct {
 
 // Page 页（磁盘和内存之间的单位）
 type Page interface {
-    ID() int
+    ID() uint32
     Data() []byte
     Dirty() bool
     SetDirty(bool)
@@ -1765,7 +1842,7 @@ type Iterator interface {
 //
 // 使用示例：
 //
-//	// 同步事务
+//	// 同步事务（单条操作）
 //	tx, err := store.NewTx()
 //	if err != nil {
 //	    return err
@@ -1784,23 +1861,47 @@ type Iterator interface {
 //
 //	return tx.Commit()
 //
-//	// 异步事务
+//	// 批量事务操作
+//	tx, err := store.NewTx()
+//	if err != nil {
+//	    return err
+//	}
+//	defer tx.Rollback()
+//
+//	// 批量写入多条数据（使用 []KeyValue）
+//	kvs := []KeyValue{
+//	    {Key: []byte("key1"), Value: []byte("value1")},
+//	    {Key: []byte("key2"), Value: []byte("value2")},
+//	    {Key: []byte("key3"), Value: []byte("value3")},
+//	}
+//	if err := tx.BatchSet(ctx, kvs); err != nil {
+//	    return err
+//	}
+//
+//	return tx.Commit()
+//
+//	// 异步事务提交
 //	future := tx.CommitAsync()
 //	// 执行其他操作...
 //	if err := future.Get(); err != nil {
 //	    return err
 //	}
 type LocalTx interface {
-    // ====== 事务操作（同步） ======
+    // ====== 单条事务操作（同步） ======
+    // 内存安全：所有方法内部会深拷贝 key/value
     Get(ctx context.Context, key []byte) ([]byte, error)
     Set(ctx context.Context, key, value []byte) error
     Delete(ctx context.Context, key []byte) error
 
+    // ====== 批量事务操作（同步，事务内顺序执行） ======
+    BatchSet(ctx context.Context, kvs []KeyValue) error
+    BatchGet(ctx context.Context, keys [][]byte) ([]KeyValue, error)
+    BatchDelete(ctx context.Context, keys [][]byte) error
+
     // ====== 提交/回滚（同步+异步） ======
     Commit() error
     CommitAsync() WriteFuture
-    Rollback() error
-    RollbackAsync() WriteFuture
+    Rollback() error // 回滚是内存操作，极快，无需异步版本
 }
 ```
 
@@ -1871,6 +1972,15 @@ type AsyncOperation[T any] interface {
     //   - err: 取消失败的原因（如操作已完成或已取消）
     Cancel() (canceled bool, err error)
 
+    // Discard 放弃结果，释放资源
+    // 用于不再需要结果时提前释放资源
+    // 返回: 可能的错误（如操作已完成）
+    Discard() error
+
+    // IsStarted 返回是否已启动（v19.0 新增）
+    // 返回: true=已启动，false=未启动
+    IsStarted() bool
+
     // OnComplete 注册回调函数（结果就绪时调用）
     // 回调函数接收结果 T 和错误 error
     // 回调执行带 recover() 隔离 panic，不会影响主流程
@@ -1912,14 +2022,18 @@ var (
 type OperationStatus int
 
 const (
-    // StatusPending 操作进行中
+    // StatusPending 待执行（v19.0 更新）
     StatusPending OperationStatus = iota
+    // StatusRunning 执行中（v19.0 新增）
+    StatusRunning
     // StatusCompleted 操作成功完成
     StatusCompleted
     // StatusFailed 操作失败
     StatusFailed
     // StatusCanceled 操作被取消
     StatusCanceled
+    // StatusDiscarded 操作被丢弃（v19.0 新增）
+    StatusDiscarded
     // StatusTimeout 操作超时
     StatusTimeout
 )
@@ -1929,12 +2043,16 @@ func (s OperationStatus) String() string {
     switch s {
     case StatusPending:
         return "pending"
+    case StatusRunning:
+        return "running"
     case StatusCompleted:
         return "completed"
     case StatusFailed:
         return "failed"
     case StatusCanceled:
         return "canceled"
+    case StatusDiscarded:
+        return "discarded"
     case StatusTimeout:
         return "timeout"
     default:
@@ -1945,8 +2063,117 @@ func (s OperationStatus) String() string {
 // IsTerminal 返回是否为终态（终态不可变更）
 func (s OperationStatus) IsTerminal() bool {
     return s == StatusCompleted || s == StatusFailed ||
-           s == StatusCanceled || s == StatusTimeout
+           s == StatusCanceled || s == StatusDiscarded || s == StatusTimeout
 }
+
+// ============================================================================
+// StatusCanceled vs StatusDiscarded 使用场景说明（v19.0 新增）
+// ============================================================================
+
+/**
+StatusCanceled 和 StatusDiscarded 的区别：
+
+1. StatusCanceled（主动取消）
+   - 触发方式：调用 Cancel() 方法
+   - 使用场景：
+     * 用户主动取消操作（如点击"取消"按钮）
+     * 业务逻辑决定不再需要结果（如检测到前置条件失败）
+     * Context 被取消（如请求超时、客户端断开连接）
+   - 行为特征：
+     * 会中断正在执行的操作
+     * 调用 context.CancelFunc() 取消底层 context
+     * 已启动的 goroutine 会收到取消信号并提前退出
+   - 示例：
+     ```go
+     // 场景1：用户取消上传
+     uploadFuture := storage.UploadAsync(ctx, file)
+     // 用户点击取消按钮
+     uploadFuture.Cancel()
+
+     // 场景2：前置检查失败，取消后续操作
+     checkFuture := db.CheckAsync(ctx, condition)
+     if !conditionMet {
+         checkFuture.Cancel() // 不再需要检查结果
+     }
+     ```
+
+2. StatusDiscarded（丢弃结果）
+   - 触发方式：调用 Discard() 方法
+   - 使用场景：
+     * 批量操作中不再需要某些结果（如批量查询后只关心部分结果）
+     * 资源释放（如内存压力大时主动释放不重要的异步操作）
+     * 缓存淘汰（如 TTL 过期的异步操作）
+     * 优化性能（避免处理不再需要的结果）
+   - 行为特征：
+     * 不中断正在执行的操作（允许操作继续执行完成）
+     * 仅丢弃结果，不释放执行资源
+     * 回调仍会执行，但结果被标记为 discarded
+   - 示例：
+     ```go
+     // 场景1：批量查询，只关心前10个结果
+     futures := make([]AsyncOperation[User], 100)
+     for i := 0; i < 100; i++ {
+         futures[i] = db.GetUserAsync(ctx, userIDs[i])
+     }
+
+     // 等待前10个结果
+     for i := 0; i < 10; i++ {
+         users[i], _ = futures[i].Get(ctx)
+     }
+
+     // 丢弃剩余结果（不中断执行，仅丢弃结果）
+     for i := 10; i < 100; i++ {
+         futures[i].Discard()
+     }
+
+     // 场景2：缓存失效，丢弃加载中的结果
+     cacheLoadFuture := cache.LoadAsync(ctx, key)
+     // 检测到 key 已被删除
+     if keyDeleted {
+         cacheLoadFuture.Discard() // 不再需要加载结果
+     }
+     ```
+
+3. 选择建议：
+
+   | 场景 | 推荐状态 | 理由 |
+   |------|---------|------|
+   | 用户取消操作 | StatusCanceled | 需要立即停止执行，释放资源 |
+   | 前置条件失败 | StatusCanceled | 避免无效执行，节省资源 |
+   | 请求超时 | StatusCanceled | Context 自动取消，需要中断执行 |
+   | 批量操作部分结果 | StatusDiscarded | 允许执行完成，仅丢弃结果 |
+   | 资源压力大 | StatusDiscarded | 不中断执行，避免频繁重启 |
+   | 缓存淘汰 | StatusDiscarded | 不中断加载，避免缓存穿透 |
+
+4. 性能影响：
+
+   | 操作 | 性能影响 | 资源释放 |
+   |------|---------|---------|
+   | Cancel() | 立即停止执行 | ✅ 立即释放 goroutine |
+   | Discard() | 允许执行完成 | ❌ 不释放 goroutine（等待自然结束） |
+
+5. 最佳实践：
+
+   - ✅ **优先使用 Cancel()**：大多数场景下应使用 Cancel()，释放资源更及时
+   - ✅ **批量操作用 Discard()**：批量查询中不关心的结果用 Discard()，避免频繁启停
+   - ⚠️ **避免混用**：同一操作不要同时调用 Cancel() 和 Discard()
+   - ⚠️ **注意状态检查**：调用前检查 `IsTerminal()`，终态不可变更
+
+   ```go
+   // ❌ 错误：同一操作多次取消/丢弃
+   future.Cancel()
+   future.Discard() // 无效，已是终态
+
+   // ✅ 正确：检查状态后再操作
+   if !future.Status().IsTerminal() {
+       if needInterrupt {
+           future.Cancel()
+       } else {
+           future.Discard()
+       }
+   }
+   ```
+*/
 
 // ============================================================================
 // asyncOp - AsyncOperation 的默认实现（v18.0 增强）
@@ -2175,7 +2402,7 @@ type Future[T any] = AsyncOperation[T]
 type ReadFuture = Future[[]byte]                      // 读取 Future
 type WriteFuture = Future[WriteResult]                // 写入 Future
 type IteratorFuture = Future[Iterator]                // 迭代器 Future
-type BatchGetFuture = Future[map[string][]byte]       // 批量读取 Future
+type BatchGetFuture = Future[[]KeyValue]       // 批量读取 Future
 type PageFuture = Future[Page]                        // 页 Future
 type BatchFuture = Future[BatchResult]                // 批量操作 Future
 
@@ -2316,7 +2543,7 @@ if future.Status() == async.StatusPending {
         log.Warnf("取消失败: %v", err)
     }
 }
-```
+
 
 // ====== 示例7：取消长时间运行的异步操作 ======
 future := store.ScanAsync(ctx, startKey, endKey)
@@ -2617,6 +2844,18 @@ type LocalStorageConfig struct {
 // CloudStorage是BlockDevice的一种实现，使用云对象存储服务。
 // 支持AWS S3、Azure Blob Storage、Google Cloud Storage等。
 //
+// ⚠️ 云存储不可变性：
+//   - S3/Azure Blob/GCS 的对象写完后不可修改
+//   - Write() 对已存在的 blockID 会返回 ErrBlockExists
+//   - 如需更新，必须先 Delete() 再 Write()
+//   - 如需版本控制，请使用 VersionedCloudStorage 接口
+//
+// 📦 本地缓存策略：
+//   - 读取时自动缓存到本地磁盘
+//   - 支持 PrefetchToCache 预取热点数据
+//   - 支持 CacheInvalidate 使缓存失效
+//   - 缓存驱逐策略由 CloudStorageConfig 配置（LRU/LFU）
+//
 // 使用场景：
 //   - AWS S3：无限容量、11个9的持久性
 //   - Azure Blob：云原生存储、分层存储
@@ -2624,6 +2863,7 @@ type LocalStorageConfig struct {
 //
 // 性能优化：
 //   - 分片上传：大文件并发上传（异步优化）
+//   - 本地缓存：减少云端访问延迟
 //   - CDN加速：就近访问
 //   - 生命周期管理：自动归档旧数据
 type CloudStorage interface {
@@ -2644,10 +2884,48 @@ type CloudStorage interface {
     // 获取元数据（同步+异步）
     GetMetadata(ctx context.Context, blockID BlockID) (map[string]string, error)
     GetMetadataAsync(ctx context.Context, blockID BlockID) MetadataFuture
+
+    // ====== 本地缓存操作（同步+异步） ======
+    // 预取到本地缓存
+    PrefetchToCache(ctx context.Context, blockIDs []BlockID) error
+    PrefetchToCacheAsync(ctx context.Context, blockIDs []BlockID) WriteFuture
+
+    // 使缓存失效
+    CacheInvalidate(ctx context.Context, blockID BlockID) error
+    CacheInvalidateAsync(ctx context.Context, blockID BlockID) WriteFuture
+
+    // 查询缓存状态
+    CacheStatus(ctx context.Context, blockID BlockID) (CacheStatus, error)
+    CacheStatusAsync(ctx context.Context, blockID BlockID) CacheStatusFuture
+
+    // 获取缓存统计
+    CacheStats() CacheStats
+}
+
+// CacheStatus 缓存状态
+type CacheStatus struct {
+    Cached      bool      // 是否在本地缓存
+    CachePath   string    // 缓存文件路径
+    CacheSize   int64     // 缓存大小
+    LastAccess  time.Time // 最后访问时间
+    ETag        string    // 云端 ETag（用于验证一致性）
+}
+
+// CacheStats 缓存统计
+type CacheStats struct {
+    TotalCached   int64 // 缓存块数
+    TotalBytes    int64 // 缓存字节数
+    HitCount      int64 // 缓存命中次数
+    MissCount     int64 // 缓存未命中次数
+    EvictCount    int64 // 驱逐次数
+    MaxCacheBytes int64 // 最大缓存大小
 }
 
 // MetadataFuture 元数据Future（类型别名）
 type MetadataFuture = AsyncOperation[map[string]string]
+
+// CacheStatusFuture 缓存状态Future（类型别名）
+type CacheStatusFuture = AsyncOperation[CacheStatus]
 
 // Chunk 分片
 type Chunk struct {
@@ -2685,10 +2963,68 @@ type CloudStorageConfig struct {
     SecretKey     string // 密钥
     MaxRetries    int    // 最大重试次数
     Timeout       time.Duration // 超时时间
+    // 本地缓存配置
+    EnableCache    bool          // 是否启用本地缓存
+    CachePath      string        // 缓存目录路径
+    MaxCacheBytes  int64         // 最大缓存大小（字节）
+    CachePolicy    CachePolicy   // 缓存驱逐策略（LRU/LFU）
+    CacheTTL       time.Duration // 缓存过期时间
+    PrefetchOnRead bool          // 读取时是否自动预取相邻块
 }
+
+// CachePolicy 缓存驱逐策略
+type CachePolicy int
+
+const (
+    CachePolicyLRU CachePolicy = iota // 最近最少使用（默认）
+    CachePolicyLFU                    // 最不常用
+)
 ```
 
-#### 2.6.4 DistributedStorage - 分布式存储接口
+#### 2.6.4 VersionedCloudStorage - 版本控制云存储接口
+
+```go
+// VersionedCloudStorage 支持版本控制的云存储接口。
+//
+// 继承 CloudStorage，扩展版本控制能力：
+//   - Write() 会创建新版本而非报错
+//   - 支持列出、获取、删除特定版本
+//
+// 适用场景：
+//   - 需要保留历史版本的场景
+//   - 合规审计要求（数据不可变 + 版本追溯）
+type VersionedCloudStorage interface {
+    CloudStorage
+
+    // ====== 版本控制操作（同步+异步） ======
+    // 列出所有版本
+    ListVersions(ctx context.Context, blockID BlockID) ([]BlockVersion, error)
+    ListVersionsAsync(ctx context.Context, blockID BlockID) VersionsFuture
+
+    // 获取特定版本
+    GetVersion(ctx context.Context, blockID BlockID, versionID string) ([]byte, error)
+    GetVersionAsync(ctx context.Context, blockID BlockID, versionID string) BlockFuture
+
+    // 删除特定版本
+    DeleteVersion(ctx context.Context, blockID BlockID, versionID string) error
+    DeleteVersionAsync(ctx context.Context, blockID BlockID, versionID string) WriteFuture
+}
+
+// BlockVersion 版本信息
+type BlockVersion struct {
+    VersionID    string    // 版本ID
+    BlockID      BlockID   // 块ID
+    Size         int64     // 大小
+    ETag         string    // ETag（用于一致性校验）
+    LastModified time.Time // 修改时间
+    IsLatest     bool      // 是否最新版本
+}
+
+// VersionsFuture 版本列表Future（类型别名）
+type VersionsFuture = AsyncOperation[[]BlockVersion]
+```
+
+#### 2.6.5 DistributedStorage - 分布式存储接口
 
 ```go
 // DistributedStorage 定义分布式存储接口（同步+异步统一接口，Ceph/MinIO）。
@@ -4656,7 +4992,7 @@ type ClientWriteResult struct {
 // Future 类型别名（基于统一 AsyncOperation）
 type ClientFuture = AsyncOperation[ClientReadResult]
 type ClientWriteFuture = AsyncOperation[ClientWriteResult]
-type ClientBatchGetFuture = AsyncOperation[map[string][]byte]
+type ClientBatchGetFuture = AsyncOperation[[]KeyValue]
 ```
 
 #### 7.2.1 ClientTx - 客户端事务（同步+异步统一）
@@ -4719,7 +5055,7 @@ type KVClient interface {
     Delete(ctx context.Context, key []byte) (hlc.Timestamp, error)
 
     // ====== 批量同步 ======
-    BatchGet(ctx context.Context, keys [][]byte) (map[string][]byte, error)
+    BatchGet(ctx context.Context, keys [][]byte) ([]KeyValue, error)
     BatchPut(ctx context.Context, kvs map[string][]byte) (hlc.Timestamp, error)
 
     // ====== 异步KV操作（三种模式） ======
@@ -6665,7 +7001,661 @@ const (
 )
 ```
 
-### 13-B.4 扩展接口使用场景
+### 13-B.4 并发管理层（1个Interface）
+
+> **依赖版本**: `github.com/panjf2000/ants/v2` v2.8.0+
+
+**核心价值**：全局 goroutine 池管理，提供类型安全的异步任务提交、优先级控制和 Prometheus 监控
+
+**核心优化点**：
+1. **泛型支持**：`Result[T any]` 类型安全，无需类型断言
+2. **动态扩缩容**：使用 `ants.Pool.Tune()` 运行时调整容量
+3. **批量错误处理**：`SubmitBatchAllErrors` 返回所有错误
+4. **NexKV 专用封装**：`SubmitRaftTask` 等 7 个优先级封装
+5. **Prometheus 监控集成**：完整的性能指标导出
+
+#### 13-B.4.1 GoroutineProvider - 全局 Goroutine 池管理
+
+```go
+package concurrency
+
+import (
+    "context"
+    "time"
+)
+
+// GoroutineProvider 全局 goroutine 提供者接口（泛型版本）
+type GoroutineProvider interface {
+    // ========================================
+    // 基础提交方法
+    // ========================================
+
+    // Submit 提交无返回值任务
+    Submit(task func()) error
+
+    // SubmitWithContext 提交带 context 的任务
+    SubmitWithContext(ctx context.Context, task func(context.Context)) error
+
+    // ========================================
+    // 泛型结果提交方法（优化点1：类型安全）
+    // ========================================
+
+    // SubmitWithResult 提交有返回值的任务（泛型）
+    SubmitWithResult[T any](task func() (T, error)) Result[T]
+
+    // SubmitWithPriority 按优先级提交任务
+    SubmitWithPriority(priority Priority, task func()) error
+
+    // SubmitDelayed 延迟提交任务
+    SubmitDelayed(delay time.Duration, task func()) error
+
+    // ========================================
+    // 批量操作（优化点4：完善错误处理）
+    // ========================================
+
+    // SubmitBatch 批量提交任务（快速失败）
+    SubmitBatch(tasks []func()) error
+
+    // SubmitBatchAllErrors 批量提交，返回所有错误
+    SubmitBatchAllErrors(tasks []func()) []error
+
+    // SubmitBatchWithResult 批量提交并获取结果（泛型）
+    SubmitBatchWithResult[T any](tasks []func() (T, error)) []Result[T]
+
+    // ========================================
+    // 监控和管理
+    // ========================================
+
+    Stats() PoolStats
+    Health() HealthStatus
+    SetCapacity(capacity int) error  // 优化点2：支持动态调整
+
+    // ========================================
+    // 生命周期
+    // ========================================
+
+    Close() error
+    CloseWithTimeout(timeout time.Duration) error
+}
+
+// Result[T] 泛型异步结果接口（优化点1）
+type Result[T any] interface {
+    Get(ctx context.Context) (T, error)
+    GetWithTimeout(timeout time.Duration) (T, error)
+    Done() <-chan struct{}
+    IsDone() bool
+}
+
+**设计说明**：
+- `Result[T]` 接口**不需要** `Discard()` 方法
+- 原因：`Result` 本身不持有资源，真正的资源（goroutine）在 `GoroutineProvider` 中管理
+- 如果需要取消任务，应在提交前通过 `context.Context` 控制
+
+// Priority 任务优先级
+type Priority int
+
+const (
+    PriorityLow Priority = iota
+    PriorityNormal
+    PriorityHigh
+    PriorityCritical
+)
+
+// PoolStats 池统计信息
+type PoolStats struct {
+    Capacity       int
+    Running        int
+    Waiting        int
+    TotalTasks     int64
+    CompletedTasks int64
+    FailedTasks    int64
+    AvgWaitTime    time.Duration
+    AvgExecTime    time.Duration
+}
+
+// HealthStatus 健康状态
+type HealthStatus struct {
+    Healthy     bool
+    Message     string
+    Utilization float64
+    LastChecked time.Time
+}
+```
+
+#### 13-B.4.8 标准错误码定义
+
+```go
+package concurrency
+
+import "errors"
+
+var (
+    // ErrProviderClosed Provider 已关闭
+    ErrProviderClosed = errors.New("goroutine provider is closed")
+
+    // ErrPoolFull goroutine 池已满
+    ErrPoolFull = errors.New("goroutine pool is full")
+
+    // ErrInvalidPriority 无效的优先级
+    ErrInvalidPriority = errors.New("invalid task priority")
+
+    // ErrInvalidConfig 无效的配置
+    ErrInvalidConfig = errors.New("invalid provider configuration")
+
+    // ErrCapacityInvalid 无效的容量
+    ErrCapacityInvalid = errors.New("capacity must be positive")
+)
+```
+
+**使用示例**：
+
+```go
+err := provider.Submit(task)
+if err != nil {
+    if errors.Is(err, concurrency.ErrProviderClosed) {
+        // Provider 已关闭，无法提交任务
+        log.Error("provider is closed")
+    } else if errors.Is(err, concurrency.ErrPoolFull) {
+        // 池已满，可以等待或降级
+        log.Warn("pool is full, retry later")
+    }
+}
+```
+
+#### 13-B.4.8.1 ants 池满错误处理指南
+
+当 `ants.Pool` 满载时，会返回 `ants.ErrPoolOverload` 错误，NexKV 将其包装为 `ErrPoolFull`。
+
+**处理策略**：
+
+```go
+err := provider.Submit(task)
+if err != nil {
+    if errors.Is(err, concurrency.ErrPoolFull) {
+        // 策略1：等待后重试（推荐）
+        time.Sleep(100 * time.Millisecond)
+        return provider.Submit(task)
+
+        // 策略2：降级到同步执行
+        task()
+        return nil
+
+        // 策略3：返回错误给调用方
+        return err
+    }
+}
+```
+
+**池满原因分析**：
+- **goroutine 池容量不足** → 调用 `SetCapacity()` 增加容量
+- **任务执行时间过长** → 优化任务代码或拆分任务
+- **任务提交速率过高** → 实施限流或批量提交
+
+**监控指标**：
+```bash
+# 查看池等待任务数
+nexkv_goroutine_pool_waiting_tasks{priority="normal"}
+
+# 查看池利用率
+nexkv_goroutine_pool_running_tasks / nexkv_goroutine_pool_capacity
+```
+
+#### 13-B.4.2 NexKV 专用封装
+
+```go
+package concurrency
+
+// SubmitRaftTask 提交 Raft 共识任务（关键优先级）
+func SubmitRaftTask(task func()) error {
+    return MustGetGlobalProvider().SubmitWithPriority(PriorityCritical, task)
+}
+
+// SubmitKVReadTask 提交 KV 读任务（高优先级）
+func SubmitKVReadTask(task func()) error {
+    return MustGetGlobalProvider().SubmitWithPriority(PriorityHigh, task)
+}
+
+// SubmitKVWriteTask 提交 KV 写任务（高优先级）
+func SubmitKVWriteTask(task func()) error {
+    return MustGetGlobalProvider().SubmitWithPriority(PriorityHigh, task)
+}
+
+// SubmitMetadataTask 提交元数据任务（关键优先级）
+func SubmitMetadataTask(task func()) error {
+    return MustGetGlobalProvider().SubmitWithPriority(PriorityCritical, task)
+}
+
+// SubmitCompactionTask 提交 Compaction 任务（低优先级）
+func SubmitCompactionTask(task func()) error {
+    return MustGetGlobalProvider().SubmitWithPriority(PriorityLow, task)
+}
+
+// SubmitGossipTask 提交 Gossip 任务（普通优先级）
+func SubmitGossipTask(task func()) error {
+    return MustGetGlobalProvider().SubmitWithPriority(PriorityNormal, task)
+}
+
+// SubmitWALTask 提交 WAL 写入任务（关键优先级）
+func SubmitWALTask(task func()) error {
+    return MustGetGlobalProvider().SubmitWithPriority(PriorityCritical, task)
+}
+```
+
+#### 13-B.4.3 全局单例管理
+
+```go
+package concurrency
+
+import "sync"
+
+var (
+    globalProvider GoroutineProvider
+    globalOnce     sync.Once
+    globalErr      error
+)
+
+// InitGlobalProvider 初始化
+func InitGlobalProvider(config *ProviderConfig) error {
+    globalOnce.Do(func() {
+        globalProvider, globalErr = NewAntsGoroutineProvider(config)
+    })
+    return globalErr
+}
+
+// GetGlobalProvider 获取
+func GetGlobalProvider() GoroutineProvider {
+    return globalProvider
+}
+
+// MustGetGlobalProvider 必须获取
+func MustGetGlobalProvider() GoroutineProvider {
+    if globalProvider == nil {
+        panic("global goroutine provider not initialized")
+    }
+    return globalProvider
+}
+
+// CloseGlobalProvider 关闭
+func CloseGlobalProvider() error {
+    if globalProvider != nil {
+        return globalProvider.Close()
+    }
+    return nil
+}
+
+// ResetGlobalProvider 重置（仅测试）
+func ResetGlobalProvider() {
+    globalProvider = nil
+    globalOnce = sync.Once{}
+}
+```
+
+#### 13-B.4.4 使用示例
+
+**示例1：类型安全的异步操作**
+
+```go
+// 优化前（需要类型断言）
+result := provider.SubmitWithResult(func() (interface{}, error) {
+    return fetchData(key)
+})
+val, err := result.Get(ctx)
+strVal := val.(string) // 不安全
+
+// 优化后（类型安全）
+result := provider.SubmitWithResult(func() (string, error) {
+    return fetchData(key)
+})
+strVal, err := result.Get(ctx) // 直接返回 string
+```
+
+**示例2：NexKV 组件使用**
+
+```go
+// Raft 层
+import "github.com/jzhang405/NexKV/internal/concurrency"
+
+func (r *Raft) proposeAsync(cmd []byte) {
+    concurrency.SubmitRaftTask(func() {
+        r.propose(cmd)
+    })
+}
+
+// Storage 层
+func (s *Storage) compactAsync() {
+    concurrency.SubmitCompactionTask(func() {
+        s.compact()
+    })
+}
+```
+
+**示例3：批量操作**
+
+```go
+// 快速失败（遇到第一个错误就返回）
+err := provider.SubmitBatch(tasks)
+
+// 获取所有错误
+errs := provider.SubmitBatchAllErrors(tasks)
+for _, err := range errs {
+    log.Printf("task failed: %v", err)
+}
+
+// 批量获取结果（泛型）
+results := provider.SubmitBatchWithResult(func() (UserData, error) {
+    return fetchUser(id)
+})
+for _, result := range results {
+    user, err := result.Get(ctx)
+    // 处理结果
+}
+```
+
+#### 13-B.4.5 优先级映射表
+
+| 优先级 | 使用场景 | 示例方法 | 池大小（默认） |
+|--------|---------|---------|--------------|
+| **Critical** | Raft 共识、元数据更新、WAL 写入 | `SubmitRaftTask` | CPU × 2 |
+| **High** | KV 读写操作 | `SubmitKVReadTask`, `SubmitKVWriteTask` | CPU × 4 |
+| **Normal** | Gossip 协议、普通任务 | `SubmitGossipTask` | CPU × 8 |
+| **Low** | Compaction、后台清理 | `SubmitCompactionTask` | CPU × 16 |
+
+#### 13-B.4.6 Prometheus 监控指标
+
+```go
+// 导出的 Prometheus 指标
+var (
+    // 运行中的任务数
+    nexkv_goroutine_pool_running_tasks{priority="critical|high|normal|low"}
+
+    // 等待中的任务数
+    nexkv_goroutine_pool_waiting_tasks{priority="critical|high|normal|low"}
+
+    // 总任务数
+    nexkv_goroutine_pool_tasks_total{priority="critical|high|normal|low"}
+
+    // 任务执行时长
+    nexkv_goroutine_pool_task_duration_seconds{priority="critical|high|normal|low"}
+)
+```
+
+#### 13-B.4.7 与其他层的关系
+
+```
+上层调用关系：
+┌─────────────────────────────────────────┐
+│ ① API层 / ② 控制平面层 / ③ 数据平面层  │
+└─────────────────┬───────────────────────┘
+                  │ SubmitRaftTask() / SubmitKVReadTask() 等
+                  ↓
+┌─────────────────────────────────────────┐
+│ ⑤ 基础设施层 - 并发管理层               │
+│ - GoroutineProvider (泛型)              │
+│ - 4级优先级池管理                        │
+│ - Prometheus 监控集成                    │
+└─────────────────┬───────────────────────┘
+                  │ ants.Pool (第三方库)
+                  ↓
+         Go Runtime Scheduler
+```
+
+**设计原则**：
+1. **全局单例**：整个应用共享一个 GoroutineProvider 实例
+2. **优先级隔离**：不同优先级任务使用独立池，避免相互影响
+3. **动态调整**：支持运行时调整池大小（`SetCapacity`）
+4. **优雅关闭**：延迟任务跟踪，确保所有任务完成
+5. **监控集成**：自动导出 Prometheus 指标
+
+#### 13-B.4.9 与 AsyncOperation[T] 的集成
+
+**架构演进（v19.0）**：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              重构前：AsyncOperation 独立实现                   │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  AsyncOperation ──→ 自己创建 goroutine ──→ 执行              │
+│       ↑                                                      │
+│       └── 每个 AsyncOperation 都独立管理 goroutine           │
+│           └── 资源不可控、无法复用                            │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│              重构后：AsyncOperation 使用 GoroutineProvider    │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  AsyncOperation ──→ GoroutineProvider.SubmitWithResult()    │
+│       ↑                           ↓                          │
+│       │                    ants.Pool（复用 goroutine）        │
+│       │                           ↓                          │
+│       └──────────────────── 执行回调                          │
+│                                                              │
+│  优势：                                                       │
+│  ✅ goroutine 复用（通过 ants 池）                            │
+│  ✅ 优先级控制（Critical/High/Normal/Low）                    │
+│  ✅ 资源可控（限制并发数）                                     │
+│  ✅ 统一监控（Prometheus 指标）                               │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**核心实现（基于 GoroutineProvider）**：
+
+```go
+// NewAsyncOperation 创建异步操作（使用全局 GoroutineProvider）
+func NewAsyncOperation[T any](
+    ctx context.Context,
+    fn func(context.Context) (T, error),
+) AsyncOperation[T] {
+    return NewAsyncOperationWithPriority(ctx, concurrency.PriorityNormal, fn)
+}
+
+// NewAsyncOperationWithPriority 创建带优先级的异步操作
+func NewAsyncOperationWithPriority[T any](
+    ctx context.Context,
+    priority concurrency.Priority,
+    fn func(context.Context) (T, error),
+) AsyncOperation[T] {
+    ctx, cancel := context.WithCancel(ctx)
+
+    op := &asyncOp[T]{
+        ctx:       ctx,
+        cancel:    cancel,
+        done:      make(chan struct{}),
+        callbacks: make(map[string]func(T, error)),
+        provider:  concurrency.MustGetGlobalProvider(),
+    }
+
+    // ✅ 使用 GoroutineProvider 提交任务
+    op.status.Store(int32(StatusRunning))
+
+    err := op.provider.SubmitWithPriority(priority, func() {
+        op.execute(fn)
+    })
+
+    // 如果提交失败，立即标记为失败
+    if err != nil {
+        op.status.Store(int32(StatusFailed))
+        op.err = err
+        close(op.done)
+    }
+
+    return op
+}
+```
+
+**优势**：
+- ✅ **goroutine 复用**：通过 ants 池管理，避免频繁创建/销毁
+- ✅ **统一优先级控制**：与其他任务共享优先级机制（Critical/High/Normal/Low）
+- ✅ **统一监控指标**：Prometheus 指标覆盖所有异步操作
+- ✅ **资源限制**：防止 goroutine 数量失控
+- ✅ **状态管理**：支持 Status/Cancel/Discard 操作
+- ✅ **回调机制**：支持 OnComplete 注册回调
+
+**使用示例**：
+
+```go
+// 示例1：基本使用（自动使用 Normal 优先级）
+future := async.NewAsyncOperation(ctx, func(ctx context.Context) (string, error) {
+    return fetchData(key)
+})
+
+result, err := future.Get(ctx)
+
+// 示例2：带优先级的使用（Raft 共识 = Critical）
+raftFuture := async.NewAsyncOperationWithPriority(
+    ctx,
+    concurrency.PriorityCritical,
+    func(ctx context.Context) (RaftResult, error) {
+        return raft.Propose(cmd)
+    },
+)
+
+// 示例3：后台任务（Compaction = Low）
+compactFuture := async.NewAsyncOperationWithPriority(
+    ctx,
+    concurrency.PriorityLow,
+    func(ctx context.Context) (CompactResult, error) {
+        return store.Compact()
+    },
+)
+
+// 示例4：使用回调
+future.OnComplete(func(result string, err error) {
+    if err != nil {
+        log.Error("操作失败:", err)
+        return
+    }
+    log.Info("操作成功:", result)
+})
+
+// 示例5：取消操作
+if canceled, err := future.Cancel(); !canceled {
+    log.Warn("取消失败:", err)
+}
+
+// 示例6：丢弃不再需要的结果
+future.Discard()  // 释放资源，不再等待结果
+```
+
+**批量操作优化**：
+
+```go
+// 批量创建异步操作
+func BatchAsyncOperations[T any](
+    ctx context.Context,
+    priority concurrency.Priority,
+    tasks []func(context.Context) (T, error),
+) []AsyncOperation[T] {
+    provider := concurrency.MustGetGlobalProvider()
+    ops := make([]AsyncOperation[T], len(tasks))
+
+    for i, task := range tasks {
+        t := task
+        ops[i] = NewAsyncOperationWithProvider(ctx, provider, priority, t)
+    }
+
+    return ops
+}
+
+// 使用示例：批量读取
+keys := []string{"key1", "key2", "key3", "key4", "key5"}
+tasks := make([]func(context.Context) ([]byte, error), len(keys))
+
+for i, key := range keys {
+    k := key
+    tasks[i] = func(ctx context.Context) ([]byte, error) {
+        return store.Get(ctx, k)
+    }
+}
+
+// 批量创建异步操作
+futures := async.BatchAsyncOperations(ctx, concurrency.PriorityHigh, tasks)
+
+// 等待所有结果
+results, err := async.WaitAll(ctx, futures)
+
+// 或只取前 N 个结果，丢弃其余
+results, err := async.WaitAllWithDiscard(ctx, futures, 3)
+```
+
+**与 Storage 层集成（M2）**：
+
+```go
+// KVStore 异步接口
+type KVStore interface {
+    // 异步操作（使用 GoroutineProvider）
+    GetAsync(ctx context.Context, key []byte) async.ReadFuture
+    SetAsync(ctx context.Context, key, value []byte) async.WriteFuture
+    DeleteAsync(ctx context.Context, key []byte) async.WriteFuture
+}
+
+func (s *storeImpl) GetAsync(ctx context.Context, key []byte) async.ReadFuture {
+    return async.NewAsyncOperationWithPriority(
+        ctx,
+        concurrency.PriorityHigh, // KV 读是高优先级
+        func(ctx context.Context) ([]byte, error) {
+            return s.Get(ctx, key)
+        },
+    )
+}
+
+// Bf-Tree 异步页操作
+func (pm *PageManager) LoadPageAsync(ctx context.Context, pageID uint32) async.PageFuture {
+    return async.NewAsyncOperationWithPriority(
+        ctx,
+        concurrency.PriorityNormal,
+        func(ctx context.Context) (Page, error) {
+            return pm.LoadPage(ctx, pageID)
+        },
+    )
+}
+
+// FlushAsync 异步刷盘（后台任务，低优先级）
+func (pm *PageManager) FlushAsync(ctx context.Context) async.WriteFuture {
+    return async.NewAsyncOperationWithPriority(
+        ctx,
+        concurrency.PriorityLow, // 刷盘是低优先级
+        func(ctx context.Context) (async.WriteResult, error) {
+            err := pm.Flush(ctx)
+            return async.WriteResult{
+                Success:   err == nil,
+                Timestamp: time.Now().UnixNano(),
+            }, err
+        },
+    )
+}
+```
+
+**类型别名（兼容性）**：
+
+```go
+// Future 类型别名（兼容性命名）
+type Future[T any] = AsyncOperation[T]
+
+// 具体类型别名
+type ReadFuture     = Future[[]byte]
+type WriteFuture    = Future[WriteResult]
+type IteratorFuture = Future[Iterator]
+type BatchGetFuture = Future[[]KeyValue]
+type PageFuture     = Future[Page]
+type BlockFuture    = Future[[]byte]
+```
+
+**性能对比**：
+
+| 特性 | 重构前 | 重构后 |
+|------|--------|--------|
+| goroutine 管理 | 每个 AsyncOperation 独立创建 | 通过 GoroutineProvider 复用 |
+| 并发控制 | 无（可能无限增长） | 有（ants 池限制） |
+| 优先级 | 无 | Critical/High/Normal/Low |
+| 监控 | 无 | Prometheus 指标 |
+| 资源清理 | 需要 Discard | 统一由 Provider 管理 |
+| 代码复杂度 | 高（自己管理 goroutine） | 低（委托给 Provider） |
+
+### 13-B.5 扩展接口使用场景
 
 | 接口 | 使用场景 | 性能提升 | 可靠性提升 |
 |------|---------|---------|-----------|
@@ -6930,7 +7920,7 @@ type Future[T any] = AsyncOperation[T]
 type ReadFuture = Future[[]byte]
 type WriteFuture = Future[WriteResult]
 type IteratorFuture = Future[Iterator]
-type BatchGetFuture = Future[map[string][]byte]
+type BatchGetFuture = Future[[]KeyValue]
 type PageFuture = Future[Page]
 
 // BlockDevice 层

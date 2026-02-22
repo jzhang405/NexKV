@@ -2,8 +2,43 @@
 
 > **技术方案文档**
 > **创建日期**: 2026-02-09
+> **最后更新**: 2026-02-22（DDD 架构适配更新）
 > **状态**: ✅ 已批准
 > **相关 ADR**: ADR 006 (Bf-Tree MVP)
+> **参考文档**: `docs/07_spike/2026-02-18_spike-nexkv-ddd-interface.md`
+
+---
+
+## 🏗️ DDD 架构说明
+
+> Bf-Tree 作为 **Infrastructure 层** 的存储引擎实现，需要与 **Domain 层** 的元数据服务交互。
+
+### 层次关系
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Domain 层 (internal/domain/)                           │
+│  ├── service/storage.go     # KVStore/BTree 接口定义    │
+│  └── model/                 # 领域模型                  │
+└─────────────────────────────────────────────────────────┘
+                          ▲
+                          │ 接口调用
+                          │
+┌─────────────────────────────────────────────────────────┐
+│  Infrastructure 层 (internal/infrastructure/)           │
+│  └── storage/bftree/        # Bf-Tree 实现              │
+│      ├── tree.go            # 实现 KVStore/BTree 接口   │
+│      └── metadata_cache.go  # 元数据缓存                │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          │ 依赖
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│  Metadata 层 (internal/metadata/)                       │
+│  ├── table/                 # 表元数据                  │
+│  └── cluster/               # 集群元数据                │
+└─────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -127,7 +162,7 @@ const (
 ### 2.2 Bf-Tree 分片感知设计
 
 ```go
-// internal/storage/bftree/tree.go
+// internal/infrastructure/storage/bftree/tree.go
 
 package bftree
 
@@ -201,7 +236,7 @@ type MetaChangeHandler func(metaType MetaChangeType, data interface{}) error
 ### 3.2 分片验证逻辑
 
 ```go
-// internal/storage/bftree/shard_validator.go
+// internal/infrastructure/storage/bftree/shard_validator.go
 
 package bftree
 
@@ -269,7 +304,7 @@ func (sv *ShardValidator) computeShardID(hash uint64) string {
 ### 3.3 元数据缓存机制
 
 ```go
-// internal/storage/bftree/metadata_cache.go
+// internal/infrastructure/storage/bftree/metadata_cache.go
 
 package bftree
 
@@ -331,7 +366,7 @@ func (mc *MetadataCache) Refresh(client ClusterClient, tableName string) error {
 ### 3.1 WAL 条目结构
 
 ```go
-// internal/wal/bftree_wal.go
+// internal/infrastructure/storage/bftree/bftree_wal.go
 
 package wal
 

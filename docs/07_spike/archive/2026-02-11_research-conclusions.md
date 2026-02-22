@@ -179,7 +179,7 @@ Layer 1: Gossip (最终一致) - 普通变更：状态更新
 - `docs/07_spike/node-sync-optimization.md`
 - `docs/07_spike/transaction-scope-optimization.md`
 - `docs/07_spike/tree-coordinator-research.md`
-- `docs/07_spike/bftree-research.md`
+- `docs/07_spike/bftree/2026-02-11_spike_rust_bftree-research.md`
 - `docs/07_spike/protocol-message-definition.md`
 
 ### 设计文档

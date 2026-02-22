@@ -433,11 +433,11 @@ MVP 完成后可逐步优化：
 
 ### 分析文档
 
-1. **`docs/07_spike/bftree-research-summary.md`** - 预研究总结报告
-2. **`docs/07_spike/bftree-source-code-analysis.md`** - 源码深度分析
-3. **`docs/07_spike/bftree-wal-analysis.md`** - WAL 机制分析
-4. **`docs/07_spike/bftree-memory-snapshot-analysis.md`** - 内存管理与快照分析
-5. **`docs/07_spike/bftree-delta-chain-promotion-analysis.md`** - Delta Chain 与 Promotion 分析
+1. **`docs/07_spike/bftree/2026-02-09_spike_rust_bftree-research-summary.md`** - 预研究总结报告（Rust）
+2. **`docs/07_spike/bftree/2026-02-09_spike_rust_bftree-source-code-analysis.md`** - 源码深度分析（Rust）
+3. **`docs/07_spike/bftree/2026-02-09_spike_rust_bftree-wal-analysis.md`** - WAL 机制分析（Rust）
+4. **`docs/07_spike/bftree/2026-02-09_spike_rust_bftree-memory-snapshot-analysis.md`** - 内存管理与快照分析（Rust）
+5. **`docs/07_spike/bftree/2026-02-09_spike_rust_bftree-delta-chain-promotion-analysis.md`** - Delta Chain 与 Promotion 分析（Rust）
 6. **`docs/07_spike/kv-storage-engine-arch-analysis.md`** - 架构对比分析
 
 ### 实施文档

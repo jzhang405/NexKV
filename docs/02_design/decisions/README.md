@@ -73,9 +73,9 @@ NexKV 采用 **双引擎架构**：
 ### 相关文档
 
 - **详细 ADR**：`docs/02_design/decisions/006_bftree_mvp_approval.md`
-- **MVP 实施计划**：`docs/07_spike/bftree-mvp-implementation-plan.md`
-- **元数据集成方案**：`docs/07_spike/bftree-metadata-integration.md`
-- **Delta Chain 分析**：`docs/07_spike/bftree-delta-chain-promotion-analysis.md`
+- **MVP 实施计划**：`docs/07_spike/bftree/2026-02-09_spike_bftree-mvp-implementation-plan.md`
+- **元数据集成方案**：`docs/07_spike/bftree/2026-02-09_spike_bftree-metadata-integration.md`
+- **Delta Chain 分析（Rust）**：`docs/07_spike/bftree/2026-02-09_spike_rust_bftree-delta-chain-promotion-analysis.md`
 
 ---
 

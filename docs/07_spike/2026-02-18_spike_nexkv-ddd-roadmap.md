@@ -1,8 +1,34 @@
 # NexKV DDD 实施路线图（增强版）
 
-**文档版本**: v2.0 | **最后更新**: 2026-02-18
-**基于**: spike-nexkv-ddd-interface.md v18.0 + spike-nexkv-ddd-implement.md v1.5
+**文档版本**: v2.1 | **最后更新**: 2026-02-22
+**基于**: spike-nexkv-ddd-interface.md v18.9 + spike-nexkv-ddd-implement.md v1.5
 **总周期**: 约24周 | **接口总数**: 47个 | **实现文件数**: 89个
+
+---
+
+## 〇、核心架构决策
+
+### 0.1 双存储引擎策略
+
+> **核心原则**：存储结构跟着场景走，而非强行统一
+
+| 存储类型 | 底层实现 | 数据类型 | 核心诉求 |
+|---------|---------|---------|---------|
+| **Metadata KV** | `sync.Map` + MVStore | 元数据（节点、分片、副本） | 极致读写性能 O(1) |
+| **External KV** | Bf-Tree（B+树变体） | 业务数据（应用数据） | 有序存储、范围查询、持久化 |
+
+**实现位置**：
+```
+internal/infrastructure/storage/
+├── metadata/           # Metadata KV（sync.Map）
+│   └── metadata_kv.go
+└── bftree/             # External KV（Bf-Tree）
+    ├── tree.go
+    ├── scan.go
+    └── ...
+```
+
+**设计理由**：参见 `docs/07_spike/2026-02-21_spike_m2-storage-engine.md`
 
 ---
 
@@ -15,6 +41,7 @@
 - 47个统一接口
 - 5层精简架构
 - AsyncOperation[T] 精化异步接口
+- **双存储引擎**：Metadata KV（sync.Map）+ External KV（Bf-Tree）
 
 ### 1.2 技术栈
 
@@ -22,7 +49,9 @@
 |------|------|------|
 | **语言** | Go 1.21+ | 泛型支持、高性能并发 |
 | **Transport** | libp2p | 去中心化、NAT穿透 |
-| **KVStore** | Bf-Tree (Go port) | 高性能 B+tree、WAL 优化、范围扫描 |
+| **Metadata KV** | sync.Map + MVStore | O(1) 哈希查找，元数据专用 |
+| **External KV** | Bf-Tree (Go port) | 高性能 B+tree、WAL 优化、范围扫描 |
+| **并发管理** | ants + 泛型 | Goroutine Pool + 类型安全异步 |
 | **序列化** | MessagePack | 高性能、自描述 |
 | **DI容器** | Wire | 编译时检查 |
 | **日志** | Zap | 结构化日志 |
@@ -34,7 +63,7 @@
 | ① API层 | 2 | 8 | 对外 KV/Tx 接口 |
 | ② 控制平面层 | 14 | 23 | 分片路由、选举、负载均衡 |
 | ③ 数据平面层 | 6 | 20 | 复制、事务 |
-| ④ 存储引擎层 | 9 | 19 | 单机 KV、WAL |
+| ④ 存储引擎层 | 9 | 19 | **双存储引擎**（Metadata + External） |
 | ⑤ 基础设施层 | 16 | 16 | 网络通信、扩展能力 |
 | **总计** | **47** | **89** | - |
 
@@ -53,7 +82,10 @@ pkg/domain/service/middleware.go    (2个) - Middleware, MiddlewareChain
 pkg/domain/service/performance.go   (3个) - BatchReplicator, PipelineReplicator, CacheLayer
 pkg/domain/service/resilience.go    (3个) - CircuitBreaker, RetryPolicy, ChaosMonkey
 pkg/domain/service/extension.go      (2个) - Plugin, DynamicConfig
+pkg/domain/service/goroutine_provider.go (1个) - GoroutineProvider⭐
 ```
+
+> ⭐ **v2.0 新增**：GoroutineProvider 并发管理层（类型安全的泛型异步任务提交 + 优先级控制 + Prometheus 监控）
 
 #### 依赖关系图
 
@@ -67,6 +99,7 @@ graph LR
         E --> F[Performance]
         E --> G[Resilience]
         E --> H[Extension]
+        I["GoroutineProvider"] -.-> A
     end
 ```
 
@@ -74,10 +107,16 @@ graph LR
 
 | 周次 | 任务 | 交付物 | 验收标准 |
 |------|------|--------|----------|
-| **Week 1** | AsyncOperation[T] 核心 + Transport 接口定义 | `domain/model/futures.go`, `domain/service/transport.go` | 接口定义通过评审 |
-| **Week 2** | libp2p Transport 实现 + Codec 实现 | `infrastructure/transport/libp2p_*.go` | 单节点 ping/pong 正常 |
-| **Week 3** | MiddlewareChain + 性能优化接口 | `infrastructure/transport/middleware_*.go` | 中间件链按序执行 |
-| **Week 4** | 容错 + 扩展接口实现 | `infrastructure/resilience/*`, `infrastructure/extension/*` | 熔断/重试/插件加载正常 |
+| **Week 1** | AsyncOperation[T] 核心 + Transport 接口定义 + **GoroutineProvider**⭐ | `domain/model/futures.go`, `domain/service/transport.go`, `domain/service/goroutine_provider.go` | 接口定义通过评审 + **并发池正常工作** |
+| **Week 2** | libp2p Transport 实现 + Codec 实现 + **GoroutineProvider 实现**⭐ + **AsyncOperation 重构**⭐ | `infrastructure/transport/libp2p_*.go`, `pkg/concurrency/ants_provider.go`, `pkg/async/operation.go` | 单节点 ping/pong 正常 + **4级优先级池管理** + **AsyncOperation 基于 GoroutineProvider** |
+| **Week 3** | MiddlewareChain + 性能优化接口 + **NexKV 专用封装**⭐ + **批量操作实现**⭐ | `infrastructure/transport/middleware_*.go`, `internal/concurrency/nexkv_tasks.go`, `pkg/async/batch.go` | 中间件链按序执行 + **7个封装函数** + **批量异步操作** |
+| **Week 4** | 容错 + 扩展接口实现 + **Storage 层集成**⭐ | `infrastructure/resilience/*`, `infrastructure/extension/*`, `internal/storage/kvstore.go` | 熔断/重试/插件加载正常 + **异步 KV 接口** |
+
+> ⭐ **v2.0 新增**：GoroutineProvider 相关任务（预计 8 天）
+> - Week 1: 接口定义（2 天）
+> - Week 2: AntsGoroutineProvider 实现（3 天）+ **AsyncOperation 重构**（1 天）
+> - Week 3: NexKV 专用封装（1 天）+ 批量操作（0.5 天）+ 全局单例管理（0.5 天）
+> - Week 4: Storage 层集成（1 天）
 
 #### 详细文件清单
 
@@ -99,6 +138,11 @@ graph LR
 | ChaosMonkey | `infrastructure/resilience` | `chaos_monkey_impl.go` | P2 |
 | Plugin | `infrastructure/extension` | `plugin_impl.go` | P2 |
 | DynamicConfig | `infrastructure/extension` | `dynamic_config_impl.go` | P2 |
+| **GoroutineProvider**⭐ | `pkg/concurrency` | `ants_provider.go`, `global.go` | P0 |
+| **AsyncOperation**⭐ | `pkg/async` | `operation.go`, `batch.go`, `types.go` | P0 |
+| **NexKV 封装**⭐ | `internal/concurrency` | `nexkv_tasks.go` | P1 |
+
+> ⭐ **v2.0 新增**：GoroutineProvider 并发管理层 + AsyncOperation 重构（17 个实现文件 → 21 个实现文件）
 
 #### 验收标准（可验证）
 
@@ -109,6 +153,30 @@ graph LR
 - [ ] CircuitBreaker 打开/关闭状态转换正常
 - [ ] RetryPolicy 重试次数和退避时间正确
 - [ ] 测试覆盖率 ≥ 80%
+
+**GoroutineProvider 验收标准**⭐：
+- [ ] 支持泛型 `Result[T any]`，无需类型断言
+- [ ] 支持 4 级优先级（Critical/High/Normal/Low）
+- [ ] 支持批量操作（快速失败 + 全错误返回）
+- [ ] 支持动态扩缩容（`SetCapacity` 方法）
+- [ ] Prometheus 指标导出（running/waiting/tasks_total/duration）
+- [ ] 优雅关闭不丢任务（延迟任务跟踪）
+- [ ] NexKV 专用封装（Raft/KV/Metadata/Compaction/Gossip/WAL）
+- [ ] 多优先级池管理测试通过（4 个独立池）
+- [ ] 泛型结果类型安全测试通过
+- [ ] 全局单例初始化/关闭测试通过
+
+**AsyncOperation 重构验收标准**⭐（v19.0）：
+- [ ] 基于 GoroutineProvider 实现，不再独立创建 goroutine
+- [ ] 支持优先级控制（Critical/High/Normal/Low）
+- [ ] 支持状态管理（Status/Cancel/Discard/IsStarted）
+- [ ] 支持回调机制（OnComplete/OffComplete）
+- [ ] 支持批量操作（BatchAsyncOperations/WaitAll/WaitAllWithDiscard）
+- [ ] 与 Storage 层集成（GetAsync/SetAsync/DeleteAsync）
+- [ ] OperationStatus 包含 StatusRunning 和 StatusDiscarded
+- [ ] goroutine 复用率 ≥ 90%（通过 ants 池监控验证）
+- [ ] 资源可控（无 goroutine 泄漏）
+- [ ] Prometheus 指标覆盖所有异步操作
 
 ---
 
@@ -490,9 +558,9 @@ make build && make lint && make test && make fmt && make clean
 
 ---
 
-## 七、v18.0 AsyncOperation[T] 精化接口要点
+## 七、AsyncOperation 演进历程
 
-### 7.1 核心变更
+### 7.1 v18.0 精化接口
 
 | 变更 | 改进前 | 改进后 | 重要性 |
 |------|--------|--------|--------|
@@ -501,13 +569,60 @@ make build && make lint && make test && make fmt && make clean
 | 回调安全 | 直接调用 | safeCallback() + recover() | P0 |
 | 错误定义 | 无 | ErrCanceled / ErrTimeout / ErrCompleted | P1 |
 
-### 7.2 OperationStatus 枚举
+### 7.2 v19.0 重构（基于 GoroutineProvider）
 
-- **StatusPending** - 进行中
+**架构演进**：
+
+```
+重构前：AsyncOperation 独立实现
+├── 每个 AsyncOperation 独立创建 goroutine
+├── 资源不可控、无法复用
+└── 无优先级、无监控
+
+重构后：AsyncOperation 使用 GoroutineProvider
+├── 通过 GoroutineProvider.SubmitWithResult() 提交
+├── ants.Pool 复用 goroutine
+├── 优先级控制（Critical/High/Normal/Low）
+└── 统一监控（Prometheus 指标）
+```
+
+**核心变更**：
+
+| 特性 | 重构前 | 重构后 |
+|------|--------|--------|
+| goroutine 管理 | 每个 AsyncOperation 独立创建 | 通过 GoroutineProvider 复用 |
+| 并发控制 | 无（可能无限增长） | 有（ants 池限制） |
+| 优先级 | 无 | Critical/High/Normal/Low |
+| 监控 | 无 | Prometheus 指标 |
+| 资源清理 | 需要 Discard | 统一由 Provider 管理 |
+| 代码复杂度 | 高（自己管理 goroutine） | 低（委托给 Provider） |
+
+**新增功能**：
+
+- ✅ **Discard()** - 放弃结果，释放资源
+- ✅ **IsStarted()** - 返回是否已启动
+- ✅ **批量操作** - BatchAsyncOperations/WaitAll/WaitAllWithDiscard
+- ✅ **优先级控制** - NewAsyncOperationWithPriority
+- ✅ **Storage 层集成** - GetAsync/SetAsync/DeleteAsync
+
+**OperationStatus 枚举**：
+
+- **StatusPending** - 待执行
+- **StatusRunning** - 执行中（v19.0 新增）
 - **StatusCompleted** - 成功完成
 - **StatusFailed** - 失败
 - **StatusCanceled** - 被取消
+- **StatusDiscarded** - 被丢弃（v19.0 新增）
 - **StatusTimeout** - 超时
+
+**性能提升**：
+
+| 指标 | 重构前 | 重构后 | 提升 |
+|------|--------|--------|------|
+| goroutine 创建开销 | 每次创建/销毁 | 复用 | 10-100x |
+| 并发控制 | 无限制 | 池限制 | 可控 |
+| 资源泄漏风险 | 高 | 低 | - |
+| 监控能力 | 无 | Prometheus | + |
 
 ---
 

@@ -232,19 +232,54 @@ func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []m
 		return service.Wrapf(service.ErrInvalidParam, "targets and messages length mismatch: %d vs %d", len(targets), len(msgs))
 	}
 
-	for i, target := range targets {
-		err := r.sendRequestNoResponse(ctx, target, msgs[i])
-		if tracker != nil {
-			if err != nil {
-				tracker.RecordFailure(target, err)
-			} else {
-				// 单向发送没有响应
-				tracker.RecordSuccess(target, nil)
-			}
-		}
+	if len(targets) == 0 {
+		return nil
 	}
 
-	return nil
+	// ✅ 修复：添加并发控制，避免瞬时连接数爆炸
+	var wg sync.WaitGroup
+	var firstErr error
+	var errOnce sync.Once
+
+	// 使用信号量限制并发（与 WriteVCall 保持一致）
+	sem := make(chan struct{}, r.config.MaxConcurrentCalls)
+
+	for i, target := range targets {
+		// 检查 context 是否已取消
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		wg.Add(1)
+		go func(idx int, peerID model.PeerID) {
+			defer wg.Done()
+
+			// 获取信号量
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			err := r.sendRequestNoResponse(ctx, peerID, msgs[idx])
+			if tracker != nil {
+				if err != nil {
+					tracker.RecordFailure(peerID, err)
+					// 记录第一个错误（但不中断其他发送）
+					errOnce.Do(func() {
+						firstErr = err
+					})
+				} else {
+					// 单向发送没有响应
+					tracker.RecordSuccess(peerID, nil)
+				}
+			}
+		}(i, target)
+	}
+
+	// 等待所有发送完成
+	wg.Wait()
+
+	return firstErr
 }
 
 // WriteVCall 不同消息群发：支持响应策略

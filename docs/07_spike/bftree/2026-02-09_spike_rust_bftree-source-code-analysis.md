@@ -2,9 +2,11 @@
 
 > **预研究报告**
 > **创建日期**: 2026-02-09
+> **最后更新**: 2026-02-22（DDD 架构适配更新）
 > **状态**: 🔄 进行中
 > **源码位置**: `/Users/zhangcz/ws/rust/src/github.com/microsoft/bf-tree`
 > **分支**: `spike/kv-storage-engine-arch-analysis`
+> **参考文档**: `docs/07_spike/2026-02-18_spike-nexkv-ddd-interface.md`
 
 ---
 

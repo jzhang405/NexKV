@@ -21,7 +21,7 @@
 | **② 控制平面层** | 14个 | 分片路由、选举、分布式锁、负载均衡、集群管理 | cluster, transport, shard, partition, election, balance | ✅ Callback+Channel |
 | **③ 数据平面层** | 6个 | 复制/一致性、事务、副本管理 | replication, tx | ✅ AsyncOp+Callback+Channel |
 | **④ 存储引擎层** | 9个 | 单机 KV、WAL、元数据管理 | storage, blockdevice | ✅ AsyncOp+Callback+Channel |
-| **⑤ 基础设施层** | 16个 | 网络通信、对象存储、异步能力、扩展能力 | transport, performance, resilience, extension | ✅ 多种模式 |
+| **⑤ 基础设施层** | 16个 | 网络通信、对象存储、异步能力、扩展能力、并发管理 | transport, performance, resilience, extension, concurrency | ✅ 多种模式 |
 | **总计** | **47个** | **完整分布式KV系统** | - | **19个接口支持完整异步** |
 
 **5层架构映射关系**:
@@ -1127,6 +1127,1304 @@ func main() {
     }
     fmt.Printf("Transaction committed, timestamp: %v\n", commitTS)
 }
+```
+
+### 5.4 并发管理层实现
+
+> **依赖说明**:
+> - `github.com/panjf2000/ants/v2` v2.8.0+ - 高性能 goroutine 池
+> - `github.com/prometheus/client_golang` v1.15.0+ - Prometheus 客户端
+>
+> 接口定义参见 [ddd-interface.md#13-b4-goroutineprovider](2026-02-18_spike_nexkv-ddd-interface.md#13-b4-并发管理层1个interface)
+
+#### 5.4.1 AntsGoroutineProvider 实现（pkg/concurrency/ants_provider.go）
+
+**核心特性**：
+- 多优先级池管理（Critical/High/Normal/Low）
+- Prometheus 监控指标集成
+- 泛型 Result[T] 实现
+- 动态扩缩容（Tune 方法）
+- 优雅关闭机制
+
+```go
+package concurrency
+
+import (
+    "context"
+    "fmt"
+    "runtime"
+    "sync"
+    "sync/atomic"
+    "time"
+
+    "github.com/panjf2000/ants/v2"
+    "github.com/prometheus/client_golang/prometheus"
+    "github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+// Prometheus 指标（优化点5：监控集成）
+var (
+    poolRunning = promauto.NewGaugeVec(prometheus.GaugeOpts{
+        Name: "nexkv_goroutine_pool_running_tasks",
+        Help: "Number of running tasks in the pool",
+    }, []string{"priority"})
+
+    poolWaiting = promauto.NewGaugeVec(prometheus.GaugeOpts{
+        Name: "nexkv_goroutine_pool_waiting_tasks",
+        Help: "Number of waiting tasks in the pool",
+    }, []string{"priority"})
+
+    poolTasksTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+        Name: "nexkv_goroutine_pool_tasks_total",
+        Help: "Total number of tasks submitted",
+    }, []string{"priority"})
+
+    poolTaskDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+        Name:    "nexkv_goroutine_pool_task_duration_seconds",
+        Help:    "Task execution duration",
+        Buckets: prometheus.DefBuckets,
+    }, []string{"priority"})
+)
+
+// AntsGoroutineProvider ants 实现
+type AntsGoroutineProvider struct {
+    criticalPool *ants.Pool
+    highPool     *ants.Pool
+    normalPool   *ants.Pool
+    lowPool      *ants.Pool
+
+    config  *ProviderConfig
+    stats   atomic.Value
+    closed  atomic.Bool
+    closeCh chan struct{}
+    wg      sync.WaitGroup
+
+    // 优化点3：延迟任务跟踪
+    delayedWg sync.WaitGroup
+}
+
+// ProviderConfig 配置
+type ProviderConfig struct {
+    CriticalPoolSize   int
+    HighPoolSize       int
+    NormalPoolSize     int
+    LowPoolSize        int
+
+    Nonblocking        bool
+    MaxBlockingTasks   int
+    PreAlloc           bool
+    ExpiryDuration     time.Duration
+    StatsInterval      time.Duration
+    HealthThreshold    float64
+}
+
+// DefaultProviderConfig 默认配置
+func DefaultProviderConfig() *ProviderConfig {
+    cpu := runtime.NumCPU()
+    return &ProviderConfig{
+        CriticalPoolSize: cpu * 2,
+        HighPoolSize:     cpu * 4,
+        NormalPoolSize:   cpu * 8,
+        LowPoolSize:      cpu * 16,
+
+        Nonblocking:      false,
+        MaxBlockingTasks: 10000,
+        PreAlloc:         false,
+        ExpiryDuration:   10 * time.Second,
+        StatsInterval:    5 * time.Second,
+        HealthThreshold:  0.8,
+    }
+}
+
+// Validate 验证配置有效性
+func (c *ProviderConfig) Validate() error {
+    if c.CriticalPoolSize <= 0 {
+        return fmt.Errorf("%w: CriticalPoolSize must be positive, got %d",
+            ErrInvalidConfig, c.CriticalPoolSize)
+    }
+    if c.HighPoolSize <= 0 {
+        return fmt.Errorf("%w: HighPoolSize must be positive, got %d",
+            ErrInvalidConfig, c.HighPoolSize)
+    }
+    if c.NormalPoolSize <= 0 {
+        return fmt.Errorf("%w: NormalPoolSize must be positive, got %d",
+            ErrInvalidConfig, c.NormalPoolSize)
+    }
+    if c.LowPoolSize <= 0 {
+        return fmt.Errorf("%w: LowPoolSize must be positive, got %d",
+            ErrInvalidConfig, c.LowPoolSize)
+    }
+    if c.HealthThreshold <= 0 || c.HealthThreshold > 1 {
+        return fmt.Errorf("%w: HealthThreshold must be in (0, 1], got %f",
+            ErrInvalidConfig, c.HealthThreshold)
+    }
+    if c.StatsInterval <= 0 {
+        return fmt.Errorf("%w: StatsInterval must be positive, got %v",
+            ErrInvalidConfig, c.StatsInterval)
+    }
+    return nil
+}
+
+// NewAntsGoroutineProvider 创建提供者
+func NewAntsGoroutineProvider(config *ProviderConfig) (*AntsGoroutineProvider, error) {
+    if config == nil {
+        config = DefaultProviderConfig()
+    }
+
+    // 验证配置
+    if err := config.Validate(); err != nil {
+        return nil, err
+    }
+
+    provider := &AntsGoroutineProvider{
+        config:  config,
+        closeCh: make(chan struct{}),
+    }
+
+    // 创建各优先级池
+    pools := []struct {
+        name string
+        size int
+        pool **ants.Pool
+    }{
+        {"critical", config.CriticalPoolSize, &provider.criticalPool},
+        {"high", config.HighPoolSize, &provider.highPool},
+        {"normal", config.NormalPoolSize, &provider.normalPool},
+        {"low", config.LowPoolSize, &provider.lowPool},
+    }
+
+    for _, p := range pools {
+        pool, err := ants.NewPool(p.size,
+            ants.WithPreAlloc(config.PreAlloc),
+            ants.WithNonblocking(config.Nonblocking),
+            ants.WithMaxBlockingTasks(config.MaxBlockingTasks),
+            ants.WithExpiryDuration(config.ExpiryDuration),
+            ants.WithDisablePurge(false),
+        )
+        if err != nil {
+            provider.Close()
+            return nil, fmt.Errorf("failed to create %s pool: %w", p.name, err)
+        }
+        *p.pool = pool
+    }
+
+    // 启动统计收集
+    provider.wg.Add(1)
+    go provider.statsCollector()
+
+    return provider, nil
+}
+
+// Submit 提交无返回值任务
+func (p *AntsGoroutineProvider) Submit(task func()) error {
+    if p.closed.Load() {
+        return fmt.Errorf("%w", ErrProviderClosed)
+    }
+
+    err := p.normalPool.Submit(task)
+    if err != nil {
+        if err == ants.ErrPoolOverload {
+            return fmt.Errorf("%w: %v", ErrPoolFull, err)
+        }
+        return err
+    }
+    return nil
+}
+
+// SubmitWithContext 提交带 context 的任务
+func (p *AntsGoroutineProvider) SubmitWithContext(ctx context.Context, task func(context.Context)) error {
+    if p.closed.Load() {
+        return fmt.Errorf("%w", ErrProviderClosed)
+    }
+
+    err := p.normalPool.Submit(func() {
+        task(ctx)
+    })
+    if err != nil {
+        if err == ants.ErrPoolOverload {
+            return fmt.Errorf("%w: %v", ErrPoolFull, err)
+        }
+        return err
+    }
+    return nil
+}
+
+// SubmitWithResult 泛型结果提交（优化点1）
+func (p *AntsGoroutineProvider) SubmitWithResult[T any](task func() (T, error)) Result[T] {
+    result := &asyncResult[T]{
+        done: make(chan struct{}),
+    }
+
+    err := p.normalPool.Submit(func() {
+        defer close(result.done)
+        start := time.Now()
+        result.value, result.err = task()
+        poolTaskDuration.WithLabelValues("normal").Observe(time.Since(start).Seconds())
+    })
+
+    if err != nil {
+        result.err = err
+        close(result.done)
+    }
+
+    poolTasksTotal.WithLabelValues("normal").Inc()
+    return result
+}
+
+// SubmitWithPriority 按优先级提交
+func (p *AntsGoroutineProvider) SubmitWithPriority(priority Priority, task func()) error {
+    if p.closed.Load() {
+        return fmt.Errorf("%w", ErrProviderClosed)
+    }
+
+    var pool *ants.Pool
+    var label string
+
+    switch priority {
+    case PriorityCritical:
+        pool = p.criticalPool
+        label = "critical"
+    case PriorityHigh:
+        pool = p.highPool
+        label = "high"
+    case PriorityLow:
+        pool = p.lowPool
+        label = "low"
+    default:
+        pool = p.normalPool
+        label = "normal"
+    }
+
+    poolTasksTotal.WithLabelValues(label).Inc()
+    err := pool.Submit(task)
+    if err != nil {
+        if err == ants.ErrPoolOverload {
+            return fmt.Errorf("%w: %v", ErrPoolFull, err)
+        }
+        return err
+    }
+    return nil
+}
+
+// SubmitDelayed 延迟提交（优化点3：可靠关闭）
+//
+// ⚠️ 重要说明：
+// - 延迟任务在 Provider 关闭时会被**静默取消**
+// - 调用方应在 Provider 关闭前确保所有延迟任务完成或可接受取消
+// - 如果需要感知任务是否执行，请使用 SubmitWithResult
+func (p *AntsGoroutineProvider) SubmitDelayed(delay time.Duration, task func()) error {
+    if p.closed.Load() {
+        return fmt.Errorf("%w", ErrProviderClosed)
+    }
+
+    p.delayedWg.Add(1)
+
+    go func() {
+        defer p.delayedWg.Done()
+
+        select {
+        case <-p.closeCh:
+            return  // 程序关闭，取消任务
+        case <-time.After(delay):
+            if !p.closed.Load() {
+                _ = p.Submit(task)
+            }
+        }
+    }()
+
+    return nil
+}
+
+// SubmitBatch 批量提交（快速失败）
+func (p *AntsGoroutineProvider) SubmitBatch(tasks []func()) error {
+    var wg sync.WaitGroup
+    errCh := make(chan error, len(tasks))
+
+    for _, task := range tasks {
+        wg.Add(1)
+        t := task
+        err := p.Submit(func() {
+            defer wg.Done()
+            t()
+        })
+        if err != nil {
+            wg.Done()
+            return err  // 快速失败
+        }
+    }
+
+    wg.Wait()
+    return nil
+}
+
+// SubmitBatchAllErrors 批量提交，返回所有错误（优化点4）
+func (p *AntsGoroutineProvider) SubmitBatchAllErrors(tasks []func()) []error {
+    var wg sync.WaitGroup
+    errCh := make(chan error, len(tasks))
+
+    for _, task := range tasks {
+        wg.Add(1)
+        t := task
+        err := p.Submit(func() {
+            defer wg.Done()
+            t()
+        })
+        if err != nil {
+            wg.Done()
+            errCh <- err
+        }
+    }
+
+    go func() {
+        wg.Wait()
+        close(errCh)
+    }()
+
+    var errs []error
+    for err := range errCh {
+        errs = append(errs, err)
+    }
+    return errs
+}
+
+// SubmitBatchWithResult 泛型批量提交（优化点1）
+func (p *AntsGoroutineProvider) SubmitBatchWithResult[T any](tasks []func() (T, error)) []Result[T] {
+    results := make([]Result[T], len(tasks))
+    var wg sync.WaitGroup
+
+    for i, task := range tasks {
+        wg.Add(1)
+        idx := i
+        t := task
+
+        results[idx] = p.SubmitWithResult(func() (T, error) {
+            defer wg.Done()
+            return t()
+        })
+    }
+
+    return results
+}
+
+// Stats 获取统计
+func (p *AntsGoroutineProvider) Stats() PoolStats {
+    if v := p.stats.Load(); v != nil {
+        return *v.(*PoolStats)
+    }
+    return PoolStats{}
+}
+
+// Health 健康检查
+func (p *AntsGoroutineProvider) Health() HealthStatus {
+    stats := p.Stats()
+
+    utilization := float64(stats.Running) / float64(stats.Capacity)
+    healthy := utilization < p.config.HealthThreshold
+
+    return HealthStatus{
+        Healthy:     healthy,
+        Message:     fmt.Sprintf("utilization: %.2f%%", utilization*100),
+        Utilization: utilization,
+        LastChecked: time.Now(),
+    }
+}
+
+// SetCapacity 动态调整容量（优化点2）
+func (p *AntsGoroutineProvider) SetCapacity(capacity int) error {
+    if capacity <= 0 {
+        return fmt.Errorf("%w: got %d", ErrCapacityInvalid, capacity)
+    }
+
+    // 基于当前实际容量计算，而非原始配置
+    currentTotal := p.criticalPool.Capacity() + p.highPool.Capacity() +
+                    p.normalPool.Capacity() + p.lowPool.Capacity()
+
+    if currentTotal == 0 {
+        return fmt.Errorf("%w: current total is 0", ErrCapacityInvalid)
+    }
+
+    ratio := float64(capacity) / float64(currentTotal)
+
+    // 按当前容量的比例调整
+    p.criticalPool.Tune(int(float64(p.criticalPool.Capacity()) * ratio))
+    p.highPool.Tune(int(float64(p.highPool.Capacity()) * ratio))
+    p.normalPool.Tune(int(float64(p.normalPool.Capacity()) * ratio))
+    p.lowPool.Tune(int(float64(p.lowPool.Capacity()) * ratio))
+
+    return nil
+}
+
+// Close 优雅关闭
+func (p *AntsGoroutineProvider) Close() error {
+    if !p.closed.CompareAndSwap(false, true) {
+        return nil
+    }
+
+    close(p.closeCh)
+
+    // 等待所有延迟任务完成或取消
+    p.delayedWg.Wait()
+
+    p.wg.Wait()
+
+    if p.criticalPool != nil {
+        p.criticalPool.Release()
+    }
+    if p.highPool != nil {
+        p.highPool.Release()
+    }
+    if p.normalPool != nil {
+        p.normalPool.Release()
+    }
+    if p.lowPool != nil {
+        p.lowPool.Release()
+    }
+
+    return nil
+}
+
+// CloseWithTimeout 带超时的关闭
+func (p *AntsGoroutineProvider) CloseWithTimeout(timeout time.Duration) error {
+    done := make(chan struct{})
+    go func() {
+        p.Close()
+        close(done)
+    }()
+
+    select {
+    case <-done:
+        return nil
+    case <-time.After(timeout):
+        return fmt.Errorf("close timeout")
+    }
+}
+
+// statsCollector 统计收集
+func (p *AntsGoroutineProvider) statsCollector() {
+    defer p.wg.Done()
+
+    ticker := time.NewTicker(p.config.StatsInterval)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-p.closeCh:
+            return
+        case <-ticker.C:
+            stats := p.collectStats()
+            p.stats.Store(&stats)
+
+            // 更新 Prometheus 指标
+            poolRunning.WithLabelValues("critical").Set(float64(p.criticalPool.Running()))
+            poolRunning.WithLabelValues("high").Set(float64(p.highPool.Running()))
+            poolRunning.WithLabelValues("normal").Set(float64(p.normalPool.Running()))
+            poolRunning.WithLabelValues("low").Set(float64(p.lowPool.Running()))
+
+            poolWaiting.WithLabelValues("critical").Set(float64(p.criticalPool.Waiting()))
+            poolWaiting.WithLabelValues("high").Set(float64(p.highPool.Waiting()))
+            poolWaiting.WithLabelValues("normal").Set(float64(p.normalPool.Waiting()))
+            poolWaiting.WithLabelValues("low").Set(float64(p.lowPool.Waiting()))
+        }
+    }
+}
+
+func (p *AntsGoroutineProvider) collectStats() PoolStats {
+    return PoolStats{
+        Capacity: p.criticalPool.Capacity() + p.highPool.Capacity() +
+                  p.normalPool.Capacity() + p.lowPool.Capacity(),
+        Running: p.criticalPool.Running() + p.highPool.Running() +
+                 p.normalPool.Running() + p.lowPool.Running(),
+        Waiting: p.criticalPool.Waiting() + p.highPool.Waiting() +
+                 p.normalPool.Waiting() + p.lowPool.Waiting(),
+    }
+}
+
+// asyncResult[T] 泛型结果实现（优化点1）
+type asyncResult[T any] struct {
+    done  chan struct{}
+    value T
+    err   error
+}
+
+func (r *asyncResult[T]) Get(ctx context.Context) (T, error) {
+    select {
+    case <-r.done:
+        return r.value, r.err
+    case <-ctx.Done():
+        var zero T
+        return zero, ctx.Err()
+    }
+}
+
+func (r *asyncResult[T]) GetWithTimeout(timeout time.Duration) (T, error) {
+    ctx, cancel := context.WithTimeout(context.Background(), timeout)
+    defer cancel()
+    return r.Get(ctx)
+}
+
+func (r *asyncResult[T]) Done() <-chan struct{} {
+    return r.done
+}
+
+func (r *asyncResult[T]) IsDone() bool {
+    select {
+    case <-r.done:
+        return true
+    default:
+        return false
+    }
+}
+```
+
+#### 5.4.2 AsyncOperation 实现（基于 GoroutineProvider）（pkg/async/operation.go）
+
+**架构演进**：v19.0 重构 AsyncOperation，从独立管理 goroutine 改为使用 GoroutineProvider
+
+**核心优势**：
+- ✅ goroutine 复用（通过 ants 池）
+- ✅ 优先级控制（Critical/High/Normal/Low）
+- ✅ 资源可控（限制并发数）
+- ✅ 统一监控（Prometheus 指标）
+
+```go
+package async
+
+import (
+    "context"
+    "fmt"
+    "sync"
+    "sync/atomic"
+
+    "github.com/jzhang405/NexKV/pkg/concurrency"
+)
+
+// asyncOp 基于 GoroutineProvider 的异步操作实现（v19.0）
+type asyncOp[T any] struct {
+    // 执行控制
+    ctx    context.Context
+    cancel context.CancelFunc
+
+    // 结果存储
+    done   chan struct{}
+    result T
+    err    error
+
+    // 状态管理
+    status atomic.Int32
+
+    // 回调管理
+    callbacks map[string]func(T, error)
+    cbMu      sync.RWMutex
+    cbSeq     int64
+
+    // 关联的 GoroutineProvider
+    provider concurrency.GoroutineProvider
+}
+
+// NewAsyncOperation 创建异步操作（使用全局 GoroutineProvider）
+func NewAsyncOperation[T any](
+    ctx context.Context,
+    fn func(context.Context) (T, error),
+) AsyncOperation[T] {
+    return NewAsyncOperationWithPriority(ctx, concurrency.PriorityNormal, fn)
+}
+
+// NewAsyncOperationWithPriority 创建带优先级的异步操作
+func NewAsyncOperationWithPriority[T any](
+    ctx context.Context,
+    priority concurrency.Priority,
+    fn func(context.Context) (T, error),
+) AsyncOperation[T] {
+    ctx, cancel := context.WithCancel(ctx)
+
+    op := &asyncOp[T]{
+        ctx:       ctx,
+        cancel:    cancel,
+        done:      make(chan struct{}),
+        callbacks: make(map[string]func(T, error)),
+        provider:  concurrency.MustGetGlobalProvider(),
+    }
+
+    // ✅ 使用 GoroutineProvider 提交任务
+    op.status.Store(int32(StatusRunning))
+
+    err := op.provider.SubmitWithPriority(priority, func() {
+        op.execute(fn)
+    })
+
+    // 如果提交失败，立即标记为失败
+    if err != nil {
+        op.status.Store(int32(StatusFailed))
+        op.err = err
+        close(op.done)
+    }
+
+    return op
+}
+
+// NewAsyncOperationWithProvider 使用指定的 Provider
+func NewAsyncOperationWithProvider[T any](
+    ctx context.Context,
+    provider concurrency.GoroutineProvider,
+    priority concurrency.Priority,
+    fn func(context.Context) (T, error),
+) AsyncOperation[T] {
+    ctx, cancel := context.WithCancel(ctx)
+
+    op := &asyncOp[T]{
+        ctx:       ctx,
+        cancel:    cancel,
+        done:      make(chan struct{}),
+        callbacks: make(map[string]func(T, error)),
+        provider:  provider,
+    }
+
+    op.status.Store(int32(StatusRunning))
+
+    err := provider.SubmitWithPriority(priority, func() {
+        op.execute(fn)
+    })
+
+    if err != nil {
+        op.status.Store(int32(StatusFailed))
+        op.err = err
+        close(op.done)
+    }
+
+    return op
+}
+
+// execute 执行实际任务
+func (op *asyncOp[T]) execute(fn func(context.Context) (T, error)) {
+    defer close(op.done)
+
+    // 检查是否已丢弃
+    if op.status.Load() == int32(StatusDiscarded) {
+        return
+    }
+
+    // 执行任务
+    result, err := fn(op.ctx)
+
+    // 再次检查状态（可能被 Discard）
+    if op.status.Load() == int32(StatusDiscarded) {
+        return
+    }
+
+    // 存储结果
+    op.result = result
+    op.err = err
+
+    // 更新状态
+    if err != nil {
+        op.status.Store(int32(StatusFailed))
+    } else {
+        op.status.Store(int32(StatusCompleted))
+    }
+
+    // 触发回调
+    op.triggerCallbacks(result, err)
+}
+
+// Get 等待结果
+func (op *asyncOp[T]) Get(ctx context.Context) (T, error) {
+    select {
+    case <-op.done:
+        return op.result, op.err
+    case <-ctx.Done():
+        var zero T
+        return zero, ctx.Err()
+    }
+}
+
+// Status 返回状态
+func (op *asyncOp[T]) Status() OperationStatus {
+    return OperationStatus(op.status.Load())
+}
+
+// Cancel 取消操作
+func (op *asyncOp[T]) Cancel() (bool, error) {
+    // 已终态，无法取消
+    if op.Status().IsTerminal() {
+        return false, nil
+    }
+
+    // 取消 context
+    op.cancel()
+
+    // 等待完成
+    <-op.done
+
+    // 尝试标记为已取消
+    if op.status.CompareAndSwap(int32(StatusRunning), int32(StatusCanceled)) {
+        return true, nil
+    }
+
+    return false, nil
+}
+
+// Discard 丢弃操作
+func (op *asyncOp[T]) Discard() error {
+    status := op.Status()
+
+    // 已终态，无需处理
+    if status.IsTerminal() {
+        return nil
+    }
+
+    // 标记为丢弃
+    if !op.status.CompareAndSwap(int32(StatusRunning), int32(StatusDiscarded)) {
+        return nil
+    }
+
+    // 取消 context
+    op.cancel()
+
+    // 清理回调
+    op.cbMu.Lock()
+    op.callbacks = nil
+    op.cbMu.Unlock()
+
+    return nil
+}
+
+// IsStarted 返回是否已启动
+func (op *asyncOp[T]) IsStarted() bool {
+    return op.status.Load() != int32(StatusPending)
+}
+
+// OnComplete 注册回调
+func (op *asyncOp[T]) OnComplete(callback func(T, error)) string {
+    op.cbMu.Lock()
+    defer op.cbMu.Unlock()
+
+    // 已终态，立即执行回调
+    if op.Status().IsTerminal() {
+        go func() {
+            defer func() {
+                if r := recover(); r != nil {
+                    // 记录 panic 日志
+                }
+            }()
+            callback(op.result, op.err)
+        }()
+        return ""
+    }
+
+    // 注册回调
+    op.cbSeq++
+    cbID := fmt.Sprintf("cb-%d", op.cbSeq)
+    op.callbacks[cbID] = callback
+
+    return cbID
+}
+
+// OffComplete 注销回调
+func (op *asyncOp[T]) OffComplete(cbID string) error {
+    op.cbMu.Lock()
+    defer op.cbMu.Unlock()
+
+    if op.callbacks == nil {
+        return fmt.Errorf("callbacks already cleared")
+    }
+
+    delete(op.callbacks, cbID)
+    return nil
+}
+
+// triggerCallbacks 触发回调
+func (op *asyncOp[T]) triggerCallbacks(result T, err error) {
+    op.cbMu.RLock()
+    callbacks := make([]func(T, error), 0, len(op.callbacks))
+    for _, cb := range op.callbacks {
+        callbacks = append(callbacks, cb)
+    }
+    op.cbMu.RUnlock()
+
+    for _, cb := range callbacks {
+        go func(f func(T, error)) {
+            defer func() {
+                if r := recover(); r != nil {
+                    // 记录 panic
+                }
+            }()
+            f(result, err)
+        }(cb)
+    }
+}
+```
+
+#### 5.4.3 批量操作实现（pkg/async/batch.go）
+
+```go
+package async
+
+import (
+    "context"
+
+    "github.com/jzhang405/NexKV/pkg/concurrency"
+)
+
+// BatchAsyncOperations 批量创建异步操作
+func BatchAsyncOperations[T any](
+    ctx context.Context,
+    priority concurrency.Priority,
+    tasks []func(context.Context) (T, error),
+) []AsyncOperation[T] {
+    provider := concurrency.MustGetGlobalProvider()
+    ops := make([]AsyncOperation[T], len(tasks))
+
+    for i, task := range tasks {
+        t := task
+        ops[i] = NewAsyncOperationWithProvider(ctx, provider, priority, t)
+    }
+
+    return ops
+}
+
+// WaitAll 等待所有操作完成
+func WaitAll[T any](ctx context.Context, ops []AsyncOperation[T]) ([]T, error) {
+    results := make([]T, len(ops))
+
+    for i, op := range ops {
+        result, err := op.Get(ctx)
+        if err != nil {
+            return nil, err
+        }
+        results[i] = result
+    }
+
+    return results, nil
+}
+
+// WaitAllWithDiscard 等待部分结果，丢弃其余
+func WaitAllWithDiscard[T any](ctx context.Context, ops []AsyncOperation[T], n int) ([]T, error) {
+    results := make([]T, 0, n)
+
+    // 获取前 n 个结果
+    for i := 0; i < n && i < len(ops); i++ {
+        result, err := ops[i].Get(ctx)
+        if err != nil {
+            return nil, err
+        }
+        results = append(results, result)
+    }
+
+    // 丢弃剩余的
+    for i := n; i < len(ops); i++ {
+        ops[i].Discard()
+    }
+
+    return results, nil
+}
+```
+
+**使用示例**：
+
+```go
+// 批量读取
+keys := []string{"key1", "key2", "key3", "key4", "key5"}
+tasks := make([]func(context.Context) ([]byte, error), len(keys))
+
+for i, key := range keys {
+    k := key
+    tasks[i] = func(ctx context.Context) ([]byte, error) {
+        return store.Get(ctx, k)
+    }
+}
+
+// 批量创建异步操作（高优先级）
+futures := async.BatchAsyncOperations(ctx, concurrency.PriorityHigh, tasks)
+
+// 方式1：等待所有结果
+results, err := async.WaitAll(ctx, futures)
+
+// 方式2：只取前 3 个结果，丢弃其余（节省资源）
+results, err := async.WaitAllWithDiscard(ctx, futures, 3)
+```
+
+#### 5.4.4 NexKV 专用封装（internal/concurrency/nexkv_tasks.go）
+
+```go
+package concurrency
+
+import "github.com/jzhang405/NexKV/pkg/concurrency"
+
+// SubmitRaftTask 提交 Raft 共识任务（关键优先级）
+func SubmitRaftTask(task func()) error {
+    return concurrency.MustGetGlobalProvider().SubmitWithPriority(
+        concurrency.PriorityCritical,
+        task,
+    )
+}
+
+// SubmitKVReadTask 提交 KV 读任务（高优先级）
+func SubmitKVReadTask(task func()) error {
+    return concurrency.MustGetGlobalProvider().SubmitWithPriority(
+        concurrency.PriorityHigh,
+        task,
+    )
+}
+
+// SubmitKVWriteTask 提交 KV 写任务（高优先级）
+func SubmitKVWriteTask(task func()) error {
+    return concurrency.MustGetGlobalProvider().SubmitWithPriority(
+        concurrency.PriorityHigh,
+        task,
+    )
+}
+
+// SubmitMetadataTask 提交元数据任务（关键优先级）
+func SubmitMetadataTask(task func()) error {
+    return concurrency.MustGetGlobalProvider().SubmitWithPriority(
+        concurrency.PriorityCritical,
+        task,
+    )
+}
+
+// SubmitCompactionTask 提交 Compaction 任务（低优先级）
+func SubmitCompactionTask(task func()) error {
+    return concurrency.MustGetGlobalProvider().SubmitWithPriority(
+        concurrency.PriorityLow,
+        task,
+    )
+}
+
+// SubmitGossipTask 提交 Gossip 任务（普通优先级）
+func SubmitGossipTask(task func()) error {
+    return concurrency.MustGetGlobalProvider().SubmitWithPriority(
+        concurrency.PriorityNormal,
+        task,
+    )
+}
+
+// SubmitWALTask 提交 WAL 写入任务（关键优先级）
+func SubmitWALTask(task func()) error {
+    return concurrency.MustGetGlobalProvider().SubmitWithPriority(
+        concurrency.PriorityCritical,
+        task,
+    )
+}
+```
+
+#### 5.4.5 与 Storage 层集成示例（M2）
+
+**KVStore 异步接口**：
+
+```go
+// internal/storage/kvstore.go
+package storage
+
+import (
+    "context"
+
+    "github.com/jzhang405/NexKV/pkg/async"
+    "github.com/jzhang405/NexKV/pkg/concurrency"
+)
+
+// KVStore 存储接口
+type KVStore interface {
+    // 同步操作
+    Get(ctx context.Context, key []byte) ([]byte, error)
+    Set(ctx context.Context, key, value []byte) error
+    Delete(ctx context.Context, key []byte) error
+
+    // 异步操作（使用 GoroutineProvider）
+    GetAsync(ctx context.Context, key []byte) async.ReadFuture
+    SetAsync(ctx context.Context, key, value []byte) async.WriteFuture
+    DeleteAsync(ctx context.Context, key []byte) async.WriteFuture
+}
+
+// storeImpl 实现
+type storeImpl struct {
+    provider concurrency.GoroutineProvider
+    // ... 其他字段
+}
+
+func (s *storeImpl) GetAsync(ctx context.Context, key []byte) async.ReadFuture {
+    return async.NewAsyncOperationWithPriority(
+        ctx,
+        concurrency.PriorityHigh, // KV 读是高优先级
+        func(ctx context.Context) ([]byte, error) {
+            return s.Get(ctx, key)
+        },
+    )
+}
+
+func (s *storeImpl) SetAsync(ctx context.Context, key, value []byte) async.WriteFuture {
+    return async.NewAsyncOperationWithPriority(
+        ctx,
+        concurrency.PriorityHigh, // KV 写是高优先级
+        func(ctx context.Context) (async.WriteResult, error) {
+            err := s.Set(ctx, key, value)
+            return async.WriteResult{
+                Success:   err == nil,
+                Timestamp: time.Now().UnixNano(),
+            }, err
+        },
+    )
+}
+
+func (s *storeImpl) DeleteAsync(ctx context.Context, key []byte) async.WriteFuture {
+    return async.NewAsyncOperationWithPriority(
+        ctx,
+        concurrency.PriorityHigh,
+        func(ctx context.Context) (async.WriteResult, error) {
+            err := s.Delete(ctx, key)
+            return async.WriteResult{
+                Success:   err == nil,
+                Timestamp: time.Now().UnixNano(),
+            }, err
+        },
+    )
+}
+```
+
+**Bf-Tree 异步页操作**：
+
+```go
+// internal/storage/bftree/page_manager.go
+package bftree
+
+import (
+    "context"
+
+    "github.com/jzhang405/NexKV/pkg/async"
+    "github.com/jzhang405/NexKV/pkg/concurrency"
+)
+
+// PageManager 页管理器
+type PageManager struct {
+    provider concurrency.GoroutineProvider
+    // ... 其他字段
+}
+
+// LoadPageAsync 异步加载页
+func (pm *PageManager) LoadPageAsync(ctx context.Context, pageID uint32) async.PageFuture {
+    return async.NewAsyncOperationWithPriority(
+        ctx,
+        concurrency.PriorityNormal,
+        func(ctx context.Context) (Page, error) {
+            return pm.LoadPage(ctx, pageID)
+        },
+    )
+}
+
+// WritePageAsync 异步写页
+func (pm *PageManager) WritePageAsync(ctx context.Context, page Page) async.WriteFuture {
+    return async.NewAsyncOperationWithPriority(
+        ctx,
+        concurrency.PriorityHigh, // 写页是高优先级
+        func(ctx context.Context) (async.WriteResult, error) {
+            err := pm.WritePage(ctx, page)
+            return async.WriteResult{
+                Success:   err == nil,
+                Timestamp: time.Now().UnixNano(),
+            }, err
+        },
+    )
+}
+
+// FlushAsync 异步刷盘（后台任务，低优先级）
+func (pm *PageManager) FlushAsync(ctx context.Context) async.WriteFuture {
+    return async.NewAsyncOperationWithPriority(
+        ctx,
+        concurrency.PriorityLow, // 刷盘是低优先级
+        func(ctx context.Context) (async.WriteResult, error) {
+            err := pm.Flush(ctx)
+            return async.WriteResult{
+                Success:   err == nil,
+                Timestamp: time.Now().UnixNano(),
+            }, err
+        },
+    )
+}
+```
+
+**使用示例**：
+
+```go
+// 示例1：异步读取
+future := store.GetAsync(ctx, []byte("user:123"))
+result, err := future.Get(ctx)
+if err != nil {
+    log.Error("读取失败:", err)
+    return
+}
+fmt.Println("结果:", string(result))
+
+// 示例2：异步写入 + 回调
+future := store.SetAsync(ctx, []byte("user:123"), userData)
+future.OnComplete(func(result WriteResult, err error) {
+    if err != nil {
+        log.Error("写入失败:", err)
+        return
+    }
+    log.Info("写入成功:", result.Timestamp)
+})
+
+// 示例3：批量异步操作
+keys := [][]byte{[]byte("key1"), []byte("key2"), []byte("key3")}
+futures := make([]async.ReadFuture, len(keys))
+
+for i, key := range keys {
+    futures[i] = store.GetAsync(ctx, key)
+}
+
+// 等待所有结果
+for i, future := range futures {
+    result, err := future.Get(ctx)
+    if err != nil {
+        log.Errorf("key%d 读取失败: %v", i+1, err)
+        continue
+    }
+    log.Infof("key%d 结果: %s", i+1, string(result))
+}
+```
+
+**优先级映射**：
+
+| 操作类型 | 优先级 | 说明 |
+|---------|--------|------|
+| Raft 共识 | Critical | 强一致性的关键操作 |
+| WAL 写入 | Critical | 持久化的关键操作 |
+| KV 读写 | High | 业务主要操作 |
+| 页加载 | Normal | 普通操作 |
+| Gossip 协议 | Normal | 元数据同步 |
+| Compaction | Low | 后台清理 |
+| Flush 刷盘 | Low | 后台持久化 |
+
+#### 5.4.3 全局单例管理（pkg/concurrency/global.go）
+
+```go
+package concurrency
+
+import "sync"
+
+var (
+    globalProvider GoroutineProvider
+    globalOnce     sync.Once
+    globalErr      error
+)
+
+// InitGlobalProvider 初始化
+func InitGlobalProvider(config *ProviderConfig) error {
+    globalOnce.Do(func() {
+        globalProvider, globalErr = NewAntsGoroutineProvider(config)
+    })
+    return globalErr
+}
+
+// GetGlobalProvider 获取
+func GetGlobalProvider() GoroutineProvider {
+    return globalProvider
+}
+
+// MustGetGlobalProvider 必须获取
+func MustGetGlobalProvider() GoroutineProvider {
+    if globalProvider == nil {
+        panic("global goroutine provider not initialized")
+    }
+    return globalProvider
+}
+
+// CloseGlobalProvider 关闭
+func CloseGlobalProvider() error {
+    if globalProvider != nil {
+        return globalProvider.Close()
+    }
+    return nil
+}
+
+// ResetGlobalProvider 重置（仅测试）
+func ResetGlobalProvider() {
+    globalProvider = nil
+    globalOnce = sync.Once{}
+}
+```
+
+#### 5.4.4 配置说明
+
+**默认配置**（CPU 密集型）：
+
+```go
+config := concurrency.DefaultProviderConfig()
+// CriticalPoolSize:   CPU × 2  (Raft、Metadata、WAL)
+// HighPoolSize:       CPU × 4  (KV 读写)
+// NormalPoolSize:     CPU × 8  (Gossip、普通任务)
+// LowPoolSize:        CPU × 16 (Compaction、后台清理)
+```
+
+**IO 密集型调整**：
+
+```go
+config := &concurrency.ProviderConfig{
+    CriticalPoolSize:   cpu * 4,   // IO 等待多，需要更多 goroutine
+    HighPoolSize:       cpu * 8,
+    NormalPoolSize:     cpu * 16,
+    LowPoolSize:        cpu * 32,
+    Nonblocking:        false,
+    MaxBlockingTasks:   10000,
+    PreAlloc:           false,
+    ExpiryDuration:     10 * time.Second,
+    StatsInterval:      5 * time.Second,
+    HealthThreshold:    0.8,
+}
+```
+
+#### 5.4.5 使用示例
+
+**初始化（main.go）**：
+
+```go
+func main() {
+    // 初始化 GoroutineProvider
+    config := concurrency.DefaultProviderConfig()
+    if err := concurrency.InitGlobalProvider(config); err != nil {
+        log.Fatalf("failed to init goroutine provider: %v", err)
+    }
+    defer concurrency.CloseGlobalProvider()
+
+    // 启动服务
+    // ...
+}
+```
+
+**Raft 层使用**：
+
+```go
+func (r *Raft) proposeAsync(cmd []byte) {
+    concurrency.SubmitRaftTask(func() {
+        r.propose(cmd)
+    })
+}
+```
+
+**Storage 层使用**：
+
+```go
+func (s *Storage) compactAsync() {
+    concurrency.SubmitCompactionTask(func() {
+        s.compact()
+    })
+}
+```
+
+**类型安全的异步操作**：
+
+```go
+// 优化前（需要类型断言）
+result := provider.SubmitWithResult(func() (interface{}, error) {
+    return fetchData(key)
+})
+val, err := result.Get(ctx)
+strVal := val.(string) // 不安全
+
+// 优化后（类型安全）
+result := provider.SubmitWithResult(func() (string, error) {
+    return fetchData(key)
+})
+strVal, err := result.Get(ctx) // 直接返回 string
 ```
 
 ---

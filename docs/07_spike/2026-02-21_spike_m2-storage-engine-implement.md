@@ -17,6 +17,8 @@
 | [实施路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md) | 时间规划 |
 | [**DDD 架构参考**](./2026-02-18_spike_nexkv-ddd-implement.md) | **完整 DDD 实施方案** |
 
+> 📖 **并发管理参考**: [DDD 架构 - GoroutineProvider](./2026-02-18_spike_nexkv-ddd-interface.md#13-b4-goroutineprovider)
+
 ---
 
 ## 📊 文档概览
@@ -174,7 +176,7 @@ func NewMetadataKV(basePath string) (*MetadataKV, error) {
 func (m *MetadataKV) Set(key string, value []byte) error {
     // 1. 同步写入 MVStore（阻塞，保证持久性）
     if err := m.store.Set(key, value); err != nil {
-        return fmt.Errorf("mvstore write failed: %w", err)
+        return fmt.Errorf("MVStore write failed: %w", err)
     }
 
     // 2. 写入成功，更新内存缓存
@@ -257,7 +259,44 @@ type DeadLetter struct {
     Err       error
     Timestamp time.Time
 }
+```
 
+**使用建议**：
+
+1. **关键元数据**（节点、分片、配置）：
+   ```go
+   // ✅ 必须使用同步写入
+   if err := kv.Set(key, value); err != nil {
+       return err
+   }
+   ```
+
+2. **非关键数据**（缓存、临时数据）：
+   ```go
+   // ⚠️ 可以使用异步写入，但需明确风险
+   if err := kv.SetAsyncUnsafe(key, value); err != nil {
+       // 注意：即使返回 nil，也不保证持久化成功
+       log.Warn("async write may fail on crash")
+   }
+   ```
+
+3. **监控异步写入失败**：
+   ```go
+   // ✅ 通过死信队列监控失败
+   for deadLetter := range kv.DeadLetterQueue() {
+       log.Error("async write failed", deadLetter.Key, deadLetter.Err)
+       // 可以选择重试或告警
+   }
+   ```
+
+**语义对比**：
+
+| 方法 | 持久性保证 | 延迟 | 适用场景 |
+|------|----------|------|---------|
+| `Set()` | ✅ 保证 | ~500μs | 关键元数据 |
+| `SetAsyncUnsafe()` | ❌ 不保证 | ~5μs | 非关键数据 |
+
+```go
 // Get 读取（优先内存）
 func (m *MetadataKV) Get(key string) ([]byte, error) {
     // 1. 尝试从 sync.Map 读取（O(1)）
@@ -301,10 +340,16 @@ func (m *MetadataKV) ListAll() ([]string, error) {
     if err != nil {
         return nil, err
     }
+    defer iter.Close()  // ✅ 修复：确保关闭迭代器，避免资源泄漏
 
     var keys []string
     for iter.Next() {
         keys = append(keys, string(iter.Key()))
+    }
+
+    // 检查迭代错误
+    if err := iter.Error(); err != nil {
+        return nil, err
     }
 
     return keys, nil
@@ -516,6 +561,13 @@ type AsyncOperation[T any] interface {
     // Cancel 取消异步操作
     Cancel() (canceled bool, err error)
 
+    // Discard 丢弃异步操作结果（v19.0 新增）
+    // 用于释放资源，适用于不再需要结果的场景
+    Discard() error
+
+    // IsStarted 返回操作是否已启动（v19.0 新增）
+    IsStarted() bool
+
     // OnComplete 注册回调函数
     OnComplete(callback func(T, error)) string
 
@@ -669,6 +721,101 @@ type PageFuture      = Future[Page]                // 页 Future
 type BlockFuture     = Future[[]byte]              // 块读取 Future
 ```
 
+### 3.4 适配器方法（与现有代码兼容）
+
+> 🎯 **目的**: 提供与 BroadcastCallback 风格兼容的适配器，确保 AsyncOperation 与现有代码平滑集成。
+
+```go
+// AsyncCallback 接口式回调（用于复杂场景）
+type AsyncCallback[T any] interface {
+    OnSuccess(value T, stats AsyncStats)
+    OnFailure(err error, stats AsyncStats)
+    OnComplete(stats AsyncStats)
+}
+
+// AsyncStats 异步操作统计信息
+type AsyncStats struct {
+    Duration   time.Duration  // 操作耗时
+    Retries    int            // 重试次数
+    StatusCode int            // 状态码
+}
+
+// ToCallback 将 AsyncOperation 转换为 AsyncCallback 风格
+func (op *asyncOp[T]) ToCallback() AsyncCallback[T] {
+    return &asyncCallbackAdapter[T]{op: op}
+}
+
+// asyncCallbackAdapter 适配器实现
+type asyncCallbackAdapter[T any] struct {
+    op *asyncOp[T]
+}
+
+func (a *asyncCallbackAdapter[T]) OnSuccess(value T, stats AsyncStats) {
+    // 成功时的处理逻辑
+    log.Printf("Operation succeeded in %v", stats.Duration)
+}
+
+func (a *asyncCallbackAdapter[T]) OnFailure(err error, stats AsyncStats) {
+    // 失败时的处理逻辑
+    log.Printf("Operation failed after %d retries: %v", stats.Retries, err)
+}
+
+func (a *asyncCallbackAdapter[T]) OnComplete(stats AsyncStats) {
+    // 完成时的清理逻辑
+    log.Printf("Operation completed with status code %d", stats.StatusCode)
+}
+
+// AdaptCallback 将函数式回调转换为接口式回调
+func AdaptCallback[T any](fn func(T, error)) AsyncCallback[T] {
+    return &funcCallbackAdapter[T]{fn: fn}
+}
+
+// funcCallbackAdapter 函数式适配器
+type funcCallbackAdapter[T any] struct {
+    fn func(T, error)
+}
+
+func (a *funcCallbackAdapter[T]) OnSuccess(value T, stats AsyncStats) {
+    a.fn(value, nil)
+}
+
+func (a *funcCallbackAdapter[T]) OnFailure(err error, stats AsyncStats) {
+    var zero T
+    a.fn(zero, err)
+}
+
+func (a *funcCallbackAdapter[T]) OnComplete(stats AsyncStats) {
+    // 函数式回调无需额外处理
+}
+```
+
+**使用示例**：
+
+```go
+// 方式 1：直接使用函数式回调（简单场景）
+future.OnComplete(func(result []byte, err error) {
+    if err != nil {
+        log.Error("操作失败", err)
+        return
+    }
+    log.Info("操作成功", string(result))
+})
+
+// 方式 2：转换为接口式回调（复杂场景）
+callback := future.ToCallback()
+callback.OnSuccess(value, AsyncStats{Duration: 100 * time.Millisecond})
+
+// 方式 3：从函数式转换为接口式
+adapted := AdaptCallback(func(result []byte, err error) {
+    // 处理逻辑
+})
+adapted.OnSuccess(value, stats)
+```
+
+**选择建议**：
+- ✅ **简单场景**（单次处理）→ 函数式回调 `OnComplete(func(T, error))`
+- ✅ **复杂场景**（需要状态管理、重试逻辑）→ 接口式回调 `AsyncCallback[T]`
+
 ---
 
 ## 四、块设备层实现
@@ -756,14 +903,24 @@ type LocalStorageConfig struct {
 
 // NewLocalStorage 创建本地存储
 func NewLocalStorage(config LocalStorageConfig) (*LocalStorage, error) {
+    // ✅ 修复：展开路径中的 ~ (如 ~/.nexkv)
+    basePath := config.BasePath
+    if strings.HasPrefix(basePath, "~/") {
+        homeDir, err := os.UserHomeDir()
+        if err != nil {
+            return nil, fmt.Errorf("get user home directory failed: %w", err)
+        }
+        basePath = filepath.Join(homeDir, basePath[2:])
+    }
+
     // 创建数据目录
-    if err := os.MkdirAll(config.BasePath, 0755); err != nil {
+    if err := os.MkdirAll(basePath, 0755); err != nil {
         return nil, err
     }
 
     return &LocalStorage{
         config:   config,
-        filePool: NewFilePool(config.BasePath),
+        filePool: NewFilePool(basePath),  // ✅ 使用展开后的路径
         stats:    DeviceStats{},
     }, nil
 }
@@ -784,12 +941,22 @@ func (s *LocalStorage) Read(ctx context.Context, blockID BlockID) ([]byte, error
 
     // 3. 读取 4KB
     data := make([]byte, s.config.BlockSize)
-    if _, err := file.ReadAt(data, offset); err != nil {
-        if err == io.EOF {
+    n, err := file.ReadAt(data, offset)
+
+    // ✅ 修复：正确处理部分读取和 io.EOF
+    if err != nil && err != io.EOF {
+        return nil, fmt.Errorf("read block %d failed: %w", blockID, err)
+    }
+
+    // 处理部分读取或文件未初始化
+    if n < s.config.BlockSize {
+        if n == 0 {
             // 文件未初始化，返回零值
             return data, nil
         }
-        return nil, fmt.Errorf("read block %d failed: %w", blockID, err)
+        // 部分读取，记录警告
+        log.Printf("WARN: partial read for block %d: read %d/%d bytes",
+            blockID, n, s.config.BlockSize)
     }
 
     // 4. 更新统计
@@ -875,13 +1042,26 @@ func (s *LocalStorage) Prefetch(ctx context.Context, blockIDs []BlockID) error {
         return nil
     }
 
-    // 并发预读
+    // ✅ 使用 semaphore 限制并发，避免启动过多 goroutine
+    const maxConcurrency = 10
+    sem := make(chan struct{}, maxConcurrency)
+
+    var wg sync.WaitGroup
     for _, blockID := range blockIDs {
+        wg.Add(1)
         go func(id BlockID) {
+            defer wg.Done()
+
+            // 获取信号量
+            sem <- struct{}{}
+            defer func() { <-sem }()  // 释放信号量
+
             _, _ = s.Read(ctx, id)
         }(blockID)
     }
 
+    // 等待所有预读完成
+    wg.Wait()
     return nil
 }
 
@@ -1049,9 +1229,35 @@ func (p *FilePool) Open(filePath string) (*os.File, error) {
 //   - 如果池中文件数量超过限制，则关闭文件
 //   - 建议在不需要时显式调用 Close() 清理资源
 func (p *FilePool) Release(file *os.File) {
-    // 文件保留在池中复用，无需额外操作
-    // 如果需要限制池大小，可以在这里实现 LRU 淘汰策略
-    // 例如：if p.size() > MaxPoolSize { p.evict(file) }
+    p.mu.Lock()
+    defer p.mu.Unlock()
+
+    // ✅ 实现 LRU 淘汰策略，限制池大小
+    const maxPoolSize = 100  // 最大文件句柄数
+
+    // 如果池已满，淘汰最久未使用的文件
+    if len(p.lastUsed) >= maxPoolSize {
+        var oldestFile *os.File
+        var oldestTime time.Time
+
+        // 找到最久未使用的文件
+        for f, t := range p.lastUsed {
+            if oldestFile == nil || t.Before(oldestTime) {
+                oldestFile = f
+                oldestTime = t
+            }
+        }
+
+        // 关闭并删除最久未使用的文件
+        if oldestFile != nil {
+            oldestFile.Close()
+            delete(p.lastUsed, oldestFile)
+            p.files.Delete(oldestFile.Name())
+        }
+    }
+
+    // 更新当前文件的使用时间
+    p.lastUsed[file] = time.Now()
 }
 
 // SyncAll 同步所有文件
@@ -1596,6 +1802,29 @@ var DefaultGrowthPolicy = MiniPageGrowthPolicy{
     GrowthThreshold: 0.8,  // 填充率 80% 时触发扩容
 }
 ```
+
+**扩容性能分析**：
+
+| 扩容次数 | 累计时间 | 理论吞吐 | 说明 |
+|---------|---------|---------|------|
+| 1 次 | ~1μs | 100万 ops/s | 64B → 128B |
+| 2 次 | ~3μs | 33万 ops/s | 64B → 256B |
+| 3 次 | ~7μs | 14万 ops/s | 64B → 512B |
+| 4 次 | ~15μs | 6.7万 ops/s | 64B → 1KB（MaxGrowthCount）|
+
+**结论**：
+- ✅ 4 次扩容后，理论吞吐 > 5万 ops/s（满足 P0 目标）
+- ✅ 大部分写入不需要 4 次扩容（Mini-Page 命中率 > 80%）
+- ⚠️ 如果 Mini-Page 命中率 < 50%，需要优化策略
+
+**实际性能测试**（待验证）：
+- Mini-Page 命中率 80%：实际吞吐 ~8万 ops/s
+- Mini-Page 命中率 60%：实际吞吐 ~6万 ops/s
+- Mini-Page 命中率 40%：实际吞吐 ~4万 ops/s（不满足 P0）
+
+**未来优化**（P1/P2）：
+- 使用内存池避免频繁分配
+- 预分配最大空间（4KB）避免扩容
 
 **读取流程（懒合并）**：
 

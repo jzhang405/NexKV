@@ -8,6 +8,7 @@
 >   - [M2 接口定义](./2026-02-21_spike_m2-storage-engine-interface.md)
 >   - [M2 实现方案](./2026-02-21_spike_m2-storage-engine-implement.md)
 >   - [Bf-Tree 术语澄清](./bftree/2026-02-22_spike_btree-variants-clarification.md)
+>   - [DDD 架构 - GoroutineProvider](./2026-02-18_spike_nexkv-ddd-interface.md#13-b4-goroutineprovider)
 
 ---
 
@@ -646,6 +647,22 @@ done
 pidstat -u -r -d -p [引擎PID] 1 > results/resource_usage.txt
 iostat -x -d 1 > results/disk_io.txt
 ```
+
+**测试规模调整**：
+
+> ⚠️ **注意**：200M 条 KV + 2GB 内存配置不现实（实际需要 > 10GB）
+
+| 测试规模 | 记录数 | 内存需求 | 说明 |
+|---------|-------|---------|------|
+| 小规模 | 100万 | 500MB | 开发测试 |
+| 中规模 | 1000万 | 2GB | 基准测试（推荐）|
+| 大规模 | 5000万 | 8GB | 压力测试 |
+| 超大规模 | 2亿 | 32GB | 生产模拟（与论文对齐）|
+
+**建议测试流程**：
+1. ✅ 先用 1000万 条 KV + 2GB 内存做基准测试
+2. ✅ 再用 5000万 条 KV + 8GB 内存做压力测试
+3. ⚠️ 2亿 条 KV + 32GB 内存在 Phase 3 进行
 
 #### 6.5.6 结果分析维度（直接验证选型）
 

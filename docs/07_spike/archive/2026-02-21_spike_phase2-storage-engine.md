@@ -1,10 +1,24 @@
-# Phase 2 存储引擎层预研报告
+# M2 存储引擎层预研报告
+
+> **归档日期**: 2026-02-22
+> **归档原因**: 文档拆分为三个独立文档，便于维护和查阅
+>
+> **拆分后的文档**：
+> | 文档 | 说明 |
+> |------|------|
+> | [Interface 定义](../2026-02-21_spike_m2-storage-engine-interface.md) | 接口设计 |
+> | [实现方案](../2026-02-21_spike_m2-storage-engine-implement.md) | 技术实现 |
+> | [实施路线图](../2026-02-21_spike_m2-storage-engine-roadmap.md) | 时间规划 |
+>
+> **推荐直接查看拆分后的文档**，以下为原始文档内容（仅供参考）。
+
+---
 
 > **预研类型**: Spike
 > **创建日期**: 2026-02-21
 > **最后更新**: 2026-02-22（添加存储引擎分层策略决策）
-> **分支**: `spike/phase2-storage-engine`
-> **状态**: 🔄 进行中
+> **分支**: `spike/m2-storage-engine`
+> **状态**: 📦 已归档
 
 ---
 
@@ -103,7 +117,7 @@
 
 ## 一、预研目标
 
-评估 Phase 2 存储引擎层的实施方案，重点分析：
+评估 M2 存储引擎层的实施方案，重点分析：
 1. Bf-Tree MVP 实施计划与路线图的协调
 2. 现有 WAL 实现的复用可行性
 3. 接口设计与依赖关系
@@ -118,8 +132,8 @@
 |------|------|------|
 | Bf-Tree MVP 实施计划 | `./bftree/2026-02-09_bftree-mvp-implementation-plan.md` | ✅ 已批准 |
 | ADR 006 批准文档 | `../02_design/decisions/006_bftree_mvp_approval.md` | ✅ 已批准 |
-| Bf-Tree WAL 分析 | `./bftree/2026-02-09_bftree-wal-analysis.md` | 🔄 进行中 |
-| Bf-Tree 源码分析 | `./bftree/2026-02-09_bftree-source-code-analysis.md` | ✅ 完成 |
+| Bf-Tree WAL 分析（Rust） | `./bftree/2026-02-09_spike_rust_bftree-wal-analysis.md` | 🔄 进行中 |
+| Bf-Tree 源码分析（Rust） | `./bftree/2026-02-09_spike_rust_bftree-source-code-analysis.md` | ✅ 完成 |
 | Bf-Tree 研究总结 | `./bftree/2026-02-09_bftree-research-summary.md` | ✅ 完成 |
 
 ### 2.2 现有 WAL 实现
@@ -135,7 +149,7 @@
 
 ## 三、时间线对比分析
 
-### 3.1 路线图 Phase 2（6 周）
+### 3.1 路线图 M2（6 周）
 
 | 周次 | 任务 | 交付物 |
 |------|------|--------|
@@ -151,7 +165,7 @@
 | 阶段 | 周次 | 任务 |
 |------|------|------|
 | Phase 1 | 1-2 | 基础设施 + 表元数据接口 |
-| Phase 2 | 3-5 | 核心节点（LeafNode/InnerNode/PageTable） |
+| M2 | 3-5 | 核心节点（LeafNode/InnerNode/PageTable） |
 | Phase 3 | 6-8 | 树结构 + CRUD + 范围扫描 |
 | Phase 4 | 9-10 | Mini-Page 机制 |
 | Phase 5 | 11-12 | 持久化（WAL/Snapshot） |
@@ -159,7 +173,7 @@
 
 ### 3.3 差异分析
 
-| 维度 | 路线图 Phase 2 | Bf-Tree MVP | 建议 |
+| 维度 | 路线图 M2 | Bf-Tree MVP | 建议 |
 |------|---------------|-------------|------|
 | **周期** | 6 周 | 10-12 周 | 采用 MVP 周期 |
 | **范围** | 仅存储引擎 | 完整 Bf-Tree | MVP 更全面 |
@@ -234,11 +248,11 @@ graph LR
 
 | 阶段 | 内容 | 周期 | 优先级 |
 |------|------|------|--------|
-| **Phase 2.1** | Bf-Tree 核心（无持久化） | 4 周 | P0 |
-| **Phase 2.2** | WAL 集成 + Snapshot | 3 周 | P0 |
-| **Phase 2.3** | Iterator + LocalTx | 2 周 | P1 |
-| **Phase 2.4** | BlockDevice 抽象 | 2 周 | P1 |
-| **Phase 2.5** | Cloud/Distributed Storage | 2 周 | P2 |
+| **M2.1** | Bf-Tree 核心（无持久化） | 4 周 | P0 |
+| **M2.2** | WAL 集成 + Snapshot | 3 周 | P0 |
+| **M2.3** | Iterator + LocalTx | 2 周 | P1 |
+| **M2.4** | BlockDevice 抽象 | 2 周 | P1 |
+| **M2.5** | Cloud/Distributed Storage | 2 周 | P2 |
 
 **总计**: 10-13 周（与 MVP 计划一致）
 
@@ -271,7 +285,7 @@ graph LR
 | 阶段 | 周次 | 任务 | 交付物 |
 |------|------|------|--------|
 | **Phase 1** | Week 1-2 | 基础设施 + 表元数据接口 | `config.go`, `bits.go` |
-| **Phase 2** | Week 2-4 | 核心节点（LeafNode/InnerNode/PageTable） | `leaf_node.go`, `inner_node.go`, `pagetable.go` |
+| **M2** | Week 2-4 | 核心节点（LeafNode/InnerNode/PageTable） | `leaf_node.go`, `inner_node.go`, `pagetable.go` |
 | **Phase 3** | Week 4-6 | 树结构 + CRUD + 范围扫描 | `tree.go`, `scan.go` |
 | **Phase 4** | Week 6-8 | Mini-Page 机制（3 级） | `mini_page.go` |
 | **Phase 5** | Week 8-10 | 持久化（WAL/Snapshot） | `bftree_wal.go`, `snapshot.go` |
@@ -319,9 +333,9 @@ const (
 
 ### 8.1 立即行动（Week 1）
 
-1. **创建 Pre 文档** - Phase 2.1 Bf-Tree 核心实现
+1. **创建 Pre 文档** - M2.1 Bf-Tree 核心实现
    - 参考：`./bftree/2026-02-09_bftree-mvp-implementation-plan.md`
-   - 范围：Phase 1 + Phase 2（基础设施 + 核心节点）
+   - 范围：Phase 1 + M2（基础设施 + 核心节点）
 
 2. **定义接口** - `internal/domain/service/storage.go`
    ```go
@@ -346,7 +360,7 @@ const (
    └── tree.go          # BfTree 主结构
    ```
 
-### 8.2 Phase 2.1 详细任务（Week 1-4）
+### 8.2 M2.1 详细任务（Week 1-4）
 
 | 任务 | 优先级 | 预计时间 |
 |------|--------|----------|

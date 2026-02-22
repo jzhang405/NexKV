@@ -17,6 +17,8 @@
 | [实施路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md) | 时间规划 |
 | [**DDD 架构参考**](./2026-02-18_spike_nexkv-ddd-interface.md) | **完整 47 接口定义（包含 AsyncOperation、BTree、WAL）** |
 
+> 📖 **并发管理参考**: [DDD 架构 - GoroutineProvider](./2026-02-18_spike_nexkv-ddd-interface.md#13-b4-goroutineprovider)
+
 ---
 
 ## 📊 文档概览
@@ -75,7 +77,7 @@ func (s *Store) Get(ctx context.Context, key []byte) ([]byte, error) {
     result := make(chan []byte, 1)
     errCh := make(chan error, 1)
     go func() {
-        val, err := s.tree.Search(key)
+        val, err := s.tree.Search(ctx, key)  // ✅ 修复：添加 ctx 参数
         result <- val
         errCh <- err
     }()
@@ -212,6 +214,17 @@ graph LR
 //   - 必须在接口实现层验证输入大小
 //   - 必须返回明确的错误类型（便于上层处理）
 //   - 建议记录监控指标（key_size_histogram, value_size_histogram）
+//
+// 使用示例：
+//   ```go
+//   import (
+//       "context"
+//       "github.com/yourorg/nexkv/internal/domain/service"
+//   )
+//
+//   var store service.KVStore = // ... 初始化实现
+//   value, err := store.Get(context.Background(), []byte("key"))
+//   ```
 type KVStore interface {
     // ====== 同步读写 ======
     Get(ctx context.Context, key []byte) ([]byte, error)
@@ -295,6 +308,35 @@ var (
     // ErrBatchTooLarge 批量操作超过最大数量
     ErrBatchTooLarge = errors.New("batch size exceeds maximum limit (1000)")
 )
+
+// ====== 错误映射说明 ======
+
+// StorageError 与简单错误的映射关系：
+//
+// 简单错误（ErrKeyTooLarge 等）是便捷错误，用于快速验证。
+// StorageError 是结构化错误，包含错误码、消息和原因，适合生产环境。
+//
+// 映射规则：
+//   - ErrKeyTooLarge → StorageError{Code: ErrCodeInvalidInput, Message: "...", Cause: ErrKeyTooLarge}
+//   - ErrValueTooLarge → StorageError{Code: ErrCodeInvalidInput, Message: "...", Cause: ErrValueTooLarge}
+//   - ErrBatchTooLarge → StorageError{Code: ErrCodeInvalidInput, Message: "...", Cause: ErrBatchTooLarge}
+//
+// 使用示例：
+//   ```go
+//   // 简单验证（开发/测试）
+//   if err := ValidateKey(key); err != nil {
+//       return err  // 直接返回 ErrKeyTooLarge
+//   }
+//
+//   // 结构化错误（生产环境）
+//   if err := ValidateKey(key); err != nil {
+//       return StorageError{
+//           Code:    ErrCodeInvalidInput,
+//           Message: fmt.Sprintf("key validation failed: %v", err),
+//           Cause:   err,  // 包装 ErrKeyTooLarge
+//       }
+//   }
+//   ```
 
 // ====== 输入验证函数（实现层必须调用）======
 
@@ -796,6 +838,13 @@ type AsyncOperation[T any] interface {
     // Cancel 取消异步操作（语义精确）
     Cancel() (canceled bool, err error)
 
+    // Discard 丢弃异步操作结果（v19.0 新增）
+    // 用于释放资源，适用于不再需要结果的场景
+    Discard() error
+
+    // IsStarted 返回操作是否已启动（v19.0 新增）
+    IsStarted() bool
+
     // OnComplete 注册回调函数（结果就绪时调用）
     //
     // 线程安全：可在任意 goroutine 调用
@@ -812,17 +861,19 @@ type AsyncOperation[T any] interface {
 type OperationStatus int
 
 const (
-    StatusPending   OperationStatus = iota // 操作进行中
+    StatusPending   OperationStatus = iota // 初始状态为待执行（v19.0更新）
+    StatusRunning                          // 执行中（v19.0新增）
     StatusCompleted                        // 操作成功完成
     StatusFailed                           // 操作失败
     StatusCanceled                         // 操作被取消
+    StatusDiscarded                        // 操作被丢弃（v19.0新增）
     StatusTimeout                          // 操作超时
 )
 
 // IsTerminal 返回是否为终态（终态不可变更）
 func (s OperationStatus) IsTerminal() bool {
     switch s {
-    case StatusCompleted, StatusFailed, StatusCanceled, StatusTimeout:
+    case StatusCompleted, StatusFailed, StatusCanceled, StatusDiscarded, StatusTimeout:
         return true
     default:
         return false
@@ -895,6 +946,105 @@ case StatusFailed:
 case StatusCanceled:
     fmt.Println("操作被取消")
 }
+```
+
+### 2.6.1 回调风格指南
+
+> 🎯 **设计理念**: NexKV 支持两种回调风格，开发者可根据场景灵活选择。
+
+#### 函数式回调（推荐用于简单场景）
+
+**特点**：简洁直观，适合单次处理逻辑。
+
+```go
+// 简单的函数式回调
+future.OnComplete(func(result T, err error) {
+    if err != nil {
+        log.Error("操作失败", err)
+        return
+    }
+    fmt.Println("操作成功:", result)
+})
+```
+
+**适用场景**：
+- ✅ 单次异步操作处理
+- ✅ 简单的成功/失败日志记录
+- ✅ 不需要复杂状态管理的场景
+
+#### 接口式回调（推荐用于复杂场景）
+
+**特点**：结构清晰，支持状态管理和重试逻辑。
+
+```go
+// 定义回调处理器
+type MyCallback struct {
+    retries int
+    maxRetries int
+}
+
+func (c *MyCallback) OnSuccess(value T, stats AsyncStats) {
+    // 成功处理逻辑
+    log.Printf("操作成功，耗时: %v", stats.Duration)
+}
+
+func (c *MyCallback) OnFailure(err error, stats AsyncStats) {
+    // 失败处理逻辑（含重试）
+    if c.retries < c.maxRetries {
+        c.retries++
+        log.Printf("操作失败，重试 %d/%d: %v", c.retries, c.maxRetries, err)
+        // 触发重试...
+    } else {
+        log.Error("达到最大重试次数", err)
+    }
+}
+
+func (c *MyCallback) OnComplete(stats AsyncStats) {
+    // 完成清理逻辑
+    log.Printf("操作结束，状态码: %d", stats.StatusCode)
+}
+
+// 使用方式
+callback := &MyCallback{maxRetries: 3}
+adapted := AdaptCallback(callback.OnSuccess) // 转换为函数式
+future.OnComplete(adapted)
+```
+
+**适用场景**：
+- ✅ 需要重试机制的异步操作
+- ✅ 需要状态管理的复杂流程
+- ✅ 需要详细统计信息的场景
+
+#### 选择建议
+
+| 场景 | 推荐风格 | 理由 |
+|------|---------|------|
+| 简单日志记录 | 函数式 | 代码简洁，1-3 行即可 |
+| 单次异步操作 | 函数式 | 无需额外抽象 |
+| 重试机制 | 接口式 | 需要维护重试计数器 |
+| 状态管理 | 接口式 | 需要追踪多次操作状态 |
+| 性能统计 | 接口式 | 需要收集详细的 AsyncStats |
+| 批量操作 | 接口式 | 需要统一处理多个异步结果 |
+
+#### 最佳实践
+
+1. **优先使用函数式回调**：90% 的场景下，函数式回调已足够
+2. **按需升级到接口式**：当出现复杂需求时再重构为接口式
+3. **避免过度设计**：不要为了"未来可能需要"而使用接口式
+
+```go
+// ❌ 错误：过度设计
+type SimpleLogger struct{}
+func (l *SimpleLogger) OnSuccess(v T, s AsyncStats) { log.Info("成功") }
+func (l *SimpleLogger) OnFailure(e error, s AsyncStats) { log.Error("失败") }
+func (l *SimpleLogger) OnComplete(s AsyncStats) {}
+future.OnComplete(AdaptCallback((&SimpleLogger{}).OnSuccess))
+
+// ✅ 正确：简洁直接
+future.OnComplete(func(v T, err error) {
+    if err != nil { log.Error("失败", err); return }
+    log.Info("成功")
+})
 ```
 
 ---
@@ -1253,6 +1403,51 @@ type BlockVersion struct {
 // Future 类型别名
 type VersionsFuture = AsyncOperation[[]BlockVersion]
 ```
+
+**接口验证策略**（Week 12-13）：
+
+> ⚠️ **注意**：CloudStorage 和 DistributedStorage 接口在 Phase 3+ 实现，但需要在 Phase 2 进行验证
+
+1. **最小实现验证**：
+   ```go
+   // 实现 Mock 版本（内存存储）
+   type MockCloudStorage struct {
+       data map[BlockID][]byte
+       mu   sync.RWMutex
+   }
+
+   func (m *MockCloudStorage) Read(ctx context.Context, blockID BlockID) ([]byte, error) {
+       m.mu.RLock()
+       defer m.mu.RUnlock()
+
+       data, ok := m.data[blockID]
+       if !ok {
+           return nil, ErrBlockNotFound
+       }
+       return data, nil
+   }
+
+   func (m *MockCloudStorage) Write(ctx context.Context, blockID BlockID, data []byte) error {
+       m.mu.Lock()
+       defer m.mu.Unlock()
+
+       m.data[blockID] = data
+       return nil
+   }
+
+   // ... 实现其他方法
+   ```
+
+2. **接口设计验证**：
+   - 验证接口方法是否完整
+   - 验证参数设计是否合理
+   - 验证错误处理是否充分
+   - 验证异步接口是否符合 AsyncOperation[T] 规范
+
+3. **真实实现**（Phase 3）：
+   - 替换 Mock 为真实 SDK（AWS S3 SDK、Azure Blob SDK）
+   - 集成测试（真实云环境）
+   - 性能测试（延迟、吞吐、成本）
 
 ---
 

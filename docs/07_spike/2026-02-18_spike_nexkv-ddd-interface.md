@@ -2,8 +2,16 @@
 
 **文档目的**: 从DDD角度组织分布式KV存储系统的Go interface设计
 **数据来源**: doubao-chat-nexkv-ddd.md 完整对话（21,647行）
-**文档版本**: v18.8 Unified | **最后更新**: 2026-02-20
-**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口** + **统一 RPC 接口** + **ResponseStrategy 广播策略** + **BroadcastTracker 完整追踪** + **WriteVResult 统一返回值**
+**文档版本**: v18.9 Unified | **最后更新**: 2026-02-22
+**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口** + **统一 RPC 接口** + **ResponseStrategy 广播策略** + **BroadcastTracker 完整追踪** + **WriteVResult 统一返回值** + **双存储引擎策略**
+
+> **📋 v18.9 变更说明 (2026-02-22)**：
+> - **双存储引擎策略**：Metadata KV（sync.Map）+ External KV（Bf-Tree）
+> - **统一接口，分层实现**：KVStore 接口统一，底层实现各司其职
+> - **架构决策**：存储结构跟着场景走，而非强行统一
+> - **实现映射**：
+>   - `MetadataKVStore`：`internal/infrastructure/storage/metadata/` → sync.Map + MVStore
+>   - `ExternalKVStore`：`internal/infrastructure/storage/bftree/` → Bf-Tree
 
 > **📋 v18.8 变更说明 (2026-02-20)**：
 > - **新增 `RecordSuccess()` / `RecordFailure()` 方法**：RPC 实现调用，更新 tracker 状态
@@ -111,6 +119,7 @@
 ✅ **5层精简架构** (API → 控制平面 → 数据平面 → 存储引擎 → 基础设施)
 ✅ **同步异步统一** (19个核心接口支持 AsyncOperation[T] + Callback + Channel 三种异步模式)
 ✅ **安全协议通用化** (支持TLS 1.3和Noise Protocol)
+✅ **双存储引擎策略** (Metadata KV: sync.Map + External KV: Bf-Tree)
 ✅ **存储引擎可插拔** (B+tree、LSM-tree、微软Bf-Tree)
 ✅ **生产级质量** (架构评分9.9/10)
 
@@ -1519,6 +1528,36 @@ STORAGE ENGINE   <--- B+tree / LSM-tree / 微软Bf-Tree 在这里
 ```
 
 ### 2.2 Interface定义
+
+#### 2.2.0 双存储引擎策略
+
+> **核心决策**：存储结构跟着场景走，而非强行统一
+
+NexKV 采用**双存储引擎策略**，针对不同数据类型使用不同的存储引擎：
+
+| 存储类型 | 底层实现 | 数据类型 | 访问模式 | 性能特点 |
+|---------|---------|---------|---------|---------|
+| **Metadata KV** | `sync.Map` + MVStore | 元数据（节点、分片、副本、锁） | 点查询 90%，前缀扫描 8% | O(1) 哈希查找，Lock-free 并发 |
+| **External KV** | Bf-Tree（B+树变体） | 业务数据（应用数据） | 点查询 + 范围查询 | O(log N) 有序存储，范围扫描 |
+
+**为什么不统一？**
+
+| 维度 | Metadata（元数据） | External KV（业务数据） |
+|------|-------------------|------------------------|
+| **数据特征** | 量小（<1000条）、读写高频 | 量大、需范围查询、持久化 |
+| **核心诉求** | 极致读写性能（O(1)） | 有序存储、范围查询、崩溃恢复 |
+| **工程复杂度** | 无持久化/事务需求 | 需 WAL、并发控制、持久化 |
+
+**实现位置**：
+```
+internal/infrastructure/storage/
+├── metadata/           # Metadata KV 实现
+│   └── metadata_kv.go  # sync.Map + MVStore
+└── bftree/             # External KV 实现
+    ├── tree.go         # Bf-Tree 主结构
+    ├── scan.go         # 范围扫描
+    └── ...
+```
 
 #### 2.2.1 KVStore - 存储引擎核心接口
 

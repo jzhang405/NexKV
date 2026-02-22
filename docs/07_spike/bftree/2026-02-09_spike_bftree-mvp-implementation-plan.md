@@ -2,10 +2,83 @@
 
 > **实施计划文档**
 > **创建日期**: 2026-02-09
-> **最后更新**: 2026-02-09（代码审查反馈后修订）
+> **最后更新**: 2026-02-22（DDD 架构适配更新）
 > **状态**: 📋 已修订
 > **预计周期**: 10-12 周（原 8 周，增加元数据集成和并发安全测试）
 > **分支**: `feature/bftree-mvp`
+
+---
+
+## 🏗️ DDD 架构说明
+
+> **参考文档**: `docs/07_spike/2026-02-18_spike-nexkv-ddd-interface.md`
+
+### 架构层次
+
+Bf-Tree 作为存储引擎层的实现，遵循 DDD 分层架构：
+
+| 层次 | 包路径 | 职责 |
+|------|--------|------|
+| **Domain 层** | `internal/domain/service/` | 接口定义（KVStore, BTree, Iterator, LocalTx） |
+| **Infrastructure 层** | `internal/infrastructure/storage/bftree/` | Bf-Tree 具体实现 |
+
+### 接口与实现关系
+
+```mermaid
+graph LR
+    subgraph Domain["Domain 层"]
+        KVStore["KVStore 接口"]
+        BTree["BTree 接口"]
+        Iterator["Iterator 接口"]
+        LocalTx["LocalTx 接口"]
+    end
+
+    subgraph Infrastructure["Infrastructure 层"]
+        BfTree["BfTree 实现"]
+        BfIterator["BfIterator 实现"]
+        BfLocalTx["BfLocalTx 实现"]
+    end
+
+    KVStore -.-> BfTree
+    BTree -.-> BfTree
+    Iterator -.-> BfIterator
+    LocalTx -.-> BfLocalTx
+```
+
+### 目录结构
+
+```
+internal/
+├── domain/
+│   └── service/
+│       └── storage.go          # KVStore, BTree, Iterator, LocalTx 接口定义
+│
+└── infrastructure/
+    └── storage/
+        └── bftree/              # Bf-Tree 实现
+            ├── config.go        # 配置模块
+            ├── bits.go          # 位操作工具
+            ├── errors.go        # 错误定义
+            ├── leaf_node.go     # 叶子节点
+            ├── inner_node.go    # 内节点
+            ├── pagetable.go     # 页面表
+            ├── tree.go          # BfTree 主结构（实现 KVStore/BTree 接口）
+            ├── scan.go          # 范围扫描（实现 Iterator 接口）
+            ├── mini_page.go     # Mini-Page 机制
+            ├── bftree_wal.go    # WAL 扩展
+            ├── snapshot.go      # 快照实现
+            └── *_test.go        # 测试文件
+```
+
+### 接口实现对照
+
+| DDD 接口 | Bf-Tree 实现文件 | 说明 |
+|----------|-----------------|------|
+| `KVStore` | `tree.go` | 核心存储接口（Get/Set/Delete/Scan） |
+| `BTree` | `tree.go` | B+树专用接口（LoadPage/WritePage） |
+| `Iterator` | `scan.go` | 范围查询迭代器 |
+| `LocalTx` | `tree.go` | 本地事务支持 |
+| `WAL` | `bftree_wal.go` | 扩展现有 WAL |
 
 ---
 
@@ -153,7 +226,7 @@ var (
 
 ### 1.1 配置模块
 
-**文件**：`internal/storage/bftree/config.go`
+**文件**：`internal/infrastructure/storage/bftree/config.go`
 
 **实现内容**：
 
@@ -210,7 +283,7 @@ func DefaultConfig() *Config {
 
 ### 1.2 位操作工具
 
-**文件**：`internal/storage/bftree/bits.go`
+**文件**：`internal/infrastructure/storage/bftree/bits.go`
 
 **实现内容**：
 
@@ -297,7 +370,7 @@ const (
 
 ### 2.1 LeafNode 实现
 
-**文件**：`internal/storage/bftree/leaf_node.go`
+**文件**：`internal/infrastructure/storage/bftree/leaf_node.go`
 
 **实现内容**：
 
@@ -418,7 +491,7 @@ func (n *LeafNode) Get(key []byte) ([]byte, bool) {
 
 ### 2.2 InnerNode 实现
 
-**文件**：`internal/storage/bftree/inner_node.go`
+**文件**：`internal/infrastructure/storage/bftree/inner_node.go`
 
 **实现内容**：
 
@@ -506,7 +579,7 @@ func (n *InnerNode) Search(key []byte) *PageID {
 
 ### 2.3 PageTable 存储
 
-**文件**：`internal/storage/bftree/pagetable.go`
+**文件**：`internal/infrastructure/storage/bftree/pagetable.go`
 
 **实现内容**：
 
@@ -586,7 +659,7 @@ func (pt *PageTable) Put(pid PageID, loc *PageLocation) {
 
 ### 3.1 BfTree 主结构
 
-**文件**：`internal/storage/bftree/tree.go`
+**文件**：`internal/infrastructure/storage/bftree/tree.go`
 
 **实现内容**：
 
@@ -874,7 +947,7 @@ func (t *BfTree) Scan(start, end []byte) (Iterator, error) {
 
 ### 3.2 范围扫描
 
-**文件**：`internal/storage/bftree/scan.go`
+**文件**：`internal/infrastructure/storage/bftree/scan.go`
 
 **实现内容**：
 
@@ -965,7 +1038,7 @@ func (it *ScanIterator) Value() []byte {
 
 ### 4.1 Mini-Page 结构
 
-**文件**：`internal/storage/bftree/mini_page.go`
+**文件**：`internal/infrastructure/storage/bftree/mini_page.go`
 
 **实现内容**：
 
@@ -1116,7 +1189,7 @@ func (t *BfTree) promoteToFull(pid PageID, mp *MiniPage) error {
 
 ### 5.1 WAL 扩展
 
-**文件**：`internal/wal/bftree_wal.go`
+**文件**：`internal/infrastructure/storage/bftree/bftree_wal.go`
 
 **实现内容**：
 
@@ -1168,7 +1241,7 @@ func (w *WAL) AppendBfTreeInsertMiniPage(offset uint64, data []byte) error {
 
 ### 5.2 Snapshot
 
-**文件**：`internal/storage/bftree/snapshot.go`
+**文件**：`internal/infrastructure/storage/bftree/snapshot.go`
 
 **实现内容**：
 
@@ -1277,7 +1350,7 @@ func verifySnapshotChecksum(file io.ReadSeeker, meta *BfTreeMeta) error {
 
 ### 6.1 单元测试
 
-**文件**：`internal/storage/bftree/*_test.go`
+**文件**：`internal/infrastructure/storage/bftree/*_test.go`
 
 **测试覆盖**：
 
@@ -1296,7 +1369,7 @@ func verifySnapshotChecksum(file io.ReadSeeker, meta *BfTreeMeta) error {
 
 ### 6.2 性能测试
 
-**文件**：`internal/storage/bftree/benchmark_test.go`
+**文件**：`internal/infrastructure/storage/bftree/benchmark_test.go`
 
 **基准测试**：
 
@@ -1350,7 +1423,7 @@ go test -bench=BenchmarkBfTreeInsert -benchtime=10s | grep ops/s
 
 ### 6.3 集成测试
 
-**文件**:`internal/storage/bftree/integration_test.go`
+**文件**:`internal/infrastructure/storage/bftree/integration_test.go`
 
 **测试场景**：
 
@@ -1481,13 +1554,13 @@ go test -bench=BenchmarkBfTreeInsert -benchtime=10s | grep ops/s
 **基准测试命令**：
 ```bash
 # 点查询测试
-go test -bench=BenchmarkBfTreeGet -benchtime=10s ./internal/storage/bftree/
+go test -bench=BenchmarkBfTreeGet -benchtime=10s ./internal/infrastructure/storage/bftree/
 
 # 写入吞吐测试
-go test -bench=BenchmarkBfTreeInsert -benchtime=10s ./internal/storage/bftree/
+go test -bench=BenchmarkBfTreeInsert -benchtime=10s ./internal/infrastructure/storage/bftree/
 
 # 详细性能分析
-go test -bench=. -cpuprofile=cpu.prof -memprofile=mem.prof ./internal/storage/bftree/
+go test -bench=. -cpuprofile=cpu.prof -memprofile=mem.prof ./internal/infrastructure/storage/bftree/
 ```
 
 ### 质量验收
@@ -1504,7 +1577,7 @@ go test -bench=. -cpuprofile=cpu.prof -memprofile=mem.prof ./internal/storage/bf
 
 ### 代码
 
-- [ ] `internal/storage/bftree/` 目录完整实现
+- [ ] `internal/infrastructure/storage/bftree/` 目录完整实现
 - [ ] 单元测试文件
 - [ ] 基准测试文件
 - [ ] 集成测试文件

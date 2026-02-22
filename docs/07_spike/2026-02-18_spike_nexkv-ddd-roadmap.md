@@ -1,8 +1,34 @@
 # NexKV DDD 实施路线图（增强版）
 
-**文档版本**: v2.0 | **最后更新**: 2026-02-18
-**基于**: spike-nexkv-ddd-interface.md v18.0 + spike-nexkv-ddd-implement.md v1.5
+**文档版本**: v2.1 | **最后更新**: 2026-02-22
+**基于**: spike-nexkv-ddd-interface.md v18.9 + spike-nexkv-ddd-implement.md v1.5
 **总周期**: 约24周 | **接口总数**: 47个 | **实现文件数**: 89个
+
+---
+
+## 〇、核心架构决策
+
+### 0.1 双存储引擎策略
+
+> **核心原则**：存储结构跟着场景走，而非强行统一
+
+| 存储类型 | 底层实现 | 数据类型 | 核心诉求 |
+|---------|---------|---------|---------|
+| **Metadata KV** | `sync.Map` + MVStore | 元数据（节点、分片、副本） | 极致读写性能 O(1) |
+| **External KV** | Bf-Tree（B+树变体） | 业务数据（应用数据） | 有序存储、范围查询、持久化 |
+
+**实现位置**：
+```
+internal/infrastructure/storage/
+├── metadata/           # Metadata KV（sync.Map）
+│   └── metadata_kv.go
+└── bftree/             # External KV（Bf-Tree）
+    ├── tree.go
+    ├── scan.go
+    └── ...
+```
+
+**设计理由**：参见 `docs/07_spike/2026-02-21_spike_phase2-storage-engine.md`
 
 ---
 
@@ -15,6 +41,7 @@
 - 47个统一接口
 - 5层精简架构
 - AsyncOperation[T] 精化异步接口
+- **双存储引擎**：Metadata KV（sync.Map）+ External KV（Bf-Tree）
 
 ### 1.2 技术栈
 
@@ -22,7 +49,8 @@
 |------|------|------|
 | **语言** | Go 1.21+ | 泛型支持、高性能并发 |
 | **Transport** | libp2p | 去中心化、NAT穿透 |
-| **KVStore** | Bf-Tree (Go port) | 高性能 B+tree、WAL 优化、范围扫描 |
+| **Metadata KV** | sync.Map + MVStore | O(1) 哈希查找，元数据专用 |
+| **External KV** | Bf-Tree (Go port) | 高性能 B+tree、WAL 优化、范围扫描 |
 | **序列化** | MessagePack | 高性能、自描述 |
 | **DI容器** | Wire | 编译时检查 |
 | **日志** | Zap | 结构化日志 |
@@ -34,7 +62,7 @@
 | ① API层 | 2 | 8 | 对外 KV/Tx 接口 |
 | ② 控制平面层 | 14 | 23 | 分片路由、选举、负载均衡 |
 | ③ 数据平面层 | 6 | 20 | 复制、事务 |
-| ④ 存储引擎层 | 9 | 19 | 单机 KV、WAL |
+| ④ 存储引擎层 | 9 | 19 | **双存储引擎**（Metadata + External） |
 | ⑤ 基础设施层 | 16 | 16 | 网络通信、扩展能力 |
 | **总计** | **47** | **89** | - |
 

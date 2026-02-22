@@ -2,12 +2,60 @@
 
 > **预研类型**: Spike
 > **创建日期**: 2026-02-21
+> **最后更新**: 2026-02-22（添加存储引擎分层策略决策）
 > **分支**: `spike/phase2-storage-engine`
 > **状态**: 🔄 进行中
 
 ---
 
-## 〇、术语澄清：Bf-Tree vs B 树变体
+## 〇、核心架构决策
+
+### 0.1 存储引擎分层策略：Metadata KV vs External KV
+
+> **核心结论**：**不需要统一存储实现**（最优解）
+> - **Metadata KV**：使用 `sync.Map`（极致 O(1) 读写性能）
+> - **External KV**：使用 Bf-Tree（有序存储、范围查询、持久化）
+> - **统一接口**：只需封装统一的 KV 接口，底层实现各司其职
+
+#### 极简理由（适配 NexKV 场景）
+
+| 维度 | Metadata（元数据） | External KV（业务数据） | 统一的弊端 |
+|------|-------------------|------------------------|-----------|
+| **数据特征** | 量小（<1000条）、读写高频、结构简单 | 量大、需范围查询、持久化、高内存利用率 | Metadata 用 Bf-Tree 会引入不必要的节点分裂/合并开销 |
+| **核心诉求** | 极致读写性能（O(1)）、简单易用 | 有序存储、范围查询、崩溃恢复、低内存碎片 | 失去 map 的 O(1) 优势，元数据操作变慢 |
+| **工程复杂度** | 无持久化/事务需求，逻辑简单 | 需 WAL、并发控制、持久化，逻辑复杂 | 元数据层被迫引入 Bf-Tree 的复杂逻辑，增加 bug 风险 |
+
+#### 为什么不统一？
+
+1. **场景适配才是核心**：
+   - Metadata 典型场景：集群节点列表、配置参数、Bf-Tree 元信息（阶数/ε因子）→ map 的 O(1) 最优
+   - External KV 典型场景：海量有序存储、范围查询（scan）→ Bf-Tree 的有序性优势不可替代
+
+2. **统一的唯一"好处"是代码复用，但得不偿失**：
+   - 强行统一需为 Metadata 适配 Bf-Tree 的 WAL/锁/恢复逻辑
+   - Metadata 根本不需要这些特性，反而 map 代码更简洁
+
+3. **折中方案**：封装**统一 KV 接口**
+   ```go
+   // 统一接口，底层实现各司其职
+   type KVStore interface {
+       Get(ctx context.Context, key []byte) ([]byte, error)
+       Set(ctx context.Context, key, value []byte) error
+       Delete(ctx context.Context, key []byte) error
+       Scan(ctx context.Context, start, end []byte) (Iterator, error)
+   }
+   ```
+
+#### 实现映射
+
+| 存储类型 | 接口 | 实现位置 | 底层存储 |
+|---------|------|---------|---------|
+| **Metadata KV** | `KVStore` | `internal/infrastructure/storage/metadata/` | `sync.Map` + MVStore |
+| **External KV** | `KVStore` | `internal/infrastructure/storage/bftree/` | Bf-Tree（B+树变体） |
+
+---
+
+## 一、术语澄清：Bf-Tree vs B 树变体
 
 ### 0.1 NexKV 选择的 Bf-Tree（Buffer-Friendly Tree）
 
@@ -68,11 +116,11 @@
 
 | 文档 | 位置 | 状态 |
 |------|------|------|
-| Bf-Tree MVP 实施计划 | `docs/07_spike/bftree/bftree-mvp-implementation-plan.md` | ✅ 已批准 |
-| ADR 006 批准文档 | `docs/02_design/decisions/006_bftree_mvp_approval.md` | ✅ 已批准 |
-| Bf-Tree WAL 分析 | `docs/07_spike/bftree/bftree-wal-analysis.md` | 🔄 进行中 |
-| Bf-Tree 源码分析 | `docs/07_spike/bftree/bftree-source-code-analysis.md` | ✅ 完成 |
-| Bf-Tree 研究总结 | `docs/07_spike/bftree/bftree-research-summary.md` | ✅ 完成 |
+| Bf-Tree MVP 实施计划 | `./bftree/2026-02-09_bftree-mvp-implementation-plan.md` | ✅ 已批准 |
+| ADR 006 批准文档 | `../02_design/decisions/006_bftree_mvp_approval.md` | ✅ 已批准 |
+| Bf-Tree WAL 分析 | `./bftree/2026-02-09_bftree-wal-analysis.md` | 🔄 进行中 |
+| Bf-Tree 源码分析 | `./bftree/2026-02-09_bftree-source-code-analysis.md` | ✅ 完成 |
+| Bf-Tree 研究总结 | `./bftree/2026-02-09_bftree-research-summary.md` | ✅ 完成 |
 
 ### 2.2 现有 WAL 实现
 
@@ -272,7 +320,7 @@ const (
 ### 8.1 立即行动（Week 1）
 
 1. **创建 Pre 文档** - Phase 2.1 Bf-Tree 核心实现
-   - 参考：`docs/07_spike/bftree/bftree-mvp-implementation-plan.md`
+   - 参考：`./bftree/2026-02-09_bftree-mvp-implementation-plan.md`
    - 范围：Phase 1 + Phase 2（基础设施 + 核心节点）
 
 2. **定义接口** - `internal/domain/service/storage.go`
@@ -346,9 +394,9 @@ const (
 
 ## 九、参考文献
 
-- `docs/07_spike/bftree/bftree-mvp-implementation-plan.md`
-- `docs/02_design/decisions/006_bftree_mvp_approval.md`
-- `docs/07_spike/2026-02-18_spike-nexkv-ddd-roadmap.md`
+- `./bftree/2026-02-09_bftree-mvp-implementation-plan.md`
+- `../02_design/decisions/006_bftree_mvp_approval.md`
+- `./2026-02-18_spike-nexkv-ddd-roadmap.md`
 - `internal/wal/wal.go`
 - [google/btree](https://github.com/google/btree)
 - [tidwall/btree](https://github.com/tidwall/btree)

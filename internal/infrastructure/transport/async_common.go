@@ -3,6 +3,7 @@ package transport
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -78,12 +79,18 @@ func (e *AtomicError) Load() error {
 	return nil
 }
 
-// AsyncLifecycle 异步组件生命周期管理（基于 conc 库）
+// AsyncLifecycle 异步组件生命周期管理
 // 支持可选的 GoroutineProvider 注入，实现集中式协程管理
+//
+// 设计说明：
+// - provider 负责任务调度和执行（注入时使用）
+// - trackWg 用于追踪任务完成状态（WaitWithTimeout）
+// - conc.WaitGroup 保留用于无 provider 时的 fallback（已移除）
 type AsyncLifecycle struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
-	wg       conc.WaitGroup
+	wg       conc.WaitGroup       // 保留用于兼容性
+	trackWg  sync.WaitGroup       // 用于追踪 provider 任务完成
 	closed   atomic.Bool
 	provider service.GoroutineProvider // 可选：集中式协程池
 	priority service.GoroutinePriority // 任务优先级
@@ -131,17 +138,31 @@ func (l *AsyncLifecycle) Done() <-chan struct{} {
 	return l.ctx.Done()
 }
 
-// Go 启动 goroutine（支持集中式协程池注入）
-// 如果注入了 GoroutineProvider，使用 SubmitWithPriority；否则回退到 conc.WaitGroup
+// Go 启动 goroutine（强制使用 GoroutineProvider）
+//
+// 注意：调用前必须通过 WithGoroutineProvider 注入 provider，
+// 否则将 panic。这是为了确保 goroutine 集中管理。
+//
+// 设计说明：
+// - provider 负责任务调度和执行
+// - trackWg 用于 WaitWithTimeout 追踪完成状态
+// - 职责分离：provider 管执行，lifecycle 管等待
 func (l *AsyncLifecycle) Go(f func()) {
-	if l.provider != nil {
-		wrapped := func(ctx context.Context) {
-			f()
-		}
-		_ = l.provider.SubmitWithPriority(l.ctx, l.priority, wrapped)
-		return
+	if l.provider == nil {
+		panic("AsyncLifecycle.Go: GoroutineProvider is required, use WithGoroutineProvider() to inject one")
 	}
-	l.wg.Go(f)
+
+	// 增加追踪计数
+	l.trackWg.Add(1)
+
+	// 包装函数：执行任务并通知完成
+	wrapped := func(ctx context.Context) {
+		defer l.trackWg.Done() // 任务完成时通知追踪 WaitGroup
+		f()
+	}
+
+	// 提交到协程池
+	_ = l.provider.SubmitWithPriority(l.ctx, l.priority, wrapped)
 }
 
 // Close 关闭（返回是否首次关闭）
@@ -161,10 +182,17 @@ func (l *AsyncLifecycle) Cancel() {
 
 // WaitWithTimeout 等待 goroutine 退出（带超时）
 // 返回 true 表示正常退出，false 表示超时
+//
+// 注意：当使用 GoroutineProvider 时，追踪 trackWg；
+// 否则追踪 wg（conc.WaitGroup）。
 func (l *AsyncLifecycle) WaitWithTimeout(timeout time.Duration) bool {
 	done := make(chan struct{})
 	go func() {
-		l.wg.Wait()
+		if l.provider != nil {
+			l.trackWg.Wait()
+		} else {
+			l.wg.Wait()
+		}
 		close(done)
 	}()
 

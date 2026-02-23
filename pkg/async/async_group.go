@@ -73,13 +73,8 @@ func NewGroup[T any](
 	provider service.GoroutineProvider,
 	targets []model.PeerID,
 	execFunc func(ctx context.Context, target model.PeerID) (T, error),
-	opts ...GroupOption,
+	_ ...GroupOption, // 保留参数签名兼容性，但当前不使用
 ) *AsyncGroup[T] {
-	// 应用选项
-	for _, opt := range opts {
-		opt(&groupConfig{})
-	}
-
 	// 创建可取消的 context
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -124,10 +119,10 @@ func NewGroup[T any](
 	return g
 }
 
-// GroupOption 批量操作选项
+// GroupOption 批量操作选项（保留类型以维持 API 兼容性）
 type GroupOption func(*groupConfig)
 
-// groupConfig 批量操作配置
+// groupConfig 批量操作配置（预留扩展，当前未使用）
 type groupConfig struct{}
 
 // handleResult 处理单个结果

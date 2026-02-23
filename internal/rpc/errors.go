@@ -75,13 +75,14 @@ func ValidateAndNormalize(opts *FanoutOptions, peerCount int) (*FanoutOptions, e
 	result := *opts
 	resultPtr := &result
 
-	// 分步骤验证和规范化
-	if err := validateResponseMode(resultPtr.Mode); err != nil {
-		return nil, err
+	// 验证响应模式（内联原 validateResponseMode）
+	if resultPtr.Mode < FireForget || resultPtr.Mode > WaitAll {
+		return nil, errors.Wrapf(errors.ErrInvalidStrategy, "无效的响应模式: %d", resultPtr.Mode)
 	}
 
-	if err := validatePeerCount(peerCount); err != nil {
-		return nil, err
+	// 验证 peer 列表（内联原 validatePeerCount）
+	if peerCount == 0 {
+		return nil, errors.Wrap(errors.ErrInvalidParam, "peer 列表为空")
 	}
 
 	normalizeHops(resultPtr)
@@ -97,22 +98,6 @@ func ValidateAndNormalize(opts *FanoutOptions, peerCount int) (*FanoutOptions, e
 	}
 
 	return resultPtr, nil
-}
-
-// validateResponseMode 验证响应模式有效性
-func validateResponseMode(mode ResponseMode) error {
-	if mode < FireForget || mode > WaitAll {
-		return errors.Wrapf(errors.ErrInvalidStrategy, "无效的响应模式: %d", mode)
-	}
-	return nil
-}
-
-// validatePeerCount 验证 peer 列表不能为空
-func validatePeerCount(peerCount int) error {
-	if peerCount == 0 {
-		return errors.Wrap(errors.ErrInvalidParam, "peer 列表为空")
-	}
-	return nil
 }
 
 // normalizeHops 规范化 Hops 配置

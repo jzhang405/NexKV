@@ -4,6 +4,8 @@ package async
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -376,7 +378,9 @@ func safeCallback[T any](callback func(T, error), value T, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			// 记录 panic 但不影响主流程
-			fmt.Printf("[async] callback panic recovered: %v\n", r)
+			slog.Error("[async] callback panic recovered",
+				"panic", r,
+				"stack", string(debug.Stack()))
 		}
 	}()
 	callback(value, err)

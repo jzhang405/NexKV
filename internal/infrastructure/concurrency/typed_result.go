@@ -102,14 +102,9 @@ type TypedResult[T any] struct {
 	inner *AnyResult
 }
 
-// Get 阻塞等待结果
-func (r *TypedResult[T]) Get(ctx context.Context) (T, error) {
+// assertType 安全类型断言辅助函数
+func assertType[T any](anyVal any) (T, error) {
 	var zero T
-	anyVal, err := r.inner.Get(ctx)
-	if err != nil {
-		return zero, err
-	}
-	// 安全类型断言，避免 panic
 	val, ok := anyVal.(T)
 	if !ok {
 		return zero, errors.Wrapf(errors.ErrAsyncExecFailed, "type assertion failed: expected %T, got %T", zero, anyVal)
@@ -117,19 +112,24 @@ func (r *TypedResult[T]) Get(ctx context.Context) (T, error) {
 	return val, nil
 }
 
-// GetWithTimeout 带超时等待结果
-func (r *TypedResult[T]) GetWithTimeout(timeout time.Duration) (T, error) {
-	var zero T
-	anyVal, err := r.inner.GetWithTimeout(timeout)
+// Get 阻塞等待结果
+func (r *TypedResult[T]) Get(ctx context.Context) (T, error) {
+	anyVal, err := r.inner.Get(ctx)
 	if err != nil {
+		var zero T
 		return zero, err
 	}
-	// 安全类型断言，避免 panic
-	val, ok := anyVal.(T)
-	if !ok {
-		return zero, errors.Wrapf(errors.ErrAsyncExecFailed, "type assertion failed: expected %T, got %T", zero, anyVal)
+	return assertType[T](anyVal)
+}
+
+// GetWithTimeout 带超时等待结果
+func (r *TypedResult[T]) GetWithTimeout(timeout time.Duration) (T, error) {
+	anyVal, err := r.inner.GetWithTimeout(timeout)
+	if err != nil {
+		var zero T
+		return zero, err
 	}
-	return val, nil
+	return assertType[T](anyVal)
 }
 
 // Done 返回完成通道

@@ -86,7 +86,7 @@ func TestHandleIncomingStream_Request(t *testing.T) {
 	defer server.Close()
 
 	// 创建 RPC
-	rpc := NewLibp2pRPC(server, nil)
+	rpc := NewLibp2pRPC(server, nil, nil)
 
 	// 设置请求处理器
 	receivedReq := make(chan model.Message, 1)
@@ -150,7 +150,7 @@ func TestHandleIncomingStream_Response(t *testing.T) {
 	defer server.Close()
 
 	// 创建 RPC
-	rpc := NewLibp2pRPC(server, nil)
+	rpc := NewLibp2pRPC(server, nil, nil)
 
 	// 创建模拟响应消息
 	respMsg := model.NewMessage(
@@ -192,7 +192,7 @@ func TestHandleIncomingStream_NoHandler(t *testing.T) {
 	defer server.Close()
 
 	// 创建 RPC（不设置处理器）
-	rpc := NewLibp2pRPC(server, nil)
+	rpc := NewLibp2pRPC(server, nil, nil)
 
 	// 创建模拟请求消息
 	reqMsg := model.NewMessage(
@@ -236,7 +236,7 @@ func TestHandleIncomingStream_ClosedRPC(t *testing.T) {
 	defer server.Close()
 
 	// 创建 RPC
-	rpc := NewLibp2pRPC(server, nil)
+	rpc := NewLibp2pRPC(server, nil, nil)
 
 	// 关闭 RPC
 	rpc.Close()
@@ -281,7 +281,7 @@ func TestHandleIncomingStream_InvalidMessage(t *testing.T) {
 	defer server.Close()
 
 	// 创建 RPC
-	rpc := NewLibp2pRPC(server, nil)
+	rpc := NewLibp2pRPC(server, nil, nil)
 
 	// 创建无效数据（不是有效的 MessagePack 消息）
 	invalidData := []byte{0x00, 0x01, 0x02, 0x03}
@@ -324,7 +324,7 @@ func TestRPCFullCycle(t *testing.T) {
 	}
 
 	// 创建服务端 RPC
-	serverRPC := NewLibp2pRPC(server, nil)
+	serverRPC := NewLibp2pRPC(server, nil, nil)
 
 	// 设置服务端处理器
 	if err := serverRPC.OnRequest(func(ctx context.Context, from model.PeerID, req model.Message) model.Message {
@@ -349,7 +349,7 @@ func TestRPCFullCycle(t *testing.T) {
 	})
 
 	// 创建客户端 RPC
-	clientRPC := NewLibp2pRPC(client, nil)
+	clientRPC := NewLibp2pRPC(client, nil, nil)
 
 	// 发起调用
 	req := model.NewMessage(

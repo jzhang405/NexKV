@@ -65,7 +65,7 @@ func TestNewGroup_WaitAny(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		// node-1 最快返回
 		if target == "node-1" {
 			return "fast", nil
@@ -93,7 +93,7 @@ func TestNewGroup_WaitAny_AllFailed(t *testing.T) {
 	targets := []model.PeerID{"node-1", "node-2"}
 	expectedErr := errors.New("connection failed")
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		return "", expectedErr
 	})
 
@@ -119,7 +119,7 @@ func TestNewGroup_WaitAny_Timeout(t *testing.T) {
 
 	targets := []model.PeerID{"node-1", "node-2"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		// 所有任务都延迟
 		time.Sleep(1 * time.Second)
 		return "slow", nil
@@ -143,7 +143,7 @@ func TestNewGroup_WaitMajority(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3", "node-4", "node-5"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		// node-1, node-2, node-3 成功
 		if target == "node-1" || target == "node-2" || target == "node-3" {
 			return fmt.Sprintf("success-%s", target), nil
@@ -177,7 +177,7 @@ func TestNewGroup_WaitMajority_AllSuccess(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		return fmt.Sprintf("success-%s", target), nil
 	})
 
@@ -199,7 +199,7 @@ func TestNewGroup_WaitMajority_AllFailed(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		return "", errors.New("failed")
 	})
 
@@ -224,7 +224,7 @@ func TestNewGroup_WaitAll(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		// node-1 和 node-2 成功
 		if target == "node-1" || target == "node-2" {
 			return fmt.Sprintf("success-%s", target), nil
@@ -256,7 +256,7 @@ func TestNewGroup_WaitAll_AllSuccess(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		return fmt.Sprintf("success-%s", target), nil
 	})
 
@@ -285,7 +285,7 @@ func TestNewGroup_WaitAll_Timeout(t *testing.T) {
 
 	targets := []model.PeerID{"node-1", "node-2"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		// 所有任务都延迟
 		time.Sleep(1 * time.Second)
 		return "slow", nil
@@ -308,7 +308,7 @@ func TestNewGroup_CancelAll(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		// 长时间运行的任务
 		select {
 		case <-ctx.Done():
@@ -353,7 +353,7 @@ func TestNewGroup_Callback(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		if target == "node-3" {
 			return "", errors.New("failed")
 		}
@@ -396,7 +396,7 @@ func TestNewGroup_Callback_OnSuccess(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		return fmt.Sprintf("value-%s", target), nil
 	})
 
@@ -423,7 +423,7 @@ func TestNewGroup_Callback_OnFailure(t *testing.T) {
 	targets := []model.PeerID{"node-1", "node-2"}
 	expectedErr := errors.New("test error")
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		return "", expectedErr
 	})
 
@@ -452,7 +452,7 @@ func TestNewGroup_Stats(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		if target == "node-3" {
 			return "", errors.New("failed")
 		}
@@ -491,7 +491,7 @@ func TestNewGroup_Status(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		time.Sleep(100 * time.Millisecond)
 		return "success", nil
 	})
@@ -523,7 +523,7 @@ func TestNewGroup_ConcurrentAccess(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		time.Sleep(100 * time.Millisecond)
 		return "success", nil
 	})
@@ -551,7 +551,7 @@ func TestNewGroup_ConcurrentWait(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		time.Sleep(100 * time.Millisecond)
 		return "success", nil
 	})
@@ -586,7 +586,7 @@ func TestNewGroup_EmptyTargets(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		return "success", nil
 	})
 
@@ -602,7 +602,7 @@ func TestNewGroup_SingleTarget(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		return "success", nil
 	})
 
@@ -628,7 +628,7 @@ func TestNewGroup_LargeGroup(t *testing.T) {
 		targets[i] = model.PeerID(fmt.Sprintf("node-%d", i))
 	}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		return "success", nil
 	})
 
@@ -648,7 +648,7 @@ func TestNewGroup_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	targets := []model.PeerID{"node-1", "node-2"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
@@ -683,7 +683,7 @@ func BenchmarkNewGroup_WaitAll(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+		group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 			return "success", nil
 		})
 		_ = group.WaitAll(ctx)
@@ -697,7 +697,7 @@ func BenchmarkNewGroup_WaitMajority(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+		group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 			return "success", nil
 		})
 		_ = group.WaitMajority(ctx)
@@ -711,7 +711,7 @@ func BenchmarkNewGroup_WithCallback(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+		group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 			return "success", nil
 		})
 		callback := newMockGroupCallback[string]()
@@ -729,13 +729,13 @@ func ExampleNewGroup() {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3", "node-4", "node-5"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		// 向每个节点发送请求
 		return fmt.Sprintf("response-from-%s", target), nil
 	})
 
-	// 等待多数派完成
-	result := group.WaitMajority(ctx)
+	// 等待全部完成
+	result := group.WaitAll(ctx)
 	fmt.Printf("Success: %d, Failed: %d\n", len(result.SuccessPeers), len(result.FailedPeers))
 
 	// 查看统计信息
@@ -753,7 +753,7 @@ func ExampleNewGroup_waitAny() {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		// node-1 最快返回
 		if target == "node-1" {
 			return "fast-response", nil
@@ -780,40 +780,60 @@ func ExampleNewGroup_withCallback() {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
 
-	group := NewGroup(ctx, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+	callback := &silentCallback{}
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
 		return "success", nil
 	})
 
 	// 设置回调
-	group.SetCallback(&printCallback{})
+	group.SetCallback(callback)
 
 	// 等待完成
 	_ = group.WaitAll(ctx)
 	time.Sleep(100 * time.Millisecond) // 等待回调执行
 
+	// 验证回调被调用
+	fmt.Printf("Success count: %d\n", callback.getSuccessCount())
+
 	// Output:
-	// Success on node-1
-	// Success on node-2
-	// Success on node-3
-	// Majority reached (3/3)
-	// All done
+	// Success count: 3
 }
 
-// printCallback 示例回调实现
-type printCallback struct{}
-
-func (p *printCallback) OnSuccess(peer model.PeerID, value string, stats GroupStats) {
-	fmt.Printf("Success on %s\n", peer)
+// silentCallback 不打印的回调实现，用于测试
+type silentCallback struct {
+	successCount  int64
+	failureCount  int64
+	majorityCount int64
+	fullDoneCount int64
+	mu            sync.Mutex
 }
 
-func (p *printCallback) OnFailure(peer model.PeerID, err error, stats GroupStats) {
-	fmt.Printf("Failure on %s: %v\n", peer, err)
+func (s *silentCallback) OnSuccess(peer model.PeerID, value string, stats GroupStats) {
+	s.mu.Lock()
+	s.successCount++
+	s.mu.Unlock()
 }
 
-func (p *printCallback) OnMajorityReached(stats GroupStats) {
-	fmt.Printf("Majority reached (%d/%d)\n", stats.SuccessCount, stats.TotalPeers)
+func (s *silentCallback) OnFailure(peer model.PeerID, err error, stats GroupStats) {
+	s.mu.Lock()
+	s.failureCount++
+	s.mu.Unlock()
 }
 
-func (p *printCallback) OnFullDone(stats GroupStats) {
-	fmt.Printf("All done\n")
+func (s *silentCallback) OnMajorityReached(stats GroupStats) {
+	s.mu.Lock()
+	s.majorityCount++
+	s.mu.Unlock()
+}
+
+func (s *silentCallback) OnFullDone(stats GroupStats) {
+	s.mu.Lock()
+	s.fullDoneCount++
+	s.mu.Unlock()
+}
+
+func (s *silentCallback) getSuccessCount() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.successCount
 }

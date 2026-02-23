@@ -157,7 +157,7 @@ func TestLibp2pRPC_Close(t *testing.T) {
 // TestLibp2pRPC_GetMiddleware 测试获取中间件链
 func TestLibp2pRPC_GetMiddleware(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	mw := rpc.GetMiddleware()
@@ -169,7 +169,7 @@ func TestLibp2pRPC_GetMiddleware(t *testing.T) {
 // TestLibp2pRPC_BroadcastCall_InvalidStrategy 测试无效策略
 func TestLibp2pRPC_BroadcastCall_InvalidStrategy(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2"}
@@ -184,7 +184,7 @@ func TestLibp2pRPC_BroadcastCall_InvalidStrategy(t *testing.T) {
 // TestLibp2pRPC_BroadcastAsync 测试异步广播
 func TestLibp2pRPC_BroadcastAsync(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2", "node-3"}
@@ -218,7 +218,7 @@ func TestLibp2pRPC_BroadcastAsync(t *testing.T) {
 // TestLibp2pRPC_ImplementsInterface 验证接口实现
 func TestLibp2pRPC_ImplementsInterface(t *testing.T) {
 	transport := newMockTransport("node-1")
-	var _ service.RPCSync = NewLibp2pRPC(transport, nil)
+	var _ service.RPCSync = NewLibp2pRPC(transport, nil, nil)
 }
 
 // ============================================================================
@@ -369,7 +369,7 @@ func TestLibp2pRPC_Call_Timeout(t *testing.T) {
 	transport.connected["node-2"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, &service.RPCConfig{
+	rpc := NewLibp2pRPC(transport, nil, &service.RPCConfig{
 		CallTimeout: 100 * time.Millisecond,
 	})
 	defer rpc.Close()
@@ -392,7 +392,7 @@ func TestLibp2pRPC_Call_ContextCanceled(t *testing.T) {
 	transport.connected["node-2"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "node-2", []byte("test"))
@@ -409,7 +409,7 @@ func TestLibp2pRPC_Call_ContextCanceled(t *testing.T) {
 // TestLibp2pRPC_CallAsync_NilCallback 测试异步调用空回调
 func TestLibp2pRPC_CallAsync_NilCallback(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "node-2", []byte("test"))
@@ -423,7 +423,7 @@ func TestLibp2pRPC_CallAsync_NilCallback(t *testing.T) {
 // TestLibp2pRPC_BroadcastCall_EmptyPeers 测试广播到空节点列表
 func TestLibp2pRPC_BroadcastCall_EmptyPeers(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "", []byte("broadcast"))
@@ -443,7 +443,7 @@ func TestLibp2pRPC_BroadcastCall_EmptyPeers(t *testing.T) {
 // TestLibp2pRPC_BroadcastAsync_NilCallback 测试异步广播空回调
 func TestLibp2pRPC_BroadcastAsync_NilCallback(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2"}
@@ -461,7 +461,7 @@ func TestLibp2pRPC_BroadcastAsync_NilCallback(t *testing.T) {
 // TestLibp2pRPC_WriteV_EmptyTargets 测试批量写入空目标
 func TestLibp2pRPC_WriteV_EmptyTargets(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	msgs := []model.Message{
@@ -478,7 +478,7 @@ func TestLibp2pRPC_WriteV_EmptyTargets(t *testing.T) {
 // TestLibp2pRPC_WriteVCall_EmptyTargets 测试批量调用空目标
 func TestLibp2pRPC_WriteVCall_EmptyTargets(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	msgs := []model.Message{
@@ -495,7 +495,7 @@ func TestLibp2pRPC_WriteVCall_EmptyTargets(t *testing.T) {
 // TestLibp2pRPC_OnRequest_NilHandler 测试注册空处理器
 func TestLibp2pRPC_OnRequest_NilHandler(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	err := rpc.OnRequest(nil)
@@ -663,7 +663,7 @@ func TestLibp2pRPC_CallAsync_ConnectedPeer(t *testing.T) {
 	transport.connected["node-2"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "node-2", []byte("test"))
@@ -697,7 +697,7 @@ func TestLibp2pRPC_CallAsync_ConnectedPeer(t *testing.T) {
 // TestLibp2pRPC_BroadcastCall_AllStrategies 测试所有广播策略
 func TestLibp2pRPC_BroadcastCall_AllStrategies(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2"}
@@ -730,7 +730,7 @@ func TestLibp2pRPC_BroadcastCall_ContextTimeout(t *testing.T) {
 	transport.connected["node-2"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, &service.RPCConfig{
+	rpc := NewLibp2pRPC(transport, nil, &service.RPCConfig{
 		CallTimeout: 100 * time.Millisecond,
 	})
 	defer rpc.Close()
@@ -750,7 +750,7 @@ func TestLibp2pRPC_BroadcastCall_ContextTimeout(t *testing.T) {
 // TestLibp2pRPC_CloseCh 测试关闭通道
 func TestLibp2pRPC_CloseCh(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 
 	// 关闭前应该返回一个可用的通道
 	ch := rpc.CloseCh()
@@ -781,7 +781,7 @@ func TestLibp2pRPC_CloseCh(t *testing.T) {
 // TestLibp2pRPC_HandleResponse 测试响应处理
 func TestLibp2pRPC_HandleResponse(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	// 注册一个待处理的调用
@@ -819,7 +819,7 @@ func TestLibp2pRPC_HandleResponse(t *testing.T) {
 // TestLibp2pRPC_HandleResponse_Timeout 测试响应超时
 func TestLibp2pRPC_HandleResponse_Timeout(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	// 注册一个待处理的调用，超时很短
@@ -843,7 +843,7 @@ func TestLibp2pRPC_HandleResponse_Timeout(t *testing.T) {
 // TestLibp2pRPC_HandleResponse_UnknownID 测试未知请求 ID 的响应
 func TestLibp2pRPC_HandleResponse_UnknownID(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	// 发送一个不存在请求 ID 的响应（不应该 panic）
@@ -852,17 +852,6 @@ func TestLibp2pRPC_HandleResponse_UnknownID(t *testing.T) {
 		Err: service.ErrTimeout,
 	})
 	// 如果没有 panic，测试通过
-}
-
-// TestAsyncCommon_Context 测试 AsyncLifecycle 的 Context
-func TestAsyncCommon_Context(t *testing.T) {
-	lifecycle := NewAsyncLifecycle()
-
-	// 测试 Context
-	ctx := lifecycle.Context()
-	if ctx == nil {
-		t.Error("Context() returned nil")
-	}
 }
 
 // TestValidateBufferSize 测试缓冲区大小验证
@@ -939,7 +928,7 @@ func TestValidateMaxMessageSize(t *testing.T) {
 // TestLibp2pRPC_WriteV_SingleTarget 测试批量写入单个目标
 func TestLibp2pRPC_WriteV_SingleTarget(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2"}
@@ -958,7 +947,7 @@ func TestLibp2pRPC_WriteV_SingleTarget(t *testing.T) {
 // TestLibp2pRPC_WriteV_MultipleTargets 测试批量写入多个目标
 func TestLibp2pRPC_WriteV_MultipleTargets(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2", "node-3"}
@@ -976,7 +965,7 @@ func TestLibp2pRPC_WriteV_MultipleTargets(t *testing.T) {
 // TestLibp2pRPC_WriteV_EmptyMessages 测试批量写入空消息
 func TestLibp2pRPC_WriteV_EmptyMessages(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2"}
@@ -991,7 +980,7 @@ func TestLibp2pRPC_WriteV_EmptyMessages(t *testing.T) {
 // TestLibp2pRPC_WriteV_NilMessages 测试批量写入 nil 消息
 func TestLibp2pRPC_WriteV_NilMessages(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2"}
@@ -1005,7 +994,7 @@ func TestLibp2pRPC_WriteV_NilMessages(t *testing.T) {
 // TestLibp2pRPC_WriteV_ContextCanceled 测试批量写入上下文取消
 func TestLibp2pRPC_WriteV_ContextCanceled(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2"}
@@ -1029,7 +1018,7 @@ func TestLibp2pRPC_WriteV_ContextCanceled(t *testing.T) {
 // TestLibp2pRPC_Call_PeerNotConnected 测试调用未连接节点
 func TestLibp2pRPC_Call_PeerNotConnected(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "node-2", []byte("test"))
@@ -1047,7 +1036,7 @@ func TestLibp2pRPC_Call_NilMessage(t *testing.T) {
 	transport.connected["node-2"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	_, err := rpc.Call(context.Background(), "node-2", nil)
@@ -1064,7 +1053,7 @@ func TestLibp2pRPC_Call_TimeoutWithConfig(t *testing.T) {
 	transport.connected["node-2"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, &service.RPCConfig{
+	rpc := NewLibp2pRPC(transport, nil, &service.RPCConfig{
 		CallTimeout: 50 * time.Millisecond,
 	})
 	defer rpc.Close()
@@ -1088,7 +1077,7 @@ func TestLibp2pRPC_Call_AfterClose(t *testing.T) {
 	transport.connected["node-2"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	rpc.Close() // 先关闭
 
 	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "node-2", []byte("test"))
@@ -1106,7 +1095,7 @@ func TestLibp2pRPC_Call_AfterClose(t *testing.T) {
 // TestLibp2pRPC_BroadcastAsync_Basic 测试异步广播
 func TestLibp2pRPC_BroadcastAsync_Basic(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2", "node-3"}
@@ -1125,7 +1114,7 @@ func TestLibp2pRPC_BroadcastAsync_Basic(t *testing.T) {
 // TestLibp2pRPC_BroadcastAsync_EmptyPeers 测试空节点列表广播
 func TestLibp2pRPC_BroadcastAsync_EmptyPeers(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	msg := model.NewMessage("test-001", model.MessageTypeEvent, "node-1", "", []byte("event"))
@@ -1139,7 +1128,7 @@ func TestLibp2pRPC_BroadcastAsync_EmptyPeers(t *testing.T) {
 // TestLibp2pRPC_BroadcastAsync_ContextCanceled 测试异步广播上下文取消
 func TestLibp2pRPC_BroadcastAsync_ContextCanceled(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2"}
@@ -1183,7 +1172,7 @@ func TestLibp2pRPC_CustomConfig(t *testing.T) {
 		MaxConcurrentCalls: 100,
 		RequestBufferSize:  64,
 	}
-	rpc := NewLibp2pRPC(transport, config)
+	rpc := NewLibp2pRPC(transport, nil, config)
 
 	if rpc == nil {
 		t.Fatal("NewLibp2pRPC with custom config returned nil")
@@ -1194,7 +1183,7 @@ func TestLibp2pRPC_CustomConfig(t *testing.T) {
 // TestLibp2pRPC_NilConfig 测试 nil 配置使用默认值
 func TestLibp2pRPC_NilConfig(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 
 	if rpc == nil {
 		t.Fatal("NewLibp2pRPC with nil config returned nil")
@@ -1214,7 +1203,7 @@ func TestLibp2pRPC_NilConfig(t *testing.T) {
 // TestLibp2pRPC_DoubleClose 测试重复关闭
 func TestLibp2pRPC_DoubleClose(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 
 	// 第一次关闭
 	err := rpc.Close()
@@ -1238,7 +1227,7 @@ func TestLibp2pRPC_DoubleClose(t *testing.T) {
 func TestLibp2pRPC_Call_PeerNotConnected_ErrorPath(t *testing.T) {
 	transport := newMockTransport("node-1")
 	// 不添加 node-2 到 connected
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "node-2", []byte("test"))
@@ -1261,7 +1250,7 @@ func TestLibp2pRPC_Call_OpenStreamFails(t *testing.T) {
 	transport.connected["node-2"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	msg := model.NewMessage("test-001", model.MessageTypeRequest, "node-1", "node-2", []byte("test"))
@@ -1280,7 +1269,7 @@ func TestLibp2pRPC_Call_OpenStreamFails(t *testing.T) {
 // TestLibp2pRPC_WriteV_PeerNotConnected 测试 WriteV 到未连接节点
 func TestLibp2pRPC_WriteV_PeerNotConnected(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2"}
@@ -1302,7 +1291,7 @@ func TestLibp2pRPC_WriteV_PeerNotConnected(t *testing.T) {
 // TestLibp2pRPC_BroadcastCall_AllPeersUnreachable 测试所有节点不可达
 func TestLibp2pRPC_BroadcastCall_AllPeersUnreachable(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2", "node-3", "node-4"}
@@ -1328,7 +1317,7 @@ func TestLibp2pRPC_BroadcastCall_NilMessage(t *testing.T) {
 	transport.connected["node-2"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2"}
@@ -1343,7 +1332,7 @@ func TestLibp2pRPC_BroadcastCall_NilMessage(t *testing.T) {
 // TestLibp2pRPC_BroadcastAsync_NilMessage 测试异步广播 nil 消息
 func TestLibp2pRPC_BroadcastAsync_NilMessage(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2"}
@@ -1360,7 +1349,7 @@ func TestLibp2pRPC_BroadcastAsync_NilMessage(t *testing.T) {
 // TestLibp2pRPC_WriteVCall_AllPeersUnreachable 测试批量调用所有节点不可达
 func TestLibp2pRPC_WriteVCall_AllPeersUnreachable(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2", "node-3"}
@@ -1385,7 +1374,7 @@ func TestLibp2pRPC_WriteVCall_AllPeersUnreachable(t *testing.T) {
 // TestLibp2pRPC_WriteVCall_LengthMismatch_Error 测试批量调用长度不匹配
 func TestLibp2pRPC_WriteVCall_LengthMismatch_Error(t *testing.T) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2", "node-3"}
@@ -1411,7 +1400,7 @@ func TestLibp2pRPC_Call_WithDeadline(t *testing.T) {
 	transport.connected["node-2"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, &service.RPCConfig{
+	rpc := NewLibp2pRPC(transport, nil, &service.RPCConfig{
 		CallTimeout: 100 * time.Millisecond,
 	})
 	defer rpc.Close()
@@ -1436,7 +1425,7 @@ func TestLibp2pRPC_BroadcastCall_WithCanceledContext(t *testing.T) {
 	transport.connected["node-3"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2", "node-3"}
@@ -1457,7 +1446,7 @@ func TestLibp2pRPC_SendRequestNoResponse_PeerUnreachable(t *testing.T) {
 	transport := newMockTransport("node-1")
 	// 不添加任何连接的节点
 
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	msg := createTestMessage("test-001", model.MessageTypeRequest, []byte("test"))
@@ -1473,7 +1462,7 @@ func TestLibp2pRPC_SendRequestNoResponse_Connected(t *testing.T) {
 	transport.connected["node-2"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	msg := createTestMessage("test-001", model.MessageTypeRequest, []byte("test"))
@@ -1490,7 +1479,7 @@ func TestLibp2pRPC_BroadcastAsync_PeerUnreachable(t *testing.T) {
 	transport := newMockTransport("node-1")
 	// 不添加任何连接的节点
 
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2", "node-3"}
@@ -1513,7 +1502,7 @@ func TestLibp2pRPC_BroadcastAsync_WithCallback(t *testing.T) {
 	transport.connected["node-3"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2", "node-3"}
@@ -1550,7 +1539,7 @@ func TestLibp2pRPC_BroadcastCall_AllPeersFail(t *testing.T) {
 	transport.connected["node-3"] = true
 	transport.mu.Unlock()
 
-	rpc := NewLibp2pRPC(transport, nil)
+	rpc := NewLibp2pRPC(transport, nil, nil)
 	defer rpc.Close()
 
 	peers := []model.PeerID{"node-2", "node-3"}
@@ -1582,7 +1571,7 @@ func TestLibp2pRPC_Call_ShortTimeout(t *testing.T) {
 		MaxConcurrentCalls: 100,
 	}
 
-	rpc := NewLibp2pRPC(transport, config)
+	rpc := NewLibp2pRPC(transport, nil, config)
 	defer rpc.Close()
 
 	msg := createTestMessage("test-001", model.MessageTypeRequest, []byte("test"))

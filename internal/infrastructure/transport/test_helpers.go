@@ -84,7 +84,7 @@ type testRPCSetup struct {
 // newTestRPC 创建测试 RPC
 func newTestRPC(t *testing.T, nodeID model.PeerID, config *service.RPCConfig) *testRPCSetup {
 	transport := newMockTransport(nodeID)
-	rpc := NewLibp2pRPC(transport, config)
+	rpc := NewLibp2pRPC(transport, nil, config)
 	return &testRPCSetup{
 		transport: transport,
 		rpc:       rpc,

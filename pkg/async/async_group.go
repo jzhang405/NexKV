@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
-	"github.com/jzhang405/NexKV/internal/infrastructure/transport"
+	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
 // ==========================================
@@ -16,7 +16,8 @@ import (
 
 // AsyncGroup 批量异步操作组
 type AsyncGroup[T any] struct {
-	lifecycle             *transport.AsyncLifecycle
+	ctx                   context.Context
+	cancel                context.CancelFunc
 	targets               []model.PeerID
 	ops                   map[model.PeerID]AsyncOperation[T]
 	results               map[model.PeerID]T
@@ -66,31 +67,29 @@ type GroupResult[T any] struct {
 }
 
 // NewGroup 创建批量异步操作组
+// provider 参数可选，为 nil 时直接使用 goroutine
 func NewGroup[T any](
 	ctx context.Context,
+	provider service.GoroutineProvider,
 	targets []model.PeerID,
 	execFunc func(ctx context.Context, target model.PeerID) (T, error),
 	opts ...GroupOption,
 ) *AsyncGroup[T] {
 	// 应用选项
-	config := &groupConfig{
-		lifecycle: transport.NewAsyncLifecycle(),
-	}
 	for _, opt := range opts {
-		opt(config)
+		opt(&groupConfig{})
 	}
 
-	lifecycle := config.lifecycle
-	if lifecycle == nil {
-		lifecycle = transport.NewAsyncLifecycle()
-	}
+	// 创建可取消的 context
+	ctx, cancel := context.WithCancel(ctx)
 
 	// 复制 targets 避免外部修改
 	targetsCopy := make([]model.PeerID, len(targets))
 	copy(targetsCopy, targets)
 
 	g := &AsyncGroup[T]{
-		lifecycle:    lifecycle,
+		ctx:          ctx,
+		cancel:       cancel,
 		targets:      targetsCopy,
 		ops:          make(map[model.PeerID]AsyncOperation[T]),
 		results:      make(map[model.PeerID]T),
@@ -104,7 +103,7 @@ func NewGroup[T any](
 	// 为每个目标创建异步操作
 	for _, target := range targets {
 		target := target // 捕获循环变量
-		op := NewOp[T](lifecycle.Context(), func(ctx context.Context) (T, error) {
+		op := NewOp[T](ctx, provider, func(ctx context.Context) (T, error) {
 			return execFunc(ctx, target)
 		})
 		g.ops[target] = op
@@ -115,23 +114,21 @@ func NewGroup[T any](
 		})
 	}
 
-	return g
-}
+	// 如果 targets 为空，立即关闭所有 channel
+	if len(targets) == 0 {
+		close(g.anyDone)
+		close(g.majorityDone)
+		close(g.allDone)
+	}
 
-// groupConfig 批量操作配置
-type groupConfig struct {
-	lifecycle *transport.AsyncLifecycle
+	return g
 }
 
 // GroupOption 批量操作选项
 type GroupOption func(*groupConfig)
 
-// WithGroupLifecycle 设置生命周期管理器
-func WithGroupLifecycle(lifecycle *transport.AsyncLifecycle) GroupOption {
-	return func(c *groupConfig) {
-		c.lifecycle = lifecycle
-	}
-}
+// groupConfig 批量操作配置
+type groupConfig struct{}
 
 // handleResult 处理单个结果
 func (g *AsyncGroup[T]) handleResult(peer model.PeerID, value T, err error) {
@@ -162,9 +159,9 @@ func (g *AsyncGroup[T]) handleResult(peer model.PeerID, value T, err error) {
 	failed := len(g.errors)
 	completed := success + failed
 
-	// 检查是否达到多数派
+	// 检查是否达到多数派（成功数达到多数派，或者全部完成但无法达到多数派）
 	majorityCount := (total / 2) + 1
-	if success >= majorityCount {
+	if success >= majorityCount || (completed >= total && success < majorityCount) {
 		g.majorityOnce.Do(func() {
 			g.majorityReachTime = time.Now()
 			shouldTriggerMajority = true
@@ -275,9 +272,8 @@ func (g *AsyncGroup[T]) CancelAll() error {
 		}
 	}
 
-	if g.lifecycle != nil {
-		g.lifecycle.Cancel()
-	}
+	// 取消 context
+	g.cancel()
 
 	return lastErr
 }

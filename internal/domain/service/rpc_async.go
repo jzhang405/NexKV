@@ -46,6 +46,11 @@ type RPCAsync interface {
 	// WriteVCallAsync 异步批量写入（带响应）
 	// 返回每个节点的响应结果
 	WriteVCallAsync(ctx context.Context, targets []model.PeerID, msgs []model.Message, opts ...BroadcastOption) AsyncOperation[WriteVResult]
+
+	// ====== Goroutine 管理 ======
+	// SetGoroutineProvider 设置 goroutine 提供者
+	// 用于统一管理 goroutine 的创建和生命周期
+	SetGoroutineProvider(provider GoroutineProvider)
 }
 
 // ==========================================

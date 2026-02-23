@@ -48,7 +48,7 @@ func TestAsyncStream_Basic(t *testing.T) {
 			t.Errorf("unexpected stream type: %T", stream)
 			return
 		}
-		serverStream = NewLibp2pAsyncStream(libp2pStream, DefaultAsyncStreamConfig())
+		serverStream = NewLibp2pAsyncStream(nil, libp2pStream, DefaultAsyncStreamConfig())
 	}()
 
 	// 客户端打开异步流
@@ -163,7 +163,7 @@ func TestAsyncStream_Burst(t *testing.T) {
 			t.Errorf("unexpected stream type: %T", stream)
 			return
 		}
-		serverStream = NewLibp2pAsyncStream(libp2pStream, DefaultAsyncStreamConfig())
+		serverStream = NewLibp2pAsyncStream(nil, libp2pStream, DefaultAsyncStreamConfig())
 	}()
 
 	clientStream, err := client.OpenAsyncStream(context.Background(), server.Self(), proto)
@@ -244,7 +244,7 @@ func TestAsyncStream_Close(t *testing.T) {
 			t.Errorf("unexpected stream type: %T", stream)
 			return
 		}
-		serverStream = NewLibp2pAsyncStream(libp2pStream, DefaultAsyncStreamConfig())
+		serverStream = NewLibp2pAsyncStream(nil, libp2pStream, DefaultAsyncStreamConfig())
 	}()
 
 	clientStream, err := client.OpenAsyncStream(context.Background(), server.Self(), proto)
@@ -313,7 +313,7 @@ func TestAsyncStream_WaitWrite(t *testing.T) {
 			t.Errorf("unexpected stream type: %T", stream)
 			return
 		}
-		serverStream = NewLibp2pAsyncStream(libp2pStream, DefaultAsyncStreamConfig())
+		serverStream = NewLibp2pAsyncStream(nil, libp2pStream, DefaultAsyncStreamConfig())
 	}()
 
 	clientStream, err := client.OpenAsyncStream(context.Background(), server.Self(), proto)

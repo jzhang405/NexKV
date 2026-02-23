@@ -19,6 +19,7 @@ type Libp2pRPC struct {
 	config      *service.RPCConfig
 	idGenerator *service.RequestIDGenerator
 	middleware  service.MiddlewareChain
+	provider    service.GoroutineProvider // goroutine 提供者
 
 	// 请求-响应匹配
 	pendingCalls   map[string]*pendingCall
@@ -42,7 +43,8 @@ type pendingCall struct {
 }
 
 // NewLibp2pRPC 创建 libp2p RPC 实例
-func NewLibp2pRPC(transport service.Transport, config *service.RPCConfig) *Libp2pRPC {
+// provider 参数可选，为 nil 时直接使用 goroutine
+func NewLibp2pRPC(transport service.Transport, provider service.GoroutineProvider, config *service.RPCConfig) *Libp2pRPC {
 	if config == nil {
 		config = service.DefaultRPCConfig()
 	}
@@ -58,6 +60,7 @@ func NewLibp2pRPC(transport service.Transport, config *service.RPCConfig) *Libp2
 		config:       config,
 		idGenerator:  service.NewRequestIDGenerator(string(self)),
 		middleware:   NewMiddlewareChain(),
+		provider:     provider,
 		pendingCalls: make(map[string]*pendingCall),
 		requestChan:  make(chan service.RequestMsg, config.RequestBufferSize),
 		closeCh:      make(chan struct{}),
@@ -117,12 +120,21 @@ func (r *Libp2pRPC) CallAsync(ctx context.Context, to model.PeerID, req model.Me
 		return service.ErrCanceled
 	}
 
-	go func() {
-		resp, err := r.Call(ctx, to, req)
-		if cb != nil {
-			cb(resp, err)
-		}
-	}()
+	if r.provider != nil {
+		_ = r.provider.Submit(ctx, func(ctx context.Context) {
+			resp, err := r.Call(ctx, to, req)
+			if cb != nil {
+				cb(resp, err)
+			}
+		})
+	} else {
+		go func() {
+			resp, err := r.Call(ctx, to, req)
+			if cb != nil {
+				cb(resp, err)
+			}
+		}()
+	}
 
 	return nil
 }
@@ -223,7 +235,7 @@ func (r *Libp2pRPC) BroadcastAsync(
 		return service.ErrCanceled
 	}
 
-	go func() {
+	execFunc := func() {
 		result, err := r.BroadcastCall(ctx, to, req, strategy, tracker)
 		if err != nil && cb != nil {
 			cb("", nil, err)
@@ -241,7 +253,15 @@ func (r *Libp2pRPC) BroadcastAsync(
 				cb(peer, nil, service.ErrPeerUnreachable)
 			}
 		}
-	}()
+	}
+
+	if r.provider != nil {
+		_ = r.provider.Submit(ctx, func(ctx context.Context) {
+			execFunc()
+		})
+	} else {
+		go execFunc()
+	}
 
 	return nil
 }
@@ -442,6 +462,11 @@ func (r *Libp2pRPC) Close() error {
 	})
 
 	return nil
+}
+
+// SetGoroutineProvider 设置 goroutine 提供者
+func (r *Libp2pRPC) SetGoroutineProvider(provider service.GoroutineProvider) {
+	r.provider = provider
 }
 
 // ============================================================================

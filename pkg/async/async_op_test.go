@@ -11,7 +11,6 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/concurrency"
-	"github.com/jzhang405/NexKV/internal/infrastructure/transport"
 )
 
 // ==========================================
@@ -128,7 +127,7 @@ func TestNewOp_BasicExecution(t *testing.T) {
 	ctx := context.Background()
 	expectedResult := "success"
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		return expectedResult, nil
 	})
 
@@ -152,7 +151,7 @@ func TestNewOp_ErrorHandling(t *testing.T) {
 	ctx := context.Background()
 	expectedErr := errors.New("test error")
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		return "", expectedErr
 	})
 
@@ -175,7 +174,7 @@ func TestNewOp_ErrorHandling(t *testing.T) {
 func TestNewOp_IsStarted(t *testing.T) {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		time.Sleep(100 * time.Millisecond)
 		return "success", nil
 	})
@@ -221,7 +220,7 @@ func TestOperationStatus_Transitions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			op := NewOp(ctx, tt.execFunc)
+			op := NewOp(ctx, nil, tt.execFunc)
 			_, _ = op.Get(ctx)
 
 			if op.Status() != tt.expectedStatus {
@@ -289,7 +288,7 @@ func TestOperationStatus_String(t *testing.T) {
 func TestNewOp_Timeout(t *testing.T) {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		// 模拟长时间运行的任务
 		select {
 		case <-ctx.Done():
@@ -321,7 +320,7 @@ func TestNewOp_Timeout(t *testing.T) {
 func TestNewOp_Cancel(t *testing.T) {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		// 模拟长时间运行的任务
 		select {
 		case <-ctx.Done():
@@ -363,7 +362,7 @@ func TestNewOp_Cancel(t *testing.T) {
 func TestNewOp_CancelCompletedOperation(t *testing.T) {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		return "success", nil
 	})
 
@@ -384,7 +383,7 @@ func TestNewOp_CancelCompletedOperation(t *testing.T) {
 func TestNewOp_Discard(t *testing.T) {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		time.Sleep(200 * time.Millisecond)
 		return "should be discarded", nil
 	})
@@ -415,7 +414,7 @@ func TestNewOp_Discard(t *testing.T) {
 func TestNewOp_DiscardCompletedOperation(t *testing.T) {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		return "success", nil
 	})
 
@@ -438,7 +437,7 @@ func TestNewOp_OnComplete(t *testing.T) {
 	ctx := context.Background()
 	expectedResult := "success"
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		return expectedResult, nil
 	})
 
@@ -477,7 +476,7 @@ func TestNewOp_OnComplete(t *testing.T) {
 func TestNewOp_OnCompleteMultipleCallbacks(t *testing.T) {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		return "success", nil
 	})
 
@@ -505,7 +504,7 @@ func TestNewOp_OnCompleteMultipleCallbacks(t *testing.T) {
 func TestNewOp_OffComplete(t *testing.T) {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		time.Sleep(200 * time.Millisecond)
 		return "success", nil
 	})
@@ -537,7 +536,7 @@ func TestNewOp_OffComplete(t *testing.T) {
 func TestNewOp_OffCompleteNotFound(t *testing.T) {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		return "success", nil
 	})
 
@@ -552,7 +551,7 @@ func TestNewOp_OnCompleteAfterCompletion(t *testing.T) {
 	ctx := context.Background()
 	expectedResult := "success"
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		return expectedResult, nil
 	})
 
@@ -583,7 +582,7 @@ func TestNewOp_OnCompleteAfterCompletion(t *testing.T) {
 func TestNewOp_CallbackPanicRecovery(t *testing.T) {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		return "success", nil
 	})
 
@@ -625,9 +624,9 @@ func TestNewOp_WithGoroutineProvider(t *testing.T) {
 	mockProvider := &mockGoroutineProvider{}
 	expectedResult := "success"
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, mockProvider, func(ctx context.Context) (string, error) {
 		return expectedResult, nil
-	}, WithGoroutineProvider(mockProvider))
+	})
 
 	result, err := op.Get(ctx)
 	if err != nil {
@@ -643,25 +642,6 @@ func TestNewOp_WithGoroutineProvider(t *testing.T) {
 	}
 }
 
-// TestNewOp_WithLifecycle 测试自定义生命周期
-func TestNewOp_WithLifecycle(t *testing.T) {
-	ctx := context.Background()
-	lifecycle := transport.NewAsyncLifecycle()
-	expectedResult := "success"
-
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
-		return expectedResult, nil
-	}, WithLifecycle(lifecycle))
-
-	result, err := op.Get(ctx)
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if result != expectedResult {
-		t.Fatalf("expected result %s, got: %s", expectedResult, result)
-	}
-}
-
 // ==========================================
 // 并发安全测试
 // ==========================================
@@ -670,7 +650,7 @@ func TestNewOp_WithLifecycle(t *testing.T) {
 func TestNewOp_ConcurrentAccess(t *testing.T) {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		time.Sleep(100 * time.Millisecond)
 		return "success", nil
 	})
@@ -710,7 +690,7 @@ func TestNewOp_ResultChannel(t *testing.T) {
 	ctx := context.Background()
 	expectedResult := "success"
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		return expectedResult, nil
 	})
 
@@ -738,7 +718,7 @@ func TestNewOp_ResultChannel(t *testing.T) {
 func TestNewOp_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
@@ -764,7 +744,7 @@ func TestNewOp_ContextCancellation(t *testing.T) {
 func TestNewOp_ZeroTimeout(t *testing.T) {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		return "success", nil
 	}, WithTimeout(0)) // 零超时表示无超时
 
@@ -787,7 +767,7 @@ func BenchmarkNewOp_Basic(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		op := NewOp(ctx, func(ctx context.Context) (string, error) {
+		op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 			return "success", nil
 		})
 		_, _ = op.Get(ctx)
@@ -800,7 +780,7 @@ func BenchmarkNewOp_WithCallback(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		op := NewOp(ctx, func(ctx context.Context) (string, error) {
+		op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 			return "success", nil
 		})
 		op.OnComplete(func(result string, err error) {})
@@ -815,9 +795,9 @@ func BenchmarkNewOp_WithGoroutineProvider(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		op := NewOp(ctx, func(ctx context.Context) (string, error) {
+		op := NewOp(ctx, mockProvider, func(ctx context.Context) (string, error) {
 			return "success", nil
-		}, WithGoroutineProvider(mockProvider))
+		})
 		_, _ = op.Get(ctx)
 	}
 }
@@ -830,7 +810,7 @@ func BenchmarkNewOp_WithGoroutineProvider(b *testing.B) {
 func ExampleNewOp() {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		// 执行异步操作
 		return "hello world", nil
 	})
@@ -853,7 +833,7 @@ func ExampleNewOp() {
 func ExampleNewOp_withTimeout() {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		// 模拟长时间运行的任务
 		select {
 		case <-ctx.Done():
@@ -879,7 +859,7 @@ func ExampleNewOp_withTimeout() {
 func ExampleNewOp_withCallback() {
 	ctx := context.Background()
 
-	op := NewOp(ctx, func(ctx context.Context) (string, error) {
+	op := NewOp(ctx, nil, func(ctx context.Context) (string, error) {
 		return "success", nil
 	})
 

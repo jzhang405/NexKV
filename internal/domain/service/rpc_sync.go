@@ -58,6 +58,11 @@ type RPCSync interface {
 
 	// ====== 生命周期 ======
 	Close() error
+
+	// ====== Goroutine 管理 ======
+	// SetGoroutineProvider 设置 goroutine 提供者
+	// 用于统一管理 goroutine 的创建和生命周期
+	SetGoroutineProvider(provider GoroutineProvider)
 }
 
 // ============================================================================

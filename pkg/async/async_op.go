@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/service"
-	"github.com/jzhang405/NexKV/internal/infrastructure/transport"
 )
 
 // ==========================================
@@ -119,9 +118,7 @@ type OpOption func(*opConfig)
 
 // opConfig 操作配置
 type opConfig struct {
-	timeout           time.Duration
-	goroutineProvider service.GoroutineProvider
-	lifecycle         *transport.AsyncLifecycle
+	timeout time.Duration
 }
 
 // WithTimeout 设置超时时间
@@ -131,27 +128,14 @@ func WithTimeout(timeout time.Duration) OpOption {
 	}
 }
 
-// WithGoroutineProvider 设置协程池提供者
-func WithGoroutineProvider(provider service.GoroutineProvider) OpOption {
-	return func(c *opConfig) {
-		c.goroutineProvider = provider
-	}
-}
-
-// WithLifecycle 设置生命周期管理器
-func WithLifecycle(lifecycle *transport.AsyncLifecycle) OpOption {
-	return func(c *opConfig) {
-		c.lifecycle = lifecycle
-	}
-}
-
 // ==========================================
 // AsyncOp[T] 实现
 // ==========================================
 
 // AsyncOp 异步操作实现
 type AsyncOp[T any] struct {
-	lifecycle *transport.AsyncLifecycle
+	ctx       context.Context
+	cancel    context.CancelFunc
 	resultCh  chan Result[T]
 	done      chan struct{}
 	value     T
@@ -163,20 +147,21 @@ type AsyncOp[T any] struct {
 	status    OperationStatus
 	statusMu  sync.RWMutex
 	started   bool
-	cancel    context.CancelFunc
 	discarded bool
+	provider  service.GoroutineProvider // goroutine 提供者
 }
 
 // NewOp 创建异步操作
+// provider 参数可选，为 nil 时直接使用 goroutine
 func NewOp[T any](
 	ctx context.Context,
+	provider service.GoroutineProvider,
 	execFunc func(ctx context.Context) (T, error),
 	opts ...OpOption,
 ) AsyncOperation[T] {
 	// 应用选项
 	config := &opConfig{
-		timeout:   30 * time.Second,
-		lifecycle: transport.NewAsyncLifecycle(),
+		timeout: 30 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(config)
@@ -190,40 +175,33 @@ func NewOp[T any](
 		ctx, cancel = context.WithCancel(ctx)
 	}
 
-	// 使用提供的 lifecycle 或创建新的
-	lifecycle := config.lifecycle
-	if lifecycle == nil {
-		lifecycle = transport.NewAsyncLifecycle()
-	}
-
 	op := &AsyncOp[T]{
-		lifecycle: lifecycle,
+		ctx:       ctx,
+		cancel:    cancel,
 		resultCh:  make(chan Result[T], 1),
 		done:      make(chan struct{}),
 		callbacks: make(map[string]func(T, error)),
 		execFunc:  execFunc,
 		status:    StatusPending,
-		cancel:    cancel,
+		provider:  provider,
 	}
 
 	// 执行任务
-	if config.goroutineProvider != nil {
+	if provider != nil {
 		// 使用 GoroutineProvider
-		_ = config.goroutineProvider.Submit(ctx, func(innerCtx context.Context) {
-			op.execute(innerCtx, ctx)
+		_ = provider.Submit(ctx, func(innerCtx context.Context) {
+			op.execute(innerCtx)
 		})
 	} else {
 		// 直接启动 goroutine
-		lifecycle.Go(func() {
-			op.execute(lifecycle.Context(), ctx)
-		})
+		go op.execute(ctx)
 	}
 
 	return op
 }
 
 // execute 执行异步操作
-func (op *AsyncOp[T]) execute(lifecycleCtx, timeoutCtx context.Context) {
+func (op *AsyncOp[T]) execute(ctx context.Context) {
 	defer close(op.done)
 
 	// 更新状态为运行中
@@ -241,16 +219,16 @@ func (op *AsyncOp[T]) execute(lifecycleCtx, timeoutCtx context.Context) {
 	}
 
 	// 执行任务
-	value, err := op.execFunc(lifecycleCtx)
+	value, err := op.execFunc(ctx)
 
 	// 更新最终状态
 	op.statusMu.Lock()
-	if timeoutCtx.Err() == context.DeadlineExceeded {
+	if ctx.Err() == context.DeadlineExceeded {
 		op.status = StatusTimeout
-		op.err = timeoutCtx.Err()
-	} else if lifecycleCtx.Err() == context.Canceled {
+		op.err = ctx.Err()
+	} else if ctx.Err() == context.Canceled {
 		op.status = StatusCanceled
-		op.err = lifecycleCtx.Err()
+		op.err = ctx.Err()
 	} else if err != nil {
 		op.status = StatusFailed
 		op.err = err
@@ -305,9 +283,6 @@ func (op *AsyncOp[T]) Cancel() (bool, error) {
 	if op.cancel != nil {
 		op.cancel()
 	}
-	if op.lifecycle != nil {
-		op.lifecycle.Cancel()
-	}
 	return true, nil
 }
 
@@ -324,9 +299,6 @@ func (op *AsyncOp[T]) Discard() error {
 	op.status = StatusDiscarded
 	if op.cancel != nil {
 		op.cancel()
-	}
-	if op.lifecycle != nil {
-		op.lifecycle.Cancel()
 	}
 	return nil
 }
@@ -386,7 +358,15 @@ func (op *AsyncOp[T]) executeCallbacks(value T, err error) {
 
 	for _, cb := range callbacks {
 		cb := cb
-		go safeCallback(cb, value, err)
+		if op.provider != nil {
+			// 使用 GoroutineProvider
+			_ = op.provider.Submit(op.ctx, func(ctx context.Context) {
+				safeCallback(cb, value, err)
+			})
+		} else {
+			// 直接启动 goroutine
+			go safeCallback(cb, value, err)
+		}
 	}
 }
 
@@ -395,7 +375,6 @@ func safeCallback[T any](callback func(T, error), value T, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			// 记录 panic 但不影响主流程
-			// TODO: 集成日志系统后记录详细日志
 			fmt.Printf("[async] callback panic recovered: %v\n", r)
 		}
 	}()

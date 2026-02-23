@@ -2,6 +2,9 @@
 package transport
 
 import (
+	"context"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -39,7 +42,7 @@ func (c *AsyncChannelConfig) validate() {
 	c.MaxMessageSize = ValidateMaxMessageSize(c.MaxMessageSize)
 }
 
-// Libp2pAsyncChannel 实现异步 Channel 接口（使用 conc 库）
+// Libp2pAsyncChannel 实现异步 Channel 接口
 type Libp2pAsyncChannel struct {
 	stream *Libp2pStream
 	codec  *LengthPrefixedCodec
@@ -49,34 +52,66 @@ type Libp2pAsyncChannel struct {
 	sendCh chan []byte
 	recvCh chan service.MsgOrError
 
-	// 生命周期管理（使用 conc 库）
-	lifecycle *AsyncLifecycle
+	// 生命周期管理（直接使用 GoroutineProvider）
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	closed   atomic.Bool
+	provider service.GoroutineProvider // 必需：集中式协程池
 
-	// 发送错误（WaitClosed 返回）- P0 修复：使用 atomic
+	// 发送错误（WaitClosed 返回）
 	sendErr AtomicError
 }
 
 // NewLibp2pAsyncChannel 创建新的异步 Channel
-func NewLibp2pAsyncChannel(stream *Libp2pStream, cfg *AsyncChannelConfig) *Libp2pAsyncChannel {
+// provider 参数可选，为 nil 时直接使用 goroutine
+func NewLibp2pAsyncChannel(provider service.GoroutineProvider, stream *Libp2pStream, cfg *AsyncChannelConfig) *Libp2pAsyncChannel {
 	if cfg == nil {
 		cfg = DefaultAsyncChannelConfig()
 	}
 	cfg.validate()
 
+	ctx, cancel := context.WithCancel(context.Background())
 	c := &Libp2pAsyncChannel{
-		stream:    stream,
-		codec:     &LengthPrefixedCodec{},
-		config:    cfg,
-		sendCh:    make(chan []byte, cfg.SendBufferSize),
-		recvCh:    make(chan service.MsgOrError, cfg.RecvBufferSize),
-		lifecycle: NewAsyncLifecycle(),
+		stream:   stream,
+		codec:    &LengthPrefixedCodec{},
+		config:   cfg,
+		sendCh:   make(chan []byte, cfg.SendBufferSize),
+		recvCh:   make(chan service.MsgOrError, cfg.RecvBufferSize),
+		ctx:      ctx,
+		cancel:   cancel,
+		provider: provider,
 	}
 
-	// 使用 conc wait.Group 启动 goroutine
-	c.lifecycle.Go(c.sendLoop)
-	c.lifecycle.Go(c.recvLoop)
+	// 启动 goroutine
+	c.startLoops()
 
 	return c
+}
+
+// startLoops 启动发送和接收循环
+func (c *Libp2pAsyncChannel) startLoops() {
+	if c.provider != nil {
+		c.wg.Add(2)
+		_ = c.provider.Submit(c.ctx, func(ctx context.Context) {
+			defer c.wg.Done()
+			c.sendLoop()
+		})
+		_ = c.provider.Submit(c.ctx, func(ctx context.Context) {
+			defer c.wg.Done()
+			c.recvLoop()
+		})
+	} else {
+		c.wg.Add(2)
+		go func() {
+			defer c.wg.Done()
+			c.sendLoop()
+		}()
+		go func() {
+			defer c.wg.Done()
+			c.recvLoop()
+		}()
+	}
 }
 
 // sendLoop 发送循环
@@ -88,17 +123,17 @@ func (c *Libp2pAsyncChannel) sendLoop() {
 				return
 			}
 
-			if c.lifecycle.IsClosed() {
+			if c.IsClosed() {
 				return
 			}
 
-			// P1 修复：验证消息大小
+			// 验证消息大小
 			if err := ValidateMessageSize(msg, c.config.MaxMessageSize, "AsyncChannel"); err != nil {
 				c.sendErr.Store(&err)
 				return
 			}
 
-			// P1 修复：添加写超时保护
+			// 添加写超时保护
 			if c.config.SendTimeout > 0 {
 				if err := c.stream.SetWriteDeadline(time.Now().Add(c.config.SendTimeout)); err != nil {
 					transportLog.WithFields(logrus.Fields{
@@ -114,8 +149,7 @@ func (c *Libp2pAsyncChannel) sendLoop() {
 				return
 			}
 
-		case <-c.lifecycle.Done():
-			// P0 修复：上下文取消时直接退出
+		case <-c.ctx.Done():
 			return
 		}
 	}
@@ -128,20 +162,20 @@ func (c *Libp2pAsyncChannel) recvLoop() {
 	for {
 		msg, err := c.stream.ReadWithCodec(c.codec)
 		if err != nil {
-			if !c.lifecycle.IsClosed() {
+			if !c.IsClosed() {
 				c.pushRecvError(err)
 			}
 			return
 		}
 
-		// P1 修复：验证消息大小
+		// 验证消息大小
 		if err := ValidateMessageSize(msg, c.config.MaxMessageSize, "AsyncChannel"); err != nil {
 			c.pushRecvError(err)
 			return
 		}
 
-		// 使用 conc 库的非阻塞发送
-		if !NonBlockingSendResult(c.recvCh, service.MsgOrError{Msg: msg}, "AsyncChannel", c.lifecycle.Done()) {
+		// 非阻塞发送
+		if !NonBlockingSendResult(c.recvCh, service.MsgOrError{Msg: msg}, "AsyncChannel", c.ctx.Done()) {
 			return
 		}
 	}
@@ -151,7 +185,7 @@ func (c *Libp2pAsyncChannel) recvLoop() {
 func (c *Libp2pAsyncChannel) pushRecvError(err error) {
 	select {
 	case c.recvCh <- service.MsgOrError{Err: err}:
-	case <-c.lifecycle.Done():
+	case <-c.ctx.Done():
 	default:
 		transportLog.WithFields(logrus.Fields{
 			"async_component": "AsyncChannel",
@@ -170,26 +204,70 @@ func (c *Libp2pAsyncChannel) RecvChan() <-chan service.MsgOrError {
 	return c.recvCh
 }
 
-// Close 关闭通道（P0 修复：超时后返回错误）
+// Close 关闭通道
 func (c *Libp2pAsyncChannel) Close() error {
-	return CloseAsync(
-		c.lifecycle,
-		func() { close(c.sendCh) },
-		c.stream.Close,
-		"AsyncChannel",
-	)
+	if !c.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+
+	// 1. 取消上下文
+	c.cancel()
+
+	// 2. 关闭发送 channel
+	close(c.sendCh)
+
+	// 3. 等待 goroutine 退出
+	done := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// 正常退出，关闭底层流
+		return c.stream.Close()
+	case <-time.After(CloseTimeout):
+		// 超时
+		transportLog.WithFields(logrus.Fields{
+			"async_component": "AsyncChannel",
+			"timeout":         CloseTimeout,
+		}).Warn("close timeout, forcing stream close")
+	}
+
+	// 4. 强制关闭底层流
+	streamErr := c.stream.Close()
+
+	// 5. 再次等待
+	select {
+	case <-done:
+		return streamErr
+	case <-time.After(CloseFinalTimeout):
+		transportLog.WithFields(logrus.Fields{
+			"async_component": "AsyncChannel",
+		}).Error("goroutine leak detected after stream close")
+		if streamErr != nil {
+			return streamErr
+		}
+		return errors.Wrap(errors.ErrAsyncExecFailed, "goroutine leak detected")
+	}
 }
 
-// WaitClosed 等待通道关闭（P1 修复：重命名，语义更清晰）
+// IsClosed 检查是否已关闭
+func (c *Libp2pAsyncChannel) IsClosed() bool {
+	return c.closed.Load()
+}
+
+// WaitClosed 等待通道关闭
 func (c *Libp2pAsyncChannel) WaitClosed() error {
-	<-c.lifecycle.Done()
+	<-c.ctx.Done()
 	return c.sendErr.Load()
 }
 
 // WaitClosedWithTimeout 带超时的等待通道关闭
 func (c *Libp2pAsyncChannel) WaitClosedWithTimeout(timeout time.Duration) error {
 	select {
-	case <-c.lifecycle.Done():
+	case <-c.ctx.Done():
 		return c.sendErr.Load()
 	case <-time.After(timeout):
 		return errors.ErrTimeout

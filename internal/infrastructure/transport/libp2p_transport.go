@@ -36,6 +36,9 @@ type Libp2pTransport struct {
 	codec     *LengthPrefixedCodec
 	acceptor  *streamAcceptor // 流接受器
 
+	// 协程池提供者
+	provider service.GoroutineProvider
+
 	// 生命周期管理
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -47,9 +50,10 @@ type Libp2pTransport struct {
 
 // Config 传输层配置
 type Config struct {
-	ListenAddr      string
-	DiscoveryTag    string
-	EnableDiscovery bool
+	ListenAddr        string
+	DiscoveryTag      string
+	EnableDiscovery   bool
+	GoroutineProvider service.GoroutineProvider // 必需：协程池提供者
 }
 
 // DefaultConfig 返回默认配置
@@ -62,6 +66,7 @@ func DefaultConfig() *Config {
 }
 
 // NewLibp2pTransport 创建新的 libp2p 传输实现
+// cfg.GoroutineProvider 可选，为 nil 时直接使用 goroutine
 func NewLibp2pTransport(ctx context.Context, cfg *Config) (*Libp2pTransport, error) {
 	// 合并默认配置
 	if cfg == nil {
@@ -87,6 +92,7 @@ func NewLibp2pTransport(ctx context.Context, cfg *Config) (*Libp2pTransport, err
 		host:     h,
 		codec:    &LengthPrefixedCodec{},
 		acceptor: newStreamAcceptor(h),
+		provider: cfg.GoroutineProvider,
 		ctx:      childCtx,
 		cancel:   cancel,
 	}
@@ -390,7 +396,7 @@ func (t *Libp2pTransport) OpenAsyncChannel(ctx context.Context, peerID model.Pee
 	if !ok {
 		return nil, service.Wrap(service.ErrInvalidParam, "unexpected stream type")
 	}
-	return NewLibp2pAsyncChannel(libp2pStream, DefaultAsyncChannelConfig()), nil
+	return NewLibp2pAsyncChannel(t.provider, libp2pStream, DefaultAsyncChannelConfig()), nil
 }
 
 // OpenAsyncStream 打开到指定节点的异步流
@@ -404,7 +410,7 @@ func (t *Libp2pTransport) OpenAsyncStream(ctx context.Context, peerID model.Peer
 	if !ok {
 		return nil, service.Wrap(service.ErrInvalidParam, "unexpected stream type")
 	}
-	return NewLibp2pAsyncStream(libp2pStream, DefaultAsyncStreamConfig()), nil
+	return NewLibp2pAsyncStream(t.provider, libp2pStream, DefaultAsyncStreamConfig()), nil
 }
 
 // ===========================

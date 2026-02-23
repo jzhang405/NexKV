@@ -55,8 +55,8 @@ func TestAntsGoroutineProvider_SubmitWithArg(t *testing.T) {
 	// 等待任务执行
 	time.Sleep(100 * time.Millisecond)
 
-	if result != 42 {
-		t.Errorf("expected result 42, got %d", result)
+	if atomic.LoadInt32(&result) != 42 {
+		t.Errorf("expected result 42, got %d", atomic.LoadInt32(&result))
 	}
 }
 
@@ -91,10 +91,10 @@ func TestAntsGoroutineProvider_SubmitWithPriority(t *testing.T) {
 	defer provider.Close()
 
 	ctx := context.Background()
-	var executed bool
+	var executed int32
 
 	err = provider.SubmitWithPriority(ctx, PriorityHigh, func(ctx context.Context) {
-		executed = true
+		atomic.StoreInt32(&executed, 1)
 	})
 
 	if err != nil {
@@ -104,7 +104,7 @@ func TestAntsGoroutineProvider_SubmitWithPriority(t *testing.T) {
 	// 等待任务执行
 	time.Sleep(100 * time.Millisecond)
 
-	if !executed {
+	if atomic.LoadInt32(&executed) != 1 {
 		t.Error("expected task to be executed")
 	}
 }
@@ -117,10 +117,10 @@ func TestAntsGoroutineProvider_SubmitDelayed(t *testing.T) {
 	defer provider.Close()
 
 	ctx := context.Background()
-	var executed bool
+	var executed int32
 
 	err = provider.SubmitDelayed(ctx, 50*time.Millisecond, func(ctx context.Context) {
-		executed = true
+		atomic.StoreInt32(&executed, 1)
 	})
 
 	if err != nil {
@@ -130,7 +130,7 @@ func TestAntsGoroutineProvider_SubmitDelayed(t *testing.T) {
 	// 等待延迟任务执行
 	time.Sleep(100 * time.Millisecond)
 
-	if !executed {
+	if atomic.LoadInt32(&executed) != 1 {
 		t.Error("expected task to be executed after delay")
 	}
 }
@@ -279,8 +279,8 @@ func TestSubmitWithArg_Generic(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if result != 42 {
-		t.Errorf("expected result 42, got %d", result)
+	if atomic.LoadInt32(&result) != 42 {
+		t.Errorf("expected result 42, got %d", atomic.LoadInt32(&result))
 	}
 }
 

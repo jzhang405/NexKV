@@ -51,10 +51,10 @@ func TestRobfigCronProvider_RegisterWithArg(t *testing.T) {
 	cp.Start()
 	defer cp.Stop()
 
-	var result string
+	var result atomic.Value
 
 	jobID, err := cp.RegisterWithArg("*/1 * * * * *", "test-job-arg", func(ctx context.Context, arg any) {
-		result = arg.(string)
+		result.Store(arg.(string))
 	}, "hello")
 	if err != nil {
 		t.Fatalf("failed to register job: %v", err)
@@ -67,8 +67,9 @@ func TestRobfigCronProvider_RegisterWithArg(t *testing.T) {
 	// 等待至少执行一次
 	time.Sleep(2 * time.Second)
 
-	if result != "hello" {
-		t.Errorf("expected result 'hello', got '%s'", result)
+	val := result.Load()
+	if val == nil || val.(string) != "hello" {
+		t.Errorf("expected result 'hello', got '%v'", val)
 	}
 }
 

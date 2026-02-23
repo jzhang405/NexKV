@@ -222,9 +222,9 @@ func TestRobfigCronProvider_ListJobs(t *testing.T) {
 	defer cp.Stop()
 
 	// 注册多个任务
-	cp.Register("*/1 * * * * *", "job1", func(ctx context.Context) {})
-	cp.Register("*/2 * * * * *", "job2", func(ctx context.Context) {})
-	cp.Register("*/3 * * * * *", "job3", func(ctx context.Context) {})
+	_, _ = cp.Register("*/1 * * * * *", "job1", func(ctx context.Context) {})
+	_, _ = cp.Register("*/2 * * * * *", "job2", func(ctx context.Context) {})
+	_, _ = cp.Register("*/3 * * * * *", "job3", func(ctx context.Context) {})
 
 	jobs := cp.ListJobs()
 	if len(jobs) != 3 {

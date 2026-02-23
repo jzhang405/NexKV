@@ -201,7 +201,7 @@ func TestMiddlewareChain_ConcurrentAccess(t *testing.T) {
 	// 避免写入和读取同时进行导致的 race condition
 
 	// 阶段 1：并发添加中间件（只写入）
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -211,7 +211,7 @@ func TestMiddlewareChain_ConcurrentAccess(t *testing.T) {
 	wg.Wait() // 等待所有写入完成
 
 	// 阶段 2：并发读取（所有写入已完成）
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

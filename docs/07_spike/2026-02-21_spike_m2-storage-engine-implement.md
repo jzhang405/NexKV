@@ -723,7 +723,7 @@ type BlockFuture     = Future[[]byte]              // 块读取 Future
 
 ### 3.4 适配器方法（与现有代码兼容）
 
-> 🎯 **目的**: 提供与 BroadcastCallback 风格兼容的适配器，确保 AsyncOperation 与现有代码平滑集成。
+> 🎯 **目的**: 提供与 BroadcastListener 风格兼容的适配器，确保 AsyncOperation 与现有代码平滑集成。
 
 ```go
 // AsyncCallback 接口式回调（用于复杂场景）

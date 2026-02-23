@@ -18,8 +18,8 @@ func BenchmarkSubmit(b *testing.B) {
 	ctx := context.Background()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		provider.Submit(ctx, func(ctx context.Context) {})
+	for b.Loop() {
+		_ = provider.Submit(ctx, func(ctx context.Context) {})
 	}
 }
 
@@ -30,11 +30,11 @@ func BenchmarkSubmitWithResult(b *testing.B) {
 	ctx := context.Background()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		result := provider.SubmitWithResult(ctx, func(ctx context.Context) (any, error) {
 			return i, nil
 		})
-		result.Get(ctx)
+		_, _ = result.Get(ctx)
 	}
 }
 
@@ -50,8 +50,8 @@ func BenchmarkSubmitBatch_100(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		provider.SubmitBatch(ctx, tasks)
+	for b.Loop() {
+		_ = provider.SubmitBatch(ctx, tasks)
 	}
 }
 
@@ -71,8 +71,8 @@ func BenchmarkSubmitBatch_1000(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		provider.SubmitBatch(ctx, tasks)
+	for b.Loop() {
+		_ = provider.SubmitBatch(ctx, tasks)
 	}
 }
 
@@ -92,8 +92,8 @@ func BenchmarkSubmitBatchAllErrors(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		provider.SubmitBatchAllErrors(ctx, tasks)
+	for b.Loop() {
+		_ = provider.SubmitBatchAllErrors(ctx, tasks)
 	}
 }
 
@@ -104,8 +104,8 @@ func BenchmarkSubmitDelayed(b *testing.B) {
 	ctx := context.Background()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		provider.SubmitDelayed(ctx, 1*time.Millisecond, func(ctx context.Context) {})
+	for b.Loop() {
+		_ = provider.SubmitDelayed(ctx, 1*time.Millisecond, func(ctx context.Context) {})
 	}
 }
 
@@ -121,7 +121,7 @@ func BenchmarkConcurrentSubmit(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			provider.Submit(ctx, func(ctx context.Context) {})
+			_ = provider.Submit(ctx, func(ctx context.Context) {})
 		}
 	})
 }
@@ -141,7 +141,7 @@ func BenchmarkConcurrentSubmitWithResult(b *testing.B) {
 			result := provider.SubmitWithResult(ctx, func(ctx context.Context) (any, error) {
 				return 1, nil
 			})
-			result.Get(ctx)
+			_, _ = result.Get(ctx)
 		}
 	})
 }
@@ -154,15 +154,15 @@ func BenchmarkTypedResult_Get(b *testing.B) {
 	ctx := context.Background()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		typed.Get(ctx)
+	for b.Loop() {
+		_, _ = typed.Get(ctx)
 	}
 }
 
 // BenchmarkAnyResult_SetValue AnyResult SetValue 操作
 func BenchmarkAnyResult_SetValue(b *testing.B) {
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		result := NewAnyResult()
 		result.SetValue(i)
 	}
@@ -171,7 +171,7 @@ func BenchmarkAnyResult_SetValue(b *testing.B) {
 // BenchmarkCloseWithPendingTasks 关闭时有待处理任务的开销
 func BenchmarkCloseWithPendingTasks(b *testing.B) {
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		provider, _ := NewAntsGoroutineProvider(&ProviderConfig{
 			Capacity:       100,
 			EnablePriority: true,
@@ -180,13 +180,13 @@ func BenchmarkCloseWithPendingTasks(b *testing.B) {
 		ctx := context.Background()
 
 		// 提交一些任务
-		for j := 0; j < 50; j++ {
-			provider.Submit(ctx, func(ctx context.Context) {
+		for range 50 {
+			_ = provider.Submit(ctx, func(ctx context.Context) {
 				time.Sleep(1 * time.Millisecond)
 			})
 		}
 
-		provider.Close()
+		_ = provider.Close()
 	}
 }
 
@@ -197,8 +197,8 @@ func BenchmarkSubmitWithPriority(b *testing.B) {
 	ctx := context.Background()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		provider.SubmitWithPriority(ctx, PriorityHigh, func(ctx context.Context) {})
+	for b.Loop() {
+		_ = provider.SubmitWithPriority(ctx, PriorityHigh, func(ctx context.Context) {})
 	}
 }
 
@@ -209,8 +209,8 @@ func BenchmarkSubmitAdvanced(b *testing.B) {
 	ctx := context.Background()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		provider.SubmitAdvanced(ctx, func(ctx context.Context, arg any) (any, error) {
+	for b.Loop() {
+		_ = provider.SubmitAdvanced(ctx, func(ctx context.Context, arg any) (any, error) {
 			return arg, nil
 		}, 42, WithPriority(PriorityHigh))
 	}

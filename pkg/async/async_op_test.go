@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/internal/infrastructure/concurrency"
 	"github.com/jzhang405/NexKV/internal/infrastructure/transport"
 )
 
@@ -16,7 +18,7 @@ import (
 // 测试辅助函数
 // ==========================================
 
-// mockGoroutineProvider 模拟协程池提供者
+// mockGoroutineProvider 模拟协程池提供者（实现完整 GoroutineProvider 接口）
 type mockGoroutineProvider struct {
 	submitCount int64
 }
@@ -24,6 +26,92 @@ type mockGoroutineProvider struct {
 func (m *mockGoroutineProvider) Submit(ctx context.Context, task func(context.Context)) error {
 	atomic.AddInt64(&m.submitCount, 1)
 	go task(ctx)
+	return nil
+}
+
+// 以下为接口兼容性存根方法（测试中未使用）
+
+func (m *mockGoroutineProvider) SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error {
+	return m.Submit(ctx, func(ctx context.Context) { task(ctx, arg) })
+}
+
+func (m *mockGoroutineProvider) SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) service.GoroutineResult[any] {
+	return concurrency.NewAnyResult()
+}
+
+func (m *mockGoroutineProvider) SubmitWithArgAndResult(ctx context.Context, task func(context.Context, any) (any, error), arg any) service.GoroutineResult[any] {
+	return concurrency.NewAnyResult()
+}
+
+func (m *mockGoroutineProvider) SubmitWithPriority(ctx context.Context, priority service.GoroutinePriority, task func(context.Context)) error {
+	return m.Submit(ctx, task)
+}
+
+func (m *mockGoroutineProvider) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
+	go func() {
+		time.Sleep(delay)
+		_ = m.Submit(ctx, task)
+	}()
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitAdvanced(ctx context.Context, task func(context.Context, any) (any, error), arg any, opts ...service.GoroutineSubmitOption) service.GoroutineResult[any] {
+	return concurrency.NewAnyResult()
+}
+
+func (m *mockGoroutineProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
+	for _, task := range tasks {
+		if err := m.Submit(ctx, task); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error {
+	for i, task := range tasks {
+		if i < len(args) {
+			if err := m.SubmitWithArg(ctx, task, args[i]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
+	errs := make([]error, len(tasks))
+	for i, task := range tasks {
+		errs[i] = m.Submit(ctx, task)
+	}
+	return errs
+}
+
+func (m *mockGoroutineProvider) SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []service.GoroutineResult[any] {
+	results := make([]service.GoroutineResult[any], len(tasks))
+	for i := range tasks {
+		results[i] = concurrency.NewAnyResult()
+	}
+	return results
+}
+
+func (m *mockGoroutineProvider) Stats() service.GoroutinePoolStats {
+	return service.GoroutinePoolStats{}
+}
+
+func (m *mockGoroutineProvider) Health() service.GoroutineHealthStatus {
+	return service.GoroutineHealthStatusHealthy
+}
+
+func (m *mockGoroutineProvider) SetCapacity(capacity int) error {
+	return nil
+}
+
+func (m *mockGoroutineProvider) Close() error {
+	return nil
+}
+
+func (m *mockGoroutineProvider) CloseWithTimeout(timeout time.Duration) error {
 	return nil
 }
 

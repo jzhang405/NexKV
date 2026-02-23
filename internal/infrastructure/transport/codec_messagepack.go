@@ -224,7 +224,7 @@ func (c *MessagePackStreamCodec) DecodeFromReader(r io.Reader) (model.Message, e
 // ============================================================================
 
 // EncodeToBuffer 编码消息到 buffer（用于测试）
-func EncodeToBuffer(codec service.Codec, msg model.Message) (*bytes.Buffer, error) {
+func EncodeToBuffer(codec model.Codec, msg model.Message) (*bytes.Buffer, error) {
 	data, err := codec.Encode(msg)
 	if err != nil {
 		return nil, err

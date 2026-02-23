@@ -43,7 +43,7 @@ func RegisterWithPriorityAndArg[T any](
 	provider CronJobProvider,
 	spec CronSpec,
 	name string,
-	priority Priority,
+	priority GoroutinePriority,
 	task func(context.Context, T),
 	arg T,
 ) (string, error) {

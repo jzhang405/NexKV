@@ -1,4 +1,4 @@
-# BroadcastTracker Callback 机制设计
+# BroadcastProgress Callback 机制设计
 
 > **文档类型**: Spike 研究文档
 > **创建日期**: 2026-02-20
@@ -13,11 +13,11 @@
 
 ### 1.1 背景
 
-`BroadcastTracker` 用于追踪广播调用的进度，支持等待多数派 (`WaitMajority`) 和全部完成 (`WaitFull`)。但在实际使用中，用户可能需要在达到关键进度节点时**立即执行某些操作**，而不是被动等待。
+`BroadcastProgress` 用于追踪广播调用的进度，支持等待多数派 (`WaitMajority`) 和全部完成 (`WaitFull`)。但在实际使用中，用户可能需要在达到关键进度节点时**立即执行某些操作**，而不是被动等待。
 
 ### 1.2 目标
 
-为 `BroadcastTracker` 添加 callback/handler 机制，支持在以下节点触发用户自定义逻辑：
+为 `BroadcastProgress` 添加 callback/handler 机制，支持在以下节点触发用户自定义逻辑：
 - 每次收到成功响应时
 - 每次收到失败响应时
 - 达到多数派时
@@ -44,8 +44,8 @@
 ### 3.1 接口模式（推荐）
 
 ```go
-// BroadcastCallback 广播进度回调接口
-type BroadcastCallback interface {
+// BroadcastListener 广播进度回调接口
+type BroadcastListener interface {
     // OnSuccess 每次收到成功响应时调用
     OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats)
 
@@ -71,10 +71,10 @@ type BroadcastStats struct {
 }
 ```
 
-#### 修改 BroadcastTracker
+#### 修改 BroadcastProgress
 
 ```go
-type BroadcastTracker struct {
+type BroadcastProgress struct {
     taskID       string
     targets      []model.PeerID
     responses    map[model.PeerID]model.Message
@@ -84,14 +84,14 @@ type BroadcastTracker struct {
     majorityDone chan struct{}
 
     // 新增：回调（可选）
-    callback     BroadcastCallback
+    callback     BroadcastListener
 
     // 新增：记录开始时间
     startTime    time.Time
 }
 
 // SetCallback 设置进度回调（必须在开始之前设置）
-func (t *BroadcastTracker) SetCallback(cb BroadcastCallback) {
+func (t *BroadcastProgress) SetCallback(cb BroadcastListener) {
     t.mu.Lock()
     defer t.mu.Unlock()
     t.callback = cb
@@ -105,14 +105,14 @@ func (t *BroadcastTracker) SetCallback(cb BroadcastCallback) {
 func safeCallback(fn func()) {
     defer func() {
         if r := recover(); r != nil {
-            log.Printf("[BroadcastTracker] callback panic recovered: %v", r)
+            log.Printf("[BroadcastProgress] callback panic recovered: %v", r)
         }
     }()
     fn()
 }
 
-func (t *BroadcastTracker) RecordSuccess(peer model.PeerID, resp model.Message) {
-    var callback BroadcastCallback
+func (t *BroadcastProgress) RecordSuccess(peer model.PeerID, resp model.Message) {
+    var callback BroadcastListener
     var stats BroadcastStats
     var shouldTriggerMajority bool
     var shouldTriggerFullDone bool
@@ -174,8 +174,8 @@ func (t *BroadcastTracker) RecordSuccess(peer model.PeerID, resp model.Message) 
     }
 }
 
-func (t *BroadcastTracker) RecordFailure(peer model.PeerID, err error) {
-    var callback BroadcastCallback
+func (t *BroadcastProgress) RecordFailure(peer model.PeerID, err error) {
+    var callback BroadcastListener
     var stats BroadcastStats
     var shouldTriggerFullDone bool
 
@@ -217,7 +217,7 @@ func (t *BroadcastTracker) RecordFailure(peer model.PeerID, err error) {
     }
 }
 
-func (t *BroadcastTracker) buildStatsLocked() BroadcastStats {
+func (t *BroadcastProgress) buildStatsLocked() BroadcastStats {
     success := len(t.responses)
     failed := len(t.failures)
     total := len(t.targets)
@@ -252,25 +252,25 @@ type (
     OnFullDoneFunc     func(stats BroadcastStats)
 )
 
-func (t *BroadcastTracker) SetOnSuccess(fn OnSuccessFunc) {
+func (t *BroadcastProgress) SetOnSuccess(fn OnSuccessFunc) {
     t.mu.Lock()
     defer t.mu.Unlock()
     t.onSuccess = fn
 }
 
-func (t *BroadcastTracker) SetOnFailure(fn OnFailureFunc) {
+func (t *BroadcastProgress) SetOnFailure(fn OnFailureFunc) {
     t.mu.Lock()
     defer t.mu.Unlock()
     t.onFailure = fn
 }
 
-func (t *BroadcastTracker) SetOnMajority(fn OnMajorityFunc) {
+func (t *BroadcastProgress) SetOnMajority(fn OnMajorityFunc) {
     t.mu.Lock()
     defer t.mu.Unlock()
     t.onMajority = fn
 }
 
-func (t *BroadcastTracker) SetOnFullDone(fn OnFullDoneFunc) {
+func (t *BroadcastProgress) SetOnFullDone(fn OnFullDoneFunc) {
     t.mu.Lock()
     defer t.mu.Unlock()
     t.onFullDone = fn
@@ -315,7 +315,7 @@ func (cb *LogCallback) OnFullDone(stats BroadcastStats) {
 }
 
 // 使用
-tracker := NewBroadcastTracker("task-001", replicas)
+tracker := NewBroadcastProgress("task-001", replicas)
 tracker.SetCallback(&LogCallback{logger: slog.Default()})
 rpc.BroadcastCall(ctx, replicas, req, ResponseMajority, tracker)
 ```
@@ -378,7 +378,7 @@ func (cb *MetricsCallback) OnFullDone(stats BroadcastStats) {
 ### 5.1 线程安全（P0 已修复）
 
 - ✅ **回调在锁外执行**，避免死锁风险
-- ✅ 回调实现可以安全调用 `BroadcastTracker` 的其他方法
+- ✅ 回调实现可以安全调用 `BroadcastProgress` 的其他方法
 - ✅ `safeCallback` 防止回调 panic 影响主流程
 - 回调实现仍应**快速返回**，避免阻塞
 - 如需长时间处理，应在回调中启动 goroutine
@@ -410,7 +410,7 @@ OnFullDone (全部完成时，仅一次)
 
 - 所有回调都通过 `safeCallback` 包装执行
 - 回调 panic 会被 recover 并记录日志
-- Panic 不会影响 `BroadcastTracker` 的正常运作
+- Panic 不会影响 `BroadcastProgress` 的正常运作
 
 ---
 

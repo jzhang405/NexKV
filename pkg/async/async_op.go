@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/transport"
 )
 
@@ -119,13 +120,8 @@ type OpOption func(*opConfig)
 // opConfig 操作配置
 type opConfig struct {
 	timeout           time.Duration
-	goroutineProvider GoroutineProvider
+	goroutineProvider service.GoroutineProvider
 	lifecycle         *transport.AsyncLifecycle
-}
-
-// GoroutineProvider 协程池提供者接口（简化版，完整版在 concurrency 包）
-type GoroutineProvider interface {
-	Submit(ctx context.Context, task func(context.Context)) error
 }
 
 // WithTimeout 设置超时时间
@@ -136,7 +132,7 @@ func WithTimeout(timeout time.Duration) OpOption {
 }
 
 // WithGoroutineProvider 设置协程池提供者
-func WithGoroutineProvider(provider GoroutineProvider) OpOption {
+func WithGoroutineProvider(provider service.GoroutineProvider) OpOption {
 	return func(c *opConfig) {
 		c.goroutineProvider = provider
 	}

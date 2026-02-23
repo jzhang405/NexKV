@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
+	"github.com/sirupsen/logrus"
 )
 
 // ==========================================
@@ -34,7 +35,7 @@ type cronJobEntry struct {
 	entryID   cron.EntryID
 	spec      CronSpec
 	status    CronJobStatus
-	priority  Priority
+	priority  GoroutinePriority
 	taskFunc  func(context.Context)
 	createdAt time.Time
 }
@@ -86,7 +87,7 @@ func (r *RobfigCronProvider) Register(
 func (r *RobfigCronProvider) RegisterWithPriority(
 	spec CronSpec,
 	name string,
-	priority Priority,
+	priority GoroutinePriority,
 	task func(context.Context),
 ) (string, error) {
 	r.mu.Lock()
@@ -140,7 +141,7 @@ func (r *RobfigCronProvider) RegisterWithArg(
 func (r *RobfigCronProvider) RegisterWithPriorityAndArg(
 	spec CronSpec,
 	name string,
-	priority Priority,
+	priority GoroutinePriority,
 	task func(context.Context, any),
 	arg any,
 ) (string, error) {
@@ -201,7 +202,7 @@ func RegisterWithPriorityAndArgTyped[T any](
 	provider *RobfigCronProvider,
 	spec CronSpec,
 	name string,
-	priority Priority,
+	priority GoroutinePriority,
 	task func(context.Context, T),
 	arg T,
 ) (string, error) {
@@ -323,7 +324,7 @@ func (r *RobfigCronProvider) generateID() string {
 }
 
 // wrapTask 包装任务函数（无参数）
-func (r *RobfigCronProvider) wrapTask(task func(context.Context), priority Priority) func() {
+func (r *RobfigCronProvider) wrapTask(task func(context.Context), priority GoroutinePriority) func() {
 	return func() {
 		ctx := context.Background()
 		if r.goroutineProvider != nil {
@@ -333,6 +334,7 @@ func (r *RobfigCronProvider) wrapTask(task func(context.Context), priority Prior
 			defer func() {
 				if err := recover(); err != nil {
 					// cron.Recover 已经处理了 panic，但这里作为额外保护
+					logrus.WithField("panic", err).Error("panic recovered in cron task")
 				}
 			}()
 			task(ctx)
@@ -341,7 +343,7 @@ func (r *RobfigCronProvider) wrapTask(task func(context.Context), priority Prior
 }
 
 // wrapTaskWithArg 包装任务函数（带参数）
-func (r *RobfigCronProvider) wrapTaskWithArg(task func(context.Context, any), arg any, priority Priority) func() {
+func (r *RobfigCronProvider) wrapTaskWithArg(task func(context.Context, any), arg any, priority GoroutinePriority) func() {
 	return func() {
 		ctx := context.Background()
 		if r.goroutineProvider != nil {
@@ -353,6 +355,7 @@ func (r *RobfigCronProvider) wrapTaskWithArg(task func(context.Context, any), ar
 			defer func() {
 				if err := recover(); err != nil {
 					// cron.Recover 已经处理了 panic，但这里作为额外保护
+					logrus.WithField("panic", err).Error("panic recovered in cron task with arg")
 				}
 			}()
 			task(ctx, arg)

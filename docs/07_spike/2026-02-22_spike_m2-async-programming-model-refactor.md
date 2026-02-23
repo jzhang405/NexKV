@@ -573,7 +573,7 @@ type AsyncGroup[T any] struct {
 	anyDone       chan struct{}
 	majorityDone  chan struct{}
 	allDone       chan struct{}
-	callback      service.BroadcastCallback
+	callback      service.BroadcastListener
 	startTime             time.Time
 	firstResponseTime     time.Time
 	majorityReachTime     time.Time
@@ -628,7 +628,7 @@ func NewGroup[T any](
 
 // handleResult 处理单个结果
 func (g *AsyncGroup[T]) handleResult(peer model.PeerID, value T, err error) {
-	var callback service.BroadcastCallback
+	var callback service.BroadcastListener
 	var stats service.BroadcastStats
 	var shouldTriggerMajority bool
 	var shouldTriggerAllDone bool
@@ -691,7 +691,7 @@ func (g *AsyncGroup[T]) handleResult(peer model.PeerID, value T, err error) {
 }
 
 // SetCallback 设置回调
-func (g *AsyncGroup[T]) SetCallback(callback service.BroadcastCallback) {
+func (g *AsyncGroup[T]) SetCallback(callback service.BroadcastListener) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.callback = callback

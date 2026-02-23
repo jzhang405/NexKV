@@ -42,7 +42,7 @@ func TestCircuitBreakerMiddleware_SuccessRequests(t *testing.T) {
 	}
 
 	// 成功请求不应该触发熔断
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		err := m.InterceptSend(ctx, peer, msg, next)
 		assert.NoError(t, err)
 	}
@@ -68,7 +68,7 @@ func TestCircuitBreakerMiddleware_OpenOnFailures(t *testing.T) {
 	}
 
 	// 连续失败 3 次后熔断器应该打开
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		err := m.InterceptSend(ctx, peer, msg, next)
 		assert.Error(t, err)
 		assert.True(t, errors.Is(err, testErr))
@@ -111,7 +111,7 @@ func TestCircuitBreakerMiddleware_HalfOpenToClosed(t *testing.T) {
 	}
 
 	// 连续失败 2 次触发熔断
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		_ = m.InterceptSend(ctx, peer, msg, next)
 	}
 	assert.Equal(t, gobreaker.StateOpen, m.GetState(peer))
@@ -144,7 +144,7 @@ func TestCircuitBreakerMiddleware_DifferentPeers(t *testing.T) {
 	}
 
 	// peer1 连续失败 2 次
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		_ = m.InterceptSend(ctx, peer1, msg, next)
 	}
 
@@ -212,7 +212,7 @@ func TestCircuitBreakerMiddleware_StateChangeCallback(t *testing.T) {
 	}
 
 	// 触发熔断
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		_ = m.InterceptSend(ctx, peer, msg, next)
 	}
 
@@ -238,7 +238,7 @@ func TestCircuitBreakerMiddleware_GetCounts(t *testing.T) {
 	}
 
 	// 连续失败 3 次
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_ = m.InterceptSend(ctx, peer, msg, next)
 	}
 
@@ -271,7 +271,7 @@ func BenchmarkCircuitBreakerMiddleware(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = m.InterceptSend(ctx, peer, msg, next)
 	}
 }
@@ -297,11 +297,11 @@ func TestCircuitBreakerMiddleware_Concurrent(t *testing.T) {
 	const requestsPerGoroutine = 100
 
 	var wg sync.WaitGroup
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < requestsPerGoroutine; j++ {
+			for range requestsPerGoroutine {
 				err := m.InterceptSend(ctx, peer, msg, func(ctx context.Context, p model.PeerID, m model.Message) error {
 					return nil
 				})

@@ -218,7 +218,7 @@ func TestLibp2pRPC_BroadcastAsync(t *testing.T) {
 // TestLibp2pRPC_ImplementsInterface 验证接口实现
 func TestLibp2pRPC_ImplementsInterface(t *testing.T) {
 	transport := newMockTransport("node-1")
-	var _ service.RPC = NewLibp2pRPC(transport, nil)
+	var _ service.RPCSync = NewLibp2pRPC(transport, nil)
 }
 
 // ============================================================================
@@ -229,7 +229,7 @@ func TestRequestIDGenerator_Next(t *testing.T) {
 	gen := service.NewRequestIDGenerator("node-001")
 
 	ids := make(map[string]bool)
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		id := gen.Next()
 		idStr := string(id)
 
@@ -278,21 +278,21 @@ func TestRequestIDGenerator_ParseInvalid(t *testing.T) {
 }
 
 // ============================================================================
-// BroadcastTracker 测试（合并为表驱动测试）
+// BroadcastProgress 测试（合并为表驱动测试）
 // ============================================================================
 
-func TestBroadcastTracker_All(t *testing.T) {
+func TestBroadcastProgress_All(t *testing.T) {
 	tests := []struct {
 		name    string
 		targets []model.PeerID
-		setup   func(*service.BroadcastTracker)
-		check   func(*testing.T, *service.BroadcastTracker)
+		setup   func(*service.BroadcastProgress)
+		check   func(*testing.T, *service.BroadcastProgress)
 	}{
 		{
 			name:    "new tracker",
 			targets: []model.PeerID{"node-1", "node-2", "node-3"},
 			setup:   nil,
-			check: func(t *testing.T, tr *service.BroadcastTracker) {
+			check: func(t *testing.T, tr *service.BroadcastProgress) {
 				s, f, p := tr.Stats()
 				assertEqual(t, 0, s, "success count should be 0")
 				assertEqual(t, 0, f, "failed count should be 0")
@@ -302,32 +302,32 @@ func TestBroadcastTracker_All(t *testing.T) {
 		{
 			name:    "majority reached",
 			targets: []model.PeerID{"node-1", "node-2", "node-3"},
-			setup: func(tr *service.BroadcastTracker) {
+			setup: func(tr *service.BroadcastProgress) {
 				tr.RecordSuccess("node-1", nil)
 				tr.RecordSuccess("node-2", nil)
 			},
-			check: func(t *testing.T, tr *service.BroadcastTracker) {
+			check: func(t *testing.T, tr *service.BroadcastProgress) {
 				assertTrue(t, tr.IsMajorityReached(), "Majority should be reached (2/3)")
 			},
 		},
 		{
 			name:    "majority not reached",
 			targets: []model.PeerID{"node-1", "node-2", "node-3"},
-			setup: func(tr *service.BroadcastTracker) {
+			setup: func(tr *service.BroadcastProgress) {
 				tr.RecordSuccess("node-1", nil)
 			},
-			check: func(t *testing.T, tr *service.BroadcastTracker) {
+			check: func(t *testing.T, tr *service.BroadcastProgress) {
 				assertFalse(t, tr.IsMajorityReached(), "Majority should not be reached (1/3)")
 			},
 		},
 		{
 			name:    "full done with mixed results",
 			targets: []model.PeerID{"node-1", "node-2"},
-			setup: func(tr *service.BroadcastTracker) {
+			setup: func(tr *service.BroadcastProgress) {
 				tr.RecordSuccess("node-1", nil)
 				tr.RecordFailure("node-2", service.ErrTimeout)
 			},
-			check: func(t *testing.T, tr *service.BroadcastTracker) {
+			check: func(t *testing.T, tr *service.BroadcastProgress) {
 				assertTrue(t, tr.IsFullDone(), "Should be full done")
 				s, f, p := tr.Stats()
 				assertEqual(t, 1, s, "success count should be 1")
@@ -339,7 +339,7 @@ func TestBroadcastTracker_All(t *testing.T) {
 			name:    "empty targets",
 			targets: []model.PeerID{},
 			setup:   nil,
-			check: func(t *testing.T, tr *service.BroadcastTracker) {
+			check: func(t *testing.T, tr *service.BroadcastProgress) {
 				err := tr.WaitMajority(context.Background())
 				assertNoError(t, err, "WaitMajority with empty targets should not return error")
 			},
@@ -348,7 +348,7 @@ func TestBroadcastTracker_All(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tracker := service.NewBroadcastTracker("test-001", tt.targets)
+			tracker := service.NewBroadcastProgress("test-001", tt.targets)
 			if tt.setup != nil {
 				tt.setup(tracker)
 			}
@@ -504,10 +504,10 @@ func TestLibp2pRPC_OnRequest_NilHandler(t *testing.T) {
 	}
 }
 
-// TestBroadcastTracker_WaitFull_AllFailed 测试全部失败场景
-func TestBroadcastTracker_WaitFull_AllFailed(t *testing.T) {
+// TestBroadcastProgress_WaitFull_AllFailed 测试全部失败场景
+func TestBroadcastProgress_WaitFull_AllFailed(t *testing.T) {
 	targets := []model.PeerID{"node-1", "node-2"}
-	tracker := service.NewBroadcastTracker("test-001", targets)
+	tracker := service.NewBroadcastProgress("test-001", targets)
 
 	// 全部标记为失败
 	tracker.RecordFailure("node-1", service.ErrTimeout)
@@ -527,10 +527,10 @@ func TestBroadcastTracker_WaitFull_AllFailed(t *testing.T) {
 	}
 }
 
-// TestBroadcastTracker_Stats_AfterOperations 测试操作后统计
-func TestBroadcastTracker_Stats_AfterOperations(t *testing.T) {
+// TestBroadcastProgress_Stats_AfterOperations 测试操作后统计
+func TestBroadcastProgress_Stats_AfterOperations(t *testing.T) {
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
-	tracker := service.NewBroadcastTracker("test-001", targets)
+	tracker := service.NewBroadcastProgress("test-001", targets)
 
 	// 混合操作
 	tracker.RecordSuccess("node-1", nil)

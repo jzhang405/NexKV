@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/panjf2000/ants/v2"
 	"github.com/sirupsen/logrus"
 )
@@ -31,12 +32,12 @@ const (
 // ==========================================
 
 // AntsGoroutineProvider 基于 ants 库的协程池实现
+// 实现 domain/service.GoroutineProvider 接口
 type AntsGoroutineProvider struct {
 	pool       *ants.Pool
 	config     *ProviderConfig
-	stats      PoolStats
+	stats      GoroutinePoolStats
 	statsMu    sync.RWMutex
-	taskCount  atomic.Int64
 	closed     atomic.Bool
 	stopCh     chan struct{}  // 全局停止信号
 	delayedWg  sync.WaitGroup // 跟踪延迟任务
@@ -82,9 +83,9 @@ func NewAntsGoroutineProvider(config *ProviderConfig) (*AntsGoroutineProvider, e
 	return &AntsGoroutineProvider{
 		pool:   pool,
 		config: config,
-		stats: PoolStats{
+		stats: GoroutinePoolStats{
 			Capacity:   config.Capacity,
-			ByPriority: make(map[Priority]int),
+			ByPriority: make(map[GoroutinePriority]int),
 		},
 		stopCh:     make(chan struct{}),
 		delayedSem: make(chan struct{}, DefaultMaxDelayedTasks), // P1-01: 速率限制
@@ -258,7 +259,7 @@ func (p *AntsGoroutineProvider) SubmitWithArgAndResult(
 // SubmitWithPriority 实现接口
 func (p *AntsGoroutineProvider) SubmitWithPriority(
 	ctx context.Context,
-	priority Priority,
+	priority GoroutinePriority,
 	task func(context.Context),
 ) error {
 	if p.isClosed() {
@@ -301,13 +302,28 @@ func (p *AntsGoroutineProvider) SubmitDelayed(
 // 高级方法实现
 // ======================================
 
+// submitOptions 提交选项配置（内部使用）
+// 使用 domain/service.GoroutineSubmitOptions 的别名
+type submitOptions = service.GoroutineSubmitOptions
+
+// applyOptions 应用选项
+func applyOptions(opts []GoroutineSubmitOption) *submitOptions {
+	config := &submitOptions{
+		Priority: PriorityNormal,
+	}
+	for _, opt := range opts {
+		opt(config)
+	}
+	return config
+}
+
 // SubmitAdvanced 实现接口
 func (p *AntsGoroutineProvider) SubmitAdvanced(
 	ctx context.Context,
 	task func(context.Context, any) (any, error),
 	arg any,
-	opts ...SubmitOption,
-) Result[any] {
+	opts ...GoroutineSubmitOption,
+) GoroutineResult[any] {
 	result := NewAnyResult()
 
 	if p.isClosed() {
@@ -318,12 +334,12 @@ func (p *AntsGoroutineProvider) SubmitAdvanced(
 	config := applyOptions(opts)
 
 	// P0-02: 处理延迟任务（使用统一的调度方法）
-	if config.delay > 0 {
+	if config.Delay > 0 {
 		// P1-01: 处理速率限制错误
-		if err := p.scheduleDelayedTask(ctx, config.delay, func() {
+		if err := p.scheduleDelayedTask(ctx, config.Delay, func() {
 			if !p.isClosed() {
 				p.statsMu.Lock()
-				p.stats.ByPriority[config.priority]++
+				p.stats.ByPriority[config.Priority]++
 				p.statsMu.Unlock()
 
 				if err := p.pool.Submit(func() {
@@ -347,7 +363,7 @@ func (p *AntsGoroutineProvider) SubmitAdvanced(
 
 	// 记录优先级统计
 	p.statsMu.Lock()
-	p.stats.ByPriority[config.priority]++
+	p.stats.ByPriority[config.Priority]++
 	p.statsMu.Unlock()
 
 	// P0-03: 检查 Submit 错误
@@ -591,7 +607,7 @@ func SubmitAdvancedTyped[T any, R any](
 	ctx context.Context,
 	task func(context.Context, T) (R, error),
 	arg T,
-	opts ...SubmitOption,
+	opts ...GoroutineSubmitOption,
 ) *TypedResult[R] {
 	result := &TypedResult[R]{inner: NewAnyResult()}
 
@@ -603,12 +619,12 @@ func SubmitAdvancedTyped[T any, R any](
 	config := applyOptions(opts)
 
 	// P0-02: 处理延迟任务
-	if config.delay > 0 {
+	if config.Delay > 0 {
 		// P1-01: 处理速率限制错误
-		if err := p.scheduleDelayedTask(ctx, config.delay, func() {
+		if err := p.scheduleDelayedTask(ctx, config.Delay, func() {
 			if !p.isClosed() {
 				p.statsMu.Lock()
-				p.stats.ByPriority[config.priority]++
+				p.stats.ByPriority[config.Priority]++
 				p.statsMu.Unlock()
 
 				if err := p.pool.Submit(func() {
@@ -631,7 +647,7 @@ func SubmitAdvancedTyped[T any, R any](
 	}
 
 	p.statsMu.Lock()
-	p.stats.ByPriority[config.priority]++
+	p.stats.ByPriority[config.Priority]++
 	p.statsMu.Unlock()
 
 	// P0-03: 检查 Submit 错误
@@ -656,7 +672,7 @@ func SubmitAdvancedTyped[T any, R any](
 // ======================================
 
 // Stats 实现接口
-func (p *AntsGoroutineProvider) Stats() PoolStats {
+func (p *AntsGoroutineProvider) Stats() GoroutinePoolStats {
 	p.statsMu.RLock()
 	defer p.statsMu.RUnlock()
 
@@ -668,7 +684,7 @@ func (p *AntsGoroutineProvider) Stats() PoolStats {
 }
 
 // Health 实现接口
-func (p *AntsGoroutineProvider) Health() HealthStatus {
+func (p *AntsGoroutineProvider) Health() GoroutineHealthStatus {
 	if p.isClosed() {
 		return HealthStatusUnhealthy
 	}

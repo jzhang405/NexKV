@@ -4,20 +4,20 @@ package service
 import (
 	"context"
 	"fmt"
-	"io"
-	"log/slog"
-	"runtime/debug"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
-// Transport 传输层核心接口
-type Transport interface {
+// ============================================================================
+// Transport 子接口（接口隔离原则）
+// ============================================================================
+
+// PeerManager 节点管理接口
+type PeerManager interface {
 	// Self 返回本地节点 ID
 	Self() model.PeerID
 
@@ -32,21 +32,43 @@ type Transport interface {
 
 	// IsConnected 检查是否与指定节点已连接
 	IsConnected(peer model.PeerID) bool
+}
 
+// StreamManager 流管理接口
+type StreamManager interface {
 	// OpenStream 打开到指定节点的流式连接
 	OpenStream(ctx context.Context, peer model.PeerID, protocol string) (Stream, error)
 
 	// AcceptStream 接受指定协议的入站流
 	AcceptStream(protocol string) (Stream, error)
 
+	// OpenAsyncStream 打开到指定节点的异步流
+	OpenAsyncStream(ctx context.Context, peer model.PeerID, protocol string) (AsyncStream, error)
+}
+
+// ChannelManager 通道管理接口
+type ChannelManager interface {
 	// OpenChannel 打开到指定节点的双向通道
 	OpenChannel(ctx context.Context, peer model.PeerID, protocol string) (Channel, error)
 
 	// OpenAsyncChannel 打开到指定节点的异步双向通道
 	OpenAsyncChannel(ctx context.Context, peer model.PeerID, protocol string) (AsyncChannel, error)
+}
 
-	// OpenAsyncStream 打开到指定节点的异步流
-	OpenAsyncStream(ctx context.Context, peer model.PeerID, protocol string) (AsyncStream, error)
+// ============================================================================
+// Transport 核心接口（组合子接口）
+// ============================================================================
+
+// Transport 传输层核心接口
+//
+// 通过接口组合提供完整的传输层能力：
+// - PeerManager: 节点连接管理
+// - StreamManager: 流式通信管理
+// - ChannelManager: 通道通信管理
+type Transport interface {
+	PeerManager
+	StreamManager
+	ChannelManager
 
 	// Close 关闭传输层
 	Close() error
@@ -253,488 +275,18 @@ type WriteVResult struct {
 }
 
 // ============================================================================
-// BroadcastTracker Callback 机制（v1.4）
+// RPC 接口定义
 // ============================================================================
 
-// BroadcastCallback 广播进度回调接口
+// 注意：RPC/RPCSync 接口定义已移至 rpc_sync.go
+// RPCAsync 接口定义在 rpc_async.go
 //
-// 回调执行顺序（针对每个响应）：
-//  1. OnSuccess / OnFailure（每次响应）
-//     ↓
-//  2. OnMajorityReached（达到多数派时，仅一次）
-//     ↓
-//  3. OnFullDone（全部完成时，仅一次）
+// 类型别名：
+// - RPC = RPCSync（向后兼容）
 //
-// 特殊场景：OnMajorityReached 和 OnFullDone 可能在同一次 RecordSuccess 中
-// 顺序触发（如果 Majority 达成时恰好也是最后一个响应）
-//
-// 回调实现注意事项：
-// 1. 回调在锁外执行，但应避免调用 BroadcastTracker 的方法（防止死锁）
-// 2. 回调应快速返回（< 10ms），长时间处理应启动 goroutine
-// 3. 回调可能被并发调用（OnSuccess/OnFailure），实现需线程安全
-// 4. 不要依赖回调的调用顺序（除文档明确保证的之外）
-type BroadcastCallback interface {
-	// OnSuccess 每次收到成功响应时调用
-	// 参数说明：
-	//   - peer: 响应节点 ID
-	//   - resp: 成功响应消息（不会为 nil）
-	//   - stats: 当前统计信息
-	OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats)
-
-	// OnFailure 每次收到失败响应时调用
-	// 参数说明：
-	//   - peer: 失败节点 ID
-	//   - err: 错误信息（不会为 nil，包含具体错误类型）
-	//          - 超时错误：context.DeadlineExceeded
-	//          - 网络错误：net.Error
-	//          - 业务错误：业务逻辑返回的错误
-	//   - stats: 当前统计信息
-	OnFailure(peer model.PeerID, err error, stats BroadcastStats)
-
-	// OnMajorityReached 达到多数派时调用（仅调用一次）
-	// 触发条件：
-	//   - 成功响应数 >= majority（len(targets)/2 + 1）
-	//   - 只在 RecordSuccess 时检查，RecordFailure 不会触发
-	//   - 例如：3 个节点，2 个成功即触发（即使 1 个失败）
-	// 参数说明：
-	//   - stats: 达到多数派时的统计信息
-	OnMajorityReached(stats BroadcastStats)
-
-	// OnFullDone 全部完成时调用（仅调用一次）
-	// 触发条件：
-	//   - 成功数 + 失败数 == 总节点数
-	// 参数说明：
-	//   - stats: 全部完成时的统计信息
-	OnFullDone(stats BroadcastStats)
-}
-
-// BroadcastStats 广播统计信息
-type BroadcastStats struct {
-	TaskID            string        // 任务 ID
-	Total             int           // 总节点数
-	Success           int           // 成功数
-	Failed            int           // 失败数
-	Pending           int           // 待响应数
-	SuccessRate       float64       // 成功率
-	ElapsedTime       time.Duration // 已耗时（从任务开始到现在）
-	FirstResponseTime time.Duration // 首个响应耗时（从任务开始到首个响应）
-	MajorityReachTime time.Duration // 达到多数派耗时（从任务开始到多数派达成）
-}
-
-// NoOpCallback 空实现的 BroadcastCallback
-// 可用于嵌入到自定义 Callback 中，只重写需要的方法
-//
-// 使用示例:
-//
-//	type MyCallback struct {
-//	    NoOpCallback // 嵌入所有空实现
-//	}
-//
-//	// 只重写关心的方法
-//	func (m *MyCallback) OnFullDone(stats BroadcastStats) {
-//	    fmt.Printf("广播完成！成功率: %.2f%%\n", stats.SuccessRate*100)
-//	}
-type NoOpCallback struct{}
-
-// OnSuccess 空实现
-func (n NoOpCallback) OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats) {}
-
-// OnFailure 空实现
-func (n NoOpCallback) OnFailure(peer model.PeerID, err error, stats BroadcastStats) {}
-
-// OnMajorityReached 空实现
-func (n NoOpCallback) OnMajorityReached(stats BroadcastStats) {}
-
-// OnFullDone 空实现
-func (n NoOpCallback) OnFullDone(stats BroadcastStats) {}
-
-// BroadcastTracker 可选的广播追踪器（一次性使用）
-//
-// 设计原则：
-// 1. Tracker 是一次性的，不复用（避免 channel 泄漏）
-// 2. Tracker 是**独立的监控工具**，与 RPC 调用的 ResponseStrategy **解耦**
-// 3. 无论 RPC 使用什么策略（All/Majority/None），Tracker 都可以：
-//   - WaitFull(): 等待所有节点响应
-//   - WaitMajority(): 等待多数派响应
-//   - Stats(): 实时查看进度
-//
-// 典型使用场景：
-//
-//	// 场景 1：RPC 用 ResponseMajority，tracker 后台监控 full completion
-//	tracker := NewBroadcastTracker("task-001", replicas)
-//	rpc.BroadcastCall(ctx, replicas, req, ResponseMajority, tracker)
-//	// RPC 返回后，异步等待全部完成
-//	go func() { tracker.WaitFull(ctx) }()
-//
-//	// 场景 2：RPC 用 ResponseNone，tracker 监控所有响应
-//	tracker := NewBroadcastTracker("task-002", replicas)
-//	rpc.BroadcastCall(ctx, replicas, req, ResponseNone, tracker)
-//	// 后台等待全部或多数派完成
-//	tracker.WaitMajority(ctx)
-type BroadcastTracker struct {
-	// 基础字段
-	taskID    string                         // 任务 ID（用于日志）
-	targets   []model.PeerID                 // 目标节点列表
-	responses map[model.PeerID]model.Message // 成功响应
-	failures  map[model.PeerID]error         // 失败记录
-
-	// 同步原语
-	mu           sync.RWMutex  // 保护并发访问
-	fullDone     chan struct{} // 全部完成时关闭
-	majorityDone chan struct{} // 多数派完成时关闭
-
-	// Callback 机制（v1.4）
-	callback                  BroadcastCallback // 回调接口（可选）
-	callbacksEnabled          bool              // 回调启用/禁用开关
-	majorityCallbackTriggered bool              // OnMajorityReached 是否已触发
-	fullDoneCallbackTriggered bool              // OnFullDone 是否已触发
-
-	// 时间统计
-	startTime             time.Time // 任务开始时间
-	firstResponseTime     time.Time // 首个响应时间
-	majorityReachTime     time.Time // 达到多数派时间
-	firstResponseRecorded bool      // 是否已记录首个响应
-}
-
-// NewBroadcastTracker 创建广播追踪器
-func NewBroadcastTracker(taskID string, targets []model.PeerID) *BroadcastTracker {
-	// 保护性拷贝，防止外部修改
-	targetsCopy := make([]model.PeerID, len(targets))
-	copy(targetsCopy, targets)
-
-	return &BroadcastTracker{
-		taskID:       taskID,
-		targets:      targetsCopy,
-		responses:    make(map[model.PeerID]model.Message),
-		failures:     make(map[model.PeerID]error),
-		fullDone:     make(chan struct{}),
-		majorityDone: make(chan struct{}),
-
-		// Callback 机制初始化
-		callbacksEnabled: true, // 默认启用回调
-		startTime:        time.Now(),
-	}
-}
-
-// WaitFull 等待所有节点响应（包括失败的）
-// 适用场景：集群关闭、全局同步
-func (t *BroadcastTracker) WaitFull(ctx context.Context) error {
-	select {
-	case <-t.fullDone:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// WaitMajority 等待多数派（> N/2）节点响应
-// 适用场景：需要确认多数派完成的场景（如 3 副本写入确认 W=2）
-// 注意：与 RPC 调用的 ResponseStrategy 无关，可独立使用
-func (t *BroadcastTracker) WaitMajority(ctx context.Context) error {
-	// 快速路径：先检查当前状态
-	t.mu.RLock()
-	majority := len(t.targets)/2 + 1
-	if len(t.responses) >= majority || len(t.targets) == 0 {
-		t.mu.RUnlock()
-		return nil
-	}
-	t.mu.RUnlock()
-
-	// 等待 majorityDone channel（零 CPU 开销）
-	select {
-	case <-t.majorityDone:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// Stats 获取实时统计信息
-func (t *BroadcastTracker) Stats() (success, failed, pending int) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return len(t.responses), len(t.failures),
-		len(t.targets) - len(t.responses) - len(t.failures)
-}
-
-// SetCallback 设置进度回调（必须在开始之前设置）
-func (t *BroadcastTracker) SetCallback(cb BroadcastCallback) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.callback = cb
-}
-
-// EnableCallbacks 启用/禁用回调（可选，便于测试）
-func (t *BroadcastTracker) EnableCallbacks(enabled bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.callbacksEnabled = enabled
-}
-
-// IsMajorityReached 检查是否已达到多数派
-func (t *BroadcastTracker) IsMajorityReached() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	majority := len(t.targets)/2 + 1
-	return len(t.responses) >= majority
-}
-
-// IsFullDone 检查是否全部完成
-func (t *BroadcastTracker) IsFullDone() bool {
-	select {
-	case <-t.fullDone:
-		return true
-	default:
-		return false
-	}
-}
-
-// RecordSuccess 记录成功响应（由 RPC 实现调用）
-// 线程安全，自动更新状态并关闭 channel
-func (t *BroadcastTracker) RecordSuccess(peer model.PeerID, resp model.Message) {
-	var callback BroadcastCallback
-	var stats BroadcastStats
-	var shouldTriggerMajority bool
-	var shouldTriggerFullDone bool
-
-	// === 锁内：只做状态更新 ===
-	t.mu.Lock()
-
-	// 1. 记录响应
-	t.responses[peer] = resp
-
-	// 2. 记录首个响应时间（仅一次）
-	if !t.firstResponseRecorded {
-		t.firstResponseTime = time.Now()
-		t.firstResponseRecorded = true
-	}
-
-	// 3. 检查是否满足 Majority 策略
-	majority := len(t.targets)/2 + 1
-	if len(t.responses) >= majority {
-		// 关闭 majorityDone channel（仅关闭一次）
-		select {
-		case <-t.majorityDone:
-			// 已经关闭，跳过
-		default:
-			close(t.majorityDone)
-		}
-
-		// 触发 OnMajorityReached 回调（仅一次）
-		if !t.majorityCallbackTriggered {
-			t.majorityCallbackTriggered = true
-			t.majorityReachTime = time.Now()
-			shouldTriggerMajority = true
-		}
-	}
-
-	// 4. 检查是否全部完成
-	if len(t.responses)+len(t.failures) == len(t.targets) {
-		// 关闭 fullDone channel
-		select {
-		case <-t.fullDone:
-		default:
-			close(t.fullDone)
-		}
-
-		// 触发 OnFullDone 回调（仅一次）
-		if !t.fullDoneCallbackTriggered {
-			t.fullDoneCallbackTriggered = true
-			shouldTriggerFullDone = true
-		}
-	}
-
-	// 5. 准备回调数据
-	callback = t.callback
-	stats = t.buildStatsLocked()
-	t.mu.Unlock()
-	// === 锁外：执行回调，避免死锁 ===
-
-	// 6. 触发回调（如果启用）
-	if callback == nil || !t.callbacksEnabled {
-		return
-	}
-
-	// 触发 OnSuccess 回调
-	safeCallback(func() {
-		callback.OnSuccess(peer, resp, stats)
-	})
-
-	// 触发 OnMajorityReached 回调（仅一次）
-	if shouldTriggerMajority {
-		safeCallback(func() {
-			callback.OnMajorityReached(stats)
-		})
-	}
-
-	// 触发 OnFullDone 回调（仅一次）
-	if shouldTriggerFullDone {
-		safeCallback(func() {
-			callback.OnFullDone(stats)
-		})
-	}
-}
-
-// RecordFailure 记录失败响应（由 RPC 实现调用）
-// 线程安全，自动更新状态并关闭 channel
-func (t *BroadcastTracker) RecordFailure(peer model.PeerID, err error) {
-	var callback BroadcastCallback
-	var stats BroadcastStats
-	var shouldTriggerFullDone bool
-
-	// === 锁内：只做状态更新 ===
-	t.mu.Lock()
-
-	// 1. 记录失败
-	t.failures[peer] = err
-
-	// 2. 检查是否全部完成
-	if len(t.responses)+len(t.failures) == len(t.targets) {
-		// 关闭 fullDone channel
-		select {
-		case <-t.fullDone:
-		default:
-			close(t.fullDone)
-		}
-
-		// 触发 OnFullDone 回调（仅一次）
-		if !t.fullDoneCallbackTriggered {
-			t.fullDoneCallbackTriggered = true
-			shouldTriggerFullDone = true
-		}
-	}
-
-	// 3. 准备回调数据
-	callback = t.callback
-	stats = t.buildStatsLocked()
-	t.mu.Unlock()
-	// === 锁外：执行回调，避免死锁 ===
-
-	// 4. 触发回调（如果启用）
-	if callback == nil || !t.callbacksEnabled {
-		return
-	}
-
-	// 触发 OnFailure 回调
-	safeCallback(func() {
-		callback.OnFailure(peer, err, stats)
-	})
-
-	// 触发 OnFullDone 回调（仅一次）
-	if shouldTriggerFullDone {
-		safeCallback(func() {
-			callback.OnFullDone(stats)
-		})
-	}
-}
-
-// buildStatsLocked 构建统计信息（内部方法，需持锁调用）
-func (t *BroadcastTracker) buildStatsLocked() BroadcastStats {
-	success := len(t.responses)
-	failed := len(t.failures)
-	total := len(t.targets)
-
-	// P2 修复：避免除零
-	var successRate float64
-	if total > 0 {
-		successRate = float64(success) / float64(total)
-	}
-
-	// 计算时间戳
-	elapsedTime := time.Since(t.startTime)
-	var firstResponseTime time.Duration
-	var majorityReachTime time.Duration
-
-	if t.firstResponseRecorded {
-		firstResponseTime = t.firstResponseTime.Sub(t.startTime)
-	}
-	if t.majorityCallbackTriggered {
-		majorityReachTime = t.majorityReachTime.Sub(t.startTime)
-	}
-
-	return BroadcastStats{
-		TaskID:            t.taskID,
-		Total:             total,
-		Success:           success,
-		Failed:            failed,
-		Pending:           total - success - failed,
-		SuccessRate:       successRate,
-		ElapsedTime:       elapsedTime,
-		FirstResponseTime: firstResponseTime,
-		MajorityReachTime: majorityReachTime,
-	}
-}
-
-// safeCallback 安全执行回调，防止 panic 影响主流程
-func safeCallback(fn func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			// 使用 slog.Error 记录 panic，便于监控和告警
-			slog.Error("[BroadcastTracker] callback panic recovered",
-				"panic", r,
-				"stack", string(debug.Stack()))
-		}
-	}()
-	fn()
-}
-
-// RPC 统一的 RPC 接口（合并原 RPC 和 MultiRPC）
-//
-// 统一了单播和广播两种通信模式，简化接口设计。
-// - 单播：Call/CallAsync/OnRequest/OnRequestChan
-// - 广播：BroadcastCall/BroadcastAsync/WriteV/WriteVCall（支持 ResponseStrategy + BroadcastTracker）
-type RPC interface {
-	// ====== 单播 ======
-	// 同步调用（阻塞等响应）
-	Call(ctx context.Context, to model.PeerID, req model.Message) (model.Message, error)
-
-	// 异步调用（不阻塞，回调返回）
-	CallAsync(ctx context.Context, to model.PeerID, req model.Message, cb func(model.Message, error)) error
-
-	// 函数式处理（服务端注册处理器）
-	OnRequest(handler func(ctx context.Context, from model.PeerID, req model.Message) model.Message) error
-
-	// Channel 模式接收请求
-	OnRequestChan() <-chan RequestMsg
-
-	// ====== 广播 ======
-	// 同消息广播：支持响应策略 + 可选追踪器
-	// - strategy: 响应策略（All/Majority/None）
-	// - tracker: 可选追踪器，nil 表示不追踪
-	BroadcastCall(
-		ctx context.Context,
-		to []model.PeerID,
-		req model.Message,
-		strategy ResponseStrategy,
-		tracker *BroadcastTracker,
-	) (BroadcastResult, error)
-
-	// 同消息广播：异步回调 + 可选追踪器
-	BroadcastAsync(
-		ctx context.Context,
-		to []model.PeerID,
-		req model.Message,
-		strategy ResponseStrategy,
-		tracker *BroadcastTracker,
-		cb func(from model.PeerID, resp model.Message, err error),
-	) error
-
-	// 不同消息群发：WriteV（单向，不等待响应，等价于 ResponseNone）
-	// 注意：WriteV 是 "Write Vector" 的缩写，表示批量写入多个目标节点
-	WriteV(ctx context.Context, targets []model.PeerID, msgs []model.Message, tracker *BroadcastTracker) error
-
-	// 不同消息群发：支持响应策略 + 可选追踪器
-	WriteVCall(
-		ctx context.Context,
-		targets []model.PeerID,
-		msgs []model.Message,
-		strategy ResponseStrategy,
-		tracker *BroadcastTracker,
-	) (WriteVResult, error)
-
-	// ====== 生命周期 ======
-	Close() error
-}
+// 接口选择指南：
+// - RPCSync: 阻塞式同步调用，直接返回结果
+// - RPCAsync: 异步调用，返回 AsyncOperation[T]，支持链式回调和超时
 
 // RequestMsg 用于 Channel 接收请求
 type RequestMsg struct {
@@ -910,110 +462,4 @@ func DefaultRPCConfig() *RPCConfig {
 		MaxConcurrentCalls: 1000,
 		RequestBufferSize:  256,
 	}
-}
-
-// ============================================================================
-// Codec 接口定义
-// ============================================================================
-
-// Codec 消息编解码接口
-type Codec interface {
-	// Encode 编码消息为字节切片
-	Encode(msg model.Message) ([]byte, error)
-
-	// Decode 解码字节切片为消息
-	Decode(data []byte) (model.Message, error)
-
-	// Name 返回编解码器名称（如 "msgpack"）
-	Name() string
-
-	// Version 返回编解码器版本（如 "v1"），用于协议协商
-	Version() string
-}
-
-// StreamCodec 流式编解码接口（支持分帧）
-type StreamCodec interface {
-	Codec
-
-	// EncodeToWriter 编码并写入 Writer
-	EncodeToWriter(w io.Writer, msg model.Message) error
-
-	// DecodeFromReader 从 Reader 解码
-	DecodeFromReader(r io.Reader) (model.Message, error)
-}
-
-// ============================================================================
-// Middleware 接口定义
-// ============================================================================
-
-// SendFunc 发送函数签名
-type SendFunc func(ctx context.Context, peer model.PeerID, msg model.Message) error
-
-// ReceiveFunc 接收函数签名
-type ReceiveFunc func(ctx context.Context, peer model.PeerID, msg model.Message) error
-
-// Middleware 中间件接口（拦截器模式）
-type Middleware interface {
-	// Name 中间件名称
-	Name() string
-
-	// Priority 中间件优先级（数字越小越先执行）
-	// 固定优先级：
-	// - RateLimit: 10
-	// - CircuitBreaker: 20
-	// - Compression: 30
-	// - Retry: 40
-	// - Logging/Metrics: 5（最外层）
-	Priority() int
-
-	// InterceptSend 拦截发送消息
-	InterceptSend(ctx context.Context, peer model.PeerID, msg model.Message, next SendFunc) error
-
-	// InterceptReceive 拦截接收消息
-	InterceptReceive(ctx context.Context, peer model.PeerID, msg model.Message, next ReceiveFunc) error
-}
-
-// MiddlewarePriority 中间件优先级常量
-// 数字越小越先执行（越外层）
-const (
-	MiddlewarePriorityLogging        = 5  // 日志（最外层）
-	MiddlewarePriorityMetrics        = 6  // 指标
-	MiddlewarePriorityRateLimit      = 10 // 限流
-	MiddlewarePriorityCircuitBreaker = 20 // 熔断
-	MiddlewarePriorityCompression    = 30 // 压缩
-	MiddlewarePriorityRetry          = 40 // 重试（最内层）
-)
-
-// MiddlewareChain 中间件链管理器
-//
-// 并发安全策略：
-// 1. 使用读写锁（sync.RWMutex）保护中间件列表
-// 2. Execute 时获取快照执行，避免持锁时间过长
-// 3. 提供 Freeze 方法，冻结后禁止修改（高性能场景）
-type MiddlewareChain interface {
-	// Use 添加中间件（自动按 Priority() 排序）
-	Use(middleware Middleware) error
-
-	// Remove 移除指定名称的中间件
-	Remove(name string) error
-
-	// List 获取所有中间件列表（返回快照）
-	List() []Middleware
-
-	// Freeze 冻结中间件链，禁止后续修改
-	// 冻结后 Use/Remove/Clear 返回 ErrChainFrozen
-	// 适用场景：启动完成后调用，避免运行时修改开销
-	Freeze()
-
-	// IsFrozen 检查是否已冻结
-	IsFrozen() bool
-
-	// ExecuteSend 执行发送中间件链
-	ExecuteSend(ctx context.Context, peer model.PeerID, msg model.Message, final SendFunc) error
-
-	// ExecuteReceive 执行接收中间件链
-	ExecuteReceive(ctx context.Context, peer model.PeerID, msg model.Message, final ReceiveFunc) error
-
-	// Clear 清空所有中间件（冻结后返回错误）
-	Clear() error
 }

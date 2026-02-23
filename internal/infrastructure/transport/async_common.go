@@ -6,11 +6,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sirupsen/logrus"
-	"github.com/sourcegraph/conc"
-
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/pkg/errors"
+	"github.com/sirupsen/logrus"
+	"github.com/sourcegraph/conc"
 )
 
 // transportLog 使用 logrus 结构化日志
@@ -80,20 +79,46 @@ func (e *AtomicError) Load() error {
 }
 
 // AsyncLifecycle 异步组件生命周期管理（基于 conc 库）
+// 支持可选的 GoroutineProvider 注入，实现集中式协程管理
 type AsyncLifecycle struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     conc.WaitGroup
-	closed atomic.Bool
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       conc.WaitGroup
+	closed   atomic.Bool
+	provider service.GoroutineProvider // 可选：集中式协程池
+	priority service.GoroutinePriority // 任务优先级
 }
 
-// NewAsyncLifecycle 创建新的生命周期管理器
-func NewAsyncLifecycle() *AsyncLifecycle {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &AsyncLifecycle{
-		ctx:    ctx,
-		cancel: cancel,
+// LifecycleOption AsyncLifecycle 配置选项
+type LifecycleOption func(*AsyncLifecycle)
+
+// WithGoroutineProvider 设置 GoroutineProvider（实现集中式协程管理）
+func WithGoroutineProvider(provider service.GoroutineProvider) LifecycleOption {
+	return func(l *AsyncLifecycle) {
+		l.provider = provider
 	}
+}
+
+// WithPriority 设置默认任务优先级
+func WithPriority(priority service.GoroutinePriority) LifecycleOption {
+	return func(l *AsyncLifecycle) {
+		l.priority = priority
+	}
+}
+
+// NewAsyncLifecycle 创建新的生命周期管理器（支持选项配置）
+func NewAsyncLifecycle(opts ...LifecycleOption) *AsyncLifecycle {
+	ctx, cancel := context.WithCancel(context.Background())
+	lifecycle := &AsyncLifecycle{
+		ctx:      ctx,
+		cancel:   cancel,
+		priority: service.GoroutinePriorityNormal, // 默认优先级
+	}
+	// 应用选项
+	for _, opt := range opts {
+		opt(lifecycle)
+	}
+	return lifecycle
 }
 
 // Context 返回上下文
@@ -106,8 +131,16 @@ func (l *AsyncLifecycle) Done() <-chan struct{} {
 	return l.ctx.Done()
 }
 
-// Go 启动 goroutine（使用 conc wait.Group）
+// Go 启动 goroutine（支持集中式协程池注入）
+// 如果注入了 GoroutineProvider，使用 SubmitWithPriority；否则回退到 conc.WaitGroup
 func (l *AsyncLifecycle) Go(f func()) {
+	if l.provider != nil {
+		wrapped := func(ctx context.Context) {
+			f()
+		}
+		_ = l.provider.SubmitWithPriority(l.ctx, l.priority, wrapped)
+		return
+	}
 	l.wg.Go(f)
 }
 

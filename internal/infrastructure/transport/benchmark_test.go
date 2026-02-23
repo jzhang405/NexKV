@@ -141,7 +141,7 @@ func BenchmarkRPC_Throughput(b *testing.B) {
 	payload := make([]byte, 64)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		msg := model.NewMessage(
 			fmt.Sprintf("msg-%d", i),
 			model.MessageTypeRequest,
@@ -176,11 +176,11 @@ func BenchmarkRPC_Concurrent(b *testing.B) {
 	numGoroutines := 10
 	opsPerGoroutine := b.N / numGoroutines
 
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
-			for i := 0; i < opsPerGoroutine; i++ {
+			for i := range opsPerGoroutine {
 				msg := model.NewMessage(
 					fmt.Sprintf("msg-%d-%d", goroutineID, i),
 					model.MessageTypeRequest,
@@ -216,7 +216,7 @@ func BenchmarkRPC_Payload_Small(b *testing.B) {
 	payload := make([]byte, 64) // 64 字节
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		msg := model.NewMessage(
 			fmt.Sprintf("msg-%d", i),
 			model.MessageTypeRequest,
@@ -244,7 +244,7 @@ func BenchmarkRPC_Payload_Medium(b *testing.B) {
 	payload := make([]byte, 1024) // 1 KB
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		msg := model.NewMessage(
 			fmt.Sprintf("msg-%d", i),
 			model.MessageTypeRequest,

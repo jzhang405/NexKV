@@ -12,7 +12,7 @@ func TestHLCNow(t *testing.T) {
 	hlc := NewHLC()
 
 	var lastHLC *HLC
-	for i := 0; i < 10000; i++ {
+	for range 10000 {
 		now := hlc.Now()
 
 		if lastHLC != nil {
@@ -160,11 +160,11 @@ func TestHLCConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
 
-			for j := 0; j < operationsPerGoroutine; j++ {
+			for j := range operationsPerGoroutine {
 				// 并发调用 Now()
 				_ = hlc.Now()
 
@@ -199,7 +199,7 @@ func TestHLCLimit(t *testing.T) {
 	fixedPT := time.Now().UnixMilli()
 
 	// 快速增加逻辑计数
-	for i := 0; i < 70000; i++ { // 超过 65535
+	for i := range 70000 { // 超过 65535
 		hlc.Update(fixedPT, &HLC{pt: fixedPT, c: uint16(i)})
 	}
 
@@ -258,7 +258,7 @@ func BenchmarkHLCNow(b *testing.B) {
 	hlc := NewHLC()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = hlc.Now()
 	}
 }
@@ -272,7 +272,7 @@ func BenchmarkHLCUpdate(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = hlc.Update(time.Now().UnixMilli(), remote)
 	}
 }
@@ -283,7 +283,7 @@ func BenchmarkHLCLessThan(b *testing.B) {
 	hlc2 := hlc1.Now()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = hlc2.LessThan(hlc1)
 	}
 }
@@ -314,7 +314,7 @@ func TestHLCUpdateWithNilRemote(t *testing.T) {
 	}
 
 	// 验证: 多次使用 nil 调用 Update 仍然正常工作
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		prev := updated
 		updated = hlc.Update(time.Now().UnixMilli(), nil)
 		if updated.LessThan(prev) {
@@ -333,7 +333,7 @@ func TestHLCUpdateNilRemoteWithFixedTime(t *testing.T) {
 	// 使用相同事件时间和 nil remoteHLC
 	// 由于 remotePT=0，条件 newPT == h.pt && newPT == remotePT 永远不满足
 	// 所以逻辑计数器会保持为 0，物理时间会取最大值
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		updated := hlc.Update(fixedPT, nil)
 		// 验证: 不会导致 panic，且时间戳有效
 		if updated.PhysicalTime() < 0 {
@@ -409,7 +409,7 @@ func TestHLCOverflowMonotonicity(t *testing.T) {
 
 	var last *HLC
 	// 触发多次溢出
-	for i := 0; i < 300; i++ {
+	for range 300 {
 		remote := &HLC{
 			pt: hlc.PhysicalTime(),
 			c:  MaxLogicalCounter,

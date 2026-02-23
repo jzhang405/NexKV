@@ -14,8 +14,8 @@ import (
 // Libp2pRPC 基于 libp2p 的 RPC 实现
 type Libp2pRPC struct {
 	transport   service.Transport
-	codec       service.Codec
-	streamCodec service.StreamCodec
+	codec       model.Codec
+	streamCodec model.StreamCodec
 	config      *service.RPCConfig
 	idGenerator *service.RequestIDGenerator
 	middleware  service.MiddlewareChain
@@ -170,10 +170,30 @@ func (r *Libp2pRPC) BroadcastCall(
 	to []model.PeerID,
 	req model.Message,
 	strategy service.ResponseStrategy,
-	tracker *service.BroadcastTracker,
+	tracker *service.BroadcastProgress,
 ) (service.BroadcastResult, error) {
 	if r.closed.Load() {
 		return service.BroadcastResult{}, service.ErrCanceled
+	}
+
+	// P1-2 修复：输入验证
+	if req == nil {
+		return service.BroadcastResult{}, service.ErrInvalidMessage
+	}
+
+	if len(to) == 0 {
+		return service.BroadcastResult{
+			Responses:    make([]model.Message, 0),
+			SuccessPeers: make([]model.PeerID, 0),
+			FailedPeers:  make([]model.PeerID, 0),
+		}, nil
+	}
+
+	// P1-2 修复：验证 PeerID 有效性
+	for i, peer := range to {
+		if peer == "" {
+			return service.BroadcastResult{}, service.Wrapf(service.ErrPeerIDInvalid, "empty PeerID at index %d", i)
+		}
 	}
 
 	// 根据策略处理
@@ -196,7 +216,7 @@ func (r *Libp2pRPC) BroadcastAsync(
 	to []model.PeerID,
 	req model.Message,
 	strategy service.ResponseStrategy,
-	tracker *service.BroadcastTracker,
+	tracker *service.BroadcastProgress,
 	cb func(from model.PeerID, resp model.Message, err error),
 ) error {
 	if r.closed.Load() {
@@ -227,13 +247,24 @@ func (r *Libp2pRPC) BroadcastAsync(
 }
 
 // WriteV 不同消息群发：单向发送
-func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []model.Message, tracker *service.BroadcastTracker) error {
+func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []model.Message, tracker *service.BroadcastProgress) error {
+	// P1-2 修复：输入验证
 	if len(targets) != len(msgs) {
 		return service.Wrapf(service.ErrInvalidParam, "targets and messages length mismatch: %d vs %d", len(targets), len(msgs))
 	}
 
 	if len(targets) == 0 {
 		return nil
+	}
+
+	// P1-2 修复：验证 PeerID 和消息有效性
+	for i, target := range targets {
+		if target == "" {
+			return service.Wrapf(service.ErrPeerIDInvalid, "empty PeerID at index %d", i)
+		}
+		if msgs[i] == nil {
+			return service.Wrapf(service.ErrInvalidMessage, "nil message at index %d", i)
+		}
 	}
 
 	// ✅ 修复：添加并发控制，避免瞬时连接数爆炸
@@ -288,14 +319,33 @@ func (r *Libp2pRPC) WriteVCall(
 	targets []model.PeerID,
 	msgs []model.Message,
 	strategy service.ResponseStrategy,
-	tracker *service.BroadcastTracker,
+	tracker *service.BroadcastProgress,
 ) (service.WriteVResult, error) {
 	if r.closed.Load() {
 		return service.WriteVResult{}, service.ErrCanceled
 	}
 
+	// P1-2 修复：输入验证
 	if len(targets) != len(msgs) {
 		return service.WriteVResult{}, service.Wrapf(service.ErrInvalidParam, "targets and messages length mismatch: %d vs %d", len(targets), len(msgs))
+	}
+
+	if len(targets) == 0 {
+		return service.WriteVResult{
+			Responses:    make(map[model.PeerID]model.Message),
+			SuccessPeers: make([]model.PeerID, 0),
+			FailedPeers:  make([]model.PeerID, 0),
+		}, nil
+	}
+
+	// P1-2 修复：验证 PeerID 和消息有效性
+	for i, target := range targets {
+		if target == "" {
+			return service.WriteVResult{}, service.Wrapf(service.ErrPeerIDInvalid, "empty PeerID at index %d", i)
+		}
+		if msgs[i] == nil {
+			return service.WriteVResult{}, service.Wrapf(service.ErrInvalidMessage, "nil message at index %d", i)
+		}
 	}
 
 	// P2 修复：添加并发控制
@@ -311,6 +361,18 @@ func (r *Libp2pRPC) WriteVCall(
 	sem := make(chan struct{}, r.config.MaxConcurrentCalls)
 
 	for i := range targets {
+		// P1-1 修复：检查 context 是否已取消，避免创建不必要的 goroutine
+		select {
+		case <-ctx.Done():
+			// 将剩余节点标记为失败
+			for j := i; j < len(targets); j++ {
+				result.FailedPeers = append(result.FailedPeers, targets[j])
+			}
+			wg.Wait()
+			return result, ctx.Err()
+		default:
+		}
+
 		sem <- struct{}{} // 获取信号量
 		wg.Add(1)
 		go func(idx int) {
@@ -537,7 +599,7 @@ func (r *Libp2pRPC) broadcastFireAndForget(
 	ctx context.Context,
 	to []model.PeerID,
 	req model.Message,
-	tracker *service.BroadcastTracker,
+	tracker *service.BroadcastProgress,
 ) (service.BroadcastResult, error) {
 	result := service.BroadcastResult{
 		Responses:    make([]model.Message, 0),
@@ -586,7 +648,7 @@ func (r *Libp2pRPC) broadcastAndWait(
 	to []model.PeerID,
 	req model.Message,
 	strategy service.ResponseStrategy,
-	tracker *service.BroadcastTracker,
+	tracker *service.BroadcastProgress,
 ) (service.BroadcastResult, error) {
 	result := service.BroadcastResult{
 		Responses:    make([]model.Message, len(to)),
@@ -606,6 +668,18 @@ func (r *Libp2pRPC) broadcastAndWait(
 
 	// 并发发送请求
 	for i, peer := range to {
+		// P1-1 修复：检查 context 是否已取消，避免创建不必要的 goroutine
+		select {
+		case <-ctx.Done():
+			// Context 已取消，将剩余节点标记为失败
+			for j := i; j < len(to); j++ {
+				result.FailedPeers = append(result.FailedPeers, to[j])
+			}
+			wg.Wait()
+			return result, ctx.Err()
+		default:
+		}
+
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(idx int, p model.PeerID) {
@@ -750,4 +824,4 @@ func cleanNilResponses(responses []model.Message) []model.Message {
 }
 
 // 确保实现 RPC 接口
-var _ service.RPC = (*Libp2pRPC)(nil)
+var _ service.RPCSync = (*Libp2pRPC)(nil)

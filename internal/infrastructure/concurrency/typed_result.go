@@ -12,17 +12,9 @@ import (
 // Result 接口定义
 // ==========================================
 
-// Result[T] 异步执行结果接口
-type Result[T any] interface {
-	// Get 阻塞等待结果
-	Get(ctx context.Context) (T, error)
-	// GetWithTimeout 带超时等待结果
-	GetWithTimeout(timeout time.Duration) (T, error)
-	// Done 返回完成通道
-	Done() <-chan struct{}
-	// IsDone 检查是否完成
-	IsDone() bool
-}
+// Result[T] 异步执行结果接口（类型别名）
+// 实际接口定义在 domain/service/concurrency.go
+type Result[T any] = GoroutineResult[T]
 
 // ==========================================
 // AnyResult any 类型的结果实现

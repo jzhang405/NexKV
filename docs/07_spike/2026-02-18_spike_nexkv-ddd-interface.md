@@ -3,7 +3,7 @@
 **文档目的**: 从DDD角度组织分布式KV存储系统的Go interface设计
 **数据来源**: doubao-chat-nexkv-ddd.md 完整对话（21,647行）
 **文档版本**: v19.3 Unified | **最后更新**: 2026-02-23
-**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口** + **统一 RPC 接口** + **ResponseStrategy 广播策略** + **BroadcastTracker 完整追踪** + **WriteVResult 统一返回值** + **双存储引擎策略** + **AsyncGroup批量操作** + **GoroutineProvider any类型设计**
+**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口** + **统一 RPC 接口** + **ResponseStrategy 广播策略** + **BroadcastProgress 完整追踪** + **WriteVResult 统一返回值** + **双存储引擎策略** + **AsyncGroup批量操作** + **GoroutineProvider any类型设计**
 
 > **📋 v19.3 变更说明 (2026-02-23)**：
 > - **GoroutineProvider 修复 Go 泛型限制**：
@@ -53,7 +53,7 @@
 > - **补充负面测试用例**：targets 为空、ctx 取消、时钟回退等
 
 > **📋 v18.6 变更说明 (2026-02-20)**：
-> - **BroadcastTracker 方法增强**：
+> - **BroadcastProgress 方法增强**：
 >   - `WaitMajority()`: 等待多数派（> N/2）
 >   - `WaitStrategy()`: 通用等待方法
 >   - `IsMajorityReached()`: 检查是否已达多数派
@@ -62,14 +62,14 @@
 > - **与 ResponseStrategy 完全对应**：每个策略都有对应的等待和检查方法
 
 > **📋 v18.5 变更说明 (2026-02-20)**：
-> - **新增 BroadcastTracker 结构体**：
+> - **新增 BroadcastProgress 结构体**：
 >   - `WaitFull()`: 等待全部节点响应（包括失败的）
 >   - `Stats()`: 实时统计成功/失败/待处理数量
 >   - `IsDone()`: 检查策略是否已满足
 >   - `Reset()`: 清理状态，释放内存
 > - **新增 WriteVResult 结构体**：统一批量写入返回值风格
 > - **新增 RPC 错误码定义**：ErrMajorityFailed/ErrAllFailed/ErrTimeout 等
-> - **更新 RPC 接口签名**：广播方法添加 `tracker *BroadcastTracker` 参数
+> - **更新 RPC 接口签名**：广播方法添加 `tracker *BroadcastProgress` 参数
 > - **WriteVCall 返回值**：`map[PeerID]Message` → `WriteVResult`
 > - **使用场景**：支持追踪广播进度、异步监控
 
@@ -496,7 +496,7 @@ type Extensions interface {
 }
 ```
 
-#### 2.2.4 RPC - 统一 RPC 接口（单播 + 广播）⭐ v18.5 BroadcastTracker
+#### 2.2.4 RPC - 统一 RPC 接口（单播 + 广播）⭐ v18.5 BroadcastProgress
 
 ```go
 // ResponseStrategy 广播响应策略 ⭐ v18.4
@@ -530,13 +530,13 @@ type WriteVResult struct {
     FailedPeers  []PeerID           // 失败/超时节点
 }
 
-// BroadcastTracker 可选的广播追踪器（一次性使用）⭐ v18.7
+// BroadcastProgress 可选的广播追踪器（一次性使用）⭐ v18.7
 //
 // 设计原则：Tracker 是一次性的，不复用
 // - 避免 channel 泄漏风险
 // - 简化并发模型
 // - Tracker 本身很轻量，不复用没有性能问题
-type BroadcastTracker struct {
+type BroadcastProgress struct {
     taskID       string              // 任务 ID（用于日志）
     targets      []PeerID            // 目标节点列表
     responses    map[PeerID]Message  // 成功响应
@@ -547,13 +547,13 @@ type BroadcastTracker struct {
     majorityDone chan struct{}       // 多数派完成时关闭 ⭐ v18.7
 }
 
-// NewBroadcastTracker 创建广播追踪器 ⭐ v18.7
-func NewBroadcastTracker(taskID string, targets []PeerID) *BroadcastTracker {
+// NewBroadcastProgress 创建广播追踪器 ⭐ v18.7
+func NewBroadcastProgress(taskID string, targets []PeerID) *BroadcastProgress {
     // 保护性拷贝，防止外部修改
     targetsCopy := make([]PeerID, len(targets))
     copy(targetsCopy, targets)
 
-    return &BroadcastTracker{
+    return &BroadcastProgress{
         taskID:       taskID,
         targets:      targetsCopy, // 使用拷贝
         responses:    make(map[PeerID]Message),
@@ -565,7 +565,7 @@ func NewBroadcastTracker(taskID string, targets []PeerID) *BroadcastTracker {
 }
 
 // WaitFull 等待所有节点响应（包括失败的） ⭐ v18.5
-func (t *BroadcastTracker) WaitFull(ctx context.Context) error {
+func (t *BroadcastProgress) WaitFull(ctx context.Context) error {
     select {
     case <-t.fullDone:
         return nil
@@ -576,7 +576,7 @@ func (t *BroadcastTracker) WaitFull(ctx context.Context) error {
 
 // WaitMajority 等待多数派（> N/2）节点响应 ⭐ v18.7 优化
 // 优化：使用 channel 而非轮询，零 CPU 开销
-func (t *BroadcastTracker) WaitMajority(ctx context.Context) error {
+func (t *BroadcastProgress) WaitMajority(ctx context.Context) error {
     // 快速路径：先检查当前状态
     t.mu.RLock()
     majority := len(t.targets)/2 + 1
@@ -596,7 +596,7 @@ func (t *BroadcastTracker) WaitMajority(ctx context.Context) error {
 }
 
 // WaitStrategy 等待指定策略满足 ⭐ v18.6
-func (t *BroadcastTracker) WaitStrategy(ctx context.Context, strategy ResponseStrategy) error {
+func (t *BroadcastProgress) WaitStrategy(ctx context.Context, strategy ResponseStrategy) error {
     switch strategy {
     case ResponseAll:
         return t.WaitFull(ctx)
@@ -610,7 +610,7 @@ func (t *BroadcastTracker) WaitStrategy(ctx context.Context, strategy ResponseSt
 }
 
 // Stats 获取实时统计信息 ⭐ v18.5
-func (t *BroadcastTracker) Stats() (success, failed, pending int) {
+func (t *BroadcastProgress) Stats() (success, failed, pending int) {
     t.mu.RLock()
     defer t.mu.RUnlock()
     return len(t.responses), len(t.failures),
@@ -618,7 +618,7 @@ func (t *BroadcastTracker) Stats() (success, failed, pending int) {
 }
 
 // IsDone 检查策略是否已满足 ⭐ v18.5
-func (t *BroadcastTracker) IsDone() bool {
+func (t *BroadcastProgress) IsDone() bool {
     select {
     case <-t.done:
         return true
@@ -628,7 +628,7 @@ func (t *BroadcastTracker) IsDone() bool {
 }
 
 // IsMajorityReached 检查是否已达到多数派 ⭐ v18.6
-func (t *BroadcastTracker) IsMajorityReached() bool {
+func (t *BroadcastProgress) IsMajorityReached() bool {
     t.mu.RLock()
     defer t.mu.RUnlock()
     majority := len(t.targets)/2 + 1
@@ -636,7 +636,7 @@ func (t *BroadcastTracker) IsMajorityReached() bool {
 }
 
 // IsFullDone 检查是否全部完成 ⭐ v18.6
-func (t *BroadcastTracker) IsFullDone() bool {
+func (t *BroadcastProgress) IsFullDone() bool {
     select {
     case <-t.fullDone:
         return true
@@ -648,7 +648,7 @@ func (t *BroadcastTracker) IsFullDone() bool {
 // ====== 内部方法（由 RPC 实现调用）⭐ v18.8 ======
 
 // RecordSuccess 记录成功响应（由 RPC 实现调用）
-func (t *BroadcastTracker) RecordSuccess(peer PeerID, resp Message) {
+func (t *BroadcastProgress) RecordSuccess(peer PeerID, resp Message) {
     t.mu.Lock()
     defer t.mu.Unlock()
     t.responses[peer] = resp
@@ -664,7 +664,7 @@ func (t *BroadcastTracker) RecordSuccess(peer PeerID, resp Message) {
 }
 
 // RecordFailure 记录失败响应（由 RPC 实现调用）
-func (t *BroadcastTracker) RecordFailure(peer PeerID, err error) {
+func (t *BroadcastProgress) RecordFailure(peer PeerID, err error) {
     t.mu.Lock()
     defer t.mu.Unlock()
     t.failures[peer] = err
@@ -672,7 +672,7 @@ func (t *BroadcastTracker) RecordFailure(peer PeerID, err error) {
 }
 
 // checkFullDone 检查是否全部完成（内部方法）
-func (t *BroadcastTracker) checkFullDone() {
+func (t *BroadcastProgress) checkFullDone() {
     if len(t.responses)+len(t.failures) == len(t.targets) {
         select {
         case <-t.fullDone:
@@ -711,7 +711,7 @@ var (
 //
 // 统一了单播和广播两种通信模式，简化接口设计。
 // - 单播：Call/CallAsync/OnRequest/OnRequestChan
-// - 广播：BroadcastCall/BroadcastAsync/WriteV/WriteVCall（支持 ResponseStrategy + BroadcastTracker）
+// - 广播：BroadcastCall/BroadcastAsync/WriteV/WriteVCall（支持 ResponseStrategy + BroadcastProgress）
 type RPC interface {
     // ====== 单播 ======
     // 同步调用（阻塞等响应）
@@ -733,20 +733,20 @@ type RPC interface {
     // - strategy: 响应策略（All/Majority/None）
     // - tracker: 可选追踪器，nil 表示不追踪
     BroadcastCall(ctx context.Context, to []PeerID, req Message,
-                  strategy ResponseStrategy, tracker *BroadcastTracker) (BroadcastResult, error)
+                  strategy ResponseStrategy, tracker *BroadcastProgress) (BroadcastResult, error)
 
     // 同消息广播：异步回调 + 可选追踪器 ⭐ v18.5 添加 tracker 参数
     BroadcastAsync(ctx context.Context, to []PeerID, req Message,
-                   strategy ResponseStrategy, tracker *BroadcastTracker,
+                   strategy ResponseStrategy, tracker *BroadcastProgress,
                    cb func(from PeerID, resp Message, err error)) error
 
     // 不同消息群发：WriteV（单向，等价于 ResponseNone）⭐ v18.5 添加 tracker 参数
     WriteV(ctx context.Context, targets []PeerID, msgs []Message,
-           tracker *BroadcastTracker) error
+           tracker *BroadcastProgress) error
 
     // 不同消息群发：支持响应策略 + 可选追踪器 ⭐ v18.5 添加 tracker 参数
     WriteVCall(ctx context.Context, targets []PeerID, msgs []Message,
-               strategy ResponseStrategy, tracker *BroadcastTracker) (WriteVResult, error)
+               strategy ResponseStrategy, tracker *BroadcastProgress) (WriteVResult, error)
 
     // ====== 生命周期 ======
     Close() error
@@ -769,7 +769,7 @@ type ResponseMsg struct {
 **设计理由**:
 - 单播和广播是 RPC 的不同调用方式，不是不同的抽象
 - 接口数量从 2 个减少到 1 个，简化使用
-- **BroadcastTracker**：可选追踪器，支持实时监控和全部完成通知
+- **BroadcastProgress**：可选追踪器，支持实时监控和全部完成通知
 - 与 spike 文档 15.3.1 节的统一 RPC 接口设计一致
 
 #### 2.2.5 Stream & PubSub

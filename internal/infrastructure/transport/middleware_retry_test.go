@@ -253,7 +253,7 @@ func BenchmarkRetryMiddleware(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = m.InterceptSend(ctx, peer, msg, next)
 	}
 }
@@ -280,7 +280,7 @@ func BenchmarkRetryMiddleware_WithRetry(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = m.InterceptSend(ctx, peer, msg, next)
 	}
 }

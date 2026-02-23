@@ -120,7 +120,7 @@ func SubmitAdvanced[T any, R any](
 	provider GoroutineProvider,
 	task func(context.Context, T) (R, error),
 	arg T,
-	opts ...SubmitOption,
+	opts ...GoroutineSubmitOption,
 ) *TypedResult[R] {
 	// 类型断言：如果是 AntsGoroutineProvider，直接调用类型安全函数
 	if p, ok := provider.(*AntsGoroutineProvider); ok {

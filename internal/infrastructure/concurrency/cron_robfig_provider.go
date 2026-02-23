@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
 )
@@ -95,7 +96,7 @@ func (r *RobfigCronProvider) RegisterWithPriority(
 
 	// 检查名称是否已存在
 	if _, exists := r.nameToID[name]; exists {
-		return "", fmt.Errorf("job with name '%s' already exists", name)
+		return "", errors.Wrapf(errors.ErrComponentExists, "job with name '%s' already exists", name)
 	}
 
 	// 生成 ID
@@ -107,7 +108,7 @@ func (r *RobfigCronProvider) RegisterWithPriority(
 	// 添加到 cron
 	entryID, err := r.cron.AddFunc(string(spec), wrappedTask)
 	if err != nil {
-		return "", fmt.Errorf("invalid cron spec: %w", err)
+		return "", errors.Wrapf(errors.ErrInvalidParam, "invalid cron spec: %v", err)
 	}
 
 	// 记录任务
@@ -150,7 +151,7 @@ func (r *RobfigCronProvider) RegisterWithPriorityAndArg(
 
 	// 检查名称是否已存在
 	if _, exists := r.nameToID[name]; exists {
-		return "", fmt.Errorf("job with name '%s' already exists", name)
+		return "", errors.Wrapf(errors.ErrComponentExists, "job with name '%s' already exists", name)
 	}
 
 	// 生成 ID
@@ -162,7 +163,7 @@ func (r *RobfigCronProvider) RegisterWithPriorityAndArg(
 	// 添加到 cron
 	entryID, err := r.cron.AddFunc(string(spec), wrappedTask)
 	if err != nil {
-		return "", fmt.Errorf("invalid cron spec: %w", err)
+		return "", errors.Wrapf(errors.ErrInvalidParam, "invalid cron spec: %v", err)
 	}
 
 	// 记录任务（存储无参数版本用于信息查询）
@@ -222,7 +223,7 @@ func (r *RobfigCronProvider) Pause(jobID string) error {
 
 	entry, exists := r.jobs[jobID]
 	if !exists {
-		return fmt.Errorf("job '%s' not found", jobID)
+		return errors.Wrapf(errors.ErrComponentNotFound, "job '%s' not found", jobID)
 	}
 
 	if entry.status == CronJobStatusPaused {
@@ -243,18 +244,18 @@ func (r *RobfigCronProvider) Resume(jobID string) error {
 
 	entry, exists := r.jobs[jobID]
 	if !exists {
-		return fmt.Errorf("job '%s' not found", jobID)
+		return errors.Wrapf(errors.ErrComponentNotFound, "job '%s' not found", jobID)
 	}
 
 	if entry.status != CronJobStatusPaused {
-		return fmt.Errorf("job '%s' is not paused", jobID)
+		return errors.Wrapf(errors.ErrInvalidState, "job '%s' is not paused", jobID)
 	}
 
 	// 重新添加到 cron
 	wrappedTask := r.wrapTask(entry.taskFunc, entry.priority)
 	entryID, err := r.cron.AddFunc(string(entry.spec), wrappedTask)
 	if err != nil {
-		return fmt.Errorf("failed to resume job: %w", err)
+		return errors.Wrapf(errors.ErrAsyncExecFailed, "failed to resume job: %v", err)
 	}
 
 	entry.entryID = entryID
@@ -270,7 +271,7 @@ func (r *RobfigCronProvider) Unregister(jobID string) error {
 
 	entry, exists := r.jobs[jobID]
 	if !exists {
-		return fmt.Errorf("job '%s' not found", jobID)
+		return errors.Wrapf(errors.ErrComponentNotFound, "job '%s' not found", jobID)
 	}
 
 	// 从 cron 中移除
@@ -295,7 +296,7 @@ func (r *RobfigCronProvider) GetJob(jobID string) (*CronJobInfo, error) {
 
 	entry, exists := r.jobs[jobID]
 	if !exists {
-		return nil, fmt.Errorf("job '%s' not found", jobID)
+		return nil, errors.Wrapf(errors.ErrComponentNotFound, "job '%s' not found", jobID)
 	}
 
 	return r.entryToInfo(entry), nil

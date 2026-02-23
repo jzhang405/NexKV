@@ -3,9 +3,9 @@ package rpc
 
 import (
 	"context"
-	"fmt"
 	"time"
 
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -102,7 +102,7 @@ func ValidateAndNormalize(opts *FanoutOptions, peerCount int) (*FanoutOptions, e
 // validateResponseMode 验证响应模式有效性
 func validateResponseMode(mode ResponseMode) error {
 	if mode < FireForget || mode > WaitAll {
-		return fmt.Errorf("无效的响应模式: %d", mode)
+		return errors.Wrapf(errors.ErrInvalidStrategy, "无效的响应模式: %d", mode)
 	}
 	return nil
 }
@@ -110,7 +110,7 @@ func validateResponseMode(mode ResponseMode) error {
 // validatePeerCount 验证 peer 列表不能为空
 func validatePeerCount(peerCount int) error {
 	if peerCount == 0 {
-		return fmt.Errorf("peer 列表为空")
+		return errors.Wrap(errors.ErrInvalidParam, "peer 列表为空")
 	}
 	return nil
 }
@@ -150,7 +150,7 @@ func normalizeAndValidateQuorum(opts *FanoutOptions, peerCount int) error {
 
 	// 验证：Quorum 不能超过 peer 数量
 	if opts.Mode == Quorum && opts.Quorum > peerCount {
-		return fmt.Errorf("quorum 阈值 (%d) 不能超过 peer 数量 (%d)", opts.Quorum, peerCount)
+		return errors.Wrapf(errors.ErrInvalidParam, "quorum 阈值 (%d) 不能超过 peer 数量 (%d)", opts.Quorum, peerCount)
 	}
 
 	return nil
@@ -162,7 +162,7 @@ func normalizeAndValidateTimeout(opts *FanoutOptions) error {
 		opts.Timeout = 30 * time.Second
 	}
 	if opts.Timeout < 10*time.Millisecond {
-		return fmt.Errorf("超时时间过短: %v (最小 10ms)", opts.Timeout)
+		return errors.Wrapf(errors.ErrInvalidParam, "超时时间过短: %v (最小 10ms)", opts.Timeout)
 	}
 	return nil
 }
@@ -170,7 +170,7 @@ func normalizeAndValidateTimeout(opts *FanoutOptions) error {
 // ValidatePeers 验证 peer 列表
 func ValidatePeers(peers []peer.ID) error {
 	if len(peers) == 0 {
-		return fmt.Errorf("peer 列表为空")
+		return errors.Wrap(errors.ErrInvalidParam, "peer 列表为空")
 	}
 	return nil
 }

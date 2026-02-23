@@ -4,13 +4,13 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	pkgerrors "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // P0-2: 输入验证错误定义
@@ -42,7 +42,7 @@ func submitTask(
 ) {
 	if provider != nil {
 		if err := provider.Submit(ctx, task); err != nil {
-			onFailure(fmt.Errorf("submit task failed: %w", err))
+			onFailure(pkgerrors.Wrapf(pkgerrors.ErrAsyncExecFailed, "submit task failed: %v", err))
 		}
 	} else {
 		go task(ctx)
@@ -320,7 +320,7 @@ func NewAsyncCall(
 
 	// P0-2: 输入验证
 	if timeoutMs <= 0 {
-		op.fail(fmt.Errorf("%w: timeoutMs must be positive, got %d", ErrInvalidTimeout, timeoutMs))
+		op.fail(pkgerrors.Wrapf(ErrInvalidTimeout, "timeoutMs must be positive, got %d", timeoutMs))
 		return &asyncCall{asyncOpImpl: op}
 	}
 
@@ -339,7 +339,7 @@ func NewAsyncCall(
 			}
 			op.complete(ResponseMsg{Msg: resp, Err: nil})
 		}); err != nil {
-			op.fail(fmt.Errorf("submit task failed: %w", err))
+			op.fail(pkgerrors.Wrapf(pkgerrors.ErrAsyncExecFailed, "submit task failed: %v", err))
 		}
 	} else {
 		// 回退：直接创建 goroutine
@@ -474,7 +474,7 @@ func NewAsyncQuorum(
 
 	// P0-2: 输入验证
 	if quorum <= 0 || quorum > len(peers) {
-		op.fail(fmt.Errorf("%w: quorum must be between 1 and %d, got %d", ErrInvalidQuorum, len(peers), quorum))
+		op.fail(pkgerrors.Wrapf(ErrInvalidQuorum, "quorum must be between 1 and %d, got %d", len(peers), quorum))
 		return &asyncQuorum{asyncOpImpl: op}
 	}
 
@@ -553,7 +553,7 @@ func NewAsyncWriteV(
 
 	// P0-2: 输入验证
 	if len(targets) != len(msgs) {
-		op.fail(fmt.Errorf("%w: targets (%d) vs msgs (%d)", ErrTargetsMsgsMismatch, len(targets), len(msgs)))
+		op.fail(pkgerrors.Wrapf(ErrTargetsMsgsMismatch, "targets (%d) vs msgs (%d)", len(targets), len(msgs)))
 		return &asyncWriteV{asyncOpImpl: op}
 	}
 
@@ -614,7 +614,7 @@ func NewAsyncWriteVCall(
 
 	// P0-2: 输入验证
 	if len(targets) != len(msgs) {
-		op.fail(fmt.Errorf("%w: targets (%d) vs msgs (%d)", ErrTargetsMsgsMismatch, len(targets), len(msgs)))
+		op.fail(pkgerrors.Wrapf(ErrTargetsMsgsMismatch, "targets (%d) vs msgs (%d)", len(targets), len(msgs)))
 		return &asyncWriteVCall{asyncOpImpl: op}
 	}
 

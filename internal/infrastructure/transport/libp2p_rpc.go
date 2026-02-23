@@ -295,7 +295,7 @@ func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []m
 	// 使用信号量限制并发（与 WriteVCall 保持一致）
 	sem := make(chan struct{}, r.config.MaxConcurrentCalls)
 
-	for i, target := range targets {
+	for i := range targets {
 		// 检查 context 是否已取消
 		select {
 		case <-ctx.Done():
@@ -304,8 +304,10 @@ func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []m
 		}
 
 		wg.Add(1)
-		go func(idx int, peerID model.PeerID) {
+		task := func(ctx context.Context, arg any) {
 			defer wg.Done()
+			idx := arg.(int)
+			peerID := targets[idx]
 
 			// 获取信号量
 			sem <- struct{}{}
@@ -324,7 +326,13 @@ func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []m
 					tracker.RecordSuccess(peerID, nil)
 				}
 			}
-		}(i, target)
+		}
+
+		if r.provider != nil {
+			_ = r.provider.SubmitWithArg(ctx, task, i)
+		} else {
+			go task(ctx, i)
+		}
 	}
 
 	// 等待所有发送完成
@@ -395,10 +403,11 @@ func (r *Libp2pRPC) WriteVCall(
 
 		sem <- struct{}{} // 获取信号量
 		wg.Add(1)
-		go func(idx int) {
+		task := func(ctx context.Context, arg any) {
 			defer func() { <-sem }() // 释放信号量
 			defer wg.Done()
 
+			idx := arg.(int)
 			target := targets[idx]
 			msg := msgs[idx]
 
@@ -419,7 +428,13 @@ func (r *Libp2pRPC) WriteVCall(
 					tracker.RecordSuccess(target, resp)
 				}
 			}
-		}(i)
+		}
+
+		if r.provider != nil {
+			_ = r.provider.SubmitWithArg(ctx, task, i)
+		} else {
+			go task(ctx, i)
+		}
 	}
 
 	wg.Wait()
@@ -509,7 +524,7 @@ func (r *Libp2pRPC) doSendRequestAndWaitResponse(ctx context.Context, to model.P
 	}
 
 	// 异步读取响应（使用 StreamCodec 支持大消息）
-	go func() {
+	readFunc := func(ctx context.Context) {
 		defer stream.Close()
 
 		// P2-2 修复：设置读取超时，避免 goroutine 无限阻塞
@@ -526,7 +541,13 @@ func (r *Libp2pRPC) doSendRequestAndWaitResponse(ctx context.Context, to model.P
 		}
 
 		r.handleResponse(req.ID(), service.ResponseMsg{Msg: resp, Err: nil})
-	}()
+	}
+
+	if r.provider != nil {
+		_ = r.provider.Submit(ctx, readFunc)
+	} else {
+		go readFunc(ctx)
+	}
 
 	return nil
 }
@@ -636,8 +657,9 @@ func (r *Libp2pRPC) broadcastFireAndForget(
 	var wg sync.WaitGroup
 	for _, peer := range to {
 		wg.Add(1)
-		go func(p model.PeerID) {
+		task := func(ctx context.Context, arg any) {
 			defer wg.Done()
+			p := arg.(model.PeerID)
 
 			err := r.sendRequestNoResponse(ctx, p, req)
 
@@ -657,7 +679,13 @@ func (r *Libp2pRPC) broadcastFireAndForget(
 			} else {
 				result.SuccessPeers = append(result.SuccessPeers, p)
 			}
-		}(peer)
+		}
+
+		if r.provider != nil {
+			_ = r.provider.SubmitWithArg(ctx, task, peer)
+		} else {
+			go task(ctx, peer)
+		}
 	}
 
 	// 立即返回（不等待发送完成）
@@ -707,9 +735,13 @@ func (r *Libp2pRPC) broadcastAndWait(
 
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(idx int, p model.PeerID) {
+		task := func(ctx context.Context, arg any) {
 			defer func() { <-sem }()
 			defer wg.Done()
+
+			args := arg.([]any)
+			idx := args[0].(int)
+			p := args[1].(model.PeerID)
 
 			// 创建带超时的上下文
 			callCtx, cancel := context.WithTimeout(ctx, r.config.BroadcastTimeout)
@@ -732,7 +764,14 @@ func (r *Libp2pRPC) broadcastAndWait(
 					tracker.RecordSuccess(p, resp)
 				}
 			}
-		}(i, peer)
+		}
+
+		args := []any{i, peer}
+		if r.provider != nil {
+			_ = r.provider.SubmitWithArg(ctx, task, args)
+		} else {
+			go task(ctx, args)
+		}
 	}
 
 	wg.Wait()

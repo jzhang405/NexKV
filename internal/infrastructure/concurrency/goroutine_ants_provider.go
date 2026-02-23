@@ -3,13 +3,13 @@ package concurrency
 
 import (
 	"context"
-	"fmt"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/panjf2000/ants/v2"
 	"github.com/sirupsen/logrus"
 )
@@ -71,7 +71,7 @@ func NewAntsGoroutineProvider(config *ProviderConfig) (*AntsGoroutineProvider, e
 
 	// P0-04: 容量验证
 	if config.Capacity < MinPoolCapacity || config.Capacity > MaxPoolCapacity {
-		return nil, fmt.Errorf("invalid pool capacity: %d (must be between %d and %d)",
+		return nil, errors.Wrapf(errors.ErrInvalidParam, "invalid pool capacity: %d (must be between %d and %d)",
 			config.Capacity, MinPoolCapacity, MaxPoolCapacity)
 	}
 
@@ -705,7 +705,7 @@ func (p *AntsGoroutineProvider) SetCapacity(capacity int) error {
 
 	// P0-04: 容量验证
 	if capacity < MinPoolCapacity || capacity > MaxPoolCapacity {
-		return fmt.Errorf("invalid capacity: %d (must be between %d and %d)",
+		return errors.Wrapf(errors.ErrInvalidParam, "invalid capacity: %d (must be between %d and %d)",
 			capacity, MinPoolCapacity, MaxPoolCapacity)
 	}
 
@@ -750,7 +750,7 @@ func (p *AntsGoroutineProvider) CloseWithTimeout(timeout time.Duration) error {
 	case <-time.After(timeout):
 		// 超时后强制标记为关闭
 		p.closed.Store(true)
-		return fmt.Errorf("close timeout after %v: %w", timeout, ErrTaskTimeout)
+		return errors.Wrapf(errors.ErrTaskTimeout, "close timeout after %v", timeout)
 	}
 }
 

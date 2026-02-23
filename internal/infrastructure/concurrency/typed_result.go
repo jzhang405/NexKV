@@ -3,9 +3,10 @@ package concurrency
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
+
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ==========================================
@@ -111,7 +112,7 @@ func (r *TypedResult[T]) Get(ctx context.Context) (T, error) {
 	// 安全类型断言，避免 panic
 	val, ok := anyVal.(T)
 	if !ok {
-		return zero, fmt.Errorf("type assertion failed: expected %T, got %T", zero, anyVal)
+		return zero, errors.Wrapf(errors.ErrAsyncExecFailed, "type assertion failed: expected %T, got %T", zero, anyVal)
 	}
 	return val, nil
 }
@@ -126,7 +127,7 @@ func (r *TypedResult[T]) GetWithTimeout(timeout time.Duration) (T, error) {
 	// 安全类型断言，避免 panic
 	val, ok := anyVal.(T)
 	if !ok {
-		return zero, fmt.Errorf("type assertion failed: expected %T, got %T", zero, anyVal)
+		return zero, errors.Wrapf(errors.ErrAsyncExecFailed, "type assertion failed: expected %T, got %T", zero, anyVal)
 	}
 	return val, nil
 }

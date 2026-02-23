@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ==========================================
@@ -276,7 +277,7 @@ func (op *AsyncOp[T]) Cancel() (bool, error) {
 	defer op.statusMu.Unlock()
 
 	if op.status.IsTerminal() {
-		return false, fmt.Errorf("operation already in terminal state: %v", op.status)
+		return false, errors.Wrapf(errors.ErrCompleted, "operation already in terminal state: %v", op.status)
 	}
 
 	op.status = StatusCanceled
@@ -292,7 +293,7 @@ func (op *AsyncOp[T]) Discard() error {
 	defer op.statusMu.Unlock()
 
 	if op.status.IsTerminal() {
-		return fmt.Errorf("cannot discard operation in terminal state: %v", op.status)
+		return errors.Wrapf(errors.ErrCompleted, "cannot discard operation in terminal state: %v", op.status)
 	}
 
 	op.discarded = true
@@ -335,7 +336,7 @@ func (op *AsyncOp[T]) OffComplete(cbID string) error {
 	defer op.cbMu.Unlock()
 
 	if _, exists := op.callbacks[cbID]; !exists {
-		return fmt.Errorf("callback not found: %s", cbID)
+		return errors.Wrapf(errors.ErrInvalidParam, "callback not found: %s", cbID)
 	}
 
 	delete(op.callbacks, cbID)

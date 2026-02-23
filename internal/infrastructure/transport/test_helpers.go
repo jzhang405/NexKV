@@ -62,12 +62,6 @@ func (t *mockTransport) AcceptStream(protocol string) (service.Stream, error) {
 func (t *mockTransport) OpenChannel(ctx context.Context, peer model.PeerID, protocol string) (service.Channel, error) {
 	return nil, service.ErrPeerUnreachable
 }
-func (t *mockTransport) OpenAsyncChannel(ctx context.Context, peer model.PeerID, protocol string) (service.AsyncChannel, error) {
-	return nil, service.ErrPeerUnreachable
-}
-func (t *mockTransport) OpenAsyncStream(ctx context.Context, peer model.PeerID, protocol string) (service.AsyncStream, error) {
-	return nil, service.ErrPeerUnreachable
-}
 func (t *mockTransport) Close() error { return nil }
 
 // ============================================================================

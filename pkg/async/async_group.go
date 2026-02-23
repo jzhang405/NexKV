@@ -2,12 +2,12 @@ package async
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ==========================================
@@ -237,7 +237,7 @@ func (g *AsyncGroup[T]) WaitAny(ctx context.Context) (model.PeerID, T, error) {
 	}
 
 	var zero T
-	return "", zero, fmt.Errorf("no result available")
+	return "", zero, errors.Wrapf(errors.ErrAsyncExecFailed, "no result available")
 }
 
 // WaitMajority 等待多数派完成

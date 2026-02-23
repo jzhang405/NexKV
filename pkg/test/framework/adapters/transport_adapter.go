@@ -501,18 +501,6 @@ func (t *transportWrapper) OpenChannel(ctx context.Context, peerID model.PeerID,
 	return nil, errors.Wrap(errors.ErrNotImplemented, "OpenChannel not supported in TransportAdapter: use ConnectTo/GetConnectedPeers for connection testing")
 }
 
-// OpenAsyncChannel 打开到指定节点的异步双向通道
-// 注意：此方法在测试适配器中不支持
-func (t *transportWrapper) OpenAsyncChannel(ctx context.Context, peerID model.PeerID, protocol string) (service.AsyncChannel, error) {
-	return nil, errors.Wrap(errors.ErrNotImplemented, "OpenAsyncChannel not supported in TransportAdapter: use ConnectTo/GetConnectedPeers for connection testing")
-}
-
-// OpenAsyncStream 打开到指定节点的异步流
-// 注意：此方法在测试适配器中不支持
-func (t *transportWrapper) OpenAsyncStream(ctx context.Context, peerID model.PeerID, protocol string) (service.AsyncStream, error) {
-	return nil, errors.Wrap(errors.ErrNotImplemented, "OpenAsyncStream not supported in TransportAdapter: use ConnectTo/GetConnectedPeers for connection testing")
-}
-
 // SetStreamHandler 设置流处理器
 // 注意：此方法在测试适配器中不支持
 func (t *transportWrapper) SetStreamHandler(protocol string, handler func(service.Stream)) {

@@ -3,8 +3,9 @@ package concurrency
 
 import (
 	"context"
-	"fmt"
 	"time"
+
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ==========================================
@@ -41,7 +42,7 @@ func wrapAnyResult[T any](anyResult Result[any]) *TypedResult[T] {
 		// P0-01: panic 恢复
 		defer func() {
 			if r := recover(); r != nil {
-				wrapper.SetError(fmt.Errorf("panic in wrapAnyResult: %v", r))
+				wrapper.SetError(errors.Wrapf(errors.ErrCallbackPanic, "panic in wrapAnyResult: %v", r))
 			}
 		}()
 

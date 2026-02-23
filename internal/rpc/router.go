@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/jzhang405/NexKV/internal/config/logging"
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // Router RPC 方法路由器
@@ -43,7 +44,7 @@ func (r *Router) RegisterHandler(method string, handler RPCHandler) error {
 
 	method = normalizeMethodName(method)
 	if _, exists := r.handlers[method]; exists {
-		return fmt.Errorf("RPC method already registered: %s", method)
+		return errors.Wrapf(errors.ErrNoHandler, "RPC method already registered: %s", method)
 	}
 
 	wrapper := NewRPCHandlerWrapper(method, handler)

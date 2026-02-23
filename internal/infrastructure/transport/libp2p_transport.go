@@ -17,12 +17,17 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/sirupsen/logrus"
 )
+
+// transportLog 使用 logrus 结构化日志
+var transportLog = logrus.WithField("component", "transport")
 
 // 常量定义
 const (
-	MaxPeerIDLength = 128  // libp2p PeerID 最大长度
-	MaxAddrLength   = 1024 // 地址最大长度
+	MaxPeerIDLength       = 128              // libp2p PeerID 最大长度
+	MaxAddrLength         = 1024             // 地址最大长度
+	DefaultMaxMessageSize = 10 * 1024 * 1024 // 默认最大消息大小 (10MB)
 )
 
 // 确保实现 service.Transport 接口
@@ -36,9 +41,6 @@ type Libp2pTransport struct {
 	codec     *LengthPrefixedCodec
 	acceptor  *streamAcceptor // 流接受器
 
-	// 协程池提供者
-	provider service.GoroutineProvider
-
 	// 生命周期管理
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -50,10 +52,9 @@ type Libp2pTransport struct {
 
 // Config 传输层配置
 type Config struct {
-	ListenAddr        string
-	DiscoveryTag      string
-	EnableDiscovery   bool
-	GoroutineProvider service.GoroutineProvider // 必需：协程池提供者
+	ListenAddr      string
+	DiscoveryTag    string
+	EnableDiscovery bool
 }
 
 // DefaultConfig 返回默认配置
@@ -66,7 +67,6 @@ func DefaultConfig() *Config {
 }
 
 // NewLibp2pTransport 创建新的 libp2p 传输实现
-// cfg.GoroutineProvider 可选，为 nil 时直接使用 goroutine
 func NewLibp2pTransport(ctx context.Context, cfg *Config) (*Libp2pTransport, error) {
 	// 合并默认配置
 	if cfg == nil {
@@ -92,7 +92,6 @@ func NewLibp2pTransport(ctx context.Context, cfg *Config) (*Libp2pTransport, err
 		host:     h,
 		codec:    &LengthPrefixedCodec{},
 		acceptor: newStreamAcceptor(h),
-		provider: cfg.GoroutineProvider,
 		ctx:      childCtx,
 		cancel:   cancel,
 	}
@@ -383,34 +382,6 @@ func (t *Libp2pTransport) OpenChannel(ctx context.Context, peerID model.PeerID, 
 		return nil, service.Wrap(service.ErrInvalidParam, "unexpected stream type")
 	}
 	return NewLibp2pChannel(libp2pStream, DefaultChannelConfig()), nil
-}
-
-// OpenAsyncChannel 打开到指定节点的异步双向通道
-func (t *Libp2pTransport) OpenAsyncChannel(ctx context.Context, peerID model.PeerID, proto string) (service.AsyncChannel, error) {
-	stream, err := t.OpenStream(ctx, peerID, proto)
-	if err != nil {
-		return nil, err
-	}
-
-	libp2pStream, ok := stream.(*Libp2pStream)
-	if !ok {
-		return nil, service.Wrap(service.ErrInvalidParam, "unexpected stream type")
-	}
-	return NewLibp2pAsyncChannel(t.provider, libp2pStream, DefaultAsyncChannelConfig()), nil
-}
-
-// OpenAsyncStream 打开到指定节点的异步流
-func (t *Libp2pTransport) OpenAsyncStream(ctx context.Context, peerID model.PeerID, proto string) (service.AsyncStream, error) {
-	stream, err := t.OpenStream(ctx, peerID, proto)
-	if err != nil {
-		return nil, err
-	}
-
-	libp2pStream, ok := stream.(*Libp2pStream)
-	if !ok {
-		return nil, service.Wrap(service.ErrInvalidParam, "unexpected stream type")
-	}
-	return NewLibp2pAsyncStream(t.provider, libp2pStream, DefaultAsyncStreamConfig()), nil
 }
 
 // ===========================

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	pkgerrors "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ============================================================================
@@ -41,18 +42,12 @@ type StreamManager interface {
 
 	// AcceptStream 接受指定协议的入站流
 	AcceptStream(protocol string) (Stream, error)
-
-	// OpenAsyncStream 打开到指定节点的异步流
-	OpenAsyncStream(ctx context.Context, peer model.PeerID, protocol string) (AsyncStream, error)
 }
 
 // ChannelManager 通道管理接口
 type ChannelManager interface {
 	// OpenChannel 打开到指定节点的双向通道
 	OpenChannel(ctx context.Context, peer model.PeerID, protocol string) (Channel, error)
-
-	// OpenAsyncChannel 打开到指定节点的异步双向通道
-	OpenAsyncChannel(ctx context.Context, peer model.PeerID, protocol string) (AsyncChannel, error)
 }
 
 // ============================================================================
@@ -114,129 +109,6 @@ type Channel interface {
 
 	// Close 关闭通道
 	Close() error
-}
-
-// MsgOrError 消息或错误（用于异步接收）
-type MsgOrError struct {
-	Msg []byte
-	Err error
-}
-
-// AsyncChannel 异步双向通道接口（Go Channel 风格）
-//
-// 使用示例:
-//
-//	ch := transport.OpenAsyncChannel(ctx, peer, protocol)
-//
-//	// 发送消息
-//	ch.SendChan() <- []byte("hello")
-//
-//	// 接收消息
-//	select {
-//	case msg := <-ch.RecvChan():
-//	    if msg.Err != nil {
-//	        // 处理错误
-//	    }
-//	    // 处理消息 msg.Msg
-//	case <-ctx.Done():
-//	    // 超时
-//	}
-//
-//	// 关闭
-//	ch.Close()
-type AsyncChannel interface {
-	// SendChan 返回发送通道
-	// 向此 channel 写入消息会异步发送到对端
-	// 注意：channel 关闭由 Close() 触发，用户无法主动关闭
-	SendChan() chan<- []byte
-
-	// RecvChan 返回接收通道
-	// 从此 channel 读取 MsgOrError 可获取对端消息
-	// channel 关闭时表示连接断开
-	RecvChan() <-chan MsgOrError
-
-	// Close 关闭通道
-	// 会取消所有等待中的操作
-	Close() error
-
-	// WaitClosed 等待通道关闭
-	// 返回发送过程中遇到的错误（如果有）
-	// 注意：此方法会阻塞直到 Close() 被调用
-	// 推荐使用 WaitClosedWithTimeout 避免永久阻塞
-	WaitClosed() error
-
-	// WaitClosedWithTimeout 带超时的等待通道关闭
-	WaitClosedWithTimeout(timeout time.Duration) error
-}
-
-// ReadResult 异步读取结果
-type ReadResult struct {
-	Data []byte
-	Err  error
-}
-
-// WriteRequest 异步写入请求
-type WriteRequest struct {
-	Data []byte
-	Err  chan error // 写入完成后发送错误（nil 表示成功）
-	// 注意：Err 可以为 nil（不等待结果）
-	// 如果非 nil，推荐使用带缓冲的 channel: make(chan error, 1)
-}
-
-// AsyncStream 异步流接口（Go Channel 风格）
-//
-// 使用示例:
-//
-//	s := transport.OpenAsyncStream(ctx, peer, protocol)
-//
-//	// 写入数据（带确认）
-//	errCh := make(chan error, 1) // 推荐：带缓冲
-//	s.WriteChan() <- WriteRequest{Data: []byte("hello"), Err: errCh}
-//	select {
-//	case err := <-errCh:
-//	    // 写入完成
-//	case <-time.After(time.Second):
-//	    // 超时
-//	}
-//
-//	// 写入数据（不等待确认）
-//	s.WriteChan() <- WriteRequest{Data: []byte("hello")}
-//
-//	// 读取数据
-//	select {
-//	case result := <-s.ReadChan():
-//	    if result.Err != nil {
-//	        // 处理错误
-//	    }
-//	    // 处理数据 result.Data
-//	case <-ctx.Done():
-//	}
-//
-//	// 关闭
-//	s.Close()
-type AsyncStream interface {
-	// ReadChan 返回读取通道
-	// 从此 channel 读取 ReadResult 可获取数据
-	// channel 关闭时表示流结束（EOF）或错误
-	ReadChan() <-chan ReadResult
-
-	// WriteChan 返回写入通道
-	// 向此 channel 写入 WriteRequest 会异步写入数据
-	// 如果 WriteRequest.Err 非 nil，写入完成后会收到结果
-	WriteChan() chan<- WriteRequest
-
-	// Close 关闭流
-	// 会取消所有等待中的操作
-	Close() error
-
-	// WaitClosed 等待流关闭
-	// 返回写入过程中遇到的错误（如果有）
-	// 注意：此方法会阻塞直到 Close() 被调用
-	// 推荐使用 WaitClosedWithTimeout 避免永久阻塞
-	WaitClosed() error
-
-	// WaitClosedWithTimeout 带超时的等待流关闭
-	WaitClosedWithTimeout(timeout time.Duration) error
 }
 
 // ============================================================================
@@ -399,21 +271,21 @@ func (g *RequestIDGenerator) Next() RequestID {
 func ParseRequestID(id RequestID) (nodeID string, timestamp int64, sequence uint32, err error) {
 	parts := strings.Split(string(id), "-")
 	if len(parts) < 3 {
-		return "", 0, 0, fmt.Errorf("invalid request ID format: expected {NodeID}-{Timestamp}-{Sequence}")
+		return "", 0, 0, pkgerrors.Wrap(pkgerrors.ErrInvalidParam, "invalid request ID format: expected {NodeID}-{Timestamp}-{Sequence}")
 	}
 
 	// 解析时间戳（倒数第二部分）
 	tsHex := parts[len(parts)-2]
 	ts, err := strconv.ParseInt(tsHex, 16, 64)
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("invalid timestamp: %w", err)
+		return "", 0, 0, pkgerrors.Wrapf(pkgerrors.ErrInvalidParam, "invalid timestamp: %v", err)
 	}
 
 	// 解析序列号（最后一部分）
 	seqHex := parts[len(parts)-1]
 	seq, err := strconv.ParseUint(seqHex, 16, 32)
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("invalid sequence: %w", err)
+		return "", 0, 0, pkgerrors.Wrapf(pkgerrors.ErrInvalidParam, "invalid sequence: %v", err)
 	}
 
 	// 节点 ID（前面所有部分）

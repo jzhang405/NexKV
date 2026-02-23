@@ -2,8 +2,23 @@
 
 **文档目的**: 从DDD角度组织分布式KV存储系统的Go interface设计
 **数据来源**: doubao-chat-nexkv-ddd.md 完整对话（21,647行）
-**文档版本**: v19.0 Unified | **最后更新**: 2026-02-22
-**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口** + **统一 RPC 接口** + **ResponseStrategy 广播策略** + **BroadcastTracker 完整追踪** + **WriteVResult 统一返回值** + **双存储引擎策略**
+**文档版本**: v19.2 Unified | **最后更新**: 2026-02-23
+**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口** + **统一 RPC 接口** + **ResponseStrategy 广播策略** + **BroadcastTracker 完整追踪** + **WriteVResult 统一返回值** + **双存储引擎策略** + **AsyncGroup批量操作**
+
+> **📋 v19.2 变更说明 (2026-02-23)**：
+> - **AsyncGroup 批量异步操作组**（新增）：
+>   - 支持同时向多个目标发起异步操作
+>   - 支持 WaitAny/WaitMajority/WaitAll 三种等待模式
+>   - 适用于 Quorum 写入、Gossip 同步等场景
+>
+> **📋 v19.1 变更说明 (2026-02-23)**：
+> - **GoroutineProvider 接口改进**（架构师评审通过）：
+>   - 统一使用 `context.Context`：所有方法第一个参数都是 `ctx`
+>   - 新增 `SubmitWithArg[T]`：避免闭包捕获陷阱
+>   - 新增 `SubmitWithArgAndResult[T, R]`：完整版（参数+结果）
+>   - 删除 `Submit(task func())`：改为 `Submit(ctx, task)`
+>   - 删除 `SubmitWithContext`：不再需要，统一用 `Submit`
+>   - **破坏性变更**：旧接口需要迁移
 
 > **📋 v19.0 变更说明 (2026-02-22)**：
 > - **AsyncOperation 接口增强**：
@@ -7024,43 +7039,87 @@ import (
     "time"
 )
 
-// GoroutineProvider 全局 goroutine 提供者接口（泛型版本）
+// GoroutineProvider 全局 goroutine 提供者接口（混合设计：简洁方法 + 选项模式）
+// 参考文档：docs/07_spike/2026-02-22_spike_m2-async-programming-model-refactor.md
 type GoroutineProvider interface {
     // ========================================
-    // 基础提交方法
+    // 基础方法（简单场景，快速上手）
     // ========================================
 
-    // Submit 提交无返回值任务
-    Submit(task func()) error
+    // Submit 简单任务：无参数，无返回值
+    Submit(ctx context.Context, task func(context.Context)) error
 
-    // SubmitWithContext 提交带 context 的任务
-    SubmitWithContext(ctx context.Context, task func(context.Context)) error
+    // SubmitWithArg 带参数：避免闭包陷阱
+    SubmitWithArg[T any](ctx context.Context, task func(context.Context, T), arg T) error
 
-    // ========================================
-    // 泛型结果提交方法（优化点1：类型安全）
-    // ========================================
+    // SubmitWithResult 带返回值：需要异步结果
+    SubmitWithResult[T any](ctx context.Context, task func(context.Context) (T, error)) Result[T]
 
-    // SubmitWithResult 提交有返回值的任务（泛型）
-    SubmitWithResult[T any](task func() (T, error)) Result[T]
-
-    // SubmitWithPriority 按优先级提交任务
-    SubmitWithPriority(priority Priority, task func()) error
-
-    // SubmitDelayed 延迟提交任务
-    SubmitDelayed(delay time.Duration, task func()) error
+    // SubmitWithArgAndResult 带参数和返回值：完整功能
+    SubmitWithArgAndResult[T any, R any](
+        ctx context.Context,
+        task func(context.Context, T) (R, error),
+        arg T,
+    ) Result[R]
 
     // ========================================
-    // 批量操作（优化点4：完善错误处理）
+    // 快捷方法（高频需求，意图明确）
     // ========================================
 
-    // SubmitBatch 批量提交任务（快速失败）
-    SubmitBatch(tasks []func()) error
+    // SubmitWithPriority 优先级任务
+    SubmitWithPriority(ctx context.Context, priority Priority, task func(context.Context)) error
 
-    // SubmitBatchAllErrors 批量提交，返回所有错误
-    SubmitBatchAllErrors(tasks []func()) []error
+    // SubmitDelayed 延迟任务
+    SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error
 
-    // SubmitBatchWithResult 批量提交并获取结果（泛型）
-    SubmitBatchWithResult[T any](tasks []func() (T, error)) []Result[T]
+    // ========================================
+    // 高级方法（复杂场景，选项模式）
+    // ========================================
+
+    // SubmitAdvanced 灵活组合：优先级 + 延迟 + 未来扩展
+    SubmitAdvanced[T any, R any](
+        ctx context.Context,
+        task func(context.Context, T) (R, error),
+        arg T,
+        opts ...SubmitOption,
+    ) Result[R]
+
+    // ========================================
+    // 批量方法（语义清晰，单独列出）
+    // ========================================
+
+    // SubmitBatch 批量提交：快速执行多个任务（无参数，无返回值）
+    SubmitBatch(ctx context.Context, tasks []func(context.Context)) error
+
+    // SubmitBatchWithArg 批量提交：快速执行多个任务（带参数，无返回值）
+    SubmitBatchWithArg[T any](
+        ctx context.Context,
+        tasks []func(context.Context, T),
+        args []T,
+    ) error
+
+    // SubmitBatchAllErrors 批量提交：收集所有错误（无参数）
+    SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error
+
+    // SubmitBatchWithArgAllErrors 批量提交：收集所有错误（带参数）
+    SubmitBatchWithArgAllErrors[T any](
+        ctx context.Context,
+        tasks []func(context.Context, T),
+        args []T,
+    ) []error
+
+    // SubmitBatchWithResult 批量提交：带返回值（无参数）
+    SubmitBatchWithResult[R any](
+        ctx context.Context,
+        tasks []func(context.Context) (R, error),
+    ) []Result[R]
+
+    // SubmitBatchWithArgAndResult 批量提交：带参数和返回值 ✅ 支持 T 和 R
+    SubmitBatchWithArgAndResult[T any, R any](
+        ctx context.Context,
+        tasks []func(context.Context, T) (R, error),
+        args []T,
+    ) []Result[R]
 
     // ========================================
     // 监控和管理
@@ -7068,7 +7127,7 @@ type GoroutineProvider interface {
 
     Stats() PoolStats
     Health() HealthStatus
-    SetCapacity(capacity int) error  // 优化点2：支持动态调整
+    SetCapacity(capacity int) error
 
     // ========================================
     // 生命周期
@@ -7077,6 +7136,37 @@ type GoroutineProvider interface {
     Close() error
     CloseWithTimeout(timeout time.Duration) error
 }
+
+// ========================================
+// 选项模式定义（用于 SubmitAdvanced）
+// ========================================
+
+// SubmitOption 提交选项
+type SubmitOption func(*submitOptions)
+
+type submitOptions struct {
+    priority Priority
+    delay    time.Duration
+}
+
+// WithPriority 设置优先级
+func WithPriority(priority Priority) SubmitOption {
+    return func(opts *submitOptions) {
+        opts.priority = priority
+    }
+}
+
+// WithDelay 设置延迟
+func WithDelay(delay time.Duration) SubmitOption {
+    return func(opts *submitOptions) {
+        opts.delay = delay
+    }
+}
+
+// 未来可扩展：
+// func WithTimeout(timeout time.Duration) SubmitOption
+// func WithRetry(count int) SubmitOption
+// func WithCallback(cb func()) SubmitOption
 
 // Result[T] 泛型异步结果接口（优化点1）
 type Result[T any] interface {
@@ -7669,6 +7759,143 @@ type BlockFuture    = Future[[]byte]
 | **DynamicConfig** | 运行时调优 | ⬆️ | ⬆️ |
 | **HotReloader** | 热更新 | ⬆️ | ⬆️⬆️ |
 
+#### 13-B.4.10 CronJobProvider - 定时任务管理
+
+**设计定位**：CronJobProvider 是 GoroutineProvider 的**补充扩展**，用于管理定时任务，与 GoroutineProvider 共享协程池资源。
+
+```go
+// ========================================
+// CronJobProvider 定时任务提供者接口
+// ========================================
+
+// CronSpec Cron 表达式
+type CronSpec string
+
+// CronJobStatus 定时任务状态
+type CronJobStatus int32
+
+const (
+    CronJobStatusScheduled CronJobStatus = iota
+    CronJobStatusRunning
+    CronJobStatusPaused
+    CronJobStatusStopped
+)
+
+// CronJobInfo 定时任务信息
+type CronJobInfo struct {
+    ID        string
+    Name      string
+    Spec      CronSpec
+    Status    CronJobStatus
+    NextRun   time.Time
+    LastRun   *time.Time
+    CreatedAt time.Time
+}
+
+// CronJobProvider 定时任务提供者接口
+type CronJobProvider interface {
+    // 生命周期
+    Start()
+    Stop() context.Context
+
+    // ========================================
+    // 基础方法（无参数）
+    // ========================================
+    Register(spec CronSpec, name string, task func(context.Context)) (string, error)
+    RegisterWithPriority(spec CronSpec, name string, priority Priority, task func(context.Context)) (string, error)
+
+    // ========================================
+    // 带参数方法（避免闭包陷阱）✅ 新增
+    // ========================================
+    RegisterWithArg[T any](spec CronSpec, name string, task func(context.Context, T), arg T) (string, error)
+    RegisterWithPriorityAndArg[T any](spec CronSpec, name string, priority Priority, task func(context.Context, T), arg T) (string, error)
+
+    // 任务控制
+    Pause(jobID string) error
+    Resume(jobID string) error
+    Unregister(jobID string) error
+
+    // 任务查询
+    GetJob(jobID string) (*CronJobInfo, error)
+    ListJobs() []*CronJobInfo
+}
+```
+
+**设计要点**：
+1. **解耦调度与执行**：Cron 只负责调度，实际执行交给 GoroutineProvider
+2. **优先级传递**：定时任务可以指定优先级，确保重要任务优先执行
+3. **资源复用**：与即时任务共享协程池，避免资源浪费
+4. **独立扩展**：可以替换 Cron 实现（如使用 quartz-go）而不影响执行层
+
+**适用场景**：
+
+| 场景 | 示例 | 优先级建议 |
+|------|------|-----------|
+| WAL 清理 | 每 5 分钟清理过期 WAL | Low |
+| 数据压缩 | 每小时压缩 SSTable | Normal |
+| Raft 快照 | 每 10 分钟生成快照 | High |
+| 健康检查 | 每分钟检查节点状态 | Critical |
+
+#### 13-B.4.11 AsyncGroup - 批量异步操作组 ✅ 新增
+
+**设计定位**：AsyncGroup 是 AsyncOperation 的**批量组合扩展**，用于同时向多个目标发起异步操作，支持 WaitAny/WaitMajority/WaitAll 三种等待模式。
+
+```go
+// ========================================
+// AsyncGroup 批量异步操作组
+// ========================================
+
+// AsyncGroup 批量异步操作组
+type AsyncGroup[T any] struct {
+    // 内部字段...
+}
+
+// GroupResult 批量操作结果
+type GroupResult[T any] struct {
+    Values       map[model.PeerID]T
+    Errors       map[model.PeerID]error
+    SuccessPeers []model.PeerID
+    FailedPeers  []model.PeerID
+}
+
+// NewGroup 创建批量异步操作组
+func NewGroup[T any](
+    ctx context.Context,
+    targets []model.PeerID,
+    execFunc func(ctx context.Context, target model.PeerID) (T, error),
+) *AsyncGroup[T]
+
+// WaitAny 等待任意一个完成
+func (g *AsyncGroup[T]) WaitAny(ctx context.Context) (model.PeerID, T, error)
+
+// WaitMajority 等待多数派完成
+func (g *AsyncGroup[T]) WaitMajority(ctx context.Context) GroupResult[T]
+
+// WaitAll 等待全部完成
+func (g *AsyncGroup[T]) WaitAll(ctx context.Context) GroupResult[T]
+
+// CancelAll 取消所有操作
+func (g *AsyncGroup[T]) CancelAll() error
+
+// Status 获取所有操作状态
+func (g *AsyncGroup[T]) Status() map[model.PeerID]OperationStatus
+```
+
+**关键特性**：
+1. **批量执行**：同时向多个目标发起异步操作
+2. **灵活等待**：支持 WaitAny/WaitMajority/WaitAll 三种模式
+3. **结果聚合**：自动收集成功/失败结果和统计信息
+4. **广播场景**：适用于 Quorum 写入、Gossip 同步等场景
+
+**适用场景**：
+
+| 场景 | 示例 | 等待模式 |
+|------|------|---------|
+| Quorum 写入 | 向 5 个节点写入，等待 3 个成功 | WaitMajority |
+| Gossip 同步 | 向所有节点广播，等待任意响应 | WaitAny |
+| 全量复制 | 向所有节点同步数据，等待全部完成 | WaitAll |
+| 健康检查 | 检查所有节点状态 | WaitAll |
+
 ---
 
 ## 十四、总结
@@ -7690,6 +7917,9 @@ type BlockFuture    = Future[[]byte]
 | v11.0 | 2026-02-18 | **Replication层异步接口**：统一接口 + AsyncOperation + Callback + Channel | ✅ |
 | v15.0 | 2026-02-18 | **统一异步接口**：AsyncOperation[T] 泛型 + Get(ctx)/IsDone()/OnComplete() | ✅ |
 | v18.0 | 2026-02-18 | **异步接口精化**：Cancel返回(canceled,err) + Status()枚举 + recover防崩溃 + 标准错误 | ✅ |
+| v19.0 | 2026-02-23 | **GoroutineProvider改进**：统一context + 泛型参数传递 + 批量方法支持T/R | ✅ |
+| v19.1 | 2026-02-23 | **CronJobProvider扩展**：定时任务管理接口，与GoroutineProvider集成 | ✅ |
+| v19.2 | 2026-02-23 | **AsyncGroup扩展**：批量异步操作组接口，支持WaitAny/WaitMajority/WaitAll | ✅ |
 
 ### 14.2 完成的改进
 

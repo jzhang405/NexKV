@@ -1315,50 +1315,28 @@ func NewAntsGoroutineProvider(config *ProviderConfig) (*AntsGoroutineProvider, e
     return provider, nil
 }
 
-// Submit 提交无返回值任务
-func (p *AntsGoroutineProvider) Submit(task func()) error {
-    if p.closed.Load() {
-        return fmt.Errorf("%w", ErrProviderClosed)
-    }
-
-    err := p.normalPool.Submit(task)
-    if err != nil {
-        if err == ants.ErrPoolOverload {
-            return fmt.Errorf("%w: %v", ErrPoolFull, err)
-        }
-        return err
-    }
-    return nil
+// Submit 简单任务：无参数，无返回值
+func (p *AntsGoroutineProvider) Submit(ctx context.Context, task func(context.Context)) error {
+    return p.SubmitWithPriority(ctx, PriorityNormal, task)
 }
 
-// SubmitWithContext 提交带 context 的任务
-func (p *AntsGoroutineProvider) SubmitWithContext(ctx context.Context, task func(context.Context)) error {
-    if p.closed.Load() {
-        return fmt.Errorf("%w", ErrProviderClosed)
-    }
-
-    err := p.normalPool.Submit(func() {
-        task(ctx)
+// SubmitWithArg 带参数：避免闭包陷阱
+func (p *AntsGoroutineProvider) SubmitWithArg[T any](ctx context.Context, task func(context.Context, T), arg T) error {
+    return p.SubmitWithPriority(ctx, PriorityNormal, func(ctx context.Context) {
+        task(ctx, arg)
     })
-    if err != nil {
-        if err == ants.ErrPoolOverload {
-            return fmt.Errorf("%w: %v", ErrPoolFull, err)
-        }
-        return err
-    }
-    return nil
 }
 
-// SubmitWithResult 泛型结果提交（优化点1）
-func (p *AntsGoroutineProvider) SubmitWithResult[T any](task func() (T, error)) Result[T] {
+// SubmitWithResult 带返回值：需要异步结果
+func (p *AntsGoroutineProvider) SubmitWithResult[T any](ctx context.Context, task func(context.Context) (T, error)) Result[T] {
     result := &asyncResult[T]{
         done: make(chan struct{}),
     }
 
-    err := p.normalPool.Submit(func() {
+    err := p.Submit(ctx, func(ctx context.Context) {
         defer close(result.done)
         start := time.Now()
-        result.value, result.err = task()
+        result.value, result.err = task(ctx)
         poolTaskDuration.WithLabelValues("normal").Observe(time.Since(start).Seconds())
     })
 
@@ -1371,8 +1349,19 @@ func (p *AntsGoroutineProvider) SubmitWithResult[T any](task func() (T, error)) 
     return result
 }
 
-// SubmitWithPriority 按优先级提交
-func (p *AntsGoroutineProvider) SubmitWithPriority(priority Priority, task func()) error {
+// SubmitWithArgAndResult 带参数和返回值：完整功能
+func (p *AntsGoroutineProvider) SubmitWithArgAndResult[T any, R any](
+    ctx context.Context,
+    task func(context.Context, T) (R, error),
+    arg T,
+) Result[R] {
+    return p.SubmitWithResult(ctx, func(ctx context.Context) (R, error) {
+        return task(ctx, arg)
+    })
+}
+
+// SubmitWithPriority 优先级任务
+func (p *AntsGoroutineProvider) SubmitWithPriority(ctx context.Context, priority Priority, task func(context.Context)) error {
     if p.closed.Load() {
         return fmt.Errorf("%w", ErrProviderClosed)
     }
@@ -1396,7 +1385,9 @@ func (p *AntsGoroutineProvider) SubmitWithPriority(priority Priority, task func(
     }
 
     poolTasksTotal.WithLabelValues(label).Inc()
-    err := pool.Submit(task)
+    err := pool.Submit(func() {
+        task(ctx)
+    })
     if err != nil {
         if err == ants.ErrPoolOverload {
             return fmt.Errorf("%w: %v", ErrPoolFull, err)
@@ -1406,13 +1397,13 @@ func (p *AntsGoroutineProvider) SubmitWithPriority(priority Priority, task func(
     return nil
 }
 
-// SubmitDelayed 延迟提交（优化点3：可靠关闭）
+// SubmitDelayed 延迟任务（优化点3：可靠关闭）
 //
 // ⚠️ 重要说明：
 // - 延迟任务在 Provider 关闭时会被**静默取消**
 // - 调用方应在 Provider 关闭前确保所有延迟任务完成或可接受取消
 // - 如果需要感知任务是否执行，请使用 SubmitWithResult
-func (p *AntsGoroutineProvider) SubmitDelayed(delay time.Duration, task func()) error {
+func (p *AntsGoroutineProvider) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
     if p.closed.Load() {
         return fmt.Errorf("%w", ErrProviderClosed)
     }
@@ -1425,9 +1416,11 @@ func (p *AntsGoroutineProvider) SubmitDelayed(delay time.Duration, task func()) 
         select {
         case <-p.closeCh:
             return  // 程序关闭，取消任务
+        case <-ctx.Done():
+            return  // context 取消
         case <-time.After(delay):
             if !p.closed.Load() {
-                _ = p.Submit(task)
+                _ = p.Submit(ctx, task)
             }
         }
     }()
@@ -1435,17 +1428,52 @@ func (p *AntsGoroutineProvider) SubmitDelayed(delay time.Duration, task func()) 
     return nil
 }
 
-// SubmitBatch 批量提交（快速失败）
-func (p *AntsGoroutineProvider) SubmitBatch(tasks []func()) error {
+// SubmitAdvanced 灵活组合：优先级 + 延迟 + 未来扩展
+func (p *AntsGoroutineProvider) SubmitAdvanced[T any, R any](
+    ctx context.Context,
+    task func(context.Context, T) (R, error),
+    arg T,
+    opts ...SubmitOption,
+) Result[R] {
+    // 解析选项
+    options := &submitOptions{
+        priority: PriorityNormal,
+        delay:    0,
+    }
+    for _, opt := range opts {
+        opt(options)
+    }
+
+    // 如果有延迟，使用延迟提交
+    if options.delay > 0 {
+        result := &asyncResult[R]{
+            done: make(chan struct{}),
+        }
+        
+        time.AfterFunc(options.delay, func() {
+            r := p.SubmitWithArgAndResult(ctx, task, arg)
+            result.value, result.err = r.Get(ctx)
+            close(result.done)
+        })
+        
+        return result
+    }
+
+    // 立即提交
+    return p.SubmitWithArgAndResult(ctx, task, arg)
+}
+
+// SubmitBatch 批量提交：快速执行多个任务（无参数，无返回值）
+func (p *AntsGoroutineProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
     var wg sync.WaitGroup
     errCh := make(chan error, len(tasks))
 
     for _, task := range tasks {
         wg.Add(1)
         t := task
-        err := p.Submit(func() {
+        err := p.Submit(ctx, func(ctx context.Context) {
             defer wg.Done()
-            t()
+            t(ctx)
         })
         if err != nil {
             wg.Done()
@@ -1457,17 +1485,48 @@ func (p *AntsGoroutineProvider) SubmitBatch(tasks []func()) error {
     return nil
 }
 
-// SubmitBatchAllErrors 批量提交，返回所有错误（优化点4）
-func (p *AntsGoroutineProvider) SubmitBatchAllErrors(tasks []func()) []error {
+// SubmitBatchWithArg 批量提交：快速执行多个任务（带参数，无返回值）
+func (p *AntsGoroutineProvider) SubmitBatchWithArg[T any](
+    ctx context.Context,
+    tasks []func(context.Context, T),
+    args []T,
+) error {
+    if len(tasks) != len(args) {
+        return fmt.Errorf("tasks and args length mismatch: %d vs %d", len(tasks), len(args))
+    }
+
+    var wg sync.WaitGroup
+    errCh := make(chan error, len(tasks))
+
+    for i, task := range tasks {
+        wg.Add(1)
+        t := task
+        arg := args[i]
+        err := p.Submit(ctx, func(ctx context.Context) {
+            defer wg.Done()
+            t(ctx, arg)
+        })
+        if err != nil {
+            wg.Done()
+            return err  // 快速失败
+        }
+    }
+
+    wg.Wait()
+    return nil
+}
+
+// SubmitBatchAllErrors 批量提交：收集所有错误（无参数）
+func (p *AntsGoroutineProvider) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
     var wg sync.WaitGroup
     errCh := make(chan error, len(tasks))
 
     for _, task := range tasks {
         wg.Add(1)
         t := task
-        err := p.Submit(func() {
+        err := p.Submit(ctx, func(ctx context.Context) {
             defer wg.Done()
-            t()
+            t(ctx)
         })
         if err != nil {
             wg.Done()
@@ -1487,9 +1546,51 @@ func (p *AntsGoroutineProvider) SubmitBatchAllErrors(tasks []func()) []error {
     return errs
 }
 
-// SubmitBatchWithResult 泛型批量提交（优化点1）
-func (p *AntsGoroutineProvider) SubmitBatchWithResult[T any](tasks []func() (T, error)) []Result[T] {
-    results := make([]Result[T], len(tasks))
+// SubmitBatchWithArgAllErrors 批量提交：收集所有错误（带参数）
+func (p *AntsGoroutineProvider) SubmitBatchWithArgAllErrors[T any](
+    ctx context.Context,
+    tasks []func(context.Context, T),
+    args []T,
+) []error {
+    if len(tasks) != len(args) {
+        return []error{fmt.Errorf("tasks and args length mismatch: %d vs %d", len(tasks), len(args))}
+    }
+
+    var wg sync.WaitGroup
+    errCh := make(chan error, len(tasks))
+
+    for i, task := range tasks {
+        wg.Add(1)
+        t := task
+        arg := args[i]
+        err := p.Submit(ctx, func(ctx context.Context) {
+            defer wg.Done()
+            t(ctx, arg)
+        })
+        if err != nil {
+            wg.Done()
+            errCh <- err
+        }
+    }
+
+    go func() {
+        wg.Wait()
+        close(errCh)
+    }()
+
+    var errs []error
+    for err := range errCh {
+        errs = append(errs, err)
+    }
+    return errs
+}
+
+// SubmitBatchWithResult 批量提交：带返回值（无参数）
+func (p *AntsGoroutineProvider) SubmitBatchWithResult[R any](
+    ctx context.Context,
+    tasks []func(context.Context) (R, error),
+) []Result[R] {
+    results := make([]Result[R], len(tasks))
     var wg sync.WaitGroup
 
     for i, task := range tasks {
@@ -1497,9 +1598,47 @@ func (p *AntsGoroutineProvider) SubmitBatchWithResult[T any](tasks []func() (T, 
         idx := i
         t := task
 
-        results[idx] = p.SubmitWithResult(func() (T, error) {
+        results[idx] = p.SubmitWithResult(ctx, func(ctx context.Context) (R, error) {
             defer wg.Done()
-            return t()
+            return t(ctx)
+        })
+    }
+
+    return results
+}
+
+// SubmitBatchWithArgAndResult 批量提交：带参数和返回值 ✅ 支持 T 和 R
+func (p *AntsGoroutineProvider) SubmitBatchWithArgAndResult[T any, R any](
+    ctx context.Context,
+    tasks []func(context.Context, T) (R, error),
+    args []T,
+) []Result[R] {
+    if len(tasks) != len(args) {
+        // 返回错误结果
+        result := &asyncResult[R]{
+            done: make(chan struct{}),
+            err:  fmt.Errorf("tasks and args length mismatch: %d vs %d", len(tasks), len(args)),
+        }
+        close(result.done)
+        results := make([]Result[R], len(tasks))
+        for i := range results {
+            results[i] = result
+        }
+        return results
+    }
+
+    results := make([]Result[R], len(tasks))
+    var wg sync.WaitGroup
+
+    for i, task := range tasks {
+        wg.Add(1)
+        idx := i
+        t := task
+        arg := args[i]
+
+        results[idx] = p.SubmitWithResult(ctx, func(ctx context.Context) (R, error) {
+            defer wg.Done()
+            return t(ctx, arg)
         })
     }
 
@@ -2425,6 +2564,337 @@ result := provider.SubmitWithResult(func() (string, error) {
     return fetchData(key)
 })
 strVal, err := result.Get(ctx) // 直接返回 string
+```
+
+#### 5.4.4 CronJobProvider 实现（基于 robfig/cron）（pkg/concurrency/cron_provider.go）
+
+```go
+package concurrency
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/robfig/cron/v3"
+)
+
+// ==========================================
+// 基于 robfig/cron + ants 的 CronJobProvider 实现
+// ==========================================
+
+var _ CronJobProvider = (*RobfigCronProvider)(nil)
+
+type RobfigCronProvider struct {
+	mu                sync.RWMutex
+	cron              *cron.Cron
+	goroutineProvider GoroutineProvider
+	jobs              map[string]*cronJobEntry
+	nameToID          map[string]string
+}
+
+type cronJobEntry struct {
+	id        string
+	name      string
+	entryID   cron.EntryID
+	spec      CronSpec
+	status    CronJobStatus
+	priority  Priority
+	taskFunc  func()
+	createdAt time.Time
+}
+
+// NewRobfigCronProvider 创建 CronJobProvider
+func NewRobfigCronProvider(goroutineProvider GoroutineProvider) *RobfigCronProvider {
+	c := cron.New(
+		cron.WithSeconds(),
+		cron.WithChain(
+			cron.Recover(cron.DefaultLogger),
+		),
+	)
+	return &RobfigCronProvider{
+		cron:              c,
+		goroutineProvider: goroutineProvider,
+		jobs:              make(map[string]*cronJobEntry),
+		nameToID:          make(map[string]string),
+	}
+}
+
+// Start 启动定时任务调度器
+func (r *RobfigCronProvider) Start() {
+	r.cron.Start()
+}
+
+// Stop 停止定时任务调度器
+func (r *RobfigCronProvider) Stop() context.Context {
+	return r.cron.Stop()
+}
+
+// Register 注册定时任务
+func (r *RobfigCronProvider) Register(
+	spec CronSpec,
+	name string,
+	taskFunc func(context.Context),
+) (string, error) {
+	return r.RegisterWithPriority(spec, name, PriorityNormal, taskFunc)
+}
+
+// RegisterWithPriority 注册带优先级的定时任务
+func (r *RobfigCronProvider) RegisterWithPriority(
+	spec CronSpec,
+	name string,
+	priority Priority,
+	taskFunc func(context.Context),
+) (string, error) {
+	return r.registerInternal(spec, name, priority, func(ctx context.Context, _ any) {
+		taskFunc(ctx)
+	}, nil)
+}
+
+// RegisterWithArg 注册带参数的定时任务 ✅ 新增
+func (r *RobfigCronProvider) RegisterWithArg[T any](
+	spec CronSpec,
+	name string,
+	taskFunc func(context.Context, T),
+	arg T,
+) (string, error) {
+	return r.RegisterWithPriorityAndArg(spec, name, PriorityNormal, taskFunc, arg)
+}
+
+// RegisterWithPriorityAndArg 注册带参数和优先级的定时任务 ✅ 新增
+func (r *RobfigCronProvider) RegisterWithPriorityAndArg[T any](
+	spec CronSpec,
+	name string,
+	priority Priority,
+	taskFunc func(context.Context, T),
+	arg T,
+) (string, error) {
+	return r.registerInternal(spec, name, priority, func(ctx context.Context, a any) {
+		taskFunc(ctx, a.(T))
+	}, arg)
+}
+
+// registerInternal 内部注册方法（统一实现）
+func (r *RobfigCronProvider) registerInternal(
+	spec CronSpec,
+	name string,
+	priority Priority,
+	taskFunc func(context.Context, any),
+	arg any,
+) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.nameToID[name]; exists {
+		return "", fmt.Errorf("job with name %s already exists", name)
+	}
+
+	wrappedFunc := func() {
+		r.mu.RLock()
+		jobID, ok := r.nameToID[name]
+		if !ok {
+			r.mu.RUnlock()
+			return
+		}
+		entry, ok := r.jobs[jobID]
+		r.mu.RUnlock()
+
+		if !ok || entry.status == CronJobStatusPaused {
+			return
+		}
+
+		err := r.goroutineProvider.SubmitWithArgAndResult(
+			context.Background(),
+			func(ctx context.Context, a any) (any, error) {
+				taskFunc(ctx, a)
+				return nil, nil
+			},
+			arg,
+		)
+		if err != nil {
+			fmt.Printf("Failed to submit cron job %s to goroutine pool: %v\n", name, err)
+		}
+	}
+
+	entryID, err := r.cron.AddFunc(string(spec), wrappedFunc)
+	if err != nil {
+		return "", fmt.Errorf("failed to register cron job: %w", err)
+	}
+
+	jobID := fmt.Sprintf("cron-%s-%d", name, time.Now().UnixNano())
+
+	entry := &cronJobEntry{
+		id:        jobID,
+		name:      name,
+		entryID:   entryID,
+		spec:      spec,
+		status:    CronJobStatusScheduled,
+		priority:  priority,
+		taskFunc:  wrappedFunc,
+		createdAt: time.Now(),
+	}
+
+	r.jobs[jobID] = entry
+	r.nameToID[name] = jobID
+
+	return jobID, nil
+}
+
+// Pause 暂停定时任务
+func (r *RobfigCronProvider) Pause(jobID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	entry, ok := r.jobs[jobID]
+	if !ok {
+		return fmt.Errorf("job not found: %s", jobID)
+	}
+
+	if entry.status != CronJobStatusScheduled && entry.status != CronJobStatusRunning {
+		return fmt.Errorf("job cannot be paused: %s", jobID)
+	}
+
+	entry.status = CronJobStatusPaused
+	return nil
+}
+
+// Resume 恢复定时任务
+func (r *RobfigCronProvider) Resume(jobID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	entry, ok := r.jobs[jobID]
+	if !ok {
+		return fmt.Errorf("job not found: %s", jobID)
+	}
+
+	if entry.status != CronJobStatusPaused {
+		return fmt.Errorf("job cannot be resumed: %s", jobID)
+	}
+
+	entry.status = CronJobStatusScheduled
+	return nil
+}
+
+// Unregister 注销定时任务
+func (r *RobfigCronProvider) Unregister(jobID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	entry, ok := r.jobs[jobID]
+	if !ok {
+		return fmt.Errorf("job not found: %s", jobID)
+	}
+
+	r.cron.Remove(entry.entryID)
+	delete(r.jobs, jobID)
+	delete(r.nameToID, entry.name)
+	return nil
+}
+
+// GetJob 获取定时任务信息
+func (r *RobfigCronProvider) GetJob(jobID string) (*CronJobInfo, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	entry, ok := r.jobs[jobID]
+	if !ok {
+		return nil, fmt.Errorf("job not found: %s", jobID)
+	}
+
+	cronEntry := r.cron.Entry(entry.entryID)
+
+	var lastRun *time.Time
+	if !cronEntry.Prev.IsZero() {
+		lastRun = &cronEntry.Prev
+	}
+
+	return &CronJobInfo{
+		ID:        entry.id,
+		Name:      entry.name,
+		Spec:      entry.spec,
+		Status:    entry.status,
+		NextRun:   cronEntry.Next,
+		LastRun:   lastRun,
+		CreatedAt: entry.createdAt,
+	}, nil
+}
+
+// ListJobs 列出所有定时任务
+func (r *RobfigCronProvider) ListJobs() []*CronJobInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	jobs := make([]*CronJobInfo, 0, len(r.jobs))
+	for id := range r.jobs {
+		job, _ := r.GetJob(id)
+		jobs = append(jobs, job)
+	}
+	return jobs
+}
+```
+
+**使用示例**：
+
+```go
+// 1. 初始化 GoroutineProvider
+goroutineProvider, _ := NewAntsGoroutineProvider(nil)
+
+// 2. 初始化 CronJobProvider
+cronProvider := NewRobfigCronProvider(goroutineProvider)
+cronProvider.Start()
+
+// 3. 注册定时任务（无参数）
+jobID, _ := cronProvider.RegisterWithPriority(
+	"0 */5 * * * *",           // 每 5 分钟
+	"wal_cleanup",              // 任务名称
+	PriorityLow,                // 低优先级
+	func(ctx context.Context) {
+		// 执行 WAL 清理
+		cleanupWAL(ctx)
+	},
+)
+
+// 3.1 注册带参数的定时任务 ✅ 新增示例
+dataDirs := []string{"/var/nexkv/data1", "/var/nexkv/data2"}
+for _, dir := range dataDirs {
+	cronProvider.RegisterWithArg(
+		"0 */10 * * * *",           // 每 10 分钟
+		"cleanup_"+dir,              // 任务名称
+		func(ctx context.Context, dataDir string) {
+			// ✅ 直接使用参数，无闭包陷阱
+			cleanupDirectory(ctx, dataDir)
+		},
+		dir,  // 参数传递
+	)
+}
+
+// 3.2 注册带参数和优先级的定时任务 ✅ 新增示例
+cronProvider.RegisterWithPriorityAndArg(
+	"0 */30 * * * *",              // 每 30 分钟
+	"raft_snapshot",                // 任务名称
+	PriorityHigh,                   // 高优先级
+	func(ctx context.Context, nodeID string) {
+		// 执行 Raft 快照
+		createSnapshot(ctx, nodeID)
+	},
+	"node-1",  // 参数：节点 ID
+)
+
+// 4. 查询任务
+job, _ := cronProvider.GetJob(jobID)
+fmt.Printf("Next run: %v\n", job.NextRun)
+
+// 5. 暂停任务
+cronProvider.Pause(jobID)
+
+// 6. 恢复任务
+cronProvider.Resume(jobID)
+
+// 7. 停止所有任务
+ctx := cronProvider.Stop()
+<-ctx.Done()
 ```
 
 ---

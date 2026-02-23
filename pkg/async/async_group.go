@@ -16,23 +16,23 @@ import (
 
 // AsyncGroup 批量异步操作组
 type AsyncGroup[T any] struct {
-	lifecycle            *transport.AsyncLifecycle
-	targets              []model.PeerID
-	ops                  map[model.PeerID]AsyncOperation[T]
-	results              map[model.PeerID]T
-	errors               map[model.PeerID]error
-	mu                   sync.RWMutex
-	anyDone              chan struct{}
-	majorityDone         chan struct{}
-	allDone              chan struct{}
-	callback             GroupCallback[T]
-	startTime            time.Time
-	firstResponseTime    time.Time
-	majorityReachTime    time.Time
+	lifecycle             *transport.AsyncLifecycle
+	targets               []model.PeerID
+	ops                   map[model.PeerID]AsyncOperation[T]
+	results               map[model.PeerID]T
+	errors                map[model.PeerID]error
+	mu                    sync.RWMutex
+	anyDone               chan struct{}
+	majorityDone          chan struct{}
+	allDone               chan struct{}
+	callback              GroupCallback[T]
+	startTime             time.Time
+	firstResponseTime     time.Time
+	majorityReachTime     time.Time
 	firstResponseRecorded bool
-	firstResponseOnce    sync.Once
-	majorityOnce         sync.Once
-	allOnce              sync.Once
+	firstResponseOnce     sync.Once
+	majorityOnce          sync.Once
+	allOnce               sync.Once
 }
 
 // GroupCallback[T] 批量操作回调接口

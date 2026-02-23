@@ -1,0 +1,15 @@
+  性能基准测试结果
+
+  BenchmarkSubmit-8                        3211394    350.8 ns/op    48 B/op
+  BenchmarkSubmitWithResult-8              2327110    498.5 ns/op   264 B/op
+  BenchmarkSubmitBatch_100-8                 33313   35238 ns/op   4809 B/op
+  BenchmarkSubmitBatch_1000-8                  3435  345827 ns/op  48226 B/op
+  BenchmarkSubmitDelayed-8                 18248001    66.57 ns/op   56 B/op
+  BenchmarkTypedResult_Get-8               40248758    29.52 ns/op    0 B/op
+  BenchmarkConcurrentSubmit-8               2473436    607.7 ns/op   49 B/op
+
+  关键指标:
+  - ✅ 单任务提交延迟: ~350ns
+  - ✅ TypedResult.Get 延迟: ~30ns (零分配)
+  - ✅ 延迟任务调度开销: ~67ns
+  - ✅ 并发提交延迟: ~608ns

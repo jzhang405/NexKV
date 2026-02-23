@@ -1,11 +1,12 @@
-# 异步编程模型重构方案 v2.7
+# 异步编程模型重构方案 v2.9
 
 > **预研类型**: Spike
 > **创建日期**: 2026-02-22
 > **最后更新**: 2026-02-23
 > **分支**: `spike/async-programming-model`
 > **状态**: ✅ 已批准（评审通过）
-> **文档版本**: v2.8
+> **文档版本**: v2.9
+> **关键变更**: 修复 Go 泛型限制（接口方法改用 any，辅助函数提供类型安全）
 > **实施范围**: Transport 异步编程模型（AsyncOperation + GoroutineProvider + Transport 改造）
 > **参考文档**:
 >   - [DDD架构 - AsyncOperation](./2026-02-18_spike_nexkv-ddd-interface.md#13-b3-asyncoperation)
@@ -88,27 +89,30 @@ import (
 )
 
 // GoroutineProvider 协程池提供者接口
-// 混合设计：简洁方法 + 选项模式（架构师评审通过 v2.7）
+// 设计：接口用 any（Go 限制）+ 辅助函数保类型安全（架构师评审通过 v2.9）
+//
+// ⚠️ 重要：Go 接口方法不能有类型参数（泛型），所以接口层使用 any 类型
+// 类型安全通过辅助函数（helpers.go）提供，内部使用类型断言优化
 type GoroutineProvider interface {
 	// ======================================
-	// 基础方法（简单场景，快速上手）
+	// 基础方法（接口层用 any，辅助函数提供类型安全）
 	// ======================================
 
 	// 简单任务：无参数，无返回值
 	Submit(ctx context.Context, task func(context.Context)) error
 
-	// 带参数：避免闭包陷阱
-	SubmitWithArg[T any](ctx context.Context, task func(context.Context, T), arg T) error
+	// 带参数：避免闭包陷阱（接口层用 any）
+	SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error
 
-	// 带返回值：需要异步结果
-	SubmitWithResult[T any](ctx context.Context, task func(context.Context) (T, error)) Result[T]
+	// 带返回值：需要异步结果（接口层用 any）
+	SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) Result[any]
 
-	// 带参数和返回值：完整功能
-	SubmitWithArgAndResult[T any, R any](
+	// 带参数和返回值：完整功能（接口层用 any）
+	SubmitWithArgAndResult(
 		ctx context.Context,
-		task func(context.Context, T) (R, error),
-		arg T,
-	) Result[R]
+		task func(context.Context, any) (any, error),
+		arg any,
+	) Result[any]
 
 	// ======================================
 	// 快捷方法（高频需求，意图明确）
@@ -124,13 +128,13 @@ type GoroutineProvider interface {
 	// 高级方法（复杂场景，选项模式）
 	// ======================================
 
-	// 灵活组合：优先级 + 延迟 + 未来扩展
-	SubmitAdvanced[T any, R any](
+	// 灵活组合：优先级 + 延迟 + 未来扩展（接口层用 any）
+	SubmitAdvanced(
 		ctx context.Context,
-		task func(context.Context, T) (R, error),
-		arg T,
+		task func(context.Context, any) (any, error),
+		arg any,
 		opts ...SubmitOption,
-	) Result[R]
+	) Result[any]
 
 	// ======================================
 	// 批量方法（语义清晰，单独列出）
@@ -139,35 +143,35 @@ type GoroutineProvider interface {
 	// 批量提交：快速执行多个任务（无参数，无返回值）
 	SubmitBatch(ctx context.Context, tasks []func(context.Context)) error
 
-	// 批量提交：快速执行多个任务（带参数，无返回值）
-	SubmitBatchWithArg[T any](
+	// 批量提交：快速执行多个任务（带参数，无返回值，接口层用 any）
+	SubmitBatchWithArg(
 		ctx context.Context,
-		tasks []func(context.Context, T),
-		args []T,
+		tasks []func(context.Context, any),
+		args []any,
 	) error
 
 	// 批量提交：收集所有错误（无参数）
 	SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error
 
-	// 批量提交：收集所有错误（带参数）
-	SubmitBatchWithArgAllErrors[T any](
+	// 批量提交：收集所有错误（带参数，接口层用 any）
+	SubmitBatchWithArgAllErrors(
 		ctx context.Context,
-		tasks []func(context.Context, T),
-		args []T,
+		tasks []func(context.Context, any),
+		args []any,
 	) []error
 
-	// 批量提交：带返回值（无参数）
-	SubmitBatchWithResult[R any](
+	// 批量提交：带返回值（无参数，接口层用 any）
+	SubmitBatchWithResult(
 		ctx context.Context,
-		tasks []func(context.Context) (R, error),
-	) []Result[R]
+		tasks []func(context.Context) (any, error),
+	) []Result[any]
 
-	// 批量提交：带参数和返回值 ✅ 支持 T 和 R
-	SubmitBatchWithArgAndResult[T any, R any](
+	// 批量提交：带参数和返回值（接口层用 any）
+	SubmitBatchWithArgAndResult(
 		ctx context.Context,
-		tasks []func(context.Context, T) (R, error),
-		args []T,
-	) []Result[R]
+		tasks []func(context.Context, any) (any, error),
+		args []any,
+	) []Result[any]
 
 	// ======================================
 	// 管理方法
@@ -237,7 +241,22 @@ const (
 	HealthStatusHealthy HealthStatus = iota
 	HealthStatusUnhealthy
 )
-```
+
+// ======================================
+// 泛型辅助函数（提供类型安全）
+// ======================================
+
+// 注意：以下函数在 helpers.go 中定义，通过类型断言优化性能
+//
+// func SubmitWithArg[T any](ctx context.Context, provider GoroutineProvider, task func(context.Context, T), arg T) error
+// func SubmitWithResult[T any](ctx context.Context, provider GoroutineProvider, task func(context.Context) (T, error)) *TypedResult[T]
+// func SubmitWithArgAndResult[T any, R any](ctx context.Context, provider GoroutineProvider, task func(context.Context, T) (R, error), arg T) *TypedResult[R]
+// func SubmitAdvanced[T any, R any](ctx context.Context, provider GoroutineProvider, task func(context.Context, T) (R, error), arg T, opts ...SubmitOption) *TypedResult[R]
+
+// 使用示例：
+//   err := concurrency.SubmitWithArg(ctx, provider, func(ctx context.Context, idx int) {
+//       fmt.Println("任务", idx)
+//   }, 42)
 
 ### 2.4 AsyncOperation 实现
 
@@ -1484,7 +1503,7 @@ result := gp.SubmitWithResult(ctx, func(ctx context.Context) (string, error) {
 
 ---
 
-**文档版本**: v2.8
+**文档版本**: v2.9
 **最后更新**: 2026-02-23
 **Spike 状态**: ✅ 已批准（评审通过）
 **变更说明**:
@@ -1495,3 +1514,4 @@ result := gp.SubmitWithResult(ctx, func(ctx context.Context) (string, error) {
 - v2.6: 删除所有其他层章节，正文采用改进后的 GoroutineProvider 接口（统一使用 context）
 - v2.7: 批量方法支持 T（输入参数）和 R（返回值），添加 SubmitBatchWithArg/SubmitBatchWithArgAllErrors/SubmitBatchWithArgAndResult；添加 CronJobProvider 扩展章节
 - v2.8: 修复 CronJobProvider 实现中的类型错误（cronJobEntry.taskFunc 改为 func(context.Context)）
+- v2.9: **修复 Go 泛型限制**：接口方法改用 `any` 类型（Go 接口不支持泛型方法），通过独立辅助函数提供类型安全（内部使用类型断言优化）

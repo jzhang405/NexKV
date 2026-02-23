@@ -118,9 +118,9 @@ type OpOption func(*opConfig)
 
 // opConfig 操作配置
 type opConfig struct {
-	timeout            time.Duration
-	goroutineProvider  GoroutineProvider
-	lifecycle          *transport.AsyncLifecycle
+	timeout           time.Duration
+	goroutineProvider GoroutineProvider
+	lifecycle         *transport.AsyncLifecycle
 }
 
 // GoroutineProvider 协程池提供者接口（简化版，完整版在 concurrency 包）

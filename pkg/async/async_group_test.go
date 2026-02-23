@@ -18,13 +18,13 @@ import (
 
 // mockGroupCallback 模拟批量操作回调
 type mockGroupCallback[T any] struct {
-	successCount   int64
-	failureCount   int64
-	majorityCount  int64
-	fullDoneCount  int64
-	successValues  map[model.PeerID]T
-	failureErrors  map[model.PeerID]error
-	mu             sync.Mutex
+	successCount  int64
+	failureCount  int64
+	majorityCount int64
+	fullDoneCount int64
+	successValues map[model.PeerID]T
+	failureErrors map[model.PeerID]error
+	mu            sync.Mutex
 }
 
 func newMockGroupCallback[T any]() *mockGroupCallback[T] {
@@ -170,7 +170,9 @@ func TestNewGroup_WaitMajority(t *testing.T) {
 	}
 }
 
-// TestNewGroup_WaitMajority_AllSuccess 测试全部成功
+// TestNewGroup_WaitMajority_AllSuccess 测试多数派达成
+// 注意：WaitMajority 在多数派达成时返回（对于3节点，多数派是2）
+// 所以不一定包含所有3个结果
 func TestNewGroup_WaitMajority_AllSuccess(t *testing.T) {
 	ctx := context.Background()
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
@@ -181,11 +183,12 @@ func TestNewGroup_WaitMajority_AllSuccess(t *testing.T) {
 
 	result := group.WaitMajority(ctx)
 
-	// 全部成功
-	if len(result.SuccessPeers) != 3 {
-		t.Fatalf("expected 3 success peers, got: %d", len(result.SuccessPeers))
+	// 多数派达成：至少 2 个成功
+	if len(result.SuccessPeers) < 2 {
+		t.Fatalf("expected at least 2 success peers, got: %d", len(result.SuccessPeers))
 	}
 
+	// 没有失败
 	if len(result.FailedPeers) != 0 {
 		t.Fatalf("expected 0 failed peers, got: %d", len(result.FailedPeers))
 	}

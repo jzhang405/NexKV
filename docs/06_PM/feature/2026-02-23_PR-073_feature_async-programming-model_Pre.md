@@ -214,34 +214,37 @@ allResult := group.WaitAll(ctx)
 **3. GoroutineProvider 接口**
 
 ```go
+// GoroutineProvider 协程池提供者接口
+// ⚠️ 重要：Go 接口方法不能有类型参数（泛型），所以接口层使用 any 类型
+// 类型安全通过辅助函数（internal/infrastructure/concurrency/helpers.go）提供
 type GoroutineProvider interface {
-    // 基础方法 - 统一使用 context
+    // 基础方法 - 接口层用 any，辅助函数提供类型安全
     Submit(ctx context.Context, task func(context.Context)) error
-    SubmitWithArg[T any](ctx context.Context, task func(context.Context, T), arg T) error
-    SubmitWithResult[T any](ctx context.Context, task func(context.Context) (T, error)) Result[T]
-    SubmitWithArgAndResult[T any, R any](
+    SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error
+    SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) Result[any]
+    SubmitWithArgAndResult(
         ctx context.Context,
-        task func(context.Context, T) (R, error),
-        arg T,
-    ) Result[R]
+        task func(context.Context, any) (any, error),
+        arg any,
+    ) Result[any]
 
     // 快捷方法
     SubmitWithPriority(ctx context.Context, priority Priority, task func(context.Context)) error
     SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error
 
-    // 高级方法
-    SubmitAdvanced[T any, R any](
+    // 高级方法 - 接口层用 any
+    SubmitAdvanced(
         ctx context.Context,
-        task func(context.Context, T) (R, error),
-        arg T,
+        task func(context.Context, any) (any, error),
+        arg any,
         opts ...SubmitOption,
-    ) Result[R]
+    ) Result[any]
 
-    // 批量方法
+    // 批量方法 - 接口层用 any
     SubmitBatch(ctx context.Context, tasks []func(context.Context)) error
-    SubmitBatchWithArg[T any](ctx context.Context, tasks []func(context.Context, T), args []T) error
+    SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error
     SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error
-    SubmitBatchWithResult[R any](ctx context.Context, tasks []func(context.Context) (R, error)) []Result[R]
+    SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []Result[any]
 
     // 管理方法
     Stats() PoolStats
@@ -249,18 +252,27 @@ type GoroutineProvider interface {
     SetCapacity(capacity int) error
     Close() error
 }
+
+// 泛型辅助函数（在 helpers.go 中定义）
+// func SubmitWithArg[T any](ctx context.Context, provider GoroutineProvider, task func(context.Context, T), arg T) error
+// func SubmitWithResult[T any](ctx context.Context, provider GoroutineProvider, task func(context.Context) (T, error)) *TypedResult[T]
+// func SubmitWithArgAndResult[T any, R any](ctx context.Context, provider GoroutineProvider, task func(context.Context, T) (R, error), arg T) *TypedResult[R]
+// func SubmitAdvanced[T any, R any](ctx context.Context, provider GoroutineProvider, task func(context.Context, T) (R, error), arg T, opts ...SubmitOption) *TypedResult[R]
 ```
 
 **关键特性**：
+- ✅ **Go 泛型限制处理**：接口方法用 `any`，辅助函数提供类型安全
 - ✅ **统一 Context**：所有方法都使用 `context.Context`
-- ✅ **泛型支持**：`SubmitWithArg[T]`、`SubmitWithResult[T]` 等
 - ✅ **避免闭包陷阱**：通过参数传递而非闭包捕获
 - ✅ **优先级支持**：4 层优先级（Critical/High/Normal/Low）
 - ✅ **批量操作**：支持批量提交和错误收集
+- ✅ **类型安全**：辅助函数通过类型断言优化性能
 
 **3. CronJobProvider 扩展**
 
 ```go
+// CronJobProvider 定时任务提供者接口
+// ⚠️ 重要：Go 接口方法不能有类型参数（泛型），所以接口层使用 any 类型
 type CronJobProvider interface {
     // 生命周期
     Start()
@@ -273,10 +285,10 @@ type CronJobProvider interface {
     RegisterWithPriority(spec CronSpec, name string, priority Priority, task func(context.Context)) (string, error)
 
     // ======================================
-    // 带参数方法（避免闭包陷阱）✅ 新增
+    // 带参数方法（接口层用 any，避免闭包陷阱）✅ 新增
     // ======================================
-    RegisterWithArg[T any](spec CronSpec, name string, task func(context.Context, T), arg T) (string, error)
-    RegisterWithPriorityAndArg[T any](spec CronSpec, name string, priority Priority, task func(context.Context, T), arg T) (string, error)
+    RegisterWithArg(spec CronSpec, name string, task func(context.Context, any), arg any) (string, error)
+    RegisterWithPriorityAndArg(spec CronSpec, name string, priority Priority, task func(context.Context, any), arg any) (string, error)
 
     // 任务控制
     Pause(jobID string) error
@@ -287,11 +299,16 @@ type CronJobProvider interface {
     GetJob(jobID string) (*CronJobInfo, error)
     ListJobs() []*CronJobInfo
 }
+
+// 泛型辅助函数（在 cron_helpers.go 中定义）
+// func RegisterWithArg[T any](provider CronJobProvider, spec CronSpec, name string, task func(context.Context, T), arg T) (string, error)
+// func RegisterWithPriorityAndArg[T any](provider CronJobProvider, spec CronSpec, name string, priority Priority, task func(context.Context, T), arg T) (string, error)
 ```
 
 **关键特性**：
+- ✅ **Go 泛型限制处理**：接口方法用 `any`，辅助函数提供类型安全
 - ✅ **统一 Context**：所有任务都接收 `func(context.Context)`
-- ✅ **带参数支持**：`RegisterWithArg[T]` 避免闭包陷阱，类型安全
+- ✅ **带参数支持**：`RegisterWithArg` 避免闭包陷阱
 - ✅ **优先级集成**：定时任务提交到 GoroutineProvider 时保留优先级
 - ✅ **生命周期管理**：支持 Pause/Resume/Unregister
 - ✅ **与 GoroutineProvider 集成**：共享协程池资源
@@ -546,7 +563,7 @@ Week 3（可选）: 优化与文档
 
 ---
 
-**文档版本**: v1.1
+**文档版本**: v1.2
 **创建日期**: 2026-02-23
 **最后更新**: 2026-02-23
 **维护者**: 🤖 核心开发 A + 👤 架构师
@@ -557,3 +574,4 @@ Week 3（可选）: 优化与文档
 |------|------|----------|------|
 | v1.0 | 2026-02-23 | 初始版本创建 | 🤖 核心开发 A |
 | v1.1 | 2026-02-23 | 补充 AsyncGroup[T] 接口、细化测试场景、添加回滚计划 | 🤖 核心开发 A |
+| v1.2 | 2026-02-23 | 修复 Go 泛型限制：GoroutineProvider/CronJobProvider 接口方法改用 any 类型，通过辅助函数提供类型安全 | 🤖 核心开发 A |

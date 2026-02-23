@@ -15,6 +15,7 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.25
 	github.com/prometheus/client_golang v1.22.0
 	github.com/prometheus/client_model v0.6.2
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/sirupsen/logrus v1.9.4
 	github.com/sony/gobreaker v1.0.0
 	github.com/sourcegraph/conc v0.3.0

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jzhang405/NexKV/pkg/errors"
@@ -160,7 +161,7 @@ type AsyncOp[T any] struct {
 	status    OperationStatus
 	statusMu  sync.RWMutex
 	started   bool
-	discarded bool
+	discarded atomic.Bool // 使用 atomic.Bool 避免竞态条件
 	provider  GoroutineProvider // goroutine 提供者
 }
 
@@ -247,8 +248,8 @@ func (op *AsyncOp[T]) execute(ctx context.Context) {
 	op.started = true
 	op.statusMu.Unlock()
 
-	// 检查是否已丢弃
-	if op.discarded {
+	// 检查是否已丢弃（使用原子读取避免竞态）
+	if op.discarded.Load() {
 		op.statusMu.Lock()
 		op.status = StatusDiscarded
 		op.statusMu.Unlock()
@@ -343,7 +344,8 @@ func (op *AsyncOp[T]) Discard() error {
 		return errors.Wrapf(errors.ErrCompleted, "cannot discard operation in terminal state: %v", op.status)
 	}
 
-	op.discarded = true
+	// 使用原子写入避免竞态条件
+	op.discarded.Store(true)
 	op.status = StatusDiscarded
 	if op.cancel != nil {
 		op.cancel()

@@ -1,4 +1,4 @@
-# 【PR全流程文档】Refactor - P0-2 AsyncOperation 实现分层重构
+# 【PR全流程文档】Refactor - P0-2 AsyncOperation 激进重构
 
 > **文档说明**：本文档包含「前置规划」和「后置总结」两部分，记录从需求对齐到开发完成的全流程，一个PR对应一份全流程文档，归档后作为项目追溯依据。
 
@@ -13,7 +13,7 @@
 | 工作类型 | 重构（Refactor） |
 | PR编号 | PR-086（创建GitHub PR后补充完整） |
 | 分支名称 | feature/P0-2-async-operation-refactor |
-| 工作主题 | P0-2 AsyncOperation 实现分层重构（Part 1: 核心实现迁移） |
+| 工作主题 | P0-2 AsyncOperation 激进重构（一次性完成） |
 | 负责人 | Claude Code |
 | 分支创建日期 | 2026-02-24 |
 | 计划开工日期 | 2026-02-24 |
@@ -35,7 +35,7 @@
 1. **违反分层架构原则**：领域层（domain/service）包含具体实现代码
 2. **违反单一职责原则**：领域层承担了基础设施层的实现职责
 3. **违反依赖倒置原则**：部分实现直接依赖并发原语
-4. **AsyncOperation 双重实现问题**（见 `thoughts/2026-02-24-AsyncOperation双重实现问题分析与解决方案.md`）：
+4. **AsyncOperation 双重实现问题**：
    - `pkg/async/async_op.go` - 通用异步操作包
    - `internal/domain/service/rpc_async_impl.go` - 领域层 RPC 异步实现
    - 导致代码重复、维护困难
@@ -46,13 +46,11 @@
 - 消除双重实现，遵循 DRY 原则
 - 更好的可测试性和可维护性
 
-**参考文档**：
-- `thoughts/2026-02-24-AsyncOperation双重实现问题分析与解决方案.md`
-
 #### 2.2 核心目标（可量化、可验证）
 
 1. **重构目标**：
    - 将 `rpc_async_impl.go` 中的实现代码移动到 `internal/infrastructure/rpc/`
+   - **完全删除 `pkg/async` 双重实现**
    - 保持现有 API 兼容，不破坏现有调用方
    - 所有测试通过
 
@@ -81,10 +79,10 @@
 | 结果类型 (`AsyncBroadcastResult`, `QuorumResult` 等) | 领域模型 |
 | `BroadcastOption` 及相关类型 | 领域配置 |
 
-**本次不修改：**
-- `pkg/async/` 包中的独立实现（保持不变）
-- 其他领域层接口定义
-- 不修改 AsyncOperation 接口签名
+**删除的内容：**
+| 内容 | 说明 |
+|------|------|
+| `pkg/async/` 整个包 | 消除双重实现，统一使用领域层实现 |
 
 ---
 
@@ -92,32 +90,18 @@
 
 #### 3.1 整体流程设计
 
-采用**Part 1 方案：核心实现迁移**（推荐），分 3 步进行：
+采用**激进重构方案**：一次性完成所有步骤，预计 ~4 小时
 
-```mermaid
-flowchart TD
-    A[Step 1: 创建基础设施实现] --> B[Step 2: 迁移适配器]
-    B --> C[Step 3: 清理和验证]
-
-    subgraph Step 1
-        A1[创建 internal/infrastructure/rpc/async_rpc_impl.go]
-		A2["移动 asyncOpImpl[T] 结构体"]
-        A3[移动工厂函数]
-        A4[移动辅助函数]
-    end
-
-    subgraph Step 2
-        B1[创建 internal/infrastructure/rpc/async_rpc_adapter.go]
-        B2[移动 RPCAsyncAdapter]
-        B3[修改 import 指向 infrastructure]
-    end
-
-    subgraph Step 3
-        C1[删除 rpc_async_impl.go 中的实现]
-        C2[保留接口定义]
-        C3[运行完整测试]
-    end
-```
+| 步骤 | 内容 | 预计时间 |
+|------|------|----------|
+| Step 1 | 创建目录结构 `internal/infrastructure/rpc/` | 10分钟 |
+| Step 2 | 迁移实现代码（asyncOpImpl[T]、工厂函数、辅助函数） | 2小时 |
+| Step 3 | 创建适配器（RPCAsyncAdapter） | 30分钟 |
+| Step 4 | 重构领域层接口定义 | 30分钟 |
+| Step 5 | 删除原实现文件 `rpc_async_impl.go` | 5分钟 |
+| Step 6 | 更新所有引用（grep + 修改 import） | 30分钟 |
+| Step 7 | 删除 `pkg/async` 包 | 10分钟 |
+| Step 8 | 运行测试验证 | 30分钟 |
 
 **分层架构示意：**
 ```
@@ -142,29 +126,40 @@ flowchart TD
 
 #### 3.2 关键设计点
 
-**循环导入解决方案**：
-```
-问题分析：
-领域层 (domain/service) 定义接口
-    ↓ 导入
-基础设施层 (infrastructure/rpc) 实现接口
-    ↓ 导入
-领域层（需要使用领域类型 model.PeerID 等）
-    ↑ 循环导入！
+**依赖关系分析**：
 
-解决方案：
-- 领域层只保留接口定义（rpc_async.go）
-- 实现层 (infrastructure/rpc) 导入领域层
-- 领域层通过 import 引用实现层
-- Go 可以处理：domain -> model, infrastructure -> domain
+正确的依赖方向（无循环依赖）：
+```
+domain/model (领域模型)
+    ↑
+domain/service (领域服务接口)
+    ↑
+infrastructure/rpc (基础设施实现)
 ```
 
-**具体实施步骤（Part 1）**：
+**说明**：
+- `domain/model`: 定义领域模型（如 PeerID, Message）
+- `domain/service`: 定义服务接口（如 RPCAsync, AsyncOperation）
+- `infrastructure/rpc`: 实现接口，依赖 domain/service
+
+**无需担心循环依赖**：
+1. 领域层只定义接口，不实现
+2. 基础设施层实现接口，导入领域层
+3. 调用方负责组装依赖
+
+**具体实施步骤**：
 
 | 步骤 | 内容 | 预计时间 |
 |------|------|----------|
-| Step 1 | 创建 `internal/infrastructure/rpc/async_rpc_impl.go`，移动 asyncOpImpl[T]、工厂函数、辅助函数 | 1.5h |
-| Step 2 | 创建 `internal/infrastructure/rpc/async_rpc_adapter.go`，移动 RPCAsyncAdapter | 0.5h |
+| Step 1 | 创建目录结构 `internal/infrastructure/rpc/` | 10分钟 |
+| Step 2 | 迁移实现代码（asyncOpImpl[T]、工厂函数、辅助函数） | 2小时 |
+| Step 3 | 创建适配器（RPCAsyncAdapter） | 30分钟 |
+| Step 4 | 重构领域层接口定义 | 30分钟 |
+| Step 5 | 删除原实现文件 `rpc_async_impl.go` | 5分钟 |
+| Step 6 | 更新所有引用（grep + 修改 import） | 1.5小时 |
+| Step 7 | 删除 `pkg/async` 包 | 30分钟 |
+| Step 8 | 运行测试验证 | 1.5小时 |
+| **总计** | | **~6.5小时** |
 | Step 3 | 修改 `rpc_async.go` 中的 import，删除 `rpc_async_impl.go` 中的实现代码 | 0.5h |
 | Step 4 | 运行测试验证 | 0.5h |
 
@@ -174,20 +169,21 @@ flowchart TD
 
 | 风险点 | 影响等级（高/中/低） | 应对措施 |
 |--------|----------------------|----------|
-| 循环导入问题 | 中 | 使用类型别名或 pkg/errors 模式解决 |
+| 循环导入问题 | 中 | 使用接口抽象，避免直接依赖 |
 | 破坏现有 API | 高 | 保持接口签名不变，通过类型别名桥接 |
-| 引入新的 bug | 中 | 每个阶段独立测试，完整测试验证 |
-| 测试覆盖下降 | 低 | 测试跟随代码移动，确保覆盖率不变 |
-| AsyncOperation 双重实现 | 中 | Part 1 暂不解决，仅移动代码；后续 Part 2 再统一 |
-| 性能回退 | 中 | 使用 atomic 优化；基准测试验证 |
+| 编译错误 | 高 | 逐步修复，使用 IDE 自动重构 |
+| 测试失败 | 中 | 保留原测试，迁移后对比结果 |
+| 性能退化 | 低 | 添加基准测试，对比重构前后 |
+| 功能丢失 | 低 | 完整代码审查，逐行对比 |
 
 ---
 
 ### 5. 架构师评审记录（循环优化，直至通过）
 
-| 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见（含AI辅助修改） | 优化 | 优化措施结果 |
-|----------|----------|------------------|--------------|--------------------------|----------|
-| 第1轮 | 2026-02-24 | 待评审 | - | - | 待评审 |
+| 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施 | 优化结果 |
+|----------|----------|------------------|-------------|----------|----------|
+| 第1轮 | 2026-02-24 | DDD Agent | 1. 循环依赖描述错误（实际无循环）2. 时间估计偏乐观（4h→6.5h）3. 需确认 pkg/async 无其他依赖 | 1. 修正依赖方向2. 调整时间3. 确认无依赖 | 已修改 |
+| 第2轮 | 2026-02-24 | 待评审 | - | - | 待评审 |
 
 ---
 
@@ -281,21 +277,21 @@ flowchart TD
 - **状态**：推迟（记录为技术债务）
 - **优先级**：中（非阻塞）
 
-### 推荐解决方案
+### 采用方案：激进重构（Radical Refactor）
 
-**方案 A：渐进式重构（本次采用）**
+一次性完成所有重构，不留技术债务。
 
-| 阶段 | 内容 | 预计时间 |
+| 步骤 | 内容 | 预计时间 |
 |------|------|----------|
-| 阶段1 | 抽象核心接口 | 2小时 |
-| 阶段2 | 创建基础设施实现 | 3小时 |
-| 阶段3 | 迁移适配器 | 2小时 |
-| 阶段4 | 清理和验证 | 3小时 |
-
-**方案 B：引入应用层**
-- 需要新增应用层目录
-- 架构复杂度增加
-- 本次不采用
+| Step 1 | 创建目录结构 | 10分钟 |
+| Step 2 | 迁移实现代码 | 2小时 |
+| Step 3 | 创建适配器 | 30分钟 |
+| Step 4 | 重构领域层接口 | 30分钟 |
+| Step 5 | 删除原实现文件 | 5分钟 |
+| Step 6 | 更新所有引用 | 30分钟 |
+| Step 7 | 删除 pkg/async 包 | 10分钟 |
+| Step 8 | 测试验证 | 30分钟 |
+| **总计** | | **~4小时** |
 
 ### 相关文档
 - `docs/09_code-review/2026-02-24_DDD_Architecture_Review_PR-073.md`

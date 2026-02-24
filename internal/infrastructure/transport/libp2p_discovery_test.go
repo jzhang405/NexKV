@@ -22,7 +22,6 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/discovery"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/multiformats/go-multiaddr"
 )
 
 // TestDiscoveryService_HandlePeerFound 测试发现节点的处理
@@ -99,7 +98,11 @@ func TestNewDiscoveryService(t *testing.T) {
 	if err := discoverySvc.Start(ctx); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	defer discoverySvc.Stop()
+	defer func() {
+		if err := discoverySvc.Stop(); err != nil {
+			t.Logf("Stop failed: %v", err)
+		}
+	}()
 
 	// 等待 mDNS 服务启动
 	time.Sleep(200 * time.Millisecond)
@@ -189,13 +192,17 @@ func TestDiscoveryService_MultipleInstances(t *testing.T) {
 		// 先关闭 discovery 服务
 		for _, d := range discoveries {
 			if d != nil {
-				d.Stop()
+				if err := d.Stop(); err != nil {
+					t.Logf("Stop discovery failed: %v", err)
+				}
 			}
 		}
 		// 再关闭 transport
 		for _, tr := range transports {
 			if tr != nil {
-				tr.Close()
+				if err := tr.Close(); err != nil {
+					t.Logf("Close transport failed: %v", err)
+				}
 			}
 		}
 	}()

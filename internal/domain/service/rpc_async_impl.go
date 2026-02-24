@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -126,7 +127,8 @@ type asyncOpImpl[T any] struct {
 	errCh             chan error // P1-1: 同上
 	done              atomic.Bool
 	status            atomic.Int32 // 0=pending, 1=success, 2=failed, 3=canceled
-	callbacks         []func(T, error)
+	callbacks         map[string]func(T, error) // P1: 改为 map 支持回调注销
+	cbSeq             atomic.Int64              // P1: 回调 ID 序列号
 	cbMu              sync.RWMutex
 	value             T
 	err               error
@@ -138,7 +140,7 @@ func newAsyncOp[T any](provider GoroutineProvider) *asyncOpImpl[T] {
 	return &asyncOpImpl[T]{
 		resultCh:          make(chan T, 1),
 		errCh:             make(chan error, 1),
-		callbacks:         make([]func(T, error), 0),
+		callbacks:         make(map[string]func(T, error)),
 		goroutineProvider: provider,
 	}
 }
@@ -156,13 +158,13 @@ func (op *asyncOpImpl[T]) Await(ctx context.Context) (T, error) {
 	}
 }
 
-// OnComplete 注册完成回调
-func (op *asyncOpImpl[T]) OnComplete(callback func(T, error)) AsyncOperation[T] {
+// OnComplete 注册完成回调，返回回调 ID 用于注销
+func (op *asyncOpImpl[T]) OnComplete(callback func(T, error)) string {
 	return op.registerCallback(callback)
 }
 
-// OnError 注册错误回调
-func (op *asyncOpImpl[T]) OnError(callback func(error)) AsyncOperation[T] {
+// OnError 注册错误回调，返回回调 ID 用于注销
+func (op *asyncOpImpl[T]) OnError(callback func(error)) string {
 	return op.registerCallback(func(_ T, err error) {
 		if err != nil {
 			callback(err)
@@ -170,8 +172,8 @@ func (op *asyncOpImpl[T]) OnError(callback func(error)) AsyncOperation[T] {
 	})
 }
 
-// OnSuccess 注册成功回调
-func (op *asyncOpImpl[T]) OnSuccess(callback func(T)) AsyncOperation[T] {
+// OnSuccess 注册成功回调，返回回调 ID 用于注销
+func (op *asyncOpImpl[T]) OnSuccess(callback func(T)) string {
 	return op.registerCallback(func(v T, err error) {
 		if err == nil {
 			callback(v)
@@ -180,18 +182,21 @@ func (op *asyncOpImpl[T]) OnSuccess(callback func(T)) AsyncOperation[T] {
 }
 
 // registerCallback 通用的回调注册逻辑（P0: DRY 简化）
-func (op *asyncOpImpl[T]) registerCallback(callback func(T, error)) AsyncOperation[T] {
+// 返回回调 ID，用于后续注销
+func (op *asyncOpImpl[T]) registerCallback(callback func(T, error)) string {
 	op.cbMu.Lock()
 	defer op.cbMu.Unlock()
 
 	if op.done.Load() {
 		// 操作已完成，立即执行回调
 		go op.safeExecuteCallback(callback, op.value, op.err)
-		return op
+		return "" // 已完成，返回空 ID
 	}
 
-	op.callbacks = append(op.callbacks, callback)
-	return op
+	// 生成唯一回调 ID
+	id := fmt.Sprintf("cb_%d", op.cbSeq.Add(1))
+	op.callbacks[id] = callback
+	return id
 }
 
 // safeExecuteCallback 安全执行回调（P0: 统一 panic recovery）
@@ -301,12 +306,19 @@ func (op *asyncOpImpl[T]) IsStarted() bool {
 
 // OffComplete 注销完成回调（实现 pkg/async.AsyncOperation 接口）
 func (op *asyncOpImpl[T]) OffComplete(cbID string) error {
+	if cbID == "" {
+		return errors.New("callback ID cannot be empty")
+	}
+
 	op.cbMu.Lock()
 	defer op.cbMu.Unlock()
 
-	// 由于 service.AsyncOperation 使用切片存储回调而非 map，
-	// 这里简化实现：不支持通过 ID 注销
-	return errors.New("callback removal not supported in this implementation")
+	if _, exists := op.callbacks[cbID]; !exists {
+		return fmt.Errorf("callback ID %q not found", cbID)
+	}
+
+	delete(op.callbacks, cbID)
+	return nil
 }
 
 // ==========================================
@@ -326,22 +338,24 @@ func (op *timeoutAsyncOp[T]) Await(ctx context.Context) (T, error) {
 	return op.inner.Await(timeoutCtx)
 }
 
-// OnComplete 委托给内部操作
-func (op *timeoutAsyncOp[T]) OnComplete(callback func(T, error)) AsyncOperation[T] {
-	op.inner.OnComplete(callback)
-	return op
+// OnComplete 委托给内部操作，返回回调 ID
+func (op *timeoutAsyncOp[T]) OnComplete(callback func(T, error)) string {
+	return op.inner.OnComplete(callback)
 }
 
-// OnError 委托给内部操作
-func (op *timeoutAsyncOp[T]) OnError(callback func(error)) AsyncOperation[T] {
-	op.inner.OnError(callback)
-	return op
+// OnError 委托给内部操作，返回回调 ID
+func (op *timeoutAsyncOp[T]) OnError(callback func(error)) string {
+	return op.inner.OnError(callback)
 }
 
-// OnSuccess 委托给内部操作
-func (op *timeoutAsyncOp[T]) OnSuccess(callback func(T)) AsyncOperation[T] {
-	op.inner.OnSuccess(callback)
-	return op
+// OnSuccess 委托给内部操作，返回回调 ID
+func (op *timeoutAsyncOp[T]) OnSuccess(callback func(T)) string {
+	return op.inner.OnSuccess(callback)
+}
+
+// OffComplete 委托给内部操作
+func (op *timeoutAsyncOp[T]) OffComplete(cbID string) error {
+	return op.inner.OffComplete(cbID)
 }
 
 // WithTimeout 支持链式设置超时（P2-1: 返回新实例，保持不可变）
@@ -428,14 +442,6 @@ func (op *timeoutAsyncOp[T]) IsStarted() bool {
 	return true
 }
 
-// OffComplete 注销完成回调
-func (op *timeoutAsyncOp[T]) OffComplete(cbID string) error {
-	if o, ok := op.inner.(interface{ OffComplete(string) error }); ok {
-		return o.OffComplete(cbID)
-	}
-	return errors.New("offcomplete not supported")
-}
-
 // complete 完成操作（成功）
 func (op *asyncOpImpl[T]) complete(v T) {
 	if op.done.CompareAndSwap(false, true) {
@@ -466,8 +472,10 @@ func (op *asyncOpImpl[T]) fail(err error) {
 // executeCallbacks 执行回调（P1-1: 使用 GoroutineProvider）
 func (op *asyncOpImpl[T]) executeCallbacks(v T, err error) {
 	op.cbMu.RLock()
-	callbacks := make([]func(T, error), len(op.callbacks))
-	copy(callbacks, op.callbacks)
+	callbacks := make([]func(T, error), 0, len(op.callbacks))
+	for _, cb := range op.callbacks {
+		callbacks = append(callbacks, cb)
+	}
 	op.cbMu.RUnlock()
 
 	for _, cb := range callbacks {

@@ -267,14 +267,17 @@ type AsyncOperation[T any] interface {
 	// Await 阻塞等待结果
 	Await(ctx context.Context) (T, error)
 
-	// OnComplete 注册完成回调
-	OnComplete(callback func(T, error)) AsyncOperation[T]
+	// OnComplete 注册完成回调，返回回调 ID 用于注销
+	OnComplete(callback func(T, error)) string
 
-	// OnError 注册错误回调
-	OnError(callback func(error)) AsyncOperation[T]
+	// OnError 注册错误回调，返回回调 ID 用于注销
+	OnError(callback func(error)) string
 
-	// OnSuccess 注册成功回调
-	OnSuccess(callback func(T)) AsyncOperation[T]
+	// OnSuccess 注册成功回调，返回回调 ID 用于注销
+	OnSuccess(callback func(T)) string
+
+	// OffComplete 注销完成回调
+	OffComplete(cbID string) error
 
 	// WithTimeout 设置超时（P2-2: 链式超时设置）
 	WithTimeout(timeout time.Duration) AsyncOperation[T]

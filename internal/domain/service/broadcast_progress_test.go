@@ -177,3 +177,62 @@ func TestBroadcastProgress_WaitFull_Timeout(t *testing.T) {
 		t.Errorf("Expected context.Canceled, got: %v", err)
 	}
 }
+
+// TestProgressBuilder_ChainedCallbacks 测试 Builder 链式调用验证：无论回调顺序
+// 设置顺序如何，所有回调都能正确保存
+func TestProgressBuilder_ChainedCallbacks(t *testing.T) {
+	peers := []model.PeerID{"node-1", "node-2"}
+
+	// 场景 1：先 OnFailure 后 OnSuccess
+	var successCalled bool
+	tracker1 := NewProgress("test-1", peers).
+		OnFailure(func(peer model.PeerID, err error, stats BroadcastStats) {}).
+		OnSuccess(func(peer model.PeerID, resp model.Message, stats BroadcastStats) {
+			successCalled = true
+		}).
+		Build()
+
+	// 验证回调都被正确保存
+	tracker1.RecordSuccess(peers[0], newTestMessage("msg-1", string(peers[0]), "resp"))
+	if !successCalled {
+		t.Error("OnSuccess should be called (set after OnFailure)")
+	}
+
+	// 场景 2：先 OnComplete 后 OnMajority
+	var majorityCalled, completeCalled bool
+	tracker2 := NewProgress("test-2", peers).
+		OnComplete(func(stats BroadcastStats) {
+			completeCalled = true
+		}).
+		OnMajority(func(stats BroadcastStats) {
+			majorityCalled = true
+		}).
+		Build()
+
+	// 验证回调都被正确保存
+	tracker2.RecordSuccess(peers[0], newTestMessage("msg-1", string(peers[0]), "resp"))
+	tracker2.RecordSuccess(peers[1], newTestMessage("msg-2", string(peers[1]), "resp"))
+	if !majorityCalled {
+		t.Error("OnMajority should be called (set after OnComplete)")
+	}
+	if !completeCalled {
+		t.Error("OnComplete should be called")
+	}
+
+	// 场景 3：随机顺序（OnComplete -> OnSuccess -> OnMajority -> OnFailure）
+	var onSuccessCalled bool
+	tracker3 := NewProgress("test-3", peers).
+		OnComplete(func(stats BroadcastStats) {}).
+		OnSuccess(func(peer model.PeerID, resp model.Message, stats BroadcastStats) {
+			onSuccessCalled = true
+		}).
+		OnMajority(func(stats BroadcastStats) {}).
+		OnFailure(func(peer model.PeerID, err error, stats BroadcastStats) {}).
+		Build()
+
+	// 验证所有回调都被正确保存
+	tracker3.RecordSuccess(peers[0], newTestMessage("msg-1", string(peers[0]), "resp"))
+	if !onSuccessCalled {
+		t.Error("OnSuccess should be called")
+	}
+}

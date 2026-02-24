@@ -112,6 +112,8 @@ clean:
 	@echo "清理编译文件..."
 	rm -rf bin/
 	rm -f coverage.out *coverage.html *coverage*.out transport.test *.out
+	go clean -testcache
+	go clean -cache
 
 ## fmt: 格式化代码并运行静态检查
 fmt:

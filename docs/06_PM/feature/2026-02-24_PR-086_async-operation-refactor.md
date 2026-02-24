@@ -51,6 +51,9 @@
 1. **重构目标**：
    - 将 `rpc_async_impl.go` 中的实现代码移动到 `internal/infrastructure/rpc/`
    - **完全删除 `pkg/async` 双重实现**
+   - **修复 P1-2：消除 submitTask 直接创建 goroutine 的问题**
+   - **修复 P2-1：拆分 GoroutineProvider 接口**
+   - **修复 P2-2：领域对象命名业务化**
    - 保持现有 API 兼容，不破坏现有调用方
    - 所有测试通过
 

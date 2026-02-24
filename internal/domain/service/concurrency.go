@@ -8,18 +8,36 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
-// GoroutinePriority 任务优先级（类型别名）
-// 实际类型定义在 domain/model/goroutine.go
+// TaskPriority 任务优先级（业务化命名）
+// Deprecated: 使用 model.TaskPriority 代替
+type TaskPriority = model.TaskPriority
+
+// GoroutinePriority 是 TaskPriority 的别名，保持向后兼容
+// Deprecated: 使用 TaskPriority 代替
 type GoroutinePriority = model.GoroutinePriority
 
-// GoroutinePoolStats 协程池统计信息（类型别名）
+// TaskPoolStats 任务池统计信息（业务化命名）
+// Deprecated: 使用 model.TaskPoolStats 代替
+type TaskPoolStats = model.TaskPoolStats
+
+// GoroutinePoolStats 是 TaskPoolStats 的别名，保持向后兼容
+// Deprecated: 使用 TaskPoolStats 代替
 type GoroutinePoolStats = model.GoroutinePoolStats
 
-// GoroutineHealthStatus 健康状态（类型别名）
+// TaskHealthStatus 健康状态（业务化命名）
+// Deprecated: 使用 model.TaskHealthStatus 代替
+type TaskHealthStatus = model.TaskHealthStatus
+
+// GoroutineHealthStatus 是 TaskHealthStatus 的别名，保持向后兼容
+// Deprecated: 使用 TaskHealthStatus 代替
 type GoroutineHealthStatus = model.GoroutineHealthStatus
 
 // 常量别名（向后兼容）
 const (
+	TaskPriorityCritical   = model.TaskPriorityCritical
+	TaskPriorityHigh      = model.TaskPriorityHigh
+	TaskPriorityNormal    = model.TaskPriorityNormal
+	TaskPriorityLow       = model.TaskPriorityLow
 	GoroutinePriorityCritical = model.GoroutinePriorityCritical
 	GoroutinePriorityHigh     = model.GoroutinePriorityHigh
 	GoroutinePriorityNormal   = model.GoroutinePriorityNormal
@@ -27,7 +45,37 @@ const (
 )
 
 // ==========================================
-// GoroutineProvider 协程池提供者接口
+// 任务执行器接口（拆分后的小接口）
+// ==========================================
+
+// TaskExecutor 基础任务执行器接口（最小接口）
+// 适用于简单场景，只需要 Submit 方法
+type TaskExecutor interface {
+	Submit(ctx context.Context, task func(context.Context)) error
+}
+
+// TaskExecutorWithArg 带参数的任务执行器
+type TaskExecutorWithArg interface {
+	SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error
+}
+
+// TaskExecutorWithResult 带返回值的任务执行器
+type TaskExecutorWithResult interface {
+	SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) GoroutineResult[any]
+}
+
+// TaskScheduler 任务调度器（延迟任务）
+type TaskScheduler interface {
+	SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error
+}
+
+// TaskPriorityExecutor 优先级任务执行器
+type TaskPriorityExecutor interface {
+	SubmitWithPriority(ctx context.Context, priority TaskPriority, task func(context.Context)) error
+}
+
+// ==========================================
+// GoroutineProvider 协程池提供者接口（完整接口）
 // ==========================================
 
 // GoroutineProvider 协程池提供者接口

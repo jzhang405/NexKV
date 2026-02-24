@@ -1,4 +1,13 @@
 // Package service 定义领域服务接口
+//
+// 技术债务（P0-2）：rpc_async_impl.go 应该移动到基础设施层
+// 当前保留在领域层的原因：
+// 1. 避免循环导入问题
+// 2. 需要进一步重构领域层和基础设施层的边界
+// 3. 优先级：先修复 P1 问题（测试失败）
+//
+// TODO: 将 AsyncOperation 实现移动到 internal/infrastructure/rpc/
+// 参考：docs/09_code-review/2026-02-24_DDD_Architecture_Review_PR-073.md
 package service
 
 import (

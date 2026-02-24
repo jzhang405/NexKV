@@ -5,7 +5,6 @@ import (
 	"context"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
-	"github.com/multiformats/go-multiaddr"
 )
 
 // ==========================================
@@ -27,10 +26,10 @@ type DiscoveryService interface {
 
 // DiscoveryNotifee 节点发现通知接口
 // 当发现新节点时，基础设施层调用此接口
-// 注意：使用 multiaddr.Multiaddr 是因为发现服务与 libp2p 紧密耦合
+// 使用领域抽象 NetworkAddress，避免依赖具体技术实现
 type DiscoveryNotifee interface {
 	// HandlePeerFound 处理发现的节点
-	HandlePeerFound(peerID model.PeerID, addrs []multiaddr.Multiaddr)
+	HandlePeerFound(peerID model.PeerID, addrs []model.NetworkAddress)
 }
 
 // ==========================================
@@ -40,7 +39,7 @@ type DiscoveryNotifee interface {
 // DiscoveryEvent 发现事件
 type DiscoveryEvent struct {
 	PeerID model.PeerID
-	Addrs  []multiaddr.Multiaddr
+	Addrs  []model.NetworkAddress
 	Type   DiscoveryEventType
 }
 

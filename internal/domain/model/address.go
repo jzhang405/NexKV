@@ -1,25 +1,37 @@
 package model
 
-// NetworkAddress 网络地址（领域值对象）
+// NetworkAddress 网络地址接口（领域抽象）
 // 用于在领域层表示网络节点地址，不依赖具体的基础设施实现
-type NetworkAddress struct {
-	// Protocol 协议类型，如 "tcp", "udp", "ws" 等
-	Protocol string `json:"protocol"`
+// 基础设施层提供具体实现（如 libp2p address、TCP address 等）
+type NetworkAddress interface {
+	// String 返回地址字符串表示
+	String() string
 
-	// IP IP 地址
-	IP string `json:"ip"`
-
-	// Port 端口号
-	Port int `json:"port"`
-
-	// Raw 原始地址字符串（用于存储无法解析的地址格式）
-	Raw string `json:"raw,omitempty"`
+	// Protocol 返回协议类型（tcp、quic、ws 等）
+	Protocol() string
 }
 
-// String 返回地址字符串表示
-func (a NetworkAddress) String() string {
-	if a.Raw != "" {
-		return a.Raw
+// SimpleAddress 简单地址实现（领域层值对象）
+// 用于测试和简单场景
+type SimpleAddress struct {
+	addr     string
+	protocol string
+}
+
+// NewSimpleAddress 创建简单地址
+func NewSimpleAddress(addr, protocol string) *SimpleAddress {
+	return &SimpleAddress{
+		addr:     addr,
+		protocol: protocol,
 	}
-	return a.Protocol + "://" + a.IP + ":" + string(rune('0'+a.Port))
+}
+
+// String 实现 NetworkAddress 接口
+func (a *SimpleAddress) String() string {
+	return a.addr
+}
+
+// Protocol 实现 NetworkAddress 接口
+func (a *SimpleAddress) Protocol() string {
+	return a.protocol
 }

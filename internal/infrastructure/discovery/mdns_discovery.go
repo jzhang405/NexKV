@@ -10,7 +10,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
-	"github.com/multiformats/go-multiaddr"
 	"github.com/sirupsen/logrus"
 )
 
@@ -44,10 +43,9 @@ type mdnsNotifee struct {
 func (n *mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
 	// 转换为领域模型
 	peerID := model.PeerID(pi.ID.String())
-	addrs := make([]multiaddr.Multiaddr, len(pi.Addrs))
-	for i, addr := range pi.Addrs {
-		addrs[i] = addr
-	}
+
+	// ✅ 使用适配器转换地址，避免领域层依赖 libp2p
+	addrs := ConvertToDomainAddresses(pi.Addrs)
 
 	// 尝试连接
 	if err := n.host.Connect(context.Background(), pi); err != nil {
@@ -57,7 +55,7 @@ func (n *mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
 		}).Warn("failed to connect to discovered peer")
 	}
 
-	// 通知领域层
+	// 通知领域层（使用领域抽象）
 	if n.parent.notifee != nil {
 		n.parent.notifee.HandlePeerFound(peerID, addrs)
 	}

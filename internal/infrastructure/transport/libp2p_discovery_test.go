@@ -74,7 +74,7 @@ type testDiscoveryNotifee struct {
 }
 
 // HandlePeerFound 处理发现的节点
-func (n *testDiscoveryNotifee) HandlePeerFound(peerID model.PeerID, addrs []multiaddr.Multiaddr) {
+func (n *testDiscoveryNotifee) HandlePeerFound(peerID model.PeerID, addrs []model.NetworkAddress) {
 	// 测试实现，不做实际操作
 }
 

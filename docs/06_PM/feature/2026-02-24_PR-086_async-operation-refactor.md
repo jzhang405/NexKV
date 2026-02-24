@@ -324,6 +324,65 @@ op := rpcinfra.NewAsyncCall(ctx, rpc, peer, req, timeout, provider)
 - SingleTaskProgress（已有 asyncOpImpl）
 - MultiTaskProgress（BroadcastProgress 已支持）
 
+#### 7.4 BroadcastProgress Builder 伪代码示例
+
+```go
+// ========== 旧方式（现有）==========
+tracker := service.NewBroadcastProgress("task-001", peers)
+rpc.BroadcastCall(ctx, peers, req, service.ResponseMajority, tracker)
+tracker.WaitMajority(ctx)
+
+// ========== 新方式（Builder 模式）==========
+tracker := service.NewProgress("task-001", peers).
+    WithTimeout(10 * time.Second).
+    OnSuccess(func(peer model.PeerID, resp model.Message, stats service.BroadcastStats) {
+        log.Printf("✓ %s 成功", peer)
+    }).
+    OnFailure(func(peer model.PeerID, err error, stats service.BroadcastStats) {
+        log.Printf("✗ %s 失败: %v", peer, err)
+    }).
+    OnMajority(func(stats service.BroadcastStats) {
+        log.Printf("🎉 多数派达成! 成功: %d/%d", stats.SuccessCount, stats.TotalPeers)
+    }).
+    OnComplete(func(stats service.BroadcastStats) {
+        log.Printf("✅ 全部完成，成功率: %.1f%%", float64(stats.SuccessCount)/float64(stats.TotalPeers)*100)
+    }).
+    Build()
+
+rpc.BroadcastCall(ctx, peers, req, service.ResponseMajority, tracker)
+```
+
+#### 7.5 统一回调命名示例
+
+```go
+// 旧命名（将废弃）
+listener.OnMajorityReached(stats)  // ❌
+listener.OnFullDone(stats)         // ❌
+
+// 新命名
+listener.OnMajority(stats)   // ✅
+listener.OnComplete(stats)   // ✅
+
+// 向后兼容（可选）
+type BroadcastListener interface {
+    // 新命名
+    OnMajority(stats BroadcastStats)
+    OnComplete(stats BroadcastStats)
+    // 旧命名（兼容）
+    OnMajorityReached(stats BroadcastStats) // alias
+    OnFullDone(stats BroadcastStats)       // alias
+}
+```
+
+#### 7.6 待验证事项
+
+| 序号 | 待验证项 | 验证方法 | 状态 |
+|------|----------|----------|------|
+| 1 | pkg/async 无生产代码引用 | `grep -r "pkg/async" internal/` | ✅ 已确认 |
+| 2 | pkg/async 测试文件处理 | 确认测试迁移或删除方案 | ⏳ 待确认 |
+| 3 | OperationStatus 统一兼容性 | 编译检查 + 单元测试 | ⏳ 待确认 |
+| 4 | Builder 模式对现有代码影响 | 现有调用方式编译通过 | ⏳ 待确认 |
+
 ---
 
 ## 第二部分：流程节点记录（开发/CI过程追溯）

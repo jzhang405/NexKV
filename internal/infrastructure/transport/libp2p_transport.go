@@ -55,6 +55,7 @@ type Config struct {
 	ListenAddr      string
 	DiscoveryTag    string
 	EnableDiscovery bool
+	Provider        service.GoroutineProvider // 协程池提供者（用于 Discovery）
 }
 
 // DefaultConfig 返回默认配置
@@ -97,7 +98,10 @@ func NewLibp2pTransport(ctx context.Context, cfg *Config) (*Libp2pTransport, err
 	}
 
 	if cfg.EnableDiscovery {
-		t.discovery = NewDiscoveryService(h, cfg.DiscoveryTag, childCtx, &t.wg)
+		if cfg.Provider == nil {
+			return nil, service.Wrap(service.ErrInvalidParam, "GoroutineProvider is required when discovery is enabled")
+		}
+		t.discovery = NewDiscoveryService(h, cfg.DiscoveryTag, cfg.Provider)
 	}
 
 	return t, nil

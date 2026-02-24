@@ -6,7 +6,8 @@
 //
 // http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law is distributed on an "AS IS" BASIS,
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
@@ -14,7 +15,6 @@
 package transport
 
 import (
-	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +28,7 @@ import (
 // TestDiscoveryService_HandlePeerFound 测试发现节点的处理
 func TestDiscoveryService_HandlePeerFound(t *testing.T) {
 	ctx := t.Context()
+	provider := newMockGoroutineProvider()
 
 	// 创建本地 host
 	localTr, err := NewLibp2pTransport(ctx, &Config{EnableDiscovery: false})
@@ -44,7 +45,7 @@ func TestDiscoveryService_HandlePeerFound(t *testing.T) {
 	defer remoteTr.Close()
 
 	// 创建 discovery service
-	d := discovery.NewMDNSDiscovery(localTr.host, "nexkv-test")
+	d := discovery.NewMDNSDiscovery(localTr.host, "nexkv-test", provider)
 
 	// 获取 remote host 的地址信息
 	remoteAddrInfo := peer.AddrInfo{
@@ -80,6 +81,7 @@ func (n *testDiscoveryNotifee) HandlePeerFound(peerID model.PeerID, addrs []mult
 // TestNewDiscoveryService 测试创建发现服务
 func TestNewDiscoveryService(t *testing.T) {
 	ctx := t.Context()
+	provider := newMockGoroutineProvider()
 
 	tr, err := NewLibp2pTransport(ctx, &Config{EnableDiscovery: false})
 	if err != nil {
@@ -87,12 +89,15 @@ func TestNewDiscoveryService(t *testing.T) {
 	}
 	defer tr.Close()
 
-	var wg sync.WaitGroup
-
 	// 创建发现服务
-	discoverySvc := NewDiscoveryService(tr.host, "nexkv-test-discovery", ctx, &wg)
+	discoverySvc := NewDiscoveryService(tr.host, "nexkv-test-discovery", provider)
 	if discoverySvc == nil {
 		t.Fatal("NewDiscoveryService returned nil")
+	}
+
+	// 启动服务
+	if err := discoverySvc.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
 	}
 	defer discoverySvc.Stop()
 
@@ -105,7 +110,7 @@ func TestNewDiscoveryService(t *testing.T) {
 // TestDiscoveryService_Stop 测试停止发现服务
 func TestDiscoveryService_Stop(t *testing.T) {
 	ctx := t.Context()
-	var wg sync.WaitGroup
+	provider := newMockGoroutineProvider()
 
 	tr, err := NewLibp2pTransport(ctx, &Config{EnableDiscovery: false})
 	if err != nil {
@@ -113,9 +118,14 @@ func TestDiscoveryService_Stop(t *testing.T) {
 	}
 	defer tr.Close()
 
-	discoverySvc := NewDiscoveryService(tr.host, "nexkv-test-stop", ctx, &wg)
+	discoverySvc := NewDiscoveryService(tr.host, "nexkv-test-stop", provider)
 	if discoverySvc == nil {
 		t.Fatal("NewDiscoveryService returned nil")
+	}
+
+	// 启动服务
+	if err := discoverySvc.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
 	}
 
 	// 等待服务启动
@@ -133,15 +143,13 @@ func TestDiscoveryService_Stop(t *testing.T) {
 		t.Logf("Second stop returned: %v", err)
 	}
 
-	// 等待所有 goroutine 完成
-	wg.Wait()
-
 	t.Log("Discovery service stop test completed")
 }
 
 // TestDiscoveryService_InvalidPeer 测试发现无效节点
 func TestDiscoveryService_InvalidPeer(t *testing.T) {
 	ctx := t.Context()
+	provider := newMockGoroutineProvider()
 
 	tr, err := NewLibp2pTransport(ctx, &Config{EnableDiscovery: false})
 	if err != nil {
@@ -150,7 +158,7 @@ func TestDiscoveryService_InvalidPeer(t *testing.T) {
 	defer tr.Close()
 
 	// 创建 discovery service
-	d := discovery.NewMDNSDiscovery(tr.host, "nexkv-test")
+	d := discovery.NewMDNSDiscovery(tr.host, "nexkv-test", provider)
 
 	// 创建 notifee
 	notifee := &testDiscoveryNotifee{host: tr.host}
@@ -170,8 +178,7 @@ func TestDiscoveryService_InvalidPeer(t *testing.T) {
 // TestDiscoveryService_MultipleInstances 测试多个发现服务实例
 func TestDiscoveryService_MultipleInstances(t *testing.T) {
 	ctx := t.Context()
-
-	var wg sync.WaitGroup
+	provider := newMockGoroutineProvider()
 
 	// P0 修复：使用切片收集资源，避免在循环中使用 defer
 	var transports []*Libp2pTransport
@@ -201,11 +208,16 @@ func TestDiscoveryService_MultipleInstances(t *testing.T) {
 		}
 		transports = append(transports, tr)
 
-		discoverySvc := NewDiscoveryService(tr.host, "nexkv-multi-test", ctx, &wg)
+		discoverySvc := NewDiscoveryService(tr.host, "nexkv-multi-test", provider)
 		if discoverySvc == nil {
 			t.Fatalf("NewDiscoveryService %d returned nil", i)
 		}
 		discoveries = append(discoveries, discoverySvc)
+
+		// 启动服务
+		if err := discoverySvc.Start(ctx); err != nil {
+			t.Fatalf("Start discovery %d failed: %v", i, err)
+		}
 	}
 
 	// 等待服务启动

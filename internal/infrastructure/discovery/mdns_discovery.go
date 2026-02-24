@@ -64,15 +64,8 @@ func (n *mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
 }
 
 // NewMDNSDiscovery 创建 mDNS 发现服务
-func NewMDNSDiscovery(h host.Host, tag string) *MDNSDiscovery {
-	return &MDNSDiscovery{
-		host: h,
-		tag:  tag,
-	}
-}
-
-// NewMDNSDiscoveryWithProvider 创建带 GoroutineProvider 的 mDNS 发现服务
-func NewMDNSDiscoveryWithProvider(h host.Host, tag string, provider service.GoroutineProvider) *MDNSDiscovery {
+// provider 是必要参数，用于管理 goroutine 生命周期
+func NewMDNSDiscovery(h host.Host, tag string, provider service.GoroutineProvider) *MDNSDiscovery {
 	return &MDNSDiscovery{
 		host:     h,
 		tag:      tag,
@@ -101,7 +94,7 @@ func (d *MDNSDiscovery) Start(ctx context.Context) error {
 	// 创建 mDNS 服务
 	d.mdnsSvc = mdns.NewMdnsService(d.host, d.tag, notifee)
 
-	// 启动 mDNS 服务（使用 GoroutineProvider 或直接使用 goroutine）
+	// 启动 mDNS 服务（使用 GoroutineProvider）
 	d.wg.Add(1)
 	startFunc := func(ctx context.Context) {
 		defer d.wg.Done()
@@ -112,11 +105,7 @@ func (d *MDNSDiscovery) Start(ctx context.Context) error {
 		<-d.ctx.Done()
 	}
 
-	if d.provider != nil {
-		_ = d.provider.Submit(d.ctx, startFunc)
-	} else {
-		go startFunc(d.ctx)
-	}
+	_ = d.provider.Submit(d.ctx, startFunc)
 
 	d.started = true
 	discoveryLog.WithField("tag", d.tag).Info("mDNS discovery service started")
@@ -157,25 +146,4 @@ func (d *MDNSDiscovery) SetNotifee(notifee service.DiscoveryNotifee) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.notifee = notifee
-}
-
-// SetProvider 设置 GoroutineProvider
-func (d *MDNSDiscovery) SetProvider(provider service.GoroutineProvider) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.provider = provider
-}
-
-// ==========================================
-// 工厂函数
-// ==========================================
-
-// NewDiscoveryService 创建 DiscoveryService 实例（工厂函数）
-func NewDiscoveryService(h host.Host, tag string) service.DiscoveryService {
-	return NewMDNSDiscovery(h, tag)
-}
-
-// NewDiscoveryServiceWithProvider 创建带 GoroutineProvider 的 DiscoveryService 实例
-func NewDiscoveryServiceWithProvider(h host.Host, tag string, provider service.GoroutineProvider) service.DiscoveryService {
-	return NewMDNSDiscoveryWithProvider(h, tag, provider)
 }

@@ -43,8 +43,10 @@ type pendingCall struct {
 }
 
 // NewLibp2pRPC 创建 libp2p RPC 实例
-// provider 参数可选，为 nil 时直接使用 goroutine
 func NewLibp2pRPC(transport service.Transport, provider service.GoroutineProvider, config *service.RPCConfig) *Libp2pRPC {
+	if provider == nil {
+		panic("GoroutineProvider is required, cannot be nil")
+	}
 	if config == nil {
 		config = service.DefaultRPCConfig()
 	}
@@ -120,21 +122,12 @@ func (r *Libp2pRPC) CallAsync(ctx context.Context, to model.PeerID, req model.Me
 		return service.ErrCanceled
 	}
 
-	if r.provider != nil {
-		_ = r.provider.Submit(ctx, func(ctx context.Context) {
-			resp, err := r.Call(ctx, to, req)
-			if cb != nil {
-				cb(resp, err)
-			}
-		})
-	} else {
-		go func() {
-			resp, err := r.Call(ctx, to, req)
-			if cb != nil {
-				cb(resp, err)
-			}
-		}()
-	}
+	_ = r.provider.Submit(ctx, func(ctx context.Context) {
+		resp, err := r.Call(ctx, to, req)
+		if cb != nil {
+			cb(resp, err)
+		}
+	})
 
 	return nil
 }
@@ -255,13 +248,9 @@ func (r *Libp2pRPC) BroadcastAsync(
 		}
 	}
 
-	if r.provider != nil {
-		_ = r.provider.Submit(ctx, func(ctx context.Context) {
-			execFunc()
-		})
-	} else {
-		go execFunc()
-	}
+	_ = r.provider.Submit(ctx, func(ctx context.Context) {
+		execFunc()
+	})
 
 	return nil
 }
@@ -328,11 +317,7 @@ func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []m
 			}
 		}
 
-		if r.provider != nil {
-			_ = r.provider.SubmitWithArg(ctx, task, i)
-		} else {
-			go task(ctx, i)
-		}
+		_ = r.provider.SubmitWithArg(ctx, task, i)
 	}
 
 	// 等待所有发送完成
@@ -430,11 +415,7 @@ func (r *Libp2pRPC) WriteVCall(
 			}
 		}
 
-		if r.provider != nil {
-			_ = r.provider.SubmitWithArg(ctx, task, i)
-		} else {
-			go task(ctx, i)
-		}
+		_ = r.provider.SubmitWithArg(ctx, task, i)
 	}
 
 	wg.Wait()
@@ -543,11 +524,7 @@ func (r *Libp2pRPC) doSendRequestAndWaitResponse(ctx context.Context, to model.P
 		r.handleResponse(req.ID(), service.ResponseMsg{Msg: resp, Err: nil})
 	}
 
-	if r.provider != nil {
-		_ = r.provider.Submit(ctx, readFunc)
-	} else {
-		go readFunc(ctx)
-	}
+	_ = r.provider.Submit(ctx, readFunc)
 
 	return nil
 }
@@ -681,11 +658,7 @@ func (r *Libp2pRPC) broadcastFireAndForget(
 			}
 		}
 
-		if r.provider != nil {
-			_ = r.provider.SubmitWithArg(ctx, task, peer)
-		} else {
-			go task(ctx, peer)
-		}
+		_ = r.provider.SubmitWithArg(ctx, task, peer)
 	}
 
 	// 立即返回（不等待发送完成）
@@ -767,11 +740,7 @@ func (r *Libp2pRPC) broadcastAndWait(
 		}
 
 		args := []any{i, peer}
-		if r.provider != nil {
-			_ = r.provider.SubmitWithArg(ctx, task, args)
-		} else {
-			go task(ctx, args)
-		}
+		_ = r.provider.SubmitWithArg(ctx, task, args)
 	}
 
 	wg.Wait()
@@ -796,10 +765,13 @@ func (r *Libp2pRPC) HandleIncomingStream(stream service.Stream) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() {
-		<-r.closeCh
-		cancel()
-	}()
+	_ = r.provider.Submit(ctx, func(ctx context.Context) {
+		select {
+		case <-r.closeCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	})
 
 	// P1-5 修复：使用 StreamCodec 读取消息（支持大消息和分帧）
 	msg, err := r.streamCodec.DecodeFromReader(stream)

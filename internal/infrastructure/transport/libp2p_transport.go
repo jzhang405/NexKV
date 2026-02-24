@@ -37,7 +37,7 @@ var _ service.Transport = (*Libp2pTransport)(nil)
 type Libp2pTransport struct {
 	mu        sync.RWMutex
 	host      host.Host
-	discovery *DiscoveryService
+	discovery service.DiscoveryService
 	codec     *LengthPrefixedCodec
 	acceptor  *streamAcceptor // 流接受器
 
@@ -438,7 +438,7 @@ func (t *Libp2pTransport) Close() error {
 
 	// 3.2 关闭 discovery
 	if t.discovery != nil {
-		if err := t.discovery.Close(); err != nil {
+		if err := t.discovery.Stop(); err != nil {
 			errs = append(errs, service.Wrap(err, "close discovery"))
 		}
 	}

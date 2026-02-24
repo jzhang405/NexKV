@@ -192,9 +192,17 @@ func NewOp[T any](
 	// 执行任务
 	if provider != nil {
 		// 使用 GoroutineProvider
-		_ = provider.Submit(ctx, func(innerCtx context.Context) {
+		if err := provider.Submit(ctx, func(innerCtx context.Context) {
 			op.execute(innerCtx)
-		})
+		}); err != nil {
+			// 提交失败，立即标记操作失败
+			op.statusMu.Lock()
+			op.status = StatusFailed
+			op.err = errors.Wrapf(errors.ErrAsyncExecFailed, "submit task failed: %v", err)
+			op.statusMu.Unlock()
+			close(op.done)
+			op.resultCh <- Result[T]{Err: op.err}
+		}
 	} else {
 		// 直接启动 goroutine
 		go op.execute(ctx)
@@ -206,6 +214,7 @@ func NewOp[T any](
 // execute 执行异步操作
 func (op *AsyncOp[T]) execute(ctx context.Context) {
 	defer close(op.done)
+	defer op.cancel() // 确保 context 被清理，防止泄漏
 
 	// 更新状态为运行中
 	op.statusMu.Lock()
@@ -303,6 +312,13 @@ func (op *AsyncOp[T]) Discard() error {
 	if op.cancel != nil {
 		op.cancel()
 	}
+
+	// Channel 泄漏防护：启动 goroutine 消费结果
+	// 确保即使调用者不读取，channel 也不会阻塞
+	go func() {
+		<-op.resultCh
+	}()
+
 	return nil
 }
 

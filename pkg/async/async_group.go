@@ -236,6 +236,17 @@ func (g *AsyncGroup[T]) WaitAny(ctx context.Context) (model.PeerID, T, error) {
 }
 
 // WaitMajority 等待多数派完成
+//
+// 语义说明：
+//   - 多数派定义：成功数 >= (总数/2 + 1)
+//   - 触发条件：
+//     1. 成功数达到多数派阈值
+//     2. 或者全部操作完成（即使未达到多数派）
+//   - 返回值：包含截至触发时刻的所有结果（成功 + 失败）
+//
+// 典型用例：
+//   - 写入 Quorum：需要多数派确认
+//   - 读取 Quorum：需要多数派响应后选择最新值
 func (g *AsyncGroup[T]) WaitMajority(ctx context.Context) GroupResult[T] {
 	select {
 	case <-g.majorityDone:
@@ -321,4 +332,21 @@ func (g *AsyncGroup[T]) getResult() GroupResult[T] {
 	}
 
 	return result
+}
+
+// Close 释放资源
+// 取消所有未完成的操作并清理内部状态
+// 这是资源管理的最佳实践，确保不会有 goroutine 泄漏
+func (g *AsyncGroup[T]) Close() error {
+	// 取消所有操作
+	_ = g.CancelAll()
+
+	// 取消 context
+	g.mu.Lock()
+	if g.cancel != nil {
+		g.cancel()
+	}
+	g.mu.Unlock()
+
+	return nil
 }

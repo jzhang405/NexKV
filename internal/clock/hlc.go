@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/jzhang405/NexKV/internal/metadata/types"
 	"math"
 	"sync"
 	"time"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/metadata/types"
 )
 
 // HLC 混合逻辑时钟
@@ -298,4 +300,25 @@ func (h *HLC) IsAtMaxValue() bool {
 	// HLC 的物理时间是 48-bit，最大值是 (1 << 48) - 1
 	maxPT := int64((1 << 48) - 1)
 	return h.pt == maxPT && h.c == MaxLogicalCounter
+}
+
+// ToModelHLC 转换为 domain/model.HLC
+func (h *HLC) ToModelHLC() *model.HLC {
+	if h == nil {
+		return nil
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return model.NewHLCWithTime(h.pt, h.c)
+}
+
+// FromModelHLC 从 domain/model.HLC 创建
+func FromModelHLC(m *model.HLC) *HLC {
+	if m == nil {
+		return nil
+	}
+	return &HLC{
+		pt: m.PhysicalTime(),
+		c:  m.LogicalCounter(),
+	}
 }

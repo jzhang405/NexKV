@@ -3,52 +3,27 @@ package service
 
 import (
 	"context"
-	"time"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
-// ==========================================
-// CronJobProvider 定时任务提供者接口
-// ==========================================
+// CronSpec Cron 表达式（类型别名）
+// 实际类型定义在 domain/model/cron_job.go
+type CronSpec = model.CronSpec
 
-// CronSpec Cron 表达式
-type CronSpec string
+// CronJobStatus 定时任务状态（类型别名）
+type CronJobStatus = model.CronJobStatus
 
-// CronJobStatus 定时任务状态
-type CronJobStatus int32
+// CronJobInfo 定时任务信息（类型别名）
+type CronJobInfo = model.CronJobInfo
 
+// 常量别名（向后兼容）
 const (
-	CronJobStatusScheduled CronJobStatus = iota
-	CronJobStatusRunning
-	CronJobStatusPaused
-	CronJobStatusStopped
+	CronJobStatusScheduled = model.CronJobStatusScheduled
+	CronJobStatusRunning   = model.CronJobStatusRunning
+	CronJobStatusPaused    = model.CronJobStatusPaused
+	CronJobStatusStopped   = model.CronJobStatusStopped
 )
-
-// String 返回状态字符串
-func (s CronJobStatus) String() string {
-	switch s {
-	case CronJobStatusScheduled:
-		return "scheduled"
-	case CronJobStatusRunning:
-		return "running"
-	case CronJobStatusPaused:
-		return "paused"
-	case CronJobStatusStopped:
-		return "stopped"
-	default:
-		return "unknown"
-	}
-}
-
-// CronJobInfo 定时任务信息
-type CronJobInfo struct {
-	ID        string
-	Name      string
-	Spec      CronSpec
-	Status    CronJobStatus
-	NextRun   time.Time
-	LastRun   *time.Time
-	CreatedAt time.Time
-}
 
 // CronJobProvider 定时任务提供者接口
 // 注意：由于 Go 接口限制，接口方法不能有类型参数

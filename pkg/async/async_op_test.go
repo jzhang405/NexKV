@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/concurrency"
 )
@@ -99,7 +100,7 @@ func (m *mockGoroutineProvider) Stats() service.GoroutinePoolStats {
 }
 
 func (m *mockGoroutineProvider) Health() service.GoroutineHealthStatus {
-	return service.GoroutineHealthStatusHealthy
+	return model.GoroutineHealthStatusHealthy
 }
 
 func (m *mockGoroutineProvider) SetCapacity(capacity int) error {

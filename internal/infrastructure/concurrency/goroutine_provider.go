@@ -4,6 +4,7 @@ package concurrency
 import (
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/pkg/errors"
 )
@@ -52,9 +53,9 @@ const (
 
 const (
 	// HealthStatusHealthy 健康
-	HealthStatusHealthy = service.GoroutineHealthStatusHealthy
+	HealthStatusHealthy = model.GoroutineHealthStatusHealthy
 	// HealthStatusUnhealthy 不健康
-	HealthStatusUnhealthy = service.GoroutineHealthStatusUnhealthy
+	HealthStatusUnhealthy = model.GoroutineHealthStatusUnhealthy
 )
 
 // ==========================================

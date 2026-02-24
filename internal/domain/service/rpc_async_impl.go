@@ -13,6 +13,62 @@ import (
 	pkgerrors "github.com/jzhang405/NexKV/pkg/errors"
 )
 
+// ==========================================
+// OperationStatus 操作状态定义（兼容 pkg/async）
+// ==========================================
+
+// OperationStatus 操作状态
+type OperationStatus int
+
+const (
+	// StatusPending 操作待执行
+	StatusPending OperationStatus = iota
+	// StatusRunning 操作正在执行
+	StatusRunning
+	// StatusCompleted 操作成功完成
+	StatusCompleted
+	// StatusFailed 操作失败
+	StatusFailed
+	// StatusCanceled 操作被取消
+	StatusCanceled
+	// StatusDiscarded 操作结果被丢弃
+	StatusDiscarded
+	// StatusTimeout 操作超时
+	StatusTimeout
+)
+
+// IsTerminal 检查是否为终态
+func (s OperationStatus) IsTerminal() bool {
+	switch s {
+	case StatusCompleted, StatusFailed, StatusCanceled, StatusDiscarded, StatusTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+// String 返回状态字符串表示
+func (s OperationStatus) String() string {
+	switch s {
+	case StatusPending:
+		return "pending"
+	case StatusRunning:
+		return "running"
+	case StatusCompleted:
+		return "completed"
+	case StatusFailed:
+		return "failed"
+	case StatusCanceled:
+		return "canceled"
+	case StatusDiscarded:
+		return "discarded"
+	case StatusTimeout:
+		return "timeout"
+	default:
+		return "unknown"
+	}
+}
+
 // P0-2: 输入验证错误定义
 var (
 	// ErrTargetsMsgsMismatch targets 和 msgs 长度不匹配
@@ -192,6 +248,68 @@ func (op *asyncOpImpl[T]) IsCanceled() bool {
 }
 
 // ==========================================
+// pkg/async.AsyncOperation[T] 接口实现
+// ==========================================
+
+// Get 实现 pkg/async.AsyncOperation 接口 - 阻塞等待结果
+func (op *asyncOpImpl[T]) Get(ctx context.Context) (T, error) {
+	return op.Await(ctx)
+}
+
+// Status 返回操作状态（映射到 OperationStatus）
+func (op *asyncOpImpl[T]) Status() OperationStatus {
+	switch op.status.Load() {
+	case 0:
+		return StatusPending
+	case 1:
+		return StatusCompleted
+	case 2:
+		return StatusFailed
+	case 3:
+		return StatusCanceled
+	default:
+		return StatusPending
+	}
+}
+
+// Cancel 取消操作
+func (op *asyncOpImpl[T]) Cancel() (bool, error) {
+	if op.done.Load() {
+		return false, errors.New("operation already completed")
+	}
+	op.status.Store(3)
+	op.done.Store(true)
+	var zero T
+	select {
+	case op.errCh <- errors.New("operation canceled"):
+	default:
+	}
+	op.executeCallbacks(zero, errors.New("operation canceled"))
+	return true, nil
+}
+
+// Discard 丢弃结果
+func (op *asyncOpImpl[T]) Discard() error {
+	_, err := op.Cancel()
+	return err
+}
+
+// IsStarted 检查是否已启动
+func (op *asyncOpImpl[T]) IsStarted() bool {
+	return true // asyncOpImpl 创建时即启动
+}
+
+// OffComplete 注销完成回调（实现 pkg/async.AsyncOperation 接口）
+func (op *asyncOpImpl[T]) OffComplete(cbID string) error {
+	op.cbMu.Lock()
+	defer op.cbMu.Unlock()
+
+	// 由于 service.AsyncOperation 使用切片存储回调而非 map，
+	// 这里简化实现：不支持通过 ID 注销
+	return errors.New("callback removal not supported in this implementation")
+}
+
+// ==========================================
 // timeoutAsyncOp 超时包装器（P2-2）
 // ==========================================
 
@@ -257,6 +375,65 @@ func (op *timeoutAsyncOp[T]) IsFailed() bool {
 // IsCanceled 委托给内部操作
 func (op *timeoutAsyncOp[T]) IsCanceled() bool {
 	return op.inner.IsCanceled()
+}
+
+// ==========================================
+// pkg/async.AsyncOperation[T] 接口实现（timeoutAsyncOp）
+// ==========================================
+
+// Get 实现 pkg/async.AsyncOperation 接口
+func (op *timeoutAsyncOp[T]) Get(ctx context.Context) (T, error) {
+	return op.Await(ctx)
+}
+
+// Status 返回操作状态
+func (op *timeoutAsyncOp[T]) Status() OperationStatus {
+	// 委托给内部操作（如果实现了 Status 方法）
+	if s, ok := op.inner.(interface{ Status() OperationStatus }); ok {
+		return s.Status()
+	}
+	if op.inner.IsDone() {
+		if op.inner.IsSuccess() {
+			return StatusCompleted
+		} else if op.inner.IsFailed() {
+			return StatusFailed
+		} else if op.inner.IsCanceled() {
+			return StatusCanceled
+		}
+	}
+	return StatusPending
+}
+
+// Cancel 取消操作
+func (op *timeoutAsyncOp[T]) Cancel() (bool, error) {
+	if c, ok := op.inner.(interface{ Cancel() (bool, error) }); ok {
+		return c.Cancel()
+	}
+	return false, errors.New("cancel not supported")
+}
+
+// Discard 丢弃结果
+func (op *timeoutAsyncOp[T]) Discard() error {
+	if d, ok := op.inner.(interface{ Discard() error }); ok {
+		return d.Discard()
+	}
+	return errors.New("discard not supported")
+}
+
+// IsStarted 检查是否已启动
+func (op *timeoutAsyncOp[T]) IsStarted() bool {
+	if s, ok := op.inner.(interface{ IsStarted() bool }); ok {
+		return s.IsStarted()
+	}
+	return true
+}
+
+// OffComplete 注销完成回调
+func (op *timeoutAsyncOp[T]) OffComplete(cbID string) error {
+	if o, ok := op.inner.(interface{ OffComplete(string) error }); ok {
+		return o.OffComplete(cbID)
+	}
+	return errors.New("offcomplete not supported")
 }
 
 // complete 完成操作（成功）

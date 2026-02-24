@@ -367,8 +367,15 @@ func TestNewGroup_Callback(t *testing.T) {
 	// 等待全部完成
 	_ = group.WaitAll(ctx)
 
-	// 等待回调执行
-	time.Sleep(200 * time.Millisecond)
+	// 轮询等待回调执行完成（race detector 会显著降低执行速度）
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt64(&callback.successCount) == 2 &&
+			atomic.LoadInt64(&callback.failureCount) == 1 {
+			break // 所有回调已完成
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	// 检查成功回调
 	if atomic.LoadInt64(&callback.successCount) != 2 {

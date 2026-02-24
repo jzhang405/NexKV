@@ -214,7 +214,7 @@ flowchart LR
 2. 全面审查代码质量、安全性、性能
 3. 生成详细审查报告（P0/P1/P2 优先级分类）
 4. 使用 code-simplifier 优化代码结构
-5. 审查报告存入 `docs/06_project_management/code_review/`
+5. 审查报告存入 `docs/09_code-review/`
 
 ---
 

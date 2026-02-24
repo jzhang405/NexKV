@@ -126,7 +126,7 @@ type asyncOpImpl[T any] struct {
 	resultCh          chan T     // P1-1: 缓冲通道，容量为1，一次性操作后由 GC 回收
 	errCh             chan error // P1-1: 同上
 	done              atomic.Bool
-	status            atomic.Int32              // 0=pending, 1=success, 2=failed, 3=canceled
+	status            atomic.Int32              // #4: 0=pending, 1=running, 2=completed, 3=failed, 4=canceled, 5=discarded, 6=timeout
 	callbacks         map[string]func(T, error) // P1: 改为 map 支持回调注销
 	cbSeq             atomic.Int64              // P1: 回调 ID 序列号
 	cbMu              sync.RWMutex
@@ -262,16 +262,25 @@ func (op *asyncOpImpl[T]) Get(ctx context.Context) (T, error) {
 }
 
 // Status 返回操作状态（映射到 OperationStatus）
+// Status 返回操作状态
+// #4: 完善状态映射，支持所有 7 种状态
+// 状态码映射：0=Pending, 1=Running, 2=Completed, 3=Failed, 4=Canceled, 5=Discarded, 6=Timeout
 func (op *asyncOpImpl[T]) Status() OperationStatus {
 	switch op.status.Load() {
 	case 0:
 		return StatusPending
 	case 1:
-		return StatusCompleted
+		return StatusRunning
 	case 2:
-		return StatusFailed
+		return StatusCompleted
 	case 3:
+		return StatusFailed
+	case 4:
 		return StatusCanceled
+	case 5:
+		return StatusDiscarded
+	case 6:
+		return StatusTimeout
 	default:
 		return StatusPending
 	}
@@ -283,7 +292,7 @@ func (op *asyncOpImpl[T]) Cancel() (bool, error) {
 	if !op.done.CompareAndSwap(false, true) {
 		return false, errors.New("operation already completed")
 	}
-	op.status.Store(3)
+	op.status.Store(4) // StatusCanceled
 	var zero T
 	select {
 	case op.errCh <- errors.New("operation canceled"):
@@ -446,7 +455,7 @@ func (op *timeoutAsyncOp[T]) IsStarted() bool {
 func (op *asyncOpImpl[T]) complete(v T) {
 	if op.done.CompareAndSwap(false, true) {
 		op.value = v
-		op.status.Store(1)
+		op.status.Store(2) // StatusCompleted
 		select {
 		case op.resultCh <- v:
 		default:
@@ -460,7 +469,7 @@ func (op *asyncOpImpl[T]) fail(err error) {
 	var zero T
 	if op.done.CompareAndSwap(false, true) {
 		op.err = err
-		op.status.Store(2)
+		op.status.Store(3) // StatusFailed
 		select {
 		case op.errCh <- err:
 		default:
@@ -513,6 +522,8 @@ func NewAsyncCall(
 	if provider != nil {
 		// P0-1: 处理 Submit 错误
 		if err := provider.Submit(ctx, func(ctx context.Context) {
+			// #4: 设置 Running 状态
+			op.status.Store(1)
 			// 创建带超时的 context
 			callCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
 			defer cancel()
@@ -529,6 +540,8 @@ func NewAsyncCall(
 	} else {
 		// 回退：直接创建 goroutine
 		go func() {
+			// #4: 设置 Running 状态
+			op.status.Store(1)
 			// 创建带超时的 context
 			callCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
 			defer cancel()

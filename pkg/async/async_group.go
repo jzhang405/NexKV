@@ -33,6 +33,8 @@ type AsyncGroup[T any] struct {
 	firstResponseOnce     sync.Once
 	majorityOnce          sync.Once
 	allOnce               sync.Once
+	closed                bool // #5: 幂等性保护
+	closeOnce             sync.Once
 }
 
 // GroupCallback[T] 批量操作回调接口
@@ -335,15 +337,17 @@ func (g *AsyncGroup[T]) Stats() GroupStats {
 }
 
 // getResult 获取结果
+// #2: 返回切片副本，防止外部修改
 func (g *AsyncGroup[T]) getResult() GroupResult[T] {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
 	result := GroupResult[T]{
-		Values: make(map[model.PeerID]T),
-		Errors: make(map[model.PeerID]error),
+		Values: make(map[model.PeerID]T, len(g.results)),
+		Errors: make(map[model.PeerID]error, len(g.errors)),
 	}
 
+	// 复制 map
 	for peer, value := range g.results {
 		result.Values[peer] = value
 		result.SuccessPeers = append(result.SuccessPeers, peer)
@@ -361,24 +365,28 @@ func (g *AsyncGroup[T]) getResult() GroupResult[T] {
 // 取消所有未完成的操作并清理内部状态
 // 这是资源管理的最佳实践，确保不会有 goroutine 泄漏
 // #8: 等待所有操作完成后再返回
+// #5: 使用 sync.Once 确保幂等性
 func (g *AsyncGroup[T]) Close() error {
-	// 取消所有操作
-	_ = g.CancelAll()
+	g.closeOnce.Do(func() {
+		// 取消所有操作
+		_ = g.CancelAll()
 
-	// 取消 context
-	g.mu.Lock()
-	if g.cancel != nil {
-		g.cancel()
-	}
-	g.mu.Unlock()
+		// 取消 context
+		g.mu.Lock()
+		g.closed = true
+		if g.cancel != nil {
+			g.cancel()
+		}
+		g.mu.Unlock()
 
-	// #8: 等待所有操作完成（带超时保护）
-	select {
-	case <-g.allDone:
-		// 所有操作已完成
-	case <-time.After(5 * time.Second):
-		// 超时保护，避免永久阻塞
-	}
+		// #8: 等待所有操作完成（带超时保护）
+		select {
+		case <-g.allDone:
+			// 所有操作已完成
+		case <-time.After(5 * time.Second):
+			// 超时保护，避免永久阻塞
+		}
+	})
 
 	return nil
 }

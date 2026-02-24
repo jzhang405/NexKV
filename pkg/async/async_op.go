@@ -308,6 +308,7 @@ func (op *AsyncOp[T]) Status() OperationStatus {
 }
 
 // Cancel 实现 AsyncOperation 接口
+// #3: 向 resultCh 发送取消结果，唤醒阻塞的 Get()
 func (op *AsyncOp[T]) Cancel() (bool, error) {
 	op.statusMu.Lock()
 	defer op.statusMu.Unlock()
@@ -317,9 +318,19 @@ func (op *AsyncOp[T]) Cancel() (bool, error) {
 	}
 
 	op.status = StatusCanceled
+	op.err = context.Canceled
+
 	if op.cancel != nil {
 		op.cancel()
 	}
+
+	// 向 channel 发送取消结果，唤醒阻塞的 Get()
+	select {
+	case op.resultCh <- Result[T]{Err: context.Canceled}:
+	default:
+		// channel 已满，说明已有结果
+	}
+
 	return true, nil
 }
 

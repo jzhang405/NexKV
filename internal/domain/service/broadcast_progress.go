@@ -398,10 +398,10 @@ func (b *ProgressBuilder) WithTimeout(timeout time.Duration) *ProgressBuilder {
 
 // OnSuccess 成功回调
 func (b *ProgressBuilder) OnSuccess(fn func(peer model.PeerID, resp model.Message, stats BroadcastStats)) *ProgressBuilder {
-	b.progress.callback = &builderListener{
-		progress:  b.progress,
-		onSuccess: fn,
+	if b.progress.callback == nil {
+		b.progress.callback = &builderListener{progress: b.progress}
 	}
+	b.progress.callback.(*builderListener).onSuccess = fn
 	return b
 }
 

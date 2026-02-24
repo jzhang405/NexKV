@@ -171,6 +171,62 @@
 
 ---
 
+### 3.3 重构后 AsyncOperation 使用方式
+
+重构完成后，调用方式保持不变，但 import 路径会变：
+
+**重构前（当前）**：
+```go
+import "github.com/jzhang405/NexKV/internal/domain/service"
+
+// 调用方
+adapter := service.NewRPCAsyncAdapter(rpc, provider)
+op := service.NewAsyncCall(ctx, rpc, peer, req, timeout, provider)
+```
+
+**重构后（目标）**：
+```go
+import (
+    "github.com/jzhang405/NexKV/internal/domain/service"
+    rpcinfra "github.com/jzhang405/NexKV/internal/infrastructure/rpc"
+)
+
+// 调用方 - 通过适配器（推荐）
+adapter := rpcinfra.NewRPCAsyncAdapter(rpc, provider)
+op := adapter.CallAsync(ctx, peer, req)
+
+// 或直接使用工厂函数
+op := rpcinfra.NewAsyncCall(ctx, rpc, peer, req, timeout, provider)
+```
+
+**关键变化**：
+1. `NewRPCAsyncAdapter` 移动到 `internal/infrastructure/rpc/`
+2. `NewAsyncCall` 等工厂函数移动到 `internal/infrastructure/rpc/`
+3. 调用方通过适配器使用，接口保持不变
+4. 领域层接口（`service.RPCAsync`）保持不变
+
+---
+
+### 3.4 关联 P1/P2 问题（DDD 架构审查）
+
+本 PR 解决的 P0-2 问题，同时关联以下问题：
+
+**P1 - 中等风险（建议修复）**：
+
+| 问题 | 文件 | 说明 | 本次是否解决 |
+|------|------|------|-------------|
+| P1-1: 应用层重复实现基础设施层功能 | `internal/application/clock/clock_service.go` | 应用层实现了 HLCProvider，与基础设施层重复 | ❌ 否 |
+| P1-2: 领域服务包含过多基础设施关注点 | `internal/domain/service/rpc_async_impl.go` | submitTask 直接创建 goroutine | ✅ 是（P0-2 的一部分） |
+
+**P2 - 低风险（可选优化）**：
+
+| 问题 | 文件 | 说明 | 本次是否解决 |
+|------|------|------|-------------|
+| P2-1: 领域服务接口定义过于庞大 | `internal/domain/service/concurrency.go` | GoroutineProvider 接口 65 行，18 个方法 | ❌ 否 |
+| P2-2: 领域对象命名不够业务化 | `internal/domain/model/goroutine.go` | GoroutinePriority 应改为 TaskPriority | ❌ 否 |
+
+---
+
 ### 4. 风险评估与应对措施
 
 | 风险点 | 影响等级（高/中/低） | 应对措施 |

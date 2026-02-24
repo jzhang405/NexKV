@@ -837,3 +837,123 @@ func (s *silentCallback) getSuccessCount() int64 {
 	defer s.mu.Unlock()
 	return s.successCount
 }
+
+// ==========================================
+// Close 方法测试
+// ==========================================
+
+// TestNewGroup_Close 测试 Close 方法
+func TestNewGroup_Close(t *testing.T) {
+	ctx := context.Background()
+	targets := []model.PeerID{"node-1", "node-2", "node-3"}
+
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+		// 长时间运行的任务
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(10 * time.Second):
+			return "should not reach here", nil
+		}
+	})
+
+	// 等待任务启动
+	time.Sleep(50 * time.Millisecond)
+
+	// 调用 Close
+	err := group.Close()
+	if err != nil {
+		t.Fatalf("expected no error on Close, got: %v", err)
+	}
+
+	// 等待关闭生效
+	time.Sleep(100 * time.Millisecond)
+
+	// 检查状态 - 应该被取消
+	statuses := group.Status()
+	canceledCount := 0
+	for _, status := range statuses {
+		if status == StatusCanceled {
+			canceledCount++
+		}
+	}
+
+	if canceledCount == 0 {
+		t.Fatal("expected at least some operations to be canceled after Close")
+	}
+}
+
+// TestNewGroup_Close_AfterCompletion 测试完成后再 Close
+func TestNewGroup_Close_AfterCompletion(t *testing.T) {
+	ctx := context.Background()
+	targets := []model.PeerID{"node-1", "node-2"}
+
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+		return "success", nil
+	})
+
+	// 等待完成
+	_ = group.WaitAll(ctx)
+
+	// 完成后再调用 Close - 应该不会出错
+	err := group.Close()
+	if err != nil {
+		t.Fatalf("expected no error on Close after completion, got: %v", err)
+	}
+}
+
+// TestNewGroup_Close_MultipleCalls 测试多次调用 Close
+func TestNewGroup_Close_MultipleCalls(t *testing.T) {
+	ctx := context.Background()
+	targets := []model.PeerID{"node-1"}
+
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+		return "success", nil
+	})
+
+	// 多次调用 Close - 应该都是幂等的
+	for i := 0; i < 3; i++ {
+		err := group.Close()
+		if err != nil {
+			t.Fatalf("expected no error on Close call %d, got: %v", i+1, err)
+		}
+	}
+}
+
+// TestNewGroup_Close_ResourcesReleased 测试 Close 释放资源
+func TestNewGroup_Close_ResourcesReleased(t *testing.T) {
+	ctx := context.Background()
+	targets := []model.PeerID{"node-1", "node-2"}
+
+	group := NewGroup(ctx, nil, targets, func(ctx context.Context, target model.PeerID) (string, error) {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(5 * time.Second):
+			return "slow", nil
+		}
+	})
+
+	// 等待任务启动
+	time.Sleep(50 * time.Millisecond)
+
+	// 调用 Close
+	_ = group.Close()
+
+	// 等待资源释放
+	time.Sleep(100 * time.Millisecond)
+
+	// 检查 context 是否被取消
+	statuses := group.Status()
+	allDone := true
+	for _, status := range statuses {
+		if status != StatusCompleted && status != StatusCanceled && status != StatusFailed {
+			allDone = false
+			break
+		}
+	}
+
+	if !allDone {
+		t.Fatal("expected all operations to be in terminal state after Close")
+	}
+}

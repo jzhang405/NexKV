@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	pkgerrors "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ============================================================================

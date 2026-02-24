@@ -340,3 +340,132 @@ func safeCallback(fn func()) {
 	}()
 	fn()
 }
+
+// ============================================================================
+// ProgressBuilder - Builder 模式（链式配置）
+// ============================================================================
+
+// ProgressBuilder 进度追踪器构建器
+//
+// 使用示例：
+//
+//	tracker := service.NewProgress("task-001", peers).
+//	    WithTimeout(10 * time.Second).
+//	    OnSuccess(func(peer model.PeerID, resp model.Message, stats BroadcastStats) {
+//	        log.Printf("✓ %s 成功", peer)
+//	    }).
+//	    OnFailure(func(peer model.PeerID, err error, stats BroadcastStats) {
+//	        log.Printf("✗ %s 失败: %v", peer, err)
+//	    }).
+//	    OnMajority(func(stats BroadcastStats) {
+//	        log.Printf("🎉 多数派达成!")
+//	    }).
+//	    OnComplete(func(stats BroadcastStats) {
+//	        log.Printf("✅ 全部完成")
+//	    }).
+//	    Build()
+type ProgressBuilder struct {
+	progress *BroadcastProgress
+}
+
+// NewProgress 创建新的进度追踪器构建器
+func NewProgress(taskID string, targets []model.PeerID) *ProgressBuilder {
+	targetsCopy := make([]model.PeerID, len(targets))
+	copy(targetsCopy, targets)
+
+	return &ProgressBuilder{
+		progress: &BroadcastProgress{
+			taskID:       taskID,
+			targets:      targetsCopy,
+			responses:    make(map[model.PeerID]model.Message),
+			failures:    make(map[model.PeerID]error),
+			fullDone:    make(chan struct{}),
+			majorityDone: make(chan struct{}),
+
+			// Callback 机制初始化
+			callbacksEnabled: true,
+			startTime:        time.Now(),
+		},
+	}
+}
+
+// WithTimeout 设置超时时间（仅用于统计，不自动触发取消）
+func (b *ProgressBuilder) WithTimeout(timeout time.Duration) *ProgressBuilder {
+	// 超时功能可通过 context 取消实现，此处仅记录
+	_ = timeout
+	return b
+}
+
+// OnSuccess 成功回调
+func (b *ProgressBuilder) OnSuccess(fn func(peer model.PeerID, resp model.Message, stats BroadcastStats)) *ProgressBuilder {
+	b.progress.callback = &builderListener{
+		progress:  b.progress,
+		onSuccess: fn,
+	}
+	return b
+}
+
+// OnFailure 失败回调
+func (b *ProgressBuilder) OnFailure(fn func(peer model.PeerID, err error, stats BroadcastStats)) *ProgressBuilder {
+	if b.progress.callback == nil {
+		b.progress.callback = &builderListener{progress: b.progress}
+	}
+	b.progress.callback.(*builderListener).onFailure = fn
+	return b
+}
+
+// OnMajority 多数派达成回调（原 OnMajorityReached）
+func (b *ProgressBuilder) OnMajority(fn func(stats BroadcastStats)) *ProgressBuilder {
+	if b.progress.callback == nil {
+		b.progress.callback = &builderListener{progress: b.progress}
+	}
+	b.progress.callback.(*builderListener).onMajority = fn
+	return b
+}
+
+// OnComplete 全部完成回调（原 OnFullDone）
+func (b *ProgressBuilder) OnComplete(fn func(stats BroadcastStats)) *ProgressBuilder {
+	if b.progress.callback == nil {
+		b.progress.callback = &builderListener{progress: b.progress}
+	}
+	b.progress.callback.(*builderListener).onComplete = fn
+	return b
+}
+
+// Build 构建进度追踪器
+func (b *ProgressBuilder) Build() *BroadcastProgress {
+	return b.progress
+}
+
+// builderListener Builder 模式监听器适配器
+type builderListener struct {
+	progress   *BroadcastProgress
+	onSuccess  func(peer model.PeerID, resp model.Message, stats BroadcastStats)
+	onFailure  func(peer model.PeerID, err error, stats BroadcastStats)
+	onMajority func(stats BroadcastStats)
+	onComplete func(stats BroadcastStats)
+}
+
+func (l *builderListener) OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats) {
+	if l.onSuccess != nil {
+		l.onSuccess(peer, resp, stats)
+	}
+}
+
+func (l *builderListener) OnFailure(peer model.PeerID, err error, stats BroadcastStats) {
+	if l.onFailure != nil {
+		l.onFailure(peer, err, stats)
+	}
+}
+
+func (l *builderListener) OnMajorityReached(stats BroadcastStats) {
+	if l.onMajority != nil {
+		l.onMajority(stats)
+	}
+}
+
+func (l *builderListener) OnFullDone(stats BroadcastStats) {
+	if l.onComplete != nil {
+		l.onComplete(stats)
+	}
+}

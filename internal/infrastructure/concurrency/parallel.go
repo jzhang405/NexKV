@@ -5,10 +5,12 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+
+	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
 // ============================================================================
-// 并行执行工具（信号量并发控制）
+// 并行执行工具（使用 GoroutineProvider）
 // ============================================================================
 
 // ParallelResult 并行执行结果
@@ -47,11 +49,12 @@ func WithFailFast(failFast bool) ParallelOption {
 //
 // 使用示例:
 //
-//	err := concurrency.ParallelExecute(ctx, len(tasks), 10, func(ctx context.Context, i int) error {
+//	err := concurrency.ParallelExecute(ctx, provider, len(tasks), 10, func(ctx context.Context, i int) error {
 //	    return processTask(tasks[i])
 //	})
 func ParallelExecute(
 	ctx context.Context,
+	provider service.GoroutineProvider,
 	taskCount int,
 	maxConcurrent int,
 	handler func(ctx context.Context, index int) error,
@@ -59,6 +62,11 @@ func ParallelExecute(
 ) error {
 	if taskCount == 0 {
 		return nil
+	}
+
+	// 如果没有提供 provider，使用默认的 ants provider
+	if provider == nil {
+		provider = defaultProvider
 	}
 
 	cfg := &ParallelConfig{MaxConcurrent: maxConcurrent}
@@ -78,11 +86,13 @@ func ParallelExecute(
 		sem      = make(chan struct{}, cfg.MaxConcurrent)
 	)
 
+	// 创建错误通道用于快速失败
+	errCh := make(chan error, 1)
+
 executeLoop:
 	for i := range taskCount {
 		// 检查是否已取消或快速失败
 		if canceled.Load() {
-			// 快速失败模式下，不再启动新任务
 			break executeLoop
 		}
 
@@ -102,7 +112,9 @@ executeLoop:
 		}
 
 		wg.Add(1)
-		go func(idx int) {
+		idx := i // 避免闭包陷阱
+
+		err := provider.Submit(ctx, func(taskCtx context.Context) {
 			defer wg.Done()
 
 			// 信号量控制并发
@@ -114,18 +126,45 @@ executeLoop:
 				return
 			}
 
-			if err := handler(ctx, idx); err != nil {
+			if err := handler(taskCtx, idx); err != nil {
 				if cfg.FailFast {
 					errOnce.Do(func() {
 						firstErr = err
 						canceled.Store(true)
+						select {
+						case errCh <- err:
+						default:
+						}
 					})
 				}
 			}
-		}(i)
+		})
+
+		if err != nil {
+			wg.Done()
+			if cfg.FailFast {
+				return err
+			}
+		}
 	}
 
-	wg.Wait()
+	// 等待所有任务完成或快速失败
+	if cfg.FailFast {
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case err := <-errCh:
+			return err
+		}
+	} else {
+		wg.Wait()
+	}
+
 	return firstErr
 }
 
@@ -133,7 +172,7 @@ executeLoop:
 //
 // 使用示例:
 //
-//	results := concurrency.ParallelExecuteWithResult(ctx, len(tasks), 10, func(ctx context.Context, i int) (Result, error) {
+//	results := concurrency.ParallelExecuteWithResult(ctx, provider, len(tasks), 10, func(ctx context.Context, i int) (Result, error) {
 //	    return processTask(tasks[i])
 //	})
 //	for _, r := range results {
@@ -144,6 +183,7 @@ executeLoop:
 //	}
 func ParallelExecuteWithResult[T any](
 	ctx context.Context,
+	provider service.GoroutineProvider,
 	taskCount int,
 	maxConcurrent int,
 	handler func(ctx context.Context, index int) (T, error),
@@ -151,6 +191,11 @@ func ParallelExecuteWithResult[T any](
 ) []ParallelResult[T] {
 	if taskCount == 0 {
 		return nil
+	}
+
+	// 如果没有提供 provider，使用默认的 ants provider
+	if provider == nil {
+		provider = defaultProvider
 	}
 
 	cfg := &ParallelConfig{MaxConcurrent: maxConcurrent}
@@ -184,7 +229,9 @@ resultLoop:
 		}
 
 		wg.Add(1)
-		go func(idx int) {
+		idx := i // 避免闭包陷阱
+
+		err := provider.Submit(ctx, func(taskCtx context.Context) {
 			defer wg.Done()
 
 			sem <- struct{}{}
@@ -193,16 +240,24 @@ resultLoop:
 			if canceled.Load() {
 				var zero T
 				mu.Lock()
-				results[idx] = ParallelResult[T]{Index: idx, Value: zero, Err: ctx.Err()}
+				results[idx] = ParallelResult[T]{Index: idx, Value: zero, Err: taskCtx.Err()}
 				mu.Unlock()
 				return
 			}
 
-			value, err := handler(ctx, idx)
+			value, err := handler(taskCtx, idx)
 			mu.Lock()
 			results[idx] = ParallelResult[T]{Index: idx, Value: value, Err: err}
 			mu.Unlock()
-		}(i)
+		})
+
+		if err != nil {
+			wg.Done()
+			var zero T
+			mu.Lock()
+			results[idx] = ParallelResult[T]{Index: idx, Value: zero, Err: err}
+			mu.Unlock()
+		}
 	}
 
 	wg.Wait()
@@ -213,11 +268,12 @@ resultLoop:
 //
 // 使用示例:
 //
-//	err := concurrency.ParallelExecuteWithArg(ctx, peers, 10, func(ctx context.Context, peer PeerID) error {
+//	err := concurrency.ParallelExecuteWithArg(ctx, provider, peers, 10, func(ctx context.Context, peer PeerID) error {
 //	    return sendToPeer(peer)
 //	})
 func ParallelExecuteWithArg[T any](
 	ctx context.Context,
+	provider service.GoroutineProvider,
 	args []T,
 	maxConcurrent int,
 	handler func(ctx context.Context, arg T) error,
@@ -227,8 +283,8 @@ func ParallelExecuteWithArg[T any](
 		return nil
 	}
 
-	return ParallelExecute(ctx, len(args), maxConcurrent, func(ctx context.Context, i int) error {
-		return handler(ctx, args[i])
+	return ParallelExecute(ctx, provider, len(args), maxConcurrent, func(taskCtx context.Context, i int) error {
+		return handler(taskCtx, args[i])
 	}, opts...)
 }
 
@@ -236,11 +292,12 @@ func ParallelExecuteWithArg[T any](
 //
 // 使用示例:
 //
-//	results := concurrency.ParallelExecuteWithArgAndResult(ctx, peers, 10, func(ctx context.Context, peer PeerID) (Response, error) {
+//	results := concurrency.ParallelExecuteWithArgAndResult(ctx, provider, peers, 10, func(ctx context.Context, peer PeerID) (Response, error) {
 //	    return callPeer(peer)
 //	})
 func ParallelExecuteWithArgAndResult[T any, R any](
 	ctx context.Context,
+	provider service.GoroutineProvider,
 	args []T,
 	maxConcurrent int,
 	handler func(ctx context.Context, arg T) (R, error),
@@ -250,7 +307,26 @@ func ParallelExecuteWithArgAndResult[T any, R any](
 		return nil
 	}
 
-	return ParallelExecuteWithResult(ctx, len(args), maxConcurrent, func(ctx context.Context, i int) (R, error) {
-		return handler(ctx, args[i])
+	return ParallelExecuteWithResult(ctx, provider, len(args), maxConcurrent, func(taskCtx context.Context, i int) (R, error) {
+		return handler(taskCtx, args[i])
 	}, opts...)
+}
+
+// ============================================================================
+// 默认 Provider（向后兼容）
+// ============================================================================
+
+// defaultProvider 是包级别的默认 GoroutineProvider
+// 在包初始化时创建，用于向后兼容（当调用者传入 nil provider 时使用）
+var defaultProvider service.GoroutineProvider
+
+// SetDefaultProvider 设置默认的 GoroutineProvider
+// 应在应用程序初始化时调用
+func SetDefaultProvider(provider service.GoroutineProvider) {
+	defaultProvider = provider
+}
+
+// GetDefaultProvider 获取默认的 GoroutineProvider
+func GetDefaultProvider() service.GoroutineProvider {
+	return defaultProvider
 }

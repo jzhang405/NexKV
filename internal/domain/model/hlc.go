@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // HLC 混合逻辑时钟（Hybrid Logical Clock）值对象
@@ -122,7 +124,7 @@ func (h *HLC) ToTime() time.Time {
 // 格式: 8 bytes pt (big-endian) + 2 bytes c (big-endian)
 func (h *HLC) MarshalBinary() ([]byte, error) {
 	if h == nil {
-		return nil, fmt.Errorf("cannot marshal nil HLC")
+		return nil, errors.Wrap(errors.ErrClockMarshalNil, "HLC is nil")
 	}
 
 	buf := new(bytes.Buffer)
@@ -143,7 +145,7 @@ func (h *HLC) MarshalBinary() ([]byte, error) {
 // UnmarshalBinary 从二进制反序列化 HLC
 func (h *HLC) UnmarshalBinary(data []byte) error {
 	if len(data) != 10 {
-		return fmt.Errorf("invalid HLC data size: expected 10 bytes, got %d", len(data))
+		return errors.Wrapf(errors.ErrClockInvalidSize, "expected 10 bytes, got %d", len(data))
 	}
 
 	buf := bytes.NewReader(data)

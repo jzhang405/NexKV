@@ -32,9 +32,15 @@ var (
 	ErrAddrInvalid      = stderrors.New("transport: invalid address format")
 	ErrAddrTooLong      = stderrors.New("transport: address too long")
 
-	// 异步模块错误
-	ErrAsyncExecFailed = stderrors.New("async: operation failed")
-	ErrCallbackPanic   = stderrors.New("async: callback panic recovered")
+	// Async Operation 错误
+	ErrAsyncExecFailed           = stderrors.New("async: operation failed")
+	ErrCallbackPanic             = stderrors.New("async: callback panic recovered")
+	ErrOperationAlreadyCompleted = stderrors.New("async: operation already completed")
+	ErrOperationCanceled         = stderrors.New("async: operation canceled")
+	ErrCallbackIDEmpty           = stderrors.New("async: callback ID cannot be empty")
+	ErrCallbackNotFound          = stderrors.New("async: callback not found")
+	ErrCancelNotSupported        = stderrors.New("async: cancel not supported")
+	ErrDiscardNotSupported       = stderrors.New("async: discard not supported")
 
 	// GoroutinePool 层错误
 	ErrPoolClosed            = stderrors.New("concurrency: goroutine pool is closed")
@@ -52,6 +58,12 @@ var (
 	ErrCodecFailure        = stderrors.New("rpc: codec failure")
 	ErrStrategyNotMajority = stderrors.New("rpc: strategy satisfied but not majority")
 	ErrInvalidStrategy     = stderrors.New("rpc: invalid response strategy")
+	ErrTargetsMsgsMismatch = stderrors.New("rpc: targets and msgs length mismatch")
+	ErrInvalidQuorum       = stderrors.New("rpc: invalid quorum value")
+	ErrInvalidTimeout      = stderrors.New("rpc: invalid timeout value")
+	ErrEmptyPeers          = stderrors.New("rpc: peers slice is empty")
+	ErrNilConfig           = stderrors.New("rpc: config is nil")
+	ErrNilRPC              = stderrors.New("rpc: rpc is nil")
 
 	// Middleware 层错误
 	ErrChainFrozen        = stderrors.New("middleware: chain is frozen")
@@ -79,6 +91,12 @@ var (
 	ErrInvalidState       = stderrors.New("test: invalid cluster state")
 	ErrNotImplemented     = stderrors.New("test: not implemented")
 	ErrNotInitialized     = stderrors.New("test: not initialized")
+
+	// Clock 层错误
+	ErrClockInvalidData = stderrors.New("clock: invalid data")
+	ErrClockNilHLC      = stderrors.New("clock: nil HLC")
+	ErrClockMarshalNil  = stderrors.New("clock: cannot marshal nil HLC")
+	ErrClockInvalidSize = stderrors.New("clock: invalid HLC data size")
 )
 
 // ===========================

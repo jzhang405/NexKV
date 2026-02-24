@@ -48,6 +48,9 @@ type Libp2pTransport struct {
 
 	// Discovery goroutine 管理
 	wg sync.WaitGroup
+
+	// GoroutineProvider 用于管理 goroutine
+	provider service.GoroutineProvider
 }
 
 // Config 传输层配置
@@ -95,6 +98,7 @@ func NewLibp2pTransport(ctx context.Context, cfg *Config) (*Libp2pTransport, err
 		acceptor: newStreamAcceptor(h),
 		ctx:      childCtx,
 		cancel:   cancel,
+		provider: cfg.Provider,
 	}
 
 	if cfg.EnableDiscovery {
@@ -449,10 +453,17 @@ func (t *Libp2pTransport) Close() error {
 
 	// 3.2 等待所有 goroutine 退出
 	done := make(chan struct{})
-	go func() {
+	waitFunc := func(ctx context.Context) {
 		t.wg.Wait()
 		close(done)
-	}()
+	}
+	if t.provider != nil {
+		if err := t.provider.Submit(t.ctx, waitFunc); err != nil {
+			errs = append(errs, service.Wrap(err, "submit wait task"))
+		}
+	} else {
+		go waitFunc(t.ctx)
+	}
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):

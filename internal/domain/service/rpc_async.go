@@ -3,10 +3,85 @@ package service
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/pkg/errors"
+)
+
+// ==========================================
+// OperationStatus 操作状态定义
+// ==========================================
+
+// OperationStatus 操作状态
+type OperationStatus int
+
+const (
+	// StatusPending 操作待执行
+	StatusPending OperationStatus = iota
+	// StatusRunning 操作正在执行
+	StatusRunning
+	// StatusCompleted 操作成功完成
+	StatusCompleted
+	// StatusFailed 操作失败
+	StatusFailed
+	// StatusCanceled 操作被取消
+	StatusCanceled
+	// StatusDiscarded 操作结果被丢弃
+	StatusDiscarded
+	// StatusTimeout 操作超时
+	StatusTimeout
+)
+
+// IsTerminal 检查是否为终态
+func (s OperationStatus) IsTerminal() bool {
+	switch s {
+	case StatusCompleted, StatusFailed, StatusCanceled, StatusDiscarded, StatusTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+// String 返回状态字符串表示
+func (s OperationStatus) String() string {
+	switch s {
+	case StatusPending:
+		return "pending"
+	case StatusRunning:
+		return "running"
+	case StatusCompleted:
+		return "completed"
+	case StatusFailed:
+		return "failed"
+	case StatusCanceled:
+		return "canceled"
+	case StatusDiscarded:
+		return "discarded"
+	case StatusTimeout:
+		return "timeout"
+	default:
+		return "unknown"
+	}
+}
+
+// ==========================================
+// 错误定义（已移至 pkg/errors）
+// ==========================================
+
+var (
+	// ErrTargetsMsgsMismatch targets 和 msgs 长度不匹配
+	ErrTargetsMsgsMismatch = errors.ErrTargetsMsgsMismatch
+	// ErrInvalidQuorum quorum 参数无效
+	ErrInvalidQuorum = errors.ErrInvalidQuorum
+	// ErrInvalidTimeout timeoutMs 参数无效
+	ErrInvalidTimeout = errors.ErrInvalidTimeout
+	// ErrEmptyPeers peers 切片为空
+	ErrEmptyPeers = errors.ErrEmptyPeers
+	// ErrNilConfig config 参数为 nil
+	ErrNilConfig = errors.ErrNilConfig
+	// ErrNilRPC rpc 参数为 nil
+	ErrNilRPC = errors.ErrNilRPC
 )
 
 // ==========================================
@@ -34,7 +109,7 @@ type RPCAsync interface {
 
 	// BroadcastQuorumAsync 异步 Quorum 调用
 	// 当达到多数派响应时完成
-	// 可通过 opts 设置回调实时拦截 OnMajority/OnFullDone 事件
+	// 可通过 opts 设置回调实时拦截 OnMajority/OnComplete 事件
 	BroadcastQuorumAsync(ctx context.Context, peers []model.PeerID, req model.Message, quorum int, opts ...BroadcastOption) AsyncOperation[QuorumResult]
 
 	// ====== 批量写入（不同消息）======
@@ -66,195 +141,22 @@ type BroadcastConfig struct {
 	callbacks []BroadcastListener
 }
 
-// OnMajority 添加多数派达成回调
-// 复用 BroadcastListener.OnMajorityReached
-func OnMajority(callback func(stats BroadcastStats)) BroadcastOption {
-	return func(cfg *BroadcastConfig) {
-		cfg.callbacks = append(cfg.callbacks, &funcListener{
-			onMajority: callback,
-		})
-	}
-}
-
-// OnFullDone 添加全部完成回调
-// 复用 BroadcastListener.OnFullDone
-func OnFullDone(callback func(stats BroadcastStats)) BroadcastOption {
-	return func(cfg *BroadcastConfig) {
-		cfg.callbacks = append(cfg.callbacks, &funcListener{
-			onFullDone: callback,
-		})
-	}
-}
-
-// OnSuccess 添加单个成功回调
-// 复用 BroadcastListener.OnSuccess
-func OnSuccess(callback func(peer model.PeerID, resp model.Message, stats BroadcastStats)) BroadcastOption {
-	return func(cfg *BroadcastConfig) {
-		cfg.callbacks = append(cfg.callbacks, &funcListener{
-			onSuccess: callback,
-		})
-	}
-}
-
-// OnFailure 添加单个失败回调
-// 复用 BroadcastListener.OnFailure
-func OnFailure(callback func(peer model.PeerID, err error, stats BroadcastStats)) BroadcastOption {
-	return func(cfg *BroadcastConfig) {
-		cfg.callbacks = append(cfg.callbacks, &funcListener{
-			onFailure: callback,
-		})
-	}
-}
-
-// funcListener 函数式回调适配器
-type funcListener struct {
-	NoOpListener
-	onMajority func(stats BroadcastStats)
-	onFullDone func(stats BroadcastStats)
-	onSuccess  func(peer model.PeerID, resp model.Message, stats BroadcastStats)
-	onFailure  func(peer model.PeerID, err error, stats BroadcastStats)
-}
-
-func (c *funcListener) OnMajorityReached(stats BroadcastStats) {
-	if c.onMajority != nil {
-		c.onMajority(stats)
-	}
-}
-
-func (c *funcListener) OnFullDone(stats BroadcastStats) {
-	if c.onFullDone != nil {
-		c.onFullDone(stats)
-	}
-}
-
-func (c *funcListener) OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats) {
-	if c.onSuccess != nil {
-		c.onSuccess(peer, resp, stats)
-	}
-}
-
-func (c *funcListener) OnFailure(peer model.PeerID, err error, stats BroadcastStats) {
-	if c.onFailure != nil {
-		c.onFailure(peer, err, stats)
-	}
-}
-
-// multiListener 多回调组合器
-type multiListener struct {
-	callbacks []BroadcastListener
-}
-
-func (m *multiListener) OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats) {
-	for _, cb := range m.callbacks {
-		cb.OnSuccess(peer, resp, stats)
-	}
-}
-
-func (m *multiListener) OnFailure(peer model.PeerID, err error, stats BroadcastStats) {
-	for _, cb := range m.callbacks {
-		cb.OnFailure(peer, err, stats)
-	}
-}
-
-func (m *multiListener) OnMajorityReached(stats BroadcastStats) {
-	for _, cb := range m.callbacks {
-		cb.OnMajorityReached(stats)
-	}
-}
-
-func (m *multiListener) OnFullDone(stats BroadcastStats) {
-	for _, cb := range m.callbacks {
-		cb.OnFullDone(stats)
-	}
-}
-
-// ==========================================
-// asyncListenerWrapper 通过 GoroutineProvider 执行回调
-// ==========================================
-
-// asyncListenerWrapper 通过 GoroutineProvider 异步执行回调
-// 避免无限制创建 goroutine，提供资源控制
-type asyncListenerWrapper struct {
-	callbacks         []BroadcastListener
-	goroutineProvider GoroutineProvider
-}
-
-func (w *asyncListenerWrapper) OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats) {
-	for _, cb := range w.callbacks {
-		cb := cb
-		_ = w.goroutineProvider.Submit(context.Background(), func(ctx context.Context) {
-			safeListenerExec(func() { cb.OnSuccess(peer, resp, stats) })
-		})
-	}
-}
-
-func (w *asyncListenerWrapper) OnFailure(peer model.PeerID, err error, stats BroadcastStats) {
-	for _, cb := range w.callbacks {
-		cb := cb
-		_ = w.goroutineProvider.Submit(context.Background(), func(ctx context.Context) {
-			safeListenerExec(func() { cb.OnFailure(peer, err, stats) })
-		})
-	}
-}
-
-func (w *asyncListenerWrapper) OnMajorityReached(stats BroadcastStats) {
-	for _, cb := range w.callbacks {
-		cb := cb
-		_ = w.goroutineProvider.Submit(context.Background(), func(ctx context.Context) {
-			safeListenerExec(func() { cb.OnMajorityReached(stats) })
-		})
-	}
-}
-
-func (w *asyncListenerWrapper) OnFullDone(stats BroadcastStats) {
-	for _, cb := range w.callbacks {
-		cb := cb
-		_ = w.goroutineProvider.Submit(context.Background(), func(ctx context.Context) {
-			safeListenerExec(func() { cb.OnFullDone(stats) })
-		})
-	}
-}
-
-// safeListenerExec 安全执行回调（带 panic 恢复）
-func safeListenerExec(fn func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("[AsyncCallback] panic recovered", "panic", r)
-		}
-	}()
-	fn()
-}
-
-// applyBroadcastOptions 应用选项并返回组合后的回调
-// 如果提供了 goroutineProvider，则使用 asyncListenerWrapper 包装回调
-func applyBroadcastOptions(opts []BroadcastOption, goroutineProvider GoroutineProvider) BroadcastListener {
-	if len(opts) == 0 {
+// GetCallbacks 获取回调列表（副本）
+func (c *BroadcastConfig) GetCallbacks() []BroadcastListener {
+	if c == nil || len(c.callbacks) == 0 {
 		return nil
 	}
+	// 返回副本防止外部修改
+	result := make([]BroadcastListener, len(c.callbacks))
+	copy(result, c.callbacks)
+	return result
+}
 
-	cfg := &BroadcastConfig{}
-	for _, opt := range opts {
-		opt(cfg)
+// AddCallback 添加回调
+func (c *BroadcastConfig) AddCallback(cb BroadcastListener) {
+	if c != nil {
+		c.callbacks = append(c.callbacks, cb)
 	}
-
-	if len(cfg.callbacks) == 0 {
-		return nil
-	}
-
-	// 如果有 GoroutineProvider，使用 asyncListenerWrapper 包装
-	if goroutineProvider != nil {
-		return &asyncListenerWrapper{
-			callbacks:         cfg.callbacks,
-			goroutineProvider: goroutineProvider,
-		}
-	}
-
-	// 否则直接组合回调（同步执行）
-	if len(cfg.callbacks) == 1 {
-		return cfg.callbacks[0]
-	}
-
-	return &multiListener{callbacks: cfg.callbacks}
 }
 
 // ==========================================
@@ -379,60 +281,4 @@ func DefaultRPCAsyncConfig() *RPCAsyncConfig {
 		DefaultTimeoutMs:   30000, // 向后兼容
 		MaxConcurrentCalls: 1000,
 	}
-}
-
-// ==========================================
-// RPCAsyncAdapter 适配器（桥接同步和异步接口）
-// ==========================================
-
-// RPCAsyncAdapter 将 RPCSync 接口适配为 RPCAsync 接口
-// 通过封装同步调用，提供 AsyncOperation[T] 风格的异步 API
-type RPCAsyncAdapter struct {
-	rpc    RPCSync // 同步 RPC 接口（RPC 是 RPCSync 的类型别名）
-	config *RPCAsyncConfig
-}
-
-// NewRPCAsyncAdapter 创建 RPCAsync 适配器
-func NewRPCAsyncAdapter(rpc RPCSync, config *RPCAsyncConfig) *RPCAsyncAdapter {
-	if config == nil {
-		config = DefaultRPCAsyncConfig()
-	}
-	return &RPCAsyncAdapter{
-		rpc:    rpc,
-		config: config,
-	}
-}
-
-// CallAsync 实现 RPCAsync 接口
-func (a *RPCAsyncAdapter) CallAsync(ctx context.Context, to model.PeerID, req model.Message) AsyncOperation[ResponseMsg] {
-	return NewAsyncCall(ctx, a.rpc, to, req, a.config.DefaultTimeoutMs, a.config.GoroutineProvider)
-}
-
-// CallAsyncWithTimeout 实现带超时的异步调用
-func (a *RPCAsyncAdapter) CallAsyncWithTimeout(ctx context.Context, to model.PeerID, req model.Message, timeoutMs int64) AsyncOperation[ResponseMsg] {
-	return NewAsyncCall(ctx, a.rpc, to, req, timeoutMs, a.config.GoroutineProvider)
-}
-
-// BroadcastAsync 实现异步广播
-func (a *RPCAsyncAdapter) BroadcastAsync(ctx context.Context, peers []model.PeerID, req model.Message, opts ...BroadcastOption) AsyncOperation[AsyncBroadcastResult] {
-	callback := applyBroadcastOptions(opts, a.config.GoroutineProvider)
-	return NewAsyncBroadcast(ctx, a.rpc, peers, req, a.config, callback, a.config.GoroutineProvider)
-}
-
-// BroadcastQuorumAsync 实现异步 Quorum 调用
-func (a *RPCAsyncAdapter) BroadcastQuorumAsync(ctx context.Context, peers []model.PeerID, req model.Message, quorum int, opts ...BroadcastOption) AsyncOperation[QuorumResult] {
-	callback := applyBroadcastOptions(opts, a.config.GoroutineProvider)
-	return NewAsyncQuorum(ctx, a.rpc, peers, req, quorum, a.config, callback, a.config.GoroutineProvider)
-}
-
-// WriteVAsync 实现异步批量写入（单向）
-func (a *RPCAsyncAdapter) WriteVAsync(ctx context.Context, targets []model.PeerID, msgs []model.Message, opts ...BroadcastOption) AsyncOperation[WriteVResult] {
-	callback := applyBroadcastOptions(opts, a.config.GoroutineProvider)
-	return NewAsyncWriteV(ctx, a.rpc, targets, msgs, a.config, callback, a.config.GoroutineProvider)
-}
-
-// WriteVCallAsync 实现异步批量写入（带响应）
-func (a *RPCAsyncAdapter) WriteVCallAsync(ctx context.Context, targets []model.PeerID, msgs []model.Message, opts ...BroadcastOption) AsyncOperation[WriteVResult] {
-	callback := applyBroadcastOptions(opts, a.config.GoroutineProvider)
-	return NewAsyncWriteVCall(ctx, a.rpc, targets, msgs, a.config, callback, a.config.GoroutineProvider)
 }

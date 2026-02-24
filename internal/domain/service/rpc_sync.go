@@ -33,12 +33,12 @@ type RPCSync interface {
 		to []model.PeerID,
 		req model.Message,
 		strategy ResponseStrategy,
-		progress *BroadcastProgress,
+		progress BroadcastProgress,
 	) (BroadcastResult, error)
 
 	// 不同消息群发：WriteV（单向，不等待响应，等价于 ResponseNone）
 	// 注意：WriteV 是 "Write Vector" 的缩写，表示批量写入多个目标节点
-	WriteV(ctx context.Context, targets []model.PeerID, msgs []model.Message, progress *BroadcastProgress) error
+	WriteV(ctx context.Context, targets []model.PeerID, msgs []model.Message, progress BroadcastProgress) error
 
 	// 不同消息群发：支持响应策略 + 可选进度追踪
 	WriteVCall(
@@ -46,7 +46,7 @@ type RPCSync interface {
 		targets []model.PeerID,
 		msgs []model.Message,
 		strategy ResponseStrategy,
-		progress *BroadcastProgress,
+		progress BroadcastProgress,
 	) (WriteVResult, error)
 
 	// ====== 服务端 ======

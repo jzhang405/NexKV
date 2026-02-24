@@ -16,11 +16,11 @@ import (
 // 监听器执行顺序（针对每个响应）：
 //  1. OnSuccess / OnFailure（每次响应）
 //     ↓
-//  2. OnMajorityReached（达到多数派时，仅一次）
+//  2. OnMajority（达到多数派时，仅一次）
 //     ↓
-//  3. OnFullDone（全部完成时，仅一次）
+//  3. OnComplete（全部完成时，仅一次）
 //
-// 特殊场景：OnMajorityReached 和 OnFullDone 可能在同一次 RecordSuccess 中
+// 特殊场景：OnMajority 和 OnComplete 可能在同一次 RecordSuccess 中
 // 顺序触发（如果 Majority 达成时恰好也是最后一个响应）
 //
 // 监听器实现注意事项：
@@ -46,21 +46,21 @@ type BroadcastListener interface {
 	//   - stats: 当前统计信息
 	OnFailure(peer model.PeerID, err error, stats BroadcastStats)
 
-	// OnMajorityReached 达到多数派时调用（仅调用一次）
+	// OnMajority 达到多数派时调用（仅调用一次）
 	// 触发条件：
 	//   - 成功响应数 >= majority（len(targets)/2 + 1）
 	//   - 只在 RecordSuccess 时检查，RecordFailure 不会触发
 	//   - 例如：3 个节点，2 个成功即触发（即使 1 个失败）
 	// 参数说明：
 	//   - stats: 达到多数派时的统计信息
-	OnMajorityReached(stats BroadcastStats)
+	OnMajority(stats BroadcastStats)
 
-	// OnFullDone 全部完成时调用（仅调用一次）
+	// OnComplete 全部完成时调用（仅调用一次）
 	// 触发条件：
 	//   - 成功数 + 失败数 == 总节点数
 	// 参数说明：
 	//   - stats: 全部完成时的统计信息
-	OnFullDone(stats BroadcastStats)
+	OnComplete(stats BroadcastStats)
 }
 
 // BroadcastStats 广播统计信息
@@ -86,7 +86,7 @@ type BroadcastStats struct {
 //	}
 //
 //	// 只重写关心的方法
-//	func (m *MyCallback) OnFullDone(stats BroadcastStats) {
+//	func (m *MyCallback) OnComplete(stats BroadcastStats) {
 //	    fmt.Printf("广播完成！成功率: %.2f%%\n", stats.SuccessRate*100)
 //	}
 type NoOpListener struct{}
@@ -97,8 +97,8 @@ func (n NoOpListener) OnSuccess(peer model.PeerID, resp model.Message, stats Bro
 // OnFailure 空实现
 func (n NoOpListener) OnFailure(peer model.PeerID, err error, stats BroadcastStats) {}
 
-// OnMajorityReached 空实现
-func (n NoOpListener) OnMajorityReached(stats BroadcastStats) {}
+// OnMajority 空实现
+func (n NoOpListener) OnMajority(stats BroadcastStats) {}
 
-// OnFullDone 空实现
-func (n NoOpListener) OnFullDone(stats BroadcastStats) {}
+// OnComplete 空实现
+func (n NoOpListener) OnComplete(stats BroadcastStats) {}

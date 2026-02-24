@@ -34,7 +34,7 @@ type RPCAsync interface {
 
 	// BroadcastQuorumAsync 异步 Quorum 调用
 	// 当达到多数派响应时完成
-	// 可通过 opts 设置回调实时拦截 OnMajority/OnFullDone 事件
+	// 可通过 opts 设置回调实时拦截 OnMajority/OnComplete 事件
 	BroadcastQuorumAsync(ctx context.Context, peers []model.PeerID, req model.Message, quorum int, opts ...BroadcastOption) AsyncOperation[QuorumResult]
 
 	// ====== 批量写入（不同消息）======
@@ -67,7 +67,7 @@ type BroadcastConfig struct {
 }
 
 // OnMajority 添加多数派达成回调
-// 复用 BroadcastListener.OnMajorityReached
+// 复用 BroadcastListener.OnMajority
 func OnMajority(callback func(stats BroadcastStats)) BroadcastOption {
 	return func(cfg *BroadcastConfig) {
 		cfg.callbacks = append(cfg.callbacks, &funcListener{
@@ -76,9 +76,9 @@ func OnMajority(callback func(stats BroadcastStats)) BroadcastOption {
 	}
 }
 
-// OnFullDone 添加全部完成回调
-// 复用 BroadcastListener.OnFullDone
-func OnFullDone(callback func(stats BroadcastStats)) BroadcastOption {
+// OnComplete 添加全部完成回调
+// 复用 BroadcastListener.OnComplete
+func OnComplete(callback func(stats BroadcastStats)) BroadcastOption {
 	return func(cfg *BroadcastConfig) {
 		cfg.callbacks = append(cfg.callbacks, &funcListener{
 			onFullDone: callback,
@@ -115,13 +115,13 @@ type funcListener struct {
 	onFailure  func(peer model.PeerID, err error, stats BroadcastStats)
 }
 
-func (c *funcListener) OnMajorityReached(stats BroadcastStats) {
+func (c *funcListener) OnMajority(stats BroadcastStats) {
 	if c.onMajority != nil {
 		c.onMajority(stats)
 	}
 }
 
-func (c *funcListener) OnFullDone(stats BroadcastStats) {
+func (c *funcListener) OnComplete(stats BroadcastStats) {
 	if c.onFullDone != nil {
 		c.onFullDone(stats)
 	}
@@ -156,15 +156,15 @@ func (m *multiListener) OnFailure(peer model.PeerID, err error, stats BroadcastS
 	}
 }
 
-func (m *multiListener) OnMajorityReached(stats BroadcastStats) {
+func (m *multiListener) OnMajority(stats BroadcastStats) {
 	for _, cb := range m.callbacks {
-		cb.OnMajorityReached(stats)
+		cb.OnMajority(stats)
 	}
 }
 
-func (m *multiListener) OnFullDone(stats BroadcastStats) {
+func (m *multiListener) OnComplete(stats BroadcastStats) {
 	for _, cb := range m.callbacks {
-		cb.OnFullDone(stats)
+		cb.OnComplete(stats)
 	}
 }
 
@@ -197,20 +197,20 @@ func (w *asyncListenerWrapper) OnFailure(peer model.PeerID, err error, stats Bro
 	}
 }
 
-func (w *asyncListenerWrapper) OnMajorityReached(stats BroadcastStats) {
+func (w *asyncListenerWrapper) OnMajority(stats BroadcastStats) {
 	for _, cb := range w.callbacks {
 		cb := cb
 		_ = w.goroutineProvider.Submit(context.Background(), func(ctx context.Context) {
-			safeListenerExec(func() { cb.OnMajorityReached(stats) })
+			safeListenerExec(func() { cb.OnMajority(stats) })
 		})
 	}
 }
 
-func (w *asyncListenerWrapper) OnFullDone(stats BroadcastStats) {
+func (w *asyncListenerWrapper) OnComplete(stats BroadcastStats) {
 	for _, cb := range w.callbacks {
 		cb := cb
 		_ = w.goroutineProvider.Submit(context.Background(), func(ctx context.Context) {
-			safeListenerExec(func() { cb.OnFullDone(stats) })
+			safeListenerExec(func() { cb.OnComplete(stats) })
 		})
 	}
 }

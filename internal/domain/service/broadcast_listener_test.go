@@ -107,22 +107,22 @@ func TestNoOpListener_OnFailure(t *testing.T) {
 	listener.OnFailure("node-1", context.DeadlineExceeded, stats)
 }
 
-// TestNoOpListener_OnMajorityReached 测试 OnMajorityReached 空实现
-func TestNoOpListener_OnMajorityReached(t *testing.T) {
+// TestNoOpListener_OnMajority 测试 OnMajority 空实现
+func TestNoOpListener_OnMajority(t *testing.T) {
 	listener := NoOpListener{}
 	stats := BroadcastStats{TaskID: "test"}
 
 	// 调用应不 panic 且正常返回
-	listener.OnMajorityReached(stats)
+	listener.OnMajority(stats)
 }
 
-// TestNoOpListener_OnFullDone 测试 OnFullDone 空实现
-func TestNoOpListener_OnFullDone(t *testing.T) {
+// TestNoOpListener_OnComplete 测试 OnComplete 空实现
+func TestNoOpListener_OnComplete(t *testing.T) {
 	listener := NoOpListener{}
 	stats := BroadcastStats{TaskID: "test"}
 
 	// 调用应不 panic 且正常返回
-	listener.OnFullDone(stats)
+	listener.OnComplete(stats)
 }
 
 // TestNoOpListener_InterfaceCompliance 测试 NoOpListener 实现 BroadcastListener 接口
@@ -142,7 +142,7 @@ type mockPartialListener struct {
 	fullDoneCalled bool
 }
 
-func (m *mockPartialListener) OnFullDone(stats BroadcastStats) {
+func (m *mockPartialListener) OnComplete(stats BroadcastStats) {
 	m.fullDoneCalled = true
 }
 
@@ -155,14 +155,14 @@ func TestNoOpListener_Embedding(t *testing.T) {
 	// 调用未重写的方法（使用 NoOpListener 的空实现）
 	listener.OnSuccess("node-1", msg, stats)
 	listener.OnFailure("node-1", context.DeadlineExceeded, stats)
-	listener.OnMajorityReached(stats)
+	listener.OnMajority(stats)
 
 	// 调用重写的方法
-	listener.OnFullDone(stats)
+	listener.OnComplete(stats)
 
 	// 验证重写的方法被调用
 	if !listener.fullDoneCalled {
-		t.Error("OnFullDone should have been called")
+		t.Error("OnComplete should have been called")
 	}
 }
 

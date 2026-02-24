@@ -68,14 +68,14 @@ func (m *MockListener) OnFailure(peer model.PeerID, err error, stats BroadcastSt
 	})
 }
 
-func (m *MockListener) OnMajorityReached(stats BroadcastStats) {
+func (m *MockListener) OnMajority(stats BroadcastStats) {
 	atomic.AddInt32(&m.onMajorityCount, 1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onMajorityStats = &stats
 }
 
-func (m *MockListener) OnFullDone(stats BroadcastStats) {
+func (m *MockListener) OnComplete(stats BroadcastStats) {
 	atomic.AddInt32(&m.onFullDoneCount, 1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -109,12 +109,12 @@ func (p *PanicListener) OnFailure(peer model.PeerID, err error, stats BroadcastS
 	panic("OnFailure panic!")
 }
 
-func (p *PanicListener) OnMajorityReached(stats BroadcastStats) {
-	panic("OnMajorityReached panic!")
+func (p *PanicListener) OnMajority(stats BroadcastStats) {
+	panic("OnMajority panic!")
 }
 
-func (p *PanicListener) OnFullDone(stats BroadcastStats) {
-	panic("OnFullDone panic!")
+func (p *PanicListener) OnComplete(stats BroadcastStats) {
+	panic("OnComplete panic!")
 }
 
 // ============================================================================
@@ -189,8 +189,8 @@ func TestBroadcastCallback_OnFailure(t *testing.T) {
 	}
 }
 
-// TestBroadcastCallback_OnMajorityReached 测试多数派回调
-func TestBroadcastCallback_OnMajorityReached(t *testing.T) {
+// TestBroadcastCallback_OnMajority 测试多数派回调
+func TestBroadcastCallback_OnMajority(t *testing.T) {
 	peers := []model.PeerID{"node-1", "node-2", "node-3"}
 	tracker := NewBroadcastProgress("test-task", peers)
 	callback := NewMockListener()
@@ -199,22 +199,22 @@ func TestBroadcastCallback_OnMajorityReached(t *testing.T) {
 	// 执行：记录 1 个成功（未达多数派）
 	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
 
-	// 验证：OnMajorityReached 不应该被调用
+	// 验证：OnMajority 不应该被调用
 	if count := callback.GetMajorityCount(); count != 0 {
-		t.Errorf("OnMajorityReached should not be called yet, got %d", count)
+		t.Errorf("OnMajority should not be called yet, got %d", count)
 	}
 
 	// 执行：记录第 2 个成功（达到多数派）
 	tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
 
-	// 验证：OnMajorityReached 应该被调用 1 次
+	// 验证：OnMajority 应该被调用 1 次
 	if count := callback.GetMajorityCount(); count != 1 {
-		t.Errorf("OnMajorityReached should be called 1 time, got %d", count)
+		t.Errorf("OnMajority should be called 1 time, got %d", count)
 	}
 
 	// 验证统计信息
 	if callback.onMajorityStats == nil {
-		t.Fatal("OnMajorityReached stats should not be nil")
+		t.Fatal("OnMajority stats should not be nil")
 	}
 	if callback.onMajorityStats.Success != 2 {
 		t.Errorf("Expected Success=2, got %d", callback.onMajorityStats.Success)
@@ -223,14 +223,14 @@ func TestBroadcastCallback_OnMajorityReached(t *testing.T) {
 	// 执行：记录第 3 个成功
 	tracker.RecordSuccess("node-3", newTestMessage("msg-3", "node-3", "resp-3"))
 
-	// 验证：OnMajorityReached 不应该再次被调用
+	// 验证：OnMajority 不应该再次被调用
 	if count := callback.GetMajorityCount(); count != 1 {
-		t.Errorf("OnMajorityReached should still be called 1 time (not %d)", count)
+		t.Errorf("OnMajority should still be called 1 time (not %d)", count)
 	}
 }
 
-// TestBroadcastCallback_OnFullDone 测试全部完成回调
-func TestBroadcastCallback_OnFullDone(t *testing.T) {
+// TestBroadcastCallback_OnComplete 测试全部完成回调
+func TestBroadcastCallback_OnComplete(t *testing.T) {
 	peers := []model.PeerID{"node-1", "node-2", "node-3"}
 	tracker := NewBroadcastProgress("test-task", peers)
 	callback := NewMockListener()
@@ -241,14 +241,14 @@ func TestBroadcastCallback_OnFullDone(t *testing.T) {
 	tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
 	tracker.RecordFailure("node-3", context.DeadlineExceeded)
 
-	// 验证：OnFullDone 应该被调用 1 次
+	// 验证：OnComplete 应该被调用 1 次
 	if count := callback.GetFullDoneCount(); count != 1 {
-		t.Errorf("OnFullDone should be called 1 time, got %d", count)
+		t.Errorf("OnComplete should be called 1 time, got %d", count)
 	}
 
 	// 验证统计信息
 	if callback.onFullDoneStats == nil {
-		t.Fatal("OnFullDone stats should not be nil")
+		t.Fatal("OnComplete stats should not be nil")
 	}
 	if callback.onFullDoneStats.Success != 2 {
 		t.Errorf("Expected Success=2, got %d", callback.onFullDoneStats.Success)
@@ -286,9 +286,9 @@ func TestBroadcastCallback_ConcurrentSafety(t *testing.T) {
 	}
 
 	// 注意：由于都是同一个节点，不会达到多数派（需要 2 个不同节点）
-	// 所以 OnMajorityReached 不应该被调用
+	// 所以 OnMajority 不应该被调用
 	if count := callback.GetMajorityCount(); count != 0 {
-		t.Errorf("OnMajorityReached should not be called (same node repeated), got %d", count)
+		t.Errorf("OnMajority should not be called (same node repeated), got %d", count)
 	}
 
 	// 验证：没有死锁，所有并发调用都成功完成（测试通过即证明）
@@ -340,9 +340,9 @@ func TestBroadcastStats_Accuracy(t *testing.T) {
 	tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
 	tracker.RecordFailure("node-3", context.DeadlineExceeded)
 
-	// 验证 OnFullDone 的统计信息（最后的完整状态）
+	// 验证 OnComplete 的统计信息（最后的完整状态）
 	if callback.onFullDoneStats == nil {
-		t.Fatal("OnFullDone stats should not be nil")
+		t.Fatal("OnComplete stats should not be nil")
 	}
 	stats := *callback.onFullDoneStats
 
@@ -427,19 +427,19 @@ func TestBroadcastCallback_AllFailed(t *testing.T) {
 		t.Errorf("OnFailure should be called 3 times, got %d", count)
 	}
 
-	// 验证：OnMajorityReached 不应该被调用（失败不触发多数派）
+	// 验证：OnMajority 不应该被调用（失败不触发多数派）
 	if count := callback.GetMajorityCount(); count != 0 {
-		t.Errorf("OnMajorityReached should not be called (failures don't count), got %d", count)
+		t.Errorf("OnMajority should not be called (failures don't count), got %d", count)
 	}
 
-	// 验证：OnFullDone 应该被调用 1 次
+	// 验证：OnComplete 应该被调用 1 次
 	if count := callback.GetFullDoneCount(); count != 1 {
-		t.Errorf("OnFullDone should be called 1 time, got %d", count)
+		t.Errorf("OnComplete should be called 1 time, got %d", count)
 	}
 
 	// 验证统计信息
 	if callback.onFullDoneStats == nil {
-		t.Fatal("OnFullDone stats should not be nil")
+		t.Fatal("OnComplete stats should not be nil")
 	}
 	if callback.onFullDoneStats.Success != 0 {
 		t.Errorf("Expected Success=0, got %d", callback.onFullDoneStats.Success)
@@ -460,32 +460,32 @@ func TestBroadcastCallback_MajorityThenFullDone(t *testing.T) {
 	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
 	tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
 
-	// 验证：OnMajorityReached 应该被调用
+	// 验证：OnMajority 应该被调用
 	if count := callback.GetMajorityCount(); count != 1 {
-		t.Errorf("OnMajorityReached should be called 1 time, got %d", count)
+		t.Errorf("OnMajority should be called 1 time, got %d", count)
 	}
 
-	// 验证：OnFullDone 不应该被调用（还有 1 个待响应）
+	// 验证：OnComplete 不应该被调用（还有 1 个待响应）
 	if count := callback.GetFullDoneCount(); count != 0 {
-		t.Errorf("OnFullDone should not be called yet, got %d", count)
+		t.Errorf("OnComplete should not be called yet, got %d", count)
 	}
 
 	// 执行：记录第 3 个成功（全部完成）
 	tracker.RecordSuccess("node-3", newTestMessage("msg-3", "node-3", "resp-3"))
 
-	// 验证：OnMajorityReached 不应该再次被调用
+	// 验证：OnMajority 不应该再次被调用
 	if count := callback.GetMajorityCount(); count != 1 {
-		t.Errorf("OnMajorityReached should still be called 1 time, got %d", count)
+		t.Errorf("OnMajority should still be called 1 time, got %d", count)
 	}
 
-	// 验证：OnFullDone 应该被调用
+	// 验证：OnComplete 应该被调用
 	if count := callback.GetFullDoneCount(); count != 1 {
-		t.Errorf("OnFullDone should be called 1 time, got %d", count)
+		t.Errorf("OnComplete should be called 1 time, got %d", count)
 	}
 
 	// 验证回调顺序正确
 	if callback.onMajorityStats == nil || callback.onFullDoneStats == nil {
-		t.Fatal("Both OnMajorityReached and OnFullDone stats should not be nil")
+		t.Fatal("Both OnMajority and OnComplete stats should not be nil")
 	}
 }
 
@@ -512,9 +512,9 @@ func TestBroadcastCallback_ConcurrentRecordSuccess_OnlyOnce(t *testing.T) {
 
 	wg.Wait()
 
-	// 验证：OnMajorityReached 应该被调用 1 次（仅触发一次）
+	// 验证：OnMajority 应该被调用 1 次（仅触发一次）
 	if count := callback.GetMajorityCount(); count != 1 {
-		t.Errorf("OnMajorityReached should be called exactly 1 time (concurrent safe), got %d", count)
+		t.Errorf("OnMajority should be called exactly 1 time (concurrent safe), got %d", count)
 	}
 
 	// 验证：OnSuccess 应该被调用 2 次

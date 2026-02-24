@@ -49,8 +49,8 @@ type BroadcastProgress struct {
 	// Callback 机制（v1.4）
 	callback                  BroadcastListener // 回调接口（可选）
 	callbacksEnabled          bool              // 回调启用/禁用开关
-	majorityCallbackTriggered bool              // OnMajorityReached 是否已触发
-	fullDoneCallbackTriggered bool              // OnFullDone 是否已触发
+	majorityCallbackTriggered bool              // OnMajority 是否已触发
+	fullDoneCallbackTriggered bool              // OnComplete 是否已触发
 
 	// 时间统计
 	startTime             time.Time // 任务开始时间
@@ -183,7 +183,7 @@ func (t *BroadcastProgress) RecordSuccess(peer model.PeerID, resp model.Message)
 			close(t.majorityDone)
 		}
 
-		// 触发 OnMajorityReached 回调（仅一次）
+		// 触发 OnMajority 回调（仅一次）
 		if !t.majorityCallbackTriggered {
 			t.majorityCallbackTriggered = true
 			t.majorityReachTime = time.Now()
@@ -200,7 +200,7 @@ func (t *BroadcastProgress) RecordSuccess(peer model.PeerID, resp model.Message)
 			close(t.fullDone)
 		}
 
-		// 触发 OnFullDone 回调（仅一次）
+		// 触发 OnComplete 回调（仅一次）
 		if !t.fullDoneCallbackTriggered {
 			t.fullDoneCallbackTriggered = true
 			shouldTriggerFullDone = true
@@ -223,17 +223,17 @@ func (t *BroadcastProgress) RecordSuccess(peer model.PeerID, resp model.Message)
 		callback.OnSuccess(peer, resp, stats)
 	})
 
-	// 触发 OnMajorityReached 回调（仅一次）
+	// 触发 OnMajority 回调（仅一次）
 	if shouldTriggerMajority {
 		safeCallback(func() {
-			callback.OnMajorityReached(stats)
+			callback.OnMajority(stats)
 		})
 	}
 
-	// 触发 OnFullDone 回调（仅一次）
+	// 触发 OnComplete 回调（仅一次）
 	if shouldTriggerFullDone {
 		safeCallback(func() {
-			callback.OnFullDone(stats)
+			callback.OnComplete(stats)
 		})
 	}
 }
@@ -260,7 +260,7 @@ func (t *BroadcastProgress) RecordFailure(peer model.PeerID, err error) {
 			close(t.fullDone)
 		}
 
-		// 触发 OnFullDone 回调（仅一次）
+		// 触发 OnComplete 回调（仅一次）
 		if !t.fullDoneCallbackTriggered {
 			t.fullDoneCallbackTriggered = true
 			shouldTriggerFullDone = true
@@ -283,10 +283,10 @@ func (t *BroadcastProgress) RecordFailure(peer model.PeerID, err error) {
 		callback.OnFailure(peer, err, stats)
 	})
 
-	// 触发 OnFullDone 回调（仅一次）
+	// 触发 OnComplete 回调（仅一次）
 	if shouldTriggerFullDone {
 		safeCallback(func() {
-			callback.OnFullDone(stats)
+			callback.OnComplete(stats)
 		})
 	}
 }
@@ -378,8 +378,8 @@ func NewProgress(taskID string, targets []model.PeerID) *ProgressBuilder {
 			taskID:       taskID,
 			targets:      targetsCopy,
 			responses:    make(map[model.PeerID]model.Message),
-			failures:    make(map[model.PeerID]error),
-			fullDone:    make(chan struct{}),
+			failures:     make(map[model.PeerID]error),
+			fullDone:     make(chan struct{}),
 			majorityDone: make(chan struct{}),
 
 			// Callback 机制初始化
@@ -414,7 +414,7 @@ func (b *ProgressBuilder) OnFailure(fn func(peer model.PeerID, err error, stats 
 	return b
 }
 
-// OnMajority 多数派达成回调（原 OnMajorityReached）
+// OnMajority 多数派达成回调（原 OnMajority）
 func (b *ProgressBuilder) OnMajority(fn func(stats BroadcastStats)) *ProgressBuilder {
 	if b.progress.callback == nil {
 		b.progress.callback = &builderListener{progress: b.progress}
@@ -423,7 +423,7 @@ func (b *ProgressBuilder) OnMajority(fn func(stats BroadcastStats)) *ProgressBui
 	return b
 }
 
-// OnComplete 全部完成回调（原 OnFullDone）
+// OnComplete 全部完成回调（原 OnComplete）
 func (b *ProgressBuilder) OnComplete(fn func(stats BroadcastStats)) *ProgressBuilder {
 	if b.progress.callback == nil {
 		b.progress.callback = &builderListener{progress: b.progress}
@@ -458,13 +458,13 @@ func (l *builderListener) OnFailure(peer model.PeerID, err error, stats Broadcas
 	}
 }
 
-func (l *builderListener) OnMajorityReached(stats BroadcastStats) {
+func (l *builderListener) OnMajority(stats BroadcastStats) {
 	if l.onMajority != nil {
 		l.onMajority(stats)
 	}
 }
 
-func (l *builderListener) OnFullDone(stats BroadcastStats) {
+func (l *builderListener) OnComplete(stats BroadcastStats) {
 	if l.onComplete != nil {
 		l.onComplete(stats)
 	}

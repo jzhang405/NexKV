@@ -19,8 +19,8 @@
 | 计划开工日期 | 2026-02-24 |
 | 计划CI通过日期 | 2026-02-24 |
 | 关联需求单号 | P0-2 技术债务（见 `docs/06_PM/doc/2026-02-24_P0-2_technical_debt.md`） |
-| 架构师评审状态 | □ 待评审 ☑ 评审中 □ 评审通过 □ 需优化（循环记录） |
-| 预审批结果 | □ 未通过 □ 已通过（架构师签字/备注：XXX 202X-XX-XX 同意开工） |
+| 架构师评审状态 | □ 待评审 □ 评审中 ☑ 评审通过 □ 需优化（循环记录） |
+| 预审批结果 | □ 未通过 ☑ 已通过（架构师签字/备注：DDD Agent 2026-02-24 同意开工） |
 
 ### 2. 背景与目标（为什么干）
 
@@ -90,7 +90,7 @@
 
 #### 3.1 整体流程设计
 
-采用**激进重构方案**：一次性完成所有步骤，预计 ~4 小时
+采用**激进重构方案**：一次性完成所有步骤，预计 ~6.5 小时
 
 | 步骤 | 内容 | 预计时间 |
 |------|------|----------|
@@ -99,9 +99,11 @@
 | Step 3 | 创建适配器（RPCAsyncAdapter） | 30分钟 |
 | Step 4 | 重构领域层接口定义 | 30分钟 |
 | Step 5 | 删除原实现文件 `rpc_async_impl.go` | 5分钟 |
-| Step 6 | 更新所有引用（grep + 修改 import） | 30分钟 |
-| Step 7 | 删除 `pkg/async` 包 | 10分钟 |
-| Step 8 | 运行测试验证 | 30分钟 |
+| Step 6 | 更新所有引用（grep + 修改 import） | 1.5小时 |
+| Step 7 | 删除 `pkg/async` 包 | 30分钟 |
+| Step 8 | 运行测试验证 | 1.5小时 |
+
+**总计** | | **~6.5小时** |
 
 **分层架构示意：**
 ```
@@ -130,17 +132,24 @@
 
 正确的依赖方向（无循环依赖）：
 ```
-domain/model (领域模型)
-    ↑
-domain/service (领域服务接口)
-    ↑
-infrastructure/rpc (基础设施实现)
+调用方向:
+  Application → domain/service (接口)
+                      ↑
+                      │ 实现
+                      ↓
+            infrastructure/rpc (实现类)
+
+导入方向:
+  domain/service ─────┐
+                      │ (被导入)
+                      ↓
+            infrastructure/rpc
 ```
 
 **说明**：
 - `domain/model`: 定义领域模型（如 PeerID, Message）
-- `domain/service`: 定义服务接口（如 RPCAsync, AsyncOperation）
-- `infrastructure/rpc`: 实现接口，依赖 domain/service
+- `domain/service`: 定义服务接口（如 RPCAsync, AsyncOperation），不依赖其他层
+- `infrastructure/rpc`: 实现接口，导入 domain/service，依赖领域层
 
 **无需担心循环依赖**：
 1. 领域层只定义接口，不实现
@@ -160,8 +169,6 @@ infrastructure/rpc (基础设施实现)
 | Step 7 | 删除 `pkg/async` 包 | 30分钟 |
 | Step 8 | 运行测试验证 | 1.5小时 |
 | **总计** | | **~6.5小时** |
-| Step 3 | 修改 `rpc_async.go` 中的 import，删除 `rpc_async_impl.go` 中的实现代码 | 0.5h |
-| Step 4 | 运行测试验证 | 0.5h |
 
 ---
 
@@ -175,6 +182,38 @@ infrastructure/rpc (基础设施实现)
 | 测试失败 | 中 | 保留原测试，迁移后对比结果 |
 | 性能退化 | 低 | 添加基准测试，对比重构前后 |
 | 功能丢失 | 低 | 完整代码审查，逐行对比 |
+| 数据丢失风险 | 高 | 异步操作重构需确保请求不丢失，添加请求队列持久化 |
+| 并发竞态条件 | 高 | 使用 `go test -race` 检测，代码审查重点关注并发逻辑 |
+
+---
+
+### 4.1 接口兼容性检查清单
+
+| 接口/类型 | 原位置 | 新位置 | 是否变化 | 验证方式 |
+|-----------|--------|--------|----------|----------|
+| `AsyncOperation[T]` | `domain/service` | `domain/service` | 不变 | 类型检查 |
+| `RPCAsync` | `domain/service` | `domain/service` | 不变 | 类型检查 |
+| `AsyncResult[T]` | `domain/service` | `domain/service` | 不变 | 类型检查 |
+| `NewAsyncCall` | `rpc_async_impl.go` | `infrastructure/rpc` | 签名不变 | 编译检查 |
+| `NewAsyncBroadcast` | `rpc_async_impl.go` | `infrastructure/rpc` | 签名不变 | 编译检查 |
+| `RPCAsyncAdapter` | `rpc_async_impl.go` | `infrastructure/rpc` | 移动 | 单元测试 |
+
+### 4.2 测试策略
+
+1. **编译时检查**: `go build ./...` 确保无编译错误
+2. **单元测试**: 迁移现有测试，确保全部通过 `go test ./internal/infrastructure/rpc/...`
+3. **集成测试**: 验证端到端功能 `go test ./test/integration/...`
+4. **基准测试**: 对比重构前后性能 `go test -bench=. ./...`
+5. **竞态检测**: `go test -race ./internal/infrastructure/rpc/...`
+6. **覆盖率检查**: 确保覆盖率不降低 `go test -cover ./...`
+
+### 4.3 回滚方案
+
+如果重构出现问题：
+1. **快速回滚**: `git revert <commit>` 或切换回主分支
+2. **数据无损**: 无持久化数据变更，仅代码移动
+3. **备份保留**: 原文件保留在 git 历史中，可随时恢复
+4. **回滚时间**: < 5 分钟
 
 ---
 

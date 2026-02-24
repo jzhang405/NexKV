@@ -50,14 +50,6 @@ var (
 	ErrTaskTimeout           = stderrors.New("concurrency: task timeout")
 	ErrTooManyDelayedTasks   = stderrors.New("concurrency: too many delayed tasks") // P1-01
 
-	// GoroutinePool 层错误
-	ErrPoolClosed            = stderrors.New("concurrency: goroutine pool is closed")
-	ErrPoolFull              = stderrors.New("concurrency: goroutine pool is full")
-	ErrTaskArgLengthMismatch = stderrors.New("concurrency: task and argument length mismatch")
-	ErrTaskCanceled          = stderrors.New("concurrency: task was canceled")
-	ErrTaskTimeout           = stderrors.New("concurrency: task timeout")
-	ErrTooManyDelayedTasks   = stderrors.New("concurrency: too many delayed tasks") // P1-01
-
 	// RPC 层错误
 	ErrMajorityFailed      = stderrors.New("rpc: majority quorum not reached")
 	ErrAllFailed           = stderrors.New("rpc: all nodes failed")

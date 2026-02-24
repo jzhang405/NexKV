@@ -321,24 +321,3 @@ func (h *HLCProvider) Update(eventTime int64, remoteHLC *model.HLC) *model.HLC {
 func (h *HLCProvider) Current() *model.HLC {
 	return h.hlc.Clone().ToModelHLC()
 }
-
-// ToModelHLC 转换为 domain/model.HLC
-func (h *HLC) ToModelHLC() *model.HLC {
-	if h == nil {
-		return nil
-	}
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return model.NewHLCWithTime(h.pt, h.c)
-}
-
-// FromModelHLC 从 domain/model.HLC 创建
-func FromModelHLC(m *model.HLC) *HLC {
-	if m == nil {
-		return nil
-	}
-	return &HLC{
-		pt: m.PhysicalTime(),
-		c:  m.LogicalCounter(),
-	}
-}

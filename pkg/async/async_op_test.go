@@ -123,6 +123,29 @@ func (m *mockGoroutineProvider) getSubmitCount() int64 {
 // 基础功能测试
 // ==========================================
 
+// TestNewOp_NilExecFunc 测试 nil execFunc 处理（#5）
+func TestNewOp_NilExecFunc(t *testing.T) {
+	ctx := context.Background()
+
+	op := NewOp[string](ctx, nil, nil)
+
+	// 应该立即返回失败状态
+	if op.Status() != StatusFailed {
+		t.Fatalf("expected status %v, got: %v", StatusFailed, op.Status())
+	}
+
+	// Get 应该返回错误
+	result, err := op.Get(ctx)
+	if err == nil {
+		t.Fatalf("expected error for nil execFunc, got result: %v", result)
+	}
+
+	// 检查是否已启动（nil execFunc 情况下不应该执行）
+	if op.IsStarted() {
+		t.Fatal("expected IsStarted to be false for nil execFunc")
+	}
+}
+
 // TestNewOp_BasicExecution 测试基本执行流程
 func TestNewOp_BasicExecution(t *testing.T) {
 	ctx := context.Background()

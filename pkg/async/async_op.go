@@ -172,6 +172,21 @@ func NewOp[T any](
 	execFunc func(ctx context.Context) (T, error),
 	opts ...OpOption,
 ) AsyncOperation[T] {
+	// #5: execFunc nil 检查
+	if execFunc == nil {
+		op := &AsyncOp[T]{
+			ctx:       ctx,
+			resultCh:  make(chan Result[T], 1),
+			done:      make(chan struct{}),
+			callbacks: make(map[string]func(T, error)),
+			status:    StatusFailed,
+		}
+		op.err = errors.Wrapf(errors.ErrInvalidParam, "execFunc cannot be nil")
+		close(op.done)
+		op.resultCh <- Result[T]{Err: op.err}
+		return op
+	}
+
 	// 应用选项
 	config := &opConfig{
 		timeout: 30 * time.Second,
@@ -393,10 +408,15 @@ func (op *AsyncOp[T]) executeCallbacks(value T, err error) {
 	for _, cb := range callbacks {
 		cb := cb
 		if op.provider != nil {
-			// 使用 GoroutineProvider
-			_ = op.provider.Submit(op.ctx, func(ctx context.Context) {
+			// #7: 使用 context.Background() 避免过期 context
+			// #6: 记录提交失败
+			if submitErr := op.provider.Submit(context.Background(), func(ctx context.Context) {
 				safeCallback(cb, value, err)
-			})
+			}); submitErr != nil {
+				slog.Error("[async] callback submit failed",
+					"error", submitErr,
+					"operationError", err)
+			}
 		} else {
 			// 直接启动 goroutine
 			go safeCallback(cb, value, err)

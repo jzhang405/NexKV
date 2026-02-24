@@ -124,14 +124,21 @@ type GroupOption func(*groupConfig)
 // groupConfig 批量操作配置（预留扩展，当前未使用）
 type groupConfig struct{}
 
-// handleResult 处理单个结果
+// handleResult 处理单个结果（入口函数）
 func (g *AsyncGroup[T]) handleResult(peer model.PeerID, value T, err error) {
-	var callback GroupCallback[T]
-	var stats GroupStats
-	var shouldTriggerMajority bool
-	var shouldTriggerAllDone bool
+	callback, stats, triggers := g.recordAndCheckResult(peer, value, err)
+	g.invokeCallbacks(callback, peer, value, err, stats, triggers)
+}
 
+// recordAndCheckResult 记录结果并检查触发条件（#1: 拆分为小函数）
+func (g *AsyncGroup[T]) recordAndCheckResult(peer model.PeerID, value T, err error) (
+	callback GroupCallback[T], stats GroupStats, triggers struct {
+		majority bool
+		allDone  bool
+	},
+) {
 	g.mu.Lock()
+	defer g.mu.Unlock()
 
 	// 记录第一次响应
 	g.firstResponseOnce.Do(func() {
@@ -153,12 +160,12 @@ func (g *AsyncGroup[T]) handleResult(peer model.PeerID, value T, err error) {
 	failed := len(g.errors)
 	completed := success + failed
 
-	// 检查是否达到多数派（成功数达到多数派，或者全部完成但无法达到多数派）
+	// 检查是否达到多数派
 	majorityCount := (total / 2) + 1
 	if success >= majorityCount || (completed >= total && success < majorityCount) {
 		g.majorityOnce.Do(func() {
 			g.majorityReachTime = time.Now()
-			shouldTriggerMajority = true
+			triggers.majority = true
 			close(g.majorityDone)
 		})
 	}
@@ -166,12 +173,12 @@ func (g *AsyncGroup[T]) handleResult(peer model.PeerID, value T, err error) {
 	// 检查是否全部完成
 	if completed >= total {
 		g.allOnce.Do(func() {
-			shouldTriggerAllDone = true
+			triggers.allDone = true
 			close(g.allDone)
 		})
 	}
 
-	// 准备统计信息
+	// 准备返回数据
 	stats = GroupStats{
 		TotalPeers:        total,
 		SuccessCount:      success,
@@ -180,23 +187,40 @@ func (g *AsyncGroup[T]) handleResult(peer model.PeerID, value T, err error) {
 		FirstResponseTime: g.firstResponseTime,
 		MajorityReachTime: g.majorityReachTime,
 	}
-
 	callback = g.callback
-	g.mu.Unlock()
 
-	// 执行回调
-	if callback != nil {
-		if err != nil {
-			callback.OnFailure(peer, err, stats)
-		} else {
-			callback.OnSuccess(peer, value, stats)
-		}
-		if shouldTriggerMajority {
-			callback.OnMajorityReached(stats)
-		}
-		if shouldTriggerAllDone {
-			callback.OnFullDone(stats)
-		}
+	return callback, stats, triggers
+}
+
+// invokeCallbacks 执行回调（#1: 拆分为小函数）
+func (g *AsyncGroup[T]) invokeCallbacks(
+	callback GroupCallback[T],
+	peer model.PeerID,
+	value T,
+	err error,
+	stats GroupStats,
+	triggers struct {
+		majority bool
+		allDone  bool
+	},
+) {
+	if callback == nil {
+		return
+	}
+
+	// 执行单个结果回调
+	if err != nil {
+		callback.OnFailure(peer, err, stats)
+	} else {
+		callback.OnSuccess(peer, value, stats)
+	}
+
+	// 执行里程碑回调
+	if triggers.majority {
+		callback.OnMajorityReached(stats)
+	}
+	if triggers.allDone {
+		callback.OnFullDone(stats)
 	}
 }
 
@@ -336,6 +360,7 @@ func (g *AsyncGroup[T]) getResult() GroupResult[T] {
 // Close 释放资源
 // 取消所有未完成的操作并清理内部状态
 // 这是资源管理的最佳实践，确保不会有 goroutine 泄漏
+// #8: 等待所有操作完成后再返回
 func (g *AsyncGroup[T]) Close() error {
 	// 取消所有操作
 	_ = g.CancelAll()
@@ -346,6 +371,14 @@ func (g *AsyncGroup[T]) Close() error {
 		g.cancel()
 	}
 	g.mu.Unlock()
+
+	// #8: 等待所有操作完成（带超时保护）
+	select {
+	case <-g.allDone:
+		// 所有操作已完成
+	case <-time.After(5 * time.Second):
+		// 超时保护，避免永久阻塞
+	}
 
 	return nil
 }

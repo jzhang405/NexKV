@@ -126,7 +126,7 @@ type asyncOpImpl[T any] struct {
 	resultCh          chan T     // P1-1: 缓冲通道，容量为1，一次性操作后由 GC 回收
 	errCh             chan error // P1-1: 同上
 	done              atomic.Bool
-	status            atomic.Int32 // 0=pending, 1=success, 2=failed, 3=canceled
+	status            atomic.Int32              // 0=pending, 1=success, 2=failed, 3=canceled
 	callbacks         map[string]func(T, error) // P1: 改为 map 支持回调注销
 	cbSeq             atomic.Int64              // P1: 回调 ID 序列号
 	cbMu              sync.RWMutex
@@ -279,11 +279,11 @@ func (op *asyncOpImpl[T]) Status() OperationStatus {
 
 // Cancel 取消操作
 func (op *asyncOpImpl[T]) Cancel() (bool, error) {
-	if op.done.Load() {
+	// 使用 CAS 确保原子性，避免 TOCTOU data race
+	if !op.done.CompareAndSwap(false, true) {
 		return false, errors.New("operation already completed")
 	}
 	op.status.Store(3)
-	op.done.Store(true)
 	var zero T
 	select {
 	case op.errCh <- errors.New("operation canceled"):

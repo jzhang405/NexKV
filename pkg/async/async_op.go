@@ -9,9 +9,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/pkg/errors"
 )
+
+// ==========================================
+// GoroutineProvider 最小化接口（解耦 domain 层）
+// ==========================================
+
+// GoroutineProvider 协程池提供者最小化接口
+// 这是一个子集接口，domain/service.GoroutineProvider 实现会满足此接口
+type GoroutineProvider interface {
+	// Submit 提交任务到协程池
+	Submit(ctx context.Context, task func(context.Context)) error
+}
 
 // ==========================================
 // AsyncOperation[T] 接口定义
@@ -151,14 +161,14 @@ type AsyncOp[T any] struct {
 	statusMu  sync.RWMutex
 	started   bool
 	discarded bool
-	provider  service.GoroutineProvider // goroutine 提供者
+	provider  GoroutineProvider // goroutine 提供者
 }
 
 // NewOp 创建异步操作
 // provider 参数可选，为 nil 时直接使用 goroutine
 func NewOp[T any](
 	ctx context.Context,
-	provider service.GoroutineProvider,
+	provider GoroutineProvider,
 	execFunc func(ctx context.Context) (T, error),
 	opts ...OpOption,
 ) AsyncOperation[T] {
@@ -314,9 +324,14 @@ func (op *AsyncOp[T]) Discard() error {
 	}
 
 	// Channel 泄漏防护：启动 goroutine 消费结果
-	// 确保即使调用者不读取，channel 也不会阻塞
+	// 使用非阻塞 select 避免永久阻塞
 	go func() {
-		<-op.resultCh
+		select {
+		case <-op.resultCh:
+			// 成功消费
+		default:
+			// channel 已空或已关闭
+		}
 	}()
 
 	return nil

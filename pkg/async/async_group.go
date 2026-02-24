@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
-	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
@@ -70,7 +69,7 @@ type GroupResult[T any] struct {
 // provider 参数可选，为 nil 时直接使用 goroutine
 func NewGroup[T any](
 	ctx context.Context,
-	provider service.GoroutineProvider,
+	provider GoroutineProvider,
 	targets []model.PeerID,
 	execFunc func(ctx context.Context, target model.PeerID) (T, error),
 	_ ...GroupOption, // 保留参数签名兼容性，但当前不使用

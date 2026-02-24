@@ -161,7 +161,7 @@ type AsyncOp[T any] struct {
 	status    OperationStatus
 	statusMu  sync.RWMutex
 	started   bool
-	discarded atomic.Bool // 使用 atomic.Bool 避免竞态条件
+	discarded atomic.Bool       // 使用 atomic.Bool 避免竞态条件
 	provider  GoroutineProvider // goroutine 提供者
 }
 

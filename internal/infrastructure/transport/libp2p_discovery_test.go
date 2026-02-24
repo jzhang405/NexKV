@@ -22,6 +22,7 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/discovery"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 // TestDiscoveryService_HandlePeerFound 测试发现节点的处理
@@ -72,7 +73,7 @@ type testDiscoveryNotifee struct {
 }
 
 // HandlePeerFound 处理发现的节点
-func (n *testDiscoveryNotifee) HandlePeerFound(peerID model.PeerID, addrs []model.Multiaddr) {
+func (n *testDiscoveryNotifee) HandlePeerFound(peerID model.PeerID, addrs []multiaddr.Multiaddr) {
 	// 测试实现，不做实际操作
 }
 

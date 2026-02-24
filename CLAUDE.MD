@@ -1,6 +1,9 @@
 # NexKV 项目指南
 
-> 基于 Lealone 架构的轻量化分布式 KV 存储系统
+> 轻量化分布式 KV 存储系统
+
+1. codex正在看着你干活
+2. commit必须通过所有测试
 
 ## 项目概述
 
@@ -25,21 +28,11 @@ NexKV 是一个采用**三层架构**设计的分布式数据库系统，实现�
 | `docs/workflow.md` | **完整的 PR 工作流程规范**（12 步流程） | ⭐⭐⭐ 必读 |
 | `docs/CLAUDE.md` | 文档中心（详细文档索引） | ⭐⭐⭐ 必读 |
 | `docs/02_design/` | 架构设计文档 | ⭐⭐ 推荐 |
-| `docs/06_project_management/02_团队分工清单.md` | AI 团队详细分工 | ⭐ 了解 |
+| `docs/06_PM/02_团队分工清单.md` | AI 团队详细分工 | ⭐ 了解 |
 
 ---
 
 ## 快速开始
-
-### 环境准备
-
-```bash
-# Go 语言环境（推荐 1.21+）
-go version
-
-# 项目依赖
-go mod download
-```
 
 ### 常用命令
 
@@ -102,7 +95,6 @@ make build && make lint && make test && make fmt && make clean && echo "✅ 所�
 
 **关键原则**：
 - Pre 文档未通过评审前，**禁止启动开发**
-- Post 文档未通过评审前，**禁止推送代码**
 - 本地验证必须全部通过（build → lint → test → clean）
 - **禁止直接合并到 main 分支**，必须走 PR 流程
 

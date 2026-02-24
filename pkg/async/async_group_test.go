@@ -790,7 +790,7 @@ func ExampleNewGroup_withCallback() {
 
 	// 等待完成
 	_ = group.WaitAll(ctx)
-	time.Sleep(100 * time.Millisecond) // 等待回调执行
+	time.Sleep(500 * time.Millisecond) // 等待回调执行（race detector 会显著降低执行速度）
 
 	// 验证回调被调用
 	fmt.Printf("Success count: %d\n", callback.getSuccessCount())

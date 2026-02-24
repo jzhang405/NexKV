@@ -468,8 +468,11 @@ func TestNewOp_OnComplete(t *testing.T) {
 	var callbackResult string
 	var callbackErr error
 	var callbackCalled int64
+	var mu sync.Mutex // 保护 callbackResult 和 callbackErr
 
 	cbID := op.OnComplete(func(result string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
 		atomic.StoreInt64(&callbackCalled, 1)
 		callbackResult = result
 		callbackErr = err
@@ -488,11 +491,18 @@ func TestNewOp_OnComplete(t *testing.T) {
 	if atomic.LoadInt64(&callbackCalled) == 0 {
 		t.Fatal("expected callback to be called")
 	}
-	if callbackResult != expectedResult {
-		t.Fatalf("expected callback result %s, got: %s", expectedResult, callbackResult)
+
+	// 使用互斥锁保护读取
+	mu.Lock()
+	result := callbackResult
+	err := callbackErr
+	mu.Unlock()
+
+	if result != expectedResult {
+		t.Fatalf("expected callback result %s, got: %s", expectedResult, result)
 	}
-	if callbackErr != nil {
-		t.Fatalf("expected no callback error, got: %v", callbackErr)
+	if err != nil {
+		t.Fatalf("expected no callback error, got: %v", err)
 	}
 }
 
@@ -585,8 +595,11 @@ func TestNewOp_OnCompleteAfterCompletion(t *testing.T) {
 	// 操作完成后注册回调（应该立即执行）
 	var callbackResult string
 	var callbackCalled int64
+	var mu sync.Mutex // 保护 callbackResult
 
 	op.OnComplete(func(result string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
 		atomic.StoreInt64(&callbackCalled, 1)
 		callbackResult = result
 	})
@@ -597,8 +610,14 @@ func TestNewOp_OnCompleteAfterCompletion(t *testing.T) {
 	if atomic.LoadInt64(&callbackCalled) == 0 {
 		t.Fatal("expected callback to be called immediately after completion")
 	}
-	if callbackResult != expectedResult {
-		t.Fatalf("expected callback result %s, got: %s", expectedResult, callbackResult)
+
+	// 使用互斥锁保护读取
+	mu.Lock()
+	result := callbackResult
+	mu.Unlock()
+
+	if result != expectedResult {
+		t.Fatalf("expected callback result %s, got: %s", expectedResult, result)
 	}
 }
 

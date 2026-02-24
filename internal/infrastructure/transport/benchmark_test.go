@@ -56,7 +56,8 @@ func createMiddlewareChain(rpc *Libp2pRPC) {
 // 目标：≥12K ops/sec
 func BenchmarkRPC_Baseline(b *testing.B) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, service.DefaultRPCConfig())
+	provider := newMockGoroutineProvider()
+	rpc := NewLibp2pRPC(transport, provider, service.DefaultRPCConfig())
 	defer rpc.Close()
 
 	peer := model.PeerID("node-2")
@@ -93,7 +94,8 @@ func BenchmarkRPC_Baseline(b *testing.B) {
 // 目标：≥10K ops/sec
 func BenchmarkRPC_WithMiddleware(b *testing.B) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, service.DefaultRPCConfig())
+	provider := newMockGoroutineProvider()
+	rpc := NewLibp2pRPC(transport, provider, service.DefaultRPCConfig())
 	createMiddlewareChain(rpc)
 	defer rpc.Close()
 
@@ -130,7 +132,8 @@ func BenchmarkRPC_WithMiddleware(b *testing.B) {
 // 目标：≥10K ops/sec
 func BenchmarkRPC_Throughput(b *testing.B) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, service.DefaultRPCConfig())
+	provider := newMockGoroutineProvider()
+	rpc := NewLibp2pRPC(transport, provider, service.DefaultRPCConfig())
 	createMiddlewareChain(rpc)
 	defer rpc.Close()
 
@@ -141,7 +144,7 @@ func BenchmarkRPC_Throughput(b *testing.B) {
 	payload := make([]byte, 64)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		msg := model.NewMessage(
 			fmt.Sprintf("msg-%d", i),
 			model.MessageTypeRequest,
@@ -159,7 +162,8 @@ func BenchmarkRPC_Throughput(b *testing.B) {
 // 目标：≥10K ops/sec
 func BenchmarkRPC_Concurrent(b *testing.B) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, service.DefaultRPCConfig())
+	provider := newMockGoroutineProvider()
+	rpc := NewLibp2pRPC(transport, provider, service.DefaultRPCConfig())
 	createMiddlewareChain(rpc)
 	defer rpc.Close()
 
@@ -176,11 +180,11 @@ func BenchmarkRPC_Concurrent(b *testing.B) {
 	numGoroutines := 10
 	opsPerGoroutine := b.N / numGoroutines
 
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
-			for i := 0; i < opsPerGoroutine; i++ {
+			for i := range opsPerGoroutine {
 				msg := model.NewMessage(
 					fmt.Sprintf("msg-%d-%d", goroutineID, i),
 					model.MessageTypeRequest,
@@ -205,7 +209,8 @@ func BenchmarkRPC_Concurrent(b *testing.B) {
 // BenchmarkRPC_Payload_Small 64 字节负载
 func BenchmarkRPC_Payload_Small(b *testing.B) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, service.DefaultRPCConfig())
+	provider := newMockGoroutineProvider()
+	rpc := NewLibp2pRPC(transport, provider, service.DefaultRPCConfig())
 	createMiddlewareChain(rpc)
 	defer rpc.Close()
 
@@ -216,7 +221,7 @@ func BenchmarkRPC_Payload_Small(b *testing.B) {
 	payload := make([]byte, 64) // 64 字节
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		msg := model.NewMessage(
 			fmt.Sprintf("msg-%d", i),
 			model.MessageTypeRequest,
@@ -233,7 +238,8 @@ func BenchmarkRPC_Payload_Small(b *testing.B) {
 // BenchmarkRPC_Payload_Medium 1 KB 负载
 func BenchmarkRPC_Payload_Medium(b *testing.B) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, service.DefaultRPCConfig())
+	provider := newMockGoroutineProvider()
+	rpc := NewLibp2pRPC(transport, provider, service.DefaultRPCConfig())
 	createMiddlewareChain(rpc)
 	defer rpc.Close()
 
@@ -244,7 +250,7 @@ func BenchmarkRPC_Payload_Medium(b *testing.B) {
 	payload := make([]byte, 1024) // 1 KB
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		msg := model.NewMessage(
 			fmt.Sprintf("msg-%d", i),
 			model.MessageTypeRequest,
@@ -261,7 +267,8 @@ func BenchmarkRPC_Payload_Medium(b *testing.B) {
 // BenchmarkRPC_Payload_Large 4 KB 负载
 func BenchmarkRPC_Payload_Large(b *testing.B) {
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, service.DefaultRPCConfig())
+	provider := newMockGoroutineProvider()
+	rpc := NewLibp2pRPC(transport, provider, service.DefaultRPCConfig())
 	createMiddlewareChain(rpc)
 	defer rpc.Close()
 
@@ -372,7 +379,8 @@ func TestPerformance_ThroughputVerification(t *testing.T) {
 	}
 
 	transport := newMockTransport("node-1")
-	rpc := NewLibp2pRPC(transport, service.DefaultRPCConfig())
+	provider := newMockGoroutineProvider()
+	rpc := NewLibp2pRPC(transport, provider, service.DefaultRPCConfig())
 	createMiddlewareChain(rpc)
 	defer rpc.Close()
 

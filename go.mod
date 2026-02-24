@@ -15,9 +15,9 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.25
 	github.com/prometheus/client_golang v1.22.0
 	github.com/prometheus/client_model v0.6.2
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/sirupsen/logrus v1.9.4
 	github.com/sony/gobreaker v1.0.0
-	github.com/sourcegraph/conc v0.3.0
 	github.com/spf13/viper v1.20.0-alpha.6
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v2 v2.27.7
@@ -100,6 +100,7 @@ require (
 	github.com/quic-go/webtransport-go v0.10.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/sagikazarmark/locafero v0.9.0 // indirect
+	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect

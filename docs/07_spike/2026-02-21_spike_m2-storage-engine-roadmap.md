@@ -164,7 +164,7 @@ graph LR
 | | - 单元测试 | | 1 天 |
 | **Week 2** | 集成测试 + 性能基准 | `pkg/async/*_test.go` | 5 天 |
 | | - 与现有 RPC 集成测试 | | 2 天 |
-| | - 性能基准测试（vs BroadcastTracker） | | 2 天 |
+| | - 性能基准测试（vs BroadcastProgress） | | 2 天 |
 | | - 内存泄漏检查 | | 1 天 |
 | **Week 3** | 渐进式迁移 + 文档 | 适配层 + 文档 | 5 天 |
 | | - RPCAdapter 适配层实现 | | 2 天 |
@@ -176,7 +176,7 @@ graph LR
 - ✅ `pkg/async/async_op.go` - AsyncOperation[T] 实现
 - ✅ `pkg/async/async_group.go` - AsyncGroup[T] 实现
 - ✅ `pkg/async/ants_provider.go` - AntsGoroutineProvider 实现
-- ✅ `pkg/async/bridge.go` - BroadcastCallback 桥接
+- ✅ `pkg/async/bridge.go` - BroadcastListener 桥接
 - ✅ `internal/infrastructure/transport/libp2p_rpc_adapter.go` - 适配层
 - ✅ 完整单元测试和性能基准测试
 

@@ -25,7 +25,7 @@ NexKV 目前已存在多种异步编程模式：
 |------|------|------|
 | `AsyncChannel` | Channel 风格 | `SendChan() chan<- []byte`, `RecvChan() <-chan MsgOrError` |
 | `AsyncStream` | Channel 风格 | `ReadChan() <-chan ReadResult`, `WriteChan() chan<- WriteRequest` |
-| `BroadcastTracker` | 回调 + Channel | `BroadcastCallback` 接口 + `WaitFull()/WaitMajority()` |
+| `BroadcastProgress` | 回调 + Channel | `BroadcastListener` 接口 + `WaitFull()/WaitMajority()` |
 | `Libp2pRPC.CallAsync` | 回调函数 | `cb func(model.Message, error)` |
 | `pendingCall` | Channel | `responseCh chan service.ResponseMsg` |
 | `AsyncOperation[T]` | 泛型异步 | `Get(ctx)/Status()/Cancel()/OnComplete()` |
@@ -43,7 +43,7 @@ NexKV 目前已存在多种异步编程模式：
 
 ### 2.1 核心原则
 
-1. **与现有架构对齐**：复用 `BroadcastCallback`、`AsyncLifecycle`、`pkg/errors` 等已有组件
+1. **与现有架构对齐**：复用 `BroadcastListener`、`AsyncLifecycle`、`pkg/errors` 等已有组件
 2. **方案B并行实现**：新旧实现并存，内部统一，逐步替换（详见第九章）
 3. **Channel 优先**：与 NexKV 现有 Channel 风格保持一致
 4. **类型安全**：利用 Go 泛型，但避免过度复杂
@@ -791,7 +791,7 @@ import (
 
 // AsyncGroup 批量异步操作组
 // 设计原则：
-// 1. 与 BroadcastTracker 风格一致（回调接口、统计信息）
+// 1. 与 BroadcastProgress 风格一致（回调接口、统计信息）
 // 2. 支持多种等待策略（All/Majority/Any）
 // 3. 复用现有的 ResponseStrategy
 type AsyncGroup[T any] struct {
@@ -812,7 +812,7 @@ type AsyncGroup[T any] struct {
 	allDone       chan struct{}
 	
 	// 回调
-	callback service.BroadcastCallback
+	callback service.BroadcastListener
 	
 	// 时间统计
 	startTime             time.Time
@@ -872,7 +872,7 @@ func NewGroup[T any](
 
 // handleResult 处理单个操作结果
 func (g *AsyncGroup[T]) handleResult(peer model.PeerID, value T, err error) {
-	var callback service.BroadcastCallback
+	var callback service.BroadcastListener
 	var stats service.BroadcastStats
 	var shouldTriggerMajority bool
 	var shouldTriggerAllDone bool
@@ -938,25 +938,25 @@ func (g *AsyncGroup[T]) handleResult(peer model.PeerID, value T, err error) {
 
 	// 1. 先执行成功/失败回调
 	if err != nil {
-		safeBroadcastCallback(func() {
+		safeBroadcastListener(func() {
 			callback.OnFailure(peer, err, stats)
 		})
 	} else {
-		safeBroadcastCallback(func() {
+		safeBroadcastListener(func() {
 			callback.OnSuccess(peer, nil, stats)
 		})
 	}
 
 	// 2. 再执行 Majority 回调（仅一次）
 	if shouldTriggerMajority {
-		safeBroadcastCallback(func() {
+		safeBroadcastListener(func() {
 			callback.OnMajorityReached(stats)
 		})
 	}
 
 	// 3. 最后执行 FullDone 回调（仅一次）
 	if shouldTriggerAllDone {
-		safeBroadcastCallback(func() {
+		safeBroadcastListener(func() {
 			callback.OnFullDone(stats)
 		})
 	}
@@ -1016,8 +1016,8 @@ func (g *AsyncGroup[T]) WaitAny(ctx context.Context) (model.PeerID, T, error) {
 }
 
 // SetCallback 设置回调（v19.0 新增）
-// 与 BroadcastTracker 风格一致，允许在操作运行中设置回调
-func (g *AsyncGroup[T]) SetCallback(callback service.BroadcastCallback) {
+// 与 BroadcastProgress 风格一致，允许在操作运行中设置回调
+func (g *AsyncGroup[T]) SetCallback(callback service.BroadcastListener) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.callback = callback
@@ -1058,8 +1058,8 @@ func (g *AsyncGroup[T]) GetResult() GroupResult[T] {
 	}
 }
 
-// safeBroadcastCallback 安全执行广播回调
-func safeBroadcastCallback(fn func()) {
+// safeBroadcastListener 安全执行广播回调
+func safeBroadcastListener(fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("[AsyncGroup] callback panic recovered", "panic", r)
@@ -1127,7 +1127,7 @@ func (r *rpcAsyncImpl) BroadcastAsync(
 }
 ```
 
-### 4.2 与 BroadcastTracker 的桥接
+### 4.2 与 BroadcastProgress 的桥接
 
 ```go
 // pkg/async/bridge.go
@@ -1139,12 +1139,12 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
-// ToBroadcastCallback 将 AsyncOp 回调转换为 BroadcastCallback
-// 用于兼容现有使用 BroadcastTracker 的代码
-func ToBroadcastCallback(
+// ToBroadcastListener 将 AsyncOp 回调转换为 BroadcastListener
+// 用于兼容现有使用 BroadcastProgress 的代码
+func ToBroadcastListener(
 	onSuccess func(peer model.PeerID, resp model.Message, stats service.BroadcastStats),
 	onFailure func(peer model.PeerID, err error, stats service.BroadcastStats),
-) service.BroadcastCallback {
+) service.BroadcastListener {
 	return &callbackBridge{
 		onSuccess: onSuccess,
 		onFailure: onFailure,
@@ -1236,7 +1236,7 @@ func exampleBroadcastAsync(rpc RPCAsync) {
 	// 创建批量操作
 	group := rpc.BroadcastAsync(ctx, peers, req, service.ResponseMajority)
 	
-	// 设置回调（与 BroadcastTracker 风格一致）
+	// 设置回调（与 BroadcastProgress 风格一致）
 	group.SetCallback(&MyCallback{})
 	
 	// 等待多数派
@@ -1438,7 +1438,7 @@ func exampleGroupWithErrorHandling(rpc RPCAsync) {
 	}
 }
 
-// errorHandlingCallback 实现 BroadcastCallback 接口
+// errorHandlingCallback 实现 BroadcastListener 接口
 type errorHandlingCallback struct{}
 
 func (c *errorHandlingCallback) OnSuccess(peer model.PeerID, resp model.Message, stats service.BroadcastStats) {
@@ -1483,7 +1483,7 @@ func (c *errorHandlingCallback) OnFullDone(stats service.BroadcastStats) {
 ### Phase 2: 集成测试（Week 2）
 
 - [ ] 与现有 RPC 层集成测试
-- [ ] 与 BroadcastTracker 对比测试
+- [ ] 与 BroadcastProgress 对比测试
 - [ ] 性能基准测试（vs 现有实现）
 
 **性能基准测试计划（v19.0）**：
@@ -1574,12 +1574,12 @@ func BenchmarkConcurrentAsyncOps(b *testing.B) {
 **性能对比基准（vs 现有实现）**：
 
 ```go
-// BenchmarkVsBroadcastTracker 与 BroadcastTracker 性能对比
-func BenchmarkVsBroadcastTracker(b *testing.B) {
-	// 现有 BroadcastTracker 实现
-	b.Run("BroadcastTracker", func(b *testing.B) {
+// BenchmarkVsBroadcastProgress 与 BroadcastProgress 性能对比
+func BenchmarkVsBroadcastProgress(b *testing.B) {
+	// 现有 BroadcastProgress 实现
+	b.Run("BroadcastProgress", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			tracker := service.NewBroadcastTracker([]model.PeerID{"node-1", "node-2", "node-3"})
+			tracker := service.NewBroadcastProgress([]model.PeerID{"node-1", "node-2", "node-3"})
 			// ... 执行广播操作
 			_ = tracker
 		}
@@ -1635,7 +1635,7 @@ func BenchmarkVsLibp2pRPCAsync(b *testing.B) {
   - [ ] 与独立 goroutine 对比测试
 
 - [ ] **与现有实现性能对比**
-  - [ ] vs BroadcastTracker 性能对比
+  - [ ] vs BroadcastProgress 性能对比
   - [ ] vs Libp2pRPC.CallAsync 性能对比
   - [ ] vs pendingCall 性能对比
 
@@ -1660,7 +1660,7 @@ go tool trace trace.out
 
 ### Phase 3: 渐进式迁移（Week 3）
 
-- [ ] 元数据同步：使用 AsyncGroup 替代现有 BroadcastTracker
+- [ ] 元数据同步：使用 AsyncGroup 替代现有 BroadcastProgress
 - [ ] KV 读写：使用 AsyncOperation 实现异步读写
 - [ ] 监控指标：验证回调机制和统计信息
 
@@ -1778,7 +1778,7 @@ func NewOp[T any](
 
 ```go
 func (g *AsyncGroup[T]) handleResult(peer model.PeerID, value T, err error) {
-    var callback service.BroadcastCallback
+    var callback service.BroadcastListener
     var stats service.BroadcastStats
     var shouldTriggerMajority bool
     var shouldTriggerAllDone bool
@@ -2000,7 +2000,7 @@ func Example_newOp() {
 | **协程管理** | 自建 goroutine | 复用 `GoroutineProvider`（DDD标准） |
 | **泛型复杂度** | `Async[T, S Status]` 双泛型参数 | `AsyncOp[T]` 单泛型参数 |
 | **Channel 风格** | 不支持 | 原生支持（通过 ResultChan） |
-| **回调风格** | 函数式 `Callback[T]` | 函数式 + 接口式 `BroadcastCallback` |
+| **回调风格** | 函数式 `Callback[T]` | 函数式 + 接口式 `BroadcastListener` |
 | **生命周期** | 自建 `done chan struct{}` | 复用 `AsyncLifecycle` |
 | **批量操作** | `MultiAsync[T, P any]` 复杂 | `AsyncGroup[T]` 简化 |
 | **状态枚举** | `SingleStatus`/`MultiStatus` 两套 | 复用 `OperationStatus`（v19.0） |
@@ -2136,32 +2136,32 @@ func (a *RPCAdapter) BroadcastAsyncOld(
     })
     
     // 设置回调适配
-    group.SetCallback(&legacyBroadcastCallback{
+    group.SetCallback(&legacyBroadcastListener{
         onSuccess: onSuccess,
         onFailure: onFailure,
     })
 }
 
-// legacyBroadcastCallback 旧回调适配
-type legacyBroadcastCallback struct {
+// legacyBroadcastListener 旧回调适配
+type legacyBroadcastListener struct {
     onSuccess func(peer model.PeerID, resp model.Message)
     onFailure func(peer model.PeerID, err error)
 }
 
-func (c *legacyBroadcastCallback) OnSuccess(peer model.PeerID, resp model.Message, stats service.BroadcastStats) {
+func (c *legacyBroadcastListener) OnSuccess(peer model.PeerID, resp model.Message, stats service.BroadcastStats) {
     if c.onSuccess != nil {
         c.onSuccess(peer, resp)
     }
 }
 
-func (c *legacyBroadcastCallback) OnFailure(peer model.PeerID, err error, stats service.BroadcastStats) {
+func (c *legacyBroadcastListener) OnFailure(peer model.PeerID, err error, stats service.BroadcastStats) {
     if c.onFailure != nil {
         c.onFailure(peer, err)
     }
 }
 
-func (c *legacyBroadcastCallback) OnMajorityReached(stats service.BroadcastStats) {}
-func (c *legacyBroadcastCallback) OnFullDone(stats service.BroadcastStats)       {}
+func (c *legacyBroadcastListener) OnMajorityReached(stats service.BroadcastStats) {}
+func (c *legacyBroadcastListener) OnFullDone(stats service.BroadcastStats)       {}
 ```
 
 ### 9.4 迁移策略

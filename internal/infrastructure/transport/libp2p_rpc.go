@@ -14,11 +14,12 @@ import (
 // Libp2pRPC 基于 libp2p 的 RPC 实现
 type Libp2pRPC struct {
 	transport   service.Transport
-	codec       service.Codec
-	streamCodec service.StreamCodec
+	codec       model.Codec
+	streamCodec model.StreamCodec
 	config      *service.RPCConfig
 	idGenerator *service.RequestIDGenerator
 	middleware  service.MiddlewareChain
+	provider    service.GoroutineProvider // goroutine 提供者
 
 	// 请求-响应匹配
 	pendingCalls   map[string]*pendingCall
@@ -42,7 +43,10 @@ type pendingCall struct {
 }
 
 // NewLibp2pRPC 创建 libp2p RPC 实例
-func NewLibp2pRPC(transport service.Transport, config *service.RPCConfig) *Libp2pRPC {
+func NewLibp2pRPC(transport service.Transport, provider service.GoroutineProvider, config *service.RPCConfig) *Libp2pRPC {
+	if provider == nil {
+		panic("GoroutineProvider is required, cannot be nil")
+	}
 	if config == nil {
 		config = service.DefaultRPCConfig()
 	}
@@ -58,6 +62,7 @@ func NewLibp2pRPC(transport service.Transport, config *service.RPCConfig) *Libp2
 		config:       config,
 		idGenerator:  service.NewRequestIDGenerator(string(self)),
 		middleware:   NewMiddlewareChain(),
+		provider:     provider,
 		pendingCalls: make(map[string]*pendingCall),
 		requestChan:  make(chan service.RequestMsg, config.RequestBufferSize),
 		closeCh:      make(chan struct{}),
@@ -117,12 +122,12 @@ func (r *Libp2pRPC) CallAsync(ctx context.Context, to model.PeerID, req model.Me
 		return service.ErrCanceled
 	}
 
-	go func() {
+	_ = r.provider.Submit(ctx, func(ctx context.Context) {
 		resp, err := r.Call(ctx, to, req)
 		if cb != nil {
 			cb(resp, err)
 		}
-	}()
+	})
 
 	return nil
 }
@@ -170,10 +175,30 @@ func (r *Libp2pRPC) BroadcastCall(
 	to []model.PeerID,
 	req model.Message,
 	strategy service.ResponseStrategy,
-	tracker *service.BroadcastTracker,
+	tracker *service.BroadcastProgress,
 ) (service.BroadcastResult, error) {
 	if r.closed.Load() {
 		return service.BroadcastResult{}, service.ErrCanceled
+	}
+
+	// P1-2 修复：输入验证
+	if req == nil {
+		return service.BroadcastResult{}, service.ErrInvalidMessage
+	}
+
+	if len(to) == 0 {
+		return service.BroadcastResult{
+			Responses:    make([]model.Message, 0),
+			SuccessPeers: make([]model.PeerID, 0),
+			FailedPeers:  make([]model.PeerID, 0),
+		}, nil
+	}
+
+	// P1-2 修复：验证 PeerID 有效性
+	for i, peer := range to {
+		if peer == "" {
+			return service.BroadcastResult{}, service.Wrapf(service.ErrPeerIDInvalid, "empty PeerID at index %d", i)
+		}
 	}
 
 	// 根据策略处理
@@ -196,14 +221,14 @@ func (r *Libp2pRPC) BroadcastAsync(
 	to []model.PeerID,
 	req model.Message,
 	strategy service.ResponseStrategy,
-	tracker *service.BroadcastTracker,
+	tracker *service.BroadcastProgress,
 	cb func(from model.PeerID, resp model.Message, err error),
 ) error {
 	if r.closed.Load() {
 		return service.ErrCanceled
 	}
 
-	go func() {
+	execFunc := func() {
 		result, err := r.BroadcastCall(ctx, to, req, strategy, tracker)
 		if err != nil && cb != nil {
 			cb("", nil, err)
@@ -221,19 +246,34 @@ func (r *Libp2pRPC) BroadcastAsync(
 				cb(peer, nil, service.ErrPeerUnreachable)
 			}
 		}
-	}()
+	}
+
+	_ = r.provider.Submit(ctx, func(ctx context.Context) {
+		execFunc()
+	})
 
 	return nil
 }
 
 // WriteV 不同消息群发：单向发送
-func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []model.Message, tracker *service.BroadcastTracker) error {
+func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []model.Message, tracker *service.BroadcastProgress) error {
+	// P1-2 修复：输入验证
 	if len(targets) != len(msgs) {
 		return service.Wrapf(service.ErrInvalidParam, "targets and messages length mismatch: %d vs %d", len(targets), len(msgs))
 	}
 
 	if len(targets) == 0 {
 		return nil
+	}
+
+	// P1-2 修复：验证 PeerID 和消息有效性
+	for i, target := range targets {
+		if target == "" {
+			return service.Wrapf(service.ErrPeerIDInvalid, "empty PeerID at index %d", i)
+		}
+		if msgs[i] == nil {
+			return service.Wrapf(service.ErrInvalidMessage, "nil message at index %d", i)
+		}
 	}
 
 	// ✅ 修复：添加并发控制，避免瞬时连接数爆炸
@@ -244,7 +284,7 @@ func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []m
 	// 使用信号量限制并发（与 WriteVCall 保持一致）
 	sem := make(chan struct{}, r.config.MaxConcurrentCalls)
 
-	for i, target := range targets {
+	for i := range targets {
 		// 检查 context 是否已取消
 		select {
 		case <-ctx.Done():
@@ -253,8 +293,10 @@ func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []m
 		}
 
 		wg.Add(1)
-		go func(idx int, peerID model.PeerID) {
+		task := func(ctx context.Context, arg any) {
 			defer wg.Done()
+			idx := arg.(int)
+			peerID := targets[idx]
 
 			// 获取信号量
 			sem <- struct{}{}
@@ -273,7 +315,9 @@ func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []m
 					tracker.RecordSuccess(peerID, nil)
 				}
 			}
-		}(i, target)
+		}
+
+		_ = r.provider.SubmitWithArg(ctx, task, i)
 	}
 
 	// 等待所有发送完成
@@ -288,14 +332,33 @@ func (r *Libp2pRPC) WriteVCall(
 	targets []model.PeerID,
 	msgs []model.Message,
 	strategy service.ResponseStrategy,
-	tracker *service.BroadcastTracker,
+	tracker *service.BroadcastProgress,
 ) (service.WriteVResult, error) {
 	if r.closed.Load() {
 		return service.WriteVResult{}, service.ErrCanceled
 	}
 
+	// P1-2 修复：输入验证
 	if len(targets) != len(msgs) {
 		return service.WriteVResult{}, service.Wrapf(service.ErrInvalidParam, "targets and messages length mismatch: %d vs %d", len(targets), len(msgs))
+	}
+
+	if len(targets) == 0 {
+		return service.WriteVResult{
+			Responses:    make(map[model.PeerID]model.Message),
+			SuccessPeers: make([]model.PeerID, 0),
+			FailedPeers:  make([]model.PeerID, 0),
+		}, nil
+	}
+
+	// P1-2 修复：验证 PeerID 和消息有效性
+	for i, target := range targets {
+		if target == "" {
+			return service.WriteVResult{}, service.Wrapf(service.ErrPeerIDInvalid, "empty PeerID at index %d", i)
+		}
+		if msgs[i] == nil {
+			return service.WriteVResult{}, service.Wrapf(service.ErrInvalidMessage, "nil message at index %d", i)
+		}
 	}
 
 	// P2 修复：添加并发控制
@@ -311,12 +374,25 @@ func (r *Libp2pRPC) WriteVCall(
 	sem := make(chan struct{}, r.config.MaxConcurrentCalls)
 
 	for i := range targets {
+		// P1-1 修复：检查 context 是否已取消，避免创建不必要的 goroutine
+		select {
+		case <-ctx.Done():
+			// 将剩余节点标记为失败
+			for j := i; j < len(targets); j++ {
+				result.FailedPeers = append(result.FailedPeers, targets[j])
+			}
+			wg.Wait()
+			return result, ctx.Err()
+		default:
+		}
+
 		sem <- struct{}{} // 获取信号量
 		wg.Add(1)
-		go func(idx int) {
+		task := func(ctx context.Context, arg any) {
 			defer func() { <-sem }() // 释放信号量
 			defer wg.Done()
 
+			idx := arg.(int)
 			target := targets[idx]
 			msg := msgs[idx]
 
@@ -337,7 +413,9 @@ func (r *Libp2pRPC) WriteVCall(
 					tracker.RecordSuccess(target, resp)
 				}
 			}
-		}(i)
+		}
+
+		_ = r.provider.SubmitWithArg(ctx, task, i)
 	}
 
 	wg.Wait()
@@ -382,6 +460,11 @@ func (r *Libp2pRPC) Close() error {
 	return nil
 }
 
+// SetGoroutineProvider 设置 goroutine 提供者
+func (r *Libp2pRPC) SetGoroutineProvider(provider service.GoroutineProvider) {
+	r.provider = provider
+}
+
 // ============================================================================
 // 内部方法
 // ============================================================================
@@ -422,7 +505,7 @@ func (r *Libp2pRPC) doSendRequestAndWaitResponse(ctx context.Context, to model.P
 	}
 
 	// 异步读取响应（使用 StreamCodec 支持大消息）
-	go func() {
+	readFunc := func(ctx context.Context) {
 		defer stream.Close()
 
 		// P2-2 修复：设置读取超时，避免 goroutine 无限阻塞
@@ -439,7 +522,9 @@ func (r *Libp2pRPC) doSendRequestAndWaitResponse(ctx context.Context, to model.P
 		}
 
 		r.handleResponse(req.ID(), service.ResponseMsg{Msg: resp, Err: nil})
-	}()
+	}
+
+	_ = r.provider.Submit(ctx, readFunc)
 
 	return nil
 }
@@ -537,7 +622,7 @@ func (r *Libp2pRPC) broadcastFireAndForget(
 	ctx context.Context,
 	to []model.PeerID,
 	req model.Message,
-	tracker *service.BroadcastTracker,
+	tracker *service.BroadcastProgress,
 ) (service.BroadcastResult, error) {
 	result := service.BroadcastResult{
 		Responses:    make([]model.Message, 0),
@@ -549,8 +634,9 @@ func (r *Libp2pRPC) broadcastFireAndForget(
 	var wg sync.WaitGroup
 	for _, peer := range to {
 		wg.Add(1)
-		go func(p model.PeerID) {
+		task := func(ctx context.Context, arg any) {
 			defer wg.Done()
+			p := arg.(model.PeerID)
 
 			err := r.sendRequestNoResponse(ctx, p, req)
 
@@ -570,7 +656,9 @@ func (r *Libp2pRPC) broadcastFireAndForget(
 			} else {
 				result.SuccessPeers = append(result.SuccessPeers, p)
 			}
-		}(peer)
+		}
+
+		_ = r.provider.SubmitWithArg(ctx, task, peer)
 	}
 
 	// 立即返回（不等待发送完成）
@@ -586,7 +674,7 @@ func (r *Libp2pRPC) broadcastAndWait(
 	to []model.PeerID,
 	req model.Message,
 	strategy service.ResponseStrategy,
-	tracker *service.BroadcastTracker,
+	tracker *service.BroadcastProgress,
 ) (service.BroadcastResult, error) {
 	result := service.BroadcastResult{
 		Responses:    make([]model.Message, len(to)),
@@ -606,11 +694,27 @@ func (r *Libp2pRPC) broadcastAndWait(
 
 	// 并发发送请求
 	for i, peer := range to {
+		// P1-1 修复：检查 context 是否已取消，避免创建不必要的 goroutine
+		select {
+		case <-ctx.Done():
+			// Context 已取消，将剩余节点标记为失败
+			for j := i; j < len(to); j++ {
+				result.FailedPeers = append(result.FailedPeers, to[j])
+			}
+			wg.Wait()
+			return result, ctx.Err()
+		default:
+		}
+
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(idx int, p model.PeerID) {
+		task := func(ctx context.Context, arg any) {
 			defer func() { <-sem }()
 			defer wg.Done()
+
+			args := arg.([]any)
+			idx := args[0].(int)
+			p := args[1].(model.PeerID)
 
 			// 创建带超时的上下文
 			callCtx, cancel := context.WithTimeout(ctx, r.config.BroadcastTimeout)
@@ -633,7 +737,10 @@ func (r *Libp2pRPC) broadcastAndWait(
 					tracker.RecordSuccess(p, resp)
 				}
 			}
-		}(i, peer)
+		}
+
+		args := []any{i, peer}
+		_ = r.provider.SubmitWithArg(ctx, task, args)
 	}
 
 	wg.Wait()
@@ -658,10 +765,13 @@ func (r *Libp2pRPC) HandleIncomingStream(stream service.Stream) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() {
-		<-r.closeCh
-		cancel()
-	}()
+	_ = r.provider.Submit(ctx, func(ctx context.Context) {
+		select {
+		case <-r.closeCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	})
 
 	// P1-5 修复：使用 StreamCodec 读取消息（支持大消息和分帧）
 	msg, err := r.streamCodec.DecodeFromReader(stream)
@@ -750,4 +860,4 @@ func cleanNilResponses(responses []model.Message) []model.Message {
 }
 
 // 确保实现 RPC 接口
-var _ service.RPC = (*Libp2pRPC)(nil)
+var _ service.RPCSync = (*Libp2pRPC)(nil)

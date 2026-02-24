@@ -17,14 +17,175 @@ package scenarios
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/transport"
 	"github.com/jzhang405/NexKV/pkg/test/framework"
 	"github.com/jzhang405/NexKV/pkg/test/framework/adapters"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
+
+// mockGoroutineProvider 测试用的 mock provider
+type mockGoroutineProvider struct{}
+
+func (m *mockGoroutineProvider) Submit(ctx context.Context, task func(context.Context)) error {
+	go task(ctx)
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error {
+	go task(ctx, arg)
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) service.GoroutineResult[any] {
+	resultCh := make(chan any, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		r, err := task(ctx)
+		if err != nil {
+			errCh <- err
+		} else {
+			resultCh <- r
+		}
+		close(resultCh)
+		close(errCh)
+	}()
+	return &mockGoroutineResult{
+		resultCh: resultCh,
+		errCh:    errCh,
+	}
+}
+
+func (m *mockGoroutineProvider) SubmitWithArgAndResult(ctx context.Context, task func(context.Context, any) (any, error), arg any) service.GoroutineResult[any] {
+	resultCh := make(chan any, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		r, err := task(ctx, arg)
+		if err != nil {
+			errCh <- err
+		} else {
+			resultCh <- r
+		}
+		close(resultCh)
+		close(errCh)
+	}()
+	return &mockGoroutineResult{
+		resultCh: resultCh,
+		errCh:    errCh,
+	}
+}
+
+func (m *mockGoroutineProvider) SubmitWithPriority(ctx context.Context, priority service.GoroutinePriority, task func(context.Context)) error {
+	go task(ctx)
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
+	go func() {
+		time.Sleep(delay)
+		task(ctx)
+	}()
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitAdvanced(ctx context.Context, task func(context.Context, any) (any, error), arg any, opts ...service.GoroutineSubmitOption) service.GoroutineResult[any] {
+	return m.SubmitWithArgAndResult(ctx, task, arg)
+}
+
+func (m *mockGoroutineProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
+	for _, task := range tasks {
+		go task(ctx)
+	}
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error {
+	for i, task := range tasks {
+		arg := args[i]
+		go task(ctx, arg)
+	}
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
+	var wg sync.WaitGroup
+	errs := make([]error, len(tasks))
+	for i, task := range tasks {
+		wg.Add(1)
+		go func(idx int, t func(context.Context)) {
+			defer wg.Done()
+			t(ctx)
+		}(i, task)
+	}
+	wg.Wait()
+	return errs
+}
+
+func (m *mockGoroutineProvider) SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []service.GoroutineResult[any] {
+	results := make([]service.GoroutineResult[any], len(tasks))
+	for i, task := range tasks {
+		results[i] = m.SubmitWithResult(ctx, task)
+	}
+	return results
+}
+
+func (m *mockGoroutineProvider) Stats() service.GoroutinePoolStats {
+	return service.GoroutinePoolStats{}
+}
+
+func (m *mockGoroutineProvider) Health() service.GoroutineHealthStatus {
+	return model.GoroutineHealthStatusHealthy
+}
+
+func (m *mockGoroutineProvider) SetCapacity(capacity int) error {
+	return nil
+}
+
+func (m *mockGoroutineProvider) Close() error {
+	return nil
+}
+
+func (m *mockGoroutineProvider) CloseWithTimeout(timeout time.Duration) error {
+	return nil
+}
+
+type mockGoroutineResult struct {
+	resultCh chan any
+	errCh    chan error
+}
+
+func (r *mockGoroutineResult) Get(ctx context.Context) (any, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r, ok := <-r.resultCh:
+		if !ok {
+			return nil, nil
+		}
+		return r, nil
+	case err, ok := <-r.errCh:
+		if !ok {
+			return nil, nil
+		}
+		return nil, err
+	}
+}
+
+func (r *mockGoroutineResult) IsDone() bool {
+	select {
+	case <-r.resultCh:
+		return true
+	case <-r.errCh:
+		return true
+	default:
+		return false
+	}
+}
 
 // skipIfNoMulticast 跳过不支持多播的环境
 func skipIfNoMulticast(t *testing.T) {
@@ -176,9 +337,11 @@ func TestIntegration_MDNSDiscovery_DirectDiscovery(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建启用发现的 transport
+	provider := &mockGoroutineProvider{}
 	node1, err := transport.NewLibp2pTransport(ctx, &transport.Config{
 		EnableDiscovery: true,
 		DiscoveryTag:    "nexkv-mdns-direct-test",
+		Provider:        provider,
 	})
 	if err != nil {
 		t.Fatalf("create node1: %v", err)
@@ -188,6 +351,7 @@ func TestIntegration_MDNSDiscovery_DirectDiscovery(t *testing.T) {
 	node2, err := transport.NewLibp2pTransport(ctx, &transport.Config{
 		EnableDiscovery: true,
 		DiscoveryTag:    "nexkv-mdns-direct-test",
+		Provider:        provider,
 	})
 	if err != nil {
 		t.Fatalf("create node2: %v", err)
@@ -235,10 +399,13 @@ func TestIntegration_DiscoveryService_MultipleTags(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建两组使用不同标签的节点
+	provider := &mockGoroutineProvider{}
+
 	// 组 A
 	nodeA1, err := transport.NewLibp2pTransport(ctx, &transport.Config{
 		EnableDiscovery: true,
 		DiscoveryTag:    "nexkv-group-a",
+		Provider:        provider,
 	})
 	if err != nil {
 		t.Fatalf("create nodeA1: %v", err)
@@ -248,6 +415,7 @@ func TestIntegration_DiscoveryService_MultipleTags(t *testing.T) {
 	nodeA2, err := transport.NewLibp2pTransport(ctx, &transport.Config{
 		EnableDiscovery: true,
 		DiscoveryTag:    "nexkv-group-a",
+		Provider:        provider,
 	})
 	if err != nil {
 		t.Fatalf("create nodeA2: %v", err)
@@ -258,6 +426,7 @@ func TestIntegration_DiscoveryService_MultipleTags(t *testing.T) {
 	nodeB1, err := transport.NewLibp2pTransport(ctx, &transport.Config{
 		EnableDiscovery: true,
 		DiscoveryTag:    "nexkv-group-b",
+		Provider:        provider,
 	})
 	if err != nil {
 		t.Fatalf("create nodeB1: %v", err)

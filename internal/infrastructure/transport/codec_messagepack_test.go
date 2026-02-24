@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
-	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
 // TestMessagePackCodec_EncodeDecode 测试基本编解码
@@ -420,8 +419,8 @@ func BenchmarkMessagePackCodec_Decode_10KB(b *testing.B) {
 
 // TestMessagePackCodec_ImplementsInterface 验证接口实现
 func TestMessagePackCodec_ImplementsInterface(t *testing.T) {
-	var _ service.Codec = NewMessagePackCodec()
-	var _ service.StreamCodec = NewMessagePackStreamCodec()
+	var _ model.Codec = NewMessagePackCodec()
+	var _ model.StreamCodec = NewMessagePackStreamCodec()
 }
 
 // TestEncodeToBuffer 测试编码到 buffer

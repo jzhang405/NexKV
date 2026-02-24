@@ -17,12 +17,17 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/sirupsen/logrus"
 )
+
+// transportLog 使用 logrus 结构化日志
+var transportLog = logrus.WithField("component", "transport")
 
 // 常量定义
 const (
-	MaxPeerIDLength = 128  // libp2p PeerID 最大长度
-	MaxAddrLength   = 1024 // 地址最大长度
+	MaxPeerIDLength       = 128              // libp2p PeerID 最大长度
+	MaxAddrLength         = 1024             // 地址最大长度
+	DefaultMaxMessageSize = 10 * 1024 * 1024 // 默认最大消息大小 (10MB)
 )
 
 // 确保实现 service.Transport 接口
@@ -32,7 +37,7 @@ var _ service.Transport = (*Libp2pTransport)(nil)
 type Libp2pTransport struct {
 	mu        sync.RWMutex
 	host      host.Host
-	discovery *DiscoveryService
+	discovery service.DiscoveryService
 	codec     *LengthPrefixedCodec
 	acceptor  *streamAcceptor // 流接受器
 
@@ -50,6 +55,7 @@ type Config struct {
 	ListenAddr      string
 	DiscoveryTag    string
 	EnableDiscovery bool
+	Provider        service.GoroutineProvider // 协程池提供者（用于 Discovery）
 }
 
 // DefaultConfig 返回默认配置
@@ -92,7 +98,10 @@ func NewLibp2pTransport(ctx context.Context, cfg *Config) (*Libp2pTransport, err
 	}
 
 	if cfg.EnableDiscovery {
-		t.discovery = NewDiscoveryService(h, cfg.DiscoveryTag, childCtx, &t.wg)
+		if cfg.Provider == nil {
+			return nil, service.Wrap(service.ErrInvalidParam, "GoroutineProvider is required when discovery is enabled")
+		}
+		t.discovery = NewDiscoveryService(h, cfg.DiscoveryTag, cfg.Provider)
 	}
 
 	return t, nil
@@ -379,34 +388,6 @@ func (t *Libp2pTransport) OpenChannel(ctx context.Context, peerID model.PeerID, 
 	return NewLibp2pChannel(libp2pStream, DefaultChannelConfig()), nil
 }
 
-// OpenAsyncChannel 打开到指定节点的异步双向通道
-func (t *Libp2pTransport) OpenAsyncChannel(ctx context.Context, peerID model.PeerID, proto string) (service.AsyncChannel, error) {
-	stream, err := t.OpenStream(ctx, peerID, proto)
-	if err != nil {
-		return nil, err
-	}
-
-	libp2pStream, ok := stream.(*Libp2pStream)
-	if !ok {
-		return nil, service.Wrap(service.ErrInvalidParam, "unexpected stream type")
-	}
-	return NewLibp2pAsyncChannel(libp2pStream, DefaultAsyncChannelConfig()), nil
-}
-
-// OpenAsyncStream 打开到指定节点的异步流
-func (t *Libp2pTransport) OpenAsyncStream(ctx context.Context, peerID model.PeerID, proto string) (service.AsyncStream, error) {
-	stream, err := t.OpenStream(ctx, peerID, proto)
-	if err != nil {
-		return nil, err
-	}
-
-	libp2pStream, ok := stream.(*Libp2pStream)
-	if !ok {
-		return nil, service.Wrap(service.ErrInvalidParam, "unexpected stream type")
-	}
-	return NewLibp2pAsyncStream(libp2pStream, DefaultAsyncStreamConfig()), nil
-}
-
 // ===========================
 // SetStreamHandler 带 panic 恢复
 // ===========================
@@ -461,7 +442,7 @@ func (t *Libp2pTransport) Close() error {
 
 	// 3.2 关闭 discovery
 	if t.discovery != nil {
-		if err := t.discovery.Close(); err != nil {
+		if err := t.discovery.Stop(); err != nil {
 			errs = append(errs, service.Wrap(err, "close discovery"))
 		}
 	}

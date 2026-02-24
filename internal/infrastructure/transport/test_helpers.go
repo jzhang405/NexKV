@@ -12,6 +12,171 @@ import (
 )
 
 // ============================================================================
+
+// mockGoroutineProvider 模拟 GoroutineProvider（用于测试）
+// 直接使用 go func() 执行任务，不使用协程池
+type mockGoroutineProvider struct{}
+
+func newMockGoroutineProvider() service.GoroutineProvider {
+	return &mockGoroutineProvider{}
+}
+
+func (m *mockGoroutineProvider) Submit(ctx context.Context, task func(context.Context)) error {
+	go task(ctx)
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error {
+	go task(ctx, arg)
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) service.GoroutineResult[any] {
+	resultCh := make(chan any, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		r, err := task(ctx)
+		if err != nil {
+			errCh <- err
+		} else {
+			resultCh <- r
+		}
+		close(resultCh)
+		close(errCh)
+	}()
+	return &mockGoroutineResult{
+		resultCh: resultCh,
+		errCh:    errCh,
+	}
+}
+
+func (m *mockGoroutineProvider) SubmitWithArgAndResult(ctx context.Context, task func(context.Context, any) (any, error), arg any) service.GoroutineResult[any] {
+	resultCh := make(chan any, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		r, err := task(ctx, arg)
+		if err != nil {
+			errCh <- err
+		} else {
+			resultCh <- r
+		}
+		close(resultCh)
+		close(errCh)
+	}()
+	return &mockGoroutineResult{
+		resultCh: resultCh,
+		errCh:    errCh,
+	}
+}
+
+func (m *mockGoroutineProvider) SubmitWithPriority(ctx context.Context, priority service.GoroutinePriority, task func(context.Context)) error {
+	go task(ctx)
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
+	go func() {
+		time.Sleep(delay)
+		task(ctx)
+	}()
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitAdvanced(ctx context.Context, task func(context.Context, any) (any, error), arg any, opts ...service.GoroutineSubmitOption) service.GoroutineResult[any] {
+	return m.SubmitWithArgAndResult(ctx, task, arg)
+}
+
+func (m *mockGoroutineProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
+	for _, task := range tasks {
+		go task(ctx)
+	}
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error {
+	for i, task := range tasks {
+		arg := args[i]
+		go task(ctx, arg)
+	}
+	return nil
+}
+
+func (m *mockGoroutineProvider) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
+	var wg sync.WaitGroup
+	errs := make([]error, len(tasks))
+	for i, task := range tasks {
+		wg.Add(1)
+		go func(idx int, t func(context.Context)) {
+			defer wg.Done()
+			t(ctx)
+		}(i, task)
+	}
+	wg.Wait()
+	return errs
+}
+
+func (m *mockGoroutineProvider) SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []service.GoroutineResult[any] {
+	results := make([]service.GoroutineResult[any], len(tasks))
+	for i, task := range tasks {
+		results[i] = m.SubmitWithResult(ctx, task)
+	}
+	return results
+}
+
+func (m *mockGoroutineProvider) Stats() service.GoroutinePoolStats {
+	return service.GoroutinePoolStats{}
+}
+
+func (m *mockGoroutineProvider) Health() service.GoroutineHealthStatus {
+	return model.GoroutineHealthStatusHealthy
+}
+
+func (m *mockGoroutineProvider) SetCapacity(capacity int) error {
+	return nil
+}
+
+func (m *mockGoroutineProvider) Close() error {
+	return nil
+}
+
+func (m *mockGoroutineProvider) CloseWithTimeout(timeout time.Duration) error {
+	return nil
+}
+
+type mockGoroutineResult struct {
+	resultCh chan any
+	errCh    chan error
+}
+
+func (r *mockGoroutineResult) Get(ctx context.Context) (any, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r, ok := <-r.resultCh:
+		if !ok {
+			return nil, nil
+		}
+		return r, nil
+	case err, ok := <-r.errCh:
+		if !ok {
+			return nil, nil
+		}
+		return nil, err
+	}
+}
+
+func (r *mockGoroutineResult) IsDone() bool {
+	select {
+	case <-r.resultCh:
+		return true
+	case <-r.errCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// ============================================================================
 // Mock Transport
 // ============================================================================
 
@@ -62,12 +227,6 @@ func (t *mockTransport) AcceptStream(protocol string) (service.Stream, error) {
 func (t *mockTransport) OpenChannel(ctx context.Context, peer model.PeerID, protocol string) (service.Channel, error) {
 	return nil, service.ErrPeerUnreachable
 }
-func (t *mockTransport) OpenAsyncChannel(ctx context.Context, peer model.PeerID, protocol string) (service.AsyncChannel, error) {
-	return nil, service.ErrPeerUnreachable
-}
-func (t *mockTransport) OpenAsyncStream(ctx context.Context, peer model.PeerID, protocol string) (service.AsyncStream, error) {
-	return nil, service.ErrPeerUnreachable
-}
 func (t *mockTransport) Close() error { return nil }
 
 // ============================================================================
@@ -84,7 +243,8 @@ type testRPCSetup struct {
 // newTestRPC 创建测试 RPC
 func newTestRPC(t *testing.T, nodeID model.PeerID, config *service.RPCConfig) *testRPCSetup {
 	transport := newMockTransport(nodeID)
-	rpc := NewLibp2pRPC(transport, config)
+	provider := newMockGoroutineProvider()
+	rpc := NewLibp2pRPC(transport, provider, config)
 	return &testRPCSetup{
 		transport: transport,
 		rpc:       rpc,

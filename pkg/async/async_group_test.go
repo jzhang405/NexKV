@@ -790,7 +790,15 @@ func ExampleNewGroup_withCallback() {
 
 	// 等待完成
 	_ = group.WaitAll(ctx)
-	time.Sleep(500 * time.Millisecond) // 等待回调执行（race detector 会显著降低执行速度）
+
+	// 轮询等待回调执行完成（race detector 会显著降低执行速度）
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if callback.getSuccessCount() == 3 {
+			break // 所有回调已完成
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	// 验证回调被调用
 	fmt.Printf("Success count: %d\n", callback.getSuccessCount())

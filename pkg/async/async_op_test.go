@@ -468,9 +468,12 @@ func TestNewOp_OnComplete(t *testing.T) {
 	var callbackResult string
 	var callbackErr error
 	var callbackCalled int64
-	var mu sync.Mutex // 保护 callbackResult 和 callbackErr
+	var mu sync.Mutex     // 保护 callbackResult 和 callbackErr
+	var wg sync.WaitGroup // 等待回调完成
+	wg.Add(1)
 
 	cbID := op.OnComplete(func(result string, err error) {
+		defer wg.Done()
 		mu.Lock()
 		defer mu.Unlock()
 		atomic.StoreInt64(&callbackCalled, 1)
@@ -485,8 +488,19 @@ func TestNewOp_OnComplete(t *testing.T) {
 	// 等待完成
 	_, _ = op.Get(ctx)
 
-	// 等待回调执行
-	time.Sleep(100 * time.Millisecond)
+	// 等待回调执行完成（带超时）
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// 回调已完成
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for callback")
+	}
 
 	if atomic.LoadInt64(&callbackCalled) == 0 {
 		t.Fatal("expected callback to be called")
@@ -595,17 +609,31 @@ func TestNewOp_OnCompleteAfterCompletion(t *testing.T) {
 	// 操作完成后注册回调（应该立即执行）
 	var callbackResult string
 	var callbackCalled int64
-	var mu sync.Mutex // 保护 callbackResult
+	var mu sync.Mutex     // 保护 callbackResult
+	var wg sync.WaitGroup // 等待回调完成
+	wg.Add(1)
 
 	op.OnComplete(func(result string, err error) {
+		defer wg.Done()
 		mu.Lock()
 		defer mu.Unlock()
 		atomic.StoreInt64(&callbackCalled, 1)
 		callbackResult = result
 	})
 
-	// 等待回调执行
-	time.Sleep(100 * time.Millisecond)
+	// 等待回调执行完成（带超时）
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// 回调已完成
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for callback")
+	}
 
 	if atomic.LoadInt64(&callbackCalled) == 0 {
 		t.Fatal("expected callback to be called immediately after completion")

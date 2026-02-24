@@ -198,7 +198,7 @@ func (op *asyncOpImpl[T]) registerCallback(callback func(T, error)) string {
 
 	if op.done.Load() {
 		// 操作已完成，立即执行回调
-		go op.safeExecuteCallback(callback, op.value, op.err)
+		op.safeExecuteCallback(callback, op.value, op.err)
 		return "" // 已完成，返回空 ID
 	}
 

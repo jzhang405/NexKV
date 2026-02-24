@@ -48,12 +48,13 @@
 
 #### 2.2 核心目标（可量化、可验证）
 
-1. **重构目标**：
-   - 将 `rpc_async_impl.go` 中的实现代码移动到 `internal/infrastructure/rpc/`
-   - **完全删除 `pkg/async` 双重实现**
-   - **修复 P1-2：消除 submitTask 直接创建 goroutine 的问题**
-   - **修复 P2-1：拆分 GoroutineProvider 接口**
-   - **修复 P2-2：领域对象命名业务化**
+1. **重构目标**（根据评估报告调整）：
+   - **✅ 已完成：修复 P2-2** - GoroutinePriority → TaskPriority 命名业务化
+   - **✅ 已完成：修复 P2-1** - 拆分 GoroutineProvider 接口（添加 TaskExecutor 等小接口）
+   - **✅ 已完成：修复 P1-2** - 使用 GoroutineProvider 替代直接 goroutine 创建
+   - **添加 BroadcastProgress Builder 模式**（简化版）
+   - **统一回调命名**（OnMajorityReached → OnMajority）
+   - **删除 pkg/async 包**（无生产代码引用）
    - 保持现有 API 兼容，不破坏现有调用方
    - 所有测试通过
 
@@ -64,28 +65,26 @@
 
 #### 2.3 明确边界（不做什么，避免范围蔓延）
 
-**移动到基础设施层的内容：**
+**本次实施范围（简化版）：**
 
-| 内容 | 行数 | 说明 |
+| 内容 | 状态 | 说明 |
 |------|------|------|
-| `asyncOpImpl[T]` 结构体及方法 | ~200 行 | 核心实现 |
-| 工厂函数 (`NewAsyncCall`, `NewAsyncBroadcast` 等) | ~300 行 | 创建异步操作 |
-| 辅助函数 (`submitTask`, `validateRPCAndConfig`) | ~50 行 | 辅助逻辑 |
-| `RPCAsyncAdapter` | ~60 行 | 适配器 |
+| `GoroutinePriority` → `TaskPriority` | ✅ 已完成 | 命名业务化 |
+| `GoroutineProvider` 接口拆分 | ✅ 已完成 | 添加 TaskExecutor 等小接口 |
+| 直接 goroutine 创建修复 | ✅ 已完成 | 使用 GoroutineProvider 替代 |
+| BroadcastProgress Builder | 待实施 | 链式配置 API |
+| 回调命名统一 | 待实施 | OnMajorityReached → OnMajority |
+| 删除 pkg/async | 待实施 | 无生产代码引用 |
 
-**保留在领域层的内容：**
+**保持不变：**
+- `rpc_async_impl.go` 保留在领域层（分层重构暂缓）
+- `asyncOpImpl[T]` 保留在领域层
+- BroadcastProgress 追踪器职责不变
 
-| 内容 | 说明 |
-|------|------|
-| `RPCAsync` 接口 | 领域服务接口 |
-| `AsyncOperation[T]` 接口 | 领域概念 |
-| 结果类型 (`AsyncBroadcastResult`, `QuorumResult` 等) | 领域模型 |
-| `BroadcastOption` 及相关类型 | 领域配置 |
-
-**删除的内容：**
-| 内容 | 说明 |
-|------|------|
-| `pkg/async/` 整个包 | 消除双重实现，统一使用领域层实现 |
+**明确不做：**
+- SingleTaskProgress（已有 asyncOpImpl）
+- MultiTaskProgress（BroadcastProgress 已支持）
+- AsyncCoordinator（职责与 BroadcastProgress 冲突）
 
 ---
 
@@ -286,6 +285,44 @@ op := rpcinfra.NewAsyncCall(ctx, rpc, peer, req, timeout, provider)
 ### 6. 预审批确认
 
 > **架构师签字/备注**：______ 2026-02-24 该重构方案可行，风险可控，同意启动开发，需严格按照文档落地，确保CI通过后提交Post总结。
+
+---
+
+### 7. 方案评估与调整（2026-02-24）
+
+#### 7.1 方案评估结果
+
+评估对象：AsyncOperation 增强方案（基于评审意见修订版）
+
+| 维度 | 评分 | 说明 |
+|------|------|------|
+| **创新性** | ⭐⭐⭐⭐ | 方案务实 |
+| **完整性** | ⭐⭐⭐⭐ | 覆盖核心需求 |
+| **可行性** | ⭐⭐⭐⭐⭐ | 风险可控 |
+| **兼容性** | ⭐⭐⭐⭐⭐ | 向后兼容 |
+| **推荐度** | ⭐⭐⭐⭐⭐ | **强烈推荐** |
+
+#### 7.2 方案调整
+
+**原方案问题**：设计 AsyncCoordinator 统一执行器和追踪器，职责混乱
+
+**调整后方案**：
+1. **保留 BroadcastProgress**（追踪器职责不变）
+2. **添加 Builder 模式**（更优雅的 API）
+3. **删除 pkg/async**（无生产代码引用）
+4. **统一回调命名**（OnMajorityReached → OnMajority）
+
+#### 7.3 推荐实施范围（简化版）
+
+| 任务 | 工期 | 风险 |
+|------|------|------|
+| BroadcastProgress Builder | 1 天 | 低 |
+| 统一回调命名 | 0.5 天 | 低 |
+| 删除 pkg/async | 0.5 天 | 低 |
+
+**跳过**：
+- SingleTaskProgress（已有 asyncOpImpl）
+- MultiTaskProgress（BroadcastProgress 已支持）
 
 ---
 

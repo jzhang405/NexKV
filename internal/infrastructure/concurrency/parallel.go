@@ -82,6 +82,7 @@ executeLoop:
 	for i := range taskCount {
 		// 检查是否已取消或快速失败
 		if canceled.Load() {
+			// 快速失败模式下，不再启动新任务
 			break executeLoop
 		}
 
@@ -93,6 +94,11 @@ executeLoop:
 			canceled.Store(true)
 			break executeLoop
 		default:
+		}
+
+		// 检查是否需要快速失败（在启动 goroutine 之前）
+		if canceled.Load() {
+			break executeLoop
 		}
 
 		wg.Add(1)

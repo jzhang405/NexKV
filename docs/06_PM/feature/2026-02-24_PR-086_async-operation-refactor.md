@@ -316,9 +316,9 @@ op := rpcinfra.NewAsyncCall(ctx, rpc, peer, req, timeout, provider)
 
 | 任务 | 工期 | 风险 |
 |------|------|------|
-| BroadcastProgress Builder | 1 天 | 低 |
-| 统一回调命名 | 0.5 天 | 低 |
-| 删除 pkg/async | 0.5 天 | 低 |
+| BroadcastProgress Builder | 2 小时 | 低 |
+| 统一回调命名 | 1 小时 | 低 |
+| 删除 pkg/async | 1 小时 | 低 |
 
 **跳过**：
 - SingleTaskProgress（已有 asyncOpImpl）
@@ -355,23 +355,12 @@ rpc.BroadcastCall(ctx, peers, req, service.ResponseMajority, tracker)
 #### 7.5 统一回调命名示例
 
 ```go
-// 旧命名（将废弃）
-listener.OnMajorityReached(stats)  // ❌
-listener.OnFullDone(stats)         // ❌
+// 旧命名（直接替换）
+listener.OnMajorityReached(stats)  // 替换为
+listener.OnMajority(stats)
 
-// 新命名
-listener.OnMajority(stats)   // ✅
-listener.OnComplete(stats)   // ✅
-
-// 向后兼容（可选）
-type BroadcastListener interface {
-    // 新命名
-    OnMajority(stats BroadcastStats)
-    OnComplete(stats BroadcastStats)
-    // 旧命名（兼容）
-    OnMajorityReached(stats BroadcastStats) // alias
-    OnFullDone(stats BroadcastStats)       // alias
-}
+listener.OnFullDone(stats)         // 替换为
+listener.OnComplete(stats)
 ```
 
 #### 7.6 待验证事项

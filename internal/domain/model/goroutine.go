@@ -70,7 +70,7 @@ type GoroutineHealthStatus = TaskHealthStatus
 
 // 常量别名（向后兼容）
 const (
-	GoroutineHealthStatusHealthy    = TaskHealthStatusHealthy
+	GoroutineHealthStatusHealthy   = TaskHealthStatusHealthy
 	GoroutineHealthStatusUnhealthy = TaskHealthStatusUnhealthy
 )
 

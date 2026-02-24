@@ -34,10 +34,10 @@ type GoroutineHealthStatus = model.GoroutineHealthStatus
 
 // 常量别名（向后兼容）
 const (
-	TaskPriorityCritical   = model.TaskPriorityCritical
-	TaskPriorityHigh      = model.TaskPriorityHigh
-	TaskPriorityNormal    = model.TaskPriorityNormal
-	TaskPriorityLow       = model.TaskPriorityLow
+	TaskPriorityCritical      = model.TaskPriorityCritical
+	TaskPriorityHigh          = model.TaskPriorityHigh
+	TaskPriorityNormal        = model.TaskPriorityNormal
+	TaskPriorityLow           = model.TaskPriorityLow
 	GoroutinePriorityCritical = model.GoroutinePriorityCritical
 	GoroutinePriorityHigh     = model.GoroutinePriorityHigh
 	GoroutinePriorityNormal   = model.GoroutinePriorityNormal

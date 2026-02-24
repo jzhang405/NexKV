@@ -13,7 +13,7 @@
 | 工作类型 | 重构（Refactor） |
 | PR编号 | PR-086（创建GitHub PR后补充完整） |
 | 分支名称 | feature/P0-2-async-operation-refactor |
-| 工作主题 | AsyncOperation 实现分层重构 - 将领域层实现代码移至基础设施层 |
+| 工作主题 | P0-2 AsyncOperation 实现分层重构（Part 1: 核心实现迁移） |
 | 负责人 | Claude Code |
 | 分支创建日期 | 2026-02-24 |
 | 计划开工日期 | 2026-02-24 |
@@ -54,14 +54,26 @@
 
 #### 2.3 明确边界（不做什么，避免范围蔓延）
 
-- **本次不修改**：
-  - `pkg/async/` 包中的独立实现（保持不变）
-  - 其他领域层接口定义
-  - 测试文件位置（测试跟随代码移动）
+**移动到基础设施层的内容：**
+| 内容 | 行数 | 说明 |
+|------|------|------|
+| `asyncOpImpl[T]` 结构体及方法 | ~200 行 | 核心实现 |
+| 工厂函数 (`NewAsyncCall`, `NewAsyncBroadcast` 等) | ~300 行 | 创建异步操作 |
+| 辅助函数 (`submitTask`, `validateRPCAndConfig`) | ~50 行 | 辅助逻辑 |
+| `RPCAsyncAdapter` | ~60 行 | 适配器 |
 
-- **本次不优化**：
-  - 不修改 AsyncOperation 接口签名
-  - 不修改 GoroutineProvider 接口
+**保留在领域层的内容：**
+| 内容 | 说明 |
+|------|------|
+| `RPCAsync` 接口 | 领域服务接口 |
+| `AsyncOperation[T]` 接口 | 领域概念 |
+| 结果类型 (`AsyncBroadcastResult`, `QuorumResult` 等) | 领域模型 |
+| `BroadcastOption` 及相关类型 | 领域配置 |
+
+**本次不修改：**
+- `pkg/async/` 包中的独立实现（保持不变）
+- 其他领域层接口定义
+- 不修改 AsyncOperation 接口签名
 
 ---
 
@@ -69,72 +81,81 @@
 
 #### 3.1 整体流程设计
 
-采用**渐进式重构**方案（推荐），分 4 阶段进行：
+采用**Part 1 方案：核心实现迁移**（推荐），分 3 步进行：
 
 ```mermaid
 flowchart TD
-    A[阶段1: 抽象核心接口] --> B[阶段2: 创建基础设施实现]
-    B --> C[阶段3: 迁移适配器]
-    C --> D[阶段4: 清理和验证]
+    A[Step 1: 创建基础设施实现] --> B[Step 2: 迁移适配器]
+    B --> C[Step 3: 清理和验证]
 
-    subgraph 阶段1
-        A1[创建 internal/domain/model/async.go]
-        A2[定义 Future[T] 接口]
+    subgraph Step 1
+        A1[创建 internal/infrastructure/rpc/async_rpc_impl.go]
+        A2[移动 asyncOpImpl[T] 结构体]
+        A3[移动工厂函数]
+        A4[移动辅助函数]
     end
 
-    subgraph 阶段2
-        B1[创建 internal/infrastructure/rpc/async_impl/]
-        B2[实现 asyncOpImpl 等结构体]
+    subgraph Step 2
+        B1[创建 internal/infrastructure/rpc/async_rpc_adapter.go]
+        B2[移动 RPCAsyncAdapter]
+        B3[修改 import 指向 infrastructure]
     end
 
-    subgraph 阶段3
-        C1[创建 RPCAsyncAdapter]
-        C2[更新 import 路径]
+    subgraph Step 3
+        C1[删除 rpc_async_impl.go 中的实现]
+        C2[保留接口定义]
+        C3[运行完整测试]
     end
+```
 
-    subgraph 阶段4
-        D1[删除领域层旧代码]
-        D2[运行完整测试]
-    end
+**分层架构示意：**
+```
+┌─────────────────────────────────────────────────────────┐
+│  领域层 (internal/domain/service)                        │
+│  ─────────────────────────────────                      │
+│  • RPCAsync 接口        ← 保持不变                      │
+│  • AsyncOperation[T]    ← 保持不变                      │
+│  • 结果类型定义         ← 保持不变                      │
+│  • BroadcastOption      ← 保持不变                      │
+└─────────────────────────────────────────────────────────┘
+                            ↑
+                            │ 依赖（领域层定义接口）
+                            ↓
+┌─────────────────────────────────────────────────────────┐
+│  基础设施层 (internal/infrastructure/rpc)                │
+│  ────────────────────────────────────────               │
+│  • async_rpc_impl.go     ← 新建，移动实现               │
+│  • async_rpc_adapter.go  ← 新建，移动适配器             │
+└─────────────────────────────────────────────────────────┘
 ```
 
 #### 3.2 关键设计点
 
 **循环导入解决方案**：
 ```
-当前问题：
+问题分析：
 领域层 (domain/service) 定义接口
     ↓ 导入
 基础设施层 (infrastructure/rpc) 实现接口
     ↓ 导入
-领域层（需要使用领域类型）
+领域层（需要使用领域类型 model.PeerID 等）
     ↑ 循环导入！
 
 解决方案：
-- 使用类型别名避免循环导入
-- 领域层保留接口定义
-- 实现层通过类型别名引用领域类型
+- 领域层只保留接口定义（rpc_async.go）
+- 实现层 (infrastructure/rpc) 导入领域层
+- 领域层通过 import 引用实现层
+- Go 可以处理：domain -> model, infrastructure -> domain
 ```
 
-**具体方案**：
+**具体实施步骤（Part 1）**：
 
-1. **阶段1：抽象核心接口**（预计 1 小时）
-   - 在 `internal/domain/model/` 定义必要的类型（如果尚未存在）
-   - 不新增接口，只确保类型定义位置正确
-
-2. **阶段2：创建基础设施实现**（预计 2 小时）
-   - 创建 `internal/infrastructure/rpc/async_impl.go`
-   - 复制 `rpc_async_impl.go` 中的实现代码
-   - 解决 import 路径问题
-
-3. **阶段3：迁移适配器**（预计 1 小时）
-   - 修改 `rpc_async.go` 中的工厂函数调用
-   - 从 `internal/infrastructure/rpc/` 导入实现
-
-4. **阶段4：清理和验证**（预计 1 小时）
-   - 删除 `internal/domain/service/rpc_async_impl.go`
-   - 运行完整测试套件
-   - 确保 lint 和 build 通过
+| 步骤 | 内容 | 预计时间 |
+|------|------|----------|
+| Step 1 | 创建 `internal/infrastructure/rpc/async_rpc_impl.go`，移动 asyncOpImpl[T]、工厂函数、辅助函数 | 1.5h |
+| Step 2 | 创建 `internal/infrastructure/rpc/async_rpc_adapter.go`，移动 RPCAsyncAdapter | 0.5h |
+| Step 3 | 修改 `rpc_async.go` 中的 import，删除 `rpc_async_impl.go` 中的实现代码 | 0.5h |
+| Step 4 | 运行测试验证 | 0.5h |
 
 ---
 
@@ -235,7 +256,7 @@ flowchart TD
 |------|------|
 | 文档最终版本 | V1.0 |
 | 归档日期 | 2026-02-24 |
-| 归档路径 | `docs/06_PM/doc/2026-02-24_PR-086_async-operation-refactor.md` |
+| 归档路径 | `docs/06_PM/feature/2026-02-24_PR-086_async-operation-refactor.md` |
 | 后续维护人 | Claude Code |
 
 ---

@@ -1,4 +1,4 @@
-package service
+package rpc
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
 // ============================================================================
@@ -22,21 +23,21 @@ type MockListener struct {
 	onFullDoneCount int32
 	onSuccessCalls  []ListenerCall
 	onFailureCalls  []FailureCall
-	onMajorityStats *BroadcastStats
-	onFullDoneStats *BroadcastStats
+	onMajorityStats *service.BroadcastStats
+	onFullDoneStats *service.BroadcastStats
 	mu              sync.Mutex
 }
 
 type ListenerCall struct {
 	Peer  model.PeerID
 	Resp  model.Message
-	Stats BroadcastStats
+	Stats service.BroadcastStats
 }
 
 type FailureCall struct {
 	Peer  model.PeerID
 	Err   error
-	Stats BroadcastStats
+	Stats service.BroadcastStats
 }
 
 func NewMockListener() *MockListener {
@@ -46,7 +47,7 @@ func NewMockListener() *MockListener {
 	}
 }
 
-func (m *MockListener) OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats) {
+func (m *MockListener) OnSuccess(peer model.PeerID, resp model.Message, stats service.BroadcastStats) {
 	atomic.AddInt32(&m.onSuccessCount, 1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -57,7 +58,7 @@ func (m *MockListener) OnSuccess(peer model.PeerID, resp model.Message, stats Br
 	})
 }
 
-func (m *MockListener) OnFailure(peer model.PeerID, err error, stats BroadcastStats) {
+func (m *MockListener) OnFailure(peer model.PeerID, err error, stats service.BroadcastStats) {
 	atomic.AddInt32(&m.onFailureCount, 1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -68,14 +69,14 @@ func (m *MockListener) OnFailure(peer model.PeerID, err error, stats BroadcastSt
 	})
 }
 
-func (m *MockListener) OnMajority(stats BroadcastStats) {
+func (m *MockListener) OnMajority(stats service.BroadcastStats) {
 	atomic.AddInt32(&m.onMajorityCount, 1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onMajorityStats = &stats
 }
 
-func (m *MockListener) OnComplete(stats BroadcastStats) {
+func (m *MockListener) OnComplete(stats service.BroadcastStats) {
 	atomic.AddInt32(&m.onFullDoneCount, 1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -101,19 +102,19 @@ func (m *MockListener) GetFullDoneCount() int32 {
 // PanicListener 会 panic 的回调（用于测试 panic 保护）
 type PanicListener struct{}
 
-func (p *PanicListener) OnSuccess(peer model.PeerID, resp model.Message, stats BroadcastStats) {
+func (p *PanicListener) OnSuccess(peer model.PeerID, resp model.Message, stats service.BroadcastStats) {
 	panic("OnSuccess panic!")
 }
 
-func (p *PanicListener) OnFailure(peer model.PeerID, err error, stats BroadcastStats) {
+func (p *PanicListener) OnFailure(peer model.PeerID, err error, stats service.BroadcastStats) {
 	panic("OnFailure panic!")
 }
 
-func (p *PanicListener) OnMajority(stats BroadcastStats) {
+func (p *PanicListener) OnMajority(stats service.BroadcastStats) {
 	panic("OnMajority panic!")
 }
 
-func (p *PanicListener) OnComplete(stats BroadcastStats) {
+func (p *PanicListener) OnComplete(stats service.BroadcastStats) {
 	panic("OnComplete panic!")
 }
 
@@ -129,8 +130,8 @@ func TestBroadcastCallback_OnSuccess(t *testing.T) {
 	tracker.SetCallback(callback)
 
 	// 执行：记录 2 个成功响应
-	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
-	tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
+	tracker.RecordSuccess("node-2", newTestMessage("msg-2"))
 
 	// 验证：OnSuccess 应该被调用 2 次
 	if count := callback.GetSuccessCount(); count != 2 {
@@ -146,8 +147,8 @@ func TestBroadcastCallback_OnSuccess(t *testing.T) {
 	if call1.Peer != "node-1" {
 		t.Errorf("Expected peer 'node-1', got '%s'", call1.Peer)
 	}
-	if string(call1.Resp.Payload()) != "resp-1" {
-		t.Errorf("Expected response 'resp-1', got '%s'", string(call1.Resp.Payload()))
+	if string(call1.Resp.Payload()) != "msg-1" {
+		t.Errorf("Expected response 'msg-1', got '%s'", string(call1.Resp.Payload()))
 	}
 	if call1.Stats.Success != 1 {
 		t.Errorf("Expected Success=1, got %d", call1.Stats.Success)
@@ -197,7 +198,7 @@ func TestBroadcastCallback_OnMajority(t *testing.T) {
 	tracker.SetCallback(callback)
 
 	// 执行：记录 1 个成功（未达多数派）
-	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
 
 	// 验证：OnMajority 不应该被调用
 	if count := callback.GetMajorityCount(); count != 0 {
@@ -205,7 +206,7 @@ func TestBroadcastCallback_OnMajority(t *testing.T) {
 	}
 
 	// 执行：记录第 2 个成功（达到多数派）
-	tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
+	tracker.RecordSuccess("node-2", newTestMessage("msg-2"))
 
 	// 验证：OnMajority 应该被调用 1 次
 	if count := callback.GetMajorityCount(); count != 1 {
@@ -221,7 +222,7 @@ func TestBroadcastCallback_OnMajority(t *testing.T) {
 	}
 
 	// 执行：记录第 3 个成功
-	tracker.RecordSuccess("node-3", newTestMessage("msg-3", "node-3", "resp-3"))
+	tracker.RecordSuccess("node-3", newTestMessage("msg-3"))
 
 	// 验证：OnMajority 不应该再次被调用
 	if count := callback.GetMajorityCount(); count != 1 {
@@ -237,8 +238,8 @@ func TestBroadcastCallback_OnComplete(t *testing.T) {
 	tracker.SetCallback(callback)
 
 	// 执行：记录 2 个成功，1 个失败
-	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
-	tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
+	tracker.RecordSuccess("node-2", newTestMessage("msg-2"))
 	tracker.RecordFailure("node-3", context.DeadlineExceeded)
 
 	// 验证：OnComplete 应该被调用 1 次
@@ -274,7 +275,7 @@ func TestBroadcastCallback_ConcurrentSafety(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			msg := newTestMessage(fmt.Sprintf("msg-%d", idx), "node-1", "resp")
+			msg := newTestMessage(fmt.Sprintf("msg-%d", idx))
 			tracker.RecordSuccess("node-1", msg)
 		}(i)
 	}
@@ -311,8 +312,8 @@ func TestBroadcastCallback_PanicRecovery(t *testing.T) {
 		}
 	}()
 
-	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
-	tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
+	tracker.RecordSuccess("node-2", newTestMessage("msg-2"))
 
 	// 验证：主流程正常继续（即使回调 panic）
 	// 检查状态是否正确更新
@@ -321,7 +322,7 @@ func TestBroadcastCallback_PanicRecovery(t *testing.T) {
 	}
 
 	// 验证：可以继续记录更多响应
-	tracker.RecordSuccess("node-3", newTestMessage("msg-3", "node-3", "resp-3"))
+	tracker.RecordSuccess("node-3", newTestMessage("msg-3"))
 
 	if !tracker.IsFullDone() {
 		t.Error("Tracker should be full done after all responses")
@@ -336,8 +337,8 @@ func TestBroadcastStats_Accuracy(t *testing.T) {
 	tracker.SetCallback(callback)
 
 	// 执行：记录 2 个成功，1 个失败
-	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
-	tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
+	tracker.RecordSuccess("node-2", newTestMessage("msg-2"))
 	tracker.RecordFailure("node-3", context.DeadlineExceeded)
 
 	// 验证 OnComplete 的统计信息（最后的完整状态）
@@ -390,7 +391,7 @@ func TestBroadcastCallback_EmptyTargets(t *testing.T) {
 	tracker.SetCallback(callback)
 
 	// 执行：尝试记录成功（不应该 panic）
-	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
 
 	// 验证：回调应该被触发（虽然不在 targets 列表中）
 	if count := callback.GetSuccessCount(); count != 1 {
@@ -457,8 +458,8 @@ func TestBroadcastCallback_MajorityThenFullDone(t *testing.T) {
 	tracker.SetCallback(callback)
 
 	// 执行：记录 2 个成功（达到多数派）
-	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
-	tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
+	tracker.RecordSuccess("node-2", newTestMessage("msg-2"))
 
 	// 验证：OnMajority 应该被调用
 	if count := callback.GetMajorityCount(); count != 1 {
@@ -471,7 +472,7 @@ func TestBroadcastCallback_MajorityThenFullDone(t *testing.T) {
 	}
 
 	// 执行：记录第 3 个成功（全部完成）
-	tracker.RecordSuccess("node-3", newTestMessage("msg-3", "node-3", "resp-3"))
+	tracker.RecordSuccess("node-3", newTestMessage("msg-3"))
 
 	// 验证：OnMajority 不应该再次被调用
 	if count := callback.GetMajorityCount(); count != 1 {
@@ -502,12 +503,12 @@ func TestBroadcastCallback_ConcurrentRecordSuccess_OnlyOnce(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+		tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
 	}()
 
 	go func() {
 		defer wg.Done()
-		tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
+		tracker.RecordSuccess("node-2", newTestMessage("msg-2"))
 	}()
 
 	wg.Wait()
@@ -538,7 +539,7 @@ func TestBroadcastCallback_EnableDisable(t *testing.T) {
 	tracker.EnableCallbacks(false)
 
 	// 执行：记录成功
-	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
 
 	// 验证：回调不应该被触发
 	if count := callback.GetSuccessCount(); count != 0 {
@@ -549,7 +550,7 @@ func TestBroadcastCallback_EnableDisable(t *testing.T) {
 	tracker.EnableCallbacks(true)
 
 	// 执行：记录成功
-	tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
+	tracker.RecordSuccess("node-2", newTestMessage("msg-2"))
 
 	// 验证：回调应该被触发
 	if count := callback.GetSuccessCount(); count != 1 {
@@ -568,7 +569,7 @@ func BenchmarkBroadcastCallback_OnSuccess(b *testing.B) {
 	callback := NewMockListener()
 	tracker.SetCallback(callback)
 
-	msg := newTestMessage("msg-1", "node-1", "resp-1")
+	msg := newTestMessage("msg-1")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -589,10 +590,10 @@ func BenchmarkBroadcastCallback_OnSuccess(b *testing.B) {
 func TestBroadcastCallback_NoOpListener(t *testing.T) {
 	peers := []model.PeerID{"node-1", "node-2"}
 	tracker := NewBroadcastProgress("test-task", peers)
-	tracker.SetCallback(NoOpListener{}) // 使用空实现
+	tracker.SetCallback(service.NoOpListener{}) // 使用空实现
 
 	// 执行：不应 panic
-	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
 	tracker.RecordFailure("node-2", context.DeadlineExceeded)
 
 	// 验证：状态正常更新

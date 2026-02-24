@@ -77,6 +77,21 @@ func (n *testDiscoveryNotifee) HandlePeerFound(peerID model.PeerID, addrs []mode
 	// 测试实现，不做实际操作
 }
 
+// HandlePeerUpdated 处理节点地址更新
+func (n *testDiscoveryNotifee) HandlePeerUpdated(peerID model.PeerID, addrs []model.NetworkAddress) {
+	// 测试实现，不做实际操作
+}
+
+// HandlePeerSuspected 处理节点疑似失效
+func (n *testDiscoveryNotifee) HandlePeerSuspected(peerID model.PeerID, reason string) {
+	// 测试实现，不做实际操作
+}
+
+// HandlePeerLost 处理节点丢失
+func (n *testDiscoveryNotifee) HandlePeerLost(peerID model.PeerID) {
+	// 测试实现，不做实际操作
+}
+
 // TestNewDiscoveryService 测试创建发现服务
 func TestNewDiscoveryService(t *testing.T) {
 	ctx := t.Context()

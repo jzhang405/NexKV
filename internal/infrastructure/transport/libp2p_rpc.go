@@ -17,7 +17,7 @@ type Libp2pRPC struct {
 	codec       model.Codec
 	streamCodec model.StreamCodec
 	config      *service.RPCConfig
-	idGenerator *service.RequestIDGenerator
+	idGenerator *model.RequestIDGenerator
 	middleware  service.MiddlewareChain
 	provider    service.GoroutineProvider // goroutine 提供者
 
@@ -60,7 +60,7 @@ func NewLibp2pRPC(transport service.Transport, provider service.GoroutineProvide
 		codec:        codec,
 		streamCodec:  streamCodec,
 		config:       config,
-		idGenerator:  service.NewRequestIDGenerator(string(self)),
+		idGenerator:  model.NewRequestIDGenerator(string(self)),
 		middleware:   NewMiddlewareChain(),
 		provider:     provider,
 		pendingCalls: make(map[string]*pendingCall),
@@ -175,7 +175,7 @@ func (r *Libp2pRPC) BroadcastCall(
 	to []model.PeerID,
 	req model.Message,
 	strategy service.ResponseStrategy,
-	tracker *service.BroadcastProgress,
+	tracker service.BroadcastProgress,
 ) (service.BroadcastResult, error) {
 	if r.closed.Load() {
 		return service.BroadcastResult{}, service.ErrCanceled
@@ -221,7 +221,7 @@ func (r *Libp2pRPC) BroadcastAsync(
 	to []model.PeerID,
 	req model.Message,
 	strategy service.ResponseStrategy,
-	tracker *service.BroadcastProgress,
+	tracker service.BroadcastProgress,
 	cb func(from model.PeerID, resp model.Message, err error),
 ) error {
 	if r.closed.Load() {
@@ -256,7 +256,7 @@ func (r *Libp2pRPC) BroadcastAsync(
 }
 
 // WriteV 不同消息群发：单向发送
-func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []model.Message, tracker *service.BroadcastProgress) error {
+func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []model.Message, tracker service.BroadcastProgress) error {
 	// P1-2 修复：输入验证
 	if len(targets) != len(msgs) {
 		return service.Wrapf(service.ErrInvalidParam, "targets and messages length mismatch: %d vs %d", len(targets), len(msgs))
@@ -332,7 +332,7 @@ func (r *Libp2pRPC) WriteVCall(
 	targets []model.PeerID,
 	msgs []model.Message,
 	strategy service.ResponseStrategy,
-	tracker *service.BroadcastProgress,
+	tracker service.BroadcastProgress,
 ) (service.WriteVResult, error) {
 	if r.closed.Load() {
 		return service.WriteVResult{}, service.ErrCanceled
@@ -622,7 +622,7 @@ func (r *Libp2pRPC) broadcastFireAndForget(
 	ctx context.Context,
 	to []model.PeerID,
 	req model.Message,
-	tracker *service.BroadcastProgress,
+	tracker service.BroadcastProgress,
 ) (service.BroadcastResult, error) {
 	result := service.BroadcastResult{
 		Responses:    make([]model.Message, 0),
@@ -674,7 +674,7 @@ func (r *Libp2pRPC) broadcastAndWait(
 	to []model.PeerID,
 	req model.Message,
 	strategy service.ResponseStrategy,
-	tracker *service.BroadcastProgress,
+	tracker service.BroadcastProgress,
 ) (service.BroadcastResult, error) {
 	result := service.BroadcastResult{
 		Responses:    make([]model.Message, len(to)),

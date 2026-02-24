@@ -4,13 +4,9 @@ package service
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
-	pkgerrors "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ============================================================================
@@ -178,129 +174,36 @@ type ResponseMsg struct {
 // RequestID 生成器
 // ============================================================================
 
-// RequestID 请求唯一标识符
-// 格式: {NodeID}-{Timestamp:08x}-{Sequence:04x}
-// 示例: node-001-65d4a3f0-0001
-//
-// 设计说明：
-// - nodeID: 节点唯一标识，确保跨节点不冲突
-// - timestamp: Unix 时间戳（16 进制，8 位），支持跨节点时间排序
-// - sequence: 自增序列号（16 进制，4 位），每秒最多 65535 个请求
-//
-// 优势：
-// - 固定宽度：便于解析和索引
-// - 16 进制：减少长度（vs 10 进制）
-// - 时间排序：支持分布式追踪按时间排序
-type RequestID string
+// ============================================================================
+// RequestID - 类型别名（已迁移到 model 层）
+// ============================================================================
 
-// RequestIDGenerator 请求 ID 生成器（线程安全 + 时钟漂移保护）
-type RequestIDGenerator struct {
-	nodeID     string        // 节点 ID（启动时分配）
-	lastSecond atomic.Int64  // 上次生成时间戳（秒）
-	secondSeq  atomic.Uint32 // 当前秒内序列号
-}
+// RequestID 请求唯一标识符
+//
+// Deprecated: 请使用 model.RequestID。此类型别名仅用于向后兼容。
+type RequestID = model.RequestID
+
+// RequestIDGenerator 请求 ID 生成器
+//
+// Deprecated: 请使用 model.NewRequestIDGenerator()。此类型别名仅用于向后兼容。
+type RequestIDGenerator = model.RequestIDGenerator
 
 // NewRequestIDGenerator 创建请求 ID 生成器
-func NewRequestIDGenerator(nodeID string) *RequestIDGenerator {
-	return &RequestIDGenerator{
-		nodeID:     nodeID,
-		lastSecond: atomic.Int64{},
-		secondSeq:  atomic.Uint32{},
-	}
-}
-
-// Next 生成下一个请求 ID（线程安全 + 时钟漂移保护 + 序列号溢出保护）
 //
-// 时钟回退处理策略：
-// - 当检测到系统时间回退（now < lastSecond）时，使用 lastSecond 作为时间戳
-// - 这保证了 RequestID 单调递增，避免 ID 冲突
-// - 场景：NTP 同步、闰秒、手动修改系统时间
-//
-// P1-1 修复：序列号溢出保护
-// - 序列号格式为 4 位 16 进制（最大 0xFFFF = 65535）
-// - 当序列号超过 65535 时，等待下一秒再生成
-// - 这样可以保持 ID 格式的一致性
-func (g *RequestIDGenerator) Next() RequestID {
-	const maxSeq uint32 = 0xFFFF // 4 位 16 进制最大值
-
-	for {
-		now := time.Now().Unix()
-
-		// 时钟漂移保护：检测时间回退
-		for {
-			lastSec := g.lastSecond.Load()
-
-			if now > lastSec {
-				// 时间前进：正常跨秒
-				if g.lastSecond.CompareAndSwap(lastSec, now) {
-					g.secondSeq.Store(0)
-					break
-				}
-				// CAS 失败，重试
-				continue
-			}
-
-			if now == lastSec {
-				// 同一秒：继续递增序列号
-				break
-			}
-
-			// now < lastSec：时间回退！
-			// 策略：使用 lastSec 保证单调递增
-			now = lastSec
-			break
-		}
-
-		// 原子递增序列号
-		seq := g.secondSeq.Add(1)
-
-		// P1-1 修复：序列号溢出保护
-		// 如果序列号超过 65535，等待下一秒再生成
-		if seq > maxSeq {
-			// 等待下一秒（最多 1 秒）
-			time.Sleep(time.Until(time.Unix(now+1, 0)))
-			continue
-		}
-
-		// 格式化：{NodeID}-{Timestamp:08x}-{Sequence:04x}
-		return RequestID(fmt.Sprintf("%s-%08x-%04x", g.nodeID, now, seq))
-	}
+// Deprecated: 请使用 model.NewRequestIDGenerator()。此函数仅用于向后兼容。
+func NewRequestIDGenerator(nodeID string) *model.RequestIDGenerator {
+	return model.NewRequestIDGenerator(nodeID)
 }
 
 // ParseRequestID 解析请求 ID（用于日志和调试）
+//
+// Deprecated: 请使用 RequestID 的方法。此函数仅用于向后兼容。
 func ParseRequestID(id RequestID) (nodeID string, timestamp int64, sequence uint32, err error) {
-	parts := strings.Split(string(id), "-")
-	if len(parts) < 3 {
-		return "", 0, 0, pkgerrors.Wrap(pkgerrors.ErrInvalidParam, "invalid request ID format: expected {NodeID}-{Timestamp}-{Sequence}")
+	if id.IsEmpty() {
+		return "", 0, 0, fmt.Errorf("request id cannot be empty")
 	}
-
-	// 解析时间戳（倒数第二部分）
-	tsHex := parts[len(parts)-2]
-	ts, err := strconv.ParseInt(tsHex, 16, 64)
-	if err != nil {
-		return "", 0, 0, pkgerrors.Wrapf(pkgerrors.ErrInvalidParam, "invalid timestamp: %v", err)
-	}
-
-	// 解析序列号（最后一部分）
-	seqHex := parts[len(parts)-1]
-	seq, err := strconv.ParseUint(seqHex, 16, 32)
-	if err != nil {
-		return "", 0, 0, pkgerrors.Wrapf(pkgerrors.ErrInvalidParam, "invalid sequence: %v", err)
-	}
-
-	// 节点 ID（前面所有部分）
-	nodeID = strings.Join(parts[:len(parts)-2], "-")
-
-	return nodeID, ts, uint32(seq), nil
-}
-
-// Time 返回请求 ID 中的时间戳（用于排序）
-func (id RequestID) Time() time.Time {
-	_, ts, _, err := ParseRequestID(id)
-	if err != nil {
-		return time.Time{}
-	}
-	return time.Unix(ts, 0)
+	// 使用 model 层的方法
+	return id.NodeID(), id.Timestamp(), id.Sequence(), nil
 }
 
 // ============================================================================

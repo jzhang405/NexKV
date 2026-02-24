@@ -8,6 +8,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/internal/infrastructure/rpc"
 )
 
 // TestLibp2pRPC_New 测试创建 RPC
@@ -228,7 +229,7 @@ func TestLibp2pRPC_ImplementsInterface(t *testing.T) {
 // ============================================================================
 
 func TestRequestIDGenerator_Next(t *testing.T) {
-	gen := service.NewRequestIDGenerator("node-001")
+	gen := model.NewRequestIDGenerator("node-001")
 
 	ids := make(map[string]bool)
 	for range 1000 {
@@ -243,13 +244,12 @@ func TestRequestIDGenerator_Next(t *testing.T) {
 }
 
 func TestRequestIDGenerator_Parse(t *testing.T) {
-	gen := service.NewRequestIDGenerator("node-001")
+	gen := model.NewRequestIDGenerator("node-001")
 	id := gen.Next()
 
-	nodeID, timestamp, sequence, err := service.ParseRequestID(id)
-	if err != nil {
-		t.Fatalf("ParseRequestID() error = %v", err)
-	}
+	nodeID := id.NodeID()
+	timestamp := id.Timestamp()
+	sequence := id.Sequence()
 
 	if nodeID != "node-001" {
 		t.Errorf("nodeID = %s, want node-001", nodeID)
@@ -257,13 +257,15 @@ func TestRequestIDGenerator_Parse(t *testing.T) {
 	if timestamp == 0 {
 		t.Error("timestamp should not be 0")
 	}
-	if sequence == 0 {
-		t.Error("sequence should not be 0")
+	// 序列号可以是 0（新秒的第一个请求）或递增的值
+	// 这里只验证序列号在有效范围内（0-65535）
+	if sequence > 65535 {
+		t.Errorf("sequence = %d, should be <= 65535", sequence)
 	}
 }
 
 func TestRequestIDGenerator_Time(t *testing.T) {
-	gen := service.NewRequestIDGenerator("node-001")
+	gen := model.NewRequestIDGenerator("node-001")
 	id := gen.Next()
 
 	tm := id.Time()
@@ -273,9 +275,10 @@ func TestRequestIDGenerator_Time(t *testing.T) {
 }
 
 func TestRequestIDGenerator_ParseInvalid(t *testing.T) {
-	_, _, _, err := service.ParseRequestID("invalid-id")
+	id := model.RequestID("invalid-id")
+	err := id.Validate()
 	if err == nil {
-		t.Error("ParseRequestID() with invalid ID should return error")
+		t.Error("Validate() with invalid ID should return error")
 	}
 }
 
@@ -287,14 +290,14 @@ func TestBroadcastProgress_All(t *testing.T) {
 	tests := []struct {
 		name    string
 		targets []model.PeerID
-		setup   func(*service.BroadcastProgress)
-		check   func(*testing.T, *service.BroadcastProgress)
+		setup   func(service.BroadcastProgress)
+		check   func(*testing.T, service.BroadcastProgress)
 	}{
 		{
 			name:    "new tracker",
 			targets: []model.PeerID{"node-1", "node-2", "node-3"},
 			setup:   nil,
-			check: func(t *testing.T, tr *service.BroadcastProgress) {
+			check: func(t *testing.T, tr service.BroadcastProgress) {
 				s, f, p := tr.Stats()
 				assertEqual(t, 0, s, "success count should be 0")
 				assertEqual(t, 0, f, "failed count should be 0")
@@ -304,32 +307,32 @@ func TestBroadcastProgress_All(t *testing.T) {
 		{
 			name:    "majority reached",
 			targets: []model.PeerID{"node-1", "node-2", "node-3"},
-			setup: func(tr *service.BroadcastProgress) {
+			setup: func(tr service.BroadcastProgress) {
 				tr.RecordSuccess("node-1", nil)
 				tr.RecordSuccess("node-2", nil)
 			},
-			check: func(t *testing.T, tr *service.BroadcastProgress) {
+			check: func(t *testing.T, tr service.BroadcastProgress) {
 				assertTrue(t, tr.IsMajorityReached(), "Majority should be reached (2/3)")
 			},
 		},
 		{
 			name:    "majority not reached",
 			targets: []model.PeerID{"node-1", "node-2", "node-3"},
-			setup: func(tr *service.BroadcastProgress) {
+			setup: func(tr service.BroadcastProgress) {
 				tr.RecordSuccess("node-1", nil)
 			},
-			check: func(t *testing.T, tr *service.BroadcastProgress) {
+			check: func(t *testing.T, tr service.BroadcastProgress) {
 				assertFalse(t, tr.IsMajorityReached(), "Majority should not be reached (1/3)")
 			},
 		},
 		{
 			name:    "full done with mixed results",
 			targets: []model.PeerID{"node-1", "node-2"},
-			setup: func(tr *service.BroadcastProgress) {
+			setup: func(tr service.BroadcastProgress) {
 				tr.RecordSuccess("node-1", nil)
 				tr.RecordFailure("node-2", service.ErrTimeout)
 			},
-			check: func(t *testing.T, tr *service.BroadcastProgress) {
+			check: func(t *testing.T, tr service.BroadcastProgress) {
 				assertTrue(t, tr.IsFullDone(), "Should be full done")
 				s, f, p := tr.Stats()
 				assertEqual(t, 1, s, "success count should be 1")
@@ -341,7 +344,7 @@ func TestBroadcastProgress_All(t *testing.T) {
 			name:    "empty targets",
 			targets: []model.PeerID{},
 			setup:   nil,
-			check: func(t *testing.T, tr *service.BroadcastProgress) {
+			check: func(t *testing.T, tr service.BroadcastProgress) {
 				err := tr.WaitMajority(context.Background())
 				assertNoError(t, err, "WaitMajority with empty targets should not return error")
 			},
@@ -350,7 +353,7 @@ func TestBroadcastProgress_All(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tracker := service.NewBroadcastProgress("test-001", tt.targets)
+			tracker := rpc.NewBroadcastProgress("test-001", tt.targets)
 			if tt.setup != nil {
 				tt.setup(tracker)
 			}
@@ -509,7 +512,7 @@ func TestLibp2pRPC_OnRequest_NilHandler(t *testing.T) {
 // TestBroadcastProgress_WaitFull_AllFailed 测试全部失败场景
 func TestBroadcastProgress_WaitFull_AllFailed(t *testing.T) {
 	targets := []model.PeerID{"node-1", "node-2"}
-	tracker := service.NewBroadcastProgress("test-001", targets)
+	tracker := rpc.NewBroadcastProgress("test-001", targets)
 
 	// 全部标记为失败
 	tracker.RecordFailure("node-1", service.ErrTimeout)
@@ -532,7 +535,7 @@ func TestBroadcastProgress_WaitFull_AllFailed(t *testing.T) {
 // TestBroadcastProgress_Stats_AfterOperations 测试操作后统计
 func TestBroadcastProgress_Stats_AfterOperations(t *testing.T) {
 	targets := []model.PeerID{"node-1", "node-2", "node-3"}
-	tracker := service.NewBroadcastProgress("test-001", targets)
+	tracker := rpc.NewBroadcastProgress("test-001", targets)
 
 	// 混合操作
 	tracker.RecordSuccess("node-1", nil)
@@ -552,10 +555,10 @@ func TestBroadcastProgress_Stats_AfterOperations(t *testing.T) {
 
 // TestRequestIDGenerator_Concurrent 测试并发生成 ID
 func TestRequestIDGenerator_Concurrent(t *testing.T) {
-	gen := service.NewRequestIDGenerator("node-001")
+	gen := model.NewRequestIDGenerator("node-001")
 
 	var wg sync.WaitGroup
-	ids := make(chan service.RequestID, 1000)
+	ids := make(chan model.RequestID, 1000)
 	idMap := make(map[string]bool)
 	var mu sync.Mutex
 

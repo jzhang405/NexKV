@@ -1,4 +1,4 @@
-package service
+package rpc
 
 import (
 	"context"
@@ -6,16 +6,8 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/domain/service"
 )
-
-// ============================================================================
-// 测试辅助函数
-// ============================================================================
-
-// newTestMessage 创建测试消息
-func newTestMessage(id, source, payload string) model.Message {
-	return model.NewMessage(id, model.MessageType(1), model.PeerID(source), "local", []byte(payload))
-}
 
 // ============================================================================
 // BroadcastProgress 基础测试
@@ -32,9 +24,9 @@ func TestBroadcastProgress_WaitMajority(t *testing.T) {
 	// 异步记录响应
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+		tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
 		time.Sleep(50 * time.Millisecond)
-		tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
+		tracker.RecordSuccess("node-2", newTestMessage("msg-2"))
 	}()
 
 	// 等待多数派
@@ -59,7 +51,7 @@ func TestBroadcastProgress_WaitFull(t *testing.T) {
 	// 异步记录响应
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+		tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
 		time.Sleep(50 * time.Millisecond)
 		tracker.RecordFailure("node-2", context.DeadlineExceeded)
 	}()
@@ -81,7 +73,7 @@ func TestBroadcastProgress_Stats(t *testing.T) {
 	tracker := NewBroadcastProgress("test-task", peers)
 
 	// 记录响应
-	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
 	tracker.RecordFailure("node-2", context.DeadlineExceeded)
 
 	// 获取统计信息
@@ -110,7 +102,7 @@ func TestBroadcastProgress_IsFullDone_NotClosed(t *testing.T) {
 	}
 
 	// 记录部分响应
-	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
 
 	if tracker.IsFullDone() {
 		t.Error("IsFullDone should return false when only partial responses received")
@@ -123,8 +115,8 @@ func TestBroadcastProgress_WaitMajority_AlreadyReached(t *testing.T) {
 	tracker := NewBroadcastProgress("test-task", peers)
 
 	// 先记录足够的成功响应
-	tracker.RecordSuccess("node-1", newTestMessage("msg-1", "node-1", "resp-1"))
-	tracker.RecordSuccess("node-2", newTestMessage("msg-2", "node-2", "resp-2"))
+	tracker.RecordSuccess("node-1", newTestMessage("msg-1"))
+	tracker.RecordSuccess("node-2", newTestMessage("msg-2"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -186,14 +178,14 @@ func TestProgressBuilder_ChainedCallbacks(t *testing.T) {
 	// 场景 1：先 OnFailure 后 OnSuccess
 	var successCalled bool
 	tracker1 := NewProgress("test-1", peers).
-		OnFailure(func(peer model.PeerID, err error, stats BroadcastStats) {}).
-		OnSuccess(func(peer model.PeerID, resp model.Message, stats BroadcastStats) {
+		OnFailure(func(peer model.PeerID, err error, stats service.BroadcastStats) {}).
+		OnSuccess(func(peer model.PeerID, resp model.Message, stats service.BroadcastStats) {
 			successCalled = true
 		}).
 		Build()
 
 	// 验证回调都被正确保存
-	tracker1.RecordSuccess(peers[0], newTestMessage("msg-1", string(peers[0]), "resp"))
+	tracker1.RecordSuccess(peers[0], newTestMessage("msg-1"))
 	if !successCalled {
 		t.Error("OnSuccess should be called (set after OnFailure)")
 	}
@@ -201,17 +193,17 @@ func TestProgressBuilder_ChainedCallbacks(t *testing.T) {
 	// 场景 2：先 OnComplete 后 OnMajority
 	var majorityCalled, completeCalled bool
 	tracker2 := NewProgress("test-2", peers).
-		OnComplete(func(stats BroadcastStats) {
+		OnComplete(func(stats service.BroadcastStats) {
 			completeCalled = true
 		}).
-		OnMajority(func(stats BroadcastStats) {
+		OnMajority(func(stats service.BroadcastStats) {
 			majorityCalled = true
 		}).
 		Build()
 
 	// 验证回调都被正确保存
-	tracker2.RecordSuccess(peers[0], newTestMessage("msg-1", string(peers[0]), "resp"))
-	tracker2.RecordSuccess(peers[1], newTestMessage("msg-2", string(peers[1]), "resp"))
+	tracker2.RecordSuccess(peers[0], newTestMessage("msg-1"))
+	tracker2.RecordSuccess(peers[1], newTestMessage("msg-2"))
 	if !majorityCalled {
 		t.Error("OnMajority should be called (set after OnComplete)")
 	}
@@ -222,16 +214,16 @@ func TestProgressBuilder_ChainedCallbacks(t *testing.T) {
 	// 场景 3：随机顺序（OnComplete -> OnSuccess -> OnMajority -> OnFailure）
 	var onSuccessCalled bool
 	tracker3 := NewProgress("test-3", peers).
-		OnComplete(func(stats BroadcastStats) {}).
-		OnSuccess(func(peer model.PeerID, resp model.Message, stats BroadcastStats) {
+		OnComplete(func(stats service.BroadcastStats) {}).
+		OnSuccess(func(peer model.PeerID, resp model.Message, stats service.BroadcastStats) {
 			onSuccessCalled = true
 		}).
-		OnMajority(func(stats BroadcastStats) {}).
-		OnFailure(func(peer model.PeerID, err error, stats BroadcastStats) {}).
+		OnMajority(func(stats service.BroadcastStats) {}).
+		OnFailure(func(peer model.PeerID, err error, stats service.BroadcastStats) {}).
 		Build()
 
 	// 验证所有回调都被正确保存
-	tracker3.RecordSuccess(peers[0], newTestMessage("msg-1", string(peers[0]), "resp"))
+	tracker3.RecordSuccess(peers[0], newTestMessage("msg-1"))
 	if !onSuccessCalled {
 		t.Error("OnSuccess should be called")
 	}

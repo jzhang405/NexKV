@@ -1,4 +1,5 @@
 // Package commands CLI 根命令
+// DDD 重构说明：此文件待根据新的 DDD 架构重新实现
 package commands
 
 import (
@@ -6,7 +7,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/jzhang405/NexKV/internal/config/logging"
 	"github.com/urfave/cli/v2"
 )
 
@@ -35,11 +35,9 @@ func NewApp() *cli.App {
 CLI 通过 RPC 协议与 Daemon 守护进程通信，
 执行节点管理、集群管理、数据操作等命令。`,
 		Before: func(c *cli.Context) error {
-			// 初始化日志
 			DaemonAddr = c.String("addr")
 			Timeout = c.Duration("timeout")
 			Verbose = c.Bool("verbose")
-			initLogging()
 			return nil
 		},
 		Flags: []cli.Flag{
@@ -66,23 +64,11 @@ CLI 通过 RPC 协议与 Daemon 守护进程通信，
 			},
 		},
 		Commands: []*cli.Command{
-			newNodeCommand(),
-			newClusterCommand(),
 			newVersionCommand(),
 		},
 	}
 
 	return app
-}
-
-// initLogging 初始化日志
-func initLogging() {
-	// TODO: 根据配置初始化日志
-	// 目前使用简单的配置
-	if Verbose {
-		// 设置为 debug 级别
-		logging.Debug("详细模式已启用")
-	}
 }
 
 // Execute 执行命令
@@ -98,15 +84,14 @@ func SetVersionInfo(version, gitCommit, buildTime string) {
 	appBuildTime = buildTime
 }
 
-// newVersionCommand 创建版本命令
+// newVersionCommand 版本命令
 func newVersionCommand() *cli.Command {
 	return &cli.Command{
-		Name:        "version",
-		Usage:       "显示版本信息",
-		Description: `显示 NexKV CLI 和 Daemon 的版本信息`,
+		Name:  "version",
+		Usage: "显示版本信息",
 		Action: func(c *cli.Context) error {
-			fmt.Println("NexKV CLI")
-			fmt.Printf("Version: %s\n", appVersion)
+			fmt.Printf("NexKV CLI\n")
+			fmt.Printf("Version:    %s\n", appVersion)
 			fmt.Printf("Git Commit: %s\n", appGitCommit)
 			fmt.Printf("Build Time: %s\n", appBuildTime)
 			return nil

@@ -55,6 +55,7 @@
 #### 2.3 明确边界（不做什么，避免范围蔓延）
 
 **移动到基础设施层的内容：**
+
 | 内容 | 行数 | 说明 |
 |------|------|------|
 | `asyncOpImpl[T]` 结构体及方法 | ~200 行 | 核心实现 |
@@ -63,6 +64,7 @@
 | `RPCAsyncAdapter` | ~60 行 | 适配器 |
 
 **保留在领域层的内容：**
+
 | 内容 | 说明 |
 |------|------|
 | `RPCAsync` 接口 | 领域服务接口 |
@@ -90,7 +92,7 @@ flowchart TD
 
     subgraph Step 1
         A1[创建 internal/infrastructure/rpc/async_rpc_impl.go]
-        A2[移动 asyncOpImpl[T] 结构体]
+		A2["移动 asyncOpImpl[T] 结构体"]
         A3[移动工厂函数]
         A4[移动辅助函数]
     end

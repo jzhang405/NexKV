@@ -79,6 +79,10 @@ var (
 	ErrInvalidState       = stderrors.New("test: invalid cluster state")
 	ErrNotImplemented     = stderrors.New("test: not implemented")
 	ErrNotInitialized     = stderrors.New("test: not initialized")
+
+	// Clock 层错误
+	ErrClockInvalidData = stderrors.New("clock: invalid data")
+	ErrClockNilHLC      = stderrors.New("clock: nil HLC")
 )
 
 // ===========================

@@ -9,6 +9,7 @@
 >   - [M2 实现方案](./2026-02-21_spike_m2-storage-engine-implement.md)
 >   - [Bf-Tree 术语澄清](./bftree/2026-02-22_spike_btree-variants-clarification.md)
 >   - [DDD 架构 - GoroutineProvider](./2026-02-18_spike_nexkv-ddd-interface.md#13-b4-goroutineprovider)
+>   - [统一执行器架构 - Per-Core 性能](./2026-02-25_spike-glm-unified-executor.md#10-收益分析)
 
 ---
 

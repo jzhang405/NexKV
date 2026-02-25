@@ -128,6 +128,27 @@ graph LR
 > - Week 3: NexKV 专用封装（1 天）+ 批量操作（0.5 天）+ 全局单例管理（0.5 天）
 > - Week 4: Storage 层集成（1 天）
 
+#### 统一执行器架构（Phase 1 深化）
+
+> ⭐ **统一执行器架构**是 Phase 1 基础设施层的**核心深化**，为 M2 存储引擎提供异步能力基础
+
+| 组件 | 说明 | 文档 |
+|------|------|------|
+| **接口拆分** | GoroutineProvider 13 个方法 → 5原子 + 3组合 + 4可暂停调度器 | [统一执行器架构](./2026-02-25_spike-glm-unified-executor.md#4-接口拆分方案kimi) |
+| **Per-Core 执行器** | 绑核无锁执行器，消除延迟抖动 | [Per-Core 实现](./2026-02-25_spike-glm-unified-executor.md#6-per-core-无锁执行器实现glm) |
+| **可暂停调度器** | 支持任务暂停/恢复/迁移 | [可暂停调度器](./2026-02-25_spike-glm-unified-executor.md#5-可暂停调度器接口kimi--glm) |
+
+**M2 存储引擎依赖链**：
+```
+GoroutineProvider → AsyncOperation[T] → M2 异步接口
+     ↓                    ↓
+ 接口拆分            GetAsync/SetAsync/DeleteAsync
+     ↓
+Per-Core 执行器 → 可暂停调度器 → 跨节点迁移
+```
+
+> 📖 **深度关联**：M2 存储引擎的异步操作依赖于 GoroutineProvider，未来迁移到 Per-Core 执行器后将获得无锁性能
+
 #### 详细文件清单
 
 | 接口 | 包路径 | 实现文件 | 优先级 |

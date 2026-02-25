@@ -7306,6 +7306,29 @@ nexkv_goroutine_pool_waiting_tasks{priority="normal"}
 nexkv_goroutine_pool_running_tasks / nexkv_goroutine_pool_capacity
 ```
 
+#### GoroutineProvider 与统一执行器架构
+
+> ⭐ **统一执行器架构**是 GoroutineProvider 的**深化实现**，提供接口拆分和 Per-Core 无锁执行器
+
+| 维度 | GoroutineProvider (现状) | 统一执行器架构 (目标) |
+|------|------------------------|---------------------|
+| **实现** | Ants 协程池 | Per-Core 无锁执行器 |
+| **性能** | 有锁竞争 | 绑核 + 串行 = 无锁 |
+| **暂停能力** | 不支持 | 原生支持暂停/恢复 |
+| **延迟抖动** | 有 | 无 |
+
+**M2 存储引擎依赖**：
+```
+GoroutineProvider → AsyncOperation[T] → M2 GetAsync/SetAsync/DeleteAsync
+     ↓
+  统一执行器（Per-Core）→ 可暂停调度器 → 跨节点迁移
+```
+
+> 📖 **深度关联文档**：
+> - [统一执行器架构 - 接口拆分](./2026-02-25_spike-glm-unified-executor.md#4-接口拆分方案kimi)
+> - [统一执行器架构 - Per-Core 实现](./2026-02-25_spike-glm-unified-executor.md#6-per-core-无锁执行器实现glm)
+> - [M2 存储引擎路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md)
+
 #### 13-B.4.2 NexKV 专用封装
 
 ```go

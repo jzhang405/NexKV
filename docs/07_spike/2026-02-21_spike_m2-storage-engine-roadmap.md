@@ -113,6 +113,11 @@ graph LR
 - 避免重复实现和后期大规模重构
 - 详见：[异步编程模型重构方案](./2026-02-22_spike_async-programming-model-refactor.md)
 
+> ⭐ **统一执行器架构**是异步编程模型的**核心深化**：
+> - GoroutineProvider → AsyncOperation[T] → M2 异步接口
+> - 未来迁移到 Per-Core 执行器后将获得无锁性能
+> - 详见：[统一执行器架构](./2026-02-25_spike-glm-unified-executor.md)
+
 ---
 
 ### M2 存储引擎实施阶段

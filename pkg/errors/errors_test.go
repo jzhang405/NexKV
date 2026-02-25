@@ -311,3 +311,109 @@ func TestErrorsAsCompatibility(t *testing.T) {
 		t.Errorf("extracted NexError.Details = %q, want %q", nexErr.Details, "test detail")
 	}
 }
+
+// TestNexError_Unwrap_Nil 测试 nil receiver 的 Unwrap
+func TestNexError_Unwrap_Nil(t *testing.T) {
+	var nexErr *NexError
+	unwrapped := nexErr.Unwrap()
+	if unwrapped != nil {
+		t.Errorf("nil NexError.Unwrap() = %v, want nil", unwrapped)
+	}
+}
+
+// TestNexError_Is_Nil 测试 nil receiver 的 Is
+func TestNexError_Is_Nil(t *testing.T) {
+	var nexErr *NexError
+	if nexErr.Is(ErrTimeout) {
+		t.Error("nil NexError.Is() = true, want false")
+	}
+}
+
+// TestNexError_Error_NilReceiver 测试 nil receiver 的 Error
+func TestNexError_Error_NilReceiver(t *testing.T) {
+	var nexErr *NexError
+	got := nexErr.Error()
+	if got != "error: nil" {
+		t.Errorf("nil NexError.Error() = %q, want %q", got, "error: nil")
+	}
+}
+
+// TestNexError_Error_NilErr 测试 nil Err 的 Error
+func TestNexError_Error_NilErr(t *testing.T) {
+	nexErr := &NexError{Err: nil, Details: ""}
+	got := nexErr.Error()
+	if got != "error: nil" {
+		t.Errorf("NexError{nil, \"\"}.Error() = %q, want %q", got, "error: nil")
+	}
+}
+
+// TestNexError_Error_NilErrWithDetails 测试 nil Err 但有 Details 的 Error
+func TestNexError_Error_NilErrWithDetails(t *testing.T) {
+	nexErr := &NexError{Err: nil, Details: "something went wrong"}
+	got := nexErr.Error()
+	if got != "something went wrong" {
+		t.Errorf("NexError{nil, details}.Error() = %q, want %q", got, "something went wrong")
+	}
+}
+
+// TestWrap_Nil 测试 Wrap nil 错误
+func TestWrap_Nil(t *testing.T) {
+	got := Wrap(nil, "details")
+	if got != nil {
+		t.Errorf("Wrap(nil, details) = %v, want nil", got)
+	}
+}
+
+// TestWrapf_Nil 测试 Wrapf nil 错误
+func TestWrapf_Nil(t *testing.T) {
+	got := Wrapf(nil, "format %s", "arg")
+	if got != nil {
+		t.Errorf("Wrapf(nil, format) = %v, want nil", got)
+	}
+}
+
+// TestErrorsIs_WithNilNexError 测试 errors.Is 与 nil NexError
+func TestErrorsIs_WithNilNexError(t *testing.T) {
+	var nexErr *NexError
+	// 这不应该 panic
+	if stderrors.Is(nexErr, ErrTimeout) {
+		t.Error("errors.Is(nil NexError, ErrTimeout) = true, want false")
+	}
+}
+
+// TestErrorsAs_WithNilNexError 测试 errors.As 与 nil NexError
+func TestErrorsAs_WithNilNexError(t *testing.T) {
+	var nexErr *NexError
+	var target *NexError
+	// nil NexError 的 errors.As 行为由标准库决定
+	// 这里主要确保不会 panic
+	_ = stderrors.As(nexErr, &target)
+}
+
+// TestNexError_Is_TargetNil 测试 Is 与 nil target
+func TestNexError_Is_TargetNil(t *testing.T) {
+	nexErr := Wrap(ErrTimeout, "details")
+	// Is 与 nil target 应该返回 false
+	if nexErr.Is(nil) {
+		t.Error("NexError.Is(nil) = true, want false")
+	}
+}
+
+// TestConcurrentErrors 测试并发场景下的错误处理
+func TestConcurrentErrors(t *testing.T) {
+	done := make(chan bool)
+
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			err := Wrapf(ErrTimeout, "goroutine %d", id)
+			if !stderrors.Is(err, ErrTimeout) {
+				t.Errorf("goroutine %d: errors.Is failed", id)
+			}
+			done <- true
+		}(i)
+	}
+
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+}

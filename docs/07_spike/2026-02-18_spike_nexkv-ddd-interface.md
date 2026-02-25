@@ -1,5 +1,13 @@
 # NexKV DDD架构设计 - Go Interface完整定义
 
+## 📋 关联文档
+
+| 文档 | 说明 |
+|------|------|
+| [DDD 实施路线图](./2026-02-18_spike_nexkv-ddd-roadmap.md) | 完整 DDD 实施路线图 |
+| [DDD 实现方案](./2026-02-18_spike_nexkv-ddd-implement.md) | 接口实现方案 |
+| [**统一执行器架构（Per-Core + 接口拆分）**](./2026-02-25_spike-glm-unified-executor.md) | **执行层核心** - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 + 可暂停调度器 |
+
 **文档目的**: 从DDD角度组织分布式KV存储系统的Go interface设计
 **数据来源**: doubao-chat-nexkv-ddd.md 完整对话（21,647行）
 **文档版本**: v19.3 Unified | **最后更新**: 2026-02-23

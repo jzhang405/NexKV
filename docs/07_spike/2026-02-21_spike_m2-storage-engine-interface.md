@@ -16,6 +16,7 @@
 | [实现方案](./2026-02-21_spike_m2-storage-engine-implement.md) | 技术实现 |
 | [实施路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md) | 时间规划 |
 | [**DDD 架构参考**](./2026-02-18_spike_nexkv-ddd-interface.md) | **完整 47 接口定义（包含 AsyncOperation、BTree、WAL）** |
+| [**统一执行器架构（Per-Core + 接口拆分）**](./2026-02-25_spike-glm-unified-executor.md) | **执行层核心** - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 + 可暂停调度器 |
 
 > 📖 **并发管理参考**: [DDD 架构 - GoroutineProvider](./2026-02-18_spike_nexkv-ddd-interface.md#13-b4-goroutineprovider)
 

@@ -6,6 +6,16 @@
 
 ---
 
+## 📋 关联文档
+
+| 文档 | 说明 |
+|------|------|
+| [Interface 定义](./2026-02-18_spike_nexkv-ddd-interface.md) | 47个接口详细定义 |
+| [实现方案](./2026-02-18_spike_nexkv-ddd-implement.md) | 接口实现方案 |
+| [统一执行器架构（Per-Core + 接口拆分）](./2026-02-25_spike-glm-unified-executor.md) | **执行层核心** - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 + 可暂停调度器 |
+
+---
+
 ## 〇、核心架构决策
 
 ### 0.1 双存储引擎策略

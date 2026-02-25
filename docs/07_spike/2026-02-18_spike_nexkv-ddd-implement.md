@@ -1,5 +1,13 @@
 # NexKV DDD实施方案完整指南
 
+## 📋 关联文档
+
+| 文档 | 说明 |
+|------|------|
+| [DDD 实施路线图](./2026-02-18_spike_nexkv-ddd-roadmap.md) | 完整 DDD 实施路线图 |
+| [DDD Interface 定义](./2026-02-18_spike_nexkv-ddd-interface.md) | 47个接口详细定义 |
+| [**统一执行器架构（Per-Core + 接口拆分）**](./2026-02-25_spike-glm-unified-executor.md) | **执行层核心** - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 + 可暂停调度器 |
+
 **文档版本**: v1.5
 **最后更新**: 2026-02-18
 **基于**: spike-nexkv-ddd-interface.md v18.0 Refined（47个接口 + 5层精简架构 + AsyncOperation[T]精化接口）

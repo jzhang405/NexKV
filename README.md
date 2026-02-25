@@ -87,37 +87,55 @@ cluster:
 
 ## 🏗️ 架构概述
 
-### 三层架构
+### 5层 DDD 架构
+
+> ⭐ **最新架构**：基于 DDD（Domain-Driven Design）的 5 层精简架构，47 个统一接口
 
 ```mermaid
 flowchart TB
-    subgraph L3["Layer 3: 分布式事务一致性层"]
-        TwoPC["无协调者简化版 2PC<br/>- Gossip 同步事务状态<br/>- 故障自动补偿"]
+    subgraph L5["Layer 5: API 层"]
+        API["KVClient<br/>TxClient"]
     end
 
-    subgraph L2["Layer 2: 副本数据一致性层"]
-        Shard["分片级主从自治<br/>- 每个 MVStore 实例对应一个分片<br/>- 主副本处理读写,从副本同步 WAL<br/>- 单机-分布式平滑切换"]
+    subgraph L4["Layer 4: 控制平面层"]
+        Cluster["集群管理<br/>分片路由<br/>负载均衡<br/>选举"]
     end
 
-    subgraph L1["Layer 1: 元数据一致性层"]
-        Meta["每个节点维护完整的元数据镜像<br/>- Gossip: 最终一致性(10秒)<br/>- Quorum: 增强最终一致(多数派确认)<br/>- WAL: 持久化 + 崩溃恢复"]
+    subgraph L3["Layer 3: 数据平面层"]
+        Data["副本管理<br/>事务一致性<br/>Quorum/EC"]
     end
 
-    TwoPC --> Shard
-    Shard --> Meta
+    subgraph L2["Layer 2: 存储引擎层"]
+        Storage["双存储引擎<br/>Metadata KV + External KV"]
+    end
 
-    style L3 fill:#e1f5ff,stroke:#333,stroke-width:2px
-    style L2 fill:#fff4e6,stroke:#333,stroke-width:2px
-    style L1 fill:#f3e5f5,stroke:#333,stroke-width:2px
+    subgraph L1["Layer 1: 基础设施层"]
+        Infra["网络通信<br/>GoroutineProvider<br/>AsyncOperation[T]<br/>可暂停调度器"]
+    end
+
+    API --> Cluster
+    Cluster --> Data
+    Data --> Storage
+    Storage --> Infra
+
+    style L5 fill:#e1f5ff,stroke:#333,stroke-width:2px
+    style L4 fill:#fff4e6,stroke:#333,stroke-width:2px
+    style L3 fill:#f3e5f5,stroke:#333,stroke-width:2px
+    style L2 fill:#e8f5e9,stroke:#333,stroke-width:2px
+    style L1 fill:#fff9c4,stroke:#333,stroke-width:2px
 ```
 
-### 分层一致性模型
+### 5层架构详情
 
-| 层级 | 一致性级别 | 机制 | 收敛时间 | 典型场景 |
-|------|-----------|------|---------|---------|
-| **L1 元数据层** | 分层一致性 | Gossip / Quorum | < 10s / < 50ms | 元数据同步 |
-| **L2 数据层** | 可选一致性 | 主从异步 / 同步复制 | < 10ms / < 50ms | 数据读写 |
-| **L3 事务层** | 最终一致 | Gossip 状态同步 + 补偿 | < 10s | 跨分片事务 |
+| 层次 | 接口数 | 核心职责 |
+|------|--------|---------|
+| **① API 层** | 2 | 对外 KV/Tx 接口 |
+| **② 控制平面层** | 14 | 分片路由、选举、负载均衡 |
+| **③ 数据平面层** | 6 | 复制、事务 |
+| **④ 存储引擎层** | 9 | 双存储引擎（Metadata + External） |
+| **⑤ 基础设施层** | 16 | 网络通信、可暂停调度器 |
+
+**总计**: 47 个统一接口 | 89 个实现文件
 
 ---
 
@@ -125,12 +143,26 @@ flowchart TB
 
 | 层级 | 技术选型 | 版本要求 | 理由 |
 |------|---------|---------|------|
-| **语言** | Go | >= 1.21 | 原生并发、高性能、简单部署 |
-| **存储** | MVStore + WAL | - | 零依赖、高性能、MVCC 支持 |
-| **编解码** | JSON / MessagePack | - | 多编解码支持，灵活切换 |
-| **网络** | TCP + 自定义帧 | - | 零开销、完全控制 |
+| **语言** | Go | >= 1.21 | 原生泛型、高性能并发 |
+| **存储** | 双引擎架构 | - | Metadata KV (sync.Map) + External KV (Bf-Tree) |
+| **并发管理** | ants + 泛型 | - | Goroutine Pool + 类型安全异步 |
+| **Async** | AsyncOperation[T] | v19.0 | 基于 GoroutineProvider 的精化异步接口 |
+| **Transport** | libp2p | - | 去中心化、NAT 穿透 |
+| **编解码** | MessagePack | - | 高性能、自描述 |
+| **DI** | Wire | - | 编译时检查 |
+| **日志** | Zap | - | 结构化日志 |
 | **测试** | testify | latest | 功能丰富、BDD 支持 |
-| **覆盖率** | 72%+ | - | 高质量代码保障 |
+| **覆盖率** | 80%+ | - | 高质量代码保障 |
+
+### 统一执行器架构
+
+> ⭐ **核心能力**：为 M2 存储引擎提供异步能力基础
+
+| 组件 | 说明 | 性能目标 |
+|------|------|---------|
+| **接口拆分** | GoroutineProvider 13 → 7原子 + 3组合 + 4可暂停调度器 | 提升可测试性 |
+| **Per-Core 执行器** | 每核单 goroutine，绑核无锁执行 | ≥ 2M ops/s，P99 < 10μs |
+| **可暂停调度器** | 支持任务暂停/恢复/迁移 | 跨节点迁移支持 |
 
 ---
 

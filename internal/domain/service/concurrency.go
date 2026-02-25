@@ -185,3 +185,128 @@ type GoroutineResult[T any] interface {
 	// IsDone 检查是否已完成
 	IsDone() bool
 }
+
+// ==========================================
+// PR-087: 统一执行器架构 - 新增接口
+// ==========================================
+
+// Step 步骤定义
+type Step struct {
+	ID         string
+	Name       string
+	Handler    func(ctx context.Context) error
+	Rollback   func(ctx context.Context) error
+	IsPausable bool
+	Timeout    time.Duration
+}
+
+// StepContext 步骤执行上下文
+type StepContext struct {
+	OperationID string
+	CurrentStep int
+	Steps       []Step
+	State       map[string]any
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// StepExecutor 步骤执行器（可暂停调度器）
+type StepExecutor interface {
+	// ExecuteSteps 执行多个步骤
+	ExecuteSteps(ctx context.Context, steps []Step, stepCtx *StepContext) error
+
+	// PauseStep 暂停步骤
+	PauseStep(opID string) error
+
+	// ResumeStep 恢复步骤
+	ResumeStep(opID string) error
+
+	// GetStepContext 获取步骤上下文
+	GetStepContext(opID string) (*StepContext, error)
+}
+
+// StepHandler 步骤处理器
+type StepHandler interface {
+	// Execute 执行单个步骤
+	Execute(ctx context.Context, step *Step, stepCtx *StepContext) error
+
+	// Rollback 回滚单个步骤
+	Rollback(ctx context.Context, step *Step, stepCtx *StepContext) error
+
+	// IsPausable 检查步骤是否可暂停
+	IsPausable(step *Step) bool
+}
+
+// Checkpoint 检查点
+type Checkpoint struct {
+	ID        string
+	LSN       uint64
+	ShardID   int
+	Step      Step
+	Data      []byte
+	Timestamp time.Time
+	Term      uint64
+}
+
+// CheckpointHandler 检查点处理器
+type CheckpointHandler interface {
+	// ExecuteToCheckpoint 执行到检查点
+	ExecuteToCheckpoint(ctx context.Context, stepCtx *StepContext, checkpoint *Checkpoint) error
+
+	// ExecuteFromCheckpoint 从检查点恢复
+	ExecuteFromCheckpoint(ctx context.Context, stepCtx *StepContext, checkpoint *Checkpoint) error
+
+	// CreateCheckpoint 创建检查点
+	CreateCheckpoint(ctx context.Context, stepCtx *StepContext) (*Checkpoint, error)
+
+	// LoadCheckpoint 加载检查点
+	LoadCheckpoint(ctx context.Context, checkpointID string) (*Checkpoint, error)
+}
+
+// MigrationRequest 迁移请求
+type MigrationRequest struct {
+	MigrationID  string
+	SourceNodeID string
+	TargetNodeID string
+	ShardID      int
+	CheckpointLSN uint64
+	Term         uint64
+}
+
+// MigrationStatus 迁移状态
+type MigrationStatus struct {
+	MigrationID string
+	Phase       MigrationPhase
+	Progress    float32
+	Error       error
+	LastUpdated time.Time
+}
+
+// MigrationPhase 迁移阶段
+type MigrationPhase int
+
+const (
+	MigrationPhaseIdle MigrationPhase = iota
+	MigrationPhasePrepare
+	MigrationPhaseExport
+	MigrationPhaseTransfer
+	MigrationPhaseCommit
+	MigrationPhaseCleanup
+	MigrationPhaseDone
+	MigrationPhaseFailed
+)
+
+// MigrationHandler 迁移处理器
+type MigrationHandler interface {
+	// PrepareMigrate 准备迁移
+	PrepareMigrate(ctx context.Context, req *MigrationRequest) error
+
+	// CommitMigrate 提交迁移
+	CommitMigrate(ctx context.Context, req *MigrationRequest) error
+
+	// RollbackMigrate 回滚迁移
+	RollbackMigrate(ctx context.Context, req *MigrationRequest) error
+
+	// GetMigrationStatus 获取迁移状态
+	GetMigrationStatus(migrationID string) (*MigrationStatus, error)
+}

@@ -76,22 +76,32 @@
 
 #### 3.1 接口拆分方案
 
+> ⭐ **命名规范**: 采用与现有代码一致的 `TaskXxx` 命名模式
+
 ```
 Level 1: 原子接口（最小粒度）
-├── Executor: Execute(ctx, fn)
-├── CoreBinder: ExecuteOnCore(ctx, core, fn)
-├── ExecutorWithResult: ExecuteWithResult(ctx, fn)
-├── Scheduler: Schedule(ctx, delay, fn)
-└── Prioritizer: ExecuteWithPriority(ctx, priority, fn)
+├── TaskExecutor: Execute(ctx, fn)                           // 基础任务执行
+├── CoreTaskExecutor: ExecuteOnCore(ctx, core, fn)         // 绑核执行
+├── TaskExecutorWithResult: ExecuteWithResult(ctx, fn)      // 带结果执行
+├── ScheduledTaskExecutor: Schedule(ctx, delay, fn)        // 延迟调度
+└── PriorityTaskExecutor: ExecuteWithPriority(ctx, p, fn)  // 优先级执行
 
 Level 2: 组合接口
-├── TaskExecutor = Executor + ExecutorWithResult
-├── AsyncTaskExecutor = TaskExecutor + Scheduler + Prioritizer
+├── BasicTaskExecutor = TaskExecutor + TaskExecutorWithResult
+├── AsyncTaskExecutor = BasicTaskExecutor + ScheduledTaskExecutor + PriorityTaskExecutor
 └── FullTaskExecutor = AsyncTaskExecutor + Batcher + Manager
 
-Level 3: 向后兼容
+Level 3: 可暂停调度器（新增）
+├── StepExecutor: ExecuteSteps/PauseStep/ResumeStep         // 步骤执行
+├── StepHandler: Execute/Rollback/IsPausable              // 步骤处理
+├── CheckpointHandler: ExecuteToCheckpoint/ExecuteFromCheckpoint  // 检查点
+└── MigrationHandler: PrepareMigrate/CommitMigrate/RollbackMigrate  // 迁移处理
+
+Level 4: 向后兼容
 └── GoroutineProvider = FullTaskExecutor (类型别名)
 ```
+
+> 📝 **接口对比**: 现有 `TaskExecutor` 用于普通任务，新 `StepExecutor` 用于可暂停任务，两者是**互补关系**而非替代
 
 #### 3.2 Per-Core 执行器设计
 
@@ -128,15 +138,93 @@ type CheckpointHandler interface {
 }
 ```
 
+#### 3.4 分布式一致性设计
+
+> ⭐ **与现有架构集成**: Per-Core 执行器是**单机实现**，分布式一致性由上层协议保证
+
+| 组件 | 职责 | 与 Per-Core 的关系 |
+|------|------|------------------|
+| **TermManager** | Fencing Token 管理 | 每个分片独立 Term，防止脑裂 |
+| **Quorum** | 多数派确认 | 分片副本投票，不依赖 Per-Core |
+| **Gossip** | 状态同步 | 异步扩散，不阻塞执行 |
+| **MigrationState** | 迁移状态机 | 2PC 协议保证原子性 |
+
+**2PC 迁移协议**：
+
+```
+Phase 1: Prepare
+├── 源节点推进 Term（Fencing Token）
+├── 锁定分片（暂停写入）
+└── 多数派确认
+
+Phase 2: Export
+├── 源节点导出快照
+└── 记录 Checkpoint LSN
+
+Phase 3: Transfer
+├── 目标节点接收数据（CRC 校验）
+└── HMAC 签名验证
+
+Phase 4: Commit
+├── 更新路由表（分片副本 Quorum）
+└── 切换服务到目标节点
+
+Phase 5: Cleanup
+├── 源节点清理旧数据
+└── 释放分片锁
+```
+
+> 📝 **职责边界**: Per-Core 执行器专注于**单机任务执行**，分布式一致性由 Layer 1（Quorum/Gossip）和 Layer 3（2PC 事务）保证
+
+#### 3.5 向后兼容实现（适配器模式）
+
+```go
+// 适配器：组合多个小接口实现 GoroutineProvider
+type GoroutineProviderAdapter struct {
+    executor TaskExecutor
+    scheduler ScheduledTaskExecutor
+    prioritizer PriorityTaskExecutor
+    batcher Batcher
+    manager PoolManager
+}
+
+// 委托模式实现 GoroutineProvider 的 13 个方法
+func (g *GoroutineProviderAdapter) Submit(ctx context.Context, task func(context.Context)) error {
+    return g.executor.Execute(ctx, task)
+}
+
+func (g *GoroutineProviderAdapter) SubmitWithPriority(ctx context.Context, priority Priority, task func(context.Context)) error {
+    return g.prioritizer.ExecuteWithPriority(ctx, priority, task)
+}
+
+// ... 其他方法类似委托
+```
+
+**类型别名实现 100% 兼容**:
+```go
+// 向后兼容别名
+type GoroutineProvider = FullTaskExecutor
+```
+
+#### 3.6 领域模型定义位置
+
+| 模型 | 定义文件 | 说明 |
+|------|----------|------|
+| `Step`, `StepContext` | `internal/domain/model/step.go` | 新建 |
+| `Checkpoint` | `internal/domain/model/checkpoint.go` | 新建 |
+| `MigrationState` | `internal/domain/model/migration.go` | 新建 |
+| `Priority` | 复用现有 `concurrency.go` | 已存在 |
+
 ### 4. 实施计划（谁干、什么时候干）
 
 #### 4.1 四阶段实施
 
 ```
 Phase 1: 接口层准备（1-2 天）
-├── 定义 Executor/CoreBinder/StepExecutor 接口
-├── 定义 Step/Checkpoint/Priority 类型
-├── 定义 MigrationState 迁移状态
+├── 定义 TaskExecutor/CoreTaskExecutor/ScheduledTaskExecutor 接口
+├── 定义 Step/Checkpoint/MigrationState 模型
+├── 在 domain/model/ 下创建 step.go, checkpoint.go, migration.go
+├── 实现适配器模式 GoroutineProviderAdapter
 ├── 添加向后兼容别名
 └── 编译验证
 

@@ -13,7 +13,7 @@ import (
 )
 
 // ==========================================
-// 可暂停调度器实现（PR-087c）
+// Per-Core Step Executor 可暂停调度器实现
 // ==========================================
 
 // DefaultStepExecutorConfig 默认配置
@@ -37,22 +37,25 @@ type StepExecutorConfig struct {
 
 // PerCoreStepExecutor Per-Core 可暂停步骤执行器
 type PerCoreStepExecutor struct {
-	config   StepExecutorConfig
-	executor *PerCoreExecutor
-	pausedOps sync.Map // map[string]*pausedOp
-	mu        sync.RWMutex
-	wg        sync.WaitGroup
-	closeCh   chan struct{}
+	config      StepExecutorConfig
+	executor    *PerCoreExecutor
+	pausedOps   sync.Map // map[string]*pausedOperation
+	pausedCount atomic.Int64
+	wg          sync.WaitGroup
+	closeCh     chan struct{}
 }
 
 // pausedOperation 暂停的操作
 type pausedOperation struct {
-	opID       string
-	stepCtx    *service.StepContext
-	pauseCh    chan struct{}
-	resumeCh   chan struct{}
-	resultCh   chan error
-	pausedAt   time.Time
+	opID        string
+	stepCtx     *service.StepContext
+	pauseCh     chan struct{}
+	resumeCh    chan struct{}
+	resultCh    chan error
+	pausedAt    time.Time
+	pauseOnce   sync.Once
+	resumeOnce  sync.Once
+	isPaused    atomic.Bool
 }
 
 // NewPerCoreStepExecutor 创建 Per-Core 步骤执行器
@@ -86,16 +89,20 @@ func (e *PerCoreStepExecutor) ExecuteSteps(ctx context.Context, steps []service.
 	stepCtx.CreatedAt = time.Now()
 	stepCtx.UpdatedAt = time.Now()
 
+	// P0: 保存 stepCtx 到 pausedOperation（用于 GetStepContext）
+	opID := stepCtx.OperationID
+	if pausedVal, ok := e.pausedOps.Load(opID); ok {
+		pausedVal.(*pausedOperation).stepCtx = stepCtx
+	}
+
 	for i := range steps {
 		stepCtx.CurrentStep = i
 		step := &steps[i]
 
-		// 检查是否已暂停
-		opID := stepCtx.OperationID
+		// P0: 使用 isPaused 标志检查暂停状态，避免 channel 关闭后的问题
 		if pausedVal, ok := e.pausedOps.Load(opID); ok {
 			paused := pausedVal.(*pausedOperation)
-			select {
-			case <-paused.pauseCh:
+			if paused.isPaused.Load() {
 				// 等待恢复
 				select {
 				case <-paused.resumeCh:
@@ -106,6 +113,11 @@ func (e *PerCoreStepExecutor) ExecuteSteps(ctx context.Context, steps []service.
 					return fmt.Errorf("executor closed")
 				}
 			}
+		}
+
+		// P2: nil 检查
+		if step == nil || step.Handler == nil {
+			return fmt.Errorf("invalid step at index %d", i)
 		}
 
 		// 执行步骤
@@ -126,23 +138,36 @@ func (e *PerCoreStepExecutor) ExecuteSteps(ctx context.Context, steps []service.
 
 // PauseStep 暂停步骤
 func (e *PerCoreStepExecutor) PauseStep(opID string) error {
-	// 查找暂停的操作
-	pausedVal, ok := e.pausedOps.Load(opID)
-	if !ok {
-		// 创建新的暂停操作
-		newPaused := &pausedOperation{
-			opID:     opID,
-			pauseCh:  make(chan struct{}),
-			resumeCh: make(chan struct{}),
-			resultCh: make(chan error, 1),
-			pausedAt: time.Now(),
+	// P1: MaxPausedOps 限制检查，防止 DoS
+	if e.config.MaxPausedOps > 0 {
+		count := e.pausedCount.Load()
+		if count >= int64(e.config.MaxPausedOps) {
+			return fmt.Errorf("max paused operations limit reached: %d", e.config.MaxPausedOps)
 		}
-		e.pausedOps.Store(opID, newPaused)
-		pausedVal = newPaused
 	}
 
-	p := pausedVal.(*pausedOperation)
-	close(p.pauseCh) // 发送暂停信号
+	// P1: 使用 LoadOrStore 保证原子性，避免 race condition
+	newPaused := &pausedOperation{
+		opID:     opID,
+		pauseCh:  make(chan struct{}, 1),
+		resumeCh: make(chan struct{}, 1),
+		resultCh: make(chan error, 1),
+		pausedAt: time.Now(),
+	}
+
+	actual, loaded := e.pausedOps.LoadOrStore(opID, newPaused)
+	p := actual.(*pausedOperation)
+
+	if !loaded {
+		// 新创建时才增加计数
+		e.pausedCount.Add(1)
+	}
+
+	// P0: 使用 sync.Once 确保 channel 只关闭一次
+	p.pauseOnce.Do(func() {
+		p.isPaused.Store(true)
+		close(p.pauseCh)
+	})
 
 	return nil
 }
@@ -155,7 +180,12 @@ func (e *PerCoreStepExecutor) ResumeStep(opID string) error {
 	}
 
 	p := pausedOp.(*pausedOperation)
-	close(p.resumeCh) // 发送恢复信号
+
+	// P0: 使用 sync.Once 确保 channel 只关闭一次
+	p.resumeOnce.Do(func() {
+		p.isPaused.Store(false)
+		close(p.resumeCh)
+	})
 
 	return nil
 }
@@ -195,7 +225,11 @@ func (e *PerCoreStepExecutor) cleanup() {
 	e.pausedOps.Range(func(key, value any) bool {
 		op := value.(*pausedOperation)
 		if now.Sub(op.pausedAt) > ttl {
+			// P1: 关闭 channel 避免资源泄漏
+			op.pauseOnce.Do(func() { close(op.pauseCh) })
+			op.resumeOnce.Do(func() { close(op.resumeCh) })
 			e.pausedOps.Delete(key)
+			e.pausedCount.Add(-1)
 		}
 		return true
 	})
@@ -233,7 +267,6 @@ type CheckpointHandlerConfig struct {
 // FileCheckpointHandler 基于文件的检查点处理器
 type FileCheckpointHandler struct {
 	config CheckpointHandlerConfig
-	mu     sync.RWMutex
 }
 
 // NewFileCheckpointHandler 创建文件检查点处理器
@@ -313,7 +346,6 @@ type MemoryCheckpointHandler struct {
 	checkpoints sync.Map // map[string]*service.Checkpoint
 	config     CheckpointHandlerConfig
 	seq        int64
-	mu         sync.RWMutex
 }
 
 // NewMemoryCheckpointHandler 创建内存检查点处理器
@@ -373,8 +405,6 @@ func (h *MemoryCheckpointHandler) LoadCheckpoint(ctx context.Context, checkpoint
 	return val.(*service.Checkpoint), nil
 }
 
-var checkpointSeq int64
-
 // 确保接口实现
 var _ service.CheckpointHandler = (*MemoryCheckpointHandler)(nil)
 
@@ -382,7 +412,6 @@ var _ service.CheckpointHandler = (*MemoryCheckpointHandler)(nil)
 type PerCoreMigrationHandler struct {
 	executor   *PerCoreExecutor
 	migrations sync.Map // map[string]*service.MigrationStatus
-	mu         sync.RWMutex
 }
 
 // NewPerCoreMigrationHandler 创建 Per-Core 迁移处理器

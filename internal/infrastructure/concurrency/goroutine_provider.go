@@ -10,7 +10,7 @@ import (
 )
 
 // ==========================================
-// 类型别名（向后兼容）
+// 类型别名
 // ==========================================
 
 // GoroutineProvider 协程池提供者接口（类型别名）
@@ -21,41 +21,41 @@ type GoroutineProvider = service.GoroutineProvider
 type GoroutineSubmitOption = service.GoroutineSubmitOption
 
 // GoroutinePriority 任务优先级（类型别名）
-type GoroutinePriority = service.GoroutinePriority
+type GoroutinePriority = model.TaskPriority
 
 // GoroutinePoolStats 协程池统计信息（类型别名）
 type GoroutinePoolStats = service.GoroutinePoolStats
 
 // GoroutineHealthStatus 健康状态（类型别名）
-type GoroutineHealthStatus = service.GoroutineHealthStatus
+type GoroutineHealthStatus = model.TaskHealthStatus
 
 // GoroutineResult 异步任务结果接口（类型别名）
 type GoroutineResult[T any] = service.GoroutineResult[T]
 
 // ==========================================
-// 优先级常量（向后兼容）
+// 优先级常量
 // ==========================================
 
 const (
 	// PriorityCritical 关键优先级
-	PriorityCritical = service.GoroutinePriorityCritical
+	PriorityCritical = model.TaskPriorityCritical
 	// PriorityHigh 高优先级
-	PriorityHigh = service.GoroutinePriorityHigh
+	PriorityHigh = model.TaskPriorityHigh
 	// PriorityNormal 正常优先级
-	PriorityNormal = service.GoroutinePriorityNormal
+	PriorityNormal = model.TaskPriorityNormal
 	// PriorityLow 低优先级
-	PriorityLow = service.GoroutinePriorityLow
+	PriorityLow = model.TaskPriorityLow
 )
 
 // ==========================================
-// 健康状态常量（向后兼容）
+// 健康状态常量
 // ==========================================
 
 const (
 	// HealthStatusHealthy 健康
-	HealthStatusHealthy = model.GoroutineHealthStatusHealthy
+	HealthStatusHealthy = model.TaskHealthStatusHealthy
 	// HealthStatusUnhealthy 不健康
-	HealthStatusUnhealthy = model.GoroutineHealthStatusUnhealthy
+	HealthStatusUnhealthy = model.TaskHealthStatusUnhealthy
 )
 
 // ==========================================

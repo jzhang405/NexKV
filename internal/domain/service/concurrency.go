@@ -32,18 +32,6 @@ type TaskHealthStatus = model.TaskHealthStatus
 // Deprecated: 使用 TaskHealthStatus 代替
 type GoroutineHealthStatus = model.GoroutineHealthStatus
 
-// 常量别名（向后兼容）
-const (
-	TaskPriorityCritical      = model.TaskPriorityCritical
-	TaskPriorityHigh          = model.TaskPriorityHigh
-	TaskPriorityNormal        = model.TaskPriorityNormal
-	TaskPriorityLow           = model.TaskPriorityLow
-	GoroutinePriorityCritical = model.GoroutinePriorityCritical
-	GoroutinePriorityHigh     = model.GoroutinePriorityHigh
-	GoroutinePriorityNormal   = model.GoroutinePriorityNormal
-	GoroutinePriorityLow      = model.GoroutinePriorityLow
-)
-
 // ==========================================
 // 任务执行器接口（拆分后的小接口）
 // ==========================================

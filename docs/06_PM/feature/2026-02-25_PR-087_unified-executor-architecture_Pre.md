@@ -21,7 +21,7 @@
 | 关联需求单号 | M2 存储引擎 - 可暂停调度器核心依赖 |
 | 架构师评审状态 | ⏳ 待评审 |
 | 预审批结果 | ⏳ 待审批 |
-| 参考文档 | [Spike 文档 v2.6](./2026-02-25_spike-glm-unified-executor.md) |
+| 参考文档 | [Spike 文档 v2.6](../../07_spike/2026-02-25_spike-glm-unified-executor.md) |
 
 ### 2. 背景与目标（为什么干）
 

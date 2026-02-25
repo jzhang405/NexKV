@@ -97,6 +97,20 @@ var (
 	ErrClockNilHLC      = stderrors.New("clock: nil HLC")
 	ErrClockMarshalNil  = stderrors.New("clock: cannot marshal nil HLC")
 	ErrClockInvalidSize = stderrors.New("clock: invalid HLC data size")
+
+	// Per-Core 执行器错误
+	ErrPerCoreExecutorClosed  = stderrors.New("percore: executor is closed")
+	ErrPerCoreQueueFull       = stderrors.New("percore: task queue is full")
+	ErrPerCoreInvalidCore     = stderrors.New("percore: invalid core ID")
+	ErrPerCoreShutdownTimeout = stderrors.New("percore: shutdown timeout")
+	ErrPerCoreNotSupported    = stderrors.New("percore: operation not supported")
+
+	// 可暂停调度器错误
+	ErrStepNotFound         = stderrors.New("step: operation not found")
+	ErrStepNotPausable      = stderrors.New("step: step is not pausable")
+	ErrStepMaxPausedReached = stderrors.New("step: max paused operations limit reached")
+	ErrCheckpointNotFound   = stderrors.New("step: checkpoint not found")
+	ErrMigrationNotFound    = stderrors.New("step: migration not found")
 )
 
 // ===========================

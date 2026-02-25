@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ==========================================
@@ -42,7 +43,8 @@ type PerCoreStepExecutor struct {
 	pausedOps   sync.Map // map[string]*pausedOperation
 	pausedCount atomic.Int64
 	wg          sync.WaitGroup
-	closeCh     chan struct{}
+	closeCh    chan struct{}
+	closed      atomic.Bool
 }
 
 // pausedOperation 暂停的操作
@@ -110,14 +112,14 @@ func (e *PerCoreStepExecutor) ExecuteSteps(ctx context.Context, steps []service.
 				case <-ctx.Done():
 					return ctx.Err()
 				case <-e.closeCh:
-					return fmt.Errorf("executor closed")
+					return errors.ErrPerCoreExecutorClosed
 				}
 			}
 		}
 
 		// P2: nil 检查
 		if step == nil || step.Handler == nil {
-			return fmt.Errorf("invalid step at index %d", i)
+			return errors.Wrapf(errors.ErrInvalidParam, "invalid step at index %d", i)
 		}
 
 		// 执行步骤
@@ -127,7 +129,7 @@ func (e *PerCoreStepExecutor) ExecuteSteps(ctx context.Context, steps []service.
 			if step.Rollback != nil {
 				_ = step.Rollback(ctx)
 			}
-			return fmt.Errorf("step %d failed: %w", i, err)
+			return errors.Wrapf(err, "step %d failed", i)
 		}
 
 		stepCtx.UpdatedAt = time.Now()
@@ -142,7 +144,7 @@ func (e *PerCoreStepExecutor) PauseStep(opID string) error {
 	if e.config.MaxPausedOps > 0 {
 		count := e.pausedCount.Load()
 		if count >= int64(e.config.MaxPausedOps) {
-			return fmt.Errorf("max paused operations limit reached: %d", e.config.MaxPausedOps)
+			return errors.Wrapf(errors.ErrStepMaxPausedReached, "max paused operations limit reached: %d", e.config.MaxPausedOps)
 		}
 	}
 
@@ -176,7 +178,7 @@ func (e *PerCoreStepExecutor) PauseStep(opID string) error {
 func (e *PerCoreStepExecutor) ResumeStep(opID string) error {
 	pausedOp, ok := e.pausedOps.Load(opID)
 	if !ok {
-		return fmt.Errorf("operation %s not found", opID)
+		return errors.Wrapf(errors.ErrStepNotFound, "operation %s not found", opID)
 	}
 
 	p := pausedOp.(*pausedOperation)
@@ -194,7 +196,7 @@ func (e *PerCoreStepExecutor) ResumeStep(opID string) error {
 func (e *PerCoreStepExecutor) GetStepContext(opID string) (*service.StepContext, error) {
 	pausedOp, ok := e.pausedOps.Load(opID)
 	if !ok {
-		return nil, fmt.Errorf("operation %s not found", opID)
+		return nil, errors.Wrapf(errors.ErrStepNotFound, "operation %s not found", opID)
 	}
 
 	return pausedOp.(*pausedOperation).stepCtx, nil
@@ -237,8 +239,11 @@ func (e *PerCoreStepExecutor) cleanup() {
 
 // Close 关闭
 func (e *PerCoreStepExecutor) Close() error {
-	close(e.closeCh)
-	e.wg.Wait()
+	// 使用 CAS 确保只关闭一次
+	if e.closed.CompareAndSwap(false, true) {
+		close(e.closeCh)
+		e.wg.Wait()
+	}
 	return nil
 }
 
@@ -285,7 +290,7 @@ func (h *FileCheckpointHandler) ExecuteToCheckpoint(ctx context.Context, stepCtx
 	// 创建检查点数据
 	checkpointData, err := h.serialize(stepCtx)
 	if err != nil {
-		return fmt.Errorf("serialize checkpoint failed: %w", err)
+		return errors.Wrap(err, "serialize checkpoint failed")
 	}
 
 	checkpoint.Data = checkpointData
@@ -297,7 +302,7 @@ func (h *FileCheckpointHandler) ExecuteToCheckpoint(ctx context.Context, stepCtx
 // ExecuteFromCheckpoint 从检查点恢复
 func (h *FileCheckpointHandler) ExecuteFromCheckpoint(ctx context.Context, stepCtx *service.StepContext, checkpoint *service.Checkpoint) error {
 	if checkpoint == nil || checkpoint.Data == nil {
-		return fmt.Errorf("invalid checkpoint")
+		return errors.ErrCheckpointNotFound
 	}
 
 	return h.deserialize(checkpoint.Data, stepCtx)
@@ -323,7 +328,7 @@ func (h *FileCheckpointHandler) CreateCheckpoint(ctx context.Context, stepCtx *s
 // LoadCheckpoint 加载检查点
 func (h *FileCheckpointHandler) LoadCheckpoint(ctx context.Context, checkpointID string) (*service.Checkpoint, error) {
 	// TODO: 从文件加载
-	return nil, fmt.Errorf("not implemented")
+	return nil, errors.ErrNotImplemented
 }
 
 // serialize 序列化步骤上下文
@@ -369,7 +374,7 @@ func (h *MemoryCheckpointHandler) ExecuteToCheckpoint(ctx context.Context, stepC
 // ExecuteFromCheckpoint 从检查点恢复
 func (h *MemoryCheckpointHandler) ExecuteFromCheckpoint(ctx context.Context, stepCtx *service.StepContext, checkpoint *service.Checkpoint) error {
 	if checkpoint == nil {
-		return fmt.Errorf("checkpoint is nil")
+		return errors.ErrCheckpointNotFound
 	}
 
 	// 从 Step.ID 解析步骤索引（格式：step_<数字>）
@@ -399,7 +404,7 @@ func (h *MemoryCheckpointHandler) CreateCheckpoint(ctx context.Context, stepCtx 
 func (h *MemoryCheckpointHandler) LoadCheckpoint(ctx context.Context, checkpointID string) (*service.Checkpoint, error) {
 	val, ok := h.checkpoints.Load(checkpointID)
 	if !ok {
-		return nil, fmt.Errorf("checkpoint %s not found", checkpointID)
+		return nil, errors.Wrapf(errors.ErrCheckpointNotFound, "checkpoint %s not found", checkpointID)
 	}
 
 	return val.(*service.Checkpoint), nil
@@ -451,7 +456,7 @@ func (h *PerCoreMigrationHandler) RollbackMigrate(ctx context.Context, req *serv
 		MigrationID: req.MigrationID,
 		Phase:       service.MigrationPhaseFailed,
 		Progress:    0,
-		Error:       fmt.Errorf("migration rolled back"),
+		Error:       errors.Wrap(errors.ErrMigrationNotFound, "migration rolled back"),
 		LastUpdated: time.Now(),
 	}
 	h.migrations.Store(req.MigrationID, status)
@@ -462,7 +467,7 @@ func (h *PerCoreMigrationHandler) RollbackMigrate(ctx context.Context, req *serv
 func (h *PerCoreMigrationHandler) GetMigrationStatus(migrationID string) (*service.MigrationStatus, error) {
 	val, ok := h.migrations.Load(migrationID)
 	if !ok {
-		return nil, fmt.Errorf("migration %s not found", migrationID)
+		return nil, errors.Wrapf(errors.ErrMigrationNotFound, "migration %s not found", migrationID)
 	}
 	return val.(*service.MigrationStatus), nil
 }

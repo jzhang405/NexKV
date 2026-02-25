@@ -3,8 +3,6 @@ package concurrency
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -12,6 +10,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ==========================================
@@ -159,7 +158,7 @@ func (w *coreWorker) run(wg *sync.WaitGroup) {
 // Submit 提交任务
 func (e *PerCoreExecutor) Submit(ctx context.Context, task func(context.Context)) error {
 	if e.isClosed() {
-		return errors.New("executor closed")
+		return errors.ErrPerCoreExecutorClosed
 	}
 
 	// 选择核心：简单轮询
@@ -168,7 +167,7 @@ func (e *PerCoreExecutor) Submit(ctx context.Context, task func(context.Context)
 	case e.workers[coreID].taskC <- task:
 		return nil
 	default:
-		return errors.New("queue full")
+		return errors.ErrPerCoreQueueFull
 	}
 }
 
@@ -181,7 +180,7 @@ func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority model
 // SubmitDelayed 提交延迟任务
 func (e *PerCoreExecutor) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
 	if e.isClosed() {
-		return errors.New("executor closed")
+		return errors.ErrPerCoreExecutorClosed
 	}
 
 	timer := time.NewTimer(delay)
@@ -193,7 +192,7 @@ func (e *PerCoreExecutor) SubmitDelayed(ctx context.Context, delay time.Duration
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-e.closeCh:
-		return errors.New("executor closed")
+		return errors.ErrPerCoreExecutorClosed
 	}
 }
 
@@ -216,7 +215,7 @@ func (e *PerCoreExecutor) SubmitWithResult(ctx context.Context, task func(contex
 // SubmitBatch 批量提交任务
 func (e *PerCoreExecutor) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
 	if e.isClosed() {
-		return errors.New("executor closed")
+		return errors.ErrPerCoreExecutorClosed
 	}
 
 	var errs []error
@@ -227,7 +226,7 @@ func (e *PerCoreExecutor) SubmitBatch(ctx context.Context, tasks []func(context.
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("failed to submit %d tasks", len(errs))
+		return errors.Wrapf(errors.ErrPerCoreQueueFull, "failed to submit %d tasks", len(errs))
 	}
 	return nil
 }
@@ -235,7 +234,7 @@ func (e *PerCoreExecutor) SubmitBatch(ctx context.Context, tasks []func(context.
 // SubmitBatchWithArg 批量提交带参数任务
 func (e *PerCoreExecutor) SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error {
 	if len(tasks) != len(args) {
-		return errors.New("tasks and args length mismatch")
+		return errors.ErrTaskArgLengthMismatch
 	}
 
 	var errs []error
@@ -249,7 +248,7 @@ func (e *PerCoreExecutor) SubmitBatchWithArg(ctx context.Context, tasks []func(c
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("failed to submit %d tasks", len(errs))
+		return errors.Wrapf(errors.ErrPerCoreQueueFull, "failed to submit %d tasks", len(errs))
 	}
 	return nil
 }
@@ -257,7 +256,7 @@ func (e *PerCoreExecutor) SubmitBatchWithArg(ctx context.Context, tasks []func(c
 // SubmitBatchAllErrors 批量提交，收集所有错误
 func (e *PerCoreExecutor) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
 	if e.isClosed() {
-		return []error{errors.New("executor closed")}
+		return []error{errors.ErrPerCoreExecutorClosed}
 	}
 
 	var errs []error
@@ -317,7 +316,7 @@ func (e *PerCoreExecutor) Health() model.TaskHealthStatus {
 // SetCapacity 设置容量
 func (e *PerCoreExecutor) SetCapacity(capacity int) error {
 	// Per-Core 执行器不支持动态调整容量
-	return errors.New("PerCoreExecutor does not support dynamic capacity adjustment")
+	return errors.ErrPerCoreNotSupported
 }
 
 // Close 关闭执行器
@@ -341,7 +340,7 @@ func (e *PerCoreExecutor) CloseWithTimeout(timeout time.Duration) error {
 	case <-done:
 		return nil
 	case <-time.After(timeout):
-		return errors.New("shutdown timeout")
+		return errors.ErrPerCoreShutdownTimeout
 	}
 }
 

@@ -392,6 +392,9 @@ type simpleResult[T any] struct {
 
 func (r *simpleResult[T]) set(value T, err error) {
 	r.once.Do(func() {
+		if r.ready == nil {
+			r.ready = make(chan struct{})
+		}
 		r.value = value
 		r.err = err
 		close(r.ready)

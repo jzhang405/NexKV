@@ -212,129 +212,91 @@ flowchart LR
 
 ## 架构概要
 
-### 三层架构
+> ⭐ **最新架构**：基于 DDD（Domain-Driven Design）的 5 层精简架构，47 个统一接口
 
-NexKV 采用分层架构设计，从底层到上层分为三层：
+### 5层 DDD 架构
 
-#### Layer 1: 元数据一致性层（基础层）
+NexKV 采用分层架构设计，从底层到上层分为五层：
 
-**核心价值**：元数据层是整个分布式数据库的"大脑"和"导航系统"
+#### Layer 1: 基础设施层
+
+**核心价值**：底层能力支撑，为上层提供网络通信、异步能力、扩展能力
 
 **核心组件**：
-- **MVStore**：内存缓存 + 磁盘持久化 + MVCC 支持
-- **Gossip 协议**：最终一致性、周期性扩散、随机选点
-- **Quorum 机制**：强一致性、多数派确认、关键变更专用
+- **Transport**：libp2p 网络通信
+- **GoroutineProvider**：并发管理（ants 协程池 + Per-Core 执行器）
+- **AsyncOperation[T]**：类型安全的泛型异步接口
+- **可暂停调度器**：支持任务暂停/恢复/迁移
 
-**变更类型分类**：
-| 变更类型 | 示例 | 一致性要求 | 同步机制 |
-|---------|------|-----------|---------|
-| **关键变更** | 分片创建、主副本切换、节点加入 | 强一致 | Quorum（阻塞等待） |
-| **普通变更** | 节点状态更新、负载信息刷新 | 最终一致 | Gossip（异步扩散） |
+#### Layer 2: 存储引擎层
 
-#### Layer 2: 副本数据一致性层（数据层）
+**核心价值**：单机-分布式一体的存储基础
 
-**核心价值**：单机-分布式一体的实现基础
-
-**核心机制**：
-- **分片自治**：每个分片对应独立的 MVStore 实例
-- **副本分布**：副本跨节点强制分布，避免单节点故障
-- **一致性模型**：默认最终一致性，可选强一致性
-
-**单机-分布式切换**：
-```mermaid
-graph LR
-    单机[单机模式<br/>1个虚拟节点] --> 扩容[新增节点]
-    扩容 --> 迁移[后台异步数据迁移]
-    迁移 --> 分布式[分布式模式<br/>多个虚拟节点]
-```
-
-#### Layer 3: 分布式事务一致性层（事务层）
-
-**核心价值**：无协调者简化版 2PC
-
-**优化方案**：
-- **发起节点兼任协调者**：无需独立 TM
-- **砍掉 Prepare 阶段**：直接预提交，无资源锁定
-- **Gossip 同步事务状态**：异步扩散，最终一致
-- **故障自动补偿**：基于状态查询的自愈机制
-
-**适用场景**：
-- ✅ 跨分片事务的最终一致性场景
-- ✅ 单机-分布式一体部署
-- ✅ 高吞吐、低延迟的 KV 存储
-- ❌ 需要强一致性的金融事务
-- ❌ 超大规模集群（>100 节点）
-
-> 📖 **详细设计**：参考 `docs/02_design/` 目录下的架构文档
-
----
-
-### 双引擎架构
-
-> **决策日期**：2026-02-09
-> **相关文档**：`docs/07_spike/kv-storage-engine-arch-analysis.md` | `docs/02_design/decisions/005_external_kv_engine_selection.md`
-
-NexKV 采用 **双引擎架构**，针对不同数据类型使用不同的存储引擎：
-
+**双存储引擎**（详见 [ADR-005](../02_design/decisions/005_external_kv_engine_selection.md)）：
 | 组件 | 存储引擎 | 数据类型 | 状态 |
 |------|----------|----------|------|
 | **Metadata KV** | sync.Map + MVStore | 元数据（节点、分片、副本） | ✅ 已实现 |
 | **External KV** | Bf-Tree | 业务数据（应用数据） | 🔄 待实现 |
 
-#### Metadata KV：sync.Map
-
-**使用场景**：元数据管理（节点、分片、副本、锁等）
-
-**存储内容**：
-| 数据类型 | Key 格式 | 示例 |
-|---------|----------|------|
-| Host 元数据 | `host:{hostID}` | `host:node-001` |
-| 分片元数据 | `shard:{shardID}` | `shard:shard-001` |
-| 节点元数据 | `node:{nodeID}` | `node:node-001` |
-
-**访问模式**：
-- 点查询：90%（GetHost、GetShard）
-- 前缀扫描：8%（ListAllHosts）
-- 状态更新：2%（UpdateHostStatus）
-
-**选择理由**：
-- ✅ sync.Map O(1) 哈希查找，点查询最优
-- ✅ Lock-free 并发控制，高并发无锁竞争
-- ✅ 双层缓存架构（内存 + MVStore）
-- ✅ 已验证稳定（`internal/metadata/cluster/host_manager.go`）
-
-#### External KV：Bf-Tree
-
-**使用场景**：业务数据存储（应用数据）
-
-**核心特性**：
-| 特性 | 说明 | 性能指标 |
-|------|------|---------|
-| 写入优化 | WAL + Mini-Page | 200万 ops/s |
-| 读取优化 | 内存优先 | O(1) 内存命中 |
-| 范围查询 | 有序扫描 | O(log N + M) |
-| 并发控制 | Lock-free SMR | 无锁竞争 |
-| 大容量 | SSTable 持久化 | 数据可超出内存 |
-
 **接口设计**：
 ```go
-// ExternalStore 外部数据存储接口
 type ExternalStore interface {
-    // 基础 CRUD
     Put(key string, value []byte) error
     Get(key string) ([]byte, error)
     Delete(key string) error
-
-    // 范围查询
     Scan(start, end string) (KVIterator, error)
-
-    // 批量操作
     BatchPut(kvs []KeyValue) error
-    BatchGet(keys []string) (map[string][]byte, error)
 }
-```
 
-**实施计划**：预计 4 个月完成移植（参考 ADR 005）
+#### Layer 3: 数据平面层
+
+**核心价值**：副本管理与事务一致性
+
+**核心机制**：
+- **Replicator**：主从复制
+- **QuorumReplicator**：多数派确认
+- **TxManager/TxCoordinator**：2PC 事务
+
+#### Layer 4: 控制平面层
+
+**核心价值**：集群管理与调度
+
+**核心组件**：
+- **Cluster**：TreeCoordinator、NodeManager、TopologyManager
+- **Shard**：ShardManager、ShardRouter
+- **Election**：Leader 选举
+- **LoadBalancer**：负载均衡
+
+#### Layer 5: API 层
+
+**核心价值**：对外客户端接口
+
+**核心组件**：
+- **KVClient**：KV 操作客户端
+- **TxClient**：事务客户端
+
+> 📖 **详细设计**：参考 `docs/07_spike/2026-02-18_spike_nexkv-ddd-roadmap.md`
+
+---
+
+### 统一执行器架构
+
+> ⭐ **核心能力**：为 M2 存储引擎提供异步能力基础
+
+| 组件 | 说明 | 性能目标 |
+|------|------|---------|
+| **接口拆分** | GoroutineProvider 13 → 7原子 + 3组合 + 4可暂停调度器 | 提升可测试性 |
+| **Per-Core 执行器** | 每核单 goroutine，绑核无锁执行 | ≥ 2M ops/s，P99 < 10μs |
+| **可暂停调度器** | 支持任务暂停/恢复/迁移 | 跨节点迁移支持 |
+
+**依赖链**：
+```
+GoroutineProvider → AsyncOperation[T] → M2 异步接口
+     ↓                    ↓
+ 接口拆分            GetAsync/SetAsync/DeleteAsync
+     ↓
+Per-Core 执行器 → 可暂停调度器 → 跨节点迁移
+```
 
 ---
 

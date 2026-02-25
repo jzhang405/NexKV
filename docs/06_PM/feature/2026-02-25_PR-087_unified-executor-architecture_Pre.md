@@ -59,7 +59,7 @@
 #### 2.2 核心目标（可量化、可验证）
 
 1. **功能目标**：
-   - ✅ 实现接口拆分：GoroutineProvider 13 方法 → 4 核心 + 2 组合 + 4 可暂停调度器（10个）
+   - ✅ 实现接口拆分：GoroutineProvider 13 方法 → 7 原子 + 3 组合 + 4 可暂停调度器（14个）
    - ✅ 实现 PerCoreExecutor：每核单 goroutine，绑核执行，无锁设计
    - ✅ 实现向后兼容：100% 兼容现有代码
 
@@ -77,17 +77,21 @@
 #### 3.1 接口拆分方案
 
 > ⭐ **命名规范**: 采用与现有代码一致的 `TaskXxx` 命名模式
-> ⭐ **简化设计**: 从 14 个接口简化为 10 个核心接口
+> ⭐ **与 Spike 文档对齐**: 14 个接口（7 原子 + 3 组合 + 4 可暂停）
 
 ```
-Level 1: 核心接口（4个）
+Level 1: 原子接口（7个）
 ├── TaskExecutor: Execute(fn)                              // 基础任务执行
+├── CoreTaskExecutor: ExecuteOnCore(core, fn)             // 绑核执行
+├── TaskExecutorWithResult: ExecuteWithResult(fn)         // 带结果执行
 ├── TaskScheduler: Schedule(delay, fn)                    // 延迟调度
+├── PriorityTaskExecutor: ExecuteWithPriority(p, fn)      // 优先级执行
 ├── TaskBatcher: SubmitBatch(tasks)                       // 批量提交
 └── TaskManager: Stats/Resize/Release                    // 池管理
 
-Level 2: 组合接口（2个）
-├── AsyncTaskExecutor = TaskExecutor + TaskScheduler + TaskBatcher
+Level 2: 组合接口（3个）
+├── BasicTaskExecutor = TaskExecutor + TaskExecutorWithResult
+├── AsyncTaskExecutor = BasicTaskExecutor + TaskScheduler + PriorityTaskExecutor + TaskBatcher
 └── FullTaskExecutor = AsyncTaskExecutor + TaskManager
 
 Level 3: 可暂停调度器（4个）
@@ -730,7 +734,7 @@ Phase 4: 生产验证（1-2 周）
 
 | 验收项 | 标准 |
 |--------|------|
-| 接口拆分 | 4 核心 + 2 组合 + 4 可暂停调度器（10个）接口定义完成 |
+| 接口拆分 | 7 原子 + 3 组合 + 4 可暂停调度器（14个）接口定义完成 |
 | Per-Core 执行器 | 每核单 goroutine，绑核执行 |
 | 向后兼容 | 100% 兼容现有代码 |
 | 暂停/恢复 | 支持 Checkpoint 级别暂停/恢复 |
@@ -838,7 +842,7 @@ Phase 4: 生产验证（1-2 周）
 
 | 子 PR | 名称 | 范围 | 周期 状态 |
 |---- |---|------|------|------|------|
-| **PR-087a** | 接口拆分 | 4 核心 + 2 组合接口定义 + 适配器模式 | 1 周 | 🔲 待启动 |
+| **PR-087a** | 接口拆分 | 7 原子 + 3 组合接口定义 + 适配器模式 | 1 周 | 🔲 待启动 |
 | **PR-087b** | Per-Core 执行器 | PerCoreExecutor 实现 + 性能基准测试 | 1 周 | 🔲 待启动 |
 | **PR-087c** | 可暂停调度器 | StepExecutor + Checkpoint 暂停/恢复 | 1 周 | 🔲 待启动 |
 | **PR-087d** | 分布式迁移 | 跨节点迁移 + Quorum + TermManager | TODO | 🔲 待规划 |

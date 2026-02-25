@@ -74,6 +74,25 @@ type TaskPriorityExecutor interface {
 	SubmitWithPriority(ctx context.Context, priority TaskPriority, task func(context.Context)) error
 }
 
+// CoreTaskExecutor 绑核任务执行器
+// 将任务绑定到特定 CPU 核心执行，减少跨核调度开销
+type CoreTaskExecutor interface {
+	// ExecuteOnCore 在指定核心上执行任务
+	ExecuteOnCore(ctx context.Context, coreID int, task func(context.Context)) error
+
+	// GetCurrentCore 获取当前 goroutine 绑定的核心 ID
+	GetCurrentCore() int
+}
+
+// TaskBatcher 批量任务执行器
+type TaskBatcher interface {
+	// SubmitBatch 批量提交任务
+	SubmitBatch(ctx context.Context, tasks []func(context.Context)) error
+
+	// SubmitBatchWithResult 批量提交带结果任务
+	SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []GoroutineResult[any]
+}
+
 // ==========================================
 // GoroutineProvider 协程池提供者接口（完整接口）
 // ==========================================

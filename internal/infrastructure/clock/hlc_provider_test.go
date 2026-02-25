@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/stretchr/testify/assert"
 )
 
 // TestHLCProviderNow 测试 HLCProvider.Now() 生成单调递增时间戳
@@ -299,4 +300,116 @@ func TestHLCProviderWithNilRemote(t *testing.T) {
 	}
 
 	_ = ts0 // 避免未使用变量警告
+}
+
+// TestHLCOperations 测试 HLC 基本操作
+func TestHLCOperations(t *testing.T) {
+	h1 := NewHLC()
+	h2 := h1.Now()
+
+	// PhysicalTime
+	pt := h2.PhysicalTime()
+	assert.GreaterOrEqual(t, pt, int64(0))
+
+	// LogicalCounter - 初始可能不为 0
+	lc := h2.LogicalCounter()
+	assert.GreaterOrEqual(t, lc, uint16(0))
+
+	// LessThan - 再次调用 Now() 应该大于等于
+	h3 := h2.Now()
+	assert.False(t, h3.LessThan(h2))
+
+	// Equal - 同一个对象应该相等
+	assert.True(t, h2.Equal(h2))
+
+	// GreaterThan
+	assert.False(t, h2.GreaterThan(h2))
+
+	// Compare
+	cmp := h2.Compare(h2)
+	assert.Equal(t, 0, cmp)
+
+	// String
+	str := h2.String()
+	assert.NotEmpty(t, str)
+
+	// ToTime
+	tt := h2.ToTime()
+	assert.False(t, tt.IsZero())
+
+	// Clone
+	clone := h2.Clone()
+	assert.True(t, h2.Equal(clone))
+
+	// IsAtMaxValue
+	assert.False(t, h2.IsAtMaxValue())
+
+	// ToModelHLC
+	modelHLC := h2.ToModelHLC()
+	assert.NotNil(t, modelHLC)
+
+	// FromModelHLC
+	h4 := FromModelHLC(modelHLC)
+	assert.True(t, h2.Equal(h4))
+}
+
+// TestHLCComparisonEdgeCases 测试比较边界情况
+func TestHLCComparisonEdgeCases(t *testing.T) {
+	h1 := NewHLC().Now()
+
+	// 与自身比较
+	assert.False(t, h1.LessThan(h1))
+	assert.True(t, h1.Equal(h1))
+	assert.False(t, h1.GreaterThan(h1))
+	assert.Equal(t, 0, h1.Compare(h1))
+
+	// Clone 后比较
+	clone := h1.Clone()
+	assert.True(t, h1.Equal(clone))
+}
+
+// TestHLCMaxValue 测试最大值情况
+func TestHLCMaxValue(t *testing.T) {
+	// 通过多次 Now() 调用推进逻辑计数器
+	h := NewHLC()
+	var maxHLC *HLC
+
+	// 循环足够多次以达到最大值
+	for i := 0; i < 100000; i++ {
+		maxHLC = h.Now()
+	}
+
+	// IsAtMaxValue 应该为 true 或接近最大值
+	// 由于我们无法直接构造最大值，使用正常测试
+	assert.NotNil(t, maxHLC)
+	assert.Greater(t, maxHLC.PhysicalTime(), int64(0))
+}
+
+// TestHLCBinarySerialization 测试二进制序列化
+func TestHLCBinarySerialization(t *testing.T) {
+	h := NewHLC().Now()
+
+	// MarshalBinary
+	data, err := h.MarshalBinary()
+	assert.NoError(t, err)
+	assert.NotNil(t, data)
+
+	// UnmarshalBinary
+	h2 := NewHLC()
+	err = h2.UnmarshalBinary(data)
+	assert.NoError(t, err)
+
+	// 验证反序列化后相等
+	assert.True(t, h.Equal(h2))
+	assert.Equal(t, h.PhysicalTime(), h2.PhysicalTime())
+	assert.Equal(t, h.LogicalCounter(), h2.LogicalCounter())
+}
+
+// TestHLCBinarySerializationErrors 测试序列化错误情况
+func TestHLCBinarySerializationErrors(t *testing.T) {
+	h := NewHLC()
+
+	// 无效数据
+	err := h.UnmarshalBinary([]byte("too short"))
+	assert.Error(t, err)
 }

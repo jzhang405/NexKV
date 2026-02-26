@@ -5,6 +5,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/event"
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
@@ -164,37 +165,23 @@ type TaskPoolProvider interface {
 }
 
 // ==========================================
-// 领域事件定义
+// 领域事件（重新导出，保持向后兼容）
 // ==========================================
 
+// 领域事件已迁移到 internal/domain/event 包
+// 这里保留类型别名以保持向后兼容
+
 // TaskSubmittedEvent 任务提交事件
-type TaskSubmittedEvent struct {
-	TaskID    string
-	Priority  TaskPriority
-	Timestamp time.Time
-}
+type TaskSubmittedEvent = event.TaskSubmittedEvent
 
 // TaskCompletedEvent 任务完成事件
-type TaskCompletedEvent struct {
-	TaskID    string
-	Duration  time.Duration
-	Timestamp time.Time
-}
+type TaskCompletedEvent = event.TaskCompletedEvent
 
 // TaskFailedEvent 任务失败事件
-type TaskFailedEvent struct {
-	TaskID    string
-	Error     error
-	Timestamp time.Time
-}
+type TaskFailedEvent = event.TaskFailedEvent
 
 // QueueFullEvent 队列满事件（背压触发）
-type QueueFullEvent struct {
-	CoreID      int
-	QueueLength int
-	Strategy    string // 触发的背压策略
-	Timestamp   time.Time
-}
+type QueueFullEvent = event.QueueFullEvent
 
 // ==========================================
 // 选项模式定义（用于 SubmitAdvanced）

@@ -42,8 +42,8 @@ func TestLibp2pAddress_String_Nil(t *testing.T) {
 
 func TestLibp2pAddress_Protocol(t *testing.T) {
 	tests := []struct {
-		name         string
-		addr         string
+		name          string
+		addr          string
 		expectedProto string
 	}{
 		{"tcp", "/ip4/127.0.0.1/tcp/8080", "ip4"},

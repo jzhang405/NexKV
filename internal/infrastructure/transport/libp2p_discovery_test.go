@@ -69,7 +69,7 @@ func TestDiscoveryService_HandlePeerFound(t *testing.T) {
 
 // testDiscoveryNotifee 测试用的发现通知处理器
 type testDiscoveryNotifee struct {
-	host interface{}
+	host any
 }
 
 // HandlePeerFound 处理发现的节点

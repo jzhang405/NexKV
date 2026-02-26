@@ -458,8 +458,12 @@ func TestAntsTaskPoolProvider_SubmitBatchWithArg(t *testing.T) {
 	// 等待任务执行
 	time.Sleep(200 * time.Millisecond)
 
-	if len(results) != 2 {
-		t.Errorf("expected 2 results, got %d", len(results))
+	mu.Lock()
+	gotLen := len(results)
+	mu.Unlock()
+
+	if gotLen != 2 {
+		t.Errorf("expected 2 results, got %d", gotLen)
 	}
 }
 

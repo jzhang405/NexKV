@@ -15,7 +15,7 @@ func cleanupSyncMap(m *sync.Map, validPeers []model.PeerID) {
 		validSet[peer] = true
 	}
 
-	m.Range(func(key, value interface{}) bool {
+	m.Range(func(key, value any) bool {
 		peer := key.(model.PeerID)
 		if !validSet[peer] {
 			m.Delete(peer)
@@ -28,7 +28,7 @@ func cleanupSyncMap(m *sync.Map, validPeers []model.PeerID) {
 // 用于统一处理限流器和熔断器的资源计数逻辑
 func countSyncMap(m *sync.Map) int {
 	count := 0
-	m.Range(func(key, value interface{}) bool {
+	m.Range(func(key, value any) bool {
 		count++
 		return true
 	})

@@ -111,6 +111,10 @@ var (
 	ErrStepMaxPausedReached = stderrors.New("step: max paused operations limit reached")
 	ErrCheckpointNotFound   = stderrors.New("step: checkpoint not found")
 	ErrMigrationNotFound    = stderrors.New("step: migration not found")
+
+	// Request ID 错误
+	ErrRequestIDInvalidFormat = stderrors.New("request: invalid request id format")
+	ErrRequestIDEmpty         = stderrors.New("request: request id cannot be empty")
 )
 
 // ===========================

@@ -89,7 +89,7 @@ func (m *CircuitBreakerMiddleware) Priority() int {
 func (m *CircuitBreakerMiddleware) InterceptSend(ctx context.Context, peer model.PeerID, msg model.Message, next service.SendFunc) error {
 	breaker := m.getBreaker(peer)
 
-	_, err := breaker.Execute(func() (interface{}, error) {
+	_, err := breaker.Execute(func() (any, error) {
 		return nil, next(ctx, peer, msg)
 	})
 

@@ -135,7 +135,7 @@ func (ctx *TestContext) Cleanup() {
 	ctx.cleanupMu.Lock()
 	defer ctx.cleanupMu.Unlock()
 
-	var panics []interface{}
+	var panics []any
 
 	// LIFO 顺序执行，捕获每个清理函数的 panic
 	for i := len(ctx.cleanupFuncs) - 1; i >= 0; i-- {

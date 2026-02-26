@@ -5,10 +5,11 @@
 package model
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ============================================================================
@@ -46,18 +47,18 @@ func (r RequestID) IsEmpty() bool {
 func (r RequestID) parse() (nodeID string, timestamp int64, sequence uint32, err error) {
 	parts := strings.Split(string(r), "-")
 	if len(parts) != 4 {
-		return "", 0, 0, fmt.Errorf("invalid request id format: expected 4 parts, got %d", len(parts))
+		return "", 0, 0, errors.Wrapf(errors.ErrRequestIDInvalidFormat, "expected 4 parts, got %d", len(parts))
 	}
 
 	nodeID = parts[0]
 	timestamp, err = strconv.ParseInt(parts[2], 16, 64)
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("invalid timestamp in request id: %w", err)
+		return "", 0, 0, errors.Wrap(err, "invalid timestamp in request id")
 	}
 
 	seq, err := strconv.ParseUint(parts[3], 16, 32)
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("invalid sequence in request id: %w", err)
+		return "", 0, 0, errors.Wrap(err, "invalid sequence in request id")
 	}
 	sequence = uint32(seq)
 
@@ -74,7 +75,7 @@ func (r RequestID) parts() []string {
 // 返回错误如果格式不符合规范
 func (r RequestID) Validate() error {
 	if r.IsEmpty() {
-		return fmt.Errorf("request id cannot be empty")
+		return errors.ErrRequestIDEmpty
 	}
 
 	_, _, _, err := r.parse()

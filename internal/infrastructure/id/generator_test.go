@@ -2,6 +2,7 @@ package id
 
 import (
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -189,4 +190,79 @@ func parseIntHex(s string) (int64, error) {
 		}
 	}
 	return result, nil
+}
+
+// ==========================================
+// 监控指标测试 (P1-04)
+// ==========================================
+
+// TestGetClockBackoffCount 测试时钟回退监控指标
+func TestGetClockBackoffCount(t *testing.T) {
+	// 初始值应该为 0
+	initialCount := GetClockBackoffCount()
+	assert.GreaterOrEqual(t, initialCount, int64(0), "Initial clock backoff count should be >= 0")
+}
+
+// TestGetSeqOverflowCount 测试序列号溢出监控指标
+func TestGetSeqOverflowCount(t *testing.T) {
+	// 初始值应该为 0
+	initialCount := GetSeqOverflowCount()
+	assert.GreaterOrEqual(t, initialCount, int64(0), "Initial sequence overflow count should be >= 0")
+}
+
+// TestRequestIDGenerator_MonitoringMetrics 测试生成器运行时监控指标
+func TestRequestIDGenerator_MonitoringMetrics(t *testing.T) {
+	generator := NewRequestIDGenerator("monitor-001")
+
+	// 生成一些 ID 以确保生成器正常工作
+	for i := 0; i < 10; i++ {
+		id := generator.Next()
+		assert.NoError(t, id.Validate())
+	}
+
+	// 监控指标应该可以正常读取
+	backoffCount := GetClockBackoffCount()
+	overflowCount := GetSeqOverflowCount()
+
+	t.Logf("Clock backoff count: %d", backoffCount)
+	t.Logf("Sequence overflow count: %d", overflowCount)
+}
+
+// TestRequestIDGenerator_HighThroughput 高吞吐量测试
+func TestRequestIDGenerator_HighThroughput(t *testing.T) {
+	generator := NewRequestIDGenerator("high-throughput-001")
+	const numIDs = 10000
+
+	var wg sync.WaitGroup
+	idChan := make(chan model.RequestID, numIDs)
+
+	// 并发生成 ID
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numIDs/10; j++ {
+				idChan <- generator.Next()
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(idChan)
+
+	// 验证所有 ID 唯一
+	ids := make(map[model.RequestID]struct{})
+	for id := range idChan {
+		if _, exists := ids[id]; exists {
+			t.Errorf("Duplicate ID found: %s", id)
+		}
+		ids[id] = struct{}{}
+	}
+
+	assert.Equal(t, numIDs, len(ids), "All IDs should be unique")
+
+	// 报告监控指标
+	t.Logf("Generated %d unique IDs", len(ids))
+	t.Logf("Clock backoff count: %d", GetClockBackoffCount())
+	t.Logf("Sequence overflow count: %d", GetSeqOverflowCount())
 }

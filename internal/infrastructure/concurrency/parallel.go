@@ -1,4 +1,4 @@
-// Package concurrency 提供协程池和定时任务管理
+// Package concurrency 提供任务池和定时任务管理
 package concurrency
 
 import (
@@ -10,7 +10,7 @@ import (
 )
 
 // ============================================================================
-// 并行执行工具（使用 GoroutineProvider）
+// 并行执行工具（使用 TaskPoolProvider）
 // ============================================================================
 
 // ParallelResult 并行执行结果
@@ -54,7 +54,7 @@ func WithFailFast(failFast bool) ParallelOption {
 //	})
 func ParallelExecute(
 	ctx context.Context,
-	provider service.GoroutineProvider,
+	provider service.TaskPoolProvider,
 	taskCount int,
 	maxConcurrent int,
 	handler func(ctx context.Context, index int) error,
@@ -183,7 +183,7 @@ executeLoop:
 //	}
 func ParallelExecuteWithResult[T any](
 	ctx context.Context,
-	provider service.GoroutineProvider,
+	provider service.TaskPoolProvider,
 	taskCount int,
 	maxConcurrent int,
 	handler func(ctx context.Context, index int) (T, error),
@@ -273,7 +273,7 @@ resultLoop:
 //	})
 func ParallelExecuteWithArg[T any](
 	ctx context.Context,
-	provider service.GoroutineProvider,
+	provider service.TaskPoolProvider,
 	args []T,
 	maxConcurrent int,
 	handler func(ctx context.Context, arg T) error,
@@ -297,7 +297,7 @@ func ParallelExecuteWithArg[T any](
 //	})
 func ParallelExecuteWithArgAndResult[T any, R any](
 	ctx context.Context,
-	provider service.GoroutineProvider,
+	provider service.TaskPoolProvider,
 	args []T,
 	maxConcurrent int,
 	handler func(ctx context.Context, arg T) (R, error),
@@ -316,17 +316,17 @@ func ParallelExecuteWithArgAndResult[T any, R any](
 // 默认 Provider（向后兼容）
 // ============================================================================
 
-// defaultProvider 是包级别的默认 GoroutineProvider
+// defaultProvider 是包级别的默认 TaskPoolProvider
 // 在包初始化时创建，用于向后兼容（当调用者传入 nil provider 时使用）
-var defaultProvider service.GoroutineProvider
+var defaultProvider service.TaskPoolProvider
 
-// SetDefaultProvider 设置默认的 GoroutineProvider
+// SetDefaultProvider 设置默认的 TaskPoolProvider
 // 应在应用程序初始化时调用
-func SetDefaultProvider(provider service.GoroutineProvider) {
+func SetDefaultProvider(provider service.TaskPoolProvider) {
 	defaultProvider = provider
 }
 
-// GetDefaultProvider 获取默认的 GoroutineProvider
-func GetDefaultProvider() service.GoroutineProvider {
+// GetDefaultProvider 获取默认的 TaskPoolProvider
+func GetDefaultProvider() service.TaskPoolProvider {
 	return defaultProvider
 }

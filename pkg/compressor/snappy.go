@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/golang/snappy"
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // snappyCompressor Snappy 压缩器
@@ -62,7 +63,7 @@ func (c *snappyCompressor) DecompressWithLimit(data []byte, maxBytes int) ([]byt
 
 	// 检查是否超过大小限制
 	if len(decompressed) > maxBytes {
-		return nil, ErrDecompressionTooBig
+		return nil, errors.ErrDecompressionTooBig
 	}
 
 	return decompressed, nil

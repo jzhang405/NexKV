@@ -29,20 +29,20 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// mockGoroutineProvider 测试用的 mock provider
-type mockGoroutineProvider struct{}
+// mockTaskPoolProvider 测试用的 mock provider
+type mockTaskPoolProvider struct{}
 
-func (m *mockGoroutineProvider) Submit(ctx context.Context, task func(context.Context)) error {
+func (m *mockTaskPoolProvider) Submit(ctx context.Context, task func(context.Context)) error {
 	go task(ctx)
 	return nil
 }
 
-func (m *mockGoroutineProvider) SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error {
+func (m *mockTaskPoolProvider) SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error {
 	go task(ctx, arg)
 	return nil
 }
 
-func (m *mockGoroutineProvider) SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) service.GoroutineResult[any] {
+func (m *mockTaskPoolProvider) SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) service.TaskResult[any] {
 	resultCh := make(chan any, 1)
 	errCh := make(chan error, 1)
 	go func() {
@@ -55,13 +55,13 @@ func (m *mockGoroutineProvider) SubmitWithResult(ctx context.Context, task func(
 		close(resultCh)
 		close(errCh)
 	}()
-	return &mockGoroutineResult{
+	return &mockTaskResult{
 		resultCh: resultCh,
 		errCh:    errCh,
 	}
 }
 
-func (m *mockGoroutineProvider) SubmitWithArgAndResult(ctx context.Context, task func(context.Context, any) (any, error), arg any) service.GoroutineResult[any] {
+func (m *mockTaskPoolProvider) SubmitWithArgAndResult(ctx context.Context, task func(context.Context, any) (any, error), arg any) service.TaskResult[any] {
 	resultCh := make(chan any, 1)
 	errCh := make(chan error, 1)
 	go func() {
@@ -74,18 +74,18 @@ func (m *mockGoroutineProvider) SubmitWithArgAndResult(ctx context.Context, task
 		close(resultCh)
 		close(errCh)
 	}()
-	return &mockGoroutineResult{
+	return &mockTaskResult{
 		resultCh: resultCh,
 		errCh:    errCh,
 	}
 }
 
-func (m *mockGoroutineProvider) SubmitWithPriority(ctx context.Context, priority service.GoroutinePriority, task func(context.Context)) error {
+func (m *mockTaskPoolProvider) SubmitWithPriority(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
 	go task(ctx)
 	return nil
 }
 
-func (m *mockGoroutineProvider) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
+func (m *mockTaskPoolProvider) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
 	go func() {
 		time.Sleep(delay)
 		task(ctx)
@@ -93,18 +93,18 @@ func (m *mockGoroutineProvider) SubmitDelayed(ctx context.Context, delay time.Du
 	return nil
 }
 
-func (m *mockGoroutineProvider) SubmitAdvanced(ctx context.Context, task func(context.Context, any) (any, error), arg any, opts ...service.GoroutineSubmitOption) service.GoroutineResult[any] {
+func (m *mockTaskPoolProvider) SubmitAdvanced(ctx context.Context, task func(context.Context, any) (any, error), arg any, opts ...service.TaskSubmitOption) service.TaskResult[any] {
 	return m.SubmitWithArgAndResult(ctx, task, arg)
 }
 
-func (m *mockGoroutineProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
+func (m *mockTaskPoolProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
 	for _, task := range tasks {
 		go task(ctx)
 	}
 	return nil
 }
 
-func (m *mockGoroutineProvider) SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error {
+func (m *mockTaskPoolProvider) SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error {
 	for i, task := range tasks {
 		arg := args[i]
 		go task(ctx, arg)
@@ -112,7 +112,7 @@ func (m *mockGoroutineProvider) SubmitBatchWithArg(ctx context.Context, tasks []
 	return nil
 }
 
-func (m *mockGoroutineProvider) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
+func (m *mockTaskPoolProvider) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
 	var wg sync.WaitGroup
 	errs := make([]error, len(tasks))
 	for i, task := range tasks {
@@ -126,40 +126,40 @@ func (m *mockGoroutineProvider) SubmitBatchAllErrors(ctx context.Context, tasks 
 	return errs
 }
 
-func (m *mockGoroutineProvider) SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []service.GoroutineResult[any] {
-	results := make([]service.GoroutineResult[any], len(tasks))
+func (m *mockTaskPoolProvider) SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []service.TaskResult[any] {
+	results := make([]service.TaskResult[any], len(tasks))
 	for i, task := range tasks {
 		results[i] = m.SubmitWithResult(ctx, task)
 	}
 	return results
 }
 
-func (m *mockGoroutineProvider) Stats() service.GoroutinePoolStats {
-	return service.GoroutinePoolStats{}
+func (m *mockTaskPoolProvider) Stats() service.TaskPoolStats {
+	return service.TaskPoolStats{}
 }
 
-func (m *mockGoroutineProvider) Health() service.GoroutineHealthStatus {
-	return model.GoroutineHealthStatusHealthy
+func (m *mockTaskPoolProvider) Health() service.TaskHealthStatus {
+	return service.TaskHealthStatus(model.TaskHealthStatusHealthy)
 }
 
-func (m *mockGoroutineProvider) SetCapacity(capacity int) error {
+func (m *mockTaskPoolProvider) SetCapacity(capacity int) error {
 	return nil
 }
 
-func (m *mockGoroutineProvider) Close() error {
+func (m *mockTaskPoolProvider) Close() error {
 	return nil
 }
 
-func (m *mockGoroutineProvider) CloseWithTimeout(timeout time.Duration) error {
+func (m *mockTaskPoolProvider) CloseWithTimeout(timeout time.Duration) error {
 	return nil
 }
 
-type mockGoroutineResult struct {
+type mockTaskResult struct {
 	resultCh chan any
 	errCh    chan error
 }
 
-func (r *mockGoroutineResult) Get(ctx context.Context) (any, error) {
+func (r *mockTaskResult) Get(ctx context.Context) (any, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -176,7 +176,7 @@ func (r *mockGoroutineResult) Get(ctx context.Context) (any, error) {
 	}
 }
 
-func (r *mockGoroutineResult) IsDone() bool {
+func (r *mockTaskResult) IsDone() bool {
 	select {
 	case <-r.resultCh:
 		return true
@@ -337,7 +337,7 @@ func TestIntegration_MDNSDiscovery_DirectDiscovery(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建启用发现的 transport
-	provider := &mockGoroutineProvider{}
+	provider := &mockTaskPoolProvider{}
 	node1, err := transport.NewLibp2pTransport(ctx, &transport.Config{
 		EnableDiscovery: true,
 		DiscoveryTag:    "nexkv-mdns-direct-test",
@@ -399,7 +399,7 @@ func TestIntegration_DiscoveryService_MultipleTags(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建两组使用不同标签的节点
-	provider := &mockGoroutineProvider{}
+	provider := &mockTaskPoolProvider{}
 
 	// 组 A
 	nodeA1, err := transport.NewLibp2pTransport(ctx, &transport.Config{

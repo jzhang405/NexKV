@@ -1,7 +1,11 @@
-// Package concurrency 提供协程池和定时任务管理
+// Package concurrency 提供任务池和定时任务管理
 package concurrency
 
-import "context"
+import (
+	"context"
+
+	"github.com/jzhang405/NexKV/internal/domain/service"
+)
 
 // ==========================================
 // CronJobProvider 泛型辅助函数
@@ -21,8 +25,8 @@ import "context"
 
 // RegisterWithArg 泛型辅助函数：注册带参数的定时任务（类型安全）
 func RegisterWithArg[T any](
-	provider CronJobProvider,
-	spec CronSpec,
+	provider service.CronJobProvider,
+	spec service.CronSpec,
 	name string,
 	task func(context.Context, T),
 	arg T,
@@ -40,10 +44,10 @@ func RegisterWithArg[T any](
 
 // RegisterWithPriorityAndArg 泛型辅助函数：注册带参数和优先级的定时任务（类型安全）
 func RegisterWithPriorityAndArg[T any](
-	provider CronJobProvider,
-	spec CronSpec,
+	provider service.CronJobProvider,
+	spec service.CronSpec,
 	name string,
-	priority GoroutinePriority,
+	priority service.TaskPriority,
 	task func(context.Context, T),
 	arg T,
 ) (string, error) {

@@ -1,6 +1,8 @@
 // Package compressor 提供压缩算法抽象
 package compressor
 
+import "github.com/jzhang405/NexKV/pkg/errors"
+
 // noneCompressor 不压缩
 type noneCompressor struct{}
 
@@ -27,7 +29,7 @@ func (c *noneCompressor) Decompress(data []byte) ([]byte, error) {
 // DecompressWithLimit 带大小限制的解压（None 不压缩，直接检查大小）
 func (c *noneCompressor) DecompressWithLimit(data []byte, maxBytes int) ([]byte, error) {
 	if len(data) > maxBytes {
-		return nil, ErrDecompressionTooBig
+		return nil, errors.ErrDecompressionTooBig
 	}
 	return data, nil
 }

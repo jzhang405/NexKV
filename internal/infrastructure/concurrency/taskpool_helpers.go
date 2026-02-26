@@ -1,4 +1,4 @@
-// Package concurrency 提供协程池和定时任务管理
+// Package concurrency 提供任务池和定时任务管理
 package concurrency
 
 import (
@@ -63,12 +63,12 @@ func wrapAnyResult[T any](anyResult Result[any]) *TypedResult[T] {
 // SubmitWithArg 泛型辅助函数：带参数任务（类型安全）
 func SubmitWithArg[T any](
 	ctx context.Context,
-	provider GoroutineProvider,
+	provider TaskPoolProvider,
 	task func(context.Context, T),
 	arg T,
 ) error {
-	// 类型断言：如果是 AntsGoroutineProvider，直接调用类型安全函数
-	if p, ok := provider.(*AntsGoroutineProvider); ok {
+	// 类型断言：如果是 AntsTaskPoolProvider，直接调用类型安全函数
+	if p, ok := provider.(*AntsTaskPoolProvider); ok {
 		return SubmitWithArgTyped(p, ctx, task, arg)
 	}
 
@@ -81,11 +81,11 @@ func SubmitWithArg[T any](
 // SubmitWithResult 泛型辅助函数：带返回值任务（类型安全）
 func SubmitWithResult[T any](
 	ctx context.Context,
-	provider GoroutineProvider,
+	provider TaskPoolProvider,
 	task func(context.Context) (T, error),
 ) *TypedResult[T] {
-	// 类型断言：如果是 AntsGoroutineProvider，直接调用类型安全函数
-	if p, ok := provider.(*AntsGoroutineProvider); ok {
+	// 类型断言：如果是 AntsTaskPoolProvider，直接调用类型安全函数
+	if p, ok := provider.(*AntsTaskPoolProvider); ok {
 		return SubmitWithResultTyped(p, ctx, task)
 	}
 
@@ -99,12 +99,12 @@ func SubmitWithResult[T any](
 // SubmitWithArgAndResult 泛型辅助函数：带参数和返回值任务（类型安全）
 func SubmitWithArgAndResult[T any, R any](
 	ctx context.Context,
-	provider GoroutineProvider,
+	provider TaskPoolProvider,
 	task func(context.Context, T) (R, error),
 	arg T,
 ) *TypedResult[R] {
-	// 类型断言：如果是 AntsGoroutineProvider，直接调用类型安全函数
-	if p, ok := provider.(*AntsGoroutineProvider); ok {
+	// 类型断言：如果是 AntsTaskPoolProvider，直接调用类型安全函数
+	if p, ok := provider.(*AntsTaskPoolProvider); ok {
 		return SubmitWithArgAndResultTyped(p, ctx, task, arg)
 	}
 
@@ -118,13 +118,13 @@ func SubmitWithArgAndResult[T any, R any](
 // SubmitAdvanced 泛型辅助函数：高级任务提交（类型安全）
 func SubmitAdvanced[T any, R any](
 	ctx context.Context,
-	provider GoroutineProvider,
+	provider TaskPoolProvider,
 	task func(context.Context, T) (R, error),
 	arg T,
-	opts ...GoroutineSubmitOption,
+	opts ...TaskSubmitOption,
 ) *TypedResult[R] {
-	// 类型断言：如果是 AntsGoroutineProvider，直接调用类型安全函数
-	if p, ok := provider.(*AntsGoroutineProvider); ok {
+	// 类型断言：如果是 AntsTaskPoolProvider，直接调用类型安全函数
+	if p, ok := provider.(*AntsTaskPoolProvider); ok {
 		return SubmitAdvancedTyped(p, ctx, task, arg, opts...)
 	}
 
@@ -138,7 +138,7 @@ func SubmitAdvanced[T any, R any](
 // SubmitBatchWithArg 泛型辅助函数：批量带参数任务（类型安全）
 func SubmitBatchWithArg[T any](
 	ctx context.Context,
-	provider GoroutineProvider,
+	provider TaskPoolProvider,
 	tasks []func(context.Context, T),
 	args []T,
 ) error {
@@ -164,7 +164,7 @@ func SubmitBatchWithArg[T any](
 // SubmitBatchWithResult 泛型辅助函数：批量带返回值任务（类型安全）
 func SubmitBatchWithResult[T any](
 	ctx context.Context,
-	provider GoroutineProvider,
+	provider TaskPoolProvider,
 	tasks []func(context.Context) (T, error),
 ) []*TypedResult[T] {
 	// 转换为 any 类型

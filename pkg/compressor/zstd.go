@@ -2,6 +2,7 @@
 package compressor
 
 import (
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -62,7 +63,7 @@ func (c *zstdCompressor) DecompressWithLimit(data []byte, maxBytes int) ([]byte,
 	}
 
 	if len(decompressed) > maxBytes {
-		return nil, ErrDecompressionTooBig
+		return nil, errors.ErrDecompressionTooBig
 	}
 	return decompressed, nil
 }

@@ -86,11 +86,11 @@ func (m *multiListener) OnComplete(stats service.BroadcastStats) {
 // asyncListenerWrapper 异步回调包装器
 // ==========================================
 
-// asyncListenerWrapper 通过 GoroutineProvider 异步执行回调
+// asyncListenerWrapper 通过 TaskPoolProvider 异步执行回调
 // 避免无限制创建 goroutine，提供资源控制
 type asyncListenerWrapper struct {
 	callbacks         []service.BroadcastListener
-	goroutineProvider service.GoroutineProvider
+	goroutineProvider service.TaskPoolProvider
 }
 
 func (w *asyncListenerWrapper) OnSuccess(peer model.PeerID, resp model.Message, stats service.BroadcastStats) {
@@ -185,7 +185,7 @@ func OnFailure(callback func(peer model.PeerID, err error, stats service.Broadca
 
 // ApplyBroadcastOptions 应用选项并返回组合后的回调
 // 如果提供了 goroutineProvider，则使用 asyncListenerWrapper 包装回调
-func ApplyBroadcastOptions(opts []service.BroadcastOption, goroutineProvider service.GoroutineProvider) service.BroadcastListener {
+func ApplyBroadcastOptions(opts []service.BroadcastOption, goroutineProvider service.TaskPoolProvider) service.BroadcastListener {
 	if len(opts) == 0 {
 		return nil
 	}
@@ -200,7 +200,7 @@ func ApplyBroadcastOptions(opts []service.BroadcastOption, goroutineProvider ser
 		return nil
 	}
 
-	// 如果有 GoroutineProvider，使用 asyncListenerWrapper 包装
+	// 如果有 TaskPoolProvider，使用 asyncListenerWrapper 包装
 	if goroutineProvider != nil {
 		return &asyncListenerWrapper{
 			callbacks:         callbacks,

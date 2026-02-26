@@ -49,8 +49,8 @@ type Libp2pTransport struct {
 	// Discovery goroutine 管理
 	wg sync.WaitGroup
 
-	// GoroutineProvider 用于管理 goroutine
-	provider service.GoroutineProvider
+	// TaskPoolProvider 用于管理 goroutine
+	provider service.TaskPoolProvider
 }
 
 // Config 传输层配置
@@ -58,7 +58,7 @@ type Config struct {
 	ListenAddr      string
 	DiscoveryTag    string
 	EnableDiscovery bool
-	Provider        service.GoroutineProvider // 协程池提供者（用于 Discovery）
+	Provider        service.TaskPoolProvider // 任务池提供者（用于 Discovery）
 }
 
 // DefaultConfig 返回默认配置
@@ -103,7 +103,7 @@ func NewLibp2pTransport(ctx context.Context, cfg *Config) (*Libp2pTransport, err
 
 	if cfg.EnableDiscovery {
 		if cfg.Provider == nil {
-			return nil, service.Wrap(service.ErrInvalidParam, "GoroutineProvider is required when discovery is enabled")
+			return nil, service.Wrap(service.ErrInvalidParam, "TaskPoolProvider is required when discovery is enabled")
 		}
 		t.discovery = NewDiscoveryService(h, cfg.DiscoveryTag, cfg.Provider)
 	}

@@ -190,7 +190,7 @@ func TestAsyncListenerWrapper(t *testing.T) {
 			},
 		}
 
-		provider := newMockGoroutineProvider()
+		provider := newMockTaskPoolProvider()
 		wrapper := &asyncListenerWrapper{
 			callbacks:         []service.BroadcastListener{listener},
 			goroutineProvider: provider,
@@ -214,7 +214,7 @@ func TestAsyncListenerWrapper(t *testing.T) {
 			},
 		}
 
-		provider := newMockGoroutineProvider()
+		provider := newMockTaskPoolProvider()
 		wrapper := &asyncListenerWrapper{
 			callbacks:         []service.BroadcastListener{listener},
 			goroutineProvider: provider,
@@ -237,7 +237,7 @@ func TestAsyncListenerWrapper(t *testing.T) {
 			onFullDone: func(stats service.BroadcastStats) { count.Add(1) },
 		}
 
-		provider := newMockGoroutineProvider()
+		provider := newMockTaskPoolProvider()
 		wrapper := &asyncListenerWrapper{
 			callbacks:         []service.BroadcastListener{listener},
 			goroutineProvider: provider,
@@ -400,7 +400,7 @@ func TestApplyBroadcastOptions(t *testing.T) {
 			close(called)
 		})
 
-		provider := newMockGoroutineProvider()
+		provider := newMockTaskPoolProvider()
 		listener := ApplyBroadcastOptions([]service.BroadcastOption{opt}, provider)
 		if listener == nil {
 			t.Fatal("expected listener")

@@ -21,10 +21,10 @@ import (
 // 辅助函数
 // ==========================================
 
-// submitTask 提交任务到 GoroutineProvider 或回退到 goroutine
+// submitTask 提交任务到 TaskPoolProvider 或回退到 goroutine
 func submitTask(
 	ctx context.Context,
-	provider service.GoroutineProvider,
+	provider service.TaskPoolProvider,
 	task func(context.Context),
 	onFailure func(error),
 ) {
@@ -100,11 +100,11 @@ type asyncOpImpl[T any] struct {
 	cbMu              sync.RWMutex
 	value             T
 	err               error
-	goroutineProvider service.GoroutineProvider
+	goroutineProvider service.TaskPoolProvider
 }
 
 // newAsyncOp 创建异步操作
-func newAsyncOp[T any](provider service.GoroutineProvider) *asyncOpImpl[T] {
+func newAsyncOp[T any](provider service.TaskPoolProvider) *asyncOpImpl[T] {
 	return &asyncOpImpl[T]{
 		resultCh:          make(chan T, 1),
 		errCh:             make(chan error, 1),
@@ -497,7 +497,7 @@ type asyncCall struct {
 func submitAsyncTask(
 	ctx context.Context,
 	op *asyncOpImpl[service.ResponseMsg],
-	provider service.GoroutineProvider,
+	provider service.TaskPoolProvider,
 	timeoutMs int64,
 	task func(ctx context.Context),
 ) {
@@ -532,7 +532,7 @@ func NewAsyncCall(
 	to model.PeerID,
 	req model.Message,
 	timeoutMs int64,
-	provider service.GoroutineProvider,
+	provider service.TaskPoolProvider,
 ) service.AsyncOperation[service.ResponseMsg] {
 	op := newAsyncOp[service.ResponseMsg](provider)
 
@@ -576,7 +576,7 @@ func NewAsyncBroadcast(
 	req model.Message,
 	config *service.RPCAsyncConfig,
 	callback service.BroadcastListener,
-	provider service.GoroutineProvider,
+	provider service.TaskPoolProvider,
 ) service.AsyncOperation[service.AsyncBroadcastResult] {
 	op := newAsyncOp[service.AsyncBroadcastResult](provider)
 
@@ -651,7 +651,7 @@ func NewAsyncQuorum(
 	quorum int,
 	config *service.RPCAsyncConfig,
 	callback service.BroadcastListener,
-	provider service.GoroutineProvider,
+	provider service.TaskPoolProvider,
 ) service.AsyncOperation[service.QuorumResult] {
 	op := newAsyncOp[service.QuorumResult](provider)
 
@@ -718,7 +718,7 @@ func NewAsyncWriteV(
 	msgs []model.Message,
 	config *service.RPCAsyncConfig,
 	callback service.BroadcastListener,
-	provider service.GoroutineProvider,
+	provider service.TaskPoolProvider,
 ) service.AsyncOperation[service.WriteVResult] {
 	op := newAsyncOp[service.WriteVResult](provider)
 
@@ -775,7 +775,7 @@ func NewAsyncWriteVCall(
 	msgs []model.Message,
 	config *service.RPCAsyncConfig,
 	callback service.BroadcastListener,
-	provider service.GoroutineProvider,
+	provider service.TaskPoolProvider,
 ) service.AsyncOperation[service.WriteVResult] {
 	op := newAsyncOp[service.WriteVResult](provider)
 

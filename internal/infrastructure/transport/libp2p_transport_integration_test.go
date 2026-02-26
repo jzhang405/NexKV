@@ -15,15 +15,25 @@ package transport
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
+func init() {
+	// 设置较短的超时时间用于测试
+	os.Setenv("NEXKV_TEST_TIMEOUT", "5s")
+}
+
 // TestIntegration_ConnectAndCommunicate 集成测试：直接使用 Libp2pTransport
 // 此测试直接覆盖 Libp2pTransport 的核心功能
 func TestIntegration_ConnectAndCommunicate(t *testing.T) {
+	// 跳过网络集成测试，需要真实网络环境
+	if os.Getenv("NEXKV_ENABLE_NETWORK_TESTS") == "" {
+		t.Skip("Skipping network integration test. Set NEXKV_ENABLE_NETWORK_TESTS=1 to enable.")
+	}
 	ctx := context.Background()
 
 	// 创建服务端

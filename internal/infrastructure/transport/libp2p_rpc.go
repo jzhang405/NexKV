@@ -9,6 +9,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/internal/infrastructure/id"
 )
 
 // Libp2pRPC 基于 libp2p 的 RPC 实现
@@ -17,9 +18,9 @@ type Libp2pRPC struct {
 	codec       model.Codec
 	streamCodec model.StreamCodec
 	config      *service.RPCConfig
-	idGenerator *model.RequestIDGenerator
+	idGenerator *id.RequestIDGenerator
 	middleware  service.MiddlewareChain
-	provider    service.GoroutineProvider // goroutine 提供者
+	provider    service.TaskPoolProvider // 任务池提供者
 
 	// 请求-响应匹配
 	pendingCalls   map[string]*pendingCall
@@ -43,9 +44,9 @@ type pendingCall struct {
 }
 
 // NewLibp2pRPC 创建 libp2p RPC 实例
-func NewLibp2pRPC(transport service.Transport, provider service.GoroutineProvider, config *service.RPCConfig) *Libp2pRPC {
+func NewLibp2pRPC(transport service.Transport, provider service.TaskPoolProvider, config *service.RPCConfig) *Libp2pRPC {
 	if provider == nil {
-		panic("GoroutineProvider is required, cannot be nil")
+		panic("TaskPoolProvider is required, cannot be nil")
 	}
 	if config == nil {
 		config = service.DefaultRPCConfig()
@@ -60,7 +61,7 @@ func NewLibp2pRPC(transport service.Transport, provider service.GoroutineProvide
 		codec:        codec,
 		streamCodec:  streamCodec,
 		config:       config,
-		idGenerator:  model.NewRequestIDGenerator(string(self)),
+		idGenerator:  id.NewRequestIDGenerator(string(self)),
 		middleware:   NewMiddlewareChain(),
 		provider:     provider,
 		pendingCalls: make(map[string]*pendingCall),
@@ -460,8 +461,8 @@ func (r *Libp2pRPC) Close() error {
 	return nil
 }
 
-// SetGoroutineProvider 设置 goroutine 提供者
-func (r *Libp2pRPC) SetGoroutineProvider(provider service.GoroutineProvider) {
+// SetTaskPoolProvider 设置 任务池提供者
+func (r *Libp2pRPC) SetTaskPoolProvider(provider service.TaskPoolProvider) {
 	r.provider = provider
 }
 

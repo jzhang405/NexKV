@@ -1,4 +1,4 @@
-// Package concurrency 提供协程池和定时任务管理
+// Package concurrency 提供任务池和定时任务管理
 package concurrency
 
 import (
@@ -6,10 +6,12 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
 func TestRobfigCronProvider_Register(t *testing.T) {
-	gp, err := NewAntsGoroutineProvider(nil)
+	gp, err := NewAntsTaskPoolProvider(nil)
 	if err != nil {
 		t.Fatalf("failed to create goroutine provider: %v", err)
 	}
@@ -41,7 +43,7 @@ func TestRobfigCronProvider_Register(t *testing.T) {
 }
 
 func TestRobfigCronProvider_RegisterWithArg(t *testing.T) {
-	gp, err := NewAntsGoroutineProvider(nil)
+	gp, err := NewAntsTaskPoolProvider(nil)
 	if err != nil {
 		t.Fatalf("failed to create goroutine provider: %v", err)
 	}
@@ -74,7 +76,7 @@ func TestRobfigCronProvider_RegisterWithArg(t *testing.T) {
 }
 
 func TestRobfigCronProvider_RegisterWithArg_Generic(t *testing.T) {
-	gp, err := NewAntsGoroutineProvider(nil)
+	gp, err := NewAntsTaskPoolProvider(nil)
 	if err != nil {
 		t.Fatalf("failed to create goroutine provider: %v", err)
 	}
@@ -106,7 +108,7 @@ func TestRobfigCronProvider_RegisterWithArg_Generic(t *testing.T) {
 }
 
 func TestRobfigCronProvider_PauseResume(t *testing.T) {
-	gp, err := NewAntsGoroutineProvider(nil)
+	gp, err := NewAntsTaskPoolProvider(nil)
 	if err != nil {
 		t.Fatalf("failed to create goroutine provider: %v", err)
 	}
@@ -134,7 +136,7 @@ func TestRobfigCronProvider_PauseResume(t *testing.T) {
 
 	// 验证状态
 	info, _ := cp.GetJob(jobID)
-	if info.Status != CronJobStatusPaused {
+	if info.Status != service.CronJobStatusPaused {
 		t.Errorf("expected status paused, got %v", info.Status)
 	}
 
@@ -160,7 +162,7 @@ func TestRobfigCronProvider_PauseResume(t *testing.T) {
 }
 
 func TestRobfigCronProvider_Unregister(t *testing.T) {
-	gp, err := NewAntsGoroutineProvider(nil)
+	gp, err := NewAntsTaskPoolProvider(nil)
 	if err != nil {
 		t.Fatalf("failed to create goroutine provider: %v", err)
 	}
@@ -186,7 +188,7 @@ func TestRobfigCronProvider_Unregister(t *testing.T) {
 }
 
 func TestRobfigCronProvider_GetJob(t *testing.T) {
-	gp, err := NewAntsGoroutineProvider(nil)
+	gp, err := NewAntsTaskPoolProvider(nil)
 	if err != nil {
 		t.Fatalf("failed to create goroutine provider: %v", err)
 	}
@@ -212,7 +214,7 @@ func TestRobfigCronProvider_GetJob(t *testing.T) {
 }
 
 func TestRobfigCronProvider_ListJobs(t *testing.T) {
-	gp, err := NewAntsGoroutineProvider(nil)
+	gp, err := NewAntsTaskPoolProvider(nil)
 	if err != nil {
 		t.Fatalf("failed to create goroutine provider: %v", err)
 	}
@@ -234,7 +236,7 @@ func TestRobfigCronProvider_ListJobs(t *testing.T) {
 }
 
 func TestRobfigCronProvider_DuplicateName(t *testing.T) {
-	gp, err := NewAntsGoroutineProvider(nil)
+	gp, err := NewAntsTaskPoolProvider(nil)
 	if err != nil {
 		t.Fatalf("failed to create goroutine provider: %v", err)
 	}

@@ -1,4 +1,4 @@
-// Package concurrency 提供协程池和定时任务管理
+// Package concurrency 提供任务池和定时任务管理
 package concurrency
 
 import (
@@ -14,8 +14,8 @@ import (
 // ==========================================
 
 // Result[T] 异步执行结果接口（类型别名）
-// 实际接口定义在 domain/service/concurrency.go
-type Result[T any] = GoroutineResult[T]
+// 实际接口定义在 domain/service/task.go
+type Result[T any] = TaskResult[T]
 
 // ==========================================
 // AnyResult any 类型的结果实现

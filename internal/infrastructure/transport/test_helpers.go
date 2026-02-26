@@ -13,25 +13,25 @@ import (
 
 // ============================================================================
 
-// mockGoroutineProvider 模拟 GoroutineProvider（用于测试）
-// 直接使用 go func() 执行任务，不使用协程池
-type mockGoroutineProvider struct{}
+// mockTaskPoolProvider 模拟 TaskPoolProvider（用于测试）
+// 直接使用 go func() 执行任务，不使用任务池
+type mockTaskPoolProvider struct{}
 
-func newMockGoroutineProvider() service.GoroutineProvider {
-	return &mockGoroutineProvider{}
+func newMockTaskPoolProvider() service.TaskPoolProvider {
+	return &mockTaskPoolProvider{}
 }
 
-func (m *mockGoroutineProvider) Submit(ctx context.Context, task func(context.Context)) error {
+func (m *mockTaskPoolProvider) Submit(ctx context.Context, task func(context.Context)) error {
 	go task(ctx)
 	return nil
 }
 
-func (m *mockGoroutineProvider) SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error {
+func (m *mockTaskPoolProvider) SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error {
 	go task(ctx, arg)
 	return nil
 }
 
-func (m *mockGoroutineProvider) SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) service.GoroutineResult[any] {
+func (m *mockTaskPoolProvider) SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) service.TaskResult[any] {
 	resultCh := make(chan any, 1)
 	errCh := make(chan error, 1)
 	go func() {
@@ -44,13 +44,13 @@ func (m *mockGoroutineProvider) SubmitWithResult(ctx context.Context, task func(
 		close(resultCh)
 		close(errCh)
 	}()
-	return &mockGoroutineResult{
+	return &mockTaskResult{
 		resultCh: resultCh,
 		errCh:    errCh,
 	}
 }
 
-func (m *mockGoroutineProvider) SubmitWithArgAndResult(ctx context.Context, task func(context.Context, any) (any, error), arg any) service.GoroutineResult[any] {
+func (m *mockTaskPoolProvider) SubmitWithArgAndResult(ctx context.Context, task func(context.Context, any) (any, error), arg any) service.TaskResult[any] {
 	resultCh := make(chan any, 1)
 	errCh := make(chan error, 1)
 	go func() {
@@ -63,18 +63,18 @@ func (m *mockGoroutineProvider) SubmitWithArgAndResult(ctx context.Context, task
 		close(resultCh)
 		close(errCh)
 	}()
-	return &mockGoroutineResult{
+	return &mockTaskResult{
 		resultCh: resultCh,
 		errCh:    errCh,
 	}
 }
 
-func (m *mockGoroutineProvider) SubmitWithPriority(ctx context.Context, priority service.GoroutinePriority, task func(context.Context)) error {
+func (m *mockTaskPoolProvider) SubmitWithPriority(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
 	go task(ctx)
 	return nil
 }
 
-func (m *mockGoroutineProvider) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
+func (m *mockTaskPoolProvider) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
 	go func() {
 		time.Sleep(delay)
 		task(ctx)
@@ -82,18 +82,18 @@ func (m *mockGoroutineProvider) SubmitDelayed(ctx context.Context, delay time.Du
 	return nil
 }
 
-func (m *mockGoroutineProvider) SubmitAdvanced(ctx context.Context, task func(context.Context, any) (any, error), arg any, opts ...service.GoroutineSubmitOption) service.GoroutineResult[any] {
+func (m *mockTaskPoolProvider) SubmitAdvanced(ctx context.Context, task func(context.Context, any) (any, error), arg any, opts ...service.TaskSubmitOption) service.TaskResult[any] {
 	return m.SubmitWithArgAndResult(ctx, task, arg)
 }
 
-func (m *mockGoroutineProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
+func (m *mockTaskPoolProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
 	for _, task := range tasks {
 		go task(ctx)
 	}
 	return nil
 }
 
-func (m *mockGoroutineProvider) SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error {
+func (m *mockTaskPoolProvider) SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error {
 	for i, task := range tasks {
 		arg := args[i]
 		go task(ctx, arg)
@@ -101,7 +101,7 @@ func (m *mockGoroutineProvider) SubmitBatchWithArg(ctx context.Context, tasks []
 	return nil
 }
 
-func (m *mockGoroutineProvider) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
+func (m *mockTaskPoolProvider) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
 	var wg sync.WaitGroup
 	errs := make([]error, len(tasks))
 	for i, task := range tasks {
@@ -115,40 +115,40 @@ func (m *mockGoroutineProvider) SubmitBatchAllErrors(ctx context.Context, tasks 
 	return errs
 }
 
-func (m *mockGoroutineProvider) SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []service.GoroutineResult[any] {
-	results := make([]service.GoroutineResult[any], len(tasks))
+func (m *mockTaskPoolProvider) SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []service.TaskResult[any] {
+	results := make([]service.TaskResult[any], len(tasks))
 	for i, task := range tasks {
 		results[i] = m.SubmitWithResult(ctx, task)
 	}
 	return results
 }
 
-func (m *mockGoroutineProvider) Stats() service.GoroutinePoolStats {
-	return service.GoroutinePoolStats{}
+func (m *mockTaskPoolProvider) Stats() service.TaskPoolStats {
+	return service.TaskPoolStats{}
 }
 
-func (m *mockGoroutineProvider) Health() service.GoroutineHealthStatus {
-	return model.GoroutineHealthStatusHealthy
+func (m *mockTaskPoolProvider) Health() service.TaskHealthStatus {
+	return model.TaskHealthStatusHealthy
 }
 
-func (m *mockGoroutineProvider) SetCapacity(capacity int) error {
+func (m *mockTaskPoolProvider) SetCapacity(capacity int) error {
 	return nil
 }
 
-func (m *mockGoroutineProvider) Close() error {
+func (m *mockTaskPoolProvider) Close() error {
 	return nil
 }
 
-func (m *mockGoroutineProvider) CloseWithTimeout(timeout time.Duration) error {
+func (m *mockTaskPoolProvider) CloseWithTimeout(timeout time.Duration) error {
 	return nil
 }
 
-type mockGoroutineResult struct {
+type mockTaskResult struct {
 	resultCh chan any
 	errCh    chan error
 }
 
-func (r *mockGoroutineResult) Get(ctx context.Context) (any, error) {
+func (r *mockTaskResult) Get(ctx context.Context) (any, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -165,7 +165,7 @@ func (r *mockGoroutineResult) Get(ctx context.Context) (any, error) {
 	}
 }
 
-func (r *mockGoroutineResult) IsDone() bool {
+func (r *mockTaskResult) IsDone() bool {
 	select {
 	case <-r.resultCh:
 		return true
@@ -243,7 +243,7 @@ type testRPCSetup struct {
 // newTestRPC 创建测试 RPC
 func newTestRPC(t *testing.T, nodeID model.PeerID, config *service.RPCConfig) *testRPCSetup {
 	transport := newMockTransport(nodeID)
-	provider := newMockGoroutineProvider()
+	provider := newMockTaskPoolProvider()
 	rpc := NewLibp2pRPC(transport, provider, config)
 	return &testRPCSetup{
 		transport: transport,

@@ -122,10 +122,10 @@ type RPCAsync interface {
 	// 返回每个节点的响应结果
 	WriteVCallAsync(ctx context.Context, targets []model.PeerID, msgs []model.Message, opts ...BroadcastOption) AsyncOperation[WriteVResult]
 
-	// ====== Goroutine 管理 ======
-	// SetGoroutineProvider 设置 goroutine 提供者
-	// 用于统一管理 goroutine 的创建和生命周期
-	SetGoroutineProvider(provider GoroutineProvider)
+	// ====== TaskPool 管理 ======
+	// SetTaskPoolProvider 设置任务池提供者
+	// 用于统一管理任务的创建和生命周期
+	SetTaskPoolProvider(provider TaskPoolProvider)
 }
 
 // ==========================================
@@ -244,8 +244,8 @@ type QuorumResult struct {
 
 // RPCAsyncConfig RPCAsync 配置
 type RPCAsyncConfig struct {
-	// GoroutineProvider 协程池提供者（可选）
-	GoroutineProvider GoroutineProvider
+	// TaskPoolProvider 任务池提供者（可选）
+	TaskPoolProvider TaskPoolProvider
 	// CallTimeoutMs 单播调用超时（毫秒），默认 30s
 	CallTimeoutMs int64
 	// BroadcastTimeoutMs 广播调用超时（毫秒），默认 60s

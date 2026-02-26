@@ -3,7 +3,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -146,11 +145,8 @@ type WriteVResult struct {
 // RPC 接口定义
 // ============================================================================
 
-// 注意：RPC/RPCSync 接口定义已移至 rpc_sync.go
+// 注意：RPCSync 接口定义在 rpc_sync.go
 // RPCAsync 接口定义在 rpc_async.go
-//
-// 类型别名：
-// - RPC = RPCSync（向后兼容）
 //
 // 接口选择指南：
 // - RPCSync: 阻塞式同步调用，直接返回结果
@@ -168,42 +164,6 @@ type RequestMsg struct {
 type ResponseMsg struct {
 	Msg model.Message
 	Err error
-}
-
-// ============================================================================
-// RequestID 生成器
-// ============================================================================
-
-// ============================================================================
-// RequestID - 类型别名（已迁移到 model 层）
-// ============================================================================
-
-// RequestID 请求唯一标识符
-//
-// Deprecated: 请使用 model.RequestID。此类型别名仅用于向后兼容。
-type RequestID = model.RequestID
-
-// RequestIDGenerator 请求 ID 生成器
-//
-// Deprecated: 请使用 model.NewRequestIDGenerator()。此类型别名仅用于向后兼容。
-type RequestIDGenerator = model.RequestIDGenerator
-
-// NewRequestIDGenerator 创建请求 ID 生成器
-//
-// Deprecated: 请使用 model.NewRequestIDGenerator()。此函数仅用于向后兼容。
-func NewRequestIDGenerator(nodeID string) *model.RequestIDGenerator {
-	return model.NewRequestIDGenerator(nodeID)
-}
-
-// ParseRequestID 解析请求 ID（用于日志和调试）
-//
-// Deprecated: 请使用 RequestID 的方法。此函数仅用于向后兼容。
-func ParseRequestID(id RequestID) (nodeID string, timestamp int64, sequence uint32, err error) {
-	if id.IsEmpty() {
-		return "", 0, 0, fmt.Errorf("request id cannot be empty")
-	}
-	// 使用 model 层的方法
-	return id.NodeID(), id.Timestamp(), id.Sequence(), nil
 }
 
 // ============================================================================

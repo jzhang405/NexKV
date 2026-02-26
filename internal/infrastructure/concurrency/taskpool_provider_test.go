@@ -1,4 +1,4 @@
-// Package concurrency 提供协程池和定时任务管理
+// Package concurrency 提供任务池和定时任务管理
 package concurrency
 
 import (
@@ -165,17 +165,17 @@ func TestTypedResult_TypeSafety(t *testing.T) {
 }
 
 // ==========================================
-// GoroutineProvider 测试
+// TaskPoolProvider 测试
 // ==========================================
 
-func TestAntsGoroutineProvider_BasicOperations(t *testing.T) {
+func TestAntsTaskPoolProvider_BasicOperations(t *testing.T) {
 	config := &ProviderConfig{
 		Capacity:       10,
 		EnablePriority: true,
 		EnableDelayed:  true,
 	}
 
-	provider, err := NewAntsGoroutineProvider(config)
+	provider, err := NewAntsTaskPoolProvider(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -298,14 +298,14 @@ func TestAntsGoroutineProvider_BasicOperations(t *testing.T) {
 	})
 }
 
-func TestAntsGoroutineProvider_ConcurrentSafety(t *testing.T) {
+func TestAntsTaskPoolProvider_ConcurrentSafety(t *testing.T) {
 	config := &ProviderConfig{
 		Capacity:       100,
 		EnablePriority: true,
 		EnableDelayed:  true,
 	}
 
-	provider, err := NewAntsGoroutineProvider(config)
+	provider, err := NewAntsTaskPoolProvider(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -382,10 +382,10 @@ func TestAntsGoroutineProvider_ConcurrentSafety(t *testing.T) {
 	})
 }
 
-func TestAntsGoroutineProvider_Lifecycle(t *testing.T) {
+func TestAntsTaskPoolProvider_Lifecycle(t *testing.T) {
 	t.Run("Close prevents new tasks", func(t *testing.T) {
 		config := DefaultProviderConfig()
-		provider, err := NewAntsGoroutineProvider(config)
+		provider, err := NewAntsTaskPoolProvider(config)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
@@ -406,7 +406,7 @@ func TestAntsGoroutineProvider_Lifecycle(t *testing.T) {
 
 	t.Run("Stats and Health", func(t *testing.T) {
 		config := DefaultProviderConfig()
-		provider, err := NewAntsGoroutineProvider(config)
+		provider, err := NewAntsTaskPoolProvider(config)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
@@ -430,7 +430,7 @@ func TestAntsGoroutineProvider_Lifecycle(t *testing.T) {
 
 func TestSubmitWithArg_Typed(t *testing.T) {
 	config := DefaultProviderConfig()
-	provider, err := NewAntsGoroutineProvider(config)
+	provider, err := NewAntsTaskPoolProvider(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestSubmitWithArg_Typed(t *testing.T) {
 
 func TestSubmitWithResult_Typed(t *testing.T) {
 	config := DefaultProviderConfig()
-	provider, err := NewAntsGoroutineProvider(config)
+	provider, err := NewAntsTaskPoolProvider(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -530,7 +530,7 @@ func TestSubmitWithResult_Typed(t *testing.T) {
 
 func TestSubmitWithArgAndResult_Typed(t *testing.T) {
 	config := DefaultProviderConfig()
-	provider, err := NewAntsGoroutineProvider(config)
+	provider, err := NewAntsTaskPoolProvider(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -555,7 +555,7 @@ func TestSubmitWithArgAndResult_Typed(t *testing.T) {
 
 func TestSubmitAdvanced_Typed(t *testing.T) {
 	config := DefaultProviderConfig()
-	provider, err := NewAntsGoroutineProvider(config)
+	provider, err := NewAntsTaskPoolProvider(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -620,7 +620,7 @@ func TestWrapAnyResult_Timeout(t *testing.T) {
 
 func TestSubmitBatchWithArg_Typed(t *testing.T) {
 	config := DefaultProviderConfig()
-	provider, err := NewAntsGoroutineProvider(config)
+	provider, err := NewAntsTaskPoolProvider(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -684,7 +684,7 @@ func TestSubmitBatchWithArg_Typed(t *testing.T) {
 
 func TestSubmitBatchWithResult_Typed(t *testing.T) {
 	config := DefaultProviderConfig()
-	provider, err := NewAntsGoroutineProvider(config)
+	provider, err := NewAntsTaskPoolProvider(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}

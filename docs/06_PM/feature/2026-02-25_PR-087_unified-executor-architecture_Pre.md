@@ -13,14 +13,14 @@
 | 工作类型 | 重构（Refactor）- Feature 范畴 |
 | PR编号 | PR-087（创建GitHub PR后补充完整） |
 | 分支名称 | `feature/PR-087-unified-executor-architecture` |
-| 工作主题 | 统一执行器架构 - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 + 可暂停调度器 |
+| 工作主题 | 统一执行器架构 - TaskPoolProvider 接口拆分 + 领域事件 |
 | 负责人 | 🤖 核心开发 A |
 | 分支创建日期 | 2026-02-25 |
 | 计划开工日期 | 2026-02-25 |
-| 计划CI通过日期 | 2026-03-15（2-3 周） |
-| 关联需求单号 | M2 存储引擎 - 可暂停调度器核心依赖 |
-| 架构师评审状态 | ⏳ 待评审 |
-| 预审批结果 | ⏳ 待审批 |
+| 计划CI通过日期 | 2026-03-01（3-5 天） |
+| 关联需求单号 | M2 存储引擎 - 异步任务池核心依赖 |
+| 架构师评审状态 | ✅ 已通过 |
+| 预审批结果 | ✅ 已批准 |
 | 参考文档 | [Spike 文档 v2.6](../../07_spike/2026-02-25_spike-glm-unified-executor.md) |
 
 ### 2. 背景与目标（为什么干）
@@ -28,16 +28,16 @@
 #### 2.1 背景
 
 **业务场景**：
-- NexKV 需要构建**可暂停调度器**架构
-- 将分布式 KV 请求的完整执行流程从「隐式的 goroutine 栈/回调链」变成「**可序列化、可持久化、可中断、可迁移、可回溯的显式状态机**」
+- NexKV 需要构建**高性能任务池**架构
+- 为 M2 存储引擎提供高性能异步任务执行能力
 
 **现有问题**：
 
 | 问题 | 现状 | 影响 |
 |------|------|------|
-| **接口过大** | `GoroutineProvider` 13 个方法，职责混杂 | 难以测试、耦合度高 |
+| **接口过大** | `TaskPoolProvider` 13 个方法，职责混杂 | 难以测试、耦合度高 |
 | **执行引擎性能** | ants 协程池有锁竞争，延迟抖动 | 高并发场景性能受限 |
-| **可暂停能力缺失** | 无暂停/恢复/迁移机制 | 无法支持跨节点迁移 |
+| **命名混乱** | Goroutine* 命名暴露实现细节 | 不符合领域抽象 |
 
 **价值**：
 
@@ -46,38 +46,42 @@
    - 降低模块耦合
    - 100% 向后兼容
 
-2. **Per-Core 执行器收益**：
-   - 5-10x 吞吐量提升
-   - 消除锁竞争
-   - P99 延迟降低到 <10μs
+2. **领域事件收益**：
+   - 支持事件驱动架构
+   - 可观测性增强
+   - 解耦任务生命周期管理
 
-3. **可暂停调度器收益**：
-   - 支持任务暂停/恢复
-   - 支持跨节点迁移
-   - 支持执行状态回溯
+3. **命名规范化收益**：
+   - 领域抽象清晰
+   - 实现细节隐藏
+
+> 📝 **范围调整**:
+> - 可暂停调度器（StepExecutor/Checkpoint/Migration）移至后续 PR（WAL 完成后实现）
+> - Per-Core 执行器移至后续 PR（CPU 亲和性需要 cgo 实现）
 
 #### 2.2 核心目标（可量化、可验证）
 
 1. **功能目标**：
-   - ✅ 实现接口拆分：GoroutineProvider 13 方法 → 7 原子 + 3 组合 + 4 可暂停调度器（14个）
-   - ✅ 实现 PerCoreExecutor：每核单 goroutine，绑核执行，无锁设计
+   - ✅ 实现接口拆分：8 原子 + 3 组合 + TaskPoolProvider 完整接口
+   - ✅ 实现领域事件：TaskSubmitted/Completed/Failed/QueueFull
    - ✅ 实现向后兼容：100% 兼容现有代码
+   - ✅ 统一命名：Goroutine* → Task* (领域抽象)
 
-2. **性能目标**：
-   - ✅ 吞吐量：≥ 2M ops/s（Ants 的 4x）
-   - ✅ P99 延迟：< 10μs（Ants 的 5-10x）
-   - ✅ 锁竞争：消除
+2. **性能目标**（后续 PR - Per-Core 执行器）：
+   - 🔄 吞吐量：≥ 2M ops/s（Ants 的 4x）
+   - 🔄 P99 延迟：< 10μs（Ants 的 5-10x）
+   - 🔄 锁竞争：消除
 
 3. **兼容性目标**：
    - ✅ 100% 向后兼容
-   - ✅ 支持 Ants 降级
+   - ✅ 支持 Ants 实现
 
 ### 3. 技术方案（怎么干）
 
 #### 3.1 接口拆分方案
 
-> ⭐ **命名规范**: 采用与现有代码一致的 `TaskXxx` 命名模式
-> ⭐ **与 Spike 文档对齐**: 14 个接口（7 原子 + 3 组合 + 4 可暂停）
+> ⭐ **命名规范**: 统一使用 `Task*` 命名模式，符合领域抽象
+> ⭐ **与 Spike 文档对齐**: 10 个接口（7 原子 + 3 组合）
 
 ```
 Level 1: 原子接口（7个）
@@ -94,18 +98,13 @@ Level 2: 组合接口（3个）
 ├── AsyncTaskExecutor = BasicTaskExecutor + TaskScheduler + PriorityTaskExecutor + TaskBatcher
 └── FullTaskExecutor = AsyncTaskExecutor + TaskManager
 
-Level 3: 可暂停调度器（4个）
-├── StepExecutor: ExecuteSteps/PauseStep/ResumeStep      // 步骤执行
-├── StepHandler: Execute/Rollback/IsPausable            // 步骤处理
-├── CheckpointHandler: ExecuteToCheckpoint/ExecuteFromCheckpoint  // 检查点
-└── MigrationHandler: PrepareMigrate/CommitMigrate/RollbackMigrate  // 迁移处理
-
-Level 4: 向后兼容
-└── GoroutineProvider = FullTaskExecutor (接口+工厂函数)
+Level 3: 完整接口
+└── TaskPoolProvider = FullTaskExecutor (完整任务池提供者)
 ```
 
-> 📝 **接口对比**: 现有 `TaskExecutor` 用于普通任务，新 `StepExecutor` 用于可暂停任务，两者是**互补关系**而非替代
-> 📝 **向后兼容**: 通过工厂函数 `NewGoroutineProvider()` 运行时选择 Per-Core 或 Ants 实现
+> 📝 **向后兼容**: 通过工厂函数 `NewTaskPoolProvider()` 运行时选择 Per-Core 或 Ants 实现
+
+> 📝 **范围调整**: 可暂停调度器（StepExecutor/Checkpoint/Migration）移至后续 PR（WAL 完成后实现）
 
 #### 3.2 领域事件设计
 
@@ -115,7 +114,7 @@ Level 4: 向后兼容
 // 任务事件
 type TaskSubmittedEvent struct {
     TaskID    string
-    Priority  Priority
+    Priority  TaskPriority
     Timestamp time.Time
 }
 
@@ -131,23 +130,16 @@ type TaskFailedEvent struct {
     Timestamp time.Time
 }
 
-// 步骤执行事件
-type StepPausedEvent struct {
-    OpID      string
-    StepIndex int
-    Timestamp time.Time
+// 背压事件
+type QueueFullEvent struct {
+    CoreID      int
+    QueueLength int
+    Strategy    string  // 触发的背压策略
+    Timestamp   time.Time
 }
+```
 
-type StepResumedEvent struct {
-    OpID      string
-    StepIndex int
-    Timestamp time.Time
-}
-
-type StepCompletedEvent struct {
-    OpID      string
-    StepIndex int
-    Duration  time.Duration
+> 📝 **范围调整**: 步骤执行事件（StepPaused/Resumed/Completed/Checkpoint）移至后续 PR（WAL 完成后实现）
     Timestamp time.Time
 }
 
@@ -184,6 +176,16 @@ type PauseTimeoutEvent struct {
 
 #### 3.3 Per-Core 执行器设计
 
+> 📝 **范围调整**: 本节内容移至后续 PR
+>
+> **原因**: CPU 亲和性绑定需要 cgo + sched_setaffinity，增加复杂度
+
+**TODO（后续 PR）**：
+- PerCoreExecutor 实现
+- CPU 亲和性绑定（cgo + sched_setaffinity）
+- 性能基准测试
+
+**设计草图**：
 ```go
 type PerCoreExecutor struct {
     cpus   int
@@ -196,81 +198,21 @@ type coreWorker struct {
 }
 ```
 
-**核心特性**：
+**核心特性**（后续实现）：
 - 每 CPU 核心一个 goroutine
-- LockOSThread 绑核执行
+- CPU 亲和性绑定（cgo）
 - 一对一 channel 原生暂停语义
 - 无锁设计
 
-**优雅关闭流程**：
-```
-1. 接收关闭信号（SIGINT/SIGTERM）
-2. 设置关闭标志，拒绝新任务提交
-3. 等待正在执行的任务完成（默认超时 30s，可配置）
-4. 超时后强制取消（context cancel）
-5. 清理资源（关闭 channel，释放内存）
-6. 发布 ShutdownCompleteEvent 事件
-```
+#### 3.4 可暂停调度器设计
 
-**资源清理策略**：
-| 资源类型 | 策略 | 配置 |
-|---------|------|------|
-| pausedOps | TTL 1小时自动清理 | `PausedOpTTL` |
-| 任务队列 | 每核最大 100MB | `MaxQueueSizePerCore` |
-| goroutine | 空闲 5 分钟释放 | `IdleTimeout` |
-| Checkpoint | 保留最近 N 个 | `MaxCheckpointCount` |
+> 📝 **范围调整**: 本节内容移至后续 PR（WAL 完成后实现）
+>
+> **原因**: Checkpoint 持久化依赖 WAL 支持，当前 WAL 模块尚未完成
 
-#### 3.3 可暂停调度器设计
-
-```go
-type StepExecutor interface {
-    ExecuteSteps(ctx context.Context, steps []Step, stepCtx *StepContext) error
-    PauseStep(opID string) error
-    ResumeStep(opID string) error
-}
-
-type CheckpointHandler interface {
-    ExecuteToCheckpoint(ctx context.Context, stepCtx *StepContext, cp Checkpoint) error
-    ExecuteFromCheckpoint(ctx context.Context, stepCtx *StepContext, cp Checkpoint) error
-}
-```
-
-**Checkpoint 持久化方案**：
-```go
-// Checkpoint 结构
-type Checkpoint struct {
-    ID        string    // 唯一标识
-    LSN       uint64    // 日志序列号
-    ShardID   int       // 分片 ID
-    Step      Step      // 当前步骤
-    Data      []byte    // 序列化状态
-    Timestamp time.Time // 创建时间
-    Term      uint64    // 任期号
-}
-
-// 持久化策略
-// 1. 每个 Checkpoint 写入独立文件（checkpoint_{shard}_{lsn}.cp）
-// 2. 保留最近 N 个 Checkpoint，定期清理旧文件
-// 3. 启动时加载最新 Checkpoint，从 LSN 位置重放 WAL
-```
-
-**迁移恢复机制**：
-```go
-// MigrationRecovery 迁移恢复
-type MigrationRecovery struct {
-    MigrationID string    // 迁移 ID
-    LastPhase   Phase    // 最后完成的阶段 (1-5)
-    Snapshot    []byte   // 已传输的数据
-    Term        uint64   // 当时的 Term
-    Timestamp   time.Time // 更新时间
-}
-
-// 恢复流程
-// 1. 启动时检查是否存在未完成的迁移
-// 2. 根据 LastPhase 决定从哪个阶段继续
-// 3. 验证 Term 是否有效（防止过期迁移）
-// 4. 继续执行剩余阶段（幂等操作）
-```
+**TODO（后续 PR - WAL 完成后）**：
+- StepExecutor 接口实现
+- CheckpointHandler 接口实现
 
 **背压策略**：
 ```go
@@ -670,76 +612,66 @@ func perCoreAvailable() bool {
 #### 3.6 领域模型定义位置
 
 > ⭐ **修正**：根据 DDD 原则调整模型放置位置
+> 📝 **范围调整**: Step/Checkpoint 相关模型移至后续 PR（WAL 完成后实现）
 
 | 模型 | 定义文件 | 说明 |
 |------|----------|------|
-| `Step`, `StepContext` | `internal/domain/aggregate/step_aggregate.go` | 领域聚合根 |
-| `MigrationState` | `internal/domain/service/migration_state.go` | 领域服务 |
-| `Checkpoint` | `internal/infrastructure/persistence/checkpoint.go` | 基础设施（持久化） |
-| `Priority` | 复用现有 `concurrency.go` | 已存在 |
+| `TaskPriority` | `internal/domain/model/task.go` | ✅ 已实现 |
+| `TaskPoolStats` | `internal/domain/model/task.go` | ✅ 已实现 |
+| `TaskHealthStatus` | `internal/domain/model/task.go` | ✅ 已实现 |
+| 领域事件 | `internal/domain/service/task.go` | ✅ 已实现 |
 
 **分层原则**：
-- **domain/aggregate/**：包含业务规则的领域实体
-- **domain/service**：跨实体的业务流程
-- **infrastructure/persistence**：持久化机制（不属于核心域）
+- **domain/model/**：值对象、枚举、统计信息
+- **domain/service/**：接口定义、领域事件
 
 ### 4. 实施计划（谁干、什么时候干）
 
-#### 4.1 四阶段实施
+#### 4.1 三阶段实施
 
 ```
-Phase 1: 接口层准备（1-2 天）
-├── 定义 TaskExecutor/CoreTaskExecutor/ScheduledTaskExecutor 接口
-├── 定义 Step/Checkpoint/MigrationState 模型
-├── 在 domain/model/ 下创建 step.go, checkpoint.go, migration.go
-├── 实现适配器模式 GoroutineProviderAdapter
-├── 添加向后兼容别名
+Phase 1: 接口层准备（1-2 天）✅ 已完成
+├── 定义 7 个原子接口（TaskExecutor/CoreTaskExecutor/...）
+├── 定义 3 个组合接口（BasicTaskExecutor/AsyncTaskExecutor/FullTaskExecutor）
+├── 定义领域事件（TaskSubmittedEvent/TaskCompletedEvent/...）
+├── 实现 TaskPoolProvider 完整接口
 └── 编译验证
 
-Phase 2: Per-Core 执行器实现（2-3 天）
+Phase 2: Per-Core 执行器实现（后续 PR）
 ├── 实现 PerCoreExecutor
-├── 实现队列满策略
-├── 实现优雅关闭
-├── 实现 pausedOps TTL 清理
-└── 性能基准测试
+├── CPU 亲和性绑定（cgo）
+├── 性能基准测试
+└── 与 Ants 对比
 
-Phase 3: 可暂停调度器集成（3-5 天）
+Phase 3: 可暂停调度器集成（后续 PR - WAL 完成后）
 ├── 实现 PerCoreStepExecutor
 ├── 实现 Checkpoint 级别暂停/恢复
-├── 实现跨节点迁移集成
 ├── RPC 模块迁移到小接口
 └── 集成测试
-
-Phase 4: 生产验证（1-2 周）
-├── WAL 刷盘模块试点
-├── 性能对比测试
-├── 故障恢复测试
-└── 全链路验证
 ```
 
 #### 4.2 时间线
 
-| 阶段 | 内容 | 周期 | 交付物 |
-|------|------|------|--------|
-| Phase 1 | 接口层准备 | 1-2 天 | `internal/domain/service/executor.go` |
-| Phase 2 | Per-Core 实现 | 2-3 天 | `internal/infrastructure/concurrency/percore_executor.go` |
-| Phase 3 | 调度器集成 | 3-5 天 | `internal/infrastructure/scheduler/percore_step_executor.go` |
-| Phase 4 | 生产验证 | 1-2 周 | 测试报告 |
+| 阶段 | 内容 | 周期 | 交付物 | 状态 |
+|------|------|------|--------|------|
+| Phase 1 | 接口层准备 | 1-2 天 | `internal/domain/service/task.go` | ✅ 已完成 |
+| Phase 2 | Per-Core 实现 | 后续 PR | `internal/infrastructure/concurrency/percore_executor.go` | 🔄 待 cgo |
+| Phase 3 | 调度器集成 | 后续 PR | `internal/infrastructure/scheduler/percore_step_executor.go` | 🔄 待 WAL |
 
-**总计**: 2-3 周（不含 Phase 4）
+**总计**: 1-2 天（Phase 1）
 
 ### 5. 验收标准（怎么算干完）
 
 #### 5.1 功能验收
 
-| 验收项 | 标准 |
-|--------|------|
-| 接口拆分 | 7 原子 + 3 组合 + 4 可暂停调度器（14个）接口定义完成 |
-| Per-Core 执行器 | 每核单 goroutine，绑核执行 |
-| 向后兼容 | 100% 兼容现有代码 |
-| 暂停/恢复 | 支持 Checkpoint 级别暂停/恢复 |
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 接口拆分 | 8 原子 + 3 组合 + TaskPoolProvider 完整接口 | ✅ 已完成 |
+| 领域事件 | TaskSubmitted/Completed/Failed/QueueFull 事件定义 | ✅ 已完成 |
+| Per-Core 执行器 | 每核单 goroutine，CPU 亲和性绑定 | 🔄 后续 PR |
+| 暂停/恢复 | 支持 Checkpoint 级别暂停/恢复 | 🔄 后续 PR |
 
-#### 5.2 性能验收
+#### 5.2 性能验收（后续 PR - Per-Core 执行器）
 
 | 指标 | 目标 | 测量方法 |
 |------|------|----------|
@@ -760,7 +692,7 @@ Phase 4: 生产验证（1-2 周）
 
 | 验收项 | 验收标准 | 测试方法 |
 |--------|---------|----------|
-| **向后兼容** | 100% 兼容现有 GoroutineProvider 调用 | 现有 47 个文件回归测试 |
+| **接口分层** | 7 原子 + 3 组合 + TaskPoolProvider | 编译验证 |
 | **降级方案** | Per-Core 不可用时自动切换到 Ants | 故障注入测试 |
 | **优雅关闭** | 关闭时等待正在执行的任务完成 | 关闭超时测试 |
 | **内存泄漏** | 长时间运行无内存泄漏 | 24h 压力测试 + pprof |

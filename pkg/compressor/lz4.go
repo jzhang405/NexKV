@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"io"
 
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/pierrec/lz4/v4"
 )
 
@@ -63,7 +64,7 @@ func (c *lz4Compressor) DecompressWithLimit(data []byte, maxBytes int) ([]byte, 
 
 	// 检查是否超过大小限制
 	if len(decompressed) > maxBytes {
-		return nil, ErrDecompressionTooBig
+		return nil, errors.ErrDecompressionTooBig
 	}
 
 	return decompressed, nil

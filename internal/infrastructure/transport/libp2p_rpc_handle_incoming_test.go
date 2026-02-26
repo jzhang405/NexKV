@@ -86,7 +86,7 @@ func TestHandleIncomingStream_Request(t *testing.T) {
 	defer server.Close()
 
 	// 创建 RPC
-	provider := newMockGoroutineProvider()
+	provider := newMockTaskPoolProvider()
 	rpc := NewLibp2pRPC(server, provider, nil)
 
 	// 设置请求处理器
@@ -151,7 +151,7 @@ func TestHandleIncomingStream_Response(t *testing.T) {
 	defer server.Close()
 
 	// 创建 RPC
-	provider := newMockGoroutineProvider()
+	provider := newMockTaskPoolProvider()
 	rpc := NewLibp2pRPC(server, provider, nil)
 
 	// 创建模拟响应消息
@@ -194,7 +194,7 @@ func TestHandleIncomingStream_NoHandler(t *testing.T) {
 	defer server.Close()
 
 	// 创建 RPC（不设置处理器）
-	provider := newMockGoroutineProvider()
+	provider := newMockTaskPoolProvider()
 	rpc := NewLibp2pRPC(server, provider, nil)
 
 	// 创建模拟请求消息
@@ -239,7 +239,7 @@ func TestHandleIncomingStream_ClosedRPC(t *testing.T) {
 	defer server.Close()
 
 	// 创建 RPC
-	provider := newMockGoroutineProvider()
+	provider := newMockTaskPoolProvider()
 	rpc := NewLibp2pRPC(server, provider, nil)
 
 	// 关闭 RPC
@@ -285,7 +285,7 @@ func TestHandleIncomingStream_InvalidMessage(t *testing.T) {
 	defer server.Close()
 
 	// 创建 RPC
-	provider := newMockGoroutineProvider()
+	provider := newMockTaskPoolProvider()
 	rpc := NewLibp2pRPC(server, provider, nil)
 
 	// 创建无效数据（不是有效的 MessagePack 消息）
@@ -329,7 +329,7 @@ func TestRPCFullCycle(t *testing.T) {
 	}
 
 	// 创建服务端 RPC
-	serverProvider := newMockGoroutineProvider()
+	serverProvider := newMockTaskPoolProvider()
 	serverRPC := NewLibp2pRPC(server, serverProvider, nil)
 
 	// 设置服务端处理器
@@ -355,7 +355,7 @@ func TestRPCFullCycle(t *testing.T) {
 	})
 
 	// 创建客户端 RPC
-	clientProvider := newMockGoroutineProvider()
+	clientProvider := newMockTaskPoolProvider()
 	clientRPC := NewLibp2pRPC(client, clientProvider, nil)
 
 	// 发起调用

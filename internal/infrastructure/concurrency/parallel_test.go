@@ -17,43 +17,43 @@ import (
 func setupTestProvider(t *testing.T) {
 	// 使用简单的 goroutine provider 用于测试
 	// 测试中使用原生 go 关键字，因为测试需要直接控制 goroutine
-	SetDefaultProvider(&testGoroutineProvider{})
+	SetDefaultProvider(&testTaskPoolProvider{})
 	t.Cleanup(func() {
 		SetDefaultProvider(nil)
 	})
 }
 
-// testGoroutineProvider 测试用的简单 provider
-type testGoroutineProvider struct{}
+// testTaskPoolProvider 测试用的简单 provider
+type testTaskPoolProvider struct{}
 
-func (p *testGoroutineProvider) Submit(ctx context.Context, task func(context.Context)) error {
+func (p *testTaskPoolProvider) Submit(ctx context.Context, task func(context.Context)) error {
 	// 测试中使用 go 关键字直接启动 goroutine
 	go task(ctx) //nolint:errcheck
 	return nil
 }
 
-func (p *testGoroutineProvider) SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error {
+func (p *testTaskPoolProvider) SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error {
 	go task(ctx, arg) //nolint:errcheck
 	return nil
 }
 
-func (p *testGoroutineProvider) SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) service.GoroutineResult[any] {
+func (p *testTaskPoolProvider) SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) service.TaskResult[any] {
 	// 简化实现，测试中不直接使用
 	_ = task // 避免未使用警告
 	return nil
 }
 
-func (p *testGoroutineProvider) SubmitWithArgAndResult(ctx context.Context, task func(context.Context, any) (any, error), arg any) service.GoroutineResult[any] {
+func (p *testTaskPoolProvider) SubmitWithArgAndResult(ctx context.Context, task func(context.Context, any) (any, error), arg any) service.TaskResult[any] {
 	_ = task // 避免未使用警告
 	return nil
 }
 
-func (p *testGoroutineProvider) SubmitWithPriority(ctx context.Context, priority model.GoroutinePriority, task func(context.Context)) error {
+func (p *testTaskPoolProvider) SubmitWithPriority(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
 	go task(ctx) //nolint:errcheck
 	return nil
 }
 
-func (p *testGoroutineProvider) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
+func (p *testTaskPoolProvider) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
 	go func() {
 		time.Sleep(delay)
 		task(ctx)
@@ -61,26 +61,26 @@ func (p *testGoroutineProvider) SubmitDelayed(ctx context.Context, delay time.Du
 	return nil
 }
 
-func (p *testGoroutineProvider) SubmitAdvanced(ctx context.Context, task func(context.Context, any) (any, error), arg any, opts ...service.GoroutineSubmitOption) service.GoroutineResult[any] {
+func (p *testTaskPoolProvider) SubmitAdvanced(ctx context.Context, task func(context.Context, any) (any, error), arg any, opts ...service.TaskSubmitOption) service.TaskResult[any] {
 	go task(ctx, arg) //nolint:errcheck
 	return nil
 }
 
-func (p *testGoroutineProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
+func (p *testTaskPoolProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
 	for _, task := range tasks {
 		go task(ctx)
 	}
 	return nil
 }
 
-func (p *testGoroutineProvider) SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error {
+func (p *testTaskPoolProvider) SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error {
 	for i, task := range tasks {
 		go task(ctx, args[i])
 	}
 	return nil
 }
 
-func (p *testGoroutineProvider) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
+func (p *testTaskPoolProvider) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
 	var errs []error
 	for _, task := range tasks {
 		go task(ctx)
@@ -88,8 +88,8 @@ func (p *testGoroutineProvider) SubmitBatchAllErrors(ctx context.Context, tasks 
 	return errs
 }
 
-func (p *testGoroutineProvider) SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []service.GoroutineResult[any] {
-	results := make([]service.GoroutineResult[any], len(tasks))
+func (p *testTaskPoolProvider) SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []service.TaskResult[any] {
+	results := make([]service.TaskResult[any], len(tasks))
 	for i, task := range tasks {
 		go func(idx int, t func(context.Context) (any, error)) {
 			val, err := t(ctx)
@@ -99,23 +99,23 @@ func (p *testGoroutineProvider) SubmitBatchWithResult(ctx context.Context, tasks
 	return results
 }
 
-func (p *testGoroutineProvider) Stats() model.GoroutinePoolStats {
-	return model.GoroutinePoolStats{}
+func (p *testTaskPoolProvider) Stats() service.TaskPoolStats {
+	return service.TaskPoolStats{}
 }
 
-func (p *testGoroutineProvider) Health() model.GoroutineHealthStatus {
-	return model.GoroutineHealthStatusHealthy
+func (p *testTaskPoolProvider) Health() service.TaskHealthStatus {
+	return model.TaskHealthStatusHealthy
 }
 
-func (p *testGoroutineProvider) SetCapacity(capacity int) error {
+func (p *testTaskPoolProvider) SetCapacity(capacity int) error {
 	return nil
 }
 
-func (p *testGoroutineProvider) Close() error {
+func (p *testTaskPoolProvider) Close() error {
 	return nil
 }
 
-func (p *testGoroutineProvider) CloseWithTimeout(timeout time.Duration) error {
+func (p *testTaskPoolProvider) CloseWithTimeout(timeout time.Duration) error {
 	return nil
 }
 
@@ -293,7 +293,7 @@ func TestDefaultProvider(t *testing.T) {
 		assert.Nil(t, GetDefaultProvider())
 
 		// 设置 provider
-		provider := &testGoroutineProvider{}
+		provider := &testTaskPoolProvider{}
 		SetDefaultProvider(provider)
 
 		// 获取 provider
@@ -303,4 +303,91 @@ func TestDefaultProvider(t *testing.T) {
 		SetDefaultProvider(nil)
 		assert.Nil(t, GetDefaultProvider())
 	})
+}
+
+// ==========================================
+// 补充测试：提高覆盖率
+// ==========================================
+
+func TestWithMaxConcurrent(t *testing.T) {
+	cfg := &ParallelConfig{}
+
+	opt := WithMaxConcurrent(10)
+	opt(cfg)
+
+	assert.Equal(t, 10, cfg.MaxConcurrent)
+}
+
+func TestWithMaxConcurrent_Zero(t *testing.T) {
+	cfg := &ParallelConfig{}
+
+	opt := WithMaxConcurrent(0)
+	opt(cfg)
+
+	assert.Equal(t, 0, cfg.MaxConcurrent)
+}
+
+func TestParallelExecute_WithMaxConcurrentOption(t *testing.T) {
+	setupTestProvider(t)
+
+	var maxConcurrent atomic.Int32
+	var currentConcurrent atomic.Int32
+
+	err := ParallelExecute(context.Background(), nil, 50, 0, func(ctx context.Context, i int) error {
+		cur := currentConcurrent.Add(1)
+		if cur > maxConcurrent.Load() {
+			maxConcurrent.Store(cur)
+		}
+		time.Sleep(10 * time.Millisecond)
+		currentConcurrent.Add(-1)
+		return nil
+	}, WithMaxConcurrent(5))
+
+	assert.NoError(t, err)
+	// 验证最大并发数不超过 5
+	assert.LessOrEqual(t, maxConcurrent.Load(), int32(5))
+}
+
+func TestParallelExecute_NilProvider(t *testing.T) {
+	// 设置默认 provider
+	setupTestProvider(t)
+
+	var counter atomic.Int32
+	err := ParallelExecute(context.Background(), nil, 10, 5, func(ctx context.Context, i int) error {
+		counter.Add(1)
+		return nil
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, int32(10), counter.Load())
+}
+
+func TestParallelExecuteWithResult_WithFailFast(t *testing.T) {
+	setupTestProvider(t)
+
+	expectedErr := errors.New("test error")
+	results := ParallelExecuteWithResult(context.Background(), nil, 10, 5, func(ctx context.Context, i int) (int, error) {
+		if i == 3 {
+			return 0, expectedErr
+		}
+		time.Sleep(10 * time.Millisecond)
+		return i * 2, nil
+	}, WithFailFast(true))
+
+	// 快速失败模式下，可能不是所有任务都执行
+	assert.LessOrEqual(t, len(results), 10)
+}
+
+func TestParallelExecuteWithResult_AllErrors(t *testing.T) {
+	setupTestProvider(t)
+
+	expectedErr := errors.New("all fail")
+	results := ParallelExecuteWithResult(context.Background(), nil, 5, 2, func(ctx context.Context, i int) (int, error) {
+		return 0, expectedErr
+	})
+
+	require.Len(t, results, 5)
+	for _, r := range results {
+		assert.ErrorIs(t, r.Err, expectedErr)
+	}
 }

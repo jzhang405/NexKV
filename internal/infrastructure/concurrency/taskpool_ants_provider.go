@@ -1,4 +1,4 @@
-// Package concurrency 提供协程池和定时任务管理
+// Package concurrency 提供任务池和定时任务管理
 package concurrency
 
 import (
@@ -28,15 +28,15 @@ const (
 )
 
 // ==========================================
-// AntsGoroutineProvider 实现
+// AntsTaskPoolProvider 实现
 // ==========================================
 
-// AntsGoroutineProvider 基于 ants 库的协程池实现
-// 实现 domain/service.GoroutineProvider 接口
-type AntsGoroutineProvider struct {
+// AntsTaskPoolProvider 基于 ants 库的任务池实现
+// 实现 domain/service.TaskPoolProvider 接口
+type AntsTaskPoolProvider struct {
 	pool       *ants.Pool
 	config     *ProviderConfig
-	stats      GoroutinePoolStats
+	stats      TaskPoolStats
 	statsMu    sync.RWMutex
 	closed     atomic.Bool
 	stopCh     chan struct{}  // 全局停止信号
@@ -49,9 +49,9 @@ type AntsGoroutineProvider struct {
 	submitCounter atomic.Int64 // Submit 调用计数器
 }
 
-// ProviderConfig 协程池配置
+// ProviderConfig 任务池配置
 type ProviderConfig struct {
-	// Capacity 协程池容量
+	// Capacity 任务池容量
 	Capacity int
 	// MaxCapacity 最大容量（自动扩容上限）
 	MaxCapacity int
@@ -77,6 +77,10 @@ type ProviderConfig struct {
 	ShrinkCheckInterval time.Duration
 	// ShrinkCooldown 缩容冷却时间（扩容后多久才能缩容）
 	ShrinkCooldown time.Duration
+	// OnError 错误回调函数（可选）
+	// 当延迟任务内部提交失败时调用
+	// taskType: "delayed", "priority", "batch" 等
+	OnError func(err error, taskType string)
 }
 
 // DefaultProviderConfig 默认配置
@@ -99,8 +103,8 @@ func DefaultProviderConfig() *ProviderConfig {
 	}
 }
 
-// NewAntsGoroutineProvider 创建 ants 协程池提供者
-func NewAntsGoroutineProvider(config *ProviderConfig) (*AntsGoroutineProvider, error) {
+// NewAntsTaskPoolProvider 创建 ants 任务池提供者
+func NewAntsTaskPoolProvider(config *ProviderConfig) (*AntsTaskPoolProvider, error) {
 	if config == nil {
 		config = DefaultProviderConfig()
 	}
@@ -124,13 +128,13 @@ func NewAntsGoroutineProvider(config *ProviderConfig) (*AntsGoroutineProvider, e
 		return nil, err
 	}
 
-	provider := &AntsGoroutineProvider{
+	provider := &AntsTaskPoolProvider{
 		pool:            pool,
 		config:          config,
 		currentCapacity: config.Capacity,
-		stats: GoroutinePoolStats{
+		stats: TaskPoolStats{
 			Capacity:   config.Capacity,
-			ByPriority: make(map[GoroutinePriority]int),
+			ByPriority: make(map[TaskPriority]int),
 		},
 		stopCh:     make(chan struct{}),
 		delayedSem: make(chan struct{}, DefaultMaxDelayedTasks), // P1-01: 速率限制
@@ -150,7 +154,7 @@ func NewAntsGoroutineProvider(config *ProviderConfig) (*AntsGoroutineProvider, e
 
 // safeExecute 安全执行任务，捕获 panic
 // P1-02: 添加日志记录
-func (p *AntsGoroutineProvider) safeExecute(task func()) {
+func (p *AntsTaskPoolProvider) safeExecute(task func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			// P1-02: 使用 panicRecoveryHandler 处理 panic
@@ -161,12 +165,26 @@ func (p *AntsGoroutineProvider) safeExecute(task func()) {
 }
 
 // handlePanic 处理 panic 恢复
-func (p *AntsGoroutineProvider) handlePanic(r any) {
+func (p *AntsTaskPoolProvider) handlePanic(r any) {
 	stack := debug.Stack()
 	logrus.WithFields(logrus.Fields{
 		"panic": r,
 		"stack": string(stack),
 	}).Error("panic recovered in goroutine task")
+}
+
+// handleTaskError 处理任务内部错误（P1-03: 延迟任务错误处理）
+// 优先调用用户配置的回调，否则使用 logrus 记录
+func (p *AntsTaskPoolProvider) handleTaskError(err error, taskType string) {
+	if p.config.OnError != nil {
+		p.config.OnError(err, taskType)
+		return
+	}
+	// 默认使用 logrus 记录
+	logrus.WithFields(logrus.Fields{
+		"task_type": taskType,
+		"error":     err.Error(),
+	}).Warn("task submission failed")
 }
 
 // ======================================
@@ -175,7 +193,7 @@ func (p *AntsGoroutineProvider) handlePanic(r any) {
 
 // scheduleDelayedTask 调度延迟任务（统一处理，避免泄漏）
 // P1-01: 添加速率限制
-func (p *AntsGoroutineProvider) scheduleDelayedTask(
+func (p *AntsTaskPoolProvider) scheduleDelayedTask(
 	ctx context.Context,
 	delay time.Duration,
 	execute func(),
@@ -219,7 +237,7 @@ func (p *AntsGoroutineProvider) scheduleDelayedTask(
 // ======================================
 
 // Submit 实现接口
-func (p *AntsGoroutineProvider) Submit(ctx context.Context, task func(context.Context)) error {
+func (p *AntsTaskPoolProvider) Submit(ctx context.Context, task func(context.Context)) error {
 	if p.isClosed() {
 		return ErrPoolClosed
 	}
@@ -238,7 +256,7 @@ func (p *AntsGoroutineProvider) Submit(ctx context.Context, task func(context.Co
 }
 
 // SubmitWithArg 实现接口
-func (p *AntsGoroutineProvider) SubmitWithArg(
+func (p *AntsTaskPoolProvider) SubmitWithArg(
 	ctx context.Context,
 	task func(context.Context, any),
 	arg any,
@@ -255,40 +273,31 @@ func (p *AntsGoroutineProvider) SubmitWithArg(
 }
 
 // SubmitWithResult 实现接口
-func (p *AntsGoroutineProvider) SubmitWithResult(
+func (p *AntsTaskPoolProvider) SubmitWithResult(
 	ctx context.Context,
 	task func(context.Context) (any, error),
 ) Result[any] {
-	result := NewAnyResult()
-
-	if p.isClosed() {
-		result.SetError(ErrPoolClosed)
-		return result
-	}
-
-	// P0-03: 检查 Submit 错误
-	if err := p.pool.Submit(func() {
-		p.safeExecute(func() {
-			val, err := task(ctx)
-			if err != nil {
-				result.SetError(err)
-			} else {
-				result.SetValue(val)
-			}
-		})
-	}); err != nil {
-		result.SetError(err)
-	}
-
-	return result
+	return p.submitWithResult(ctx, func() (any, error) {
+		return task(ctx)
+	})
 }
 
 // SubmitWithArgAndResult 实现接口
-func (p *AntsGoroutineProvider) SubmitWithArgAndResult(
+func (p *AntsTaskPoolProvider) SubmitWithArgAndResult(
 	ctx context.Context,
 	task func(context.Context, any) (any, error),
 	arg any,
 ) Result[any] {
+	return p.submitWithResult(ctx, func() (any, error) {
+		return task(ctx, arg)
+	})
+}
+
+// submitWithResult 统一的结果任务提交逻辑
+func (p *AntsTaskPoolProvider) submitWithResult(
+	ctx context.Context,
+	task func() (any, error),
+) *AnyResult {
 	result := NewAnyResult()
 
 	if p.isClosed() {
@@ -296,10 +305,9 @@ func (p *AntsGoroutineProvider) SubmitWithArgAndResult(
 		return result
 	}
 
-	// P0-03: 检查 Submit 错误
 	if err := p.pool.Submit(func() {
 		p.safeExecute(func() {
-			val, err := task(ctx, arg)
+			val, err := task()
 			if err != nil {
 				result.SetError(err)
 			} else {
@@ -314,9 +322,9 @@ func (p *AntsGoroutineProvider) SubmitWithArgAndResult(
 }
 
 // SubmitWithPriority 实现接口
-func (p *AntsGoroutineProvider) SubmitWithPriority(
+func (p *AntsTaskPoolProvider) SubmitWithPriority(
 	ctx context.Context,
-	priority GoroutinePriority,
+	priority TaskPriority,
 	task func(context.Context),
 ) error {
 	if p.isClosed() {
@@ -336,7 +344,7 @@ func (p *AntsGoroutineProvider) SubmitWithPriority(
 }
 
 // SubmitDelayed 实现接口
-func (p *AntsGoroutineProvider) SubmitDelayed(
+func (p *AntsTaskPoolProvider) SubmitDelayed(
 	ctx context.Context,
 	delay time.Duration,
 	task func(context.Context),
@@ -347,11 +355,14 @@ func (p *AntsGoroutineProvider) SubmitDelayed(
 
 	// P0-02: 使用统一的延迟任务调度，P1-01: 处理速率限制错误
 	return p.scheduleDelayedTask(ctx, delay, func() {
-		_ = p.pool.Submit(func() {
+		// P1-03: 处理内部提交错误
+		if err := p.pool.Submit(func() {
 			p.safeExecute(func() {
 				task(ctx)
 			})
-		})
+		}); err != nil {
+			p.handleTaskError(err, "delayed")
+		}
 	})
 }
 
@@ -360,11 +371,11 @@ func (p *AntsGoroutineProvider) SubmitDelayed(
 // ======================================
 
 // submitOptions 提交选项配置（内部使用）
-// 使用 domain/service.GoroutineSubmitOptions 的别名
-type submitOptions = service.GoroutineSubmitOptions
+// 使用 domain/service.TaskSubmitOptions 的别名
+type submitOptions = service.TaskSubmitOptions
 
 // applyOptions 应用选项
-func applyOptions(opts []GoroutineSubmitOption) *submitOptions {
+func applyOptions(opts []TaskSubmitOption) *submitOptions {
 	config := &submitOptions{
 		Priority: PriorityNormal,
 	}
@@ -375,12 +386,23 @@ func applyOptions(opts []GoroutineSubmitOption) *submitOptions {
 }
 
 // SubmitAdvanced 实现接口
-func (p *AntsGoroutineProvider) SubmitAdvanced(
+func (p *AntsTaskPoolProvider) SubmitAdvanced(
 	ctx context.Context,
 	task func(context.Context, any) (any, error),
 	arg any,
-	opts ...GoroutineSubmitOption,
-) GoroutineResult[any] {
+	opts ...TaskSubmitOption,
+) TaskResult[any] {
+	return p.submitAdvancedInternal(ctx, func() (any, error) {
+		return task(ctx, arg)
+	}, opts...)
+}
+
+// submitAdvancedInternal 统一的高级任务提交逻辑
+func (p *AntsTaskPoolProvider) submitAdvancedInternal(
+	ctx context.Context,
+	task func() (any, error),
+	opts ...TaskSubmitOption,
+) *AnyResult {
 	result := NewAnyResult()
 
 	if p.isClosed() {
@@ -390,27 +412,11 @@ func (p *AntsGoroutineProvider) SubmitAdvanced(
 
 	config := applyOptions(opts)
 
-	// P0-02: 处理延迟任务（使用统一的调度方法）
+	// 处理延迟任务
 	if config.Delay > 0 {
-		// P1-01: 处理速率限制错误
 		if err := p.scheduleDelayedTask(ctx, config.Delay, func() {
 			if !p.isClosed() {
-				p.statsMu.Lock()
-				p.stats.ByPriority[config.Priority]++
-				p.statsMu.Unlock()
-
-				if err := p.pool.Submit(func() {
-					p.safeExecute(func() {
-						val, err := task(ctx, arg)
-						if err != nil {
-							result.SetError(err)
-						} else {
-							result.SetValue(val)
-						}
-					})
-				}); err != nil {
-					result.SetError(err)
-				}
+				p.executeWithPriorityAndResult(ctx, task, config.Priority, result)
 			}
 		}); err != nil {
 			result.SetError(err)
@@ -418,15 +424,27 @@ func (p *AntsGoroutineProvider) SubmitAdvanced(
 		return result
 	}
 
+	// 立即执行任务
+	p.executeWithPriorityAndResult(ctx, task, config.Priority, result)
+	return result
+}
+
+// executeWithPriorityAndResult 带优先级统计和结果的任务执行
+func (p *AntsTaskPoolProvider) executeWithPriorityAndResult(
+	ctx context.Context,
+	task func() (any, error),
+	priority TaskPriority,
+	result *AnyResult,
+) {
 	// 记录优先级统计
 	p.statsMu.Lock()
-	p.stats.ByPriority[config.Priority]++
+	p.stats.ByPriority[priority]++
 	p.statsMu.Unlock()
 
-	// P0-03: 检查 Submit 错误
+	// 提交任务
 	if err := p.pool.Submit(func() {
 		p.safeExecute(func() {
-			val, err := task(ctx, arg)
+			val, err := task()
 			if err != nil {
 				result.SetError(err)
 			} else {
@@ -436,8 +454,6 @@ func (p *AntsGoroutineProvider) SubmitAdvanced(
 	}); err != nil {
 		result.SetError(err)
 	}
-
-	return result
 }
 
 // ======================================
@@ -445,7 +461,7 @@ func (p *AntsGoroutineProvider) SubmitAdvanced(
 // ======================================
 
 // SubmitBatch 实现接口
-func (p *AntsGoroutineProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
+func (p *AntsTaskPoolProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
 	if p.isClosed() {
 		return ErrPoolClosed
 	}
@@ -464,7 +480,7 @@ func (p *AntsGoroutineProvider) SubmitBatch(ctx context.Context, tasks []func(co
 }
 
 // SubmitBatchWithArg 实现接口
-func (p *AntsGoroutineProvider) SubmitBatchWithArg(
+func (p *AntsTaskPoolProvider) SubmitBatchWithArg(
 	ctx context.Context,
 	tasks []func(context.Context, any),
 	args []any,
@@ -494,7 +510,7 @@ func (p *AntsGoroutineProvider) SubmitBatchWithArg(
 // SubmitBatchAllErrors 实现接口
 // SubmitBatchAllErrors 实现接口
 // P2-01: 优化锁竞争 - 使用预分配切片 + 原子索引
-func (p *AntsGoroutineProvider) SubmitBatchAllErrors(
+func (p *AntsTaskPoolProvider) SubmitBatchAllErrors(
 	ctx context.Context,
 	tasks []func(context.Context),
 ) []error {
@@ -537,7 +553,7 @@ func (p *AntsGoroutineProvider) SubmitBatchAllErrors(
 }
 
 // SubmitBatchWithResult 实现接口
-func (p *AntsGoroutineProvider) SubmitBatchWithResult(
+func (p *AntsTaskPoolProvider) SubmitBatchWithResult(
 	ctx context.Context,
 	tasks []func(context.Context) (any, error),
 ) []Result[any] {
@@ -553,23 +569,9 @@ func (p *AntsGoroutineProvider) SubmitBatchWithResult(
 	}
 
 	for i, task := range tasks {
-		task := task
-		result := NewAnyResult()
-		results[i] = result
-
-		// P0-03: 检查 Submit 错误
-		if err := p.pool.Submit(func() {
-			p.safeExecute(func() {
-				val, err := task(ctx)
-				if err != nil {
-					result.SetError(err)
-				} else {
-					result.SetValue(val)
-				}
-			})
-		}); err != nil {
-			result.SetError(err)
-		}
+		results[i] = p.submitWithResult(ctx, func() (any, error) {
+			return task(ctx)
+		})
 	}
 
 	return results
@@ -581,7 +583,7 @@ func (p *AntsGoroutineProvider) SubmitBatchWithResult(
 
 // SubmitWithArgTyped 类型安全的带参数函数
 func SubmitWithArgTyped[T any](
-	p *AntsGoroutineProvider,
+	p *AntsTaskPoolProvider,
 	ctx context.Context,
 	task func(context.Context, T),
 	arg T,
@@ -599,129 +601,44 @@ func SubmitWithArgTyped[T any](
 
 // SubmitWithResultTyped 类型安全的带返回值函数
 func SubmitWithResultTyped[T any](
-	p *AntsGoroutineProvider,
+	p *AntsTaskPoolProvider,
 	ctx context.Context,
 	task func(context.Context) (T, error),
 ) *TypedResult[T] {
-	result := &TypedResult[T]{inner: NewAnyResult()}
-
-	if p.isClosed() {
-		result.inner.SetError(ErrPoolClosed)
-		return result
+	return &TypedResult[T]{
+		inner: p.submitWithResult(ctx, func() (any, error) {
+			return task(ctx)
+		}),
 	}
-
-	// P0-03: 检查 Submit 错误
-	if err := p.pool.Submit(func() {
-		p.safeExecute(func() {
-			val, err := task(ctx)
-			if err != nil {
-				result.inner.SetError(err)
-			} else {
-				result.inner.SetValue(val)
-			}
-		})
-	}); err != nil {
-		result.inner.SetError(err)
-	}
-
-	return result
 }
 
 // SubmitWithArgAndResultTyped 类型安全的带参数和返回值函数
 func SubmitWithArgAndResultTyped[T any, R any](
-	p *AntsGoroutineProvider,
+	p *AntsTaskPoolProvider,
 	ctx context.Context,
 	task func(context.Context, T) (R, error),
 	arg T,
 ) *TypedResult[R] {
-	result := &TypedResult[R]{inner: NewAnyResult()}
-
-	if p.isClosed() {
-		result.inner.SetError(ErrPoolClosed)
-		return result
+	return &TypedResult[R]{
+		inner: p.submitWithResult(ctx, func() (any, error) {
+			return task(ctx, arg)
+		}),
 	}
-
-	// P0-03: 检查 Submit 错误
-	if err := p.pool.Submit(func() {
-		p.safeExecute(func() {
-			val, err := task(ctx, arg)
-			if err != nil {
-				result.inner.SetError(err)
-			} else {
-				result.inner.SetValue(val)
-			}
-		})
-	}); err != nil {
-		result.inner.SetError(err)
-	}
-
-	return result
 }
 
 // SubmitAdvancedTyped 类型安全的高级函数
 func SubmitAdvancedTyped[T any, R any](
-	p *AntsGoroutineProvider,
+	p *AntsTaskPoolProvider,
 	ctx context.Context,
 	task func(context.Context, T) (R, error),
 	arg T,
-	opts ...GoroutineSubmitOption,
+	opts ...TaskSubmitOption,
 ) *TypedResult[R] {
-	result := &TypedResult[R]{inner: NewAnyResult()}
-
-	if p.isClosed() {
-		result.inner.SetError(ErrPoolClosed)
-		return result
+	return &TypedResult[R]{
+		inner: p.submitAdvancedInternal(ctx, func() (any, error) {
+			return task(ctx, arg)
+		}, opts...),
 	}
-
-	config := applyOptions(opts)
-
-	// P0-02: 处理延迟任务
-	if config.Delay > 0 {
-		// P1-01: 处理速率限制错误
-		if err := p.scheduleDelayedTask(ctx, config.Delay, func() {
-			if !p.isClosed() {
-				p.statsMu.Lock()
-				p.stats.ByPriority[config.Priority]++
-				p.statsMu.Unlock()
-
-				if err := p.pool.Submit(func() {
-					p.safeExecute(func() {
-						val, err := task(ctx, arg)
-						if err != nil {
-							result.inner.SetError(err)
-						} else {
-							result.inner.SetValue(val)
-						}
-					})
-				}); err != nil {
-					result.inner.SetError(err)
-				}
-			}
-		}); err != nil {
-			result.inner.SetError(err)
-		}
-		return result
-	}
-
-	p.statsMu.Lock()
-	p.stats.ByPriority[config.Priority]++
-	p.statsMu.Unlock()
-
-	// P0-03: 检查 Submit 错误
-	if err := p.pool.Submit(func() {
-		p.safeExecute(func() {
-			val, err := task(ctx, arg)
-			if err != nil {
-				result.inner.SetError(err)
-			} else {
-				result.inner.SetValue(val)
-			}
-		})
-	}); err != nil {
-		result.inner.SetError(err)
-	}
-
-	return result
 }
 
 // ======================================
@@ -729,7 +646,7 @@ func SubmitAdvancedTyped[T any, R any](
 // ======================================
 
 // Stats 实现接口
-func (p *AntsGoroutineProvider) Stats() GoroutinePoolStats {
+func (p *AntsTaskPoolProvider) Stats() TaskPoolStats {
 	p.statsMu.RLock()
 	defer p.statsMu.RUnlock()
 
@@ -741,12 +658,12 @@ func (p *AntsGoroutineProvider) Stats() GoroutinePoolStats {
 }
 
 // Health 实现接口
-func (p *AntsGoroutineProvider) Health() GoroutineHealthStatus {
+func (p *AntsTaskPoolProvider) Health() TaskHealthStatus {
 	if p.isClosed() {
 		return HealthStatusUnhealthy
 	}
 
-	// 检查协程池健康状态
+	// 检查任务池健康状态
 	if p.pool.IsClosed() {
 		return HealthStatusUnhealthy
 	}
@@ -755,7 +672,7 @@ func (p *AntsGoroutineProvider) Health() GoroutineHealthStatus {
 }
 
 // SetCapacity 实现接口
-func (p *AntsGoroutineProvider) SetCapacity(capacity int) error {
+func (p *AntsTaskPoolProvider) SetCapacity(capacity int) error {
 	if p.isClosed() {
 		return ErrPoolClosed
 	}
@@ -776,7 +693,7 @@ func (p *AntsGoroutineProvider) SetCapacity(capacity int) error {
 }
 
 // Close 实现接口
-func (p *AntsGoroutineProvider) Close() error {
+func (p *AntsTaskPoolProvider) Close() error {
 	// 使用 atomic 确保幂等性
 	if p.closed.Swap(true) {
 		return nil
@@ -799,7 +716,7 @@ func (p *AntsGoroutineProvider) Close() error {
 }
 
 // CloseWithTimeout 实现接口
-func (p *AntsGoroutineProvider) CloseWithTimeout(timeout time.Duration) error {
+func (p *AntsTaskPoolProvider) CloseWithTimeout(timeout time.Duration) error {
 	done := make(chan error, 1)
 
 	go func() {
@@ -820,7 +737,7 @@ func (p *AntsGoroutineProvider) CloseWithTimeout(timeout time.Duration) error {
 // 内部方法
 // ======================================
 
-func (p *AntsGoroutineProvider) isClosed() bool {
+func (p *AntsTaskPoolProvider) isClosed() bool {
 	return p.closed.Load()
 }
 
@@ -829,7 +746,7 @@ func (p *AntsGoroutineProvider) isClosed() bool {
 // ======================================
 
 // autoScale 检查并执行自动扩容
-func (p *AntsGoroutineProvider) autoScale() {
+func (p *AntsTaskPoolProvider) autoScale() {
 	if !p.config.EnableAutoScale {
 		return
 	}
@@ -861,7 +778,7 @@ func (p *AntsGoroutineProvider) autoScale() {
 }
 
 // startShrinkChecker 启动缩容检查协程
-func (p *AntsGoroutineProvider) startShrinkChecker() {
+func (p *AntsTaskPoolProvider) startShrinkChecker() {
 	p.scaleCheckTicker = time.NewTicker(p.config.ShrinkCheckInterval)
 
 	go func() {
@@ -877,7 +794,7 @@ func (p *AntsGoroutineProvider) startShrinkChecker() {
 }
 
 // checkAndShrink 检查并执行缩容
-func (p *AntsGoroutineProvider) checkAndShrink() {
+func (p *AntsTaskPoolProvider) checkAndShrink() {
 	if !p.config.EnableAutoShrink || p.isClosed() {
 		return
 	}

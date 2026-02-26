@@ -140,20 +140,20 @@
 //	    fmt.Printf("节点丢失: %s\n", peerID)
 //	}
 //
-// # GoroutineProvider - 协程池管理
+// # TaskPoolProvider - 任务池管理
 //
-// GoroutineProvider 用于统一管理异步任务的执行:
+// TaskPoolProvider 用于统一管理异步任务的执行:
 //
-//	// 创建协程池
+//	// 创建任务池
 //	pool, err := ants.NewPool(1000)
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
-//	provider := NewAntsGoroutineProvider(pool)
+//	provider := NewAntsTaskPoolProvider(pool)
 //	defer provider.Close()
 //
 //	// 设置到 RPCAsync 适配器
-//	adapter.SetGoroutineProvider(provider)
+//	adapter.SetTaskPoolProvider(provider)
 //
 // # 完整示例
 //

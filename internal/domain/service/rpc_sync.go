@@ -59,26 +59,8 @@ type RPCSync interface {
 	// ====== 生命周期 ======
 	Close() error
 
-	// ====== Goroutine 管理 ======
-	// SetGoroutineProvider 设置 goroutine 提供者
-	// 用于统一管理 goroutine 的创建和生命周期
-	SetGoroutineProvider(provider GoroutineProvider)
+	// ====== TaskPool 管理 ======
+	// SetTaskPoolProvider 设置任务池提供者
+	// 用于统一管理任务的创建和生命周期
+	SetTaskPoolProvider(provider TaskPoolProvider)
 }
-
-// ============================================================================
-// 向后兼容类型别名
-// ============================================================================
-
-// RPC 是 RPCSync 的类型别名，用于向后兼容
-//
-// Deprecated: 建议直接使用 RPCSync 以明确表达同步调用语义。
-// 此别名将在未来版本中保留，以确保现有代码的兼容性。
-//
-// 迁移示例:
-//
-//	// 旧代码
-//	var rpc service.RPC = transport.NewLibp2pRPC(...)
-//
-//	// 新代码（推荐）
-//	var rpc service.RPCSync = transport.NewLibp2pRPC(...)
-type RPC = RPCSync

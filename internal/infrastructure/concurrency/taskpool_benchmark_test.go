@@ -1,4 +1,4 @@
-// Package concurrency 提供协程池和定时任务管理
+// Package concurrency 提供任务池和定时任务管理
 package concurrency
 
 import (
@@ -13,7 +13,7 @@ import (
 
 // BenchmarkSubmit 单任务提交延迟
 func BenchmarkSubmit(b *testing.B) {
-	provider, _ := NewAntsGoroutineProvider(nil)
+	provider, _ := NewAntsTaskPoolProvider(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
@@ -25,7 +25,7 @@ func BenchmarkSubmit(b *testing.B) {
 
 // BenchmarkSubmitWithResult 带结果任务延迟
 func BenchmarkSubmitWithResult(b *testing.B) {
-	provider, _ := NewAntsGoroutineProvider(nil)
+	provider, _ := NewAntsTaskPoolProvider(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
@@ -40,7 +40,7 @@ func BenchmarkSubmitWithResult(b *testing.B) {
 
 // BenchmarkSubmitBatch_100 批量提交 100 任务
 func BenchmarkSubmitBatch_100(b *testing.B) {
-	provider, _ := NewAntsGoroutineProvider(nil)
+	provider, _ := NewAntsTaskPoolProvider(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
@@ -57,7 +57,7 @@ func BenchmarkSubmitBatch_100(b *testing.B) {
 
 // BenchmarkSubmitBatch_1000 批量提交 1000 任务
 func BenchmarkSubmitBatch_1000(b *testing.B) {
-	provider, _ := NewAntsGoroutineProvider(&ProviderConfig{
+	provider, _ := NewAntsTaskPoolProvider(&ProviderConfig{
 		Capacity:       1000,
 		EnablePriority: true,
 		EnableDelayed:  true,
@@ -78,7 +78,7 @@ func BenchmarkSubmitBatch_1000(b *testing.B) {
 
 // BenchmarkSubmitBatchAllErrors 批量提交（收集错误）
 func BenchmarkSubmitBatchAllErrors(b *testing.B) {
-	provider, _ := NewAntsGoroutineProvider(&ProviderConfig{
+	provider, _ := NewAntsTaskPoolProvider(&ProviderConfig{
 		Capacity:       1000,
 		EnablePriority: true,
 		EnableDelayed:  true,
@@ -99,7 +99,7 @@ func BenchmarkSubmitBatchAllErrors(b *testing.B) {
 
 // BenchmarkSubmitDelayed 延迟任务调度开销
 func BenchmarkSubmitDelayed(b *testing.B) {
-	provider, _ := NewAntsGoroutineProvider(nil)
+	provider, _ := NewAntsTaskPoolProvider(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
@@ -111,7 +111,7 @@ func BenchmarkSubmitDelayed(b *testing.B) {
 
 // BenchmarkConcurrentSubmit 并发提交锁竞争测试
 func BenchmarkConcurrentSubmit(b *testing.B) {
-	provider, _ := NewAntsGoroutineProvider(&ProviderConfig{
+	provider, _ := NewAntsTaskPoolProvider(&ProviderConfig{
 		Capacity:       10000,
 		EnablePriority: true,
 		EnableDelayed:  true,
@@ -128,7 +128,7 @@ func BenchmarkConcurrentSubmit(b *testing.B) {
 
 // BenchmarkConcurrentSubmitWithResult 并发带结果提交
 func BenchmarkConcurrentSubmitWithResult(b *testing.B) {
-	provider, _ := NewAntsGoroutineProvider(&ProviderConfig{
+	provider, _ := NewAntsTaskPoolProvider(&ProviderConfig{
 		Capacity:       10000,
 		EnablePriority: true,
 		EnableDelayed:  true,
@@ -172,7 +172,7 @@ func BenchmarkAnyResult_SetValue(b *testing.B) {
 func BenchmarkCloseWithPendingTasks(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
-		provider, _ := NewAntsGoroutineProvider(&ProviderConfig{
+		provider, _ := NewAntsTaskPoolProvider(&ProviderConfig{
 			Capacity:       100,
 			EnablePriority: true,
 			EnableDelayed:  true,
@@ -192,7 +192,7 @@ func BenchmarkCloseWithPendingTasks(b *testing.B) {
 
 // BenchmarkSubmitWithPriority 带优先级提交
 func BenchmarkSubmitWithPriority(b *testing.B) {
-	provider, _ := NewAntsGoroutineProvider(nil)
+	provider, _ := NewAntsTaskPoolProvider(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
@@ -204,7 +204,7 @@ func BenchmarkSubmitWithPriority(b *testing.B) {
 
 // BenchmarkSubmitAdvanced 高级提交（带选项）
 func BenchmarkSubmitAdvanced(b *testing.B) {
-	provider, _ := NewAntsGoroutineProvider(nil)
+	provider, _ := NewAntsTaskPoolProvider(nil)
 	defer provider.Close()
 	ctx := context.Background()
 

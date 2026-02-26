@@ -1,4 +1,4 @@
-// Package concurrency 提供协程池和定时任务管理
+// Package concurrency 提供任务池和定时任务管理
 package concurrency
 
 import (
@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
@@ -17,13 +18,13 @@ import (
 // ==========================================
 
 // RobfigCronProvider 基于 robfig/cron 的定时任务提供者
-var _ CronJobProvider = (*RobfigCronProvider)(nil)
+var _ service.CronJobProvider = (*RobfigCronProvider)(nil)
 
 // RobfigCronProvider 定时任务提供者实现
 type RobfigCronProvider struct {
 	mu                sync.RWMutex
 	cron              *cron.Cron
-	goroutineProvider GoroutineProvider
+	goroutineProvider service.TaskPoolProvider
 	jobs              map[string]*cronJobEntry
 	nameToID          map[string]string
 	nextID            int64
@@ -34,15 +35,15 @@ type cronJobEntry struct {
 	id        string
 	name      string
 	entryID   cron.EntryID
-	spec      CronSpec
-	status    CronJobStatus
-	priority  GoroutinePriority
+	spec      service.CronSpec
+	status    service.CronJobStatus
+	priority  service.TaskPriority
 	taskFunc  func(context.Context)
 	createdAt time.Time
 }
 
 // NewRobfigCronProvider 创建 robfig/cron 定时任务提供者
-func NewRobfigCronProvider(goroutineProvider GoroutineProvider) *RobfigCronProvider {
+func NewRobfigCronProvider(goroutineProvider service.TaskPoolProvider) *RobfigCronProvider {
 	c := cron.New(
 		cron.WithSeconds(),
 		cron.WithChain(
@@ -77,18 +78,18 @@ func (r *RobfigCronProvider) Stop() context.Context {
 
 // Register 注册定时任务（无参数）
 func (r *RobfigCronProvider) Register(
-	spec CronSpec,
+	spec service.CronSpec,
 	name string,
 	task func(context.Context),
 ) (string, error) {
-	return r.RegisterWithPriority(spec, name, PriorityNormal, task)
+	return r.RegisterWithPriority(spec, name, service.PriorityNormal, task)
 }
 
 // RegisterWithPriority 注册带优先级的定时任务（无参数）
 func (r *RobfigCronProvider) RegisterWithPriority(
-	spec CronSpec,
+	spec service.CronSpec,
 	name string,
-	priority GoroutinePriority,
+	priority service.TaskPriority,
 	task func(context.Context),
 ) (string, error) {
 	r.mu.Lock()
@@ -117,7 +118,7 @@ func (r *RobfigCronProvider) RegisterWithPriority(
 		name:      name,
 		entryID:   entryID,
 		spec:      spec,
-		status:    CronJobStatusScheduled,
+		status:    service.CronJobStatusScheduled,
 		priority:  priority,
 		taskFunc:  task,
 		createdAt: time.Now(),
@@ -130,19 +131,19 @@ func (r *RobfigCronProvider) RegisterWithPriority(
 
 // RegisterWithArg 注册带参数的定时任务（使用 any 类型）
 func (r *RobfigCronProvider) RegisterWithArg(
-	spec CronSpec,
+	spec service.CronSpec,
 	name string,
 	task func(context.Context, any),
 	arg any,
 ) (string, error) {
-	return r.RegisterWithPriorityAndArg(spec, name, PriorityNormal, task, arg)
+	return r.RegisterWithPriorityAndArg(spec, name, service.PriorityNormal, task, arg)
 }
 
 // RegisterWithPriorityAndArg 注册带参数和优先级的定时任务（使用 any 类型）
 func (r *RobfigCronProvider) RegisterWithPriorityAndArg(
-	spec CronSpec,
+	spec service.CronSpec,
 	name string,
-	priority GoroutinePriority,
+	priority service.TaskPriority,
 	task func(context.Context, any),
 	arg any,
 ) (string, error) {
@@ -172,7 +173,7 @@ func (r *RobfigCronProvider) RegisterWithPriorityAndArg(
 		name:      name,
 		entryID:   entryID,
 		spec:      spec,
-		status:    CronJobStatusScheduled,
+		status:    service.CronJobStatusScheduled,
 		priority:  priority,
 		taskFunc:  func(ctx context.Context) { task(ctx, arg) },
 		createdAt: time.Now(),
@@ -190,20 +191,20 @@ func (r *RobfigCronProvider) RegisterWithPriorityAndArg(
 // RegisterWithArgTyped 注册带参数的定时任务（类型安全）
 func RegisterWithArgTyped[T any](
 	provider *RobfigCronProvider,
-	spec CronSpec,
+	spec service.CronSpec,
 	name string,
 	task func(context.Context, T),
 	arg T,
 ) (string, error) {
-	return RegisterWithPriorityAndArgTyped(provider, spec, name, PriorityNormal, task, arg)
+	return RegisterWithPriorityAndArgTyped(provider, spec, name, service.PriorityNormal, task, arg)
 }
 
 // RegisterWithPriorityAndArgTyped 注册带参数和优先级的定时任务（类型安全）
 func RegisterWithPriorityAndArgTyped[T any](
 	provider *RobfigCronProvider,
-	spec CronSpec,
+	spec service.CronSpec,
 	name string,
-	priority GoroutinePriority,
+	priority service.TaskPriority,
 	task func(context.Context, T),
 	arg T,
 ) (string, error) {
@@ -226,13 +227,13 @@ func (r *RobfigCronProvider) Pause(jobID string) error {
 		return errors.Wrapf(errors.ErrComponentNotFound, "job '%s' not found", jobID)
 	}
 
-	if entry.status == CronJobStatusPaused {
+	if entry.status == service.CronJobStatusPaused {
 		return nil // 已经暂停
 	}
 
 	// 从 cron 中移除
 	r.cron.Remove(entry.entryID)
-	entry.status = CronJobStatusPaused
+	entry.status = service.CronJobStatusPaused
 
 	return nil
 }
@@ -247,7 +248,7 @@ func (r *RobfigCronProvider) Resume(jobID string) error {
 		return errors.Wrapf(errors.ErrComponentNotFound, "job '%s' not found", jobID)
 	}
 
-	if entry.status != CronJobStatusPaused {
+	if entry.status != service.CronJobStatusPaused {
 		return errors.Wrapf(errors.ErrInvalidState, "job '%s' is not paused", jobID)
 	}
 
@@ -259,7 +260,7 @@ func (r *RobfigCronProvider) Resume(jobID string) error {
 	}
 
 	entry.entryID = entryID
-	entry.status = CronJobStatusScheduled
+	entry.status = service.CronJobStatusScheduled
 
 	return nil
 }
@@ -280,7 +281,7 @@ func (r *RobfigCronProvider) Unregister(jobID string) error {
 	// 从记录中删除
 	delete(r.jobs, jobID)
 	delete(r.nameToID, entry.name)
-	entry.status = CronJobStatusStopped
+	entry.status = service.CronJobStatusStopped
 
 	return nil
 }
@@ -290,7 +291,7 @@ func (r *RobfigCronProvider) Unregister(jobID string) error {
 // ======================================
 
 // GetJob 获取定时任务信息
-func (r *RobfigCronProvider) GetJob(jobID string) (*CronJobInfo, error) {
+func (r *RobfigCronProvider) GetJob(jobID string) (*service.CronJobInfo, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -303,11 +304,11 @@ func (r *RobfigCronProvider) GetJob(jobID string) (*CronJobInfo, error) {
 }
 
 // ListJobs 列出所有定时任务
-func (r *RobfigCronProvider) ListJobs() []*CronJobInfo {
+func (r *RobfigCronProvider) ListJobs() []*service.CronJobInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	infos := make([]*CronJobInfo, 0, len(r.jobs))
+	infos := make([]*service.CronJobInfo, 0, len(r.jobs))
 	for _, entry := range r.jobs {
 		infos = append(infos, r.entryToInfo(entry))
 	}
@@ -325,13 +326,13 @@ func (r *RobfigCronProvider) generateID() string {
 }
 
 // wrapTask 包装任务函数（无参数）
-func (r *RobfigCronProvider) wrapTask(task func(context.Context), priority GoroutinePriority) func() {
+func (r *RobfigCronProvider) wrapTask(task func(context.Context), priority service.TaskPriority) func() {
 	return func() {
 		ctx := context.Background()
 		if r.goroutineProvider != nil {
 			_ = r.goroutineProvider.SubmitWithPriority(ctx, priority, task)
 		} else {
-			// P0-01: 没有 GoroutineProvider，直接执行（添加 panic 恢复）
+			// P0-01: 没有 TaskPoolProvider，直接执行（添加 panic 恢复）
 			defer func() {
 				if err := recover(); err != nil {
 					// cron.Recover 已经处理了 panic，但这里作为额外保护
@@ -344,7 +345,7 @@ func (r *RobfigCronProvider) wrapTask(task func(context.Context), priority Gorou
 }
 
 // wrapTaskWithArg 包装任务函数（带参数）
-func (r *RobfigCronProvider) wrapTaskWithArg(task func(context.Context, any), arg any, priority GoroutinePriority) func() {
+func (r *RobfigCronProvider) wrapTaskWithArg(task func(context.Context, any), arg any, priority service.TaskPriority) func() {
 	return func() {
 		ctx := context.Background()
 		if r.goroutineProvider != nil {
@@ -352,7 +353,7 @@ func (r *RobfigCronProvider) wrapTaskWithArg(task func(context.Context, any), ar
 				task(ctx, arg)
 			})
 		} else {
-			// P0-01: 没有 GoroutineProvider，直接执行（添加 panic 恢复）
+			// P0-01: 没有 TaskPoolProvider，直接执行（添加 panic 恢复）
 			defer func() {
 				if err := recover(); err != nil {
 					// cron.Recover 已经处理了 panic，但这里作为额外保护
@@ -365,7 +366,7 @@ func (r *RobfigCronProvider) wrapTaskWithArg(task func(context.Context, any), ar
 }
 
 // entryToInfo 将任务条目转换为信息
-func (r *RobfigCronProvider) entryToInfo(entry *cronJobEntry) *CronJobInfo {
+func (r *RobfigCronProvider) entryToInfo(entry *cronJobEntry) *service.CronJobInfo {
 	// 获取下次执行时间
 	cronEntry := r.cron.Entry(entry.entryID)
 	var nextRun time.Time
@@ -373,7 +374,7 @@ func (r *RobfigCronProvider) entryToInfo(entry *cronJobEntry) *CronJobInfo {
 		nextRun = cronEntry.Next
 	}
 
-	return &CronJobInfo{
+	return &service.CronJobInfo{
 		ID:        entry.id,
 		Name:      entry.name,
 		Spec:      entry.spec,

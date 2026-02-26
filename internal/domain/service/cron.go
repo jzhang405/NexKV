@@ -17,7 +17,7 @@ type CronJobStatus = model.CronJobStatus
 // CronJobInfo 定时任务信息（类型别名）
 type CronJobInfo = model.CronJobInfo
 
-// 常量别名（向后兼容）
+// 状态常量
 const (
 	CronJobStatusScheduled = model.CronJobStatusScheduled
 	CronJobStatusRunning   = model.CronJobStatusRunning
@@ -46,7 +46,7 @@ type CronJobProvider interface {
 	Register(spec CronSpec, name string, task func(context.Context)) (string, error)
 
 	// RegisterWithPriority 注册带优先级的定时任务（无参数）
-	RegisterWithPriority(spec CronSpec, name string, priority GoroutinePriority, task func(context.Context)) (string, error)
+	RegisterWithPriority(spec CronSpec, name string, priority TaskPriority, task func(context.Context)) (string, error)
 
 	// ======================================
 	// 带参数方法（避免闭包陷阱）
@@ -56,7 +56,7 @@ type CronJobProvider interface {
 	RegisterWithArg(spec CronSpec, name string, task func(context.Context, any), arg any) (string, error)
 
 	// RegisterWithPriorityAndArg 注册带参数和优先级的定时任务（使用 any 类型）
-	RegisterWithPriorityAndArg(spec CronSpec, name string, priority GoroutinePriority, task func(context.Context, any), arg any) (string, error)
+	RegisterWithPriorityAndArg(spec CronSpec, name string, priority TaskPriority, task func(context.Context, any), arg any) (string, error)
 
 	// ======================================
 	// 任务控制

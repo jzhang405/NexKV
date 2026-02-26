@@ -27,7 +27,7 @@ import (
 // TestDiscoveryService_HandlePeerFound 测试发现节点的处理
 func TestDiscoveryService_HandlePeerFound(t *testing.T) {
 	ctx := t.Context()
-	provider := newMockGoroutineProvider()
+	provider := newMockTaskPoolProvider()
 
 	// 创建本地 host
 	localTr, err := NewLibp2pTransport(ctx, &Config{EnableDiscovery: false})
@@ -95,7 +95,7 @@ func (n *testDiscoveryNotifee) HandlePeerLost(peerID model.PeerID) {
 // TestNewDiscoveryService 测试创建发现服务
 func TestNewDiscoveryService(t *testing.T) {
 	ctx := t.Context()
-	provider := newMockGoroutineProvider()
+	provider := newMockTaskPoolProvider()
 
 	tr, err := NewLibp2pTransport(ctx, &Config{EnableDiscovery: false})
 	if err != nil {
@@ -128,7 +128,7 @@ func TestNewDiscoveryService(t *testing.T) {
 // TestDiscoveryService_Stop 测试停止发现服务
 func TestDiscoveryService_Stop(t *testing.T) {
 	ctx := t.Context()
-	provider := newMockGoroutineProvider()
+	provider := newMockTaskPoolProvider()
 
 	tr, err := NewLibp2pTransport(ctx, &Config{EnableDiscovery: false})
 	if err != nil {
@@ -167,7 +167,7 @@ func TestDiscoveryService_Stop(t *testing.T) {
 // TestDiscoveryService_InvalidPeer 测试发现无效节点
 func TestDiscoveryService_InvalidPeer(t *testing.T) {
 	ctx := t.Context()
-	provider := newMockGoroutineProvider()
+	provider := newMockTaskPoolProvider()
 
 	tr, err := NewLibp2pTransport(ctx, &Config{EnableDiscovery: false})
 	if err != nil {
@@ -196,7 +196,7 @@ func TestDiscoveryService_InvalidPeer(t *testing.T) {
 // TestDiscoveryService_MultipleInstances 测试多个发现服务实例
 func TestDiscoveryService_MultipleInstances(t *testing.T) {
 	ctx := t.Context()
-	provider := newMockGoroutineProvider()
+	provider := newMockTaskPoolProvider()
 
 	// P0 修复：使用切片收集资源，避免在循环中使用 defer
 	var transports []*Libp2pTransport

@@ -1,10 +1,6 @@
 // Package compressor 提供压缩算法抽象
 package compressor
 
-import (
-	"github.com/jzhang405/NexKV/pkg/errors"
-)
-
 // DefaultMaxDecompressedSize 默认最大解压大小（10MB）
 const DefaultMaxDecompressedSize = 10 * 1024 * 1024
 
@@ -51,11 +47,3 @@ func New(t CompressorType) Compressor {
 		return newSnappyCompressor()
 	}
 }
-
-// 重新导出 errors 包中的压缩错误，保持向后兼容
-var (
-	ErrCompressionFailed   = errors.ErrCompressionFailed
-	ErrDecompressionFailed = errors.ErrDecompressionFailed
-	ErrUnsupportedType     = errors.ErrUnsupportedType
-	ErrDecompressionTooBig = errors.ErrDecompressionTooBig
-)

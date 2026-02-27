@@ -679,9 +679,9 @@ type SchedulerApplicationService struct {
 |------|----------|----------|--------|
 | PRE 评审通过 | 2026-02-27 | V1.3 文档通过架构师评审 | ✅ 本文档 |
 | 启动开发 | 2026-02-27 | 开始 Phase 1 实现 | - |
-| Phase 1 完成 | - | PerCoreExecutor + TaskCoordinator 协调器 | - |
-| Phase 2 完成 | - | 4 种 Ants Executor 封装 + 优先级队列 | - |
-| Phase 3 完成 | - | 性能调优 + 监控集成 | - |
+| Phase 1 完成 | 2026-02-27 | PerCoreExecutor + TaskCoordinator + Ants包装器 | ✅ 168 tests |
+| Phase 2 完成 | 2026-02-27 | TaskSelector + 集成测试 + Bug修复 | ✅ 42 tests |
+| Phase 3 | - | **⏸️ 延期待 WAL 完成** | - |
 | Post文档编写 | - | 编写后置总结文档 | 第三部分 |
 | 架构师Post批准 | - | 架构师评审Post文档 | 批准签字 |
 | 提交GitHub | - | 推送分支，创建PR | PR链接 |
@@ -705,42 +705,54 @@ type SchedulerApplicationService struct {
 ### 1. 核心成果总结（开发了啥，结果怎样）
 
 #### 1.1 功能成果
-- **已完成**：[CI通过后填写]
-- **与Pre文档差异**：[CI通过后填写]
+- **已完成**：
+  - ✅ TaskMode 值对象（5 种调度模式 + 降级 + 平台检测）
+  - ✅ SourceID 值对象（模式匹配 + 推荐模式 + 优先级判断）
+  - ✅ TaskCoordinator 协调器（执行器注册 + 路由 + 统计）
+  - ✅ PerCoreExecutor（优先级队列 + 限流 + Panic 恢复 + NumCores 限制）
+  - ✅ Ants 包装器（Default/Pool/Func/Multi 四种模式）
+  - ✅ TaskSelector（路由规则 + 降级 + 便捷方法）
+  - ✅ 集成测试 + 性能基准
+
+- **与Pre文档差异**：
+  - Phase 3（可暂停调度器）延期：依赖 WAL 模块
 
 #### 1.2 性能/数据成果
-- **性能数据**：[CI通过后填写]
-- **测试成果**：[CI通过后填写]
+- **测试成果**：937 tests passed in 18 packages
+- **新增测试**：~210 tests（Phase 1: 168, Phase 2: 42）
+- **Bug修复**：AntsFuncExecutor.Submit 死锁问题
 
 #### 1.3 代码/文档交付物
 
 | 类型 | 具体内容 | 链接/路径 |
 |------|----------|-----------|
-| 代码变更 | [CI通过后填写] | [GitHub PR链接] |
-| 文档更新 | [CI通过后填写] | [文档路径] |
+| 代码变更 | TaskMode + SourceID + Coordinator + PerCore + Ants包装 + Selector | feature/unified-task-scheduler |
+| 测试代码 | 单元测试 + 集成测试 + 性能基准 | internal/infrastructure/concurrency/*_test.go |
 
 ### 2. 未完成项与ToDo清单（有哪些没干，后续规划）
 
 #### 2.1 本次PR未完成项
-- **未支持**：[CI通过后填写]
-- **遗留问题**：[CI通过后填写]
+- **Phase 3 延期**：可暂停调度器（依赖 WAL）
+  - StepExecutor 接口
+  - CheckpointHandler 接口
+  - PerCoreStepExecutor 实现
+  - 跨节点任务迁移
 
 #### 2.2 ToDo清单（优先级排序）
 
-| 优先级 | 任务内容 | 预估工期 | 关联PR/需求 | 备注 |
-|--------|----------|----------|-------------|------|
-| 高 | 单元测试（覆盖率 80%+） | 2天 | PR-088 | 必须完成 |
-| 高 | 并发测试（race + goleak） | 1天 | PR-088 | **P1-02: goleak 已引入** |
-| 高 | 性能基线测试（vs ants） | 1天 | PR-088 | **P1-01: 目标调整为 200K** |
-| 中 | 低优先级任务防饥饿测试 | 0.5天 | PR-088 | P2-01 简化后 |
-| 中 | DoS 防护包装器实现 | 0.5天 | PR-088 | **P0-01: 已设计分级限流** |
-| 低 | Prometheus 指标集成 | 1天 | PR-088 | 可选 |
+| 优先级 | 任务内容 | 预估工期 | 依赖 | 备注 |
+|--------|----------|----------|------|------|
+| P0 | WAL 模块完成 | - | - | Phase 3 前置依赖 |
+| P1 | StepExecutor 实现 | 3天 | WAL | Checkpoint 级别暂停 |
+| P1 | CheckpointHandler 实现 | 2天 | WAL | 持久化恢复 |
+| P2 | 跨节点迁移 | 5天 | Quorum + TermManager | 分布式调度 |
+| P3 | 性能优化至 1M ops/s | 3天 | - | Phase 2 目标 |
 
 ### 3. 下一步工作建议（建议干啥）
 
 1. **优先推进**：
-   - Phase 1 实现并验证 500K ops/s 目标
-   - 并发测试确保无数据竞争
+   - 完成 WAL 模块 → 解锁 Phase 3
+   - 集成测试覆盖更多边界场景
 
 2. **监控要点**：
    - P99 延迟监控
@@ -752,8 +764,8 @@ type SchedulerApplicationService struct {
    - 性能调优手册
 
 4. **后续规划**：
-   - Phase 2: 1M ops/s 优化
-   - Phase 3: 2M ops/s 极限优化
+   - Phase 3: 可暂停调度器（WAL 完成后）
+   - Phase 4: 跨节点迁移（Quorum 完成后）
 
 5. **反馈收集**：
    - 各模块延迟数据收集

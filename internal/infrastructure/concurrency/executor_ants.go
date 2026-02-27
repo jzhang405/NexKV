@@ -230,6 +230,6 @@ func (e *AntsMultiExecutor) Close() error {
 	}
 
 	e.closed = true
-	e.multiPool.ReleaseTimeout(0)
+	_ = e.multiPool.ReleaseTimeout(0)
 	return nil
 }

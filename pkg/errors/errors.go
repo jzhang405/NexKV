@@ -50,6 +50,15 @@ var (
 	ErrTaskTimeout           = stderrors.New("concurrency: task timeout")
 	ErrTooManyDelayedTasks   = stderrors.New("concurrency: too many delayed tasks") // P1-01
 
+	// TaskExecutor 层错误
+	ErrExecutorClosed    = stderrors.New("concurrency: executor is closed")
+	ErrExecutorNotFound  = stderrors.New("concurrency: executor not found for requested mode")
+	ErrSelectorClosed    = stderrors.New("concurrency: selector is closed")
+	ErrDuplicateExecutor = stderrors.New("concurrency: executor already registered for this mode")
+	ErrRateLimitExceeded = stderrors.New("concurrency: rate limit exceeded")
+	ErrInvalidConfig     = stderrors.New("concurrency: invalid configuration")
+	ErrQueueFull         = stderrors.New("concurrency: queue full")
+
 	// RPC 层错误
 	ErrMajorityFailed      = stderrors.New("rpc: majority quorum not reached")
 	ErrAllFailed           = stderrors.New("rpc: all nodes failed")
@@ -66,8 +75,8 @@ var (
 	ErrNilRPC              = stderrors.New("rpc: rpc is nil")
 
 	// Middleware 层错误
-	ErrChainFrozen        = stderrors.New("middleware: chain is frozen")
-	ErrRateLimitExceeded  = stderrors.New("middleware: rate limit exceeded")
+	ErrChainFrozen = stderrors.New("middleware: chain is frozen")
+	// ErrRateLimitExceeded 在 TaskExecutor 层已定义
 	ErrCircuitBreakerOpen = stderrors.New("middleware: circuit breaker is open")
 	ErrInvalidCompression = stderrors.New("middleware: invalid or unsupported compression")
 

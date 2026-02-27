@@ -3,14 +3,14 @@ package concurrency
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ==========================================
@@ -38,19 +38,11 @@ const (
 	CLOSED
 )
 
-// ==========================================
-// 错误定义
-// ==========================================
-
+// 使用 pkg/errors 中的错误定义
 var (
-	// ErrExecutorClosed 执行器已关闭
-	ErrExecutorClosed = errors.New("executor is closed")
-
-	// ErrRateLimitExceeded 限流超限
-	ErrRateLimitExceeded = errors.New("rate limit exceeded")
-
-	// ErrInvalidConfig 无效配置
-	ErrInvalidConfig = errors.New("invalid configuration")
+	ErrExecutorClosed    = errors.ErrExecutorClosed
+	ErrRateLimitExceeded = errors.ErrRateLimitExceeded
+	ErrInvalidConfig     = errors.ErrInvalidConfig
 )
 
 // ==========================================
@@ -87,24 +79,24 @@ type PerCoreExecutor struct {
 
 // PerCoreConfig Per-Core 执行器配置
 type PerCoreConfig struct {
-	NumCores     int                    // 核心数
-	QueueSize    int                    // 每核心队列大小
-	PanicHandler func(interface{})      // Panic 处理器
-	RateLimit    int                    // 限流速率 (OPS)
-	BurstSize    int                    // 突发大小
-	EnableAffini bool                   // 启用绑核
-	Labels       map[string]string      // 标签（用于监控）
+	NumCores     int               // 核心数
+	QueueSize    int               // 每核心队列大小
+	PanicHandler func(interface{}) // Panic 处理器
+	RateLimit    int               // 限流速率 (OPS)
+	BurstSize    int               // 突发大小
+	EnableAffini bool              // 启用绑核
+	Labels       map[string]string // 标签（用于监控）
 }
 
 // PerCoreStats Per-Core 执行器统计
 type PerCoreStats struct {
-	TotalSubmitted  int64 // 总提交任务数
-	TotalCompleted  int64 // 总完成任务数
-	TotalFailed     int64 // 总失败任务数
-	TotalPanics     int64 // 总 Panic 次数
-	TotalRateLimit  int64 // 总限流次数
-	QueueLength     int64 // 当前队列长度
-	ActiveWorkers   int64 // 活跃 Worker 数
+	TotalSubmitted int64 // 总提交任务数
+	TotalCompleted int64 // 总完成任务数
+	TotalFailed    int64 // 总失败任务数
+	TotalPanics    int64 // 总 Panic 次数
+	TotalRateLimit int64 // 总限流次数
+	QueueLength    int64 // 当前队列长度
+	ActiveWorkers  int64 // 活跃 Worker 数
 }
 
 // coreWorker 核心工作器
@@ -115,9 +107,6 @@ type coreWorker struct {
 	// 优先级队列
 	queue taskQueue
 	cond  *sync.Cond
-
-	// 状态
-	running int32
 
 	// 上下文
 	ctx    context.Context
@@ -259,8 +248,8 @@ func NewPerCoreExecutor(opts ...PerCoreOption) (*PerCoreExecutor, error) {
 	for i := 0; i < config.NumCores; i++ {
 		worker := e.newWorker(i)
 		e.workers[i] = worker
+		e.wg.Add(1) // P1-02: 先 Add 再启动 goroutine，避免竞态
 		go worker.run()
-		e.wg.Add(1)
 	}
 
 	return e, nil
@@ -269,13 +258,13 @@ func NewPerCoreExecutor(opts ...PerCoreOption) (*PerCoreExecutor, error) {
 // validateConfig 验证配置
 func validateConfig(config *PerCoreConfig) error {
 	if config.NumCores <= 0 {
-		return fmt.Errorf("%w: NumCores must be positive, got %d", ErrInvalidConfig, config.NumCores)
+		return errors.Wrapf(ErrInvalidConfig, "NumCores must be positive, got %d", config.NumCores)
 	}
 	if config.NumCores > MaxCores {
-		return fmt.Errorf("%w: NumCores (%d) exceeds maximum (%d)", ErrInvalidConfig, config.NumCores, MaxCores)
+		return errors.Wrapf(ErrInvalidConfig, "NumCores (%d) exceeds maximum (%d)", config.NumCores, MaxCores)
 	}
 	if config.QueueSize <= 0 {
-		return fmt.Errorf("%w: QueueSize must be positive, got %d", ErrInvalidConfig, config.QueueSize)
+		return errors.Wrapf(ErrInvalidConfig, "QueueSize must be positive, got %d", config.QueueSize)
 	}
 	if config.RateLimit <= 0 {
 		config.RateLimit = DefaultRateLimit
@@ -298,12 +287,12 @@ func defaultPanicHandler(r interface{}) {
 func (e *PerCoreExecutor) newWorker(coreID int) *coreWorker {
 	ctx, cancel := context.WithCancel(e.ctx)
 	return &coreWorker{
-		coreID:  coreID,
+		coreID:   coreID,
 		executor: e,
-		queue:   make(taskQueue, 0, e.config.QueueSize),
-		cond:    sync.NewCond(new(sync.Mutex)),
-		ctx:     ctx,
-		cancel:  cancel,
+		queue:    make(taskQueue, 0, e.config.QueueSize),
+		cond:     sync.NewCond(new(sync.Mutex)),
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 }
 
@@ -350,7 +339,7 @@ func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority int, 
 	// 检查队列容量
 	if len(worker.queue) >= e.config.QueueSize {
 		worker.cond.L.Unlock()
-		return fmt.Errorf("queue full for worker %d", workerID)
+		return errors.Wrapf(errors.ErrQueueFull, "worker %d", workerID)
 	}
 
 	// 添加任务
@@ -385,10 +374,12 @@ func (e *PerCoreExecutor) CloseWithContext(ctx context.Context) error {
 		// 1. 标记为关闭中
 		atomic.StoreInt32(&e.state, CLOSING)
 
-		// 2. 取消所有 worker
+		// 2. 取消所有 worker（P1-04: 持锁调用 Broadcast，避免竞态）
 		for _, worker := range e.workers {
 			worker.cancel()
+			worker.cond.L.Lock()
 			worker.cond.Broadcast()
+			worker.cond.L.Unlock()
 		}
 
 		// 3. 等待所有 worker 退出或超时
@@ -448,10 +439,11 @@ func (w *coreWorker) run() {
 	defer w.executor.wg.Done()
 
 	// 启用绑核（如果配置）
-	if w.executor.config.EnableAffini {
-		// 绑核逻辑（平台相关，这里简化处理）
-		// 实际实现需要根据平台调用相关 API
-	}
+	// TODO: 实现平台相关的绑核逻辑
+	// if w.executor.config.EnableAffini {
+	//     // Linux: 使用 sched_setaffinity
+	//     // Windows: 使用 SetThreadAffinityMask
+	// }
 
 	for {
 		w.cond.L.Lock()

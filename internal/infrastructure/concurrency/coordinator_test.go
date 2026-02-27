@@ -74,7 +74,9 @@ func TestTaskCoordinator_GetExecutor(t *testing.T) {
 
 	// 注册后应该能获取
 	mockExecutor := &MockExecutor{}
-	coordinator.RegisterExecutor(model.ModeDefaultPool, mockExecutor)
+	if err := coordinator.RegisterExecutor(model.ModeDefaultPool, mockExecutor); err != nil {
+		t.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	executor = coordinator.GetExecutor(model.ModeDefaultPool)
 	if executor == nil {
@@ -87,11 +89,15 @@ func TestTaskCoordinator_Submit(t *testing.T) {
 
 	// 注册默认执行器
 	defaultExecutor := &MockExecutor{}
-	coordinator.RegisterExecutor(model.ModeDefaultPool, defaultExecutor)
+	if err := coordinator.RegisterExecutor(model.ModeDefaultPool, defaultExecutor); err != nil {
+		t.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	// 注册 PerCore 执行器
 	perCoreExecutor := &MockExecutor{}
-	coordinator.RegisterExecutor(model.ModePerCore, perCoreExecutor)
+	if err := coordinator.RegisterExecutor(model.ModePerCore, perCoreExecutor); err != nil {
+		t.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	tests := []struct {
 		name         string
@@ -140,10 +146,14 @@ func TestTaskCoordinator_SubmitWithMode(t *testing.T) {
 
 	// 注册执行器
 	defaultExecutor := &MockExecutor{}
-	coordinator.RegisterExecutor(model.ModeDefaultPool, defaultExecutor)
+	if err := coordinator.RegisterExecutor(model.ModeDefaultPool, defaultExecutor); err != nil {
+		t.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	customExecutor := &MockExecutor{}
-	coordinator.RegisterExecutor(model.ModeCustomPool, customExecutor)
+	if err := coordinator.RegisterExecutor(model.ModeCustomPool, customExecutor); err != nil {
+		t.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	// 显式指定模式
 	err := coordinator.SubmitWithMode(context.Background(), model.ModeCustomPool, func(ctx context.Context) {})
@@ -166,7 +176,9 @@ func TestTaskCoordinator_SubmitUnregisteredMode(t *testing.T) {
 
 	// 只注册默认执行器
 	defaultExecutor := &MockExecutor{}
-	coordinator.RegisterExecutor(model.ModeDefaultPool, defaultExecutor)
+	if err := coordinator.RegisterExecutor(model.ModeDefaultPool, defaultExecutor); err != nil {
+		t.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	sourceID, _ := model.ParseSourceID("hlc:clock:tick")
 
@@ -189,8 +201,12 @@ func TestTaskCoordinator_Close(t *testing.T) {
 	// 注册多个执行器
 	executor1 := &MockExecutor{}
 	executor2 := &MockExecutor{}
-	coordinator.RegisterExecutor(model.ModeDefaultPool, executor1)
-	coordinator.RegisterExecutor(model.ModeCustomPool, executor2)
+	if err := coordinator.RegisterExecutor(model.ModeDefaultPool, executor1); err != nil {
+		t.Fatalf("RegisterExecutor() error = %v", err)
+	}
+	if err := coordinator.RegisterExecutor(model.ModeCustomPool, executor2); err != nil {
+		t.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	// 关闭协调器
 	err := coordinator.Close()
@@ -218,11 +234,21 @@ func TestTaskCoordinator_Route(t *testing.T) {
 	coordinator := NewTaskCoordinator()
 
 	// 注册所有模式的执行器，以便测试路由逻辑
-	coordinator.RegisterExecutor(model.ModePerCore, &MockExecutor{})
-	coordinator.RegisterExecutor(model.ModeFuncPool, &MockExecutor{})
-	coordinator.RegisterExecutor(model.ModeMultiPool, &MockExecutor{})
-	coordinator.RegisterExecutor(model.ModeCustomPool, &MockExecutor{})
-	coordinator.RegisterExecutor(model.ModeDefaultPool, &MockExecutor{})
+	if err := coordinator.RegisterExecutor(model.ModePerCore, &MockExecutor{}); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error = %v", err)
+	}
+	if err := coordinator.RegisterExecutor(model.ModeFuncPool, &MockExecutor{}); err != nil {
+		t.Fatalf("RegisterExecutor(ModeFuncPool) error = %v", err)
+	}
+	if err := coordinator.RegisterExecutor(model.ModeMultiPool, &MockExecutor{}); err != nil {
+		t.Fatalf("RegisterExecutor(ModeMultiPool) error = %v", err)
+	}
+	if err := coordinator.RegisterExecutor(model.ModeCustomPool, &MockExecutor{}); err != nil {
+		t.Fatalf("RegisterExecutor(ModeCustomPool) error = %v", err)
+	}
+	if err := coordinator.RegisterExecutor(model.ModeDefaultPool, &MockExecutor{}); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	tests := []struct {
 		sourceID     string
@@ -267,7 +293,9 @@ func TestTaskCoordinator_ConcurrentSubmit(t *testing.T) {
 
 	// 注册执行器
 	executor := &MockExecutor{}
-	coordinator.RegisterExecutor(model.ModeDefaultPool, executor)
+	if err := coordinator.RegisterExecutor(model.ModeDefaultPool, executor); err != nil {
+		t.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	sourceID, _ := model.ParseSourceID("test:concurrent:task")
 
@@ -277,7 +305,7 @@ func TestTaskCoordinator_ConcurrentSubmit(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			coordinator.Submit(context.Background(), sourceID, func(ctx context.Context) {})
+			_ = coordinator.Submit(context.Background(), sourceID, func(ctx context.Context) {})
 		}()
 	}
 	wg.Wait()
@@ -327,12 +355,14 @@ func TestTaskCoordinator_Stats(t *testing.T) {
 
 	// 注册执行器
 	executor := &MockExecutor{}
-	coordinator.RegisterExecutor(model.ModeDefaultPool, executor)
+	if err := coordinator.RegisterExecutor(model.ModeDefaultPool, executor); err != nil {
+		t.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	// 提交任务
 	sourceID, _ := model.ParseSourceID("test:stats:task")
 	for i := 0; i < 100; i++ {
-		coordinator.Submit(context.Background(), sourceID, func(ctx context.Context) {})
+		_ = coordinator.Submit(context.Background(), sourceID, func(ctx context.Context) {})
 	}
 
 	// 获取统计信息
@@ -346,14 +376,16 @@ func TestTaskCoordinator_Stats(t *testing.T) {
 func BenchmarkTaskCoordinator_Submit(b *testing.B) {
 	coordinator := NewTaskCoordinator()
 	executor := &MockExecutor{}
-	coordinator.RegisterExecutor(model.ModeDefaultPool, executor)
+	if err := coordinator.RegisterExecutor(model.ModeDefaultPool, executor); err != nil {
+		b.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	sourceID, _ := model.ParseSourceID("bench:test:task")
 	task := func(ctx context.Context) {}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		coordinator.Submit(context.Background(), sourceID, task)
+		_ = coordinator.Submit(context.Background(), sourceID, task)
 	}
 }
 
@@ -370,14 +402,16 @@ func BenchmarkTaskCoordinator_Route(b *testing.B) {
 func BenchmarkTaskCoordinator_ConcurrentSubmit(b *testing.B) {
 	coordinator := NewTaskCoordinator()
 	executor := &MockExecutor{}
-	coordinator.RegisterExecutor(model.ModeDefaultPool, executor)
+	if err := coordinator.RegisterExecutor(model.ModeDefaultPool, executor); err != nil {
+		b.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	sourceID, _ := model.ParseSourceID("bench:concurrent:task")
 	task := func(ctx context.Context) {}
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			coordinator.Submit(context.Background(), sourceID, task)
+			_ = coordinator.Submit(context.Background(), sourceID, task)
 		}
 	})
 }

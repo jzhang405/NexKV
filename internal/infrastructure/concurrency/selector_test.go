@@ -42,11 +42,21 @@ func TestTaskSelector_Select(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 注册所有执行器
-	selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor())
-	selector.RegisterExecutor(model.ModeCustomPool, mustCreateAntsPoolExecutor(10))
-	selector.RegisterExecutor(model.ModeFuncPool, mustCreateAntsFuncExecutor())
-	selector.RegisterExecutor(model.ModeMultiPool, mustCreateAntsMultiExecutor())
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeCustomPool, mustCreateAntsPoolExecutor(10)); err != nil {
+		t.Fatalf("RegisterExecutor(ModeCustomPool) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeFuncPool, mustCreateAntsFuncExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeFuncPool) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeMultiPool, mustCreateAntsMultiExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeMultiPool) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	tests := []struct {
 		sourceID     string
@@ -92,8 +102,12 @@ func TestTaskSelector_SelectByMode(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 注册执行器
-	selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor())
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	// 选择存在的模式
 	executor, err := selector.SelectByMode(model.ModePerCore)
@@ -115,7 +129,9 @@ func TestTaskSelector_SelectWithFallback(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 只注册默认池
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	// 请求 PerCore 模式，应该降级到默认池
 	sourceID, _ := model.ParseSourceID("hlc:clock:tick")
@@ -135,7 +151,9 @@ func TestTaskSelector_Submit(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 注册执行器
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	var executed int32
 	var wg sync.WaitGroup
@@ -164,7 +182,9 @@ func TestTaskSelector_SubmitWithMode(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 注册执行器
-	selector.RegisterExecutor(model.ModeCustomPool, mustCreateAntsPoolExecutor(10))
+	if err := selector.RegisterExecutor(model.ModeCustomPool, mustCreateAntsPoolExecutor(10)); err != nil {
+		t.Fatalf("RegisterExecutor(ModeCustomPool) error = %v", err)
+	}
 
 	var executed int32
 	var wg sync.WaitGroup
@@ -192,8 +212,12 @@ func TestTaskSelector_AddRoutingRule(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 注册执行器
-	selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor())
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	// 添加自定义路由规则
 	err := selector.AddRoutingRule("custom:*:*", model.ModePerCore)
@@ -217,11 +241,15 @@ func TestTaskSelector_RemoveRoutingRule(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 注册执行器
-	selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor())
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	// 添加并移除路由规则
-	selector.AddRoutingRule("temp:*:*", model.ModePerCore)
+	_ = selector.AddRoutingRule("temp:*:*", model.ModePerCore)
 	selector.RemoveRoutingRule("temp:*:*")
 
 	// 验证规则已移除
@@ -241,12 +269,14 @@ func TestTaskSelector_Stats(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 注册执行器
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	// 提交任务
 	for i := 0; i < 100; i++ {
 		sourceID, _ := model.ParseSourceID("test:stats:task")
-		selector.Submit(context.Background(), sourceID, func(ctx context.Context) {})
+		_ = selector.Submit(context.Background(), sourceID, func(ctx context.Context) {})
 	}
 
 	time.Sleep(50 * time.Millisecond)
@@ -261,8 +291,12 @@ func TestTaskSelector_AvailableModes(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 注册部分执行器
-	selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor())
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	modes := selector.AvailableModes()
 	if len(modes) != 2 {
@@ -274,7 +308,9 @@ func TestTaskSelector_HasMode(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 注册执行器
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	if !selector.HasMode(model.ModeDefaultPool) {
 		t.Error("HasMode(ModeDefaultPool) should return true")
@@ -288,8 +324,12 @@ func TestTaskSelector_Close(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 注册多个执行器
-	selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor())
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	// 关闭选择器
 	err := selector.Close()
@@ -309,11 +349,15 @@ func TestTaskSelector_ConcurrentSelect(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 注册所有执行器
-	selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor())
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	var wg sync.WaitGroup
-	errors := make(chan error, 1000)
+	errs := make(chan error, 1000)
 
 	// 并发选择
 	for i := 0; i < 1000; i++ {
@@ -323,15 +367,15 @@ func TestTaskSelector_ConcurrentSelect(t *testing.T) {
 			sourceID, _ := model.ParseSourceID("test:concurrent:task")
 			_, _, err := selector.Select(sourceID)
 			if err != nil {
-				errors <- err
+				errs <- err
 			}
 		}(i)
 	}
 
 	wg.Wait()
-	close(errors)
+	close(errs)
 
-	for err := range errors {
+	for err := range errs {
 		t.Errorf("Concurrent Select() error: %v", err)
 	}
 }
@@ -344,11 +388,21 @@ func TestTaskSelector_Integration_FullWorkflow(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 1. 注册所有执行器
-	selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor())
-	selector.RegisterExecutor(model.ModeCustomPool, mustCreateAntsPoolExecutor(10))
-	selector.RegisterExecutor(model.ModeFuncPool, mustCreateAntsFuncExecutor())
-	selector.RegisterExecutor(model.ModeMultiPool, mustCreateAntsMultiExecutor())
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeCustomPool, mustCreateAntsPoolExecutor(10)); err != nil {
+		t.Fatalf("RegisterExecutor(ModeCustomPool) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeFuncPool, mustCreateAntsFuncExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeFuncPool) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeMultiPool, mustCreateAntsMultiExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeMultiPool) error = %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	// 2. 提交不同类型的任务
 	var counter int64
@@ -358,7 +412,7 @@ func TestTaskSelector_Integration_FullWorkflow(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		sourceID, _ := model.ParseSourceID("hlc:clock:tick")
-		selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
+		_ = selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
 			atomic.AddInt64(&counter, 1)
 			wg.Done()
 		})
@@ -368,7 +422,7 @@ func TestTaskSelector_Integration_FullWorkflow(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		sourceID, _ := model.ParseSourceID("rpc:client:send")
-		selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
+		_ = selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
 			atomic.AddInt64(&counter, 1)
 			wg.Done()
 		})
@@ -378,7 +432,7 @@ func TestTaskSelector_Integration_FullWorkflow(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		sourceID, _ := model.ParseSourceID("background:log:flush")
-		selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
+		_ = selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
 			atomic.AddInt64(&counter, 1)
 			wg.Done()
 		})
@@ -397,14 +451,16 @@ func TestTaskSelector_Integration_FullWorkflow(t *testing.T) {
 	}
 
 	// 4. 关闭
-	selector.Close()
+	_ = selector.Close()
 }
 
 func TestTaskSelector_Integration_GracefulShutdown(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 注册执行器
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error = %v", err)
+	}
 
 	// 提交一些任务
 	var completed int32
@@ -413,7 +469,7 @@ func TestTaskSelector_Integration_GracefulShutdown(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		sourceID, _ := model.ParseSourceID("test:shutdown:task")
-		selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
+		_ = selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 			atomic.AddInt32(&completed, 1)
 			wg.Done()
@@ -428,7 +484,7 @@ func TestTaskSelector_Integration_GracefulShutdown(t *testing.T) {
 	}
 
 	// 关闭
-	selector.Close()
+	_ = selector.Close()
 }
 
 // ==========================================
@@ -473,39 +529,45 @@ func mustCreateAntsMultiExecutor() *AntsMultiExecutor {
 
 func BenchmarkTaskSelector_Select(b *testing.B) {
 	selector := NewTaskSelector()
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		b.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	sourceID, _ := model.ParseSourceID("bench:test:task")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		selector.Select(sourceID)
+		_, _, _ = selector.Select(sourceID)
 	}
 }
 
 func BenchmarkTaskSelector_Submit(b *testing.B) {
 	selector := NewTaskSelector()
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		b.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	sourceID, _ := model.ParseSourceID("bench:test:task")
 	task := func(ctx context.Context) {}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		selector.Submit(context.Background(), sourceID, task)
+		_ = selector.Submit(context.Background(), sourceID, task)
 	}
 }
 
 func BenchmarkTaskSelector_ConcurrentSubmit(b *testing.B) {
 	selector := NewTaskSelector()
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		b.Fatalf("RegisterExecutor() error = %v", err)
+	}
 
 	sourceID, _ := model.ParseSourceID("bench:concurrent:task")
 	task := func(ctx context.Context) {}
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			selector.Submit(context.Background(), sourceID, task)
+			_ = selector.Submit(context.Background(), sourceID, task)
 		}
 	})
 }

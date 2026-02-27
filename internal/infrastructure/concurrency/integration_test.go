@@ -24,18 +24,28 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 
 	// 2. 注册所有执行器
 	perCoreExec, _ := NewPerCoreExecutor(WithNumCores(2), WithQueueSize(100))
-	selector.RegisterExecutor(model.ModePerCore, perCoreExec)
+	if err := selector.RegisterExecutor(model.ModePerCore, perCoreExec); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error: %v", err)
+	}
 
 	customPoolExec, _ := NewAntsPoolExecutor(10)
-	selector.RegisterExecutor(model.ModeCustomPool, customPoolExec)
+	if err := selector.RegisterExecutor(model.ModeCustomPool, customPoolExec); err != nil {
+		t.Fatalf("RegisterExecutor(ModeCustomPool) error: %v", err)
+	}
 
 	funcPoolExec, _ := NewAntsFuncExecutor(10, func(i interface{}) {})
-	selector.RegisterExecutor(model.ModeFuncPool, funcPoolExec)
+	if err := selector.RegisterExecutor(model.ModeFuncPool, funcPoolExec); err != nil {
+		t.Fatalf("RegisterExecutor(ModeFuncPool) error: %v", err)
+	}
 
 	multiPoolExec, _ := NewAntsMultiExecutor(2, 10)
-	selector.RegisterExecutor(model.ModeMultiPool, multiPoolExec)
+	if err := selector.RegisterExecutor(model.ModeMultiPool, multiPoolExec); err != nil {
+		t.Fatalf("RegisterExecutor(ModeMultiPool) error: %v", err)
+	}
 
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error: %v", err)
+	}
 
 	// 3. 提交不同类型的任务
 	var counter int64
@@ -82,7 +92,7 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	}
 
 	// 5. 关闭
-	selector.Close()
+	_ = selector.Close()
 }
 
 // TestIntegration_GracefulShutdown 优雅关闭测试
@@ -91,7 +101,9 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 
 	// 注册执行器
 	executor, _ := NewPerCoreExecutor(WithNumCores(2), WithQueueSize(1000))
-	selector.RegisterExecutor(model.ModePerCore, executor)
+	if err := selector.RegisterExecutor(model.ModePerCore, executor); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error: %v", err)
+	}
 
 	// 提交大量任务
 	var started, completed int64
@@ -123,7 +135,7 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 	}
 
 	// 关闭
-	selector.Close()
+	_ = selector.Close()
 }
 
 // TestIntegration_PriorityOrdering 优先级顺序测试
@@ -136,7 +148,7 @@ func TestIntegration_PriorityOrdering(t *testing.T) {
 
 	// 先提交低优先级任务
 	for i := 0; i < 5; i++ {
-		executor.SubmitWithPriority(context.Background(), 1, func(ctx context.Context) {
+		_ = executor.SubmitWithPriority(context.Background(), 1, func(ctx context.Context) {
 			mu.Lock()
 			executionOrder = append(executionOrder, 1)
 			mu.Unlock()
@@ -144,7 +156,7 @@ func TestIntegration_PriorityOrdering(t *testing.T) {
 	}
 
 	// 提交高优先级任务
-	executor.SubmitWithPriority(context.Background(), 10, func(ctx context.Context) {
+	_ = executor.SubmitWithPriority(context.Background(), 10, func(ctx context.Context) {
 		mu.Lock()
 		executionOrder = append(executionOrder, 10)
 		mu.Unlock()
@@ -194,9 +206,10 @@ func TestIntegration_RateLimiting(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			err := executor.Submit(context.Background(), func(ctx context.Context) {})
-			if err == ErrRateLimitExceeded {
+			switch err {
+			case ErrRateLimitExceeded:
 				atomic.AddInt64(&rejected, 1)
-			} else if err == nil {
+			case nil:
 				atomic.AddInt64(&accepted, 1)
 			}
 		}()
@@ -255,8 +268,12 @@ func TestIntegration_HighConcurrency(t *testing.T) {
 
 	// 注册执行器
 	executor, _ := NewPerCoreExecutor(WithNumCores(runtime.NumCPU()), WithQueueSize(10000))
-	selector.RegisterExecutor(model.ModePerCore, executor)
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModePerCore, executor); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error: %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error: %v", err)
+	}
 
 	var counter int64
 	var wg sync.WaitGroup
@@ -288,7 +305,7 @@ func TestIntegration_HighConcurrency(t *testing.T) {
 		t.Errorf("counter = %d, want %d", counter, numTasks)
 	}
 
-	selector.Close()
+	_ = selector.Close()
 }
 
 // TestIntegration_MultiExecutorFallback 多执行器降级测试
@@ -296,13 +313,15 @@ func TestIntegration_MultiExecutorFallback(t *testing.T) {
 	selector := NewTaskSelector()
 
 	// 只注册默认池
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error: %v", err)
+	}
 
 	// 请求各种模式，应该都降级到默认池
 	testCases := []string{
-		"hlc:clock:tick",     // 推荐 PerCore
-		"rpc:client:send",    // 推荐 FuncPool
-		"query:range:scan",   // 推荐 MultiPool
+		"hlc:clock:tick",       // 推荐 PerCore
+		"rpc:client:send",      // 推荐 FuncPool
+		"query:range:scan",     // 推荐 MultiPool
 		"background:log:flush", // 推荐 CustomPool
 	}
 
@@ -322,7 +341,7 @@ func TestIntegration_MultiExecutorFallback(t *testing.T) {
 		}
 	}
 
-	selector.Close()
+	_ = selector.Close()
 }
 
 // TestIntegration_CustomRoutingRules 自定义路由规则测试
@@ -331,11 +350,15 @@ func TestIntegration_CustomRoutingRules(t *testing.T) {
 
 	// 注册执行器
 	perCoreExec, _ := NewPerCoreExecutor(WithNumCores(2), WithQueueSize(100))
-	selector.RegisterExecutor(model.ModePerCore, perCoreExec)
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModePerCore, perCoreExec); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error: %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error: %v", err)
+	}
 
 	// 添加自定义路由规则
-	selector.AddRoutingRule("urgent:*:*", model.ModePerCore)
+	_ = selector.AddRoutingRule("urgent:*:*", model.ModePerCore)
 
 	// 测试路由规则
 	sourceID, _ := model.ParseSourceID("urgent:module:action")
@@ -363,7 +386,7 @@ func TestIntegration_CustomRoutingRules(t *testing.T) {
 		t.Errorf("Select() mode = %v, want ModeDefaultPool", mode)
 	}
 
-	selector.Close()
+	_ = selector.Close()
 }
 
 // ==========================================
@@ -379,14 +402,16 @@ func BenchmarkIntegration_PerCoreSubmit(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), task)
 	}
 }
 
 // BenchmarkIntegration_SelectorSubmit 选择器提交基准
 func BenchmarkIntegration_SelectorSubmit(b *testing.B) {
 	selector := NewTaskSelector()
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		b.Fatalf("RegisterExecutor() error: %v", err)
+	}
 	defer selector.Close()
 
 	sourceID, _ := model.ParseSourceID("bench:test:task")
@@ -394,30 +419,36 @@ func BenchmarkIntegration_SelectorSubmit(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		selector.Submit(context.Background(), sourceID, task)
+		_ = selector.Submit(context.Background(), sourceID, task)
 	}
 }
 
 // BenchmarkIntegration_SelectWithRoute 路由选择基准
 func BenchmarkIntegration_SelectWithRoute(b *testing.B) {
 	selector := NewTaskSelector()
-	selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor())
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor()); err != nil {
+		b.Fatalf("RegisterExecutor(ModePerCore) error: %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		b.Fatalf("RegisterExecutor(ModeDefaultPool) error: %v", err)
+	}
 
 	sourceID, _ := model.ParseSourceID("hlc:clock:tick")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		selector.Select(sourceID)
+		_, _, _ = selector.Select(sourceID)
 	}
 
-	selector.Close()
+	_ = selector.Close()
 }
 
 // BenchmarkIntegration_ConcurrentSubmit 并发提交基准
 func BenchmarkIntegration_ConcurrentSubmit(b *testing.B) {
 	selector := NewTaskSelector()
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		b.Fatalf("RegisterExecutor() error: %v", err)
+	}
 	defer selector.Close()
 
 	sourceID, _ := model.ParseSourceID("bench:concurrent:task")
@@ -425,7 +456,7 @@ func BenchmarkIntegration_ConcurrentSubmit(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			selector.Submit(context.Background(), sourceID, task)
+			_ = selector.Submit(context.Background(), sourceID, task)
 		}
 	})
 }
@@ -439,16 +470,22 @@ func BenchmarkIntegration_PrioritySubmit(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		executor.SubmitWithPriority(context.Background(), i%10, task)
+		_ = executor.SubmitWithPriority(context.Background(), i%10, task)
 	}
 }
 
 // BenchmarkIntegration_MixedWorkload 混合工作负载基准
 func BenchmarkIntegration_MixedWorkload(b *testing.B) {
 	selector := NewTaskSelector()
-	selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor())
-	selector.RegisterExecutor(model.ModeCustomPool, mustCreateAntsPoolExecutor(100))
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor()); err != nil {
+		b.Fatalf("RegisterExecutor(ModePerCore) error: %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeCustomPool, mustCreateAntsPoolExecutor(100)); err != nil {
+		b.Fatalf("RegisterExecutor(ModeCustomPool) error: %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		b.Fatalf("RegisterExecutor(ModeDefaultPool) error: %v", err)
+	}
 	defer selector.Close()
 
 	task := func(ctx context.Context) {}
@@ -463,7 +500,7 @@ func BenchmarkIntegration_MixedWorkload(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		sourceID, _ := model.ParseSourceID(sources[i%len(sources)])
-		selector.Submit(context.Background(), sourceID, task)
+		_ = selector.Submit(context.Background(), sourceID, task)
 	}
 }
 
@@ -478,8 +515,12 @@ func TestStress_HighLoad(t *testing.T) {
 	}
 
 	selector := NewTaskSelector()
-	selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor())
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModePerCore, mustCreatePerCoreExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModePerCore) error: %v", err)
+	}
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error: %v", err)
+	}
 	defer selector.Close()
 
 	numTasks := 100000
@@ -491,7 +532,7 @@ func TestStress_HighLoad(t *testing.T) {
 	for i := 0; i < numTasks; i++ {
 		wg.Add(1)
 		sourceID, _ := model.ParseSourceID("stress:test:task")
-		selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
+		_ = selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
 			atomic.AddInt64(&counter, 1)
 			wg.Done()
 		})
@@ -519,14 +560,16 @@ func TestStress_MemoryUsage(t *testing.T) {
 	runtime.ReadMemStats(&m1)
 
 	selector := NewTaskSelector()
-	selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor() error: %v", err)
+	}
 
 	// 提交大量任务
 	var wg sync.WaitGroup
 	for i := 0; i < 10000; i++ {
 		wg.Add(1)
 		sourceID, _ := model.ParseSourceID("memory:test:task")
-		selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
+		_ = selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
 			wg.Done()
 		})
 	}
@@ -535,7 +578,7 @@ func TestStress_MemoryUsage(t *testing.T) {
 	runtime.GC()
 	runtime.ReadMemStats(&m2)
 
-	selector.Close()
+	_ = selector.Close()
 
 	heapDiff := int64(m2.HeapAlloc) - int64(m1.HeapAlloc)
 	t.Logf("Heap difference: %d bytes (%.2f MB)", heapDiff, float64(heapDiff)/1024/1024)

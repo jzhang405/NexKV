@@ -152,9 +152,9 @@ func (c *TaskCoordinator) Submit(ctx context.Context, sourceID model.SourceID, t
 		}
 	}
 
-	// 3. 更新统计
-	atomic.AddInt64(&c.stats.TotalSubmitted, 1)
+	// 3. 更新统计（统一使用 mutex，避免混用 atomic 和 mutex 导致竞态）
 	c.stats.mu.Lock()
+	c.stats.TotalSubmitted++
 	c.stats.ByMode[mode]++
 	c.stats.mu.Unlock()
 

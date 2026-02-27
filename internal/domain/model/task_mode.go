@@ -73,6 +73,13 @@ func (m TaskMode) FallbackMode() TaskMode {
 	}
 }
 
+// 支持的平台常量
+const (
+	PlatformLinux   = "linux"
+	PlatformWindows = "windows"
+	PlatformDarwin  = "darwin"
+)
+
 // IsSupportedOn 检查当前模式是否支持指定平台
 // Linux 和 Windows 支持真正的 CPU 绑核
 // macOS 不支持真正的 CPU 绑核（仅 LockOSThread）
@@ -80,7 +87,7 @@ func (m TaskMode) IsSupportedOn(platform string) bool {
 	switch m {
 	case ModePerCore:
 		// 只有 Linux 和 Windows 支持真正的 CPU 绑核
-		return platform == "linux" || platform == "windows"
+		return platform == PlatformLinux || platform == PlatformWindows
 	case ModeCustomPool, ModeFuncPool, ModeMultiPool, ModeDefaultPool:
 		// 其他模式跨平台支持
 		return true

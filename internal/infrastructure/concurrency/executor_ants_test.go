@@ -111,9 +111,12 @@ func TestAntsPoolExecutor_SubmitAfterClose(t *testing.T) {
 
 func TestAntsFuncExecutor_Invoke(t *testing.T) {
 	var counter int32
+	var wg sync.WaitGroup
+
 	handler := func(i interface{}) {
 		if n, ok := i.(int); ok {
 			atomic.AddInt32(&counter, int32(n))
+			wg.Done() // 在 handler 中调用 Done
 		}
 	}
 
@@ -123,14 +126,13 @@ func TestAntsFuncExecutor_Invoke(t *testing.T) {
 	}
 	defer executor.Close()
 
-	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		err := executor.Invoke(context.Background(), 1)
 		if err != nil {
 			t.Errorf("Invoke() error: %v", err)
+			wg.Done() // 如果提交失败，需要手动 Done
 		}
-		wg.Done()
 	}
 
 	wg.Wait()
@@ -235,7 +237,7 @@ func BenchmarkAntsDefaultExecutor_Submit(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), task)
 	}
 }
 
@@ -247,7 +249,7 @@ func BenchmarkAntsPoolExecutor_Submit(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), task)
 	}
 }
 
@@ -259,6 +261,6 @@ func BenchmarkAntsMultiExecutor_Submit(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), task)
 	}
 }

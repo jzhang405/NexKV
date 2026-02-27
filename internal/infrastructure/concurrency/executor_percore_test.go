@@ -195,7 +195,7 @@ func TestPerCoreExecutor_Close(t *testing.T) {
 
 	// 提交一些任务
 	for i := 0; i < 5; i++ {
-		executor.Submit(context.Background(), func(ctx context.Context) {
+		_ = executor.Submit(context.Background(), func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
 	}
@@ -216,7 +216,7 @@ func TestPerCoreExecutor_CloseTimeout(t *testing.T) {
 
 	// 使用 channel 创建一个真正阻塞的任务
 	blockCh := make(chan struct{})
-	executor.Submit(context.Background(), func(ctx context.Context) {
+	_ = executor.Submit(context.Background(), func(ctx context.Context) {
 		<-blockCh // 阻塞直到 channel 关闭
 	})
 
@@ -382,7 +382,7 @@ func TestPerCoreExecutor_Stats(t *testing.T) {
 
 	// 提交任务
 	for i := 0; i < 10; i++ {
-		executor.Submit(context.Background(), func(ctx context.Context) {})
+		_ = executor.Submit(context.Background(), func(ctx context.Context) {})
 	}
 
 	time.Sleep(50 * time.Millisecond)
@@ -436,7 +436,7 @@ func BenchmarkPerCoreExecutor_Submit(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), task)
 	}
 }
 
@@ -448,7 +448,7 @@ func BenchmarkPerCoreExecutor_SubmitWithPriority(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		executor.SubmitWithPriority(context.Background(), i%10, task)
+		_ = executor.SubmitWithPriority(context.Background(), i%10, task)
 	}
 }
 
@@ -460,7 +460,7 @@ func BenchmarkPerCoreExecutor_ConcurrentSubmit(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), task)
 		}
 	})
 }

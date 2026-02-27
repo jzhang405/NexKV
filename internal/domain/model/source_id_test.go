@@ -13,13 +13,13 @@ func TestParseSourceID(t *testing.T) {
 		{"hlc:clock:tick", false},
 		{"wal:writer:flush", false},
 		{"rpc:client:send", false},
-		{"", true},                      // 空字符串
-		{"invalid", true},               // 缺少冒号
-		{"only:two", true},              // 只有两部分
-		{"too:many:parts:here", true},   // 超过三部分
-		{":empty:module", true},         // 空模块名
-		{"module::action", true},        // 空子模块名
-		{"module:sub:", true},           // 空操作名
+		{"", true},                    // 空字符串
+		{"invalid", true},             // 缺少冒号
+		{"only:two", true},            // 只有两部分
+		{"too:many:parts:here", true}, // 超过三部分
+		{":empty:module", true},       // 空模块名
+		{"module::action", true},      // 空子模块名
+		{"module:sub:", true},         // 空操作名
 	}
 
 	for _, tt := range tests {
@@ -201,8 +201,8 @@ func TestSourceID_Validate(t *testing.T) {
 
 func TestSourceID_IsHighPriority(t *testing.T) {
 	tests := []struct {
-		sourceID   string
-		isHigh     bool
+		sourceID string
+		isHigh   bool
 	}{
 		{"hlc:clock:tick", true},
 		{"wal:writer:flush", true},

@@ -681,7 +681,7 @@ type SchedulerApplicationService struct {
 | 启动开发 | 2026-02-27 | 开始 Phase 1 实现 | - |
 | Phase 1 完成 | 2026-02-27 | PerCoreExecutor + TaskCoordinator + Ants包装器 | ✅ 168 tests |
 | Phase 2 完成 | 2026-02-27 | TaskSelector + 集成测试 + Bug修复 | ✅ 42 tests |
-| Phase 3 | - | **⏸️ 延期待 WAL 完成** | - |
+| Phase 3 | - | **⏸️ 无限期延后**（情况调查中） | - |
 | Post文档编写 | - | 编写后置总结文档 | 第三部分 |
 | 架构师Post批准 | - | 架构师评审Post文档 | 批准签字 |
 | 提交GitHub | - | 推送分支，创建PR | PR链接 |

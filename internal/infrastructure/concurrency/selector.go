@@ -3,24 +3,18 @@ package concurrency
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
-// ==========================================
-// 错误定义
-// ==========================================
-
+// 使用 pkg/errors 中的错误定义
 var (
-	// ErrExecutorNotFound 执行器未找到
-	ErrExecutorNotFound = errors.New("executor not found for requested mode")
-	// ErrSelectorClosed 选择器已关闭
-	ErrSelectorClosed = errors.New("selector is closed")
-	// ErrDuplicateExecutor 执行器重复注册
-	ErrDuplicateExecutor = errors.New("executor already registered for this mode")
+	ErrExecutorNotFound  = errors.ErrExecutorNotFound
+	ErrSelectorClosed    = errors.ErrSelectorClosed
+	ErrDuplicateExecutor = errors.ErrDuplicateExecutor
 )
 
 // ==========================================
@@ -54,7 +48,7 @@ type selectorStatsInternal struct {
 
 // SelectorStats 选择器统计（返回结构，不含锁）
 type SelectorStats struct {
-	TotalSubmitted int64                   // 总提交任务数
+	TotalSubmitted int64                    // 总提交任务数
 	ByMode         map[model.TaskMode]int64 // 按模式统计
 }
 

@@ -130,33 +130,33 @@ func (s SourceID) Validate() error {
 func (s SourceID) RecommendedMode() TaskMode {
 	// Per-Core 模式：延迟敏感的核心模块
 	perCoreModules := map[string]bool{
-		"hlc":        true, // HLC 时钟
-		"wal":        true, // WAL 写入
-		"transpose":  true, // 矩阵转置
+		"hlc":         true, // HLC 时钟
+		"wal":         true, // WAL 写入
+		"transpose":   true, // 矩阵转置
 		"replication": true, // 副本同步
 	}
 
 	// 函数池模式：高频重复任务
 	funcPoolPatterns := []string{
-		"rpc:client:",    // RPC 客户端
-		"rpc:server:",    // RPC 服务端
-		"network:send:",  // 网络发送
-		"network:recv:",  // 网络接收
+		"rpc:client:",   // RPC 客户端
+		"rpc:server:",   // RPC 服务端
+		"network:send:", // 网络发送
+		"network:recv:", // 网络接收
 	}
 
 	// 多池模式：分片场景
 	multiPoolPatterns := []string{
-		"query:range:",   // 范围查询
-		"query:point:",   // 点查询
-		"shard:",         // 分片操作
+		"query:range:", // 范围查询
+		"query:point:", // 点查询
+		"shard:",       // 分片操作
 	}
 
 	// 自定义池模式：后台任务
 	customPoolPatterns := []string{
-		"background:",    // 后台任务
-		"log:",           // 日志
-		"metric:",        // 指标
-		"cleanup:",       // 清理
+		"background:", // 后台任务
+		"log:",        // 日志
+		"metric:",     // 指标
+		"cleanup:",    // 清理
 	}
 
 	// 检查 Per-Core 模式
@@ -195,8 +195,8 @@ func (s SourceID) RecommendedMode() TaskMode {
 // IsHighPriority 判断是否为高优先级任务
 func (s SourceID) IsHighPriority() bool {
 	highPriorityModules := map[string]bool{
-		"hlc":        true,
-		"wal":        true,
+		"hlc":         true,
+		"wal":         true,
 		"replication": true,
 	}
 	return highPriorityModules[s.module]

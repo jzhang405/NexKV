@@ -160,9 +160,14 @@ func (e *AntsFuncExecutor) Submit(ctx context.Context, task func(context.Context
 	}
 
 	// 将任务包装为可调用的形式
-	return e.pool.Invoke(func() {
-		task(ctx)
-	})
+	// pool.Invoke 会将参数传给 handler，handler 需要执行这个任务
+	return e.pool.Invoke(&funcTask{ctx: ctx, task: task})
+}
+
+// funcTask 用于 Submit 方法的任务包装
+type funcTask struct {
+	ctx  context.Context
+	task func(context.Context)
 }
 
 // Close 关闭执行器

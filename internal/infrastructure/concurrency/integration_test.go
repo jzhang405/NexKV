@@ -33,7 +33,13 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 		t.Fatalf("RegisterExecutor(ModeCustomPool) error: %v", err)
 	}
 
-	funcPoolExec, _ := NewAntsFuncExecutor(10, func(i interface{}) {})
+	// 创建一个 handler 来执行 funcTask
+	funcPoolHandler := func(i interface{}) {
+		if ft, ok := i.(*funcTask); ok {
+			ft.task(ft.ctx)
+		}
+	}
+	funcPoolExec, _ := NewAntsFuncExecutor(10, funcPoolHandler)
 	if err := selector.RegisterExecutor(model.ModeFuncPool, funcPoolExec); err != nil {
 		t.Fatalf("RegisterExecutor(ModeFuncPool) error: %v", err)
 	}
@@ -104,6 +110,10 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 	if err := selector.RegisterExecutor(model.ModePerCore, executor); err != nil {
 		t.Fatalf("RegisterExecutor(ModePerCore) error: %v", err)
 	}
+	// 注册默认池作为 fallback
+	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+		t.Fatalf("RegisterExecutor(ModeDefaultPool) error: %v", err)
+	}
 
 	// 提交大量任务
 	var started, completed int64
@@ -111,7 +121,7 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
-		sourceID, _ := model.ParseSourceID("test:shutdown:task")
+		sourceID, _ := model.ParseSourceID("hlc:clock:tick") // 使用 PerCore 模式的 SourceID
 		err := selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
 			atomic.AddInt64(&started, 1)
 			time.Sleep(10 * time.Millisecond)

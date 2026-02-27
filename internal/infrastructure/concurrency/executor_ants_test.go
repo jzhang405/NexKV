@@ -144,7 +144,14 @@ func TestAntsFuncExecutor_Invoke(t *testing.T) {
 }
 
 func TestAntsFuncExecutor_Submit(t *testing.T) {
-	executor, err := NewAntsFuncExecutor(10, func(i interface{}) {})
+	// 创建一个 handler 来执行 funcTask
+	handler := func(i interface{}) {
+		if ft, ok := i.(*funcTask); ok {
+			ft.task(ft.ctx)
+		}
+	}
+
+	executor, err := NewAntsFuncExecutor(10, handler)
 	if err != nil {
 		t.Fatalf("NewAntsFuncExecutor() error: %v", err)
 	}

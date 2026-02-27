@@ -508,7 +508,13 @@ func mustCreateAntsPoolExecutor(capacity int) *AntsPoolExecutor {
 }
 
 func mustCreateAntsFuncExecutor() *AntsFuncExecutor {
-	e, err := NewAntsFuncExecutor(10, func(i interface{}) {})
+	// 创建一个 handler 来执行 funcTask
+	handler := func(i interface{}) {
+		if ft, ok := i.(*funcTask); ok {
+			ft.task(ft.ctx)
+		}
+	}
+	e, err := NewAntsFuncExecutor(10, handler)
 	if err != nil {
 		panic(err)
 	}

@@ -159,8 +159,10 @@ func (e *AntsFuncExecutor) Submit(ctx context.Context, task func(context.Context
 		return ErrExecutorClosed
 	}
 
-	// 对于函数池，Submit 将任务作为参数传递
-	return e.pool.Invoke(task)
+	// 将任务包装为可调用的形式
+	return e.pool.Invoke(func() {
+		task(ctx)
+	})
 }
 
 // Close 关闭执行器

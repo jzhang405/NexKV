@@ -293,17 +293,19 @@ func TestIntegration_HighConcurrency(t *testing.T) {
 	numGoroutines := 100
 	tasksPerGoroutine := numTasks / numGoroutines
 
+	// 在启动 goroutine 之前预先设置 WaitGroup 计数，避免竞态条件
+	wg.Add(numTasks)
+
 	for g := 0; g < numGoroutines; g++ {
 		go func() {
 			for i := 0; i < tasksPerGoroutine; i++ {
-				wg.Add(1)
 				sourceID, _ := model.ParseSourceID("test:concurrent:task")
 				err := selector.Submit(context.Background(), sourceID, func(ctx context.Context) {
 					atomic.AddInt64(&counter, 1)
 					wg.Done()
 				})
 				if err != nil {
-					wg.Done()
+					wg.Done() // 提交失败也要减少计数
 				}
 			}
 		}()

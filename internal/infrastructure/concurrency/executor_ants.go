@@ -119,7 +119,7 @@ type AntsFuncExecutor struct {
 }
 
 // NewAntsFuncExecutor 创建函数池执行器
-func NewAntsFuncExecutor(capacity int, handler func(interface{})) (*AntsFuncExecutor, error) {
+func NewAntsFuncExecutor(capacity int, handler func(any)) (*AntsFuncExecutor, error) {
 	pool, err := ants.NewPoolWithFunc(capacity, handler)
 	if err != nil {
 		return nil, err
@@ -129,7 +129,7 @@ func NewAntsFuncExecutor(capacity int, handler func(interface{})) (*AntsFuncExec
 }
 
 // Invoke 调用函数
-func (e *AntsFuncExecutor) Invoke(ctx context.Context, arg interface{}) error {
+func (e *AntsFuncExecutor) Invoke(ctx context.Context, arg any) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

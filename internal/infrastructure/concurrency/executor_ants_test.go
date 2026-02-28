@@ -113,7 +113,7 @@ func TestAntsFuncExecutor_Invoke(t *testing.T) {
 	var counter int32
 	var wg sync.WaitGroup
 
-	handler := func(i interface{}) {
+	handler := func(i any) {
 		if n, ok := i.(int); ok {
 			atomic.AddInt32(&counter, int32(n))
 			wg.Done() // 在 handler 中调用 Done
@@ -145,7 +145,7 @@ func TestAntsFuncExecutor_Invoke(t *testing.T) {
 
 func TestAntsFuncExecutor_Submit(t *testing.T) {
 	// 创建一个 handler 来执行 funcTask
-	handler := func(i interface{}) {
+	handler := func(i any) {
 		if ft, ok := i.(*funcTask); ok {
 			ft.task(ft.ctx)
 		}
@@ -180,7 +180,7 @@ func TestAntsFuncExecutor_Submit(t *testing.T) {
 }
 
 func TestAntsFuncExecutor_InvokeAfterClose(t *testing.T) {
-	executor, _ := NewAntsFuncExecutor(10, func(i interface{}) {})
+	executor, _ := NewAntsFuncExecutor(10, func(i any) {})
 	executor.Close()
 
 	err := executor.Invoke(context.Background(), 1)

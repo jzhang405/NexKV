@@ -509,7 +509,7 @@ func mustCreateAntsPoolExecutor(capacity int) *AntsPoolExecutor {
 
 func mustCreateAntsFuncExecutor() *AntsFuncExecutor {
 	// 创建一个 handler 来执行 funcTask
-	handler := func(i interface{}) {
+	handler := func(i any) {
 		if ft, ok := i.(*funcTask); ok {
 			ft.task(ft.ctx)
 		}

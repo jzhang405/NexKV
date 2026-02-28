@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
@@ -67,11 +68,12 @@ type PerCoreExecutor struct {
 
 // PerCoreConfig Per-Core 执行器配置
 type PerCoreConfig struct {
-	NumCores     int               // 核心数
-	QueueSize    int               // 每核心队列大小
-	PanicHandler func(interface{}) // Panic 处理器
-	EnableAffini bool              // 启用绑核
-	Labels       map[string]string // 标签（用于监控）
+	NumCores          int               // 核心数
+	QueueSize         int               // 每核心队列大小
+	PanicHandler      func(any)         // Panic 处理器
+	EnableAffini      bool              // 启用绑核
+	Labels            map[string]string // 标签（用于监控）
+	StarvationTimeout time.Duration     // 饥饿防护超时时间（默认 10s）
 }
 
 // PerCoreStats Per-Core 执行器统计
@@ -96,48 +98,71 @@ type coreWorker struct {
 	// 上下文
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// 绑核状态标志（确保只绑定一次）
+	pinned bool
 }
 
 // taskItem 任务项
+// 优化说明：移除过大的 padding（64字节），避免内存浪费
+// 伪共享问题通过核心本地数据和独立的 worker 队列已经解决
 type taskItem struct {
-	priority   int
+	priority   model.TaskPriority
 	submitTime time.Time
 	task       func(context.Context)
 }
 
 // taskQueue 任务队列（实现 heap.Interface）
-type taskQueue []taskItem
+// 使用结构体包装 slice，以支持可配置的饥饿防护超时
+type taskQueue struct {
+	items             []taskItem    // 底层 slice
+	starvationTimeout time.Duration // 饥饿防护超时时间
+}
 
-func (q taskQueue) Len() int { return len(q) }
+// Len 返回队列长度
+func (q taskQueue) Len() int { return len(q.items) }
 
+// Less 比较两个任务的优先级
 func (q taskQueue) Less(i, j int) bool {
-	// 优先级相同时 FIFO
-	if q[i].priority == q[j].priority {
-		return q[i].submitTime.Before(q[j].submitTime)
+	// 饥饿防护：超时提升优先级
+	if q.starvationTimeout > 0 {
+		timeI := time.Since(q.items[i].submitTime)
+		timeJ := time.Since(q.items[j].submitTime)
+		iTimeout := timeI > q.starvationTimeout
+		jTimeout := timeJ > q.starvationTimeout
+
+		switch {
+		case iTimeout && !jTimeout:
+			return true // i 超时优先
+		case !iTimeout && jTimeout:
+			return false // j 超时优先
+		case iTimeout && jTimeout:
+			return timeI > timeJ // 都超时：等待时间长的优先
+		}
 	}
 
-	// 等待时间过长时提升优先级
-	const maxWaitTime = 10 * time.Second
-	if time.Since(q[i].submitTime) > maxWaitTime {
-		return true
+	// 优先级相同时 FIFO（先提交的先执行）
+	if q.items[i].priority == q.items[j].priority {
+		return q.items[i].submitTime.Before(q.items[j].submitTime)
 	}
 
-	return q[i].priority > q[j].priority
+	// Unix 传统：数值越小越重要（0 最高，9 最低）
+	return q.items[i].priority < q.items[j].priority
 }
 
 func (q taskQueue) Swap(i, j int) {
-	q[i], q[j] = q[j], q[i]
+	q.items[i], q.items[j] = q.items[j], q.items[i]
 }
 
-func (q *taskQueue) Push(x interface{}) {
-	*q = append(*q, x.(taskItem))
+func (q *taskQueue) Push(x any) {
+	q.items = append(q.items, x.(taskItem))
 }
 
-func (q *taskQueue) Pop() interface{} {
-	old := *q
+func (q *taskQueue) Pop() any {
+	old := q.items
 	n := len(old)
 	item := old[n-1]
-	*q = old[0 : n-1]
+	q.items = old[0 : n-1]
 	return item
 }
 
@@ -163,7 +188,7 @@ func WithQueueSize(size int) PerCoreOption {
 }
 
 // WithPanicHandler 设置 Panic 处理器
-func WithPanicHandler(handler func(interface{})) PerCoreOption {
+func WithPanicHandler(handler func(any)) PerCoreOption {
 	return func(c *PerCoreConfig) {
 		c.PanicHandler = handler
 	}
@@ -183,6 +208,15 @@ func WithLabels(labels map[string]string) PerCoreOption {
 	}
 }
 
+// WithStarvationTimeout 设置饥饿防护超时时间
+// 超时后低优先级任务会被自动提升优先级，防止饥饿
+// 默认 10 秒，设置为 0 表示禁用饥饿防护
+func WithStarvationTimeout(timeout time.Duration) PerCoreOption {
+	return func(c *PerCoreConfig) {
+		c.StarvationTimeout = timeout
+	}
+}
+
 // ==========================================
 // 构造函数
 // ==========================================
@@ -191,10 +225,11 @@ func WithLabels(labels map[string]string) PerCoreOption {
 func NewPerCoreExecutor(opts ...PerCoreOption) (*PerCoreExecutor, error) {
 	// 默认配置
 	config := PerCoreConfig{
-		NumCores:     runtime.NumCPU(),
-		QueueSize:    DefaultQueueSize,
-		EnableAffini: false, // 默认不绑核（跨平台兼容）
-		PanicHandler: defaultPanicHandler,
+		NumCores:          runtime.NumCPU(),
+		QueueSize:         DefaultQueueSize,
+		EnableAffini:      isAffinitySupported(), // 默认绑核（仅支持的平台）
+		PanicHandler:      defaultPanicHandler,
+		StarvationTimeout: 10 * time.Second, // 默认饥饿防护超时 10 秒
 	}
 
 	// 应用选项
@@ -247,20 +282,25 @@ func validateConfig(config *PerCoreConfig) error {
 }
 
 // defaultPanicHandler 默认 Panic 处理器
-func defaultPanicHandler(r interface{}) {
+func defaultPanicHandler(r any) {
 	// 可以记录日志或上报监控
 }
 
 // newWorker 创建核心工作器
 func (e *PerCoreExecutor) newWorker(coreID int) *coreWorker {
 	ctx, cancel := context.WithCancel(e.ctx)
+
 	return &coreWorker{
 		coreID:   coreID,
 		executor: e,
-		queue:    make(taskQueue, 0, e.config.QueueSize),
-		cond:     sync.NewCond(new(sync.Mutex)),
-		ctx:      ctx,
-		cancel:   cancel,
+		queue: taskQueue{
+			items:             make([]taskItem, 0, e.config.QueueSize),
+			starvationTimeout: e.config.StarvationTimeout,
+		},
+		cond:   sync.NewCond(new(sync.Mutex)),
+		ctx:    ctx,
+		cancel: cancel,
+		pinned: false, // 初始状态：未绑定
 	}
 }
 
@@ -268,54 +308,49 @@ func (e *PerCoreExecutor) newWorker(coreID int) *coreWorker {
 // TaskExecutor 接口实现
 // ==========================================
 
-// Submit 提交任务
+// Submit 提交任务（使用默认优先级：TaskPriorityNormal = 5）
 func (e *PerCoreExecutor) Submit(ctx context.Context, task func(context.Context)) error {
-	return e.SubmitWithPriority(ctx, 0, task)
+	return e.SubmitWithPriority(ctx, model.TaskPriorityNormal, task)
 }
 
 // SubmitWithPriority 带优先级提交任务
-func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority int, task func(context.Context)) error {
-	// 1. 检查执行器状态
-	if atomic.LoadInt32(&e.state) != RUNNING {
-		return ErrExecutorClosed
-	}
-
-	// 2. 检查上下文
+func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority model.TaskPriority, task func(context.Context)) error {
+	// 检查上下文
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 
-	// 3. 选择 worker（简单轮询）
+	// 检查执行器状态
+	if atomic.LoadInt32(&e.state) != RUNNING {
+		return ErrExecutorClosed
+	}
+
+	// 选择 worker（简单轮询）
 	workerID := int(atomic.AddInt64(&e.stats.TotalSubmitted, 1)-1) % len(e.workers)
 	worker := e.workers[workerID]
 
-	// 4. 提交任务
+	// 提交任务
 	worker.cond.L.Lock()
+	defer worker.cond.L.Unlock()
 
 	// 再次检查状态（持锁期间）
 	if atomic.LoadInt32(&e.state) != RUNNING {
-		worker.cond.L.Unlock()
 		return ErrExecutorClosed
 	}
 
 	// 检查队列容量
-	if len(worker.queue) >= e.config.QueueSize {
-		worker.cond.L.Unlock()
+	if worker.queue.Len() >= e.config.QueueSize {
 		return errors.Wrapf(errors.ErrQueueFull, "worker %d", workerID)
 	}
 
-	// 添加任务
-	item := taskItem{
+	// 使用 heap.Push 维护优先级队列
+	heapPush(&worker.queue, taskItem{
 		priority:   priority,
 		submitTime: time.Now(),
 		task:       task,
-	}
-	// 使用 heap.Push 维护优先级队列
-	heapPush(&worker.queue, item)
+	})
 
-	worker.cond.L.Unlock()
 	worker.cond.Signal()
-
 	return nil
 }
 
@@ -333,10 +368,9 @@ func (e *PerCoreExecutor) CloseWithContext(ctx context.Context) error {
 	var closeErr error
 
 	e.closeOnce.Do(func() {
-		// 1. 标记为关闭中
 		atomic.StoreInt32(&e.state, CLOSING)
 
-		// 2. 取消所有 worker（P1-04: 持锁调用 Broadcast，避免竞态）
+		// 取消所有 worker 并广播
 		for _, worker := range e.workers {
 			worker.cancel()
 			worker.cond.L.Lock()
@@ -344,7 +378,7 @@ func (e *PerCoreExecutor) CloseWithContext(ctx context.Context) error {
 			worker.cond.L.Unlock()
 		}
 
-		// 3. 等待所有 worker 退出或超时
+		// 等待所有 worker 退出或超时
 		done := make(chan struct{})
 		go func() {
 			e.wg.Wait()
@@ -359,7 +393,6 @@ func (e *PerCoreExecutor) CloseWithContext(ctx context.Context) error {
 			closeErr = ctx.Err()
 		}
 
-		// 4. 标记为已关闭
 		atomic.StoreInt32(&e.state, CLOSED)
 		e.cancel()
 	})
@@ -399,18 +432,25 @@ func (e *PerCoreExecutor) IsRunning() bool {
 func (w *coreWorker) run() {
 	defer w.executor.wg.Done()
 
-	// 启用绑核（如果配置）
-	// TODO: 实现平台相关的绑核逻辑
-	// if w.executor.config.EnableAffini {
-	//     // Linux: 使用 sched_setaffinity
-	//     // Windows: 使用 SetThreadAffinityMask
-	// }
+	// 启用绑核（如果配置且尚未绑定）
+	// 使用标志位确保只绑定一次，避免重复系统调用
+	if w.executor.config.EnableAffini && !w.pinned {
+		// macOS 特殊处理：使用 LockOSThread + defer UnlockOSThread
+		// Linux/Windows: pinToCore 内部已经处理了 LockOSThread
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
+		if err := pinToCore(w.coreID); err == nil {
+			w.pinned = true // 标记已绑定
+		}
+		// 绑核失败不应阻止 worker 启动
+	}
 
 	for {
 		w.cond.L.Lock()
 
 		// 等待任务或关闭
-		for len(w.queue) == 0 && w.ctx.Err() == nil {
+		for w.queue.Len() == 0 && w.ctx.Err() == nil {
 			w.cond.Wait()
 		}
 
@@ -451,41 +491,40 @@ func (w *coreWorker) executeTask(task func(context.Context)) {
 // ==========================================
 
 func heapPush(q *taskQueue, item taskItem) {
-	*q = append(*q, item)
+	q.items = append(q.items, item)
 	// 向上调整
-	heapUp(*q, len(*q)-1)
+	heapUp(q, len(q.items)-1)
 }
 
 func heapPop(q *taskQueue) taskItem {
-	n := len(*q)
+	n := len(q.items)
 	if n == 0 {
 		return taskItem{}
 	}
 
 	// 交换根和最后一个元素
-	(*q)[0], (*q)[n-1] = (*q)[n-1], (*q)[0]
+	q.items[0], q.items[n-1] = q.items[n-1], q.items[0]
 	// 向下调整
-	heapDown(*q, 0, n-1)
+	heapDown(q, 0, n-1)
 
 	// 弹出最后一个元素
-	old := *q
-	item := old[n-1]
-	*q = old[0 : n-1]
+	item := q.items[n-1]
+	q.items = q.items[0 : n-1]
 	return item
 }
 
-func heapUp(q taskQueue, i int) {
+func heapUp(q *taskQueue, i int) {
 	for {
 		parent := (i - 1) / 2
 		if parent == i || !q.Less(i, parent) {
 			break
 		}
-		q[parent], q[i] = q[i], q[parent]
+		q.items[parent], q.items[i] = q.items[i], q.items[parent]
 		i = parent
 	}
 }
 
-func heapDown(q taskQueue, i0, n int) {
+func heapDown(q *taskQueue, i0, n int) {
 	i := i0
 	for {
 		j1 := 2*i + 1
@@ -499,7 +538,7 @@ func heapDown(q taskQueue, i0, n int) {
 		if !q.Less(j, i) {
 			break
 		}
-		q[i], q[j] = q[j], q[i]
+		q.items[i], q.items[j] = q.items[j], q.items[i]
 		i = j
 	}
 }

@@ -32,14 +32,20 @@ type TaskHealthStatus = model.TaskHealthStatus
 type TaskResult[T any] = service.TaskResult[T]
 
 // ==========================================
-// 优先级常量
+// 优先级常量（Unix 传统：0 最高，9 最低）
 // ==========================================
 
 const (
-	PriorityCritical = model.TaskPriorityCritical
-	PriorityHigh     = model.TaskPriorityHigh
-	PriorityNormal   = model.TaskPriorityNormal
-	PriorityLow      = model.TaskPriorityLow
+	PriorityCritical   = model.TaskPriorityCritical   // 0
+	PriorityHigh       = model.TaskPriorityHigh       // 1
+	PriorityUrgent     = model.TaskPriorityUrgent     // 2
+	PriorityImportant  = model.TaskPriorityImportant  // 3
+	PriorityNormalHigh = model.TaskPriorityNormalHigh // 4
+	PriorityNormal     = model.TaskPriorityNormal     // 5
+	PriorityNormalLow  = model.TaskPriorityNormalLow  // 6
+	PriorityLow        = model.TaskPriorityLow        // 7
+	PriorityBackground = model.TaskPriorityBackground // 8
+	PriorityIdle       = model.TaskPriorityIdle       // 9
 )
 
 // ==========================================

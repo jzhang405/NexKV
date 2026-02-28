@@ -8,8 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/time/rate"
-
 	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
@@ -23,12 +21,6 @@ const (
 
 	// DefaultQueueSize 默认队列大小
 	DefaultQueueSize = 1000
-
-	// DefaultRateLimit 默认限流速率 (OPS)
-	DefaultRateLimit = 100000
-
-	// DefaultBurstSize 默认突发大小
-	DefaultBurstSize = 10000
 )
 
 // 执行器状态
@@ -40,9 +32,8 @@ const (
 
 // 使用 pkg/errors 中的错误定义
 var (
-	ErrExecutorClosed    = errors.ErrExecutorClosed
-	ErrRateLimitExceeded = errors.ErrRateLimitExceeded
-	ErrInvalidConfig     = errors.ErrInvalidConfig
+	ErrExecutorClosed = errors.ErrExecutorClosed
+	ErrInvalidConfig  = errors.ErrInvalidConfig
 )
 
 // ==========================================
@@ -63,9 +54,6 @@ type PerCoreExecutor struct {
 	workers []*coreWorker
 	wg      sync.WaitGroup
 
-	// 限流器
-	limiter *rate.Limiter
-
 	// 统计
 	stats PerCoreStats
 
@@ -82,8 +70,6 @@ type PerCoreConfig struct {
 	NumCores     int               // 核心数
 	QueueSize    int               // 每核心队列大小
 	PanicHandler func(interface{}) // Panic 处理器
-	RateLimit    int               // 限流速率 (OPS)
-	BurstSize    int               // 突发大小
 	EnableAffini bool              // 启用绑核
 	Labels       map[string]string // 标签（用于监控）
 }
@@ -94,7 +80,6 @@ type PerCoreStats struct {
 	TotalCompleted int64 // 总完成任务数
 	TotalFailed    int64 // 总失败任务数
 	TotalPanics    int64 // 总 Panic 次数
-	TotalRateLimit int64 // 总限流次数
 	QueueLength    int64 // 当前队列长度
 	ActiveWorkers  int64 // 活跃 Worker 数
 }
@@ -184,14 +169,6 @@ func WithPanicHandler(handler func(interface{})) PerCoreOption {
 	}
 }
 
-// WithRateLimit 设置限流
-func WithRateLimit(rateLimit, burst int) PerCoreOption {
-	return func(c *PerCoreConfig) {
-		c.RateLimit = rateLimit
-		c.BurstSize = burst
-	}
-}
-
 // WithEnableAffinity 启用绑核
 func WithEnableAffinity(enable bool) PerCoreOption {
 	return func(c *PerCoreConfig) {
@@ -216,8 +193,6 @@ func NewPerCoreExecutor(opts ...PerCoreOption) (*PerCoreExecutor, error) {
 	config := PerCoreConfig{
 		NumCores:     runtime.NumCPU(),
 		QueueSize:    DefaultQueueSize,
-		RateLimit:    DefaultRateLimit,
-		BurstSize:    DefaultBurstSize,
 		EnableAffini: false, // 默认不绑核（跨平台兼容）
 		PanicHandler: defaultPanicHandler,
 	}
@@ -240,7 +215,6 @@ func NewPerCoreExecutor(opts ...PerCoreOption) (*PerCoreExecutor, error) {
 		startTime: time.Now(),
 		ctx:       ctx,
 		cancel:    cancel,
-		limiter:   rate.NewLimiter(rate.Limit(config.RateLimit), config.BurstSize),
 	}
 
 	// 创建 workers
@@ -265,12 +239,6 @@ func validateConfig(config *PerCoreConfig) error {
 	}
 	if config.QueueSize <= 0 {
 		return errors.Wrapf(ErrInvalidConfig, "QueueSize must be positive, got %d", config.QueueSize)
-	}
-	if config.RateLimit <= 0 {
-		config.RateLimit = DefaultRateLimit
-	}
-	if config.BurstSize <= 0 {
-		config.BurstSize = DefaultBurstSize
 	}
 	if config.PanicHandler == nil {
 		config.PanicHandler = defaultPanicHandler
@@ -317,17 +285,11 @@ func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority int, 
 		return ctx.Err()
 	}
 
-	// 3. 限流检查
-	if !e.limiter.Allow() {
-		atomic.AddInt64(&e.stats.TotalRateLimit, 1)
-		return ErrRateLimitExceeded
-	}
-
-	// 4. 选择 worker（简单轮询）
+	// 3. 选择 worker（简单轮询）
 	workerID := int(atomic.AddInt64(&e.stats.TotalSubmitted, 1)-1) % len(e.workers)
 	worker := e.workers[workerID]
 
-	// 5. 提交任务
+	// 4. 提交任务
 	worker.cond.L.Lock()
 
 	// 再次检查状态（持锁期间）
@@ -416,7 +378,6 @@ func (e *PerCoreExecutor) Stats() PerCoreStats {
 		TotalCompleted: atomic.LoadInt64(&e.stats.TotalCompleted),
 		TotalFailed:    atomic.LoadInt64(&e.stats.TotalFailed),
 		TotalPanics:    atomic.LoadInt64(&e.stats.TotalPanics),
-		TotalRateLimit: atomic.LoadInt64(&e.stats.TotalRateLimit),
 	}
 }
 

@@ -3,7 +3,6 @@ package concurrency
 
 import (
 	"context"
-	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -342,41 +341,6 @@ func TestPerCoreExecutor_ConcurrentSubmit(t *testing.T) {
 
 	if atomic.LoadInt32(&counter) != 1000 {
 		t.Errorf("counter = %d, want 1000", counter)
-	}
-}
-
-// TestPerCoreExecutor_RateLimit 测试限流
-func TestPerCoreExecutor_RateLimit(t *testing.T) {
-	// 创建带限流的执行器
-	executor, err := NewPerCoreExecutor(
-		WithNumCores(1),
-		WithRateLimit(100, 10), // 100 QPS, burst 10
-	)
-	if err != nil {
-		t.Fatalf("NewPerCoreExecutor() error: %v", err)
-	}
-	defer executor.Close()
-
-	var rejected int32
-	var wg sync.WaitGroup
-
-	// 快速提交 100 个任务，部分应该被限流
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			err := executor.Submit(context.Background(), func(ctx context.Context) {})
-			if err != nil && errors.Is(err, ErrRateLimitExceeded) {
-				atomic.AddInt32(&rejected, 1)
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	// 应该有部分任务被限流
-	if atomic.LoadInt32(&rejected) == 0 {
-		t.Log("Warning: No tasks were rate limited, but this can happen due to timing")
 	}
 }
 

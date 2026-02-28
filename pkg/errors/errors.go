@@ -55,7 +55,6 @@ var (
 	ErrExecutorNotFound  = stderrors.New("concurrency: executor not found for requested mode")
 	ErrSelectorClosed    = stderrors.New("concurrency: selector is closed")
 	ErrDuplicateExecutor = stderrors.New("concurrency: executor already registered for this mode")
-	ErrRateLimitExceeded = stderrors.New("concurrency: rate limit exceeded")
 	ErrInvalidConfig     = stderrors.New("concurrency: invalid configuration")
 	ErrQueueFull         = stderrors.New("concurrency: queue full")
 
@@ -75,8 +74,8 @@ var (
 	ErrNilRPC              = stderrors.New("rpc: rpc is nil")
 
 	// Middleware 层错误
-	ErrChainFrozen = stderrors.New("middleware: chain is frozen")
-	// ErrRateLimitExceeded 在 TaskExecutor 层已定义
+	ErrChainFrozen        = stderrors.New("middleware: chain is frozen")
+	ErrRateLimitExceeded  = stderrors.New("middleware: rate limit exceeded")
 	ErrCircuitBreakerOpen = stderrors.New("middleware: circuit breaker is open")
 	ErrInvalidCompression = stderrors.New("middleware: invalid or unsupported compression")
 

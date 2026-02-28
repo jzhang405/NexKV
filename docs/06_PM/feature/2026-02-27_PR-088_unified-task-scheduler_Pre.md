@@ -183,10 +183,11 @@ test:temp:task           → 模式: 默认池
 ##### 3.2.4 PerCoreExecutor 核心设计（P2-02 + P0 评审意见响应）
 
 > **评审意见**：DoS 防护不应内嵌于执行器
-> **决策**：DoS 防护移至配置层，由调用方决定是否启用
+> **决策**：TaskScheduler 的请求都来自于内部，不需要限流功能
 >
-> **P0 修复**：
-> - **CRITICAL-01**：DoS 防护增加分级限流 + 降级策略
+> **设计说明**：
+> - TaskScheduler 用于内部模块（HLC、WAL、副本同步等）的任务调度
+> - 内部请求无需限流防护，避免不必要的性能开销
 > - **CRITICAL-02**：强制 panic 恢复 + 自动重启 worker
 > - **CRITICAL-03**：goroutine 数量强制上限
 
@@ -287,64 +288,9 @@ func (e *PerCoreExecutor) workerLoop(coreID int) {
 }
 ```
 
-**CRITICAL-01: DoS 防护分级限流 + 降级策略**：
-
-```go
-// SmartRateLimiter 智能限流器（分级 + 降级）
-type SmartRateLimiter struct {
-    // 分级限流器
-    highPriorityLim   *rate.Limiter  // 高优先级：高阈值（100K/s）
-    normalPriorityLim *rate.Limiter  // 普通优先级：正常阈值（50K/s）
-    lowPriorityLim    *rate.Limiter  // 低优先级：低阈值（10K/s）
-
-    // 降级执行器（高优先级任务被限流时使用）
-    fallbackExecutor TaskExecutor
-
-    // 降级队列（低优先级任务排队）
-    fallbackQueue chan taskItem
-}
-
-func (s *SmartRateLimiter) Submit(
-    ctx context.Context,
-    priority Priority,
-    sourceID SourceID,
-    task func(context.Context),
-) error {
-    var limiter *rate.Limiter
-    switch priority {
-    case PriorityHigh:
-        limiter = s.highPriorityLim
-    case PriorityNormal:
-        limiter = s.normalPriorityLim
-    case PriorityLow:
-        limiter = s.lowPriorityLim
-    }
-
-    if !limiter.Allow() {
-        // 降级策略1：高优先级任务降级到 fallback 执行器
-        if priority == PriorityHigh && s.fallbackExecutor != nil {
-            logrus.Warnf("high priority task rate limited, fallback to default executor: %s", sourceID)
-            return s.fallbackExecutor.Submit(ctx, task)
-        }
-
-        // 降级策略2：低/普通优先级任务排队
-        select {
-        case s.fallbackQueue <- taskItem{task: task, priority: priority}:
-            return nil
-        default:
-            // 队列满，返回错误
-            return ErrRateLimitExceeded
-        }
-    }
-
-    return s.executor.Submit(ctx, task)
-}
-```
-
 **设计理由**：
 - 执行器保持单一职责（任务调度）
-- DoS 防护作为装饰器模式，按需组合
-- **CRITICAL-01**：分级限流避免关键任务丢失
+- 内部请求无需限流，避免不必要的性能开销
 - **CRITICAL-02**：强制 panic 恢复保证 worker 可用性
 - **CRITICAL-03**：资源上限防止资源耗尽
 
@@ -629,8 +575,7 @@ type SchedulerApplicationService struct {
 | Channel 泄漏 | 高 | P0-01/P0-02 已修复：超时强制关闭 + 清空机制 | ✅ 已修复 |
 | 锁管理混乱 | 高 | P0-03 已修复：defer + 局部作用域 | ✅ 已修复 |
 | 优先级队列复杂 | 低 | 简化为 3 级优先级；5s 饥饿阈值 | ✅ 已简化 |
-| DoS 防护位置 | 低 | 移至配置层，装饰器模式 | ✅ 已调整 |
-| **DoS 防护任务丢失** | 🔴 **CRITICAL** | 分级限流 + 降级策略（高优先级 fallback，低优先级排队） | ✅ **已修复** |
+| **Panic 导致 worker 退出** | 🔴 **CRITICAL** | 强制 panic 恢复 + 自动重启 worker | ✅ **已修复** |
 | **Panic 导致 worker 退出** | 🔴 **CRITICAL** | 强制 panic 恢复 + 自动重启 worker | ✅ **已修复** |
 | **Goroutine 数量无上限** | 🔴 **CRITICAL** | NumCores 强制上限 MaxCores=64 | ✅ **已修复** |
 
@@ -639,7 +584,7 @@ type SchedulerApplicationService struct {
 | 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施 | 优化结果 |
 |----------|----------|------------------|--------------|----------|----------|
 | 第1轮 | 2026-02-27 | 👤 架构师 | **P1 问题**：范围过大、缺性能基线、兼容策略不清<br/>**P2 问题**：优先级队列复杂、DoS 位置不当、缺测试策略<br/>**架构建议**：TaskSchedule 聚合根过重 | 1. 添加性能基线测试计划（3.4.3）<br/>2. 明确向后兼容策略（2.2）<br/>3. 添加完整测试策略（3.4）<br/>4. 简化优先级队列为 3 级（3.2.5）<br/>5. DoS 防护移至配置层（3.2.4）<br/>6. 简化聚合根为协调器（3.5） | ✅ 已响应 |
-| 第2轮 | 2026-02-27 | 🤖 专家组 | **专家评审意见**：<br/>- DDD 专家(3.5/5)：聚合根职责模糊<br/>- 测试专家(3.5/5)：goleak未引入、并发测试不足<br/>- 安全专家(3.5/5)：**CRITICAL 问题** | **P0 修复**：<br/>1. CRITICAL-01: DoS 防护分级限流+降级<br/>2. CRITICAL-02: 强制 panic 恢复+自动重启<br/>3. CRITICAL-03: NumCores 强制上限 64<br/>**P1 响应**：<br/>1. P1-01: 性能目标调整（200K→500K→1M）<br/>2. P1-02: goleak 引入 + 分层并发测试<br/>3. P1-03: TaskCoordinator 明确为协调器（非聚合根） | ✅ P0 已修复<br/>✅ P1 已响应 |
+| 第2轮 | 2026-02-27 | 🤖 专家组 | **专家评审意见**：<br/>- DDD 专家(3.5/5)：聚合根职责模糊<br/>- 测试专家(3.5/5)：goleak未引入、并发测试不足<br/>- 安全专家(3.5/5)：**CRITICAL 问题** | **P0 修复**：<br/>1. ~~CRITICAL-01: DoS 防护分级限流+降级~~ → **移除**（内部请求无需限流）<br/>2. CRITICAL-02: 强制 panic 恢复+自动重启<br/>3. CRITICAL-03: NumCores 强制上限 64<br/>**P1 响应**：<br/>1. P1-01: 性能目标调整（200K→500K→1M）<br/>2. P1-02: goleak 引入 + 分层并发测试<br/>3. P1-03: TaskCoordinator 明确为协调器（非聚合根） | ✅ P0 已修复<br/>✅ P1 已响应 |
 | 第3轮 | 2026-02-27 | 👤 架构师 | **用户确认 P1 方案**：<br/>- P1-01: ✅ 选方案 A（分阶段目标）<br/>- P1-02: ✅ 选方案 A（本次引入 goleak）<br/>- P1-03: ✅ 选方案 A（明确为协调器） | **文档更新至 V1.3**：<br/>- 性能目标表格更新（2.2）<br/>- goleak + 分层测试（3.4.2）<br/>- DDD 职责定位表（3.5） | ✅ P1 用户已确认 |
 | 第4轮 | 2026-02-27 | 👤 架构师 | **最终批准** | - | ✅ **评审通过** |
 
@@ -650,11 +595,11 @@ type SchedulerApplicationService struct {
 > - [x] DDD 分层架构是否合理？→ 已明确 TaskCoordinator 为协调器（领域服务），非聚合根
 > - [x] 5 种调度模式是否足够？→ 保持 5 种模式
 > - [x] 性能目标是否现实？→ 已调整为分阶段目标：200K → 500K → 1M ops/s
-> - [x] 风险缓解措施是否充分？→ 14 项风险均有应对措施（11 原有 + 3 CRITICAL）
+> - [x] 风险缓解措施是否充分？→ 13 项风险均有应对措施（11 原有 + 2 CRITICAL）
 > - [x] 测试策略是否完整？→ 已添加单元/并发/性能/集成测试 + goleak 泄漏检测
 > - [x] 向后兼容策略是否清晰？→ v2 子包 + 100% 兼容
 > - [x] **P0 CRITICAL 问题是否修复？**
->   - [x] CRITICAL-01: DoS 防护分级限流 + 降级策略
+>   - [x] ~~CRITICAL-01: DoS 防护分级限流 + 降级策略~~ → **已移除**（内部请求无需限流）
 >   - [x] CRITICAL-02: 强制 panic 恢复 + 自动重启 worker
 >   - [x] CRITICAL-03: NumCores 强制上限 MaxCores=64
 > - [x] **P1 问题是否响应？**
@@ -709,7 +654,7 @@ type SchedulerApplicationService struct {
   - ✅ TaskMode 值对象（5 种调度模式 + 降级 + 平台检测）
   - ✅ SourceID 值对象（模式匹配 + 推荐模式 + 优先级判断）
   - ✅ TaskCoordinator 协调器（执行器注册 + 路由 + 统计）
-  - ✅ PerCoreExecutor（优先级队列 + 限流 + Panic 恢复 + NumCores 限制）
+  - ✅ PerCoreExecutor（优先级队列 + Panic 恢复 + NumCores 限制，**内部请求无限流**）
   - ✅ Ants 包装器（Default/Pool/Func/Multi 四种模式）
   - ✅ TaskSelector（路由规则 + 降级 + 便捷方法）
   - ✅ 集成测试 + 性能基准
@@ -793,7 +738,7 @@ type SchedulerApplicationService struct {
 | P1-01 | 缺性能基线 | 添加基线测试计划 | 3.4.3 |
 | P1-02 | 兼容策略不清 | 明确 v2 子包 + 100% 兼容 | 2.2 |
 | P2-01 | 优先级队列复杂 | 简化为 3 级 + 5s 饥饿阈值 | 3.2.5 |
-| P2-02 | DoS 位置不当 | 移至配置层，装饰器模式 | 3.2.4 |
+| P2-02 | ~~DoS 位置不当~~ | **已解决**（内部请求无需限流） | 3.2.4 |
 | P2-03 | 缺测试策略 | 添加完整测试策略章节 | 3.4 |
 | 架构建议 | 聚合根过重 | 简化为 TaskCoordinator | 3.5 |
 
@@ -801,7 +746,7 @@ type SchedulerApplicationService struct {
 
 | 问题编号 | 问题描述 | 响应措施 | 文档位置 |
 |----------|----------|----------|----------|
-| **CRITICAL-01** | DoS 防护任务丢失风险 | 分级限流 + 降级策略（高优先级 fallback，低优先级排队） | 3.2.4 |
+| **CRITICAL-01** | ~~DoS 防护任务丢失风险~~ | **已移除**（内部请求无需限流，避免性能开销） | 3.2.4 |
 | **CRITICAL-02** | Panic 导致 worker 退出 | 强制 panic 恢复 + 自动重启 worker | 3.2.4 |
 | **CRITICAL-03** | Goroutine 数量无上限 | NumCores 强制上限 MaxCores=64 | 3.2.4 |
 

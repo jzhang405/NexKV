@@ -197,40 +197,6 @@ func TestIntegration_PriorityOrdering(t *testing.T) {
 	}
 }
 
-// TestIntegration_RateLimiting 限流测试
-func TestIntegration_RateLimiting(t *testing.T) {
-	// 创建带限流的执行器
-	executor, _ := NewPerCoreExecutor(
-		WithNumCores(1),
-		WithQueueSize(1000),
-		WithRateLimit(1000, 100), // 1000 QPS, burst 100
-	)
-	defer executor.Close()
-
-	var accepted, rejected int64
-	var wg sync.WaitGroup
-
-	// 快速提交任务
-	for i := 0; i < 200; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			err := executor.Submit(context.Background(), func(ctx context.Context) {})
-			switch err {
-			case ErrRateLimitExceeded:
-				atomic.AddInt64(&rejected, 1)
-			case nil:
-				atomic.AddInt64(&accepted, 1)
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	// 应该有部分任务被限流
-	t.Logf("Accepted: %d, Rejected: %d", accepted, rejected)
-}
-
 // TestIntegration_PanicRecovery Panic 恢复测试
 func TestIntegration_PanicRecovery(t *testing.T) {
 	var panicCount int64

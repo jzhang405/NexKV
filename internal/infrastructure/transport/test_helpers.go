@@ -17,163 +17,17 @@ import (
 // 直接使用 go func() 执行任务，不使用任务池
 type mockTaskPoolProvider struct{}
 
-func newMockTaskPoolProvider() service.ExecutorManager {
+func newMockTaskPoolProvider() service.TaskExecutor {
 	return &mockTaskPoolProvider{}
 }
 
-func (m *mockTaskPoolProvider) Submit(ctx context.Context, task func(context.Context)) error {
+func (m *mockTaskPoolProvider) Submit(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
 	go task(ctx)
-	return nil
-}
-
-func (m *mockTaskPoolProvider) SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error {
-	go task(ctx, arg)
-	return nil
-}
-
-func (m *mockTaskPoolProvider) SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) service.TaskResult[any] {
-	resultCh := make(chan any, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		r, err := task(ctx)
-		if err != nil {
-			errCh <- err
-		} else {
-			resultCh <- r
-		}
-		close(resultCh)
-		close(errCh)
-	}()
-	return &mockTaskResult{
-		resultCh: resultCh,
-		errCh:    errCh,
-	}
-}
-
-func (m *mockTaskPoolProvider) SubmitWithArgAndResult(ctx context.Context, task func(context.Context, any) (any, error), arg any) service.TaskResult[any] {
-	resultCh := make(chan any, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		r, err := task(ctx, arg)
-		if err != nil {
-			errCh <- err
-		} else {
-			resultCh <- r
-		}
-		close(resultCh)
-		close(errCh)
-	}()
-	return &mockTaskResult{
-		resultCh: resultCh,
-		errCh:    errCh,
-	}
-}
-
-func (m *mockTaskPoolProvider) SubmitWithPriority(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
-	go task(ctx)
-	return nil
-}
-
-func (m *mockTaskPoolProvider) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
-	go func() {
-		time.Sleep(delay)
-		task(ctx)
-	}()
-	return nil
-}
-
-func (m *mockTaskPoolProvider) SubmitAdvanced(ctx context.Context, task func(context.Context, any) (any, error), arg any, opts ...service.TaskSubmitOption) service.TaskResult[any] {
-	return m.SubmitWithArgAndResult(ctx, task, arg)
-}
-
-func (m *mockTaskPoolProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
-	for _, task := range tasks {
-		go task(ctx)
-	}
-	return nil
-}
-
-func (m *mockTaskPoolProvider) SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error {
-	for i, task := range tasks {
-		arg := args[i]
-		go task(ctx, arg)
-	}
-	return nil
-}
-
-func (m *mockTaskPoolProvider) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
-	var wg sync.WaitGroup
-	errs := make([]error, len(tasks))
-	for i, task := range tasks {
-		wg.Add(1)
-		go func(idx int, t func(context.Context)) {
-			defer wg.Done()
-			t(ctx)
-		}(i, task)
-	}
-	wg.Wait()
-	return errs
-}
-
-func (m *mockTaskPoolProvider) SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []service.TaskResult[any] {
-	results := make([]service.TaskResult[any], len(tasks))
-	for i, task := range tasks {
-		results[i] = m.SubmitWithResult(ctx, task)
-	}
-	return results
-}
-
-func (m *mockTaskPoolProvider) Stats() service.TaskPoolStats {
-	return service.TaskPoolStats{}
-}
-
-func (m *mockTaskPoolProvider) Health() service.TaskHealthStatus {
-	return model.TaskHealthStatusHealthy
-}
-
-func (m *mockTaskPoolProvider) SetCapacity(capacity int) error {
 	return nil
 }
 
 func (m *mockTaskPoolProvider) Close() error {
 	return nil
-}
-
-func (m *mockTaskPoolProvider) CloseWithTimeout(timeout time.Duration) error {
-	return nil
-}
-
-type mockTaskResult struct {
-	resultCh chan any
-	errCh    chan error
-}
-
-func (r *mockTaskResult) Get(ctx context.Context) (any, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case r, ok := <-r.resultCh:
-		if !ok {
-			return nil, nil
-		}
-		return r, nil
-	case err, ok := <-r.errCh:
-		if !ok {
-			return nil, nil
-		}
-		return nil, err
-	}
-}
-
-func (r *mockTaskResult) IsDone() bool {
-	select {
-	case <-r.resultCh:
-		return true
-	case <-r.errCh:
-		return true
-	default:
-		return false
-	}
 }
 
 // ============================================================================

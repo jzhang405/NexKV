@@ -28,7 +28,7 @@ type MDNSDiscovery struct {
 	wg       sync.WaitGroup
 	notifee  service.DiscoveryNotifee
 	mdnsSvc  mdns.Service
-	provider service.ExecutorManager
+	provider service.TaskExecutor
 	started  bool
 	mu       sync.RWMutex
 }
@@ -63,7 +63,7 @@ func (n *mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
 
 // NewMDNSDiscovery 创建 mDNS 发现服务
 // provider 是必要参数，用于管理 goroutine 生命周期
-func NewMDNSDiscovery(h host.Host, tag string, provider service.ExecutorManager) *MDNSDiscovery {
+func NewMDNSDiscovery(h host.Host, tag string, provider service.TaskExecutor) *MDNSDiscovery {
 	return &MDNSDiscovery{
 		host:     h,
 		tag:      tag,
@@ -103,7 +103,7 @@ func (d *MDNSDiscovery) Start(ctx context.Context) error {
 		<-d.ctx.Done()
 	}
 
-	_ = d.provider.Submit(d.ctx, startFunc)
+	_ = d.provider.Submit(d.ctx, service.PriorityNormal, startFunc)
 
 	d.started = true
 	discoveryLog.WithField("tag", d.tag).Info("mDNS discovery service started")

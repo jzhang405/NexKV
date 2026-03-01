@@ -4,7 +4,6 @@ package rpc
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -235,14 +234,14 @@ func TestRPCAsyncAdapter_WriteVCallAsync(t *testing.T) {
 	})
 }
 
-func TestRPCAsyncAdapter_SetTaskPoolProvider(t *testing.T) {
+func TestRPCAsyncAdapter_SetExecutor(t *testing.T) {
 	mockRPC := &mockRPCSync{}
 	config := service.DefaultRPCAsyncConfig()
 	adapter := NewRPCAsyncAdapter(mockRPC, config)
 
 	t.Run("set provider", func(t *testing.T) {
 		provider := newMockTaskPoolProvider()
-		adapter.SetTaskPoolProvider(provider)
+		adapter.SetExecutor(provider)
 		// 验证通过执行异步操作
 	})
 
@@ -256,7 +255,7 @@ func TestRPCAsyncAdapter_SetTaskPoolProvider(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				provider := newMockTaskPoolProvider()
-				adapter.SetTaskPoolProvider(provider)
+				adapter.SetExecutor(provider)
 			}()
 			go func() {
 				defer wg.Done()
@@ -287,7 +286,7 @@ func TestRPCAsyncAdapter_ConcurrentSafety(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			adapter.SetTaskPoolProvider(newMockTaskPoolProvider())
+			adapter.SetExecutor(newMockTaskPoolProvider())
 		}()
 		go func() {
 			defer wg.Done()
@@ -313,95 +312,8 @@ func newMockTaskPoolProvider() *mockTaskPoolProvider {
 	return &mockTaskPoolProvider{}
 }
 
-func (m *mockTaskPoolProvider) Submit(ctx context.Context, task func(context.Context)) error {
+func (m *mockTaskPoolProvider) Submit(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
 	go task(ctx)
-	return nil
-}
-
-func (m *mockTaskPoolProvider) SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error {
-	go task(ctx, arg)
-	return nil
-}
-
-func (m *mockTaskPoolProvider) SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) service.TaskResult[any] {
-	result := make(chan struct {
-		val any
-		err error
-	}, 1)
-	go func() {
-		val, err := task(ctx)
-		result <- struct {
-			val any
-			err error
-		}{val, err}
-	}()
-	return &mockTaskResult[any]{resultCh: result}
-}
-
-func (m *mockTaskPoolProvider) SubmitWithArgAndResult(ctx context.Context, task func(context.Context, any) (any, error), arg any) service.TaskResult[any] {
-	result := make(chan struct {
-		val any
-		err error
-	}, 1)
-	go func() {
-		val, err := task(ctx, arg)
-		result <- struct {
-			val any
-			err error
-		}{val, err}
-	}()
-	return &mockTaskResult[any]{resultCh: result}
-}
-
-func (m *mockTaskPoolProvider) SubmitWithPriority(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
-	go task(ctx)
-	return nil
-}
-
-func (m *mockTaskPoolProvider) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
-	time.AfterFunc(delay, func() { task(ctx) })
-	return nil
-}
-
-func (m *mockTaskPoolProvider) SubmitAdvanced(ctx context.Context, task func(context.Context, any) (any, error), arg any, opts ...service.TaskSubmitOption) service.TaskResult[any] {
-	return m.SubmitWithArgAndResult(ctx, task, arg)
-}
-
-func (m *mockTaskPoolProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
-	for _, task := range tasks {
-		go task(ctx)
-	}
-	return nil
-}
-
-func (m *mockTaskPoolProvider) SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error {
-	for i, task := range tasks {
-		go task(ctx, args[i])
-	}
-	return nil
-}
-
-func (m *mockTaskPoolProvider) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
-	return make([]error, len(tasks))
-}
-
-func (m *mockTaskPoolProvider) SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []service.TaskResult[any] {
-	results := make([]service.TaskResult[any], len(tasks))
-	for i, task := range tasks {
-		results[i] = m.SubmitWithResult(ctx, task)
-	}
-	return results
-}
-
-func (m *mockTaskPoolProvider) Stats() service.TaskPoolStats {
-	return service.TaskPoolStats{}
-}
-
-func (m *mockTaskPoolProvider) Health() service.TaskHealthStatus {
-	return model.TaskHealthStatusHealthy
-}
-
-func (m *mockTaskPoolProvider) SetCapacity(capacity int) error {
 	return nil
 }
 
@@ -411,30 +323,6 @@ func (m *mockTaskPoolProvider) Close() error {
 
 func (m *mockTaskPoolProvider) CloseWithTimeout(timeout time.Duration) error {
 	return nil
-}
-
-// mockTaskResult 模拟 TaskResult
-type mockTaskResult[T any] struct {
-	resultCh chan struct {
-		val T
-		err error
-	}
-	done atomic.Bool
-}
-
-func (r *mockTaskResult[T]) Get(ctx context.Context) (T, error) {
-	select {
-	case <-ctx.Done():
-		var zero T
-		return zero, ctx.Err()
-	case result := <-r.resultCh:
-		r.done.Store(true)
-		return result.val, result.err
-	}
-}
-
-func (r *mockTaskResult[T]) IsDone() bool {
-	return r.done.Load()
 }
 
 // mockRPCSync 模拟 RPCSync 接口
@@ -477,7 +365,7 @@ func (m *mockRPCSync) Close() error {
 	return nil
 }
 
-func (m *mockRPCSync) SetTaskPoolProvider(provider service.ExecutorManager) {}
+func (m *mockRPCSync) SetExecutor(provider service.TaskExecutor) {}
 
 // newTestMessage 创建测试消息
 func newTestMessage(content string) model.Message {

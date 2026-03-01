@@ -30,7 +30,7 @@ func pinToCore(coreID int) error {
 	// 获取当前线程句柄
 	threadHandle, _, _ := procGetCurrentThread.Call()
 	if threadHandle == 0 {
-		return fmt.Errorf("GetCurrentThread failed")
+		return errors.ErrCPUGetCurrentThread
 	}
 
 	// 创建 CPU 亲和性掩码
@@ -45,7 +45,7 @@ func pinToCore(coreID int) error {
 	)
 
 	if ret == 0 {
-		return fmt.Errorf("SetThreadAffinityMask failed: %v", errno)
+		return errors.Wrapf(errors.ErrCPUSetAffinityMask, "errno: %v", errno)
 	}
 
 	return nil

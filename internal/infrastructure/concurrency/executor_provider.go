@@ -2,8 +2,6 @@
 package concurrency
 
 import (
-	"time"
-
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/pkg/errors"
@@ -14,10 +12,7 @@ import (
 // ==========================================
 
 // TaskPoolProvider 任务池提供者接口
-type TaskPoolProvider = service.ExecutorManager
-
-// TaskSubmitOption 提交选项
-type TaskSubmitOption = service.TaskSubmitOption
+type TaskPoolProvider = service.TaskExecutor
 
 // TaskPriority 任务优先级
 type TaskPriority = model.TaskPriority
@@ -27,9 +22,6 @@ type TaskPoolStats = service.TaskPoolStats
 
 // TaskHealthStatus 健康状态
 type TaskHealthStatus = model.TaskHealthStatus
-
-// TaskResult 异步任务结果接口
-type TaskResult[T any] = service.TaskResult[T]
 
 // ==========================================
 // 优先级常量（Unix 传统：0 最高，9 最低）
@@ -56,23 +48,6 @@ const (
 	HealthStatusHealthy   = model.TaskHealthStatusHealthy
 	HealthStatusUnhealthy = model.TaskHealthStatusUnhealthy
 )
-
-// ==========================================
-// 选项模式定义
-// ==========================================
-
-// SubmitOptions 提交选项配置
-type SubmitOptions = service.TaskSubmitOptions
-
-// WithPriority 设置优先级
-func WithPriority(priority TaskPriority) TaskSubmitOption {
-	return service.WithTaskPriority(priority)
-}
-
-// WithDelay 设置延迟
-func WithDelay(delay time.Duration) TaskSubmitOption {
-	return service.WithTaskDelay(delay)
-}
 
 // ==========================================
 // 错误导出（便捷访问）

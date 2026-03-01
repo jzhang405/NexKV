@@ -2,8 +2,9 @@
 package model
 
 import (
-	"errors"
 	"strings"
+
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // SourceID 来源标识（值对象）
@@ -19,12 +20,12 @@ type SourceID struct {
 // 格式必须为 {module}:{sub-module}:{action}
 func ParseSourceID(s string) (SourceID, error) {
 	if s == "" {
-		return SourceID{}, errors.New("source ID cannot be empty")
+		return SourceID{}, errors.SourceIDEmpty()
 	}
 
 	parts := strings.Split(s, ":")
 	if len(parts) != 3 {
-		return SourceID{}, errors.New("source ID must be in format {module}:{sub-module}:{action}")
+		return SourceID{}, errors.SourceIDInvalidFormat()
 	}
 
 	module := strings.TrimSpace(parts[0])
@@ -32,13 +33,13 @@ func ParseSourceID(s string) (SourceID, error) {
 	action := strings.TrimSpace(parts[2])
 
 	if module == "" {
-		return SourceID{}, errors.New("module cannot be empty")
+		return SourceID{}, errors.ModuleEmpty()
 	}
 	if subModule == "" {
-		return SourceID{}, errors.New("sub-module cannot be empty")
+		return SourceID{}, errors.SubModuleEmpty()
 	}
 	if action == "" {
-		return SourceID{}, errors.New("action cannot be empty")
+		return SourceID{}, errors.ActionEmpty()
 	}
 
 	return SourceID{
@@ -115,13 +116,13 @@ func (s SourceID) Match(pattern string) bool {
 // Validate 验证 SourceID 有效性
 func (s SourceID) Validate() error {
 	if s.module == "" {
-		return errors.New("module cannot be empty")
+		return errors.ModuleEmpty()
 	}
 	if s.subModule == "" {
-		return errors.New("sub-module cannot be empty")
+		return errors.SubModuleEmpty()
 	}
 	if s.action == "" {
-		return errors.New("action cannot be empty")
+		return errors.ActionEmpty()
 	}
 	return nil
 }

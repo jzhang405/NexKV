@@ -25,7 +25,7 @@ type mockDiscoveryTaskPoolProvider struct {
 	mu    sync.Mutex
 }
 
-func (m *mockDiscoveryTaskPoolProvider) Submit(ctx context.Context, task func(context.Context)) error {
+func (m *mockDiscoveryTaskPoolProvider) Submit(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
 	m.mu.Lock()
 	m.tasks = append(m.tasks, task)
 	m.mu.Unlock()
@@ -33,147 +33,8 @@ func (m *mockDiscoveryTaskPoolProvider) Submit(ctx context.Context, task func(co
 	return nil
 }
 
-func (m *mockDiscoveryTaskPoolProvider) SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error {
-	go task(ctx, arg)
-	return nil
-}
-
-func (m *mockDiscoveryTaskPoolProvider) SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) service.TaskResult[any] {
-	resultCh := make(chan any, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		r, err := task(ctx)
-		if err != nil {
-			errCh <- err
-		} else {
-			resultCh <- r
-		}
-		close(resultCh)
-		close(errCh)
-	}()
-	return &mockDiscoveryTaskResult{resultCh: resultCh, errCh: errCh}
-}
-
-func (m *mockDiscoveryTaskPoolProvider) SubmitWithArgAndResult(ctx context.Context, task func(context.Context, any) (any, error), arg any) service.TaskResult[any] {
-	resultCh := make(chan any, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		r, err := task(ctx, arg)
-		if err != nil {
-			errCh <- err
-		} else {
-			resultCh <- r
-		}
-		close(resultCh)
-		close(errCh)
-	}()
-	return &mockDiscoveryTaskResult{resultCh: resultCh, errCh: errCh}
-}
-
-func (m *mockDiscoveryTaskPoolProvider) SubmitWithPriority(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
-	go task(ctx)
-	return nil
-}
-
-func (m *mockDiscoveryTaskPoolProvider) SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error {
-	go func() {
-		time.Sleep(delay)
-		task(ctx)
-	}()
-	return nil
-}
-
-func (m *mockDiscoveryTaskPoolProvider) SubmitAdvanced(ctx context.Context, task func(context.Context, any) (any, error), arg any, opts ...service.TaskSubmitOption) service.TaskResult[any] {
-	return m.SubmitWithArgAndResult(ctx, task, arg)
-}
-
-func (m *mockDiscoveryTaskPoolProvider) SubmitBatch(ctx context.Context, tasks []func(context.Context)) error {
-	for _, task := range tasks {
-		go task(ctx)
-	}
-	return nil
-}
-
-func (m *mockDiscoveryTaskPoolProvider) SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error {
-	for i, task := range tasks {
-		go task(ctx, args[i])
-	}
-	return nil
-}
-
-func (m *mockDiscoveryTaskPoolProvider) SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error {
-	var wg sync.WaitGroup
-	errs := make([]error, len(tasks))
-	for i, task := range tasks {
-		wg.Add(1)
-		go func(idx int, t func(context.Context)) {
-			defer wg.Done()
-			t(ctx)
-		}(i, task)
-	}
-	wg.Wait()
-	return errs
-}
-
-func (m *mockDiscoveryTaskPoolProvider) SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []service.TaskResult[any] {
-	results := make([]service.TaskResult[any], len(tasks))
-	for i, task := range tasks {
-		results[i] = m.SubmitWithResult(ctx, task)
-	}
-	return results
-}
-
-func (m *mockDiscoveryTaskPoolProvider) Stats() service.TaskPoolStats {
-	return service.TaskPoolStats{}
-}
-
-func (m *mockDiscoveryTaskPoolProvider) Health() service.TaskHealthStatus {
-	return service.TaskHealthStatus(model.TaskHealthStatusHealthy)
-}
-
-func (m *mockDiscoveryTaskPoolProvider) SetCapacity(capacity int) error {
-	return nil
-}
-
 func (m *mockDiscoveryTaskPoolProvider) Close() error {
 	return nil
-}
-
-func (m *mockDiscoveryTaskPoolProvider) CloseWithTimeout(timeout time.Duration) error {
-	return nil
-}
-
-type mockDiscoveryTaskResult struct {
-	resultCh chan any
-	errCh    chan error
-}
-
-func (r *mockDiscoveryTaskResult) Get(ctx context.Context) (any, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case res, ok := <-r.resultCh:
-		if !ok {
-			return nil, nil
-		}
-		return res, nil
-	case err, ok := <-r.errCh:
-		if !ok {
-			return nil, nil
-		}
-		return nil, err
-	}
-}
-
-func (r *mockDiscoveryTaskResult) IsDone() bool {
-	select {
-	case <-r.resultCh:
-		return true
-	case <-r.errCh:
-		return true
-	default:
-		return false
-	}
 }
 
 // ==========================================

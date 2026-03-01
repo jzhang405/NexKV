@@ -90,13 +90,13 @@ func (m *multiListener) OnComplete(stats service.BroadcastStats) {
 // 避免无限制创建 goroutine，提供资源控制
 type asyncListenerWrapper struct {
 	callbacks         []service.BroadcastListener
-	goroutineProvider service.ExecutorManager
+	goroutineProvider service.TaskExecutor
 }
 
 func (w *asyncListenerWrapper) OnSuccess(peer model.PeerID, resp model.Message, stats service.BroadcastStats) {
 	for _, cb := range w.callbacks {
 		cb := cb
-		_ = w.goroutineProvider.Submit(context.Background(), func(ctx context.Context) {
+		_ = w.goroutineProvider.Submit(context.Background(), service.PriorityNormal, func(ctx context.Context) {
 			safeListenerExec(func() { cb.OnSuccess(peer, resp, stats) })
 		})
 	}
@@ -105,7 +105,7 @@ func (w *asyncListenerWrapper) OnSuccess(peer model.PeerID, resp model.Message, 
 func (w *asyncListenerWrapper) OnFailure(peer model.PeerID, err error, stats service.BroadcastStats) {
 	for _, cb := range w.callbacks {
 		cb := cb
-		_ = w.goroutineProvider.Submit(context.Background(), func(ctx context.Context) {
+		_ = w.goroutineProvider.Submit(context.Background(), service.PriorityNormal, func(ctx context.Context) {
 			safeListenerExec(func() { cb.OnFailure(peer, err, stats) })
 		})
 	}
@@ -114,7 +114,7 @@ func (w *asyncListenerWrapper) OnFailure(peer model.PeerID, err error, stats ser
 func (w *asyncListenerWrapper) OnMajority(stats service.BroadcastStats) {
 	for _, cb := range w.callbacks {
 		cb := cb
-		_ = w.goroutineProvider.Submit(context.Background(), func(ctx context.Context) {
+		_ = w.goroutineProvider.Submit(context.Background(), service.PriorityNormal, func(ctx context.Context) {
 			safeListenerExec(func() { cb.OnMajority(stats) })
 		})
 	}
@@ -123,7 +123,7 @@ func (w *asyncListenerWrapper) OnMajority(stats service.BroadcastStats) {
 func (w *asyncListenerWrapper) OnComplete(stats service.BroadcastStats) {
 	for _, cb := range w.callbacks {
 		cb := cb
-		_ = w.goroutineProvider.Submit(context.Background(), func(ctx context.Context) {
+		_ = w.goroutineProvider.Submit(context.Background(), service.PriorityNormal, func(ctx context.Context) {
 			safeListenerExec(func() { cb.OnComplete(stats) })
 		})
 	}
@@ -185,7 +185,7 @@ func OnFailure(callback func(peer model.PeerID, err error, stats service.Broadca
 
 // ApplyBroadcastOptions 应用选项并返回组合后的回调
 // 如果提供了 goroutineProvider，则使用 asyncListenerWrapper 包装回调
-func ApplyBroadcastOptions(opts []service.BroadcastOption, goroutineProvider service.ExecutorManager) service.BroadcastListener {
+func ApplyBroadcastOptions(opts []service.BroadcastOption, goroutineProvider service.TaskExecutor) service.BroadcastListener {
 	if len(opts) == 0 {
 		return nil
 	}

@@ -2,8 +2,9 @@
 package model
 
 import (
-	"fmt"
 	"runtime"
+
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // TaskMode 任务调度模式（值对象）
@@ -122,7 +123,7 @@ func ParseTaskMode(s string) (TaskMode, error) {
 	case "default-pool":
 		return ModeDefaultPool, nil
 	default:
-		return ModeDefaultPool, fmt.Errorf("unknown task mode: %s", s)
+		return ModeDefaultPool, errors.UnknownTaskMode(s)
 	}
 }
 

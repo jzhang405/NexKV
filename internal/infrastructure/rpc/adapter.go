@@ -39,7 +39,7 @@ func NewRPCAsyncAdapter(rpc service.RPCSync, config *service.RPCAsyncConfig) ser
 // 并发安全：使用读锁访问 config
 func (a *RPCAsyncAdapter) applyOptions(opts []service.BroadcastOption) service.BroadcastListener {
 	a.mu.RLock()
-	provider := a.config.ExecutorManager
+	provider := a.config.Executor
 	a.mu.RUnlock()
 	return ApplyBroadcastOptions(opts, provider)
 }
@@ -49,7 +49,7 @@ func (a *RPCAsyncAdapter) applyOptions(opts []service.BroadcastOption) service.B
 func (a *RPCAsyncAdapter) CallAsync(ctx context.Context, to model.PeerID, req model.Message) service.AsyncOperation[service.ResponseMsg] {
 	a.mu.RLock()
 	timeoutMs := a.config.DefaultTimeoutMs
-	provider := a.config.ExecutorManager
+	provider := a.config.Executor
 	a.mu.RUnlock()
 	return NewAsyncCall(ctx, a.rpc, to, req, timeoutMs, provider)
 }
@@ -58,7 +58,7 @@ func (a *RPCAsyncAdapter) CallAsync(ctx context.Context, to model.PeerID, req mo
 // 并发安全：使用读锁访问 config
 func (a *RPCAsyncAdapter) CallAsyncWithTimeout(ctx context.Context, to model.PeerID, req model.Message, timeoutMs int64) service.AsyncOperation[service.ResponseMsg] {
 	a.mu.RLock()
-	provider := a.config.ExecutorManager
+	provider := a.config.Executor
 	a.mu.RUnlock()
 	return NewAsyncCall(ctx, a.rpc, to, req, timeoutMs, provider)
 }
@@ -69,7 +69,7 @@ func (a *RPCAsyncAdapter) BroadcastAsync(ctx context.Context, peers []model.Peer
 	callback := a.applyOptions(opts)
 	a.mu.RLock()
 	config := a.config
-	provider := a.config.ExecutorManager
+	provider := a.config.Executor
 	a.mu.RUnlock()
 	return NewAsyncBroadcast(ctx, a.rpc, peers, req, config, callback, provider)
 }
@@ -80,7 +80,7 @@ func (a *RPCAsyncAdapter) BroadcastQuorumAsync(ctx context.Context, peers []mode
 	callback := a.applyOptions(opts)
 	a.mu.RLock()
 	config := a.config
-	provider := a.config.ExecutorManager
+	provider := a.config.Executor
 	a.mu.RUnlock()
 	return NewAsyncQuorum(ctx, a.rpc, peers, req, quorum, config, callback, provider)
 }
@@ -91,7 +91,7 @@ func (a *RPCAsyncAdapter) WriteVAsync(ctx context.Context, targets []model.PeerI
 	callback := a.applyOptions(opts)
 	a.mu.RLock()
 	config := a.config
-	provider := a.config.ExecutorManager
+	provider := a.config.Executor
 	a.mu.RUnlock()
 	return NewAsyncWriteV(ctx, a.rpc, targets, msgs, config, callback, provider)
 }
@@ -102,15 +102,16 @@ func (a *RPCAsyncAdapter) WriteVCallAsync(ctx context.Context, targets []model.P
 	callback := a.applyOptions(opts)
 	a.mu.RLock()
 	config := a.config
-	provider := a.config.ExecutorManager
+	provider := a.config.Executor
 	a.mu.RUnlock()
 	return NewAsyncWriteVCall(ctx, a.rpc, targets, msgs, config, callback, provider)
 }
 
-// SetExecutorManager 设置 任务池提供者
+// SetExecutor 设置任务执行器
+// 实现 RPCAsync 接口要求
 // 并发安全：使用写锁保护 config
-func (a *RPCAsyncAdapter) SetExecutorManager(provider service.ExecutorManager) {
+func (a *RPCAsyncAdapter) SetExecutor(provider service.TaskExecutor) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.config.ExecutorManager = provider
+	a.config.Executor = provider
 }

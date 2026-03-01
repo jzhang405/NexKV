@@ -2,6 +2,8 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -54,33 +56,96 @@ func TestDiscoveryEvent_Fields(t *testing.T) {
 }
 
 // ==========================================
-// TaskSubmitOptions 测试
+// Future[T] 泛型类型测试
 // ==========================================
 
-func TestWithTaskPriority(t *testing.T) {
-	opts := &TaskSubmitOptions{}
-	option := WithTaskPriority(PriorityHigh)
-	option(opts)
+func TestFuture_Resolve(t *testing.T) {
+	future := NewFuture[int]()
+	expected := 42
 
-	assert.Equal(t, PriorityHigh, opts.Priority)
+	future.Resolve(expected)
+
+	result, err := future.Get(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, expected, result)
 }
 
-func TestWithTaskDelay(t *testing.T) {
-	opts := &TaskSubmitOptions{}
-	delay := 5 * time.Second
-	option := WithTaskDelay(delay)
-	option(opts)
+func TestFuture_Reject(t *testing.T) {
+	future := NewFuture[int]()
+	testErr := errors.New("test error")
 
-	assert.Equal(t, delay, opts.Delay)
+	future.Reject(testErr)
+
+	result, err := future.Get(context.Background())
+	assert.Error(t, err)
+	assert.Equal(t, 0, result)
+	assert.Equal(t, testErr, err)
 }
 
-func TestTaskSubmitOptions_Combined(t *testing.T) {
-	opts := &TaskSubmitOptions{}
-	WithTaskPriority(PriorityCritical)(opts)
-	WithTaskDelay(10 * time.Second)(opts)
+func TestFuture_IsDone(t *testing.T) {
+	future := NewFuture[int]()
 
-	assert.Equal(t, PriorityCritical, opts.Priority)
-	assert.Equal(t, 10*time.Second, opts.Delay)
+	assert.False(t, future.IsDone())
+
+	future.Resolve(42)
+
+	assert.True(t, future.IsDone())
+}
+
+func TestFuture_ContextCanceled(t *testing.T) {
+	future := NewFuture[int]()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := future.Get(ctx)
+	assert.Error(t, err)
+	assert.Equal(t, context.Canceled, err)
+	assert.Equal(t, 0, result)
+}
+
+func TestSubmitWithResult_Success(t *testing.T) {
+	executor := &mockExecutor{delay: 10 * time.Millisecond}
+
+	ctx := context.Background()
+	future := SubmitWithResult(executor, ctx, PriorityNormal, func(ctx context.Context) (int, error) {
+		return 42, nil
+	})
+
+	result, err := future.Get(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, 42, result)
+}
+
+func TestSubmitWithResult_Error(t *testing.T) {
+	executor := &mockExecutor{delay: 10 * time.Millisecond}
+	testErr := errors.New("test error")
+
+	ctx := context.Background()
+	future := SubmitWithResult(executor, ctx, PriorityNormal, func(ctx context.Context) (int, error) {
+		return 0, testErr
+	})
+
+	result, err := future.Get(ctx)
+	assert.Error(t, err)
+	assert.Equal(t, testErr, err)
+	assert.Equal(t, 0, result)
+}
+
+// mockExecutor 是用于测试的模拟执行器
+type mockExecutor struct {
+	delay time.Duration
+}
+
+func (m *mockExecutor) Submit(ctx context.Context, priority TaskPriority, task func(context.Context)) error {
+	go func() {
+		time.Sleep(m.delay)
+		task(ctx)
+	}()
+	return nil
+}
+
+func (m *mockExecutor) Close() error {
+	return nil
 }
 
 // ==========================================

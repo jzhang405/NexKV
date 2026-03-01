@@ -123,9 +123,9 @@ type RPCAsync interface {
 	WriteVCallAsync(ctx context.Context, targets []model.PeerID, msgs []model.Message, opts ...BroadcastOption) AsyncOperation[WriteVResult]
 
 	// ====== TaskPool 管理 ======
-	// SetExecutorManager 设置任务池提供者
-	// 用于统一管理任务的创建和生命周期
-	SetExecutorManager(provider ExecutorManager)
+	// SetExecutor 设置任务执行器
+	// 用于任务执行
+	SetExecutor(provider TaskExecutor)
 }
 
 // ==========================================
@@ -244,8 +244,8 @@ type QuorumResult struct {
 
 // RPCAsyncConfig RPCAsync 配置
 type RPCAsyncConfig struct {
-	// ExecutorManager 任务池提供者（可选）
-	ExecutorManager ExecutorManager
+	// Executor 任务执行器（可选）
+	Executor TaskExecutor
 	// CallTimeoutMs 单播调用超时（毫秒），默认 30s
 	CallTimeoutMs int64
 	// BroadcastTimeoutMs 广播调用超时（毫秒），默认 60s

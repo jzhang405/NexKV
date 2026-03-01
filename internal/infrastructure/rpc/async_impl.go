@@ -24,7 +24,7 @@ import (
 // submitTask 提交任务到 TaskPoolProvider 或回退到 goroutine
 func submitTask(
 	ctx context.Context,
-	provider service.ExecutorManager,
+	provider service.TaskExecutor,
 	task func(context.Context),
 	onFailure func(error),
 ) {
@@ -39,7 +39,7 @@ func submitTask(
 	}
 
 	if provider != nil {
-		if err := provider.Submit(ctx, wrappedTask); err != nil {
+		if err := provider.Submit(ctx, service.PriorityNormal, wrappedTask); err != nil {
 			// 提交失败：回退到直接启动 goroutine
 			slog.Warn("[AsyncOperation] failed to submit task, falling back to direct goroutine", "error", err)
 			go wrappedTask(ctx)
@@ -100,11 +100,11 @@ type asyncOpImpl[T any] struct {
 	cbMu              sync.RWMutex
 	value             T
 	err               error
-	goroutineProvider service.ExecutorManager
+	goroutineProvider service.TaskExecutor
 }
 
 // newAsyncOp 创建异步操作
-func newAsyncOp[T any](provider service.ExecutorManager) *asyncOpImpl[T] {
+func newAsyncOp[T any](provider service.TaskExecutor) *asyncOpImpl[T] {
 	return &asyncOpImpl[T]{
 		resultCh:          make(chan T, 1),
 		errCh:             make(chan error, 1),
@@ -194,7 +194,7 @@ func (op *asyncOpImpl[T]) safeExecuteCallback(callback func(T, error), v T, err 
 	}
 
 	if op.goroutineProvider != nil {
-		if submitErr := op.goroutineProvider.Submit(context.Background(), func(ctx context.Context) {
+		if submitErr := op.goroutineProvider.Submit(context.Background(), service.PriorityNormal, func(ctx context.Context) {
 			executor()
 		}); submitErr != nil {
 			// CRITICAL FIX: Submit 失败时回退到直接启动 goroutine
@@ -497,7 +497,7 @@ type asyncCall struct {
 func submitAsyncTask(
 	ctx context.Context,
 	op *asyncOpImpl[service.ResponseMsg],
-	provider service.ExecutorManager,
+	provider service.TaskExecutor,
 	timeoutMs int64,
 	task func(ctx context.Context),
 ) {
@@ -515,7 +515,7 @@ func submitAsyncTask(
 	}
 
 	if provider != nil {
-		if err := provider.Submit(ctx, executor); err != nil {
+		if err := provider.Submit(ctx, service.PriorityNormal, executor); err != nil {
 			// 提交失败时回退到直接启动 goroutine
 			slog.Warn("[AsyncOperation] failed to submit task, falling back to direct goroutine", "error", err)
 			go executor(ctx)
@@ -532,7 +532,7 @@ func NewAsyncCall(
 	to model.PeerID,
 	req model.Message,
 	timeoutMs int64,
-	provider service.ExecutorManager,
+	provider service.TaskExecutor,
 ) service.AsyncOperation[service.ResponseMsg] {
 	op := newAsyncOp[service.ResponseMsg](provider)
 
@@ -576,7 +576,7 @@ func NewAsyncBroadcast(
 	req model.Message,
 	config *service.RPCAsyncConfig,
 	callback service.BroadcastListener,
-	provider service.ExecutorManager,
+	provider service.TaskExecutor,
 ) service.AsyncOperation[service.AsyncBroadcastResult] {
 	op := newAsyncOp[service.AsyncBroadcastResult](provider)
 
@@ -651,7 +651,7 @@ func NewAsyncQuorum(
 	quorum int,
 	config *service.RPCAsyncConfig,
 	callback service.BroadcastListener,
-	provider service.ExecutorManager,
+	provider service.TaskExecutor,
 ) service.AsyncOperation[service.QuorumResult] {
 	op := newAsyncOp[service.QuorumResult](provider)
 
@@ -718,7 +718,7 @@ func NewAsyncWriteV(
 	msgs []model.Message,
 	config *service.RPCAsyncConfig,
 	callback service.BroadcastListener,
-	provider service.ExecutorManager,
+	provider service.TaskExecutor,
 ) service.AsyncOperation[service.WriteVResult] {
 	op := newAsyncOp[service.WriteVResult](provider)
 
@@ -775,7 +775,7 @@ func NewAsyncWriteVCall(
 	msgs []model.Message,
 	config *service.RPCAsyncConfig,
 	callback service.BroadcastListener,
-	provider service.ExecutorManager,
+	provider service.TaskExecutor,
 ) service.AsyncOperation[service.WriteVResult] {
 	op := newAsyncOp[service.WriteVResult](provider)
 

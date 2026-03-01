@@ -20,7 +20,7 @@ type Libp2pRPC struct {
 	config      *service.RPCConfig
 	idGenerator *id.RequestIDGenerator
 	middleware  service.MiddlewareChain
-	provider    service.ExecutorManager // 任务池提供者
+	provider    service.TaskExecutor // 任务池提供者
 
 	// 请求-响应匹配
 	pendingCalls   map[string]*pendingCall
@@ -44,7 +44,7 @@ type pendingCall struct {
 }
 
 // NewLibp2pRPC 创建 libp2p RPC 实例
-func NewLibp2pRPC(transport service.Transport, provider service.ExecutorManager, config *service.RPCConfig) *Libp2pRPC {
+func NewLibp2pRPC(transport service.Transport, provider service.TaskExecutor, config *service.RPCConfig) *Libp2pRPC {
 	if provider == nil {
 		panic("TaskPoolProvider is required, cannot be nil")
 	}
@@ -123,7 +123,7 @@ func (r *Libp2pRPC) CallAsync(ctx context.Context, to model.PeerID, req model.Me
 		return service.ErrCanceled
 	}
 
-	_ = r.provider.Submit(ctx, func(ctx context.Context) {
+	_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 		resp, err := r.Call(ctx, to, req)
 		if cb != nil {
 			cb(resp, err)
@@ -249,7 +249,7 @@ func (r *Libp2pRPC) BroadcastAsync(
 		}
 	}
 
-	_ = r.provider.Submit(ctx, func(ctx context.Context) {
+	_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 		execFunc()
 	})
 
@@ -294,9 +294,9 @@ func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []m
 		}
 
 		wg.Add(1)
-		task := func(ctx context.Context, arg any) {
+		idx := i // 捕获循环变量
+		_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 			defer wg.Done()
-			idx := arg.(int)
 			peerID := targets[idx]
 
 			// 获取信号量
@@ -316,9 +316,7 @@ func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []m
 					tracker.RecordSuccess(peerID, nil)
 				}
 			}
-		}
-
-		_ = r.provider.SubmitWithArg(ctx, task, i)
+		})
 	}
 
 	// 等待所有发送完成
@@ -389,11 +387,11 @@ func (r *Libp2pRPC) WriteVCall(
 
 		sem <- struct{}{} // 获取信号量
 		wg.Add(1)
-		task := func(ctx context.Context, arg any) {
+		idx := i // 捕获循环变量
+		_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 			defer func() { <-sem }() // 释放信号量
 			defer wg.Done()
 
-			idx := arg.(int)
 			target := targets[idx]
 			msg := msgs[idx]
 
@@ -414,9 +412,7 @@ func (r *Libp2pRPC) WriteVCall(
 					tracker.RecordSuccess(target, resp)
 				}
 			}
-		}
-
-		_ = r.provider.SubmitWithArg(ctx, task, i)
+		})
 	}
 
 	wg.Wait()
@@ -461,8 +457,8 @@ func (r *Libp2pRPC) Close() error {
 	return nil
 }
 
-// SetExecutorManager 设置执行器管理器
-func (r *Libp2pRPC) SetExecutorManager(provider service.ExecutorManager) {
+// SetExecutor 设置任务执行器（实现 service.RPCSync 接口）
+func (r *Libp2pRPC) SetExecutor(provider service.TaskExecutor) {
 	r.provider = provider
 }
 
@@ -525,7 +521,7 @@ func (r *Libp2pRPC) doSendRequestAndWaitResponse(ctx context.Context, to model.P
 		r.handleResponse(req.ID(), service.ResponseMsg{Msg: resp, Err: nil})
 	}
 
-	_ = r.provider.Submit(ctx, readFunc)
+	_ = r.provider.Submit(ctx, service.PriorityNormal, readFunc)
 
 	return nil
 }
@@ -635,9 +631,9 @@ func (r *Libp2pRPC) broadcastFireAndForget(
 	var wg sync.WaitGroup
 	for _, peer := range to {
 		wg.Add(1)
-		task := func(ctx context.Context, arg any) {
+		p := peer // 捕获循环变量
+		_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 			defer wg.Done()
-			p := arg.(model.PeerID)
 
 			err := r.sendRequestNoResponse(ctx, p, req)
 
@@ -657,9 +653,7 @@ func (r *Libp2pRPC) broadcastFireAndForget(
 			} else {
 				result.SuccessPeers = append(result.SuccessPeers, p)
 			}
-		}
-
-		_ = r.provider.SubmitWithArg(ctx, task, peer)
+		})
 	}
 
 	// 立即返回（不等待发送完成）
@@ -709,13 +703,11 @@ func (r *Libp2pRPC) broadcastAndWait(
 
 		sem <- struct{}{}
 		wg.Add(1)
-		task := func(ctx context.Context, arg any) {
+		idx := i // 捕获循环变量
+		p := peer
+		_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 			defer func() { <-sem }()
 			defer wg.Done()
-
-			args := arg.([]any)
-			idx := args[0].(int)
-			p := args[1].(model.PeerID)
 
 			// 创建带超时的上下文
 			callCtx, cancel := context.WithTimeout(ctx, r.config.BroadcastTimeout)
@@ -738,10 +730,7 @@ func (r *Libp2pRPC) broadcastAndWait(
 					tracker.RecordSuccess(p, resp)
 				}
 			}
-		}
-
-		args := []any{i, peer}
-		_ = r.provider.SubmitWithArg(ctx, task, args)
+		})
 	}
 
 	wg.Wait()
@@ -766,7 +755,7 @@ func (r *Libp2pRPC) HandleIncomingStream(stream service.Stream) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_ = r.provider.Submit(ctx, func(ctx context.Context) {
+	_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 		select {
 		case <-r.closeCh:
 			cancel()

@@ -44,7 +44,8 @@ const (
 // TaskExecutor 基础任务执行器接口（最小接口）
 // 适用于简单场景，只需要 Submit 方法
 type TaskExecutor interface {
-	Submit(ctx context.Context, task func(context.Context)) error
+	Submit(ctx context.Context, priority TaskPriority, task func(context.Context)) error
+	Close() error
 }
 
 // TaskExecutorWithArg 带参数的任务执行器

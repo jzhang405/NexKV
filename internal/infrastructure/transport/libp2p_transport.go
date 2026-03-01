@@ -50,7 +50,7 @@ type Libp2pTransport struct {
 	wg sync.WaitGroup
 
 	// TaskPoolProvider 用于管理 goroutine
-	provider service.ExecutorManager
+	provider service.TaskExecutor
 }
 
 // Config 传输层配置
@@ -58,7 +58,7 @@ type Config struct {
 	ListenAddr      string
 	DiscoveryTag    string
 	EnableDiscovery bool
-	Provider        service.ExecutorManager // 任务池提供者（用于 Discovery）
+	Provider        service.TaskExecutor // 任务池提供者（用于 Discovery）
 }
 
 // DefaultConfig 返回默认配置
@@ -458,7 +458,7 @@ func (t *Libp2pTransport) Close() error {
 		close(done)
 	}
 	if t.provider != nil {
-		if err := t.provider.Submit(t.ctx, waitFunc); err != nil {
+		if err := t.provider.Submit(t.ctx, service.PriorityNormal, waitFunc); err != nil {
 			errs = append(errs, service.Wrap(err, "submit wait task"))
 		}
 	} else {

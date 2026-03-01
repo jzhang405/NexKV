@@ -60,7 +60,7 @@ type RPCSync interface {
 	Close() error
 
 	// ====== TaskPool 管理 ======
-	// SetExecutorManager 设置任务池提供者
-	// 用于统一管理任务的创建和生命周期
-	SetExecutorManager(provider ExecutorManager)
+	// SetExecutor 设置任务执行器
+	// 用于任务执行
+	SetExecutor(provider TaskExecutor)
 }

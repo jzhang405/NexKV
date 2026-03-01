@@ -4,10 +4,11 @@
 package concurrency
 
 import (
-	"fmt"
 	"runtime"
 	"syscall"
 	"unsafe"
+
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 const (
@@ -40,7 +41,7 @@ func pinToCore(coreID int) error {
 	// 验证 coreID 有效性
 	numCPU := runtime.NumCPU()
 	if coreID < 0 || coreID >= numCPU {
-		return fmt.Errorf("invalid core ID %d, must be in [0, %d)", coreID, numCPU)
+		return errors.InvalidCoreID(coreID, numCPU)
 	}
 
 	// 创建 CPU 集合
@@ -58,7 +59,7 @@ func pinToCore(coreID int) error {
 	)
 
 	if errno != 0 {
-		return fmt.Errorf("sched_setaffinity failed: %v", errno)
+		return errors.Wrapf(errors.ErrCPUSetAffinityFailed, "errno: %v", errno)
 	}
 
 	return nil

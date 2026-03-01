@@ -123,6 +123,22 @@ var (
 	// Request ID 错误
 	ErrRequestIDInvalidFormat = stderrors.New("request: invalid request id format")
 	ErrRequestIDEmpty         = stderrors.New("request: request id cannot be empty")
+
+	// CPU 亲和性错误
+	ErrCPUInvalidCoreID       = stderrors.New("affinity: invalid core ID")
+	ErrCPUSetAffinityFailed   = stderrors.New("affinity: sched_setaffinity failed")
+	ErrCPUGetCurrentThread    = stderrors.New("affinity: GetCurrentThread failed")
+	ErrCPUSetAffinityMask     = stderrors.New("affinity: SetThreadAffinityMask failed")
+
+	// SourceID 错误
+	ErrSourceIDEmpty          = stderrors.New("source_id: cannot be empty")
+	ErrSourceIDInvalidFormat   = stderrors.New("source_id: must be in format {module}:{sub-module}:{action}")
+	ErrSourceIDModuleEmpty     = stderrors.New("source_id: module cannot be empty")
+	ErrSourceIDSubModuleEmpty  = stderrors.New("source_id: sub-module cannot be empty")
+	ErrSourceIDActionEmpty     = stderrors.New("source_id: action cannot be empty")
+
+	// TaskMode 错误
+	ErrTaskModeUnknown         = stderrors.New("task_mode: unknown task mode")
 )
 
 // ===========================
@@ -214,4 +230,48 @@ func mergeNexError(err error, details string) *NexError {
 		Err:     err,
 		Details: details,
 	}
+}
+
+// ===========================
+// 便捷格式化函数（返回错误）
+// ===========================
+
+// InvalidParamf 创建参数无效错误
+func InvalidParamf(format string, args ...any) error {
+	return fmt.Errorf("invalid parameter: "+fmt.Sprintf(format, args...))
+}
+
+// InvalidCoreID 创建无效核心ID错误
+func InvalidCoreID(coreID, maxCoreID int) error {
+	return Wrapf(ErrCPUInvalidCoreID, "core ID %d out of range [0, %d]", coreID, maxCoreID)
+}
+
+// SourceIDEmpty 创建 SourceID 为空错误
+func SourceIDEmpty() error {
+	return ErrSourceIDEmpty
+}
+
+// SourceIDInvalidFormat 创建 SourceID 格式错误
+func SourceIDInvalidFormat() error {
+	return ErrSourceIDInvalidFormat
+}
+
+// ModuleEmpty 创建模块为空错误
+func ModuleEmpty() error {
+	return ErrSourceIDModuleEmpty
+}
+
+// SubModuleEmpty 创建子模块为空错误
+func SubModuleEmpty() error {
+	return ErrSourceIDSubModuleEmpty
+}
+
+// ActionEmpty 创建动作字段为空错误
+func ActionEmpty() error {
+	return ErrSourceIDActionEmpty
+}
+
+// UnknownTaskMode 创建未知任务模式错误
+func UnknownTaskMode(mode string) error {
+	return Wrapf(ErrTaskModeUnknown, "mode: %s", mode)
 }

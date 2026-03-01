@@ -1524,3 +1524,63 @@ func TestLibp2pRPC_Call_ShortTimeout(t *testing.T) {
 		t.Logf("Call() with timeout error: %v (expected)", err)
 	}
 }
+
+// ==========================================
+// SetExecutor 测试
+// ==========================================
+
+// TestLibp2pRPC_SetExecutor 测试设置任务执行器
+func TestLibp2pRPC_SetExecutor(t *testing.T) {
+	transport := newMockTransport("node-1")
+	mockPool := newMockTaskPoolProvider()
+
+	rpc := NewLibp2pRPC(transport, mockPool, nil)
+	defer rpc.Close()
+
+	// 验证初始 provider
+	if rpc.provider != mockPool {
+		t.Errorf("Initial provider mismatch")
+	}
+
+	// 创建新的 provider
+	newPool := newMockTaskPoolProvider()
+	rpc.SetExecutor(newPool)
+
+	// 验证 provider 已更新
+	if rpc.provider != newPool {
+		t.Errorf("SetExecutor did not update provider")
+	}
+
+	// nil provider 也应该被接受
+	rpc.SetExecutor(nil)
+	if rpc.provider != nil {
+		t.Errorf("SetExecutor(nil) should set provider to nil")
+	}
+}
+
+// TestLibp2pRPC_SetExecutor_Concurrent 测试并发设置 executor
+func TestLibp2pRPC_SetExecutor_Concurrent(t *testing.T) {
+	transport := newMockTransport("node-1")
+	mockPool := newMockTaskPoolProvider()
+
+	rpc := NewLibp2pRPC(transport, mockPool, nil)
+	defer rpc.Close()
+
+	// 并发设置
+	done := make(chan bool)
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			pool := newMockTaskPoolProvider()
+			rpc.SetExecutor(pool)
+			done <- true
+		}(i)
+	}
+
+	// 等待所有 goroutine 完成
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	// 只要没有 panic 就算通过
+	t.Log("Concurrent SetExecutor completed without panic")
+}

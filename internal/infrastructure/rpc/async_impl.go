@@ -15,6 +15,7 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/pkg/errors"
+	"github.com/jzhang405/NexKV/pkg/recovery"
 )
 
 // ==========================================
@@ -22,20 +23,18 @@ import (
 // ==========================================
 
 // submitTask 提交任务到 TaskPoolProvider 或回退到 goroutine
+// 使用统一的 panic 恢复机制
 func submitTask(
 	ctx context.Context,
 	provider service.TaskExecutor,
 	task func(context.Context),
 	onFailure func(error),
 ) {
-	// 包装任务添加 panic 保护
+	// 包装任务添加 panic 保护（使用 recovery 包）
 	wrappedTask := func(ctx context.Context) {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("[AsyncOperation] task goroutine panic recovered", "panic", r)
-			}
-		}()
-		task(ctx)
+		_ = recovery.SafeContext(ctx, task, func(r any, stack []byte) {
+			slog.Error("[AsyncOperation] task goroutine panic recovered", "panic", r, "stack", string(stack))
+		})
 	}
 
 	if provider != nil {
@@ -182,15 +181,14 @@ func (op *asyncOpImpl[T]) registerCallback(callback func(T, error)) string {
 	return id
 }
 
-// safeExecuteCallback 安全执行回调
+// safeExecuteCallback 安全执行回调（使用统一的 panic 恢复）
 func (op *asyncOpImpl[T]) safeExecuteCallback(callback func(T, error), v T, err error) {
 	executor := func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("[AsyncOperation] callback panic recovered", "panic", r)
-			}
-		}()
-		callback(v, err)
+		_ = recovery.Safe(func() {
+			callback(v, err)
+		}, func(r any, stack []byte) {
+			slog.Error("[AsyncOperation] callback panic recovered", "panic", r, "stack", string(stack))
+		})
 	}
 
 	if op.goroutineProvider != nil {
@@ -199,14 +197,7 @@ func (op *asyncOpImpl[T]) safeExecuteCallback(callback func(T, error), v T, err 
 		}); submitErr != nil {
 			// CRITICAL FIX: Submit 失败时回退到直接启动 goroutine
 			slog.Warn("[AsyncOperation] failed to submit callback, falling back to direct goroutine", "error", submitErr)
-			go func() {
-				defer func() {
-					if r := recover(); r != nil {
-						slog.Error("[AsyncOperation] fallback goroutine panic recovered", "panic", r)
-					}
-				}()
-				executor()
-			}()
+			go executor()
 		}
 	} else {
 		go executor()
@@ -493,7 +484,7 @@ type asyncCall struct {
 	*asyncOpImpl[service.ResponseMsg]
 }
 
-// submitAsyncTask 提交异步任务（统一处理 provider 和 fallback）
+// submitAsyncTask 提交异步任务（统一处理 provider 和 fallback，使用 recovery 包）
 func submitAsyncTask(
 	ctx context.Context,
 	op *asyncOpImpl[service.ResponseMsg],
@@ -503,15 +494,14 @@ func submitAsyncTask(
 ) {
 	// CRITICAL FIX: 统一添加 panic 保护
 	executor := func(callCtx context.Context) {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("[AsyncOperation] task goroutine panic recovered", "panic", r)
-			}
-		}()
-		op.status.Store(int32(service.StatusRunning))
-		innerCtx, cancel := context.WithTimeout(callCtx, time.Duration(timeoutMs)*time.Millisecond)
-		defer cancel()
-		task(innerCtx)
+		_ = recovery.SafeContext(callCtx, func(innerCtx context.Context) {
+			op.status.Store(int32(service.StatusRunning))
+			timeoutCtx, cancel := context.WithTimeout(innerCtx, time.Duration(timeoutMs)*time.Millisecond)
+			defer cancel()
+			task(timeoutCtx)
+		}, func(r any, stack []byte) {
+			slog.Error("[AsyncOperation] task goroutine panic recovered", "panic", r, "stack", string(stack))
+		})
 	}
 
 	if provider != nil {

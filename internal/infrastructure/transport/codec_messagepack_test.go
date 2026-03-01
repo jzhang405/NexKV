@@ -5,6 +5,7 @@ import (
 	"io"
 	"testing"
 
+	"github.com/jzhang405/NexKV/internal/domain/constants"
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
@@ -295,8 +296,8 @@ func TestMessagePackStreamCodec_CustomMaxSize(t *testing.T) {
 func TestMessagePackStreamCodec_DefaultMaxSize(t *testing.T) {
 	codec := NewMessagePackStreamCodec()
 
-	if codec.MaxMessageSize() != DefaultMaxMessageSize {
-		t.Errorf("MaxMessageSize() = %d, want %d", codec.MaxMessageSize(), DefaultMaxMessageSize)
+	if codec.MaxMessageSize() != constants.DefaultMaxMessageSize {
+		t.Errorf("MaxMessageSize() = %d, want %d", codec.MaxMessageSize(), constants.DefaultMaxMessageSize)
 	}
 }
 

@@ -87,6 +87,46 @@ func TestHLCProviderUpdate(t *testing.T) {
 			t.Errorf("Update 导致时间回退: updated.pt=%d, current.pt=%d", updated.PhysicalTime(), currentPT2)
 		}
 	})
+
+	t.Run("相同物理时间但更高逻辑计数(maxUint16分支)", func(t *testing.T) {
+		// 创建一个 provider 并获取初始时间
+		provider2 := NewHLCProvider()
+		initialPT := provider2.Current().PhysicalTime()
+
+		// 创建远程 HLC，物理时间相同但逻辑计数更高
+		remoteHLC := model.NewHLCWithTime(initialPT, 100)
+
+		// 更新本地 HLC（应该触发 maxUint16 分支）
+		updated := provider2.Update(initialPT, remoteHLC)
+
+		// 验证逻辑计数器增加了
+		if updated.LogicalCounter() <= 100 {
+			t.Errorf("逻辑计数器未正确增加: got %d, want > 100", updated.LogicalCounter())
+		}
+
+		// 验证物理时间保持不变
+		if updated.PhysicalTime() != initialPT {
+			t.Errorf("物理时间不应改变: got %d, want %d", updated.PhysicalTime(), initialPT)
+		}
+	})
+
+	t.Run("相同物理时间和逻辑计数", func(t *testing.T) {
+		// 创建 provider 并获取当前时间
+		provider3 := NewHLCProvider()
+		currentHLC := provider3.Current()
+
+		// 创建远程 HLC，与本地完全相同
+		remoteHLC := model.NewHLCWithTime(currentHLC.PhysicalTime(), currentHLC.LogicalCounter())
+
+		// 更新本地 HLC（应该触发 maxUint16，逻辑计数 +1）
+		updated := provider3.Update(currentHLC.PhysicalTime(), remoteHLC)
+
+		// 验证逻辑计数器增加了
+		expectedLC := currentHLC.LogicalCounter() + 1
+		if updated.LogicalCounter() != expectedLC {
+			t.Errorf("逻辑计数器未正确增加: got %d, want %d", updated.LogicalCounter(), expectedLC)
+		}
+	})
 }
 
 // TestHLCClockBackwards 测试时间回拨防护

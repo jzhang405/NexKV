@@ -7,6 +7,20 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
+// copyExts 复制消息扩展信息（跳过压缩标记）
+// 用于压缩中间件中统一处理扩展信息复制
+func copyExts(src, dst model.Message) {
+	for k, v := range src.Exts().All() {
+		if k != "compression" {
+			dst.Exts().Set(k, v)
+		}
+	}
+}
+
+// ==========================================
+// 测试辅助函数
+// ==========================================
+
 // cleanupSyncMap 清理 sync.Map 中不在有效节点列表中的资源
 // 用于统一处理限流器和熔断器的资源清理逻辑
 func cleanupSyncMap(m *sync.Map, validPeers []model.PeerID) {
@@ -33,14 +47,4 @@ func countSyncMap(m *sync.Map) int {
 		return true
 	})
 	return count
-}
-
-// copyExts 复制消息扩展信息（跳过压缩标记）
-// 用于压缩中间件中统一处理扩展信息复制
-func copyExts(src, dst model.Message) {
-	for k, v := range src.Exts().All() {
-		if k != "compression" {
-			dst.Exts().Set(k, v)
-		}
-	}
 }

@@ -3,7 +3,6 @@ package concurrency
 
 import (
 	"context"
-	"log"
 	"math/bits"
 	"runtime"
 	"sync"
@@ -12,18 +11,8 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/pkg/errors"
-)
-
-// ==========================================
-// 常量定义
-// ==========================================
-
-const (
-	// MaxCores 最大核心数限制
-	MaxCores = 64
-
-	// DefaultQueueSize 默认队列大小
-	DefaultQueueSize = 1000
+	"github.com/jzhang405/NexKV/pkg/recovery"
+	"github.com/sirupsen/logrus"
 )
 
 // 执行器状态
@@ -32,33 +21,6 @@ const (
 	CLOSING
 	CLOSED
 )
-
-// 日志级别
-const (
-	// LogLevelDebug 调试级别（输出所有日志）
-	LogLevelDebug int = iota
-	// LogLevelInfo 信息级别（输出重要信息）
-	LogLevelInfo
-	// LogLevelWarn 警告级别（只输出警告和错误）
-	LogLevelWarn
-	// LogLevelError 错误级别（只输出错误）
-	LogLevelError
-)
-
-// ==========================================
-// 全局变量
-// ==========================================
-
-var (
-	// executorLogLevel 执行器日志级别（原子变量，可动态调整）
-	// 默认：LogLevelError（生产环境推荐）
-	executorLogLevel int32 = int32(LogLevelError)
-)
-
-// SetExecutorLogLevel 设置执行器日志级别
-func SetExecutorLogLevel(level int) {
-	atomic.StoreInt32(&executorLogLevel, int32(level))
-}
 
 // ==========================================
 // 错误定义
@@ -69,37 +31,6 @@ var (
 	ErrExecutorClosed = errors.ErrExecutorClosed
 	ErrInvalidConfig  = errors.ErrInvalidConfig
 )
-
-// ==========================================
-// 日志辅助函数
-// ==========================================
-
-// shouldLog 检查是否应该输出日志
-func shouldLog(level int) bool {
-	return int32(level) >= atomic.LoadInt32(&executorLogLevel)
-}
-
-// logf 格式化日志输出（条件判断）
-func logf(level int, format string, args ...any) {
-	if shouldLog(level) {
-		log.Printf(format, args...)
-	}
-}
-
-// logDebug 调试日志
-func logDebug(format string, args ...any) {
-	logf(LogLevelDebug, format, args...)
-}
-
-// logWarn 警告日志
-func logWarn(format string, args ...any) {
-	logf(LogLevelWarn, format, args...)
-}
-
-// logError 错误日志
-func logError(format string, args ...any) {
-	logf(LogLevelError, format, args...)
-}
 
 // ==========================================
 // 类型定义
@@ -469,7 +400,7 @@ func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority model
 
 	// 检查执行器状态
 	if atomic.LoadInt32(&e.state) != RUNNING {
-		logDebug("[PerCore] Executor is closed, rejecting task")
+		logrus.Debugf("[PerCore] Executor is closed, rejecting task")
 		return ErrExecutorClosed
 	}
 
@@ -479,7 +410,7 @@ func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority model
 
 	// 优化：在持锁之前检查队列容量（快速失败）
 	if worker.queue.Len() >= e.config.QueueSize {
-		logWarn("[PerCore] Worker %d queue full (len=%d)", workerID, worker.queue.Len())
+		logrus.Warnf("[PerCore] Worker %d queue full (len=%d)", workerID, worker.queue.Len())
 		return errors.Wrapf(errors.ErrQueueFull, "worker %d", workerID)
 	}
 
@@ -490,7 +421,7 @@ func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority model
 		task:       task,
 	}
 
-	logDebug("[PerCore] Submitting task with priority %d to worker %d", priority, workerID)
+	logrus.Debugf("[PerCore] Submitting task with priority %d to worker %d", priority, workerID)
 
 	// 优化：只在必要时持有锁
 	worker.cond.L.Lock()
@@ -498,14 +429,14 @@ func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority model
 	// 再次检查状态（持锁期间）
 	if atomic.LoadInt32(&e.state) != RUNNING {
 		worker.cond.L.Unlock()
-		logDebug("[PerCore] Executor closed during submit")
+		logrus.Debugf("[PerCore] Executor closed during submit")
 		return ErrExecutorClosed
 	}
 
 	// 再次检查队列容量（持锁期间）
 	if worker.queue.Len() >= e.config.QueueSize {
 		worker.cond.L.Unlock()
-		logWarn("[PerCore] Worker %d queue full during submit (len=%d)", workerID, worker.queue.Len())
+		logrus.Warnf("[PerCore] Worker %d queue full during submit (len=%d)", workerID, worker.queue.Len())
 		return errors.Wrapf(errors.ErrQueueFull, "worker %d", workerID)
 	}
 
@@ -640,23 +571,24 @@ func (w *coreWorker) run() {
 	}
 }
 
-// executeTask 执行任务
+// executeTask 执行任务（使用统一的 panic 恢复）
 func (w *coreWorker) executeTask(task func(context.Context)) {
-	defer func() {
-		if r := recover(); r != nil {
-			atomic.AddInt64(&w.executor.stats.TotalPanics, 1)
-			logError("[PerCore] Worker %d panic recovered: %v", w.coreID, r)
+	// 使用统一的 recovery 包，保留自定义逻辑
+	_ = recovery.Safe(func() {
+		// 执行任务
+		task(w.ctx)
+	}, func(r any, stack []byte) {
+		// 统计 panic
+		atomic.AddInt64(&w.executor.stats.TotalPanics, 1)
+		logrus.Errorf("[PerCore] Worker %d panic recovered: %v", w.coreID, r)
 
-			// 调用 panic 处理器
-			if w.executor.config.PanicHandler != nil {
-				w.executor.config.PanicHandler(r)
-			}
-
-			// Worker 自动重启（通过继续循环）
+		// 调用用户配置的 panic 处理器
+		if w.executor.config.PanicHandler != nil {
+			w.executor.config.PanicHandler(r)
 		}
-		atomic.AddInt64(&w.executor.stats.TotalCompleted, 1)
-	}()
+		// Worker 自动重启（通过继续循环）
+	})
 
-	// 执行任务
-	task(w.ctx)
+	// 任务完成统计
+	atomic.AddInt64(&w.executor.stats.TotalCompleted, 1)
 }

@@ -125,20 +125,20 @@ var (
 	ErrRequestIDEmpty         = stderrors.New("request: request id cannot be empty")
 
 	// CPU 亲和性错误
-	ErrCPUInvalidCoreID       = stderrors.New("affinity: invalid core ID")
-	ErrCPUSetAffinityFailed   = stderrors.New("affinity: sched_setaffinity failed")
-	ErrCPUGetCurrentThread    = stderrors.New("affinity: GetCurrentThread failed")
-	ErrCPUSetAffinityMask     = stderrors.New("affinity: SetThreadAffinityMask failed")
+	ErrCPUInvalidCoreID     = stderrors.New("affinity: invalid core ID")
+	ErrCPUSetAffinityFailed = stderrors.New("affinity: sched_setaffinity failed")
+	ErrCPUGetCurrentThread  = stderrors.New("affinity: GetCurrentThread failed")
+	ErrCPUSetAffinityMask   = stderrors.New("affinity: SetThreadAffinityMask failed")
 
 	// SourceID 错误
 	ErrSourceIDEmpty          = stderrors.New("source_id: cannot be empty")
-	ErrSourceIDInvalidFormat   = stderrors.New("source_id: must be in format {module}:{sub-module}:{action}")
-	ErrSourceIDModuleEmpty     = stderrors.New("source_id: module cannot be empty")
-	ErrSourceIDSubModuleEmpty  = stderrors.New("source_id: sub-module cannot be empty")
-	ErrSourceIDActionEmpty     = stderrors.New("source_id: action cannot be empty")
+	ErrSourceIDInvalidFormat  = stderrors.New("source_id: must be in format {module}:{sub-module}:{action}")
+	ErrSourceIDModuleEmpty    = stderrors.New("source_id: module cannot be empty")
+	ErrSourceIDSubModuleEmpty = stderrors.New("source_id: sub-module cannot be empty")
+	ErrSourceIDActionEmpty    = stderrors.New("source_id: action cannot be empty")
 
 	// TaskMode 错误
-	ErrTaskModeUnknown         = stderrors.New("task_mode: unknown task mode")
+	ErrTaskModeUnknown = stderrors.New("task_mode: unknown task mode")
 )
 
 // ===========================

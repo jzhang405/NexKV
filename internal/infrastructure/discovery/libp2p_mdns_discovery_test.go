@@ -56,7 +56,6 @@ type mockDiscoveryNotifee struct {
 	}
 	lost []model.PeerID
 	mu   sync.Mutex
-	wg   sync.WaitGroup
 }
 
 func (m *mockDiscoveryNotifee) HandlePeerFound(peerID model.PeerID, addrs []model.NetworkAddress) {
@@ -66,7 +65,8 @@ func (m *mockDiscoveryNotifee) HandlePeerFound(peerID model.PeerID, addrs []mode
 		addrs []model.NetworkAddress
 	}{id: peerID, addrs: addrs})
 	m.mu.Unlock()
-	m.wg.Done()
+	// 不使用 wg.Done()，因为 mDNS 可能随时调用
+	// 调用方应该使用 peers 切片的长度或其他同步机制
 }
 
 func (m *mockDiscoveryNotifee) HandlePeerUpdated(peerID model.PeerID, addrs []model.NetworkAddress) {
@@ -332,34 +332,33 @@ func TestMdnsNotifee_HandlePeerFound(t *testing.T) {
 		Addrs: h2.Addrs(),
 	}
 
-	// 先设置 WaitGroup 计数（在调用前）
-	notifee.wg.Add(1)
-
 	// 调用 HandlePeerFound
 	mdnsN.HandlePeerFound(peerInfo)
 
-	// 等待通知完成
-	done := make(chan struct{})
-	go func() {
-		notifee.wg.Wait()
-		close(done)
-	}()
+	// 轮询等待通知完成
+	timeout := time.After(2 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 
-	select {
-	case <-done:
-		// 成功
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for peer notification")
+	for {
+		select {
+		case <-ticker.C:
+			notifee.mu.Lock()
+			if len(notifee.peers) > 0 {
+				// 验证通知内容
+				assert.Len(t, notifee.peers, 1)
+				if len(notifee.peers) > 0 {
+					assert.Equal(t, model.PeerID(h2.ID().String()), notifee.peers[0].id)
+					assert.NotEmpty(t, notifee.peers[0].addrs)
+				}
+				notifee.mu.Unlock()
+				return
+			}
+			notifee.mu.Unlock()
+		case <-timeout:
+			t.Fatal("timeout waiting for peer notification")
+		}
 	}
-
-	// 验证通知内容
-	notifee.mu.Lock()
-	assert.Len(t, notifee.peers, 1)
-	if len(notifee.peers) > 0 {
-		assert.Equal(t, model.PeerID(h2.ID().String()), notifee.peers[0].id)
-		assert.NotEmpty(t, notifee.peers[0].addrs)
-	}
-	notifee.mu.Unlock()
 }
 
 func TestMdnsNotifee_HandlePeerFound_NilNotifee(t *testing.T) {
@@ -408,33 +407,33 @@ func TestMdnsNotifee_HandlePeerFound_EmptyAddrs(t *testing.T) {
 		Addrs: []multiaddr.Multiaddr{},
 	}
 
-	// 先设置 WaitGroup 计数
-	notifee.wg.Add(1)
-
 	// 调用 HandlePeerFound
 	mdnsN.HandlePeerFound(peerInfo)
 
-	// 等待通知完成
-	done := make(chan struct{})
-	go func() {
-		notifee.wg.Wait()
-		close(done)
-	}()
+	// 轮询等待通知完成
+	timeout := time.After(2 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 
-	select {
-	case <-done:
-		// 成功
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for peer notification")
+	for {
+		select {
+		case <-ticker.C:
+			notifee.mu.Lock()
+			if len(notifee.peers) > 0 {
+				// 验证通知内容（应该有空的 addrs）
+				assert.Len(t, notifee.peers, 1)
+				if len(notifee.peers) > 0 {
+					assert.Equal(t, model.PeerID(h.ID().String()), notifee.peers[0].id)
+					assert.Empty(t, notifee.peers[0].addrs)
+				}
+				notifee.mu.Unlock()
+				return
+			}
+			notifee.mu.Unlock()
+		case <-timeout:
+			t.Fatal("timeout waiting for peer notification")
+		}
 	}
-
-	// 验证通知内容（应该有空的 addrs）
-	notifee.mu.Lock()
-	assert.Len(t, notifee.peers, 1)
-	if len(notifee.peers) > 0 {
-		assert.Empty(t, notifee.peers[0].addrs)
-	}
-	notifee.mu.Unlock()
 }
 
 // ==========================================

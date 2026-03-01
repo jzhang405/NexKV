@@ -20,7 +20,7 @@ func TestAntsTaskExecutorProvider_Submit(t *testing.T) {
 	ctx := context.Background()
 	var executed int32
 
-	err = provider.Submit(ctx, PriorityNormal, func(ctx context.Context) {
+	err = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {
 		atomic.AddInt32(&executed, 1)
 	})
 
@@ -42,7 +42,7 @@ func TestAntsTaskExecutorProvider_SubmitWithPriority(t *testing.T) {
 	ctx := context.Background()
 	var executed int32
 
-	err = provider.Submit(ctx, PriorityHigh, func(ctx context.Context) {
+	err = provider.Submit(ctx, model.TaskPriorityHigh, func(ctx context.Context) {
 		atomic.AddInt32(&executed, 1)
 	})
 
@@ -89,7 +89,7 @@ func TestAntsTaskExecutorProvider_CloseWithTimeout(t *testing.T) {
 
 		// 提交任务并等待执行
 		for i := 0; i < 10; i++ {
-			_ = provider.Submit(ctx, PriorityNormal, func(ctx context.Context) {
+			_ = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {
 				executed.Add(1)
 			})
 		}
@@ -138,7 +138,7 @@ func TestAntsTaskExecutorProvider_ClosedPool(t *testing.T) {
 
 	ctx := context.Background()
 
-	err = provider.Submit(ctx, PriorityNormal, func(ctx context.Context) {
+	err = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {
 		t.Error("task should not execute after pool is closed")
 	})
 

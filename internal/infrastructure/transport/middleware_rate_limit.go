@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/jzhang405/NexKV/internal/domain/constants"
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/pkg/errors"
@@ -18,14 +19,6 @@ type RateLimitMiddleware struct {
 	limiters sync.Map // peer.ID -> *rate.Limiter
 	config   RateLimitConfig
 }
-
-// 限流配置常量（P1-1 修复：防止配置过大导致资源耗尽）
-const (
-	// MaxRequestsPerSecond 最大每秒请求数（10万 QPS）
-	MaxRequestsPerSecond = 100000
-	// MaxBurst 最大突发流量容量
-	MaxBurst = 10000
-)
 
 // RateLimitConfig 限流配置
 type RateLimitConfig struct {
@@ -50,15 +43,15 @@ func NewRateLimitMiddleware(config RateLimitConfig) *RateLimitMiddleware {
 	// 验证 RequestsPerSecond（下限 + 上限）
 	if config.RequestsPerSecond <= 0 {
 		config.RequestsPerSecond = defaults.RequestsPerSecond
-	} else if config.RequestsPerSecond > MaxRequestsPerSecond {
-		config.RequestsPerSecond = MaxRequestsPerSecond
+	} else if config.RequestsPerSecond > constants.MaxRequestsPerSecond {
+		config.RequestsPerSecond = constants.MaxRequestsPerSecond
 	}
 
 	// 验证 Burst（下限 + 上限）
 	if config.Burst <= 0 {
 		config.Burst = defaults.Burst
-	} else if config.Burst > MaxBurst {
-		config.Burst = MaxBurst
+	} else if config.Burst > constants.MaxBurst {
+		config.Burst = constants.MaxBurst
 	}
 
 	return &RateLimitMiddleware{config: config}

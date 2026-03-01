@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"io"
 
+	"github.com/jzhang405/NexKV/internal/domain/constants"
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/vmihailenco/msgpack/v5"
@@ -134,7 +135,7 @@ type MessagePackStreamCodec struct {
 func NewMessagePackStreamCodec() *MessagePackStreamCodec {
 	return &MessagePackStreamCodec{
 		MessagePackCodec: NewMessagePackCodec(),
-		maxMessageSize:   DefaultMaxMessageSize,
+		maxMessageSize:   constants.DefaultMaxMessageSize,
 	}
 }
 
@@ -142,7 +143,7 @@ func NewMessagePackStreamCodec() *MessagePackStreamCodec {
 // maxSize: 最大消息大小（字节），<= 0 使用默认值 10MB，超过 100MB 使用 100MB
 func NewMessagePackStreamCodecWithLimit(maxSize int) *MessagePackStreamCodec {
 	if maxSize <= 0 {
-		maxSize = DefaultMaxMessageSize
+		maxSize = constants.DefaultMaxMessageSize
 	}
 	if maxSize > MessagePackStreamCodecHardLimit {
 		maxSize = MessagePackStreamCodecHardLimit

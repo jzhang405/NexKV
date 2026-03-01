@@ -10,14 +10,12 @@ require (
 	github.com/multiformats/go-multiaddr v0.16.1
 	github.com/panjf2000/ants/v2 v2.9.0
 	github.com/pierrec/lz4/v4 v4.1.25
-	github.com/robfig/cron/v3 v3.0.1
 	github.com/sirupsen/logrus v1.9.4
 	github.com/sony/gobreaker v1.0.0
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v2 v2.27.7
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	go.uber.org/automaxprocs v1.6.0
-	go.uber.org/goleak v1.3.0
 	golang.org/x/time v0.12.0
 )
 

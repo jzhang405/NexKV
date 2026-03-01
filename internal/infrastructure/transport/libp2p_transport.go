@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/constants"
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/libp2p/go-libp2p"
@@ -22,13 +23,6 @@ import (
 
 // transportLog 使用 logrus 结构化日志
 var transportLog = logrus.WithField("component", "transport")
-
-// 常量定义
-const (
-	MaxPeerIDLength       = 128              // libp2p PeerID 最大长度
-	MaxAddrLength         = 1024             // 地址最大长度
-	DefaultMaxMessageSize = 10 * 1024 * 1024 // 默认最大消息大小 (10MB)
-)
 
 // 确保实现 service.Transport 接口
 var _ service.Transport = (*Libp2pTransport)(nil)
@@ -119,8 +113,8 @@ func validatePeerID(peerID model.PeerID) error {
 	if len(peerID) == 0 {
 		return service.Wrap(service.ErrPeerIDInvalid, "empty")
 	}
-	if len(peerID) > MaxPeerIDLength {
-		return service.Wrapf(service.ErrPeerIDInvalid, "too long: %d > %d", len(peerID), MaxPeerIDLength)
+	if len(peerID) > constants.MaxPeerIDLength {
+		return service.Wrapf(service.ErrPeerIDInvalid, "too long: %d > %d", len(peerID), constants.MaxPeerIDLength)
 	}
 	return nil
 }
@@ -129,8 +123,8 @@ func validateAddr(addr string) error {
 	if len(addr) == 0 {
 		return service.Wrap(service.ErrAddrInvalid, "empty")
 	}
-	if len(addr) > MaxAddrLength {
-		return service.Wrapf(service.ErrAddrTooLong, "%d > %d", len(addr), MaxAddrLength)
+	if len(addr) > constants.MaxAddrLength {
+		return service.Wrapf(service.ErrAddrTooLong, "%d > %d", len(addr), constants.MaxAddrLength)
 	}
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/pkg/recovery"
 )
 
 // ==========================================
@@ -129,14 +130,11 @@ func (w *asyncListenerWrapper) OnComplete(stats service.BroadcastStats) {
 	}
 }
 
-// safeListenerExec 安全执行回调（带 panic 恢复）
+// safeListenerExec 安全执行回调（使用统一的 panic 恢复）
 func safeListenerExec(fn func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("[AsyncCallback] panic recovered", "panic", r)
-		}
-	}()
-	fn()
+	_ = recovery.Safe(fn, func(r any, stack []byte) {
+		slog.Error("[AsyncCallback] panic recovered", "panic", r, "stack", string(stack))
+	})
 }
 
 // ==========================================

@@ -5,6 +5,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
 // ==========================================
@@ -26,7 +28,7 @@ func TestAntsTaskExecutorProvider_BasicSubmit(t *testing.T) {
 		done := make(chan bool)
 		ctx := context.Background()
 
-		err := provider.Submit(ctx, PriorityNormal, func(ctx context.Context) {
+		err := provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {
 			done <- true
 		})
 
@@ -47,13 +49,13 @@ func TestAntsTaskExecutorProvider_BasicSubmit(t *testing.T) {
 		ctx := context.Background()
 
 		// 提交不同优先级的任务
-		_ = provider.Submit(ctx, PriorityHigh, func(ctx context.Context) {
+		_ = provider.Submit(ctx, model.TaskPriorityHigh, func(ctx context.Context) {
 			done <- true
 		})
-		_ = provider.Submit(ctx, PriorityNormal, func(ctx context.Context) {
+		_ = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {
 			done <- true
 		})
-		_ = provider.Submit(ctx, PriorityLow, func(ctx context.Context) {
+		_ = provider.Submit(ctx, model.TaskPriorityLow, func(ctx context.Context) {
 			done <- true
 		})
 

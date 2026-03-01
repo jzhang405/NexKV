@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/event"
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/stretchr/testify/assert"
 )
@@ -154,7 +155,7 @@ func (m *mockExecutor) Close() error {
 
 func TestTaskSubmittedEvent_Fields(t *testing.T) {
 	now := time.Now()
-	event := TaskSubmittedEvent{
+	event := event.TaskSubmittedEvent{
 		TaskID:    "task-001",
 		Priority:  PriorityHigh,
 		Timestamp: now,
@@ -167,7 +168,7 @@ func TestTaskSubmittedEvent_Fields(t *testing.T) {
 
 func TestTaskCompletedEvent_Fields(t *testing.T) {
 	now := time.Now()
-	event := TaskCompletedEvent{
+	event := event.TaskCompletedEvent{
 		TaskID:    "task-001",
 		Duration:  100 * time.Millisecond,
 		Timestamp: now,
@@ -181,7 +182,7 @@ func TestTaskCompletedEvent_Fields(t *testing.T) {
 func TestTaskFailedEvent_Fields(t *testing.T) {
 	now := time.Now()
 	testErr := assert.AnError
-	event := TaskFailedEvent{
+	event := event.TaskFailedEvent{
 		TaskID:    "task-001",
 		Error:     testErr,
 		Timestamp: now,
@@ -194,7 +195,7 @@ func TestTaskFailedEvent_Fields(t *testing.T) {
 
 func TestQueueFullEvent_Fields(t *testing.T) {
 	now := time.Now()
-	event := QueueFullEvent{
+	event := event.QueueFullEvent{
 		CoreID:      2,
 		QueueLength: 100,
 		Strategy:    "drop",

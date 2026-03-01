@@ -3,28 +3,16 @@ package concurrency
 
 import (
 	"context"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/pkg/errors"
+	"github.com/jzhang405/NexKV/pkg/recovery"
 	"github.com/panjf2000/ants/v2"
 	"github.com/sirupsen/logrus"
-)
-
-// ==========================================
-// 常量定义
-// ==========================================
-
-const (
-	// MinPoolCapacity 最小池容量
-	MinPoolCapacity = 1
-	// MaxPoolCapacity 最大池容量
-	MaxPoolCapacity = 100000
-	// DefaultMaxDelayedTasks 默认最大延迟任务数（P1-01: 速率限制）
-	DefaultMaxDelayedTasks = 10000
 )
 
 // ==========================================
@@ -36,7 +24,7 @@ const (
 type AntsTaskExecutorProvider struct {
 	pool       *ants.Pool
 	config     *ProviderConfig
-	stats      TaskPoolStats
+	stats      service.TaskPoolStats
 	statsMu    sync.RWMutex
 	closed     atomic.Bool
 	stopCh     chan struct{}  // 全局停止信号
@@ -132,9 +120,9 @@ func NewAntsTaskExecutorProvider(config *ProviderConfig) (*AntsTaskExecutorProvi
 		pool:            pool,
 		config:          config,
 		currentCapacity: config.Capacity,
-		stats: TaskPoolStats{
+		stats: service.TaskPoolStats{
 			Capacity:   config.Capacity,
-			ByPriority: make(map[TaskPriority]int),
+			ByPriority: make(map[service.TaskPriority]int),
 		},
 		stopCh:     make(chan struct{}),
 		delayedSem: make(chan struct{}, DefaultMaxDelayedTasks), // P1-01: 速率限制
@@ -149,28 +137,19 @@ func NewAntsTaskExecutorProvider(config *ProviderConfig) (*AntsTaskExecutorProvi
 }
 
 // ======================================
-// P0-01: Panic 恢复包装器
+// P0-01: Panic 恢复包装器（统一使用 pkg/recovery）
 // ======================================
 
 // safeExecute 安全执行任务，捕获 panic
-// P1-02: 添加日志记录
+// 使用统一的 recovery 包处理 panic
 func (p *AntsTaskExecutorProvider) safeExecute(task func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			// P1-02: 使用 panicRecoveryHandler 处理 panic
-			p.handlePanic(r)
-		}
-	}()
-	task()
-}
-
-// handlePanic 处理 panic 恢复
-func (p *AntsTaskExecutorProvider) handlePanic(r any) {
-	stack := debug.Stack()
-	logrus.WithFields(logrus.Fields{
-		"panic": r,
-		"stack": string(stack),
-	}).Error("panic recovered in goroutine task")
+	// 使用自定义处理器保留 logrus 格式
+	_ = recovery.Safe(task, func(r any, stack []byte) {
+		logrus.WithFields(logrus.Fields{
+			"panic": r,
+			"stack": string(stack),
+		}).Error("panic recovered in goroutine task")
+	})
 }
 
 // handleTaskError 处理任务内部错误（P1-03: 延迟任务错误处理）
@@ -276,7 +255,7 @@ func (p *AntsTaskExecutorProvider) SubmitWithArg(
 // SubmitWithPriority 实现接口（保留以兼容性，实际通过 Submit 调用）
 func (p *AntsTaskExecutorProvider) SubmitWithPriority(
 	ctx context.Context,
-	priority TaskPriority,
+	priority service.TaskPriority,
 	task func(context.Context),
 ) error {
 	if p.isClosed() {
@@ -324,7 +303,7 @@ func (p *AntsTaskExecutorProvider) SubmitDelayed(
 // ======================================
 
 // Stats 实现接口
-func (p *AntsTaskExecutorProvider) Stats() TaskPoolStats {
+func (p *AntsTaskExecutorProvider) Stats() service.TaskPoolStats {
 	p.statsMu.RLock()
 	defer p.statsMu.RUnlock()
 
@@ -336,17 +315,17 @@ func (p *AntsTaskExecutorProvider) Stats() TaskPoolStats {
 }
 
 // Health 实现接口
-func (p *AntsTaskExecutorProvider) Health() TaskHealthStatus {
+func (p *AntsTaskExecutorProvider) Health() service.TaskHealthStatus {
 	if p.isClosed() {
-		return HealthStatusUnhealthy
+		return model.TaskHealthStatusUnhealthy
 	}
 
 	// 检查任务池健康状态
 	if p.pool.IsClosed() {
-		return HealthStatusUnhealthy
+		return model.TaskHealthStatusUnhealthy
 	}
 
-	return HealthStatusHealthy
+	return model.TaskHealthStatusHealthy
 }
 
 // SetCapacity 实现接口

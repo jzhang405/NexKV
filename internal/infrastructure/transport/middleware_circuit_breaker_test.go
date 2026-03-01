@@ -320,3 +320,204 @@ func TestCircuitBreakerMiddleware_Concurrent(t *testing.T) {
 	require.Equal(t, int64(goroutines*requestsPerGoroutine), successCount)
 	assert.Equal(t, int64(0), failCount)
 }
+
+// TestDefaultReadyToTrip 测试默认熔断触发条件
+func TestDefaultReadyToTrip(t *testing.T) {
+	tests := []struct {
+		name       string
+		counts     gobreaker.Counts
+		shouldTrip bool
+	}{
+		{
+			name: "no requests",
+			counts: gobreaker.Counts{
+				Requests:             0,
+				TotalSuccesses:       0,
+				TotalFailures:        0,
+				ConsecutiveSuccesses: 0,
+				ConsecutiveFailures:  0,
+			},
+			shouldTrip: false,
+		},
+		{
+			name: "less than 10 requests",
+			counts: gobreaker.Counts{
+				Requests:             5,
+				TotalSuccesses:       2,
+				TotalFailures:        3,
+				ConsecutiveSuccesses: 0,
+				ConsecutiveFailures:  3,
+			},
+			shouldTrip: false,
+		},
+		{
+			name: "10 requests, 50% failure rate",
+			counts: gobreaker.Counts{
+				Requests:             10,
+				TotalSuccesses:       5,
+				TotalFailures:        5,
+				ConsecutiveSuccesses: 0,
+				ConsecutiveFailures:  0,
+			},
+			shouldTrip: true, // >= 10 requests and 50% failure rate
+		},
+		{
+			name: "10 requests, 60% failure rate",
+			counts: gobreaker.Counts{
+				Requests:             10,
+				TotalSuccesses:       4,
+				TotalFailures:        6,
+				ConsecutiveSuccesses: 0,
+				ConsecutiveFailures:  0,
+			},
+			shouldTrip: true, // >= 10 requests and > 50% failure rate
+		},
+		{
+			name: "10 requests, 40% failure rate",
+			counts: gobreaker.Counts{
+				Requests:             10,
+				TotalSuccesses:       6,
+				TotalFailures:        4,
+				ConsecutiveSuccesses: 0,
+				ConsecutiveFailures:  0,
+			},
+			shouldTrip: false, // failure rate < 50%
+		},
+		{
+			name: "5 consecutive failures",
+			counts: gobreaker.Counts{
+				Requests:             5,
+				TotalSuccesses:       0,
+				TotalFailures:        5,
+				ConsecutiveSuccesses: 0,
+				ConsecutiveFailures:  5,
+			},
+			shouldTrip: true, // >= 5 consecutive failures
+		},
+		{
+			name: "3 consecutive failures",
+			counts: gobreaker.Counts{
+				Requests:             10,
+				TotalSuccesses:       7,
+				TotalFailures:        3,
+				ConsecutiveSuccesses: 0,
+				ConsecutiveFailures:  3,
+			},
+			shouldTrip: false, // < 5 consecutive failures
+		},
+		{
+			name: "both conditions met",
+			counts: gobreaker.Counts{
+				Requests:             20,
+				TotalSuccesses:       5,
+				TotalFailures:        15,
+				ConsecutiveSuccesses: 0,
+				ConsecutiveFailures:  5,
+			},
+			shouldTrip: true, // both conditions met
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := defaultReadyToTrip(tt.counts)
+			if result != tt.shouldTrip {
+				t.Errorf("defaultReadyToTrip() = %v, want %v", result, tt.shouldTrip)
+			}
+		})
+	}
+}
+
+// TestCircuitBreakerMiddleware_RemoveBreaker 测试移除熔断器
+func TestCircuitBreakerMiddleware_RemoveBreaker(t *testing.T) {
+	m := NewCircuitBreakerMiddleware(DefaultCircuitBreakerConfig())
+
+	peer1 := model.PeerID("peer-1")
+	peer2 := model.PeerID("peer-2")
+	msg := model.NewMessage("test-id", model.MessageTypeRequest, "src", "dst", []byte("payload"))
+	ctx := context.Background()
+
+	// 创建一些请求以初始化熔断器
+	next := func(ctx context.Context, p model.PeerID, m model.Message) error {
+		return nil
+	}
+
+	// 为 peer1 创建请求，触发熔断器创建
+	_ = m.InterceptSend(ctx, peer1, msg, next)
+
+	// 验证熔断器存在
+	assert.Equal(t, gobreaker.StateClosed, m.GetState(peer1))
+
+	// 移除 peer1 的熔断器
+	m.RemoveBreaker(peer1)
+
+	// 再次获取状态应该创建新的熔断器（初始状态为 Closed）
+	state := m.GetState(peer1)
+	assert.Equal(t, gobreaker.StateClosed, state)
+
+	// peer2 的熔断器应该仍然存在
+	_ = m.InterceptSend(ctx, peer2, msg, next)
+	assert.Equal(t, gobreaker.StateClosed, m.GetState(peer2))
+}
+
+// TestCircuitBreakerMiddleware_CleanupBreakers 测试清理熔断器
+func TestCircuitBreakerMiddleware_CleanupBreakers(t *testing.T) {
+	m := NewCircuitBreakerMiddleware(DefaultCircuitBreakerConfig())
+
+	peer1 := model.PeerID("peer-1")
+	peer2 := model.PeerID("peer-2")
+	peer3 := model.PeerID("peer-3")
+	msg := model.NewMessage("test-id", model.MessageTypeRequest, "src", "dst", []byte("payload"))
+	ctx := context.Background()
+
+	next := func(ctx context.Context, p model.PeerID, m model.Message) error {
+		return nil
+	}
+
+	// 为三个节点创建请求
+	_ = m.InterceptSend(ctx, peer1, msg, next)
+	_ = m.InterceptSend(ctx, peer2, msg, next)
+	_ = m.InterceptSend(ctx, peer3, msg, next)
+
+	// 验证熔断器存在
+	assert.Equal(t, gobreaker.StateClosed, m.GetState(peer1))
+	assert.Equal(t, gobreaker.StateClosed, m.GetState(peer2))
+	assert.Equal(t, gobreaker.StateClosed, m.GetState(peer3))
+
+	// 清理不在有效列表中的熔断器（peer3 不在有效列表中）
+	validPeers := []model.PeerID{peer1, peer2}
+	m.CleanupBreakers(validPeers)
+
+	// peer1 和 peer2 的熔断器应该仍然存在
+	assert.Equal(t, gobreaker.StateClosed, m.GetState(peer1))
+	assert.Equal(t, gobreaker.StateClosed, m.GetState(peer2))
+
+	// peer3 的熔断器应该被移除（重新获取会创建新的）
+	state := m.GetState(peer3)
+	assert.Equal(t, gobreaker.StateClosed, state)
+}
+
+// TestCircuitBreakerMiddleware_BreakerCount 测试熔断器计数
+func TestCircuitBreakerMiddleware_BreakerCount(t *testing.T) {
+	m := NewCircuitBreakerMiddleware(DefaultCircuitBreakerConfig())
+
+	// 初始计数应该为 0
+	assert.Equal(t, 0, m.BreakerCount())
+
+	peer1 := model.PeerID("peer-1")
+	peer2 := model.PeerID("peer-2")
+	msg := model.NewMessage("test-id", model.MessageTypeRequest, "src", "dst", []byte("payload"))
+	ctx := context.Background()
+
+	next := func(ctx context.Context, p model.PeerID, m model.Message) error {
+		return nil
+	}
+
+	// 为两个节点创建请求，应该创建两个熔断器
+	_ = m.InterceptSend(ctx, peer1, msg, next)
+	_ = m.InterceptSend(ctx, peer2, msg, next)
+
+	// 计数应该为 2
+	count := m.BreakerCount()
+	assert.Equal(t, 2, count)
+}

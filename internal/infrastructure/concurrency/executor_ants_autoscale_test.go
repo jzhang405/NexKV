@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
 // ==========================================
@@ -47,7 +47,7 @@ func TestAntsTaskExecutorProvider_AutoScale(t *testing.T) {
 
 	for i := 0; i < 90; i++ { // 90% 使用率
 		wg.Add(1)
-		err := provider.Submit(context.Background(), PriorityNormal, func(ctx context.Context) {
+		err := provider.Submit(context.Background(), model.TaskPriorityNormal, func(ctx context.Context) {
 			runningCount.Add(1)
 			<-blockCh // 阻塞任务
 			wg.Done()
@@ -62,7 +62,7 @@ func TestAntsTaskExecutorProvider_AutoScale(t *testing.T) {
 
 	// 提交更多任务以触发扩容检查
 	for i := 0; i < 50; i++ {
-		_ = provider.Submit(context.Background(), PriorityNormal, func(ctx context.Context) {
+		_ = provider.Submit(context.Background(), model.TaskPriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
 	}
@@ -108,7 +108,7 @@ func TestAntsTaskExecutorProvider_AutoShrink(t *testing.T) {
 
 	// 提交少量任务（低使用率）
 	for i := 0; i < 10; i++ {
-		_ = provider.Submit(context.Background(), PriorityNormal, func(ctx context.Context) {
+		_ = provider.Submit(context.Background(), model.TaskPriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
 	}
@@ -136,7 +136,7 @@ func TestAntsTaskExecutorProvider_AutoScale_Disabled(t *testing.T) {
 
 	// 提交大量任务
 	for i := 0; i < 50; i++ {
-		_ = provider.Submit(context.Background(), PriorityNormal, func(ctx context.Context) {
+		_ = provider.Submit(context.Background(), model.TaskPriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
 	}
@@ -172,7 +172,7 @@ func TestAntsTaskExecutorProvider_AutoScale_MaxCapacity(t *testing.T) {
 
 	for i := 0; i < 90; i++ {
 		wg.Add(1)
-		_ = provider.Submit(context.Background(), PriorityNormal, func(ctx context.Context) {
+		_ = provider.Submit(context.Background(), model.TaskPriorityNormal, func(ctx context.Context) {
 			<-blockCh
 			wg.Done()
 		})
@@ -182,7 +182,7 @@ func TestAntsTaskExecutorProvider_AutoScale_MaxCapacity(t *testing.T) {
 
 	// 提交更多任务以触发扩容检查
 	for i := 0; i < 100; i++ {
-		_ = provider.Submit(context.Background(), PriorityNormal, func(ctx context.Context) {
+		_ = provider.Submit(context.Background(), model.TaskPriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
 	}
@@ -222,7 +222,7 @@ func TestAntsTaskExecutorProvider_HighConcurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < tasksPerGoroutine; j++ {
-				err := provider.Submit(context.Background(), PriorityNormal, func(ctx context.Context) {
+				err := provider.Submit(context.Background(), model.TaskPriorityNormal, func(ctx context.Context) {
 					completed.Add(1)
 				})
 				if err != nil {
@@ -269,7 +269,7 @@ func TestAntsTaskExecutorProvider_RaceCondition(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < numOps; j++ {
-				_ = provider.Submit(context.Background(), PriorityNormal, func(ctx context.Context) {})
+				_ = provider.Submit(context.Background(), model.TaskPriorityNormal, func(ctx context.Context) {})
 			}
 		}()
 
@@ -309,7 +309,7 @@ func TestAntsTaskExecutorProvider_SubmitDelayed_Many(t *testing.T) {
 	var executed atomic.Int32
 
 	for i := 0; i < numTasks; i++ {
-		err := provider.SubmitDelayed(context.Background(), 10*time.Millisecond, service.PriorityNormal, func(ctx context.Context) {
+		err := provider.SubmitDelayed(context.Background(), 10*time.Millisecond, model.TaskPriorityNormal, func(ctx context.Context) {
 			executed.Add(1)
 		})
 		if err != nil {
@@ -346,7 +346,7 @@ func TestAntsTaskExecutorProvider_SubmitDelayed_TooMany(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := provider.SubmitDelayed(context.Background(), 1*time.Second, service.PriorityNormal, func(ctx context.Context) {})
+			err := provider.SubmitDelayed(context.Background(), 1*time.Second, model.TaskPriorityNormal, func(ctx context.Context) {})
 			if err == ErrTooManyDelayedTasks {
 				errors.Add(1)
 			}
@@ -370,7 +370,7 @@ func TestAntsTaskExecutorProvider_SubmitDelayed_Close(t *testing.T) {
 
 	// 提交延迟任务
 	for i := 0; i < 10; i++ {
-		_ = provider.SubmitDelayed(context.Background(), 1*time.Second, service.PriorityNormal, func(ctx context.Context) {
+		_ = provider.SubmitDelayed(context.Background(), 1*time.Second, model.TaskPriorityNormal, func(ctx context.Context) {
 			executed.Add(1)
 		})
 	}

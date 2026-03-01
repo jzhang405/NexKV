@@ -5,7 +5,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/jzhang405/NexKV/internal/domain/event"
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
@@ -105,37 +104,3 @@ type TaskResult[T any] interface {
 	// IsDone 检查是否已完成
 	IsDone() bool
 }
-
-// ==========================================
-// 领域事件重新导出
-// ==========================================
-
-// TaskSubmittedEvent 任务提交事件
-type TaskSubmittedEvent = event.TaskSubmittedEvent
-
-// TaskCompletedEvent 任务完成事件
-type TaskCompletedEvent = event.TaskCompletedEvent
-
-// TaskFailedEvent 任务失败事件
-type TaskFailedEvent = event.TaskFailedEvent
-
-// TaskCanceledEvent 任务取消事件
-type TaskCanceledEvent = event.TaskCanceledEvent
-
-// TaskRetryEvent 任务重试事件
-type TaskRetryEvent = event.TaskRetryEvent
-
-// QueueFullEvent 队列满事件
-type QueueFullEvent = event.QueueFullEvent
-
-// QueueDrainedEvent 队列排空事件
-type QueueDrainedEvent = event.QueueDrainedEvent
-
-// ExecutorStartedEvent 执行器启动事件
-type ExecutorStartedEvent = event.ExecutorStartedEvent
-
-// ExecutorStoppedEvent 执行器停止事件
-type ExecutorStoppedEvent = event.ExecutorStoppedEvent
-
-// ExecutorCapacityChangedEvent 执行器容量变更事件
-type ExecutorCapacityChangedEvent = event.ExecutorCapacityChangedEvent

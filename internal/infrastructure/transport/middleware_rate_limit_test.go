@@ -230,3 +230,105 @@ func TestRateLimitMiddleware_Concurrent(t *testing.T) {
 	// 成功数应该等于 Burst
 	assert.Equal(t, int64(1000), successCount)
 }
+
+// TestRateLimitMiddleware_RemoveLimiter 测试移除限流器
+func TestRateLimitMiddleware_RemoveLimiter(t *testing.T) {
+	m := NewRateLimitMiddleware(RateLimitConfig{
+		RequestsPerSecond: 10,
+		Burst:             1,
+	})
+
+	peer1 := model.PeerID("peer-1")
+	peer2 := model.PeerID("peer-2")
+	msg := model.NewMessage("test-id", model.MessageTypeRequest, "src", "dst", []byte("payload"))
+	ctx := context.Background()
+
+	next := func(ctx context.Context, p model.PeerID, m model.Message) error {
+		return nil
+	}
+
+	// 为 peer1 创建请求，触发限流器创建
+	_ = m.InterceptSend(ctx, peer1, msg, next)
+
+	// 初始计数应该为 1
+	assert.Equal(t, 1, m.LimiterCount())
+
+	// 移除 peer1 的限流器
+	m.RemoveLimiter(peer1)
+
+	// 计数应该为 0
+	assert.Equal(t, 0, m.LimiterCount())
+
+	// peer2 的限流器应该仍然存在
+	_ = m.InterceptSend(ctx, peer2, msg, next)
+	assert.Equal(t, 1, m.LimiterCount())
+}
+
+// TestRateLimitMiddleware_CleanupLimiters 测试清理限流器
+func TestRateLimitMiddleware_CleanupLimiters(t *testing.T) {
+	m := NewRateLimitMiddleware(RateLimitConfig{
+		RequestsPerSecond: 10,
+		Burst:             10, // 增加 Burst 以避免测试中的限流
+	})
+
+	peer1 := model.PeerID("peer-1")
+	peer2 := model.PeerID("peer-2")
+	peer3 := model.PeerID("peer-3")
+	msg := model.NewMessage("test-id", model.MessageTypeRequest, "src", "dst", []byte("payload"))
+	ctx := context.Background()
+
+	next := func(ctx context.Context, p model.PeerID, m model.Message) error {
+		return nil
+	}
+
+	// 为三个节点创建请求
+	_ = m.InterceptSend(ctx, peer1, msg, next)
+	_ = m.InterceptSend(ctx, peer2, msg, next)
+	_ = m.InterceptSend(ctx, peer3, msg, next)
+
+	// 验证限流器存在
+	assert.Equal(t, 3, m.LimiterCount())
+
+	// 清理不在有效列表中的限流器（peer3 不在有效列表中）
+	validPeers := []model.PeerID{peer1, peer2}
+	m.CleanupLimiters(validPeers)
+
+	// peer1 和 peer2 的限流器应该仍然存在
+	assert.Equal(t, 2, m.LimiterCount())
+
+	// 为 peer1 再次发送请求应该使用已有的限流器
+	err := m.InterceptSend(ctx, peer1, msg, next)
+	assert.NoError(t, err)
+
+	// 为 peer3 发送请求应该创建新的限流器
+	err = m.InterceptSend(ctx, peer3, msg, next)
+	assert.NoError(t, err)
+
+	// 计数应该为 3
+	assert.Equal(t, 3, m.LimiterCount())
+}
+
+// TestRateLimitMiddleware_LimiterCount 测试限流器计数
+func TestRateLimitMiddleware_LimiterCount(t *testing.T) {
+	m := NewRateLimitMiddleware(DefaultRateLimitConfig())
+
+	// 初始计数应该为 0
+	assert.Equal(t, 0, m.LimiterCount())
+
+	peer1 := model.PeerID("peer-1")
+	peer2 := model.PeerID("peer-2")
+	msg := model.NewMessage("test-id", model.MessageTypeRequest, "src", "dst", []byte("payload"))
+	ctx := context.Background()
+
+	next := func(ctx context.Context, p model.PeerID, m model.Message) error {
+		return nil
+	}
+
+	// 为两个节点创建请求，应该创建两个限流器
+	_ = m.InterceptSend(ctx, peer1, msg, next)
+	_ = m.InterceptSend(ctx, peer2, msg, next)
+
+	// 计数应该为 2
+	count := m.LimiterCount()
+	assert.Equal(t, 2, count)
+}

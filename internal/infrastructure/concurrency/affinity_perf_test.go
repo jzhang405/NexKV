@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -87,20 +88,19 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 	t.Run("MemoryIntensive", func(t *testing.T) {
 		var completed int64
 
-		// 模拟 WAL 写入缓冲区
-		bufferPool := make([][]byte, numCores)
-		for i := range bufferPool {
-			bufferPool[i] = make([]byte, 4096) // 4KB 页
+		// 使用 sync.Pool 为每个任务分配独立的 buffer
+		bufPool := &sync.Pool{
+			New: func() any {
+				buf := make([]byte, 4096) // 4KB 页
+				return &buf
+			},
 		}
 
 		task := func(ctx context.Context) {
-			// 每个 worker 处理自己的 buffer（避免竞争）
-			coreID := runtime.NumCPU() // 简化：实际应该从 context 获取
-			if coreID >= len(bufferPool) {
-				coreID = 0
-			}
-
-			buf := bufferPool[coreID%len(bufferPool)]
+			// 从 pool 获取 buffer（每个任务独立）
+			bufPtr := bufPool.Get().(*[]byte)
+			buf := *bufPtr
+			defer bufPool.Put(bufPtr)
 
 			// 模拟写入数据（内存密集）
 			for i := 0; i < len(buf); i += 64 {
@@ -181,18 +181,22 @@ func BenchmarkPerCore_CacheHitRate(b *testing.B) {
 		)
 		defer executor.Close()
 
-		// 模拟缓存友好的任务：每个 worker 访问独立的内存区域
+		// 使用 sync.Pool 为每个任务分配独立的数据区域
 		type WorkerLocalData struct {
 			data [1024]int
 		}
-		workerData := make([]WorkerLocalData, runtime.NumCPU())
+		dataPool := &sync.Pool{
+			New: func() any {
+				return &WorkerLocalData{}
+			},
+		}
 
 		task := func(ctx context.Context) {
-			// 获取当前 goroutine 可能对应的 core（简化模拟）
-			idx := int(time.Now().UnixNano()) % len(workerData)
+			// 从 pool 获取独立数据区域
+			localData := dataPool.Get().(*WorkerLocalData)
+			defer dataPool.Put(localData)
 
 			// 访问本地数据（缓存友好）
-			localData := &workerData[idx]
 			for i := 0; i < 16; i++ {
 				localData.data[i*64] = i * 2
 			}

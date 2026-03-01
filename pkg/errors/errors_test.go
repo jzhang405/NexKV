@@ -417,3 +417,113 @@ func TestConcurrentErrors(t *testing.T) {
 		<-done
 	}
 }
+
+// ==========================================
+// 便捷格式化函数测试
+// ==========================================
+
+// TestInvalidParamf 测试 InvalidParamf 函数
+func TestInvalidParamf(t *testing.T) {
+	err := InvalidParamf("value %d is out of range", 42)
+	if err == nil {
+		t.Fatal("InvalidParamf should return error")
+	}
+	expected := "invalid parameter: value 42 is out of range"
+	if err.Error() != expected {
+		t.Errorf("InvalidParamf() = %q, want %q", err.Error(), expected)
+	}
+}
+
+// TestInvalidCoreID 测试 InvalidCoreID 函数
+func TestInvalidCoreID(t *testing.T) {
+	err := InvalidCoreID(16, 8)
+	if err == nil {
+		t.Fatal("InvalidCoreID should return error")
+	}
+	// 验证错误可以被 errors.Is 匹配
+	if !stderrors.Is(err, ErrCPUInvalidCoreID) {
+		t.Error("InvalidCoreID should wrap ErrCPUInvalidCoreID")
+	}
+	// 验证错误消息包含参数信息
+	errMsg := err.Error()
+	if errMsg == "" {
+		t.Error("InvalidCoreID error message should not be empty")
+	}
+}
+
+// TestSourceIDEmpty 测试 SourceIDEmpty 函数
+func TestSourceIDEmpty(t *testing.T) {
+	err := SourceIDEmpty()
+	if err == nil {
+		t.Fatal("SourceIDEmpty should return error")
+	}
+	// 验证是预期的 sentinel error
+	if !stderrors.Is(err, ErrSourceIDEmpty) {
+		t.Error("SourceIDEmpty should return ErrSourceIDEmpty")
+	}
+}
+
+// TestSourceIDInvalidFormat 测试 SourceIDInvalidFormat 函数
+func TestSourceIDInvalidFormat(t *testing.T) {
+	err := SourceIDInvalidFormat()
+	if err == nil {
+		t.Fatal("SourceIDInvalidFormat should return error")
+	}
+	// 验证是预期的 sentinel error
+	if !stderrors.Is(err, ErrSourceIDInvalidFormat) {
+		t.Error("SourceIDInvalidFormat should return ErrSourceIDInvalidFormat")
+	}
+}
+
+// TestModuleEmpty 测试 ModuleEmpty 函数
+func TestModuleEmpty(t *testing.T) {
+	err := ModuleEmpty()
+	if err == nil {
+		t.Fatal("ModuleEmpty should return error")
+	}
+	// 验证是预期的 sentinel error
+	if !stderrors.Is(err, ErrSourceIDModuleEmpty) {
+		t.Error("ModuleEmpty should return ErrSourceIDModuleEmpty")
+	}
+}
+
+// TestSubModuleEmpty 测试 SubModuleEmpty 函数
+func TestSubModuleEmpty(t *testing.T) {
+	err := SubModuleEmpty()
+	if err == nil {
+		t.Fatal("SubModuleEmpty should return error")
+	}
+	// 验证是预期的 sentinel error
+	if !stderrors.Is(err, ErrSourceIDSubModuleEmpty) {
+		t.Error("SubModuleEmpty should return ErrSourceIDSubModuleEmpty")
+	}
+}
+
+// TestActionEmpty 测试 ActionEmpty 函数
+func TestActionEmpty(t *testing.T) {
+	err := ActionEmpty()
+	if err == nil {
+		t.Fatal("ActionEmpty should return error")
+	}
+	// 验证是预期的 sentinel error
+	if !stderrors.Is(err, ErrSourceIDActionEmpty) {
+		t.Error("ActionEmpty should return ErrSourceIDActionEmpty")
+	}
+}
+
+// TestUnknownTaskMode 测试 UnknownTaskMode 函数
+func TestUnknownTaskMode(t *testing.T) {
+	err := UnknownTaskMode("invalid_mode")
+	if err == nil {
+		t.Fatal("UnknownTaskMode should return error")
+	}
+	// 验证错误可以被 errors.Is 匹配
+	if !stderrors.Is(err, ErrTaskModeUnknown) {
+		t.Error("UnknownTaskMode should wrap ErrTaskModeUnknown")
+	}
+	// 验证错误消息包含模式名称
+	errMsg := err.Error()
+	if errMsg == "" {
+		t.Error("UnknownTaskMode error message should not be empty")
+	}
+}

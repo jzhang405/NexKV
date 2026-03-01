@@ -11,12 +11,12 @@ package rpc
 import (
 	"context"
 	"log/slog"
-	"runtime/debug"
 	"sync"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/pkg/recovery"
 )
 
 // BroadcastProgress 可选的广播追踪器（一次性使用）
@@ -336,16 +336,11 @@ func (t *BroadcastProgress) buildStatsLocked() service.BroadcastStats {
 	}
 }
 
-// safeCallback 安全执行回调，防止 panic 影响主流程
+// safeCallback 安全执行回调（使用统一的 panic 恢复）
 func safeCallback(fn func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			// panic 恢复，记录堆栈信息
-			// 注意：领域层不依赖具体日志实现，调用方应通过回调处理异常
-			slog.Error("[BroadcastProgress] callback panic", "panic", r, "stack", debug.Stack())
-		}
-	}()
-	fn()
+	_ = recovery.Safe(fn, func(r any, stack []byte) {
+		slog.Error("[BroadcastProgress] callback panic", "panic", r, "stack", string(stack))
+	})
 }
 
 // ============================================================================

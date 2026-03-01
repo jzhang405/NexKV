@@ -24,7 +24,7 @@ var _ service.CronJobProvider = (*RobfigCronProvider)(nil)
 type RobfigCronProvider struct {
 	mu                sync.RWMutex
 	cron              *cron.Cron
-	goroutineProvider service.TaskPoolProvider
+	goroutineProvider service.ExecutorManager
 	jobs              map[string]*cronJobEntry
 	nameToID          map[string]string
 	nextID            int64
@@ -43,7 +43,7 @@ type cronJobEntry struct {
 }
 
 // NewRobfigCronProvider 创建 robfig/cron 定时任务提供者
-func NewRobfigCronProvider(goroutineProvider service.TaskPoolProvider) *RobfigCronProvider {
+func NewRobfigCronProvider(goroutineProvider service.ExecutorManager) *RobfigCronProvider {
 	c := cron.New(
 		cron.WithSeconds(),
 		cron.WithChain(

@@ -14,7 +14,7 @@ import (
 // ==========================================
 
 // TaskPoolProvider 任务池提供者接口
-type TaskPoolProvider = service.TaskPoolProvider
+type TaskPoolProvider = service.ExecutorManager
 
 // TaskSubmitOption 提交选项
 type TaskSubmitOption = service.TaskSubmitOption

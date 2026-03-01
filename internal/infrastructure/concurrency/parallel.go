@@ -54,7 +54,7 @@ func WithFailFast(failFast bool) ParallelOption {
 //	})
 func ParallelExecute(
 	ctx context.Context,
-	provider service.TaskPoolProvider,
+	provider service.ExecutorManager,
 	taskCount int,
 	maxConcurrent int,
 	handler func(ctx context.Context, index int) error,
@@ -183,7 +183,7 @@ executeLoop:
 //	}
 func ParallelExecuteWithResult[T any](
 	ctx context.Context,
-	provider service.TaskPoolProvider,
+	provider service.ExecutorManager,
 	taskCount int,
 	maxConcurrent int,
 	handler func(ctx context.Context, index int) (T, error),
@@ -273,7 +273,7 @@ resultLoop:
 //	})
 func ParallelExecuteWithArg[T any](
 	ctx context.Context,
-	provider service.TaskPoolProvider,
+	provider service.ExecutorManager,
 	args []T,
 	maxConcurrent int,
 	handler func(ctx context.Context, arg T) error,
@@ -297,7 +297,7 @@ func ParallelExecuteWithArg[T any](
 //	})
 func ParallelExecuteWithArgAndResult[T any, R any](
 	ctx context.Context,
-	provider service.TaskPoolProvider,
+	provider service.ExecutorManager,
 	args []T,
 	maxConcurrent int,
 	handler func(ctx context.Context, arg T) (R, error),
@@ -318,15 +318,15 @@ func ParallelExecuteWithArgAndResult[T any, R any](
 
 // defaultProvider 是包级别的默认 TaskPoolProvider
 // 在包初始化时创建，用于向后兼容（当调用者传入 nil provider 时使用）
-var defaultProvider service.TaskPoolProvider
+var defaultProvider service.ExecutorManager
 
 // SetDefaultProvider 设置默认的 TaskPoolProvider
 // 应在应用程序初始化时调用
-func SetDefaultProvider(provider service.TaskPoolProvider) {
+func SetDefaultProvider(provider service.ExecutorManager) {
 	defaultProvider = provider
 }
 
 // GetDefaultProvider 获取默认的 TaskPoolProvider
-func GetDefaultProvider() service.TaskPoolProvider {
+func GetDefaultProvider() service.ExecutorManager {
 	return defaultProvider
 }

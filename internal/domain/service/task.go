@@ -38,7 +38,7 @@ const (
 )
 
 // ==========================================
-// 任务执行器接口（拆分后的小接口）
+// 核心接口（小接口原则）
 // ==========================================
 
 // TaskExecutor 基础任务执行器接口（最小接口）
@@ -67,16 +67,6 @@ type TaskPriorityExecutor interface {
 	SubmitWithPriority(ctx context.Context, priority TaskPriority, task func(context.Context)) error
 }
 
-// CoreTaskExecutor 绑核任务执行器
-// 将任务绑定到特定 CPU 核心执行，减少跨核调度开销
-type CoreTaskExecutor interface {
-	// ExecuteOnCore 在指定核心上执行任务
-	ExecuteOnCore(ctx context.Context, coreID int, task func(context.Context)) error
-
-	// GetCurrentCore 获取当前 goroutine 绑定的核心 ID
-	GetCurrentCore() int
-}
-
 // TaskBatcher 批量任务执行器
 type TaskBatcher interface {
 	// SubmitBatch 批量提交任务
@@ -101,7 +91,7 @@ type TaskManager interface {
 }
 
 // ==========================================
-// Level 2: 组合接口（3个）
+// 组合接口（按需组合）
 // ==========================================
 
 // BasicTaskExecutor 基础任务执行器
@@ -121,35 +111,20 @@ type AsyncTaskExecutor interface {
 	TaskBatcher
 }
 
-// FullTaskExecutor 完整任务执行器
+// ExecutorManager 执行器管理接口
 // 组合：AsyncTaskExecutor + TaskManager
-type FullTaskExecutor interface {
+type ExecutorManager interface {
 	AsyncTaskExecutor
 	TaskManager
-}
 
-// ==========================================
-// Level 3: TaskPoolProvider 完整接口
-// ==========================================
-
-// TaskPoolProvider 任务池提供者接口
-// 注意：由于 Go 接口限制，接口方法不能有类型参数
-// 泛型方法通过独立辅助函数提供（由基础设施层实现）
-type TaskPoolProvider interface {
-	FullTaskExecutor
-
-	// ======================================
-	// 扩展方法（组合接口未覆盖）
-	// ======================================
-
-	// SubmitWithArgAndResult 带参数和返回值任务（使用 any 类型）
+	// 扩展方法（用于向后兼容，将在未来移除）
+	// TODO: 逐步迁移使用代码到小接口组合，然后移除这些方法
 	SubmitWithArgAndResult(
 		ctx context.Context,
 		task func(context.Context, any) (any, error),
 		arg any,
 	) TaskResult[any]
 
-	// SubmitAdvanced 高级任务提交（使用 any 类型）
 	SubmitAdvanced(
 		ctx context.Context,
 		task func(context.Context, any) (any, error),
@@ -157,10 +132,8 @@ type TaskPoolProvider interface {
 		opts ...TaskSubmitOption,
 	) TaskResult[any]
 
-	// SubmitBatchWithArg 批量提交：带参数（使用 any 类型）
 	SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error
 
-	// SubmitBatchAllErrors 批量提交：收集所有错误（无参数）
 	SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error
 }
 
@@ -184,7 +157,7 @@ type TaskFailedEvent = event.TaskFailedEvent
 type QueueFullEvent = event.QueueFullEvent
 
 // ==========================================
-// 选项模式定义（用于 SubmitAdvanced）
+// 选项模式定义（用于高级场景）
 // ==========================================
 
 // TaskSubmitOptions 提交选项配置

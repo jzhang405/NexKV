@@ -187,20 +187,20 @@ func (s *TaskScheduler) Submit(ctx context.Context, sourceID model.SourceID, tas
 	// 1. 路由到合适的模式
 	mode := s.Route(sourceID)
 
-	// 2. 获取执行器
+	// 2. 获取执行器（修复：避免重复加锁）
 	s.mu.RLock()
-	executor, exists := s.executors[mode]
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
 
+	executor, exists := s.executors[mode]
 	if !exists {
 		// 降级到默认执行器
-		s.mu.RLock()
-		executor, exists = s.executors[s.defaultMode]
-		s.mu.RUnlock()
-
-		if !exists {
+		executor = s.executors[s.defaultMode]
+		if executor == nil {
 			return ErrNoExecutorAvailable
 		}
+		// 更新统计：使用默认模式
+		atomic.AddInt64(&s.stats.TotalSubmitted, 1)
+		return executor.Submit(ctx, task)
 	}
 
 	// 3. 更新统计（统一使用 atomic，提升性能）
@@ -484,7 +484,14 @@ func (s *TaskScheduler) submitWithGoroutine(ctx context.Context, task func(conte
 		defer func() {
 			_ = recover() // 恢复 panic 但不传播，保证 Goroutine 不崩溃
 		}()
-		task(ctx)
+		// 检查 context 是否已取消，避免执行已取消的任务
+		select {
+		case <-ctx.Done():
+			// Context 已取消，不执行任务
+			return
+		default:
+			task(ctx)
+		}
 	}()
 	return nil
 }

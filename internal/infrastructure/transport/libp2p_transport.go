@@ -50,7 +50,7 @@ type Libp2pTransport struct {
 	wg sync.WaitGroup
 
 	// TaskPoolProvider 用于管理 goroutine
-	provider service.TaskPoolProvider
+	provider service.ExecutorManager
 }
 
 // Config 传输层配置
@@ -58,7 +58,7 @@ type Config struct {
 	ListenAddr      string
 	DiscoveryTag    string
 	EnableDiscovery bool
-	Provider        service.TaskPoolProvider // 任务池提供者（用于 Discovery）
+	Provider        service.ExecutorManager // 任务池提供者（用于 Discovery）
 }
 
 // DefaultConfig 返回默认配置

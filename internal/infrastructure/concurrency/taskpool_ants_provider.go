@@ -32,7 +32,7 @@ const (
 // ==========================================
 
 // AntsTaskPoolProvider 基于 ants 库的任务池实现
-// 实现 domain/service.TaskPoolProvider 接口
+// 实现 domain/service.ExecutorManager 接口
 type AntsTaskPoolProvider struct {
 	pool       *ants.Pool
 	config     *ProviderConfig

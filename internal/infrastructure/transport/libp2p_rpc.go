@@ -20,7 +20,7 @@ type Libp2pRPC struct {
 	config      *service.RPCConfig
 	idGenerator *id.RequestIDGenerator
 	middleware  service.MiddlewareChain
-	provider    service.TaskPoolProvider // 任务池提供者
+	provider    service.ExecutorManager // 任务池提供者
 
 	// 请求-响应匹配
 	pendingCalls   map[string]*pendingCall
@@ -44,7 +44,7 @@ type pendingCall struct {
 }
 
 // NewLibp2pRPC 创建 libp2p RPC 实例
-func NewLibp2pRPC(transport service.Transport, provider service.TaskPoolProvider, config *service.RPCConfig) *Libp2pRPC {
+func NewLibp2pRPC(transport service.Transport, provider service.ExecutorManager, config *service.RPCConfig) *Libp2pRPC {
 	if provider == nil {
 		panic("TaskPoolProvider is required, cannot be nil")
 	}
@@ -461,8 +461,8 @@ func (r *Libp2pRPC) Close() error {
 	return nil
 }
 
-// SetTaskPoolProvider 设置 任务池提供者
-func (r *Libp2pRPC) SetTaskPoolProvider(provider service.TaskPoolProvider) {
+// SetExecutorManager 设置执行器管理器
+func (r *Libp2pRPC) SetExecutorManager(provider service.ExecutorManager) {
 	r.provider = provider
 }
 

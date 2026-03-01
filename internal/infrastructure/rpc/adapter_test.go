@@ -477,7 +477,7 @@ func (m *mockRPCSync) Close() error {
 	return nil
 }
 
-func (m *mockRPCSync) SetTaskPoolProvider(provider service.TaskPoolProvider) {}
+func (m *mockRPCSync) SetTaskPoolProvider(provider service.ExecutorManager) {}
 
 // newTestMessage 创建测试消息
 func newTestMessage(content string) model.Message {

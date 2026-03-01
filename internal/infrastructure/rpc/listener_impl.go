@@ -90,7 +90,7 @@ func (m *multiListener) OnComplete(stats service.BroadcastStats) {
 // 避免无限制创建 goroutine，提供资源控制
 type asyncListenerWrapper struct {
 	callbacks         []service.BroadcastListener
-	goroutineProvider service.TaskPoolProvider
+	goroutineProvider service.ExecutorManager
 }
 
 func (w *asyncListenerWrapper) OnSuccess(peer model.PeerID, resp model.Message, stats service.BroadcastStats) {
@@ -185,7 +185,7 @@ func OnFailure(callback func(peer model.PeerID, err error, stats service.Broadca
 
 // ApplyBroadcastOptions 应用选项并返回组合后的回调
 // 如果提供了 goroutineProvider，则使用 asyncListenerWrapper 包装回调
-func ApplyBroadcastOptions(opts []service.BroadcastOption, goroutineProvider service.TaskPoolProvider) service.BroadcastListener {
+func ApplyBroadcastOptions(opts []service.BroadcastOption, goroutineProvider service.ExecutorManager) service.BroadcastListener {
 	if len(opts) == 0 {
 		return nil
 	}

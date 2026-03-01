@@ -17,7 +17,7 @@ import (
 // 直接使用 go func() 执行任务，不使用任务池
 type mockTaskPoolProvider struct{}
 
-func newMockTaskPoolProvider() service.TaskPoolProvider {
+func newMockTaskPoolProvider() service.ExecutorManager {
 	return &mockTaskPoolProvider{}
 }
 

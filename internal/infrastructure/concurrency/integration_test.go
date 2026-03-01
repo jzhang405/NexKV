@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"go.uber.org/goleak"
 )
 
 // ==========================================
@@ -68,7 +69,7 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 
 // TestIntegration_GracefulShutdown 优雅关闭测试
 func TestIntegration_GracefulShutdown(t *testing.T) {
-	selector := NewTaskSelector()
+	selector := NewTaskScheduler()
 
 	// 注册执行器
 	executor, _ := NewPerCoreExecutor(WithNumCores(2), WithQueueSize(1000))
@@ -211,7 +212,7 @@ func TestIntegration_PanicRecovery(t *testing.T) {
 
 // TestIntegration_HighConcurrency 高并发测试
 func TestIntegration_HighConcurrency(t *testing.T) {
-	selector := NewTaskSelector()
+	selector := NewTaskScheduler()
 
 	executor, err := NewPerCoreExecutor(WithNumCores(runtime.NumCPU()), WithQueueSize(10000))
 	if err != nil {
@@ -259,7 +260,7 @@ func TestIntegration_HighConcurrency(t *testing.T) {
 
 // TestIntegration_MultiExecutorFallback 多执行器降级测试
 func TestIntegration_MultiExecutorFallback(t *testing.T) {
-	selector := NewTaskSelector()
+	selector := NewTaskScheduler()
 
 	// 只注册默认池
 	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
@@ -295,7 +296,7 @@ func TestIntegration_MultiExecutorFallback(t *testing.T) {
 
 // TestIntegration_CustomRoutingRules 自定义路由规则测试
 func TestIntegration_CustomRoutingRules(t *testing.T) {
-	selector := NewTaskSelector()
+	selector := NewTaskScheduler()
 
 	// 注册执行器
 	perCoreExec, _ := NewPerCoreExecutor(WithNumCores(2), WithQueueSize(100))
@@ -355,9 +356,9 @@ func BenchmarkIntegration_PerCoreSubmit(b *testing.B) {
 	}
 }
 
-// BenchmarkIntegration_SelectorSubmit 选择器提交基准
+// BenchmarkIntegration_SelectorSubmit 调度器提交基准
 func BenchmarkIntegration_SelectorSubmit(b *testing.B) {
-	selector := NewTaskSelector()
+	selector := NewTaskScheduler()
 	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
 		b.Fatalf("RegisterExecutor() error: %v", err)
 	}
@@ -374,7 +375,7 @@ func BenchmarkIntegration_SelectorSubmit(b *testing.B) {
 
 // BenchmarkIntegration_SelectWithRoute 路由选择基准
 func BenchmarkIntegration_SelectWithRoute(b *testing.B) {
-	selector := NewTaskSelector()
+	selector := NewTaskScheduler()
 	perCoreExec, err := NewPerCoreExecutor(WithNumCores(runtime.NumCPU()), WithQueueSize(10000))
 	if err != nil {
 		b.Fatalf("NewPerCoreExecutor() error: %v", err)
@@ -398,7 +399,7 @@ func BenchmarkIntegration_SelectWithRoute(b *testing.B) {
 
 // BenchmarkIntegration_ConcurrentSubmit 并发提交基准
 func BenchmarkIntegration_ConcurrentSubmit(b *testing.B) {
-	selector := NewTaskSelector()
+	selector := NewTaskScheduler()
 	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
 		b.Fatalf("RegisterExecutor() error: %v", err)
 	}
@@ -430,7 +431,7 @@ func BenchmarkIntegration_PrioritySubmit(b *testing.B) {
 
 // BenchmarkIntegration_MixedWorkload 混合工作负载基准
 func BenchmarkIntegration_MixedWorkload(b *testing.B) {
-	selector := NewTaskSelector()
+	selector := NewTaskScheduler()
 
 	perCoreExec, err := NewPerCoreExecutor(WithNumCores(runtime.NumCPU()), WithQueueSize(10000))
 	if err != nil {
@@ -478,7 +479,7 @@ func TestStress_HighLoad(t *testing.T) {
 		t.Skip("Skipping stress test in short mode")
 	}
 
-	selector := NewTaskSelector()
+	selector := NewTaskScheduler()
 
 	perCoreExec, err := NewPerCoreExecutor(WithNumCores(runtime.NumCPU()), WithQueueSize(100000))
 	if err != nil {
@@ -528,7 +529,7 @@ func TestStress_MemoryUsage(t *testing.T) {
 	runtime.GC()
 	runtime.ReadMemStats(&m1)
 
-	selector := NewTaskSelector()
+	selector := NewTaskScheduler()
 	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
 		t.Fatalf("RegisterExecutor() error: %v", err)
 	}
@@ -557,10 +558,10 @@ func TestStress_MemoryUsage(t *testing.T) {
 // 辅助函数
 // ==========================================
 
-// setupFullSelector 创建并注册所有执行器的选择器
-func setupFullSelector(t *testing.T) *TaskSelector {
+// setupFullSelector 创建并注册所有执行器的调度器
+func setupFullSelector(t *testing.T) *TaskScheduler {
 	t.Helper()
-	selector := NewTaskSelector()
+	selector := NewTaskScheduler()
 
 	// 注册所有执行器
 	perCoreExec, err := NewPerCoreExecutor(WithNumCores(2), WithQueueSize(100))
@@ -610,5 +611,23 @@ func setupFullSelector(t *testing.T) *TaskSelector {
 
 func TestMain(m *testing.M) {
 	fmt.Println("Starting integration tests...")
-	m.Run()
+
+	goleak.VerifyTestMain(m,
+		// 忽略 ants 池的后台清理 goroutine
+		goleak.IgnoreTopFunction("github.com/panjf2000/ants/v2.(*Pool).purgeStaleWorkers"),
+		goleak.IgnoreTopFunction("github.com/panjf2000/ants/v2.(*Pool).ticktock"),
+		goleak.IgnoreTopFunction("github.com/panjf2000/ants/v2.(*PoolWithFunc).purgeStaleWorkers"),
+		goleak.IgnoreTopFunction("github.com/panjf2000/ants/v2.(*PoolWithFunc).ticktock"),
+		// 忽略系统级轮询 goroutine
+		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
+		// 忽略 Go 运行时定时器 goroutine
+		goleak.IgnoreTopFunction("time.Sleep"),
+		goleak.IgnoreTopFunction("runtime.gopark"),
+		// 忽略 sync.Cond.Wait 导致的等待（PerCoreExecutor worker 正常等待）
+		goleak.IgnoreTopFunction("sync.(*Cond).Wait"),
+		goleak.IgnoreTopFunction("sync.runtime_notifyListWait"),
+		// 忽略测试辅助函数中的 goroutine（wrapAnyResult 的超时等待）
+		goleak.IgnoreTopFunction("github.com/jzhang405/NexKV/internal/infrastructure/concurrency.wrapAnyResult[...].func1"),
+		goleak.IgnoreTopFunction("github.com/jzhang405/NexKV/internal/infrastructure/concurrency.(*mockResult).Get"),
+	)
 }

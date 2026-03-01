@@ -34,7 +34,7 @@ Pre 文档（前置规划）          Post 文档（后置总结）
 **核心原则**：
 - ✅ Pre 文档**未通过评审前**，禁止启动开发
 - ✅ Post 文档**未通过评审前**，禁止推送到远程
-- ✅ 提交前**所有验证必须通过**（lint + build + test + test-race + clean）
+- ✅ 提交前**所有验证必须通过**（lint + build + test + fmt + clean）
 
 ---
 
@@ -253,8 +253,7 @@ git checkout -b feature/update-workflow-validation
 ### 3.1 测试结果
 - ✅ make lint: 0 issues
 - ✅ make build: 编译成功
-- ✅ make test: 所有测试通过（XX.XXs）
-- ✅ make test-race: 无竞态问题
+- ✅ make test: 所有测试通过（包含竞态检测）
 - ✅ make clean: 清理完成
 
 ### 3.2 代码覆盖率
@@ -339,23 +338,19 @@ make lint
 make build
 # ⚠️ 必须通过：编译成功
 
-# === 步骤 4: 单元测试 ===
+# === 步骤 4: 单元测试 + 竞态检测 ===
 make test
-# ⚠️ 必须通过：所有测试用例通过
+# ⚠️ 必须通过：所有测试用例通过（包含 -race 竞态检测）
 
-# === 步骤 5: 竞态检测 ===
-make test-race
-# ⚠️ 必须通过：无数据竞态问题
-
-# === 步骤 6: 代码格式化 ===
+# === 步骤 5: 代码格式化 ===
 make fmt
 # ⚠️ 必须通过：代码格式符合规范
 
-# === 步骤 7: 清理构建产物 ===
+# === 步骤 6: 清理构建产物 ===
 make clean
 # ⚠️ 必须通过：清理完成
 
-# === 步骤 8: 验证结果检查 ===
+# === 步骤 7: 验证结果检查 ===
 echo $?  # 确保上一个命令返回 0
 ```
 
@@ -365,19 +360,18 @@ echo $?  # 确保上一个命令返回 0
 |--------|------|---------|
 | **make lint** | 代码质量检查（golangci-lint） | 修复所有 lint issues，重新运行 |
 | **make build** | 编译项目（含 Protobuf） | 修复编译错误，重新运行 |
-| **make test** | 运行所有单元测试 | 修复测试失败，重新运行 |
-| **make test-race** | 竞态检测（-race 标志） | 修复竞态问题，重新运行 |
+| **make test** | 运行所有测试（单元+集成，含竞态检测） | 修复测试失败，重新运行 |
 | **make fmt** | 代码格式化（gofmt/goimports） | 格式化代码，重新运行 |
 | **make clean** | 清理构建产物 | 确保清理成功 |
 
 **快速验证命令**（一行执行）：
 ```bash
 # 注意：code-simplifier 需要在 Claude Code 中单独运行
-make lint && make build && make test && make test-race && make fmt && make clean && echo "✅ 所有验证通过"
+make lint && make build && make test && make fmt && make clean && echo "✅ 所有验证通过"
 ```
 
 **⚠️ 重要**：
-- **顺序执行**：lint → build → test → test-race → fmt → clean
+- **顺序执行**：lint → build → test → fmt → clean
 - **缺一不可**：所有验证项必须通过，否则禁止提交
 - **修复循环**：任何验证失败，修复后重新执行完整流程
 
@@ -651,8 +645,7 @@ git push origin --delete feature/{功能描述}
 ### 3.1 本地验证结果
 - ✅ make lint: 0 issues
 - ✅ make build: 编译成功
-- ✅ make test: 所有测试通过（XX.XXs）
-- ✅ make test-race: 无竞态问题
+- ✅ make test: 所有测试通过（包含竞态检测）
 - ✅ make clean: 清理完成
 
 ### 3.2 代码覆盖率
@@ -722,26 +715,22 @@ make lint
 make build
 # ⚠️ 必须通过：编译成功
 
-# 步骤 3: 单元测试
+# 步骤 3: 单元测试 + 竞态检测
 make test
-# ⚠️ 必须通过：所有测试用例通过
+# ⚠️ 必须通过：所有测试用例通过（包含竞态检测）
 
-# 步骤 4: 竞态检测
-make test-race
-# ⚠️ 必须通过：无数据竞态问题
-
-# 步骤 5: 代码格式化
+# 步骤 4: 代码格式化
 make fmt
 # ⚠️ 必须通过：代码格式符合规范
 
-# 步骤 6: 清理构建产物
+# 步骤 5: 清理构建产物
 make clean
 # ⚠️ 必须通过：清理完成
 ```
 
 **快速验证命令**：
 ```bash
-make lint && make build && make test && make test-race && make fmt && make clean && echo "✅ 所有验证通过"
+make lint && make build && make test && make fmt && make clean && echo "✅ 所有验证通过"
 ```
 
 ### 验证失败处理流程
@@ -757,24 +746,20 @@ flowchart TD
     C -->|通过| D{make test}
     D -->|失败| D1[修复测试失败]
     D1 --> D
-    D -->|通过| E{make test-race}
-    E -->|失败| E1[修复竞态问题]
+    D -->|通过| E{make fmt}
+    E -->|失败| E1[格式化代码]
     E1 --> E
-    E -->|通过| F{make fmt}
-    F -->|失败| F1[格式化代码]
+    E -->|通过| F{make clean}
+    F -->|失败| F1[检查清理脚本]
     F1 --> F
-    F -->|通过| G{make clean}
-    G -->|失败| G1[检查清理脚本]
-    G1 --> G
-    G -->|通过| H[✅ 所有验证通过]
+    F -->|通过| G[✅ 所有验证通过]
 
     style B fill:#ffe6e6
     style C fill:#ffe6e6
     style D fill:#ffe6e6
     style E fill:#ffe6e6
     style F fill:#ffe6e6
-    style G fill:#ffe6e6
-    style H fill:#c8e6c9
+    style G fill:#c8e6c9
 ```
 
 ---
@@ -924,8 +909,7 @@ gh pr comment --body "✅ CI 已通过，请评审并批准合并"
 **验证阶段**：
 - [ ] make lint（0 issues）
 - [ ] make build（编译成功）
-- [ ] make test（所有测试通过）
-- [ ] make test-race（无竞态问题）
+- [ ] make test（所有测试通过，包含竞态检测）
 - [ ] make fmt（格式化通过）
 - [ ] make clean（清理完成）
 
@@ -957,8 +941,8 @@ gh pr comment --body "✅ CI 已通过，请评审并批准合并"
 
 ---
 
-**文档版本**: v1.0
+**文档版本**: v3.0
 **创建日期**: 2026-01-27
-**最后更新**: 2026-01-27
+**最后更新**: 2026-03-01
 **维护者**: NexKV 开发团队
 **状态**: ✅ 已批准

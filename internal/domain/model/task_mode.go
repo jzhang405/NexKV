@@ -62,10 +62,11 @@ func (m TaskMode) IsValid() bool {
 
 // FallbackMode 返回降级后的调度模式
 // 当当前模式不支持时，应该降级到的模式
+// 三级降级链: PerCore -> Ants Default -> Native Goroutine
 func (m TaskMode) FallbackMode() TaskMode {
 	switch m {
 	case ModePerCore:
-		return ModeCustomPool // PerCore 降级到 CustomPool
+		return ModeDefaultPool // PerCore 降级到 Ants Default（三级降级策略）
 	case ModeCustomPool, ModeFuncPool, ModeMultiPool:
 		return ModeDefaultPool // 其他模式降级到 DefaultPool
 	default:

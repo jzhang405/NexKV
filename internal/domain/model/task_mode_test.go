@@ -58,7 +58,7 @@ func TestTaskMode_FallbackMode(t *testing.T) {
 		mode     TaskMode
 		expected TaskMode
 	}{
-		{ModePerCore, ModeCustomPool},      // PerCore 降级到 CustomPool
+		{ModePerCore, ModeDefaultPool},     // PerCore 降级到 DefaultPool（三级降级策略）
 		{ModeCustomPool, ModeDefaultPool},  // CustomPool 降级到 DefaultPool
 		{ModeFuncPool, ModeDefaultPool},    // FuncPool 降级到 DefaultPool
 		{ModeMultiPool, ModeDefaultPool},   // MultiPool 降级到 DefaultPool

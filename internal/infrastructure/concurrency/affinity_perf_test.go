@@ -60,12 +60,8 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 
 	// ========== 场景 1: 计算密集型任务（HLC 时钟模拟）==========
 	t.Run("ComputeIntensive", func(t *testing.T) {
-		t.Parallel() // 允许子测试并行运行
-		if deadline, ok := t.Deadline(); ok {
-			// 计算剩余时间
-			remaining := time.Until(deadline)
-			t.Logf("子测试超时时间: %v", remaining)
-		}
+		// 性能测试不使用 t.Parallel()，避免与父测试的超时竞争
+		// 这种测试设计用于 perf 分析，需要顺序执行
 		var completed int64
 
 		// 模拟 HLC 时钟更新

@@ -10,10 +10,10 @@ import (
 )
 
 // ==========================================
-// 类型定义
+// 类型别名
 // ==========================================
 
-// TaskPriority 任务优先级（与 model.TaskPriority 一致）
+// TaskPriority 任务优先级
 type TaskPriority = model.TaskPriority
 
 // TaskPoolStats 任务池统计信息
@@ -38,150 +38,51 @@ const (
 )
 
 // ==========================================
-// 核心接口（小接口原则）
+// 核心接口（4个）
 // ==========================================
 
-// TaskExecutor 基础任务执行器接口（最小接口）
-// 适用于简单场景，只需要 Submit 方法
+// TaskExecutor 基础任务执行器接口
 type TaskExecutor interface {
+	// Submit 提交任务执行
 	Submit(ctx context.Context, priority TaskPriority, task func(context.Context)) error
+	// Close 关闭执行器
 	Close() error
 }
 
-// TaskExecutorWithArg 带参数的任务执行器
-type TaskExecutorWithArg interface {
-	SubmitWithArg(ctx context.Context, task func(context.Context, any), arg any) error
-}
-
-// TaskExecutorWithResult 带返回值的任务执行器
-type TaskExecutorWithResult interface {
-	SubmitWithResult(ctx context.Context, task func(context.Context) (any, error)) TaskResult[any]
+// PriorityExecutor 优先级执行器
+// TaskExecutor 已包含 priority 参数，此接口用于类型标识
+type PriorityExecutor interface {
+	TaskExecutor
 }
 
 // TaskScheduler 任务调度器（延迟任务）
 type TaskScheduler interface {
+	// SubmitDelayed 延迟提交任务
 	SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error
 }
 
-// TaskPriorityExecutor 优先级任务执行器
-type TaskPriorityExecutor interface {
-	SubmitWithPriority(ctx context.Context, priority TaskPriority, task func(context.Context)) error
-}
-
-// TaskBatcher 批量任务执行器
-type TaskBatcher interface {
-	// SubmitBatch 批量提交任务
-	SubmitBatch(ctx context.Context, tasks []func(context.Context)) error
-
-	// SubmitBatchWithResult 批量提交带结果任务
-	SubmitBatchWithResult(ctx context.Context, tasks []func(context.Context) (any, error)) []TaskResult[any]
-}
-
-// TaskManager 任务池管理接口
-type TaskManager interface {
-	// Stats 获取任务池统计信息
+// Monitorable 监控接口
+type Monitorable interface {
+	// Stats 获取统计信息
 	Stats() TaskPoolStats
 	// Health 获取健康状态
 	Health() TaskHealthStatus
 	// SetCapacity 设置容量
 	SetCapacity(capacity int) error
-	// Close 关闭任务池
-	Close() error
 	// CloseWithTimeout 带超时关闭
 	CloseWithTimeout(timeout time.Duration) error
 }
 
 // ==========================================
-// 组合接口（按需组合）
+// 组合接口
 // ==========================================
-
-// BasicTaskExecutor 基础任务执行器
-// 组合：TaskExecutor + TaskExecutorWithArg + TaskExecutorWithResult
-type BasicTaskExecutor interface {
-	TaskExecutor
-	TaskExecutorWithArg
-	TaskExecutorWithResult
-}
 
 // AsyncTaskExecutor 异步任务执行器
-// 组合：BasicTaskExecutor + TaskScheduler + TaskPriorityExecutor + TaskBatcher
+// 组合：TaskExecutor + TaskScheduler + Monitorable
 type AsyncTaskExecutor interface {
-	BasicTaskExecutor
+	TaskExecutor
 	TaskScheduler
-	TaskPriorityExecutor
-	TaskBatcher
-}
-
-// ExecutorManager 执行器管理接口
-// 组合：AsyncTaskExecutor + TaskManager
-type ExecutorManager interface {
-	AsyncTaskExecutor
-	TaskManager
-
-	// 扩展方法（用于向后兼容，将在未来移除）
-	// TODO: 逐步迁移使用代码到小接口组合，然后移除这些方法
-	SubmitWithArgAndResult(
-		ctx context.Context,
-		task func(context.Context, any) (any, error),
-		arg any,
-	) TaskResult[any]
-
-	SubmitAdvanced(
-		ctx context.Context,
-		task func(context.Context, any) (any, error),
-		arg any,
-		opts ...TaskSubmitOption,
-	) TaskResult[any]
-
-	SubmitBatchWithArg(ctx context.Context, tasks []func(context.Context, any), args []any) error
-
-	SubmitBatchAllErrors(ctx context.Context, tasks []func(context.Context)) []error
-}
-
-// ==========================================
-// 领域事件（重新导出，保持向后兼容）
-// ==========================================
-
-// 领域事件已迁移到 internal/domain/event 包
-// 这里保留类型别名以保持向后兼容
-
-// TaskSubmittedEvent 任务提交事件
-type TaskSubmittedEvent = event.TaskSubmittedEvent
-
-// TaskCompletedEvent 任务完成事件
-type TaskCompletedEvent = event.TaskCompletedEvent
-
-// TaskFailedEvent 任务失败事件
-type TaskFailedEvent = event.TaskFailedEvent
-
-// QueueFullEvent 队列满事件（背压触发）
-type QueueFullEvent = event.QueueFullEvent
-
-// ==========================================
-// 选项模式定义（用于高级场景）
-// ==========================================
-
-// TaskSubmitOptions 提交选项配置
-type TaskSubmitOptions struct {
-	Priority TaskPriority
-	Delay    time.Duration
-}
-
-// TaskSubmitOption 提交选项
-type TaskSubmitOption func(*TaskSubmitOptions)
-
-// WithTaskPriority 设置优先级
-func WithTaskPriority(priority TaskPriority) TaskSubmitOption {
-	return func(opts *TaskSubmitOptions) {
-		opts.Priority = priority
-	}
-}
-
-// WithTaskDelay 设置延迟
-func WithTaskDelay(delay time.Duration) TaskSubmitOption {
-	return func(opts *TaskSubmitOptions) {
-		opts.Delay = delay
-	}
+	Monitorable
 }
 
 // ==========================================
@@ -195,3 +96,37 @@ type TaskResult[T any] interface {
 	// IsDone 检查是否已完成
 	IsDone() bool
 }
+
+// ==========================================
+// 领域事件重新导出
+// ==========================================
+
+// TaskSubmittedEvent 任务提交事件
+type TaskSubmittedEvent = event.TaskSubmittedEvent
+
+// TaskCompletedEvent 任务完成事件
+type TaskCompletedEvent = event.TaskCompletedEvent
+
+// TaskFailedEvent 任务失败事件
+type TaskFailedEvent = event.TaskFailedEvent
+
+// TaskCanceledEvent 任务取消事件
+type TaskCanceledEvent = event.TaskCanceledEvent
+
+// TaskRetryEvent 任务重试事件
+type TaskRetryEvent = event.TaskRetryEvent
+
+// QueueFullEvent 队列满事件
+type QueueFullEvent = event.QueueFullEvent
+
+// QueueDrainedEvent 队列排空事件
+type QueueDrainedEvent = event.QueueDrainedEvent
+
+// ExecutorStartedEvent 执行器启动事件
+type ExecutorStartedEvent = event.ExecutorStartedEvent
+
+// ExecutorStoppedEvent 执行器停止事件
+type ExecutorStoppedEvent = event.ExecutorStoppedEvent
+
+// ExecutorCapacityChangedEvent 执行器容量变更事件
+type ExecutorCapacityChangedEvent = event.ExecutorCapacityChangedEvent

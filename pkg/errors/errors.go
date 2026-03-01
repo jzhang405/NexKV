@@ -238,7 +238,7 @@ func mergeNexError(err error, details string) *NexError {
 
 // InvalidParamf 创建参数无效错误
 func InvalidParamf(format string, args ...any) error {
-	return fmt.Errorf("invalid parameter: "+fmt.Sprintf(format, args...))
+	return stderrors.New("invalid parameter: " + fmt.Sprintf(format, args...))
 }
 
 // InvalidCoreID 创建无效核心ID错误

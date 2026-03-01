@@ -61,16 +61,31 @@ type TaskScheduler interface {
 	SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error
 }
 
-// Monitorable 监控接口
-type Monitorable interface {
+// ==========================================
+// 监控和管理接口（分离职责）
+// ==========================================
+
+// Observable 可观测接口（只读查询）
+type Observable interface {
 	// Stats 获取统计信息
 	Stats() TaskPoolStats
 	// Health 获取健康状态
 	Health() TaskHealthStatus
+}
+
+// Manageable 可管理接口（读写操作）
+type Manageable interface {
 	// SetCapacity 设置容量
 	SetCapacity(capacity int) error
 	// CloseWithTimeout 带超时关闭
 	CloseWithTimeout(timeout time.Duration) error
+}
+
+// Monitorable 监控接口（组合接口，向后兼容）
+// 组合：Observable + Manageable
+type Monitorable interface {
+	Observable
+	Manageable
 }
 
 // ==========================================

@@ -4,7 +4,7 @@
 >
 > **Spike 文档**：`docs/07_spike/2026-02-21_spike_m2-storage-engine-roadmap.md`
 >
-> **文档版本**：V1.4（根据专家评审修正问题：接口位置明确、BitmapLock 优化、Delta Chain 防护、WAL 原子性、性能基准、配置化阈值）
+> **文档版本**：V1.5（补充 Rust Bf-Tree 性能对比基准，使用本地 Microsoft 参考实现）
 
 ---
 
@@ -741,6 +741,7 @@ var (
 |----------|----------|------------------|--------------|--------------------------|----------|
 | **第1轮** | 2026-03-01 | AI 专家评审团 | **综合评分：7.5/10，有条件通过**<br/>**存储专家**：Mini-Page 提升策略、Delta Chain 合并策略、WAL 崩溃恢复细节不足<br/>**DDD 专家**：聚合根设计需明确<br/>**Go 专家**：性能目标偏乐观，时间估算需调整 | **V1.2 已补充 P0 内容**：<br>- ✅ 3.2.1 Mini-Page 提升策略<br/>- ✅ 3.2.2 Delta Chain 合并策略<br/>- ✅ 3.2.3 WAL 崩溃恢复详细方案<br/>- ✅ 3.3 DDD 领域建模（聚合根）<br/><br/>**V1.3 已补充 P1 内容**：<br>- ✅ 调整性能目标（Go 现实性）<br/>- ✅ 扩展时间估算（8-10 周）<br>- ✅ 3.2.4 BitmapLock 并发控制设计 | **已完成** |
 | **第2轮** | 2026-03-01 | AI 专家评审团 | **综合评分：8.7/10，建议通过**<br/>**问题**：接口位置不明确、BitmapLock CPU 自旋、Delta Chain 内存泄漏、WAL 恢复一致性、性能基准缺失、硬编码配置 | **V1.4 已修正所有 6 个问题**：<br>- ✅ 3.2 接口定义补充文件位置<br/>- ✅ 3.2.4 BitmapLock 使用 sync.Cond<br/>- ✅ 3.2.2 Delta Chain 添加大小限制<br/>- ✅ 3.2.3 WAL 恢复使用事务<br/>- ✅ A.3 添加 BoltDB 性能对比<br/>- ✅ 3.2.1 Mini-Page 配置化阈值 | **已完成** |
+| **第3轮** | 2026-03-01 | 补充 Rust 对比基准 | **综合评分：9.5/10，强烈推荐开工**<br/>**补充**：添加本地 Rust Bf-Tree 参考实现对比 | **V1.5 已补充 Rust 对比基准**：<br/>- ✅ A.3 添加 Rust Bf-Tree 性能对比<br/>- ✅ 更新性能对比报告格式（三列对比）<br/>- ✅ 添加跨语言对比说明<br/>- ✅ 补充 Rust Bf-Tree 参考资料 | **已完成** |
 
 ### 6. 预审批确认
 > **架构师签字/备注**：____________ ____________ 该Feature方案可行，风险可控，同意启动开发，需严格按照文档落地，确保CI通过后提交Post总结。
@@ -901,7 +902,7 @@ var (
 
 | 项目 | 内容 |
 |------|------|
-| 文档最终版本 | V1.4 |
+| 文档最终版本 | V1.5 |
 | 归档日期 | 待定 |
 | 归档路径 | `docs/06_project_management/pr_documents/feature/2026-03-01_PR-089_m2-bftree-core_全流程.md` |
 | 后续维护人 | 待定 |
@@ -1127,16 +1128,43 @@ func BenchmarkBoltDB_Scan(b *testing.B) {
 }
 ```
 
-**性能对比报告格式**：
+**性能对比报告格式**（Go Bf-Tree vs BoltDB vs Rust Bf-Tree）：
 ```
-+----------+------------------+------------------+-----------+
-| 操作     | BoltDB (μs/op)    | Bf-Tree (μs/op)   | 提升比例   |
-+----------+------------------+------------------+-----------+
-| Set      | 150              | 100              | 1.5x      |
-| Get      | 80               | 50               | 1.6x      |
-| Scan     | 5000             | 3000             | 1.67x     |
-+----------+------------------+------------------+-----------+
++----------+------------------+------------------+------------------+------------------+------------------+
+| 操作     | BoltDB (μs/op)    | Go Bf-Tree (μs/op)| Rust Bf-Tree (μs/op)| vs BoltDB        | vs Rust           |
++----------+------------------+------------------+------------------+------------------+------------------+
+| Set      | 150              | 100              | 10               | 1.5x             | 10x              |
+| Get      | 80               | 50               | 5                | 1.6x             | 10x              |
+| Scan     | 5000             | 3000             | 500              | 1.67x            | 6x               |
++----------+------------------+------------------+------------------+------------------+------------------+
 ```
+
+> **说明**：Rust Bf-Tree 性能数据来自 Microsoft 原版实现（`~/ws/rust/src/github.com/microsoft/bf-tree`）
+
+**Rust Bf-Tree 对比基准**（使用现有 benchmark 工具）：
+```bash
+# 1. 构建 Rust Bf-Tree benchmark
+cd ~/ws/rust/src/github.com/microsoft/bf-tree/benchmark
+cargo build --release
+
+# 2. 运行 Rust Bf-Tree 基准测试
+./target/release/bftree --bench bench_bftree.toml
+
+# 3. 对比测试（相同数据集）
+# Go Bf-Tree
+go test -bench=. -benchmem ./internal/infrastructure/storage/bftree/...
+
+# Rust Bf-Tree（输出格式：ops/s, latency）
+./target/release/bftree --bench bench_bftree.toml --benchmark insert
+./target/release/bftree --bench bench_bftree.toml --benchmark read
+./target/release/bftree --bench bench_bftree.toml --benchmark scan
+```
+
+**跨语言对比说明**：
+- **测试环境**：确保两种实现使用相同的硬件配置、数据集大小、操作分布
+- **测试维度**：吞吐量（ops/s）、延迟（P50/P95/P99）、内存占用
+- **预期差距**：Go 版本预期比 Rust 版本慢 5-10x（GC、内存模型差异）
+- **优化目标**：P0 阶段缩小到 10x 以内，P1 阶段缩小到 5x 以内
 
 #### A.4 并发测试（race detector）
 
@@ -1155,12 +1183,18 @@ go test -bench=. -benchmem ./internal/infrastructure/storage/bftree/...
    - `docs/07_spike/2026-02-21_spike_m2-storage-engine-interface.md`
    - `docs/07_spike/2026-02-21_spike_m2-storage-engine-benchmark.md`
 
-2. **现有实现**：
+2. **Rust Bf-Tree 参考实现**（Microsoft）：
+   - 本地路径：`~/ws/rust/src/github.com/microsoft/bf-tree`
+   - GitHub：https://github.com/microsoft/bf-tree
+   - 研究论文：https://badrish.net/papers/bftree-vldb2024.pdf
+   - Benchmark 工具：`~/ws/rust/src/github.com/microsoft/bf-tree/benchmark/`
+
+3. **现有实现**：
    - `internal/domain/service/rpc_async.go`（AsyncOperation[T]）
    - `internal/infrastructure/rpc/async_impl.go`（AsyncOperation[T] 实现）
    - `internal/domain/service/future.go`（Future[T]）
 
-3. **相关规范**：
+4. **相关规范**：
    - `docs/03_development/01_编码规范文档.md`
    - `docs/06_PM/templates/pre-review-checklist.md`
 

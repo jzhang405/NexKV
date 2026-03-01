@@ -10,7 +10,7 @@
 
 | 指标 | 优化前 | 优化后 | 变化 |
 |------|--------|--------|------|
-| 接口数量 | 9 个复杂接口 | 3 个核心接口 | **-67%** |
+| 接口数量 | 9 个复杂接口 | 4 个核心接口 | **-56%** |
 | 代码行数 | 18,935 行 | 10,280 行 | **-46%** |
 | Deadcode | 665 个 | 392 个 | **-41%** |
 | 测试文件 | 45 个 | 45 个 | 保持 |
@@ -50,7 +50,7 @@ type FullTaskExecutor interface {
 - 类型不安全（`any` 到处使用）
 - 方法命名混乱（`Submit*` 系列过多）
 
-### 1.2 优化后（3 个核心接口）
+### 1.2 优化后（4 个核心接口）
 
 ```go
 // 小接口原则（Go 最佳实践）
@@ -60,14 +60,25 @@ type TaskExecutor interface {
 }
 
 type PriorityExecutor interface {
-    TaskExecutor
-    SubmitWithPriority(ctx context.Context, priority TaskPriority, task func(context.Context)) error
+    TaskExecutor  // TaskExecutor 已包含 priority 参数
+}
+
+type TaskScheduler interface {
+    SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error
 }
 
 type Monitorable interface {
     Stats() TaskPoolStats
     Health() TaskHealthStatus
     SetCapacity(capacity int) error
+    CloseWithTimeout(timeout time.Duration) error
+}
+
+// 组合接口
+type AsyncTaskExecutor interface {
+    TaskExecutor
+    TaskScheduler
+    Monitorable
 }
 ```
 
@@ -349,7 +360,7 @@ type FullService struct {
 
 ### 9.1 关键成就
 
-1. **接口简化**：从 9 个复杂接口 → 3 个核心接口
+1. **接口简化**：从 9 个复杂接口 → 4 个核心接口
 2. **类型安全**：引入泛型 `Future[T]` 模式
 3. **代码减少**：删除 8,655 行代码（-46%）
 4. **Deadcode 清理**：从 665 → 392（-41%）
@@ -360,7 +371,7 @@ type FullService struct {
 
 | 原则 | 应用 | 效果 |
 |------|------|------|
-| **KISS** | 3 个接口 vs 9 个 | 复杂度 -67% |
+| **KISS** | 4 个接口 vs 9 个 | 复杂度 -56% |
 | **DRY** | 泛型辅助函数 | 代码重复 -80% |
 | **ISP** | 小接口组合 | 灵活性 +100% |
 | **YAGNI** | 删除未使用功能 | 代码 -46% |
@@ -396,7 +407,7 @@ type FullService struct {
 
 ```
 2025-03-01  初始版本
-  - 接口简化：9 → 3
+  - 接口简化：9 → 4（保留 TaskScheduler）
   - 删除 deadcode：665 → 392
   - 命名统一：taskpool → executor
   - 添加泛型 Future[T] 支持

@@ -57,8 +57,8 @@ type PriorityExecutor interface {
 
 // TaskScheduler 任务调度器（延迟任务）
 type TaskScheduler interface {
-	// SubmitDelayed 延迟提交任务
-	SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error
+	// SubmitDelayed 延迟提交任务（支持优先级）
+	SubmitDelayed(ctx context.Context, delay time.Duration, priority TaskPriority, task func(context.Context)) error
 }
 
 // ==========================================

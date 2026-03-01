@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
 // ==========================================
@@ -307,7 +309,7 @@ func TestAntsTaskExecutorProvider_SubmitDelayed_Many(t *testing.T) {
 	var executed atomic.Int32
 
 	for i := 0; i < numTasks; i++ {
-		err := provider.SubmitDelayed(context.Background(), 10*time.Millisecond, func(ctx context.Context) {
+		err := provider.SubmitDelayed(context.Background(), 10*time.Millisecond, service.PriorityNormal, func(ctx context.Context) {
 			executed.Add(1)
 		})
 		if err != nil {
@@ -344,7 +346,7 @@ func TestAntsTaskExecutorProvider_SubmitDelayed_TooMany(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := provider.SubmitDelayed(context.Background(), 1*time.Second, func(ctx context.Context) {})
+			err := provider.SubmitDelayed(context.Background(), 1*time.Second, service.PriorityNormal, func(ctx context.Context) {})
 			if err == ErrTooManyDelayedTasks {
 				errors.Add(1)
 			}
@@ -368,7 +370,7 @@ func TestAntsTaskExecutorProvider_SubmitDelayed_Close(t *testing.T) {
 
 	// 提交延迟任务
 	for i := 0; i < 10; i++ {
-		_ = provider.SubmitDelayed(context.Background(), 1*time.Second, func(ctx context.Context) {
+		_ = provider.SubmitDelayed(context.Background(), 1*time.Second, service.PriorityNormal, func(ctx context.Context) {
 			executed.Add(1)
 		})
 	}

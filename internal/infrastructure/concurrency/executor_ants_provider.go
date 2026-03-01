@@ -192,10 +192,11 @@ func (p *AntsTaskExecutorProvider) handleTaskError(err error, taskType string) {
 // ======================================
 
 // scheduleDelayedTask 调度延迟任务（统一处理，避免泄漏）
-// P1-01: 添加速率限制
+// P1-01: 添加速率限制，支持优先级
 func (p *AntsTaskExecutorProvider) scheduleDelayedTask(
 	ctx context.Context,
 	delay time.Duration,
+	priority service.TaskPriority,
 	execute func(),
 ) error {
 	// P1-01: 速率限制 - 尝试获取信号量
@@ -294,10 +295,11 @@ func (p *AntsTaskExecutorProvider) SubmitWithPriority(
 	})
 }
 
-// SubmitDelayed 实现接口
+// SubmitDelayed 实现接口（支持优先级）
 func (p *AntsTaskExecutorProvider) SubmitDelayed(
 	ctx context.Context,
 	delay time.Duration,
+	priority service.TaskPriority,
 	task func(context.Context),
 ) error {
 	if p.isClosed() {
@@ -305,7 +307,7 @@ func (p *AntsTaskExecutorProvider) SubmitDelayed(
 	}
 
 	// P0-02: 使用统一的延迟任务调度，P1-01: 处理速率限制错误
-	return p.scheduleDelayedTask(ctx, delay, func() {
+	return p.scheduleDelayedTask(ctx, delay, priority, func() {
 		// P1-03: 处理内部提交错误
 		if err := p.pool.Submit(func() {
 			p.safeExecute(func() {

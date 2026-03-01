@@ -20,7 +20,7 @@ type Libp2pRPC struct {
 	config      *service.RPCConfig
 	idGenerator *id.RequestIDGenerator
 	middleware  service.MiddlewareChain
-	provider    service.TaskExecutor // 任务池提供者
+	provider    atomic.Value // 类型: service.TaskExecutor
 
 	// 请求-响应匹配
 	pendingCalls   map[string]*pendingCall
@@ -56,18 +56,19 @@ func NewLibp2pRPC(transport service.Transport, provider service.TaskExecutor, co
 	codec := NewMessagePackCodec()
 	streamCodec := NewMessagePackStreamCodec()
 
-	return &Libp2pRPC{
+	rpc := &Libp2pRPC{
 		transport:    transport,
 		codec:        codec,
 		streamCodec:  streamCodec,
 		config:       config,
 		idGenerator:  id.NewRequestIDGenerator(string(self)),
 		middleware:   NewMiddlewareChain(),
-		provider:     provider,
 		pendingCalls: make(map[string]*pendingCall),
 		requestChan:  make(chan service.RequestMsg, config.RequestBufferSize),
 		closeCh:      make(chan struct{}),
 	}
+	rpc.provider.Store(provider)
+	return rpc
 }
 
 // ============================================================================
@@ -123,7 +124,7 @@ func (r *Libp2pRPC) CallAsync(ctx context.Context, to model.PeerID, req model.Me
 		return service.ErrCanceled
 	}
 
-	_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+	_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 		resp, err := r.Call(ctx, to, req)
 		if cb != nil {
 			cb(resp, err)
@@ -249,7 +250,7 @@ func (r *Libp2pRPC) BroadcastAsync(
 		}
 	}
 
-	_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+	_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 		execFunc()
 	})
 
@@ -295,7 +296,7 @@ func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []m
 
 		wg.Add(1)
 		idx := i // 捕获循环变量
-		_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+		_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 			defer wg.Done()
 			peerID := targets[idx]
 
@@ -388,7 +389,7 @@ func (r *Libp2pRPC) WriteVCall(
 		sem <- struct{}{} // 获取信号量
 		wg.Add(1)
 		idx := i // 捕获循环变量
-		_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+		_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 			defer func() { <-sem }() // 释放信号量
 			defer wg.Done()
 
@@ -459,7 +460,7 @@ func (r *Libp2pRPC) Close() error {
 
 // SetExecutor 设置任务执行器（实现 service.RPCSync 接口）
 func (r *Libp2pRPC) SetExecutor(provider service.TaskExecutor) {
-	r.provider = provider
+	r.provider.Store(provider)
 }
 
 // ============================================================================
@@ -521,7 +522,7 @@ func (r *Libp2pRPC) doSendRequestAndWaitResponse(ctx context.Context, to model.P
 		r.handleResponse(req.ID(), service.ResponseMsg{Msg: resp, Err: nil})
 	}
 
-	_ = r.provider.Submit(ctx, service.PriorityNormal, readFunc)
+	_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, readFunc)
 
 	return nil
 }
@@ -632,7 +633,7 @@ func (r *Libp2pRPC) broadcastFireAndForget(
 	for _, peer := range to {
 		wg.Add(1)
 		p := peer // 捕获循环变量
-		_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+		_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 			defer wg.Done()
 
 			err := r.sendRequestNoResponse(ctx, p, req)
@@ -705,7 +706,7 @@ func (r *Libp2pRPC) broadcastAndWait(
 		wg.Add(1)
 		idx := i // 捕获循环变量
 		p := peer
-		_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+		_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 			defer func() { <-sem }()
 			defer wg.Done()
 
@@ -755,7 +756,7 @@ func (r *Libp2pRPC) HandleIncomingStream(stream service.Stream) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_ = r.provider.Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+	_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
 		select {
 		case <-r.closeCh:
 			cancel()

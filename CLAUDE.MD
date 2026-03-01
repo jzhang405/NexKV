@@ -293,6 +293,40 @@ make lint && make build && make test && make fmt && make clean && echo "✅ 所�
 
 ---
 
+## 专家技能知识库
+
+### .claude/skills/ 目录说明
+
+`.claude/skills/` 目录包含自定义专家知识库文件，这些文件作为**知识库参考**使用，提供专业的领域知识指导。
+
+**使用方式**：
+- 这些文件不是通过 `Skill` 工具调用的标准技能
+- AI 会根据需要读取这些文件的内容来获得专业知识
+- 然后应用这些知识来评审文档、设计方案、指导开发
+
+**当前可用专家技能**：
+
+| 技能文件 | 专业领域 | 主要内容 |
+|---------|---------|----------|
+| `storage-engine-expert.md` | 存储引擎专家 | Bf-Tree、LSM-Tree、B+树、WAL、快照、持久化、索引设计、数据压缩 |
+| `ddd-architect.md` | DDD 架构专家 | 领域驱动设计、聚合根、实体、值对象、分层架构、边界上下文 |
+| `golang-expert.md` | Go 语言专家 | 并发编程、错误处理、性能优化、泛型、内存管理 |
+| `distributed-kv-expert.md` | 分布式 KV 专家 | 分片、复制、共识、一致性、故障恢复 |
+| `distributed-system-expert.md` | 分布式系统专家 | DDIA 理论、分布式模式、CAP、PACELC |
+| `distributed-test-profile-expert.md` | 分布式测试专家 | pprof、Perf、火焰图、性能测试、日志监控 |
+| `network-rpc-expert.md` | 网络 RPC 专家 | libp2p、gRPC、HTTP、序列化、传输优化 |
+| `security-expert.md` | 安全专家（高级） | DevSecOps、威胁建模、合规、安全架构 |
+| `security-mid-expert.md` | 安全专家（中级） | 加密、认证、授权、漏洞防护 |
+
+**典型应用场景**：
+- PRE 文档专家评审
+- 技术方案设计评审
+- 代码质量评审
+- 性能问题分析
+- 架构设计指导
+
+---
+
 ## 许可证
 
 本项目基于 **AGPL-3.0** 许可证开源。

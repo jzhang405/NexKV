@@ -4,7 +4,7 @@
 >
 > **Spike 文档**：`docs/07_spike/2026-02-21_spike_m2-storage-engine-roadmap.md`
 >
-> **文档版本**：V1.3（根据专家评审建议优化：调整性能目标、扩展时间估算至 8-10 周、补充 BitmapLock 并发控制设计）
+> **文档版本**：V1.4（根据专家评审修正问题：接口位置明确、BitmapLock 优化、Delta Chain 防护、WAL 原子性、性能基准、配置化阈值）
 
 ---
 
@@ -131,9 +131,16 @@ flowchart TD
 
 #### 3.2 关键设计点
 
-**1. 接口定义**（遵循 SOLID 原则）：
+**1. 接口定义**（遵循 DDD 分层原则）：
+
+**文件位置**（Week 4.4 创建）：
+- **领域层接口**：`internal/domain/service/storage.go`
+- **基础设施层实现**：`internal/infrastructure/storage/bftree/bftree.go`
 
 ```go
+// 文件：internal/domain/service/storage.go
+package service
+
 // KVStore 接口（同步 + 异步）
 type KVStore interface {
     // 同步 CRUD
@@ -253,8 +260,31 @@ type DeltaEntry struct {
 | **Size Promotion** | 数据大小 >= 阈值 | 超过当前级别 80% |
 | **Delta Promotion** | Delta Chain 长度 >= 阈值 | 强制合并并提升 |
 
-**实现策略**：
+**实现策略**（配置化提升阈值）：
 ```go
+// PromotionConfig 提升策略配置
+type PromotionConfig struct {
+    ReadThresholds   map[PageLevel]uint32  // 各级别读取阈值
+    SizeThresholdPct uint8                 // 大小阈值百分比（默认 80%）
+    MaxDeltaChainLen uint16                // Delta Chain 长度阈值（默认 8）
+}
+
+// NewDefaultPromotionConfig 创建默认配置
+func NewDefaultPromotionConfig() *PromotionConfig {
+    return &PromotionConfig{
+        ReadThresholds: map[PageLevel]uint32{
+            L1: 1,   // 1%
+            L2: 5,   // 5%
+            L3: 10,  // 10%
+            L4: 15,
+            L5: 20,
+            L6: 25,
+        },
+        SizeThresholdPct: 80,  // 80%
+        MaxDeltaChainLen: 8,  // 8 条
+    }
+}
+
 // MiniPage 提升决策
 type MiniPage struct {
     level        PageLevel
@@ -262,6 +292,7 @@ type MiniPage struct {
     readCount    uint32
     scanCount    uint32
     deltaCount  uint16
+    config      *PromotionConfig  // 提升策略配置
 }
 
 // shouldPromote 判断是否需要提升
@@ -271,31 +302,37 @@ func (mp *MiniPage) shouldPromote() bool {
         return true  // 100% 提升
     }
 
-    // Read Promotion
-    if mp.readCount >= calculateReadThreshold(mp.level) {
+    // Read Promotion（使用配置的阈值）
+    if threshold, ok := mp.config.ReadThresholds[mp.level]; ok {
+        if mp.readCount >= threshold {
+            return true
+        }
+    }
+
+    // Size Promotion（使用配置的百分比）
+    maxSize := maxSizeForLevel(mp.level)
+    if mp.dataSize >= uint16(float64(maxSize)*float64(mp.config.SizeThresholdPct)/100) {
         return true
     }
 
-    // Size Promotion
-    if mp.dataSize >= maxSizeForLevel(mp.level) * 8 / 10 {
-        return true
-    }
-
-    // Delta Promotion
-    if mp.deltaCount >= maxDeltaChainLength {
+    // Delta Promotion（使用配置的长度阈值）
+    if mp.deltaCount >= mp.config.MaxDeltaChainLen {
         return true
     }
 
     return false
 }
 
-// calculateReadThreshold 计算读取阈值
-func calculateReadThreshold(level PageLevel) uint32 {
+// maxSizeForLevel 获取各级别最大大小
+func maxSizeForLevel(level PageLevel) uint16 {
     switch level {
-    case L1: return 1    // 1%
-    case L2: return 5    // 5%
-    case L3: return 10   // 10%
-    default: return 20
+    case L1: return 64
+    case L2: return 128
+    case L3: return 256
+    case L4: return 512
+    case L5: return 1024
+    case L6: return 2048
+    default: return 4096  // Full-Page
     }
 }
 ```
@@ -311,13 +348,38 @@ func calculateReadThreshold(level PageLevel) uint32 {
 | **内存压力** | GC 触发 | 系统内存不足时主动合并 |
 | **手动触发** | Compact() 调用 | 用户主动合并 |
 
-**并发冲突处理**：
+**并发冲突处理**（添加内存泄漏防护）：
 ```go
-// Delta Chain 并发安全合并
+// Delta Chain 并发安全合并（添加大小限制）
 type DeltaChain struct {
-    mu     sync.RWMutex
-    deltas []*DeltaEntry
-    size   int64
+    mu      sync.RWMutex
+    deltas  []*DeltaEntry
+    size    int64
+    maxSize int64  // 硬性大小限制（默认 1MB）
+    maxLen  int    // 硬性长度限制（默认 16）
+}
+
+// NewDeltaChain 创建 DeltaChain
+func NewDeltaChain(maxSize int64, maxLen int) *DeltaChain {
+    return &DeltaChain{
+        maxSize: maxSize,
+        maxLen:  maxLen,
+    }
+}
+
+// Append 追加 Delta 条目（检查限制）
+func (dc *DeltaChain) Append(entry *DeltaEntry) error {
+    dc.mu.Lock()
+    defer dc.mu.Unlock()
+
+    // 检查硬性限制，防止内存泄漏
+    if dc.size >= dc.maxSize || len(dc.deltas) >= dc.maxLen {
+        return ErrDeltaChainFull  // 或触发同步合并
+    }
+
+    dc.deltas = append(dc.deltas, entry)
+    dc.size += int64(len(entry.key) + len(entry.value))
+    return nil
 }
 
 // Merge 合并 Delta Chain 到主树（原子性）
@@ -362,9 +424,9 @@ func (dc *DeltaChain) snapshot() []*DeltaEntry {
 | **合并过程中崩溃** | 检测合并标记，重新合并 | 双写合并标记 |
 | **分裂过程中崩溃** | 检测分裂状态，完成或回滚 | 原子性分裂协议 |
 
-**恢复流程**：
+**恢复流程**（使用事务保证原子性）：
 ```go
-// RecoverFromWAL 从 WAL 恢复
+// RecoverFromWAL 从 WAL 恢复（原子性保证）
 func (tree *BfTree) RecoverFromWAL(wal WAL) error {
     // 1. 读取 WAL 条目
     entries, err := wal.ReadAll()
@@ -374,16 +436,28 @@ func (tree *BfTree) RecoverFromWAL(wal WAL) error {
 
     // 2. 过滤未完成的事务
     committed := filterCommitted(entries)
+    if len(committed) == 0 {
+        return nil  // 无需恢复
+    }
 
-    // 3. 重放已提交的事务
+    // 3. 使用事务保证原子性（全部成功或全部失败）
+    tx := tree.NewTx()
+    defer tx.Rollback()  // 确保事务被清理
+
+    // 4. 重放已提交的事务
     for _, entry := range committed {
         if err := tree.applyEntry(entry); err != nil {
-            // 记录错误但继续恢复
-            log.Printf("WARN: failed to apply WAL entry %d: %v", entry.Index(), err)
+            // 单条失败，回滚整个恢复
+            return fmt.Errorf("apply WAL entry %d failed, recovery aborted: %w", entry.Index(), err)
         }
     }
 
-    // 4. 清理 WAL
+    // 5. 全部成功才提交事务
+    if err := tx.Commit(); err != nil {
+        return fmt.Errorf("commit recovery transaction: %w", err)
+    }
+
+    // 6. 清理 WAL
     if err := wal.Truncate(entries[len(entries)-1].Index()); err != nil {
         return fmt.Errorf("truncate WAL: %w", err)
     }
@@ -408,15 +482,31 @@ func filterCommitted(entries []WALEntry) []WALEntry {
 
 **设计目标**：从 P0 的 `sync.RWMutex`（全局锁）升级到细粒度锁（BitmapLock），减少锁竞争，提升并发性能。
 
-**BitmapLock 核心设计**：
+**BitmapLock 核心设计**（优化版 - 使用 sync.Cond 避免 CPU 自旋）：
 ```go
 // BitmapLock 细粒度锁实现
 type BitmapLock struct {
     // 每个 bit 代表一个页面或槽位的锁状态
-    bitmap    []uint64  // 位图数组（64 * N bits）
-    mutex     []sync.Mutex  // 每个 bit 对应一个 mutex（分片锁）
-    shards    int       // 分片数（默认 16，可配置）
-    mask      uint64    // 位掩码
+    bitmap    []uint64       // 位图数组（64 * N bits）
+    mutex     []sync.Mutex   // 每个 bit 对应一个 mutex（分片锁）
+    cond      []sync.Cond    // 条件变量（避免 CPU 自旋）
+    shards    int            // 分片数（默认 16，可配置）
+    mask      uint64         // 位掩码
+}
+
+// NewBitmapLock 创建 BitmapLock
+func NewBitmapLock(shards int) *BitmapLock {
+    bl := &BitmapLock{
+        bitmap: make([]uint64, shards),
+        mutex:  make([]sync.Mutex, shards),
+        cond:   make([]sync.Cond, shards),
+        shards: shards,
+    }
+    // 初始化条件变量（每个 cond 需要关联对应的 mutex）
+    for i := range bl.cond {
+        bl.cond[i] = *sync.NewCond(&bl.mutex[i])
+    }
+    return bl
 }
 
 // Lock 锁定指定页面（通过 pageID）
@@ -424,19 +514,14 @@ func (bl *BitmapLock) Lock(pageID uint64) {
     shard := bl.calculateShard(pageID)
     bit := bl.calculateBit(pageID)
 
-    // 使用分片锁减少竞争
     bl.mutex[shard].Lock()
     defer bl.mutex[shard].Unlock()
 
-    // 设置 bit
-    for {
-        if bl.bitmap[shard] & (1 << bit) == 0 {
-            bl.bitmap[shard] |= (1 << bit)
-            return
-        }
-        // 等待锁释放（spin wait 或 cond.Wait）
-        runtime.Gosched()
+    // 使用 sync.Cond 阻塞等待，不消耗 CPU
+    for bl.bitmap[shard]&(1<<bit) != 0 {
+        bl.cond[shard].Wait()
     }
+    bl.bitmap[shard] |= (1 << bit)
 }
 
 // Unlock 释放指定页面
@@ -445,9 +530,11 @@ func (bl *BitmapLock) Unlock(pageID uint64) {
     bit := bl.calculateBit(pageID)
 
     bl.mutex[shard].Lock()
-    defer bl.mutex[shard].Unlock()
-
     bl.bitmap[shard] &^= (1 << bit)
+    bl.mutex[shard].Unlock()
+
+    // 唤醒等待者
+    bl.cond[shard].Broadcast()
 }
 
 // TryLock 尝试锁定（非阻塞）
@@ -653,7 +740,7 @@ var (
 | 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施（含AI辅助修改） | 优化结果 |
 |----------|----------|------------------|--------------|--------------------------|----------|
 | **第1轮** | 2026-03-01 | AI 专家评审团 | **综合评分：7.5/10，有条件通过**<br/>**存储专家**：Mini-Page 提升策略、Delta Chain 合并策略、WAL 崩溃恢复细节不足<br/>**DDD 专家**：聚合根设计需明确<br/>**Go 专家**：性能目标偏乐观，时间估算需调整 | **V1.2 已补充 P0 内容**：<br>- ✅ 3.2.1 Mini-Page 提升策略<br/>- ✅ 3.2.2 Delta Chain 合并策略<br/>- ✅ 3.2.3 WAL 崩溃恢复详细方案<br/>- ✅ 3.3 DDD 领域建模（聚合根）<br/><br/>**V1.3 已补充 P1 内容**：<br>- ✅ 调整性能目标（Go 现实性）<br/>- ✅ 扩展时间估算（8-10 周）<br>- ✅ 3.2.4 BitmapLock 并发控制设计 | **已完成** |
-| 第2轮 | 待定 | 待定 | 待评审 | - | 待评审 |
+| **第2轮** | 2026-03-01 | AI 专家评审团 | **综合评分：8.7/10，建议通过**<br/>**问题**：接口位置不明确、BitmapLock CPU 自旋、Delta Chain 内存泄漏、WAL 恢复一致性、性能基准缺失、硬编码配置 | **V1.4 已修正所有 6 个问题**：<br>- ✅ 3.2 接口定义补充文件位置<br/>- ✅ 3.2.4 BitmapLock 使用 sync.Cond<br/>- ✅ 3.2.2 Delta Chain 添加大小限制<br/>- ✅ 3.2.3 WAL 恢复使用事务<br/>- ✅ A.3 添加 BoltDB 性能对比<br/>- ✅ 3.2.1 Mini-Page 配置化阈值 | **已完成** |
 
 ### 6. 预审批确认
 > **架构师签字/备注**：____________ ____________ 该Feature方案可行，风险可控，同意启动开发，需严格按照文档落地，确保CI通过后提交Post总结。
@@ -814,7 +901,7 @@ var (
 
 | 项目 | 内容 |
 |------|------|
-| 文档最终版本 | V1.0 |
+| 文档最终版本 | V1.4 |
 | 归档日期 | 待定 |
 | 归档路径 | `docs/06_project_management/pr_documents/feature/2026-03-01_PR-089_m2-bftree-core_全流程.md` |
 | 后续维护人 | 待定 |
@@ -925,6 +1012,7 @@ func TestBfTree_ConcurrentWriteSameKey(t *testing.T) {
 
 #### A.3 性能测试（基准测试）
 
+**Bf-Tree 性能基准**：
 ```go
 func BenchmarkBfTree_Set(b *testing.B) {
     tree := setupBenchmarkTree(b)
@@ -967,6 +1055,87 @@ func BenchmarkBfTree_Scan(b *testing.B) {
         iter.Close()
     }
 }
+```
+
+**BoltDB 对比基准**（用于验证性能提升）：
+```go
+// BoltDB 写入基准
+func BenchmarkBoltDB_Set(b *testing.B) {
+    db := setupBoltDB(b)
+    defer db.Close()
+
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        key := fmt.Sprintf("key-%d", i%10000)
+        value := []byte("value")
+        db.Update(func(tx *bolt.Tx) error {
+            bucket := tx.Bucket([]byte("test"))
+            return bucket.Put([]byte(key), value)
+        })
+    }
+}
+
+// BoltDB 读取基准
+func BenchmarkBoltDB_Get(b *testing.B) {
+    db := setupBoltDB(b)
+    defer db.Close()
+
+    // 预填充数据
+    db.Update(func(tx *bolt.Tx) error {
+        bucket, _ := tx.CreateBucketIfNotExists([]byte("test"))
+        for i := 0; i < 10000; i++ {
+            bucket.Put([]byte(fmt.Sprintf("key-%d", i)), []byte("value"))
+        }
+        return nil
+    })
+
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        db.View(func(tx *bolt.Tx) error {
+            bucket := tx.Bucket([]byte("test"))
+            _ = bucket.Get([]byte(fmt.Sprintf("key-%d", i%10000)))
+            return nil
+        })
+    }
+}
+
+// BoltDB 范围扫描基准
+func BenchmarkBoltDB_Scan(b *testing.B) {
+    db := setupBoltDB(b)
+    defer db.Close()
+
+    // 预填充数据
+    db.Update(func(tx *bolt.Tx) error {
+        bucket, _ := tx.CreateBucketIfNotExists([]byte("test"))
+        for i := 0; i < 10000; i++ {
+            bucket.Put([]byte(fmt.Sprintf("key-%d", i)), []byte("value"))
+        }
+        return nil
+    })
+
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        db.View(func(tx *bolt.Tx) error {
+            bucket := tx.Bucket([]byte("test"))
+            cursor := bucket.Cursor()
+            for k, v := cursor.Seek([]byte("key-0")); k != nil && string(k) <= "key-5000"; k, v = cursor.Next() {
+                _, _ = k, v
+            }
+            return nil
+        })
+    }
+}
+```
+
+**性能对比报告格式**：
+```
++----------+------------------+------------------+-----------+
+| 操作     | BoltDB (μs/op)    | Bf-Tree (μs/op)   | 提升比例   |
++----------+------------------+------------------+-----------+
+| Set      | 150              | 100              | 1.5x      |
+| Get      | 80               | 50               | 1.6x      |
+| Scan     | 5000             | 3000             | 1.67x     |
++----------+------------------+------------------+-----------+
 ```
 
 #### A.4 并发测试（race detector）

@@ -4,6 +4,7 @@ package concurrency
 import (
 	"context"
 	"log"
+	"math/bits"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -176,8 +177,10 @@ type taskItem struct {
 
 // taskQueue 多级优先级队列（O(1) Push/Pop）
 // 使用 10 个独立队列替代堆结构，大幅提升性能
+// 使用 bitmap 优化优先级查找，避免循环扫描
 type taskQueue struct {
 	queues            [10][]taskItem // 10 个优先级队列（0 最高，9 最低）
+	bitmap            uint16         // 位图：位 0-9 表示对应优先级队列是否有任务
 	starvationCheck   int64          // 上次饥饿检查时间（纳秒）
 	starvationTimeout time.Duration  // 饥饿防护超时时间（0 = 禁用）
 	checkInterval     int64          // 饥饿检查间隔（默认 10ms）
@@ -224,11 +227,17 @@ func (q *taskQueue) Push(item taskItem) {
 
 	// 优化：使用写锁保护队列操作
 	q.mu.Lock()
+	wasEmpty := len(q.queues[p]) == 0
 	q.queues[p] = append(q.queues[p], item)
+	// 更新 bitmap：如果队列之前为空，设置对应位
+	if wasEmpty {
+		q.bitmap |= (1 << p)
+	}
 	q.mu.Unlock()
 }
 
 // Pop 从最高优先级非空队列取出任务（O(1)）
+// 使用 bitmap 快速查找，避免循环扫描
 func (q *taskQueue) Pop() taskItem {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -246,18 +255,32 @@ func (q *taskQueue) Pop() taskItem {
 		}
 	}
 
-	// 从高到低查找非空队列
-	for p := 0; p < 10; p++ {
-		if len(q.queues[p]) > 0 {
-			// 取出第一个任务（FIFO）
-			item := q.queues[p][0]
-			q.queues[p] = q.queues[p][1:]
-			return item
-		}
+	// 使用 bitmap 快速找到第一个非空队列（O(1)）
+	// bits.TrailingZeros16 返回从最低位开始的连续零数
+	// 即 bitmap 中第一个为 1 的位的位置
+	bitmap := q.bitmap
+	if bitmap == 0 {
+		// 所有队列都为空
+		return taskItem{}
 	}
 
-	// 队列为空
-	return taskItem{}
+	// 找到第一个非空队列（优先级最高的）
+	p := bits.TrailingZeros16(bitmap)
+	if p >= 10 {
+		// 不应该发生，但防御性编程
+		return taskItem{}
+	}
+
+	// 取出第一个任务（FIFO）
+	item := q.queues[p][0]
+	q.queues[p] = q.queues[p][1:]
+
+	// 如果队列变为空，清除 bitmap 对应位
+	if len(q.queues[p]) == 0 {
+		q.bitmap &^= (1 << p)
+	}
+
+	return item
 }
 
 // promoteStarvedTasks 提升超时的低优先级任务到最高优先级队列
@@ -278,13 +301,22 @@ func (q *taskQueue) promoteStarvedTasks(now int64) {
 				// 从当前队列移除
 				copy(q.queues[p][i:], q.queues[p][i+1:])
 				q.queues[p] = q.queues[p][:len(q.queues[p])-1]
+				n--
+
+				// 如果队列 p 变为空，清除 bitmap 对应位
+				if len(q.queues[p]) == 0 {
+					q.bitmap &^= (1 << p)
+				}
 
 				// 提升到优先级 0（修改优先级字段）
 				item.priority = model.TaskPriority(0)
+				wasEmpty := len(q.queues[0]) == 0
 				q.queues[0] = append(q.queues[0], item)
 
-				// n 减 1，i 不变（检查移动到当前位置的下一个元素）
-				n--
+				// 更新优先级 0 的 bitmap
+				if wasEmpty {
+					q.bitmap |= 1 // 设置位 0
+				}
 			} else {
 				i++
 			}

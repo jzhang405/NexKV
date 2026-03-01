@@ -4,25 +4,8 @@
 name: Integration Tests
 
 on:
-  push:
-    branches: [main, develop]
-    paths:
-      - 'pkg/test/**'
-      - 'test/integration/**'
-      - 'internal/transport/**'
-      - 'internal/rpc/**'
-      - 'go.mod'
-      - 'go.sum'
-  pull_request:
-    branches: [main, develop]
-    paths:
-      - 'pkg/test/**'
-      - 'test/integration/**'
-      - 'internal/transport/**'
-      - 'internal/rpc/**'
-      - 'go.mod'
-      - 'go.sum'
-  workflow_dispatch: # 允许手动触发
+  # 仅允许手动触发，不在 CI 中自动运行集成测试
+  workflow_dispatch: # 手动触发集成测试
 
 jobs:
   integration-test:

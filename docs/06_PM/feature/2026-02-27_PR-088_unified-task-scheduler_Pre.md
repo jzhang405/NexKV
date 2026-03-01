@@ -755,16 +755,23 @@ type SchedulerApplicationService struct {
 
 #### 1.1 功能成果
 - **已完成**：
-  - ✅ TaskMode 值对象（5 种调度模式 + 降级 + 平台检测）
-  - ✅ SourceID 值对象（模式匹配 + 推荐模式 + 优先级判断）
-  - ✅ TaskCoordinator 协调器（执行器注册 + 路由 + 统计）
-  - ✅ PerCoreExecutor（优先级队列 + Panic 恢复 + NumCores 限制，**内部请求无限流**）
-  - ✅ Ants 包装器（Default/Pool/Func/Multi 四种模式）
-  - ✅ TaskSelector（路由规则 + 降级 + 便捷方法）
+  - ✅ TaskMode 值对象（简化为 2 种：PerCore + DefaultPool）
+  - ✅ SourceID 值对象（模式匹配 + 推荐模式 + transpose→transaction）
+  - ✅ **TaskScheduler 统一调度器**（合并 TaskSelector + TaskCoordinator）
+  - ✅ PerCoreExecutor（优先级队列 + Panic 恢复 + CPU 绑核，**主要执行器**）
+  - ✅ AntsDefaultExecutor（降级备用，简单可靠）
+  - ✅ 三级降级策略（PerCore → AntsDefault → Native Goroutine）
   - ✅ 集成测试 + 性能基准
+
+- **架构简化成果**：
+  - 从 5 种 TaskMode → 2 种（PerCore + DefaultPool）
+  - 合并 TaskSelector + TaskCoordinator → TaskScheduler
+  - 代码减少 1214 行
+  - 删除未实现的 CustomPool/FuncPool/MultiPool
 
 - **与Pre文档差异**：
   - Phase 3（可暂停调度器）延期：依赖 WAL 模块
+  - 架构简化：专注于 PerCore + AntsDefault 双执行器模式
 
 #### 1.2 性能/数据成果
 - **测试成果**：所有测试通过（21s 运行时间）
@@ -781,6 +788,21 @@ type SchedulerApplicationService struct {
   | 计算密集型 | **2.1M ops/s** | - | ✅ **10x Phase 1** |
   | 内存密集型 | **1.8M ops/s** | - | ✅ **3.6x Phase 1** |
   | 混合工作负载 | **2.0M ops/s** | - | ✅ **4x Phase 1** |
+
+- **PerCore vs AntsDefault 性能对比**（Transport/RPC 场景）：
+  | 场景 | PerCore | AntsDefault | 性能提升 |
+  |------|---------|-------------|----------|
+  | Transport 吞吐量 | **105.5 ns/op** | 455.6 ns/op | **4.3x** ⚡ |
+  | RPC 服务器 | **337.0 ns/op** | 379.7 ns/op | 1.1x |
+  | RPC 客户端 | **133.2 ns/op** | 731.0 ns/op | **5.5x** ⚡ |
+  | 任务提交延迟 | 423.0 ns/op | 444.9 ns/op | 1.05x |
+  | 混合工作负载 | 334.8 ns/op | 522.7 ns/op | **1.6x** |
+  | 优先级调度 | 364.4 ns/op | 411.0 ns/op | 1.1x |
+
+  **关键发现**：
+  - PerCore 在 Transport/RPC 客户端场景中优势明显（4-5x）
+  - CPU 绑定显著减少上下文切换开销
+  - 验证了 PerCore 作为主要执行器的架构决策
 
 #### 1.3 代码/文档交付物
 

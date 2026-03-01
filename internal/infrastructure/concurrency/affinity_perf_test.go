@@ -17,12 +17,10 @@ import (
 // TestPerCore_CPUAffinity_PerfAnalysis 用于 perf 分析的性能测试
 // 运行方式：
 //  1. 编译: go test -c -o /tmp/affinity_perf_test ./internal/infrastructure/concurrency/
-//  2. Perf 分析绑核版本:
+//  2. Perf 分析:
 //     perf record -g -e cycles,instructions,cache-references,cache-misses \
 //     /tmp/affinity_perf_test -test.run=TestPerCore_CPUAffinity_PerfAnalysis -test.v
-//  3. Perf 分析无绑核版本:
-//     修改代码 EnableAffinity=false，重新编译，再次 perf record
-//  4. 查看报告: perf report
+//  3. 查看报告: perf report
 //
 // 对比缓存命中率:
 //
@@ -37,17 +35,13 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 		t.Skip("CPU affinity not supported on this platform")
 	}
 
-	// ========== 配置区域：修改此处切换绑核/无绑核 ==========
-	withAffinity := true // ⚠️ 修改为 false 测试无绑核版本
-	// =====================================================
-
 	numCores := runtime.NumCPU()
 	numTasks := 1000000 // 大量任务以便 perf 收集足够数据
 
+	// PerCore 总是启用绑核
 	executor, err := NewPerCoreExecutor(
 		WithNumCores(numCores),
 		WithQueueSize(100000),
-		WithEnableAffinity(withAffinity),
 	)
 	require.NoError(t, err)
 	defer executor.Close()
@@ -55,7 +49,7 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 	t.Logf("=== 性能分析配置 ===")
 	t.Logf("平台: %s", runtime.GOOS)
 	t.Logf("CPU 核心数: %d", numCores)
-	t.Logf("CPU 绑核: %v", withAffinity)
+	t.Logf("CPU 绑核: true (PerCore 总是启用)")
 	t.Logf("任务数量: %d", numTasks)
 
 	// ========== 场景 1: 计算密集型任务（HLC 时钟模拟）==========
@@ -169,7 +163,7 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 	t.Logf("提示: 使用 'perf report' 查看详细分析报告")
 }
 
-// BenchmarkPerCore_CacheHitRate 对比绑核/无绑核的缓存命中率
+// BenchmarkPerCore_CacheHitRate 测试绑核下的缓存命中率
 // 运行方式:
 //
 //	perf stat -e cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses,cycles,instructions \
@@ -180,46 +174,35 @@ func BenchmarkPerCore_CacheHitRate(b *testing.B) {
 		b.Skip("CPU affinity not supported on this platform")
 	}
 
-	benchmarks := []struct {
-		name         string
-		withAffinity bool
-	}{
-		{"WithAffinity", true},
-		{"WithoutAffinity", false},
-	}
+	b.Run("WithAffinity", func(b *testing.B) {
+		executor, _ := NewPerCoreExecutor(
+			WithNumCores(runtime.NumCPU()),
+			WithQueueSize(100000),
+		)
+		defer executor.Close()
 
-	for _, bm := range benchmarks {
-		b.Run(bm.name, func(b *testing.B) {
-			executor, _ := NewPerCoreExecutor(
-				WithNumCores(runtime.NumCPU()),
-				WithQueueSize(100000),
-				WithEnableAffinity(bm.withAffinity),
-			)
-			defer executor.Close()
+		// 模拟缓存友好的任务：每个 worker 访问独立的内存区域
+		type WorkerLocalData struct {
+			data [1024]int
+		}
+		workerData := make([]WorkerLocalData, runtime.NumCPU())
 
-			// 模拟缓存友好的任务：每个 worker 访问独立的内存区域
-			type WorkerLocalData struct {
-				data [1024]int
+		task := func(ctx context.Context) {
+			// 获取当前 goroutine 可能对应的 core（简化模拟）
+			idx := int(time.Now().UnixNano()) % len(workerData)
+
+			// 访问本地数据（缓存友好）
+			localData := &workerData[idx]
+			for i := 0; i < 16; i++ {
+				localData.data[i*64] = i * 2
 			}
-			workerData := make([]WorkerLocalData, runtime.NumCPU())
+		}
 
-			task := func(ctx context.Context) {
-				// 获取当前 goroutine 可能对应的 core（简化模拟）
-				idx := int(time.Now().UnixNano()) % len(workerData)
-
-				// 访问本地数据（缓存友好）
-				localData := &workerData[idx]
-				for i := 0; i < 16; i++ {
-					localData.data[i*64] = i * 2
-				}
+		b.ResetTimer()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				_ = executor.Submit(context.Background(), task)
 			}
-
-			b.ResetTimer()
-			b.RunParallel(func(pb *testing.PB) {
-				for pb.Next() {
-					_ = executor.Submit(context.Background(), task)
-				}
-			})
 		})
-	}
+	})
 }

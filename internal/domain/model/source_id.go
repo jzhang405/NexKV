@@ -127,36 +127,14 @@ func (s SourceID) Validate() error {
 }
 
 // RecommendedMode 根据 SourceID 返回推荐的调度模式
+// 简化逻辑：只有 PerCore（延迟敏感）和 DefaultPool（通用）
 func (s SourceID) RecommendedMode() TaskMode {
 	// Per-Core 模式：延迟敏感的核心模块
 	perCoreModules := map[string]bool{
 		"hlc":         true, // HLC 时钟
 		"wal":         true, // WAL 写入
-		"transpose":   true, // 矩阵转置
+		"transaction": true, // 事务处理
 		"replication": true, // 副本同步
-	}
-
-	// 函数池模式：高频重复任务
-	funcPoolPatterns := []string{
-		"rpc:client:",   // RPC 客户端
-		"rpc:server:",   // RPC 服务端
-		"network:send:", // 网络发送
-		"network:recv:", // 网络接收
-	}
-
-	// 多池模式：分片场景
-	multiPoolPatterns := []string{
-		"query:range:", // 范围查询
-		"query:point:", // 点查询
-		"shard:",       // 分片操作
-	}
-
-	// 自定义池模式：后台任务
-	customPoolPatterns := []string{
-		"background:", // 后台任务
-		"log:",        // 日志
-		"metric:",     // 指标
-		"cleanup:",    // 清理
 	}
 
 	// 检查 Per-Core 模式
@@ -164,31 +142,7 @@ func (s SourceID) RecommendedMode() TaskMode {
 		return ModePerCore
 	}
 
-	// 构建前缀
-	prefix := s.module + ":" + s.subModule + ":"
-
-	// 检查函数池模式
-	for _, pattern := range funcPoolPatterns {
-		if strings.HasPrefix(prefix, pattern) {
-			return ModeFuncPool
-		}
-	}
-
-	// 检查多池模式
-	for _, pattern := range multiPoolPatterns {
-		if strings.HasPrefix(s.module+":"+s.subModule+":", pattern) {
-			return ModeMultiPool
-		}
-	}
-
-	// 检查自定义池模式
-	for _, pattern := range customPoolPatterns {
-		if strings.HasPrefix(s.String(), pattern) {
-			return ModeCustomPool
-		}
-	}
-
-	// 默认使用默认池
+	// 其他所有任务使用默认池
 	return ModeDefaultPool
 }
 

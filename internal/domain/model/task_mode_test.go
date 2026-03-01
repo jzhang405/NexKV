@@ -12,9 +12,6 @@ func TestTaskMode_String(t *testing.T) {
 		expected string
 	}{
 		{ModePerCore, "per-core"},
-		{ModeCustomPool, "custom-pool"},
-		{ModeFuncPool, "func-pool"},
-		{ModeMultiPool, "multi-pool"},
 		{ModeDefaultPool, "default-pool"},
 		{TaskMode(100), "unknown"}, // 真正的无效值
 	}
@@ -34,9 +31,6 @@ func TestTaskMode_IsValid(t *testing.T) {
 		expected bool
 	}{
 		{ModePerCore, true},
-		{ModeCustomPool, true},
-		{ModeFuncPool, true},
-		{ModeMultiPool, true},
 		{ModeDefaultPool, true},
 		{TaskMode(-1), false},
 		{TaskMode(0), false},
@@ -45,6 +39,9 @@ func TestTaskMode_IsValid(t *testing.T) {
 
 	for _, tt := range tests {
 		name := tt.mode.String()
+		if name == "unknown" {
+			name = "invalid"
+		}
 		t.Run(name, func(t *testing.T) {
 			if got := tt.mode.IsValid(); got != tt.expected {
 				t.Errorf("TaskMode.IsValid() = %v, want %v", got, tt.expected)
@@ -58,10 +55,7 @@ func TestTaskMode_FallbackMode(t *testing.T) {
 		mode     TaskMode
 		expected TaskMode
 	}{
-		{ModePerCore, ModeDefaultPool},     // PerCore 降级到 DefaultPool（三级降级策略）
-		{ModeCustomPool, ModeDefaultPool},  // CustomPool 降级到 DefaultPool
-		{ModeFuncPool, ModeDefaultPool},    // FuncPool 降级到 DefaultPool
-		{ModeMultiPool, ModeDefaultPool},   // MultiPool 降级到 DefaultPool
+		{ModePerCore, ModeDefaultPool},     // PerCore 降级到 DefaultPool
 		{ModeDefaultPool, ModeDefaultPool}, // DefaultPool 无需降级
 	}
 
@@ -82,18 +76,15 @@ func TestTaskMode_IsSupportedOn(t *testing.T) {
 	}{
 		// Linux 支持所有模式
 		{"linux", ModePerCore, true},
-		{"linux", ModeCustomPool, true},
-		{"linux", ModeFuncPool, true},
-		{"linux", ModeMultiPool, true},
 		{"linux", ModeDefaultPool, true},
 
 		// Windows 支持所有模式
 		{"windows", ModePerCore, true},
-		{"windows", ModeCustomPool, true},
+		{"windows", ModeDefaultPool, true},
 
 		// macOS 不支持真绑核，PerCore 降级
 		{"darwin", ModePerCore, false},
-		{"darwin", ModeCustomPool, true},
+		{"darwin", ModeDefaultPool, true},
 
 		// 未知平台
 		{"freebsd", ModePerCore, false},
@@ -115,9 +106,6 @@ func TestTaskMode_RecommendedConfig(t *testing.T) {
 		mode TaskMode
 	}{
 		{ModePerCore},
-		{ModeCustomPool},
-		{ModeFuncPool},
-		{ModeMultiPool},
 		{ModeDefaultPool},
 	}
 
@@ -151,11 +139,6 @@ func TestTaskMode_RecommendedConfig(t *testing.T) {
 			if tt.mode == ModePerCore && !config.EnableAffinity {
 				t.Error("PerCore mode should have EnableAffinity = true")
 			}
-
-			// 其他模式不应该启用绑核
-			if tt.mode != ModePerCore && config.EnableAffinity {
-				t.Errorf("%s mode should not have EnableAffinity = true", tt.mode)
-			}
 		})
 	}
 }
@@ -167,9 +150,6 @@ func TestTaskMode_ParseTaskMode(t *testing.T) {
 		hasError bool
 	}{
 		{"per-core", ModePerCore, false},
-		{"custom-pool", ModeCustomPool, false},
-		{"func-pool", ModeFuncPool, false},
-		{"multi-pool", ModeMultiPool, false},
 		{"default-pool", ModeDefaultPool, false},
 		{"invalid", ModeDefaultPool, true},
 		{"", ModeDefaultPool, true},

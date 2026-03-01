@@ -7,7 +7,7 @@ import (
 )
 
 // TaskMode 任务调度模式（值对象）
-// 定义任务应该如何被调度和执行
+// 简化为两种模式：PerCore（延迟敏感）和 DefaultPool（通用）
 type TaskMode int
 
 const (
@@ -15,20 +15,8 @@ const (
 	// 支持 CPU 绑定，适用于 HLC、WAL、Transpose 等延迟敏感场景
 	ModePerCore TaskMode = iota + 1
 
-	// ModeCustomPool ants 自定义池模式
-	// 适用于通用场景，提供独立的资源隔离
-	ModeCustomPool
-
-	// ModeFuncPool ants 函数池模式
-	// 适用于高频重复任务，减少函数对象创建开销
-	ModeFuncPool
-
-	// ModeMultiPool ants 多池模式
-	// 适用于分片场景，每个分片独立的池
-	ModeMultiPool
-
-	// ModeDefaultPool ants 默认池模式（隐式回退）
-	// 适用于临时任务、测试场景
+	// ModeDefaultPool ants 默认池模式（通用场景）
+	// 适用于大多数普通任务，提供良好的并发性能
 	ModeDefaultPool TaskMode = 99
 )
 
@@ -37,12 +25,6 @@ func (m TaskMode) String() string {
 	switch m {
 	case ModePerCore:
 		return "per-core"
-	case ModeCustomPool:
-		return "custom-pool"
-	case ModeFuncPool:
-		return "func-pool"
-	case ModeMultiPool:
-		return "multi-pool"
 	case ModeDefaultPool:
 		return "default-pool"
 	default:
@@ -53,7 +35,7 @@ func (m TaskMode) String() string {
 // IsValid 验证 TaskMode 是否有效
 func (m TaskMode) IsValid() bool {
 	switch m {
-	case ModePerCore, ModeCustomPool, ModeFuncPool, ModeMultiPool, ModeDefaultPool:
+	case ModePerCore, ModeDefaultPool:
 		return true
 	default:
 		return false
@@ -61,14 +43,11 @@ func (m TaskMode) IsValid() bool {
 }
 
 // FallbackMode 返回降级后的调度模式
-// 当当前模式不支持时，应该降级到的模式
-// 三级降级链: PerCore -> Ants Default -> Native Goroutine
+// 双执行器降级链: PerCore -> DefaultPool
 func (m TaskMode) FallbackMode() TaskMode {
 	switch m {
 	case ModePerCore:
-		return ModeDefaultPool // PerCore 降级到 Ants Default（三级降级策略）
-	case ModeCustomPool, ModeFuncPool, ModeMultiPool:
-		return ModeDefaultPool // 其他模式降级到 DefaultPool
+		return ModeDefaultPool
 	default:
 		return ModeDefaultPool
 	}
@@ -89,8 +68,8 @@ func (m TaskMode) IsSupportedOn(platform string) bool {
 	case ModePerCore:
 		// 只有 Linux 和 Windows 支持真正的 CPU 绑核
 		return platform == PlatformLinux || platform == PlatformWindows
-	case ModeCustomPool, ModeFuncPool, ModeMultiPool, ModeDefaultPool:
-		// 其他模式跨平台支持
+	case ModeDefaultPool:
+		// DefaultPool 跨平台支持
 		return true
 	default:
 		return false
@@ -105,24 +84,6 @@ func (m TaskMode) RecommendedConfig() ModeConfig {
 			MaxConcurrency: runtime.NumCPU(),
 			QueueSize:      1000,
 			EnableAffinity: true,
-		}
-	case ModeCustomPool:
-		return ModeConfig{
-			MaxConcurrency: runtime.NumCPU() * 2,
-			QueueSize:      2000,
-			EnableAffinity: false,
-		}
-	case ModeFuncPool:
-		return ModeConfig{
-			MaxConcurrency: runtime.NumCPU() * 4,
-			QueueSize:      5000,
-			EnableAffinity: false,
-		}
-	case ModeMultiPool:
-		return ModeConfig{
-			MaxConcurrency: runtime.NumCPU() * 2,
-			QueueSize:      1000,
-			EnableAffinity: false,
 		}
 	case ModeDefaultPool:
 		return ModeConfig{
@@ -158,12 +119,6 @@ func ParseTaskMode(s string) (TaskMode, error) {
 	switch s {
 	case "per-core":
 		return ModePerCore, nil
-	case "custom-pool":
-		return ModeCustomPool, nil
-	case "func-pool":
-		return ModeFuncPool, nil
-	case "multi-pool":
-		return ModeMultiPool, nil
 	case "default-pool":
 		return ModeDefaultPool, nil
 	default:

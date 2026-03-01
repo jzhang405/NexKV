@@ -37,7 +37,6 @@ func BenchmarkOptimization_WithPadding(b *testing.B) {
 	executor, _ := NewPerCoreExecutor(
 		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
-		WithEnableAffinity(true),
 	)
 	defer executor.Close()
 
@@ -75,7 +74,7 @@ func BenchmarkOptimization_WithoutAffinity_NoPadding(b *testing.B) {
 	executor, _ := NewPerCoreExecutor(
 		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
-		WithEnableAffinity(false), // 禁用绑核
+		// 禁用绑核
 	)
 	defer executor.Close()
 
@@ -114,7 +113,6 @@ func BenchmarkOptimization_WithAffinity_NoPadding(b *testing.B) {
 	executor, _ := NewPerCoreExecutor(
 		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
-		WithEnableAffinity(true),
 	)
 	defer executor.Close()
 
@@ -153,7 +151,6 @@ func BenchmarkOptimization_MemoryAccessPattern(b *testing.B) {
 		executor, _ := NewPerCoreExecutor(
 			WithNumCores(runtime.NumCPU()),
 			WithQueueSize(100000),
-			WithEnableAffinity(true),
 		)
 		defer executor.Close()
 
@@ -182,7 +179,6 @@ func BenchmarkOptimization_MemoryAccessPattern(b *testing.B) {
 		executor, _ := NewPerCoreExecutor(
 			WithNumCores(runtime.NumCPU()),
 			WithQueueSize(100000),
-			WithEnableAffinity(true),
 		)
 		defer executor.Close()
 
@@ -215,7 +211,6 @@ func BenchmarkOptimization_BatchedStats(b *testing.B) {
 	executor, _ := NewPerCoreExecutor(
 		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
-		WithEnableAffinity(true),
 	)
 	defer executor.Close()
 
@@ -251,7 +246,6 @@ func TestOptimization_VerifyLocalData(t *testing.T) {
 	executor, _ := NewPerCoreExecutor(
 		WithNumCores(2),
 		WithQueueSize(100),
-		WithEnableAffinity(true),
 	)
 	defer executor.Close()
 
@@ -290,7 +284,6 @@ func BenchmarkOptimization_FalseSharing(b *testing.B) {
 		executor, _ := NewPerCoreExecutor(
 			WithNumCores(runtime.NumCPU()),
 			WithQueueSize(100000),
-			WithEnableAffinity(true),
 		)
 		defer executor.Close()
 
@@ -321,7 +314,6 @@ func BenchmarkOptimization_FalseSharing(b *testing.B) {
 		executor, _ := NewPerCoreExecutor(
 			WithNumCores(runtime.NumCPU()),
 			WithQueueSize(100000),
-			WithEnableAffinity(true),
 		)
 		defer executor.Close()
 

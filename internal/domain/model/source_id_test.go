@@ -124,26 +124,22 @@ func TestSourceID_RecommendedMode(t *testing.T) {
 		// Per-Core 模式
 		{"hlc:clock:tick", ModePerCore},
 		{"wal:writer:flush", ModePerCore},
-		{"transpose:matrix:compute", ModePerCore},
+		{"transaction:matrix:compute", ModePerCore},
 		{"replication:sync:send", ModePerCore},
 
-		// FuncPool 模式
-		{"rpc:client:send", ModeFuncPool},
-		{"rpc:server:handle", ModeFuncPool},
-		{"network:send:packet", ModeFuncPool},
-		{"network:recv:data", ModeFuncPool},
-
-		// MultiPool 模式
-		{"query:range:scan", ModeMultiPool},
-		{"query:point:get", ModeMultiPool},
-		{"shard:write:data", ModeMultiPool},
-
-		// CustomPool 模式
-		{"background:log:flush", ModeCustomPool},
-		{"background:metric:collect", ModeCustomPool},
-		{"log:write:entry", ModeCustomPool},
-		{"metric:collect:counter", ModeCustomPool},
-		{"cleanup:gc:run", ModeCustomPool},
+		// DefaultPool 模式（所有其他场景）
+		{"rpc:client:send", ModeDefaultPool},
+		{"rpc:server:handle", ModeDefaultPool},
+		{"network:send:packet", ModeDefaultPool},
+		{"network:recv:data", ModeDefaultPool},
+		{"query:range:scan", ModeDefaultPool},
+		{"query:point:get", ModeDefaultPool},
+		{"shard:write:data", ModeDefaultPool},
+		{"background:log:flush", ModeDefaultPool},
+		{"background:metric:collect", ModeDefaultPool},
+		{"log:write:entry", ModeDefaultPool},
+		{"metric:collect:counter", ModeDefaultPool},
+		{"cleanup:gc:run", ModeDefaultPool},
 
 		// DefaultPool 模式
 		{"test:temp:task", ModeDefaultPool},

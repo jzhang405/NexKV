@@ -405,10 +405,7 @@ func (s *TaskScheduler) SubmitHighPriority(ctx context.Context, sourceID model.S
 
 // SubmitBackground 提交后台任务
 func (s *TaskScheduler) SubmitBackground(ctx context.Context, sourceID model.SourceID, task func(context.Context)) error {
-	// 后台任务使用 CustomPool 模式（如果可用）
-	if s.HasMode(model.ModeCustomPool) {
-		return s.SubmitWithMode(ctx, model.ModeCustomPool, task)
-	}
+	// 后台任务使用 DefaultPool 模式
 	return s.Submit(ctx, sourceID, task)
 }
 

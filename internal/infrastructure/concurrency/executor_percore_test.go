@@ -114,7 +114,7 @@ func TestPerCoreExecutor_Submit(t *testing.T) {
 
 // TestPerCoreExecutor_SubmitWithPriority 测试优先级提交
 func TestPerCoreExecutor_SubmitWithPriority(t *testing.T) {
-	executor, err := NewPerCoreExecutor(WithNumCores(1), WithQueueSize(100), WithEnableAffinity(false))
+	executor, err := NewPerCoreExecutor(WithNumCores(1), WithQueueSize(100))
 	if err != nil {
 		t.Fatalf("NewPerCoreExecutor() error: %v", err)
 	}

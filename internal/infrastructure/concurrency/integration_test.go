@@ -116,7 +116,7 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 
 // TestIntegration_PriorityOrdering 优先级顺序测试
 func TestIntegration_PriorityOrdering(t *testing.T) {
-	executor, _ := NewPerCoreExecutor(WithNumCores(1), WithQueueSize(100), WithEnableAffinity(false))
+	executor, _ := NewPerCoreExecutor(WithNumCores(1), WithQueueSize(100))
 	defer executor.Close()
 
 	var allCompleted sync.WaitGroup
@@ -441,14 +441,6 @@ func BenchmarkIntegration_MixedWorkload(b *testing.B) {
 		b.Fatalf("RegisterExecutor(ModePerCore) error: %v", err)
 	}
 
-	customPoolExec, err := NewAntsPoolExecutor(100)
-	if err != nil {
-		b.Fatalf("NewAntsPoolExecutor() error: %v", err)
-	}
-	if err := selector.RegisterExecutor(model.ModeCustomPool, customPoolExec); err != nil {
-		b.Fatalf("RegisterExecutor(ModeCustomPool) error: %v", err)
-	}
-
 	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
 		b.Fatalf("RegisterExecutor(ModeDefaultPool) error: %v", err)
 	}
@@ -457,8 +449,7 @@ func BenchmarkIntegration_MixedWorkload(b *testing.B) {
 	task := func(ctx context.Context) {}
 	sources := []string{
 		"hlc:clock:tick",
-		"rpc:client:send",
-		"background:log:flush",
+		"wal:writer:flush",
 		"test:module:action",
 	}
 
@@ -558,12 +549,12 @@ func TestStress_MemoryUsage(t *testing.T) {
 // 辅助函数
 // ==========================================
 
-// setupFullSelector 创建并注册所有执行器的调度器
+// setupFullSelector 创建并注册执行器的调度器
 func setupFullSelector(t *testing.T) *TaskScheduler {
 	t.Helper()
 	selector := NewTaskScheduler()
 
-	// 注册所有执行器
+	// 注册 PerCore 执行器
 	perCoreExec, err := NewPerCoreExecutor(WithNumCores(2), WithQueueSize(100))
 	if err != nil {
 		t.Fatalf("NewPerCoreExecutor() error: %v", err)
@@ -572,36 +563,7 @@ func setupFullSelector(t *testing.T) *TaskScheduler {
 		t.Fatalf("RegisterExecutor(ModePerCore) error: %v", err)
 	}
 
-	customPoolExec, err := NewAntsPoolExecutor(10)
-	if err != nil {
-		t.Fatalf("NewAntsPoolExecutor() error: %v", err)
-	}
-	if err := selector.RegisterExecutor(model.ModeCustomPool, customPoolExec); err != nil {
-		t.Fatalf("RegisterExecutor(ModeCustomPool) error: %v", err)
-	}
-
-	// 创建 handler 来执行 funcTask
-	funcPoolHandler := func(i any) {
-		if ft, ok := i.(*funcTask); ok {
-			ft.task(ft.ctx)
-		}
-	}
-	funcPoolExec, err := NewAntsFuncExecutor(10, funcPoolHandler)
-	if err != nil {
-		t.Fatalf("NewAntsFuncExecutor() error: %v", err)
-	}
-	if err := selector.RegisterExecutor(model.ModeFuncPool, funcPoolExec); err != nil {
-		t.Fatalf("RegisterExecutor(ModeFuncPool) error: %v", err)
-	}
-
-	multiPoolExec, err := NewAntsMultiExecutor(2, 10)
-	if err != nil {
-		t.Fatalf("NewAntsMultiExecutor() error: %v", err)
-	}
-	if err := selector.RegisterExecutor(model.ModeMultiPool, multiPoolExec); err != nil {
-		t.Fatalf("RegisterExecutor(ModeMultiPool) error: %v", err)
-	}
-
+	// 注册 DefaultPool 执行器
 	if err := selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
 		t.Fatalf("RegisterExecutor(ModeDefaultPool) error: %v", err)
 	}

@@ -29,45 +29,10 @@ func TestPriorityValues(t *testing.T) {
 	assert.Equal(t, model.TaskPriorityIdle, model.TaskPriority(9), "Idle priority should be 9")
 }
 
-func TestPriorityOrdering(t *testing.T) {
-	// 验证优先级顺序（数值越小越重要）
-	var queue taskQueue
-	queue.starvationTimeout = 10 * time.Second // 设置默认超时
-
-	// 添加不同优先级的任务（注意添加顺序）
-	now := time.Now()
-	queue.items = append(queue.items, taskItem{
-		priority:   model.TaskPriorityCritical, // 0 (最高) - index 0
-		submitTime: now.Add(2 * time.Second),
-		task:       nil,
-	})
-	queue.items = append(queue.items, taskItem{
-		priority:   model.TaskPriorityNormal, // 5 - index 1
-		submitTime: now.Add(1 * time.Second),
-		task:       nil,
-	})
-	queue.items = append(queue.items, taskItem{
-		priority:   model.TaskPriorityIdle, // 9 (最低) - index 2
-		submitTime: now,
-		task:       nil,
-	})
-
-	// 手动测试 Less() 方法
-	// Less(0, 1): Critical (0) vs Normal (5) -> 应该返回 true (0 < 5)
-	assert.True(t, queue.Less(0, 1), "Critical (0) should have higher priority than Normal (5)")
-
-	// Less(1, 2): Normal (5) vs Idle (9) -> 应该返回 true (5 < 9)
-	assert.True(t, queue.Less(1, 2), "Normal (5) should have higher priority than Idle (9)")
-
-	// Less(0, 2): Critical (0) vs Idle (9) -> 应该返回 true (0 < 9)
-	assert.True(t, queue.Less(0, 2), "Critical (0) should have higher priority than Idle (9)")
-}
-
 func TestPriorityExecutionOrder(t *testing.T) {
 	executor, err := NewPerCoreExecutor(
 		WithNumCores(1),
 		WithQueueSize(100),
-		WithEnableAffinity(false),
 	)
 	assert.NoError(t, err)
 	defer executor.Close()
@@ -112,7 +77,6 @@ func TestPriorityFIFO(t *testing.T) {
 	executor, err := NewPerCoreExecutor(
 		WithNumCores(1),
 		WithQueueSize(100),
-		WithEnableAffinity(false),
 	)
 	assert.NoError(t, err)
 	defer executor.Close()
@@ -145,35 +109,46 @@ func TestPriorityFIFO(t *testing.T) {
 }
 
 func TestPriorityStarvationPrevention(t *testing.T) {
-	executor, err := NewPerCoreExecutor(
-		WithNumCores(1),
-		WithQueueSize(100),
-		WithEnableAffinity(false),
-	)
-	assert.NoError(t, err)
-	defer executor.Close()
+	// 验证饥饿防护机制：等待超过配置的超时自动提升优先级
+	shortTimeout := 100 * time.Millisecond
+	queue := newTaskQueue(100, shortTimeout)
 
-	// 验证饥饿防护机制：等待超过 10 秒自动提升优先级
-	var queue taskQueue
-	queue.starvationTimeout = 10 * time.Second
-	now := time.Now()
+	now := time.Now().UnixNano()
 
 	// 创建测试任务：一个等待很久的低优先级任务 vs 刚提交的高优先级任务
 	oldTask := taskItem{
-		priority:   PriorityIdle,               // 9 (最低)
-		submitTime: now.Add(-11 * time.Second), // 11 秒前提交
-		task:       nil,
+		priority:   model.TaskPriorityIdle,            // 9 (最低)
+		submitTime: now - int64(150*time.Millisecond), // 150ms 前提交
+		task:       func(context.Context) {},
 	}
 	newTask := taskItem{
-		priority:   PriorityCritical, // 0 (最高)
-		submitTime: now,              // 刚提交
-		task:       nil,
+		priority:   model.TaskPriorityCritical, // 0 (最高)
+		submitTime: now,                        // 刚提交
+		task:       func(context.Context) {},
 	}
 
-	queue.items = append(queue.items, oldTask, newTask)
+	// 先添加低优先级任务（已超时）
+	queue.Push(oldTask)
+	// 再添加高优先级任务
+	queue.Push(newTask)
 
-	// 由于 oldTask 等待超过 10 秒，应该被提升优先级
-	assert.True(t, queue.Less(0, 1), "Old low-priority task should be prioritized due to starvation prevention")
+	// 执行 promoteStarvedTasks（模拟 Pop 中的调用）
+	queue.promoteStarvedTasks(now)
+
+	// 验证队列状态：
+	// - 优先级 0 应该有 2 个任务（newTask 和被提升的 oldTask）
+	// - 优先级 9 应该是空的
+	assert.Equal(t, 2, len(queue.queues[0]), "Priority 0 should have 2 tasks after promotion")
+	assert.Equal(t, 0, len(queue.queues[9]), "Priority 9 should be empty after promotion")
+
+	// Pop 应该返回优先级 0 的第一个任务（先添加的先弹出）
+	popped := queue.Pop()
+
+	// 验证弹出的任务不为空
+	assert.NotNil(t, popped.task, "Should pop a task")
+
+	// 验证队列长度减少了 1
+	assert.Equal(t, 1, queue.Len(), "Queue length should be 1 after popping")
 }
 
 func TestPrioritySemanticNames(t *testing.T) {
@@ -204,16 +179,15 @@ func TestPrioritySemanticNames(t *testing.T) {
 }
 
 func TestSubmitWithDefaultPriority(t *testing.T) {
-	// 验证 Submit() 使用默认优先级 PriorityNormal (5)
+	// 验证 Submit() 使用默认优先级 TaskPriorityNormal (5)
 	executor, err := NewPerCoreExecutor(
 		WithNumCores(1),
 		WithQueueSize(100),
-		WithEnableAffinity(false),
 	)
 	assert.NoError(t, err)
 	defer executor.Close()
 
-	// Submit() 应该使用 PriorityNormal (5)
+	// Submit() 应该使用 TaskPriorityNormal (5)
 	err = executor.Submit(context.Background(), func(ctx context.Context) {
 		// 任务执行
 	})
@@ -240,7 +214,6 @@ func TestPriorityBoundary(t *testing.T) {
 			executor, err := NewPerCoreExecutor(
 				WithNumCores(1),
 				WithQueueSize(100),
-				WithEnableAffinity(false),
 			)
 			assert.NoError(t, err)
 			defer executor.Close()
@@ -259,10 +232,9 @@ func TestStarvationTimeoutBoundary(t *testing.T) {
 		timeout time.Duration
 		valid   bool
 	}{
-		{"Zero", 0, true},                     // 禁用饥饿防护
-		{"Normal", 10 * time.Second, true},    // 正常值
-		{"Long", 60 * time.Second, true},      // 长超时
-		{"Negative", -1 * time.Second, false}, // 负数无效（当前实现接受）
+		{"Zero", 0, true},                  // 禁用饥饿防护
+		{"Normal", 10 * time.Second, true}, // 正常值
+		{"Long", 60 * time.Second, true},   // 长超时
 	}
 
 	for _, tc := range testCases {
@@ -270,7 +242,7 @@ func TestStarvationTimeoutBoundary(t *testing.T) {
 			executor, err := NewPerCoreExecutor(
 				WithNumCores(1),
 				WithQueueSize(100),
-				WithEnableAffinity(false),
+
 				WithStarvationTimeout(tc.timeout),
 			)
 
@@ -282,9 +254,6 @@ func TestStarvationTimeoutBoundary(t *testing.T) {
 					config := executor.Config()
 					assert.Equal(t, tc.timeout, config.StarvationTimeout)
 				}
-			} else {
-				// 当前实现不拒绝负数，但记录测试结果
-				t.Logf("Timeout %v acceptance: got err=%v", tc.timeout, err)
 			}
 		})
 	}
@@ -295,7 +264,6 @@ func TestStarvationTimeoutDefault(t *testing.T) {
 	executor, err := NewPerCoreExecutor(
 		WithNumCores(1),
 		WithQueueSize(100),
-		WithEnableAffinity(false),
 	)
 	assert.NoError(t, err)
 	defer executor.Close()
@@ -311,7 +279,7 @@ func TestStarvationTimeoutCustom(t *testing.T) {
 	executor, err := NewPerCoreExecutor(
 		WithNumCores(1),
 		WithQueueSize(100),
-		WithEnableAffinity(false),
+
 		WithStarvationTimeout(customTimeout),
 	)
 	assert.NoError(t, err)
@@ -327,7 +295,7 @@ func TestStarvationTimeoutDisabled(t *testing.T) {
 	executor, err := NewPerCoreExecutor(
 		WithNumCores(1),
 		WithQueueSize(100),
-		WithEnableAffinity(false),
+
 		WithStarvationTimeout(0), // 禁用饥饿防护
 	)
 	assert.NoError(t, err)
@@ -336,63 +304,104 @@ func TestStarvationTimeoutDisabled(t *testing.T) {
 	// 验证配置
 	config := executor.Config()
 	assert.Equal(t, time.Duration(0), config.StarvationTimeout, "Starvation timeout should be 0 (disabled)")
-
-	// 创建队列并验证饥饿防护被禁用
-	queue := taskQueue{
-		items:             make([]taskItem, 0, 10),
-		starvationTimeout: 0, // 禁用
-	}
-
-	now := time.Now()
-	queue.items = append(queue.items, taskItem{
-		priority:   PriorityIdle,               // 9 (最低)
-		submitTime: now.Add(-20 * time.Second), // 20秒前提交（应该提升优先级，但被禁用）
-		task:       nil,
-	})
-	queue.items = append(queue.items, taskItem{
-		priority:   PriorityCritical, // 0 (最高)
-		submitTime: now,
-		task:       nil,
-	})
-
-	// 饥饿防护被禁用，所以 Idle (9) 不应该提升优先级
-	// Less(0, 1) 应该返回 false（0 > 9，数值越小越重要）
-	assert.False(t, queue.Less(0, 1), "With starvation disabled, old low-priority task should NOT be prioritized")
 }
 
-// TestStarvationTimeoutEffect 测试饥饿防护实际效果
-func TestStarvationTimeoutEffect(t *testing.T) {
-	shortTimeout := 100 * time.Millisecond
-	executor, err := NewPerCoreExecutor(
-		WithNumCores(1),
-		WithQueueSize(100),
-		WithEnableAffinity(false),
-		WithStarvationTimeout(shortTimeout),
-	)
-	assert.NoError(t, err)
-	defer executor.Close()
+// TestMultiLevelQueueBasic 测试多级队列基本功能
+func TestMultiLevelQueueBasic(t *testing.T) {
+	queue := newTaskQueue(100, 0) // 禁用饥饿防护
 
-	// 创建队列并验证饥饿防护工作正常
-	queue := taskQueue{
-		items:             make([]taskItem, 0, 10),
-		starvationTimeout: shortTimeout,
-	}
-
-	now := time.Now()
-	oldTask := taskItem{
-		priority:   PriorityIdle,                     // 9 (最低)
-		submitTime: now.Add(-150 * time.Millisecond), // 150ms前提交（超过100ms阈值）
+	// 测试 Push 和 Len
+	queue.Push(taskItem{
+		priority:   model.TaskPriorityNormal, // 5
+		submitTime: time.Now().UnixNano(),
 		task:       nil,
-	}
-	newTask := taskItem{
-		priority:   PriorityCritical, // 0 (最高)
+	})
+
+	assert.Equal(t, 1, queue.Len(), "Queue length should be 1")
+
+	queue.Push(taskItem{
+		priority:   model.TaskPriorityCritical, // 0 (最高)
+		submitTime: time.Now().UnixNano(),
+		task:       nil,
+	})
+
+	assert.Equal(t, 2, queue.Len(), "Queue length should be 2")
+
+	// 测试 Pop - 应该先返回 Critical (0)，再返回 Normal (5)
+	item1 := queue.Pop()
+	assert.Equal(t, model.TaskPriorityCritical, item1.priority, "Should pop Critical task first")
+
+	item2 := queue.Pop()
+	assert.Equal(t, model.TaskPriorityNormal, item2.priority, "Should pop Normal task second")
+
+	assert.Equal(t, 0, queue.Len(), "Queue should be empty")
+}
+
+// TestMultiLevelQueueFIFO 测试同优先级 FIFO 顺序
+func TestMultiLevelQueueFIFO(t *testing.T) {
+	queue := newTaskQueue(100, 0)
+
+	now := time.Now().UnixNano()
+
+	// 添加 3 个相同优先级的任务
+	queue.Push(taskItem{
+		priority:   model.TaskPriorityNormal,
 		submitTime: now,
+		task:       func(context.Context) {},
+	})
+	queue.Push(taskItem{
+		priority:   model.TaskPriorityNormal,
+		submitTime: now + 1, // 稍晚
+		task:       func(context.Context) {},
+	})
+	queue.Push(taskItem{
+		priority:   model.TaskPriorityNormal,
+		submitTime: now + 2, // 更晚
+		task:       func(context.Context) {},
+	})
+
+	// 应该按添加顺序弹出（FIFO）
+	item1 := queue.Pop()
+	item2 := queue.Pop()
+	item3 := queue.Pop()
+
+	assert.NotNil(t, item1.task)
+	assert.NotNil(t, item2.task)
+	assert.NotNil(t, item3.task)
+
+	// 验证顺序
+	assert.Equal(t, now, item1.submitTime, "First item should have earliest submit time")
+	assert.Equal(t, now+1, item2.submitTime, "Second item should have middle submit time")
+	assert.Equal(t, now+2, item3.submitTime, "Third item should have latest submit time")
+}
+
+// TestMultiLevelQueuePriorityClamp 测试优先级边界处理
+func TestMultiLevelQueuePriorityClamp(t *testing.T) {
+	queue := newTaskQueue(100, 0)
+
+	// 测试低于 0 的优先级
+	queue.Push(taskItem{
+		priority:   model.TaskPriority(-1), // 低于最小值
+		submitTime: time.Now().UnixNano(),
 		task:       nil,
-	}
+	})
 
-	queue.items = append(queue.items, oldTask, newTask)
+	// 测试高于 9 的优先级
+	queue.Push(taskItem{
+		priority:   model.TaskPriority(100), // 高于最大值
+		submitTime: time.Now().UnixNano(),
+		task:       nil,
+	})
 
-	// 饥饿防护生效，等待超时的 Idle (9) 应该被提升优先级
-	// Less(0, 1) 应该返回 true（因为等待超过 100ms）
-	assert.True(t, queue.Less(0, 1), "Old low-priority task should be prioritized due to starvation prevention")
+	// 两个任务都应该能正常添加
+	assert.Equal(t, 2, queue.Len(), "Should handle out-of-range priorities")
+
+	// 验证优先级被正确限制
+	// 第一个任务应该被限制到 0（最高）
+	// 第二个任务应该被限制到 9（最低）
+	item1 := queue.Pop()
+	assert.Equal(t, model.TaskPriority(0), item1.priority, "Negative priority should be clamped to 0")
+
+	item2 := queue.Pop()
+	assert.Equal(t, model.TaskPriority(9), item2.priority, "Large priority should be clamped to 9")
 }

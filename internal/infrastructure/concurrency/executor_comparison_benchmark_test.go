@@ -5,584 +5,465 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
 // ==========================================
-// 全局对比测试：PerCore vs Ants 各模式
+// PerCoreExecutor vs AntsDefaultExecutor 性能对比
+// 场景：Transport 和 RPC 工作负载
 // ==========================================
 
-// 模拟实际工作负载的任务
-func simulateWork(workTime time.Duration) func(context.Context) {
-	return func(ctx context.Context) {
-		start := time.Now()
-		for time.Since(start) < workTime {
-			// CPU 密集型计算
-			_ = fmt.Sprintf("work-%d", time.Now().UnixNano())
+// 模拟 Transport 场景：网络 I/O 密集型任务
+func simulateTransportTask(ctx context.Context) {
+	// 模拟网络延迟（微秒级）
+	start := time.Now()
+	for time.Since(start) < 10*time.Microsecond {
+		// 模拟网络等待
+		runtime.Gosched()
+	}
+
+	// 模拟数据序列化/反序列化
+	data := make([]byte, 1024)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+
+	// 模拟校验和计算
+	checksum := uint32(0)
+	for _, b := range data {
+		checksum += uint32(b)
+	}
+	_ = checksum
+}
+
+// 模拟 RPC 场景：请求-响应处理
+func simulateRPCHandler(ctx context.Context) {
+	// 模拟请求解析
+	reqData := make([]byte, 512)
+	for i := range reqData {
+		reqData[i] = byte(i)
+	}
+
+	// 模拟业务逻辑处理（轻量计算）
+	result := 0
+	for _, v := range reqData[:100] {
+		result += int(v)
+	}
+
+	// 模拟响应构建
+	respData := make([]byte, 256)
+	for i := range respData {
+		respData[i] = byte(result % 256)
+	}
+	_ = respData
+}
+
+// 模拟 RPC 客户端场景
+func simulateRPCClient(ctx context.Context) {
+	// 模拟请求构建
+	req := make(map[string]string)
+	req["method"] = "GET"
+	req["key"] = "test-key"
+	req["timestamp"] = time.Now().String()
+
+	// 模拟序列化
+	data := fmt.Sprintf("%v", req)
+
+	// 模拟网络等待
+	time.Sleep(5 * time.Microsecond)
+
+	// 模拟响应解析
+	_ = len(data)
+}
+
+// BenchmarkPerCoreVsAnts_Transport_Throughput Transport 吞吐量对比
+func BenchmarkPerCoreVsAnts_Transport_Throughput(b *testing.B) {
+	benchmarks := []struct {
+		name       string
+		createExec func() TaskExecutor
+	}{
+		{
+			name: "PerCore",
+			createExec: func() TaskExecutor {
+				exec, _ := NewPerCoreExecutor(
+					WithNumCores(runtime.NumCPU()),
+					WithQueueSize(10000),
+				)
+				return exec
+			},
+		},
+		{
+			name: "AntsDefault",
+			createExec: func() TaskExecutor {
+				return NewAntsDefaultExecutor()
+			},
+		},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			exec := bm.createExec()
+			if closer, ok := exec.(interface{ Close() error }); ok {
+				defer closer.Close()
+			}
+
+			ctx := context.Background()
+			b.ResetTimer()
+
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					_ = exec.Submit(ctx, simulateTransportTask)
+				}
+			})
+		})
+	}
+}
+
+// BenchmarkPerCoreVsAnts_RPC_Server RPC 服务器吞吐量对比
+func BenchmarkPerCoreVsAnts_RPC_Server(b *testing.B) {
+	benchmarks := []struct {
+		name       string
+		createExec func() TaskExecutor
+	}{
+		{
+			name: "PerCore",
+			createExec: func() TaskExecutor {
+				exec, _ := NewPerCoreExecutor(
+					WithNumCores(runtime.NumCPU()),
+					WithQueueSize(10000),
+				)
+				return exec
+			},
+		},
+		{
+			name: "AntsDefault",
+			createExec: func() TaskExecutor {
+				return NewAntsDefaultExecutor()
+			},
+		},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			exec := bm.createExec()
+			if closer, ok := exec.(interface{ Close() error }); ok {
+				defer closer.Close()
+			}
+
+			ctx := context.Background()
+			b.ResetTimer()
+
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					_ = exec.Submit(ctx, simulateRPCHandler)
+				}
+			})
+		})
+	}
+}
+
+// BenchmarkPerCoreVsAnts_RPC_Client RPC 客户端吞吐量对比
+func BenchmarkPerCoreVsAnts_RPC_Client(b *testing.B) {
+	benchmarks := []struct {
+		name       string
+		createExec func() TaskExecutor
+	}{
+		{
+			name: "PerCore",
+			createExec: func() TaskExecutor {
+				exec, _ := NewPerCoreExecutor(
+					WithNumCores(runtime.NumCPU()),
+					WithQueueSize(10000),
+				)
+				return exec
+			},
+		},
+		{
+			name: "AntsDefault",
+			createExec: func() TaskExecutor {
+				return NewAntsDefaultExecutor()
+			},
+		},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			exec := bm.createExec()
+			if closer, ok := exec.(interface{ Close() error }); ok {
+				defer closer.Close()
+			}
+
+			ctx := context.Background()
+			b.ResetTimer()
+
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					_ = exec.Submit(ctx, simulateRPCClient)
+				}
+			})
+		})
+	}
+}
+
+// BenchmarkPerCoreVsAnts_Latency 任务提交延迟对比
+func BenchmarkPerCoreVsAnts_Latency(b *testing.B) {
+	benchmarks := []struct {
+		name       string
+		createExec func() TaskExecutor
+	}{
+		{
+			name: "PerCore",
+			createExec: func() TaskExecutor {
+				exec, _ := NewPerCoreExecutor(
+					WithNumCores(runtime.NumCPU()),
+					WithQueueSize(10000),
+				)
+				return exec
+			},
+		},
+		{
+			name: "AntsDefault",
+			createExec: func() TaskExecutor {
+				return NewAntsDefaultExecutor()
+			},
+		},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			exec := bm.createExec()
+			if closer, ok := exec.(interface{ Close() error }); ok {
+				defer closer.Close()
+			}
+
+			ctx := context.Background()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				_ = exec.Submit(ctx, func(ctx context.Context) {
+					// 极简任务，只测试提交延迟
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkPerCoreVsAnts_MixedWorkload 混合工作负载对比
+func BenchmarkPerCoreVsAnts_MixedWorkload(b *testing.B) {
+	benchmarks := []struct {
+		name       string
+		createExec func() TaskExecutor
+	}{
+		{
+			name: "PerCore",
+			createExec: func() TaskExecutor {
+				exec, _ := NewPerCoreExecutor(
+					WithNumCores(runtime.NumCPU()),
+					WithQueueSize(10000),
+				)
+				return exec
+			},
+		},
+		{
+			name: "AntsDefault",
+			createExec: func() TaskExecutor {
+				return NewAntsDefaultExecutor()
+			},
+		},
+	}
+
+	tasks := []func(context.Context){
+		simulateTransportTask,
+		simulateRPCHandler,
+		simulateRPCClient,
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			exec := bm.createExec()
+			if closer, ok := exec.(interface{ Close() error }); ok {
+				defer closer.Close()
+			}
+
+			ctx := context.Background()
+			b.ResetTimer()
+
+			taskIdx := uint32(0)
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					idx := atomic.AddUint32(&taskIdx, 1) - 1
+					task := tasks[idx%uint32(len(tasks))]
+					_ = exec.Submit(ctx, task)
+				}
+			})
+		})
+	}
+}
+
+// BenchmarkPerCoreVsAnts_ConcurrentTransport 并发 Transport 任务对比
+func BenchmarkPerCoreVsAnts_ConcurrentTransport(b *testing.B) {
+	benchmarks := []struct {
+		name       string
+		createExec func() TaskExecutor
+	}{
+		{
+			name: "PerCore",
+			createExec: func() TaskExecutor {
+				exec, _ := NewPerCoreExecutor(
+					WithNumCores(runtime.NumCPU()),
+					WithQueueSize(10000),
+				)
+				return exec
+			},
+		},
+		{
+			name: "AntsDefault",
+			createExec: func() TaskExecutor {
+				return NewAntsDefaultExecutor()
+			},
+		},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			exec := bm.createExec()
+			if closer, ok := exec.(interface{ Close() error }); ok {
+				defer closer.Close()
+			}
+
+			ctx := context.Background()
+
+			// 预先提交大量任务，测试高并发场景
+			var wg sync.WaitGroup
+			taskCount := 10000
+			completed := atomic.Int64{}
+
+			b.ResetTimer()
+
+			for i := 0; i < taskCount; i++ {
+				wg.Add(1)
+				_ = exec.Submit(ctx, func(ctx context.Context) {
+					defer wg.Done()
+					simulateTransportTask(ctx)
+					completed.Add(1)
+				})
+			}
+
+			wg.Wait()
+
+			// 验证所有任务完成
+			if completed.Load() != int64(taskCount) {
+				b.Fatalf("Expected %d completed, got %d", taskCount, completed.Load())
+			}
+		})
+	}
+}
+
+// BenchmarkPerCoreVsAnts_SchedulerOverhead 调度器开销对比
+func BenchmarkPerCoreVsAnts_SchedulerOverhead(b *testing.B) {
+	b.Run("WithScheduler", func(b *testing.B) {
+		scheduler := NewTaskScheduler()
+
+		// 注册 PerCore 执行器
+		perCoreExec, _ := NewPerCoreExecutor(
+			WithNumCores(runtime.NumCPU()),
+			WithQueueSize(10000),
+		)
+		if err := scheduler.RegisterExecutor(model.ModePerCore, perCoreExec); err != nil {
+			b.Fatalf("Failed to register PerCore executor: %v", err)
 		}
-	}
-}
 
-// 统计任务完成数
-type statsCounter struct {
-	completed atomic.Int64
-}
-
-func (s *statsCounter) increment() {
-	s.completed.Add(1)
-}
-
-func (s *statsCounter) get() int64 {
-	return s.completed.Load()
-}
-
-// ==========================================
-// FuncPool 专用数据结构
-// ==========================================
-
-// workItem FuncPool 的任务数据结构
-type workItem struct {
-	id     int
-	result atomic.Int64
-}
-
-// workHandler 默认工作负载处理器（100μs）
-func workHandler(arg any) {
-	if item, ok := arg.(*workItem); ok {
-		start := time.Now()
-		for time.Since(start) < 100*time.Microsecond {
-			_ = fmt.Sprintf("work-%d", item.id)
+		// 注册 DefaultPool 执行器
+		if err := scheduler.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor()); err != nil {
+			b.Fatalf("Failed to register DefaultPool executor: %v", err)
 		}
-		item.result.Add(1)
-	}
-}
 
-// ==========================================
-// Benchmark 1: PerCoreExecutor (CPU 绑核)
-// ==========================================
+		defer scheduler.Close()
 
-func Benchmark_PerCore_Affinity(b *testing.B) {
-	executor, err := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
-		WithQueueSize(100000),
-		WithEnableAffinity(true),
-	)
-	if err != nil {
-		b.Fatalf("Failed to create executor: %v", err)
-	}
-	defer executor.Close()
+		ctx := context.Background()
+		sourceID, _ := model.ParseSourceID("hlc:clock:tick")
 
-	// Warm-up: 确保所有 worker 完成绑核
-	for i := 0; i < runtime.NumCPU()*10; i++ {
-		_ = executor.Submit(context.Background(), simulateWork(100*time.Microsecond))
-	}
-	time.Sleep(100 * time.Millisecond)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	stats := &statsCounter{}
-
-	for i := 0; i < b.N; i++ {
-		_ = executor.Submit(context.Background(), func(ctx context.Context) {
-			simulateWork(100 * time.Microsecond)(ctx)
-			stats.increment()
-		})
-	}
-
-	// 等待所有任务完成
-	time.Sleep(1 * time.Second)
-	b.ReportMetric(float64(stats.get()), "tasks")
-}
-
-// ==========================================
-// Benchmark 2: Ants Default Pool (Mode 2)
-// ==========================================
-
-func Benchmark_Ants_Default(b *testing.B) {
-	executor := NewAntsDefaultExecutor()
-	defer executor.Close()
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	stats := &statsCounter{}
-
-	for i := 0; i < b.N; i++ {
-		_ = executor.Submit(context.Background(), func(ctx context.Context) {
-			simulateWork(100 * time.Microsecond)(ctx)
-			stats.increment()
-		})
-	}
-
-	// 等待所有任务完成
-	time.Sleep(1 * time.Second)
-	b.ReportMetric(float64(stats.get()), "tasks")
-}
-
-// ==========================================
-// Benchmark 3: Ants Custom Pool (Mode 3)
-// ==========================================
-
-func Benchmark_Ants_CustomPool(b *testing.B) {
-	executor, err := NewAntsPoolExecutor(runtime.NumCPU() * 4)
-	if err != nil {
-		b.Fatalf("Failed to create executor: %v", err)
-	}
-	defer executor.Close()
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	stats := &statsCounter{}
-
-	for i := 0; i < b.N; i++ {
-		_ = executor.Submit(context.Background(), func(ctx context.Context) {
-			simulateWork(100 * time.Microsecond)(ctx)
-			stats.increment()
-		})
-	}
-
-	// 等待所有任务完成
-	time.Sleep(1 * time.Second)
-	b.ReportMetric(float64(stats.get()), "tasks")
-}
-
-// ==========================================
-// Benchmark 4: Ants Func Pool (Mode 4)
-// ==========================================
-
-// 4.1 错误用法：使用 Submit 接口（不推荐）
-func Benchmark_Ants_FuncPool(b *testing.B) {
-	handler := func(arg any) {
-		if ft, ok := arg.(*funcTask); ok {
-			simulateWork(100 * time.Microsecond)(ft.ctx)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = scheduler.Submit(ctx, sourceID, simulateTransportTask)
 		}
-	}
+	})
 
-	executor, err := NewAntsFuncExecutor(runtime.NumCPU()*4, handler)
-	if err != nil {
-		b.Fatalf("Failed to create executor: %v", err)
-	}
-	defer executor.Close()
+	b.Run("DirectPerCore", func(b *testing.B) {
+		exec, _ := NewPerCoreExecutor(
+			WithNumCores(runtime.NumCPU()),
+			WithQueueSize(10000),
+		)
+		defer exec.Close()
 
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	stats := &statsCounter{}
-
-	for i := 0; i < b.N; i++ {
-		_ = executor.Submit(context.Background(), func(ctx context.Context) {
-			simulateWork(100 * time.Microsecond)(ctx)
-			stats.increment()
-		})
-	}
-
-	// 等待所有任务完成
-	time.Sleep(1 * time.Second)
-	b.ReportMetric(float64(stats.get()), "tasks")
-}
-
-// 4.2 正确用法：使用 Invoke 接口（推荐）
-func Benchmark_AntsFuncPool_Invoke(b *testing.B) {
-	executor, err := NewAntsFuncExecutor(runtime.NumCPU()*4, workHandler)
-	if err != nil {
-		b.Fatalf("Failed to create executor: %v", err)
-	}
-	defer executor.Close()
-
-	// Warm-up
-	for i := 0; i < runtime.NumCPU()*10; i++ {
-		item := &workItem{id: i}
-		_ = executor.Invoke(context.Background(), item)
-	}
-	time.Sleep(100 * time.Millisecond)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	var completed atomic.Int64
-
-	for i := 0; i < b.N; i++ {
-		item := &workItem{id: i}
-		_ = executor.Invoke(context.Background(), item)
-		completed.Add(1)
-	}
-
-	// 等待所有任务完成
-	time.Sleep(1 * time.Second)
-	b.ReportMetric(float64(completed.Load()), "tasks")
-}
-
-// ==========================================
-// Benchmark 5: Ants Multi Pool (Mode 5)
-// ==========================================
-
-func Benchmark_Ants_MultiPool(b *testing.B) {
-	executor, err := NewAntsMultiExecutor(4, runtime.NumCPU())
-	if err != nil {
-		b.Fatalf("Failed to create executor: %v", err)
-	}
-	defer executor.Close()
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	stats := &statsCounter{}
-
-	for i := 0; i < b.N; i++ {
-		_ = executor.Submit(context.Background(), func(ctx context.Context) {
-			simulateWork(100 * time.Microsecond)(ctx)
-			stats.increment()
-		})
-	}
-
-	// 等待所有任务完成
-	time.Sleep(1 * time.Second)
-	b.ReportMetric(float64(stats.get()), "tasks")
-}
-
-// ==========================================
-// 并行对比测试
-// ==========================================
-
-func Benchmark_Parallel_PerCore_Affinity(b *testing.B) {
-	executor, err := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
-		WithQueueSize(100000),
-		WithEnableAffinity(true),
-	)
-	if err != nil {
-		b.Fatalf("Failed to create executor: %v", err)
-	}
-	defer executor.Close()
-
-	// Warm-up
-	for i := 0; i < runtime.NumCPU()*10; i++ {
-		_ = executor.Submit(context.Background(), simulateWork(100*time.Microsecond))
-	}
-	time.Sleep(100 * time.Millisecond)
-
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			_ = executor.Submit(context.Background(), simulateWork(100*time.Microsecond))
+		ctx := context.Background()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = exec.Submit(ctx, simulateTransportTask)
 		}
 	})
 }
 
-func Benchmark_Parallel_Ants_Default(b *testing.B) {
-	executor := NewAntsDefaultExecutor()
-	defer executor.Close()
-
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			_ = executor.Submit(context.Background(), simulateWork(100*time.Microsecond))
-		}
-	})
-}
-
-func Benchmark_Parallel_Ants_CustomPool(b *testing.B) {
-	executor, err := NewAntsPoolExecutor(runtime.NumCPU() * 4)
-	if err != nil {
-		b.Fatalf("Failed to create executor: %v", err)
-	}
-	defer executor.Close()
-
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			_ = executor.Submit(context.Background(), simulateWork(100*time.Microsecond))
-		}
-	})
-}
-
-func Benchmark_Parallel_Ants_FuncPool(b *testing.B) {
-	handler := func(arg any) {
-		if ft, ok := arg.(*funcTask); ok {
-			simulateWork(100 * time.Microsecond)(ft.ctx)
-		}
+// BenchmarkPerCoreVsAnts_PriorityScheduling 优先级调度对比
+func BenchmarkPerCoreVsAnts_PriorityScheduling(b *testing.B) {
+	benchmarks := []struct {
+		name       string
+		createExec func() TaskExecutor
+	}{
+		{
+			name: "PerCore",
+			createExec: func() TaskExecutor {
+				exec, _ := NewPerCoreExecutor(
+					WithNumCores(runtime.NumCPU()),
+					WithQueueSize(10000),
+				)
+				return exec
+			},
+		},
+		{
+			name: "AntsDefault",
+			createExec: func() TaskExecutor {
+				return NewAntsDefaultExecutor()
+			},
+		},
 	}
 
-	executor, err := NewAntsFuncExecutor(runtime.NumCPU()*4, handler)
-	if err != nil {
-		b.Fatalf("Failed to create executor: %v", err)
-	}
-	defer executor.Close()
-
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			_ = executor.Submit(context.Background(), simulateWork(100*time.Microsecond))
-		}
-	})
-}
-
-func Benchmark_Parallel_AntsFuncPool_Invoke(b *testing.B) {
-	executor, err := NewAntsFuncExecutor(runtime.NumCPU()*4, workHandler)
-	if err != nil {
-		b.Fatalf("Failed to create executor: %v", err)
-	}
-	defer executor.Close()
-
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		id := 0
-		for pb.Next() {
-			item := &workItem{id: id}
-			_ = executor.Invoke(context.Background(), item)
-			id++
-		}
-	})
-}
-
-func Benchmark_Parallel_Ants_MultiPool(b *testing.B) {
-	executor, err := NewAntsMultiExecutor(4, runtime.NumCPU())
-	if err != nil {
-		b.Fatalf("Failed to create executor: %v", err)
-	}
-	defer executor.Close()
-
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			_ = executor.Submit(context.Background(), simulateWork(100*time.Microsecond))
-		}
-	})
-}
-
-// ==========================================
-// 不同工作负载的对比
-// ==========================================
-
-// 短任务 (10μs)
-func benchmark_ShortTask(b *testing.B, executor TaskExecutor) {
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_ = executor.Submit(context.Background(), func(ctx context.Context) {
-			start := time.Now()
-			for time.Since(start) < 10*time.Microsecond {
-				_ = i
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			exec := bm.createExec()
+			if closer, ok := exec.(interface{ Close() error }); ok {
+				defer closer.Close()
 			}
+
+			ctx := context.Background()
+
+			// 测试不同优先级任务的提交延迟
+			highPriorityCount := atomic.Int64{}
+			normalPriorityCount := atomic.Int64{}
+
+			b.ResetTimer()
+
+			b.RunParallel(func(pb *testing.PB) {
+				taskNum := 0
+				for pb.Next() {
+					taskNum++
+					isHighPriority := taskNum%10 == 0 // 10% 高优先级
+
+					_ = exec.Submit(ctx, func(ctx context.Context) {
+						if isHighPriority {
+							highPriorityCount.Add(1)
+						} else {
+							normalPriorityCount.Add(1)
+						}
+						simulateRPCHandler(ctx)
+					})
+				}
+			})
 		})
 	}
-}
-
-// 中等任务 (100μs)
-func benchmark_MediumTask(b *testing.B, executor TaskExecutor) {
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_ = executor.Submit(context.Background(), func(ctx context.Context) {
-			start := time.Now()
-			for time.Since(start) < 100*time.Microsecond {
-				_ = fmt.Sprintf("work-%d", i)
-			}
-		})
-	}
-}
-
-// 长任务 (1ms)
-func benchmark_LongTask(b *testing.B, executor TaskExecutor) {
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_ = executor.Submit(context.Background(), func(ctx context.Context) {
-			start := time.Now()
-			for time.Since(start) < 1*time.Millisecond {
-				_ = fmt.Sprintf("work-%d-%d", i, time.Now().UnixNano())
-			}
-		})
-	}
-}
-
-// 基于工作负载的对比测试 - PerCore
-func Benchmark_PerCore_ShortTask(b *testing.B) {
-	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
-		WithQueueSize(100000),
-		WithEnableAffinity(true),
-	)
-	defer executor.Close()
-	benchmark_ShortTask(b, executor)
-}
-
-func Benchmark_PerCore_MediumTask(b *testing.B) {
-	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
-		WithQueueSize(100000),
-		WithEnableAffinity(true),
-	)
-	defer executor.Close()
-	benchmark_MediumTask(b, executor)
-}
-
-func Benchmark_PerCore_LongTask(b *testing.B) {
-	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
-		WithQueueSize(100000),
-		WithEnableAffinity(true),
-	)
-	defer executor.Close()
-	benchmark_LongTask(b, executor)
-}
-
-// 基于工作负载的对比测试 - Ants Default
-func Benchmark_AntsDefault_ShortTask(b *testing.B) {
-	executor := NewAntsDefaultExecutor()
-	defer executor.Close()
-	benchmark_ShortTask(b, executor)
-}
-
-func Benchmark_AntsDefault_MediumTask(b *testing.B) {
-	executor := NewAntsDefaultExecutor()
-	defer executor.Close()
-	benchmark_MediumTask(b, executor)
-}
-
-func Benchmark_AntsDefault_LongTask(b *testing.B) {
-	executor := NewAntsDefaultExecutor()
-	defer executor.Close()
-	benchmark_LongTask(b, executor)
-}
-
-// 基于工作负载的对比测试 - Ants CustomPool
-func Benchmark_AntsCustomPool_ShortTask(b *testing.B) {
-	executor, _ := NewAntsPoolExecutor(runtime.NumCPU() * 4)
-	defer executor.Close()
-	benchmark_ShortTask(b, executor)
-}
-
-func Benchmark_AntsCustomPool_MediumTask(b *testing.B) {
-	executor, _ := NewAntsPoolExecutor(runtime.NumCPU() * 4)
-	defer executor.Close()
-	benchmark_MediumTask(b, executor)
-}
-
-func Benchmark_AntsCustomPool_LongTask(b *testing.B) {
-	executor, _ := NewAntsPoolExecutor(runtime.NumCPU() * 4)
-	defer executor.Close()
-	benchmark_LongTask(b, executor)
-}
-
-// 基于工作负载的对比测试 - Ants FuncPool (Submit - 不推荐)
-func Benchmark_AntsFuncPool_ShortTask(b *testing.B) {
-	handler := func(arg any) {
-		if _, ok := arg.(*funcTask); ok {
-			start := time.Now()
-			for time.Since(start) < 10*time.Microsecond {
-				_ = time.Now().UnixNano()
-			}
-		}
-	}
-	executor, _ := NewAntsFuncExecutor(runtime.NumCPU()*4, handler)
-	defer executor.Close()
-	benchmark_ShortTask(b, executor)
-}
-
-func Benchmark_AntsFuncPool_MediumTask(b *testing.B) {
-	handler := func(arg any) {
-		if _, ok := arg.(*funcTask); ok {
-			start := time.Now()
-			for time.Since(start) < 100*time.Microsecond {
-				_ = fmt.Sprintf("work-%d", time.Now().UnixNano())
-			}
-		}
-	}
-	executor, _ := NewAntsFuncExecutor(runtime.NumCPU()*4, handler)
-	defer executor.Close()
-	benchmark_MediumTask(b, executor)
-}
-
-func Benchmark_AntsFuncPool_LongTask(b *testing.B) {
-	handler := func(arg any) {
-		if _, ok := arg.(*funcTask); ok {
-			start := time.Now()
-			for time.Since(start) < 1*time.Millisecond {
-				_ = fmt.Sprintf("work-%d", time.Now().UnixNano())
-			}
-		}
-	}
-	executor, _ := NewAntsFuncExecutor(runtime.NumCPU()*4, handler)
-	defer executor.Close()
-	benchmark_LongTask(b, executor)
-}
-
-// 基于工作负载的对比测试 - Ants FuncPool (Invoke - 推荐)
-func Benchmark_AntsFuncPool_Invoke_ShortTask(b *testing.B) {
-	shortHandler := func(arg any) {
-		if _, ok := arg.(*workItem); ok {
-			start := time.Now()
-			for time.Since(start) < 10*time.Microsecond {
-				_ = time.Now().UnixNano()
-			}
-		}
-	}
-	executor, _ := NewAntsFuncExecutor(runtime.NumCPU()*4, shortHandler)
-	defer executor.Close()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		item := &workItem{id: i}
-		_ = executor.Invoke(context.Background(), item)
-	}
-}
-
-func Benchmark_AntsFuncPool_Invoke_MediumTask(b *testing.B) {
-	executor, _ := NewAntsFuncExecutor(runtime.NumCPU()*4, workHandler)
-	defer executor.Close()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		item := &workItem{id: i}
-		_ = executor.Invoke(context.Background(), item)
-	}
-}
-
-func Benchmark_AntsFuncPool_Invoke_LongTask(b *testing.B) {
-	longHandler := func(arg any) {
-		if _, ok := arg.(*workItem); ok {
-			start := time.Now()
-			for time.Since(start) < 1*time.Millisecond {
-				_ = fmt.Sprintf("work-%d", time.Now().UnixNano())
-			}
-		}
-	}
-	executor, _ := NewAntsFuncExecutor(runtime.NumCPU()*4, longHandler)
-	defer executor.Close()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		item := &workItem{id: i}
-		_ = executor.Invoke(context.Background(), item)
-	}
-}
-
-// 基于工作负载的对比测试 - Ants MultiPool
-func Benchmark_AntsMultiPool_ShortTask(b *testing.B) {
-	executor, _ := NewAntsMultiExecutor(4, runtime.NumCPU())
-	defer executor.Close()
-	benchmark_ShortTask(b, executor)
-}
-
-func Benchmark_AntsMultiPool_MediumTask(b *testing.B) {
-	executor, _ := NewAntsMultiExecutor(4, runtime.NumCPU())
-	defer executor.Close()
-	benchmark_MediumTask(b, executor)
-}
-
-func Benchmark_AntsMultiPool_LongTask(b *testing.B) {
-	executor, _ := NewAntsMultiExecutor(4, runtime.NumCPU())
-	defer executor.Close()
-	benchmark_LongTask(b, executor)
 }

@@ -4,7 +4,7 @@
 >
 > **Spike 文档**：`docs/07_spike/2026-02-21_spike_m2-storage-engine-roadmap.md`
 >
-> **文档版本**：V1.2（补充专家评审意见：Mini-Page 提升策略、Delta Chain 合并策略、WAL 崩溃恢复、DDD 聚合根）
+> **文档版本**：V1.3（根据专家评审建议优化：调整性能目标、扩展时间估算至 8-10 周、补充 BitmapLock 并发控制设计）
 
 ---
 
@@ -21,7 +21,7 @@
 | 负责人 | 待定 |
 | 分支创建日期 | 2026-03-01 |
 | 计划开工日期 | 待定（PRE 评审通过后） |
-| 计划CI通过日期 | 待定（约 6 周） |
+| 计划CI通过日期 | 待定（约 8-10 周） |
 | 关联需求单号 | [M2 存储引擎层需求](docs/07_spike/2026-02-21_spike_m2-storage-engine-roadmap.md) |
 | 架构师评审状态 | ☐ 待评审 ☐ 评审中 ☐ 评审通过 ☐ 需优化（循环记录） |
 | 预审批结果 | ☐ 未通过 ☐ 已通过（架构师签字/备注：____________ 202X-XX-XX 同意开工） |
@@ -58,18 +58,18 @@
 
 | 操作 | P0（最低/MVP） | P1（推荐） | P2（理想） |
 |------|---------------|-----------|-----------|
-| **点查询（同步）** | < 50μs | < 30μs | < 20μs |
-| **点查询（异步）** | < 60μs | < 40μs | < 25μs |
-| **写入吞吐（同步）** | > 5万 ops/s | > 10万 ops/s | > 20万 ops/s |
-| **写入吞吐（异步）** | > 8万 ops/s | > 15万 ops/s | > 30万 ops/s |
+| **点查询（同步）** | < 100μs | < 60μs | < 30μs |
+| **点查询（异步）** | < 120μs | < 80μs | < 40μs |
+| **写入吞吐（同步）** | > 3万 ops/s | > 5万 ops/s | > 10万 ops/s |
+| **写入吞吐（异步）** | > 5万 ops/s | > 8万 ops/s | > 15万 ops/s |
 | **范围查询** | O(log N + M) | O(log N + M) | O(log N + M) |
 
 **与 Rust 原版对比**（预期差距）：
 
 | 操作 | Rust 原版 | Go MVP P0 | 差距 | 说明 |
 |------|----------|----------|------|------|
-| 点查询 | 10μs | 50μs | 5x | GC + RWMutex 开销 |
-| 写入吞吐 | 200万 ops/s | 5万 ops/s | 40x | GC + 无 SMR 优化 |
+| 点查询 | 10μs | 100μs | 10x | GC 暂停 + RWMutex 开销 |
+| 写入吞吐 | 200万 ops/s | 3万 ops/s | 67x | GC + 无 SMR 优化 |
 
 **3. 质量目标**：
 - 测试覆盖率 ≥ 80%
@@ -404,6 +404,124 @@ func filterCommitted(entries []WALEntry) []WALEntry {
 }
 ```
 
+#### 3.2.4 BitmapLock 并发控制设计（P1 优化）
+
+**设计目标**：从 P0 的 `sync.RWMutex`（全局锁）升级到细粒度锁（BitmapLock），减少锁竞争，提升并发性能。
+
+**BitmapLock 核心设计**：
+```go
+// BitmapLock 细粒度锁实现
+type BitmapLock struct {
+    // 每个 bit 代表一个页面或槽位的锁状态
+    bitmap    []uint64  // 位图数组（64 * N bits）
+    mutex     []sync.Mutex  // 每个 bit 对应一个 mutex（分片锁）
+    shards    int       // 分片数（默认 16，可配置）
+    mask      uint64    // 位掩码
+}
+
+// Lock 锁定指定页面（通过 pageID）
+func (bl *BitmapLock) Lock(pageID uint64) {
+    shard := bl.calculateShard(pageID)
+    bit := bl.calculateBit(pageID)
+
+    // 使用分片锁减少竞争
+    bl.mutex[shard].Lock()
+    defer bl.mutex[shard].Unlock()
+
+    // 设置 bit
+    for {
+        if bl.bitmap[shard] & (1 << bit) == 0 {
+            bl.bitmap[shard] |= (1 << bit)
+            return
+        }
+        // 等待锁释放（spin wait 或 cond.Wait）
+        runtime.Gosched()
+    }
+}
+
+// Unlock 释放指定页面
+func (bl *BitmapLock) Unlock(pageID uint64) {
+    shard := bl.calculateShard(pageID)
+    bit := bl.calculateBit(pageID)
+
+    bl.mutex[shard].Lock()
+    defer bl.mutex[shard].Unlock()
+
+    bl.bitmap[shard] &^= (1 << bit)
+}
+
+// TryLock 尝试锁定（非阻塞）
+func (bl *BitmapLock) TryLock(pageID uint64) bool {
+    shard := bl.calculateShard(pageID)
+    bit := bl.calculateBit(pageID)
+
+    bl.mutex[shard].Lock()
+    defer bl.mutex[shard].Unlock()
+
+    if bl.bitmap[shard] & (1 << bit) == 0 {
+        bl.bitmap[shard] |= (1 << bit)
+        return true
+    }
+    return false
+}
+
+// calculateShard 计算分片索引
+func (bl *BitmapLock) calculateShard(pageID uint64) int {
+    return int(pageID % uint64(bl.shards))
+}
+
+// calculateBit 计算 bit 位置
+func (bl *BitmapLock) calculateBit(pageID uint64) uint64 {
+    return pageID % 64
+}
+```
+
+**锁粒度设计**：
+
+| 锁粒度 | 说明 | 适用场景 | 性能影响 |
+|--------|------|----------|----------|
+| **页面级** | 每个 pageID 一个 bit | 默认方案 | 平衡性能与复杂度 |
+| **槽位级** | 每个 slot 一个 bit | 高并发场景 | 更细粒度，但开销大 |
+| **节点级** | 每个节点一个 bit | 低并发场景 | 简单，但竞争多 |
+
+**分片策略**：
+- **默认分片数**：16（可配置 8/16/32/64）
+- **分片目的**：减少不同 pageID 在同一个 mutex 上的竞争
+- **动态调整**：根据并发压力动态调整分片数
+
+**性能对比**：
+
+| 锁类型 | 并发读 | 并发写 | 内存开销 | 实现复杂度 |
+|--------|--------|--------|----------|------------|
+| sync.RWMutex（P0） | 低竞争 | 高竞争 | 低 | 简单 |
+| BitmapLock（P1） | 中竞争 | 中竞争 | 中 | 中等 |
+| Delta Chain + 乐观锁（P2） | 高竞争 | 低冲突 | 低 | 复杂 |
+
+**P0 → P1 迁移路径**：
+```go
+// P0: 使用 RWMutex
+type BfTree struct {
+    rwLock sync.RWMutex
+}
+
+// P1: 升级到 BitmapLock
+type BfTree struct {
+    bitmapLock *BitmapLock  // 替换 rwLock
+    rwLock     sync.RWMutex // 保留作为 fallback
+}
+
+// 兼容性：提供配置开关
+func NewBfTree(config *Config) (*BfTree, error) {
+    tree := &BfTree{}
+    if config.EnableBitmapLock {
+        tree.bitmapLock = NewBitmapLock(config.BitmapLockShards)
+    } else {
+        // 使用 RWMutex
+    }
+    return tree, nil
+}
+```
+
 #### 3.3 DDD 领域建模
 
 **聚合根设计**：
@@ -525,7 +643,7 @@ var (
 | **性能目标无法达成** | 高 | 渐进式优化，先跑通再优化；分 P0/P1/P2 三阶段 |
 | **并发安全问题** | 高 | 使用 race detector；边界测试；代码评审 |
 | **WAL 恢复失败** | 中 | 充分测试崩溃恢复场景；单元测试 + 集成测试 |
-| **时间估算偏差** | 中 | 预留 1 周缓冲时间；分阶段检查点 |
+| **时间估算偏差** | 中 | 预留 4-6 周缓冲时间（8-10 周总周期）；分阶段检查点 |
 | **接口设计变更** | 低 | 基于 Spike 文档设计；架构师评审 |
 | **泛型学习曲线** | 低 | AsyncOperation[T] 已存在，复用即可 |
 | **测试覆盖率不足** | 中 | 使用 testify；表驱动测试；强制 80% 覆盖率 |
@@ -534,7 +652,7 @@ var (
 
 | 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施（含AI辅助修改） | 优化结果 |
 |----------|----------|------------------|--------------|--------------------------|----------|
-| **第1轮** | 2026-03-01 | AI 专家评审团 | **综合评分：7.5/10，有条件通过** | **V1.2 已补充**：<br>- ✅ 添加 Mini-Page 提升策略（3.2.1）<br/>- ✅ 添加 Delta Chain 合并策略（3.2.2）<br/>- ✅ 添加 WAL 崩溃恢复详细方案（3.2.3）<br/>- ✅ 添加 DDD 领域建模（3.3） | **已完成** |
+| **第1轮** | 2026-03-01 | AI 专家评审团 | **综合评分：7.5/10，有条件通过**<br/>**存储专家**：Mini-Page 提升策略、Delta Chain 合并策略、WAL 崩溃恢复细节不足<br/>**DDD 专家**：聚合根设计需明确<br/>**Go 专家**：性能目标偏乐观，时间估算需调整 | **V1.2 已补充 P0 内容**：<br>- ✅ 3.2.1 Mini-Page 提升策略<br/>- ✅ 3.2.2 Delta Chain 合并策略<br/>- ✅ 3.2.3 WAL 崩溃恢复详细方案<br/>- ✅ 3.3 DDD 领域建模（聚合根）<br/><br/>**V1.3 已补充 P1 内容**：<br>- ✅ 调整性能目标（Go 现实性）<br/>- ✅ 扩展时间估算（8-10 周）<br>- ✅ 3.2.4 BitmapLock 并发控制设计 | **已完成** |
 | 第2轮 | 待定 | 待定 | 待评审 | - | 待评审 |
 
 ### 6. 预审批确认
@@ -554,9 +672,9 @@ var (
 | 架构师Post批准 | 待定 | 待定 | [批准签字/备注] |
 | 提交GitHub | 待定 | 待定 | [GitHub PR链接] |
 
-**实施计划**（6 周 = Spike 4 周 + 2 周缓冲）：
+**实施计划**（8-10 周 = Spike 4 周 + 4-6 周缓冲）：
 
-> **说明**：本计划采用 Spike 文档的详细技术拆分（LeafNode → InnerNode → PageTable → Tree），但周期从 4 周扩展到 6 周（+50% 风险缓冲）。
+> **说明**：本计划采用 Spike 文档的详细技术拆分（LeafNode → InnerNode → PageTable → Tree），根据专家评审建议，周期从 4 周扩展到 8-10 周（+100%~150% 风险缓冲），考虑 Go 语言性能特性与并发控制复杂度。
 
 | 阶段 | 任务 | 时间估算 | 负责人 | 依赖 |
 |------|------|----------|--------|------|
@@ -589,11 +707,27 @@ var (
 | Week 5.3 | 恢复集成 | 1.5 天 | - | - |
 | Week 5.4 | 单元测试补充 | 0.5 天 | - | - |
 | Week 5.5 | 性能测试 + 初步优化 | 0.5 天 | - | - |
-| **Week 6** | 性能优化 + 文档 + 缓冲 | 5 天 | - | Week 5 |
+| **Week 6** | 性能优化 + 文档 + Bug 修复 | 5 天 | - | Week 5 |
 | Week 6.1 | 性能优化（P0 目标达标） | 1.5 天 | - | - |
 | Week 6.2 | Bug 修复 | 1.5 天 | - | - |
 | Week 6.3 | 文档补充 | 1 天 | - | - |
 | Week 6.4 | CI/CD 修复 | 1 天 | - | - |
+| **Week 7-8** | P1 并发控制优化（BitmapLock） | 10 天 | - | Week 6 |
+| Week 7.1 | BitmapLock 结构实现 | 2 天 | - | - |
+| Week 7.2 | Lock/Unlock/TryLock 实现 | 2 天 | - | - |
+| Week 7.3 | 分片策略实现与测试 | 1.5 天 | - | - |
+| Week 7.4 | 集成到 Bf-Tree | 1.5 天 | - | - |
+| Week 7.5 | 性能测试与对比 | 1 天 | - | - |
+| Week 8.1 | 并发测试（race detector） | 1.5 天 | - | - |
+| Week 8.2 | 性能调优 | 2 天 | - | - |
+| Week 8.3 | Bug 修复 | 1.5 天 | - | - |
+| **Week 9-10** | P1/P2 性能优化 + 压力测试 + 缓冲 | 10 天 | - | Week 8 |
+| Week 9.1 | P1 性能目标验证 | 2 天 | - | - |
+| Week 9.2 | P2 性能优化（Delta Chain） | 2 天 | - | - |
+| Week 9.3 | 压力测试（长时间稳定性） | 1 天 | - | - |
+| Week 10.1 | 性能分析与调优 | 2 天 | - | - |
+| Week 10.2 | Bug 修复与回归测试 | 2 天 | - | - |
+| Week 10.3 | 文档更新与交付 | 1 天 | - | - |
 
 **分阶段检查点**（与 Spike 文档对齐）：
 
@@ -605,16 +739,19 @@ var (
 | **CP4** | Week 4 结束 | Tree 结构完成，CRUD 功能正常，异步方法可用 |
 | **CP5** | Week 5 结束 | WAL 集成完成，崩溃恢复验证通过 |
 | **CP6** | Week 6 结束 | 所有测试通过，性能达标（P0），CI/CD 全绿 |
+| **CP7** | Week 8 结束 | BitmapLock 实现，P1 性能目标验证通过 |
+| **CP8** | Week 10 结束 | P2 性能优化完成，压力测试通过，交付准备完成 |
 
 **与 Spike 文档对比**：
 
-| 维度 | Spike 文档（4 周） | PRE 文档（6 周） | 调整原因 |
+| 维度 | Spike 文档（4 周） | PRE 文档（8-10 周） | 调整原因 |
 |------|------------------|-----------------|----------|
 | Week 1 | Config + bits + errors | 同上 + LeafNode 骨架 | 拆分更细 |
 | Week 2 | LeafNode 实现 | LeafNode + Mini-Page | 增加 Mini-Page |
 | Week 3 | InnerNode + PageTable | 同上 + Delta Chain | 增加 Delta Chain |
 | Week 4 | Tree + CRUD + 异步 | 同上 | 一致 |
 | Week 5-6 | （无） | WAL + 测试 + 优化 | 风险缓冲 |
+| Week 7-10 | （无） | BitmapLock + P1/P2 性能优化 | 考虑 Go 语言性能特性与并发控制复杂度 |
 
 ### 2. CI流程记录（修复Bug直至通过）
 
@@ -659,8 +796,8 @@ var (
 
 | 优先级 | 任务内容 | 预估工期 | 关联PR/需求 | 备注 |
 |--------|----------|----------|-------------|------|
-| 高 | P1 性能优化（Bitmap Lock） | 1 周 | PR-090 | 并发性能优化 |
-| 中 | P2 性能优化（Delta Chain） | 1 周 | PR-091 | 写入放大优化 |
+| 高 | P1 性能优化（BitmapLock） | 2 周 | Week 7-8 | 本次 PR 包含 |
+| 中 | P2 性能优化（Delta Chain） | 1 周 | Week 9 | 本次 PR 包含 |
 | 中 | 压缩算法实现 | 1 周 | PR-092 | 空间优化 |
 | 低 | 云存储后端（CloudStorage） | 2 周 | PR-093 | Phase 3+ |
 

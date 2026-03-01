@@ -1538,7 +1538,7 @@ func TestLibp2pRPC_SetExecutor(t *testing.T) {
 	defer rpc.Close()
 
 	// 验证初始 provider
-	if rpc.provider != mockPool {
+	if rpc.provider.Load().(service.TaskExecutor) != mockPool {
 		t.Errorf("Initial provider mismatch")
 	}
 
@@ -1547,14 +1547,8 @@ func TestLibp2pRPC_SetExecutor(t *testing.T) {
 	rpc.SetExecutor(newPool)
 
 	// 验证 provider 已更新
-	if rpc.provider != newPool {
+	if rpc.provider.Load().(service.TaskExecutor) != newPool {
 		t.Errorf("SetExecutor did not update provider")
-	}
-
-	// nil provider 也应该被接受
-	rpc.SetExecutor(nil)
-	if rpc.provider != nil {
-		t.Errorf("SetExecutor(nil) should set provider to nil")
 	}
 }
 

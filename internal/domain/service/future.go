@@ -3,6 +3,7 @@ package service
 
 import (
 	"context"
+	"sync"
 )
 
 // Future[T] 表示一个异步计算的结果
@@ -11,6 +12,7 @@ type Future[T any] struct {
 	result T
 	err    error
 	done   chan struct{}
+	once   sync.Once // 确保 Resolve/Reject 只执行一次
 }
 
 // NewFuture 创建一个未完成的 Future
@@ -20,16 +22,20 @@ func NewFuture[T any]() *Future[T] {
 	}
 }
 
-// Resolve 设置成功结果
+// Resolve 设置成功结果（并发安全）
 func (f *Future[T]) Resolve(result T) {
-	f.result = result
-	close(f.done)
+	f.once.Do(func() {
+		f.result = result
+		close(f.done)
+	})
 }
 
-// Reject 设置错误结果
+// Reject 设置错误结果（并发安全）
 func (f *Future[T]) Reject(err error) {
-	f.err = err
-	close(f.done)
+	f.once.Do(func() {
+		f.err = err
+		close(f.done)
+	})
 }
 
 // Get 阻塞等待结果
@@ -56,6 +62,8 @@ func (f *Future[T]) IsDone() bool {
 
 // SubmitWithResult 提交带返回值的任务（泛型辅助函数）
 // 返回 *Future[T]，通过 future.Get(ctx) 获取结果
+//
+// 注意：如果 executor.Submit 返回错误（如队列满），Future 会被立即 reject
 func SubmitWithResult[T any](
 	executor TaskExecutor,
 	ctx context.Context,
@@ -64,7 +72,7 @@ func SubmitWithResult[T any](
 ) *Future[T] {
 	future := NewFuture[T]()
 
-	_ = executor.Submit(ctx, priority, func(execCtx context.Context) {
+	err := executor.Submit(ctx, priority, func(execCtx context.Context) {
 		result, err := task(execCtx)
 		if err != nil {
 			future.Reject(err)
@@ -72,6 +80,11 @@ func SubmitWithResult[T any](
 			future.Resolve(result)
 		}
 	})
+
+	// 如果提交失败，立即 reject future
+	if err != nil {
+		future.Reject(err)
+	}
 
 	return future
 }

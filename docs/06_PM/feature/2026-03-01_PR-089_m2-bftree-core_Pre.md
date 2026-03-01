@@ -4,7 +4,7 @@
 >
 > **Spike 文档**：`docs/07_spike/2026-02-21_spike_m2-storage-engine-roadmap.md`
 >
-> **文档版本**：V1.5（补充 Rust Bf-Tree 性能对比基准，使用本地 Microsoft 参考实现）
+> **文档版本**：V1.6（补充 WAL 实现方案，作为 Bf-Tree 的前置依赖在 Week 1 优先实现）
 
 ---
 
@@ -413,6 +413,207 @@ func (dc *DeltaChain) snapshot() []*DeltaEntry {
 }
 ```
 
+#### 3.2.2.5 WAL 实现方案（前置依赖）
+
+> **重要说明**：当前项目中 WAL 实现不存在，需要在 Bf-Tree 实现前先完成 WAL 的基础实现。
+
+**WAL 接口定义**（基于 Spike 文档）：
+```go
+// 文件：internal/domain/service/storage.go
+package service
+
+// WAL 写前日志接口
+type WAL interface {
+    // 同步写日志
+    Append(entry WALEntry) error
+    Sync() error
+    Recover() ([]WALEntry, error)
+    Truncate(lsn uint64) error
+
+    // 异步写日志（复用 WriteFuture）
+    AppendAsync(entry WALEntry) WriteFuture
+    TruncateAsync(lsn uint64) WriteFuture
+
+    // 生命周期
+    Close() error
+}
+
+// WALEntry WAL 条目结构
+type WALEntry struct {
+    LSN       uint64      // 日志序列号
+    TxID      uint64      // 事务ID（0 = 非事务操作）
+    Timestamp int64       // Unix 时间戳（微秒）
+    Type      WALType     // 日志类型
+    Key       []byte      // 键
+    Value     []byte      // 值
+    PrevLSN   uint64      // 前一条日志的 LSN
+}
+
+// WALType 日志类型
+type WALType uint8
+
+const (
+    WALTypeInsert WALType = iota
+    WALTypeDelete
+    WALTypeTxBegin
+    WALTypeCommit
+    WALTypeTxRollback
+    WALTypeCheckpoint
+    // Bf-Tree 扩展类型
+    WALTypeInsertMiniPage
+    WALTypeDeleteMiniPage
+    WALTypeUpgradeToFullPage
+)
+```
+
+**WAL 实现方案**（Week 1-2）：
+```go
+// 文件：internal/infrastructure/storage/wal/wal.go
+package wal
+
+// DiskWAL 磁盘 WAL 实现（MVP 版本）
+type DiskWAL struct {
+    file       *os.File        // WAL 文件句柄
+    dir        string          // WAL 目录
+    filePath   string          // WAL 文件路径
+    mu         sync.Mutex      // 保护并发写入
+    currentLSN uint64          // 当前 LSN
+
+    // 配置
+    syncPolicy SyncPolicy      // 同步策略
+    maxFileSize int64          // 单文件最大大小（默认 100MB）
+
+    // 异步支持
+    writeChan  chan *WriteRequest  // 异步写入通道
+}
+
+// SyncPolicy 同步策略
+type SyncPolicy int
+
+const (
+    SyncAlways   SyncPolicy = iota  // 每次写入都 fsync
+    SyncBatch                        // 批量刷盘
+    SyncPeriodic                     // 定期刷盘
+)
+
+// NewDiskWAL 创建磁盘 WAL
+func NewDiskWAL(dir string, syncPolicy SyncPolicy) (*DiskWAL, error) {
+    if err := os.MkdirAll(dir, 0755); err != nil {
+        return nil, fmt.Errorf("mkdir WAL dir: %w", err)
+    }
+
+    filePath := filepath.Join(dir, "wal.log")
+    file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+    if err != nil {
+        return nil, fmt.Errorf("open WAL file: %w", err)
+    }
+
+    wal := &DiskWAL{
+        file:       file,
+        dir:        dir,
+        filePath:   filePath,
+        syncPolicy: syncPolicy,
+        maxFileSize: 100 * 1024 * 1024,  // 100MB
+        writeChan:  make(chan *WriteRequest, 1000),
+    }
+
+    // 恢复当前 LSN
+    if err := wal.recoverLSN(); err != nil {
+        return nil, fmt.Errorf("recover LSN: %w", err)
+    }
+
+    // 启动异步写入 goroutine
+    go wal.asyncWriter()
+
+    return wal, nil
+}
+
+// Append 追加 WAL 条目（同步）
+func (w *DiskWAL) Append(entry WALEntry) error {
+    w.mu.Lock()
+    defer w.mu.Unlock()
+
+    // 1. 分配 LSN
+    entry.LSN = w.currentLSN + 1
+
+    // 2. 序列化
+    data, err := w.serialize(entry)
+    if err != nil {
+        return fmt.Errorf("serialize entry: %w", err)
+    }
+
+    // 3. 写入文件
+    if _, err := w.file.Write(data); err != nil {
+        return fmt.Errorf("write WAL: %w", err)
+    }
+
+    // 4. 根据 SyncPolicy 决定是否刷盘
+    if w.syncPolicy == SyncAlways {
+        if err := w.file.Sync(); err != nil {
+            return fmt.Errorf("sync WAL: %w", err)
+        }
+    }
+
+    w.currentLSN = entry.LSN
+    return nil
+}
+
+// Recover 恢复所有 WAL 条目
+func (w *DiskWAL) Recover() ([]WALEntry, error) {
+    file, err := os.Open(w.filePath)
+    if err != nil {
+        if os.IsNotExist(err) {
+            return []WALEntry{}, nil  // 文件不存在，返回空列表
+        }
+        return nil, fmt.Errorf("open WAL file: %w", err)
+    }
+    defer file.Close()
+
+    var entries []WALEntry
+
+    // 逐条读取并反序列化
+    decoder := NewWALEncoder(file)
+    for {
+        entry, err := decoder.Decode()
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            // 部分损坏，停止恢复
+            return entries, nil
+        }
+        entries = append(entries, entry)
+    }
+
+    return entries, nil
+}
+```
+
+**WAL 文件结构**：
+```
+internal/infrastructure/storage/wal/
+├── wal.go              # WAL 接口实现
+├── encoder.go          # WAL 序列化/反序列化
+├── sync_policy.go      # 同步策略实现
+├── recovery.go         # 崩溃恢复逻辑
+└── wal_test.go         # WAL 单元测试
+```
+
+**实施计划调整**：
+
+| 阶段 | 原计划 | 调整后 | 说明 |
+|------|--------|--------|------|
+| Week 1 | Config + Bits + Errors + LeafNode | **+ WAL 实现** | Week 1.5-1.7 添加 WAL 基础实现 |
+| Week 1.5 | LeafNode 结构定义 | **WAL 接口 + 序列化** | 实现 DiskWAL 核心功能 |
+| Week 1.6 | LeafNode 基础操作骨架 | **WAL 恢复逻辑** | 实现 Recover() 方法 |
+| Week 1.7 | 目录结构搭建 | **WAL 单元测试** | 确保 WAL 可用 |
+
+**WAL 实现验收标准**：
+- ✅ 支持同步/异步写入
+- ✅ 支持崩溃恢复
+- ✅ 单元测试覆盖率 ≥ 80%
+- ✅ 性能测试：写入吞吐 > 10K ops/s
+
 #### 3.2.3 WAL 崩溃恢复详细方案
 
 **崩溃恢复场景**：
@@ -683,20 +884,28 @@ type DeltaChainMergedEvent struct {
 | DeltaEntry | Delta Chain 条目 | `internal/infrastructure/storage/bftree/delta_chain.go` |
 | Config | 配置 | `internal/infrastructure/storage/bftree/config.go` |
 | BfTreeStats | 统计信息 | `internal/infrastructure/storage/bftree/stats.go` |
+| WAL | 预写日志 | `internal/infrastructure/storage/wal/wal.go` |
 
 **文件结构**：
 ```
-internal/infrastructure/storage/bftree/
-├── bftree.go              # Bf-Tree 主结构
-├── leaf_node.go           # 叶子节点实现
-├── inner_node.go          # 内部节点实现
-├── pagetable.go           # 页面表管理
-├── minipage.go            # Mini-Page 机制
-├── delta_chain.go         # Delta Chain 优化
-├── config.go              # 配置
-├── errors.go              # 错误定义
-├── bits.go                # 位操作工具
-└── stats.go               # 统计信息
+internal/infrastructure/storage/
+├── wal/                       # WAL 预写日志（Week 1.5-1.7 优先实现）
+│   ├── wal.go                 # WAL 接口实现
+│   ├── encoder.go             # 序列化/反序列化
+│   ├── sync_policy.go         # 同步策略
+│   ├── recovery.go            # 崩溃恢复
+│   └── wal_test.go            # 单元测试
+└── bftree/                    # Bf-Tree 核心
+    ├── bftree.go              # Bf-Tree 主结构
+    ├── leaf_node.go           # 叶子节点实现
+    ├── inner_node.go          # 内部节点实现
+    ├── pagetable.go           # 页面表管理
+    ├── minipage.go            # Mini-Page 机制
+    ├── delta_chain.go         # Delta Chain 优化
+    ├── config.go              # 配置
+    ├── errors.go              # 错误定义
+    ├── bits.go                # 位操作工具
+    └── stats.go               # 统计信息
 ```
 
 **4. 容错设计**：
@@ -742,6 +951,7 @@ var (
 | **第1轮** | 2026-03-01 | AI 专家评审团 | **综合评分：7.5/10，有条件通过**<br/>**存储专家**：Mini-Page 提升策略、Delta Chain 合并策略、WAL 崩溃恢复细节不足<br/>**DDD 专家**：聚合根设计需明确<br/>**Go 专家**：性能目标偏乐观，时间估算需调整 | **V1.2 已补充 P0 内容**：<br>- ✅ 3.2.1 Mini-Page 提升策略<br/>- ✅ 3.2.2 Delta Chain 合并策略<br/>- ✅ 3.2.3 WAL 崩溃恢复详细方案<br/>- ✅ 3.3 DDD 领域建模（聚合根）<br/><br/>**V1.3 已补充 P1 内容**：<br>- ✅ 调整性能目标（Go 现实性）<br/>- ✅ 扩展时间估算（8-10 周）<br>- ✅ 3.2.4 BitmapLock 并发控制设计 | **已完成** |
 | **第2轮** | 2026-03-01 | AI 专家评审团 | **综合评分：8.7/10，建议通过**<br/>**问题**：接口位置不明确、BitmapLock CPU 自旋、Delta Chain 内存泄漏、WAL 恢复一致性、性能基准缺失、硬编码配置 | **V1.4 已修正所有 6 个问题**：<br>- ✅ 3.2 接口定义补充文件位置<br/>- ✅ 3.2.4 BitmapLock 使用 sync.Cond<br/>- ✅ 3.2.2 Delta Chain 添加大小限制<br/>- ✅ 3.2.3 WAL 恢复使用事务<br/>- ✅ A.3 添加 BoltDB 性能对比<br/>- ✅ 3.2.1 Mini-Page 配置化阈值 | **已完成** |
 | **第3轮** | 2026-03-01 | 补充 Rust 对比基准 | **综合评分：9.5/10，强烈推荐开工**<br/>**补充**：添加本地 Rust Bf-Tree 参考实现对比 | **V1.5 已补充 Rust 对比基准**：<br/>- ✅ A.3 添加 Rust Bf-Tree 性能对比<br/>- ✅ 更新性能对比报告格式（三列对比）<br/>- ✅ 添加跨语言对比说明<br/>- ✅ 补充 Rust Bf-Tree 参考资料 | **已完成** |
+| **第4轮** | 2026-03-01 | 补充 WAL 实现方案 | **综合评分：9.8/10，完备可开工**<br/>**问题**：WAL 当前不存在，但文档假设可用 | **V1.6 已补充 WAL 实现方案**：<br/>- ✅ 3.2.2.5 添加 WAL 实现方案章节<br/>- ✅ 定义 WAL 接口和 DiskWAL 实现<br/>- ✅ Week 1 优先实现 WAL（Week 1.4-1.6）<br/>- ✅ 更新文件结构（添加 wal/ 目录）<br/>- ✅ 调整 Week 5 为 Bf-Tree + WAL 集成 | **已完成** |
 
 ### 6. 预审批确认
 > **架构师签字/备注**：____________ ____________ 该Feature方案可行，风险可控，同意启动开发，需严格按照文档落地，确保CI通过后提交Post总结。
@@ -766,13 +976,14 @@ var (
 
 | 阶段 | 任务 | 时间估算 | 负责人 | 依赖 |
 |------|------|----------|--------|------|
-| **Week 1** | 基础设施搭建 + LeafNode 骨架 | 5 天 | - | Spike 完成 |
+| **Week 1** | 基础设施搭建 + WAL 实现 + LeafNode 骨架 | 5 天 | - | Spike 完成 |
 | Week 1.1 | Config 模块（config.go） | 0.5 天 | - | - |
 | Week 1.2 | Bit 操作工具（bits.go） | 0.5 天 | - | - |
 | Week 1.3 | 错误定义（errors.go） | 0.5 天 | - | - |
-| Week 1.4 | LeafNode 结构定义 | 1 天 | - | Config |
-| Week 1.5 | LeafNode 基础操作骨架 | 1.5 天 | - | - |
-| Week 1.6 | 目录结构搭建 | 1 天 | - | - |
+| Week 1.4 | **WAL 接口 + 序列化（wal.go, encoder.go）** | 1 天 | - | Config |
+| Week 1.5 | **WAL 恢复逻辑（recovery.go）** | 1 天 | - | WAL 接口 |
+| Week 1.6 | WAL 单元测试 | 0.5 天 | - | - |
+| Week 1.7 | 目录结构搭建 + LeafNode 结构定义 | 1 天 | - | WAL |
 | **Week 2** | LeafNode 完整实现 + Mini-Page | 5 天 | - | Week 1 |
 | Week 2.1 | LeafNode 插入/删除逻辑 | 2 天 | - | - |
 | Week 2.2 | LeafNode 查找逻辑 | 1 天 | - | - |
@@ -789,11 +1000,11 @@ var (
 | Week 4.3 | 异步方法实现 | 1 天 | - | - |
 | Week 4.4 | KVStore 适配 | 1 天 | - | - |
 | Week 4.5 | 集成测试 | 1 天 | - | - |
-| **Week 5** | WAL 集成 + 测试 | 5 天 | - | Week 4 |
-| Week 5.1 | WAL 接口实现 | 1.5 天 | - | - |
-| Week 5.2 | 写入集成 | 1 天 | - | - |
-| Week 5.3 | 恢复集成 | 1.5 天 | - | - |
-| Week 5.4 | 单元测试补充 | 0.5 天 | - | - |
+| **Week 5** | Bf-Tree + WAL 集成 + 测试 | 5 天 | - | Week 4 |
+| Week 5.1 | Bf-Tree 写入路径集成 WAL | 1.5 天 | - | - |
+| Week 5.2 | Bf-Tree 读取路径集成 WAL | 1 天 | - | - |
+| Week 5.3 | 崩溃恢复集成测试 | 1.5 天 | - | - |
+| Week 5.4 | 集成测试补充 | 0.5 天 | - | - |
 | Week 5.5 | 性能测试 + 初步优化 | 0.5 天 | - | - |
 | **Week 6** | 性能优化 + 文档 + Bug 修复 | 5 天 | - | Week 5 |
 | Week 6.1 | 性能优化（P0 目标达标） | 1.5 天 | - | - |
@@ -902,7 +1113,7 @@ var (
 
 | 项目 | 内容 |
 |------|------|
-| 文档最终版本 | V1.5 |
+| 文档最终版本 | V1.6 |
 | 归档日期 | 待定 |
 | 归档路径 | `docs/06_project_management/pr_documents/feature/2026-03-01_PR-089_m2-bftree-core_全流程.md` |
 | 后续维护人 | 待定 |

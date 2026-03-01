@@ -6,10 +6,10 @@
 //   - 异步操作执行
 //
 // 设计原则：
-//   1. 简单易用：提供 Safe() 和 SafeContext() 两个核心函数
-//   2. 可扩展：支持自定义 panic 处理器
-//   3. 上下文感知：SafeContext() 支持 context.Context
-//   4. 类型安全：PanicError 实现 error 接口
+//  1. 简单易用：提供 Safe() 和 SafeContext() 两个核心函数
+//  2. 可扩展：支持自定义 panic 处理器
+//  3. 上下文感知：SafeContext() 支持 context.Context
+//  4. 类型安全：PanicError 实现 error 接口
 package recovery
 
 import (
@@ -26,8 +26,8 @@ import (
 
 // PanicError 表示被恢复的 panic
 type PanicError struct {
-	R     any       // panic 值
-	Stack []byte    // 堆栈信息
+	R     any    // panic 值
+	Stack []byte // 堆栈信息
 }
 
 // Error 实现 error 接口
@@ -82,11 +82,13 @@ var LogrusHandler Handler = func(r any, stack []byte) {
 // Safe 安全执行函数，捕获 panic
 //
 // 参数：
-//   fn: 要执行的函数
-//   handlers: 可选的 panic 处理器（如果没有提供，使用 DefaultHandler）
+//
+//	fn: 要执行的函数
+//	handlers: 可选的 panic 处理器（如果没有提供，使用 DefaultHandler）
 //
 // 返回：
-//   error: 如果发生 panic，返回 *PanicError；否则返回 nil
+//
+//	error: 如果发生 panic，返回 *PanicError；否则返回 nil
 //
 // 示例：
 //
@@ -127,12 +129,14 @@ func Safe(fn func(), handlers ...Handler) (err error) {
 // SafeContext 安全执行带上下文的函数，捕获 panic
 //
 // 参数：
-//   ctx: 上下文
-//   fn: 要执行的函数（接收 context.Context）
-//   handlers: 可选的 panic 处理器
+//
+//	ctx: 上下文
+//	fn: 要执行的函数（接收 context.Context）
+//	handlers: 可选的 panic 处理器
 //
 // 返回：
-//   error: 如果发生 panic 或 context 取消，返回错误
+//
+//	error: 如果发生 panic 或 context 取消，返回错误
 //
 // 示例：
 //

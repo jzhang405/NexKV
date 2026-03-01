@@ -47,13 +47,6 @@ func (a *RPCAsyncAdapter) getConfig() (*service.RPCAsyncConfig, service.TaskExec
 	return a.config, a.config.Executor
 }
 
-// getExecutor 安全获取 executor（读锁保护）
-func (a *RPCAsyncAdapter) getExecutor() service.TaskExecutor {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.config.Executor
-}
-
 // getTimeout 安全获取默认超时（读锁保护）
 func (a *RPCAsyncAdapter) getTimeout() int64 {
 	a.mu.RLock()

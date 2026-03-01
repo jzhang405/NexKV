@@ -33,7 +33,6 @@ go.work.sum
 # Editor/IDE
 .idea/
 .vscode/
-.claude/
 .spec-workflow/
 .serena/
 bin/nexkv*

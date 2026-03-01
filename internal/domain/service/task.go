@@ -81,23 +81,17 @@ type Manageable interface {
 	CloseWithTimeout(timeout time.Duration) error
 }
 
-// Monitorable 监控接口（组合接口，向后兼容）
-// 组合：Observable + Manageable
-type Monitorable interface {
-	Observable
-	Manageable
-}
-
 // ==========================================
 // 组合接口
 // ==========================================
 
 // AsyncTaskExecutor 异步任务执行器
-// 组合：TaskExecutor + TaskScheduler + Monitorable
+// 组合：TaskExecutor + TaskScheduler + Observable + Manageable
 type AsyncTaskExecutor interface {
 	TaskExecutor
 	TaskScheduler
-	Monitorable
+	Observable
+	Manageable
 }
 
 // ==========================================

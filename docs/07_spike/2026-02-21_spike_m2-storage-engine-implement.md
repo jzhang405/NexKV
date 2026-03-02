@@ -10,21 +10,26 @@
 
 ## 📋 关联文档
 
-| 文档 | 说明 |
-|------|------|
-| [Interface 定义](./2026-02-21_spike_m2-storage-engine-interface.md) | 接口设计（总纲领性文件） |
-| [实现方案](./2026-02-21_spike_m2-storage-engine-implement.md) | 技术实现（本文档） |
-| [实施路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md) | 时间规划 |
-| [**DDD 架构参考**](./2026-02-18_spike_nexkv-ddd-implement.md) | **完整 DDD 实施方案** |
-| [**统一执行器架构（Per-Core + 接口拆分）**](./2026-02-25_spike-glm-unified-executor.md) | **执行层核心** - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 + 可暂停调度器 |
+| 文档 | 版本 | 说明 |
+|------|------|------|
+| [Interface 定义](./2026-02-21_spike_m2-storage-engine-interface.md) | v2.2 | 接口设计（总纲领性文件） |
+| [实现方案](./2026-02-21_spike_m2-storage-engine-implement.md) | v2.1 | 技术实现（本文档） |
+| [实施路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md) | v2.0 | 时间规划 |
+| [性能基准](./2026-02-21_spike_m2-storage-engine-benchmark.md) | v2.0 | 性能测试方案 |
+| [**DDD Interface v3.0**](./2026-02-18_spike_nexkv-ddd-interface.md) | **v3.0** | **统一接口定义（47个接口）** |
+| [**DDD Implement v3.0**](./2026-02-18_spike_nexkv-ddd-implement.md) | **v3.0** | **DDD 实施方案（含测试策略）** |
+| [**DDD Roadmap v3.0**](./2026-02-18_spike_nexkv-ddd-roadmap.md) | **v3.0** | **阶段规划（含阶段 0）** |
+| [**统一执行器架构**](./2026-02-25_spike_glm-unified-executor.md) | - | 执行层核心 - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 |
 
-> 📖 **并发管理参考**: [DDD 架构 - GoroutineProvider](./2026-02-18_spike_nexkv-ddd-interface.md#13-b4-goroutineprovider)
+> 📖 **并发管理参考**: [DDD Interface v3.0 - GoroutineProvider](./2026-02-18_spike_nexkv-ddd-interface.md#13-b4-goroutineprovider)
+>
+> ⚠️ **重要**: M2 实现依赖 DDD v3.0 的架构和测试策略，确保版本一致。
 
 ---
 
 ## 📊 文档概览
 
-**基于文档**: [Interface 定义](./2026-02-21_spike_m2-storage-engine-interface.md) v2.0
+**基于文档**: [Interface 定义](./2026-02-21_spike_m2-storage-engine-interface.md) v2.2
 
 **核心特性**：
 - **双存储引擎实现**：Metadata KV（sync.Map）+ External KV（Bf-Tree）
@@ -704,6 +709,46 @@ func (op *asyncOp[T]) Cancel() (bool, error) {
     op.cancel()  // 触发 context 取消
     op.status = StatusCanceled
     return true, nil
+}
+
+// Discard 丢弃操作结果，释放资源（v19.0 新增）
+// 用于不再需要结果时提前释放资源
+func (op *asyncOp[T]) Discard() error {
+    op.mu.Lock()
+    defer op.mu.Unlock()
+
+    // 如果操作未完成，取消它
+    if !op.status.IsTerminal() {
+        op.cancel()
+        op.status = StatusDiscarded
+        return nil
+    }
+
+    // 已经完成，无需操作
+    return nil
+}
+
+// IsStarted 返回操作是否已启动（v19.0 新增）
+// 区分"待执行"和"运行中"状态
+func (op *asyncOp[T]) IsStarted() bool {
+    op.mu.RLock()
+    defer op.mu.RUnlock()
+    return op.status == StatusRunning || op.status.IsTerminal()
+}
+
+// OffComplete 注销回调函数
+// cbID: OnComplete 返回的回调ID
+// 返回: 注销失败的错误（如回调ID不存在）
+func (op *asyncOp[T]) OffComplete(cbID string) error {
+    op.mu.Lock()
+    defer op.mu.Unlock()
+
+    if _, exists := op.callbacks[cbID]; !exists {
+        return ErrCallbackNotFound
+    }
+
+    delete(op.callbacks, cbID)
+    return nil
 }
 ```
 
@@ -3152,8 +3197,455 @@ func (s *LocalStorage) Read(ctx context.Context, blockID BlockID) ([]byte, error
 
 ---
 
-**文档版本**: v2.1（重大更新：WAL 实现改用成熟库）
+## 十二、WAL 批量事务写入 ⭐ v2.2 新增
+
+> **来源**: `thoughts/2026-03-02-idea-async-pipeline-pre.md`
+
+### 12.1 批量写入设计
+
+```go
+// WAL 批量写入器
+type WALBatcher struct {
+    batchChan    chan *WriteTask      // 单个写任务通道
+    batchTxnChan chan []*WriteTask    // 事务批量通道
+    closeCh      chan struct{}        // 关闭信号
+    wg           sync.WaitGroup
+
+    // 统计（atomic）
+    pendingSync int64         // 待 fsync 数量
+    synced      int64         // 已 fsync 数量
+    fsyncErrors int64         // fsync 错误数
+    lastSync    time.Time     // 上次成功 fsync 时间
+
+    // 批量配置
+    batchSize   int
+    flushIntv   time.Duration
+}
+
+func NewWALBatcher() *WALBatcher {
+    w := &WALBatcher{
+        batchChan:    make(chan *WriteTask, 4096),
+        batchTxnChan: make(chan []*WriteTask, 1024),
+        closeCh:      make(chan struct{}),
+        batchSize:    256,
+        flushIntv:    10 * time.Millisecond,
+    }
+    w.wg.Add(1)
+    go w.batchWorker()
+    return w
+}
+
+// Write 单个写入
+func (w *WALBatcher) Write(task *WriteTask) {
+    w.batchChan <- task
+}
+
+// WriteBatch 批量写入事务（原子操作）
+func (w *WALBatcher) WriteBatch(tasks []*WriteTask) {
+    w.batchTxnChan <- tasks
+}
+```
+
+### 12.2 批量 Worker 实现
+
+```go
+// batchWorker 批量写入 + 定时刷盘
+func (w *WALBatcher) batchWorker() {
+    defer func() {
+        if r := recover(); r != nil {
+            log.Printf("WAL worker panic recovered: %v", r)
+        }
+        w.wg.Done()
+    }()
+
+    var batch []*WriteTask
+    ticker := time.NewTicker(w.flushIntv)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case task, ok := <-w.batchChan:
+            if !ok {
+                return
+            }
+            // 单个写任务，添加到批次
+            batch = append(batch, task)
+            if len(batch) >= w.batchSize {
+                w.flushBatch(batch)
+                batch = nil
+            }
+
+        case txnBatch, ok := <-w.batchTxnChan:
+            if !ok {
+                return
+            }
+            // 事务批量写入，立即刷新（保证原子性）
+            // 先把当前批次刷出去
+            if len(batch) > 0 {
+                w.flushBatch(batch)
+                batch = nil
+            }
+            // 写入事务记录
+            w.flushBatch(txnBatch)
+
+        case <-ticker.C:
+            if len(batch) > 0 {
+                w.flushBatch(batch)
+                batch = nil
+            }
+
+        case <-w.closeCh:
+            if len(batch) > 0 {
+                w.flushBatch(batch)
+            }
+            return
+        }
+    }
+}
+
+// flushBatch 真正写 WAL + 条件 fsync
+func (w *WALBatcher) flushBatch(batch []*WriteTask) {
+    if len(batch) == 0 {
+        return
+    }
+
+    // 互斥锁保护文件写入
+    w.mu.Lock()
+    defer w.mu.Unlock()
+
+    // 1. 构建 WAL 记录
+    // 如果是事务，写入事务头 + 所有操作 + 事务提交标记
+    // 2. 写入文件
+    // 3. 计算 CRC32 校验和
+    checksum := w.calculateChecksum(batch)
+
+    // 4. 根据 SyncPolicy 决定 fsync 策略
+    needSync := false
+    for _, task := range batch {
+        if task.SyncPolicy == SyncAlways {
+            needSync = true
+            break
+        }
+    }
+
+    if needSync {
+        // 同步 fsync（阻塞直到落盘）
+        syscall.Fdatasync(int(w.file.Fd()))
+
+        // 通知任务完成（已落盘）
+        for _, task := range batch {
+            if task.Done != nil {
+                task.Done <- nil
+            }
+        }
+    } else {
+        // 异步 fsync（不阻塞）
+        go func() {
+            syscall.Fdatasync(int(w.file.Fd()))
+            for _, task := range batch {
+                if task.Done != nil {
+                    task.Done <- nil
+                }
+            }
+        }()
+    }
+}
+
+// calculateChecksum 计算 CRC32 校验和
+func (w *WALBatcher) calculateChecksum(batch []*WriteTask) uint32 {
+    h := crc32.NewIEEE()
+    for _, task := range batch {
+        h.Write(task.Key)
+        h.Write(task.Value)
+    }
+    return h.Sum32()
+}
+```
+
+### 12.3 事务 WAL 记录格式
+
+```
+[TXN_BEGIN]  txn_id=12345
+[PUT]        key=k1 value=v1
+[PUT]        key=k2 value=v2
+[TXN_COMMIT] txn_id=12345
+```
+
+**崩溃恢复时**：
+1. 扫描 WAL，识别未完成的事务
+2. 只重放已提交的事务
+3. 丢弃未提交的事务记录
+
+---
+
+## 十三、安全注意事项 ⭐ v2.2 新增
+
+> **来源**: `thoughts/2026-03-02-idea-async-pipeline-pre.md`
+> **优先级**: P0 = 必须修复, P1 = 建议修复, P2 = 可选优化
+
+### 13.1 goroutine 泄漏防护（P0）
+
+**问题**：所有 worker goroutine 必须可取消，否则会导致泄漏
+
+**修复方案**：
+```go
+// ✅ 使用 context.Context 控制生命周期
+type BTree struct {
+    ctx    context.Context
+    cancel context.CancelFunc
+}
+
+func (b *BTree) Start() {
+    b.ctx, b.cancel = context.WithCancel(context.Background())
+    go b.worker(b.ctx)
+}
+
+func (b *BTree) Stop() {
+    b.cancel()  // 通知所有 goroutine 退出
+    b.wg.Wait()
+}
+
+// worker 中检查 context
+func (b *BTree) worker(ctx context.Context) {
+    for {
+        select {
+        case <-ctx.Done():
+            return  // 优雅退出
+        case task := <-b.writeChan:
+            // 处理任务...
+        }
+    }
+}
+```
+
+### 13.2 Panic 恢复机制（P1）
+
+**问题**：panic 会导致整个进程崩溃
+
+**修复方案**：
+```go
+// ✅ 每个 worker 启动处添加 recover
+func (b *BTree) worker(ctx context.Context) {
+    defer func() {
+        if r := recover(); r != nil {
+            log.Printf("worker panic recovered: %v", r)
+            // 可选：重启 worker
+        }
+    }()
+
+    // 正常处理...
+}
+```
+
+### 13.3 MVCC 内存泄漏防护（P0）
+
+**问题**：版本无限增长会导致 OOM
+
+**修复方案**：
+```go
+// ✅ 后台定期清理旧版本
+const maxVersionsToKeep = 100
+
+func (t *BTree) cleanupOldVersions(currentVersion uint64) {
+    if currentVersion <= maxVersionsToKeep {
+        return
+    }
+
+    cutoff := currentVersion - maxVersionsToKeep
+    for v := range t.versions {
+        if v < cutoff {
+            delete(t.versions, v)
+        }
+    }
+}
+```
+
+### 13.4 Channel 死锁防护（P1）
+
+**问题**：Channel 满载或阻塞可能导致死锁
+
+**修复方案**：
+```go
+// ✅ 使用 context 超时
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+select {
+case b.writeChan <- task:
+    // 发送成功
+case <-ctx.Done():
+    return fmt.Errorf("send timeout: %w", ctx.Err())
+}
+```
+
+### 13.5 DoS 防护（P2）
+
+**问题**：恶意请求可能填满 Channel
+
+**修复方案**：
+```go
+const maxPendingOps = 10000
+
+func (a *API) SetAsync(key, value []byte) AsyncOperation[struct{}] {
+    if len(a.writeChan) > maxPendingOps {
+        return NewFailedAsyncOperation[struct{}](
+            fmt.Errorf("server overloaded"),
+        )
+    }
+    // 正常处理...
+}
+```
+
+### 13.6 WAL 校验和（P1）
+
+**问题**：磁盘损坏可能无法检测
+
+**修复方案**：
+```go
+// ✅ 每个 WAL 条目添加 CRC32 校验
+type WALEntry struct {
+    Key      []byte
+    Value    []byte
+    Checksum uint32  // CRC32
+}
+
+func (w *WAL) validateChecksum(entry *WALEntry) bool {
+    h := crc32.NewIEEE()
+    h.Write(entry.Key)
+    h.Write(entry.Value)
+    return h.Sum32() == entry.Checksum
+}
+```
+
+---
+
+## 十四、WAL 崩溃恢复设计 ⭐ v2.2 新增
+
+> **来源**: `thoughts/2026-03-02-idea-async-pipeline-pre.md`
+
+### 14.1 WAL 记录格式
+
+```
+[HEADER]     magic=0x57414C47 len=1234 checksum=0xABCD
+[TXN_BEGIN]  txn_id=12345 timestamp=1234567890
+[PUT]        key=k1 value=v1
+[PUT]        key=k2 value=v2
+[TXN_COMMIT] txn_id=12345
+[FOOTER]     checksum=0xDCBA
+```
+
+### 14.2 恢复流程
+
+```go
+func (w *WAL) Recover() error {
+    file, err := os.Open(w.filePath)
+    if err != nil {
+        return err
+    }
+    defer file.Close()
+
+    scanner := NewWALScanner(file)
+    committedTxns := make(map[uint64]bool)
+    pendingTxn := &Transaction{}
+
+    for scanner.Scan() {
+        entry := scanner.Entry()
+
+        // 验证校验和
+        if !w.validateChecksum(entry) {
+            log.Printf("invalid checksum, skipping entry")
+            continue
+        }
+
+        switch entry.Type {
+        case EntryTypeTxnBegin:
+            pendingTxn.ID = entry.TxnID
+            pendingTxn.Start = entry.Timestamp
+
+        case EntryTypePut:
+            pendingTxn.Writes = append(pendingTxn.Writes, entry)
+
+        case EntryTypeTxnCommit:
+            committedTxns[pendingTxn.ID] = true
+            // 重放已提交的事务
+            w.replayTransaction(pendingTxn)
+            pendingTxn = &Transaction{}
+
+        case EntryTypeTxnRollback:
+            // 丢弃未提交的事务
+            pendingTxn = &Transaction{}
+        }
+    }
+
+    return scanner.Err()
+}
+
+func (w *WAL) replayTransaction(txn *Transaction) error {
+    // 重放事务内的所有写操作
+    for _, write := range txn.Writes {
+        // 更新内存索引
+    }
+    return nil
+}
+```
+
+### 14.3 校验和验证
+
+```go
+type WALScanner struct {
+    file *os.File
+    pos  int64
+}
+
+func (s *WALScanner) Scan() bool {
+    // 读取 header
+    header, err := s.readHeader()
+    if err != nil {
+        return false
+    }
+
+    // 验证 magic number
+    if header.Magic != 0x57414C47 { // "WALG"
+        return false
+    }
+
+    // 读取 body
+    body, err := s.readBody(header.Len)
+    if err != nil {
+        return false
+    }
+
+    // 验证校验和
+    checksum := crc32.ChecksumIEEE(body)
+    if checksum != header.Checksum {
+        return false
+    }
+
+    return true
+}
+```
+
+### 14.4 恢复策略
+
+| 场景 | 处理方式 |
+|------|----------|
+| 已提交事务（TXN_COMMIT） | 重放所有写操作 |
+| 未提交事务（无 COMMIT） | 丢弃 |
+| 已回滚事务（TXN_ROLLBACK） | 丢弃 |
+| 校验和失败 | 跳过该条目，继续恢复 |
+| Magic 不匹配 | 停止恢复，报告错误 |
+
+**v2.2 新增内容完成！** 🎉
+
+**新增内容**：
+- ✅ WAL 批量事务写入（WriteBatch + batchWorker）
+- ✅ 安全注意事项（goroutine 泄漏、panic 恢复、MVCC 内存泄漏等）
+- ✅ WAL 崩溃恢复设计（记录格式、恢复流程、校验和验证）
+
+---
+
+**文档版本**: v2.2（新增：WAL 批量写入 + 安全 + 恢复设计）
 **创建日期**: 2026-02-21
-**最后更新**: 2026-02-22
+**最后更新**: 2026-03-02
 **维护者**: NexKV 开发团队
 **状态**: ✅ 已完成

@@ -108,20 +108,32 @@
 - `GetDirect()` 方法：直接访问（无锁）
 - `Get()`/`Set()` 方法：基础访问器
 
-#### 3.3 Week 4: 流水线框架设计
+#### 3.3 Week 4: 补充 ADR 002 + 集成测试准备 ⭐ v1.1 更新
 
-| 文件 | 新增/修改 | 更新内容 | 优先级 |
-|------|----------|---------|--------|
-| `docs/07_spike/async-pipeline-design.md` | 新增 | 流水线架构设计文档 | 🔴 P0 |
+> **更新原因**：ADR 002 已存在，无需重复创建设计文档
+>
+> **调整内容**：补充 ADR 002 缺失内容，准备集成测试
+
+| 任务 | 内容 | 优先级 | 交付物 |
+|------|------|--------|--------|
+| 补充 ReadPipeline 设计 | 添加 ReadPipeline 结构定义、worker 逻辑 | 🔴 P0 | ADR 002 更新 |
+| 补充 FlushPipeline 设计 | 添加 FlushPipeline 结构定义、WAL 批量逻辑 | 🔴 P0 | ADR 002 更新 |
+| 集成任务类型定义 | 引用/复制 SyncPolicy、ReadTask、TransactionTask | 🟡 P1 | ADR 002 更新 |
+| 添加集成测试计划 | 定义流水线集成测试场景 | 🟡 P1 | 测试计划文档 |
+| 更新交叉引用 | 引用 thoughts 文档和 M2 文档 | 🟢 P2 | ADR 002 更新 |
 
 **主要变更点**：
 
 新增内容：
-- 存储引擎层流水线架构图
-- WritePipeline/ReadPipeline 接口定义
-- WriteTask/ReadTask/FlushTask 类型定义
-- TaskExecutor 集成方案
-- 背压控制策略
+- ReadPipeline 结构定义和实现框架
+- FlushPipeline（WAL）结构定义和批量写入逻辑
+- 任务类型定义（SyncPolicy、ReadTask、TransactionTask、IsolationLevel）
+- 集成测试计划
+
+更新内容：
+- ADR 002 补充缺失的设计
+- 添加与 `thoughts/2026-03-02-idea-async-pipeline-pre.md` 的引用
+- 添加与 `docs/07_spike/2026-02-21_spike_m2-storage-engine-interface.md` 的引用
 
 ### 4. 验收标准（如何验证完成）
 
@@ -143,13 +155,15 @@
 | **性能测试** | 性能优于手动加锁 | `go test -bench=. ./...` |
 | **GetDirect 性能** | 优于 View 10 倍以上 | 基准测试对比 |
 
-#### 4.3 Week 4: 流水线设计验收
+#### 4.3 Week 4: 补充 ADR 002 + 集成测试准备验收 ⭐ v1.1 更新
 
 | 验证项 | 验收标准 | 验证方式 |
 |--------|----------|----------|
-| **架构文档** | 完整设计文档 | 架构师评审 |
-| **接口定义** | 清晰的接口定义 | 技术评审 |
-| **集成方案** | TaskExecutor 集成确认 | 技术评审 |
+| **ADR 002 更新** | ReadPipeline 和 FlushPipeline 设计已补充 | ADR 002 完整性检查 |
+| **类型定义** | SyncPolicy、ReadTask、TransactionTask 已添加 | 代码审查 |
+| **集成测试计划** | 测试场景和测试用例定义 | 测试计划评审 |
+| **交叉引用** | thoughts 和 M2 文档引用正确 | 链接检查 |
+| **设计一致性** | ADR 与 thoughts/M2 文档一致 | 架构师评审 |
 
 ### 5. 风险控制
 

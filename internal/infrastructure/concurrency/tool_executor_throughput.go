@@ -3,31 +3,36 @@
 // Package main 提供 Executor 吞吐量性能测试工具
 //
 // 用途：
-//   对比 PerCoreExecutor 和 AntsTaskExecutorProvider 的吞吐量性能
+//
+//	对比 PerCoreExecutor 和 AntsTaskExecutorProvider 的吞吐量性能
 //
 // 测试场景：
-//   模拟 Transport 层的网络 I/O 密集型任务，包括：
-//   - 微秒级网络延迟
-//   - 数据序列化/反序列化（1KB）
-//   - 校验和计算
+//
+//	模拟 Transport 层的网络 I/O 密集型任务，包括：
+//	- 微秒级网络延迟
+//	- 数据序列化/反序列化（1KB）
+//	- 校验和计算
 //
 // 运行方式：
-//   cd internal/infrastructure/concurrency
-//   go run tool_executor_throughput.go <percore|ants>
+//
+//	cd internal/infrastructure/concurrency
+//	go run tool_executor_throughput.go <percore|ants>
 //
 // 示例：
-//   # 测试 PerCoreExecutor
-//   go run tool_executor_throughput.go percore
 //
-//   # 测试 AntsTaskExecutorProvider
-//   go run tool_executor_throughput.go ants
+//	# 测试 PerCoreExecutor
+//	go run tool_executor_throughput.go percore
+//
+//	# 测试 AntsTaskExecutorProvider
+//	go run tool_executor_throughput.go ants
 //
 // 预期输出：
-//   === Benchmarking PerCoreExecutor ===
-//   PerCore: Completed 1000000 tasks in 2.5s, throughput: 400000.00 ops/s
 //
-//   === Benchmarking AntsTaskExecutorProvider ===
-//   AntsPool: Completed 1000000 tasks in 3.2s, throughput: 312500.00 ops/s
+//	=== Benchmarking PerCoreExecutor ===
+//	PerCore: Completed 1000000 tasks in 2.5s, throughput: 400000.00 ops/s
+//
+//	=== Benchmarking AntsTaskExecutorProvider ===
+//	AntsPool: Completed 1000000 tasks in 3.2s, throughput: 312500.00 ops/s
 //
 // 注意事项：
 //   - 本工具使用 `//go:build ignore`，不会被 `go test` 自动运行

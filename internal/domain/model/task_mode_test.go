@@ -55,7 +55,7 @@ func TestTaskMode_FallbackMode(t *testing.T) {
 		mode     TaskMode
 		expected TaskMode
 	}{
-		{ModePerCore, ModeAntsPool},     // PerCore 降级到 DefaultPool
+		{ModePerCore, ModeAntsPool},  // PerCore 降级到 DefaultPool
 		{ModeAntsPool, ModeAntsPool}, // DefaultPool 无需降级
 	}
 

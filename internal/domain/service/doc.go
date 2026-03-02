@@ -7,7 +7,7 @@
 // # 核心接口概览
 //
 //	RPCSync      → 同步 RPC 调用（阻塞等待结果）
-//	RPCAsync     → 异步 RPC 调用（返回 AsyncOperation，支持回调）
+//	RPCAsync     → 异步 RPC 调用（返回 AsyncOp，支持回调）
 //	BroadcastProgress  → 广播进度追踪
 //	BroadcastListener → 广播事件监听
 //	DiscoveryService  → 节点发现服务
@@ -31,7 +31,7 @@
 //
 // ## 2. RPCAsync - 异步调用
 //
-// 返回 AsyncOperation[T]，支持链式回调和超时设置:
+// 返回 AsyncOp[T]，支持链式回调和超时设置:
 //
 //	// 基础用法
 //	op := rpc.CallAsync(ctx, peerID, request)

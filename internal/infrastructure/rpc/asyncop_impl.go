@@ -1,6 +1,6 @@
 // Package rpc 异步 RPC 实现
 //
-// 从 domain/service 迁移过来的 AsyncOperation 实现
+// 从 domain/service 迁移过来的 AsyncOp 实现
 // 遵循 DDD 架构：领域层保留接口，基础设施层负责实现
 package rpc
 
@@ -33,14 +33,14 @@ func submitTask(
 	// 包装任务添加 panic 保护（使用 recovery 包）
 	wrappedTask := func(ctx context.Context) {
 		_ = recovery.SafeContext(ctx, task, func(r any, stack []byte) {
-			slog.Error("[AsyncOperation] task goroutine panic recovered", "panic", r, "stack", string(stack))
+			slog.Error("[AsyncOp] task goroutine panic recovered", "panic", r, "stack", string(stack))
 		})
 	}
 
 	if provider != nil {
 		if err := provider.Submit(ctx, service.PriorityNormal, wrappedTask); err != nil {
 			// 提交失败：回退到直接启动 goroutine
-			slog.Warn("[AsyncOperation] failed to submit task, falling back to direct goroutine", "error", err)
+			slog.Warn("[AsyncOp] failed to submit task, falling back to direct goroutine", "error", err)
 			go wrappedTask(ctx)
 		}
 		// 提交成功：任务由 provider 执行
@@ -85,10 +85,10 @@ func convertToPeerResponses(peers []model.PeerID, responses []model.Message) []s
 }
 
 // ==========================================
-// AsyncOperation[T] 实现
+// AsyncOp[T] 实现
 // ==========================================
 
-// asyncOpImpl AsyncOperation 的通用实现
+// asyncOpImpl AsyncOp 的通用实现
 type asyncOpImpl[T any] struct {
 	resultCh          chan T     // 缓冲通道，容量为1
 	errCh             chan error // 同上
@@ -187,7 +187,7 @@ func (op *asyncOpImpl[T]) safeExecuteCallback(callback func(T, error), v T, err 
 		_ = recovery.Safe(func() {
 			callback(v, err)
 		}, func(r any, stack []byte) {
-			slog.Error("[AsyncOperation] callback panic recovered", "panic", r, "stack", string(stack))
+			slog.Error("[AsyncOp] callback panic recovered", "panic", r, "stack", string(stack))
 		})
 	}
 
@@ -196,7 +196,7 @@ func (op *asyncOpImpl[T]) safeExecuteCallback(callback func(T, error), v T, err 
 			executor()
 		}); submitErr != nil {
 			// CRITICAL FIX: Submit 失败时回退到直接启动 goroutine
-			slog.Warn("[AsyncOperation] failed to submit callback, falling back to direct goroutine", "error", submitErr)
+			slog.Warn("[AsyncOp] failed to submit callback, falling back to direct goroutine", "error", submitErr)
 			go executor()
 		}
 	} else {
@@ -205,7 +205,7 @@ func (op *asyncOpImpl[T]) safeExecuteCallback(callback func(T, error), v T, err 
 }
 
 // WithTimeout 设置超时
-func (op *asyncOpImpl[T]) WithTimeout(timeout time.Duration) service.AsyncOperation[T] {
+func (op *asyncOpImpl[T]) WithTimeout(timeout time.Duration) service.AsyncOp[T] {
 	wrapped := &timeoutAsyncOp[T]{
 		inner:   op,
 		timeout: timeout,
@@ -234,10 +234,10 @@ func (op *asyncOpImpl[T]) IsCanceled() bool {
 }
 
 // ==========================================
-// pkg/async.AsyncOperation[T] 接口实现
+// pkg/async.AsyncOp[T] 接口实现
 // ==========================================
 
-// Get 实现 pkg/async.AsyncOperation 接口 - 阻塞等待结果
+// Get 实现 pkg/async.AsyncOp 接口 - 阻塞等待结果
 func (op *asyncOpImpl[T]) Get(ctx context.Context) (T, error) {
 	return op.Await(ctx)
 }
@@ -311,9 +311,9 @@ func (op *asyncOpImpl[T]) OffComplete(cbID string) error {
 // timeoutAsyncOp 超时包装器
 // ==========================================
 
-// timeoutAsyncOp 为 AsyncOperation 添加超时功能
+// timeoutAsyncOp 为 AsyncOp 添加超时功能
 type timeoutAsyncOp[T any] struct {
-	inner   service.AsyncOperation[T]
+	inner   service.AsyncOp[T]
 	timeout time.Duration
 }
 
@@ -345,7 +345,7 @@ func (op *timeoutAsyncOp[T]) OffComplete(cbID string) error {
 }
 
 // WithTimeout 支持链式设置超时
-func (op *timeoutAsyncOp[T]) WithTimeout(timeout time.Duration) service.AsyncOperation[T] {
+func (op *timeoutAsyncOp[T]) WithTimeout(timeout time.Duration) service.AsyncOp[T] {
 	newTimeout := op.timeout
 	if timeout < newTimeout {
 		newTimeout = timeout
@@ -376,7 +376,7 @@ func (op *timeoutAsyncOp[T]) IsCanceled() bool {
 	return op.inner.IsCanceled()
 }
 
-// Get 实现 pkg/async.AsyncOperation 接口
+// Get 实现 pkg/async.AsyncOp 接口
 func (op *timeoutAsyncOp[T]) Get(ctx context.Context) (T, error) {
 	return op.Await(ctx)
 }
@@ -500,14 +500,14 @@ func submitAsyncTask(
 			defer cancel()
 			task(timeoutCtx)
 		}, func(r any, stack []byte) {
-			slog.Error("[AsyncOperation] task goroutine panic recovered", "panic", r, "stack", string(stack))
+			slog.Error("[AsyncOp] task goroutine panic recovered", "panic", r, "stack", string(stack))
 		})
 	}
 
 	if provider != nil {
 		if err := provider.Submit(ctx, service.PriorityNormal, executor); err != nil {
 			// 提交失败时回退到直接启动 goroutine
-			slog.Warn("[AsyncOperation] failed to submit task, falling back to direct goroutine", "error", err)
+			slog.Warn("[AsyncOp] failed to submit task, falling back to direct goroutine", "error", err)
 			go executor(ctx)
 		}
 	} else {
@@ -523,7 +523,7 @@ func NewAsyncCall(
 	req model.Message,
 	timeoutMs int64,
 	provider service.TaskExecutor,
-) service.AsyncOperation[service.ResponseMsg] {
+) service.AsyncOp[service.ResponseMsg] {
 	op := newAsyncOp[service.ResponseMsg](provider)
 
 	// 输入验证
@@ -567,7 +567,7 @@ func NewAsyncBroadcast(
 	config *service.RPCAsyncConfig,
 	callback service.BroadcastListener,
 	provider service.TaskExecutor,
-) service.AsyncOperation[service.AsyncBroadcastResult] {
+) service.AsyncOp[service.AsyncBroadcastResult] {
 	op := newAsyncOp[service.AsyncBroadcastResult](provider)
 
 	// 使用统一验证函数
@@ -642,7 +642,7 @@ func NewAsyncQuorum(
 	config *service.RPCAsyncConfig,
 	callback service.BroadcastListener,
 	provider service.TaskExecutor,
-) service.AsyncOperation[service.QuorumResult] {
+) service.AsyncOp[service.QuorumResult] {
 	op := newAsyncOp[service.QuorumResult](provider)
 
 	// 使用统一验证函数
@@ -709,7 +709,7 @@ func NewAsyncWriteV(
 	config *service.RPCAsyncConfig,
 	callback service.BroadcastListener,
 	provider service.TaskExecutor,
-) service.AsyncOperation[service.WriteVResult] {
+) service.AsyncOp[service.WriteVResult] {
 	op := newAsyncOp[service.WriteVResult](provider)
 
 	// 使用统一验证函数
@@ -766,7 +766,7 @@ func NewAsyncWriteVCall(
 	config *service.RPCAsyncConfig,
 	callback service.BroadcastListener,
 	provider service.TaskExecutor,
-) service.AsyncOperation[service.WriteVResult] {
+) service.AsyncOp[service.WriteVResult] {
 	op := newAsyncOp[service.WriteVResult](provider)
 
 	// 使用统一验证函数

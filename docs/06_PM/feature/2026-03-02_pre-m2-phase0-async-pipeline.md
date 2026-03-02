@@ -132,8 +132,8 @@
 
 更新内容：
 - ADR 002 补充缺失的设计
-- 添加与 `thoughts/2026-03-02-idea-async-pipeline-pre.md` 的引用
-- 添加与 `docs/07_spike/2026-02-21_spike_m2-storage-engine-interface.md` 的引用
+- 添加与 `docs/07_spike/2026-02-18_spike_nexkv-ddd-implement.md`（流水线模式实现）的交叉引用
+- 添加与 `docs/07_spike/2026-02-21_spike_m2-storage-engine-interface.md`（流水线任务类型定义）的交叉引用
 
 ### 4. 验收标准（如何验证完成）
 
@@ -162,8 +162,8 @@
 | **ADR 002 更新** | ReadPipeline 和 FlushPipeline 设计已补充 | ADR 002 完整性检查 |
 | **类型定义** | SyncPolicy、ReadTask、TransactionTask 已添加 | 代码审查 |
 | **集成测试计划** | 测试场景和测试用例定义 | 测试计划评审 |
-| **交叉引用** | thoughts 和 M2 文档引用正确 | 链接检查 |
-| **设计一致性** | ADR 与 thoughts/M2 文档一致 | 架构师评审 |
+| **交叉引用** | DDD/M2 文档交叉引用正确 | 链接检查 |
+| **设计一致性** | ADR 与 DDD/M2 文档一致 | 架构师评审 |
 
 ### 5. 风险控制
 
@@ -307,14 +307,15 @@
 
 | 文档 | 路径 | 说明 |
 |------|------|------|
-| 异步流水线重构计划 | `thoughts/2026-03-02-idea-async-pipeline-refactor.md` | 基础重构计划 |
-| 全链路异步流水线设计 | `thoughts/2026-03-02-idea-async-pipeline-pre.md` | 完整设计文档 |
-| DDD Interface v3.0 | `docs/07_spike/2026-02-18_spike_nexkv-ddd-interface.md` | 接口定义 |
-| DDD Implement v3.0 | `docs/07_spike/2026-02-18_spike_nexkv-ddd-implement.md` | 实施方案 |
-| M2 Roadmap v2.0 | `docs/07_spike/2026-02-21_spike_m2-storage-engine-roadmap.md` | M2 实施路线 |
+| DDD Interface v3.0 | `docs/07_spike/2026-02-18_spike_nexkv-ddd-interface.md` | 接口定义（47个接口） |
+| DDD Implement v3.0 | `docs/07_spike/2026-02-18_spike_nexkv-ddd-implement.md` | 实施方案（含流水线模式实现 3.7节、泛型锁包装器 14章） |
+| M2 Interface v2.3 | `docs/07_spike/2026-02-21_spike_m2-storage-engine-interface.md` | 流水线任务类型定义（SyncPolicy、WriteTask、ReadTask、TransactionTask、IsolationLevel） |
+| M2 Roadmap v2.0 | `docs/07_spike/2026-02-21_spike_m2-storage-engine-roadmap.md` | M2 实施路线（含阶段 0 规划） |
 
 ### ADR 文档
 
 | ADR | 路径 | 说明 |
 |-----|------|------|
+| ADR 001 | `docs/08_adr/001-dual-storage-engine.md` | 双存储引擎策略 |
 | ADR 002 | `docs/08_adr/002-async-pipeline.md` | 异步流水线架构 |
+| ADR 003 | `docs/08_adr/003-5layer-ddd.md` | 5层 DDD 架构 |

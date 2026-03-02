@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	pkgerrors "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ==========================================
@@ -347,7 +348,7 @@ func TestAntsTaskExecutorProvider_SubmitDelayed_TooMany(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			err := provider.SubmitDelayed(context.Background(), 1*time.Second, model.TaskPriorityNormal, func(ctx context.Context) {})
-			if err == ErrTooManyDelayedTasks {
+			if err == pkgerrors.ErrTooManyDelayedTasks {
 				errors.Add(1)
 			}
 		}()

@@ -184,7 +184,7 @@ func (p *AntsTaskExecutorProvider) scheduleDelayedTask(
 		// 成功获取
 	default:
 		// 延迟任务数已达上限
-		return ErrTooManyDelayedTasks
+		return errors.ErrTooManyDelayedTasks
 	}
 
 	p.delayedWg.Add(1)
@@ -219,7 +219,7 @@ func (p *AntsTaskExecutorProvider) scheduleDelayedTask(
 // Submit 实现接口（带优先级）
 func (p *AntsTaskExecutorProvider) Submit(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
 	if p.isClosed() {
-		return ErrPoolClosed
+		return errors.ErrPoolClosed
 	}
 
 	// 自动扩容检查（每 N 次 Submit 检查一次）
@@ -242,7 +242,7 @@ func (p *AntsTaskExecutorProvider) SubmitWithArg(
 	arg any,
 ) error {
 	if p.isClosed() {
-		return ErrPoolClosed
+		return errors.ErrPoolClosed
 	}
 
 	return p.pool.Submit(func() {
@@ -259,7 +259,7 @@ func (p *AntsTaskExecutorProvider) SubmitWithPriority(
 	task func(context.Context),
 ) error {
 	if p.isClosed() {
-		return ErrPoolClosed
+		return errors.ErrPoolClosed
 	}
 
 	// ants 不支持原生优先级，这里通过统计记录
@@ -282,7 +282,7 @@ func (p *AntsTaskExecutorProvider) SubmitDelayed(
 	task func(context.Context),
 ) error {
 	if p.isClosed() {
-		return ErrPoolClosed
+		return errors.ErrPoolClosed
 	}
 
 	// P0-02: 使用统一的延迟任务调度，P1-01: 处理速率限制错误
@@ -331,7 +331,7 @@ func (p *AntsTaskExecutorProvider) Health() service.TaskHealthStatus {
 // SetCapacity 实现接口
 func (p *AntsTaskExecutorProvider) SetCapacity(capacity int) error {
 	if p.isClosed() {
-		return ErrPoolClosed
+		return errors.ErrPoolClosed
 	}
 
 	// P0-04: 容量验证

@@ -131,7 +131,7 @@ graph TB
 | **ModeCustomPool** | 显式 | ants 自定义池 | 通用场景 |
 | **ModeFuncPool** | 显式 | ants 函数池 | 高频重复任务 |
 | **ModeMultiPool** | 显式 | ants 多池 | 分片场景 |
-| **ModeDefaultPool** | 隐式回退 | ants 默认池 | 临时任务、测试 |
+| **ModeAntsPool** | 隐式回退 | ants 默认池 | 临时任务、测试 |
 
 ##### 3.2.2 接口定义
 
@@ -144,7 +144,7 @@ const (
     ModeCustomPool                   // ants 自定义池
     ModeFuncPool                     // ants 函数池
     ModeMultiPool                    // ants 多池
-    ModeDefaultPool                  // ants 默认池（回退）
+    ModeAntsPool                  // ants 默认池（回退）
 )
 
 // TaskMode 业务行为
@@ -635,7 +635,7 @@ func (c *TaskCoordinator) Submit(ctx context.Context, sourceID SourceID, task fu
     mode := c.router.Route(sourceID)
     executor, ok := c.executors[mode]
     if !ok {
-        executor = c.executors[ModeDefaultPool]  // 降级到默认池
+        executor = c.executors[ModeAntsPool]  // 降级到默认池
     }
     return executor.Submit(ctx, task)
 }

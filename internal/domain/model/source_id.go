@@ -144,7 +144,7 @@ func (s SourceID) RecommendedMode() TaskMode {
 	}
 
 	// 其他所有任务使用默认池
-	return ModeDefaultPool
+	return ModeAntsPool
 }
 
 // IsHighPriority 判断是否为高优先级任务

@@ -48,12 +48,6 @@ type TaskExecutor interface {
 	Close() error
 }
 
-// PriorityExecutor 优先级执行器
-// TaskExecutor 已包含 priority 参数，此接口用于类型标识
-type PriorityExecutor interface {
-	TaskExecutor
-}
-
 // TaskScheduler 任务调度器（延迟任务）
 type TaskScheduler interface {
 	// SubmitDelayed 延迟提交任务（支持优先级）

@@ -37,7 +37,7 @@
 #### 核心改进
 
 1. **接口简化**
-   - 从 9 个嵌套接口 → 3 个小接口（TaskExecutor、PriorityExecutor、Monitorable）
+   - 从 9 个嵌套接口 → 核心接口（TaskExecutor、Monitorable）
    - 符合接口隔离原则（ISP）和单一职责原则（SRP）
 
 2. **类型安全**

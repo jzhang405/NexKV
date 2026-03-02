@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
 
@@ -146,8 +147,8 @@ func TestAntsTaskExecutorProvider_ClosedPool(t *testing.T) {
 		t.Error("expected error when submitting to closed pool, got nil")
 	}
 
-	if !std_errors.Is(err, ErrPoolClosed) {
-		t.Errorf("expected ErrPoolClosed, got: %v", err)
+	if !std_errors.Is(err, errors.ErrPoolClosed) {
+		t.Errorf("expected errors.ErrPoolClosed, got: %v", err)
 	}
 }
 

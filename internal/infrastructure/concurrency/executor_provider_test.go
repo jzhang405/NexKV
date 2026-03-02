@@ -18,7 +18,7 @@ func TestAntsTaskExecutorProvider_BasicSubmit(t *testing.T) {
 		Capacity: 10,
 	}
 
-	provider, err := NewAntsTaskExecutorProvider(config)
+	provider, err := NewAntsExecutor(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}

@@ -28,7 +28,7 @@ func TestAntsTaskExecutorProvider_AutoScale(t *testing.T) {
 		EnableAutoShrink:   false, // 禁用自动缩容（避免干扰测试）
 	}
 
-	provider, err := NewAntsTaskExecutorProvider(config)
+	provider, err := NewAntsExecutor(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestAntsTaskExecutorProvider_AutoShrink(t *testing.T) {
 		ShrinkCooldown:      1 * time.Second,
 	}
 
-	provider, err := NewAntsTaskExecutorProvider(config)
+	provider, err := NewAntsExecutor(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestAntsTaskExecutorProvider_AutoScale_Disabled(t *testing.T) {
 		EnableAutoScale: false, // 禁用自动扩容
 	}
 
-	provider, err := NewAntsTaskExecutorProvider(config)
+	provider, err := NewAntsExecutor(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestAntsTaskExecutorProvider_AutoScale_MaxCapacity(t *testing.T) {
 		EnableAutoShrink:   false,
 	}
 
-	provider, err := NewAntsTaskExecutorProvider(config)
+	provider, err := NewAntsExecutor(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestAntsTaskExecutorProvider_AutoScale_MaxCapacity(t *testing.T) {
 
 // TestAntsTaskExecutorProvider_HighConcurrency 测试高并发场景
 func TestAntsTaskExecutorProvider_HighConcurrency(t *testing.T) {
-	provider, err := NewAntsTaskExecutorProvider(nil)
+	provider, err := NewAntsExecutor(nil)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestAntsTaskExecutorProvider_HighConcurrency(t *testing.T) {
 
 // TestAntsTaskExecutorProvider_RaceCondition 测试竞态条件
 func TestAntsTaskExecutorProvider_RaceCondition(t *testing.T) {
-	provider, err := NewAntsTaskExecutorProvider(nil)
+	provider, err := NewAntsExecutor(nil)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestAntsTaskExecutorProvider_RaceCondition(t *testing.T) {
 
 // TestAntsTaskExecutorProvider_SubmitDelayed_Many 测试大量延迟任务
 func TestAntsTaskExecutorProvider_SubmitDelayed_Many(t *testing.T) {
-	provider, err := NewAntsTaskExecutorProvider(nil)
+	provider, err := NewAntsExecutor(nil)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestAntsTaskExecutorProvider_SubmitDelayed_TooMany(t *testing.T) {
 	}
 	// 使用默认的 DefaultMaxDelayedTasks = 10000
 
-	provider, err := NewAntsTaskExecutorProvider(config)
+	provider, err := NewAntsExecutor(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestAntsTaskExecutorProvider_SubmitDelayed_TooMany(t *testing.T) {
 
 // TestAntsTaskExecutorProvider_SubmitDelayed_Close 测试关闭时延迟任务处理
 func TestAntsTaskExecutorProvider_SubmitDelayed_Close(t *testing.T) {
-	provider, err := NewAntsTaskExecutorProvider(nil)
+	provider, err := NewAntsExecutor(nil)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}

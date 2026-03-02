@@ -91,8 +91,8 @@ func DefaultProviderConfig() *ProviderConfig {
 	}
 }
 
-// NewAntsTaskExecutorProvider 创建 ants 任务池提供者
-func NewAntsTaskExecutorProvider(config *ProviderConfig) (*AntsTaskExecutorProvider, error) {
+// NewAntsExecutor 创建 ants 任务池执行器
+func NewAntsExecutor(config *ProviderConfig) (*AntsTaskExecutorProvider, error) {
 	if config == nil {
 		config = DefaultProviderConfig()
 	}

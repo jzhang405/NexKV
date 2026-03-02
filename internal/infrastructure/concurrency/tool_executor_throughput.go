@@ -110,7 +110,7 @@ func benchmarkPerCore() {
 
 func benchmarkAntsDefault() {
 	fmt.Println("\n=== Benchmarking AntsTaskExecutorProvider ===")
-	exec, _ := concurrency.NewAntsTaskExecutorProvider(nil)
+	exec, _ := concurrency.NewAntsExecutor(nil)
 	defer exec.Close()
 
 	ctx := context.Background()

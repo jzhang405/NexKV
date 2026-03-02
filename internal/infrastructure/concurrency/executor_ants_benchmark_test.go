@@ -15,7 +15,7 @@ import (
 
 // BenchmarkSubmit 单任务提交延迟
 func BenchmarkSubmit(b *testing.B) {
-	provider, _ := NewAntsTaskExecutorProvider(nil)
+	provider, _ := NewAntsExecutor(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
@@ -27,7 +27,7 @@ func BenchmarkSubmit(b *testing.B) {
 
 // BenchmarkSubmitBatch_100 批量提交 100 个任务
 func BenchmarkSubmitBatch_100(b *testing.B) {
-	provider, _ := NewAntsTaskExecutorProvider(nil)
+	provider, _ := NewAntsExecutor(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
@@ -41,7 +41,7 @@ func BenchmarkSubmitBatch_100(b *testing.B) {
 
 // BenchmarkSubmitBatch_1000 批量提交 1000 个任务
 func BenchmarkSubmitBatch_1000(b *testing.B) {
-	provider, _ := NewAntsTaskExecutorProvider(nil)
+	provider, _ := NewAntsExecutor(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
@@ -55,7 +55,7 @@ func BenchmarkSubmitBatch_1000(b *testing.B) {
 
 // BenchmarkConcurrentSubmit 并发提交
 func BenchmarkConcurrentSubmit(b *testing.B) {
-	provider, _ := NewAntsTaskExecutorProvider(nil)
+	provider, _ := NewAntsExecutor(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
@@ -71,7 +71,7 @@ func BenchmarkConcurrentSubmit(b *testing.B) {
 func BenchmarkCloseWithPendingTasks(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		provider, _ := NewAntsTaskExecutorProvider(nil)
+		provider, _ := NewAntsExecutor(nil)
 		ctx := context.Background()
 
 		// 提交一些任务
@@ -91,7 +91,7 @@ func BenchmarkCloseWithPendingTasks(b *testing.B) {
 
 // BenchmarkSubmitWithPriority 不同优先级提交
 func BenchmarkSubmitWithPriority(b *testing.B) {
-	provider, _ := NewAntsTaskExecutorProvider(nil)
+	provider, _ := NewAntsExecutor(nil)
 	defer provider.Close()
 	ctx := context.Background()
 

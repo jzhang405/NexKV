@@ -41,7 +41,7 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 
 	// PerCore 总是启用绑核
 	executor, err := NewPerCoreExecutor(
-		WithNumCores(numCores),
+
 		WithQueueSize(100000),
 	)
 	require.NoError(t, err)
@@ -176,7 +176,6 @@ func BenchmarkPerCore_CacheHitRate(b *testing.B) {
 
 	b.Run("WithAffinity", func(b *testing.B) {
 		executor, _ := NewPerCoreExecutor(
-			WithNumCores(runtime.NumCPU()),
 			WithQueueSize(100000),
 		)
 		defer executor.Close()

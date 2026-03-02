@@ -9,15 +9,14 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
-	pkgerrors "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ==========================================
 // 自动扩缩容测试 (P1-01)
 // ==========================================
 
-// TestAntsTaskExecutorProvider_AutoScale 测试自动扩容功能
-func TestAntsTaskExecutorProvider_AutoScale(t *testing.T) {
+// TestAntsPoolExecutor_AutoScale 测试自动扩容功能
+func TestAntsPoolExecutor_AutoScale(t *testing.T) {
 	config := &ProviderConfig{
 		Capacity:           100,   // 初始容量
 		MaxCapacity:        500,   // 最大容量
@@ -80,8 +79,8 @@ func TestAntsTaskExecutorProvider_AutoScale(t *testing.T) {
 	t.Logf("Initial capacity: 100, Current capacity: %d", provider.currentCapacity)
 }
 
-// TestAntsTaskExecutorProvider_AutoShrink 测试自动缩容功能
-func TestAntsTaskExecutorProvider_AutoShrink(t *testing.T) {
+// TestAntsPoolExecutor_AutoShrink 测试自动缩容功能
+func TestAntsPoolExecutor_AutoShrink(t *testing.T) {
 	config := &ProviderConfig{
 		Capacity:            100,
 		MaxCapacity:         500,
@@ -121,8 +120,8 @@ func TestAntsTaskExecutorProvider_AutoShrink(t *testing.T) {
 	t.Logf("Initial capacity: 100, Current capacity: %d", provider.currentCapacity)
 }
 
-// TestAntsTaskExecutorProvider_AutoScale_Disabled 测试禁用自动扩容
-func TestAntsTaskExecutorProvider_AutoScale_Disabled(t *testing.T) {
+// TestAntsPoolExecutor_AutoScale_Disabled 测试禁用自动扩容
+func TestAntsPoolExecutor_AutoScale_Disabled(t *testing.T) {
 	config := &ProviderConfig{
 		Capacity:        100,
 		MaxCapacity:     500,
@@ -149,8 +148,8 @@ func TestAntsTaskExecutorProvider_AutoScale_Disabled(t *testing.T) {
 	}
 }
 
-// TestAntsTaskExecutorProvider_AutoScale_MaxCapacity 测试扩容不超过最大容量
-func TestAntsTaskExecutorProvider_AutoScale_MaxCapacity(t *testing.T) {
+// TestAntsPoolExecutor_AutoScale_MaxCapacity 测试扩容不超过最大容量
+func TestAntsPoolExecutor_AutoScale_MaxCapacity(t *testing.T) {
 	config := &ProviderConfig{
 		Capacity:           100,
 		MaxCapacity:        150, // 最大容量略高于初始容量
@@ -204,8 +203,8 @@ func TestAntsTaskExecutorProvider_AutoScale_MaxCapacity(t *testing.T) {
 // 并发压力测试 (P1-01)
 // ==========================================
 
-// TestAntsTaskExecutorProvider_HighConcurrency 测试高并发场景
-func TestAntsTaskExecutorProvider_HighConcurrency(t *testing.T) {
+// TestAntsPoolExecutor_HighConcurrency 测试高并发场景
+func TestAntsPoolExecutor_HighConcurrency(t *testing.T) {
 	provider, err := NewAntsExecutor(nil)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
@@ -253,8 +252,8 @@ func TestAntsTaskExecutorProvider_HighConcurrency(t *testing.T) {
 	}
 }
 
-// TestAntsTaskExecutorProvider_RaceCondition 测试竞态条件
-func TestAntsTaskExecutorProvider_RaceCondition(t *testing.T) {
+// TestAntsPoolExecutor_RaceCondition 测试竞态条件
+func TestAntsPoolExecutor_RaceCondition(t *testing.T) {
 	provider, err := NewAntsExecutor(nil)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
@@ -292,93 +291,4 @@ func TestAntsTaskExecutorProvider_RaceCondition(t *testing.T) {
 	}
 
 	wg.Wait()
-}
-
-// ==========================================
-// 延迟任务测试 (P1-01)
-// ==========================================
-
-// TestAntsTaskExecutorProvider_SubmitDelayed_Many 测试大量延迟任务
-func TestAntsTaskExecutorProvider_SubmitDelayed_Many(t *testing.T) {
-	provider, err := NewAntsExecutor(nil)
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
-	defer provider.Close()
-
-	const numTasks = 100
-	var executed atomic.Int32
-
-	for i := 0; i < numTasks; i++ {
-		err := provider.SubmitDelayed(context.Background(), 10*time.Millisecond, model.TaskPriorityNormal, func(ctx context.Context) {
-			executed.Add(1)
-		})
-		if err != nil {
-			t.Errorf("SubmitDelayed failed: %v", err)
-		}
-	}
-
-	// 等待所有延迟任务执行
-	time.Sleep(500 * time.Millisecond)
-
-	if executed.Load() != numTasks {
-		t.Errorf("expected %d tasks executed, got %d", numTasks, executed.Load())
-	}
-}
-
-// TestAntsTaskExecutorProvider_SubmitDelayed_TooMany 测试延迟任务速率限制
-func TestAntsTaskExecutorProvider_SubmitDelayed_TooMany(t *testing.T) {
-	config := &ProviderConfig{
-		Capacity: 1000,
-	}
-	// 使用默认的 DefaultMaxDelayedTasks = 10000
-
-	provider, err := NewAntsExecutor(config)
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
-	defer provider.Close()
-
-	// 尝试提交超过限制的延迟任务
-	var errors atomic.Int32
-	var wg sync.WaitGroup
-
-	for i := 0; i < 15000; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			err := provider.SubmitDelayed(context.Background(), 1*time.Second, model.TaskPriorityNormal, func(ctx context.Context) {})
-			if err == pkgerrors.ErrTooManyDelayedTasks {
-				errors.Add(1)
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	// 应该有一些任务因为速率限制被拒绝
-	t.Logf("Tasks rejected due to rate limit: %d", errors.Load())
-}
-
-// TestAntsTaskExecutorProvider_SubmitDelayed_Close 测试关闭时延迟任务处理
-func TestAntsTaskExecutorProvider_SubmitDelayed_Close(t *testing.T) {
-	provider, err := NewAntsExecutor(nil)
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
-
-	var executed atomic.Int32
-
-	// 提交延迟任务
-	for i := 0; i < 10; i++ {
-		_ = provider.SubmitDelayed(context.Background(), 1*time.Second, model.TaskPriorityNormal, func(ctx context.Context) {
-			executed.Add(1)
-		})
-	}
-
-	// 立即关闭（延迟任务尚未执行）
-	err = provider.Close()
-	if err != nil {
-		t.Errorf("Close failed: %v", err)
-	}
 }

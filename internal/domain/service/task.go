@@ -37,7 +37,7 @@ const (
 )
 
 // ==========================================
-// 核心接口（4个）
+// 核心接口（3个）
 // ==========================================
 
 // TaskExecutor 基础任务执行器接口
@@ -46,12 +46,6 @@ type TaskExecutor interface {
 	Submit(ctx context.Context, priority TaskPriority, task func(context.Context)) error
 	// Close 关闭执行器
 	Close() error
-}
-
-// TaskScheduler 任务调度器（延迟任务）
-type TaskScheduler interface {
-	// SubmitDelayed 延迟提交任务（支持优先级）
-	SubmitDelayed(ctx context.Context, delay time.Duration, priority TaskPriority, task func(context.Context)) error
 }
 
 // ==========================================
@@ -79,10 +73,9 @@ type Manageable interface {
 // ==========================================
 
 // AsyncTaskExecutor 异步任务执行器
-// 组合：TaskExecutor + TaskScheduler + Observable + Manageable
+// 组合：TaskExecutor + Observable + Manageable
 type AsyncTaskExecutor interface {
 	TaskExecutor
-	TaskScheduler
 	Observable
 	Manageable
 }

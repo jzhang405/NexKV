@@ -86,7 +86,6 @@ func simulateTransportTask(ctx context.Context) {
 func benchmarkPerCore() {
 	fmt.Println("=== Benchmarking PerCoreExecutor ===")
 	exec, _ := concurrency.NewPerCoreExecutor(
-		concurrency.WithNumCores(runtime.NumCPU()),
 		concurrency.WithQueueSize(10000),
 	)
 	defer exec.Close()
@@ -96,7 +95,7 @@ func benchmarkPerCore() {
 	var completed atomic.Int64
 
 	start := time.Now()
-	for i := 0; i < taskCount; i++ {
+	for range taskCount {
 		_ = exec.Submit(ctx, func(ctx context.Context) {
 			simulateTransportTask(ctx)
 			completed.Add(1)
@@ -123,7 +122,7 @@ func benchmarkAntsDefault() {
 	var completed atomic.Int64
 
 	start := time.Now()
-	for i := 0; i < taskCount; i++ {
+	for range taskCount {
 		_ = exec.Submit(ctx, 0, func(ctx context.Context) {
 			simulateTransportTask(ctx)
 			completed.Add(1)

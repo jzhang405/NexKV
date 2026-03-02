@@ -13,7 +13,7 @@ import (
 // TaskPoolProvider 基础测试
 // ==========================================
 
-func TestAntsTaskExecutorProvider_BasicSubmit(t *testing.T) {
+func TestAntsPoolExecutor_BasicSubmit(t *testing.T) {
 	config := &ProviderConfig{
 		Capacity: 10,
 	}

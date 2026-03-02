@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestAntsTaskExecutorProvider_Submit(t *testing.T) {
+func TestAntsPoolExecutor_Submit(t *testing.T) {
 	provider, err := NewAntsExecutor(nil)
 	require.NoError(t, err)
 	defer provider.Close()
@@ -35,7 +35,7 @@ func TestAntsTaskExecutorProvider_Submit(t *testing.T) {
 	}
 }
 
-func TestAntsTaskExecutorProvider_SubmitWithPriority(t *testing.T) {
+func TestAntsPoolExecutor_SubmitWithPriority(t *testing.T) {
 	provider, err := NewAntsExecutor(nil)
 	require.NoError(t, err)
 	defer provider.Close()
@@ -56,7 +56,7 @@ func TestAntsTaskExecutorProvider_SubmitWithPriority(t *testing.T) {
 	}
 }
 
-func TestAntsTaskExecutorProvider_Stats(t *testing.T) {
+func TestAntsPoolExecutor_Stats(t *testing.T) {
 	provider, err := NewAntsExecutor(nil)
 	require.NoError(t, err)
 	defer provider.Close()
@@ -68,7 +68,7 @@ func TestAntsTaskExecutorProvider_Stats(t *testing.T) {
 	}
 }
 
-func TestAntsTaskExecutorProvider_Health(t *testing.T) {
+func TestAntsPoolExecutor_Health(t *testing.T) {
 	provider, err := NewAntsExecutor(nil)
 	require.NoError(t, err)
 	defer provider.Close()
@@ -80,7 +80,7 @@ func TestAntsTaskExecutorProvider_Health(t *testing.T) {
 	}
 }
 
-func TestAntsTaskExecutorProvider_CloseWithTimeout(t *testing.T) {
+func TestAntsPoolExecutor_CloseWithTimeout(t *testing.T) {
 	t.Run("正常关闭", func(t *testing.T) {
 		provider, err := NewAntsExecutor(nil)
 		require.NoError(t, err)
@@ -132,7 +132,7 @@ func TestAntsTaskExecutorProvider_CloseWithTimeout(t *testing.T) {
 	})
 }
 
-func TestAntsTaskExecutorProvider_ClosedPool(t *testing.T) {
+func TestAntsPoolExecutor_ClosedPool(t *testing.T) {
 	provider, err := NewAntsExecutor(nil)
 	require.NoError(t, err)
 	provider.Close()
@@ -152,7 +152,7 @@ func TestAntsTaskExecutorProvider_ClosedPool(t *testing.T) {
 	}
 }
 
-func TestAntsTaskExecutorProvider_SetCapacity(t *testing.T) {
+func TestAntsPoolExecutor_SetCapacity(t *testing.T) {
 	provider, err := NewAntsExecutor(nil)
 	require.NoError(t, err)
 	defer provider.Close()

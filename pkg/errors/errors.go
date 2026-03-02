@@ -48,6 +48,7 @@ var (
 	ErrTaskArgLengthMismatch = stderrors.New("concurrency: task and argument length mismatch")
 	ErrTaskCanceled          = stderrors.New("concurrency: task was canceled")
 	ErrTaskTimeout           = stderrors.New("concurrency: task timeout")
+	ErrAllWorkersBusy        = stderrors.New("concurrency: all workers are bound to different source IDs")
 	ErrTooManyDelayedTasks   = stderrors.New("concurrency: too many delayed tasks") // P1-01
 
 	// TaskExecutor 层错误

@@ -25,29 +25,9 @@ func TestPerCoreExecutor_NewExecutor(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "with num cores",
-			opts:        []PerCoreOption{WithNumCores(4)},
-			expectError: false,
-		},
-		{
 			name:        "with queue size",
 			opts:        []PerCoreOption{WithQueueSize(1000)},
 			expectError: false,
-		},
-		{
-			name:        "invalid num cores - zero",
-			opts:        []PerCoreOption{WithNumCores(0)},
-			expectError: true,
-		},
-		{
-			name:        "invalid num cores - negative",
-			opts:        []PerCoreOption{WithNumCores(-1)},
-			expectError: true,
-		},
-		{
-			name:        "invalid num cores - exceeds max",
-			opts:        []PerCoreOption{WithNumCores(100)},
-			expectError: true,
 		},
 		{
 			name:        "invalid queue size - zero",
@@ -84,7 +64,7 @@ func TestPerCoreExecutor_NewExecutor(t *testing.T) {
 
 // TestPerCoreExecutor_Submit 测试任务提交
 func TestPerCoreExecutor_Submit(t *testing.T) {
-	executor, err := NewPerCoreExecutor(WithNumCores(2))
+	executor, err := NewPerCoreExecutor()
 	if err != nil {
 		t.Fatalf("NewPerCoreExecutor() error: %v", err)
 	}
@@ -114,7 +94,7 @@ func TestPerCoreExecutor_Submit(t *testing.T) {
 
 // TestPerCoreExecutor_SubmitWithPriority 测试优先级提交
 func TestPerCoreExecutor_SubmitWithPriority(t *testing.T) {
-	executor, err := NewPerCoreExecutor(WithNumCores(1), WithQueueSize(100))
+	executor, err := NewPerCoreExecutor(WithQueueSize(100))
 	if err != nil {
 		t.Fatalf("NewPerCoreExecutor() error: %v", err)
 	}
@@ -179,7 +159,7 @@ func TestPerCoreExecutor_SubmitWithPriority(t *testing.T) {
 
 // TestPerCoreExecutor_SubmitAfterClose 测试关闭后提交
 func TestPerCoreExecutor_SubmitAfterClose(t *testing.T) {
-	executor, err := NewPerCoreExecutor(WithNumCores(1))
+	executor, err := NewPerCoreExecutor()
 	if err != nil {
 		t.Fatalf("NewPerCoreExecutor() error: %v", err)
 	}
@@ -194,7 +174,7 @@ func TestPerCoreExecutor_SubmitAfterClose(t *testing.T) {
 
 // TestPerCoreExecutor_Close 测试关闭
 func TestPerCoreExecutor_Close(t *testing.T) {
-	executor, err := NewPerCoreExecutor(WithNumCores(2))
+	executor, err := NewPerCoreExecutor()
 	if err != nil {
 		t.Fatalf("NewPerCoreExecutor() error: %v", err)
 	}
@@ -215,7 +195,7 @@ func TestPerCoreExecutor_Close(t *testing.T) {
 
 // TestPerCoreExecutor_CloseTimeout 测试超时关闭
 func TestPerCoreExecutor_CloseTimeout(t *testing.T) {
-	executor, err := NewPerCoreExecutor(WithNumCores(1))
+	executor, err := NewPerCoreExecutor()
 	if err != nil {
 		t.Fatalf("NewPerCoreExecutor() error: %v", err)
 	}
@@ -256,7 +236,7 @@ func TestPerCoreExecutor_PanicRecovery(t *testing.T) {
 	}
 
 	executor, err := NewPerCoreExecutor(
-		WithNumCores(1),
+
 		WithPanicHandler(panicHandler),
 	)
 	if err != nil {
@@ -292,7 +272,7 @@ func TestPerCoreExecutor_PanicRecovery(t *testing.T) {
 
 // TestPerCoreExecutor_ConcurrentSubmit 测试并发提交
 func TestPerCoreExecutor_ConcurrentSubmit(t *testing.T) {
-	executor, err := NewPerCoreExecutor(WithNumCores(4), WithQueueSize(10000))
+	executor, err := NewPerCoreExecutor(WithQueueSize(10000))
 	if err != nil {
 		t.Fatalf("NewPerCoreExecutor() error: %v", err)
 	}
@@ -325,7 +305,7 @@ func TestPerCoreExecutor_ConcurrentSubmit(t *testing.T) {
 
 // TestPerCoreExecutor_ContextCancellation 测试上下文取消
 func TestPerCoreExecutor_ContextCancellation(t *testing.T) {
-	executor, err := NewPerCoreExecutor(WithNumCores(1), WithQueueSize(10))
+	executor, err := NewPerCoreExecutor(WithQueueSize(10))
 	if err != nil {
 		t.Fatalf("NewPerCoreExecutor() error: %v", err)
 	}
@@ -342,7 +322,7 @@ func TestPerCoreExecutor_ContextCancellation(t *testing.T) {
 
 // TestPerCoreExecutor_Stats 测试统计信息
 func TestPerCoreExecutor_Stats(t *testing.T) {
-	executor, err := NewPerCoreExecutor(WithNumCores(2))
+	executor, err := NewPerCoreExecutor()
 	if err != nil {
 		t.Fatalf("NewPerCoreExecutor() error: %v", err)
 	}
@@ -361,8 +341,8 @@ func TestPerCoreExecutor_Stats(t *testing.T) {
 	}
 
 	config := executor.Config()
-	if config.NumCores != 2 {
-		t.Errorf("Config().NumCores = %d, want 2", config.NumCores)
+	if config.NumCores != runtime.NumCPU() {
+		t.Errorf("Config().NumCores = %d, want %d", config.NumCores, runtime.NumCPU())
 	}
 }
 
@@ -388,16 +368,13 @@ func TestPerCoreExecutor_DefaultConfig(t *testing.T) {
 
 // TestPerCoreExecutor_MaxCoresLimit 测试最大核心数限制
 func TestPerCoreExecutor_MaxCoresLimit(t *testing.T) {
-	// 尝试创建超过最大限制的执行器
-	_, err := NewPerCoreExecutor(WithNumCores(1000))
-	if err == nil {
-		t.Error("NewPerCoreExecutor() should reject numCores > MaxCores (64)")
-	}
+	// 默认使用所有核心，不再有限制测试
+	// 这个测试已废弃
 }
 
 // 基准测试
 func BenchmarkPerCoreExecutor_Submit(b *testing.B) {
-	executor, _ := NewPerCoreExecutor(WithNumCores(4), WithQueueSize(10000))
+	executor, _ := NewPerCoreExecutor(WithQueueSize(10000))
 	defer executor.Close()
 
 	task := func(ctx context.Context) {}
@@ -409,7 +386,7 @@ func BenchmarkPerCoreExecutor_Submit(b *testing.B) {
 }
 
 func BenchmarkPerCoreExecutor_SubmitWithPriority(b *testing.B) {
-	executor, _ := NewPerCoreExecutor(WithNumCores(4), WithQueueSize(10000))
+	executor, _ := NewPerCoreExecutor(WithQueueSize(10000))
 	defer executor.Close()
 
 	task := func(ctx context.Context) {}
@@ -422,7 +399,7 @@ func BenchmarkPerCoreExecutor_SubmitWithPriority(b *testing.B) {
 }
 
 func BenchmarkPerCoreExecutor_ConcurrentSubmit(b *testing.B) {
-	executor, _ := NewPerCoreExecutor(WithNumCores(4), WithQueueSize(10000))
+	executor, _ := NewPerCoreExecutor(WithQueueSize(10000))
 	defer executor.Close()
 
 	task := func(ctx context.Context) {}

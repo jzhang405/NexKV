@@ -35,7 +35,6 @@ func BenchmarkOptimization_WithPadding(b *testing.B) {
 	}
 
 	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
 	)
 	defer executor.Close()
@@ -72,7 +71,6 @@ func BenchmarkOptimization_WithPadding(b *testing.B) {
 // BenchmarkOptimization_WithoutAffinity_NoPadding 对比基线（无优化）
 func BenchmarkOptimization_WithoutAffinity_NoPadding(b *testing.B) {
 	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
 		// 禁用绑核
 	)
@@ -111,7 +109,6 @@ func BenchmarkOptimization_WithAffinity_NoPadding(b *testing.B) {
 	}
 
 	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
 	)
 	defer executor.Close()
@@ -149,7 +146,6 @@ func BenchmarkOptimization_MemoryAccessPattern(b *testing.B) {
 
 	b.Run("SequentialAccess", func(b *testing.B) {
 		executor, _ := NewPerCoreExecutor(
-			WithNumCores(runtime.NumCPU()),
 			WithQueueSize(100000),
 		)
 		defer executor.Close()
@@ -177,7 +173,6 @@ func BenchmarkOptimization_MemoryAccessPattern(b *testing.B) {
 
 	b.Run("RandomAccess", func(b *testing.B) {
 		executor, _ := NewPerCoreExecutor(
-			WithNumCores(runtime.NumCPU()),
 			WithQueueSize(100000),
 		)
 		defer executor.Close()
@@ -209,7 +204,6 @@ func BenchmarkOptimization_BatchedStats(b *testing.B) {
 	}
 
 	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
 	)
 	defer executor.Close()
@@ -244,7 +238,7 @@ func TestOptimization_VerifyLocalData(t *testing.T) {
 	}
 
 	executor, _ := NewPerCoreExecutor(
-		WithNumCores(2),
+
 		WithQueueSize(100),
 	)
 	defer executor.Close()
@@ -282,7 +276,6 @@ func BenchmarkOptimization_FalseSharing(b *testing.B) {
 
 	b.Run("WithFalseSharing", func(b *testing.B) {
 		executor, _ := NewPerCoreExecutor(
-			WithNumCores(runtime.NumCPU()),
 			WithQueueSize(100000),
 		)
 		defer executor.Close()
@@ -312,7 +305,6 @@ func BenchmarkOptimization_FalseSharing(b *testing.B) {
 
 	b.Run("WithoutFalseSharing", func(b *testing.B) {
 		executor, _ := NewPerCoreExecutor(
-			WithNumCores(runtime.NumCPU()),
 			WithQueueSize(100000),
 		)
 		defer executor.Close()

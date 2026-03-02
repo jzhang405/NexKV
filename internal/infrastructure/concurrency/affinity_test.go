@@ -24,7 +24,7 @@ func TestPerCoreExecutor_CPUAffinity(t *testing.T) {
 	// 创建执行器（PerCore 总是启用绑核）
 	numCores := runtime.NumCPU()
 	executor, err := NewPerCoreExecutor(
-		WithNumCores(numCores),
+
 		WithQueueSize(100),
 	)
 	require.NoError(t, err)
@@ -51,8 +51,8 @@ func TestPerCoreExecutor_CPUAffinity(t *testing.T) {
 
 // TestPerCoreExecutor_DefaultAffinity 测试默认绑核行为
 func TestPerCoreExecutor_DefaultAffinity(t *testing.T) {
-	// 创建使用默认配置的执行器
-	executor, err := NewPerCoreExecutor(WithNumCores(2))
+	// 创建使用默认配置的执行器（使用所有核心）
+	executor, err := NewPerCoreExecutor()
 	require.NoError(t, err)
 	require.NotNil(t, executor)
 	defer executor.Close()
@@ -60,7 +60,7 @@ func TestPerCoreExecutor_DefaultAffinity(t *testing.T) {
 	// 验证默认行为
 	config := executor.Config()
 	// PerCore 总是启用绑核（在支持的平台上会实际绑核）
-	assert.Equal(t, 2, config.NumCores, "should use configured cores")
+	assert.Equal(t, runtime.NumCPU(), config.NumCores, "should use all available cores")
 }
 
 // BenchmarkPerCoreExecutor_WithAffinity 绑核性能基准测试
@@ -70,7 +70,6 @@ func BenchmarkPerCoreExecutor_WithAffinity(b *testing.B) {
 	}
 
 	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
 	)
 	defer executor.Close()
@@ -100,7 +99,6 @@ func BenchmarkPerCoreExecutor_SimulatedWorkload(b *testing.B) {
 	}
 
 	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
 	)
 	defer executor.Close()
@@ -136,7 +134,6 @@ func BenchmarkPerCoreExecutor_MemoryIntensive(b *testing.B) {
 	}
 
 	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
 	)
 	defer executor.Close()

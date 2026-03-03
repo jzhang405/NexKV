@@ -314,7 +314,7 @@ func TestPerCoreExecutor_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 立即取消
 
-	err = executor.Submit(ctx, func(ctx context.Context) {})
+	err = executor.Submit(ctx, model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {})
 	if err == nil {
 		t.Error("Submit() with cancelled context should return error")
 	}
@@ -381,7 +381,7 @@ func BenchmarkPerCoreExecutor_Submit(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 	}
 }
 
@@ -406,7 +406,7 @@ func BenchmarkPerCoreExecutor_ConcurrentSubmit(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 	})
 }

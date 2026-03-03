@@ -6,6 +6,7 @@ package concurrency
 import (
 	"context"
 	"fmt"
+	"github.com/jzhang405/NexKV/internal/domain/model"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -71,7 +72,7 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 
 		start := time.Now()
 		for i := 0; i < numTasks; i++ {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 
 		// 等待所有任务完成
@@ -112,7 +113,7 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 
 		start := time.Now()
 		for i := 0; i < numTasks; i++ {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 
 		for atomic.LoadInt64(&completed) < int64(numTasks) {
@@ -147,7 +148,7 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 
 		start := time.Now()
 		for i := 0; i < numTasks; i++ {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 
 		for atomic.LoadInt64(&completed) < int64(numTasks) {
@@ -204,7 +205,7 @@ func BenchmarkPerCore_CacheHitRate(b *testing.B) {
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_ = executor.Submit(context.Background(), task)
+				_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 			}
 		})
 	})

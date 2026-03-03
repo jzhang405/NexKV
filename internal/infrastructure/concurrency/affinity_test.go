@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +39,7 @@ func TestPerCoreExecutor_CPUAffinity(t *testing.T) {
 	// 提交任务验证执行
 	var executed int32
 	for i := 0; i < 100; i++ {
-		err := executor.Submit(context.Background(), func(ctx context.Context) {
+		err := executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 			atomic.AddInt32(&executed, 1)
 		})
 		assert.NoError(t, err)
@@ -79,7 +80,7 @@ func BenchmarkPerCoreExecutor_WithAffinity(b *testing.B) {
 	// Warm-up: 确保所有 worker 都已完成初始化和绑核
 	// 提交足够多的任务让所有 worker 都启动并完成绑核
 	for i := 0; i < runtime.NumCPU()*10; i++ {
-		_ = executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 	}
 
 	// 等待 warm-up 任务完成
@@ -88,7 +89,7 @@ func BenchmarkPerCoreExecutor_WithAffinity(b *testing.B) {
 	// 重置计时器，现在开始测量真实的绑核后性能
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 	}
 }
 
@@ -115,14 +116,14 @@ func BenchmarkPerCoreExecutor_SimulatedWorkload(b *testing.B) {
 
 	// Warm-up
 	for i := 0; i < runtime.NumCPU()*100; i++ {
-		_ = executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 	}
 	time.Sleep(200 * time.Millisecond)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 	})
 }
@@ -149,14 +150,14 @@ func BenchmarkPerCoreExecutor_MemoryIntensive(b *testing.B) {
 
 	// Warm-up
 	for i := 0; i < runtime.NumCPU()*100; i++ {
-		_ = executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 	}
 	time.Sleep(200 * time.Millisecond)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 	})
 }

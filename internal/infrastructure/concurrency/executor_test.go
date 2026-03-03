@@ -28,7 +28,7 @@ func TestAntsPoolExecutor_BasicSubmit(t *testing.T) {
 		done := make(chan bool)
 		ctx := context.Background()
 
-		err := provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {
+		err := provider.Submit(ctx, model.SourceDefault, model.TaskPriorityNormal, model.TaskPriorityNormal, func(ctx context.Context) {
 			done <- true
 		})
 
@@ -49,13 +49,13 @@ func TestAntsPoolExecutor_BasicSubmit(t *testing.T) {
 		ctx := context.Background()
 
 		// 提交不同优先级的任务
-		_ = provider.Submit(ctx, model.TaskPriorityHigh, func(ctx context.Context) {
+		_ = provider.Submit(ctx, model.SourceDefault, model.TaskPriorityNormal, model.TaskPriorityHigh, func(ctx context.Context) {
 			done <- true
 		})
-		_ = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {
+		_ = provider.Submit(ctx, model.SourceDefault, model.TaskPriorityNormal, model.TaskPriorityNormal, func(ctx context.Context) {
 			done <- true
 		})
-		_ = provider.Submit(ctx, model.TaskPriorityLow, func(ctx context.Context) {
+		_ = provider.Submit(ctx, model.SourceDefault, model.TaskPriorityNormal, model.TaskPriorityLow, func(ctx context.Context) {
 			done <- true
 		})
 

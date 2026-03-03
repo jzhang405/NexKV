@@ -56,14 +56,14 @@ func BenchmarkOptimization_WithPadding(b *testing.B) {
 
 	// Warm-up
 	for i := 0; i < runtime.NumCPU()*100; i++ {
-		_ = executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 	}
 	time.Sleep(200 * time.Millisecond)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 	})
 }
@@ -89,14 +89,14 @@ func BenchmarkOptimization_WithoutAffinity_NoPadding(b *testing.B) {
 	}
 
 	for i := 0; i < runtime.NumCPU()*100; i++ {
-		_ = executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 	}
 	time.Sleep(200 * time.Millisecond)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 	})
 }
@@ -126,14 +126,14 @@ func BenchmarkOptimization_WithAffinity_NoPadding(b *testing.B) {
 	}
 
 	for i := 0; i < runtime.NumCPU()*100; i++ {
-		_ = executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 	}
 	time.Sleep(200 * time.Millisecond)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 	})
 }
@@ -166,7 +166,7 @@ func BenchmarkOptimization_MemoryAccessPattern(b *testing.B) {
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_ = executor.Submit(context.Background(), task)
+				_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 			}
 		})
 	})
@@ -191,7 +191,7 @@ func BenchmarkOptimization_MemoryAccessPattern(b *testing.B) {
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_ = executor.Submit(context.Background(), task)
+				_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 			}
 		})
 	})
@@ -226,7 +226,7 @@ func BenchmarkOptimization_BatchedStats(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 	})
 }
@@ -298,7 +298,7 @@ func BenchmarkOptimization_FalseSharing(b *testing.B) {
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_ = executor.Submit(context.Background(), task)
+				_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 			}
 		})
 	})
@@ -326,7 +326,7 @@ func BenchmarkOptimization_FalseSharing(b *testing.B) {
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_ = executor.Submit(context.Background(), task)
+				_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 			}
 		})
 	})

@@ -13,7 +13,8 @@
 | v1.0 | 2026-03-02 | 初始版本：AsyncOp 重命名 + 泛型锁包装器 | PM |
 | v1.1 | 2026-03-02 | 调整 Week 4：ADR 002 补充而非重新创建 | PM |
 | v1.2 | 2026-03-03 | 新增：TaskExecutor 接口增强（SourceID 支持） | PM |
-| **v1.3** | **2026-03-03** | **修正：TaskExecutor 接口未修改，使用 SubmitWithSource() 方法（独占绑定策略）** | **PM** |
+| v1.3 | 2026-03-03 | 修正：TaskExecutor 接口未修改，使用 SubmitWithSource() 方法（独占绑定策略） | PM |
+| **v1.4** | **2026-03-03** | **调整：流水线集成到 BTree/WAL 内部，不单独实现** | **PM** |
 
 ---
 
@@ -77,11 +78,18 @@
 - ✅ 单元测试 + 基准测试
 - ✅ DDD/M2 文档更新到 v3.0（已完成）
 
-**暂不更新**（后续阶段）：
-- ⏸ 流水线代码实现（阶段 1 后考虑）
-- ⏸ Bf-Tree 异步接口（M2 阶段）
-- ⏸ WAL 异步批量写入（M2 阶段）
-- ⏸ ADR 002 pipeline 设计补充（延后到后续计划）
+**暂不更新**（后续阶段 - M2 存储引擎）：
+- ⏸ Bf-Tree 异步接口（M2 阶段，集成 ReadPipeline + WritePipeline）
+- ⏸ WAL 异步批量写入（M2 阶段，集成 FlushPipeline）
+- ⏸ 流水线代码实现（直接集成到存储引擎内部，不单独实现 Pipeline 类）
+
+> **设计调整说明**：
+> 流水线模式将直接集成到 BTree 和 WAL 组件内部，而不是单独实现独立的 Pipeline 类。
+> 这样可以减少抽象层开销，提升性能，简化维护。
+>
+> - **BTree 内部**：集成 ReadPipeline + WritePipeline 逻辑
+> - **WAL 内部**：集成 FlushPipeline 批量刷新逻辑
+> - **优势**：减少跨组件调用、更好的封装、便于优化
 
 ### 3. 实施内容（做什么）
 
@@ -261,11 +269,11 @@ go test -bench=BenchmarkPerCoreExecutor ./internal/infrastructure/concurrency/..
 
 #### 6.2 后续依赖
 
-| 后续任务 | 依赖阶段 0 的内容 |
-|----------|-------------------|
-| M2 存储引擎 | AsyncOp + Locked[T] + 流水线设计 |
-| BfTree 异步接口 | AsyncOp 接口 |
-| WAL 异步批量写入 | 流水线设计 |
+| 后续任务 | 依赖阶段 0 的内容 | 实施方式 |
+|----------|-------------------|----------|
+| M2 存储引擎 | AsyncOp + Locked[T] + 流水线设计 | 集成到 BTree/WAL 内部 |
+| BfTree 异步接口 | AsyncOp 接口 + 流水线设计 | 内部集成 ReadPipeline + WritePipeline |
+| WAL 异步批量写入 | 流水线设计 + SyncPolicy | 内部集成 FlushPipeline |
 
 ### 7. 评审要点
 

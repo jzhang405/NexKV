@@ -624,17 +624,33 @@ func (l IsolationLevel) String() string {
 - [x] TaskExecutor 接口增强（SourceID 支持）
 - [x] 设计流水线架构（本文档）
 
-### 阶段 1：流水线实现（6周）
+### 阶段 1：存储引擎集成（8周）
 
-- [ ] 实现 WritePipeline
-- [ ] 实现 ReadPipeline
-- [ ] 实现 FlushPipeline（WAL）
+> **设计调整**：流水线模式将直接集成到 BTree 和 WAL 组件内部，不单独实现独立的 Pipeline 类。
 
-### 阶段 2：存储引擎集成（8周）
+- [ ] **BTree 异步 API**（集成 ReadPipeline + WritePipeline）
+  - 在 BTree 内部实现异步读写流水线
+  - 使用 Channel 进行任务分发
+  - 复用 TaskExecutor 进行任务执行
+  - 支持背压控制和并发安全
 
-- [ ] BfTree 异步 API
-- [ ] WAL 异步批量写入
-- [ ] 性能测试与优化
+- [ ] **WAL 异步批量写入**（集成 FlushPipeline）
+  - 在 WAL 内部实现批量刷新流水线
+  - 支持多种同步策略（Async/Batch/Always）
+  - 批量累积优化（100 条或 10ms）
+  - 故障恢复机制
+
+- [ ] **性能测试与优化**
+  - 端到端性能基准测试
+  - 吞吐量和延迟优化
+  - 资源使用监控
+  - 并发正确性验证
+
+**集成优势**：
+- ✅ 减少抽象层：直接在存储引擎内部实现流水线，减少接口开销
+- ✅ 更好的封装：流水线逻辑与存储引擎紧密耦合，便于优化
+- ✅ 简化维护：避免额外的 Pipeline 类维护成本
+- ✅ 性能优化：减少跨组件调用，提升缓存局部性
 
 ---
 

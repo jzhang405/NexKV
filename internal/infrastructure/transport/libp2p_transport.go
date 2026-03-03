@@ -452,7 +452,7 @@ func (t *Libp2pTransport) Close() error {
 		close(done)
 	}
 	if t.provider != nil {
-		if err := t.provider.Submit(t.ctx, service.PriorityNormal, waitFunc); err != nil {
+		if err := t.provider.Submit(t.ctx, model.SourceNetwork, service.PriorityNormal, waitFunc); err != nil {
 			errs = append(errs, service.Wrap(err, "submit wait task"))
 		}
 	} else {

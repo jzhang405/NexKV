@@ -38,7 +38,7 @@ func submitTask(
 	}
 
 	if provider != nil {
-		if err := provider.Submit(ctx, service.PriorityNormal, wrappedTask); err != nil {
+		if err := provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, wrappedTask); err != nil {
 			// 提交失败：回退到直接启动 goroutine
 			slog.Warn("[AsyncOp] failed to submit task, falling back to direct goroutine", "error", err)
 			go wrappedTask(ctx)
@@ -192,7 +192,7 @@ func (op *asyncOpImpl[T]) safeExecuteCallback(callback func(T, error), v T, err 
 	}
 
 	if op.goroutineProvider != nil {
-		if submitErr := op.goroutineProvider.Submit(context.Background(), service.PriorityNormal, func(ctx context.Context) {
+		if submitErr := op.goroutineProvider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			executor()
 		}); submitErr != nil {
 			// CRITICAL FIX: Submit 失败时回退到直接启动 goroutine
@@ -505,7 +505,7 @@ func submitAsyncTask(
 	}
 
 	if provider != nil {
-		if err := provider.Submit(ctx, service.PriorityNormal, executor); err != nil {
+		if err := provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, executor); err != nil {
 			// 提交失败时回退到直接启动 goroutine
 			slog.Warn("[AsyncOp] failed to submit task, falling back to direct goroutine", "error", err)
 			go executor(ctx)

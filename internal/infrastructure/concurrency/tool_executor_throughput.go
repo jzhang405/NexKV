@@ -54,6 +54,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/concurrency"
 )
 
@@ -96,7 +98,7 @@ func benchmarkPerCore() {
 
 	start := time.Now()
 	for range taskCount {
-		_ = exec.Submit(ctx, func(ctx context.Context) {
+		_ = exec.Submit(ctx, model.SourceNetwork, service.PriorityNormal, func(ctx context.Context) {
 			simulateTransportTask(ctx)
 			completed.Add(1)
 		})
@@ -123,7 +125,7 @@ func benchmarkAntsDefault() {
 
 	start := time.Now()
 	for range taskCount {
-		_ = exec.Submit(ctx, 0, func(ctx context.Context) {
+		_ = exec.Submit(ctx, model.SourceNetwork, 0, func(ctx context.Context) {
 			simulateTransportTask(ctx)
 			completed.Add(1)
 		})

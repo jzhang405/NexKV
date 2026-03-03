@@ -4,6 +4,8 @@ package service
 import (
 	"context"
 	"sync"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
 // Future[T] 表示一个异步计算的结果
@@ -72,7 +74,7 @@ func SubmitWithResult[T any](
 ) *Future[T] {
 	future := NewFuture[T]()
 
-	err := executor.Submit(ctx, priority, func(execCtx context.Context) {
+	err := executor.Submit(ctx, model.SourceDefault, priority, func(execCtx context.Context) {
 		result, err := task(execCtx)
 		if err != nil {
 			future.Reject(err)

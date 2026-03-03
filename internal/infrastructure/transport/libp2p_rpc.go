@@ -124,7 +124,7 @@ func (r *Libp2pRPC) CallAsync(ctx context.Context, to model.PeerID, req model.Me
 		return service.ErrCanceled
 	}
 
-	_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+	_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, model.SourceNetwork, service.PriorityNormal, func(ctx context.Context) {
 		resp, err := r.Call(ctx, to, req)
 		if cb != nil {
 			cb(resp, err)
@@ -250,7 +250,7 @@ func (r *Libp2pRPC) BroadcastAsync(
 		}
 	}
 
-	_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+	_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, model.SourceNetwork, service.PriorityNormal, func(ctx context.Context) {
 		execFunc()
 	})
 
@@ -296,7 +296,7 @@ func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []m
 
 		wg.Add(1)
 		idx := i // 捕获循环变量
-		_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+		_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, model.SourceNetwork, service.PriorityNormal, func(ctx context.Context) {
 			defer wg.Done()
 			peerID := targets[idx]
 
@@ -389,7 +389,7 @@ func (r *Libp2pRPC) WriteVCall(
 		sem <- struct{}{} // 获取信号量
 		wg.Add(1)
 		idx := i // 捕获循环变量
-		_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+		_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, model.SourceNetwork, service.PriorityNormal, func(ctx context.Context) {
 			defer func() { <-sem }() // 释放信号量
 			defer wg.Done()
 
@@ -522,7 +522,7 @@ func (r *Libp2pRPC) doSendRequestAndWaitResponse(ctx context.Context, to model.P
 		r.handleResponse(req.ID(), service.ResponseMsg{Msg: resp, Err: nil})
 	}
 
-	_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, readFunc)
+	_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, model.SourceNetwork, service.PriorityNormal, readFunc)
 
 	return nil
 }
@@ -633,7 +633,7 @@ func (r *Libp2pRPC) broadcastFireAndForget(
 	for _, peer := range to {
 		wg.Add(1)
 		p := peer // 捕获循环变量
-		_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+		_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, model.SourceNetwork, service.PriorityNormal, func(ctx context.Context) {
 			defer wg.Done()
 
 			err := r.sendRequestNoResponse(ctx, p, req)
@@ -706,7 +706,7 @@ func (r *Libp2pRPC) broadcastAndWait(
 		wg.Add(1)
 		idx := i // 捕获循环变量
 		p := peer
-		_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+		_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, model.SourceNetwork, service.PriorityNormal, func(ctx context.Context) {
 			defer func() { <-sem }()
 			defer wg.Done()
 
@@ -756,7 +756,7 @@ func (r *Libp2pRPC) HandleIncomingStream(stream service.Stream) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, service.PriorityNormal, func(ctx context.Context) {
+	_ = r.provider.Load().(service.TaskExecutor).Submit(ctx, model.SourceNetwork, service.PriorityNormal, func(ctx context.Context) {
 		select {
 		case <-r.closeCh:
 			cancel()

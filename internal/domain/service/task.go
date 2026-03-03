@@ -43,7 +43,10 @@ const (
 // TaskExecutor 基础任务执行器接口
 type TaskExecutor interface {
 	// Submit 提交任务执行
-	Submit(ctx context.Context, priority TaskPriority, task func(context.Context)) error
+	// sourceID: 数据源标识符，用于 CPU 亲和性调度
+	// priority: 任务优先级（0-9，0 最高）
+	// task: 任务函数
+	Submit(ctx context.Context, sourceID model.SourceID, priority TaskPriority, task func(context.Context)) error
 	// Close 关闭执行器
 	Close() error
 }

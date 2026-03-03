@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
 // ==========================================
@@ -21,7 +22,7 @@ func BenchmarkSubmit(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = provider.Submit(ctx, model.SourceDefault, model.TaskPriorityNormal, model.TaskPriorityNormal, func(ctx context.Context) {})
+		_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 	}
 }
 
@@ -34,7 +35,7 @@ func BenchmarkSubmitBatch_100(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < 100; j++ {
-			_ = provider.Submit(ctx, model.SourceDefault, model.TaskPriorityNormal, model.TaskPriorityNormal, func(ctx context.Context) {})
+			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 		}
 	}
 }
@@ -48,7 +49,7 @@ func BenchmarkSubmitBatch_1000(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < 1000; j++ {
-			_ = provider.Submit(ctx, model.SourceDefault, model.TaskPriorityNormal, model.TaskPriorityNormal, func(ctx context.Context) {})
+			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 		}
 	}
 }
@@ -62,7 +63,7 @@ func BenchmarkConcurrentSubmit(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = provider.Submit(ctx, model.SourceDefault, model.TaskPriorityNormal, model.TaskPriorityNormal, func(ctx context.Context) {})
+			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 		}
 	})
 }
@@ -76,7 +77,7 @@ func BenchmarkCloseWithPendingTasks(b *testing.B) {
 
 		// 提交一些任务
 		for j := 0; j < 100; j++ {
-			_ = provider.Submit(ctx, model.SourceDefault, model.TaskPriorityNormal, model.TaskPriorityNormal, func(ctx context.Context) {
+			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 				time.Sleep(10 * time.Millisecond)
 			})
 		}
@@ -97,12 +98,12 @@ func BenchmarkSubmitWithPriority(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		priority := model.TaskPriorityNormal
+		priority := service.PriorityNormal
 		if i%10 == 0 {
-			priority = model.TaskPriorityHigh
+			priority = service.PriorityHigh
 		} else if i%100 == 0 {
-			priority = model.TaskPriorityCritical
+			priority = service.PriorityCritical
 		}
-		_ = provider.Submit(ctx, model.SourceDefault, model.TaskPriorityNormal, priority, func(ctx context.Context) {})
+		_ = provider.Submit(ctx, model.SourceDefault, priority, func(ctx context.Context) {})
 	}
 }

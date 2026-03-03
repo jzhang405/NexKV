@@ -147,7 +147,7 @@ func TestSubmitWithDefaultPriority(t *testing.T) {
 	defer executor.Close()
 
 	// Submit() 应该使用 TaskPriorityNormal (5)
-	err = executor.Submit(context.Background(), func(ctx context.Context) {
+	err = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 		// 任务执行
 	})
 	assert.NoError(t, err)

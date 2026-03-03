@@ -48,7 +48,7 @@ func TestAntsPoolExecutor_AutoScale(t *testing.T) {
 
 	for i := 0; i < 90; i++ { // 90% 使用率
 		wg.Add(1)
-		err := provider.Submit(context.Background(), model.SourceDefault, service.TaskPriorityNormal, func(ctx context.Context) {
+		err := provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			runningCount.Add(1)
 			<-blockCh // 阻塞任务
 			wg.Done()
@@ -63,7 +63,7 @@ func TestAntsPoolExecutor_AutoScale(t *testing.T) {
 
 	// 提交更多任务以触发扩容检查
 	for i := 0; i < 50; i++ {
-		_ = provider.Submit(context.Background(), model.SourceDefault, service.TaskPriorityNormal, func(ctx context.Context) {
+		_ = provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
 	}
@@ -109,7 +109,7 @@ func TestAntsPoolExecutor_AutoShrink(t *testing.T) {
 
 	// 提交少量任务（低使用率）
 	for i := 0; i < 10; i++ {
-		_ = provider.Submit(context.Background(), model.SourceDefault, service.TaskPriorityNormal, func(ctx context.Context) {
+		_ = provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
 	}
@@ -137,7 +137,7 @@ func TestAntsPoolExecutor_AutoScale_Disabled(t *testing.T) {
 
 	// 提交大量任务
 	for i := 0; i < 50; i++ {
-		_ = provider.Submit(context.Background(), model.SourceDefault, service.TaskPriorityNormal, func(ctx context.Context) {
+		_ = provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
 	}
@@ -173,7 +173,7 @@ func TestAntsPoolExecutor_AutoScale_MaxCapacity(t *testing.T) {
 
 	for i := 0; i < 90; i++ {
 		wg.Add(1)
-		_ = provider.Submit(context.Background(), model.SourceDefault, service.TaskPriorityNormal, func(ctx context.Context) {
+		_ = provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			<-blockCh
 			wg.Done()
 		})
@@ -183,7 +183,7 @@ func TestAntsPoolExecutor_AutoScale_MaxCapacity(t *testing.T) {
 
 	// 提交更多任务以触发扩容检查
 	for i := 0; i < 100; i++ {
-		_ = provider.Submit(context.Background(), model.SourceDefault, service.TaskPriorityNormal, func(ctx context.Context) {
+		_ = provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
 	}
@@ -223,7 +223,7 @@ func TestAntsPoolExecutor_HighConcurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < tasksPerGoroutine; j++ {
-				err := provider.Submit(context.Background(), model.SourceDefault, service.TaskPriorityNormal, func(ctx context.Context) {
+				err := provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 					completed.Add(1)
 				})
 				if err != nil {
@@ -270,7 +270,7 @@ func TestAntsPoolExecutor_RaceCondition(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < numOps; j++ {
-				_ = provider.Submit(context.Background(), model.SourceDefault, service.TaskPriorityNormal, func(ctx context.Context) {})
+				_ = provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 			}
 		}()
 

@@ -75,7 +75,7 @@ func TestPerCoreExecutor_Submit(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
-		err := executor.Submit(context.Background(), func(ctx context.Context) {
+		err := executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 			atomic.AddInt32(&executed, 1)
 			wg.Done()
 		})
@@ -166,7 +166,7 @@ func TestPerCoreExecutor_SubmitAfterClose(t *testing.T) {
 
 	executor.Close()
 
-	err = executor.Submit(context.Background(), func(ctx context.Context) {})
+	err = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {})
 	if err == nil {
 		t.Error("Submit() after Close() should return error")
 	}
@@ -181,7 +181,7 @@ func TestPerCoreExecutor_Close(t *testing.T) {
 
 	// 提交一些任务
 	for i := 0; i < 5; i++ {
-		_ = executor.Submit(context.Background(), func(ctx context.Context) {
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
 	}
@@ -202,7 +202,7 @@ func TestPerCoreExecutor_CloseTimeout(t *testing.T) {
 
 	// 使用 channel 创建一个真正阻塞的任务
 	blockCh := make(chan struct{})
-	_ = executor.Submit(context.Background(), func(ctx context.Context) {
+	_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 		<-blockCh
 	})
 
@@ -247,7 +247,7 @@ func TestPerCoreExecutor_PanicRecovery(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	err = executor.Submit(context.Background(), func(ctx context.Context) {
+	err = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 		defer wg.Done()
 		panic("test panic")
 	})
@@ -264,7 +264,7 @@ func TestPerCoreExecutor_PanicRecovery(t *testing.T) {
 	}
 
 	// 执行器应该仍然可用
-	err = executor.Submit(context.Background(), func(ctx context.Context) {})
+	err = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {})
 	if err != nil {
 		t.Error("Executor should still be usable after panic")
 	}
@@ -286,7 +286,7 @@ func TestPerCoreExecutor_ConcurrentSubmit(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := executor.Submit(context.Background(), func(ctx context.Context) {
+			err := executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 				atomic.AddInt32(&counter, 1)
 			})
 			if err != nil {
@@ -330,7 +330,7 @@ func TestPerCoreExecutor_Stats(t *testing.T) {
 
 	// 提交任务
 	for i := 0; i < 10; i++ {
-		_ = executor.Submit(context.Background(), func(ctx context.Context) {})
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {})
 	}
 
 	time.Sleep(50 * time.Millisecond)

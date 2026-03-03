@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
 // ==========================================
@@ -249,7 +251,7 @@ func TestOptimization_VerifyLocalData(t *testing.T) {
 	// 提交任务
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
-		_ = executor.Submit(context.Background(), func(ctx context.Context) {
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 			atomic.AddInt64(&executed, 1)
 			wg.Done()
 		})

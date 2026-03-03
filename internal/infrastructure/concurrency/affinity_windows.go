@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"runtime"
 	"syscall"
-	"unsafe"
+
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // Windows API 声明

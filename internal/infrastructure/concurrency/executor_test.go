@@ -7,18 +7,19 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
 // ==========================================
 // TaskPoolProvider 基础测试
 // ==========================================
 
-func TestAntsTaskExecutorProvider_BasicSubmit(t *testing.T) {
+func TestAntsPoolExecutor_BasicSubmit(t *testing.T) {
 	config := &ProviderConfig{
 		Capacity: 10,
 	}
 
-	provider, err := NewAntsTaskExecutorProvider(config)
+	provider, err := NewAntsExecutor(config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -28,7 +29,7 @@ func TestAntsTaskExecutorProvider_BasicSubmit(t *testing.T) {
 		done := make(chan bool)
 		ctx := context.Background()
 
-		err := provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {
+		err := provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			done <- true
 		})
 
@@ -49,13 +50,13 @@ func TestAntsTaskExecutorProvider_BasicSubmit(t *testing.T) {
 		ctx := context.Background()
 
 		// 提交不同优先级的任务
-		_ = provider.Submit(ctx, model.TaskPriorityHigh, func(ctx context.Context) {
+		_ = provider.Submit(ctx, model.SourceDefault, service.PriorityHigh, func(ctx context.Context) {
 			done <- true
 		})
-		_ = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {
+		_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			done <- true
 		})
-		_ = provider.Submit(ctx, model.TaskPriorityLow, func(ctx context.Context) {
+		_ = provider.Submit(ctx, model.SourceDefault, service.PriorityLow, func(ctx context.Context) {
 			done <- true
 		})
 

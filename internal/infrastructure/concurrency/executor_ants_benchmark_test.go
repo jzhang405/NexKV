@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
 // ==========================================
@@ -15,54 +16,54 @@ import (
 
 // BenchmarkSubmit 单任务提交延迟
 func BenchmarkSubmit(b *testing.B) {
-	provider, _ := NewAntsTaskExecutorProvider(nil)
+	provider, _ := NewAntsExecutor(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {})
+		_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 	}
 }
 
 // BenchmarkSubmitBatch_100 批量提交 100 个任务
 func BenchmarkSubmitBatch_100(b *testing.B) {
-	provider, _ := NewAntsTaskExecutorProvider(nil)
+	provider, _ := NewAntsExecutor(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < 100; j++ {
-			_ = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {})
+			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 		}
 	}
 }
 
 // BenchmarkSubmitBatch_1000 批量提交 1000 个任务
 func BenchmarkSubmitBatch_1000(b *testing.B) {
-	provider, _ := NewAntsTaskExecutorProvider(nil)
+	provider, _ := NewAntsExecutor(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < 1000; j++ {
-			_ = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {})
+			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 		}
 	}
 }
 
 // BenchmarkConcurrentSubmit 并发提交
 func BenchmarkConcurrentSubmit(b *testing.B) {
-	provider, _ := NewAntsTaskExecutorProvider(nil)
+	provider, _ := NewAntsExecutor(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {})
+			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 		}
 	})
 }
@@ -71,12 +72,12 @@ func BenchmarkConcurrentSubmit(b *testing.B) {
 func BenchmarkCloseWithPendingTasks(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		provider, _ := NewAntsTaskExecutorProvider(nil)
+		provider, _ := NewAntsExecutor(nil)
 		ctx := context.Background()
 
 		// 提交一些任务
 		for j := 0; j < 100; j++ {
-			_ = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {
+			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 				time.Sleep(10 * time.Millisecond)
 			})
 		}
@@ -91,18 +92,18 @@ func BenchmarkCloseWithPendingTasks(b *testing.B) {
 
 // BenchmarkSubmitWithPriority 不同优先级提交
 func BenchmarkSubmitWithPriority(b *testing.B) {
-	provider, _ := NewAntsTaskExecutorProvider(nil)
+	provider, _ := NewAntsExecutor(nil)
 	defer provider.Close()
 	ctx := context.Background()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		priority := model.TaskPriorityNormal
+		priority := service.PriorityNormal
 		if i%10 == 0 {
-			priority = model.TaskPriorityHigh
+			priority = service.PriorityHigh
 		} else if i%100 == 0 {
-			priority = model.TaskPriorityCritical
+			priority = service.PriorityCritical
 		}
-		_ = provider.Submit(ctx, priority, func(ctx context.Context) {})
+		_ = provider.Submit(ctx, model.SourceDefault, priority, func(ctx context.Context) {})
 	}
 }

@@ -12,7 +12,7 @@ func TestTaskMode_String(t *testing.T) {
 		expected string
 	}{
 		{ModePerCore, "per-core"},
-		{ModeDefaultPool, "default-pool"},
+		{ModeAntsPool, "ants-pool"},
 		{TaskMode(100), "unknown"}, // 真正的无效值
 	}
 
@@ -31,7 +31,7 @@ func TestTaskMode_IsValid(t *testing.T) {
 		expected bool
 	}{
 		{ModePerCore, true},
-		{ModeDefaultPool, true},
+		{ModeAntsPool, true},
 		{TaskMode(-1), false},
 		{TaskMode(0), false},
 		{TaskMode(100), false},
@@ -55,8 +55,8 @@ func TestTaskMode_FallbackMode(t *testing.T) {
 		mode     TaskMode
 		expected TaskMode
 	}{
-		{ModePerCore, ModeDefaultPool},     // PerCore 降级到 DefaultPool
-		{ModeDefaultPool, ModeDefaultPool}, // DefaultPool 无需降级
+		{ModePerCore, ModeAntsPool},  // PerCore 降级到 DefaultPool
+		{ModeAntsPool, ModeAntsPool}, // DefaultPool 无需降级
 	}
 
 	for _, tt := range tests {
@@ -76,19 +76,19 @@ func TestTaskMode_IsSupportedOn(t *testing.T) {
 	}{
 		// Linux 支持所有模式
 		{"linux", ModePerCore, true},
-		{"linux", ModeDefaultPool, true},
+		{"linux", ModeAntsPool, true},
 
 		// Windows 支持所有模式
 		{"windows", ModePerCore, true},
-		{"windows", ModeDefaultPool, true},
+		{"windows", ModeAntsPool, true},
 
 		// macOS 不支持真绑核，PerCore 降级
 		{"darwin", ModePerCore, false},
-		{"darwin", ModeDefaultPool, true},
+		{"darwin", ModeAntsPool, true},
 
 		// 未知平台
 		{"freebsd", ModePerCore, false},
-		{"freebsd", ModeDefaultPool, true},
+		{"freebsd", ModeAntsPool, true},
 	}
 
 	for _, tt := range tests {
@@ -106,7 +106,7 @@ func TestTaskMode_RecommendedConfig(t *testing.T) {
 		mode TaskMode
 	}{
 		{ModePerCore},
-		{ModeDefaultPool},
+		{ModeAntsPool},
 	}
 
 	for _, tt := range tests {
@@ -114,7 +114,7 @@ func TestTaskMode_RecommendedConfig(t *testing.T) {
 			config := tt.mode.RecommendedConfig()
 
 			// DefaultPool 使用 -1 表示使用 ants 默认值
-			if tt.mode == ModeDefaultPool {
+			if tt.mode == ModeAntsPool {
 				if config.MaxConcurrency != -1 {
 					t.Errorf("DefaultPool MaxConcurrency should be -1, got %d", config.MaxConcurrency)
 				}
@@ -150,9 +150,9 @@ func TestTaskMode_ParseTaskMode(t *testing.T) {
 		hasError bool
 	}{
 		{"per-core", ModePerCore, false},
-		{"default-pool", ModeDefaultPool, false},
-		{"invalid", ModeDefaultPool, true},
-		{"", ModeDefaultPool, true},
+		{"ants-pool", ModeAntsPool, false},
+		{"invalid", ModeAntsPool, true},
+		{"", ModeAntsPool, true},
 	}
 
 	for _, tt := range tests {
@@ -188,7 +188,7 @@ func TestModeConfig_Defaults(t *testing.T) {
 	}
 
 	// 测试 DefaultPool 推荐配置
-	defaultConfig := ModeDefaultPool.RecommendedConfig()
+	defaultConfig := ModeAntsPool.RecommendedConfig()
 	if defaultConfig.EnableAffinity {
 		t.Error("DefaultPool should not have EnableAffinity")
 	}

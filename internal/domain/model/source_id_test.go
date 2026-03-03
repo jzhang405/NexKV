@@ -128,22 +128,22 @@ func TestSourceID_RecommendedMode(t *testing.T) {
 		{"replication:sync:send", ModePerCore},
 
 		// DefaultPool 模式（所有其他场景）
-		{"rpc:client:send", ModeDefaultPool},
-		{"rpc:server:handle", ModeDefaultPool},
-		{"network:send:packet", ModeDefaultPool},
-		{"network:recv:data", ModeDefaultPool},
-		{"query:range:scan", ModeDefaultPool},
-		{"query:point:get", ModeDefaultPool},
-		{"shard:write:data", ModeDefaultPool},
-		{"background:log:flush", ModeDefaultPool},
-		{"background:metric:collect", ModeDefaultPool},
-		{"log:write:entry", ModeDefaultPool},
-		{"metric:collect:counter", ModeDefaultPool},
-		{"cleanup:gc:run", ModeDefaultPool},
+		{"rpc:client:send", ModeAntsPool},
+		{"rpc:server:handle", ModeAntsPool},
+		{"network:send:packet", ModeAntsPool},
+		{"network:recv:data", ModeAntsPool},
+		{"query:range:scan", ModeAntsPool},
+		{"query:point:get", ModeAntsPool},
+		{"shard:write:data", ModeAntsPool},
+		{"background:log:flush", ModeAntsPool},
+		{"background:metric:collect", ModeAntsPool},
+		{"log:write:entry", ModeAntsPool},
+		{"metric:collect:counter", ModeAntsPool},
+		{"cleanup:gc:run", ModeAntsPool},
 
 		// DefaultPool 模式
-		{"test:temp:task", ModeDefaultPool},
-		{"unknown:module:action", ModeDefaultPool},
+		{"test:temp:task", ModeAntsPool},
+		{"unknown:module:action", ModeAntsPool},
 	}
 
 	for _, tt := range tests {

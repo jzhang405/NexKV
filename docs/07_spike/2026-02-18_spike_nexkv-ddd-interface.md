@@ -10,9 +10,15 @@
 
 **文档目的**: 从DDD角度组织分布式KV存储系统的Go interface设计
 **数据来源**: doubao-chat-nexkv-ddd.md 完整对话（21,647行）
-**文档版本**: v19.3 Unified | **最后更新**: 2026-02-23
-**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口** + **统一 RPC 接口** + **ResponseStrategy 广播策略** + **BroadcastProgress 完整追踪** + **WriteVResult 统一返回值** + **双存储引擎策略** + **AsyncGroup批量操作** + **GoroutineProvider any类型设计**
+**文档版本**: v3.0 | **最后更新**: 2026-03-02
+**关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口** + **统一 RPC 接口** + **ResponseStrategy 广播策略** + **BroadcastProgress 完整追踪** + **WriteVResult 统一返回值** + **双存储引擎策略** + **AsyncGroup批量操作** + **GoroutineProvider any类型设计** + **AsyncOp 重命名** + **泛型锁包装器** + **流水线任务接口**
 
+> **📋 v3.0 变更说明 (2026-03-02)**：
+> - **AsyncOperation → AsyncOp 重命名计划**：添加重命名说明和类型别名兼容
+> - **新增流水线任务接口**：PipelineWorker、WriteTask、ReadTask、FlushTask
+> - **接口验证策略更新**：添加异步接口验证和流水线集成验证
+> - **版本管理优化**：统一三份文档版本号，解决版本不一致问题
+>
 > **📋 v19.3 变更说明 (2026-02-23)**：
 > - **GoroutineProvider 修复 Go 泛型限制**：
 >   - 接口方法改用 `any` 类型（Go 接口不支持泛型方法）
@@ -163,7 +169,7 @@
 
 ## 一、架构总图
 
-### 1.1 完整架构图（5层 + 44个接口）
+### 1.1 完整架构图（5层 + 47个接口）
 
 ```mermaid
 flowchart TB
@@ -355,7 +361,7 @@ graph LR
 | **③ 数据平面层** | 6个 | `Replicator`, `QuorumReplicator`, `ECManager`, `ReplicationStrategy`, `TxManager`, `TxCoordinator` | 复制/一致性、事务、副本管理 |
 | **④ 存储引擎层** | 9个 | `KVStore`, `WAL`, `BTree`, `Iterator`, `LocalTx`, `BlockDevice`, `LocalStorage`, `CloudStorage`, `DistributedStorage` | 单机 KV、WAL、元数据管理 |
 | **⑤ 基础设施层** | 16个 | `Transport`, `Message`, `Stream`, `Channel`, `RPC`⭐, `Codec`, `Middleware`, `MiddlewareChain`, `BatchReplicator`, `PipelineReplicator`, `CacheLayer`, `CircuitBreaker`, `RetryPolicy`, `Plugin`, `DynamicConfig`, `GoroutineProvider`⭐ | 网络通信、对象存储、异步能力、扩展能力、并发管理 |
-| **总计** | **44个** | **44个完整接口** | **完整分布式KV系统** |
+| **总计** | **47个** | **47个完整接口** | **完整分布式KV系统** |
 
 > ⭐ v18.2: 合并 RPC + MultiRPC → 统一 RPC 接口（-1 个接口）
 >
@@ -380,9 +386,162 @@ API层 → 控制平面层 → 数据平面层 → 存储引擎层
 - **存储引擎层**：单机 KV、WAL、元数据管理
 - **基础设施层**：网络通信、对象存储、异步能力、扩展能力
 
+### 1.5 接口依赖关系图
+
+#### 核心接口依赖链
+
+```mermaid
+graph TD
+    %% Client层
+    KVClient["KVClient 🔴 P0"]
+    ClientTx["ClientTx 🔴 P0"]
+
+    %% Transaction层
+    Tx["Transaction 🟡 P1"]
+    TxManager["TxManager 🟡 P1"]
+
+    %% Sharding层
+    Shard["Shard 🟡 P1"]
+    ShardManager["ShardManager 🟡 P1"]
+
+    %% Replication层
+    Replication["Replication 🔴 P0"]
+    ReplicaGroup["ReplicaGroup 🔴 P0"]
+    LogEntry["LogEntry 🔴 P0"]
+
+    %% Cluster层
+    Cluster["Cluster 🔴 P0"]
+    TreeTopology["TreeTopology 🔴 P0"]
+    ParentHA["ParentHA 🔴 P0"]
+    Group["Group 🔴 P0"]
+    Membership["Membership 🔴 P0"]
+    FailureDetector["FailureDetector 🔴 P0"]
+
+    %% 控制平面扩展
+    Partitioner["Partitioner 🟡 P1"]
+    Election["Election 🟡 P1"]
+    LoadBalancer["LoadBalancer 🟡 P1"]
+
+    %% Storage层
+    KVStore["KVStore 🔴 P0"]
+    WAL["WAL 🔴 P0"]
+    BTree["BTree 🔴 P0"]
+    Iterator["Iterator 🔴 P0"]
+    LocalTx["LocalTx 🔴 P0"]
+
+    %% BlockDevice层
+    BlockDevice["BlockDevice 🟡 P1"]
+    LocalStorage["LocalStorage 🟡 P1"]
+    CloudStorage["CloudStorage 🟡 P1"]
+    DistributedStorage["DistributedStorage 🟡 P1"]
+
+    %% Transport层
+    Transport["Transport 🔴 P0"]
+    Message["Message 🔴 P0"]
+    RPC["RPC 🔴 P0"]
+    Stream["Stream 🟢 P2"]
+    Codec["Codec 🟢 P2"]
+    SecurityLayer["SecurityLayer 🟢 P2"]
+    Middleware["Middleware 🟢 P2"]
+
+    %% 基础设施扩展
+    CacheLayer["CacheLayer 🟢 P2"]
+    CircuitBreaker["CircuitBreaker 🟢 P2"]
+    RetryPolicy["RetryPolicy 🟢 P2"]
+    GoroutineProvider["GoroutineProvider 🟢 P2"]
+
+    %% 依赖关系
+    KVClient --> ClientTx
+    KVClient --> Tx
+    ClientTx --> TxManager
+    TxManager --> Tx
+    Tx --> LocalTx
+
+    KVClient --> ShardManager
+    ShardManager --> Shard
+    Shard --> Partitioner
+
+    Shard --> Replication
+    Replication --> ReplicaGroup
+    Replication --> LogEntry
+
+    KVClient --> Cluster
+    Cluster --> TreeTopology
+    Cluster --> ParentHA
+    Cluster --> Group
+    Cluster --> Membership
+    Cluster --> FailureDetector
+    Cluster --> Election
+    Cluster --> LoadBalancer
+
+    Replication --> KVStore
+    Tx --> KVStore
+    Shard --> KVStore
+
+    KVStore --> WAL
+    KVStore --> BTree
+    KVStore --> Iterator
+    KVStore --> LocalTx
+
+    WAL --> BlockDevice
+    BTree --> BlockDevice
+    LocalStorage --> BlockDevice
+    CloudStorage --> BlockDevice
+    DistributedStorage --> BlockDevice
+
+    Cluster --> Transport
+    Replication --> Transport
+    Shard --> Transport
+
+    Transport --> Message
+    Transport --> RPC
+    Transport --> Stream
+    RPC --> Codec
+    Transport --> SecurityLayer
+    Transport --> Middleware
+
+    Cluster --> CacheLayer
+    Transport --> CircuitBreaker
+    RPC --> RetryPolicy
+    Replication --> GoroutineProvider
+
+    %% 样式
+    classDef p0 fill:#ff6b6b,stroke:#c92a2a,color:#fff
+    classDef p1 fill:#ffd43b,stroke:#fab005,color:#000
+    classDef p2 fill:#69db7c,stroke:#37b24d,color:#000
+
+    class KVClient,ClientTx,Replication,ReplicaGroup,LogEntry,Cluster,TreeTopology,ParentHA,Group,Membership,FailureDetector,KVStore,WAL,BTree,Iterator,Transport,RPC,Message p0
+    class Tx,TxManager,Shard,ShardManager,Partitioner,Election,LoadBalancer,BlockDevice,LocalStorage,CloudStorage,DistributedStorage,LocalTx p1
+    class Stream,Codec,SecurityLayer,Middleware,CacheLayer,CircuitBreaker,RetryPolicy,GoroutineProvider p2
+```
+
+#### 层间调用关系
+
+| 调用层次 | 被调用层次 | 关系类型 | 说明 |
+|---------|-----------|----------|------|
+| **Client层** | Transaction层 | 依赖 | 客户端事务依赖事务管理器 |
+| **Client层** | Sharding层 | 依赖 | 分片路由 |
+| **Client层** | Cluster层 | 依赖 | 集群状态查询 |
+| **Sharding层** | Replication层 | 依赖 | 分片数据复制 |
+| **Sharding层** | Cluster层 | 依赖 | 分片拓扑信息 |
+| **Replication层** | Storage层 | 依赖 | 数据持久化 |
+| **Replication层** | Transport层 | 依赖 | 副本间通信 |
+| **Cluster层** | Transport层 | 依赖 | 节点间通信 |
+| **所有层** | 基础设施层 | 依赖 | 网络通信、异步能力 |
+
+#### 接口实现优先级
+
+基于依赖关系，推荐实现顺序：
+
+1. **第一阶段**：基础设施层（Transport + 异步能力）
+2. **第二阶段**：Storage层 + BlockDevice层
+3. **第三阶段**：Cluster层 + Replication层
+4. **第四阶段**：Sharding层 + Transaction层
+5. **第五阶段**：Client层
+
 ---
 
-## 二、① Transport层（9个Interface）
+## 二、① Transport层（9个Interface） 🔴 P0
 
 ### 2.1 层次职责
 
@@ -1533,7 +1692,7 @@ if config.Env == "production" {
 
 ---
 
-## 二、⑦ Storage层（5个Interface）- 最底层
+## 二、⑦ Storage层（5个Interface） 🔴 P0 - 最底层
 
 ### 2.1 层次职责
 
@@ -1932,7 +2091,119 @@ type LocalTx interface {
 }
 ```
 
-### 2.2.6 AsyncOperation - 统一异步操作接口
+### 2.2.6 流水线任务接口（异步流水线支持）
+
+> **设计来源**: `thoughts/2026-03-02-idea-async-pipeline-refactor.md`
+> **实施时间**: 阶段 0 Week 4（流水线框架设计）
+
+为支持异步流水线架构，存储引擎层需要支持流水线任务处理。
+
+#### PipelineWorker 工作器接口
+
+```go
+package storage
+
+import "context"
+
+// PipelineWorker 流水线工作器
+// 用于存储引擎内部的任务调度
+//
+// 设计原则：
+//   - 单 worker 串行化：避免锁竞争
+//   - 复用 TaskExecutor：集成 PerCore/Ants
+//   - 背压控制：Channel 限制队列大小
+type PipelineWorker interface {
+    // Start 启动工作器
+    Start(ctx context.Context) error
+
+    // Stop 停止工作器
+    Stop(ctx context.Context) error
+
+    // Stats 获取统计信息
+    Stats() WorkerStats
+}
+
+// WorkerStats 工作器统计信息
+type WorkerStats struct {
+    Queued   int64 // 队列中等待的任务数
+    Running  int64 // 正在执行的任务数
+    Completed int64 // 已完成的任务数
+    Failed   int64 // 失败的任务数
+}
+```
+
+#### 流水线任务类型
+
+```go
+package storage
+
+// WriteTask 写任务
+// 提交到写流水线，执行：BTree 更新 → WAL 异步写入
+type WriteTask struct {
+    Key       []byte
+    Value     []byte
+    Callback  func(error) // 完成回调
+    Timestamp uint64      // 时间戳（用于排序）
+}
+
+// ReadTask 读任务
+// 提交到读流水线，执行：BTree 查询
+type ReadTask struct {
+    Key      []byte
+    Callback func([]byte, error) // 完成回调
+}
+
+// FlushTask 刷盘任务（WAL）
+// 提交到 WAL 刷盘流水线，执行：WAL fsync
+type FlushTask struct {
+    Force    bool           // 是否强制刷盘
+    Callback func(error)    // 完成回调
+    Sequence uint64         // 序列号
+}
+```
+
+#### 流水线设计原则
+
+```go
+// 示例：写流水线实现
+//
+// type WritePipeline struct {
+//     btree    BTree
+//     wal      WAL
+//     writeCh  chan *WriteTask
+//     executor service.TaskExecutor  // 复用现有 TaskExecutor
+// }
+//
+// func (p *WritePipeline) Start(ctx context.Context) {
+//     go p.worker(ctx)
+// }
+//
+// func (p *WritePipeline) worker(ctx context.Context) {
+//     for {
+//         select {
+//         case <-ctx.Done():
+//             return
+//         case task := <-p.writeCh:
+//             // 1. 写 BTree（内存更新）
+//             err := p.btree.Set(task.Key, task.Value)
+//
+//             // 2. 异步写 WAL
+//             if err == nil {
+//                 p.wal.AppendAsync(ctx, task.Key, task.Value)
+//             }
+//
+//             // 3. 回调
+//             if task.Callback != nil {
+//                 task.Callback(err)
+//             }
+//         }
+//     }
+// }
+```
+
+---
+
+### 2.2.7 AsyncOperation - 统一异步操作接口
 
 **设计原则**: 使用 Go 1.18+ 泛型统一所有异步操作接口，减少类型重复，提高代码一致性
 
@@ -1983,6 +2254,18 @@ import (
 //	if canceled, err := op.Cancel(); !canceled {
 //	    log.Warnf("取消失败: %v", err)
 //	}
+// AsyncOperation[T] 异步操作接口
+//
+// > ⚠️ **重命名计划**: AsyncOperation 将在重构中重命名为 AsyncOp
+// >    参见: `thoughts/2026-03-02-idea-async-pipeline-refactor.md`
+// >    向后兼容: `type AsyncOp[T any] = AsyncOperation[T]`
+//
+// AsyncOperation 封装异步计算的结果和状态，支持：
+// - 阻塞等待（Get）
+// - 状态查询（Status, IsStarted）
+// - 取消操作（Cancel）
+// - 资源管理（Discard）
+// - 回调注册/注销（OnComplete/OffComplete）
 type AsyncOperation[T any] interface {
     // Get 等待异步操作完成并返回结果
     // ctx: 用于超时控制和取消
@@ -2019,6 +2302,47 @@ type AsyncOperation[T any] interface {
     // 返回: 注销失败的错误（如回调ID不存在）
     OffComplete(cbID string) error
 }
+
+// AsyncOp[T] 异步操作接口（新名称，待实施）
+//
+// 重命名后的接口，功能与 AsyncOperation 完全一致
+//
+// > 参见: `thoughts/2026-03-02-idea-async-pipeline-refactor.md`
+// > 实施时间: 阶段 0 Week 1-2
+type AsyncOp[T any] interface {
+    // Await 阻塞等待结果（新名称，替代 Get）
+    Await(ctx context.Context) (T, error)
+
+    // OnComplete 注册完成回调
+    OnComplete(callback func(T, error)) string
+
+    // OnError 注册错误回调
+    OnError(callback func(error)) string
+
+    // OnSuccess 注册成功回调
+    OnSuccess(callback func(T)) string
+
+    // OffComplete 注销回调
+    OffComplete(cbID string) error
+
+    // WithTimeout 设置超时
+    WithTimeout(timeout time.Duration) AsyncOp[T]
+
+    // IsDone 检查是否完成
+    IsDone() bool
+
+    // IsSuccess 检查是否成功
+    IsSuccess() bool
+
+    // IsFailed 检查是否失败
+    IsFailed() bool
+
+    // IsCanceled 检查是否取消
+    IsCanceled() bool
+}
+
+// 向后兼容别名（重构时使用）
+// type AsyncOperation[T any] = AsyncOp[T]
 
 // ============================================================================
 // 标准错误定义（v18.0 新增）
@@ -2696,7 +3020,7 @@ if userCancelled {
 
 ---
 
-## 二、⑧ BlockDevice层（4个Interface）- 存储后端抽象层
+## 二、⑧ BlockDevice层（4个Interface） 🟡 P1 - 存储后端抽象层
 
 ### 2.5 层次职责
 
@@ -3291,7 +3615,7 @@ if err != nil {
 
 ---
 
-## 三、② Cluster层（7个Interface）
+## 三、② Cluster层（7个Interface） 🔴 P0
 
 ### 3.1 层次职责
 
@@ -3602,7 +3926,7 @@ type Cluster interface {
 
 ---
 
-## 四、③ Replication层（4个Interface）
+## 四、③ Replication层（4个Interface） 🔴 P0
 
 ### 4.1 层次职责
 
@@ -4424,7 +4748,7 @@ if !replManager.Auth().CheckPermission(token, PermWrite) {
 
 ---
 
-## 五、④ Sharding层（2个Interface）- 同步+异步统一接口
+## 五、④ Sharding层（2个Interface） 🟡 P1 - 同步+异步统一接口
 
 ### 5.1 层次职责
 
@@ -4687,7 +5011,7 @@ future.OnComplete(func(sid1, sid2 ShardID, err error) {
 
 ---
 
-## 六、⑤ Transaction层（2个Interface）- 同步+异步统一接口
+## 六、⑤ Transaction层（2个Interface） 🟡 P1 - 同步+异步统一接口
 
 ### 6.1 层次职责
 
@@ -4958,7 +5282,7 @@ go func() {
 
 ---
 
-## 七、⑥ Client层（2个Interface）- 同步+异步统一接口
+## 七、⑥ Client层（2个Interface） 🔴 P0 - 同步+异步统一接口
 
 ### 7.1 层次职责
 
@@ -6533,7 +6857,7 @@ internal/
 
 基于上述改进建议，将关键接口正式纳入架构设计：
 
-### 13-B.1 性能优化层（3个Interface）
+### 13-B.1 性能优化层（3个Interface） 🟢 P2
 
 ```go
 package performance
@@ -6648,7 +6972,7 @@ type CacheStats struct {
 }
 ```
 
-### 13-B.2 容错性增强层（3个Interface）
+### 13-B.2 容错性增强层（3个Interface） 🟢 P2
 
 ```go
 package resilience
@@ -6835,7 +7159,7 @@ const (
 )
 ```
 
-### 13-B.3 扩展性层（3个Interface）
+### 13-B.3 扩展性层（3个Interface） 🟢 P2
 
 ```go
 package extension
@@ -7028,7 +7352,7 @@ const (
 )
 ```
 
-### 13-B.4 并发管理层（1个Interface）
+### 13-B.4 并发管理层（1个Interface） 🟢 P2
 
 > **依赖版本**: `github.com/panjf2000/ants/v2` v2.8.0+
 
@@ -7258,10 +7582,10 @@ var (
 ```go
 err := provider.Submit(task)
 if err != nil {
-    if errors.Is(err, concurrency.ErrProviderClosed) {
+    if errors.Is(err, errors.ErrPoolClosed) {
         // Provider 已关闭，无法提交任务
         log.Error("provider is closed")
-    } else if errors.Is(err, concurrency.ErrPoolFull) {
+    } else if errors.Is(err, errors.ErrPoolFull) {
         // 池已满，可以等待或降级
         log.Warn("pool is full, retry later")
     }
@@ -7277,7 +7601,7 @@ if err != nil {
 ```go
 err := provider.Submit(task)
 if err != nil {
-    if errors.Is(err, concurrency.ErrPoolFull) {
+    if errors.Is(err, errors.ErrPoolFull) {
         // 策略1：等待后重试（推荐）
         time.Sleep(100 * time.Millisecond)
         return provider.Submit(task)
@@ -8056,7 +8380,7 @@ func (g *AsyncGroup[T]) Status() map[model.PeerID]OperationStatus
 ### 14.3 最终文档统计
 
 - **总行数**：4,173行
-- **接口数量**：42个核心接口（33个核心 + 9个扩展）
+- **接口数量**：47个核心接口（完整5层架构）
 - **代码示例**：90+个
 - **设计原则**：SOLID、DDD、ISP、DRY
 - **Go最佳实践**：Context-first、错误返回、-er后缀
@@ -9176,7 +9500,7 @@ const (
 
 ---
 
-## 附录A：Cluster层补充接口（控制平面）
+## 附录A：Cluster层补充接口（控制平面） 🟡 P1
 
 > **补充日期**: 2026-02-18
 > **补充原因**: 架构策略专家审查后，建议添加控制平面的关键接口
@@ -9351,6 +9675,63 @@ Election（主节点故障时触发选举）
 - **Election** + **HAController**：Election是底层选举机制，HAController是上层的高可用控制
 - **LoadBalancer** + **NodeManager**：LoadBalancer依赖NodeManager提供的节点状态信息
 
-**更新后的接口总数**: 47个（原44个 + 新增3个控制平面接口）
-- 核心架构：38个接口
-- 扩展层：9个接口
+**更新后的接口总数**: 47个（完整5层架构）
+- API 层：5个接口
+- 控制平面层：11个接口
+- 数据平面层：6个接口
+- 存储引擎层：9个接口
+- 基础设施层：16个接口
+
+---
+
+## 📋 接口验证策略更新（异步流水线影响）
+
+> **更新日期**: 2026-03-02
+> **参考**: `thoughts/2026-03-02-idea-async-pipeline-refactor.md`
+
+### 异步接口验证
+
+#### 1. AsyncOperation/AsyncOp 接口验证
+
+| 验证项 | 说明 | 验收标准 |
+|--------|------|----------|
+| **类型推断** | 所有返回 AsyncOperation[T] 的方法必须支持类型推断 | 编译通过，无类型断言 |
+| **链式调用** | OnComplete/OnError/OnSuccess 必须支持链式调用 | 回调按注册顺序执行 |
+| **回调隔离** | 回调执行带 recover()，不会影响主流程 | panic 不会传播 |
+| **回调注销** | OffComplete 必须正确注销回调 | 注销后回调不再执行 |
+| **资源管理** | Discard() 必须释放资源 | 无 goroutine 泄漏 |
+| **状态查询** | IsStarted() 必须正确反映启动状态 | 状态转换正确 |
+
+#### 2. 流水线集成验证
+
+| 验证项 | 说明 | 验收标准 |
+|--------|------|----------|
+| **流水线任务** | 存储引擎层必须支持流水线任务处理 | WriteTask/ReadTask/FlushTask 正常工作 |
+| **WAL 异步写入** | WAL 异步写入必须支持批量操作 | AppendAsync 性能优于 Append |
+| **BTree 异步操作** | BTree 异步操作必须支持页管理 | SetAsync/GetAsync 正常工作 |
+| **TaskExecutor 集成** | 流水线必须复用现有 TaskExecutor | PerCore/Ants 正常工作 |
+| **背压控制** | Channel 限制队列大小，防止内存溢出 | 高负载下内存稳定 |
+
+#### 3. 兼容性验证
+
+| 验证项 | 说明 | 验收标准 |
+|--------|------|----------|
+| **类型别名** | AsyncOperation[T] = AsyncOp[T] 必须工作 | 类型别名可以互相赋值 |
+| **重命名迁移** | 旧代码可以逐步迁移到新接口 | 编译通过，无破坏性变更 |
+| **接口版本** | v2.0 完全兼容 v1.0 | 旧代码无需修改 |
+
+---
+
+## 📚 参考文档
+
+| 文档 | 说明 |
+|------|------|
+| [异步流水线重构计划](../../thoughts/2026-03-02-idea-async-pipeline-refactor.md) | AsyncOp 重命名 + 泛型锁包装器 |
+| [异步流水线设计（PRE）](../../thoughts/2026-03-02-idea-async-pipeline-pre.md) | 完整异步流水线设计 |
+| [DDD 实施路线图](./2026-02-18_spike_nexkv-ddd-roadmap.md) | 包含阶段 0 异步重构 |
+| [M2 存储引擎 Interface](./2026-02-21_spike_m2-storage-engine-interface.md) | 存储引擎层接口定义 |
+
+---
+
+**文档版本**: v3.0 | **最后更新**: 2026-03-02
+**关键更新**: AsyncOp 重命名 + 流水线任务接口 + 接口验证策略 + 版本统一

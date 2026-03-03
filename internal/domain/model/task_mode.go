@@ -8,17 +8,17 @@ import (
 )
 
 // TaskMode 任务调度模式（值对象）
-// 简化为两种模式：PerCore（延迟敏感）和 DefaultPool（通用）
+// 简化为两种模式：PerCore（延迟敏感）和 AntsPool（通用）
 type TaskMode int
 
 const (
 	// ModePerCore 每核单 goroutine 模式
-	// 支持 CPU 绑定，适用于 HLC、WAL、Transpose 等延迟敏感场景
+	// 支持 CPU 绑定，适用于 HLC、WAL、Transaction 等延迟敏感场景
 	ModePerCore TaskMode = iota + 1
 
-	// ModeDefaultPool ants 默认池模式（通用场景）
+	// ModeAntsPool ants 默认池模式（通用场景）
 	// 适用于大多数普通任务，提供良好的并发性能
-	ModeDefaultPool TaskMode = 99
+	ModeAntsPool TaskMode = 99
 )
 
 // String 返回调度模式字符串
@@ -26,8 +26,8 @@ func (m TaskMode) String() string {
 	switch m {
 	case ModePerCore:
 		return "per-core"
-	case ModeDefaultPool:
-		return "default-pool"
+	case ModeAntsPool:
+		return "ants-pool"
 	default:
 		return "unknown"
 	}
@@ -36,7 +36,7 @@ func (m TaskMode) String() string {
 // IsValid 验证 TaskMode 是否有效
 func (m TaskMode) IsValid() bool {
 	switch m {
-	case ModePerCore, ModeDefaultPool:
+	case ModePerCore, ModeAntsPool:
 		return true
 	default:
 		return false
@@ -44,13 +44,13 @@ func (m TaskMode) IsValid() bool {
 }
 
 // FallbackMode 返回降级后的调度模式
-// 双执行器降级链: PerCore -> DefaultPool
+// 双执行器降级链: PerCore -> AntsPool
 func (m TaskMode) FallbackMode() TaskMode {
 	switch m {
 	case ModePerCore:
-		return ModeDefaultPool
+		return ModeAntsPool
 	default:
-		return ModeDefaultPool
+		return ModeAntsPool
 	}
 }
 
@@ -69,8 +69,8 @@ func (m TaskMode) IsSupportedOn(platform string) bool {
 	case ModePerCore:
 		// 只有 Linux 和 Windows 支持真正的 CPU 绑核
 		return platform == PlatformLinux || platform == PlatformWindows
-	case ModeDefaultPool:
-		// DefaultPool 跨平台支持
+	case ModeAntsPool:
+		// AntsPool 跨平台支持
 		return true
 	default:
 		return false
@@ -86,7 +86,7 @@ func (m TaskMode) RecommendedConfig() ModeConfig {
 			QueueSize:      1000,
 			EnableAffinity: true,
 		}
-	case ModeDefaultPool:
+	case ModeAntsPool:
 		return ModeConfig{
 			MaxConcurrency: -1, // 使用 ants 默认值
 			QueueSize:      -1, // 使用 ants 默认值
@@ -120,10 +120,10 @@ func ParseTaskMode(s string) (TaskMode, error) {
 	switch s {
 	case "per-core":
 		return ModePerCore, nil
-	case "default-pool":
-		return ModeDefaultPool, nil
+	case "ants-pool":
+		return ModeAntsPool, nil
 	default:
-		return ModeDefaultPool, errors.UnknownTaskMode(s)
+		return ModeAntsPool, errors.UnknownTaskMode(s)
 	}
 }
 

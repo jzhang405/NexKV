@@ -10,15 +10,20 @@
 
 ## 📋 关联文档
 
-| 文档 | 说明 |
-|------|------|
-| [Interface 定义](./2026-02-21_spike_m2-storage-engine-interface.md) | 接口设计（本文档） |
-| [实现方案](./2026-02-21_spike_m2-storage-engine-implement.md) | 技术实现 |
-| [实施路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md) | 时间规划 |
-| [**DDD 架构参考**](./2026-02-18_spike_nexkv-ddd-interface.md) | **完整 47 接口定义（包含 AsyncOperation、BTree、WAL）** |
-| [**统一执行器架构（Per-Core + 接口拆分）**](./2026-02-25_spike-glm-unified-executor.md) | **执行层核心** - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 + 可暂停调度器 |
+| 文档 | 版本 | 说明 |
+|------|------|------|
+| [Interface 定义](./2026-02-21_spike_m2-storage-engine-interface.md) | v2.2 | 接口设计（本文档） |
+| [实现方案](./2026-02-21_spike_m2-storage-engine-implement.md) | v2.1 | 技术实现 |
+| [实施路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md) | v2.0 | 时间规划 |
+| [性能基准](./2026-02-21_spike_m2-storage-engine-benchmark.md) | v2.0 | 性能测试方案 |
+| [**DDD Interface v3.0**](./2026-02-18_spike_nexkv-ddd-interface.md) | **v3.0** | **统一接口定义（47个接口，包含 AsyncOperation、BTree、WAL）** |
+| [**DDD Implement v3.0**](./2026-02-18_spike_nexkv-ddd-implement.md) | **v3.0** | **DDD 实施方案（含测试策略）** |
+| [**DDD Roadmap v3.0**](./2026-02-18_spike_nexkv-ddd-roadmap.md) | **v3.0** | **阶段规划（含阶段 0：异步重构）** |
+| [**统一执行器架构**](./2026-02-25_spike_glm-unified-executor.md) | - | 执行层核心 - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 |
 
-> 📖 **并发管理参考**: [DDD 架构 - GoroutineProvider](./2026-02-18_spike_nexkv-ddd-interface.md#13-b4-goroutineprovider)
+> 📖 **并发管理参考**: [DDD Interface v3.0 - GoroutineProvider](./2026-02-18_spike_nexkv-ddd-interface.md#13-b4-goroutineprovider)
+>
+> ⚠️ **重要**: M2 存储引擎层直接依赖 DDD v3.0 的架构定义，确保版本一致。
 
 ---
 
@@ -829,6 +834,10 @@ type Page interface {
 //   - 状态明确：Status() 返回操作状态枚举，无歧义
 //   - 精确取消：Cancel() 返回 (canceled bool, err error)，语义精确
 //   - 防崩溃：回调执行带 recover() 隔离 panic
+//
+// > ⚠️ **重命名计划**: AsyncOperation 将在重构中重命名为 AsyncOp
+// >    参见: `thoughts/2026-03-02-idea-async-pipeline-refactor.md`
+// >    向后兼容: `type AsyncOp[T any] = AsyncOperation[T]`
 type AsyncOperation[T any] interface {
     // Get 等待异步操作完成并返回结果
     Get(ctx context.Context) (T, error)
@@ -1047,6 +1056,113 @@ future.OnComplete(func(v T, err error) {
     log.Info("成功")
 })
 ```
+
+### 2.6.2 AsyncOperation 接口版本说明 ⭐ v2.0 新增
+
+> **⚠️ 重要声明**：M2 存储引擎层直接使用 **DDD v3.0** 定义的 `AsyncOperation[T]` 接口
+>
+> **接口位置**：`internal/domain/service/rpc_async.go`
+> **完整定义**：参见 [DDD Interface v3.0 - AsyncOperation 泛型接口](./2026-02-18_spike_nexkv-ddd-interface.md#22-asyncoperation-泛型接口)
+>
+> **设计原则**：
+> - M2 **不再单独定义**此接口，避免版本不一致和重复维护
+> - 所有异步接口（SetAsync, GetAsync, DeleteAsync 等）均返回 `AsyncOperation[T]`
+> - 未来 AsyncOperation → AsyncOp 重命名时，M2 代码将自动受益
+>
+> ---
+>
+> **更新日期**: 2026-03-02
+> **参考**: `thoughts/2026-03-02-idea-async-pipeline-refactor.md`
+
+#### v1.0 (原始版本)
+
+基础异步操作接口：
+```go
+type AsyncOperation[T any] interface {
+    Get(ctx context.Context) (T, error)
+    Status() OperationStatus
+    Cancel() (canceled bool, err error)
+    OnComplete(callback func(T, error))
+}
+```
+
+**特点**：
+- ✅ 基础异步能力
+- ✅ 阻塞等待（Get）
+- ✅ 状态查询（Status）
+- ✅ 取消操作（Cancel）
+- ✅ 回调注册（OnComplete）
+
+**限制**：
+- ❌ 无资源管理方法（Discard）
+- ❌ 无启动状态查询（IsStarted）
+- ❌ 无回调注销（OffComplete）
+
+#### v2.0 (增强版本，受异步流水线设计影响)
+
+新增方法：
+```go
+type AsyncOperation[T any] interface {
+    // ====== v1.0 方法 ======
+    Get(ctx context.Context) (T, error)
+    Status() OperationStatus
+    Cancel() (canceled bool, err error)
+    OnComplete(callback func(T, error)) string  // 现在返回 cbID
+
+    // ====== v2.0 新增方法 ======
+    // Discard 丢弃操作结果，释放资源
+    Discard() error
+
+    // IsStarted 检查操作是否已开始
+    IsStarted() bool
+
+    // OffComplete 注销回调
+    OffComplete(cbID string) error
+}
+```
+
+**新增功能**：
+
+| 方法 | 说明 | 使用场景 |
+|------|------|----------|
+| **Discard()** | 丢弃操作结果，释放资源 | 取消不再需要的异步操作 |
+| **IsStarted()** | 检查操作是否已开始 | 区分"待执行"和"运行中"状态 |
+| **OffComplete()** | 注销回调函数 | 动态移除回调，避免内存泄漏 |
+
+**兼容性**：v2.0 完全兼容 v1.0
+- 旧代码无需修改，可以正常编译
+- 新方法为可选扩展，不影响现有功能
+
+#### v3.0 (重命名版本，待实施)
+
+> **实施时间**: 阶段 0 Week 1-2
+> **设计来源**: `thoughts/2026-03-02-idea-async-pipeline-refactor.md`
+
+**重命名**：`AsyncOperation[T]` → `AsyncOp[T]`
+
+```go
+// 新接口（更简洁的命名）
+type AsyncOp[T any] interface {
+    Await(ctx context.Context) (T, error)  // 替代 Get
+    OnComplete(callback func(T, error)) string
+    OnError(callback func(error)) string
+    OnSuccess(callback func(T)) string
+    OffComplete(cbID string) error
+    WithTimeout(timeout time.Duration) AsyncOp[T]
+    IsDone() bool
+    IsSuccess() bool
+    IsFailed() bool
+    IsCanceled() bool
+}
+
+// 向后兼容别名
+type AsyncOperation[T any] = AsyncOp[T]
+```
+
+**迁移路径**：
+1. **阶段 0**：添加 `AsyncOp[T]` 接口和类型别名
+2. **后续阶段**：逐步迁移到 `AsyncOp[T]`
+3. **最终移除**：在 v2.0 版本中移除 `AsyncOperation[T]`
 
 ---
 
@@ -1949,8 +2065,302 @@ go func() {
 
 ---
 
-**文档版本**: v2.2
+## 十二、流水线任务类型定义 ⭐ v2.3 新增
+
+> **来源**: `thoughts/2026-03-02-idea-async-pipeline-pre.md`
+> **用途**: 异步流水线架构中的任务类型定义
+
+### 12.1 SyncPolicy 同步策略
+
+```go
+// SyncPolicy 定义 WAL 同步策略
+type SyncPolicy int
+
+const (
+    // SyncAsync 异步模式，不等待 fsync（最高性能）
+    // 适用场景：日志写入、非关键数据
+    // 风险：崩溃后可能丢失最后一批数据
+    SyncAsync SyncPolicy = iota
+
+    // SyncBatch 批量 fsync（默认）
+    // 适用场景：一般业务数据
+    // 行为：累积一定数量或时间后统一 fsync
+    SyncBatch
+
+    // SyncAlways 每次操作都 fsync（最安全）
+    // 适用场景：关键数据、事务提交
+    // 性能：最低，但数据安全性最高
+    SyncAlways
+)
+
+// String 返回策略名称
+func (s SyncPolicy) String() string {
+    switch s {
+    case SyncAsync:
+        return "async"
+    case SyncBatch:
+        return "batch"
+    case SyncAlways:
+        return "always"
+    default:
+        return "unknown"
+    }
+}
+```
+
+**策略对比**：
+
+| 策略 | 延迟 | 吞吐量 | 数据安全 | 适用场景 |
+|------|------|--------|----------|----------|
+| SyncAsync | ~5μs | 最高 | 可能丢失 | 日志、缓存 |
+| SyncBatch | ~500μs | 高 | 批量丢失 | 一般业务 |
+| SyncAlways | ~5ms | 低 | 不丢失 | 关键数据、事务 |
+
+### 12.2 WriteTask 写任务
+
+```go
+// WriteTask 贯穿写链路的任务结构
+type WriteTask struct {
+    // Key 键（最大 4KB）
+    Key []byte
+
+    // Value 值（最大 4MB，nil 表示删除）
+    Value []byte
+
+    // Done 完成通知通道（可选）
+    // - 同步模式：调用方等待此通道
+    // - 异步模式：可设置为 nil
+    Done chan error
+
+    // SyncPolicy 同步策略
+    SyncPolicy SyncPolicy
+
+    // TxnID 事务 ID（0 表示非事务操作）
+    TxnID uint64
+
+    // Timestamp 操作时间戳（HLC）
+    Timestamp hlc.Timestamp
+}
+
+// IsDelete 判断是否为删除操作
+func (t *WriteTask) IsDelete() bool {
+    return t.Value == nil
+}
+
+// IsTransactional 判断是否为事务操作
+func (t *WriteTask) IsTransactional() bool {
+    return t.TxnID != 0
+}
+```
+
+### 12.3 ReadTask 读任务
+
+```go
+// ReadTask 用于读操作的任务结构
+type ReadTask struct {
+    // Key 键
+    Key []byte
+
+    // Result 结果返回通道
+    Result chan []byte
+
+    // Err 错误返回通道
+    Err chan error
+
+    // TxnID 事务 ID（0 表示非事务读）
+    TxnID uint64
+
+    // Snapshot 快照版本（用于 MVCC）
+    // 0 表示读取最新版本
+    Snapshot uint64
+
+    // Timestamp 读操作时间戳
+    Timestamp hlc.Timestamp
+}
+
+// IsSnapshotRead 判断是否为快照读
+func (t *ReadTask) IsSnapshotRead() bool {
+    return t.Snapshot != 0
+}
+```
+
+### 12.4 TransactionTask 事务任务
+
+```go
+// TxnMode 事务模式
+type TxnMode int
+
+const (
+    // TxnModeReadWrite 读写事务（默认）
+    TxnModeReadWrite TxnMode = iota
+
+    // TxnModeReadOnly 只读事务
+    TxnModeReadOnly
+)
+
+// TransactionTask 用于事务操作的任务结构
+type TransactionTask struct {
+    // TxnID 事务唯一标识
+    TxnID uint64
+
+    // Mode 事务模式
+    Mode TxnMode
+
+    // Isolation 隔离级别
+    Isolation IsolationLevel
+
+    // Writes 事务内的写操作列表
+    Writes []*WriteTask
+
+    // Reads 事务内的读操作列表
+    Reads []*ReadTask
+
+    // Done 完成通知通道
+    Done chan error
+
+    // StartTime 事务开始时间
+    StartTime time.Time
+
+    // Timeout 事务超时时间
+    Timeout time.Duration
+}
+
+// IsReadOnly 判断是否为只读事务
+func (t *TransactionTask) IsReadOnly() bool {
+    return t.Mode == TxnModeReadOnly || len(t.Writes) == 0
+}
+
+// HasTimeout 判断是否设置了超时
+func (t *TransactionTask) HasTimeout() bool {
+    return t.Timeout > 0
+}
+```
+
+### 12.5 IsolationLevel 事务隔离级别
+
+```go
+// IsolationLevel 事务隔离级别
+type IsolationLevel int
+
+const (
+    // IsolationReadCommitted 已提交读
+    // - 只能读取已提交的数据
+    // - 可能遇到不可重复读和幻读
+    // - 性能最好
+    IsolationReadCommitted IsolationLevel = iota
+
+    // IsolationSnapshot 快照隔离（默认）
+    // - 基于 MVCC 实现
+    // - 保证可重复读
+    // - 可能遇到写冲突（需要冲突检测）
+    IsolationSnapshot
+
+    // IsolationSerializable 可串行化
+    // - 最高隔离级别
+    // - 完全避免并发异常
+    // - 性能最差（当前未实现）
+    IsolationSerializable
+)
+
+// String 返回隔离级别名称
+func (i IsolationLevel) String() string {
+    switch i {
+    case IsolationReadCommitted:
+        return "read_committed"
+    case IsolationSnapshot:
+        return "snapshot"
+    case IsolationSerializable:
+        return "serializable"
+    default:
+        return "unknown"
+    }
+}
+```
+
+**隔离级别对比**：
+
+| 隔离级别 | 脏读 | 不可重复读 | 幻读 | 实现方式 | 性能 |
+|----------|------|------------|------|----------|------|
+| ReadCommitted | ❌ 不会 | ✅ 可能 | ✅ 可能 | 锁 | 最高 |
+| Snapshot | ❌ 不会 | ❌ 不会 | ✅ 可能 | MVCC | 高 |
+| Serializable | ❌ 不会 | ❌ 不会 | ❌ 不会 | 锁+MVCC | 低 |
+
+### 12.6 任务类型使用示例
+
+```go
+// 示例 1：普通写操作（批量同步策略）
+writeTask := &WriteTask{
+    Key:        []byte("user:123"),
+    Value:      []byte(`{"name":"Alice"}`),
+    Done:       make(chan error, 1),
+    SyncPolicy: SyncBatch,
+    TxnID:      0, // 非事务
+}
+writeChan <- writeTask
+err := <-writeTask.Done
+
+// 示例 2：事务写操作（强制同步）
+txnWriteTask := &WriteTask{
+    Key:        []byte("account:456"),
+    Value:      []byte(`{"balance":1000}`),
+    Done:       make(chan error, 1),
+    SyncPolicy: SyncAlways, // 关键数据，强制同步
+    TxnID:      txnID,
+}
+writeChan <- txnWriteTask
+
+// 示例 3：快照读操作
+readTask := &ReadTask{
+    Key:      []byte("user:123"),
+    Result:   make(chan []byte, 1),
+    Err:      make(chan error, 1),
+    TxnID:    txnID,
+    Snapshot: snapshotVersion, // 读取历史版本
+}
+readChan <- readTask
+value := <-readTask.Result
+
+// 示例 4：只读事务
+txnTask := &TransactionTask{
+    TxnID:     generateTxnID(),
+    Mode:      TxnModeReadOnly,
+    Isolation: IsolationSnapshot,
+    Reads:     []*ReadTask{readTask1, readTask2},
+    Done:      make(chan error, 1),
+}
+txnChan <- txnTask
+err := <-txnTask.Done
+
+// 示例 5：读写事务（批量提交）
+txnWrite1 := &WriteTask{Key: []byte("a"), Value: []byte("1"), TxnID: txnID}
+txnWrite2 := &WriteTask{Key: []byte("b"), Value: []byte("2"), TxnID: txnID}
+
+rwTxnTask := &TransactionTask{
+    TxnID:     txnID,
+    Mode:      TxnModeReadWrite,
+    Isolation: IsolationSnapshot,
+    Writes:    []*WriteTask{txnWrite1, txnWrite2},
+    Done:      make(chan error, 1),
+    Timeout:   30 * time.Second,
+}
+txnChan <- rwTxnTask
+err := <-rwTxnTask.Done
+```
+
+**v2.3 流水线任务类型定义完成！** 🎉
+
+**新增内容**：
+- ✅ SyncPolicy 同步策略（Async/Batch/Always）
+- ✅ WriteTask 写任务（支持事务和同步策略）
+- ✅ ReadTask 读任务（支持 MVCC 快照读）
+- ✅ TransactionTask 事务任务（支持读写和只读模式）
+- ✅ IsolationLevel 隔离级别（ReadCommitted/Snapshot/Serializable）
+- ✅ 完整使用示例
+
+---
+
+**文档版本**: v2.3
 **创建日期**: 2026-02-21
-**最后更新**: 2026-02-22
+**最后更新**: 2026-03-02
 **维护者**: NexKV 开发团队
 **状态**: ✅ 已完成

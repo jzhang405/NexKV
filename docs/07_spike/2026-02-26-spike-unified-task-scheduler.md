@@ -88,7 +88,7 @@ const (
     ModeMultiPool                    // ants 多池
 
     // 1种隐式回退模式（不需要用户选择，最后的防线）
-    ModeDefaultPool                  // ants 默认池（回退）
+    ModeAntsPool                  // ants 默认池（回退）
 )
 
 func (m TaskMode) String() string {
@@ -108,7 +108,7 @@ func (m TaskMode) FallbackMode() TaskMode {
     case ModePerCore:
         return ModeCustomPool  // PerCore → CustomPool
     default:
-        return ModeDefaultPool  // 其他 → DefaultPool
+        return ModeAntsPool  // 其他 → DefaultPool
     }
 }
 
@@ -312,7 +312,7 @@ func NewTaskSchedule(id string) *TaskSchedule {
         executors: make(map[TaskMode]TaskExecutorRef),
         router: &SourceRouter{
             rules:       make(map[string]TaskMode),
-            defaultMode: ModeDefaultPool,
+            defaultMode: ModeAntsPool,
         },
         stats: ScheduleStats{},
     }
@@ -353,7 +353,7 @@ func (s *TaskSchedule) Submit(ctx context.Context, sourceID SourceID, task func(
     if !ok {
         // 2. 降级到默认池
         s.mu.RLock()
-        executorRef, ok = s.executors[ModeDefaultPool]
+        executorRef, ok = s.executors[ModeAntsPool]
         s.mu.RUnlock()
 
         if !ok {
@@ -1879,7 +1879,7 @@ func (cm *CoreManager) ReleaseCore(sourceID string) {
 // 使用示例
 scheduler.SubmitTask(TaskOptions{
     SourceID: "test:quick-task",
-    Mode:     ModeDefaultPool,
+    Mode:     ModeAntsPool,
 }, func(ctx context.Context) {
     // 简单任务
 })
@@ -1984,7 +1984,7 @@ const (
     ModeMultiPool                    // ants 多池
 
     // 1种隐式回退模式（不需要用户选择，最后的防线）
-    ModeDefaultPool                  // ants 默认池（回退）
+    ModeAntsPool                  // ants 默认池（回退）
 )
 
 // TaskOptions 任务选项
@@ -2045,7 +2045,7 @@ flowchart TD
 | **ModeCustomPool** | 显式 | 用户指定或自动映射 | ants 自定义池，通用场景 |
 | **ModeFuncPool** | 显式 | 用户指定或自动映射 | ants 函数池，高频重复任务 |
 | **ModeMultiPool** | 显式 | 用户指定或自动映射 | ants 多池，分片场景 |
-| **ModeDefaultPool** | 隐式回退 | 自动（不可选） | ants 默认池，最后的防线 |
+| **ModeAntsPool** | 隐式回退 | 自动（不可选） | ants 默认池，最后的防线 |
 
 ### 5.3 SourceID 规范
 
@@ -2080,7 +2080,7 @@ var DefaultModeMapping = map[string]TaskMode{
     "background:*": ModeCustomPool,
 
     // 测试 → 默认池
-    "test:*":    ModeDefaultPool,
+    "test:*":    ModeAntsPool,
 }
 ```
 
@@ -2093,7 +2093,7 @@ var DefaultModeMapping = map[string]TaskMode{
 ```go
 func (s *TaskScheduler) getAvailableModes() []TaskMode {
     modes := []TaskMode{
-        ModeDefaultPool,
+        ModeAntsPool,
         ModeCustomPool,
         ModeFuncPool,
         ModeMultiPool,
@@ -2122,7 +2122,7 @@ func (s *TaskScheduler) getAvailableModes() []TaskMode {
 | ModeMultiPool | ✅ 多池 | ✅ 多池（支持）|
 | ModeFuncPool | ✅ 函数池 | ✅ 函数池（支持）|
 | ModeCustomPool | ✅ 自定义池 | ✅ 自定义池（支持）|
-| ModeDefaultPool | ✅ 默认池 | ✅ 默认池（支持）|
+| ModeAntsPool | ✅ 默认池 | ✅ 默认池（支持）|
 
 ---
 

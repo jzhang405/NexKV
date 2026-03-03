@@ -312,7 +312,7 @@ func newMockTaskPoolProvider() *mockTaskPoolProvider {
 	return &mockTaskPoolProvider{}
 }
 
-func (m *mockTaskPoolProvider) Submit(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
+func (m *mockTaskPoolProvider) Submit(ctx context.Context, sourceID model.SourceID, priority service.TaskPriority, task func(context.Context)) error {
 	go task(ctx)
 	return nil
 }

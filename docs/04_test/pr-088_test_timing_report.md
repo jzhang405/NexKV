@@ -73,14 +73,14 @@ handler := func(i interface{}) {
 executor, _ := NewPerCoreExecutor(WithNumCores(2), WithQueueSize(1000))
 selector.RegisterExecutor(model.ModePerCore, executor)
 
-// 但使用的是 "test:shutdown:task"，它会路由到 ModeDefaultPool
+// 但使用的是 "test:shutdown:task"，它会路由到 ModeAntsPool
 sourceID, _ := model.ParseSourceID("test:shutdown:task")  // ❌
 ```
 
 **修复方案**：
 ```go
 // 注册默认池作为 fallback
-selector.RegisterExecutor(model.ModeDefaultPool, NewAntsDefaultExecutor())
+selector.RegisterExecutor(model.ModeAntsPool, NewAntsDefaultExecutor())
 
 // 使用 PerCore 模式的 SourceID
 sourceID, _ := model.ParseSourceID("hlc:clock:tick")  // ✅

@@ -137,7 +137,7 @@ type mockExecutor struct {
 	delay time.Duration
 }
 
-func (m *mockExecutor) Submit(ctx context.Context, priority TaskPriority, task func(context.Context)) error {
+func (m *mockExecutor) Submit(ctx context.Context, sourceID model.SourceID, priority TaskPriority, task func(context.Context)) error {
 	go func() {
 		time.Sleep(m.delay)
 		task(ctx)

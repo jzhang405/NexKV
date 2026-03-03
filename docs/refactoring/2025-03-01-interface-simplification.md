@@ -59,10 +59,6 @@ type TaskExecutor interface {
     Close() error
 }
 
-type PriorityExecutor interface {
-    TaskExecutor  // TaskExecutor 已包含 priority 参数
-}
-
 type TaskScheduler interface {
     SubmitDelayed(ctx context.Context, delay time.Duration, task func(context.Context)) error
 }
@@ -316,9 +312,9 @@ val, err := future.Get(ctx)  // 类型安全
 ### 7.2 接口组合
 
 ```go
-// 需要优先级？使用 PriorityExecutor
+// 需要优先级？使用 TaskExecutor（已内置 priority 参数）
 type MyService struct {
-    executor service.PriorityExecutor
+    executor service.TaskExecutor
 }
 
 // 需要监控？组合 Monitorable

@@ -3,67 +3,10 @@ package service
 
 import (
 	"context"
-	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/pkg/errors"
 )
-
-// ==========================================
-// OperationStatus 操作状态定义
-// ==========================================
-
-// OperationStatus 操作状态
-type OperationStatus int
-
-const (
-	// StatusPending 操作待执行
-	StatusPending OperationStatus = iota
-	// StatusRunning 操作正在执行
-	StatusRunning
-	// StatusCompleted 操作成功完成
-	StatusCompleted
-	// StatusFailed 操作失败
-	StatusFailed
-	// StatusCanceled 操作被取消
-	StatusCanceled
-	// StatusDiscarded 操作结果被丢弃
-	StatusDiscarded
-	// StatusTimeout 操作超时
-	StatusTimeout
-)
-
-// IsTerminal 检查是否为终态
-func (s OperationStatus) IsTerminal() bool {
-	switch s {
-	case StatusCompleted, StatusFailed, StatusCanceled, StatusDiscarded, StatusTimeout:
-		return true
-	default:
-		return false
-	}
-}
-
-// String 返回状态字符串表示
-func (s OperationStatus) String() string {
-	switch s {
-	case StatusPending:
-		return "pending"
-	case StatusRunning:
-		return "running"
-	case StatusCompleted:
-		return "completed"
-	case StatusFailed:
-		return "failed"
-	case StatusCanceled:
-		return "canceled"
-	case StatusDiscarded:
-		return "discarded"
-	case StatusTimeout:
-		return "timeout"
-	default:
-		return "unknown"
-	}
-}
 
 // ==========================================
 // 错误定义（已移至 pkg/errors）
@@ -89,38 +32,38 @@ var (
 // ==========================================
 
 // RPCAsync 提供异步 RPC 调用能力
-// 使用 AsyncOperation[T] 作为返回类型，支持类型安全的异步操作
+// 使用 AsyncOp[T] 作为返回类型，支持类型安全的异步操作
 type RPCAsync interface {
 	// ====== 单播 ======
 
 	// CallAsync 异步单播调用
-	// 返回 AsyncOperation[ResponseMsg]，调用者可以链式处理结果
-	CallAsync(ctx context.Context, to model.PeerID, req model.Message) AsyncOperation[ResponseMsg]
+	// 返回 AsyncOp[ResponseMsg]，调用者可以链式处理结果
+	CallAsync(ctx context.Context, to model.PeerID, req model.Message) AsyncOp[ResponseMsg]
 
 	// CallAsyncWithTimeout 带超时的异步调用
-	CallAsyncWithTimeout(ctx context.Context, to model.PeerID, req model.Message, timeoutMs int64) AsyncOperation[ResponseMsg]
+	CallAsyncWithTimeout(ctx context.Context, to model.PeerID, req model.Message, timeoutMs int64) AsyncOp[ResponseMsg]
 
 	// ====== 广播（同消息）======
 
 	// BroadcastAsync 异步广播调用
-	// 返回 AsyncOperation[AsyncBroadcastResult]，包含每个节点的响应
+	// 返回 AsyncOp[AsyncBroadcastResult]，包含每个节点的响应
 	// 可通过 opts 设置回调实时拦截事件
-	BroadcastAsync(ctx context.Context, peers []model.PeerID, req model.Message, opts ...BroadcastOption) AsyncOperation[AsyncBroadcastResult]
+	BroadcastAsync(ctx context.Context, peers []model.PeerID, req model.Message, opts ...BroadcastOption) AsyncOp[AsyncBroadcastResult]
 
 	// BroadcastQuorumAsync 异步 Quorum 调用
 	// 当达到多数派响应时完成
 	// 可通过 opts 设置回调实时拦截 OnMajority/OnComplete 事件
-	BroadcastQuorumAsync(ctx context.Context, peers []model.PeerID, req model.Message, quorum int, opts ...BroadcastOption) AsyncOperation[QuorumResult]
+	BroadcastQuorumAsync(ctx context.Context, peers []model.PeerID, req model.Message, quorum int, opts ...BroadcastOption) AsyncOp[QuorumResult]
 
 	// ====== 批量写入（不同消息）======
 
 	// WriteVAsync 异步批量写入（单向，不等待响应）
 	// 适用于日志广播、监控数据等高吞吐场景
-	WriteVAsync(ctx context.Context, targets []model.PeerID, msgs []model.Message, opts ...BroadcastOption) AsyncOperation[WriteVResult]
+	WriteVAsync(ctx context.Context, targets []model.PeerID, msgs []model.Message, opts ...BroadcastOption) AsyncOp[WriteVResult]
 
 	// WriteVCallAsync 异步批量写入（带响应）
 	// 返回每个节点的响应结果
-	WriteVCallAsync(ctx context.Context, targets []model.PeerID, msgs []model.Message, opts ...BroadcastOption) AsyncOperation[WriteVResult]
+	WriteVCallAsync(ctx context.Context, targets []model.PeerID, msgs []model.Message, opts ...BroadcastOption) AsyncOp[WriteVResult]
 
 	// ====== TaskPool 管理 ======
 	// SetExecutor 设置任务执行器
@@ -157,44 +100,6 @@ func (c *BroadcastConfig) AddCallback(cb BroadcastListener) {
 	if c != nil {
 		c.callbacks = append(c.callbacks, cb)
 	}
-}
-
-// ==========================================
-// 异步操作接口
-// ==========================================
-
-// AsyncOperation[T] 异步操作接口
-// 封装异步计算的结果和状态
-type AsyncOperation[T any] interface {
-	// Await 阻塞等待结果
-	Await(ctx context.Context) (T, error)
-
-	// OnComplete 注册完成回调，返回回调 ID 用于注销
-	OnComplete(callback func(T, error)) string
-
-	// OnError 注册错误回调，返回回调 ID 用于注销
-	OnError(callback func(error)) string
-
-	// OnSuccess 注册成功回调，返回回调 ID 用于注销
-	OnSuccess(callback func(T)) string
-
-	// OffComplete 注销完成回调
-	OffComplete(cbID string) error
-
-	// WithTimeout 设置超时（P2-2: 链式超时设置）
-	WithTimeout(timeout time.Duration) AsyncOperation[T]
-
-	// IsDone 检查是否完成
-	IsDone() bool
-
-	// IsSuccess 检查是否成功
-	IsSuccess() bool
-
-	// IsFailed 检查是否失败
-	IsFailed() bool
-
-	// IsCanceled 检查是否取消
-	IsCanceled() bool
 }
 
 // ==========================================

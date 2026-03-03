@@ -5,11 +5,14 @@
 > **最后更新**: 2026-02-22
 > **状态**: 🔄 待实施
 > **关联文档**:
->   - [M2 接口定义](./2026-02-21_spike_m2-storage-engine-interface.md)
->   - [M2 实现方案](./2026-02-21_spike_m2-storage-engine-implement.md)
+>   - [M2 接口定义 v2.2](./2026-02-21_spike_m2-storage-engine-interface.md)
+>   - [M2 实现方案 v2.1](./2026-02-21_spike_m2-storage-engine-implement.md)
+>   - [M2 实施路线图 v2.0](./2026-02-21_spike_m2-storage-engine-roadmap.md)
+>   - [**DDD Interface v3.0**](./2026-02-18_spike_nexkv-ddd-interface.md)
+>   - [**DDD Roadmap v3.0**](./2026-02-18_spike_nexkv-ddd-roadmap.md)
 >   - [Bf-Tree 术语澄清](./bftree/2026-02-22_spike_btree-variants-clarification.md)
 >   - [DDD 架构 - GoroutineProvider](./2026-02-18_spike_nexkv-ddd-interface.md#13-b4-goroutineprovider)
->   - [统一执行器架构 - Per-Core 性能](./2026-02-25_spike-glm-unified-executor.md#10-收益分析)
+>   - [统一执行器架构 - Per-Core 性能](./2026-02-25_spike_glm-unified-executor.md#10-收益分析)
 
 ---
 
@@ -30,15 +33,21 @@
 
 ## 一、测试目标
 
-### 1.1 验证性能目标分级
+### 1.1 验证性能目标分级 ⭐ v2.0 更新
 
-| 操作 | P0（最低） | P1（推荐） | P2（理想） |
-|------|-----------|-----------|-----------|
-| **点查询（同步）** | < 50μs | < 30μs | < 20μs |
-| **点查询（异步）** | < 60μs | < 40μs | < 25μs |
-| **写入吞吐（同步）** | > 5万 ops/s | > 10万 ops/s | > 20万 ops/s |
-| **写入吞吐（异步）** | > 8万 ops/s | > 15万 ops/s | > 30万 ops/s |
-| **范围查询** | O(log N + M) | O(log N + M) | O(log N + M) |
+> **更新日期**: 2026-03-02
+> **参考**: `thoughts/2026-03-02-idea-async-pipeline-refactor.md`
+
+| 操作 | P0（最低） | P1（推荐） | P2（理想） | 说明 |
+|------|-----------|-----------|-----------|------|
+| **点查询（同步）** | < 50μs | < 30μs | < 20μs | 保持不变 |
+| **点查询（异步）** | < 50μs | < 30μs | < 15μs | 新增，更严格 |
+| **写入吞吐（同步）** | > 5万 ops/s | > 10万 ops/s | > 20万 ops/s | 保持不变 |
+| **写入吞吐（异步）** | > 10万 ops/s | > 20万 ops/s | > 40万 ops/s | 新增，更高目标 |
+| **批量写入（100条）** | > 50万 ops/s | > 100万 ops/s | > 200万 ops/s | 新增 |
+| **WAL 异步 fsync** | < 5ms | < 2ms | < 1ms | 新增 |
+
+**预期提升**：异步模式相比同步模式预期提升 **50-100%**
 
 **与 Rust 原版对比**：
 

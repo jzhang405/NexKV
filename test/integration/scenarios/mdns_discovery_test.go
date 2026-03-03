@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/transport"
 	"github.com/jzhang405/NexKV/pkg/test/framework"
@@ -30,7 +31,7 @@ import (
 // mockTaskPoolProvider 测试用的 mock provider
 type mockTaskPoolProvider struct{}
 
-func (m *mockTaskPoolProvider) Submit(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
+func (m *mockTaskPoolProvider) Submit(ctx context.Context, sourceID model.SourceID, priority service.TaskPriority, task func(context.Context)) error {
 	go task(ctx)
 	return nil
 }

@@ -28,7 +28,7 @@ func BenchmarkMultiLevelQueue_PushPop(b *testing.B) {
 // BenchmarkExecutor_SubmitHighPriority 测试高优先级任务提交性能
 func BenchmarkExecutor_SubmitHighPriority(b *testing.B) {
 	exec, _ := NewPerCoreExecutor(
-		WithNumCores(4),
+
 		WithQueueSize(10000),
 	)
 	defer exec.Close()
@@ -43,7 +43,7 @@ func BenchmarkExecutor_SubmitHighPriority(b *testing.B) {
 // BenchmarkExecutor_SubmitLowPriority 测试低优先级任务提交性能
 func BenchmarkExecutor_SubmitLowPriority(b *testing.B) {
 	exec, _ := NewPerCoreExecutor(
-		WithNumCores(4),
+
 		WithQueueSize(10000),
 	)
 	defer exec.Close()
@@ -58,7 +58,7 @@ func BenchmarkExecutor_SubmitLowPriority(b *testing.B) {
 // BenchmarkExecutor_SubmitMixedPriority 测试混合优先级任务提交性能
 func BenchmarkExecutor_SubmitMixedPriority(b *testing.B) {
 	exec, _ := NewPerCoreExecutor(
-		WithNumCores(4),
+
 		WithQueueSize(10000),
 	)
 	defer exec.Close()

@@ -35,7 +35,6 @@ go.work.sum
 .vscode/
 .spec-workflow/
 .serena/
-bin/nexkv*
-bin/nexkvd*
+bin/*
 thoughts/
 ants/

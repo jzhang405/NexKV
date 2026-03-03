@@ -151,8 +151,9 @@ func (p *AntsPoolExecutor) safeExecute(task func()) {
 // 基础方法实现
 // ======================================
 
-// Submit 实现接口（带优先级）
-func (p *AntsPoolExecutor) Submit(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
+// Submit 实现接口（带 SourceID 和优先级）
+// 注意：AntsPool 不使用 SourceID 进行路由，sourceID 参数仅用于接口一致性
+func (p *AntsPoolExecutor) Submit(ctx context.Context, sourceID model.SourceID, priority service.TaskPriority, task func(context.Context)) error {
 	if p.isClosed() {
 		return errors.ErrPoolClosed
 	}

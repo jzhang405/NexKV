@@ -443,17 +443,12 @@ func (e *PerCoreExecutor) newWorker(coreID int) *coreWorker {
 // TaskExecutor 接口实现
 // ==========================================
 
-// Submit 提交任务（使用默认优先级：TaskPriorityNormal = 5）
-func (e *PerCoreExecutor) Submit(ctx context.Context, task func(context.Context)) error {
-	return e.SubmitWithPriority(ctx, model.TaskPriorityNormal, task)
-}
-
-// SubmitWithSource 基于 SourceID 提交任务（智能调度）
+// Submit 基于 SourceID 提交任务（智能调度）
 // 相同 SourceID 的任务总是路由到同一个 Worker，保证 CPU 亲和性
 // 调度规则：
 //   - 规则 A：首次提交时，选择空闲 Worker 绑定，记录到 map[source]=workerID
 //   - 规则 B：后续相同 source，从 map 复用 Worker，并更新最后使用时间
-func (e *PerCoreExecutor) SubmitWithSource(
+func (e *PerCoreExecutor) Submit(
 	ctx context.Context,
 	sourceID model.SourceID,
 	priority model.TaskPriority,

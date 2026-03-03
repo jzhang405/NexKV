@@ -7582,10 +7582,10 @@ var (
 ```go
 err := provider.Submit(task)
 if err != nil {
-    if errors.Is(err, concurrency.ErrProviderClosed) {
+    if errors.Is(err, errors.ErrPoolClosed) {
         // Provider 已关闭，无法提交任务
         log.Error("provider is closed")
-    } else if errors.Is(err, concurrency.ErrPoolFull) {
+    } else if errors.Is(err, errors.ErrPoolFull) {
         // 池已满，可以等待或降级
         log.Warn("pool is full, retry later")
     }
@@ -7601,7 +7601,7 @@ if err != nil {
 ```go
 err := provider.Submit(task)
 if err != nil {
-    if errors.Is(err, concurrency.ErrPoolFull) {
+    if errors.Is(err, errors.ErrPoolFull) {
         // 策略1：等待后重试（推荐）
         time.Sleep(100 * time.Millisecond)
         return provider.Submit(task)

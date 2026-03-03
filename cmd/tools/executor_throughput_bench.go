@@ -1,19 +1,24 @@
-//go:build ignore
-
+// Package main 提供任务池性能对比测试工具
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"runtime"
 	"sync/atomic"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/infrastructure/concurrency"
 )
 
-// 模拟 Transport 场景：网络 I/O 密集型任务
+// simulateTransportTask 模拟 Transport 场景：网络 I/O 密集型任务
+// 包括：
+//   - 10μs 网络延迟
+//   - 1KB 数据处理
+//   - 校验和计算
 func simulateTransportTask(ctx context.Context) {
 	// 模拟网络延迟（微秒级）
 	start := time.Now()
@@ -35,21 +40,20 @@ func simulateTransportTask(ctx context.Context) {
 	_ = checksum
 }
 
-func benchmarkPerCore() {
+func benchmarkPerCore(taskCount int) {
 	fmt.Println("=== Benchmarking PerCoreExecutor ===")
 	exec, _ := concurrency.NewPerCoreExecutor(
-		concurrency.WithNumCores(runtime.NumCPU()),
 		concurrency.WithQueueSize(10000),
 	)
 	defer exec.Close()
 
 	ctx := context.Background()
-	taskCount := 1000000
 	var completed atomic.Int64
 
 	start := time.Now()
 	for i := 0; i < taskCount; i++ {
-		_ = exec.Submit(ctx, func(ctx context.Context) {
+		// 使用新的 Submit 接口：Submit(ctx, sourceID, priority, task)
+		_ = exec.Submit(ctx, model.SourceNetwork, model.TaskPriorityNormal, func(ctx context.Context) {
 			simulateTransportTask(ctx)
 			completed.Add(1)
 		})
@@ -65,18 +69,18 @@ func benchmarkPerCore() {
 		taskCount, elapsed, float64(taskCount)/elapsed.Seconds())
 }
 
-func benchmarkAntsDefault() {
-	fmt.Println("\n=== Benchmarking AntsDefaultExecutor ===")
-	exec := concurrency.NewAntsDefaultExecutor()
+func benchmarkAntsDefault(taskCount int) {
+	fmt.Println("\n=== Benchmarking AntsTaskExecutorProvider ===")
+	exec, _ := concurrency.NewAntsExecutor(nil)
 	defer exec.Close()
 
 	ctx := context.Background()
-	taskCount := 1000000
 	var completed atomic.Int64
 
 	start := time.Now()
 	for i := 0; i < taskCount; i++ {
-		_ = exec.Submit(ctx, func(ctx context.Context) {
+		// 使用新的 Submit 接口：Submit(ctx, sourceID, priority, task)
+		_ = exec.Submit(ctx, model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 			simulateTransportTask(ctx)
 			completed.Add(1)
 		})
@@ -88,24 +92,20 @@ func benchmarkAntsDefault() {
 	}
 
 	elapsed := time.Since(start)
-	fmt.Printf("AntsDefault: Completed %d tasks in %v, throughput: %.2f ops/s\n",
+	fmt.Printf("AntsPool: Completed %d tasks in %v, throughput: %.2f ops/s\n",
 		taskCount, elapsed, float64(taskCount)/elapsed.Seconds())
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: perf_executor_test <percore|ants>")
+	taskCount := flag.Int("tasks", 1000000, "number of tasks to run")
+	flag.Parse()
+
+	if *taskCount <= 0 {
+		fmt.Println("Error: task count must be positive")
 		os.Exit(1)
 	}
 
-	mode := os.Args[1]
-	switch mode {
-	case "percore":
-		benchmarkPerCore()
-	case "ants":
-		benchmarkAntsDefault()
-	default:
-		fmt.Println("Unknown mode:", mode)
-		os.Exit(1)
-	}
+	fmt.Printf("Running benchmark with %d tasks...\n\n", *taskCount)
+	benchmarkPerCore(*taskCount)
+	benchmarkAntsDefault(*taskCount)
 }

@@ -103,7 +103,7 @@ func (d *MDNSDiscovery) Start(ctx context.Context) error {
 		<-d.ctx.Done()
 	}
 
-	_ = d.provider.Submit(d.ctx, service.PriorityNormal, startFunc)
+	_ = d.provider.Submit(d.ctx, model.SourceNetwork, service.PriorityNormal, startFunc)
 
 	d.started = true
 	discoveryLog.WithField("tag", d.tag).Info("mDNS discovery service started")

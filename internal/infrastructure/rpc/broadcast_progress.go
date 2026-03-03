@@ -2,7 +2,7 @@
 //
 // 包含：
 //   - BroadcastProgress: 广播进度追踪实现
-//   - AsyncOperation: 异步操作实现
+//   - AsyncOp: 异步操作实现
 //   - 回调适配器和监听器实现
 //
 // 遵循 DDD 架构：领域层 (domain/service) 定义接口，基础设施层负责具体实现

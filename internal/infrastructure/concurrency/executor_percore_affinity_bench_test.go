@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
 // ==========================================
@@ -35,7 +37,6 @@ func BenchmarkOptimization_WithPadding(b *testing.B) {
 	}
 
 	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
 	)
 	defer executor.Close()
@@ -57,14 +58,14 @@ func BenchmarkOptimization_WithPadding(b *testing.B) {
 
 	// Warm-up
 	for i := 0; i < runtime.NumCPU()*100; i++ {
-		_ = executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 	}
 	time.Sleep(200 * time.Millisecond)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 	})
 }
@@ -72,7 +73,6 @@ func BenchmarkOptimization_WithPadding(b *testing.B) {
 // BenchmarkOptimization_WithoutAffinity_NoPadding 对比基线（无优化）
 func BenchmarkOptimization_WithoutAffinity_NoPadding(b *testing.B) {
 	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
 		// 禁用绑核
 	)
@@ -91,14 +91,14 @@ func BenchmarkOptimization_WithoutAffinity_NoPadding(b *testing.B) {
 	}
 
 	for i := 0; i < runtime.NumCPU()*100; i++ {
-		_ = executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 	}
 	time.Sleep(200 * time.Millisecond)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 	})
 }
@@ -111,7 +111,6 @@ func BenchmarkOptimization_WithAffinity_NoPadding(b *testing.B) {
 	}
 
 	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
 	)
 	defer executor.Close()
@@ -129,14 +128,14 @@ func BenchmarkOptimization_WithAffinity_NoPadding(b *testing.B) {
 	}
 
 	for i := 0; i < runtime.NumCPU()*100; i++ {
-		_ = executor.Submit(context.Background(), task)
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 	}
 	time.Sleep(200 * time.Millisecond)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 	})
 }
@@ -149,7 +148,6 @@ func BenchmarkOptimization_MemoryAccessPattern(b *testing.B) {
 
 	b.Run("SequentialAccess", func(b *testing.B) {
 		executor, _ := NewPerCoreExecutor(
-			WithNumCores(runtime.NumCPU()),
 			WithQueueSize(100000),
 		)
 		defer executor.Close()
@@ -170,14 +168,13 @@ func BenchmarkOptimization_MemoryAccessPattern(b *testing.B) {
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_ = executor.Submit(context.Background(), task)
+				_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 			}
 		})
 	})
 
 	b.Run("RandomAccess", func(b *testing.B) {
 		executor, _ := NewPerCoreExecutor(
-			WithNumCores(runtime.NumCPU()),
 			WithQueueSize(100000),
 		)
 		defer executor.Close()
@@ -196,7 +193,7 @@ func BenchmarkOptimization_MemoryAccessPattern(b *testing.B) {
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_ = executor.Submit(context.Background(), task)
+				_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 			}
 		})
 	})
@@ -209,7 +206,6 @@ func BenchmarkOptimization_BatchedStats(b *testing.B) {
 	}
 
 	executor, _ := NewPerCoreExecutor(
-		WithNumCores(runtime.NumCPU()),
 		WithQueueSize(100000),
 	)
 	defer executor.Close()
@@ -232,7 +228,7 @@ func BenchmarkOptimization_BatchedStats(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = executor.Submit(context.Background(), task)
+			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 	})
 }
@@ -244,7 +240,7 @@ func TestOptimization_VerifyLocalData(t *testing.T) {
 	}
 
 	executor, _ := NewPerCoreExecutor(
-		WithNumCores(2),
+
 		WithQueueSize(100),
 	)
 	defer executor.Close()
@@ -255,7 +251,7 @@ func TestOptimization_VerifyLocalData(t *testing.T) {
 	// 提交任务
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
-		_ = executor.Submit(context.Background(), func(ctx context.Context) {
+		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 			atomic.AddInt64(&executed, 1)
 			wg.Done()
 		})
@@ -282,7 +278,6 @@ func BenchmarkOptimization_FalseSharing(b *testing.B) {
 
 	b.Run("WithFalseSharing", func(b *testing.B) {
 		executor, _ := NewPerCoreExecutor(
-			WithNumCores(runtime.NumCPU()),
 			WithQueueSize(100000),
 		)
 		defer executor.Close()
@@ -305,14 +300,13 @@ func BenchmarkOptimization_FalseSharing(b *testing.B) {
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_ = executor.Submit(context.Background(), task)
+				_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 			}
 		})
 	})
 
 	b.Run("WithoutFalseSharing", func(b *testing.B) {
 		executor, _ := NewPerCoreExecutor(
-			WithNumCores(runtime.NumCPU()),
 			WithQueueSize(100000),
 		)
 		defer executor.Close()
@@ -334,7 +328,7 @@ func BenchmarkOptimization_FalseSharing(b *testing.B) {
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_ = executor.Submit(context.Background(), task)
+				_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 			}
 		})
 	})

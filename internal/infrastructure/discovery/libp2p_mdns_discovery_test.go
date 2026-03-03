@@ -25,7 +25,7 @@ type mockDiscoveryTaskPoolProvider struct {
 	mu    sync.Mutex
 }
 
-func (m *mockDiscoveryTaskPoolProvider) Submit(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
+func (m *mockDiscoveryTaskPoolProvider) Submit(ctx context.Context, sourceID model.SourceID, priority service.TaskPriority, task func(context.Context)) error {
 	m.mu.Lock()
 	m.tasks = append(m.tasks, task)
 	m.mu.Unlock()

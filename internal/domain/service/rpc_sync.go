@@ -18,7 +18,7 @@ import (
 //
 // 与 RPCAsync 的区别：
 // - RPCSync: 阻塞式调用，直接返回结果
-// - RPCAsync: 返回 AsyncOperation[T]，支持链式回调和超时设置
+// - RPCAsync: 返回 AsyncOp[T]，支持链式回调和超时设置
 type RPCSync interface {
 	// ====== 单播 ======
 	// 同步调用（阻塞等响应）

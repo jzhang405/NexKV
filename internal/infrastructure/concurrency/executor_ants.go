@@ -16,20 +16,17 @@ import (
 )
 
 // ==========================================
-// AntsTaskExecutorProvider 实现
+// AntsPoolExecutor 实现
 // ==========================================
 
-// AntsTaskExecutorProvider 基于 ants 库的任务池实现
+// AntsPoolExecutor 基于 ants 库的任务池实现
 // 实现 domain/service.TaskExecutor 接口
-type AntsTaskExecutorProvider struct {
-	pool       *ants.Pool
-	config     *ProviderConfig
-	stats      service.TaskPoolStats
-	statsMu    sync.RWMutex
-	closed     atomic.Bool
-	stopCh     chan struct{}  // 全局停止信号
-	delayedWg  sync.WaitGroup // 跟踪延迟任务
-	delayedSem chan struct{}  // P1-01: 延迟任务信号量（速率限制）
+type AntsPoolExecutor struct {
+	pool    *ants.Pool
+	config  *ProviderConfig
+	stats   service.TaskPoolStats
+	statsMu sync.RWMutex
+	closed  atomic.Bool
 	// 缩容相关
 	scaleCheckTicker *time.Ticker // 缩容检查定时器
 	currentCapacity  int          // 当前实际容量
@@ -91,8 +88,8 @@ func DefaultProviderConfig() *ProviderConfig {
 	}
 }
 
-// NewAntsTaskExecutorProvider 创建 ants 任务池提供者
-func NewAntsTaskExecutorProvider(config *ProviderConfig) (*AntsTaskExecutorProvider, error) {
+// NewAntsExecutor 创建 ants 任务池执行器
+func NewAntsExecutor(config *ProviderConfig) (*AntsPoolExecutor, error) {
 	if config == nil {
 		config = DefaultProviderConfig()
 	}
@@ -116,7 +113,7 @@ func NewAntsTaskExecutorProvider(config *ProviderConfig) (*AntsTaskExecutorProvi
 		return nil, err
 	}
 
-	provider := &AntsTaskExecutorProvider{
+	provider := &AntsPoolExecutor{
 		pool:            pool,
 		config:          config,
 		currentCapacity: config.Capacity,
@@ -124,8 +121,6 @@ func NewAntsTaskExecutorProvider(config *ProviderConfig) (*AntsTaskExecutorProvi
 			Capacity:   config.Capacity,
 			ByPriority: make(map[service.TaskPriority]int),
 		},
-		stopCh:     make(chan struct{}),
-		delayedSem: make(chan struct{}, DefaultMaxDelayedTasks), // P1-01: 速率限制
 	}
 
 	// 启动缩容检查协程
@@ -142,7 +137,7 @@ func NewAntsTaskExecutorProvider(config *ProviderConfig) (*AntsTaskExecutorProvi
 
 // safeExecute 安全执行任务，捕获 panic
 // 使用统一的 recovery 包处理 panic
-func (p *AntsTaskExecutorProvider) safeExecute(task func()) {
+func (p *AntsPoolExecutor) safeExecute(task func()) {
 	// 使用自定义处理器保留 logrus 格式
 	_ = recovery.Safe(task, func(r any, stack []byte) {
 		logrus.WithFields(logrus.Fields{
@@ -152,74 +147,15 @@ func (p *AntsTaskExecutorProvider) safeExecute(task func()) {
 	})
 }
 
-// handleTaskError 处理任务内部错误（P1-03: 延迟任务错误处理）
-// 优先调用用户配置的回调，否则使用 logrus 记录
-func (p *AntsTaskExecutorProvider) handleTaskError(err error, taskType string) {
-	if p.config.OnError != nil {
-		p.config.OnError(err, taskType)
-		return
-	}
-	// 默认使用 logrus 记录
-	logrus.WithFields(logrus.Fields{
-		"task_type": taskType,
-		"error":     err.Error(),
-	}).Warn("task submission failed")
-}
-
-// ======================================
-// P0-02: 延迟任务调度（修复 goroutine 泄漏）
-// ======================================
-
-// scheduleDelayedTask 调度延迟任务（统一处理，避免泄漏）
-// P1-01: 添加速率限制，支持优先级
-func (p *AntsTaskExecutorProvider) scheduleDelayedTask(
-	ctx context.Context,
-	delay time.Duration,
-	priority service.TaskPriority,
-	execute func(),
-) error {
-	// P1-01: 速率限制 - 尝试获取信号量
-	select {
-	case p.delayedSem <- struct{}{}:
-		// 成功获取
-	default:
-		// 延迟任务数已达上限
-		return ErrTooManyDelayedTasks
-	}
-
-	p.delayedWg.Add(1)
-	go func() {
-		defer func() {
-			<-p.delayedSem // P1-01: 释放信号量
-			p.delayedWg.Done()
-		}()
-
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-
-		select {
-		case <-timer.C:
-			if !p.isClosed() {
-				execute()
-			}
-		case <-ctx.Done():
-			// Context 取消，任务放弃执行
-		case <-p.stopCh:
-			// 池关闭信号，任务放弃执行
-		}
-	}()
-
-	return nil
-}
-
 // ======================================
 // 基础方法实现
 // ======================================
 
-// Submit 实现接口（带优先级）
-func (p *AntsTaskExecutorProvider) Submit(ctx context.Context, priority service.TaskPriority, task func(context.Context)) error {
+// Submit 实现接口（带 SourceID 和优先级）
+// 注意：AntsPool 不使用 SourceID 进行路由，sourceID 参数仅用于接口一致性
+func (p *AntsPoolExecutor) Submit(ctx context.Context, sourceID model.SourceID, priority service.TaskPriority, task func(context.Context)) error {
 	if p.isClosed() {
-		return ErrPoolClosed
+		return errors.ErrPoolClosed
 	}
 
 	// 自动扩容检查（每 N 次 Submit 检查一次）
@@ -236,13 +172,13 @@ func (p *AntsTaskExecutorProvider) Submit(ctx context.Context, priority service.
 }
 
 // SubmitWithArg 实现接口
-func (p *AntsTaskExecutorProvider) SubmitWithArg(
+func (p *AntsPoolExecutor) SubmitWithArg(
 	ctx context.Context,
 	task func(context.Context, any),
 	arg any,
 ) error {
 	if p.isClosed() {
-		return ErrPoolClosed
+		return errors.ErrPoolClosed
 	}
 
 	return p.pool.Submit(func() {
@@ -253,13 +189,13 @@ func (p *AntsTaskExecutorProvider) SubmitWithArg(
 }
 
 // SubmitWithPriority 实现接口（保留以兼容性，实际通过 Submit 调用）
-func (p *AntsTaskExecutorProvider) SubmitWithPriority(
+func (p *AntsPoolExecutor) SubmitWithPriority(
 	ctx context.Context,
 	priority service.TaskPriority,
 	task func(context.Context),
 ) error {
 	if p.isClosed() {
-		return ErrPoolClosed
+		return errors.ErrPoolClosed
 	}
 
 	// ants 不支持原生优先级，这里通过统计记录
@@ -274,36 +210,12 @@ func (p *AntsTaskExecutorProvider) SubmitWithPriority(
 	})
 }
 
-// SubmitDelayed 实现接口（支持优先级）
-func (p *AntsTaskExecutorProvider) SubmitDelayed(
-	ctx context.Context,
-	delay time.Duration,
-	priority service.TaskPriority,
-	task func(context.Context),
-) error {
-	if p.isClosed() {
-		return ErrPoolClosed
-	}
-
-	// P0-02: 使用统一的延迟任务调度，P1-01: 处理速率限制错误
-	return p.scheduleDelayedTask(ctx, delay, priority, func() {
-		// P1-03: 处理内部提交错误
-		if err := p.pool.Submit(func() {
-			p.safeExecute(func() {
-				task(ctx)
-			})
-		}); err != nil {
-			p.handleTaskError(err, "delayed")
-		}
-	})
-}
-
 // ======================================
 // 管理方法实现
 // ======================================
 
 // Stats 实现接口
-func (p *AntsTaskExecutorProvider) Stats() service.TaskPoolStats {
+func (p *AntsPoolExecutor) Stats() service.TaskPoolStats {
 	p.statsMu.RLock()
 	defer p.statsMu.RUnlock()
 
@@ -315,7 +227,7 @@ func (p *AntsTaskExecutorProvider) Stats() service.TaskPoolStats {
 }
 
 // Health 实现接口
-func (p *AntsTaskExecutorProvider) Health() service.TaskHealthStatus {
+func (p *AntsPoolExecutor) Health() service.TaskHealthStatus {
 	if p.isClosed() {
 		return model.TaskHealthStatusUnhealthy
 	}
@@ -329,9 +241,9 @@ func (p *AntsTaskExecutorProvider) Health() service.TaskHealthStatus {
 }
 
 // SetCapacity 实现接口
-func (p *AntsTaskExecutorProvider) SetCapacity(capacity int) error {
+func (p *AntsPoolExecutor) SetCapacity(capacity int) error {
 	if p.isClosed() {
-		return ErrPoolClosed
+		return errors.ErrPoolClosed
 	}
 
 	// P0-04: 容量验证
@@ -350,7 +262,7 @@ func (p *AntsTaskExecutorProvider) SetCapacity(capacity int) error {
 }
 
 // Close 实现接口
-func (p *AntsTaskExecutorProvider) Close() error {
+func (p *AntsPoolExecutor) Close() error {
 	// 使用 atomic 确保幂等性
 	if p.closed.Swap(true) {
 		return nil
@@ -361,19 +273,13 @@ func (p *AntsTaskExecutorProvider) Close() error {
 		p.scaleCheckTicker.Stop()
 	}
 
-	// P0-02: 通知所有延迟任务停止
-	close(p.stopCh)
-
-	// 等待所有延迟任务完成
-	p.delayedWg.Wait()
-
 	// 释放池资源
 	p.pool.Release()
 	return nil
 }
 
 // CloseWithTimeout 实现接口
-func (p *AntsTaskExecutorProvider) CloseWithTimeout(timeout time.Duration) error {
+func (p *AntsPoolExecutor) CloseWithTimeout(timeout time.Duration) error {
 	done := make(chan error, 1)
 
 	go func() {
@@ -394,7 +300,7 @@ func (p *AntsTaskExecutorProvider) CloseWithTimeout(timeout time.Duration) error
 // 内部方法
 // ======================================
 
-func (p *AntsTaskExecutorProvider) isClosed() bool {
+func (p *AntsPoolExecutor) isClosed() bool {
 	return p.closed.Load()
 }
 
@@ -403,7 +309,7 @@ func (p *AntsTaskExecutorProvider) isClosed() bool {
 // ======================================
 
 // autoScale 检查并执行自动扩容
-func (p *AntsTaskExecutorProvider) autoScale() {
+func (p *AntsPoolExecutor) autoScale() {
 	if !p.config.EnableAutoScale {
 		return
 	}
@@ -416,10 +322,7 @@ func (p *AntsTaskExecutorProvider) autoScale() {
 
 	// 超过阈值且未达到最大容量时扩容
 	if usage >= p.config.ScaleThreshold && capacity < p.config.MaxCapacity {
-		newCapacity := capacity + p.config.ScaleStep
-		if newCapacity > p.config.MaxCapacity {
-			newCapacity = p.config.MaxCapacity
-		}
+		newCapacity := min(capacity+p.config.ScaleStep, p.config.MaxCapacity)
 
 		// 使用 Tune 动态调整容量
 		p.pool.Tune(newCapacity)
@@ -435,23 +338,21 @@ func (p *AntsTaskExecutorProvider) autoScale() {
 }
 
 // startShrinkChecker 启动缩容检查协程
-func (p *AntsTaskExecutorProvider) startShrinkChecker() {
+func (p *AntsPoolExecutor) startShrinkChecker() {
 	p.scaleCheckTicker = time.NewTicker(p.config.ShrinkCheckInterval)
 
 	go func() {
-		for {
-			select {
-			case <-p.scaleCheckTicker.C:
-				p.checkAndShrink()
-			case <-p.stopCh:
+		for range p.scaleCheckTicker.C {
+			if p.isClosed() {
 				return
 			}
+			p.checkAndShrink()
 		}
 	}()
 }
 
 // checkAndShrink 检查并执行缩容
-func (p *AntsTaskExecutorProvider) checkAndShrink() {
+func (p *AntsPoolExecutor) checkAndShrink() {
 	if !p.config.EnableAutoShrink || p.isClosed() {
 		return
 	}
@@ -464,15 +365,10 @@ func (p *AntsTaskExecutorProvider) checkAndShrink() {
 
 	// 使用率低于阈值且高于初始容量时缩容
 	if usage < p.config.ShrinkThreshold && capacity > p.config.Capacity {
-		newCapacity := capacity - p.config.ShrinkStep
-		if newCapacity < p.config.Capacity {
-			newCapacity = p.config.Capacity
-		}
+		newCapacity := max(capacity-p.config.ShrinkStep, p.config.Capacity)
 
 		// 确保不会缩到小于当前运行中的数量
-		if newCapacity < running {
-			newCapacity = running + p.config.ShrinkStep/2
-		}
+		newCapacity = max(newCapacity, running+p.config.ShrinkStep/2)
 
 		// 使用 Tune 调整容量（ants 会释放多余的 worker）
 		p.pool.Tune(newCapacity)

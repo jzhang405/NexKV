@@ -166,6 +166,15 @@ version:
 	@echo "提示: 可以通过 VERSION 变量覆盖版本号"
 	@echo "  示例: make build VERSION=1.0.0"
 
+## tools: 构建开发工具
+tools:
+	@echo "构建开发工具..."
+	@mkdir -p bin
+	$(GO) build -o bin/executor_throughput_bench ./cmd/tools/executor_throughput_bench.go
+
+	@echo "工具构建完成:"
+	@echo "  bin/executor_throughput_bench  - 执行器吞吐量基准测试"
+
 ## help: 显示帮助信息
 help:
 	@echo "可用命令:"

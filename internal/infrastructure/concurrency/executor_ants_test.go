@@ -9,18 +9,20 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
 
-func TestAntsTaskExecutorProvider_Submit(t *testing.T) {
-	provider, err := NewAntsTaskExecutorProvider(nil)
+func TestAntsPoolExecutor_Submit(t *testing.T) {
+	provider, err := NewAntsExecutor(nil)
 	require.NoError(t, err)
 	defer provider.Close()
 
 	ctx := context.Background()
 	var executed int32
 
-	err = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {
+	err = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 		atomic.AddInt32(&executed, 1)
 	})
 
@@ -34,15 +36,15 @@ func TestAntsTaskExecutorProvider_Submit(t *testing.T) {
 	}
 }
 
-func TestAntsTaskExecutorProvider_SubmitWithPriority(t *testing.T) {
-	provider, err := NewAntsTaskExecutorProvider(nil)
+func TestAntsPoolExecutor_SubmitWithPriority(t *testing.T) {
+	provider, err := NewAntsExecutor(nil)
 	require.NoError(t, err)
 	defer provider.Close()
 
 	ctx := context.Background()
 	var executed int32
 
-	err = provider.Submit(ctx, model.TaskPriorityHigh, func(ctx context.Context) {
+	err = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 		atomic.AddInt32(&executed, 1)
 	})
 
@@ -55,8 +57,8 @@ func TestAntsTaskExecutorProvider_SubmitWithPriority(t *testing.T) {
 	}
 }
 
-func TestAntsTaskExecutorProvider_Stats(t *testing.T) {
-	provider, err := NewAntsTaskExecutorProvider(nil)
+func TestAntsPoolExecutor_Stats(t *testing.T) {
+	provider, err := NewAntsExecutor(nil)
 	require.NoError(t, err)
 	defer provider.Close()
 
@@ -67,8 +69,8 @@ func TestAntsTaskExecutorProvider_Stats(t *testing.T) {
 	}
 }
 
-func TestAntsTaskExecutorProvider_Health(t *testing.T) {
-	provider, err := NewAntsTaskExecutorProvider(nil)
+func TestAntsPoolExecutor_Health(t *testing.T) {
+	provider, err := NewAntsExecutor(nil)
 	require.NoError(t, err)
 	defer provider.Close()
 
@@ -79,9 +81,9 @@ func TestAntsTaskExecutorProvider_Health(t *testing.T) {
 	}
 }
 
-func TestAntsTaskExecutorProvider_CloseWithTimeout(t *testing.T) {
+func TestAntsPoolExecutor_CloseWithTimeout(t *testing.T) {
 	t.Run("正常关闭", func(t *testing.T) {
-		provider, err := NewAntsTaskExecutorProvider(nil)
+		provider, err := NewAntsExecutor(nil)
 		require.NoError(t, err)
 
 		var executed atomic.Int32
@@ -89,7 +91,7 @@ func TestAntsTaskExecutorProvider_CloseWithTimeout(t *testing.T) {
 
 		// 提交任务并等待执行
 		for i := 0; i < 10; i++ {
-			_ = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {
+			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 				executed.Add(1)
 			})
 		}
@@ -109,7 +111,7 @@ func TestAntsTaskExecutorProvider_CloseWithTimeout(t *testing.T) {
 	})
 
 	t.Run("空池关闭", func(t *testing.T) {
-		provider, err := NewAntsTaskExecutorProvider(nil)
+		provider, err := NewAntsExecutor(nil)
 		require.NoError(t, err)
 
 		// 不提交任何任务，直接关闭
@@ -118,7 +120,7 @@ func TestAntsTaskExecutorProvider_CloseWithTimeout(t *testing.T) {
 	})
 
 	t.Run("多次关闭幂等性", func(t *testing.T) {
-		provider, err := NewAntsTaskExecutorProvider(nil)
+		provider, err := NewAntsExecutor(nil)
 		require.NoError(t, err)
 
 		// 第一次关闭
@@ -131,14 +133,14 @@ func TestAntsTaskExecutorProvider_CloseWithTimeout(t *testing.T) {
 	})
 }
 
-func TestAntsTaskExecutorProvider_ClosedPool(t *testing.T) {
-	provider, err := NewAntsTaskExecutorProvider(nil)
+func TestAntsPoolExecutor_ClosedPool(t *testing.T) {
+	provider, err := NewAntsExecutor(nil)
 	require.NoError(t, err)
 	provider.Close()
 
 	ctx := context.Background()
 
-	err = provider.Submit(ctx, model.TaskPriorityNormal, func(ctx context.Context) {
+	err = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 		t.Error("task should not execute after pool is closed")
 	})
 
@@ -146,13 +148,13 @@ func TestAntsTaskExecutorProvider_ClosedPool(t *testing.T) {
 		t.Error("expected error when submitting to closed pool, got nil")
 	}
 
-	if !std_errors.Is(err, ErrPoolClosed) {
-		t.Errorf("expected ErrPoolClosed, got: %v", err)
+	if !std_errors.Is(err, errors.ErrPoolClosed) {
+		t.Errorf("expected errors.ErrPoolClosed, got: %v", err)
 	}
 }
 
-func TestAntsTaskExecutorProvider_SetCapacity(t *testing.T) {
-	provider, err := NewAntsTaskExecutorProvider(nil)
+func TestAntsPoolExecutor_SetCapacity(t *testing.T) {
+	provider, err := NewAntsExecutor(nil)
 	require.NoError(t, err)
 	defer provider.Close()
 

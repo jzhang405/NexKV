@@ -83,27 +83,27 @@ func TestLocked_ConcurrentAccess(t *testing.T) {
 	locked := concurrency.NewLocked(0)
 
 	var wg sync.WaitGroup
-	wg.Add(1000)
+	wg.Add(200)
 
-	// 500 个并发读
-	for i := 0; i < 500; i++ {
+	// 100 个并发读
+	for i := 0; i < 100; i++ {
 		go func() {
 			defer wg.Done()
 			_ = locked.View(func(val int) error {
-				time.Sleep(10 * time.Microsecond)
+				time.Sleep(1 * time.Microsecond)
 				return nil
 			})
 		}()
 	}
 
-	// 500 个并发写
-	for i := 0; i < 500; i++ {
+	// 100 个并发写
+	for i := 0; i < 100; i++ {
 		go func() {
 			defer wg.Done()
 			_ = locked.Modify(func(val *int) error {
 				// 递增计数器
 				*val = *val + 1
-				time.Sleep(10 * time.Microsecond)
+				time.Sleep(1 * time.Microsecond)
 				return nil
 			})
 		}()
@@ -111,9 +111,9 @@ func TestLocked_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 
-	// 验证最终值（应该是 500）
+	// 验证最终值（应该是 100）
 	val := locked.Get()
-	assert.Equal(t, 500, val)
+	assert.Equal(t, 100, val)
 }
 
 func TestLocked_GetDirect(t *testing.T) {

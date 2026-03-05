@@ -198,13 +198,12 @@ func NewBaseTask[Result any](opType OpType, priority TaskPriority, sourceID Sour
 // Run 实现 TaskRunner 接口
 // 这是通用的执行逻辑，调用 Execute 方法并处理结果
 func (b *BaseTask[Result]) Run(ctx context.Context, pipeline PipelineContext) {
-	// 检查是否已完成
-	if b.IsDone() {
+	// 使用 CAS 操作确保只有一个 goroutine 执行任务
+	// 只有当状态为 StatusPending 时才能转换为 StatusRunning
+	if !b.status.CompareAndSwap(int32(StatusPending), int32(StatusRunning)) {
+		// 其他 goroutine 已经在执行或已完成
 		return
 	}
-
-	// 设置运行状态
-	b.status.Store(int32(StatusRunning))
 
 	// 执行任务（调用 Execute 方法）
 	result, err := b.Execute(ctx, pipeline)
@@ -220,7 +219,7 @@ func (b *BaseTask[Result]) Run(ctx context.Context, pipeline PipelineContext) {
 	}
 	b.mu.Unlock()
 
-	// 关闭 done channel
+	// 关闭 done channel（只关闭一次，因为只有一个 goroutine 能到达这里）
 	close(b.done)
 }
 

@@ -65,6 +65,24 @@ func (a *RPCAsyncAdapter) applyOptions(opts []service.BroadcastOption) service.B
 	return ApplyBroadcastOptions(opts, provider)
 }
 
+// emptyPipelineContext 空的 PipelineContext 实现
+// 用于不需要提交子任务的场景（如 CallAsync）
+type emptyPipelineContext struct {
+	ctx context.Context
+}
+
+// Submit 实现 PipelineContext 接口
+func (e *emptyPipelineContext) Submit(task model.TaskRunner) error {
+	// 在空实现中，不支持提交子任务
+	// 返回错误但不中断执行
+	return nil
+}
+
+// Executor 实现 PipelineContext 接口
+func (e *emptyPipelineContext) Executor() model.TaskExecutorRef {
+	return nil
+}
+
 // submitTask 提交任务执行
 // 如果执行器为 nil，则在当前 goroutine 中同步执行
 func (a *RPCAsyncAdapter) submitTask(task model.TaskRunner) {
@@ -74,11 +92,11 @@ func (a *RPCAsyncAdapter) submitTask(task model.TaskRunner) {
 		// 提交给执行器异步执行
 		_ = executor.Submit(context.Background(), task.SourceID(), task.Priority(), func(ctx context.Context) {
 			// 创建一个空的 PipelineContext，因为 CallAsync 不需要提交子任务
-			task.Run(ctx, nil)
+			task.Run(ctx, &emptyPipelineContext{ctx: ctx})
 		})
 	} else {
 		// 没有执行器，同步执行（用于测试场景）
-		task.Run(context.Background(), nil)
+		task.Run(context.Background(), &emptyPipelineContext{ctx: context.Background()})
 	}
 }
 

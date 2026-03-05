@@ -3,6 +3,7 @@ package transport
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -306,9 +307,10 @@ func BenchmarkMiddleware_Compression_Snappy(b *testing.B) {
 
 	peer := model.PeerID("node-2")
 	payload := make([]byte, 1024) // 1 KB
-	for i := range payload {
-		payload[i] = byte(i % 10)
-	}
+
+	// 使用随机数据模拟真实场景
+	rand.Read(payload)
+
 	msg := model.NewMessage("test-id", model.MessageTypeRequest, "node-1", "node-2", payload)
 	ctx := context.Background()
 

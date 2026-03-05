@@ -1,0 +1,43 @@
+time="2026-03-05T17:42:53+08:00" level=info msg="mDNS discovery service started" component=discovery tag=nexkv-test-discovery
+time="2026-03-05T17:42:53+08:00" level=info msg="mDNS discovery service stopped" component=discovery
+time="2026-03-05T17:42:53+08:00" level=info msg="mDNS discovery service started" component=discovery tag=nexkv-test-stop
+time="2026-03-05T17:42:53+08:00" level=info msg="mDNS discovery service stopped" component=discovery
+time="2026-03-05T17:42:53+08:00" level=info msg="mDNS discovery service started" component=discovery tag=nexkv-multi-test
+time="2026-03-05T17:42:53+08:00" level=info msg="mDNS discovery service started" component=discovery tag=nexkv-multi-test
+time="2026-03-05T17:42:53+08:00" level=info msg="mDNS discovery service started" component=discovery tag=nexkv-multi-test
+time="2026-03-05T17:42:53+08:00" level=info msg="mDNS discovery service stopped" component=discovery
+time="2026-03-05T17:42:53+08:00" level=info msg="mDNS discovery service stopped" component=discovery
+time="2026-03-05T17:42:53+08:00" level=info msg="mDNS discovery service stopped" component=discovery
+time="2026-03-05T17:42:55+08:00" level=debug msg="Sending message" component=rpc direction=send middleware=logging msg_id=test-001 msg_type=request payload_len=12 peer=node-2
+time="2026-03-05T17:42:55+08:00" level=debug msg="Send completed" component=rpc direction=send middleware=logging msg_id=test-001 msg_type=request payload_len=12 peer=node-2
+time="2026-03-05T17:42:55+08:00" level=debug msg="Receiving message" component=rpc direction=receive middleware=logging msg_id=test-001 msg_type=request payload_len=12 peer=node-1
+time="2026-03-05T17:42:55+08:00" level=debug msg="Receive completed" component=rpc direction=receive middleware=logging msg_id=test-001 msg_type=request payload_len=12 peer=node-1
+goos: linux
+goarch: amd64
+pkg: github.com/jzhang405/NexKV/internal/infrastructure/transport
+cpu: Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz
+BenchmarkRPC_Baseline-12                               	53733620	       112.9 ns/op	     264 B/op	       6 allocs/op
+BenchmarkRPC_WithMiddleware-12                         	15967190	       366.4 ns/op	     566 B/op	      13 allocs/op
+BenchmarkRPC_Throughput-12                             	 6552985	      1077 ns/op	     602 B/op	      14 allocs/op
+BenchmarkRPC_Concurrent-12                             	14399769	       406.3 ns/op	     583 B/op	      14 allocs/op
+BenchmarkRPC_Payload_Small-12                          	 6142354	       977.4 ns/op	     596 B/op	      14 allocs/op
+BenchmarkRPC_Payload_Medium-12                         	 5279786	      1118 ns/op	    1675 B/op	      14 allocs/op
+BenchmarkRPC_Payload_Large-12                          	  177046	     36013 ns/op	  157802 B/op	      38 allocs/op
+BenchmarkMiddleware_Compression_Snappy-12              	  192030	     30697 ns/op	  149216 B/op	      12 allocs/op
+BenchmarkMiddleware_RateLimit-12                       	33481059	       207.3 ns/op	      78 B/op	       1 allocs/op
+BenchmarkMiddleware_CircuitBreaker-12                  	43781154	       128.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMessagePackCodec_Encode-12                    	 4122841	      1449 ns/op	    2482 B/op	       7 allocs/op
+BenchmarkMessagePackCodec_Decode-12                    	 3818414	      1561 ns/op	    2394 B/op	      10 allocs/op
+BenchmarkMessagePackCodec_RoundTrip-12                 	 1919821	      3102 ns/op	    4881 B/op	      17 allocs/op
+BenchmarkMessagePackStreamCodec_EncodeToWriter-12      	 2978184	      2013 ns/op	    3751 B/op	      11 allocs/op
+BenchmarkMessagePackStreamCodec_DecodeFromReader-12    	 2943801	      2023 ns/op	    3603 B/op	      13 allocs/op
+BenchmarkMessagePackCodec_Encode_10KB-12               	  887096	      6909 ns/op	   21443 B/op	       7 allocs/op
+BenchmarkMessagePackCodec_Decode_10KB-12               	  937596	      6526 ns/op	   20843 B/op	      10 allocs/op
+BenchmarkCircuitBreakerMiddleware-12                   	48410914	       124.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompressionMiddleware-12                      	  192490	     31299 ns/op	  149216 B/op	      12 allocs/op
+BenchmarkCompressionMiddleware_Decompress-12           	  190730	     29352 ns/op	  151432 B/op	      16 allocs/op
+BenchmarkRateLimitMiddleware-12                        	34297360	       209.0 ns/op	      78 B/op	       1 allocs/op
+BenchmarkRetryMiddleware-12                            	 5633298	      1168 ns/op	     616 B/op	      15 allocs/op
+BenchmarkRetryMiddleware_WithRetry-12                  	    1765	   3405226 ns/op	    1336 B/op	      28 allocs/op
+PASS
+ok  	github.com/jzhang405/NexKV/internal/infrastructure/transport	171.683s

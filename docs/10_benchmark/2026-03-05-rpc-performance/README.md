@@ -59,11 +59,25 @@ Go: 1.21+
 
 ### Phase 1: Baseline 测试
 
-**状态**: ⏳ 待开始
+**状态**: ✅ 已完成
 
 **目标**: 建立当前性能基线
 
 **配置**: C1 (AntsPool + SourceNetwork)
+
+**完成内容**:
+- ✅ Transport 层 baseline 测试
+- ✅ RPC 层 AsyncOp/回调 baseline 测试
+- ✅ 中间件链性能测试
+- ✅ 并发测试 (10/100 goroutines)
+- ✅ 不同负载大小测试
+
+**关键结果**:
+- Transport (无中间件): **53.7M ops/sec**, 112.9 ns/op
+- Transport (完整中间件): **15.9M ops/sec**, 366.4 ns/op
+- AsyncOp 创建: **4.17B ops/sec**, 0.24 ns/op
+- AsyncOp 等待: **710M ops/sec**, 1.41 ns/op
+- 回调执行: **171M ops/sec**, 5.84 ns/op
 
 **结果**: [phase1-baseline.md](phase1-baseline.md)
 

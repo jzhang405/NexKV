@@ -11,7 +11,7 @@
 | 项目 | 内容 |
 |------|------|
 | 工作类型 | 纯文档更新（Doc） - 技术提案评审文档 |
-| PR编号 | PR-XXX（待GitHub PR创建后补充） |
+| PR编号 | PR-091 |
 | 分支名称 | docs/update-spike-ddd-m2-storage |
 | 工作主题 | Transport RPC V4 异步管道改造技术提案专家评审及改进 |
 | 负责人 | jzh |

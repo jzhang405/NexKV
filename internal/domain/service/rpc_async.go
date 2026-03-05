@@ -32,38 +32,38 @@ var (
 // ==========================================
 
 // RPCAsync 提供异步 RPC 调用能力
-// 使用 AsyncOp[T] 作为返回类型，支持类型安全的异步操作
+// 使用 model.Task[T] 作为返回类型，支持类型安全的异步操作
 type RPCAsync interface {
 	// ====== 单播 ======
 
 	// CallAsync 异步单播调用
-	// 返回 AsyncOp[ResponseMsg]，调用者可以链式处理结果
-	CallAsync(ctx context.Context, to model.PeerID, req model.Message) AsyncOp[ResponseMsg]
+	// 返回 Task[ResponseMsg]，调用者可以链式处理结果
+	CallAsync(ctx context.Context, to model.PeerID, req model.Message) model.Task[ResponseMsg]
 
 	// CallAsyncWithTimeout 带超时的异步调用
-	CallAsyncWithTimeout(ctx context.Context, to model.PeerID, req model.Message, timeoutMs int64) AsyncOp[ResponseMsg]
+	CallAsyncWithTimeout(ctx context.Context, to model.PeerID, req model.Message, timeoutMs int64) model.Task[ResponseMsg]
 
 	// ====== 广播（同消息）======
 
 	// BroadcastAsync 异步广播调用
-	// 返回 AsyncOp[AsyncBroadcastResult]，包含每个节点的响应
+	// 返回 Task[AsyncBroadcastResult]，包含每个节点的响应
 	// 可通过 opts 设置回调实时拦截事件
-	BroadcastAsync(ctx context.Context, peers []model.PeerID, req model.Message, opts ...BroadcastOption) AsyncOp[AsyncBroadcastResult]
+	BroadcastAsync(ctx context.Context, peers []model.PeerID, req model.Message, opts ...BroadcastOption) model.Task[AsyncBroadcastResult]
 
 	// BroadcastQuorumAsync 异步 Quorum 调用
 	// 当达到多数派响应时完成
 	// 可通过 opts 设置回调实时拦截 OnMajority/OnComplete 事件
-	BroadcastQuorumAsync(ctx context.Context, peers []model.PeerID, req model.Message, quorum int, opts ...BroadcastOption) AsyncOp[QuorumResult]
+	BroadcastQuorumAsync(ctx context.Context, peers []model.PeerID, req model.Message, quorum int, opts ...BroadcastOption) model.Task[QuorumResult]
 
 	// ====== 批量写入（不同消息）======
 
 	// WriteVAsync 异步批量写入（单向，不等待响应）
 	// 适用于日志广播、监控数据等高吞吐场景
-	WriteVAsync(ctx context.Context, targets []model.PeerID, msgs []model.Message, opts ...BroadcastOption) AsyncOp[WriteVResult]
+	WriteVAsync(ctx context.Context, targets []model.PeerID, msgs []model.Message, opts ...BroadcastOption) model.Task[WriteVResult]
 
 	// WriteVCallAsync 异步批量写入（带响应）
 	// 返回每个节点的响应结果
-	WriteVCallAsync(ctx context.Context, targets []model.PeerID, msgs []model.Message, opts ...BroadcastOption) AsyncOp[WriteVResult]
+	WriteVCallAsync(ctx context.Context, targets []model.PeerID, msgs []model.Message, opts ...BroadcastOption) model.Task[WriteVResult]
 
 	// ====== TaskPool 管理 ======
 	// SetExecutor 设置任务执行器

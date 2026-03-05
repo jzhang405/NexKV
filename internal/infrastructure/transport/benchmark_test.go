@@ -13,6 +13,7 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/pkg/compressor"
+	"github.com/stretchr/testify/require"
 )
 
 // ============================================================================
@@ -309,7 +310,8 @@ func BenchmarkMiddleware_Compression_Snappy(b *testing.B) {
 	payload := make([]byte, 1024) // 1 KB
 
 	// 使用随机数据模拟真实场景
-	rand.Read(payload)
+	_, err := rand.Read(payload)
+	require.NoError(b, err)
 
 	msg := model.NewMessage("test-id", model.MessageTypeRequest, "node-1", "node-2", payload)
 	ctx := context.Background()

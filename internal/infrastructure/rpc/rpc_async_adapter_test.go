@@ -55,7 +55,7 @@ func TestRPCAsyncAdapter_CallAsync(t *testing.T) {
 			t.Fatal("expected operation, got nil")
 		}
 
-		resp, err := op.Await(ctx)
+		resp, err := op.Wait(ctx)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -71,7 +71,7 @@ func TestRPCAsyncAdapter_CallAsync(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				op := adapter.CallAsync(ctx, "peer-1", newTestMessage("test"))
-				_, _ = op.Await(ctx)
+				_, _ = op.Wait(ctx)
 			}()
 		}
 		wg.Wait()
@@ -96,7 +96,7 @@ func TestRPCAsyncAdapter_CallAsyncWithTimeout(t *testing.T) {
 
 	t.Run("with sufficient timeout", func(t *testing.T) {
 		op := adapter.CallAsyncWithTimeout(ctx, "peer-1", newTestMessage("test"), 200)
-		resp, err := op.Await(ctx)
+		resp, err := op.Wait(ctx)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -108,7 +108,7 @@ func TestRPCAsyncAdapter_CallAsyncWithTimeout(t *testing.T) {
 	t.Run("with zero timeout", func(t *testing.T) {
 		// 使用 0 超时会导致立即超时
 		op := adapter.CallAsyncWithTimeout(ctx, "peer-1", newTestMessage("test"), 0)
-		_, err := op.Await(ctx)
+		_, err := op.Wait(ctx)
 		// 0 超时应该导致错误，但具体行为取决于实现
 		// 这里只验证操作能正常完成不 panic
 		_ = err
@@ -138,7 +138,7 @@ func TestRPCAsyncAdapter_BroadcastAsync(t *testing.T) {
 			t.Fatal("expected operation, got nil")
 		}
 
-		result, err := op.Await(ctx)
+		result, err := op.Wait(ctx)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -151,7 +151,7 @@ func TestRPCAsyncAdapter_BroadcastAsync(t *testing.T) {
 		// 回调通过 BroadcastConfig 设置，这里简化测试
 		peers := []model.PeerID{"peer-1"}
 		op := adapter.BroadcastAsync(ctx, peers, newTestMessage("test"))
-		_, _ = op.Await(ctx)
+		_, _ = op.Wait(ctx)
 	})
 }
 
@@ -178,7 +178,7 @@ func TestRPCAsyncAdapter_BroadcastQuorumAsync(t *testing.T) {
 			t.Fatal("expected operation, got nil")
 		}
 
-		result, err := op.Await(ctx)
+		result, err := op.Wait(ctx)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -204,7 +204,7 @@ func TestRPCAsyncAdapter_WriteVAsync(t *testing.T) {
 			t.Fatal("expected operation, got nil")
 		}
 
-		_, err := op.Await(ctx)
+		_, err := op.Wait(ctx)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -227,7 +227,7 @@ func TestRPCAsyncAdapter_WriteVCallAsync(t *testing.T) {
 			t.Fatal("expected operation, got nil")
 		}
 
-		_, err := op.Await(ctx)
+		_, err := op.Wait(ctx)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -329,6 +329,8 @@ func (m *mockTaskPoolProvider) CloseWithTimeout(timeout time.Duration) error {
 type mockRPCSync struct {
 	callFunc          func(ctx context.Context, to model.PeerID, req model.Message) (model.Message, error)
 	broadcastCallFunc func(ctx context.Context, peers []model.PeerID, req model.Message, strategy service.ResponseStrategy, tracker service.BroadcastProgress) (service.BroadcastResult, error)
+	writeVFunc        func(ctx context.Context, targets []model.PeerID, msgs []model.Message, progress service.BroadcastProgress) error
+	writeVCallFunc    func(ctx context.Context, targets []model.PeerID, msgs []model.Message, strategy service.ResponseStrategy, progress service.BroadcastProgress) (service.WriteVResult, error)
 }
 
 func (m *mockRPCSync) Call(ctx context.Context, to model.PeerID, req model.Message) (model.Message, error) {
@@ -346,10 +348,16 @@ func (m *mockRPCSync) BroadcastCall(ctx context.Context, peers []model.PeerID, r
 }
 
 func (m *mockRPCSync) WriteV(ctx context.Context, targets []model.PeerID, msgs []model.Message, progress service.BroadcastProgress) error {
+	if m.writeVFunc != nil {
+		return m.writeVFunc(ctx, targets, msgs, progress)
+	}
 	return nil
 }
 
 func (m *mockRPCSync) WriteVCall(ctx context.Context, targets []model.PeerID, msgs []model.Message, strategy service.ResponseStrategy, progress service.BroadcastProgress) (service.WriteVResult, error) {
+	if m.writeVCallFunc != nil {
+		return m.writeVCallFunc(ctx, targets, msgs, strategy, progress)
+	}
 	return service.WriteVResult{}, nil
 }
 

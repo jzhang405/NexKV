@@ -807,6 +807,10 @@ func (w *coreWorker) run() {
 	if err := pinToCore(w.coreID); err != nil {
 		// 绑核失败不应阻止 worker 启动，但记录警告
 		// 在某些平台（如 macOS）可能不支持绑核，但 LockOSThread 仍然有效
+		logrus.WithFields(logrus.Fields{
+			"coreID": w.coreID,
+			"error":  err,
+		}).Warn("Failed to pin worker to core, but continuing with LockOSThread only")
 	}
 
 	for {

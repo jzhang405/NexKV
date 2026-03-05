@@ -170,7 +170,7 @@ func (op *asyncOpImpl[T]) registerCallback(callback func(T, error)) string {
 		// 在锁内复制数据，然后在锁外执行
 		v := op.value
 		e := op.err
-		// 使用 defer 确保解锁后执行
+		// 使用 defer 确保解锁后执行（defer 按 LIFO 顺序执行）
 		defer op.safeExecuteCallback(callback, v, e)
 		return ""
 	}

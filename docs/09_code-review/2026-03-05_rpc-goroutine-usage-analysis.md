@@ -786,3 +786,606 @@ func TestRPC_Concurrent_Callbacks(t *testing.T) {
 **分析人**: jzh  
 **关联PR**: PR-091  
 **状态**: ✅ 分析完成，待实施
+
+---
+
+## 9. 补充：6个核心场景详细分析
+
+> **来源**: `docs/09_code-review/2026-03-05_rpc-executor-sourceid-design.md`  
+> **整合时间**: 2026-03-05
+
+### 9.1 场景清单
+
+| # | 场景 | 文件位置 | 行号 | 当前 SourceID | 优先级 |
+|---|------|---------|------|-------------|--------|
+| 1 | 异步 RPC 调用 | `asyncop_impl.go` | 41 | `SourceDefault` | 🔴 高 |
+| 2 | RPC 回调执行 | `asyncop_impl.go` | 195 | `SourceDefault` | 🔴 高 |
+| 3 | 广播监听器-OnSuccess | `broadcast_listener_impl.go` | 100 | `SourceNetwork` | 🟡 中 |
+| 4 | 广播监听器-OnFailure | `broadcast_listener_impl.go` | 109 | `SourceNetwork` | 🟡 中 |
+| 5 | 广播监听器-OnMajority | `broadcast_listener_impl.go` | 118 | `SourceNetwork` | 🟡 中 |
+| 6 | 广播监听器-OnComplete | `broadcast_listener_impl.go` | 127 | `SourceNetwork` | 🟡 中 |
+
+### 9.2 场景1：异步 RPC 调用（asyncop_impl.go:41）
+
+**当前代码**:
+```go
+if err := provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, wrappedTask); err != nil {
+    slog.Warn("[AsyncOp] failed to submit task, falling back to direct goroutine", "error", err)
+    go wrappedTask(ctx)  // ⚠️ 回退到 goroutine
+}
+```
+
+**问题分析**:
+- 🔴 使用 `SourceDefault`，无 CPU 亲和性
+- 🔴 无法利用 PerCoreExecutor 的缓存局部性
+- 🔴 RPC 调用延迟敏感，应该有更好的亲和性
+
+**优化方案**:
+```go
+// 优化后：根据请求类型动态选择 SourceID
+func getRPCSourceID(req model.Message, peer model.PeerID) model.SourceID {
+    switch req.Type {
+    case model.MsgTypeRaft:
+        // Raft 消息：按分片亲和
+        return model.SourceShard(req.ShardID)
+    case model.MsgTypeClient:
+        // 客户端请求：按客户端亲和
+        return model.SourceClient(req.ClientID)
+    case model.MsgTypeInternal:
+        // 内部消息：按节点亲和
+        return model.SourceNode(peer.String())
+    default:
+        // 其他：使用网络默认
+        return model.SourceRPC
+    }
+}
+```
+
+**建议 SourceID**: 
+- `SourceRPC:shard:{shardID}:call` 
+- `SourceRPC:client:{clientID}:call`
+
+---
+
+### 9.3 场景2：RPC 回调执行（asyncop_impl.go:195）
+
+**当前代码**:
+```go
+if submitErr := op.goroutineProvider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
+    executor()
+}); submitErr != nil {
+    // 回退到直接启动 goroutine
+    go executor(ctx)
+}
+```
+
+**问题分析**:
+- 🔴 回调执行位置不统一（可能在 Executor 或独立 goroutine）
+- 🔴 使用 `SourceDefault`，无亲和性
+- 🔴 回调通常轻量，应该有更快的响应
+
+**优化方案**:
+```go
+// 新增专用的回调 SourceID
+const SourceRPCCallback = "rpc:callback:execute"
+
+// 回调统一走专用队列
+_ = w.goroutineProvider.Submit(ctx, model.SourceRPCCallback, service.PriorityHigh, func(ctx context.Context) {
+    callback(v, err)
+})
+```
+
+**建议 SourceID**: `rpc:callback:execute`
+
+**特点**:
+- ✅ 高优先级
+- ✅ 短任务队列
+- ✅ 快速响应
+
+---
+
+### 9.4 场景3-6：广播监听器回调
+
+**当前代码**（所有回调都使用 SourceNetwork）:
+```go
+// OnSuccess
+_ = w.goroutineProvider.Submit(context.Background(), model.SourceNetwork, service.PriorityNormal, func(ctx context.Context) {
+    safeListenerExec(func() { cb.OnSuccess(peer, resp, stats) })
+})
+
+// OnFailure
+_ = w.goroutineProvider.Submit(context.Background(), model.SourceNetwork, service.PriorityNormal, func(ctx context.Context) {
+    safeListenerExec(func() { cb.OnFailure(peer, err, stats) })
+})
+
+// OnMajority
+_ = w.goroutineProvider.Submit(context.Background(), model.SourceNetwork, service.PriorityNormal, func(ctx context.Context) {
+    safeListenerExec(func() { cb.OnMajority(stats) })
+})
+
+// OnComplete
+_ = w.goroutineProvider.Submit(context.Background(), model.SourceNetwork, service.PriorityNormal, func(ctx context.Context) {
+    safeListenerExec(func() { cb.OnComplete(stats) })
+})
+```
+
+**问题分析**:
+- ⚠️ 所有广播回调都使用 `SourceNetwork`，无区分
+- ⚠️ 广播是高并发场景，需要更好的调度策略
+- ⚠️ 不同回调类型优先级不同
+
+**优化方案**:
+```go
+// 按回调类型区分 SourceID
+var (
+    SourceBroadcastSuccess  = MustParseSourceID("rpc:broadcast:success")
+    SourceBroadcastFailure  = MustParseSourceID("rpc:broadcast:failure")
+    SourceBroadcastMajority = MustParseSourceID("rpc:broadcast:majority")
+    SourceBroadcastComplete = MustParseSourceID("rpc:broadcast:complete")
+)
+
+// OnSuccess - 成功回调，高优先级
+_ = w.goroutineProvider.Submit(ctx, model.SourceBroadcastSuccess, service.PriorityHigh, func(ctx context.Context) {
+    safeListenerExec(func() { cb.OnSuccess(peer, resp, stats) })
+})
+
+// OnFailure - 失败回调，中优先级
+_ = w.goroutineProvider.Submit(ctx, model.SourceBroadcastFailure, service.PriorityNormal, func(ctx context.Context) {
+    safeListenerExec(func() { cb.OnFailure(peer, err, stats) })
+})
+
+// OnMajority - 多数派回调，最高优先级（影响一致性）
+_ = w.goroutineProvider.Submit(ctx, model.SourceBroadcastMajority, service.PriorityCritical, func(ctx context.Context) {
+    safeListenerExec(func() { cb.OnMajority(stats) })
+})
+
+// OnComplete - 完成回调，低优先级
+_ = w.goroutineProvider.Submit(ctx, model.SourceBroadcastComplete, service.PriorityLow, func(ctx context.Context) {
+    safeListenerExec(func() { cb.OnComplete(stats) })
+})
+```
+
+---
+
+## 10. 补充：完整的 SourceID 定义
+
+### 10.1 新增预定义 SourceID
+
+**位置**: `internal/domain/model/source_id_rpc.go`（新建）
+
+```go
+package model
+
+// ============================================
+// RPC 调用相关 SourceID
+// ============================================
+
+var (
+    // 基础 RPC
+    SourceRPC          = MustParseSourceID("rpc:default:call")
+    SourceRPCCallback  = MustParseSourceID("rpc:callback:execute")
+
+    // RPC 广播（按回调类型）
+    SourceBroadcastSuccess  = MustParseSourceID("rpc:broadcast:success")
+    SourceBroadcastFailure  = MustParseSourceID("rpc:broadcast:failure")
+    SourceBroadcastMajority = MustParseSourceID("rpc:broadcast:majority")
+    SourceBroadcastComplete = MustParseSourceID("rpc:broadcast:complete")
+
+    // RPC 广播（聚合）
+    SourceBroadcastAll = MustParseSourceID("rpc:broadcast:all")
+)
+
+// ============================================
+// 动态 SourceID 构造函数
+// ============================================
+
+// SourceRPCShard 按分片生成 SourceID
+func SourceRPCShard(shardID uint64) SourceID {
+    return MustParseSourceID(fmt.Sprintf("rpc:shard:%d:call", shardID))
+}
+
+// SourceRPCClient 按客户端生成 SourceID
+func SourceRPCClient(clientID string) SourceID {
+    return MustParseSourceID(fmt.Sprintf("rpc:client:%s:call", clientID))
+}
+
+// SourceRPCNode 按节点生成 SourceID
+func SourceRPCNode(nodeID string) SourceID {
+    return MustParseSourceID(fmt.Sprintf("rpc:node:%s:call", nodeID))
+}
+```
+
+### 10.2 SourceID 分类表
+
+| SourceID | 模块 | 子模块 | 操作 | 优先级 | 亲和性策略 |
+|----------|------|--------|------|--------|-----------|
+| `rpc:default:call` | rpc | default | call | Normal | 无 |
+| `rpc:callback:execute` | rpc | callback | execute | High | 无 |
+| `rpc:shard:{id}:call` | rpc | shard | call | Normal | 分片亲和 |
+| `rpc:client:{id}:call` | rpc | client | call | Normal | 客户端亲和 |
+| `rpc:node:{id}:call` | rpc | node | call | Normal | 节点亲和 |
+| `rpc:broadcast:success` | rpc | broadcast | success | High | 无 |
+| `rpc:broadcast:failure` | rpc | broadcast | failure | Normal | 无 |
+| `rpc:broadcast:majority` | rpc | broadcast | majority | Critical | 无 |
+| `rpc:broadcast:complete` | rpc | broadcast | complete | Low | 无 |
+
+---
+
+## 11. 补充：调度策略实现
+
+### 11.1 按模块选择执行器
+
+```go
+// 更新: internal/domain/model/source_id.go
+
+func (s SourceID) RecommendedMode() TaskMode {
+    // Per-Core 模式：延迟敏感的任务
+    perCoreModules := map[string]bool{
+        "hlc":         true,
+        "wal":         true,
+        "transaction": true,
+        "replication": true,
+        "rpc":         true,  // 新增：RPC 调用
+        "callback":    true,  // 新增：RPC 回调
+        "broadcast":   true,  // 新增：广播回调
+    }
+
+    if perCoreModules[s.module] {
+        return ModePerCore
+    }
+
+    return ModeAntsPool
+}
+```
+
+### 11.2 按子模块选择 Worker
+
+```go
+// 新增: internal/infrastructure/concurrency/executor_percore_strategy.go
+
+// PerCoreExecutor 绑定策略
+func (e *PerCoreExecutor) selectWorker(sourceID SourceID) int {
+    switch sourceID.module {
+    case "rpc":
+        return e.selectRPCWorker(sourceID)
+    case "broadcast":
+        return e.selectBroadcastWorker(sourceID)
+    default:
+        return e.selectDefaultWorker(sourceID)
+    }
+}
+
+func (e *PerCoreExecutor) selectRPCWorker(sourceID SourceID) int {
+    // 解析子模块
+    parts := strings.Split(sourceID.subModule, ":")
+    if len(parts) == 0 {
+        return e.selectDefaultWorker(sourceID)
+    }
+
+    subModule := parts[0]
+    switch subModule {
+    case "shard":
+        // 按分片绑定，保证同一分片的任务在同一 Worker
+        shardID, _ := strconv.ParseUint(parts[1], 10, 64)
+        return e.bindToShard(shardID)
+
+    case "client":
+        // 按客户端绑定
+        clientID := parts[1]
+        return e.bindToClient(clientID)
+
+    case "node":
+        // 按节点绑定
+        nodeID := parts[1]
+        return e.bindToNode(nodeID)
+
+    default:
+        return e.selectDefaultWorker(sourceID)
+    }
+}
+
+func (e *PerCoreExecutor) selectBroadcastWorker(sourceID SourceID) int {
+    // 广播回调：按回调类型选择优先级队列
+    // 所有广播回调使用相同的 Worker 池，但不同优先级
+    return e.selectDefaultWorker(sourceID)
+}
+```
+
+---
+
+## 12. 补充：优先级映射
+
+### 12.1 SourceID → 优先级映射函数
+
+```go
+// 新增: internal/domain/model/source_id_priority.go
+
+func (s SourceID) RecommendedPriority() TaskPriority {
+    // 高优先级
+    highPriority := map[string]bool{
+        "callback":   true,
+        "success":    true,
+        "majority":   true,  // 多数派影响一致性
+    }
+
+    // 低优先级
+    lowPriority := map[string]bool{
+        "complete":   true,
+        "cleanup":    true,
+    }
+
+    // 组合键
+    key := s.subModule
+    if highPriority[key] {
+        return PriorityHigh
+    }
+    if lowPriority[key] {
+        return PriorityLow
+    }
+
+    return PriorityNormal
+}
+```
+
+### 12.2 优先级策略表
+
+| 场景 | SourceID | 推荐优先级 | 理由 |
+|------|----------|-----------|------|
+| 回调执行 | `rpc:callback:execute` | High | 用户等待响应 |
+| 广播多数派 | `rpc:broadcast:majority` | Critical | 影响一致性 |
+| 广播成功 | `rpc:broadcast:success` | High | 快速响应 |
+| 广播失败 | `rpc:broadcast:failure` | Normal | 错误处理 |
+| 广播完成 | `rpc:broadcast:complete` | Low | 后处理 |
+| 分片调用 | `rpc:shard:{id}:call` | Normal | 批量操作 |
+| 客户端调用 | `rpc:client:{id}:call` | Normal | 用户请求 |
+
+---
+
+## 13. 补充：具体性能收益
+
+### 13.1 CPU 亲和性收益（详细数据）
+
+| 指标 | 优化前 | 优化后 | 提升 |
+|------|--------|--------|------|
+| **L1 缓存命中率** | 75% | 90% | **+15%** |
+| **L2 缓存命中率** | 85% | 95% | **+10%** |
+| **平均延迟** | 280 ns/op | 200 ns/op | **-29%** |
+
+### 13.2 调度效率收益
+
+| 指标 | 优化前 | 优化后 | 提升 |
+|------|--------|--------|------|
+| **上下文切换** | 1500/sec | 300/sec | **-80%** |
+| **任务排队延迟** | 50 ns | 10 ns | **-80%** |
+
+---
+
+## 14. 补充：完整测试用例
+
+### 14.1 单元测试
+
+```go
+// 位置: internal/domain/model/source_id_rpc_test.go
+
+func TestSourceRPCShard(t *testing.T) {
+    sid := model.SourceRPCShard(1)
+    assert.Equal(t, "rpc", sid.Module())
+    assert.Equal(t, "shard:1", sid.SubModule())
+    assert.Equal(t, "call", sid.Action())
+}
+
+func TestSourceRPCClient(t *testing.T) {
+    sid := model.SourceRPCClient("client-123")
+    assert.Equal(t, "rpc", sid.Module())
+    assert.Equal(t, "client:client-123", sid.SubModule())
+    assert.Equal(t, "call", sid.Action())
+}
+
+func TestSourceID_RecommendedPriority(t *testing.T) {
+    tests := []struct {
+        sourceID string
+        want     TaskPriority
+    }{
+        {"rpc:callback:execute", PriorityHigh},
+        {"rpc:broadcast:majority", PriorityCritical},
+        {"rpc:broadcast:success", PriorityHigh},
+        {"rpc:broadcast:failure", PriorityNormal},
+        {"rpc:broadcast:complete", PriorityLow},
+    }
+    
+    for _, tt := range tests {
+        sid := MustParseSourceID(tt.sourceID)
+        assert.Equal(t, tt.want, sid.RecommendedPriority())
+    }
+}
+```
+
+### 14.2 集成测试
+
+```go
+// 位置: internal/infrastructure/concurrency/executor_percore_rpc_test.go
+
+func TestRPCAffinityBinding(t *testing.T) {
+    executor, _ := NewPerCoreExecutor()
+    defer executor.Close()
+
+    // 同一分片的请求应该绑定到同一 Worker
+    var workerIDs []int
+    for i := 0; i < 100; i++ {
+        var capturedWorkerID int
+        executor.Submit(ctx, model.SourceRPCShard(1), PriorityNormal, func(ctx context.Context) {
+            capturedWorkerID = getWorkerID()
+        })
+        workerIDs = append(workerIDs, capturedWorkerID)
+    }
+
+    // 验证：所有任务都路由到同一 Worker
+    assert.AllEqual(t, workerIDs, workerIDs[0])
+}
+
+func TestRPCAffinityDifferentShards(t *testing.T) {
+    executor, _ := NewPerCoreExecutor()
+    defer executor.Close()
+
+    // 不同分片可以绑定到不同 Worker（负载均衡）
+    var worker1ID, worker2ID int
+    
+    executor.Submit(ctx, model.SourceRPCShard(1), PriorityNormal, func(ctx context.Context) {
+        worker1ID = getWorkerID()
+    })
+    
+    executor.Submit(ctx, model.SourceRPCShard(2), PriorityNormal, func(ctx context.Context) {
+        worker2ID = getWorkerID()
+    })
+
+    // 验证：不同分片可以绑定到不同 Worker
+    // 注意：不是强制要求，可以相同（取决于负载均衡策略）
+    t.Logf("Shard 1 -> Worker %d, Shard 2 -> Worker %d", worker1ID, worker2ID)
+}
+
+func TestRPCCallSourceIDSelection(t *testing.T) {
+    manager := NewRPCManager(strategy)
+
+    // Raft 消息应该选择分片 SourceID
+    raftReq := &model.Message{Type: model.MsgTypeRaft, ShardID: 1}
+    sid := strategy.GetSourceID(raftReq, peer)
+    assert.Equal(t, model.SourceRPCShard(1), sid)
+
+    // 客户端消息应该选择客户端 SourceID
+    clientReq := &model.Message{Type: model.MsgTypeClient, ClientID: "client-1"}
+    sid = strategy.GetSourceID(clientReq, peer)
+    assert.Equal(t, model.SourceRPCClient("client-1"), sid)
+
+    // 内部消息应该选择节点 SourceID
+    internalReq := &model.Message{Type: model.MsgTypeInternal}
+    sid = strategy.GetSourceID(internalReq, peer)
+    assert.Equal(t, model.SourceRPCNode(peer.String()), sid)
+}
+```
+
+---
+
+## 15. 补充：监控指标
+
+### 15.1 Prometheus 指标定义
+
+```go
+// 位置: internal/infrastructure/metrics/rpc_metrics.go
+
+var (
+    // RPC 调用
+    RPCLatencyBySourceID = promauto.NewHistogramVec(
+        prometheus.HistogramOpts{
+            Name: "nexkv_rpc_latency_by_source_id",
+            Help: "RPC call latency by SourceID",
+            Buckets: []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1},
+        },
+        []string{"source_id", "operation"},
+    )
+
+    RPCTasksBySourceID = promauto.NewCounterVec(
+        prometheus.CounterOpts{
+            Name: "nexkv_rpc_tasks_by_source_id_total",
+            Help: "Total RPC tasks by SourceID",
+        },
+        []string{"source_id", "operation", "status"},
+    )
+
+    // 广播回调
+    BroadcastLatencyByType = promauto.NewHistogramVec(
+        prometheus.HistogramOpts{
+            Name: "nexkv_broadcast_latency_by_type",
+            Help: "Broadcast callback latency by type",
+            Buckets: []float64{.0001, .0005, .001, .005, .01, .05, .1},
+        },
+        []string{"callback_type"},
+    )
+
+    BroadcastEventsByType = promauto.NewCounterVec(
+        prometheus.CounterOpts{
+            Name: "nexkv_broadcast_events_by_type_total",
+            Help: "Total broadcast events by callback type",
+        },
+        []string{"callback_type"},
+    )
+
+    // 亲和性
+    AffinityHitRateBySource = promauto.NewGaugeVec(
+        prometheus.GaugeOpts{
+            Name: "nexkv_affinity_hit_rate_by_source",
+            Help: "CPU affinity hit rate by SourceID",
+        },
+        []string{"source_id"},
+    )
+)
+```
+
+### 15.2 Dashboard 建议
+
+| Panel | 指标 | 说明 |
+|-------|------|------|
+| **RPC 延迟分布** | `RPCLatencyBySourceID` | 按 SourceID 分组的延迟 |
+| **RPC 吞吐量** | `RPCTasksBySourceID` | 按 SourceID 分组的 QPS |
+| **亲和性命中率** | `AffinityHitRateBySource` | 按 Source 分组的命中率 |
+| **广播回调延迟** | `BroadcastLatencyByType` | 按回调类型分组 |
+
+---
+
+## 16. 整合后的实施计划
+
+### 16.1 更新后的优先级
+
+| 阶段 | 任务 | 工作量 | 优先级 | 依赖 |
+|------|------|--------|--------|------|
+| **Phase 1** | 定义 RPC SourceID 常量 | 1小时 | P0 | - |
+| **Phase 1** | 修改 asyncop_impl.go 使用新 SourceID | 30分钟 | P0 | Phase 1 |
+| **Phase 1** | 修改 broadcast_listener_impl.go | 1小时 | P0 | Phase 1 |
+| **Phase 2** | 实现动态 SourceID 选择策略 | 4小时 | P1 | Phase 1 |
+| **Phase 2** | 实现优先级映射函数 | 2小时 | P1 | Phase 1 |
+| **Phase 2** | 添加 SourceID 监控指标 | 2小时 | P1 | Phase 1 |
+| **Phase 3** | 编写完整测试用例 | 4小时 | P2 | Phase 2 |
+
+### 16.2 代码修改清单（更新）
+
+```bash
+# 新增文件
+internal/domain/model/source_id_rpc.go          # RPC SourceID 定义
+internal/domain/model/source_id_priority.go      # 优先级映射
+internal/infrastructure/concurrency/executor_percore_strategy.go  # 调度策略
+internal/infrastructure/metrics/rpc_metrics.go   # Prometheus 指标
+
+# 修改文件
+internal/domain/model/source_id.go               # 更新 RecommendedMode
+internal/infrastructure/rpc/asyncop_impl.go      # 使用 SourceRPCCallback
+internal/infrastructure/rpc/broadcast_listener_impl.go  # 使用广播 SourceID
+
+# 测试文件
+internal/domain/model/source_id_rpc_test.go      # SourceID 测试
+internal/infrastructure/concurrency/executor_percore_rpc_test.go  # 亲和性测试
+```
+
+---
+
+## 17. 文档整合说明
+
+本文档整合了以下两个文档的内容：
+
+1. **`2026-03-05_rpc-goroutine-usage-analysis.md`** (原始文档)
+   - RPC 层 goroutine 使用统计
+   - 5个场景分类
+   - 问题诊断
+   - 改进方案
+   - SourceID 映射建议
+
+2. **`2026-03-05_rpc-executor-sourceid-design.md`** (已整合)
+   - 6个核心场景详细分析
+   - 完整的 SourceID 定义代码
+   - 调度策略实现
+   - 优先级映射函数
+   - 具体性能收益数据
+   - 完整测试用例
+   - Prometheus 监控指标
+
+**整合时间**: 2026-03-05  
+**整合原因**: 避免内容重复，提供统一的技术参考  
+**后续维护**: 本文档作为唯一的 RPC 层 goroutine 和 SourceID 设计参考

@@ -2,7 +2,7 @@
 
 > **预研类型**: Spike
 > **创建日期**: 2026-02-21
-> **最后更新**: 2026-02-22
+> **最后更新**: 2026-03-05
 > **分支**: `spike/m2-storage-engine`
 > **状态**: ✅ 已完成
 
@@ -12,18 +12,20 @@
 
 | 文档 | 版本 | 说明 |
 |------|------|------|
-| [Interface 定义](./2026-02-21_spike_m2-storage-engine-interface.md) | v2.2 | 接口设计（本文档） |
+| [Interface 定义](./2026-02-21_spike_m2-storage-engine-interface.md) | v2.3 | 接口设计（本文档） |
 | [实现方案](./2026-02-21_spike_m2-storage-engine-implement.md) | v2.1 | 技术实现 |
-| [实施路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md) | v2.0 | 时间规划 |
+| [实施路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md) | v2.1 | 时间规划（阶段 0 已完成） |
 | [性能基准](./2026-02-21_spike_m2-storage-engine-benchmark.md) | v2.0 | 性能测试方案 |
 | [**DDD Interface v3.0**](./2026-02-18_spike_nexkv-ddd-interface.md) | **v3.0** | **统一接口定义（47个接口，包含 AsyncOperation、BTree、WAL）** |
 | [**DDD Implement v3.0**](./2026-02-18_spike_nexkv-ddd-implement.md) | **v3.0** | **DDD 实施方案（含测试策略）** |
-| [**DDD Roadmap v3.0**](./2026-02-18_spike_nexkv-ddd-roadmap.md) | **v3.0** | **阶段规划（含阶段 0：异步重构）** |
-| [**统一执行器架构**](./2026-02-25_spike_glm-unified-executor.md) | - | 执行层核心 - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 |
+| [**DDD Roadmap v3.0**](./2026-02-18_spike_nexkv-ddd-roadmap.md) | **v3.0** | **阶段规划（阶段 0：异步重构 ✅ 已完成）** |
+| [**统一执行器架构**](./2026-02-25_spike_glm-unified-executor.md) | v1.0 | 执行层核心 - TaskExecutor 接口 + Per-Core 无锁执行器 |
 
-> 📖 **并发管理参考**: [DDD Interface v3.0 - GoroutineProvider](./2026-02-18_spike_nexkv-ddd-interface.md#13-b4-goroutineprovider)
+> 📖 **并发管理参考**: [DDD Interface v3.0 - TaskExecutor](./2026-02-18_spike_nexkv-ddd-interface.md#实现状态追踪)
 >
 > ⚠️ **重要**: M2 存储引擎层直接依赖 DDD v3.0 的架构定义，确保版本一致。
+>
+> ✅ **阶段 0 已完成**: PR-088 (AsyncOperation), PR-087 (Unified Executor), PR-073 (Async Pipeline)
 
 ---
 

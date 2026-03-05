@@ -167,6 +167,55 @@
 
 ---
 
+## 🔧 实现状态追踪
+
+> **更新日期**: 2026-03-05
+
+### 已实现接口
+
+| 接口 | 实现文件 | 状态 | 备注 |
+|------|---------|------|------|
+| **TaskExecutor** | `internal/domain/service/task.go` | ✅ 已实现 | 基础任务执行器 |
+| **Observable** | `internal/domain/service/task.go` | ✅ 已实现 | 可观测接口 |
+| **Manageable** | `internal/domain/service/task.go` | ✅ 已实现 | 可管理接口 |
+| **AsyncOp[T]** | `internal/domain/service/asyncop.go` | ✅ 已实现 | 泛型异步操作 |
+| **RPCSync** | `internal/infrastructure/transport/libp2p_rpc.go` | ✅ 已实现 | 同步 RPC |
+| **RPCAsync** | `internal/infrastructure/rpc/rpc_async_adapter.go` | ✅ 已实现 | 异步 RPC 适配器 |
+| **Transport** | `internal/infrastructure/transport/libp2p_transport.go` | ✅ 已实现 | libp2p 传输层 |
+
+### 命名问题备注
+
+> ⚠️ **`AsyncTaskExecutor` 命名建议**
+>
+> 当前 `AsyncTaskExecutor` 接口命名存在语义问题：
+> - "Async" 与 `TaskExecutor` 语义重复（`Submit()` 本身就是异步提交）
+> - 建议重命名为 `ManagedTaskExecutor` 或 `FullTaskExecutor`
+>
+> **当前定义**（`internal/domain/service/task.go`）：
+> ```go
+> // AsyncTaskExecutor 异步任务执行器
+> // 组合：TaskExecutor + Observable + Manageable
+> type AsyncTaskExecutor interface {
+>     TaskExecutor
+>     Observable    // 可观测性：Stats(), Health()
+>     Manageable    // 可管理性：SetCapacity(), CloseWithTimeout()
+> }
+> ```
+>
+> **建议重命名**：
+> ```go
+> // ManagedTaskExecutor 可管理的任务执行器
+> type ManagedTaskExecutor interface {
+>     TaskExecutor
+>     Observable
+>     Manageable
+> }
+> ```
+>
+> 详见：`thoughts/2026-03-05-async-executor-rpc-transport-intro.md#1.2-命名问题`
+
+---
+
 ## 一、架构总图
 
 ### 1.1 完整架构图（5层 + 47个接口）

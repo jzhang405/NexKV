@@ -103,12 +103,17 @@ graph LR
 
 ### ⚠️ 前置依赖：异步编程模型重构（必须先完成）⭐ v2.0 更新
 
-> **更新日期**: 2026-03-02
+> **更新日期**: 2026-03-05
 > **参考**: `thoughts/2026-03-02-idea-async-pipeline-refactor.md`
 
-| 阶段 | 内容 | 周期 | 优先级 | 交付物 |
-|------|------|------|--------|--------|
-| **阶段 0** | 异步重构（AsyncOp + 泛型锁包装器 + 流水线框架） | **4 周** | **P0** | `thoughts/2026-03-02-idea-async-pipeline-refactor.md` |
+| 阶段 | 内容 | 周期 | 优先级 | 状态 | 交付物 |
+|------|------|------|--------|------|--------|
+| **阶段 0** | 异步重构（AsyncOp + 泛型锁包装器 + 流水线框架） | **4 周** | **P0** | ✅ **已完成** | 见下方 PR 列表 |
+
+> ✅ **已完成 PR**：
+> - **PR-088**: AsyncOperation 泛型接口实现
+> - **PR-087**: 统一执行器架构（TaskExecutor + Observable + Manageable）
+> - **PR-073**: 异步流水线模型重构
 | | **Week 1-2**: AsyncOp 重命名 | | | `domain/service/rpc_async.go`, `infrastructure/rpc/async_impl.go` |
 | | - AsyncOperation → AsyncOp | | | - 所有引用更新 |
 | | - 类型别名兼容 | | | - 测试验证 |

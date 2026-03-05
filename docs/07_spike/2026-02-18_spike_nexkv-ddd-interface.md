@@ -7,10 +7,11 @@
 | [DDD 实施路线图](./2026-02-18_spike_nexkv-ddd-roadmap.md) | 完整 DDD 实施路线图 |
 | [DDD 实现方案](./2026-02-18_spike_nexkv-ddd-implement.md) | 接口实现方案 |
 | [**统一执行器架构（Per-Core + 接口拆分）**](./2026-02-25_spike-glm-unified-executor.md) | **执行层核心** - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 + 可暂停调度器 |
+| [**Component Interface 完备性审查**](../09_code-review/2026-03-05_review-component-interface-completeness.md) | **审查报告** - 47个接口分类（MUST/SHOULD/NICE-TO-HAVE/OPTIONAL）+ 缺失接口清单 + V4融合评估 |
 
 **文档目的**: 从DDD角度组织分布式KV存储系统的Go interface设计
 **数据来源**: doubao-chat-nexkv-ddd.md 完整对话（21,647行）
-**文档版本**: v3.0 | **最后更新**: 2026-03-02
+**文档版本**: v3.1 | **最后更新**: 2026-03-05
 **关键特性**: 47个统一接口 + 同名合并 + 场景明确 + 交互清晰 + **5层精简架构** + **统一泛型异步接口 AsyncOperation[T]** + **架构专家审查优化** + **Transport中间件支持** + **控制平面增强** + **异步接口精化** + **AsyncStream/AsyncChannel 接口** + **统一 RPC 接口** + **ResponseStrategy 广播策略** + **BroadcastProgress 完整追踪** + **WriteVResult 统一返回值** + **双存储引擎策略** + **AsyncGroup批量操作** + **GoroutineProvider any类型设计** + **AsyncOp 重命名** + **泛型锁包装器** + **流水线任务接口**
 
 > **📋 v3.0 变更说明 (2026-03-02)**：
@@ -18,6 +19,13 @@
 > - **新增流水线任务接口**：PipelineWorker、WriteTask、ReadTask、FlushTask
 > - **接口验证策略更新**：添加异步接口验证和流水线集成验证
 > - **版本管理优化**：统一三份文档版本号，解决版本不一致问题
+>
+> **📋 v3.1 变更说明 (2026-03-05)**：
+> - **接口完备性审查**：完成 47 个接口的 MUST/SHOULD/NICE-TO-HAVE/OPTIONAL 分类
+> - **缺失接口清单**：识别 14 个缺失接口（MetricsCollector、HealthCheck、Logger等）
+> - **V4 融合评估**：TaskRunner/Task[Result] 与现有接口兼容性分析
+> - **架构一致性检查**：统一命名规范、优先级体系（4级）、Context 使用规范
+> - **新增审查报告引用**：`docs/09_code-review/2026-03-05_review-component-interface-completeness.md`
 >
 > **📋 v19.3 变更说明 (2026-02-23)**：
 > - **GoroutineProvider 修复 Go 泛型限制**：
@@ -310,6 +318,142 @@ flowchart TB
             HotReloader["HotReloader<br/>热加载"]
         end
     end
+```
+
+### 1.2 接口优先级分类（MUST/SHOULD/NICE-TO-HAVE/OPTIONAL）
+
+> 📖 **详细分类请参考**: [Component Interface 完备性审查报告](../09_code-review/2026-03-05_review-component-interface-completeness.md)
+
+#### ① API 层（4个接口）
+
+| 接口 | 优先级 | 理由 |
+|------|--------|------|
+| **KVClient** | MUST | 核心 KV 操作接口，系统存在的根本价值 |
+| **TxClient** | SHOULD | 事务支持是 KV 存储的重要功能 |
+| **RPCAsync** | SHOULD | 异步 RPC 调用接口 |
+| **RPCSync** | NICE-TO-HAVE | 同步 RPC 调用接口 |
+
+#### ② 控制平面层（11个接口）
+
+| 接口 | 优先级 | 理由 |
+|------|--------|------|
+| **TreeCoordinator** | MUST | 树形协调器，分片管理的核心 |
+| **NodeManager** | MUST | 节点管理，集群基础 |
+| **TopologyManager** | MUST | 拓扑管理，维护集群拓扑结构 |
+| **HAController** | MUST | 高可用控制器，故障检测和恢复 |
+| **HeartbeatManager** | MUST | 心跳管理，节点故障检测 |
+| **ShardManager** | MUST | 分片管理，数据分片核心 |
+| **ShardRouter** | MUST | 分片路由，请求路由基础设施 |
+| **MetadataStore** | SHOULD | 元数据存储 |
+| **GroupManager** | SHOULD | 组管理，支持动态组操作 |
+| **Broadcaster** | SHOULD | 广播器，消息广播 |
+| **SecurityLayer** | NICE-TO-HAVE | 安全层，认证加密 |
+| **ECManager** | OPTIONAL | 纠删码管理，存储优化 |
+
+#### ③ 数据平面层（6个接口）
+
+| 接口 | 优先级 | 理由 |
+|------|--------|------|
+| **Replicator** | MUST | 复制器，数据复制基础 |
+| **QuorumReplicator** | MUST | 复制组管理，一致性算法基石 |
+| **TxManager** | MUST | 事务管理器，事务处理核心 |
+| **TxCoordinator** | MUST | 事务协调器，分布式事务关键 |
+| **ReplicationStrategy** | SHOULD | 复制策略，定义复制行为 |
+
+#### ④ 存储引擎层（11个接口）
+
+| 接口 | 优先级 | 完整性 | 缺失方法 |
+|------|--------|--------|----------|
+| **KVStore** | MUST | ✅ 完整 | - |
+| **WAL** | MUST | ⚠️ 部分 | Rotate() |
+| **BTree** | MUST | ⚠️ 部分 | Split/Merge, GetSiblingPages |
+| **Iterator** | MUST | ✅ 完整 | - |
+| **LocalTx** | SHOULD | ⚠️ 部分 | RollbackAsync(), SetIsolationLevel() |
+| **BlockDevice** | MUST | ⚠️ 部分 | GetDeviceInfo(), Format() |
+| **LocalStorage** | SHOULD | ✅ 完整 | - |
+| **CloudStorage** | NICE-TO-HAVE | - | - |
+| **DistributedStorage** | OPTIONAL | - | - |
+| **AsyncOp[T]** | MUST | ✅ 完整 | - |
+| **Task[Result]** | MUST | ✅ 完整 | - |
+
+#### ⑤ 基础设施层（15个接口）
+
+| 接口 | 优先级 | 理由 |
+|------|--------|------|
+| **Transport** | MUST | 传输层，网络通信基础 |
+| **Message** | MUST | 消息抽象，通信数据标准 |
+| **RPC** | MUST | 远程过程调用，分布式通信核心 |
+| **Codec** | MUST | 编解码器，序列化基础 |
+| **GoroutineProvider** | MUST | 协程提供者，并发管理基础 |
+| **Stream** | SHOULD | 流接口，流式传输 |
+| **Channel** | SHOULD | 通道，异步通信抽象 |
+| **Middleware** | SHOULD | 中间件，横切关注点 |
+| **MiddlewareChain** | SHOULD | 中间件链，中间件组合 |
+| **CacheLayer** | SHOULD | 缓存层，性能提升 |
+| **CircuitBreaker** | SHOULD | 熔断器，容错性 |
+| **RetryPolicy** | SHOULD | 重试策略，可靠性 |
+| **DynamicConfig** | SHOULD | 动态配置，运行时配置 |
+| **Plugin** | NICE-TO-HAVE | 插件系统，扩展性 |
+| **BatchReplicator** | NICE-TO-HAVE | 批量复制，性能优化 |
+| **PipelineReplicator** | NICE-TO-HAVE | 流水线复制，性能优化 |
+
+### 1.3 缺失接口清单
+
+> 📖 **详细分析请参考**: [Component Interface 完备性审查报告](../09_code-review/2026-03-05_review-component-interface-completeness.md)
+
+#### 高优先级缺失（MUST）
+
+| 接口 | 层级 | 用途 | 建议包路径 |
+|------|------|------|------------|
+| **HLCClock** | Domain | 混合逻辑时钟，分布式事务时序 | `internal/domain/service/clock.go` |
+| **MetricsCollector** | Domain | 系统监控指标收集 | `internal/domain/service/metrics.go` |
+| **HealthCheck** | Application | 集群健康状态检查 | `internal/application/health/check.go` |
+| **ConfigProvider** | Infrastructure | 统一配置管理 | `internal/infrastructure/config/provider.go` |
+
+#### 中优先级缺失（SHOULD）
+
+| 接口 | 层级 | 用途 | 建议包路径 |
+|------|------|------|------------|
+| **Logger** | Infrastructure | 统一日志管理 | `internal/infrastructure/logging/logger.go` |
+| **Tracer** | Infrastructure | 分布式链路追踪 | `internal/infrastructure/tracing/tracer.go` |
+| **EventBus** | Domain | 领域事件传递 | `internal/domain/event/bus.go` |
+| **BackupManager** | Application | 数据备份和恢复 | `internal/application/backup/manager.go` |
+| **MigrationManager** | Application | 数据迁移 | `internal/application/migration/manager.go` |
+| **RecoveryManager** | Storage Engine | 崩溃恢复 | `internal/storage/recovery/manager.go` |
+
+#### 低优先级缺失（NICE-TO-HAVE）
+
+| 接口 | 层级 | 用途 | 建议包路径 |
+|------|------|------|------------|
+| **SnapshotManager** | Domain | 快照管理 | `internal/domain/snapshot/manager.go` |
+| **RateLimiter** | API | 客户端限流 | `internal/api/client/rate_limiter.go` |
+| **Compression** | Infrastructure | 数据压缩 | `internal/infrastructure/compression/compressor.go` |
+| **Encryption** | Infrastructure | 数据加密 | `internal/infrastructure/encryption/encryptor.go` |
+| **QuotaManager** | Application | 资源配额管理 | `internal/application/quota/manager.go` |
+
+### 1.4 统一优先级体系
+
+> ⚠️ **重要**: 当前存在多套优先级定义，建议统一为 4 级体系。
+
+```go
+// 统一优先级定义 (internal/domain/model/priority.go)
+type Priority int
+
+const (
+    PriorityCritical Priority = iota  // 0: 最高优先级，系统关键任务
+    PriorityHigh      Priority = 1    // 2: 高优先级，重要任务
+    PriorityNormal    Priority = 2    // 3: 普通优先级，常规任务
+    PriorityLow       Priority = 3    // 4: 低优先级，后台任务
+)
+```
+
+**映射关系**:
+| Priority | 接口分类 | 说明 |
+|----------|----------|------|
+| Critical | MUST | 系统无法运行的核心接口 |
+| High | SHOULD | 影响系统质量的重要接口 |
+| Normal | NICE-TO-HAVE | 提升用户体验的可选接口 |
+| Low | OPTIONAL | 特定场景才需要的接口 |
 
     %% 核心依赖关系
     KVClient --> TxManager
@@ -2142,12 +2286,132 @@ type LocalTx interface {
 
 ### 2.2.6 流水线任务接口（异步流水线支持）
 
-> **设计来源**: `thoughts/2026-03-02-idea-async-pipeline-refactor.md`
-> **实施时间**: 阶段 0 Week 4（流水线框架设计）
+> **设计来源**: `docs/07_spike/2026-03-04-spike-async-pipeline-v4.md` (V4 异步管道设计)
+> **实施时间**: 阶段 0 Week 4（流水线框架设计）✅ 已完成
 
 为支持异步流水线架构，存储引擎层需要支持流水线任务处理。
 
-#### PipelineWorker 工作器接口
+#### V4 异步管道接口（TaskRunner + Task[Result]）
+
+> **设计意图**: 解决泛型与统一调度的矛盾
+> - Executor 不需要知道 Result 类型，只需要知道"如何执行"
+> - 用户使用泛型 Task[Result] 获得编译时类型安全
+
+```go
+package storage
+
+import (
+    "context"
+    "github.com/jzhang405/NexKV/internal/domain/model"
+)
+
+// ═══════════════════════════════════════════════════════════════
+// 第一层：TaskRunner（非泛型）—— Executor 只看到这个
+// ═══════════════════════════════════════════════════════════════
+
+// TaskRunner 非泛型任务执行接口（Executor 视角）
+//
+// 设计意图：Executor 不需要知道 Result 类型，只需要知道"如何执行"
+// 这是类型擦除点，允许 Executor 统一调度不同返回类型的 Task
+type TaskRunner interface {
+    // Run 执行任务（由 Executor 调用）
+    Run(ctx context.Context, p *Pipeline)
+
+    // Priority 返回任务优先级（用于优先级队列调度）
+    Priority() Priority
+
+    // SourceID 返回任务来源标识（用于 CPU 亲和性绑定）
+    SourceID() model.SourceID
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 第二层：Task[Result]（泛型）—— 用户使用，类型安全
+// ═══════════════════════════════════════════════════════════════
+
+// Task[Result] 泛型任务接口（用户视角）
+//
+// 设计意图：编译时类型安全，不同任务返回不同类型
+// 嵌入 TaskRunner 实现类型擦除，Executor 只看到 TaskRunner
+type Task[Result any] interface {
+    TaskRunner  // 嵌入 TaskRunner（类型擦除点）
+
+    // Execute 执行任务并返回类型化结果
+    Execute(ctx context.Context, p *Pipeline) (Result, error)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BaseTask 泛型基类（提供 TaskRunner 接口的默认实现）
+// ═══════════════════════════════════════════════════════════════
+
+// BaseTask[Result] 泛型任务基类
+//
+// 提供 TaskRunner 接口的默认实现，用户只需实现 Execute 方法
+// 使用单 done channel + 直接存储结果的方式，高效且符合 Go 惯例
+type BaseTask[Result any] struct {
+    // 调度属性
+    opType   OpType
+    priority Priority
+    sourceID model.SourceID
+
+    // 结果存储（单 done channel + 直接存储）
+    done   chan struct{}  // 完成信号
+    result Result         // 直接存储结果（值类型）
+    err    error
+}
+
+// NewBaseTask 创建任务基类
+func NewBaseTask[Result any](opType OpType, priority Priority, sourceID model.SourceID) BaseTask[Result]
+
+// Run 实现 TaskRunner 接口（Executor 调用）
+func (b *BaseTask[Result]) Run(ctx context.Context, p *Pipeline)
+
+// Wait 等待完成并返回结果（类型安全恢复）
+func (b *BaseTask[Result]) Wait() (Result, error)
+
+// Done 返回完成 channel（用于 select）
+func (b *BaseTask[Result]) Done() <-chan struct{}
+
+// Priority 实现 TaskRunner 接口
+func (b *BaseTask[Result]) Priority() Priority
+
+// SourceID 实现 TaskRunner 接口
+func (b *BaseTask[Result]) SourceID() model.SourceID
+```
+
+#### V4 AsyncOp[Result] 异步操作句柄
+
+> **设计意图**: 异步 API 返回此句柄，用户可等待或检查完成状态
+> **注意**: V4 AsyncOp 是 Task[Result] 的包装器，与现有的 AsyncOperation[T] 接口兼容
+
+```go
+// AsyncOp[Result] 异步操作句柄（包装 Task[Result]）
+//
+// 设计意图：异步 API 返回此句柄，用户可等待或检查完成状态
+// 与现有 AsyncOperation[T] 接口兼容，可相互转换
+type AsyncOp[Result any] struct {
+    task Task[Result]  // 持有 Task 引用
+}
+
+// Wait 等待完成并返回结果
+func (op *AsyncOp[Result]) Wait() (Result, error)
+
+// Done 返回完成 channel（用于 select）
+func (op *AsyncOp[Result]) Done() <-chan struct{}
+
+// IsComplete 非阻塞检查是否完成
+func (op *AsyncOp[Result]) IsComplete() bool
+```
+
+#### V4 与现有接口的关系
+
+| 现有接口 | V4 接口 | 关系 |
+|---------|--------|------|
+| `TaskExecutor.Submit(ctx, sourceID, priority, task)` | `Pipeline.Submit(task TaskRunner)` | V4 的 Pipeline 包装了 TaskExecutor |
+| `AsyncOperation[T]`（已实现） | `AsyncOp[Result]`（V4） | 兼容，V4 更强调包装 Task |
+| `GoroutineProvider`（已弃用） | `TaskRunner` | V4 正式定义非泛型执行接口 |
+| `PipelineWorker`（原有设计） | `Task[Result]` | V4 用泛型替代 struct 回调 |
+
+#### PipelineWorker 工作器接口（原有设计，保留兼容）
 
 ```go
 package storage
@@ -2181,12 +2445,124 @@ type WorkerStats struct {
 }
 ```
 
-#### 流水线任务类型
+#### 流水线任务类型（V4 更新版）
 
 ```go
 package storage
 
-// WriteTask 写任务
+// ═══════════════════════════════════════════════════════════════
+// V4 具体 Task 实现（使用 Task[Result] 泛型接口）
+// ═══════════════════════════════════════════════════════════════
+
+// BTreeReadTask BTree 读取任务
+// Result 类型: []byte
+type BTreeReadTask struct {
+    BaseTask[[]byte]
+    key      []byte
+    snapshot *HLC  // 可选：快照读取
+}
+
+func NewBTreeReadTask(key []byte, sourceID model.SourceID) *BTreeReadTask
+func NewBTreeReadTaskWithSnapshot(key []byte, snapshot *HLC, sourceID model.SourceID) *BTreeReadTask
+func (t *BTreeReadTask) Execute(ctx context.Context, p *Pipeline) ([]byte, error)
+
+// BTreeWriteTask BTree 写入任务
+// Result 类型: struct{}
+type BTreeWriteTask struct {
+    BaseTask[struct{}]
+    key   []byte
+    value []byte
+    ts    *HLC
+}
+
+func NewBTreeWriteTask(key, value []byte, ts *HLC, sourceID model.SourceID) *BTreeWriteTask
+func (t *BTreeWriteTask) Execute(ctx context.Context, p *Pipeline) (struct{}, error)
+
+// BTreeDeleteTask BTree 删除任务
+// Result 类型: struct{}
+type BTreeDeleteTask struct {
+    BaseTask[struct{}]
+    key []byte
+    ts  *HLC
+}
+
+func NewBTreeDeleteTask(key []byte, ts *HLC, sourceID model.SourceID) *BTreeDeleteTask
+func (t *BTreeDeleteTask) Execute(ctx context.Context, p *Pipeline) (struct{}, error)
+
+// WALAppendTask WAL 追加任务
+// Result 类型: struct{}
+type WALAppendTask struct {
+    BaseTask[struct{}]
+    entries []*LogEntry
+}
+
+func NewWALAppendTask(entry *LogEntry, sourceID model.SourceID) *WALAppendTask
+func NewWALAppendTaskBatch(entries []*LogEntry, sourceID model.SourceID) *WALAppendTask
+func (t *WALAppendTask) Execute(ctx context.Context, p *Pipeline) (struct{}, error)
+
+// CompositeWriteTask 组合写入任务（WAL + BTree）
+// 
+// 设计意图：Set 操作需要先 WAL 后 BTree，用组合任务保证顺序
+// 关键特性：整个 Set 操作在同一个 Worker 中完成，保持 CPU 亲和性
+//
+// ⚠️ 重要：直接调用存储引擎，不嵌套 Submit（避免 PerCoreExecutor 死锁）
+type CompositeWriteTask struct {
+    BaseTask[struct{}]
+    key, value []byte
+    ts         *HLC
+}
+
+func NewCompositeWriteTask(key, value []byte, ts *HLC, sourceID model.SourceID) *CompositeWriteTask
+
+// Execute 执行组合写入
+// 注意：直接调用 p.wal.Append() 和 p.btree.ReplaceOrInsert()，不经过 Executor
+func (t *CompositeWriteTask) Execute(ctx context.Context, p *Pipeline) (struct{}, error)
+
+// ═══════════════════════════════════════════════════════════════
+// PerCoreExecutor 设计约束（重要）
+// ═══════════════════════════════════════════════════════════════
+
+// ⚠️ 死锁风险说明
+//
+// PerCoreExecutor 使用单线程 Worker 模型，每个 Worker 同时只能执行一个 Task。
+// 如果在 Task.Execute 中嵌套调用 p.Submit() + Wait()，会导致死锁：
+//
+//   Worker 线程
+//       │
+//       ▼
+//   Execute(CompositeTask)  ← Worker 正在执行
+//       │
+//       ├── Submit(SubTask) ──► 等待 Worker 执行 SubTask
+//       │                         │
+//       │                         ▼
+//       │                     Worker 正在忙（执行 CompositeTask）
+//       │                     SubTask 无法执行
+//       │
+//       └── 死锁！
+//
+// ❌ 错误做法（死锁）：
+//   func (t *CompositeTask) Execute(ctx context.Context, p *Pipeline) (Result, error) {
+//       subTask := NewSubTask()
+//       p.Submit(subTask)      // 提交到 Executor
+//       return subTask.Wait()  // 死锁！Worker 无法执行 subTask
+//   }
+//
+// ✅ 正确做法（直接调用存储引擎）：
+//   func (t *CompositeTask) Execute(ctx context.Context, p *Pipeline) (Result, error) {
+//       p.wal.Append(...)           // 直接调用，不 Submit
+//       p.btree.ReplaceOrInsert(...) // 直接调用，不 Submit
+//       return Result{}, nil
+//   }
+//
+// 设计原则：
+//   - API 层（Pipeline.Get/Set）：使用 Submit + Wait，享受调度能力
+//   - Task 内部（Execute 方法）：直接调用存储引擎，避免死锁
+
+// ═══════════════════════════════════════════════════════════════
+// 旧版任务类型（保留兼容）
+// ═══════════════════════════════════════════════════════════════
+
+// WriteTask 写任务（旧版，使用回调）
 // 提交到写流水线，执行：BTree 更新 → WAL 异步写入
 type WriteTask struct {
     Key       []byte
@@ -2195,14 +2571,14 @@ type WriteTask struct {
     Timestamp uint64      // 时间戳（用于排序）
 }
 
-// ReadTask 读任务
+// ReadTask 读任务（旧版，使用回调）
 // 提交到读流水线，执行：BTree 查询
 type ReadTask struct {
     Key      []byte
     Callback func([]byte, error) // 完成回调
 }
 
-// FlushTask 刷盘任务（WAL）
+// FlushTask 刷盘任务（WAL，旧版）
 // 提交到 WAL 刷盘流水线，执行：WAL fsync
 type FlushTask struct {
     Force    bool           // 是否强制刷盘
@@ -2211,43 +2587,100 @@ type FlushTask struct {
 }
 ```
 
+#### Pipeline 结构（V4 新增）
+
+```go
+package storage
+
+// Pipeline 异步流水线
+//
+// 设计意图：统一封装存储引擎（BTree + WAL + HLC）和任务调度（Executor）
+// 所有 API 操作（Get/Set/Delete）都通过 Pipeline 提交 Task 到 Executor 执行
+type Pipeline struct {
+    ctx      context.Context
+    cancel   context.CancelFunc
+    
+    // 存储引擎
+    btree *BTreeManager  // B+Tree 管理器
+    wal   *WALManager    // WAL 管理器
+    hlc   *HLC           // 混合逻辑时钟
+    
+    // 调度器
+    executor service.TaskExecutor
+}
+
+// NewPipeline 创建 Pipeline
+func NewPipeline(
+    ctx context.Context,
+    btree *BTreeManager,
+    wal *WALManager,
+    hlc *HLC,
+    executor service.TaskExecutor,
+) *Pipeline
+
+// Submit 提交任务到 Executor
+// 使用 task.SourceID() 进行路由，保证同一 SourceID 的任务在同一 Worker 执行
+func (p *Pipeline) Submit(task TaskRunner) error
+
+// Close 关闭 Pipeline
+func (p *Pipeline) Close() error
+
+// ═══════════════════════════════════════════════════════════════
+// Pipeline API 方法（同步接口，内部异步执行）
+// ═══════════════════════════════════════════════════════════════
+
+// Get 读取（同步）
+func (p *Pipeline) Get(ctx context.Context, key []byte) ([]byte, error)
+
+// Set 写入（同步，先 WAL 后 BTree）
+func (p *Pipeline) Set(ctx context.Context, key, value []byte) error
+
+// Delete 删除（同步）
+func (p *Pipeline) Delete(ctx context.Context, key []byte) error
+
+// Range 范围查询（同步）
+func (p *Pipeline) Range(ctx context.Context, start, end []byte, limit int) ([]KVPair, error)
+
+// ═══════════════════════════════════════════════════════════════
+// Pipeline Async API 方法（异步接口，返回 AsyncOp）
+// ═══════════════════════════════════════════════════════════════
+
+// GetAsync 异步读取
+func (p *Pipeline) GetAsync(key []byte) *AsyncOp[[]byte]
+
+// SetAsync 异步写入
+func (p *Pipeline) SetAsync(key, value []byte) *AsyncOp[struct{}]
+
+// DeleteAsync 异步删除
+func (p *Pipeline) DeleteAsync(key []byte) *AsyncOp[struct{}]
+
+// RangeAsync 异步范围查询
+func (p *Pipeline) RangeAsync(start, end []byte, limit int) *AsyncOp[[]KVPair]
+```
+
 #### 流水线设计原则
 
 ```go
-// 示例：写流水线实现
+// 示例：写流水线实现（V4 版）
 //
 // type WritePipeline struct {
-//     btree    BTree
-//     wal      WAL
-//     writeCh  chan *WriteTask
-//     executor service.TaskExecutor  // 复用现有 TaskExecutor
+//     pipeline *Pipeline  // 使用 V4 Pipeline 封装所有逻辑
 // }
 //
-// func (p *WritePipeline) Start(ctx context.Context) {
-//     go p.worker(ctx)
+// func (p *WritePipeline) Set(ctx context.Context, key, value []byte) error {
+//     return p.pipeline.Set(ctx, key, value)
 // }
 //
-// func (p *WritePipeline) worker(ctx context.Context) {
-//     for {
-//         select {
-//         case <-ctx.Done():
-//             return
-//         case task := <-p.writeCh:
-//             // 1. 写 BTree（内存更新）
-//             err := p.btree.Set(task.Key, task.Value)
+// 内部执行流程（Pipeline.Set）：
+//   1. 创建 CompositeWriteTask
+//   2. Submit(task) → 提交到 Executor
+//   3. task.Wait()   → 阻塞等待完成
+//   4. 返回结果
 //
-//             // 2. 异步写 WAL
-//             if err == nil {
-//                 p.wal.AppendAsync(ctx, task.Key, task.Value)
-//             }
-//
-//             // 3. 回调
-//             if task.Callback != nil {
-//                 task.Callback(err)
-//             }
-//         }
-//     }
-// }
+// CompositeWriteTask.Execute 内部：
+//   1. 直接调用 p.wal.Append()（不 Submit，避免死锁）
+//   2. 直接调用 p.btree.ReplaceOrInsert()（不 Submit）
+//   3. 返回
 ```
 
 ---

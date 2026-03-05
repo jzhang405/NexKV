@@ -4,6 +4,12 @@
 **基于**: spike-nexkv-ddd-interface.md v3.0 + spike-nexkv-ddd-implement.md v3.0
 **总周期**: 约28周（含阶段 0: 异步重构 4周） | **接口总数**: 47个 | **实现文件数**: 89个
 
+> **📋 v3.1 变更说明 (2026-03-05)**：
+> - **版本同步**：与 interface.md、implement.md 统一版本号到 v3.1
+> - **阶段 0 更新**：V4 异步管道架构（TaskRunner + Task[Result] + CompositeWriteTask）
+> - **新增组件**：BaseTask[Result]、Pipeline、具体 Task 类型
+> - **死锁约束**：PerCoreExecutor 嵌套 Submit 限制
+>
 > **📋 v3.0 变更说明 (2026-03-02)**：
 > - **版本同步**：与 interface.md、implement.md 统一版本号到 v3.0
 > - **新增阶段 0**：异步重构（AsyncOp 重命名 + 泛型锁包装器 + 流水线框架）
@@ -104,6 +110,7 @@ internal/infrastructure/storage/
 | **AsyncOperation 命名太长** | 代码冗长，可读性差 | 重命名为 AsyncOp |
 | **缺少泛型锁包装器** | 每次都需要手动实现锁逻辑 | 实现 Locked[T] |
 | **流水线框架缺失** | 存储层异步能力不足 | 设计流水线架构 |
+| **V4 异步管道架构缺失** | 缺少泛型任务 + 统一调度 | 实现 TaskRunner + Task[Result] |
 
 #### 阶段 0 任务分解
 
@@ -111,7 +118,7 @@ internal/infrastructure/storage/
 |------|------|--------|----------|
 | **Week 1-2** | AsyncOp 重命名 | `domain/service/rpc_async.go`, `infrastructure/rpc/async_impl.go` | 所有引用更新，测试通过 |
 | **Week 3** | 泛型锁包装器 | `infrastructure/concurrent/locked.go`, `locked_test.go` | 单元测试 + 基准测试 |
-| **Week 4** | 流水线框架设计 | `docs/07_spike/async-pipeline-design.md` | 架构设计文档 |
+| **Week 4** | V4 异步管道架构 | `docs/07_spike/2026-03-04-spike-async-pipeline-v4.md` | V4 架构设计文档 |
 
 #### Week 1-2: AsyncOp 重命名
 
@@ -175,32 +182,59 @@ func (l *Locked[T]) GetDirect() T
 - [ ] 基准测试：View/Modify 性能优于直接加锁
 - [ ] GetDirect 性能优于 View 10 倍以上
 
-#### Week 4: 流水线框架设计
+#### Week 4: V4 异步管道架构
 
-**设计文档内容**:
-1. 存储引擎层流水线架构图
-2. WritePipeline/ReadPipeline 接口定义
-3. WriteTask/ReadTask/FlushTask 类型定义
-4. TaskExecutor 集成方案
-5. 背压控制策略
+**设计文档**: [V4 异步管道架构](./2026-03-04-spike-async-pipeline-v4.md)
+
+**核心组件**:
+1. **双层接口设计**
+   - `TaskRunner` - 非泛型接口（Executor 视角）
+   - `Task[Result]` - 泛型接口（用户视角）
+2. **BaseTask[Result]** - 任务基类，提供通用实现
+3. **Pipeline** - 流水线上下文，聚合存储引擎
+4. **具体 Task 类型**
+   - `BTreeReadTask` - BTree 读取任务
+   - `BTreeWriteTask` - BTree 写入任务
+   - `BTreeDeleteTask` - BTree 删除任务
+   - `WALAppendTask` - WAL 追加任务
+   - `CompositeWriteTask` - 组合写入任务（WAL + BTree）
+
+**关键约束**:
+- **PerCoreExecutor 死锁**: Task 内部禁止嵌套 Submit
+- **正确做法**: CompositeWriteTask 直接调用存储引擎方法
 
 **验收标准**:
-- [ ] 设计文档通过评审
-- [ ] 与现有 TaskExecutor 集成方案确认
+- [ ] V4 设计文档通过评审
+- [ ] TaskRunner/Task[Result] 接口定义完成
+- [ ] BaseTask[Result] 实现完成
+- [ ] Pipeline 结构定义完成
+- [ ] 具体 Task 类型定义完成
+- [ ] PerCoreExecutor 死锁约束文档化
 
 #### 阶段 0 依赖关系图
 
 ```mermaid
 graph TD
     A[AsyncOp 重命名] --> B[泛型锁包装器]
-    B --> C[流水线框架设计]
-    C --> D[Phase 1: 基础设施层]
+    B --> C[V4 异步管道架构]
+    C --> C1[TaskRunner/Task[Result]]
+    C --> C2[BaseTask[Result]]
+    C --> C3[Pipeline]
+    C --> C4[CompositeWriteTask]
+    C1 --> D[Phase 1: 基础设施层]
+    C2 --> D
+    C3 --> D
+    C4 --> D
     D --> E[Phase 2: 存储引擎层]
     E --> F[Phase 3-8: 其他阶段]
 
     style A fill:#ff9999
     style B fill:#ffcc99
     style C fill:#ffff99
+    style C1 fill:#ffff99
+    style C2 fill:#ffff99
+    style C3 fill:#ffff99
+    style C4 fill:#ffff99
     style D fill:#99ff99
 ```
 
@@ -224,7 +258,13 @@ graph TD
 | **代码文件** | 泛型锁包装器 | `internal/infrastructure/concurrent/locked.go` |
 | **测试文件** | Locked 单元测试 | `locked_test.go` |
 | **测试文件** | Locked 基准测试 | `locked_bench_test.go` |
-| **设计文档** | 流水线架构设计 | `docs/07_spike/async-pipeline-design.md` |
+| **设计文档** | V4 异步管道架构 | `docs/07_spike/2026-03-04-spike-async-pipeline-v4.md` |
+| **代码文件** | TaskRunner/Task[Result] 接口 | `internal/domain/service/task.go` |
+| **代码文件** | BaseTask[Result] 实现 | `internal/domain/model/base_task.go` |
+| **代码文件** | Pipeline 结构 | `internal/infrastructure/storage/pipeline.go` |
+| **代码文件** | CompositeWriteTask | `internal/infrastructure/storage/composite_task.go` |
+| **代码文件** | BTreeReadTask/BTreeWriteTask/BTreeDeleteTask | `internal/infrastructure/storage/btree_tasks.go` |
+| **代码文件** | WALAppendTask | `internal/infrastructure/storage/wal_tasks.go` |
 
 ##### 阶段 0 → 阶段 1 准入条件
 
@@ -234,7 +274,8 @@ graph TD
 |---------|---------|------|
 | ✅ AsyncOp 重命名完成 | 所有测试通过 + 代码审查 | ⬜ 未验证 |
 | ✅ 泛型锁包装器实现 | 单元测试 + 基准测试通过 | ⬜ 未验证 |
-| ✅ 流水线设计文档评审 | 架构师审查通过 | ⬜ 未验证 |
+| ✅ V4 异步管道架构设计评审 | 架构师审查通过 | ⬜ 未验证 |
+| ✅ PerCoreExecutor 死锁约束文档化 | 文档审查通过 | ⬜ 未验证 |
 | ✅ 接口向后兼容验证 | 旧代码可以编译运行 | ⬜ 未验证 |
 | ✅ 性能基准达标 | Locked 性能优于手动锁 | ⬜ 未验证 |
 
@@ -245,6 +286,12 @@ graph TD
 - [ ] Locked[T] 泛型锁包装器已实现并通过测试
 - [ ] 流水线架构设计文档已通过评审
 - [ ] 与 TaskExecutor 的集成方案已确认
+- [ ] V4 异步管道架构设计文档已通过评审
+- [ ] TaskRunner/Task[Result] 接口已实现
+- [ ] BaseTask[Result] 已实现
+- [ ] Pipeline 结构已实现
+- [ ] CompositeWriteTask 已实现
+- [ ] PerCoreExecutor 死锁约束已文档化并培训
 
 **文档准备：**
 - [ ] 阶段 0 实施总结文档
@@ -762,7 +809,7 @@ graph LR
 
 | 里程碑 | 原时间 | 新时间 | 关键成果 | 可验证标准 |
 |--------|--------|--------|----------|------------|
-| **M0** | - | 第4周 | 阶段 0 完成 | AsyncOp 重命名 + 泛型锁包装器 + 流水线框架设计 |
+| **M0** | - | 第4周 | 阶段 0 完成 | AsyncOp 重命名 + 泛型锁包装器 + **V4 异步管道架构** |
 | **M1** | 第4周 | 第8周 | 基础设施层完成 | 16个接口单元测试通过 |
 | **M2** | 第10周 | 第14周 | 存储引擎层完成 | 单节点 KV 性能达标 |
 | **M3** | 第14周 | 第18周 | 数据平面层完成 | 3副本写入正常 |

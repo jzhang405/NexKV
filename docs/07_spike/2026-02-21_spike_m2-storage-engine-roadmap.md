@@ -2,7 +2,7 @@
 
 > **预研类型**: Spike
 > **创建日期**: 2026-02-21
-> **最后更新**: 2026-02-22
+> **最后更新**: 2026-03-05
 > **分支**: `spike/m2-storage-engine`
 > **状态**: 📋 已批准（待实施）
 
@@ -12,16 +12,17 @@
 
 | 文档 | 版本 | 说明 |
 |------|------|------|
-| [Interface 定义](./2026-02-21_spike_m2-storage-engine-interface.md) | v2.2 | 接口设计（总纲领性文件） |
-| [实现方案](./2026-02-21_spike_m2-storage-engine-implement.md) | v2.1 | 技术实现 |
-| [实施路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md) | v2.0 | 时间规划（本文档） |
+| [Interface 定义](./2026-02-21_spike_m2-storage-engine-interface.md) | v2.4 | 接口设计（总纲领性文件） |
+| [实现方案](./2026-02-21_spike_m2-storage-engine-implement.md) | v2.2 | 技术实现 |
+| [实施路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md) | v2.2 | 时间规划（本文档） |
 | [性能基准](./2026-02-21_spike_m2-storage-engine-benchmark.md) | v2.0 | 性能测试方案 |
-| [**DDD Interface v3.0**](./2026-02-18_spike_nexkv-ddd-interface.md) | **v3.0** | **统一接口定义（47个接口）** |
-| [**DDD Implement v3.0**](./2026-02-18_spike_nexkv-ddd-implement.md) | **v3.0** | **DDD 实施方案（含测试策略）** |
-| [**DDD Roadmap v3.0**](./2026-02-18_spike_nexkv-ddd-roadmap.md) | **v3.0** | **阶段规划（含阶段 0：异步重构 4周）** |
-| [**统一执行器架构**](./2026-02-25_spike_glm-unified-executor.md) | - | 执行层核心 - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 |
+| [**DDD Interface v3.1**](./2026-02-18_spike_nexkv-ddd-interface.md) | **v3.1** | **统一接口定义（47个接口）** |
+| [**DDD Implement v3.1**](./2026-02-18_spike_nexkv-ddd-implement.md) | **v3.1** | **DDD 实施方案（含测试策略）** |
+| [**DDD Roadmap v3.1**](./2026-02-18_spike_nexkv-ddd-roadmap.md) | **v3.1** | **阶段规划（含阶段 0：异步重构 4周）** |
+| [**统一执行器架构**](./2026-02-25_spike_glm-unified-executor.md) | v1.0 | 执行层核心 - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 |
+| [**Component Interface 完备性审查**](../09_code-review/2026-03-05_review-component-interface-completeness.md) | **v1.0** | **审查报告** - 47个接口分类 + 缺失接口清单 + V4融合评估 |
 
-> ⚠️ **前置依赖**: 必须先完成 **DDD 阶段 0（异步重构 4周）**，详见 [DDD Roadmap v3.0](./2026-02-18_spike_nexkv-ddd-roadmap.md)
+> ⚠️ **前置依赖**: 必须先完成 **DDD 阶段 0（异步重构 4周）**，详见 [DDD Roadmap v3.1](./2026-02-18_spike_nexkv-ddd-roadmap.md)
 
 ---
 
@@ -108,20 +109,24 @@ graph LR
 
 | 阶段 | 内容 | 周期 | 优先级 | 状态 | 交付物 |
 |------|------|------|--------|------|--------|
-| **阶段 0** | 异步重构（AsyncOp + 泛型锁包装器 + 流水线框架） | **4 周** | **P0** | ✅ **已完成** | 见下方 PR 列表 |
+| **阶段 0** | 异步重构（AsyncOp + 泛型锁包装器 + **V4 异步管道架构**） | **4 周** | **P0** | ✅ **已完成** | 见下方 PR 列表 |
 
 > ✅ **已完成 PR**：
 > - **PR-088**: AsyncOperation 泛型接口实现
 > - **PR-087**: 统一执行器架构（TaskExecutor + Observable + Manageable）
 > - **PR-073**: 异步流水线模型重构
+> - **PR-0XX**: V4 异步管道架构（TaskRunner + Task[Result] + CompositeWriteTask）
 | | **Week 1-2**: AsyncOp 重命名 | | | `domain/service/rpc_async.go`, `infrastructure/rpc/async_impl.go` |
 | | - AsyncOperation → AsyncOp | | | - 所有引用更新 |
 | | - 类型别名兼容 | | | - 测试验证 |
 | | **Week 3**: 泛型锁包装器 | | | `infrastructure/concurrent/locked.go` |
 | | - Locked[T] 实现 | | | - 单元测试 + 基准测试 |
-| | **Week 4**: 流水线框架设计 | | | 流水线架构设计文档 |
-| | - WritePipeline/ReadPipeline 设计 | | | - TaskExecutor 集成方案 |
-| | - WriteTask/ReadTask/FlushTask 类型 | | | - 背压控制策略 |
+| | **Week 4**: **V4 异步管道架构** | | | `docs/07_spike/2026-03-04-spike-async-pipeline-v4.md` |
+| | - **TaskRunner/Task[Result] 双层接口** | | | - TaskRunner 非泛型（Executor 视角） |
+| | - **BaseTask[Result] 任务基类** | | | - Task[Result] 泛型（用户视角） |
+| | - **Pipeline 流水线上下文** | | | - Pipeline 聚合存储引擎 |
+| | - **CompositeWriteTask 组合任务** | | | - WAL + BTree 原子写入 |
+| | - **PerCoreExecutor 死锁约束** | | | - Task 内部禁止嵌套 Submit |
 | **Phase 1.0** | 异步编程模型重构（复用阶段 0 成果） | **0 周** | **P0** | **复用阶段 0 成果** |
 
 **依赖说明**：
@@ -130,9 +135,9 @@ graph LR
 - 避免重复实现和后期大规模重构
 - 详见：[异步编程模型重构方案](./2026-02-22_spike_async-programming-model-refactor.md)
 
-#### 阶段 0 时间说明 ⭐ v3.0 更新
+#### 阶段 0 时间说明 ⭐ v3.1 更新
 
-> **阶段 0 周期**: 4 周（含流水线框架设计）
+> **阶段 0 周期**: 4 周（含 **V4 异步管道架构**）
 >
 > **时间分配**：
 > - **Week 1-2**: AsyncOp 重命名（基础重构）
@@ -141,19 +146,25 @@ graph LR
 > - **Week 3**: 泛型锁包装器实现
 >   - 重构计划估算：约 2.5 天
 >   - 预留缓冲：2.5 天（测试、基准、优化）
-> - **Week 4**: 流水线框架设计
->   - **新增内容**（重构计划未包含）
->   - 存储层专用：WritePipeline/ReadPipeline 设计
->   - 集成验证：与 TaskExecutor 的集成方案
+> - **Week 4**: **V4 异步管道架构** ⭐ **v3.1 更新**
+>   - **核心设计**：双层接口（TaskRunner + Task[Result]）
+>   - **任务基类**：BaseTask[Result] 提供通用实现
+>   - **流水线上下文**：Pipeline 聚合存储引擎
+>   - **组合任务**：CompositeWriteTask（WAL + BTree）
+>   - **关键约束**：PerCoreExecutor 死锁避免
+>   - **设计文档**：[V4 异步管道架构](./2026-03-04-spike-async-pipeline-v4.md)
 >
 > **参考文档**：
 > - 基础重构计划：`thoughts/2026-03-02-idea-async-pipeline-refactor.md`（约 1 周）
-> - 完整阶段 0：[DDD Roadmap v3.0 - 阶段 0](./2026-02-18_spike_nexkv-ddd-roadmap.md)（4 周）
+> - 完整阶段 0：[DDD Roadmap v3.1 - 阶段 0](./2026-02-18_spike_nexkv-ddd-roadmap.md)（4 周）
+> - **V4 架构**：[V4 异步管道架构](./2026-03-04-spike-async-pipeline-v4.md)
 >
 > **为什么是 4 周而不是 1 周？**
-> 1. **流水线框架设计**对存储层很重要（重构计划未包含）
-> 2. **预留缓冲时间**应对意外问题（1 周估算较乐观）
-> 3. **与 DDD roadmap 保持一致**，便于统筹规划
+> 1. **V4 异步管道架构**是存储层核心设计（重构计划未包含）
+> 2. **泛型任务设计**需要仔细考虑类型安全和性能
+> 3. **PerCoreExecutor 死锁约束**需要充分文档化和培训
+> 4. **预留缓冲时间**应对意外问题（1 周估算较乐观）
+> 5. **与 DDD roadmap 保持一致**，便于统筹规划
 
 > ⭐ **统一执行器架构**是异步编程模型的**核心深化**：
 > - GoroutineProvider → AsyncOperation[T] → M2 异步接口

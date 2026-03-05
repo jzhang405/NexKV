@@ -12,18 +12,19 @@
 
 | 文档 | 版本 | 说明 |
 |------|------|------|
-| [Interface 定义](./2026-02-21_spike_m2-storage-engine-interface.md) | v2.3 | 接口设计（本文档） |
-| [实现方案](./2026-02-21_spike_m2-storage-engine-implement.md) | v2.1 | 技术实现 |
-| [实施路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md) | v2.1 | 时间规划（阶段 0 已完成） |
+| [Interface 定义](./2026-02-21_spike_m2-storage-engine-interface.md) | v2.4 | 接口设计（本文档） |
+| [实现方案](./2026-02-21_spike_m2-storage-engine-implement.md) | v2.2 | 技术实现 |
+| [实施路线图](./2026-02-21_spike_m2-storage-engine-roadmap.md) | v2.2 | 时间规划（阶段 0 已完成） |
 | [性能基准](./2026-02-21_spike_m2-storage-engine-benchmark.md) | v2.0 | 性能测试方案 |
-| [**DDD Interface v3.0**](./2026-02-18_spike_nexkv-ddd-interface.md) | **v3.0** | **统一接口定义（47个接口，包含 AsyncOperation、BTree、WAL）** |
-| [**DDD Implement v3.0**](./2026-02-18_spike_nexkv-ddd-implement.md) | **v3.0** | **DDD 实施方案（含测试策略）** |
-| [**DDD Roadmap v3.0**](./2026-02-18_spike_nexkv-ddd-roadmap.md) | **v3.0** | **阶段规划（阶段 0：异步重构 ✅ 已完成）** |
+| [**DDD Interface v3.1**](./2026-02-18_spike_nexkv-ddd-interface.md) | **v3.1** | **统一接口定义（47个接口，包含 AsyncOperation、BTree、WAL）** |
+| [**DDD Implement v3.1**](./2026-02-18_spike_nexkv-ddd-implement.md) | **v3.1** | **DDD 实施方案（含测试策略）** |
+| [**DDD Roadmap v3.1**](./2026-02-18_spike_nexkv-ddd-roadmap.md) | **v3.1** | **阶段规划（阶段 0：异步重构 ✅ 已完成）** |
 | [**统一执行器架构**](./2026-02-25_spike_glm-unified-executor.md) | v1.0 | 执行层核心 - TaskExecutor 接口 + Per-Core 无锁执行器 |
+| [**Component Interface 完备性审查**](../09_code-review/2026-03-05_review-component-interface-completeness.md) | **v1.0** | **审查报告** - 47个接口分类 + 缺失接口清单 + V4融合评估 |
 
-> 📖 **并发管理参考**: [DDD Interface v3.0 - TaskExecutor](./2026-02-18_spike_nexkv-ddd-interface.md#实现状态追踪)
+> 📖 **并发管理参考**: [DDD Interface v3.1 - TaskExecutor](./2026-02-18_spike_nexkv-ddd-interface.md#实现状态追踪)
 >
-> ⚠️ **重要**: M2 存储引擎层直接依赖 DDD v3.0 的架构定义，确保版本一致。
+> ⚠️ **重要**: M2 存储引擎层直接依赖 DDD v3.1 的架构定义，确保版本一致。
 >
 > ✅ **阶段 0 已完成**: PR-088 (AsyncOperation), PR-087 (Unified Executor), PR-073 (Async Pipeline)
 
@@ -623,6 +624,10 @@ type LocalTx interface {
     Commit() error
     CommitAsync() WriteFuture
     Rollback() error // 回滚是内存操作，极快，无需异步版本
+    RollbackAsync(ctx context.Context) WriteFuture // 📋 完备性审查: 异步回滚，支持大事务
+
+    // 📋 完备性审查: 事务隔离级别设置
+    SetIsolationLevel(level IsolationLevel) error
 }
 ```
 
@@ -701,10 +706,12 @@ type WAL interface {
     Sync() error
     Recover() ([]WALEntry, error)
     Truncate(lsn uint64) error
+    Rotate() error  // 📋 完备性审查: 日志轮转，防止文件过大
 
     // ====== 异步写日志 ======
     AppendAsync(entry WALEntry) WriteFuture
     TruncateAsync(lsn uint64) WriteFuture
+    RotateAsync() WriteFuture  // 📋 完备性审查: 异步日志轮转
 
     // ====== 生命周期 ======
     Close() error
@@ -795,7 +802,14 @@ type BTree interface {
     Flush(ctx context.Context) error
     FlushAsync(ctx context.Context) WriteFuture
 
-    // ====== 生命周期 ======
+  // 📋 完备性审查: 节点分裂/合并（B+树核心操作）
+    Split(ctx context.Context, node *BTreeNode) error
+    Merge(ctx context.Context, leftNode, rightNode *BTreeNode) error
+    GetSiblingPages(ctx context.Context, pageID uint32) ([]uint32, error)
+    SplitAsync(ctx context.Context, node *BTreeNode) WriteFuture
+    MergeAsync(ctx context.Context, leftNode, rightNode *BTreeNode) WriteFuture
+    GetSiblingPagesAsync(ctx context.Context, pageID uint32) ([]uint32, error)
+   // ====== 生命周期 ======
     Close() error
 }
 
@@ -1168,6 +1182,244 @@ type AsyncOperation[T any] = AsyncOp[T]
 
 ---
 
+### 2.6.3 V4 存储引擎任务接口（具体实现）
+
+> **设计来源**: `docs/07_spike/2026-03-04-spike-async-pipeline-v4.md`
+> **实施状态**: 📝 待实现（Phase 2.1）
+
+基于 V4 异步管道接口，存储引擎层需要实现具体的 Task 类型。
+
+#### 具体 Task 类型定义
+
+| Task 类型 | Result 类型 | 优先级 | 说明 |
+|----------|------------|-------|------|
+| `BTreeReadTask` | `[]byte` | High | BTree 读取任务 |
+| `BTreeWriteTask` | `struct{}` | High | BTree 写入任务 |
+| `BTreeDeleteTask` | `struct{}` | High | BTree 删除任务 |
+| `BTreeRangeTask` | `[]KVPair` | Normal | BTree 范围查询任务 |
+| `WALAppendTask` | `struct{}` | **Critical** | WAL 追加任务 |
+| `CompositeWriteTask` | `struct{}` | High | 组合写入（WAL + BTree） |
+
+#### CompositeWriteTask 组合任务（重点）
+
+**设计意图**: Set 操作需要先 WAL 后 BTree，用组合任务保证顺序和 CPU 亲和性
+
+**关键特性**: 整个 Set 操作在同一个 Worker 中完成，保持 CPU 亲和性
+
+**重要限制**: 在 Execute 中直接调用存储引擎方法，不嵌套 Submit（避免死锁）
+
+```go
+package storage
+
+import (
+    "context"
+    "fmt"
+)
+
+// CompositeWriteTask 组合写入任务（WAL + BTree）
+//
+// 设计意图： Set 操作需要先 WAL 后 BTree
+// 整个操作在同一个 Worker 中完成，保持 CPU 亲和性
+//
+// ⚠️ 重要限制： 在 Execute 中直接调用存储引擎方法，不嵌套 Submit
+// 否则会导致死锁（PerCoreExecutor 是单线程 Worker）
+type CompositeWriteTask struct {
+    BaseTask[struct{}]
+    key, value []byte
+    ts         *HLC
+}
+
+// NewCompositeWriteTask 创建组合写入任务
+func NewCompositeWriteTask(key, value []byte, ts *HLC, sourceID model.SourceID) *CompositeWriteTask
+
+// Execute 执行组合写入（直接调用存储引擎，不嵌套 Submit）
+func (t *CompositeWriteTask) Execute(ctx context.Context, p *Pipeline) (struct{}, error) {
+    // ❌ 错误做法（死锁风险）：
+    // walTask := NewWALAppendTask(...)
+    // p.Submit(walTask)      // 提交到 Executor
+    // walTask.Wait()         // 死锁！Worker 无法执行新 Task
+
+    // ✅ 正确做法：直接调用存储引擎方法（在当前 Worker 中同步执行）
+
+    // 1. 写 WAL（同步执行）
+    if err := p.wal.Append(&LogEntry{
+        Op:        OpWrite,
+        Key:       t.key,
+        Value:     t.value,
+        Timestamp: t.ts,
+    }); err != nil {
+        return struct{}{}, fmt.Errorf("wal: %w", err)
+    }
+
+    // 2. 更新 BTree（同步执行）
+    if err := p.btree.ReplaceOrInsert(t.key, t.value, t.ts); err != nil {
+        return struct{}{}, fmt.Errorf("btree: %w", err)
+    }
+
+    return struct{}{}, nil
+}
+```
+
+**死锁风险说明**:
+PerCoreExecutor 使用**单线程 Worker**模型，如果在 Task 的 `Execute` 方法中嵌套调用 `p.Submit()` 并 `Wait()`，会导致**死锁**：
+- Worker 正在执行 CompositeWriteTask
+- Submit(walTask) 会 walTask 加入队列
+- walTask.Wait() 等待 Worker 执行 walTask
+- 但 Worker 正在忙于执行 CompositeWriteTask，无法执行 walTask
+- **结果**: 永久阻塞
+
+**解决方案**: 在 Execute 中直接调用存储引擎方法，不经过 Executor 调度。
+
+#### 其他具体 Task 实现
+
+```go
+// BTreeReadTask BTree 读取任务
+// Result 类型: []byte
+type BTreeReadTask struct {
+    BaseTask[[]byte]
+    key []byte
+}
+
+// NewBTreeReadTask 创建 BTree 读取任务
+func NewBTreeReadTask(key []byte, sourceID model.SourceID) *BTreeReadTask {
+    return &BTreeReadTask{
+        BaseTask: NewBaseTask[[]byte](OpRead, PriorityHigh, sourceID),
+        key:      key,
+    }
+}
+
+// Execute 执行读取
+func (t *BTreeReadTask) Execute(ctx context.Context, p *Pipeline) ([]byte, error) {
+    p.btree.mu.RLock()
+    defer p.btree.mu.RUnlock()
+    return p.btree.Get(t.key), nil
+}
+
+// BTreeWriteTask BTree 写入任务
+// Result 类型: struct{}
+type BTreeWriteTask struct {
+    BaseTask[struct{}]
+    key, value []byte
+    ts         *HLC
+}
+
+// NewBTreeWriteTask 创建 BTree 写入任务
+func NewBTreeWriteTask(key, value []byte, ts *HLC, sourceID model.SourceID) *BTreeWriteTask {
+    return &BTreeWriteTask{
+        BaseTask: NewBaseTask[struct{}](OpWrite, PriorityHigh, sourceID),
+        key:      key,
+        value:    value,
+        ts:       ts,
+    }
+}
+
+// Execute 执行写入
+func (t *BTreeWriteTask) Execute(ctx context.Context, p *Pipeline) (struct{}, error) {
+    p.btree.mu.Lock()
+    defer p.btree.mu.Unlock()
+    p.btree.ReplaceOrInsert(t.key, t.value, t.ts)
+    return struct{}{}, nil
+}
+
+// BTreeDeleteTask BTree 删除任务
+// Result 类型: struct{}
+type BTreeDeleteTask struct {
+    BaseTask[struct{}]
+    key []byte
+    ts  *HLC
+}
+
+// NewBTreeDeleteTask 创建 BTree 删除任务
+func NewBTreeDeleteTask(key []byte, ts *HLC, sourceID model.SourceID) *BTreeDeleteTask {
+    return &BTreeDeleteTask{
+        BaseTask: NewBaseTask[struct{}](OpDelete, PriorityHigh, sourceID),
+        key:      key,
+        ts:       ts,
+    }
+}
+
+// Execute 执行删除
+func (t *BTreeDeleteTask) Execute(ctx context.Context, p *Pipeline) (struct{}, error) {
+    p.btree.mu.Lock()
+    defer p.btree.mu.Unlock()
+    p.btree.Delete(t.key, t.ts)
+    return struct{}{}, nil
+}
+
+// WALAppendTask WAL 追加任务
+// Result 类型: struct{}
+// 优先级: Critical（最高优先级，避免阻塞写操作）
+type WALAppendTask struct {
+    BaseTask[struct{}]
+    entries []*LogEntry
+}
+
+// NewWALAppendTask 创建 WAL 单条追加任务
+func NewWALAppendTask(entry *LogEntry, sourceID model.SourceID) *WALAppendTask {
+    return &WALAppendTask{
+        BaseTask: NewBaseTask[struct{}](OpWALAppend, PriorityCritical, sourceID),
+        entries:  []*LogEntry{entry},
+    }
+}
+
+// NewWALAppendTaskBatch 创建 WAL 批量追加任务
+func NewWALAppendTaskBatch(entries []*LogEntry, sourceID model.SourceID) *WALAppendTask {
+    return &WALAppendTask{
+        BaseTask: NewBaseTask[struct{}](OpWALAppend, PriorityCritical, sourceID),
+        entries:  entries,
+    }
+}
+
+// Execute 执行 WAL 追加
+func (t *WALAppendTask) Execute(ctx context.Context, p *Pipeline) (struct{}, error) {
+    p.wal.mu.Lock()
+    defer p.wal.mu.Unlock()
+    
+    // 批量追加
+    for _, entry := range t.entries {
+        if err := p.wal.Append(entry); err != nil {
+            return struct{}{}, fmt.Errorf("wal append: %w", err)
+        }
+    }
+    
+    // 刷盘保证持久化
+    if err := p.wal.Flush(); err != nil {
+        return struct{}{}, fmt.Errorf("wal flush: %w", err)
+    }
+    
+    return struct{}{}, nil
+}
+```
+
+#### Pipeline.Submit 方法
+```go
+// Pipeline.Submit 提交任务到 Executor
+func (p *Pipeline) Submit(task TaskRunner) error {
+    return p.executor.Submit(
+        p.ctx,
+        task.SourceID(),
+        model.TaskPriority(task.Priority()),
+        func(ctx context.Context) {
+            task.Run(ctx, p)  // 调用 TaskRunner.Run
+        },
+    )
+}
+```
+**设计原则**:
+- **API 层（Pipeline.Get/Set）**: 使用 `Submit + Wait`，享受调度能力
+- **组合 Task（CompositeTask）**: 直接调用存储引擎，保持原子性
+- **单一职责**: 每个 Task 只做一件事，复杂操作用组合 Task 顺序执行
+
+#### V4 接口与现有接口的关系
+
+| 现有接口 | V4 接口 | 关系 |
+|---------|--------|------|
+| `TaskExecutor.Submit(ctx, sourceID, priority, task)` | `Pipeline.Submit(task TaskRunner)` | V4 的 Pipeline 包装了 TaskExecutor |
+| `AsyncOperation[T]`（已实现） | `AsyncOp[Result]`（V4） | 兼容，V4 更强调包装 Task |
+| `PipelineWorker`（原有设计） | `Task[Result]` | V4 用泛型替代 struct 回调 |
+
+---
+
 ## 三、块设备层接口
 
 ### 3.1 BlockDevice 接口
@@ -1203,6 +1455,8 @@ type BlockDevice interface {
 
     // ====== 设备信息 ======
     Stats() DeviceStats
+    GetDeviceInfo(ctx context.Context) (DeviceInfo, error)  // 📋 完备性审查: 获取设备详细信息
+    Format(ctx context.Context) error  // 📋 完备性审查: 设备格式化
     Close() error
 }
 
@@ -1215,6 +1469,19 @@ type DeviceStats struct {
     UsedBlocks     int64   // 已用块数
     FreeBlocks     int64   // 空闲块数
     ReadBytes      int64   // 读取字节数
+
+// 📋 完备性审查: DeviceInfo 设备详细信息
+type DeviceInfo struct {
+    DeviceID       string    // 设备唯一标识
+    Model          string    // 设备型号
+    BlockSize      int       // 块大小（字节）
+    TotalBlocks    int64     // 总块数
+    TotalBytes     int64     // 总容量（字节）
+    HealthStatus   string    // 健康状态（healthy/degraded/failed）
+    Temperature    int       // 设备温度（摄氏度，如支持）
+    FirmwareVersion string   // 固件版本
+    LastCheckTime  time.Time // 上次检查时间
+}
     WriteBytes     int64   // 写入字节数
     ReadLatency    float64 // 平均读延迟(ms)
     WriteLatency   float64 // 平均写延迟(ms)

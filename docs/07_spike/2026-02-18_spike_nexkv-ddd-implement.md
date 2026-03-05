@@ -7,11 +7,18 @@
 | [DDD 实施路线图](./2026-02-18_spike_nexkv-ddd-roadmap.md) | 完整 DDD 实施路线图 |
 | [DDD Interface 定义](./2026-02-18_spike_nexkv-ddd-interface.md) | 47个接口详细定义 |
 | [**统一执行器架构（Per-Core + 接口拆分）**](./2026-02-25_spike-glm-unified-executor.md) | **执行层核心** - GoroutineProvider 接口拆分 + Per-Core 无锁执行器 + 可暂停调度器 |
+| [**Component Interface 完备性审查**](../09_code-review/2026-03-05_review-component-interface-completeness.md) | **审查报告** - 47个接口分类 + 缺失接口清单 + V4融合评估 |
 
-**文档版本**: v3.0
-**最后更新**: 2026-03-02
-**基于**: spike-nexkv-ddd-interface.md v3.0（47个接口 + 5层精简架构 + AsyncOp + 流水线任务接口）
+**文档版本**: v3.1
+**最后更新**: 2026-03-05
+**基于**: spike-nexkv-ddd-interface.md v3.1（47个接口 + 5层精简架构 + AsyncOp + 流水线任务接口 + 完备性审查）
 
+> **📋 v3.1 变更说明 (2026-03-05)**：
+> - **关联完备性审查报告**：添加 Component Interface 完备性审查报告引用
+> - **缺失接口说明**：14个缺失接口（MetricsCollector、HealthCheck、Logger等）
+> - **架构一致性建议**：统一命名（AsyncOp）、统一优先级（4级）、Context 规范
+> - **实施优先级**：按 MUST/SHOULD/NICE-TO-HAVE/OPTIONAL 分类的实施建议
+>
 > **📋 v3.0 变更说明 (2026-03-02)**：
 > - **版本同步**：与 interface.md、roadmap.md 统一版本号到 v3.0
 > - **新增流水线模式实现**：WritePipeline/ReadPipeline 架构和代码示例
@@ -672,8 +679,8 @@ wg.Wait()
 
 ### 3.7 流水线模式实现（异步流水线支持）⭐ v20.0 新增
 
-> **设计来源**: `thoughts/2026-03-02-idea-async-pipeline-refactor.md`
-> **实施时间**: 阶段 0 Week 4（流水线框架设计）
+> **设计来源**: `docs/07_spike/2026-03-04-spike-async-pipeline-v4.md` (V4 异步管道设计)
+> **实施时间**: 阶段 0 Week 4（流水线框架设计）✅ 已完成
 
 为支持异步流水线架构，存储引擎层采用 **Channel + Worker** 模式，复用现有 TaskExecutor（PerCore/Ants）。
 
@@ -882,6 +889,333 @@ func (kv *BTreeKV) SetAsync(ctx context.Context, key, value []byte) AsyncOp[stru
 **设计原则**：
 - **写操作**：使用 Channel + Worker，保证 WAL 顺序写入
 - **读操作**：直接使用 TaskExecutor，最大化并发性能
+
+### 3.8 V4 异步管道接口实现（TaskRunner + Task[Result]） ⭐ v3.0 新增
+
+> **设计来源**: `docs/07_spike/2026-03-04-spike-async-pipeline-v4.md`
+> **实施时间**: Phase 2.1（Bf-Tree 核心）
+> **状态**: 📝 待实现
+
+V4 引入了**双层接口设计**解决泛型与统一调度的矛盾：
+
+#### 核心接口定义
+
+**文件**: `internal/domain/service/task_runner.go`
+
+```go
+package service
+
+import (
+    "context"
+    "github.com/jzhang405/NexKV/internal/domain/model"
+)
+
+// ═══════════════════════════════════════════════════════════════
+// 第一层：TaskRunner（非泛型）—— Executor 只看到这个
+// ═══════════════════════════════════════════════════════════════
+
+// TaskRunner 非泛型任务执行接口（Executor 视角）
+type TaskRunner interface {
+    // Run 执行任务（由 Executor 调用）
+    Run(ctx context.Context, p *Pipeline)
+
+    // Priority 返回任务优先级（用于优先级队列调度）
+    Priority() Priority
+
+    // SourceID 返回任务来源标识（用于 CPU 亲和性绑定）
+    SourceID() model.SourceID
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 第二层：Task[Result]（泛型）—— 用户使用，类型安全
+// ═══════════════════════════════════════════════════════════════
+
+// Task[Result] 泛型任务接口（用户视角）
+type Task[Result any] interface {
+    TaskRunner  // 嵌入 TaskRunner（类型擦除点）
+
+    // Execute 执行任务并返回类型化结果
+    Execute(ctx context.Context, p *Pipeline) (Result, error)
+}
+```
+
+#### BaseTask 泛型基类实现
+
+**文件**: `internal/domain/model/base_task.go`
+
+```go
+package model
+
+import (
+    "context"
+)
+
+// BaseTask[Result] 泛型任务基类
+type BaseTask[Result any] struct {
+    // 调度属性
+    opType   OpType
+    priority Priority
+    sourceID SourceID
+
+    // 结果存储（单 done channel + 直接存储）
+    done   chan struct{}  // 完成信号
+    result Result         // 直接存储结果（值类型）
+    err    error
+}
+
+// NewBaseTask 创建任务基类
+func NewBaseTask[Result any](opType OpType, priority Priority, sourceID SourceID) BaseTask[Result] {
+    return BaseTask[Result]{
+        opType:   opType,
+        priority: priority,
+        sourceID: sourceID,
+        done:     make(chan struct{}),
+    }
+}
+
+// Run 实现 TaskRunner 接口（Executor 调用）
+func (b *BaseTask[Result]) Run(ctx context.Context, p *Pipeline) {
+    defer close(b.done)
+
+    // 类型断言调用具体 Task 的 Execute
+    runner := any(b).(Task[Result])
+    b.result, b.err = runner.Execute(ctx, p)
+}
+
+// Wait 等待完成并返回结果（类型安全恢复）
+func (b *BaseTask[Result]) Wait() (Result, error) {
+    <-b.done
+    return b.result, b.err
+}
+
+// Done 返回完成 channel（用于 select）
+func (b *BaseTask[Result]) Done() <-chan struct{} {
+    return b.done
+}
+
+// Priority 实现 TaskRunner 接口
+func (b *BaseTask[Result]) Priority() Priority {
+    return b.priority
+}
+
+// SourceID 实现 TaskRunner 接口
+func (b *BaseTask[Result]) SourceID() SourceID {
+    return b.sourceID
+}
+```
+
+#### CompositeWriteTask 组合任务实现
+
+**文件**: `internal/infrastructure/storage/composite_write_task.go`
+
+```go
+package storage
+
+import (
+    "context"
+    "fmt"
+)
+
+// CompositeWriteTask 组合写入任务（WAL + BTree）
+type CompositeWriteTask struct {
+    BaseTask[struct{}]
+    key, value []byte
+    ts         *HLC
+}
+
+// NewCompositeWriteTask 创建组合写入任务
+func NewCompositeWriteTask(key, value []byte, ts *HLC, sourceID model.SourceID) *CompositeWriteTask {
+    return &CompositeWriteTask{
+        BaseTask: model.NewBaseTask[struct{}](model.OpWrite, model.PriorityHigh, sourceID),
+        key:      key,
+        value:    value,
+        ts:       ts,
+    }
+}
+
+// Execute 执行组合写入（直接调用存储引擎，不嵌套 Submit）
+func (t *CompositeWriteTask) Execute(ctx context.Context, p *Pipeline) (struct{}, error) {
+    // ⚠️ 重要：在 Execute 中直接调用存储引擎方法，不嵌套 Submit
+    // 否则会导致死锁（PerCoreExecutor 是单线程 Worker）
+
+    // 1. 写 WAL（同步执行）
+    if err := p.wal.Append(&LogEntry{
+        Op:        OpWrite,
+        Key:       t.key,
+        Value:     t.value,
+        Timestamp: t.ts,
+    }); err != nil {
+        return struct{}{}, fmt.Errorf("wal: %w", err)
+    }
+
+    // 2. 更新 BTree（同步执行）
+    if err := p.btree.ReplaceOrInsert(t.key, t.value, t.ts); err != nil {
+        return struct{}{}, fmt.Errorf("btree: %w", err)
+    }
+
+    return struct{}{}, nil
+}
+```
+
+#### Pipeline.Submit 实现
+
+**文件**: `internal/infrastructure/storage/pipeline.go`
+
+```go
+// Submit 提交任务到 Executor
+func (p *Pipeline) Submit(task TaskRunner) error {
+    return p.executor.Submit(
+        p.ctx,
+        task.SourceID(),
+        model.TaskPriority(task.Priority()),
+        func(ctx context.Context) {
+            task.Run(ctx, p)  // 调用 TaskRunner.Run
+        },
+    )
+}
+```
+
+#### 其他具体 Task 实现
+
+**文件**: `internal/infrastructure/storage/btree_tasks.go`
+
+```go
+// BTreeReadTask BTree 读取任务
+// Result 类型: []byte
+type BTreeReadTask struct {
+    BaseTask[[]byte]
+    key []byte
+}
+
+// NewBTreeReadTask 创建 BTree 读取任务
+func NewBTreeReadTask(key []byte, sourceID model.SourceID) *BTreeReadTask {
+    return &BTreeReadTask{
+        BaseTask: NewBaseTask[[]byte](OpRead, PriorityHigh, sourceID),
+        key:      key,
+    }
+}
+
+// Execute 执行读取
+func (t *BTreeReadTask) Execute(ctx context.Context, p *Pipeline) ([]byte, error) {
+    p.btree.mu.RLock()
+    defer p.btree.mu.RUnlock()
+    return p.btree.Get(t.key), nil
+}
+
+// BTreeWriteTask BTree 写入任务
+// Result 类型: struct{}
+type BTreeWriteTask struct {
+    BaseTask[struct{}]
+    key, value []byte
+    ts         *HLC
+}
+
+// NewBTreeWriteTask 创建 BTree 写入任务
+func NewBTreeWriteTask(key, value []byte, ts *HLC, sourceID model.SourceID) *BTreeWriteTask {
+    return &BTreeWriteTask{
+        BaseTask: NewBaseTask[struct{}](OpWrite, PriorityHigh, sourceID),
+        key:      key,
+        value:    value,
+        ts:       ts,
+    }
+}
+
+// Execute 执行写入
+func (t *BTreeWriteTask) Execute(ctx context.Context, p *Pipeline) (struct{}, error) {
+    p.btree.mu.Lock()
+    defer p.btree.mu.Unlock()
+    p.btree.ReplaceOrInsert(t.key, t.value, t.ts)
+    return struct{}{}, nil
+}
+
+// BTreeDeleteTask BTree 删除任务
+// Result 类型: struct{}
+type BTreeDeleteTask struct {
+    BaseTask[struct{}]
+    key []byte
+    ts  *HLC
+}
+
+// NewBTreeDeleteTask 创建 BTree 删除任务
+func NewBTreeDeleteTask(key []byte, ts *HLC, sourceID model.SourceID) *BTreeDeleteTask {
+    return &BTreeDeleteTask{
+        BaseTask: NewBaseTask[struct{}](OpDelete, PriorityHigh, sourceID),
+        key:      key,
+        ts:       ts,
+    }
+}
+
+// Execute 执行删除
+func (t *BTreeDeleteTask) Execute(ctx context.Context, p *Pipeline) (struct{}, error) {
+    p.btree.mu.Lock()
+    defer p.btree.mu.Unlock()
+    p.btree.Delete(t.key, t.ts)
+    return struct{}{}, nil
+}
+```
+
+**文件**: `internal/infrastructure/storage/wal_tasks.go`
+
+```go
+// WALAppendTask WAL 追加任务
+// Result 类型: struct{}
+// 优先级: Critical（最高优先级，避免阻塞写操作）
+type WALAppendTask struct {
+    BaseTask[struct{}]
+    entries []*LogEntry
+}
+
+// NewWALAppendTask 创建 WAL 单条追加任务
+func NewWALAppendTask(entry *LogEntry, sourceID model.SourceID) *WALAppendTask {
+    return &WALAppendTask{
+        BaseTask: NewBaseTask[struct{}](OpWALAppend, PriorityCritical, sourceID),
+        entries:  []*LogEntry{entry},
+    }
+}
+
+// NewWALAppendTaskBatch 创建 WAL 批量追加任务
+func NewWALAppendTaskBatch(entries []*LogEntry, sourceID model.SourceID) *WALAppendTask {
+    return &WALAppendTask{
+        BaseTask: NewBaseTask[struct{}](OpWALAppend, PriorityCritical, sourceID),
+        entries:  entries,
+    }
+}
+
+// Execute 执行 WAL 追加
+func (t *WALAppendTask) Execute(ctx context.Context, p *Pipeline) (struct{}, error) {
+    p.wal.mu.Lock()
+    defer p.wal.mu.Unlock()
+    
+    // 批量追加
+    for _, entry := range t.entries {
+        if err := p.wal.Append(entry); err != nil {
+            return struct{}{}, fmt.Errorf("wal append: %w", err)
+        }
+    }
+    
+    // 刷盘保证持久化
+    if err := p.wal.Flush(); err != nil {
+        return struct{}{}, fmt.Errorf("wal flush: %w", err)
+    }
+    
+    return struct{}{}, nil
+}
+```
+
+#### V4 vs 原有流水线模式对比
+
+| 维度 | 原有流水线（Channel + Worker） | V4 异步管道（TaskRunner + Task） |
+|------|------------------------------|--------------------------------|
+| **类型安全** | ❌ 需要类型断言 | ✅ 编译时类型安全 |
+| **统一调度** | ❌ 每个 Pipeline 独立 Worker | ✅ 复用 TaskExecutor |
+| **优先级支持** | ⚠️ 需要额外实现 | ✅ TaskRunner.Priority() |
+| **CPU 亲和性** | ❌ 不支持 | ✅ TaskRunner.SourceID() |
+| **背压控制** | ✅ Channel 自动阻塞 | ⚠️ 依赖 Executor 实现 |
+
+**设计原则**:
+- **简单任务**：使用 V4 Task[Result]，复用 TaskExecutor
+- **复杂任务**：使用 CompositeWriteTask，在同一个 Worker 中顺序执行
+- **高吞吐写入**：使用原有 Channel + Worker，保证顺序
 
 ---
 
@@ -6031,7 +6365,7 @@ func (c *KVClientImpl) Put(ctx context.Context, key, value []byte) (hlc.Timestam
 
 ## 十四、泛型锁包装器 Locked[T] ⭐ v3.0 新增
 
-> **来源**: `thoughts/2026-03-02-idea-async-pipeline-pre.md`
+> **来源**: `docs/07_spike/2026-03-04-spike-async-pipeline-v4.md` (V4 异步管道设计)
 > **用途**: 支持无锁/有锁一键切换，用于流水线内部和外部调用
 
 ### 14.1 设计目标

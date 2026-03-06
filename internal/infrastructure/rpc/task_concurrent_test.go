@@ -118,7 +118,7 @@ func TestRPCBroadcastTask_ConcurrentBroadcasts(t *testing.T) {
 			defer wg.Done()
 
 			config := &service.RPCAsyncConfig{
-				Executor:        nil,
+				Executor:         nil,
 				DefaultTimeoutMs: 1000,
 			}
 

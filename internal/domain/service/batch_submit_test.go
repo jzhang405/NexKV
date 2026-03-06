@@ -23,7 +23,6 @@ type mockBatchExecutor struct {
 	submitCount int32
 	failCount   int32
 	delay       time.Duration
-	mu          sync.Mutex
 }
 
 func (m *mockBatchExecutor) Submit(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, task func(context.Context)) error {
@@ -178,10 +177,7 @@ func TestBatchSubmitter_ConcurrentSubmit(t *testing.T) {
 				)
 			}
 
-			result, err := submitter.SubmitBatch(context.Background(), tasks)
-			if err == nil && result.Success == tasksPerBatch {
-				// 批次提交成功
-			}
+			_, _ = submitter.SubmitBatch(context.Background(), tasks)
 		}()
 	}
 

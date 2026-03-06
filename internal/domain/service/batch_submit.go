@@ -37,9 +37,9 @@ type BatchSubmitConfig struct {
 // DefaultBatchSubmitConfig 默认批量提交配置
 func DefaultBatchSubmitConfig() *BatchSubmitConfig {
 	return &BatchSubmitConfig{
-		MaxConcurrent: 100,     // 默认最多100个并发提交
-		EnableAtomic:  false,   // 默认不启用原子性（性能优先）
-		Timeout:       30000,   // 默认30秒超时
+		MaxConcurrent: 100,   // 默认最多100个并发提交
+		EnableAtomic:  false, // 默认不启用原子性（性能优先）
+		Timeout:       30000, // 默认30秒超时
 	}
 }
 

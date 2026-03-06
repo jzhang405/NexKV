@@ -346,3 +346,76 @@ func (n *LeafNode) DeltaCount() int {
 	defer n.mu.RUnlock()
 	return len(n.deltas)
 }
+
+// Delete 删除键值（写入 Delta Chain）
+//
+// 删除策略：
+// - 写入删除标记到 Delta Chain（DeltaOpDelete）
+// - 定期合并到 Mini-Page（Compact）
+// - Get 时先查 Delta Chain，返回"已删除"
+//
+// 返回：
+//   - error: 错误（nil 表示成功）
+//   - ErrKeyNotFound: 键不存在
+func (n *LeafNode) Delete(key []byte) error {
+	// P1-6: 添加参数验证
+	if key == nil {
+		return ErrNilKey
+	}
+	if len(key) == 0 {
+		return ErrEmptyKey
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// 检查键是否存在（先查 Delta Chain，再查 Mini-Page）
+	exists := false
+	for i := len(n.deltas) - 1; i >= 0; i-- {
+		delta := n.deltas[i]
+		if bytes.Equal(delta.key, key) {
+			if delta.opType == DeltaOpDelete {
+				// 已经被删除
+				return ErrKeyNotFound
+			}
+			exists = true
+			break
+		}
+	}
+
+	if !exists {
+		// 检查 Mini-Page
+		slotIndex := n.miniPage.findSlot(key)
+		if slotIndex == -1 {
+			return ErrKeyNotFound
+		}
+	}
+
+	// 检查 Delta Chain 容量
+	if uint16(len(n.deltas)) >= uint16(n.maxDeltaLen) {
+		// 容量已满，先触发合并
+		if err := n.compact(); err != nil {
+			return err
+		}
+	}
+
+	// 创建删除 Delta 条目
+	delta := &DeltaEntry{
+		opType:    DeltaOpDelete,
+		key:       key,
+		value:     nil,
+		timestamp: currentTimestamp(),
+	}
+
+	// 追加到 Delta Chain
+	n.deltas = append(n.deltas, delta)
+
+	// 检查是否需要合并
+	if n.shouldCompact() {
+		if err := n.compact(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

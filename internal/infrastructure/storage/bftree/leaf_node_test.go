@@ -413,3 +413,138 @@ func BenchmarkLeafNode_Set(b *testing.B) {
 		_ = node.Set(key, value)
 	}
 }
+
+// TestLeafNode_Delete 测试删除操作
+func TestLeafNode_Delete(t *testing.T) {
+	node := NewLeafNode(1, L2)
+
+	// 1. 先写入数据
+	_ = node.Set([]byte("key1"), []byte("value1"))
+	_ = node.Set([]byte("key2"), []byte("value2"))
+	_ = node.Set([]byte("key3"), []byte("value3"))
+
+	// 2. 验证数据存在
+	value, found := node.Get([]byte("key1"))
+	require.True(t, found)
+	assert.Equal(t, []byte("value1"), value)
+
+	// 3. 删除 key1
+	err := node.Delete([]byte("key1"))
+	require.NoError(t, err)
+
+	// 4. 验证已删除
+	value, found = node.Get([]byte("key1"))
+	assert.False(t, found)
+	assert.Nil(t, value)
+
+	// 5. 验证其他键不受影响
+	value, found = node.Get([]byte("key2"))
+	assert.True(t, found)
+	assert.Equal(t, []byte("value2"), value)
+
+	value, found = node.Get([]byte("key3"))
+	assert.True(t, found)
+	assert.Equal(t, []byte("value3"), value)
+}
+
+// TestLeafNode_Delete_NotFound 测试删除不存在的键
+func TestLeafNode_Delete_NotFound(t *testing.T) {
+	node := NewLeafNode(1, L1)
+
+	// 删除不存在的键
+	err := node.Delete([]byte("nonexistent"))
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrKeyNotFound)
+}
+
+// TestLeafNode_Delete_NilKey 测试删除 nil 键
+func TestLeafNode_Delete_NilKey(t *testing.T) {
+	node := NewLeafNode(1, L1)
+
+	err := node.Delete(nil)
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrNilKey)
+}
+
+// TestLeafNode_Delete_EmptyKey 测试删除空键
+func TestLeafNode_Delete_EmptyKey(t *testing.T) {
+	node := NewLeafNode(1, L1)
+
+	err := node.Delete([]byte{})
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrEmptyKey)
+}
+
+// TestLeafNode_Delete_Twice 测试删除同一个键两次
+func TestLeafNode_Delete_Twice(t *testing.T) {
+	node := NewLeafNode(1, L2)
+
+	// 写入数据
+	_ = node.Set([]byte("key1"), []byte("value1"))
+
+	// 第一次删除
+	err := node.Delete([]byte("key1"))
+	require.NoError(t, err)
+
+	// 第二次删除（应该返回 ErrKeyNotFound）
+	err = node.Delete([]byte("key1"))
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrKeyNotFound)
+}
+
+// TestLeafNode_Delete_And_Compact 测试删除后触发合并
+func TestLeafNode_Delete_And_Compact(t *testing.T) {
+	node := NewLeafNode(1, L2)
+
+	// 写入多个键值
+	for i := 0; i < 8; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		_ = node.Set(key, value)
+	}
+
+	// Delta 应该被合并
+	assert.Equal(t, 0, node.DeltaCount())
+
+	// 删除几个键
+	err := node.Delete([]byte{0})
+	require.NoError(t, err)
+	err = node.Delete([]byte{1})
+	require.NoError(t, err)
+
+	// 验证删除
+	_, found := node.Get([]byte{0})
+	assert.False(t, found)
+	_, found = node.Get([]byte{1})
+	assert.False(t, found)
+
+	// 验证其他键存在
+	_, found = node.Get([]byte{2})
+	assert.True(t, found)
+}
+
+// TestLeafNode_Delete_Then_Set 测试删除后再设置
+func TestLeafNode_Delete_Then_Set(t *testing.T) {
+	node := NewLeafNode(1, L2)
+
+	// 写入数据
+	_ = node.Set([]byte("key1"), []byte("value1"))
+
+	// 删除
+	err := node.Delete([]byte("key1"))
+	require.NoError(t, err)
+
+	// 验证已删除
+	value, found := node.Get([]byte("key1"))
+	assert.False(t, found)
+	assert.Nil(t, value)
+
+	// 重新设置
+	err = node.Set([]byte("key1"), []byte("value2"))
+	require.NoError(t, err)
+
+	// 验证新值
+	value, found = node.Get([]byte("key1"))
+	assert.True(t, found)
+	assert.Equal(t, []byte("value2"), value)
+}

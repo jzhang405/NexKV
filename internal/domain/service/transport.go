@@ -150,7 +150,7 @@ type WriteVResult struct {
 //
 // 接口选择指南：
 // - RPCSync: 阻塞式同步调用，直接返回结果
-// - RPCAsync: 异步调用，返回 AsyncOp[T]，支持链式回调和超时
+// - RPCAsync: 异步调用，返回 Task[T]，支持链式回调和超时
 
 // RequestMsg 用于 Channel 接收请求
 type RequestMsg struct {

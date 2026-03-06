@@ -798,17 +798,19 @@ func (w *coreWorker) run() {
 	defer w.executor.wg.Done()
 
 	// 启用绑核（PerCore 总是启用绑核）
-	// 使用标志位确保只绑定一次，避免重复系统调用
-	if !w.pinned {
-		// macOS 特殊处理：使用 LockOSThread + defer UnlockOSThread
-		// Linux/Windows: pinToCore 内部已经处理了 LockOSThread
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
+	// 永久绑定到 OS 线程，在整个 worker 生命周期内保持绑定
+	// 注意：不使用 defer UnlockOSThread()，因为 worker 应该永久绑定
+	// goroutine 退出时 LockOSThread 会自动失效
+	runtime.LockOSThread()
 
-		if err := pinToCore(w.coreID); err == nil {
-			w.pinned = true // 标记已绑定
-		}
-		// 绑核失败不应阻止 worker 启动
+	// 尝试绑核（每次都尝试，幂等操作）
+	if err := pinToCore(w.coreID); err != nil {
+		// 绑核失败不应阻止 worker 启动，但记录警告
+		// 在某些平台（如 macOS）可能不支持绑核，但 LockOSThread 仍然有效
+		logrus.WithFields(logrus.Fields{
+			"coreID": w.coreID,
+			"error":  err,
+		}).Warn("Failed to pin worker to core, but continuing with LockOSThread only")
 	}
 
 	for {

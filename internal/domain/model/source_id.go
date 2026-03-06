@@ -147,6 +147,33 @@ func (s SourceID) RecommendedMode() TaskMode {
 	return ModeAntsPool
 }
 
+// NewSourceShard 创建分片亲和的 SourceID
+func NewSourceShard(shardID string) SourceID {
+	return SourceID{
+		module:    "shard",
+		subModule: shardID,
+		action:    "ops",
+	}
+}
+
+// NewSourceClient 创建客户端亲和的 SourceID
+func NewSourceClient(clientID string) SourceID {
+	return SourceID{
+		module:    "client",
+		subModule: clientID,
+		action:    "ops",
+	}
+}
+
+// NewSourceNode 创建节点亲和的 SourceID
+func NewSourceNode(nodeID string) SourceID {
+	return SourceID{
+		module:    "node",
+		subModule: nodeID,
+		action:    "ops",
+	}
+}
+
 // IsHighPriority 判断是否为高优先级任务
 func (s SourceID) IsHighPriority() bool {
 	highPriorityModules := map[string]bool{

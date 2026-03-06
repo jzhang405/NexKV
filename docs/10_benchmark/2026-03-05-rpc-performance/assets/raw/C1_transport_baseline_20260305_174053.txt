@@ -1,0 +1,21 @@
+time="2026-03-05T17:40:57+08:00" level=info msg="mDNS discovery service started" component=discovery tag=nexkv-test-discovery
+time="2026-03-05T17:40:57+08:00" level=info msg="mDNS discovery service stopped" component=discovery
+time="2026-03-05T17:40:57+08:00" level=info msg="mDNS discovery service started" component=discovery tag=nexkv-test-stop
+time="2026-03-05T17:40:57+08:00" level=info msg="mDNS discovery service stopped" component=discovery
+time="2026-03-05T17:40:57+08:00" level=info msg="mDNS discovery service started" component=discovery tag=nexkv-multi-test
+time="2026-03-05T17:40:57+08:00" level=info msg="mDNS discovery service started" component=discovery tag=nexkv-multi-test
+time="2026-03-05T17:40:57+08:00" level=info msg="mDNS discovery service started" component=discovery tag=nexkv-multi-test
+time="2026-03-05T17:40:58+08:00" level=info msg="mDNS discovery service stopped" component=discovery
+time="2026-03-05T17:40:58+08:00" level=info msg="mDNS discovery service stopped" component=discovery
+time="2026-03-05T17:40:58+08:00" level=info msg="mDNS discovery service stopped" component=discovery
+time="2026-03-05T17:40:59+08:00" level=debug msg="Sending message" component=rpc direction=send middleware=logging msg_id=test-001 msg_type=request payload_len=12 peer=node-2
+time="2026-03-05T17:40:59+08:00" level=debug msg="Send completed" component=rpc direction=send middleware=logging msg_id=test-001 msg_type=request payload_len=12 peer=node-2
+time="2026-03-05T17:40:59+08:00" level=debug msg="Receiving message" component=rpc direction=receive middleware=logging msg_id=test-001 msg_type=request payload_len=12 peer=node-1
+time="2026-03-05T17:40:59+08:00" level=debug msg="Receive completed" component=rpc direction=receive middleware=logging msg_id=test-001 msg_type=request payload_len=12 peer=node-1
+goos: linux
+goarch: amd64
+pkg: github.com/jzhang405/NexKV/internal/infrastructure/transport
+cpu: Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz
+BenchmarkRPC_Baseline-12    	31832480	       112.1 ns/op	     264 B/op	       6 allocs/op
+PASS
+ok  	github.com/jzhang405/NexKV/internal/infrastructure/transport	8.021s

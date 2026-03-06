@@ -3,6 +3,7 @@ package transport
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/pkg/compressor"
+	"github.com/stretchr/testify/require"
 )
 
 // ============================================================================
@@ -306,9 +308,11 @@ func BenchmarkMiddleware_Compression_Snappy(b *testing.B) {
 
 	peer := model.PeerID("node-2")
 	payload := make([]byte, 1024) // 1 KB
-	for i := range payload {
-		payload[i] = byte(i % 10)
-	}
+
+	// 使用随机数据模拟真实场景
+	_, err := rand.Read(payload)
+	require.NoError(b, err)
+
 	msg := model.NewMessage("test-id", model.MessageTypeRequest, "node-1", "node-2", payload)
 	ctx := context.Background()
 

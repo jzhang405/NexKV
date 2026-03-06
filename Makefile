@@ -105,7 +105,7 @@ benchmark:
 clean:
 	@echo "清理编译文件..."
 	rm -rf bin/
-	rm -f coverage.out *coverage.html *coverage*.out transport.test *.out
+	rm -f coverage.out *coverage.html *coverage*.out transport.test *.out cpu.prof mem.prof
 	go clean -testcache
 	go clean -cache
 

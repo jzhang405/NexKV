@@ -75,9 +75,9 @@ type Manageable interface {
 // 组合接口
 // ==========================================
 
-// AsyncTaskExecutor 异步任务执行器
+// ManagedTaskExecutor 托管任务执行器
 // 组合：TaskExecutor + Observable + Manageable
-type AsyncTaskExecutor interface {
+type ManagedTaskExecutor interface {
 	TaskExecutor
 	Observable
 	Manageable

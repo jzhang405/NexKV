@@ -1,0 +1,9 @@
+# github.com/jzhang405/NexKV/internal/infrastructure/rpc [github.com/jzhang405/NexKV/internal/infrastructure/rpc.test]
+internal/infrastructure/rpc/benchmark_perf_test.go:105:14: invalid composite literal type service.BroadcastProgress
+internal/infrastructure/rpc/benchmark_perf_test.go:133:14: invalid composite literal type service.BroadcastProgress
+internal/infrastructure/rpc/benchmark_perf_test.go:238:9: cannot use &completedAsyncOp{…} (value of type *completedAsyncOp) as service.AsyncOp[service.ResponseMsg] value in return statement: *completedAsyncOp does not implement service.AsyncOp[service.ResponseMsg] (missing method IsCanceled)
+internal/infrastructure/rpc/benchmark_perf_test.go:252:9: cannot use op (variable of type *completedAsyncOp) as service.AsyncOp[service.ResponseMsg] value in return statement: *completedAsyncOp does not implement service.AsyncOp[service.ResponseMsg] (missing method IsCanceled)
+internal/infrastructure/rpc/benchmark_perf_test.go:259:9: cannot use op (variable of type *completedAsyncOp) as service.AsyncOp[service.ResponseMsg] value in return statement: *completedAsyncOp does not implement service.AsyncOp[service.ResponseMsg] (missing method IsCanceled)
+internal/infrastructure/rpc/benchmark_perf_test.go:266:9: cannot use op (variable of type *completedAsyncOp) as service.AsyncOp[service.ResponseMsg] value in return statement: *completedAsyncOp does not implement service.AsyncOp[service.ResponseMsg] (missing method IsCanceled)
+FAIL	github.com/jzhang405/NexKV/internal/infrastructure/rpc [build failed]
+FAIL

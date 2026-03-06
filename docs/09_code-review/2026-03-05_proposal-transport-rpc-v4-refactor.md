@@ -1567,7 +1567,113 @@ go test -bench="New" -benchmem -count=5 ./internal/transport/rpc/...
 
 ---
 
-**审查完成时间**: 2026-03-05  
-**下次审查时间**: P0修复完成后  
-**负责人**: 架构组 + 并发组  
+**审查完成时间**: 2026-03-05
+**下次审查时间**: P0修复完成后
+**负责人**: 架构组 + 并发组
 **审查文档**: `/home/jzh/.claude/plans/harmonic-dazzling-quokka.md`
+
+---
+
+## 13. 实施决策记录
+
+> **更新日期**: 2026-03-06
+> **决策人**: 项目组
+> **状态**: ✅ 已确认
+
+### 13.1 决策：取消 Task 聚合根设计
+
+**决策内容**: 取消 P1-1 中建议的 Task 聚合根完整设计
+
+**决策原因**:
+
+1. **架构简化** - V4 Task[T] 模型已经足够满足需求
+   - 当前 `BaseTask[T]` 提供了完整的状态管理和生命周期控制
+   - 使用泛型和原子操作实现类型安全和高性能
+   - 避免过度设计，保持架构简洁
+
+2. **性能考虑** - 避免额外的内存和计算开销
+   - TaskID 值对象会引入额外的字符串分配
+   - 时间戳记录在大量并发场景下会增加内存压力
+   - 当前原子状态机已经足够高效
+
+3. **职责清晰** - Task 是执行单元，非持久化实体
+   - Task 专注于执行和结果返回
+   - 不需要持久化和复杂查询
+   - 领域事件（TaskCompletedEvent 等）已提供足够的可观测性
+
+4. **实践验证** - 现有实现已通过测试
+   - 并发测试通过（TestBaseTask_ConcurrentStateTransitions）
+   - Goroutine 泄漏测试通过（TestBaseTask_NoGoroutineLeak）
+   - 死锁检测测试通过（TestBaseTask_NoDeadlockOnCallback）
+
+**当前实现**:
+
+```go
+// 当前 BaseTask 设计（保留）
+type BaseTask[Result any] struct {
+    // 任务元数据
+    opType   OpType
+    priority TaskPriority
+    sourceID SourceID
+
+    // 执行函数
+    execute ExecuteFunc[Result]
+
+    // 任务状态（原子操作）
+    done   chan struct{}
+    status atomic.Int32 // OperationStatus
+
+    // 任务结果
+    result Result
+    err    error
+    mu     sync.RWMutex
+}
+```
+
+**优势**:
+- ✅ 类型安全（泛型支持）
+- ✅ 高性能（原子操作，无锁设计）
+- ✅ 简洁（最小化状态）
+- ✅ 可观测（领域事件 + Observable 接口）
+
+**放弃的功能**:
+- ❌ TaskID 值对象（不需要持久化标识）
+- ❌ 时间戳记录（事件已包含时间戳）
+- ❌ Repository 模式（Task 是 ephemeral 对象）
+- ❌ 复杂状态机（原子 CAS 已足够）
+
+**替代方案**:
+- 使用 `task_events.go` 中的领域事件进行追踪
+- 使用 `Observable` 接口获取统计信息
+- 使用分布式追踪（如 OpenTelemetry）进行跨任务追踪
+
+### 13.2 影响范围
+
+**不需要修改**:
+- ✅ P1-3: 批量提交并发安全（保持不变）
+- ✅ P1-4: SourceID 策略配置（继续实施）
+- ✅ P1-5: 领域事件机制（保持不变）
+
+**需要更新的文档**:
+- ✅ 更新 P1-1 状态为"已取消 - 架构简化"
+- ✅ 更新 P1-2 状态为"不需要 - Task 非持久化"
+
+### 13.3 后续计划
+
+**优先级调整**:
+
+| 优先级 | 改进项 | 调整原因 | 预估工期 |
+|--------|-------|---------|---------|
+| **P1** | P1-4: SourceID 策略配置 | 性能提升 | 2天 |
+| **P2** | 引入 sync.Pool 优化 | GC 优化 | 6小时 |
+| **P2** | 优化全局绑定锁 | 性能优化 | 4小时 |
+
+**不再实施**:
+- ❌ Task 聚合根设计（已取消）
+- ❌ TaskRepository 接口（不需要）
+
+---
+
+**决策批准**: 项目组
+**文档版本**: v1.2
+**最后更新**: 2026-03-06

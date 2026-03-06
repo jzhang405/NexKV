@@ -270,6 +270,37 @@ func (t *BfTree) insertLocked(key, value []byte, writeWAL bool) error {
 
 	// 插入到叶子节点
 	if err := leafNode.Set(key, value); err != nil {
+		// 检查是否需要分裂（Delta Chain 满）
+		if err == ErrDeltaFull {
+			// 分裂叶子节点
+			leftPageID, rightPageID, splitKey, splitErr := t.splitLeafNode(leafPageID)
+			if splitErr != nil {
+				return fmt.Errorf("failed to split leaf node: %w", splitErr)
+			}
+
+			// 创建新根节点（MVP：仅支持根节点分裂）
+			if err := t.createNewRoot(leftPageID, rightPageID, splitKey); err != nil {
+				return fmt.Errorf("failed to create new root: %w", err)
+			}
+
+			// 重试插入：根据键值决定插入左或右节点
+			targetPageID := leftPageID
+			if compareKeys(key, splitKey) >= 0 {
+				targetPageID = rightPageID
+			}
+
+			// 重新获取目标节点并插入
+			targetNode, getNodeErr := t.pageStore.getLeaf(targetPageID)
+			if getNodeErr != nil {
+				return fmt.Errorf("failed to get target node after split: %w", getNodeErr)
+			}
+
+			if setErr := targetNode.Set(key, value); setErr != nil {
+				return fmt.Errorf("failed to insert after split: %w", setErr)
+			}
+
+			return nil
+		}
 		return err
 	}
 

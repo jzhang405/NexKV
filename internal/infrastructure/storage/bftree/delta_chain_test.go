@@ -234,7 +234,7 @@ func TestDeltaChain_Clone(t *testing.T) {
 	assert.Equal(t, dc.Size(), clone.Size())
 
 	// 修改原数据不应影响克隆
-	dc.Append(DeltaOpInsert, []byte("key3"), []byte("value3"))
+	_ = dc.Append(DeltaOpInsert, []byte("key3"), []byte("value3"))
 	assert.Equal(t, 3, dc.Len())
 	assert.Equal(t, 2, clone.Len())
 }

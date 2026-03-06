@@ -45,14 +45,6 @@ func (ps *pageStore) putLeaf(pageID uint64, node *LeafNode) {
 	ps.leafNodes[pageID] = node
 }
 
-// deleteLeaf 删除叶子节点
-func (ps *pageStore) deleteLeaf(pageID uint64) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
-	delete(ps.leafNodes, pageID)
-}
-
 // getInner 获取内部节点
 func (ps *pageStore) getInner(pageID uint64) (*InnerNode, error) {
 	ps.mu.RLock()
@@ -66,35 +58,10 @@ func (ps *pageStore) getInner(pageID uint64) (*InnerNode, error) {
 }
 
 // putInner 存储内部节点
+//lint:ignore U1000 // 预留方法，未来内部节点分裂时使用
 func (ps *pageStore) putInner(pageID uint64, node *InnerNode) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
 	ps.innerNodes[pageID] = node
-}
-
-// deleteInner 删除内部节点
-func (ps *pageStore) deleteInner(pageID uint64) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
-	delete(ps.innerNodes, pageID)
-}
-
-// hasLeaf 检查叶子节点是否存在
-func (ps *pageStore) hasLeaf(pageID uint64) bool {
-	ps.mu.RLock()
-	defer ps.mu.RUnlock()
-
-	_, ok := ps.leafNodes[pageID]
-	return ok
-}
-
-// hasInner 检查内部节点是否存在
-func (ps *pageStore) hasInner(pageID uint64) bool {
-	ps.mu.RLock()
-	defer ps.mu.RUnlock()
-
-	_, ok := ps.innerNodes[pageID]
-	return ok
 }

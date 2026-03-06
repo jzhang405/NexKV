@@ -153,6 +153,17 @@ func (b *batchSubmitter) SubmitBatchWithConfig(ctx context.Context, tasks []mode
 
 	// 提交所有任务
 	for _, task := range tasks {
+		// 先检查 context 是否已取消
+		select {
+		case <-ctx.Done():
+			// context 已取消，不再启动新任务
+			result.Failed = len(tasks) - int(successCount)
+			result.Success = int(successCount)
+			result.Errors = append(result.Errors, ctx.Err())
+			return result, ctx.Err()
+		default:
+		}
+
 		// 背压控制：获取信号量
 		if b.sem != nil {
 			select {
@@ -160,7 +171,8 @@ func (b *batchSubmitter) SubmitBatchWithConfig(ctx context.Context, tasks []mode
 				// 获取成功
 			case <-ctx.Done():
 				// context 取消
-				result.Failed = int(failedCount) + 1
+				result.Failed = len(tasks) - int(successCount)
+				result.Success = int(successCount)
 				result.Errors = append(result.Errors, ctx.Err())
 				return result, ctx.Err()
 			}
@@ -176,6 +188,11 @@ func (b *batchSubmitter) SubmitBatchWithConfig(ctx context.Context, tasks []mode
 					<-b.sem
 				}
 			}()
+
+			// 检查 context 是否已取消
+			if ctx.Err() != nil {
+				return
+			}
 
 			// 提交任务
 			err := b.executor.Submit(ctx, t.SourceID(), t.Priority(), func(ctx context.Context) {

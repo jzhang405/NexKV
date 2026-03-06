@@ -13,7 +13,7 @@ func TestMiniPage_ReadPromotion(t *testing.T) {
 
 	// L1 读取阈值是 1，读取一次即可触发提升
 	_ = node.Set([]byte("key1"), []byte("value1"))
-	
+
 	// 模拟读取（直接调用 incrementReadCount）
 	for i := 0; i < 5; i++ {
 		node.miniPage.incrementReadCount()
@@ -60,7 +60,7 @@ func TestMiniPage_PromoteToFull(t *testing.T) {
 	// 逐级提升
 	for node.GetLevel() < Full {
 		currentLevel := node.GetLevel()
-		
+
 		// 增加读取计数以触发提升
 		for i := 0; i < 100; i++ {
 			node.miniPage.incrementReadCount()

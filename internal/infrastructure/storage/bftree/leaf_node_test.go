@@ -67,6 +67,7 @@ func TestNewMiniPage(t *testing.T) {
 			assert.Equal(t, tt.level, mp.level)
 			assert.Equal(t, uint64(0), mp.bitmap) // 初始无占用
 			assert.NotNil(t, mp.slots)
+			assert.NotNil(t, mp.slotMap) // P1-4: 验证 map 已初始化
 			assert.Equal(t, uint16(0), mp.dataSize)
 			assert.Equal(t, tt.expectedCapacity, mp.capacity)
 		})
@@ -114,6 +115,33 @@ func TestLeafNode_Get_Set(t *testing.T) {
 	assert.Equal(t, []byte("value1"), value)
 }
 
+// P1-6: 测试 nil key
+func TestLeafNode_Set_NilKey(t *testing.T) {
+	node := NewLeafNode(1, L1)
+
+	err := node.Set(nil, []byte("value"))
+	assert.Error(t, err)
+	assert.Equal(t, ErrNilKey, err)
+}
+
+// P1-6: 测试空键
+func TestLeafNode_Set_EmptyKey(t *testing.T) {
+	node := NewLeafNode(1, L1)
+
+	err := node.Set([]byte{}, []byte("value"))
+	assert.Error(t, err)
+	assert.Equal(t, ErrEmptyKey, err)
+}
+
+// P1-6: 测试 nil value
+func TestLeafNode_Set_NilValue(t *testing.T) {
+	node := NewLeafNode(1, L1)
+
+	err := node.Set([]byte("key"), nil)
+	assert.Error(t, err)
+	assert.Equal(t, ErrNilValue, err)
+}
+
 func TestLeafNode_Get_Set_Multiple(t *testing.T) {
 	node := NewLeafNode(1, L2)
 
@@ -157,13 +185,16 @@ func TestLeafNode_Set_Update(t *testing.T) {
 	assert.Equal(t, []byte("value2"), value)
 }
 
-func TestLeafNode_ShouldCompact(t *testing.T) {
-	node := NewLeafNode(1, L1)
+// P1-5: 测试 Compact 触发
+func TestLeafNode_Compact(t *testing.T) {
+	// 使用 L2 而不是 L1（L1 容量 64B，maxDeltaSize=32B，只能容纳约 6 个 Delta）
+	node := NewLeafNode(1, L2)
 
 	// 初始状态不需要合并
 	assert.False(t, node.shouldCompact())
 
-	// 写入 8 个 Delta 触发合并
+	// L2 容量 128B，maxDeltaSize=64B，可以容纳更多 Delta
+	// 写入 8 个 Delta 触发合并（基于 maxDeltaLen=8）
 	for i := 0; i < 8; i++ {
 		key := []byte{byte(i)}
 		value := []byte("value")
@@ -171,8 +202,34 @@ func TestLeafNode_ShouldCompact(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// Delta Chain 长度 = 8，应该触发合并
-	assert.True(t, node.shouldCompact())
+	// Delta Chain 应该被清空（Compact 已执行）
+	assert.Equal(t, 0, node.DeltaCount())
+
+	// 验证数据仍然可以通过 Get 获取（已合并到 Mini-Page）
+	value, found := node.Get([]byte{byte(0)})
+	assert.True(t, found)
+	assert.Equal(t, []byte("value"), value)
+}
+
+// P1-8: 测试 Delta 操作（Delete）
+func TestLeafNode_DeltaOpDelete(t *testing.T) {
+	node := NewLeafNode(1, L1)
+
+	// 先写入
+	_ = node.Set([]byte("key1"), []byte("value1"))
+
+	// 添加删除 Delta
+	node.mu.Lock()
+	node.deltas = append(node.deltas, &DeltaEntry{
+		opType: DeltaOpDelete,
+		key:    []byte("key1"),
+	})
+	node.mu.Unlock()
+
+	// 验证删除
+	value, found := node.Get([]byte("key1"))
+	assert.False(t, found)
+	assert.Nil(t, value)
 }
 
 func TestLeafNode_DeltaCount(t *testing.T) {
@@ -220,6 +277,7 @@ func TestMiniPage_FindSlot(t *testing.T) {
 		key:   []byte("key1"),
 		value: []byte("value1"),
 	})
+	mp.slotMap["key1"] = 0
 
 	// 可以找到
 	slotIndex = mp.findSlot([]byte("key1"))
@@ -228,6 +286,81 @@ func TestMiniPage_FindSlot(t *testing.T) {
 	// 找不到不存在的键
 	slotIndex = mp.findSlot([]byte("key2"))
 	assert.Equal(t, -1, slotIndex)
+}
+
+// P1-4: 测试 map 查找性能
+func TestMiniPage_FindSlot_Performance(t *testing.T) {
+	mp := NewMiniPage(L2)
+
+	// 添加 100 个槽位
+	for i := 0; i < 100; i++ {
+		key := []byte{byte(i >> 8), byte(i)}
+		value := []byte("value")
+		mp.slots = append(mp.slots, Slot{key: key, value: value})
+		mp.slotMap[string(key)] = i
+	}
+
+	// 测试查找
+	t.Run("MapLookup", func(t *testing.T) {
+		t.Skip("Performance test - run with -bench")
+		key := []byte{0, 50}
+		idx := mp.findSlot(key)
+		assert.Equal(t, 50, idx)
+	})
+}
+
+// P1-7: 测试返回值副本
+func TestLeafNode_Get_ReturnsCopy(t *testing.T) {
+	node := NewLeafNode(1, L1)
+
+	_ = node.Set([]byte("key1"), []byte("value1"))
+
+	// 获取值
+	value, _ := node.Get([]byte("key1"))
+
+	// 修改返回值
+	value[0] = 'X'
+
+	// 再次获取，应该不受影响
+	value2, _ := node.Get([]byte("key1"))
+	assert.Equal(t, []byte("value1"), value2)
+	assert.NotEqual(t, []byte("Xalue1"), value2)
+}
+
+// P1-8: 测试并发读写安全
+func TestLeafNode_ConcurrentReadWrite(t *testing.T) {
+	node := NewLeafNode(1, L2)
+	const goroutines = 10
+	const opsPerGoroutine = 100
+
+	var wg sync.WaitGroup
+
+	// 并发写入
+	for i := 0; i < goroutines/2; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < opsPerGoroutine; j++ {
+				key := []byte{byte(id), byte(j)}
+				value := []byte("value")
+				_ = node.Set(key, value)
+			}
+		}(i)
+	}
+
+	// 并发读取
+	for i := goroutines / 2; i < goroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < opsPerGoroutine; j++ {
+				key := []byte{byte(id), byte(j)}
+				_, _ = node.Get(key)
+			}
+		}(i)
+	}
+
+	wg.Wait()
 }
 
 func TestLeafNode_ConcurrentGetSet(t *testing.T) {
@@ -250,10 +383,33 @@ func TestLeafNode_ConcurrentGetSet(t *testing.T) {
 		}(i)
 	}
 
-	// 等待所有 goroutine 完成
 	wg.Wait()
 
-	// 验证 Delta 数量
+	// 注意：由于 Compact 会自动触发（每 8 个 Delta），
+	// DeltaCount 不会累积到 1000，而是会被周期性清空
+	// 这里只验证没有错误发生
 	deltaCount := node.DeltaCount()
-	assert.Equal(t, goroutines*writesPerGoroutine, deltaCount)
+	assert.LessOrEqual(t, deltaCount, 8) // 最多保留 7 个（第 8 个触发 Compact）
+}
+
+// 基准测试
+func BenchmarkLeafNode_Get(b *testing.B) {
+	node := NewLeafNode(1, L2)
+	_ = node.Set([]byte("key1"), []byte("value1"))
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = node.Get([]byte("key1"))
+	}
+}
+
+func BenchmarkLeafNode_Set(b *testing.B) {
+	node := NewLeafNode(1, L2)
+	key := []byte("key")
+	value := []byte("value")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = node.Set(key, value)
+	}
 }

@@ -260,11 +260,11 @@ func (n *InnerNode) IsFull() bool {
 
 // CanMerge 检查是否可以合并
 func (n *InnerNode) CanMerge(sibling *InnerNode) bool {
-	 n.mu.RLock()
-	 defer n.mu.RUnlock()
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 
-	 totalChildren := len(n.children) + len(sibling.children)
-	 return totalChildren < n.maxKeys
+	totalChildren := len(n.children) + len(sibling.children)
+	return totalChildren < n.maxKeys
 }
 
 // GetPageID 获取页面 ID

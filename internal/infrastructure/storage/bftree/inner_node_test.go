@@ -271,15 +271,15 @@ func TestInnerNode_ConcurrentRead(t *testing.T) {
 
 func TestMaxKeysForLevel(t *testing.T) {
 	tests := []struct {
-		level        PageLevel
-		expectedMax  int
+		level       PageLevel
+		expectedMax int
 	}{
-		{L1, 2},   // 2 个子节点，1 个键
-		{L2, 3},   // 3 个子节点，2 个键
-		{L3, 5},   // 5 个子节点，4 个键
-		{L4, 9},   // 9 个子节点，8 个键
-		{L5, 17},  // 17 个子节点，16 个键
-		{L6, 33},  // 33 个子节点，32 个键
+		{L1, 2},    // 2 个子节点，1 个键
+		{L2, 3},    // 3 个子节点，2 个键
+		{L3, 5},    // 5 个子节点，4 个键
+		{L4, 9},    // 9 个子节点，8 个键
+		{L5, 17},   // 17 个子节点，16 个键
+		{L6, 33},   // 33 个子节点，32 个键
 		{Full, 65}, // 65 个子节点，64 个键
 	}
 

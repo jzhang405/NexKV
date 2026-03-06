@@ -26,28 +26,28 @@ func TestGetSourceID_Basic(t *testing.T) {
   for _, tt := range(testCases) {
       tt.Run(tt.name)
       tt.Errorf("invalid strategy: expected string)
-      
+
       assert.Equal(t, got, want, model.SourceNetwork)
     }
 
     // Test empty extensions
     for _, tt := range(testCases) {
       exts := model.NewExtensions()
-      
+
       msg := model.NewMessage(
         "test-msg",
         model.MsgTypeRequest,
         "shard_id": "test-shard",
       })
-      
+
       exts.Set("client_id", "test-client")
-      
+
       msg := model.NewMessage(
         "test-msg-client",
         model.MsgTypeRequest,
         "client_id": "test-client")
       )
-      
+
       exts := model.NewExtensions()
       assert.NoError(t, "client_id not set in empty extensions")
 
@@ -78,7 +78,7 @@ func TestGetSourceID_Basic(t *testing.T) {
 
 func TestGetSourceID_Integration(t *testing.T) {
   // 这个测试演示如何在将 GetSourceID 集成到现有的 RPC 调用中
-  
+
   msg := model.NewMessage(
     "test-msg-request",
     model.MsgTypeRequest,
@@ -88,12 +88,12 @@ func TestGetSourceID_Integration(t *testing.T) {
     "client_id": "test-client",
   })
 
-  
+
   // 测试默认策略
   for _, tt := range(testCases) {
     tt.Run(tt.name)
     tt.Logf("using default strategy")
-    
+
     got := model.SourceNetwork
   })
 }

@@ -25,6 +25,7 @@ type BfTree struct {
 	// 核心组件
 	rootPageID uint64     // 根页面 ID
 	pageTable  *PageTable // 页面表管理器
+	pageStore  *pageStore // 页面存储（MVP：内存存储）
 	config     *Config    // 配置
 
 	// WAL 集成
@@ -49,7 +50,7 @@ type BfTreeStats struct {
 
 	// 操作统计
 	ReadCount   int64 // 读操作次数
-	WriteCount  int64 // 写操作次数
+	WriteCount  int64 // 写入操作次数
 	DeleteCount int64 // 删除操作次数
 
 	// Delta Chain 统计
@@ -72,6 +73,9 @@ func NewBfTree(config *Config) (*BfTree, error) {
 	// 创建 PageTable
 	pageTable := NewPageTable()
 
+	// 创建 pageStore
+	pageStore := newPageStore()
+
 	// 创建 WAL（如果启用）
 	var w wal.WAL
 	var walErr error
@@ -90,6 +94,7 @@ func NewBfTree(config *Config) (*BfTree, error) {
 	tree := &BfTree{
 		rootPageID: 0, // 初始为空树
 		pageTable:  pageTable,
+		pageStore:  pageStore,
 		config:     config,
 		wal:        w,
 		walEnabled: config.EnableWAL,
@@ -180,7 +185,7 @@ func (t *BfTree) lookup(key []byte) ([]byte, error) {
 		switch entry.pageType {
 		case PageTypeLeaf:
 			// 叶子节点：直接查找键
-			leafNode, err := t.getLeafNode(currentPageID)
+			leafNode, err := t.pageStore.getLeaf(currentPageID)
 			if err != nil {
 				return nil, err
 			}
@@ -192,7 +197,7 @@ func (t *BfTree) lookup(key []byte) ([]byte, error) {
 
 		case PageTypeInner:
 			// 内部节点：继续向下查找
-			innerNode, err := t.getInnerNode(currentPageID)
+			innerNode, err := t.pageStore.getInner(currentPageID)
 			if err != nil {
 				return nil, err
 			}
@@ -246,16 +251,61 @@ func (t *BfTree) insertLocked(key, value []byte, writeWAL bool) error {
 		if err := leafNode.Set(key, value); err != nil {
 			return err
 		}
+		t.pageStore.putLeaf(pageID, leafNode)
+		atomic.AddInt64(&t.stats.LeafPages, 1)
 		return nil
 	}
 
-	// TODO: 实现完整的 B+ 树插入逻辑
-	// 1. 查找插入位置
-	// 2. 插入到叶子节点
-	// 3. 处理分裂
-	// 4. 更新路径
+	// 非空树：查找插入位置的叶子节点
+	leafPageID, err := t.findLeafPage(t.rootPageID, key)
+	if err != nil {
+		return err
+	}
 
-	return fmt.Errorf("not implemented: full insert logic")
+	// 获取叶子节点
+	leafNode, err := t.pageStore.getLeaf(leafPageID)
+	if err != nil {
+		return err
+	}
+
+	// 插入到叶子节点
+	if err := leafNode.Set(key, value); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// findLeafPage 查找键应该所在的叶子页面
+func (t *BfTree) findLeafPage(rootPageID uint64, key []byte) (uint64, error) {
+	currentPageID := rootPageID
+
+	for {
+		entry, found := t.pageTable.Get(currentPageID)
+		if !found {
+			return 0, ErrPageNotFound
+		}
+
+		if entry.pageType == PageTypeLeaf {
+			return currentPageID, nil
+		}
+
+		// 内部节点：继续向下
+		innerNode, err := t.pageStore.getInner(currentPageID)
+		if err != nil {
+			return 0, err
+		}
+
+		childID, found := innerNode.FindChild(key)
+		if !found {
+			// 返回最左边的子节点
+			if len(innerNode.children) == 0 {
+				return 0, ErrPageNotFound
+			}
+			childID = innerNode.children[0]
+		}
+		currentPageID = childID
+	}
 }
 
 // Update 更新键值（同步）
@@ -283,8 +333,31 @@ func (t *BfTree) Update(ctx context.Context, key, value []byte) error {
 
 // updateLocked 更新键值（内部，已持有锁）
 func (t *BfTree) updateLocked(key, value []byte, writeWAL bool) error {
-	// TODO: 实现完整的 B+ 树更新逻辑
-	return fmt.Errorf("not implemented: full update logic")
+	// 空树：键不存在
+	if t.rootPageID == 0 {
+		return ErrKeyNotFound
+	}
+
+	// 查找叶子页面
+	leafPageID, err := t.findLeafPage(t.rootPageID, key)
+	if err != nil {
+		return err
+	}
+
+	// 获取叶子节点
+	leafNode, err := t.pageStore.getLeaf(leafPageID)
+	if err != nil {
+		return err
+	}
+
+	// 检查键是否存在
+	_, found := leafNode.Get(key)
+	if !found {
+		return ErrKeyNotFound
+	}
+
+	// 更新键值（使用 Set，LeafNode 内部会处理为 Update）
+	return leafNode.Set(key, value)
 }
 
 // Delete 删除键值（同步）
@@ -312,8 +385,25 @@ func (t *BfTree) Delete(ctx context.Context, key []byte) error {
 
 // deleteLocked 删除键值（内部，已持有锁）
 func (t *BfTree) deleteLocked(key []byte, writeWAL bool) error {
-	// TODO: 实现完整的 B+ 树删除逻辑
-	return fmt.Errorf("not implemented: full delete logic")
+	// 空树：键不存在
+	if t.rootPageID == 0 {
+		return ErrKeyNotFound
+	}
+
+	// 查找叶子页面
+	leafPageID, err := t.findLeafPage(t.rootPageID, key)
+	if err != nil {
+		return err
+	}
+
+	// 获取叶子节点
+	leafNode, err := t.pageStore.getLeaf(leafPageID)
+	if err != nil {
+		return err
+	}
+
+	// 删除键值
+	return leafNode.Delete(key)
 }
 
 // GetStats 获取统计信息
@@ -347,18 +437,4 @@ func (t *BfTree) Close() error {
 	}
 
 	return nil
-}
-
-// getLeafNode 获取叶子节点（内部）
-func (t *BfTree) getLeafNode(pageID uint64) (*LeafNode, error) {
-	// TODO: 实现页面加载逻辑
-	// MVP 简化：假设所有页面都在内存中
-	return nil, fmt.Errorf("not implemented: getLeafNode")
-}
-
-// getInnerNode 获取内部节点（内部）
-func (t *BfTree) getInnerNode(pageID uint64) (*InnerNode, error) {
-	// TODO: 实现页面加载逻辑
-	// MVP 简化：假设所有页面都在内存中
-	return nil, fmt.Errorf("not implemented: getInnerNode")
 }

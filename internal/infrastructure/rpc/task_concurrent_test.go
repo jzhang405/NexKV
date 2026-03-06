@@ -29,7 +29,7 @@ func TestRPCCallTask_NoGoroutineLeak(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		req := model.NewMessage("test", model.MessageTypeRequest, "node-1", "node-2", []byte("payload"))
-		task := NewRPCCallTask(mockRPC, "node-2", req, model.SourceNetwork, 1*time.Second)
+		task := NewRPCCallTask(mockRPC, "node-2", req, model.SourceRPCCallback, 1*time.Second)
 
 		go task.Run(context.Background(), nil)
 		<-task.Done()
@@ -71,7 +71,7 @@ func TestRPCCallTask_HighConcurrency(t *testing.T) {
 			defer func() { <-sem }()
 
 			req := model.NewMessage("test", model.MessageTypeRequest, "node-1", "node-2", []byte("payload"))
-			task := NewRPCCallTask(mockRPC, "node-2", req, model.SourceNetwork, 1*time.Second)
+			task := NewRPCCallTask(mockRPC, "node-2", req, model.SourceRPCCallback, 1*time.Second)
 
 			task.Run(context.Background(), nil)
 			<-task.Done()

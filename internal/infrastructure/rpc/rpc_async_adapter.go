@@ -107,7 +107,7 @@ func (a *RPCAsyncAdapter) CallAsync(ctx context.Context, to model.PeerID, req mo
 		a.rpc,
 		to,
 		req,
-		model.SourceNetwork,
+		model.SourceRPCCallback,
 		time.Duration(timeoutMs)*time.Millisecond,
 	)
 
@@ -123,7 +123,7 @@ func (a *RPCAsyncAdapter) CallAsyncWithTimeout(ctx context.Context, to model.Pee
 		a.rpc,
 		to,
 		req,
-		model.SourceNetwork,
+		model.SourceRPCCallback,
 		time.Duration(timeoutMs)*time.Millisecond,
 	)
 

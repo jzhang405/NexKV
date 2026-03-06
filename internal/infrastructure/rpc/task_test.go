@@ -34,7 +34,7 @@ func TestRPCCallTask_Execute_Success(t *testing.T) {
 		mockRPC,
 		model.PeerID("node-2"),
 		reqMsg,
-		model.SourceNetwork,
+		model.SourceRPCCallback,
 		30*time.Second,
 	)
 
@@ -67,7 +67,7 @@ func TestRPCCallTask_Execute_Timeout(t *testing.T) {
 		mockRPC,
 		model.PeerID("node-2"),
 		reqMsg,
-		model.SourceNetwork,
+		model.SourceRPCCallback,
 		10*time.Millisecond, // 很短的超时
 	)
 
@@ -97,7 +97,7 @@ func TestRPCCallTask_Execute_Error(t *testing.T) {
 		mockRPC,
 		model.PeerID("node-2"),
 		reqMsg,
-		model.SourceNetwork,
+		model.SourceRPCCallback,
 		30*time.Second,
 	)
 
@@ -173,7 +173,7 @@ func TestBaseTask_Wait(t *testing.T) {
 		},
 		model.PeerID("node-2"),
 		reqMsg,
-		model.SourceNetwork,
+		model.SourceRPCCallback,
 		30*time.Second,
 	)
 

@@ -118,7 +118,7 @@ func NewRPCBroadcastTask(
 	task.BaseTask = model.NewBaseTask[service.AsyncBroadcastResult](
 		model.OpRPC,
 		model.TaskPriorityNormal,
-		model.SourceNetwork,
+		model.SourceBroadcast,
 		func(ctx context.Context, pipeline model.PipelineContext) (service.AsyncBroadcastResult, error) {
 			// 参数验证
 			if rpc == nil {
@@ -215,7 +215,7 @@ func NewRPCQuorumTask(
 	task.BaseTask = model.NewBaseTask[service.QuorumResult](
 		model.OpRPC,
 		model.TaskPriorityNormal,
-		model.SourceNetwork,
+		model.SourceBroadcast,
 		func(ctx context.Context, pipeline model.PipelineContext) (service.QuorumResult, error) {
 			// 参数验证
 			if rpc == nil {
@@ -304,7 +304,7 @@ func NewRPCWriteVTask(
 	task.BaseTask = model.NewBaseTask[service.WriteVResult](
 		model.OpRPC,
 		model.TaskPriorityNormal,
-		model.SourceNetwork,
+		model.SourceBroadcast,
 		func(ctx context.Context, pipeline model.PipelineContext) (service.WriteVResult, error) {
 			// 参数验证
 			if rpc == nil {
@@ -377,7 +377,7 @@ func NewRPCWriteVCallTask(
 	task.BaseTask = model.NewBaseTask[service.WriteVResult](
 		model.OpRPC,
 		model.TaskPriorityNormal,
-		model.SourceNetwork,
+		model.SourceBroadcast,
 		func(ctx context.Context, pipeline model.PipelineContext) (service.WriteVResult, error) {
 			// 参数验证
 			if rpc == nil {
@@ -426,7 +426,7 @@ func NewFailedRPCTask(err error) *model.BaseTask[service.ResponseMsg] {
 	return model.NewBaseTask[service.ResponseMsg](
 		model.OpRPC,
 		model.TaskPriorityNormal,
-		model.SourceNetwork,
+		model.SourceRPCCallback,
 		func(ctx context.Context, pipeline model.PipelineContext) (service.ResponseMsg, error) {
 			return service.ResponseMsg{Err: err}, err
 		},

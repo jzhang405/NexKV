@@ -18,7 +18,10 @@ var (
 	ErrPageFull = errors.New("page full")
 
 	// ErrPageNotFound 页面不存在
-	ErrPageNotFound = errors.New("page not found")
+
+	// ErrPageStillReferenced 页面仍被引用
+	ErrPageStillReferenced = errors.New("page still referenced")
+	ErrPageNotFound        = errors.New("page not found")
 
 	// ErrInvalidPageType 无效的页面类型
 	ErrInvalidPageType = errors.New("invalid page type")

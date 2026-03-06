@@ -421,16 +421,22 @@ func (dc *DeltaChain) snapshot() []*DeltaEntry {
 package service
 
 // WAL 写前日志接口
+// LSN 日志序列号（Log Sequence Number）
+type LSN uint64
+
+const (
+	LSNInvalid LSN = 0  // 无效 LSN
+)
 type WAL interface {
     // 同步写日志
-    Append(entry WALEntry) error
+    Append(entry WALEntry) (LSN, error)
     Sync() error
     Recover() ([]WALEntry, error)
-    Truncate(lsn uint64) error
+    Truncate(lsn LSN) error
 
-    // 异步写日志（复用 WriteFuture）
-    AppendAsync(entry WALEntry) WriteFuture
-    TruncateAsync(lsn uint64) WriteFuture
+    // 异步写日志（复用 v4 Task[Result]）
+    AppendAsync(ctx context.Context, entry WALEntry) model.Task[LSN]
+    TruncateAsync(ctx context.Context, lsn LSN) model.Task[struct{}]
 
     // 生命周期
     Close() error
@@ -438,13 +444,13 @@ type WAL interface {
 
 // WALEntry WAL 条目结构
 type WALEntry struct {
-    LSN       uint64      // 日志序列号
+    LSN       LSN         // 日志序列号（使用独立类型)
     TxID      uint64      // 事务ID（0 = 非事务操作）
     Timestamp int64       // Unix 时间戳（微秒）
     Type      WALType     // 日志类型
     Key       []byte      // 键
     Value     []byte      // 值
-    PrevLSN   uint64      // 前一条日志的 LSN
+    PrevLSN   LSN         // 前一条日志的 LSN（类型统一）
     CRC       uint32      // CRC32 校验和（新增，问题 1）
 }
 
@@ -553,7 +559,7 @@ func (w *DiskWAL) Close() error {
 }
 
 // Append 追加 WAL 条目（同步，支持 CRC 校验和分段）
-func (w *DiskWAL) Append(entry WALEntry) error {
+func (w *DiskWAL) Append(entry WALEntry) (LSN, error) {
     w.mu.Lock()
     defer w.mu.Unlock()
 

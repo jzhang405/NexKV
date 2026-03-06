@@ -82,3 +82,27 @@ func TestCompareKeys(t *testing.T) {
 		})
 	}
 }
+
+// TestCompareKeys_EdgeCases_Coverage 测试键比较的边界情况
+func TestCompareKeys_EdgeCases_Coverage(t *testing.T) {
+	tests := []struct {
+		name     string
+		k1       []byte
+		k2       []byte
+		expected int
+	}{
+		{"空键", []byte{}, []byte{}, 0},
+		{"k1 空", []byte{}, []byte{1}, -1},
+		{"k2 空", []byte{1}, []byte{}, 1},
+		{"相同单字节", []byte{5}, []byte{5}, 0},
+		{"相同多字节", []byte{1, 2, 3}, []byte{1, 2, 3}, 0},
+		{"前缀相同", []byte{1, 2}, []byte{1, 2, 3}, -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := compareKeys(tt.k1, tt.k2)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

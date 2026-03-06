@@ -1,6 +1,7 @@
 package bftree
 
 import (
+	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
@@ -448,4 +449,33 @@ func BenchmarkFindFirstSet(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		FindFirstSet(bitmap)
 	}
+}
+
+// TestBits_RangeFunctions_Coverage 测试位范围函数覆盖率
+func TestBits_RangeFunctions_Coverage(t *testing.T) {
+	var bitmap uint64
+
+	// 测试 IsBitRangeFull - 空范围
+	assert.False(t, IsBitRangeFull(bitmap, 0, 8))
+
+	// 测试 IsBitRangeFull - 部分填充
+	bitmap = 0x0F
+	assert.False(t, IsBitRangeFull(bitmap, 0, 8))
+
+	// 测试 IsBitRangeFull - 完全填充
+	bitmap = 0xFF
+	assert.True(t, IsBitRangeFull(bitmap, 0, 8))
+
+	// 测试 CountBitsInRange
+	bitmap = 0b10101010
+	count := CountBitsInRange(bitmap, 0, 4)
+	assert.Equal(t, 2, count)
+
+	// 测试 CountBitsInRange - 全零
+	count = CountBitsInRange(0, 0, 8)
+	assert.Equal(t, 0, count)
+
+	// 测试 CountBitsInRange - 全一
+	count = CountBitsInRange(0xFF, 0, 8)
+	assert.Equal(t, 8, count)
 }

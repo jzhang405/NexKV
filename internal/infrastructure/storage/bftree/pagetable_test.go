@@ -340,3 +340,24 @@ func TestPageTable_ConcurrentReadWrite(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestPageTable_ErrorPaths_Coverage 提升 PageTable 错误路径覆盖率
+func TestPageTable_ErrorPaths_Coverage(t *testing.T) {
+	pt := NewPageTable()
+
+	// Free 不存在的页面
+	err := pt.Free(999)
+	assert.Error(t, err)
+
+	// Get 不存在的页面
+	_, found := pt.Get(999)
+	assert.False(t, found)
+
+	// Unref 不存在的页面
+	err = pt.Unref(999)
+	assert.Error(t, err)
+
+	// Ref 不存在的页面
+	err = pt.Ref(999)
+	assert.Error(t, err)
+}

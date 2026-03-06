@@ -290,3 +290,25 @@ func TestMaxKeysForLevel(t *testing.T) {
 		})
 	}
 }
+
+// TestInnerNode_InsertChild_Coverage 测试 InnerNode.InsertChild 各种路径
+func TestInnerNode_InsertChild_Coverage(t *testing.T) {
+	node := NewInnerNode(1, L2)
+
+	// 先添加初始子节点
+	key1 := []byte("first")
+	childID1 := uint64(100)
+	err := node.InsertChild(0, key1, childID1)
+	require.NoError(t, err)
+
+	// 测试在末尾插入
+	key2 := []byte("second")
+	childID2 := uint64(200)
+	err = node.InsertChild(1, key2, childID2)
+	require.NoError(t, err)
+
+	// 验证插入
+	assert.Equal(t, childID1, node.children[0])
+	assert.Equal(t, childID2, node.children[1])
+	assert.Equal(t, key2, node.keys[0])
+}

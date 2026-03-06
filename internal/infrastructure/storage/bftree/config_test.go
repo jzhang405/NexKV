@@ -1,12 +1,15 @@
 package bftree
 
 import (
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
-
 	tests := []struct {
 		name  string
 		check func(*Config) bool
@@ -54,7 +57,6 @@ func TestDefaultConfig(t *testing.T) {
 			},
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if !tt.check(config) {
@@ -63,7 +65,6 @@ func TestDefaultConfig(t *testing.T) {
 		})
 	}
 }
-
 func TestConfigValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -190,7 +191,6 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: true,
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.config.Validate()
@@ -200,7 +200,6 @@ func TestConfigValidate(t *testing.T) {
 		})
 	}
 }
-
 func TestPromotionConfigValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -249,7 +248,6 @@ func TestPromotionConfigValidate(t *testing.T) {
 			wantErr: true,
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.config.Validate()
@@ -259,7 +257,6 @@ func TestPromotionConfigValidate(t *testing.T) {
 		})
 	}
 }
-
 func TestPageLevelString(t *testing.T) {
 	tests := []struct {
 		level PageLevel
@@ -274,7 +271,6 @@ func TestPageLevelString(t *testing.T) {
 		{Full, "Full(4KB)"},
 		{PageLevel(99), "Unknown"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
 			got := tt.level.String()
@@ -284,7 +280,6 @@ func TestPageLevelString(t *testing.T) {
 		})
 	}
 }
-
 func TestPageLevelPageSize(t *testing.T) {
 	tests := []struct {
 		level PageLevel
@@ -299,7 +294,6 @@ func TestPageLevelPageSize(t *testing.T) {
 		{Full, 4096},
 		{PageLevel(99), 64}, // 默认返回 64
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.level.String(), func(t *testing.T) {
 			got := tt.level.PageSize()
@@ -309,7 +303,6 @@ func TestPageLevelPageSize(t *testing.T) {
 		})
 	}
 }
-
 func TestPageLevelValid(t *testing.T) {
 	tests := []struct {
 		level PageLevel
@@ -325,7 +318,6 @@ func TestPageLevelValid(t *testing.T) {
 		{PageLevel(-1), false},
 		{PageLevel(99), false},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.level.String(), func(t *testing.T) {
 			got := tt.level.Valid()
@@ -335,7 +327,6 @@ func TestPageLevelValid(t *testing.T) {
 		})
 	}
 }
-
 func TestPageLevelNextLevel(t *testing.T) {
 	tests := []struct {
 		level PageLevel
@@ -349,7 +340,6 @@ func TestPageLevelNextLevel(t *testing.T) {
 		{L6, Full},
 		{Full, Full}, // 已经是最大，返回自身
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.level.String(), func(t *testing.T) {
 			got := tt.level.NextLevel()
@@ -359,7 +349,6 @@ func TestPageLevelNextLevel(t *testing.T) {
 		})
 	}
 }
-
 func TestPageTypeString(t *testing.T) {
 	tests := []struct {
 		ptype PageType
@@ -369,7 +358,6 @@ func TestPageTypeString(t *testing.T) {
 		{PageTypeInner, "Inner"},
 		{PageType(99), "Unknown"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
 			got := tt.ptype.String()
@@ -378,4 +366,48 @@ func TestPageTypeString(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestConfig_EnsureDataDir 测试目录创建
+func TestConfig_EnsureDataDir(t *testing.T) {
+	t.Run("创建数据目录", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		config := &Config{
+			DataDir: tmpDir,
+		}
+		err := config.EnsureDataDir()
+		require.NoError(t, err)
+		// 验证目录已创建
+		info, err := os.Stat(tmpDir)
+		require.NoError(t, err)
+		assert.True(t, info.IsDir())
+	})
+	t.Run("创建数据目录和WAL目录", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		walDir := filepath.Join(tmpDir, "wal")
+		config := &Config{
+			DataDir:   tmpDir,
+			EnableWAL: true,
+			WALDir:    walDir,
+		}
+		err := config.EnsureDataDir()
+		require.NoError(t, err)
+		// 验证两个目录都已创建
+		_, err = os.Stat(tmpDir)
+		require.NoError(t, err)
+		_, err = os.Stat(walDir)
+		require.NoError(t, err)
+	})
+	t.Run("目录已存在", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		config := &Config{
+			DataDir: tmpDir,
+		}
+		// 第一次创建
+		err := config.EnsureDataDir()
+		require.NoError(t, err)
+		// 第二次调用（目录已存在）应该成功
+		err = config.EnsureDataDir()
+		assert.NoError(t, err)
+	})
 }

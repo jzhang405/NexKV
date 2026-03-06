@@ -407,3 +407,26 @@ func BenchmarkDeltaChain_CompactTo(b *testing.B) {
 		_ = dc.CompactTo(mp)
 	}
 }
+
+// TestDeltaChain_CompactTo_Coverage 提升 CompactTo 覆盖率
+func TestDeltaChain_CompactTo_Coverage(t *testing.T) {
+	deltaChain := NewDeltaChain(10, 256)
+
+	// 添加一些 Delta
+	for i := 0; i < 5; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := deltaChain.Append(DeltaOpInsert, key, value)
+		require.NoError(t, err)
+	}
+
+	// 创建目标 Mini-Page
+	target := NewMiniPage(L1)
+
+	// Compact 到目标
+	err := deltaChain.CompactTo(target)
+	require.NoError(t, err)
+
+	// 验证数据已合并
+	assert.Equal(t, 0, deltaChain.Len())
+}

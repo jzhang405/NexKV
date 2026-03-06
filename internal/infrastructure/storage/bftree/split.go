@@ -116,6 +116,7 @@ func (t *BfTree) splitLeafNode(pageID uint64) (leftPageID, rightPageID uint64, s
 //   - rightPageID: 右节点页面 ID
 //   - splitKey: 分隔键（提升到父节点）
 //   - error: 错误
+//
 //nolint:unused // Phase 2.3: 多级分裂时使用
 func (t *BfTree) splitInnerNode(pageID uint64) (leftPageID, rightPageID uint64, splitKey []byte, err error) {
 	// 1. 获取要分裂的节点
@@ -191,6 +192,7 @@ func (t *BfTree) splitInnerNode(pageID uint64) (leftPageID, rightPageID uint64, 
 // MVP 实现：仅支持根节点分裂
 // - 如果 parentPageID == 0，创建新根节点
 // - 否则返回错误（多级分裂在 Phase 2.3 实现）
+//
 //nolint:unused // Phase 2.3: 多级分裂时使用
 func (t *BfTree) insertSplitIntoParent(parentPageID, leftPageID, rightPageID uint64, splitKey []byte) error {
 	// 1. 如果是根节点分裂（parentPageID == 0）
@@ -248,6 +250,7 @@ func collectAllSlots(mp *MiniPage) []Slot {
 }
 
 // insertKeyAtIndex 在指定位置插入键
+//
 //nolint:unused // Phase 2.3: 多级分裂时使用
 func insertKeyAtIndex(keys [][]byte, key []byte, index int) [][]byte {
 	// 扩展切片
@@ -259,6 +262,7 @@ func insertKeyAtIndex(keys [][]byte, key []byte, index int) [][]byte {
 }
 
 // insertChildAtIndex 在指定位置插入子节点
+//
 //nolint:unused // Phase 2.3: 多级分裂时使用
 func insertChildAtIndex(children []uint64, childID uint64, index int) []uint64 {
 	// 扩展切片
@@ -270,6 +274,7 @@ func insertChildAtIndex(children []uint64, childID uint64, index int) []uint64 {
 }
 
 // maxChildrenForInnerNode 内部节点的最大子节点数
+//
 //nolint:unused // Phase 2.3: 多级分裂时使用
 func maxChildrenForInnerNode() int {
 	// 假设页面大小 4KB，每个子节点指针 8 字节 + 键平均 16 字节

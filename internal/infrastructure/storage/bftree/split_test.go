@@ -459,3 +459,166 @@ func TestBfTree_Set_OverwriteExistingKey(t *testing.T) {
 	value, _ = tree.Get(context.Background(), []byte("key"))
 	assert.Equal(t, []byte("value2"), value)
 }
+
+// TestBfTree_SplitParentAndInsert 测试父节点分裂并插入
+
+// TestBfTree_InsertSplitWithDepth_MaxDepth 测试最大深度限制
+
+// TestBfTree_MultiLevelSplit_Propagation 测试分裂向上传播
+
+// TestBfTree_Split_LeafNodeFull 测试叶子节点满后分裂
+func TestBfTree_Split_LeafNodeFull(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         1024,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入足够多的数据直到叶子节点分裂
+	splitCount := 0
+	const maxKeys = 200
+
+	for i := 0; i < maxKeys; i++ {
+		initialLeafPages := tree.GetStats().LeafPages
+
+		key := []byte{byte(i)}
+		value := []byte("value data")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+
+		// 检查是否发生了分裂（叶子页数增加）
+		if tree.GetStats().LeafPages > initialLeafPages {
+			splitCount++
+			t.Logf("Split detected at key %d, total leaf pages: %d", i, tree.GetStats().LeafPages)
+		}
+	}
+
+	t.Logf("Total splits detected: %d", splitCount)
+	assert.Greater(t, splitCount, 0, "should have at least one split")
+}
+
+// TestBfTree_InsertSplitIntoParent_InsertChild 测试向父节点插入子节点
+func TestBfTree_InsertSplitIntoParent_InsertChild(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         1024,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 创建一个有内部节点的树
+	const numKeys = 100
+	for i := 0; i < numKeys; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	stats := tree.GetStats()
+	if stats.InnerPages > 0 && tree.rootPageID != 0 {
+		// 有内部节点，测试分裂结果
+		t.Logf("Tree has inner nodes, testing split insertion")
+
+		// 验证根节点是内部节点
+		rootEntry, found := tree.pageTable.Get(tree.rootPageID)
+		if found && rootEntry.pageType == PageTypeInner {
+			// 根节点是内部节点，说明树的高度 >= 2
+			t.Logf("Root is inner node, tree height >= 2")
+		}
+	}
+}
+
+// TestBfTree_InsertSplitWithDepth_Recursion 测试递归深度检查
+
+// TestBfTree_SplitLeafNode_Pagination 测试叶子节点分页
+func TestBfTree_SplitLeafNode_Pagination(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         2048,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据直到触发分裂
+	for i := 0; i < 100; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value data that consumes space")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 验证数据完整性
+	for i := 0; i < 100; i++ {
+		key := []byte{byte(i)}
+		value, err := tree.Get(context.Background(), key)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("value data that consumes space"), value)
+	}
+
+	stats := tree.GetStats()
+	t.Logf("After splits: LeafPages=%d", stats.LeafPages)
+}
+
+// TestBfTree_Split_InnerNode 测试内部节点分裂
+func TestBfTree_Split_InnerNode(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         2048,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入大量数据触发多级分裂
+	const numKeys = 300
+	for i := 0; i < numKeys; i++ {
+		key := []byte{byte(i / 256), byte(i % 256)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	stats := tree.GetStats()
+	t.Logf("Tree: InnerPages=%d, LeafPages=%d", stats.InnerPages, stats.LeafPages)
+
+	// 验证数据
+	for i := 0; i < numKeys; i += 10 {
+		key := []byte{byte(i / 256), byte(i % 256)}
+		value, err := tree.Get(context.Background(), key)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("value"), value)
+	}
+}

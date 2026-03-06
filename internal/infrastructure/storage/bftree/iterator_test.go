@@ -883,3 +883,200 @@ func TestBfTree_Scan_ReverseVerification(t *testing.T) {
 		assert.True(t, seen[byte(i)], "key %d should be in scan result", i)
 	}
 }
+
+// TestBfTree_InitStack_MultiLevel 测试多级树的栈初始化
+func TestBfTree_InitStack_MultiLevel(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         1024,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据创建多级树
+	const numKeys = 200
+	for i := 0; i < numKeys; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value data that is long")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	stats := tree.GetStats()
+	t.Logf("Tree: InnerPages=%d, LeafPages=%d", stats.InnerPages, stats.LeafPages)
+
+	// 创建迭代器并遍历
+	iter := tree.Scan(context.Background(), nil, nil)
+	defer iter.Close()
+
+	// 遍历所有数据，应该会初始化栈
+	count := 0
+	for {
+		valid, _, _, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+		count++
+	}
+
+	assert.Equal(t, numKeys, count)
+}
+
+// TestBfTree_InitStack_WithRange 测试带范围的栈初始化
+func TestBfTree_InitStack_WithRange(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         1024,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	for i := 0; i < 100; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 从中间开始扫描
+	startKey := []byte{30}
+	endKey := []byte{70}
+
+	iter := tree.Scan(context.Background(), startKey, endKey)
+	defer iter.Close()
+
+	// 验证范围
+	seen := make(map[byte]bool)
+	for {
+		valid, key, _, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+		seen[key[0]] = true
+		// 验证在范围内
+		assert.GreaterOrEqual(t, key[0], byte(30))
+		assert.Less(t, key[0], byte(70))
+	}
+
+	// 应该看到 30-69 的键
+	assert.Equal(t, 40, len(seen))
+}
+
+// TestBfTree_MoveUp 测试迭代器向上移动
+func TestBfTree_MoveUp(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         1024,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据创建多级树
+	for i := 0; i < 150; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 扫描到末尾，然后继续 Next，应该触发 moveUp
+	startKey := []byte{100}
+	iter := tree.Scan(context.Background(), startKey, nil)
+	defer iter.Close()
+
+	count := 0
+	for {
+		valid, key, _, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, key[0], byte(100))
+		count++
+	}
+
+	// 应该至少扫描到 50 个键
+	assert.GreaterOrEqual(t, count, 50)
+}
+
+// TestBfTree_Scan_DeletedKeysInDeltaChain 测试 Delta Chain 中删除的键
+func TestBfTree_Scan_DeletedKeysInDeltaChain(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         1024,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	for i := 0; i < 20; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 删除一些数据（会在 Delta Chain 中）
+	for i := 5; i < 10; i++ {
+		key := []byte{byte(i)}
+		err := tree.Delete(context.Background(), key)
+		require.NoError(t, err)
+	}
+
+	// 扫描，删除的键不应该出现
+	iter := tree.Scan(context.Background(), nil, nil)
+	defer iter.Close()
+
+	seen := make(map[byte]bool)
+	for {
+		valid, key, _, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+		seen[key[0]] = true
+	}
+
+	// 验证删除的键不在扫描结果中
+	for i := 5; i < 10; i++ {
+		assert.False(t, seen[byte(i)], "deleted key %d should not be in scan", i)
+	}
+
+	// 验证其他键都在
+	assert.Equal(t, 15, len(seen))
+}

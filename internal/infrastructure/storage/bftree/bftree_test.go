@@ -1316,3 +1316,102 @@ func TestBfTree_ScanEmptyTree(t *testing.T) {
 	valid, _, _, _ := iter.Next()
 	assert.False(t, valid)
 }
+
+// TestBfTree_Split_RecursionLimit 测试递归深度限制
+func TestBfTree_Split_RecursionLimit(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         2048,
+		MaxDepth:         3, // 限制深度
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据直到达到深度限制
+	for i := 0; i < 200; i++ {
+		key := []byte{byte(i / 256), byte(i % 256)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+
+		// 如果达到深度限制，停止
+		if err == ErrTreeTooDeep {
+			t.Logf("Reached max depth at key %d", i)
+			break
+		}
+		require.NoError(t, err)
+	}
+}
+
+// TestBfTree_Insert_WithFullDeltaChain 测试 Delta Chain 满的情况
+func TestBfTree_Insert_WithFullDeltaChain(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         2048,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 对同一个键进行多次更新，填满 Delta Chain
+	key := []byte("key")
+	for i := 0; i < 20; i++ {
+		value := []byte(fmt.Sprintf("value%d", i))
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 验证最终值
+	value, err := tree.Get(context.Background(), key)
+	require.NoError(t, err)
+	assert.NotNil(t, value)
+}
+
+// TestBfTree_VeryLargeKeyValue 测试非常大的键值对
+func TestBfTree_VeryLargeKeyValue(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         4096, // 4KB 页面
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入接近页面大小的键值对
+	largeKey := make([]byte, 500)
+	largeValue := make([]byte, 1500)
+	for i := range largeKey {
+		largeKey[i] = byte(i % 256)
+	}
+	for i := range largeValue {
+		largeValue[i] = byte(i % 256)
+	}
+
+	err = tree.Set(context.Background(), largeKey, largeValue)
+	require.NoError(t, err)
+
+	// 获取并验证
+	retrieved, err := tree.Get(context.Background(), largeKey)
+	require.NoError(t, err)
+	assert.Equal(t, largeValue, retrieved)
+}

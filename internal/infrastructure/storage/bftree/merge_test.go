@@ -769,3 +769,161 @@ func TestBfTree_GetSiblings_RootNode(t *testing.T) {
 	assert.Nil(t, left)
 	assert.Nil(t, right)
 }
+
+// TestBfTree_FindParentBFS_MultiLevel 测试 BFS 查找父节点
+func TestBfTree_FindParentBFS_MultiLevel(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         1024, // 小页面容易触发分裂
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入足够多的数据创建多级树
+	const numKeys = 500
+	for i := 0; i < numKeys; i++ {
+		key := []byte{byte(i / 256), byte(i % 256)}
+		value := []byte("value data that is reasonably long")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	stats := tree.GetStats()
+	t.Logf("Tree stats: InnerPages=%d, LeafPages=%d", stats.InnerPages, stats.LeafPages)
+
+	// 如果有内部节点，测试 findParent
+	if stats.InnerPages > 0 {
+		// 测试查找非根节点的父节点
+		// 从根节点开始 BFS 搜索
+		if tree.rootPageID != 0 {
+			// 获取根节点
+			entry, found := tree.pageTable.Get(tree.rootPageID)
+			if found && entry.pageType == PageTypeInner {
+				// 根节点是内部节点，获取它的子节点
+				innerNode, err := tree.pageStore.getInner(tree.rootPageID)
+				if err == nil && len(innerNode.children) > 0 {
+					// 选择第一个子节点
+					childPageID := innerNode.children[0]
+
+					// 测试 findParentBFS
+					parentID, err := tree.findParentBFS(tree.rootPageID, childPageID)
+					require.NoError(t, err)
+					assert.Equal(t, tree.rootPageID, parentID)
+				}
+			}
+		}
+	}
+}
+
+// TestBfTree_FindParentBFS_NotFound 测试查找不存在的子节点
+func TestBfTree_FindParentBFS_NotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	for i := 0; i < 50; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 测试查找不存在的子节点
+	if tree.rootPageID != 0 {
+		parentID, err := tree.findParentBFS(tree.rootPageID, 99999)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(0), parentID)
+	}
+}
+
+// TestBfTree_FindParentBFS_PageNotFound 测试页面不存在
+func TestBfTree_FindParentBFS_PageNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 测试从不存在的页面开始搜索
+	_, err = tree.findParentBFS(99999, 1)
+	assert.Error(t, err)
+}
+
+// TestBfTree_TryMergeAfterDelete_WithSiblings 测试有兄弟节点的情况
+func TestBfTree_TryMergeAfterDelete_WithSiblings(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         1024,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+		MergeThreshold:   0.25,
+		MergeStrategy:    "merge",
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	for i := 0; i < 30; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 删除一些数据
+	for i := 10; i < 20; i++ {
+		key := []byte{byte(i)}
+		err := tree.Delete(context.Background(), key)
+		require.NoError(t, err)
+	}
+
+	// 验证剩余数据
+	for i := 0; i < 10; i++ {
+		key := []byte{byte(i)}
+		value, err := tree.Get(context.Background(), key)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("value"), value)
+	}
+
+	for i := 20; i < 30; i++ {
+		key := []byte{byte(i)}
+		value, err := tree.Get(context.Background(), key)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("value"), value)
+	}
+}

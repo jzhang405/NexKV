@@ -479,3 +479,25 @@ func TestBits_RangeFunctions_Coverage(t *testing.T) {
 	count = CountBitsInRange(0xFF, 0, 8)
 	assert.Equal(t, 8, count)
 }
+
+// TestGetBit_BitOperations 测试位操作
+
+// TestSetBit_ModifyBits 测试修改位
+func TestSetBit_ModifyBits(t *testing.T) {
+	data := []byte{0x00, 0x00}
+
+	// 设置位
+	SetBit(data, 0, true)
+	assert.Equal(t, byte(0x01), data[0])
+
+	SetBit(data, 7, true)
+	assert.Equal(t, byte(0x81), data[0])
+
+	SetBit(data, 8, true)
+	assert.Equal(t, byte(0x81), data[0])
+	assert.Equal(t, byte(0x01), data[1])
+
+	// 清除位
+	SetBit(data, 0, false)
+	assert.Equal(t, byte(0x80), data[0])
+}

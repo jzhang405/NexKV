@@ -61,7 +61,7 @@ func TestBfTree_Sync_WithWAL(t *testing.T) {
 	// 验证统计信息
 	stats := tree.GetStats()
 	assert.Equal(t, int64(1), stats.WALAppends)
-	assert.GreaterOrEqual(t, int64(1), stats.WALSyncCount)
+	assert.GreaterOrEqual(t, stats.WALSyncCount, int64(1))
 }
 
 func TestBfTree_Sync_Closed(t *testing.T) {
@@ -135,5 +135,5 @@ func TestBfTree_Sync_Concurrent(t *testing.T) {
 	// 验证统计信息
 	stats := tree.GetStats()
 	assert.Equal(t, int64(10), stats.WALAppends)
-	assert.GreaterOrEqual(t, int64(10), stats.WALSyncCount)
+	assert.GreaterOrEqual(t, stats.WALSyncCount, int64(10))
 }

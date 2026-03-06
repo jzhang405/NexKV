@@ -16,45 +16,50 @@ import (
 // 5. 如果是根节点，创建新根节点并提升高度
 // 6. 否则，将分隔键插入父节点（MVP：仅支持根节点分裂）
 //
+// 注意：旧节点不会自动释放，调用者负责在成功后释放
+//
 // 返回：
 //   - leftPageID: 左节点页面 ID
 //   - rightPageID: 右节点页面 ID
 //   - splitKey: 分隔键（提升到父节点）
+//   - oldPageID: 旧节点页面 ID（需要调用者释放）
 //   - error: 错误
-func (t *BfTree) splitLeafNode(pageID uint64) (leftPageID, rightPageID uint64, splitKey []byte, err error) {
+func (t *BfTree) splitLeafNode(pageID uint64) (leftPageID, rightPageID uint64, splitKey []byte, oldPageID uint64, err error) {
 	// 1. 获取要分裂的节点
 	leafNode, err := t.pageStore.getLeaf(pageID)
 	if err != nil {
-		return 0, 0, nil, fmt.Errorf("failed to get leaf node: %w", err)
+		return 0, 0, nil, 0, fmt.Errorf("failed to get leaf node: %w", err)
 	}
 
 	// 2. 先 compact 所有 Delta 到 Mini-Page
 	if err := leafNode.compact(); err != nil {
-		return 0, 0, nil, fmt.Errorf("failed to compact before split: %w", err)
+		return 0, 0, nil, 0, fmt.Errorf("failed to compact before split: %w", err)
 	}
 
 	// 3. 收集所有键值对
 	allPairs := collectAllSlots(leafNode.miniPage)
 	if len(allPairs) == 0 {
-		return 0, 0, nil, fmt.Errorf("cannot split empty node")
+		return 0, 0, nil, 0, fmt.Errorf("cannot split empty node")
 	}
 
 	// 4. 找到中间位置
 	midIndex := len(allPairs) / 2
-	splitKey = allPairs[midIndex].key
+	// 深拷贝分隔键，防止后续修改
+	splitKey = make([]byte, len(allPairs[midIndex].key))
+	copy(splitKey, allPairs[midIndex].key)
 
 	// 5. 创建左右两个新节点
 	leftLevel := leafNode.level
 	leftPageID, err = t.pageTable.Alloc(PageTypeLeaf, leftLevel)
 	if err != nil {
-		return 0, 0, nil, fmt.Errorf("failed to allocate left page: %w", err)
+		return 0, 0, nil, 0, fmt.Errorf("failed to allocate left page: %w", err)
 	}
 
 	rightPageID, err = t.pageTable.Alloc(PageTypeLeaf, leftLevel)
 	if err != nil {
 		// 回滚左节点分配
 		_ = t.pageTable.Free(leftPageID)
-		return 0, 0, nil, fmt.Errorf("failed to allocate right page: %w", err)
+		return 0, 0, nil, 0, fmt.Errorf("failed to allocate right page: %w", err)
 	}
 
 	// 6. 创建左右节点并分配键值对
@@ -68,7 +73,7 @@ func (t *BfTree) splitLeafNode(pageID uint64) (leftPageID, rightPageID uint64, s
 			// 回滚
 			_ = t.pageTable.Free(leftPageID)
 			_ = t.pageTable.Free(rightPageID)
-			return 0, 0, nil, fmt.Errorf("failed to insert to left node: %w", err)
+			return 0, 0, nil, 0, fmt.Errorf("failed to insert to left node: %w", err)
 		}
 	}
 
@@ -79,7 +84,7 @@ func (t *BfTree) splitLeafNode(pageID uint64) (leftPageID, rightPageID uint64, s
 			// 回滚
 			_ = t.pageTable.Free(leftPageID)
 			_ = t.pageTable.Free(rightPageID)
-			return 0, 0, nil, fmt.Errorf("failed to insert to right node: %w", err)
+			return 0, 0, nil, 0, fmt.Errorf("failed to insert to right node: %w", err)
 		}
 	}
 
@@ -87,14 +92,14 @@ func (t *BfTree) splitLeafNode(pageID uint64) (leftPageID, rightPageID uint64, s
 	t.pageStore.putLeaf(leftPageID, leftNode)
 	t.pageStore.putLeaf(rightPageID, rightNode)
 
-	// 8. 释放旧节点（延迟到父节点更新后）
-	// MVP: 这里先释放，父节点更新失败时需要回滚
-	_ = t.pageTable.Free(pageID)
+	// 8. 返回旧节点 ID，调用者负责释放
+	// 注意：不在这里释放，确保父节点更新成功后再释放
+	oldPageID = pageID
 
 	// 9. 更新统计
 	atomic.AddInt64(&t.stats.LeafPages, 1)
 
-	return leftPageID, rightPageID, splitKey, nil
+	return leftPageID, rightPageID, splitKey, oldPageID, nil
 }
 
 // splitInnerNode 分裂内部节点
@@ -111,6 +116,7 @@ func (t *BfTree) splitLeafNode(pageID uint64) (leftPageID, rightPageID uint64, s
 //   - rightPageID: 右节点页面 ID
 //   - splitKey: 分隔键（提升到父节点）
 //   - error: 错误
+//nolint:unused // Phase 2.3: 多级分裂时使用
 func (t *BfTree) splitInnerNode(pageID uint64) (leftPageID, rightPageID uint64, splitKey []byte, err error) {
 	// 1. 获取要分裂的节点
 	innerNode, err := t.pageStore.getInner(pageID)
@@ -185,6 +191,7 @@ func (t *BfTree) splitInnerNode(pageID uint64) (leftPageID, rightPageID uint64, 
 // MVP 实现：仅支持根节点分裂
 // - 如果 parentPageID == 0，创建新根节点
 // - 否则返回错误（多级分裂在 Phase 2.3 实现）
+//nolint:unused // Phase 2.3: 多级分裂时使用
 func (t *BfTree) insertSplitIntoParent(parentPageID, leftPageID, rightPageID uint64, splitKey []byte) error {
 	// 1. 如果是根节点分裂（parentPageID == 0）
 	if parentPageID == 0 || t.rootPageID == 0 {
@@ -223,7 +230,7 @@ func (t *BfTree) createNewRoot(leftPageID, rightPageID uint64, splitKey []byte) 
 
 // collectAllSlots 收集 Mini-Page 中的所有键值对
 func collectAllSlots(mp *MiniPage) []Slot {
-	var slots []Slot
+	slots := make([]Slot, 0, len(mp.slots))
 	for _, slot := range mp.slots {
 		// 深拷贝键值
 		keyCopy := make([]byte, len(slot.key))
@@ -241,6 +248,7 @@ func collectAllSlots(mp *MiniPage) []Slot {
 }
 
 // insertKeyAtIndex 在指定位置插入键
+//nolint:unused // Phase 2.3: 多级分裂时使用
 func insertKeyAtIndex(keys [][]byte, key []byte, index int) [][]byte {
 	// 扩展切片
 	newKeys := make([][]byte, len(keys)+1)
@@ -251,6 +259,7 @@ func insertKeyAtIndex(keys [][]byte, key []byte, index int) [][]byte {
 }
 
 // insertChildAtIndex 在指定位置插入子节点
+//nolint:unused // Phase 2.3: 多级分裂时使用
 func insertChildAtIndex(children []uint64, childID uint64, index int) []uint64 {
 	// 扩展切片
 	newChildren := make([]uint64, len(children)+1)
@@ -261,6 +270,7 @@ func insertChildAtIndex(children []uint64, childID uint64, index int) []uint64 {
 }
 
 // maxChildrenForInnerNode 内部节点的最大子节点数
+//nolint:unused // Phase 2.3: 多级分裂时使用
 func maxChildrenForInnerNode() int {
 	// 假设页面大小 4KB，每个子节点指针 8 字节 + 键平均 16 字节
 	// 约可支持 128 个子节点

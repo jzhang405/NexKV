@@ -38,7 +38,7 @@ type ScanIterator struct {
 	current []byte // 当前键
 
 	// 遍历状态
-	stack []*iteratorStackEntry // 遍历栈
+	stack  []*iteratorStackEntry // 遍历栈
 	closed bool
 }
 

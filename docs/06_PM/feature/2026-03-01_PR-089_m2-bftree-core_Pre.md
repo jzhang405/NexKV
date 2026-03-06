@@ -39,7 +39,7 @@
 
 - **价值**：
   1. Bf-Tree 使用 bitmap 优化，减少锁竞争，提升并发性能
-  2. 异步操作接口（AsyncOperation[T]），提升吞吐量
+  2. 异步操作接口（Task[Result]），提升吞吐量
   3. Mini-Page 机制（3-level），减少空间占用
   4. Delta Chain 优化，减少写入放大
 
@@ -103,7 +103,7 @@ flowchart TD
 
     subgraph Domain["领域层 (Domain Layer)"]
         B[KVStore 接口]
-        C[AsyncOperation T]
+        C[Task[Result] T]
         D[LocalTx 接口]
     end
 
@@ -148,20 +148,20 @@ type KVStore interface {
     Set(ctx context.Context, key, value []byte) error
     Delete(ctx context.Context, key []byte) error
 
-    // 异步 CRUD（复用 AsyncOperation[T]）
-    GetAsync(ctx context.Context, key []byte) ReadOperation
-    SetAsync(ctx context.Context, key, value []byte) WriteOperation
-    DeleteAsync(ctx context.Context, key []byte) WriteOperation
+    // 异步 CRUD（复用 Task[Result]）
+    GetAsync(ctx context.Context, key []byte) model.Task[[]byte]
+    SetAsync(ctx context.Context, key, value []byte) model.Task[struct{}]
+    DeleteAsync(ctx context.Context, key []byte) model.Task[struct{}]
 
     // 范围查询
     Scan(ctx context.Context, start, end []byte) (Iterator, error)
-    ScanAsync(ctx context.Context, start, end []byte) IteratorOperation
+    ScanAsync(ctx context.Context, start, end []byte) model.Task[Iterator]
 
     // 批量操作
     BatchGet(ctx context.Context, keys [][]byte) (map[string][]byte, error)
     BatchSet(ctx context.Context, kvs []KeyValue) error
-    BatchGetAsync(ctx context.Context, keys [][]byte) BatchGetOperation
-    BatchSetAsync(ctx context.Context, kvs []KeyValue) WriteOperation
+    BatchGetAsync(ctx context.Context, keys [][]byte) model.Task[map[string][]byte]
+    BatchSetAsync(ctx context.Context, kvs []KeyValue) model.Task[struct{}]
 
     // 事务支持
     NewTx() (LocalTx, error)
@@ -169,14 +169,12 @@ type KVStore interface {
     // 资源管理
     Close() error
     Sync() error
-    SyncAsync(ctx context.Context) WriteOperation
+    SyncAsync(ctx context.Context) model.Task[struct{}]
 }
 
-// 类型别名（复用现有 AsyncOperation[T]）
-type ReadOperation = AsyncOperation[[]byte]
-type WriteOperation = AsyncOperation[struct{}]
-type IteratorOperation = AsyncOperation[Iterator]
-type BatchGetOperation = AsyncOperation[map[string][]byte]
+type model.Task[struct{}] = Task[Result][struct{}]
+type model.Task[Iterator] = Task[Result][Iterator]
+type model.Task[map[string][]byte] = Task[Result][map[string][]byte]
 ```
 
 **Nil 参数行为**（明确）：
@@ -423,16 +421,22 @@ func (dc *DeltaChain) snapshot() []*DeltaEntry {
 package service
 
 // WAL 写前日志接口
+// LSN 日志序列号（Log Sequence Number）
+type LSN uint64
+
+const (
+	LSNInvalid LSN = 0  // 无效 LSN
+)
 type WAL interface {
     // 同步写日志
-    Append(entry WALEntry) error
+    Append(entry WALEntry) (LSN, error)
     Sync() error
     Recover() ([]WALEntry, error)
-    Truncate(lsn uint64) error
+    Truncate(lsn LSN) error
 
-    // 异步写日志（复用 WriteFuture）
-    AppendAsync(entry WALEntry) WriteFuture
-    TruncateAsync(lsn uint64) WriteFuture
+    // 异步写日志（复用 v4 Task[Result]）
+    AppendAsync(ctx context.Context, entry WALEntry) model.Task[LSN]
+    TruncateAsync(ctx context.Context, lsn LSN) model.Task[struct{}]
 
     // 生命周期
     Close() error
@@ -440,13 +444,13 @@ type WAL interface {
 
 // WALEntry WAL 条目结构
 type WALEntry struct {
-    LSN       uint64      // 日志序列号
+    LSN       LSN         // 日志序列号（使用独立类型)
     TxID      uint64      // 事务ID（0 = 非事务操作）
     Timestamp int64       // Unix 时间戳（微秒）
     Type      WALType     // 日志类型
     Key       []byte      // 键
     Value     []byte      // 值
-    PrevLSN   uint64      // 前一条日志的 LSN
+    PrevLSN   LSN         // 前一条日志的 LSN（类型统一）
     CRC       uint32      // CRC32 校验和（新增，问题 1）
 }
 
@@ -555,7 +559,7 @@ func (w *DiskWAL) Close() error {
 }
 
 // Append 追加 WAL 条目（同步，支持 CRC 校验和分段）
-func (w *DiskWAL) Append(entry WALEntry) error {
+func (w *DiskWAL) Append(entry WALEntry) (LSN, error) {
     w.mu.Lock()
     defer w.mu.Unlock()
 
@@ -1003,6 +1007,297 @@ func NewBfTree(config *Config) (*BfTree, error) {
 }
 ```
 
+
+
+#### 3.2.4.1 并发控制设计选择说明
+
+> **重要设计决策**：Bf-Tree 采用 **Locked（有锁）设计**，而非 Lock-free（无锁）
+
+---
+
+**设计选择**：Locked（有锁）
+
+**核心原因**：
+
+1. **WAL 串行化约束**
+   - 写入操作必须先写 WAL（Write-Ahead Logging）
+   - WAL `Append()` 和 `Sync()` 必须串行化，无法无锁
+   - Lock-free 设计无法满足持久化语义
+
+2. **全局状态保护**
+   - `pageTable`：全局页面分配器，需要锁保护
+   - `rootPageID`：根节点 ID，分裂时需要原子更新
+   - `deltaChain`：Delta Chain 有自己的锁（`sync.RWMutex`）
+
+3. **实现复杂度**
+   - 完全 Lock-free 需要：
+     - `atomic` 包的原子操作（CAS、Load/Store）
+     - ABA 问题处理（通常使用版本号）
+     - 内存回收机制（epoch-based reclamation 或 hazard pointer）
+   - MVP 阶段复杂度过高，不可行
+
+4. **通用性要求**
+   - Bf-Tree 的并发控制应独立于 Executor 选择
+   - PerCoreExecutor 和 AntsExecutor 都可以使用相同的 Bf-Tree 实现
+   - Executor 的"无锁"是指"Task 执行无锁"，不是"数据结构无锁"
+
+---
+
+**与 Executor 的关系**：
+
+| Executor | Task 执行 | Bf-Tree 设计 | 说明 |
+|----------|-----------|--------------|------|
+| **PerCoreExecutor** | 无锁（SourceID 绑定 CPU） | **Locked Bf-Tree** | Bf-Tree 仍有锁，但减少锁竞争 |
+| **AntsExecutor** | 有锁（goroutine 池） | **Locked Bf-Tree** | Bf-Tree 有锁，与 Executor 一致 |
+
+**说明**：
+- ✅ Executor 的无锁特性不影响 Bf-Tree 的有锁设计
+- ✅ 两者职责分离：Executor 负责任务调度，Bf-Tree 负责数据一致性
+
+---
+
+**性能优化路径**：
+
+| 阶段 | 方案 | 并发控制 | 性能提升 |
+|------|------|---------|---------|
+| **P0（MVP）** | RWMutex | 全局锁 | 基线性能 |
+| **P1** | BitmapLock | 细粒度锁 | 减少锁竞争（+50%~100%）|
+| **P2** | 读取无锁优化 | 读快照 + 写锁 | 读性能提升（+200%~300%）|
+| **P3** | Delta Chain + 乐观锁 | 延迟写入 | 进一步优化（+30%~50%）|
+
+**P2：读取无锁优化示例**：
+```go
+// 读取无锁优化（读快照）
+func (t *BfTree) Get(ctx context.Context, key []byte) ([]byte, error) {
+    // 1. 获取快照版本（原子读取）
+    version := atomic.LoadUint64(&t.version)
+    
+    // 2. 无锁读取（假设版本不变）
+    if value, ok := t.lookup(key); ok {
+        // 3. 验证版本（乐观检查）
+        if atomic.LoadUint64(&t.version) == version {
+            return value, nil
+        }
+    }
+    
+    // 4. 版本变化，回退到有锁读取
+    t.mu.RLock()
+    defer t.mu.RUnlock()
+    return t.lookup(key)
+}
+```
+
+---
+
+**为什么不采用完全 Lock-free**：
+
+| 方案 | 优点 | 缺点 | MVP 可行性 |
+|------|------|------|-----------|
+| **Locked（当前）** | ✅ 实现简单<br>✅ 通用性强<br>✅ 易于维护 | ⚠️ 锁竞争开销 | ✅ **可行** |
+| **Lock-free** | ✅ 理论性能最高 | ❌ 实现极复杂<br>❌ WAL 无法无锁<br>❌ 调试困难 | ❌ **不可行** |
+
+---
+
+**总结**：
+- ✅ MVP 采用 **Locked 设计**（P0: RWMutex，P1: BitmapLock）
+- ✅ P2 阶段可优化为**读取无锁**（读快照）
+- ❌ 完全 Lock-free 设计不在 MVP 范围内
+
+
+
+#### 3.2.5 Pipeline 集成（v4 异步管道架构）
+
+> **重要**：Bf-Tree 直接复用 Phase 0 已完成的 v4 异步管道架构（Task[Result] + Pipeline）
+
+**v4 架构说明**：
+
+Bf-Tree 通过 **v4 异步管道架构**（Task[Result] + Pipeline）集成异步能力：
+
+```go
+// 文件：internal/domain/service/storage.go
+package service
+
+import "github.com/jzhang405/NexKV/internal/domain/model"
+
+// KVStore 接口（同步 + 异步）
+type KVStore interface {
+    // 同步 CRUD
+    Get(ctx context.Context, key []byte) ([]byte, error)
+    Set(ctx context.Context, key, value []byte) error
+    Delete(ctx context.Context, key []byte) error
+
+    // 异步 CRUD（返回 Task[Result]）
+    GetAsync(ctx context.Context, key []byte) model.Task[[]byte]
+    SetAsync(ctx context.Context, key, value []byte) model.Task[struct{}]
+    DeleteAsync(ctx context.Context, key []byte) model.Task[struct{}]
+
+    // 范围查询
+    Scan(ctx context.Context, start, end []byte) (Iterator, error)
+    ScanAsync(ctx context.Context, start, end []byte) model.Task[Iterator]
+
+    // 批量操作
+    BatchGet(ctx context.Context, keys [][]byte) (map[string][]byte, error)
+    BatchSet(ctx context.Context, kvs []KeyValue) error
+    BatchGetAsync(ctx context.Context, keys [][]byte) model.Task[map[string][]byte]
+    BatchSetAsync(ctx context.Context, kvs []KeyValue) model.Task[struct{}]
+
+    // 事务支持
+    NewTx() (LocalTx, error)
+
+    // 资源管理
+    Close() error
+    Sync() error
+    SyncAsync(ctx context.Context) model.Task[struct{}]
+}
+```
+
+**BfTree 集成 Pipeline**：
+
+```go
+// 文件：internal/infrastructure/storage/bftree/bftree.go
+package bftree
+
+import (
+    "context"
+    "github.com/jzhang405/NexKV/internal/domain/model"
+    "github.com/jzhang405/NexKV/internal/domain/service"
+)
+
+// BfTree 实现 KVStore 接口
+type BfTree struct {
+    pipeline *service.Pipeline  // ✅ v4 Pipeline 引用
+    config   *Config
+    // ... 其他字段
+}
+
+// SetAsync 异步设置（v4 模式）
+func (t *BfTree) SetAsync(ctx context.Context, key, value []byte) model.Task[struct{}] {
+    // 创建 Set 任务
+    task := NewBTreeSetTask(t, key, value)
+
+    // 提交到 Pipeline（异步执行）
+    err := t.pipeline.Submit(task)
+    if err != nil {
+        // 返回已失败的 Task
+        return model.NewFailedTask[struct{}](err)
+    }
+
+    return task
+}
+
+// BTreeSetTask BTree 写入任务
+type BTreeSetTask struct {
+    model.BaseTask[struct{}]
+    tree  *BfTree
+    key   []byte
+    value []byte
+}
+
+// NewBTreeSetTask 创建 BTreeSetTask
+func NewBTreeSetTask(tree *BfTree, key, value []byte) *BTreeSetTask {
+    return &BTreeSetTask{
+        BaseTask: *model.NewBaseTask(
+            model.OpStorage,
+            model.TaskPriorityNormal,
+            model.NewSourceStorage("bftree"),
+            func(ctx context.Context, pipeline model.PipelineContext) (struct{}, error) {
+                // 实际的 BTree 写入逻辑
+                err := tree.set(ctx, key, value)
+                return struct{}{}, err
+            },
+        ),
+        tree:  tree,
+        key:   key,
+        value: value,
+    }
+}
+
+// Execute 实现 Task[Result] 接口
+func (t *BTreeSetTask) Execute(ctx context.Context, pipeline model.PipelineContext) (struct{}, error) {
+    return t.BaseTask.Execute(ctx, pipeline)
+}
+```
+
+**CompositeWriteTask（WAL + BTree 组合）**：
+
+```go
+// CompositeWriteTask 组合写入任务（WAL + BTree）
+// ✅ 关键：确保先写 WAL，再写 BTree
+type CompositeWriteTask struct {
+    model.BaseTask[struct{}]
+    wal    WAL
+    btree  *BfTree
+    key    []byte
+    value  []byte
+}
+
+// NewCompositeWriteTask 创建组合写入任务
+func NewCompositeWriteTask(wal WAL, btree *BfTree, key, value []byte) *CompositeWriteTask {
+    return &CompositeWriteTask{
+        BaseTask: *model.NewBaseTask(
+            model.OpStorage,
+            model.TaskPriorityNormal,
+            model.NewSourceStorage("composite-write"),
+            func(ctx context.Context, pipeline model.PipelineContext) (struct{}, error) {
+                // 1. 先写 WAL
+                lsn, err := wal.Append(&WALEntry{
+                    Type:  WALTypeInsert,
+                    Key:   string(key),
+                    Value: value,
+                })
+                if err != nil {
+                    return struct{}{}, err
+                }
+
+                // 等待 WAL 持久化
+                if err := wal.Sync(); err != nil {
+                    return struct{}{}, err
+                }
+
+                // 2. 再写 BTree（内存）
+                err = btree.set(ctx, key, value)
+                return struct{}{}, err
+            },
+        ),
+        wal:   wal,
+        btree: btree,
+        key:   key,
+        value: value,
+    }
+}
+
+// Execute 实现 Task[Result] 接口
+func (t *CompositeWriteTask) Execute(ctx context.Context, pipeline model.PipelineContext) (struct{}, error) {
+    return t.BaseTask.Execute(ctx, pipeline)
+}
+```
+
+**使用示例**：
+
+```go
+// 用户代码（API 层）
+func (s *StorageService) Set(ctx context.Context, key, value []byte) error {
+    // 方式 1：使用 BfTree 异步接口
+    task := s.bftree.SetAsync(ctx, key, value)
+
+    // 等待完成
+    _, err := task.Wait(ctx)
+    return err
+
+    // 方式 2：使用组合任务（原子性更好）
+    task := NewCompositeWriteTask(s.wal, s.bftree, key, value)
+    s.pipeline.Submit(task)
+    _, err := task.Wait(ctx)
+    return err
+}
+```
+
+**关键设计点**：
+1. ✅ **复用 v4 架构**：使用 `Task[Result]` 和 `Pipeline`
+2. ✅ **组合任务**：`CompositeWriteTask` 保证 WAL + BTree 原子性
+3. ✅ **异步执行**：通过 `Pipeline.Submit()` 异步执行
+4. ✅ **类型安全**：泛型 `Task[Result]` 提供类型安全
+
 #### 3.3 DDD 领域建模
 
 **聚合根设计**：
@@ -1134,7 +1429,7 @@ var (
 | **WAL 恢复失败** | 中 | 充分测试崩溃恢复场景；单元测试 + 集成测试 |
 | **时间估算偏差** | 中 | 预留 4-6 周缓冲时间（8-10 周总周期）；分阶段检查点 |
 | **接口设计变更** | 低 | 基于 Spike 文档设计；架构师评审 |
-| **泛型学习曲线** | 低 | AsyncOperation[T] 已存在，复用即可 |
+| **泛型学习曲线** | 低 | Task[Result] 已存在，复用即可 |
 | **测试覆盖率不足** | 中 | 使用 testify；表驱动测试；强制 80% 覆盖率 |
 
 ### 5. 架构师评审记录（循环优化，直至通过）
@@ -1595,8 +1890,6 @@ go test -bench=. -benchmem ./internal/infrastructure/storage/bftree/...
    - Benchmark 工具：`~/ws/rust/src/github.com/microsoft/bf-tree/benchmark/`
 
 3. **现有实现**：
-   - `internal/domain/service/rpc_async.go`（AsyncOperation[T]）
-   - `internal/infrastructure/rpc/async_impl.go`（AsyncOperation[T] 实现）
    - `internal/domain/service/future.go`（Future[T]）
 
 4. **相关规范**：

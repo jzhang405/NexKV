@@ -46,6 +46,10 @@ type Config struct {
 
 	// 性能调优
 	CacheSize int `json:"cache_size"` // 缓存大小（页面数）
+
+	// 合并配置（Phase 2.3 新增）
+	MergeThreshold float32 `json:"merge_threshold"` // 合并阈值，默认 0.25 (25%)
+	MergeStrategy  string  `json:"merge_strategy"`  // 合并策略：默认 "merge"（rebalance 暂不支持）
 }
 
 // PromotionConfig Mini-Page 提升配置
@@ -74,7 +78,9 @@ func DefaultConfig() *Config {
 		PromotionConfig:  DefaultPromotionConfig(),
 		BitmapLockShards: DefaultBitmapLockShards,
 		SegmentSize:      DefaultSegmentSize,
-		CacheSize:        10000, // 10K 页面
+		CacheSize:        10000,   // 10K 页面
+		MergeThreshold:   0.25,    // 25% 利用率触发合并
+		MergeStrategy:    "merge", // 优先合并策略
 	}
 }
 

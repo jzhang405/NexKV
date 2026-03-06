@@ -238,10 +238,16 @@ func (n *LeafNode) Set(key, value []byte) error {
 	}
 
 	// 创建 Delta 条目
+	// 深拷贝键和值，防止外部修改影响 Delta Chain
+	keyCopy := make([]byte, len(key))
+	copy(keyCopy, key)
+	valueCopy := make([]byte, len(value))
+	copy(valueCopy, value)
+
 	delta := &DeltaEntry{
 		opType:    DeltaOpInsert,
-		key:       key,
-		value:     value,
+		key:       keyCopy,
+		value:     valueCopy,
 		timestamp: currentTimestamp(),
 	}
 
@@ -277,48 +283,49 @@ func (n *LeafNode) compact() error {
 	// 1. 创建新 Mini-Page
 	newMiniPage := NewMiniPage(n.level)
 
-	// 2. 先复制旧 Mini-Page 的有效槽位
-	applied := make(map[string]bool)
+	// 2. 将旧 Mini-Page 的槽位复制到临时 map
+	tempSlots := make(map[string]Slot)
 	for _, slot := range n.miniPage.slots {
 		keyStr := string(slot.key)
-		if !applied[keyStr] {
-			newMiniPage.slots = append(newMiniPage.slots, slot)
-			newMiniPage.slotMap[keyStr] = len(newMiniPage.slots) - 1
-			newMiniPage.dataSize += uint16(len(slot.key) + len(slot.value))
-			applied[keyStr] = true
-		}
+		tempSlots[keyStr] = slot
 	}
 
 	// 3. 应用 Delta Chain（倒序，最新优先）
+	// 记录被 Delta 处理过的键
+	processed := make(map[string]bool)
 	for i := len(n.deltas) - 1; i >= 0; i-- {
 		delta := n.deltas[i]
 		keyStr := string(delta.key)
 
-		if applied[keyStr] {
-			continue // 已应用过，跳过
-		}
+		// 标记为已处理
+		processed[keyStr] = true
 
 		switch delta.opType {
 		case DeltaOpInsert, DeltaOpUpdate:
-			// 更新或追加槽位
-			newMiniPage.slots = append(newMiniPage.slots, Slot{
+			// 更新或添加到临时 map
+			tempSlots[keyStr] = Slot{
 				key:   delta.key,
 				value: delta.value,
-			})
-			newMiniPage.slotMap[keyStr] = len(newMiniPage.slots) - 1
-			newMiniPage.dataSize += uint16(len(delta.key) + len(delta.value))
-			applied[keyStr] = true
+			}
 
 		case DeltaOpDelete:
-			// 标记删除（不添加到新 Mini-Page）
-			applied[keyStr] = true
+			// 从临时 map 中删除
+			delete(tempSlots, keyStr)
 		}
 	}
 
-	// 4. 替换 Mini-Page
+	// 4. 将所有槽位添加到新 Mini-Page
+	for _, slot := range tempSlots {
+		keyStr := string(slot.key)
+		newMiniPage.slots = append(newMiniPage.slots, slot)
+		newMiniPage.slotMap[keyStr] = len(newMiniPage.slots) - 1
+		newMiniPage.dataSize += uint16(len(slot.key) + len(slot.value))
+	}
+
+	// 5. 替换 Mini-Page
 	n.miniPage = newMiniPage
 
-	// 5. 清空 Delta Chain
+	// 6. 清空 Delta Chain
 	n.deltas = make([]*DeltaEntry, 0, 8)
 	n.deltaSize = 0
 
@@ -400,9 +407,13 @@ func (n *LeafNode) Delete(key []byte) error {
 	}
 
 	// 创建删除 Delta 条目
+	// 深拷贝键，防止外部修改影响 Delta Chain
+	keyCopy := make([]byte, len(key))
+	copy(keyCopy, key)
+
 	delta := &DeltaEntry{
 		opType:    DeltaOpDelete,
-		key:       key,
+		key:       keyCopy,
 		value:     nil,
 		timestamp: currentTimestamp(),
 	}

@@ -2,6 +2,7 @@
 package bftree
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -44,8 +45,9 @@ type ScanIterator struct {
 
 // iteratorStackEntry 遍历栈条目
 type iteratorStackEntry struct {
-	pageID uint64
-	index  int // 当前访问的子节点索引
+	pageID     uint64
+	index      int // 当前访问的子节点索引
+	deltaIndex int // Delta Chain 遍历索引（Phase 2.3）
 }
 
 // Scan 扫描指定范围的键值对
@@ -152,20 +154,106 @@ func (it *ScanIterator) Next() (valid bool, key []byte, value []byte, err error)
 		return false, nil, nil, nil
 	}
 
-	// 获取栈顶的叶子节点
-	top := it.stack[len(it.stack)-1]
-	if top == nil {
-		return false, nil, nil, nil
-	}
+	for {
+		// 获取栈顶的叶子节点
+		if len(it.stack) == 0 {
+			return false, nil, nil, nil
+		}
 
-	leafNode, err := it.tree.pageStore.getLeaf(top.pageID)
-	if err != nil {
-		return false, nil, nil, fmt.Errorf("failed to get leaf node: %w", err)
-	}
+		top := it.stack[len(it.stack)-1]
+		if top == nil {
+			return false, nil, nil, nil
+		}
 
-	// 获取当前槽位的键值对
-	if top.index >= len(leafNode.miniPage.slots) {
-		// 当前叶子节点已遍历完，需要向上回溯
+		leafNode, err := it.tree.pageStore.getLeaf(top.pageID)
+		if err != nil {
+			return false, nil, nil, fmt.Errorf("failed to get leaf node: %w", err)
+		}
+
+		// Phase 2.3: 支持遍历 Delta Chain
+		// 第一阶段：遍历 Mini-Page
+		if top.deltaIndex == 0 {
+			// 还在遍历 Mini-Page
+			for top.index < len(leafNode.miniPage.slots) {
+				slot := leafNode.miniPage.slots[top.index]
+
+				// 检查范围
+				if it.start != nil && compareKeys(slot.key, it.start) < 0 {
+					top.index++
+					continue
+				}
+
+				if it.end != nil && compareKeys(slot.key, it.end) >= 0 {
+					// 超过结束键，遍历完全结束
+					return false, nil, nil, nil
+				}
+
+				// 检查键是否在 Delta Chain 中被删除
+				if !deletedInDeltaChain(slot.key, leafNode.deltas) {
+					// 找到有效键值对
+					keyCopy := make([]byte, len(slot.key))
+					copy(keyCopy, slot.key)
+
+					valueCopy := make([]byte, len(slot.value))
+					copy(valueCopy, slot.value)
+
+					// 移动到下一个
+					top.index++
+					it.current = keyCopy
+
+					return true, keyCopy, valueCopy, nil
+				}
+
+				top.index++
+			}
+
+			// Mini-Page 遍历完成，开始遍历 Delta Chain
+			top.deltaIndex = 1
+		}
+
+		// 第二阶段：遍历 Delta Chain
+		for top.deltaIndex <= len(leafNode.deltas) {
+			// Delta Chain 遍历完成
+			if top.deltaIndex > len(leafNode.deltas) {
+				break
+			}
+
+			delta := leafNode.deltas[top.deltaIndex-1]
+
+			// 跳过 Delete 操作
+			if delta.opType == DeltaOpDelete {
+				top.deltaIndex++
+				continue
+			}
+
+			// 检查范围
+			if it.start != nil && compareKeys(delta.key, it.start) < 0 {
+				top.deltaIndex++
+				continue
+			}
+			if it.end != nil && compareKeys(delta.key, it.end) >= 0 {
+				// 超过结束键，遍历完全结束
+				return false, nil, nil, nil
+			}
+
+			// 检查键是否已在 Mini-Page 中
+			if !keyInMiniPage(delta.key, leafNode.miniPage) {
+				keyCopy := make([]byte, len(delta.key))
+				copy(keyCopy, delta.key)
+
+				valueCopy := make([]byte, len(delta.value))
+				copy(valueCopy, delta.value)
+
+				top.deltaIndex++
+				it.current = keyCopy
+				return true, keyCopy, valueCopy, nil
+			}
+
+			top.deltaIndex++
+		}
+
+		// 当前节点的 Mini-Page 和 Delta Chain 都遍历完成
+		// 移动到下一个节点
 		if err := it.moveUp(); err != nil {
 			return false, nil, nil, err
 		}
@@ -174,47 +262,7 @@ func (it *ScanIterator) Next() (valid bool, key []byte, value []byte, err error)
 		if len(it.stack) == 0 {
 			return false, nil, nil, nil
 		}
-
-		// 重新获取栈顶
-		top = it.stack[len(it.stack)-1]
-		leafNode, err = it.tree.pageStore.getLeaf(top.pageID)
-		if err != nil {
-			return false, nil, nil, fmt.Errorf("failed to get leaf node after move up: %w", err)
-		}
 	}
-
-	if top.index >= len(leafNode.miniPage.slots) {
-		// 应该不会到这里
-		return false, nil, nil, nil
-	}
-
-	slot := leafNode.miniPage.slots[top.index]
-
-	// 检查范围
-	if it.start != nil && compareKeys(slot.key, it.start) < 0 {
-		// 还没到起始键，继续移动
-		top.index++
-		it.moveToNextValid()
-		return it.Next()
-	}
-
-	if it.end != nil && compareKeys(slot.key, it.end) >= 0 {
-		// 超过结束键，遍历结束
-		return false, nil, nil, nil
-	}
-
-	// 深拷贝键值
-	keyCopy := make([]byte, len(slot.key))
-	copy(keyCopy, slot.key)
-
-	valueCopy := make([]byte, len(slot.value))
-	copy(valueCopy, slot.value)
-
-	// 移动到下一个
-	top.index++
-	it.current = keyCopy
-
-	return true, keyCopy, valueCopy, nil
 }
 
 // moveUp 向上回溯，移动到下一个叶子节点
@@ -339,4 +387,36 @@ func (t *BfTree) ScanAsync(ctx context.Context, start, end []byte) model.Task[It
 			return t.Scan(ctx, start, end), nil
 		},
 	)
+}
+
+// deletedInDeltaChain 检查键是否在 Delta Chain 中被删除
+//
+// 参数：
+//   - key: 要检查的键
+//   - deltas: Delta Chain 切片
+//
+// 返回：
+//   - bool: 如果键在 Delta Chain 中被删除返回 true
+func deletedInDeltaChain(key []byte, deltas []*DeltaEntry) bool {
+	// 从后向前遍历（最新的优先）
+	for i := len(deltas) - 1; i >= 0; i-- {
+		delta := deltas[i]
+		if delta.opType == DeltaOpDelete && bytes.Equal(delta.key, key) {
+			return true
+		}
+	}
+	return false
+}
+
+// keyInMiniPage 检查键是否在 MiniPage 中
+//
+// 参数：
+//   - key: 要检查的键
+//   - miniPage: Mini-Page 实例
+//
+// 返回：
+//   - bool: 如果键在 MiniPage 中存在返回 true
+func keyInMiniPage(key []byte, miniPage *MiniPage) bool {
+	found := miniPage.findSlot(key)
+	return found >= 0
 }

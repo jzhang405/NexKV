@@ -189,9 +189,10 @@ func (t *BfTree) splitInnerNode(pageID uint64) (leftPageID, rightPageID uint64, 
 
 // insertSplitIntoParent 将分裂结果插入父节点
 //
-// MVP 实现：仅支持根节点分裂
+// 支持多级分裂：
 // - 如果 parentPageID == 0，创建新根节点
-// - 否则返回错误（多级分裂在 Phase 2.3 实现）
+// - 否则，将分隔键和右子节点插入父节点
+// - 如果父节点也满了，递归分裂父节点
 //
 //nolint:unused // Phase 2.3: 多级分裂时使用
 func (t *BfTree) insertSplitIntoParent(parentPageID, leftPageID, rightPageID uint64, splitKey []byte) error {
@@ -200,9 +201,156 @@ func (t *BfTree) insertSplitIntoParent(parentPageID, leftPageID, rightPageID uin
 		return t.createNewRoot(leftPageID, rightPageID, splitKey)
 	}
 
-	// 2. MVP: 非根节点分裂暂不支持
-	// Phase 2.3 将实现完整的多级分裂逻辑
-	return fmt.Errorf("non-root split not yet implemented (Phase 2.3)")
+	// 2. 获取父节点
+	parentNode, err := t.pageStore.getInner(parentPageID)
+	if err != nil {
+		return fmt.Errorf("failed to get parent node: %w", err)
+	}
+
+	// 3. 检查父节点是否已满
+	if parentNode.IsFull() {
+		// 父节点已满，需要分裂
+		return t.splitParentAndInsert(parentPageID, leftPageID, rightPageID, splitKey)
+	}
+
+	// 4. 父节点未满，直接插入
+	// 找到 leftPageID 在父节点中的位置
+	insertIndex := -1
+	for i, childID := range parentNode.children {
+		if childID == leftPageID {
+			insertIndex = i
+			break
+		}
+	}
+
+	if insertIndex == -1 {
+		return fmt.Errorf("leftPageID %d not found in parent node %d", leftPageID, parentPageID)
+	}
+
+	// 5. 插入分隔键和右子节点
+	// 在 insertIndex 位置后插入 splitKey 和 rightPageID
+	if err := parentNode.InsertChild(insertIndex, splitKey, rightPageID); err != nil {
+		return fmt.Errorf("failed to insert child to parent: %w", err)
+	}
+
+	// 6. 存储更新后的父节点
+	t.pageStore.putInner(parentPageID, parentNode)
+
+	return nil
+}
+
+// splitParentAndInsert 分裂父节点并插入新子节点
+//
+// 当父节点已满时：
+// 1. 分裂父节点
+// 2. 提升分隔键到祖父节点
+// 3. 如果祖父节点也满，递归分裂
+//
+// 参数：
+//   - parentPageID: 父节点页面 ID
+//   - leftPageID: 左子节点页面 ID
+//   - rightPageID: 右子节点页面 ID
+//   - splitKey: 分隔键
+//
+// 返回：
+//   - error: 错误
+func (t *BfTree) splitParentAndInsert(parentPageID, leftPageID, rightPageID uint64, splitKey []byte) error {
+	// 1. 先从父节点中移除 leftPageID
+	parentNode, err := t.pageStore.getInner(parentPageID)
+	if err != nil {
+		return fmt.Errorf("failed to get parent node: %w", err)
+	}
+
+	// 找到 leftPageID 的位置
+	leftIndex := -1
+	for i, childID := range parentNode.children {
+		if childID == leftPageID {
+			leftIndex = i
+			break
+		}
+	}
+
+	if leftIndex == -1 {
+		return fmt.Errorf("leftPageID %d not found in parent node", leftPageID)
+	}
+
+	// 2. 分裂父节点
+	newLeftPageID, newRightPageID, parentSplitKey, splitErr := t.splitInnerNode(parentPageID)
+	if splitErr != nil {
+		return fmt.Errorf("failed to split parent node: %w", splitErr)
+	}
+
+	// 3. 找到祖父节点
+	grandParentID, err := t.findParent(parentPageID)
+	if err != nil {
+		return fmt.Errorf("failed to find grandparent: %w", err)
+	}
+
+	// 4. 递归插入分裂结果到祖父节点
+	if grandParentID == 0 || grandParentID == parentPageID {
+		// 到达根节点，创建新根
+		return t.createNewRoot(newLeftPageID, newRightPageID, parentSplitKey)
+	}
+
+	// 5. 将 splitKey 和 rightPageID 插入到正确的父节点中
+	// 需要确定 leftPageID 现在是在 newLeftPageID 还是 newRightPageID 中
+	newLeftNode, err := t.pageStore.getInner(newLeftPageID)
+	if err != nil {
+		return fmt.Errorf("failed to get new left node: %w", err)
+	}
+
+	// 检查 leftPageID 是否在 newLeftNode 中
+	foundInLeft := false
+	for _, childID := range newLeftNode.children {
+		if childID == leftPageID {
+			foundInLeft = true
+			break
+		}
+	}
+
+	var targetParentID uint64
+	var insertIndex int
+
+	if foundInLeft {
+		// leftPageID 在 newLeftNode 中，插入到 newLeftNode
+		targetParentID = newLeftPageID
+		// 找到 leftPageID 的位置
+		for i, childID := range newLeftNode.children {
+			if childID == leftPageID {
+				insertIndex = i
+				break
+			}
+		}
+	} else {
+		// leftPageID 在 newRightNode 中，插入到 newRightNode
+		targetParentID = newRightPageID
+		newRightNode, err := t.pageStore.getInner(newRightPageID)
+		if err != nil {
+			return fmt.Errorf("failed to get new right node: %w", err)
+		}
+		// 找到 leftPageID 的位置
+		for i, childID := range newRightNode.children {
+			if childID == leftPageID {
+				insertIndex = i
+				break
+			}
+		}
+	}
+
+	// 6. 插入 splitKey 和 rightPageID 到目标父节点
+	targetNode, err := t.pageStore.getInner(targetParentID)
+	if err != nil {
+		return fmt.Errorf("failed to get target parent node: %w", err)
+	}
+
+	if err := targetNode.InsertChild(insertIndex, splitKey, rightPageID); err != nil {
+		return fmt.Errorf("failed to insert child: %w", err)
+	}
+
+	t.pageStore.putInner(targetParentID, targetNode)
+
+	// 7. 将父节点的分裂结果插入到祖父节点
+	return t.insertSplitIntoParent(grandParentID, newLeftPageID, newRightPageID, parentSplitKey)
 }
 
 // createNewRoot 创建新的根节点（树高度 +1）

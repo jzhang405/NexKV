@@ -106,3 +106,99 @@ func TestCompareKeys_EdgeCases_Coverage(t *testing.T) {
 		})
 	}
 }
+
+// TestSplitLeafNode_Direct 测试叶子节点分裂
+func TestSplitLeafNode_Direct(t *testing.T) {
+	tree := setupTestTree(t)
+	defer tree.Close()
+
+	// 创建一个叶子节点并添加数据
+	node := NewLeafNode(1, L3)
+	for i := 0; i < 10; i++ {
+		key := []byte{byte(i)}
+		value := make([]byte, 30)
+		_ = node.Set(key, value)
+	}
+	_ = node.compact()
+
+	tree.pageStore.putLeaf(1, node)
+
+	// 分裂节点
+	leftPageID, rightPageID, splitKey, oldPageID, err := tree.splitLeafNode(1)
+	require.NoError(t, err)
+	assert.NotZero(t, leftPageID)
+	assert.NotZero(t, rightPageID)
+	assert.NotNil(t, splitKey)
+	assert.Equal(t, uint64(1), oldPageID)
+}
+
+// TestSplitInnerNode_Direct 测试内部节点分裂
+func TestSplitInnerNode_Direct(t *testing.T) {
+	tree := setupTestTree(t)
+	defer tree.Close()
+
+	// 创建一个内部节点
+	node := NewInnerNode(1, L3)
+	for i := uint64(1); i <= 6; i++ {
+		key := []byte{byte(i - 1)}
+		_ = node.InsertChild(int(i-1), key, i)
+	}
+
+	tree.pageStore.putInner(1, node)
+
+	// 分裂节点
+	leftPageID, rightPageID, splitKey, err := tree.splitInnerNode(1)
+	require.NoError(t, err)
+	assert.NotZero(t, leftPageID)
+	assert.NotZero(t, rightPageID)
+	assert.NotNil(t, splitKey)
+}
+
+// TestInsertSplitIntoParent_Direct 测试插入分裂到父节点
+func TestInsertSplitIntoParent_Direct(t *testing.T) {
+	tree := setupTestTree(t)
+	defer tree.Close()
+
+	// 创建父节点
+	parentNode := NewInnerNode(10, L3)
+	parentNode.children = []uint64{1, 2}
+	parentNode.keys = [][]byte{{5}}
+	tree.pageStore.putInner(10, parentNode)
+
+	// 插入分裂结果
+	err := tree.insertSplitIntoParent(10, 1, 2, []byte{5})
+	require.NoError(t, err)
+}
+
+// TestInsertSplitIntoParent_NewRoot_Direct 测试创建新根节点
+func TestInsertSplitIntoParent_NewRoot_Direct(t *testing.T) {
+	tree := setupTestTree(t)
+	defer tree.Close()
+
+	// parentPageID=0 表示创建新根节点
+	err := tree.insertSplitIntoParent(0, 1, 2, []byte{5})
+	require.NoError(t, err)
+
+	// 验证根节点被创建
+	assert.NotZero(t, tree.rootPageID)
+}
+
+// TestInsertKeyAtIndex_Direct 测试插入键
+func TestInsertKeyAtIndex_Direct(t *testing.T) {
+	keys := [][]byte{{1}, {3}, {5}}
+	result := insertKeyAtIndex(keys, []byte{2}, 1)
+	assert.Equal(t, 4, len(result))
+}
+
+// TestInsertChildAtIndex_Direct 测试插入子节点
+func TestInsertChildAtIndex_Direct(t *testing.T) {
+	children := []uint64{1, 3, 5}
+	result := insertChildAtIndex(children, 2, 1)
+	assert.Equal(t, 4, len(result))
+}
+
+// TestMaxChildrenForInnerNode_Direct 测试获取最大子节点数
+func TestMaxChildrenForInnerNode_Direct(t *testing.T) {
+	max := maxChildrenForInnerNode()
+	assert.Greater(t, max, 0)
+}

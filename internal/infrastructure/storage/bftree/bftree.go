@@ -278,9 +278,16 @@ func (t *BfTree) insertLocked(key, value []byte, writeWAL bool) error {
 				return fmt.Errorf("failed to split leaf node: %w", splitErr)
 			}
 
-			// 创建新根节点（MVP：仅支持根节点分裂）
-			if err := t.createNewRoot(leftPageID, rightPageID, splitKey); err != nil {
-				return fmt.Errorf("failed to create new root: %w", err)
+			// Phase 2.3: 使用 insertSplitIntoParent 支持多级分裂
+			// 找到父节点
+			parentPageID, err := t.findParent(leafPageID)
+			if err != nil {
+				return fmt.Errorf("failed to find parent: %w", err)
+			}
+
+			// 将分裂结果插入父节点（支持多级分裂）
+			if insertErr := t.insertSplitIntoParent(parentPageID, leftPageID, rightPageID, splitKey); insertErr != nil {
+				return fmt.Errorf("failed to insert split to parent: %w", insertErr)
 			}
 
 			// 成功后释放旧节点
@@ -437,7 +444,17 @@ func (t *BfTree) deleteLocked(key []byte, writeWAL bool) error {
 	}
 
 	// 删除键值
-	return leafNode.Delete(key)
+	if err := leafNode.Delete(key); err != nil {
+		return err
+	}
+
+	// Phase 2.3: 删除后立即检查是否需要合并兄弟节点
+	// 设计决策 1：Delete 后立即检查
+	if err := t.tryMergeAfterDelete(leafPageID); err != nil {
+		return fmt.Errorf("merge failed: %w", err)
+	}
+
+	return nil
 }
 
 // GetStats 获取统计信息

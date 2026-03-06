@@ -34,6 +34,12 @@ var (
 
 	// ErrTreeClosed Bf-Tree 已关闭
 	ErrTreeClosed = errors.New("tree closed")
+
+	// ErrTreeTooDeep 树深度超过限制（Phase 2.3 新增）
+	ErrTreeTooDeep = errors.New("tree depth exceeded")
+
+	// ErrCannotMerge 节点无法合并（Phase 2.3 新增）
+	ErrCannotMerge = errors.New("nodes cannot be merged")
 )
 
 // PageCorruptError 页面损坏错误

@@ -451,6 +451,33 @@ func (t *BfTree) GetStats() BfTreeStats {
 	return stats
 }
 
+// Sync 刷盘，确保持久化
+//
+// 如果启用了 WAL，将 WAL 数据刷到磁盘
+// 如果未启用 WAL，直接返回成功（MVP：数据仅在内存中）
+func (t *BfTree) Sync() error {
+	if t.closed.Load() {
+		return ErrTreeClosed
+	}
+
+	// 如果启用了 WAL，同步 WAL
+	if t.wal != nil && t.walEnabled {
+		t.rwLock.RLock()
+		defer t.rwLock.RUnlock()
+
+		if err := t.wal.Sync(); err != nil {
+			return fmt.Errorf("failed to sync wal: %w", err)
+		}
+
+		// 更新统计
+		atomic.AddInt64(&t.stats.WALSyncCount, 1)
+		return nil
+	}
+
+	// MVP: 未启用 WAL，直接返回成功
+	return nil
+}
+
 // Close 关闭 Bf-Tree
 func (t *BfTree) Close() error {
 	if !t.closed.CompareAndSwap(false, true) {

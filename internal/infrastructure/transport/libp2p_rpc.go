@@ -602,6 +602,11 @@ func (r *Libp2pRPC) registerPendingCall(requestID string, callCtx context.Contex
 	r.pendingCalls[requestID] = call
 	r.pendingCallsMu.Unlock()
 
+	go func(reqID string) {
+		<-callCtx.Done()
+		r.unregisterPendingCall(reqID)
+	}(requestID)
+
 	return call
 }
 

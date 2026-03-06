@@ -31,23 +31,15 @@
 //
 // ## 2. RPCAsync - 异步调用
 //
-// 返回 Task[T]，支持链式回调和超时设置:
+// 返回 Task[T]，支持等待结果:
 //
 //	// 基础用法
-//	op := rpc.CallAsync(ctx, peerID, request)
-//	result, err := op.Await(ctx)
+//	task := rpc.CallAsync(ctx, peerID, request)
+//	result, err := task.Wait(ctx)
 //
-//	// 链式回调
-//	op.OnSuccess(func(resp ResponseMsg) {
-//	    fmt.Println("成功:", resp)
-//	}).OnError(func(err error) {
-//	    fmt.Println("失败:", err)
-//	})
-//
-//	// 链式超时
-//	result, err := rpc.CallAsync(ctx, peerID, request).
-//	    WithTimeout(5 * time.Second).
-//	    Await(ctx)
+//	// 带超时
+//	task := rpc.CallAsyncWithTimeout(ctx, peerID, request, 5000)
+//	result, err := task.Wait(ctx)
 //
 // # BroadcastProgress - 广播进度追踪
 //
@@ -202,8 +194,8 @@
 //	    defer cancel()
 //
 //	    req := model.NewMessage("test-payload")
-//	    op := rpcAsync.BroadcastAsync(ctx, peers, req)
-//	    result, err := op.Await(ctx)
+//	    task := rpcAsync.BroadcastAsync(ctx, peers, req)
+//	    result, err := task.Wait(ctx)
 //
 //	    if err != nil {
 //	        fmt.Printf("广播失败: %v\n", err)

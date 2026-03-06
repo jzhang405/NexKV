@@ -276,3 +276,610 @@ func TestBfTree_ScanAsync(t *testing.T) {
 	assert.Greater(t, count, 0)
 	iter.Close()
 }
+
+// TestBfTree_Scan_MultiLevel 测试多级树的扫描
+
+// TestBfTree_Scan_MultiLevel 测试多级树的扫描
+func TestBfTree_Scan_MultiLevel(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入足够多的数据创建多级树
+	const numKeys = 100
+	for i := 0; i < numKeys; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 扫描所有数据
+	iter := tree.Scan(context.Background(), nil, nil)
+	defer iter.Close()
+
+	count := 0
+	for {
+		valid, _, _, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+		count++
+	}
+
+	assert.Equal(t, numKeys, count)
+}
+
+// TestBfTree_Scan_WithDeltaChain 测试 Delta Chain 的扫描
+func TestBfTree_Scan_WithDeltaChain(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	for i := 0; i < 20; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 更新一些数据
+	for i := 0; i < 10; i++ {
+		key := []byte{byte(i)}
+		value := []byte("updated")
+		err := tree.Update(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 扫描所有数据，验证所有键都被扫描到
+	iter := tree.Scan(context.Background(), nil, nil)
+	defer iter.Close()
+
+	seen := make(map[byte]bool)
+	for {
+		valid, key, _, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+		seen[key[0]] = true
+	}
+
+	assert.Equal(t, 20, len(seen))
+
+	// 验证更新的值可以通过 Get 获取
+	for i := 0; i < 10; i++ {
+		key := []byte{byte(i)}
+		value, err := tree.Get(context.Background(), key)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("updated"), value)
+	}
+}
+
+// TestBfTree_Scan_AfterDelete 测试删除后的扫描
+func TestBfTree_Scan_AfterDelete(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	for i := 0; i < 20; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 删除一些数据
+	for i := 5; i < 10; i++ {
+		key := []byte{byte(i)}
+		err := tree.Delete(context.Background(), key)
+		require.NoError(t, err)
+	}
+
+	// 扫描所有数据
+	iter := tree.Scan(context.Background(), nil, nil)
+	defer iter.Close()
+
+	seen := make(map[byte]bool)
+	for {
+		valid, key, _, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+		seen[key[0]] = true
+	}
+
+	// 应该看到 15 个键（0-4, 10-19）
+	assert.Equal(t, 15, len(seen))
+
+	// 验证删除的键不在结果中
+	for i := 5; i < 10; i++ {
+		assert.False(t, seen[byte(i)], "key %d should not be in scan result", i)
+	}
+}
+
+// TestBfTree_Scan_Range_WithDeltaChain 测试带 Delta Chain 的范围扫描
+func TestBfTree_Scan_Range_WithDeltaChain(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	for i := 0; i < 50; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 更新一些数据
+	for i := 20; i < 30; i++ {
+		key := []byte{byte(i)}
+		value := []byte("updated")
+		err := tree.Update(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 范围扫描 [10, 40)
+	iter := tree.Scan(context.Background(), []byte{10}, []byte{40})
+	defer iter.Close()
+
+	seen := make(map[byte]bool)
+	for {
+		valid, key, _, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+
+		// 验证范围
+		assert.GreaterOrEqual(t, key[0], byte(10))
+		assert.Less(t, key[0], byte(40))
+
+		seen[key[0]] = true
+	}
+
+	// 应该看到 30 个键（10-39）
+	assert.Equal(t, 30, len(seen))
+
+	// 验证更新的值可以通过 Get 获取
+	for i := 20; i < 30; i++ {
+		key := []byte{byte(i)}
+		value, err := tree.Get(context.Background(), key)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("updated"), value)
+	}
+}
+
+// TestBfTree_Scan_RangeBasic 测试基本范围扫描
+func TestBfTree_Scan_RangeBasic(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	for i := 0; i < 10; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 扫描范围 [3, 7)
+	iter := tree.Scan(context.Background(), []byte{3}, []byte{7})
+	defer iter.Close()
+
+	seen := make(map[byte]bool)
+	for {
+		valid, key, _, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+		seen[key[0]] = true
+	}
+
+	// 验证所有扫描的键都在范围内
+	for k := range seen {
+		assert.GreaterOrEqual(t, k, byte(3))
+		assert.Less(t, k, byte(7))
+	}
+}
+
+// TestBfTree_Scan_EmptyRange 测试空范围
+func TestBfTree_Scan_EmptyRange(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	for i := 0; i < 10; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 扫描不存在的范围
+	iter := tree.Scan(context.Background(), []byte{20}, []byte{30})
+	defer iter.Close()
+
+	// 应该立即结束
+	valid, _, _, _ := iter.Next()
+	assert.False(t, valid)
+}
+
+// TestBfTree_Scan_SingleKey 测试单个键的扫描
+func TestBfTree_Scan_SingleKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	err = tree.Set(context.Background(), []byte{10}, []byte("value10"))
+	require.NoError(t, err)
+
+	// 扫描单个键
+	iter := tree.Scan(context.Background(), []byte{10}, []byte{11})
+	defer iter.Close()
+
+	valid, key, value, err := iter.Next()
+	require.NoError(t, err)
+	assert.True(t, valid)
+	assert.Equal(t, []byte{10}, key)
+	assert.Equal(t, []byte("value10"), value)
+
+	// 下一个应该结束
+	valid, _, _, _ = iter.Next()
+	assert.False(t, valid)
+}
+
+// TestBfTree_Scan_LargeDataset 测试大数据集扫描
+func TestBfTree_Scan_LargeDataset(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入大量数据
+	const numKeys = 500
+	for i := 0; i < numKeys; i++ {
+		key := []byte{byte(i / 256), byte(i % 256)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 扫描所有数据
+	iter := tree.Scan(context.Background(), nil, nil)
+	defer iter.Close()
+
+	count := 0
+	seen := make(map[string]bool)
+
+	for {
+		valid, key, value, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+		count++
+		seen[string(key)] = true
+		assert.Equal(t, []byte("value"), value)
+	}
+
+	assert.Equal(t, numKeys, count)
+	assert.Equal(t, numKeys, len(seen))
+}
+
+// TestBfTree_Scan_MoveUp 测试迭代器向上移动
+func TestBfTree_Scan_MoveUp(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据创建多级树
+	for i := 0; i < 200; i++ {
+		key := []byte{byte(i / 256), byte(i % 256)}
+		value := []byte("value data that is longer")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 从中间开始扫描，应该触发 moveUp
+	startKey := []byte{0, 100}
+	endKey := []byte{0, 150}
+
+	iter := tree.Scan(context.Background(), startKey, endKey)
+	defer iter.Close()
+
+	count := 0
+	for {
+		valid, _, _, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+		count++
+	}
+
+	// 应该扫描到 50 个键
+	assert.Equal(t, 50, count)
+}
+
+// TestBfTree_Scan_AllFromMiddle 测试从中间开始扫描到结束
+func TestBfTree_Scan_AllFromMiddle(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	const numKeys = 100
+	for i := 0; i < numKeys; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 从中间开始扫描到结束
+	startKey := []byte{50}
+	iter := tree.Scan(context.Background(), startKey, nil)
+	defer iter.Close()
+
+	seen := make(map[byte]bool)
+	for {
+		valid, key, _, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+		seen[key[0]] = true
+		assert.GreaterOrEqual(t, key[0], byte(50))
+	}
+
+	// 应该看到 50-99 的键
+	assert.Equal(t, 50, len(seen))
+}
+
+// TestBfTree_Scan_ToMiddle 测试从头扫描到中间
+func TestBfTree_Scan_ToMiddle(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	const numKeys = 100
+	for i := 0; i < numKeys; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 从头扫描到中间
+	endKey := []byte{50}
+	iter := tree.Scan(context.Background(), nil, endKey)
+	defer iter.Close()
+
+	seen := make(map[byte]bool)
+	for {
+		valid, key, _, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+		seen[key[0]] = true
+		assert.Less(t, key[0], byte(50))
+	}
+
+	// 应该看到 0-49 的键
+	assert.Equal(t, 50, len(seen))
+}
+
+// TestBfTree_Scan_ExactStartKey 测试精确起始键
+func TestBfTree_Scan_ExactStartKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	for i := 0; i < 20; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 精确起始键扫描
+	startKey := []byte{10}
+	iter := tree.Scan(context.Background(), startKey, nil)
+	defer iter.Close()
+
+	valid, firstKey, _, err := iter.Next()
+	require.NoError(t, err)
+	assert.True(t, valid)
+	// 第一个键应该是 10 或更大
+	assert.GreaterOrEqual(t, firstKey[0], byte(10))
+}
+
+// TestBfTree_Scan_ReverseVerification 测试扫描完整性
+func TestBfTree_Scan_ReverseVerification(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	for i := 0; i < 50; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 扫描并验证所有键都被扫描到
+	iter := tree.Scan(context.Background(), nil, nil)
+	defer iter.Close()
+
+	seen := make(map[byte]bool)
+	for {
+		valid, key, _, err := iter.Next()
+		if !valid {
+			break
+		}
+		require.NoError(t, err)
+		seen[key[0]] = true
+	}
+
+	// 验证所有键都被扫描到
+	assert.Equal(t, 50, len(seen))
+	for i := 0; i < 50; i++ {
+		assert.True(t, seen[byte(i)], "key %d should be in scan result", i)
+	}
+}

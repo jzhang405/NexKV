@@ -2,6 +2,7 @@ package bftree
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -861,4 +862,457 @@ func TestBfTree_Set_Update_Delete_Complete(t *testing.T) {
 
 	_, err = tree.Get(context.Background(), []byte("key1"))
 	assert.Error(t, err)
+}
+
+// Removed duplicate WAL tests - see sync_test.go
+
+// TestBfTree_Recover_EmptyWAL 测试空 WAL 恢复
+func TestBfTree_Recover_EmptyWAL(t *testing.T) {
+	tmpDir := t.TempDir()
+	walDir := filepath.Join(tmpDir, "wal")
+	config := &Config{
+		DataDir:          tmpDir,
+		WALDir:           walDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        true,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		SegmentSize:      DefaultSegmentSize,
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	tree.Close()
+
+	// 重新打开应该能恢复（虽然 WAL 为空）
+	tree2, err := NewBfTree(config)
+	require.NoError(t, err)
+	tree2.Close()
+}
+
+// TestBfTree_NewBfTree_WithWALRecovery 测试带 WAL 恢复的创建
+func TestBfTree_NewBfTree_WithWALRecovery(t *testing.T) {
+	tmpDir := t.TempDir()
+	walDir := filepath.Join(tmpDir, "wal")
+	config := &Config{
+		DataDir:          tmpDir,
+		WALDir:           walDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        true,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		SegmentSize:      DefaultSegmentSize,
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	// 创建第一个树并写入数据
+	tree1, err := NewBfTree(config)
+	require.NoError(t, err)
+
+	err = tree1.Set(context.Background(), []byte("key1"), []byte("value1"))
+	require.NoError(t, err)
+
+	tree1.Close()
+
+	// 创建第二个树，应该从 WAL 恢复
+	tree2, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree2.Close()
+
+	// 验证数据已恢复
+	value, err := tree2.Get(context.Background(), []byte("key1"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("value1"), value)
+}
+
+// TestBfTree_Update_KeyInDeltaChain 测试更新 Delta Chain 中的键
+func TestBfTree_Update_KeyInDeltaChain(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	err = tree.Set(context.Background(), []byte("key"), []byte("value1"))
+	require.NoError(t, err)
+
+	// 再次更新（可能在 Delta Chain 中）
+	err = tree.Update(context.Background(), []byte("key"), []byte("value2"))
+	require.NoError(t, err)
+
+	// 验证最新值
+	value, err := tree.Get(context.Background(), []byte("key"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("value2"), value)
+}
+
+// TestBfTree_GetStats_DeltaStats 测试 Delta Chain 统计
+func TestBfTree_GetStats_DeltaStats(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据创建 Delta Chain
+	for i := 0; i < 5; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	stats := tree.GetStats()
+	assert.Greater(t, stats.TotalPages, int64(0))
+	assert.Greater(t, stats.WriteCount, int64(0))
+}
+
+// Removed TestBfTree_Lookup_PageNotFound - depends on internal implementation
+
+// TestBfTree_FindLeafPage_PageNotFound 测试查找页面不存在
+func TestBfTree_FindLeafPage_PageNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 使用不存在的页面 ID
+	_, err = tree.findLeafPage(9999, []byte("key"))
+	assert.Error(t, err)
+}
+
+// TestBfTree_InsertLocked_UpdateKey 测试插入已存在的键
+func TestBfTree_InsertLocked_UpdateKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入键
+	err = tree.Set(context.Background(), []byte("key"), []byte("value1"))
+	require.NoError(t, err)
+
+	// 再次插入相同的键（Set 应该更新）
+	err = tree.Set(context.Background(), []byte("key"), []byte("value2"))
+	require.NoError(t, err)
+
+	// 验证
+	value, err := tree.Get(context.Background(), []byte("key"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("value2"), value)
+}
+
+// TestBfTree_Delete_TriggerCompact 测试删除后可能触发 compact
+func TestBfTree_Delete_TriggerCompact(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	for i := 0; i < 10; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 删除一些数据
+	for i := 0; i < 5; i++ {
+		key := []byte{byte(i)}
+		err := tree.Delete(context.Background(), key)
+		require.NoError(t, err)
+	}
+
+	// 验证剩余数据存在
+	for i := 5; i < 10; i++ {
+		key := []byte{byte(i)}
+		value, err := tree.Get(context.Background(), key)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("value"), value)
+	}
+}
+
+// TestBfTree_Get_UnknownPageType 测试未知页面类型错误路径
+func TestBfTree_Get_UnknownPageType(t *testing.T) {
+	// 这个测试需要直接修改 PageTable 来模拟未知页面类型
+	// 但由于 PageType 是枚举，这个测试很难在不修改代码的情况下触发
+	// 跳过此测试
+	t.Skip("Cannot trigger unknown page type without modifying code")
+}
+
+// TestBfTree_Sync_WALError 测试 WAL 错误时的 Sync
+func TestBfTree_Sync_WALError(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 没有 WAL 的情况下 Sync 应该成功
+	err = tree.Sync()
+	assert.NoError(t, err)
+}
+
+// TestBfTree_Close_AlreadyClosed 测试重复关闭
+func TestBfTree_Close_AlreadyClosed(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+
+	// 第一次关闭
+	err = tree.Close()
+	assert.NoError(t, err)
+
+	// 第二次关闭应该返回错误
+	err = tree.Close()
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrTreeClosed)
+}
+
+// TestBfTree_GetStats_AfterClose 测试关闭后的统计
+func TestBfTree_GetStats_AfterClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+
+	// 插入数据
+	_ = tree.Set(context.Background(), []byte("key"), []byte("value"))
+
+	// 获取统计
+	stats := tree.GetStats()
+	assert.Greater(t, stats.WriteCount, int64(0))
+
+	// 关闭
+	tree.Close()
+
+	// 关闭后仍能获取统计（使用读锁）
+	stats = tree.GetStats()
+	assert.Greater(t, stats.WriteCount, int64(0))
+}
+
+// TestBfTree_InsertWithWAL_Failure 测试 WAL 写入失败处理
+func TestBfTree_InsertWithWAL_Failure(t *testing.T) {
+	// 这个测试需要模拟 WAL 失败，但当前的 WAL 实现不容易模拟失败
+	// 跳过此测试
+	t.Skip("Need to mock WAL failure")
+}
+
+// TestBfTree_LargeKeyValues 测试大键值对
+func TestBfTree_LargeKeyValues(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入大键值对
+	largeKey := make([]byte, 100)
+	largeValue := make([]byte, 500)
+	for i := range largeKey {
+		largeKey[i] = byte(i % 256)
+	}
+	for i := range largeValue {
+		largeValue[i] = byte(i % 256)
+	}
+
+	err = tree.Set(context.Background(), largeKey, largeValue)
+	require.NoError(t, err)
+
+	// 获取并验证
+	retrieved, err := tree.Get(context.Background(), largeKey)
+	require.NoError(t, err)
+	assert.Equal(t, largeValue, retrieved)
+}
+
+// TestBfTree_ManySmallUpdates 测试多次小更新
+func TestBfTree_ManySmallUpdates(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入一个键
+	key := []byte("key")
+	err = tree.Set(context.Background(), key, []byte("value0"))
+	require.NoError(t, err)
+
+	// 多次更新同一个键（compact 会在某个点触发）
+	const updateCount = 20
+	for i := 1; i <= updateCount; i++ {
+		value := []byte(fmt.Sprintf("value%d", i))
+		err := tree.Update(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 验证可以获取到值（compact 后值会持久化）
+	value, err := tree.Get(context.Background(), key)
+	require.NoError(t, err)
+	assert.NotNil(t, value)
+}
+
+// TestBfTree_DeleteAllKeys 测试删除所有键
+func TestBfTree_DeleteAllKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据
+	for i := 0; i < 10; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 删除所有数据
+	for i := 0; i < 10; i++ {
+		key := []byte{byte(i)}
+		err := tree.Delete(context.Background(), key)
+		require.NoError(t, err)
+	}
+
+	// 验证所有键都被删除
+	for i := 0; i < 10; i++ {
+		key := []byte{byte(i)}
+		_, err := tree.Get(context.Background(), key)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, ErrKeyNotFound)
+	}
+}
+
+// TestBfTree_ScanEmptyTree 测试扫描空树
+func TestBfTree_ScanEmptyTree(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 扫描空树
+	iter := tree.Scan(context.Background(), nil, nil)
+	defer iter.Close()
+
+	valid, _, _, _ := iter.Next()
+	assert.False(t, valid)
 }

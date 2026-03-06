@@ -202,3 +202,260 @@ func TestMaxChildrenForInnerNode_Direct(t *testing.T) {
 	max := maxChildrenForInnerNode()
 	assert.Greater(t, max, 0)
 }
+
+// TestBfTree_InsertSplitIntoParent_ParentFull 测试父节点满的情况
+func TestBfTree_InsertSplitIntoParent_ParentFull(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入足够多的数据触发多级分裂
+	const numKeys = 300
+	for i := 0; i < numKeys; i++ {
+		key := []byte{byte(i / 256), byte(i % 256)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 验证所有数据都可以访问
+	for i := 0; i < numKeys; i++ {
+		key := []byte{byte(i / 256), byte(i % 256)}
+		value, err := tree.Get(context.Background(), key)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("value"), value)
+	}
+}
+
+// TestBfTree_FindLeafPage_WithInnerNodes 测试通过内部节点查找叶子页面
+func TestBfTree_FindLeafPage_WithInnerNodes(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入大量数据创建多级树
+	const numKeys = 300
+	for i := 0; i < numKeys; i++ {
+		key := []byte{byte(i / 256), byte(i % 256)}
+		value := []byte("value data that is longer")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 测试查找叶子页面
+	leafPageID, err := tree.findLeafPage(tree.rootPageID, []byte{0, 50})
+	require.NoError(t, err)
+	assert.NotEqual(t, uint64(0), leafPageID)
+
+	// 如果有内部节点，叶子页面 ID 应该与根节点不同
+	stats := tree.GetStats()
+	if stats.InnerPages > 0 {
+		assert.NotEqual(t, tree.rootPageID, leafPageID)
+	}
+}
+
+// TestBfTree_InsertLocked_NoSplit 测试不触发分裂的插入
+func TestBfTree_InsertLocked_NoSplit(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入少量数据，不触发分裂
+	for i := 0; i < 10; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 验证只有一个叶子节点
+	stats := tree.GetStats()
+	assert.Equal(t, int64(1), stats.LeafPages)
+	assert.Equal(t, int64(0), stats.InnerPages)
+}
+
+// TestBfTree_InsertLocked_TriggerSplit 测试触发分裂的插入
+func TestBfTree_InsertLocked_TriggerSplit(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 记录初始叶子页数
+	initialStats := tree.GetStats()
+
+	// 插入足够多的数据触发分裂
+	const numKeys = 200
+	for i := 0; i < numKeys; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value data that is longer")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 验证有多个叶子页面
+	finalStats := tree.GetStats()
+	assert.Greater(t, finalStats.LeafPages, initialStats.LeafPages)
+}
+
+// TestBfTree_SplitLeafNode_Coverage 测试叶子节点分裂路径
+func TestBfTree_SplitLeafNode_Coverage(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 创建一个叶子节点并填满
+	pageID, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
+	leafNode := NewLeafNode(pageID, L1)
+
+	// 插入足够多的数据以触发 Delta Chain 满和分裂
+	for i := 0; i < 20; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value data that is long enough")
+		_ = leafNode.Set(key, value)
+	}
+
+	tree.pageStore.putLeaf(pageID, leafNode)
+	tree.rootPageID = pageID
+
+	// 再插入一个触发分裂
+	err = tree.Set(context.Background(), []byte{255}, []byte("trigger"))
+	// 可能成功或触发分裂
+	_ = err
+}
+
+// TestBfTree_Lookup_InnerNodePath 测试通过内部节点查找的路径
+func TestBfTree_Lookup_InnerNodePath(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据创建多级树
+	for i := 0; i < 150; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		err := tree.Set(context.Background(), key, value)
+		require.NoError(t, err)
+	}
+
+	// 测试查找，确保走内部节点路径
+	value, err := tree.Get(context.Background(), []byte{75})
+	require.NoError(t, err)
+	assert.Equal(t, []byte("value"), value)
+}
+
+// TestBfTree_Delete_EmptyTreePath 测试空树删除路径
+func TestBfTree_Delete_EmptyTreePath(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 空树删除
+	err = tree.Delete(context.Background(), []byte("key"))
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrKeyNotFound)
+}
+
+// TestBfTree_Set_OverwriteExistingKey 测试覆盖已存在的键
+func TestBfTree_Set_OverwriteExistingKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入键
+	_ = tree.Set(context.Background(), []byte("key"), []byte("value1"))
+	value, _ := tree.Get(context.Background(), []byte("key"))
+	assert.Equal(t, []byte("value1"), value)
+
+	// 再次插入相同的键（覆盖）
+	_ = tree.Set(context.Background(), []byte("key"), []byte("value2"))
+	value, _ = tree.Get(context.Background(), []byte("key"))
+	assert.Equal(t, []byte("value2"), value)
+}

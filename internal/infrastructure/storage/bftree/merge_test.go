@@ -573,3 +573,199 @@ func TestInsertSplitWithDepth_Direct(t *testing.T) {
 	err = tree.insertSplitWithDepth(0, 1, 2, []byte("key"), 1)
 	assert.NoError(t, err)
 }
+
+// TestBfTree_TryMergeAfterDelete_HighUtilization 测试高利用率不触发合并
+func TestBfTree_TryMergeAfterDelete_HighUtilization(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+		MergeThreshold:   0.25,
+		MergeStrategy:    "merge",
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 创建一个叶子节点
+	pageID, err := tree.pageTable.Alloc(PageTypeLeaf, L1)
+	require.NoError(t, err)
+
+	leafNode := NewLeafNode(pageID, L1)
+	tree.pageStore.putLeaf(pageID, leafNode)
+	tree.rootPageID = pageID
+
+	// 插入足够多的数据使利用率高于 25%
+	for i := 0; i < 10; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value data")
+		err := leafNode.Set(key, value)
+		require.NoError(t, err)
+	}
+
+	tree.pageStore.putLeaf(pageID, leafNode)
+
+	// 调用 tryMergeAfterDelete，由于利用率高，不应触发合并
+	err = tree.tryMergeAfterDelete(pageID)
+	assert.NoError(t, err)
+
+	// 节点应该仍然存在
+	_, found := tree.pageTable.Get(pageID)
+	assert.True(t, found)
+}
+
+// TestBfTree_CalculateNodeUtilization 测试节点利用率计算
+func TestBfTree_CalculateNodeUtilization(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 创建叶子节点
+	pageID, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
+	leafNode := NewLeafNode(pageID, L1)
+
+	// 插入数据
+	for i := 0; i < 5; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		_ = leafNode.Set(key, value)
+	}
+
+	// 计算利用率
+	utilization := tree.calculateNodeUtilization(leafNode)
+	assert.Greater(t, utilization, float32(0))
+	assert.LessOrEqual(t, utilization, float32(1))
+}
+
+// TestBfTree_CanMergeTwoLeafNodes 测试两节点合并判断
+func TestBfTree_CanMergeTwoLeafNodes(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 创建两个小的叶子节点
+	pageID1, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
+	pageID2, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
+
+	node1 := NewLeafNode(pageID1, L1)
+	node2 := NewLeafNode(pageID2, L1)
+
+	// 每个节点插入少量数据
+	for i := 0; i < 3; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		_ = node1.Set(key, value)
+	}
+
+	for i := 3; i < 6; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		_ = node2.Set(key, value)
+	}
+
+	// 测试可以合并
+	canMerge := tree.canMergeTwoLeafNodes(node1, node2)
+	assert.True(t, canMerge)
+}
+
+// TestBfTree_CanMergeThreeLeafNodes 测试三节点合并判断
+func TestBfTree_CanMergeThreeLeafNodes(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 创建三个小的叶子节点
+	pageID1, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
+	pageID2, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
+	pageID3, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
+
+	node1 := NewLeafNode(pageID1, L1)
+	node2 := NewLeafNode(pageID2, L1)
+	node3 := NewLeafNode(pageID3, L1)
+
+	// 每个节点插入少量数据
+	for i := 0; i < 2; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		_ = node1.Set(key, value)
+	}
+
+	for i := 2; i < 4; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		_ = node2.Set(key, value)
+	}
+
+	for i := 4; i < 6; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		_ = node3.Set(key, value)
+	}
+
+	// 测试可以合并
+	canMerge := tree.canMergeThreeLeafNodes(node1, node2, node3)
+	assert.True(t, canMerge)
+}
+
+// TestBfTree_GetSiblings_RootNode 测试根节点无兄弟
+func TestBfTree_GetSiblings_RootNode(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &Config{
+		DataDir:          tmpDir,
+		PageSize:         DefaultPageSize,
+		MaxDepth:         DefaultMaxDepth,
+		EnableWAL:        false,
+		EnableDeltaChain: true,
+		PromotionConfig:  DefaultPromotionConfig(),
+		BitmapLockShards: DefaultBitmapLockShards,
+	}
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 根节点应该没有兄弟
+	left, right, err := tree.getSiblings(tree.rootPageID)
+	assert.NoError(t, err)
+	assert.Nil(t, left)
+	assert.Nil(t, right)
+}

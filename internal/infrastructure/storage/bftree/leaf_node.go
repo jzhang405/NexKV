@@ -4,6 +4,7 @@ package bftree
 import (
 	"bytes"
 	"errors"
+	"sort"
 	"sync"
 )
 
@@ -279,16 +280,18 @@ func (n *LeafNode) shouldCompact() bool {
 }
 
 // P1-5: compact 合并 Delta Chain 到 Mini-Page
+// compact 合并 Delta Chain 到 Mini-Page
 func (n *LeafNode) compact() error {
 	// 1. 创建新 Mini-Page
 	newMiniPage := NewMiniPage(n.level)
 
-	// 2. 将旧 Mini-Page 的槽位复制到临时 map
-	tempSlots := make(map[string]Slot)
-	for _, slot := range n.miniPage.slots {
-		keyStr := string(slot.key)
-		tempSlots[keyStr] = slot
-	}
+	// 2. 将旧 Mini-Page 的槽位复制到临时切片
+	// 使用切片而非 map 以保持插入顺序
+	tempSlots := append([]Slot(nil), n.miniPage.slots...)
+	// 按键排序确保顺序稳定
+	sort.Slice(tempSlots, func(i, j int) bool {
+		return compareKeys(tempSlots[i].key, tempSlots[j].key) < 0
+	})
 
 	// 3. 应用 Delta Chain（倒序，最新优先）
 	// 记录被 Delta 处理过的键
@@ -302,15 +305,36 @@ func (n *LeafNode) compact() error {
 
 		switch delta.opType {
 		case DeltaOpInsert, DeltaOpUpdate:
-			// 更新或添加到临时 map
-			tempSlots[keyStr] = Slot{
-				key:   delta.key,
-				value: delta.value,
+			// 在切片中查找并更新/添加键
+			found := false
+			for idx, slot := range tempSlots {
+				if string(slot.key) == keyStr {
+					// 更新现有槽位
+					tempSlots[idx] = Slot{
+						key:   delta.key,
+						value: delta.value,
+					}
+					found = true
+					break
+				}
+			}
+			// 如果没找到，添加新槽位
+			if !found {
+				tempSlots = append(tempSlots, Slot{
+					key:   delta.key,
+					value: delta.value,
+				})
 			}
 
 		case DeltaOpDelete:
-			// 从临时 map 中删除
-			delete(tempSlots, keyStr)
+			// 从切片中删除键
+			for idx, slot := range tempSlots {
+				if string(slot.key) == keyStr {
+					// 删除元素
+					tempSlots = append(tempSlots[:idx], tempSlots[idx+1:]...)
+					break
+				}
+			}
 		}
 	}
 

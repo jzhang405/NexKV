@@ -58,6 +58,7 @@ func (ps *pageStore) getInner(pageID uint64) (*InnerNode, error) {
 }
 
 // putInner 存储内部节点
+//
 //lint:ignore U1000 // 预留方法，未来内部节点分裂时使用
 func (ps *pageStore) putInner(pageID uint64, node *InnerNode) {
 	ps.mu.Lock()

@@ -55,6 +55,10 @@ type Config struct {
 	// 合并配置（Phase 2.3 新增）
 	MergeThreshold float32 `json:"merge_threshold"` // 合并阈值，默认 0.25 (25%)
 	MergeStrategy  string  `json:"merge_strategy"`  // 合并策略：默认 "merge"（rebalance 暂不支持）
+
+	// 压缩配置（P2-2 新增）
+	CompressionType  string `json:"compression_type"`  // 压缩算法类型：none, snappy, lz4, zstd（默认 snappy）
+	ZSTDCompressionLevel int  `json:"zstd_level"`     // ZSTD 压缩级别（1-22，默认 3）
 }
 
 // PromotionConfig Mini-Page 提升配置
@@ -90,6 +94,9 @@ func DefaultConfig() *Config {
 		// P2-1: Delta Chain 配置
 		MaxDeltaChainLen:   8,    // 最大 8 个 Delta
 		MaxDeltaChainSize: 2048, // 最大 2KB（50% of 4KB page）
+		// P2-2: 压缩配置
+		CompressionType:    "snappy", // Snappy 压缩（平衡速度和压缩率）
+		ZSTDCompressionLevel: 3,     // ZSTD 默认级别 3
 	}
 }
 

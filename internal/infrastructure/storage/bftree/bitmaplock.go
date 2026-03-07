@@ -29,6 +29,9 @@ type lockShard struct {
 
 	// mutex 保护 shard 内部操作
 	mu sync.Mutex
+
+	// cond 用于条件等待（避免 busy waiting）
+	cond *sync.Cond
 }
 
 // BitmapLock 细粒度锁实现
@@ -65,7 +68,9 @@ func NewBitmapLock(shardCount int) *BitmapLock {
 
 	// 初始化分片
 	for i := range bl.shards {
-		bl.shards[i] = &lockShard{}
+		shard := &lockShard{}
+		shard.cond = sync.NewCond(&shard.mu)  // 初始化条件变量
+		bl.shards[i] = shard
 	}
 
 	return bl
@@ -88,23 +93,20 @@ func (bl *BitmapLock) getBitInShard(pageID uint64) uint {
 // Lock 获取写锁（阻塞）
 //
 // 使用写锁时，页面将被完全锁定，不允许其他读写操作
+// Lock 获取写锁（阻塞）
+//
+// 使用写锁时，页面将被完全锁定，不允许其他读写操作
+// 使用 sync.Cond 避免忙等待，减少 CPU 占用
 func (bl *BitmapLock) Lock(pageID uint64) {
 	shard := bl.getShard(pageID)
+	bit := bl.getBitInShard(pageID)
 
-	// 先获取 shard 级别的锁
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	// 等待读锁释放
-	bit := bl.getBitInShard(pageID)
-	for {
-		readers := shard.readers[bit].Load()
-		if readers == 0 {
-			break
-		}
-		// 读锁未释放，等待
-		shard.mu.Unlock()
-		shard.mu.Lock()
+	// 等待读锁释放（使用 cond.Wait 阻塞等待，不占用 CPU）
+	for shard.readers[bit].Load() != 0 {
+		shard.cond.Wait()  // 自动释放/获取 mu，等待 Broadcast 信号
 	}
 
 	// 设置写锁标志
@@ -117,8 +119,11 @@ func (bl *BitmapLock) Lock(pageID uint64) {
 }
 
 // Unlock 释放写锁
+//
+// 释放写锁并唤醒等待的读锁
 func (bl *BitmapLock) Unlock(pageID uint64) {
 	shard := bl.getShard(pageID)
+	bit := bl.getBitInShard(pageID)
 
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
@@ -127,29 +132,31 @@ func (bl *BitmapLock) Unlock(pageID uint64) {
 	shard.writer.Store(0)
 
 	// 更新 bitmap
-	bit := bl.getBitInShard(pageID)
 	oldBitmap := shard.bitmap.Load()
 	newBitmap := oldBitmap &^ (1 << bit)
 	shard.bitmap.Store(newBitmap)
+
+	// 唤醒等待的读锁
+	shard.cond.Broadcast()
 }
 
 // RLock 获取读锁（阻塞）
 //
 // 多个读锁可以同时持有，但与写锁互斥
+// 使用 sync.Cond 避免忙等待
 func (bl *BitmapLock) RLock(pageID uint64) {
 	shard := bl.getShard(pageID)
+	bit := bl.getBitInShard(pageID)
 
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	// 等待写锁释放
+	// 等待写锁释放（使用 cond.Wait 阻塞等待）
 	for shard.writer.Load() != 0 {
-		shard.mu.Unlock()
-		shard.mu.Lock()
+		shard.cond.Wait()  // 自动释放/获取 mu，等待 Broadcast 信号
 	}
 
 	// 增加读锁计数
-	bit := bl.getBitInShard(pageID)
 	shard.readers[bit].Add(1)
 
 	// 更新 bitmap（标记为已读）
@@ -159,21 +166,26 @@ func (bl *BitmapLock) RLock(pageID uint64) {
 }
 
 // RUnlock 释放读锁
+//
+// 释放读锁，如果是最后一个读锁，唤醒等待的写锁
 func (bl *BitmapLock) RUnlock(pageID uint64) {
 	shard := bl.getShard(pageID)
+	bit := bl.getBitInShard(pageID)
 
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
 	// 减少读锁计数
-	bit := bl.getBitInShard(pageID)
 	newCount := shard.readers[bit].Add(^uint32(0)) // -1
 
-	// 如果是最后一个读锁，清除 bitmap 标记
+	// 如果是最后一个读锁，清除 bitmap 标记并唤醒等待的写锁
 	if newCount == 0 {
 		oldBitmap := shard.bitmap.Load()
 		newBitmap := oldBitmap &^ (1 << bit)
 		shard.bitmap.Store(newBitmap)
+
+		// 唤醒等待的写锁
+		shard.cond.Broadcast()
 	}
 }
 

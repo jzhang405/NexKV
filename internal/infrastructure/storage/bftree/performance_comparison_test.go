@@ -1,193 +1,140 @@
+// Package bftree BitmapLock 性能对比测试
 package bftree
 
 import (
 	"context"
-	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-// Benchmark_RWMutex_MultiplePages RWMutex 多页面并发读写基准测试
-func Benchmark_RWMutex_MultiplePages(b *testing.B) {
+// benchmarkHelper 创建用于基准测试的 BfTree
+func benchmarkHelper(b *testing.B, useBitmapLock bool) *BfTree {
 	config := DefaultConfig()
-	config.UseBitmapLock = false
-	config.EnableWAL = false
-	config.DataDir = b.TempDir()
+	config.UseBitmapLock = useBitmapLock
+	config.BitmapLockShards = 16
+	config.DataDir = b.TempDir()  // 设置临时目录
 
 	tree, err := NewBfTree(config)
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.NoError(b, err)
+	require.NotNil(b, tree)
+	return tree
+}
+
+// BenchmarkRWMutex_Get 基准测试 RWMutex Get 性能
+func BenchmarkRWMutex_Get(b *testing.B) {
+	tree := benchmarkHelper(b, false)
 	defer tree.Close()
 
-	// 预填充多个页面的数据
-	const numPages = 100
-	for i := 0; i < numPages; i++ {
-		key := []byte{byte(i >> 8), byte(i & 0xFF)}
-		value := make([]byte, 100)
-		_ = tree.Set(context.Background(), key, value)
+	// 预填充数据
+	ctx := context.Background()
+	for i := 0; i < 1000; i++ {
+		key := []byte{byte(i % 256)}
+		value := []byte("test-value")
+		_ = tree.Set(ctx, key, value)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := []byte{byte(i % 1000)}
+		_, _ = tree.Get(ctx, key)
+	}
+}
+
+// BenchmarkBitmapLock_Get 基准测试 BitmapLock Get 性能
+func BenchmarkBitmapLock_Get(b *testing.B) {
+	tree := benchmarkHelper(b, true)
+	defer tree.Close()
+
+	// 预填充数据
+	ctx := context.Background()
+	for i := 0; i < 1000; i++ {
+		key := []byte{byte(i % 256)}
+		value := []byte("test-value")
+		_ = tree.Set(ctx, key, value)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := []byte{byte(i % 1000)}
+		_, _ = tree.Get(ctx, key)
+	}
+}
+
+// BenchmarkRWMutex_Set 基准测试 RWMutex Set 性能
+func BenchmarkRWMutex_Set(b *testing.B) {
+	tree := benchmarkHelper(b, false)
+	defer tree.Close()
+
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := []byte{byte(i % 256)}
+		value := []byte("test-value")
+		_ = tree.Set(ctx, key, value)
+	}
+}
+
+// BenchmarkBitmapLock_Set 基准测试 BitmapLock Set 性能
+func BenchmarkBitmapLock_Set(b *testing.B) {
+	tree := benchmarkHelper(b, true)
+	defer tree.Close()
+
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := []byte{byte(i % 256)}
+		value := []byte("test-value")
+		_ = tree.Set(ctx, key, value)
+	}
+}
+
+// BenchmarkRWMutex_ConcurrentGet 并发读测试 - RWMutex
+func BenchmarkRWMutex_ConcurrentGet(b *testing.B) {
+	tree := benchmarkHelper(b, false)
+	defer tree.Close()
+
+	// 预填充数据
+	ctx := context.Background()
+	for i := 0; i < 100; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		_ = tree.Set(ctx, key, value)
 	}
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			key := []byte{byte(i >> 8), byte(i & 0xFF)}
-			_, _ = tree.Get(context.Background(), key)
+			key := []byte{byte(i % 100)}
+			_, _ = tree.Get(ctx, key)
 			i++
-			if i >= numPages {
-				i = 0
-			}
 		}
 	})
 }
 
-// Benchmark_BitmapLock_MultiplePages BitmapLock 多页面并发读写基准测试
-func Benchmark_BitmapLock_MultiplePages(b *testing.B) {
-	config := DefaultConfig()
-	config.UseBitmapLock = true
-	config.EnableWAL = false
-	config.DataDir = b.TempDir()
-
-	tree, err := NewBfTree(config)
-	if err != nil {
-		b.Fatal(err)
-	}
+// BenchmarkBitmapLock_ConcurrentGet 并发读测试 - BitmapLock
+func BenchmarkBitmapLock_ConcurrentGet(b *testing.B) {
+	tree := benchmarkHelper(b, true)
 	defer tree.Close()
 
-	// 预填充多个页面的数据
-	const numPages = 100
-	for i := 0; i < numPages; i++ {
-		key := []byte{byte(i >> 8), byte(i & 0xFF)}
-		value := make([]byte, 100)
-		_ = tree.Set(context.Background(), key, value)
+	// 预填充数据
+	ctx := context.Background()
+	for i := 0; i < 100; i++ {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		_ = tree.Set(ctx, key, value)
 	}
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			key := []byte{byte(i >> 8), byte(i & 0xFF)}
-			_, _ = tree.Get(context.Background(), key)
+			key := []byte{byte(i % 100)}
+			_, _ = tree.Get(ctx, key)
 			i++
-			if i >= numPages {
-				i = 0
-			}
 		}
 	})
-}
-
-// Test_PerformanceComparison 运行性能对比测试并输出结果
-func Test_PerformanceComparison(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping performance comparison test in short mode")
-	}
-
-	results := &sync.Map{}
-
-	// 测试 RWMutex 模式
-	t.Run("RWMutex", func(t *testing.T) {
-		config := DefaultConfig()
-		config.UseBitmapLock = false
-		config.EnableWAL = false
-		config.DataDir = t.TempDir()
-
-		tree, err := NewBfTree(config)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tree.Close()
-
-		// 预填充数据
-		const numKeys = 1000
-		for i := 0; i < numKeys; i++ {
-			key := []byte{byte(i >> 8), byte(i & 0xFF), byte(i)}
-			value := make([]byte, 100)
-			_ = tree.Set(context.Background(), key, value)
-		}
-
-		// 并发读取测试
-		const goroutines = 100
-		const opsPerGoroutine = 1000
-
-		var wg sync.WaitGroup
-		start := make(chan struct{})
-
-		for i := 0; i < goroutines; i++ {
-			wg.Add(1)
-			go func(id int) {
-				defer wg.Done()
-				<-start
-				for j := 0; j < opsPerGoroutine; j++ {
-					key := []byte{byte((id + j) >> 8), byte((id + j) & 0xFF), byte(id + j)}
-					_, _ = tree.Get(context.Background(), key)
-				}
-			}(i)
-		}
-
-		// 计时开始
-		close(start)
-		wg.Wait()
-
-		// 存储结果
-		results.Store("RWMutex", "completed")
-	})
-
-	// 测试 BitmapLock 模式
-	t.Run("BitmapLock", func(t *testing.T) {
-		config := DefaultConfig()
-		config.UseBitmapLock = true
-		config.EnableWAL = false
-		config.DataDir = t.TempDir()
-
-		tree, err := NewBfTree(config)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tree.Close()
-
-		// 预填充数据
-		const numKeys = 1000
-		for i := 0; i < numKeys; i++ {
-			key := []byte{byte(i >> 8), byte(i & 0xFF), byte(i)}
-			value := make([]byte, 100)
-			_ = tree.Set(context.Background(), key, value)
-		}
-
-		// 并发读取测试
-		const goroutines = 100
-		const opsPerGoroutine = 1000
-
-		var wg sync.WaitGroup
-		start := make(chan struct{})
-
-		for i := 0; i < goroutines; i++ {
-			wg.Add(1)
-			go func(id int) {
-				defer wg.Done()
-				<-start
-				for j := 0; j < opsPerGoroutine; j++ {
-					key := []byte{byte((id + j) >> 8), byte((id + j) & 0xFF), byte(id + j)}
-					_, _ = tree.Get(context.Background(), key)
-				}
-			}(i)
-		}
-
-		// 计时开始
-		close(start)
-		wg.Wait()
-
-		// 存储结果
-		results.Store("BitmapLock", "completed")
-	})
-
-	// 输出对比结果
-	t.Log("\n=== BitmapLock 集成测试完成 ===")
-	t.Log("✅ RWMutex 模式：功能正常")
-	t.Log("✅ BitmapLock 模式：功能正常")
-	t.Log("\n配置选项：")
-	t.Log("  config.UseBitmapLock = false  -> 使用 RWMutex（全局锁）")
-	t.Log("  config.UseBitmapLock = true   -> 使用 BitmapLock（细粒度锁）")
-	t.Log("\n使用建议：")
-	t.Log("  - 高并发、多页面场景：推荐 BitmapLock")
-	t.Log("  - 低并发、单页面场景：RWMutex 足够")
 }

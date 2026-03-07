@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/wal"
 )
@@ -161,17 +162,74 @@ func (t *BfTree) applyWALEntry(entry *wal.WALEntry) error {
 }
 
 // Get 获取键值（同步）
+//
+// 双层锁架构实现：
+// 1. 使用 treeLock 保护树结构查找
+// 2. 使用 bitmapLock 保护页面内容读取
+// 3. 版本检查机制检测并发修改
+// 4. 重试机制处理版本冲突
 func (t *BfTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, ErrTreeClosed
 	}
 
-	t.treeLock.RLock()
-	defer t.treeLock.RUnlock()
-
 	atomic.AddInt64(&t.stats.ReadCount, 1)
 
-	return t.lookup(key)
+	// 空树快速路径
+	if t.rootPageID == 0 {
+		return nil, ErrKeyNotFound
+	}
+
+	const MaxRetries = 10
+
+	// 重试循环：处理版本冲突
+	for retry := 0; retry < MaxRetries; retry++ {
+		// 步骤 1: 使用 treeLock 保护树结构查找
+		t.treeLock.RLock()
+		pageID, version, err := t.findLeafPageWithVersion(t.rootPageID, key)
+		if err != nil {
+			t.treeLock.RUnlock()
+			// 查找失败（键不存在）
+			if err == ErrKeyNotFound || err == ErrPageNotFound {
+				return nil, ErrKeyNotFound
+			}
+			return nil, err
+		}
+
+		// 步骤 2: 获取 bitmapLock（如果启用）
+		if t.useBitmapLock && t.bitmapLock != nil {
+			t.bitmapLock.RLock(pageID)
+			// 释放 treeLock（遵循锁顺序：先释放外层）
+			t.treeLock.RUnlock()
+
+			// 步骤 3: 版本检查
+			currentVersion := t.getPageVersion(pageID)
+			if currentVersion == version {
+				// 版本一致，读取数据
+				value, err := t.lookupFromPage(pageID, key)
+				t.bitmapLock.RUnlock(pageID)
+				return value, err
+			}
+
+			// 版本冲突，释放锁并重试
+			t.bitmapLock.RUnlock(pageID)
+
+			// 指数退避
+			if retry < MaxRetries-1 {
+				backoff := (1 << retry) * 10 // 10μs, 20μs, 40μs, ...
+				time.Sleep(time.Duration(backoff) * time.Microsecond)
+			}
+		} else {
+			// 未启用 BitmapLock，使用原有逻辑
+			value, err := t.lookupFromPage(pageID, key)
+			t.treeLock.RUnlock()
+			return value, err
+		}
+	}
+
+	// 重试次数耗尽
+	atomic.AddInt64(&t.stats.ReadCount, -1) // 回滚统计
+	return nil, ErrMaxRetries
 }
 
 // lookup 查找键（内部，已持有锁）
@@ -219,6 +277,42 @@ func (t *BfTree) lookup(key []byte) ([]byte, error) {
 		default:
 			return nil, fmt.Errorf("unknown page type: %d", entry.pageType)
 		}
+	}
+}
+
+// lookupFromPage 从指定页面查找键（内部，已持有 bitmapLock）
+//
+// 用于双层锁架构：
+// - 调用前必须持有 bitmapLock
+// - 不需要 treeLock（已经释放）
+// - 直接从页面存储读取数据
+func (t *BfTree) lookupFromPage(pageID uint64, key []byte) ([]byte, error) {
+	// 获取页面条目
+	entry, found := t.pageTable.Get(pageID)
+	if !found {
+		return nil, ErrPageNotFound
+	}
+
+	// 根据页面类型处理
+	switch entry.pageType {
+	case PageTypeLeaf:
+		// 叶子节点：直接查找键
+		leafNode, err := t.pageStore.getLeaf(pageID)
+		if err != nil {
+			return nil, err
+		}
+		value, found := leafNode.Get(key)
+		if !found {
+			return nil, ErrKeyNotFound
+		}
+		return value, nil
+
+	case PageTypeInner:
+		// 内部节点：不应该到达这里（findLeafPageWithVersion 应该返回叶子节点）
+		return nil, fmt.Errorf("expected leaf page, got inner page")
+
+	default:
+		return nil, fmt.Errorf("unknown page type: %d", entry.pageType)
 	}
 }
 

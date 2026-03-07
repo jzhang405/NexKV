@@ -445,7 +445,28 @@ func (t *BfTree) Set(ctx context.Context, key, value []byte) error {
 				
 				// 处理分裂等情况
 				if err == ErrDeltaFull {
-					// 分裂情况：升级为 treeLock，重试
+					// 分裂情况：升级为 treeLock 执行分裂
+					t.bitmapLock.Unlock(pageID)
+					
+					// 获取 treeLock 执行分裂
+					t.treeLock.Lock()
+					
+					// 重新获取页面（可能已变化）
+					newPageID, _, findErr := t.findLeafPageWithVersion(t.rootPageID, key)
+					if findErr != nil {
+						t.treeLock.Unlock()
+						continue
+					}
+					
+					// 执行分裂（使用 treeLock）
+					splitErr := t.performSplitWithTreeLock(newPageID, key)
+					t.treeLock.Unlock()
+					
+					if splitErr != nil {
+						return splitErr
+					}
+					
+					// 分裂成功，重试插入
 					continue
 				}
 				return err
@@ -907,6 +928,43 @@ func (t *BfTree) deleteFromPage(pageID uint64, key []byte) error {
 
 	// 注意：不在这里调用 tryMergeAfterDelete
 	// 合并操作需要 treeLock，在重试循环中处理
+	return nil
+}
+
+// performSplitWithTreeLock 执行分裂操作（内部，已持有 treeLock）
+//
+// 用于双层锁架构：
+// - 调用前必须持有 treeLock
+// - 执行页面分裂操作
+// - 涉及多个页面修改（叶子节点、父节点等）
+func (t *BfTree) performSplitWithTreeLock(pageID uint64, key []byte) error {
+	// 使用原有的分裂逻辑
+	leftPageID, rightPageID, splitKey, oldPageID, splitErr := t.splitLeafNode(pageID)
+	if splitErr != nil {
+		return fmt.Errorf("failed to split leaf node: %w", splitErr)
+	}
+
+	// 找到父节点
+	parentPageID, err := t.findParent(pageID)
+	if err != nil {
+		return fmt.Errorf("failed to find parent: %w", err)
+	}
+
+	// 将分裂结果插入父节点（支持多级分裂）
+	if insertErr := t.insertSplitIntoParent(parentPageID, leftPageID, rightPageID, splitKey); insertErr != nil {
+		return fmt.Errorf("failed to insert split to parent: %w", insertErr)
+	}
+
+	// 成功后释放旧节点
+	_ = t.pageTable.Free(oldPageID)
+	
+	// 递增相关页面版本号
+	t.incrementPageVersion(leftPageID)
+	t.incrementPageVersion(rightPageID)
+	if parentPageID != 0 {
+		t.incrementPageVersion(parentPageID)
+	}
+
 	return nil
 }
 

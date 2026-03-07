@@ -1,0 +1,66 @@
+goos: linux
+goarch: amd64
+pkg: github.com/jzhang405/NexKV/internal/infrastructure/storage/bftree
+cpu: Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz
+BenchmarkBfTree_RWMutex_BasicOperations-12       	 6370138	        92.74 ns/op	       1 B/op	       0 allocs/op
+BenchmarkBfTree_RWMutex_BasicOperations-12       	 6361434	       101.7 ns/op	       1 B/op	       0 allocs/op
+BenchmarkBfTree_RWMutex_BasicOperations-12       	 5964336	        93.87 ns/op	       1 B/op	       0 allocs/op
+BenchmarkBfTree_BitmapLock_BasicOperations-12    	 3572680	       174.3 ns/op	       1 B/op	       0 allocs/op
+BenchmarkBfTree_BitmapLock_BasicOperations-12    	 3584204	       156.6 ns/op	       1 B/op	       0 allocs/op
+BenchmarkBfTree_BitmapLock_BasicOperations-12    	 3758056	       184.6 ns/op	       1 B/op	       0 allocs/op
+BenchmarkBfTree_RWMutex_ConcurrentReads-12       	 4683571	       118.0 ns/op	     112 B/op	       1 allocs/op
+BenchmarkBfTree_RWMutex_ConcurrentReads-12       	 5135908	       114.9 ns/op	     112 B/op	       1 allocs/op
+BenchmarkBfTree_RWMutex_ConcurrentReads-12       	 4870446	       117.6 ns/op	     112 B/op	       1 allocs/op
+BenchmarkBfTree_BitmapLock_ConcurrentReads-12    	 1759076	       333.6 ns/op	     112 B/op	       1 allocs/op
+BenchmarkBfTree_BitmapLock_ConcurrentReads-12    	 1732927	       341.3 ns/op	     112 B/op	       1 allocs/op
+BenchmarkBfTree_BitmapLock_ConcurrentReads-12    	 1738206	       331.5 ns/op	     112 B/op	       1 allocs/op
+BenchmarkBitmapLock_LockUnlock-12                	12320216	        47.81 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_LockUnlock-12                	12584648	        48.18 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_LockUnlock-12                	12555892	        48.17 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_RLockRUnlock-12              	12834163	        47.79 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_RLockRUnlock-12              	12558171	        46.95 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_RLockRUnlock-12              	12822009	        46.76 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_TryLock-12                   	11781445	        49.59 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_TryLock-12                   	12129666	        49.67 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_TryLock-12                   	12122007	        49.55 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentRead-12            	 4788315	       123.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentRead-12            	 4732573	       125.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentRead-12            	 4803808	       125.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentWrite-12           	 4562112	       132.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentWrite-12           	 4616106	       132.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentWrite-12           	 4545579	       133.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_MultiplePages-12             	12892491	        46.14 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_MultiplePages-12             	12866184	        46.25 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_MultiplePages-12             	13019215	        46.34 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCountBits-12                            	1000000000	         0.2351 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCountBits-12                            	1000000000	         0.2361 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCountBits-12                            	1000000000	         0.2462 ns/op	       0 B/op	       0 allocs/op
+BenchmarkNextFreeSlot-12                         	1000000000	         0.2494 ns/op	       0 B/op	       0 allocs/op
+BenchmarkNextFreeSlot-12                         	1000000000	         0.2368 ns/op	       0 B/op	       0 allocs/op
+BenchmarkNextFreeSlot-12                         	1000000000	         0.2349 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFindFirstSet-12                         	1000000000	         0.2366 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFindFirstSet-12                         	1000000000	         0.2371 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFindFirstSet-12                         	1000000000	         0.2347 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDeltaChain_Append-12                    	22973397	        25.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDeltaChain_Append-12                    	21694416	        26.17 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDeltaChain_Append-12                    	21336706	        25.75 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDeltaChain_Get-12                       	 2907218	       200.7 ns/op	       5 B/op	       1 allocs/op
+BenchmarkDeltaChain_Get-12                       	 3095481	       243.1 ns/op	       5 B/op	       1 allocs/op
+BenchmarkDeltaChain_Get-12                       	 2852312	       197.5 ns/op	       5 B/op	       1 allocs/op
+BenchmarkDeltaChain_CompactTo-12                 	   89142	      7295 ns/op	   11216 B/op	      18 allocs/op
+BenchmarkDeltaChain_CompactTo-12                 	   88345	      7003 ns/op	   11216 B/op	      18 allocs/op
+BenchmarkDeltaChain_CompactTo-12                 	   91056	      7224 ns/op	   11216 B/op	      18 allocs/op
+BenchmarkLeafNode_Get-12                         	19082767	        33.57 ns/op	       8 B/op	       1 allocs/op
+BenchmarkLeafNode_Get-12                         	18915543	        33.54 ns/op	       8 B/op	       1 allocs/op
+BenchmarkLeafNode_Get-12                         	18588068	        32.62 ns/op	       8 B/op	       1 allocs/op
+BenchmarkLeafNode_Set-12                         	 3268706	       180.8 ns/op	     157 B/op	       5 allocs/op
+BenchmarkLeafNode_Set-12                         	 2913139	       194.1 ns/op	     157 B/op	       4 allocs/op
+BenchmarkLeafNode_Set-12                         	 3203914	       243.7 ns/op	     157 B/op	       4 allocs/op
+Benchmark_RWMutex_MultiplePages-12               	 5091700	       121.1 ns/op	     112 B/op	       1 allocs/op
+Benchmark_RWMutex_MultiplePages-12               	 4703187	       117.1 ns/op	     112 B/op	       1 allocs/op
+Benchmark_RWMutex_MultiplePages-12               	 4692597	       119.0 ns/op	     112 B/op	       1 allocs/op
+Benchmark_BitmapLock_MultiplePages-12            	 1811962	       328.7 ns/op	     112 B/op	       1 allocs/op
+Benchmark_BitmapLock_MultiplePages-12            	 1768188	       333.9 ns/op	     112 B/op	       1 allocs/op
+Benchmark_BitmapLock_MultiplePages-12            	 1757450	       331.2 ns/op	     112 B/op	       1 allocs/op
+PASS
+ok  	github.com/jzhang405/NexKV/internal/infrastructure/storage/bftree	47.149s

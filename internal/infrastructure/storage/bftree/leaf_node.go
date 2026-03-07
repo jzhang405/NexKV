@@ -292,68 +292,66 @@ func (n *LeafNode) shouldCompact() bool {
 // P1-5: compact 合并 Delta Chain 到 Mini-Page
 // compact 合并 Delta Chain 到 Mini-Page
 func (n *LeafNode) compact() error {
-	// 1. 创建新 Mini-Page
-	newMiniPage := NewMiniPage(n.level)
+	// P0-2 优化：预计算所需容量，避免 map 动态扩容
+	totalSlots := len(n.miniPage.slots) + len(n.deltas)
+	
+	// P0-2 优化：使用 NewMiniPageWithCapacity 预分配 map 容量
+	newMiniPage := NewMiniPageWithCapacity(n.level, totalSlots)
 
-	// 2. 将旧 Mini-Page 的槽位复制到临时切片
-	// 使用切片而非 map 以保持插入顺序
+	// 将旧 Mini-Page 的槽位复制到临时切片
 	tempSlots := append([]Slot(nil), n.miniPage.slots...)
-	// 按键排序确保顺序稳定
+	
+	// P0-3 优化：只排序一次（在开始时）
+	// 理由：后续插入使用二分查找保持有序，无需再次排序
 	sort.Slice(tempSlots, func(i, j int) bool {
 		return compareKeys(tempSlots[i].key, tempSlots[j].key) < 0
 	})
 
-	// 3. 应用 Delta Chain（倒序，最新优先）
-	// 记录被 Delta 处理过的键
-	processed := make(map[string]bool)
+	// 应用 Delta Chain（倒序，最新优先）
+	processed := make(map[string]bool, len(n.deltas))
 	for i := len(n.deltas) - 1; i >= 0; i-- {
 		delta := n.deltas[i]
 		keyStr := string(delta.key)
-
-		// 标记为已处理
 		processed[keyStr] = true
 
 		switch delta.opType {
 		case DeltaOpInsert, DeltaOpUpdate:
-			// 在切片中查找并更新/添加键
-			found := false
-			for idx, slot := range tempSlots {
-				if string(slot.key) == keyStr {
-					// 更新现有槽位
-					tempSlots[idx] = Slot{
-						key:   delta.key,
-						value: delta.value,
-					}
-					found = true
-					break
-				}
-			}
-			// 如果没找到，添加新槽位
-			if !found {
-				tempSlots = append(tempSlots, Slot{
+			// P0-3 优化：使用二分查找保持有序，无需再次排序
+			idx := sort.Search(len(tempSlots), func(i int) bool {
+				return compareKeys(tempSlots[i].key, delta.key) >= 0
+			})
+
+			if idx < len(tempSlots) && compareKeys(tempSlots[idx].key, delta.key) == 0 {
+				// 更新现有槽位
+				tempSlots[idx] = Slot{
 					key:   delta.key,
 					value: delta.value,
-				})
+				}
+			} else {
+				// 插入新槽位（保持有序）
+				tempSlots = append(tempSlots, Slot{})
+				copy(tempSlots[idx+1:], tempSlots[idx:])
+				tempSlots[idx] = Slot{
+					key:   delta.key,
+					value: delta.value,
+				}
 			}
 
 		case DeltaOpDelete:
-			// 从切片中删除键
-			for idx, slot := range tempSlots {
-				if string(slot.key) == keyStr {
-					// 删除元素
-					tempSlots = append(tempSlots[:idx], tempSlots[idx+1:]...)
-					break
-				}
+			// P0-3 优化：使用二分查找删除，保持有序
+			idx := sort.Search(len(tempSlots), func(i int) bool {
+				return compareKeys(tempSlots[i].key, delta.key) >= 0
+			})
+
+			if idx < len(tempSlots) && compareKeys(tempSlots[idx].key, delta.key) == 0 {
+				// 删除元素
+				tempSlots = append(tempSlots[:idx], tempSlots[idx+1:]...)
 			}
 		}
 	}
 
-	// 4. 将所有槽位添加到新 Mini-Page
-	// 4. 再次排序以确保顺序正确（修复 Delta Chain 应用后的顺序问题）
-	sort.Slice(tempSlots, func(i, j int) bool {
-		return compareKeys(tempSlots[i].key, tempSlots[j].key) < 0
-	})
-
+	// 将所有槽位添加到新 Mini-Page
+	// ✅ 无需再次排序（已经保持有序）
 	for _, slot := range tempSlots {
 		keyStr := string(slot.key)
 		newMiniPage.slots = append(newMiniPage.slots, slot)
@@ -361,17 +359,34 @@ func (n *LeafNode) compact() error {
 		newMiniPage.dataSize += uint16(len(slot.key) + len(slot.value))
 	}
 
-	// 5. 替换 Mini-Page
+	// 替换 Mini-Page
 	n.miniPage = newMiniPage
 
-	// 6. 清空 Delta Chain
+	// 清空 Delta Chain
 	n.deltas = make([]*DeltaEntry, 0, 8)
 	n.deltaSize = 0
 
 	return nil
 }
 
+
 // currentTimestamp 获取当前时间戳（纳秒）
+// NewMiniPageWithCapacity 创建指定容量的 Mini-Page
+// P0-2 优化：预分配 map 容量，避免动态扩容导致重新哈希
+func NewMiniPageWithCapacity(level PageLevel, slotCapacity int) *MiniPage {
+	capacity := maxSizeForLevel(level)
+
+	return &MiniPage{
+		level:    level,
+		bitmap:   0,
+		slots:    make([]Slot, 0, slotCapacity),
+		slotMap:  make(map[string]int, slotCapacity), // ✅ 预分配容量
+		dataSize: 0,
+		capacity: capacity,
+	}
+}
+
+
 func currentTimestamp() uint64 {
 	return uint64(0) // MVP 简化实现
 }

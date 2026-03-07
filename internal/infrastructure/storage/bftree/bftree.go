@@ -286,53 +286,6 @@ func (t *BfTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 	return nil, ErrMaxRetries
 }
 
-// lookup 查找键（内部，已持有锁）
-func (t *BfTree) lookup(key []byte) ([]byte, error) {
-	// 空树
-	if t.rootPageID == 0 {
-		return nil, ErrKeyNotFound
-	}
-
-	// 从根节点开始查找
-	currentPageID := t.rootPageID
-
-	for {
-		entry, found := t.pageTable.Get(currentPageID)
-		if !found {
-			return nil, ErrPageNotFound
-		}
-
-		// 根据页面类型处理
-		switch entry.pageType {
-		case PageTypeLeaf:
-			// 叶子节点：直接查找键
-			leafNode, err := t.pageStore.getLeaf(currentPageID)
-			if err != nil {
-				return nil, err
-			}
-			value, found := leafNode.Get(key)
-			if !found {
-				return nil, ErrKeyNotFound
-			}
-			return value, nil
-
-		case PageTypeInner:
-			// 内部节点：继续向下查找
-			innerNode, err := t.pageStore.getInner(currentPageID)
-			if err != nil {
-				return nil, err
-			}
-			childID, found := innerNode.FindChild(key)
-			if !found {
-				return nil, ErrKeyNotFound
-			}
-			currentPageID = childID
-
-		default:
-			return nil, fmt.Errorf("unknown page type: %d", entry.pageType)
-		}
-	}
-}
 
 // lookupFromPage 从指定页面查找键（内部，已持有 bitmapLock）
 //
@@ -1088,12 +1041,3 @@ func (t *BfTree) incrementPageVersion(pageID uint64) uint64 {
 	return entry.version.Add(1)
 }
 
-// compareAndSwapPageVersion 比较并交换页面版本号
-// 用于乐观锁控制
-func (t *BfTree) compareAndSwapPageVersion(pageID uint64, oldVersion, newVersion uint64) bool {
-	entry, exists := t.pageTable.Get(pageID)
-	if !exists {
-		return false
-	}
-	return entry.version.CompareAndSwap(oldVersion, newVersion)
-}

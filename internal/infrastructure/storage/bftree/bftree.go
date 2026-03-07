@@ -327,30 +327,44 @@ func (t *BfTree) insertLocked(key, value []byte, writeWAL bool) error {
 }
 
 // findLeafPage 查找键应该所在的叶子页面
+// 便捷方法，忽略版本号（向后兼容）
 func (t *BfTree) findLeafPage(rootPageID uint64, key []byte) (uint64, error) {
+	pageID, _, err := t.findLeafPageWithVersion(rootPageID, key)
+	return pageID, err
+}
+
+// findLeafPageWithVersion 查找键应该所在的叶子页面（带版本号）
+// 返回: (pageID, version, error)
+//
+// 用于双层锁架构的版本检查机制：
+// - 获取页面ID用于锁定
+// - 获取版本号用于并发修改检测
+func (t *BfTree) findLeafPageWithVersion(rootPageID uint64, key []byte) (uint64, uint64, error) {
 	currentPageID := rootPageID
 
 	for {
 		entry, found := t.pageTable.Get(currentPageID)
 		if !found {
-			return 0, ErrPageNotFound
+			return 0, 0, ErrPageNotFound
 		}
 
 		if entry.pageType == PageTypeLeaf {
-			return currentPageID, nil
+			// 返回页面ID和版本号
+			version := entry.version.Load()
+			return currentPageID, version, nil
 		}
 
 		// 内部节点：继续向下
 		innerNode, err := t.pageStore.getInner(currentPageID)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 
 		childID, found := innerNode.FindChild(key)
 		if !found {
 			// 返回最左边的子节点
 			if len(innerNode.children) == 0 {
-				return 0, ErrPageNotFound
+				return 0, 0, ErrPageNotFound
 			}
 			childID = innerNode.children[0]
 		}

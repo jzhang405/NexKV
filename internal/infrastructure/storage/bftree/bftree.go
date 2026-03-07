@@ -34,6 +34,8 @@ type BfTree struct {
 
 	// 并发控制
 	rwLock sync.RWMutex // 读写锁（MVP）
+	bitmapLock    *BitmapLock   // BitmapLock（P1 优化）
+	useBitmapLock bool          // 是否使用 BitmapLock
 
 	// 状态管理
 	closed atomic.Bool // 关闭标志
@@ -97,7 +99,8 @@ func NewBfTree(config *Config) (*BfTree, error) {
 		pageStore:  pageStore,
 		config:     config,
 		wal:        w,
-		walEnabled: config.EnableWAL,
+		walEnabled:    config.EnableWAL,
+		useBitmapLock: config.UseBitmapLock,
 	}
 
 	// 恢复 WAL（如果启用）
@@ -107,6 +110,12 @@ func NewBfTree(config *Config) (*BfTree, error) {
 			_ = w.Close()
 			return nil, fmt.Errorf("failed to recover from WAL: %w", err)
 		}
+	}
+
+
+	// 初始化 BitmapLock（如果启用）
+	if config.UseBitmapLock {
+		tree.bitmapLock = NewBitmapLock(config.BitmapLockShards)
 	}
 
 	return tree, nil
@@ -515,4 +524,44 @@ func (t *BfTree) Close() error {
 	}
 
 	return nil
+}
+
+// Lock helper methods for BitmapLock integration
+// 这些方法根据配置自动选择使用 RWMutex 或 BitmapLock
+
+// lockPage 锁定指定页面（写锁）
+// 如果启用 BitmapLock，使用细粒度锁；否则使用全局 RWMutex
+func (t *BfTree) lockPage(pageID uint64) {
+	if t.useBitmapLock && t.bitmapLock != nil {
+		t.bitmapLock.Lock(pageID)
+	} else {
+		t.rwLock.Lock()
+	}
+}
+
+// unlockPage 解锁指定页面（写锁）
+func (t *BfTree) unlockPage(pageID uint64) {
+	if t.useBitmapLock && t.bitmapLock != nil {
+		t.bitmapLock.Unlock(pageID)
+	} else {
+		t.rwLock.Unlock()
+	}
+}
+
+// rlockPage 锁定指定页面（读锁）
+func (t *BfTree) rlockPage(pageID uint64) {
+	if t.useBitmapLock && t.bitmapLock != nil {
+		t.bitmapLock.RLock(pageID)
+	} else {
+		t.rwLock.RLock()
+	}
+}
+
+// runlockPage 解锁指定页面（读锁）
+func (t *BfTree) runlockPage(pageID uint64) {
+	if t.useBitmapLock && t.bitmapLock != nil {
+		t.bitmapLock.RUnlock(pageID)
+	} else {
+		t.rwLock.RUnlock()
+	}
 }

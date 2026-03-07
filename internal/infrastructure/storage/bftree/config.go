@@ -39,6 +39,7 @@ type Config struct {
 
 	// 并发控制配置
 	BitmapLockShards int `json:"bitmap_lock_shards"` // BitmapLock 分片数
+	UseBitmapLock bool `json:"use_bitmap_lock"` // 是否启用 BitmapLock（细粒度锁）
 
 	// WAL 配置
 	WALDir      string `json:"wal_dir"`      // WAL 目录
@@ -76,7 +77,8 @@ func DefaultConfig() *Config {
 		EnableWAL:        true,
 		EnableDeltaChain: true,
 		PromotionConfig:  DefaultPromotionConfig(),
-		BitmapLockShards: DefaultBitmapLockShards,
+		UseBitmapLock:     false,
+		BitmapLockShards:  DefaultBitmapLockShards,
 		SegmentSize:      DefaultSegmentSize,
 		CacheSize:        10000,   // 10K 页面
 		MergeThreshold:   0.25,    // 25% 利用率触发合并

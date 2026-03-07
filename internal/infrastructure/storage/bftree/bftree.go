@@ -173,7 +173,7 @@ func (t *BfTree) createRootNode(key, value []byte) error {
 	if err != nil {
 		return err
 	}
-	t.rootPageID = pageID
+	atomic.StoreUint64(&t.rootPageID, pageID)
 
 	leafNode := NewLeafNode(pageID, L1)
 	if err := leafNode.Set(key, value); err != nil {
@@ -390,7 +390,7 @@ func (t *BfTree) Set(ctx context.Context, key, value []byte) error {
 	// 重试循环：处理版本冲突
 	for retry := 0; retry < MaxRetries; retry++ {
 		// 空树特殊处理：需要创建根节点（必须使用 treeLock）
-		if t.rootPageID == 0 {
+		if atomic.LoadUint64(&t.rootPageID) == 0 {
 			t.treeLock.Lock()
 			
 			// 双重检查：可能在等待锁时已被其他 goroutine 创建
@@ -512,7 +512,7 @@ func (t *BfTree) insertLocked(key, value []byte, writeWAL bool) error {
 		if err != nil {
 			return err
 		}
-		t.rootPageID = pageID
+		atomic.StoreUint64(&t.rootPageID, pageID)
 
 		leafNode := NewLeafNode(pageID, L1)
 		if err := leafNode.Set(key, value); err != nil {

@@ -163,7 +163,7 @@ func (dc *DeltaChain) Get(key []byte) ([]byte, bool) {
 		if bytes.Equal(entry.key, key) {
 			switch entry.opType {
 			case DeltaOpInsert, DeltaOpUpdate:
-				// 返回副本
+				// 返回值副本
 				value := make([]byte, len(entry.value))
 				copy(value, entry.value)
 				return value, true

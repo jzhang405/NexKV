@@ -10,13 +10,13 @@ import (
 //
 // 存储页面的元数据和引用
 type PageEntry struct {
-	pageID   uint64    // 页面 ID
-	pageType PageType  // 页面类型
-	level    PageLevel // 页面级别
-	refCount int32     // 引用计数
-	pinCount int32     // 固定计数（防止被驱逐）
-	version  uint64    // 版本号
-	loaded   bool      // 是否已加载到内存
+	pageID   uint64        // 页面 ID
+	pageType PageType      // 页面类型
+	level    PageLevel     // 页面级别
+	refCount int32         // 引用计数
+	pinCount int32         // 固定计数（防止被驱逐）
+	version  atomic.Uint64 // 版本号（原子操作，用于并发修改检测）
+	loaded   bool          // 是否已加载到内存
 }
 
 // PageTable 页面表（管理所有页面实体）
@@ -68,9 +68,9 @@ func (pt *PageTable) Alloc(pageType PageType, level PageLevel) (uint64, error) {
 		level:    level,
 		refCount: 1, // 初始引用计数为 1
 		pinCount: 0,
-		version:  1,
 		loaded:   true,
 	}
+	entry.version.Store(1) // 初始化版本号为 1
 
 	pt.mu.Lock()
 	defer pt.mu.Unlock()

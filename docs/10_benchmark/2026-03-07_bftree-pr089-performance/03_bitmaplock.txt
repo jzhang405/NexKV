@@ -1,0 +1,36 @@
+goos: linux
+goarch: amd64
+pkg: github.com/jzhang405/NexKV/internal/infrastructure/storage/bftree
+cpu: Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz
+BenchmarkBitmapLock_LockUnlock-12         	25466668	        45.92 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_LockUnlock-12         	26171917	        46.19 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_LockUnlock-12         	26333732	        46.65 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_LockUnlock-12         	26048347	        45.59 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_LockUnlock-12         	25328187	        45.85 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_RLockRUnlock-12       	26391690	        45.39 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_RLockRUnlock-12       	26063563	        46.00 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_RLockRUnlock-12       	26415063	        45.67 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_RLockRUnlock-12       	26221503	        45.51 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_RLockRUnlock-12       	26319178	        45.55 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_TryLock-12            	25156066	        47.60 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_TryLock-12            	25284051	        47.60 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_TryLock-12            	25275145	        47.50 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_TryLock-12            	25117501	        47.45 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_TryLock-12            	25291813	        47.48 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentRead-12     	 8875021	       135.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentRead-12     	 9388659	       128.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentRead-12     	 9259664	       127.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentRead-12     	 9278770	       127.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentRead-12     	 9356496	       128.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentWrite-12    	 8652045	       137.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentWrite-12    	 9079708	       132.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentWrite-12    	 9168177	       132.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentWrite-12    	 9273561	       132.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_ConcurrentWrite-12    	 8997933	       131.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_MultiplePages-12      	25933933	        46.76 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_MultiplePages-12      	25926559	        48.13 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_MultiplePages-12      	25948978	        46.71 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_MultiplePages-12      	25899448	        47.91 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBitmapLock_MultiplePages-12      	25714903	        46.95 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/jzhang405/NexKV/internal/infrastructure/storage/bftree	38.358s

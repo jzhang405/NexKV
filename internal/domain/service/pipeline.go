@@ -3,7 +3,7 @@ package service
 
 import (
 	"context"
-	"errors"
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"sync"
 	"time"
 
@@ -103,6 +103,6 @@ func (p *Pipeline) GracefulShutdown(timeout time.Duration) error {
 
 // Pipeline errors
 var (
-	ErrPipelineClosed          = errors.New("pipeline is closed")
-	ErrPipelineShutdownTimeout = errors.New("pipeline graceful shutdown timeout")
+	ErrPipelineClosed          = errors.ErrPipelineClosed
+	ErrPipelineShutdownTimeout = errors.ErrPipelineShutdownTimeout
 )

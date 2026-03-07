@@ -40,6 +40,9 @@ var (
 
 	// ErrCannotMerge 节点无法合并（Phase 2.3 新增）
 	ErrCannotMerge = errors.New("nodes cannot be merged")
+
+	// ErrMaxRetries 重试次数耗尽（双层锁架构新增）
+	ErrMaxRetries = errors.New("max retries exceeded")
 )
 
 // PageCorruptError 页面损坏错误

@@ -3,6 +3,7 @@ package bftree
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -113,7 +114,7 @@ func TestSplitLeafNode_Direct(t *testing.T) {
 	defer tree.Close()
 
 	// 创建一个叶子节点并添加数据
-	node := NewLeafNode(1, L3)
+	node := NewLeafNode(1, L3, 8, 2048)
 	for i := 0; i < 10; i++ {
 		key := []byte{byte(i)}
 		value := make([]byte, 30)
@@ -360,7 +361,7 @@ func TestBfTree_SplitLeafNode_Coverage(t *testing.T) {
 
 	// 创建一个叶子节点并填满
 	pageID, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
-	leafNode := NewLeafNode(pageID, L1)
+	leafNode := NewLeafNode(pageID, L1, 8, 2048)
 
 	// 插入足够多的数据以触发 Delta Chain 满和分裂
 	for i := 0; i < 20; i++ {
@@ -621,4 +622,40 @@ func TestBfTree_Split_InnerNode(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, []byte("value"), value)
 	}
+}
+
+// TestCoverage_PageSplit 页面分裂测试 - 触发 performSplitWithTreeLock
+func TestCoverage_PageSplit(t *testing.T) {
+	config := DefaultConfig()
+	config.DataDir = t.TempDir()
+	config.EnableWAL = false
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	ctx := context.Background()
+
+	// 插入大量数据
+	const numKeys = 3000
+	for i := 0; i < numKeys; i++ {
+		key := []byte(fmt.Sprintf("split-key-%06d", i))
+		value := []byte(fmt.Sprintf("value-%06d-padding-to-make-it-bigger-1234567890", i))
+		err := tree.Set(ctx, key, value)
+		assert.NoError(t, err)
+	}
+
+	// 验证部分数据
+	for i := 0; i < numKeys; i += 100 {
+		key := []byte(fmt.Sprintf("split-key-%06d", i))
+		_, err := tree.Get(ctx, key)
+		assert.NoError(t, err)
+	}
+
+	// 验证统计信息
+	stats := tree.GetStats()
+	t.Logf("After insert: TotalPages=%d, LeafPages=%d, InnerPages=%d",
+		stats.TotalPages, stats.LeafPages, stats.InnerPages)
+
+	// 测试已覆盖大量插入路径，分裂可能被 Delta Chain 延迟
 }

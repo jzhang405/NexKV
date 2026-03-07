@@ -60,8 +60,8 @@ type iteratorStackEntry struct {
 // 返回：
 //   - Iterator: 迭代器
 func (t *BfTree) Scan(ctx context.Context, start, end []byte) Iterator {
-	t.rwLock.RLock()
-	defer t.rwLock.RUnlock()
+	t.treeLock.RLock()
+	defer t.treeLock.RUnlock()
 
 	if t.closed.Load() {
 		return &errorIterator{err: ErrTreeClosed}
@@ -142,8 +142,8 @@ func (it *ScanIterator) Next() (valid bool, key []byte, value []byte, err error)
 		return false, nil, nil, fmt.Errorf("iterator closed")
 	}
 
-	it.tree.rwLock.RLock()
-	defer it.tree.rwLock.RUnlock()
+	it.tree.treeLock.RLock()
+	defer it.tree.treeLock.RUnlock()
 
 	if it.tree.closed.Load() {
 		return false, nil, nil, ErrTreeClosed

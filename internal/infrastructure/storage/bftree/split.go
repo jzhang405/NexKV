@@ -63,8 +63,8 @@ func (t *BfTree) splitLeafNode(pageID uint64) (leftPageID, rightPageID uint64, s
 	}
 
 	// 6. 创建左右节点并分配键值对
-	leftNode := NewLeafNode(leftPageID, leftLevel)
-	rightNode := NewLeafNode(rightPageID, leftLevel)
+	leftNode := NewLeafNode(leftPageID, leftLevel, t.config.MaxDeltaChainLen, t.config.MaxDeltaChainSize)
+	rightNode := NewLeafNode(rightPageID, leftLevel, t.config.MaxDeltaChainLen, t.config.MaxDeltaChainSize)
 
 	// 左节点：[0, midIndex)
 	for i := 0; i < midIndex; i++ {

@@ -8,7 +8,7 @@ package service
 
 import (
 	"context"
-	"errors"
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"sync"
 	"sync/atomic"
 
@@ -256,11 +256,11 @@ func (b *batchSubmitter) Close() error {
 
 var (
 	// ErrSubmitterClosed 批量提交器已关闭
-	ErrSubmitterClosed = errors.New("batch submitter is closed")
+	ErrSubmitterClosed = errors.ErrBatchSubmitterClosed
 
 	// ErrBatchTimeout 批量提交超时
-	ErrBatchTimeout = errors.New("batch submit timeout")
+	ErrBatchTimeout = errors.ErrBatchTimeout
 
 	// ErrBatchTooLarge 批量提交任务过多
-	ErrBatchTooLarge = errors.New("batch submit too large")
+	ErrBatchTooLarge = errors.ErrBatchTooLarge
 )

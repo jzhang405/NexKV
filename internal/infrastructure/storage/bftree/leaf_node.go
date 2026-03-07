@@ -95,10 +95,20 @@ const (
 // 参数：
 //   - pageID: 页面 ID
 //   - level: Mini-Page 级别（默认 L1）
+//   - maxDeltaLen: Delta Chain 最大长度（可选，默认 8）
+//   - maxDeltaSize: Delta Chain 最大大小（可选，默认 Mini-Page 容量的 50%）
 //
 // 返回：
 //   - 初始化的 LeafNode
-func NewLeafNode(pageID uint64, level PageLevel) *LeafNode {
+func NewLeafNode(pageID uint64, level PageLevel, maxDeltaLen int, maxDeltaSize uint16) *LeafNode {
+	// 使用默认值（如果未指定）
+	if maxDeltaLen <= 0 {
+		maxDeltaLen = 8 // 默认最大 8 个 Delta
+	}
+	if maxDeltaSize == 0 {
+		maxDeltaSize = uint16(maxSizeForLevel(level) / 2) // 默认容量 50%
+	}
+
 	return &LeafNode{
 		pageID:       pageID,
 		level:        level,
@@ -106,8 +116,8 @@ func NewLeafNode(pageID uint64, level PageLevel) *LeafNode {
 		miniPage:     NewMiniPage(level),
 		deltas:       make([]*DeltaEntry, 0, 8), // 预分配 8 个 Delta 槽位
 		deltaSize:    0,
-		maxDeltaLen:  8,                                  // 默认最大 8 个 Delta
-		maxDeltaSize: uint16(maxSizeForLevel(level) / 2), // 默认容量 50%
+		maxDeltaLen:  maxDeltaLen,
+		maxDeltaSize: maxDeltaSize,
 	}
 }
 
@@ -339,6 +349,11 @@ func (n *LeafNode) compact() error {
 	}
 
 	// 4. 将所有槽位添加到新 Mini-Page
+	// 4. 再次排序以确保顺序正确（修复 Delta Chain 应用后的顺序问题）
+	sort.Slice(tempSlots, func(i, j int) bool {
+		return compareKeys(tempSlots[i].key, tempSlots[j].key) < 0
+	})
+
 	for _, slot := range tempSlots {
 		keyStr := string(slot.key)
 		newMiniPage.slots = append(newMiniPage.slots, slot)

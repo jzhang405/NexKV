@@ -3,8 +3,9 @@ package bftree
 
 import (
 	"bytes"
-	"errors"
 	"sync"
+
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // InnerNode Bf-Tree 内部节点（索引节点）
@@ -137,7 +138,7 @@ func (n *InnerNode) InsertChild(index int, key []byte, childID uint64) error {
 		return ErrEmptyKey
 	}
 	if index < 0 || index > len(n.children) {
-		return errors.New("invalid index")
+		return errors.ErrBfTreeInvalidIndex
 	}
 
 	// 检查容量
@@ -175,7 +176,7 @@ func (n *InnerNode) Split() (*InnerNode, []byte, error) {
 
 	// 检查是否需要分裂
 	if len(n.children) < n.maxKeys {
-		return nil, nil, errors.New("node not full")
+		return nil, nil, errors.ErrBfTreeNodeNotFull
 	}
 
 	// 计算分裂点（中间位置）
@@ -222,10 +223,10 @@ func (n *InnerNode) Merge(sibling *InnerNode) error {
 
 	// 参数验证
 	if sibling == nil {
-		return errors.New("sibling is nil")
+		return errors.ErrBfTreeSiblingNil
 	}
 	if sibling.level != n.level {
-		return errors.New("level mismatch")
+		return errors.ErrBfTreeLevelMismatch
 	}
 
 	// 合并键和子节点

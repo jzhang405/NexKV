@@ -1,0 +1,21 @@
+goos: linux
+goarch: amd64
+pkg: github.com/jzhang405/NexKV/internal/infrastructure/storage/bftree
+cpu: Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz
+BenchmarkDeltaChain_Append-12       	45748969	        26.97 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDeltaChain_Append-12       	46108297	        26.39 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDeltaChain_Append-12       	46068180	        25.95 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDeltaChain_Append-12       	45909283	        25.99 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDeltaChain_Append-12       	45566882	        25.77 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDeltaChain_Get-12          	 5298156	       201.3 ns/op	       5 B/op	       1 allocs/op
+BenchmarkDeltaChain_Get-12          	 5960461	       213.4 ns/op	       5 B/op	       1 allocs/op
+BenchmarkDeltaChain_Get-12          	 6159769	       238.6 ns/op	       5 B/op	       1 allocs/op
+BenchmarkDeltaChain_Get-12          	 6000804	       198.6 ns/op	       5 B/op	       1 allocs/op
+BenchmarkDeltaChain_Get-12          	 5848533	       199.9 ns/op	       5 B/op	       1 allocs/op
+BenchmarkDeltaChain_CompactTo-12    	  177012	      7742 ns/op	   11216 B/op	      18 allocs/op
+BenchmarkDeltaChain_CompactTo-12    	  152935	      7554 ns/op	   11216 B/op	      18 allocs/op
+BenchmarkDeltaChain_CompactTo-12    	  163380	      7742 ns/op	   11216 B/op	      18 allocs/op
+BenchmarkDeltaChain_CompactTo-12    	  165261	      7556 ns/op	   11216 B/op	      18 allocs/op
+BenchmarkDeltaChain_CompactTo-12    	  156254	      7639 ns/op	   11216 B/op	      18 allocs/op
+PASS
+ok  	github.com/jzhang405/NexKV/internal/infrastructure/storage/bftree	37.760s

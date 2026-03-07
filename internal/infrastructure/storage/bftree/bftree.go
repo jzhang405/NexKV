@@ -144,6 +144,60 @@ func (t *BfTree) recover() error {
 	return nil
 }
 
+// insertToPage 向指定页面插入键值（内部，已持有 bitmapLock）
+//
+// 用于双层锁架构：
+// - 调用前必须持有 bitmapLock 写锁
+// - 不需要 treeLock（已经释放）
+// - 直接修改页面内容
+func (t *BfTree) insertToPage(pageID uint64, key, value []byte) error {
+	// 获取叶子节点
+	leafNode, err := t.pageStore.getLeaf(pageID)
+	if err != nil {
+		return err
+	}
+
+	// 插入到叶子节点
+	return leafNode.Set(key, value)
+}
+
+// createRootNode 创建根节点（内部，已持有 treeLock）
+//
+// 用于空树初始化：
+// - 调用前必须持有 treeLock
+// - 创建新的根节点
+// - 写入 WAL
+// - 递增版本号
+func (t *BfTree) createRootNode(key, value []byte) error {
+	pageID, err := t.pageTable.Alloc(PageTypeLeaf, L1)
+	if err != nil {
+		return err
+	}
+	t.rootPageID = pageID
+
+	leafNode := NewLeafNode(pageID, L1)
+	if err := leafNode.Set(key, value); err != nil {
+		return err
+	}
+	t.pageStore.putLeaf(pageID, leafNode)
+	atomic.AddInt64(&t.stats.LeafPages, 1)
+	
+	// 写 WAL
+	if t.walEnabled {
+		entry := wal.NewWALEntry(wal.WALTypeInsert, 0, key, value, wal.LSNInvalid)
+		if _, err := t.wal.Append(entry); err != nil {
+			return fmt.Errorf("failed to append WAL: %w", err)
+		}
+		atomic.AddInt64(&t.stats.WALAppends, 1)
+		atomic.AddInt64(&t.stats.WALTotalBytes, int64(len(key)+len(value)))
+	}
+	
+	// 递增版本号
+	t.incrementPageVersion(pageID)
+	
+	return nil
+}
+
 // applyWALEntry 应用 WAL 日志条目
 func (t *BfTree) applyWALEntry(entry *wal.WALEntry) error {
 	t.treeLock.Lock()
@@ -317,27 +371,116 @@ func (t *BfTree) lookupFromPage(pageID uint64, key []byte) ([]byte, error) {
 }
 
 // Set 设置键值（同步）
+//
+// 双层锁架构实现：
+// 1. 使用 treeLock 保护树结构查找
+// 2. 使用 bitmapLock 保护页面内容写入
+// 3. 版本检查机制检测并发修改
+// 4. 重试机制处理版本冲突
+// 5. 修改成功后递增版本号
 func (t *BfTree) Set(ctx context.Context, key, value []byte) error {
 	if t.closed.Load() {
 		return ErrTreeClosed
 	}
 
-	t.treeLock.Lock()
-	defer t.treeLock.Unlock()
-
 	atomic.AddInt64(&t.stats.WriteCount, 1)
 
-	// 写 WAL
-	if t.walEnabled {
-		entry := wal.NewWALEntry(wal.WALTypeInsert, 0, key, value, wal.LSNInvalid)
-		if _, err := t.wal.Append(entry); err != nil {
-			return fmt.Errorf("failed to append WAL: %w", err)
+	const MaxRetries = 10
+
+	// 重试循环：处理版本冲突
+	for retry := 0; retry < MaxRetries; retry++ {
+		// 空树特殊处理：需要创建根节点（必须使用 treeLock）
+		if t.rootPageID == 0 {
+			t.treeLock.Lock()
+			
+			// 双重检查：可能在等待锁时已被其他 goroutine 创建
+			if t.rootPageID == 0 {
+				err := t.createRootNode(key, value)
+				t.treeLock.Unlock()
+				return err
+			}
+			t.treeLock.Unlock()
 		}
-		atomic.AddInt64(&t.stats.WALAppends, 1)
-		atomic.AddInt64(&t.stats.WALTotalBytes, int64(len(key)+len(value)))
+
+		// 步骤 1: 使用 treeLock 保护树结构查找
+		t.treeLock.RLock()
+		pageID, version, err := t.findLeafPageWithVersion(t.rootPageID, key)
+		if err != nil {
+			t.treeLock.RUnlock()
+			if err == ErrKeyNotFound || err == ErrPageNotFound {
+				// 树结构已变化，重试
+				continue
+			}
+			return err
+		}
+
+		// 步骤 2: 获取 bitmapLock 写锁
+		if t.useBitmapLock && t.bitmapLock != nil {
+			t.bitmapLock.Lock(pageID)
+			// 释放 treeLock（遵循锁顺序）
+			t.treeLock.RUnlock()
+
+			// 步骤 3: 版本检查
+			currentVersion := t.getPageVersion(pageID)
+			if currentVersion == version {
+				// 版本一致，执行写入
+				err := t.insertToPage(pageID, key, value)
+				
+				if err == nil {
+					// 写入成功：递增版本号
+					t.incrementPageVersion(pageID)
+					
+					// 写 WAL（在成功之后）
+					if t.walEnabled {
+						entry := wal.NewWALEntry(wal.WALTypeInsert, 0, key, value, wal.LSNInvalid)
+						if _, walErr := t.wal.Append(entry); walErr != nil {
+							return fmt.Errorf("failed to append WAL: %w", walErr)
+						}
+						atomic.AddInt64(&t.stats.WALAppends, 1)
+						atomic.AddInt64(&t.stats.WALTotalBytes, int64(len(key)+len(value)))
+					}
+				}
+				
+				t.bitmapLock.Unlock(pageID)
+				
+				// 处理分裂等情况
+				if err == ErrDeltaFull {
+					// 分裂情况：升级为 treeLock，重试
+					continue
+				}
+				return err
+			}
+
+			// 版本冲突，释放锁并重试
+			t.bitmapLock.Unlock(pageID)
+
+			// 指数退避
+			if retry < MaxRetries-1 {
+				backoff := (1 << retry) * 10
+				time.Sleep(time.Duration(backoff) * time.Microsecond)
+			}
+		} else {
+			// 未启用 BitmapLock，使用原有逻辑
+			t.treeLock.RUnlock()
+			t.treeLock.Lock()
+			defer t.treeLock.Unlock()
+
+			// 写 WAL
+			if t.walEnabled {
+				entry := wal.NewWALEntry(wal.WALTypeInsert, 0, key, value, wal.LSNInvalid)
+				if _, err := t.wal.Append(entry); err != nil {
+					return fmt.Errorf("failed to append WAL: %w", err)
+				}
+				atomic.AddInt64(&t.stats.WALAppends, 1)
+				atomic.AddInt64(&t.stats.WALTotalBytes, int64(len(key)+len(value)))
+			}
+
+			return t.insertLocked(key, value, true)
+		}
 	}
 
-	return t.insertLocked(key, value, true)
+	atomic.AddInt64(&t.stats.WriteCount, -1) // 回滚统计
+	return ErrMaxRetries
 }
 
 // insertLocked 插入键值（内部，已持有锁）
@@ -467,26 +610,99 @@ func (t *BfTree) findLeafPageWithVersion(rootPageID uint64, key []byte) (uint64,
 }
 
 // Update 更新键值（同步）
+//
+// 双层锁架构实现：
+// 1. 使用 treeLock 保护树结构查找
+// 2. 使用 bitmapLock 保护页面内容更新
+// 3. 版本检查机制检测并发修改
+// 4. 重试机制处理版本冲突
+// 5. 修改成功后递增版本号
 func (t *BfTree) Update(ctx context.Context, key, value []byte) error {
 	if t.closed.Load() {
 		return ErrTreeClosed
 	}
 
-	t.treeLock.Lock()
-	defer t.treeLock.Unlock()
-
 	atomic.AddInt64(&t.stats.WriteCount, 1)
 
-	// 写 WAL
-	if t.walEnabled {
-		entry := wal.NewWALEntry(wal.WALTypeUpdate, 0, key, value, wal.LSNInvalid)
-		if _, err := t.wal.Append(entry); err != nil {
-			return fmt.Errorf("failed to append WAL: %w", err)
-		}
-		atomic.AddInt64(&t.stats.WALAppends, 1)
+	// 空树快速路径
+	if t.rootPageID == 0 {
+		return ErrKeyNotFound
 	}
 
-	return t.updateLocked(key, value, true)
+	const MaxRetries = 10
+
+	// 重试循环：处理版本冲突
+	for retry := 0; retry < MaxRetries; retry++ {
+		// 步骤 1: 使用 treeLock 保护树结构查找
+		t.treeLock.RLock()
+		pageID, version, err := t.findLeafPageWithVersion(t.rootPageID, key)
+		if err != nil {
+			t.treeLock.RUnlock()
+			if err == ErrKeyNotFound || err == ErrPageNotFound {
+				return ErrKeyNotFound
+			}
+			return err
+		}
+
+		// 步骤 2: 获取 bitmapLock 写锁
+		if t.useBitmapLock && t.bitmapLock != nil {
+			t.bitmapLock.Lock(pageID)
+			// 释放 treeLock（遵循锁顺序）
+			t.treeLock.RUnlock()
+
+			// 步骤 3: 版本检查
+			currentVersion := t.getPageVersion(pageID)
+			if currentVersion == version {
+				// 版本一致，执行更新
+				err := t.updateInPage(pageID, key, value)
+				
+				// 步骤 4: 递增版本号
+				if err == nil {
+					t.incrementPageVersion(pageID)
+					
+					// 写 WAL
+					if t.walEnabled {
+						entry := wal.NewWALEntry(wal.WALTypeUpdate, 0, key, value, wal.LSNInvalid)
+						if _, err := t.wal.Append(entry); err != nil {
+							return fmt.Errorf("failed to append WAL: %w", err)
+						}
+						atomic.AddInt64(&t.stats.WALAppends, 1)
+					}
+				}
+				
+				t.bitmapLock.Unlock(pageID)
+				return err
+			}
+
+			// 版本冲突，释放锁并重试
+			t.bitmapLock.Unlock(pageID)
+
+			// 指数退避
+			if retry < MaxRetries-1 {
+				backoff := (1 << retry) * 10
+				time.Sleep(time.Duration(backoff) * time.Microsecond)
+			}
+		} else {
+			// 未启用 BitmapLock，使用原有逻辑
+			t.treeLock.RUnlock()
+			t.treeLock.Lock()
+			defer t.treeLock.Unlock()
+
+			// 写 WAL
+			if t.walEnabled {
+				entry := wal.NewWALEntry(wal.WALTypeUpdate, 0, key, value, wal.LSNInvalid)
+				if _, err := t.wal.Append(entry); err != nil {
+					return fmt.Errorf("failed to append WAL: %w", err)
+				}
+				atomic.AddInt64(&t.stats.WALAppends, 1)
+			}
+
+			return t.updateLocked(key, value, true)
+		}
+	}
+
+	atomic.AddInt64(&t.stats.WriteCount, -1) // 回滚统计
+	return ErrMaxRetries
 }
 
 // updateLocked 更新键值（内部，已持有锁）
@@ -518,27 +734,124 @@ func (t *BfTree) updateLocked(key, value []byte, writeWAL bool) error {
 	return leafNode.Set(key, value)
 }
 
+// updateInPage 在指定页面更新键值（内部，已持有 bitmapLock）
+//
+// 用于双层锁架构：
+// - 调用前必须持有 bitmapLock 写锁
+// - 不需要 treeLock（已经释放）
+// - 直接修改页面内容
+// - 检查键是否存在（更新要求键必须存在）
+func (t *BfTree) updateInPage(pageID uint64, key, value []byte) error {
+	// 获取叶子节点
+	leafNode, err := t.pageStore.getLeaf(pageID)
+	if err != nil {
+		return err
+	}
+
+	// 检查键是否存在
+	_, found := leafNode.Get(key)
+	if !found {
+		return ErrKeyNotFound
+	}
+
+	// 更新键值（使用 Set，LeafNode 内部会处理为 Update）
+	return leafNode.Set(key, value)
+}
+
 // Delete 删除键值（同步）
+//
+// 双层锁架构实现：
+// 1. 使用 treeLock 保护树结构查找
+// 2. 使用 bitmapLock 保护页面内容删除
+// 3. 版本检查机制检测并发修改
+// 4. 重试机制处理版本冲突
+// 5. 修改成功后递增版本号
 func (t *BfTree) Delete(ctx context.Context, key []byte) error {
 	if t.closed.Load() {
 		return ErrTreeClosed
 	}
 
-	t.treeLock.Lock()
-	defer t.treeLock.Unlock()
-
 	atomic.AddInt64(&t.stats.DeleteCount, 1)
 
-	// 写 WAL
-	if t.walEnabled {
-		entry := wal.NewWALEntry(wal.WALTypeDelete, 0, key, nil, wal.LSNInvalid)
-		if _, err := t.wal.Append(entry); err != nil {
-			return fmt.Errorf("failed to append WAL: %w", err)
-		}
-		atomic.AddInt64(&t.stats.WALAppends, 1)
+	// 空树快速路径
+	if t.rootPageID == 0 {
+		return ErrKeyNotFound
 	}
 
-	return t.deleteLocked(key, true)
+	const MaxRetries = 10
+
+	// 重试循环：处理版本冲突
+	for retry := 0; retry < MaxRetries; retry++ {
+		// 步骤 1: 使用 treeLock 保护树结构查找
+		t.treeLock.RLock()
+		pageID, version, err := t.findLeafPageWithVersion(t.rootPageID, key)
+		if err != nil {
+			t.treeLock.RUnlock()
+			if err == ErrKeyNotFound || err == ErrPageNotFound {
+				return ErrKeyNotFound
+			}
+			return err
+		}
+
+		// 步骤 2: 获取 bitmapLock 写锁
+		if t.useBitmapLock && t.bitmapLock != nil {
+			t.bitmapLock.Lock(pageID)
+			// 释放 treeLock（遵循锁顺序）
+			t.treeLock.RUnlock()
+
+			// 步骤 3: 版本检查
+			currentVersion := t.getPageVersion(pageID)
+			if currentVersion == version {
+				// 版本一致，执行删除
+				err := t.deleteFromPage(pageID, key)
+				
+				// 步骤 4: 递增版本号
+				if err == nil {
+					t.incrementPageVersion(pageID)
+					
+					// 写 WAL
+					if t.walEnabled {
+						entry := wal.NewWALEntry(wal.WALTypeDelete, 0, key, nil, wal.LSNInvalid)
+						if _, err := t.wal.Append(entry); err != nil {
+							return fmt.Errorf("failed to append WAL: %w", err)
+						}
+						atomic.AddInt64(&t.stats.WALAppends, 1)
+					}
+				}
+				
+				t.bitmapLock.Unlock(pageID)
+				return err
+			}
+
+			// 版本冲突，释放锁并重试
+			t.bitmapLock.Unlock(pageID)
+
+			// 指数退避
+			if retry < MaxRetries-1 {
+				backoff := (1 << retry) * 10
+				time.Sleep(time.Duration(backoff) * time.Microsecond)
+			}
+		} else {
+			// 未启用 BitmapLock，使用原有逻辑
+			t.treeLock.RUnlock()
+			t.treeLock.Lock()
+			defer t.treeLock.Unlock()
+
+			// 写 WAL
+			if t.walEnabled {
+				entry := wal.NewWALEntry(wal.WALTypeDelete, 0, key, nil, wal.LSNInvalid)
+				if _, err := t.wal.Append(entry); err != nil {
+					return fmt.Errorf("failed to append WAL: %w", err)
+				}
+				atomic.AddInt64(&t.stats.WALAppends, 1)
+			}
+
+			return t.deleteLocked(key, true)
+		}
+	}
+
+	atomic.AddInt64(&t.stats.DeleteCount, -1) // 回滚统计
+	return ErrMaxRetries
 }
 
 // deleteLocked 删除键值（内部，已持有锁）
@@ -571,6 +884,29 @@ func (t *BfTree) deleteLocked(key []byte, writeWAL bool) error {
 		return fmt.Errorf("merge failed: %w", err)
 	}
 
+	return nil
+}
+
+// deleteFromPage 从指定页面删除键值（内部，已持有 bitmapLock）
+//
+// 用于双层锁架构：
+// - 调用前必须持有 bitmapLock 写锁
+// - 不需要 treeLock（已经释放）
+// - 直接修改页面内容
+func (t *BfTree) deleteFromPage(pageID uint64, key []byte) error {
+	// 获取叶子节点
+	leafNode, err := t.pageStore.getLeaf(pageID)
+	if err != nil {
+		return err
+	}
+
+	// 删除键值
+	if err := leafNode.Delete(key); err != nil {
+		return err
+	}
+
+	// 注意：不在这里调用 tryMergeAfterDelete
+	// 合并操作需要 treeLock，在重试循环中处理
 	return nil
 }
 

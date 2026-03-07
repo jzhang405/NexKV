@@ -34,9 +34,9 @@ type BfTree struct {
 	walEnabled bool    // WAL 开关
 
 	// 并发控制
-	treeLock sync.RWMutex // 读写锁（MVP）
-	bitmapLock    *BitmapLock   // BitmapLock（P1 优化）
-	useBitmapLock bool          // 是否使用 BitmapLock
+	treeLock      sync.RWMutex // 读写锁（MVP）
+	bitmapLock    *BitmapLock  // BitmapLock（P1 优化）
+	useBitmapLock bool         // 是否使用 BitmapLock
 
 	// 状态管理
 	closed atomic.Bool // 关闭标志
@@ -95,11 +95,11 @@ func NewBfTree(config *Config) (*BfTree, error) {
 	}
 
 	tree := &BfTree{
-		rootPageID: 0, // 初始为空树
-		pageTable:  pageTable,
-		pageStore:  pageStore,
-		config:     config,
-		wal:        w,
+		rootPageID:    0, // 初始为空树
+		pageTable:     pageTable,
+		pageStore:     pageStore,
+		config:        config,
+		wal:           w,
 		walEnabled:    config.EnableWAL,
 		useBitmapLock: config.UseBitmapLock,
 	}
@@ -112,7 +112,6 @@ func NewBfTree(config *Config) (*BfTree, error) {
 			return nil, fmt.Errorf("failed to recover from WAL: %w", err)
 		}
 	}
-
 
 	// 初始化 BitmapLock（如果启用）
 	if config.UseBitmapLock {
@@ -181,7 +180,7 @@ func (t *BfTree) createRootNode(key, value []byte) error {
 	}
 	t.pageStore.putLeaf(pageID, leafNode)
 	atomic.AddInt64(&t.stats.LeafPages, 1)
-	
+
 	// 写 WAL
 	if t.walEnabled {
 		entry := wal.NewWALEntry(wal.WALTypeInsert, 0, key, value, wal.LSNInvalid)
@@ -191,10 +190,10 @@ func (t *BfTree) createRootNode(key, value []byte) error {
 		atomic.AddInt64(&t.stats.WALAppends, 1)
 		atomic.AddInt64(&t.stats.WALTotalBytes, int64(len(key)+len(value)))
 	}
-	
+
 	// 递增版本号
 	t.incrementPageVersion(pageID)
-	
+
 	return nil
 }
 
@@ -286,7 +285,6 @@ func (t *BfTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 	return nil, ErrMaxRetries
 }
 
-
 // lookupFromPage 从指定页面查找键（内部，已持有 bitmapLock）
 //
 // 用于双层锁架构：
@@ -345,7 +343,7 @@ func (t *BfTree) Set(ctx context.Context, key, value []byte) error {
 		// 空树特殊处理：需要创建根节点（必须使用 treeLock）
 		if atomic.LoadUint64(&t.rootPageID) == 0 {
 			t.treeLock.Lock()
-			
+
 			// 双重检查：可能在等待锁时已被其他 goroutine 创建
 			if t.rootPageID == 0 {
 				err := t.createRootNode(key, value)
@@ -378,11 +376,11 @@ func (t *BfTree) Set(ctx context.Context, key, value []byte) error {
 			if currentVersion == version {
 				// 版本一致，执行写入
 				err := t.insertToPage(pageID, key, value)
-				
+
 				if err == nil {
 					// 写入成功：递增版本号
 					t.incrementPageVersion(pageID)
-					
+
 					// 写 WAL（在成功之后）
 					if t.walEnabled {
 						entry := wal.NewWALEntry(wal.WALTypeInsert, 0, key, value, wal.LSNInvalid)
@@ -393,32 +391,32 @@ func (t *BfTree) Set(ctx context.Context, key, value []byte) error {
 						atomic.AddInt64(&t.stats.WALTotalBytes, int64(len(key)+len(value)))
 					}
 				}
-				
+
 				t.bitmapLock.Unlock(pageID)
-				
+
 				// 处理分裂等情况
 				if err == ErrDeltaFull {
 					// 分裂情况：升级为 treeLock 执行分裂
 					t.bitmapLock.Unlock(pageID)
-					
+
 					// 获取 treeLock 执行分裂
 					t.treeLock.Lock()
-					
+
 					// 重新获取页面（可能已变化）
 					newPageID, _, findErr := t.findLeafPageWithVersion(t.rootPageID, key)
 					if findErr != nil {
 						t.treeLock.Unlock()
 						continue
 					}
-					
+
 					// 执行分裂（使用 treeLock）
 					splitErr := t.performSplitWithTreeLock(newPageID, key)
 					t.treeLock.Unlock()
-					
+
 					if splitErr != nil {
 						return splitErr
 					}
-					
+
 					// 分裂成功，重试插入
 					continue
 				}
@@ -629,11 +627,11 @@ func (t *BfTree) Update(ctx context.Context, key, value []byte) error {
 			if currentVersion == version {
 				// 版本一致，执行更新
 				err := t.updateInPage(pageID, key, value)
-				
+
 				// 步骤 4: 递增版本号
 				if err == nil {
 					t.incrementPageVersion(pageID)
-					
+
 					// 写 WAL
 					if t.walEnabled {
 						entry := wal.NewWALEntry(wal.WALTypeUpdate, 0, key, value, wal.LSNInvalid)
@@ -643,7 +641,7 @@ func (t *BfTree) Update(ctx context.Context, key, value []byte) error {
 						atomic.AddInt64(&t.stats.WALAppends, 1)
 					}
 				}
-				
+
 				t.bitmapLock.Unlock(pageID)
 				return err
 			}
@@ -778,11 +776,11 @@ func (t *BfTree) Delete(ctx context.Context, key []byte) error {
 			if currentVersion == version {
 				// 版本一致，执行删除
 				err := t.deleteFromPage(pageID, key)
-				
+
 				// 步骤 4: 递增版本号
 				if err == nil {
 					t.incrementPageVersion(pageID)
-					
+
 					// 写 WAL
 					if t.walEnabled {
 						entry := wal.NewWALEntry(wal.WALTypeDelete, 0, key, nil, wal.LSNInvalid)
@@ -792,7 +790,7 @@ func (t *BfTree) Delete(ctx context.Context, key []byte) error {
 						atomic.AddInt64(&t.stats.WALAppends, 1)
 					}
 				}
-				
+
 				t.bitmapLock.Unlock(pageID)
 				return err
 			}
@@ -910,7 +908,7 @@ func (t *BfTree) performSplitWithTreeLock(pageID uint64, key []byte) error {
 
 	// 成功后释放旧节点
 	_ = t.pageTable.Free(oldPageID)
-	
+
 	// 递增相关页面版本号
 	t.incrementPageVersion(leftPageID)
 	t.incrementPageVersion(rightPageID)
@@ -1040,4 +1038,3 @@ func (t *BfTree) incrementPageVersion(pageID uint64) uint64 {
 	}
 	return entry.version.Add(1)
 }
-

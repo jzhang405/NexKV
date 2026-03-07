@@ -33,7 +33,7 @@ type BfTree struct {
 	walEnabled bool    // WAL 开关
 
 	// 并发控制
-	rwLock sync.RWMutex // 读写锁（MVP）
+	treeLock sync.RWMutex // 读写锁（MVP）
 	bitmapLock    *BitmapLock   // BitmapLock（P1 优化）
 	useBitmapLock bool          // 是否使用 BitmapLock
 
@@ -145,8 +145,8 @@ func (t *BfTree) recover() error {
 
 // applyWALEntry 应用 WAL 日志条目
 func (t *BfTree) applyWALEntry(entry *wal.WALEntry) error {
-	t.rwLock.Lock()
-	defer t.rwLock.Unlock()
+	t.treeLock.Lock()
+	defer t.treeLock.Unlock()
 
 	switch entry.Type {
 	case wal.WALTypeInsert:
@@ -166,8 +166,8 @@ func (t *BfTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, ErrTreeClosed
 	}
 
-	t.rwLock.RLock()
-	defer t.rwLock.RUnlock()
+	t.treeLock.RLock()
+	defer t.treeLock.RUnlock()
 
 	atomic.AddInt64(&t.stats.ReadCount, 1)
 
@@ -228,8 +228,8 @@ func (t *BfTree) Set(ctx context.Context, key, value []byte) error {
 		return ErrTreeClosed
 	}
 
-	t.rwLock.Lock()
-	defer t.rwLock.Unlock()
+	t.treeLock.Lock()
+	defer t.treeLock.Unlock()
 
 	atomic.AddInt64(&t.stats.WriteCount, 1)
 
@@ -364,8 +364,8 @@ func (t *BfTree) Update(ctx context.Context, key, value []byte) error {
 		return ErrTreeClosed
 	}
 
-	t.rwLock.Lock()
-	defer t.rwLock.Unlock()
+	t.treeLock.Lock()
+	defer t.treeLock.Unlock()
 
 	atomic.AddInt64(&t.stats.WriteCount, 1)
 
@@ -416,8 +416,8 @@ func (t *BfTree) Delete(ctx context.Context, key []byte) error {
 		return ErrTreeClosed
 	}
 
-	t.rwLock.Lock()
-	defer t.rwLock.Unlock()
+	t.treeLock.Lock()
+	defer t.treeLock.Unlock()
 
 	atomic.AddInt64(&t.stats.DeleteCount, 1)
 
@@ -468,8 +468,8 @@ func (t *BfTree) deleteLocked(key []byte, writeWAL bool) error {
 
 // GetStats 获取统计信息
 func (t *BfTree) GetStats() BfTreeStats {
-	t.rwLock.RLock()
-	defer t.rwLock.RUnlock()
+	t.treeLock.RLock()
+	defer t.treeLock.RUnlock()
 
 	stats := t.stats
 
@@ -491,8 +491,8 @@ func (t *BfTree) Sync() error {
 
 	// 如果启用了 WAL，同步 WAL
 	if t.wal != nil && t.walEnabled {
-		t.rwLock.RLock()
-		defer t.rwLock.RUnlock()
+		t.treeLock.RLock()
+		defer t.treeLock.RUnlock()
 
 		if err := t.wal.Sync(); err != nil {
 			return fmt.Errorf("failed to sync wal: %w", err)
@@ -513,8 +513,8 @@ func (t *BfTree) Close() error {
 		return ErrTreeClosed
 	}
 
-	t.rwLock.Lock()
-	defer t.rwLock.Unlock()
+	t.treeLock.Lock()
+	defer t.treeLock.Unlock()
 
 	// 关闭 WAL
 	if t.wal != nil {
@@ -535,7 +535,7 @@ func (t *BfTree) lockPage(pageID uint64) {
 	if t.useBitmapLock && t.bitmapLock != nil {
 		t.bitmapLock.Lock(pageID)
 	} else {
-		t.rwLock.Lock()
+		t.treeLock.Lock()
 	}
 }
 
@@ -544,7 +544,7 @@ func (t *BfTree) unlockPage(pageID uint64) {
 	if t.useBitmapLock && t.bitmapLock != nil {
 		t.bitmapLock.Unlock(pageID)
 	} else {
-		t.rwLock.Unlock()
+		t.treeLock.Unlock()
 	}
 }
 
@@ -553,7 +553,7 @@ func (t *BfTree) rlockPage(pageID uint64) {
 	if t.useBitmapLock && t.bitmapLock != nil {
 		t.bitmapLock.RLock(pageID)
 	} else {
-		t.rwLock.RLock()
+		t.treeLock.RLock()
 	}
 }
 
@@ -562,6 +562,36 @@ func (t *BfTree) runlockPage(pageID uint64) {
 	if t.useBitmapLock && t.bitmapLock != nil {
 		t.bitmapLock.RUnlock(pageID)
 	} else {
-		t.rwLock.RUnlock()
+		t.treeLock.RUnlock()
 	}
+}
+
+// getPageVersion 获取页面版本号
+// 用于检测并发修改
+func (t *BfTree) getPageVersion(pageID uint64) uint64 {
+	entry, exists := t.pageTable.Get(pageID)
+	if !exists {
+		return 0
+	}
+	return entry.version.Load()
+}
+
+// incrementPageVersion 递增页面版本号
+// 在修改页面内容时调用
+func (t *BfTree) incrementPageVersion(pageID uint64) uint64 {
+	entry, exists := t.pageTable.Get(pageID)
+	if !exists {
+		return 0
+	}
+	return entry.version.Add(1)
+}
+
+// compareAndSwapPageVersion 比较并交换页面版本号
+// 用于乐观锁控制
+func (t *BfTree) compareAndSwapPageVersion(pageID uint64, oldVersion, newVersion uint64) bool {
+	entry, exists := t.pageTable.Get(pageID)
+	if !exists {
+		return false
+	}
+	return entry.version.CompareAndSwap(oldVersion, newVersion)
 }

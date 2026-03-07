@@ -113,7 +113,7 @@ func TestSplitLeafNode_Direct(t *testing.T) {
 	defer tree.Close()
 
 	// 创建一个叶子节点并添加数据
-	node := NewLeafNode(1, L3)
+	node := NewLeafNode(1, L3, 8, 2048)
 	for i := 0; i < 10; i++ {
 		key := []byte{byte(i)}
 		value := make([]byte, 30)
@@ -360,7 +360,7 @@ func TestBfTree_SplitLeafNode_Coverage(t *testing.T) {
 
 	// 创建一个叶子节点并填满
 	pageID, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
-	leafNode := NewLeafNode(pageID, L1)
+	leafNode := NewLeafNode(pageID, L1, 8, 2048)
 
 	// 插入足够多的数据以触发 Delta Chain 满和分裂
 	for i := 0; i < 20; i++ {

@@ -175,7 +175,7 @@ func (t *BfTree) createRootNode(key, value []byte) error {
 	}
 	atomic.StoreUint64(&t.rootPageID, pageID)
 
-	leafNode := NewLeafNode(pageID, L1)
+	leafNode := NewLeafNode(pageID, L1, t.config.MaxDeltaChainLen, t.config.MaxDeltaChainSize)
 	if err := leafNode.Set(key, value); err != nil {
 		return err
 	}
@@ -514,7 +514,7 @@ func (t *BfTree) insertLocked(key, value []byte, writeWAL bool) error {
 		}
 		atomic.StoreUint64(&t.rootPageID, pageID)
 
-		leafNode := NewLeafNode(pageID, L1)
+		leafNode := NewLeafNode(pageID, L1, t.config.MaxDeltaChainLen, t.config.MaxDeltaChainSize)
 		if err := leafNode.Set(key, value); err != nil {
 			return err
 		}

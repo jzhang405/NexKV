@@ -37,6 +37,10 @@ type Config struct {
 	EnableDeltaChain bool            `json:"enable_delta_chain"` // 是否启用 Delta Chain
 	PromotionConfig  PromotionConfig `json:"promotion_config"`   // Mini-Page 提升配置
 
+	// Delta Chain 配置（P2-1 新增）
+	MaxDeltaChainLen  int    `json:"max_delta_chain_len"`  // Delta Chain 最大长度（默认 8）
+	MaxDeltaChainSize uint16 `json:"max_delta_chain_size"` // Delta Chain 最大大小（字节，默认 Mini-Page 容量的 50%）
+
 	// 并发控制配置
 	BitmapLockShards int `json:"bitmap_lock_shards"` // BitmapLock 分片数
 	UseBitmapLock bool `json:"use_bitmap_lock"` // 是否启用 BitmapLock（细粒度锁）
@@ -83,6 +87,9 @@ func DefaultConfig() *Config {
 		CacheSize:        10000,   // 10K 页面
 		MergeThreshold:   0.25,    // 25% 利用率触发合并
 		MergeStrategy:    "merge", // 优先合并策略
+		// P2-1: Delta Chain 配置
+		MaxDeltaChainLen:   8,    // 最大 8 个 Delta
+		MaxDeltaChainSize: 2048, // 最大 2KB（50% of 4KB page）
 	}
 }
 

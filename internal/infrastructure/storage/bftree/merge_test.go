@@ -14,7 +14,7 @@ func TestCalculateNodeUtilization(t *testing.T) {
 	tree := setupTestTree(t)
 	defer tree.Close()
 	// 创建一个叶子节点并添加数据
-	leafNode := NewLeafNode(1, Full)
+	leafNode := NewLeafNode(1, Full, 8, 2048)
 	// 初始状态：空节点
 	utilization := tree.calculateNodeUtilization(leafNode)
 	assert.Equal(t, float32(0), utilization)
@@ -35,8 +35,8 @@ func TestCanMergeTwoLeafNodes(t *testing.T) {
 	tree := setupTestTree(t)
 	defer tree.Close()
 	// 创建两个小节点
-	node1 := NewLeafNode(1, L1)
-	node2 := NewLeafNode(2, L1)
+	node1 := NewLeafNode(1, L1, 8, 2048)
+	node2 := NewLeafNode(2, L1, 8, 2048)
 	// 两个空节点应该可以合并
 	assert.True(t, tree.canMergeTwoLeafNodes(node1, node2))
 	// 添加少量数据
@@ -45,12 +45,12 @@ func TestCanMergeTwoLeafNodes(t *testing.T) {
 	// 小数据量应该可以合并
 	assert.True(t, tree.canMergeTwoLeafNodes(node1, node2))
 	// 创建大节点
-	node3 := NewLeafNode(3, L2) // 使用较小的 L2 (128B) 而不是 Full
+	node3 := NewLeafNode(3, L2, 8, 2048) // 使用较小的 L2 (128B) 而不是 Full
 	for i := 0; i < 30; i++ {
 		key := []byte{byte(i)}
 		_ = node3.Set(key, []byte("large-value-12345")) // 更大的值
 	}
-	node4 := NewLeafNode(4, L2)
+	node4 := NewLeafNode(4, L2, 8, 2048)
 	for i := 30; i < 60; i++ {
 		key := []byte{byte(i)}
 		_ = node4.Set(key, []byte("large-value-12345"))
@@ -64,9 +64,9 @@ func TestCanMergeThreeLeafNodes(t *testing.T) {
 	tree := setupTestTree(t)
 	defer tree.Close()
 	// 创建三个小节点
-	left := NewLeafNode(1, L1)
-	middle := NewLeafNode(2, L1)
-	right := NewLeafNode(3, L1)
+	left := NewLeafNode(1, L1, 8, 2048)
+	middle := NewLeafNode(2, L1, 8, 2048)
+	right := NewLeafNode(3, L1, 8, 2048)
 	// 三个空节点应该可以合并
 	assert.True(t, tree.canMergeThreeLeafNodes(left, middle, right))
 	// 添加少量数据
@@ -76,9 +76,9 @@ func TestCanMergeThreeLeafNodes(t *testing.T) {
 	// 小数据量应该可以合并
 	assert.True(t, tree.canMergeThreeLeafNodes(left, middle, right))
 	// 创建三个大节点
-	bigLeft := NewLeafNode(4, L2)
-	bigMiddle := NewLeafNode(5, L2)
-	bigRight := NewLeafNode(6, L2)
+	bigLeft := NewLeafNode(4, L2, 8, 2048)
+	bigMiddle := NewLeafNode(5, L2, 8, 2048)
+	bigRight := NewLeafNode(6, L2, 8, 2048)
 	for i := 0; i < 30; i++ {
 		key := []byte{byte(i)}
 		_ = bigLeft.Set(key, []byte("large-value"))
@@ -100,8 +100,8 @@ func TestMergeTwoLeafNodes(t *testing.T) {
 	tree := setupTestTree(t)
 	defer tree.Close()
 	// 创建两个节点
-	node1 := NewLeafNode(1, L3)
-	node2 := NewLeafNode(2, L3)
+	node1 := NewLeafNode(1, L3, 8, 2048)
+	node2 := NewLeafNode(2, L3, 8, 2048)
 	// 添加数据到两个节点
 	_ = node1.Set([]byte("key1"), []byte("value1"))
 	_ = node1.Set([]byte("key2"), []byte("value2"))
@@ -133,9 +133,9 @@ func TestMergeThreeLeafNodes(t *testing.T) {
 	tree := setupTestTree(t)
 	defer tree.Close()
 	// 创建三个节点
-	left := NewLeafNode(1, L3)
-	middle := NewLeafNode(2, L3)
-	right := NewLeafNode(3, L3)
+	left := NewLeafNode(1, L3, 8, 2048)
+	middle := NewLeafNode(2, L3, 8, 2048)
+	right := NewLeafNode(3, L3, 8, 2048)
 	// 添加数据到三个节点
 	_ = left.Set([]byte("key1"), []byte("value1"))
 	_ = left.Set([]byte("key2"), []byte("value2"))
@@ -375,8 +375,8 @@ func TestMergeWithCompact(t *testing.T) {
 	tree := setupTestTree(t)
 	defer tree.Close()
 	// 创建节点并添加数据
-	node1 := NewLeafNode(1, L4)
-	node2 := NewLeafNode(2, L4)
+	node1 := NewLeafNode(1, L4, 8, 2048)
+	node2 := NewLeafNode(2, L4, 8, 2048)
 	// 添加数据到 node1
 	for i := 0; i < 10; i++ {
 		key := []byte{byte(i)}
@@ -415,8 +415,8 @@ func TestMergePreservesData(t *testing.T) {
 	tree := setupTestTree(t)
 	defer tree.Close()
 	// 创建节点
-	node1 := NewLeafNode(1, L4)
-	node2 := NewLeafNode(2, L4)
+	node1 := NewLeafNode(1, L4, 8, 2048)
+	node2 := NewLeafNode(2, L4, 8, 2048)
 	// 添加不重复的数据
 	data1 := map[string]string{}
 	data2 := map[string]string{}
@@ -453,8 +453,8 @@ func TestMergeWithEmptyNodes(t *testing.T) {
 	tree := setupTestTree(t)
 	defer tree.Close()
 	// 创建一个有数据的节点和一个空节点
-	node1 := NewLeafNode(1, L3)
-	node2 := NewLeafNode(2, L3)
+	node1 := NewLeafNode(1, L3, 8, 2048)
+	node2 := NewLeafNode(2, L3, 8, 2048)
 	_ = node1.Set([]byte("key1"), []byte("value1"))
 	_ = node1.Set([]byte("key2"), []byte("value2"))
 	// node2 保持为空
@@ -472,7 +472,7 @@ func TestMergeWithEmptyNodes(t *testing.T) {
 
 // TestDeleteAndGet 调试删除功能
 func TestDeleteAndGet(t *testing.T) {
-	node := NewLeafNode(1, L3)
+	node := NewLeafNode(1, L3, 8, 2048)
 
 	// Set key 1
 	key1 := []byte{byte(1)}
@@ -597,7 +597,7 @@ func TestBfTree_TryMergeAfterDelete_HighUtilization(t *testing.T) {
 	pageID, err := tree.pageTable.Alloc(PageTypeLeaf, L1)
 	require.NoError(t, err)
 
-	leafNode := NewLeafNode(pageID, L1)
+	leafNode := NewLeafNode(pageID, L1, 8, 2048)
 	tree.pageStore.putLeaf(pageID, leafNode)
 	tree.rootPageID = pageID
 
@@ -639,7 +639,7 @@ func TestBfTree_CalculateNodeUtilization(t *testing.T) {
 
 	// 创建叶子节点
 	pageID, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
-	leafNode := NewLeafNode(pageID, L1)
+	leafNode := NewLeafNode(pageID, L1, 8, 2048)
 
 	// 插入数据
 	for i := 0; i < 5; i++ {
@@ -675,8 +675,8 @@ func TestBfTree_CanMergeTwoLeafNodes(t *testing.T) {
 	pageID1, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
 	pageID2, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
 
-	node1 := NewLeafNode(pageID1, L1)
-	node2 := NewLeafNode(pageID2, L1)
+	node1 := NewLeafNode(pageID1, L1, 8, 2048)
+	node2 := NewLeafNode(pageID2, L1, 8, 2048)
 
 	// 每个节点插入少量数据
 	for i := 0; i < 3; i++ {
@@ -718,9 +718,9 @@ func TestBfTree_CanMergeThreeLeafNodes(t *testing.T) {
 	pageID2, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
 	pageID3, _ := tree.pageTable.Alloc(PageTypeLeaf, L1)
 
-	node1 := NewLeafNode(pageID1, L1)
-	node2 := NewLeafNode(pageID2, L1)
-	node3 := NewLeafNode(pageID3, L1)
+	node1 := NewLeafNode(pageID1, L1, 8, 2048)
+	node2 := NewLeafNode(pageID2, L1, 8, 2048)
+	node3 := NewLeafNode(pageID3, L1, 8, 2048)
 
 	// 每个节点插入少量数据
 	for i := 0; i < 2; i++ {

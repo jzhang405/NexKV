@@ -33,7 +33,7 @@ func TestNewLeafNode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			node := NewLeafNode(tt.pageID, tt.level)
+			node := NewLeafNode(tt.pageID, tt.level, 8, 2048)
 
 			assert.Equal(t, tt.pageID, node.pageID)
 			assert.Equal(t, tt.level, node.level)
@@ -98,7 +98,7 @@ func TestMaxSizeForLevel(t *testing.T) {
 }
 
 func TestLeafNode_Get_Set(t *testing.T) {
-	node := NewLeafNode(1, L1)
+	node := NewLeafNode(1, L1, 8, 2048)
 
 	// 测试 Get 不存在的键
 	value, found := node.Get([]byte("nonexistent"))
@@ -117,7 +117,7 @@ func TestLeafNode_Get_Set(t *testing.T) {
 
 // P1-6: 测试 nil key
 func TestLeafNode_Set_NilKey(t *testing.T) {
-	node := NewLeafNode(1, L1)
+	node := NewLeafNode(1, L1, 8, 2048)
 
 	err := node.Set(nil, []byte("value"))
 	assert.Error(t, err)
@@ -126,7 +126,7 @@ func TestLeafNode_Set_NilKey(t *testing.T) {
 
 // P1-6: 测试空键
 func TestLeafNode_Set_EmptyKey(t *testing.T) {
-	node := NewLeafNode(1, L1)
+	node := NewLeafNode(1, L1, 8, 2048)
 
 	err := node.Set([]byte{}, []byte("value"))
 	assert.Error(t, err)
@@ -135,7 +135,7 @@ func TestLeafNode_Set_EmptyKey(t *testing.T) {
 
 // P1-6: 测试 nil value
 func TestLeafNode_Set_NilValue(t *testing.T) {
-	node := NewLeafNode(1, L1)
+	node := NewLeafNode(1, L1, 8, 2048)
 
 	err := node.Set([]byte("key"), nil)
 	assert.Error(t, err)
@@ -143,7 +143,7 @@ func TestLeafNode_Set_NilValue(t *testing.T) {
 }
 
 func TestLeafNode_Get_Set_Multiple(t *testing.T) {
-	node := NewLeafNode(1, L2)
+	node := NewLeafNode(1, L2, 8, 2048)
 
 	// 写入多个键值
 	pairs := [][]byte{
@@ -166,7 +166,7 @@ func TestLeafNode_Get_Set_Multiple(t *testing.T) {
 }
 
 func TestLeafNode_Set_Update(t *testing.T) {
-	node := NewLeafNode(1, L1)
+	node := NewLeafNode(1, L1, 8, 2048)
 
 	// 第一次写入
 	err := node.Set([]byte("key1"), []byte("value1"))
@@ -188,7 +188,7 @@ func TestLeafNode_Set_Update(t *testing.T) {
 // P1-5: 测试 Compact 触发
 func TestLeafNode_Compact(t *testing.T) {
 	// 使用 L2 而不是 L1（L1 容量 64B，maxDeltaSize=32B，只能容纳约 6 个 Delta）
-	node := NewLeafNode(1, L2)
+	node := NewLeafNode(1, L2, 8, 2048)
 
 	// 初始状态不需要合并
 	assert.False(t, node.shouldCompact())
@@ -213,7 +213,7 @@ func TestLeafNode_Compact(t *testing.T) {
 
 // P1-8: 测试 Delta 操作（Delete）
 func TestLeafNode_DeltaOpDelete(t *testing.T) {
-	node := NewLeafNode(1, L1)
+	node := NewLeafNode(1, L1, 8, 2048)
 
 	// 先写入
 	_ = node.Set([]byte("key1"), []byte("value1"))
@@ -233,7 +233,7 @@ func TestLeafNode_DeltaOpDelete(t *testing.T) {
 }
 
 func TestLeafNode_DeltaCount(t *testing.T) {
-	node := NewLeafNode(1, L1)
+	node := NewLeafNode(1, L1, 8, 2048)
 
 	// 初始 Delta 为 0
 	assert.Equal(t, 0, node.DeltaCount())
@@ -248,7 +248,7 @@ func TestLeafNode_DeltaCount(t *testing.T) {
 }
 
 func TestLeafNode_Size(t *testing.T) {
-	node := NewLeafNode(1, L1)
+	node := NewLeafNode(1, L1, 8, 2048)
 
 	// 初始大小
 	initialSize := node.Size()
@@ -311,7 +311,7 @@ func TestMiniPage_FindSlot_Performance(t *testing.T) {
 
 // P1-7: 测试返回值副本
 func TestLeafNode_Get_ReturnsCopy(t *testing.T) {
-	node := NewLeafNode(1, L1)
+	node := NewLeafNode(1, L1, 8, 2048)
 
 	_ = node.Set([]byte("key1"), []byte("value1"))
 
@@ -329,7 +329,7 @@ func TestLeafNode_Get_ReturnsCopy(t *testing.T) {
 
 // P1-8: 测试并发读写安全
 func TestLeafNode_ConcurrentReadWrite(t *testing.T) {
-	node := NewLeafNode(1, L2)
+	node := NewLeafNode(1, L2, 8, 2048)
 	const goroutines = 10
 	const opsPerGoroutine = 100
 
@@ -364,7 +364,7 @@ func TestLeafNode_ConcurrentReadWrite(t *testing.T) {
 }
 
 func TestLeafNode_ConcurrentGetSet(t *testing.T) {
-	node := NewLeafNode(1, L2)
+	node := NewLeafNode(1, L2, 8, 2048)
 	const goroutines = 10
 	const writesPerGoroutine = 100
 
@@ -394,7 +394,7 @@ func TestLeafNode_ConcurrentGetSet(t *testing.T) {
 
 // 基准测试
 func BenchmarkLeafNode_Get(b *testing.B) {
-	node := NewLeafNode(1, L2)
+	node := NewLeafNode(1, L2, 8, 2048)
 	_ = node.Set([]byte("key1"), []byte("value1"))
 
 	b.ResetTimer()
@@ -404,7 +404,7 @@ func BenchmarkLeafNode_Get(b *testing.B) {
 }
 
 func BenchmarkLeafNode_Set(b *testing.B) {
-	node := NewLeafNode(1, L2)
+	node := NewLeafNode(1, L2, 8, 2048)
 	key := []byte("key")
 	value := []byte("value")
 
@@ -416,7 +416,7 @@ func BenchmarkLeafNode_Set(b *testing.B) {
 
 // TestLeafNode_Delete 测试删除操作
 func TestLeafNode_Delete(t *testing.T) {
-	node := NewLeafNode(1, L2)
+	node := NewLeafNode(1, L2, 8, 2048)
 
 	// 1. 先写入数据
 	_ = node.Set([]byte("key1"), []byte("value1"))
@@ -449,7 +449,7 @@ func TestLeafNode_Delete(t *testing.T) {
 
 // TestLeafNode_Delete_NotFound 测试删除不存在的键
 func TestLeafNode_Delete_NotFound(t *testing.T) {
-	node := NewLeafNode(1, L1)
+	node := NewLeafNode(1, L1, 8, 2048)
 
 	// 删除不存在的键
 	err := node.Delete([]byte("nonexistent"))
@@ -459,7 +459,7 @@ func TestLeafNode_Delete_NotFound(t *testing.T) {
 
 // TestLeafNode_Delete_NilKey 测试删除 nil 键
 func TestLeafNode_Delete_NilKey(t *testing.T) {
-	node := NewLeafNode(1, L1)
+	node := NewLeafNode(1, L1, 8, 2048)
 
 	err := node.Delete(nil)
 	assert.Error(t, err)
@@ -468,7 +468,7 @@ func TestLeafNode_Delete_NilKey(t *testing.T) {
 
 // TestLeafNode_Delete_EmptyKey 测试删除空键
 func TestLeafNode_Delete_EmptyKey(t *testing.T) {
-	node := NewLeafNode(1, L1)
+	node := NewLeafNode(1, L1, 8, 2048)
 
 	err := node.Delete([]byte{})
 	assert.Error(t, err)
@@ -477,7 +477,7 @@ func TestLeafNode_Delete_EmptyKey(t *testing.T) {
 
 // TestLeafNode_Delete_Twice 测试删除同一个键两次
 func TestLeafNode_Delete_Twice(t *testing.T) {
-	node := NewLeafNode(1, L2)
+	node := NewLeafNode(1, L2, 8, 2048)
 
 	// 写入数据
 	_ = node.Set([]byte("key1"), []byte("value1"))
@@ -494,7 +494,7 @@ func TestLeafNode_Delete_Twice(t *testing.T) {
 
 // TestLeafNode_Delete_And_Compact 测试删除后触发合并
 func TestLeafNode_Delete_And_Compact(t *testing.T) {
-	node := NewLeafNode(1, L2)
+	node := NewLeafNode(1, L2, 8, 2048)
 
 	// 写入多个键值
 	for i := 0; i < 8; i++ {
@@ -525,7 +525,7 @@ func TestLeafNode_Delete_And_Compact(t *testing.T) {
 
 // TestLeafNode_Delete_Then_Set 测试删除后再设置
 func TestLeafNode_Delete_Then_Set(t *testing.T) {
-	node := NewLeafNode(1, L2)
+	node := NewLeafNode(1, L2, 8, 2048)
 
 	// 写入数据
 	_ = node.Set([]byte("key1"), []byte("value1"))

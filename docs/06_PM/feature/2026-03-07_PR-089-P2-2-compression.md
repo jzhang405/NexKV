@@ -8,23 +8,22 @@
 
 ## 执行摘要
 
-成功完成 BfTree 页面压缩算法实现，支持多种压缩算法（Snappy、LZ4、ZSTD），为存储密集型场景提供优化选项。
+成功完成 BfTree 页面压缩配置，复用 pkg/compressor 提供的压缩功能，支持多种压缩算法（Snappy、LZ4、ZSTD）。
 
 ### 核心成果
 
-- ✅ 压缩器接口设计和实现
+- ✅ Config 添加 CompressionType 配置（使用 compressor.CompressorType）
 - ✅ 支持 4 种压缩算法（None、Snappy、LZ4、ZSTD）
-- ✅ 压缩页面格式定义和实现
-- ✅ Config 添加压缩配置参数
-- ✅ 完整的单元测试和基准测试
+- ✅ 复用 pkg/compressor 的成熟实现（包含安全特性）
+- ✅ 完整的测试覆盖
 
 ---
 
 ## 实现详情
 
-### 1. 压缩器接口设计
+### 1. 复用 pkg/compressor
 
-**文件**: `internal/infrastructure/storage/bftree/compression.go`
+**现有实现**: `pkg/compressor/compressor.go`
 
 **Compressor 接口**:
 ```go
@@ -362,9 +361,8 @@ func main() {
 ## 相关资源
 
 - **实现代码**:
-  - `internal/infrastructure/storage/bftree/compression.go` (压缩器实现)
   - `internal/infrastructure/storage/bftree/config.go` (配置)
-  - `internal/infrastructure/storage/bftree/compression_test.go` (测试)
+  - `pkg/compressor/` (压缩器实现)
 
 - **依赖库**:
   - `github.com/golang/snappy` (Snappy 压缩)

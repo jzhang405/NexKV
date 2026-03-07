@@ -62,9 +62,9 @@ func TestBfTree_LockHelperMethods(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := DefaultConfig()
-		config.UseBitmapLock = tt.useBitmapLock
-		config.EnableWAL = false
-		config.DataDir = t.TempDir()
+			config.UseBitmapLock = tt.useBitmapLock
+			config.EnableWAL = false
+			config.DataDir = t.TempDir()
 			config.DataDir = t.TempDir()
 
 			tree, err := NewBfTree(config)

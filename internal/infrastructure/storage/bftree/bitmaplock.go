@@ -42,8 +42,8 @@ type lockShard struct {
 // - TryLock 支持（非阻塞）
 // - 低开销的 Lock/Unlock 操作
 type BitmapLock struct {
-	shards    []*lockShard
-	shardMask uint64
+	shards     []*lockShard
+	shardMask  uint64
 	shardCount int
 }
 
@@ -61,15 +61,15 @@ func NewBitmapLock(shardCount int) *BitmapLock {
 	}
 
 	bl := &BitmapLock{
-		shards:    make([]*lockShard, shardCount),
-		shardMask: uint64(shardCount - 1),
+		shards:     make([]*lockShard, shardCount),
+		shardMask:  uint64(shardCount - 1),
 		shardCount: shardCount,
 	}
 
 	// 初始化分片
 	for i := range bl.shards {
 		shard := &lockShard{}
-		shard.cond = sync.NewCond(&shard.mu)  // 初始化条件变量
+		shard.cond = sync.NewCond(&shard.mu) // 初始化条件变量
 		bl.shards[i] = shard
 	}
 
@@ -106,7 +106,7 @@ func (bl *BitmapLock) Lock(pageID uint64) {
 
 	// 等待读锁释放（使用 cond.Wait 阻塞等待，不占用 CPU）
 	for shard.readers[bit].Load() != 0 {
-		shard.cond.Wait()  // 自动释放/获取 mu，等待 Broadcast 信号
+		shard.cond.Wait() // 自动释放/获取 mu，等待 Broadcast 信号
 	}
 
 	// 设置写锁标志
@@ -153,7 +153,7 @@ func (bl *BitmapLock) RLock(pageID uint64) {
 
 	// 等待写锁释放（使用 cond.Wait 阻塞等待）
 	for shard.writer.Load() != 0 {
-		shard.cond.Wait()  // 自动释放/获取 mu，等待 Broadcast 信号
+		shard.cond.Wait() // 自动释放/获取 mu，等待 Broadcast 信号
 	}
 
 	// 增加读锁计数

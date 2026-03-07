@@ -75,20 +75,63 @@ func (t *BfTree) tryMergeAfterDelete(leafPageID uint64) error {
 //   - rightSibling: 右兄弟节点（可能为 nil）
 //   - error: 错误
 func (t *BfTree) getSiblings(pageID uint64) (*LeafNode, *LeafNode, error) {
-	// MVP 实现：简化版，仅返回 nil
-	// Phase 2.3 完整版：需要遍历父节点找到兄弟节点
-
 	// 如果没有父节点（根节点），无兄弟
 	if t.rootPageID == 0 || t.rootPageID == pageID {
 		return nil, nil, nil
 	}
 
-	// TODO: 实现完整版本
 	// 1. 找到父节点
-	// 2. 在父节点的 children 数组中找到当前节点的索引
-	// 3. 获取左右兄弟节点
+	parentPageID, err := t.findParent(pageID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to find parent: %w", err)
+	}
+	if parentPageID == 0 {
+		// 根节点没有兄弟
+		return nil, nil, nil
+	}
 
-	return nil, nil, nil
+	// 2. 获取父节点
+	parentNode, err := t.pageStore.getInner(parentPageID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get parent node: %w", err)
+	}
+
+	// 3. 在父节点的 children 数组中找到当前节点的索引
+	nodeIndex := -1
+	for i, childID := range parentNode.children {
+		if childID == pageID {
+			nodeIndex = i
+			break
+		}
+	}
+
+	if nodeIndex == -1 {
+		// 当前节点不在父节点的 children 中，可能已被修改
+		return nil, nil, fmt.Errorf("node %d not found in parent", pageID)
+	}
+
+	// 4. 获取左右兄弟节点
+	var leftSibling, rightSibling *LeafNode
+
+	// 左兄弟
+	if nodeIndex > 0 {
+		leftSiblingID := parentNode.children[nodeIndex-1]
+		leftSibling, err = t.pageStore.getLeaf(leftSiblingID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get left sibling: %w", err)
+		}
+	}
+
+	// 右兄弟
+	if nodeIndex < len(parentNode.children)-1 {
+		rightSiblingID := parentNode.children[nodeIndex+1]
+		rightSibling, err = t.pageStore.getLeaf(rightSiblingID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get right sibling: %w", err)
+		}
+	}
+
+	return leftSibling, rightSibling, nil
 }
 
 // calculateNodeUtilization 计算节点利用率
@@ -191,12 +234,23 @@ func (t *BfTree) mergeThreeLeafNodes(left, node, right *LeafNode, nodePageID uin
 	t.pageStore.putLeaf(nodePageID, node)
 
 	// 7. 释放左右节点
-	_ = t.pageTable.Free(left.pageID)
-	_ = t.pageTable.Free(right.pageID)
+	leftPageID := left.pageID
+	rightPageID := right.pageID
+	_ = t.pageTable.Free(leftPageID)
+	_ = t.pageTable.Free(rightPageID)
 
 	// 8. 更新父节点
-	// TODO: 需要实现父节点更新逻辑
-	// Phase 2.3: 多级树需要更新父节点的子节点指针
+	// 删除左右兄弟节点的引用，更新为合并后的节点
+	if leftPageID != 0 {
+		if err := t.updateParentAfterMerge(leftPageID, nodePageID); err != nil {
+			return fmt.Errorf("failed to update parent after removing left sibling: %w", err)
+		}
+	}
+	if rightPageID != 0 {
+		if err := t.updateParentAfterMerge(rightPageID, nodePageID); err != nil {
+			return fmt.Errorf("failed to update parent after removing right sibling: %w", err)
+		}
+	}
 
 	// 9. 更新统计
 	atomic.AddInt64(&t.stats.LeafPages, -2)
@@ -269,7 +323,9 @@ func (t *BfTree) mergeTwoLeafNodes(node1, node2 *LeafNode, targetPageID uint64, 
 	_ = t.pageTable.Free(sourcePageIDToFree)
 
 	// 9. 更新父节点
-	// TODO: 需要实现父节点更新逻辑
+	if err := t.updateParentAfterMerge(sourcePageIDToFree, targetPageIDToKeep); err != nil {
+		return fmt.Errorf("failed to update parent after merge: %w", err)
+	}
 
 	// 10. 更新统计
 	atomic.AddInt64(&t.stats.LeafPages, -1)
@@ -499,21 +555,68 @@ func (t *BfTree) insertSplitWithDepth(parentID, leftPageID, rightPageID uint64, 
 // updateParentAfterMerge 合并后更新父节点
 //
 // 参数：
-//   - childPageID: 子节点页面 ID
-//   - mergedPageID: 合并后的节点页面 ID
+//   - childPageID: 被移除的子节点页面 ID
+//   - mergedPageID: 合并后保留的节点页面 ID
 //
 // 返回：
 //   - error: 错误
 //
 //nolint:unused // Phase 2.3: 完整合并逻辑时使用
 func (t *BfTree) updateParentAfterMerge(childPageID, mergedPageID uint64) error {
-	// MVP 实现：简化版
-	// Phase 2.3 完整版：需要更新父节点的子节点指针
-
-	// TODO: 实现完整版本
 	// 1. 找到父节点
-	// 2. 更新父节点的 children 数组
-	// 3. 删除对应的分隔键
+	parentPageID, err := t.findParent(childPageID)
+	if err != nil {
+		return fmt.Errorf("failed to find parent: %w", err)
+	}
+	if parentPageID == 0 {
+		// 根节点没有父节点，不需要更新
+		return nil
+	}
+
+	// 2. 获取父节点
+	parentNode, err := t.pageStore.getInner(parentPageID)
+	if err != nil {
+		return fmt.Errorf("failed to get parent node: %w", err)
+	}
+
+	// 3. 在父节点的 children 数组中找到 childPageID 的索引
+	removeIndex := -1
+	for i, childID := range parentNode.children {
+		if childID == childPageID {
+			removeIndex = i
+			break
+		}
+	}
+
+	if removeIndex == -1 {
+		// 节点已被移除，可能已被其他操作处理
+		return nil
+	}
+
+	// 4. 从 children 数组中删除 childPageID
+	parentNode.children = append(parentNode.children[:removeIndex], parentNode.children[removeIndex+1:]...)
+
+	// 5. 删除对应的分隔键
+	// B+ 树中，父节点的 keys[i] 是 children[i] 和 children[i+1] 之间的分隔键
+	// 当删除 children[i] 时，需要删除 keys[i-1]（如果存在）
+	if removeIndex > 0 && removeIndex <= len(parentNode.keys) {
+		// 删除 keys[removeIndex-1]
+		parentNode.keys = append(parentNode.keys[:removeIndex-1], parentNode.keys[removeIndex:]...)
+	} else if removeIndex == 0 && len(parentNode.keys) > 0 {
+		// 删除第一个节点时，删除第一个键
+		parentNode.keys = parentNode.keys[1:]
+	}
+
+	// 6. 如果父节点只有一个子节点且没有键，需要递归向上合并
+	if len(parentNode.children) == 1 && len(parentNode.keys) == 0 {
+		// 父节点现在只有一个子节点，需要合并
+		// 这是一个复杂的情况，需要递归处理
+		// 暂时跳过，在未来的版本中完善
+		return nil
+	}
+
+	// 7. 存储更新后的父节点
+	t.pageStore.putInner(parentPageID, parentNode)
 
 	return nil
 }

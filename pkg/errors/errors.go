@@ -140,6 +140,26 @@ var (
 
 	// TaskMode 错误
 	ErrTaskModeUnknown = stderrors.New("task_mode: unknown task mode")
+
+	// ===========================
+	// Storage 层错误
+	// ===========================
+
+	// Batch 层错误
+	ErrBatchSubmitterClosed = stderrors.New("batch: submitter is closed")
+	ErrBatchTimeout         = stderrors.New("batch: submit timeout")
+	ErrBatchTooLarge        = stderrors.New("batch: submit too large")
+
+	// Pipeline 层错误
+	ErrPipelineClosed          = stderrors.New("pipeline: closed")
+	ErrPipelineShutdownTimeout = stderrors.New("pipeline: graceful shutdown timeout")
+
+	// BfTree 内联错误
+	ErrBfTreeInvalidIndex    = stderrors.New("bftree: invalid index")
+	ErrBfTreeNodeNotFull     = stderrors.New("bftree: node not full")
+	ErrBfTreeSiblingNil      = stderrors.New("bftree: sibling is nil")
+	ErrBfTreeLevelMismatch   = stderrors.New("bftree: level mismatch")
+	ErrBfTreeDataDirRequired = stderrors.New("bftree: data_dir is required")
 )
 
 // ===========================

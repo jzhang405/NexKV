@@ -1,11 +1,14 @@
 package bftree
 
 import (
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -410,4 +413,37 @@ func TestConfig_EnsureDataDir(t *testing.T) {
 		err = config.EnsureDataDir()
 		assert.NoError(t, err)
 	})
+}
+
+// TestCoverage_SmallPages 小页面配置测试
+func TestCoverage_SmallPages(t *testing.T) {
+	config := DefaultConfig()
+	config.DataDir = t.TempDir()
+	config.EnableWAL = false
+	config.PageSize = 1024 // 使用小页面
+
+	tree, err := NewBfTree(config)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	ctx := context.Background()
+
+	// 插入数据以触发分裂
+	const numKeys = 500
+	for i := 0; i < numKeys; i++ {
+		key := []byte(fmt.Sprintf("small-%04d", i))
+		value := []byte(fmt.Sprintf("value-%04d-padding", i))
+		err := tree.Set(ctx, key, value)
+		assert.NoError(t, err)
+	}
+
+	// 验证
+	stats := tree.GetStats()
+	t.Logf("Small pages: TotalPages=%d", stats.TotalPages)
+
+	for i := 0; i < numKeys; i += 20 {
+		key := []byte(fmt.Sprintf("small-%04d", i))
+		_, err := tree.Get(ctx, key)
+		assert.NoError(t, err)
+	}
 }

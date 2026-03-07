@@ -39,8 +39,8 @@ func TestNewBfTree_DefaultConfig(t *testing.T) {
 // TestNewBfTree_NoWAL 测试不使用 WAL 创建 BfTree
 func TestNewBfTree_NoWAL(t *testing.T) {
 	config := DefaultConfig()
-	config.EnableWAL = false  // 禁用 WAL
-	config.DataDir = t.TempDir()  // 设置 DataDir
+	config.EnableWAL = false     // 禁用 WAL
+	config.DataDir = t.TempDir() // 设置 DataDir
 
 	tree, err := NewBfTree(config)
 	require.NoError(t, err)

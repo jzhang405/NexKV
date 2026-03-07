@@ -349,6 +349,11 @@ func (n *LeafNode) compact() error {
 	}
 
 	// 4. 将所有槽位添加到新 Mini-Page
+	// 4. 再次排序以确保顺序正确（修复 Delta Chain 应用后的顺序问题）
+	sort.Slice(tempSlots, func(i, j int) bool {
+		return compareKeys(tempSlots[i].key, tempSlots[j].key) < 0
+	})
+
 	for _, slot := range tempSlots {
 		keyStr := string(slot.key)
 		newMiniPage.slots = append(newMiniPage.slots, slot)

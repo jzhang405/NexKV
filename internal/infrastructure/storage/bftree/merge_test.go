@@ -3,10 +3,10 @@ package bftree
 
 import (
 	"context"
+	"testing"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"path/filepath"
-	"testing"
 )
 
 // TestCalculateNodeUtilization 测试节点利用率计算
@@ -284,33 +284,6 @@ func TestInsertSplitWithDepth(t *testing.T) {
 	err = tree.insertSplitWithDepth(0, 1, 2, []byte("key"), 1)
 	// 应该创建新根节点（因为 parentID == 0）
 	assert.NoError(t, err)
-}
-
-// setupTestTree 创建测试用 Bf-Tree
-func setupTestTree(t *testing.T) *BfTree {
-	t.Helper()
-	tempDir := t.TempDir()
-	dataDir := filepath.Join(tempDir, "data")
-	walDir := filepath.Join(tempDir, "wal")
-	// 创建配置
-	config := &Config{
-		DataDir:          dataDir,
-		WALDir:           walDir,
-		PageSize:         DefaultPageSize,
-		MaxDepth:         DefaultMaxDepth,
-		EnableWAL:        false, // 关闭 WAL 以加快测试速度
-		EnableDeltaChain: true,
-		MergeThreshold:   0.25,
-		CacheSize:        100,
-		PromotionConfig:  DefaultPromotionConfig(),
-		SegmentSize:      DefaultSegmentSize,
-		BitmapLockShards: DefaultBitmapLockShards,
-		MergeStrategy:    "merge",
-	}
-	// 创建 Bf-Tree
-	tree, err := NewBfTree(config)
-	require.NoError(t, err)
-	return tree
 }
 
 // TestMergeThresholdConfig 测试合并阈值配置

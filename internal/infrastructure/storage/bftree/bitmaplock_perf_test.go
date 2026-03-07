@@ -13,7 +13,7 @@ func benchmarkHelper(b *testing.B, useBitmapLock bool) *BfTree {
 	config := DefaultConfig()
 	config.UseBitmapLock = useBitmapLock
 	config.BitmapLockShards = 16
-	config.DataDir = b.TempDir()  // 设置临时目录
+	config.DataDir = b.TempDir() // 设置临时目录
 
 	tree, err := NewBfTree(config)
 	require.NoError(b, err)

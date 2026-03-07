@@ -11,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"errors"
+	pkgerrors "github.com/jzhang405/NexKV/pkg/errors"
 
 	"github.com/jzhang405/NexKV/pkg/compressor"
 )
@@ -137,7 +137,7 @@ func (c *Config) Validate() error {
 
 	// 验证 DataDir
 	if c.DataDir == "" {
-		return errors.New("data_dir is required")
+		return pkgerrors.ErrBfTreeDataDirRequired
 	}
 
 	// 验证 BitmapLockShards

@@ -82,26 +82,99 @@ ok  	github.com/jzhang405/NexKV/internal/infrastructure/storage/bftree	0.342s
 
 ---
 
-## 🔄 Phase 2: Lookup 重构（进行中）
+## ✅ Phase 2: Lookup 重构（已完成）
 
-**预计时间**: 1.5 天
+**提交**: `67cb02d`
+**完成时间**: 2026-03-07
+**实际耗时**: ~1 小时
+
+### 核心变更
+
+#### 1. 新增方法
+- ✅ `findLeafPageWithVersion(rootPageID, key) (pageID, version, error)`
+  - 返回页面ID和版本号
+  - 用于双层锁架构的并发修改检测
+
+#### 2. 代码重构
+- ✅ `findLeafPage` 重构为便捷方法
+  - 调用 `findLeafPageWithVersion`
+  - 保持向后兼容
+  - 减少代码重复
+
+### 实现细节
+
+```go
+// 新方法：返回页面ID和版本号
+func (t *BfTree) findLeafPageWithVersion(rootPageID uint64, key []byte) (uint64, uint64, error) {
+    // ... 遍历树结构 ...
+    if entry.pageType == PageTypeLeaf {
+        version := entry.version.Load()  // 原子读取版本号
+        return currentPageID, version, nil
+    }
+    // ...
+}
+
+// 原方法：调用新方法（向后兼容）
+func (t *BfTree) findLeafPage(rootPageID uint64, key []byte) (uint64, error) {
+    pageID, _, err := t.findLeafPageWithVersion(rootPageID, key)
+    return pageID, err
+}
+```
+
+### 测试验证
+
+✅ 编译通过
+✅ 所有单元测试通过 (0.376s)
+✅ 无 regression
+
+---
+
+## 🔄 Phase 3: 读操作重构（进行中）
+
+**预计时间**: 2 天
 **开始时间**: 2026-03-07
 
 ### 目标
 
-实现 `findLeafPageWithVersion` 方法，为版本检查机制做准备：
+实现带版本检查和重试机制的 Get 操作：
 
 ```go
-// findLeafPageWithVersion 查找键所在的叶子页面（带版本号）
-// 返回: (pageID, version, error)
-func (t *BfTree) findLeafPageWithVersion(rootPageID uint64, key []byte) (uint64, uint64, error)
+func (t *BfTree) Get(ctx context.Context, key []byte) ([]byte, error) {
+    const MaxRetries = 10
+    
+    for retry := 0; retry < MaxRetries; retry++ {
+        // 1. 使用 treeLock 保护树结构
+        t.treeLock.RLock()
+        pageID, version, err := t.findLeafPageWithVersion(t.rootPageID, key)
+        
+        // 2. 使用 bitmapLock 保护页面内容
+        t.bitmapLock.RLock(pageID)
+        t.treeLock.RUnlock()
+        
+        // 3. 检查版本号
+        if t.getPageVersion(pageID) == version {
+            // 版本一致，读取数据
+            // ...
+            return data, nil
+        }
+        
+        // 4. 版本不一致，重试
+        t.bitmapLock.RUnlock(pageID)
+    }
+    
+    return nil, ErrMaxRetries
+}
 ```
 
 ### 实现步骤
 
-1. ✅ 修改 `findLeafPage` 签名，添加版本号返回
-2. ⏳ 实现版本号读取逻辑
+1. ⏳ 修改 Get 方法，添加双层锁
+2. ⏳ 实现版本检查和重试逻辑
 3. ⏳ 测试验证
+
+---
+
+## 📋 Phase 4-7 概览（待开始）
 
 ---
 
@@ -110,8 +183,8 @@ func (t *BfTree) findLeafPageWithVersion(rootPageID uint64, key []byte) (uint64,
 | 阶段 | 名称 | 预计时间 | 状态 |
 |------|------|----------|------|
 | Phase 1 | 结构体重构 | 1.5 天 | ✅ 完成 |
-| Phase 2 | Lookup 重构 | 1.5 天 | 🔄 进行中 |
-| Phase 3 | 读操作重构 | 2 天 | ⏳ 待开始 |
+| Phase 2 | Lookup 重构 | 1.5 天 | ✅ 完成 |
+| Phase 3 | 读操作重构 | 2 天 | 🔄 进行中 |
 | Phase 4 | 写操作重构 | 2.5 天 | ⏳ 待开始 |
 | Phase 5 | Split/Merge 集成 | 1.5 天 | ⏳ 待开始 |
 | Phase 6 | 测试验证 | 1.5 天 | ⏳ 待开始 |
@@ -174,8 +247,8 @@ newVersion := t.incrementPageVersion(pageID)
 
 ## 📊 进度追踪
 
-**完成度**: 14% (1/7 阶段)
-**用时**: 2 小时 / 10 天
+**完成度**: 28% (2/7 阶段)
+**用时**: 3 小时 / 10 天
 **预计完成日期**: 2026-03-17
 
 ---

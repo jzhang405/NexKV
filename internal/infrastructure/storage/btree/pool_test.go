@@ -20,21 +20,21 @@ import (
 // ==========================================
 
 const (
-	// PageSize 模拟 BTree 页面大小 (4KB)
-	PageSize = 4096
+	// TestPageSize 模拟 BTree 页面大小 (4KB)
+	TestPageSize = 4096
 
-	// MaxKeys 模拟 BTree 节点最大键数
-	MaxKeys = 128
+	// TestMaxKeys 模拟 BTree 节点最大键数
+	TestMaxKeys = 128
 )
 
-// Page 模拟 BTree 页面
-type Page struct {
-	Data    [PageSize]byte
+// TestPage 模拟 BTree 页面 (Phase 0.5 临时类型)
+type TestPage struct {
+	Data    [TestPageSize]byte
 	RefCount int32
 }
 
-// Node 模拟 BTree 节点
-type Node struct {
+// TestNode 模拟 BTree 节点 (Phase 0.5 临时类型)
+type TestNode struct {
 	Keys   [][]byte
 	Values [][]byte
 	RefCount int32
@@ -45,71 +45,71 @@ type Node struct {
 // ==========================================
 
 var (
-	// PagePool 页面对象池
-	pagePool = sync.Pool{
+	// testPagePool 页面对象池
+	testPagePool = sync.Pool{
 		New: func() any {
-			return &Page{
-				Data: [PageSize]byte{},
+			return &TestPage{
+				Data: [TestPageSize]byte{},
 			}
 		},
 	}
 
-	// NodePool 节点对象池
-	nodePool = sync.Pool{
+	// testNodePool 节点对象池
+	testNodePool = sync.Pool{
 		New: func() any {
-			return &Node{
-				Keys:   make([][]byte, 0, MaxKeys),
-				Values: make([][]byte, 0, MaxKeys),
+			return &TestNode{
+				Keys:   make([][]byte, 0, TestMaxKeys),
+				Values: make([][]byte, 0, TestMaxKeys),
 			}
 		},
 	}
 )
 
-// AcquirePage 从池中获取页面
-func AcquirePage() *Page {
-	return pagePool.Get().(*Page)
+// AcquireTestPage 从池中获取页面
+func AcquireTestPage() *TestPage {
+	return testPagePool.Get().(*TestPage)
 }
 
-// ReleasePage 将页面归还到池中
-func ReleasePage(page *Page) {
+// ReleaseTestPage 将页面归还到池中
+func ReleaseTestPage(page *TestPage) {
 	// 重置引用计数
 	page.RefCount = 0
 	// 清零数据（可选，取决于安全需求）
-	// page.Data = [PageSize]byte{}
-	pagePool.Put(page)
+	// page.Data = [TestPageSize]byte{}
+	testPagePool.Put(page)
 }
 
-// AcquireNode 从池中获取节点
-func AcquireNode() *Node {
-	return nodePool.Get().(*Node)
+// AcquireTestNode 从池中获取节点
+func AcquireTestNode() *TestNode {
+	return testNodePool.Get().(*TestNode)
 }
 
-// ReleaseNode 将节点归还到池中
-func ReleaseNode(node *Node) {
+// ReleaseTestNode 将节点归还到池中
+func ReleaseTestNode(node *TestNode) {
 	// 重置引用计数
 	node.RefCount = 0
 	// 清空切片（保留容量）
 	node.Keys = node.Keys[:0]
 	node.Values = node.Values[:0]
-	nodePool.Put(node)
+	testNodePool.Put(node)
 }
 
 // ==========================================
 // 非池化版本（用于对比）
 // ==========================================
 
-// NewPage 直接创建页面（不使用池）
-func NewPage() *Page {
-	return &Page{
-		Data: [PageSize]byte{},
+// NewTestPage 直接创建页面（不使用池）
+func NewTestPage() *TestPage {
+	return &TestPage{
+		Data: [TestPageSize]byte{},
 	}
 }
 
-// NewNode 直接创建节点（不使用池）
-func NewNode() *Node {
-	return &Node{
-		Keys:   make([][]byte, 0, MaxKeys),
-		Values: make([][]byte, 0, MaxKeys),
+// NewTestNode 直接创建节点（不使用池）
+func NewTestNode() *TestNode {
+	return &TestNode{
+		Keys:   make([][]byte, 0, TestMaxKeys),
+		Values: make([][]byte, 0, TestMaxKeys),
 	}
 }
 
@@ -123,11 +123,11 @@ func BenchmarkPageWithPool(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			page := AcquirePage()
+			page := AcquireTestPage()
 			// 模拟使用
 			page.RefCount = 1
 			// 模拟释放
-			ReleasePage(page)
+			ReleaseTestPage(page)
 		}
 	})
 }
@@ -138,7 +138,7 @@ func BenchmarkPageWithoutPool(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			page := NewPage()
+			page := NewTestPage()
 			// 模拟使用
 			page.RefCount = 1
 			// 不释放，让 GC 回收
@@ -152,9 +152,9 @@ func BenchmarkPageWithPool_Sequential(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		page := AcquirePage()
+		page := AcquireTestPage()
 		page.RefCount = 1
-		ReleasePage(page)
+		ReleaseTestPage(page)
 	}
 }
 
@@ -163,7 +163,7 @@ func BenchmarkPageWithoutPool_Sequential(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		page := NewPage()
+		page := NewTestPage()
 		page.RefCount = 1
 		_ = page
 	}
@@ -179,7 +179,7 @@ func BenchmarkNodeWithPool(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			node := AcquireNode()
+			node := AcquireTestNode()
 			// 模拟使用：添加一些键值对
 			for i := 0; i < 10; i++ {
 				key := []byte("test-key")
@@ -188,7 +188,7 @@ func BenchmarkNodeWithPool(b *testing.B) {
 				node.Values = append(node.Values, value)
 			}
 			// 模拟释放
-			ReleaseNode(node)
+			ReleaseTestNode(node)
 		}
 	})
 }
@@ -199,7 +199,7 @@ func BenchmarkNodeWithoutPool(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			node := NewNode()
+			node := NewTestNode()
 			// 模拟使用：添加一些键值对
 			for i := 0; i < 10; i++ {
 				key := []byte("test-key")
@@ -218,7 +218,7 @@ func BenchmarkNodeWithPool_Sequential(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		node := AcquireNode()
+		node := AcquireTestNode()
 		// 模拟使用
 		for j := 0; j < 10; j++ {
 			key := []byte("test-key")
@@ -226,7 +226,7 @@ func BenchmarkNodeWithPool_Sequential(b *testing.B) {
 			node.Keys = append(node.Keys, key)
 			node.Values = append(node.Values, value)
 		}
-		ReleaseNode(node)
+		ReleaseTestNode(node)
 	}
 }
 
@@ -235,7 +235,7 @@ func BenchmarkNodeWithoutPool_Sequential(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		node := NewNode()
+		node := NewTestNode()
 		// 模拟使用
 		for j := 0; j < 10; j++ {
 			key := []byte("test-key")
@@ -259,14 +259,14 @@ func BenchmarkMixedWorkload_Pool(b *testing.B) {
 		for pb.Next() {
 			// 70% 页面分配，30% 节点分配
 			if b.N%10 < 7 {
-				page := AcquirePage()
+				page := AcquireTestPage()
 				page.RefCount = 1
-				ReleasePage(page)
+				ReleaseTestPage(page)
 			} else {
-				node := AcquireNode()
+				node := AcquireTestNode()
 				node.Keys = append(node.Keys, []byte("key"))
 				node.Values = append(node.Values, []byte("value"))
-				ReleaseNode(node)
+				ReleaseTestNode(node)
 			}
 		}
 	})
@@ -280,11 +280,11 @@ func BenchmarkMixedWorkload_NoPool(b *testing.B) {
 		for pb.Next() {
 			// 70% 页面分配，30% 节点分配
 			if b.N%10 < 7 {
-				page := NewPage()
+				page := NewTestPage()
 				page.RefCount = 1
 				_ = page
 			} else {
-				node := NewNode()
+				node := NewTestNode()
 				node.Keys = append(node.Keys, []byte("key"))
 				node.Values = append(node.Values, []byte("value"))
 				_ = node
@@ -301,17 +301,17 @@ func BenchmarkMixedWorkload_NoPool(b *testing.B) {
 func BenchmarkGCPressure_Pool(b *testing.B) {
 	b.ReportAllocs()
 
-	var pages []*Page
-	var nodes []*Node
+	var pages []*TestPage
+	var nodes []*TestNode
 
 	b.RunParallel(func(pb *testing.PB) {
-		localPages := make([]*Page, 0, 100)
-		localNodes := make([]*Node, 0, 100)
+		localPages := make([]*TestPage, 0, 100)
+		localNodes := make([]*TestNode, 0, 100)
 
 		for pb.Next() {
 			// 分配
-			page := AcquirePage()
-			node := AcquireNode()
+			page := AcquireTestPage()
+			node := AcquireTestNode()
 
 			localPages = append(localPages, page)
 			localNodes = append(localNodes, node)
@@ -319,12 +319,12 @@ func BenchmarkGCPressure_Pool(b *testing.B) {
 			// 定期释放
 			if len(localPages) > 100 {
 				for _, p := range localPages {
-					ReleasePage(p)
+					ReleaseTestPage(p)
 				}
 				localPages = localPages[:0]
 
 				for _, n := range localNodes {
-					ReleaseNode(n)
+					ReleaseTestNode(n)
 				}
 				localNodes = localNodes[:0]
 			}
@@ -336,10 +336,10 @@ func BenchmarkGCPressure_Pool(b *testing.B) {
 
 	// 清理
 	for _, p := range pages {
-		ReleasePage(p)
+		ReleaseTestPage(p)
 	}
 	for _, n := range nodes {
-		ReleaseNode(n)
+		ReleaseTestNode(n)
 	}
 }
 
@@ -347,17 +347,17 @@ func BenchmarkGCPressure_Pool(b *testing.B) {
 func BenchmarkGCPressure_NoPool(b *testing.B) {
 	b.ReportAllocs()
 
-	var pages []*Page
-	var nodes []*Node
+	var pages []*TestPage
+	var nodes []*TestNode
 
 	b.RunParallel(func(pb *testing.PB) {
-		localPages := make([]*Page, 0, 100)
-		localNodes := make([]*Node, 0, 100)
+		localPages := make([]*TestPage, 0, 100)
+		localNodes := make([]*TestNode, 0, 100)
 
 		for pb.Next() {
 			// 分配
-			page := NewPage()
-			node := NewNode()
+			page := NewTestPage()
+			node := NewTestNode()
 
 			localPages = append(localPages, page)
 			localNodes = append(localNodes, node)

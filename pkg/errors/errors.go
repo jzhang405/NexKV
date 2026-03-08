@@ -58,6 +58,7 @@ var (
 	ErrDuplicateExecutor = stderrors.New("concurrency: executor already registered for this mode")
 	ErrInvalidConfig     = stderrors.New("concurrency: invalid configuration")
 	ErrQueueFull         = stderrors.New("concurrency: queue full")
+	ErrTaskPanic         = stderrors.New("concurrency: task panic recovered")
 
 	// RPC 层错误
 	ErrMajorityFailed      = stderrors.New("rpc: majority quorum not reached")

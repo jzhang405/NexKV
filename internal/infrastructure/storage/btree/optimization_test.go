@@ -83,17 +83,35 @@ func BenchmarkCCOW_Batch(b *testing.B) {
 	defer btree.Close()
 
 	ctx := context.Background()
+
+	// 预热：插入初始数据，避免测量初始化开销
+	for i := 0; i < 100; i++ {
+		key := []byte(fmt.Sprintf("warmup-key-%d", i))
+		value := []byte(fmt.Sprintf("warmup-value-%d", i))
+		rootInfo := btree.root.Get()
+		if rootInfo.Root == nil {
+			rootInfo.Release()
+			continue
+		}
+		path := make(Path, 1)
+		path[0] = &PathNode{Node: rootInfo.Root, Level: 0}
+		batchFunc := func(node *Node) error {
+			return node.Insert(key, value)
+		}
+		newRoot, _ := btree.CopyPathBottomUp(ctx, path, batchFunc)
+		btree.root.Update(ctx, newRoot, uint64(i))
+		rootInfo.Release()
+	}
+
 	writeCount := 0
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if writeCount > 90 {
-			btree.Close()
-			btree, _ = OpenBTree("", nil)
-			writeCount = 0
-		}
-
 		rootInfo := btree.root.Get()
+		if rootInfo.Root == nil {
+			rootInfo.Release()
+			continue
+		}
 
 		path := make(Path, 1)
 		path[0] = &PathNode{
@@ -127,18 +145,41 @@ func BenchmarkCCOW_Complete_vs_Batch(b *testing.B) {
 	ctx := context.Background()
 
 	b.Run("Complete", func(b *testing.B) {
+		btree, _ := OpenBTree("", nil)
+		defer btree.Close()
+
+		// 预热
+		for i := 0; i < 100; i++ {
+			key := []byte(fmt.Sprintf("warmup-key-%d", i))
+			value := []byte(fmt.Sprintf("warmup-value-%d", i))
+			rootInfo := btree.root.Get()
+			if rootInfo.Root == nil {
+				rootInfo.Release()
+				continue
+			}
+			path := make(Path, 1)
+			path[0] = &PathNode{Node: rootInfo.Root, Level: 0}
+			batchFunc := func(node *Node) error {
+				return node.Insert(key, value)
+			}
+			newRoot, _ := btree.CopyPathBottomUp(ctx, path, batchFunc)
+			btree.root.Update(ctx, newRoot, uint64(i))
+			rootInfo.Release()
+		}
+
+		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			btree, _ := OpenBTree("", nil)
+			key := []byte(fmt.Sprintf("key-%d", i%1000))
+			value := []byte(fmt.Sprintf("value-%d", i))
 
 			rootInfo := btree.root.Get()
-			path := make(Path, 1)
-			path[0] = &PathNode{
-				Node:  rootInfo.Root,
-				Level: 0,
+			if rootInfo.Root == nil {
+				rootInfo.Release()
+				continue
 			}
 
-			key := []byte(fmt.Sprintf("key-%d", i%100))
-			value := []byte(fmt.Sprintf("value-%d", i))
+			path := make(Path, 1)
+			path[0] = &PathNode{Node: rootInfo.Root, Level: 0}
 
 			modifyFunc := func(node *Node) error {
 				return node.Insert(key, value)
@@ -148,15 +189,40 @@ func BenchmarkCCOW_Complete_vs_Batch(b *testing.B) {
 			btree.root.Update(ctx, newRoot, uint64(i))
 
 			rootInfo.Release()
-			btree.Close()
 		}
 	})
 
 	b.Run("Batch", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			btree, _ := OpenBTree("", nil)
+		btree, _ := OpenBTree("", nil)
+		defer btree.Close()
 
+		// 预热
+		for i := 0; i < 100; i++ {
+			key := []byte(fmt.Sprintf("warmup-key-%d", i))
+			value := []byte(fmt.Sprintf("warmup-value-%d", i))
 			rootInfo := btree.root.Get()
+			if rootInfo.Root == nil {
+				rootInfo.Release()
+				continue
+			}
+			path := make(Path, 1)
+			path[0] = &PathNode{Node: rootInfo.Root, Level: 0}
+			batchFunc := func(node *Node) error {
+				return node.Insert(key, value)
+			}
+			newRoot, _ := btree.CopyPathBottomUp(ctx, path, batchFunc)
+			btree.root.Update(ctx, newRoot, uint64(i))
+			rootInfo.Release()
+		}
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			rootInfo := btree.root.Get()
+			if rootInfo.Root == nil {
+				rootInfo.Release()
+				continue
+			}
+
 			path := make(Path, 1)
 			path[0] = &PathNode{
 				Node:  rootInfo.Root,
@@ -177,7 +243,6 @@ func BenchmarkCCOW_Complete_vs_Batch(b *testing.B) {
 			btree.root.Update(ctx, newRoot, uint64(i))
 
 			rootInfo.Release()
-			btree.Close()
 		}
 	})
 }
@@ -188,17 +253,36 @@ func BenchmarkWriteThroughput_Single(b *testing.B) {
 	defer btree.Close()
 
 	ctx := context.Background()
+
+	// 预热：避免测量初始化开销
+	for i := 0; i < 100; i++ {
+		key := []byte(fmt.Sprintf("warmup-key-%d", i))
+		value := []byte(fmt.Sprintf("warmup-value-%d", i))
+		rootInfo := btree.root.Get()
+		if rootInfo.Root == nil {
+			rootInfo.Release()
+			continue
+		}
+		path := make(Path, 1)
+		path[0] = &PathNode{Node: rootInfo.Root, Level: 0}
+		batchFunc := func(node *Node) error {
+			return node.Insert(key, value)
+		}
+		newRoot, _ := btree.CopyPathBottomUp(ctx, path, batchFunc)
+		btree.root.Update(ctx, newRoot, uint64(i))
+		rootInfo.Release()
+	}
+
 	writeCount := 0
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if writeCount > 90 {
-			btree.Close()
-			btree, _ = OpenBTree("", nil)
-			writeCount = 0
+		rootInfo := btree.root.Get()
+		if rootInfo.Root == nil {
+			rootInfo.Release()
+			continue
 		}
 
-		rootInfo := btree.root.Get()
 		path := make(Path, 1)
 		path[0] = &PathNode{
 			Node:  rootInfo.Root,

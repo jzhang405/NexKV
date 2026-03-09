@@ -21,11 +21,38 @@ var (
 	ErrClosed = errors.New("btree is closed")
 )
 
+// PageManager manages page allocation and I/O.
+type PageManager struct {
+	// Placeholder for page manager implementation
+	// This will be implemented with actual disk I/O in Phase 4
+}
+
+// Get retrieves a page by ID.
+func (pm *PageManager) Get(pageID model.PageID) (*Page, error) {
+	// Placeholder implementation
+	return NewPage(pageID, model.LeafPage), nil
+}
+
+// Release releases a page reference.
+func (pm *PageManager) Release(page *Page) {
+	// Placeholder implementation
+	page.Release()
+}
+
+// Allocate allocates a new page.
+func (pm *PageManager) Allocate() (*Page, error) {
+	// Placeholder implementation
+	return NewPage(0, model.LeafPage), nil
+}
+
 // BTree is the main BTree storage engine (placeholder implementation).
 // This will be fully implemented in Phase 3.
 type BTree struct {
-	config *model.BTreeConfig
-	closed bool
+	config       *model.BTreeConfig
+	closed       bool
+	root         *VersionedRoot  // Versioned root pointer
+	pageManager  *PageManager    // Page manager for page allocation
+	maxLevels    int             // Maximum tree levels
 }
 
 // OpenBTree opens or creates a BTree storage engine (placeholder).
@@ -39,9 +66,21 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		config = model.NewDefaultBTreeConfig()
 	}
 
+	// Create versioned root with initial root ID
+	root := NewVersionedRoot(1)
+
+	// Create page manager
+	pageManager := &PageManager{}
+
+	// Calculate max levels based on config
+	maxLevels := 10 // Default value, will be calculated from config
+
 	return &BTree{
-		config: config,
-		closed: false,
+		config:      config,
+		closed:      false,
+		root:        root,
+		pageManager: pageManager,
+		maxLevels:   maxLevels,
 	}, nil
 }
 

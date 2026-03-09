@@ -26,6 +26,7 @@ func (b *BTree) InsertWithSplit(ctx context.Context, key, value []byte) error {
 	if err != nil {
 		return fmt.Errorf("failed to find path: %w", err)
 	}
+	defer ReleasePath(path) // ✅ 释放 path 回 pool
 
 	// Check context again before potentially expensive operations
 	select {
@@ -34,25 +35,31 @@ func (b *BTree) InsertWithSplit(ctx context.Context, key, value []byte) error {
 	default:
 	}
 
-	// 2. Try to insert at the leaf level
-	leafNode := path[len(path)-1].Node
-	if err := leafNode.Insert(key, value); err != nil {
-		if err == ErrNodeFull {
-			// Node is full, need to split and insert
-			return b.insertWithSplitPath(ctx, path, key, value)
+	// 2. Copy the path bottom-up and insert in the new leaf
+	// This is the CORE of CCOW: all modifications happen on copied nodes
+	newRoot, err := b.CopyPathBottomUp(ctx, path, func(node *Node) error {
+		// node is a COPY of the original node
+		// Insert into the copied node (not the original)
+		if err := node.Insert(key, value); err != nil {
+			if err == ErrNodeFull {
+				// Node is full, we'll handle splitting separately
+				return ErrNodeFull
+			}
+			return err
 		}
-		return fmt.Errorf("failed to insert: %w", err)
+		return nil
+	})
+
+	// 3. Handle node full case (need splitting)
+	if err != nil && err.Error() == "node is full" {
+		return b.insertWithSplitPath(ctx, path, key, value)
 	}
 
-	// 3. Copy the path bottom-up (no split needed)
-	newRoot, err := b.CopyPathBottomUp(ctx, path, func(node *Node) error {
-		return nil // Leaf already modified
-	})
 	if err != nil {
 		return fmt.Errorf("failed to copy path: %w", err)
 	}
 
-	// 4. Update root
+	// 4. Update root via CAS (atomic commit point)
 	return b.root.Update(ctx, newRoot, 0)
 }
 

@@ -102,10 +102,11 @@ func (nc *nodeCache) InvalidateAll() {
 // FindPath finds the path from root to leaf for the given key.
 // This is a read-only operation and does not require locking.
 // Pure memory implementation - no PageManager.Get calls needed.
+//
+// IMPORTANT: Caller is responsible for releasing the returned path using ReleasePath().
 func (b *BTree) FindPath(key []byte) (Path, error) {
 	// Use path pool to reduce allocations
 	path := AcquirePath()
-	defer ReleasePath(path)
 
 	// Start from current root
 	rootInfo := b.root.Get()

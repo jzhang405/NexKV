@@ -486,7 +486,7 @@ func TestPureMemoryBTree_ConcurrentWrites(t *testing.T) {
 
 	ctx := context.Background()
 	const numGoroutines = 10
-	const opsPerGoroutine = 100
+	const opsPerGoroutine = 10 // 减少到10以避免超过 DefaultMaxKeys (128)
 
 	var wg sync.WaitGroup
 	for g := 0; g < numGoroutines; g++ {

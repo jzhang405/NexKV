@@ -269,14 +269,18 @@ func (b *BTree) serializeNodeToPage(node *Node, page *Page) error {
 }
 
 // deserializeNode deserializes a node from a page.
+// Optimized to use node pool to reduce allocations and GC pressure.
 func (b *BTree) deserializeNode(page *Page) *Node {
 	// This is a placeholder - will be implemented with serializer
-	// For now, return a new node
-	return NewNode(page.Type == model.LeafPage)
+	// For now, use pooled node to reduce GC pressure
+	node := AcquireNode()
+	node.IsLeaf = (page.Type == model.LeafPage)
+	return node
 }
 
 // ModifyPage modifies a page with the given key-value pair.
 // This is used by the CopyPathBottomUp operation.
+// Optimized to use node pool and properly release nodes.
 func (b *BTree) ModifyPage(page *Page, key, value []byte, op ModifyOperation) error {
 	node := b.deserializeNode(page)
 
@@ -298,7 +302,13 @@ func (b *BTree) ModifyPage(page *Page, key, value []byte, op ModifyOperation) er
 		}
 	}
 
-	return b.serializeNodeToPage(node, page)
+	// Serialize before releasing node
+	err := b.serializeNodeToPage(node, page)
+
+	// Release node back to pool for reuse
+	ReleaseNode(node)
+
+	return err
 }
 
 // ModifyOperation represents the type of modification.

@@ -53,6 +53,7 @@ type BTree struct {
 	root         *VersionedRoot  // Versioned root pointer
 	pageManager  *PageManager    // Page manager for page allocation
 	maxLevels    int             // Maximum tree levels
+	nodeCache    *nodeCache      // Node deserialization cache for optimization
 }
 
 // OpenBTree opens or creates a BTree storage engine (placeholder).
@@ -72,6 +73,9 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// Create page manager
 	pageManager := &PageManager{}
 
+	// Create node cache for optimization
+	nodeCache := newNodeCache()
+
 	// Calculate max levels based on config
 	maxLevels := 10 // Default value, will be calculated from config
 
@@ -81,6 +85,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		root:        root,
 		pageManager: pageManager,
 		maxLevels:   maxLevels,
+		nodeCache:   nodeCache,
 	}, nil
 }
 

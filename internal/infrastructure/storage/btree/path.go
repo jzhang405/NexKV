@@ -7,6 +7,7 @@ package btree
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
@@ -21,10 +22,85 @@ type PathNode struct {
 // Path represents a path from root to leaf.
 type Path []*PathNode
 
+// pathPool is a sync.Pool for Path objects.
+var pathPool = sync.Pool{
+	New: func() any {
+		// Pre-allocate capacity for typical BTree depth
+		return make(Path, 0, 10)
+	},
+}
+
+// AcquirePath gets a Path from the pool or creates a new one.
+func AcquirePath() Path {
+	return pathPool.Get().(Path)
+}
+
+// ReleasePath returns a Path to the pool for reuse.
+func ReleasePath(path Path) {
+	// Reset path to zero length but keep capacity
+	path = path[:0]
+	pathPool.Put(path)
+}
+
+// nodeCache is a simple cache for deserialized nodes.
+// This is a placeholder for future optimization.
+type nodeCache struct {
+	cache map[model.PageID]*Node
+	mu    sync.RWMutex
+}
+
+// newNodeCache creates a new node cache.
+func newNodeCache() *nodeCache {
+	return &nodeCache{
+		cache: make(map[model.PageID]*Node),
+	}
+}
+
+// Get retrieves a node from cache or deserializes it.
+func (nc *nodeCache) Get(pageID model.PageID, page *Page, deserializeFunc func(*Page) *Node) *Node {
+	nc.mu.RLock()
+	node, ok := nc.cache[pageID]
+	nc.mu.RUnlock()
+
+	if ok {
+		return node
+	}
+
+	// Not in cache, deserialize and cache it
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if node, ok := nc.cache[pageID]; ok {
+		return node
+	}
+
+	node = deserializeFunc(page)
+	nc.cache[pageID] = node
+	return node
+}
+
+// Invalidate removes a node from cache (used during CCOW operations).
+func (nc *nodeCache) Invalidate(pageID model.PageID) {
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+	delete(nc.cache, pageID)
+}
+
+// InvalidateAll clears all cached nodes.
+func (nc *nodeCache) InvalidateAll() {
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+	nc.cache = make(map[model.PageID]*Node)
+}
+
 // FindPath finds the path from root to leaf for the given key.
 // This is a read-only operation and does not require locking.
+// Optimized with path pooling to reduce allocations.
 func (b *BTree) FindPath(key []byte) (Path, error) {
-	path := make(Path, 0, b.maxLevels)
+	// Use path pool to reduce allocations
+	path := AcquirePath()
+	defer ReleasePath(path)
 
 	// Start from current root
 	rootInfo := b.root.Get()
@@ -43,8 +119,8 @@ func (b *BTree) FindPath(key []byte) (Path, error) {
 		}
 		defer b.pageManager.Release(page)
 
-		// Deserialize node from page
-		node := b.deserializeNode(page)
+		// Deserialize node from page (cached)
+		node := b.nodeCache.Get(currentPageID, page, b.deserializeNode)
 
 		// Add to path
 		pathNode := &PathNode{
@@ -121,6 +197,9 @@ func (b *BTree) CopyPathBottomUp(ctx context.Context, path Path, modifyFunc func
 
 		// Mark page as dirty
 		newPage.MarkDirty()
+
+		// Invalidate old page from cache (CCOW creates new version)
+		b.nodeCache.Invalidate(pathNode.PageID)
 
 		// Store new page ID for next iteration
 		path[i].PageID = newPageID

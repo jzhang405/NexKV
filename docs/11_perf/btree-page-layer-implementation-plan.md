@@ -902,37 +902,236 @@ vs Lealone:
 - `lru_cache.go` (泛型实现)
 - 测试文件
 
-### Phase 2: 序列化层（1 周）
+### Phase 2: 序列化层（1 周）⭐ 基于 2026-03-09-kv-to-page-serialization.md
 
-**目标**: 实现 Node ↔ Page 转换
+**目标**: 实现 Node ↔ Page 转换（基于 Lealone 实际实现）
+
+**参考文档**:
+- `thoughts/2026-03-09-kv-to-page-serialization.md` - 详细序列化设计
+- Lealone `Page.write()` / `Page.read()` 方法
 
 **任务**:
 ```
-□ 2.1 实现 SerializeNode
-   - 写入元数据
-   - 写入 Keys/Values
-   - 写入 Children PageIDs
+□ 2.1 定义 Page 内存布局（参考设计文档）⭐ 核心
+   - Header: 21 bytes (Type + Version + ID + RefCount)
+   - Data: 4075 bytes (Metadata + Keys + Values + Children)
+   - 固定 4KB 大小，避免内存碎片
 
-□ 2.2 实现 DeserializeNode
-   - 读取元数据
-   - 读取 Keys/Values
-   - 读取 Children PageIDs
+□ 2.2 实现 SerializeNode（Node → Page）⭐ 基于 Lealone
+   - 写入 IsLeaf (1 byte) + NumKeys (4 bytes)
+   - 遍历 Keys：写入 Length (2 bytes) + Data
+   - 遍历 Values：写入 Length (2 bytes) + Data（叶子节点）
+   - 遍历 Children：写入 PageID (8 bytes)（内部节点）
+   - MarkDirty() 标记页面脏
 
-□ 2.3 修改 Node 结构
-   - 添加 Page 字段
-   - 添加 PageID 字段
-   - Children 改为 PageID 列表
+□ 2.3 实现 DeserializeNode（Page → Node）⭐ 基于 Lealone
+   - 读取 Header → IsLeaf, NumKeys
+   - 解析 Keys Section：读取 Length + Data
+   - 解析 Values Section（叶子节点）：读取 Length + Data
+   - 解析 Children Section（内部节点）：读取 PageID
+   - 返回 Node 对象
 
-□ 2.4 单元测试
-   - serializer_test.go
-   - 序列化正确性验证
-   - 边界测试
+□ 2.4 优化：变长字段序列化 ⭐ 性能关键
+   - 使用 binary.Write 写入定长字段
+   - 使用 bytes.Buffer 构建变长数据
+   - 减少内存分配和拷贝
+
+□ 2.5 单元测试（参考设计文档示例）⭐ 验证正确性
+   - 序列化正确性：Node → Page → Node 循环
+   - 边界测试：空节点、满节点、超大键值
+   - 字节级验证：与设计文档中的示例对比
 ```
 
 **交付物**:
-- `serializer.go`
-- `node.go` (修改)
-- 测试文件
+- `page.go` - Page 结构定义（固定 4KB）
+- `serializer.go` - SerializeNode/DeserializeNode 实现
+- `serializer_test.go` - 完整测试覆盖
+
+**关键代码示例**（基于设计文档）:
+
+```go
+// ===== Page 结构（固定 4KB）=====
+type Page struct {
+    ID       model.PageID
+    Type     PageType
+    Version  uint64
+    RefCount atomic.Int32
+
+    // 固定 4KB 数据区
+    Data     [PageSize]byte  // PageSize = 4096
+}
+
+const PageSize = 4096
+
+// ===== 序列化：Node → Page =====
+func SerializeNode(node *Node, page *Page) error {
+    var buf bytes.Buffer
+
+    // 1. 写入元数据 (5 bytes)
+    buf.WriteByte(byte(node.IsLeaf))        // IsLeaf: 1 byte
+    binary.Write(&buf, binary.LittleEndian, uint32(len(node.Keys))) // NumKeys: 4 bytes
+
+    // 2. 写入 Keys (变长：Length + Data)
+    for _, key := range node.Keys {
+        binary.Write(&buf, binary.LittleEndian, uint16(len(key))) // KeyLen: 2 bytes
+        buf.Write(key)  // KeyData
+    }
+
+    // 3. 写入 Values（叶子节点）
+    if node.IsLeaf {
+        for _, value := range node.Values {
+            binary.Write(&buf, binary.LittleEndian, uint16(len(value))) // ValueLen: 2 bytes
+            buf.Write(value)  // ValueData
+        }
+    }
+
+    // 4. 写入 Children PageIDs（内部节点）
+    if !node.IsLeaf {
+        for _, childID := range node.Children {
+            binary.Write(&buf, binary.LittleEndian, uint64(childID)) // PageID: 8 bytes
+        }
+    }
+
+    // 5. 复制到 Page.Data
+    if buf.Len() > len(page.Data) {
+        return ErrPageTooSmall
+    }
+    copy(page.Data[:], buf.Bytes())
+
+    // 6. 标记脏页
+    page.MarkDirty()
+
+    return nil
+}
+
+// ===== 反序列化：Page → Node =====
+func DeserializeNode(page *Page) (*Node, error) {
+    node := &Node{
+        ID: page.ID,
+    }
+
+    buf := bytes.NewBuffer(page.Data[:])
+
+    // 1. 读取元数据
+    isLeafByte, err := buf.ReadByte()
+    if err != nil {
+        return nil, err
+    }
+    node.IsLeaf = isLeafByte != 0
+
+    var numKeys uint32
+    if err := binary.Read(buf, binary.LittleEndian, &numKeys); err != nil {
+        return nil, err
+    }
+
+    // 2. 读取 Keys
+    node.Keys = make([][]byte, numKeys)
+    for i := 0; i < int(numKeys); i++ {
+        var keyLen uint16
+        if err := binary.Read(buf, binary.LittleEndian, &keyLen); err != nil {
+            return nil, err
+        }
+
+        key := make([]byte, keyLen)
+        if _, err := buf.Read(key); err != nil {
+            return nil, err
+        }
+        node.Keys[i] = key
+    }
+
+    // 3. 读取 Values（叶子节点）
+    if node.IsLeaf {
+        node.Values = make([][]byte, numKeys)
+        for i := 0; i < int(numKeys); i++ {
+            var valueLen uint16
+            if err := binary.Read(buf, binary.LittleEndian, &valueLen); err != nil {
+                return nil, err
+            }
+
+            value := make([]byte, valueLen)
+            if _, err := buf.Read(value); err != nil {
+                return nil, err
+            }
+            node.Values[i] = value
+        }
+    }
+
+    // 4. 读取 Children PageIDs（内部节点）
+    if !node.IsLeaf {
+        node.Children = make([]model.PageID, numKeys+1)
+        for i := 0; i <= int(numKeys); i++ {
+            var childID uint64
+            if err := binary.Read(buf, binary.LittleEndian, &childID); err != nil {
+                return nil, err
+            }
+            node.Children[i] = model.PageID(childID)
+        }
+    }
+
+    return node, nil
+}
+```
+
+**测试示例**（验证设计文档中的示例）:
+
+```go
+func TestSerializationRoundTrip(t *testing.T) {
+    // 输入 Node（设计文档示例）
+    node := &Node{
+        IsLeaf: true,
+        Keys:   [][]byte{[]byte("key1"), []byte("key2")},
+        Values: [][]byte{[]byte("val1"), []byte("val2")},
+    }
+
+    // 序列化 → Page
+    page := &Page{ID: 1}
+    err := SerializeNode(node, page)
+    require.NoError(t, err)
+
+    // 验证 Page.Data 字节内容
+    expected := []byte{
+        0x01,                   // IsLeaf = 1
+        0x00, 0x00, 0x00,       // Padding
+        0x02, 0x00, 0x00, 0x00,  // NumKeys = 2
+
+        0x04, 0x00,             // Key[0] Length = 4
+        0x6b, 0x65, 0x79, 0x31,  // "key1"
+        0x05, 0x00,             // Value[0] Length = 5
+        0x76, 0x61, 0x6c, 0x75, 0x31,  // "val1"
+
+        0x03, 0x00,             // Key[1] Length = 3
+        0x6b, 0x65, 0x79,        // "key2"
+        0x05, 0x00,             // Value[1] Length = 5
+        0x76, 0x61, 0x6c, 0x75, 0x31,  // "val2"
+    }
+
+    assert.Equal(t, expected, page.Data[:len(expected)])
+
+    // 反序列化 → Node'
+    node2, err := DeserializeNode(page)
+    require.NoError(t, err)
+
+    // 验证：Node' == Node
+    assert.True(t, node.IsLeaf == node2.IsLeaf)
+    assert.Equal(t, node.Keys, node2.Keys)
+    assert.Equal(t, node.Values, node2.Values)
+}
+```
+
+**性能优化要点**:
+
+```
+优化目标：
+- ✅ 减少内存分配：使用 bytes.Buffer 复用
+- ✅ 减少内存拷贝：直接操作 []byte
+- ✅ 避免反射：使用 binary.Write/Read
+- ✅ 固定大小：4KB Page 避免碎片
+
+预期性能：
+- 序列化：~500-1000 ns/op
+- 反序列化：~800-1500 ns/op
+- 内存分配：~2-3 次/op
+```
 
 ### Phase 3: BTree 集成（1.5 周）
 

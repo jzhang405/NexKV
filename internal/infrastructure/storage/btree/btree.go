@@ -47,7 +47,6 @@ package btree
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
@@ -63,30 +62,6 @@ var (
 	// ErrRetry is returned when a CAS operation fails and the caller should retry.
 	ErrRetry = errors.New("cas failed, retry operation")
 )
-
-// PageManager manages page allocation and I/O.
-type PageManager struct {
-	nextPageID atomic.Uint64 // Next page ID to allocate
-}
-
-// Get retrieves a page by ID.
-func (pm *PageManager) Get(pageID model.PageID) (*Page, error) {
-	// Placeholder implementation
-	return NewPage(pageID, model.LeafPage), nil
-}
-
-// Release releases a page reference.
-func (pm *PageManager) Release(page *Page) {
-	// Placeholder implementation
-	page.Release()
-}
-
-// Allocate allocates a new page with a unique ID.
-func (pm *PageManager) Allocate() (*Page, error) {
-	// Allocate next page ID
-	pageID := pm.nextPageID.Add(1)
-	return NewPage(model.PageID(pageID), model.LeafPage), nil
-}
 
 // BTree is the main BTree storage engine (placeholder implementation).
 // This will be fully implemented in Phase 3.

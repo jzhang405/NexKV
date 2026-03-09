@@ -14,7 +14,7 @@ import (
 
 // PathNode represents a node in the path from root to leaf.
 type PathNode struct {
-	Node   *Node       // The node at this level
+	Node   *Node       // The deserialized node at this level (cached to avoid repeated deserialization)
 	PageID model.PageID // The page ID of this node
 	Level  int         // The level in the tree (0 = leaf)
 }
@@ -122,9 +122,9 @@ func (b *BTree) FindPath(key []byte) (Path, error) {
 		// Deserialize node from page (cached)
 		node := b.nodeCache.Get(currentPageID, page, b.deserializeNode)
 
-		// Add to path
+		// Add to path with cached node
 		pathNode := &PathNode{
-			Node:   node,
+			Node:   node, // Cache the deserialized node for reuse in CopyPathBottomUp
 			PageID: currentPageID,
 			Level:  currentLevel,
 		}
@@ -150,70 +150,110 @@ func (b *BTree) FindPath(key []byte) (Path, error) {
 
 // CopyPathBottomUp copies the path from bottom to top (leaf to root).
 // Returns the new root page ID after the copy-on-write operation.
+// Optimized to reuse cached nodes and avoid unnecessary Get/Release cycles.
 func (b *BTree) CopyPathBottomUp(ctx context.Context, path Path, modifyFunc func(*Node) error) (model.PageID, error) {
 	if len(path) == 0 {
 		return 0, fmt.Errorf("empty path")
 	}
 
+	// Save old page IDs before they get modified
+	oldPageIDs := make([]model.PageID, len(path))
+	for i, pathNode := range path {
+		oldPageIDs[i] = pathNode.PageID
+	}
+
+	// Track pages to release at the end
+	pagesToRelease := make([]*Page, 0, len(path))
+
 	// Process from leaf to root
 	for i := len(path) - 1; i >= 0; i-- {
 		pathNode := path[i]
-		oldPageID := pathNode.PageID // Save old page ID before update
 
-		// Copy the page
-		newPageID, err := b.copyPage(pathNode.PageID)
+		// Copy the page (optimized version returns pointer directly)
+		newPage, err := b.copyPageOptimized(pathNode.PageID)
 		if err != nil {
+			// Clean up already allocated pages
+			for _, p := range pagesToRelease {
+				b.pageManager.Release(p)
+			}
 			return 0, fmt.Errorf("failed to copy page %d: %w", pathNode.PageID, err)
 		}
 
-		// Get the new page
-		newPage, err := b.pageManager.Get(newPageID)
-		if err != nil {
-			return 0, fmt.Errorf("failed to get new page %d: %w", newPageID, err)
+		// Track for cleanup
+		pagesToRelease = append(pagesToRelease, newPage)
+
+		// Reuse cached node data instead of deserializing from new page
+		// Use AcquireNode to get a pre-allocated node from pool, then copy data from cached node
+		newNode := AcquireNode()
+		sourceNode := pathNode.Node
+
+		// Copy node properties
+		newNode.Page = newPage
+		newNode.IsLeaf = sourceNode.IsLeaf
+
+		// Copy Keys
+		if len(sourceNode.Keys) > 0 {
+			newNode.Keys = append(newNode.Keys[:0], sourceNode.Keys...)
 		}
 
-		// Deserialize node from new page
-		newNode := b.deserializeNode(newPage)
+		// Copy Values or Children based on node type
+		if sourceNode.IsLeaf {
+			if len(sourceNode.Values) > 0 {
+				newNode.Values = append(newNode.Values[:0], sourceNode.Values...)
+			}
+		} else {
+			if len(sourceNode.Children) > 0 {
+				newNode.Children = append(newNode.Children[:0], sourceNode.Children...)
+			}
+		}
 
 		if i == len(path)-1 {
 			// This is the leaf node, apply modification
 			if err := modifyFunc(newNode); err != nil {
-				b.pageManager.Release(newPage)
+				ReleaseNode(newNode)
 				return 0, fmt.Errorf("failed to modify leaf node: %w", err)
 			}
 		} else {
 			// This is an internal node, update child reference
-			// Use the child's old page ID (before it was updated)
-			childPathNode := path[i+1]
-			if err := b.updateChildReference(newNode, oldPageID, childPathNode.PageID); err != nil {
-				b.pageManager.Release(newPage)
+			// The child was already copied in the previous iteration.
+			// We need to update the parent's Children array to point from the child's old page ID
+			// (which is stored in the parent's Children array) to the child's new page ID
+			// (which was updated in the previous iteration and is in path[i+1].PageID).
+			if err := b.updateChildReference(newNode, oldPageIDs[i+1], path[i+1].PageID); err != nil {
+				ReleaseNode(newNode)
 				return 0, fmt.Errorf("failed to update child reference: %w", err)
 			}
 		}
 
 		// Serialize node back to page
 		if err := b.serializeNodeToPage(newNode, newPage); err != nil {
-			b.pageManager.Release(newPage)
+			ReleaseNode(newNode)
 			return 0, fmt.Errorf("failed to serialize node: %w", err)
 		}
+
+		// Release node back to pool
+		ReleaseNode(newNode)
 
 		// Mark page as dirty
 		newPage.MarkDirty()
 
 		// Invalidate old page from cache (CCOW creates new version)
-		b.nodeCache.Invalidate(oldPageID)
+		b.nodeCache.Invalidate(oldPageIDs[i])
 
 		// Store new page ID for next iteration
-		path[i].PageID = newPageID
+		path[i].PageID = newPage.ID
+	}
 
-		b.pageManager.Release(newPage)
+	// Release all pages at the end
+	for _, page := range pagesToRelease {
+		b.pageManager.Release(page)
 	}
 
 	// Return the new root page ID
 	return path[0].PageID, nil
 }
 
-// copyPage creates a copy of the given page.
+// copyPage creates a copy of the given page and returns the PageID.
 func (b *BTree) copyPage(pageID model.PageID) (model.PageID, error) {
 	// Get the original page
 	page, err := b.pageManager.Get(pageID)
@@ -227,6 +267,7 @@ func (b *BTree) copyPage(pageID model.PageID) (model.PageID, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer b.pageManager.Release(newPage)
 
 	// Copy data from old page to new page
 	copy(newPage.Data[:], page.Data[:])
@@ -236,12 +277,36 @@ func (b *BTree) copyPage(pageID model.PageID) (model.PageID, error) {
 	newPage.Version = page.Version + 1
 	newPage.MarkDirty()
 
-	// Get the page ID before releasing
-	newPageID := newPage.ID
+	return newPage.ID, nil
+}
 
-	b.pageManager.Release(newPage)
+// copyPageOptimized creates a copy of the given page and returns the Page pointer directly.
+// This avoids an extra Get/Release cycle. The caller is responsible for releasing the returned page.
+func (b *BTree) copyPageOptimized(pageID model.PageID) (*Page, error) {
+	// Get the original page
+	oldPage, err := b.pageManager.Get(pageID)
+	if err != nil {
+		return nil, err
+	}
+	defer b.pageManager.Release(oldPage)
 
-	return newPageID, nil
+	// Allocate a new page
+	newPage, err := b.pageManager.Allocate()
+	if err != nil {
+		return nil, err
+	}
+
+	// Copy data from old page to new page
+	copy(newPage.Data[:], oldPage.Data[:])
+
+	// Copy metadata
+	newPage.Type = oldPage.Type
+	newPage.Version = oldPage.Version + 1
+	newPage.MarkDirty()
+
+	// Return the page pointer without releasing
+	// Caller is responsible for releasing the page
+	return newPage, nil
 }
 
 // updateChildReference updates the child reference in the parent node.

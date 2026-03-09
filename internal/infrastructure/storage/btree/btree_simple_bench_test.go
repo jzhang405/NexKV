@@ -2,6 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Package btree provides BTree storage implementation.
+//
+// 性能测试文件索引：
+//
+// 1. btree_simple_bench_test.go (本文件)
+//   - 简单的节点级性能基准测试
+//   - 测试单个节点的读写性能
+//   - 基准: BenchmarkNode_Read, BenchmarkNode_Write
+//
+// 2. btree_bench_test.go
+//   - BTree 系统级性能基准测试
+//   - 包含吞吐量测试、访问模式测试、优化技术验证
+//   - 基准: BenchmarkBTree_WriteThroughput, BenchmarkRead_Sequential, BenchmarkNode_Clone_Optimized
+//
+// 使用建议：
+// - 开发阶段: 运行 btree_simple_bench_test.go 快速验证基本性能
+// - 性能调优: 运行 btree_bench_test.go 验证系统级性能和优化效果
+// - 发布前: 运行所有性能测试进行全面验证
 package btree
 
 import (
@@ -17,11 +35,11 @@ func BenchmarkNode_Read(b *testing.B) {
 	for i := 0; i < 100; i++ {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))
-		node.Insert(key, value)
+		_ = node.Insert(key, value)
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		key := []byte(fmt.Sprintf("key-%d", i%100))
 		idx := node.Search(key)
 		if idx < len(node.Keys) {
@@ -33,7 +51,7 @@ func BenchmarkNode_Read(b *testing.B) {
 // BenchmarkNode_Write benchmarks write operations on a single node.
 func BenchmarkNode_Write(b *testing.B) {
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		node := NewNode(true)
 		for j := 0; j < 100; j++ {
 			key := []byte(fmt.Sprintf("key-%d", j))
@@ -56,7 +74,7 @@ func BenchmarkCCOW_ReadWrite(b *testing.B) {
 	writeCount := 0
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		// Create new BTree periodically to avoid node full
 		if writeCount > 90 {
 			btree.Close()
@@ -84,7 +102,7 @@ func BenchmarkCCOW_ReadWrite(b *testing.B) {
 
 		newRoot, err := btree.CopyPathBottomUp(ctx, path, modifyFunc)
 		if err == nil {
-			btree.root.Update(ctx, newRoot, uint64(writeCount))
+			_ = btree.root.Update(ctx, newRoot, uint64(writeCount))
 			writeCount++
 		}
 
@@ -99,15 +117,15 @@ func BenchmarkPath_Find(b *testing.B) {
 
 	// Pre-populate root
 	rootInfo := btree.root.Get()
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))
-		rootInfo.Root.Insert(key, value)
+		_ = rootInfo.Root.Insert(key, value)
 	}
 	rootInfo.Release()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		key := []byte(fmt.Sprintf("key-%d", i%100))
 		path, err := btree.FindPath(key)
 		if err != nil {
@@ -126,7 +144,7 @@ func BenchmarkPath_Copy(b *testing.B) {
 	writeCount := 0
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if writeCount > 90 {
 			btree.Close()
 			btree, _ = OpenBTree("", nil)
@@ -150,7 +168,7 @@ func BenchmarkPath_Copy(b *testing.B) {
 
 		newRoot, err := btree.CopyPathBottomUp(ctx, path, modifyFunc)
 		if err == nil {
-			btree.root.Update(ctx, newRoot, uint64(writeCount))
+			_ = btree.root.Update(ctx, newRoot, uint64(writeCount))
 			writeCount++
 		}
 
@@ -163,7 +181,7 @@ func BenchmarkRoot_Update(b *testing.B) {
 	ctx := context.Background()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		node := NewNode(true)
 		vr := NewVersionedRoot(node)
 		err := vr.Update(ctx, node, uint64(i))
@@ -179,7 +197,7 @@ func BenchmarkRoot_Get(b *testing.B) {
 	vr := NewVersionedRoot(node)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rootInfo := vr.Get()
 		_ = rootInfo.Root
 		rootInfo.Release()
@@ -189,7 +207,7 @@ func BenchmarkRoot_Get(b *testing.B) {
 // BenchmarkMemory_Allocation benchmarks memory allocation pattern.
 func BenchmarkMemory_Allocation(b *testing.B) {
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		// Allocate node with slices
 		node := &Node{
 			IsLeaf:   true,
@@ -199,7 +217,7 @@ func BenchmarkMemory_Allocation(b *testing.B) {
 		}
 
 		// Add some data
-		for j := 0; j < 10; j++ {
+		for j := range 10 {
 			key := []byte(fmt.Sprintf("key-%d", j))
 			value := []byte(fmt.Sprintf("value-%d", j))
 			node.Keys = append(node.Keys, key)
@@ -217,16 +235,16 @@ func BenchmarkThroughput_Read(b *testing.B) {
 
 	// Pre-populate
 	rootInfo := btree.root.Get()
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))
-		rootInfo.Root.Insert(key, value)
+		_ = rootInfo.Root.Insert(key, value)
 	}
 	rootInfo.Release()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		key := []byte(fmt.Sprintf("key-%d", i%100))
+	for i := range b.N {
+		key := []byte(fmt.Sprintf("key-%d", int(i)%100))
 		path, _ := btree.FindPath(key)
 		_, _ = path[0].Node.Get(key)
 	}
@@ -243,7 +261,7 @@ func BenchmarkThroughput_Write(b *testing.B) {
 	writeCount := 0
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if writeCount > 90 {
 			btree.Close()
 			btree, _ = OpenBTree("", nil)
@@ -266,7 +284,7 @@ func BenchmarkThroughput_Write(b *testing.B) {
 
 		newRoot, err := btree.CopyPathBottomUp(ctx, path, modifyFunc)
 		if err == nil {
-			btree.root.Update(ctx, newRoot, uint64(writeCount))
+			_ = btree.root.Update(ctx, newRoot, uint64(writeCount))
 			writeCount++
 		}
 

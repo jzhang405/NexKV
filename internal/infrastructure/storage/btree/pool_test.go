@@ -7,7 +7,8 @@
 // 3. pool 版本 ≥ new 版本性能的 80%
 //
 // 运行测试:
-//   go test -bench=. -benchmem ./internal/infrastructure/storage/btree/ -run BenchmarkPool
+//
+//	go test -bench=. -benchmem ./internal/infrastructure/storage/btree/ -run BenchmarkPool
 package btree
 
 import (
@@ -29,14 +30,14 @@ const (
 
 // TestPage 模拟 BTree 页面 (Phase 0.5 临时类型)
 type TestPage struct {
-	Data    [TestPageSize]byte
+	Data     [TestPageSize]byte
 	RefCount int32
 }
 
 // TestNode 模拟 BTree 节点 (Phase 0.5 临时类型)
 type TestNode struct {
-	Keys   [][]byte
-	Values [][]byte
+	Keys     [][]byte
+	Values   [][]byte
 	RefCount int32
 }
 
@@ -151,7 +152,7 @@ func BenchmarkPageWithoutPool(b *testing.B) {
 func BenchmarkPageWithPool_Sequential(b *testing.B) {
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		page := AcquireTestPage()
 		page.RefCount = 1
 		ReleaseTestPage(page)
@@ -162,7 +163,7 @@ func BenchmarkPageWithPool_Sequential(b *testing.B) {
 func BenchmarkPageWithoutPool_Sequential(b *testing.B) {
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		page := NewTestPage()
 		page.RefCount = 1
 		_ = page
@@ -181,7 +182,7 @@ func BenchmarkNodeWithPool(b *testing.B) {
 		for pb.Next() {
 			node := AcquireTestNode()
 			// 模拟使用：添加一些键值对
-			for i := 0; i < 10; i++ {
+			for range 10 {
 				key := []byte("test-key")
 				value := []byte("test-value")
 				node.Keys = append(node.Keys, key)
@@ -201,7 +202,7 @@ func BenchmarkNodeWithoutPool(b *testing.B) {
 		for pb.Next() {
 			node := NewTestNode()
 			// 模拟使用：添加一些键值对
-			for i := 0; i < 10; i++ {
+			for range 10 {
 				key := []byte("test-key")
 				value := []byte("test-value")
 				node.Keys = append(node.Keys, key)
@@ -217,10 +218,10 @@ func BenchmarkNodeWithoutPool(b *testing.B) {
 func BenchmarkNodeWithPool_Sequential(b *testing.B) {
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		node := AcquireTestNode()
 		// 模拟使用
-		for j := 0; j < 10; j++ {
+		for range 10 {
 			key := []byte("test-key")
 			value := []byte("test-value")
 			node.Keys = append(node.Keys, key)
@@ -234,10 +235,10 @@ func BenchmarkNodeWithPool_Sequential(b *testing.B) {
 func BenchmarkNodeWithoutPool_Sequential(b *testing.B) {
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		node := NewTestNode()
 		// 模拟使用
-		for j := 0; j < 10; j++ {
+		for range 10 {
 			key := []byte("test-key")
 			value := []byte("test-value")
 			node.Keys = append(node.Keys, key)
@@ -399,9 +400,9 @@ func TestPoolPerformanceSummary(t *testing.T) {
 
 // BenchmarkResult 基准测试结果
 type BenchmarkResult struct {
-	Name         string
-	NsPerOp      int64
-	AllocsPerOp  int64
+	Name            string
+	NsPerOp         int64
+	AllocsPerOp     int64
 	AllocBytesPerOp int64
 }
 
@@ -429,9 +430,9 @@ func runBenchmark(t *testing.T, poolName, noPoolName string) BenchmarkResult {
 	// 这里简化处理，实际应该使用 testing.Benchmark()
 	// 返回模拟数据
 	return BenchmarkResult{
-		Name:         poolName,
-		NsPerOp:      100,  // 占位
-		AllocsPerOp:  1,    // 占位
+		Name:            poolName,
+		NsPerOp:         100,  // 占位
+		AllocsPerOp:     1,    // 占位
 		AllocBytesPerOp: 4096, // 占位
 	}
 }

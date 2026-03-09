@@ -90,15 +90,15 @@ type SnapshotID uint64
 
 // StoreStats holds storage statistics.
 type StoreStats struct {
-	TotalKeys   int64
-	TotalSize   int64
-	TreeHeight  int
-	PageCount   int
-	Version     uint64
-	ReadCount   int64
-	WriteCount  int64
-	SplitCount  int64
-	MergeCount  int64
+	TotalKeys      int64
+	TotalSize      int64
+	TreeHeight     int
+	PageCount      int
+	Version        uint64
+	ReadCount      int64
+	WriteCount     int64
+	SplitCount     int64
+	MergeCount     int64
 	ActiveVersions int
 }
 
@@ -123,5 +123,5 @@ type BTreeStats struct {
 type WALStats struct {
 	SequenceNumber uint64
 	Entries        uint64
-	SyncCount       uint64
+	SyncCount      uint64
 }

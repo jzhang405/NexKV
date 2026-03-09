@@ -30,18 +30,36 @@ var (
 // Pure in-memory implementation without page indirection for maximum performance.
 // This eliminates the 4075-byte Page.Data overhead and reduces CopyPathBottomUp
 // from copying ~4KB per node to simple pointer assignment.
+//
+// Node Layout:
+//   - Leaf node:   [Keys[i], Values[i]] pairs, sorted by Keys
+//   - Internal node: Keys[i] are separators, Children[i] and Children[i+1]
+//     are subtrees with keys < Keys[i] and >= Keys[i] respectively
+//
+// Invariants:
+//   - len(Keys) <= DefaultMaxKeys
+//   - For internal nodes: len(Children) == len(Keys) + 1
+//   - Keys are always sorted in ascending order
+//   - All keys in Children[i] < Keys[i] <= keys in Children[i+1]
 type Node struct {
-	// Keys stores the sorted keys.
+	// Keys stores the sorted keys in ascending order.
+	// For leaf nodes: actual data keys
+	// For internal nodes: separator keys between children
 	Keys [][]byte
 
 	// Values stores the values (only for leaf nodes).
+	// Values[i] corresponds to Keys[i].
+	// Not used for internal nodes (will be empty).
 	Values [][]byte
 
 	// Children stores child node pointers (only for internal nodes).
+	// Children[i] contains keys < Keys[i]
+	// Children[i+1] contains keys >= Keys[i]
 	// Using direct Node pointers eliminates PageID indirection.
 	Children []*Node
 
 	// IsLeaf indicates whether this is a leaf node.
+	// Leaf nodes have Values, internal nodes have Children.
 	IsLeaf bool
 }
 

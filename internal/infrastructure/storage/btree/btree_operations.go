@@ -14,10 +14,24 @@ import (
 // InsertWithSplit inserts a key-value pair with automatic node splitting.
 // This is a higher-level operation that handles node overflow by splitting.
 func (b *BTree) InsertWithSplit(ctx context.Context, key, value []byte) error {
+	// Check if context is already cancelled
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	// 1. Find the path to the leaf
 	path, err := b.FindPath(key)
 	if err != nil {
 		return fmt.Errorf("failed to find path: %w", err)
+	}
+
+	// Check context again before potentially expensive operations
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 
 	// 2. Try to insert at the leaf level
@@ -111,17 +125,15 @@ func (b *BTree) promoteSplit(ctx context.Context, path Path, medianKey []byte, r
 
 // splitRoot creates a new root when the current root needs to split.
 func (b *BTree) splitRoot(ctx context.Context, oldRoot *Node, medianKey []byte, rightNode *Node) error {
-	// Create new root node
+	// Create new internal node as root
 	newRoot := NewNode(false)
 
-	// Insert old root and new node as children
-	// For simplicity, we insert median key and right child
-	if err := newRoot.InsertChild(medianKey, rightNode); err != nil {
-		return fmt.Errorf("failed to insert into new root: %w", err)
-	}
+	// Set children: oldRoot as left child, rightNode as right child
+	newRoot.Children = append(newRoot.Children, oldRoot)
+	newRoot.Children = append(newRoot.Children, rightNode)
 
-	// Old root becomes the left child (implicitly, as it's the first child)
-	// This is a simplified implementation - a full implementation would properly set children
+	// Insert the separator key
+	newRoot.Keys = append(newRoot.Keys, medianKey)
 
 	// Update versioned root
 	return b.root.Update(ctx, newRoot, 0)
@@ -130,10 +142,24 @@ func (b *BTree) splitRoot(ctx context.Context, oldRoot *Node, medianKey []byte, 
 // DeleteWithMerge deletes a key with automatic node merging.
 // This is a higher-level operation that handles node underflow by merging.
 func (b *BTree) DeleteWithMerge(ctx context.Context, key []byte) error {
+	// Check if context is already cancelled
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	// 1. Find the path to the leaf
 	path, err := b.FindPath(key)
 	if err != nil {
 		return fmt.Errorf("failed to find path: %w", err)
+	}
+
+	// Check context again before potentially expensive operations
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 
 	// 2. Delete from the leaf
@@ -195,7 +221,7 @@ func compareBytesInternal(a, b []byte) int {
 		min = len(b)
 	}
 
-	for i := 0; i < min; i++ {
+	for i := range min {
 		if a[i] < b[i] {
 			return -1
 		}
@@ -246,11 +272,11 @@ func (b *BTree) GetStats() *BTreeStats {
 	defer rootInfo.Release()
 
 	return &BTreeStats{
-		Depth:      b.GetDepth(),
-		MaxLevels:  b.maxLevels,
-		RootSize:   rootInfo.Root.Size(),
-		MaxKeys:    model.DefaultMaxKeys,
-		MinKeys:    model.DefaultMinKeys,
+		Depth:     b.GetDepth(),
+		MaxLevels: b.maxLevels,
+		RootSize:  rootInfo.Root.Size(),
+		MaxKeys:   model.DefaultMaxKeys,
+		MinKeys:   model.DefaultMinKeys,
 	}
 }
 

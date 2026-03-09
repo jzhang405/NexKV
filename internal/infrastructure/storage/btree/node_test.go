@@ -7,10 +7,11 @@ package btree
 import (
 	"bytes"
 
+	"testing"
+
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 // TestNewNode verifies node creation.
@@ -133,7 +134,7 @@ func TestNodeInsert(t *testing.T) {
 		node := NewNode(true)
 
 		// Fill node to capacity
-		for i := 0; i < model.DefaultMaxKeys; i++ {
+		for i := range model.DefaultMaxKeys {
 			key := []byte{byte(i)}
 			err := node.Insert(key, []byte("value"))
 			require.NoError(t, err)
@@ -191,7 +192,7 @@ func TestNodeSplit(t *testing.T) {
 		node := NewNode(true)
 
 		// Fill node to capacity
-		for i := 0; i < model.DefaultMaxKeys; i++ {
+		for i := range model.DefaultMaxKeys {
 			key := []byte{byte(i)}
 			err := node.Insert(key, []byte("value"))
 			require.NoError(t, err)
@@ -215,7 +216,7 @@ func TestNodeSplit(t *testing.T) {
 
 	t.Run("split non-full node", func(t *testing.T) {
 		node := NewNode(true)
-		node.Insert([]byte("key"), []byte("value"))
+		_ = node.Insert([]byte("key"), []byte("value"))
 
 		_, _, err := node.Split()
 		assert.ErrorIs(t, err, ErrNodeNotFull)
@@ -229,11 +230,11 @@ func TestNodeMerge(t *testing.T) {
 		node2 := NewNode(true)
 
 		// Add keys to both nodes (below capacity)
-		for i := 0; i < 30; i++ {
+		for i := range 30 {
 			key1 := []byte{byte(i)}
 			key2 := []byte{byte(i + 30)}
-			node1.Insert(key1, []byte("value"))
-			node2.Insert(key2, []byte("value"))
+			_ = node1.Insert(key1, []byte("value"))
+			_ = node2.Insert(key2, []byte("value"))
 		}
 
 		err := node1.Merge(node2)
@@ -256,11 +257,11 @@ func TestNodeMerge(t *testing.T) {
 		node2 := NewNode(true)
 
 		// Fill nodes near capacity (130+130=260 > 256)
-		for i := 0; i < 130; i++ {
-			node1.Insert([]byte{byte(i % 256)}, []byte("value"))
+		for i := range 130 {
+			_ = node1.Insert([]byte{byte(i % 256)}, []byte("value"))
 		}
-		for i := 0; i < 130; i++ {
-			node2.Insert([]byte{byte((i + 130) % 256)}, []byte("value"))
+		for i := range 130 {
+			_ = node2.Insert([]byte{byte((i + 130) % 256)}, []byte("value"))
 		}
 
 		err := node1.Merge(node2)
@@ -272,9 +273,9 @@ func TestNodeMerge(t *testing.T) {
 func TestNodeDelete(t *testing.T) {
 	t.Run("delete existing key from leaf", func(t *testing.T) {
 		node := NewNode(true)
-		node.Insert([]byte("apple"), []byte("red"))
-		node.Insert([]byte("banana"), []byte("yellow"))
-		node.Insert([]byte("cherry"), []byte("purple"))
+		_ = node.Insert([]byte("apple"), []byte("red"))
+		_ = node.Insert([]byte("banana"), []byte("yellow"))
+		_ = node.Insert([]byte("cherry"), []byte("purple"))
 
 		err := node.Delete([]byte("banana"))
 		require.NoError(t, err)
@@ -285,7 +286,7 @@ func TestNodeDelete(t *testing.T) {
 
 	t.Run("delete non-existing key", func(t *testing.T) {
 		node := NewNode(true)
-		node.Insert([]byte("key"), []byte("value"))
+		_ = node.Insert([]byte("key"), []byte("value"))
 
 		err := node.Delete([]byte("nonexistent"))
 		assert.ErrorIs(t, err, ErrKeyNotFound)
@@ -301,8 +302,8 @@ func TestNodeStateChecks(t *testing.T) {
 	assert.True(t, node.IsUnderflow()) // Empty node is underflow
 
 	// Add some keys (still below minimum)
-	for i := 0; i < 10; i++ {
-		node.Insert([]byte{byte(i)}, []byte("value"))
+	for i := range 10 {
+		_ = node.Insert([]byte{byte(i)}, []byte("value"))
 	}
 
 	assert.False(t, node.IsEmpty())
@@ -315,8 +316,8 @@ func TestNodeClear(t *testing.T) {
 	node := NewNode(true)
 
 	// Add some keys
-	for i := 0; i < 10; i++ {
-		node.Insert([]byte{byte(i)}, []byte("value"))
+	for i := range 10 {
+		_ = node.Insert([]byte{byte(i)}, []byte("value"))
 	}
 
 	assert.Equal(t, 10, node.Size())
@@ -330,8 +331,8 @@ func TestNodeClear(t *testing.T) {
 // TestNodeClone verifies node cloning.
 func TestNodeClone(t *testing.T) {
 	node := NewNode(true)
-	node.Insert([]byte("key1"), []byte("value1"))
-	node.Insert([]byte("key2"), []byte("value2"))
+	_ = node.Insert([]byte("key1"), []byte("value1"))
+	_ = node.Insert([]byte("key2"), []byte("value2"))
 
 	clone := node.Clone()
 
@@ -341,7 +342,7 @@ func TestNodeClone(t *testing.T) {
 	assert.True(t, bytes.Equal(node.Keys[1], clone.Keys[1]))
 
 	// Verify clone is independent
-	clone.Insert([]byte("key3"), []byte("value3"))
+	_ = clone.Insert([]byte("key3"), []byte("value3"))
 	assert.Equal(t, 2, node.Size())
 	assert.Equal(t, 3, clone.Size())
 }
@@ -359,8 +360,8 @@ func BenchmarkNodeInsert(b *testing.B) {
 	value := []byte("test-value")
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		node.Insert(key, value)
+	for range b.N {
+		_ = node.Insert(key, value)
 		if node.IsFull() {
 			node.Clear()
 		}
@@ -372,14 +373,14 @@ func BenchmarkNodeSearch(b *testing.B) {
 	node := NewNode(true)
 
 	// Fill node
-	for i := 0; i < model.DefaultMaxKeys; i++ {
-		node.Insert([]byte{byte(i)}, []byte("value"))
+	for i := range model.DefaultMaxKeys {
+		_ = node.Insert([]byte{byte(i)}, []byte("value"))
 	}
 
 	key := []byte{64} // Middle key
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		node.Search(key)
 	}
 }
@@ -389,25 +390,25 @@ func BenchmarkNodeGet(b *testing.B) {
 	node := NewNode(true)
 	key := []byte("test-key")
 	value := []byte("test-value")
-	node.Insert(key, value)
+	_ = node.Insert(key, value)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		node.Get(key)
+	for range b.N {
+		_, _ = node.Get(key)
 	}
 }
 
 // BenchmarkNodeSplit benchmarks node splitting.
 func BenchmarkNodeSplit(b *testing.B) {
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		b.StopTimer()
 		node := NewNode(true)
-		for j := 0; j < model.DefaultMaxKeys; j++ {
-			node.Insert([]byte{byte(j)}, []byte("value"))
+		for j := range model.DefaultMaxKeys {
+			_ = node.Insert([]byte{byte(j)}, []byte("value"))
 		}
 		b.StartTimer()
 
-		node.Split()
+		_, _, _ = node.Split()
 	}
 }

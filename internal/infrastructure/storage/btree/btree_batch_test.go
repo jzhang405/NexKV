@@ -40,7 +40,7 @@ func TestBatchSizeOptimization(t *testing.T) {
 			// 准备批量数据（使用零填充确保字典序 = 数字序）
 			keys := make([][]byte, batchSize)
 			values := make([][]byte, batchSize)
-			for i := 0; i < batchSize; i++ {
+			for i := range batchSize {
 				keys[i] = []byte(fmt.Sprintf("batch-key-%04d", i))
 				values[i] = []byte(fmt.Sprintf("batch-value-%d", i))
 			}
@@ -61,7 +61,7 @@ func TestBatchSizeOptimization(t *testing.T) {
 			require.NotNil(t, newRoot)
 
 			// 验证所有键都插入了
-			for i := 0; i < batchSize; i++ {
+			for i := range batchSize {
 				value, err := newRoot.Get(keys[i])
 				require.NoError(t, err)
 				require.Equal(t, values[i], value)
@@ -118,7 +118,7 @@ func benchmarkBatchSize(b *testing.B, batchSize int) {
 	maxWrites := 90 // 保持在 DefaultMaxKeys (128) 以下
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		// 定期重置以避免节点满
 		if writeCount > maxWrites {
 			btree.Close()
@@ -131,7 +131,7 @@ func benchmarkBatchSize(b *testing.B, batchSize int) {
 		// 准备批量数据
 		keys := make([][]byte, batchSize)
 		values := make([][]byte, batchSize)
-		for j := 0; j < batchSize; j++ {
+		for j := range batchSize {
 			keys[j] = []byte(fmt.Sprintf("key-%d-%d", writeCount, j))
 			values[j] = []byte(fmt.Sprintf("value-%d", j))
 		}
@@ -149,7 +149,7 @@ func benchmarkBatchSize(b *testing.B, batchSize int) {
 
 		newRoot, err := btree.CopyPathBottomUpBatch(ctx, path, batchFunc)
 		if err == nil {
-			btree.root.Update(ctx, newRoot, uint64(writeCount))
+			_ = btree.root.Update(ctx, newRoot, uint64(writeCount))
 			writeCount += batchSize
 		}
 
@@ -171,7 +171,7 @@ func BenchmarkBatchSizePerKey(b *testing.B) {
 			maxWrites := 90
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				if writeCount > maxWrites {
 					btree.Close()
 					btree, _ = OpenBTree("", nil)
@@ -182,7 +182,7 @@ func BenchmarkBatchSizePerKey(b *testing.B) {
 
 				keys := make([][]byte, batchSize)
 				values := make([][]byte, batchSize)
-				for j := 0; j < batchSize; j++ {
+				for j := range batchSize {
 					keys[j] = []byte(fmt.Sprintf("key-%d-%d", writeCount, j))
 					values[j] = []byte(fmt.Sprintf("value-%d", j))
 				}
@@ -199,7 +199,7 @@ func BenchmarkBatchSizePerKey(b *testing.B) {
 
 				newRoot, err := btree.CopyPathBottomUpBatch(ctx, path, batchFunc)
 				if err == nil {
-					btree.root.Update(ctx, newRoot, uint64(writeCount))
+					_ = btree.root.Update(ctx, newRoot, uint64(writeCount))
 					writeCount += batchSize
 				}
 
@@ -222,7 +222,7 @@ func BenchmarkSingleKeyComparison(b *testing.B) {
 	maxWrites := 90
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if writeCount > maxWrites {
 			btree.Close()
 			btree, _ = OpenBTree("", nil)
@@ -246,7 +246,7 @@ func BenchmarkSingleKeyComparison(b *testing.B) {
 
 		newRoot, err := btree.CopyPathBottomUp(ctx, path, modifyFunc)
 		if err == nil {
-			btree.root.Update(ctx, newRoot, uint64(writeCount))
+			_ = btree.root.Update(ctx, newRoot, uint64(writeCount))
 			writeCount++
 		}
 

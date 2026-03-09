@@ -24,8 +24,9 @@ type Path []*PathNode
 // pathPool is a sync.Pool for Path objects.
 var pathPool = sync.Pool{
 	New: func() any {
-		// Pre-allocate capacity for typical BTree depth
-		return make(Path, 0, 10)
+		// Pre-allocate capacity for BTree depth with safety margin
+		// Default max levels is 10, we use 20 to handle edge cases
+		return make(Path, 0, 20)
 	},
 }
 
@@ -36,9 +37,14 @@ func AcquirePath() Path {
 
 // ReleasePath returns a Path to the pool for reuse.
 func ReleasePath(path Path) {
-	// Reset path to zero length but keep capacity
-	path = path[:0]
-	pathPool.Put(path)
+	// Only return paths with expected capacity to avoid polluting pool
+	// with expanded slices
+	const maxExpectedCapacity = 20
+	if cap(path) <= maxExpectedCapacity {
+		path = path[:0]
+		pathPool.Put(path) //nolint:staticcheck
+	}
+	// Let GC reclaim paths that exceeded expected capacity
 }
 
 // nodeCache is a simple cache for deserialized nodes.
@@ -142,6 +148,13 @@ func (b *BTree) FindPath(key []byte) (Path, error) {
 // PURE MEMORY IMPLEMENTATION: No Page.Data copying, just Node.Clone().
 // This eliminates the 4075-byte copy overhead, providing ~9.5x performance improvement.
 func (b *BTree) CopyPathBottomUp(ctx context.Context, path Path, modifyFunc func(*Node) error) (*Node, error) {
+	// Check context
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	if len(path) == 0 {
 		return nil, fmt.Errorf("empty path")
 	}
@@ -197,29 +210,38 @@ func (b *BTree) CopyPathBottomUp(ctx context.Context, path Path, modifyFunc func
 // This is more efficient than multiple CopyPathBottomUp calls as it reduces path copying.
 // Returns the new root node after all batch operations are applied.
 func (b *BTree) CopyPathBottomUpBatch(ctx context.Context, path Path, batchFunc func(*Node) error) (*Node, error) {
+	// Check context
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	if len(path) == 0 {
 		return nil, fmt.Errorf("empty path")
 	}
 
-	// Only clone the path once
-	oldNode := path[len(path)-1].Node
-	newNode := oldNode.Clone()
-
-	// Apply all batch operations at once
-	if err := batchFunc(newNode); err != nil {
-		return nil, fmt.Errorf("failed to apply batch operations: %w", err)
+	// Save original node references before modification
+	oldNodes := make([]*Node, len(path))
+	for i, pathNode := range path {
+		oldNodes[i] = pathNode.Node
 	}
 
-	// Update path
-	path[len(path)-1].Node = newNode
+	// Clone only the leaf node and apply batch operations
+	leafIdx := len(path) - 1
+	newLeaf := oldNodes[leafIdx].Clone()
+	if err := batchFunc(newLeaf); err != nil {
+		return nil, fmt.Errorf("failed to apply batch operations: %w", err)
+	}
+	path[leafIdx].Node = newLeaf
 
-	// Update parent references (if any)
-	for i := len(path) - 2; i >= 0; i-- {
-		oldParent := path[i].Node
+	// Update parent references bottom-up
+	for i := leafIdx - 1; i >= 0; i-- {
+		oldParent := oldNodes[i]
 		newParent := oldParent.Clone()
 
-		// Update child reference
-		oldChild := path[i+1].Node
+		// Find the child to update
+		oldChild := oldNodes[i+1]
 		newChild := path[i+1].Node // Use the updated child from path
 
 		found := false
@@ -235,7 +257,6 @@ func (b *BTree) CopyPathBottomUpBatch(ctx context.Context, path Path, batchFunc 
 		}
 
 		path[i].Node = newParent
-		newNode = newParent
 	}
 
 	return path[0].Node, nil

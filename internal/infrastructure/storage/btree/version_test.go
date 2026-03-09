@@ -50,7 +50,7 @@ func TestVersionedRoot_Update(t *testing.T) {
 
 	t.Run("update root", func(t *testing.T) {
 		newNode := NewNode(true)
-		newNode.Insert([]byte("key"), []byte("value"))
+		_ = newNode.Insert([]byte("key"), []byte("value"))
 		err := vr.Update(ctx, newNode, 100)
 		require.NoError(t, err)
 
@@ -68,9 +68,9 @@ func TestVersionedRoot_Update(t *testing.T) {
 		vr2 := NewVersionedRoot(NewNode(true))
 
 		// Initial version is 0, after 5 updates should be version 5
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			newNode := NewNode(true)
-			newNode.Insert([]byte{byte(i)}, []byte("value"))
+			_ = newNode.Insert([]byte{byte(i)}, []byte("value"))
 			err := vr2.Update(ctx, newNode, uint64(i*1000))
 			require.NoError(t, err)
 		}
@@ -103,10 +103,10 @@ func TestVersionedRoot_ConcurrentGet(t *testing.T) {
 	wg.Add(goroutines)
 
 	// Concurrent reads (all should be lock-free)
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 100; j++ {
+			for range 100 {
 				root := vr.Get()
 				assert.NotNil(t, root)
 				assert.NotNil(t, root.Root)
@@ -135,14 +135,16 @@ func TestVersionedRoot_ConcurrentUpdate(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < updatesPerGoroutine; j++ {
+			seqNum := id * updatesPerGoroutine
+			for range updatesPerGoroutine {
 				newNode := NewNode(true)
-				newNode.Insert([]byte("key"), []byte("value"))
-				err := vr.Update(ctx, newNode, uint64(j))
+				_ = newNode.Insert([]byte("key"), []byte("value"))
+				err := vr.Update(ctx, newNode, uint64(seqNum))
 				assert.NoError(t, err)
+				seqNum++
 			}
 		}(i)
 	}
@@ -192,7 +194,7 @@ func TestVersionedRoot_Snapshot(t *testing.T) {
 
 		// Update root
 		newNode := NewNode(true)
-		newNode.Insert([]byte("key"), []byte("value"))
+		_ = newNode.Insert([]byte("key"), []byte("value"))
 		err = vr2.Update(ctx, newNode, 100)
 		require.NoError(t, err)
 
@@ -232,7 +234,7 @@ func TestVersionedRoot_Snapshot(t *testing.T) {
 		// Version should still exist because initial root has a reference
 		// But the snapshot reference should be released
 		root = vr2.GetVersion(snapshotID)
-		assert.NotNil(t, root) // Still exists because initial root ref > 0
+		assert.NotNil(t, root)                                 // Still exists because initial root ref > 0
 		assert.Equal(t, initialRefCount-1, root.GetRefCount()) // Decreased by 1
 		root.Release()
 	})
@@ -262,9 +264,9 @@ func TestVersionedRoot_VersionManagement(t *testing.T) {
 		initialCount := vr.GetVersionCount()
 
 		// Update 5 times
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			newNode := NewNode(true)
-			newNode.Insert([]byte{byte(i)}, []byte("value"))
+			_ = newNode.Insert([]byte{byte(i)}, []byte("value"))
 			err := vr.Update(ctx, newNode, uint64(i))
 			require.NoError(t, err)
 		}
@@ -279,14 +281,14 @@ func TestVersionedRoot_VersionManagement(t *testing.T) {
 
 		// Create multiple snapshots
 		var snapshotIDs []SnapshotID
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			snapshotID, err := vr2.CreateSnapshot(ctx)
 			require.NoError(t, err)
 			snapshotIDs = append(snapshotIDs, snapshotID)
 
 			if i < 2 {
 				newNode := NewNode(true)
-				newNode.Insert([]byte{byte(i)}, []byte("value"))
+				_ = newNode.Insert([]byte{byte(i)}, []byte("value"))
 				err = vr2.Update(ctx, newNode, uint64(i))
 				require.NoError(t, err)
 			}
@@ -311,8 +313,8 @@ func TestVersionedRoot_VersionManagement(t *testing.T) {
 // TestRootInfo_RefCount verifies reference counting.
 func TestRootInfo_RefCount(t *testing.T) {
 	root := &RootInfo{
-		Root:   NewNode(true),
-		RootID: 1,
+		Root:    NewNode(true),
+		RootID:  1,
 		Version: 0,
 	}
 	root.RefCount.Store(1)
@@ -341,7 +343,7 @@ func TestRootInfo_RefCount(t *testing.T) {
 		wg.Add(goroutines * 2)
 
 		// Acquire goroutines
-		for i := 0; i < goroutines; i++ {
+		for range goroutines {
 			go func() {
 				defer wg.Done()
 				for j := 0; j < opsPerGoroutine; j++ {
@@ -351,7 +353,7 @@ func TestRootInfo_RefCount(t *testing.T) {
 		}
 
 		// Release goroutines
-		for i := 0; i < goroutines; i++ {
+		for range goroutines {
 			go func() {
 				defer wg.Done()
 				for j := 0; j < opsPerGoroutine; j++ {
@@ -372,7 +374,7 @@ func BenchmarkVersionedRoot_Get(b *testing.B) {
 	vr := NewVersionedRoot(NewNode(true))
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		root := vr.Get()
 		root.Release()
 	}
@@ -384,10 +386,10 @@ func BenchmarkVersionedRoot_Update(b *testing.B) {
 	vr := NewVersionedRoot(NewNode(true))
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		newNode := NewNode(true)
-		newNode.Insert([]byte("key"), []byte("value"))
-		vr.Update(ctx, newNode, uint64(i))
+		_ = newNode.Insert([]byte("key"), []byte("value"))
+		_ = vr.Update(ctx, newNode, uint64(i))
 	}
 }
 
@@ -410,7 +412,7 @@ func BenchmarkVersionedRoot_CreateSnapshot(b *testing.B) {
 	vr := NewVersionedRoot(NewNode(true))
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		vr.CreateSnapshot(ctx)
+	for range b.N {
+		_, _ = vr.CreateSnapshot(ctx)
 	}
 }

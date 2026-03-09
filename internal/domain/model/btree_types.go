@@ -123,7 +123,7 @@ const (
 // BTreeStats holds BTree statistics.
 type BTreeStats struct {
 	// Basic statistics
-	TotalKeys int64
+	TotalKeys  int64
 	TotalPages int
 	TreeHeight int
 
@@ -134,12 +134,12 @@ type BTreeStats struct {
 	MergeCount int64
 
 	// Version statistics
-	CurrentVersion  uint64
+	CurrentVersion uint64
 	ActiveVersions int
 
 	// Pool statistics
 	PoolHits   int64
-	PoolMisses  int64
+	PoolMisses int64
 }
 
 // SnapshotInfo holds snapshot information.

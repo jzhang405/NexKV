@@ -37,7 +37,7 @@ func TestPath(t *testing.T) {
 
 	t.Run("create path with nodes", func(t *testing.T) {
 		path := make(Path, 3)
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			node := NewNode(i == 2) // Last node is leaf
 			path[i] = &PathNode{
 				Node:  node,
@@ -96,10 +96,10 @@ func TestBTree_FindPath(t *testing.T) {
 	t.Run("find path for key in populated tree", func(t *testing.T) {
 		// Insert some keys
 		rootInfo := btree.root.Get()
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			key := []byte{byte(i)}
 			value := []byte("value")
-			rootInfo.Root.Insert(key, value)
+			_ = rootInfo.Root.Insert(key, value)
 		}
 		rootInfo.Release()
 
@@ -185,7 +185,7 @@ func TestBTree_CopyPathBottomUpBatch(t *testing.T) {
 		batchFunc := func(node *Node) error {
 			keys := make([][]byte, 5)
 			values := make([][]byte, 5)
-			for i := 0; i < 5; i++ {
+			for i := range 5 {
 				keys[i] = []byte{byte(i)}
 				values[i] = []byte("value")
 			}
@@ -197,7 +197,7 @@ func TestBTree_CopyPathBottomUpBatch(t *testing.T) {
 		require.NotNil(t, newRoot)
 
 		// Verify all keys were inserted
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			key := []byte{byte(i)}
 			value, err := newRoot.Get(key)
 			require.NoError(t, err)
@@ -233,13 +233,13 @@ func TestBTree_CopyPathBottomUpBatch(t *testing.T) {
 func TestNodeCloningInCCOW(t *testing.T) {
 	t.Run("clone creates independent node", func(t *testing.T) {
 		original := NewNode(true)
-		original.Insert([]byte("key1"), []byte("value1"))
-		original.Insert([]byte("key2"), []byte("value2"))
+		_ = original.Insert([]byte("key1"), []byte("value1"))
+		_ = original.Insert([]byte("key2"), []byte("value2"))
 
 		cloned := original.Clone()
 
 		// Modify clone
-		cloned.Insert([]byte("key3"), []byte("value3"))
+		_ = cloned.Insert([]byte("key3"), []byte("value3"))
 
 		// Verify original is unchanged
 		assert.Equal(t, 2, original.Size())
@@ -255,17 +255,17 @@ func TestNodeCloningInCCOW(t *testing.T) {
 
 	t.Run("clone preserves all data", func(t *testing.T) {
 		original := NewNode(true)
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			key := []byte{byte(i)}
 			value := []byte("value")
-			original.Insert(key, value)
+			_ = original.Insert(key, value)
 		}
 
 		cloned := original.Clone()
 
 		// Verify all keys are present
 		assert.Equal(t, original.Size(), cloned.Size())
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			key := []byte{byte(i)}
 			value1, err1 := original.Get(key)
 			value2, err2 := cloned.Get(key)

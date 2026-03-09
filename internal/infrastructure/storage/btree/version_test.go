@@ -18,11 +18,13 @@ import (
 // TestNewVersionedRoot verifies VersionedRoot creation.
 func TestNewVersionedRoot(t *testing.T) {
 	t.Run("create with initial root", func(t *testing.T) {
-		vr := NewVersionedRoot(1)
+		initialNode := NewNode(true)
+		vr := NewVersionedRoot(initialNode)
 
 		root := vr.Get()
 		defer root.Release()
 
+		assert.NotNil(t, root.Root)
 		assert.Equal(t, model.PageID(1), root.RootID)
 		assert.Equal(t, uint64(0), root.Version)
 		assert.False(t, root.Created.IsZero())
@@ -31,7 +33,8 @@ func TestNewVersionedRoot(t *testing.T) {
 	})
 
 	t.Run("verify default settings", func(t *testing.T) {
-		vr := NewVersionedRoot(1)
+		initialNode := NewNode(true)
+		vr := NewVersionedRoot(initialNode)
 
 		assert.Equal(t, uint64(0), vr.GetCurrentVersion())
 		assert.Equal(t, 1, vr.GetVersionCount())
@@ -42,50 +45,58 @@ func TestNewVersionedRoot(t *testing.T) {
 // TestVersionedRoot_Update verifies root update functionality.
 func TestVersionedRoot_Update(t *testing.T) {
 	ctx := context.Background()
-	vr := NewVersionedRoot(1)
+	initialNode := NewNode(true)
+	vr := NewVersionedRoot(initialNode)
 
 	t.Run("update root", func(t *testing.T) {
-		err := vr.Update(ctx, 2, 100)
+		newNode := NewNode(true)
+		newNode.Insert([]byte("key"), []byte("value"))
+		err := vr.Update(ctx, newNode, 100)
 		require.NoError(t, err)
 
 		root := vr.Get()
 		defer root.Release()
 
-		assert.Equal(t, model.PageID(2), root.RootID)
+		assert.NotNil(t, root.Root)
+		assert.Equal(t, 1, root.Root.Size())
 		assert.Equal(t, uint64(1), root.Version)
 		assert.Equal(t, uint64(100), root.WALSeqNum)
 	})
 
 	t.Run("multiple updates increment version", func(t *testing.T) {
 		// Create fresh instance for this test
-		vr2 := NewVersionedRoot(1)
+		vr2 := NewVersionedRoot(NewNode(true))
 
 		// Initial version is 0, after 5 updates should be version 5
 		for i := 0; i < 5; i++ {
-			err := vr2.Update(ctx, model.PageID(3+i), uint64(i*1000))
+			newNode := NewNode(true)
+			newNode.Insert([]byte{byte(i)}, []byte("value"))
+			err := vr2.Update(ctx, newNode, uint64(i*1000))
 			require.NoError(t, err)
 		}
 
 		root := vr2.Get()
 		defer root.Release()
 
-		assert.Equal(t, model.PageID(7), root.RootID) // Last update was PageID(7)
-		assert.Equal(t, uint64(5), root.Version)   // 5 updates: versions 1,2,3,4,5
+		assert.NotNil(t, root.Root)
+		assert.Equal(t, uint64(5), root.Version) // 5 updates: versions 1,2,3,4,5
 	})
 
 	t.Run("update after close", func(t *testing.T) {
-		vr2 := NewVersionedRoot(1)
+		vr2 := NewVersionedRoot(NewNode(true))
 		err := vr2.Close()
 		require.NoError(t, err)
 
-		err = vr2.Update(ctx, 2, 100)
+		newNode := NewNode(true)
+		err = vr2.Update(ctx, newNode, 100)
 		assert.ErrorIs(t, err, ErrClosed)
 	})
 }
 
 // TestVersionedRoot_ConcurrentGet verifies lock-free concurrent reads.
 func TestVersionedRoot_ConcurrentGet(t *testing.T) {
-	vr := NewVersionedRoot(1)
+	initialNode := NewNode(true)
+	vr := NewVersionedRoot(initialNode)
 
 	const goroutines = 1000
 	var wg sync.WaitGroup
@@ -98,7 +109,7 @@ func TestVersionedRoot_ConcurrentGet(t *testing.T) {
 			for j := 0; j < 100; j++ {
 				root := vr.Get()
 				assert.NotNil(t, root)
-				assert.Equal(t, model.PageID(1), root.RootID)
+				assert.NotNil(t, root.Root)
 				root.Release()
 			}
 		}()
@@ -109,13 +120,14 @@ func TestVersionedRoot_ConcurrentGet(t *testing.T) {
 	// Verify no corruption
 	root := vr.Get()
 	defer root.Release()
-	assert.Equal(t, model.PageID(1), root.RootID)
+	assert.NotNil(t, root.Root)
 }
 
 // TestVersionedRoot_ConcurrentUpdate verifies concurrent root updates.
 func TestVersionedRoot_ConcurrentUpdate(t *testing.T) {
 	ctx := context.Background()
-	vr := NewVersionedRoot(1)
+	initialNode := NewNode(true)
+	vr := NewVersionedRoot(initialNode)
 
 	const goroutines = 100
 	const updatesPerGoroutine = 100
@@ -127,8 +139,9 @@ func TestVersionedRoot_ConcurrentUpdate(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < updatesPerGoroutine; j++ {
-				newRootID := model.PageID(2 + id*1000 + j)
-				err := vr.Update(ctx, newRootID, uint64(j))
+				newNode := NewNode(true)
+				newNode.Insert([]byte("key"), []byte("value"))
+				err := vr.Update(ctx, newNode, uint64(j))
 				assert.NoError(t, err)
 			}
 		}(i)
@@ -150,10 +163,11 @@ func TestVersionedRoot_ConcurrentUpdate(t *testing.T) {
 // TestVersionedRoot_Snapshot verifies snapshot functionality.
 func TestVersionedRoot_Snapshot(t *testing.T) {
 	ctx := context.Background()
-	vr := NewVersionedRoot(1)
+	initialNode := NewNode(true)
+	vr := NewVersionedRoot(initialNode)
 
 	t.Run("create snapshot", func(t *testing.T) {
-		vr2 := NewVersionedRoot(1)
+		vr2 := NewVersionedRoot(NewNode(true))
 
 		snapshotID, err := vr2.CreateSnapshot(ctx)
 		require.NoError(t, err)
@@ -164,20 +178,22 @@ func TestVersionedRoot_Snapshot(t *testing.T) {
 		require.NotNil(t, root)
 		defer root.Release()
 
-		assert.Equal(t, model.PageID(1), root.RootID)
+		assert.NotNil(t, root.Root)
 		assert.Equal(t, uint64(0), root.Version)
 		assert.Greater(t, root.GetRefCount(), int32(1)) // At least snapshot + initial
 	})
 
 	t.Run("multiple snapshots", func(t *testing.T) {
-		vr2 := NewVersionedRoot(1)
+		vr2 := NewVersionedRoot(NewNode(true))
 
 		// Create snapshot for version 0
 		snapshotID1, err := vr2.CreateSnapshot(ctx)
 		require.NoError(t, err)
 
 		// Update root
-		err = vr2.Update(ctx, 2, 100)
+		newNode := NewNode(true)
+		newNode.Insert([]byte("key"), []byte("value"))
+		err = vr2.Update(ctx, newNode, 100)
 		require.NoError(t, err)
 
 		// Create another snapshot
@@ -188,18 +204,18 @@ func TestVersionedRoot_Snapshot(t *testing.T) {
 		root1 := vr2.GetVersion(snapshotID1)
 		require.NotNil(t, root1)
 		defer root1.Release()
-		assert.Equal(t, model.PageID(1), root1.RootID)
+		assert.NotNil(t, root1.Root)
 		assert.Equal(t, uint64(0), root1.Version)
 
 		root2 := vr2.GetVersion(snapshotID2)
 		require.NotNil(t, root2)
 		defer root2.Release()
-		assert.Equal(t, model.PageID(2), root2.RootID)
+		assert.NotNil(t, root2.Root)
 		assert.Equal(t, uint64(1), root2.Version)
 	})
 
 	t.Run("release snapshot", func(t *testing.T) {
-		vr2 := NewVersionedRoot(1)
+		vr2 := NewVersionedRoot(NewNode(true))
 
 		snapshotID, err := vr2.CreateSnapshot(ctx)
 		require.NoError(t, err)
@@ -227,7 +243,7 @@ func TestVersionedRoot_Snapshot(t *testing.T) {
 	})
 
 	t.Run("create snapshot after close", func(t *testing.T) {
-		vr2 := NewVersionedRoot(1)
+		vr2 := NewVersionedRoot(NewNode(true))
 		err := vr2.Close()
 		require.NoError(t, err)
 
@@ -239,14 +255,17 @@ func TestVersionedRoot_Snapshot(t *testing.T) {
 // TestVersionedRoot_VersionManagement verifies version lifecycle.
 func TestVersionedRoot_VersionManagement(t *testing.T) {
 	ctx := context.Background()
-	vr := NewVersionedRoot(1)
+	initialNode := NewNode(true)
+	vr := NewVersionedRoot(initialNode)
 
 	t.Run("version count increases with updates", func(t *testing.T) {
 		initialCount := vr.GetVersionCount()
 
 		// Update 5 times
 		for i := 0; i < 5; i++ {
-			err := vr.Update(ctx, model.PageID(2+i), uint64(i))
+			newNode := NewNode(true)
+			newNode.Insert([]byte{byte(i)}, []byte("value"))
+			err := vr.Update(ctx, newNode, uint64(i))
 			require.NoError(t, err)
 		}
 
@@ -256,7 +275,7 @@ func TestVersionedRoot_VersionManagement(t *testing.T) {
 
 	t.Run("versions are garbage collected after release", func(t *testing.T) {
 		// Use fresh instance to avoid state pollution from previous test
-		vr2 := NewVersionedRoot(1)
+		vr2 := NewVersionedRoot(NewNode(true))
 
 		// Create multiple snapshots
 		var snapshotIDs []SnapshotID
@@ -266,7 +285,9 @@ func TestVersionedRoot_VersionManagement(t *testing.T) {
 			snapshotIDs = append(snapshotIDs, snapshotID)
 
 			if i < 2 {
-				err = vr2.Update(ctx, model.PageID(10+i), uint64(i))
+				newNode := NewNode(true)
+				newNode.Insert([]byte{byte(i)}, []byte("value"))
+				err = vr2.Update(ctx, newNode, uint64(i))
 				require.NoError(t, err)
 			}
 		}
@@ -290,6 +311,7 @@ func TestVersionedRoot_VersionManagement(t *testing.T) {
 // TestRootInfo_RefCount verifies reference counting.
 func TestRootInfo_RefCount(t *testing.T) {
 	root := &RootInfo{
+		Root:   NewNode(true),
 		RootID: 1,
 		Version: 0,
 	}
@@ -347,7 +369,7 @@ func TestRootInfo_RefCount(t *testing.T) {
 
 // BenchmarkVersionedRoot_Get benchmarks root info retrieval.
 func BenchmarkVersionedRoot_Get(b *testing.B) {
-	vr := NewVersionedRoot(1)
+	vr := NewVersionedRoot(NewNode(true))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -359,17 +381,19 @@ func BenchmarkVersionedRoot_Get(b *testing.B) {
 // BenchmarkVersionedRoot_Update benchmarks root updates.
 func BenchmarkVersionedRoot_Update(b *testing.B) {
 	ctx := context.Background()
-	vr := NewVersionedRoot(1)
+	vr := NewVersionedRoot(NewNode(true))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		vr.Update(ctx, model.PageID(2+i), uint64(i))
+		newNode := NewNode(true)
+		newNode.Insert([]byte("key"), []byte("value"))
+		vr.Update(ctx, newNode, uint64(i))
 	}
 }
 
 // BenchmarkVersionedRoot_ConcurrentGet benchmarks concurrent reads.
 func BenchmarkVersionedRoot_ConcurrentGet(b *testing.B) {
-	vr := NewVersionedRoot(1)
+	vr := NewVersionedRoot(NewNode(true))
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -383,7 +407,7 @@ func BenchmarkVersionedRoot_ConcurrentGet(b *testing.B) {
 // BenchmarkVersionedRoot_CreateSnapshot benchmarks snapshot creation.
 func BenchmarkVersionedRoot_CreateSnapshot(b *testing.B) {
 	ctx := context.Background()
-	vr := NewVersionedRoot(1)
+	vr := NewVersionedRoot(NewNode(true))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

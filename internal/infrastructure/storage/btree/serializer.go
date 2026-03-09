@@ -169,57 +169,61 @@ func (s *Serializer) decompress(data []byte) ([]byte, error) {
 }
 
 // MarshalNode serializes a node to binary format.
-// This is a simplified implementation for Phase 1.
+// Optimized to reduce allocations and append operations.
 func (s *Serializer) MarshalNode(node *Node) ([]byte, error) {
 	if node == nil {
 		return nil, errors.New("MarshalNode: nil node")
 	}
 
+	keyCount := len(node.Keys)
+
 	// Calculate total size
 	size := 4 // Key count (uint32)
 	for _, key := range node.Keys {
-		size += 4 // Key length
-		size += len(key)
+		size += 4 + len(key) // Key length + key data
 	}
 
 	if node.IsLeaf {
 		for _, value := range node.Values {
-			size += 4 // Value length
-			size += len(value)
+			size += 4 + len(value) // Value length + value data
 		}
 	} else {
 		size += len(node.Children) * 8 // PageID (uint64)
 	}
 
-	buf := make([]byte, 0, size)
+	// Pre-allocate buffer with exact size
+	buf := make([]byte, size)
 
-	// Write key count
-	buf = append(buf, 0, 0, 0, 0) // Reserve 4 bytes
-	binary.BigEndian.PutUint32(buf[0:4], uint32(len(node.Keys)))
+	// Write key count at position 0
+	binary.BigEndian.PutUint32(buf[0:4], uint32(keyCount))
+
+	offset := 4
 
 	// Write keys
 	for _, key := range node.Keys {
 		// Key length
-		buf = append(buf, 0, 0, 0, 0)
-		binary.BigEndian.PutUint32(buf[len(buf)-4:], uint32(len(key)))
+		binary.BigEndian.PutUint32(buf[offset:offset+4], uint32(len(key)))
+		offset += 4
 		// Key data
-		buf = append(buf, key...)
+		copy(buf[offset:offset+len(key)], key)
+		offset += len(key)
 	}
 
 	// Write values or children
 	if node.IsLeaf {
 		for _, value := range node.Values {
 			// Value length
-			buf = append(buf, 0, 0, 0, 0)
-			binary.BigEndian.PutUint32(buf[len(buf)-4:], uint32(len(value)))
+			binary.BigEndian.PutUint32(buf[offset:offset+4], uint32(len(value)))
+			offset += 4
 			// Value data
-			buf = append(buf, value...)
+			copy(buf[offset:offset+len(value)], value)
+			offset += len(value)
 		}
 	} else {
 		for _, childID := range node.Children {
 			// Child ID (8 bytes)
-			buf = append(buf, 0, 0, 0, 0, 0, 0, 0, 0)
-			binary.BigEndian.PutUint64(buf[len(buf)-8:], uint64(childID))
+			binary.BigEndian.PutUint64(buf[offset:offset+8], uint64(childID))
+			offset += 8
 		}
 	}
 
@@ -227,19 +231,25 @@ func (s *Serializer) MarshalNode(node *Node) ([]byte, error) {
 }
 
 // UnmarshalNode deserializes a node from binary format.
+// Optimized to reuse pre-allocated slices and reduce allocations.
 func (s *Serializer) UnmarshalNode(data []byte, isLeaf bool) (*Node, error) {
 	if len(data) < 4 {
 		return nil, ErrInvalidDataFormat
 	}
 
-	node := NewNode(isLeaf)
-
-	// Read key count
+	// Read key count first to know exact capacity needed
 	keyCount := binary.BigEndian.Uint32(data[0:4])
+
+	// Create node with pre-allocated capacity
+	node := &Node{
+		IsLeaf:   isLeaf,
+		Keys:     make([][]byte, keyCount, keyCount),     // Exact capacity
+		Children: make([]model.PageID, 0, keyCount+1),     // Pre-allocate
+	}
+
 	offset := 4
 
 	// Read keys
-	node.Keys = make([][]byte, keyCount)
 	for i := uint32(0); i < keyCount; i++ {
 		if offset+4 > len(data) {
 			return nil, ErrInvalidDataFormat
@@ -250,13 +260,14 @@ func (s *Serializer) UnmarshalNode(data []byte, isLeaf bool) (*Node, error) {
 		if offset+int(keyLen) > len(data) {
 			return nil, ErrInvalidDataFormat
 		}
+		// Use slice reference instead of copying
 		node.Keys[i] = data[offset : offset+int(keyLen)]
 		offset += int(keyLen)
 	}
 
 	// Read values or children
 	if isLeaf {
-		node.Values = make([][]byte, keyCount)
+		node.Values = make([][]byte, keyCount, keyCount) // Exact capacity
 		for i := uint32(0); i < keyCount; i++ {
 			if offset+4 > len(data) {
 				return nil, ErrInvalidDataFormat
@@ -267,12 +278,13 @@ func (s *Serializer) UnmarshalNode(data []byte, isLeaf bool) (*Node, error) {
 			if offset+int(valueLen) > len(data) {
 				return nil, ErrInvalidDataFormat
 			}
+			// Use slice reference instead of copying
 			node.Values[i] = data[offset : offset+int(valueLen)]
 			offset += int(valueLen)
 		}
 	} else {
 		childCount := keyCount + 1
-		node.Children = make([]model.PageID, childCount)
+		node.Children = node.Children[:childCount] // Use pre-allocated slice
 		for i := uint32(0); i < childCount; i++ {
 			if offset+8 > len(data) {
 				return nil, ErrInvalidDataFormat

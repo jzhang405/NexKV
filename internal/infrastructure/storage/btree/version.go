@@ -19,7 +19,10 @@ type SnapshotID = model.SnapshotID
 
 // RootInfo holds root node information.
 type RootInfo struct {
-	// RootID is the ID of the root page.
+	// Root is the root node pointer (pure memory BTree).
+	Root *Node
+
+	// RootID is the ID of the root page (kept for compatibility).
 	RootID model.PageID
 
 	// Version is the monotonically increasing version number.
@@ -72,11 +75,12 @@ type VersionedRoot struct {
 	closed bool
 }
 
-// NewVersionedRoot creates a new VersionedRoot with the given initial root ID.
-func NewVersionedRoot(initialRootID model.PageID) *VersionedRoot {
+// NewVersionedRoot creates a new VersionedRoot with the given initial root node.
+func NewVersionedRoot(initialRoot *Node) *VersionedRoot {
 	now := time.Now()
 	root := &RootInfo{
-		RootID:    initialRootID,
+		Root:      initialRoot,
+		RootID:    1, // Placeholder for compatibility
 		Version:   0,
 		Created:   now,
 		WALSeqNum: 0,
@@ -102,9 +106,9 @@ func (v *VersionedRoot) Get() *RootInfo {
 	return root
 }
 
-// Update updates the root to a new page ID.
+// Update updates the root to a new node.
 // This is atomic and will publish the new root to all readers.
-func (v *VersionedRoot) Update(ctx context.Context, newRootID model.PageID, walSeqNum uint64) error {
+func (v *VersionedRoot) Update(ctx context.Context, newRoot *Node, walSeqNum uint64) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -113,20 +117,21 @@ func (v *VersionedRoot) Update(ctx context.Context, newRootID model.PageID, walS
 	}
 
 	// Create new root info
-	newRoot := &RootInfo{
-		RootID:    newRootID,
+	newRootInfo := &RootInfo{
+		Root:      newRoot,
+		RootID:    model.PageID(v.nextVersion), // Incrementing ID for compatibility
 		Version:   v.nextVersion,
 		Created:   time.Now(),
 		WALSeqNum: walSeqNum,
 	}
-	newRoot.RefCount.Store(1)
+	newRootInfo.RefCount.Store(1)
 
 	// Store old root for snapshots
 	oldRoot := v.current.Load().(*RootInfo)
-	v.versions.Store(newRoot.Version, newRoot)
+	v.versions.Store(newRootInfo.Version, newRootInfo)
 
 	// Atomically switch to new root
-	v.current.Store(newRoot)
+	v.current.Store(newRootInfo)
 	v.nextVersion++
 
 	// Release old root (may trigger GC)

@@ -68,13 +68,16 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		config = model.NewDefaultBTreeConfig()
 	}
 
-	// Create versioned root with initial root ID
-	root := NewVersionedRoot(1)
+	// Create initial root node (empty leaf)
+	rootNode := NewNode(true)
 
-	// Create page manager
+	// Create versioned root with initial root node
+	root := NewVersionedRoot(rootNode)
+
+	// Create page manager (kept for compatibility, minimal use)
 	pageManager := &PageManager{}
 
-	// Create node cache for optimization
+	// Create node cache for optimization (may not be needed for pure memory)
 	nodeCache := newNodeCache()
 
 	// Calculate max levels based on config

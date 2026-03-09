@@ -32,7 +32,7 @@ var (
 			return &Node{
 				Keys:     make([][]byte, 0, model.DefaultMaxKeys),
 				Values:   make([][]byte, 0, model.DefaultMaxKeys),
-				Children: make([]model.PageID, 0, model.DefaultMaxKeys+1),
+				Children: make([]*Node, 0, model.DefaultMaxKeys+1),
 			}
 		},
 	}
@@ -72,7 +72,6 @@ func AcquireNode() *Node {
 	node := nodePool.Get().(*Node)
 
 	// Reset node state
-	node.Page = nil
 	node.IsLeaf = true
 
 	// Clear slices (preserve capacity)
@@ -97,9 +96,6 @@ func ReleaseNode(node *Node) {
 	if node == nil {
 		return
 	}
-
-	// Clear references to avoid memory leaks
-	node.Page = nil
 
 	// Clear slices (preserve capacity for reuse)
 	node.Keys = node.Keys[:0]

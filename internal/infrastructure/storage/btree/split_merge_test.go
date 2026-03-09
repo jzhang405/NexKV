@@ -72,10 +72,10 @@ func TestBTree_InsertWithSplit(t *testing.T) {
 		require.NotNil(t, medianKey)
 
 		// Verify split result
-		// Left node should have 64 keys (0..63 including median copy)
-		assert.Equal(t, 64, node.Size())
-		// Right node should have 64 keys (64..127)
-		assert.Equal(t, 64, rightNode.Size())
+		// Left node should have 128 keys (0..127 including median copy)
+		assert.Equal(t, 128, node.Size())
+		// Right node should have 128 keys (128..255)
+		assert.Equal(t, 128, rightNode.Size())
 
 		t.Logf("Split successful: left=%d keys, right=%d keys, median=%v",
 			node.Size(), rightNode.Size(), medianKey)
@@ -155,19 +155,19 @@ func TestNode_Merge(t *testing.T) {
 		node2 := NewNode(true)
 
 		// Fill nodes near capacity
-		for i := 0; i < 70; i++ {
-			node1.Insert([]byte{byte(i)}, []byte("value"))
+		for i := 0; i < 130; i++ {
+			node1.Insert([]byte{byte(i % 256)}, []byte("value"))
 		}
-		for i := 0; i < 70; i++ {
-			node2.Insert([]byte{byte(i + 70)}, []byte("value"))
+		for i := 0; i < 130; i++ {
+			node2.Insert([]byte{byte((i + 130) % 256)}, []byte("value"))
 		}
 
-		// Try to merge (should fail: 70+70=140 > 128)
+		// Try to merge (should fail: 130+130=260 > 256)
 		err := node1.Merge(node2)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "would exceed capacity")
 
-		t.Logf("Merge correctly rejected: %d + %d > %d", 70, 70, model.DefaultMaxKeys)
+		t.Logf("Merge correctly rejected: %d + %d > %d", 130, 130, model.DefaultMaxKeys)
 	})
 }
 

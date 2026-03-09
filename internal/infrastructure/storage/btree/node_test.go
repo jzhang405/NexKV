@@ -201,14 +201,14 @@ func TestNodeSplit(t *testing.T) {
 		rightNode, medianKey, err := node.Split()
 		require.NoError(t, err)
 
-		// Verify split: (DefaultMaxKeys - 1) / 2 = 63
-		// Left: keys[0..63] (64 keys including median copy)
-		// Right: keys[64..127] (64 keys)
-		assert.Equal(t, 64, node.Size(), "left node should have 64 keys")
-		assert.Equal(t, 64, rightNode.Size(), "right node should have 64 keys")
+		// Verify split: (DefaultMaxKeys - 1) / 2 = 127
+		// Left: keys[0..127] (128 keys including median copy)
+		// Right: keys[128..255] (128 keys)
+		assert.Equal(t, 128, node.Size(), "left node should have 128 keys")
+		assert.Equal(t, 128, rightNode.Size(), "right node should have 128 keys")
 		assert.NotNil(t, medianKey)
 
-		// Verify total keys preserved (128 original + 1 copy in parent = 129)
+		// Verify total keys preserved (256 original + 1 copy in parent = 257)
 		totalKeys := node.Size() + rightNode.Size() + 1 // +1 for median copy in parent
 		assert.Equal(t, model.DefaultMaxKeys+1, totalKeys)
 	})
@@ -255,12 +255,12 @@ func TestNodeMerge(t *testing.T) {
 		node1 := NewNode(true)
 		node2 := NewNode(true)
 
-		// Fill nodes near capacity
-		for i := 0; i < 70; i++ {
-			node1.Insert([]byte{byte(i)}, []byte("value"))
+		// Fill nodes near capacity (130+130=260 > 256)
+		for i := 0; i < 130; i++ {
+			node1.Insert([]byte{byte(i % 256)}, []byte("value"))
 		}
-		for i := 0; i < 70; i++ {
-			node2.Insert([]byte{byte(i + 70)}, []byte("value"))
+		for i := 0; i < 130; i++ {
+			node2.Insert([]byte{byte((i + 130) % 256)}, []byte("value"))
 		}
 
 		err := node1.Merge(node2)

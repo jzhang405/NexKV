@@ -220,7 +220,7 @@ func (b *BTree) CopyPathBottomUpBatch(ctx context.Context, path Path, batchFunc 
 
 		// Update child reference
 		oldChild := path[i+1].Node
-		newChild := newNode
+		newChild := path[i+1].Node // Use the updated child from path
 
 		found := false
 		for j, child := range newParent.Children {

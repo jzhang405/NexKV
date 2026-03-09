@@ -39,18 +39,18 @@ func TestNode_SplitCopy(t *testing.T) {
 		assert.True(t, original.IsFull())
 
 		// Verify new nodes have correct sizes
-		assert.Equal(t, 64, newLeft.Size())
-		assert.Equal(t, 64, newRight.Size())
+		assert.Equal(t, 128, newLeft.Size())
+		assert.Equal(t, 128, newRight.Size())
 
 		// Verify all keys are present across nodes
-		for i := 0; i < 64; i++ {
+		for i := 0; i < 128; i++ {
 			key := []byte{byte(i)}
 			value, err := newLeft.Get(key)
 			require.NoError(t, err)
 			assert.Equal(t, []byte("value"), value)
 		}
 
-		for i := 64; i < 128; i++ {
+		for i := 128; i < 256; i++ {
 			key := []byte{byte(i)}
 			value, err := newRight.Get(key)
 			require.NoError(t, err)
@@ -85,8 +85,8 @@ func TestNode_SplitCopy(t *testing.T) {
 		}
 
 		// Verify new nodes are accessible
-		assert.Equal(t, 64, newLeft.Size())
-		assert.Equal(t, 64, newRight.Size())
+		assert.Equal(t, 128, newLeft.Size())
+		assert.Equal(t, 128, newRight.Size())
 
 		t.Logf("Concurrent read test passed: original remains readable after SplitCopy")
 	})

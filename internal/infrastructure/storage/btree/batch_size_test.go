@@ -37,11 +37,11 @@ func TestBatchSizeOptimization(t *testing.T) {
 			// 重置 BTree
 			rootInfo := btree.root.Get()
 
-			// 准备批量数据
+			// 准备批量数据（使用零填充确保字典序 = 数字序）
 			keys := make([][]byte, batchSize)
 			values := make([][]byte, batchSize)
 			for i := 0; i < batchSize; i++ {
-				keys[i] = []byte(fmt.Sprintf("batch-key-%d", i))
+				keys[i] = []byte(fmt.Sprintf("batch-key-%04d", i))
 				values[i] = []byte(fmt.Sprintf("batch-value-%d", i))
 			}
 

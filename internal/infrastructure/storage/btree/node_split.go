@@ -43,8 +43,8 @@ func (n *Node) SplitCopy() (*Node, *Node, []byte, error) {
 	// Create new right node (copy of right half)
 	newRight := &Node{
 		IsLeaf:   n.IsLeaf,
-		Keys:     make([][]byte, 0, model.DefaultMaxKeys-mid-1),
-		Values:   make([][]byte, 0, model.DefaultMaxKeys-mid-1),
+		Keys:     make([][]byte, model.DefaultMaxKeys-mid-1),
+		Values:   make([][]byte, model.DefaultMaxKeys-mid-1),
 		Children: make([]*Node, 0, model.DefaultMaxKeys-mid),
 	}
 	copy(newRight.Keys, n.Keys[mid+1:])

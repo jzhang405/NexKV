@@ -62,12 +62,13 @@ const (
 // WALEntry represents a single WAL entry.
 //
 // Layout (fixed header + variable data):
-//   Offset 0:     Type (1 byte)
-//   Offset 1:     KeyLen (2 bytes)
-//   Offset 3:     ValueLen (2 bytes)
-//   Offset 5:     Key (variable)
-//   Offset 5+KeyLen: Value (variable)
-//   Offset 5+KeyLen+ValueLen: Checksum (4 bytes)
+//
+//	Offset 0:     Type (1 byte)
+//	Offset 1:     KeyLen (2 bytes)
+//	Offset 3:     ValueLen (2 bytes)
+//	Offset 5:     Key (variable)
+//	Offset 5+KeyLen: Value (variable)
+//	Offset 5+KeyLen+ValueLen: Checksum (4 bytes)
 type WALEntry struct {
 	Type     WALEntryType
 	Key      []byte
@@ -366,8 +367,8 @@ func NewDeleteEntry(key []byte) *WALEntry {
 // NewCheckpointEntry creates a new checkpoint entry.
 func NewCheckpointEntry() *WALEntry {
 	return &WALEntry{
-		Type: WALEntryTypeCheckpoint,
-		Key:  nil,
+		Type:  WALEntryTypeCheckpoint,
+		Key:   nil,
 		Value: nil,
 	}
 }

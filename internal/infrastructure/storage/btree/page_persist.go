@@ -115,10 +115,10 @@ func (pm *PageManager) syncWritePage(page *Page) error {
 
 	// Serialize page to buffer
 	buf := make([]byte, PageSize)
-	buf[0] = byte(page.Type)              // Type (1 byte)
-	binary.LittleEndian.PutUint64(buf[1:9], page.Version) // Version (8 bytes)
+	buf[0] = byte(page.Type)                                  // Type (1 byte)
+	binary.LittleEndian.PutUint64(buf[1:9], page.Version)     // Version (8 bytes)
 	binary.LittleEndian.PutUint64(buf[9:17], uint64(page.ID)) // ID (8 bytes)
-	copy(buf[17:], page.Data[:])          // Data (4075 bytes)
+	copy(buf[17:], page.Data[:])                              // Data (4075 bytes)
 
 	// Write to file
 	_, err = pm.file.Write(buf)

@@ -233,9 +233,10 @@ func TestWAL_DeleteEntry(t *testing.T) {
 	// Replay and verify
 	var insertCount, deleteCount int
 	_, err = wal.Replay(func(entry *WALEntry) error {
-		if entry.Type == WALEntryTypeInsert {
+		switch entry.Type {
+		case WALEntryTypeInsert:
 			insertCount++
-		} else if entry.Type == WALEntryTypeDelete {
+		case WALEntryTypeDelete:
 			deleteCount++
 		}
 		return nil

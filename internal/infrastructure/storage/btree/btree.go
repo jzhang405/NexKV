@@ -305,6 +305,7 @@ func (b *BTree) insertFromWAL(key, value []byte) error {
 }
 
 // persistNode persists a node to disk using PageManager.
+// nolint:unused // Reserved for Phase 2.5 (full node persistence)
 func (b *BTree) persistNode(node *Node) error {
 	if !b.enablePersistence || b.pageManager == nil {
 		return nil // Persistence disabled

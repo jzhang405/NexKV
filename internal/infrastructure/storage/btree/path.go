@@ -158,6 +158,7 @@ func (b *BTree) CopyPathBottomUp(ctx context.Context, path Path, modifyFunc func
 	// Process from leaf to root
 	for i := len(path) - 1; i >= 0; i-- {
 		pathNode := path[i]
+		oldPageID := pathNode.PageID // Save old page ID before update
 
 		// Copy the page
 		newPageID, err := b.copyPage(pathNode.PageID)
@@ -182,8 +183,9 @@ func (b *BTree) CopyPathBottomUp(ctx context.Context, path Path, modifyFunc func
 			}
 		} else {
 			// This is an internal node, update child reference
+			// Use the child's old page ID (before it was updated)
 			childPathNode := path[i+1]
-			if err := b.updateChildReference(newNode, childPathNode); err != nil {
+			if err := b.updateChildReference(newNode, oldPageID, childPathNode.PageID); err != nil {
 				b.pageManager.Release(newPage)
 				return 0, fmt.Errorf("failed to update child reference: %w", err)
 			}
@@ -199,7 +201,7 @@ func (b *BTree) CopyPathBottomUp(ctx context.Context, path Path, modifyFunc func
 		newPage.MarkDirty()
 
 		// Invalidate old page from cache (CCOW creates new version)
-		b.nodeCache.Invalidate(pathNode.PageID)
+		b.nodeCache.Invalidate(oldPageID)
 
 		// Store new page ID for next iteration
 		path[i].PageID = newPageID
@@ -243,18 +245,19 @@ func (b *BTree) copyPage(pageID model.PageID) (model.PageID, error) {
 }
 
 // updateChildReference updates the child reference in the parent node.
-func (b *BTree) updateChildReference(parentNode *Node, childPathNode *PathNode) error {
+// It finds the child with oldPageID and updates it to newPageID.
+func (b *BTree) updateChildReference(parentNode *Node, oldPageID, newPageID model.PageID) error {
 	// Find the index to update
 	// We need to find the child that points to the old page ID
 	for i, childID := range parentNode.Children {
-		if childID == childPathNode.PageID {
+		if childID == oldPageID {
 			// Update the child reference to point to the new page
-			parentNode.Children[i] = childPathNode.PageID
+			parentNode.Children[i] = newPageID
 			return nil
 		}
 	}
 
-	return fmt.Errorf("child reference not found")
+	return fmt.Errorf("child reference not found: oldPageID=%d", oldPageID)
 }
 
 // serializeNodeToPage serializes a node to a page.

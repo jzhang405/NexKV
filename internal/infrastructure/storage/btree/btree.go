@@ -8,6 +8,7 @@ package btree
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
@@ -23,8 +24,7 @@ var (
 
 // PageManager manages page allocation and I/O.
 type PageManager struct {
-	// Placeholder for page manager implementation
-	// This will be implemented with actual disk I/O in Phase 4
+	nextPageID atomic.Uint64 // Next page ID to allocate
 }
 
 // Get retrieves a page by ID.
@@ -39,10 +39,11 @@ func (pm *PageManager) Release(page *Page) {
 	page.Release()
 }
 
-// Allocate allocates a new page.
+// Allocate allocates a new page with a unique ID.
 func (pm *PageManager) Allocate() (*Page, error) {
-	// Placeholder implementation
-	return NewPage(0, model.LeafPage), nil
+	// Allocate next page ID
+	pageID := pm.nextPageID.Add(1)
+	return NewPage(model.PageID(pageID), model.LeafPage), nil
 }
 
 // BTree is the main BTree storage engine (placeholder implementation).

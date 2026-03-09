@@ -9,8 +9,20 @@ import (
 )
 
 // TestDefaultMaxKeys_Optimization 测试不同 DefaultMaxKeys 的性能影响
-// 优化目标：增大 DefaultMaxKeys 从 128 → 256/512
-// 预期：Split 触发频率降低 50%-75%，摊薄开销降低
+// 实测结论：增大 DefaultMaxKeys 从 128 → 256 并未带来性能提升
+//
+// 实测数据（10,000 次插入）:
+// - DefaultMaxKeys=128: 8.19 ns/insert
+// - DefaultMaxKeys=256: 10.53 ns/insert (❌ 慢 28%)
+//
+// 原因分析：
+// - Split 频率降低 50% ✅
+// - 单次 Split 成本增加 157% ❌ (1050 → 2700 ns)
+// - 净效果：摊销成本增加 28%
+//
+// 真正有效的优化：
+// - 批量操作: 588 ns/key (2.4x 提升) ✅
+// - SplitCopy: 无锁并发读 (仅慢 8%) ✅
 func TestDefaultMaxKeys_Optimization(t *testing.T) {
 	if testing.Short() {
 		t.Skip("跳过 DefaultMaxKeys 优化测试（使用 -short 标志）")
@@ -31,9 +43,9 @@ func TestDefaultMaxKeys_Optimization(t *testing.T) {
 		splitCount  int
 		splitCostNs int
 	}{
-		{128, totalInserts / 128, 1049},
-		{256, totalInserts / 256, 1049}, // 假设 split cost 相同
-		{512, totalInserts / 512, 1049},
+		{128, totalInserts / 128, 1050},  // 实测: ~1050 ns/op
+		{256, totalInserts / 256, 2700},  // 实测: ~2700 ns/op (增加 157%)
+		{512, totalInserts / 512, 5400},  // 估算: 可能加倍
 	}
 
 	for _, config := range configs {

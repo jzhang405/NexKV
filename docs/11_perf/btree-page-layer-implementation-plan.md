@@ -544,7 +544,345 @@ data, ok := l2Cache.Get(pageID)
 
 ---
 
-## 四、实施计划（5-6 周）
+## 四、并发模型设计（4读1写）⭐
+
+### 4.1 核心架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              Lealone 风格的 4读1写并发模型                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                              │
+│  写线程（单线程，防止互相干扰）:                              │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  Writer Thread (1个)                                   │   │
+│  │                                                        │   │
+│  │  1. 获取根引用                                         │   │
+│  │  2. CCOW 路径复制                                     │   │
+│  │  3. 序列化新 Page                                     │   │
+│  │  4. CAS 更新根指针 ⭐ 关键                              │   │
+│  │  5. 释放旧引用                                         │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                                                              │
+│  读线程（多线程，完全无锁）:                                │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐         │
+│  │ Reader1 │  │ Reader2 │  │ Reader3 │  │ Reader4 │         │
+│  │ Thread  │  │ Thread  │  │ Thread  │  │ Thread  │         │
+│  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘         │
+│       │            │            │            │              │
+│       ▼            ▼            ▼            ▼              │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  1. 读取版本化根（无锁）                             │   │
+│  │  2. 遍历 BTree（只读，不修改）                       │   │
+│  │  3. 访问 Page（引用计数保护）                         │   │
+│  │  4. 返回结果                                           │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 为什么单写多读？
+
+#### 写操作的问题
+
+```go
+// ❌ 多写线程的问题
+func (b *BTree) Insert(key, value []byte) error {
+    // 1. CCOW 路径复制（串行操作，无法并行）
+    path := b.findPath(key)
+
+    // 2. 修改路径（串行操作）
+    newRoot := b.copyPathBottomUp(path, key, value)
+
+    // 3. CAS 更新根指针
+    // ❌ 多个写线程会 CAS 冲突，重试开销大
+    if !b.root.CompareAndSwap(oldRoot, newRoot) {
+        return ErrRetry  // 重试
+    }
+}
+```
+
+**关键问题**:
+- ❌ **CAS 冲突**: 多个写线程同时竞争根指针
+- ❌ **重试开销**: CAS 失败需要重新执行整个路径复制
+- ❌ **串行瓶颈**: 路径复制本身无法并行化
+
+#### 读操作的优势
+
+```go
+// ✅ 多读线程的优势
+func (b *BTree) Get(key []byte) ([]byte, error) {
+    // 1. 读取版本化根（原子操作，无锁）✅
+    rootInfo := b.root.Load().(*RootInfo)
+
+    // 2. 访问 Page（只读，完全无锁）✅
+    page := b.pageManager.Get(rootInfo.RootPageID)
+    defer page.Unpin()
+
+    // 3. 查找数据（只读操作）✅
+    return page.Search(key)
+}
+```
+
+**关键优势**:
+- ✅ **完全无锁**: 读操作不修改数据
+- ✅ **并发安全**: 版本化根指针隔离
+- ✅ **线性扩展**: 4个线程 = 4x吞吐量
+
+
+### 4.3 数据结构设计
+
+```go
+// btree.go - 并发模型
+type BTree struct {
+    root       atomic.Value     // *RootInfo (版本化根指针)
+    writeQueue *WriteQueue      // 写任务队列（单线程消费）
+    readPool   *ReadPool        // 读操作池（4个线程）
+    pageManager *PageManager    // 三层缓存管理器
+    config     *BTreeConfig
+}
+
+type RootInfo struct {
+    RootPageID model.PageID
+    Version    uint64          // CCOW 版本号
+    RefCount   atomic.Int32    // 引用计数（防止回收）
+}
+
+type WriteTask struct {
+    OpType  WriteOpType
+    Key     []byte
+    Value   []byte
+    Result  chan error
+}
+
+type WriteOpType int
+
+const (
+    OpInsert WriteOpType = iota
+    OpDelete
+    OpUpdate
+)
+```
+
+### 4.4 写队列实现（单线程）
+
+```go
+// write_queue.go
+type WriteQueue struct {
+    tasks chan WriteTask
+    wg    sync.WaitGroup
+    tree  *BTree
+}
+
+func NewWriteQueue(tree *BTree, size int) *WriteQueue {
+    wq := &WriteQueue{
+        tasks: make(chan WriteTask, size),
+        tree:  tree,
+    }
+
+    // ✅ 启动单个写线程（防止互相干扰）
+    wq.wg.Add(1)
+    go func() {
+        defer wq.wg.Done()
+
+        for task := range wq.tasks {
+            // 执行写操作（串行，无竞争）
+            task.Result <- wq.executeWrite(task)
+        }
+    }()
+
+    return wq
+}
+
+func (wq *WriteQueue) executeWrite(task WriteTask) error {
+    switch task.OpType {
+    case OpInsert:
+        return wq.tree.insertInternal(task.Key, task.Value)
+    case OpDelete:
+        return wq.tree.deleteInternal(task.Key)
+    case OpUpdate:
+        return wq.tree.updateInternal(task.Key, task.Value)
+    }
+    return nil
+}
+
+// 写操作（通过队列提交）
+func (wq *WriteQueue) Submit(ctx context.Context, task WriteTask) error {
+    select {
+    case wq.tasks <- task:
+        // 等待执行结果
+        select {
+        case err := <-task.Result:
+            return err
+        case <-ctx.Done():
+            return ctx.Err()
+        }
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
+```
+
+### 4.5 读池实现（4线程）
+
+```go
+// read_pool.go
+type ReadPool struct {
+    pool chan *Reader
+    wg   sync.WaitGroup
+}
+
+type Reader struct {
+    id       int
+    tree     *BTree
+    pm       *PageManager
+    stopChan chan struct{}
+}
+
+func NewReadPool(tree *BTree, pm *PageManager, size int) *ReadPool {
+    pool := &ReadPool{
+        pool: make(chan *Reader, size),
+    }
+
+    // ✅ 启动 4 个读线程
+    for i := 0; i < size; i++ {
+        pool.wg.Add(1)
+        go func(id int) {
+            defer pool.wg.Done()
+
+            reader := &Reader{
+                id:       id,
+                tree:     tree,
+                pm:       pm,
+                stopChan: make(chan struct{}),
+            }
+
+            // 将 reader 放入池中
+            pool.pool <- reader
+
+            // 等待停止信号
+            <-reader.stopChan
+        }()
+    }
+
+    return pool
+}
+
+// 执行读操作（无锁，并发）
+func (rp *ReadPool) Execute(ctx context.Context, fn func(*Reader) error) error {
+    select {
+    case reader := <-rp.pool:
+        defer func() { rp.pool <- reader }()
+        return fn(reader)
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
+
+func (r *Reader) Get(ctx context.Context, key []byte) ([]byte, error) {
+    // 1. 读取版本化根（原子操作，无锁）
+    rootInfo := r.tree.root.Load().(*RootInfo)
+
+    // 2. 获取 Page（通过 PageManager）
+    rootPage := r.pm.Get(rootInfo.RootPageID)
+    defer rootPage.Unpin()
+
+    // 3. 反序列化为 Node
+    node, err := DeserializeNode(rootPage)
+    if err != nil {
+        return nil, err
+    }
+
+    // 4. 查找数据（只读，完全无锁）
+    return r.searchNode(node, key)
+}
+
+func (r *Reader) searchNode(node *Node, key []byte) ([]byte, error) {
+    idx := node.Search(key)
+
+    if node.IsLeaf {
+        if idx < len(node.Keys) && bytes.Equal(node.Keys[idx], key) {
+            return node.Values[idx], nil
+        }
+        return nil, ErrKeyNotFound
+    }
+
+    // 延迟加载子节点（无锁）
+    childPageID := node.Children[idx]
+    childPage := r.pm.Get(childPageID)
+    defer childPage.Unpin()
+
+    childNode, err := DeserializeNode(childPage)
+    if err != nil {
+        return nil, err
+    }
+
+    return r.searchNode(childNode, key)
+}
+```
+
+### 4.6 并发隔离机制
+
+```go
+// 并发时间线分析
+
+时刻 T1:
+  写线程: CAS 更新根指针 V1 → V2
+  读线程1-4: 读取 V1（旧版本，一致性快照）
+
+时刻 T2:
+  写线程: CAS 更新根指针 V2 → V3
+  读线程1: 读取 V2（新版本）
+  读线程2-4: 读取 V1（旧版本，仍然一致）
+
+时刻 T3:
+  写线程: CAS 更新根指针 V3 → V4
+  读线程1-2: 读取 V3（新版本）
+  读线程3-4: 读取 V2（旧版本，仍然一致）
+
+关键机制:
+  ✅ CCOW: 写操作路径复制，不阻塞读
+  ✅ 版本化根: 原子切换，读写隔离
+  ✅ 引用计数: 旧版本读完后自动回收
+```
+
+### 4.7 性能分析
+
+#### 并发扩展性
+
+```
+配置: 4读线程 + 1写线程
+
+单线程基线:
+  - 读延迟: 300 ns/op
+  - 写延迟: 1000 ns/op
+  - 读吞吐: 3.33M ops/s
+  - 写吞吐: 1M ops/s
+  - 总吞吐: 4.33M ops/s
+
+4读1写:
+  - 读吞吐: 3.33M x 4 = 13.32M ops/s
+  - 写吞吐: 1M x 1 = 1M ops/s
+  - 总吞吐: 14.32M ops/s (提升 3.3x)
+
+vs Lealone:
+  - Lealone: 1.07M x 4 = 4.28M 读 + 0.67M 写 = 4.95M ops/s
+  - NexKV: 13.32M 读 + 1M 写 = 14.32M ops/s
+  - 提升: 2.9x ✅
+```
+
+#### 关键优势
+
+| 维度 | 多写多读 | 4读1写 | 提升 |
+|------|---------|--------|------|
+| **写竞争** | 高（CAS 冲突） | 无（串行） | ✅ 消除竞争 |
+| **读扩展** | 线性 | 线性（4x） | ✅ 充分利用 |
+| **吞吐量** | 中等 | 高（3.3x） | ✅ 显著提升 |
+| **延迟** | 写延迟抖动 | 写延迟稳定 | ✅ 可预测 |
+
+---
+
+## 五、实施计划（5-6 周）
 
 ### Phase 1: 基础设施（1 周）
 

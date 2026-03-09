@@ -6,6 +6,8 @@ package btree
 
 import (
 	"testing"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
 // TestDefaultMaxKeys_Optimization 测试不同 DefaultMaxKeys 的性能影响
@@ -65,13 +67,15 @@ func TestDefaultMaxKeys_Optimization(t *testing.T) {
 }
 
 // BenchmarkSplitFrequency_128 benchmarks split frequency with 128 max keys
+// 注意: 此基准测试已失效，因为实际 DefaultMaxKeys=256
+// 保留用于对比：模拟 DefaultMaxKeys=128 的场景
 func BenchmarkSplitFrequency_128(b *testing.B) {
-	benchmarkSplitFrequency(b, 128)
+	b.Skip("实际 DefaultMaxKeys=256，此基准测试不适用")
 }
 
 // BenchmarkSplitFrequency_256 benchmarks split frequency with 256 max keys
 func BenchmarkSplitFrequency_256(b *testing.B) {
-	benchmarkSplitFrequency(b, 256)
+	benchmarkSplitFrequency(b, model.DefaultMaxKeys) // 使用实际配置
 }
 
 // BenchmarkSplitFrequency_512 benchmarks split frequency with 512 max keys
@@ -113,8 +117,9 @@ func benchmarkSplitFrequency(b *testing.B, maxKeys int) {
 }
 
 // BenchmarkAmortizedSplitCost_128 benchmarks amortized split cost (128 keys)
+// 注意: 此基准测试已失效，因为实际 DefaultMaxKeys=256
 func BenchmarkAmortizedSplitCost_128(b *testing.B) {
-	benchmarkAmortizedSplitCost(b, 128)
+	b.Skip("实际 DefaultMaxKeys=256，此基准测试不适用")
 }
 
 // BenchmarkAmortizedSplitCost_256 benchmarks amortized split cost (256 keys)

@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/wal"
 )
 
 // InsertWithSplit inserts a key-value pair with automatic node splitting.
@@ -61,7 +62,13 @@ func (b *BTree) InsertWithSplit(ctx context.Context, key, value []byte) error {
 
 	// 4. Write WAL entry before committing (for crash recovery)
 	if b.enableWAL {
-		entry := NewInsertEntry(key, value)
+		// Create WAL entry for general-purpose WAL
+		entry := &wal.WALEntry{
+			Type:  wal.WALTypeInsert,
+			TxID:  0, // Non-transactional
+			Key:   key,
+			Value: value,
+		}
 		if err := b.writeWAL(entry); err != nil {
 			return fmt.Errorf("write WAL: %w", err)
 		}

@@ -31,6 +31,8 @@ const (
 	WALTypeRollback
 	// WALTypeCheckpoint 检查点
 	WALTypeCheckpoint
+	// WALTypeSplit BTree 节点分裂操作
+	WALTypeSplit
 )
 
 // String 返回 WALType 的字符串表示
@@ -48,6 +50,8 @@ func (wt WALType) String() string {
 		return "Rollback"
 	case WALTypeCheckpoint:
 		return "Checkpoint"
+	case WALTypeSplit:
+		return "Split"
 	default:
 		return "Unknown"
 	}

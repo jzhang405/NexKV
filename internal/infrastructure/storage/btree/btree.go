@@ -54,6 +54,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/wal"
 )
 
 var (
@@ -74,7 +75,7 @@ type BTree struct {
 	closedMu    sync.RWMutex
 	root        *VersionedRoot // Versioned root pointer
 	pageManager *PageManager   // Page manager for page allocation and persistence
-	wal         *WAL           // Write-Ahead Log for crash recovery
+	wal         wal.WAL        // Write-Ahead Log for crash recovery
 	maxLevels   int            // Maximum tree levels
 	nodeCache   *nodeCache     // Node deserialization cache for optimization
 
@@ -108,13 +109,13 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 
 	// Initialize page manager and WAL
 	var pageManager *PageManager
-	var wal *WAL
+	var walImpl wal.WAL
 	enablePersistence := dir != ""
 	enableWAL := dir != ""
 
 	if enablePersistence {
 		dbPath := filepath.Join(dir, "database.db")
-		walPath := filepath.Join(dir, "wal.log")
+		walDir := filepath.Join(dir, "wal")
 
 		// Open page manager
 		pm, err := NewPageManager(dbPath)
@@ -123,13 +124,17 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		}
 		pageManager = pm
 
-		// Open WAL
-		w, err := NewWAL(walPath)
+		// Open WAL using the general-purpose WAL implementation
+		w, err := wal.NewDiskWAL(&wal.WALConfig{
+			Dir:         walDir,
+			SegmentSize: 64 * 1024 * 1024, // 64MB
+			SyncPolicy:  wal.SyncPolicyEveryWrite,
+		})
 		if err != nil {
 			pageManager.Close()
 			return nil, fmt.Errorf("open WAL: %w", err)
 		}
-		wal = w
+		walImpl = w
 	}
 
 	// Create initial root node (empty leaf)
@@ -149,7 +154,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		closed:            false,
 		root:              root,
 		pageManager:       pageManager,
-		wal:               wal,
+		wal:               walImpl,
 		maxLevels:         maxLevels,
 		nodeCache:         nodeCache,
 		enablePersistence: enablePersistence,
@@ -157,11 +162,11 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	}
 
 	// Replay WAL if exists (crash recovery)
-	if enableWAL && wal != nil {
+	if enableWAL && walImpl != nil {
 		if err := btree.replayWAL(); err != nil {
 			// Close resources on error
 			pageManager.Close()
-			wal.Close()
+			walImpl.Close()
 			return nil, fmt.Errorf("replay WAL: %w", err)
 		}
 	}
@@ -267,22 +272,27 @@ func (b *BTree) replayWAL() error {
 		return nil
 	}
 
-	count, err := b.wal.Replay(func(entry *WALEntry) error {
-		// Apply entry to BTree
-		if entry.Type == WALEntryTypeInsert {
-			// Rebuild tree from WAL entries
-			return b.insertFromWAL(entry.Key, entry.Value)
-		}
-		return nil
-	})
-
+	// Recover all WAL entries
+	entries, err := b.wal.Recover()
 	if err != nil {
 		return err
 	}
 
+	// Apply entries to BTree
+	for _, entry := range entries {
+		// Apply entry to BTree
+		if entry.Type == wal.WALTypeInsert {
+			// Rebuild tree from WAL entries
+			if err := b.insertFromWAL(entry.Key, entry.Value); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Truncate WAL after successful replay
-	if count > 0 {
-		if err := b.wal.Truncate(); err != nil {
+	if len(entries) > 0 {
+		lastLSN := entries[len(entries)-1].LSN
+		if err := b.wal.Truncate(lastLSN); err != nil {
 			return fmt.Errorf("truncate WAL: %w", err)
 		}
 	}
@@ -329,12 +339,14 @@ func (b *BTree) persistNode(node *Node) error {
 }
 
 // writeWAL writes an entry to the WAL.
-func (b *BTree) writeWAL(entry *WALEntry) error {
+func (b *BTree) writeWAL(entry *wal.WALEntry) error {
 	if !b.enableWAL || b.wal == nil {
 		return nil // WAL disabled
 	}
 
-	return b.wal.Write(entry)
+	// Append to WAL (LSN will be assigned automatically)
+	_, err := b.wal.Append(entry)
+	return err
 }
 
 // Close closes the BTree storage engine and releases resources.

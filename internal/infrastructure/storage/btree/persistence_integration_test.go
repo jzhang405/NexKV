@@ -61,11 +61,23 @@ func TestPersistence_InsertWithWAL(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// Verify WAL file exists and has content
-	walPath := filepath.Join(dir, "wal.log")
-	info, err := os.Stat(walPath)
+	// Verify WAL directory exists
+	walDir := filepath.Join(dir, "wal")
+	info, err := os.Stat(walDir)
 	require.NoError(t, err)
-	assert.Greater(t, info.Size(), int64(0), "WAL file should have content")
+	assert.True(t, info.IsDir(), "WAL directory should exist")
+
+	// Verify WAL file exists and has content
+	// WAL files are named with LSN: 00000000000000000001.wal
+	entries, err := os.ReadDir(walDir)
+	require.NoError(t, err)
+	assert.Greater(t, len(entries), 0, "WAL directory should contain WAL files")
+
+	// Check first WAL file size
+	firstWALPath := filepath.Join(walDir, entries[0].Name())
+	walInfo, err := os.Stat(firstWALPath)
+	require.NoError(t, err)
+	assert.Greater(t, walInfo.Size(), int64(0), "WAL file should have content")
 
 	// Verify database file exists
 	// Note: Database file may be empty as node persistence is not fully implemented yet
@@ -161,11 +173,17 @@ func TestPersistence_ConcurrentInsertWithWAL(t *testing.T) {
 		<-done
 	}
 
-	// Verify WAL file exists
-	walPath := filepath.Join(dir, "wal.log")
-	info, err := os.Stat(walPath)
+	// Verify WAL directory exists and has content
+	walDir := filepath.Join(dir, "wal")
+	entries, err := os.ReadDir(walDir)
 	require.NoError(t, err)
-	assert.Greater(t, info.Size(), int64(0), "WAL file should have data")
+	assert.Greater(t, len(entries), 0, "WAL directory should contain WAL files")
+
+	// Check first WAL file size
+	firstWALPath := filepath.Join(walDir, entries[0].Name())
+	walInfo, err := os.Stat(firstWALPath)
+	require.NoError(t, err)
+	assert.Greater(t, walInfo.Size(), int64(0), "WAL file should have data")
 }
 
 // TestPersistence_LargeDataset tests inserting a larger dataset.
@@ -194,9 +212,15 @@ func TestPersistence_LargeDataset(t *testing.T) {
 		}
 	}
 
-	// Verify WAL file exists
-	walPath := filepath.Join(dir, "wal.log")
-	walInfo, err := os.Stat(walPath)
+	// Verify WAL directory exists and has content
+	walDir := filepath.Join(dir, "wal")
+	entries, err := os.ReadDir(walDir)
+	require.NoError(t, err)
+	assert.Greater(t, len(entries), 0, "WAL directory should contain WAL files")
+
+	// Check first WAL file size
+	firstWALPath := filepath.Join(walDir, entries[0].Name())
+	walInfo, err := os.Stat(firstWALPath)
 	require.NoError(t, err)
 	assert.Greater(t, walInfo.Size(), int64(0), "WAL should have entries")
 }

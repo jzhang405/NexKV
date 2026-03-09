@@ -44,6 +44,11 @@ func TestWALType_String(t *testing.T) {
 			expected: "Checkpoint",
 		},
 		{
+			name:     "Split",
+			walType:  WALTypeSplit,
+			expected: "Split",
+		},
+		{
 			name:     "Unknown",
 			walType:  WALType(99),
 			expected: "Unknown",

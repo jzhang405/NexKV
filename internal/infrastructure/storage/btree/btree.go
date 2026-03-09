@@ -59,6 +59,9 @@ var (
 
 	// ErrClosed is returned when operations are performed on a closed BTree.
 	ErrClosed = errors.New("btree is closed")
+
+	// ErrRetry is returned when a CAS operation fails and the caller should retry.
+	ErrRetry = errors.New("cas failed, retry operation")
 )
 
 // PageManager manages page allocation and I/O.

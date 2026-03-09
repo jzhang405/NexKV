@@ -59,8 +59,24 @@ func (b *BTree) InsertWithSplit(ctx context.Context, key, value []byte) error {
 		return fmt.Errorf("failed to copy path: %w", err)
 	}
 
-	// 4. Update root via CAS (atomic commit point)
-	return b.root.Update(ctx, newRoot, 0)
+	// 4. Write WAL entry before committing (for crash recovery)
+	if b.enableWAL {
+		entry := NewInsertEntry(key, value)
+		if err := b.writeWAL(entry); err != nil {
+			return fmt.Errorf("write WAL: %w", err)
+		}
+	}
+
+	// 5. Persist modified nodes (if enabled)
+	// For now, we skip node persistence as it requires tracking which nodes were modified
+	// This will be implemented in Phase 2.5
+
+	// 6. Update root via CAS (atomic commit point)
+	if err := b.root.Update(ctx, newRoot, 0); err != nil {
+		return fmt.Errorf("update root: %w", err)
+	}
+
+	return nil
 }
 
 // insertWithSplitPath handles insertion when node is full by splitting.

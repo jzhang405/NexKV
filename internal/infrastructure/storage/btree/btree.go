@@ -47,6 +47,10 @@ package btree
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
@@ -63,26 +67,69 @@ var (
 	ErrRetry = errors.New("cas failed, retry operation")
 )
 
-// BTree is the main BTree storage engine (placeholder implementation).
-// This will be fully implemented in Phase 3.
+// BTree is the main BTree storage engine with CCOW and persistence.
 type BTree struct {
 	config      *model.BTreeConfig
 	closed      bool
+	closedMu    sync.RWMutex
 	root        *VersionedRoot // Versioned root pointer
-	pageManager *PageManager   // Page manager for page allocation
+	pageManager *PageManager   // Page manager for page allocation and persistence
+	wal         *WAL           // Write-Ahead Log for crash recovery
 	maxLevels   int            // Maximum tree levels
 	nodeCache   *nodeCache     // Node deserialization cache for optimization
+
+	// Persistence settings
+	enablePersistence bool // Enable page persistence
+	enableWAL         bool // Enable WAL logging
 }
 
-// OpenBTree opens or creates a BTree storage engine (placeholder).
+// OpenBTree opens or creates a BTree storage engine with persistence support.
+//
+// Parameters:
+// - dir: Directory for storing database files (.db and .wal)
+// - config: BTree configuration (use nil for defaults)
 //
 // This function will:
-// - Phase 1: Return placeholder implementation
-// - Phase 2: Add CCOW mechanism
-// - Phase 3: Full implementation with WAL integration
+// - Create or open the database file
+// - Create or open the WAL file
+// - Replay WAL for crash recovery (if WAL exists)
+// - Initialize the BTree with recovered or empty state
 func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	if config == nil {
 		config = model.NewDefaultBTreeConfig()
+	}
+
+	// Create directory if not exists
+	if dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("create directory: %w", err)
+		}
+	}
+
+	// Initialize page manager and WAL
+	var pageManager *PageManager
+	var wal *WAL
+	enablePersistence := dir != ""
+	enableWAL := dir != ""
+
+	if enablePersistence {
+		dbPath := filepath.Join(dir, "database.db")
+		walPath := filepath.Join(dir, "wal.log")
+
+		// Open page manager
+		pm, err := NewPageManager(dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("open page manager: %w", err)
+		}
+		pageManager = pm
+
+		// Open WAL
+		w, err := NewWAL(walPath)
+		if err != nil {
+			pageManager.Close()
+			return nil, fmt.Errorf("open WAL: %w", err)
+		}
+		wal = w
 	}
 
 	// Create initial root node (empty leaf)
@@ -91,23 +138,35 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// Create versioned root with initial root node
 	root := NewVersionedRoot(rootNode)
 
-	// Create page manager (kept for compatibility, minimal use)
-	pageManager := &PageManager{}
-
-	// Create node cache for optimization (may not be needed for pure memory)
+	// Create node cache for optimization
 	nodeCache := newNodeCache()
 
 	// Calculate max levels based on config
-	maxLevels := 10 // Default value, will be calculated from config
+	maxLevels := 10 // Default value
 
-	return &BTree{
-		config:      config,
-		closed:      false,
-		root:        root,
-		pageManager: pageManager,
-		maxLevels:   maxLevels,
-		nodeCache:   nodeCache,
-	}, nil
+	btree := &BTree{
+		config:            config,
+		closed:            false,
+		root:              root,
+		pageManager:       pageManager,
+		wal:               wal,
+		maxLevels:         maxLevels,
+		nodeCache:         nodeCache,
+		enablePersistence: enablePersistence,
+		enableWAL:         enableWAL,
+	}
+
+	// Replay WAL if exists (crash recovery)
+	if enableWAL && wal != nil {
+		if err := btree.replayWAL(); err != nil {
+			// Close resources on error
+			pageManager.Close()
+			wal.Close()
+			return nil, fmt.Errorf("replay WAL: %w", err)
+		}
+	}
+
+	return btree, nil
 }
 
 // ===== KVStore Interface Implementation (Placeholder) =====
@@ -200,11 +259,106 @@ func (b *BTree) Stats(ctx context.Context) (*service.StoreStats, error) {
 	return nil, ErrNotImplemented
 }
 
-// Close closes the BTree storage engine.
-func (b *BTree) Close() error {
-	if b.closed {
-		return ErrClosed
+// ===== Persistence Methods =====
+
+// replayWAL replays WAL entries for crash recovery.
+func (b *BTree) replayWAL() error {
+	if b.wal == nil {
+		return nil
 	}
+
+	count, err := b.wal.Replay(func(entry *WALEntry) error {
+		// Apply entry to BTree
+		if entry.Type == WALEntryTypeInsert {
+			// Rebuild tree from WAL entries
+			return b.insertFromWAL(entry.Key, entry.Value)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	// Truncate WAL after successful replay
+	if count > 0 {
+		if err := b.wal.Truncate(); err != nil {
+			return fmt.Errorf("truncate WAL: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// insertFromWAL inserts a key-value pair during WAL replay.
+// This bypasses WAL logging to avoid infinite recursion.
+func (b *BTree) insertFromWAL(key, value []byte) error {
+	ctx := context.Background()
+
+	// Temporarily disable WAL during replay
+	oldEnableWAL := b.enableWAL
+	b.enableWAL = false
+	defer func() { b.enableWAL = oldEnableWAL }()
+
+	// Use InsertWithSplit (WAL is disabled, so no recursion)
+	return b.InsertWithSplit(ctx, key, value)
+}
+
+// persistNode persists a node to disk using PageManager.
+func (b *BTree) persistNode(node *Node) error {
+	if !b.enablePersistence || b.pageManager == nil {
+		return nil // Persistence disabled
+	}
+
+	// Allocate page ID
+	pageID := b.pageManager.AllocatePage()
+
+	// Create page from node
+	page, err := PageFromNode(pageID, node)
+	if err != nil {
+		return fmt.Errorf("create page from node: %w", err)
+	}
+
+	// Write page to disk
+	if err := b.pageManager.WritePage(page); err != nil {
+		return fmt.Errorf("write page: %w", err)
+	}
+
+	return nil
+}
+
+// writeWAL writes an entry to the WAL.
+func (b *BTree) writeWAL(entry *WALEntry) error {
+	if !b.enableWAL || b.wal == nil {
+		return nil // WAL disabled
+	}
+
+	return b.wal.Write(entry)
+}
+
+// Close closes the BTree storage engine and releases resources.
+func (b *BTree) Close() error {
+	b.closedMu.Lock()
+	defer b.closedMu.Unlock()
+
+	if b.closed {
+		return nil // Already closed
+	}
+
+	// Close WAL
+	if b.wal != nil {
+		if err := b.wal.Close(); err != nil {
+			return fmt.Errorf("close WAL: %w", err)
+		}
+	}
+
+	// Close page manager
+	if b.pageManager != nil {
+		if err := b.pageManager.Close(); err != nil {
+			return fmt.Errorf("close page manager: %w", err)
+		}
+	}
+
 	b.closed = true
 	return nil
 }

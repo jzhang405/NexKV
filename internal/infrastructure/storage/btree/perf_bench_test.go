@@ -95,6 +95,122 @@ func BenchmarkInsertWithSplit_8Threads(b *testing.B) {
 }
 
 // ========================================
+// Read Performance Benchmarks
+// ========================================
+
+// BenchmarkRead_SingleThread benchmarks single-threaded read.
+func BenchmarkRead_SingleThread(b *testing.B) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(b, err)
+	defer btree.Close()
+
+	// Pre-populate tree
+	ctx := context.Background()
+	for i := 0; i < 10000; i++ {
+		key := []byte(fmt.Sprintf("key-%05d", i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+		_ = btree.InsertWithSplit(ctx, key, value)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := []byte(fmt.Sprintf("key-%05d", i%10000))
+		_, _ = btree.Get(ctx, key)
+	}
+}
+
+// BenchmarkRead_8Threads benchmarks concurrent read with 8 threads.
+func BenchmarkRead_8Threads(b *testing.B) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(b, err)
+	defer btree.Close()
+
+	// Pre-populate tree
+	ctx := context.Background()
+	for i := 0; i < 10000; i++ {
+		key := []byte(fmt.Sprintf("key-%05d", i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+		_ = btree.InsertWithSplit(ctx, key, value)
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			key := []byte(fmt.Sprintf("key-%05d", i%10000))
+			_, _ = btree.Get(ctx, key)
+			i++
+		}
+	})
+}
+
+// BenchmarkMixed_Read80Write20 benchmarks 80% read + 20% write workload.
+func BenchmarkMixed_Read80Write20(b *testing.B) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(b, err)
+	defer btree.Close()
+
+	// Pre-populate tree
+	ctx := context.Background()
+	for i := 0; i < 1000; i++ {
+		key := []byte(fmt.Sprintf("key-%05d", i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+		_ = btree.InsertWithSplit(ctx, key, value)
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			if i%5 == 0 {
+				// 20% write
+				key := []byte(fmt.Sprintf("key-%05d", i%2000))
+				value := []byte(fmt.Sprintf("value-%d", i))
+				_ = btree.InsertWithSplit(ctx, key, value)
+			} else {
+				// 80% read
+				key := []byte(fmt.Sprintf("key-%05d", i%1000))
+				_, _ = btree.Get(ctx, key)
+			}
+			i++
+		}
+	})
+}
+
+// BenchmarkMixed_Read50Write50 benchmarks 50% read + 50% write workload.
+func BenchmarkMixed_Read50Write50(b *testing.B) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(b, err)
+	defer btree.Close()
+
+	// Pre-populate tree
+	ctx := context.Background()
+	for i := 0; i < 1000; i++ {
+		key := []byte(fmt.Sprintf("key-%05d", i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+		_ = btree.InsertWithSplit(ctx, key, value)
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			if i%2 == 0 {
+				// 50% write
+				key := []byte(fmt.Sprintf("key-%05d", i%2000))
+				value := []byte(fmt.Sprintf("value-%d", i))
+				_ = btree.InsertWithSplit(ctx, key, value)
+			} else {
+				// 50% read
+				key := []byte(fmt.Sprintf("key-%05d", i%1000))
+				_, _ = btree.Get(ctx, key)
+			}
+			i++
+		}
+	})
+}
+
+// ========================================
 // Node Clone Benchmarks (With Pool vs No Pool)
 // ========================================
 

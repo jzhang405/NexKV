@@ -1,8 +1,32 @@
-# Page 层实施计划 - 基于 thoughts/2026-03-09 设计文档
+# Page 层实施计划 - 基于 Lealone 完整实现（优化版 v2.0）
 
 **日期**: 2026-03-09
-**基于**: `thoughts/2026-03-09-page-layer-architecture-design.md`
+**基于**:
+- `thoughts/2026-03-09-lealone-page-based-btree-implementation.md` ⭐ 新增
+- `thoughts/2026-03-09-page-layer-architecture-design.md`
 **优先级**: P0（生产环境必要条件）
+
+---
+
+## 🔄 版本更新日志
+
+### v2.0 (2026-03-09) - 基于 Lealone 完整实现优化
+
+**核心改进**:
+1. ✅ 引入 Lealone 的 PageLock 机制（可重入、等待）
+2. ✅ 引入 PageReference 原子引用（CAS 无锁更新）
+3. ✅ 引入 Scheduler 单写调度器（消除 CAS 竞争）
+4. ✅ 真正的 BTree 结构（多层 Page，不同叶节点可并发写入）
+
+**性能预期**:
+- 4线程写入：491K QPS → **2.5M QPS** (提升 5倍)
+- 8线程写入：480K QPS → **4.0M QPS** (提升 7.3倍)
+
+**关键洞察**:
+```
+当前问题：1个 Page 存储所有 key → Page 锁退化成全局锁
+Lealone 方案：真正的 BTree → 不同叶节点独立锁 → 真正并发
+```
 
 ---
 
@@ -51,9 +75,9 @@
 
 **结论**: "舍短期/极致性能，取长远/可运维" ✅
 
-**性能提升**（vs Lealone）:
-- 读延迟: 300-600 ns vs Lealone 941 ns → **快 1.6-3.1x** ✅
-- 写延迟: 800-1500 ns vs Lealone 1596 ns → **快 1.1-2.0x** ✅
+**预期性能**（vs Lealone）：
+- 读延迟: 300-600 ns vs Lealone 941 ns → **预期快 1.6-3.1x**（待验证）
+- 写延迟: 800-1500 ns vs Lealone 1596 ns → **预期快 1.1-2.0x**（待验证）
 
 ---
 
@@ -124,7 +148,11 @@ type PageReference struct {
 }
 
 func (pr *PageReference) replacePage(expect, update *PageInfo) bool {
-    return pr pInfo.CompareAndSwap(expect, update)
+    old := pr.pInfo.Load()
+    if old == expect {
+        return pr.pInfo.CompareAndSwap(expect, update)
+    }
+    return false
 }
 ```
 
@@ -194,22 +222,28 @@ type Node struct {
     PageID   model.PageID       // Page ID（用于持久化）
     Keys     [][]byte           // 键
     Values   [][]byte           // 值
-    Children []*Node            // 子节点指针（需改为 PageID）
+    Children []*Node            // 子节点指针（内存操作）
     IsLeaf   bool               // 是否叶子节点
 }
 ```
 
-**关键修改**:
+**关键说明**：
 ```go
-// 之前: 直接指针
-Children []*Node
+// 内存操作：保持指针
+Children []*Node  // ✅ 直接指针，内存操作无需转换
 
-// 之后: PageID 引用
-Children []model.PageID  // ← 只存储 PageID
+// 持久化时：序列化为 PageID
+func (n *Node) SerializeToPage(page *Page) {
+    // 遍历 Children，转换为 PageID 写入
+    for _, child := range n.Children {
+        childPageIDs = append(childPageIDs, child.PageID)
+    }
+    // ...
+}
 
-// 读取时延迟加载
+// 反序列化时：从 PageID 还原（延迟加载）
 func (n *Node) GetChild(idx int, pm *PageManager) (*Node, error) {
-    childPageID := n.Children[idx]
+    childPageID := n.Children[idx].PageID  // 从指针获取 ID
     childPage := pm.Get(childPageID)
     defer childPage.Unpin()
     return DeserializeNode(childPage)
@@ -419,13 +453,15 @@ func DeserializeNode(page *Page) (*Node, error) {
         }
     }
 
-    // 5. 读取 Children PageIDs (内部节点)
+    // 5. 读取 Children（内部节点）
+    // 反序列化时创建指针，序列化时转换为 PageID
     if !node.IsLeaf {
-        node.Children = make([]model.PageID, 0, numKeys+1)
+        node.Children = make([]*Node, 0, numKeys+1)
         for i := 0; i <= numKeys; i++ {
             childID := model.PageID(binary.LittleEndian.Uint64(buf[offset:offset+8]))
             offset += 8
-            node.Children = append(node.Children, childID)
+            // 延迟加载：只存 PageID，需要时再获取
+            _ = childID  // 占位，后续实现延迟加载
         }
     }
 
@@ -570,7 +606,7 @@ data, ok := l2Cache.Get(pageID)
 │  │       3. CAS 更新根指针                                    │ │
 │  └───────────────────────────────────────────────────────────┘ │
 │                                                                  │
-│  读操作（直接执行，完全无锁）:                                   │
+│  读操作（直接执行，lock-free 无锁）:                                   │
 │  ┌───────────────────────────────────────────────────────────┐ │
 │  │  多个 goroutine 直接调用 Get(key)                         │ │
 │  │    1. root.Get() - 无锁读取版本化根                       │ │
@@ -585,7 +621,7 @@ data, ok := l2Cache.Get(pageID)
 - ❌ **删除**: ReadPool（过度设计）
 - ❌ **删除**: 复杂的 WriteQueue 结构
 - ✅ **保留**: `chan WriteOperation`（单写队列）
-- ✅ **保留**: 直接的 Get(key) 调用（完全无锁读）
+- ✅ **保留**: 直接的 Get(key) 调用（lock-free 无锁读）
 
 ### 4.2 Lealone 的实际实现参考
 
@@ -594,7 +630,7 @@ data, ok := l2Cache.Get(pageID)
 ```java
 // ===== BTreeMap.java - Lealone 实际实现 =====
 
-// ✅ 读操作：完全无锁，直接执行
+// ✅ 读操作：lock-free 无锁，直接执行
 public V get(Object key) {
     // 1. 原子读取根指针
     Page root = rootRef.getOrReadPage();
@@ -763,12 +799,12 @@ func (op *PutOperation) Done() chan error {
 }
 ```
 
-### 4.5 读操作实现（完全无锁）
+### 4.5 读操作实现（lock-free 无锁）
 
 ```go
 // btree.go - 读操作
 
-// ✅ 读操作：直接执行，完全无锁
+// ✅ 读操作：直接执行，lock-free 无锁
 func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
     if b.closed {
         return nil, ErrClosed
@@ -785,7 +821,7 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
     return leaf.Get(key), nil
 }
 
-// gotoLeafPage - 遍历到叶子页面（完全无锁）
+// gotoLeafPage - 遍历到叶子页面（lock-free 无锁）
 func (b *BTree) gotoLeafPage(root *Page, key []byte) *Page {
     current := root
 
@@ -963,42 +999,50 @@ type Page struct {
 
 const PageSize = 4096
 
-// ===== 序列化：Node → Page =====
+// ===== 序列化：Node → Page（零拷贝优化）=====
 func SerializeNode(node *Node, page *Page) error {
-    var buf bytes.Buffer
+    data := page.Data[:]
+    offset := 0
 
     // 1. 写入元数据 (5 bytes)
-    buf.WriteByte(byte(node.IsLeaf))        // IsLeaf: 1 byte
-    binary.Write(&buf, binary.LittleEndian, uint32(len(node.Keys))) // NumKeys: 4 bytes
+    if node.IsLeaf {
+        data[offset] = 1
+    } else {
+        data[offset] = 0
+    }
+    offset++
+    // 3 bytes padding
+
+    binary.LittleEndian.PutUint32(data[offset:offset+4], uint32(len(node.Keys)))
+    offset += 4
 
     // 2. 写入 Keys (变长：Length + Data)
     for _, key := range node.Keys {
-        binary.Write(&buf, binary.LittleEndian, uint16(len(key))) // KeyLen: 2 bytes
-        buf.Write(key)  // KeyData
+        binary.LittleEndian.PutUint16(data[offset:offset+2], uint16(len(key)))
+        offset += 2
+        copy(data[offset:offset+len(key)], key)
+        offset += len(key)
     }
 
     // 3. 写入 Values（叶子节点）
     if node.IsLeaf {
         for _, value := range node.Values {
-            binary.Write(&buf, binary.LittleEndian, uint16(len(value))) // ValueLen: 2 bytes
-            buf.Write(value)  // ValueData
+            binary.LittleEndian.PutUint16(data[offset:offset+2], uint16(len(value)))
+            offset += 2
+            copy(data[offset:offset+len(value)], value)
+            offset += len(value)
         }
     }
 
     // 4. 写入 Children PageIDs（内部节点）
     if !node.IsLeaf {
-        for _, childID := range node.Children {
-            binary.Write(&buf, binary.LittleEndian, uint64(childID)) // PageID: 8 bytes
+        for _, child := range node.Children {
+            binary.LittleEndian.PutUint64(data[offset:offset+8], uint64(child.PageID))
+            offset += 8
         }
     }
 
-    // 5. 复制到 Page.Data
-    if buf.Len() > len(page.Data) {
-        return ErrPageTooSmall
-    }
-    copy(page.Data[:], buf.Bytes())
-
-    // 6. 标记脏页
+    // 5. 标记脏页
     page.MarkDirty()
 
     return nil
@@ -1056,15 +1100,16 @@ func DeserializeNode(page *Page) (*Node, error) {
         }
     }
 
-    // 4. 读取 Children PageIDs（内部节点）
+    // 4. 读取 Children（内部节点）
+    // 反序列化时创建指针，序列化时转换为 PageID
     if !node.IsLeaf {
-        node.Children = make([]model.PageID, numKeys+1)
+        node.Children = make([]*Node, numKeys+1)
         for i := 0; i <= int(numKeys); i++ {
             var childID uint64
             if err := binary.Read(buf, binary.LittleEndian, &childID); err != nil {
                 return nil, err
             }
-            node.Children[i] = model.PageID(childID)
+            _ = childID // 占位，后续实现延迟加载
         }
     }
 
@@ -1144,7 +1189,7 @@ func TestSerializationRoundTrip(t *testing.T) {
    - 添加 Storage 字段
    - 添加 writeQueue 字段（chan WriteOperation）
 
-□ 3.2 修改 Get 流程（完全无锁）⭐ 简化
+□ 3.2 修改 Get 流程（lock-free 无锁）⭐ 简化
    - root.Get() - 读取版本化根
    - gotoLeafPage(root, key) - 遍历 Page 树
    - leaf.Get(key) - 返回结果
@@ -1599,8 +1644,8 @@ L3 磁盘读取 (5%):
 ```
 指标          | NexKV 三层缓存 | Lealone | 对比
 --------------|----------------|---------|-------
-读延迟        | 300-600 ns     | 941 ns  | 快 1.6-3.1x ✅
-写延迟        | 800-1500 ns    | 1596 ns  | 快 1.1-2.0x ✅
+读延迟        | 300-600 ns     | 941 ns  | 预期快 1.6-3.1x（待验证）
+写延迟        | 800-1500 ns    | 1596 ns  | 预期快 1.1-2.0x（待验证）
 读吞吐        | > 2M ops/s     | 1.07M    | 快 1.9x ✅
 写吞吐        | > 1M ops/s     | 0.67M    | 快 1.5x ✅
 ```
@@ -1639,12 +1684,12 @@ L3 磁盘读取 (5%):
   - L3 读取 (5%): ~10-100 μs/op
 
 综合性能:
-  - 读: 300-600 ns/op (仍比 Lealone 快 1.6-3.1x) ✅
-  - 写: 800-1500 ns/op (仍比 Lealone 快 1.1-2.0x) ✅
+  - 读: 300-600 ns/op（预期比 Lealone 快 1.6-3.1x，待验证）
+  - 写: 800-1500 ns/op（预期比 Lealone 快 1.1-2.0x，待验证）
 
 性能提升:
   - vs 二层缓存: ~8% 性能提升 ⭐ 新增
-  - vs Lealone: 1.6-3.1x 更快 ✅
+  - vs Lealone: 预期快 1.6-3.1x（待验证）
 ```
 
 **功能**:
@@ -1769,3 +1814,332 @@ internal/infrastructure/storage/btree/
 **文档版本**: v2.0
 **最后更新**: 2026-03-09
 **状态**: ✅ 基于Lealone实际实现的完整实施计划（简化版）
+
+---
+
+## 附录：基于 Lealone 完整实现的优化方案 (v2.0)
+
+> **新增于 2026-03-09**：基于 `thoughts/2026-03-09-lealone-page-based-btree-implementation.md` 深度分析后的优化方案
+
+### A.1 问题诊断
+
+**当前已实施** (Phase 1-5 完成):
+- ✅ Page 结构添加 `sync.RWMutex`
+- ✅ 序列化/反序列化 (573 ns/op, 0 分配)
+- ✅ 三层缓存 (L1/L2/L3)
+- ✅ 并发测试通过
+
+**性能瓶颈**:
+- **当前并发写入**: 491K QPS (4线程)
+- **预期目标**: 250万 QPS (4线程)
+- **差距**: 5倍未达标
+
+**根本原因**:
+```
+当前实现: 1个 Page 存储所有 key (哈希映射)
+→ 所有写入竞争同一把 Page 锁
+→ Page 级别锁退化成全局锁
+→ 并发度完全丧失
+
+Lealone 的关键:
+真正的 BTree 结构 (多层 Page)
+→ 不同叶节点存储不同 key 范围
+→ 写入不同叶节点 = 不同 Page 锁
+→ 真正的并发写入能力
+```
+
+### A.2 Lealone 核心设计迁移
+
+#### 1. Page 级轻量锁 (PageLock)
+
+**Lealone 源码** (`PageReference.java:92-113`):
+```java
+public class PageReference {
+    private final PageLock pageLock = new PageLock();
+
+    public boolean tryLock(InternalScheduler scheduler, boolean waitingIfLocked) {
+        return pageLock.tryLock(scheduler, waitingIfLocked);
+    }
+
+    public void unlock() {
+        pageLock.unlock();
+    }
+}
+```
+
+**NexV 实施建议**:
+```go
+// page_lock.go - 新建文件
+type PageLock struct {
+    mu    sync.Mutex
+    owner goroutineID
+    count int  // 可重入计数
+}
+
+func (pl *PageLock) tryLock(scheduler *Scheduler, waitingIfLocked bool) bool {
+    // 快速路径：无锁获取
+    if pl.count == 0 {
+        pl.mu.Lock()
+        pl.owner = getGoroutineID()
+        pl.count = 1
+        return true
+    }
+
+    // 可重入检查
+    if pl.owner == getGoroutineID() {
+        pl.count++
+        return true
+    }
+
+    // 需要等待
+    if waitingIfLocked {
+        scheduler.wait()
+        // 唤醒后重试...
+    }
+
+    return false
+}
+```
+
+**优势**:
+- ✅ 可重入：同一线程可多次获取
+- ✅ 等待机制：避免忙等待
+- ✅ 快速路径：无竞争时几乎零开销
+
+#### 2. PageReference 原子引用
+
+**Lealone 源码**:
+```java
+private static final AtomicReferenceFieldUpdater<PageReference, PageInfo>
+    pageInfoUpdater = AtomicReferenceFieldUpdater.newUpdater(
+        PageReference.class, PageInfo.class, "pInfo"
+    );
+
+private volatile PageInfo pInfo;
+
+public boolean replacePage(PageInfo expect, PageInfo update) {
+    return pageInfoUpdater.compareAndSet(this, expect, update);
+}
+```
+
+**NexV 实施建议**:
+```go
+// page_reference.go - 新建文件
+type PageInfo struct {
+    Page         *Page
+    RefCount     int32
+    LastModified time.Time
+}
+
+type PageReference struct {
+    pInfo atomic.Value  // *PageInfo
+    parentRef *PageReference
+    lock     *PageLock
+}
+
+func (pr *PageReference) replacePage(expect, update *PageInfo) bool {
+    old := pr.pInfo.Load()
+    if old == expect {
+        return pr.pInfo.CompareAndSwap(expect, update)
+    }
+    return false
+}
+
+func (pr *PageReference) Acquire() {
+    // CAS 循环增加引用计数
+    for {
+        oldInfo := pr.pInfo.Load().(*PageInfo)
+        newInfo := &PageInfo{
+            Page:     oldInfo.Page,
+            RefCount: oldInfo.RefCount + 1,
+            LastModified: oldInfo.LastModified,
+        }
+        if pr.pInfo.CompareAndSwap(oldInfo, newInfo) {
+            return
+        }
+    }
+}
+```
+
+**优势**:
+- ✅ 无锁读取：`GetPage()` 直接 `Load()`
+- ✅ CAS 更新：原子替换 Page
+- ✅ 引用计数：安全的生命周期管理
+
+#### 3. Scheduler 单写调度器
+
+**Lealone 设计** (`SchedulerThread.java`):
+```java
+public void runPageOperation() {
+    WriteOperation op = writeQueue.poll();
+    if (op != null) {
+        op.run();  // 在单写线程中执行
+    }
+}
+```
+
+**NexV 实施建议**:
+```go
+// scheduler.go - 新建文件
+type Scheduler struct {
+    writeQueue chan WriteOperation
+    stopChan   chan struct{}
+    wg         sync.WaitGroup
+}
+
+func (s *Scheduler) Start() {
+    s.wg.Add(1)
+    go func() {
+        defer s.wg.Done()
+        for {
+            select {
+            case op := <-s.writeQueue:
+                op.Run()  // 在单写线程中执行
+            case <-s.stopChan:
+                return
+            }
+        }
+    }()
+}
+
+// Set 提交写操作到队列
+func (b *BTree) Set(ctx context.Context, key, value []byte) error {
+    op := &PutOperation{
+        btree: b,
+        key:   key,
+        value: value,
+        done:  make(chan error, 1),
+    }
+
+    if err := b.scheduler.Submit(op); err != nil {
+        return err
+    }
+
+    return <-op.done  // 等待完成
+}
+```
+
+**优势**:
+- ✅ 消除 CAS 竞争：所有写操作串行化
+- ✅ 批量优化：可支持批量写入
+- ✅ 简洁：无复杂的锁管理
+
+#### 4. 真正的 BTree 结构
+
+**关键变更**:
+```go
+// 内存操作：保持指针
+Children []*Node  // ✅ 直接指针，内存操作无需转换
+
+// 持久化时：序列化为 PageID
+func (n *Node) SerializeToPage(page *Page) {
+    for _, child := range n.Children {
+        childPageIDs = append(childPageIDs, child.PageID)
+    }
+    // ...
+}
+
+// 读取时延迟加载
+func (n *Node) GetChild(idx int, pm *PageManager) (*Node, error) {
+    childPageID := n.Children[idx].PageID  // 从指针获取 ID
+    childPage, err := pm.Get(childPageID)
+    if err != nil {
+        return nil, err
+    }
+    defer childPage.Release()
+    return DeserializeNode(childPage)
+}
+```
+
+**优势**:
+- ✅ 真正的并发：不同叶节点独立锁
+- ✅ 持久化友好：PageID 可直接序列化
+- ✅ 内存高效：按需加载子节点
+
+### A.3 实施步骤（优化版）
+
+#### Phase 1: 基础设施 (1-2周)
+
+**新建文件**:
+1. `page_lock.go` - Page 级轻量锁
+2. `page_reference.go` - Page 原子引用
+3. `scheduler.go` - 单写调度器
+4. `write_operation.go` - 写操作接口
+
+**验证**:
+- 单元测试覆盖
+- 无 data race
+
+#### Phase 2: BTree 重构 (2-3周)
+
+**修改文件**:
+- `btree.go` - 集成 Scheduler 和 PageReference
+- `node.go` - Children 改为 `[]PageID`
+
+**验证**:
+- 功能测试通过
+- 性能不退化
+
+#### Phase 3: CCOW 路径复制 (1-2周)
+
+**新建文件**:
+- `put_operation.go` - Put 操作实现
+- `path_copy.go` - CCOW 路径复制
+
+**验证**:
+- CCOW 正确性验证
+- 基准测试达标
+
+#### Phase 4: 性能优化 (1周)
+
+**优化项**:
+- 批量写入支持
+- LRU 缓存调优
+- 序列化优化
+
+**验证**:
+- 4线程 QPS > 200万
+- 读延迟 < 200 ns
+
+### A.4 预期性能提升
+
+| 指标 | 当前 (491K) | 目标 (2.5M) | 提升 |
+|------|-----------|------------|------|
+| **单线程写入** | ~500K QPS | ~800K QPS | +60% |
+| **2线程写入** | ~490K QPS | ~1.5M QPS | +206% |
+| **4线程写入** | ~491K QPS | ~2.5M QPS | +409% |
+| **8线程写入** | ~480K QPS | ~4.0M QPS | +733% |
+
+**关键改进**:
+1. ✅ 真正的 Page 级别锁（不同叶节点并发写入）
+2. ✅ 单写队列（消除 CAS 竞争）
+3. ✅ Page 引用计数（无锁读取）
+
+### A.5 关键文件清单
+
+**新建文件 (7个)**:
+1. `page_lock.go` - Page 级轻量锁
+2. `page_reference.go` - Page 原子引用
+3. `scheduler.go` - 单写调度器
+4. `write_operation.go` - 写操作接口
+5. `put_operation.go` - Put 操作实现
+6. `path_copy.go` - CCOW 路径复制
+7. `lru_cache.go` - 泛型 LRU 缓存
+
+**修改文件 (2个)**:
+1. `btree.go` - 集成 Scheduler 和 PageReference
+2. `node.go` - Children 改为 `[]PageID`
+
+---
+
+## 参考
+
+- **Lealone 源码分析**: `thoughts/2026-03-09-lealone-page-based-btree-implementation.md`
+- **Page 级别锁设计**: `docs/09_code-review/2026-03/2026-03-09-page-level-locking-design.md`
+- **KV 序列化规范**: `docs/09_code-review/2026-03-09-kv-to-page-serialization.md`
+
+---
+
+**版本**: v2.0 (基于 Lealone 完整实现优化)
+**预计工作量**: 4-6周
+**性能目标**: 4线程 250万 QPS (提升 5倍)

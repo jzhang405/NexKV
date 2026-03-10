@@ -11,12 +11,12 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
-// PageCache implements a three-tier cache for Page objects.
+// PageCache implements a three-tier cache for Page and Node objects.
 //
 // Cache levels:
 //   - L1: Hot data - Page objects (fully deserialized, ready to use)
 //   - L2: Warm data - Serialized buffers ([]byte)
-//   - L3: Cold data - On disk (future implementation)
+//   - L3: Cold data - On disk (via PageManager)
 //
 // The cache uses a simple LRU eviction policy when capacity is reached.
 type PageCache struct {
@@ -26,11 +26,17 @@ type PageCache struct {
 	// L2 cache stores PageID → []byte (warm data, serialized)
 	L2 *sync.Map
 
+	// NodeL1 cache stores PageID → *Node for lazy loading
+	NodeL1 *sync.Map
+
 	// l1Capacity is the maximum number of Pages in L1 cache.
 	l1Capacity int
 
 	// l2Capacity is the maximum number of buffers in L2 cache.
 	l2Capacity int
+
+	// nodeL1Capacity is the maximum number of Nodes in NodeL1 cache.
+	nodeL1Capacity int
 
 	// l1Size tracks current L1 cache size.
 	l1Size atomic.Int64
@@ -38,19 +44,29 @@ type PageCache struct {
 	// l2Size tracks current L2 cache size.
 	l2Size atomic.Int64
 
+	// nodeL1Size tracks current NodeL1 cache size.
+	nodeL1Size atomic.Int64
+
 	// evictionQueue tracks LRU order for eviction.
 	evictionLock  sync.Mutex
 	evictionQueue []model.PageID
+
+	// pageManager is the optional L3 storage (can be nil for in-memory mode).
+	pageManager *PageManager
 }
 
 // NewPageCache creates a new PageCache with the given capacities.
-func NewPageCache(l1Capacity, l2Capacity int) *PageCache {
+// Optionally accepts a PageManager for L3 storage (can be nil for in-memory mode).
+func NewPageCache(l1Capacity, l2Capacity, nodeL1Capacity int, pageManager *PageManager) *PageCache {
 	return &PageCache{
-		L1:            &sync.Map{},
-		L2:            &sync.Map{},
-		l1Capacity:    l1Capacity,
-		l2Capacity:    l2Capacity,
-		evictionQueue: make([]model.PageID, 0, l1Capacity+l2Capacity),
+		L1:             &sync.Map{},
+		L2:             &sync.Map{},
+		NodeL1:         &sync.Map{},
+		l1Capacity:     l1Capacity,
+		l2Capacity:     l2Capacity,
+		nodeL1Capacity: nodeL1Capacity,
+		evictionQueue:  make([]model.PageID, 0, l1Capacity+l2Capacity+nodeL1Capacity),
+		pageManager:    pageManager,
 	}
 }
 
@@ -257,5 +273,167 @@ type CacheStats struct {
 
 // DefaultPageCache returns a PageCache with default capacities.
 func DefaultPageCache() *PageCache {
-	return NewPageCache(1000, 10000) // L1: 1000 pages, L2: 10000 buffers
+	return NewPageCache(1000, 10000, 500, nil) // L1: 1000 pages, L2: 10000 buffers, NodeL1: 500 nodes
+}
+
+// DefaultPageCacheWithPersistence returns a PageCache with default capacities and L3 storage.
+func DefaultPageCacheWithPersistence(pageManager *PageManager) *PageCache {
+	return NewPageCache(1000, 10000, 500, pageManager) // L1: 1000 pages, L2: 10000 buffers, NodeL1: 500 nodes
+}
+
+// GetNode retrieves or loads a Node by PageID (lazy loading).
+// Implements three-tier caching:
+//   - L1 (NodeL1): Hot data - deserialized Node objects
+//   - L2 (L2): Warm data - serialized bytes
+//   - L3 (pageManager): Cold data - on-disk Pages
+//
+// Returns ErrPageNotFound if the page cannot be found in any cache level.
+func (c *PageCache) GetNode(pageID model.PageID) (*Node, error) {
+	if pageID == 0 {
+		return nil, ErrPageNotFound
+	}
+
+	// L1: Check for already deserialized Node (hot data)
+	if node, ok := c.NodeL1.Load(pageID); ok {
+		n := node.(*Node)
+		n.Acquire()
+		c.trackAccess(pageID)
+		return n, nil
+	}
+
+	// L2: Check for serialized bytes (warm data)
+	if data, ok := c.L2.Load(pageID); ok {
+		node, err := c.deserializeNode(data.([]byte))
+		if err != nil {
+			return nil, err
+		}
+
+		// Promote to NodeL1
+		if c.nodeL1Size.Load() < int64(c.nodeL1Capacity) {
+			c.NodeL1.Store(pageID, node)
+			c.nodeL1Size.Add(1)
+		}
+
+		node.Acquire()
+		c.trackAccess(pageID)
+		return node, nil
+	}
+
+	// L3: Read from PageManager (cold data)
+	if c.pageManager != nil {
+		page, err := c.pageManager.ReadPage(pageID)
+		if err != nil {
+			return nil, err
+		}
+
+		// Deserialize Page to Node
+		node, err := DeserializeNode(page)
+		if err != nil {
+			return nil, err
+		}
+
+		// Cache in L2 (serialized) and NodeL1 (deserialized)
+		data := make([]byte, PageDataSize)
+		copy(data, page.Data[:])
+
+		c.L2.Store(pageID, data)
+		c.l2Size.Add(1)
+
+		if c.nodeL1Size.Load() < int64(c.nodeL1Capacity) {
+			c.NodeL1.Store(pageID, node)
+			c.nodeL1Size.Add(1)
+		}
+
+		node.Acquire()
+		c.trackAccess(pageID)
+		return node, nil
+	}
+
+	return nil, ErrPageNotFound
+}
+
+// PutNode stores a Node in the NodeL1 cache.
+// Also creates a serialized version in L2.
+func (c *PageCache) PutNode(pageID model.PageID, node *Node) error {
+	if node == nil || pageID == 0 {
+		return nil
+	}
+
+	// Check if node already exists in NodeL1
+	_, exists := c.NodeL1.Load(pageID)
+
+	// If not exists and cache is full, evict first
+	if !exists && c.nodeL1Size.Load() >= int64(c.nodeL1Capacity) {
+		c.evictLRUNode()
+	}
+
+	// Store in NodeL1
+	c.NodeL1.Store(pageID, node)
+	if !exists {
+		c.nodeL1Size.Add(1)
+	}
+
+	// Also store serialized version in L2
+	page, err := PageFromNode(pageID, node)
+	if err != nil {
+		return err
+	}
+
+	data := make([]byte, PageDataSize)
+	copy(data, page.Data[:])
+
+	_, l2Exists := c.L2.Load(pageID)
+	c.L2.Store(pageID, data)
+	if !l2Exists {
+		c.l2Size.Add(1)
+	}
+
+	c.trackAccess(pageID)
+	return nil
+}
+
+// deserializeNode deserializes a Node from byte data.
+func (c *PageCache) deserializeNode(data []byte) (*Node, error) {
+	if len(data) < PageDataSize {
+		return nil, ErrBufferTooSmall
+	}
+
+	page := &Page{
+		Data: [PageDataSize]byte{},
+	}
+	copy(page.Data[:], data)
+
+	return DeserializeNode(page)
+}
+
+// evictLRUNode evicts the least recently used Node from NodeL1.
+func (c *PageCache) evictLRUNode() {
+	c.evictionLock.Lock()
+	defer c.evictionLock.Unlock()
+
+	if len(c.evictionQueue) == 0 {
+		return
+	}
+
+	// Get LRU entry (first in queue)
+	lruID := c.evictionQueue[0]
+	c.evictionQueue = c.evictionQueue[1:]
+
+	// Evict from NodeL1
+	if node, ok := c.NodeL1.LoadAndDelete(lruID); ok {
+		n := node.(*Node)
+		n.Release()
+		c.nodeL1Size.Add(-1)
+	}
+
+	// Note: We don't evict from L2 here as it may still be useful
+}
+
+// GetNodeStats returns statistics about NodeL1 cache.
+func (c *PageCache) GetNodeStats() CacheStats {
+	size := c.nodeL1Size.Load()
+	return CacheStats{
+		Size:     int(size),
+		Capacity: c.nodeL1Capacity,
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"errors"
 	"sort"
+	"sync/atomic"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
@@ -81,6 +82,11 @@ type Node struct {
 	// IsLeaf indicates whether this is a leaf node.
 	// Leaf nodes have Values, internal nodes have Children.
 	IsLeaf bool
+
+	// pinCount tracks the number of active references to this node.
+	// Used for cache management and eviction.
+	// When pinCount > 0, the node cannot be evicted from cache.
+	pinCount int32
 }
 
 // NewNode creates a new node with the given type.
@@ -385,4 +391,21 @@ func (n *Node) Clone() *Node {
 	copy(clone.ChildIDs, n.ChildIDs)
 
 	return clone
+}
+
+// Acquire increments the reference count for this node.
+// Used for cache management to prevent premature eviction.
+func (n *Node) Acquire() {
+	atomic.AddInt32(&n.pinCount, 1)
+}
+
+// Release decrements the reference count for this node.
+// When the reference count reaches zero, the node can be evicted from cache.
+func (n *Node) Release() {
+	atomic.AddInt32(&n.pinCount, -1)
+}
+
+// PinCount returns the current reference count for this node.
+func (n *Node) PinCount() int32 {
+	return atomic.LoadInt32(&n.pinCount)
 }

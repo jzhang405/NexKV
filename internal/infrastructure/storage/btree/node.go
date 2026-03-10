@@ -27,9 +27,11 @@ var (
 )
 
 // Node represents a BTree node (either leaf or internal).
-// Pure in-memory implementation without page indirection for maximum performance.
-// This eliminates the 4075-byte Page.Data overhead and reduces CopyPathBottomUp
-// from copying ~4KB per node to simple pointer assignment.
+//
+// Phase 2.5 - Hybrid Architecture:
+//   - Primary: Pure in-memory with direct pointers for performance
+//   - Secondary: PageID field for persistence support
+//   - Transition: Gradual migration to PageID-based indirection
 //
 // Node Layout:
 //   - Leaf node:   [Keys[i], Values[i]] pairs, sorted by Keys
@@ -42,6 +44,11 @@ var (
 //   - Keys are always sorted in ascending order
 //   - All keys in Children[i] < Keys[i] <= keys in Children[i+1]
 type Node struct {
+	// PageID stores the persistent page identifier (0 for in-memory nodes).
+	// Used for serialization and crash recovery.
+	// When PageID == 0, the node exists only in memory.
+	PageID model.PageID
+
 	// Keys stores the sorted keys in ascending order.
 	// For leaf nodes: actual data keys
 	// For internal nodes: separator keys between children
@@ -64,8 +71,11 @@ type Node struct {
 }
 
 // NewNode creates a new node with the given type.
+// PageID is initialized to 0 (in-memory only).
+// Call allocateNodePageID() to assign a persistent page ID.
 func NewNode(isLeaf bool) *Node {
 	return &Node{
+		PageID:   0, // In-memory node, no persistent page yet
 		IsLeaf:   isLeaf,
 		Keys:     make([][]byte, 0, model.DefaultMaxKeys),
 		Values:   make([][]byte, 0, model.DefaultMaxKeys),

@@ -251,3 +251,112 @@ func BenchmarkDeserializeNode(b *testing.B) {
 		_, _ = DeserializeNode(page)
 	}
 }
+
+// TestNewNodePageIDInitialization verifies that new nodes are initialized with PageID = 0.
+func TestNewNodePageIDInitialization(t *testing.T) {
+	leafNode := NewNode(true)
+	assert.Equal(t, model.PageID(0), leafNode.PageID, "New leaf node should have PageID = 0")
+
+	internalNode := NewNode(false)
+	assert.Equal(t, model.PageID(0), internalNode.PageID, "New internal node should have PageID = 0")
+}
+
+// TestSerializeNodeWithPageID verifies that node's PageID is preserved during serialization.
+func TestSerializeNodeWithPageID(t *testing.T) {
+	// Create a leaf node with specific PageID
+	node := NewNode(true)
+	node.PageID = 42 // Set a specific PageID
+	_ = node.Insert([]byte("key1"), []byte("value1"))
+
+	// Serialize to page
+	page := NewPage(node.PageID, model.LeafPage)
+	err := SerializeNode(node, page)
+	require.NoError(t, err)
+
+	// Verify page ID matches
+	assert.Equal(t, model.PageID(42), page.ID, "Page ID should match node's PageID")
+}
+
+// TestInternalNodeChildPageIDSerialization verifies that child nodes' PageIDs are serialized.
+func TestInternalNodeChildPageIDSerialization(t *testing.T) {
+	// Create internal node with children that have PageIDs
+	parent := NewNode(false)
+	parent.PageID = 1
+
+	child1 := NewNode(true)
+	child1.PageID = 10
+	_ = child1.Insert([]byte("a"), []byte("a_val"))
+
+	child2 := NewNode(true)
+	child2.PageID = 20
+	_ = child2.Insert([]byte("z"), []byte("z_val"))
+
+	parent.Children = []*Node{child1, child2}
+	parent.Keys = [][]byte{[]byte("m")}
+
+	// Serialize parent to page
+	page := NewPage(parent.PageID, model.InternalPage)
+	err := SerializeNode(parent, page)
+	require.NoError(t, err)
+
+	// Deserialize and verify child PageIDs are preserved
+	restored, err := DeserializeNode(page)
+	require.NoError(t, err)
+
+	assert.False(t, restored.IsLeaf)
+	assert.Equal(t, 1, len(restored.Keys))
+	assert.True(t, bytes.Equal(restored.Keys[0], []byte("m")))
+
+	// Note: Currently children are not fully restored (will be handled in Phase 2)
+	// But we can verify the serialized data contains child PageIDs
+	buf := page.Data[:]
+	offset := 8 // Skip header
+
+	// Skip keys section
+	for i := 0; i < len(parent.Keys); i++ {
+		keyLen := int(buf[offset]) | int(buf[offset+1])<<8
+		offset += 2 + keyLen
+	}
+
+	// Read child PageIDs
+	child1PageID := int(buf[offset]) | int(buf[offset+1])<<8 | int(buf[offset+2])<<16 |
+		int(buf[offset+3])<<24 | int(buf[offset+4])<<32 | int(buf[offset+5])<<40 |
+		int(buf[offset+6])<<48 | int(buf[offset+7])<<56
+	offset += 8
+
+	child2PageID := int(buf[offset]) | int(buf[offset+1])<<8 | int(buf[offset+2])<<16 |
+		int(buf[offset+3])<<24 | int(buf[offset+4])<<32 | int(buf[offset+5])<<40 |
+		int(buf[offset+6])<<48 | int(buf[offset+7])<<56
+
+	assert.Equal(t, 10, child1PageID, "First child PageID should be 10")
+	assert.Equal(t, 20, child2PageID, "Second child PageID should be 20")
+}
+
+// TestSerializeNodeWithZeroPageID verifies that nodes with PageID=0 are handled correctly.
+func TestSerializeNodeWithZeroPageID(t *testing.T) {
+	// Create a node with PageID = 0 (in-memory only)
+	node := NewNode(true)
+	// PageID is already 0 by default
+	_ = node.Insert([]byte("key"), []byte("value"))
+
+	// Serialize
+	page := NewPage(0, model.LeafPage)
+	err := SerializeNode(node, page)
+	require.NoError(t, err)
+
+	// Verify serialization succeeded
+	assert.Equal(t, model.PageID(0), page.ID)
+	assert.True(t, page.IsDirty()) // SerializeNode marks page as dirty
+}
+
+// TestAllocateNodePageIDInMemoryMode verifies PageID allocation in memory mode.
+func TestAllocateNodePageIDInMemoryMode(t *testing.T) {
+	// Create BTree in memory-only mode (no persistence)
+	btree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer btree.Close()
+
+	// Allocate PageID should return 0 in memory mode
+	pageID := btree.allocateNodePageID()
+	assert.Equal(t, model.PageID(0), pageID, "Should return 0 in memory-only mode")
+}

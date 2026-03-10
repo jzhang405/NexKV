@@ -314,6 +314,15 @@ func (b *BTree) insertFromWAL(key, value []byte) error {
 	return b.InsertWithSplit(ctx, key, value)
 }
 
+// allocateNodePageID allocates a new PageID for a node.
+// Returns 0 if persistence is disabled.
+func (b *BTree) allocateNodePageID() model.PageID {
+	if !b.enablePersistence || b.pageManager == nil {
+		return 0 // In-memory mode
+	}
+	return b.pageManager.AllocatePage()
+}
+
 // persistNode persists a node to disk using PageManager.
 // nolint:unused // Reserved for Phase 2.5 (full node persistence)
 func (b *BTree) persistNode(node *Node) error {

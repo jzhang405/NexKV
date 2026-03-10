@@ -106,13 +106,12 @@ func SerializeNode(node *Node, page *Page) error {
 				}
 				binary.LittleEndian.PutUint64(buf[offset:offset+8], 0)
 			} else {
-				// Note: For pure memory BTree, we don't have PageID for children yet
-				// This will be handled when Page-based architecture is fully implemented
-				// For now, use a placeholder
+				// Use the child's PageID for serialization
+				// If PageID is 0 (in-memory only), serialize as 0
 				if offset+8 > len(buf) {
 					return ErrBufferTooSmall
 				}
-				binary.LittleEndian.PutUint64(buf[offset:offset+8], uint64(uintptr(0)))
+				binary.LittleEndian.PutUint64(buf[offset:offset+8], uint64(child.PageID))
 			}
 			offset += 8
 		}

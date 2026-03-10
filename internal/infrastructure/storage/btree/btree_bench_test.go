@@ -78,7 +78,7 @@ func BenchmarkBTree_ReadThroughput(b *testing.B) {
 	ctx := context.Background()
 
 	// 预热：插入初始数据
-	numKeys := 1000
+	numKeys := 200  // Less than DefaultMaxKeys (256) to avoid node full
 	for i := range numKeys {
 		key := []byte(fmt.Sprintf("key-%05d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))
@@ -258,17 +258,39 @@ func BenchmarkRead_Random(b *testing.B) {
 	btree, _ := OpenBTree("", nil)
 	defer btree.Close()
 
-	// Pre-populate with data
-	rootInfo := btree.root.Get()
-	numKeys := 1000
+	ctx := context.Background()
+
+	// Pre-populate with data using CCOW
+	numKeys := 200  // Less than DefaultMaxKeys (256) to avoid node full
 	keys := make([][]byte, numKeys)
 	for i := range numKeys {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))
-		_ = rootInfo.Root.Insert(key, value)
 		keys[i] = key
+
+		rootInfo := btree.root.Get()
+		path := make(Path, 1)
+		path[0] = &PathNode{
+			Node:  rootInfo.Root,
+			Level: 0,
+		}
+
+		modifyFunc := func(node *Node) error {
+			return node.Insert(key, value)
+		}
+
+		newRoot, err := btree.CopyPathBottomUp(ctx, path, modifyFunc)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		err = btree.root.Update(ctx, newRoot, uint64(i))
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		rootInfo.Release()
 	}
-	rootInfo.Release()
 
 	b.ResetTimer()
 	for i := range b.N {
@@ -295,7 +317,7 @@ func BenchmarkWrite_Random(b *testing.B) {
 
 	ctx := context.Background()
 	opCount := 0
-	numKeys := 1000
+	numKeys := 200  // Less than DefaultMaxKeys (256) to avoid node full
 
 	b.ResetTimer()
 	for i := range b.N {
@@ -309,7 +331,8 @@ func BenchmarkWrite_Random(b *testing.B) {
 			Level: 0,
 		}
 
-		key := []byte(fmt.Sprintf("key-%d", i%numKeys))
+		// Use cyclic keys to avoid "node is full" error
+		key := []byte(fmt.Sprintf("key-%d", opCount%numKeys))
 		value := []byte(fmt.Sprintf("value-%d", i))
 
 		// Perform CCOW write
@@ -338,21 +361,44 @@ func BenchmarkRead_Concurrent(b *testing.B) {
 	btree, _ := OpenBTree("", nil)
 	defer btree.Close()
 
-	// Pre-populate with data
-	rootInfo := btree.root.Get()
-	numKeys := 1000
+	ctx := context.Background()
+
+	// Pre-populate with data using CCOW
+	numKeys := 200  // Less than DefaultMaxKeys (256) to avoid node full
 	for i := range numKeys {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))
-		_ = rootInfo.Root.Insert(key, value)
+
+		rootInfo := btree.root.Get()
+		path := make(Path, 1)
+		path[0] = &PathNode{
+			Node:  rootInfo.Root,
+			Level: 0,
+		}
+
+		modifyFunc := func(node *Node) error {
+			return node.Insert(key, value)
+		}
+
+		newRoot, err := btree.CopyPathBottomUp(ctx, path, modifyFunc)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		err = btree.root.Update(ctx, newRoot, uint64(i))
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		rootInfo.Release()
 	}
-	rootInfo.Release()
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		i := 0
+		// Use local counter to avoid race condition
+		localI := 0
 		for pb.Next() {
-			key := []byte(fmt.Sprintf("key-%d", i%numKeys))
+			key := []byte(fmt.Sprintf("key-%d", localI%numKeys))
 			path, err := btree.FindPath(key)
 			if err != nil {
 				b.Error(err)
@@ -368,7 +414,7 @@ func BenchmarkRead_Concurrent(b *testing.B) {
 				return
 			}
 			_ = value
-			i++
+			localI++
 		}
 	})
 }
@@ -453,17 +499,38 @@ func BenchmarkMixed_ReadWrite(b *testing.B) {
 	btree, _ := OpenBTree("", nil)
 	defer btree.Close()
 
-	// Pre-populate with data
-	rootInfo := btree.root.Get()
-	numKeys := 1000
+	ctx := context.Background()
+
+	// Pre-populate with data using CCOW
+	numKeys := 200  // Less than DefaultMaxKeys (256) to avoid node full
 	for i := range numKeys {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))
-		_ = rootInfo.Root.Insert(key, value)
-	}
-	rootInfo.Release()
 
-	ctx := context.Background()
+		rootInfo := btree.root.Get()
+		path := make(Path, 1)
+		path[0] = &PathNode{
+			Node:  rootInfo.Root,
+			Level: 0,
+		}
+
+		modifyFunc := func(node *Node) error {
+			return node.Insert(key, value)
+		}
+
+		newRoot, err := btree.CopyPathBottomUp(ctx, path, modifyFunc)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		err = btree.root.Update(ctx, newRoot, uint64(i))
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		rootInfo.Release()
+	}
+
 	opCount := 0
 
 	b.ResetTimer()
@@ -583,7 +650,7 @@ func BenchmarkBTree_ConcurrentRead(b *testing.B) {
 	ctx := context.Background()
 
 	// 预热：插入初始数据
-	numKeys := 1000
+	numKeys := 200  // Less than DefaultMaxKeys (256) to avoid node full
 	for i := range numKeys {
 		key := []byte(fmt.Sprintf("key-%05d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))

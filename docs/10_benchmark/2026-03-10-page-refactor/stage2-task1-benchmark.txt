@@ -1,0 +1,80 @@
+goos: linux
+goarch: amd64
+pkg: github.com/jzhang405/NexKV/internal/infrastructure/storage/btree
+cpu: Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz
+BenchmarkBatchSize_5-12                     	  276655	      4106 ns/op	   11849 B/op	      33 allocs/op
+BenchmarkBatchSize_10-12                    	  214532	      5865 ns/op	   13968 B/op	      53 allocs/op
+BenchmarkBatchSize_20-12                    	  137900	     10056 ns/op	   18047 B/op	      94 allocs/op
+BenchmarkBatchSize_30-12                    	   98361	     12514 ns/op	   21624 B/op	     135 allocs/op
+BenchmarkBatchSize_50-12                    	   63368	     17489 ns/op	   30328 B/op	     218 allocs/op
+BenchmarkBatchSize_100-12                   	   36806	     34684 ns/op	   50278 B/op	     425 allocs/op
+BenchmarkBatchSizePerKey/BatchSize_5-12     	  259810	      4278 ns/op	   1299050 keys	   11849 B/op	      33 allocs/op
+BenchmarkBatchSizePerKey/BatchSize_10-12    	  227036	      5511 ns/op	   2270360 keys	   13969 B/op	      53 allocs/op
+BenchmarkBatchSizePerKey/BatchSize_20-12    	  143503	      8800 ns/op	   2870060 keys	   18047 B/op	      94 allocs/op
+BenchmarkBatchSizePerKey/BatchSize_30-12    	   93903	     12306 ns/op	   2817090 keys	   21624 B/op	     135 allocs/op
+BenchmarkBatchSizePerKey/BatchSize_50-12    	   56422	     18807 ns/op	   2821100 keys	   30328 B/op	     218 allocs/op
+BenchmarkBatchSizePerKey/BatchSize_100-12   	   34069	     34647 ns/op	   3406900 keys	   50279 B/op	     425 allocs/op
+BenchmarkSingleKeyComparison-12             	  282997	      4527 ns/op	   18202 B/op	      12 allocs/op
+BenchmarkBTree_WriteThroughput-12           	  241644	      4666 ns/op	       256.0 writes	   17944 B/op	      14 allocs/op
+BenchmarkBTree_ReadThroughput-12            	 8423745	       129.0 ns/op	         0 reads	      21 B/op	       1 allocs/op
+BenchmarkBTree_BatchWriteThroughput/BatchSize_10-12         	  191197	      6307 ns/op	         0 writes	   18633 B/op	      70 allocs/op
+BenchmarkBTree_BatchWriteThroughput/BatchSize_50-12         	   67377	     18194 ns/op	         0 writes	   25041 B/op	     310 allocs/op
+BenchmarkBTree_BatchWriteThroughput/BatchSize_100-12        	   36010	     36858 ns/op	         0 writes	   33253 B/op	     610 allocs/op
+BenchmarkRead_Sequential-12                                 	 2827371	       433.7 ns/op	     207 B/op	       4 allocs/op
+BenchmarkWrite_Sequential-12                                	  195894	      5391 ns/op	   36380 B/op	      26 allocs/op
+BenchmarkRead_Random-12                                     	--- FAIL: BenchmarkRead_Random-12
+    btree_bench_test.go:285: key not found
+BenchmarkWrite_Random-12                                    	--- FAIL: BenchmarkWrite_Random-12
+    btree_bench_test.go:322: failed to modify leaf node: node is full
+BenchmarkRead_Concurrent-12                                 	--- FAIL: BenchmarkRead_Concurrent-12
+    btree_bench_test.go:367: key not found
+    btree_bench_test.go:367: key not found
+    btree_bench_test.go:367: key not found
+    btree_bench_test.go:367: key not found
+    btree_bench_test.go:367: key not found
+    btree_bench_test.go:367: key not found
+    btree_bench_test.go:367: key not found
+    btree_bench_test.go:367: key not found
+    btree_bench_test.go:367: key not found
+    btree_bench_test.go:367: key not found
+    btree_bench_test.go:367: key not found
+    btree_bench_test.go:367: key not found
+BenchmarkWrite_Concurrent-12                                	  538906	      2015 ns/op	   17953 B/op	      14 allocs/op
+--- FAIL: BenchmarkMixed_ReadWrite
+    btree_bench_test.go:490: failed to modify leaf node: node is full
+BenchmarkBTree_ConcurrentWrite-12                           	  474512	      2316 ns/op	       848.0 writes	   17955 B/op	      14 allocs/op
+BenchmarkBTree_ConcurrentRead-12                            	19017990	        64.82 ns/op	         0 reads	      21 B/op	       1 allocs/op
+BenchmarkBTree_MixedReadWrite-12                            	 7563057	       148.9 ns/op	       560.0 reads	       157.0 writes	      27 B/op	       1 allocs/op
+BenchmarkNode_Clone_Optimized-12                            	  538131	      2157 ns/op	   17664 B/op	       4 allocs/op
+BenchmarkNode_BatchInsert-12                                	  522510	      2508 ns/op	     800 B/op	      42 allocs/op
+BenchmarkNode_BatchInsert_vs_Single/BatchInsert-12          	 3097944	       477.5 ns/op	     480 B/op	       2 allocs/op
+BenchmarkNode_BatchInsert_vs_Single/SingleInsert-12         	  487554	      2387 ns/op	   17664 B/op	       4 allocs/op
+BenchmarkCCOW_Batch-12                                      	  155446	      7836 ns/op	   17760 B/op	      48 allocs/op
+BenchmarkCCOW_Complete_vs_Batch/Complete-12                 	 4676000	       243.1 ns/op	      62 B/op	       5 allocs/op
+BenchmarkCCOW_Complete_vs_Batch/Batch-12                    	  125342	      9082 ns/op	   17847 B/op	      51 allocs/op
+BenchmarkWriteThroughput_Single-12                          	  227480	      4622 ns/op	    768640 ops/sec	   17928 B/op	      12 allocs/op
+BenchmarkWriteThroughput_Batch-12                           	  240043	      5277 ns/op	   13489 B/op	      51 allocs/op
+BenchmarkNodeOperations_Insert-12                           	 3502494	       349.6 ns/op	     149 B/op	       6 allocs/op
+BenchmarkNodeOperations_Search-12                           	 7231501	       139.6 ns/op	       7 B/op	       1 allocs/op
+BenchmarkNodeOperations_Get-12                              	 8784819	       139.5 ns/op	       7 B/op	       1 allocs/op
+BenchmarkCCOW_Complete-12                                   	  244812	      4631 ns/op	   17944 B/op	      12 allocs/op
+BenchmarkNode_Read-12                                       	 8298310	       129.9 ns/op	       7 B/op	       1 allocs/op
+BenchmarkNode_Write-12                                      	   41572	     31727 ns/op	   20876 B/op	     404 allocs/op
+BenchmarkCCOW_ReadWrite-12                                  	  260899	      4604 ns/op	   18202 B/op	      12 allocs/op
+BenchmarkPath_Find-12                                       	 3754996	       355.1 ns/op	     207 B/op	       4 allocs/op
+BenchmarkPath_Copy-12                                       	  220065	      4789 ns/op	   18202 B/op	      12 allocs/op
+BenchmarkRoot_Update-12                                     	  436965	      2709 ns/op	   18282 B/op	      11 allocs/op
+BenchmarkRoot_Get-12                                        	100000000	        10.21 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemory_Allocation-12                               	  389326	      3197 ns/op	    6595 B/op	      43 allocs/op
+BenchmarkThroughput_Read-12                                 	 2713459	       443.0 ns/op	  12134450 ops/sec	     207 B/op	       4 allocs/op
+BenchmarkThroughput_Write-12                                	  249948	      4744 ns/op	    888889 ops/sec	   18202 B/op	      12 allocs/op
+BenchmarkCCOWRead-12                                        	 9162942	       121.5 ns/op	      23 B/op	       1 allocs/op
+BenchmarkCCOWWrite-12                                       	  228614	      5123 ns/op	   18087 B/op	      17 allocs/op
+BenchmarkCCOWConcurrentWrite-12                             	  523065	      2147 ns/op	   18073 B/op	      16 allocs/op
+BenchmarkNode_SplitCopy-12                                  	  544495	      2137 ns/op	   15328 B/op	       8 allocs/op
+BenchmarkNode_SplitCopyOptimized-12                         	  541897	      2159 ns/op	   15328 B/op	       8 allocs/op
+BenchmarkNode_SplitVsSplitCopy/Original_Split-12            	  633091	      1928 ns/op	   17776 B/op	       5 allocs/op
+BenchmarkNode_SplitVsSplitCopy/SplitCopy-12                 	  483775	      2174 ns/op	   15328 B/op	       8 allocs/op
+BenchmarkConcurrentSplitCopy-12                             	  102220	     12302 ns/op	   35041 B/op	     524 allocs/op
+BenchmarkNode_Split-12                                      	  627308	      1890 ns/op	   17776 B/op	       5 allocs/op
+BenchmarkNode_Merge-12                                      	

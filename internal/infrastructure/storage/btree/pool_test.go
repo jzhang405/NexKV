@@ -14,6 +14,8 @@ package btree
 import (
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // ==========================================
@@ -442,4 +444,33 @@ func analyzeResults(t *testing.T, results map[string]BenchmarkResult) {
 	t.Log("性能分析结果:")
 	t.Log("  注意: 这些数据需要通过实际基准测试获得")
 	t.Log("  运行命令: go test -bench=. -benchmem ./internal/infrastructure/storage/btree/")
+}
+
+// TestPool_AcquireAndRelease tests pool acquire and release operations.
+func TestPool_AcquireAndRelease(t *testing.T) {
+	// Test Page pool
+	page := AcquirePage()
+	assert.NotNil(t, page)
+	ReleasePage(page)
+
+	// Test Node pool - returns a leaf node
+	node := AcquireNode()
+	assert.NotNil(t, node)
+	// Check if it's a leaf (field access, not method)
+	assert.Equal(t, true, node.IsLeaf)
+	ReleaseNode(node)
+
+	// Test Internal Node pool
+	internalNode := AcquireInternalNode()
+	assert.NotNil(t, internalNode)
+	// Check if it's not a leaf (field access, not method)
+	assert.Equal(t, false, internalNode.IsLeaf)
+	ReleaseNode(internalNode)
+
+	// Test pool stats
+	stats := GetPoolStats()
+	assert.NotNil(t, stats)
+	// Stats fields are PageHits, PageMisses, NodeHits, NodeMisses
+	assert.GreaterOrEqual(t, stats.PageHits, int64(0))
+	assert.GreaterOrEqual(t, stats.NodeHits, int64(0))
 }

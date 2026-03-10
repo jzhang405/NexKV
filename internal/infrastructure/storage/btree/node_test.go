@@ -412,3 +412,16 @@ func BenchmarkNodeSplit(b *testing.B) {
 		_, _, _ = node.Split()
 	}
 }
+
+// TestNode_CloningIntegrity tests node cloning.
+func TestNode_CloningIntegrity(t *testing.T) {
+	node := NewNode(true)
+	for i := 0; i < 5; i++ {
+		key := []byte{byte(i)}
+		_ = node.Insert(key, []byte("value"))
+	}
+
+	cloned := node.Clone()
+	assert.Equal(t, node.PageID, cloned.PageID)
+	assert.Equal(t, len(node.Keys), len(cloned.Keys))
+}

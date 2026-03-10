@@ -98,22 +98,12 @@ func SerializeNode(node *Node, page *Page) error {
 		}
 	} else {
 		// Write children: [PageID(8)] × (NumKeys + 1)
-		for _, child := range node.Children {
-			if child == nil {
-				// Use 0 as null PageID
-				if offset+8 > len(buf) {
-					return ErrBufferTooSmall
-				}
-				binary.LittleEndian.PutUint64(buf[offset:offset+8], 0)
-			} else {
-				// Note: For pure memory BTree, we don't have PageID for children yet
-				// This will be handled when Page-based architecture is fully implemented
-				// For now, use a placeholder
-				if offset+8 > len(buf) {
-					return ErrBufferTooSmall
-				}
-				binary.LittleEndian.PutUint64(buf[offset:offset+8], uint64(uintptr(0)))
+		// Use ChildIDs for serialization (persistent references)
+		for _, childID := range node.ChildIDs {
+			if offset+8 > len(buf) {
+				return ErrBufferTooSmall
 			}
+			binary.LittleEndian.PutUint64(buf[offset:offset+8], uint64(childID))
 			offset += 8
 		}
 	}
@@ -186,9 +176,8 @@ func DeserializeNode(page *Page) (*Node, error) {
 		}
 	} else {
 		// Read children: [PageID(8)] × (NumKeys + 1)
-		// Note: For pure memory BTree, we don't restore children from PageID yet
-		// This will be handled when Page-based architecture is fully implemented
-		node.Children = make([]*Node, 0, numKeys+1)
+		// Store in ChildIDs for lazy loading (will be loaded by PageCache.GetNode later)
+		node.ChildIDs = make([]model.PageID, 0, numKeys+1)
 		for i := 0; i < numKeys+1; i++ {
 			if offset+8 > len(buf) {
 				return nil, ErrBufferTooSmall
@@ -196,15 +185,13 @@ func DeserializeNode(page *Page) (*Node, error) {
 			pageID := binary.LittleEndian.Uint64(buf[offset : offset+8])
 			offset += 8
 
-			if pageID == 0 {
-				// Null child
-				node.Children = append(node.Children, nil)
-			} else {
-				// Placeholder: will be resolved by PageCache
-				// For now, create empty node as placeholder
-				node.Children = append(node.Children, nil)
-			}
+			// Store PageID in ChildIDs (0 means null or in-memory only)
+			node.ChildIDs = append(node.ChildIDs, model.PageID(pageID))
+
+			// Note: Children slice is left empty for now
+			// It will be populated by lazy loading when accessed
 		}
+		node.Children = make([]*Node, 0, numKeys+1) // Pre-allocate but empty
 	}
 
 	return node, nil
@@ -230,7 +217,7 @@ func GetSerializedSize(node *Node) (int, error) {
 			size += 2 + len(value)
 		}
 	} else {
-		// Children: PageID(8) × (NumKeys + 1)
+		// ChildIDs: PageID(8) × (NumKeys + 1)
 		size += 8 * (len(node.Keys) + 1)
 	}
 

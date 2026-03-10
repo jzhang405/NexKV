@@ -278,3 +278,114 @@ const (
 	ModifyUpdate
 	ModifyDelete
 )
+
+// FindPathPageID finds the path from root to leaf for the given key using PageID-based lazy loading.
+// This method uses PageCache.GetNode() to load nodes on-demand from three-tier cache.
+// Falls back to direct pointer mode when root.PageID == 0 (memory-only mode).
+//
+// IMPORTANT: Caller is responsible for releasing the returned path using ReleasePath().
+func (b *BTree) FindPathPageID(key []byte) (Path, error) {
+	// Get current root
+	rootInfo := b.root.Get()
+	defer rootInfo.Release()
+
+	rootNode := rootInfo.Root
+
+	// Check if we're in memory-only mode (PageID == 0)
+	if rootNode.PageID == 0 {
+		// Fall back to direct pointer mode
+		return b.findPathDirect(key)
+	}
+
+	// Use PageID-based lazy loading
+	return b.findPathPageID(key, rootNode.PageID)
+}
+
+// findPathPageID implements PageID-based path finding with lazy loading.
+func (b *BTree) findPathPageID(key []byte, rootPageID model.PageID) (Path, error) {
+	path := AcquirePath()
+
+	currentID := rootPageID
+	currentLevel := b.maxLevels
+
+	for currentLevel > 0 {
+		currentLevel--
+
+		// Lazy load node from PageCache
+		currentNode, err := b.pageCache.GetNode(currentID)
+		if err != nil {
+			ReleasePath(path)
+			return nil, fmt.Errorf("load node %d: %w", currentID, err)
+		}
+		defer currentNode.Release()
+
+		// Add current node to path
+		pathNode := &PathNode{
+			Node:  currentNode,
+			Level: currentLevel,
+		}
+		path = append(path, pathNode)
+
+		// If this is a leaf node, we're done
+		if currentNode.IsLeaf {
+			break
+		}
+
+		// Validate internal node has children
+		if len(currentNode.ChildIDs) == 0 {
+			ReleasePath(path)
+			return nil, ErrInvalidPath
+		}
+
+		// Find the child to descend to
+		idx := currentNode.Search(key)
+		if idx >= len(currentNode.ChildIDs) {
+			// Key is greater than all keys, go to rightmost child
+			currentID = currentNode.ChildIDs[len(currentNode.ChildIDs)-1]
+		} else {
+			currentID = currentNode.ChildIDs[idx]
+		}
+	}
+
+	return path, nil
+}
+
+// findPathDirect implements direct pointer-based path finding (memory-only mode).
+// Used as fallback when root.PageID == 0.
+func (b *BTree) findPathDirect(key []byte) (Path, error) {
+	path := AcquirePath()
+
+	// Get current root
+	rootInfo := b.root.Get()
+	defer rootInfo.Release()
+
+	currentNode := rootInfo.Root
+	currentLevel := b.maxLevels
+
+	for currentLevel > 0 {
+		currentLevel--
+
+		// Add current node to path
+		pathNode := &PathNode{
+			Node:  currentNode,
+			Level: currentLevel,
+		}
+		path = append(path, pathNode)
+
+		// If this is a leaf node, we're done
+		if currentNode.IsLeaf {
+			break
+		}
+
+		// Find the child to descend to
+		idx := currentNode.Search(key)
+		if idx >= len(currentNode.Children) {
+			// Key is greater than all keys, go to rightmost child
+			currentNode = currentNode.Children[len(currentNode.Children)-1]
+		} else {
+			currentNode = currentNode.Children[idx]
+		}
+	}
+
+	return path, nil
+}

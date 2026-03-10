@@ -55,7 +55,7 @@ type Request struct {
 // drainRequestResult 清空 Request 的 Result channel 中可能的残留数据
 // 在从对象池获取 Request 后调用，确保 channel 处于干净状态
 //
-//nolint:deadcode,unused
+//nolint:unused
 func drainRequestResult(req *Request) {
 	select {
 	case <-req.Result:

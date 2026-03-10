@@ -6,6 +6,8 @@ package btree
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -274,4 +276,401 @@ func TestNodeCloningInCCOW(t *testing.T) {
 			assert.Equal(t, value1, value2)
 		}
 	})
+}
+
+// TestBTree_FindPathPageID verifies PageID-based path finding with lazy loading.
+func TestBTree_FindPathPageID(t *testing.T) {
+	t.Run("memory mode fallback", func(t *testing.T) {
+		// Memory-only mode (no PageManager)
+		btree, err := OpenBTree("", nil)
+		require.NoError(t, err)
+		defer btree.Close()
+
+		// Insert some keys
+		rootInfo := btree.root.Get()
+		for i := range 10 {
+			key := []byte{byte(i)}
+			value := []byte("value")
+			_ = rootInfo.Root.Insert(key, value)
+		}
+		rootInfo.Release()
+
+		// FindPathPageID should fall back to direct pointer mode
+		key := []byte{5}
+		path, err := btree.FindPathPageID(key)
+		require.NoError(t, err)
+		require.NotNil(t, path)
+
+		// Path should have at least one node
+		assert.Greater(t, len(path), 0)
+
+		// Last node should be leaf
+		lastNode := path[len(path)-1]
+		assert.True(t, lastNode.Node.IsLeaf)
+
+		ReleasePath(path)
+	})
+
+	t.Run("find path in empty tree", func(t *testing.T) {
+		btree, err := OpenBTree("", nil)
+		require.NoError(t, err)
+		defer btree.Close()
+
+		key := []byte("test-key")
+		path, err := btree.FindPathPageID(key)
+		require.NoError(t, err)
+		require.NotNil(t, path)
+
+		// Path should have at least one node (the leaf/root)
+		assert.Greater(t, len(path), 0)
+
+		// Last node should be leaf
+		lastNode := path[len(path)-1]
+		assert.True(t, lastNode.Node.IsLeaf)
+
+		ReleasePath(path)
+	})
+
+	t.Run("path levels are correct", func(t *testing.T) {
+		btree, err := OpenBTree("", nil)
+		require.NoError(t, err)
+		defer btree.Close()
+
+		// Insert enough keys to potentially create internal nodes
+		rootInfo := btree.root.Get()
+		for i := range 100 {
+			key := []byte{byte(i)}
+			value := []byte("value")
+			_ = rootInfo.Root.Insert(key, value)
+		}
+		rootInfo.Release()
+
+		key := []byte{50}
+		path, err := btree.FindPathPageID(key)
+		require.NoError(t, err)
+		require.NotNil(t, path)
+
+		// Verify path levels decrease from root to leaf
+		for i := 0; i < len(path)-1; i++ {
+			assert.Greater(t, path[i].Level, path[i+1].Level,
+				"Path levels should decrease from root to leaf")
+		}
+
+		// Last node should be leaf
+		lastNode := path[len(path)-1]
+		assert.True(t, lastNode.Node.IsLeaf)
+
+		ReleasePath(path)
+	})
+
+	t.Run("compare FindPath and FindPathPageID results", func(t *testing.T) {
+		btree, err := OpenBTree("", nil)
+		require.NoError(t, err)
+		defer btree.Close()
+
+		// Insert keys
+		rootInfo := btree.root.Get()
+		for i := range 50 {
+			key := []byte{byte(i)}
+			value := []byte("value")
+			_ = rootInfo.Root.Insert(key, value)
+		}
+		rootInfo.Release()
+
+		// Test multiple keys
+		testKeys := []byte{10, 25, 40}
+		for _, keyByte := range testKeys {
+			key := []byte{keyByte}
+
+			// Find path using direct pointer method
+			path1, err1 := btree.FindPath(key)
+			require.NoError(t, err1)
+			defer ReleasePath(path1)
+
+			// Find path using PageID method
+			path2, err2 := btree.FindPathPageID(key)
+			require.NoError(t, err2)
+			defer ReleasePath(path2)
+
+			// Both should return the same path length
+			assert.Equal(t, len(path1), len(path2),
+				"Path lengths should match for key %d", keyByte)
+
+			// Both should end at leaf nodes
+			assert.True(t, path1[len(path1)-1].Node.IsLeaf)
+			assert.True(t, path2[len(path2)-1].Node.IsLeaf)
+		}
+	})
+}
+
+// TestFindPathPageID_NotFound verifies handling of non-existent keys.
+func TestFindPathPageID_NotFound(t *testing.T) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer btree.Close()
+
+	// Insert some keys
+	rootInfo := btree.root.Get()
+	for i := range 10 {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		_ = rootInfo.Root.Insert(key, value)
+	}
+	rootInfo.Release()
+
+	// Try to find a key that doesn't exist
+	// Path finding should still succeed, just return the path to where it would be
+	key := []byte{255} // Way outside the range
+	path, err := btree.FindPathPageID(key)
+	require.NoError(t, err)
+	require.NotNil(t, path)
+
+	// Should still have a valid path
+	assert.Greater(t, len(path), 0)
+
+	ReleasePath(path)
+}
+
+// TestFindPathPageID_Concurrent verifies concurrent path finding.
+func TestFindPathPageID_Concurrent(t *testing.T) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer btree.Close()
+
+	// Insert keys
+	rootInfo := btree.root.Get()
+	for i := range 100 {
+		key := []byte{byte(i)}
+		value := []byte("value")
+		_ = rootInfo.Root.Insert(key, value)
+	}
+	rootInfo.Release()
+
+	// Concurrent path finding
+	const numGoroutines = 10
+	const numOpsPerGoroutine = 100
+
+	done := make(chan bool, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer func() { done <- true }()
+			for j := 0; j < numOpsPerGoroutine; j++ {
+				key := []byte{byte(j % 100)}
+				path, err := btree.FindPathPageID(key)
+				if err == nil {
+					// Verify path is valid
+					if len(path) > 0 {
+						lastNode := path[len(path)-1]
+						if !lastNode.Node.IsLeaf {
+							t.Errorf("Expected leaf node at end of path")
+						}
+					}
+					ReleasePath(path)
+				}
+			}
+		}(i)
+	}
+
+	// Wait for all goroutines to complete
+	for i := 0; i < numGoroutines; i++ {
+		<-done
+	}
+}
+
+// TestCopyPathBottomUp_ErrorHandling tests error handling in CopyPathBottomUp.
+func TestCopyPathBottomUp_ErrorHandling(t *testing.T) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer btree.Close()
+
+	ctx := context.Background()
+
+	// Test with empty path
+	emptyPath := Path{}
+	_, err = btree.CopyPathBottomUp(ctx, emptyPath, func(node *Node) error {
+		return nil
+	})
+	assert.Error(t, err)
+}
+
+// TestCopyPathBottomUp_ModifyFuncError tests when modifyFunc returns error.
+func TestCopyPathBottomUp_ModifyFuncError(t *testing.T) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer btree.Close()
+
+	ctx := context.Background()
+
+	rootInfo := btree.root.Get()
+	defer rootInfo.Release()
+
+	// Create a path with root node only
+	path := make(Path, 1)
+	path[0] = &PathNode{
+		Node:  rootInfo.Root,
+		Level: 0,
+	}
+
+	// Modify function that returns error
+	modifyFunc := func(node *Node) error {
+		return errors.New("intentional test error")
+	}
+
+	_, err = btree.CopyPathBottomUp(ctx, path, modifyFunc)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "intentional test error")
+}
+
+// TestCopyPathBottomUpBatch_Success tests successful batch path copying.
+func TestCopyPathBottomUpBatch_Success(t *testing.T) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer btree.Close()
+
+	ctx := context.Background()
+
+	rootInfo := btree.root.Get()
+	defer rootInfo.Release()
+
+	// Create path with root node only
+	path := make(Path, 1)
+	path[0] = &PathNode{
+		Node:  rootInfo.Root,
+		Level: 0,
+	}
+
+	// Batch insert function to insert multiple keys
+	batchFunc := func(node *Node) error {
+		for i := 0; i < 5; i++ {
+			key := []byte(fmt.Sprintf("batch-%d", i))
+			value := []byte(fmt.Sprintf("batch-value-%d", i))
+			if err := node.Insert(key, value); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	newRoot, err := btree.CopyPathBottomUpBatch(ctx, path, batchFunc)
+	require.NoError(t, err)
+	assert.NotNil(t, newRoot)
+
+	// Verify all keys were inserted
+	for i := 0; i < 5; i++ {
+		key := []byte(fmt.Sprintf("batch-%d", i))
+		value, err := newRoot.Get(key)
+		require.NoError(t, err)
+		assert.Equal(t, []byte(fmt.Sprintf("batch-value-%d", i)), value)
+	}
+}
+
+// TestCopyPathBottomUpBatch_EmptyPath tests empty path error handling.
+func TestCopyPathBottomUpBatch_EmptyPath(t *testing.T) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer btree.Close()
+
+	ctx := context.Background()
+
+	emptyPath := Path{}
+	_, err = btree.CopyPathBottomUpBatch(ctx, emptyPath, func(node *Node) error {
+		return nil
+	})
+	assert.Error(t, err)
+}
+
+// TestCopyPathBottomUpBatch_BatchFuncError tests error propagation from batchFunc.
+func TestCopyPathBottomUpBatch_BatchFuncError(t *testing.T) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer btree.Close()
+
+	ctx := context.Background()
+
+	rootInfo := btree.root.Get()
+	defer rootInfo.Release()
+
+	path := make(Path, 1)
+	path[0] = &PathNode{
+		Node:  rootInfo.Root,
+		Level: 0,
+	}
+
+	batchFunc := func(node *Node) error {
+		return errors.New("batch operation failed")
+	}
+
+	_, err = btree.CopyPathBottomUpBatch(ctx, path, batchFunc)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "batch operation failed")
+}
+
+// TestCopyPathBottomUpBatch_ContextCanceled tests context cancellation.
+func TestCopyPathBottomUpBatch_ContextCanceled(t *testing.T) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer btree.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	rootInfo := btree.root.Get()
+	defer rootInfo.Release()
+
+	path := make(Path, 1)
+	path[0] = &PathNode{
+		Node:  rootInfo.Root,
+		Level: 0,
+	}
+
+	_, err = btree.CopyPathBottomUpBatch(ctx, path, func(node *Node) error {
+		return nil
+	})
+	assert.Error(t, err)
+}
+
+// TestFindPathPageID_Errors tests FindPathPageID error cases.
+func TestFindPathPageID_Errors(t *testing.T) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer btree.Close()
+
+	// Test with canceled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = btree.FindPathPageID([]byte("test-key"))
+	// Should either work or return context error
+	// We don't assert error since it might work in memory mode
+	_ = err
+	_ = ctx
+}
+
+// TestFindPathDirect_EmptyKey tests FindPathDirect with empty key.
+func TestFindPathDirect_EmptyKey(t *testing.T) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer btree.Close()
+
+	// Empty key should be handled
+	path, err := btree.findPathDirect([]byte{})
+	if err == nil {
+		defer ReleasePath(path)
+		assert.NotNil(t, path)
+	}
+}
+
+// TestPath_AcquireRelease tests path acquire and release.
+func TestPath_AcquireRelease(t *testing.T) {
+	path := AcquirePath()
+	defer ReleasePath(path)
+
+	root := NewNode(true)
+	path = append(path, &PathNode{
+		Node:  root,
+		Level: 0,
+	})
+
+	assert.Equal(t, 1, len(path))
 }

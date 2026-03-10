@@ -78,7 +78,7 @@ func BenchmarkBTree_ReadThroughput(b *testing.B) {
 	ctx := context.Background()
 
 	// 预热：插入初始数据
-	numKeys := 200  // Less than DefaultMaxKeys (256) to avoid node full
+	numKeys := 200 // Less than DefaultMaxKeys (256) to avoid node full
 	for i := range numKeys {
 		key := []byte(fmt.Sprintf("key-%05d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))
@@ -261,7 +261,7 @@ func BenchmarkRead_Random(b *testing.B) {
 	ctx := context.Background()
 
 	// Pre-populate with data using CCOW
-	numKeys := 200  // Less than DefaultMaxKeys (256) to avoid node full
+	numKeys := 200 // Less than DefaultMaxKeys (256) to avoid node full
 	keys := make([][]byte, numKeys)
 	for i := range numKeys {
 		key := []byte(fmt.Sprintf("key-%d", i))
@@ -317,7 +317,7 @@ func BenchmarkWrite_Random(b *testing.B) {
 
 	ctx := context.Background()
 	opCount := 0
-	numKeys := 200  // Less than DefaultMaxKeys (256) to avoid node full
+	numKeys := 200 // Less than DefaultMaxKeys (256) to avoid node full
 
 	b.ResetTimer()
 	for i := range b.N {
@@ -364,7 +364,7 @@ func BenchmarkRead_Concurrent(b *testing.B) {
 	ctx := context.Background()
 
 	// Pre-populate with data using CCOW
-	numKeys := 200  // Less than DefaultMaxKeys (256) to avoid node full
+	numKeys := 200 // Less than DefaultMaxKeys (256) to avoid node full
 	for i := range numKeys {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))
@@ -502,7 +502,7 @@ func BenchmarkMixed_ReadWrite(b *testing.B) {
 	ctx := context.Background()
 
 	// Pre-populate with data using CCOW
-	numKeys := 200  // Less than DefaultMaxKeys (256) to avoid node full
+	numKeys := 200 // Less than DefaultMaxKeys (256) to avoid node full
 	for i := range numKeys {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))
@@ -650,7 +650,7 @@ func BenchmarkBTree_ConcurrentRead(b *testing.B) {
 	ctx := context.Background()
 
 	// 预热：插入初始数据
-	numKeys := 200  // Less than DefaultMaxKeys (256) to avoid node full
+	numKeys := 200 // Less than DefaultMaxKeys (256) to avoid node full
 	for i := range numKeys {
 		key := []byte(fmt.Sprintf("key-%05d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))

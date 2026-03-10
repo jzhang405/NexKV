@@ -416,3 +416,15 @@ func BenchmarkVersionedRoot_CreateSnapshot(b *testing.B) {
 		_, _ = vr.CreateSnapshot(ctx)
 	}
 }
+
+// TestVersionedRoot_SetMaxVersions tests SetMaxVersions method.
+func TestVersionedRoot_SetMaxVersions(t *testing.T) {
+	root := NewVersionedRoot(NewNode(true))
+
+	// Default max versions is 10
+	assert.Equal(t, 10, root.GetMaxVersions())
+
+	// Set max versions
+	root.SetMaxVersions(50)
+	assert.Equal(t, 50, root.GetMaxVersions())
+}

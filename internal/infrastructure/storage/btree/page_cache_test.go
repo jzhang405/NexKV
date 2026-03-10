@@ -426,3 +426,391 @@ func TestPageCache_GetNode_Concurrent(t *testing.T) {
 	stats := cache.GetNodeStats()
 	assert.Equal(t, 1, stats.Size)
 }
+
+// TestPageCache_EvictLRUNode tests the LRU eviction logic for NodeL1 cache.
+func TestPageCache_EvictLRUNode(t *testing.T) {
+	// Create a cache with very small capacity (1 node)
+	cache := NewPageCache(10, 100, 1, nil)
+
+	// Create first node and store it
+	node1 := NewNode(true)
+	err := node1.Insert([]byte("key1"), []byte("value1"))
+	require.NoError(t, err)
+	err = cache.PutNode(1, node1)
+	require.NoError(t, err)
+
+	// Verify node1 is in cache
+	stats := cache.GetNodeStats()
+	assert.Equal(t, 1, stats.Size)
+
+	// Create second node and store it (should evict node1)
+	node2 := NewNode(true)
+	err = node2.Insert([]byte("key2"), []byte("value2"))
+	require.NoError(t, err)
+	err = cache.PutNode(2, node2)
+	require.NoError(t, err)
+
+	// Verify cache size is still 1 (LRU eviction)
+	stats = cache.GetNodeStats()
+	assert.Equal(t, 1, stats.Size)
+
+	// Verify node2 is now in cache
+	retrieved, err := cache.GetNode(2)
+	require.NoError(t, err)
+	assert.Equal(t, 1, len(retrieved.Keys))
+	assert.Equal(t, []byte("key2"), retrieved.Keys[0])
+	retrieved.Release()
+
+	// node1 should have been evicted (not in NodeL1, but may be in L2)
+	retrieved2, err := cache.GetNode(1)
+	require.NoError(t, err)
+	assert.NotNil(t, retrieved2)
+	retrieved2.Release()
+}
+
+// TestPageCache_GetNode_L3Hit tests the L3 cache hit path (loading from PageManager).
+func TestPageCache_GetNode_L3Hit(t *testing.T) {
+	// Create a temporary directory for PageManager
+	tempDir := t.TempDir()
+	dbFile := tempDir + "/test.db"
+
+	// Create a real PageManager
+	pageManager, err := NewPageManager(dbFile)
+	require.NoError(t, err)
+
+	// Create a cache with small capacity
+	cache := NewPageCache(1, 100, 10, pageManager)
+
+	// Pre-populate PageManager with a page
+	node := NewNode(true)
+	err = node.Insert([]byte("key1"), []byte("value1"))
+	require.NoError(t, err)
+
+	page, err := PageFromNode(1, node)
+	require.NoError(t, err)
+
+	err = pageManager.WritePage(page)
+	require.NoError(t, err)
+
+	// Clear NodeL1 and L2 to force L3 hit
+	cache.NodeL1 = &sync.Map{}
+	cache.L2 = &sync.Map{}
+	cache.nodeL1Size.Store(0)
+	cache.l2Size.Store(0)
+
+	// GetNode should load from L3 (PageManager)
+	retrieved, err := cache.GetNode(1)
+	require.NoError(t, err)
+	assert.NotNil(t, retrieved)
+	assert.Equal(t, 1, len(retrieved.Keys))
+	assert.Equal(t, []byte("key1"), retrieved.Keys[0])
+
+	// Verify it was cached in both L1 and L2
+	stats := cache.GetNodeStats()
+	assert.Equal(t, 1, stats.Size)
+
+	retrieved.Release()
+}
+
+// TestPageCache_Get_L2Hit tests L2 cache hit with L1 promotion.
+func TestPageCache_Get_L2Hit(t *testing.T) {
+	// Create a cache with limited L1 capacity
+	cache := NewPageCache(2, 100, 10, nil)
+
+	// Create and store a page using NewPage
+	page1 := NewPage(1, model.LeafPage)
+	copy(page1.Data[:], []byte("test-data-1"))
+
+	err := cache.Put(page1)
+	require.NoError(t, err)
+
+	// Clear L1 to force L2 hit on next Get
+	cache.L1 = &sync.Map{}
+	cache.l1Size.Store(0)
+
+	// Get should find in L2 and promote to L1
+	retrieved, ok := cache.Get(1)
+	assert.True(t, ok)
+	assert.NotNil(t, retrieved)
+	assert.Equal(t, model.PageID(1), retrieved.ID)
+
+	// Verify it was promoted to L1
+	l1Size := cache.l1Size.Load()
+	assert.Equal(t, int64(1), l1Size)
+
+	retrieved.Release()
+}
+
+// TestPageCache_Get_NotFound tests cache miss.
+func TestPageCache_Get_NotFound(t *testing.T) {
+	cache := NewPageCache(10, 100, 10, nil)
+
+	// Try to get non-existent page
+	retrieved, ok := cache.Get(999)
+	assert.False(t, ok)
+	assert.Nil(t, retrieved)
+}
+
+// TestPageCache_Put_NilPage tests putting nil page.
+func TestPageCache_Put_NilPage(t *testing.T) {
+	cache := NewPageCache(10, 100, 10, nil)
+
+	// Put nil should not error
+	err := cache.Put(nil)
+	assert.NoError(t, err)
+
+	// L1 size should remain 0
+	l1Size := cache.l1Size.Load()
+	assert.Equal(t, int64(0), l1Size)
+}
+
+// TestPageCache_Put_UpdateExisting tests updating existing page in cache.
+func TestPageCache_Put_UpdateExisting(t *testing.T) {
+	cache := NewPageCache(10, 100, 10, nil)
+
+	// Create and store initial page using NewPage
+	page1 := NewPage(1, model.LeafPage)
+	copy(page1.Data[:], []byte("initial-data"))
+
+	err := cache.Put(page1)
+	require.NoError(t, err)
+
+	l1Size1 := cache.l1Size.Load()
+	assert.Equal(t, int64(1), l1Size1)
+
+	// Update with new data
+	page1Updated := NewPage(1, model.LeafPage)
+	copy(page1Updated.Data[:], []byte("updated-data"))
+
+	err = cache.Put(page1Updated)
+	require.NoError(t, err)
+
+	// L1 size should still be 1 (not incremented)
+	l1Size2 := cache.l1Size.Load()
+	assert.Equal(t, int64(1), l1Size2)
+
+	// Verify we get the updated data
+	retrieved, ok := cache.Get(1)
+	assert.True(t, ok)
+	assert.Equal(t, []byte("updated-data"), retrieved.Data[:len("updated-data")])
+	retrieved.Release()
+}
+
+// TestPageManager_WritePage_NotDirty tests writing a clean page.
+func TestPageManager_WritePage_NotDirty(t *testing.T) {
+	tempDir := t.TempDir()
+	dbFile := tempDir + "/test.db"
+
+	pageManager, err := NewPageManager(dbFile)
+	require.NoError(t, err)
+	defer pageManager.Close()
+
+	// Create a page without marking it dirty
+	page := NewPage(1, model.LeafPage)
+	copy(page.Data[:], []byte("test-data"))
+
+	// WritePage should return nil (not dirty, no write needed)
+	err = pageManager.WritePage(page)
+	assert.NoError(t, err)
+}
+
+// TestPageManager_WritePage_NilPage tests writing nil page.
+func TestPageManager_WritePage_NilPage(t *testing.T) {
+	tempDir := t.TempDir()
+	dbFile := tempDir + "/test.db"
+
+	pageManager, err := NewPageManager(dbFile)
+	require.NoError(t, err)
+	defer pageManager.Close()
+
+	// WritePage with nil should return error
+	err = pageManager.WritePage(nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "page is nil")
+}
+
+// TestPageManager_WritePage_Closed tests writing to closed PageManager.
+func TestPageManager_WritePage_Closed(t *testing.T) {
+	tempDir := t.TempDir()
+	dbFile := tempDir + "/test.db"
+
+	pageManager, err := NewPageManager(dbFile)
+	require.NoError(t, err)
+
+	// Close the PageManager
+	pageManager.Close()
+
+	// Create a dirty page
+	page := NewPage(1, model.LeafPage)
+	copy(page.Data[:], []byte("test-data"))
+	page.MarkDirty()
+
+	// WritePage should return ErrStoreClosed
+	err = pageManager.WritePage(page)
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrStoreClosed)
+}
+
+// TestNode_BatchInsert_Basic tests basic batch insert functionality.
+func TestNode_BatchInsert_Basic(t *testing.T) {
+	node := NewNode(true)
+
+	// Batch insert multiple keys
+	keys := make([][]byte, 5)
+	values := make([][]byte, 5)
+	for i := 0; i < 5; i++ {
+		keys[i] = []byte{byte(i)}
+		values[i] = []byte("value")
+	}
+
+	err := node.BatchInsert(keys, values)
+	require.NoError(t, err)
+
+	// Verify all keys were inserted
+	assert.Equal(t, 5, len(node.Keys))
+
+	// Verify values
+	for i := 0; i < 5; i++ {
+		value, err := node.Get(keys[i])
+		require.NoError(t, err)
+		assert.Equal(t, values[i], value)
+	}
+}
+
+// TestNode_BatchInsert_MismatchedLengths tests batch insert with mismatched arrays.
+func TestNode_BatchInsert_MismatchedLengths(t *testing.T) {
+	node := NewNode(true)
+
+	keys := make([][]byte, 3)
+	values := make([][]byte, 5) // Different length
+
+	err := node.BatchInsert(keys, values)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "length mismatch")
+}
+
+// TestPage_TypeCheckers tests Page type checking methods.
+func TestPage_TypeCheckers(t *testing.T) {
+	leafPage := NewPage(1, model.LeafPage)
+	internalPage := NewPage(2, model.InternalPage)
+	metaPage := NewPage(3, model.MetaPage)
+
+	assert.True(t, leafPage.IsLeaf())
+	assert.False(t, leafPage.IsInternal())
+	assert.False(t, leafPage.IsMeta())
+
+	assert.False(t, internalPage.IsLeaf())
+	assert.True(t, internalPage.IsInternal())
+	assert.False(t, internalPage.IsMeta())
+
+	assert.False(t, metaPage.IsLeaf())
+	assert.False(t, metaPage.IsInternal())
+	assert.True(t, metaPage.IsMeta())
+}
+
+// TestPage_GetRefCount tests GetRefCount method.
+func TestPage_GetRefCount(t *testing.T) {
+	page := NewPage(1, model.LeafPage)
+
+	// Initial ref count should be 1 (from NewPage)
+	refCount := page.GetRefCount()
+	assert.Equal(t, int32(1), refCount)
+
+	// Acquire should increment
+	page.Acquire()
+	refCount = page.GetRefCount()
+	assert.Equal(t, int32(2), refCount)
+
+	// Release should decrement
+	page.Release()
+	refCount = page.GetRefCount()
+	assert.Equal(t, int32(1), refCount)
+}
+
+// TestPage_GetVersion tests GetVersion method.
+func TestPage_GetVersion(t *testing.T) {
+	page := NewPage(1, model.LeafPage)
+
+	// Initial version should be 0
+	assert.Equal(t, uint64(0), page.GetVersion())
+
+	// Set version
+	page.SetVersion(5)
+	assert.Equal(t, uint64(5), page.GetVersion())
+}
+
+// TestPageCache_EvictionLRUBoundary tests LRU eviction at boundaries.
+func TestPageCache_EvictionLRUBoundary(t *testing.T) {
+	cache := NewPageCache(2, 100, 2, nil)
+
+	// Create pages
+	page1 := NewPage(1, model.LeafPage)
+	page2 := NewPage(2, model.LeafPage)
+	page3 := NewPage(3, model.LeafPage)
+
+	// Fill cache to capacity
+	err := cache.Put(page1)
+	require.NoError(t, err)
+	err = cache.Put(page2)
+	require.NoError(t, err)
+
+	// Access page1 to make it more recent
+	_, _ = cache.Get(1)
+
+	// Add page3 - should evict page2 (least recently used)
+	err = cache.Put(page3)
+	require.NoError(t, err)
+
+	// page2 should be evicted, page1 and page3 should remain
+	_, ok := cache.Get(2)
+	assert.False(t, ok) // page2 evicted
+
+	_, ok = cache.Get(1)
+	assert.True(t, ok) // page1 still there
+
+	_, ok = cache.Get(3)
+	assert.True(t, ok) // page3 added
+}
+
+// TestPageCache_EvictAll tests evicting all cached items.
+func TestPageCache_EvictAll(t *testing.T) {
+	cache := NewPageCache(10, 100, 10, nil)
+
+	// Add some pages
+	for i := 1; i <= 5; i++ {
+		page := NewPage(model.PageID(i), model.LeafPage)
+		err := cache.Put(page)
+		require.NoError(t, err)
+	}
+
+	// Clear all
+	cache.Clear()
+
+	// All should be evicted
+	stats := cache.GetL1Stats()
+	assert.Equal(t, 0, stats.Size)
+}
+
+// TestPageCache_StatsConsistency tests cache statistics consistency.
+func TestPageCache_StatsConsistency(t *testing.T) {
+	cache := NewPageCache(10, 100, 10, nil)
+
+	// Initially empty
+	l1Stats := cache.GetL1Stats()
+	assert.Equal(t, 0, l1Stats.Size)
+
+	l2Stats := cache.GetL2Stats()
+	assert.Equal(t, 0, l2Stats.Size)
+
+	// Add one page
+	page := NewPage(1, model.LeafPage)
+	err := cache.Put(page)
+	require.NoError(t, err)
+
+	// Should be in both L1 and L2
+	l1Stats = cache.GetL1Stats()
+	assert.Equal(t, 1, l1Stats.Size)
+
+	l2Stats = cache.GetL2Stats()
+	assert.Equal(t, 1, l2Stats.Size)
+}

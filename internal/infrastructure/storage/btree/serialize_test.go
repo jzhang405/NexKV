@@ -291,7 +291,9 @@ func TestInternalNodeChildPageIDSerialization(t *testing.T) {
 	child2.PageID = 20
 	_ = child2.Insert([]byte("z"), []byte("z_val"))
 
+	// Set both Children (for in-memory access) and ChildIDs (for serialization)
 	parent.Children = []*Node{child1, child2}
+	parent.ChildIDs = []model.PageID{10, 20} // ⭐ 新增：设置 ChildIDs
 	parent.Keys = [][]byte{[]byte("m")}
 
 	// Serialize parent to page
@@ -306,30 +308,9 @@ func TestInternalNodeChildPageIDSerialization(t *testing.T) {
 	assert.False(t, restored.IsLeaf)
 	assert.Equal(t, 1, len(restored.Keys))
 	assert.True(t, bytes.Equal(restored.Keys[0], []byte("m")))
-
-	// Note: Currently children are not fully restored (will be handled in Phase 2)
-	// But we can verify the serialized data contains child PageIDs
-	buf := page.Data[:]
-	offset := 8 // Skip header
-
-	// Skip keys section
-	for i := 0; i < len(parent.Keys); i++ {
-		keyLen := int(buf[offset]) | int(buf[offset+1])<<8
-		offset += 2 + keyLen
-	}
-
-	// Read child PageIDs
-	child1PageID := int(buf[offset]) | int(buf[offset+1])<<8 | int(buf[offset+2])<<16 |
-		int(buf[offset+3])<<24 | int(buf[offset+4])<<32 | int(buf[offset+5])<<40 |
-		int(buf[offset+6])<<48 | int(buf[offset+7])<<56
-	offset += 8
-
-	child2PageID := int(buf[offset]) | int(buf[offset+1])<<8 | int(buf[offset+2])<<16 |
-		int(buf[offset+3])<<24 | int(buf[offset+4])<<32 | int(buf[offset+5])<<40 |
-		int(buf[offset+6])<<48 | int(buf[offset+7])<<56
-
-	assert.Equal(t, 10, child1PageID, "First child PageID should be 10")
-	assert.Equal(t, 20, child2PageID, "Second child PageID should be 20")
+	assert.Equal(t, 2, len(restored.ChildIDs), "ChildIDs should have 2 entries")
+	assert.Equal(t, model.PageID(10), restored.ChildIDs[0], "First child PageID should be 10")
+	assert.Equal(t, model.PageID(20), restored.ChildIDs[1], "Second child PageID should be 20")
 }
 
 // TestSerializeNodeWithZeroPageID verifies that nodes with PageID=0 are handled correctly.

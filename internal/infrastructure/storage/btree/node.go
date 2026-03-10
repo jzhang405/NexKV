@@ -33,6 +33,11 @@ var (
 //   - Secondary: PageID field for persistence support
 //   - Transition: Gradual migration to PageID-based indirection
 //
+// Phase 2 - Lazy Loading Support:
+//   - Children []*Node: In-memory cache for fast access
+//   - ChildIDs []PageID: Persistent references for serialization
+//   - Both fields are kept in sync for hybrid access
+//
 // Node Layout:
 //   - Leaf node:   [Keys[i], Values[i]] pairs, sorted by Keys
 //   - Internal node: Keys[i] are separators, Children[i] and Children[i+1]
@@ -40,7 +45,7 @@ var (
 //
 // Invariants:
 //   - len(Keys) <= DefaultMaxKeys
-//   - For internal nodes: len(Children) == len(Keys) + 1
+//   - For internal nodes: len(Children) == len(ChildIDs) == len(Keys) + 1
 //   - Keys are always sorted in ascending order
 //   - All keys in Children[i] < Keys[i] <= keys in Children[i+1]
 type Node struct {
@@ -60,10 +65,18 @@ type Node struct {
 	Values [][]byte
 
 	// Children stores child node pointers (only for internal nodes).
+	// Used as in-memory cache for fast access.
 	// Children[i] contains keys < Keys[i]
 	// Children[i+1] contains keys >= Keys[i]
 	// Using direct Node pointers eliminates PageID indirection.
 	Children []*Node
+
+	// ChildIDs stores persistent PageID references (only for internal nodes).
+	// Used for serialization and lazy loading.
+	// ChildIDs[i] corresponds to Children[i].
+	// When a child is loaded from disk, ChildIDs[i] is used to fetch the node.
+	// For in-memory nodes (PageID == 0), ChildIDs[i] will be 0.
+	ChildIDs []model.PageID
 
 	// IsLeaf indicates whether this is a leaf node.
 	// Leaf nodes have Values, internal nodes have Children.
@@ -72,6 +85,7 @@ type Node struct {
 
 // NewNode creates a new node with the given type.
 // PageID is initialized to 0 (in-memory only).
+// ChildIDs is initialized to empty slice for internal nodes.
 // Call allocateNodePageID() to assign a persistent page ID.
 func NewNode(isLeaf bool) *Node {
 	return &Node{
@@ -80,6 +94,7 @@ func NewNode(isLeaf bool) *Node {
 		Keys:     make([][]byte, 0, model.DefaultMaxKeys),
 		Values:   make([][]byte, 0, model.DefaultMaxKeys),
 		Children: make([]*Node, 0, model.DefaultMaxKeys+1),
+		ChildIDs: make([]model.PageID, 0, model.DefaultMaxKeys+1), // Initialize ChildIDs
 	}
 }
 
@@ -353,17 +368,21 @@ func (n *Node) Clear() {
 
 // Clone creates a shallow copy of the node.
 // Simple and efficient implementation using make() + copy().
+// Both PageID and ChildIDs are copied for persistence support.
 func (n *Node) Clone() *Node {
 	clone := &Node{
+		PageID:   n.PageID,
 		IsLeaf:   n.IsLeaf,
 		Keys:     make([][]byte, len(n.Keys), cap(n.Keys)),
 		Values:   make([][]byte, len(n.Values), cap(n.Values)),
 		Children: make([]*Node, len(n.Children), cap(n.Children)),
+		ChildIDs: make([]model.PageID, len(n.ChildIDs), cap(n.ChildIDs)),
 	}
 
 	copy(clone.Keys, n.Keys)
 	copy(clone.Values, n.Values)
 	copy(clone.Children, n.Children)
+	copy(clone.ChildIDs, n.ChildIDs)
 
 	return clone
 }

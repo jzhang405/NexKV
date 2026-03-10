@@ -7,6 +7,7 @@ package btree
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"sort"
 	"sync/atomic"
 
@@ -233,6 +234,7 @@ func (n *Node) BatchInsert(keys, values [][]byte) error {
 }
 
 // InsertChild inserts a key and child node pointer into an internal node.
+// Synchronizes ChildIDs with Children to maintain consistency for persistence.
 func (n *Node) InsertChild(key []byte, child *Node) error {
 	if len(key) == 0 {
 		return ErrInvalidKey
@@ -255,21 +257,39 @@ func (n *Node) InsertChild(key []byte, child *Node) error {
 	n.Keys[idx] = key
 
 	// Insert child (right side of the key)
-	n.Children = append(n.Children, nil)
+	// Extend slice to have at least idx+2 elements
+	for len(n.Children) <= idx+1 {
+		n.Children = append(n.Children, nil)
+	}
+	// Now shift elements [idx+1:] to [idx+2:]
 	copy(n.Children[idx+2:], n.Children[idx+1:])
+	// Finally insert at position idx+1
 	n.Children[idx+1] = child
+
+	// ⭐ 同步 ChildIDs：插入子节点的 PageID
+	childPageID := child.PageID
+	// Extend ChildIDs slice to have at least idx+2 elements
+	for len(n.ChildIDs) <= idx+1 {
+		n.ChildIDs = append(n.ChildIDs, 0)
+	}
+	// Shift and insert
+	copy(n.ChildIDs[idx+2:], n.ChildIDs[idx+1:])
+	n.ChildIDs[idx+1] = childPageID
 
 	return nil
 }
 
 // Split splits a full node into two nodes.
 // Returns the new node and the median key to promote to parent.
+// Synchronizes ChildIDs with Children for internal nodes.
 func (n *Node) Split() (*Node, []byte, error) {
 	if len(n.Keys) < model.DefaultMaxKeys {
 		return nil, nil, ErrNodeNotFull
 	}
 
 	// Find median index
+	// For 256 keys, we want 128+128 split, so mid = 127 (0-based)
+	// For odd number of keys, (n-1)/2 gives the middle
 	mid := (model.DefaultMaxKeys - 1) / 2
 	medianKey := n.Keys[mid]
 
@@ -291,6 +311,12 @@ func (n *Node) Split() (*Node, []byte, error) {
 		rightNode.Keys = append(rightNode.Keys, n.Keys[mid+1:]...)
 		rightNode.Children = append(rightNode.Children, n.Children[mid+1:]...)
 
+		// ⭐ 同步 ChildIDs：分割子节点 PageID
+		// 右节点获取后半部分 ChildIDs [mid+1:]
+		rightNode.ChildIDs = append(rightNode.ChildIDs, n.ChildIDs[mid+1:]...)
+		// 左节点保留前半部分 ChildIDs [0..mid]
+		n.ChildIDs = n.ChildIDs[:mid+1]
+
 		// Left node keeps keys[0..mid-1] and children[0..mid]
 		n.Keys = n.Keys[:mid]
 		n.Children = n.Children[:mid+1]
@@ -301,6 +327,7 @@ func (n *Node) Split() (*Node, []byte, error) {
 
 // Merge merges another node into this node.
 // Only valid when both nodes are below minimum capacity.
+// Synchronizes ChildIDs for internal nodes.
 func (n *Node) Merge(other *Node) error {
 	if n.IsLeaf != other.IsLeaf {
 		return errors.New("Merge: cannot merge different node types")
@@ -318,6 +345,9 @@ func (n *Node) Merge(other *Node) error {
 		n.Values = append(n.Values, other.Values...)
 	} else {
 		n.Children = append(n.Children, other.Children...)
+
+		// ⭐ 同步 ChildIDs：合并子节点 PageID
+		n.ChildIDs = append(n.ChildIDs, other.ChildIDs...)
 	}
 
 	return nil
@@ -365,11 +395,12 @@ func (n *Node) IsUnderflow() bool {
 	return len(n.Keys) < model.DefaultMinKeys
 }
 
-// Clear removes all keys, values, and children from the node.
+// Clear removes all keys, values, children, and ChildIDs from the node.
 func (n *Node) Clear() {
 	n.Keys = n.Keys[:0]
 	n.Values = n.Values[:0]
 	n.Children = n.Children[:0]
+	n.ChildIDs = n.ChildIDs[:0]
 }
 
 // Clone creates a shallow copy of the node.
@@ -391,6 +422,65 @@ func (n *Node) Clone() *Node {
 	copy(clone.ChildIDs, n.ChildIDs)
 
 	return clone
+}
+
+// ValidateChildConsistency validates that Children and ChildIDs are consistent.
+// Returns an error if inconsistency is detected.
+// Used for debugging and testing.
+func (n *Node) ValidateChildConsistency() error {
+	if n.IsLeaf {
+		// Leaf nodes should have no children
+		if len(n.Children) > 0 {
+			return fmt.Errorf("leaf node should not have children, got %d", len(n.Children))
+		}
+		if len(n.ChildIDs) > 0 {
+			return fmt.Errorf("leaf node should not have ChildIDs, got %d", len(n.ChildIDs))
+		}
+		return nil
+	}
+
+	// Internal nodes must have Children and ChildIDs
+	if len(n.Children) == 0 && len(n.ChildIDs) == 0 {
+		// Empty internal node is valid (newly created)
+		return nil
+	}
+
+	// Check lengths match
+	if len(n.Children) != len(n.ChildIDs) {
+		return fmt.Errorf("children length mismatch: children=%d, childIDs=%d",
+			len(n.Children), len(n.ChildIDs))
+	}
+
+	// Check PageID consistency
+	for i, child := range n.Children {
+		if child != nil && child.PageID != 0 && child.PageID != n.ChildIDs[i] {
+			return fmt.Errorf("childIDs[%d]=%d doesn't match children[%d].PageID=%d",
+				i, n.ChildIDs[i], i, child.PageID)
+		}
+	}
+
+	return nil
+}
+
+// EnsureChildIDs ensures ChildIDs slice is synchronized with Children.
+// Called after operations that modify Children.
+func (n *Node) EnsureChildIDs() {
+	if n.IsLeaf {
+		// Leaf nodes have no ChildIDs
+		return
+	}
+
+	// If ChildIDs is empty or mismatched, rebuild from Children
+	if len(n.ChildIDs) != len(n.Children) {
+		n.ChildIDs = make([]model.PageID, len(n.Children))
+		for i, child := range n.Children {
+			if child != nil {
+				n.ChildIDs[i] = child.PageID
+			} else {
+				n.ChildIDs[i] = 0
+			}
+		}
+	}
 }
 
 // Acquire increments the reference count for this node.

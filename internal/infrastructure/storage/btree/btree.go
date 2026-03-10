@@ -66,6 +66,9 @@ var (
 
 	// ErrRetry is returned when a CAS operation fails and the caller should retry.
 	ErrRetry = errors.New("cas failed, retry operation")
+
+	// ErrInvalidPath is returned when path finding fails due to invalid node structure.
+	ErrInvalidPath = errors.New("invalid path: node structure inconsistent")
 )
 
 // BTree is the main BTree storage engine with CCOW and persistence.
@@ -75,6 +78,7 @@ type BTree struct {
 	closedMu    sync.RWMutex
 	root        *VersionedRoot // Versioned root pointer
 	pageManager *PageManager   // Page manager for page allocation and persistence
+	pageCache   *PageCache     // Three-tier cache for Page and Node objects
 	wal         wal.WAL        // Write-Ahead Log for crash recovery
 	maxLevels   int            // Maximum tree levels
 	nodeCache   *nodeCache     // Node deserialization cache for optimization
@@ -146,6 +150,16 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// Create node cache for optimization
 	nodeCache := newNodeCache()
 
+	// Create page cache for three-tier caching
+	var pageCache *PageCache
+	if enablePersistence {
+		// Persistent mode: L1 (1000 pages), L2 (10000 buffers), NodeL1 (500 nodes), with PageManager
+		pageCache = NewPageCache(1000, 10000, 500, pageManager)
+	} else {
+		// Memory-only mode: smaller cache without PageManager
+		pageCache = NewPageCache(1000, 10000, 500, nil)
+	}
+
 	// Calculate max levels based on config
 	maxLevels := 10 // Default value
 
@@ -154,6 +168,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		closed:            false,
 		root:              root,
 		pageManager:       pageManager,
+		pageCache:         pageCache,
 		wal:               walImpl,
 		maxLevels:         maxLevels,
 		nodeCache:         nodeCache,

@@ -58,4 +58,5 @@ BenchmarkCCOWWrite-12                                       	 1000000	      5527
 BenchmarkCCOWConcurrentWrite-12                             	 2688241	      2150 ns/op	   18072 B/op	      17 allocs/op
 BenchmarkNode_SplitCopy-12                                  	 2563394	      2551 ns/op	   15328 B/op	       8 allocs/op
 BenchmarkNode_SplitCopyOptimized-12                         	 2590464	      2316 ns/op	   15328 B/op	       8 allocs/op
-BenchmarkNode_SplitVsSplitCopy/Original_Split-12            	
+BenchmarkNode_SplitVsSplitCopy/Original_Split-12            	 2425978	      2071 ns/op	   17776 B/op	       5 allocs/op
+BenchmarkNode_SplitVsSplitCopy/SplitCopy-12                 	

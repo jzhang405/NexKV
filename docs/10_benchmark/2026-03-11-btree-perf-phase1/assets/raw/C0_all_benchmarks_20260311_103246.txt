@@ -56,4 +56,6 @@ BenchmarkThroughput_Write-12                                	 1061062	      5645
 BenchmarkCCOWRead-12                                        	54094322	       118.6 ns/op	      23 B/op	       1 allocs/op
 BenchmarkCCOWWrite-12                                       	 1000000	      5527 ns/op	   18087 B/op	      17 allocs/op
 BenchmarkCCOWConcurrentWrite-12                             	 2688241	      2150 ns/op	   18072 B/op	      17 allocs/op
-BenchmarkNode_SplitCopy-12                                  	
+BenchmarkNode_SplitCopy-12                                  	 2563394	      2551 ns/op	   15328 B/op	       8 allocs/op
+BenchmarkNode_SplitCopyOptimized-12                         	 2590464	      2316 ns/op	   15328 B/op	       8 allocs/op
+BenchmarkNode_SplitVsSplitCopy/Original_Split-12            	

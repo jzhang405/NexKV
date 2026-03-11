@@ -88,11 +88,6 @@ type Node struct {
 	// Used for cache management and eviction.
 	// When pinCount > 0, the node cannot be evicted from cache.
 	pinCount int32
-
-	// refCount tracks the number of references for object pooling.
-	// When refCount reaches 0, the node can be returned to the pool.
-	// Used by AcquireNode/ReleaseNode for memory optimization.
-	refCount int32
 }
 
 // NewNode creates a new node with the given type.
@@ -108,38 +103,6 @@ func NewNode(isLeaf bool) *Node {
 		Children: make([]*Node, 0, model.DefaultMaxKeys+1),
 		ChildIDs: make([]model.PageID, 0, model.DefaultMaxKeys+1), // Initialize ChildIDs
 	}
-}
-
-// PoolRetain increases the reference count for object pooling.
-// Returns true if the node was retained, false if refCount was already 0.
-func (n *Node) PoolRetain() bool {
-	if n == nil {
-		return false
-	}
-	return atomic.AddInt32(&n.refCount, 1) > 0
-}
-
-// PoolRelease decreases the reference count and returns the node to the pool if it reaches 0.
-// Returns true if the node was returned to the pool, false otherwise.
-func (n *Node) PoolRelease() bool {
-	if n == nil {
-		return false
-	}
-	newCount := atomic.AddInt32(&n.refCount, -1)
-	if newCount == 0 {
-		// Return to pool
-		ReleaseNode(n)
-		return true
-	}
-	return newCount < 0 // Should not happen, but catch underflow
-}
-
-// PoolRefCount returns the current reference count (for testing/debugging).
-func (n *Node) PoolRefCount() int32 {
-	if n == nil {
-		return 0
-	}
-	return atomic.LoadInt32(&n.refCount)
 }
 
 // Search searches for a key in the node using binary search.
@@ -441,43 +404,22 @@ func (n *Node) Clear() {
 }
 
 // Clone creates a shallow copy of the node.
-// Uses object pooling for performance (AcquireNode instead of direct allocation).
+// Simple and efficient implementation using make() + copy().
 // Both PageID and ChildIDs are copied for persistence support.
-// The returned node has refCount = 1 and should be released with PoolRelease() when done.
 func (n *Node) Clone() *Node {
-	clone := AcquireNode()
-	clone.PageID = n.PageID
-	clone.IsLeaf = n.IsLeaf
-
-	// Reuse slices from pool, but ensure capacity
-	if cap(clone.Keys) < len(n.Keys) {
-		clone.Keys = make([][]byte, len(n.Keys), cap(n.Keys))
-	} else {
-		clone.Keys = clone.Keys[:len(n.Keys)]
-	}
-	if cap(clone.Values) < len(n.Values) {
-		clone.Values = make([][]byte, len(n.Values), cap(n.Values))
-	} else {
-		clone.Values = clone.Values[:len(n.Values)]
-	}
-	if cap(clone.Children) < len(n.Children) {
-		clone.Children = make([]*Node, len(n.Children), cap(n.Children))
-	} else {
-		clone.Children = clone.Children[:len(n.Children)]
-	}
-	if cap(clone.ChildIDs) < len(n.ChildIDs) {
-		clone.ChildIDs = make([]model.PageID, len(n.ChildIDs), cap(n.ChildIDs))
-	} else {
-		clone.ChildIDs = clone.ChildIDs[:len(n.ChildIDs)]
+	clone := &Node{
+		PageID:   n.PageID,
+		IsLeaf:   n.IsLeaf,
+		Keys:     make([][]byte, len(n.Keys), cap(n.Keys)),
+		Values:   make([][]byte, len(n.Values), cap(n.Values)),
+		Children: make([]*Node, len(n.Children), cap(n.Children)),
+		ChildIDs: make([]model.PageID, len(n.ChildIDs), cap(n.ChildIDs)),
 	}
 
 	copy(clone.Keys, n.Keys)
 	copy(clone.Values, n.Values)
 	copy(clone.Children, n.Children)
 	copy(clone.ChildIDs, n.ChildIDs)
-
-	// Initialize refCount = 1 for the caller
-	atomic.StoreInt32(&clone.refCount, 1)
 
 	return clone
 }

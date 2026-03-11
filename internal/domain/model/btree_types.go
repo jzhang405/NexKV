@@ -81,6 +81,7 @@ const (
 	// 优化：从 128 增加到 256，降低 Split 触发频率 50%
 	// 摊销开销：从 8.2 ns/插入 → 4.1 ns/插入
 	// 权衡：节点变大但 Split 频率降低，整体性能提升
+	// 注意：C1 测试显示 MaxKeys=512 性能下降 63%，因此保持 256
 	DefaultMaxKeys = 256
 
 	// DefaultMinKeys is the default minimum number of keys per page.

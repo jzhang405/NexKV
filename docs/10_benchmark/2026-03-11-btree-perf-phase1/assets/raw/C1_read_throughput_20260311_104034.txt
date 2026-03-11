@@ -1,0 +1,7 @@
+goos: linux
+goarch: amd64
+pkg: github.com/jzhang405/NexKV/internal/infrastructure/storage/btree
+cpu: Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz
+BenchmarkBTree_ReadThroughput-12    	55167033	       211.5 ns/op	  55167033 reads	      16 B/op	       1 allocs/op
+PASS
+ok  	github.com/jzhang405/NexKV/internal/infrastructure/storage/btree	11.909s

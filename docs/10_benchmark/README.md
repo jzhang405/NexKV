@@ -142,11 +142,19 @@ make benchmark-executor > docs/10_benchmark/2026-03-01-executor-comparison/asset
 
 ## 🔗 相关文档
 
+### BTree 性能测试
+
+- [BTree Phase 1 性能优化总结](2026-03-11-btree-perf-phase1/SUMMARY.md) - NexKV BTree 优化测试总结
+- [Lealone AOSE BTree 测试说明](2026-03-11-lealone-aose-btree/README.md) - Lealone BTree benchmark 文档
+- [NexKV vs Lealone 性能对比](2026-03-11-lealone-aose-btree/analysis/comparison-with-nexkv.md) - 架构和性能对比分析
+
+### 其他性能测试
+
 - [RPC 性能测试方案](../09_code-review/2026-03-05_rpc-perf-benchmark-plan.md)
 - [RPC Executor SourceID 设计](../09_code-review/2026-03-05_rpc-executor-sourceid-design.md)
 - [Executor 对比报告](assets/2026-03-01-perf/executor_comparison_report.md)
 
 ---
 
-**最后更新**: 2026-03-05
+**最后更新**: 2026-03-11
 **维护人**: jzh

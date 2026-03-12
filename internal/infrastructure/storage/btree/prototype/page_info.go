@@ -2,9 +2,9 @@ package prototype
 
 // PageInfo 简化的页面信息（无缓存逻辑，仅用于原型测试）
 type PageInfo struct {
-	page  *Page  // 页面对象
-	pos   int64  // 在 Chunk 中的位置（0=未写入）
-	state int32  // 状态：0=clean, 1=dirty
+	page  *Page // 页面对象
+	pos   int64 // 在 Chunk 中的位置（0=未写入）
+	state int32 // 状态：0=clean, 1=dirty
 }
 
 // NewPageInfo 创建新的 PageInfo

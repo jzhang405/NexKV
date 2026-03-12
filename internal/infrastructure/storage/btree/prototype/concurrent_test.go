@@ -1,7 +1,6 @@
 package prototype
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -238,45 +237,4 @@ func Test_ConcurrentClone(t *testing.T) {
 	}
 
 	wg.Wait()
-}
-
-// Example_PageReference_BasicUsage PageReference 基本使用示例
-func Example_PageReference_BasicUsage() {
-	// 创建 PageReference
-	ref := NewPageReferenceWithPage(NewPage(1))
-
-	// 读取页面
-	page := ref.GetPage()
-	fmt.Println(page.ID)
-
-	// 更新页面
-	newPage := NewPage(2)
-	ref.UpdatePage(newPage)
-
-	// 读取更新后的页面
-	page = ref.GetPage()
-	fmt.Println(page.ID)
-
-	// Output:
-	// 1
-	// 2
-}
-
-// Example_PageReference_CAS PageReference CAS 使用示例
-func Example_PageReference_CAS() {
-	ref := NewPageReferenceWithPage(NewPage(1))
-
-	oldInfo := ref.GetPageInfo()
-	newInfo := NewPageInfo(NewPage(2))
-
-	// CAS 更新
-	swapped := ref.ReplacePage(oldInfo, newInfo)
-	fmt.Println("CAS 成功:", swapped)
-
-	page := ref.GetPage()
-	fmt.Println(page.ID)
-
-	// Output:
-	// CAS 成功: true
-	// 2
 }

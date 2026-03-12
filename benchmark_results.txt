@@ -1,0 +1,18 @@
+goos: linux
+goarch: amd64
+pkg: github.com/jzhang405/NexKV/internal/infrastructure/storage/btree/prototype
+cpu: Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz
+Benchmark_DirectPointer_Read-12                	1000000000	         0.2431 ns/op	       0 B/op	       0 allocs/op
+Benchmark_AtomicPointer_Read-12                	1000000000	         0.3677 ns/op	       0 B/op	       0 allocs/op
+Benchmark_AtomicPointer_GetPageInfo-12         	1000000000	         0.3511 ns/op	       0 B/op	       0 allocs/op
+Benchmark_AtomicPointer_CAS-12                 	523950892	         6.852 ns/op	       0 B/op	       0 allocs/op
+Benchmark_AtomicPointer_UpdatePage-12          	54460705	        75.68 ns/op	      88 B/op	       2 allocs/op
+Benchmark_PageReference_ConcurrentRead-12      	1000000000	         0.1329 ns/op	       0 B/op	       0 allocs/op
+Benchmark_PageReference_ConcurrentWrite-12     	21323798	       171.7 ns/op	     198 B/op	       6 allocs/op
+Benchmark_PageReference_MixedReadWrite-12      	163646761	        21.95 ns/op	      11 B/op	       0 allocs/op
+Benchmark_PageInfo_Clone-12                    	45176780	        90.46 ns/op	      96 B/op	       2 allocs/op
+Benchmark_Page_Create-12                       	1000000000	         0.2365 ns/op	       0 B/op	       0 allocs/op
+Benchmark_DirectPointer_vs_AtomicPointer/DirectPointer-12         	1000000000	         0.2367 ns/op	       0 B/op	       0 allocs/op
+Benchmark_DirectPointer_vs_AtomicPointer/AtomicPointer-12         	1000000000	         0.3526 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/jzhang405/NexKV/internal/infrastructure/storage/btree/prototype	24.426s

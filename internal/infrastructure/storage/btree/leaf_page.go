@@ -146,7 +146,8 @@ func (p *LeafPage) Insert(key, value []byte) (bool, error) {
 // insertSlice 在切片指定位置插入元素
 func insertSlice[T any](slice []T, idx int, value T) []T {
 	if len(slice) == cap(slice) {
-		newSlice := make([]T, len(slice), cap(slice)*2)
+		// 创建新切片时预留空间给新元素
+		newSlice := make([]T, len(slice)+1, cap(slice)*2)
 		copy(newSlice, slice[:idx])
 		copy(newSlice[idx+1:], slice[idx:])
 		newSlice[idx] = value

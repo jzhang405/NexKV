@@ -24,7 +24,7 @@ func TestPersistence_OpenWithDirectory(t *testing.T) {
 	defer btree.Close()
 
 	// Verify persistence is enabled
-	assert.True(t, btree.enablePersistence, "Persistence should be enabled")
+	assert.NotNil(t, btree.chunkMgr, "ChunkManager should be enabled")
 	assert.True(t, btree.enableWAL, "WAL should be enabled")
 	assert.NotNil(t, btree.pageManager, "PageManager should be initialized")
 	assert.NotNil(t, btree.wal, "WAL should be initialized")
@@ -38,7 +38,7 @@ func TestPersistence_OpenWithoutDirectory(t *testing.T) {
 	defer btree.Close()
 
 	// Verify persistence is disabled
-	assert.False(t, btree.enablePersistence, "Persistence should be disabled")
+	assert.Nil(t, btree.chunkMgr, "ChunkManager should be nil")
 	assert.False(t, btree.enableWAL, "WAL should be disabled")
 	assert.Nil(t, btree.pageManager, "PageManager should be nil")
 	assert.Nil(t, btree.wal, "WAL should be nil")

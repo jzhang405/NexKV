@@ -73,20 +73,33 @@ var (
 )
 
 // BTree is the main BTree storage engine with CCOW and persistence.
+//
+// Week 13-14: Migrated to Lealone AOSE architecture
+// - ChunkManager for append-only storage
+// - RootPageRef for atomic root updates
+// - Lazy loading (no page cache)
+// - Copy-on-Write concurrency control
 type BTree struct {
-	config      *model.BTreeConfig
-	closed      bool
-	closedMu    sync.RWMutex
-	root        *VersionedRoot // Versioned root pointer
-	pageManager *PageManager   // Page manager for page allocation and persistence
-	pageCache   *PageCache     // Three-tier cache for Page and Node objects
-	wal         wal.WAL        // Write-Ahead Log for crash recovery
-	maxLevels   int            // Maximum tree levels
-	nodeCache   *nodeCache     // Node deserialization cache for optimization
+	config   *model.BTreeConfig
+	closed   bool
+	closedMu sync.RWMutex
 
-	// Persistence settings
-	enablePersistence bool // Enable page persistence
-	enableWAL         bool // Enable WAL logging
+	// Root management
+	rootRef *RootPageRef // Root page reference (atomic updates)
+
+	// Storage (Lealone AOSE)
+	chunkMgr *ChunkManager // Append-only storage manager
+	wal     wal.WAL       // Write-Ahead Log for crash recovery
+
+	// Configuration
+	maxLevels int  // Maximum tree levels
+	enableWAL bool // Enable WAL logging
+
+	// Legacy (deprecated, will be removed)
+	root        *VersionedRoot // TODO: Week 14 - Remove after migration
+	pageManager *PageManager   // TODO: Week 14 - Remove after migration
+	pageCache   *PageCache     // TODO: Week 14 - Remove after migration
+	nodeCache   *nodeCache     // TODO: Week 14 - Remove after migration
 }
 
 // OpenBTree opens or creates a BTree storage engine with persistence support.
@@ -112,17 +125,22 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		}
 	}
 
-	// Initialize page manager and WAL
-	var pageManager *PageManager
+	// Initialize ChunkManager and WAL
+	var chunkMgr *ChunkManager
+	var pageManager *PageManager // Legacy, will be removed in Week 14
 	var walImpl wal.WAL
-	enablePersistence := dir != ""
 	enableWAL := dir != ""
 
-	if enablePersistence {
-		dbPath := filepath.Join(dir, "database.db")
-		walDir := filepath.Join(dir, "wal")
+	if dir != "" {
+		// Open ChunkManager (Lealone AOSE)
+		cm, err := NewChunkManager(dir)
+		if err != nil {
+			return nil, fmt.Errorf("open chunk manager: %w", err)
+		}
+		chunkMgr = cm
 
-		// Open page manager
+		// Open legacy PageManager (TODO: Week 14 - Remove)
+		dbPath := filepath.Join(dir, "database.db")
 		pm, err := NewPageManager(dbPath)
 		if err != nil {
 			return nil, fmt.Errorf("open page manager: %w", err)
@@ -130,6 +148,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		pageManager = pm
 
 		// Open WAL using the general-purpose WAL implementation
+		walDir := filepath.Join(dir, "wal")
 		w, err := wal.NewDiskWAL(&wal.WALConfig{
 			Dir:         walDir,
 			SegmentSize: 64 * 1024 * 1024, // 64MB
@@ -151,9 +170,9 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// Create node cache for optimization
 	nodeCache := newNodeCache()
 
-	// Create page cache for three-tier caching
+	// Create page cache for three-tier caching (legacy, will be removed in Week 14)
 	var pageCache *PageCache
-	if enablePersistence {
+	if chunkMgr != nil {
 		// Persistent mode: L1 (1000 pages), L2 (10000 buffers), NodeL1 (500 nodes), with PageManager
 		pageCache = NewPageCache(1000, 10000, 500, pageManager)
 	} else {
@@ -161,20 +180,26 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		pageCache = NewPageCache(1000, 10000, 500, nil)
 	}
 
+	// Create RootPageRef for atomic root updates
+	rootPageRef := NewRootPageRef()
+
 	// Calculate max levels based on config
 	maxLevels := 10 // Default value
 
 	btree := &BTree{
-		config:            config,
-		closed:            false,
-		root:              root,
-		pageManager:       pageManager,
-		pageCache:         pageCache,
-		wal:               walImpl,
-		maxLevels:         maxLevels,
-		nodeCache:         nodeCache,
-		enablePersistence: enablePersistence,
-		enableWAL:         enableWAL,
+		config:     config,
+		closed:     false,
+		rootRef:    rootPageRef,
+		chunkMgr:   chunkMgr,
+		wal:        walImpl,
+		maxLevels:  maxLevels,
+		enableWAL:  enableWAL,
+
+		// Legacy (TODO: Week 14 - Remove)
+		root:        root,
+		pageManager: pageManager,
+		pageCache:   pageCache,
+		nodeCache:   nodeCache,
 	}
 
 	// Replay WAL if exists (crash recovery)
@@ -420,16 +445,17 @@ func (b *BTree) insertFromWAL(key, value []byte) error {
 // allocateNodePageID allocates a new PageID for a node.
 // Returns 0 if persistence is disabled.
 func (b *BTree) allocateNodePageID() model.PageID {
-	if !b.enablePersistence || b.pageManager == nil {
+	if b.chunkMgr == nil {
 		return 0 // In-memory mode
 	}
-	return b.pageManager.AllocatePage()
+	// TODO: Week 13-14 - Use ChunkManager to allocate page ID
+	return 0
 }
 
 // persistNode persists a node to disk using PageManager.
 // nolint:unused // Reserved for Phase 2.5 (full node persistence)
 func (b *BTree) persistNode(node *Node) error {
-	if !b.enablePersistence || b.pageManager == nil {
+	if b.chunkMgr == nil {
 		return nil // Persistence disabled
 	}
 
@@ -508,21 +534,17 @@ func (b *BTree) Close() error {
 // 注意：此方法不会更新 PageInfo，调用者需要手动设置
 func (b *BTree) loadPage(pos int64) (interface{}, error) {
 	// 1. 检查 ChunkManager（仅持久化模式需要）
-	if b.pageManager == nil && b.enablePersistence {
-		return nil, fmt.Errorf("page manager not initialized")
+	if b.chunkMgr == nil {
+		return nil, fmt.Errorf("chunk manager not initialized (in-memory mode)")
 	}
 
-	// TODO: Week 13-14 - 将 pageManager 替换为 chunkMgr
-	// 临时方案：暂时返回错误，等待 ChunkManager 集成
-	return nil, fmt.Errorf("loadPage: ChunkManager not integrated yet (Week 13-14)")
+	// 2. 调用 ChunkManager.LoadPage()（根据位置编码加载页面）
+	page, err := b.chunkMgr.LoadPage(pos)
+	if err != nil {
+		return nil, fmt.Errorf("load page at %d: %w", pos, err)
+	}
 
-	// 2. 调用 ChunkManager.LoadPage()（Week 13-14 实现）
-	// page, err := b.chunkMgr.LoadPage(pos)
-	// if err != nil {
-	//     return nil, fmt.Errorf("load page at %d: %w", pos, err)
-	// }
-	//
-	// return page, nil
+	return page, nil
 }
 
 // getPageOrLoad 获取页面，支持懒加载（辅助方法）

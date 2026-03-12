@@ -89,6 +89,11 @@ func (p *LeafPage) NumKeys() int {
 	return len(p.keys)
 }
 
+// IsLeaf 判断是否为叶子节点（实现 Page 接口）
+func (p *LeafPage) IsLeaf() bool {
+	return true
+}
+
 // Get 获取键对应的值
 func (p *LeafPage) Get(key []byte) ([]byte, bool) {
 	// 二分查找

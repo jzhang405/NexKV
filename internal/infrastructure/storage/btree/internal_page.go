@@ -61,6 +61,16 @@ func (p *InternalPage) NumChildren() int {
 	return len(p.children)
 }
 
+// IsLeaf 判断是否为叶子节点（实现 Page 接口）
+func (p *InternalPage) IsLeaf() bool {
+	return false
+}
+
+// Children 获取所有子节点引用（用于遍历）
+func (p *InternalPage) Children() []*PageRef {
+	return p.children
+}
+
 // GetChild 获取指定索引的子节点
 func (p *InternalPage) GetChild(idx int) *PageRef {
 	if idx < 0 || idx >= len(p.children) {
@@ -123,6 +133,27 @@ func (p *InternalPage) FindChild(key []byte) (*PageRef, bool) {
 	}
 
 	return nil, false
+}
+
+// FindChildRef 查找键对应的子节点引用（简化版，用于 searchPath）
+// 返回：子节点引用（不关心是否精确匹配）
+//
+// BTree 搜索逻辑：
+// - 如果 key == keys[i]，搜索应该在右子节点（children[i+1]）
+// - 如果 keys[i-1] < key < keys[i]，搜索应该在子节点（children[i]）
+func (p *InternalPage) FindChildRef(key []byte) *PageRef {
+	idx := p.search(key)
+
+	// 边界检查
+	if idx < 0 || idx >= len(p.children) {
+		// 返回最右边的子节点
+		if len(p.children) > 0 {
+			return p.children[len(p.children)-1]
+		}
+		return nil
+	}
+
+	return p.children[idx]
 }
 
 // Insert 插入键和子节点

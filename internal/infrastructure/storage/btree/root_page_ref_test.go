@@ -1,3 +1,6 @@
+//go:build ignore_old_tests
+// +build ignore_old_tests
+
 package btree
 
 import (

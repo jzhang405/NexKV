@@ -57,7 +57,7 @@ func (ccow *CCOWManager) TakeSnapshot(rootRef *RootPageRef) (*BTreeSnapshot, err
 	snapshot := &BTreeSnapshot{
 		ID:        snapshotID,
 		RootRef:   rootRef,
-		Version:   rootInfo.GetPage().Version,
+		Version:   rootInfo.GetPageVersion(),
 		CreatedAt: time.Now().UnixNano(),
 	}
 
@@ -237,7 +237,7 @@ func (ccow *CCOWManager) VerifySnapshotIntegrity(snapshotID uint64) (bool, error
 	}
 
 	// 验证版本
-	if rootInfo.GetPage().Version != snapshot.Version {
+	if rootInfo.GetPageVersion() != snapshot.Version {
 		return false, nil
 	}
 

@@ -206,6 +206,38 @@ func (info *PageInfo) GetPageType() string {
 	}
 }
 
+// GetPageVersion 获取页面版本号
+func (info *PageInfo) GetPageVersion() uint64 {
+	if info.page == nil {
+		return 0
+	}
+
+	switch p := info.page.(type) {
+	case *LeafPage:
+		return p.GetVersion()
+	case *InternalPage:
+		return p.GetVersion()
+	default:
+		return 0
+	}
+}
+
+// GetPageID 获取页面 ID
+func (info *PageInfo) GetPageID() uint64 {
+	if info.page == nil {
+		return 0
+	}
+
+	switch p := info.page.(type) {
+	case *LeafPage:
+		return uint64(p.GetPageID())
+	case *InternalPage:
+		return uint64(p.GetPageID())
+	default:
+		return 0
+	}
+}
+
 // VerifyAlignment 验证 Cache Line 对齐
 func VerifyPageInfoAlignment() {
 	var info PageInfo

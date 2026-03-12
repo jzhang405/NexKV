@@ -289,9 +289,9 @@ func (p *InternalPage) Serialize() ([]byte, error) {
 	// 写入子节点 ID（暂时使用 PageID，后续可以改为位置编码）
 	for i := 0; i < len(p.children); i++ {
 		var childID uint64
-		if p.children[i] != nil && p.children[i].GetPageInfo() != nil {
-			if page := p.children[i].GetPage(); page != nil {
-				childID = uint64(page.ID)
+		if p.children[i] != nil {
+			if info := p.children[i].GetPageInfo(); info != nil {
+				childID = info.GetPageID()
 			}
 		}
 		if err := binaryWrite(&buf, uint64ToBytes(childID)); err != nil {

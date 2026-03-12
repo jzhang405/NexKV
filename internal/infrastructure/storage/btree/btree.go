@@ -400,6 +400,79 @@ func (b *BTree) Close() error {
 	return nil
 }
 
+// ===== 懒加载机制（Week 13-14 Day 1-2）=====
+
+// loadPage 从 ChunkManager 加载页面（懒加载核心封装）
+// 这是 BTree 对 ChunkManager.LoadPage() 的封装，提供统一的错误处理
+//
+// 参数：
+//   pos - 64 位位置编码
+//
+// 返回：
+//   interface{} - 页面对象（实际类型为 *LeafPage 或 *InternalPage）
+//   error - 错误信息
+//
+// 懒加载流程：
+// 1. 检查 ChunkManager 是否初始化
+// 2. 调用 ChunkManager.LoadPage(pos) 加载并反序列化
+// 3. 返回页面对象
+//
+// 注意：此方法不会更新 PageInfo，调用者需要手动设置
+func (b *BTree) loadPage(pos int64) (interface{}, error) {
+	// 1. 检查 ChunkManager（仅持久化模式需要）
+	if b.pageManager == nil && b.enablePersistence {
+		return nil, fmt.Errorf("page manager not initialized")
+	}
+
+	// TODO: Week 13-14 - 将 pageManager 替换为 chunkMgr
+	// 临时方案：暂时返回错误，等待 ChunkManager 集成
+	return nil, fmt.Errorf("loadPage: ChunkManager not integrated yet (Week 13-14)")
+
+	// 2. 调用 ChunkManager.LoadPage()（Week 13-14 实现）
+	// page, err := b.chunkMgr.LoadPage(pos)
+	// if err != nil {
+	//     return nil, fmt.Errorf("load page at %d: %w", pos, err)
+	// }
+	//
+	// return page, nil
+}
+
+// getPageOrLoad 获取页面，支持懒加载（辅助方法）
+// 如果 PageInfo.page 为 nil，则从 ChunkManager 加载
+//
+// 参数：
+//   info - PageInfo 对象
+//
+// 返回：
+//   interface{} - 页面对象
+//   error - 错误信息
+func (b *BTree) getPageOrLoad(info *PageInfo) (interface{}, error) {
+	if info == nil {
+		return nil, fmt.Errorf("pageInfo is nil")
+	}
+
+	// 如果 page 已加载，直接返回
+	if info.IsPageLoaded() {
+		return info.GetPage(), nil
+	}
+
+	// 如果 pos == 0，说明页面从未持久化
+	if info.GetPos() == 0 {
+		return nil, fmt.Errorf("page not loaded and no position (pos=0)")
+	}
+
+	// 懒加载：从 ChunkManager 加载
+	page, err := b.loadPage(info.GetPos())
+	if err != nil {
+		return nil, fmt.Errorf("load page: %w", err)
+	}
+
+	// 更新 PageInfo.page
+	info.SetPage(page)
+
+	return page, nil
+}
+
 // ===== BTree Interface Implementation (Placeholder) =====
 
 // GetHeight returns the tree height (not implemented until Phase 3).

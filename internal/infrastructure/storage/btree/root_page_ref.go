@@ -157,7 +157,8 @@ func (r *RootPageRef) UpdateChildrenParentRef(page *Page) {
 }
 
 // GetRootPage 获取 Root Page（便捷方法）
-func (r *RootPageRef) GetRootPage() *Page {
+// 返回 interface{}，实际类型为 *LeafPage 或 *InternalPage
+func (r *RootPageRef) GetRootPage() interface{} {
 	return r.GetPage()
 }
 

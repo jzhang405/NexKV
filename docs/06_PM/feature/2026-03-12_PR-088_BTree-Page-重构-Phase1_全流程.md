@@ -499,11 +499,11 @@ func (m *DataMigrator) Rollback() error {
 
 **4. Chunk 设计简化** ✅
 - **问题**：设计过于复杂（header + directory + variable-length pages）
-- **修订**：简化为纯 4KB 固定页面
+- **修订**：简化为纯 4KB 固定页面 + Lealone 原版编码
   - 文件格式：256MB = 65536 个 4KB 页面
-  - 位置编码：16 bits ChunkID + 32 bits PageIdx + 16 bits PageType
-  - 支持规模：65536 Chunks × 65536 Pages = 16TB
-- **优势**：代码量减少 70%，无元数据损坏风险
+  - 位置编码：26 bits ChunkID + 32 bits Offset + 5 bits PageType + 1 bit 保留
+  - 支持规模：67M Chunks × 4GB = **16PB**（理论上限）
+- **优势**：代码量减少 70%，无元数据损坏风险，支持超大容量
 - **Phase 3 补充**：Chunk 压缩策略
 
 **5. PageLock state 编码** ✅

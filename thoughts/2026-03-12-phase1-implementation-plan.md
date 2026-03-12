@@ -537,7 +537,7 @@ const (
     ChunkSize     = 256 * 1024 * 1024 // 256MB
     PageSize      = 4096              // 4KB 固定
     PagesPerChunk = ChunkSize / PageSize // 65536 pages
-    MaxChunks     = 65536             // 最大 Chunk 数量
+    MaxChunks     = 1 << 26          // 67M 个 Chunks（26 bits）
 )
 
 var (
@@ -565,7 +565,7 @@ type PageIndex struct {
 // PageLocation 页面位置
 type PageLocation struct {
     ChunkID int
-    PageIdx int32
+    Offset  int  // 字节偏移（在 Chunk 中的位置）
 }
 
 // NewChunkManager 创建新的 ChunkManager
@@ -602,14 +602,17 @@ func (cm *ChunkManager) AllocatePage(pageType PageType) (int64, error) {
         }
     }
 
-    // 2. 在当前 Chunk 中分配页面
-    pageIdx, err := cm.currentChunk.AllocatePage()
+    // 2. 在当前 Chunk 中分配页面（返回字节偏移）
+    offset, err := cm.currentChunk.AllocatePage()
     if err != nil {
         return 0, err
     }
 
-    // 3. 编码位置（64 位）
-    encodedPos := EncodePos(cm.currentChunk.id, pageIdx, int(pageType))
+    // 3. 编码位置（64 位 Lealone 编码）
+    encodedPos, err := EncodePagePos(cm.currentChunk.id, offset, int(pageType))
+    if err != nil {
+        return 0, err
+    }
 
     return encodedPos, nil
 }
@@ -628,7 +631,7 @@ func (cm *ChunkManager) WritePage(pageID uint64, data []byte, pageType PageType)
     }
 
     // 3. 解码位置
-    chunkID, pageIdx, _ := DecodePos(pos)
+    chunkID, offset, _ := DecodePagePos(pos)
 
     // 4. 写入到 Chunk
     cm.mu.RLock()
@@ -643,7 +646,7 @@ func (cm *ChunkManager) WritePage(pageID uint64, data []byte, pageType PageType)
     pageData := make([]byte, PageSize)
     copy(pageData, data)
 
-    if _, err := chunk.WritePage(pageIdx, pageData); err != nil {
+    if _, err := chunk.WriteAt(offset, pageData); err != nil {
         return 0, err
     }
 
@@ -651,7 +654,7 @@ func (cm *ChunkManager) WritePage(pageID uint64, data []byte, pageType PageType)
     cm.pageIndex.mu.Lock()
     cm.pageIndex.entries[pageID] = PageLocation{
         ChunkID: chunkID,
-        PageIdx: pageIdx,
+        Offset:  offset,
     }
     cm.pageIndex.mu.Unlock()
 
@@ -661,7 +664,7 @@ func (cm *ChunkManager) WritePage(pageID uint64, data []byte, pageType PageType)
 // ReadPage 从 Chunk 读取页面（固定 4KB）
 func (cm *ChunkManager) ReadPage(pos int64) ([]byte, error) {
     // 1. 解码位置
-    chunkID, pageIdx, _ := DecodePos(pos)
+    chunkID, offset, _ := DecodePagePos(pos)
 
     // 2. 获取 Chunk
     cm.mu.RLock()
@@ -673,7 +676,7 @@ func (cm *ChunkManager) ReadPage(pos int64) ([]byte, error) {
     }
 
     // 3. 读取页面数据（固定 4KB）
-    data, err := chunk.ReadPage(pageIdx)
+    data, err := chunk.ReadAt(offset, PageSize)
     if err != nil {
         return nil, err
     }
@@ -738,9 +741,9 @@ func (cm *ChunkManager) rebuildIndex() error {
             continue
         }
 
-        // 遍历所有页面
-        for pageIdx := int32(0); pageIdx < chunk.pageCount; pageIdx++ {
-            data, err := chunk.ReadPage(pageIdx)
+        // 遍历所有页面（按 4KB 对齐）
+        for offset := 0; offset < int(chunk.writePos); offset += PageSize {
+            data, err := chunk.ReadAt(int64(offset), PageSize)
             if err != nil {
                 continue  // 跳过损坏的页面
             }
@@ -750,7 +753,7 @@ func (cm *ChunkManager) rebuildIndex() error {
             if pageID != 0 {
                 cm.pageIndex.entries[pageID] = PageLocation{
                     ChunkID: chunk.id,
-                    PageIdx: pageIdx,
+                    Offset:  offset,
                 }
             }
         }
@@ -824,12 +827,12 @@ const (
 // Chunk Chunk 文件（简化版 Append-Only）
 // 文件格式：256MB = 65536 个 4KB 页面
 type Chunk struct {
-    mu        sync.Mutex
-    id        int        // Chunk ID
-    file      *os.File   // 文件句柄
-    path      string     // 文件路径
-    pageCount int32      // 当前页面数（最多 65536）
-    isReadOnly bool      // 是否只读
+    mu         sync.Mutex
+    id         int        // Chunk ID
+    file       *os.File   // 文件句柄
+    path       string     // 文件路径
+    writePos   int64      // 当前写入位置（字节偏移）
+    isReadOnly bool       // 是否只读
 }
 
 // NewChunk 创建新的 Chunk
@@ -865,13 +868,10 @@ func LoadChunk(path string) (*Chunk, error) {
         return nil, err
     }
 
-    // 计算页面数量
-    pageCount := int32(info.Size() / PageSize)
-
     chunk := &Chunk{
-        path:      path,
-        file:      file,
-        pageCount: pageCount,
+        path:       path,
+        file:       file,
+        writePos:   info.Size(),
         isReadOnly: true,
     }
 
@@ -879,70 +879,55 @@ func LoadChunk(path string) (*Chunk, error) {
 }
 
 // AllocatePage 在 Chunk 中分配页面（固定 4KB）
-func (c *Chunk) AllocatePage() (int32, error) {
+func (c *Chunk) AllocatePage() (int, error) {
     c.mu.Lock()
     defer c.mu.Unlock()
 
-    if c.pageCount >= PagesPerChunk {
+    if c.writePos >= ChunkSize {
         return 0, ErrChunkFull
     }
 
-    pageIdx := c.pageCount
-    c.pageCount++
+    offset := int(c.writePos)
+    c.writePos += PageSize
 
-    return pageIdx, nil
+    return offset, nil
 }
 
-// WritePage 写入页面（固定 4KB）
-func (c *Chunk) WritePage(pageIdx int32, data []byte) error {
-    if pageIdx < 0 || pageIdx >= PagesPerChunk {
-        return ErrInvalidPageIndex
-    }
-
-    if len(data) > PageSize {
-        return fmt.Errorf("data size %d exceeds page size %d", len(data), PageSize)
+// WriteAt 在指定位置写入
+func (c *Chunk) WriteAt(offset int, data []byte) error {
+    if offset < 0 || offset+PageSize > int(ChunkSize) {
+        return fmt.Errorf("offset %d out of range", offset)
     }
 
     c.mu.Lock()
     defer c.mu.Unlock()
-
-    // 计算文件偏移
-    offset := int64(pageIdx) * PageSize
 
     // 准备 4KB 页面数据
     pageData := make([]byte, PageSize)
     copy(pageData, data)
 
     // 写入文件
-    _, err := c.file.WriteAt(pageData, offset)
+    _, err := c.file.WriteAt(pageData, int64(offset))
     return err
 }
 
-// ReadPage 读取页面（固定 4KB）
-func (c *Chunk) ReadPage(pageIdx int32) ([]byte, error) {
-    if pageIdx < 0 || pageIdx >= c.pageCount {
-        return nil, ErrInvalidPageIndex
+// ReadAt 在指定位置读取
+func (c *Chunk) ReadAt(offset int, size int) ([]byte, error) {
+    if offset < 0 || offset+size > int(ChunkSize) {
+        return nil, fmt.Errorf("offset %d out of range", offset)
     }
 
     c.mu.Lock()
     defer c.mu.Unlock()
 
-    // 计算文件偏移
-    offset := int64(pageIdx) * PageSize
-
-    // 读取页面数据
-    data := make([]byte, PageSize)
-    _, err := c.file.ReadAt(data, offset)
-    if err != nil {
-        return nil, err
-    }
-
-    return data, nil
+    data := make([]byte, size)
+    _, err := c.file.ReadAt(data, int64(offset))
+    return data, err
 }
 
 // IsFull 判断 Chunk 是否已满
 func (c *Chunk) IsFull() bool {
-    return c.pageCount >= PagesPerChunk
+    return c.writePos >= ChunkSize
 }
 
 // Sync 同步文件到磁盘
@@ -958,11 +943,11 @@ func (c *Chunk) Close() error {
 
 ---
 
-### 5.2 Day 11-12: 64 位位置编码（简化版）
+### 5.2 Day 11-12: 64 位位置编码（Lealone 原版编码）
 
 **设计说明**：
-- ✅ **简化版编码**：16 bits ChunkID + 32 bits PageIdx + 16 bits PageType
-- ✅ **支持规模**：65536 Chunks × 65536 Pages/Chunk = 42 亿页面（16TB @ 4KB）
+- ✅ **Lealone 原版编码**：26 bits ChunkID + 32 bits Offset + 5 bits PageType + 1 bit 保留
+- ✅ **支持规模**：67M Chunks × 4GB/Chunk = **16PB** 理论上限
 - ✅ **边界检查**：验证参数范围，防止溢出
 
 #### 文件：`position.go`
@@ -979,40 +964,44 @@ var (
     ErrInvalidPosition = errors.New("invalid page position")
 )
 
-// EncodePos 编码页面位置（64 位简化版）
+// EncodePagePos 编码页面位置（64 位 Lealone 原版编码）
 //
 // 位布局：
 // ┌────────────────────────────────────────────────────────────────┐
-// │  63-48 (16 bits) │ 47-16 (32 bits) │ 15-0 (16 bits)            │
-// │    Chunk ID      │   Page Index     │   Page Type              │
+// │  63-38 (26 bits) │ 37-6 (32 bits) │ 5-1 (5 bits) │ 0 (1 bit) │
+// │    Chunk ID      │     Offset     │   Page Type  │  保留位   │
 // └────────────────────────────────────────────────────────────────┘
 //
 // 支持规模：
-// - Chunk ID：65536 个
-// - Page Index：65536 页/Chunk（256MB / 4KB）
-// - Page Type：65536 种
-// - 总容量：65536 × 65536 × 4KB = 16TB
-func EncodePos(chunkID int, pageIdx int32, pageType int) (int64, error) {
+// - Chunk ID：67,108,864 个（26 bits）
+// - Offset：4GB per Chunk（32 bits）
+// - Page Type：32 种（5 bits）
+// - 总容量：67M × 4GB = **268TB**（实际）到 **16PB**（理论）
+//
+// 说明：
+// - Chunk 使用固定 256MB，因此 32 bits Offset 远超需求
+// - 但保留 32 bits 是为了与 Lealone 编码兼容，支持未来扩展
+func EncodePagePos(chunkID, offset, pageType int) (int64, error) {
     // 边界检查
-    if chunkID < 0 || chunkID >= MaxChunks {
-        return 0, fmt.Errorf("chunk ID %d out of range [0, %d)", chunkID, MaxChunks)
+    if chunkID < 0 || chunkID >= (1<<26) {
+        return 0, fmt.Errorf("chunk ID %d out of range [0, %d)", chunkID, 1<<26)
     }
-    if pageIdx < 0 || pageIdx >= PagesPerChunk {
-        return 0, fmt.Errorf("page index %d out of range [0, %d)", pageIdx, PagesPerChunk)
+    if offset < 0 || offset >= (1<<32) {
+        return 0, fmt.Errorf("offset %d out of range [0, %d)", offset, 1<<32)
     }
-    if pageType < 0 || pageType >= 65536 {
-        return 0, fmt.Errorf("page type %d out of range [0, 65536)", pageType)
+    if pageType < 0 || pageType >= (1<<5) {
+        return 0, fmt.Errorf("page type %d out of range [0, %d)", pageType, 1<<5)
     }
 
-    // 编码：[63:48] ChunkID | [47:16] PageIdx | [15:0] PageType
-    return (int64(chunkID) << 48) | (int64(pageIdx) << 16) | int64(pageType), nil
+    // 编码：[63:38] ChunkID | [37:6] Offset | [5:1] PageType | [0] 保留
+    return (int64(chunkID) << 38) | (int64(offset) << 6) | (int64(pageType) << 1), nil
 }
 
-// DecodePos 解码页面位置
-func DecodePos(pos int64) (chunkID int, pageIdx int32, pageType int) {
-    chunkID = int(pos >> 48)
-    pageIdx = int32((pos >> 16) & 0xFFFFFFFF)
-    pageType = int(pos & 0xFFFF)
+// DecodePagePos 解码页面位置
+func DecodePagePos(pos int64) (chunkID, offset, pageType int) {
+    chunkID = int(pos >> 38)              // [63:38]
+    offset = int((pos >> 6) & 0xFFFFFFFF) // [37:6]
+    pageType = int((pos >> 1) & 0x1F)     // [5:1]
     return
 }
 
@@ -1022,9 +1011,10 @@ func ValidatePosition(pos int64) bool {
         return false
     }
 
-    chunkID, pageIdx, _ := DecodePos(pos)
-    return chunkID >= 0 && chunkID < MaxChunks &&
-           pageIdx >= 0 && pageIdx < PagesPerChunk
+    chunkID, offset, pageType := DecodePagePos(pos)
+    return chunkID >= 0 && chunkID < (1<<26) &&
+           offset >= 0 && offset < (1<<32) &&
+           pageType >= 0 && pageType < (1<<5)
 }
     }
     if offset < 0 || offset >= (1<<32) {
@@ -1057,10 +1047,10 @@ func ValidatePosition(pos int64) bool {
 ```
 
 **关键设计点**：
-- ✅ 支持 65536 个 Chunk 文件（16 bits）
-- ✅ 每个 Chunk 最多 65536 页（32 bits）
-- ✅ 支持 65536 种页面类型（16 bits）
-- ✅ **理论数据规模**：65536 × 65536 × 4KB = **16TB**
+- ✅ 支持 67M 个 Chunk 文件（26 bits）
+- ✅ 每个 Chunk 最大 4GB offset（32 bits）
+- ✅ 支持 32 种页面类型（5 bits）
+- ✅ **理论数据规模**：67M × 4GB = **268TB**（实际，256MB/Chunk）到 **16PB**（理论上限）
 - ✅ **边界检查**：防止参数溢出
 
 ---
@@ -1489,12 +1479,12 @@ func (r *RootPageReference) ReplacePage(oldInfo, newInfo *PageInfo) bool {
 // 修订前：复杂设计
 // - 变长页面（通过 pageSizes map）
 // - 空间重用（通过 freePages）
-// - 64 位编码：26 bits ChunkID + 32 bits Offset + 5 bits PageType
+// - 64 位编码：16 bits ChunkID + 32 bits PageIdx + 16 bits PageType
 
-// 修订后：简化设计
+// 修订后：简化设计 + Lealone 原版编码
 // - 固定 4KB 页面
 // - 纯 Append-Only（无空间重用）
-// - 64 位编码：16 bits ChunkID + 32 bits PageIdx + 16 bits PageType
+// - 64 位编码：26 bits ChunkID + 32 bits Offset + 5 bits PageType + 1 bit 保留
 ```
 
 **简化版 Chunk 文件格式**：
@@ -1505,11 +1495,20 @@ func (r *RootPageReference) ReplacePage(oldInfo, newInfo *PageInfo) bool {
 文件布局：[Page_0(4KB)] [Page_1(4KB)] [Page_2(4KB)] ... [Page_65535(4KB)]
 ```
 
+**位置编码**（Lealone 原版）：
+```
+┌────────────────────────────────────────────────────────────────┐
+│  63-38 (26 bits) │ 37-6 (32 bits) │ 5-1 (5 bits) │ 0 (1 bit) │
+│    Chunk ID      │     Offset     │   Page Type  │  保留位   │
+└────────────────────────────────────────────────────────────────┘
+```
+
 **优势**：
 - ✅ 代码量减少 70%
 - ✅ 无元数据损坏风险
 - ✅ 启动快速恢复（顺序扫描）
 - ✅ 可用 hexdump 直接查看文件
+- ✅ **支持 16PB 理论上限**（67M Chunks × 4GB）
 
 **空间利用率**：
 - 固定 4KB 可能浪费空间（小页面也需要 4KB）

@@ -32,7 +32,7 @@ const (
 	PageTypeMeta     = 4 // 元页面
 )
 
-// EncodePagePos 编码页面位置（64 位 Lealone 原版编码）
+// EncodePagePos 编码页面位置（64 位编码）
 //
 // 位布局：
 // ┌────────────────────────────────────────────────────────────────┐
@@ -48,7 +48,7 @@ const (
 //
 // 说明：
 // - Chunk 使用固定 256MB，因此 32 bits Offset 远超需求
-// - 但保留 32 bits 是为了与 Lealone 编码兼容，支持未来扩展
+// - 保留 32 bits Offset 以支持未来扩展
 func EncodePagePos(chunkID, offset, pageType int) (int64, error) {
 	// 边界检查
 	if chunkID < 0 || chunkID >= MaxChunks {

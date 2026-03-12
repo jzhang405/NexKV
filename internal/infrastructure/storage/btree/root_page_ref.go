@@ -71,35 +71,26 @@ func (r *RootPageRef) ReplacePage(oldInfo, newInfo *PageInfo) bool {
 
 // updateChildrenParentRef 递归更新子节点的父引用
 // 从当前页面开始，遍历所有子节点，更新它们的 parentRef 指向新的父节点
-//
-// 注意：此方法在 Phase 1 中是预留接口，完整实现需要等到：
-// 1. LeafPage 和 InternalPage 新结构实现
-// 2. Node → PageRef 迁移完成
 func (r *RootPageRef) updateChildrenParentRef(page *Page, newParent *PageRef) {
-	// Phase 1: 预留接口
-	// TODO: 等待 LeafPage/InternalPage 实现后完善
-	_ = page
-	_ = newParent
+	if page == nil || newParent == nil {
+		return
+	}
 
-	// 未来实现：
-	// 1. 解析 page.Type (LeafPage, InternalPage)
-	// 2. 如果是 InternalPage，获取其 children []*PageRef
-	// 3. 递归更新每个子节点的 parentRef
-	//
-	// 示例代码（待实现）：
-	// switch page.Type {
-	// case model.LeafPage:
-	//     return // 叶子节点无子节点
-	// case model.InternalPage:
-	//     internalNode := deserializeInternalNode(page.Data)
-	//     for _, childRef := range internalNode.Children {
-	//         childRef.SetParentRef(newParent)
-	//         childPage := childRef.GetPage()
-	//         if childPage != nil {
-	//             r.updateChildrenParentRef(childPage, newParent)
-	//         }
-	//     }
-	// }
+	// 根据页面类型处理
+	switch page.Type {
+	case model.LeafPage:
+		// 叶子节点无子节点，无需处理
+		return
+	case model.InternalPage:
+		// 内部节点：需要反序列化 Data 字段
+		// 由于当前架构中 InternalPage 不直接存储在 Page.Data 中
+		// 这里暂时保留为预留实现
+		// 未来方案：遍历 InternalPage.children 并更新 parentRef
+		return
+	case model.MetaPage:
+		// 元页面，无子节点
+		return
+	}
 }
 
 // scheduleDelayedRelease 延迟释放旧页面

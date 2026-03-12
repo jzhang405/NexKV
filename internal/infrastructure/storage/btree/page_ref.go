@@ -215,7 +215,7 @@ func (r *PageRef) SetBuff(buff []byte) {
 }
 
 // GetOrLoad 获取 PageInfo，如果未加载则从 ChunkManager 加载（懒加载）
-// 这是 Lealone 模式的核心：只有 Root 常驻内存，其他页面按需加载
+// 懒加载模式核心：只有 Root 常驻内存，其他页面按需加载
 //
 // 参数：
 //

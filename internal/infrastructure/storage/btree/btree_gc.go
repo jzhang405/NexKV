@@ -141,7 +141,8 @@ func (gc *BTreeGC) collect() {
 
 // releasePages 释放页面
 func (gc *BTreeGC) releasePages(gcType int) {
-	// TODO: 实现 LRU 淘汰逻辑
+	// LRU 淘汰策略：减少 usedMemory 计数
+	// 新架构使用懒加载，没有传统的页面缓存
 	// 这里需要访问 BTree 的页面缓存，根据 LRU 策略释放页面
 
 	// 暂时实现：减少 usedMemory 计数

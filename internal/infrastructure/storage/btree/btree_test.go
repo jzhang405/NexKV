@@ -113,11 +113,11 @@ func TestBTree_HeightAndPageCount(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Test GetHeight - not implemented until Phase 3
+	// ✅ Test GetHeight - 已实现 (P0-5)
 	height, err := btree.GetHeight(ctx)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-	assert.Equal(t, 0, height)
+	assert.NoError(t, err)
+	assert.GreaterOrEqual(t, height, 0) // 空树高度为 0
+	t.Logf("Tree height: %d", height)
 
 	// Test GetPageCount - not implemented until Phase 3
 	pageCount, err := btree.GetPageCount(ctx)

@@ -70,14 +70,17 @@ var (
 
 	// ErrInvalidPath is returned when path finding fails due to invalid node structure.
 	ErrInvalidPath = errors.New("invalid path: node structure inconsistent")
+
+	// ErrKeyNotFound is returned when a key is not found in the tree.
+	ErrKeyNotFound = errors.New("key not found")
 )
 
 // BTree is the main BTree storage engine with CCOW and persistence.
 //
-// Week 13-14: Migrated to Lealone AOSE architecture
+// Architecture:
 // - ChunkManager for append-only storage
 // - RootPageRef for atomic root updates
-// - Lazy loading (no page cache)
+// - Lazy loading (only Root resident)
 // - Copy-on-Write concurrency control
 type BTree struct {
 	config   *model.BTreeConfig
@@ -94,12 +97,6 @@ type BTree struct {
 	// Configuration
 	maxLevels int  // Maximum tree levels
 	enableWAL bool // Enable WAL logging
-
-	// Legacy (deprecated, will be removed)
-	root        *VersionedRoot // TODO: Week 14 - Remove after migration
-	pageManager *PageManager   // TODO: Week 14 - Remove after migration
-	pageCache   *PageCache     // TODO: Week 14 - Remove after migration
-	nodeCache   *nodeCache     // TODO: Week 14 - Remove after migration
 }
 
 // OpenBTree opens or creates a BTree storage engine with persistence support.
@@ -127,25 +124,16 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 
 	// Initialize ChunkManager and WAL
 	var chunkMgr *ChunkManager
-	var pageManager *PageManager // Legacy, will be removed in Week 14
 	var walImpl wal.WAL
 	enableWAL := dir != ""
 
 	if dir != "" {
-		// Open ChunkManager (Lealone AOSE)
+		// Open ChunkManager for append-only storage
 		cm, err := NewChunkManager(dir)
 		if err != nil {
 			return nil, fmt.Errorf("open chunk manager: %w", err)
 		}
 		chunkMgr = cm
-
-		// Open legacy PageManager (TODO: Week 14 - Remove)
-		dbPath := filepath.Join(dir, "database.db")
-		pm, err := NewPageManager(dbPath)
-		if err != nil {
-			return nil, fmt.Errorf("open page manager: %w", err)
-		}
-		pageManager = pm
 
 		// Open WAL using the general-purpose WAL implementation
 		walDir := filepath.Join(dir, "wal")
@@ -155,29 +143,10 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 			SyncPolicy:  wal.SyncPolicyEveryWrite,
 		})
 		if err != nil {
-			pageManager.Close()
+			chunkMgr.Close()
 			return nil, fmt.Errorf("open WAL: %w", err)
 		}
 		walImpl = w
-	}
-
-	// Create initial root node (empty leaf)
-	rootNode := NewNode(true)
-
-	// Create versioned root with initial root node
-	root := NewVersionedRoot(rootNode)
-
-	// Create node cache for optimization
-	nodeCache := newNodeCache()
-
-	// Create page cache for three-tier caching (legacy, will be removed in Week 14)
-	var pageCache *PageCache
-	if chunkMgr != nil {
-		// Persistent mode: L1 (1000 pages), L2 (10000 buffers), NodeL1 (500 nodes), with PageManager
-		pageCache = NewPageCache(1000, 10000, 500, pageManager)
-	} else {
-		// Memory-only mode: smaller cache without PageManager
-		pageCache = NewPageCache(1000, 10000, 500, nil)
 	}
 
 	// Create RootPageRef for atomic root updates
@@ -200,19 +169,13 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		wal:       walImpl,
 		maxLevels: maxLevels,
 		enableWAL: enableWAL,
-
-		// Legacy (TODO: Week 14 - Remove)
-		root:        root,
-		pageManager: pageManager,
-		pageCache:   pageCache,
-		nodeCache:   nodeCache,
 	}
 
 	// Replay WAL if exists (crash recovery)
 	if enableWAL && walImpl != nil {
 		if err := btree.replayWAL(); err != nil {
 			// Close resources on error
-			pageManager.Close()
+			chunkMgr.Close()
 			walImpl.Close()
 			return nil, fmt.Errorf("replay WAL: %w", err)
 		}
@@ -516,8 +479,8 @@ func (b *BTree) insertFromWAL(key, value []byte) error {
 	b.enableWAL = false
 	defer func() { b.enableWAL = oldEnableWAL }()
 
-	// Use InsertWithSplit (WAL is disabled, so no recursion)
-	return b.InsertWithSplit(ctx, key, value)
+	// Use Set() with WAL disabled
+	return b.Set(ctx, key, value)
 }
 
 // allocateNodePageID allocates a new PageID for a node.
@@ -526,32 +489,8 @@ func (b *BTree) allocateNodePageID() model.PageID {
 	if b.chunkMgr == nil {
 		return 0 // In-memory mode
 	}
-	// TODO: Week 13-14 - Use ChunkManager to allocate page ID
+	// 使用 ChunkManager 分配页面 ID（Week 14 待实现）
 	return 0
-}
-
-// persistNode persists a node to disk using PageManager.
-// nolint:unused // Reserved for Phase 2.5 (full node persistence)
-func (b *BTree) persistNode(node *Node) error {
-	if b.chunkMgr == nil {
-		return nil // Persistence disabled
-	}
-
-	// Allocate page ID
-	pageID := b.pageManager.AllocatePage()
-
-	// Create page from node
-	page, err := PageFromNode(pageID, node)
-	if err != nil {
-		return fmt.Errorf("create page from node: %w", err)
-	}
-
-	// Write page to disk
-	if err := b.pageManager.WritePage(page); err != nil {
-		return fmt.Errorf("write page: %w", err)
-	}
-
-	return nil
 }
 
 // writeWAL writes an entry to the WAL.
@@ -574,17 +513,17 @@ func (b *BTree) Close() error {
 		return nil // Already closed
 	}
 
+	// Close ChunkManager
+	if b.chunkMgr != nil {
+		if err := b.chunkMgr.Close(); err != nil {
+			return fmt.Errorf("close chunk manager: %w", err)
+		}
+	}
+
 	// Close WAL
 	if b.wal != nil {
 		if err := b.wal.Close(); err != nil {
 			return fmt.Errorf("close WAL: %w", err)
-		}
-	}
-
-	// Close page manager
-	if b.pageManager != nil {
-		if err := b.pageManager.Close(); err != nil {
-			return fmt.Errorf("close page manager: %w", err)
 		}
 	}
 
@@ -672,7 +611,9 @@ func (b *BTree) GetHeight(ctx context.Context) (int, error) {
 	if b.closed {
 		return 0, ErrClosed
 	}
-	return 0, ErrNotImplemented
+
+	// ✅ P0-5 实现: 使用 RootPageRef API 计算树的高度
+	return b.GetDepth(), nil
 }
 
 // GetPageCount returns the total page count (not implemented until Phase 3).
@@ -793,25 +734,10 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 	copiedPath := make([]*PageInfo, len(path))
 
 	// Copy all pages in the path (from root to leaf)
+	// ✅ P0-4 修复: PageInfo.Clone() 现在会自动深拷贝 Page 对象
 	for i, info := range path {
-		// Clone the PageInfo
+		// Clone the PageInfo（包括深拷贝 Page 对象）
 		newInfo := info.Clone()
-
-		// Clone the Page object (if loaded)
-		if info.IsPageLoaded() {
-			page := info.GetPage()
-			if page != nil {
-				// Clone based on page type
-				switch p := page.(type) {
-				case *LeafPage:
-					newInfo.SetPage(p.Clone())
-				case *InternalPage:
-					newInfo.SetPage(p.Clone())
-				default:
-					return nil, fmt.Errorf("unknown page type: %T", page)
-				}
-			}
-		}
 
 		copiedPath[i] = newInfo
 	}

@@ -150,10 +150,14 @@ func (ccow *CCOWManager) CopyPathBottomUp(
 				return nil, fmt.Errorf("update child ref failed: %w", err)
 			}
 		} else {
-			// 根节点，需要更新根引用
-			// TODO: 实现 RootPageRef 的 CAS 更新
-			_ = rootRef
-			_ = clonedInfo
+			// 根节点，使用 CAS 更新 RootPageRef
+			if rootRef != nil {
+				oldRootInfo := rootRef.pInfo.Load()
+				if !rootRef.ReplacePage(oldRootInfo, clonedInfo) {
+					return nil, fmt.Errorf("CAS update root failed: concurrent modification detected")
+				}
+			}
+			// 如果 rootRef 为 nil，跳过 CAS 更新（测试场景）
 		}
 	}
 
@@ -185,10 +189,51 @@ func (ccow *CCOWManager) clonePageInfo(info *PageInfo) *PageInfo {
 }
 
 // updateChildRef 更新子节点引用
+//
+// 从父节点的 children 数组中找到旧的孩子引用，将其替换为新的孩子引用
 func (ccow *CCOWManager) updateChildRef(parentInfo, oldChild, newChild *PageInfo) error {
-	// TODO: 实现更新父节点中子节点引用的逻辑
-	// 这需要访问 InternalPage 的 children 数组
-	// 暂时跳过，在 Phase 2 实现
+	// 获取父页面
+	parentPage := parentInfo.GetPage()
+	if parentPage == nil {
+		// 父页面为 nil，跳过更新（可能只是占位符 PageInfo）
+		return nil
+	}
+
+	// 只处理 InternalPage（叶子节点没有子节点）
+	internalPage, ok := parentPage.(*InternalPage)
+	if !ok {
+		// 不是 InternalPage，跳过更新
+		return nil
+	}
+
+	// 获取旧孩子的 PageID
+	oldChildID := oldChild.GetPageID()
+
+	// 在父节点的 children 数组中查找并替换
+	for i, childRef := range internalPage.children {
+		if childRef == nil {
+			continue
+		}
+
+		childInfo := childRef.pInfo.Load()
+		if childInfo == nil {
+			continue
+		}
+
+		// 通过 PageID 匹配找到旧的孩子
+		if childInfo.GetPageID() == oldChildID {
+			// 创建新的 PageRef 指向新的 PageInfo
+			newChildRef := NewPageRefWithInfo(newChild)
+
+			// 替换子节点引用
+			internalPage.children[i] = newChildRef
+
+			// 更新父节点版本
+			internalPage.version++
+			break
+		}
+	}
+
 	return nil
 }
 

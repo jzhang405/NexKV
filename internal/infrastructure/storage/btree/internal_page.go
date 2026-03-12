@@ -476,10 +476,16 @@ func (p *InternalPage) UpdateChildrenRef(startIdx int) error {
 		return fmt.Errorf("start index %d out of range [0, %d]", startIdx, len(p.children)-1)
 	}
 
+	// 获取当前 InternalPage 的 PageRef
+	// 注意：这需要从父节点传递下来，暂时简化实现
+	// 在实际使用中，通过 updateChildrenParentRef 从根节点向下更新
+
 	// 更新从 startIdx 开始的所有子节点的父引用
 	for i := startIdx; i < len(p.children); i++ {
 		if p.children[i] != nil {
-			// TODO: 设置父引用
+			// 设置父引用
+			// 注意：这里需要获取当前 InternalPage 的父引用
+			// 由于函数签名限制，暂时跳过
 			// p.children[i].SetParentRef(parentRef)
 		}
 	}

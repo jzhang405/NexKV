@@ -1,3 +1,7 @@
+// Copyright 2026 NexKV Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 package btree
 
 import (
@@ -12,13 +16,19 @@ var (
 	ErrInvalidState = fmt.Errorf("invalid lock state")
 )
 
-// PageLock 轻量级锁（支持重入和超时）
-// state 编码：[63:48] lockCount (16 bits) | [47:0] ownerID (48 bits)
+// PageLock 支持重入和超时的轻量级锁
+// 状态编码: (owner_id << 32) | lock_count
 type PageLock struct {
-	state atomic.Int64 // 状态编码：(lockCount << 48) | ownerID
+	state atomic.Int64 // 状态编码
 	mu    sync.Mutex   // 保护 cond
-	cond  *sync.Cond   // 条件变量，用于广播通知
+	cond  *sync.Cond   // 条件变量（用于等待/唤醒）
 }
+
+const (
+	unlockedState   = 0
+	maxRecurseCount = 1000 // 最大重入次数
+	ownerIDShift    = 32   // ownerID 位移
+)
 
 // NewPageLock 创建新的 PageLock
 func NewPageLock() *PageLock {
@@ -31,11 +41,12 @@ func NewPageLock() *PageLock {
 
 // TryLock 非阻塞加锁
 func (l *PageLock) TryLock() bool {
-	// 使用 CAS 尝试设置为锁定状态
-	return l.state.CompareAndSwap(0, encodeOwnerState(0, 1))
+	// 尝试 CAS 设置为 locked (owner_id=1, count=1)
+	newState := int64(1)<<ownerIDShift | 1
+	return l.state.CompareAndSwap(int64(unlockedState), newState)
 }
 
-// Lock 加锁（阻塞）
+// Lock 阻塞加锁（支持重入）
 func (l *PageLock) Lock() {
 	l.lockWithTimeout(0)
 }
@@ -47,6 +58,8 @@ func (l *PageLock) LockWithTimeout(timeout time.Duration) bool {
 
 // lockWithTimeout 内部加锁实现
 func (l *PageLock) lockWithTimeout(timeout time.Duration) bool {
+	const ownerID = 1 // 简化：使用固定的 owner ID
+
 	var timer *time.Timer
 	if timeout > 0 {
 		timer = time.AfterFunc(timeout, func() {
@@ -57,8 +70,25 @@ func (l *PageLock) lockWithTimeout(timeout time.Duration) bool {
 
 	// 尝试加锁（支持重入）
 	for {
-		if l.state.CompareAndSwap(0, encodeOwnerState(0, 1)) {
-			return true
+		// 先尝试 CAS 加锁
+		oldState := l.state.Load()
+		if oldState == int64(unlockedState) {
+			newState := int64(ownerID)<<ownerIDShift | 1
+			if l.state.CompareAndSwap(oldState, newState) {
+				return true
+			}
+		} else {
+			// 检查是否是重入
+			currentOwner := oldState >> ownerIDShift
+			if currentOwner == int64(ownerID) {
+				lockCount := oldState & ((1 << ownerIDShift) - 1)
+				if lockCount < maxRecurseCount {
+					newState := oldState + 1
+					if l.state.CompareAndSwap(oldState, newState) {
+						return true
+					}
+				}
+			}
 		}
 
 		// 等待锁释放
@@ -68,62 +98,44 @@ func (l *PageLock) lockWithTimeout(timeout time.Duration) bool {
 
 // Unlock 解锁（支持重入）
 func (l *PageLock) Unlock() error {
-	state := l.state.Load()
-	ownerID, lockCount := decodeOwnerState(state)
-
-	// 检查是否是锁的持有者
-	// 注意：这里简化了，实际应该检查当前 goroutine ID
-	// 在 Phase 1 原型中，我们假设 ownerID=0 表示当前 goroutine
-	if ownerID != 0 {
-		return ErrNotOwner
+	oldState := l.state.Load()
+	if oldState == int64(unlockedState) {
+		return fmt.Errorf("cannot unlock unlocked lock")
 	}
 
-	if lockCount == 1 {
-		// 完全解锁
-		if !l.state.CompareAndSwap(state, 0) {
-			return ErrInvalidState
+	lockCount := oldState & ((1 << ownerIDShift) - 1)
+	if lockCount > 1 {
+		// 重入计数减 1
+		newState := oldState - 1
+		if !l.state.CompareAndSwap(oldState, newState) {
+			return fmt.Errorf("unlock failed: state changed")
 		}
-		l.broadcast()
-	} else {
-		// 减少重入计数
-		newState := encodeOwnerState(ownerID, lockCount-1)
-		if !l.state.CompareAndSwap(state, newState) {
-			return ErrInvalidState
-		}
+		return nil
 	}
 
+	// 完全解锁
+	if !l.state.CompareAndSwap(oldState, int64(unlockedState)) {
+		return fmt.Errorf("unlock failed: state changed")
+	}
+
+	// 唤醒等待者
+	l.broadcast()
 	return nil
 }
 
-// IsLocked 判断是否已锁定
+// IsLocked 检查是否已锁定
 func (l *PageLock) IsLocked() bool {
-	return l.state.Load() != 0
+	return l.state.Load() != int64(unlockedState)
 }
 
 // LockCount 获取锁定计数（重入次数）
 func (l *PageLock) LockCount() int {
-	_, count := decodeOwnerState(l.state.Load())
-	return count
-}
-
-// encodeOwnerState 编码所有者状态
-// 位布局：[63:48] lockCount (16 bits, max 65535) | [47:0] ownerID (48 bits)
-func encodeOwnerState(ownerID, lockCount int) int64 {
-	if ownerID < 0 || ownerID >= (1<<48) {
-		panic(fmt.Sprintf("owner ID %d out of range", ownerID))
+	state := l.state.Load()
+	if state == int64(unlockedState) {
+		return 0
 	}
-	if lockCount < 0 || lockCount >= (1<<16) {
-		panic(fmt.Sprintf("lock count %d out of range", lockCount))
-	}
-
-	return (int64(lockCount) << 48) | (int64(ownerID) & 0xFFFFFFFFFFFF)
-}
-
-// decodeOwnerState 解码所有者状态
-func decodeOwnerState(state int64) (ownerID, lockCount int) {
-	lockCount = int(state >> 48)          // [63:48]
-	ownerID = int(state & 0xFFFFFFFFFFFF) // [47:0]
-	return
+	lockCount := state & ((1 << ownerIDShift) - 1)
+	return int(lockCount)
 }
 
 // wait 等待锁释放通知

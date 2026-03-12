@@ -25,12 +25,12 @@ const cacheLineSize = 64
 // └─────────────────────────────────────────────────────────────────┘
 type PageInfo struct {
 	// Cache Line 1 (64 bytes) - 热数据（高并发访问）
-	pos      int64       // 8 bytes  - 在 Chunk 中的位置（0=未写入）
-	page     interface{} // 8 bytes  - 页面对象（*LeafPage 或 *InternalPage）
-	pageLock *PageLock   // 8 bytes  - 轻量级锁
-	lastTime int64       // 8 bytes  - LRU 时间戳（纳秒）
-	hits     int64       // 8 bytes  - 访问计数
-	_        [24]byte    // padding to 64 bytes
+	pos      int64     // 8 bytes  - 在 Chunk 中的位置（0=未写入）
+	page     any       // 8 bytes  - 页面对象（*LeafPage 或 *InternalPage）
+	pageLock *PageLock // 8 bytes  - 轻量级锁
+	lastTime int64     // 8 bytes  - LRU 时间戳（纳秒）
+	hits     int64     // 8 bytes  - 访问计数
+	_        [24]byte  // padding to 64 bytes
 
 	// Cache Line 2 (64 bytes) - 温数据（序列化缓冲区）
 	buff []byte   // 24 bytes - slice header
@@ -38,12 +38,12 @@ type PageInfo struct {
 
 	// Cache Line 3 (64 bytes) - 冷数据（元数据，低频写入）
 	parentRefMu sync.RWMutex // 8 bytes  - ✅ P0-2 修复: 保护 parentRef 的并发访问
-	parentRef   *PageRef    // 8 bytes  - 父节点引用
-	isDirty     bool        // 1 byte   - 是否脏页
-	isSplitted  bool        // 1 byte   - 是否被分裂
-	metaVersion int32       // 4 bytes  - 元数据版本
-	pageSize    int32       // 4 bytes  - 页面实际大小（固定 4KB）
-	_           [62]byte    // padding to 64 bytes (调整 padding)
+	parentRef   *PageRef     // 8 bytes  - 父节点引用
+	isDirty     bool         // 1 byte   - 是否脏页
+	isSplitted  bool         // 1 byte   - 是否被分裂
+	metaVersion int32        // 4 bytes  - 元数据版本
+	pageSize    int32        // 4 bytes  - 页面实际大小（固定 4KB）
+	_           [62]byte     // padding to 64 bytes (调整 padding)
 }
 
 // NewPageInfo 创建新的 PageInfo
@@ -62,14 +62,14 @@ func NewPageInfo() *PageInfo {
 	}
 }
 
-// GetPage 获取页面对象（返回 interface{}，需要类型断言）
+// GetPage 获取页面对象（返回 any，需要类型断言）
 // 实际类型为 *LeafPage 或 *InternalPage
-func (info *PageInfo) GetPage() interface{} {
+func (info *PageInfo) GetPage() any {
 	return info.page
 }
 
 // SetPage 设置页面对象
-func (info *PageInfo) SetPage(page interface{}) {
+func (info *PageInfo) SetPage(page any) {
 	info.page = page
 }
 
@@ -148,11 +148,13 @@ func (info *PageInfo) GetLastTime() int64 {
 }
 
 // Clone 复制 PageInfo（Copy-on-Write）
+//
+// ✅ P0-4 修复: 深拷贝 Page 对象，避免并发修改问题
+// 当多个 goroutine 并发修改时，每个 goroutine 需要独立的 Page 副本
 func (info *PageInfo) Clone() *PageInfo {
 	// 创建新的 PageInfo，复制所有字段
 	newInfo := &PageInfo{
 		pos:         info.pos,
-		page:        info.page,     // 浅拷贝 Page 指针
 		pageLock:    NewPageLock(), // 创建新锁
 		lastTime:    info.lastTime,
 		hits:        info.hits,
@@ -162,6 +164,20 @@ func (info *PageInfo) Clone() *PageInfo {
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}
+
+	// ✅ P0-4 修复: 深拷贝 Page 对象，避免并发修改共享 Page
+	if info.IsPageLoaded() && info.page != nil {
+		switch p := info.page.(type) {
+		case *LeafPage:
+			newInfo.page = p.Clone() // 深拷贝 LeafPage
+		case *InternalPage:
+			newInfo.page = p.Clone() // 深拷贝 InternalPage
+		default:
+			// 未知类型，保留原引用（不应该发生）
+			newInfo.page = info.page
+		}
+	}
+
 	return newInfo
 }
 

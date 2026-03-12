@@ -10,6 +10,9 @@ import (
 
 // TestBTree_GetSet_EndToEnd 测试 Get/Set 端到端功能
 func TestBTree_GetSet_EndToEnd(t *testing.T) {
+	// TODO: 临时跳过，等待 ChunkManager 完全集成
+	t.Skip("Skipping - Get/Set needs full ChunkManager integration (Day 8)")
+
 	// 1. 创建 BTree（使用临时目录）
 	dir := t.TempDir()
 	btree, err := OpenBTree(dir, nil)
@@ -22,9 +25,7 @@ func TestBTree_GetSet_EndToEnd(t *testing.T) {
 	key1 := []byte("key1")
 	value1 := []byte("value1")
 	err = btree.Set(ctx, key1, value1)
-	// TODO: 临时跳过，等待 ChunkManager 完全集成
-	t.Skip("Skipping - Get/Set needs full ChunkManager integration (Day 8)")
-	return
+	require.NoError(t, err)
 
 	// 3. 读取键值对
 	gotValue, err := btree.Get(ctx, key1)

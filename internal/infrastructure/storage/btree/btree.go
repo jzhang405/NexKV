@@ -87,7 +87,7 @@ type BTree struct {
 	// Root management
 	rootRef *RootPageRef // Root page reference (atomic updates)
 
-	// Storage (Lealone AOSE)
+	// Storage
 	chunkMgr *ChunkManager // Append-only storage manager
 	wal      wal.WAL       // Write-Ahead Log for crash recovery
 
@@ -370,10 +370,11 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 
 		// 5. 检查是否需要 Merge
 		const minKeys = 8
-		if leaf.NumKeys() < minKeys && len(copiedPath) >= 2 {
-			// 暂时跳过 Merge，专注于修复基本的 Delete 功能
-			// TODO: 在修复引用关系问题后，重新启用 Merge
-			// Merge 操作需要正确处理引用关系，暂时禁用
+		if leaf.NumKeys() < minKeys && len(path) >= 2 {
+			// ✅ Phase 2.1: 重新启用 Merge，使用原始 path 访问兄弟节点
+			if err := b.mergeLeaf(leafInfo, copiedPath, path); err != nil {
+				return fmt.Errorf("merge leaf: %w", err)
+			}
 		}
 
 		// 6. ✅ CAS 更新根节点（带重试）
@@ -1300,27 +1301,35 @@ func (b *BTree) ensurePageLoaded(pageInfo *PageInfo) error {
 // 返回：
 //
 //	error - 错误信息
-func (b *BTree) mergeLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
+func (b *BTree) mergeLeaf(leafInfo *PageInfo, copiedPath, path []*PageInfo) error {
 	const minKeys = 8
 
 	// 1. 检查是否有父节点
-	if len(copiedPath) < 2 {
+	if len(path) < 2 {
 		// 没有父节点，说明是根节点
 		// 根节点允许任意数量的键（包括 0）
 		return nil
 	}
 
-	// 2. 获取父节点
+	// ✅ P0-3 修复: 统一使用 copiedPath 来获取父节点
+	// 从 copiedPath 获取父节点（用于修改和访问兄弟节点）
+	if len(copiedPath) < 2 {
+		return fmt.Errorf("copiedPath too short: expected at least 2, got %d", len(copiedPath))
+	}
+
 	parentInfo := copiedPath[len(copiedPath)-2]
 	parent := parentInfo.GetInternalPage()
+	if parent == nil {
+		return fmt.Errorf("parent page not loaded in copiedPath")
+	}
 
-	// 3. 找到当前节点在父节点中的位置
+	// 2. 找到当前节点在父节点中的位置
 	leafIndex, err := b.findChildIndexInParent(parent, leafInfo)
 	if err != nil {
 		return fmt.Errorf("find child index: %w", err)
 	}
 
-	// 4. 尝试从左兄弟借键
+	// 3. 尝试从左兄弟借键
 	if leafIndex > 0 {
 		leftSiblingRef := parent.GetChild(leafIndex - 1)
 		if leftSiblingRef != nil {
@@ -1338,7 +1347,7 @@ func (b *BTree) mergeLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
 		}
 	}
 
-	// 5. 尝试从右兄弟借键
+	// 4. 尝试从右兄弟借键
 	if leafIndex < parent.NumChildren()-1 {
 		rightSiblingRef := parent.GetChild(leafIndex + 1)
 		if rightSiblingRef != nil {
@@ -1356,7 +1365,10 @@ func (b *BTree) mergeLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
 		}
 	}
 
-	// 6. 如果无法借键，则合并
+	// 5. 如果无法借键，则合并
+	// ✅ P0-3 修复: 统一使用 copiedPath 中的父节点
+	// parentInfo 已经来自 copiedPath，不需要再次获取
+
 	// 优先与右兄弟合并
 	if leafIndex < parent.NumChildren()-1 {
 		rightSiblingRef := parent.GetChild(leafIndex + 1)
@@ -1367,7 +1379,7 @@ func (b *BTree) mergeLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
 				return err
 			}
 
-			return b.mergeLeafWithSibling(parentInfo, parent, leafInfo, rightSiblingInfo, leafIndex)
+			return b.mergeLeafWithSibling(parentInfo, parent, leafInfo, rightSiblingInfo, leafIndex, copiedPath, path)
 		}
 	} else {
 		// 与左兄弟合并
@@ -1379,7 +1391,7 @@ func (b *BTree) mergeLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
 				return err
 			}
 
-			return b.mergeLeafWithSibling(parentInfo, parent, leftSiblingInfo, leafInfo, leafIndex-1)
+			return b.mergeLeafWithSibling(parentInfo, parent, leftSiblingInfo, leafInfo, leafIndex-1, copiedPath, path)
 		}
 	}
 
@@ -1496,6 +1508,7 @@ func (b *BTree) mergeLeafWithSibling(
 	parent *InternalPage,
 	leftNodeInfo, rightNodeInfo *PageInfo,
 	separatorIndex int,
+	copiedPath, path []*PageInfo,
 ) error {
 	leftNode := leftNodeInfo.GetLeafPage()
 	rightNode := rightNodeInfo.GetLeafPage()
@@ -1530,12 +1543,296 @@ func (b *BTree) mergeLeafWithSibling(
 		return nil
 	}
 
-	// 5. 检查父节点是否需要 Merge
+	// 5. ✅ Phase 2.3: 检查父节点是否需要 Merge（递归向上合并）
 	const minInternal = 7
-	if parent.NumKeys() < minInternal {
-		// 需要递归向上合并
-		// 这里暂时返回 nil，实际需要递归处理
-		// TODO: 实现递归 Merge
+	if parent.NumKeys() < minInternal && len(path) >= 2 {
+		// 递归向上合并父节点
+		// 注意：这里需要移除当前节点层级的路径
+		return b.mergeInternal(parentInfo, copiedPath[:len(copiedPath)-1], path[:len(path)-1])
+	}
+
+	return nil
+}
+
+// mergeInternalWithSibling 合并两个内部节点
+//
+// 将右节点合并到左节点，并将父节点的分隔键下降
+// 合并后：Left + Separator + Right
+//
+// 参数：
+//   - parentInfo: 父节点信息（用于检查是否为根节点）
+//   - parent: 父节点
+//   - leftNodeInfo: 左节点信息
+//   - rightNodeInfo: 右节点信息
+//   - separatorIndex: 分隔键在父节点中的索引
+//
+// 返回：
+//   - error: 错误信息
+func (b *BTree) mergeInternalWithSibling(
+	parentInfo *PageInfo,
+	parent *InternalPage,
+	leftNodeInfo, rightNodeInfo *PageInfo,
+	separatorIndex int,
+	copiedPath, path []*PageInfo,
+) error {
+	leftNode := leftNodeInfo.GetInternalPage()
+	rightNode := rightNodeInfo.GetInternalPage()
+
+	// 1. 获取父节点的分隔键
+	separatorKey := parent.keys[separatorIndex]
+
+	// 2. 合并节点：Left + Separator + Right
+	// 2.1 将分隔键追加到左节点
+	leftNode.keys = append(leftNode.keys, separatorKey)
+
+	// 2.2 将右节点的所有键追加到左节点
+	leftNode.keys = append(leftNode.keys, rightNode.keys...)
+
+	// 2.3 将右节点的所有子节点引用追加到左节点
+	// 注意：右节点的第一个子节点对应分隔键，需要跳过
+	leftNode.children = append(leftNode.children, rightNode.children...)
+
+	// 2.4 ✅ P0-1 修复: 更新右节点子节点的父引用（指向左节点）
+	// 从父节点中找到左节点的 PageRef（在 separatorIndex 位置）
+	leftNodeRef := parent.children[separatorIndex]
+	if leftNodeRef != nil {
+		// 遍历右节点的所有子节点，更新它们的 parentRef
+		for _, childRef := range rightNode.children {
+			if childRef != nil {
+				childRef.SetParentRef(leftNodeRef)
+			}
+		}
+	}
+
+	leftNode.version++
+
+	// 3. 从父节点删除分隔键和右子节点引用
+	parent.keys = append(parent.keys[:separatorIndex], parent.keys[separatorIndex+1:]...)
+	parent.children = append(parent.children[:separatorIndex+1], parent.children[separatorIndex+2:]...)
+	parent.version++
+
+	// 4. 处理根节点降低
+	// 如果父节点是根节点且已空（没有键），则降低树的高度
+	if parentInfo == b.rootRef.pInfo.Load() && parent.NumKeys() == 0 {
+		// 合并后的节点成为新的根节点
+		oldRootInfo := parentInfo
+		if !b.rootRef.ReplacePage(oldRootInfo, leftNodeInfo) {
+			return ErrRetry
+		}
+		// ✅ P0-1 修复: 更新新根节点的 parentRef 为 nil
+		// leftNodeInfo 现在是根节点，不应该有父节点
+		leftNodeInfo.SetParentRef(nil)
+		return nil
+	}
+
+	// 5. ✅ Phase 2.3: 检查父节点是否需要 Merge（递归向上合并）
+	const minInternal = 7
+	if parent.NumKeys() < minInternal && len(path) >= 2 {
+		// 递归向上合并父节点
+		return b.mergeInternal(parentInfo, copiedPath[:len(copiedPath)-1], path[:len(path)-1])
+	}
+
+	return nil
+}
+
+// redistributeInternalLeft 从左兄弟借键（内部节点）
+//
+// 当左兄弟有足够的键时，从左兄弟借一个键到当前节点
+//
+// 借键流程：
+// 1. 父节点的分隔键下降到当前节点
+// 2. 左兄弟的最大键上升到父节点作为新的分隔键
+// 3. 左兄弟的最大子节点移动到当前节点
+func (b *BTree) redistributeInternalLeft(
+	parent *InternalPage,
+	nodeInfo, leftSiblingInfo *PageInfo,
+	nodeIndex int,
+) error {
+	node := nodeInfo.GetInternalPage()
+	leftSibling := leftSiblingInfo.GetInternalPage()
+
+	// 1. 从父节点获取分隔键
+	separatorKey := parent.keys[nodeIndex-1]
+
+	// 2. 从左兄弟借最后一个键和子节点
+	lastIdx := leftSibling.NumKeys() - 1
+	borrowedKey := leftSibling.keys[lastIdx]
+	borrowedChild := leftSibling.children[lastIdx+1] // 最后一个子节点
+
+	// 3. 从左兄弟删除最后一个键和子节点
+	leftSibling.keys = leftSibling.keys[:lastIdx]
+	leftSibling.children = leftSibling.children[:lastIdx+1]
+	leftSibling.version++
+
+	// 4. 将分隔键插入到当前节点的开头
+	node.keys = insertSlice(node.keys, 0, separatorKey)
+
+	// 5. 将借来的键插入到当前节点的开头（在分隔键之后）
+	node.keys = insertSlice(node.keys, 1, borrowedKey)
+
+	// 6. 将借来的子节点插入到当前节点的开头
+	node.children = insertSlice(node.children, 0, borrowedChild)
+
+	// 7. 更新父节点的分隔键（使用左兄弟删除后的新最大键）
+	if leftSibling.NumKeys() > 0 {
+		newSeparatorKey := leftSibling.keys[leftSibling.NumKeys()-1]
+		parent.keys[nodeIndex-1] = newSeparatorKey
+	}
+	parent.version++
+
+	return nil
+}
+
+// redistributeInternalRight 从右兄弟借键（内部节点）
+//
+// 当右兄弟有足够的键时，从右兄弟借一个键到当前节点
+//
+// 借键流程：
+// 1. 父节点的分隔键下降到当前节点
+// 2. 右兄弟的最小键上升到父节点作为新的分隔键
+// 3. 右兄弟的最小子节点移动到当前节点
+func (b *BTree) redistributeInternalRight(
+	parent *InternalPage,
+	nodeInfo, rightSiblingInfo *PageInfo,
+	nodeIndex int,
+) error {
+	node := nodeInfo.GetInternalPage()
+	rightSibling := rightSiblingInfo.GetInternalPage()
+
+	// 1. 从父节点获取分隔键
+	separatorKey := parent.keys[nodeIndex]
+
+	// 2. 从右兄弟借第一个键和子节点
+	borrowedKey := rightSibling.keys[0]
+	borrowedChild := rightSibling.children[0] // 第一个子节点
+
+	// 3. 从右兄弟删除第一个键和子节点
+	rightSibling.keys = rightSibling.keys[1:]
+	rightSibling.children = rightSibling.children[1:]
+	rightSibling.version++
+
+	// 4. 将分隔键追加到当前节点
+	node.keys = append(node.keys, separatorKey)
+
+	// 5. 将借来的键追加到当前节点
+	node.keys = append(node.keys, borrowedKey)
+
+	// 6. 将借来的子节点追加到当前节点
+	node.children = append(node.children, borrowedChild)
+
+	// 7. 更新父节点的分隔键（使用右兄弟的最小键）
+	if rightSibling.NumKeys() > 0 {
+		newSeparatorKey := rightSibling.keys[0]
+		parent.keys[nodeIndex] = newSeparatorKey
+	}
+	parent.version++
+
+	return nil
+}
+
+// mergeInternal 合并内部节点
+//
+// 当内部节点的键数量少于 minKeys 时，尝试从兄弟节点借键或合并
+//
+// 参数：
+//   - nodeInfo: 要合并的节点信息
+//   - copiedPath: 复制路径（用于修改）
+//   - path: 原始路径（用于读取）
+//
+// 返回：
+//   - error: 错误信息
+func (b *BTree) mergeInternal(nodeInfo *PageInfo, copiedPath, path []*PageInfo) error {
+	const minInternal = 7
+
+	// 1. 检查是否有父节点
+	if len(path) < 2 {
+		// 没有父节点，说明是根节点
+		// 根节点允许任意数量的键（包括 0）
+		return nil
+	}
+
+	// ✅ P0-3 修复: 统一使用 copiedPath 来获取父节点
+	// 从 copiedPath 获取父节点（用于修改和访问兄弟节点）
+	if len(copiedPath) < 2 {
+		return fmt.Errorf("copiedPath too short: expected at least 2, got %d", len(copiedPath))
+	}
+
+	parentInfo := copiedPath[len(copiedPath)-2]
+	parent := parentInfo.GetInternalPage()
+	if parent == nil {
+		return fmt.Errorf("parent page not loaded in copiedPath")
+	}
+
+	// 2. 找到当前节点在父节点中的位置
+	nodeIndex, err := b.findChildIndexInParent(parent, nodeInfo)
+	if err != nil {
+		return fmt.Errorf("find child index: %w", err)
+	}
+
+	// 3. 尝试从左兄弟借键
+	if nodeIndex > 0 {
+		leftSiblingRef := parent.GetChild(nodeIndex - 1)
+		if leftSiblingRef != nil {
+			leftSiblingInfo := leftSiblingRef.GetPageInfo()
+
+			// 懒加载左兄弟（如果未加载）
+			if err := b.ensurePageLoaded(leftSiblingInfo); err != nil {
+				return err
+			}
+
+			leftSibling := leftSiblingInfo.GetInternalPage()
+			if leftSibling != nil && leftSibling.NumKeys() > minInternal {
+				return b.redistributeInternalLeft(parent, nodeInfo, leftSiblingInfo, nodeIndex)
+			}
+		}
+	}
+
+	// 4. 尝试从右兄弟借键
+	if nodeIndex < parent.NumChildren()-1 {
+		rightSiblingRef := parent.GetChild(nodeIndex + 1)
+		if rightSiblingRef != nil {
+			rightSiblingInfo := rightSiblingRef.GetPageInfo()
+
+			// 懒加载右兄弟（如果未加载）
+			if err := b.ensurePageLoaded(rightSiblingInfo); err != nil {
+				return err
+			}
+
+			rightSibling := rightSiblingInfo.GetInternalPage()
+			if rightSibling != nil && rightSibling.NumKeys() > minInternal {
+				return b.redistributeInternalRight(parent, nodeInfo, rightSiblingInfo, nodeIndex)
+			}
+		}
+	}
+
+	// 5. 如果无法借键，则合并
+	// ✅ P0-3 修复: 统一使用 copiedPath 中的父节点
+	// parentInfo 已经来自 copiedPath，不需要再次获取
+
+	// 优先与右兄弟合并
+	if nodeIndex < parent.NumChildren()-1 {
+		rightSiblingRef := parent.GetChild(nodeIndex + 1)
+		if rightSiblingRef != nil {
+			rightSiblingInfo := rightSiblingRef.GetPageInfo()
+
+			if err := b.ensurePageLoaded(rightSiblingInfo); err != nil {
+				return err
+			}
+
+			return b.mergeInternalWithSibling(parentInfo, parent, nodeInfo, rightSiblingInfo, nodeIndex, copiedPath, path)
+		}
+	} else {
+		// 与左兄弟合并
+		leftSiblingRef := parent.GetChild(nodeIndex - 1)
+		if leftSiblingRef != nil {
+			leftSiblingInfo := leftSiblingRef.GetPageInfo()
+
+			if err := b.ensurePageLoaded(leftSiblingInfo); err != nil {
+				return err
+			}
+
+			return b.mergeInternalWithSibling(parentInfo, parent, leftSiblingInfo, nodeInfo, nodeIndex-1, copiedPath, path)
+		}
 	}
 
 	return nil

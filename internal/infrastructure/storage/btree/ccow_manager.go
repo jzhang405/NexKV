@@ -13,9 +13,9 @@ type CCOWManager struct {
 	gc *BTreeGC
 
 	// 快照管理
-	snapshots    map[uint64]*BTreeSnapshot
-	snapshotID  atomic.Uint64
-	snapshotMu  sync.RWMutex
+	snapshots  map[uint64]*BTreeSnapshot
+	snapshotID atomic.Uint64
+	snapshotMu sync.RWMutex
 
 	// 脏页跟踪
 	dirtyPages   map[*PageInfo]struct{}

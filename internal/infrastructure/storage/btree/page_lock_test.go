@@ -118,8 +118,8 @@ func TestPageLock_ConcurrentAccess(t *testing.T) {
 
 func TestEncodeDecodeOwnerState(t *testing.T) {
 	tests := []struct {
-		name     string
-		ownerID  int
+		name      string
+		ownerID   int
 		lockCount int
 	}{
 		{"零值", 0, 0},

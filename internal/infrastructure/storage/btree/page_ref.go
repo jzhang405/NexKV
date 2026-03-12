@@ -10,9 +10,9 @@ import (
 // 使用 atomic.Pointer[PageInfo] 实现无锁并发访问
 // 要求：Go 1.19+ (atomic.Pointer 泛型支持)
 type PageRef struct {
-	pInfo     atomic.Pointer[PageInfo]  // 原子指针，支持 CAS 更新
-	parentRef *PageRef             // 父引用，形成引用链（弱引用避免循环）
-	mu        sync.RWMutex              // 保护 parentRef 更新
+	pInfo     atomic.Pointer[PageInfo] // 原子指针，支持 CAS 更新
+	parentRef *PageRef                 // 父引用，形成引用链（弱引用避免循环）
+	mu        sync.RWMutex             // 保护 parentRef 更新
 }
 
 // NewPageRef 创建新的 PageRef
@@ -53,12 +53,14 @@ func (r *PageRef) GetPageInfo() *PageInfo {
 // 使用 Compare-And-Swap 确保原子性
 //
 // 参数：
-//   oldInfo - 期望的当前 PageInfo（可以为 nil）
-//   newInfo - 新的 PageInfo（不能为 nil）
+//
+//	oldInfo - 期望的当前 PageInfo（可以为 nil）
+//	newInfo - 新的 PageInfo（不能为 nil）
 //
 // 返回：
-//   true - CAS 成功，替换成功
-//   false - CAS 失败，当前值不是 oldInfo
+//
+//	true - CAS 成功，替换成功
+//	false - CAS 失败，当前值不是 oldInfo
 func (r *PageRef) ReplacePage(oldInfo, newInfo *PageInfo) bool {
 	if newInfo == nil {
 		panic("newInfo cannot be nil")
@@ -216,11 +218,13 @@ func (r *PageRef) SetBuff(buff []byte) {
 // 这是 Lealone 模式的核心：只有 Root 常驻内存，其他页面按需加载
 //
 // 参数：
-//   chunkMgr - ChunkManager 用于加载页面数据
+//
+//	chunkMgr - ChunkManager 用于加载页面数据
 //
 // 返回：
-//   *PageInfo - 页面信息（保证 page != nil）
-//   error - 错误信息
+//
+//	*PageInfo - 页面信息（保证 page != nil）
+//	error - 错误信息
 //
 // 懒加载逻辑：
 // 1. 如果 pageInfo.page != nil，直接返回（已加载）

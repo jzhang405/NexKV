@@ -9,9 +9,9 @@ import (
 
 // GC 类型
 const (
-	GCTypeFull   = 0 // 完全释放（page + buff）
-	GCTypePage   = 1 // 仅释放 page 对象
-	GCTypeBuff   = 2 // 仅释放 buff 缓存
+	GCTypeFull = 0 // 完全释放（page + buff）
+	GCTypePage = 1 // 仅释放 page 对象
+	GCTypeBuff = 2 // 仅释放 buff 缓存
 )
 
 // BTreeGC 渐进式垃圾回收
@@ -19,20 +19,20 @@ type BTreeGC struct {
 	chunkManager *ChunkManager
 
 	// 内存管理
-	maxMemory     int64          // 内存上限 (64MB)
-	lowWaterMark  int64          // 低水位 (70% = 44.8MB)
-	highWaterMark int64          // 高水位 (90% = 57.6MB)
-	usedMemory    atomic.Int64   // 已使用内存
+	maxMemory     int64        // 内存上限 (64MB)
+	lowWaterMark  int64        // 低水位 (70% = 44.8MB)
+	highWaterMark int64        // 高水位 (90% = 57.6MB)
+	usedMemory    atomic.Int64 // 已使用内存
 
 	// 分层 GC 策略
 	pageEvictionRate   float64 // 页面淘汰率 (0.1)
 	bufferEvictionRate float64 // 缓冲区淘汰率 (0.3)
 
 	// 智能触发
-	memoryPressure     chan bool         // 内存压力信号
-	adaptiveInterval   atomic.Int64    // 自适应间隔 (纳秒)
-	stopCh             chan struct{}    // 停止信号
-	wg                 sync.WaitGroup   // 等待组
+	memoryPressure   chan bool      // 内存压力信号
+	adaptiveInterval atomic.Int64   // 自适应间隔 (纳秒)
+	stopCh           chan struct{}  // 停止信号
+	wg               sync.WaitGroup // 等待组
 
 	// 统计
 	stats GCStats
@@ -41,11 +41,11 @@ type BTreeGC struct {
 
 // GCStats GC 统计信息
 type GCStats struct {
-	TotalGCs      int64         // 总 GC 次数
-	PageReleases  int64         // 页面释放次数
+	TotalGCs       int64         // 总 GC 次数
+	PageReleases   int64         // 页面释放次数
 	BufferReleases int64         // 缓冲区释放次数
-	LastGCTime    time.Time     // 最后一次 GC 时间
-	AvgGCDuration time.Duration // 平均 GC 耗时
+	LastGCTime     time.Time     // 最后一次 GC 时间
+	AvgGCDuration  time.Duration // 平均 GC 耗时
 }
 
 // NewBTreeGC 创建新的 BTreeGC

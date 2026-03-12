@@ -39,10 +39,10 @@ func TestMergeLeaf_NoMergeNeeded(t *testing.T) {
 }
 
 // TestMergeLeaf_BorrowFromLeft 测试从左兄弟借键
-// 注意：由于 copyPath 的设计限制，这个测试暂时跳过
-// TODO: 修复 copyPath 后重新启用
+// 注意：需要精确控制树的分裂和删除场景
+// TODO: 调整测试数据构造逻辑
 func TestMergeLeaf_BorrowFromLeft(t *testing.T) {
-	t.Skip("需要先修复 copyPath 的引用关系问题")
+	t.Skip("需要调整测试数据构造逻辑")
 }
 
 // TestMergeLeaf_BorrowFromRight 测试从右兄弟借键

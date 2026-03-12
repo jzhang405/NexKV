@@ -76,14 +76,14 @@ func TestInternalPage_FindChildRef(t *testing.T) {
 
 	// 测试查找
 	testCases := []struct {
-		key        []byte
-		expectIdx  int
+		key       []byte
+		expectIdx int
 	}{
-		{[]byte("key0"), 0},  // 比 key1 小，应该返回第 0 个子节点
-		{[]byte("key1"), 1},  // 等于 key1，应该返回第 1 个子节点（右子节点）
-		{[]byte("key2"), 1},  // key1 < key2 < key3，应该返回第 1 个子节点
-		{[]byte("key4"), 2},  // key3 < key4 < key5，应该返回第 2 个子节点
-		{[]byte("key6"), 3},  // 比 key5 大，应该返回第 3 个子节点
+		{[]byte("key0"), 0}, // 比 key1 小，应该返回第 0 个子节点
+		{[]byte("key1"), 1}, // 等于 key1，应该返回第 1 个子节点（右子节点）
+		{[]byte("key2"), 1}, // key1 < key2 < key3，应该返回第 1 个子节点
+		{[]byte("key4"), 2}, // key3 < key4 < key5，应该返回第 2 个子节点
+		{[]byte("key6"), 3}, // 比 key5 大，应该返回第 3 个子节点
 	}
 
 	for _, tc := range testCases {

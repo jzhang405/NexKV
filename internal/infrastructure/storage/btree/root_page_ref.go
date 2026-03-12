@@ -36,12 +36,14 @@ func NewRootPageRefWithInfo(info *PageInfo) *RootPageRef {
 // 3. 延迟释放旧页面（等待活跃读操作完成）
 //
 // 参数：
-//   oldInfo - 期望的当前 PageInfo（可以为 nil）
-//   newInfo - 新的 PageInfo（不能为 nil）
+//
+//	oldInfo - 期望的当前 PageInfo（可以为 nil）
+//	newInfo - 新的 PageInfo（不能为 nil）
 //
 // 返回：
-//   true - CAS 成功，替换成功并完成引用链更新
-//   false - CAS 失败，当前值不是 oldInfo
+//
+//	true - CAS 成功，替换成功并完成引用链更新
+//	false - CAS 失败，当前值不是 oldInfo
 func (r *RootPageRef) ReplacePage(oldInfo, newInfo *PageInfo) bool {
 	if newInfo == nil {
 		panic("newInfo cannot be nil")

@@ -7,18 +7,17 @@ import (
 	"time"
 )
 
-
 var (
-	ErrNotOwner    = fmt.Errorf("not the lock owner")
+	ErrNotOwner     = fmt.Errorf("not the lock owner")
 	ErrInvalidState = fmt.Errorf("invalid lock state")
 )
 
 // PageLock 轻量级锁（支持重入和超时）
 // state 编码：[63:48] lockCount (16 bits) | [47:0] ownerID (48 bits)
 type PageLock struct {
-	state atomic.Int64  // 状态编码：(lockCount << 48) | ownerID
-	mu    sync.Mutex    // 保护 cond
-	cond  *sync.Cond    // 条件变量，用于广播通知
+	state atomic.Int64 // 状态编码：(lockCount << 48) | ownerID
+	mu    sync.Mutex   // 保护 cond
+	cond  *sync.Cond   // 条件变量，用于广播通知
 }
 
 // NewPageLock 创建新的 PageLock
@@ -122,8 +121,8 @@ func encodeOwnerState(ownerID, lockCount int) int64 {
 
 // decodeOwnerState 解码所有者状态
 func decodeOwnerState(state int64) (ownerID, lockCount int) {
-	lockCount = int(state >> 48)              // [63:48]
-	ownerID = int(state & 0xFFFFFFFFFFFF)      // [47:0]
+	lockCount = int(state >> 48)          // [63:48]
+	ownerID = int(state & 0xFFFFFFFFFFFF) // [47:0]
 	return
 }
 

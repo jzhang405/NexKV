@@ -168,7 +168,7 @@ func TestInternalPage_Split(t *testing.T) {
 	// ✅ Day 7: 新分裂逻辑 - 右子节点包含分裂键
 	// 验证新页面包含后半部分（包含分裂键）
 	assert.Equal(t, 3, newPage.NumKeys())
-	assert.Equal(t, 2, newPage.NumChildren()) // 包含从 mid 开始的子节点
+	assert.Equal(t, 2, newPage.NumChildren())     // 包含从 mid 开始的子节点
 	assert.Equal(t, []byte("c"), newPage.keys[0]) // 包含分裂键
 	assert.Equal(t, []byte("d"), newPage.keys[1])
 	assert.Equal(t, []byte("e"), newPage.keys[2])

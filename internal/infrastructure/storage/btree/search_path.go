@@ -9,12 +9,14 @@ import (
 // 这是 BTree 搜索的核心方法，支持懒加载和并发安全
 //
 // 参数：
-//   ctx - 上下文（用于取消和超时）
-//   key - 搜索键
+//
+//	ctx - 上下文（用于取消和超时）
+//	key - 搜索键
 //
 // 返回：
-//   []*PageInfo - 从 Root 到 Leaf 的路径（按深度排序）
-//   error - 错误信息
+//
+//	[]*PageInfo - 从 Root 到 Leaf 的路径（按深度排序）
+//	error - 错误信息
 //
 // 搜索流程：
 // 1. 从 Root PageRef 开始（通过 b.rootRef 获取）
@@ -116,13 +118,15 @@ func (b *BTree) searchPath(ctx context.Context, key []byte) ([]*PageInfo, error)
 // 返回叶子节点的 PageInfo 和路径
 //
 // 参数：
-//   ctx - 上下文
-//   key - 搜索键
+//
+//	ctx - 上下文
+//	key - 搜索键
 //
 // 返回：
-//   *PageInfo - 叶子节点的 PageInfo
-//   []*PageInfo - 完整路径（包括 Root 和 Leaf）
-//   error - 错误信息
+//
+//	*PageInfo - 叶子节点的 PageInfo
+//	[]*PageInfo - 完整路径（包括 Root 和 Leaf）
+//	error - 错误信息
 func (b *BTree) findLeafPage(ctx context.Context, key []byte) (*PageInfo, []*PageInfo, error) {
 	path, err := b.searchPath(ctx, key)
 	if err != nil {

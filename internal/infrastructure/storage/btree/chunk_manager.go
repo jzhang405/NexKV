@@ -12,14 +12,14 @@ import (
 // 支持多个 Chunk 文件的创建、分配和写入
 type ChunkManager struct {
 	// 基础配置
-	chunkSize int  // 每个 Chunk 大小 (256MB)
-	pageSize  int  // 页面大小 (4KB)
+	chunkSize int    // 每个 Chunk 大小 (256MB)
+	pageSize  int    // 页面大小 (4KB)
 	dataDir   string // 数据目录
 
 	// 文件管理
-	activeChunks   []*Chunk    // 活跃的 Chunk（可写入）
-	archivedChunks []*Chunk    // 已归档的 Chunk（只读）
-	currentChunk   *Chunk      // 当前写入的 Chunk
+	activeChunks   []*Chunk     // 活跃的 Chunk（可写入）
+	archivedChunks []*Chunk     // 已归档的 Chunk（只读）
+	currentChunk   *Chunk       // 当前写入的 Chunk
 	currentChunkID atomic.Int64 // 当前 Chunk ID
 
 	// 并发控制
@@ -161,11 +161,13 @@ func (cm *ChunkManager) ReadPage(pos int64) ([]byte, error) {
 // 从 Chunk 文件读取页面数据并反序列化为具体的 Page 类型（LeafPage 或 InternalPage）
 //
 // 参数：
-//   pos - 64 位位置编码（包含 ChunkID、Offset、PageType）
+//
+//	pos - 64 位位置编码（包含 ChunkID、Offset、PageType）
 //
 // 返回：
-//   interface{} - 反序列化后的页面对象（实际类型为 *LeafPage 或 *InternalPage）
-//   error - 错误信息
+//
+//	interface{} - 反序列化后的页面对象（实际类型为 *LeafPage 或 *InternalPage）
+//	error - 错误信息
 //
 // 懒加载流程：
 // 1. 解码 pos，获取 ChunkID、Offset、PageType
@@ -336,9 +338,9 @@ func (cm *ChunkManager) GetStats() ChunkManagerStats {
 	defer cm.mu.RUnlock()
 
 	stats := ChunkManagerStats{
-		ActiveChunkCount:  len(cm.activeChunks),
+		ActiveChunkCount:   len(cm.activeChunks),
 		ArchivedChunkCount: len(cm.archivedChunks),
-		CurrentChunkID:    int(cm.currentChunkID.Load()),
+		CurrentChunkID:     int(cm.currentChunkID.Load()),
 	}
 
 	if cm.currentChunk != nil {

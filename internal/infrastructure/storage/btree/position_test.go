@@ -18,56 +18,56 @@ func TestEncodePagePos(t *testing.T) {
 		{
 			name:     "有效参数（非零）",
 			chunkID:  1,
-			offset:  4096,
+			offset:   4096,
 			pageType: 1,
 			wantErr:  false,
 		},
 		{
 			name:     "大有效值",
-			chunkID:  1000000, // 1M
-			offset:  256 * 1024 * 1024, // 256MB
+			chunkID:  1000000,           // 1M
+			offset:   256 * 1024 * 1024, // 256MB
 			pageType: MaxPageType - 1,
 			wantErr:  false,
 		},
 		{
 			name:     "ChunkID 为负数",
 			chunkID:  -1,
-			offset:  0,
+			offset:   0,
 			pageType: 0,
 			wantErr:  true,
 		},
 		{
 			name:     "ChunkID 超出范围",
 			chunkID:  MaxChunks,
-			offset:  0,
+			offset:   0,
 			pageType: 0,
 			wantErr:  true,
 		},
 		{
 			name:     "Offset 为负数",
 			chunkID:  0,
-			offset:  -1,
+			offset:   -1,
 			pageType: 0,
 			wantErr:  true,
 		},
 		{
 			name:     "Offset 超出范围",
 			chunkID:  0,
-			offset:  MaxOffset,
+			offset:   MaxOffset,
 			pageType: 0,
 			wantErr:  true,
 		},
 		{
 			name:     "PageType 为负数",
 			chunkID:  0,
-			offset:  0,
+			offset:   0,
 			pageType: -1,
 			wantErr:  true,
 		},
 		{
 			name:     "PageType 超出范围",
 			chunkID:  0,
-			offset:  0,
+			offset:   0,
 			pageType: MaxPageType,
 			wantErr:  true,
 		},
@@ -90,27 +90,27 @@ func TestEncodePagePos(t *testing.T) {
 
 func TestDecodePagePos(t *testing.T) {
 	tests := []struct {
-		name      string
-		chunkID   int
-		offset    int
-		pageType  int
+		name     string
+		chunkID  int
+		offset   int
+		pageType int
 	}{
 		{
 			name:     "最小值",
 			chunkID:  0,
-			offset:  0,
+			offset:   0,
 			pageType: 0,
 		},
 		{
 			name:     "中等值",
 			chunkID:  1000,
-			offset:  4096,
+			offset:   4096,
 			pageType: 1,
 		},
 		{
 			name:     "大值",
 			chunkID:  1000000,
-			offset:  256 * 1024 * 1024,
+			offset:   256 * 1024 * 1024,
 			pageType: MaxPageType - 1,
 		},
 	}

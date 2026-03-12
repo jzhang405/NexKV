@@ -6,10 +6,10 @@ import (
 )
 
 var (
-	ErrInvalidPosition  = errors.New("invalid page position")
-	ErrInvalidChunkID   = errors.New("invalid chunk id")
-	ErrInvalidOffset    = errors.New("invalid offset")
-	ErrInvalidPageType  = errors.New("invalid page type")
+	ErrInvalidPosition = errors.New("invalid page position")
+	ErrInvalidChunkID  = errors.New("invalid chunk id")
+	ErrInvalidOffset   = errors.New("invalid offset")
+	ErrInvalidPageType = errors.New("invalid page type")
 )
 
 const (
@@ -67,9 +67,9 @@ func EncodePagePos(chunkID, offset, pageType int) (int64, error) {
 
 // DecodePagePos 解码页面位置
 func DecodePagePos(pos int64) (chunkID, offset, pageType int) {
-	chunkID = int(pos >> 38)                  // [63:38]
-	offset = int((pos >> 6) & 0xFFFFFFFF)     // [37:6]
-	pageType = int((pos >> 1) & 0x1F)         // [5:1]
+	chunkID = int(pos >> 38)              // [63:38]
+	offset = int((pos >> 6) & 0xFFFFFFFF) // [37:6]
+	pageType = int((pos >> 1) & 0x1F)     // [5:1]
 	return
 }
 

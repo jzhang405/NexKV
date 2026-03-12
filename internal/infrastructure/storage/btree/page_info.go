@@ -1,6 +1,7 @@
 package btree
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -36,12 +37,13 @@ type PageInfo struct {
 	_    [40]byte // padding to 64 bytes
 
 	// Cache Line 3 (64 bytes) - 冷数据（元数据，低频写入）
-	parentRef   *PageRef // 8 bytes  - ✅ 父节点引用（新增）
-	isDirty     bool     // 1 byte   - 是否脏页
-	isSplitted  bool     // 1 byte   - 是否被分裂
-	metaVersion int32    // 4 bytes  - 元数据版本
-	pageSize    int32    // 4 bytes  - 页面实际大小（固定 4KB）
-	_           [72]byte // padding to 64 bytes (52 → 72-8+8=72)
+	parentRefMu sync.RWMutex // 8 bytes  - ✅ P0-2 修复: 保护 parentRef 的并发访问
+	parentRef   *PageRef    // 8 bytes  - 父节点引用
+	isDirty     bool        // 1 byte   - 是否脏页
+	isSplitted  bool        // 1 byte   - 是否被分裂
+	metaVersion int32       // 4 bytes  - 元数据版本
+	pageSize    int32       // 4 bytes  - 页面实际大小（固定 4KB）
+	_           [62]byte    // padding to 64 bytes (调整 padding)
 }
 
 // NewPageInfo 创建新的 PageInfo
@@ -154,7 +156,7 @@ func (info *PageInfo) Clone() *PageInfo {
 		pageLock:    NewPageLock(), // 创建新锁
 		lastTime:    info.lastTime,
 		hits:        info.hits,
-		parentRef:   info.parentRef, // ✅ 复制父节点引用（浅拷贝）
+		parentRef:   info.GetParentRef(), // ✅ P0-2 修复: 线程安全地复制父节点引用
 		isDirty:     info.isDirty,
 		isSplitted:  info.isSplitted,
 		metaVersion: info.metaVersion,
@@ -188,13 +190,17 @@ func (info *PageInfo) GetPageSize() int32 {
 	return info.pageSize
 }
 
-// GetParentRef 获取父节点引用
+// GetParentRef 获取父节点引用（线程安全）
 func (info *PageInfo) GetParentRef() *PageRef {
+	info.parentRefMu.RLock()
+	defer info.parentRefMu.RUnlock()
 	return info.parentRef
 }
 
-// SetParentRef 设置父节点引用
+// SetParentRef 设置父节点引用（线程安全）
 func (info *PageInfo) SetParentRef(ref *PageRef) {
+	info.parentRefMu.Lock()
+	defer info.parentRefMu.Unlock()
 	info.parentRef = ref
 }
 

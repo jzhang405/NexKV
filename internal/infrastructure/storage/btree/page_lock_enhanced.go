@@ -70,7 +70,7 @@ func (l *EnhancedPageLock) LockWithContext(ctx context.Context) error {
 			}
 		}
 
-		// 等待
+		// 等待（带超时检查）
 		if err := l.waitForNotify(ctx); err != nil {
 			return err
 		}
@@ -116,17 +116,17 @@ func (l *EnhancedPageLock) IsLocked() bool {
 	return l.state.Load() != int64(unlockedState)
 }
 
-// waitForNotify 等待唤醒信号
+// waitForNotify 等待唤醒信号（支持 context 取消）
 func (l *EnhancedPageLock) waitForNotify(ctx context.Context) error {
-	// 启动一个 goroutine 监听 context 取消
+	// 使用 channel 实现 context 取消通知
 	done := make(chan struct{})
-	stopCh := make(chan struct{})
 
 	go func() {
 		select {
 		case <-ctx.Done():
+			// Context 取消，唤醒所有等待者
 			l.cond.Broadcast()
-		case <-stopCh:
+		case <-done:
 			return
 		}
 	}()
@@ -135,9 +135,7 @@ func (l *EnhancedPageLock) waitForNotify(ctx context.Context) error {
 	l.cond.Wait()
 	l.cond.L.Unlock()
 
-	close(stopCh)
 	close(done)
-
 	return ctx.Err()
 }
 

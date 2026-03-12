@@ -593,9 +593,6 @@ type PageInfo struct {
     hits        int64       // 访问计数
     isDirty     bool
 }
-
-// ❌ 旧设计（已移除）
-// type PageInfoCache struct { ... }  // 删除
 ```
 
 #### BTreeGC 职责变更

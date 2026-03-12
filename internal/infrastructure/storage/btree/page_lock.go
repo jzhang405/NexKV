@@ -16,17 +16,18 @@ var (
 // PageLock 轻量级锁（支持重入和超时）
 // state 编码：[63:48] lockCount (16 bits) | [47:0] ownerID (48 bits)
 type PageLock struct {
-	state   atomic.Int64  // 状态编码：(lockCount << 48) | ownerID
-	waiters chan struct{} // 等待队列
-	mu      sync.Mutex    // 保护 waiters
+	state atomic.Int64  // 状态编码：(lockCount << 48) | ownerID
+	mu    sync.Mutex    // 保护 cond
+	cond  *sync.Cond    // 条件变量，用于广播通知
 }
 
 // NewPageLock 创建新的 PageLock
 func NewPageLock() *PageLock {
-	return &PageLock{
-		state:   atomic.Int64{},
-		waiters: make(chan struct{}),
+	l := &PageLock{
+		state: atomic.Int64{},
 	}
+	l.cond = sync.NewCond(&l.mu)
+	return l
 }
 
 // TryLock 非阻塞加锁
@@ -50,7 +51,7 @@ func (l *PageLock) lockWithTimeout(timeout time.Duration) bool {
 	var timer *time.Timer
 	if timeout > 0 {
 		timer = time.AfterFunc(timeout, func() {
-			l.notifyWaiters()
+			l.broadcast()
 		})
 		defer timer.Stop()
 	}
@@ -62,7 +63,7 @@ func (l *PageLock) lockWithTimeout(timeout time.Duration) bool {
 		}
 
 		// 等待锁释放
-		l.waitForNotify()
+		l.wait()
 	}
 }
 
@@ -83,7 +84,7 @@ func (l *PageLock) Unlock() error {
 		if !l.state.CompareAndSwap(state, 0) {
 			return ErrInvalidState
 		}
-		l.notifyWaiters()
+		l.broadcast()
 	} else {
 		// 减少重入计数
 		newState := encodeOwnerState(ownerID, lockCount-1)
@@ -126,23 +127,16 @@ func decodeOwnerState(state int64) (ownerID, lockCount int) {
 	return
 }
 
-// waitForNotify 等待锁释放通知
-func (l *PageLock) waitForNotify() {
-	l.mu.Lock()
-	l.waiters = make(chan struct{})
-	ch := l.waiters
-	l.mu.Unlock()
-	<-ch
-}
-
-// notifyWaiters 通知等待者
-func (l *PageLock) notifyWaiters() {
+// wait 等待锁释放通知
+func (l *PageLock) wait() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.cond.Wait()
+}
 
-	ch := l.waiters
-	if ch != nil {
-		close(ch)
-		l.waiters = nil
-	}
+// broadcast 广播通知所有等待者
+func (l *PageLock) broadcast() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.cond.Broadcast()
 }

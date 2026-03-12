@@ -92,8 +92,6 @@ func TestPageLock_LockWithTimeout(t *testing.T) {
 }
 
 func TestPageLock_ConcurrentAccess(t *testing.T) {
-	t.Skip("PageLock 实现有死锁问题，待修复后启用")
-
 	lock := NewPageLock()
 	const goroutines = 100
 	var ops int64

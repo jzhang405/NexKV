@@ -1,8 +1,33 @@
 # Day 6-7: Split/Merge 逻辑实施计划
 
 **日期**: 2026-03-12
+**版本**: v2.0（根据审核意见修订）
 **预估工期**: 2 天
 **依赖**: Day 1-5 已完成（懒加载、searchPath、Get/Set）
+
+---
+
+## 🔴 审核意见确认（2026-03-12）
+
+### 已修复的关键问题
+
+| # | 问题 | 修复方案 | 状态 |
+|---|------|---------|------|
+| 1 | PageInfo 无法获取 PageRef | ✅ 方案 B：调用方传入，避免循环引用 | 已修复 |
+| 2 | PageInfo 缺少 parentRef | ✅ 添加 `parentRef *PageRef` 字段 | 已修复 |
+| 3 | splitRoot CAS 更新 | ✅ 使用 `ReplacePage()` 方法 | 已修复 |
+| 4 | InternalPage.Insert() 不明确 | ✅ 添加 `InsertKeyChild()` 方法 | 已修复 |
+| 5 | createPageInfo 未定义 | ✅ 添加辅助函数 | 已修复 |
+| 6 | Merge 操作描述简略 | ✅ 标记为 Future Phase | 已修复 |
+| 7 | 文档一致性 | ✅ 先更新 Day 6-7，实施后再更新主计划 | 已修复 |
+
+### 关键设计决策
+
+1. **避免循环引用**：`PageRef` → `PageInfo`（单向），不添加 `pageRef` 字段
+2. **引用链维护**：添加 `PageInfo.parentRef` 字段，用于 Split 后更新引用链
+3. **CAS 更新**：使用 `RootPageRef.ReplacePage()` 而非直接操作 `unsafe.Pointer`
+4. **方法签名**：`Split()` 不传 `parentRef`，由调用方负责引用更新
+5. **Merge 延后**：不在 Day 6-7 实现，允许节点低于 minKeys
 
 ---
 
@@ -45,26 +70,73 @@ Lealone AOSE Split:
 
 ## Day 6: LeafPage Split 实现
 
+### 任务 6.0: 添加 PageInfo.parentRef 字段 ⚠️ 前置依赖
+
+**文件**: `page_info.go`
+
+**修改内容**：
+```go
+type PageInfo struct {
+    pos         int64
+    page        interface{}
+    pageLock    *PageLock
+    lastTime    int64
+    hits        int64
+    buff        []byte
+
+    isDirty     bool
+    isSplitted  bool
+    metaVersion int
+    pageSize    int32
+
+    // ✅ 新增：父节点引用（用于 Split 后更新引用链）
+    parentRef *PageRef  // 父节点引用
+
+    _         [cacheLineSize - 72]byte  // 调整 padding（64 → 72）
+}
+
+// GetParentRef 获取父节点引用
+func (info *PageInfo) GetParentRef() *PageRef {
+    return info.parentRef
+}
+
+// SetParentRef 设置父节点引用
+func (info *PageInfo) SetParentRef(ref *PageRef) {
+    info.parentRef = ref
+}
+```
+
+**原因**：Split 后需要维护引用链完整性，子节点需要知道父节点是谁。
+
+---
+
 ### 任务 6.1: 实现带引用更新的 LeafPage.Split()
 
 **文件**: `leaf_page.go`（修改现有 Split 方法）
 
-**当前问题**：
-```go
-// 现有 Split() - 仅复制数据，不处理引用
-func (p *LeafPage) Split() (*LeafPage, []byte, error) {
-    // ... 分裂逻辑
-    newPage := NewLeafPage(model.PageID(p.pageID + 1))
-    // ❌ 没有设置 PageRef
-    // ❌ 没有更新父节点引用
-    return newPage, splitKey, nil
-}
-```
+**设计方案确认**：**使用方案 B（调用方传入 PageRef）**
 
-**目标设计**：
+**理由**：
+- 调用方在 `splitLeaf()` 时已经持有 `PageRef`
+- 避免循环引用风险（`PageRef` ↔ `PageInfo` ↔ `PageRef`）
+- API 更清晰
+
+**修改后的签名**：
 ```go
-// Split 分裂页面，返回新页面、分裂键、需要更新的父节点引用
-func (p *LeafPage) Split(parentRef *PageRef) (*LeafPage, []byte, *PageRef, error) {
+// Split 分裂叶子节点
+// 参数：
+//   - 无需 parentRef 参数（由调用方传入）
+//
+// 返回：
+//   - *LeafPage: 新创建的叶子节点
+//   - []byte: 分裂键（提升到父节点）
+//   - error: 错误信息
+//
+// 调用方负责：
+//   - 创建新节点的 PageRef 和 PageInfo
+//   - 更新父节点的 children 引用
+//   - 更新新节点的 parentRef
+func (p *LeafPage) Split() (*LeafPage, []byte, error) {
     // 1. 分裂逻辑（已实现）
     mid := len(p.keys) / 2
     splitKey := p.keys[mid]
@@ -77,24 +149,12 @@ func (p *LeafPage) Split(parentRef *PageRef) (*LeafPage, []byte, *PageRef, error
     p.values = p.values[:mid]
     p.version++
 
-    // 2. 为新页面创建 PageRef
-    newPageRef := NewPageRef()
-    newPageInfo := NewPageInfo()
-    newPageInfo.SetPage(newPage)
-    newPageRef.SetPage(newPageInfo)
-
-    // 3. 更新父引用（如果父节点存在）
-    if parentRef != nil {
-        // TODO: Day 7 - 更新父节点的 children 引用
-    }
-
-    return newPage, splitKey, newPageRef, nil
+    return newPage, splitKey, nil
 }
 ```
 
 **接受标准**：
 - [ ] Split 后两个页面的键数量都 ≤ maxKeys/2
-- [ ] 新 PageRef 正确创建和初始化
 - [ ] 单元测试覆盖所有边界情况
 
 ### 任务 6.2: 实现 BTree.splitLeaf()
@@ -149,20 +209,61 @@ func (b *BTree) splitLeaf(ctx context.Context, path []*PageInfo, leafInfo *PageI
 }
 
 // splitRoot 分裂根节点（树高度 +1）
-func (b *BTree) splitRoot(ctx context.Context, leftInfo *PageInfo, rightRef *PageRef, splitKey []byte) error {
-    // 创建新的根节点（内部节点）
-    newRoot := NewInternalPage(model.PageID(1))
-    newRoot.keys = [][]byte{splitKey}
-    newRoot.children = []*PageRef{
-        leftInfo.GetPageRef(),  // TODO: 需要从 PageInfo 获取 PageRef
-        rightRef,
+//
+// 设计确认：使用 ReplacePage() 进行 CAS 更新
+//
+// 参数：
+//   ctx - 上下文
+//   leftRef - 左子节点引用（原根节点）
+//   rightRef - 右子节点引用（新分裂出的节点）
+//   splitKey - 分裂键（插入到新根节点）
+func (b *BTree) splitRoot(ctx context.Context, leftRef *PageRef, rightRef *PageRef, splitKey []byte) error {
+    // 1. 创建新的根节点（内部节点）
+    newRootPage := NewInternalPage(model.PageID(1))
+    newRootPage.keys = [][]byte{splitKey}
+    newRootPage.children = []*PageRef{leftRef, rightRef}
+
+    // 2. 创建新的 PageInfo
+    newRootInfo := NewPageInfo()
+    newRootInfo.SetPage(newRootPage)
+    newRootInfo.SetParentRef(nil)  // 根节点无父引用
+
+    // 3. 创建新的 RootPageRef
+    newRootRef := NewRootPageRefWithInfo(newRootInfo)
+
+    // 4. 更新子节点的父引用（指向新的根节点）
+    leftInfo := leftRef.GetPageInfo()
+    if leftInfo != nil {
+        leftInfo.SetParentRef(newRootRef)
     }
 
-    // TODO: Day 7 - 使用 CAS 更新根节点
-    // b.rootRef.ReplacePage(oldRoot, newRoot)
+    rightInfo := rightRef.GetPageInfo()
+    if rightInfo != nil {
+        rightInfo.SetParentRef(newRootRef)
+    }
+
+    // 5. CAS 更新 BTree 的根引用
+    // 使用 ReplacePage() 进行原子更新
+    oldRootInfo := b.rootRef.pInfo.Load()
+    if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
+        return ErrRetry  // CAS 失败，调用方重试
+    }
+
+    // 6. 延迟释放旧根（等待活跃读操作完成）
+    go func() {
+        time.Sleep(100 * time.Millisecond)
+        // 标记旧根为脏页（如果需要）
+    }()
 
     return nil
 }
+```
+
+**关键设计决策**：
+- ✅ 使用 `RootPageRef.ReplacePage()` 而非直接操作 `unsafe.Pointer`
+- ✅ 与现有 CCOW 模式一致
+- ✅ 更新子节点的 `parentRef`，维护引用链完整性
+- ✅ CAS 失败返回 `ErrRetry`，调用方重试
 ```
 
 **接受标准**：
@@ -176,6 +277,13 @@ func (b *BTree) splitRoot(ctx context.Context, leftInfo *PageInfo, rightRef *Pag
 **文件**: `leaf_page_split_test.go`（新建）
 
 ```go
+// 辅助函数：创建 PageInfo
+func createPageInfo(page interface{}) *PageInfo {
+    info := NewPageInfo()
+    info.SetPage(page)
+    return info
+}
+
 // TestLeafPage_Split_Basic 测试基本分裂
 func TestLeafPage_Split_Basic(t *testing.T) {
     leaf := NewLeafPage(1)
@@ -187,8 +295,8 @@ func TestLeafPage_Split_Basic(t *testing.T) {
         leaf.Insert(key, value)
     }
 
-    // 分裂
-    newLeaf, splitKey, newRef, err := leaf.Split(nil)
+    // 分裂（新签名：无需参数）
+    newLeaf, splitKey, err := leaf.Split()
     require.NoError(t, err)
 
     // 验证分裂键
@@ -224,8 +332,8 @@ func TestLeafPage_Split_MaxKeys(t *testing.T) {
     // TODO: 需要修改 Insert() 方法，在满时自动分裂
     // 目前 Insert() 不会自动触发分裂，需要调用方处理
 
-    // 手动分裂
-    newLeaf, splitKey, _, err := leaf.Split(nil)
+    // 手动分裂（新签名：返回 2 个值）
+    newLeaf, splitKey, err := leaf.Split()
     require.NoError(t, err)
     assert.Equal(t, 8, leaf.NumKeys())
     assert.Equal(t, 9, newLeaf.NumKeys())
@@ -235,7 +343,7 @@ func TestLeafPage_Split_MaxKeys(t *testing.T) {
 func TestLeafPage_Split_EmptyPage(t *testing.T) {
     leaf := NewLeafPage(1)
 
-    _, _, _, err := leaf.Split(nil)
+    _, _, err := leaf.Split()
     assert.Error(t, err)
     assert.Contains(t, err.Error(), "cannot split")
 }
@@ -245,7 +353,7 @@ func TestLeafPage_Split_SingleKey(t *testing.T) {
     leaf := NewLeafPage(1)
     leaf.Insert([]byte("key1"), []byte("value1"))
 
-    _, _, _, err := leaf.Split(nil)
+    _, _, err := leaf.Split()
     assert.Error(t, err)
     assert.Contains(t, err.Error(), "cannot split")
 }
@@ -255,29 +363,68 @@ func TestLeafPage_Split_SingleKey(t *testing.T) {
 
 ## Day 7: InternalPage Split 和引用更新
 
+### 任务 7.0: 实现 InternalPage.InsertKeyChild()
+
+**文件**: `internal_page.go`（新增方法）
+
+**设计方案确认**：添加 `InsertKeyChild()` 方法
+
+**实现**：
+```go
+// InsertKeyChild 在指定位置插入键和子节点引用
+// 用于 Split 后在父节点中插入分裂键和新子节点
+//
+// 参数：
+//   key - 要插入的键（分裂键）
+//   childRef - 新的子节点引用
+//
+// 返回：
+//   error - 错误信息
+func (p *InternalPage) InsertKeyChild(key []byte, childRef *PageRef) error {
+    // 1. 使用二分查找找到插入位置
+    idx := p.search(key)
+
+    // 2. 插入键
+    p.keys = insertSlice(p.keys, idx, key)
+
+    // 3. 插入子节点引用（在 idx+1 位置）
+    p.children = insertSlice(p.children, idx+1, childRef)
+
+    // 4. 更新版本号
+    p.version++
+
+    return nil
+}
+```
+
+**使用示例**：
+```go
+// 在父节点中插入分裂键和新的子节点
+parentPage.InsertKeyChild(splitKey, newChildRef)
+```
+
+---
+
 ### 任务 7.1: 实现带引用更新的 InternalPage.Split()
 
 **文件**: `internal_page.go`（修改现有 Split 方法）
 
-**当前问题**：
+**设计方案确认**：**使用方案 B（调用方传入 PageRef）**
+
+**修改后的签名**：
 ```go
-// 现有 Split() - 仅复制数据，不处理子节点引用
+// Split 分裂内部节点
+//
+// 返回：
+//   - *InternalPage: 新创建的内部节点
+//   - []byte: 分裂键（提升到父节点）
+//   - error: 错误信息
+//
+// 调用方负责：
+//   - 创建新节点的 PageRef 和 PageInfo
+//   - 更新父节点的 children 引用
+//   - 更新所有子节点的 parentRef（包括新节点和原节点）
 func (p *InternalPage) Split() (*InternalPage, []byte, error) {
-    // ... 分裂逻辑
-    newPage := NewInternalPage(model.PageID(p.pageID + 1))
-    newPage.keys = append(newPage.keys, p.keys[mid+1:]...)
-    newPage.children = append(newPage.children, p.children[mid+1:]...)
-
-    // ❌ 子节点引用没有更新 parentRef
-    // ❌ 父节点引用没有设置
-    return newPage, splitKey, nil
-}
-```
-
-**目标设计**：
-```go
-// Split 分裂内部节点，返回新页面、分裂键、需要更新的子节点引用
-func (p *InternalPage) Split(parentRef *PageRef) (*InternalPage, []byte, []*PageRef, error) {
     mid := len(p.keys) / 2
     splitKey := p.keys[mid]
 
@@ -291,23 +438,41 @@ func (p *InternalPage) Split(parentRef *PageRef) (*InternalPage, []byte, []*Page
     p.children = p.children[:mid+1]
     p.version++
 
-    // 更新子节点的父引用
-    var updatedRefs []*PageRef
-    for _, childRef := range newPage.children {
-        if childRef != nil {
-            // TODO: 设置新的父引用
-            // childRef.SetParentRef(newPageRef)
-            updatedRefs = append(updatedRefs, childRef)
-        }
-    }
-
-    return newPage, splitKey, updatedRefs, nil
+    return newPage, splitKey, nil
 }
 ```
 
+---
+
 ### 任务 7.2: 实现引用更新机制
 
-**挑战**：Split 后需要维护完整的引用链
+**设计方案确认**：使用 `PageInfo.SetParentRef()`
+
+**实现**：
+```go
+// UpdateChildrenParentRef 更新子节点的父引用
+// 用于 Split 后维护引用链完整性
+//
+// 参数：
+//   parentRef - 新的父节点引用
+//
+// 返回：
+//   error - 错误信息
+func (p *InternalPage) UpdateChildrenParentRef(parentRef *PageRef) error {
+    for _, childRef := range p.children {
+        if childRef != nil {
+            childInfo := childRef.GetPageInfo()
+            if childInfo != nil {
+                // 直接设置父引用（非 CAS 操作，因为这是新创建的路径）
+                childInfo.SetParentRef(parentRef)
+            }
+        }
+    }
+    return nil
+}
+```
+
+**引用更新流程**：
 
 ```
 分裂前：
@@ -318,41 +483,18 @@ InternalPage (keys=[k5,k10], children=[c1,c2,c3])
 
 分裂 c2（LeafPage）：
 LeafPage (keys=[k6,k7,k8]) → Split() →
-    ├── LeafPage (keys=[k6,k7]) + newRef
-    └── LeafPage (keys=[k8]) + newRef2
+    ├── leftLeaf (keys=[k6,k7])
+    └── rightLeaf (keys=[k8])
 
-需要更新父节点：
-InternalPage (keys=[k5,k7,k10], children=[c1,newRef,newRef2,c3])
+调用方更新父节点：
+parentPage.InsertKeyChild(splitKey, rightRef)
+parentPage.UpdateChildrenParentRef(newParentRef)
 ```
 
-**实现方案**：
-```go
-// updateParentRef 更新子节点的父引用
-func (r *PageRef) SetParentRef(parent *PageRef) error {
-    info := r.GetPageInfo()
-    if info == nil {
-        return fmt.Errorf("page info is nil")
-    }
-
-    // 使用 CAS 更新
-    for {
-        oldInfo := r.pInfo.Load()
-        newInfo := oldInfo.Clone()
-        // TODO: 需要在 PageInfo 中添加 parentRef 字段
-        // newInfo.parentRef = parent
-
-        if r.pInfo.CompareAndSwap(oldInfo, newInfo) {
-            return nil
-        }
-    }
-}
-
-// InsertWithRefInsert 在父节点中插入分裂键和子节点
-func (p *InternalPage) InsertWithRefInsert(splitKey []byte, newChildRef *PageRef, leftChildRef *PageRef) error {
-    // 1. 找到插入位置
-    idx := p.search(splitKey)
-
-    // 2. 插入分裂键
+**关键点**：
+- ✅ 使用 `PageInfo.SetParentRef()` 更新父引用
+- ✅ 调用方负责在 CCOW 路径中更新所有引用
+- ✅ 避免在 Split() 方法中直接操作引用（保持简洁）
     p.keys = insertSlice(p.keys, idx, splitKey)
 
     // 3. 插入新的子节点引用
@@ -483,9 +625,11 @@ func TestBTree_Split_RootSplit(t *testing.T) {
 
 ---
 
-## Merge 操作（可选，视时间情况）
+## Merge 操作（Future Phase - 不在 Day 6-7 范围内）
 
-### Merge 触发条件
+> **实施说明**：Merge 操作是可选的，不在 Day 6-7 的实施计划中。允许节点低于 `minKeys` 不会影响正确性，只影响空间效率。
+
+### Merge 触发条件（未来实现）
 
 **触发 Merge 的场景**：
 1. **LeafPage.Delete()** - 删除后 `len(keys) < minKeys`
@@ -493,30 +637,39 @@ func TestBTree_Split_RootSplit(t *testing.T) {
 
 **Merge 策略**：
 ```
-Option 1: 从兄弟节点借一个键
+Option 1: 从兄弟节点借一个键（Redistribute）
     ├── 兄弟节点有足够的键
     └── 重新分配键
 
-Option 2: 合并到兄弟节点
+Option 2: 合并到兄弟节点（Merge）
     ├── 兄弟节点也不够
     └── 合并两个节点
 ```
 
-### 实现优先级
+### 实施计划（Week 14 或后续 Phase）
 
-**高优先级**（必须实现）：
-- [ ] LeafPage.Split()
-- [ ] InternalPage.Split()
-- [ ] 引用更新机制
-
-**中优先级**（Week 14 实现）：
+**Phase 1：基础 Merge（Week 14，如果时间允许）**
 - [ ] LeafPage.Merge()
-- [ ] LeafPage.Redistribute()（从兄弟节点借）
 - [ ] InternalPage.Merge()
+- [ ] 合并后的引用链更新
 
-**低优先级**（后续 Phase）：
+**Phase 2：Redistribute（优化，后续 Phase）**
+- [ ] LeafPage.Redistribute()（从兄弟节点借）
+- [ ] InternalPage.Redistribute()
 - [ ] 自动触发 Merge 的 Delete()
+
+**Phase 3：树平衡优化（Future Phase）**
 - [ ] 合并后的树平衡优化
+- [ ] 自适应 Merge 策略
+- [ ] 性能优化
+
+### 当前策略（Day 6-7）
+
+**允许节点低于 minKeys**：
+- ✅ 不影响正确性（BTree 仍然能正确工作）
+- ✅ 简化实现（优先完成 Split）
+- ⚠️ 空间效率降低（可接受）
+- 📊 后续通过 Merge 恢复空间效率
 
 ---
 

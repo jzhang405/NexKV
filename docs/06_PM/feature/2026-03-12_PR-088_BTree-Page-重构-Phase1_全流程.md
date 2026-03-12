@@ -175,10 +175,10 @@ func DecodePagePos(pos int64) (chunkID, offset, pageType int)
 ```
 
 **编码优势**：
-- 支持 268M 个 Chunk 文件（26 bits）
+- 支持 67M 个 Chunk 文件（26 bits）
 - 每个 Chunk 最大 4GB（32 bits offset）
 - 支持 32 种页面类型（5 bits）
-- 支持数据规模：268M × 4GB = 1PB 理论上限
+- 支持数据规模：67M × 4GB = 268TB 理论上限
 
 ##### 4. Chunk Manager（Append-Only）
 
@@ -454,7 +454,7 @@ func (m *DataMigrator) Rollback() error {
 | 风险点 | 影响等级 | 应对措施 |
 |--------|----------|----------|
 | atomic.Pointer 性能不满足 <1μs 目标 | 高 | Phase 0.5 原型验证；备选方案：混合架构（热数据直接指针，冷数据 PageReference）；性能基准测试对比 |
-| 内存占用增加 200-300% | 中 | 强调核心目标是 TB/PB 支持；激进 GC 策略（低水位 70%）；内存池复用；设置内存告警阈值 |
+| Lealone 懒加载内存优化效果不达预期 | 中 | 懒加载将内存占用从 100% 降至 20-30%（节省 70-80%）；激进 GC 策略（低水位 70%）；内存池复用；设置内存监控验证 |
 | Split/Merge 并发控制复杂度高 | 高 | 详细设计引用更新流程；延迟释放旧页面；并发安全测试；使用 model checking 验证正确性 |
 | 数据一致性（异步持久化） | 高 | WAL 机制（可配置）；崩溃恢复测试；定期检查点；验证所有场景下的数据完整性 |
 | Chunk 文件管理复杂度 | 中 | 固定 Chunk 大小（256MB）；最大 8 个文件；自动压缩归档；实现 Chunk 监控脚本 |
@@ -503,7 +503,7 @@ func (m *DataMigrator) Rollback() error {
 - **修订**：简化为纯 4KB 固定页面 + Lealone 原版编码
   - 文件格式：256MB = 65536 个 4KB 页面
   - 位置编码：26 bits ChunkID + 32 bits Offset + 5 bits PageType + 1 bit 保留
-  - 支持规模：67M Chunks × 4GB = **16PB**（理论上限）
+  - 支持规模：67M Chunks × 4GB = **268TB**（理论上限）
 - **优势**：代码量减少 70%，无元数据损坏风险，支持超大容量
 - **Phase 3 补充**：Chunk 压缩策略
 
@@ -824,7 +824,7 @@ InternalPage.children []*PageRef
 - **关键特性**：
   - ✅ Go 1.19+ atomic.Pointer 泛型支持
   - ✅ 64 位位置编码（26 bits ChunkID + 32 bits Offset + 5 bits PageType + 1 bit 保留）
-  - ✅ 支持 268M Chunk 文件，理论上限 1PB
+  - ✅ 支持 67M Chunk 文件，理论上限 268TB
   - ✅ 256MB Chunk 自动切换
 
 ##### Phase 1 Week 4-7: Page 类型重构（已完成）✅
@@ -892,7 +892,8 @@ InternalPage.children []*PageRef
 ##### Phase 0.5 原型验证结果（已完成）✅
 
 **性能测试结果**（超出预期）：
-- **读延迟**：**0.37ns/op**（目标 <100ns）✅ **超出预期 270x**
+- **原子指针延迟**：**0.37ns/op**（目标 <100ns）✅ **超出预期 270x**
+  > 注：这是 atomic.Pointer 原子操作的延迟，非完整 BTree 读路径延迟
 - **并发吞吐**：**>2700M ops/sec**（目标 >8M）✅ **超出预期 337x**
 - **CAS 延迟**：**6.85ns/op**（目标 <200ns）✅ **超出预期 29x**
 - **并发读性能**：**0.13ns/op**（超出预期 769x）
@@ -1109,7 +1110,7 @@ InternalPage.children []*PageRef
    - 分层 GC：高水位（90%）完全释放，低水位（70%）仅释放 buff
 
 #### 2. 监控要点
-- **内存占用**：预期 200-300% 增长（可接受，换取 TB/PB 支持）
+- **内存占用**：预期从 100% 降至 20-30%（节省 70-80%，Lealone 懒加载优势）
 - **GC 频率和延迟**：监控自适应 GC 效果
 - **Cache miss 率**：目标 > 95%
 - **False sharing**：通过性能分析工具验证 Cache Line 对齐效果
@@ -1173,10 +1174,11 @@ InternalPage.children []*PageRef
 
 | 项目 | 内容 |
 |------|------|
-| 文档最终版本 | **V2.0**（第5轮评审后更新） |
+| 文档最终版本 | **V2.1**（数据修正更新） |
 | 归档日期 | 2026-03-12（前置部分）/ 待定（后置部分） |
 | 归档路径 | `docs/06_project_management/pr_documents/feature/2026-03-12_PR-088_BTree-Page-重构-Phase1_全流程.md` |
 | 后续维护人 | jzhang405 |
 | 关键变更 | **第5轮评审（2026-03-12）**：Week 13-14 集成计划 v2.0，移除 PageInfoCache，采用 Lealone 模式 |
+| **V2.1 修正（2026-03-12）** | **数据修正**：1. 内存占用（错误说法：增加200-300% → 正确：减少70-80%）；2. 数据规模（错误：268M chunks/1PB/16PB → 正确：67M chunks/268TB）；3. Phase 0.5 数据标注澄清 |
 | 相关文档 | `thoughts/2026-03-12-phase1-week13-14-btree-integration-plan.md` v2.0 |
 | Git 提交 | `bf1063d` - docs(btree): 更新 Week 13-14 集成计划为 v2.0（根据审核意见修订） |

@@ -26,8 +26,6 @@ func TestBTree_GetSet_EndToEnd(t *testing.T) {
 	t.Skip("Skipping - Get/Set needs full ChunkManager integration (Day 8)")
 	return
 
-	require.NoError(t, err)
-
 	// 3. 读取键值对
 	gotValue, err := btree.Get(ctx, key1)
 	require.NoError(t, err)

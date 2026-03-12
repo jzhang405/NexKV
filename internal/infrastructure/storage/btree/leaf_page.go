@@ -221,8 +221,8 @@ func (p *LeafPage) Split() (*LeafPage, []byte, error) {
 
 	// 创建新页面，包含分裂键及之后的键值对（包含分裂键）
 	// ✅ Day 10-11: 修正分裂逻辑，右子节点包含分裂键
-	newPage := NewLeafPage(model.PageID(p.pageID + 1)) // 临时 ID
-	newPage.keys = append(newPage.keys, p.keys[mid:]...)     // 包含分裂键
+	newPage := NewLeafPage(model.PageID(p.pageID + 1))   // 临时 ID
+	newPage.keys = append(newPage.keys, p.keys[mid:]...) // 包含分裂键
 	newPage.values = append(newPage.values, p.values[mid:]...)
 
 	// 当前页面保留分裂键之前的键值对（不包含分裂键）
@@ -380,7 +380,7 @@ func (p *LeafPage) Size() int {
 	size := 8 + 8 + 4 // pageID + version + numKeys
 
 	for i := 0; i < len(p.keys); i++ {
-		size += 2 + len(p.keys[i]) // keyLen + key
+		size += 2 + len(p.keys[i])   // keyLen + key
 		size += 2 + len(p.values[i]) // valueLen + value
 	}
 

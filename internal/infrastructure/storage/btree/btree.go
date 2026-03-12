@@ -331,7 +331,79 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 	if b.closed {
 		return ErrClosed
 	}
-	return ErrNotImplemented
+
+	// ✅ Day 10-11: 实现 Delete 操作，集成 mergeLeaf
+	const maxRetries = 3
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// 1. 检查上下文取消
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// 2. 查找键的路径
+		_, path, err := b.findLeafPage(ctx, key)
+		if err != nil {
+			return fmt.Errorf("find leaf page: %w", err)
+		}
+
+		// 3. CCOW：复制路径
+		copiedPath, err := b.copyPath(path)
+		if err != nil {
+			return fmt.Errorf("copy path: %w", err)
+		}
+
+		// 4. 删除键
+		leafInfo := copiedPath[len(copiedPath)-1]
+		leaf := leafInfo.GetLeafPage()
+
+		deleted, err := leaf.Delete(key)
+		if err != nil {
+			return fmt.Errorf("delete from leaf: %w", err)
+		}
+
+		if !deleted {
+			return ErrKeyNotFound
+		}
+
+		// 5. 检查是否需要 Merge
+		const minKeys = 8
+		if leaf.NumKeys() < minKeys && len(copiedPath) >= 2 {
+			// 需要合并
+			if err := b.mergeLeaf(leafInfo, copiedPath); err != nil {
+				return fmt.Errorf("merge leaf: %w", err)
+			}
+		}
+
+		// 6. ✅ CAS 更新根节点（带重试）
+		newRootInfo := copiedPath[0]
+		oldRootInfo := b.rootRef.pInfo.Load()
+
+		if b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
+			// CAS 成功，继续持久化
+		} else {
+			// CAS 失败，说明有并发写操作
+			if attempt < maxRetries-1 {
+				// 短暂等待后重试
+				time.Sleep(time.Microsecond * 10 * time.Duration(attempt+1))
+				continue
+			}
+			return ErrRetry
+		}
+
+		// 7. 持久化
+		if b.chunkMgr != nil {
+			if err := b.persistRoot(); err != nil {
+				return fmt.Errorf("persist root: %w", err)
+			}
+		}
+
+		return nil
+	}
+
+	return ErrRetry
 }
 
 // GetBatch retrieves multiple values (not implemented until Phase 3).
@@ -1163,5 +1235,295 @@ func (b *BTree) persistRoot() error {
 
 	// 递归持久化整个树（自底向上）
 	return b.persistPageRecursive(rootInfo)
+}
+
+// ===== Merge Operations =====
+
+// findChildIndexInParent 查找子节点在父节点中的索引
+func (b *BTree) findChildIndexInParent(parent *InternalPage, childInfo *PageInfo) (int, error) {
+	childPageID := childInfo.GetPageID()
+
+	for i := 0; i < parent.NumChildren(); i++ {
+		childRef := parent.GetChild(i)
+		if childRef != nil {
+			info := childRef.GetPageInfo()
+			if info != nil && info.GetPageID() == childPageID {
+				return i, nil
+			}
+		}
+	}
+
+	return -1, fmt.Errorf("child not found in parent")
+}
+
+// ensurePageLoaded 确保页面已加载（懒加载）
+func (b *BTree) ensurePageLoaded(pageInfo *PageInfo) error {
+	if pageInfo.IsPageLoaded() {
+		return nil
+	}
+
+	// 从 ChunkManager 加载
+	if b.chunkMgr != nil {
+		if pos := pageInfo.GetPos(); pos != 0 {
+			page, err := b.chunkMgr.LoadPage(pos)
+			if err != nil {
+				return fmt.Errorf("load page from chunk: %w", err)
+			}
+			pageInfo.SetPage(page)
+		}
+	}
+
+	return nil
+}
+
+// mergeLeaf 合并叶子节点
+//
+// 当叶子节点键数量过少（< minKeys）时，尝试从兄弟节点借键或合并
+//
+// 参数：
+//   leafInfo - 需要合并的叶子节点 PageInfo
+//   copiedPath - CCOW 复制的路径
+//
+// 返回：
+//   error - 错误信息
+func (b *BTree) mergeLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
+	const minKeys = 8
+
+	// 1. 检查是否有父节点
+	if len(copiedPath) < 2 {
+		// 没有父节点，说明是根节点
+		// 根节点允许任意数量的键（包括 0）
+		return nil
+	}
+
+	// 2. 获取父节点
+	parentInfo := copiedPath[len(copiedPath)-2]
+	parent := parentInfo.GetInternalPage()
+
+	// 3. 找到当前节点在父节点中的位置
+	leafIndex, err := b.findChildIndexInParent(parent, leafInfo)
+	if err != nil {
+		return fmt.Errorf("find child index: %w", err)
+	}
+
+	// 4. 尝试从左兄弟借键
+	if leafIndex > 0 {
+		leftSiblingRef := parent.GetChild(leafIndex - 1)
+		if leftSiblingRef != nil {
+			leftSiblingInfo := leftSiblingRef.GetPageInfo()
+
+			// 懒加载左兄弟（如果未加载）
+			if err := b.ensurePageLoaded(leftSiblingInfo); err != nil {
+				return err
+			}
+
+			leftSibling := leftSiblingInfo.GetLeafPage()
+			if leftSibling != nil && leftSibling.NumKeys() > minKeys {
+				return b.redistributeLeafLeft(parent, leafInfo, leftSiblingInfo, leafIndex)
+			}
+		}
+	}
+
+	// 5. 尝试从右兄弟借键
+	if leafIndex < parent.NumChildren()-1 {
+		rightSiblingRef := parent.GetChild(leafIndex + 1)
+		if rightSiblingRef != nil {
+			rightSiblingInfo := rightSiblingRef.GetPageInfo()
+
+			// 懒加载右兄弟（如果未加载）
+			if err := b.ensurePageLoaded(rightSiblingInfo); err != nil {
+				return err
+			}
+
+			rightSibling := rightSiblingInfo.GetLeafPage()
+			if rightSibling != nil && rightSibling.NumKeys() > minKeys {
+				return b.redistributeLeafRight(parent, leafInfo, rightSiblingInfo, leafIndex)
+			}
+		}
+	}
+
+	// 6. 如果无法借键，则合并
+	// 优先与右兄弟合并
+	if leafIndex < parent.NumChildren()-1 {
+		rightSiblingRef := parent.GetChild(leafIndex + 1)
+		if rightSiblingRef != nil {
+			rightSiblingInfo := rightSiblingRef.GetPageInfo()
+
+			if err := b.ensurePageLoaded(rightSiblingInfo); err != nil {
+				return err
+			}
+
+			return b.mergeLeafWithSibling(parentInfo, parent, leafInfo, rightSiblingInfo, leafIndex)
+		}
+	} else {
+		// 与左兄弟合并
+		leftSiblingRef := parent.GetChild(leafIndex - 1)
+		if leftSiblingRef != nil {
+			leftSiblingInfo := leftSiblingRef.GetPageInfo()
+
+			if err := b.ensurePageLoaded(leftSiblingInfo); err != nil {
+				return err
+			}
+
+			return b.mergeLeafWithSibling(parentInfo, parent, leftSiblingInfo, leafInfo, leafIndex-1)
+		}
+	}
+
+	return nil
+}
+
+// redistributeLeafLeft 从左兄弟借键
+//
+// 当左兄弟有足够的键时，从左兄弟借一个键到当前节点
+//
+// 借键流程：
+// 1. 父节点的分隔键下降到当前节点
+// 2. 左兄弟的最大键上升到父节点作为新的分隔键
+// 3. 左兄弟删除最大键
+func (b *BTree) redistributeLeafLeft(
+	parent *InternalPage,
+	leafInfo, leftSiblingInfo *PageInfo,
+	leafIndex int,
+) error {
+	leaf := leafInfo.GetLeafPage()
+	leftSibling := leftSiblingInfo.GetLeafPage()
+
+	// 1. 从父节点获取分隔键（分隔键将下降到当前节点）
+	separatorKey := parent.keys[leafIndex-1]
+
+	// 2. 从左兄弟借最后一个键值对
+	lastIdx := leftSibling.NumKeys() - 1
+	borrowedKey := leftSibling.keys[lastIdx]
+	borrowedValue := leftSibling.values[lastIdx]
+
+	// 3. 从左兄弟删除最后一个键值对
+	leftSibling.keys = leftSibling.keys[:lastIdx]
+	leftSibling.values = leftSibling.values[:lastIdx]
+	leftSibling.version++
+
+	// 4. 将分隔键和借来的值插入到当前节点的开头
+	leaf.keys = insertSlice(leaf.keys, 0, separatorKey)
+	leaf.values = insertSlice(leaf.values, 0, borrowedValue)
+
+	// 5. 将借来的键插入到当前节点的开头（在分隔键之后）
+	leaf.keys = insertSlice(leaf.keys, 1, borrowedKey)
+	leaf.version++
+
+	// 6. 更新父节点的分隔键
+	// 使用左兄弟删除后的新最大键作为新的分隔键
+	if leftSibling.NumKeys() > 0 {
+		newSeparatorKey := leftSibling.keys[leftSibling.NumKeys()-1]
+		parent.keys[leafIndex-1] = newSeparatorKey
+	}
+	parent.version++
+
+	return nil
+}
+
+// redistributeLeafRight 从右兄弟借键
+//
+// 当右兄弟有足够的键时，从右兄弟借一个键到当前节点
+//
+// 借键流程：
+// 1. 父节点的分隔键下降到当前节点
+// 2. 右兄弟的最小键上升到父节点作为新的分隔键
+// 3. 右兄弟删除最小键
+func (b *BTree) redistributeLeafRight(
+	parent *InternalPage,
+	leafInfo, rightSiblingInfo *PageInfo,
+	leafIndex int,
+) error {
+	leaf := leafInfo.GetLeafPage()
+	rightSibling := rightSiblingInfo.GetLeafPage()
+
+	// 1. 从父节点获取分隔键
+	separatorKey := parent.keys[leafIndex]
+
+	// 2. 从右兄弟借第一个键值对
+	borrowedKey := rightSibling.keys[0]
+	borrowedValue := rightSibling.values[0]
+
+	// 3. 从右兄弟删除第一个键值对
+	rightSibling.keys = rightSibling.keys[1:]
+	rightSibling.values = rightSibling.values[1:]
+	rightSibling.version++
+
+	// 4. 将分隔键和借来的值追加到当前节点末尾
+	leaf.keys = append(leaf.keys, separatorKey)
+	leaf.values = append(leaf.values, borrowedValue)
+
+	// 5. 将借来的键追加到当前节点末尾
+	leaf.keys = append(leaf.keys, borrowedKey)
+	leaf.version++
+
+	// 6. 更新父节点的分隔键
+	// 使用右兄弟删除后的新最小键（即现在的第一个键）
+	if rightSibling.NumKeys() > 0 {
+		newSeparatorKey := rightSibling.keys[0]
+		parent.keys[leafIndex] = newSeparatorKey
+	}
+	parent.version++
+
+	return nil
+}
+
+// mergeLeafWithSibling 合并两个叶子节点
+//
+// 当两个兄弟节点的键数量都不足时，将它们合并
+//
+// 合并流程：
+// 1. 将父节点的分隔键插入到左节点
+// 2. 将右节点的所有键值对追加到左节点
+// 3. 从父节点删除分隔键和右子节点引用
+// 4. 检查父节点是否需要 Merge
+// 5. 处理根节点降低的特殊情况
+func (b *BTree) mergeLeafWithSibling(
+	parentInfo *PageInfo,
+	parent *InternalPage,
+	leftNodeInfo, rightNodeInfo *PageInfo,
+	separatorIndex int,
+) error {
+	leftNode := leftNodeInfo.GetLeafPage()
+	rightNode := rightNodeInfo.GetLeafPage()
+
+	// 1. 获取父节点的分隔键
+	separatorKey := parent.keys[separatorIndex]
+
+	// 2. 合并节点：Left + Separator + Right
+	// 2.1 将分隔键追加到左节点
+	leftNode.keys = append(leftNode.keys, separatorKey)
+
+	// 2.2 将右节点的所有键值对追加到左节点
+	leftNode.keys = append(leftNode.keys, rightNode.keys...)
+	leftNode.values = append(leftNode.values, rightNode.values...)
+	leftNode.version++
+
+	// 3. 从父节点删除分隔键和右子节点引用
+	parent.keys = append(parent.keys[:separatorIndex], parent.keys[separatorIndex+1:]...)
+	parent.children = append(parent.children[:separatorIndex+1], parent.children[separatorIndex+2:]...)
+	parent.version++
+
+	// 4. 处理根节点降低
+	// 如果父节点是根节点且已空（没有键），则降低树的高度
+	if parentInfo == b.rootRef.pInfo.Load() && parent.NumKeys() == 0 {
+		// 合并后的节点成为新的根节点
+		oldRootInfo := parentInfo
+		if !b.rootRef.ReplacePage(oldRootInfo, leftNodeInfo) {
+			return ErrRetry
+		}
+		// 更新新根节点的 parentRef 为 nil
+		leftNodeInfo.SetParentRef(nil)
+		return nil
+	}
+
+	// 5. 检查父节点是否需要 Merge
+	const minInternal = 7
+	if parent.NumKeys() < minInternal {
+		// 需要递归向上合并
+		// 这里暂时返回 nil，实际需要递归处理
+		// TODO: 实现递归 Merge
+	}
+
+	return nil
 }
 

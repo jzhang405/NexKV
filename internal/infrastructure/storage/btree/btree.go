@@ -483,27 +483,6 @@ func (b *BTree) insertFromWAL(key, value []byte) error {
 	return b.Set(ctx, key, value)
 }
 
-// allocateNodePageID allocates a new PageID for a node.
-// Returns 0 if persistence is disabled.
-func (b *BTree) allocateNodePageID() model.PageID {
-	if b.chunkMgr == nil {
-		return 0 // In-memory mode
-	}
-	// 使用 ChunkManager 分配页面 ID（Week 14 待实现）
-	return 0
-}
-
-// writeWAL writes an entry to the WAL.
-func (b *BTree) writeWAL(entry *wal.WALEntry) error {
-	if !b.enableWAL || b.wal == nil {
-		return nil // WAL disabled
-	}
-
-	// Append to WAL (LSN will be assigned automatically)
-	_, err := b.wal.Append(entry)
-	return err
-}
-
 // Close closes the BTree storage engine and releases resources.
 func (b *BTree) Close() error {
 	b.closedMu.Lock()
@@ -1019,32 +998,6 @@ func (b *BTree) updateChildrenParentRefs(pageInfo *PageInfo, parentRef *PageRef)
 		// 叶子节点：没有子节点，无需继续递归
 		return
 	}
-}
-
-// splitRootPage 分裂根节点（Page-based 架构）
-// 创建新的内部节点作为根，提升分裂键
-func (b *BTree) splitRootPage(leftRef, rightRef *PageRef, splitKey []byte) error {
-	// 1. 创建新的内部节点作为根
-	newRootPage := NewInternalPage(model.PageID(1)) // 根节点 ID = 1
-	newRootPage.keys = [][]byte{splitKey}
-	newRootPage.children = []*PageRef{leftRef, rightRef}
-
-	// 2. 创建 PageInfo
-	newRootInfo := NewPageInfo()
-	newRootInfo.SetPage(newRootPage)
-	newRootInfo.SetParentRef(nil) // 根节点没有父引用
-
-	// 3. CAS 更新根节点
-	oldRootInfo := b.rootRef.pInfo.Load()
-	if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
-		return ErrRetry
-	}
-
-	// 4. 更新子节点的 parentRef（使用 embedded PageRef）
-	leftRef.SetParentRef(b.rootRef.PageRef)
-	rightRef.SetParentRef(b.rootRef.PageRef)
-
-	return nil
 }
 
 // ===== Day 9: Persistence Integration =====

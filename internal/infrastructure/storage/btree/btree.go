@@ -1422,6 +1422,15 @@ func (b *BTree) redistributeLeafLeft(
 	borrowedKey := leftSibling.keys[lastIdx]
 	borrowedValue := leftSibling.values[lastIdx]
 
+	// ✅ P1-1 修复: 在删除键之前，先确定新的分隔键
+	// 如果删除后左兄弟还有键，使用新的最大键（倒数第二个键）
+	var newSeparatorKey []byte
+	if lastIdx > 0 {
+		// 删除后至少还有一个键，使用新的最大键
+		newSeparatorKey = leftSibling.keys[lastIdx-1]
+	}
+	// 如果 lastIdx == 0，删除后左兄弟为空，需要特殊处理（暂不处理）
+
 	// 3. 从左兄弟删除最后一个键值对
 	leftSibling.keys = leftSibling.keys[:lastIdx]
 	leftSibling.values = leftSibling.values[:lastIdx]
@@ -1436,9 +1445,7 @@ func (b *BTree) redistributeLeafLeft(
 	leaf.version++
 
 	// 6. 更新父节点的分隔键
-	// 使用左兄弟删除后的新最大键作为新的分隔键
-	if leftSibling.NumKeys() > 0 {
-		newSeparatorKey := leftSibling.keys[leftSibling.NumKeys()-1]
+	if newSeparatorKey != nil {
 		parent.keys[leafIndex-1] = newSeparatorKey
 	}
 	parent.version++

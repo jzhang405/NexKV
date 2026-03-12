@@ -2,8 +2,16 @@
 
 **文档目的**: 详细规划从当前 Node-based 架构迁移到 Page-based 架构的实施步骤
 **创建日期**: 2026-03-12
-**目标审核人**: jzhang405
+**最后更新**: 2026-03-12（根据审核意见修订 v2.0）
+**审核人**: jzhang405（已审核确认）
 **预计工期**: 2 周（Week 13-14）
+
+**关键变更**（v2.0）：
+- ✅ 移除 PageInfoCache 设计，采用 Lealone 模式
+- ✅ PageRef 直接持有 PageInfo（atomic.Pointer[PageInfo]）
+- ✅ BTreeGC 扫描 PageRef 树进行 LRU 淘汰
+- ✅ 明确懒加载：只有 Root 常驻，其他按需加载
+- ✅ PageID 直接使用 64 位位置编码
 
 ---
 
@@ -85,7 +93,7 @@ type PageCache struct {
 
 ## 二、目标架构设计
 
-### 2.1 新 BTree 结构
+### 2.1 新 BTree 结构（Lealone 模式）
 
 ```go
 type BTree struct {
@@ -93,10 +101,10 @@ type BTree struct {
     closed      bool
     closedMu    sync.RWMutex
 
-    // 新架构核心组件
-    rootRef     *RootPageRef     // Root 页面引用（原子指针）
+    // 核心组件（Lealone 风格）
+    rootRef     *RootPageRef     // Root 页面引用（原子指针，常驻内存）
     chunkMgr    *ChunkManager    // Append-Only 存储
-    gc          *BTreeGC         // 垃圾回收器
+    gc          *BTreeGC         // 垃圾回收器（扫描 PageRef 树）
     ccow        *CCOWManager     // Copy-on-Write 管理
 
     // 可选组件
@@ -111,10 +119,173 @@ type BTree struct {
 **关键变化**：
 | 旧组件 | 新组件 | 变化说明 |
 |--------|--------|----------|
-| `root: *VersionedRoot` | `rootRef: *RootPageRef` | VersionedRoot → RootPageRef |
+| `root: *VersionedRoot` | `rootRef: *RootPageRef` | VersionedRoot 包装 RootPageRef |
 | `pageManager: *PageManager` | `chunkMgr: *ChunkManager` | PageManager → ChunkManager |
-| `pageCache: *PageCache` | `PageInfoCache: *PageInfoCache` | 三层缓存 → 统一 PageInfo 缓存 |
-| ~~`nodeCache: *nodeCache`~~ | - | 移除（PageInfo 已包含 Page） |
+| `pageCache: *PageCache` | ❌ **移除** | Lealone 无独立缓存层 |
+| ~~`nodeCache: *nodeCache`~~ | - | 移除 |
+
+### 2.2 Lealone 架构设计
+
+**核心原则**：PageRef 直接持有 PageInfo，无独立缓存层
+
+```go
+// PageRef：树结构中的节点引用（部分在内存，部分在磁盘）
+type PageRef struct {
+    pInfo     atomic.Pointer[PageInfo]  // 直接持有 PageInfo
+    parentRef *PageRef                   // 父引用（形成引用链）
+}
+
+// PageInfo：缓存条目（可能未加载）
+type PageInfo struct {
+    pos         int64       // 64 位位置编码（ChunkID + Offset + Type）
+    page        *Page       // 页面对象（可能 nil，懒加载）
+    buff        []byte      // 序列化缓冲（可能 nil）
+    pageLock    *PageLock   // 页面锁
+    lastTime    int64       // LRU 时间戳
+    hits        int64       // 访问计数
+    isDirty     bool        // 是否脏页
+    // ... 其他元数据
+}
+
+// LeafPage / InternalPage：实际页面数据
+type LeafPage struct {
+    pageID   model.PageID  // 64 位位置编码
+    version  uint64
+    keys     [][]byte
+    values   [][]byte
+}
+
+type InternalPage struct {
+    pageID   model.PageID
+    version  uint64
+    keys     [][]byte
+    children []*PageRef  // 子节点引用（可能未加载）
+}
+```
+
+**关键特性**：
+
+| 特性 | Lealone | NexKV 实现 |
+|-----|---------|-----------|
+| PageInfo 存储 | 直接在 PageRef 下 | ✅ PageRef.pInfo 直接持有 |
+| 缓存管理 | BTreeGC 扫描 PageRef | ✅ BTreeGC 扫描树结构 |
+| LRU 淘汰 | 根据 PageInfo.lastTime | ✅ 相同机制 |
+| 懒加载 | PageInfo.page = nil | ✅ 按需从 ChunkManager 加载 |
+| 常驻内存 | 只有 Root PageRef | ✅ Root 常驻，其他懒加载 |
+
+### 2.3 内存模型（懒加载）
+
+**树结构内存占用**：
+
+```
+假设：100 万页面的 BTree（树高 13 层）
+
+全量加载（错误）：
+├── PageRef: 1,111,111 × 72 bytes = 79.2 MB ✅ 可接受
+├── PageInfo: 1,111,111 × 192 bytes = 212.7 MB ⚠️ 可接受
+└── Page 对象: 1,111,111 × 4KB = 4.4 GB ❌ 不可接受
+
+懒加载（正确）：
+├── Root PageRef + PageInfo + Page: ~4 KB（常驻）
+├── 热点页面（10%）: 111,111 × 4 KB = 433 MB
+└── 冷页面（90%）: PageInfo.page = nil（仅 212.7 MB 元数据）
+```
+
+**懒加载流程**：
+
+```go
+// InternalPage.GetChild(idx) - 懒加载子页面
+func (p *InternalPage) GetChild(idx int, chunkMgr *ChunkManager) (*Page, error) {
+    ref := p.children[idx]
+    info := ref.pInfo.Load()
+
+    // 1. 快速路径：已加载
+    if info.page != nil {
+        info.lastTime = time.Now().UnixNano()  // 更新 LRU
+        info.hits++
+        return info.page, nil
+    }
+
+    // 2. 慢速路径：未加载，从磁盘读取
+    data, err := chunkMgr.ReadPage(info.pos)
+    if err != nil {
+        return nil, err
+    }
+
+    // 3. 反序列化
+    page, err := DeserializePage(data)
+    if err != nil {
+        return nil, err
+    }
+
+    // 4. 更新 PageInfo（原子操作）
+    newInfo := info.Clone()
+    newInfo.page = page
+    newInfo.lastTime = time.Now().UnixNano()
+    ref.pInfo.CompareAndSwap(info, newInfo)
+
+    return page, nil
+}
+```
+
+### 2.4 BTreeGC 职责（Lealone 模式）
+
+**核心功能**：扫描 PageRef 树，根据 PageInfo.lastTime 进行 LRU 淘汰
+
+```go
+type BTreeGC struct {
+    btree         *BTree
+    chunkMgr      *ChunkManager
+    lowWaterMark  int64  // 70% 内存阈值
+    highWaterMark int64  // 90% 内存阈值
+    usedMemory    atomic.Int64
+    adaptiveInt   atomic.Duration  // 自适应间隔（1s-5min）
+}
+
+// Collect：从 Root 开始扫描 PageRef 树
+func (gc *BTreeGC) Collect() error {
+    // 1. 从 Root 开始 DFS/BFS 遍历
+    pageRefs := gc.scanPageRefTree(gc.btree.rootRef)
+
+    // 2. 按 PageInfo.lastTime 排序（LRU）
+    sort.Slice(pageRefs, func(i, j int) bool {
+        infoI := pageRefs[i].pInfo.Load()
+        infoJ := pageRefs[j].pInfo.Load()
+        return infoI.lastTime < infoJ.lastTime
+    })
+
+    // 3. 淘汰最久未使用的页面（分层 GC）
+    gc.releasePages(pageRefs)
+
+    return nil
+}
+
+// releasePages：分层淘汰策略
+func (gc *BTreeGC) releasePages(pageRefs []*PageRef) {
+    used := gc.usedMemory.Load()
+
+    if used > gc.highWaterMark {
+        // 高水位：完全释放（page + buff）
+        for _, ref := range pageRefs {
+            info := ref.pInfo.Load()
+            if info.page != nil {
+                info.page = nil  // 释放 Page 对象
+            }
+            if info.buff != nil {
+                info.buff = nil  // 释放 buff
+            }
+        }
+    } else if used > gc.lowWaterMark {
+        // 低水位：仅释放 buff
+        for _, ref := range pageRefs {
+            info := ref.pInfo.Load()
+            if info.buff != nil {
+                info.buff = nil
+            }
+        }
+    }
+}
+```
 
 ### 2.2 PageInfoCache 设计
 
@@ -262,7 +433,7 @@ type PageRef struct {
 
 ## 三、核心操作改造
 
-### 3.1 Get 操作改造
+### 3.1 Get 操作改造（懒加载）
 
 #### 当前实现（未完成）
 ```go
@@ -271,22 +442,22 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 }
 ```
 
-#### 新实现
+#### 新实现（Lealone 风格）
 
 ```go
 func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
-    // 1. 从 rootRef 开始搜索
+    // 1. 从 rootRef 开始（Root 常驻内存）
     rootInfo := b.rootRef.pInfo.Load()
     if rootInfo == nil {
         return nil, ErrKeyNotFound
     }
 
-    rootPage := rootInfo.GetPage()
+    rootPage := rootInfo.page
     if rootPage == nil {
         return nil, ErrKeyNotFound
     }
 
-    // 2. 搜索路径（自顶向下）
+    // 2. 搜索路径（自顶向下，懒加载）
     path, err := b.searchPath(rootPage, key)
     if err != nil {
         return nil, err
@@ -296,13 +467,28 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
     leafRef := path[len(path)-1]
     leafInfo := leafRef.pInfo.Load()
 
-    // 4. 从 PageInfo 获取 Page
-    leafPage := leafInfo.GetPage()
-    if leafPage == nil {
-        return nil, ErrKeyNotFound
+    // 4. 懒加载：如果 page 为 nil，从 ChunkManager 加载
+    if leafInfo.page == nil {
+        page, err := b.loadPage(leafInfo.pos)
+        if err != nil {
+            return nil, err
+        }
+
+        // 原子更新 PageInfo
+        newInfo := leafInfo.Clone()
+        newInfo.page = page
+        newInfo.lastTime = time.Now().UnixNano()
+        newInfo.hits++
+        leafRef.pInfo.CompareAndSwap(leafInfo, newInfo)
+        leafInfo = newInfo
+    } else {
+        // 更新 LRU 时间戳
+        leafInfo.lastTime = time.Now().UnixNano()
+        leafInfo.hits++
     }
 
     // 5. 在 LeafPage 中查找键
+    leafPage := leafInfo.page.(*LeafPage)
     value, ok := leafPage.Get(key)
     if !ok {
         return nil, ErrKeyNotFound
@@ -311,10 +497,9 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
     return value, nil
 }
 
-// searchPath 搜索从根到叶子的路径
+// searchPath 搜索从根到叶子的路径（懒加载）
 func (b *BTree) searchPath(rootPage *Page, key []byte) ([]*PageRef, error) {
     var path []*PageRef
-
     current := rootPage
     maxLevels := b.maxLevels
 
@@ -322,7 +507,6 @@ func (b *BTree) searchPath(rootPage *Page, key []byte) ([]*PageRef, error) {
         path = append(path, current.ref)
 
         if current.IsLeaf() {
-            // 到达叶子节点
             return path, nil
         }
 
@@ -331,92 +515,122 @@ func (b *BTree) searchPath(rootPage *Page, key []byte) ([]*PageRef, error) {
         childIdx := internalPage.FindChild(key)
         childRef := internalPage.children[childIdx]
 
-        // 加载子节点的 PageInfo
+        // 懒加载子节点
         childInfo := childRef.pInfo.Load()
-        if childInfo == nil {
-            // 从缓存或磁盘加载
-            childInfo, err := b.cache.Get(childRef.GetPageID())
+        if childInfo == nil || childInfo.page == nil {
+            // 从 ChunkManager 加载
+            page, err := b.loadPage(childInfo.pos)
             if err != nil {
                 return nil, err
             }
-            // 缓存到 PageRef（非阻塞）
-            childRef.pInfo.Store(childInfo)
+
+            newInfo := &PageInfo{
+                pos:      childInfo.pos,
+                page:     page,
+                pageLock: NewPageLock(),
+                lastTime: time.Now().UnixNano(),
+                hits:     0,
+            }
+            childRef.pInfo.Store(newInfo)
+            childInfo = newInfo
         }
 
-        current = childInfo.GetPage()
-        if current == nil {
-            return nil, fmt.Errorf("child page is nil")
-        }
+        current = childInfo.page
     }
 
-    return path, fmt.Errorf("max levels exceeded")
+    return nil, fmt.Errorf("max levels exceeded")
+}
+
+// loadPage 从 ChunkManager 加载页面
+func (b *BTree) loadPage(pos int64) (*Page, error) {
+    // 1. 从 ChunkManager 读取
+    data, err := b.chunkMgr.ReadPage(pos)
+    if err != nil {
+        return nil, err
+    }
+
+    // 2. 反序列化
+    page, err := DeserializePage(data)
+    if err != nil {
+        return nil, err
+    }
+
+    return page, nil
 }
 ```
 
 **关键点**：
-1. PageRef 持有 PageInfo（原子指针）
-2. PageInfoCache 管理 PageInfo（LRU 淘汰）
-3. 懒加载：PageRef.pInfo.Load() 为 nil 时加载
+1. ✅ PageRef 直接持有 PageInfo（无 PageInfoCache）
+2. ✅ 懒加载：PageInfo.page = nil 时从 ChunkManager 加载
+3. ✅ 更新 LRU 时间戳（lastTime, hits）
+4. ✅ 无锁访问：atomic.Pointer[PageInfo]
 
-### 3.2 Set 操作改造
+### 3.2 Set 操作改造（CCOW）
 
 ```go
 func (b *BTree) Set(ctx context.Context, key, value []byte) error {
-    // 1. 搜索路径
-    path, err := b.searchPath(rootPage, key)
-    if err != nil {
-        return fmt.Errorf("search path failed: %w", err)
-    }
+    const maxRetries = 3
 
-    // 2. Copy-on-Write：自底向上复制路径
-    // 使用 CCOWManager 的 CopyPathBottomUp
-    newRootInfo, err := b.ccow.CopyPathBottomUp(ctx, b.rootRef, path, func(pageInfo *PageInfo) error {
-        page := pageInfo.GetPage()
+    for attempt := 0; attempt < maxRetries; attempt++ {
+        // 1. 搜索路径（会触发懒加载）
+        path, err := b.searchPath(b.rootRef.pInfo.Load().page, key)
+        if err != nil {
+            return fmt.Errorf("search path failed: %w", err)
+        }
 
-        if page.IsLeaf() {
-            leafPage := page.(*LeafPage)
-            if _, err := leafPage.Insert(key, value); err != nil {
-                return err
+        // 2. Copy-on-Write：自底向上复制路径
+        newRootInfo, err := b.ccow.CopyPathBottomUp(ctx, b.rootRef, path, func(pageInfo *PageInfo) error {
+            page := pageInfo.page
+
+            if page.IsLeaf() {
+                leafPage := page.(*LeafPage)
+                if _, err := leafPage.Insert(key, value); err != nil {
+                    return err
+                }
             }
-        } else {
-            // 内部节点：不需要修改（Split 时处理）
+
+            // 修改后，page 的 version 会自动递增
+            pageInfo.isDirty = true
+            return nil
+        })
+
+        if err != nil {
+            return fmt.Errorf("copy path bottom-up failed: %w", err)
         }
 
-        // 修改后，page 的 version 会自动递增
-        return nil
-    })
+        // 3. CAS 更新 RootPageRef
+        oldRootInfo := b.rootRef.pInfo.Load()
+        swapped := b.rootRef.pInfo.CompareAndSwap(oldRootInfo, newRootInfo)
 
-    if err != nil {
-        return fmt.Errorf("copy path bottom-up failed: %w", err)
-    }
+        if swapped {
+            // 4. 标记旧路径的 PageInfo 为脏页（GC 清理）
+            for _, pageRef := range path {
+                oldInfo := pageRef.pInfo.Load()
+                if oldInfo != newRootInfo && oldInfo != nil {
+                    b.ccow.MarkDirty(oldInfo)
+                }
+            }
+            return nil
+        }
 
-    // 3. CAS 更新 RootPageRef
-    oldRootInfo := b.rootRef.pInfo.Load()
-    swapped := b.rootRef.pInfo.CompareAndSwap(oldRootInfo, newRootInfo)
-    if !swapped {
-        return ErrRetry // CAS 失败，重试
-    }
-
-    // 4. 标记旧路径的 PageInfo 为脏页（GC 清理）
-    for _, pageRef := range path {
-        oldInfo := pageRef.pInfo.Load()
-        if oldInfo != newRootInfo && oldInfo != nil {
-            b.ccow.MarkDirty(oldInfo)
+        // CAS 失败，短暂等待后重试
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        case <-time.After(time.Microsecond * 100):
+            // 继续重试
         }
     }
 
-    // 5. 异步刷脏页（BTreeGC 后台处理）
-    // 不需要立即调用，GC 会自动触发
-
-    return nil
+    return fmt.Errorf("CAS failed after %d attempts", maxRetries)
 }
 ```
 
 **关键点**：
-1. 使用 CCOWManager.CopyPathBottomUp
-2. CAS 更新 RootPageRef
-3. 标记旧 PageInfo 为脏页
-4. BTreeGC 后台异步刷脏页
+1. ✅ 使用 CCOWManager.CopyPathBottomUp
+2. ✅ CAS 更新 RootPageRef（原子操作）
+3. ✅ 标记旧 PageInfo 为脏页（isDirty = true）
+4. ✅ BTreeGC 后台异步刷脏页
 
 ### 3.3 Delete 操作改造
 
@@ -424,7 +638,7 @@ func (b *BTree) Set(ctx context.Context, key, value []byte) error {
 
 ---
 
-## 四、PageCache 重构方案
+## 四、PageCache 重构方案（Lealone 模式）
 
 ### 4.1 当前 PageCache 的问题
 
@@ -445,316 +659,326 @@ type PageCache struct {
 | NodeL1 冗余 | Node 混合架构需要 | 新架构无 Node，可移除 |
 | L1/L2 分离 | Page 对象和序列化缓冲分开管理 | PageInfo 统一包含两者，可合并 |
 | sync.Map 锁竞争 | 每个 cache 操作都需要锁 | PageRef 使用 atomic.Pointer，无锁 |
-| 复杂淘汰逻辑 | 需要维护三个队列 | PageInfo 统一 LRU |
+| 复杂淘汰逻辑 | 需要维护三个队列 | BTreeGC 直接扫描 PageRef 树 |
 
-### 4.2 PageInfoCache 设计
+### 4.2 Lealone 模式：无独立缓存层
+
+**核心设计**：PageRef → PageInfo 直接引用，BTreeGC 扫描树结构
 
 ```go
-type PageInfoCache struct {
-    // PageInfo 存储（map + RWMutex）
-    pages      map[model.PageID]*PageInfo
-    pagesMu    sync.RWMutex
+// ❌ 移除 PageInfoCache（旧设计）
+// type PageInfoCache struct { ... }
 
-    // LRU 管理
-    lruLock    sync.Mutex
-    lruQueue   []model.PageID
-    lruIndex   map[model.PageID]int  // 快速查找索引
-
-    // 容量控制
-    maxPages   int
-    usedPages  atomic.Int64
-
-    // 与后端集成
-    chunkMgr   *ChunkManager
-    gc         *BTreeGC
-
-    // 统计
-    hits       atomic.Int64
-    misses     atomic.Int64
+// ✅ 新设计：PageRef 直接持有 PageInfo
+type PageRef struct {
+    pInfo     atomic.Pointer[PageInfo]  // 直接持有
+    parentRef *PageRef                   // 父引用
 }
 
-func NewPageInfoCache(maxPages int, chunkMgr *ChunkManager, gc *BTreeGC) *PageInfoCache {
-    return &PageInfoCache{
-        pages:     make(map[model.PageID]*PageInfo),
-        lruIndex:  make(map[model.PageID]int),
-        maxPages:  maxPages,
-        chunkMgr:  chunkMgr,
-        gc:        gc,
+// PageInfo 本身就是缓存条目
+type PageInfo struct {
+    pos         int64       // 64 位位置编码
+    page        *Page       // 可能 nil（懒加载）
+    buff        []byte      // 可能 nil（按需序列化）
+    pageLock    *PageLock
+    lastTime    int64       // LRU 时间戳
+    hits        int64       // 访问计数
+    isDirty     bool        // 脏页标记
+}
+```
+
+### 4.3 BTreeGC 扫描机制
+
+**核心功能**：从 Root 开始 DFS/BFS 遍历 PageRef 树，按 LRU 淘汰
+
+```go
+// scanPageRefTree：从 Root 开始扫描所有 PageRef
+func (gc *BTreeGC) scanPageRefTree(rootRef *RootPageRef) []*PageRef {
+    var pageRefs []*PageRef
+    visited := make(map[*PageRef]bool)
+
+    // BFS 遍历
+    queue := []*PageRef{rootRef}
+    for len(queue) > 0 {
+        ref := queue[0]
+        queue = queue[1:]
+
+        if visited[ref] {
+            continue
+        }
+        visited[ref] = true
+        pageRefs = append(pageRefs, ref)
+
+        // 遍历子节点
+        info := ref.pInfo.Load()
+        if info != nil && info.page != nil {
+            if internalPage, ok := info.page.(*InternalPage); ok {
+                for _, childRef := range internalPage.children {
+                    if childRef != nil {
+                        queue = append(queue, childRef)
+                    }
+                }
+            }
+        }
     }
+
+    return pageRefs
 }
 
-// Get 获取 PageInfo
-func (c *PageInfoCache) Get(pageID model.PageID) (*PageInfo, error) {
-    // 1. 快速路径：读锁查找
-    c.pagesMu.RLock()
-    info, ok := c.pages[pageID]
-    if ok {
-        c.pagesMu.RUnlock()
-        info.Touch()
-        c.hits.Add(1)
-        return info, nil
+// Collect：垃圾回收入口
+func (gc *BTreeGC) Collect() error {
+    // 1. 扫描 PageRef 树
+    pageRefs := gc.scanPageRefTree(gc.btree.rootRef)
+
+    // 2. 收集脏页
+    dirtyPages := gc.collectDirtyPages(pageRefs)
+
+    // 3. 写入脏页到 ChunkManager
+    if err := gc.writeDirtyPages(dirtyPages); err != nil {
+        return err
     }
-    c.pagesMu.RUnlock()
 
-    // 2. 慢速路径：未命中，从 ChunkManager 加载
-    c.misses.Add(1)
-    return c.loadPage(pageID)
+    // 4. LRU 淘汰
+    if gc.shouldGC() {
+        gc.evictLRU(pageRefs)
+    }
+
+    return nil
 }
 
-// loadPage 从 ChunkManager 加载页面
-func (c *PageInfoCache) loadPage(pageID model.PageID) (*PageInfo, error) {
-    // 1. 从 ChunkManager 查找位置
-    pos, err := c.chunkMgr.LookupPagePos(pageID)
+// evictLRU：按 lastTime 淘汰
+func (gc *BTreeGC) evictLRU(pageRefs []*PageRef) {
+    // 按 lastTime 排序
+    sort.Slice(pageRefs, func(i, j int) bool {
+        infoI := pageRefs[i].pInfo.Load()
+        infoJ := pageRefs[j].pInfo.Load()
+        return infoI.lastTime < infoJ.lastTime
+    })
+
+    // 分层淘汰
+    used := gc.usedMemory.Load()
+    for _, ref := range pageRefs {
+        info := ref.pInfo.Load()
+
+        if used > gc.highWaterMark {
+            // 高水位：完全释放
+            if info.page != nil {
+                info.page = nil
+                used -= int64(unsafe.Sizeof(*info.page))
+            }
+            if info.buff != nil {
+                info.buff = nil
+                used -= int64(len(info.buff))
+            }
+        } else if used > gc.lowWaterMark {
+            // 低水位：仅释放 buff
+            if info.buff != nil {
+                info.buff = nil
+                used -= int64(len(info.buff))
+            }
+        } else {
+            break
+        }
+    }
+
+    gc.usedMemory.Store(used)
+}
+
+---
+
+## 五、实施步骤（2 周）
+
+### Week 13: 核心改造（Day 1-5）
+
+#### Day 1-2: 懒加载机制实现
+- [ ] 实现 `PageRef.GetOrLoad()` 方法
+- [ ] 实现 `BTree.loadPage(pos)` 从 ChunkManager 加载
+- [ ] 处理 `PageInfo.page == nil` 的情况
+- [ ] 更新 `PageInfo.lastTime` 和 `hits`
+- [ ] 单元测试
+
+#### Day 3-4: searchPath 实现
+- [ ] 实现 `searchPath(rootPage, key)` 方法
+- [ ] 支持 InternalPage 懒加载子节点
+- [ ] 处理 `maxLevels` 限制
+- [ ] 单元测试
+
+#### Day 5: Get/Set 实现
+- [ ] 实现 `Get(ctx, key)` 方法
+- [ ] 实现 `Set(ctx, key, value)` 方法（使用 CCOW）
+- [ ] CAS 更新 RootPageRef（带重试）
+- [ ] 标记旧 PageInfo 为脏页
+- [ ] 集成测试
+
+### Week 14: 集成和优化（Day 6-10）
+
+#### Day 6-7: 替换 BTree 结构
+- [ ] 修改 `BTree` 结构（移除 `pageCache` 和 `pageManager`）
+- [ ] 修改 `OpenBTree` 初始化（使用 `RootPageRef` 和 `ChunkManager`）
+- [ ] 保留 `VersionedRoot` 作为 `RootPageRef` 的包装
+- [ ] 保留 WAL 和配置兼容性
+- [ ] 回归测试
+
+#### Day 8-9: BTreeGC 集成
+- [ ] 实现 `BTreeGC.scanPageRefTree()` 遍历树结构
+- [ ] 实现 `BTreeGC.evictLRU()` 按时间戳淘汰
+- [ ] 实现 `BTreeGC.collectDirtyPages()` 收集脏页
+- [ ] 实现 `BTreeGC.writeDirtyPages()` 写入 ChunkManager
+- [ ] 内存压力触发淘汰
+- [ ] 性能测试
+
+#### Day 10: 集成测试
+- [ ] 基本 CRUD 操作测试
+- [ ] 并发读写测试（100 goroutines）
+- [ ] 持久化测试（重启后验证）
+- [ ] 性能基准测试
+- [ ] 内存泄漏监控
+
+---
+
+## 六、风险点和应对
+
+### 风险 1：懒加载的并发安全 🟡
+
+**问题**：
+- 多个 goroutine 同时发现 `PageInfo.page == nil`
+- 可能重复加载同一个页面（浪费 IO）
+
+**应对**：
+```go
+// 方案：double-checked locking + CAS
+func (b *BTree) loadPageWithCAS(ref *PageRef) (*Page, error) {
+    // 1. 快速路径：已加载
+    info := ref.pInfo.Load()
+    if info != nil && info.page != nil {
+        return info.page, nil
+    }
+
+    // 2. 慢速路径：需要加载（使用 CAS 避免重复加载）
+    // 注意：这里允许重复加载（偶尔），但保证只有一个会成功 CAS
+    data, err := b.chunkMgr.ReadPage(info.pos)
     if err != nil {
-        return nil, fmt.Errorf("lookup page pos: %w", err)
+        return nil, err
     }
 
-    // 2. 读取页面数据
-    data, err := c.chunkMgr.ReadPage(pos)
-    if err != nil {
-        return nil, fmt.Errorf("read page: %w", err)
-    }
-
-    // 3. 反序列化
     page, err := DeserializePage(data)
     if err != nil {
-        return nil, fmt.Errorf("deserialize page: %w", err)
+        return nil, err
     }
 
-    // 4. 创建 PageInfo
-    info := &PageInfo{
-        pos:      pos,
+    // 3. 创建新 PageInfo
+    newInfo := &PageInfo{
+        pos:      info.pos,
         page:     page,
         pageLock: NewPageLock(),
         lastTime: time.Now().UnixNano(),
         hits:     0,
     }
 
-    // 5. 加入缓存（写锁）
-    c.pagesMu.Lock()
-    defer c.pagesMu.Unlock()
-
-    // 检查容量
-    if c.usedPages.Load() >= int64(c.maxPages) {
-        c.evictLRU()
+    // 4. CAS 更新（只有一个 goroutine 会成功）
+    if !ref.pInfo.CompareAndSwap(info, newInfo) {
+        // CAS 失败：其他 goroutine 已经加载了
+        // 丢弃当前加载的 page（会被 GC 回收）
+        return ref.pInfo.Load().page, nil
     }
 
-    c.pages[pageID] = info
-    c.lruQueue = append(c.lruQueue, pageID)
-    c.lruIndex[pageID] = len(c.lruQueue) - 1
-    c.usedPages.Add(1)
-
-    return info, nil
-}
-
-// Put 直接放入缓存（用于 Copy-on-Write）
-func (c *PageInfoCache) Put(pageID model.PageID, info *PageInfo) error {
-    c.pagesMu.Lock()
-    defer c.pagesMu.Unlock()
-
-    // 更新 LRU
-    if idx, ok := c.lruIndex[pageID]; ok {
-        // 已存在，移动到队列尾部
-        c.lruQueue = append(c.lruQueue[:idx], c.lruQueue[idx+1:]...)
-        c.lruQueue = append(c.lruQueue, pageID)
-        c.lruIndex[pageID] = len(c.lruQueue) - 1
-    } else {
-        // 新增
-        if c.usedPages.Load() >= int64(c.maxPages) {
-            c.evictLRU()
-        }
-
-        c.lruQueue = append(c.lruQueue, pageID)
-        c.lruIndex[pageID] = len(c.lruQueue) - 1
-        c.usedPages.Add(1)
-    }
-
-    c.pages[pageID] = info
-    return nil
-}
-
-// evictLRU 淘汰最久未使用的 PageInfo
-func (c *PageInfoCache) evictLRU() {
-    if len(c.lruQueue) == 0 {
-        return
-    }
-
-    // 淘汰最老的
-    oldestPageID := c.lruQueue[0]
-
-    // 从队列移除
-    c.lruQueue = c.lruQueue[1:]
-    delete(c.lruIndex, oldestPageID)
-
-    // 从 map 移除
-    delete(c.pages, oldestPageID)
-    c.usedPages.Add(-1)
-
-    // 注意：不删除 PageRef 中的引用（由 GC 清理）
+    return page, nil
 }
 ```
 
-### 4.3 与 BTreeGC 集成
+**优化**：允许偶尔重复加载（比加锁更高效），CAS 确保最终一致性
 
-```go
-// BTreeGC 触发条件
-func (gc *BTreeGC) shouldGC() bool {
-    used := gc.usedMemory.Load()
-    return used >= gc.lowWaterMark  // 70%
-}
-
-// 收集脏页时通知 PageInfoCache
-func (gc *BTreeGC) collectDirtyPages(dirtyPages map[*PageInfo]bool) error {
-    // 1. 写入脏页到 ChunkManager
-    for pageInfo := range dirtyPages {
-        // 序列化
-        data, err := pageInfo.page.Serialize()
-        if err != nil {
-            return err
-        }
-
-        // 写入
-        pos, err := gc.chunkManager.WritePage(data)
-        if err != nil {
-            return err
-        }
-
-        // 更新位置
-        pageInfo.pos = pos
-    }
-
-    // 2. 清除脏页标记
-    for pageInfo := range dirtyPages {
-        pageInfo.ClearDirty()
-    }
-
-    return nil
-}
-
-// 淘汰页面时与 BTreeGC 协调
-func (c *PageInfoCache) evictLRU() {
-    if len(c.lruQueue) == 0 {
-        return
-    }
-
-    oldestPageID := c.lruQueue[0]
-    oldestInfo := c.pages[oldestPageID]
-
-    // 通知 BTreeGC PageInfo 已释放
-    c.gc.ReleasePageInfo(oldestInfo)
-
-    // ... 其余淘汰逻辑
-}
-```
-
----
-
-## 五、实施步骤
-
-### Week 13: 核心改造（Day 1-5）
-
-#### Day 1-2: PageInfoCache 实现
-- [ ] 实现 PageInfoCache 结构
-- [ ] 实现 Get/Put 方法
-- [ ] 实现 LRU 淘汰
-- [ ] 单元测试
-
-#### Day 3-4: searchPath 实现
-- [ ] 实现 searchPath 方法
-- [ ] 处理 PageRef.pInfo 为 nil 的情况
-- [ ] 懒加载逻辑
-- [ ] 单元测试
-
-#### Day 5: Get/Set 实现
-- [ ] 实现 Get 方法
-- [ ] 实现 Set 方法（使用 CCOW）
-- [ ] CAS 更新 RootPageRef
-- [ ] 集成测试
-
-### Week 14: 集成和优化（Day 6-10）
-
-#### Day 6-7: 替换 BTree 结构
-- [ ] 修改 BTree 结构（移除旧字段）
-- [ ] 修改 OpenBTree 初始化
-- [ ] 保留 WAL 和配置兼容性
-- [ ] 回归测试
-
-#### Day 8-9: 与 BTreeGC 集成
-- [ ] PageInfoCache 与 BTreeGC 协作
-- [ ] 脏页标记和收集
-- [ ] 内存压力触发淘汰
-- [ ] 性能测试
-
-#### Day 10: 集成测试
-- [ ] 基本 CRUD 操作测试
-- [ ] 并发读写测试
-- [ ] 持久化测试
-- [ ] 性能基准测试
-
----
-
-## 六、风险点和应对
-
-### 风险 1：PageRef 和 PageInfoCache 职责混淆 🔴
+### 风险 2：BTreeGC 扫描树结构的性能 🔴
 
 **问题**：
-- PageRef 持有 PageInfo（原子指针）
-- PageInfoCache 也管理 PageInfo
-- 职责边界不清
+- 扫描 100 万 PageRef 需要时间
+- 可能影响读写性能
 
 **应对**：
-- ✅ 明确职责：
-  - PageRef：**引用持有**，提供原子访问
-  - PageInfoCache：**缓存管理**，LRU 淘汰
-- ✅ PageInfoCache 不直接操作 PageRef
-- ✅ PageRef 不关心缓存淘汰
+- ✅ 自适应间隔（1s-5min）：根据 GC 耗时动态调整
+- ✅ 分层 GC：高水位完全释放，低水位仅释放 buff
+- ✅ 后台异步：不阻塞读写操作
+- ✅ 增量扫描：每次只扫描部分树（Root → L1 → L2）
 
-**代码约定**：
 ```go
-// ✅ 正确：PageInfoCache 管理 PageInfo
-info := cache.Get(pageID)  // 返回 *PageInfo
-ref.pInfo.Store(info)     // PageRef 持有
+// 增量扫描策略
+func (gc *BTreeGC) incrementalScan() {
+    // 第一轮：扫描 Root 和 L1
+    gc.scanLevel(gc.btree.rootRef, 1)
 
-// ❌ 错误：PageRef 直接访问缓存
-ref := cache.GetRef(pageID)  // ❌ 不要这样
+    // 第二轮：扫描 L2
+    gc.scanLevel(gc.btree.rootRef, 2)
+
+    // ... 依此类推
+}
 ```
 
-### 风险 2：懒加载的并发安全 🟡
+### 风险 3：CAS 更新失败重试 🟡
 
 **问题**：
-- 多个 goroutine 同时发现 PageRef.pInfo 为 nil
-- 可能重复加载同一个页面
+- 高并发下 CAS 可能频繁失败
+- 无限重试浪费 CPU
 
 **应对**：
 ```go
-// 方案：使用 sync.Map 或 double-checked locking
-func (c *PageInfoCache) GetOrLoad(pageID model.PageID) (*PageInfo, error) {
-    // 1. 快速路径：读锁检查
-    c.pagesMu.RLock()
-    info, ok := c.pages[pageID]
-    c.pagesMu.RUnlock()
+func (b *BTree) Set(ctx context.Context, key, value []byte) error {
+    const maxRetries = 3
 
-    if ok {
-        return info, nil
+    for attempt := 0; attempt < maxRetries; attempt++ {
+        // ... 执行 Copy-on-Write ...
+
+        // CAS 更新
+        oldRootInfo := b.rootRef.pInfo.Load()
+        swapped := b.rootRef.pInfo.CompareAndSwap(oldRootInfo, newRootInfo)
+
+        if swapped {
+            return nil
+        }
+
+        // CAS 失败，指数退避重试
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        case <-time.After(time.Microsecond * (1 << attempt)):  // 100μs, 200μs, 400μs
+            // 继续重试
+        }
     }
 
-    // 2. 慢速路径：写锁加载
-    c.pagesMu.Lock()
-    defer c.pagesMu.Unlock()
+    return fmt.Errorf("CAS failed after %d attempts", maxRetries)
+}
+```
 
-    // Double-check
-    if info, ok := c.pages[pageID]; ok {
-        return info, nil
+### 风险 4：内存泄漏（PageInfo 未释放）🔴
+
+**问题**：
+- PageInfo 被 PageRef 持有
+- PageRef 形成引用链，可能无法及时回收
+
+**应对**：
+- ✅ BTreeGC 定期扫描 PageRef 树
+- ✅ 根据 `lastTime` 淘汰最久未使用的页面
+- ✅ 释放时：`page = nil` 和 `buff = nil`
+- ✅ 延迟释放：RootPageRef.ReplacePage 中 100ms 延迟
+
+```go
+// RootPageRef.ReplacePage：延迟释放旧页面
+func (r *RootPageRef) ReplacePage(oldInfo, newInfo *PageInfo) bool {
+    if !r.pInfo.CompareAndSwap(oldInfo, newInfo) {
+        return false
     }
 
-    // 加载页面
-    info, err := c.loadPage(pageID)
-    if err != nil {
-        return nil, err
-    }
+    // 延迟释放旧页面（等待活跃读操作完成）
+    go func() {
+        time.Sleep(100 * time.Millisecond)
+        if oldInfo.page != nil {
+            oldInfo.page = nil
+        }
+        if oldInfo.buff != nil {
+            oldInfo.buff = nil
+        }
+    }()
 
-    c.pages[pageID] = info
-    return info, nil
+    return true
 }
 ```
 
@@ -1079,59 +1303,113 @@ type PageID struct {
 
 ---
 
-## 十、待审核的关键决策
+## 十、已确认的关键决策
 
-### 决策 1：是否保留 PageInfoCache？
+### 决策 1：是否保留 PageInfoCache？ ✅ 已确认
 
-**选项 A**：保留 PageInfoCache（推荐）
-- ✅ 集中管理缓存
-- ✅ LRU 淘汰策略
-- ✅ 与 BTreeGC 集成
-- ❌ 增加一层间接
+**用户确认**：**移除 PageInfoCache**
 
-**选项 B**：移除 PageInfoCache，仅使用 PageRef
-- ✅ 减少间接层
-- ❌ 无法全局容量控制
-- ❌ LRU 淘汰复杂
-- ❌ 与 BTreeGC 难以集成
+**理由**：
+- ✅ Lealone 无 PageInfoCache，PageRef 直接持有 PageInfo
+- ✅ 简化架构，减少中间层
+- ✅ BTreeGC 直接扫描 PageRef 树进行 LRU 淘汰
 
-**建议**：保留 PageInfoCache
+**实施**：
+- ❌ 删除所有 PageInfoCache 相关代码（~400 行）
+- ✅ PageRef 直接持有 `atomic.Pointer[PageInfo]`
+- ✅ BTreeGC 扫描 PageRef 树
 
-### 决策 2：PageID 格式
+### 决策 2：树结构内存模型？ ✅ 已确认
 
-**选项 A**：PageID = 64 位位置编码
+**用户确认**：**懒加载模式**
+
+**要求**：
+- ✅ 只有 Root PageRef 常驻内存
+- ✅ 其他 PageRef 的 PageInfo.page = nil（初始状态）
+- ✅ 按需从 ChunkManager 加载（Get/Set 操作触发）
+- ✅ 内存节省：4.4 GB → 461 MB（91% 减少）
+
+**实施**：
 ```go
-type PageID int64  // 直接使用 ChunkManager 的位置编码
-```
+// InternalPage.GetChild(idx) - 懒加载
+func (p *InternalPage) GetChild(idx int, chunkMgr *ChunkManager) (*Page, error) {
+    ref := p.children[idx]
+    info := ref.pInfo.Load()
 
-**选项 B**：PageID 独立结构
-```go
-type PageID struct {
-    chunkID  uint32
-    offset   uint32
-    pageType uint8
+    if info.page == nil {
+        // 从 ChunkManager 加载
+        page, err := chunkMgr.ReadPage(info.pos)
+        // ... 反序列化并 CAS 更新
+    }
+
+    return info.page, nil
 }
 ```
 
-**建议**：选项 A（简化设计）
+### 决策 3：PageID 格式？ ✅ 已确认
 
-### 决策 3：是否保留 VersionedRoot？
+**用户确认**：**64 位位置编码**
 
-**选项 A**：保留 VersionedRoot，内部使用 RootPageRef
+**实施**：
 ```go
+// internal/domain/model/page_id.go
+type PageID int64  // 直接使用 ChunkManager 的 64 位位置编码
+
+// 64 位编码格式（Lealone 方案）：
+// ┌────────────────────────────────────────────────────────────────┐
+// │  63-48 (16 bits) │ 47-16 (32 bits) │ 15-1 (15 bits) │ 0 (1 bit) │
+// │    Chunk ID      │     Offset     │  Page Index   │  保留位   │
+// └────────────────────────────────────────────────────────────────┘
+
+func EncodePageID(chunkID int, pageIndex int32, pageType int) PageID {
+    return PageID((int64(chunkID) << 48) | (int64(uint32(pageIndex)) << 16) | int64(pageType))
+}
+
+func (id PageID) ChunkID() int {
+    return int(int64(id) >> 48)
+}
+
+func (id PageID) PageIndex() int32 {
+    return int32((int64(id) >> 16) & 0xFFFFFFFF)
+}
+
+func (id PageID) PageType() int {
+    return int(int64(id) & 0xFFFF)
+}
+```
+
+### 决策 4：VersionedRoot 是否保留？ ✅ 已确认
+
+**用户确认**：**保留 VersionedRoot 作为包装层**
+
+**实施**：
+```go
+// VersionedRoot 包装 RootPageRef
 type VersionedRoot struct {
     rootRef *RootPageRef  // 内部使用新架构
+    version atomic.Uint64 // 版本号（可选）
+}
+
+// 保持 API 兼容
+func (v *VersionedRoot) Get() *RootPageRef {
+    return v.rootRef
+}
+
+func (v *VersionedRoot) Update(newRoot *RootPageRef) bool {
+    oldRoot := v.rootRef.pInfo.Load()
+    newRootInfo := newRoot.pInfo.Load()
+    swapped := v.rootRef.pInfo.CompareAndSwap(oldRoot, newRootInfo)
+    if swapped {
+        v.version.Add(1)
+    }
+    return swapped
 }
 ```
 
-**选项 B**：完全替换为 RootPageRef
-```go
-type BTree struct {
-    rootRef *RootPageRef  // 直接使用
-}
-```
-
-**建议**：选项 A（平滑迁移）
+**理由**：
+- ✅ 平滑迁移，保持 API 兼容
+- ✅ 内部使用新架构（RootPageRef）
+- ✅ 支持版本号（可选）
 
 ---
 
@@ -1141,59 +1419,89 @@ type BTree struct {
 
 | 组件 | 变化 | 工作量 |
 |------|------|--------|
-| BTree.root | `*VersionedRoot` → `*RootPageRef` | 2 天 |
+| BTree.root | `*VersionedRoot` → 包装 `*RootPageRef` | 1 天 |
 | BTree.pageManager | `*PageManager` → `*ChunkManager` | 1 天 |
-| BTree.pageCache | `*PageCache` → `*PageInfoCache` | 3 天 |
-| Get/Set/Delete | 重写实现 | 3 天 |
-| 与 BTreeGC 集成 | 新增集成逻辑 | 2 天 |
+| ~~BTree.pageCache~~ | ❌ **移除**（Lealone 模式） | -1 天 |
+| Get/Set/Delete | 重写实现（懒加载） | 3 天 |
+| BTreeGC 集成 | 扫描 PageRef 树，LRU 淘汰 | 3 天 |
 | 测试 | 单元 + 并发 + 性能 | 3 天 |
 
-**总计**：约 14 天（2 周）
+**总计**：约 10 天（2 周）
 
 ### 关键风险
 
 | 风险 | 影响 | 应对 |
 |------|------|------|
-| PageRef/PageInfoCache 职责混淆 | 高 | 明确职责边界 |
-| 懒加载并发安全 | 中 | Double-checked locking |
-| CAS 更新失败重试 | 中 | 最多重试 3 次 |
-| 内存泄漏 | 高 | 引用计数 + GC 清理 |
+| 懒加载并发安全 | 中 | CAS 更新，允许偶尔重复加载 |
+| BTreeGC 扫描性能 | 高 | 增量扫描，自适应间隔 |
+| CAS 更新失败重试 | 中 | 最多重试 3 次，指数退避 |
+| 内存泄漏 | 高 | BTreeGC 定期扫描 + lastTime 淘汰 |
 
-### 待审核问题
+### 已确认决策
 
-1. ✅ PageInfoCache 是否保留？（建议保留）
-2. ⏳ PageID 格式如何选择？（待讨论）
-3. ⏳ VersionedRoot 是否保留？（建议保留作为包装）
-4. ⏳ PageInfoCache 容量如何设置？（待设计）
+1. ✅ **移除 PageInfoCache**（采用 Lealone 模式）
+2. ✅ **懒加载模式**（只有 Root 常驻，其他按需加载）
+3. ✅ **64 位位置编码**（简化 PageID 设计）
+4. ✅ **保留 VersionedRoot**（作为 RootPageRef 的包装层）
+
+### 预期收益
+
+| 指标 | 旧架构（Node） | 新架构（Lealone 模式） | 改进 |
+|------|---------------|----------------------|------|
+| **数据规模** | <100GB | **>1TB** | **10x+** |
+| **内存占用** | 100% | 20-30%（懒加载） | **70-80%↓** |
+| **写放大** | 10-15x | 1.1-1.5x | **10x↓** |
+| **读延迟** | ~3μs | <1μs（目标） | **3x↑** |
+| **并发读** | N/A | >10M ops/sec（目标） | **显著提升** |
 
 ---
 
-**附录：当前 BTree 依赖关系**
+**附录：架构对比**
 
+**旧 BTree 依赖关系**：
 ```
 BTree
 ├── VersionedRoot (原子根节点管理)
 ├── PageManager (覆盖写入持久化)
-├── PageCache (三层缓存)
+├── PageCache (三层缓存：L1/L2/NodeL1)
 ├── WAL (Write-Ahead Log)
 └── Node (混合架构节点)
 ```
 
-**新 BTree 依赖关系**
-
+**新 BTree 依赖关系（Lealone 模式）**：
 ```
 BTree
-├── RootPageRef (Root 页面引用)
-├── PageInfoCache (统一 PageInfo 缓存)
+├── VersionedRoot (包装 RootPageRef)
+│   └── RootPageRef (Root 页面引用，常驻内存)
 ├── ChunkManager (Append-Only 存储)
-├── BTreeGC (垃圾回收器)
+├── BTreeGC (扫描 PageRef 树，LRU 淘汰)
 ├── CCOWManager (Copy-on-Write 管理)
 └── WAL (保留，兼容性)
+
+树结构（懒加载）：
+InternalPage.children []*PageRef
+    └── PageRef.pInfo atomic.Pointer[PageInfo]
+        └── PageInfo (可能 page=nil，按需加载)
+            ├── page: *Page (懒加载)
+            ├── buff: []byte (序列化缓冲)
+            └── pos: int64 (64 位位置编码)
 ```
 
 ---
 
-**文档版本**：v1.0
+**文档版本**：v2.0（根据审核意见修订）
 **创建日期**：2026-03-12
+**最后更新**：2026-03-12
 **作者**：AI Assistant
-**审核人**：jzhang405（待审核）
+**审核人**：jzhang405（已审核确认）
+**状态**：✅ 待实施
+
+**v2.0 主要变更**：
+- ✅ 移除 PageInfoCache 设计（~400 行），采用 Lealone 模式
+- ✅ PageRef 直接持有 PageInfo（atomic.Pointer[PageInfo]）
+- ✅ BTreeGC 扫描 PageRef 树进行 LRU 淘汰（替代独立缓存层）
+- ✅ 明确懒加载机制：只有 Root 常驻，其他按需加载
+- ✅ PageID 直接使用 64 位位置编码
+- ✅ 保留 VersionedRoot 作为 RootPageRef 的包装层
+- ✅ 更新风险评估（移除 PageInfoCache 职责混淆）
+- ✅ 更新预期收益（内存占用从 200-300% 降至 20-30%）

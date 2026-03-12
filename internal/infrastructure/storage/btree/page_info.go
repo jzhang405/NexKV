@@ -25,7 +25,7 @@ const cacheLineSize = 64
 type PageInfo struct {
 	// Cache Line 1 (64 bytes) - 热数据（高并发访问）
 	pos      int64     // 8 bytes  - 在 Chunk 中的位置（0=未写入）
-	page     *Page     // 8 bytes  - Page 对象
+	page     interface{} // 8 bytes  - 页面对象（*LeafPage 或 *InternalPage）
 	pageLock *PageLock // 8 bytes  - 轻量级锁
 	lastTime int64     // 8 bytes  - LRU 时间戳（纳秒）
 	hits     int64     // 8 bytes  - 访问计数
@@ -58,14 +58,33 @@ func NewPageInfo() *PageInfo {
 	}
 }
 
-// GetPage 获取 Page 对象
-func (info *PageInfo) GetPage() *Page {
+// GetPage 获取页面对象（返回 interface{}，需要类型断言）
+// 实际类型为 *LeafPage 或 *InternalPage
+func (info *PageInfo) GetPage() interface{} {
 	return info.page
 }
 
-// SetPage 设置 Page 对象
-func (info *PageInfo) SetPage(page *Page) {
+// SetPage 设置页面对象
+func (info *PageInfo) SetPage(page interface{}) {
 	info.page = page
+}
+
+// GetLeafPage 获取叶子节点（类型断言）
+// 如果不是叶子节点，返回 nil
+func (info *PageInfo) GetLeafPage() *LeafPage {
+	if leaf, ok := info.page.(*LeafPage); ok {
+		return leaf
+	}
+	return nil
+}
+
+// GetInternalPage 获取内部节点（类型断言）
+// 如果不是内部节点，返回 nil
+func (info *PageInfo) GetInternalPage() *InternalPage {
+	if internal, ok := info.page.(*InternalPage); ok {
+		return internal
+	}
+	return nil
 }
 
 // GetPos 获取位置信息
@@ -164,6 +183,27 @@ func (info *PageInfo) IncrementMetaVersion() {
 // GetPageSize 获取页面大小
 func (info *PageInfo) GetPageSize() int32 {
 	return info.pageSize
+}
+
+// IsPageLoaded 检查页面是否已加载
+func (info *PageInfo) IsPageLoaded() bool {
+	return info.page != nil
+}
+
+// GetPageType 获取页面类型（"leaf" 或 "internal"）
+func (info *PageInfo) GetPageType() string {
+	if info.page == nil {
+		return "nil"
+	}
+
+	switch info.page.(type) {
+	case *LeafPage:
+		return "leaf"
+	case *InternalPage:
+		return "internal"
+	default:
+		return "unknown"
+	}
 }
 
 // VerifyAlignment 验证 Cache Line 对齐

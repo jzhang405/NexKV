@@ -144,7 +144,7 @@ func (cm *ChunkManager) WritePage(pos int64, data []byte) error {
 	return chunk.WritePage(int64(offset), data)
 }
 
-// ReadPage 读取页面
+// ReadPage 读取页面（返回原始字节数据）
 func (cm *ChunkManager) ReadPage(pos int64) ([]byte, error) {
 	chunkID := GetChunkID(pos)
 	offset := GetOffset(pos)
@@ -155,6 +155,58 @@ func (cm *ChunkManager) ReadPage(pos int64) ([]byte, error) {
 	}
 
 	return chunk.ReadPage(int64(offset))
+}
+
+// LoadPage 加载并反序列化页面（懒加载核心）
+// 从 Chunk 文件读取页面数据并反序列化为具体的 Page 类型（LeafPage 或 InternalPage）
+//
+// 参数：
+//   pos - 64 位位置编码（包含 ChunkID、Offset、PageType）
+//
+// 返回：
+//   interface{} - 反序列化后的页面对象（实际类型为 *LeafPage 或 *InternalPage）
+//   error - 错误信息
+//
+// 懒加载流程：
+// 1. 解码 pos，获取 ChunkID、Offset、PageType
+// 2. 从对应的 Chunk 读取原始字节数据
+// 3. 根据 PageType 反序列化为具体类型
+// 4. 返回具体类型（需要类型断言使用）
+func (cm *ChunkManager) LoadPage(pos int64) (interface{}, error) {
+	// 1. 解码位置信息
+	chunkID, offset, pageType := DecodePagePos(pos)
+
+	// 2. 查找 Chunk
+	chunk := cm.getChunkByID(int(chunkID))
+	if chunk == nil {
+		return nil, fmt.Errorf("chunk %d not found", chunkID)
+	}
+
+	// 3. 读取原始字节数据
+	data, err := chunk.ReadPage(int64(offset))
+	if err != nil {
+		return nil, fmt.Errorf("read page from chunk %d at offset %d: %w", chunkID, offset, err)
+	}
+
+	// 4. 根据 PageType 反序列化
+	switch pageType {
+	case PageTypeLeaf:
+		leafPage, err := DeserializeLeafPage(data)
+		if err != nil {
+			return nil, fmt.Errorf("deserialize leaf page: %w", err)
+		}
+		return leafPage, nil
+
+	case PageTypeInternal:
+		internalPage, err := DeserializeInternalPage(data)
+		if err != nil {
+			return nil, fmt.Errorf("deserialize internal page: %w", err)
+		}
+		return internalPage, nil
+
+	default:
+		return nil, fmt.Errorf("unknown page type: %d", pageType)
+	}
 }
 
 // ensureCurrentChunk 确保有可写入的 Chunk

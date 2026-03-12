@@ -23,6 +23,15 @@ const (
 	MaxPageType = 1 << 5
 )
 
+// 页面类型常量（用于 64 位位置编码）
+const (
+	PageTypeReserved = 0 // 保留位
+	PageTypeLeaf     = 1 // 叶子节点
+	PageTypeInternal = 2 // 内部节点
+	PageTypeRoot     = 3 // 根节点（特殊标记）
+	PageTypeMeta     = 4 // 元页面
+)
+
 // EncodePagePos 编码页面位置（64 位 Lealone 原版编码）
 //
 // 位布局：

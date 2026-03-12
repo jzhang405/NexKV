@@ -1,6 +1,7 @@
 package btree
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -32,9 +33,10 @@ func NewPageRefWithInfo(info *PageInfo) *PageRef {
 	return ref
 }
 
-// GetPage 获取 Page 对象（原子操作）
+// GetPage 获取页面对象（原子操作）
+// 返回 interface{}，实际类型为 *LeafPage 或 *InternalPage
 // 如果 PageInfo 为 nil，返回 nil
-func (r *PageRef) GetPage() *Page {
+func (r *PageRef) GetPage() interface{} {
 	info := r.pInfo.Load()
 	if info == nil {
 		return nil
@@ -208,4 +210,63 @@ func (r *PageRef) SetBuff(buff []byte) {
 		return
 	}
 	info.SetBuff(buff)
+}
+
+// GetOrLoad 获取 PageInfo，如果未加载则从 ChunkManager 加载（懒加载）
+// 这是 Lealone 模式的核心：只有 Root 常驻内存，其他页面按需加载
+//
+// 参数：
+//   chunkMgr - ChunkManager 用于加载页面数据
+//
+// 返回：
+//   *PageInfo - 页面信息（保证 page != nil）
+//   error - 错误信息
+//
+// 懒加载逻辑：
+// 1. 如果 pageInfo.page != nil，直接返回（已加载）
+// 2. 如果 pageInfo.page == nil 且 pageInfo.pos != 0，从 ChunkManager 加载
+// 3. 使用 CAS 更新 pageInfo.page，支持并发安全
+func (r *PageRef) GetOrLoad(chunkMgr *ChunkManager) (*PageInfo, error) {
+	// 1. 尝试从原子指针加载
+	info := r.pInfo.Load()
+	if info == nil {
+		return nil, fmt.Errorf("pageInfo is nil")
+	}
+
+	// 2. 如果 page 已加载，直接返回
+	if info.page != nil {
+		info.Touch() // 更新访问时间
+		return info, nil
+	}
+
+	// 3. Double-checked locking：如果 page == nil 且 pos != 0，触发加载
+	if info.page == nil && info.pos != 0 {
+		// 从 ChunkManager 加载页面
+		page, err := chunkMgr.LoadPage(info.pos)
+		if err != nil {
+			return nil, fmt.Errorf("load page at %d: %w", info.pos, err)
+		}
+
+		// CAS 更新 pageInfo.page
+		newInfo := info.Clone()
+		newInfo.page = page
+
+		if !r.pInfo.CompareAndSwap(info, newInfo) {
+			// CAS 失败：其他 goroutine 已加载，重新加载
+			return r.GetOrLoad(chunkMgr)
+		}
+
+		// 成功加载
+		newInfo.Touch()
+		return newInfo, nil
+	}
+
+	// 4. 如果 pos == 0，说明页面从未持久化
+	return nil, fmt.Errorf("page not loaded and no position (pos=0)")
+}
+
+// Get 获取 PageInfo（简化版，不含加载逻辑）
+// 返回 nil 如果未加载
+func (r *PageRef) Get() *PageInfo {
+	return r.pInfo.Load()
 }

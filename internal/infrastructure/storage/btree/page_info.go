@@ -24,12 +24,12 @@ const cacheLineSize = 64
 // └─────────────────────────────────────────────────────────────────┘
 type PageInfo struct {
 	// Cache Line 1 (64 bytes) - 热数据（高并发访问）
-	pos      int64     // 8 bytes  - 在 Chunk 中的位置（0=未写入）
+	pos      int64       // 8 bytes  - 在 Chunk 中的位置（0=未写入）
 	page     interface{} // 8 bytes  - 页面对象（*LeafPage 或 *InternalPage）
-	pageLock *PageLock // 8 bytes  - 轻量级锁
-	lastTime int64     // 8 bytes  - LRU 时间戳（纳秒）
-	hits     int64     // 8 bytes  - 访问计数
-	_        [24]byte  // padding to 64 bytes
+	pageLock *PageLock   // 8 bytes  - 轻量级锁
+	lastTime int64       // 8 bytes  - LRU 时间戳（纳秒）
+	hits     int64       // 8 bytes  - 访问计数
+	_        [24]byte    // padding to 64 bytes
 
 	// Cache Line 2 (64 bytes) - 温数据（序列化缓冲区）
 	buff []byte   // 24 bytes - slice header
@@ -37,11 +37,11 @@ type PageInfo struct {
 
 	// Cache Line 3 (64 bytes) - 冷数据（元数据，低频写入）
 	parentRef   *PageRef // 8 bytes  - ✅ 父节点引用（新增）
-	isDirty     bool      // 1 byte   - 是否脏页
-	isSplitted  bool      // 1 byte   - 是否被分裂
-	metaVersion int32     // 4 bytes  - 元数据版本
-	pageSize    int32     // 4 bytes  - 页面实际大小（固定 4KB）
-	_           [72]byte  // padding to 64 bytes (52 → 72-8+8=72)
+	isDirty     bool     // 1 byte   - 是否脏页
+	isSplitted  bool     // 1 byte   - 是否被分裂
+	metaVersion int32    // 4 bytes  - 元数据版本
+	pageSize    int32    // 4 bytes  - 页面实际大小（固定 4KB）
+	_           [72]byte // padding to 64 bytes (52 → 72-8+8=72)
 }
 
 // NewPageInfo 创建新的 PageInfo
@@ -150,7 +150,7 @@ func (info *PageInfo) Clone() *PageInfo {
 	// 创建新的 PageInfo，复制所有字段
 	newInfo := &PageInfo{
 		pos:         info.pos,
-		page:        info.page, // 浅拷贝 Page 指针
+		page:        info.page,     // 浅拷贝 Page 指针
 		pageLock:    NewPageLock(), // 创建新锁
 		lastTime:    info.lastTime,
 		hits:        info.hits,

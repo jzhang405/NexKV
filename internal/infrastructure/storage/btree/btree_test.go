@@ -23,10 +23,11 @@ func TestBTree_NotImplementedMethods(t *testing.T) {
 	// 2. Root node is not properly initialized
 	// TODO: Week 13-14 - Update these tests after ChunkManager integration
 
-	// Test Delete (not implemented yet)
+	// Test Delete (已实现在 Day 10-11，但需要先插入数据才能删除)
+	// 删除不存在的键会返回 "key not found"
 	err = btree.Delete(ctx, []byte("key"))
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
+	assert.Contains(t, err.Error(), "key not found")
 
 	// Test GetBatch
 	_, err = btree.GetBatch(ctx, [][]byte{[]byte("key1"), []byte("key2")})

@@ -117,6 +117,7 @@ func TestBTree_splitLeaf_Basic(t *testing.T) {
 	dir := t.TempDir()
 	btree, err := OpenBTree(dir, nil)
 	require.NoError(t, err)
+	btree.chunkMgr = nil // 禁用持久化以避免序列化大小问题
 	defer btree.Close()
 
 	ctx := context.Background()

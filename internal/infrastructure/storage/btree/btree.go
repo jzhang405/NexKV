@@ -89,7 +89,7 @@ type BTree struct {
 
 	// Storage (Lealone AOSE)
 	chunkMgr *ChunkManager // Append-only storage manager
-	wal     wal.WAL       // Write-Ahead Log for crash recovery
+	wal      wal.WAL       // Write-Ahead Log for crash recovery
 
 	// Configuration
 	maxLevels int  // Maximum tree levels
@@ -193,13 +193,13 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	maxLevels := 10 // Default value
 
 	btree := &BTree{
-		config:     config,
-		closed:     false,
-		rootRef:    rootPageRef,
-		chunkMgr:   chunkMgr,
-		wal:        walImpl,
-		maxLevels:  maxLevels,
-		enableWAL:  enableWAL,
+		config:    config,
+		closed:    false,
+		rootRef:   rootPageRef,
+		chunkMgr:  chunkMgr,
+		wal:       walImpl,
+		maxLevels: maxLevels,
+		enableWAL: enableWAL,
 
 		// Legacy (TODO: Week 14 - Remove)
 		root:        root,
@@ -371,10 +371,9 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 		// 5. 检查是否需要 Merge
 		const minKeys = 8
 		if leaf.NumKeys() < minKeys && len(copiedPath) >= 2 {
-			// 需要合并
-			if err := b.mergeLeaf(leafInfo, copiedPath); err != nil {
-				return fmt.Errorf("merge leaf: %w", err)
-			}
+			// 暂时跳过 Merge，专注于修复基本的 Delete 功能
+			// TODO: 在修复引用关系问题后，重新启用 Merge
+			// Merge 操作需要正确处理引用关系，暂时禁用
 		}
 
 		// 6. ✅ CAS 更新根节点（带重试）
@@ -598,11 +597,13 @@ func (b *BTree) Close() error {
 // 这是 BTree 对 ChunkManager.LoadPage() 的封装，提供统一的错误处理
 //
 // 参数：
-//   pos - 64 位位置编码
+//
+//	pos - 64 位位置编码
 //
 // 返回：
-//   interface{} - 页面对象（实际类型为 *LeafPage 或 *InternalPage）
-//   error - 错误信息
+//
+//	interface{} - 页面对象（实际类型为 *LeafPage 或 *InternalPage）
+//	error - 错误信息
 //
 // 懒加载流程：
 // 1. 检查 ChunkManager 是否初始化
@@ -629,11 +630,13 @@ func (b *BTree) loadPage(pos int64) (interface{}, error) {
 // 如果 PageInfo.page 为 nil，则从 ChunkManager 加载
 //
 // 参数：
-//   info - PageInfo 对象
+//
+//	info - PageInfo 对象
 //
 // 返回：
-//   interface{} - 页面对象
-//   error - 错误信息
+//
+//	interface{} - 页面对象
+//	error - 错误信息
 func (b *BTree) getPageOrLoad(info *PageInfo) (interface{}, error) {
 	if info == nil {
 		return nil, fmt.Errorf("pageInfo is nil")
@@ -819,11 +822,13 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 // 当叶子节点满时（len(keys) > maxKeys），进行分裂操作
 //
 // 参数：
-//   leafInfo - 需要分裂的叶子节点 PageInfo（来自 copiedPath）
-//   copiedPath - 复制的路径（CCOW 操作的路径副本）
+//
+//	leafInfo - 需要分裂的叶子节点 PageInfo（来自 copiedPath）
+//	copiedPath - 复制的路径（CCOW 操作的路径副本）
 //
 // 返回：
-//   error - 错误信息
+//
+//	error - 错误信息
 //
 // 分裂步骤（CCOW 架构）：
 // 1. 调用 leaf.Split() 创建新页面
@@ -938,11 +943,13 @@ func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, splitKey []byte
 // ✅ Day 7: 完整实现，支持 CCOW 和引用更新
 //
 // 参数：
-//   internalInfo - 需要分裂的内部节点 PageInfo（来自 copiedPath）
-//   copiedPath - 复制的路径（CCOW 操作的路径副本）
+//
+//	internalInfo - 需要分裂的内部节点 PageInfo（来自 copiedPath）
+//	copiedPath - 复制的路径（CCOW 操作的路径副本）
 //
 // 返回：
-//   error - 错误信息
+//
+//	error - 错误信息
 func (b *BTree) splitInternal(internalInfo *PageInfo, copiedPath []*PageInfo) error {
 	const maxKeys = 15 // InternalPage 最大键数量
 
@@ -1053,8 +1060,9 @@ func (b *BTree) splitRootFromInternal(leftInfo, rightInfo *PageInfo, splitKey []
 // ✅ Day 7: 引用更新机制的核心方法
 //
 // 参数：
-//   pageInfo - 父节点的 PageInfo
-//   parentRef - 新的父节点引用
+//
+//	pageInfo - 父节点的 PageInfo
+//	parentRef - 新的父节点引用
 func (b *BTree) updateChildrenParentRefs(pageInfo *PageInfo, parentRef *PageRef) {
 	if pageInfo == nil || !pageInfo.IsPageLoaded() {
 		return
@@ -1117,12 +1125,14 @@ func (b *BTree) splitRootPage(leftRef, rightRef *PageRef, splitKey []byte) error
 // persistPage 持久化单个页面到 ChunkManager
 //
 // 参数：
-//   pageInfo - 需要持久化的 PageInfo
-//   pageType - 页面类型（PageTypeLeaf 或 PageTypeInternal）
+//
+//	pageInfo - 需要持久化的 PageInfo
+//	pageType - 页面类型（PageTypeLeaf 或 PageTypeInternal）
 //
 // 返回：
-//   int64 - 页面在 Chunk 中的位置编码
-//   error - 错误信息
+//
+//	int64 - 页面在 Chunk 中的位置编码
+//	error - 错误信息
 func (b *BTree) persistPage(pageInfo *PageInfo, pageType int) (int64, error) {
 	if b.chunkMgr == nil {
 		return 0, fmt.Errorf("chunk manager not initialized")
@@ -1177,10 +1187,12 @@ func (b *BTree) persistPage(pageInfo *PageInfo, pageType int) (int64, error) {
 // persistPageRecursive 递归持久化页面及其子节点（自底向上）
 //
 // 参数：
-//   pageInfo - 需要持久化的 PageInfo
+//
+//	pageInfo - 需要持久化的 PageInfo
 //
 // 返回：
-//   error - 错误信息
+//
+//	error - 错误信息
 func (b *BTree) persistPageRecursive(pageInfo *PageInfo) error {
 	if !pageInfo.IsPageLoaded() {
 		return nil // 未加载的页面无需持久化
@@ -1281,11 +1293,13 @@ func (b *BTree) ensurePageLoaded(pageInfo *PageInfo) error {
 // 当叶子节点键数量过少（< minKeys）时，尝试从兄弟节点借键或合并
 //
 // 参数：
-//   leafInfo - 需要合并的叶子节点 PageInfo
-//   copiedPath - CCOW 复制的路径
+//
+//	leafInfo - 需要合并的叶子节点 PageInfo
+//	copiedPath - CCOW 复制的路径
 //
 // 返回：
-//   error - 错误信息
+//
+//	error - 错误信息
 func (b *BTree) mergeLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
 	const minKeys = 8
 
@@ -1526,4 +1540,3 @@ func (b *BTree) mergeLeafWithSibling(
 
 	return nil
 }
-

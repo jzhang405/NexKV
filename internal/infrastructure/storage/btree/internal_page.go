@@ -2,6 +2,7 @@ package btree
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -300,7 +301,12 @@ func (p *InternalPage) Clone() *InternalPage {
 
 // Serialize 序列化页面
 func (p *InternalPage) Serialize() ([]byte, error) {
+	const pageSize = 4096 // 固定页面大小
+
 	var buf bytes.Buffer
+
+	// 1. 先序列化页面内容（暂时跳过长度字段）
+	contentStart := buf.Len()
 
 	// 写入 pageID (8 bytes)
 	if err := binaryWrite(&buf, uint64ToBytes(uint64(p.pageID))); err != nil {
@@ -351,42 +357,69 @@ func (p *InternalPage) Serialize() ([]byte, error) {
 		}
 	}
 
-	return buf.Bytes(), nil
+	// 2. 获取实际内容长度
+	contentData := buf.Bytes()[contentStart:]
+	contentLength := len(contentData)
+
+	// 3. 创建最终的序列化结果（4 字节长度 + 内容 + 填充）
+	result := make([]byte, pageSize)
+
+	// 写入实际长度（前 4 字节）
+	binary.BigEndian.PutUint32(result[0:4], uint32(contentLength))
+
+	// 复制内容
+	copy(result[4:4+contentLength], contentData)
+
+	// 剩余部分已经自动填充为 0x00（Go 的 make 默认初始化）
+
+	return result, nil
 }
 
 // DeserializeInternalPage 反序列化内部页面
 func DeserializeInternalPage(data []byte) (*InternalPage, error) {
-	reader := bytes.NewReader(data)
+	const pageSize = 4096
 
-	// 读取 pageID
+	// 检查数据长度
+	if len(data) != pageSize {
+		return nil, fmt.Errorf("invalid data size: expected %d bytes, got %d", pageSize, len(data))
+	}
+
+	// 1. 读取实际内容长度（前 4 字节）
+	contentLength := binary.BigEndian.Uint32(data[0:4])
+
+	// 2. 只读取实际内容部分（跳过填充）
+	contentData := data[4 : 4+contentLength]
+	reader := bytes.NewReader(contentData)
+
+	// 3. 读取 pageID
 	pageIDBytes, err := readBytes(reader, 8)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read pageID: %w", err)
 	}
 	pageID := model.PageID(bytesToUint64(pageIDBytes))
 
-	// 读取 version
+	// 4. 读取 version
 	versionBytes, err := readBytes(reader, 8)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read version: %w", err)
 	}
 	version := bytesToUint64(versionBytes)
 
-	// 读取键数量
+	// 5. 读取键数量
 	numKeysBytes, err := readBytes(reader, 4)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read numKeys: %w", err)
 	}
 	numKeys := bytesToUint32(numKeysBytes)
 
-	// 读取子节点数量
+	// 6. 读取子节点数量
 	numChildrenBytes, err := readBytes(reader, 4)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read numChildren: %w", err)
 	}
 	numChildren := bytesToUint32(numChildrenBytes)
 
-	// 创建页面
+	// 7. 创建页面
 	page := &InternalPage{
 		pageID:   pageID,
 		version:  version,
@@ -394,7 +427,7 @@ func DeserializeInternalPage(data []byte) (*InternalPage, error) {
 		children: make([]*PageRef, 0, numChildren),
 	}
 
-	// 读取键
+	// 8. 读取键
 	for i := 0; i < int(numKeys); i++ {
 		// 读取键长度
 		keyLenBytes, err := readBytes(reader, 2)
@@ -411,28 +444,26 @@ func DeserializeInternalPage(data []byte) (*InternalPage, error) {
 		page.keys = append(page.keys, key)
 	}
 
-	// 读取子节点 ID
+	// 9. 读取子节点 ID
 	for i := 0; i < int(numChildren); i++ {
 		childIDBytes, err := readBytes(reader, 8)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read childID: %w", err)
+			return nil, fmt.Errorf("failed to read child ID: %w", err)
 		}
 		childID := bytesToUint64(childIDBytes)
 
-		// 创建 PageRef（暂时使用 PageID，后续可以通过位置编码加载）
-		// TODO: 后续需要通过位置编码加载实际的 Page
+		// 创建 PageRef（暂时只存储 PageID，后续可以改为位置编码）
 		childRef := NewPageRef()
-		// 注意：这里暂时不加载页面，只保存 PageID
-		// 实际使用时需要通过 ChunkManager 加载
+		childInfo := NewPageInfo()
+		// 注意：PageID 存储在 Page 对象中，不在 PageInfo 中
+		// 这里暂时创建一个占位的 Page 对象来存储 PageID
+		tempPage := &InternalPage{
+			pageID: model.PageID(childID),
+		}
+		childInfo.SetPage(tempPage)
+		childRef.pInfo.Store(childInfo)
 
-		// 临时：创建一个 PageInfo 包含 PageID
-		// 这是为了反序列化的完整性，实际使用时需要重新设计
-		_ = childID
-		_ = childRef
-
-		// Phase 1: 简化处理，暂时不创建 PageInfo
-		// Phase 2: 实现通过位置编码加载 Page 的机制
-		page.children = append(page.children, nil) // 暂时设为 nil
+		page.children = append(page.children, childRef)
 	}
 
 	return page, nil

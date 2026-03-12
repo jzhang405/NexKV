@@ -252,7 +252,12 @@ func (p *LeafPage) Clone() *LeafPage {
 // Serialize 序列化页面
 // 返回：序列化后的字节数组
 func (p *LeafPage) Serialize() ([]byte, error) {
+	const pageSize = 4096 // 固定页面大小
+
 	var buf bytes.Buffer
+
+	// 1. 先序列化页面内容（暂时跳过长度字段）
+	contentStart := buf.Len()
 
 	// 写入 pageID (8 bytes)
 	if err := binaryWrite(&buf, uint64ToBytes(uint64(p.pageID))); err != nil {
@@ -295,35 +300,62 @@ func (p *LeafPage) Serialize() ([]byte, error) {
 		}
 	}
 
-	return buf.Bytes(), nil
+	// 2. 获取实际内容长度
+	contentData := buf.Bytes()[contentStart:]
+	contentLength := len(contentData)
+
+	// 3. 创建最终的序列化结果（4 字节长度 + 内容 + 填充）
+	result := make([]byte, pageSize)
+
+	// 写入实际长度（前 4 字节）
+	binary.BigEndian.PutUint32(result[0:4], uint32(contentLength))
+
+	// 复制内容
+	copy(result[4:4+contentLength], contentData)
+
+	// 剩余部分已经自动填充为 0x00（Go 的 make 默认初始化）
+
+	return result, nil
 }
 
 // DeserializeLeafPage 反序列化叶子页面
 func DeserializeLeafPage(data []byte) (*LeafPage, error) {
-	reader := bytes.NewReader(data)
+	const pageSize = 4096
 
-	// 读取 pageID
+	// 检查数据长度
+	if len(data) != pageSize {
+		return nil, fmt.Errorf("invalid data size: expected %d bytes, got %d", pageSize, len(data))
+	}
+
+	// 1. 读取实际内容长度（前 4 字节）
+	contentLength := binary.BigEndian.Uint32(data[0:4])
+
+	// 2. 只读取实际内容部分（跳过填充）
+	contentData := data[4 : 4+contentLength]
+	reader := bytes.NewReader(contentData)
+
+	// 3. 读取 pageID
 	pageIDBytes, err := readBytes(reader, 8)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read pageID: %w", err)
 	}
 	pageID := model.PageID(bytesToUint64(pageIDBytes))
 
-	// 读取 version
+	// 4. 读取 version
 	versionBytes, err := readBytes(reader, 8)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read version: %w", err)
 	}
 	version := bytesToUint64(versionBytes)
 
-	// 读取键数量
+	// 5. 读取键数量
 	numKeysBytes, err := readBytes(reader, 4)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read numKeys: %w", err)
 	}
 	numKeys := bytesToUint32(numKeysBytes)
 
-	// 创建页面
+	// 6. 创建页面
 	page := &LeafPage{
 		pageID:  pageID,
 		version: version,
@@ -331,7 +363,7 @@ func DeserializeLeafPage(data []byte) (*LeafPage, error) {
 		values:  make([][]byte, 0, numKeys),
 	}
 
-	// 读取键值对
+	// 7. 读取键值对
 	for i := 0; i < int(numKeys); i++ {
 		// 读取键长度
 		keyLenBytes, err := readBytes(reader, 2)

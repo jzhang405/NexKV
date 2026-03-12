@@ -472,6 +472,7 @@ func (m *DataMigrator) Rollback() error {
 | 第2轮 | 2026-03-12 | 用户确认 | 性能目标保持 <1μs，内存目标修正为 200-300%，位置编码采用 64 位，工期 16 周 | 删除 PageInfo.refCount，增加 Cache Line 对齐，补充详细设计 | 待确认 |
 | 第3轮 | 2026-03-12 | 用户确认 | PageInfo 需要对齐，PageReference 分离延后决定，硬编码 64，仅关键结构对齐 | 添加 Cache Line 对齐章节（第 9 节），明确对齐优先级 | 完成 |
 | **第4轮** | **2026-03-12** | **用户确认** | **Phase 1 实施计划审核（6 项关键修正）** | **1. 性能目标：<10μs（验收），<1μs（追求）；2. PageInfo：3 个 cache lines；3. RootPageReference：先 CAS 后更新子节点；4. Chunk：简化为 4KB 固定；5. PageLock：state 编码修正；6. 添加 PageIndex + 边界检查** | **✅ 条件通过（完成修订后可实施）** |
+| **第5轮** | **2026-03-12** | **用户确认** | **Week 13-14 集成计划审核（Lealone 模式迁移）** | **1. 移除 PageInfoCache（~400 行）；2. PageRef 直接持有 PageInfo；3. BTreeGC 扫描 PageRef 树；4. 明确懒加载：只有 Root 常驻；5. PageID 64 位编码；6. 保留 VersionedRoot** | **✅ 全部通过（4 项决策已确认）** |
 
 ### 第4轮评审详细意见（2026-03-12）
 
@@ -538,6 +539,163 @@ func (m *DataMigrator) Rollback() error {
 
 **修订后状态**：✅ **可以开始实施**
 
+---
+
+### 第5轮评审详细意见（2026-03-12）
+
+#### 关键问题：Week 13-14 集成计划架构审核
+
+**审核意见**：PageInfoCache 是多余的，应采用 Lealone 模式
+
+**核心问题**：
+1. **PageInfoCache 不符合 Lealone 设计**
+   - ❌ 原设计：PageRef → PageInfoCache → ChunkManager（3 层）
+   - ✅ Lealone：PageRef → PageInfo → ChunkManager（2 层）
+   - ✅ 理由：Lealone 无独立 PageInfoCache，PageRef 直接持有 PageInfo
+
+2. **树结构内存占用需要明确**
+   - ❌ 全量加载：4.4GB（100 万页面 × 4KB）
+   - ✅ 懒加载：461MB（仅 10% 热点页面常驻）
+   - ✅ 节省：91% 内存
+
+3. **PageID 格式需要简化**
+   - ✅ 直接使用 64 位位置编码
+   - ✅ 无需独立 PageID struct
+
+4. **VersionedRoot 处理**
+   - ✅ 保留作为包装层
+   - ✅ 内部使用 RootPageRef
+
+#### 已确认的 4 项关键决策
+
+| 决策 | 用户选择 | 影响 | 文档参考 |
+|------|---------|------|----------|
+| **PageInfoCache** | **移除** | ~400 行代码删除，采用 Lealone 模式 | `thoughts/2026-03-12-phase1-week13-14-btree-integration-plan.md` v2.0 |
+| **内存模型** | **懒加载** | 4.4GB → 461MB（91% 节省） | 同上 |
+| **PageID 格式** | **64 位编码** | 简化设计，直接使用 ChunkManager 编码 | 同上 |
+| **VersionedRoot** | **保留作为包装** | 平滑迁移，API 兼容 | 同上 |
+
+#### Lealone 模式架构设计
+
+```go
+// ✅ 新设计（Lealone 模式）
+type PageRef struct {
+    pInfo     atomic.Pointer[PageInfo]  // 直接持有
+    parentRef *PageRef                   // 父引用
+}
+
+type PageInfo struct {
+    pos         int64       // 64 位位置编码
+    page        *Page       // 可能 nil（懒加载）
+    buff        []byte      // 可能 nil
+    pageLock    *PageLock
+    lastTime    int64       // LRU 时间戳
+    hits        int64       // 访问计数
+    isDirty     bool
+}
+
+// ❌ 旧设计（已移除）
+// type PageInfoCache struct { ... }  // 删除
+```
+
+#### BTreeGC 职责变更
+
+| 职责 | 旧设计（v1.0） | 新设计（v2.0） |
+|------|--------------|--------------|
+| **缓存管理** | PageInfoCache（独立） | ❌ 移除 |
+| **LRU 淘汰** | PageInfoCache.lruQueue | ✅ BTreeGC 扫描 PageRef 树 |
+| **容量控制** | PageInfoCache.maxPages | ✅ BTreeGC 水位线机制 |
+| **页面加载** | PageInfoCache.Get() | ✅ BTree.loadPage() 懒加载 |
+
+#### 更新后的架构图
+
+**旧架构（v1.0）**：
+```
+BTree
+├── PageInfoCache（独立缓存层）❌
+│   └── 管理 PageInfo 的 LRU 淘汰
+├── PageRef → PageInfo
+└── ChunkManager
+```
+
+**新架构（v2.0 - Lealone 模式）**：
+```
+BTree
+├── VersionedRoot（包装 RootPageRef）✅
+│   └── RootPageRef（Root 页面引用，常驻内存）
+├── ChunkManager（Append-Only 存储）
+└── BTreeGC（扫描 PageRef 树，LRU 淘汰）✅
+
+树结构（懒加载）：
+InternalPage.children []*PageRef
+    └── PageRef.pInfo atomic.Pointer[PageInfo]
+        └── PageInfo（可能 page=nil）✅
+            ├── page: *Page（按需加载）
+            ├── buff: []byte
+            └── pos: int64（64 位编码）
+```
+
+#### 文档更新内容
+
+1. **移除章节**（~400 行）：
+   - ❌ 2.2 PageInfoCache 设计
+   - ❌ 2.3 PageRef vs PageInfoCache 的职责
+   - ❌ 4.2 PageInfoCache 实现
+   - ❌ 4.3 与 BTreeGC 集成（旧版本）
+
+2. **新增章节**：
+   - ✅ 2.2 Lealone 架构设计（PageRef 直接持有 PageInfo）
+   - ✅ 2.3 内存模型（懒加载详解）
+   - ✅ 2.4 BTreeGC 职责（扫描 PageRef 树）
+   - ✅ 4.2 Lealone 模式（无独立缓存层）
+   - ✅ 4.3 BTreeGC 扫描机制
+
+3. **更新实施步骤**（Week 13-14）：
+   - Day 1-2: 懒加载机制实现（PageRef.GetOrLoad）
+   - Day 3-4: searchPath 实现（支持懒加载）
+   - Day 5: Get/Set 实现（使用 CCOW）
+   - Day 6-7: 替换 BTree 结构
+   - Day 8-9: BTreeGC 集成（扫描树结构）
+   - Day 10: 集成测试
+
+#### 预期收益更新
+
+| 指标 | 旧设计（v1.0） | 新设计（v2.0） | 改进 |
+|------|--------------|--------------|------|
+| **内存占用** | 200-300% | **20-30%** | **10x↓** |
+| **数据规模** | <100GB | **>1TB** | **10x+** |
+| **架构复杂度** | 3 层（PageInfoCache） | **2 层**（简化） | **简化** |
+| **与 Lealone 一致性** | ❌ 不一致 | ✅ **完全一致** | **符合预期** |
+
+#### 审核结论
+
+**第5轮审核结论**：✅ **全部通过（4 项决策已确认）**
+
+**审核意见**：
+- Week 13-14 集成计划已更新为 v2.0 版本
+- 移除 PageInfoCache 设计，采用 Lealone 模式
+- 4 个关键决策已全部确认
+- 文档已提交至 git（commit bf1063d）
+
+**同意开工**：
+- Week 13-14: BTree 集成（2 周）
+- 采用 Lealone 模式：PageRef → PageInfo 直接引用
+- 懒加载机制：内存节省 91%（4.4GB → 461MB）
+- 预计完成日期：2026-03-26
+
+---
+
+#### 修订结果总结（第5轮）
+
+| 类别 | 数量 | 状态 |
+|------|------|------|
+| **必须修正** | 4 项 | ✅ 全部完成 |
+| **建议添加** | 0 项 | - |
+| **决策确认** | 4 项 | ✅ 全部确认 |
+| **文档版本** | v1.1 → v2.0 | ✅ 已更新 |
+
+**修订后状态**：✅ **可以开始实施 Week 13-14**
+
 ### 6. 预审批确认
 
 > **架构师签字/备注**：jzhang405 2026-03-12
@@ -554,6 +712,25 @@ func (m *DataMigrator) Rollback() error {
 - 性能目标：<10μs（验收目标），<1μs（追求目标）
 - 关键设计：3 个 cache lines 对齐、简化 Chunk（4KB 固定）、修正 PageLock 编码
 - 预计工期：2 周（2026-03-12 至 2026-03-26）
+
+---
+
+**第5轮审核结论**：✅ **全部通过（Week 13-14 集成计划 v2.0 已确认）**
+
+**审核意见**：
+- Week 13-14 集成计划已更新为 v2.0 版本（commit bf1063d）
+- 移除 PageInfoCache 设计，采用 Lealone 模式
+- 4 个关键决策已全部确认
+- 架构简化：PageRef → PageInfo 直接引用，BTreeGC 扫描 PageRef 树
+- 内存优化：懒加载机制，节省 91% 内存（4.4GB → 461MB）
+
+**确认开工**：
+- Week 13-14: BTree 集成（2 周）
+- 采用 Lealone 模式：PageRef 直接持有 PageInfo（atomic.Pointer[PageInfo]）
+- 懒加载机制：只有 Root 常驻，其他按需加载
+- PageID 简化：直接使用 64 位位置编码
+- 保留 VersionedRoot：作为 RootPageRef 的包装层
+- 预计完成日期：2026-03-26
 
 ---
 
@@ -586,6 +763,13 @@ func (m *DataMigrator) Rollback() error {
 | **Phase 1 Week 11-12: 数据迁移** | **2026-03-12** | **已移除（新项目不需要）** | **代码提交：`ad1d50a`** |
 | - 决策 | 2026-03-12 | 新项目无需旧数据迁移 | 移除 DataMigrator（424 行 + 362 行测试） |
 | - 理由 | 2026-03-12 | 简化实现，降低维护成本 | 直接使用新 Page-based 架构 |
+| **Phase 1 Week 13-14: BTree 集成计划** | **2026-03-12** | **Week 13-14 集成计划 v2.0（Lealone 模式）** | **文档提交：`bf1063d`** |
+| - 审核通过 | 2026-03-12 | 第5轮审核：移除 PageInfoCache，采用 Lealone 模式 | 4 项关键决策已确认 ✅ |
+| - 文档更新 | 2026-03-12 | 更新 Week 13-14 集成计划为 v2.0 | `thoughts/2026-03-12-phase1-week13-14-btree-integration-plan.md` |
+| - 架构变更 | 2026-03-12 | PageRef → PageInfo 直接引用，移除 PageInfoCache | ~400 行代码删除 |
+| - 懒加载设计 | 2026-03-12 | 只有 Root 常驻，其他按需加载 | 内存节省 91%（4.4GB → 461MB） |
+| - PageID 简化 | 2026-03-12 | 直接使用 64 位位置编码 | 简化设计 |
+| - VersionedRoot | 2026-03-12 | 保留作为包装层 | 平滑迁移，API 兼容 |
 | **Phase 1 Week 13-15: BTree 集成** | **待定** | **集成测试和优化** | **代码提交至 feature/btree-page-refactor-phase1** |
 | 本地测试 | 待定 | 单元测试 + 并发测试 + 性能基准测试 | 测试报告/覆盖率数据 |
 | Post文档编写 | 待定 | 编写后置总结文档 | 第三部分：后置部分 |
@@ -802,21 +986,94 @@ func (m *DataMigrator) Rollback() error {
 
 ### 3. 下一步工作建议（建议干啥）
 
-#### 当前进度：Phase 1 完成 75%（Week 1-10/15）
+#### 当前进度：Phase 1 完成 75%（Week 1-12/15）
 
 **已完成**：
 - ✅ Week 1-3: 基础设施（PageRef + PageInfo + ChunkManager）
 - ✅ Week 4-7: Page 类型重构（LeafPage + InternalPage）
 - ✅ Week 8-10: 并发控制（EnhancedPageLock + BTreeGC + CCOWManager）
 - ❌ Week 11-12: 数据迁移 → 已移除（新项目不需要）
+- ✅ Week 13-14: 集成计划审核通过（第5轮，v2.0）
 
 **剩余工作**：
-- 🔄 Week 13-14: BTree 集成（替换 Node 架构）
+- 🔄 Week 13-14: BTree 集成（Lealone 模式，2 周）
 - 🔄 Week 15: 集成测试和优化
 
-#### 1. 优先推进：Week 13-14 BTree 集成
+---
 
-**目标**：将现有 BTree 从 Node-based 架构迁移到 Page-based 架构
+## 第5轮评审后更新（2026-03-12）
+
+### Week 13-14 集成计划 v2.0（Lealone 模式）
+
+**文档链接**：`thoughts/2026-03-12-phase1-week13-14-btree-integration-plan.md` v2.0
+
+#### 关键变更总结
+
+| 变更项 | 旧设计（v1.0） | 新设计（v2.0） | 影响 |
+|--------|--------------|--------------|------|
+| **PageInfoCache** | 独立缓存层 | ❌ 移除 | ~400 行代码删除 |
+| **PageRef → PageInfo** | 通过 PageInfoCache | ✅ 直接引用 | 简化架构 |
+| **BTreeGC 职责** | 管理 PageInfoCache | ✅ 扫描 PageRef 树 | LRU 淘汰机制 |
+| **内存模型** | 全量加载 | ✅ 懒加载 | 节省 91% 内存 |
+| **PageID 格式** | 独立 struct | ✅ 64 位编码 | 简化设计 |
+| **VersionedRoot** | 完全替换 | ✅ 保留作为包装 | 平滑迁移 |
+
+#### 实施步骤（2 周）
+
+**Week 13: 核心改造（Day 1-5）**
+- Day 1-2: 懒加载机制实现
+  - `PageRef.GetOrLoad()` 方法
+  - `BTree.loadPage(pos)` 从 ChunkManager 加载
+  - 处理 `PageInfo.page == nil` 的情况
+- Day 3-4: searchPath 实现
+  - `searchPath(rootPage, key)` 方法
+  - 支持 InternalPage 懒加载子节点
+  - 处理 `maxLevels` 限制
+- Day 5: Get/Set 实现
+  - `Get(ctx, key)` 方法（懒加载）
+  - `Set(ctx, key, value)` 方法（CCOW + CAS）
+  - CAS 更新 RootPageRef（带重试）
+
+**Week 14: 集成和优化（Day 6-10）**
+- Day 6-7: 替换 BTree 结构
+  - 修改 `BTree` 结构（移除 `pageCache` 和 `pageManager`）
+  - 修改 `OpenBTree` 初始化
+  - 保留 `VersionedRoot` 作为 `RootPageRef` 的包装
+- Day 8-9: BTreeGC 集成
+  - `BTreeGC.scanPageRefTree()` 遍历树结构
+  - `BTreeGC.evictLRU()` 按时间戳淘汰
+  - `BTreeGC.collectDirtyPages()` 收集脏页
+  - `BTreeGC.writeDirtyPages()` 写入 ChunkManager
+- Day 10: 集成测试
+  - 基本 CRUD 操作测试
+  - 并发读写测试（100 goroutines）
+  - 持久化测试（重启后验证）
+  - 性能基准测试
+
+#### 预期收益
+
+| 指标 | 旧架构（Node） | 新架构（Lealone 模式） | 改进 |
+|------|---------------|----------------------|------|
+| **数据规模** | <100GB | **>1TB** | **10x+** |
+| **内存占用** | 100% | **20-30%**（懒加载） | **70-80%↓** |
+| **写放大** | 10-15x | **1.1-1.5x** | **10x↓** |
+| **读延迟** | ~3μs | <1μs（目标） | **3x↑** |
+| **并发读** | N/A | >10M ops/sec（目标） | **显著提升** |
+
+#### 风险和应对
+
+| 风险 | 影响 | 应对 |
+|------|------|------|
+| 懒加载并发安全 | 中 | double-checked locking + CAS |
+| BTreeGC 扫描性能 | 高 | 增量扫描 + 自适应间隔 |
+| CAS 更新失败重试 | 中 | 最多重试 3 次，指数退避 |
+| 内存泄漏 | 高 | BTreeGC 定期扫描 + lastTime 淘汰 |
+
+---
+
+#### 1. 优先推进：Week 13-14 BTree 集成（Lealone 模式）
+
+**目标**：将现有 BTree 从 Node-based 架构迁移到 Page-based 架构（Lealone 模式）
 
 **关键任务**：
 1. **替换 BTree 内部实现**
@@ -828,24 +1085,31 @@ func (m *DataMigrator) Rollback() error {
        pm     *PageManager    // ❌ 覆盖写入
    }
 
-   // 新实现
+   // 新实现（Lealone 模式）
    type BTree struct {
-       rootRef *RootPageRef   // ✅ 纯 PageRef
-       cache   *PageInfoCache // ✅ 两层缓存
-       cm      *ChunkManager  // ✅ Append-Only
-       gc      *BTreeGC       // ✅ 渐进式 GC
-       ccow    *CCOWManager   // ✅ CCOW
+       rootRef     *RootPageRef  // ✅ VersionedRoot 包装 RootPageRef
+       chunkMgr    *ChunkManager // ✅ Append-Only
+       gc          *BTreeGC      // ✅ 扫描 PageRef 树
+       ccow        *CCOWManager  // ✅ Copy-on-Write
+       // ❌ 无 PageInfoCache（移除）
    }
    ```
 
-2. **更新 Put/Get/Delete 操作**
-   - 搜索路径：PageReference → PageInfo → Page
+2. **实现懒加载机制**
+   - 只有 Root PageRef 常驻内存
+   - 其他 PageRef 的 PageInfo.page = nil
+   - 按需从 ChunkManager 加载
+   - 内存节省：4.4GB → 461MB（91%）
+
+3. **更新 Put/Get/Delete 操作**
+   - 搜索路径：PageRef → PageInfo（懒加载）→ Page
    - Copy-on-Write：CCOW 路径复制
    - CAS 更新：RootPageRef.ReplacePage
 
-3. **简化 PageCache**
-   - 移除 NodeL1 缓存
-   - 优化为两层：PageInfo（L1）+ ChunkManager（L2）
+4. **BTreeGC 扫描机制**
+   - 从 Root 开始 DFS/BFS 遍历 PageRef 树
+   - 根据 PageInfo.lastTime 进行 LRU 淘汰
+   - 分层 GC：高水位（90%）完全释放，低水位（70%）仅释放 buff
 
 #### 2. 监控要点
 - **内存占用**：预期 200-300% 增长（可接受，换取 TB/PB 支持）
@@ -912,7 +1176,10 @@ func (m *DataMigrator) Rollback() error {
 
 | 项目 | 内容 |
 |------|------|
-| 文档最终版本 | V1.0 |
+| 文档最终版本 | **V2.0**（第5轮评审后更新） |
 | 归档日期 | 2026-03-12（前置部分）/ 待定（后置部分） |
-| 归档路径 | `docs/06_project_management/pr_documents/feature/2026-03-12_PR-XXX_BTree-Page-重构-Phase1_全流程.md` |
+| 归档路径 | `docs/06_project_management/pr_documents/feature/2026-03-12_PR-088_BTree-Page-重构-Phase1_全流程.md` |
 | 后续维护人 | jzhang405 |
+| 关键变更 | **第5轮评审（2026-03-12）**：Week 13-14 集成计划 v2.0，移除 PageInfoCache，采用 Lealone 模式 |
+| 相关文档 | `thoughts/2026-03-12-phase1-week13-14-btree-integration-plan.md` v2.0 |
+| Git 提交 | `bf1063d` - docs(btree): 更新 Week 13-14 集成计划为 v2.0（根据审核意见修订） |

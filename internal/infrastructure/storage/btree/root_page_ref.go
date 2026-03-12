@@ -7,28 +7,28 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
-// RootPageReference Root 页面的特殊引用
+// RootPageRef Root 页面的特殊引用
 // 处理 Root Page 的 CAS 更新和引用链维护
-type RootPageReference struct {
-	*PageReference
+type RootPageRef struct {
+	*PageRef
 }
 
-// NewRootPageReference 创建新的 RootPageReference
-func NewRootPageReference() *RootPageReference {
-	return &RootPageReference{
-		PageReference: NewPageReference(),
+// NewRootPageRef 创建新的 RootPageRef
+func NewRootPageRef() *RootPageRef {
+	return &RootPageRef{
+		PageRef: NewPageRef(),
 	}
 }
 
-// NewRootPageReferenceWithInfo 创建带有初始 PageInfo 的 RootPageReference
-func NewRootPageReferenceWithInfo(info *PageInfo) *RootPageReference {
-	return &RootPageReference{
-		PageReference: NewPageReferenceWithInfo(info),
+// NewRootPageRefWithInfo 创建带有初始 PageInfo 的 RootPageRef
+func NewRootPageRefWithInfo(info *PageInfo) *RootPageRef {
+	return &RootPageRef{
+		PageRef: NewPageRefWithInfo(info),
 	}
 }
 
 // ReplacePage 替换 Root Page（原子更新并维护引用链）
-// 这是 RootPageReference 的核心方法，确保并发安全
+// 这是 RootPageRef 的核心方法，确保并发安全
 //
 // 执行顺序（根据 v3.0 设计）：
 // 1. 先 CAS 更新 pInfo（原子操作）
@@ -42,7 +42,7 @@ func NewRootPageReferenceWithInfo(info *PageInfo) *RootPageReference {
 // 返回：
 //   true - CAS 成功，替换成功并完成引用链更新
 //   false - CAS 失败，当前值不是 oldInfo
-func (r *RootPageReference) ReplacePage(oldInfo, newInfo *PageInfo) bool {
+func (r *RootPageRef) ReplacePage(oldInfo, newInfo *PageInfo) bool {
 	if newInfo == nil {
 		panic("newInfo cannot be nil")
 	}
@@ -72,8 +72,8 @@ func (r *RootPageReference) ReplacePage(oldInfo, newInfo *PageInfo) bool {
 //
 // 注意：此方法在 Phase 1 中是预留接口，完整实现需要等到：
 // 1. LeafPage 和 InternalPage 新结构实现
-// 2. Node → PageReference 迁移完成
-func (r *RootPageReference) updateChildrenParentRef(page *Page, newParent *PageReference) {
+// 2. Node → PageRef 迁移完成
+func (r *RootPageRef) updateChildrenParentRef(page *Page, newParent *PageRef) {
 	// Phase 1: 预留接口
 	// TODO: 等待 LeafPage/InternalPage 实现后完善
 	_ = page
@@ -81,7 +81,7 @@ func (r *RootPageReference) updateChildrenParentRef(page *Page, newParent *PageR
 
 	// 未来实现：
 	// 1. 解析 page.Type (LeafPage, InternalPage)
-	// 2. 如果是 InternalPage，获取其 children []*PageReference
+	// 2. 如果是 InternalPage，获取其 children []*PageRef
 	// 3. 递归更新每个子节点的 parentRef
 	//
 	// 示例代码（待实现）：
@@ -106,7 +106,7 @@ func (r *RootPageReference) updateChildrenParentRef(page *Page, newParent *PageR
 // 在 Phase 1 中，我们简化实现：
 // - 使用固定延迟（100ms）等待活跃读操作完成
 // - 后续版本可以优化为基于引用计数的精确释放
-func (r *RootPageReference) scheduleDelayedRelease(info *PageInfo) {
+func (r *RootPageRef) scheduleDelayedRelease(info *PageInfo) {
 	// 在后台 goroutine 中延迟释放
 	go func() {
 		// 等待活跃读操作完成（Phase 1 使用固定延迟）
@@ -124,7 +124,7 @@ func (r *RootPageReference) scheduleDelayedRelease(info *PageInfo) {
 
 // ReplacePageWithContext 带上下文的 ReplacePage
 // 支持取消操作和超时控制
-func (r *RootPageReference) ReplacePageWithContext(
+func (r *RootPageRef) ReplacePageWithContext(
 	ctx context.Context,
 	oldInfo, newInfo *PageInfo,
 ) error {
@@ -152,17 +152,17 @@ func (r *RootPageReference) ReplacePageWithContext(
 // 用于特殊场景（如页面分裂后需要手动更新引用链）
 //
 // 注意：Phase 1 中此方法为预留接口
-func (r *RootPageReference) UpdateChildrenParentRef(page *Page) {
-	r.updateChildrenParentRef(page, r.PageReference)
+func (r *RootPageRef) UpdateChildrenParentRef(page *Page) {
+	r.updateChildrenParentRef(page, r.PageRef)
 }
 
 // GetRootPage 获取 Root Page（便捷方法）
-func (r *RootPageReference) GetRootPage() *Page {
+func (r *RootPageRef) GetRootPage() *Page {
 	return r.GetPage()
 }
 
 // GetRootPageInfo 获取 Root PageInfo（便捷方法）
-func (r *RootPageReference) GetRootPageInfo() *PageInfo {
+func (r *RootPageRef) GetRootPageInfo() *PageInfo {
 	return r.GetPageInfo()
 }
 

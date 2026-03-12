@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewPageReference(t *testing.T) {
-	ref := NewPageReference()
+func TestNewPageRef(t *testing.T) {
+	ref := NewPageRef()
 
 	assert.NotNil(t, ref)
 	assert.Nil(t, ref.GetPage())
@@ -20,11 +20,11 @@ func TestNewPageReference(t *testing.T) {
 	assert.False(t, ref.HasParent())
 }
 
-func TestNewPageReferenceWithInfo(t *testing.T) {
+func TestNewPageRefWithInfo(t *testing.T) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1})
 
-	ref := NewPageReferenceWithInfo(info)
+	ref := NewPageRefWithInfo(info)
 
 	assert.NotNil(t, ref)
 	assert.Equal(t, info, ref.GetPageInfo())
@@ -33,8 +33,8 @@ func TestNewPageReferenceWithInfo(t *testing.T) {
 	assert.Equal(t, model.PageID(1), ref.GetPage().ID)
 }
 
-func TestPageReference_SetGetPage(t *testing.T) {
-	ref := NewPageReference()
+func TestPageRef_SetGetPage(t *testing.T) {
+	ref := NewPageRef()
 	page := &Page{ID: 1}
 	info := NewPageInfo()
 	info.SetPage(page)
@@ -46,8 +46,8 @@ func TestPageReference_SetGetPage(t *testing.T) {
 	assert.True(t, ref.IsLoaded())
 }
 
-func TestPageReference_ReplacePage_CAS(t *testing.T) {
-	ref := NewPageReference()
+func TestPageRef_ReplacePage_CAS(t *testing.T) {
+	ref := NewPageRef()
 
 	oldInfo := NewPageInfo()
 	oldInfo.SetPage(&Page{ID: 1})
@@ -73,8 +73,8 @@ func TestPageReference_ReplacePage_CAS(t *testing.T) {
 	assert.Equal(t, newInfo, ref.GetPageInfo()) // 保持不变
 }
 
-func TestPageReference_ReplacePage_NilPanic(t *testing.T) {
-	ref := NewPageReference()
+func TestPageRef_ReplacePage_NilPanic(t *testing.T) {
+	ref := NewPageRef()
 
 	assert.Panics(t, func() {
 		ref.ReplacePage(nil, nil)
@@ -85,8 +85,8 @@ func TestPageReference_ReplacePage_NilPanic(t *testing.T) {
 	})
 }
 
-func TestPageReference_MarkDirty(t *testing.T) {
-	ref := NewPageReference()
+func TestPageRef_MarkDirty(t *testing.T) {
+	ref := NewPageRef()
 	info := NewPageInfo()
 	ref.SetPage(info)
 
@@ -103,16 +103,16 @@ func TestPageReference_MarkDirty(t *testing.T) {
 	assert.False(t, ref.IsDirty())
 }
 
-func TestPageReference_MarkDirty_NilInfo(t *testing.T) {
-	ref := NewPageReference()
+func TestPageRef_MarkDirty_NilInfo(t *testing.T) {
+	ref := NewPageRef()
 
 	result := ref.MarkDirty()
 	assert.False(t, result)
 	assert.False(t, ref.IsDirty())
 }
 
-func TestPageReference_GetSetPos(t *testing.T) {
-	ref := NewPageReference()
+func TestPageRef_GetSetPos(t *testing.T) {
+	ref := NewPageRef()
 	info := NewPageInfo()
 	ref.SetPage(info)
 
@@ -124,8 +124,8 @@ func TestPageReference_GetSetPos(t *testing.T) {
 	assert.Equal(t, int64(12345), ref.GetPos())
 }
 
-func TestPageReference_GetLock(t *testing.T) {
-	ref := NewPageReference()
+func TestPageRef_GetLock(t *testing.T) {
+	ref := NewPageRef()
 	info := NewPageInfo()
 	ref.SetPage(info)
 
@@ -134,8 +134,8 @@ func TestPageReference_GetLock(t *testing.T) {
 	assert.Same(t, info.GetLock(), lock)
 }
 
-func TestPageReference_Touch(t *testing.T) {
-	ref := NewPageReference()
+func TestPageRef_Touch(t *testing.T) {
+	ref := NewPageRef()
 	info := NewPageInfo()
 	ref.SetPage(info)
 
@@ -149,9 +149,9 @@ func TestPageReference_Touch(t *testing.T) {
 	assert.Greater(t, ref.GetLastTime(), oldTime)
 }
 
-func TestPageReference_ParentRef(t *testing.T) {
-	parentRef := NewPageReference()
-	child := NewPageReference()
+func TestPageRef_ParentRef(t *testing.T) {
+	parentRef := NewPageRef()
+	child := NewPageRef()
 
 	// 初始状态
 	assert.Nil(t, child.GetParentRef())
@@ -163,10 +163,10 @@ func TestPageReference_ParentRef(t *testing.T) {
 	assert.True(t, child.HasParent())
 }
 
-func TestPageReference_Clone(t *testing.T) {
+func TestPageRef_Clone(t *testing.T) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1})
-	ref := NewPageReferenceWithInfo(info)
+	ref := NewPageRefWithInfo(info)
 
 	cloned := ref.Clone()
 
@@ -178,10 +178,10 @@ func TestPageReference_Clone(t *testing.T) {
 	assert.NotSame(t, ref, cloned)
 }
 
-func TestPageReference_Unload(t *testing.T) {
+func TestPageRef_Unload(t *testing.T) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1})
-	ref := NewPageReferenceWithInfo(info)
+	ref := NewPageRefWithInfo(info)
 
 	// 初始状态
 	assert.True(t, ref.IsLoaded())
@@ -193,8 +193,8 @@ func TestPageReference_Unload(t *testing.T) {
 	assert.Nil(t, ref.GetPage())
 }
 
-func TestPageReference_GetSetBuff(t *testing.T) {
-	ref := NewPageReference()
+func TestPageRef_GetSetBuff(t *testing.T) {
+	ref := NewPageRef()
 	info := NewPageInfo()
 	ref.SetPage(info)
 
@@ -205,8 +205,8 @@ func TestPageReference_GetSetBuff(t *testing.T) {
 	assert.Equal(t, buff, got)
 }
 
-func TestPageReference_NilInfoSafety(t *testing.T) {
-	ref := NewPageReference()
+func TestPageRef_NilInfoSafety(t *testing.T) {
+	ref := NewPageRef()
 
 	// 所有操作在 PageInfo 为 nil 时应该安全
 	assert.Nil(t, ref.GetPage())
@@ -224,10 +224,10 @@ func TestPageReference_NilInfoSafety(t *testing.T) {
 	ref.SetBuff([]byte{1, 2, 3})
 }
 
-func TestPageReference_ConcurrentAccess(t *testing.T) {
+func TestPageRef_ConcurrentAccess(t *testing.T) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1})
-	ref := NewPageReferenceWithInfo(info)
+	ref := NewPageRefWithInfo(info)
 
 	const goroutines = 100
 	var wg sync.WaitGroup
@@ -265,8 +265,8 @@ func TestPageReference_ConcurrentAccess(t *testing.T) {
 	assert.True(t, true)
 }
 
-func TestPageReference_ConcurrentParentRef(t *testing.T) {
-	child := NewPageReference()
+func TestPageRef_ConcurrentParentRef(t *testing.T) {
+	child := NewPageRef()
 
 	const goroutines = 50
 	var wg sync.WaitGroup
@@ -276,7 +276,7 @@ func TestPageReference_ConcurrentParentRef(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			p := NewPageReference()
+			p := NewPageRef()
 			child.SetParentRef(p)
 		}(i)
 	}
@@ -288,18 +288,18 @@ func TestPageReference_ConcurrentParentRef(t *testing.T) {
 	assert.NotNil(t, child.GetParentRef())
 }
 
-// Benchmark PageReference 操作性能
-func BenchmarkPageReference_NewPageReference(b *testing.B) {
+// Benchmark PageRef 操作性能
+func BenchmarkPageRef_NewPageRef(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = NewPageReference()
+		_ = NewPageRef()
 	}
 }
 
-func BenchmarkPageReference_GetPage(b *testing.B) {
+func BenchmarkPageRef_GetPage(b *testing.B) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1})
-	ref := NewPageReferenceWithInfo(info)
+	ref := NewPageRefWithInfo(info)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -307,8 +307,8 @@ func BenchmarkPageReference_GetPage(b *testing.B) {
 	}
 }
 
-func BenchmarkPageReference_SetPage(b *testing.B) {
-	ref := NewPageReference()
+func BenchmarkPageRef_SetPage(b *testing.B) {
+	ref := NewPageRef()
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1})
 
@@ -318,13 +318,13 @@ func BenchmarkPageReference_SetPage(b *testing.B) {
 	}
 }
 
-func BenchmarkPageReference_ReplacePage(b *testing.B) {
+func BenchmarkPageRef_ReplacePage(b *testing.B) {
 	oldInfo := NewPageInfo()
 	oldInfo.SetPage(&Page{ID: 1})
 	newInfo := NewPageInfo()
 	newInfo.SetPage(&Page{ID: 2})
 
-	ref := NewPageReference()
+	ref := NewPageRef()
 	ref.SetPage(oldInfo)
 
 	b.ResetTimer()
@@ -334,10 +334,10 @@ func BenchmarkPageReference_ReplacePage(b *testing.B) {
 	}
 }
 
-func BenchmarkPageReference_Touch(b *testing.B) {
+func BenchmarkPageRef_Touch(b *testing.B) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1})
-	ref := NewPageReferenceWithInfo(info)
+	ref := NewPageRefWithInfo(info)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -345,10 +345,10 @@ func BenchmarkPageReference_Touch(b *testing.B) {
 	}
 }
 
-func BenchmarkPageReference_ConcurrentRead(b *testing.B) {
+func BenchmarkPageRef_ConcurrentRead(b *testing.B) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1})
-	ref := NewPageReferenceWithInfo(info)
+	ref := NewPageRefWithInfo(info)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {

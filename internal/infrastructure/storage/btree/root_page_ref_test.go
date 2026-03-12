@@ -9,21 +9,21 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewRootPageReference(t *testing.T) {
-	ref := NewRootPageReference()
+func TestNewRootPageRef(t *testing.T) {
+	ref := NewRootPageRef()
 
 	assert.NotNil(t, ref)
-	assert.NotNil(t, ref.PageReference)
+	assert.NotNil(t, ref.PageRef)
 	assert.Nil(t, ref.GetPage())
 	assert.Nil(t, ref.GetRootPage())
 	assert.Nil(t, ref.GetRootPageInfo())
 }
 
-func TestNewRootPageReferenceWithInfo(t *testing.T) {
+func TestNewRootPageRefWithInfo(t *testing.T) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1, Type: model.InternalPage})
 
-	ref := NewRootPageReferenceWithInfo(info)
+	ref := NewRootPageRefWithInfo(info)
 
 	assert.NotNil(t, ref)
 	assert.Equal(t, info, ref.GetRootPageInfo())
@@ -31,8 +31,8 @@ func TestNewRootPageReferenceWithInfo(t *testing.T) {
 	assert.Equal(t, model.PageID(1), ref.GetRootPage().ID)
 }
 
-func TestRootPageReference_ReplacePage_CAS(t *testing.T) {
-	ref := NewRootPageReference()
+func TestRootPageRef_ReplacePage_CAS(t *testing.T) {
+	ref := NewRootPageRef()
 
 	oldInfo := NewPageInfo()
 	oldInfo.SetPage(&Page{ID: 1, Type: model.InternalPage})
@@ -58,8 +58,8 @@ func TestRootPageReference_ReplacePage_CAS(t *testing.T) {
 	assert.Equal(t, newInfo, ref.GetRootPageInfo()) // 保持不变
 }
 
-func TestRootPageReference_ReplacePage_NilPanic(t *testing.T) {
-	ref := NewRootPageReference()
+func TestRootPageRef_ReplacePage_NilPanic(t *testing.T) {
+	ref := NewRootPageRef()
 
 	assert.Panics(t, func() {
 		ref.ReplacePage(nil, nil)
@@ -70,8 +70,8 @@ func TestRootPageReference_ReplacePage_NilPanic(t *testing.T) {
 	})
 }
 
-func TestRootPageReference_ReplacePageWithContext(t *testing.T) {
-	ref := NewRootPageReference()
+func TestRootPageRef_ReplacePageWithContext(t *testing.T) {
+	ref := NewRootPageRef()
 
 	oldInfo := NewPageInfo()
 	oldInfo.SetPage(&Page{ID: 1, Type: model.InternalPage})
@@ -96,8 +96,8 @@ func TestRootPageReference_ReplacePageWithContext(t *testing.T) {
 	assert.Equal(t, context.Canceled, err)
 }
 
-func TestRootPageReference_ReplacePageWithContext_CASFailure(t *testing.T) {
-	ref := NewRootPageReference()
+func TestRootPageRef_ReplacePageWithContext_CASFailure(t *testing.T) {
+	ref := NewRootPageRef()
 
 	currentInfo := NewPageInfo()
 	currentInfo.SetPage(&Page{ID: 1, Type: model.InternalPage})
@@ -113,8 +113,8 @@ func TestRootPageReference_ReplacePageWithContext_CASFailure(t *testing.T) {
 	assert.Equal(t, ErrInvalidState, err)
 }
 
-func TestRootPageReference_DelayedRelease(t *testing.T) {
-	ref := NewRootPageReference()
+func TestRootPageRef_DelayedRelease(t *testing.T) {
+	ref := NewRootPageRef()
 
 	oldInfo := NewPageInfo()
 	oldInfo.SetPage(&Page{ID: 1, Type: model.InternalPage})
@@ -136,8 +136,8 @@ func TestRootPageReference_DelayedRelease(t *testing.T) {
 	assert.Equal(t, model.PageID(2), ref.GetRootPage().ID)
 }
 
-func TestRootPageReference_UpdateChildrenParentRef(t *testing.T) {
-	ref := NewRootPageReference()
+func TestRootPageRef_UpdateChildrenParentRef(t *testing.T) {
+	ref := NewRootPageRef()
 
 	page := &Page{
 		ID:   1,
@@ -152,12 +152,12 @@ func TestRootPageReference_UpdateChildrenParentRef(t *testing.T) {
 	assert.True(t, true)
 }
 
-func TestRootPageReference_InheritedMethods(t *testing.T) {
+func TestRootPageRef_InheritedMethods(t *testing.T) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1, Type: model.InternalPage})
-	ref := NewRootPageReferenceWithInfo(info)
+	ref := NewRootPageRefWithInfo(info)
 
-	// 验证继承的 PageReference 方法可用
+	// 验证继承的 PageRef 方法可用
 	assert.NotNil(t, ref.GetPage())
 	assert.NotNil(t, ref.GetPageInfo())
 	assert.True(t, ref.IsLoaded())
@@ -166,12 +166,12 @@ func TestRootPageReference_InheritedMethods(t *testing.T) {
 	assert.False(t, ref.HasParent())
 }
 
-func TestRootPageReference_GetRootPage(t *testing.T) {
+func TestRootPageRef_GetRootPage(t *testing.T) {
 	info := NewPageInfo()
 	page := &Page{ID: 1, Type: model.InternalPage}
 	info.SetPage(page)
 
-	ref := NewRootPageReferenceWithInfo(info)
+	ref := NewRootPageRefWithInfo(info)
 
 	// GetRootPage 和 GetPage 应该返回相同的值
 	rootPage := ref.GetRootPage()
@@ -179,11 +179,11 @@ func TestRootPageReference_GetRootPage(t *testing.T) {
 	assert.Equal(t, ref.GetPage(), rootPage)
 }
 
-func TestRootPageReference_GetRootPageInfo(t *testing.T) {
+func TestRootPageRef_GetRootPageInfo(t *testing.T) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1, Type: model.InternalPage})
 
-	ref := NewRootPageReferenceWithInfo(info)
+	ref := NewRootPageRefWithInfo(info)
 
 	// GetRootPageInfo 和 GetPageInfo 应该返回相同的值
 	rootInfo := ref.GetRootPageInfo()
@@ -236,8 +236,8 @@ func TestIsRootPageType(t *testing.T) {
 	}
 }
 
-func TestRootPageReference_ConcurrentAccess(t *testing.T) {
-	ref := NewRootPageReference()
+func TestRootPageRef_ConcurrentAccess(t *testing.T) {
+	ref := NewRootPageRef()
 
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1, Type: model.InternalPage})
@@ -266,18 +266,18 @@ func TestRootPageReference_ConcurrentAccess(t *testing.T) {
 	assert.NotNil(t, ref.GetRootPage())
 }
 
-// Benchmark RootPageReference 操作性能
-func BenchmarkRootPageReference_NewRootPageReference(b *testing.B) {
+// Benchmark RootPageRef 操作性能
+func BenchmarkRootPageRef_NewRootPageRef(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = NewRootPageReference()
+		_ = NewRootPageRef()
 	}
 }
 
-func BenchmarkRootPageReference_GetRootPage(b *testing.B) {
+func BenchmarkRootPageRef_GetRootPage(b *testing.B) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1, Type: model.InternalPage})
-	ref := NewRootPageReferenceWithInfo(info)
+	ref := NewRootPageRefWithInfo(info)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -285,14 +285,14 @@ func BenchmarkRootPageReference_GetRootPage(b *testing.B) {
 	}
 }
 
-func BenchmarkRootPageReference_ReplacePage(b *testing.B) {
+func BenchmarkRootPageRef_ReplacePage(b *testing.B) {
 	oldInfo := NewPageInfo()
 	oldInfo.SetPage(&Page{ID: 1, Type: model.InternalPage})
 
 	newInfo := NewPageInfo()
 	newInfo.SetPage(&Page{ID: 2, Type: model.InternalPage})
 
-	ref := NewRootPageReference()
+	ref := NewRootPageRef()
 	ref.SetPage(oldInfo)
 
 	b.ResetTimer()
@@ -302,10 +302,10 @@ func BenchmarkRootPageReference_ReplacePage(b *testing.B) {
 	}
 }
 
-func BenchmarkRootPageReference_ConcurrentRead(b *testing.B) {
+func BenchmarkRootPageRef_ConcurrentRead(b *testing.B) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1, Type: model.InternalPage})
-	ref := NewRootPageReferenceWithInfo(info)
+	ref := NewRootPageRefWithInfo(info)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {

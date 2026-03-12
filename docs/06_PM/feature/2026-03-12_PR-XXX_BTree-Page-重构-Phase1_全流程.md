@@ -471,6 +471,72 @@ func (m *DataMigrator) Rollback() error {
 | 第1轮 | 2026-03-12 | AI 审核代理 | atomic.Pointer 性能、内存目标矛盾、关键设计缺失 | 调整内存目标为 200-300%，补充 Root Page CAS、Split 引用更新、脏页写入顺序 | 待确认 |
 | 第2轮 | 2026-03-12 | 用户确认 | 性能目标保持 <1μs，内存目标修正为 200-300%，位置编码采用 64 位，工期 16 周 | 删除 PageInfo.refCount，增加 Cache Line 对齐，补充详细设计 | 待确认 |
 | 第3轮 | 2026-03-12 | 用户确认 | PageInfo 需要对齐，PageReference 分离延后决定，硬编码 64，仅关键结构对齐 | 添加 Cache Line 对齐章节（第 9 节），明确对齐优先级 | 完成 |
+| **第4轮** | **2026-03-12** | **用户确认** | **Phase 1 实施计划审核（6 项关键修正）** | **1. 性能目标：<10μs（验收），<1μs（追求）；2. PageInfo：3 个 cache lines；3. RootPageReference：先 CAS 后更新子节点；4. Chunk：简化为 4KB 固定；5. PageLock：state 编码修正；6. 添加 PageIndex + 边界检查** | **✅ 条件通过（完成修订后可实施）** |
+
+### 第4轮评审详细意见（2026-03-12）
+
+#### 关键问题（必须修正）
+
+**1. 性能目标调整** ✅
+- **问题**：<1μs 目标过于激进（Phase 0.5 测试的是纯原子指针，非完整 BTree 路径）
+- **修订**：
+  - 验收目标：读延迟 <10μs，写延迟 <15μs
+  - 追求目标：读延迟 <1μs，写延迟 <2μs
+- **理由**：完整路径包含 PageReference → PageInfo → Page 反序列化 → 锁获取
+
+**2. PageInfo Cache Line 对齐** ✅
+- **问题**：buff 字段（24 bytes）跨 cache line
+- **修订**：3 个 cache lines 设计（192 bytes）
+  - 第 1 个：热数据（pos, page, pageLock, lastTime, hits）+ padding
+  - 第 2 个：温数据（buff）+ padding
+  - 第 3 个：冷数据（元数据）+ padding
+- **验证**：添加 verifyPageInfoAlignment() 函数
+
+**3. RootPageReference CAS 顺序** ✅
+- **问题**：在 CAS 之前更新子节点，可能导致并发访问错误
+- **修订**：先 CAS，成功后更新子节点，最后延迟释放旧页面
+- **理由**：确保原子操作的语义正确性
+
+**4. Chunk 设计简化** ✅
+- **问题**：设计过于复杂（header + directory + variable-length pages）
+- **修订**：简化为纯 4KB 固定页面
+  - 文件格式：256MB = 65536 个 4KB 页面
+  - 位置编码：16 bits ChunkID + 32 bits PageIdx + 16 bits PageType
+  - 支持规模：65536 Chunks × 65536 Pages = 16TB
+- **优势**：代码量减少 70%，无元数据损坏风险
+- **Phase 3 补充**：Chunk 压缩策略
+
+**5. PageLock state 编码** ✅
+- **问题**：lockCount 和 ownerID 分配不合理
+- **修订**：
+  - [63:48] lockCount (16 bits, max 65535)
+  - [47:0] ownerID (48 bits)
+- **理由**：重入次数很少超过 65535，但 ownerID 需要更大空间
+
+#### 建议添加项
+
+**6. PageIndex 内存索引** ✅
+- **目的**：快速查找 PageID 对应的 Chunk 位置
+- **实现**：map[uint64]PageLocation
+- **重建**：启动时从 Chunk 文件重建索引
+
+**7. 边界检查** ✅
+- **目的**：防止参数溢出导致编码错误
+- **实现**：EncodePos 返回 error，验证参数范围
+
+**8. Chunk 压缩策略** ⏳ **延后到 Phase 3**
+- **原因**：简化版优先实现核心功能
+- **Phase 3 计划**：碎片率阈值 30%，触发压缩
+
+#### 修订结果总结
+
+| 类别 | 数量 | 状态 |
+|------|------|------|
+| **必须修正** | 5 项 | ✅ 全部完成 |
+| **建议添加** | 3 项 | ✅ 2 项完成，1 项延后 |
+| **文档版本** | v1.0 → v1.1 | ✅ 已更新 |
+
+**修订后状态**：✅ **可以开始实施**
 
 ### 6. 预审批确认
 > **架构师签字/备注**：_____________ 2026-03-12 该Feature方案可行，风险可控，同意启动开发。Phase 1 重点验证 atomic.Pointer 性能，确保 <1μs 目标可实现；同时关注内存占用增加（200-300%）是可扩展性的必要代价。

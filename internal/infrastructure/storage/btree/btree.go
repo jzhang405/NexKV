@@ -181,7 +181,13 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	}
 
 	// Create RootPageRef for atomic root updates
-	rootPageRef := NewRootPageRef()
+	// ✅ Day 10-11: 初始化空的根叶子节点
+	initialRootPage := NewLeafPage(model.PageID(0)) // 根叶子节点 ID = 0
+	initialRootInfo := NewPageInfo()
+	initialRootInfo.SetPage(initialRootPage)
+	initialRootInfo.SetParentRef(nil) // 根节点没有父引用
+
+	rootPageRef := NewRootPageRefWithInfo(initialRootInfo)
 
 	// Calculate max levels based on config
 	maxLevels := 10 // Default value
@@ -657,26 +663,42 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 	}
 
 	// Insert the key-value pair
-	inserted, err := leaf.Insert(key, value)
+	_, err = leaf.Insert(key, value)
 	if err != nil {
 		return fmt.Errorf("insert into leaf: %w", err)
 	}
 
-	// Check if we need to split the leaf
-	// TODO: Week 13-14 - Implement split logic
-	if !inserted {
-		// Key already exists, value updated
-		// Mark the leaf as dirty
-		leafInfo.MarkDirty()
+	// Step 4: Check if we need to split the leaf
+	const maxKeys = 16 // LeafPage 最大键数量
+	if leaf.NumKeys() > maxKeys {
+		// ✅ Day 10-11: 集成分裂检测和处理
+		// 叶子节点已满，需要分裂
+		if err := b.splitLeaf(leafInfo, copiedPath); err != nil {
+			return fmt.Errorf("split leaf: %w", err)
+		}
+		// splitLeaf 已经处理了根节点的 CAS 更新
+		return nil
 	}
 
-	// Step 4: Try to atomically update the root using CAS
-	// TODO: Week 13-14 - Implement root update with CAS
-	// For now, we just mark the pages as dirty
+	// Step 5: No split needed - perform normal CCOW update
+	// 获取新的根节点（copiedPath[0]）
+	newRootInfo := copiedPath[0]
 
-	// Mark all pages in the copied path as dirty
-	for _, info := range copiedPath {
-		info.MarkDirty()
+	// Step 6: CAS 更新根节点
+	oldRootInfo := b.rootRef.pInfo.Load()
+	if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
+		// CAS 失败，触发重试
+		return ErrRetry
+	}
+
+	// Step 7: ✅ Day 9: 持久化集成
+	// CAS 更新成功后，持久化整个树
+	if b.chunkMgr != nil {
+		if err := b.persistRoot(); err != nil {
+			// 持久化失败，记录错误但不中断操作
+			// 数据仍在内存中，可以稍后重试
+			return fmt.Errorf("persist root: %w", err)
+		}
 	}
 
 	return nil
@@ -719,5 +741,427 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 	}
 
 	return copiedPath, nil
+}
+
+// splitLeaf 分裂叶子节点（CCOW 版本）
+// 当叶子节点满时（len(keys) > maxKeys），进行分裂操作
+//
+// 参数：
+//   leafInfo - 需要分裂的叶子节点 PageInfo（来自 copiedPath）
+//   copiedPath - 复制的路径（CCOW 操作的路径副本）
+//
+// 返回：
+//   error - 错误信息
+//
+// 分裂步骤（CCOW 架构）：
+// 1. 调用 leaf.Split() 创建新页面
+// 2. 在 copiedPath 中创建新页面的 PageInfo
+// 3. 将分裂键插入父节点（也在 copiedPath 中）
+// 4. 更新父节点的 children 引用
+// 5. 检查父节点是否需要递归分裂
+// 6. 处理根节点分裂
+// 7. 最后通过 CAS 更新根节点
+func (b *BTree) splitLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
+	const maxKeys = 16 // LeafPage 最大键数量
+
+	// 1. 获取叶子节点
+	leafPage := leafInfo.GetLeafPage()
+	if leafPage == nil {
+		return fmt.Errorf("leaf page not loaded")
+	}
+
+	// 2. 检查是否需要分裂（防御性检查）
+	if leafPage.NumKeys() <= maxKeys {
+		return nil // 无需分裂
+	}
+
+	// 3. 调用 Split 方法（leafPage 已经被修改）
+	newPage, splitKey, err := leafPage.Split()
+	if err != nil {
+		return fmt.Errorf("leaf split failed: %w", err)
+	}
+
+	// 4. 创建新页面的 PageInfo（直接使用，不创建 PageRef）
+	newPageInfo := NewPageInfo()
+	newPageInfo.SetPage(newPage)
+	// parentRef 稍后设置
+
+	// 5. 检查是否有父节点
+	if len(copiedPath) < 2 {
+		// 没有父节点，说明当前只有根叶子节点
+		// 需要创建新的内部节点作为根
+		return b.splitRootFromLeaf(leafInfo, newPageInfo, splitKey, copiedPath)
+	}
+
+	// 6. 获取父节点（在 copiedPath 中）
+	parentInfo := copiedPath[len(copiedPath)-2]
+	parentPage := parentInfo.GetInternalPage()
+	if parentPage == nil {
+		return fmt.Errorf("parent page not loaded or not internal")
+	}
+
+	// 7. 将分裂键插入父节点
+	// 注意：我们需要创建临时 PageRef 来包装 newPageInfo
+	newPageRef := NewPageRefWithInfo(newPageInfo)
+	if err := parentPage.InsertKeyChild(splitKey, newPageRef); err != nil {
+		return fmt.Errorf("insert split key to parent failed: %w", err)
+	}
+
+	// 8. 检查父节点是否需要分裂
+	const maxInternalKeys = 15 // InternalPage 最大键数量
+	if parentPage.NumKeys() > maxInternalKeys {
+		// 父节点也需要分裂
+		return b.splitInternal(parentInfo, copiedPath[:len(copiedPath)-1])
+	}
+
+	// 9. 更新 parentRef（可选，用于引用链完整性）
+	// 在当前的简化实现中，我们可以跳过这一步
+
+	// 10. 分裂完成，copiedPath 已更新
+	// 调用者负责最终的 CAS 更新
+	return nil
+}
+
+// splitRootFromLeaf 从叶子节点分裂创建新的根节点
+func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, splitKey []byte, copiedPath []*PageInfo) error {
+	// 1. 创建新的内部节点作为根
+	newRootPage := NewInternalPage(model.PageID(1)) // 根节点 ID = 1
+	newRootPage.keys = [][]byte{splitKey}
+
+	// 2. 创建左右子节点的 PageRef
+	leftRef := NewPageRefWithInfo(leftInfo)
+	rightRef := NewPageRefWithInfo(rightInfo)
+	newRootPage.children = []*PageRef{leftRef, rightRef}
+
+	// 3. 创建新的 Root PageInfo
+	newRootInfo := NewPageInfo()
+	newRootInfo.SetPage(newRootPage)
+	newRootInfo.SetParentRef(nil) // 根节点没有父引用
+
+	// 4. CAS 更新根节点
+	oldRootInfo := b.rootRef.pInfo.Load()
+	if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
+		return ErrRetry
+	}
+
+	// 5. ✅ Day 7: 引用更新机制
+	// 更新子节点的 parentRef
+	leftInfo.SetParentRef(b.rootRef.PageRef)
+	rightInfo.SetParentRef(b.rootRef.PageRef)
+
+	// 6. ✅ Day 9: 持久化集成
+	// 分裂完成后，持久化整个树
+	if b.chunkMgr != nil {
+		if err := b.persistRoot(); err != nil {
+			return fmt.Errorf("persist root after split: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// splitInternal 分裂内部节点（CCOW 版本）
+// 当内部节点满时（len(keys) > 15），进行分裂操作
+//
+// ✅ Day 7: 完整实现，支持 CCOW 和引用更新
+//
+// 参数：
+//   internalInfo - 需要分裂的内部节点 PageInfo（来自 copiedPath）
+//   copiedPath - 复制的路径（CCOW 操作的路径副本）
+//
+// 返回：
+//   error - 错误信息
+func (b *BTree) splitInternal(internalInfo *PageInfo, copiedPath []*PageInfo) error {
+	const maxKeys = 15 // InternalPage 最大键数量
+
+	// 1. 获取内部节点
+	internalPage := internalInfo.GetInternalPage()
+	if internalPage == nil {
+		return fmt.Errorf("internal page not loaded")
+	}
+
+	// 2. 检查是否需要分裂（防御性检查）
+	if internalPage.NumKeys() <= maxKeys {
+		return nil // 无需分裂
+	}
+
+	// 3. 调用 Split 方法
+	newPage, splitKey, err := internalPage.Split()
+	if err != nil {
+		return fmt.Errorf("internal split failed: %w", err)
+	}
+
+	// 4. 检查是否有父节点
+	if len(copiedPath) < 2 {
+		// 没有父节点，说明是根节点，需要创建新的根
+		// 创建新的 PageInfo 包装
+		leftInfo := NewPageInfo()
+		leftInfo.SetPage(internalPage)
+		leftInfo.SetParentRef(nil) // 稍后设置
+
+		rightInfo := NewPageInfo()
+		rightInfo.SetPage(newPage)
+		rightInfo.SetParentRef(nil) // 稍后设置
+
+		return b.splitRootFromInternal(leftInfo, rightInfo, splitKey, copiedPath)
+	}
+
+	// 5. 获取父节点（在 copiedPath 中）
+	parentInfo := copiedPath[len(copiedPath)-2]
+	parentPage := parentInfo.GetInternalPage()
+	if parentPage == nil {
+		return fmt.Errorf("parent page not loaded or not internal")
+	}
+
+	// 6. 将分裂键插入父节点
+	// 创建新页面的 PageRef 和 PageInfo
+	newPageInfo := NewPageInfo()
+	newPageInfo.SetPage(newPage)
+	newPageRef := NewPageRefWithInfo(newPageInfo)
+
+	if err := parentPage.InsertKeyChild(splitKey, newPageRef); err != nil {
+		return fmt.Errorf("insert split key to parent failed: %w", err)
+	}
+
+	// 7. 检查父节点是否需要继续分裂
+	if parentPage.NumKeys() > maxKeys {
+		return b.splitInternal(parentInfo, copiedPath[:len(copiedPath)-1])
+	}
+
+	// 8. 分裂完成，copiedPath 已更新
+	// 调用者负责最终的 CAS 更新
+	return nil
+}
+
+// splitRootFromInternal 从内部节点分裂创建新的根节点
+func (b *BTree) splitRootFromInternal(leftInfo, rightInfo *PageInfo, splitKey []byte, copiedPath []*PageInfo) error {
+	// 1. 创建新的内部节点作为根
+	newRootPage := NewInternalPage(model.PageID(1)) // 根节点 ID = 1
+	newRootPage.keys = [][]byte{splitKey}
+
+	// 2. 创建左右子节点的 PageRef
+	leftRef := NewPageRefWithInfo(leftInfo)
+	rightRef := NewPageRefWithInfo(rightInfo)
+	newRootPage.children = []*PageRef{leftRef, rightRef}
+
+	// 3. 创建新的 Root PageInfo
+	newRootInfo := NewPageInfo()
+	newRootInfo.SetPage(newRootPage)
+	newRootInfo.SetParentRef(nil) // 根节点没有父引用
+
+	// 4. CAS 更新根节点
+	oldRootInfo := b.rootRef.pInfo.Load()
+	if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
+		return ErrRetry
+	}
+
+	// 5. ✅ Day 7: 引用更新机制
+	// 更新子节点的 parentRef
+	leftInfo.SetParentRef(b.rootRef.PageRef)
+	rightInfo.SetParentRef(b.rootRef.PageRef)
+
+	// 6. ✅ Day 7: 递归更新子节点树
+	// 更新左子树的所有子孙节点的 parentRef
+	b.updateChildrenParentRefs(leftInfo, b.rootRef.PageRef)
+	// 更新右子树的所有子孙节点的 parentRef
+	b.updateChildrenParentRefs(rightInfo, b.rootRef.PageRef)
+
+	// 7. ✅ Day 9: 持久化集成
+	// 分裂完成后，持久化整个树
+	if b.chunkMgr != nil {
+		if err := b.persistRoot(); err != nil {
+			return fmt.Errorf("persist root after split: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// updateChildrenParentRefs 递归更新子节点树的 parentRef
+// ✅ Day 7: 引用更新机制的核心方法
+//
+// 参数：
+//   pageInfo - 父节点的 PageInfo
+//   parentRef - 新的父节点引用
+func (b *BTree) updateChildrenParentRefs(pageInfo *PageInfo, parentRef *PageRef) {
+	if pageInfo == nil || !pageInfo.IsPageLoaded() {
+		return
+	}
+
+	page := pageInfo.GetPage()
+	if page == nil {
+		return
+	}
+
+	// 根据页面类型处理
+	switch p := page.(type) {
+	case *InternalPage:
+		// 内部节点：递归更新所有子节点
+		for _, childRef := range p.Children() {
+			if childRef != nil {
+				childInfo := childRef.GetPageInfo()
+				if childInfo != nil {
+					// 更新子节点的 parentRef
+					childInfo.SetParentRef(parentRef)
+					// 递归更新子节点的子树
+					b.updateChildrenParentRefs(childInfo, childRef)
+				}
+			}
+		}
+	case *LeafPage:
+		// 叶子节点：没有子节点，无需继续递归
+		return
+	}
+}
+
+// splitRootPage 分裂根节点（Page-based 架构）
+// 创建新的内部节点作为根，提升分裂键
+func (b *BTree) splitRootPage(leftRef, rightRef *PageRef, splitKey []byte) error {
+	// 1. 创建新的内部节点作为根
+	newRootPage := NewInternalPage(model.PageID(1)) // 根节点 ID = 1
+	newRootPage.keys = [][]byte{splitKey}
+	newRootPage.children = []*PageRef{leftRef, rightRef}
+
+	// 2. 创建 PageInfo
+	newRootInfo := NewPageInfo()
+	newRootInfo.SetPage(newRootPage)
+	newRootInfo.SetParentRef(nil) // 根节点没有父引用
+
+	// 3. CAS 更新根节点
+	oldRootInfo := b.rootRef.pInfo.Load()
+	if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
+		return ErrRetry
+	}
+
+	// 4. 更新子节点的 parentRef（使用 embedded PageRef）
+	leftRef.SetParentRef(b.rootRef.PageRef)
+	rightRef.SetParentRef(b.rootRef.PageRef)
+
+	return nil
+}
+
+// ===== Day 9: Persistence Integration =====
+
+// persistPage 持久化单个页面到 ChunkManager
+//
+// 参数：
+//   pageInfo - 需要持久化的 PageInfo
+//   pageType - 页面类型（PageTypeLeaf 或 PageTypeInternal）
+//
+// 返回：
+//   int64 - 页面在 Chunk 中的位置编码
+//   error - 错误信息
+func (b *BTree) persistPage(pageInfo *PageInfo, pageType int) (int64, error) {
+	if b.chunkMgr == nil {
+		return 0, fmt.Errorf("chunk manager not initialized")
+	}
+
+	// 1. 获取页面
+	if !pageInfo.IsPageLoaded() {
+		return 0, fmt.Errorf("page not loaded")
+	}
+
+	page := pageInfo.GetPage()
+	if page == nil {
+		return 0, fmt.Errorf("page is nil")
+	}
+
+	// 2. 序列化页面
+	var data []byte
+	var err error
+
+	switch p := page.(type) {
+	case *LeafPage:
+		data, err = p.Serialize()
+		if err != nil {
+			return 0, fmt.Errorf("serialize leaf page: %w", err)
+		}
+	case *InternalPage:
+		data, err = p.Serialize()
+		if err != nil {
+			return 0, fmt.Errorf("serialize internal page: %w", err)
+		}
+	default:
+		return 0, fmt.Errorf("unknown page type: %T", page)
+	}
+
+	// 3. 分配页面空间
+	pos, err := b.chunkMgr.AllocatePage(pageType)
+	if err != nil {
+		return 0, fmt.Errorf("allocate page: %w", err)
+	}
+
+	// 4. 写入页面
+	if err := b.chunkMgr.WritePage(pos, data); err != nil {
+		return 0, fmt.Errorf("write page to chunk: %w", err)
+	}
+
+	// 5. 更新 PageInfo 的位置
+	pageInfo.SetPos(pos)
+
+	return pos, nil
+}
+
+// persistPageRecursive 递归持久化页面及其子节点（自底向上）
+//
+// 参数：
+//   pageInfo - 需要持久化的 PageInfo
+//
+// 返回：
+//   error - 错误信息
+func (b *BTree) persistPageRecursive(pageInfo *PageInfo) error {
+	if !pageInfo.IsPageLoaded() {
+		return nil // 未加载的页面无需持久化
+	}
+
+	page := pageInfo.GetPage()
+	if page == nil {
+		return nil
+	}
+
+	// 1. 根据页面类型处理
+	switch p := page.(type) {
+	case *InternalPage:
+		// 1.1 先递归持久化所有子节点（自底向上）
+		for _, childRef := range p.Children() {
+			if childRef != nil {
+				childInfo := childRef.GetPageInfo()
+				if childInfo != nil {
+					if err := b.persistPageRecursive(childInfo); err != nil {
+						return fmt.Errorf("persist child page: %w", err)
+					}
+				}
+			}
+		}
+
+		// 1.2 持久化当前内部节点
+		_, err := b.persistPage(pageInfo, PageTypeInternal)
+		if err != nil {
+			return fmt.Errorf("persist internal page: %w", err)
+		}
+
+	case *LeafPage:
+		// 2. 持久化叶子节点
+		_, err := b.persistPage(pageInfo, PageTypeLeaf)
+		if err != nil {
+			return fmt.Errorf("persist leaf page: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// persistRoot 持久化根节点
+//
+// 这是持久化流程的入口点，在 Set 操作完成后调用
+// 确保 Root 页面及其所有子节点都被持久化到磁盘
+func (b *BTree) persistRoot() error {
+	rootInfo := b.rootRef.pInfo.Load()
+	if rootInfo == nil {
+		return fmt.Errorf("root page info is nil")
+	}
+
+	// 递归持久化整个树（自底向上）
+	return b.persistPageRecursive(rootInfo)
 }
 

@@ -5,7 +5,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +29,7 @@ func TestCCOWManager_TakeSnapshot(t *testing.T) {
 	ccow := NewCCOWManager(gc)
 
 	// 创建根引用
-	rootPage := NewPage(1, model.LeafPage)
+	rootPage := NewLeafPage(1)
 	rootInfo := NewPageInfo()
 	rootInfo.SetPage(rootPage)
 	rootRef := NewRootPageRef()
@@ -41,7 +40,7 @@ func TestCCOWManager_TakeSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, snapshot)
 	assert.Greater(t, snapshot.ID, uint64(0))
-	assert.Equal(t, rootPage.Version, snapshot.Version)
+	assert.Equal(t, rootPage.GetVersion(), snapshot.Version)
 
 	// 验证快照可以获取
 	retrieved, exists := ccow.GetSnapshot(snapshot.ID)
@@ -57,7 +56,7 @@ func TestCCOWManager_ReleaseSnapshot(t *testing.T) {
 	ccow := NewCCOWManager(gc)
 
 	// 创建并释放快照
-	rootPage := NewPage(1, model.LeafPage)
+	rootPage := NewLeafPage(1)
 	rootInfo := NewPageInfo()
 	rootInfo.SetPage(rootPage)
 	rootRef := NewRootPageRef()
@@ -120,7 +119,7 @@ func TestCCOWManager_CopyPathBottomUp(t *testing.T) {
 	ccow := NewCCOWManager(gc)
 
 	// 创建路径（需要初始化 Page）
-	page1 := NewPage(1, model.LeafPage)
+	page1 := NewLeafPage(1)
 	pageInfo1 := NewPageInfo()
 	pageInfo1.SetPage(page1)
 
@@ -181,7 +180,7 @@ func TestCCOWManager_VerifySnapshotIntegrity(t *testing.T) {
 	ccow := NewCCOWManager(gc)
 
 	// 创建快照
-	rootPage := NewPage(1, model.LeafPage)
+	rootPage := NewLeafPage(1)
 	rootInfo := NewPageInfo()
 	rootInfo.SetPage(rootPage)
 	rootRef := NewRootPageRef()
@@ -207,34 +206,41 @@ func TestCCOWManager_MultipleSnapshots(t *testing.T) {
 	gc := NewBTreeGC(cm, 1024)
 	ccow := NewCCOWManager(gc)
 
-	rootPage := NewPage(1, model.LeafPage)
+	// ✅ 修复：使用新的 LeafPage 类型替代旧的 *Page 类型
+	rootPage := NewLeafPage(1)
 	rootInfo := NewPageInfo()
 	rootInfo.SetPage(rootPage)
 	rootRef := NewRootPageRef()
 	rootRef.pInfo.Store(rootInfo)
 
-	// 创建多个快照
+	// 创建第一个快照（version = 0）
 	snapshot1, err := ccow.TakeSnapshot(rootRef)
 	require.NoError(t, err)
+	assert.Equal(t, uint64(0), snapshot1.Version, "Initial version should be 0")
 
-	// 修改根页面
-	rootPage.Version++
+	// ✅ 修复：通过 IncrementVersion() 方法增加版本，而不是直接修改字段
+	rootPage.IncrementVersion()
 
+	// 创建第二个快照（version = 1）
 	snapshot2, err := ccow.TakeSnapshot(rootRef)
 	require.NoError(t, err)
+	assert.Equal(t, uint64(1), snapshot2.Version, "Version should be 1 after increment")
 
 	// 验证两个快照都存在且版本不同
 	assert.NotEqual(t, snapshot1.Version, snapshot2.Version)
 	assert.Greater(t, snapshot2.Version, snapshot1.Version)
 
 	// 验证两个快照的完整性
+	// ✅ 修复：在 CCOW 架构中，快照共享同一个 RootPageRef
+	// 所以 snapshot1 和 snapshot2 都指向同一个 rootPage，其当前 version 是 1
+	// snapshot1.Version 记录的是创建时的版本（0），与当前 version（1）不匹配
 	valid1, err := ccow.VerifySnapshotIntegrity(snapshot1.ID)
 	require.NoError(t, err)
-	assert.False(t, valid1, "Snapshot 1 should be invalid because version changed")
+	assert.False(t, valid1, "Snapshot 1 should be invalid because current version is 1, not 0")
 
 	valid2, err := ccow.VerifySnapshotIntegrity(snapshot2.ID)
 	require.NoError(t, err)
-	assert.True(t, valid2, "Snapshot 2 should be valid")
+	assert.True(t, valid2, "Snapshot 2 should be valid because current version is 1")
 }
 
 func TestCCOWManager_ConcurrentSnapshots(t *testing.T) {
@@ -244,7 +250,8 @@ func TestCCOWManager_ConcurrentSnapshots(t *testing.T) {
 	gc := NewBTreeGC(cm, 1024)
 	ccow := NewCCOWManager(gc)
 
-	rootPage := NewPage(1, model.LeafPage)
+	// ✅ 修复：使用新的 LeafPage 类型替代旧的 *Page 类型
+	rootPage := NewLeafPage(1)
 	rootInfo := NewPageInfo()
 	rootInfo.SetPage(rootPage)
 	rootRef := NewRootPageRef()

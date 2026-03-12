@@ -147,7 +147,12 @@ func (p *LeafPage) Insert(key, value []byte) (bool, error) {
 func insertSlice[T any](slice []T, idx int, value T) []T {
 	if len(slice) == cap(slice) {
 		// 创建新切片时预留空间给新元素
-		newSlice := make([]T, len(slice)+1, cap(slice)*2)
+		// 计算新容量：如果 cap 为 0，使用默认容量 16；否则翻倍
+		newCap := cap(slice) * 2
+		if newCap == 0 {
+			newCap = 16 // 默认初始容量
+		}
+		newSlice := make([]T, len(slice)+1, newCap)
 		copy(newSlice, slice[:idx])
 		copy(newSlice[idx+1:], slice[idx:])
 		newSlice[idx] = value
@@ -198,6 +203,11 @@ func (p *LeafPage) Update(key, value []byte) error {
 // 当页面满时，分裂为两个页面
 // 返回：新页面，分裂键（提升到父节点）
 // 均匀分裂策略：将键平均分配到两个页面，中间的键提升到父节点
+//
+// BTree 标准分裂逻辑：
+// - 左页面：键 [0, mid)
+// - 分裂键：键 [mid]（提升到父节点）
+// - 右页面：键 (mid, end]
 func (p *LeafPage) Split() (*LeafPage, []byte, error) {
 	if len(p.keys) < 2 {
 		return nil, nil, fmt.Errorf("cannot split page with less than 2 keys")
@@ -209,12 +219,13 @@ func (p *LeafPage) Split() (*LeafPage, []byte, error) {
 	// 对于奇数个键，取中间的键；对于偶数个键，取中间偏左的键
 	splitKey := p.keys[mid]
 
-	// 创建新页面，包含中间键之后的键值对（不包含分裂键）
+	// 创建新页面，包含分裂键及之后的键值对（包含分裂键）
+	// ✅ Day 10-11: 修正分裂逻辑，右子节点包含分裂键
 	newPage := NewLeafPage(model.PageID(p.pageID + 1)) // 临时 ID
-	newPage.keys = append(newPage.keys, p.keys[mid+1:]...)
-	newPage.values = append(newPage.values, p.values[mid+1:]...)
+	newPage.keys = append(newPage.keys, p.keys[mid:]...)     // 包含分裂键
+	newPage.values = append(newPage.values, p.values[mid:]...)
 
-	// 当前页面保留中间键之前的键值对（不包含分裂键）
+	// 当前页面保留分裂键之前的键值对（不包含分裂键）
 	p.keys = p.keys[:mid]
 	p.values = p.values[:mid]
 	p.version++

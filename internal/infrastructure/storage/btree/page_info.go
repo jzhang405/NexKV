@@ -20,7 +20,7 @@ const cacheLineSize = 64
 // │ buff(24) │ padding(40)                                             │
 // ├─────────────────────────────────────────────────────────────────┤
 // │ Cache Line 3 (64 bytes) - 冷数据（元数据，低频写入）               │
-// │ isDirty(1) │ isSplitted(1) │ metaVersion(4) │ pageSize(4) │ pad(52)│
+// │ parentRef(8) │ isDirty(1) │ isSplitted(1) │ metaVersion(4) │ pageSize(4) │ pad(46)│
 // └─────────────────────────────────────────────────────────────────┘
 type PageInfo struct {
 	// Cache Line 1 (64 bytes) - 热数据（高并发访问）
@@ -36,11 +36,12 @@ type PageInfo struct {
 	_    [40]byte // padding to 64 bytes
 
 	// Cache Line 3 (64 bytes) - 冷数据（元数据，低频写入）
-	isDirty     bool  // 1 byte  - 是否脏页
-	isSplitted  bool  // 1 byte  - 是否被分裂
-	metaVersion int32 // 4 bytes - 元数据版本
-	pageSize    int32 // 4 bytes - 页面实际大小（固定 4KB）
-	_           [52]byte // padding to 64 bytes
+	parentRef   *PageRef // 8 bytes  - ✅ 父节点引用（新增）
+	isDirty     bool      // 1 byte   - 是否脏页
+	isSplitted  bool      // 1 byte   - 是否被分裂
+	metaVersion int32     // 4 bytes  - 元数据版本
+	pageSize    int32     // 4 bytes  - 页面实际大小（固定 4KB）
+	_           [72]byte  // padding to 64 bytes (52 → 72-8+8=72)
 }
 
 // NewPageInfo 创建新的 PageInfo
@@ -51,6 +52,7 @@ func NewPageInfo() *PageInfo {
 		pageLock:    NewPageLock(),
 		lastTime:    time.Now().UnixNano(),
 		hits:        0,
+		parentRef:   nil, // ✅ 初始化父节点引用
 		isDirty:     false,
 		isSplitted:  false,
 		metaVersion: 0,
@@ -152,6 +154,7 @@ func (info *PageInfo) Clone() *PageInfo {
 		pageLock:    NewPageLock(), // 创建新锁
 		lastTime:    info.lastTime,
 		hits:        info.hits,
+		parentRef:   info.parentRef, // ✅ 复制父节点引用（浅拷贝）
 		isDirty:     info.isDirty,
 		isSplitted:  info.isSplitted,
 		metaVersion: info.metaVersion,
@@ -183,6 +186,16 @@ func (info *PageInfo) IncrementMetaVersion() {
 // GetPageSize 获取页面大小
 func (info *PageInfo) GetPageSize() int32 {
 	return info.pageSize
+}
+
+// GetParentRef 获取父节点引用
+func (info *PageInfo) GetParentRef() *PageRef {
+	return info.parentRef
+}
+
+// SetParentRef 设置父节点引用
+func (info *PageInfo) SetParentRef(ref *PageRef) {
+	info.parentRef = ref
 }
 
 // IsPageLoaded 检查页面是否已加载

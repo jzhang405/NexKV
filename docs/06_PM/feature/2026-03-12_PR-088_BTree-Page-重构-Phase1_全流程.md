@@ -46,7 +46,7 @@
 
 #### 2.2 核心目标（可量化、可验证）
 1. **功能目标**：
-   - 实现基于 Lealone AOSE 的 PageReference 架构
+   - 实现基于 Lealone AOSE 的 PageRef 架构
    - 实现 Append-Only Chunk 文件管理
    - 实现异步脏页回收（BTreeGC）
    - 支持旧数据迁移到新格式
@@ -94,7 +94,7 @@
 ```mermaid
 flowchart TD
     A[客户端请求] --> B[API层]
-    B --> C{PageReference 查找}
+    B --> C{PageRef 查找}
     C -->|L1 缓存命中| D[返回 Page 对象]
     C -->|L1 未命中| E[从 ChunkManager 读取]
     E --> F[反序列化到 PageInfo]
@@ -111,25 +111,25 @@ flowchart TD
 ```
 
 **Phase 1 重点实现组件**（本次 PR）：
-- PageReference 和 PageInfo（含 Cache Line 对齐）
-- RootPageReference（Root Page CAS 更新）
+- PageRef 和 PageInfo（含 Cache Line 对齐）
+- RootPageRef（Root Page CAS 更新）
 - Chunk Manager（64 位位置编码）
 - PageLock（支持重入和超时）
 
 #### 3.2 关键设计点
 
-##### 1. PageReference 间接寻址
+##### 1. PageRef 间接寻址
 
 ```go
 // 要求：Go 1.19+ (atomic.Pointer 泛型支持)
-type PageReference struct {
+type PageRef struct {
     pInfo     atomic.Pointer[PageInfo]  // 原子指针，支持 CAS 更新
-    parentRef *PageReference             // 父引用，形成引用链
+    parentRef *PageRef             // 父引用，形成引用链
 }
 
-func (r *PageReference) GetOrReadPage() (*Page, error)
-func (r *PageReference) ReplacePage(oldInfo, newInfo *PageInfo) bool
-func (r *PageReference) MarkDirty() error
+func (r *PageRef) GetOrReadPage() (*Page, error)
+func (r *PageRef) ReplacePage(oldInfo, newInfo *PageInfo) bool
+func (r *PageRef) MarkDirty() error
 ```
 
 ##### 2. PageInfo Cache Line 对齐（64 bytes）
@@ -453,13 +453,13 @@ func (m *DataMigrator) Rollback() error {
 
 | 风险点 | 影响等级 | 应对措施 |
 |--------|----------|----------|
-| atomic.Pointer 性能不满足 <1μs 目标 | 高 | Phase 0.5 原型验证；备选方案：混合架构（热数据直接指针，冷数据 PageReference）；性能基准测试对比 |
+| atomic.Pointer 性能不满足 <1μs 目标 | 高 | Phase 0.5 原型验证；备选方案：混合架构（热数据直接指针，冷数据 PageRef）；性能基准测试对比 |
 | Lealone 懒加载内存优化效果不达预期 | 中 | 懒加载将内存占用从 100% 降至 20-30%（节省 70-80%）；激进 GC 策略（低水位 70%）；内存池复用；设置内存监控验证 |
 | Split/Merge 并发控制复杂度高 | 高 | 详细设计引用更新流程；延迟释放旧页面；并发安全测试；使用 model checking 验证正确性 |
 | 数据一致性（异步持久化） | 高 | WAL 机制（可配置）；崩溃恢复测试；定期检查点；验证所有场景下的数据完整性 |
 | Chunk 文件管理复杂度 | 中 | 固定 Chunk 大小（256MB）；最大 8 个文件；自动压缩归档；实现 Chunk 监控脚本 |
 | 序列化兼容性 | 中 | 版本字段支持；数据迁移工具；新旧格式互转测试；版本升级路径文档 |
-| Cache Line 对齐效果不理想 | 中 | 通过性能测试验证；备选方案：PageReference 读写分离；使用 pprof 识别 false sharing |
+| Cache Line 对齐效果不理想 | 中 | 通过性能测试验证；备选方案：PageRef 读写分离；使用 pprof 识别 false sharing |
 | 引用链更新导致 use-after-free | 高 | 延迟释放旧页面（等待 100ms）；并发测试覆盖所有场景；内存安全检查工具 |
 | 工期风险（16 周总体） | 中 | Phase 0.5 早期验证关键风险；每个 Phase 有清晰交付物；预留 2-4 周应急时间；每周进度评估 |
 | 24 小时稳定性测试失败 | 中 | 内存泄漏监控工具；性能回归测试；长期运行测试脚本；自动告警机制 |
@@ -470,8 +470,8 @@ func (m *DataMigrator) Rollback() error {
 |----------|----------|------------------|--------------|--------------------------|----------|
 | 第1轮 | 2026-03-12 | AI 审核代理 | atomic.Pointer 性能、内存目标矛盾、关键设计缺失 | 调整内存目标为 200-300%，补充 Root Page CAS、Split 引用更新、脏页写入顺序 | 待确认 |
 | 第2轮 | 2026-03-12 | 用户确认 | 性能目标保持 <1μs，内存目标修正为 200-300%，位置编码采用 64 位，工期 16 周 | 删除 PageInfo.refCount，增加 Cache Line 对齐，补充详细设计 | 待确认 |
-| 第3轮 | 2026-03-12 | 用户确认 | PageInfo 需要对齐，PageReference 分离延后决定，硬编码 64，仅关键结构对齐 | 添加 Cache Line 对齐章节（第 9 节），明确对齐优先级 | 完成 |
-| **第4轮** | **2026-03-12** | **用户确认** | **Phase 1 实施计划审核（6 项关键修正）** | **1. 性能目标：<10μs（验收），<1μs（追求）；2. PageInfo：3 个 cache lines；3. RootPageReference：先 CAS 后更新子节点；4. Chunk：简化为 4KB 固定；5. PageLock：state 编码修正；6. 添加 PageIndex + 边界检查** | **✅ 条件通过（完成修订后可实施）** |
+| 第3轮 | 2026-03-12 | 用户确认 | PageInfo 需要对齐，PageRef 分离延后决定，硬编码 64，仅关键结构对齐 | 添加 Cache Line 对齐章节（第 9 节），明确对齐优先级 | 完成 |
+| **第4轮** | **2026-03-12** | **用户确认** | **Phase 1 实施计划审核（6 项关键修正）** | **1. 性能目标：<10μs（验收），<1μs（追求）；2. PageInfo：3 个 cache lines；3. RootPageRef：先 CAS 后更新子节点；4. Chunk：简化为 4KB 固定；5. PageLock：state 编码修正；6. 添加 PageIndex + 边界检查** | **✅ 条件通过（完成修订后可实施）** |
 | **第5轮** | **2026-03-12** | **用户确认** | **Week 13-14 集成计划审核（Lealone 模式迁移）** | **1. 移除 PageInfoCache（~400 行）；2. PageRef 直接持有 PageInfo；3. BTreeGC 扫描 PageRef 树；4. 明确懒加载：只有 Root 常驻；5. PageID 64 位编码；6. 保留 VersionedRoot** | **✅ 全部通过（4 项决策已确认）** |
 
 ### 第4轮评审详细意见（2026-03-12）
@@ -483,7 +483,7 @@ func (m *DataMigrator) Rollback() error {
 - **修订**：
   - 验收目标：读延迟 <10μs，写延迟 <15μs
   - 追求目标：读延迟 <1μs，写延迟 <2μs
-- **理由**：完整路径包含 PageReference → PageInfo → Page 反序列化 → 锁获取
+- **理由**：完整路径包含 PageRef → PageInfo → Page 反序列化 → 锁获取
 
 **2. PageInfo Cache Line 对齐** ✅
 - **问题**：buff 字段（24 bytes）跨 cache line
@@ -493,7 +493,7 @@ func (m *DataMigrator) Rollback() error {
   - 第 3 个：冷数据（元数据）+ padding
 - **验证**：添加 verifyPageInfoAlignment() 函数
 
-**3. RootPageReference CAS 顺序** ✅
+**3. RootPageRef CAS 顺序** ✅
 - **问题**：在 CAS 之前更新子节点，可能导致并发访问错误
 - **修订**：先 CAS，成功后更新子节点，最后延迟释放旧页面
 - **理由**：确保原子操作的语义正确性
@@ -705,7 +705,7 @@ InternalPage.children []*PageRef
 - Phase 1 实施计划已更新至 v1.1 版本
 
 **同意开工**：
-- Phase 1 重点：基础设施实现（PageReference + PageInfo + Chunk Manager）
+- Phase 1 重点：基础设施实现（PageRef + PageInfo + Chunk Manager）
 - 性能目标：<10μs（验收目标），<1μs（追求目标）
 - 关键设计：3 个 cache lines 对齐、简化 Chunk（4KB 固定）、修正 PageLock 编码
 - 预计工期：2 周（2026-03-12 至 2026-03-26）
@@ -738,12 +738,12 @@ InternalPage.children []*PageRef
 | 节点 | 完成日期 | 具体内容 | 交付物 |
 |------|----------|----------|--------|
 | **Phase 0.5 原型验证** | **2026-03-12** | **atomic.Pointer 性能验证** | **测试报告：`docs/10_benchmark/2026-03-12_phase0.5_page_reference_prototype/2026-03-12_results_summary.md`** |
-| - 原型实现 | 2026-03-12 | 实现 PageReference + PageInfo + Page 原型 | 代码：`internal/infrastructure/storage/btree/prototype/` (已删除) |
+| - 原型实现 | 2026-03-12 | 实现 PageRef + PageInfo + Page 原型 | 代码：`internal/infrastructure/storage/btree/prototype/` (已删除) |
 | - 性能基准测试 | 2026-03-12 | 8 个基准测试场景，对比 atomic.Pointer vs 直接指针 | Benchmark 结果：**0.37ns/op** (超出目标 270x) |
 | - 并发安全测试 | 2026-03-12 | 1000 goroutines 并发访问，race detector 验证 | 结果：**✅ 通过，无数据竞争** |
 | - CPU Profile 分析 | 2026-03-12 | pprof 性能分析，识别热点函数 | 结果：**atomic.Pointer.Load 仅占 27.5% CPU** |
-| **Phase 1 Week 1-3: 基础设施** | **2026-03-12** | **PageReference + PageInfo + ChunkManager** | **代码提交：`ffa674b`, `963aad2`** |
-| - PageRef 实现 | 2026-03-12 | PageReference + PageInfo（含 Cache Line 对齐） | `page_ref.go` (212 行), `page_info.go` (267 行) |
+| **Phase 1 Week 1-3: 基础设施** | **2026-03-12** | **PageRef + PageInfo + ChunkManager** | **代码提交：`ffa674b`, `963aad2`** |
+| - PageRef 实现 | 2026-03-12 | PageRef + PageInfo（含 Cache Line 对齐） | `page_ref.go` (212 行), `page_info.go` (267 行) |
 | - RootPageRef 实现 | 2026-03-12 | Root Page 特殊处理（CAS 更新） | `root_page_ref.go` (82 行) |
 | - ChunkManager 实现 | 2026-03-12 | Append-Only 文件管理，64 位位置编码 | `chunk_manager.go` (308 行) |
 | - 单元测试 | 2026-03-12 | 基础功能测试 | 6 个测试函数，全部通过 ✅ |
@@ -796,7 +796,7 @@ InternalPage.children []*PageRef
 
 ##### Phase 0.5 原型验证（已完成）✅
 - **已完成**：
-  - ✅ PageReference 原型实现（atomic.Pointer[PageInfo]）
+  - ✅ PageRef 原型实现（atomic.Pointer[PageInfo]）
   - ✅ PageInfo 原型实现（简化版，不含 Cache Line 对齐）
   - ✅ Page 原型实现（基础数据结构）
   - ✅ 8 个性能基准测试（Benchmark）
@@ -815,9 +815,9 @@ InternalPage.children []*PageRef
 
 ##### Phase 1 Week 1-3: 基础设施（已完成）✅
 - **已完成**：
-  - ✅ PageReference（212 行）：原子指针（atomic.Pointer[PageInfo]）
+  - ✅ PageRef（212 行）：原子指针（atomic.Pointer[PageInfo]）
   - ✅ PageInfo（267 行）：Cache Line 对齐优化（64 bytes）
-  - ✅ RootPageReference（82 行）：Root Page CAS 更新
+  - ✅ RootPageRef（82 行）：Root Page CAS 更新
   - ✅ ChunkManager（308 行）：Append-Only 文件管理，64 位位置编码
   - ✅ 单元测试：6 个测试函数，全部通过
 
@@ -901,7 +901,7 @@ InternalPage.children []*PageRef
 
 **CPU Profile 分析**：
 - **atomic.Pointer.Load**：27.5% CPU（原子操作本身开销）
-- **PageReference.GetPage**：2.5% CPU（封装层开销）
+- **PageRef.GetPage**：2.5% CPU（封装层开销）
 - **总计原子操作开销**：30%（符合预期，非常低）
 
 **并发安全测试**：
@@ -937,7 +937,7 @@ InternalPage.children []*PageRef
 
 | 类型 | 具体内容 | 链接/路径 |
 |------|----------|-----------|
-| **原型代码** | PageReference + PageInfo + Page 原型实现（已删除） | `internal/infrastructure/storage/btree/prototype/` (已删除) |
+| **原型代码** | PageRef + PageInfo + Page 原型实现（已删除） | `internal/infrastructure/storage/btree/prototype/` (已删除) |
 | **基准测试** | 8 个性能基准测试场景 | `internal/infrastructure/storage/btree/prototype/benchmark_test.go` (已删除) |
 | **并发测试** | 7 个并发安全测试场景 | `internal/infrastructure/storage/btree/prototype/concurrent_test.go` (已删除) |
 | **测试报告** | 完整的测试结果汇总和分析 | `docs/10_benchmark/2026-03-12_phase0.5_page_reference_prototype/2026-03-12_results_summary.md` |
@@ -966,14 +966,14 @@ InternalPage.children []*PageRef
   - EnhancedPageLock 高并发优化（100+ goroutines）
   - CCOW updateChildRef 完整实现
   - Copy-on-Write 深拷贝效率优化（增量拷贝）
-  - PageReference 读写分离优化（性能测试后决定）
+  - PageRef 读写分离优化（性能测试后决定）
 
 #### 2.2 ToDo清单（优先级排序）
 
 | 优先级 | 任务内容 | 预估工期 | 关联PR/需求 | 备注 |
 |--------|----------|----------|-------------|------|
 | 高 | **Phase 1 Week 13-14: BTree 集成** | 2 周 | Phase 1 | |
-| - 替换 BTree 内部实现 | 1 周 | | Node → PageReference |
+| - 替换 BTree 内部实现 | 1 周 | | Node → PageRef |
 | - 更新 PageCache（简化为两层） | 0.5 周 | | 移除三级缓存 |
 | - 配置切换机制 | 0.5 周 | | 支持新旧架构切换 |
 | 高 | **Phase 1 Week 15: 集成测试和优化** | 1 周 | Phase 1 | |
@@ -1132,7 +1132,7 @@ InternalPage.children []*PageRef
   - EnhancedPageLock 高并发优化
   - CCOW updateChildRef 完整实现
   - Copy-on-Write 增量拷贝优化
-  - PageReference 读写分离（性能测试后决定）
+  - PageRef 读写分离（性能测试后决定）
 - **长期规划**：
   - 分布式 BTree（单机版 → 分布式）
   - 事务支持（MVCC）

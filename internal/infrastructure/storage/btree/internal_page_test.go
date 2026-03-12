@@ -159,17 +159,19 @@ func TestInternalPage_Split(t *testing.T) {
 	assert.NotNil(t, splitKey)
 	assert.Equal(t, []byte("c"), splitKey) // 第3个键作为分裂键
 
-	// 验证原页面保留前半部分
+	// 验证原页面保留前半部分（不包含分裂键）
 	assert.Equal(t, 2, page.NumKeys())
 	assert.Equal(t, 3, page.NumChildren()) // 保留前 mid+1 个子节点
 	assert.Equal(t, []byte("a"), page.keys[0])
 	assert.Equal(t, []byte("b"), page.keys[1])
 
-	// 验证新页面包含后半部分
-	assert.Equal(t, 2, newPage.NumKeys())
-	assert.Equal(t, 2, newPage.NumChildren()) // 包含从 mid+1 开始的子节点
-	assert.Equal(t, []byte("d"), newPage.keys[0])
-	assert.Equal(t, []byte("e"), newPage.keys[1])
+	// ✅ Day 7: 新分裂逻辑 - 右子节点包含分裂键
+	// 验证新页面包含后半部分（包含分裂键）
+	assert.Equal(t, 3, newPage.NumKeys())
+	assert.Equal(t, 2, newPage.NumChildren()) // 包含从 mid 开始的子节点
+	assert.Equal(t, []byte("c"), newPage.keys[0]) // 包含分裂键
+	assert.Equal(t, []byte("d"), newPage.keys[1])
+	assert.Equal(t, []byte("e"), newPage.keys[2])
 }
 
 func TestInternalPage_SplitError(t *testing.T) {

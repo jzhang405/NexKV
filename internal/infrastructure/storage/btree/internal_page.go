@@ -171,6 +171,19 @@ func (p *InternalPage) Insert(key []byte, child *PageRef) (bool, error) {
 	return true, nil
 }
 
+// InsertKeyChild 插入键和子节点（用于 Split 操作）
+// 在指定位置插入键和右子节点
+// 返回：错误信息
+func (p *InternalPage) InsertKeyChild(key []byte, childRef *PageRef) error {
+	idx := p.search(key)
+	// 插入键
+	p.keys = insertSlice(p.keys, idx, key)
+	// 插入右子节点（在 idx+1 位置）
+	p.children = insertSlice(p.children, idx+1, childRef)
+	p.version++
+	return nil
+}
+
 // Delete 删除键和子节点
 // 返回：被删除的子节点引用
 func (p *InternalPage) Delete(key []byte) (*PageRef, error) {
@@ -231,9 +244,13 @@ func (p *InternalPage) UpdateKey(oldKey, newKey []byte) (bool, error) {
 	return true, nil
 }
 
-// Split 分裂页面
+// Split 分裂页面（带引用更新）
 // 返回：新页面，分裂键（提升到父节点）
 // 均匀分裂策略：将键平均分配到两个页面，中间的键提升到父节点
+//
+// ✅ Day 7: 添加引用更新机制
+// - 更新新页面子节点的 parentRef 指向新页面
+// - 保留原页面子节点的 parentRef 指向原页面
 func (p *InternalPage) Split() (*InternalPage, []byte, error) {
 	if len(p.keys) < 2 {
 		return nil, nil, fmt.Errorf("cannot split page with less than 2 keys")
@@ -247,11 +264,15 @@ func (p *InternalPage) Split() (*InternalPage, []byte, error) {
 	// 创建新页面，包含中间键之后的键和子节点
 	newPage := NewInternalPage(model.PageID(p.pageID + 1)) // 临时 ID
 
-	// 复制后半部分键（不包含分裂键）
-	newPage.keys = append(newPage.keys, p.keys[mid+1:]...)
+	// 复制后半部分键（包含分裂键）
+	// ✅ Day 7: 修正为包含分裂键，与 LeafPage.Split 一致
+	newPage.keys = append(newPage.keys, p.keys[mid:]...)
 
 	// 复制后半部分子节点（从 mid+1 到末尾）
-	newPage.children = append(newPage.children, p.children[mid+1:]...)
+	// ✅ Day 7: 需要更新这些子节点的 parentRef
+	newPage.children = make([]*PageRef, len(p.children[mid+1:]))
+	copy(newPage.children, p.children[mid+1:])
+	// ✅ Day 7: parentRef 更新将在 splitInternal() 中处理
 
 	// 当前页面保留中间键之前的键和子节点
 	p.keys = p.keys[:mid]

@@ -1,6 +1,7 @@
 package btree
 
 import (
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -110,12 +111,12 @@ func (info *PageInfo) MarkSplitted() {
 // Touch 更新访问时间（LRU）
 func (info *PageInfo) Touch() {
 	info.lastTime = time.Now().UnixNano()
-	info.hits++
+	atomic.AddInt64(&info.hits, 1)
 }
 
 // GetHits 获取访问计数
 func (info *PageInfo) GetHits() int64 {
-	return info.hits
+	return atomic.LoadInt64(&info.hits)
 }
 
 // GetLastTime 获取最后访问时间

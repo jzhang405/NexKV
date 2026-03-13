@@ -52,6 +52,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -100,8 +101,7 @@ type BTree struct {
 	enableWAL bool // Enable WAL logging
 
 	// PageID management
-	nextPageID model.PageID // Next page ID to allocate
-	pageIDMu   sync.Mutex   // Mutex for page ID allocation
+	nextPageID atomic.Uint64 // Next page ID to allocate (lock-free)
 }
 
 // OpenBTree opens or creates a BTree storage engine with persistence support.
@@ -174,7 +174,6 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		wal:        walImpl,
 		maxLevels:  maxLevels,
 		enableWAL:  enableWAL,
-		nextPageID: 1, // PageID 0 is used by initial root
 	}
 
 	// Replay WAL if exists (crash recovery)
@@ -481,13 +480,11 @@ func (b *BTree) insertFromWAL(key, value []byte) error {
 
 // allocatePageID allocates a new unique page ID.
 // This ensures that each newly created page has a unique identifier.
+// ✅ Phase 2B: Lock-free implementation using atomic.Uint64
 func (b *BTree) allocatePageID() model.PageID {
-	b.pageIDMu.Lock()
-	defer b.pageIDMu.Unlock()
-
-	pageID := b.nextPageID
-	b.nextPageID++
-	return pageID
+	// ✅ 使用 atomic.Add(1) 原子操作：读取旧值、加1、返回新值
+	// 完全无锁，多个 goroutine 可以并发调用
+	return model.PageID(b.nextPageID.Add(1))
 }
 
 // Close closes the BTree storage engine and releases resources.

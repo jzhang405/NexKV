@@ -12,13 +12,16 @@ const (
 	maxInternalKeys = 256
 
 	// InitialLeafCapacity 叶子节点初始容量
-	InitialLeafCapacity = 16
+	// ✅ Phase 3 优化：增大初始容量，减少扩容次数，降低 GC 压力
+	// 从 16 → 128（与 splitThreshold 对齐），避免多次扩容
+	InitialLeafCapacity = 128
 
 	// InitialInternalCapacity 内部节点初始容量
 	InitialInternalCapacity = 16
 
 	// DefaultSliceCapacity 默认切片容量
-	DefaultSliceCapacity = 8
+	// ✅ Phase 3 优化：从 8 → 32，减少扩容次数
+	DefaultSliceCapacity = 32
 
 	// DefaultChildSlots 默认子节点槽数量
 	DefaultChildSlots = 17

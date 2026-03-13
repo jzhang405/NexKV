@@ -25,41 +25,40 @@ const cacheLineSize = 64
 // └─────────────────────────────────────────────────────────────────┘
 type PageInfo struct {
 	// Cache Line 1 (64 bytes) - 热数据（高并发访问）
-	pos      int64     // 8 bytes  - 在 Chunk 中的位置（0=未写入）
-	page     any       // 8 bytes  - 页面对象（*LeafPage 或 *InternalPage）
-	pageLock *PageLock // 8 bytes  - 轻量级锁
-	lastTime int64     // 8 bytes  - LRU 时间戳（纳秒）
-	hits     int64     // 8 bytes  - 访问计数
-	_        [24]byte  // padding to 64 bytes
+	pos      atomic.Int64 // 8 bytes  - 在 Chunk 中的位置（0=未写入）✅ 使用原子操作
+	page     any          // 8 bytes  - 页面对象（*LeafPage 或 *InternalPage）
+	pageLock *PageLock    // 8 bytes  - 轻量级锁
+	lastTime atomic.Int64 // 8 bytes  - LRU 时间戳（纳秒）✅ 并发安全
+	hits     atomic.Int64 // 8 bytes  - 访问计数 ✅ 并发安全
+	_        [24]byte     // padding to 64 bytes
 
 	// Cache Line 2 (64 bytes) - 温数据（序列化缓冲区）
 	buff []byte   // 24 bytes - slice header
 	_    [40]byte // padding to 64 bytes
 
 	// Cache Line 3 (64 bytes) - 冷数据（元数据，低频写入）
-	parentRefMu sync.RWMutex // 8 bytes  - ✅ P0-2 修复: 保护 parentRef 的并发访问
-	parentRef   *PageRef     // 8 bytes  - 父节点引用
-	isDirty     bool         // 1 byte   - 是否脏页
-	isSplitted  bool         // 1 byte   - 是否被分裂
-	metaVersion int32        // 4 bytes  - 元数据版本
-	pageSize    int32        // 4 bytes  - 页面实际大小（固定 4KB）
-	_           [62]byte     // padding to 64 bytes (调整 padding)
+	parentRefMu sync.RWMutex  // 8 bytes  - ✅ P0-2 修复: 保护 parentRef 的并发访问
+	parentRef   *PageRef      // 8 bytes  - 父节点引用
+	flags       atomic.Uint32 // 4 bytes  - ✅ 并发安全标志位: bit0=isDirty, bit1=isSplitted
+	metaVersion int32         // 4 bytes  - 元数据版本
+	pageSize    int32         // 4 bytes  - 页面实际大小（固定 4KB）
+	_           [60]byte      // padding to 64 bytes (调整 padding)
 }
 
 // NewPageInfo 创建新的 PageInfo
 func NewPageInfo() *PageInfo {
-	return &PageInfo{
-		pos:         0,
+	info := &PageInfo{
 		page:        nil,
 		pageLock:    NewPageLock(),
-		lastTime:    time.Now().UnixNano(),
-		hits:        0,
 		parentRef:   nil, // ✅ 初始化父节点引用
-		isDirty:     false,
-		isSplitted:  false,
 		metaVersion: 0,
 		pageSize:    PageSize,
 	}
+	info.SetPos(0) // ✅ 使用 SetPos() 方法避免 noCopy 违规
+	info.lastTime.Store(time.Now().UnixNano())
+	info.hits.Store(0)
+	info.flags.Store(0) // 初始化所有标志位为 0
+	return info
 }
 
 // GetPage 获取页面对象（返回 any，需要类型断言）
@@ -93,12 +92,12 @@ func (info *PageInfo) GetInternalPage() *InternalPage {
 
 // GetPos 获取位置信息
 func (info *PageInfo) GetPos() int64 {
-	return info.pos
+	return info.pos.Load()
 }
 
-// SetPos 设置位置信息
+// SetPos 设置位置信息（原子操作，线程安全）
 func (info *PageInfo) SetPos(pos int64) {
-	info.pos = pos
+	info.pos.Store(pos)
 }
 
 // GetLock 获取轻量级锁
@@ -106,45 +105,45 @@ func (info *PageInfo) GetLock() *PageLock {
 	return info.pageLock
 }
 
-// IsDirty 检查是否为脏页
+// IsDirty 检查是否为脏页（并发安全）
 func (info *PageInfo) IsDirty() bool {
-	return info.isDirty
+	return info.flags.Load()&0x01 != 0
 }
 
-// MarkDirty 标记为脏页
+// MarkDirty 标记为脏页（并发安全）
 func (info *PageInfo) MarkDirty() {
-	info.isDirty = true
+	info.flags.Or(0x01)
 }
 
-// ClearDirty 清除脏页标记
+// ClearDirty 清除脏页标记（并发安全）
 func (info *PageInfo) ClearDirty() {
-	info.isDirty = false
+	info.flags.And(^uint32(0x01))
 }
 
-// IsSplitted 检查是否被分裂
+// IsSplitted 检查是否被分裂（并发安全）
 func (info *PageInfo) IsSplitted() bool {
-	return info.isSplitted
+	return info.flags.Load()&0x02 != 0
 }
 
-// MarkSplitted 标记为已分裂
+// MarkSplitted 标记为已分裂（并发安全）
 func (info *PageInfo) MarkSplitted() {
-	info.isSplitted = true
+	info.flags.Or(0x02)
 }
 
 // Touch 更新访问时间（LRU）
 func (info *PageInfo) Touch() {
-	info.lastTime = time.Now().UnixNano()
-	atomic.AddInt64(&info.hits, 1)
+	info.lastTime.Store(time.Now().UnixNano())
+	info.hits.Add(1)
 }
 
 // GetHits 获取访问计数
 func (info *PageInfo) GetHits() int64 {
-	return atomic.LoadInt64(&info.hits)
+	return info.hits.Load()
 }
 
 // GetLastTime 获取最后访问时间
 func (info *PageInfo) GetLastTime() int64 {
-	return info.lastTime
+	return info.lastTime.Load()
 }
 
 // Clone 复制 PageInfo（Copy-on-Write）
@@ -154,16 +153,21 @@ func (info *PageInfo) GetLastTime() int64 {
 func (info *PageInfo) Clone() *PageInfo {
 	// 创建新的 PageInfo，复制所有字段
 	newInfo := &PageInfo{
-		pos:         info.pos,
-		pageLock:    NewPageLock(), // 创建新锁
-		lastTime:    info.lastTime,
-		hits:        info.hits,
+		pageLock:    NewPageLock(),       // 创建新锁
 		parentRef:   info.GetParentRef(), // ✅ P0-2 修复: 线程安全地复制父节点引用
-		isDirty:     info.isDirty,
-		isSplitted:  info.isSplitted,
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}
+
+	// ✅ 修复：使用 SetPos() 方法设置 atomic.Int64，避免直接复制
+	newInfo.SetPos(info.GetPos())
+
+	// ✅ 复制原子字段（并发安全）
+	newInfo.lastTime.Store(info.lastTime.Load())
+	newInfo.hits.Store(info.hits.Load())
+
+	// ✅ 复制标志位（并发安全）
+	newInfo.flags.Store(info.flags.Load())
 
 	// ✅ P0-4 修复: 深拷贝 Page 对象，避免并发修改共享 Page
 	if info.IsPageLoaded() && info.page != nil {
@@ -278,7 +282,7 @@ func VerifyPageInfoAlignment() {
 	var info PageInfo
 	offset1 := unsafe.Offsetof(info.pos)
 	offset2 := unsafe.Offsetof(info.buff)
-	offset3 := unsafe.Offsetof(info.isDirty)
+	offset3 := unsafe.Offsetof(info.flags)
 
 	// pos 应该在 cache line 边界（0 的倍数）
 	if offset1%cacheLineSize != 0 {

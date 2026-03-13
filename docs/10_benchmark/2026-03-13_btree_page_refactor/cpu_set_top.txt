@@ -1,0 +1,29 @@
+File: btree.test
+Build ID: 7c50829c532a7cef7e7fb480f6c2a3766b8e6a9c
+Type: cpu
+Time: 2026-03-13 07:12:42 CST
+Duration: 4.67s, Total samples = 7.45s (159.44%)
+Showing nodes accounting for 5.20s, 69.80% of 7.45s total
+Dropped 191 nodes (cum <= 0.04s)
+Showing top 20 nodes out of 153
+      flat  flat%   sum%        cum   cum%
+     2.97s 39.87% 39.87%      2.97s 39.87%  internal/runtime/syscall/linux.Syscall6
+     0.29s  3.89% 43.76%      0.29s  3.89%  runtime.futex
+     0.22s  2.95% 46.71%      0.22s  2.95%  encoding/binary.bigEndian.PutUint32 (inline)
+     0.18s  2.42% 49.13%      0.18s  2.42%  runtime.memclrNoHeapPointers
+     0.16s  2.15% 51.28%      0.35s  4.70%  runtime.scanObjectsSmall
+     0.16s  2.15% 53.42%      0.23s  3.09%  runtime.typePointers.next
+     0.14s  1.88% 55.30%      0.21s  2.82%  runtime.scanblock
+     0.14s  1.88% 57.18%      0.21s  2.82%  runtime.tryDeferToSpanScan
+     0.12s  1.61% 58.79%      0.12s  1.61%  runtime.memmove
+     0.12s  1.61% 60.40%      0.40s  5.37%  runtime.scanObject
+     0.12s  1.61% 62.01%      0.12s  1.61%  sync/atomic.(*Int32).Add
+     0.10s  1.34% 63.36%      0.56s  7.52%  bytes.(*Buffer).Write
+     0.10s  1.34% 64.70%      0.10s  1.34%  internal/runtime/atomic.(*Uint32).Load (inline)
+     0.07s  0.94% 65.64%      0.08s  1.07%  runtime.(*spanSet).push
+     0.06s  0.81% 66.44%      0.09s  1.21%  runtime.(*unwinder).resolveInternal
+     0.05s  0.67% 67.11%      1.31s 17.58%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Serialize
+     0.05s  0.67% 67.79%      0.05s  0.67%  runtime.(*gcBitsArena).tryAlloc (inline)
+     0.05s  0.67% 68.46%      0.05s  0.67%  runtime.(*pallocBits).summarize
+     0.05s  0.67% 69.13%      0.05s  0.67%  runtime.madvise
+     0.05s  0.67% 69.80%      0.08s  1.07%  runtime.stealWork

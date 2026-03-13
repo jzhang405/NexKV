@@ -55,7 +55,7 @@ func TestLoadPage_PageNotFound(t *testing.T) {
 	// 尝试加载不存在的页面位置
 	_, err = tree.loadPage(0) // 位置 0 表示无效
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "page not found")
+	assert.Contains(t, err.Error(), "chunk 0 not found")
 }
 
 // TestLoadPage_NoChunkManager 测试没有 ChunkManager 的情况

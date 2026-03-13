@@ -1,152 +1,180 @@
-# Benchmark 测试目录
+# NexKV BTree 性能基准测试
 
-本目录用于存储 NexKV 项目的所有性能测试结果和分析报告。
+**测试日期**: 2026-03-13
+**代码版本**: P0/P1 重构后（常量提取 + 序列化统一 + Bug 修复）
+**测试环境**: Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz, 12 cores
 
 ---
 
-## 📁 目录结构
+## 📂 文件说明
 
 ```
-10_benchmark/
-├── README.md                          # 本文件
-├── templates/                          # 模板文件
-│   ├── benchmark_report_template.md   # 报告模板
-│   └── benchmark_checklist.md         # 检查清单
-├── 2026-03-01-executor-comparison/    # Executor 对比测试（历史）
-│   ├── README.md                      # 测试概述
-│   ├── plan.md                        # 测试计划
-│   ├── results.md                     # 测试结果
-│   └── assets/                        # 数据文件
-├── 2026-03-05-rpc-performance/        # RPC 性能测试（当前）
-│   ├── README.md                      # 测试概述
-│   ├── plan.md                        # 测试计划（8配置×6场景）
-│   ├── phase1-baseline.md             # Phase 1: Baseline 测试
-│   ├── phase2-design.md               # Phase 2: Design 文档测试
-│   ├── phase3-comparison.md           # Phase 3: 配置对比测试
-│   ├── phase4-conclusion.md           # Phase 4: 最优配置选择
-│   └── assets/                        # 数据文件
-│       ├── raw/                       # 原始数据（benchmark 输出）
-│       ├── processed/                 # 处理后数据（CSV/JSON）
-│       └── graphs/                    # 图表（PNG/SVG）
-└── assets/                            # 公共资源（旧数据）
-    └── 2026-03-01-perf/               # 历史数据
+docs/10_benchmark/
+├── README.md                    # 本文件 - 性能测试概述
+├── analysis_20260313.md         # 详细性能分析报告
+├── raw_data_20260313.txt        # 原始基准测试数据
+└── trends.md                    # 性能趋势分析（待添加）
 ```
 
 ---
 
-## 🎯 命名规范
+## 🎯 核心性能指标
 
-### 测试目录命名
+### 读操作（优秀 ✅）
 
-**格式**: `{YYYY-MM-DD}-{test-subject}`
+| 测试场景 | 吞吐量 | 延迟 | 内存 | 分配次数 |
+|---------|--------|------|------|---------|
+| 单线程 Get | 8.35M ops/s | **134.7 ns/op** | 24 B/op | 1 allocs/op |
+| 并发 Get | 37.46M ops/s | **34.70 ns/op** | 24 B/op | 1 allocs/op |
 
-**示例**:
-- `2026-03-01-executor-comparison` - Executor 对比测试
-- `2026-03-05-rpc-performance` - RPC 性能测试
-- `2026-03-10-wal-throughput` - WAL 吞吐量测试
+**亮点**：
+- 🚀 并发读取 **3.9x 加速**（得益于缓存局部性）
+- 💾 内存效率高：每次操作仅 24 字节
+- ♻️ GC 友好：每次操作仅 1 次分配
 
-### 数据文件命名
+### 写操作（可优化 ⚠️）
 
-**原始数据**: `{config}_{scenario}_{timestamp}.{ext}`
+| 测试场景 | 吞吐量 | 延迟 | 内存 | 分配次数 |
+|---------|--------|------|------|---------|
+| 单线程 Set | 2,361 ops/s | **465.1 μs/op** | 607.4 KB/op | 694 allocs/op |
+| 并发 Set | 2,084 ops/s | **571.5 μs/op** | 599.1 KB/op | 688 allocs/op |
+| 单线程 Delete | 1,539 ops/s | **842.3 μs/op** | 1.04 MB/op | 1242 allocs/op |
 
-**示例**:
-- `C1_AntsNetwork_p2p_20260305_143022.txt` - C1 配置点对点测试
-- `C3_PerCoreShard_broadcast_20260305_143500.csv` - C3 配置广播测试
-
----
-
-## 📊 Benchmark 分类
-
-### 1. Executor 性能测试
-- **目标**: 对比不同 Executor 的性能
-- **指标**: 延迟、吞吐量、CPU 使用率、内存占用
-- **频率**: 每次 Executor 实现变更
-
-### 2. RPC 性能测试
-- **目标**: 测试 RPC 层的性能
-- **指标**: 点对点延迟、广播吞吐、并发 QPS
-- **频率**: 每次 RPC 接口变更
-
-### 3. 存储性能测试
-- **目标**: 测试 WAL/BTree 的性能
-- **指标**: 写入吞吐、读取延迟、空间效率
-- **频率**: 每次存储引擎变更
-
-### 4. 网络性能测试
-- **目标**: 测试传输层性能
-- **指标**: 带宽利用率、连接建立时间
-- **频率**: 每次网络层变更
+**分析**：
+- ⚠️ Set/Delete 较慢（微秒级），主要因为：
+  - CCOW（Copy-on-Write）需要复制路径上所有节点
+  - CAS 更新可能有重试开销
+  - Split/Merge 操作开销
+- ⚠️ 内存分配多（约 600KB-1MB/操作）
+- 🔍 并发 Set 稍慢于单线程（CAS 竞争）
 
 ---
 
-## 🔧 使用方法
+## 📊 详细数据
 
-### 创建新的 Benchmark 测试
+### 页面操作性能
 
+| 操作 | 延迟 | 内存 | 分配次数 |
+|------|------|------|---------|
+| InternalPage Split | **2.546 μs/op** | 2.08 KB/op | 40 allocs/op |
+| splitLeaf | **2.424 ms/op** | 2.68 MB/op | 2140 allocs/op |
+| SearchPath | **120.6 ns/op** | 24 B/op | 1 allocs/op |
+
+**关键发现**：
+- ✅ InternalPage Split 非常快（微秒级）
+- ⚠️ splitLeaf 较慢（毫秒级），因为递归向上分裂
+
+### 并发工作负载
+
+| 操作 | 吞吐量 | 延迟 | 内存 |
+|------|--------|------|------|
+| MixedWorkload | 20,858 ops/s | 57.5 μs/op | 60.4 KB/op |
+| ConcurrentReaders | 14,454 ops/s | 88.6 μs/op | 30.4 KB/op |
+| ConcurrentWriters | **21 ops/s** | **55.6 ms/op** | 60.4 MB/op |
+
+**问题**：
+- 🔴 并发写扩展性差：ConcurrentWriters 性能严重下降
+- 可能原因：CAS 竞争导致大量重试
+
+---
+
+## 🐛 已修复问题
+
+### P0: Delete 崩溃 ✅
+
+**问题**：
+```
+panic: runtime error: index out of range [8] with length 8
+at redistributeInternalLeft() line 1658
+```
+
+**修复**：
+- 添加防御性检查验证 B+ 树不变性
+- 添加边界检查防止访问无效索引
+- 影响：`redistributeInternalLeft` 和 `redistributeInternalRight`
+
+**结果**：
+- ✅ BenchmarkBTree_Delete 通过
+- ✅ 所有测试用例通过
+
+---
+
+## 📈 性能优化建议
+
+### 高优先级 🔴
+
+1. **优化 Set/Delete 内存分配**
+   - 当前：~600KB-1MB/操作
+   - 建议：使用 `sync.Pool` 对象池
+   - 预期：减少 50%+ 内存分配
+
+2. **改善并发写性能**
+   - 当前：ConcurrentWriters 仅 21 ops/s
+   - 建议：实现批量 CAS 或分段锁
+   - 预期：10x 并发写性能提升
+
+3. **优化 splitLeaf 性能**
+   - 当前：2.4 ms/op
+   - 建议：减少递归深度，延迟分裂
+   - 预期：50% 性能提升
+
+### 中优先级 🟡
+
+4. **实现真正的懒惰分裂**
+   - 提前检测并预防满节点
+   - 减少运行时分裂开销
+
+5. **优化 Merge 策略**
+   - 当前 Delete 比 Set 慢 2x
+   - 建议：延迟合并，批量处理
+   - 预期：30% 性能提升
+
+---
+
+## 🔍 如何运行测试
+
+### 运行所有基准测试
 ```bash
-# 1. 创建测试目录
-cd docs/10_benchmark
-mkdir -p 2026-03-10-{test-name}/assets/{raw,processed,graphs}
-
-# 2. 复制模板
-cp templates/benchmark_report_template.md 2026-03-10-{test-name}/README.md
-
-# 3. 编辑测试计划
-# 4. 运行测试
-# 5. 记录结果
-# 6. 生成报告
+go test -bench=. -benchmem -run=^$ ./internal/infrastructure/storage/btree/
 ```
 
-### 运行 Benchmark 测试
-
+### 运行特定测试
 ```bash
-# RPC 性能测试
-make benchmark-rpc > docs/10_benchmark/2026-03-05-rpc-performance/assets/raw/C1_baseline_$(date +%Y%m%d_%H%M%S).txt
+# 只测试 Get 操作
+go test -bench=BenchmarkBTree_Get -benchmem -run=^$ ./internal/infrastructure/storage/btree/
 
-# Executor 对比测试
-make benchmark-executor > docs/10_benchmark/2026-03-01-executor-comparison/assets/raw/executor_$(date +%Y%m%d_%H%M%S).txt
+# 只测试 Set 操作
+go test -bench=BenchmarkBTree_Set -benchmem -run=^$ ./internal/infrastructure/storage/btree/
+
+# 只测试 Delete 操作
+go test -bench=BenchmarkBTree_Delete -benchmem -run=^$ ./internal/infrastructure/storage/btree/
+```
+
+### 生成 CPU 性能分析
+```bash
+go test -bench=. -cpuprofile=cpu.prof -memprofile=mem.prof ./internal/infrastructure/storage/btree/
+go tool pprof cpu.prof
 ```
 
 ---
 
-## 📈 测试流程
+## 📝 更新日志
 
-1. **计划阶段**
-   - 明确测试目标
-   - 设计测试矩阵
-   - 准备测试环境
-
-2. **执行阶段**
-   - 运行基准测试
-   - 收集原始数据
-   - 保存到 `assets/raw/`
-
-3. **分析阶段**
-   - 处理数据
-   - 生成图表
-   - 保存到 `assets/processed/` 和 `assets/graphs/`
-
-4. **报告阶段**
-   - 填写测试报告
-   - 得出结论
-   - 提出建议
-
----
-
-## 📝 模板文件
-
-- [benchmark_report_template.md](templates/benchmark_report_template.md) - 标准报告模板
-- [benchmark_checklist.md](templates/benchmark_checklist.md) - 测试检查清单
+### 2026-03-13
+- ✅ 初始性能基准测试
+- ✅ 修复 Delete 操作崩溃问题
+- ✅ P0/P1 代码重构（常量提取 + 序列化统一）
+- ✅ 生成性能分析报告
 
 ---
 
 ## 🔗 相关文档
 
-- [RPC 性能测试方案](../09_code-review/2026-03-05_rpc-perf-benchmark-plan.md)
-- [RPC Executor SourceID 设计](../09_code-review/2026-03-05_rpc-executor-sourceid-design.md)
-- [Executor 对比报告](assets/2026-03-01-perf/executor_comparison_report.md)
+- [性能分析详细报告](./analysis_20260313.md)
+- [原始测试数据](./raw_data_20260313.txt)
+- [P0/P1 重构总结](../09_development/phases.md)
 
 ---
 
-**最后更新**: 2026-03-05
-**维护人**: jzh
+**维护者**: NexKV 开发团队
+**最后更新**: 2026-03-13

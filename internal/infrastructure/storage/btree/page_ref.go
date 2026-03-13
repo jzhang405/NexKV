@@ -244,11 +244,12 @@ func (r *PageRef) GetOrLoad(chunkMgr *ChunkManager) (*PageInfo, error) {
 	}
 
 	// 3. Double-checked locking：如果 page == nil 且 pos != 0，触发加载
-	if info.page == nil && info.pos != 0 {
+	pos := info.GetPos()
+	if info.page == nil && pos != 0 {
 		// 从 ChunkManager 加载页面
-		page, err := chunkMgr.LoadPage(info.pos)
+		page, err := chunkMgr.LoadPage(pos)
 		if err != nil {
-			return nil, fmt.Errorf("load page at %d: %w", info.pos, err)
+			return nil, fmt.Errorf("load page at %d: %w", pos, err)
 		}
 
 		// CAS 更新 pageInfo.page

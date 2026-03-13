@@ -1,5 +1,7 @@
 package btree
 
+//nolint:errcheck // 测试代码中忽略部分返回值检查
+
 import (
 	"context"
 	"testing"

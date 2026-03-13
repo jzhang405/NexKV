@@ -22,8 +22,12 @@ type ChunkManager struct {
 	currentChunk   *Chunk       // 当前写入的 Chunk
 	currentChunkID atomic.Int64 // 当前 Chunk ID
 
+	// ✅ 优化：使用 atomic.Value 存储只读 Chunk 索引
+	// 读操作完全无锁，更新时使用 CAS
+	chunkIndex atomic.Value // map[int]*Chunk
+
 	// 并发控制
-	mu sync.RWMutex // 保护 Chunk 列表
+	mu sync.RWMutex // 保护 Chunk 列表（仅用于更新）
 
 	// 内存池
 	pagePool sync.Pool // *[]byte 复用
@@ -44,6 +48,10 @@ func NewChunkManager(dataDir string) (*ChunkManager, error) {
 		archivedChunks: make([]*Chunk, 0, 8),
 	}
 
+	// ✅ 初始化 Chunk 索引
+	chunkIndex := make(map[int]*Chunk)
+	cm.chunkIndex.Store(chunkIndex)
+
 	// 初始化内存池
 	cm.pagePool.New = func() interface{} {
 		buf := make([]byte, PageSize)
@@ -54,6 +62,9 @@ func NewChunkManager(dataDir string) (*ChunkManager, error) {
 	if err := cm.loadExistingChunks(); err != nil {
 		return nil, fmt.Errorf("failed to load existing chunks: %w", err)
 	}
+
+	// ✅ 构建初始索引
+	cm.rebuildChunkIndexLocked()
 
 	return cm, nil
 }
@@ -247,6 +258,9 @@ func (cm *ChunkManager) rotateChunk() error {
 	cm.activeChunks = append(cm.activeChunks, chunk)
 	cm.currentChunkID.Add(1)
 
+	// ✅ 重建 Chunk 索引（当前持有写锁）
+	cm.rebuildChunkIndexLocked()
+
 	return nil
 }
 
@@ -258,25 +272,35 @@ func (cm *ChunkManager) getCurrentChunk() *Chunk {
 }
 
 // getChunkByID 根据 ID 获取 Chunk
+// ✅ 优化：无锁读取 - 使用 atomic.Value 存储的索引
 func (cm *ChunkManager) getChunkByID(id int) *Chunk {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
+	chunkIndex := cm.chunkIndex.Load().(map[int]*Chunk)
+	return chunkIndex[id]
+}
 
-	// 先查找活跃 Chunk
+// rebuildChunkIndex 重建 Chunk 索引（在 Chunk 列表更新后调用）
+// ⚠️ 注意：调用此方法时必须已经持有 cm.mu 锁
+func (cm *ChunkManager) rebuildChunkIndexLocked() {
+	// ✅ 不需要获取锁，因为调用者已经持有锁
+	// 构建新的索引 map
+	newIndex := make(map[int]*Chunk, len(cm.activeChunks)+len(cm.archivedChunks))
+
+	// 添加活跃 Chunk
 	for _, chunk := range cm.activeChunks {
-		if chunk.GetID() == id {
-			return chunk
+		if chunk != nil {
+			newIndex[chunk.GetID()] = chunk
 		}
 	}
 
-	// 再查找已归档 Chunk
+	// 添加已归档 Chunk
 	for _, chunk := range cm.archivedChunks {
-		if chunk.GetID() == id {
-			return chunk
+		if chunk != nil {
+			newIndex[chunk.GetID()] = chunk
 		}
 	}
 
-	return nil
+	// 原子替换索引
+	cm.chunkIndex.Store(newIndex)
 }
 
 // AcquirePageBuffer 从内存池获取页面缓冲区

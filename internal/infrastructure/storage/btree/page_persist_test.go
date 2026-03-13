@@ -71,6 +71,10 @@ func TestPageManager_WriteAndRead(t *testing.T) {
 	err = pm.WritePage(page)
 	require.NoError(t, err)
 
+	// Flush to ensure page is written
+	err = pm.Flush()
+	require.NoError(t, err)
+
 	// Read back
 	readPage, err := pm.ReadPage(pageID)
 	require.NoError(t, err)
@@ -155,6 +159,10 @@ func TestPageManager_MultiplePages(t *testing.T) {
 		err = pm.WritePage(page)
 		require.NoError(t, err)
 	}
+
+	// Flush to ensure all pages are written
+	err = pm.Flush()
+	require.NoError(t, err)
 
 	// Read back and verify
 	for i, pageID := range pages {

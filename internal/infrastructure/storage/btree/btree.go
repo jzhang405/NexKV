@@ -97,6 +97,10 @@ type BTree struct {
 	// Configuration
 	maxLevels int  // Maximum tree levels
 	enableWAL bool // Enable WAL logging
+
+	// PageID management
+	nextPageID model.PageID // Next page ID to allocate
+	pageIDMu   sync.Mutex   // Mutex for page ID allocation
 }
 
 // OpenBTree opens or creates a BTree storage engine with persistence support.
@@ -162,13 +166,14 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	maxLevels := 10 // Default value
 
 	btree := &BTree{
-		config:    config,
-		closed:    false,
-		rootRef:   rootPageRef,
-		chunkMgr:  chunkMgr,
-		wal:       walImpl,
-		maxLevels: maxLevels,
-		enableWAL: enableWAL,
+		config:     config,
+		closed:     false,
+		rootRef:    rootPageRef,
+		chunkMgr:   chunkMgr,
+		wal:        walImpl,
+		maxLevels:  maxLevels,
+		enableWAL:  enableWAL,
+		nextPageID: 1, // PageID 0 is used by initial root
 	}
 
 	// Replay WAL if exists (crash recovery)
@@ -203,12 +208,18 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, ErrClosed
 	}
 
-	// Find the leaf page using searchPath
-	leafInfo, _, err := b.findLeafPage(ctx, key)
+	// Find the path to the leaf page using searchPath
+	path, err := b.searchPath(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("find leaf page: %w", err)
+		return nil, fmt.Errorf("search path: %w", err)
 	}
 
+	if len(path) == 0 {
+		return nil, ErrKeyNotFound
+	}
+
+	// Get the last element in the path (leaf page)
+	leafInfo := path[len(path)-1]
 	if leafInfo == nil {
 		return nil, ErrKeyNotFound
 	}
@@ -483,6 +494,17 @@ func (b *BTree) insertFromWAL(key, value []byte) error {
 	return b.Set(ctx, key, value)
 }
 
+// allocatePageID allocates a new unique page ID.
+// This ensures that each newly created page has a unique identifier.
+func (b *BTree) allocatePageID() model.PageID {
+	b.pageIDMu.Lock()
+	defer b.pageIDMu.Unlock()
+
+	pageID := b.nextPageID
+	b.nextPageID++
+	return pageID
+}
+
 // Close closes the BTree storage engine and releases resources.
 func (b *BTree) Close() error {
 	b.closedMu.Lock()
@@ -630,6 +652,10 @@ func (b *BTree) Validate(ctx context.Context) error {
 // 4. Try to atomically update the root using CAS
 // 5. Return ErrRetry if CAS fails (concurrent write detected)
 func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
+	// ✅ 关键修复：在开始时记录 oldRootInfo
+	// 这样 CAS 时使用的是与 path 一致的根节点引用
+	oldRootInfo := b.rootRef.pInfo.Load()
+
 	// Step 1: Find the path from Root to Leaf
 	_, path, err := b.findLeafPage(ctx, key)
 	if err != nil {
@@ -665,15 +691,28 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 	}
 
 	// Step 4: Check if we need to split the leaf
-	const maxKeys = 16 // LeafPage 最大键数量
-	if leaf.NumKeys() > maxKeys {
+	if leaf.NumKeys() > splitThreshold {
 		// ✅ Day 10-11: 集成分裂检测和处理
 		// 叶子节点已满，需要分裂
 		if err := b.splitLeaf(leafInfo, copiedPath); err != nil {
 			return fmt.Errorf("split leaf: %w", err)
 		}
-		// splitLeaf 已经处理了根节点的 CAS 更新
-		return nil
+
+		// ✅ 修复：splitLeaf 修改了 copiedPath
+		// 如果 len(copiedPath) >= 2，说明不是根节点分裂，需要执行 CAS
+		// 如果 len(copiedPath) < 2，说明是根节点分裂，splitRootFromLeaf 已经执行了 CAS
+		if len(copiedPath) >= 2 {
+			// 非根节点分裂，需要执行 CAS 更新
+			newRootInfo := copiedPath[0]
+			if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
+				return ErrRetry
+			}
+			// CAS 更新成功
+			return nil
+		} else {
+			// 根节点分裂，splitRootFromLeaf 已经执行了 CAS
+			return nil
+		}
 	}
 
 	// Step 5: No split needed - perform normal CCOW update
@@ -681,7 +720,7 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 	newRootInfo := copiedPath[0]
 
 	// Step 6: CAS 更新根节点
-	oldRootInfo := b.rootRef.pInfo.Load()
+	// ✅ 使用操作开始时记录的 oldRootInfo，而不是当前的
 	if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
 		// CAS 失败，触发重试
 		return ErrRetry
@@ -705,6 +744,8 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 // This function clones all PageInfo objects in the path, creating new
 // Page objects for each. This ensures that concurrent readers can still
 // access the old version while the writer modifies the new version.
+//
+// ✅ 修复：使用 PageID 来正确匹配和更新 InternalPage 的子节点引用
 func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 	if len(path) == 0 {
 		return nil, fmt.Errorf("empty path")
@@ -712,13 +753,96 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 
 	copiedPath := make([]*PageInfo, len(path))
 
-	// Copy all pages in the path (from root to leaf)
-	// ✅ P0-4 修复: PageInfo.Clone() 现在会自动深拷贝 Page 对象
-	for i, info := range path {
-		// Clone the PageInfo（包括深拷贝 Page 对象）
-		newInfo := info.Clone()
+	// ✅ 优化：预先构建 PageID -> PageInfo 映射表，避免 O(n²) 嵌套循环
+	pageInfoMap := make(map[model.PageID]*PageInfo, len(path))
+	for _, info := range path {
+		var pageID model.PageID
+		switch p := info.GetPage().(type) {
+		case *LeafPage:
+			pageID = p.pageID
+		case *InternalPage:
+			pageID = p.pageID
+		default:
+			continue
+		}
+		pageInfoMap[pageID] = info // 暂时存储原始 PageInfo，稍后更新
+	}
 
+	// Phase 1: Clone all PageInfos in the path
+	for i, info := range path {
+		newInfo := info.Clone()
 		copiedPath[i] = newInfo
+
+		// 更新映射表为克隆后的 PageInfo
+		var pageID model.PageID
+		switch p := newInfo.GetPage().(type) {
+		case *LeafPage:
+			pageID = p.pageID
+		case *InternalPage:
+			pageID = p.pageID
+		default:
+			continue
+		}
+		pageInfoMap[pageID] = newInfo
+	}
+
+	// Phase 2: Rebuild child references for InternalPages
+	for _, info := range copiedPath {
+		// ✅ 关键修复：如果是 InternalPage，需要重建子节点引用
+		// 因为 InternalPage.Clone() 只是浅拷贝了 children[]
+		//
+		// 方法：使用 PageID 来匹配子节点，而不是对象地址
+		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
+			// 遍历所有子节点引用
+			for j := 0; j < len(internalPage.children); j++ {
+				childRef := internalPage.children[j]
+				if childRef == nil {
+					continue
+				}
+
+				childInfo := childRef.GetPageInfo()
+				if childInfo == nil {
+					continue
+				}
+
+				childPage := childInfo.GetPage()
+				if childPage == nil {
+					continue
+				}
+
+				// 获取子节点的 PageID
+				var childPageID model.PageID
+				switch p := childPage.(type) {
+				case *LeafPage:
+					childPageID = p.pageID
+				case *InternalPage:
+					childPageID = p.pageID
+				default:
+					// 未知类型，跳过
+					continue
+				}
+
+				// ✅ 优化：使用映射表进行 O(1) 查找，避免嵌套循环
+				childReplacement := pageInfoMap[childPageID]
+
+				if childReplacement != nil {
+					// 子节点在路径中，使用克隆的 PageInfo
+					newChildRef := NewPageRefWithInfo(childReplacement)
+					// ✅ 设置 parentRef：指向当前克隆的 InternalPage
+					newChildRef.parentRef = b.rootRef.PageRef
+					newChildRef.mu = sync.RWMutex{} // 初始化 mutex
+					internalPage.children[j] = newChildRef
+				} else {
+					// 子节点不在路径中，创建新的克隆
+					clonedChildInfo := childInfo.Clone()
+					newChildRef := NewPageRefWithInfo(clonedChildInfo)
+					// 设置 parentRef
+					newChildRef.parentRef = b.rootRef.PageRef
+					newChildRef.mu = sync.RWMutex{}
+					internalPage.children[j] = newChildRef
+				}
+			}
+		}
 	}
 
 	return copiedPath, nil
@@ -764,6 +888,9 @@ func (b *BTree) splitLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
 		return fmt.Errorf("leaf split failed: %w", err)
 	}
 
+	// 为新页面分配唯一的 pageID
+	newPage.pageID = b.allocatePageID()
+
 	// 4. 创建新页面的 PageInfo（直接使用，不创建 PageRef）
 	newPageInfo := NewPageInfo()
 	newPageInfo.SetPage(newPage)
@@ -791,7 +918,6 @@ func (b *BTree) splitLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
 	}
 
 	// 8. 检查父节点是否需要分裂
-	const maxInternalKeys = 15 // InternalPage 最大键数量
 	if parentPage.NumKeys() > maxInternalKeys {
 		// 父节点也需要分裂
 		return b.splitInternal(parentInfo, copiedPath[:len(copiedPath)-1])
@@ -808,7 +934,7 @@ func (b *BTree) splitLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
 // splitRootFromLeaf 从叶子节点分裂创建新的根节点
 func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, splitKey []byte, copiedPath []*PageInfo) error {
 	// 1. 创建新的内部节点作为根
-	newRootPage := NewInternalPage(model.PageID(1)) // 根节点 ID = 1
+	newRootPage := NewInternalPage(b.allocatePageID()) // 分配唯一的 pageID
 	newRootPage.keys = [][]byte{splitKey}
 
 	// 2. 创建左右子节点的 PageRef
@@ -876,6 +1002,9 @@ func (b *BTree) splitInternal(internalInfo *PageInfo, copiedPath []*PageInfo) er
 		return fmt.Errorf("internal split failed: %w", err)
 	}
 
+	// 为新页面分配唯一的 pageID
+	newPage.pageID = b.allocatePageID()
+
 	// 4. 检查是否有父节点
 	if len(copiedPath) < 2 {
 		// 没有父节点，说明是根节点，需要创建新的根
@@ -921,7 +1050,7 @@ func (b *BTree) splitInternal(internalInfo *PageInfo, copiedPath []*PageInfo) er
 // splitRootFromInternal 从内部节点分裂创建新的根节点
 func (b *BTree) splitRootFromInternal(leftInfo, rightInfo *PageInfo, splitKey []byte, copiedPath []*PageInfo) error {
 	// 1. 创建新的内部节点作为根
-	newRootPage := NewInternalPage(model.PageID(1)) // 根节点 ID = 1
+	newRootPage := NewInternalPage(b.allocatePageID()) // 分配唯一的 pageID
 	newRootPage.keys = [][]byte{splitKey}
 
 	// 2. 创建左右子节点的 PageRef
@@ -1293,41 +1422,34 @@ func (b *BTree) redistributeLeafLeft(
 	leaf := leafInfo.GetLeafPage()
 	leftSibling := leftSiblingInfo.GetLeafPage()
 
-	// 1. 从父节点获取分隔键（分隔键将下降到当前节点）
-	separatorKey := parent.keys[leafIndex-1]
-
-	// 2. 从左兄弟借最后一个键值对
+	// 1. 从左兄弟借最后一个键值对
 	lastIdx := leftSibling.NumKeys() - 1
 	borrowedKey := leftSibling.keys[lastIdx]
 	borrowedValue := leftSibling.values[lastIdx]
 
-	// ✅ P1-1 修复: 在删除键之前，先确定新的分隔键
+	// 2. ✅ P1-1 修复: 在删除键之前，先确定新的分隔键
 	// 如果删除后左兄弟还有键，使用新的最大键（倒数第二个键）
 	var newSeparatorKey []byte
 	if lastIdx > 0 {
 		// 删除后至少还有一个键，使用新的最大键
 		newSeparatorKey = leftSibling.keys[lastIdx-1]
 	}
-	// 如果 lastIdx == 0，删除后左兄弟为空，需要特殊处理（暂不处理）
 
 	// 3. 从左兄弟删除最后一个键值对
 	leftSibling.keys = leftSibling.keys[:lastIdx]
 	leftSibling.values = leftSibling.values[:lastIdx]
 	leftSibling.version++
 
-	// 4. 将分隔键和借来的值插入到当前节点的开头
-	leaf.keys = insertSlice(leaf.keys, 0, separatorKey)
+	// 4. 将借来的键值对插入到当前节点的开头
+	leaf.keys = insertSlice(leaf.keys, 0, borrowedKey)
 	leaf.values = insertSlice(leaf.values, 0, borrowedValue)
 
-	// 5. 将借来的键插入到当前节点的开头（在分隔键之后）
-	leaf.keys = insertSlice(leaf.keys, 1, borrowedKey)
-	leaf.version++
-
-	// 6. 更新父节点的分隔键
+	// 5. 更新父节点的分隔键
 	if newSeparatorKey != nil {
 		parent.keys[leafIndex-1] = newSeparatorKey
 	}
 	parent.version++
+	leaf.version++
 
 	return nil
 }
@@ -1348,33 +1470,27 @@ func (b *BTree) redistributeLeafRight(
 	leaf := leafInfo.GetLeafPage()
 	rightSibling := rightSiblingInfo.GetLeafPage()
 
-	// 1. 从父节点获取分隔键
-	separatorKey := parent.keys[leafIndex]
-
-	// 2. 从右兄弟借第一个键值对
+	// 1. 从右兄弟借第一个键值对
 	borrowedKey := rightSibling.keys[0]
 	borrowedValue := rightSibling.values[0]
 
-	// 3. 从右兄弟删除第一个键值对
+	// 2. 从右兄弟删除第一个键值对
 	rightSibling.keys = rightSibling.keys[1:]
 	rightSibling.values = rightSibling.values[1:]
 	rightSibling.version++
 
-	// 4. 将分隔键和借来的值追加到当前节点末尾
-	leaf.keys = append(leaf.keys, separatorKey)
+	// 3. 将借来的键值对追加到当前节点末尾
+	leaf.keys = append(leaf.keys, borrowedKey)
 	leaf.values = append(leaf.values, borrowedValue)
 
-	// 5. 将借来的键追加到当前节点末尾
-	leaf.keys = append(leaf.keys, borrowedKey)
-	leaf.version++
-
-	// 6. 更新父节点的分隔键
+	// 4. 更新父节点的分隔键
 	// 使用右兄弟删除后的新最小键（即现在的第一个键）
 	if rightSibling.NumKeys() > 0 {
 		newSeparatorKey := rightSibling.keys[0]
 		parent.keys[leafIndex] = newSeparatorKey
 	}
 	parent.version++
+	leaf.version++
 
 	return nil
 }
@@ -1399,14 +1515,11 @@ func (b *BTree) mergeLeafWithSibling(
 	leftNode := leftNodeInfo.GetLeafPage()
 	rightNode := rightNodeInfo.GetLeafPage()
 
-	// 1. 获取父节点的分隔键
-	separatorKey := parent.keys[separatorIndex]
+	// 1. 合并节点：Left + Right
+	// ✅ 修复：对于叶子节点，分隔键不应该插入到合并后的节点中
+	// 只有右节点的键值对需要移动到左节点
 
-	// 2. 合并节点：Left + Separator + Right
-	// 2.1 将分隔键追加到左节点
-	leftNode.keys = append(leftNode.keys, separatorKey)
-
-	// 2.2 将右节点的所有键值对追加到左节点
+	// 2. 将右节点的所有键值对追加到左节点
 	leftNode.keys = append(leftNode.keys, rightNode.keys...)
 	leftNode.values = append(leftNode.values, rightNode.values...)
 	leftNode.version++
@@ -1537,12 +1650,27 @@ func (b *BTree) redistributeInternalLeft(
 	node := nodeInfo.GetInternalPage()
 	leftSibling := leftSiblingInfo.GetInternalPage()
 
+	// ✅ P0 修复: 防御性检查 - 确保左兄弟有足够的键和子节点
+	if leftSibling.NumKeys() < 2 {
+		return fmt.Errorf("left sibling has insufficient keys to borrow: %d", leftSibling.NumKeys())
+	}
+	if len(leftSibling.children) != leftSibling.NumKeys()+1 {
+		return fmt.Errorf("left sibling children count mismatch: keys=%d, children=%d",
+			leftSibling.NumKeys(), len(leftSibling.children))
+	}
+
 	// 1. 从父节点获取分隔键
 	separatorKey := parent.keys[nodeIndex-1]
 
 	// 2. 从左兄弟借最后一个键和子节点
 	lastIdx := leftSibling.NumKeys() - 1
 	borrowedKey := leftSibling.keys[lastIdx]
+
+	// ✅ P0 修复: 添加边界检查，防止数组越界
+	if lastIdx+1 >= len(leftSibling.children) {
+		return fmt.Errorf("left sibling children index out of range: lastIdx=%d, children_len=%d",
+			lastIdx, len(leftSibling.children))
+	}
 	borrowedChild := leftSibling.children[lastIdx+1] // 最后一个子节点
 
 	// 3. 从左兄弟删除最后一个键和子节点
@@ -1585,11 +1713,25 @@ func (b *BTree) redistributeInternalRight(
 	node := nodeInfo.GetInternalPage()
 	rightSibling := rightSiblingInfo.GetInternalPage()
 
+	// ✅ P0 修复: 防御性检查 - 确保右兄弟有足够的键和子节点
+	if rightSibling.NumKeys() < 1 {
+		return fmt.Errorf("right sibling has insufficient keys to borrow: %d", rightSibling.NumKeys())
+	}
+	if len(rightSibling.children) != rightSibling.NumKeys()+1 {
+		return fmt.Errorf("right sibling children count mismatch: keys=%d, children=%d",
+			rightSibling.NumKeys(), len(rightSibling.children))
+	}
+
 	// 1. 从父节点获取分隔键
 	separatorKey := parent.keys[nodeIndex]
 
 	// 2. 从右兄弟借第一个键和子节点
 	borrowedKey := rightSibling.keys[0]
+
+	// ✅ P0 修复: 添加边界检查，防止空切片访问
+	if len(rightSibling.children) == 0 {
+		return fmt.Errorf("right sibling has no children")
+	}
 	borrowedChild := rightSibling.children[0] // 第一个子节点
 
 	// 3. 从右兄弟删除第一个键和子节点

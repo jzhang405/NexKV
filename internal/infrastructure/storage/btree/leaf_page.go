@@ -4,41 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"io"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
-
-// 类型转换辅助函数
-func uint64ToBytes(v uint64) []byte {
-	buf := make([]byte, 8)
-	binary.LittleEndian.PutUint64(buf, v)
-	return buf
-}
-
-func bytesToUint64(b []byte) uint64 {
-	return binary.LittleEndian.Uint64(b)
-}
-
-func uint32ToBytes(v uint32) []byte {
-	buf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(buf, v)
-	return buf
-}
-
-func bytesToUint32(b []byte) uint32 {
-	return binary.LittleEndian.Uint32(b)
-}
-
-func uint16ToBytes(v uint16) []byte {
-	buf := make([]byte, 2)
-	binary.LittleEndian.PutUint16(buf, v)
-	return buf
-}
-
-func bytesToUint16(b []byte) uint16 {
-	return binary.LittleEndian.Uint16(b)
-}
 
 // LeafPage 叶子节点
 // 存储键值对，是 BTree 的最底层节点
@@ -54,8 +22,8 @@ func NewLeafPage(pageID model.PageID) *LeafPage {
 	return &LeafPage{
 		pageID:  pageID,
 		version: 0,
-		keys:    make([][]byte, 0, 16), // 预分配容量
-		values:  make([][]byte, 0, 16),
+		keys:    make([][]byte, 0, InitialLeafCapacity), // 预分配容量
+		values:  make([][]byte, 0, InitialLeafCapacity),
 	}
 }
 
@@ -147,10 +115,10 @@ func (p *LeafPage) Insert(key, value []byte) (bool, error) {
 func insertSlice[T any](slice []T, idx int, value T) []T {
 	if len(slice) == cap(slice) {
 		// 创建新切片时预留空间给新元素
-		// 计算新容量：如果 cap 为 0，使用默认容量 16；否则翻倍
+		// 计算新容量：如果 cap 为 0，使用默认容量；否则翻倍
 		newCap := cap(slice) * 2
 		if newCap == 0 {
-			newCap = 16 // 默认初始容量
+			newCap = DefaultSliceCapacity // 默认初始容量
 		}
 		newSlice := make([]T, len(slice)+1, newCap)
 		copy(newSlice, slice[:idx])
@@ -252,70 +220,27 @@ func (p *LeafPage) Clone() *LeafPage {
 // Serialize 序列化页面
 // 返回：序列化后的字节数组
 func (p *LeafPage) Serialize() ([]byte, error) {
-	const pageSize = 4096 // 固定页面大小
+	ps := NewPageSerializer()
 
-	var buf bytes.Buffer
-
-	// 1. 先序列化页面内容（暂时跳过长度字段）
-	contentStart := buf.Len()
-
-	// 写入 pageID (8 bytes)
-	if err := binaryWrite(&buf, uint64ToBytes(uint64(p.pageID))); err != nil {
+	// 使用 PageSerializer 写入公共头部
+	if err := ps.WriteHeader(uint64(p.pageID), p.version); err != nil {
 		return nil, err
 	}
 
-	// 写入 version (8 bytes)
-	if err := binaryWrite(&buf, uint64ToBytes(p.version)); err != nil {
-		return nil, err
-	}
-
-	// 写入键数量 (4 bytes)
-	numKeys := uint32(len(p.keys))
-	if err := binaryWrite(&buf, uint32ToBytes(numKeys)); err != nil {
+	// 写入键数量
+	if err := ps.WriteKeyCount(len(p.keys)); err != nil {
 		return nil, err
 	}
 
 	// 写入键值对
 	for i := 0; i < len(p.keys); i++ {
-		// 写入键长度 (2 bytes)
-		keyLen := uint16(len(p.keys[i]))
-		if err := binaryWrite(&buf, uint16ToBytes(keyLen)); err != nil {
-			return nil, err
-		}
-
-		// 写入键数据
-		if err := binaryWrite(&buf, p.keys[i]); err != nil {
-			return nil, err
-		}
-
-		// 写入值长度 (2 bytes)
-		valueLen := uint16(len(p.values[i]))
-		if err := binaryWrite(&buf, uint16ToBytes(valueLen)); err != nil {
-			return nil, err
-		}
-
-		// 写入值数据
-		if err := binaryWrite(&buf, p.values[i]); err != nil {
+		if err := ps.WriteKeyValue(p.keys[i], p.values[i]); err != nil {
 			return nil, err
 		}
 	}
 
-	// 2. 获取实际内容长度
-	contentData := buf.Bytes()[contentStart:]
-	contentLength := len(contentData)
-
-	// 3. 创建最终的序列化结果（4 字节长度 + 内容 + 填充）
-	result := make([]byte, pageSize)
-
-	// 写入实际长度（前 4 字节）
-	binary.BigEndian.PutUint32(result[0:4], uint32(contentLength))
-
-	// 复制内容
-	copy(result[4:4+contentLength], contentData)
-
-	// 剩余部分已经自动填充为 0x00（Go 的 make 默认初始化）
-
-	return result, nil
+	// 使用 Finalize() 完成序列化（添加长度前缀和填充）
+	return ps.Finalize()
 }
 
 // DeserializeLeafPage 反序列化叶子页面
@@ -422,17 +347,4 @@ func (p *LeafPage) Size() int {
 // IsFull 判断页面是否已满
 func (p *LeafPage) IsFull(maxKeys int) bool {
 	return len(p.keys) >= maxKeys
-}
-
-// binaryWrite 辅助函数：写入字节数组到 buffer
-func binaryWrite(w io.Writer, data []byte) error {
-	_, err := w.Write(data)
-	return err
-}
-
-// readBytes 辅助函数：从 reader 读取指定长度的字节
-func readBytes(r io.Reader, length int) ([]byte, error) {
-	data := make([]byte, length)
-	_, err := io.ReadFull(r, data)
-	return data, err
 }

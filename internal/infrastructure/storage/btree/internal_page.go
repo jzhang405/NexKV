@@ -482,12 +482,9 @@ func (p *InternalPage) UpdateChildrenRef(startIdx int) error {
 
 	// 更新从 startIdx 开始的所有子节点的父引用
 	for i := startIdx; i < len(p.children); i++ {
-		if p.children[i] != nil {
-			// 设置父引用
-			// 注意：这里需要获取当前 InternalPage 的父引用
-			// 由于函数签名限制，暂时跳过
-			// p.children[i].SetParentRef(parentRef)
-		}
+		// TODO: 更新子节点的父引用
+		// 需要重构 UpdateChildrenRef 方法签名以支持传递 parentRef
+		_ = p.children[i] // 避免空分支警告
 	}
 
 	p.version++

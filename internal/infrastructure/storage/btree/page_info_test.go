@@ -12,15 +12,15 @@ func TestNewPageInfo(t *testing.T) {
 	info := NewPageInfo()
 
 	assert.NotNil(t, info)
-	assert.Equal(t, int64(0), info.pos)
+	assert.Equal(t, int64(0), info.pos.Load())
 	assert.Nil(t, info.page)
 	assert.NotNil(t, info.pageLock)
-	assert.False(t, info.isDirty)
-	assert.False(t, info.isSplitted)
+	assert.False(t, info.IsDirty())
+	assert.False(t, info.IsSplitted())
 	assert.Equal(t, int32(0), info.metaVersion)
 	assert.Equal(t, int32(PageSize), info.pageSize)
-	assert.Greater(t, info.lastTime, int64(0))
-	assert.Equal(t, int64(0), info.hits)
+	assert.Greater(t, info.lastTime.Load(), int64(0))
+	assert.Equal(t, int64(0), info.hits.Load())
 }
 
 func TestPageInfo_GetSetPage(t *testing.T) {
@@ -74,15 +74,15 @@ func TestPageInfo_SplittedFlag(t *testing.T) {
 
 func TestPageInfo_Touch(t *testing.T) {
 	info := NewPageInfo()
-	oldTime := info.lastTime
-	oldHits := info.hits
+	oldTime := info.lastTime.Load()
+	oldHits := info.hits.Load()
 
 	// 等待确保时间戳不同
 	time.Sleep(10 * time.Millisecond)
 	info.Touch()
 
-	assert.Greater(t, info.lastTime, oldTime)
-	assert.Equal(t, oldHits+1, info.hits)
+	assert.Greater(t, info.lastTime.Load(), oldTime)
+	assert.Equal(t, oldHits+1, info.hits.Load())
 }
 
 func TestPageInfo_GetHits(t *testing.T) {
@@ -124,12 +124,12 @@ func TestPageInfo_Clone(t *testing.T) {
 	cloned := original.Clone()
 
 	// 验证字段复制
-	assert.Equal(t, original.pos, cloned.pos)
+	assert.Equal(t, original.pos.Load(), cloned.pos.Load())
 	assert.Equal(t, original.page, cloned.page) // 浅拷贝 Page 指针
-	assert.Equal(t, original.lastTime, cloned.lastTime)
-	assert.Equal(t, original.hits, cloned.hits)
-	assert.Equal(t, original.isDirty, cloned.isDirty)
-	assert.Equal(t, original.isSplitted, cloned.isSplitted)
+	assert.Equal(t, original.lastTime.Load(), cloned.lastTime.Load())
+	assert.Equal(t, original.hits.Load(), cloned.hits.Load())
+	assert.Equal(t, original.IsDirty(), cloned.IsDirty())
+	assert.Equal(t, original.IsSplitted(), cloned.IsSplitted())
 	assert.Equal(t, original.metaVersion, cloned.metaVersion)
 	assert.Equal(t, original.pageSize, cloned.pageSize)
 
@@ -138,7 +138,7 @@ func TestPageInfo_Clone(t *testing.T) {
 
 	// 验证独立修改
 	cloned.SetPos(99999)
-	assert.NotEqual(t, original.pos, cloned.pos)
+	assert.NotEqual(t, original.pos.Load(), cloned.pos.Load())
 }
 
 func TestPageInfo_GetSetBuff(t *testing.T) {

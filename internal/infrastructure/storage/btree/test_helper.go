@@ -33,10 +33,10 @@ func NewTestBTreeBuilder(t require.TestingT) *TestBTreeBuilder {
 	rootInfo := btree.rootRef.GetRootPageInfo()
 	if rootInfo == nil {
 		rootInfo = &PageInfo{
-			pos:         0,
 			metaVersion: 1,
 			pageSize:    4096,
 		}
+		rootInfo.SetPos(0) // ✅ 使用 SetPos() 方法
 	}
 
 	return &TestBTreeBuilder{
@@ -54,11 +54,11 @@ func (tb *TestBTreeBuilder) Build() *BTree {
 // SetRoot 设置根节点
 func (tb *TestBTreeBuilder) SetRoot(page interface{}) *TestBTreeBuilder {
 	info := &PageInfo{
-		pos:         0,
 		page:        page,
 		metaVersion: 1,
 		pageSize:    4096,
 	}
+	info.SetPos(0) // ✅ 使用 SetPos() 方法
 
 	tb.rootRef.pInfo.Store(info)
 	return tb
@@ -67,11 +67,11 @@ func (tb *TestBTreeBuilder) SetRoot(page interface{}) *TestBTreeBuilder {
 // CreatePageRef 创建页面引用
 func (tb *TestBTreeBuilder) CreatePageRef(page interface{}) *PageRef {
 	info := &PageInfo{
-		pos:         0,
 		page:        page,
 		metaVersion: 1,
 		pageSize:    4096,
 	}
+	info.SetPos(0) // ✅ 使用 SetPos() 方法
 	return NewPageRefWithInfo(info)
 }
 

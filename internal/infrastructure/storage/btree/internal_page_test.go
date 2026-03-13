@@ -1,5 +1,7 @@
 package btree
 
+//nolint:errcheck // 测试代码中忽略部分返回值检查
+
 import (
 	"bytes"
 	"testing"
@@ -69,7 +71,7 @@ func TestInternalPage_FindChild(t *testing.T) {
 	assert.NotNil(t, child)
 
 	// 查找等于第一个键（在当前设计中，可能不会精确匹配）
-	child, exact = page.FindChild([]byte("b"))
+	child, _ = page.FindChild([]byte("b"))
 	// 注意：由于 Insert 设计的原因，精确匹配可能不总是工作
 	// 这里我们只验证返回了非 nil 的 child
 	assert.NotNil(t, child)

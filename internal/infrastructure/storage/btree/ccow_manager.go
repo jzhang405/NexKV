@@ -167,25 +167,28 @@ func (ccow *CCOWManager) CopyPathBottomUp(
 // clonePageInfo 克隆 PageInfo
 func (ccow *CCOWManager) clonePageInfo(info *PageInfo) *PageInfo {
 	// 创建新的 PageInfo（深拷贝 Page 数据）
-	clonedInfo := &PageInfo{
-		pos:         info.GetPos(),
+	newInfo := &PageInfo{
 		page:        info.GetPage(), // 暂时共享 Page，后续实现深拷贝
-		pageLock:    info.GetLock(),
-		lastTime:    time.Now().UnixNano(),
-		hits:        0, // 重置访问计数
-		isDirty:     false,
-		isSplitted:  info.isSplitted,
+		pageLock:    NewPageLock(),  // 创建新锁
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}
 
+	// ✅ 修复：使用 Store() 方法设置原子字段
+	newInfo.SetPos(info.GetPos())
+	newInfo.lastTime.Store(time.Now().UnixNano())
+	newInfo.hits.Store(0) // 重置访问计数
+
+	// ✅ 复制标志位（并发安全），但重置 isDirty
+	newInfo.flags.Store(info.flags.Load() &^ 0x01) // 保留 isSplitted，清除 isDirty
+
 	// 复制序列化缓冲区
 	if info.buff != nil {
-		clonedInfo.buff = make([]byte, len(info.buff))
-		copy(clonedInfo.buff, info.buff)
+		newInfo.buff = make([]byte, len(info.buff))
+		copy(newInfo.buff, info.buff)
 	}
 
-	return clonedInfo
+	return newInfo
 }
 
 // updateChildRef 更新子节点引用

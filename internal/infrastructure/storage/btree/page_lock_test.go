@@ -4,8 +4,11 @@
 
 package btree
 
+//nolint:errcheck // 测试代码中忽略部分返回值检查
+
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -115,7 +118,7 @@ func TestPageLock_ConcurrentAccess(t *testing.T) {
 					t.Logf("Goroutine %d: lock timeout at iteration %d", id, j)
 					continue
 				}
-				ops++
+				atomic.AddInt64(&ops, 1)         // ✅ 使用原子操作避免数据竞争
 				time.Sleep(1 * time.Millisecond) // 模拟工作
 				lock.Unlock()
 				time.Sleep(1 * time.Millisecond) // 给其他 goroutine 机会

@@ -1,5 +1,7 @@
 package btree
 
+//nolint:errcheck // 测试代码中忽略部分返回值检查
+
 import (
 	"testing"
 
@@ -194,8 +196,15 @@ func TestBTree_copyPath_MultiplePages(t *testing.T) {
 
 	path := []*PageInfo{internalInfo, leafInfo}
 
+	// 创建测试用的 BTree，需要初始化 rootRef
+	initialRootPage := NewLeafPage(0)
+	initialRootInfo := NewPageInfo()
+	initialRootInfo.SetPage(initialRootPage)
+	rootPageRef := NewRootPageRefWithInfo(initialRootInfo)
+
 	btree := &BTree{
 		maxLevels: 10,
+		rootRef:   rootPageRef,
 	}
 
 	// 测试 copyPath

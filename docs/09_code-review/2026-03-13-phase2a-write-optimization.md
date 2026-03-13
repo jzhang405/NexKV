@@ -4,7 +4,7 @@
 **创建日期**: 2026-03-13
 **负责人**: NexKV Team
 **状态**: 📋 讨论稿
-**预估工期**: 1-2 周
+**预估工期**: 1 周
 **分支**: phase2-write-optimization
 
 ---
@@ -42,11 +42,11 @@ Phase 1 → Phase 2A (写性能优化) → Phase 2B (WAL) → Phase 3
 
 #### 2. **快速见效**（更务实）
 ```
-Phase 2A (1-2 周):
+Phase 2A (1 周):
 ├── Buffer Pool: 2.5x QPS ↑
 ├── 异步刷盘: 2.0x QPS ↑
-├── 批量 API: 1.5x QPS ↑
-└── 预期: 5,000+ QPS (3x 提升)
+├── 序列化优化: 1.3x QPS ↑
+└── 预期: 3,500+ QPS (2.0x+ 提升)
 
 Phase 2B (2-3 周):
 ├── WAL 实现
@@ -61,7 +61,8 @@ Phase 2B (2-3 周):
 Phase 2A 后:
 ├── Buffer Pool: 4,200 QPS (2.5x)
 ├── 异步刷盘: 8,400 QPS (2.0x)
-└── 批量 API: 12,600 QPS (1.5x)
+├── 序列化优化: 10,900 QPS (1.3x)
+└── 预期: 3,500+ QPS (保守 2.0x+ 提升)
 
 Phase 2B 后:
 └── WAL + Group Commit: 15,000+ QPS
@@ -79,9 +80,9 @@ Phase 2B 后:
 ```
 指标              当前       Phase 2A 目标   提升
 ──────────────────────────────────────────────
-Set QPS          1,696     5,000+         3x
-Set P99 延迟     15ms      <5ms            3x
-吞吐量 (MB/s)    0.8       2.5             3x
+Set QPS          1,696     3,500+         2.0x+
+Set P99 延迟     15ms      <8ms            2x
+吞吐量 (MB/s)    0.8       1.6             2x
 内存分配/op      5.5KB     1KB             ↓82%
 GC CPU 时间      15.23%    3%              ↓80%
 ```
@@ -89,8 +90,13 @@ GC CPU 时间      15.23%    3%              ↓80%
 **功能目标**:
 - ✅ Buffer Pool（减少内存分配）
 - ✅ 异步刷盘优化（启用现有框架）
-- ✅ 批量写入 API（SetBatch）
 - ✅ 序列化优化（unsafe 直接内存操作）
+
+**不做什么**（本次优化范围外）:
+- ❌ 批量 Set API（不实现 SetBatch）
+- ❌ WAL（不实现崩溃恢复）
+- ❌ 改变存储格式（向后兼容）
+- ❌ 引入新的依赖
 
 ### 不做什么（Phase 2B）
 
@@ -122,18 +128,22 @@ Set 操作 CPU 时间分布 (pprof):
 
 ### 快速优化机会
 
-**高价值低成本优化**:
+**聚焦 Set 操作优化**（本次范围）:
 ```
 优化项              预期提升    实施难度    工作量
 ──────────────────────────────────────────────
 异步刷盘（已有框架） 2.0x       低         2 天
 Buffer Pool         2.5x       低         3 天
-批量 Set API         1.5x       中         3 天
 序列化优化           1.3x       中         2 天
 ──────────────────────────────────────────────
-总计                9.8x       -          10 天
-实际 (保守估计)     3.0x       -          10 天
+总计                6.5x       -          7 天
+实际 (保守估计)     2.0x       -          7 天
 ```
+
+**不在本次范围内**:
+- ❌ 批量 Set API（留给后续考虑）
+- ❌ WAL 实现（留在 Phase 2B）
+- ❌ Get 操作优化（聚焦 Set）
 
 ---
 
@@ -330,6 +340,7 @@ func (ps *PageSerializer) Serialize(page *Page) ([]byte, error) {
 package btree
 
 import (
+    "fmt"
     "sync"
     "sync/atomic"
 )
@@ -457,12 +468,12 @@ func (pool *BufferPool) PrintStats() {
 
     hitRate := float64(hits) / float64(total) * 100
 
-    printf("Buffer Pool Stats:\n")
-    printf("  Total:      %d\n", total)
-    printf("  Hits:       %d (%.2f%%)\n", hits, hitRate)
-    printf("  Misses:     %d (%.2f%%)\n", misses, 100-hitRate)
-    printf("  Allocations:%d\n", pool.stats.Allocations.Load())
-    printf("  In Pool:    %d\n", pool.stats.InPool.Load())
+    fmt.Printf("Buffer Pool Stats:\n")
+    fmt.Printf("  Total:      %d\n", total)
+    fmt.Printf("  Hits:       %d (%.2f%%)\n", hits, hitRate)
+    fmt.Printf("  Misses:     %d (%.2f%%)\n", misses, 100-hitRate)
+    fmt.Printf("  Allocations:%d\n", pool.stats.Allocations.Load())
+    fmt.Printf("  In Pool:    %d\n", pool.stats.InPool.Load())
 }
 
 // GetGlobalBufferPool 获取全局 pool
@@ -541,176 +552,7 @@ QPS 提升: 额外 2.5x
 
 ---
 
-### 3. 批量 Set API
-
-#### 当前问题
-
-**逐条写入效率低**:
-```go
-// 当前 API: 逐条写入
-for i := 0; i < 1000; i++ {
-    tree.Set(ctx, key(i), value(i))
-    // 每次都触发:
-    // 1. 搜索路径
-    // 2. Page 加载/分裂
-    // 3. 序列化
-    // 4. fsync (10ms)
-}
-```
-
-#### 优化方案
-
-**批量 API 设计**:
-```go
-// 批量 Set API
-func (tree *BTree) SetBatch(ctx context.Context, kvs []KeyValue) error {
-    if len(kvs) == 0 {
-        return nil
-    }
-    if len(kvs) > MaxBatchSize {
-        return ErrBatchTooLarge
-    }
-
-    // Step 1: 按 Page 分组
-    pageGroups := tree.groupKeysByPage(kvs)
-
-    // Step 2: 批量处理每个 Page
-    for pageID, kvs := range pageGroups {
-        if err := tree.setPageBatch(ctx, pageID, kvs); err != nil {
-            return err
-        }
-    }
-
-    // Step 3: 批量刷盘（由异步刷盘处理）
-    return nil
-}
-
-// 按 Page 分组
-func (tree *BTree) groupKeysByPage(kvs []KeyValue) map[model.PageID][]KeyValue {
-    groups := make(map[model.PageID][]KeyValue)
-
-    for _, kv := range kvs {
-        // 搜索 key 所在的 Page
-        path := tree.searchPath(kv.Key)
-        if len(path) > 0 {
-            leafInfo := path[len(path)-1]
-            pageID := leafInfo.GetPos()
-            groups[pageID] = append(groups[pageID], kv)
-        }
-        // TODO: 未找到 Page，需要处理
-    }
-
-    return groups
-}
-
-// 批量设置单个 Page
-func (tree *BTree) setPageBatch(ctx context.Context, pageID model.PageID, kvs []KeyValue) error {
-    // 加载 Page
-    pageInfo, err := tree.loadPage(pageID)
-    if err != nil {
-        return err
-    }
-
-    page, ok := pageInfo.GetPage().(*LeafPage)
-    if !ok {
-        return ErrNotLeafPage
-    }
-
-    // 批量插入
-    for _, kv := range kvs {
-        if _, err := page.Insert(kv.Key, kv.Value); err != nil {
-            return err
-        }
-    }
-
-    // 标记脏页（异步刷盘）
-    page.MarkDirty()
-    pageInfo.MarkDirty()
-
-    return nil
-}
-```
-
-**使用示例**:
-```go
-// 示例 1: 批量导入
-kvs := make([]KeyValue, 1000)
-for i := 0; i < 1000; i++ {
-    kvs[i] = KeyValue{
-        Key:   []byte(fmt.Sprintf("key-%d", i)),
-        Value: []byte(fmt.Sprintf("value-%d", i)),
-    }
-}
-
-// ✅ 一次性批量写入
-if err := tree.SetBatch(ctx, kvs); err != nil {
-    log.Fatal(err)
-}
-
-// 示例 2: 分批处理大数据集
-func importData(tree *BTree, data []KeyValue) error {
-    batchSize := 100
-
-    for i := 0; i < len(data); i += batchSize {
-        end := i + batchSize
-        if end > len(data) {
-            end = len(data)
-        }
-
-        batch := data[i:end]
-        if err := tree.SetBatch(ctx, batch); err != nil {
-            return err
-        }
-    }
-
-    return nil
-}
-```
-
-#### 预期效果
-
-**性能提升**:
-```
-优化前 (逐条写入):
-1000 次 Set:
-├── 搜索路径: 1000 次
-├── Page 加载: 1000 次
-├── 序列化: 1000 次
-├── fsync: 1000 次 (10s)
-└── 总时间: ~10 秒
-
-优化后 (批量写入):
-1000 次 Set (10 个 Page, 每个 Page 100 keys):
-├── 搜索路径: 1000 次 (无法减少)
-├── Page 加载: 10 次 (↓99%)
-├── 序列化: 10 次 (↓99%)
-├── fsync: 10 次 (↓99%, 100ms)
-└── 总时间: ~1.2 秒
-
-QPS 提升: 额外 1.5x
-```
-
-#### 实施计划
-
-**Day 1: 基础 API 实现**
-- [ ] 实现 `SetBatch()` 方法
-- [ ] 实现 `groupKeysByPage()` 辅助方法
-- [ ] 单元测试：批量写入正确性
-
-**Day 2: 边界情况处理**
-- [ ] 处理 Key 跨 Page 的情况
-- [ ] 处理 Page 满需要分裂的情况
-- [ ] 处理部分失败的情况
-- [ ] 集成测试：复杂场景
-
-**Day 3: 性能测试**
-- [ ] Benchmark: SetBatch vs Set
-- [ ] 不同批量大小的性能
-- [ ] 寻找最优批量大小
-
----
-
-### 4. 序列化优化（可选）
+### 3. 序列化优化（可选）
 
 #### 优化方案
 
@@ -802,46 +644,59 @@ QPS 提升: 额外 1.3x
 
 ---
 
-## 📅 实施计划（1-2 周）
+## 📅 实施计划（1 周 = 5 个工作日）
 
-### Week 1: 核心优化
+### Day 1-2: 异步刷盘 + Buffer Pool
 
-**Day 1-2: 异步刷盘 + Buffer Pool**
-- [ ] 启用异步刷盘框架
-- [ ] 实现 Buffer Pool
-- [ ] 集成测试
+**启用异步刷盘**:
+- [ ] 检查现有异步刷盘框架
+- [ ] 启用异步刷盘配置
+- [ ] 测试数据安全性
 
-**Day 3-4: 批量 Set API**
-- [ ] 实现 `SetBatch()` 方法
-- [ ] 边界情况处理
-- [ ] 性能测试
+**实现 Buffer Pool**:
+- [ ] 创建 `BufferPool` 结构体
+- [ ] 实现 4 级 pool (4KB, 8KB, 16KB, 32KB)
+- [ ] 实现 `Get()` 和 `Put()` 方法
+- [ ] 集成到 `PageSerializer`
 
-**Day 5: 序列化优化（可选）**
-- [ ] unsafe 直接内存操作
-- [ ] 预分配 buffer 大小
-- [ ] 性能测试
+**Day 1 结束**:
+- [ ] 异步刷盘启用
+- [ ] Buffer Pool 基础实现完成
 
-**Day 6-7: 性能测试和调优**
-- [ ] 运行完整 benchmark
-- [ ] 生成 profiling 报告
-- [ ] 调优参数
+### Day 3: 序列化优化（可选）
 
-### Week 2: 测试和文档
+**unsafe 优化**:
+- [ ] 替换 `binary.PutUvarint` 为 `binary.LittleEndian`
+- [ ] 使用 `unsafe.Pointer` 直接操作内存
+- [ ] 精确预分配 buffer 大小
 
-**Day 1-3: 集成测试**
+**Day 3 结束**:
+- [ ] 序列化性能测试通过
+
+### Day 4-5: 性能测试和调优
+
+**基准测试**:
+- [ ] 运行完整 benchmark suite
+- [ ] 生成 CPU/Memory profiling
+- [ ] 对比基线数据
+
+**调优**:
+- [ ] 调整 Buffer Pool 大小
+- [ ] 调整异步刷盘批量大小
+- [ ] 调整刷盘间隔
+
+**Day 5 结束**:
+- [ ] 性能目标达成
+- [ ] 测试报告完成
+
+### 可选：额外时间（测试和文档）
+
+如果有额外时间，可以进行：
 - [ ] 并发压力测试
 - [ ] 长时间运行测试
-- [ ] 崩溃恢复测试（无 WAL）
-
-**Day 4-5: 文档编写**
 - [ ] 性能测试报告
 - [ ] API 使用文档
-- [ ] 配置说明
-
-**Day 6-7: Code Review**
-- [ ] 团队 Code Review
-- [ ] 修复问题
-- [ ] 准备合并
+- [ ] Code Review
 
 ---
 
@@ -851,7 +706,7 @@ QPS 提升: 额外 1.3x
 
 - [ ] **异步刷盘**: 正确启用，无数据丢失
 - [ ] **Buffer Pool**: 命中率 >80%，无内存泄露
-- [ ] **SetBatch API**: 功能正确，支持跨 Page
+- [ ] **序列化优化**: 性能提升达标
 - [ ] **向后兼容**: 现有 API 无需修改
 
 ### 性能验收
@@ -859,9 +714,7 @@ QPS 提升: 额外 1.3x
 ```
 基准测试目标:
 BenchmarkBTree_Set:        1,696 → 3,500+  (2.0x)
-BenchmarkBTree_Set_P99:    15ms → <5ms      (3x)
-BenchmarkBTree_SetBatch_100:  新增   <50ms
-BenchmarkBTree_SetBatch_1000: 新增   <500ms
+BenchmarkBTree_Set_P99:    15ms → <8ms      (2x)
 
 内存分配:
 ├── 每次操作分配: 5KB → 1KB (↓82%)
@@ -898,8 +751,8 @@ go tool cover -func=coverage.out | grep total
 
 **预期性能基线**:
 ```
-Set QPS:    5,000+ (3x 提升)
-Set P99:    <5ms (3x 提升)
+Set QPS:    3,500+ (2.0x+ 提升)
+Set P99:    <8ms (2x 提升)
 内存分配:  ↓82%
 GC 压力:   ↓80%
 ```
@@ -930,11 +783,11 @@ WAL 支持:  ✅
 │ 阶段           QPS      P99     内存分配   GC CPU    │
 ├────────────────────────────────────────────────────┤
 │ Phase 1       1,696    15ms    5.5KB      15.23%   │
-│ Phase 2A      5,000+   <5ms    1KB        3%       │
+│ Phase 2A      3,500+   <8ms    1KB        3%       │
 │ Phase 2B     10,000+   <2ms    1KB        3%       │
 ├────────────────────────────────────────────────────┤
-│ 提升 (1→2A)   3x       3x      ↓82%      ↓80%     │
-│ 提升 (2A→2B)  2x       2.5x    持平       持平      │
+│ 提升 (1→2A)   2.0x+    2x      ↓82%      ↓80%     │
+│ 提升 (2A→2B)  2.9x     4x      持平       持平      │
 │ 提升 (1→2B)   6x       7.5x    ↓82%      ↓80%     │
 └────────────────────────────────────────────────────┘
 ```
@@ -944,8 +797,8 @@ WAL 支持:  ✅
 ## 💡 讨论要点
 
 1. **优化顺序**: 是否同意先优化现有架构再实施 WAL？
-2. **性能目标**: Phase 2A 的 5,000 QPS 目标是否合理？
-3. **实施时间**: 1-2 周是否足够完成 Phase 2A？
+2. **性能目标**: Phase 2A 的 3,500+ QPS (2.0x+) 目标是否合理？
+3. **实施时间**: 1 周是否足够完成 Phase 2A？
 4. **风险评估**: 异步刷盘是否会影响数据一致性？
 5. **Phase 2B**: 是否需要在 Phase 2A 完成后再评估？
 

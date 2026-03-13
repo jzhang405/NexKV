@@ -1,0 +1,28 @@
+File: btree.test
+Build ID: 7c50829c532a7cef7e7fb480f6c2a3766b8e6a9c
+Type: alloc_space
+Time: 2026-03-13 07:12:57 CST
+Showing nodes accounting for 5.32GB, 99.15% of 5.36GB total
+Dropped 46 nodes (cum <= 0.03GB)
+Showing top 20 nodes out of 23
+      flat  flat%   sum%        cum   cum%
+    4.59GB 85.58% 85.58%     4.59GB 85.58%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageSerializer).Finalize (inline)
+    0.49GB  9.07% 94.65%     0.49GB  9.07%  bytes.growSlice
+    0.08GB  1.41% 96.07%     0.56GB 10.48%  bytes.(*Buffer).grow
+    0.06GB  1.09% 97.16%     0.06GB  1.09%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Clone (inline)
+    0.06GB  1.08% 98.24%     0.19GB  3.47%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).Clone
+    0.05GB  0.91% 99.15%     0.05GB  0.91%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*InternalPage).Clone (inline)
+         0     0% 99.15%     0.56GB 10.48%  bytes.(*Buffer).Write
+         0     0% 99.15%     5.35GB 99.82%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+         0     0% 99.15%     0.19GB  3.61%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPath
+         0     0% 99.15%     5.15GB 96.07%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).persistPage
+         0     0% 99.15%     5.15GB 96.07%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).persistPageRecursive
+         0     0% 99.15%     5.15GB 96.07%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).persistRoot
+         0     0% 99.15%     5.35GB 99.82%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+         0     0% 99.15%     0.54GB 10.00%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*InternalPage).Serialize
+         0     0% 99.15%     4.62GB 86.07%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Serialize
+         0     0% 99.15%     0.03GB  0.56%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageSerializer).WriteChildID (inline)
+         0     0% 99.15%     0.08GB  1.41%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageSerializer).WriteHeader
+         0     0% 99.15%     0.44GB  8.22%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageSerializer).WriteKeyValue
+         0     0% 99.15%     5.36GB 99.90%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.BenchmarkBTree_Set_Single
+         0     0% 99.15%     0.79GB 14.71%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.setupBenchmarkTree

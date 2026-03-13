@@ -1,0 +1,29 @@
+File: btree.test
+Build ID: 7c50829c532a7cef7e7fb480f6c2a3766b8e6a9c
+Type: cpu
+Time: 2026-03-13 07:12:47 CST
+Duration: 4.72s, Total samples = 37170ms (787.59%)
+Showing nodes accounting for 28870ms, 77.67% of 37170ms total
+Dropped 245 nodes (cum <= 185.85ms)
+Showing top 20 nodes out of 96
+      flat  flat%   sum%        cum   cum%
+    5860ms 15.77% 15.77%     5860ms 15.77%  cmpbody
+    4440ms 11.95% 27.71%    10150ms 27.31%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*InternalPage).search
+    3310ms  8.91% 36.62%    29660ms 79.80%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).searchPath
+    2230ms  6.00% 42.62%    11510ms 30.97%  runtime.moveSliceNoCap
+    1640ms  4.41% 47.03%    11790ms 31.72%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*InternalPage).FindChildRef
+    1640ms  4.41% 51.44%     2980ms  8.02%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).search
+    1010ms  2.72% 54.16%     1310ms  3.52%  runtime.tryDeferToSpanScan
+     900ms  2.42% 56.58%     4660ms 12.54%  runtime.mallocgcSmallScanNoHeader
+     800ms  2.15% 58.73%     7000ms 18.83%  bytes.Compare (inline)
+     790ms  2.13% 60.86%      890ms  2.39%  runtime.(*mspan).writeHeapBitsSmall
+     790ms  2.13% 62.98%      790ms  2.13%  runtime.memmove
+     780ms  2.10% 65.08%     2310ms  6.21%  runtime.bulkBarrierPreWriteSrcOnly
+     740ms  1.99% 67.07%      740ms  1.99%  internal/runtime/syscall/linux.Syscall6
+     600ms  1.61% 68.68%     1120ms  3.01%  runtime.selectnbrecv
+     580ms  1.56% 70.24%     5940ms 15.98%  runtime.mallocgc
+     580ms  1.56% 71.81%      580ms  1.56%  runtime.nextFreeFast (inline)
+     570ms  1.53% 73.34%      570ms  1.53%  runtime.memclrNoHeapPointers
+     560ms  1.51% 74.85%      630ms  1.69%  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).getPageOrLoad
+     550ms  1.48% 76.32%      650ms  1.75%  runtime.typePointers.next
+     500ms  1.35% 77.67%      500ms  1.35%  runtime.chanrecv

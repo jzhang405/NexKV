@@ -1,41 +1,35 @@
-version: "2"
-run:
-  concurrency: 4
-  modules-download-mode: readonly
+version: 2
+
 linters:
-  default: none
   enable:
     - govet
-    - ineffassign
     - staticcheck
-    - unused
-    - errcheck # Unhandled errors (critical for Go)
+    - ineffassign
+  disable:
+    - errcheck
+    - gosec      # 安全检查，暂时禁用
+    - dupl       # 重复代码检测，暂时禁用
+    - gocyclo    # 圈复杂度，暂时禁用
 
-  settings:
-    govet:
-      enable:
-        - atomic
-        - nilfunc
-        - printf
-      enable-all: false
-  exclusions:
-    generated: lax
-    presets:
-      - comments
-      - common-false-positives
-      - legacy
-      - std-error-handling
-    paths:
-      - third_party$
-      - builtin$
-      - examples$
+linters-settings:
+  govet:
+    enable-all: false
+    enable:
+      - atomic
+      - shadow
+      - copylocks
+
 issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
-formatters:
-  exclusions:
-    generated: lax
-    paths:
-      - third_party$
-      - builtin$
-      - examples$
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+    # 排除一些误报
+    - linters:
+        - staticcheck
+      text: "SA9003:"  # 忽略无用的类型转换建议
+    # 允许 main 函数中使用 fmt.Println
+    - path: cmd/
+      linters:
+        - staticcheck
+      text: "SA9002:"

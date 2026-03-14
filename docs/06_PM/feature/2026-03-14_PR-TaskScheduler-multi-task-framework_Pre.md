@@ -37,16 +37,30 @@ BTree 写入性能优化是 NexKV 项目的核心优化方向。当前实现存�
 
 **现有问题**：
 
-1. **命名混淆**：当前 `RunLoopWorker` 和设计中的 `RunLoop` 命名容易混淆，无法从名字区分核心差异
+1. **命名混淆风险**：原设计中的 `RunLoop` 与现有 `RunLoopWorker` 命名相似，容易混淆职责
 2. **缺乏多任务调度**：现有 `RunLoopWorker` 是单队列单 worker 模式，无法支持多类型任务的优先级调度
 3. **无优先级支持**：所有任务按 FIFO 顺序处理，无法区分任务优先级
 4. **调度模式单一**：只有同步执行模式，无法支持 IO 密集型和混合型任务
+
+**与 BTree 优化方案的关联**：
+
+TaskScheduler 是 BTree 写入性能优化 Phase 2 的核心基础设施：
+
+- **Phase 1**：有限重试 + 智能退避（减少 CPU 浪费）
+- **Phase 2**：TaskScheduler 异步写入队列（本PR）+ WriteTask 实现
+- **Phase 3**：Per-Page Lock 优化（长期目标）
+
+TaskScheduler 解决了 Phase 2 的关键问题：
+1. 单队列无法支持多类型任务调度
+2. 无优先级导致关键任务等待
+3. 命名混淆导致设计不清晰
 
 **价值**：
 
 实现 TaskScheduler 多任务调度框架后：
 - **命名清晰**：`EventLoop`（单队列）vs `TaskScheduler`（多任务调度）
-- **性能提升**：预期 8 并发写入性能提升 6.2x
+- **性能提升**：配合 Phase 2 整体优化，预期 8 并发写入性能提升 6.2x
+- **框架价值**：提供可插拔、可扩展的多任务调度基础设施
 - **可扩展性**：支持动态注册不同类型的 Task，每个 Task 独立队列
 - **优先级调度**：支持按优先级调度，高优先级任务优先处理
 
@@ -137,6 +151,18 @@ type AsyncResult struct {
 
 2. **核心机制**：**优先级调度 + 无空转等待**
 
+**无空转等待原理**：
+- 所有 Task 队列都空时，调用 `sync.Cond.Wait()` 阻塞调度器 goroutine
+- Task 入队时调用 `cond.Signal()` 自动唤醒调度器
+- 避免忙等待（busy loop），零 CPU 消耗
+- 与现有 `RunLoopWorker` 的 channel 阻塞等待类似，但支持多队列
+
+**优先级调度原理**：
+- 每个Task 有独立的优先级（数值越小优先级越高）
+- 调度器每次循环按优先级排序任务列表
+- 优先处理高优先级 Task 的队列
+- 相同优先级按注册顺序处理
+
 ```go
 // TaskScheduler 核心调度循环
 func (s *TaskScheduler) Run() {
@@ -181,6 +207,16 @@ type TaskScheduler struct {
     stats    TaskSchedulerStats
 }
 
+// TaskSchedulerStats 统计信息
+type TaskSchedulerStats struct {
+    TotalCycles    atomic.Int64  // 总循环次数
+    TotalTasks     atomic.Int64  // 总处理任务数
+    EmptyWaits     atomic.Int64  // 空等待次数
+    PanicCount     atomic.Int64  // Panic 恢复次数
+    LastPanicTime  atomic.Value  // 最后一次 panic 时间
+    TaskExecutions map[string]atomic.Int64  // 各任务执行次数
+}
+
 // BaseTask 基类
 type BaseTask struct {
     name        string
@@ -209,9 +245,27 @@ type BaseTask struct {
 | `RunLoopWorker` | `EventLoop` | `event_loop.go` | 单队列单 worker 高性能执行 |
 | `RunLoop` | `TaskScheduler` | `task_scheduler.go` | 多任务优先级调度框架 |
 
+**命名理由**：
+- `EventLoop`: 明确表示单一事件循环，处理单一任务队列
+- `TaskScheduler`: 明确表示多任务调度器，支持优先级和动态注册
+- 职责清晰，无重叠混淆，便于理解和选择
+
 **共存策略**：
 - `EventLoop`: 适用于简单高性能任务执行（保留现有实现）
 - `TaskScheduler`: 适用于复杂多任务调度（新增实现）
+
+#### 3.4 与现有组件对比
+
+| 特性 | EventLoop (原 RunLoopWorker) | TaskScheduler (新增) |
+|-----|------------------------------|---------------------|
+| **队列模式** | 单一 `chan taskRequest` | 每个 Task 独立队列 |
+| **任务类型** | Request / EnhancedRequest | 可插拔 Task 接口 |
+| **执行方式** | 同步执行（runLoop 内） | 异步执行（`go Execute()`） |
+| **优先级** | ❌ 无 | ✅ 支持 |
+| **对象池** | ✅ `sync.Pool` | 可选 |
+| **动态注册** | ❌ 不支持 | ✅ 支持 |
+| **CPU 绑定** | ✅ `LockOSThread()` | 可选 |
+| **适用场景** | 简单高性能任务 | 复杂多任务调度 |
 
 ### 4. 风险评估与应对措施
 
@@ -223,13 +277,51 @@ type BaseTask struct {
 | 测试覆盖不足 | 中 | 编写完整单元测试和基准测试，确保 80%+ 覆盖率 |
 | 集成复杂度高 | 中 | 分阶段集成，先独立测试再集成到 BTree |
 
-### 5. 架构师评审记录（循环优化，直至通过）
+### 5. 测试验证计划
+
+#### 5.1 单元测试
+
+| 测试内容 | 文件 | 覆盖目标 |
+|---------|------|---------|
+| Task 接口方法 | `task_scheduler_test.go` | 100% |
+| BaseTask 实现 | `base_task_test.go` | 90%+ |
+| 调度器循环 | `task_scheduler_test.go` | 80%+ |
+| 优先级调度 | `task_scheduler_test.go` | 核心逻辑 |
+| Panic 恢复 | `task_scheduler_test.go` | 异常路径 |
+| 上下文取消 | `task_scheduler_test.go` | 取消逻辑 |
+
+#### 5.2 基准测试
+
+| 测试内容 | 文件 | 验证指标 |
+|---------|------|---------|
+| 单任务吞吐量 | `task_scheduler_bench_test.go` | ops/sec |
+| 多任务调度开销 | `task_scheduler_bench_test.go` | 调度延迟 |
+| 与 EventLoop 对比 | `comparison_bench_test.go` | 性能差异 |
+| 优先级调度性能 | `task_scheduler_bench_test.go` | 高优先级响应时间 |
+
+#### 5.3 集成测试
+
+- BTree 写入集成（`write_task_integration_test.go`）
+- 并发压力测试（`concurrent_test.go`）
+- 优雅关闭测试（`shutdown_test.go`）
+
+### 6. 设计决策记录（ADR）
+
+| 决策 | 选择方案 | 替代方案 | 理由 |
+|------|---------|---------|------|
+| 命名规范 | EventLoop vs TaskScheduler | RunLoopWorker vs RunLoop | 职责清晰，无重叠混淆 |
+| 执行方式 | 异步执行 `go Execute()` | 同步执行 | 不阻塞调度循环 |
+| 等待机制 | `sync.Cond.Wait()` | channel + select | 零 CPU 空转 |
+| 队列实现 | slice + mutex | channel | 灵活性高，易于扩展 |
+| 统计信息 | atomic.Int64 | mutex + int64 | 高性能无锁计数 |
+
+### 7. 架构师评审记录（循环优化，直至通过）
 
 | 评审轮次 | 评审日期 | 评审人（架构师） | 核心评审意见 | 优化措施（含AI辅助修改） | 优化结果 |
 |----------|----------|------------------|--------------|--------------------------|----------|
 | 第1轮 | 待定 | 待定 | 待评审 | 待优化 | 待完成 |
 
-### 6. 预审批确认
+### 8. 预审批确认
 > **架构师签字/备注**：XXX 202X-XX-XX 该Feature方案可行，风险可控，同意启动开发，需严格按照文档落地，确保CI通过后提交Post总结。
 
 ---

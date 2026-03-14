@@ -32,6 +32,16 @@ func setupTestBTree(t *testing.T) (*BTree, func()) {
 	return b, cleanup
 }
 
+// setupBenchmarkBTree 创建基准测试用的 BTree（无 cleanup）
+func setupBenchmarkBTree(b *testing.B) *BTree {
+	// 创建 BTree（使用空目录，表示内存模式）
+	bt, err := OpenBTree("", nil)
+	if err != nil {
+		b.Fatalf("Failed to create BTree: %v", err)
+	}
+	return bt
+}
+
 // TestBTree_copyPathShallow 测试浅拷贝路径
 func TestBTree_copyPathShallow(t *testing.T) {
 	b, cleanup := setupTestBTree(t)
@@ -300,7 +310,7 @@ func TestBTree_copyPathShallow_Integration(t *testing.T) {
 
 // BenchmarkBTree_copyPathShallow 基准测试：浅拷贝路径
 func BenchmarkBTree_copyPathShallow(b *testing.B) {
-	bt, _ := setupTestBTree(nil)
+	bt := setupBenchmarkBTree(b)
 
 	// 构建三层路径
 	rootInfo := NewPageInfo()
@@ -334,7 +344,7 @@ func BenchmarkBTree_copyPathShallow(b *testing.B) {
 
 // BenchmarkBTree_finalizeDeepClone 基准测试：深拷贝转换
 func BenchmarkBTree_finalizeDeepClone(b *testing.B) {
-	bt, _ := setupTestBTree(nil)
+	bt := setupBenchmarkBTree(b)
 
 	// 构建浅拷贝路径
 	rootInfo := NewPageInfo()

@@ -160,37 +160,49 @@ type Task interface {
 - 优先处理高优先级 Task 的队列
 - 相同优先级按注册顺序处理
 
-```go
-// TaskScheduler 核心调度循环
-func (s *TaskScheduler) Run() {
-    for s.running {
-        tasks := s.getSortedTasks()  // 按优先级排序
+**执行模式（修正）**：
+- 调度器本身作为 Task 提交给 PerCoreExecutor/AntsExecutor 运行
+- 在 Executor 的 goroutine 中同步执行任务
+- executeTask 同步执行，不启动新的 goroutine（避免 goroutine 爆炸）
 
-        processed := false
+```go
+// ✅ 正确：调度器在 Executor 上运行
+func (s *TaskScheduler) Start(executor TaskExecutor) error {
+    return executor.Submit(
+        context.Background(),
+        model.SourceDefault,
+        model.TaskPriorityNormal,
+        s.Run,  // 调度器作为 task 提交
+    )
+}
+
+// ✅ 正确：同步执行（在 executor 的 goroutine 中）
+func (s *TaskScheduler) Run(ctx context.Context) error {
+    for s.running {
+        tasks := s.getSortedTasks()
+
         for _, task := range tasks {
             if !task.HasItem() { continue }
 
             var item any
             if !task.Dequeue(&item) { continue }
 
-            // 异步执行（不阻塞循环）
-            go s.executeTask(task, item)
-
-            processed = true
+            // 同步执行（在 executor 的 goroutine 中，不启动新 goroutine）
+            s.executeTask(task, item)
         }
 
-        // 所有队列都空，无空转等待
         if !processed {
-            s.waitForSignal()  // sync.Cond.Wait()
+            s.waitForSignal()
         }
     }
+    return nil
 }
 ```
 
 3. **数据结构**：
 
 ```go
-// TaskScheduler 调度器
+// TaskScheduler 调度器（实现 model.TaskRunner 接口）
 type TaskScheduler struct {
     name     string
     tasks    []Task
@@ -202,6 +214,9 @@ type TaskScheduler struct {
     ctx      context.Context
     cancel   context.CancelFunc
     stats    TaskSchedulerStats
+
+    // 关联的 Executor（可选）
+    executor TaskExecutor  // TaskExecutor 接口（来自 service 包）
 }
 
 // TaskSchedulerStats 统计信息
@@ -225,10 +240,30 @@ type SchedulerBaseTask struct {
     cond     *sync.Cond
 }
 
+// 实现model.TaskRunner接口
+func (s *TaskScheduler) Run(ctx context.Context, pipeline model.PipelineContext) error {
+    // ... 调度循环逻辑 ...
+    return nil
+}
+
+func (s *TaskScheduler) Priority() model.TaskPriority {
+    return model.TaskPriorityNormal
+}
+
+func (s *TaskScheduler) SourceID() model.SourceID {
+    return model.SourceDefault
+}
+
 // 复用 model.TaskPriority（10级优先级）
 // 0=critical, 1=high, 2=urgent, 3=important, 4=normal-high
 // 5=normal, 6=normal-low, 7=low, 8=background, 9=idle
 ```
+
+**复用说明**：
+- **`model.BaseTask[any]`**：提供 `done` channel、`Wait()`、`IsDone()`、`GetResult()` 等异步结果机制
+- **`model.TaskPriority`**：提供标准化的 10 级优先级枚举（0-9，0 最高）
+- **`model.TaskRunner`**：调度器实现此接口，可提交给 Executor
+- **与现有 `Task` 接口体系一致**：`Task[Result]` 实现 `TaskRunner` 接口
 
 **复用说明**：
 - **`model.BaseTask[any]`**：提供 `done` channel、`Wait()`、`IsDone()`、`GetResult()` 等异步结果机制
@@ -262,16 +297,17 @@ type SchedulerBaseTask struct {
 
 | 特性 | EventLoop (原 RunLoopWorker) | TaskScheduler (新增) |
 |-----|------------------------------|---------------------|
+| **运行模式** | 独立 goroutine + `LockOSThread()` | 在 PerCoreExecutor/Ants 上运行 |
 | **队列模式** | 单一 `chan taskRequest` | 每个 Task 独立队列 |
 | **任务类型** | Request / EnhancedRequest | 可插拔 Task 接口 |
 | **异步结果** | `ResultCh/ErrorCh` 分离 channel | 复用 `BaseTask[Result].done` |
 | **等待方法** | `Wait()`, `WaitWithTimeout()` | 复用 `BaseTask.Wait(ctx)` |
 | **状态检查** | ❌ 无 | ✅ `IsDone()`, `Status()` |
 | **优先级** | ❌ 无 | ✅ 支持（复用 `TaskPriority`） |
-| **执行方式** | 同步执行（runLoop 内） | 异步执行（`go Execute()`） |
+| **任务执行** | 同步执行（runLoop 内） | 同步执行（在 executor goroutine 内） |
 | **对象池** | ✅ `sync.Pool` | 可选 |
 | **动态注册** | ❌ 不支持 | ✅ 支持 |
-| **CPU 绑定** | ✅ `LockOSThread()` | 可选 |
+| **CPU 绑定** | ✅ `LockOSThread()` | 通过 Executor 绑定 |
 | **适用场景** | 简单高性能任务 | 复杂多任务调度 |
 
 ### 4. 风险评估与应对措施
@@ -319,7 +355,8 @@ type SchedulerBaseTask struct {
 | 命名规范 | EventLoop vs TaskScheduler | RunLoopWorker vs RunLoop | 职责清晰，无重叠混淆 |
 | 异步结果 | 复用 `model.BaseTask[Result]` | 新建 `AsyncResult` | 避免重复代码，复用成熟实现 |
 | 优先级 | 复用 `model.TaskPriority` | 自定义 int | 10级标准枚举，语义清晰 |
-| 执行方式 | 异步执行 `go Execute()` | 同步执行 | 不阻塞调度循环 |
+| **运行模式** | **在 Executor 上运行** | **独立 goroutine** | 利用 CPU 绑定和智能调度 |
+| **任务执行** | **同步执行** | **异步执行 `go Execute()`** | 避免 goroutine 爆炸，正确利用 Executor |
 | 等待机制 | `sync.Cond.Wait()` | channel + select | 零 CPU 空转 |
 | 队列实现 | slice + mutex | channel | 灵活性高，易于扩展 |
 | 统计信息 | atomic.Int64 | mutex + int64 | 高性能无锁计数 |

@@ -20,8 +20,9 @@ const (
 	InitialInternalCapacity = 16
 
 	// DefaultSliceCapacity 默认切片容量
-	// ✅ Phase 3 优化：从 8 → 32，减少扩容次数
-	DefaultSliceCapacity = 32
+	// ✅ Phase 3 优化：从 8 → 32 → 256，大幅减少扩容次数和 GC 压力
+	// 分析显示 insertSlice 占 51% 内存分配，主要原因是频繁扩容
+	DefaultSliceCapacity = 256
 
 	// DefaultChildSlots 默认子节点槽数量
 	DefaultChildSlots = 17

@@ -68,9 +68,10 @@ TaskScheduler 解决了 Phase 2 的关键问题：
 
 1. **功能目标**：
    - 实现 `TaskScheduler` 调度器，支持多任务优先级调度
-   - 实现 `Task` 接口和 `BaseTask` 基类
+   - 实现 `Task` 接口和 `SchedulerBaseTask` 基类（嵌入 `model.BaseTask`）
    - 支持任务动态注册/注销
-   - 支持异步执行结果获取（`AsyncResult`）
+   - 复用现有 `model.BaseTask[Result]` 实现异步结果等待
+   - 复用现有 `model.TaskPriority` 实现标准化优先级
    - 重命名现有 `RunLoopWorker` → `EventLoop`
 
 2. **性能目标**：
@@ -130,24 +131,20 @@ flowchart TD
 ```go
 // Task 调度器任务接口
 type Task interface {
-    HasItem() bool                    // 检查是否有待处理任务
-    Enqueue(item any) error           // 客户端入队任务
-    Dequeue(item *any) bool           // 出队一个任务
-    Execute(item any)                 // 执行任务处理逻辑
-    SetAsyncResult(res AsyncResult)   // 设置异步结果
-    Name() string                      // 任务名称
-    Priority() int                     // 优先级
-    setScheduler(s *TaskScheduler)     // 内部使用
-}
-
-// AsyncResult 异步执行结果
-type AsyncResult struct {
-    Value     any
-    Error     error
-    Done      chan struct{}
-    Timestamp time.Time
+    HasItem() bool                      // 检查是否有待处理任务
+    Enqueue(item any) error             // 客户端入队任务
+    Dequeue(item *any) bool             // 出队一个任务
+    Execute(item any)                   // 执行任务处理逻辑
+    GetTask() *model.BaseTask[any]      // 获取异步结果任务（复用现有）
+    Name() string                        // 任务名称
+    Priority() model.TaskPriority       // 优先级（复用现有枚举）
+    setScheduler(s *TaskScheduler)      // 内部使用
 }
 ```
+
+**复用现有组件**：
+- `internal/domain/model/task.go` 的 `BaseTask[Result]` - 异步结果等待
+- `internal/domain/model/task.go` 的 `TaskPriority` - 10 级优先级枚举
 
 2. **核心机制**：**优先级调度 + 无空转等待**
 
@@ -217,19 +214,26 @@ type TaskSchedulerStats struct {
     TaskExecutions map[string]atomic.Int64  // 各任务执行次数
 }
 
-// BaseTask 基类
-type BaseTask struct {
-    name        string
-    priority    int
-    scheduler   *TaskScheduler
-    queue       []any
-    mu          sync.Mutex
-    cond        *sync.Cond
-    ctx         context.Context
-    cancel      context.CancelFunc
-    asyncResult *AsyncResult
+// SchedulerBaseTask 调度器任务基类（嵌入 model.BaseTask）
+type SchedulerBaseTask struct {
+    *model.BaseTask[any]  // 嵌入现有 BaseTask，复用异步结果机制
+    name     string
+    priority model.TaskPriority
+    scheduler *TaskScheduler
+    queue    []any
+    mu       sync.Mutex
+    cond     *sync.Cond
 }
+
+// 复用 model.TaskPriority（10级优先级）
+// 0=critical, 1=high, 2=urgent, 3=important, 4=normal-high
+// 5=normal, 6=normal-low, 7=low, 8=background, 9=idle
 ```
+
+**复用说明**：
+- **`model.BaseTask[any]`**：提供 `done` channel、`Wait()`、`IsDone()`、`GetResult()` 等异步结果机制
+- **`model.TaskPriority`**：提供标准化的 10 级优先级枚举（0-9，0 最高）
+- **与现有 `Task` 接口体系一致**：`Task[Result]` 实现 `TaskRunner` 接口
 
 4. **容错设计**：
 
@@ -260,8 +264,11 @@ type BaseTask struct {
 |-----|------------------------------|---------------------|
 | **队列模式** | 单一 `chan taskRequest` | 每个 Task 独立队列 |
 | **任务类型** | Request / EnhancedRequest | 可插拔 Task 接口 |
+| **异步结果** | `ResultCh/ErrorCh` 分离 channel | 复用 `BaseTask[Result].done` |
+| **等待方法** | `Wait()`, `WaitWithTimeout()` | 复用 `BaseTask.Wait(ctx)` |
+| **状态检查** | ❌ 无 | ✅ `IsDone()`, `Status()` |
+| **优先级** | ❌ 无 | ✅ 支持（复用 `TaskPriority`） |
 | **执行方式** | 同步执行（runLoop 内） | 异步执行（`go Execute()`） |
-| **优先级** | ❌ 无 | ✅ 支持 |
 | **对象池** | ✅ `sync.Pool` | 可选 |
 | **动态注册** | ❌ 不支持 | ✅ 支持 |
 | **CPU 绑定** | ✅ `LockOSThread()` | 可选 |
@@ -310,6 +317,8 @@ type BaseTask struct {
 | 决策 | 选择方案 | 替代方案 | 理由 |
 |------|---------|---------|------|
 | 命名规范 | EventLoop vs TaskScheduler | RunLoopWorker vs RunLoop | 职责清晰，无重叠混淆 |
+| 异步结果 | 复用 `model.BaseTask[Result]` | 新建 `AsyncResult` | 避免重复代码，复用成熟实现 |
+| 优先级 | 复用 `model.TaskPriority` | 自定义 int | 10级标准枚举，语义清晰 |
 | 执行方式 | 异步执行 `go Execute()` | 同步执行 | 不阻塞调度循环 |
 | 等待机制 | `sync.Cond.Wait()` | channel + select | 零 CPU 空转 |
 | 队列实现 | slice + mutex | channel | 灵活性高，易于扩展 |
@@ -394,16 +403,74 @@ type BaseTask struct {
 
 ---
 
+## 附录：复用现有组件
+
+### model.BaseTask[Result] 复用
+
+**文件**: `internal/domain/model/task.go`
+
+**复用的功能**：
+- `done chan struct{}` - 完成信号
+- `Wait(ctx context.Context) (Result, error)` - 等待完成
+- `Done() <-chan struct{}` - 返回 done channel（用于 select）
+- `IsDone() bool` - 检查是否完成
+- `GetResult() (Result, error)` - 获取结果
+- `Status() OperationStatus` - 获取任务状态
+
+**使用方式**：
+
+```go
+// SchedulerBaseTask 嵌入 model.BaseTask
+type SchedulerBaseTask struct {
+    *model.BaseTask[any]  // 复用异步结果机制
+    // ... 其他字段
+}
+
+// Execute 完成时
+func (t *SchedulerBaseTask) Execute(item any) {
+    // ... 执行逻辑 ...
+
+    // 通过 BaseTask 的机制完成（需要访问内部方法）
+    // 方式1: 直接调用 Complete() 方法（如果存在）
+    // 方式2: 通过 Run() 方法的完成逻辑
+}
+```
+
+### model.TaskPriority 复用
+
+**文件**: `internal/domain/model/task.go`
+
+**复用的功能**：
+- 10 级优先级枚举（0-9，0 最高）
+- 标准化优先级名称（critical, high, urgent, important, normal 等）
+
+**优先级映射**：
+
+```go
+// TaskScheduler 可直接使用 model.TaskPriority
+const (
+    PriorityCritical   = model.TaskPriorityCritical   // 0
+    PriorityHigh        = model.TaskPriorityHigh        // 1
+    PriorityUrgent      = model.TaskPriorityUrgent      // 2
+    PriorityImportant   = model.TaskPriorityImportant   // 3
+    PriorityNormal      = model.TaskPriorityNormal      // 5（默认）
+    PriorityBackground  = model.TaskPriorityBackground  // 8
+)
+```
+
+---
+
 ## 附录：设计文档引用
 
 **详细设计文档**：`thoughts/2026-03-14-task-runloop-framework-design.md`
 
 **核心设计要素**：
 
-1. **Task 接口**：`HasItem()`, `Enqueue()`, `Dequeue()`, `Execute()`, `SetAsyncResult()`
+1. **Task 接口**：`HasItem()`, `Enqueue()`, `Dequeue()`, `Execute()`, `GetTask()`
 2. **TaskScheduler**：优先级轮询 + `sync.Cond.Wait()` 无空转
-3. **BaseTask**：提供通用实现，包含独立队列和上下文支持
-4. **性能优化**：对象池、panic 恢复、上下文支持（参考现有 `executor_runloop_worker.go`）
+3. **SchedulerBaseTask**：嵌入 `model.BaseTask[any]`，复用异步结果机制
+4. **优先级**：复用 `model.TaskPriority` 10级标准枚举
+5. **性能优化**：对象池、panic 恢复、上下文支持（参考现有 `executor_runloop_worker.go`）
 
 ---
 

@@ -7,23 +7,13 @@ linters:
     - ineffassign
   disable:
     - errcheck
-    - gosec      # 安全检查，暂时禁用
-    - dupl       # 重复代码检测，暂时禁用
-    - gocyclo    # 圈复杂度，暂时禁用
+    - gosec
+    - dupl
+    - gocyclo
 
-linters-settings:
-  govet:
-    enable-all: false
-    enable:
-      - atomic
-      - shadow
-      - copylocks
-
-issues:
-  exclude:
-    - SA9003  # 忽略无用的类型转换建议
-    - SA9002  # 允许 main 函数中使用 fmt.Println
-  exclude-dirs:
+run:
+  timeout: 5m
+  skip-dirs:
     - test
-  exclude-files:
+  skip-files:
     - _test\.go

@@ -90,8 +90,9 @@ jobs:
       - name: 运行 golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.8.0
-          args: --timeout=5m
+          version: v2.10.1
+          args: --timeout=5m --config=.golangci.yml
+          skip-pkg-cache: true
 
   build:
     name: Build

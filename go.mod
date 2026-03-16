@@ -1,6 +1,6 @@
 module github.com/jzhang405/NexKV
 
-go 1.24.6
+go 1.25.0
 
 require (
 	github.com/avast/retry-go/v4 v4.7.0
@@ -8,7 +8,7 @@ require (
 	github.com/klauspost/compress v1.18.4
 	github.com/libp2p/go-libp2p v0.47.0
 	github.com/multiformats/go-multiaddr v0.16.1
-	github.com/panjf2000/ants/v2 v2.9.0
+	github.com/panjf2000/ants/v2 v2.11.6
 	github.com/pierrec/lz4/v4 v4.1.25
 	github.com/sirupsen/logrus v1.9.4
 	github.com/sony/gobreaker v1.0.0
@@ -103,7 +103,7 @@ require (
 	golang.org/x/exp v0.0.0-20250606033433-dcc06ee1d476 // indirect
 	golang.org/x/mod v0.27.0 // indirect
 	golang.org/x/net v0.43.0 // indirect
-	golang.org/x/sync v0.16.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
 	golang.org/x/tools v0.36.0 // indirect

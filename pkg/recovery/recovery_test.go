@@ -199,6 +199,11 @@ func TestConcurrentSafe(t *testing.T) {
 	var successCount atomic.Int64
 	var panicCount atomic.Int64
 
+	// 使用静默处理器避免在测试中记录大量 ERROR 日志
+	silentHandler := func(r any, stack []byte) {
+		// 不记录日志，避免 CI 误判
+	}
+
 	for i := 0; i < goroutines; i++ {
 		wg.Add(1)
 		go func() {
@@ -209,7 +214,7 @@ func TestConcurrentSafe(t *testing.T) {
 						panic("test panic")
 					}
 					successCount.Add(1)
-				})
+				}, silentHandler)
 				if err != nil {
 					panicCount.Add(1)
 				}
@@ -220,8 +225,8 @@ func TestConcurrentSafe(t *testing.T) {
 	wg.Wait()
 
 	t.Logf("Success: %d, Panics: %d", successCount.Load(), panicCount.Load())
-	assert.Greater(t, successCount.Load(), int64(0))
-	assert.Greater(t, panicCount.Load(), int64(0))
+	assert.Greater(t, successCount.Load(), int64(0), "should have some successful operations")
+	assert.Greater(t, panicCount.Load(), int64(0), "should have some recovered panics")
 }
 
 // TestSafe_NilFunction 测试 nil 函数处理

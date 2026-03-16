@@ -1,14 +1,14 @@
 package concurrency
 
 //
-// 本包实现了 RunLoop Worker 模式的任务调度和执行器，支持：
+// 本包实现了 Event Loop 模式的任务调度和执行器，支持：
 //   - 基础任务提交（TrySubmit, SubmitAndWait）
 //   - 批量任务提交（SubmitBatch）
 //   - 增强任务提交，支持异步结果（SubmitWithResult, SubmitWithContext）
 //   - 对象池优化，减少内存分配
 //
-// Worker 特性：
-//   - 单 goroutine RunLoop 模式
+// EventLoop 特性：
+//   - 单 goroutine Event Loop 模式
 //   - CPU 亲和性绑定（可选）
 //   - 优雅关闭和资源清理
 //
@@ -18,7 +18,7 @@ package concurrency
 //   - 单独核绑定的计算密集型任务
 
 //
-// 本包实现了 RunLoop Worker 模式的任务调度和执行器
+// 本包实现了 Event Loop 模式的任务调度和执行器
 
 import (
 	"context"
@@ -37,7 +37,7 @@ import (
 
 // taskRequest 任务请求接口
 type taskRequest interface {
-	execute(w *RunLoopWorker)
+	execute(w *EventLoop)
 }
 
 // ==========================================
@@ -72,10 +72,10 @@ var requestPool = sync.Pool{
 }
 
 // execute 执行基础请求
-func (r *Request) execute(w *RunLoopWorker) {
+func (r *Request) execute(w *EventLoop) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			logrus.Errorf("[RunLoop] Worker %d panic recovered: %v", w.coreID, recovered)
+			logrus.Errorf("[EventLoop] Worker %d panic recovered: %v", w.coreID, recovered)
 		}
 		// 通知完成
 		select {
@@ -113,7 +113,7 @@ var enhancedRequestPool = sync.Pool{
 }
 
 // execute 执行增强请求
-func (r *EnhancedRequest) execute(w *RunLoopWorker) {
+func (r *EnhancedRequest) execute(w *EventLoop) {
 	var result any
 	var err error
 
@@ -121,7 +121,7 @@ func (r *EnhancedRequest) execute(w *RunLoopWorker) {
 	func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				logrus.Errorf("[RunLoopEnh] Worker %d panic recovered: %v", w.coreID, recovered)
+				logrus.Errorf("[EventLoopEnh] Worker %d panic recovered: %v", w.coreID, recovered)
 				err = errors.ErrTaskPanic
 			}
 		}()
@@ -197,11 +197,11 @@ func (r *EnhancedRequest) WaitWithTimeout(timeout time.Duration) (any, error) {
 }
 
 // ==========================================
-// RunLoopWorker Worker 实现
+// EventLoop 实现
 // ==========================================
 
-// RunLoopWorker RunLoop Worker
-type RunLoopWorker struct {
+// EventLoop 事件循环
+type EventLoop struct {
 	coreID int
 
 	// 任务 Channel
@@ -216,11 +216,11 @@ type RunLoopWorker struct {
 	wg      sync.WaitGroup
 }
 
-// NewRunLoopWorker 创建 RunLoop Worker
-func NewRunLoopWorker(coreID int, queueSize int) *RunLoopWorker {
+// NewEventLoop 创建事件循环
+func NewEventLoop(coreID int, queueSize int) *EventLoop {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &RunLoopWorker{
+	return &EventLoop{
 		coreID: coreID,
 		taskCh: make(chan taskRequest, queueSize),
 		ctx:    ctx,
@@ -228,21 +228,21 @@ func NewRunLoopWorker(coreID int, queueSize int) *RunLoopWorker {
 	}
 }
 
-// Start 启动 Worker
-func (w *RunLoopWorker) Start() {
+// Start 启动 EventLoop
+func (w *EventLoop) Start() {
 	if !w.running.CompareAndSwap(false, true) {
-		logrus.Warnf("[RunLoop] Worker %d already started", w.coreID)
+		logrus.Warnf("[EventLoop] Worker %d already started", w.coreID)
 		return
 	}
 
 	w.wg.Add(1)
 	go w.runLoop()
 
-	logrus.Infof("[RunLoop] Worker %d started", w.coreID)
+	logrus.Infof("[EventLoop] Worker %d started", w.coreID)
 }
 
 // runLoop 统一事件循环
-func (w *RunLoopWorker) runLoop() {
+func (w *EventLoop) runLoop() {
 	defer w.wg.Done()
 	defer w.running.Store(false)
 
@@ -251,7 +251,7 @@ func (w *RunLoopWorker) runLoop() {
 	if err := pinToCore(w.coreID); err != nil {
 		logrus.WithField("coreID", w.coreID).
 			WithField("error", err).
-			Warn("Failed to pin RunLoop worker to core")
+			Warn("Failed to pin EventLoop worker to core")
 	}
 
 	for {
@@ -271,7 +271,7 @@ func (w *RunLoopWorker) runLoop() {
 // ==========================================
 
 // TrySubmit 提交任务但不等待完成（fire-and-forget）
-func (w *RunLoopWorker) TrySubmit(task func()) error {
+func (w *EventLoop) TrySubmit(task func()) error {
 	if !w.running.Load() {
 		return errors.ErrExecutorClosed
 	}
@@ -289,7 +289,7 @@ func (w *RunLoopWorker) TrySubmit(task func()) error {
 }
 
 // SubmitAndWait 提交任务并等待完成
-func (w *RunLoopWorker) SubmitAndWait(task func()) error {
+func (w *EventLoop) SubmitAndWait(task func()) error {
 	if !w.running.Load() {
 		return errors.ErrExecutorClosed
 	}
@@ -308,7 +308,7 @@ func (w *RunLoopWorker) SubmitAndWait(task func()) error {
 }
 
 // SubmitBatch 批量提交任务并等待全部完成
-func (w *RunLoopWorker) SubmitBatch(tasks []func()) error {
+func (w *EventLoop) SubmitBatch(tasks []func()) error {
 	if !w.running.Load() {
 		return errors.ErrExecutorClosed
 	}
@@ -350,7 +350,7 @@ func (w *RunLoopWorker) SubmitBatch(tasks []func()) error {
 }
 
 // Submit 提交任务（向后兼容）
-func (w *RunLoopWorker) Submit(task func()) error {
+func (w *EventLoop) Submit(task func()) error {
 	return w.SubmitAndWait(task)
 }
 
@@ -359,7 +359,7 @@ func (w *RunLoopWorker) Submit(task func()) error {
 // ==========================================
 
 // SubmitWithResult 提交任务并异步接收结果
-func (w *RunLoopWorker) SubmitWithResult(task func() any) (*EnhancedRequest, error) {
+func (w *EventLoop) SubmitWithResult(task func() any) (*EnhancedRequest, error) {
 	if !w.running.Load() {
 		return nil, errors.ErrExecutorClosed
 	}
@@ -378,7 +378,7 @@ func (w *RunLoopWorker) SubmitWithResult(task func() any) (*EnhancedRequest, err
 }
 
 // SubmitWithContext 提交任务并异步接收结果（带上下文）
-func (w *RunLoopWorker) SubmitWithContext(ctx context.Context, task func() any) (*EnhancedRequest, error) {
+func (w *EventLoop) SubmitWithContext(ctx context.Context, task func() any) (*EnhancedRequest, error) {
 	if !w.running.Load() {
 		return nil, errors.ErrExecutorClosed
 	}
@@ -400,8 +400,8 @@ func (w *RunLoopWorker) SubmitWithContext(ctx context.Context, task func() any) 
 // 通用方法
 // ==========================================
 
-// Close 关闭 Worker
-func (w *RunLoopWorker) Close() error {
+// Close 关闭 EventLoop
+func (w *EventLoop) Close() error {
 	if !w.running.CompareAndSwap(true, false) {
 		return nil
 	}
@@ -409,16 +409,16 @@ func (w *RunLoopWorker) Close() error {
 	w.cancel()
 	w.wg.Wait()
 
-	logrus.Infof("[RunLoop] Worker %d closed", w.coreID)
+	logrus.Infof("[EventLoop] Worker %d closed", w.coreID)
 	return nil
 }
 
 // IsRunning 检查是否运行中
-func (w *RunLoopWorker) IsRunning() bool {
+func (w *EventLoop) IsRunning() bool {
 	return w.running.Load()
 }
 
 // QueueLength 返回当前队列长度
-func (w *RunLoopWorker) QueueLength() int {
+func (w *EventLoop) QueueLength() int {
 	return len(w.taskCh)
 }

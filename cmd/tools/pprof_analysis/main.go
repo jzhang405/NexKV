@@ -32,7 +32,7 @@ func simulateWork() {
 func benchmarkRunLoop() {
 	const ops = 10000
 
-	worker := concurrency.NewRunLoopWorker(0, 1000)
+	worker := concurrency.NewEventLoop(0, 1000)
 	worker.Start()
 	defer worker.Close()
 

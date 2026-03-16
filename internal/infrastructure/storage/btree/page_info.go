@@ -9,6 +9,13 @@ import (
 
 const cacheLineSize = 64
 
+// 克隆状态常量（Phase 2A 延迟深拷贝优化）
+const (
+	CloneStatusShared  = 0 // 共享原始 Page（未克隆）
+	CloneStatusShallow = 1 // 浅克隆（PageInfo 独立，Page 共享）
+	CloneStatusDeep    = 2 // 深克隆（PageInfo 和 Page 都独立）
+)
+
 // PageInfo 页面信息（Cache Line 对齐优化）
 // 减少伪共享（false sharing），提升并发性能
 //
@@ -42,7 +49,10 @@ type PageInfo struct {
 	flags       atomic.Uint32 // 4 bytes  - ✅ 并发安全标志位: bit0=isDirty, bit1=isSplitted
 	metaVersion int32         // 4 bytes  - 元数据版本
 	pageSize    int32         // 4 bytes  - 页面实际大小（固定 4KB）
-	_           [60]byte      // padding to 64 bytes (调整 padding)
+	// ✅ Phase 2A: 克隆状态标记（放在最后，避免对齐问题）
+	// 0=共享原始 Page, 1=浅克隆（PageInfo 独立，Page 共享）, 2=深克隆（PageInfo 和 Page 都独立）
+	cloneStatus atomic.Uint32 // 4 bytes
+	_           [56]byte      // padding to 64 bytes
 }
 
 // NewPageInfo 创建新的 PageInfo
@@ -183,6 +193,91 @@ func (info *PageInfo) Clone() *PageInfo {
 	}
 
 	return newInfo
+}
+
+// CloneShallow 浅拷贝（Phase 2A 延迟深拷贝优化）
+// 只拷贝 PageInfo 元数据，不拷贝 Page 对象（共享引用）
+//
+// 使用场景：
+// - CAS 前的路径拷贝，避免大量无效深拷贝
+// - 只读访问场景，不需要独立 Page 副本
+//
+// 并发安全性：
+// - 浅拷贝状态下的 Page 必须只读
+// - 如果需要修改，必须先转换为深拷贝
+func (info *PageInfo) CloneShallow() *PageInfo {
+	newInfo := &PageInfo{
+		pageLock:    NewPageLock(),
+		parentRef:   info.GetParentRef(),
+		metaVersion: info.metaVersion,
+		pageSize:    info.pageSize,
+	}
+
+	newInfo.SetPos(info.GetPos())
+	newInfo.lastTime.Store(info.lastTime.Load())
+	newInfo.hits.Store(info.hits.Load())
+	newInfo.flags.Store(info.flags.Load())
+
+	// ✅ 关键：共享 Page 对象，不进行深拷贝
+	newInfo.page = info.page
+
+	// ✅ 标记为浅克隆状态
+	newInfo.cloneStatus.Store(CloneStatusShallow)
+
+	return newInfo
+}
+
+// CloneDeep 深拷贝（Phase 2A 延迟深拷贝优化）
+// 拷贝 PageInfo 元数据和 Page 对象，完全独立
+//
+// 使用场景：
+// - CAS 成功后的最终深拷贝
+// - 需要修改 Page 的场景
+//
+// 实现逻辑：
+// - 如果当前是浅克隆状态，则执行深拷贝
+// - 如果当前是深克隆状态，直接返回
+func (info *PageInfo) CloneDeep() *PageInfo {
+	// ✅ 如果已经是深克隆，直接返回
+	if info.cloneStatus.Load() == CloneStatusDeep {
+		return info
+	}
+
+	// ✅ 如果当前是浅克隆或共享状态，执行深拷贝
+	newInfo := info.CloneShallow()
+
+	// ✅ 深拷贝 Page 对象
+	if info.IsPageLoaded() && info.page != nil {
+		switch p := info.page.(type) {
+		case *LeafPage:
+			newInfo.page = p.Clone() // 深拷贝 LeafPage
+		case *InternalPage:
+			newInfo.page = p.Clone() // 深拷贝 InternalPage
+		default:
+			// 未知类型，保留共享引用（不应该发生）
+		}
+	}
+
+	// ✅ 标记为深克隆状态
+	newInfo.cloneStatus.Store(CloneStatusDeep)
+
+	return newInfo
+}
+
+// GetCloneStatus 获取克隆状态（Phase 2A 延迟深拷贝优化）
+// 返回值：0=共享, 1=浅克隆, 2=深克隆
+func (info *PageInfo) GetCloneStatus() uint32 {
+	return info.cloneStatus.Load()
+}
+
+// IsShallowClone 判断是否为浅克隆状态（Phase 2A 延迟深拷贝优化）
+func (info *PageInfo) IsShallowClone() bool {
+	return info.cloneStatus.Load() == CloneStatusShallow
+}
+
+// IsDeepClone 判断是否为深克隆状态（Phase 2A 延迟深拷贝优化）
+func (info *PageInfo) IsDeepClone() bool {
+	return info.cloneStatus.Load() == CloneStatusDeep
 }
 
 // GetBuff 获取序列化缓冲区

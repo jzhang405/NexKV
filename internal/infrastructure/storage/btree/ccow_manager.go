@@ -17,9 +17,8 @@ type CCOWManager struct {
 	snapshotID atomic.Uint64
 	snapshotMu sync.RWMutex
 
-	// 脏页跟踪
-	dirtyPages   map[*PageInfo]struct{}
-	dirtyPagesMu sync.RWMutex
+	// 脏页跟踪 - ✅ Phase 2B: 使用 sync.Map 替代 map+mutex（无锁）
+	dirtyPages sync.Map
 }
 
 // BTreeSnapshot BTree 快照
@@ -33,9 +32,9 @@ type BTreeSnapshot struct {
 // NewCCOWManager 创建新的 CCOW 管理器
 func NewCCOWManager(gc *BTreeGC) *CCOWManager {
 	return &CCOWManager{
-		gc:         gc,
-		snapshots:  make(map[uint64]*BTreeSnapshot),
-		dirtyPages: make(map[*PageInfo]struct{}),
+		gc:        gc,
+		snapshots: make(map[uint64]*BTreeSnapshot),
+		// dirtyPages sync.Map 无需初始化，零值可用
 	}
 }
 
@@ -85,34 +84,33 @@ func (ccow *CCOWManager) ReleaseSnapshot(snapshotID uint64) {
 }
 
 // MarkDirty 标记页面为脏页
+// ✅ Phase 2B: 使用 sync.Map.Store 无锁操作
 func (ccow *CCOWManager) MarkDirty(pageInfo *PageInfo) {
-	ccow.dirtyPagesMu.Lock()
-	defer ccow.dirtyPagesMu.Unlock()
-
 	if !pageInfo.IsDirty() {
 		pageInfo.MarkDirty()
-		ccow.dirtyPages[pageInfo] = struct{}{}
+		// ✅ sync.Map.Store 是无锁操作，并发安全
+		ccow.dirtyPages.Store(pageInfo, struct{}{})
 	}
 }
 
 // ClearDirty 清除脏页标记
+// ✅ Phase 2B: 使用 sync.Map.Delete 无锁操作
 func (ccow *CCOWManager) ClearDirty(pageInfo *PageInfo) {
-	ccow.dirtyPagesMu.Lock()
-	defer ccow.dirtyPagesMu.Unlock()
-
 	pageInfo.ClearDirty()
-	delete(ccow.dirtyPages, pageInfo)
+	// ✅ sync.Map.Delete 是无锁操作，并发安全
+	ccow.dirtyPages.Delete(pageInfo)
 }
 
 // GetDirtyPages 获取所有脏页
+// ✅ Phase 2B: 使用 sync.Map.Range 无锁遍历
 func (ccow *CCOWManager) GetDirtyPages() []*PageInfo {
-	ccow.dirtyPagesMu.RLock()
-	defer ccow.dirtyPagesMu.RUnlock()
-
-	dirtyPages := make([]*PageInfo, 0, len(ccow.dirtyPages))
-	for pageInfo := range ccow.dirtyPages {
+	var dirtyPages []*PageInfo
+	// ✅ sync.Map.Range 是无锁遍历，并发安全
+	ccow.dirtyPages.Range(func(key, value any) bool {
+		pageInfo := key.(*PageInfo)
 		dirtyPages = append(dirtyPages, pageInfo)
-	}
+		return true
+	})
 
 	return dirtyPages
 }

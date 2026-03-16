@@ -50,7 +50,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -99,8 +101,7 @@ type BTree struct {
 	enableWAL bool // Enable WAL logging
 
 	// PageID management
-	nextPageID model.PageID // Next page ID to allocate
-	pageIDMu   sync.Mutex   // Mutex for page ID allocation
+	nextPageID atomic.Uint64 // Next page ID to allocate (lock-free)
 }
 
 // OpenBTree opens or creates a BTree storage engine with persistence support.
@@ -166,14 +167,13 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	maxLevels := 10 // Default value
 
 	btree := &BTree{
-		config:     config,
-		closed:     false,
-		rootRef:    rootPageRef,
-		chunkMgr:   chunkMgr,
-		wal:        walImpl,
-		maxLevels:  maxLevels,
-		enableWAL:  enableWAL,
-		nextPageID: 1, // PageID 0 is used by initial root
+		config:    config,
+		closed:    false,
+		rootRef:   rootPageRef,
+		chunkMgr:  chunkMgr,
+		wal:       walImpl,
+		maxLevels: maxLevels,
+		enableWAL: enableWAL,
 	}
 
 	// Replay WAL if exists (crash recovery)
@@ -252,52 +252,36 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 // 2. Create a copy-on-write path (clone all pages from root to leaf)
 // 3. Insert/Update the key-value pair in the leaf
 // 4. Atomically update the root using CAS (Compare-And-Swap)
-// 5. Retry on CAS failure (up to 3 retries with exponential backoff)
+// 5. Spin retry on CAS failure with runtime.Gosched()
 //
 // Performance:
 // - O(log n) page copies for CCOW
 // - Atomic root switch using CAS
-// - Retry on concurrent writes
+// - Lock-free spin retry on concurrent writes
 func (b *BTree) Set(ctx context.Context, key, value []byte) error {
 	if b.closed {
 		return ErrClosed
 	}
 
-	// Retry configuration
-	const maxRetries = 3
-	const baseDelay = 10 * time.Millisecond
-
-	var lastErr error
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			// Exponential backoff: 10ms, 20ms, 40ms
-			delay := baseDelay * time.Duration(1<<uint(attempt-1))
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+	// Classic lock-free CAS spin loop
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
 		}
 
-		// Try to insert with CAS
 		err := b.setWithCAS(ctx, key, value)
-		if err == nil {
-			// Success
+		switch err {
+		case nil:
 			return nil
-		}
-
-		// Check if we should retry
-		if err == ErrRetry {
-			lastErr = err
+		case ErrRetry:
+			runtime.Gosched()
 			continue
+		default:
+			return err
 		}
-
-		// Non-retryable error
-		return err
 	}
-
-	return fmt.Errorf("set failed after %d retries: %w", maxRetries, lastErr)
 }
 
 // Delete removes a key (not implemented until Phase 3).
@@ -309,7 +293,7 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 	// ✅ Day 10-11: 实现 Delete 操作，集成 mergeLeaf
 	const maxRetries = 3
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := range maxRetries {
 		// 1. 检查上下文取消
 		select {
 		case <-ctx.Done():
@@ -496,13 +480,11 @@ func (b *BTree) insertFromWAL(key, value []byte) error {
 
 // allocatePageID allocates a new unique page ID.
 // This ensures that each newly created page has a unique identifier.
+// ✅ Phase 2B: Lock-free implementation using atomic.Uint64
 func (b *BTree) allocatePageID() model.PageID {
-	b.pageIDMu.Lock()
-	defer b.pageIDMu.Unlock()
-
-	pageID := b.nextPageID
-	b.nextPageID++
-	return pageID
+	// ✅ 使用 atomic.Add(1) 原子操作：读取旧值、加1、返回新值
+	// 完全无锁，多个 goroutine 可以并发调用
+	return model.PageID(b.nextPageID.Add(1))
 }
 
 // Close closes the BTree storage engine and releases resources.
@@ -543,7 +525,7 @@ func (b *BTree) Close() error {
 //
 // 返回：
 //
-//	interface{} - 页面对象（实际类型为 *LeafPage 或 *InternalPage）
+//	any - 页面对象（实际类型为 *LeafPage 或 *InternalPage）
 //	error - 错误信息
 //
 // 懒加载流程：
@@ -552,7 +534,7 @@ func (b *BTree) Close() error {
 // 3. 返回页面对象
 //
 // 注意：此方法不会更新 PageInfo，调用者需要手动设置
-func (b *BTree) loadPage(pos int64) (interface{}, error) {
+func (b *BTree) loadPage(pos int64) (any, error) {
 	// 1. 检查 ChunkManager（仅持久化模式需要）
 	if b.chunkMgr == nil {
 		return nil, fmt.Errorf("chunk manager not initialized (in-memory mode)")
@@ -576,9 +558,9 @@ func (b *BTree) loadPage(pos int64) (interface{}, error) {
 //
 // 返回：
 //
-//	interface{} - 页面对象
+//	any - 页面对象
 //	error - 错误信息
-func (b *BTree) getPageOrLoad(info *PageInfo) (interface{}, error) {
+func (b *BTree) getPageOrLoad(info *PageInfo) (any, error) {
 	if info == nil {
 		return nil, fmt.Errorf("pageInfo is nil")
 	}
@@ -666,14 +648,22 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 		return fmt.Errorf("empty path")
 	}
 
-	// Step 2: Create copy-on-write copies of all pages in the path
-	copiedPath, err := b.copyPath(path)
+	// Step 2: ✅ Phase 2A: 使用浅拷贝创建路径副本（延迟深拷贝优化）
+	copiedPath, err := b.copyPathShallow(path)
 	if err != nil {
-		return fmt.Errorf("copy path: %w", err)
+		return fmt.Errorf("copy path shallow: %w", err)
 	}
 
 	// Step 3: Insert/Update the key-value pair in the leaf copy
 	leafInfo := copiedPath[len(copiedPath)-1]
+
+	// ✅ Phase 2A: 如果是浅拷贝状态，需要先深拷贝 Page
+	if leafInfo.IsShallowClone() {
+		deepClonedInfo := leafInfo.CloneDeep()
+		copiedPath[len(copiedPath)-1] = deepClonedInfo
+		leafInfo = deepClonedInfo
+	}
+
 	leafPage, err := b.getPageOrLoad(leafInfo)
 	if err != nil {
 		return fmt.Errorf("load leaf page: %w", err)
@@ -692,25 +682,30 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 
 	// Step 4: Check if we need to split the leaf
 	if leaf.NumKeys() > splitThreshold {
-		// ✅ Day 10-11: 集成分裂检测和处理
-		// 叶子节点已满，需要分裂
+		// ✅ 按需 Clone：需要分裂时，分裂逻辑使用已克隆的完整路径
+		// 调用分裂（copiedPath 已经包含完整的克隆路径）
+		leafInfo = copiedPath[len(copiedPath)-1]
+
+		// 调用分裂
 		if err := b.splitLeaf(leafInfo, copiedPath); err != nil {
 			return fmt.Errorf("split leaf: %w", err)
 		}
 
-		// ✅ 修复：splitLeaf 修改了 copiedPath
-		// 如果 len(copiedPath) >= 2，说明不是根节点分裂，需要执行 CAS
-		// 如果 len(copiedPath) < 2，说明是根节点分裂，splitRootFromLeaf 已经执行了 CAS
+		// 分裂后，检查是否需要 CAS
 		if len(copiedPath) >= 2 {
-			// 非根节点分裂，需要执行 CAS 更新
 			newRootInfo := copiedPath[0]
 			if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
+				// CAS 失败，触发重试
 				return ErrRetry
 			}
-			// CAS 更新成功
+
+			// ✅ Phase 2A: CAS 成功后，执行深拷贝
+			if err := b.finalizeDeepClone(copiedPath); err != nil {
+				return fmt.Errorf("finalize deep clone after split: %w", err)
+			}
 			return nil
 		} else {
-			// 根节点分裂，splitRootFromLeaf 已经执行了 CAS
+			// 根节点分裂，已经在 splitLeaf 中处理
 			return nil
 		}
 	}
@@ -723,7 +718,14 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 	// ✅ 使用操作开始时记录的 oldRootInfo，而不是当前的
 	if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
 		// CAS 失败，触发重试
+		// ✅ 浅拷贝的 Page 是共享的，不需要额外处理
 		return ErrRetry
+	}
+
+	// ✅ Phase 2A: CAS 成功后，执行深拷贝（延迟深拷贝优化）
+	// 将浅拷贝路径转换为深拷贝，确保后续修改有独立的 Page 副本
+	if err := b.finalizeDeepClone(copiedPath); err != nil {
+		return fmt.Errorf("finalize deep clone: %w", err)
 	}
 
 	// Step 7: ✅ Day 9: 持久化集成
@@ -846,6 +848,215 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 	}
 
 	return copiedPath, nil
+}
+
+// copyPathShallow 浅拷贝路径（Phase 2A 延迟深拷贝优化）
+//
+// 与 copyPath 的区别：
+// - copyPath: 深拷贝所有 Page（PageInfo + Page）
+// - copyPathShallow: 只浅拷贝 PageInfo，共享 Page 引用
+//
+// 使用场景：
+// - CAS 前的路径拷贝，避免大量无效深拷贝
+// - CAS 成功后，再通过 finalizeDeepClone 转为深拷贝
+//
+// 并发安全性：
+// - 浅拷贝状态下的 Page 必须只读
+// - CAS 成功后的修改会触发深拷贝
+func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
+	if len(path) == 0 {
+		return nil, fmt.Errorf("empty path")
+	}
+
+	copiedPath := make([]*PageInfo, len(path))
+
+	// ✅ 优化：预先构建 PageID -> PageInfo 映射表
+	pageInfoMap := make(map[model.PageID]*PageInfo, len(path))
+	for _, info := range path {
+		var pageID model.PageID
+		switch p := info.GetPage().(type) {
+		case *LeafPage:
+			pageID = p.pageID
+		case *InternalPage:
+			pageID = p.pageID
+		default:
+			continue
+		}
+		pageInfoMap[pageID] = info
+	}
+
+	// Phase 1: Clone all PageInfos in the path (使用 CloneShallow)
+	for i, info := range path {
+		// ✅ 关键：使用 CloneShallow 而不是 Clone
+		newInfo := info.CloneShallow()
+		copiedPath[i] = newInfo
+
+		// 更新映射表
+		var pageID model.PageID
+		switch p := newInfo.GetPage().(type) {
+		case *LeafPage:
+			pageID = p.pageID
+		case *InternalPage:
+			pageID = p.pageID
+		default:
+			continue
+		}
+		pageInfoMap[pageID] = newInfo
+	}
+
+	// Phase 2: Rebuild child references for InternalPages
+	for _, info := range copiedPath {
+		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
+			// 遍历所有子节点引用
+			for j := 0; j < len(internalPage.children); j++ {
+				childRef := internalPage.children[j]
+				if childRef == nil {
+					continue
+				}
+
+				childInfo := childRef.GetPageInfo()
+				if childInfo == nil {
+					continue
+				}
+
+				childPage := childInfo.GetPage()
+				if childPage == nil {
+					continue
+				}
+
+				// 获取子节点的 PageID
+				var childPageID model.PageID
+				switch p := childPage.(type) {
+				case *LeafPage:
+					childPageID = p.pageID
+				case *InternalPage:
+					childPageID = p.pageID
+				default:
+					continue
+				}
+
+				// 使用映射表查找克隆的子节点
+				childReplacement := pageInfoMap[childPageID]
+
+				if childReplacement != nil {
+					// 子节点在路径中，使用浅拷贝的 PageInfo
+					newChildRef := NewPageRefWithInfo(childReplacement)
+					newChildRef.parentRef = b.rootRef.PageRef
+					newChildRef.mu = sync.RWMutex{}
+					internalPage.children[j] = newChildRef
+				} else {
+					// 子节点不在路径中，创建浅拷贝
+					shallowChildInfo := childInfo.CloneShallow()
+					newChildRef := NewPageRefWithInfo(shallowChildInfo)
+					newChildRef.parentRef = b.rootRef.PageRef
+					newChildRef.mu = sync.RWMutex{}
+					internalPage.children[j] = newChildRef
+				}
+			}
+		}
+	}
+
+	return copiedPath, nil
+}
+
+// finalizeDeepClone 将浅拷贝路径转换为深拷贝（Phase 2A 延迟深拷贝优化）
+//
+// 使用场景：
+// - CAS 成功后，将浅拷贝路径转为深拷贝
+// - 确保后续修改有独立的 Page 副本
+//
+// 实现逻辑：
+// - 遍历路径中的所有 PageInfo
+// - 如果是浅拷贝状态，执行 CloneDeep 转换
+// - 重建子节点引用（指向深拷贝后的 PageInfo）
+func (b *BTree) finalizeDeepClone(copiedPath []*PageInfo) error {
+	if len(copiedPath) == 0 {
+		return nil
+	}
+
+	// ✅ 构建映射表：PageID -> 深拷贝后的 PageInfo
+	deepClonedMap := make(map[model.PageID]*PageInfo, len(copiedPath))
+
+	// Phase 1: 将所有浅拷贝转为深拷贝
+	for i, info := range copiedPath {
+		// 如果已经是深拷贝，跳过
+		if info.IsDeepClone() {
+			var pageID model.PageID
+			switch p := info.GetPage().(type) {
+			case *LeafPage:
+				pageID = p.pageID
+			case *InternalPage:
+				pageID = p.pageID
+			default:
+				continue
+			}
+			deepClonedMap[pageID] = info
+			continue
+		}
+
+		// 执行深拷贝
+		deepClonedInfo := info.CloneDeep()
+		copiedPath[i] = deepClonedInfo
+
+		// 更新映射表
+		var pageID model.PageID
+		switch p := deepClonedInfo.GetPage().(type) {
+		case *LeafPage:
+			pageID = p.pageID
+		case *InternalPage:
+			pageID = p.pageID
+		default:
+			continue
+		}
+		deepClonedMap[pageID] = deepClonedInfo
+	}
+
+	// Phase 2: 更新子节点引用（指向深拷贝后的 PageInfo）
+	for _, info := range copiedPath {
+		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
+			// 遍历所有子节点引用
+			for j := 0; j < len(internalPage.children); j++ {
+				childRef := internalPage.children[j]
+				if childRef == nil {
+					continue
+				}
+
+				childInfo := childRef.GetPageInfo()
+				if childInfo == nil {
+					continue
+				}
+
+				childPage := childInfo.GetPage()
+				if childPage == nil {
+					continue
+				}
+
+				// 获取子节点的 PageID
+				var childPageID model.PageID
+				switch p := childPage.(type) {
+				case *LeafPage:
+					childPageID = p.pageID
+				case *InternalPage:
+					childPageID = p.pageID
+				default:
+					continue
+				}
+
+				// 查找深拷贝后的子节点
+				deepClonedChild := deepClonedMap[childPageID]
+				if deepClonedChild != nil {
+					// 使用深拷贝的 PageInfo
+					newChildRef := NewPageRefWithInfo(deepClonedChild)
+					newChildRef.parentRef = b.rootRef.PageRef
+					newChildRef.mu = sync.RWMutex{}
+					internalPage.children[j] = newChildRef
+				}
+				// 如果不在映射表中，说明不在路径内，保持原引用
+			}
+		}
+	}
+
+	return nil
 }
 
 // splitLeaf 分裂叶子节点（CCOW 版本）

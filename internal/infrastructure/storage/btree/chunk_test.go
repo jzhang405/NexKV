@@ -325,10 +325,11 @@ func TestChunkManager_PageBufferPool(t *testing.T) {
 	// 归还缓冲区
 	cm.ReleasePageBuffer(buf1)
 
-	// 再次获取，应该是复用的
+	// 再次获取，应该是有效的缓冲区
 	buf2 := cm.AcquirePageBuffer()
 	assert.NotNil(t, buf2)
-	assert.Same(t, buf1, buf2) // 同一个对象
+	assert.Equal(t, PageSize, cap(*buf2))
+	// 注意：sync.Pool 不保证返回同一个对象，只保证返回有效对象
 }
 
 // Benchmark Chunk 操作性能

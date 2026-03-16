@@ -86,7 +86,7 @@ func benchmarkTaskMode() {
 func benchmarkRunLoop() {
 	const ops = 100000
 
-	worker := concurrency.NewRunLoopWorker(0, 1000)
+	worker := concurrency.NewEventLoop(0, 1000)
 	worker.Start()
 	defer worker.Close()
 
@@ -113,9 +113,9 @@ func benchmarkRunLoopParallel() {
 	const ops = 100000
 	numWorkers := runtime.NumCPU()
 
-	var workers []*concurrency.RunLoopWorker
+	var workers []*concurrency.EventLoop
 	for i := 0; i < numWorkers; i++ {
-		w := concurrency.NewRunLoopWorker(i, 1000)
+		w := concurrency.NewEventLoop(i, 1000)
 		w.Start()
 		defer w.Close()
 		workers = append(workers, w)

@@ -45,7 +45,7 @@ test: test-unit integration-test-race
 ## test-unit: 运行单元测试（组件级测试，快速反馈）
 test-unit:
 	@echo "运行单元测试..."
-	$(GO) test -v -short -race -timeout 2m ./internal/... -run "Test[^I].*"
+	$(GO) test -v -short -race -timeout 5m ./internal/...
 
 ## test-e2e: 运行 E2E 测试框架测试
 # DDD 重构说明：E2E 测试待重新实现
@@ -121,11 +121,11 @@ vet:
 	@echo "运行 go vet..."
 	$(GO) vet ./...
 
-## lint: 代码质量检查
+## lint: 代码质量检查（与 CI 保持一致）
 lint:
 	@echo "运行 golangci-lint..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run  ./...; \
+		golangci-lint run --timeout=5m --config=.golangci.yml ./...; \
 	else \
 		echo "golangci-lint 未安装，跳过 lint"; \
 	fi

@@ -30,7 +30,7 @@ func simulateWork() {
 
 // Benchmark_RunLoop_TrySubmit TrySubmit 基准
 func Benchmark_RunLoop_TrySubmit(b *testing.B) {
-	worker := NewRunLoopWorker(0, 10000)
+	worker := NewEventLoop(0, 10000)
 	worker.Start()
 	defer worker.Close()
 
@@ -48,7 +48,7 @@ func Benchmark_RunLoop_TrySubmit(b *testing.B) {
 
 // Benchmark_RunLoop_SubmitAndWait SubmitAndWait 基准
 func Benchmark_RunLoop_SubmitAndWait(b *testing.B) {
-	worker := NewRunLoopWorker(0, 10000)
+	worker := NewEventLoop(0, 10000)
 	worker.Start()
 	defer worker.Close()
 
@@ -65,7 +65,7 @@ func Benchmark_RunLoop_SubmitAndWait(b *testing.B) {
 
 // Benchmark_RunLoop_SubmitBatch_10 批量提交基准（批量大小 10）
 func Benchmark_RunLoop_SubmitBatch_10(b *testing.B) {
-	worker := NewRunLoopWorker(0, 10000)
+	worker := NewEventLoop(0, 10000)
 	worker.Start()
 	defer worker.Close()
 
@@ -86,7 +86,7 @@ func Benchmark_RunLoop_SubmitBatch_10(b *testing.B) {
 
 // Benchmark_RunLoop_SubmitBatch_100 批量提交基准（批量大小 100）
 func Benchmark_RunLoop_SubmitBatch_100(b *testing.B) {
-	worker := NewRunLoopWorker(0, 10000)
+	worker := NewEventLoop(0, 10000)
 	worker.Start()
 	defer worker.Close()
 
@@ -159,9 +159,9 @@ func Benchmark_AllComparison(b *testing.B) {
 // 功能测试
 // ==========================================
 
-// Test_RunLoop_BasicFunctionality 基本功能测试
-func Test_RunLoop_BasicFunctionality(t *testing.T) {
-	worker := NewRunLoopWorker(0, 10)
+// Test_EventLoop_BasicFunctionality 基本功能测试
+func Test_EventLoop_BasicFunctionality(t *testing.T) {
+	worker := NewEventLoop(0, 10)
 	worker.Start()
 	defer worker.Close()
 
@@ -180,9 +180,9 @@ func Test_RunLoop_BasicFunctionality(t *testing.T) {
 	}
 }
 
-// Test_RunLoop_TrySubmit TrySubmit 测试
-func Test_RunLoop_TrySubmit(t *testing.T) {
-	worker := NewRunLoopWorker(0, 100)
+// Test_EventLoop_TrySubmit TrySubmit 测试
+func Test_EventLoop_TrySubmit(t *testing.T) {
+	worker := NewEventLoop(0, 100)
 	worker.Start()
 	defer worker.Close()
 
@@ -205,9 +205,9 @@ func Test_RunLoop_TrySubmit(t *testing.T) {
 	}
 }
 
-// Test_RunLoop_SubmitBatch 批量提交测试
-func Test_RunLoop_SubmitBatch(t *testing.T) {
-	worker := NewRunLoopWorker(0, 100)
+// Test_EventLoop_SubmitBatch 批量提交测试
+func Test_EventLoop_SubmitBatch(t *testing.T) {
+	worker := NewEventLoop(0, 100)
 	worker.Start()
 	defer worker.Close()
 
@@ -232,14 +232,14 @@ func Test_RunLoop_SubmitBatch(t *testing.T) {
 	}
 }
 
-// Test_RunLoop_ConcurrentStress 并发压力测试
-func Test_RunLoop_ConcurrentStress(t *testing.T) {
+// Test_EventLoop_ConcurrentStress 并发压力测试
+func Test_EventLoop_ConcurrentStress(t *testing.T) {
 	const (
 		numGoroutines   = 100
 		opsPerGoroutine = 1000
 	)
 
-	worker := NewRunLoopWorker(0, 10000)
+	worker := NewEventLoop(0, 10000)
 	worker.Start()
 	defer worker.Close()
 
@@ -266,8 +266,8 @@ func Test_RunLoop_ConcurrentStress(t *testing.T) {
 	t.Logf("Concurrent stress test passed")
 }
 
-func Test_RunLoop_SubmitBatch_Debug_WithLogging(t *testing.T) {
-	worker := NewRunLoopWorker(0, 100)
+func Test_EventLoop_SubmitBatch_Debug_WithLogging(t *testing.T) {
+	worker := NewEventLoop(0, 100)
 	worker.Start()
 	defer worker.Close()
 
@@ -298,8 +298,8 @@ func Test_RunLoop_SubmitBatch_Debug_WithLogging(t *testing.T) {
 	}
 }
 
-func Test_RunLoop_SubmitBatch_WithDelay(t *testing.T) {
-	worker := NewRunLoopWorker(0, 100)
+func Test_EventLoop_SubmitBatch_WithDelay(t *testing.T) {
+	worker := NewEventLoop(0, 100)
 	worker.Start()
 	defer worker.Close()
 
@@ -339,8 +339,8 @@ func Test_RunLoop_SubmitBatch_WithDelay(t *testing.T) {
 	}
 }
 
-func Test_RunLoop_SubmitBatch_OneByOne(t *testing.T) {
-	worker := NewRunLoopWorker(0, 100)
+func Test_EventLoop_SubmitBatch_OneByOne(t *testing.T) {
+	worker := NewEventLoop(0, 100)
 	worker.Start()
 	defer worker.Close()
 

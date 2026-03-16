@@ -38,8 +38,8 @@ BTree 写入性能优化是 NexKV 项目的核心优化方向。当前实现存�
 **现有问题**：
 
 1. **命名混淆风险**：原设计中的 `RunLoop` 与现有 `RunLoopWorker` 命名相似，容易混淆职责
-2. **缺乏多任务调度**：现有 `RunLoopWorker` 是单队列单 worker 模式，无法支持多类型任务的优先级调度
-3. **无优先级支持**：所有任务按 FIFO 顺序处理，无法区分任务优先级
+2. **缺乏多任务调度**：现有 `EventLoop` 是单队列单 worker 模式，无法支持多类型任务的调度
+3. **无执行顺序支持**：所有任务按 FIFO 顺序处理，无法配置任务执行顺序
 4. **调度模式单一**：只有同步执行模式，无法支持 IO 密集型和混合型任务
 
 **与 BTree 优化方案的关联**：
@@ -62,16 +62,16 @@ TaskScheduler 解决了 Phase 2 的关键问题：
 - **性能提升**：配合 Phase 2 整体优化，预期 8 并发写入性能提升 6.2x
 - **框架价值**：提供可插拔、可扩展的多任务调度基础设施
 - **可扩展性**：支持动态注册不同类型的 Task，每个 Task 独立队列
-- **优先级调度**：支持按优先级调度，高优先级任务优先处理
+- **执行顺序调度**：支持配置 ExecutionOrder，按指定顺序 Round-Robin 调度
 
 #### 2.2 核心目标（可量化、可验证）
 
 1. **功能目标**：
-   - 实现 `TaskScheduler` 调度器，支持多任务优先级调度
+   - 实现 `TaskScheduler` 调度器，支持多任务按 ExecutionOrder 调度
    - 实现 `Task` 接口和 `SchedulerBaseTask` 基类（嵌入 `model.BaseTask`）
-   - 支持任务动态注册/注销
+   - 支持任务动态注册/注销（指定 ExecutionOrder）
    - 复用现有 `model.BaseTask[Result]` 实现异步结果等待
-   - 复用现有 `model.TaskPriority` 实现标准化优先级
+   - 复用现有 `model.TaskPriority` 实现 Executor 层优先级（TaskScheduler 自身的优先级）
    - 重命名现有 `RunLoopWorker` → `EventLoop`
 
 2. **性能目标**：
@@ -129,36 +129,90 @@ flowchart TD
 **文件**: `internal/infrastructure/concurrency/task_scheduler.go`
 
 ```go
-// Task 调度器任务接口
+// Task 调度器任务接口（支持 Peek + Execute 两阶段执行）
 type Task interface {
-    HasItem() bool                      // 检查是否有待处理任务
+    // 队列管理
+    QueueLen() int                       // 获取队列长度
     Enqueue(item any) error             // 客户端入队任务
-    Dequeue(item *any) bool             // 出队一个任务
-    Execute(item any)                   // 执行任务处理逻辑
-    GetTask() *model.BaseTask[any]      // 获取异步结果任务（复用现有）
+    Peek(item *any) bool                // 查看队首元素（不出队）
+    Dequeue(item *any) bool             // 移除队首元素（出队）
+
+    // 任务执行
+    Execute(item any) TaskStatus        // 执行任务处理逻辑，返回执行状态
+
+    // 元数据
     Name() string                        // 任务名称
     Priority() model.TaskPriority       // 优先级（复用现有枚举）
-    setScheduler(s *TaskScheduler)      // 内部使用
+    GetTask() *model.BaseTask[any]      // 获取异步结果任务（复用现有）
+
+    // 内部使用
+    setScheduler(s *TaskScheduler)      // 设置调度器引用
 }
+```
+
+**接口方法说明**：
+
+| 方法 | 作用 | 返回值 | Item 状态 |
+|------|------|--------|-----------|
+| `QueueLen()` | 获取队列长度 | int | - |
+| `Enqueue(item)` | 入队任务 | error | ✅ 入队 |
+| `Peek(&item)` | 查看队首元素 | bool | ✅ 仍在队列（不出队）|
+| `Dequeue(&item)` | 移除队首元素 | bool | ❌ 出队 |
+| `Execute(item)` | 执行任务逻辑 | TaskStatus | ✅ 仍在队列 |
+
+**Execute 返回值说明**：
+
+| 返回值 | 说明 | TaskScheduler 处理 |
+|--------|------|-------------------|
+| `TaskPassed` | 执行成功 | 调用 Dequeue，出队 |
+| `TaskFailed` | 执行失败 | 调用 Dequeue，出队 |
+| `TaskRetrying` | 需要重试 | 不调用 Dequeue，保留在队列 |
+| `TaskTimeout` | 执行超时 | 调用 Dequeue，出队 |
+
+**执行流程**：
+```
+1. Peek(&item)   → 查看队首，不出队
+2. Execute(item) → 执行任务，返回 TaskStatus，不出队
+3. 根据 TaskStatus 决定：
+   - TaskPassed/Failed/Timeout → 调用 Dequeue，出队
+   - TaskRetrying → 不调用 Dequeue，保留在队列
 ```
 
 **复用现有组件**：
 - `internal/domain/model/task.go` 的 `BaseTask[Result]` - 异步结果等待
 - `internal/domain/model/task.go` 的 `TaskPriority` - 10 级优先级枚举
 
-2. **核心机制**：**优先级调度 + 无空转等待**
+2. **核心机制**：**执行顺序调度 + 无空转等待 + Peek 两阶段执行**
 
 **无空转等待原理**：
 - 所有 Task 队列都空时，调用 `sync.Cond.Wait()` 阻塞调度器 goroutine
 - Task 入队时调用 `cond.Signal()` 自动唤醒调度器
 - 避免忙等待（busy loop），零 CPU 消耗
-- 与现有 `RunLoopWorker` 的 channel 阻塞等待类似，但支持多队列
+- 与现有 `EventLoop` 的 channel 阻塞等待类似，但支持多队列
 
-**优先级调度原理**：
-- 每个Task 有独立的优先级（数值越小优先级越高）
-- 调度器每次循环按优先级排序任务列表
-- 优先处理高优先级 Task 的队列
-- 相同优先级按注册顺序处理
+**执行顺序（Execution Order）**：
+- 每个 Task 有独立的 ExecutionOrder（整数，从小到大）
+- 调度器每次循环按 ExecutionOrder 排序任务列表
+- 使用 Round-Robin 策略：每次循环每个 Task 最多处理 1 个 item
+- 保证公平性，避免 ExecutionOrder 大的 Task 饥饿
+
+**Priority（优先级）说明**：
+- Priority 是实现 `TaskRunner` 接口时的参数
+- 发送给 Executor（PerCoreExecutor/AntsExecutor），用于 Executor 层的调度
+- **不影响** TaskScheduler 内部的调度顺序
+- TaskScheduler 默认使用 `TaskPriorityNormal`
+
+**循环调度原理（Round-Robin）**：
+- **每次循环处理每个 Task 最多一个 item**
+- **保证公平性**：即使某个 Task 队列有很多 item，每次循环也只处理一个
+- **避免饥饿**：其他 Task 有机会被调度，不会因为某个 Task 队列长而被饿死
+- **按 ExecutionOrder 顺序处理**：ExecutionOrder 小的 Task 先处理
+
+**Wakeup 机制**：
+- **Enqueue 时 wakeup**：新任务入队时调用 `cond.Signal()` 唤醒调度器
+- **Wait 条件**：使用 `totalQueueLen` 判断是否所有队列都空
+- **高效调度**：没有任务时不浪费 CPU，有任务时立即响应
+- **QueueLen 优化**：提前计算总队列长度，避免空循环
 
 **执行模式（修正）**：
 - 调度器本身作为 Task 提交给 PerCoreExecutor/AntsExecutor 运行
@@ -176,28 +230,144 @@ func (s *TaskScheduler) Start(executor TaskExecutor) error {
     )
 }
 
-// ✅ 正确：同步执行（在 executor 的 goroutine 中）
+// ✅ 正确：循环调度 + Peek 两阶段执行 + QueueLen 优化
 func (s *TaskScheduler) Run(ctx context.Context) error {
     for s.running {
-        tasks := s.getSortedTasks()
+        tasks := s.getOrderedTasks()  // 按 ExecutionOrder 排序
+        processed := false
 
+        // ========== 预检查：计算总队列长度 ==========
+        totalQueueLen := 0
         for _, task := range tasks {
-            if !task.HasItem() { continue }
-
-            var item any
-            if !task.Dequeue(&item) { continue }
-
-            // 同步执行（在 executor 的 goroutine 中，不启动新 goroutine）
-            s.executeTask(task, item)
+            totalQueueLen += task.QueueLen()
         }
 
-        if !processed {
-            s.waitForSignal()
+        // 如果所有队列都空，等待 wakeup
+        if totalQueueLen == 0 {
+            s.waitForSignal()  // cond.Wait()
+            continue
+        }
+
+        // 每次循环遍历所有 Task，每个最多处理一个 item
+        for _, task := range tasks {
+            // ========== 阶段 1: Peek 查看队首（不出队）==========
+            var item any
+            if !task.Peek(&item) {
+                continue  // 队列空，跳过
+            }
+
+            // ========== 阶段 2: Execute 执行（返回状态）==========
+            status := task.Execute(item)
+            processed = true
+
+            // ========== 阶段 3: 根据返回状态决定是否 Dequeue ==========
+            switch status {
+            case TaskPassed, TaskFailed, TaskTimeout:
+                // 执行完成，出队
+                var dequeued any
+                task.Dequeue(&dequeued)
+
+            case TaskRetrying:
+                // 需要重试，不出队
+                // item 保留在队列中，下次循环会再次 Peek 到
+                // 可选：延迟重试，避免立即重试
+            }
         }
     }
     return nil
 }
+
+// ========== waitForSignal 和 wakeup 实现 ==========
+
+// waitForSignal 等待新任务入队时的唤醒信号
+func (s *TaskScheduler) waitForSignal() {
+    s.stats.EmptyWaits.Add(1)
+    s.cond.L.Lock()
+    s.cond.Wait()
+    s.cond.L.Unlock()
+}
+
+// wakeup 唤醒调度器（由 Task.Enqueue 时调用）
+func (s *TaskScheduler) wakeup() {
+    s.cond.Signal()
+}
 ```
+
+**循环调度示例**：
+
+假设有 3 个 Task，队列状态如下：
+- Task A (优先级 0): [item1, item2, item3, ...]  // 100 个
+- Task B (优先级 1): [item1, item2]                 // 2 个
+- Task C (优先级 2): []                              // 0 个
+
+**调度过程**：
+
+```
+循环 1:
+  totalQueueLen = 100 + 2 + 0 = 102  // ✅ 不为空，继续
+  Task A.Peek() → item1 → Execute() → Dequeue()  // 剩 99 个
+  Task B.Peek() → item1 → Execute() → Dequeue()  // 剩 1 个
+  Task C.Peek() → false，跳过
+
+循环 2:
+  totalQueueLen = 99 + 1 + 0 = 100    // ✅ 不为空，继续
+  Task A.Peek() → item2 → Execute() → Dequeue()  // 剩 98 个
+  Task B.Peek() → item2 → Execute() → Dequeue()  // 剩 0 个
+  Task C.Peek() → false，跳过
+
+循环 3:
+  totalQueueLen = 98 + 0 + 0 = 98     // ✅ 不为空，继续
+  Task A.Peek() → item3 → Execute() → Dequeue()  // 剩 97 个
+  Task B.Peek() → false，空队列
+  Task C.Peek() → false，空队列
+
+...
+
+循环 100:
+  totalQueueLen = 1 + 0 + 0 = 1      // ✅ 不为空，继续
+  Task A.Peek() → item100 → Execute() → Dequeue()  // 剩 0 个
+
+循环 101:
+  totalQueueLen = 0 + 0 + 0 = 0      // ✅ 所有队列空
+  → 调用 waitForSignal()，等待 Enqueue 时唤醒
+```
+
+**关键理解**：
+
+1. **QueueLen 优化**：
+   ```go
+   totalQueueLen := 0
+   for _, task := range tasks {
+       totalQueueLen += task.QueueLen()
+   }
+
+   if totalQueueLen == 0 {
+       s.waitForSignal()  // 所有队列空，等待
+       continue
+   }
+   ```
+   - 提前计算总队列长度
+   - 避免不必要的空循环
+   - 只有 `totalQueueLen == 0` 时才等待
+
+2. **每次循环只处理一个 item**：
+   - 即使 Task A 有 100 个 item，每次循环也只处理一个
+   - 保证公平性，其他 Task 有机会被调度
+
+3. **持续处理直到队列为空**：
+   - Task A 有 100 个 → 前 100 次循环 `totalQueueLen > 0`，持续处理
+   - 第 101 次循环 `totalQueueLen == 0`，等待唤醒
+
+4. **Wakeup 时机**：
+   - **新 item 入队时**：调用 `Enqueue()` → `cond.Signal()` → 调度器被唤醒
+   - **被唤醒后重新计算**：`totalQueueLen > 0`，继续处理
+
+**总结**：
+- ✅ **公平性**：每次循环每个 Task 最多处理一个 item
+- ✅ **非空继续**：只要 `totalQueueLen > 0`，就不会休眠
+- ✅ **新任务唤醒**：Enqueue 时 Signal，立即响应
+- ✅ **无空转**：所有队列空时才 Wait，零 CPU 消耗
+- ✅ **QueueLen 优化**：提前计算总队列长度，避免空循环
 
 3. **数据结构**：
 
@@ -265,24 +435,215 @@ func (s *TaskScheduler) SourceID() model.SourceID {
 - **`model.TaskRunner`**：调度器实现此接口，可提交给 Executor
 - **与现有 `Task` 接口体系一致**：`Task[Result]` 实现 `TaskRunner` 接口
 
-**复用说明**：
-- **`model.BaseTask[any]`**：提供 `done` channel、`Wait()`、`IsDone()`、`GetResult()` 等异步结果机制
-- **`model.TaskPriority`**：提供标准化的 10 级优先级枚举（0-9，0 最高）
-- **与现有 `Task` 接口体系一致**：`Task[Result]` 实现 `TaskRunner` 接口
+4. **Peek + Execute 两阶段执行模式**：
 
-4. **容错设计**：
+**设计目的**：
+- **Peek 查看队首**：获取队首元素但不移除（不出队）
+- **Execute 执行**：处理元素
+- **结果决定 Dequeue**：根据执行结果决定是否出队
+
+**关键语义**：
+- **Peek(item *any) bool**：查看队首元素，存入 item，返回是否成功（元素不出队）
+- **Execute(item any)**：执行任务逻辑
+- **Dequeue(item *any) bool**：移除队首元素（出队）
+- **执行成功 → Dequeue**：PASSED → 出队
+- **执行失败 → Dequeue**：FAILED → 出队
+- **需要重试 → 不 Dequeue**：RETRYING → 元素保留在队列
+
+**执行流程**：
+
+```mermaid
+flowchart TD
+    A[调度器循环] --> B{Peek 查看队首}
+    B -->|成功| C[Execute 执行<br/>item 仍在队列]
+    B -->|失败/空| D[等待下次调度]
+
+    C -->|PASSED| E[Dequeue 出队]
+    C -->|FAILED| F[Dequeue 出队]
+    C -->|RETRYING| G[保留在队列<br/>下次重试]
+    C -->|TIMEOUT| H[Dequeue 出队]
+
+    E --> I[任务完成]
+    F --> I
+    G --> A
+    H --> I
+```
+
+**状态定义（TaskStatus - 调度队列视角）**：
+
+| 状态 | 说明 | Item 在队列中 | Dequeue 时机 |
+|------|------|---------------|-------------|
+| `TaskQueued` | 任务已入队 | ✅ 是 | - |
+| `TaskExecuting` | 正在执行（Peek 成功后） | ✅ 是 | - |
+| `TaskPassed` | 执行成功 | ❌ 否 | 立即 Dequeue |
+| `TaskFailed` | 执行失败 | ❌ 否 | 立即 Dequeue |
+| `TaskRetrying` | 需要重试 | ✅ 是 | 保留，下次 Peek |
+| `TaskTimeout` | 超时 | ❌ 否 | 立即 Dequeue |
+
+**Peek 操作说明**：
+
+| 操作 | 作用 | Item 状态 |
+|------|------|-----------|
+| `Peek(item *any) bool` | 查看队首元素，存入 item，不出队 | ✅ 仍在队列 |
+| `Execute(item any)` | 执行任务逻辑 | ✅ 仍在队列 |
+| `Dequeue(item *any) bool` | 移除队首元素 | ❌ 出队 |
+
+**Task 接口设计（完整版）**：
+
+```go
+// Task 调度器任务接口（支持 Peek + Execute 两阶段执行）
+type Task interface {
+    // 队列管理
+    QueueLen() int                       // 获取队列长度
+    Enqueue(item any) error             // 客户端入队任务
+    Peek(item *any) bool                // 查看队首元素（不出队）
+    Dequeue(item *any) bool             // 移除队首元素（出队）
+
+    // 任务执行
+    Execute(item any) TaskStatus        // 执行任务处理逻辑，返回执行状态
+
+    // 元数据
+    Name() string                        // 任务名称
+    Priority() model.TaskPriority       // 优先级（复用现有枚举）
+    GetTask() *model.BaseTask[any]      // 获取异步结果任务（复用现有）
+
+    // 内部使用
+    setScheduler(s *TaskScheduler)      // 设置调度器引用
+}
+```
+
+**使用示例**：
+
+```go
+// WriteTask 写入任务（实现 Task 接口）
+type WriteTask struct {
+    *model.BaseTask[any]
+    scheduler *TaskScheduler
+    queue     []any
+    mu        sync.Mutex
+
+    // 任务状态（调度队列视角）
+    taskStatus atomic.Int32 // TaskStatus
+    retryCount atomic.Int32
+}
+
+// ========== 队列管理方法 ==========
+
+func (w *WriteTask) QueueLen() int {
+    w.mu.Lock()
+    defer w.mu.Unlock()
+    return len(w.queue)
+}
+
+func (w *WriteTask) Enqueue(item any) error {
+    w.mu.Lock()
+    defer w.mu.Unlock()
+    w.queue = append(w.queue, item)
+    w.taskStatus.Store(int32(TaskQueued))
+
+    // 唤醒调度器（如果有新任务入队）
+    if w.scheduler != nil {
+        w.scheduler.wakeup()
+    }
+
+    return nil
+}
+
+// Peek 查看队首元素（不出队）
+func (w *WriteTask) Peek(item *any) bool {
+    w.mu.Lock()
+    defer w.mu.Unlock()
+
+    if len(w.queue) == 0 {
+        return false
+    }
+
+    // 将队首元素存入 item，但不从队列移除
+    *item = w.queue[0]
+    w.taskStatus.Store(int32(TaskExecuting))
+    return true
+}
+
+// Dequeue 移除队首元素（出队）
+func (w *WriteTask) Dequeue(item *any) bool {
+    w.mu.Lock()
+    defer w.mu.Unlock()
+
+    if len(w.queue) == 0 {
+        return false
+    }
+
+    // 移除队首元素
+    *item = w.queue[0]
+    w.queue = w.queue[1:]
+    return true
+}
+
+// ========== 任务执行方法 ==========
+
+func (w *WriteTask) Execute(item any) TaskStatus {
+    data := item.(*WriteData)
+
+    // 执行实际的写入逻辑
+    err := w.doWrite(data)
+
+    // 返回执行状态（TaskScheduler 会根据状态决定是否 Dequeue）
+    if err != nil {
+        if w.isRetryable(err) && w.retryCount.Load() < 3 {
+            // 需要重试，TaskScheduler 不会 Dequeue，元素保留在队列
+            w.retryCount.Add(1)
+            return TaskRetrying
+        } else {
+            // 不可重试，TaskScheduler 会 Dequeue
+            return TaskFailed
+        }
+    } else {
+        // 成功，TaskScheduler 会 Dequeue
+        w.retryCount.Store(0) // 重置重试计数
+        return TaskPassed
+    }
+}
+
+// ========== 元数据方法 ==========
+
+func (w *WriteTask) Name() string {
+    return "WriteTask"
+}
+
+func (w *WriteTask) Priority() model.TaskPriority {
+    return model.TaskPriorityNormal
+}
+
+func (w *WriteTask) GetTask() *model.BaseTask[any] {
+    return w.BaseTask
+}
+
+func (w *WriteTask) setScheduler(s *TaskScheduler) {
+    w.scheduler = s
+}
+```
+
+**与现有代码的协同**：
+- **`OperationStatus`**（BaseTask 内部状态）：`Pending` → `Running` → `Completed`/`Failed`
+- **`TaskStatus`**（调度队列视角）：`Queued` → `Executing` → `Passed`/`Failed`/`Retrying`
+- **关键区别**：
+  - `OperationStatus`：BaseTask 的异步执行状态
+  - `TaskStatus`：TaskScheduler 队列视角的状态，控制 Dequeue 时机
+- **Peek 语义**：Peek 只是查看队首元素，不出队；只有 Execute 完成后才根据 TaskStatus 决定是否 Dequeue
+
+5. **容错设计**：
 
 - **Panic 恢复**：每个任务执行时带 `defer recover()`
 - **上下文取消**：支持 `context.Context` 取消
 - **背压控制**：队列满时返回 `ErrQueueFull`
 - **优雅关闭**：`Stop()` 方法等待所有任务处理完毕
 
-#### 3.3 命名规范（解决混淆）
+#### 3.4 命名规范（解决混淆）
 
 | 旧名称 | 新名称 | 文件名 | 职责 |
 |--------|--------|--------|------|
 | `RunLoopWorker` | `EventLoop` | `event_loop.go` | 单队列单 worker 高性能执行 |
-| `RunLoop` | `TaskScheduler` | `task_scheduler.go` | 多任务优先级调度框架 |
+| `RunLoop` | `TaskScheduler` | `task_scheduler.go` | 多任务调度框架（支持 ExecutionOrder） |
 
 **命名理由**：
 - `EventLoop`: 明确表示单一事件循环，处理单一任务队列
@@ -293,7 +654,7 @@ func (s *TaskScheduler) SourceID() model.SourceID {
 - `EventLoop`: 适用于简单高性能任务执行（保留现有实现）
 - `TaskScheduler`: 适用于复杂多任务调度（新增实现）
 
-#### 3.4 与现有组件对比
+#### 3.5 与现有组件对比
 
 | 特性 | EventLoop (原 RunLoopWorker) | TaskScheduler (新增) |
 |-----|------------------------------|---------------------|
@@ -329,7 +690,7 @@ func (s *TaskScheduler) SourceID() model.SourceID {
 | Task 接口方法 | `task_scheduler_test.go` | 100% |
 | BaseTask 实现 | `base_task_test.go` | 90%+ |
 | 调度器循环 | `task_scheduler_test.go` | 80%+ |
-| 优先级调度 | `task_scheduler_test.go` | 核心逻辑 |
+| ExecutionOrder 调度 | `task_scheduler_test.go` | 核心逻辑 |
 | Panic 恢复 | `task_scheduler_test.go` | 异常路径 |
 | 上下文取消 | `task_scheduler_test.go` | 取消逻辑 |
 
@@ -340,7 +701,7 @@ func (s *TaskScheduler) SourceID() model.SourceID {
 | 单任务吞吐量 | `task_scheduler_bench_test.go` | ops/sec |
 | 多任务调度开销 | `task_scheduler_bench_test.go` | 调度延迟 |
 | 与 EventLoop 对比 | `comparison_bench_test.go` | 性能差异 |
-| 优先级调度性能 | `task_scheduler_bench_test.go` | 高优先级响应时间 |
+| ExecutionOrder 切换性能 | `task_scheduler_bench_test.go` | 切换开销 |
 
 #### 5.3 集成测试
 

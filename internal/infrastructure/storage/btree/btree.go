@@ -167,13 +167,13 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	maxLevels := 10 // Default value
 
 	btree := &BTree{
-		config:     config,
-		closed:     false,
-		rootRef:    rootPageRef,
-		chunkMgr:   chunkMgr,
-		wal:        walImpl,
-		maxLevels:  maxLevels,
-		enableWAL:  enableWAL,
+		config:    config,
+		closed:    false,
+		rootRef:   rootPageRef,
+		chunkMgr:  chunkMgr,
+		wal:       walImpl,
+		maxLevels: maxLevels,
+		enableWAL: enableWAL,
 	}
 
 	// Replay WAL if exists (crash recovery)

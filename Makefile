@@ -121,11 +121,11 @@ vet:
 	@echo "运行 go vet..."
 	$(GO) vet ./...
 
-## lint: 代码质量检查
+## lint: 代码质量检查（与 CI 保持一致）
 lint:
 	@echo "运行 golangci-lint..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run  ./...; \
+		golangci-lint run --timeout=5m --config=.golangci.yml ./...; \
 	else \
 		echo "golangci-lint 未安装，跳过 lint"; \
 	fi

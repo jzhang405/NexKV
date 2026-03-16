@@ -1,4 +1,4 @@
-version: 2
+version: "2"
 
 linters:
   enable:
@@ -20,16 +20,10 @@ linters-settings:
       - copylocks
 
 issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-    # 排除一些误报
-    - linters:
-        - staticcheck
-      text: "SA9003:"  # 忽略无用的类型转换建议
-    # 允许 main 函数中使用 fmt.Println
-    - path: cmd/
-      linters:
-        - staticcheck
-      text: "SA9002:"
+  exclude:
+    - SA9003  # 忽略无用的类型转换建议
+    - SA9002  # 允许 main 函数中使用 fmt.Println
+  exclude-dirs:
+    - test
+  exclude-files:
+    - _test\.go

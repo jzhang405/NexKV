@@ -830,17 +830,15 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 				if childReplacement != nil {
 					// 子节点在路径中，使用克隆的 PageInfo
 					newChildRef := NewPageRefWithInfo(childReplacement)
-					// ✅ 设置 parentRef：指向当前克隆的 InternalPage
-					newChildRef.parentRef = b.rootRef.PageRef
-					newChildRef.mu = sync.RWMutex{} // 初始化 mutex
+					// ✅ 设置 parentRef：指向当前克隆的 InternalPage（使用 atomic.Value）
+					newChildRef.SetParentRef(b.rootRef.PageRef)
 					internalPage.children[j] = newChildRef
 				} else {
 					// 子节点不在路径中，创建新的克隆
 					clonedChildInfo := childInfo.Clone()
 					newChildRef := NewPageRefWithInfo(clonedChildInfo)
-					// 设置 parentRef
-					newChildRef.parentRef = b.rootRef.PageRef
-					newChildRef.mu = sync.RWMutex{}
+					// 设置 parentRef（使用 atomic.Value）
+					newChildRef.SetParentRef(b.rootRef.PageRef)
 					internalPage.children[j] = newChildRef
 				}
 			}
@@ -941,15 +939,15 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 				if childReplacement != nil {
 					// 子节点在路径中，使用浅拷贝的 PageInfo
 					newChildRef := NewPageRefWithInfo(childReplacement)
-					newChildRef.parentRef = b.rootRef.PageRef
-					newChildRef.mu = sync.RWMutex{}
+					// ✅ 阶段1优化: 使用 SetParentRef（atomic.Value）
+					newChildRef.SetParentRef(b.rootRef.PageRef)
 					internalPage.children[j] = newChildRef
 				} else {
 					// 子节点不在路径中，创建浅拷贝
 					shallowChildInfo := childInfo.CloneShallow()
 					newChildRef := NewPageRefWithInfo(shallowChildInfo)
-					newChildRef.parentRef = b.rootRef.PageRef
-					newChildRef.mu = sync.RWMutex{}
+					// ✅ 阶段1优化: 使用 SetParentRef（atomic.Value）
+					newChildRef.SetParentRef(b.rootRef.PageRef)
 					internalPage.children[j] = newChildRef
 				}
 			}
@@ -1047,8 +1045,8 @@ func (b *BTree) finalizeDeepClone(copiedPath []*PageInfo) error {
 				if deepClonedChild != nil {
 					// 使用深拷贝的 PageInfo
 					newChildRef := NewPageRefWithInfo(deepClonedChild)
-					newChildRef.parentRef = b.rootRef.PageRef
-					newChildRef.mu = sync.RWMutex{}
+					// ✅ 阶段1优化: 使用 SetParentRef（atomic.Value）
+					newChildRef.SetParentRef(b.rootRef.PageRef)
 					internalPage.children[j] = newChildRef
 				}
 				// 如果不在映射表中，说明不在路径内，保持原引用

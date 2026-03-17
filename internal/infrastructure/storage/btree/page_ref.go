@@ -2,7 +2,6 @@ package btree
 
 import (
 	"fmt"
-	"sync"
 	"sync/atomic"
 )
 
@@ -11,25 +10,22 @@ import (
 // 要求：Go 1.19+ (atomic.Pointer 泛型支持)
 type PageRef struct {
 	pInfo     atomic.Pointer[PageInfo] // 原子指针，支持 CAS 更新
-	parentRef *PageRef                 // 父引用，形成引用链（弱引用避免循环）
-	mu        sync.RWMutex             // 保护 parentRef 更新
+	parentRef atomic.Value             // ✅ 阶段1优化: 使用 atomic.Value 存储 *PageRef，移除 defer 开销
 }
 
 // NewPageRef 创建新的 PageRef
 func NewPageRef() *PageRef {
-	ref := &PageRef{
-		parentRef: nil,
-	}
+	ref := &PageRef{}
 	ref.pInfo.Store(nil)
+	ref.parentRef.Store((*PageRef)(nil)) // ✅ 显式初始化为 nil
 	return ref
 }
 
 // NewPageRefWithInfo 创建带有初始 PageInfo 的 PageRef
 func NewPageRefWithInfo(info *PageInfo) *PageRef {
-	ref := &PageRef{
-		parentRef: nil,
-	}
+	ref := &PageRef{}
 	ref.pInfo.Store(info)
+	ref.parentRef.Store((*PageRef)(nil)) // ✅ 显式初始化为 nil
 	return ref
 }
 
@@ -155,18 +151,16 @@ func (r *PageRef) GetLastTime() int64 {
 	return info.GetLastTime()
 }
 
-// GetParentRef 获取父引用
+// GetParentRef 获取父引用（无锁，atomic.Value）
+// ✅ 阶段1优化: 移除 defer，减少 tryDeferToSpanScan 开销
 func (r *PageRef) GetParentRef() *PageRef {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.parentRef
+	return r.parentRef.Load().(*PageRef)
 }
 
-// SetParentRef 设置父引用（线程安全）
+// SetParentRef 设置父引用（无锁，atomic.Value）
+// ✅ 阶段1优化: 移除 defer，减少 tryDeferToSpanScan 开销
 func (r *PageRef) SetParentRef(parent *PageRef) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.parentRef = parent
+	r.parentRef.Store(parent)
 }
 
 // Clone 克隆 PageRef（浅拷贝 PageInfo）
@@ -189,11 +183,10 @@ func (r *PageRef) Unload() *PageInfo {
 	return oldInfo
 }
 
-// HasParent 检查是否有父引用
+// HasParent 检查是否有父引用（无锁，atomic.Value）
+// ✅ 阶段1优化: 移除 defer，减少 tryDeferToSpanScan 开销
 func (r *PageRef) HasParent() bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.parentRef != nil
+	return r.parentRef.Load().(*PageRef) != nil
 }
 
 // GetBuff 获取序列化缓冲区

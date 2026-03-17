@@ -1,7 +1,6 @@
 package btree
 
 import (
-	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -44,8 +43,7 @@ type PageInfo struct {
 	_    [40]byte // padding to 64 bytes
 
 	// Cache Line 3 (64 bytes) - 冷数据（元数据，低频写入）
-	parentRefMu sync.RWMutex  // 8 bytes  - ✅ P0-2 修复: 保护 parentRef 的并发访问
-	parentRef   *PageRef      // 8 bytes  - 父节点引用
+	parentRef atomic.Value  // 8 bytes - ✅ 阶段1优化: 使用 atomic.Value 存储 *PageRef，移除 defer 开销
 	flags       atomic.Uint32 // 4 bytes  - ✅ 并发安全标志位: bit0=isDirty, bit1=isSplitted
 	metaVersion int32         // 4 bytes  - 元数据版本
 	pageSize    int32         // 4 bytes  - 页面实际大小（固定 4KB）
@@ -60,7 +58,7 @@ func NewPageInfo() *PageInfo {
 	info := &PageInfo{
 		page:        nil,
 		pageLock:    NewPageLock(),
-		parentRef:   nil, // ✅ 初始化父节点引用
+		// parentRef 使用 atomic.Value，不需要显式初始化为 nil
 		metaVersion: 0,
 		pageSize:    PageSize,
 	}
@@ -68,6 +66,7 @@ func NewPageInfo() *PageInfo {
 	info.lastTime.Store(time.Now().UnixNano())
 	info.hits.Store(0)
 	info.flags.Store(0) // 初始化所有标志位为 0
+	info.parentRef.Store((*PageRef)(nil)) // ✅ 显式初始化为 nil
 	return info
 }
 
@@ -164,10 +163,11 @@ func (info *PageInfo) Clone() *PageInfo {
 	// 创建新的 PageInfo，复制所有字段
 	newInfo := &PageInfo{
 		pageLock:    NewPageLock(),       // 创建新锁
-		parentRef:   info.GetParentRef(), // ✅ P0-2 修复: 线程安全地复制父节点引用
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}
+	// ✅ 阶段1优化: 使用 atomic.Value 复制 parentRef（无锁）
+	newInfo.parentRef.Store(info.parentRef.Load())
 
 	// ✅ 修复：使用 SetPos() 方法设置 atomic.Int64，避免直接复制
 	newInfo.SetPos(info.GetPos())
@@ -208,10 +208,11 @@ func (info *PageInfo) Clone() *PageInfo {
 func (info *PageInfo) CloneShallow() *PageInfo {
 	newInfo := &PageInfo{
 		pageLock:    NewPageLock(),
-		parentRef:   info.GetParentRef(),
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}
+	// ✅ 阶段1优化: 使用 atomic.Value 复制 parentRef（无锁）
+	newInfo.parentRef.Store(info.parentRef.Load())
 
 	newInfo.SetPos(info.GetPos())
 	newInfo.lastTime.Store(info.lastTime.Load())
@@ -306,18 +307,16 @@ func (info *PageInfo) GetPageSize() int32 {
 	return info.pageSize
 }
 
-// GetParentRef 获取父节点引用（线程安全）
+// GetParentRef 获取父节点引用（无锁，atomic.Value）
+// ✅ 阶段1优化: 移除 defer，减少 tryDeferToSpanScan 开销
 func (info *PageInfo) GetParentRef() *PageRef {
-	info.parentRefMu.RLock()
-	defer info.parentRefMu.RUnlock()
-	return info.parentRef
+	return info.parentRef.Load().(*PageRef)
 }
 
-// SetParentRef 设置父节点引用（线程安全）
+// SetParentRef 设置父节点引用（无锁，atomic.Value）
+// ✅ 阶段1优化: 移除 defer，减少 tryDeferToSpanScan 开销
 func (info *PageInfo) SetParentRef(ref *PageRef) {
-	info.parentRefMu.Lock()
-	defer info.parentRefMu.Unlock()
-	info.parentRef = ref
+	info.parentRef.Store(ref)
 }
 
 // IsPageLoaded 检查页面是否已加载

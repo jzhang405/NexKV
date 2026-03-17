@@ -189,23 +189,7 @@ func (r *PageRef) HasParent() bool {
 	return r.parentRef.Load().(*PageRef) != nil
 }
 
-// GetBuff 获取序列化缓冲区
-func (r *PageRef) GetBuff() []byte {
-	info := r.pInfo.Load()
-	if info == nil {
-		return nil
-	}
-	return info.GetBuff()
-}
-
-// SetBuff 设置序列化缓冲区
-func (r *PageRef) SetBuff(buff []byte) {
-	info := r.pInfo.Load()
-	if info == nil {
-		return
-	}
-	info.SetBuff(buff)
-}
+// ✅ 优化：移除 GetBuff/SetBuff 方法，序列化缓冲区现在由 ChunkManager.pagePool 管理
 
 // GetOrLoad 获取 PageInfo，如果未加载则从 ChunkManager 加载（懒加载）
 // 懒加载模式核心：只有 Root 常驻内存，其他页面按需加载

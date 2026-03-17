@@ -141,16 +141,7 @@ func TestPageInfo_Clone(t *testing.T) {
 	assert.NotEqual(t, original.pos.Load(), cloned.pos.Load())
 }
 
-func TestPageInfo_GetSetBuff(t *testing.T) {
-	info := NewPageInfo()
-	buff := []byte{1, 2, 3, 4, 5}
-
-	info.SetBuff(buff)
-	got := info.GetBuff()
-	assert.Equal(t, buff, got)
-	// 验证是同一个底层数组
-	assert.Equal(t, cap(buff), cap(got))
-}
+// ✅ 优化：移除 TestPageInfo_GetSetBuff 测试（GetBuff/SetBuff 方法已移除，序列化缓冲区由 ChunkManager.pagePool 管理）
 
 func TestPageInfo_MetaVersion(t *testing.T) {
 	info := NewPageInfo()

@@ -38,9 +38,9 @@ type PageInfo struct {
 	hits     atomic.Int64 // 8 bytes  - 访问计数 ✅ 并发安全
 	_        [24]byte     // padding to 64 bytes
 
-	// Cache Line 2 (64 bytes) - 温数据（序列化缓冲区）
-	buff []byte   // 24 bytes - slice header
-	_    [40]byte // padding to 64 bytes
+	// Cache Line 2 (64 bytes) - ✅ 优化：移除 buff 字段，使用 ChunkManager.pagePool 管理
+	// 原 buff []byte 字段已移除，减少1个指针（25%↓），序列化时使用 ChunkManager.AcquirePageBuffer()
+	_    [0]byte // 占位，保持对齐
 
 	// Cache Line 3 (64 bytes) - 冷数据（元数据，低频写入）
 	parentRef atomic.Value  // 8 bytes - ✅ 阶段1优化: 使用 atomic.Value 存储 *PageRef，移除 defer 开销
@@ -282,15 +282,7 @@ func (info *PageInfo) IsDeepClone() bool {
 	return info.cloneStatus.Load() == CloneStatusDeep
 }
 
-// GetBuff 获取序列化缓冲区
-func (info *PageInfo) GetBuff() []byte {
-	return info.buff
-}
-
-// SetBuff 设置序列化缓冲区
-func (info *PageInfo) SetBuff(buff []byte) {
-	info.buff = buff
-}
+// ✅ 优化：移除 GetBuff/SetBuff 方法，序列化缓冲区现在由 ChunkManager.pagePool 管理
 
 // GetMetaVersion 获取元数据版本
 func (info *PageInfo) GetMetaVersion() int32 {
@@ -376,7 +368,6 @@ func (info *PageInfo) GetPageID() uint64 {
 func VerifyPageInfoAlignment() {
 	var info PageInfo
 	offset1 := unsafe.Offsetof(info.pos)
-	offset2 := unsafe.Offsetof(info.buff)
 	offset3 := unsafe.Offsetof(info.flags)
 
 	// pos 应该在 cache line 边界（0 的倍数）
@@ -384,13 +375,10 @@ func VerifyPageInfoAlignment() {
 		println("Warning: PageInfo.pos not aligned to cache line")
 	}
 
-	// buff 应该在独立的 cache line
-	if (offset2-offset1)%cacheLineSize != 0 {
-		println("Warning: PageInfo.buff not in separate cache line")
-	}
+	// ✅ 移除 buff 对齐检查（字段已移除）
 
-	// isDirty 应该在独立的 cache line
-	if (offset3-offset2)%cacheLineSize != 0 {
+	// flags 应该在独立的 cache line
+	if (offset3-offset1)%cacheLineSize != 0 {
 		println("Warning: PageInfo.metadata not in separate cache line")
 	}
 }

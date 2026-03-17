@@ -200,17 +200,7 @@ func TestPageRef_Unload(t *testing.T) {
 	assert.Nil(t, ref.GetPage())
 }
 
-func TestPageRef_GetSetBuff(t *testing.T) {
-	ref := NewPageRef()
-	info := NewPageInfo()
-	ref.SetPage(info)
-
-	buff := []byte{1, 2, 3, 4, 5}
-	ref.SetBuff(buff)
-
-	got := ref.GetBuff()
-	assert.Equal(t, buff, got)
-}
+// ✅ 优化：移除 TestPageRef_GetSetBuff 测试（GetBuff/SetBuff 方法已移除，序列化缓冲区由 ChunkManager.pagePool 管理）
 
 func TestPageRef_NilInfoSafety(t *testing.T) {
 	ref := NewPageRef()

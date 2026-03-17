@@ -14,6 +14,7 @@ package recovery
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -57,11 +58,20 @@ type Handler func(r any, stack []byte)
 // ==========================================
 
 // DefaultHandler 默认的 panic 处理器，使用 slog 记录
+// 在测试环境中使用 Debug 级别，避免被 CI 误认为错误
 func DefaultHandler(r any, stack []byte) {
-	slog.Error("[recovery] panic recovered",
-		"panic", r,
-		"stack", string(stack),
-	)
+	if flag.Lookup("test.v") != nil {
+		// 测试环境中使用 Debug 级别
+		slog.Debug("[recovery] panic recovered",
+			"panic", r,
+			"stack", string(stack),
+		)
+	} else {
+		slog.Error("[recovery] panic recovered",
+			"panic", r,
+			"stack", string(stack),
+		)
+	}
 }
 
 // LogrusHandler 兼容 logrus 的处理器

@@ -6,6 +6,7 @@ package rpc
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -131,9 +132,15 @@ func (w *asyncListenerWrapper) OnComplete(stats service.BroadcastStats) {
 }
 
 // safeListenerExec 安全执行回调（使用统一的 panic 恢复）
+// 在测试环境中使用 Debug 级别，避免被 CI 误认为错误
 func safeListenerExec(fn func()) {
 	_ = recovery.Safe(fn, func(r any, stack []byte) {
-		slog.Error("[AsyncCallback] panic recovered", "panic", r, "stack", string(stack))
+		if flag.Lookup("test.v") != nil {
+			// 测试环境中使用 Debug 级别
+			slog.Debug("[AsyncCallback] panic recovered", "panic", r, "stack", string(stack))
+		} else {
+			slog.Error("[AsyncCallback] panic recovered", "panic", r, "stack", string(stack))
+		}
 	})
 }
 

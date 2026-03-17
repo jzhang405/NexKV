@@ -1,0 +1,34 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 9K of event 'cycles:P'
+# Event count (approx.): 392102441885
+#
+# Overhead  Command         Shared Object     Symbol                                                                                                          
+# ........  ..............  ................  ................................................................................................................
+#
+    11.88%  btree_perf_mem  btree_perf_mem    [.] runtime.mallocgcSmallScanNoHeader
+     8.80%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+     7.90%  btree_perf_mem  btree_perf_mem    [.] sync/atomic.StoreUintptr
+     7.67%  btree_perf_mem  btree_perf_mem    [.] runtime.tryDeferToSpanScan
+     4.74%  btree_perf_mem  btree_perf_mem    [.] runtime.(*mspan).writeHeapBitsSmall
+     4.19%  btree_perf_mem  btree_perf_mem    [.] runtime.typePointers.next
+     3.38%  btree_perf_mem  btree_perf_mem    [.] runtime.scanObject
+     3.29%  btree_perf_mem  btree_perf_mem    [.] sync/atomic.CompareAndSwapUintptr
+     3.16%  btree_perf_mem  btree_perf_mem    [.] runtime.mallocgc
+     3.06%  btree_perf_mem  btree_perf_mem    [.] runtime.memclrNoHeapPointers
+     2.73%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+     2.40%  btree_perf_mem  btree_perf_mem    [.] sync/atomic.(*Value).Store
+     1.96%  btree_perf_mem  btree_perf_mem    [.] runtime.newobject
+     1.66%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).finalizeDeepClone
+     1.35%  btree_perf_mem  btree_perf_mem    [.] sync/atomic.StorePointer
+     1.28%  btree_perf_mem  [unknown]         [.] 0000000000000000
+     1.18%  btree_perf_mem  btree_perf_mem    [.] runtime.mapaccess1_fast64
+     1.10%  btree_perf_mem  btree_perf_mem    [.] runtime.stealWork
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

@@ -1,0 +1,2135 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 9K of event 'cycles:P'
+# Event count (approx.): 392102441885
+#
+# Children      Self  Command         Shared Object     Symbol                                                                                                          
+# ........  ........  ..............  ................  ................................................................................................................
+#
+    60.95%     0.01%  btree_perf_mem  btree_perf_mem    [.] runtime.goexit.abi0
+            |
+            ---runtime.goexit.abi0
+               |          
+               |--57.42%--runtime.main
+               |          |          
+               |           --57.41%--main.main
+               |                     |          
+               |                      --56.73%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+               |                                |          
+               |                                 --56.72%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+               |                                           |          
+               |                                           |--50.30%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+               |                                           |          |          
+               |                                           |          |--32.85%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+               |                                           |          |          |          
+               |                                           |          |          |--18.07%--runtime.newobject
+               |                                           |          |          |          |          
+               |                                           |          |          |           --17.34%--runtime.mallocgc
+               |                                           |          |          |                     |          
+               |                                           |          |          |                      --15.49%--runtime.mallocgcSmallScanNoHeader
+               |                                           |          |          |                                |          
+               |                                           |          |          |                                |--3.60%--runtime.(*mspan).writeHeapBitsSmall
+               |                                           |          |          |                                |          
+               |                                           |          |          |                                |--1.51%--runtime.memclrNoHeapPointers
+               |                                           |          |          |                                |          
+               |                                           |          |          |                                 --1.49%--runtime.(*mcache).nextFree
+               |                                           |          |          |                                           |          
+               |                                           |          |          |                                            --1.30%--runtime.(*mcache).refill
+               |                                           |          |          |                                                      |          
+               |                                           |          |          |                                                       --0.51%--runtime.(*mcentral).cacheSpan
+               |                                           |          |          |          
+               |                                           |          |           --5.63%--sync/atomic.(*Value).Store
+               |                                           |          |                     |          
+               |                                           |          |                     |--2.78%--sync/atomic.StorePointer
+               |                                           |          |                     |          |          
+               |                                           |          |                     |           --2.51%--sync/atomic.StoreUintptr
+               |                                           |          |                     |          
+               |                                           |          |                      --1.81%--sync/atomic.CompareAndSwapPointer
+               |                                           |          |                                |          
+               |                                           |          |                                 --1.61%--sync/atomic.CompareAndSwapUintptr
+               |                                           |          |          
+               |                                           |          |--11.84%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+               |                                           |          |          |          
+               |                                           |          |          |--5.16%--sync/atomic.(*Value).Store
+               |                                           |          |          |          |          
+               |                                           |          |          |          |--2.74%--sync/atomic.StorePointer
+               |                                           |          |          |          |          |          
+               |                                           |          |          |          |           --2.51%--sync/atomic.StoreUintptr
+               |                                           |          |          |          |          
+               |                                           |          |          |           --1.70%--sync/atomic.CompareAndSwapPointer
+               |                                           |          |          |                     |          
+               |                                           |          |          |                      --1.51%--sync/atomic.CompareAndSwapUintptr
+               |                                           |          |          |          
+               |                                           |          |          |--4.08%--runtime.newobject
+               |                                           |          |          |          |          
+               |                                           |          |          |           --3.91%--runtime.mallocgc
+               |                                           |          |          |                     |          
+               |                                           |          |          |                      --3.22%--runtime.mallocgcSmallScanNoHeader
+               |                                           |          |          |                                |          
+               |                                           |          |          |                                 --0.84%--runtime.(*mspan).writeHeapBitsSmall
+               |                                           |          |          |          
+               |                                           |          |           --1.76%--sync/atomic.StorePointer
+               |                                           |          |                     |          
+               |                                           |          |                      --1.64%--sync/atomic.StoreUintptr
+               |                                           |          |          
+               |                                           |           --1.89%--sync/atomic.(*Value).Store
+               |                                           |                     |          
+               |                                           |                      --1.29%--sync/atomic.StorePointer
+               |                                           |                                |          
+               |                                           |                                 --1.21%--sync/atomic.StoreUintptr
+               |                                           |          
+               |                                           |--3.85%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).finalizeDeepClone
+               |                                           |          |          
+               |                                           |          |--1.34%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneDeep
+               |                                           |          |          |          
+               |                                           |          |           --0.54%--runtime.makeslice
+               |                                           |          |                     |          
+               |                                           |          |                      --0.51%--runtime.mallocgc
+               |                                           |          |          
+               |                                           |           --0.57%--runtime.mapaccess1_fast64
+               |                                           |          
+               |                                           |--1.21%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).findLeafPage
+               |                                           |          github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).searchPath
+               |                                           |          
+               |                                            --1.17%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Insert
+               |                                                      |          
+               |                                                       --1.09%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.insertSlice[go.shape.[]uint8]
+               |                                                                 |          
+               |                                                                  --0.78%--runtime.makeslice
+               |                                                                            |          
+               |                                                                             --0.76%--runtime.mallocgc
+               |                                                                                       |          
+               |                                                                                        --0.76%--runtime.mallocgcSmallScanHeader
+               |          
+                --3.24%--runtime.gcenable.gowrap1
+                          |          
+                           --3.22%--runtime.bgsweep
+                                     |          
+                                      --3.19%--runtime.sweepone
+                                                |          
+                                                 --1.77%--runtime.(*sweepLocked).sweep
+                                                           |          
+                                                            --0.82%--runtime.(*mspan).moveInlineMarks
+
+    57.42%     0.00%  btree_perf_mem  btree_perf_mem    [.] runtime.main
+            |
+            ---runtime.main
+               |          
+                --57.41%--main.main
+                          |          
+                           --56.73%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                                     |          
+                                      --56.72%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                                                |          
+                                                |--50.30%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+                                                |          |          
+                                                |          |--32.85%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+                                                |          |          |          
+                                                |          |          |--18.07%--runtime.newobject
+                                                |          |          |          |          
+                                                |          |          |           --17.34%--runtime.mallocgc
+                                                |          |          |                     |          
+                                                |          |          |                      --15.49%--runtime.mallocgcSmallScanNoHeader
+                                                |          |          |                                |          
+                                                |          |          |                                |--3.60%--runtime.(*mspan).writeHeapBitsSmall
+                                                |          |          |                                |          
+                                                |          |          |                                |--1.51%--runtime.memclrNoHeapPointers
+                                                |          |          |                                |          
+                                                |          |          |                                 --1.49%--runtime.(*mcache).nextFree
+                                                |          |          |                                           |          
+                                                |          |          |                                            --1.30%--runtime.(*mcache).refill
+                                                |          |          |                                                      |          
+                                                |          |          |                                                       --0.51%--runtime.(*mcentral).cacheSpan
+                                                |          |          |          
+                                                |          |           --5.63%--sync/atomic.(*Value).Store
+                                                |          |                     |          
+                                                |          |                     |--2.78%--sync/atomic.StorePointer
+                                                |          |                     |          |          
+                                                |          |                     |           --2.51%--sync/atomic.StoreUintptr
+                                                |          |                     |          
+                                                |          |                      --1.81%--sync/atomic.CompareAndSwapPointer
+                                                |          |                                |          
+                                                |          |                                 --1.61%--sync/atomic.CompareAndSwapUintptr
+                                                |          |          
+                                                |          |--11.84%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+                                                |          |          |          
+                                                |          |          |--5.16%--sync/atomic.(*Value).Store
+                                                |          |          |          |          
+                                                |          |          |          |--2.74%--sync/atomic.StorePointer
+                                                |          |          |          |          |          
+                                                |          |          |          |           --2.51%--sync/atomic.StoreUintptr
+                                                |          |          |          |          
+                                                |          |          |           --1.70%--sync/atomic.CompareAndSwapPointer
+                                                |          |          |                     |          
+                                                |          |          |                      --1.51%--sync/atomic.CompareAndSwapUintptr
+                                                |          |          |          
+                                                |          |          |--4.08%--runtime.newobject
+                                                |          |          |          |          
+                                                |          |          |           --3.91%--runtime.mallocgc
+                                                |          |          |                     |          
+                                                |          |          |                      --3.22%--runtime.mallocgcSmallScanNoHeader
+                                                |          |          |                                |          
+                                                |          |          |                                 --0.84%--runtime.(*mspan).writeHeapBitsSmall
+                                                |          |          |          
+                                                |          |           --1.76%--sync/atomic.StorePointer
+                                                |          |                     |          
+                                                |          |                      --1.64%--sync/atomic.StoreUintptr
+                                                |          |          
+                                                |           --1.89%--sync/atomic.(*Value).Store
+                                                |                     |          
+                                                |                      --1.29%--sync/atomic.StorePointer
+                                                |                                |          
+                                                |                                 --1.21%--sync/atomic.StoreUintptr
+                                                |          
+                                                |--3.85%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).finalizeDeepClone
+                                                |          |          
+                                                |          |--1.34%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneDeep
+                                                |          |          |          
+                                                |          |           --0.54%--runtime.makeslice
+                                                |          |                     |          
+                                                |          |                      --0.51%--runtime.mallocgc
+                                                |          |          
+                                                |           --0.57%--runtime.mapaccess1_fast64
+                                                |          
+                                                |--1.21%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).findLeafPage
+                                                |          github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).searchPath
+                                                |          
+                                                 --1.17%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Insert
+                                                           |          
+                                                            --1.09%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.insertSlice[go.shape.[]uint8]
+                                                                      |          
+                                                                       --0.78%--runtime.makeslice
+                                                                                 |          
+                                                                                  --0.76%--runtime.mallocgc
+                                                                                            |          
+                                                                                             --0.76%--runtime.mallocgcSmallScanHeader
+
+    57.41%     0.00%  btree_perf_mem  btree_perf_mem    [.] main.main
+            |
+            ---main.main
+               |          
+                --56.73%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                          |          
+                           --56.72%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                                     |          
+                                     |--50.30%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+                                     |          |          
+                                     |          |--32.85%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+                                     |          |          |          
+                                     |          |          |--18.07%--runtime.newobject
+                                     |          |          |          |          
+                                     |          |          |           --17.34%--runtime.mallocgc
+                                     |          |          |                     |          
+                                     |          |          |                      --15.49%--runtime.mallocgcSmallScanNoHeader
+                                     |          |          |                                |          
+                                     |          |          |                                |--3.60%--runtime.(*mspan).writeHeapBitsSmall
+                                     |          |          |                                |          
+                                     |          |          |                                |--1.51%--runtime.memclrNoHeapPointers
+                                     |          |          |                                |          
+                                     |          |          |                                 --1.49%--runtime.(*mcache).nextFree
+                                     |          |          |                                           |          
+                                     |          |          |                                            --1.30%--runtime.(*mcache).refill
+                                     |          |          |                                                      |          
+                                     |          |          |                                                       --0.51%--runtime.(*mcentral).cacheSpan
+                                     |          |          |          
+                                     |          |           --5.63%--sync/atomic.(*Value).Store
+                                     |          |                     |          
+                                     |          |                     |--2.78%--sync/atomic.StorePointer
+                                     |          |                     |          |          
+                                     |          |                     |           --2.51%--sync/atomic.StoreUintptr
+                                     |          |                     |          
+                                     |          |                      --1.81%--sync/atomic.CompareAndSwapPointer
+                                     |          |                                |          
+                                     |          |                                 --1.61%--sync/atomic.CompareAndSwapUintptr
+                                     |          |          
+                                     |          |--11.84%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+                                     |          |          |          
+                                     |          |          |--5.16%--sync/atomic.(*Value).Store
+                                     |          |          |          |          
+                                     |          |          |          |--2.74%--sync/atomic.StorePointer
+                                     |          |          |          |          |          
+                                     |          |          |          |           --2.51%--sync/atomic.StoreUintptr
+                                     |          |          |          |          
+                                     |          |          |           --1.70%--sync/atomic.CompareAndSwapPointer
+                                     |          |          |                     |          
+                                     |          |          |                      --1.51%--sync/atomic.CompareAndSwapUintptr
+                                     |          |          |          
+                                     |          |          |--4.08%--runtime.newobject
+                                     |          |          |          |          
+                                     |          |          |           --3.91%--runtime.mallocgc
+                                     |          |          |                     |          
+                                     |          |          |                      --3.22%--runtime.mallocgcSmallScanNoHeader
+                                     |          |          |                                |          
+                                     |          |          |                                 --0.84%--runtime.(*mspan).writeHeapBitsSmall
+                                     |          |          |          
+                                     |          |           --1.76%--sync/atomic.StorePointer
+                                     |          |                     |          
+                                     |          |                      --1.64%--sync/atomic.StoreUintptr
+                                     |          |          
+                                     |           --1.89%--sync/atomic.(*Value).Store
+                                     |                     |          
+                                     |                      --1.29%--sync/atomic.StorePointer
+                                     |                                |          
+                                     |                                 --1.21%--sync/atomic.StoreUintptr
+                                     |          
+                                     |--3.85%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).finalizeDeepClone
+                                     |          |          
+                                     |          |--1.34%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneDeep
+                                     |          |          |          
+                                     |          |           --0.54%--runtime.makeslice
+                                     |          |                     |          
+                                     |          |                      --0.51%--runtime.mallocgc
+                                     |          |          
+                                     |           --0.57%--runtime.mapaccess1_fast64
+                                     |          
+                                     |--1.21%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).findLeafPage
+                                     |          github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).searchPath
+                                     |          
+                                      --1.17%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Insert
+                                                |          
+                                                 --1.09%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.insertSlice[go.shape.[]uint8]
+                                                           |          
+                                                            --0.78%--runtime.makeslice
+                                                                      |          
+                                                                       --0.76%--runtime.mallocgc
+                                                                                 |          
+                                                                                  --0.76%--runtime.mallocgcSmallScanHeader
+
+    56.73%     0.01%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+            |          
+             --56.72%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                       |          
+                       |--50.30%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+                       |          |          
+                       |          |--32.85%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+                       |          |          |          
+                       |          |          |--18.07%--runtime.newobject
+                       |          |          |          |          
+                       |          |          |           --17.34%--runtime.mallocgc
+                       |          |          |                     |          
+                       |          |          |                      --15.49%--runtime.mallocgcSmallScanNoHeader
+                       |          |          |                                |          
+                       |          |          |                                |--3.60%--runtime.(*mspan).writeHeapBitsSmall
+                       |          |          |                                |          
+                       |          |          |                                |--1.51%--runtime.memclrNoHeapPointers
+                       |          |          |                                |          
+                       |          |          |                                 --1.49%--runtime.(*mcache).nextFree
+                       |          |          |                                           |          
+                       |          |          |                                            --1.30%--runtime.(*mcache).refill
+                       |          |          |                                                      |          
+                       |          |          |                                                       --0.51%--runtime.(*mcentral).cacheSpan
+                       |          |          |          
+                       |          |           --5.63%--sync/atomic.(*Value).Store
+                       |          |                     |          
+                       |          |                     |--2.78%--sync/atomic.StorePointer
+                       |          |                     |          |          
+                       |          |                     |           --2.51%--sync/atomic.StoreUintptr
+                       |          |                     |          
+                       |          |                      --1.81%--sync/atomic.CompareAndSwapPointer
+                       |          |                                |          
+                       |          |                                 --1.61%--sync/atomic.CompareAndSwapUintptr
+                       |          |          
+                       |          |--11.84%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+                       |          |          |          
+                       |          |          |--5.16%--sync/atomic.(*Value).Store
+                       |          |          |          |          
+                       |          |          |          |--2.74%--sync/atomic.StorePointer
+                       |          |          |          |          |          
+                       |          |          |          |           --2.51%--sync/atomic.StoreUintptr
+                       |          |          |          |          
+                       |          |          |           --1.70%--sync/atomic.CompareAndSwapPointer
+                       |          |          |                     |          
+                       |          |          |                      --1.51%--sync/atomic.CompareAndSwapUintptr
+                       |          |          |          
+                       |          |          |--4.08%--runtime.newobject
+                       |          |          |          |          
+                       |          |          |           --3.91%--runtime.mallocgc
+                       |          |          |                     |          
+                       |          |          |                      --3.22%--runtime.mallocgcSmallScanNoHeader
+                       |          |          |                                |          
+                       |          |          |                                 --0.84%--runtime.(*mspan).writeHeapBitsSmall
+                       |          |          |          
+                       |          |           --1.76%--sync/atomic.StorePointer
+                       |          |                     |          
+                       |          |                      --1.64%--sync/atomic.StoreUintptr
+                       |          |          
+                       |           --1.89%--sync/atomic.(*Value).Store
+                       |                     |          
+                       |                      --1.29%--sync/atomic.StorePointer
+                       |                                |          
+                       |                                 --1.21%--sync/atomic.StoreUintptr
+                       |          
+                       |--3.85%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).finalizeDeepClone
+                       |          |          
+                       |          |--1.34%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneDeep
+                       |          |          |          
+                       |          |           --0.54%--runtime.makeslice
+                       |          |                     |          
+                       |          |                      --0.51%--runtime.mallocgc
+                       |          |          
+                       |           --0.57%--runtime.mapaccess1_fast64
+                       |          
+                       |--1.21%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).findLeafPage
+                       |          github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).searchPath
+                       |          
+                        --1.17%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Insert
+                                  |          
+                                   --1.09%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.insertSlice[go.shape.[]uint8]
+                                             |          
+                                              --0.78%--runtime.makeslice
+                                                        |          
+                                                         --0.76%--runtime.mallocgc
+                                                                   |          
+                                                                    --0.76%--runtime.mallocgcSmallScanHeader
+
+    56.72%     0.06%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+            |          
+             --56.66%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                       |          
+                       |--50.30%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+                       |          |          
+                       |          |--32.85%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+                       |          |          |          
+                       |          |          |--18.07%--runtime.newobject
+                       |          |          |          |          
+                       |          |          |           --17.34%--runtime.mallocgc
+                       |          |          |                     |          
+                       |          |          |                      --15.49%--runtime.mallocgcSmallScanNoHeader
+                       |          |          |                                |          
+                       |          |          |                                |--3.60%--runtime.(*mspan).writeHeapBitsSmall
+                       |          |          |                                |          
+                       |          |          |                                |--1.51%--runtime.memclrNoHeapPointers
+                       |          |          |                                |          
+                       |          |          |                                 --1.49%--runtime.(*mcache).nextFree
+                       |          |          |                                           |          
+                       |          |          |                                            --1.30%--runtime.(*mcache).refill
+                       |          |          |                                                      |          
+                       |          |          |                                                       --0.51%--runtime.(*mcentral).cacheSpan
+                       |          |          |          
+                       |          |           --5.63%--sync/atomic.(*Value).Store
+                       |          |                     |          
+                       |          |                     |--2.78%--sync/atomic.StorePointer
+                       |          |                     |          |          
+                       |          |                     |           --2.51%--sync/atomic.StoreUintptr
+                       |          |                     |          
+                       |          |                      --1.81%--sync/atomic.CompareAndSwapPointer
+                       |          |                                |          
+                       |          |                                 --1.61%--sync/atomic.CompareAndSwapUintptr
+                       |          |          
+                       |          |--11.84%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+                       |          |          |          
+                       |          |          |--5.16%--sync/atomic.(*Value).Store
+                       |          |          |          |          
+                       |          |          |          |--2.74%--sync/atomic.StorePointer
+                       |          |          |          |          |          
+                       |          |          |          |           --2.51%--sync/atomic.StoreUintptr
+                       |          |          |          |          
+                       |          |          |           --1.70%--sync/atomic.CompareAndSwapPointer
+                       |          |          |                     |          
+                       |          |          |                      --1.51%--sync/atomic.CompareAndSwapUintptr
+                       |          |          |          
+                       |          |          |--4.08%--runtime.newobject
+                       |          |          |          |          
+                       |          |          |           --3.91%--runtime.mallocgc
+                       |          |          |                     |          
+                       |          |          |                      --3.22%--runtime.mallocgcSmallScanNoHeader
+                       |          |          |                                |          
+                       |          |          |                                 --0.84%--runtime.(*mspan).writeHeapBitsSmall
+                       |          |          |          
+                       |          |           --1.76%--sync/atomic.StorePointer
+                       |          |                     |          
+                       |          |                      --1.64%--sync/atomic.StoreUintptr
+                       |          |          
+                       |           --1.89%--sync/atomic.(*Value).Store
+                       |                     |          
+                       |                      --1.29%--sync/atomic.StorePointer
+                       |                                |          
+                       |                                 --1.21%--sync/atomic.StoreUintptr
+                       |          
+                       |--3.85%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).finalizeDeepClone
+                       |          |          
+                       |          |--1.34%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneDeep
+                       |          |          |          
+                       |          |           --0.54%--runtime.makeslice
+                       |          |                     |          
+                       |          |                      --0.51%--runtime.mallocgc
+                       |          |          
+                       |           --0.57%--runtime.mapaccess1_fast64
+                       |          
+                       |--1.21%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).findLeafPage
+                       |          github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).searchPath
+                       |          
+                        --1.17%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Insert
+                                  |          
+                                   --1.09%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.insertSlice[go.shape.[]uint8]
+                                             |          
+                                              --0.78%--runtime.makeslice
+                                                        |          
+                                                         --0.76%--runtime.mallocgc
+                                                                   |          
+                                                                    --0.76%--runtime.mallocgcSmallScanHeader
+
+    50.51%     2.73%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+            |          
+            |--47.98%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+            |          |          
+            |          |--32.85%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+            |          |          |          
+            |          |          |--18.07%--runtime.newobject
+            |          |          |          |          
+            |          |          |           --17.34%--runtime.mallocgc
+            |          |          |                     |          
+            |          |          |                      --15.49%--runtime.mallocgcSmallScanNoHeader
+            |          |          |                                |          
+            |          |          |                                |--3.60%--runtime.(*mspan).writeHeapBitsSmall
+            |          |          |                                |          
+            |          |          |                                |--1.51%--runtime.memclrNoHeapPointers
+            |          |          |                                |          
+            |          |          |                                 --1.49%--runtime.(*mcache).nextFree
+            |          |          |                                           |          
+            |          |          |                                            --1.30%--runtime.(*mcache).refill
+            |          |          |                                                      |          
+            |          |          |                                                       --0.51%--runtime.(*mcentral).cacheSpan
+            |          |          |          
+            |          |           --5.63%--sync/atomic.(*Value).Store
+            |          |                     |          
+            |          |                     |--2.78%--sync/atomic.StorePointer
+            |          |                     |          |          
+            |          |                     |           --2.51%--sync/atomic.StoreUintptr
+            |          |                     |          
+            |          |                      --1.81%--sync/atomic.CompareAndSwapPointer
+            |          |                                |          
+            |          |                                 --1.61%--sync/atomic.CompareAndSwapUintptr
+            |          |          
+            |          |--11.84%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+            |          |          |          
+            |          |          |--5.16%--sync/atomic.(*Value).Store
+            |          |          |          |          
+            |          |          |          |--2.74%--sync/atomic.StorePointer
+            |          |          |          |          |          
+            |          |          |          |           --2.51%--sync/atomic.StoreUintptr
+            |          |          |          |          
+            |          |          |           --1.70%--sync/atomic.CompareAndSwapPointer
+            |          |          |                     |          
+            |          |          |                      --1.51%--sync/atomic.CompareAndSwapUintptr
+            |          |          |          
+            |          |          |--4.08%--runtime.newobject
+            |          |          |          |          
+            |          |          |           --3.91%--runtime.mallocgc
+            |          |          |                     |          
+            |          |          |                      --3.22%--runtime.mallocgcSmallScanNoHeader
+            |          |          |                                |          
+            |          |          |                                 --0.84%--runtime.(*mspan).writeHeapBitsSmall
+            |          |          |          
+            |          |           --1.76%--sync/atomic.StorePointer
+            |          |                     |          
+            |          |                      --1.64%--sync/atomic.StoreUintptr
+            |          |          
+            |           --1.89%--sync/atomic.(*Value).Store
+            |                     |          
+            |                      --1.29%--sync/atomic.StorePointer
+            |                                |          
+            |                                 --1.21%--sync/atomic.StoreUintptr
+            |          
+             --2.53%--runtime.goexit.abi0
+                       runtime.main
+                       main.main
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+
+    33.35%     8.80%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+            |          
+            |--24.72%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+            |          |          
+            |          |--18.25%--runtime.newobject
+            |          |          |          
+            |          |           --17.52%--runtime.mallocgc
+            |          |                     |          
+            |          |                      --15.66%--runtime.mallocgcSmallScanNoHeader
+            |          |                                |          
+            |          |                                |--3.62%--runtime.(*mspan).writeHeapBitsSmall
+            |          |                                |          
+            |          |                                |--1.53%--runtime.memclrNoHeapPointers
+            |          |                                |          
+            |          |                                 --1.50%--runtime.(*mcache).nextFree
+            |          |                                           |          
+            |          |                                            --1.31%--runtime.(*mcache).refill
+            |          |                                                      |          
+            |          |                                                       --0.51%--runtime.(*mcentral).cacheSpan
+            |          |          
+            |           --5.69%--sync/atomic.(*Value).Store
+            |                     |          
+            |                     |--2.82%--sync/atomic.StorePointer
+            |                     |          |          
+            |                     |           --2.55%--sync/atomic.StoreUintptr
+            |                     |          
+            |                      --1.81%--sync/atomic.CompareAndSwapPointer
+            |                                |          
+            |                                 --1.61%--sync/atomic.CompareAndSwapUintptr
+            |          
+             --8.63%--runtime.goexit.abi0
+                       runtime.main
+                       main.main
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                       |          
+                        --8.54%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+                                  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+
+    27.77%     0.00%  btree_perf_mem  [unknown]         [.] 0x01ffffffffffff7f
+            |
+            ---0x1ffffffffffff7f
+               |          
+               |--20.11%--runtime.systemstack.abi0
+               |          |          
+               |          |--15.05%--runtime.gcBgMarkWorker.func2
+               |          |          runtime.gcDrain
+               |          |          |          
+               |          |          |--12.89%--runtime.scanObject
+               |          |          |          |          
+               |          |          |          |--6.38%--runtime.tryDeferToSpanScan
+               |          |          |          |          
+               |          |          |           --3.45%--runtime.typePointers.next
+               |          |          |          
+               |          |          |--1.14%--runtime.scanSpan
+               |          |          |          |          
+               |          |          |           --0.75%--runtime.scanObjectsSmall
+               |          |          |          
+               |          |           --0.72%--runtime.markroot
+               |          |                     |          
+               |          |                      --0.54%--runtime.markroot.func1
+               |          |                                |          
+               |          |                                 --0.51%--runtime.scanstack
+               |          |          
+               |          |--2.45%--runtime.(*mheap).alloc.func1
+               |          |          |          
+               |          |           --2.42%--runtime.(*mheap).allocSpan
+               |          |                     |          
+               |          |                     |--1.14%--runtime.(*mheap).initSpan
+               |          |                     |          |          
+               |          |                     |           --0.78%--runtime.(*mspan).init
+               |          |                     |          
+               |          |                      --0.75%--runtime.(*mheap).allocMSpanLocked
+               |          |                                |          
+               |          |                                 --0.74%--runtime.(*fixalloc).alloc
+               |          |          
+               |           --1.57%--runtime.(*sweepLocked).sweep.(*mheap).freeSpan.func2
+               |                     |          
+               |                      --1.34%--runtime.(*mheap).freeSpanLocked
+               |                                |          
+               |                                 --0.76%--runtime.(*pageAlloc).free
+               |                                           |          
+               |                                            --0.63%--runtime.(*pageAlloc).update
+               |                                                      |          
+               |                                                       --0.54%--runtime.(*pallocBits).summarize
+               |          
+                --7.61%--runtime.mcall
+                          |          
+                          |--5.18%--runtime.goexit0
+                          |          |          
+                          |           --5.04%--runtime.schedule
+                          |                     |          
+                          |                      --4.64%--runtime.findRunnable
+                          |                                |          
+                          |                                |--3.54%--runtime.stealWork
+                          |                                |          |          
+                          |                                |           --2.73%--runtime.runqsteal
+                          |                                |                     |          
+                          |                                |                      --2.66%--runtime.runqgrab
+                          |                                |                                |          
+                          |                                |                                 --2.47%--runtime.usleep.abi0
+                          |                                |                                           |          
+                          |                                |                                            --1.94%--0xffffffff88e0012b
+                          |                                |                                                      |          
+                          |                                |                                                       --1.75%--0xffffffff8a392650
+                          |                                |                                                                 |          
+                          |                                |                                                                  --1.73%--0xffffffff8908b8cf
+                          |                                |                                                                            |          
+                          |                                |                                                                             --1.68%--0xffffffff892aa0fe
+                          |                                |                                                                                       |          
+                          |                                |                                                                                        --1.60%--0xffffffff892a9dab
+                          |                                |                                                                                                  |          
+                          |                                |                                                                                                   --1.24%--0xffffffff8a3a8170
+                          |                                |                                                                                                             |          
+                          |                                |                                                                                                              --1.20%--0xffffffff8a3a12a7
+                          |                                |                                                                                                                        |          
+                          |                                |                                                                                                                         --0.70%--0xffffffff8a3a0c3d
+                          |                                |                                                                                                                                   0xffffffff891dadf0
+                          |                                |                                                                                                                                   |          
+                          |                                |                                                                                                                                    --0.68%--0xffffffff891da63b
+                          |                                |                                                                                                                                              |          
+                          |                                |                                                                                                                                               --0.66%--0xffffffff891f247b
+                          |                                |                                                                                                                                                         |          
+                          |                                |                                                                                                                                                          --0.57%--0xffffffff891f1d48
+                          |                                |          
+                          |                                 --0.68%--runtime.stopm
+                          |                                           |          
+                          |                                            --0.63%--runtime.notesleep
+                          |                                                      |          
+                          |                                                       --0.61%--runtime.futexsleep
+                          |                                                                 |          
+                          |                                                                  --0.60%--runtime.futex.abi0
+                          |          
+                           --2.42%--runtime.park_m
+                                     |          
+                                      --2.29%--runtime.schedule
+                                                |          
+                                                 --2.11%--runtime.findRunnable
+                                                           |          
+                                                            --1.62%--runtime.stealWork
+                                                                      |          
+                                                                       --1.03%--runtime.runqsteal
+                                                                                 |          
+                                                                                  --1.03%--runtime.runqgrab
+                                                                                            |          
+                                                                                             --0.95%--runtime.usleep.abi0
+                                                                                                       |          
+                                                                                                        --0.70%--0xffffffff88e0012b
+                                                                                                                  |          
+                                                                                                                   --0.62%--0xffffffff8a392650
+                                                                                                                             |          
+                                                                                                                              --0.61%--0xffffffff8908b8cf
+                                                                                                                                        |          
+                                                                                                                                         --0.60%--0xffffffff892aa0fe
+                                                                                                                                                   0xffffffff892a9dab
+
+    24.97%     3.16%  btree_perf_mem  btree_perf_mem    [.] runtime.mallocgc
+            |          
+            |--21.94%--runtime.mallocgc
+            |          |          
+            |          |--19.49%--runtime.mallocgcSmallScanNoHeader
+            |          |          |          
+            |          |          |--4.58%--runtime.(*mspan).writeHeapBitsSmall
+            |          |          |          
+            |          |          |--1.72%--runtime.memclrNoHeapPointers
+            |          |          |          
+            |          |           --1.70%--runtime.(*mcache).nextFree
+            |          |                     |          
+            |          |                      --1.47%--runtime.(*mcache).refill
+            |          |                                |          
+            |          |                                 --0.60%--runtime.(*mcentral).cacheSpan
+            |          |          
+            |           --1.96%--runtime.mallocgcSmallScanHeader
+            |                     |          
+            |                      --1.09%--runtime.memclrNoHeapPointers
+            |          
+             --3.02%--runtime.goexit.abi0
+                       |          
+                        --3.01%--runtime.main
+                                  main.main
+                                  |          
+                                   --2.98%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                                             github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                                             |          
+                                              --2.94%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+                                                        |          
+                                                        |--2.17%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+                                                        |          |          
+                                                        |           --1.87%--runtime.newobject
+                                                        |                     |          
+                                                        |                      --1.81%--runtime.mallocgc
+                                                        |          
+                                                         --0.74%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+                                                                   |          
+                                                                    --0.67%--runtime.newobject
+                                                                              runtime.mallocgc
+
+    24.10%     1.96%  btree_perf_mem  btree_perf_mem    [.] runtime.newobject
+            |          
+            |--23.31%--runtime.newobject
+            |          |          
+            |           --21.94%--runtime.mallocgc
+            |                     |          
+            |                      --19.38%--runtime.mallocgcSmallScanNoHeader
+            |                                |          
+            |                                |--4.57%--runtime.(*mspan).writeHeapBitsSmall
+            |                                |          
+            |                                |--1.68%--runtime.(*mcache).nextFree
+            |                                |          |          
+            |                                |           --1.45%--runtime.(*mcache).refill
+            |                                |                     |          
+            |                                |                      --0.59%--runtime.(*mcentral).cacheSpan
+            |                                |          
+            |                                 --1.67%--runtime.memclrNoHeapPointers
+            |          
+             --0.79%--runtime.goexit.abi0
+                       runtime.main
+                       main.main
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                       |          
+                        --0.77%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+                                  |          
+                                   --0.60%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+                                             runtime.newobject
+
+    21.90%     0.12%  btree_perf_mem  btree_perf_mem    [.] runtime.systemstack.abi0
+            |          
+             --21.85%--runtime.systemstack.abi0
+                       |          
+                       |--16.30%--runtime.gcBgMarkWorker.func2
+                       |          runtime.gcDrain
+                       |          |          
+                       |          |--13.91%--runtime.scanObject
+                       |          |          |          
+                       |          |          |--6.79%--runtime.tryDeferToSpanScan
+                       |          |          |          
+                       |          |           --3.71%--runtime.typePointers.next
+                       |          |          
+                       |          |--1.28%--runtime.scanSpan
+                       |          |          |          
+                       |          |           --0.86%--runtime.scanObjectsSmall
+                       |          |          
+                       |           --0.76%--runtime.markroot
+                       |                     |          
+                       |                      --0.56%--runtime.markroot.func1
+                       |                                |          
+                       |                                 --0.52%--runtime.scanstack
+                       |          
+                       |--2.69%--runtime.(*mheap).alloc.func1
+                       |          |          
+                       |           --2.65%--runtime.(*mheap).allocSpan
+                       |                     |          
+                       |                     |--1.26%--runtime.(*mheap).initSpan
+                       |                     |          |          
+                       |                     |           --0.85%--runtime.(*mspan).init
+                       |                     |          
+                       |                      --0.79%--runtime.(*mheap).allocMSpanLocked
+                       |                                |          
+                       |                                 --0.78%--runtime.(*fixalloc).alloc
+                       |          
+                       |--1.67%--runtime.(*sweepLocked).sweep.(*mheap).freeSpan.func2
+                       |          |          
+                       |           --1.42%--runtime.(*mheap).freeSpanLocked
+                       |                     |          
+                       |                      --0.82%--runtime.(*pageAlloc).free
+                       |                                |          
+                       |                                 --0.68%--runtime.(*pageAlloc).update
+                       |                                           |          
+                       |                                            --0.58%--runtime.(*pallocBits).summarize
+                       |          
+                        --0.51%--runtime.newproc.func1
+
+    20.22%    11.88%  btree_perf_mem  btree_perf_mem    [.] runtime.mallocgcSmallScanNoHeader
+            |          
+            |--11.25%--runtime.goexit.abi0
+            |          |          
+            |           --11.21%--runtime.main
+            |                     main.main
+            |                     github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+            |                     github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+            |                     |          
+            |                      --10.84%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+            |                                |          
+            |                                |--8.70%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+            |                                |          runtime.newobject
+            |                                |          |          
+            |                                |           --8.65%--runtime.mallocgc
+            |                                |                     runtime.mallocgcSmallScanNoHeader
+            |                                |          
+            |                                 --2.11%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+            |                                           runtime.newobject
+            |                                           |          
+            |                                            --2.06%--runtime.mallocgc
+            |                                                      runtime.mallocgcSmallScanNoHeader
+            |          
+             --8.92%--runtime.mallocgcSmallScanNoHeader
+                       |          
+                       |--4.58%--runtime.(*mspan).writeHeapBitsSmall
+                       |          
+                       |--1.72%--runtime.memclrNoHeapPointers
+                       |          
+                        --1.70%--runtime.(*mcache).nextFree
+                                  |          
+                                   --1.47%--runtime.(*mcache).refill
+                                             |          
+                                              --0.60%--runtime.(*mcentral).cacheSpan
+
+    16.30%     0.00%  btree_perf_mem  btree_perf_mem    [.] runtime.gcBgMarkWorker.func2
+            |
+            ---runtime.gcBgMarkWorker.func2
+               runtime.gcDrain
+               |          
+               |--13.91%--runtime.scanObject
+               |          |          
+               |          |--6.79%--runtime.tryDeferToSpanScan
+               |          |          
+               |           --3.71%--runtime.typePointers.next
+               |          
+               |--1.28%--runtime.scanSpan
+               |          |          
+               |           --0.86%--runtime.scanObjectsSmall
+               |          
+                --0.76%--runtime.markroot
+                          |          
+                           --0.56%--runtime.markroot.func1
+                                     |          
+                                      --0.52%--runtime.scanstack
+
+    16.30%     0.12%  btree_perf_mem  btree_perf_mem    [.] runtime.gcDrain
+            |          
+             --16.19%--runtime.gcDrain
+                       |          
+                       |--13.91%--runtime.scanObject
+                       |          |          
+                       |          |--6.79%--runtime.tryDeferToSpanScan
+                       |          |          
+                       |           --3.71%--runtime.typePointers.next
+                       |          
+                       |--1.28%--runtime.scanSpan
+                       |          |          
+                       |           --0.86%--runtime.scanObjectsSmall
+                       |          
+                        --0.76%--runtime.markroot
+                                  |          
+                                   --0.56%--runtime.markroot.func1
+                                             |          
+                                              --0.52%--runtime.scanstack
+
+    14.23%     3.38%  btree_perf_mem  btree_perf_mem    [.] runtime.scanObject
+            |          
+            |--11.07%--runtime.scanObject
+            |          |          
+            |          |--6.82%--runtime.tryDeferToSpanScan
+            |          |          
+            |           --3.72%--runtime.typePointers.next
+            |          
+             --2.84%--0x1ffffffffffff7f
+                       runtime.systemstack.abi0
+                       |          
+                        --2.80%--runtime.gcBgMarkWorker.func2
+                                  runtime.gcDrain
+                                  runtime.scanObject
+
+    13.62%     2.40%  btree_perf_mem  btree_perf_mem    [.] sync/atomic.(*Value).Store
+            |          
+            |--12.01%--sync/atomic.(*Value).Store
+            |          |          
+            |          |--6.89%--sync/atomic.StorePointer
+            |          |          |          
+            |          |           --6.29%--sync/atomic.StoreUintptr
+            |          |          
+            |           --3.53%--sync/atomic.CompareAndSwapPointer
+            |                     |          
+            |                      --3.14%--sync/atomic.CompareAndSwapUintptr
+            |          
+             --1.60%--runtime.goexit.abi0
+                       runtime.main
+                       main.main
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+                       |          
+                       |--0.60%--sync/atomic.(*Value).Store
+                       |          
+                        --0.58%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+                                  |          
+                                   --0.57%--sync/atomic.(*Value).Store
+
+    12.31%     0.73%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+            |          
+            |--11.77%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+            |          |          
+            |          |--5.18%--sync/atomic.(*Value).Store
+            |          |          |          
+            |          |          |--2.74%--sync/atomic.StorePointer
+            |          |          |          |          
+            |          |          |           --2.51%--sync/atomic.StoreUintptr
+            |          |          |          
+            |          |           --1.72%--sync/atomic.CompareAndSwapPointer
+            |          |                     |          
+            |          |                      --1.54%--sync/atomic.CompareAndSwapUintptr
+            |          |          
+            |          |--4.27%--runtime.newobject
+            |          |          |          
+            |          |           --4.09%--runtime.mallocgc
+            |          |                     |          
+            |          |                      --3.39%--runtime.mallocgcSmallScanNoHeader
+            |          |                                |          
+            |          |                                 --0.92%--runtime.(*mspan).writeHeapBitsSmall
+            |          |          
+            |           --1.82%--sync/atomic.StorePointer
+            |                     |          
+            |                      --1.69%--sync/atomic.StoreUintptr
+            |          
+             --0.54%--runtime.goexit.abi0
+                       runtime.main
+                       main.main
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+
+     9.42%     1.35%  btree_perf_mem  btree_perf_mem    [.] sync/atomic.StorePointer
+            |          
+            |--8.74%--sync/atomic.StorePointer
+            |          |          
+            |           --7.99%--sync/atomic.StoreUintptr
+            |          
+             --0.69%--runtime.goexit.abi0
+                       runtime.main
+                       main.main
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                       |          
+                        --0.67%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+
+     8.24%     0.00%  btree_perf_mem  btree_perf_mem    [.] runtime.mcall
+            |
+            ---runtime.mcall
+               |          
+               |--5.60%--runtime.goexit0
+               |          |          
+               |           --5.45%--runtime.schedule
+               |                     |          
+               |                      --5.02%--runtime.findRunnable
+               |                                |          
+               |                                |--3.82%--runtime.stealWork
+               |                                |          |          
+               |                                |           --2.93%--runtime.runqsteal
+               |                                |                     |          
+               |                                |                      --2.86%--runtime.runqgrab
+               |                                |                                |          
+               |                                |                                 --2.66%--runtime.usleep.abi0
+               |                                |                                           |          
+               |                                |                                            --2.11%--0xffffffff88e0012b
+               |                                |                                                      |          
+               |                                |                                                       --1.89%--0xffffffff8a392650
+               |                                |                                                                 |          
+               |                                |                                                                  --1.87%--0xffffffff8908b8cf
+               |                                |                                                                            |          
+               |                                |                                                                             --1.80%--0xffffffff892aa0fe
+               |                                |                                                                                       |          
+               |                                |                                                                                        --1.72%--0xffffffff892a9dab
+               |                                |                                                                                                  |          
+               |                                |                                                                                                   --1.33%--0xffffffff8a3a8170
+               |                                |                                                                                                             |          
+               |                                |                                                                                                              --1.29%--0xffffffff8a3a12a7
+               |                                |                                                                                                                        |          
+               |                                |                                                                                                                         --0.74%--0xffffffff8a3a0c3d
+               |                                |                                                                                                                                   0xffffffff891dadf0
+               |                                |                                                                                                                                   |          
+               |                                |                                                                                                                                    --0.71%--0xffffffff891da63b
+               |                                |                                                                                                                                              |          
+               |                                |                                                                                                                                               --0.70%--0xffffffff891f247b
+               |                                |                                                                                                                                                         |          
+               |                                |                                                                                                                                                          --0.60%--0xffffffff891f1d48
+               |                                |          
+               |                                 --0.76%--runtime.stopm
+               |                                           |          
+               |                                            --0.71%--runtime.notesleep
+               |                                                      |          
+               |                                                       --0.67%--runtime.futexsleep
+               |                                                                 |          
+               |                                                                  --0.66%--runtime.futex.abi0
+               |                                                                            |          
+               |                                                                             --0.53%--0xffffffff88e0012b
+               |          
+                --2.64%--runtime.park_m
+                          |          
+                           --2.49%--runtime.schedule
+                                     |          
+                                      --2.30%--runtime.findRunnable
+                                                |          
+                                                 --1.75%--runtime.stealWork
+                                                           |          
+                                                            --1.10%--runtime.runqsteal
+                                                                      |          
+                                                                       --1.10%--runtime.runqgrab
+                                                                                 |          
+                                                                                  --1.02%--runtime.usleep.abi0
+                                                                                            |          
+                                                                                             --0.76%--0xffffffff88e0012b
+                                                                                                       |          
+                                                                                                        --0.68%--0xffffffff8a392650
+                                                                                                                  |          
+                                                                                                                   --0.66%--0xffffffff8908b8cf
+                                                                                                                             |          
+                                                                                                                              --0.65%--0xffffffff892aa0fe
+                                                                                                                                        0xffffffff892a9dab
+                                                                                                                                        |          
+                                                                                                                                         --0.52%--0xffffffff8a3a8170
+                                                                                                                                                   0xffffffff8a3a12a7
+
+     8.00%     7.90%  btree_perf_mem  btree_perf_mem    [.] sync/atomic.StoreUintptr
+            |          
+             --7.89%--runtime.goexit.abi0
+                       runtime.main
+                       main.main
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                       |          
+                        --7.78%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+                                  |          
+                                  |--4.08%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+                                  |          |          
+                                  |          |--2.49%--sync/atomic.(*Value).Store
+                                  |          |          sync/atomic.StorePointer
+                                  |          |          sync/atomic.StoreUintptr
+                                  |          |          
+                                  |           --1.59%--sync/atomic.StorePointer
+                                  |                     sync/atomic.StoreUintptr
+                                  |          
+                                  |--2.50%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+                                  |          sync/atomic.(*Value).Store
+                                  |          sync/atomic.StorePointer
+                                  |          sync/atomic.StoreUintptr
+                                  |          
+                                   --1.20%--sync/atomic.(*Value).Store
+                                             sync/atomic.StorePointer
+                                             sync/atomic.StoreUintptr
+
+     7.99%     0.06%  btree_perf_mem  btree_perf_mem    [.] runtime.schedule
+            |          
+             --7.93%--runtime.schedule
+                       |          
+                        --7.38%--runtime.findRunnable
+                                  |          
+                                  |--5.57%--runtime.stealWork
+                                  |          |          
+                                  |           --4.03%--runtime.runqsteal
+                                  |                     |          
+                                  |                      --3.95%--runtime.runqgrab
+                                  |                                |          
+                                  |                                 --3.68%--runtime.usleep.abi0
+                                  |                                           |          
+                                  |                                            --2.86%--0xffffffff88e0012b
+                                  |                                                      |          
+                                  |                                                       --2.56%--0xffffffff8a392650
+                                  |                                                                 |          
+                                  |                                                                  --2.53%--0xffffffff8908b8cf
+                                  |                                                                            |          
+                                  |                                                                             --2.45%--0xffffffff892aa0fe
+                                  |                                                                                       |          
+                                  |                                                                                        --2.37%--0xffffffff892a9dab
+                                  |                                                                                                  |          
+                                  |                                                                                                   --1.84%--0xffffffff8a3a8170
+                                  |                                                                                                             |          
+                                  |                                                                                                              --1.80%--0xffffffff8a3a12a7
+                                  |                                                                                                                        |          
+                                  |                                                                                                                         --1.00%--0xffffffff8a3a0c3d
+                                  |                                                                                                                                   |          
+                                  |                                                                                                                                    --0.99%--0xffffffff891dadf0
+                                  |                                                                                                                                              |          
+                                  |                                                                                                                                               --0.94%--0xffffffff891da63b
+                                  |                                                                                                                                                         |          
+                                  |                                                                                                                                                          --0.92%--0xffffffff891f247b
+                                  |                                                                                                                                                                    |          
+                                  |                                                                                                                                                                     --0.80%--0xffffffff891f1d48
+                                  |          
+                                   --0.91%--runtime.stopm
+                                             |          
+                                              --0.86%--runtime.notesleep
+                                                        |          
+                                                         --0.82%--runtime.futexsleep
+                                                                   |          
+                                                                    --0.81%--runtime.futex.abi0
+                                                                              |          
+                                                                               --0.65%--0xffffffff88e0012b
+                                                                                         |          
+                                                                                          --0.61%--0xffffffff8a392650
+                                                                                                    0xffffffff8908be8d
+                                                                                                    0xffffffff892cc6d9
+                                                                                                    |          
+                                                                                                     --0.61%--0xffffffff892cbe15
+                                                                                                               |          
+                                                                                                                --0.59%--0xffffffff892d0392
+
+     7.98%     7.67%  btree_perf_mem  btree_perf_mem    [.] runtime.tryDeferToSpanScan
+            |          
+            |--6.79%--0x1ffffffffffff7f
+            |          runtime.systemstack.abi0
+            |          |          
+            |           --6.47%--runtime.gcBgMarkWorker.func2
+            |                     runtime.gcDrain
+            |                     |          
+            |                      --6.14%--runtime.scanObject
+            |                                runtime.tryDeferToSpanScan
+            |          
+            |--0.60%--runtime.tryDeferToSpanScan
+            |          
+             --0.54%--runtime.systemstack.abi0
+
+     7.41%     0.17%  btree_perf_mem  btree_perf_mem    [.] runtime.findRunnable
+            |          
+             --7.27%--runtime.findRunnable
+                       |          
+                       |--5.57%--runtime.stealWork
+                       |          |          
+                       |           --4.03%--runtime.runqsteal
+                       |                     |          
+                       |                      --3.95%--runtime.runqgrab
+                       |                                |          
+                       |                                 --3.68%--runtime.usleep.abi0
+                       |                                           |          
+                       |                                            --2.86%--0xffffffff88e0012b
+                       |                                                      |          
+                       |                                                       --2.56%--0xffffffff8a392650
+                       |                                                                 |          
+                       |                                                                  --2.53%--0xffffffff8908b8cf
+                       |                                                                            |          
+                       |                                                                             --2.45%--0xffffffff892aa0fe
+                       |                                                                                       |          
+                       |                                                                                        --2.37%--0xffffffff892a9dab
+                       |                                                                                                  |          
+                       |                                                                                                   --1.84%--0xffffffff8a3a8170
+                       |                                                                                                             |          
+                       |                                                                                                              --1.80%--0xffffffff8a3a12a7
+                       |                                                                                                                        |          
+                       |                                                                                                                         --1.00%--0xffffffff8a3a0c3d
+                       |                                                                                                                                   |          
+                       |                                                                                                                                    --0.99%--0xffffffff891dadf0
+                       |                                                                                                                                              |          
+                       |                                                                                                                                               --0.94%--0xffffffff891da63b
+                       |                                                                                                                                                         |          
+                       |                                                                                                                                                          --0.92%--0xffffffff891f247b
+                       |                                                                                                                                                                    |          
+                       |                                                                                                                                                                     --0.80%--0xffffffff891f1d48
+                       |          
+                        --0.91%--runtime.stopm
+                                  |          
+                                   --0.86%--runtime.notesleep
+                                             |          
+                                              --0.82%--runtime.futexsleep
+                                                        |          
+                                                         --0.81%--runtime.futex.abi0
+                                                                   |          
+                                                                    --0.65%--0xffffffff88e0012b
+                                                                              |          
+                                                                               --0.61%--0xffffffff8a392650
+                                                                                         0xffffffff8908be8d
+                                                                                         0xffffffff892cc6d9
+                                                                                         |          
+                                                                                          --0.61%--0xffffffff892cbe15
+                                                                                                    |          
+                                                                                                     --0.59%--0xffffffff892d0392
+
+     5.61%     0.01%  btree_perf_mem  btree_perf_mem    [.] runtime.goexit0
+            |
+            ---runtime.goexit0
+               |          
+                --5.45%--runtime.schedule
+                          |          
+                           --5.02%--runtime.findRunnable
+                                     |          
+                                     |--3.82%--runtime.stealWork
+                                     |          |          
+                                     |           --2.93%--runtime.runqsteal
+                                     |                     |          
+                                     |                      --2.86%--runtime.runqgrab
+                                     |                                |          
+                                     |                                 --2.66%--runtime.usleep.abi0
+                                     |                                           |          
+                                     |                                            --2.11%--0xffffffff88e0012b
+                                     |                                                      |          
+                                     |                                                       --1.89%--0xffffffff8a392650
+                                     |                                                                 |          
+                                     |                                                                  --1.87%--0xffffffff8908b8cf
+                                     |                                                                            |          
+                                     |                                                                             --1.80%--0xffffffff892aa0fe
+                                     |                                                                                       |          
+                                     |                                                                                        --1.72%--0xffffffff892a9dab
+                                     |                                                                                                  |          
+                                     |                                                                                                   --1.33%--0xffffffff8a3a8170
+                                     |                                                                                                             |          
+                                     |                                                                                                              --1.29%--0xffffffff8a3a12a7
+                                     |                                                                                                                        |          
+                                     |                                                                                                                         --0.74%--0xffffffff8a3a0c3d
+                                     |                                                                                                                                   0xffffffff891dadf0
+                                     |                                                                                                                                   |          
+                                     |                                                                                                                                    --0.71%--0xffffffff891da63b
+                                     |                                                                                                                                              |          
+                                     |                                                                                                                                               --0.70%--0xffffffff891f247b
+                                     |                                                                                                                                                         |          
+                                     |                                                                                                                                                          --0.60%--0xffffffff891f1d48
+                                     |          
+                                      --0.76%--runtime.stopm
+                                                |          
+                                                 --0.71%--runtime.notesleep
+                                                           |          
+                                                            --0.67%--runtime.futexsleep
+                                                                      |          
+                                                                       --0.66%--runtime.futex.abi0
+                                                                                 |          
+                                                                                  --0.53%--0xffffffff88e0012b
+
+     5.57%     1.10%  btree_perf_mem  btree_perf_mem    [.] runtime.stealWork
+            |          
+            |--4.47%--runtime.stealWork
+            |          |          
+            |           --4.03%--runtime.runqsteal
+            |                     |          
+            |                      --3.95%--runtime.runqgrab
+            |                                |          
+            |                                 --3.68%--runtime.usleep.abi0
+            |                                           |          
+            |                                            --2.86%--0xffffffff88e0012b
+            |                                                      |          
+            |                                                       --2.56%--0xffffffff8a392650
+            |                                                                 |          
+            |                                                                  --2.53%--0xffffffff8908b8cf
+            |                                                                            |          
+            |                                                                             --2.45%--0xffffffff892aa0fe
+            |                                                                                       |          
+            |                                                                                        --2.37%--0xffffffff892a9dab
+            |                                                                                                  |          
+            |                                                                                                   --1.84%--0xffffffff8a3a8170
+            |                                                                                                             |          
+            |                                                                                                              --1.80%--0xffffffff8a3a12a7
+            |                                                                                                                        |          
+            |                                                                                                                         --1.00%--0xffffffff8a3a0c3d
+            |                                                                                                                                   |          
+            |                                                                                                                                    --0.99%--0xffffffff891dadf0
+            |                                                                                                                                              |          
+            |                                                                                                                                               --0.94%--0xffffffff891da63b
+            |                                                                                                                                                         |          
+            |                                                                                                                                                          --0.92%--0xffffffff891f247b
+            |                                                                                                                                                                    |          
+            |                                                                                                                                                                     --0.80%--0xffffffff891f1d48
+            |          
+             --0.99%--0x1ffffffffffff7f
+                       runtime.mcall
+                       |          
+                        --0.65%--runtime.goexit0
+                                  runtime.schedule
+                                  runtime.findRunnable
+                                  runtime.stealWork
+
+     4.75%     4.74%  btree_perf_mem  btree_perf_mem    [.] runtime.(*mspan).writeHeapBitsSmall
+            |          
+             --4.57%--runtime.goexit.abi0
+                       |          
+                        --4.56%--runtime.main
+                                  main.main
+                                  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                                  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                                  |          
+                                   --4.44%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+                                             |          
+                                             |--3.59%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+                                             |          runtime.newobject
+                                             |          runtime.mallocgc
+                                             |          runtime.mallocgcSmallScanNoHeader
+                                             |          runtime.(*mspan).writeHeapBitsSmall
+                                             |          
+                                              --0.84%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+                                                        runtime.newobject
+                                                        runtime.mallocgc
+                                                        runtime.mallocgcSmallScanNoHeader
+                                                        runtime.(*mspan).writeHeapBitsSmall
+
+     4.39%     4.19%  btree_perf_mem  btree_perf_mem    [.] runtime.typePointers.next
+            |          
+            |--3.28%--0x1ffffffffffff7f
+            |          runtime.systemstack.abi0
+            |          |          
+            |           --3.27%--runtime.gcBgMarkWorker.func2
+            |                     runtime.gcDrain
+            |                     |          
+            |                      --3.27%--runtime.scanObject
+            |                                runtime.typePointers.next
+            |          
+             --0.59%--runtime.typePointers.next
+
+     4.30%     0.00%  btree_perf_mem  [unknown]         [.] 0xffffffff88e0012b
+            |
+            ---0xffffffff88e0012b
+               |          
+                --3.91%--0xffffffff8a392650
+                          |          
+                          |--2.64%--0xffffffff8908b8cf
+                          |          |          
+                          |           --2.56%--0xffffffff892aa0fe
+                          |                     |          
+                          |                      --2.47%--0xffffffff892a9dab
+                          |                                |          
+                          |                                 --1.93%--0xffffffff8a3a8170
+                          |                                           |          
+                          |                                            --1.89%--0xffffffff8a3a12a7
+                          |                                                      |          
+                          |                                                       --1.08%--0xffffffff8a3a0c3d
+                          |                                                                 |          
+                          |                                                                  --1.07%--0xffffffff891dadf0
+                          |                                                                            |          
+                          |                                                                             --1.01%--0xffffffff891da63b
+                          |                                                                                       |          
+                          |                                                                                        --0.99%--0xffffffff891f247b
+                          |                                                                                                  |          
+                          |                                                                                                   --0.83%--0xffffffff891f1d48
+                          |          
+                           --0.95%--0xffffffff8908be8d
+                                     |          
+                                      --0.93%--0xffffffff892cc6d9
+                                                |          
+                                                 --0.66%--0xffffffff892cbe15
+                                                           |          
+                                                            --0.63%--0xffffffff892d0392
+
+     4.05%     0.05%  btree_perf_mem  btree_perf_mem    [.] runtime.runqsteal
+            |          
+             --4.01%--runtime.runqsteal
+                       |          
+                        --3.95%--runtime.runqgrab
+                                  |          
+                                   --3.68%--runtime.usleep.abi0
+                                             |          
+                                              --2.86%--0xffffffff88e0012b
+                                                        |          
+                                                         --2.56%--0xffffffff8a392650
+                                                                   |          
+                                                                    --2.53%--0xffffffff8908b8cf
+                                                                              |          
+                                                                               --2.45%--0xffffffff892aa0fe
+                                                                                         |          
+                                                                                          --2.37%--0xffffffff892a9dab
+                                                                                                    |          
+                                                                                                     --1.84%--0xffffffff8a3a8170
+                                                                                                               |          
+                                                                                                                --1.80%--0xffffffff8a3a12a7
+                                                                                                                          |          
+                                                                                                                           --1.00%--0xffffffff8a3a0c3d
+                                                                                                                                     |          
+                                                                                                                                      --0.99%--0xffffffff891dadf0
+                                                                                                                                                |          
+                                                                                                                                                 --0.94%--0xffffffff891da63b
+                                                                                                                                                           |          
+                                                                                                                                                            --0.92%--0xffffffff891f247b
+                                                                                                                                                                      |          
+                                                                                                                                                                       --0.80%--0xffffffff891f1d48
+
+     3.95%     0.27%  btree_perf_mem  btree_perf_mem    [.] runtime.runqgrab
+            |          
+             --3.68%--runtime.runqgrab
+                       runtime.usleep.abi0
+                       |          
+                        --2.86%--0xffffffff88e0012b
+                                  |          
+                                   --2.56%--0xffffffff8a392650
+                                             |          
+                                              --2.53%--0xffffffff8908b8cf
+                                                        |          
+                                                         --2.45%--0xffffffff892aa0fe
+                                                                   |          
+                                                                    --2.37%--0xffffffff892a9dab
+                                                                              |          
+                                                                               --1.84%--0xffffffff8a3a8170
+                                                                                         |          
+                                                                                          --1.80%--0xffffffff8a3a12a7
+                                                                                                    |          
+                                                                                                     --1.00%--0xffffffff8a3a0c3d
+                                                                                                               |          
+                                                                                                                --0.99%--0xffffffff891dadf0
+                                                                                                                          |          
+                                                                                                                           --0.94%--0xffffffff891da63b
+                                                                                                                                     |          
+                                                                                                                                      --0.92%--0xffffffff891f247b
+                                                                                                                                                |          
+                                                                                                                                                 --0.80%--0xffffffff891f1d48
+
+     3.93%     0.02%  btree_perf_mem  [unknown]         [.] 0xffffffff8a392650
+            |          
+             --3.91%--0xffffffff8a392650
+                       |          
+                       |--2.64%--0xffffffff8908b8cf
+                       |          |          
+                       |           --2.56%--0xffffffff892aa0fe
+                       |                     |          
+                       |                      --2.47%--0xffffffff892a9dab
+                       |                                |          
+                       |                                 --1.93%--0xffffffff8a3a8170
+                       |                                           |          
+                       |                                            --1.89%--0xffffffff8a3a12a7
+                       |                                                      |          
+                       |                                                       --1.08%--0xffffffff8a3a0c3d
+                       |                                                                 |          
+                       |                                                                  --1.07%--0xffffffff891dadf0
+                       |                                                                            |          
+                       |                                                                             --1.01%--0xffffffff891da63b
+                       |                                                                                       |          
+                       |                                                                                        --0.99%--0xffffffff891f247b
+                       |                                                                                                  |          
+                       |                                                                                                   --0.83%--0xffffffff891f1d48
+                       |          
+                        --0.95%--0xffffffff8908be8d
+                                  |          
+                                   --0.93%--0xffffffff892cc6d9
+                                             |          
+                                              --0.66%--0xffffffff892cbe15
+                                                        |          
+                                                         --0.63%--0xffffffff892d0392
+
+     3.93%     1.66%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).finalizeDeepClone
+            |          
+            |--2.34%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).finalizeDeepClone
+            |          |          
+            |          |--1.34%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneDeep
+            |          |          |          
+            |          |           --0.54%--runtime.makeslice
+            |          |                     |          
+            |          |                      --0.51%--runtime.mallocgc
+            |          |          
+            |           --0.57%--runtime.mapaccess1_fast64
+            |          
+             --1.58%--runtime.goexit.abi0
+                       runtime.main
+                       main.main
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).finalizeDeepClone
+
+     3.82%     0.13%  btree_perf_mem  btree_perf_mem    [.] runtime.usleep.abi0
+            |          
+             --3.70%--runtime.usleep.abi0
+                       |          
+                        --2.91%--0xffffffff88e0012b
+                                  |          
+                                   --2.60%--0xffffffff8a392650
+                                             |          
+                                              --2.57%--0xffffffff8908b8cf
+                                                        |          
+                                                         --2.49%--0xffffffff892aa0fe
+                                                                   |          
+                                                                    --2.40%--0xffffffff892a9dab
+                                                                              |          
+                                                                               --1.88%--0xffffffff8a3a8170
+                                                                                         |          
+                                                                                          --1.84%--0xffffffff8a3a12a7
+                                                                                                    |          
+                                                                                                     --1.04%--0xffffffff8a3a0c3d
+                                                                                                               |          
+                                                                                                                --1.03%--0xffffffff891dadf0
+                                                                                                                          |          
+                                                                                                                           --0.98%--0xffffffff891da63b
+                                                                                                                                     |          
+                                                                                                                                      --0.96%--0xffffffff891f247b
+                                                                                                                                                |          
+                                                                                                                                                 --0.82%--0xffffffff891f1d48
+
+     3.81%     0.63%  btree_perf_mem  btree_perf_mem    [.] sync/atomic.CompareAndSwapPointer
+            |          
+             --3.32%--sync/atomic.CompareAndSwapPointer
+                       |          
+                        --3.15%--sync/atomic.CompareAndSwapUintptr
+
+     3.29%     3.29%  btree_perf_mem  btree_perf_mem    [.] sync/atomic.CompareAndSwapUintptr
+            |
+            ---runtime.goexit.abi0
+               runtime.main
+               main.main
+               github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+               github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+               |          
+                --3.25%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+                          |          
+                          |--1.67%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+                          |          sync/atomic.(*Value).Store
+                          |          |          
+                          |           --1.61%--sync/atomic.CompareAndSwapPointer
+                          |                     sync/atomic.CompareAndSwapUintptr
+                          |          
+                           --1.58%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageRefWithInfo
+                                     sync/atomic.(*Value).Store
+                                     |          
+                                      --1.51%--sync/atomic.CompareAndSwapPointer
+                                                sync/atomic.CompareAndSwapUintptr
+
+     3.26%     3.06%  btree_perf_mem  btree_perf_mem    [.] runtime.memclrNoHeapPointers
+            |          
+             --2.93%--runtime.goexit.abi0
+                       runtime.main
+                       main.main
+                       |          
+                        --2.91%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                                  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                                  |          
+                                   --1.93%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+                                             |          
+                                              --1.60%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneShallow
+                                                        runtime.newobject
+                                                        runtime.mallocgc
+                                                        runtime.mallocgcSmallScanNoHeader
+                                                        |          
+                                                         --1.51%--runtime.memclrNoHeapPointers
+
+     3.24%     0.00%  btree_perf_mem  btree_perf_mem    [.] runtime.gcenable.gowrap1
+            |
+            ---runtime.gcenable.gowrap1
+               |          
+                --3.22%--runtime.bgsweep
+                          |          
+                           --3.19%--runtime.sweepone
+                                     |          
+                                      --1.77%--runtime.(*sweepLocked).sweep
+                                                |          
+                                                 --0.82%--runtime.(*mspan).moveInlineMarks
+
+     3.22%     0.01%  btree_perf_mem  btree_perf_mem    [.] runtime.bgsweep
+            |          
+             --3.21%--runtime.bgsweep
+                       |          
+                        --3.19%--runtime.sweepone
+                                  |          
+                                   --1.77%--runtime.(*sweepLocked).sweep
+                                             |          
+                                              --0.82%--runtime.(*mspan).moveInlineMarks
+
+     3.21%     0.96%  btree_perf_mem  btree_perf_mem    [.] runtime.sweepone
+            |          
+            |--2.26%--runtime.sweepone
+            |          |          
+            |           --1.77%--runtime.(*sweepLocked).sweep
+            |                     |          
+            |                      --0.82%--runtime.(*mspan).moveInlineMarks
+            |          
+             --0.95%--runtime.goexit.abi0
+                       runtime.gcenable.gowrap1
+                       |          
+                        --0.94%--runtime.bgsweep
+                                  runtime.sweepone
+
+     2.69%     0.03%  btree_perf_mem  btree_perf_mem    [.] runtime.(*mheap).alloc.func1
+            |          
+             --2.66%--runtime.(*mheap).alloc.func1
+                       |          
+                        --2.65%--runtime.(*mheap).allocSpan
+                                  |          
+                                  |--1.26%--runtime.(*mheap).initSpan
+                                  |          |          
+                                  |           --0.85%--runtime.(*mspan).init
+                                  |          
+                                   --0.79%--runtime.(*mheap).allocMSpanLocked
+                                             |          
+                                              --0.78%--runtime.(*fixalloc).alloc
+
+     2.67%     0.24%  btree_perf_mem  btree_perf_mem    [.] runtime.(*mheap).allocSpan
+            |          
+             --2.46%--runtime.(*mheap).allocSpan
+                       |          
+                       |--1.26%--runtime.(*mheap).initSpan
+                       |          |          
+                       |           --0.85%--runtime.(*mspan).init
+                       |          
+                        --0.79%--runtime.(*mheap).allocMSpanLocked
+                                  |          
+                                   --0.78%--runtime.(*fixalloc).alloc
+
+     2.66%     0.02%  btree_perf_mem  [unknown]         [.] 0xffffffff8908b8cf
+            |          
+             --2.64%--0xffffffff8908b8cf
+                       |          
+                        --2.56%--0xffffffff892aa0fe
+                                  |          
+                                   --2.47%--0xffffffff892a9dab
+                                             |          
+                                              --1.93%--0xffffffff8a3a8170
+                                                        |          
+                                                         --1.89%--0xffffffff8a3a12a7
+                                                                   |          
+                                                                    --1.08%--0xffffffff8a3a0c3d
+                                                                              |          
+                                                                               --1.07%--0xffffffff891dadf0
+                                                                                         |          
+                                                                                          --1.01%--0xffffffff891da63b
+                                                                                                    |          
+                                                                                                     --0.99%--0xffffffff891f247b
+                                                                                                               |          
+                                                                                                                --0.83%--0xffffffff891f1d48
+
+     2.64%     0.04%  btree_perf_mem  btree_perf_mem    [.] runtime.park_m
+            |          
+             --2.60%--runtime.park_m
+                       |          
+                        --2.49%--runtime.schedule
+                                  |          
+                                   --2.30%--runtime.findRunnable
+                                             |          
+                                              --1.75%--runtime.stealWork
+                                                        |          
+                                                         --1.10%--runtime.runqsteal
+                                                                   |          
+                                                                    --1.10%--runtime.runqgrab
+                                                                              |          
+                                                                               --1.02%--runtime.usleep.abi0
+                                                                                         |          
+                                                                                          --0.76%--0xffffffff88e0012b
+                                                                                                    |          
+                                                                                                     --0.68%--0xffffffff8a392650
+                                                                                                               |          
+                                                                                                                --0.66%--0xffffffff8908b8cf
+                                                                                                                          |          
+                                                                                                                           --0.65%--0xffffffff892aa0fe
+                                                                                                                                     0xffffffff892a9dab
+                                                                                                                                     |          
+                                                                                                                                      --0.52%--0xffffffff8a3a8170
+                                                                                                                                                0xffffffff8a3a12a7
+
+     2.58%     0.02%  btree_perf_mem  [unknown]         [.] 0xffffffff892aa0fe
+            |          
+             --2.56%--0xffffffff892aa0fe
+                       |          
+                        --2.47%--0xffffffff892a9dab
+                                  |          
+                                   --1.93%--0xffffffff8a3a8170
+                                             |          
+                                              --1.89%--0xffffffff8a3a12a7
+                                                        |          
+                                                         --1.08%--0xffffffff8a3a0c3d
+                                                                   |          
+                                                                    --1.07%--0xffffffff891dadf0
+                                                                              |          
+                                                                               --1.01%--0xffffffff891da63b
+                                                                                         |          
+                                                                                          --0.99%--0xffffffff891f247b
+                                                                                                    |          
+                                                                                                     --0.83%--0xffffffff891f1d48
+
+     2.53%     0.01%  btree_perf_mem  [unknown]         [.] 0xffffffff8a3a12a7
+            |          
+             --2.52%--0xffffffff8a3a12a7
+                       |          
+                        --1.42%--0xffffffff8a3a0c3d
+                                  |          
+                                   --1.41%--0xffffffff891dadf0
+                                             |          
+                                              --1.34%--0xffffffff891da63b
+                                                        |          
+                                                         --1.32%--0xffffffff891f247b
+                                                                   |          
+                                                                    --1.14%--0xffffffff891f1d48
+
+     2.49%     0.02%  btree_perf_mem  [unknown]         [.] 0xffffffff892a9dab
+            |          
+             --2.47%--0xffffffff892a9dab
+                       |          
+                        --1.93%--0xffffffff8a3a8170
+                                  |          
+                                   --1.89%--0xffffffff8a3a12a7
+                                             |          
+                                              --1.08%--0xffffffff8a3a0c3d
+                                                        |          
+                                                         --1.07%--0xffffffff891dadf0
+                                                                   |          
+                                                                    --1.01%--0xffffffff891da63b
+                                                                              |          
+                                                                               --0.99%--0xffffffff891f247b
+                                                                                         |          
+                                                                                          --0.83%--0xffffffff891f1d48
+
+     2.19%     0.09%  btree_perf_mem  btree_perf_mem    [.] runtime.makeslice
+            |          
+             --2.12%--runtime.makeslice
+                       |          
+                        --2.10%--runtime.mallocgc
+                                  |          
+                                   --1.95%--runtime.mallocgcSmallScanHeader
+                                             |          
+                                              --1.09%--runtime.memclrNoHeapPointers
+
+     2.08%     0.16%  btree_perf_mem  btree_perf_mem    [.] runtime.(*mcache).nextFree
+            |          
+             --1.93%--runtime.(*mcache).nextFree
+                       |          
+                        --1.77%--runtime.(*mcache).refill
+                                  |          
+                                  |--0.71%--runtime.(*mcentral).cacheSpan
+                                  |          
+                                   --0.58%--runtime.(*mcentral).uncacheSpan
+
+     1.98%     0.29%  btree_perf_mem  btree_perf_mem    [.] runtime.mallocgcSmallScanHeader
+            |          
+             --1.70%--runtime.mallocgcSmallScanHeader
+                       |          
+                        --1.09%--runtime.memclrNoHeapPointers
+
+     1.96%     0.03%  btree_perf_mem  [unknown]         [.] 0xffffffff8a3a8170
+            |          
+             --1.93%--0xffffffff8a3a8170
+                       |          
+                        --1.89%--0xffffffff8a3a12a7
+                                  |          
+                                   --1.08%--0xffffffff8a3a0c3d
+                                             |          
+                                              --1.07%--0xffffffff891dadf0
+                                                        |          
+                                                         --1.01%--0xffffffff891da63b
+                                                                   |          
+                                                                    --0.99%--0xffffffff891f247b
+                                                                              |          
+                                                                               --0.83%--0xffffffff891f1d48
+
+     1.92%     0.68%  btree_perf_mem  btree_perf_mem    [.] runtime.(*sweepLocked).sweep
+            |          
+            |--1.28%--runtime.(*sweepLocked).sweep
+            |          |          
+            |           --0.83%--runtime.(*mspan).moveInlineMarks
+            |          
+             --0.63%--runtime.goexit.abi0
+                       |          
+                        --0.59%--runtime.gcenable.gowrap1
+                                  runtime.bgsweep
+                                  runtime.sweepone
+                                  runtime.(*sweepLocked).sweep
+
+     1.78%     0.18%  btree_perf_mem  btree_perf_mem    [.] runtime.(*mcache).refill
+            |          
+             --1.61%--runtime.(*mcache).refill
+                       |          
+                       |--0.71%--runtime.(*mcentral).cacheSpan
+                       |          
+                        --0.58%--runtime.(*mcentral).uncacheSpan
+
+     1.68%     0.02%  btree_perf_mem  btree_perf_mem    [.] runtime.(*sweepLocked).sweep.(*mheap).freeSpan.func2
+            |          
+             --1.66%--runtime.(*sweepLocked).sweep.(*mheap).freeSpan.func2
+                       |          
+                        --1.43%--runtime.(*mheap).freeSpanLocked
+                                  |          
+                                   --0.83%--runtime.(*pageAlloc).free
+                                             |          
+                                              --0.68%--runtime.(*pageAlloc).update
+                                                        |          
+                                                         --0.58%--runtime.(*pallocBits).summarize
+
+     1.44%     0.37%  btree_perf_mem  btree_perf_mem    [.] runtime.(*mheap).freeSpanLocked
+            |          
+             --1.09%--runtime.(*mheap).freeSpanLocked
+                       |          
+                        --0.83%--runtime.(*pageAlloc).free
+                                  |          
+                                   --0.68%--runtime.(*pageAlloc).update
+                                             |          
+                                              --0.58%--runtime.(*pallocBits).summarize
+
+     1.42%     0.00%  btree_perf_mem  [unknown]         [.] 0xffffffff8a3a0c3d
+            |
+            ---0xffffffff8a3a0c3d
+               |          
+                --1.41%--0xffffffff891dadf0
+                          |          
+                           --1.34%--0xffffffff891da63b
+                                     |          
+                                      --1.32%--0xffffffff891f247b
+                                                |          
+                                                 --1.14%--0xffffffff891f1d48
+
+     1.41%     0.00%  btree_perf_mem  [unknown]         [.] 0xffffffff891dadf0
+            |
+            ---0xffffffff891dadf0
+               |          
+                --1.34%--0xffffffff891da63b
+                          |          
+                           --1.32%--0xffffffff891f247b
+                                     |          
+                                      --1.14%--0xffffffff891f1d48
+
+     1.35%     0.04%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneDeep
+            |          
+             --1.32%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*PageInfo).CloneDeep
+                       |          
+                        --0.54%--runtime.makeslice
+                                  |          
+                                   --0.51%--runtime.mallocgc
+
+     1.34%     0.02%  btree_perf_mem  btree_perf_mem    [.] runtime.futex.abi0
+            |          
+             --1.32%--runtime.futex.abi0
+                       |          
+                        --0.97%--0xffffffff88e0012b
+                                  |          
+                                   --0.92%--0xffffffff8a392650
+                                             |          
+                                              --0.91%--0xffffffff8908be8d
+                                                        |          
+                                                         --0.89%--0xffffffff892cc6d9
+                                                                   |          
+                                                                    --0.63%--0xffffffff892cbe15
+                                                                              |          
+                                                                               --0.61%--0xffffffff892d0392
+
+     1.34%     0.00%  btree_perf_mem  [unknown]         [.] 0xffffffff891da63b
+            |
+            ---0xffffffff891da63b
+               |          
+                --1.32%--0xffffffff891f247b
+                          |          
+                           --1.14%--0xffffffff891f1d48
+
+     1.32%     0.00%  btree_perf_mem  [unknown]         [.] 0xffffffff891f247b
+            |
+            ---0xffffffff891f247b
+               |          
+                --1.14%--0xffffffff891f1d48
+
+     1.28%     0.12%  btree_perf_mem  btree_perf_mem    [.] runtime.scanSpan
+            |          
+             --1.16%--runtime.scanSpan
+                       |          
+                        --0.86%--runtime.scanObjectsSmall
+
+     1.28%     1.28%  btree_perf_mem  [unknown]         [.] 0000000000000000
+     1.27%     0.25%  btree_perf_mem  btree_perf_mem    [.] runtime.(*mheap).initSpan
+            |          
+             --1.04%--runtime.(*mheap).initSpan
+                       |          
+                        --0.85%--runtime.(*mspan).init
+
+     1.21%     0.00%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).findLeafPage
+            |
+            ---github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).findLeafPage
+               github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).searchPath
+
+     1.21%     0.08%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).searchPath
+            |          
+             --1.13%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).searchPath
+
+     1.20%     0.06%  btree_perf_mem  btree_perf_mem    [.] runtime.typedslicecopy
+            |          
+             --1.16%--runtime.typedslicecopy
+                       |          
+                        --0.93%--runtime.memmove
+
+     1.18%     1.18%  btree_perf_mem  btree_perf_mem    [.] runtime.mapaccess1_fast64
+            |          
+             --0.99%--runtime.goexit.abi0
+                       runtime.main
+                       main.main
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                       |          
+                        --0.57%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).finalizeDeepClone
+                                  runtime.mapaccess1_fast64
+
+     1.17%     0.01%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Insert
+            |          
+             --1.16%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Insert
+                       |          
+                        --1.09%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.insertSlice[go.shape.[]uint8]
+                                  |          
+                                   --0.78%--runtime.makeslice
+                                             |          
+                                              --0.76%--runtime.mallocgc
+                                                        |          
+                                                         --0.76%--runtime.mallocgcSmallScanHeader
+
+     1.14%     0.00%  btree_perf_mem  [unknown]         [.] 0xffffffff891f1d48
+            |
+            ---0xffffffff891f1d48
+
+     1.09%     0.04%  btree_perf_mem  btree_perf_mem    [.] github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.insertSlice[go.shape.[]uint8]
+            |          
+             --1.05%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.insertSlice[go.shape.[]uint8]
+                       |          
+                        --0.78%--runtime.makeslice
+                                  |          
+                                   --0.76%--runtime.mallocgc
+                                             |          
+                                              --0.76%--runtime.mallocgcSmallScanHeader
+
+     0.97%     0.91%  btree_perf_mem  btree_perf_mem    [.] runtime.memmove
+            |          
+             --0.89%--runtime.goexit.abi0
+                       runtime.main
+                       main.main
+                       |          
+                        --0.87%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                                  github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+
+     0.95%     0.00%  btree_perf_mem  [unknown]         [.] 0xffffffff8908be8d
+            |
+            ---0xffffffff8908be8d
+               |          
+                --0.93%--0xffffffff892cc6d9
+                          |          
+                           --0.66%--0xffffffff892cbe15
+                                     |          
+                                      --0.63%--0xffffffff892d0392
+
+     0.93%     0.00%  btree_perf_mem  [unknown]         [.] 0xffffffff892cc6d9
+            |
+            ---0xffffffff892cc6d9
+               |          
+                --0.66%--0xffffffff892cbe15
+                          |          
+                           --0.63%--0xffffffff892d0392
+
+     0.92%     0.00%  btree_perf_mem  btree_perf_mem    [.] runtime.stopm
+            |          
+             --0.92%--runtime.stopm
+                       |          
+                        --0.86%--runtime.notesleep
+                                  |          
+                                   --0.82%--runtime.futexsleep
+                                             |          
+                                              --0.81%--runtime.futex.abi0
+                                                        |          
+                                                         --0.65%--0xffffffff88e0012b
+                                                                   |          
+                                                                    --0.61%--0xffffffff8a392650
+                                                                              0xffffffff8908be8d
+                                                                              0xffffffff892cc6d9
+                                                                              |          
+                                                                               --0.61%--0xffffffff892cbe15
+                                                                                         |          
+                                                                                          --0.59%--0xffffffff892d0392
+
+     0.87%     0.25%  btree_perf_mem  btree_perf_mem    [.] runtime.scanObjectsSmall
+            |          
+             --0.62%--runtime.scanObjectsSmall
+
+     0.87%     0.01%  btree_perf_mem  btree_perf_mem    [.] runtime.futexsleep
+            |          
+             --0.86%--runtime.futexsleep
+                       runtime.futex.abi0
+                       |          
+                        --0.68%--0xffffffff88e0012b
+                                  |          
+                                   --0.63%--0xffffffff8a392650
+                                             |          
+                                              --0.63%--0xffffffff8908be8d
+                                                        0xffffffff892cc6d9
+                                                        |          
+                                                         --0.63%--0xffffffff892cbe15
+                                                                   |          
+                                                                    --0.61%--0xffffffff892d0392
+
+     0.86%     0.04%  btree_perf_mem  btree_perf_mem    [.] runtime.notesleep
+            |          
+             --0.82%--runtime.notesleep
+                       runtime.futexsleep
+                       |          
+                        --0.81%--runtime.futex.abi0
+                                  |          
+                                   --0.65%--0xffffffff88e0012b
+                                             |          
+                                              --0.61%--0xffffffff8a392650
+                                                        0xffffffff8908be8d
+                                                        0xffffffff892cc6d9
+                                                        |          
+                                                         --0.61%--0xffffffff892cbe15
+                                                                   |          
+                                                                    --0.59%--0xffffffff892d0392
+
+     0.85%     0.06%  btree_perf_mem  btree_perf_mem    [.] runtime.(*pageAlloc).free
+            |          
+             --0.81%--runtime.(*pageAlloc).free
+                       |          
+                        --0.68%--runtime.(*pageAlloc).update
+                                  |          
+                                   --0.58%--runtime.(*pallocBits).summarize
+
+     0.85%     0.84%  btree_perf_mem  btree_perf_mem    [.] runtime.(*mspan).init
+            |          
+             --0.77%--0x1ffffffffffff7f
+                       runtime.systemstack.abi0
+                       runtime.(*mheap).alloc.func1
+                       runtime.(*mheap).allocSpan
+                       runtime.(*mheap).initSpan
+                       runtime.(*mspan).init
+
+     0.83%     0.78%  btree_perf_mem  btree_perf_mem    [.] runtime.(*mspan).moveInlineMarks
+            |          
+             --0.78%--runtime.goexit.abi0
+                       |          
+                        --0.77%--runtime.gcenable.gowrap1
+                                  runtime.bgsweep
+                                  runtime.sweepone
+                                  runtime.(*sweepLocked).sweep
+                                  runtime.(*mspan).moveInlineMarks
+
+     0.81%     0.02%  btree_perf_mem  btree_perf_mem    [.] runtime.(*mheap).allocMSpanLocked
+            |          
+             --0.79%--runtime.(*mheap).allocMSpanLocked
+                       |          
+                        --0.78%--runtime.(*fixalloc).alloc
+
+     0.78%     0.78%  btree_perf_mem  btree_perf_mem    [.] runtime.(*fixalloc).alloc
+            |          
+             --0.74%--0x1ffffffffffff7f
+                       runtime.systemstack.abi0
+                       runtime.(*mheap).alloc.func1
+                       runtime.(*mheap).allocSpan
+                       runtime.(*mheap).allocMSpanLocked
+                       runtime.(*fixalloc).alloc
+
+     0.76%     0.13%  btree_perf_mem  btree_perf_mem    [.] runtime.markroot
+            |          
+             --0.63%--runtime.markroot
+                       |          
+                        --0.56%--runtime.markroot.func1
+                                  |          
+                                   --0.52%--runtime.scanstack
+
+     0.72%     0.09%  btree_perf_mem  btree_perf_mem    [.] runtime.(*mcentral).cacheSpan
+            |          
+             --0.65%--runtime.(*mcentral).cacheSpan
+
+     0.70%     0.12%  btree_perf_mem  btree_perf_mem    [.] runtime.(*timers).check
+            |          
+             --0.60%--runtime.(*timers).check
+                       |          
+                        --0.50%--runtime.(*timers).run
+
+     0.69%     0.09%  btree_perf_mem  btree_perf_mem    [.] runtime.(*pageAlloc).update
+            |          
+             --0.60%--runtime.(*pageAlloc).update
+                       |          
+                        --0.58%--runtime.(*pallocBits).summarize
+
+     0.66%     0.00%  btree_perf_mem  [unknown]         [.] 0xffffffff892cbe15
+            |
+            ---0xffffffff892cbe15
+               |          
+                --0.63%--0xffffffff892d0392
+
+     0.63%     0.00%  btree_perf_mem  [unknown]         [.] 0xffffffff892d0392
+            |
+            ---0xffffffff892d0392
+
+     0.62%     0.61%  btree_perf_mem  btree_perf_mem    [.] sync/atomic.runtime_procPin
+            |          
+             --0.61%--runtime.goexit.abi0
+                       runtime.main
+                       main.main
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).Set
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithCAS
+                       github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).copyPathShallow
+
+     0.59%     0.09%  btree_perf_mem  btree_perf_mem    [.] runtime.(*mcentral).uncacheSpan
+     0.58%     0.58%  btree_perf_mem  btree_perf_mem    [.] runtime.(*pallocBits).summarize
+            |          
+             --0.54%--0x1ffffffffffff7f
+                       runtime.systemstack.abi0
+                       runtime.(*sweepLocked).sweep.(*mheap).freeSpan.func2
+                       runtime.(*mheap).freeSpanLocked
+                       runtime.(*pageAlloc).free
+                       runtime.(*pageAlloc).update
+                       runtime.(*pallocBits).summarize
+
+     0.56%     0.00%  btree_perf_mem  btree_perf_mem    [.] runtime.markroot.func1
+            |          
+             --0.56%--runtime.markroot.func1
+                       |          
+                        --0.52%--runtime.scanstack
+
+     0.55%     0.04%  btree_perf_mem  btree_perf_mem    [.] runtime.wakep
+            |          
+             --0.52%--runtime.wakep
+
+     0.52%     0.05%  btree_perf_mem  btree_perf_mem    [.] runtime.scanstack
+     0.52%     0.01%  btree_perf_mem  btree_perf_mem    [.] runtime.newproc.func1
+            |
+            ---runtime.newproc.func1
+
+     0.51%     0.02%  btree_perf_mem  [unknown]         [.] 0xffffffff88e00bb7
+     0.50%     0.34%  btree_perf_mem  btree_perf_mem    [.] runtime.(*spanSet).push
+     0.50%     0.06%  btree_perf_mem  btree_perf_mem    [.] runtime.(*timers).run
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

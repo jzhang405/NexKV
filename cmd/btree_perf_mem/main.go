@@ -26,15 +26,18 @@ func main() {
 
 	ctx := context.Background()
 
-	// 初始化数据：1000 个键值对
-	fmt.Println("Initializing with 1000 keys...")
-	initCount := 1000
+	// 初始化数据：1M 个键值对
+	fmt.Println("Initializing with 1M keys...")
+	initCount := 1_000_000
 	for i := 0; i < initCount; i++ {
-		key := fmt.Sprintf("key-%06d", i)
-		value := fmt.Sprintf("value-%06d", i)
+		key := fmt.Sprintf("key-%07d", i)
+		value := fmt.Sprintf("value-%07d", i)
 		if err := tree.Set(ctx, []byte(key), []byte(value)); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to set key %s: %v\n", key, err)
 			os.Exit(1)
+		}
+		if i > 0 && i%100000 == 0 {
+			fmt.Printf("  Initialized %d keys...\n", i)
 		}
 	}
 	fmt.Printf("Initialized %d keys\n\n", initCount)
@@ -45,8 +48,9 @@ func main() {
 
 	startTime := time.Now()
 	for i := 0; i < opsCount; i++ {
-		key := fmt.Sprintf("key-%06d", i%initCount)
-		value := fmt.Sprintf("value-updated-%06d", i)
+		// 更新已有键（key-0000000 到 key-0099999）
+		key := fmt.Sprintf("key-%07d", i%initCount)
+		value := fmt.Sprintf("value-updated-%07d", i)
 		if err := tree.Set(ctx, []byte(key), []byte(value)); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to set key %s: %v\n", key, err)
 			os.Exit(1)

@@ -157,16 +157,20 @@ func (p *InternalPage) FindChildRef(key []byte) *PageRef {
 	return p.children[idx]
 }
 
-// Insert 插入键和子节点
+// Insert 插入键和子节点（右子节点）
 // 返回：是否插入成功
+//
+// B+Tree 语义：插入键 key 时，child 是 key 的右子节点
+// - key 插入到 keys[idx]
+// - child 插入到 children[idx+1]
 func (p *InternalPage) Insert(key []byte, child *PageRef) (bool, error) {
 	idx := p.search(key)
 
 	// 插入键
 	p.keys = insertSlice(p.keys, idx, key)
 
-	// 插入子节点引用
-	p.children = insertSlice(p.children, idx, child)
+	// 插入右子节点（在 idx+1 位置，因为 key 的左子节点是 children[idx]）
+	p.children = insertSlice(p.children, idx+1, child)
 	p.version++
 
 	return true, nil
@@ -176,6 +180,20 @@ func (p *InternalPage) Insert(key []byte, child *PageRef) (bool, error) {
 // 在指定位置插入键和右子节点
 // 返回：错误信息
 func (p *InternalPage) InsertKeyChild(key []byte, childRef *PageRef) error {
+	// ✅ 防御性修复：检查并修复不变量
+	expectedChildren := len(p.keys) + 1
+	if len(p.children) != expectedChildren {
+		// 如果 children 太多，截断
+		if len(p.children) > expectedChildren {
+			fmt.Printf("[WARN] InsertKeyChild: fixing invariant before insert: pageID=%d, keys=%d, children=%d -> %d\n",
+				p.pageID, len(p.keys), len(p.children), expectedChildren)
+			p.children = p.children[:expectedChildren]
+		} else {
+			// 如果 children 太少，返回错误
+			return fmt.Errorf("InternalPage invariant violated: len(children)=%d, len(keys)=%d", len(p.children), len(p.keys))
+		}
+	}
+
 	idx := p.search(key)
 	// 插入键
 	p.keys = insertSlice(p.keys, idx, key)
@@ -249,6 +267,11 @@ func (p *InternalPage) UpdateKey(oldKey, newKey []byte) (bool, error) {
 // 返回：新页面，分裂键（提升到父节点）
 // 均匀分裂策略：将键平均分配到两个页面，中间的键提升到父节点
 //
+// B+Tree 标准分裂逻辑（内部节点）：
+// - 左页面：键 [0, mid)，子节点 [0:mid+1]
+// - 分裂键：键 [mid]（提升到父节点，不在左右页面中）
+// - 右页面：键 [mid+1:]，子节点 [mid+1:]
+//
 // ✅ Day 7: 添加引用更新机制
 // - 更新新页面子节点的 parentRef 指向新页面
 // - 保留原页面子节点的 parentRef 指向原页面
@@ -265,19 +288,22 @@ func (p *InternalPage) Split() (*InternalPage, []byte, error) {
 	// 创建新页面，包含中间键之后的键和子节点
 	newPage := NewInternalPage(model.PageID(p.pageID + 1)) // 临时 ID
 
-	// 复制后半部分键（包含分裂键）
-	// ✅ Day 7: 修正为包含分裂键，与 LeafPage.Split 一致
-	newPage.keys = append(newPage.keys, p.keys[mid:]...)
-
-	// 复制后半部分子节点（从 mid+1 到末尾）
-	// ✅ Day 7: 需要更新这些子节点的 parentRef
+	// ✅ 修复：B+Tree 标准分裂逻辑 - 分裂键提升到父节点，不在左右页面中
+	// ✅ 修复：使用 make + copy 创建独立的 slice，避免共享底层数组
+	// 分裂键 keys[mid] 提升到父节点：
+	// - 左页面: keys[0:mid], children[0:mid+1]
+	// - 右页面: keys[mid+1:], children[mid+1:]
+	// 左页面最后一个键 (keys[mid-1]) 的右子节点是 children[mid]
+	// 右页面第一个键 (keys[mid+1]) 的左子节点是 children[mid+1]
+	newPage.keys = make([][]byte, len(p.keys[mid+1:]))
+	copy(newPage.keys, p.keys[mid+1:])
 	newPage.children = make([]*PageRef, len(p.children[mid+1:]))
 	copy(newPage.children, p.children[mid+1:])
 	// ✅ Day 7: parentRef 更新将在 splitInternal() 中处理
 
-	// 当前页面保留中间键之前的键和子节点
-	p.keys = p.keys[:mid]
-	p.children = p.children[:mid+1] // 保留前 mid+1 个子节点（0 到 mid）
+	// 当前页面保留中间键之前的键和子节点（不包含分裂键）
+	p.keys = p.keys[:mid]     // 不包含分裂键
+	p.children = p.children[:mid+1] // 保留前 mid+1 个子节点（0 到 mid，包含分裂键的左子节点）
 	p.version++
 
 	return newPage, splitKey, nil

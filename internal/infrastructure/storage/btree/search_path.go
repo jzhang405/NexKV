@@ -65,8 +65,19 @@ func (b *BTree) searchPath(ctx context.Context, key []byte) ([]*PageInfo, error)
 		}
 
 		// 2.3 判断是否为叶子节点
+		// ✅ 修复：LeafPage 立即深拷贝，防止并发修改导致 keys/values 不一致
 		if leafPage, ok := currentPage.(*LeafPage); ok && leafPage != nil {
-			// 到达叶子节点，搜索结束
+			// 到达叶子节点，深拷贝后添加到路径
+			// 这是必要的，因为多个 goroutine 可能并发访问同一个叶子页面
+			// 如果不立即深拷贝，其他 goroutine 可能在我们调用 copyPathShallow 之前
+			// 就修改了共享的 LeafPage，导致 keys/values 不一致
+			clonedPage := leafPage.Clone()
+			clonedInfo := NewPageInfo()
+			clonedInfo.SetPage(clonedPage)
+			clonedInfo.cloneStatus.Store(CloneStatusDeep)
+
+			// 替换路径中的最后一个元素为深拷贝的版本
+			path[len(path)-1] = clonedInfo
 			break
 		}
 

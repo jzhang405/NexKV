@@ -96,6 +96,12 @@ func (p *LeafPage) search(key []byte) (int, bool) {
 // Insert 插入键值对
 // 返回：是否插入成功（false 表示键已存在）
 func (p *LeafPage) Insert(key, value []byte) (bool, error) {
+	// ✅ 调试：检查前置条件
+	if len(p.keys) != len(p.values) {
+		panic(fmt.Sprintf("Insert: precondition violated - pageID=%d, keys=%d, values=%d",
+			p.pageID, len(p.keys), len(p.values)))
+	}
+
 	idx, found := p.search(key)
 
 	if found {
@@ -105,14 +111,30 @@ func (p *LeafPage) Insert(key, value []byte) (bool, error) {
 	}
 
 	// 插入新键值对
+	oldKeysLen := len(p.keys)
+	oldValuesLen := len(p.values)
 	p.keys = insertSlice(p.keys, idx, key)
 	p.values = insertSlice(p.values, idx, value)
+
+	// ✅ 调试：检查后置条件
+	if len(p.keys) != len(p.values) {
+		panic(fmt.Sprintf("Insert: postcondition violated - pageID=%d, oldKeys=%d->%d, oldValues=%d->%d",
+			p.pageID, oldKeysLen, len(p.keys), oldValuesLen, len(p.values)))
+	}
+
 	p.version++
 	return true, nil
 }
 
 // insertSlice 在切片指定位置插入元素
 func insertSlice[T any](slice []T, idx int, value T) []T {
+	// ✅ 修复：检查索引范围
+	if idx < 0 || idx > len(slice) {
+		panic(fmt.Sprintf("insertSlice: index %d out of bounds [0, %d]", idx, len(slice)))
+	}
+
+	// ✅ 修复：无论容量是否足够，都使用创建新切片的方式
+	// 避免在 len(slice) == cap(slice) 时的边界情况
 	if len(slice) == cap(slice) {
 		// 创建新切片时预留空间给新元素
 		// 计算新容量：如果 cap 为 0，使用默认容量；否则翻倍
@@ -127,9 +149,17 @@ func insertSlice[T any](slice []T, idx int, value T) []T {
 		return newSlice
 	}
 
-	slice = slice[:len(slice)+1]
-	copy(slice[idx+1:], slice[idx:])
-	slice[idx] = value
+	// ✅ 修复：即使容量足够，也使用 append 方式避免边界问题
+	// 这比直接操作 slice 更安全
+	if idx == len(slice) {
+		// 在末尾追加
+		return append(slice, value)
+	}
+
+	// 在中间插入
+	slice = append(slice, value)          // 扩展切片
+	copy(slice[idx+1:], slice[idx:])     // 移动元素
+	slice[idx] = value                   // 设置新值
 	return slice
 }
 
@@ -188,10 +218,13 @@ func (p *LeafPage) Split() (*LeafPage, []byte, error) {
 	splitKey := p.keys[mid]
 
 	// 创建新页面，包含分裂键及之后的键值对（包含分裂键）
-	// ✅ Day 10-11: 修正分裂逻辑，右子节点包含分裂键
-	newPage := NewLeafPage(model.PageID(p.pageID + 1))   // 临时 ID
-	newPage.keys = append(newPage.keys, p.keys[mid:]...) // 包含分裂键
-	newPage.values = append(newPage.values, p.values[mid:]...)
+	// ✅ 修复：使用 make + copy 创建独立的 slice，避免共享底层数组
+	// 这防止并发修改时 p.keys 和 newPage.keys 的底层数组被重新分配导致长度不一致
+	newPage := NewLeafPage(model.PageID(p.pageID + 1)) // 临时 ID
+	newPage.keys = make([][]byte, len(p.keys[mid:]))
+	copy(newPage.keys, p.keys[mid:])
+	newPage.values = make([][]byte, len(p.values[mid:]))
+	copy(newPage.values, p.values[mid:])
 
 	// 当前页面保留分裂键之前的键值对（不包含分裂键）
 	p.keys = p.keys[:mid]
@@ -220,6 +253,12 @@ func (p *LeafPage) Clone() *LeafPage {
 // Serialize 序列化页面
 // 返回：序列化后的字节数组
 func (p *LeafPage) Serialize() ([]byte, error) {
+	// ✅ 调试：检查 keys 和 values 长度是否一致
+	if len(p.keys) != len(p.values) {
+		panic(fmt.Sprintf("Serialize: inconsistent page state - len(keys)=%d, len(values)=%d, pageID=%d",
+			len(p.keys), len(p.values), p.pageID))
+	}
+
 	ps := NewPageSerializer()
 
 	// 使用 PageSerializer 写入公共头部

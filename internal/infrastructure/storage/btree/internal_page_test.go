@@ -23,6 +23,9 @@ func TestNewInternalPage(t *testing.T) {
 func TestInternalPage_InsertChild(t *testing.T) {
 	page := NewInternalPage(1)
 
+	// ✅ 重要：先初始化第一个子节点（children[0]）
+	page.children = append(page.children, NewPageRef())
+
 	// 创建子节点引用
 	child1 := NewPageRefWithInfo(&PageInfo{
 		page: &Page{ID: model.PageID(10)},
@@ -38,7 +41,7 @@ func TestInternalPage_InsertChild(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, 1, page.NumKeys())
-	assert.Equal(t, 1, page.NumChildren())
+	assert.Equal(t, 2, page.NumChildren()) // 1 key needs 2 children
 
 	// 插入第二个键和子节点
 	key2 := []byte("key2")
@@ -46,7 +49,7 @@ func TestInternalPage_InsertChild(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, 2, page.NumKeys())
-	assert.Equal(t, 2, page.NumChildren())
+	assert.Equal(t, 3, page.NumChildren()) // 2 keys need 3 children
 
 	// 验证顺序（键应该有序）
 	assert.Equal(t, -1, bytes.Compare(page.keys[0], page.keys[1]))
@@ -54,6 +57,9 @@ func TestInternalPage_InsertChild(t *testing.T) {
 
 func TestInternalPage_FindChild(t *testing.T) {
 	page := NewInternalPage(1)
+
+	// ✅ 重要：先初始化第一个子节点（children[0]）
+	page.children = append(page.children, NewPageRef())
 
 	// 插入键和子节点
 	child1 := NewPageRef()
@@ -90,6 +96,9 @@ func TestInternalPage_FindChild(t *testing.T) {
 func TestInternalPage_Delete(t *testing.T) {
 	page := NewInternalPage(1)
 
+	// ✅ 重要：先初始化第一个子节点（children[0]）
+	page.children = append(page.children, NewPageRef())
+
 	// 插入键值对
 	key1 := []byte("key1")
 	key2 := []byte("key2")
@@ -106,7 +115,7 @@ func TestInternalPage_Delete(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, removedChild)
 	assert.Equal(t, 1, page.NumKeys())
-	assert.Equal(t, 1, page.NumChildren())
+	assert.Equal(t, 2, page.NumChildren()) // 1 key needs 2 children
 
 	// 删除不存在的键
 	_, err = page.Delete([]byte("notexist"))
@@ -115,6 +124,9 @@ func TestInternalPage_Delete(t *testing.T) {
 
 func TestInternalPage_UpdateKey(t *testing.T) {
 	page := NewInternalPage(1)
+
+	// ✅ 重要：先初始化第一个子节点（children[0]）
+	page.children = append(page.children, NewPageRef())
 
 	// 插入键
 	key1 := []byte("key1")
@@ -146,7 +158,10 @@ func TestInternalPage_UpdateKey(t *testing.T) {
 func TestInternalPage_Split(t *testing.T) {
 	page := NewInternalPage(1)
 
-	// 插入多个键和子节点
+	// ✅ 重要：先初始化第一个子节点（children[0]）
+	page.children = append(page.children, NewPageRef())
+
+	// 插入 5 个键，每个键带一个右子节点
 	for i := 0; i < 5; i++ {
 		key := []byte{byte('a' + byte(i))}
 		child := NewPageRef()
@@ -154,30 +169,36 @@ func TestInternalPage_Split(t *testing.T) {
 		require.NoError(t, err)
 	}
 
+	// 验证 B+Tree 不变式：5 个键应该有 6 个子节点
+	assert.Equal(t, 5, page.NumKeys())
+	assert.Equal(t, 6, page.NumChildren())
+
 	// 分裂页面
 	newPage, splitKey, err := page.Split()
 	require.NoError(t, err)
 	assert.NotNil(t, newPage)
 	assert.NotNil(t, splitKey)
-	assert.Equal(t, []byte("c"), splitKey) // 第3个键作为分裂键
+	assert.Equal(t, []byte("c"), splitKey) // 第3个键作为分裂键（提升到父节点）
 
 	// 验证原页面保留前半部分（不包含分裂键）
 	assert.Equal(t, 2, page.NumKeys())
-	assert.Equal(t, 3, page.NumChildren()) // 保留前 mid+1 个子节点
+	assert.Equal(t, 3, page.NumChildren()) // Split 实现: p.children = p.children[:mid+1]
 	assert.Equal(t, []byte("a"), page.keys[0])
 	assert.Equal(t, []byte("b"), page.keys[1])
 
-	// ✅ Day 7: 新分裂逻辑 - 右子节点包含分裂键
-	// 验证新页面包含后半部分（包含分裂键）
-	assert.Equal(t, 3, newPage.NumKeys())
-	assert.Equal(t, 2, newPage.NumChildren())     // 包含从 mid 开始的子节点
-	assert.Equal(t, []byte("c"), newPage.keys[0]) // 包含分裂键
-	assert.Equal(t, []byte("d"), newPage.keys[1])
-	assert.Equal(t, []byte("e"), newPage.keys[2])
+	// ✅ 修复：B+Tree 标准分裂逻辑 - 分裂键提升到父节点，不在左右页面中
+	// 验证新页面包含后半部分（不包含分裂键）
+	assert.Equal(t, 2, newPage.NumKeys())      // 不包含分裂键 c
+	assert.Equal(t, 3, newPage.NumChildren())  // Split 实现: p.children[mid+1:] = children[3:]
+	assert.Equal(t, []byte("d"), newPage.keys[0]) // 第一个键是 d（keys[3]）
+	assert.Equal(t, []byte("e"), newPage.keys[1])
 }
 
 func TestInternalPage_SplitError(t *testing.T) {
 	page := NewInternalPage(1)
+
+	// ✅ 重要：先初始化第一个子节点（children[0]）
+	page.children = append(page.children, NewPageRef())
 
 	// 只有一个键，无法分裂
 	key := []byte("key")
@@ -191,6 +212,9 @@ func TestInternalPage_SplitError(t *testing.T) {
 
 func TestInternalPage_Clone(t *testing.T) {
 	page := NewInternalPage(1)
+
+	// ✅ 重要：先初始化第一个子节点（children[0]）
+	page.children = append(page.children, NewPageRef())
 
 	// 插入数据
 	for i := 0; i < 3; i++ {
@@ -227,6 +251,9 @@ func TestInternalPage_Clone(t *testing.T) {
 func TestInternalPage_Serialize(t *testing.T) {
 	page := NewInternalPage(1)
 
+	// ✅ 重要：先初始化第一个子节点（children[0]）
+	page.children = append(page.children, NewPageRef())
+
 	// 插入数据
 	key := []byte("test")
 	child := NewPageRef()
@@ -252,6 +279,9 @@ func TestInternalPage_Serialize(t *testing.T) {
 func TestInternalPage_Size(t *testing.T) {
 	page := NewInternalPage(1)
 
+	// ✅ 重要：先初始化第一个子节点（children[0]）
+	page.children = append(page.children, NewPageRef())
+
 	// 空页面大小
 	baseSize := page.Size()
 	assert.Greater(t, baseSize, 0)
@@ -268,6 +298,9 @@ func TestInternalPage_Size(t *testing.T) {
 func TestInternalPage_IsFull(t *testing.T) {
 	page := NewInternalPage(1)
 	maxKeys := 16
+
+	// ✅ 重要：先初始化第一个子节点（children[0]）
+	page.children = append(page.children, NewPageRef())
 
 	// 未满
 	assert.False(t, page.IsFull(maxKeys))
@@ -293,6 +326,9 @@ func TestInternalPage_GetMinKey(t *testing.T) {
 	// 空页面
 	assert.Nil(t, page.GetMinKey())
 	assert.Nil(t, page.GetMaxKey())
+
+	// ✅ 重要：先初始化第一个子节点（children[0]）
+	page.children = append(page.children, NewPageRef())
 
 	// 插入数据
 	key1 := []byte("a")

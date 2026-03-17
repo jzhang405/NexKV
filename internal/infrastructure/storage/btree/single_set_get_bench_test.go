@@ -6,12 +6,18 @@ package btree
 
 import (
 	"context"
-	"strconv"
+	"fmt"
+	"runtime/debug"
 	"sync"
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
+
+func init() {
+	// 设置 GOGC=400 优化 GC 触发频率，提升性能
+	debug.SetGCPercent(400)
+}
 
 // ============================================================================
 // 预分配 key/value 池 - 避免 fmt.Sprintf 开销
@@ -22,24 +28,35 @@ import (
 var (
 	preallocatedKeys   [][]byte
 	preallocatedValues [][]byte
-	preallocOnce       sync.Once
+	preallocMu        sync.Mutex
+	preallocInitCount int // 当前已初始化的数量
 )
 
-// initPreallocated 初始化预分配的 key/value 池
+// initPreallocated 初始化预分配的 key/value 池（支持动态扩展）
 func initPreallocated(count int) {
-	preallocOnce.Do(func() {
-		preallocatedKeys = make([][]byte, count)
-		preallocatedValues = make([][]byte, count)
+	preallocMu.Lock()
+	defer preallocMu.Unlock()
 
-		// 预生成所有 key 和 value
-		for i := 0; i < count; i++ {
-			// key: k-{i} 格式
-			preallocatedKeys[i] = []byte("k-" + strconv.Itoa(i))
+	// 如果已初始化的数量足够，直接返回
+	if preallocInitCount >= count {
+		return
+	}
 
-			// value: v-{i} 格式
-			preallocatedValues[i] = []byte("v-" + strconv.Itoa(i))
-		}
-	})
+	// 扩展切片
+	preallocatedKeys = make([][]byte, count)
+	preallocatedValues = make([][]byte, count)
+
+	// 预生成所有 key 和 value
+	for i := 0; i < count; i++ {
+		// key: k-{i} 格式（使用固定宽度确保字典序正确）
+		// ✅ 修复：使用 %07d 格式，确保 k-0000001 < k-0000002 < ... < k-0009999 < k-0010000
+		preallocatedKeys[i] = []byte(fmt.Sprintf("k-%07d", i))
+
+		// value: v-{i} 格式
+		preallocatedValues[i] = []byte(fmt.Sprintf("v-%07d", i))
+	}
+
+	preallocInitCount = count
 }
 
 const maxPreallocCount = 1000000 // 预分配 100 万个 key/value
@@ -581,6 +598,271 @@ func BenchmarkSingleGet_GoroutinePool_HotKey(b *testing.B) {
 			for i := 0; i < b.N/workers; i++ {
 				if _, err := tree.Get(ctx, hotKey); err != nil {
 					b.Errorf("Get failed: %v", err)
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+}
+
+// ============================================================================
+// 1M Keys 完整读写基准测试
+// 目的：测试真实场景下的大规模读写性能（内存模式）
+// ============================================================================
+
+// Benchmark1MKeys_Set 测试基于 1M 已有键的 Set 更新性能
+func Benchmark1MKeys_Set(b *testing.B) {
+	initPreallocated(maxPreallocCount)
+
+	ctx := context.Background()
+	tmpDir := ""
+
+	tree, err := OpenBTree(tmpDir, &model.BTreeConfig{})
+	if err != nil {
+		b.Fatalf("Failed to open BTree: %v", err)
+	}
+	defer tree.Close()
+
+	// 预填充 1M 键（模拟生产环境数据规模）
+	b.StopTimer()
+	for i := 0; i < maxPreallocCount; i++ {
+		if err := tree.Set(ctx, preallocatedKeys[i], preallocatedValues[i]); err != nil {
+			b.Fatalf("Setup Set failed at i=%d: %v", i, err)
+		}
+	}
+	b.StartTimer()
+
+	// 更新已有键（触发 Copy-on-Write）
+	for i := 0; i < b.N; i++ {
+		idx := i % maxPreallocCount
+		if err := tree.Set(ctx, preallocatedKeys[idx], preallocatedValues[idx]); err != nil {
+			b.Fatalf("Set failed: %v", err)
+		}
+	}
+}
+
+// Benchmark1MKeys_Get_Serial 测试单线程从 1M 键中读取
+func Benchmark1MKeys_Get_Serial(b *testing.B) {
+	initPreallocated(maxPreallocCount)
+
+	ctx := context.Background()
+	tmpDir := ""
+
+	tree, err := OpenBTree(tmpDir, &model.BTreeConfig{})
+	if err != nil {
+		b.Fatalf("Failed to open BTree: %v", err)
+	}
+	defer tree.Close()
+
+	// 预填充 1M 键
+	b.StopTimer()
+	for i := 0; i < maxPreallocCount; i++ {
+		if err := tree.Set(ctx, preallocatedKeys[i], preallocatedValues[i]); err != nil {
+			b.Fatalf("Setup Set failed at i=%d: %v", i, err)
+		}
+	}
+	b.StartTimer()
+
+	// 从 1M 键中随机读取
+	for i := 0; i < b.N; i++ {
+		idx := i % maxPreallocCount
+		if _, err := tree.Get(ctx, preallocatedKeys[idx]); err != nil {
+			b.Fatalf("Get failed: %v", err)
+		}
+	}
+}
+
+// Benchmark1MKeys_Get_Concurrent_4Readers 测试并发从 1M 键中读取（4个reader）
+func Benchmark1MKeys_Get_Concurrent_4Readers(b *testing.B) {
+	initPreallocated(maxPreallocCount)
+
+	ctx := context.Background()
+	tmpDir := ""
+
+	tree, err := OpenBTree(tmpDir, &model.BTreeConfig{})
+	if err != nil {
+		b.Fatalf("Failed to open BTree: %v", err)
+	}
+	defer tree.Close()
+
+	// 预填充 1M 键
+	b.StopTimer()
+	for i := 0; i < maxPreallocCount; i++ {
+		if err := tree.Set(ctx, preallocatedKeys[i], preallocatedValues[i]); err != nil {
+			b.Fatalf("Setup Set failed at i=%d: %v", i, err)
+		}
+	}
+	b.StartTimer()
+
+	// 并发读取
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			idx := i % maxPreallocCount
+			if _, err := tree.Get(ctx, preallocatedKeys[idx]); err != nil {
+				b.Fatalf("Get failed: %v", err)
+			}
+			i++
+		}
+	})
+}
+
+// Benchmark1MKeys_Get_Concurrent_8Readers 测试并发从 1M 键中读取（8个reader）
+func Benchmark1MKeys_Get_Concurrent_8Readers(b *testing.B) {
+	initPreallocated(maxPreallocCount)
+
+	ctx := context.Background()
+	tmpDir := ""
+
+	tree, err := OpenBTree(tmpDir, &model.BTreeConfig{})
+	if err != nil {
+		b.Fatalf("Failed to open BTree: %v", err)
+	}
+	defer tree.Close()
+
+	// 预填充 1M 键
+	b.StopTimer()
+	for i := 0; i < maxPreallocCount; i++ {
+		if err := tree.Set(ctx, preallocatedKeys[i], preallocatedValues[i]); err != nil {
+			b.Fatalf("Setup Set failed at i=%d: %v", i, err)
+		}
+	}
+	b.StartTimer()
+
+	// 并发读取
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			idx := i % maxPreallocCount
+			if _, err := tree.Get(ctx, preallocatedKeys[idx]); err != nil {
+				b.Fatalf("Get failed: %v", err)
+			}
+			i++
+		}
+	})
+}
+
+// Benchmark1MKeys_Mixed_50Read50Write 测试混合读写（50% Get + 50% Set）
+func Benchmark1MKeys_Mixed_50Read50Write(b *testing.B) {
+	initPreallocated(maxPreallocCount)
+
+	ctx := context.Background()
+	tmpDir := ""
+
+	tree, err := OpenBTree(tmpDir, &model.BTreeConfig{})
+	if err != nil {
+		b.Fatalf("Failed to open BTree: %v", err)
+	}
+	defer tree.Close()
+
+	// 预填充 1M 键
+	b.StopTimer()
+	for i := 0; i < maxPreallocCount; i++ {
+		if err := tree.Set(ctx, preallocatedKeys[i], preallocatedValues[i]); err != nil {
+			b.Fatalf("Setup Set failed at i=%d: %v", i, err)
+		}
+	}
+	b.StartTimer()
+
+	// 混合读写：偶数索引读，奇数索引写
+	for i := 0; i < b.N; i++ {
+		idx := i % maxPreallocCount
+		if i%2 == 0 {
+			// 读操作
+			if _, err := tree.Get(ctx, preallocatedKeys[idx]); err != nil {
+				b.Fatalf("Get failed: %v", err)
+			}
+		} else {
+			// 写操作（更新已有键）
+			if err := tree.Set(ctx, preallocatedKeys[idx], preallocatedValues[idx]); err != nil {
+				b.Fatalf("Set failed: %v", err)
+			}
+		}
+	}
+}
+
+// Benchmark1MKeys_Mixed_80Read20Write 测试读多写少场景（80% Get + 20% Set）
+func Benchmark1MKeys_Mixed_80Read20Write(b *testing.B) {
+	initPreallocated(maxPreallocCount)
+
+	ctx := context.Background()
+	tmpDir := ""
+
+	tree, err := OpenBTree(tmpDir, &model.BTreeConfig{})
+	if err != nil {
+		b.Fatalf("Failed to open BTree: %v", err)
+	}
+	defer tree.Close()
+
+	// 预填充 1M 键
+	b.StopTimer()
+	for i := 0; i < maxPreallocCount; i++ {
+		if err := tree.Set(ctx, preallocatedKeys[i], preallocatedValues[i]); err != nil {
+			b.Fatalf("Setup Set failed at i=%d: %v", i, err)
+		}
+	}
+	b.StartTimer()
+
+	// 混合读写：80% 读，20% 写
+	for i := 0; i < b.N; i++ {
+		idx := i % maxPreallocCount
+		if i%5 < 4 {
+			// 读操作（80%）
+			if _, err := tree.Get(ctx, preallocatedKeys[idx]); err != nil {
+				b.Fatalf("Get failed: %v", err)
+			}
+		} else {
+			// 写操作（20%）
+			if err := tree.Set(ctx, preallocatedKeys[idx], preallocatedValues[idx]); err != nil {
+				b.Fatalf("Set failed: %v", err)
+			}
+		}
+	}
+}
+
+// Benchmark1MKeys_Mixed_Concurrent 测试并发混合读写（4 readers + 4 writers）
+func Benchmark1MKeys_Mixed_Concurrent(b *testing.B) {
+	initPreallocated(maxPreallocCount)
+
+	ctx := context.Background()
+	tmpDir := ""
+
+	tree, err := OpenBTree(tmpDir, &model.BTreeConfig{})
+	if err != nil {
+		b.Fatalf("Failed to open BTree: %v", err)
+	}
+	defer tree.Close()
+
+	// 预填充 1M 键
+	b.StopTimer()
+	for i := 0; i < maxPreallocCount; i++ {
+		if err := tree.Set(ctx, preallocatedKeys[i], preallocatedValues[i]); err != nil {
+			b.Fatalf("Setup Set failed at i=%d: %v", i, err)
+		}
+	}
+	b.StartTimer()
+
+	// 4 个 reader + 4 个 writer
+	var wg sync.WaitGroup
+	workers := 8
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			isReader := (workerID % 2) == 0
+			for i := 0; i < b.N/workers; i++ {
+				idx := (workerID*100000 + i) % maxPreallocCount
+				if isReader {
+					// 读操作
+					if _, err := tree.Get(ctx, preallocatedKeys[idx]); err != nil {
+						b.Errorf("Get failed: %v", err)
+					}
+				} else {
+					// 写操作
+					if err := tree.Set(ctx, preallocatedKeys[idx], preallocatedValues[idx]); err != nil {
+						b.Errorf("Set failed: %v", err)
+					}
 				}
 			}
 		}(w)

@@ -45,6 +45,7 @@
 package btree
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -102,6 +103,9 @@ type BTree struct {
 
 	// PageID management
 	nextPageID atomic.Uint64 // Next page ID to allocate (lock-free)
+
+	// Persistence coordination
+	writeMu sync.Mutex // Global write lock for persistence operations
 }
 
 // OpenBTree opens or creates a BTree storage engine with persistence support.
@@ -353,7 +357,7 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 
 		// 7. 持久化
 		if b.chunkMgr != nil {
-			if err := b.persistRoot(); err != nil {
+			if err := b.persistRoot(newRootInfo); err != nil {
 				return fmt.Errorf("persist root: %w", err)
 			}
 		}
@@ -659,14 +663,59 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 
 	// ✅ Phase 2A: 如果是浅拷贝状态，需要先深拷贝 Page
 	if leafInfo.IsShallowClone() {
+		// ✅ 修复：保存旧的 leafInfo，用于后续比较
+		oldLeafInfo := leafInfo
+
 		deepClonedInfo := leafInfo.CloneDeep()
 		copiedPath[len(copiedPath)-1] = deepClonedInfo
 		leafInfo = deepClonedInfo
+
+		// ✅ 修复：更新父节点的 children 引用，指向深拷贝的子节点
+		if len(copiedPath) >= 2 {
+			parentInfo := copiedPath[len(copiedPath)-2]
+			if parentPage, ok := parentInfo.GetPage().(*InternalPage); ok && parentPage != nil {
+				// ✅ 调试：检查父节点状态
+				if len(parentPage.children) != len(parentPage.keys)+1 {
+					fmt.Printf("[DEBUG] setWithCAS deep clone: parent invariant violated BEFORE update: pageID=%d, len(keys)=%d, len(children)=%d\n",
+						parentPage.pageID, len(parentPage.keys), len(parentPage.children))
+				}
+
+				// 找到指向旧的 leafInfo 的子节点引用，更新为新的 leafInfo
+				found := false
+				for j := 0; j < len(parentPage.children); j++ {
+					childRef := parentPage.children[j]
+					if childRef != nil && childRef.GetPageInfo() == oldLeafInfo {
+						// 创建新的 PageRef，指向深拷贝的 leafInfo
+						newChildRef := NewPageRefWithInfo(deepClonedInfo)
+						// 保持 parentRef 不变
+						if parentRef := childRef.parentRef.Load(); parentRef != nil {
+							newChildRef.SetParentRef(parentRef.(*PageRef))
+						}
+						parentPage.children[j] = newChildRef
+						found = true
+						break
+					}
+				}
+
+				// ✅ 调试：检查是否找到了旧的 leafInfo
+				if !found {
+					fmt.Printf("[DEBUG] setWithCAS deep clone: oldLeafInfo not found in parent.children, pageID=%d\n", parentPage.pageID)
+				}
+
+				// ✅ 调试：检查父节点状态
+				if len(parentPage.children) != len(parentPage.keys)+1 {
+					fmt.Printf("[DEBUG] setWithCAS deep clone: parent invariant violated AFTER update: pageID=%d, len(keys)=%d, len(children)=%d\n",
+						parentPage.pageID, len(parentPage.keys), len(parentPage.children))
+				}
+			}
+		}
 	}
 
-	leafPage, err := b.getPageOrLoad(leafInfo)
-	if err != nil {
-		return fmt.Errorf("load leaf page: %w", err)
+	// ✅ 修复：直接从 leafInfo 获取页面，而不是 getPageOrLoad
+	// getPageOrLoad 可能返回原始页面（如果已加载），而不是深拷贝的页面
+	leafPage := leafInfo.GetPage()
+	if leafPage == nil {
+		return fmt.Errorf("leaf page not loaded")
 	}
 
 	leaf, ok := leafPage.(*LeafPage)
@@ -687,8 +736,35 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 		leafInfo = copiedPath[len(copiedPath)-1]
 
 		// 调用分裂
-		if err := b.splitLeaf(leafInfo, copiedPath); err != nil {
+		if err := b.splitLeaf(leafInfo, key, copiedPath); err != nil {
 			return fmt.Errorf("split leaf: %w", err)
+		}
+
+		// ✅ 修复：分裂后重新获取 leaf 和 leafInfo，确保它们指向修改后的对象
+		// 分裂可能修改了 leafInfo.page，需要重新获取
+		leafInfo = copiedPath[len(copiedPath)-1]
+		leafPage = leafInfo.GetPage()
+		if leafPage == nil {
+			return fmt.Errorf("leaf page not loaded after split")
+		}
+		leaf, ok = leafPage.(*LeafPage)
+		if !ok || leaf == nil {
+			return fmt.Errorf("invalid leaf page type after split: %T", leafPage)
+		}
+
+		// ✅ 修复：检查是否需要继续插入
+		// 分裂后，键可能已经被插入到正确的位置
+		_, found := leaf.search(key)
+		if found {
+			// 键已存在（分裂时被复制），更新值
+			idx, _ := leaf.search(key)
+			leaf.values[idx] = value
+		} else {
+			// 键不存在，需要插入
+			_, err = leaf.Insert(key, value)
+			if err != nil {
+				return fmt.Errorf("insert into leaf after split: %w", err)
+			}
 		}
 
 		// 分裂后，检查是否需要 CAS
@@ -722,6 +798,11 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 		return ErrRetry
 	}
 
+	// ✅ CAS 成功后，获取全局写锁
+	// 防止并发修改干扰 finalizeDeepClone 和 persistRoot
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+
 	// ✅ Phase 2A: CAS 成功后，执行深拷贝（延迟深拷贝优化）
 	// 将浅拷贝路径转换为深拷贝，确保后续修改有独立的 Page 副本
 	if err := b.finalizeDeepClone(copiedPath); err != nil {
@@ -730,8 +811,10 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 
 	// Step 7: ✅ Day 9: 持久化集成
 	// CAS 更新成功后，持久化整个树
+	// ✅ 修复：传递 copiedPath[0] 而不是从 rootRef 加载
+	// 这确保持久化的是当前线程修改的树，而不是其他线程并发修改的树
 	if b.chunkMgr != nil {
-		if err := b.persistRoot(); err != nil {
+		if err := b.persistRoot(copiedPath[0]); err != nil {
 			// 持久化失败，记录错误但不中断操作
 			// 数据仍在内存中，可以稍后重试
 			return fmt.Errorf("persist root: %w", err)
@@ -871,6 +954,14 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 	// ✅ 优化：预先构建 PageID -> PageInfo 映射表
 	pageInfoMap := make(map[model.PageID]*PageInfo, len(path))
 	for _, info := range path {
+		// ✅ 调试：检查原始 path 中的 InternalPage 不变式
+		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
+			if len(internalPage.children) != len(internalPage.keys)+1 {
+				fmt.Printf("[DEBUG] copyPathShallow: invariant violated in ORIGINAL path: pageID=%d, len(keys)=%d, len(children)=%d\n",
+					internalPage.pageID, len(internalPage.keys), len(internalPage.children))
+			}
+		}
+
 		var pageID model.PageID
 		switch p := info.GetPage().(type) {
 		case *LeafPage:
@@ -884,10 +975,33 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 	}
 
 	// Phase 1: Clone all PageInfos in the path (使用 CloneShallow)
+	// ✅ 修复：LeafPage 立即深拷贝，避免并发修改导致 keys/values 不一致
 	for i, info := range path {
-		// ✅ 关键：使用 CloneShallow 而不是 Clone
-		newInfo := info.CloneShallow()
+		// 检查是否为 LeafPage，如果是则立即深拷贝
+		var newInfo *PageInfo
+		if leafPage, ok := info.GetPage().(*LeafPage); ok && leafPage != nil {
+			// LeafPage 需要立即深拷贝，防止并发修改
+			// ✅ 调试：验证前置条件
+			if len(leafPage.keys) != len(leafPage.values) {
+				panic(fmt.Sprintf("copyPathShallow: original LeafPage already inconsistent - pageID=%d, keys=%d, values=%d",
+					leafPage.pageID, len(leafPage.keys), len(leafPage.values)))
+			}
+			newInfo = info.CloneShallow()
+			newInfo.page = leafPage.Clone() // 深拷贝 Page 对象
+			newInfo.cloneStatus.Store(CloneStatusDeep)
+		} else {
+			// InternalPage 使用浅拷贝
+			newInfo = info.CloneShallow()
+		}
 		copiedPath[i] = newInfo
+
+		// ✅ 调试：检查 InternalPage 的不变式
+		if internalPage, ok := newInfo.GetPage().(*InternalPage); ok && internalPage != nil {
+			if len(internalPage.children) != len(internalPage.keys)+1 {
+				fmt.Printf("[DEBUG] copyPathShallow: invariant violated after CloneShallow: pageID=%d, len(keys)=%d, len(children)=%d\n",
+					internalPage.pageID, len(internalPage.keys), len(internalPage.children))
+			}
+		}
 
 		// 更新映射表
 		var pageID model.PageID
@@ -905,6 +1019,30 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 	// Phase 2: Rebuild child references for InternalPages
 	for _, info := range copiedPath {
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
+			// ✅ 调试：检查重建前的 children 长度
+			expectedChildrenLen := len(internalPage.keys) + 1
+			if len(internalPage.children) != expectedChildrenLen {
+				fmt.Printf("[DEBUG] copyPathShallow Phase 2: BEFORE rebuild, pageID=%d, len(keys)=%d, len(children)=%d, expected=%d\n",
+					internalPage.pageID, len(internalPage.keys), len(internalPage.children), expectedChildrenLen)
+				// 打印所有子节点的 pageID
+				fmt.Printf("[DEBUG] copyPathShallow Phase 2: children pageIDs: ")
+				for j := 0; j < len(internalPage.children); j++ {
+					if internalPage.children[j] != nil && internalPage.children[j].GetPageInfo() != nil {
+						if childPage := internalPage.children[j].GetPageInfo().GetPage(); childPage != nil {
+							switch p := childPage.(type) {
+							case *LeafPage:
+								fmt.Printf("L%d ", p.pageID)
+							case *InternalPage:
+								fmt.Printf("I%d ", p.pageID)
+							}
+						}
+					} else {
+						fmt.Printf("nil ")
+					}
+				}
+				fmt.Println()
+			}
+
 			// 遍历所有子节点引用
 			for j := 0; j < len(internalPage.children); j++ {
 				childRef := internalPage.children[j]
@@ -950,6 +1088,12 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 					newChildRef.SetParentRef(b.rootRef.PageRef)
 					internalPage.children[j] = newChildRef
 				}
+			}
+
+			// ✅ 调试：检查重建后的 children 长度
+			if len(internalPage.children) != expectedChildrenLen {
+				fmt.Printf("[DEBUG] copyPathShallow Phase 2: AFTER rebuild, pageID=%d, len(keys)=%d, len(children)=%d, expected=%d\n",
+					internalPage.pageID, len(internalPage.keys), len(internalPage.children), expectedChildrenLen)
 			}
 		}
 	}
@@ -1077,8 +1221,8 @@ func (b *BTree) finalizeDeepClone(copiedPath []*PageInfo) error {
 // 5. 检查父节点是否需要递归分裂
 // 6. 处理根节点分裂
 // 7. 最后通过 CAS 更新根节点
-func (b *BTree) splitLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
-	const maxKeys = 16 // LeafPage 最大键数量
+func (b *BTree) splitLeaf(leafInfo *PageInfo, key []byte, copiedPath []*PageInfo) error {
+	const maxKeys = 200 // LeafPage 最大键数量（优化性能）
 
 	// 1. 获取叶子节点
 	leafPage := leafInfo.GetLeafPage()
@@ -1109,7 +1253,14 @@ func (b *BTree) splitLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
 	if len(copiedPath) < 2 {
 		// 没有父节点，说明当前只有根叶子节点
 		// 需要创建新的内部节点作为根
-		return b.splitRootFromLeaf(leafInfo, newPageInfo, splitKey, copiedPath)
+		casSuccess, err := b.splitRootFromLeaf(leafInfo, newPageInfo, key, splitKey, copiedPath)
+		if err != nil {
+			return err
+		}
+		if !casSuccess {
+			return ErrRetry
+		}
+		return nil
 	}
 
 	// 6. 获取父节点（在 copiedPath 中）
@@ -1122,6 +1273,14 @@ func (b *BTree) splitLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
 	// 7. 将分裂键插入父节点
 	// 注意：我们需要创建临时 PageRef 来包装 newPageInfo
 	newPageRef := NewPageRefWithInfo(newPageInfo)
+
+	// ✅ 调试：检查父节点状态
+	if len(parentPage.children) != len(parentPage.keys)+1 {
+		fmt.Printf("[DEBUG] splitLeaf: parent invariant violated BEFORE InsertKeyChild: len(children)=%d, len(keys)=%d, pageID=%d\n",
+			len(parentPage.children), len(parentPage.keys), parentPage.pageID)
+		fmt.Printf("[DEBUG] splitLeaf: parentPage.keys=%d, parentPage.children=%d\n", len(parentPage.keys), len(parentPage.children))
+	}
+
 	if err := parentPage.InsertKeyChild(splitKey, newPageRef); err != nil {
 		return fmt.Errorf("insert split key to parent failed: %w", err)
 	}
@@ -1141,7 +1300,10 @@ func (b *BTree) splitLeaf(leafInfo *PageInfo, copiedPath []*PageInfo) error {
 }
 
 // splitRootFromLeaf 从叶子节点分裂创建新的根节点
-func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, splitKey []byte, copiedPath []*PageInfo) error {
+// 返回值：
+//   - bool: CAS 是否成功
+//   - error: 错误信息
+func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, key []byte, splitKey []byte, copiedPath []*PageInfo) (bool, error) {
 	// 1. 创建新的内部节点作为根
 	newRootPage := NewInternalPage(b.allocatePageID()) // 分配唯一的 pageID
 	newRootPage.keys = [][]byte{splitKey}
@@ -1159,8 +1321,24 @@ func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, splitKey []byte
 	// 4. CAS 更新根节点
 	oldRootInfo := b.rootRef.pInfo.Load()
 	if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
-		return ErrRetry
+		// ✅ CAS 失败，返回 false 让调用者重试
+		return false, nil
 	}
+
+	// ✅ CAS 成功，更新 copiedPath[0] 以保持一致性
+	copiedPath[0] = newRootInfo
+
+	// ✅ 修复：确定新键应该去哪个子节点，更新 copiedPath[len(copiedPath)-1]
+	// LeafPage.Split() 后，左页面包含键 [0, mid)，右页面包含键 [mid, end)
+	// 分裂键 splitKey = keys[mid] 在右页面中
+	// 所以：key < splitKey 去 leftInfo，key >= splitKey 去 rightInfo
+	var targetLeafInfo *PageInfo
+	if bytes.Compare(key, splitKey) < 0 {
+		targetLeafInfo = leftInfo
+	} else {
+		targetLeafInfo = rightInfo
+	}
+	copiedPath[len(copiedPath)-1] = targetLeafInfo
 
 	// 5. ✅ Day 7: 引用更新机制
 	// 更新子节点的 parentRef
@@ -1170,12 +1348,13 @@ func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, splitKey []byte
 	// 6. ✅ Day 9: 持久化集成
 	// 分裂完成后，持久化整个树
 	if b.chunkMgr != nil {
-		if err := b.persistRoot(); err != nil {
-			return fmt.Errorf("persist root after split: %w", err)
+		if err := b.persistRoot(newRootInfo); err != nil {
+			return false, fmt.Errorf("persist root after split: %w", err)
 		}
 	}
 
-	return nil
+	// ✅ CAS 成功，返回 true
+	return true, nil
 }
 
 // splitInternal 分裂内部节点（CCOW 版本）
@@ -1192,7 +1371,7 @@ func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, splitKey []byte
 //
 //	error - 错误信息
 func (b *BTree) splitInternal(internalInfo *PageInfo, copiedPath []*PageInfo) error {
-	const maxKeys = 15 // InternalPage 最大键数量
+	const maxKeys = 199 // InternalPage 最大键数量（优化性能，通常比 LeafPage 少 1）
 
 	// 1. 获取内部节点
 	internalPage := internalInfo.GetInternalPage()
@@ -1292,7 +1471,7 @@ func (b *BTree) splitRootFromInternal(leftInfo, rightInfo *PageInfo, splitKey []
 	// 7. ✅ Day 9: 持久化集成
 	// 分裂完成后，持久化整个树
 	if b.chunkMgr != nil {
-		if err := b.persistRoot(); err != nil {
+		if err := b.persistRoot(newRootInfo); err != nil {
 			return fmt.Errorf("persist root after split: %w", err)
 		}
 	}
@@ -1457,8 +1636,14 @@ func (b *BTree) persistPageRecursive(pageInfo *PageInfo) error {
 //
 // 这是持久化流程的入口点，在 Set 操作完成后调用
 // 确保 Root 页面及其所有子节点都被持久化到磁盘
-func (b *BTree) persistRoot() error {
-	rootInfo := b.rootRef.pInfo.Load()
+//
+// 参数：
+//
+//	rootInfo - 要持久化的根节点 PageInfo（应该使用当前线程修改的版本）
+//
+// 注意：调用者必须在 CAS 成功后持有 writeMu 锁，确保持久化期间
+// 没有并发修改导致页面结构不一致
+func (b *BTree) persistRoot(rootInfo *PageInfo) error {
 	if rootInfo == nil {
 		return fmt.Errorf("root page info is nil")
 	}

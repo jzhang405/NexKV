@@ -13,27 +13,38 @@ import (
 
 // TestInternalPage_Split_WithChildren 测试带子节点的 InternalPage 分裂
 func TestInternalPage_Split_WithChildren(t *testing.T) {
-	// 创建内部节点，添加 17 个键和对应的子节点
+	// 创建内部节点，添加 18 个键和对应的子节点
+	// ✅ B+Tree 不变式：n 个键需要 n+1 个子节点
 	page := NewInternalPage(1)
 
-	// 插入 17 个键（maxKeys = 15，触发分裂）
-	for i := 0; i < 17; i++ {
+	// ✅ 重要：先初始化第一个子节点（children[0]）
+	// 在 B+Tree 中，第一个键插入前，children[0] 应该已经存在
+	firstChildRef := NewPageRef()
+	firstChildInfo := NewPageInfo()
+	firstChildPage := NewLeafPage(model.PageID(100))
+	firstChildInfo.SetPage(firstChildPage)
+	firstChildRef.SetPage(firstChildInfo)
+	page.children = append(page.children, firstChildRef)
+
+	// 插入 18 个键，每个键带一个右子节点
+	// Insert 方法会在正确位置插入键和其右子节点
+	for i := 0; i < 18; i++ {
 		key := []byte{byte(i)}
-		// 为每个键创建一个子节点
+		// 创建右子节点
 		childRef := NewPageRef()
 		childInfo := NewPageInfo()
-		childPage := NewLeafPage(model.PageID(i + 100))
+		childPage := NewLeafPage(model.PageID(i + 101))
 		childInfo.SetPage(childPage)
 		childRef.SetPage(childInfo)
 
-		// 插入键和子节点
+		// 插入键和右子节点
 		_, err := page.Insert(key, childRef)
 		require.NoError(t, err)
 	}
 
 	// 检查分裂前状态
-	assert.Equal(t, 17, page.NumKeys(), "应该有 17 个键")
-	assert.Equal(t, 17, page.NumChildren(), "应该有 17 个子节点")
+	assert.Equal(t, 18, page.NumKeys(), "应该有 18 个键")
+	assert.Equal(t, 19, page.NumChildren(), "应该有 19 个子节点")
 
 	// 执行分裂
 	newPage, splitKey, err := page.Split()
@@ -42,24 +53,24 @@ func TestInternalPage_Split_WithChildren(t *testing.T) {
 	require.NotNil(t, splitKey, "分裂键不应为空")
 
 	// 验证分裂后状态
-	// 原页面保留前半部分（0-7，共 8 个键）
-	// BTree 规则：n 个键需要 n+1 个子节点
-	assert.Equal(t, 8, page.NumKeys(), "原页面应该有 8 个键")
-	assert.Equal(t, 9, page.NumChildren(), "原页面应该有 9 个子节点")
-	assert.Equal(t, []byte{8}, splitKey, "分裂键应该是第 8 个键")
+	// 原页面保留前半部分（0-8，共 9 个键）
+	// Split 实现: p.children = p.children[:mid+1]
+	assert.Equal(t, 9, page.NumKeys(), "原页面应该有 9 个键")
+	assert.Equal(t, 10, page.NumChildren(), "原页面应该有 10 个子节点") // children[0:10]
+	assert.Equal(t, []byte{9}, splitKey, "分裂键应该是第 9 个键")
 
-	// ✅ Day 7: 右子节点包含分裂键
-	// 新页面包含后半部分（8-16，共 9 个键）
-	assert.Equal(t, 9, newPage.NumKeys(), "新页面应该有 9 个键")
-	assert.Equal(t, 8, newPage.NumChildren(), "新页面应该有 8 个子节点")
+	// ✅ 修复：B+Tree 标准分裂逻辑 - 分裂键提升到父节点，不在左右页面中
+	// 新页面包含后半部分（10-17，共 8 个键，不包含分裂键 9）
+	assert.Equal(t, 8, newPage.NumKeys(), "新页面应该有 8 个键")
+	assert.Equal(t, 9, newPage.NumChildren(), "新页面应该有 9 个子节点") // Split 实现: p.children[mid+1:] = children[10:]
 
 	// 验证子节点引用完整性
-	for i := 0; i < 9; i++ {
+	for i := 0; i < 10; i++ {
 		childRef := page.GetChild(i)
 		assert.NotNil(t, childRef, "原页面子节点 %d 不应为空", i)
 	}
 
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 9; i++ {
 		childRef := newPage.GetChild(i)
 		assert.NotNil(t, childRef, "新页面子节点 %d 不应为空", i)
 	}

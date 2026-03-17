@@ -11,19 +11,21 @@ import (
 // LeafPage 叶子节点
 // 存储键值对，是 BTree 的最底层节点
 type LeafPage struct {
-	pageID  model.PageID // 页面 ID
-	version uint64       // 版本号（用于 CCOW）
-	keys    [][]byte     // 键数组（有序）
-	values  [][]byte     // 值数组（与 keys 一一对应）
+	pageID   model.PageID // 页面 ID
+	version  uint64       // 版本号（用于 CCOW）
+	keys     [][]byte     // 键数组（有序）
+	values   [][]byte     // 值数组（与 keys 一一对应）
+	pageLock *PageLock    // 页面锁（用于避免重复深拷贝）
 }
 
 // NewLeafPage 创建新的叶子页面
 func NewLeafPage(pageID model.PageID) *LeafPage {
 	return &LeafPage{
-		pageID:  pageID,
-		version: 0,
-		keys:    make([][]byte, 0, InitialLeafCapacity), // 预分配容量
-		values:  make([][]byte, 0, InitialLeafCapacity),
+		pageID:   pageID,
+		version:  0,
+		keys:     make([][]byte, 0, InitialLeafCapacity), // 预分配容量
+		values:   make([][]byte, 0, InitialLeafCapacity),
+		pageLock: NewPageLock(), // 初始化页面锁
 	}
 }
 
@@ -243,10 +245,11 @@ func (p *LeafPage) Clone() *LeafPage {
 	copy(newValues, p.values)
 
 	return &LeafPage{
-		pageID:  p.pageID,
-		version: p.version,
-		keys:    newKeys,
-		values:  newValues,
+		pageID:   p.pageID,
+		version:  p.version,
+		keys:     newKeys,
+		values:   newValues,
+		pageLock: NewPageLock(), // 深拷贝创建新的 PageLock
 	}
 }
 

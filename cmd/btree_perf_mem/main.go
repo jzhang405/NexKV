@@ -72,5 +72,17 @@ func main() {
 	fmt.Printf("Total time: %.2f seconds\n", elapsed.Seconds())
 	fmt.Printf("Throughput: %.0f ops/sec\n", opsPerSec)
 	fmt.Printf("Average latency: %.2f μs/op\n", float64(avgLatency)/1000)
+
+	// ✅ 调试：PageLock TryLock 统计
+	success, failure := btree.GetTryLockStats()
+	total := success + failure
+	if total > 0 {
+		successRate := float64(success) / float64(total) * 100
+		fmt.Printf("\n=== PageLock TryLock Stats ===\n")
+		fmt.Printf("Success: %d (%.1f%%)\n", success, successRate)
+		fmt.Printf("Failure: %d (%.1f%%)\n", failure, float64(failure)/float64(total)*100)
+		fmt.Printf("Total: %d\n", total)
+	}
+
 	fmt.Println("\nNote: This is pure memory mode (no disk I/O)")
 }

@@ -3,7 +3,25 @@ package btree
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 )
+
+// ✅ 调试：PageLock TryLock 统计
+var (
+	tryLockSuccess atomic.Int64
+	tryLockFailure atomic.Int64
+)
+
+// GetTryLockStats 获取 TryLock 统计信息
+func GetTryLockStats() (success, failure int64) {
+	return tryLockSuccess.Load(), tryLockFailure.Load()
+}
+
+// ResetTryLockStats 重置统计
+func ResetTryLockStats() {
+	tryLockSuccess.Store(0)
+	tryLockFailure.Store(0)
+}
 
 // searchPath 搜索从 Root 到 Leaf 的完整路径
 // 这是 BTree 搜索的核心方法，支持懒加载和并发安全
@@ -65,19 +83,26 @@ func (b *BTree) searchPath(ctx context.Context, key []byte) ([]*PageInfo, error)
 		}
 
 		// 2.3 判断是否为叶子节点
-		// ✅ 修复：LeafPage 立即深拷贝，防止并发修改导致 keys/values 不一致
+		// ✅ 方案2：使用 PageLock TryLock 避免立即深拷贝
 		if leafPage, ok := currentPage.(*LeafPage); ok && leafPage != nil {
-			// 到达叶子节点，深拷贝后添加到路径
-			// 这是必要的，因为多个 goroutine 可能并发访问同一个叶子页面
-			// 如果不立即深拷贝，其他 goroutine 可能在我们调用 copyPathShallow 之前
-			// 就修改了共享的 LeafPage，导致 keys/values 不一致
-			clonedPage := leafPage.Clone()
-			clonedInfo := NewPageInfo()
-			clonedInfo.SetPage(clonedPage)
-			clonedInfo.cloneStatus.Store(CloneStatusDeep)
-
-			// 替换路径中的最后一个元素为深拷贝的版本
-			path[len(path)-1] = clonedInfo
+			// 尝试获取 PageLock，避免立即深拷贝
+			if leafPage.pageLock.TryLock() {
+				// ✅ 成功获取锁，使用浅拷贝（共享引用）
+				tryLockSuccess.Add(1) // 统计
+				clonedInfo := NewPageInfo()
+				clonedInfo.SetPage(leafPage) // 共享引用，不深拷贝
+				clonedInfo.cloneStatus.Store(CloneStatusShallow)
+				// 注意：锁释放在 setWithCAS 的 defer 中
+				path[len(path)-1] = clonedInfo
+			} else {
+				// ✅ 获取锁失败，回退到深拷贝（保证正确性）
+				tryLockFailure.Add(1) // 统计
+				clonedPage := leafPage.Clone()
+				clonedInfo := NewPageInfo()
+				clonedInfo.SetPage(clonedPage)
+				clonedInfo.cloneStatus.Store(CloneStatusDeep)
+				path[len(path)-1] = clonedInfo
+			}
 			break
 		}
 

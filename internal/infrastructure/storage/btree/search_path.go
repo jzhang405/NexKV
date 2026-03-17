@@ -68,10 +68,10 @@ func (b *BTree) searchPath(ctx context.Context, key []byte) ([]*PageInfo, error)
 		// ✅ 原始实现：立即深拷贝
 		if leafPage, ok := currentPage.(*LeafPage); ok && leafPage != nil {
 			// 到达叶子节点，深拷贝后添加到路径
-			clonedPage := leafPage.Clone()
+			clonedPage := leafPage.CloneWithDelta()
 			clonedInfo := NewPageInfo()
 			clonedInfo.SetPage(clonedPage)
-			clonedInfo.cloneStatus.Store(CloneStatusDeep)
+			clonedInfo.cloneStatus.Store(CloneStatusShallow)
 
 			// 替换路径中的最后一个元素为深拷贝的版本
 			path[len(path)-1] = clonedInfo

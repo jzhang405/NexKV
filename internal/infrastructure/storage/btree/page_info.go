@@ -183,9 +183,9 @@ func (info *PageInfo) Clone() *PageInfo {
 	if info.IsPageLoaded() && info.page != nil {
 		switch p := info.page.(type) {
 		case *LeafPage:
-			newInfo.page = p.Clone() // 深拷贝 LeafPage
+			newInfo.page = p.CloneWithDelta() // 深拷贝 LeafPage
 		case *InternalPage:
-			newInfo.page = p.Clone() // 深拷贝 InternalPage
+			newInfo.page = p.CloneWithDelta() // 深拷贝 InternalPage
 		default:
 			// 未知类型，保留原引用（不应该发生）
 			newInfo.page = info.page

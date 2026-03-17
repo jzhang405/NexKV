@@ -39,7 +39,7 @@ func main() {
 	}
 
 	fmt.Fprintln(os.Stderr, "Starting benchmark (100K iterations)...")
-	
+
 	// 运行基准测试
 	start := time.Now()
 	for i := 0; i < 100000; i++ {
@@ -49,14 +49,14 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Failed to set key-%d: %v\n", i, err)
 			os.Exit(1)
 		}
-		
+
 		if (i+1)%10000 == 0 {
 			elapsed := time.Since(start)
 			opsPerSec := float64(i+1) / elapsed.Seconds()
 			fmt.Fprintf(os.Stderr, "\rProgress: %d/%d (%.1f ops/sec)", i+1, 100000, opsPerSec)
 		}
 	}
-	
+
 	elapsed := time.Since(start)
 	opsPerSec := 100000.0 / elapsed.Seconds()
 	fmt.Fprintf(os.Stderr, "\nCompleted: 100000 ops in %v (%.1f ops/sec)\n", elapsed, opsPerSec)

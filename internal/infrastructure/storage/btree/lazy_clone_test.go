@@ -69,22 +69,22 @@ func TestBTree_copyPathShallow(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, copiedPath, 3)
 
-	// 验证所有 PageInfo 都是浅克隆状态
-	for i, info := range copiedPath {
-		assert.Equal(t, uint32(CloneStatusShallow), info.GetCloneStatus(),
-			"PageInfo[%d] 应该是浅克隆状态", i)
-		assert.True(t, info.IsShallowClone())
-	}
-
-	// ✅ 关键验证：Page 对象是共享的
+	// ✅ 验证克隆状态：InternalPage 浅拷贝，LeafPage 深拷贝
+	// 这是修复并发问题的关键设计
 	copiedRoot := copiedPath[0].GetInternalPage()
+	assert.Equal(t, uint32(CloneStatusShallow), copiedPath[0].GetCloneStatus(),
+		"InternalPage 应该是浅克隆状态")
 	assert.Same(t, root, copiedRoot, "浅拷贝应该共享 root Page")
 
 	copiedInternal := copiedPath[1].GetInternalPage()
+	assert.Equal(t, uint32(CloneStatusShallow), copiedPath[1].GetCloneStatus(),
+		"InternalPage 应该是浅克隆状态")
 	assert.Same(t, internal, copiedInternal, "浅拷贝应该共享 internal Page")
 
 	copiedLeaf := copiedPath[2].GetLeafPage()
-	assert.Same(t, leaf, copiedLeaf, "浅拷贝应该共享 leaf Page")
+	assert.Equal(t, uint32(CloneStatusDeep), copiedPath[2].GetCloneStatus(),
+		"LeafPage 应该是深克隆状态（防止并发修改）")
+	assert.NotSame(t, leaf, copiedLeaf, "LeafPage 需要深拷贝避免并发问题")
 }
 
 // TestBTree_copyPathShallow_EmptyPath 测试空路径
@@ -102,32 +102,35 @@ func TestBTree_finalizeDeepClone(t *testing.T) {
 	b, cleanup := setupTestBTree(t)
 	defer cleanup()
 
-	// 构建浅拷贝路径
+	// 构建路径（包含 InternalPage 和 LeafPage）
 	rootInfo := NewPageInfo()
 	root := NewInternalPage(model.PageID(1))
 	rootInfo.SetPage(root)
 
 	leafInfo := NewPageInfo()
 	leaf := NewLeafPage(model.PageID(2))
+	// ✅ 修复：正确初始化 LeafPage，确保 keys 和 values 长度一致
 	leaf.keys = append(leaf.keys, []byte("key1"))
+	leaf.values = append(leaf.values, []byte("value1"))
 	leafInfo.SetPage(leaf)
 
 	path := []*PageInfo{rootInfo, leafInfo}
 
-	// 执行浅拷贝
+	// 执行浅拷贝（LeafPage 会立即深拷贝，InternalPage 保持浅拷贝）
 	shallowPath, err := b.copyPathShallow(path)
 	require.NoError(t, err)
 
-	// 验证浅拷贝状态
-	for _, info := range shallowPath {
-		assert.Equal(t, uint32(CloneStatusShallow), info.GetCloneStatus())
-	}
+	// 验证初始状态：InternalPage 浅拷贝，LeafPage 深拷贝
+	assert.Equal(t, uint32(CloneStatusShallow), shallowPath[0].GetCloneStatus(),
+		"InternalPage 初始应该是浅克隆状态")
+	assert.Equal(t, uint32(CloneStatusDeep), shallowPath[1].GetCloneStatus(),
+		"LeafPage 在 copyPathShallow 中已深拷贝")
 
-	// 执行深拷贝转换
+	// 执行深拷贝转换（将 InternalPage 转换为深拷贝）
 	err = b.finalizeDeepClone(shallowPath)
 	require.NoError(t, err)
 
-	// 验证所有 PageInfo 都是深克隆状态
+	// 验证最终状态：所有 PageInfo 都是深克隆状态
 	for i, info := range shallowPath {
 		assert.Equal(t, uint32(CloneStatusDeep), info.GetCloneStatus(),
 			"PageInfo[%d] 应该是深克隆状态", i)
@@ -169,6 +172,7 @@ func TestBTree_finalizeDeepClone_SkipAlreadyDeep(t *testing.T) {
 	leafInfo := NewPageInfo()
 	leaf := NewLeafPage(model.PageID(2))
 	leaf.keys = append(leaf.keys, []byte("key1"))
+	leaf.values = append(leaf.values, []byte("value1"))
 	leafInfo.SetPage(leaf)
 
 	// 先深拷贝
@@ -203,18 +207,21 @@ func TestBTree_LazyCloneIntegration(t *testing.T) {
 	leafInfo := NewPageInfo()
 	leaf := NewLeafPage(model.PageID(2))
 	leaf.keys = append(leaf.keys, []byte("key1"))
+	leaf.values = append(leaf.values, []byte("value1"))
 	leafInfo.SetPage(leaf)
 
 	path := []*PageInfo{rootInfo, leafInfo}
 
 	// 步骤 1: 浅拷贝路径（CAS 前）
+	// 注意：LeafPage 会立即深拷贝（防止并发修改），InternalPage 保持浅拷贝
 	copiedPath, err := b.copyPathShallow(path)
 	require.NoError(t, err)
 
-	// 验证浅拷贝状态
-	for _, info := range copiedPath {
-		assert.Equal(t, uint32(CloneStatusShallow), info.GetCloneStatus())
-	}
+	// 验证初始克隆状态
+	assert.Equal(t, uint32(CloneStatusShallow), copiedPath[0].GetCloneStatus(),
+		"InternalPage 应该是浅拷贝")
+	assert.Equal(t, uint32(CloneStatusDeep), copiedPath[1].GetCloneStatus(),
+		"LeafPage 应该立即深拷贝")
 
 	// 步骤 2: 模拟 CAS 成功，执行深拷贝
 	err = b.finalizeDeepClone(copiedPath)
@@ -243,16 +250,18 @@ func TestBTree_LazyCloneCASFailure(t *testing.T) {
 	leafInfo := NewPageInfo()
 	leaf := NewLeafPage(model.PageID(1))
 	leaf.keys = append(leaf.keys, []byte("key1"))
+	leaf.values = append(leaf.values, []byte("value1"))
 	leafInfo.SetPage(leaf)
 
 	path := []*PageInfo{leafInfo}
 
-	// 步骤 1: 浅拷贝路径
+	// 步骤 1: 浅拷贝路径（LeafPage 会立即深拷贝）
 	copiedPath, err := b.copyPathShallow(path)
 	require.NoError(t, err)
 
-	// 验证浅拷贝状态
-	assert.Equal(t, uint32(CloneStatusShallow), copiedPath[0].GetCloneStatus())
+	// 验证克隆状态：LeafPage 立即深拷贝
+	assert.Equal(t, uint32(CloneStatusDeep), copiedPath[0].GetCloneStatus(),
+		"LeafPage 应该立即深拷贝")
 
 	// 步骤 2: 模拟 CAS 失败（不调用 finalizeDeepClone）
 	// 浅拷贝的 copiedPath 会被 GC 回收
@@ -261,9 +270,9 @@ func TestBTree_LazyCloneCASFailure(t *testing.T) {
 	// 验证原始 leaf 未受影响
 	assert.Equal(t, []byte("key1"), leaf.keys[0])
 
-	// ✅ 关键：浅拷贝的 Page 是共享的，不会造成内存泄漏
+	// ✅ 关键：LeafPage 深拷贝，有独立的 Page 副本
 	copiedLeaf := copiedPath[0].GetLeafPage()
-	assert.Same(t, leaf, copiedLeaf, "浅拷贝共享 Page，CAS 失败无额外开销")
+	assert.NotSame(t, leaf, copiedLeaf, "LeafPage 深拷贝，有独立副本")
 }
 
 // TestBTree_copyPathShallow_Integration 测试集成场景
@@ -284,6 +293,7 @@ func TestBTree_copyPathShallow_Integration(t *testing.T) {
 	leafInfo := NewPageInfo()
 	leaf := NewLeafPage(model.PageID(3))
 	leaf.keys = append(leaf.keys, []byte("key1"), []byte("key2"))
+	leaf.values = append(leaf.values, []byte("value1"), []byte("value2"))
 	leafInfo.SetPage(leaf)
 
 	// 建立父子关系
@@ -302,10 +312,10 @@ func TestBTree_copyPathShallow_Integration(t *testing.T) {
 		assert.NotNil(t, copiedPath[i])
 	}
 
-	// 验证 Page 共享
-	assert.Same(t, root, copiedPath[0].GetPage())
-	assert.Same(t, internal, copiedPath[1].GetPage())
-	assert.Same(t, leaf, copiedPath[2].GetPage())
+	// 验证 Page 共享（InternalPage 共享，LeafPage 深拷贝）
+	assert.Same(t, root, copiedPath[0].GetPage(), "Root Page 应该共享")
+	assert.Same(t, internal, copiedPath[1].GetPage(), "Internal Page 应该共享")
+	assert.NotSame(t, leaf, copiedPath[2].GetPage(), "LeafPage 应该深拷贝（防止并发修改）")
 }
 
 // BenchmarkBTree_copyPathShallow 基准测试：浅拷贝路径

@@ -10,7 +10,7 @@ import (
 // 要求：Go 1.19+ (atomic.Pointer 泛型支持)
 type PageRef struct {
 	pInfo     atomic.Pointer[PageInfo] // 原子指针，支持 CAS 更新
-	parentRef atomic.Value             // ✅ 阶段1优化: 使用 atomic.Value 存储 *PageRef，移除 defer 开销
+	parentRef atomic.Value             // ✅ 优化：使用 atomic.Value 存储 *PageRef，移除 defer 开销
 }
 
 // NewPageRef 创建新的 PageRef
@@ -152,13 +152,13 @@ func (r *PageRef) GetLastTime() int64 {
 }
 
 // GetParentRef 获取父引用（无锁，atomic.Value）
-// ✅ 阶段1优化: 移除 defer，减少 tryDeferToSpanScan 开销
+// ✅ 优化：移除 defer，减少 tryDeferToSpanScan 开销
 func (r *PageRef) GetParentRef() *PageRef {
 	return r.parentRef.Load().(*PageRef)
 }
 
 // SetParentRef 设置父引用（无锁，atomic.Value）
-// ✅ 阶段1优化: 移除 defer，减少 tryDeferToSpanScan 开销
+// ✅ 优化：移除 defer，减少 tryDeferToSpanScan 开销
 func (r *PageRef) SetParentRef(parent *PageRef) {
 	r.parentRef.Store(parent)
 }
@@ -184,7 +184,7 @@ func (r *PageRef) Unload() *PageInfo {
 }
 
 // HasParent 检查是否有父引用（无锁，atomic.Value）
-// ✅ 阶段1优化: 移除 defer，减少 tryDeferToSpanScan 开销
+// ✅ 优化：移除 defer，减少 tryDeferToSpanScan 开销
 func (r *PageRef) HasParent() bool {
 	return r.parentRef.Load().(*PageRef) != nil
 }

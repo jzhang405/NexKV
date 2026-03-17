@@ -52,6 +52,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,7 +64,7 @@ import (
 
 var (
 	// ErrNotImplemented is returned when a method is not yet implemented.
-	ErrNotImplemented = errors.New("not implemented until Phase 3")
+	ErrNotImplemented = errors.New("not implemented")
 
 	// ErrClosed is returned when operations are performed on a closed BTree.
 	ErrClosed = errors.New("btree is closed")
@@ -180,6 +181,12 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		enableWAL: enableWAL,
 	}
 
+	// ✅ 应用 GC 配置（如果指定）
+	// 注意：这会影响整个进程，使用时需谨慎
+	if config.GCPercent > 0 {
+		debug.SetGCPercent(config.GCPercent)
+	}
+
 	// Replay WAL if exists (crash recovery)
 	if enableWAL && walImpl != nil {
 		if err := btree.replayWAL(); err != nil {
@@ -288,7 +295,7 @@ func (b *BTree) Set(ctx context.Context, key, value []byte) error {
 	}
 }
 
-// Delete removes a key (not implemented until Phase 3).
+// Delete removes a key (not implemented).
 func (b *BTree) Delete(ctx context.Context, key []byte) error {
 	if b.closed {
 		return ErrClosed
@@ -333,7 +340,7 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 		// 5. 检查是否需要 Merge
 		const minKeys = 8
 		if leaf.NumKeys() < minKeys && len(path) >= 2 {
-			// ✅ Phase 2.1: 重新启用 Merge，使用原始 path 访问兄弟节点
+			// ✅ 重新启用 Merge，使用原始 path 访问兄弟节点
 			if err := b.mergeLeaf(leafInfo, copiedPath, path); err != nil {
 				return fmt.Errorf("merge leaf: %w", err)
 			}
@@ -368,7 +375,7 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 	return ErrRetry
 }
 
-// GetBatch retrieves multiple values (not implemented until Phase 3).
+// GetBatch retrieves multiple values (not implemented).
 func (b *BTree) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, error) {
 	if b.closed {
 		return nil, ErrClosed
@@ -376,7 +383,7 @@ func (b *BTree) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, error) {
 	return nil, ErrNotImplemented
 }
 
-// SetBatch stores multiple key-value pairs (not implemented until Phase 3).
+// SetBatch stores multiple key-value pairs (not implemented).
 func (b *BTree) SetBatch(ctx context.Context, pairs []service.KVPair) error {
 	if b.closed {
 		return ErrClosed
@@ -384,7 +391,7 @@ func (b *BTree) SetBatch(ctx context.Context, pairs []service.KVPair) error {
 	return ErrNotImplemented
 }
 
-// DeleteBatch removes multiple keys (not implemented until Phase 3).
+// DeleteBatch removes multiple keys (not implemented).
 func (b *BTree) DeleteBatch(ctx context.Context, keys [][]byte) error {
 	if b.closed {
 		return ErrClosed
@@ -392,7 +399,7 @@ func (b *BTree) DeleteBatch(ctx context.Context, keys [][]byte) error {
 	return ErrNotImplemented
 }
 
-// RangeScan returns an iterator for a key range (not implemented until Phase 3).
+// RangeScan returns an iterator for a key range (not implemented).
 func (b *BTree) RangeScan(ctx context.Context, start, end []byte) (service.Iterator, error) {
 	if b.closed {
 		return nil, ErrClosed
@@ -400,31 +407,31 @@ func (b *BTree) RangeScan(ctx context.Context, start, end []byte) (service.Itera
 	return nil, ErrNotImplemented
 }
 
-// BeginTx starts a transaction (not implemented until Phase 4).
+// BeginTx starts a transaction (not implemented).
 func (b *BTree) BeginTx(ctx context.Context, opts ...service.TxOption) (service.Transaction, error) {
 	if b.closed {
 		return nil, ErrClosed
 	}
-	return nil, errors.New("BeginTx: not implemented until Phase 4")
+	return nil, errors.New("BeginTx: not implemented")
 }
 
-// CreateSnapshot creates a snapshot (not implemented until Phase 2).
+// CreateSnapshot creates a snapshot (not implemented).
 func (b *BTree) CreateSnapshot(ctx context.Context) (service.SnapshotID, error) {
 	if b.closed {
 		return 0, ErrClosed
 	}
-	return 0, errors.New("CreateSnapshot: not implemented until Phase 2")
+	return 0, errors.New("CreateSnapshot: not implemented")
 }
 
-// ReleaseSnapshot releases a snapshot (not implemented until Phase 2).
+// ReleaseSnapshot releases a snapshot (not implemented).
 func (b *BTree) ReleaseSnapshot(ctx context.Context, id service.SnapshotID) error {
 	if b.closed {
 		return ErrClosed
 	}
-	return errors.New("ReleaseSnapshot: not implemented until Phase 2")
+	return errors.New("ReleaseSnapshot: not implemented")
 }
 
-// Stats returns storage statistics (not implemented until Phase 3).
+// Stats returns storage statistics (not implemented).
 func (b *BTree) Stats(ctx context.Context) (*service.StoreStats, error) {
 	if b.closed {
 		return nil, ErrClosed
@@ -484,7 +491,7 @@ func (b *BTree) insertFromWAL(key, value []byte) error {
 
 // allocatePageID allocates a new unique page ID.
 // This ensures that each newly created page has a unique identifier.
-// ✅ Phase 2B: Lock-free implementation using atomic.Uint64
+// ✅ 无锁实现：使用 atomic.Uint64
 func (b *BTree) allocatePageID() model.PageID {
 	// ✅ 使用 atomic.Add(1) 原子操作：读取旧值、加1、返回新值
 	// 完全无锁，多个 goroutine 可以并发调用
@@ -593,7 +600,7 @@ func (b *BTree) getPageOrLoad(info *PageInfo) (any, error) {
 
 // ===== BTree Interface Implementation (Placeholder) =====
 
-// GetHeight returns the tree height (not implemented until Phase 3).
+// GetHeight returns the tree height (not implemented).
 func (b *BTree) GetHeight(ctx context.Context) (int, error) {
 	if b.closed {
 		return 0, ErrClosed
@@ -603,7 +610,7 @@ func (b *BTree) GetHeight(ctx context.Context) (int, error) {
 	return b.GetDepth(), nil
 }
 
-// GetPageCount returns the total page count (not implemented until Phase 3).
+// GetPageCount returns the total page count (not implemented).
 func (b *BTree) GetPageCount(ctx context.Context) (int, error) {
 	if b.closed {
 		return 0, ErrClosed
@@ -611,7 +618,7 @@ func (b *BTree) GetPageCount(ctx context.Context) (int, error) {
 	return 0, ErrNotImplemented
 }
 
-// DumpTree returns a string representation of the tree (not implemented until Phase 3).
+// DumpTree returns a string representation of the tree (not implemented).
 func (b *BTree) DumpTree(ctx context.Context) (string, error) {
 	if b.closed {
 		return "", ErrClosed
@@ -619,7 +626,7 @@ func (b *BTree) DumpTree(ctx context.Context) (string, error) {
 	return "", ErrNotImplemented
 }
 
-// Validate validates the tree structure (not implemented until Phase 3).
+// Validate validates the tree structure (not implemented).
 func (b *BTree) Validate(ctx context.Context) error {
 	if b.closed {
 		return ErrClosed
@@ -652,7 +659,7 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 		return fmt.Errorf("empty path")
 	}
 
-	// Step 2: ✅ Phase 2A: 使用浅拷贝创建路径副本（延迟深拷贝优化）
+	// Step 2: ✅ 使用浅拷贝创建路径副本（延迟深拷贝优化）
 	copiedPath, err := b.copyPathShallow(path)
 	if err != nil {
 		return fmt.Errorf("copy path shallow: %w", err)
@@ -661,7 +668,7 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 	// Step 3: Insert/Update the key-value pair in the leaf copy
 	leafInfo := copiedPath[len(copiedPath)-1]
 
-	// ✅ Phase 2A: 如果是浅拷贝状态，需要先深拷贝 Page
+	// ✅ 如果是浅拷贝状态，需要先深拷贝 Page
 	if leafInfo.IsShallowClone() {
 		// ✅ 修复：保存旧的 leafInfo，用于后续比较
 		oldLeafInfo := leafInfo
@@ -674,14 +681,7 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 		if len(copiedPath) >= 2 {
 			parentInfo := copiedPath[len(copiedPath)-2]
 			if parentPage, ok := parentInfo.GetPage().(*InternalPage); ok && parentPage != nil {
-				// ✅ 调试：检查父节点状态
-				if len(parentPage.children) != len(parentPage.keys)+1 {
-					fmt.Printf("[DEBUG] setWithCAS deep clone: parent invariant violated BEFORE update: pageID=%d, len(keys)=%d, len(children)=%d\n",
-						parentPage.pageID, len(parentPage.keys), len(parentPage.children))
-				}
-
 				// 找到指向旧的 leafInfo 的子节点引用，更新为新的 leafInfo
-				found := false
 				for j := 0; j < len(parentPage.children); j++ {
 					childRef := parentPage.children[j]
 					if childRef != nil && childRef.GetPageInfo() == oldLeafInfo {
@@ -692,20 +692,8 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 							newChildRef.SetParentRef(parentRef.(*PageRef))
 						}
 						parentPage.children[j] = newChildRef
-						found = true
 						break
 					}
-				}
-
-				// ✅ 调试：检查是否找到了旧的 leafInfo
-				if !found {
-					fmt.Printf("[DEBUG] setWithCAS deep clone: oldLeafInfo not found in parent.children, pageID=%d\n", parentPage.pageID)
-				}
-
-				// ✅ 调试：检查父节点状态
-				if len(parentPage.children) != len(parentPage.keys)+1 {
-					fmt.Printf("[DEBUG] setWithCAS deep clone: parent invariant violated AFTER update: pageID=%d, len(keys)=%d, len(children)=%d\n",
-						parentPage.pageID, len(parentPage.keys), len(parentPage.children))
 				}
 			}
 		}
@@ -775,7 +763,7 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 				return ErrRetry
 			}
 
-			// ✅ Phase 2A: CAS 成功后，执行深拷贝
+			// ✅ CAS 成功后，执行深拷贝
 			if err := b.finalizeDeepClone(copiedPath); err != nil {
 				return fmt.Errorf("finalize deep clone after split: %w", err)
 			}
@@ -803,7 +791,7 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 	b.writeMu.Lock()
 	defer b.writeMu.Unlock()
 
-	// ✅ Phase 2A: CAS 成功后，执行深拷贝（延迟深拷贝优化）
+	// ✅ CAS 成功后，执行深拷贝（延迟深拷贝优化）
 	// 将浅拷贝路径转换为深拷贝，确保后续修改有独立的 Page 副本
 	if err := b.finalizeDeepClone(copiedPath); err != nil {
 		return fmt.Errorf("finalize deep clone: %w", err)
@@ -853,7 +841,7 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 		pageInfoMap[pageID] = info // 暂时存储原始 PageInfo，稍后更新
 	}
 
-	// Phase 1: Clone all PageInfos in the path
+	// Clone all PageInfos in the path
 	for i, info := range path {
 		newInfo := info.Clone()
 		copiedPath[i] = newInfo
@@ -871,7 +859,7 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 		pageInfoMap[pageID] = newInfo
 	}
 
-	// Phase 2: Rebuild child references for InternalPages
+	// Rebuild child references for InternalPages
 	for _, info := range copiedPath {
 		// ✅ 关键修复：如果是 InternalPage，需要重建子节点引用
 		// 因为 InternalPage.Clone() 只是浅拷贝了 children[]
@@ -931,7 +919,7 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 	return copiedPath, nil
 }
 
-// copyPathShallow 浅拷贝路径（Phase 2A 延迟深拷贝优化）
+// copyPathShallow 浅拷贝路径（延迟深拷贝优化）
 //
 // 与 copyPath 的区别：
 // - copyPath: 深拷贝所有 Page（PageInfo + Page）
@@ -974,7 +962,7 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 		pageInfoMap[pageID] = info
 	}
 
-	// Phase 1: Clone all PageInfos in the path (使用 CloneShallow)
+	// Clone all PageInfos in the path (使用 CloneShallow)
 	// ✅ 修复：LeafPage 立即深拷贝，避免并发修改导致 keys/values 不一致
 	for i, info := range path {
 		// 检查是否为 LeafPage，如果是则立即深拷贝
@@ -995,14 +983,6 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 		}
 		copiedPath[i] = newInfo
 
-		// ✅ 调试：检查 InternalPage 的不变式
-		if internalPage, ok := newInfo.GetPage().(*InternalPage); ok && internalPage != nil {
-			if len(internalPage.children) != len(internalPage.keys)+1 {
-				fmt.Printf("[DEBUG] copyPathShallow: invariant violated after CloneShallow: pageID=%d, len(keys)=%d, len(children)=%d\n",
-					internalPage.pageID, len(internalPage.keys), len(internalPage.children))
-			}
-		}
-
 		// 更新映射表
 		var pageID model.PageID
 		switch p := newInfo.GetPage().(type) {
@@ -1016,33 +996,9 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 		pageInfoMap[pageID] = newInfo
 	}
 
-	// Phase 2: Rebuild child references for InternalPages
+	// Rebuild child references for InternalPages
 	for _, info := range copiedPath {
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
-			// ✅ 调试：检查重建前的 children 长度
-			expectedChildrenLen := len(internalPage.keys) + 1
-			if len(internalPage.children) != expectedChildrenLen {
-				fmt.Printf("[DEBUG] copyPathShallow Phase 2: BEFORE rebuild, pageID=%d, len(keys)=%d, len(children)=%d, expected=%d\n",
-					internalPage.pageID, len(internalPage.keys), len(internalPage.children), expectedChildrenLen)
-				// 打印所有子节点的 pageID
-				fmt.Printf("[DEBUG] copyPathShallow Phase 2: children pageIDs: ")
-				for j := 0; j < len(internalPage.children); j++ {
-					if internalPage.children[j] != nil && internalPage.children[j].GetPageInfo() != nil {
-						if childPage := internalPage.children[j].GetPageInfo().GetPage(); childPage != nil {
-							switch p := childPage.(type) {
-							case *LeafPage:
-								fmt.Printf("L%d ", p.pageID)
-							case *InternalPage:
-								fmt.Printf("I%d ", p.pageID)
-							}
-						}
-					} else {
-						fmt.Printf("nil ")
-					}
-				}
-				fmt.Println()
-			}
-
 			// 遍历所有子节点引用
 			for j := 0; j < len(internalPage.children); j++ {
 				childRef := internalPage.children[j]
@@ -1077,23 +1033,17 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 				if childReplacement != nil {
 					// 子节点在路径中，使用浅拷贝的 PageInfo
 					newChildRef := NewPageRefWithInfo(childReplacement)
-					// ✅ 阶段1优化: 使用 SetParentRef（atomic.Value）
+					// ✅ 优化：使用 SetParentRef（atomic.Value）
 					newChildRef.SetParentRef(b.rootRef.PageRef)
 					internalPage.children[j] = newChildRef
 				} else {
 					// 子节点不在路径中，创建浅拷贝
 					shallowChildInfo := childInfo.CloneShallow()
 					newChildRef := NewPageRefWithInfo(shallowChildInfo)
-					// ✅ 阶段1优化: 使用 SetParentRef（atomic.Value）
+					// ✅ 优化：使用 SetParentRef（atomic.Value）
 					newChildRef.SetParentRef(b.rootRef.PageRef)
 					internalPage.children[j] = newChildRef
 				}
-			}
-
-			// ✅ 调试：检查重建后的 children 长度
-			if len(internalPage.children) != expectedChildrenLen {
-				fmt.Printf("[DEBUG] copyPathShallow Phase 2: AFTER rebuild, pageID=%d, len(keys)=%d, len(children)=%d, expected=%d\n",
-					internalPage.pageID, len(internalPage.keys), len(internalPage.children), expectedChildrenLen)
 			}
 		}
 	}
@@ -1101,7 +1051,7 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 	return copiedPath, nil
 }
 
-// finalizeDeepClone 将浅拷贝路径转换为深拷贝（Phase 2A 延迟深拷贝优化）
+// finalizeDeepClone 将浅拷贝路径转换为深拷贝（延迟深拷贝优化）
 //
 // 使用场景：
 // - CAS 成功后，将浅拷贝路径转为深拷贝
@@ -1189,7 +1139,7 @@ func (b *BTree) finalizeDeepClone(copiedPath []*PageInfo) error {
 				if deepClonedChild != nil {
 					// 使用深拷贝的 PageInfo
 					newChildRef := NewPageRefWithInfo(deepClonedChild)
-					// ✅ 阶段1优化: 使用 SetParentRef（atomic.Value）
+					// ✅ 优化：使用 SetParentRef（atomic.Value）
 					newChildRef.SetParentRef(b.rootRef.PageRef)
 					internalPage.children[j] = newChildRef
 				}
@@ -1273,13 +1223,6 @@ func (b *BTree) splitLeaf(leafInfo *PageInfo, key []byte, copiedPath []*PageInfo
 	// 7. 将分裂键插入父节点
 	// 注意：我们需要创建临时 PageRef 来包装 newPageInfo
 	newPageRef := NewPageRefWithInfo(newPageInfo)
-
-	// ✅ 调试：检查父节点状态
-	if len(parentPage.children) != len(parentPage.keys)+1 {
-		fmt.Printf("[DEBUG] splitLeaf: parent invariant violated BEFORE InsertKeyChild: len(children)=%d, len(keys)=%d, pageID=%d\n",
-			len(parentPage.children), len(parentPage.keys), parentPage.pageID)
-		fmt.Printf("[DEBUG] splitLeaf: parentPage.keys=%d, parentPage.children=%d\n", len(parentPage.keys), len(parentPage.children))
-	}
 
 	if err := parentPage.InsertKeyChild(splitKey, newPageRef); err != nil {
 		return fmt.Errorf("insert split key to parent failed: %w", err)
@@ -1936,7 +1879,7 @@ func (b *BTree) mergeLeafWithSibling(
 		return nil
 	}
 
-	// 5. ✅ Phase 2.3: 检查父节点是否需要 Merge（递归向上合并）
+	// 5. ✅ 检查父节点是否需要 Merge（递归向上合并）
 	const minInternal = 7
 	if parent.NumKeys() < minInternal && len(path) >= 2 {
 		// 递归向上合并父节点
@@ -2018,7 +1961,7 @@ func (b *BTree) mergeInternalWithSibling(
 		return nil
 	}
 
-	// 5. ✅ Phase 2.3: 检查父节点是否需要 Merge（递归向上合并）
+	// 5. ✅ 检查父节点是否需要 Merge（递归向上合并）
 	const minInternal = 7
 	if parent.NumKeys() < minInternal && len(path) >= 2 {
 		// 递归向上合并父节点

@@ -302,7 +302,7 @@ func (p *InternalPage) Split() (*InternalPage, []byte, error) {
 	// ✅ Day 7: parentRef 更新将在 splitInternal() 中处理
 
 	// 当前页面保留中间键之前的键和子节点（不包含分裂键）
-	p.keys = p.keys[:mid]     // 不包含分裂键
+	p.keys = p.keys[:mid]           // 不包含分裂键
 	p.children = p.children[:mid+1] // 保留前 mid+1 个子节点（0 到 mid，包含分裂键的左子节点）
 	p.version++
 

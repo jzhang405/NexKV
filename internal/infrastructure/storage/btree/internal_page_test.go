@@ -188,8 +188,8 @@ func TestInternalPage_Split(t *testing.T) {
 
 	// ✅ 修复：B+Tree 标准分裂逻辑 - 分裂键提升到父节点，不在左右页面中
 	// 验证新页面包含后半部分（不包含分裂键）
-	assert.Equal(t, 2, newPage.NumKeys())      // 不包含分裂键 c
-	assert.Equal(t, 3, newPage.NumChildren())  // Split 实现: p.children[mid+1:] = children[3:]
+	assert.Equal(t, 2, newPage.NumKeys())         // 不包含分裂键 c
+	assert.Equal(t, 3, newPage.NumChildren())     // Split 实现: p.children[mid+1:] = children[3:]
 	assert.Equal(t, []byte("d"), newPage.keys[0]) // 第一个键是 d（keys[3]）
 	assert.Equal(t, []byte("e"), newPage.keys[1])
 }

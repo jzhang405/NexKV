@@ -157,9 +157,9 @@ func insertSlice[T any](slice []T, idx int, value T) []T {
 	}
 
 	// 在中间插入
-	slice = append(slice, value)          // 扩展切片
-	copy(slice[idx+1:], slice[idx:])     // 移动元素
-	slice[idx] = value                   // 设置新值
+	slice = append(slice, value)     // 扩展切片
+	copy(slice[idx+1:], slice[idx:]) // 移动元素
+	slice[idx] = value               // 设置新值
 	return slice
 }
 

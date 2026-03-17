@@ -71,6 +71,12 @@ type BTreeConfig struct {
 
 	// Compression is the compression type.
 	Compression CompressionType
+
+	// GCPercent is the GC trigger threshold (GOGC).
+	// 值为 100 表示默认行为（堆增长 100% 时触发 GC）
+	// 值为 off 表示禁用 GC（仅用于特殊场景）
+	// 优化：设置为 400 可以减少 GC 触发频率，提升性能
+	GCPercent int
 }
 
 const (
@@ -100,6 +106,7 @@ func NewDefaultBTreeConfig() *BTreeConfig {
 		MaxVersions: DefaultMaxVersions,
 		EnablePool:  true, // Phase 0.5 validation: Node using pool has 14.9x improvement
 		Compression: CompressionNone,
+		GCPercent:   100, // 默认 GC 行为（生产环境）
 	}
 }
 

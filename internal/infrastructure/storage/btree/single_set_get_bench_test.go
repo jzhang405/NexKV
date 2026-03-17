@@ -14,8 +14,11 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
+// init 设置 GC 配置为性能优化模式
+// 注意：这会影响整个进程的 GC 行为
 func init() {
 	// 设置 GOGC=400 优化 GC 触发频率，提升性能
+	// 在生产环境中应通过 BTreeConfig.GCPercent 配置
 	debug.SetGCPercent(400)
 }
 
@@ -28,8 +31,8 @@ func init() {
 var (
 	preallocatedKeys   [][]byte
 	preallocatedValues [][]byte
-	preallocMu        sync.Mutex
-	preallocInitCount int // 当前已初始化的数量
+	preallocMu         sync.Mutex
+	preallocInitCount  int // 当前已初始化的数量
 )
 
 // initPreallocated 初始化预分配的 key/value 池（支持动态扩展）

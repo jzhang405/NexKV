@@ -147,8 +147,8 @@ func TestRootPageRef_UpdateChildrenParentRef(t *testing.T) {
 		Type: model.InternalPage,
 	}
 
-	// Phase 1: 此方法为预留接口，不会 panic
-	// 实际实现在后续 Phase
+	// 此方法为预留接口，不会 panic
+	// 实际实现在后续版本
 	ref.UpdateChildrenParentRef(page)
 
 	// 验证不会发生 panic

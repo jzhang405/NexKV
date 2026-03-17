@@ -8,7 +8,7 @@ import (
 
 const cacheLineSize = 64
 
-// 克隆状态常量（Phase 2A 延迟深拷贝优化）
+// 克隆状态常量（延迟深拷贝优化）
 const (
 	CloneStatusShared  = 0 // 共享原始 Page（未克隆）
 	CloneStatusShallow = 1 // 浅克隆（PageInfo 独立，Page 共享）
@@ -40,14 +40,14 @@ type PageInfo struct {
 
 	// Cache Line 2 (64 bytes) - ✅ 优化：移除 buff 字段，使用 ChunkManager.pagePool 管理
 	// 原 buff []byte 字段已移除，减少1个指针（25%↓），序列化时使用 ChunkManager.AcquirePageBuffer()
-	_    [0]byte // 占位，保持对齐
+	_ [0]byte // 占位，保持对齐
 
 	// Cache Line 3 (64 bytes) - 冷数据（元数据，低频写入）
-	parentRef atomic.Value  // 8 bytes - ✅ 阶段1优化: 使用 atomic.Value 存储 *PageRef，移除 defer 开销
+	parentRef   atomic.Value  // 8 bytes - ✅ 优化：使用 atomic.Value 存储 *PageRef，移除 defer 开销
 	flags       atomic.Uint32 // 4 bytes  - ✅ 并发安全标志位: bit0=isDirty, bit1=isSplitted
 	metaVersion int32         // 4 bytes  - 元数据版本
 	pageSize    int32         // 4 bytes  - 页面实际大小（固定 4KB）
-	// ✅ Phase 2A: 克隆状态标记（放在最后，避免对齐问题）
+	// ✅ 克隆状态标记（放在最后，避免对齐问题）
 	// 0=共享原始 Page, 1=浅克隆（PageInfo 独立，Page 共享）, 2=深克隆（PageInfo 和 Page 都独立）
 	cloneStatus atomic.Uint32 // 4 bytes
 	_           [56]byte      // padding to 64 bytes
@@ -56,8 +56,8 @@ type PageInfo struct {
 // NewPageInfo 创建新的 PageInfo
 func NewPageInfo() *PageInfo {
 	info := &PageInfo{
-		page:        nil,
-		pageLock:    NewPageLock(),
+		page:     nil,
+		pageLock: NewPageLock(),
 		// parentRef 使用 atomic.Value，不需要显式初始化为 nil
 		metaVersion: 0,
 		pageSize:    PageSize,
@@ -65,7 +65,7 @@ func NewPageInfo() *PageInfo {
 	info.SetPos(0) // ✅ 使用 SetPos() 方法避免 noCopy 违规
 	info.lastTime.Store(time.Now().UnixNano())
 	info.hits.Store(0)
-	info.flags.Store(0) // 初始化所有标志位为 0
+	info.flags.Store(0)                   // 初始化所有标志位为 0
 	info.parentRef.Store((*PageRef)(nil)) // ✅ 显式初始化为 nil
 	return info
 }
@@ -162,11 +162,11 @@ func (info *PageInfo) GetLastTime() int64 {
 func (info *PageInfo) Clone() *PageInfo {
 	// 创建新的 PageInfo，复制所有字段
 	newInfo := &PageInfo{
-		pageLock:    NewPageLock(),       // 创建新锁
+		pageLock:    NewPageLock(), // 创建新锁
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}
-	// ✅ 阶段1优化: 使用 atomic.Value 复制 parentRef（无锁）
+	// ✅ 优化：使用 atomic.Value 复制 parentRef（无锁）
 	newInfo.parentRef.Store(info.parentRef.Load())
 
 	// ✅ 修复：使用 SetPos() 方法设置 atomic.Int64，避免直接复制
@@ -195,7 +195,7 @@ func (info *PageInfo) Clone() *PageInfo {
 	return newInfo
 }
 
-// CloneShallow 浅拷贝（Phase 2A 延迟深拷贝优化）
+// CloneShallow 浅拷贝（延迟深拷贝优化）
 // 只拷贝 PageInfo 元数据，不拷贝 Page 对象（共享引用）
 //
 // 使用场景：
@@ -211,7 +211,7 @@ func (info *PageInfo) CloneShallow() *PageInfo {
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}
-	// ✅ 阶段1优化: 使用 atomic.Value 复制 parentRef（无锁）
+	// ✅ 优化：使用 atomic.Value 复制 parentRef（无锁）
 	newInfo.parentRef.Store(info.parentRef.Load())
 
 	newInfo.SetPos(info.GetPos())
@@ -228,7 +228,7 @@ func (info *PageInfo) CloneShallow() *PageInfo {
 	return newInfo
 }
 
-// CloneDeep 深拷贝（Phase 2A 延迟深拷贝优化）
+// CloneDeep 深拷贝（延迟深拷贝优化）
 // 拷贝 PageInfo 元数据和 Page 对象，完全独立
 //
 // 使用场景：
@@ -251,7 +251,7 @@ func (info *PageInfo) CloneDeep() *PageInfo {
 	if info.IsPageLoaded() && info.page != nil {
 		switch p := info.page.(type) {
 		case *LeafPage:
-			// Phase 1 策略：使用 Clone 进行深拷贝
+			// 策略：使用 Clone 进行深拷贝
 			newInfo.page = p.Clone()
 		case *InternalPage:
 			newInfo.page = p.Clone() // 深拷贝 InternalPage
@@ -266,18 +266,18 @@ func (info *PageInfo) CloneDeep() *PageInfo {
 	return newInfo
 }
 
-// GetCloneStatus 获取克隆状态（Phase 2A 延迟深拷贝优化）
+// GetCloneStatus 获取克隆状态（延迟深拷贝优化）
 // 返回值：0=共享, 1=浅克隆, 2=深克隆
 func (info *PageInfo) GetCloneStatus() uint32 {
 	return info.cloneStatus.Load()
 }
 
-// IsShallowClone 判断是否为浅克隆状态（Phase 2A 延迟深拷贝优化）
+// IsShallowClone 判断是否为浅克隆状态（延迟深拷贝优化）
 func (info *PageInfo) IsShallowClone() bool {
 	return info.cloneStatus.Load() == CloneStatusShallow
 }
 
-// IsDeepClone 判断是否为深克隆状态（Phase 2A 延迟深拷贝优化）
+// IsDeepClone 判断是否为深克隆状态（延迟深拷贝优化）
 func (info *PageInfo) IsDeepClone() bool {
 	return info.cloneStatus.Load() == CloneStatusDeep
 }
@@ -300,13 +300,13 @@ func (info *PageInfo) GetPageSize() int32 {
 }
 
 // GetParentRef 获取父节点引用（无锁，atomic.Value）
-// ✅ 阶段1优化: 移除 defer，减少 tryDeferToSpanScan 开销
+// ✅ 优化：移除 defer，减少 tryDeferToSpanScan 开销
 func (info *PageInfo) GetParentRef() *PageRef {
 	return info.parentRef.Load().(*PageRef)
 }
 
 // SetParentRef 设置父节点引用（无锁，atomic.Value）
-// ✅ 阶段1优化: 移除 defer，减少 tryDeferToSpanScan 开销
+// ✅ 优化：移除 defer，减少 tryDeferToSpanScan 开销
 func (info *PageInfo) SetParentRef(ref *PageRef) {
 	info.parentRef.Store(ref)
 }

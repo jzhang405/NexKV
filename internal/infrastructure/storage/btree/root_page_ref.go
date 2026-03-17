@@ -58,7 +58,7 @@ func (r *RootPageRef) ReplacePage(oldInfo, newInfo *PageInfo) bool {
 	// 步骤2：CAS 成功后，更新所有子节点的 parentRef
 	// 注意：在当前架构下，Page.Data 是原始字节数组
 	// 我们需要等到 LeafPage/InternalPage 新架构实现后再完善此功能
-	// Phase 1: 预留接口，暂不实现
+	// 预留接口，暂不实现
 	_ = r.updateChildrenParentRef
 
 	// 步骤3：延迟释放旧页面（如果存在）
@@ -96,13 +96,13 @@ func (r *RootPageRef) updateChildrenParentRef(page *Page, newParent *PageRef) {
 // scheduleDelayedRelease 延迟释放旧页面
 // 等待活跃读操作完成后释放，避免 use-after-free
 //
-// 在 Phase 1 中，我们简化实现：
+// 简化实现：
 // - 使用固定延迟（100ms）等待活跃读操作完成
 // - 后续版本可以优化为基于引用计数的精确释放
 func (r *RootPageRef) scheduleDelayedRelease(info *PageInfo) {
 	// 在后台 goroutine 中延迟释放
 	go func() {
-		// 等待活跃读操作完成（Phase 1 使用固定延迟）
+		// 等待活跃读操作完成（使用固定延迟）
 		// 后续版本可以使用引用计数或读写锁检测
 		time.Sleep(100 * time.Millisecond)
 
@@ -110,7 +110,7 @@ func (r *RootPageRef) scheduleDelayedRelease(info *PageInfo) {
 		// 注意：不清理 PageInfo 本身，因为它可能还在使用中
 		_ = info
 
-		// Phase 1: 简化实现，仅延迟，不主动释放
+		// 简化实现，仅延迟，不主动释放
 		// Go 的 GC 会自动回收不再使用的对象
 	}()
 }
@@ -144,7 +144,7 @@ func (r *RootPageRef) ReplacePageWithContext(
 // UpdateChildrenParentRef 公开方法：手动触发子节点父引用更新
 // 用于特殊场景（如页面分裂后需要手动更新引用链）
 //
-// 注意：Phase 1 中此方法为预留接口
+// 注意：此方法为预留接口
 func (r *RootPageRef) UpdateChildrenParentRef(page *Page) {
 	r.updateChildrenParentRef(page, r.PageRef)
 }

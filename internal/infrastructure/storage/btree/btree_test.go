@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBTree_NotImplementedMethods tests methods that are not implemented until Phase 3.
+// TestBTree_NotImplementedMethods tests methods that are not implemented.
 func TestBTree_NotImplementedMethods(t *testing.T) {
 	btree, err := OpenBTree("", nil)
 	require.NoError(t, err)
@@ -17,13 +17,13 @@ func TestBTree_NotImplementedMethods(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Note: Get and Set are partially implemented in Week 13 Day 5
+	// Note: Get and Set are partially implemented
 	// They return runtime errors instead of "not implemented" because:
 	// 1. ChunkManager is not integrated yet
 	// 2. Root node is not properly initialized
-	// TODO: Week 13-14 - Update these tests after ChunkManager integration
+	// TODO: Update these tests after ChunkManager integration
 
-	// Test Delete (已实现在 Day 10-11，但需要先插入数据才能删除)
+	// Test Delete (已实现，但需要先插入数据才能删除)
 	// 删除不存在的键会返回 "key not found"
 	err = btree.Delete(ctx, []byte("key"))
 	assert.Error(t, err)
@@ -80,7 +80,7 @@ func TestBTree_NotImplementedMethods_Closed(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Note: Set is implemented in Week 13 Day 5, so it should return ErrClosed
+	// Note: Set is implemented, so it should return ErrClosed
 	err = btree.Set(ctx, []byte("key"), []byte("value"))
 	assert.ErrorIs(t, err, ErrClosed)
 
@@ -119,7 +119,7 @@ func TestBTree_HeightAndPageCount(t *testing.T) {
 	assert.GreaterOrEqual(t, height, 0) // 空树高度为 0
 	t.Logf("Tree height: %d", height)
 
-	// Test GetPageCount - not implemented until Phase 3
+	// Test GetPageCount - not implemented
 	pageCount, err := btree.GetPageCount(ctx)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not implemented")
@@ -134,7 +134,7 @@ func TestBTree_DumpTree(t *testing.T) {
 
 	ctx := context.Background()
 
-	// DumpTree is not implemented until Phase 3
+	// DumpTree is not implemented
 	treeDump, err := btree.DumpTree(ctx)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not implemented")
@@ -149,7 +149,7 @@ func TestBTree_Validate(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Validate is not implemented until Phase 3
+	// Validate is not implemented
 	err = btree.Validate(ctx)
 	// Should return "not implemented" error
 	assert.Error(t, err)

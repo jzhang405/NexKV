@@ -232,5 +232,5 @@ func TestLazyLoad_MemoryEfficiency(t *testing.T) {
 	require.NotNil(t, rootInfo.GetPage(), "Root page should be loaded")
 
 	// 这里可以添加更详细的内存使用统计
-	// 但在当前 Phase 1 中，我们只验证基本功能
+	// 当前只验证基本功能
 }

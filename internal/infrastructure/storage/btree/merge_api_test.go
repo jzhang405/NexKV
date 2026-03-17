@@ -35,8 +35,8 @@ func TestMergeAPI_BorrowFromLeft(t *testing.T) {
 	ctx := context.Background()
 
 	// Step 1: 插入足够多的键触发分裂（触发 3 层树）
-	// 需要超过 splitThreshold (128)
-	const numKeys = 150
+	// ✅ 更新：maxKeys 现在是 200，需要超过 201 才能触发分裂
+	const numKeys = 250
 	for i := 0; i < numKeys; i++ {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}

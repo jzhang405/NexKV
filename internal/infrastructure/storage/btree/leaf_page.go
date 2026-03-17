@@ -424,6 +424,43 @@ func (p *LeafPage) Clone() *LeafPage {
 	}
 }
 
+// CloneWithDelta 创建 Delta Chain 模式克隆（零拷贝）
+//
+// 与 Clone() 的区别：
+// - Clone(): 深拷贝，返回完全独立的副本（兼容现有代码）
+// - CloneWithDelta(): 零拷贝，共享 keys/values，使用增量链记录修改
+//
+// 使用场景：
+// - 写路径：使用 CloneWithDelta() 减少拷贝开销
+// - 读路径：使用 Clone() 确保数据独立性
+func (p *LeafPage) CloneWithDelta() *LeafPage {
+	// 如果已有 COW 引用，增加引用计数
+	if p.cowDelta != nil {
+		p.cowDelta.Retain()
+		return &LeafPage{
+			pageID:   p.pageID,
+			version:  p.version + 1,
+			cowDelta: p.cowDelta,
+			keys:     p.cowDelta.GetSharedKeys(),
+			values:   p.cowDelta.GetSharedValues(),
+			pageLock: NewPageLock(),
+		}
+	}
+
+	// 创建新的 COW 引用
+	cowRef := NewCOWDeltaRef(p.keys, p.values)
+	// 注意：NewCOWDeltaRef 已经将 refCount 初始化为 1
+
+	return &LeafPage{
+		pageID:   p.pageID,
+		version:  p.version + 1,
+		cowDelta: cowRef,
+		keys:     cowRef.GetSharedKeys(),
+		values:   cowRef.GetSharedValues(),
+		pageLock: NewPageLock(),
+	}
+}
+
 // Serialize 序列化页面
 // 返回：序列化后的字节数组
 func (p *LeafPage) Serialize() ([]byte, error) {
@@ -560,4 +597,33 @@ func (p *LeafPage) Size() int {
 // IsFull 判断页面是否已满
 func (p *LeafPage) IsFull(maxKeys int) bool {
 	return len(p.keys) >= maxKeys
+}
+
+// IsInDeltaMode 检查是否在 Delta Chain 模式
+func (p *LeafPage) IsInDeltaMode() bool {
+	return p.cowDelta != nil
+}
+
+// GetDeltaCount 获取增量链长度
+func (p *LeafPage) GetDeltaCount() int {
+	if p.cowDelta == nil {
+		return 0
+	}
+	return p.cowDelta.GetDeltaCount()
+}
+
+// IsShared 检查是否共享数据（引用计数 > 1）
+func (p *LeafPage) IsShared() bool {
+	if p.cowDelta == nil {
+		return false
+	}
+	return p.cowDelta.GetRefCount() > 1
+}
+
+// GetRefCount 获取当前引用计数
+func (p *LeafPage) GetRefCount() int32 {
+	if p.cowDelta == nil {
+		return 1 // 未使用 Delta Chain，引用计数为 1（自己）
+	}
+	return p.cowDelta.GetRefCount()
 }

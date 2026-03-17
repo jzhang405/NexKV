@@ -10,11 +10,13 @@ import (
 
 // InternalPage 内部节点
 // 存储键和子节点引用，用于索引
+// 支持 COW+Delta 混合方案优化 Clone 性能
 type InternalPage struct {
-	pageID   model.PageID // 页面 ID
-	version  uint64       // 版本号（用于 CCOW）
-	keys     [][]byte     // 键数组（有序）
-	children []*PageRef   // 子节点引用（使用 PageRef）
+	pageID   model.PageID   // 页面 ID
+	version  uint64         // 版本号（用于 CCOW）
+	keys     [][]byte       // 键数组（有序）
+	children []*PageRef     // 子节点引用（使用 PageRef）
+	cowDelta *COWDeltaRef   // COW+Delta 引用（nil = 已物化/独立数据）
 }
 
 // NewInternalPage 创建新的内部页面
@@ -325,6 +327,40 @@ func (p *InternalPage) Clone() *InternalPage {
 	}
 }
 
+// CloneWithDelta 创建 Delta Chain 模式克隆（半零拷贝）
+//
+// InternalPage 的特殊性：
+// - keys: 使用 Delta Chain 共享（零拷贝）
+// - children: 深拷贝（因为 PageRef 包含原子指针，且需要独立）
+//
+// 使用场景：
+// - 写路径：使用 CloneWithDelta() 减少 keys 的拷贝开销
+// - 读路径：使用 Clone() 确保完全独立
+func (p *InternalPage) CloneWithDelta() *InternalPage {
+	var cowRef *COWDeltaRef
+
+	// 如果已有 COW 引用，增加引用计数
+	if p.cowDelta != nil {
+		p.cowDelta.Retain()
+		cowRef = p.cowDelta
+	} else {
+		// 创建新的 COW 引用（只共享 keys，不包含 children）
+		cowRef = NewCOWDeltaRef(p.keys, nil) // values 为 nil，因为 InternalPage 不需要
+	}
+
+	// children 必须深拷贝（因为包含 PageRef，且有原子操作）
+	newChildren := make([]*PageRef, len(p.children))
+	copy(newChildren, p.children)
+
+	return &InternalPage{
+		pageID:   p.pageID,
+		version:  p.version + 1,
+		cowDelta: cowRef,
+		keys:     cowRef.GetSharedKeys(), // 共享 keys
+		children: newChildren,            // 独立 children
+	}
+}
+
 // Serialize 序列化页面
 func (p *InternalPage) Serialize() ([]byte, error) {
 	const pageSize = 4096 // 固定页面大小
@@ -550,4 +586,33 @@ func (p *InternalPage) GetMaxKey() []byte {
 		return nil
 	}
 	return p.keys[len(p.keys)-1]
+}
+
+// IsInDeltaMode 检查是否在 Delta Chain 模式
+func (p *InternalPage) IsInDeltaMode() bool {
+	return p.cowDelta != nil
+}
+
+// GetDeltaCount 获取增量链长度
+func (p *InternalPage) GetDeltaCount() int {
+	if p.cowDelta == nil {
+		return 0
+	}
+	return p.cowDelta.GetDeltaCount()
+}
+
+// IsShared 检查是否共享数据（引用计数 > 1）
+func (p *InternalPage) IsShared() bool {
+	if p.cowDelta == nil {
+		return false
+	}
+	return p.cowDelta.GetRefCount() > 1
+}
+
+// GetRefCount 获取当前引用计数
+func (p *InternalPage) GetRefCount() int32 {
+	if p.cowDelta == nil {
+		return 1 // 未使用 Delta Chain，引用计数为 1（自己）
+	}
+	return p.cowDelta.GetRefCount()
 }

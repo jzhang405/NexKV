@@ -7,9 +7,12 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"runtime/debug"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,7 +21,32 @@ import (
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree"
 )
 
+var (
+	// 并发度选项，支持逗号分隔的多个值，例如: -threads 1,2,4,8,16,32,64
+	threadList string
+)
+
+func init() {
+	flag.StringVar(&threadList, "threads", "1,2,4,8,16,32,64",
+		"并发度列表（逗号分隔），例如: 1,2,4,8,16,32,64")
+}
+
+// parseThreadList 解析线程列表字符串
+func parseThreadList(s string) []int {
+	parts := strings.Split(s, ",")
+	result := make([]int, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if val, err := strconv.Atoi(part); err == nil && val > 0 {
+			result = append(result, val)
+		}
+	}
+	return result
+}
+
 func main() {
+	flag.Parse()
+
 	// ✅ 优化：设置 GOGC=400 减少 GC 触发频率，提升性能
 	// 测试结果：GOGC=400 时吞吐量提升 49.9%（193K → 290K ops/sec）
 	debug.SetGCPercent(400)
@@ -49,13 +77,20 @@ func main() {
 	}
 	fmt.Printf("Initialized %d keys\n\n", initCount)
 
+	// 解析线程列表
+	goroutineCounts := parseThreadList(threadList)
+	if len(goroutineCounts) == 0 {
+		goroutineCounts = []int{1, 2, 4, 8, 16, 32, 64}
+	}
+
 	// 运行单线程基准测试
 	fmt.Println("=== 单线程基准测试 ===")
 	runSingleThreadTest(ctx, tree, initCount)
 
 	// 运行高并发测试
 	fmt.Println("\n=== 高并发性能测试 ===")
-	runConcurrentTests(ctx, tree, initCount)
+	fmt.Printf("测试并发度: %v\n\n", goroutineCounts)
+	runConcurrentTests(ctx, tree, initCount, goroutineCounts)
 }
 
 // runSingleThreadTest 单线程基准测试
@@ -82,8 +117,7 @@ func runSingleThreadTest(ctx context.Context, tree *btree.BTree, initCount int) 
 }
 
 // runConcurrentTests 高并发测试
-func runConcurrentTests(ctx context.Context, tree *btree.BTree, initCount int) {
-	goroutineCounts := []int{1, 2, 4, 8, 16, 32, 64}
+func runConcurrentTests(ctx context.Context, tree *btree.BTree, initCount int, goroutineCounts []int) {
 	opsPerGoroutine := 10_000
 
 	fmt.Println("并发度 | 总操作数 | 吞吐量 (ops/sec) | 平均延迟 (μs/op)")

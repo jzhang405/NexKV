@@ -44,13 +44,16 @@ type COWDeltaRef struct {
 
 // NewCOWDeltaRef 创建新的 COW+Delta 引用
 func NewCOWDeltaRef(keys, values [][]byte) *COWDeltaRef {
-	return &COWDeltaRef{
+	ref := &COWDeltaRef{
 		sharedKeys:   keys,
 		sharedValues: values,
 		deltas:       make([]Delta, 0, 8), // 预分配容量
 		maxDeltas:    10,                   // 默认阈值
 		version:      atomic.Uint64{},
 	}
+	// 初始引用计数 = 1（创建者持有）
+	ref.refCount.Store(1)
+	return ref
 }
 
 // Retain 增加引用计数

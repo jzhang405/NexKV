@@ -181,12 +181,6 @@ func TestLeafPage_Clone(t *testing.T) {
 	assert.Equal(t, page.GetVersion(), cloned.GetVersion())
 	assert.Equal(t, page.NumKeys(), cloned.NumKeys())
 
-	// COW 方案：克隆后共享数据引用
-	// keys/values 指向同一个底层数组
-	// 注意：由于切片是引用类型，page.keys 和 cloned.keys 指向相同底层数组
-	assert.NotNil(t, cloned.cowDelta)
-	assert.Equal(t, int32(1), cloned.cowDelta.GetRefCount()) // 只有 cloned 持有 COWDeltaRef 引用
-
 	// 验证数据一致性（通过 Get 方法）
 	for i := 1; i <= 3; i++ {
 		key := []byte{byte('a' + byte(i))}

@@ -250,7 +250,8 @@ func (info *PageInfo) CloneDeep() *PageInfo {
 	if info.IsPageLoaded() && info.page != nil {
 		switch p := info.page.(type) {
 		case *LeafPage:
-			newInfo.page = p.Clone() // 深拷贝 LeafPage
+			// 使用 forceCloneDeep 确保完全独立（不使用 COW 共享）
+			newInfo.page = p.forceCloneDeep()
 		case *InternalPage:
 			newInfo.page = p.Clone() // 深拷贝 InternalPage
 		default:

@@ -181,16 +181,34 @@ func TestLeafPage_Clone(t *testing.T) {
 	assert.Equal(t, page.GetVersion(), cloned.GetVersion())
 	assert.Equal(t, page.NumKeys(), cloned.NumKeys())
 
-	// 验证数据一致性
-	for i := 0; i < page.NumKeys(); i++ {
-		assert.Equal(t, page.keys[i], cloned.keys[i])
-		assert.Equal(t, page.values[i], cloned.values[i])
+	// COW 方案：克隆后共享数据引用
+	// keys/values 指向同一个底层数组
+	// 注意：由于切片是引用类型，page.keys 和 cloned.keys 指向相同底层数组
+	assert.NotNil(t, cloned.cowDelta)
+	assert.Equal(t, int32(1), cloned.cowDelta.GetRefCount()) // 只有 cloned 持有 COWDeltaRef 引用
+
+	// 验证数据一致性（通过 Get 方法）
+	for i := 1; i <= 3; i++ {
+		key := []byte{byte('a' + byte(i))}
+		expectedValue := []byte{byte('0' + byte(i))}
+		val, found := cloned.Get(key)
+		assert.True(t, found)
+		assert.Equal(t, expectedValue, val)
 	}
 
-	// 验证独立性
-	newValue := []byte("new")
-	cloned.values[0] = newValue
-	assert.NotEqual(t, page.values[0], newValue)
+	// 验证独立性：通过 Insert 修改 clone
+	newKey := []byte("new")
+	newValue := []byte("new_val")
+	cloned.Insert(newKey, newValue)
+
+	// original 的 Get 应该找不到 newKey
+	_, found := page.Get(newKey)
+	assert.False(t, found)
+
+	// cloned 的 Get 应该能找到 newKey
+	val, found := cloned.Get(newKey)
+	assert.True(t, found)
+	assert.Equal(t, newValue, val)
 }
 
 func TestLeafPage_Range(t *testing.T) {

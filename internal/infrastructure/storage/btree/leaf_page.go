@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"sync"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
@@ -11,19 +12,22 @@ import (
 // LeafPage 叶子节点
 // 存储键值对，是 BTree 的最底层节点
 type LeafPage struct {
-	pageID  model.PageID // 页面 ID
-	version uint64       // 版本号（用于 CCOW）
-	keys    [][]byte     // 键数组（有序）
-	values  [][]byte     // 值数组（与 keys 一一对应）
+	pageID   model.PageID  // 页面 ID
+	version  uint64        // 版本号（用于 CCOW）
+	keys     [][]byte      // 键数组（有序）
+	values   [][]byte      // 值数组（与 keys 一一对应）
+	cowDelta *COWDeltaRef  // COW + Delta 引用，nil = 已物化/独立数据
+	mu       sync.RWMutex  // 保护 cowDelta 的并发访问（仅用于 materialize）
 }
 
 // NewLeafPage 创建新的叶子页面
 func NewLeafPage(pageID model.PageID) *LeafPage {
 	return &LeafPage{
-		pageID:  pageID,
-		version: 0,
-		keys:    make([][]byte, 0, InitialLeafCapacity), // 预分配容量
-		values:  make([][]byte, 0, InitialLeafCapacity),
+		pageID:   pageID,
+		version:  0,
+		keys:     make([][]byte, 0, InitialLeafCapacity), // 预分配容量
+		values:   make([][]byte, 0, InitialLeafCapacity),
+		cowDelta: nil, // 显式初始化为 nil（物化状态）
 	}
 }
 
@@ -64,7 +68,25 @@ func (p *LeafPage) IsLeaf() bool {
 
 // Get 获取键对应的值
 func (p *LeafPage) Get(key []byte) ([]byte, bool) {
-	// 二分查找
+	// 如果有 COW 引用，先检查增量链
+	if p.cowDelta != nil {
+		// 反向遍历增量（最新的优先）
+		deltas := p.cowDelta.GetDeltas()
+
+		for i := len(deltas) - 1; i >= 0; i-- {
+			delta := deltas[i]
+			if bytes.Equal(delta.key, key) {
+				switch delta.op {
+				case DeltaInsert, DeltaUpdate:
+					return delta.value, true
+				case DeltaDelete:
+					return nil, false
+				}
+			}
+		}
+	}
+
+	// 增量链中未找到，查找基础数据
 	idx, found := p.search(key)
 	if !found {
 		return nil, false
@@ -93,18 +115,51 @@ func (p *LeafPage) search(key []byte) (int, bool) {
 	return left, false
 }
 
-// Insert 插入键值对
-// 返回：是否插入成功（false 表示键已存在）
+// Insert 插入键值对（COW + Delta Chain 混合方案）
+// 返回：是否插入成功（false 表示键已存在，进行了更新）
 func (p *LeafPage) Insert(key, value []byte) (bool, error) {
-	idx, found := p.search(key)
+	// 如果有 COW 引用，使用增量模式
+	if p.cowDelta != nil {
+		// 检查是否需要物化
+		if p.cowDelta.ShouldMaterialize(len(p.keys), p.cowDelta.GetRefCount()) {
+			p.materialize()
+			return p.insertDirect(key, value)
+		}
 
+		// 先检查键是否存在，决定是 Insert 还是 Update
+		_, found := p.search(key)
+		if found {
+			// 键已存在，记录更新增量
+			p.cowDelta.AppendDelta(Delta{
+				op:    DeltaUpdate,
+				key:   key,
+				value: value,
+			})
+			return false, nil
+		}
+
+		// 键不存在，记录插入增量
+		p.cowDelta.AppendDelta(Delta{
+			op:    DeltaInsert,
+			key:   key,
+			value: value,
+		})
+		p.version++
+		return true, nil
+	}
+
+	// 物化状态：直接修改
+	return p.insertDirect(key, value)
+}
+
+// insertDirect 直接插入（物化状态）
+func (p *LeafPage) insertDirect(key, value []byte) (bool, error) {
+	idx, found := p.search(key)
 	if found {
-		// 键已存在，更新值
 		p.values[idx] = value
 		return false, nil
 	}
 
-	// 插入新键值对
 	p.keys = insertSlice(p.keys, idx, key)
 	p.values = insertSlice(p.values, idx, value)
 	p.version++
@@ -133,15 +188,42 @@ func insertSlice[T any](slice []T, idx int, value T) []T {
 	return slice
 }
 
-// Delete 删除键值对
-// 返回：是否删除成功
+// Delete 删除键值对（COW + Delta Chain 混合方案）
+// 返回：是否删除成功（false 表示键不存在）
 func (p *LeafPage) Delete(key []byte) (bool, error) {
+	if p.cowDelta != nil {
+		// 检查是否需要物化
+		if p.cowDelta.ShouldMaterialize(len(p.keys), p.cowDelta.GetRefCount()) {
+			p.materialize()
+			return p.deleteDirect(key)
+		}
+
+		// 检查键是否存在
+		_, found := p.search(key)
+		if !found {
+			return false, nil
+		}
+
+		// 记录删除增量
+		p.cowDelta.AppendDelta(Delta{
+			op:  DeltaDelete,
+			key: key,
+		})
+		p.version++
+		return true, nil
+	}
+
+	// 物化状态：直接删除
+	return p.deleteDirect(key)
+}
+
+// deleteDirect 直接删除（物化状态）
+func (p *LeafPage) deleteDirect(key []byte) (bool, error) {
 	idx, found := p.search(key)
 	if !found {
 		return false, nil
 	}
 
-	// 删除键值对
 	p.keys = append(p.keys[:idx], p.keys[idx+1:]...)
 	p.values = append(p.values[:idx], p.values[idx+1:]...)
 	p.version++
@@ -187,22 +269,95 @@ func (p *LeafPage) Split() (*LeafPage, []byte, error) {
 	// 对于奇数个键，取中间的键；对于偶数个键，取中间偏左的键
 	splitKey := p.keys[mid]
 
+	// 加锁保护 cowDelta 的检查和物化
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.cowDelta != nil {
+		p.materializeUnsafe()
+	}
+
 	// 创建新页面，包含分裂键及之后的键值对（包含分裂键）
 	// ✅ Day 10-11: 修正分裂逻辑，右子节点包含分裂键
 	newPage := NewLeafPage(model.PageID(p.pageID + 1))   // 临时 ID
 	newPage.keys = append(newPage.keys, p.keys[mid:]...) // 包含分裂键
 	newPage.values = append(newPage.values, p.values[mid:]...)
+	newPage.cowDelta = nil // 分裂产生的新页面是独立数据
 
 	// 当前页面保留分裂键之前的键值对（不包含分裂键）
 	p.keys = p.keys[:mid]
 	p.values = p.values[:mid]
 	p.version++
+	p.cowDelta = nil // 分裂后当前页面也是独立数据
 
 	return newPage, splitKey, nil
 }
 
-// Clone 克隆页面（Copy-on-Write）
+// Clone 克隆页面（COW + Delta Chain 混合方案）
+//
+// 引用计数生命周期：
+//   - NewCOWDeltaRef: refCount = 0（初始状态）
+//   - Retain(): refCount += 1（首次调用后变为 1，表示自己持有）
+//   - Clone(): refCount += 1（每次克隆增加引用）
+//   - Release(): refCount -= 1（返回是否为最后一个引用）
+//   - 当 refCount = 0 时，sharedKeys/sharedValues 可被回收
 func (p *LeafPage) Clone() *LeafPage {
+	// 加锁保护 cowDelta 的读取
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	// 如果已有 COW 引用，增加引用计数
+	if p.cowDelta != nil {
+		// 验证 COWDeltaRef 的有效性
+		if p.cowDelta.GetRefCount() <= 0 {
+			// 引用计数无效，创建新的 COW 引用
+			cowRef := NewCOWDeltaRef(p.keys, p.values)
+			cowRef.Retain()
+			return &LeafPage{
+				pageID:   p.pageID,
+				version:  p.version,
+				cowDelta: cowRef,
+				keys:     cowRef.sharedKeys,
+				values:   cowRef.sharedValues,
+			}
+		}
+
+		p.cowDelta.Retain()
+		return &LeafPage{
+			pageID:   p.pageID,
+			version:  p.version,
+			cowDelta: p.cowDelta,
+			keys:     p.cowDelta.sharedKeys,
+			values:   p.cowDelta.sharedValues,
+		}
+	}
+
+	// 创建新的 COW 引用
+	// NewCOWDeltaRef 将 refCount 初始化为 0
+	// Retain() 将 refCount 增加到 1，表示当前页面持有此引用
+	cowRef := NewCOWDeltaRef(p.keys, p.values)
+	cowRef.Retain() // refCount: 0 → 1
+
+	return &LeafPage{
+		pageID:   p.pageID,
+		version:  p.version, // 保持版本号一致
+		cowDelta: cowRef,
+		keys:     cowRef.sharedKeys,
+		values:   cowRef.sharedValues,
+	}
+}
+
+// forceCloneDeep 强制完整深拷贝（用于 CloneDeep）
+// 不使用 COW 共享，确保完全独立
+func (p *LeafPage) forceCloneDeep() *LeafPage {
+	// 如果有 cowDelta，先物化
+	p.mu.Lock()
+	if p.cowDelta != nil {
+		p.materializeUnsafe()
+	}
+	p.mu.Unlock()
+
+	// 完整深拷贝 keys 和 values
 	newKeys := make([][]byte, len(p.keys))
 	copy(newKeys, p.keys)
 
@@ -210,16 +365,26 @@ func (p *LeafPage) Clone() *LeafPage {
 	copy(newValues, p.values)
 
 	return &LeafPage{
-		pageID:  p.pageID,
-		version: p.version,
-		keys:    newKeys,
-		values:  newValues,
+		pageID:   p.pageID,
+		version:  p.version,
+		keys:     newKeys,
+		values:   newValues,
+		cowDelta: nil, // 深拷贝后没有 cowDelta
 	}
 }
 
 // Serialize 序列化页面
 // 返回：序列化后的字节数组
+// 注意：如果 cowDelta 存在，会先物化
 func (p *LeafPage) Serialize() ([]byte, error) {
+	// 加锁保护 cowDelta 的检查和物化
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.cowDelta != nil {
+		p.materializeUnsafe()
+	}
+
 	ps := NewPageSerializer()
 
 	// 使用 PageSerializer 写入公共头部
@@ -282,10 +447,11 @@ func DeserializeLeafPage(data []byte) (*LeafPage, error) {
 
 	// 6. 创建页面
 	page := &LeafPage{
-		pageID:  pageID,
-		version: version,
-		keys:    make([][]byte, 0, numKeys),
-		values:  make([][]byte, 0, numKeys),
+		pageID:   pageID,
+		version:  version,
+		keys:     make([][]byte, 0, numKeys),
+		values:   make([][]byte, 0, numKeys),
+		cowDelta: nil, // 反序列化后是物化状态
 	}
 
 	// 7. 读取键值对
@@ -347,4 +513,110 @@ func (p *LeafPage) Size() int {
 // IsFull 判断页面是否已满
 func (p *LeafPage) IsFull(maxKeys int) bool {
 	return len(p.keys) >= maxKeys
+}
+
+// materialize 物化增量链（合并到独立数据）
+// 内部使用锁确保原子性
+func (p *LeafPage) materialize() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.materializeUnsafe()
+}
+
+// materializeUnsafe 物化增量链（合并到独立数据）
+// ⚠️ 调用此方法时必须持有 p.mu 锁！
+func (p *LeafPage) materializeUnsafe() {
+	// 双重检查：先读取 cowDelta 到局部变量
+	cow := p.cowDelta
+	if cow == nil {
+		return
+	}
+
+	// 再次确认，确保在应用 deltas 前 cowDelta 没有被修改
+	if p.cowDelta == nil {
+		return
+	}
+
+	// 获取基础数据的完整副本
+	newKeys := make([][]byte, len(p.cowDelta.sharedKeys))
+	copy(newKeys, p.cowDelta.sharedKeys)
+
+	newValues := make([][]byte, len(p.cowDelta.sharedValues))
+	copy(newValues, p.cowDelta.sharedValues)
+
+	// 应用所有增量操作
+	deltas := p.cowDelta.GetDeltas()
+
+	for _, delta := range deltas {
+		switch delta.op {
+		case DeltaInsert:
+			idx, found := binarySearch(newKeys, delta.key)
+			if found {
+				// 更新
+				newValues[idx] = delta.value
+			} else {
+				// 插入
+				newKeys = insertSlice(newKeys, idx, delta.key)
+				newValues = insertSlice(newValues, idx, delta.value)
+			}
+		case DeltaUpdate:
+			idx, found := binarySearch(newKeys, delta.key)
+			if found {
+				newValues[idx] = delta.value
+			}
+		case DeltaDelete:
+			idx, found := binarySearch(newKeys, delta.key)
+			if found {
+				newKeys = append(newKeys[:idx], newKeys[idx+1:]...)
+				newValues = append(newValues[:idx], newValues[idx+1:]...)
+			}
+		}
+	}
+
+	// 替换为独立数据
+	p.keys = newKeys
+	p.values = newValues
+	p.version++
+
+	// 释放当前页面对 COWDeltaRef 的引用
+	// 注意：如果其他页面共享此 COWDeltaRef（refCount > 1），
+	//       sharedKeys/sharedValues 不会被立即回收
+	//       只有当最后一个引用 Release() 时，底层数据才会被 GC 回收
+	if p.cowDelta != nil {
+		p.cowDelta.Release()
+		p.cowDelta = nil
+	}
+}
+
+// IsShared 检查是否共享数据
+func (p *LeafPage) IsShared() bool {
+	return p.cowDelta != nil && p.cowDelta.GetRefCount() > 1
+}
+
+// GetDeltaCount 获取增量链长度
+func (p *LeafPage) GetDeltaCount() int {
+	if p.cowDelta == nil {
+		return 0
+	}
+	return p.cowDelta.GetDeltaCount()
+}
+
+// binarySearch 辅助函数（在切片中搜索）
+func binarySearch(slice [][]byte, key []byte) (int, bool) {
+	left, right := 0, len(slice)-1
+
+	for left <= right {
+		mid := left + (right-left)/2
+		cmp := bytes.Compare(slice[mid], key)
+
+		if cmp == 0 {
+			return mid, true
+		} else if cmp < 0 {
+			left = mid + 1
+		} else {
+			right = mid - 1
+		}
+	}
+
+	return left, false
 }

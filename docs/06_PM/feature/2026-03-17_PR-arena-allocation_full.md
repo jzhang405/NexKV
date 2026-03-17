@@ -308,70 +308,73 @@ type LeafPage struct {
 
 ### 3. 实现方案（怎么干，核心设计）
 
+> **⚠️ 注意**：Arena 分配优化已放弃（见第 4 节调查结果）。本节仅记录阶段 1（defer 优化）的实际实现。
+
 #### 3.1 整体流程设计
 
 ```mermaid
 flowchart TD
-    A[OpenBTree] --> B[创建 BTreeArena]
-    B --> C[Arena.NewArena]
-    C --> D[初始化 BTree]
-    D --> E[Set 操作]
-    E --> F{需要分配 PageInfo?}
-    F -- 是 --> G[BTreeArena.NewPageInfo]
-    G --> H[arena.New- 简化 GC 扫描]
-    F -- 否 --> I[普通分配]
-    H --> J[完成操作]
-    I --> J
-    J --> K[Close]
-    K --> L[Arena.Free 释放所有内存]
+    A[OpenBTree] --> B[初始化 BTree]
+    B --> C[Set 操作]
+    C --> D{需要读取 parentRef?}
+    D -- 是 --> E[atomic.Value.Load 无锁读取]
+    E --> F[完成操作]
+    D -- 否 --> F
 ```
 
 #### 3.2 关键设计点
 
-1. **接口定义**：
+1. **atomic.Value 替代 RWMutex**：
 
 ```go
-// BTreeArena Arena 内存管理器
-type BTreeArena struct {
-    mu    sync.RWMutex
-    arena *arena.Arena
-}
-
-// 核心接口
-func NewBTreeArena() *BTreeArena
-func (a *BTreeArena) NewPageInfo() *PageInfo
-func (a *BTreeArena) NewLeafPage() *LeafPage
-func (a *BTreeArena) MakeSlice[T any](len, cap int) []T
-func (a *BTreeArena) NewBytes(len, cap int) []byte
-func (a *BTreeArena) Free()
-```
-
-2. **核心机制**：
-   - **Arena 隔离**：Arena 中的对象不会被单独 GC 扫描
-   - **批量释放**：Close 时一次性释放所有内存
-   - **Fallback 机制**：Arena 为 nil 时自动回退到普通分配
-   - **并发安全**：RWMutex 保护 Arena 访问
-
-3. **数据结构**：
-
-```go
-// PageInfo 和 LeafPage 使用 Arena 分配
+// PageInfo 使用 atomic.Value 存储 parentRef
 type PageInfo struct {
-    // 原有字段保持不变
+    parentRef atomic.Value  // 存储 *PageRef（替代 parentRefMu + parentRef）
+    // ... 其他字段
 }
 
-type LeafPage struct {
-    keys   [][]byte  // 使用 arena.MakeSlice 分配
-    values [][]byte  // 使用 arena.MakeSlice 分配
+// GetParentRef 无锁读取
+func (info *PageInfo) GetParentRef() *PageRef {
+    return info.parentRef.Load().(*PageRef)
+}
+
+// SetParentRef 无锁写入
+func (info *PageInfo) SetParentRef(ref *PageRef) {
+    info.parentRef.Store(ref)
 }
 ```
 
-4. **容错设计**：
-   - Arena 创建失败时 fallback 到普通分配
-   - Arena.New() 失败时 fallback 到普通 new()
-   - 添加内存泄漏检测（测试验证 Free() 释放所有内存）
+2. **PageRef 同样优化**：
 
-5. **同步优化：减少 defer 使用**（阶段 1，低风险先验证）：
+```go
+// PageRef 使用 atomic.Value 存储 parentRef
+type PageRef struct {
+    pInfo     atomic.Pointer[PageInfo]
+    parentRef atomic.Value  // 存储 *PageRef（替代 mu + parentRef）
+}
+```
+
+3. **核心机制**：
+   - **无锁读取**：atomic.Value.Load() 替代 RWMutex.RLock()
+   - **无锁写入**：atomic.Value.Store() 替代 RWMutex.Lock()
+   - **移除 defer**：GetParentRef/SetParentRef/HasParent 中的 defer 全部移除
+
+4. **数据结构**：
+
+```go
+// 优化前
+type PageInfo struct {
+    parentRefMu sync.RWMutex
+    parentRef   *PageRef
+}
+
+// 优化后
+type PageInfo struct {
+    parentRef atomic.Value  // 存储 *PageRef
+}
+```
+
+5. **同步优化：减少 defer 使用**（阶段 1 实际实施）：
 
 **目标**：将 tryDeferToSpanScan 从 8.58% → < 3%（减少 4-6% GC）
 
@@ -508,29 +511,135 @@ func TestDeferStats(t *testing.T) {
 - 吞吐量：171K → 180-185K ops/sec（+5-8%）
 - 延迟：5.84 μs → 5.5-5.7 μs（-2-6%）
 
-### 4. 风险评估与应对措施
+### 4. Arena 调查与验证结果（阶段 2 实际测试）
 
-| 风险点 | 影响等级（高/中/低） | 应对措施 |
-|--------|----------------------|----------|
-| Arena 是 experimental API | 中 | 添加 fallback 逻辑，监控 Go 版本升级时的 API 变化 |
-| 内存占用增加 | 中 | 设置 Arena 大小上限（建议 1GB），监控内存使用 |
-| 并发安全问题 | 高 | 使用 RWMutex 保护 Arena 访问，添加并发测试 |
-| 内存泄漏 | 高 | 添加测试验证 Arena.Free() 释放所有内存，使用 runtime.ReadMemStats() 监控 |
-| 性能回归 | 中 | 基准测试对比，确保性能提升而非下降 |
-| Fallback 逻辑未覆盖 | 低 | 添加单元测试覆盖所有 fallback 路径 |
-| **CAS 失败率增加** | **中** | **atomic.Value 优化失败时，CAS 重试率可能增加。缓解：先测试 atomic.Value，确认收益后再合并；defer 优化优先，减少 4-6% GC** |
-| **阶段 1 效果不佳** | **中** | **阶段 1 仅减少 4-6% GC，未达预期。缓解：立即启动阶段 2 Arena 优化；两阶段可独立验证效果** |
-| **连续内存方案失败** | **低** | **Phase 1 连续内存优化可能无法达到预期。缓解：仅在统计数据显示收益 > 2% 时才实施；保留原切片方案作为 fallback** |
+#### 4.1 测试环境
+
+- **Go 版本**：go1.26.0 linux/amd64
+- **Arena 版本**：Go 实验性 API（`goexperiment.arenas`）
+- **测试场景**：1M keys 初始化 + 100K Set 操作（纯内存模式）
+- **测试日期**：2026-03-17
+
+#### 4.2 性能测试结果
+
+| 版本 | 吞吐量 | 延迟 | vs 阶段 1 | 评价 |
+|------|--------|------|----------|------|
+| **原始（未优化）** | 171K ops/sec | 5.84 μs | - | 基线 |
+| **阶段 1（defer 优化）** ✅ | **191K ops/sec** | **5.23 μs** | **+12% / -10%** | 成功 |
+| **阶段 2（Arena + 锁）** ❌ | 62.3K ops/sec | 16.04 μs | **-66% / +207%** | 失败 |
+| **阶段 2（Arena + 原子）** ❌ | 123K ops/sec | 8.08 μs | **-28% / +38%** | 失败 |
+
+#### 4.3 性能瓶颈对比（Perf 分析）
+
+| 指标 | 阶段 1（defer） | Arena（原子） | 变化 | 分析 |
+|------|----------------|---------------|------|------|
+| **tryDeferToSpanScan** | 8.48% | 16.34% | **+93%** | defer 开销大幅增加 |
+| **typePointers.next** | 1.98% | 11.82% | **+497%** | 类型检查开销暴增 |
+| **scanObject** | 1.02% | 9.58% | **+839%** | GC 扫描对象增加 |
+| **CloneShallow** | 0.65% | 1.04% | +60% | 克隆开销增加 |
+
+**typePointers.next 调用链（Arena 版本）**：
+```
+11.82%  runtime.typePointers.next
+  └─ 9.84%  runtime.scanObject
+      └─ GC 扫描
+```
+
+#### 4.4 问题根因分析
+
+**1. 架构不兼容**
+```
+copyPathShallow(path []*PageInfo) {
+    copiedPath := b.newPathSliceWithArena(len(path))  // ✅ 切片用 Arena
+
+    for i, info := range path {
+        newInfo := info.CloneShallow()  // ❌ PageInfo 仍然普通分配！
+        copiedPath[i] = newInfo
+    }
+}
+```
+
+- CCOW 的 `CloneShallow` 直接使用 `&PageInfo{...}` 普通分配
+- 切片用 Arena，但对象用普通分配，导致混用
+- GC 需要同时追踪 Arena 和普通分配的对象
+
+**2. 每次原子操作开销**
+```go
+func (a *BTreeArena) NewPageInfo() *PageInfo {
+    ptr := a.getArena()  // atomic.Load 每次调用
+    if ptr == nil {
+        return NewPageInfo()
+    }
+    return arena.New[PageInfo](ptr)
+}
+```
+- 每次 Arena 分配都有 `atomic.Load` 开销
+- 原子操作本身有延迟
+
+**3. Go 1.26 Arena API 不成熟**
+- 实验性 API，性能不稳定
+- Arena 内部管理开销 > GC 减少收益
+- 可能仍有 GC 追踪机制未完全禁用
+
+#### 4.5 尝试的优化方案
+
+| 方案 | 描述 | 结果 |
+|------|------|------|
+| **方案 1**：RWMutex 保护 Arena | 每次 NewPageInfo 获取锁 | 吞吐量 62K (-66%) ❌ |
+| **方案 2**：atomic.Pointer 保护 Arena | 使用原子操作替代锁 | 吞吐量 123K (-28%) ❌ |
+
+**结论**：两种方案都失败了，问题不在于并发控制，而在于 Arena 本身的开销。
+
+#### 4.6 验证结论
+
+**❌ Arena 优化在当前 CCOW 架构下不可行**
+
+**原因总结**：
+1. **架构不兼容**：CCOW 的 CloneShallow 需要创建大量独立 PageInfo，很难改用 Arena
+2. **收益 < 开销**：即使正确使用 Arena，GC 减少收益 < Arena 管理开销
+3. **API 不成熟**：Go 1.26 arena 是实验性的，性能不稳定
+4. **混用分配方式**：Arena + 普通分配混用，GC 需要同时追踪
+
+**性能数据验证**：
+- 阶段 1（defer 优化）：191K ops/sec ✅
+- Arena 版本：123K ops/sec ❌
+- **性能损失：-28% 到 -66%**
+
+**决策**：
+- ✅ **保留阶段 1 优化**（defer 优化，+12% 性能）
+- ❌ **放弃 Arena 优化**（性能下降，风险高）
+- 📝 **记录分析结果**，等 Go Arena API 成熟后再考虑
+
+**未来可能的优化方向**：
+1. 等待 Go Arena API 稳定并优化性能
+2. 重构 CCOW 架构，全面使用 Arena 分配
+3. 使用其他内存管理方案（如对象池、自定义分配器）
+4. 优化 GC 参数（GOGC、GOMEMLIMIT）而非使用 Arena
+
+---
+
+### 5. 风险评估与应对措施
+
+| 风险点 | 影响等级（高/中/低） | 应对措施 | 状态 |
+|--------|----------------------|----------|------|
+| **CAS 失败率增加** | **中** | **atomic.Value 优化失败时，CAS 重试率可能增加。缓解：已验证 atomic.Value 方案单独无效果，仅配合 defer 优化使用** | ✅ 已缓解 |
+| **性能回归** | 中 | 基准测试对比，确保性能提升而非下降 | ✅ 已验证 |
+| **并发安全问题** | 高 | 添加并发测试，使用 -race 检测 | ✅ 已通过 |
+
+**Arena 优化风险（已放弃）**：
+| 风险点 | 影响等级 | 应对措施 | 结果 |
+|--------|----------|----------|------|
+| Arena 是 experimental API | 高 | 已调查，Go 1.26 arena 性能不稳定 | ❌ 已放弃 |
+| 性能回归 | 高 | 已测试，Arena 版本性能下降 28-66% | ❌ 已放弃 |
+| 架构不兼容 | 高 | CCOW + Arena 架构冲突 | ❌ 已放弃 |
 
 **风险优先级**：
-1. **P0（必须缓解）**：内存泄漏、并发安全、性能回归
-2. **P1（重点监控）**：CAS 失败率增加、阶段 1 效果不佳
-3. **P2（可选缓解）**：连续内存方案失败
+1. **P0（已缓解）**：并发安全、性能回归 ✅
+2. **P1（已放弃）**：Arena 优化 ❌
 
-**缓解验证标准**：
-- P0 风险必须 100% 通过测试
-- P1 风险必须有明确的监控指标
-- P2 风险可以有条件地接受
+**验证结果**：
+- ✅ 阶段 1（defer 优化）：191K ops/sec，+12% 性能
+- ❌ Arena 优化：性能下降，已放弃
 
 ### 5. 架构师评审记录（循环优化，直至通过）
 

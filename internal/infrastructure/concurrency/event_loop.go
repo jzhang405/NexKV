@@ -318,25 +318,18 @@ func (w *EventLoop) SubmitBatch(tasks []func()) error {
 	}
 
 	// 批量发送
+	// 修复：创建独立的 Request 对象，避免对象池 channel 的数据竞争
 	requests := make([]*Request, 0, len(tasks))
 	for _, task := range tasks {
-		req := requestPool.Get().(*Request)
-		req.Fn = task
-		// 清空 Result channel 中可能的残留数据
-		select {
-		case <-req.Result:
-		default:
+		req := &Request{
+			Fn:     task,
+			Result: make(chan struct{}, 1), // 独立的 channel，不使用对象池
 		}
-
 		requests = append(requests, req)
 
 		select {
 		case w.taskCh <- req:
 		default:
-			// 队列满，回收已提交的请求
-			for _, r := range requests {
-				requestPool.Put(r)
-			}
 			return errors.ErrQueueFull
 		}
 	}
@@ -344,6 +337,12 @@ func (w *EventLoop) SubmitBatch(tasks []func()) error {
 	// 批量等待
 	for _, req := range requests {
 		<-req.Result
+	}
+
+	// 手动回收 Request（不使用对象池）
+	for _, req := range requests {
+		// Request 不再使用对象池回收，让 GC 处理
+		_ = req
 	}
 
 	return nil

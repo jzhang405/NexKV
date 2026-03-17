@@ -12,11 +12,11 @@ import (
 // 存储键和子节点引用，用于索引
 // 支持 COW+Delta 混合方案优化 Clone 性能
 type InternalPage struct {
-	pageID   model.PageID   // 页面 ID
-	version  uint64         // 版本号（用于 CCOW）
-	keys     [][]byte       // 键数组（有序）
-	children []*PageRef     // 子节点引用（使用 PageRef）
-	cowDelta *COWDeltaRef   // COW+Delta 引用（nil = 已物化/独立数据）
+	pageID   model.PageID // 页面 ID
+	version  uint64       // 版本号（用于 CCOW）
+	keys     [][]byte     // 键数组（有序）
+	children []*PageRef   // 子节点引用（使用 PageRef）
+	cowDelta *COWDeltaRef // COW+Delta 引用（nil = 已物化/独立数据）
 }
 
 // NewInternalPage 创建新的内部页面

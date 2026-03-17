@@ -664,8 +664,6 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 	if err != nil {
 		return fmt.Errorf("copy path with delta: %w", err)
 	}
-
-
 	// Step 3: Insert/Update the key-value pair in the leaf copy
 	leafInfo := copiedPath[len(copiedPath)-1]
 
@@ -1281,6 +1279,7 @@ func (b *BTree) shouldMaterializeBeforeCAS(leafInfo *PageInfo) bool {
 
 // materializePath 物化路径中的所有 Delta Chain 页面
 // 用于 CAS 前的预物化优化
+//nolint:unused // 预留用于 Phase 6 性能优化
 func (b *BTree) materializePath(path []*PageInfo) error {
 	for i, info := range path {
 		page := info.GetPage()
@@ -1288,9 +1287,9 @@ func (b *BTree) materializePath(path []*PageInfo) error {
 			continue
 		}
 
-		switch page.(type) {
+		switch p := page.(type) {
 		case *LeafPage:
-			leafPage := page.(*LeafPage)
+			leafPage := p
 			if leafPage == nil {
 				continue
 			}
@@ -1328,6 +1327,7 @@ func (b *BTree) materializePath(path []*PageInfo) error {
 }
 
 // materializeLeafPage 物化 LeafPage 的 Delta Chain
+//nolint:unused // 预留用于 Phase 6 性能优化
 func (b *BTree) materializeLeafPage(leafPage *LeafPage) error {
 	// 这是临时解决方案：通过反射调用私有方法
 	// 更好的方案是将 materialize() 改为公开方法
@@ -1359,6 +1359,7 @@ func (b *BTree) materializeLeafPage(leafPage *LeafPage) error {
 }
 
 // materializeInternalPage 物化 InternalPage 的 Delta Chain
+//nolint:unused // 预留用于 Phase 6 性能优化
 func (b *BTree) materializeInternalPage(internalPage *InternalPage) error {
 	// InternalPage 的物化逻辑类似
 	if !internalPage.IsInDeltaMode() {
@@ -1603,7 +1604,7 @@ func (b *BTree) splitInternal(internalInfo *PageInfo, copiedPath []*PageInfo) er
 }
 
 // splitRootFromInternal 从内部节点分裂创建新的根节点
-func (b *BTree) splitRootFromInternal(leftInfo, rightInfo *PageInfo, splitKey []byte, copiedPath []*PageInfo) error {
+func (b *BTree) splitRootFromInternal(leftInfo, rightInfo *PageInfo, splitKey []byte, copiedPath []*PageInfo) error { //nolint:unused // copiedPath 预留用于未来优化
 	// 1. 创建新的内部节点作为根
 	newRootPage := NewInternalPage(b.allocatePageID()) // 分配唯一的 pageID
 	newRootPage.keys = [][]byte{splitKey}

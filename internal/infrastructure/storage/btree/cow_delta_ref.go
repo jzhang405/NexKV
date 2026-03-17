@@ -33,13 +33,13 @@ type Delta struct {
 // - deltas: 增量操作链（读写需要加锁）
 // - maxDeltas: 物化阈值
 type COWDeltaRef struct {
-	sharedKeys   [][]byte       // 共享的键数组
-	sharedValues [][]byte       // 共享的值数组
-	refCount     atomic.Int32   // 引用计数
-	deltas       []Delta        // 增量操作链
-	maxDeltas    int            // 增量阈值
-	mu           sync.RWMutex   // 保护增量链的读写
-	version      atomic.Uint64  // 版本号
+	sharedKeys   [][]byte      // 共享的键数组
+	sharedValues [][]byte      // 共享的值数组
+	refCount     atomic.Int32  // 引用计数
+	deltas       []Delta       // 增量操作链
+	maxDeltas    int           // 增量阈值
+	mu           sync.RWMutex  // 保护增量链的读写
+	version      atomic.Uint64 // 版本号
 }
 
 // NewCOWDeltaRef 创建新的 COW+Delta 引用
@@ -48,7 +48,7 @@ func NewCOWDeltaRef(keys, values [][]byte) *COWDeltaRef {
 		sharedKeys:   keys,
 		sharedValues: values,
 		deltas:       make([]Delta, 0, 8), // 预分配容量
-		maxDeltas:    10,                   // 默认阈值
+		maxDeltas:    10,                  // 默认阈值
 		version:      atomic.Uint64{},
 	}
 	// 初始引用计数 = 1（创建者持有）

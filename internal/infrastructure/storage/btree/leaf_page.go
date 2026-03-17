@@ -12,12 +12,12 @@ import (
 // 存储键值对，是 BTree 的最底层节点
 // 支持 COW+Delta 混合方案优化 Clone 性能
 type LeafPage struct {
-	pageID   model.PageID  // 页面 ID
-	version  uint64        // 版本号（用于 CCOW）
-	keys     [][]byte      // 键数组（有序）
-	values   [][]byte      // 值数组（与 keys 一一对应）
-	pageLock *PageLock     // 页面锁（用于避免重复深拷贝）
-	cowDelta *COWDeltaRef  // COW+Delta 引用（nil = 已物化/独立数据）
+	pageID   model.PageID // 页面 ID
+	version  uint64       // 版本号（用于 CCOW）
+	keys     [][]byte     // 键数组（有序）
+	values   [][]byte     // 值数组（与 keys 一一对应）
+	pageLock *PageLock    // 页面锁（用于避免重复深拷贝）
+	cowDelta *COWDeltaRef // COW+Delta 引用（nil = 已物化/独立数据）
 }
 
 // NewLeafPage 创建新的叶子页面

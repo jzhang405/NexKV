@@ -1,0 +1,67 @@
+// Copyright 2026 NexKV Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Main program for BTree memory-mode performance profiling (without persistence)
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree"
+)
+
+func main() {
+	// 使用空字符串启用纯内存模式（无持久化）
+	tree, err := btree.OpenBTree("", &model.BTreeConfig{})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open BTree: %v\n", err)
+		os.Exit(1)
+	}
+	defer tree.Close()
+
+	ctx := context.Background()
+
+	// 初始化数据：1000 个键值对
+	fmt.Println("Initializing with 1000 keys...")
+	initCount := 1000
+	for i := 0; i < initCount; i++ {
+		key := fmt.Sprintf("key-%06d", i)
+		value := fmt.Sprintf("value-%06d", i)
+		if err := tree.Set(ctx, []byte(key), []byte(value)); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to set key %s: %v\n", key, err)
+			os.Exit(1)
+		}
+	}
+	fmt.Printf("Initialized %d keys\n\n", initCount)
+
+	// 运行 100,000 次 Set 操作（纯内存模式）
+	opsCount := 100_000
+	fmt.Printf("Running %d Set operations (memory mode, no persistence)...\n", opsCount)
+
+	startTime := time.Now()
+	for i := 0; i < opsCount; i++ {
+		key := fmt.Sprintf("key-%06d", i%initCount)
+		value := fmt.Sprintf("value-updated-%06d", i)
+		if err := tree.Set(ctx, []byte(key), []byte(value)); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to set key %s: %v\n", key, err)
+			os.Exit(1)
+		}
+	}
+	elapsed := time.Since(startTime)
+
+	// 报告结果
+	opsPerSec := float64(opsCount) / elapsed.Seconds()
+	avgLatency := elapsed.Nanoseconds() / int64(opsCount)
+
+	fmt.Println("\n=== Memory Mode Performance Results ===")
+	fmt.Printf("Total operations: %d\n", opsCount)
+	fmt.Printf("Total time: %.2f seconds\n", elapsed.Seconds())
+	fmt.Printf("Throughput: %.0f ops/sec\n", opsPerSec)
+	fmt.Printf("Average latency: %.2f μs/op\n", float64(avgLatency)/1000)
+	fmt.Println("\nNote: This is pure memory mode (no disk I/O)")
+}

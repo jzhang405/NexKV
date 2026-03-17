@@ -121,9 +121,56 @@ BenchmarkBTree_Delete_Single-12    381,954    13,775 ns/op    24,014 B/op    44 
 
 ---
 
-## 2. 性能对比
+## 2. 纯内存模式性能测试
 
-### 2.1 与 Phase 1 报告对比
+> **测试说明**：本节使用 `OpenBTree("", nil)` 创建纯内存模式 BTree（无持久化）
+
+### 2.1 内存模式性能结果
+
+#### Set 操作（100,000 次）
+
+```
+=== Memory Mode Performance Results ===
+Total operations: 100,000
+Total time: 0.53 seconds
+Throughput: 187K ops/sec
+Average latency: 5.34 μs/op
+```
+
+**分析**：
+- **延迟**：5.34 μs = **0.0053 ms**
+- **吞吐量**：约 **187K ops/sec**
+- **状态**：⭐⭐⭐⭐⭐ **卓越**
+
+### 2.2 持久化模式 vs 纯内存模式对比
+
+| 指标 | 持久化模式 | 纯内存模式 | 性能差异 |
+|------|-----------|-----------|----------|
+| **Set 延迟** | 24.4 μs | 5.34 μs | **4.6x 更快** 🚀 |
+| **Set 吞吐** | 41K ops/sec | 187K ops/sec | **4.6x 提升** 🚀 |
+| **GC 开销** | 35-40% | 45-50% | +10% ⚠️ |
+| **I/O 开销** | 6-7% | 0% | -100% ✅ |
+| **序列化开销** | ~4% | 0% | -100% ✅ |
+
+### 2.3 关键发现
+
+1. **无持久化开销显著提升性能**：
+   - 纯内存模式比持久化模式快 **4.6 倍**
+   - 消除了序列化和磁盘 I/O 开销
+
+2. **GC 压力相对增加**：
+   - 由于吞吐量提升，GC 工作量占比增加 10%
+   - 绝对 GC 时间可能相近，但因总时间更短而占比上升
+
+3. **适用场景**：
+   - **持久化模式**：生产环境，需要数据可靠性
+   - **纯内存模式**：缓存层、临时存储、高性能场景
+
+---
+
+## 3. 性能对比
+
+### 3.1 与 Phase 1 报告对比
 
 | 指标 | Phase 1 报告 | 当前测试 | 变化 |
 |------|-------------|----------|------|
@@ -293,6 +340,8 @@ go test -bench="BenchmarkBTree_Set_Single" \
 
 ### 7.2 相关文档
 
+- **持久化模式 perf 报告**：`docs/10_benchmark/2026-03-17_baseline/perf_analysis_report.md`
+- **纯内存模式 perf 报告**：`docs/10_benchmark/2026-03-17_baseline/memory_mode_perf_analysis.md`
 - **COW + Delta 调查报告**：`docs/10_benchmark/2026-03-17_cow_delta_investigation/`
 - **Phase 1 性能报告**：`docs/10_benchmark/2026-03-13_btree_page_refactor/2026-03-13_phase1_performance_report.md`
 

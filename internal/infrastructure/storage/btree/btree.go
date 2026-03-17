@@ -963,20 +963,29 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 	}
 
 	// Clone all PageInfos in the path (使用 CloneShallow)
-	// ✅ 修复：LeafPage 立即深拷贝，避免并发修改导致 keys/values 不一致
+	// ✅ 优化：检查是否已是深拷贝，避免冗余的第二次深拷贝
 	for i, info := range path {
 		// 检查是否为 LeafPage，如果是则立即深拷贝
 		var newInfo *PageInfo
 		if leafPage, ok := info.GetPage().(*LeafPage); ok && leafPage != nil {
-			// LeafPage 需要立即深拷贝，防止并发修改
-			// ✅ 调试：验证前置条件
-			if len(leafPage.keys) != len(leafPage.values) {
-				panic(fmt.Sprintf("copyPathShallow: original LeafPage already inconsistent - pageID=%d, keys=%d, values=%d",
-					leafPage.pageID, len(leafPage.keys), len(leafPage.values)))
+			// ✅ 优化：检查是否已经是深拷贝状态
+			// searchPath 已经对 LeafPage 做了深拷贝，这里不需要再次深拷贝
+			if info.IsDeepClone() {
+				// 已经是深拷贝状态，直接复用 Page 对象
+				newInfo = info.CloneShallow()
+				newInfo.page = leafPage // ✅ 共享已深拷贝的 Page，避免冗余拷贝
+				newInfo.cloneStatus.Store(CloneStatusDeep)
+			} else {
+				// 原始 LeafPage，需要深拷贝
+				// ✅ 调试：验证前置条件
+				if len(leafPage.keys) != len(leafPage.values) {
+					panic(fmt.Sprintf("copyPathShallow: original LeafPage already inconsistent - pageID=%d, keys=%d, values=%d",
+						leafPage.pageID, len(leafPage.keys), len(leafPage.values)))
+				}
+				newInfo = info.CloneShallow()
+				newInfo.page = leafPage.Clone() // 深拷贝 Page 对象
+				newInfo.cloneStatus.Store(CloneStatusDeep)
 			}
-			newInfo = info.CloneShallow()
-			newInfo.page = leafPage.Clone() // 深拷贝 Page 对象
-			newInfo.cloneStatus.Store(CloneStatusDeep)
 		} else {
 			// InternalPage 使用浅拷贝
 			newInfo = info.CloneShallow()

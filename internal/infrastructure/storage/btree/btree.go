@@ -1279,6 +1279,7 @@ func (b *BTree) shouldMaterializeBeforeCAS(leafInfo *PageInfo) bool {
 
 // materializePath 物化路径中的所有 Delta Chain 页面
 // 用于 CAS 前的预物化优化
+//
 //nolint:unused // 预留用于 Phase 6 性能优化
 func (b *BTree) materializePath(path []*PageInfo) error {
 	for i, info := range path {
@@ -1327,6 +1328,7 @@ func (b *BTree) materializePath(path []*PageInfo) error {
 }
 
 // materializeLeafPage 物化 LeafPage 的 Delta Chain
+//
 //nolint:unused // 预留用于 Phase 6 性能优化
 func (b *BTree) materializeLeafPage(leafPage *LeafPage) error {
 	// 这是临时解决方案：通过反射调用私有方法
@@ -1359,6 +1361,7 @@ func (b *BTree) materializeLeafPage(leafPage *LeafPage) error {
 }
 
 // materializeInternalPage 物化 InternalPage 的 Delta Chain
+//
 //nolint:unused // 预留用于 Phase 6 性能优化
 func (b *BTree) materializeInternalPage(internalPage *InternalPage) error {
 	// InternalPage 的物化逻辑类似

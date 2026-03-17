@@ -659,18 +659,6 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 		return fmt.Errorf("empty path")
 	}
 
-	// ✅ 优化：在函数结束时释放所有 PageLock
-	defer func() {
-		// 释放所有路径上的 PageLock
-		for _, info := range path {
-			if leafPage, ok := info.GetPage().(*LeafPage); ok && leafPage != nil {
-				if leafPage.pageLock.IsLocked() {
-					leafPage.pageLock.Unlock()
-				}
-			}
-		}
-	}()
-
 	// Step 2: ✅ 使用浅拷贝创建路径副本（延迟深拷贝优化）
 	copiedPath, err := b.copyPathShallow(path)
 	if err != nil {
@@ -980,28 +968,10 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 		// 检查是否为 LeafPage，如果是则根据锁状态决定是否深拷贝
 		var newInfo *PageInfo
 		if leafPage, ok := info.GetPage().(*LeafPage); ok && leafPage != nil {
-			// ✅ 优化：检查是否持有 PageLock
-			if info.IsShallowClone() && leafPage.pageLock.IsLocked() {
-				// ✅ 持有锁，可以安全地使用浅拷贝
-				newInfo = info.CloneShallow()
-				newInfo.page = leafPage // 共享引用
-				newInfo.cloneStatus.Store(CloneStatusShallow)
-			} else if info.IsDeepClone() {
-				// 已经是深拷贝状态，直接复用 Page 对象
-				newInfo = info.CloneShallow()
-				newInfo.page = leafPage // ✅ 共享已深拷贝的 Page，避免冗余拷贝
-				newInfo.cloneStatus.Store(CloneStatusDeep)
-			} else {
-				// 原始 LeafPage，需要深拷贝
-				// ✅ 调试：验证前置条件
-				if len(leafPage.keys) != len(leafPage.values) {
-					panic(fmt.Sprintf("copyPathShallow: original LeafPage already inconsistent - pageID=%d, keys=%d, values=%d",
-						leafPage.pageID, len(leafPage.keys), len(leafPage.values)))
-				}
-				newInfo = info.CloneShallow()
-				newInfo.page = leafPage.Clone() // 深拷贝 Page 对象
-				newInfo.cloneStatus.Store(CloneStatusDeep)
-			}
+			// ✅ 原始实现：LeafPage 需要立即深拷贝，防止并发修改
+			newInfo = info.CloneShallow()
+			newInfo.page = leafPage.Clone() // 深拷贝 Page 对象
+			newInfo.cloneStatus.Store(CloneStatusDeep)
 		} else {
 			// InternalPage 使用浅拷贝
 			newInfo = info.CloneShallow()

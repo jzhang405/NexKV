@@ -860,74 +860,198 @@ func BenchmarkLeafPage_SequentialWrites_Hybrid(b *testing.B) {
 
 ---
 
-## 第三部分：后置部分（CI通过后编写，总结/成果/ToDo）
+## 第三部分：后置部分（代码审查后填写，总结/问题/ToDo）
+
+> **填写日期**：2026-03-18
+> **审查类型**：代码实现审查（发现严重 Bug）
 
 ### 1. 核心成果总结（开发了啥，结果怎样）
 
 #### 1.1 功能成果
-- **已完成**：待开发完成后填写
-- **与Pre文档差异**：待定
 
-#### 1.2 性能/数据成果
+**✅ 已完成**：
+- **Phase 1**: COWDeltaRef 基础设施（`cow_delta_ref.go`）- ✅ 完成
+- **Phase 2**: LeafPage 混合方案（`leaf_page.go`）- ✅ 完成
+- **Phase 3**: InternalPage 混合方案（`internal_page.go`）- ✅ 完成（超出原计划）
+- **BTree 集成**: `copyPathWithDelta` 已在 `setWithCAS` 中使用 - ✅ 完成
 
-**与 Baseline 对比**：
+**关键文件**：
+| 文件 | 状态 | 说明 |
+|------|------|------|
+| `cow_delta_ref.go` | ✅ 完成 | 引用计数 + 增量链核心实现 |
+| `leaf_page.go` | ⚠️ 有 Bug | `Clone()` 方法未物化 Delta Chain |
+| `internal_page.go` | ⚠️ 有 Bug | `Clone()` 方法未物化 Delta Chain |
+| `btree.go` | ⚠️ 部分完成 | `materializePath` 等函数为空实现 |
 
-| 测试项 | Baseline | 优化后 | 提升 | 说明 |
-|--------|----------|--------|------|------|
-| Clone | 172.4 ns/op | 待测 | 待定 | 保持 < 200 ns |
-| Set (Single) | 26,587 ns/op | 待测 | 待定 | 目标减少内存分配 |
-| 内存分配 | 31,752 B/op | 待测 | 待定 | 目标减少 50% |
-| QPS | ~40K ops/s | 待测 | 待定 | 目标保持或提升 |
+**与 Pre 文档差异**：
+- 超出计划：Phase 3（InternalPage）也已完成
+- 发现问题：物化机制未完全集成到 `Clone()` 方法
 
-- **性能数据**：
-  - Clone 开销：待基准测试后填写
-  - 增量模式写开销：待基准测试后填写
-  - 物化开销：待基准测试后填写
-  - QPS 提升：待压力测试后填写
+#### 1.2 ⚠️ 发现的严重 Bug
 
-- **测试成果**：
-  - 测试覆盖率：待定
-  - race detector：待定
-  - 内存泄漏检测：待定
+**Bug #1: `Clone()` 方法在 Delta Chain 模式下会丢失数据**
 
-#### 1.3 代码/文档交付物
+**位置**：`leaf_page.go:407-425`, `internal_page.go:324-330`
 
-| 类型 | 具体内容 | 链接/路径 |
-|------|----------|-----------|
-| 代码变更 | 待定 | GitHub PR链接 |
-| 文档更新 | 待定 | 待定 |
+**问题描述**：
+```go
+// Clone 克隆页面（保持深拷贝，Delta Chain 暂禁用）
+// TODO: Delta Chain 需要与 CCOW 架构深度集成
+func (p *LeafPage) Clone() *LeafPage {
+    newKeys := make([][]byte, len(p.keys))
+    copy(newKeys, p.keys)  // ⚠️ 只复制引用，未物化 Delta Chain！
+
+    newValues := make([][]byte, len(p.values))
+    copy(newValues, p.values)  // ⚠️ 会丢失 deltas 中的数据！
+
+    return &LeafPage{...}
+}
+```
+
+**影响范围**：
+- `PageInfo.CloneDeep()` → `LeafPage.Clone()`
+- CAS 成功后的 `finalizeDeepClone` 流程
+- **后果**：增量链（deltas）中的数据会被**永久丢失**
+
+**复现场景**：
+1. 写操作使用 `copyPathWithDelta` → `CloneWithDelta()`（零拷贝）
+2. 添加一些增量操作（Insert/Update/Delete）
+3. CAS 成功后，`finalizeDeepClone` 调用 `Clone()` 深拷贝
+4. **Bug**：`Clone()` 只复制 `keys/values` 引用，不应用 `deltas`
+5. **结果**：增量数据丢失，数据不一致
+
+---
+
+**Bug #2: `BTree.materializeLeafPage` 空实现**
+
+**位置**：`btree.go:1330-1361`
+
+**问题描述**：
+```go
+// TODO: 在下一个版本中，将 materialize() 改为公开方法
+func (b *BTree) materializeLeafPage(leafPage *LeafPage) error {
+    // 临时方案：直接设置 cowDelta = nil
+    // 注意：这会丢失增量链中的数据，不是真正的物化
+    leafPage.cowDelta = nil  // ⚠️ 会丢失数据！
+    return nil
+}
+```
+
+**影响**：
+- `materializePath` 函数被标记为 `//nolint:unused`
+- 但如果未来启用，会导致数据丢失
+
+---
+
+**Bug #3: `BTree.materializeInternalPage` 空实现**
+
+**位置**：`btree.go:1363-1380`
+
+**问题描述**：
+```go
+// TODO: 实现真正的物化逻辑
+func (b *BTree) materializeInternalPage(internalPage *InternalPage) error {
+    // TODO: 实现真正的物化逻辑
+    return nil
+}
+```
+
+---
+
+#### 1.3 性能/数据成果
+
+**测试状态**：由于存在 Bug，性能测试结果可能不准确
+
+| 测试项 | Baseline | 优化后 | 说明 |
+|--------|----------|--------|------|
+| Clone | 172.4 ns/op | 未测试 | Bug #1 导致测试无效 |
+| Set (Single) | 26,587 ns/op | 未测试 | 需修复后重新测试 |
+| CloneWithDelta | - | ~50 ns/op | 零拷贝，但未在主流程使用 |
 
 ---
 
 ### 2. 未完成项与ToDo清单（有哪些没干，后续规划）
 
 #### 2.1 本次PR未完成项
-- **未支持**：
-  - InternalPage 的混合方案（Phase 3）
-  - 全局 Delta Chain 优化
-- **遗留问题**：待定
+
+**❌ 关键缺失**：
+- **物化集成**：`Clone()` 方法未调用 `materialize()`
+- **空实现函数**：`materializePath`, `materializeLeafPage`, `materializeInternalPage`
+- **测试覆盖**：缺少 Delta Chain 模式下的端到端测试
+
+**✅ 超出原计划完成**：
+- InternalPage 混合方案（原定 Phase 3）
 
 #### 2.2 ToDo清单（优先级排序）
 
-| 优先级 | 任务内容 | 预估工期 | 关联PR/需求 | 备注 |
-|--------|----------|----------|-------------|------|
-| 高 | InternalPage 混合方案实现 | 2 天 | 下一个PR | Phase 3 |
-| 中 | 性能调优（阈值自适应） | 1 天 | 待定 | 根据生产数据调整 |
-| 低 | sync.Pool 优化（如需要） | 0.5 天 | 待定 | 当前不使用 |
+| 优先级 | 任务内容 | 预估工期 | 关联 Bug | 备注 |
+|--------|----------|----------|----------|------|
+| **P0-严重** | 修复 `Clone()` 物化 Bug | 2 小时 | Bug #1 | 数据完整性问题 |
+| **P0-严重** | 修复 `materializeLeafPage` | 1 小时 | Bug #2 | 或删除空实现 |
+| **P1-高** | 修复 `materializeInternalPage` | 2 小时 | Bug #3 | 同上 |
+| **P1-高** | 添加 Delta Chain E2E 测试 | 4 小时 | - | 验证完整流程 |
+| **P2-中** | 性能基准测试（修复后） | 2 小时 | - | 填写第三部分数据 |
+| **P2-中** | 决定：保留 `Clone()` 双模式？ | 1 小时 | - | 架构决策 |
+| **P3-低** | 文档更新（Fix 后） | 1 小时 | - | 更新本文档 |
 
 ---
 
-### 3. 下一步工作建议（建议干啥）
-1. **优先推进**：完成 Phase 3 InternalPage 混合支持
-2. **监控要点**：
-   - Clone 开销（目标 < 200 ns）
-   - QPS（目标 > 40K ops/s）
-   - 内存使用（监控泄漏）
-3. **运维补充**：添加性能监控指标（Clone 耗时、Delta 链长度）
-4. **后续规划**：
-   - BTree 分裂/合并逻辑优化
-   - 全局 Delta Chain 优化
-5. **反馈收集**：生产环境性能数据收集
+### 3. 下一步工作建议
+
+#### 3.1 立即行动（P0）
+
+**修复 `Clone()` 方法的物化问题**：
+
+方案 A：在 `Clone()` 中强制物化
+```go
+func (p *LeafPage) Clone() *LeafPage {
+    // ✅ 如果在 Delta Chain 模式，先物化
+    if p.cowDelta != nil {
+        p.materialize()
+    }
+    // 然后执行深拷贝...
+}
+```
+
+方案 B：将 `materialize()` 改为公开方法
+```go
+func (p *LeafPage) Materialize() {
+    p.materialize()
+}
+```
+
+方案 C：双模式 `Clone(forceMaterialize bool)`
+```go
+func (p *LeafPage) Clone(forceMaterialize bool) *LeafPage {
+    if forceMaterialize && p.cowDelta != nil {
+        p.materialize()
+    }
+    // ...
+}
+```
+
+**推荐**：方案 A（最小改动，向后兼容）
+
+#### 3.2 架构决策
+
+**问题**：是否需要保留 `Clone()` 和 `CloneWithDelta()` 双克隆模式？
+
+| 方案 | 优点 | 缺点 |
+|------|------|------|
+| **保留双模式** | 灵活性高，可选择性使用零拷贝 | 复杂度高，容易误用 |
+| **统一模式** | 简化 API，减少误用 | 失去零拷贝优化机会 |
+
+**建议**：
+1. 短期：修复 `Clone()` 强制物化，保留双模式
+2. 长期：评估性能后，考虑统一为单一模式
+
+#### 3.3 验证步骤
+
+修复后需要验证：
+1. ✅ 单元测试：`TestLeafPage_Clone_Materialize`
+2. ✅ 集成测试：Delta Chain 模式下的完整写流程
+3. ✅ 并发测试：`go test -race`
+4. ✅ 性能测试：修复前后的 Clone 性能对比
 
 ---
 
@@ -935,7 +1059,26 @@ func BenchmarkLeafPage_SequentialWrites_Hybrid(b *testing.B) {
 
 | 项目 | 内容 |
 |------|------|
-| 文档最终版本 | V1.0 |
-| 归档日期 | 待定 |
-| 归档路径 | `docs/06_project_management/pr_documents/feature/2026-03-17_PR-XXX_cow-delta-chain-optimization_全流程.md` |
+| 文档最终版本 | V1.1（代码审查后更新） |
+| 归档日期 | 2026-03-18 |
+| 分支名称 | `fix/cow-delta-chain-materialize` |
+| 关联 Issue | 待创建 |
 | 后续维护人 | jzhang405 |
+
+---
+
+## 附录：代码审查记录
+
+**审查日期**：2026-03-18
+**审查人**：Claude Code
+**审查类型**：代码实现审查
+
+**发现问题汇总**：
+- P0 严重 Bug：3 个
+- P1 高优先级：2 个
+- P2 中优先级：2 个
+
+**关键建议**：
+1. **不要合并到 main**：存在数据丢失 Bug
+2. **先修复 P0 Bug**：确保数据完整性
+3. **添加 E2E 测试**：覆盖 Delta Chain 完整流程

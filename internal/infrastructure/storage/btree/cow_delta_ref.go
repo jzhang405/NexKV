@@ -29,26 +29,26 @@ type Delta struct {
 
 // 物化配置默认值
 const (
-	DefaultDeltaChainThreshold      = 10  // Delta 链长度阈值
-	DefaultDeltaChainRatio          = 0.2 // 20% 比例阈值
-	DefaultHotPageThreshold         = 1000 // 热数据读取阈值
+	DefaultDeltaChainThreshold     = 10   // Delta 链长度阈值
+	DefaultDeltaChainRatio         = 0.2  // 20% 比例阈值
+	DefaultHotPageThreshold        = 1000 // 热数据读取阈值
 	DefaultMemoryPressureThreshold = 0.8  // 80% 内存压力阈值
 )
 
 // COWDeltaRefConfig COW Delta 引用配置
 type COWDeltaRefConfig struct {
-	MaxDeltas              int     // Delta 链长度阈值
-	DeltaRatio             float64 // 比例阈值（0-1）
-	HotPageThreshold       int64   // 热数据阈值
+	MaxDeltas               int     // Delta 链长度阈值
+	DeltaRatio              float64 // 比例阈值（0-1）
+	HotPageThreshold        int64   // 热数据阈值
 	MemoryPressureThreshold float64 // 内存压力阈值
 }
 
 // NewDefaultCOWDeltaRefConfig 创建默认配置
 func NewDefaultCOWDeltaRefConfig() *COWDeltaRefConfig {
 	return &COWDeltaRefConfig{
-		MaxDeltas:              DefaultDeltaChainThreshold,
-		DeltaRatio:             DefaultDeltaChainRatio,
-		HotPageThreshold:       DefaultHotPageThreshold,
+		MaxDeltas:               DefaultDeltaChainThreshold,
+		DeltaRatio:              DefaultDeltaChainRatio,
+		HotPageThreshold:        DefaultHotPageThreshold,
 		MemoryPressureThreshold: DefaultMemoryPressureThreshold,
 	}
 }
@@ -56,9 +56,9 @@ func NewDefaultCOWDeltaRefConfig() *COWDeltaRefConfig {
 // NewCOWDeltaRefConfigFromBTreeConfig 从 BTreeConfig 创建 Delta 引用配置
 func NewCOWDeltaRefConfigFromBTreeConfig(config *model.BTreeConfig) *COWDeltaRefConfig {
 	return &COWDeltaRefConfig{
-		MaxDeltas:              config.DeltaChainThreshold,
-		DeltaRatio:             config.DeltaChainRatio,
-		HotPageThreshold:       config.HotPageThreshold,
+		MaxDeltas:               config.DeltaChainThreshold,
+		DeltaRatio:              config.DeltaChainRatio,
+		HotPageThreshold:        config.HotPageThreshold,
 		MemoryPressureThreshold: config.MemoryPressureThreshold,
 	}
 }
@@ -72,13 +72,13 @@ func NewCOWDeltaRefConfigFromBTreeConfig(config *model.BTreeConfig) *COWDeltaRef
 // - maxDeltas: 物化阈值
 // - config: 物化配置
 type COWDeltaRef struct {
-	sharedKeys   [][]byte      // 共享的键数组
-	sharedValues [][]byte      // 共享的值数组
-	refCount     atomic.Int32  // 引用计数
-	deltas       []Delta       // 增量操作链
-	maxDeltas    int           // 增量阈值（已弃用，保留用于兼容）
-	mu           sync.RWMutex  // 保护增量链的读写
-	version      atomic.Uint64 // 版本号
+	sharedKeys   [][]byte           // 共享的键数组
+	sharedValues [][]byte           // 共享的值数组
+	refCount     atomic.Int32       // 引用计数
+	deltas       []Delta            // 增量操作链
+	maxDeltas    int                // 增量阈值（已弃用，保留用于兼容）
+	mu           sync.RWMutex       // 保护增量链的读写
+	version      atomic.Uint64      // 版本号
 	config       *COWDeltaRefConfig // 物化配置
 }
 
@@ -94,10 +94,10 @@ func NewCOWDeltaRefWithConfig(keys, values [][]byte, config *COWDeltaRefConfig) 
 		sharedValues: values,
 		// ✅ 性能优化：减少预分配容量，从 8 降到 0（按需增长）
 		// 大部分 Delta Chain 使用量很小（0-2），预分配 8 会浪费内存
-		deltas:       make([]Delta, 0, 0), // 按需增长，减少 22.7% 内存分配
-		maxDeltas:    config.MaxDeltas,      // 使用配置的阈值
-		version:      atomic.Uint64{},
-		config:       config,
+		deltas:    make([]Delta, 0), // 按需增长，减少 22.7% 内存分配
+		maxDeltas: config.MaxDeltas, // 使用配置的阈值
+		version:   atomic.Uint64{},
+		config:    config,
 	}
 	// 初始引用计数 = 1（创建者持有）
 	ref.refCount.Store(1)

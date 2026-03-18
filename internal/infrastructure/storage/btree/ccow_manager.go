@@ -179,6 +179,7 @@ func (ccow *CCOWManager) clonePageInfo(info *PageInfo) *PageInfo {
 
 	// ✅ 复制标志位（并发安全），但重置 isDirty
 	newInfo.flags.Store(info.flags.Load() &^ 0x01) // 保留 isSplitted，清除 isDirty
+	newInfo.parentRef.Store(info.parentRef.Load())
 
 	// ✅ 优化：移除 buff 复制逻辑（buff 字段已移除，序列化时使用 ChunkManager.pagePool）
 

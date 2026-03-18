@@ -71,6 +71,7 @@ func NewPageInfo() *PageInfo {
 	info.hits.Store(0)
 	info.flags.Store(0)                   // 初始化所有标志位为 0
 	info.parentRef.Store((*PageRef)(nil)) // ✅ 显式初始化为 nil
+	info.cloneStatus.Store(0)
 	return info
 }
 

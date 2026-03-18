@@ -1586,9 +1586,9 @@ ok  	github.com/jzhang405/NexKV/internal/infrastructure/storage/btree	(cached)
 
 | 项目 | 内容 |
 |------|------|
-| 文档最终版本 | V1.3（添加性能分析和优化建议） |
+| 文档最终版本 | V1.4（添加引用计数管理文档） |
 | 归档日期 | 2026-03-18 |
-| 更新日期 | 2026-03-18（性能分析：Delta Chain 快 4.9 倍） |
+| 更新日期 | 2026-03-18（新增 section 4.9：引用计数管理） |
 | 分支名称 | `fix/cow-delta-chain-materialize` |
 | 关联 Issue | 待创建 |
 | 后续维护人 | jzhang405 |

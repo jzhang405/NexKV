@@ -87,9 +87,10 @@ var (
 // - Lazy loading (only Root resident)
 // - Copy-on-Write concurrency control
 type BTree struct {
-	config   *model.BTreeConfig
-	closed   bool
-	closedMu sync.RWMutex
+	config    *model.BTreeConfig
+	cowConfig *COWDeltaRefConfig // COW Delta 物化配置
+	closed    bool
+	closedMu  sync.RWMutex
 
 	// Root management
 	rootRef *RootPageRef // Root page reference (atomic updates)
@@ -107,6 +108,11 @@ type BTree struct {
 
 	// Persistence coordination
 	writeMu sync.Mutex // Global write lock for persistence operations
+
+	// Performance optimization
+	stats          *PageStats         // 页面访问统计（热数据识别）
+	memMonitor     *MemoryMonitor     // 内存监控（内存压力检测）
+	hotPageThreshold int64            // 热数据阈值（来自配置）
 }
 
 // OpenBTree opens or creates a BTree storage engine with persistence support.
@@ -171,14 +177,25 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// Calculate max levels based on config
 	maxLevels := 10 // Default value
 
+	// 创建 COW Delta 物化配置
+	cowConfig := NewCOWDeltaRefConfigFromBTreeConfig(config)
+
+	// 创建性能优化组件
+	stats := NewPageStats()
+	memMonitor := NewMemoryMonitor(config.MemoryPressureThreshold)
+
 	btree := &BTree{
-		config:    config,
-		closed:    false,
-		rootRef:   rootPageRef,
-		chunkMgr:  chunkMgr,
-		wal:       walImpl,
-		maxLevels: maxLevels,
-		enableWAL: enableWAL,
+		config:           config,
+		cowConfig:        cowConfig,
+		closed:           false,
+		rootRef:          rootPageRef,
+		chunkMgr:         chunkMgr,
+		wal:              walImpl,
+		maxLevels:        maxLevels,
+		enableWAL:        enableWAL,
+		stats:            stats,
+		memMonitor:       memMonitor,
+		hotPageThreshold: config.HotPageThreshold,
 	}
 
 	// ✅ 应用 GC 配置（如果指定）
@@ -246,6 +263,9 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if !ok || leaf == nil {
 		return nil, fmt.Errorf("invalid leaf page type: %T", leafPage)
 	}
+
+	// 更新页面读计数（用于热数据识别）
+	b.stats.IncrementReadCount(leaf.GetPageID())
 
 	// Search for the key in the leaf page
 	value, found := leaf.Get(key)
@@ -525,6 +545,100 @@ func (b *BTree) Close() error {
 	return nil
 }
 
+// ===== 性能优化：热数据和内存监控 =====
+
+// StartBackgroundOptimization 启动后台优化任务
+// 定期优化热数据页面并衰减读计数
+func (b *BTree) StartBackgroundOptimization(ctx context.Context, interval time.Duration) {
+	if b.stats == nil {
+		return
+	}
+
+	ticker := time.NewTicker(interval)
+	go func() {
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				b.optimizeHotPages()
+				b.stats.DecayReadCounts(0.9) // 衰减 10%
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+// optimizeHotPages 优化热数据页面
+func (b *BTree) optimizeHotPages() {
+	// 获取读取次数最多的页面
+	topPages := b.stats.GetTopReadPages(100)
+
+	for _, pageID := range topPages {
+		// 获取当前根节点
+		rootInfo := b.rootRef.pInfo.Load()
+		if rootInfo == nil {
+			continue
+		}
+
+		// 查找页面（需要遍历树）
+		page := b.findPageByID(rootInfo, pageID)
+		if page == nil {
+			continue
+		}
+
+		// 检查是否为 LeafPage 且在 Delta 模式
+		if leafPage, ok := page.(*LeafPage); ok && leafPage.IsInDeltaMode() {
+			readCount := b.stats.GetReadCount(pageID)
+			// 热数据且有增量，物化优化
+			if readCount > b.hotPageThreshold && leafPage.GetDeltaCount() > 0 {
+				leafPage.materialize()
+			}
+		}
+	}
+}
+
+// findPageByID 根据 PageID 查找页面（辅助方法）
+func (b *BTree) findPageByID(rootInfo *PageInfo, pageID model.PageID) any {
+	if rootInfo == nil {
+		return nil
+	}
+
+	// 检查根节点
+	rootPage := rootInfo.GetPage()
+	if rootPage == nil {
+		return nil
+	}
+
+	// 如果根节点就是目标
+	if pg, ok := rootPage.(*LeafPage); ok && pg.GetPageID() == pageID {
+		return pg
+	}
+	if pg, ok := rootPage.(*InternalPage); ok && pg.GetPageID() == pageID {
+		return pg
+	}
+
+	// 对于 InternalPage，递归查找子节点
+	if internalPage, ok := rootPage.(*InternalPage); ok {
+		for _, childRef := range internalPage.children {
+			if childRef == nil {
+				continue
+			}
+			childInfo := childRef.GetPageInfo()
+			if childInfo == nil {
+				continue
+			}
+			page := b.findPageByID(childInfo, pageID)
+			if page != nil {
+				return page
+			}
+		}
+	}
+
+	return nil
+}
+
 // ===== 懒加载机制（Week 13-14 Day 1-2）=====
 
 // loadPage 从 ChunkManager 加载页面（懒加载核心封装）
@@ -681,6 +795,22 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 	_, err = leaf.Insert(key, value)
 	if err != nil {
 		return fmt.Errorf("insert into leaf: %w", err)
+	}
+
+	// ✅ 性能优化：检查是否需要因内存压力或热数据而物化
+	if leaf.IsInDeltaMode() && leaf.GetDeltaCount() > 0 {
+		// 检查内存压力
+		memPressure := b.memMonitor.IsUnderPressure()
+		refCount := leaf.GetRefCount()
+
+		// 检查是否为热数据
+		readCount := b.stats.GetReadCount(leaf.GetPageID())
+		isHotData := readCount > b.hotPageThreshold
+
+		// 内存压力或热数据触发物化
+		if (memPressure && refCount == 1) || isHotData {
+			leaf.materialize()
+		}
 	}
 
 	// Step 4: Check if we need to split the leaf
@@ -935,7 +1065,7 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 		if leafPage, ok := info.GetPage().(*LeafPage); ok && leafPage != nil {
 			// ✅ 原始实现：LeafPage 需要立即深拷贝，防止并发修改
 			newInfo = info.CloneShallow()
-			newInfo.page = leafPage.Clone() // 深拷贝 Page 对象
+			newInfo.page = leafPage.CloneDeep() // 深拷贝（独立数据）
 			newInfo.cloneStatus.Store(CloneStatusDeep)
 		} else {
 			// InternalPage 使用浅拷贝

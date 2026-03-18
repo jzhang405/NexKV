@@ -77,6 +77,32 @@ type BTreeConfig struct {
 	// 值为 off 表示禁用 GC（仅用于特殊场景）
 	// 优化：设置为 400 可以减少 GC 触发频率，提升性能
 	GCPercent int
+
+	// DeltaChainThreshold is the maximum number of deltas before auto-materialization.
+	// 物化阈值：Delta 链长度超过此值时自动物化
+	// 默认：10（可根据工作负载调整）
+	// - 读密集型：可以设置更高（15-20），减少物化频率
+	// - 写密集型：可以设置更低（5-8），更快物化
+	DeltaChainThreshold int
+
+	// DeltaChainRatio is the ratio threshold (0-1) for auto-materialization.
+	// 物化比例阈值：Delta 数量占页面大小的比例超过此值时物化
+	// 默认：0.2（20%）
+	// 例如：100 键的页面，增量超过 20 个时物化
+	DeltaChainRatio float64
+
+	// HotPageThreshold is the read count threshold for hot data identification.
+	// 热数据阈值：页面读取次数超过此值时识别为热数据
+	// 默认：1000 次
+	// - 读密集场景：可以设置更高（2000-5000）
+	// - 写密集场景：可以设置更低（500-800）
+	HotPageThreshold int64
+
+	// MemoryPressureThreshold is the memory usage threshold (0-1) for pressure detection.
+	// 内存压力阈值：内存使用率超过此值时触发内存压力物化
+	// 默认：0.8（80%）
+	// 当内存紧张且 refCount=1 时，立即物化以释放内存
+	MemoryPressureThreshold float64
 }
 
 const (
@@ -100,13 +126,17 @@ const (
 // NewDefaultBTreeConfig creates a default BTree configuration.
 func NewDefaultBTreeConfig() *BTreeConfig {
 	return &BTreeConfig{
-		PageSize:    DefaultPageSize,
-		MaxKeys:     DefaultMaxKeys,
-		MinKeys:     DefaultMinKeys,
-		MaxVersions: DefaultMaxVersions,
-		EnablePool:  true, // Phase 0.5 validation: Node using pool has 14.9x improvement
-		Compression: CompressionNone,
-		GCPercent:   100, // 默认 GC 行为（生产环境）
+		PageSize:                 DefaultPageSize,
+		MaxKeys:                  DefaultMaxKeys,
+		MinKeys:                  DefaultMinKeys,
+		MaxVersions:              DefaultMaxVersions,
+		EnablePool:               true, // Phase 0.5 validation: Node using pool has 14.9x improvement
+		Compression:              CompressionNone,
+		GCPercent:                100, // 默认 GC 行为（生产环境）
+		DeltaChainThreshold:      10,  // Delta 链长度阈值
+		DeltaChainRatio:          0.2, // 20% 比例阈值
+		HotPageThreshold:         1000, // 热数据读取阈值
+		MemoryPressureThreshold:  0.8, // 80% 内存压力阈值
 	}
 }
 

@@ -228,11 +228,11 @@ func TestInternalPage_Clone(t *testing.T) {
 
 	// 验证克隆的页面
 	assert.Equal(t, page.GetPageID(), cloned.GetPageID())
-	assert.Equal(t, page.GetVersion(), cloned.GetVersion())
+	assert.Equal(t, page.GetVersion()+1, cloned.GetVersion()) // Clone 会增加版本号
 	assert.Equal(t, page.NumKeys(), cloned.NumKeys())
 	assert.Equal(t, page.NumChildren(), cloned.NumChildren())
 
-	// 验证数据一致性（keys 是深拷贝）
+	// 验证数据一致性（keys 是共享的 - Delta Chain 模式）
 	for i := 0; i < page.NumKeys(); i++ {
 		assert.Equal(t, page.keys[i], cloned.keys[i])
 	}
@@ -242,10 +242,15 @@ func TestInternalPage_Clone(t *testing.T) {
 		assert.Same(t, page.children[i], cloned.children[i])
 	}
 
-	// 验证独立性：修改克隆页面的 keys 不影响原页面
-	cloned.keys[0] = []byte("modified")
-	assert.NotEqual(t, page.keys[0], cloned.keys[0])
-	assert.Equal(t, []byte("a"), page.keys[0])
+	// 验证共享性：克隆页面和原始页面共享 keys（Delta Chain 模式）
+	// 修改克隆页面的 keys 会影响原始页面（因为是共享的）
+	if len(cloned.keys) > 0 {
+		originalKey := cloned.keys[0]
+		cloned.keys[0] = []byte("modified")
+		assert.Equal(t, page.keys[0], cloned.keys[0], "keys should be shared")
+		// 恢复
+		cloned.keys[0] = originalKey
+	}
 }
 
 func TestInternalPage_Serialize(t *testing.T) {

@@ -23,8 +23,10 @@ func TestLeafPage_CloneWithDelta_Basic(t *testing.T) {
 	clone := page.CloneWithDelta()
 
 	require.NotNil(t, clone.cowDelta, "cowDelta should not be nil")
-	// 原始页面不在 Delta 模式，所以克隆页面持有 COWDeltaRef，refCount = 1（克隆者）
+	// 克隆页面有自己的 COWDeltaRef，refCount = 1
 	assert.Equal(t, int32(1), clone.cowDelta.GetRefCount(), "refCount should be 1 (only clone)")
+	// 原始页面不应该在 Delta 模式
+	assert.Nil(t, page.cowDelta, "original page should not be in delta mode")
 
 	// keys 和 values 应该指向相同的底层数组（验证共享）
 	// 修改底层数组应该同时影响原始页面和克隆页面
@@ -183,11 +185,10 @@ func TestLeafPage_CloneVsCloneWithDelta(t *testing.T) {
 	page.Insert([]byte("key1"), []byte("val1"))
 	page.Insert([]byte("key2"), []byte("val2"))
 
-	// Clone: 深拷贝（独立切片）
-	deepClone := page.Clone()
+	// CloneDeep: 深拷贝（独立切片）
+	deepClone := page.CloneDeep()
 	assert.Nil(t, deepClone.cowDelta, "deep clone should not have cowDelta")
-	// 注意：当前 Clone() 实现中，keys/values 切片是独立的，
-	// 但内部的 byte 数组可能共享（这是优化，不是 bug）
+	// 注意：CloneDeep() 实现中，keys/values 切片是独立的
 	// 验证切片独立性（通过替换整个元素）
 	if len(deepClone.keys) > 0 {
 		originalKey := deepClone.keys[0]
@@ -197,8 +198,8 @@ func TestLeafPage_CloneVsCloneWithDelta(t *testing.T) {
 		deepClone.keys[0] = originalKey
 	}
 
-	// CloneWithDelta: 零拷贝（共享 keys）
-	deltaClone := page.CloneWithDelta()
+	// Clone: Delta Chain 模式（共享 keys）
+	deltaClone := page.Clone()
 	assert.NotNil(t, deltaClone.cowDelta, "delta clone should have cowDelta")
 	// Delta 克隆应该共享 keys（验证底层数组共享）
 	if len(deltaClone.keys) > 0 && len(page.keys) > 0 {
@@ -249,13 +250,17 @@ func TestLeafPage_CloneWithDelta_IsInDeltaMode(t *testing.T) {
 	// 原始页面不在 Delta 模式
 	assert.False(t, page.IsInDeltaMode())
 
-	// Clone 仍在不在 Delta 模式
-	deepClone := page.Clone()
+	// CloneDeep 不在 Delta 模式（深拷贝）
+	deepClone := page.CloneDeep()
 	assert.False(t, deepClone.IsInDeltaMode())
 
-	// CloneWithDelta 在 Delta 模式
-	deltaClone := page.CloneWithDelta()
+	// Clone (Delta Chain 模式)
+	deltaClone := page.Clone()
 	assert.True(t, deltaClone.IsInDeltaMode())
+
+	// CloneWithDelta 等同于 Clone
+	deltaClone2 := page.CloneWithDelta()
+	assert.True(t, deltaClone2.IsInDeltaMode())
 }
 
 // TestLeafPage_CloneWithDelta_GetDeltaCount 测试 GetDeltaCount

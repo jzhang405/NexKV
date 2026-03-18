@@ -178,7 +178,7 @@ func TestLeafPage_Clone(t *testing.T) {
 
 	// 验证克隆的页面
 	assert.Equal(t, page.GetPageID(), cloned.GetPageID())
-	assert.Equal(t, page.GetVersion(), cloned.GetVersion())
+	assert.Equal(t, page.GetVersion()+1, cloned.GetVersion()) // Clone 会增加版本号
 	assert.Equal(t, page.NumKeys(), cloned.NumKeys())
 
 	// 验证数据一致性（通过 Get 方法）

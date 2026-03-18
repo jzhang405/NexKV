@@ -53,8 +53,8 @@ func TestInternalPage_CloneVsCloneWithDelta(t *testing.T) {
 	childRef := NewPageRef()
 	page.InsertKeyChild(key, childRef)
 
-	// Clone: 深拷贝（keys 和 children 都独立）
-	deepClone := page.Clone()
+	// CloneDeep: 深拷贝（keys 和 children 都独立）
+	deepClone := page.CloneDeep()
 	assert.Nil(t, deepClone.cowDelta, "deep clone should not have cowDelta")
 	// keys 和 children 应该是独立的副本（通过修改验证）
 	if len(deepClone.keys) > 0 {
@@ -64,8 +64,8 @@ func TestInternalPage_CloneVsCloneWithDelta(t *testing.T) {
 		deepClone.keys[0][0] = page.keys[0][0]
 	}
 
-	// CloneWithDelta: 半零拷贝（keys 共享，children 独立）
-	deltaClone := page.CloneWithDelta()
+	// Clone: Delta Chain 模式（keys 共享，children 独立）
+	deltaClone := page.Clone()
 	assert.NotNil(t, deltaClone.cowDelta, "delta clone should have cowDelta")
 	// children 应该独立（通过验证长度相同）
 	assert.Equal(t, len(page.children), len(deltaClone.children), "children should have same length")
@@ -90,13 +90,17 @@ func TestInternalPage_CloneWithDelta_IsInDeltaMode(t *testing.T) {
 	// 原始页面不在 Delta 模式
 	assert.False(t, page.IsInDeltaMode())
 
-	// Clone 仍在不在 Delta 模式
-	deepClone := page.Clone()
+	// CloneDeep 不在 Delta 模式
+	deepClone := page.CloneDeep()
 	assert.False(t, deepClone.IsInDeltaMode())
 
-	// CloneWithDelta 在 Delta 模式
-	deltaClone := page.CloneWithDelta()
+	// Clone (Delta Chain 模式)
+	deltaClone := page.Clone()
 	assert.True(t, deltaClone.IsInDeltaMode())
+
+	// CloneWithDelta 等同于 Clone
+	deltaClone2 := page.CloneWithDelta()
+	assert.True(t, deltaClone2.IsInDeltaMode())
 }
 
 // TestInternalPage_CloneWithDelta_Version 测试版本号递增

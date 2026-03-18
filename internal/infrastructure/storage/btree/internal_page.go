@@ -316,7 +316,9 @@ func (p *InternalPage) Split() (*InternalPage, []byte, error) {
 // InternalPage 的特殊性：
 // - keys: 使用 Delta Chain 共享（零拷贝）
 // - children: 深拷贝（因为 PageRef 包含原子指针，且需要独立）
-func (p *InternalPage) Clone() *InternalPage {
+//
+// config: 可选的 COW 配置，如果不提供则使用默认配置
+func (p *InternalPage) Clone(config ...*COWDeltaRefConfig) *InternalPage {
 	var cowRef *COWDeltaRef
 
 	// 如果已有 COW 引用，增加引用计数
@@ -325,8 +327,14 @@ func (p *InternalPage) Clone() *InternalPage {
 		cowRef = p.cowDelta
 	} else {
 		// 创建新的 COW 引用（只共享 keys，不包含 children）
-		cowRef = NewCOWDeltaRef(p.keys, nil) // values 为 nil，因为 InternalPage 不需要
-		cowRef.Retain() // refCount: 1 → 2（原始页面 + 新克隆）
+		// values 为 nil，因为 InternalPage 不需要
+		if len(config) > 0 && config[0] != nil {
+			cowRef = NewCOWDeltaRefWithConfig(p.keys, nil, config[0])
+		} else {
+			cowRef = NewCOWDeltaRef(p.keys, nil)
+		}
+		// refCount = 1（只有克隆页面持有这个 COWDeltaRef）
+		// 原始页面保持独立，不进入 Delta 模式
 	}
 
 	// children 必须深拷贝（因为包含 PageRef，且有原子操作）

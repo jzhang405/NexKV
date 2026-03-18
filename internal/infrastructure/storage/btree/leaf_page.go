@@ -409,8 +409,10 @@ func (p *LeafPage) Split() (*LeafPage, []byte, error) {
 // 与 CloneDeep() 的区别：
 // - Clone(): Delta Chain 模式，共享 keys/values，使用增量链记录修改
 // - CloneDeep(): 深拷贝模式，返回完全独立的副本（~1423 ns/op）
-func (p *LeafPage) Clone() *LeafPage {
-	// 如果已有 COW 引用，增加引用计数
+//
+// config: 可选的 COW 配置，如果不提供则使用默认配置
+func (p *LeafPage) Clone(config ...*COWDeltaRefConfig) *LeafPage {
+	// 如果已有 COW 引用，增加引用计数并返回新克隆
 	if p.cowDelta != nil {
 		p.cowDelta.Retain()
 		return &LeafPage{
@@ -423,9 +425,16 @@ func (p *LeafPage) Clone() *LeafPage {
 		}
 	}
 
-	// 创建新的 COW 引用
-	cowRef := NewCOWDeltaRef(p.keys, p.values)
-	cowRef.Retain() // refCount: 1 → 2（原始页面 + 新克隆）
+	// 创建新的 COW 引用（共享 keys/values）
+	// 注意：克隆页面有自己的 COWDeltaRef，但共享相同的 keys/values
+	var cowRef *COWDeltaRef
+	if len(config) > 0 && config[0] != nil {
+		cowRef = NewCOWDeltaRefWithConfig(p.keys, p.values, config[0])
+	} else {
+		cowRef = NewCOWDeltaRef(p.keys, p.values)
+	}
+	// refCount = 1（只有克隆页面持有这个 COWDeltaRef）
+	// 原始页面保持独立，不进入 Delta 模式
 
 	return &LeafPage{
 		pageID:   p.pageID,

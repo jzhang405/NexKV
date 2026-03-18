@@ -321,10 +321,23 @@ func (p *InternalPage) Split() (*InternalPage, []byte, error) {
 func (p *InternalPage) Clone(config ...*COWDeltaRefConfig) *InternalPage {
 	var cowRef *COWDeltaRef
 
-	// 如果已有 COW 引用，增加引用计数
+	// 如果已有 COW 引用，检查是否可以重用
 	if p.cowDelta != nil {
-		p.cowDelta.Retain()
-		cowRef = p.cowDelta
+		// ✅ 关键修复：检查 p.keys 是否与 cowDelta.sharedKeys 同步
+		// 如果 p.keys 的长度与 sharedKeys 的长度不一致，说明 p.keys 已被修改
+		// 需要创建新的 COWDeltaRef，而不是重用旧的
+		if len(p.keys) != len(p.cowDelta.GetSharedKeys()) {
+			// p.keys 已被修改（如 InsertKeyChild），创建新的 COWDeltaRef
+			if len(config) > 0 && config[0] != nil {
+				cowRef = NewCOWDeltaRefWithConfig(p.keys, nil, config[0])
+			} else {
+				cowRef = NewCOWDeltaRef(p.keys, nil)
+			}
+		} else {
+			// 可以重用现有的 cowDelta
+			p.cowDelta.Retain()
+			cowRef = p.cowDelta
+		}
 	} else {
 		// 创建新的 COW 引用（只共享 keys，不包含 children）
 		// values 为 nil，因为 InternalPage 不需要

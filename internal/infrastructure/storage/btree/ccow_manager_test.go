@@ -206,7 +206,7 @@ func TestCCOWManager_MultipleSnapshots(t *testing.T) {
 	gc := NewBTreeGC(cm, 1024)
 	ccow := NewCCOWManager(gc)
 
-	// ✅ 修复：使用新的 LeafPage 类型替代旧的 *Page 类型
+	// 修复：使用新的 LeafPage 类型替代旧的 *Page 类型
 	rootPage := NewLeafPage(1)
 	rootInfo := NewPageInfo()
 	rootInfo.SetPage(rootPage)
@@ -218,7 +218,7 @@ func TestCCOWManager_MultipleSnapshots(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, uint64(0), snapshot1.Version, "Initial version should be 0")
 
-	// ✅ 修复：通过 IncrementVersion() 方法增加版本，而不是直接修改字段
+	// 修复：通过 IncrementVersion() 方法增加版本，而不是直接修改字段
 	rootPage.IncrementVersion()
 
 	// 创建第二个快照（version = 1）
@@ -231,7 +231,7 @@ func TestCCOWManager_MultipleSnapshots(t *testing.T) {
 	assert.Greater(t, snapshot2.Version, snapshot1.Version)
 
 	// 验证两个快照的完整性
-	// ✅ 修复：在 CCOW 架构中，快照共享同一个 RootPageRef
+	// 修复：在 CCOW 架构中，快照共享同一个 RootPageRef
 	// 所以 snapshot1 和 snapshot2 都指向同一个 rootPage，其当前 version 是 1
 	// snapshot1.Version 记录的是创建时的版本（0），与当前 version（1）不匹配
 	valid1, err := ccow.VerifySnapshotIntegrity(snapshot1.ID)
@@ -250,7 +250,7 @@ func TestCCOWManager_ConcurrentSnapshots(t *testing.T) {
 	gc := NewBTreeGC(cm, 1024)
 	ccow := NewCCOWManager(gc)
 
-	// ✅ 修复：使用新的 LeafPage 类型替代旧的 *Page 类型
+	// 修复：使用新的 LeafPage 类型替代旧的 *Page 类型
 	rootPage := NewLeafPage(1)
 	rootInfo := NewPageInfo()
 	rootInfo.SetPage(rootPage)

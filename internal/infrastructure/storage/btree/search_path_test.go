@@ -10,9 +10,9 @@ import (
 
 // TestBTree_searchPath_Basic 测试基本的路径搜索
 func TestBTree_searchPath_Basic(t *testing.T) {
-	t.Skip("Skipping test - searchPath implementation pending (Week 13-14)")
+	t.Skip("Skipping test - searchPath implementation pending ")
 
-	// TODO: Week 13-14 - 启用此测试
+	// TODO: 启用此测试
 	// 1. 创建 BTree（使用新的 PageRef 架构）
 	// 2. 插入一些键值对
 	// 3. 搜索某个 key
@@ -21,9 +21,9 @@ func TestBTree_searchPath_Basic(t *testing.T) {
 
 // TestBTree_searchPath_EmptyTree 测试空树的搜索
 func TestBTree_searchPath_EmptyTree(t *testing.T) {
-	t.Skip("Skipping test - searchPath implementation pending (Week 13-14)")
+	t.Skip("Skipping test - searchPath implementation pending ")
 
-	// TODO: Week 13-14 - 启用此测试
+	// TODO: 启用此测试
 	// 1. 创建空的 BTree
 	// 2. 搜索 key
 	// 3. 验证路径只包含 Root
@@ -31,9 +31,9 @@ func TestBTree_searchPath_EmptyTree(t *testing.T) {
 
 // TestBTree_searchPath_ContextCancel 测试上下文取消
 func TestBTree_searchPath_ContextCancel(t *testing.T) {
-	t.Skip("Skipping test - searchPath implementation pending (Week 13-14)")
+	t.Skip("Skipping test - searchPath implementation pending ")
 
-	// TODO: Week 13-14 - 启用此测试
+	// TODO: 启用此测试
 	// 1. 创建已取消的 context
 	// 2. 调用 searchPath
 	// 3. 验证返回 ctx.Err()
@@ -41,9 +41,9 @@ func TestBTree_searchPath_ContextCancel(t *testing.T) {
 
 // TestBTree_searchPath_MaxLevels 测试最大层级限制
 func TestBTree_searchPath_MaxLevels(t *testing.T) {
-	t.Skip("Skipping test - searchPath implementation pending (Week 13-14)")
+	t.Skip("Skipping test - searchPath implementation pending ")
 
-	// TODO: Week 13-14 - 启用此测试
+	// TODO: 启用此测试
 	// 1. 创建深度 > maxLevels 的树
 	// 2. 搜索叶子节点
 	// 3. 验证返回错误

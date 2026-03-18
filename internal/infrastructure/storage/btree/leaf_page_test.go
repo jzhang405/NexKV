@@ -142,7 +142,7 @@ func TestLeafPage_Split(t *testing.T) {
 	assert.Equal(t, []byte("a"), page.keys[0])
 	assert.Equal(t, []byte("b"), page.keys[1])
 
-	// ✅ Day 10-11: 新分裂逻辑 - 右子节点包含分裂键
+	// 新分裂逻辑 - 右子节点包含分裂键
 	// 验证新页面包含后半部分（包含分裂键）
 	assert.Equal(t, 3, newPage.NumKeys())
 	assert.Equal(t, []byte("c"), newPage.keys[0]) // 包含分裂键

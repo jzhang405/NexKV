@@ -166,7 +166,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	}
 
 	// Create RootPageRef for atomic root updates
-	// ✅ Day 10-11: 初始化空的根叶子节点
+	// 初始化空的根叶子节点
 	initialRootPage := NewLeafPage(model.PageID(0)) // 根叶子节点 ID = 0
 	initialRootInfo := NewPageInfo()
 	initialRootInfo.SetPage(initialRootPage)
@@ -198,7 +198,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		hotPageThreshold: config.HotPageThreshold,
 	}
 
-	// ✅ 应用 GC 配置（如果指定）
+	// 应用 GC 配置（如果指定）
 	// 注意：这会影响整个进程，使用时需谨慎
 	if config.GCPercent > 0 {
 		debug.SetGCPercent(config.GCPercent)
@@ -264,7 +264,7 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, fmt.Errorf("invalid leaf page type: %T", leafPage)
 	}
 
-	// ✅ 性能优化：移除热数据统计调用，避免每次 Get() 都加锁
+	// 性能优化：移除热数据统计调用，避免每次 Get() 都加锁
 	// 原代码：b.stats.IncrementReadCount(leaf.GetPageID())
 
 	// Search for the key in the leaf page
@@ -321,7 +321,7 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 		return ErrClosed
 	}
 
-	// ✅ Day 10-11: 实现 Delete 操作，集成 mergeLeaf
+	// 实现 Delete 操作，集成 mergeLeaf
 	const maxRetries = 3
 
 	for attempt := range maxRetries {
@@ -360,13 +360,13 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 		// 5. 检查是否需要 Merge
 		const minKeys = 8
 		if leaf.NumKeys() < minKeys && len(path) >= 2 {
-			// ✅ 重新启用 Merge，使用原始 path 访问兄弟节点
+			// 重新启用 Merge，使用原始 path 访问兄弟节点
 			if err := b.mergeLeaf(leafInfo, copiedPath, path); err != nil {
 				return fmt.Errorf("merge leaf: %w", err)
 			}
 		}
 
-		// 6. ✅ CAS 更新根节点（带重试）
+		// 6. CAS 更新根节点（带重试）
 		newRootInfo := copiedPath[0]
 		oldRootInfo := b.rootRef.pInfo.Load()
 		oldRootID := uint64(0)
@@ -515,9 +515,9 @@ func (b *BTree) insertFromWAL(key, value []byte) error {
 
 // allocatePageID allocates a new unique page ID.
 // This ensures that each newly created page has a unique identifier.
-// ✅ 无锁实现：使用 atomic.Uint64
+// 无锁实现：使用 atomic.Uint64
 func (b *BTree) allocatePageID() model.PageID {
-	// ✅ 使用 atomic.Add(1) 原子操作：读取旧值、加1、返回新值
+	// 使用 atomic.Add(1) 原子操作：读取旧值、加1、返回新值
 	// 完全无锁，多个 goroutine 可以并发调用
 	return model.PageID(b.nextPageID.Add(1))
 }
@@ -643,7 +643,7 @@ func (b *BTree) findPageByID(rootInfo *PageInfo, pageID model.PageID) any {
 	return nil
 }
 
-// ===== 懒加载机制（Week 13-14 Day 1-2）=====
+// ===== 懒加载机制 =====
 
 // loadPage 从 ChunkManager 加载页面（懒加载核心封装）
 // 这是 BTree 对 ChunkManager.LoadPage() 的封装，提供统一的错误处理
@@ -724,7 +724,6 @@ func (b *BTree) GetHeight(ctx context.Context) (int, error) {
 		return 0, ErrClosed
 	}
 
-	// ✅ P0-5 实现: 使用 RootPageRef API 计算树的高度
 	return b.GetDepth(), nil
 }
 
@@ -752,7 +751,7 @@ func (b *BTree) Validate(ctx context.Context) error {
 	return ErrNotImplemented
 }
 
-// ===== Week 13 Day 5: Get/Set Helper Methods =====
+// ===== Get/Set Helper Methods =====
 
 // setWithCAS attempts to insert a key-value pair using CAS.
 //
@@ -763,7 +762,7 @@ func (b *BTree) Validate(ctx context.Context) error {
 // 4. Try to atomically update the root using CAS
 // 5. Return ErrRetry if CAS fails (concurrent write detected)
 func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
-	// ✅ 关键修复：在开始时记录 oldRootInfo 和 oldRootID
+	// 在开始时记录 oldRootInfo 和 oldRootID
 	// 这样 CAS 时使用的是与 path 一致的根节点引用
 	oldRootInfo := b.rootRef.pInfo.Load()
 	oldRootID := uint64(0)
@@ -781,7 +780,7 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 		return fmt.Errorf("empty path")
 	}
 
-	// Step 2: ✅ 使用浅拷贝创建路径副本（延迟深拷贝优化）
+	// Step 2: 使用浅拷贝创建路径副本（延迟深拷贝优化）
 	copiedPath, err := b.copyPathWithDelta(path)
 	if err != nil {
 		return fmt.Errorf("copy path with delta: %w", err)
@@ -805,13 +804,9 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 		return fmt.Errorf("insert into leaf: %w", err)
 	}
 
-	// ✅ 性能优化：移除内存压力和热数据检查，避免每次 Set() 的昂贵开销
-	// 原代码检查：memMonitor.IsUnderPressure() 和 stats.GetReadCount()
-	// Delta Chain 会在必要时自动物化（通过 ShouldMaterialize）
-
 	// Step 4: Check if we need to split the leaf
 	if leaf.NumKeys() > splitThreshold {
-		// ✅ 按需 Clone：需要分裂时，分裂逻辑使用已克隆的完整路径
+		// 按需 Clone：需要分裂时，分裂逻辑使用已克隆的完整路径
 		// 调用分裂（copiedPath 已经包含完整的克隆路径）
 		leafInfo = copiedPath[len(copiedPath)-1]
 
@@ -820,7 +815,7 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 			return fmt.Errorf("split leaf: %w", err)
 		}
 
-		// ✅ 修复：分裂后重新获取 leaf 和 leafInfo，确保它们指向修改后的对象
+		// 分裂后重新获取 leaf 和 leafInfo，确保它们指向修改后的对象
 		// 分裂可能修改了 leafInfo.page，需要重新获取
 		leafInfo = copiedPath[len(copiedPath)-1]
 		leafPage = leafInfo.GetPage()
@@ -832,7 +827,7 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 			return fmt.Errorf("invalid leaf page type after split: %T", leafPage)
 		}
 
-		// ✅ 修复：检查是否需要继续插入
+		// 修复：检查是否需要继续插入
 		// 分裂后，键可能已经被插入到正确的位置
 		_, found := leaf.search(key)
 		if found {
@@ -855,7 +850,7 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 				return ErrRetry
 			}
 
-			// ✅ 性能优化：仅持久化模式需要深拷贝
+			// 性能优化：仅持久化模式需要深拷贝
 			if b.chunkMgr != nil {
 				if err := b.finalizeDeepClone(copiedPath); err != nil {
 					return fmt.Errorf("finalize deep clone after split: %w", err)
@@ -873,19 +868,19 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 	newRootInfo := copiedPath[0]
 
 	// Step 6: CAS 更新根节点
-	// ✅ 使用操作开始时记录的 oldRootID，而不是当前的
+	// 使用操作开始时记录的 oldRootID，而不是当前的
 	if !b.rootRef.ReplacePage(oldRootID, newRootInfo) {
 		// CAS 失败，触发重试
-		// ✅ 浅拷贝的 Page 是共享的，不需要额外处理
+		// 浅拷贝的 Page 是共享的，不需要额外处理
 		return ErrRetry
 	}
 
-	// ✅ CAS 成功后，获取全局写锁
+	// CAS 成功后，获取全局写锁
 	// 防止并发修改干扰 finalizeDeepClone 和 persistRoot
 	b.writeMu.Lock()
 	defer b.writeMu.Unlock()
 
-	// ✅ 性能优化：仅持久化模式需要深拷贝
+	// 性能优化：仅持久化模式需要深拷贝
 	// 纯内存模式下，Delta Chain 已经提供了写时复制语义，无需深拷贝
 	// 这可以减少 52.79% 的内存分配，大幅降低 GC 压力
 	if b.chunkMgr != nil {
@@ -894,9 +889,9 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 			return fmt.Errorf("finalize deep clone: %w", err)
 		}
 
-		// Step 7: ✅ Day 9: 持久化集成
+		// Step 7: 持久化集成
 		// CAS 更新成功后，持久化整个树
-		// ✅ 修复：传递 copiedPath[0] 而不是从 rootRef 加载
+		// 修复：传递 copiedPath[0] 而不是从 rootRef 加载
 		// 这确保持久化的是当前线程修改的树，而不是其他线程并发修改的树
 		if err := b.persistRoot(copiedPath[0]); err != nil {
 			// 持久化失败，记录错误但不中断操作
@@ -915,7 +910,7 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 // Page objects for each. This ensures that concurrent readers can still
 // access the old version while the writer modifies the new version.
 //
-// ✅ 修复：使用 PageID 来正确匹配和更新 InternalPage 的子节点引用
+// 修复：使用 PageID 来正确匹配和更新 InternalPage 的子节点引用
 func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 	if len(path) == 0 {
 		return nil, fmt.Errorf("empty path")
@@ -923,7 +918,7 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 
 	copiedPath := make([]*PageInfo, len(path))
 
-	// ✅ 优化：预先构建 PageID -> PageInfo 映射表，避免 O(n²) 嵌套循环
+	// 优化：预先构建 PageID -> PageInfo 映射表，避免 O(n²) 嵌套循环
 	pageInfoMap := make(map[model.PageID]*PageInfo, len(path))
 	for _, info := range path {
 		var pageID model.PageID
@@ -958,7 +953,7 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 
 	// Rebuild child references for InternalPages
 	for _, info := range copiedPath {
-		// ✅ 关键修复：如果是 InternalPage，需要重建子节点引用
+		// 关键修复：如果是 InternalPage，需要重建子节点引用
 		// 因为 InternalPage.Clone() 只是浅拷贝了 children[]
 		//
 		// 方法：使用 PageID 来匹配子节点，而不是对象地址
@@ -992,13 +987,13 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 					continue
 				}
 
-				// ✅ 优化：使用映射表进行 O(1) 查找，避免嵌套循环
+				// 优化：使用映射表进行 O(1) 查找，避免嵌套循环
 				childReplacement := pageInfoMap[childPageID]
 
 				if childReplacement != nil {
 					// 子节点在路径中，使用克隆的 PageInfo
 					newChildRef := NewPageRefWithInfo(childReplacement)
-					// ✅ 设置 parentRef：指向当前克隆的 InternalPage（使用 atomic.Value）
+					// 设置 parentRef：指向当前克隆的 InternalPage（使用 atomic.Value）
 					newChildRef.SetParentRef(b.rootRef.PageRef)
 					internalPage.children[j] = newChildRef
 				} else {
@@ -1036,10 +1031,10 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 
 	copiedPath := make([]*PageInfo, len(path))
 
-	// ✅ 优化：预先构建 PageID -> PageInfo 映射表
+	// 优化：预先构建 PageID -> PageInfo 映射表
 	pageInfoMap := make(map[model.PageID]*PageInfo, len(path))
 	for _, info := range path {
-		// ✅ 调试：检查原始 path 中的 InternalPage 不变式
+		// 调试：检查原始 path 中的 InternalPage 不变式
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
 			if len(internalPage.children) != len(internalPage.keys)+1 {
 				fmt.Printf("[DEBUG] copyPathShallow: invariant violated in ORIGINAL path: pageID=%d, len(keys)=%d, len(children)=%d\n",
@@ -1060,11 +1055,11 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 	}
 
 	// Clone all PageInfos in the path (使用 CloneShallow)
-	// ✅ 原始实现：LeafPage 立即深拷贝
+	// 原始实现：LeafPage 立即深拷贝
 	for i, info := range path {
 		var newInfo *PageInfo
 		if leafPage, ok := info.GetPage().(*LeafPage); ok && leafPage != nil {
-			// ✅ 原始实现：LeafPage 需要立即深拷贝，防止并发修改
+			// 原始实现：LeafPage 需要立即深拷贝，防止并发修改
 			newInfo = info.CloneShallow()
 			newInfo.page = leafPage.CloneDeep() // 深拷贝（独立数据）
 			newInfo.cloneStatus.Store(CloneStatusDeep)
@@ -1124,14 +1119,14 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 				if childReplacement != nil {
 					// 子节点在路径中，使用浅拷贝的 PageInfo
 					newChildRef := NewPageRefWithInfo(childReplacement)
-					// ✅ 优化：使用 SetParentRef（atomic.Value）
+					// 优化：使用 SetParentRef（atomic.Value）
 					newChildRef.SetParentRef(b.rootRef.PageRef)
 					internalPage.children[j] = newChildRef
 				} else {
 					// 子节点不在路径中，创建浅拷贝
 					shallowChildInfo := childInfo.CloneShallow()
 					newChildRef := NewPageRefWithInfo(shallowChildInfo)
-					// ✅ 优化：使用 SetParentRef（atomic.Value）
+					// 优化：使用 SetParentRef（atomic.Value）
 					newChildRef.SetParentRef(b.rootRef.PageRef)
 					internalPage.children[j] = newChildRef
 				}
@@ -1157,7 +1152,7 @@ func (b *BTree) finalizeDeepClone(copiedPath []*PageInfo) error {
 		return nil
 	}
 
-	// ✅ 构建映射表：PageID -> 深拷贝后的 PageInfo
+	// 构建映射表：PageID -> 深拷贝后的 PageInfo
 	deepClonedMap := make(map[model.PageID]*PageInfo, len(copiedPath))
 
 	// Phase 1: 将所有浅拷贝转为深拷贝
@@ -1230,7 +1225,7 @@ func (b *BTree) finalizeDeepClone(copiedPath []*PageInfo) error {
 				if deepClonedChild != nil {
 					// 使用深拷贝的 PageInfo
 					newChildRef := NewPageRefWithInfo(deepClonedChild)
-					// ✅ 优化：使用 SetParentRef（atomic.Value）
+					// 优化：使用 SetParentRef（atomic.Value）
 					newChildRef.SetParentRef(b.rootRef.PageRef)
 					internalPage.children[j] = newChildRef
 				}
@@ -1292,7 +1287,7 @@ func (b *BTree) copyPathWithDelta(path []*PageInfo) ([]*PageInfo, error) {
 // rebuildChildRefs 重建子节点引用（辅助方法）
 // 用于 copyPathWithDelta 和 copyPathShallow
 func (b *BTree) rebuildChildRefs(originalPath, copiedPath []*PageInfo) ([]*PageInfo, error) {
-	// ✅ 性能优化：使用 copiedPageIDMap（从 clonedPath 构建）
+	// 性能优化：使用 copiedPageIDMap（从 clonedPath 构建）
 	// 只重建路径中的节点引用，避免全局遍历
 	copiedPageIDMap := make(map[model.PageID]*PageInfo, len(copiedPath))
 	for _, info := range copiedPath {
@@ -1308,7 +1303,7 @@ func (b *BTree) rebuildChildRefs(originalPath, copiedPath []*PageInfo) ([]*PageI
 		copiedPageIDMap[pageID] = info
 	}
 
-	// ✅ 关键修复：始终更新子节点引用，无论 childInfo 是否为 nil
+	// 关键修复：始终更新子节点引用，无论 childInfo 是否为 nil
 	// Root cause：InternalPage.Clone() 复制 PageRef 指针，PageRef.GetPageInfo() 指向原始 PageInfo
 	//           必须更新为 copiedPath 中的克隆 PageInfo
 	for _, info := range copiedPath {
@@ -1336,7 +1331,7 @@ func (b *BTree) rebuildChildRefs(originalPath, copiedPath []*PageInfo) ([]*PageI
 					continue
 				}
 
-				// ✅ 跳过自身，避免匹配错误
+				// 跳过自身，避免匹配错误
 				if childPageID == selfPageID {
 					continue
 				}
@@ -1344,7 +1339,7 @@ func (b *BTree) rebuildChildRefs(originalPath, copiedPath []*PageInfo) ([]*PageI
 				// 在 copiedPath 中查找对应的 PageInfo
 				copiedChildInfo := copiedPageIDMap[childPageID]
 
-				// ✅ 始终更新子节点引用（即使 childInfo != nil）
+				// 始终更新子节点引用（即使 childInfo != nil）
 				// 原因：childInfo 指向原始路径中的 PageInfo，需要更新为克隆的 PageInfo
 				if copiedChildInfo != nil {
 					newChildRef := NewPageRefWithInfo(copiedChildInfo)
@@ -1624,14 +1619,14 @@ func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, key []byte, spl
 		oldRootID = oldRootInfo.GetPageID()
 	}
 	if !b.rootRef.ReplacePage(oldRootID, newRootInfo) {
-		// ✅ CAS 失败，返回 false 让调用者重试
+		// CAS 失败，返回 false 让调用者重试
 		return false, nil
 	}
 
-	// ✅ CAS 成功，更新 copiedPath[0] 以保持一致性
+	// CAS 成功，更新 copiedPath[0] 以保持一致性
 	copiedPath[0] = newRootInfo
 
-	// ✅ 修复：确定新键应该去哪个子节点，更新 copiedPath[len(copiedPath)-1]
+	// 修复：确定新键应该去哪个子节点，更新 copiedPath[len(copiedPath)-1]
 	// LeafPage.Split() 后，左页面包含键 [0, mid)，右页面包含键 [mid, end)
 	// 分裂键 splitKey = keys[mid] 在右页面中
 	// 所以：key < splitKey 去 leftInfo，key >= splitKey 去 rightInfo
@@ -1643,12 +1638,12 @@ func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, key []byte, spl
 	}
 	copiedPath[len(copiedPath)-1] = targetLeafInfo
 
-	// 5. ✅ Day 7: 引用更新机制
+	// 5. 引用更新机制
 	// 更新子节点的 parentRef
 	leftInfo.SetParentRef(b.rootRef.PageRef)
 	rightInfo.SetParentRef(b.rootRef.PageRef)
 
-	// 6. ✅ Day 9: 持久化集成
+	// 6. 持久化集成
 	// 分裂完成后，持久化整个树
 	if b.chunkMgr != nil {
 		if err := b.persistRoot(newRootInfo); err != nil {
@@ -1656,14 +1651,14 @@ func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, key []byte, spl
 		}
 	}
 
-	// ✅ CAS 成功，返回 true
+	// CAS 成功，返回 true
 	return true, nil
 }
 
 // splitInternal 分裂内部节点（CCOW 版本）
 // 当内部节点满时（len(keys) > 15），进行分裂操作
 //
-// ✅ Day 7: 完整实现，支持 CCOW 和引用更新
+// 完整实现，支持 CCOW 和引用更新
 //
 // 参数：
 //
@@ -1764,18 +1759,18 @@ func (b *BTree) splitRootFromInternal(leftInfo, rightInfo *PageInfo, splitKey []
 		return ErrRetry
 	}
 
-	// 5. ✅ Day 7: 引用更新机制
+	// 5. 引用更新机制
 	// 更新子节点的 parentRef
 	leftInfo.SetParentRef(b.rootRef.PageRef)
 	rightInfo.SetParentRef(b.rootRef.PageRef)
 
-	// 6. ✅ Day 7: 递归更新子节点树
+	// 6. 递归更新子节点树
 	// 更新左子树的所有子孙节点的 parentRef
 	b.updateChildrenParentRefs(leftInfo, b.rootRef.PageRef)
 	// 更新右子树的所有子孙节点的 parentRef
 	b.updateChildrenParentRefs(rightInfo, b.rootRef.PageRef)
 
-	// 7. ✅ Day 9: 持久化集成
+	// 7. 持久化集成
 	// 分裂完成后，持久化整个树
 	if b.chunkMgr != nil {
 		if err := b.persistRoot(newRootInfo); err != nil {
@@ -1787,7 +1782,7 @@ func (b *BTree) splitRootFromInternal(leftInfo, rightInfo *PageInfo, splitKey []
 }
 
 // updateChildrenParentRefs 递归更新子节点树的 parentRef
-// ✅ Day 7: 引用更新机制的核心方法
+// 引用更新机制的核心方法
 //
 // 参数：
 //
@@ -1824,7 +1819,7 @@ func (b *BTree) updateChildrenParentRefs(pageInfo *PageInfo, parentRef *PageRef)
 	}
 }
 
-// ===== Day 9: Persistence Integration =====
+// ===== Persistence Integration =====
 
 // persistPage 持久化单个页面到 ChunkManager
 //
@@ -2020,7 +2015,6 @@ func (b *BTree) mergeLeaf(leafInfo *PageInfo, copiedPath, path []*PageInfo) erro
 		return nil
 	}
 
-	// ✅ P0-3 修复: 统一使用 copiedPath 来获取父节点
 	// 从 copiedPath 获取父节点（用于修改和访问兄弟节点）
 	if len(copiedPath) < 2 {
 		return fmt.Errorf("copiedPath too short: expected at least 2, got %d", len(copiedPath))
@@ -2075,7 +2069,6 @@ func (b *BTree) mergeLeaf(leafInfo *PageInfo, copiedPath, path []*PageInfo) erro
 	}
 
 	// 5. 如果无法借键，则合并
-	// ✅ P0-3 修复: 统一使用 copiedPath 中的父节点
 	// parentInfo 已经来自 copiedPath，不需要再次获取
 
 	// 优先与右兄弟合并
@@ -2128,7 +2121,7 @@ func (b *BTree) redistributeLeafLeft(
 	borrowedKey := leftSibling.keys[lastIdx]
 	borrowedValue := leftSibling.values[lastIdx]
 
-	// 2. ✅ P1-1 修复: 在删除键之前，先确定新的分隔键
+	// 2. 在删除键之前，先确定新的分隔键
 	// 如果删除后左兄弟还有键，使用新的最大键（倒数第二个键）
 	var newSeparatorKey []byte
 	if lastIdx > 0 {
@@ -2217,7 +2210,7 @@ func (b *BTree) mergeLeafWithSibling(
 	rightNode := rightNodeInfo.GetLeafPage()
 
 	// 1. 合并节点：Left + Right
-	// ✅ 修复：对于叶子节点，分隔键不应该插入到合并后的节点中
+	// 修复：对于叶子节点，分隔键不应该插入到合并后的节点中
 	// 只有右节点的键值对需要移动到左节点
 
 	// 2. 将右节点的所有键值对追加到左节点
@@ -2243,7 +2236,7 @@ func (b *BTree) mergeLeafWithSibling(
 		return nil
 	}
 
-	// 5. ✅ 检查父节点是否需要 Merge（递归向上合并）
+	// 5. 检查父节点是否需要 Merge（递归向上合并）
 	const minInternal = 7
 	if parent.NumKeys() < minInternal && len(path) >= 2 {
 		// 递归向上合并父节点
@@ -2292,7 +2285,7 @@ func (b *BTree) mergeInternalWithSibling(
 	// 注意：右节点的第一个子节点对应分隔键，需要跳过
 	leftNode.children = append(leftNode.children, rightNode.children...)
 
-	// 2.4 ✅ P0-1 修复: 更新右节点子节点的父引用（指向左节点）
+	// 2.4 更新右节点子节点的父引用（指向左节点）
 	// 从父节点中找到左节点的 PageRef（在 separatorIndex 位置）
 	leftNodeRef := parent.children[separatorIndex]
 	if leftNodeRef != nil {
@@ -2319,13 +2312,13 @@ func (b *BTree) mergeInternalWithSibling(
 		if !b.rootRef.ReplacePage(oldRootID, leftNodeInfo) {
 			return ErrRetry
 		}
-		// ✅ P0-1 修复: 更新新根节点的 parentRef 为 nil
+		// 更新新根节点的 parentRef 为 nil
 		// leftNodeInfo 现在是根节点，不应该有父节点
 		leftNodeInfo.SetParentRef(nil)
 		return nil
 	}
 
-	// 5. ✅ 检查父节点是否需要 Merge（递归向上合并）
+	// 5. 检查父节点是否需要 Merge（递归向上合并）
 	const minInternal = 7
 	if parent.NumKeys() < minInternal && len(path) >= 2 {
 		// 递归向上合并父节点
@@ -2351,7 +2344,7 @@ func (b *BTree) redistributeInternalLeft(
 	node := nodeInfo.GetInternalPage()
 	leftSibling := leftSiblingInfo.GetInternalPage()
 
-	// ✅ P0 修复: 防御性检查 - 确保左兄弟有足够的键和子节点
+	// P0 修复: 防御性检查 - 确保左兄弟有足够的键和子节点
 	if leftSibling.NumKeys() < 2 {
 		return fmt.Errorf("left sibling has insufficient keys to borrow: %d", leftSibling.NumKeys())
 	}
@@ -2367,7 +2360,7 @@ func (b *BTree) redistributeInternalLeft(
 	lastIdx := leftSibling.NumKeys() - 1
 	borrowedKey := leftSibling.keys[lastIdx]
 
-	// ✅ P0 修复: 添加边界检查，防止数组越界
+	// P0 修复: 添加边界检查，防止数组越界
 	if lastIdx+1 >= len(leftSibling.children) {
 		return fmt.Errorf("left sibling children index out of range: lastIdx=%d, children_len=%d",
 			lastIdx, len(leftSibling.children))
@@ -2414,7 +2407,7 @@ func (b *BTree) redistributeInternalRight(
 	node := nodeInfo.GetInternalPage()
 	rightSibling := rightSiblingInfo.GetInternalPage()
 
-	// ✅ P0 修复: 防御性检查 - 确保右兄弟有足够的键和子节点
+	// P0 修复: 防御性检查 - 确保右兄弟有足够的键和子节点
 	if rightSibling.NumKeys() < 1 {
 		return fmt.Errorf("right sibling has insufficient keys to borrow: %d", rightSibling.NumKeys())
 	}
@@ -2429,7 +2422,7 @@ func (b *BTree) redistributeInternalRight(
 	// 2. 从右兄弟借第一个键和子节点
 	borrowedKey := rightSibling.keys[0]
 
-	// ✅ P0 修复: 添加边界检查，防止空切片访问
+	// P0 修复: 添加边界检查，防止空切片访问
 	if len(rightSibling.children) == 0 {
 		return fmt.Errorf("right sibling has no children")
 	}
@@ -2480,7 +2473,6 @@ func (b *BTree) mergeInternal(nodeInfo *PageInfo, copiedPath, path []*PageInfo) 
 		return nil
 	}
 
-	// ✅ P0-3 修复: 统一使用 copiedPath 来获取父节点
 	// 从 copiedPath 获取父节点（用于修改和访问兄弟节点）
 	if len(copiedPath) < 2 {
 		return fmt.Errorf("copiedPath too short: expected at least 2, got %d", len(copiedPath))
@@ -2535,7 +2527,6 @@ func (b *BTree) mergeInternal(nodeInfo *PageInfo, copiedPath, path []*PageInfo) 
 	}
 
 	// 5. 如果无法借键，则合并
-	// ✅ P0-3 修复: 统一使用 copiedPath 中的父节点
 	// parentInfo 已经来自 copiedPath，不需要再次获取
 
 	// 优先与右兄弟合并

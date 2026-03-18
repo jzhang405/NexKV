@@ -143,7 +143,7 @@ func TestPageInfo_Clone(t *testing.T) {
 	assert.Equal(t, original.metaVersion, cloned.metaVersion)
 	assert.Equal(t, original.pageSize, cloned.pageSize)
 
-	// ✅ 性能优化：验证 pageLock 使用懒加载
+	// 性能优化：验证 pageLock 使用懒加载
 	// 延迟创建，两个 PageInfo 的 pageLock 都是空的（nil）
 	assert.Nil(t, original.pageLock.Load())
 	assert.Nil(t, cloned.pageLock.Load())
@@ -153,7 +153,7 @@ func TestPageInfo_Clone(t *testing.T) {
 	assert.NotEqual(t, original.pos.Load(), cloned.pos.Load())
 }
 
-// ✅ 优化：移除 TestPageInfo_GetSetBuff 测试（GetBuff/SetBuff 方法已移除，序列化缓冲区由 ChunkManager.pagePool 管理）
+// 优化：移除 TestPageInfo_GetSetBuff 测试（GetBuff/SetBuff 方法已移除，序列化缓冲区由 ChunkManager.pagePool 管理）
 
 func TestPageInfo_MetaVersion(t *testing.T) {
 	info := NewPageInfo()

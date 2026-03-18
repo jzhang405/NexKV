@@ -10,14 +10,14 @@ import (
 // 要求：Go 1.19+ (atomic.Pointer 泛型支持)
 type PageRef struct {
 	pInfo     atomic.Pointer[PageInfo] // 原子指针，支持 CAS 更新
-	parentRef atomic.Value             // ✅ 优化：使用 atomic.Value 存储 *PageRef，移除 defer 开销
+	parentRef atomic.Value             // 优化：使用 atomic.Value 存储 *PageRef，移除 defer 开销
 }
 
 // NewPageRef 创建新的 PageRef
 func NewPageRef() *PageRef {
 	ref := &PageRef{}
 	ref.pInfo.Store(nil)
-	ref.parentRef.Store((*PageRef)(nil)) // ✅ 显式初始化为 nil
+	ref.parentRef.Store((*PageRef)(nil)) // 显式初始化为 nil
 	return ref
 }
 
@@ -25,7 +25,7 @@ func NewPageRef() *PageRef {
 func NewPageRefWithInfo(info *PageInfo) *PageRef {
 	ref := &PageRef{}
 	ref.pInfo.Store(info)
-	ref.parentRef.Store((*PageRef)(nil)) // ✅ 显式初始化为 nil
+	ref.parentRef.Store((*PageRef)(nil)) // 显式初始化为 nil
 	return ref
 }
 
@@ -152,13 +152,13 @@ func (r *PageRef) GetLastTime() int64 {
 }
 
 // GetParentRef 获取父引用（无锁，atomic.Value）
-// ✅ 优化：移除 defer，减少 tryDeferToSpanScan 开销
+// 优化：移除 defer，减少 tryDeferToSpanScan 开销
 func (r *PageRef) GetParentRef() *PageRef {
 	return r.parentRef.Load().(*PageRef)
 }
 
 // SetParentRef 设置父引用（无锁，atomic.Value）
-// ✅ 优化：移除 defer，减少 tryDeferToSpanScan 开销
+// 优化：移除 defer，减少 tryDeferToSpanScan 开销
 func (r *PageRef) SetParentRef(parent *PageRef) {
 	r.parentRef.Store(parent)
 }
@@ -184,12 +184,12 @@ func (r *PageRef) Unload() *PageInfo {
 }
 
 // HasParent 检查是否有父引用（无锁，atomic.Value）
-// ✅ 优化：移除 defer，减少 tryDeferToSpanScan 开销
+// 优化：移除 defer，减少 tryDeferToSpanScan 开销
 func (r *PageRef) HasParent() bool {
 	return r.parentRef.Load().(*PageRef) != nil
 }
 
-// ✅ 优化：移除 GetBuff/SetBuff 方法，序列化缓冲区现在由 ChunkManager.pagePool 管理
+// 优化：移除 GetBuff/SetBuff 方法，序列化缓冲区现在由 ChunkManager.pagePool 管理
 
 // GetOrLoad 获取 PageInfo，如果未加载则从 ChunkManager 加载（懒加载）
 // 懒加载模式核心：只有 Root 常驻内存，其他页面按需加载

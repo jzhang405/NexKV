@@ -35,7 +35,7 @@ func TestPageInfo_CloneShallow(t *testing.T) {
 	assert.True(t, cloned.IsShallowClone())
 	assert.False(t, cloned.IsDeepClone())
 
-	// ✅ 关键验证：Page 对象是共享的（浅拷贝）
+	// 关键验证：Page 对象是共享的（浅拷贝）
 	clonedLeaf := cloned.GetLeafPage()
 	require.NotNil(t, clonedLeaf)
 	assert.Same(t, leaf, clonedLeaf, "浅拷贝应该共享 Page 对象")
@@ -62,7 +62,7 @@ func TestPageInfo_CloneDeep(t *testing.T) {
 	assert.False(t, cloned.IsShallowClone())
 	assert.True(t, cloned.IsDeepClone())
 
-	// ✅ 关键验证：Page 对象是独立的（深拷贝）
+	// 关键验证：Page 对象是独立的（深拷贝）
 	clonedLeaf := cloned.GetLeafPage()
 	require.NotNil(t, clonedLeaf)
 	assert.NotSame(t, leaf, clonedLeaf, "深拷贝应该创建独立的 Page 对象")
@@ -199,7 +199,7 @@ func TestPageInfo_CloneShallowIndependence(t *testing.T) {
 	cloned.SetPos(999)
 	assert.NotEqual(t, original.GetPos(), cloned.GetPos())
 
-	// ✅ 关键：修改共享 Page 的内容会影响原始
+	// 关键：修改共享 Page 的内容会影响原始
 	clonedLeaf := cloned.GetLeafPage()
 	clonedLeaf.keys[0] = []byte("modified")
 

@@ -12,9 +12,7 @@ import (
 
 // ===== 已实现的辅助函数 =====
 
-// GetDepth returns the current depth of the tree.
-//
-// ✅ P0-5 实现: 使用 RootPageRef API 计算树的深度
+// GetDepth 返回当前树的深度
 // 深度定义为从根节点到叶子节点的最长路径长度
 func (b *BTree) GetDepth() int {
 	rootInfo := b.rootRef.GetRootPageInfo()
@@ -54,9 +52,7 @@ func (b *BTree) GetDepth() int {
 	return depth + 1 // +1 因为 depth 从 0 开始计数
 }
 
-// GetStats returns statistics about the BTree.
-//
-// ✅ P0-5 实现: 使用 RootPageRef API 获取统计信息
+// GetStats 返回 BTree 的统计信息
 func (b *BTree) GetStats() *BTreeStats {
 	rootInfo := b.rootRef.GetRootPageInfo()
 	if rootInfo == nil {
@@ -85,7 +81,7 @@ func (b *BTree) GetStats() *BTreeStats {
 		RootSize:  rootSize,
 		MaxKeys:   model.DefaultMaxKeys,
 		MinKeys:   model.DefaultMinKeys,
-		// 统计功能（Week 14 待实现）
+		// 统计功能
 		TotalNodes: 0,
 		TotalKeys:  0,
 	}

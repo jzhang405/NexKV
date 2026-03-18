@@ -15,7 +15,7 @@ import (
 // PageStats 页面访问统计
 // 用于识别热数据，触发自动物化优化
 //
-// ✅ 优化：使用 sync.Map 替代 map+sync.RWMutex，减少锁竞争
+// 优化：使用 sync.Map 替代 map+sync.RWMutex，减少锁竞争
 // 适用场景：高并发读写，key-value 存储
 type PageStats struct {
 	readCounts sync.Map // PageID -> int64

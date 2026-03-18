@@ -36,7 +36,7 @@ func NewTestBTreeBuilder(t require.TestingT) *TestBTreeBuilder {
 			metaVersion: 1,
 			pageSize:    4096,
 		}
-		rootInfo.SetPos(0) // ✅ 使用 SetPos() 方法
+		rootInfo.SetPos(0) // 使用 SetPos() 方法
 	}
 
 	return &TestBTreeBuilder{
@@ -58,7 +58,7 @@ func (tb *TestBTreeBuilder) SetRoot(page interface{}) *TestBTreeBuilder {
 		metaVersion: 1,
 		pageSize:    4096,
 	}
-	info.SetPos(0) // ✅ 使用 SetPos() 方法
+	info.SetPos(0) // 使用 SetPos() 方法
 
 	tb.rootRef.pInfo.Store(info)
 	return tb
@@ -71,7 +71,7 @@ func (tb *TestBTreeBuilder) CreatePageRef(page interface{}) *PageRef {
 		metaVersion: 1,
 		pageSize:    4096,
 	}
-	info.SetPos(0) // ✅ 使用 SetPos() 方法
+	info.SetPos(0) // 使用 SetPos() 方法
 	return NewPageRefWithInfo(info)
 }
 

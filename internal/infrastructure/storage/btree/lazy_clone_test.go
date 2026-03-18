@@ -69,7 +69,7 @@ func TestBTree_copyPathShallow(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, copiedPath, 3)
 
-	// ✅ 验证克隆状态：InternalPage 浅拷贝，LeafPage 深拷贝
+	// 验证克隆状态：InternalPage 浅拷贝，LeafPage 深拷贝
 	// 这是修复并发问题的关键设计
 	copiedRoot := copiedPath[0].GetInternalPage()
 	assert.Equal(t, uint32(CloneStatusShallow), copiedPath[0].GetCloneStatus(),
@@ -109,7 +109,7 @@ func TestBTree_finalizeDeepClone(t *testing.T) {
 
 	leafInfo := NewPageInfo()
 	leaf := NewLeafPage(model.PageID(2))
-	// ✅ 修复：正确初始化 LeafPage，确保 keys 和 values 长度一致
+	// 修复：正确初始化 LeafPage，确保 keys 和 values 长度一致
 	leaf.keys = append(leaf.keys, []byte("key1"))
 	leaf.values = append(leaf.values, []byte("value1"))
 	leafInfo.SetPage(leaf)
@@ -137,7 +137,7 @@ func TestBTree_finalizeDeepClone(t *testing.T) {
 		assert.True(t, info.IsDeepClone())
 	}
 
-	// ✅ 关键验证：Page 对象已独立
+	// 关键验证：Page 对象已独立
 	deepRoot := shallowPath[0].GetInternalPage()
 	assert.NotSame(t, root, deepRoot, "深拷贝应该有独立的 root Page")
 
@@ -270,7 +270,7 @@ func TestBTree_LazyCloneCASFailure(t *testing.T) {
 	// 验证原始 leaf 未受影响
 	assert.Equal(t, []byte("key1"), leaf.keys[0])
 
-	// ✅ 关键：LeafPage 深拷贝，有独立的 Page 副本
+	// 关键：LeafPage 深拷贝，有独立的 Page 副本
 	copiedLeaf := copiedPath[0].GetLeafPage()
 	assert.NotSame(t, leaf, copiedLeaf, "LeafPage 深拷贝，有独立副本")
 }

@@ -14,10 +14,10 @@ import (
 // TestInternalPage_Split_WithChildren 测试带子节点的 InternalPage 分裂
 func TestInternalPage_Split_WithChildren(t *testing.T) {
 	// 创建内部节点，添加 18 个键和对应的子节点
-	// ✅ B+Tree 不变式：n 个键需要 n+1 个子节点
+	// B+Tree 不变式：n 个键需要 n+1 个子节点
 	page := NewInternalPage(1)
 
-	// ✅ 重要：先初始化第一个子节点（children[0]）
+	// 重要：先初始化第一个子节点（children[0]）
 	// 在 B+Tree 中，第一个键插入前，children[0] 应该已经存在
 	firstChildRef := NewPageRef()
 	firstChildInfo := NewPageInfo()
@@ -59,7 +59,7 @@ func TestInternalPage_Split_WithChildren(t *testing.T) {
 	assert.Equal(t, 10, page.NumChildren(), "原页面应该有 10 个子节点") // children[0:10]
 	assert.Equal(t, []byte{9}, splitKey, "分裂键应该是第 9 个键")
 
-	// ✅ 修复：B+Tree 标准分裂逻辑 - 分裂键提升到父节点，不在左右页面中
+	// 修复：B+Tree 标准分裂逻辑 - 分裂键提升到父节点，不在左右页面中
 	// 新页面包含后半部分（10-17，共 8 个键，不包含分裂键 9）
 	assert.Equal(t, 8, newPage.NumKeys(), "新页面应该有 8 个键")
 	assert.Equal(t, 9, newPage.NumChildren(), "新页面应该有 9 个子节点") // Split 实现: p.children[mid+1:] = children[10:]

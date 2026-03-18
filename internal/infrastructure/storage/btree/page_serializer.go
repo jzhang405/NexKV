@@ -17,7 +17,7 @@ type PageSerializer struct {
 	buf bytes.Buffer
 }
 
-// ✅ 对象池：复用 PageSerializer 对象
+// 对象池：复用 PageSerializer 对象
 var pageSerializerPool = sync.Pool{
 	New: func() any {
 		return &PageSerializer{}
@@ -42,7 +42,7 @@ func NewPageSerializer() *PageSerializer {
 }
 
 // WriteHeader 写入页面公共头部（pageID + version）
-// ✅ 优化：使用栈上缓冲区，避免堆分配
+// 优化：使用栈上缓冲区，避免堆分配
 func (ps *PageSerializer) WriteHeader(pageID uint64, version uint64) error {
 	// 使用栈上缓冲区（16 字节）
 	var buf [16]byte
@@ -54,7 +54,7 @@ func (ps *PageSerializer) WriteHeader(pageID uint64, version uint64) error {
 }
 
 // WriteKeyCount 写入键数量
-// ✅ 优化：使用栈上缓冲区
+// 优化：使用栈上缓冲区
 func (ps *PageSerializer) WriteKeyCount(numKeys int) error {
 	var buf [4]byte
 	binary.LittleEndian.PutUint32(buf[:], uint32(numKeys))
@@ -63,7 +63,7 @@ func (ps *PageSerializer) WriteKeyCount(numKeys int) error {
 }
 
 // WriteKey 写入单个键（带长度前缀）
-// ✅ 优化：使用栈上缓冲区
+// 优化：使用栈上缓冲区
 func (ps *PageSerializer) WriteKey(key []byte) error {
 	// 使用栈上缓冲区（2 字节长度 + 键数据）
 	keyLen := uint16(len(key))
@@ -82,7 +82,7 @@ func (ps *PageSerializer) WriteKey(key []byte) error {
 }
 
 // WriteKeyValue 写入键值对（带长度前缀）
-// ✅ 优化：使用栈上缓冲区
+// 优化：使用栈上缓冲区
 func (ps *PageSerializer) WriteKeyValue(key, value []byte) error {
 	// 写入键长度
 	keyLen := uint16(len(key))
@@ -114,7 +114,7 @@ func (ps *PageSerializer) WriteKeyValue(key, value []byte) error {
 }
 
 // WriteChildCount 写入子节点数量
-// ✅ 优化：使用栈上缓冲区
+// 优化：使用栈上缓冲区
 func (ps *PageSerializer) WriteChildCount(numChildren int) error {
 	var buf [4]byte
 	binary.LittleEndian.PutUint32(buf[:], uint32(numChildren))
@@ -123,7 +123,7 @@ func (ps *PageSerializer) WriteChildCount(numChildren int) error {
 }
 
 // WriteChildID 写入子节点 ID
-// ✅ 优化：使用栈上缓冲区
+// 优化：使用栈上缓冲区
 func (ps *PageSerializer) WriteChildID(childID uint64) error {
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], childID)

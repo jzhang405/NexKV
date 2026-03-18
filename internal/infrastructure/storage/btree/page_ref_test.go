@@ -24,7 +24,7 @@ func TestNewPageRef(t *testing.T) {
 }
 
 func TestNewPageRefWithInfo(t *testing.T) {
-	// TODO: Week 13-14 - 更新为使用 LeafPage
+	// TODO: 更新为使用 LeafPage
 	// 暂时跳过此测试
 	t.Skip("Test needs update for new Page interface{} type")
 
@@ -200,7 +200,7 @@ func TestPageRef_Unload(t *testing.T) {
 	assert.Nil(t, ref.GetPage())
 }
 
-// ✅ 优化：移除 TestPageRef_GetSetBuff 测试（GetBuff/SetBuff 方法已移除，序列化缓冲区由 ChunkManager.pagePool 管理）
+// 优化：移除 TestPageRef_GetSetBuff 测试（GetBuff/SetBuff 方法已移除，序列化缓冲区由 ChunkManager.pagePool 管理）
 
 func TestPageRef_NilInfoSafety(t *testing.T) {
 	ref := NewPageRef()

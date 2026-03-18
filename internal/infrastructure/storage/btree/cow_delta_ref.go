@@ -125,7 +125,10 @@ func (r *COWDeltaRef) CompactDeltas() {
 }
 
 // ShouldMaterialize 判断是否需要物化
-func (r *COWDeltaRef) ShouldMaterialize(baseSize int, refCount int32) bool {
+// baseSize: 基础数据大小（键数量）
+// refCount: 当前引用计数
+// memPressure: 是否处于内存压力状态（可选）
+func (r *COWDeltaRef) ShouldMaterialize(baseSize int, refCount int32, memPressure ...bool) bool {
 	deltaCount := r.GetDeltaCount()
 
 	// 多因素决策
@@ -139,6 +142,11 @@ func (r *COWDeltaRef) ShouldMaterialize(baseSize int, refCount int32) bool {
 
 	if refCount > 10 {
 		return true // 引用计数高，减少锁竞争
+	}
+
+	// 内存压力触发：内存紧张且只有单一引用时，立即物化
+	if len(memPressure) > 0 && memPressure[0] && refCount == 1 {
+		return true
 	}
 
 	return false

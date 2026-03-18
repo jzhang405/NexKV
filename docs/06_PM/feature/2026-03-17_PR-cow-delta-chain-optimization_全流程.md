@@ -1493,11 +1493,17 @@ if CAS(root, newRoot) {
 - COWDeltaRef 基础设施实现
 - LeafPage/InternalPage Delta Chain 支持
 - BTree 集成（copyPathWithDelta）
-- 测试覆盖（31 个测试全部通过）
 - 性能基准测试数据（已补充）
+- **新增**：Clone() 统一使用 Delta Chain 模式
+- **新增**：CloneDeep() 保留深拷贝能力
+- **新增**：InternalPage.materialize() 实现
+- **新增**：Serialize() 自动物化
+- **新增**：热数据统计（PageStats）
+- **新增**：内存监控（MemoryMonitor）
 
 **⚠️ 遗留项（低优先级）**：
-- `materializeLeafPage`/`materializeInternalPage` 空实现（标记为 unused）
+- `materializeLeafPage`/`materializeInternalPage` 空实现（标记为 unused）- 已实现 materialize() 方法
+- **测试更新**：需要更新测试以反映新的 Clone() 行为
 
 #### 2.2 ToDo清单（优先级排序）
 

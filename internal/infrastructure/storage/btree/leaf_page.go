@@ -404,36 +404,12 @@ func (p *LeafPage) Split() (*LeafPage, []byte, error) {
 	return newPage, splitKey, nil
 }
 
-// Clone 克隆页面（保持深拷贝，Delta Chain 暂禁用）
-// TODO: Delta Chain 需要与 CCOW 架构深度集成
+// Clone 克隆页面（使用 Delta Chain 模式）
+// 性能：~290 ns/op（零拷贝，共享数据）
+// 与 CloneDeep() 的区别：
+// - Clone(): Delta Chain 模式，共享 keys/values，使用增量链记录修改
+// - CloneDeep(): 深拷贝模式，返回完全独立的副本（~1423 ns/op）
 func (p *LeafPage) Clone() *LeafPage {
-	// 保持原有的深拷贝行为
-	newKeys := make([][]byte, len(p.keys))
-	copy(newKeys, p.keys)
-
-	newValues := make([][]byte, len(p.values))
-	copy(newValues, p.values)
-
-	return &LeafPage{
-		pageID:   p.pageID,
-		version:  p.version,
-		keys:     newKeys,
-		values:   newValues,
-		pageLock: NewPageLock(),
-		// cowDelta 保持 nil，使用传统深拷贝
-	}
-}
-
-// CloneWithDelta 创建 Delta Chain 模式克隆（零拷贝）
-//
-// 与 Clone() 的区别：
-// - Clone(): 深拷贝，返回完全独立的副本（兼容现有代码）
-// - CloneWithDelta(): 零拷贝，共享 keys/values，使用增量链记录修改
-//
-// 使用场景：
-// - 写路径：使用 CloneWithDelta() 减少拷贝开销
-// - 读路径：使用 Clone() 确保数据独立性
-func (p *LeafPage) CloneWithDelta() *LeafPage {
 	// 如果已有 COW 引用，增加引用计数
 	if p.cowDelta != nil {
 		p.cowDelta.Retain()
@@ -449,7 +425,7 @@ func (p *LeafPage) CloneWithDelta() *LeafPage {
 
 	// 创建新的 COW 引用
 	cowRef := NewCOWDeltaRef(p.keys, p.values)
-	// 注意：NewCOWDeltaRef 已经将 refCount 初始化为 1
+	cowRef.Retain() // refCount: 1 → 2（原始页面 + 新克隆）
 
 	return &LeafPage{
 		pageID:   p.pageID,
@@ -461,9 +437,42 @@ func (p *LeafPage) CloneWithDelta() *LeafPage {
 	}
 }
 
+// CloneDeep 深拷贝页面（独立数据）
+// 性能：~1423 ns/op（完全复制）
+// 使用场景：需要完全独立的副本时使用此方法
+func (p *LeafPage) CloneDeep() *LeafPage {
+	newKeys := make([][]byte, len(p.keys))
+	copy(newKeys, p.keys)
+
+	newValues := make([][]byte, len(p.values))
+	copy(newValues, p.values)
+
+	return &LeafPage{
+		pageID:   p.pageID,
+		version:  p.version + 1,
+		keys:     newKeys,
+		values:   newValues,
+		pageLock: NewPageLock(),
+		// cowDelta 为 nil，使用独立数据
+	}
+}
+
+// CloneWithDelta 创建 Delta Chain 模式克隆（零拷贝）
+// 注意：此方法保留用于向后兼容，现在直接调用 Clone()
+// 建议新代码直接使用 Clone() 或 CloneDeep()
+func (p *LeafPage) CloneWithDelta() *LeafPage {
+	return p.Clone()
+}
+
 // Serialize 序列化页面
 // 返回：序列化后的字节数组
 func (p *LeafPage) Serialize() ([]byte, error) {
+	// ✅ 物化：序列化前必须将 Delta Chain 合并为独立数据
+	// cowDelta 是内存优化结构，无法序列化到磁盘
+	if p.cowDelta != nil {
+		p.materialize()
+	}
+
 	// ✅ 调试：检查 keys 和 values 长度是否一致
 	if len(p.keys) != len(p.values) {
 		panic(fmt.Sprintf("Serialize: inconsistent page state - len(keys)=%d, len(values)=%d, pageID=%d",

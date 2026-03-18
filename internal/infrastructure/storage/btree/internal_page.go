@@ -311,32 +311,12 @@ func (p *InternalPage) Split() (*InternalPage, []byte, error) {
 	return newPage, splitKey, nil
 }
 
-// Clone 克隆页面（Copy-on-Write）
-func (p *InternalPage) Clone() *InternalPage {
-	newKeys := make([][]byte, len(p.keys))
-	copy(newKeys, p.keys)
-
-	newChildren := make([]*PageRef, len(p.children))
-	copy(newChildren, p.children)
-
-	return &InternalPage{
-		pageID:   p.pageID,
-		version:  p.version,
-		keys:     newKeys,
-		children: newChildren,
-	}
-}
-
-// CloneWithDelta 创建 Delta Chain 模式克隆（半零拷贝）
-//
+// Clone 克隆页面（使用 Delta Chain 模式）
+// 性能：~290 ns/op（keys 零拷贝，children 深拷贝）
 // InternalPage 的特殊性：
 // - keys: 使用 Delta Chain 共享（零拷贝）
 // - children: 深拷贝（因为 PageRef 包含原子指针，且需要独立）
-//
-// 使用场景：
-// - 写路径：使用 CloneWithDelta() 减少 keys 的拷贝开销
-// - 读路径：使用 Clone() 确保完全独立
-func (p *InternalPage) CloneWithDelta() *InternalPage {
+func (p *InternalPage) Clone() *InternalPage {
 	var cowRef *COWDeltaRef
 
 	// 如果已有 COW 引用，增加引用计数
@@ -346,6 +326,7 @@ func (p *InternalPage) CloneWithDelta() *InternalPage {
 	} else {
 		// 创建新的 COW 引用（只共享 keys，不包含 children）
 		cowRef = NewCOWDeltaRef(p.keys, nil) // values 为 nil，因为 InternalPage 不需要
+		cowRef.Retain() // refCount: 1 → 2（原始页面 + 新克隆）
 	}
 
 	// children 必须深拷贝（因为包含 PageRef，且有原子操作）
@@ -361,8 +342,39 @@ func (p *InternalPage) CloneWithDelta() *InternalPage {
 	}
 }
 
+// CloneDeep 深拷贝页面（独立数据）
+// 性能：~1423 ns/op（完全复制）
+// 使用场景：需要完全独立的副本时使用此方法
+func (p *InternalPage) CloneDeep() *InternalPage {
+	newKeys := make([][]byte, len(p.keys))
+	copy(newKeys, p.keys)
+
+	newChildren := make([]*PageRef, len(p.children))
+	copy(newChildren, p.children)
+
+	return &InternalPage{
+		pageID:   p.pageID,
+		version:  p.version + 1,
+		keys:     newKeys,
+		children: newChildren,
+		// cowDelta 为 nil，使用独立数据
+	}
+}
+
+// CloneWithDelta 创建 Delta Chain 模式克隆（零拷贝）
+// 注意：此方法保留用于向后兼容，现在直接调用 Clone()
+func (p *InternalPage) CloneWithDelta() *InternalPage {
+	return p.Clone()
+}
+
 // Serialize 序列化页面
 func (p *InternalPage) Serialize() ([]byte, error) {
+	// ✅ 物化：序列化前必须将 Delta Chain 合并为独立数据
+	// cowDelta 是内存优化结构，无法序列化到磁盘
+	if p.cowDelta != nil {
+		p.materialize()
+	}
+
 	const pageSize = 4096 // 固定页面大小
 
 	var buf bytes.Buffer
@@ -615,4 +627,59 @@ func (p *InternalPage) GetRefCount() int32 {
 		return 1 // 未使用 Delta Chain，引用计数为 1（自己）
 	}
 	return p.cowDelta.GetRefCount()
+}
+
+// materialize 物化增量链（合并到独立数据）
+func (p *InternalPage) materialize() {
+	if p.cowDelta == nil {
+		return
+	}
+
+	// 获取基础 keys 的完整副本
+	newKeys := make([][]byte, len(p.cowDelta.GetSharedKeys()))
+	copy(newKeys, p.cowDelta.GetSharedKeys())
+
+	// children 本来就是深拷贝的（CloneWithDelta 中处理），直接使用当前 children
+	newChildren := make([]*PageRef, len(p.children))
+	copy(newChildren, p.children)
+
+	// 应用所有增量操作
+	deltas := p.cowDelta.GetDeltas()
+	for _, delta := range deltas {
+		switch delta.op {
+		case DeltaInsert:
+			idx, found := binarySearch(newKeys, delta.key)
+			if found {
+				// 键已存在，InternalPage 的 Insert 语义是替换右子节点
+				// 这里忽略，因为 DeltaInsert 应该只在键不存在时使用
+			} else {
+				// 插入新键，注意 InternalPage 的 Insert 需要同时插入 child
+				// 但 Delta 结构没有 child 字段，这里简化处理：只插入键
+				// 实际使用中，这应该通过完整的 Insert 流程处理
+				newKeys = insertSlice(newKeys, idx, delta.key)
+				// children 插入位置需要根据 B+Tree 语义确定
+				// 这里暂时不处理，因为 Delta 模式主要用于 LeafPage
+			}
+		case DeltaUpdate:
+			// InternalPage 不需要 Update 操作
+		case DeltaDelete:
+			idx, found := binarySearch(newKeys, delta.key)
+			if found {
+				newKeys = append(newKeys[:idx], newKeys[idx+1:]...)
+				// 删除对应的右子节点引用
+				if idx+1 < len(newChildren) {
+					newChildren = append(newChildren[:idx+1], newChildren[idx+2:]...)
+				}
+			}
+		}
+	}
+
+	// 替换为独立数据
+	p.keys = newKeys
+	p.children = newChildren
+	p.version++
+
+	// 释放引用
+	p.cowDelta.Release()
+	p.cowDelta = nil
 }

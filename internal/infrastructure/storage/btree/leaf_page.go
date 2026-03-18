@@ -27,7 +27,7 @@ func NewLeafPage(pageID model.PageID) *LeafPage {
 		version:  0,
 		keys:     make([][]byte, 0, InitialLeafCapacity), // 预分配容量
 		values:   make([][]byte, 0, InitialLeafCapacity),
-		pageLock: NewPageLock(), // 初始化页面锁
+		pageLock: nil, // ✅ 性能优化：延迟创建页面锁（通过 PageInfo.GetLock 访问）
 	}
 }
 
@@ -421,7 +421,7 @@ func (p *LeafPage) Clone(config ...*COWDeltaRefConfig) *LeafPage {
 			cowDelta: p.cowDelta,
 			keys:     p.cowDelta.GetSharedKeys(),
 			values:   p.cowDelta.GetSharedValues(),
-			pageLock: NewPageLock(),
+			pageLock: nil, // ✅ 性能优化：延迟创建页面锁
 		}
 	}
 
@@ -442,7 +442,7 @@ func (p *LeafPage) Clone(config ...*COWDeltaRefConfig) *LeafPage {
 		cowDelta: cowRef,
 		keys:     cowRef.GetSharedKeys(),
 		values:   cowRef.GetSharedValues(),
-		pageLock: NewPageLock(),
+		pageLock: nil, // ✅ 性能优化：延迟创建页面锁
 	}
 }
 
@@ -461,7 +461,7 @@ func (p *LeafPage) CloneDeep() *LeafPage {
 		version:  p.version + 1,
 		keys:     newKeys,
 		values:   newValues,
-		pageLock: NewPageLock(),
+		pageLock: nil, // ✅ 性能优化：延迟创建页面锁
 		// cowDelta 为 nil，使用独立数据
 	}
 }

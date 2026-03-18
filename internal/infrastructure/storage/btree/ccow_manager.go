@@ -167,7 +167,7 @@ func (ccow *CCOWManager) clonePageInfo(info *PageInfo) *PageInfo {
 	// 创建新的 PageInfo（深拷贝 Page 数据）
 	newInfo := &PageInfo{
 		page:        info.GetPage(), // 暂时共享 Page，后续实现深拷贝
-		pageLock:    NewPageLock(),  // 创建新锁
+		pageLock:    atomic.Value{}, // ✅ 性能优化：延迟创建 PageLock
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}

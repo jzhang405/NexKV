@@ -41,9 +41,19 @@ func TestPageInfo_GetSetPos(t *testing.T) {
 func TestPageInfo_GetLock(t *testing.T) {
 	info := NewPageInfo()
 
-	lock := info.GetLock()
-	assert.NotNil(t, lock)
-	assert.Same(t, info.pageLock, lock)
+	// 验证初始状态：pageLock 未创建
+	assert.Nil(t, info.pageLock.Load())
+
+	// 首次调用 GetLock() 创建 PageLock
+	lock1 := info.GetLock()
+	assert.NotNil(t, lock1)
+
+	// 验证 pageLock 已被创建
+	assert.NotNil(t, info.pageLock.Load())
+
+	// 再次调用 GetLock() 应返回同一个 PageLock（幂等性）
+	lock2 := info.GetLock()
+	assert.Same(t, lock1, lock2)
 }
 
 func TestPageInfo_DirtyFlag(t *testing.T) {
@@ -133,8 +143,10 @@ func TestPageInfo_Clone(t *testing.T) {
 	assert.Equal(t, original.metaVersion, cloned.metaVersion)
 	assert.Equal(t, original.pageSize, cloned.pageSize)
 
-	// 验证锁是新的（不共享）
-	assert.NotSame(t, original.pageLock, cloned.pageLock)
+	// ✅ 性能优化：验证 pageLock 使用懒加载
+	// 延迟创建，两个 PageInfo 的 pageLock 都是空的（nil）
+	assert.Nil(t, original.pageLock.Load())
+	assert.Nil(t, cloned.pageLock.Load())
 
 	// 验证独立修改
 	cloned.SetPos(99999)

@@ -264,8 +264,8 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, fmt.Errorf("invalid leaf page type: %T", leafPage)
 	}
 
-	// 更新页面读计数（用于热数据识别）
-	b.stats.IncrementReadCount(leaf.GetPageID())
+	// ✅ 性能优化：移除热数据统计调用，避免每次 Get() 都加锁
+	// 原代码：b.stats.IncrementReadCount(leaf.GetPageID())
 
 	// Search for the key in the leaf page
 	value, found := leaf.Get(key)
@@ -797,21 +797,9 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 		return fmt.Errorf("insert into leaf: %w", err)
 	}
 
-	// ✅ 性能优化：检查是否需要因内存压力或热数据而物化
-	if leaf.IsInDeltaMode() && leaf.GetDeltaCount() > 0 {
-		// 检查内存压力
-		memPressure := b.memMonitor.IsUnderPressure()
-		refCount := leaf.GetRefCount()
-
-		// 检查是否为热数据
-		readCount := b.stats.GetReadCount(leaf.GetPageID())
-		isHotData := readCount > b.hotPageThreshold
-
-		// 内存压力或热数据触发物化
-		if (memPressure && refCount == 1) || isHotData {
-			leaf.materialize()
-		}
-	}
+	// ✅ 性能优化：移除内存压力和热数据检查，避免每次 Set() 的昂贵开销
+	// 原代码检查：memMonitor.IsUnderPressure() 和 stats.GetReadCount()
+	// Delta Chain 会在必要时自动物化（通过 ShouldMaterialize）
 
 	// Step 4: Check if we need to split the leaf
 	if leaf.NumKeys() > splitThreshold {

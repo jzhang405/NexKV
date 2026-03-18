@@ -1292,9 +1292,10 @@ func (b *BTree) copyPathWithDelta(path []*PageInfo) ([]*PageInfo, error) {
 // rebuildChildRefs 重建子节点引用（辅助方法）
 // 用于 copyPathWithDelta 和 copyPathShallow
 func (b *BTree) rebuildChildRefs(originalPath, copiedPath []*PageInfo) ([]*PageInfo, error) {
-	// 构建 PageID -> PageInfo 映射
-	pageInfoMap := make(map[model.PageID]*PageInfo, len(originalPath))
-	for _, info := range originalPath {
+	// ✅ 性能优化：使用 copiedPageIDMap（从 clonedPath 构建）
+	// 只重建路径中的节点引用，避免全局遍历
+	copiedPageIDMap := make(map[model.PageID]*PageInfo, len(copiedPath))
+	for _, info := range copiedPath {
 		var pageID model.PageID
 		switch p := info.GetPage().(type) {
 		case *LeafPage:
@@ -1304,58 +1305,54 @@ func (b *BTree) rebuildChildRefs(originalPath, copiedPath []*PageInfo) ([]*PageI
 		default:
 			continue
 		}
-		pageInfoMap[pageID] = info
+		copiedPageIDMap[pageID] = info
 	}
 
-	// 重建子节点引用
+	// ✅ 关键修复：始终更新子节点引用，无论 childInfo 是否为 nil
+	// Root cause：InternalPage.Clone() 复制 PageRef 指针，PageRef.GetPageInfo() 指向原始 PageInfo
+	//           必须更新为 copiedPath 中的克隆 PageInfo
 	for _, info := range copiedPath {
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
+			selfPageID := internalPage.GetPageID()
+
 			for j := 0; j < len(internalPage.children); j++ {
 				childRef := internalPage.children[j]
 				if childRef == nil {
 					continue
 				}
 
-				childInfo := childRef.GetPageInfo()
-				if childInfo == nil {
-					// 尝试从映射表查找
-					var childPageID model.PageID
-					switch p := childRef.GetPage().(type) {
-					case *LeafPage:
-						childPageID = p.pageID
-					case *InternalPage:
-						childPageID = p.pageID
-					default:
-						continue
-					}
+				// 获取子节点的 PageID
+				var childPageID model.PageID
+				childPage := childRef.GetPage()
+				if childPage == nil {
+					continue
+				}
+				switch p := childPage.(type) {
+				case *LeafPage:
+					childPageID = p.pageID
+				case *InternalPage:
+					childPageID = p.pageID
+				default:
+					continue
+				}
 
-					// 在 copiedPath 中查找对应的 PageInfo
-					var copiedChildInfo *PageInfo
-					for _, copiedInfo := range copiedPath {
-						var copiedPageID model.PageID
-						switch p := copiedInfo.GetPage().(type) {
-						case *LeafPage:
-							copiedPageID = p.pageID
-						case *InternalPage:
-							copiedPageID = p.pageID
-						default:
-							continue
-						}
-						if copiedPageID == childPageID {
-							copiedChildInfo = copiedInfo
-							break
-						}
-					}
+				// ✅ 跳过自身，避免匹配错误
+				if childPageID == selfPageID {
+					continue
+				}
 
-					if copiedChildInfo != nil {
-						// 创建新的 PageRef，指向克隆的 PageInfo
-						newChildRef := NewPageRefWithInfo(copiedChildInfo)
-						// 保持 parentRef
-						if parentRef := childRef.parentRef.Load(); parentRef != nil {
-							newChildRef.SetParentRef(parentRef.(*PageRef))
-						}
-						internalPage.children[j] = newChildRef
+				// 在 copiedPath 中查找对应的 PageInfo
+				copiedChildInfo := copiedPageIDMap[childPageID]
+
+				// ✅ 始终更新子节点引用（即使 childInfo != nil）
+				// 原因：childInfo 指向原始路径中的 PageInfo，需要更新为克隆的 PageInfo
+				if copiedChildInfo != nil {
+					newChildRef := NewPageRefWithInfo(copiedChildInfo)
+					// 保持 parentRef
+					if parentRef := childRef.parentRef.Load(); parentRef != nil {
+						newChildRef.SetParentRef(parentRef.(*PageRef))
 					}
+					internalPage.children[j] = newChildRef
 				}
 			}
 		}

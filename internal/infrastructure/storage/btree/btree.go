@@ -369,8 +369,12 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 		// 6. ✅ CAS 更新根节点（带重试）
 		newRootInfo := copiedPath[0]
 		oldRootInfo := b.rootRef.pInfo.Load()
+		oldRootID := uint64(0)
+		if oldRootInfo != nil {
+			oldRootID = oldRootInfo.GetPageID()
+		}
 
-		if b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
+		if b.rootRef.ReplacePage(oldRootID, newRootInfo) {
 			// CAS 成功，继续持久化
 		} else {
 			// CAS 失败，说明有并发写操作
@@ -759,9 +763,13 @@ func (b *BTree) Validate(ctx context.Context) error {
 // 4. Try to atomically update the root using CAS
 // 5. Return ErrRetry if CAS fails (concurrent write detected)
 func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
-	// ✅ 关键修复：在开始时记录 oldRootInfo
+	// ✅ 关键修复：在开始时记录 oldRootInfo 和 oldRootID
 	// 这样 CAS 时使用的是与 path 一致的根节点引用
 	oldRootInfo := b.rootRef.pInfo.Load()
+	oldRootID := uint64(0)
+	if oldRootInfo != nil {
+		oldRootID = oldRootInfo.GetPageID()
+	}
 
 	// Step 1: Find the path from Root to Leaf
 	_, path, err := b.findLeafPage(ctx, key)
@@ -842,7 +850,7 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 		// 分裂后，检查是否需要 CAS
 		if len(copiedPath) >= 2 {
 			newRootInfo := copiedPath[0]
-			if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
+			if !b.rootRef.ReplacePage(oldRootID, newRootInfo) {
 				// CAS 失败，触发重试
 				return ErrRetry
 			}
@@ -865,8 +873,8 @@ func (b *BTree) setWithCAS(ctx context.Context, key, value []byte) error {
 	newRootInfo := copiedPath[0]
 
 	// Step 6: CAS 更新根节点
-	// ✅ 使用操作开始时记录的 oldRootInfo，而不是当前的
-	if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
+	// ✅ 使用操作开始时记录的 oldRootID，而不是当前的
+	if !b.rootRef.ReplacePage(oldRootID, newRootInfo) {
 		// CAS 失败，触发重试
 		// ✅ 浅拷贝的 Page 是共享的，不需要额外处理
 		return ErrRetry
@@ -1614,7 +1622,11 @@ func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, key []byte, spl
 
 	// 4. CAS 更新根节点
 	oldRootInfo := b.rootRef.pInfo.Load()
-	if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
+	oldRootID := uint64(0)
+	if oldRootInfo != nil {
+		oldRootID = oldRootInfo.GetPageID()
+	}
+	if !b.rootRef.ReplacePage(oldRootID, newRootInfo) {
 		// ✅ CAS 失败，返回 false 让调用者重试
 		return false, nil
 	}
@@ -1747,7 +1759,11 @@ func (b *BTree) splitRootFromInternal(leftInfo, rightInfo *PageInfo, splitKey []
 
 	// 4. CAS 更新根节点
 	oldRootInfo := b.rootRef.pInfo.Load()
-	if !b.rootRef.ReplacePage(oldRootInfo, newRootInfo) {
+	oldRootID := uint64(0)
+	if oldRootInfo != nil {
+		oldRootID = oldRootInfo.GetPageID()
+	}
+	if !b.rootRef.ReplacePage(oldRootID, newRootInfo) {
 		return ErrRetry
 	}
 
@@ -2221,8 +2237,8 @@ func (b *BTree) mergeLeafWithSibling(
 	// 如果父节点是根节点且已空（没有键），则降低树的高度
 	if parentInfo == b.rootRef.pInfo.Load() && parent.NumKeys() == 0 {
 		// 合并后的节点成为新的根节点
-		oldRootInfo := parentInfo
-		if !b.rootRef.ReplacePage(oldRootInfo, leftNodeInfo) {
+		oldRootID := parentInfo.GetPageID()
+		if !b.rootRef.ReplacePage(oldRootID, leftNodeInfo) {
 			return ErrRetry
 		}
 		// 更新新根节点的 parentRef 为 nil
@@ -2302,8 +2318,8 @@ func (b *BTree) mergeInternalWithSibling(
 	// 如果父节点是根节点且已空（没有键），则降低树的高度
 	if parentInfo == b.rootRef.pInfo.Load() && parent.NumKeys() == 0 {
 		// 合并后的节点成为新的根节点
-		oldRootInfo := parentInfo
-		if !b.rootRef.ReplacePage(oldRootInfo, leftNodeInfo) {
+		oldRootID := parentInfo.GetPageID()
+		if !b.rootRef.ReplacePage(oldRootID, leftNodeInfo) {
 			return ErrRetry
 		}
 		// ✅ P0-1 修复: 更新新根节点的 parentRef 为 nil

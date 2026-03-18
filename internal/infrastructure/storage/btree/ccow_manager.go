@@ -151,7 +151,11 @@ func (ccow *CCOWManager) CopyPathBottomUp(
 			// 根节点，使用 CAS 更新 RootPageRef
 			if rootRef != nil {
 				oldRootInfo := rootRef.pInfo.Load()
-				if !rootRef.ReplacePage(oldRootInfo, clonedInfo) {
+				oldRootID := uint64(0)
+				if oldRootInfo != nil {
+					oldRootID = oldRootInfo.GetPageID()
+				}
+				if !rootRef.ReplacePage(oldRootID, clonedInfo) {
 					return nil, fmt.Errorf("CAS update root failed: concurrent modification detected")
 				}
 			}

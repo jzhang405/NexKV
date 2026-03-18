@@ -31,8 +31,8 @@ const (
 // └─────────────────────────────────────────────────────────────────┘
 type PageInfo struct {
 	// Cache Line 1 (64 bytes) - 热数据（高并发访问）
-	pos      atomic.Int64 // 8 bytes  - 在 Chunk 中的位置（0=未写入）✅ 使用原子操作
-	page     any          // 8 bytes  - 页面对象（*LeafPage 或 *InternalPage）
+	pos  atomic.Int64 // 8 bytes  - 在 Chunk 中的位置（0=未写入）✅ 使用原子操作
+	page any          // 8 bytes  - 页面对象（*LeafPage 或 *InternalPage）
 	// ✅ 性能优化：延迟 PageLock 创建（减少 15.45% 内存分配）
 	// 纯内存模式下不需要锁，仅在持久化模式的分裂/合并时使用
 	pageLock atomic.Value // 8 bytes  - *PageLock（懒加载）
@@ -58,7 +58,7 @@ type PageInfo struct {
 // NewPageInfo 创建新的 PageInfo
 func NewPageInfo() *PageInfo {
 	info := &PageInfo{
-		page:     nil,
+		page: nil,
 		// ✅ 性能优化：pageLock 延迟创建，减少内存分配
 		// 纯内存模式下不需要锁，仅在需要时才创建
 		pageLock: atomic.Value{},

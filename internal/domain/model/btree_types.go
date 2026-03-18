@@ -126,17 +126,17 @@ const (
 // NewDefaultBTreeConfig creates a default BTree configuration.
 func NewDefaultBTreeConfig() *BTreeConfig {
 	return &BTreeConfig{
-		PageSize:                 DefaultPageSize,
-		MaxKeys:                  DefaultMaxKeys,
-		MinKeys:                  DefaultMinKeys,
-		MaxVersions:              DefaultMaxVersions,
-		EnablePool:               true, // Phase 0.5 validation: Node using pool has 14.9x improvement
-		Compression:              CompressionNone,
-		GCPercent:                100, // 默认 GC 行为（生产环境）
-		DeltaChainThreshold:      10,  // Delta 链长度阈值
-		DeltaChainRatio:          0.2, // 20% 比例阈值
-		HotPageThreshold:         1000, // 热数据读取阈值
-		MemoryPressureThreshold:  0.8, // 80% 内存压力阈值
+		PageSize:                DefaultPageSize,
+		MaxKeys:                 DefaultMaxKeys,
+		MinKeys:                 DefaultMinKeys,
+		MaxVersions:             DefaultMaxVersions,
+		EnablePool:              true, // Phase 0.5 validation: Node using pool has 14.9x improvement
+		Compression:             CompressionNone,
+		GCPercent:               100,  // 默认 GC 行为（生产环境）
+		DeltaChainThreshold:     10,   // Delta 链长度阈值
+		DeltaChainRatio:         0.2,  // 20% 比例阈值
+		HotPageThreshold:        1000, // 热数据读取阈值
+		MemoryPressureThreshold: 0.8,  // 80% 内存压力阈值
 	}
 }
 

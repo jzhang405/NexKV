@@ -110,9 +110,9 @@ type BTree struct {
 	writeMu sync.Mutex // Global write lock for persistence operations
 
 	// Performance optimization
-	stats          *PageStats         // 页面访问统计（热数据识别）
-	memMonitor     *MemoryMonitor     // 内存监控（内存压力检测）
-	hotPageThreshold int64            // 热数据阈值（来自配置）
+	stats            *PageStats     // 页面访问统计（热数据识别）
+	memMonitor       *MemoryMonitor // 内存监控（内存压力检测）
+	hotPageThreshold int64          // 热数据阈值（来自配置）
 }
 
 // OpenBTree opens or creates a BTree storage engine with persistence support.

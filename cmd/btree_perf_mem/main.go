@@ -35,6 +35,9 @@ var (
 	// 初始化数据量
 	initCount int
 
+	// 实际初始化的 key 数量（用于 Get 操作）
+	actualInitializedKeys int
+
 	// 混合操作的读写比例（如 80:20 表示 80% 读 20% 写）
 	ratio string
 
@@ -184,11 +187,17 @@ func initializeData(ctx context.Context, tree *btree.BTree, count int) {
 			fmt.Printf("  Initialized %d keys... (%.0f keys/sec)\n", i, rate)
 		}
 	}
+	// ✅ 记录实际初始化的 key 数量
+	actualInitializedKeys = count
 }
 
 // runSingleThreadTest 单线程基准测试
 func runSingleThreadTest(ctx context.Context, tree *btree.BTree, opType OperationType) {
-	testCount := 100_000
+	// ✅ 修复：使用更小的测试量，避免超出初始化范围
+	testCount := 10_000
+	if opType == OpSet {
+		testCount = 100_000 // Set 可以使用更大的测试量
+	}
 	fmt.Printf("Running %d %s operations (single-threaded)...\n", testCount, opsType)
 
 	startTime := time.Now()
@@ -309,8 +318,10 @@ func runSetOperations(ctx context.Context, tree *btree.BTree, count int, workerI
 
 func runGetOperations(ctx context.Context, tree *btree.BTree, count int, workerID int) int64 {
 	var success int64
+	// ✅ 修复：使用实际初始化的 key 数量，而不是全局 initCount
+	// 避免访问未初始化的 key
 	for i := 0; i < count; i++ {
-		key := fmt.Sprintf("key-%07d", (workerID*count+i)%initCount)
+		key := fmt.Sprintf("key-%07d", (workerID*count+i)%actualInitializedKeys)
 		if _, err := tree.Get(ctx, []byte(key)); err == nil {
 			success++
 		}
@@ -327,7 +338,7 @@ func runMixedOperations(ctx context.Context, tree *btree.BTree, readCount, write
 
 	// 先执行读操作
 	for i := 0; i < readCount; i++ {
-		key := fmt.Sprintf("key-%07d", (workerID*100000+i)%initCount)
+		key := fmt.Sprintf("key-%07d", (workerID*100000+i)%actualInitializedKeys)
 		if _, err := tree.Get(ctx, []byte(key)); err == nil {
 			success++
 		}
@@ -335,7 +346,7 @@ func runMixedOperations(ctx context.Context, tree *btree.BTree, readCount, write
 
 	// 再执行写操作
 	for i := 0; i < writeCount; i++ {
-		key := fmt.Sprintf("key-%07d", (workerID*100000+readCount+i)%initCount)
+		key := fmt.Sprintf("key-%07d", (workerID*100000+readCount+i)%actualInitializedKeys)
 		value := fmt.Sprintf("value-mixed-%d-%05d", workerID, i)
 		if err := tree.Set(ctx, []byte(key), []byte(value)); err == nil {
 			success++
@@ -392,7 +403,7 @@ func runBatchGetOperations(ctx context.Context, tree *btree.BTree, count, batchS
 
 		for i := 0; i < currentBatchSize; i++ {
 			idx := b*batchSize + i
-			key := fmt.Sprintf("key-%07d", (workerID*count+idx)%initCount)
+			key := fmt.Sprintf("key-%07d", (workerID*count+idx)%actualInitializedKeys)
 			if _, err := tree.Get(ctx, []byte(key)); err == nil {
 				success++
 			}

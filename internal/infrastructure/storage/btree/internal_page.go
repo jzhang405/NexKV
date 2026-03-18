@@ -661,12 +661,16 @@ func (p *InternalPage) materialize() {
 				// 键已存在，InternalPage 的 Insert 语义是替换右子节点
 				// 这里忽略，因为 DeltaInsert 应该只在键不存在时使用
 			} else {
-				// 插入新键，注意 InternalPage 的 Insert 需要同时插入 child
-				// 但 Delta 结构没有 child 字段，这里简化处理：只插入键
-				// 实际使用中，这应该通过完整的 Insert 流程处理
+				// ✅ 设计说明：DeltaInsert 只插入 key，不插入 child
+				// 原因：
+				// 1. Delta 结构没有 child 字段
+				// 2. InternalPage.Clone() 时 children 已经是深拷贝（独立）
+				// 3. 修改 InternalPage 时直接修改 children，不使用 Delta Chain
+				// 4. materialize() 主要用于持久化模式，纯内存模式不会调用
+				//
+				// 不变量检查：len(newChildren) 应该保持 == len(newKeys) + 1
+				// 如果 child 信息的插入发生在其他地方，这里只需要插入 key
 				newKeys = insertSlice(newKeys, idx, delta.key)
-				// children 插入位置需要根据 B+Tree 语义确定
-				// 这里暂时不处理，因为 Delta 模式主要用于 LeafPage
 			}
 		case DeltaUpdate:
 			// InternalPage 不需要 Update 操作
@@ -686,6 +690,13 @@ func (p *InternalPage) materialize() {
 	p.keys = newKeys
 	p.children = newChildren
 	p.version++
+
+	// ✅ 不变量检查：确保 B+Tree 不变性成立
+	// len(children) == len(keys) + 1
+	if len(p.children) != len(p.keys)+1 {
+		panic(fmt.Sprintf("InternalPage.materialize(): invariant violated after materialize - pageID=%d, keys=%d, children=%d",
+			p.pageID, len(p.keys), len(p.children)))
+	}
 
 	// 释放引用
 	p.cowDelta.Release()

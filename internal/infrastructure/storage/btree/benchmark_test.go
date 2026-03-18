@@ -251,3 +251,32 @@ func BenchmarkBTree_ConcurrentWriters(b *testing.B) {
 		counter++
 	}
 }
+
+// BenchmarkBTree_Set_Concurrent_Memory 纯内存模式基准测试（无持久化）
+func BenchmarkBTree_Set_Concurrent_Memory(b *testing.B) {
+	tree, err := OpenBTree("", nil) // 空字符串 = 纯内存模式
+	if err != nil {
+		b.Fatalf("Failed to open BTree: %v", err)
+	}
+
+	// 预填充数据
+	ctx := context.Background()
+	for i := 0; i < 1000; i++ {
+		key := []byte(fmt.Sprintf("key-%d", i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+		if err := tree.Set(ctx, key, value); err != nil {
+			b.Fatalf("Failed to insert key-%d: %v", i, err)
+		}
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		counter := 0
+		for pb.Next() {
+			key := []byte(fmt.Sprintf("key-%d", counter%1000))
+			value := []byte(fmt.Sprintf("value-%d", counter))
+			_ = tree.Set(context.Background(), key, value)
+			counter++
+		}
+	})
+}

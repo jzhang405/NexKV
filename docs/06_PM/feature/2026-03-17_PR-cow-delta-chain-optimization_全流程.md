@@ -863,6 +863,217 @@ func (p *LeafPage) Clone() *LeafPage {
 
 ---
 
+#### 4.9 引用计数管理
+
+**关键点**: Base + Delta 模式需要引用计数管理，这是实现正确内存管理的关键。
+
+**引用计数生命周期**:
+
+1. **初始化** (NewCOWDeltaRef):
+```go
+func NewCOWDeltaRef(keys, values [][]byte) *COWDeltaRef {
+    ref := &COWDeltaRef{
+        sharedKeys:   keys,
+        sharedValues: values,
+        deltas:       make([]Delta, 0, 8),
+        maxDeltas:    10,
+    }
+    ref.refCount.Store(1)  // 初始 refCount = 1（创建者持有）
+    return ref
+}
+```
+
+2. **克隆时增加引用** (CloneWithDelta):
+```go
+func (p *LeafPage) CloneWithDelta() *LeafPage {
+    if p.cowDelta != nil {
+        p.cowDelta.Retain()  // refCount++
+        return &LeafPage{
+            pageID:   p.pageID,
+            version:  p.version + 1,
+            cowDelta: p.cowDelta,
+            keys:     p.cowDelta.GetSharedKeys(),
+            values:   p.cowDelta.GetSharedValues(),
+            pageLock: NewPageLock(),
+        }
+    }
+    // 创建新的 COW 引用...
+}
+```
+
+3. **物化时释放引用** (materialize):
+```go
+func (p *LeafPage) materialize() {
+    if p.cowDelta == nil {
+        return
+    }
+
+    // 获取基础数据的完整副本
+    newKeys := make([][]byte, len(p.cowDelta.GetSharedKeys()))
+    copy(newKeys, p.cowDelta.GetSharedKeys())
+
+    newValues := make([][]byte, len(p.cowDelta.GetSharedValues()))
+    copy(newValues, p.cowDelta.GetSharedValues())
+
+    // 应用所有增量操作
+    deltas := p.cowDelta.GetDeltas()
+    for _, delta := range deltas {
+        // ... 应用增量 ...
+    }
+
+    // 替换为独立数据
+    p.keys = newKeys
+    p.values = newValues
+    p.version++
+
+    // 释放引用
+    p.cowDelta.Release()  // refCount--
+    p.cowDelta = nil
+}
+```
+
+**使用场景示例**:
+
+```go
+// 场景：多个页面克隆共享同一份数据
+original := NewLeafPage(1)
+original.Insert([]byte("key1"), []byte("val1"))
+
+// 克隆1：使用 Delta Chain 模式
+clone1 := original.CloneWithDelta()  // refCount = 2
+
+// 克隆2：共享同一份基础数据
+clone2 := clone1.CloneWithDelta()    // refCount = 3
+
+// 修改 clone1（添加增量）
+clone1.Insert([]byte("key2"), []byte("val2"))
+// clone1 仍然与 clone2 共享 base 数据，只是增量链不同
+
+// 物化 clone1（脱离共享）
+clone1.materialize()                 // refCount = 2
+// clone1 现在有自己独立的数据副本
+
+// clone2 仍然共享原始 base 数据
+clone2.Insert([]byte("key3"), []byte("val3"))
+```
+
+**并发安全保证**:
+
+```go
+// 使用 atomic.Int32 保证引用计数的并发安全
+type COWDeltaRef struct {
+    refCount atomic.Int32  // 并发安全的引用计数
+    // ...
+}
+
+func (r *COWDeltaRef) Retain() {
+    r.refCount.Add(1)
+}
+
+func (r *COWDeltaRef) Release() bool {
+    newCount := r.refCount.Add(-1)
+    return newCount == 0
+}
+```
+
+**最佳实践**:
+
+1. **成对使用 Retain/Release**:
+```go
+// ✅ 正确：每次 Retain 都有对应的 Release
+func (p *LeafPage) CloneWithDelta() *LeafPage {
+    p.cowDelta.Retain()
+    // ... 创建副本 ...
+    // 注意：Release 由调用者在适当时机调用（如 materialize）
+}
+
+// ❌ 错误：Retain 后忘记 Release
+func badExample() {
+    p.cowDelta.Retain()
+    // 缺少对应的 Release -> 内存泄漏
+}
+```
+
+2. **物化时释放引用**:
+```go
+// ✅ 正确：物化时释放引用
+func (p *LeafPage) materialize() {
+    // ... 创建独立副本 ...
+    p.cowDelta.Release()  // 释放引用
+    p.cowDelta = nil
+}
+```
+
+3. **检查引用计数**:
+```go
+// 用于调试和验证
+func (p *LeafPage) IsShared() bool {
+    if p.cowDelta == nil {
+        return false
+    }
+    return p.cowDelta.GetRefCount() > 1
+}
+
+func (p *LeafPage) GetRefCount() int32 {
+    if p.cowDelta == nil {
+        return 1  // 未使用 Delta Chain，引用计数为 1（自己）
+    }
+    return p.cowDelta.GetRefCount()
+}
+```
+
+**测试验证**:
+
+```go
+func TestCOWDeltaRef_ReferenceCount(t *testing.T) {
+    keys := [][]byte{[]byte("key1"), []byte("key2")}
+    values := [][]byte{[]byte("val1"), []byte("val2")}
+
+    ref := NewCOWDeltaRef(keys, values)
+    assert.Equal(t, int32(1), ref.GetRefCount())  // 初始为 1
+
+    ref.Retain()
+    assert.Equal(t, int32(2), ref.GetRefCount())
+
+    ref.Retain()
+    assert.Equal(t, int32(3), ref.GetRefCount())
+
+    released := ref.Release()
+    assert.Equal(t, int32(2), ref.GetRefCount())
+    assert.False(t, released)  // refCount != 0
+
+    released = ref.Release()
+    assert.Equal(t, int32(1), ref.GetRefCount())
+    assert.False(t, released)
+
+    released = ref.Release()
+    assert.Equal(t, int32(0), ref.GetRefCount())
+    assert.True(t, released)  // refCount == 0，可以释放
+}
+
+func TestLeafPage_CloneWithDeltaRefCount(t *testing.T) {
+    original := NewLeafPage(1)
+    original.Insert([]byte("key1"), []byte("val1"))
+    original.Insert([]byte("key2"), []byte("val2"))
+
+    // 创建 Delta Chain 模式
+    original = original.CloneWithDelta()  // refCount = 1
+
+    clone1 := original.CloneWithDelta()   // refCount = 2
+    assert.Equal(t, int32(2), clone1.GetRefCount())
+
+    clone2 := clone1.CloneWithDelta()     // refCount = 3
+    assert.Equal(t, int32(3), clone2.GetRefCount())
+
+    // 物化 clone1
+    clone1.materialize()                  // refCount = 2
+    assert.Equal(t, int32(0), clone1.GetRefCount())  // 不再使用 Delta Chain
+    assert.Equal(t, int32(2), clone2.GetRefCount())  // clone2 仍在使用
+}
+```
+
+---
+
 ### 5. 测试方案
 
 #### 5.1 单元测试

@@ -37,7 +37,7 @@ var (
 // - PageID = file offset / PageSize
 // - No complex free page management (simplified for PoC)
 //
-// ✅ Optimization: Async batch flush to reduce sync overhead
+// Optimization: Async batch flush to reduce sync overhead
 type PageManager struct {
 	// file is the underlying storage file.
 	file *os.File
@@ -54,7 +54,7 @@ type PageManager struct {
 	// mu protects file operations.
 	mu sync.Mutex
 
-	// ✅ Async flush fields
+	// Async flush fields
 	dirtyPages     chan *Page         // Channel for dirty pages
 	flushInterval  time.Duration      // Max time between flushes
 	flushBatchSize int                // Max pages per batch
@@ -80,7 +80,7 @@ func NewPageManager(path string) (*PageManager, error) {
 	fileSize := info.Size()
 	nextPageID := uint64(fileSize / PageSize)
 
-	// ✅ Create context for background flusher
+	// Create context for background flusher
 	ctx, cancel := context.WithCancel(context.Background())
 
 	pm := &PageManager{
@@ -93,7 +93,7 @@ func NewPageManager(path string) (*PageManager, error) {
 	}
 	pm.nextPageID.Store(nextPageID)
 
-	// ✅ Start background flush goroutine
+	// Start background flush goroutine
 	pm.flushWg.Add(1)
 	go pm.backgroundFlush(ctx)
 
@@ -117,7 +117,7 @@ func (pm *PageManager) WritePage(page *Page) error {
 	}
 
 	// Synchronous write (simplified for PoC)
-	// 异步写回优化（Week 14 待实现）
+	// 异步写回优化
 	return pm.syncWritePage(page)
 }
 
@@ -155,7 +155,7 @@ func (pm *PageManager) flushPage(page *Page) error {
 		return fmt.Errorf("write page %d: %w", page.ID, err)
 	}
 
-	// ✅ Optimization: Sync only in batch (not per-page)
+	// Optimization: Sync only in batch (not per-page)
 	if err := pm.file.Sync(); err != nil {
 		return fmt.Errorf("sync page %d: %w", page.ID, err)
 	}
@@ -322,7 +322,7 @@ func (pm *PageManager) Close() error {
 		return nil // Already closed
 	}
 
-	// ✅ Stop background flush goroutine
+	// Stop background flush goroutine
 	pm.stopFlush()
 
 	// Wait for background flush to complete

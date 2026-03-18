@@ -31,25 +31,25 @@ const (
 // └─────────────────────────────────────────────────────────────────┘
 type PageInfo struct {
 	// Cache Line 1 (64 bytes) - 热数据（高并发访问）
-	pos  atomic.Int64 // 8 bytes  - 在 Chunk 中的位置（0=未写入）✅ 使用原子操作
+	pos  atomic.Int64 // 8 bytes  - 在 Chunk 中的位置（0=未写入）使用原子操作
 	page any          // 8 bytes  - 页面对象（*LeafPage 或 *InternalPage）
-	// ✅ 性能优化：延迟 PageLock 创建（减少 15.45% 内存分配）
+	// 性能优化：延迟 PageLock 创建（减少 15.45% 内存分配）
 	// 纯内存模式下不需要锁，仅在持久化模式的分裂/合并时使用
 	pageLock atomic.Value // 8 bytes  - *PageLock（懒加载）
-	lastTime atomic.Int64 // 8 bytes  - LRU 时间戳（纳秒）✅ 并发安全
-	hits     atomic.Int64 // 8 bytes  - 访问计数 ✅ 并发安全
+	lastTime atomic.Int64 // 8 bytes  - LRU 时间戳（纳秒）并发安全
+	hits     atomic.Int64 // 8 bytes  - 访问计数 并发安全
 	_        [24]byte     // padding to 64 bytes
 
-	// Cache Line 2 (64 bytes) - ✅ 优化：移除 buff 字段，使用 ChunkManager.pagePool 管理
+	// Cache Line 2 (64 bytes) - 优化：移除 buff 字段，使用 ChunkManager.pagePool 管理
 	// 原 buff []byte 字段已移除，减少1个指针（25%↓），序列化时使用 ChunkManager.AcquirePageBuffer()
 	_ [0]byte // 占位，保持对齐
 
 	// Cache Line 3 (64 bytes) - 冷数据（元数据，低频写入）
-	parentRef   atomic.Value  // 8 bytes - ✅ 优化：使用 atomic.Value 存储 *PageRef，移除 defer 开销
-	flags       atomic.Uint32 // 4 bytes  - ✅ 并发安全标志位: bit0=isDirty, bit1=isSplitted
+	parentRef   atomic.Value  // 8 bytes - 优化：使用 atomic.Value 存储 *PageRef，移除 defer 开销
+	flags       atomic.Uint32 // 4 bytes  - 并发安全标志位: bit0=isDirty, bit1=isSplitted
 	metaVersion int32         // 4 bytes  - 元数据版本
 	pageSize    int32         // 4 bytes  - 页面实际大小（固定 4KB）
-	// ✅ 克隆状态标记（放在最后，避免对齐问题）
+	// 克隆状态标记（放在最后，避免对齐问题）
 	// 0=共享原始 Page, 1=浅克隆（PageInfo 独立，Page 共享）, 2=深克隆（PageInfo 和 Page 都独立）
 	cloneStatus atomic.Uint32 // 4 bytes
 	_           [56]byte      // padding to 64 bytes
@@ -59,18 +59,18 @@ type PageInfo struct {
 func NewPageInfo() *PageInfo {
 	info := &PageInfo{
 		page: nil,
-		// ✅ 性能优化：pageLock 延迟创建，减少内存分配
+		// 性能优化：pageLock 延迟创建，减少内存分配
 		// 纯内存模式下不需要锁，仅在需要时才创建
 		pageLock: atomic.Value{},
 		// parentRef 使用 atomic.Value，不需要显式初始化为 nil
 		metaVersion: 0,
 		pageSize:    PageSize,
 	}
-	info.SetPos(0) // ✅ 使用 SetPos() 方法避免 noCopy 违规
+	info.SetPos(0) // 使用 SetPos() 方法避免 noCopy 违规
 	info.lastTime.Store(time.Now().UnixNano())
 	info.hits.Store(0)
 	info.flags.Store(0)                   // 初始化所有标志位为 0
-	info.parentRef.Store((*PageRef)(nil)) // ✅ 显式初始化为 nil
+	info.parentRef.Store((*PageRef)(nil)) // 显式初始化为 nil
 	info.cloneStatus.Store(0)
 	return info
 }
@@ -115,7 +115,7 @@ func (info *PageInfo) SetPos(pos int64) {
 }
 
 // GetLock 获取轻量级锁（懒加载优化）
-// ✅ 性能优化：仅在首次访问时创建 PageLock，减少内存分配
+// 性能优化：仅在首次访问时创建 PageLock，减少内存分配
 // 纯内存模式下不会调用此方法，因此不会创建不必要的锁
 func (info *PageInfo) GetLock() *PageLock {
 	// 快速路径：已经初始化
@@ -174,30 +174,29 @@ func (info *PageInfo) GetLastTime() int64 {
 }
 
 // Clone 复制 PageInfo（Copy-on-Write）
-//
-// ✅ P0-4 修复: 深拷贝 Page 对象，避免并发修改问题
+// 深拷贝 Page 对象，避免并发修改问题
 // 当多个 goroutine 并发修改时，每个 goroutine 需要独立的 Page 副本
 func (info *PageInfo) Clone() *PageInfo {
 	// 创建新的 PageInfo，复制所有字段
 	newInfo := &PageInfo{
-		pageLock:    atomic.Value{}, // ✅ 性能优化：延迟创建 PageLock
+		pageLock:    atomic.Value{}, // 性能优化：延迟创建 PageLock
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}
-	// ✅ 优化：使用 atomic.Value 复制 parentRef（无锁）
+	// 优化：使用 atomic.Value 复制 parentRef（无锁）
 	newInfo.parentRef.Store(info.parentRef.Load())
 
-	// ✅ 修复：使用 SetPos() 方法设置 atomic.Int64，避免直接复制
+	// 修复：使用 SetPos() 方法设置 atomic.Int64，避免直接复制
 	newInfo.SetPos(info.GetPos())
 
-	// ✅ 复制原子字段（并发安全）
+	// 复制原子字段（并发安全）
 	newInfo.lastTime.Store(info.lastTime.Load())
 	newInfo.hits.Store(info.hits.Load())
 
-	// ✅ 复制标志位（并发安全）
+	// 复制标志位（并发安全）
 	newInfo.flags.Store(info.flags.Load())
 
-	// ✅ P0-4 修复: 深拷贝 Page 对象，避免并发修改共享 Page
+	// 深拷贝 Page 对象，避免并发修改共享 Page
 	if info.IsPageLoaded() && info.page != nil {
 		switch p := info.page.(type) {
 		case *LeafPage:
@@ -225,11 +224,11 @@ func (info *PageInfo) Clone() *PageInfo {
 // - 如果需要修改，必须先转换为深拷贝
 func (info *PageInfo) CloneShallow() *PageInfo {
 	newInfo := &PageInfo{
-		pageLock:    atomic.Value{}, // ✅ 性能优化：延迟创建 PageLock
+		pageLock:    atomic.Value{}, // 性能优化：延迟创建 PageLock
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}
-	// ✅ 优化：使用 atomic.Value 复制 parentRef（无锁）
+	// 优化：使用 atomic.Value 复制 parentRef（无锁）
 	newInfo.parentRef.Store(info.parentRef.Load())
 
 	newInfo.SetPos(info.GetPos())
@@ -237,10 +236,10 @@ func (info *PageInfo) CloneShallow() *PageInfo {
 	newInfo.hits.Store(info.hits.Load())
 	newInfo.flags.Store(info.flags.Load())
 
-	// ✅ 关键：共享 Page 对象，不进行深拷贝
+	// 关键：共享 Page 对象，不进行深拷贝
 	newInfo.page = info.page
 
-	// ✅ 标记为浅克隆状态
+	// 标记为浅克隆状态
 	newInfo.cloneStatus.Store(CloneStatusShallow)
 
 	return newInfo
@@ -257,15 +256,15 @@ func (info *PageInfo) CloneShallow() *PageInfo {
 // - 如果当前是浅克隆状态，则执行深拷贝
 // - 如果当前是深克隆状态，直接返回
 func (info *PageInfo) CloneDeep() *PageInfo {
-	// ✅ 如果已经是深克隆，直接返回
+	// 如果已经是深克隆，直接返回
 	if info.cloneStatus.Load() == CloneStatusDeep {
 		return info
 	}
 
-	// ✅ 如果当前是浅克隆或共享状态，执行深拷贝
+	// 如果当前是浅克隆或共享状态，执行深拷贝
 	newInfo := info.CloneShallow()
 
-	// ✅ 深拷贝 Page 对象
+	// 深拷贝 Page 对象
 	if info.IsPageLoaded() && info.page != nil {
 		switch p := info.page.(type) {
 		case *LeafPage:
@@ -278,7 +277,7 @@ func (info *PageInfo) CloneDeep() *PageInfo {
 		}
 	}
 
-	// ✅ 标记为深克隆状态
+	// 标记为深克隆状态
 	newInfo.cloneStatus.Store(CloneStatusDeep)
 
 	return newInfo
@@ -300,7 +299,7 @@ func (info *PageInfo) IsDeepClone() bool {
 	return info.cloneStatus.Load() == CloneStatusDeep
 }
 
-// ✅ 优化：移除 GetBuff/SetBuff 方法，序列化缓冲区现在由 ChunkManager.pagePool 管理
+// 优化：移除 GetBuff/SetBuff 方法，序列化缓冲区现在由 ChunkManager.pagePool 管理
 
 // GetMetaVersion 获取元数据版本
 func (info *PageInfo) GetMetaVersion() int32 {
@@ -318,13 +317,13 @@ func (info *PageInfo) GetPageSize() int32 {
 }
 
 // GetParentRef 获取父节点引用（无锁，atomic.Value）
-// ✅ 优化：移除 defer，减少 tryDeferToSpanScan 开销
+// 优化：移除 defer，减少 tryDeferToSpanScan 开销
 func (info *PageInfo) GetParentRef() *PageRef {
 	return info.parentRef.Load().(*PageRef)
 }
 
 // SetParentRef 设置父节点引用（无锁，atomic.Value）
-// ✅ 优化：移除 defer，减少 tryDeferToSpanScan 开销
+// 优化：移除 defer，减少 tryDeferToSpanScan 开销
 func (info *PageInfo) SetParentRef(ref *PageRef) {
 	info.parentRef.Store(ref)
 }
@@ -393,7 +392,7 @@ func VerifyPageInfoAlignment() {
 		println("Warning: PageInfo.pos not aligned to cache line")
 	}
 
-	// ✅ 移除 buff 对齐检查（字段已移除）
+	// 移除 buff 对齐检查（字段已移除）
 
 	// flags 应该在独立的 cache line
 	if (offset3-offset1)%cacheLineSize != 0 {

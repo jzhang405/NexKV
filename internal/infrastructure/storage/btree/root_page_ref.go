@@ -27,46 +27,64 @@ func NewRootPageRefWithInfo(info *PageInfo) *RootPageRef {
 	}
 }
 
-// ReplacePage 替换 Root Page（原子更新并维护引用链）
+// ReplacePage 替换 Root Page（基于 PageID 的 CAS 优化）
 // 这是 RootPageRef 的核心方法，确保并发安全
 //
-// 执行顺序（根据 v3.0 设计）：
-// 1. 先 CAS 更新 pInfo（原子操作）
-// 2. CAS 成功后，更新所有子节点的 parentRef（指向新 Root）
-// 3. 延迟释放旧页面（等待活跃读操作完成）
+// 优化策略（PageID + Pointer CAS）：
+// 1. 快速路径：PageID 检查（提前过滤，避免不必要的 CAS）
+// 2. 原子操作：Pointer CAS（真正保证原子性）
+// 3. 失败重试：CAS 失败则重试整个流程
+//
+// 关键优势：
+// - PageID 在页面生命周期内不变（仅在分裂时变化）
+// - 读操作不会改变 PageID（减少伪冲突）
+// - 不需要额外的 version 字段（Pointer CAS 已提供必要的同步）
 //
 // 参数：
 //
-//	oldInfo - 期望的当前 PageInfo（可以为 nil）
+//	oldRootID - 期望的当前 Root PageID（0 表示任意值）
 //	newInfo - 新的 PageInfo（不能为 nil）
 //
 // 返回：
 //
 //	true - CAS 成功，替换成功并完成引用链更新
-//	false - CAS 失败，当前值不是 oldInfo
-func (r *RootPageRef) ReplacePage(oldInfo, newInfo *PageInfo) bool {
+//	false - CAS 失败，Root PageID 已变化
+func (r *RootPageRef) ReplacePage(oldRootID uint64, newInfo *PageInfo) bool {
 	if newInfo == nil {
 		panic("newInfo cannot be nil")
 	}
 
-	// 步骤1：CAS 更新 pInfo（原子操作）
-	swapped := r.pInfo.CompareAndSwap(oldInfo, newInfo)
-	if !swapped {
-		return false
+	// 使用循环重试（理论上极少重试）
+	for {
+		// 阶段 1：加载当前指针
+		currentPtr := r.pInfo.Load()
+		if currentPtr == nil {
+			// Root 未初始化，直接设置
+			if r.pInfo.CompareAndSwap(nil, newInfo) {
+				return true
+			}
+			continue // CAS 失败，重试
+		}
+
+		// 阶段 2：快速路径 - PageID 检查
+		// 如果 PageID 已变化，立即返回（无需 CAS）
+		currentRootID := currentPtr.GetPageID()
+		if oldRootID != 0 && currentRootID != oldRootID {
+			// Root 已分裂，CAS 会失败
+			return false
+		}
+
+		// 阶段 3：Pointer CAS（原子操作）
+		// 只有当其他线程没有修改时，CAS 才会成功
+		if r.pInfo.CompareAndSwap(currentPtr, newInfo) {
+			// CAS 成功，延迟释放旧页面
+			r.scheduleDelayedRelease(currentPtr)
+			return true
+		}
+
+		// CAS 失败：重试（回到阶段 1）
+		// 注意：这种情况在正常并发下应该很少发生
 	}
-
-	// 步骤2：CAS 成功后，更新所有子节点的 parentRef
-	// 注意：在当前架构下，Page.Data 是原始字节数组
-	// 我们需要等到 LeafPage/InternalPage 新架构实现后再完善此功能
-	// 预留接口，暂不实现
-	_ = r.updateChildrenParentRef
-
-	// 步骤3：延迟释放旧页面（如果存在）
-	if oldInfo != nil {
-		r.scheduleDelayedRelease(oldInfo)
-	}
-
-	return true
 }
 
 // updateChildrenParentRef 递归更新子节点的父引用
@@ -119,7 +137,8 @@ func (r *RootPageRef) scheduleDelayedRelease(info *PageInfo) {
 // 支持取消操作和超时控制
 func (r *RootPageRef) ReplacePageWithContext(
 	ctx context.Context,
-	oldInfo, newInfo *PageInfo,
+	oldRootID uint64,
+	newInfo *PageInfo,
 ) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -133,7 +152,7 @@ func (r *RootPageRef) ReplacePageWithContext(
 	}
 
 	// 执行 CAS 更新
-	swapped := r.ReplacePage(oldInfo, newInfo)
+	swapped := r.ReplacePage(oldRootID, newInfo)
 	if !swapped {
 		return ErrInvalidState
 	}

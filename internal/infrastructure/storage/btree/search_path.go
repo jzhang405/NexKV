@@ -65,16 +65,10 @@ func (b *BTree) searchPath(ctx context.Context, key []byte) ([]*PageInfo, error)
 		}
 
 		// 2.3 判断是否为叶子节点
-		// ✅ 原始实现：立即深拷贝
+		// 修复：Get 操作不需要克隆，直接使用原始页面
 		if leafPage, ok := currentPage.(*LeafPage); ok && leafPage != nil {
-			// 到达叶子节点，深拷贝后添加到路径
-			clonedPage := leafPage.CloneWithDelta()
-			clonedInfo := NewPageInfo()
-			clonedInfo.SetPage(clonedPage)
-			clonedInfo.cloneStatus.Store(CloneStatusShallow)
-
-			// 替换路径中的最后一个元素为深拷贝的版本
-			path[len(path)-1] = clonedInfo
+			// 到达叶子节点，直接添加到路径（不克隆）
+			// Get 是只读操作，不需要 COW
 			break
 		}
 

@@ -182,7 +182,7 @@ func (p *InternalPage) Insert(key []byte, child *PageRef) (bool, error) {
 // 在指定位置插入键和右子节点
 // 返回：错误信息
 func (p *InternalPage) InsertKeyChild(key []byte, childRef *PageRef) error {
-	// ✅ 防御性修复：检查并修复不变量
+	// 防御性修复：检查并修复不变量
 	expectedChildren := len(p.keys) + 1
 	if len(p.children) != expectedChildren {
 		// 如果 children 太多，截断
@@ -274,7 +274,7 @@ func (p *InternalPage) UpdateKey(oldKey, newKey []byte) (bool, error) {
 // - 分裂键：键 [mid]（提升到父节点，不在左右页面中）
 // - 右页面：键 [mid+1:]，子节点 [mid+1:]
 //
-// ✅ Day 7: 添加引用更新机制
+// 添加引用更新机制
 // - 更新新页面子节点的 parentRef 指向新页面
 // - 保留原页面子节点的 parentRef 指向原页面
 func (p *InternalPage) Split() (*InternalPage, []byte, error) {
@@ -290,8 +290,8 @@ func (p *InternalPage) Split() (*InternalPage, []byte, error) {
 	// 创建新页面，包含中间键之后的键和子节点
 	newPage := NewInternalPage(model.PageID(p.pageID + 1)) // 临时 ID
 
-	// ✅ 修复：B+Tree 标准分裂逻辑 - 分裂键提升到父节点，不在左右页面中
-	// ✅ 修复：使用 make + copy 创建独立的 slice，避免共享底层数组
+	// 修复：B+Tree 标准分裂逻辑 - 分裂键提升到父节点，不在左右页面中
+	// 修复：使用 make + copy 创建独立的 slice，避免共享底层数组
 	// 分裂键 keys[mid] 提升到父节点：
 	// - 左页面: keys[0:mid], children[0:mid+1]
 	// - 右页面: keys[mid+1:], children[mid+1:]
@@ -301,7 +301,7 @@ func (p *InternalPage) Split() (*InternalPage, []byte, error) {
 	copy(newPage.keys, p.keys[mid+1:])
 	newPage.children = make([]*PageRef, len(p.children[mid+1:]))
 	copy(newPage.children, p.children[mid+1:])
-	// ✅ Day 7: parentRef 更新将在 splitInternal() 中处理
+	//parentRef 更新将在 splitInternal() 中处理
 
 	// 当前页面保留中间键之前的键和子节点（不包含分裂键）
 	p.keys = p.keys[:mid]           // 不包含分裂键
@@ -321,10 +321,23 @@ func (p *InternalPage) Split() (*InternalPage, []byte, error) {
 func (p *InternalPage) Clone(config ...*COWDeltaRefConfig) *InternalPage {
 	var cowRef *COWDeltaRef
 
-	// 如果已有 COW 引用，增加引用计数
+	// 如果已有 COW 引用，检查是否可以重用
 	if p.cowDelta != nil {
-		p.cowDelta.Retain()
-		cowRef = p.cowDelta
+		// 关键修复：检查 p.keys 是否与 cowDelta.sharedKeys 同步
+		// 如果 p.keys 的长度与 sharedKeys 的长度不一致，说明 p.keys 已被修改
+		// 需要创建新的 COWDeltaRef，而不是重用旧的
+		if len(p.keys) != len(p.cowDelta.GetSharedKeys()) {
+			// p.keys 已被修改（如 InsertKeyChild），创建新的 COWDeltaRef
+			if len(config) > 0 && config[0] != nil {
+				cowRef = NewCOWDeltaRefWithConfig(p.keys, nil, config[0])
+			} else {
+				cowRef = NewCOWDeltaRef(p.keys, nil)
+			}
+		} else {
+			// 可以重用现有的 cowDelta
+			p.cowDelta.Retain()
+			cowRef = p.cowDelta
+		}
 	} else {
 		// 创建新的 COW 引用（只共享 keys，不包含 children）
 		// values 为 nil，因为 InternalPage 不需要
@@ -377,7 +390,7 @@ func (p *InternalPage) CloneWithDelta() *InternalPage {
 
 // Serialize 序列化页面
 func (p *InternalPage) Serialize() ([]byte, error) {
-	// ✅ 物化：序列化前必须将 Delta Chain 合并为独立数据
+	// 物化：序列化前必须将 Delta Chain 合并为独立数据
 	// cowDelta 是内存优化结构，无法序列化到磁盘
 	if p.cowDelta != nil {
 		p.materialize()
@@ -661,7 +674,7 @@ func (p *InternalPage) materialize() {
 				// 键已存在，InternalPage 的 Insert 语义是替换右子节点
 				// 这里忽略，因为 DeltaInsert 应该只在键不存在时使用
 			} else {
-				// ✅ 设计说明：DeltaInsert 只插入 key，不插入 child
+				// 设计说明：DeltaInsert 只插入 key，不插入 child
 				// 原因：
 				// 1. Delta 结构没有 child 字段
 				// 2. InternalPage.Clone() 时 children 已经是深拷贝（独立）
@@ -691,7 +704,7 @@ func (p *InternalPage) materialize() {
 	p.children = newChildren
 	p.version++
 
-	// ✅ 不变量检查：确保 B+Tree 不变性成立
+	// 不变量检查：确保 B+Tree 不变性成立
 	// len(children) == len(keys) + 1
 	if len(p.children) != len(p.keys)+1 {
 		panic(fmt.Sprintf("InternalPage.materialize(): invariant violated after materialize - pageID=%d, keys=%d, children=%d",

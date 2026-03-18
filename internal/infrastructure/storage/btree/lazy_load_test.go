@@ -8,9 +8,9 @@ import (
 
 // TestPageRef_GetOrLoad_LazyLoading 测试懒加载机制
 func TestPageRef_GetOrLoad_LazyLoading(t *testing.T) {
-	t.Skip("Skipping test - ChunkManager integration pending (Week 13-14)")
+	t.Skip("Skipping test - ChunkManager integration pending")
 
-	// TODO: Week 13-14 - 启用此测试
+	// TODO: 启用此测试
 	// 1. 创建 ChunkManager
 	// 2. 创建 PageInfo（page = nil，pos != 0）
 	// 3. 第一次 GetOrLoad：应该触发加载
@@ -19,9 +19,9 @@ func TestPageRef_GetOrLoad_LazyLoading(t *testing.T) {
 
 // TestPageRef_GetOrLoad_Concurrent 测试并发懒加载
 func TestPageRef_GetOrLoad_Concurrent(t *testing.T) {
-	t.Skip("Skipping test - ChunkManager integration pending (Week 13-14)")
+	t.Skip("Skipping test - ChunkManager integration pending")
 
-	// TODO: Week 13-14 - 启用此测试
+	// TODO: 启用此测试
 	// 1. 创建 ChunkManager
 	// 2. 创建 PageInfo（page = nil）
 	// 3. 多个 goroutine 并发调用 GetOrLoad
@@ -31,9 +31,9 @@ func TestPageRef_GetOrLoad_Concurrent(t *testing.T) {
 
 // TestChunkManager_LoadPage 测试 ChunkManager 加载页面
 func TestChunkManager_LoadPage(t *testing.T) {
-	t.Skip("Skipping test - LoadPage implementation pending (Week 13-14)")
+	t.Skip("Skipping test - LoadPage implementation pending")
 
-	// TODO: Week 13-14 - 启用此测试
+	// TODO: 启用此测试
 	// 1. 创建 ChunkManager
 	// 2. 序列化一个 LeafPage
 	// 3. 写入 ChunkManager
@@ -43,9 +43,9 @@ func TestChunkManager_LoadPage(t *testing.T) {
 
 // TestBTree_loadPage 测试 BTree.loadPage() 封装方法
 func TestBTree_loadPage(t *testing.T) {
-	t.Skip("Skipping test - loadPage implementation pending (Week 13-14)")
+	t.Skip("Skipping test - loadPage implementation pending")
 
-	// TODO: Week 13-14 - 启用此测试
+	// TODO: 启用此测试
 	// 1. 创建 BTree
 	// 2. 调用 loadPage(pos)
 	// 3. 验证返回的页面类型正确

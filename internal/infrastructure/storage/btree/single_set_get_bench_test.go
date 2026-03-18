@@ -52,7 +52,7 @@ func initPreallocated(count int) {
 	// 预生成所有 key 和 value
 	for i := 0; i < count; i++ {
 		// key: k-{i} 格式（使用固定宽度确保字典序正确）
-		// ✅ 修复：使用 %07d 格式，确保 k-0000001 < k-0000002 < ... < k-0009999 < k-0010000
+		// 修复：使用 %07d 格式，确保 k-0000001 < k-0000002 < ... < k-0009999 < k-0010000
 		preallocatedKeys[i] = []byte(fmt.Sprintf("k-%07d", i))
 
 		// value: v-{i} 格式

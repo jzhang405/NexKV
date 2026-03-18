@@ -17,7 +17,7 @@ type CCOWManager struct {
 	snapshotID atomic.Uint64
 	snapshotMu sync.RWMutex
 
-	// 脏页跟踪 - ✅ 优化：使用 sync.Map 替代 map+mutex（无锁）
+	// 脏页跟踪 - 优化：使用 sync.Map 替代 map+mutex（无锁）
 	dirtyPages sync.Map
 }
 
@@ -84,28 +84,28 @@ func (ccow *CCOWManager) ReleaseSnapshot(snapshotID uint64) {
 }
 
 // MarkDirty 标记页面为脏页
-// ✅ 使用 sync.Map.Store 无锁操作
+// 使用 sync.Map.Store 无锁操作
 func (ccow *CCOWManager) MarkDirty(pageInfo *PageInfo) {
 	if !pageInfo.IsDirty() {
 		pageInfo.MarkDirty()
-		// ✅ sync.Map.Store 是无锁操作，并发安全
+		// sync.Map.Store 是无锁操作，并发安全
 		ccow.dirtyPages.Store(pageInfo, struct{}{})
 	}
 }
 
 // ClearDirty 清除脏页标记
-// ✅ 使用 sync.Map.Delete 无锁操作
+// 使用 sync.Map.Delete 无锁操作
 func (ccow *CCOWManager) ClearDirty(pageInfo *PageInfo) {
 	pageInfo.ClearDirty()
-	// ✅ sync.Map.Delete 是无锁操作，并发安全
+	// sync.Map.Delete 是无锁操作，并发安全
 	ccow.dirtyPages.Delete(pageInfo)
 }
 
 // GetDirtyPages 获取所有脏页
-// ✅ 使用 sync.Map.Range 无锁遍历
+// 使用 sync.Map.Range 无锁遍历
 func (ccow *CCOWManager) GetDirtyPages() []*PageInfo {
 	var dirtyPages []*PageInfo
-	// ✅ sync.Map.Range 是无锁遍历，并发安全
+	// sync.Map.Range 是无锁遍历，并发安全
 	ccow.dirtyPages.Range(func(key, value any) bool {
 		pageInfo := key.(*PageInfo)
 		dirtyPages = append(dirtyPages, pageInfo)
@@ -151,7 +151,11 @@ func (ccow *CCOWManager) CopyPathBottomUp(
 			// 根节点，使用 CAS 更新 RootPageRef
 			if rootRef != nil {
 				oldRootInfo := rootRef.pInfo.Load()
-				if !rootRef.ReplacePage(oldRootInfo, clonedInfo) {
+				oldRootID := uint64(0)
+				if oldRootInfo != nil {
+					oldRootID = oldRootInfo.GetPageID()
+				}
+				if !rootRef.ReplacePage(oldRootID, clonedInfo) {
 					return nil, fmt.Errorf("CAS update root failed: concurrent modification detected")
 				}
 			}
@@ -167,21 +171,21 @@ func (ccow *CCOWManager) clonePageInfo(info *PageInfo) *PageInfo {
 	// 创建新的 PageInfo（深拷贝 Page 数据）
 	newInfo := &PageInfo{
 		page:        info.GetPage(), // 暂时共享 Page，后续实现深拷贝
-		pageLock:    atomic.Value{}, // ✅ 性能优化：延迟创建 PageLock
+		pageLock:    atomic.Value{}, // 性能优化：延迟创建 PageLock
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}
 
-	// ✅ 修复：使用 Store() 方法设置原子字段
+	// 修复：使用 Store() 方法设置原子字段
 	newInfo.SetPos(info.GetPos())
 	newInfo.lastTime.Store(time.Now().UnixNano())
 	newInfo.hits.Store(0) // 重置访问计数
 
-	// ✅ 复制标志位（并发安全），但重置 isDirty
+	// 复制标志位（并发安全），但重置 isDirty
 	newInfo.flags.Store(info.flags.Load() &^ 0x01) // 保留 isSplitted，清除 isDirty
 	newInfo.parentRef.Store(info.parentRef.Load())
 
-	// ✅ 优化：移除 buff 复制逻辑（buff 字段已移除，序列化时使用 ChunkManager.pagePool）
+	// 优化：移除 buff 复制逻辑（buff 字段已移除，序列化时使用 ChunkManager.pagePool）
 
 	return newInfo
 }

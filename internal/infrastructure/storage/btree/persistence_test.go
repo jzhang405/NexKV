@@ -67,7 +67,7 @@ func TestPersistence_Reload(t *testing.T) {
 	defer btree2.Close()
 
 	// 4. 验证数据（暂时跳过，因为 Get 操作还需要集成 ChunkManager）
-	// TODO: Week 13-14 - 启用此验证
+	// TODO: 启用此验证
 	// value, err := btree2.Get(ctx, []byte("key1"))
 	// require.NoError(t, err)
 	// assert.Equal(t, []byte("value1"), value)
@@ -164,5 +164,5 @@ func TestPersistence_SplitAndPersist(t *testing.T) {
 	require.NoError(t, err)
 	assert.Greater(t, len(chunkFiles), 0, "Chunk files should be created after split")
 
-	// TODO: Week 13-14 - 验证数据完整性（需要 Get 操作集成）
+	// TODO: 验证数据完整性（需要 Get 操作集成）
 }

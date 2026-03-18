@@ -35,7 +35,7 @@ func TestLeafPage_Split_Basic(t *testing.T) {
 	assert.Equal(t, 8, page.NumKeys(), "原页面应该有 8 个键")
 	assert.Equal(t, []byte{8}, splitKey, "分裂键应该是第 8 个键")
 
-	// ✅ Day 10-11: 新分裂逻辑 - 右子节点包含分裂键
+	// 新分裂逻辑 - 右子节点包含分裂键
 	// 新页面包含后半部分（8-16，共 9 个键，包含分裂键）
 	assert.Equal(t, 9, newPage.NumKeys(), "新页面应该有 9 个键")
 
@@ -78,7 +78,7 @@ func TestLeafPage_Split_MaxKeys(t *testing.T) {
 
 	// 验证分裂后状态
 	assert.Equal(t, 8, page.NumKeys(), "原页面应该有 8 个键")
-	// ✅ Day 10-11: 新分裂逻辑 - 右子节点包含分裂键
+	// 新分裂逻辑 - 右子节点包含分裂键
 	assert.Equal(t, 8, newPage.NumKeys(), "新页面应该有 8 个键")
 }
 

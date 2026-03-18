@@ -27,7 +27,7 @@ func NewLeafPage(pageID model.PageID) *LeafPage {
 		version:  0,
 		keys:     make([][]byte, 0, InitialLeafCapacity), // 预分配容量
 		values:   make([][]byte, 0, InitialLeafCapacity),
-		pageLock: nil, // ✅ 性能优化：延迟创建页面锁（通过 PageInfo.GetLock 访问）
+		pageLock: nil, // 性能优化：延迟创建页面锁（通过 PageInfo.GetLock 访问）
 	}
 }
 
@@ -152,7 +152,7 @@ func (p *LeafPage) Insert(key, value []byte) (bool, error) {
 
 // insertDirect 直接插入（物化状态）
 func (p *LeafPage) insertDirect(key, value []byte) (bool, error) {
-	// ✅ 调试：检查前置条件
+	// 调试：检查前置条件
 	if len(p.keys) != len(p.values) {
 		panic(fmt.Sprintf("Insert: precondition violated - pageID=%d, keys=%d, values=%d",
 			p.pageID, len(p.keys), len(p.values)))
@@ -173,7 +173,7 @@ func (p *LeafPage) insertDirect(key, value []byte) (bool, error) {
 	p.keys = insertSlice(p.keys, idx, key)
 	p.values = insertSlice(p.values, idx, value)
 
-	// ✅ 调试：检查后置条件
+	// 调试：检查后置条件
 	if len(p.keys) != len(p.values) {
 		panic(fmt.Sprintf("Insert: postcondition violated - pageID=%d, oldKeys=%d->%d, oldValues=%d->%d",
 			p.pageID, oldKeysLen, len(p.keys), oldValuesLen, len(p.values)))
@@ -256,12 +256,12 @@ func binarySearch(slice [][]byte, key []byte) (int, bool) {
 
 // insertSlice 在切片指定位置插入元素
 func insertSlice[T any](slice []T, idx int, value T) []T {
-	// ✅ 修复：检查索引范围
+	// 修复：检查索引范围
 	if idx < 0 || idx > len(slice) {
 		panic(fmt.Sprintf("insertSlice: index %d out of bounds [0, %d]", idx, len(slice)))
 	}
 
-	// ✅ 修复：无论容量是否足够，都使用创建新切片的方式
+	// 修复：无论容量是否足够，都使用创建新切片的方式
 	// 避免在 len(slice) == cap(slice) 时的边界情况
 	if len(slice) == cap(slice) {
 		// 创建新切片时预留空间给新元素
@@ -277,7 +277,7 @@ func insertSlice[T any](slice []T, idx int, value T) []T {
 		return newSlice
 	}
 
-	// ✅ 修复：即使容量足够，也使用 append 方式避免边界问题
+	// 修复：即使容量足够，也使用 append 方式避免边界问题
 	// 这比直接操作 slice 更安全
 	if idx == len(slice) {
 		// 在末尾追加
@@ -388,7 +388,7 @@ func (p *LeafPage) Split() (*LeafPage, []byte, error) {
 	splitKey := p.keys[mid]
 
 	// 创建新页面，包含分裂键及之后的键值对（包含分裂键）
-	// ✅ 修复：使用 make + copy 创建独立的 slice，避免共享底层数组
+	// 修复：使用 make + copy 创建独立的 slice，避免共享底层数组
 	// 这防止并发修改时 p.keys 和 newPage.keys 的底层数组被重新分配导致长度不一致
 	newPage := NewLeafPage(model.PageID(p.pageID + 1)) // 临时 ID
 	newPage.keys = make([][]byte, len(p.keys[mid:]))
@@ -421,7 +421,7 @@ func (p *LeafPage) Clone(config ...*COWDeltaRefConfig) *LeafPage {
 			cowDelta: p.cowDelta,
 			keys:     p.cowDelta.GetSharedKeys(),
 			values:   p.cowDelta.GetSharedValues(),
-			pageLock: nil, // ✅ 性能优化：延迟创建页面锁
+			pageLock: nil, // 性能优化：延迟创建页面锁
 		}
 	}
 
@@ -442,7 +442,7 @@ func (p *LeafPage) Clone(config ...*COWDeltaRefConfig) *LeafPage {
 		cowDelta: cowRef,
 		keys:     cowRef.GetSharedKeys(),
 		values:   cowRef.GetSharedValues(),
-		pageLock: nil, // ✅ 性能优化：延迟创建页面锁
+		pageLock: nil, // 性能优化：延迟创建页面锁
 	}
 }
 
@@ -461,7 +461,7 @@ func (p *LeafPage) CloneDeep() *LeafPage {
 		version:  p.version + 1,
 		keys:     newKeys,
 		values:   newValues,
-		pageLock: nil, // ✅ 性能优化：延迟创建页面锁
+		pageLock: nil, // 性能优化：延迟创建页面锁
 		// cowDelta 为 nil，使用独立数据
 	}
 }
@@ -476,13 +476,13 @@ func (p *LeafPage) CloneWithDelta() *LeafPage {
 // Serialize 序列化页面
 // 返回：序列化后的字节数组
 func (p *LeafPage) Serialize() ([]byte, error) {
-	// ✅ 物化：序列化前必须将 Delta Chain 合并为独立数据
+	// 物化：序列化前必须将 Delta Chain 合并为独立数据
 	// cowDelta 是内存优化结构，无法序列化到磁盘
 	if p.cowDelta != nil {
 		p.materialize()
 	}
 
-	// ✅ 调试：检查 keys 和 values 长度是否一致
+	// 调试：检查 keys 和 values 长度是否一致
 	if len(p.keys) != len(p.values) {
 		panic(fmt.Sprintf("Serialize: inconsistent page state - len(keys)=%d, len(values)=%d, pageID=%d",
 			len(p.keys), len(p.values), p.pageID))

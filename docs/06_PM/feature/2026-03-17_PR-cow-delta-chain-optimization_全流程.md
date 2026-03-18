@@ -593,7 +593,240 @@ func (p *LeafPage) Deserialize(data []byte) error {
 }
 ```
 
-#### 4.5 与 CCOW 集成
+#### 4.5 物化时机（Materialization Triggers）
+
+> **关键设计决策**：何时应该将 Delta Chain 物化为独立数据？
+
+**核心原则**：在**性能**与**内存**之间取得平衡，在需要时物化，不需要时保持 Delta Chain 的零拷贝优势。
+
+---
+
+##### 4.5.1 时机一：读性能优化（增量链过长）
+
+**触发条件**：Delta 链长度超过阈值
+
+```go
+// Insert/Update/Delete 时自动检查
+func (p *LeafPage) Insert(key, value []byte) (bool, error) {
+    if p.cowDelta != nil {
+        // 检查是否需要物化（Delta 太多时）
+        if p.cowDelta.ShouldMaterialize(len(p.keys), p.cowDelta.GetRefCount()) {
+            p.materialize()
+            return p.insertDirect(key, value)
+        }
+
+        // 否则追加 Delta
+        p.cowDelta.AppendDelta(Delta{op: DeltaInsert, key: key, value: value})
+        return true, nil
+    }
+    return p.insertDirect(key, value)
+}
+```
+
+**物化阈值**（`ShouldMaterialize` 逻辑）：
+
+| 条件 | 阈值 | 原因 |
+|------|------|------|
+| Delta 数量 | > 10 | 数量超限 |
+| Delta 比例 | > 20% | 占页面比例过大 |
+| 引用计数 | > 10 | 减少锁竞争 |
+
+**性能对比**：
+
+| Delta 数量 | 读开销 | 物化后读开销 | 收益 |
+|-----------|--------|-------------|------|
+| 1-3 个 | ~50 ns | ~30 ns | 无明显收益 |
+| 4-10 个 | ~150 ns | ~30 ns | 5倍提升 |
+| > 10 个 | > 200 ns | ~30 ns | **> 6倍提升** |
+
+---
+
+##### 4.5.2 时机二：持久化前（必须物化）
+
+**触发条件**：页面需要写入磁盘
+
+```go
+// 持久化前必须物化
+func (b *BTree) persistRoot(rootInfo *PageInfo) error {
+    page := rootInfo.GetLeafPage()
+
+    // ✅ 序列化前自动物化
+    if page.IsInDeltaMode() {
+        materializedPage := page.materialize()
+        rootInfo.SetPage(materializedPage)
+    }
+
+    // 持久化物化后的页面
+    return b.chunkMgr.WritePage(rootInfo)
+}
+```
+
+**为什么必须物化**：
+
+1. **`cowDelta` 是内存结构**：无法序列化到磁盘
+2. **磁盘需要完整数据**：增量链无法直接持久化
+3. **读操作需要完整数据**：从磁盘加载后必须是独立数据
+
+```go
+// Serialize 的实现
+func (p *LeafPage) Serialize() ([]byte, error) {
+    // 如果在 Delta Chain 模式，先物化
+    if p.cowDelta != nil {
+        p.materialize()  // 必须！
+    }
+
+    // 序列化独立数据
+    // ...keys 和 values...
+}
+```
+
+---
+
+##### 4.5.3 时机三：频繁读取优化（热数据）
+
+**触发条件**：页面被频繁读取
+
+```go
+// 读取时优化热数据
+func (b *BTree) optimizeHotPage(page *LeafPage) *LeafPage {
+    if !page.IsInDeltaMode() {
+        return page  // 已经是独立数据
+    }
+
+    // 检查是否为热数据
+    readCount := b.stats.GetReadCount(page.pageID)
+    if readCount > 1000 {  // 阈值：> 1000 次读取
+        return page.materialize()  // 物化提升后续读取性能
+    }
+
+    return page
+}
+```
+
+**热数据识别**：
+
+| 页面类型 | 读取频率阈值 | 优化策略 |
+|---------|-------------|----------|
+| 冷数据 | < 100 次 | 保持 Delta Chain |
+| 温数据 | 100-1000 次 | 保持 Delta Chain |
+| **热数据** | **> 1000 次** | **立即物化** |
+
+**实现方式**：
+
+```go
+// 在 Get 操作中更新读计数
+func (p *LeafPage) Get(key []byte) ([]byte, bool) {
+    // ... 正常的 Get 逻辑 ...
+
+    // 更新读计数（用于热数据识别）
+    b.stats.IncrementReadCount(p.pageID)
+
+    return value, found
+}
+
+// 后台定期检查热数据
+func (b *BTree) optimizeHotPages() {
+    for _, pageID := range b.stats.GetTopReadPages(100) {
+        page := b.loadPage(pageID)
+        if page.IsInDeltaMode() && page.GetDeltaCount() > 0 {
+            optimized := page.materialize()
+            b.updatePage(pageID, optimized)
+        }
+    }
+}
+```
+
+---
+
+#### 4.6 物化决策矩阵
+
+| 时机 | 触发条件 | 优先级 | 物化收益 | 内存开销 |
+|------|----------|--------|----------|----------|
+| **读性能优化** | Delta 链长度 > 10 | **高** | 读性能提升 50%+ | 增加独立副本 |
+| **持久化** | 写入磁盘前 | **最高**（必须） | 必须物化 | 临时开销 |
+| **频繁读取** | 读取次数 > 1000 | 中 | 热数据优化 | 长期占用 |
+
+**决策流程**：
+
+```mermaid
+flowchart TD
+    A[需要操作页面] --> B{在 Delta Chain 模式?}
+    B -->|否| C[直接操作]
+    B -->|是| D{需要持久化?}
+    D -->|是| E[立即物化]
+    D -->|否| F{Delta 数量 > 10?}
+    F -->|是| G[物化优化读性能]
+    F -->|否| H{是热数据? > 1000次}
+    H -->|是| I[物化优化热数据]
+    H -->|否| J[保持 Delta Chain]
+    E --> C
+    G --> C
+    I --> C
+```
+
+---
+
+#### 4.7 智能物化实现示例
+
+```go
+// SmartMaterializer 智能物化管理器
+type SmartMaterializer struct {
+    deltaThreshold    int  // Delta 链长度阈值
+    hotPageThreshold  int  // 热数据读取阈值
+    stats              *PageStats
+}
+
+// ShouldMaterialize 判断是否需要物化
+func (sm *SmartMaterializer) ShouldMaterialize(page *LeafPage) bool {
+    if !page.IsInDeltaMode() {
+        return false  // 已经物化
+    }
+
+    // 时机1：Delta 链过长
+    if page.GetDeltaCount() > sm.deltaThreshold {
+        return true
+    }
+
+    // 时机2：热数据优化
+    readCount := sm.stats.GetReadCount(page.GetPageID())
+    if readCount > sm.hotPageThreshold {
+        return true
+    }
+
+    return false  // 保持 Delta Chain 模式
+}
+
+// MaterializeIfNeeded 按需物化
+func (sm *SmartMaterializer) MaterializeIfNeeded(page *LeafPage) *LeafPage {
+    if sm.ShouldMaterialize(page) {
+        return page.materialize()
+    }
+    return page
+}
+```
+
+**使用示例**：
+
+```go
+// 在 BTree 中集成智能物化
+func (b *BTree) Set(key, value []byte) error {
+    // ... CAS 流程 ...
+
+    // CAS 成功后，智能决定是否物化
+    for _, pageInfo := range copiedPath {
+        if leafPage := pageInfo.GetLeafPage(); leafPage != nil {
+            leafPage = b.materializer.MaterializeIfNeeded(leafPage)
+            pageInfo.SetPage(leafPage)
+        }
+    }
+
+    return nil
+}
+```
+
+---
+
+#### 4.8 与 CCOW 集成
 
 **关键点**: 混合方案需要与现有的 CCOW 机制无缝集成。
 

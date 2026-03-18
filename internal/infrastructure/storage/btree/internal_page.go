@@ -274,7 +274,7 @@ func (p *InternalPage) UpdateKey(oldKey, newKey []byte) (bool, error) {
 // - 分裂键：键 [mid]（提升到父节点，不在左右页面中）
 // - 右页面：键 [mid+1:]，子节点 [mid+1:]
 //
-//添加引用更新机制
+// 添加引用更新机制
 // - 更新新页面子节点的 parentRef 指向新页面
 // - 保留原页面子节点的 parentRef 指向原页面
 func (p *InternalPage) Split() (*InternalPage, []byte, error) {

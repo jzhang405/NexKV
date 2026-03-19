@@ -86,7 +86,7 @@ func TestLocked_ConcurrentAccess(t *testing.T) {
 	wg.Add(200)
 
 	// 100 个并发读
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		go func() {
 			defer wg.Done()
 			_ = locked.View(func(val int) error {
@@ -97,7 +97,7 @@ func TestLocked_ConcurrentAccess(t *testing.T) {
 	}
 
 	// 100 个并发写
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		go func() {
 			defer wg.Done()
 			_ = locked.Modify(func(val *int) error {

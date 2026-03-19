@@ -34,7 +34,7 @@ func BenchmarkSubmitBatch_100(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		for j := 0; j < 100; j++ {
+		for range 100 {
 			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 		}
 	}
@@ -48,7 +48,7 @@ func BenchmarkSubmitBatch_1000(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		for j := 0; j < 1000; j++ {
+		for range 1000 {
 			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 		}
 	}
@@ -76,7 +76,7 @@ func BenchmarkCloseWithPendingTasks(b *testing.B) {
 		ctx := context.Background()
 
 		// 提交一些任务
-		for j := 0; j < 100; j++ {
+		for range 100 {
 			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 				time.Sleep(10 * time.Millisecond)
 			})

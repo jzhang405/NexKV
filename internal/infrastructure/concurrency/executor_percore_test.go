@@ -73,7 +73,7 @@ func TestPerCoreExecutor_Submit(t *testing.T) {
 	var executed int32
 	var wg sync.WaitGroup
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wg.Add(1)
 		err := executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 			atomic.AddInt32(&executed, 1)
@@ -105,7 +105,7 @@ func TestPerCoreExecutor_SubmitWithPriority(t *testing.T) {
 	var mu sync.Mutex
 
 	// 提交多个低优先级任务（使用 Normal = 5）
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		allCompleted.Add(1)
 		err := executor.SubmitWithPriority(context.Background(), 5, func(ctx context.Context) {
 			defer allCompleted.Done()
@@ -180,7 +180,7 @@ func TestPerCoreExecutor_Close(t *testing.T) {
 	}
 
 	// 提交一些任务
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
@@ -282,7 +282,7 @@ func TestPerCoreExecutor_ConcurrentSubmit(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// 并发提交 1000 个任务
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -329,7 +329,7 @@ func TestPerCoreExecutor_Stats(t *testing.T) {
 	defer executor.Close()
 
 	// 提交任务
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {})
 	}
 

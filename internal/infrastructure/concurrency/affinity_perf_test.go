@@ -7,7 +7,9 @@ import (
 	"context"
 	"fmt"
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,18 +18,61 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// getPerfTaskCount 从环境变量获取任务数量，默认使用 defaultCount
+func getPerfTaskCount(defaultCount int) int {
+	if env := os.Getenv("PERF_TASK_COUNT"); env != "" {
+		if count, err := strconv.Atoi(env); err == nil && count > 0 {
+			return count
+		}
+	}
+	return defaultCount
+}
+
+// waitForCompletion 等待任务完成，支持超时控制
+func waitForCompletion(ctx context.Context, completed *int64, target int) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("等待超时: 已完成 %d/%d", atomic.LoadInt64(completed), target)
+		case <-ticker.C:
+			if atomic.LoadInt64(completed) >= int64(target) {
+				return nil
+			}
+		}
+	}
+}
+
 // TestPerCore_CPUAffinity_PerfAnalysis 用于 perf 分析的性能测试
+//
 // 运行方式：
-//  1. 编译: go test -c -o /tmp/affinity_perf_test ./internal/infrastructure/concurrency/
-//  2. Perf 分析:
+//
+//  1. 快速测试（开发/CI）:
+//     go test -short ./internal/infrastructure/concurrency/
+//     go test -short -run TestPerCore_CPUAffinity_PerfAnalysis ./internal/infrastructure/concurrency/
+//
+//  2. 自定义任务数量:
+//     PERF_TASK_COUNT=10000 go test -v -run TestPerCore_CPUAffinity_PerfAnalysis ./internal/infrastructure/concurrency/
+//
+//  3. Perf 分析（生产环境性能调优）:
+//     # 编译测试二进制
+//     go test -c -o /tmp/affinity_perf_test ./internal/infrastructure/concurrency/
+//
+//     # CPU 性能分析
 //     perf record -g -e cycles,instructions,cache-references,cache-misses \
 //     /tmp/affinity_perf_test -test.run=TestPerCore_CPUAffinity_PerfAnalysis -test.v
-//  3. 查看报告: perf report
+//     perf report
 //
-// 对比缓存命中率:
+//     # 缓存命中率分析
+//     perf stat -e cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses,cycles,instructions \
+//     /tmp/affinity_perf_test -test.run=TestPerCore_CPUAffinity_PerfAnalysis
 //
-//	perf stat -e cache-references,cache-misses,cycles,instructions \
-//	  /tmp/affinity_perf_test -test.run=TestPerCore_CPUAffinity_PerfAnalysis
+// 超时保护：
+//   - 整个测试: 5 分钟超时
+//   - 每个场景: 2 分钟超时
+//   - 默认任务数: 10 万（可通过 PERF_TASK_COUNT 环境变量覆盖）
 func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping perf analysis test in short mode")
@@ -37,8 +82,13 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 		t.Skip("CPU affinity not supported on this platform")
 	}
 
+	// 设置测试超时保护（避免无限等待）
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
 	numCores := runtime.NumCPU()
-	numTasks := 1000000 // 大量任务以便 perf 收集足够数据
+	// 使用环境变量控制任务数量，默认 10 万（平衡性能和数据量）
+	numTasks := getPerfTaskCount(100000)
 
 	// PerCore 总是启用绑核
 	executor, err := NewPerCoreExecutor(
@@ -70,14 +120,18 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 			atomic.AddInt64(&completed, 1)
 		}
 
+		// 场景超时：2 分钟
+		sceneCtx, sceneCancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer sceneCancel()
+
 		start := time.Now()
 		for i := 0; i < numTasks; i++ {
 			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 
-		// 等待所有任务完成
-		for atomic.LoadInt64(&completed) < int64(numTasks) {
-			time.Sleep(10 * time.Millisecond)
+		// 等待所有任务完成（带超时）
+		if err := waitForCompletion(sceneCtx, &completed, numTasks); err != nil {
+			t.Fatalf("场景 1 失败: %v", err)
 		}
 		elapsed := time.Since(start)
 
@@ -111,13 +165,17 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 			atomic.AddInt64(&completed, 1)
 		}
 
+		// 场景超时：2 分钟
+		sceneCtx, sceneCancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer sceneCancel()
+
 		start := time.Now()
 		for i := 0; i < numTasks; i++ {
 			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 
-		for atomic.LoadInt64(&completed) < int64(numTasks) {
-			time.Sleep(10 * time.Millisecond)
+		if err := waitForCompletion(sceneCtx, &completed, numTasks); err != nil {
+			t.Fatalf("场景 2 失败: %v", err)
 		}
 		elapsed := time.Since(start)
 
@@ -136,7 +194,7 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 
 			// 2. 简单计算
 			counter := int(now.UnixNano() % 1000)
-			for i := 0; i < 10; i++ {
+			for i := range 10 {
 				counter += i
 			}
 
@@ -146,13 +204,17 @@ func TestPerCore_CPUAffinity_PerfAnalysis(t *testing.T) {
 			atomic.AddInt64(&completed, 1)
 		}
 
+		// 场景超时：2 分钟
+		sceneCtx, sceneCancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer sceneCancel()
+
 		start := time.Now()
 		for i := 0; i < numTasks; i++ {
 			_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 		}
 
-		for atomic.LoadInt64(&completed) < int64(numTasks) {
-			time.Sleep(10 * time.Millisecond)
+		if err := waitForCompletion(sceneCtx, &completed, numTasks); err != nil {
+			t.Fatalf("场景 3 失败: %v", err)
 		}
 		elapsed := time.Since(start)
 
@@ -197,7 +259,7 @@ func BenchmarkPerCore_CacheHitRate(b *testing.B) {
 			defer dataPool.Put(localData)
 
 			// 访问本地数据（缓存友好）
-			for i := 0; i < 16; i++ {
+			for i := range 16 {
 				localData.data[i*64] = i * 2
 			}
 		}

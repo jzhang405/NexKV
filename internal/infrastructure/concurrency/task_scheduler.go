@@ -4,235 +4,204 @@ package concurrency
 import (
 	"context"
 	"fmt"
-	"runtime/debug"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ==========================================
-// TaskStatus 调度队列视角的任务状态
+// ShardTask 分片任务（独立队列）
 // ==========================================
 
-// TaskStatus 调度队列视角的任务状态
-// 区别于 OperationStatus（BaseTask 的异步执行状态）
-// TaskStatus 控制队列中元素的 Dequeue 时机
-type TaskStatus int
+// ShardTask 分片任务（每个调度器独立实例）
+type ShardTask struct {
+	name           string
+	priority       model.TaskPriority
+	executionOrder int
+	queue          []any
+	mu             sync.Mutex
+	taskStatus     atomic.Int32 // TaskStatus
+	executeFunc    func(any) TaskStatus
+}
 
-const (
-	// TaskQueued 任务已入队，等待执行
-	TaskQueued TaskStatus = iota
-	// TaskExecuting 正在执行（Peek 成功后）
-	TaskExecuting
-	// TaskPassed 执行成功，需要 Dequeue
-	TaskPassed
-	// TaskFailed 执行失败，需要 Dequeue
-	TaskFailed
-	// TaskRetrying 需要重试，保留在队列
-	TaskRetrying
-	// TaskTimeout 超时，需要 Dequeue
-	TaskTimeout
-)
-
-// String 返回状态字符串
-func (s TaskStatus) String() string {
-	switch s {
-	case TaskQueued:
-		return "queued"
-	case TaskExecuting:
-		return "executing"
-	case TaskPassed:
-		return "passed"
-	case TaskFailed:
-		return "failed"
-	case TaskRetrying:
-		return "retrying"
-	case TaskTimeout:
-		return "timeout"
-	default:
-		return "unknown"
+// NewShardTask 创建分片任务
+func NewShardTask(name string, priority model.TaskPriority, executionOrder int, executeFunc func(any) TaskStatus) *ShardTask {
+	t := &ShardTask{
+		name:           name,
+		priority:       priority,
+		executionOrder: executionOrder,
+		queue:          make([]any, 0, DefaultShardTaskQueueCapacity),
+		executeFunc:    executeFunc,
 	}
+	t.taskStatus.Store(int32(TaskQueued))
+	return t
 }
 
 // ==========================================
-// Task 调度器任务接口
+// Task 接口实现
 // ==========================================
 
-// Task 调度器任务接口（支持 Peek + Execute 两阶段执行）
-type Task interface {
-	// 队列管理
-	QueueLen() int          // 获取队列长度
-	Enqueue(item any) error // 客户端入队任务
-	Peek(item *any) bool    // 查看队首元素（不出队）
-	Dequeue(item *any) bool // 移除队首元素（出队）
+func (t *ShardTask) QueueLen() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.queue)
+}
 
-	// 任务执行
-	Execute(item any) TaskStatus // 执行任务处理逻辑，返回执行状态
+func (t *ShardTask) Enqueue(item any) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.queue = append(t.queue, item)
+	t.taskStatus.Store(int32(TaskQueued))
+	return nil
+}
 
-	// 元数据
-	Name() string                  // 任务名称
-	Priority() model.TaskPriority  // 优先级（发给 Executor 的参数）
-	ExecutionOrder() int           // 执行顺序（TaskScheduler 内部排序，从小到大）
-	GetTask() *model.BaseTask[any] // 获取异步结果任务（复用现有）
+func (t *ShardTask) Peek(item *any) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if len(t.queue) == 0 {
+		return false
+	}
+
+	*item = t.queue[0]
+	t.taskStatus.Store(int32(TaskExecuting))
+	return true
+}
+
+func (t *ShardTask) Dequeue(item *any) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if len(t.queue) == 0 {
+		return false
+	}
+
+	*item = t.queue[0]
+
+	// 避免内存泄漏：使用 copy 而不是切片
+	if len(t.queue) > 1 {
+		copy(t.queue, t.queue[1:])
+	}
+	t.queue = t.queue[:len(t.queue)-1]
+
+	return true
+}
+
+func (t *ShardTask) Execute(item any) TaskStatus {
+	if t.executeFunc != nil {
+		return t.executeFunc(item)
+	}
+	return TaskPassed
+}
+
+func (t *ShardTask) Name() string {
+	return t.name
+}
+
+func (t *ShardTask) Priority() model.TaskPriority {
+	return t.priority
+}
+
+func (t *ShardTask) ExecutionOrder() int {
+	return t.executionOrder
+}
+
+func (t *ShardTask) GetTask() *model.BaseTask[any] {
+	// ShardTask 不使用 BaseTask
+	return nil
 }
 
 // ==========================================
-// TaskScheduler 调度器
+// SchedulerCore 单个调度器核心
 // ==========================================
 
-// internalTask 内部任务接口（包含未导出方法）
-// 用于 TaskScheduler 内部设置调度器引用和执行顺序
-type internalTask interface {
-	Task
-	setScheduler(s *TaskScheduler)
-	setSchedulerWithOrder(s *TaskScheduler, executionOrder int)
+// CoreStats 单个 Core 的统计信息（V2）
+type CoreStats struct {
+	CoreID              int          // Core ID
+	TotalCycles         atomic.Int64 // 总循环次数
+	TotalTasksProcessed atomic.Int64 // 总处理任务数
+	EmptyWaits          atomic.Int64 // 空等待次数
+	PanicCount          atomic.Int64 // Panic 恢复次数
+	QueueLen            atomic.Int64 // 当前队列长度
 }
 
-// TaskScheduler 调度器（实现 model.TaskRunner 接口）
-// 支持多任务按 ExecutionOrder 调度，无空转等待
-type TaskScheduler struct {
-	name     string
-	tasks    []Task
-	taskMap  map[string]Task
-	mu       sync.RWMutex
-	running  atomic.Bool // 使用原子操作保证并发安全
-	cond     *sync.Cond  // 条件变量（无空转等待）
-	wg       sync.WaitGroup
-	ctx      context.Context
-	cancel   context.CancelFunc
-	stats    TaskSchedulerStats
-	executor service.TaskExecutor
-
-	// 优化：缓存排序结果，避免每次循环都重新排序
-	orderedTasks []Task
-	tasksDirty   atomic.Bool // 标记是否需要重新排序
+// SchedulerCore 单个调度器核心（对应一个 CPU 核心）
+type SchedulerCore struct {
+	coreID     int
+	tasks      []*ShardTask // 独立的 Task 实例
+	taskMap    map[string]*ShardTask
+	mu         sync.RWMutex
+	running    atomic.Bool
+	wg         sync.WaitGroup
+	ctx        context.Context
+	cancel     context.CancelFunc
+	stats      CoreStats     //
+	wakeupChan chan struct{} // 唤醒通道（替代 cond）
 }
 
-// TaskSchedulerStats 统计信息
-type TaskSchedulerStats struct {
-	TotalCycles    atomic.Int64             // 总循环次数
-	TotalTasks     atomic.Int64             // 总处理任务数
-	EmptyWaits     atomic.Int64             // 空等待次数
-	PanicCount     atomic.Int64             // Panic 恢复次数
-	LastPanicTime  atomic.Value             // 最后一次 panic 时间
-	TaskExecutions map[string]*atomic.Int64 // 各任务执行次数
-}
-
-// NewTaskScheduler 创建任务调度器
-func NewTaskScheduler(name string) *TaskScheduler {
+// NewSchedulerCore 创建调度器核心
+func NewSchedulerCore(coreID int) *SchedulerCore {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	ts := &TaskScheduler{
-		name:    name,
-		tasks:   make([]Task, 0, 8),
-		taskMap: make(map[string]Task),
-		running: atomic.Bool{}, // 初始化为 false
-		cond:    sync.NewCond(&sync.Mutex{}),
-		ctx:     ctx,
-		cancel:  cancel,
-		stats: TaskSchedulerStats{
-			TaskExecutions: make(map[string]*atomic.Int64),
-		},
+	return &SchedulerCore{
+		coreID:     coreID,
+		tasks:      make([]*ShardTask, 0, DefaultCoreTasksCapacity),
+		taskMap:    make(map[string]*ShardTask),
+		running:    atomic.Bool{},
+		ctx:        ctx,
+		cancel:     cancel,
+		wakeupChan: make(chan struct{}, 1),
+	}
+}
+
+// RegisterTask 注册任务（创建独立的 Task 实例）
+func (c *SchedulerCore) RegisterTask(taskTemplate *ShardTask) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	name := taskTemplate.Name()
+	if _, exists := c.taskMap[name]; exists {
+		return errors.TaskAlreadyRegistered(name)
 	}
 
-	return ts
-}
-
-// ==========================================
-// TaskRunner 接口实现
-// ==========================================
-
-// Run 实现 model.TaskRunner 接口
-func (s *TaskScheduler) Run(ctx context.Context, pipeline model.PipelineContext) {
-	s.runLoop()
-}
-
-// Priority 实现 model.TaskRunner 接口
-func (s *TaskScheduler) Priority() model.TaskPriority {
-	return model.TaskPriorityNormal
-}
-
-// SourceID 实现 model.TaskRunner 接口
-func (s *TaskScheduler) SourceID() model.SourceID {
-	return model.SourceDefault
-}
-
-// ==========================================
-// 调度器生命周期
-// ==========================================
-
-// Start 启动调度器（在 Executor 上运行）
-func (s *TaskScheduler) Start(executor service.TaskExecutor) error {
-	s.mu.Lock()
-	if s.running.Load() {
-		s.mu.Unlock()
-		return fmt.Errorf("scheduler already running")
+	// 创建独立的 Task 实例（深拷贝）
+	task := &ShardTask{
+		name:           taskTemplate.name,
+		priority:       taskTemplate.priority,
+		executionOrder: taskTemplate.executionOrder,
+		queue:          make([]any, 0, 64),
+		executeFunc:    taskTemplate.executeFunc,
 	}
-	s.running.Store(true)
-	s.executor = executor
-	s.mu.Unlock()
+	task.taskStatus.Store(int32(TaskQueued))
 
-	// 将调度器作为任务提交给 Executor
-	return executor.Submit(
-		context.Background(),
-		model.SourceDefault,
-		model.TaskPriorityNormal,
-		func(ctx context.Context) {
-			s.runLoop()
-		},
-	)
+	c.tasks = append(c.tasks, task)
+	c.taskMap[name] = task
+
+	return nil
 }
 
-// Stop 停止调度器（优雅关闭，等待所有任务处理完毕）
-func (s *TaskScheduler) Stop() {
-	// 使用原子操作保证只停止一次
-	if !s.running.CompareAndSwap(true, false) {
-		return
-	}
+// runLoop 调度循环（独立运行）
+func (c *SchedulerCore) runLoop() {
+	c.wg.Add(1)
+	defer c.wg.Done()
 
-	// 取消上下文
-	s.cancel()
-
-	// 唤醒所有等待的 goroutine（需要持有 cond.L）
-	s.cond.L.Lock()
-	s.cond.Broadcast()
-	s.cond.L.Unlock()
-
-	// 等待调度器 goroutine 退出
-	s.wg.Wait()
-}
-
-// ==========================================
-// 核心调度循环
-// ==========================================
-
-// runLoop 调度循环（在 Executor goroutine 中运行）
-func (s *TaskScheduler) runLoop() {
-	s.wg.Add(1)
-	defer func() {
-		if r := recover(); r != nil {
-			s.stats.PanicCount.Add(1)
-			s.stats.LastPanicTime.Store(debug.Stack())
-			// panic 后继续运行，保证调度器可用
-		}
-		s.wg.Done()
-	}()
-
-	for s.running.Load() {
+	for c.running.Load() {
 		// 检查上下文是否已取消
 		select {
-		case <-s.ctx.Done():
+		case <-c.ctx.Done():
 			return
 		default:
 		}
 
-		s.stats.TotalCycles.Add(1)
+		c.stats.TotalCycles.Add(1)
 
 		// ========== 按 ExecutionOrder 排序任务 ==========
-		tasks := s.getOrderedTasks()
+		tasks := c.getOrderedTasks()
 
 		// ========== 预检查：计算总队列长度 ==========
 		totalQueueLen := 0
@@ -242,7 +211,7 @@ func (s *TaskScheduler) runLoop() {
 
 		// 如果所有队列都空，等待 wakeup
 		if totalQueueLen == 0 {
-			s.waitForSignal()
+			c.waitForSignal()
 			continue
 		}
 
@@ -255,8 +224,8 @@ func (s *TaskScheduler) runLoop() {
 			}
 
 			// ========== 阶段 2: Execute 执行（返回状态）==========
-			status := s.executeTask(task, item)
-			s.stats.TotalTasks.Add(1)
+			status := c.executeTask(task, item)
+			c.stats.TotalTasksProcessed.Add(1)
 
 			// ========== 阶段 3: 根据返回状态决定是否 Dequeue ==========
 			switch status {
@@ -270,311 +239,297 @@ func (s *TaskScheduler) runLoop() {
 				// item 保留在队列中，下次循环会再次 Peek 到
 			}
 		}
+
+		// 让出 CPU
+		runtime.Gosched()
 	}
 }
 
 // executeTask 执行任务（带 panic 恢复）
-func (s *TaskScheduler) executeTask(task Task, item any) TaskStatus {
+func (c *SchedulerCore) executeTask(task *ShardTask, item any) TaskStatus {
 	defer func() {
 		if r := recover(); r != nil {
-			s.stats.PanicCount.Add(1)
-			s.stats.LastPanicTime.Store(debug.Stack())
+			c.stats.PanicCount.Add(1)
 		}
 	}()
-
-	// 更新任务执行统计
-	s.incrementTaskExecution(task.Name())
 
 	return task.Execute(item)
 }
 
-// ==========================================
-// Wakeup 机制
-// ==========================================
-
 // waitForSignal 等待新任务入队时的唤醒信号
-func (s *TaskScheduler) waitForSignal() {
-	s.stats.EmptyWaits.Add(1)
-	s.cond.L.Lock()
-	s.cond.Wait()
-	s.cond.L.Unlock()
+func (c *SchedulerCore) waitForSignal() {
+	c.stats.EmptyWaits.Add(1)
+	select {
+	case <-c.wakeupChan:
+		// 被唤醒
+	case <-c.ctx.Done():
+		// 上下文取消
+	}
 }
 
-// wakeup 唤醒调度器（由 Task.Enqueue 时调用）
-func (s *TaskScheduler) wakeup() {
-	s.cond.L.Lock()
-	s.cond.Signal()
-	s.cond.L.Unlock()
-}
-
-// ==========================================
-// 任务管理
-// ==========================================
-
-// RegisterTask 注册任务
-// RegisterTask 注册任务（需指定 ExecutionOrder）
-func (s *TaskScheduler) RegisterTask(task Task, executionOrder int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// 类型断言：确保 task 实现了内部接口
-	internalTask, ok := task.(internalTask)
-	if !ok {
-		return fmt.Errorf("task %s must implement internalTask interface", task.Name())
+// wakeup 唤醒调度器（由 Enqueue 时调用）
+func (c *SchedulerCore) wakeup() {
+	select {
+	case c.wakeupChan <- struct{}{}:
+		// 成功发送唤醒信号
+	default:
+		// 通道已有信号，无需重复发送
 	}
-
-	// 检查 ExecutionOrder 是否重复
-	for _, t := range s.tasks {
-		if t.ExecutionOrder() == executionOrder {
-			return fmt.Errorf("execution order %d already used by task %s", executionOrder, t.Name())
-		}
-	}
-
-	name := task.Name()
-	if _, exists := s.taskMap[name]; exists {
-		return fmt.Errorf("task %s already registered", name)
-	}
-
-	s.tasks = append(s.tasks, task)
-	s.taskMap[name] = task
-	s.stats.TaskExecutions[name] = &atomic.Int64{}
-
-	// 设置调度器引用和 ExecutionOrder
-	internalTask.setSchedulerWithOrder(s, executionOrder)
-
-	// 标记任务列表已变更，需要重新排序
-	s.tasksDirty.Store(true)
-
-	return nil
-}
-
-// UnregisterTask 注销任务
-func (s *TaskScheduler) UnregisterTask(name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, exists := s.taskMap[name]; !exists {
-		return fmt.Errorf("task %s not found", name)
-	}
-
-	// 从 slice 中移除
-	newTasks := make([]Task, 0, len(s.tasks)-1)
-	for _, t := range s.tasks {
-		if t.Name() != name {
-			newTasks = append(newTasks, t)
-		}
-	}
-	s.tasks = newTasks
-
-	delete(s.taskMap, name)
-	delete(s.stats.TaskExecutions, name)
-
-	// 标记任务列表已变更，需要重新排序
-	s.tasksDirty.Store(true)
-
-	return nil
 }
 
 // getOrderedTasks 按 ExecutionOrder 排序任务（从小到大）
-// 优化：缓存排序结果，避免每次循环都重新排序
-func (s *TaskScheduler) getOrderedTasks() []Task {
-	// 快速路径：如果任务列表没有变化，直接返回缓存
-	if !s.tasksDirty.Load() {
-		return s.orderedTasks
-	}
-
-	// 慢速路径：需要重新排序
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (c *SchedulerCore) getOrderedTasks() []*ShardTask {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
 	// 复制任务列表
-	tasks := make([]Task, len(s.tasks))
-	copy(tasks, s.tasks)
+	tasks := make([]*ShardTask, len(c.tasks))
+	copy(tasks, c.tasks)
 
-	// 按 ExecutionOrder 排序（使用标准库排序）
+	// 按 ExecutionOrder 排序
 	sort.Slice(tasks, func(i, j int) bool {
 		return tasks[i].ExecutionOrder() < tasks[j].ExecutionOrder()
 	})
 
-	// 更新缓存（需要写锁）
-	s.mu.RUnlock()
-	s.mu.Lock()
-	s.orderedTasks = tasks
-	s.tasksDirty.Store(false)
-	s.mu.Unlock()
-	s.mu.RLock()
-
 	return tasks
 }
 
-// ==========================================
-// 统计信息
-// ==========================================
+// GetTaskByName 获取指定名称的任务
+func (c *SchedulerCore) GetTaskByName(name string) (*ShardTask, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
-// GetStats 获取统计信息
-func (s *TaskScheduler) GetStats() TaskSchedulerStats {
-	// 复制 TaskExecutions map
-	taskExecutions := make(map[string]*atomic.Int64, len(s.stats.TaskExecutions))
-	for name, counter := range s.stats.TaskExecutions {
-		taskExecutions[name] = counter
+	task, exists := c.taskMap[name]
+	if !exists {
+		return nil, errors.TaskNotFound(name)
 	}
-
-	return TaskSchedulerStats{
-		TotalCycles:    atomic.Int64{}, // 创建新实例
-		TotalTasks:     atomic.Int64{},
-		EmptyWaits:     atomic.Int64{},
-		PanicCount:     atomic.Int64{},
-		LastPanicTime:  s.stats.LastPanicTime,
-		TaskExecutions: taskExecutions,
-	}
-}
-
-// incrementTaskExecution 增加任务执行计数
-func (s *TaskScheduler) incrementTaskExecution(name string) {
-	if counter, exists := s.stats.TaskExecutions[name]; exists {
-		counter.Add(1)
-	}
+	return task, nil
 }
 
 // ==========================================
-// SchedulerBaseTask 调度器任务基类
+// TaskScheduler V2（重构版）
 // ==========================================
 
-// SchedulerBaseTask 调度器任务基类（嵌入 model.BaseTask）
-type SchedulerBaseTask struct {
-	*model.BaseTask[any] // 嵌入现有 BaseTask，复用异步结果机制
-	name                 string
-	priority             model.TaskPriority // 发给 Executor 的参数
-	executionOrder       int                // TaskScheduler 内部排序（从小到大）
-	scheduler            *TaskScheduler
-	queue                []any
-	mu                   sync.Mutex
-	taskStatus           atomic.Int32 // TaskStatus
+// SchedulerStats 统计信息（V2）
+type SchedulerStats struct {
+	TotalTasksEnqueued  atomic.Int64 // 总入队任务数
+	TotalTasksProcessed atomic.Int64 // 总处理任务数
+	CoreStats           []CoreStats  // 各 Core 统计（V2）
 }
 
-// NewSchedulerBaseTask 创建调度器任务基类
-func NewSchedulerBaseTask(name string, priority model.TaskPriority, executionOrder int) *SchedulerBaseTask {
-	base := model.NewBaseTask(
-		model.OpStorage,
-		priority,
-		model.SourceDefault,
-		func(ctx context.Context, pipeline model.PipelineContext) (any, error) {
-			return nil, nil // 默认实现
+// TaskScheduler 多调度器管理器（V2：独立队列架构）
+type TaskScheduler struct {
+	cores            []*SchedulerCore
+	coreCount        int
+	executor         service.TaskExecutor
+	registeredOrders map[int]string // ExecutionOrder → TaskName
+	mu               sync.RWMutex
+	ctx              context.Context
+	cancel           context.CancelFunc
+	running          atomic.Bool
+	stats            SchedulerStats //
+}
+
+// NewTaskScheduler 创建多调度器管理器（V2）
+func NewTaskScheduler(name string, coreCount int) *TaskScheduler {
+	if coreCount <= 0 {
+		coreCount = runtime.NumCPU()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	m := &TaskScheduler{
+		cores:            make([]*SchedulerCore, coreCount),
+		coreCount:        coreCount,
+		registeredOrders: make(map[int]string),
+		ctx:              ctx,
+		cancel:           cancel,
+		running:          atomic.Bool{},
+		stats: SchedulerStats{
+			CoreStats: make([]CoreStats, coreCount),
 		},
-	)
+	}
 
-	t := &SchedulerBaseTask{
-		BaseTask:       base,
+	// 创建 N 个调度器核心
+	for i := 0; i < coreCount; i++ {
+		m.cores[i] = NewSchedulerCore(i)
+		m.stats.CoreStats[i] = CoreStats{CoreID: i}
+	}
+
+	return m
+}
+
+// RegisterTask 注册任务模板到所有核心
+func (m *TaskScheduler) RegisterTask(executeFunc func(any) TaskStatus, name string, priority model.TaskPriority, executionOrder int) error {
+	m.mu.Lock()
+	// 检查 ExecutionOrder 冲突
+	if existingTask, exists := m.registeredOrders[executionOrder]; exists {
+		m.mu.Unlock()
+		return errors.ExecutionOrderConflict(executionOrder, existingTask)
+	}
+
+	// 创建任务模板
+	taskTemplate := &ShardTask{
 		name:           name,
 		priority:       priority,
 		executionOrder: executionOrder,
-		queue:          make([]any, 0, 64),
+		executeFunc:    executeFunc,
 	}
-	t.taskStatus.Store(int32(TaskQueued))
 
-	return t
-}
-
-// ==========================================
-// Task 接口实现
-// ==========================================
-
-// QueueLen 获取队列长度
-func (t *SchedulerBaseTask) QueueLen() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return len(t.queue)
-}
-
-// Enqueue 客户端入队任务
-func (t *SchedulerBaseTask) Enqueue(item any) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.queue = append(t.queue, item)
-	t.taskStatus.Store(int32(TaskQueued))
-
-	// 唤醒调度器（如果有新任务入队）
-	if t.scheduler != nil {
-		t.scheduler.wakeup()
+	// 注册到所有核心（每个核心创建独立的 Task 实例）
+	for _, core := range m.cores {
+		if err := core.RegisterTask(taskTemplate); err != nil {
+			m.mu.Unlock()
+			return errors.CoreRegisterFailed(core.coreID, err)
+		}
 	}
+
+	// 全部成功后才标记
+	m.registeredOrders[executionOrder] = name
+	m.mu.Unlock()
 
 	return nil
 }
 
-// Peek 查看队首元素（不出队）
-func (t *SchedulerBaseTask) Peek(item *any) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if len(t.queue) == 0 {
-		return false
+// EnqueueWithShard 根据 ShardID 分发任务到对应核心
+func (m *TaskScheduler) EnqueueWithShard(item ShardItem, taskName string) error {
+	if !m.running.Load() {
+		return errors.SchedulerNotStarted()
 	}
 
-	// 将队首元素存入 item，但不从队列移除
-	*item = t.queue[0]
-	t.taskStatus.Store(int32(TaskExecuting))
-	return true
-}
+	shardID := item.ShardID()
+	var coreIndex int
 
-// Dequeue 移除队首元素（出队）
-func (t *SchedulerBaseTask) Dequeue(item *any) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if len(t.queue) == 0 {
-		return false
+	if shardID == 0 {
+		// 无偏好：动态选择负载最小的 Core
+		coreIndex = m.selectLeastLoadedCore()
+	} else if shardID > 0 {
+		// 固定路由：取模计算
+		coreIndex = shardID % m.coreCount
+	} else {
+		// 负数：取绝对值后取模
+		coreIndex = (-shardID) % m.coreCount
 	}
 
-	// 移除队首元素
-	*item = t.queue[0]
+	core := m.cores[coreIndex]
+	m.stats.TotalTasksEnqueued.Add(1)
 
-	// 避免内存泄漏：使用 copy 而不是切片
-	if len(t.queue) > 1 {
-		copy(t.queue, t.queue[1:])
+	// 获取指定 Task 并入队
+	task, err := core.GetTaskByName(taskName)
+	if err != nil {
+		return err
 	}
-	t.queue = t.queue[:len(t.queue)-1]
 
-	return true
+	// 入队并唤醒该核心
+	if err := task.Enqueue(item); err != nil {
+		return err
+	}
+
+	core.wakeup()
+	return nil
 }
 
-// Execute 执行任务处理逻辑（默认实现，返回 TaskPassed）
-// 子类应该重写此方法
-func (t *SchedulerBaseTask) Execute(item any) TaskStatus {
-	return TaskPassed
+// selectLeastLoadedCore 选择队列长度最小的核心
+func (m *TaskScheduler) selectLeastLoadedCore() int {
+	minQueueLen := int64(^uint64(0) >> 1)
+	minIndex := 0
+
+	for i, core := range m.cores {
+		// 计算实际队列长度
+		queueLen := int64(0)
+		tasks := core.getOrderedTasks()
+		for _, task := range tasks {
+			queueLen += int64(task.QueueLen())
+		}
+
+		if queueLen < minQueueLen {
+			minQueueLen = queueLen
+			minIndex = i
+		}
+	}
+
+	return minIndex
 }
 
-// Name 返回任务名称
-func (t *SchedulerBaseTask) Name() string {
-	return t.name
+// Start 启动所有调度器核心
+func (m *TaskScheduler) Start(executor service.TaskExecutor) error {
+	m.executor = executor
+
+	for i, core := range m.cores {
+		sourceID := model.MustParseSourceID(fmt.Sprintf("multi-scheduler-v2:%d:runloop", i))
+
+		// 提交到 Executor
+		err := executor.Submit(
+			context.Background(),
+			sourceID,
+			model.TaskPriorityHigh,
+			func(ctx context.Context) {
+				core.runLoop()
+			},
+		)
+
+		if err != nil {
+			return errors.CoreStartFailed(i, err)
+		}
+	}
+
+	m.running.Store(true)
+	return nil
 }
 
-// Priority 返回任务优先级（发给 Executor 的参数）
-func (t *SchedulerBaseTask) Priority() model.TaskPriority {
-	return t.priority
+// Stop 停止所有调度器核心
+func (m *TaskScheduler) Stop() {
+	if !m.running.CompareAndSwap(true, false) {
+		return
+	}
+
+	m.cancel()
+
+	// 唤醒所有核心
+	for _, core := range m.cores {
+		core.wakeup()
+	}
+
+	// 等待所有核心退出
+	for _, core := range m.cores {
+		core.wg.Wait()
+	}
 }
 
-// ExecutionOrder 返回执行顺序（TaskScheduler 内部排序，从小到大）
-func (t *SchedulerBaseTask) ExecutionOrder() int {
-	return t.executionOrder
+// GetStats 获取统计信息
+func (m *TaskScheduler) GetStats() *SchedulerStats {
+	// 更新核心统计
+	for i, core := range m.cores {
+		m.stats.CoreStats[i].TotalCycles.Store(core.stats.TotalCycles.Load())
+		m.stats.CoreStats[i].TotalTasksProcessed.Store(core.stats.TotalTasksProcessed.Load())
+		m.stats.CoreStats[i].EmptyWaits.Store(core.stats.EmptyWaits.Load())
+		m.stats.CoreStats[i].PanicCount.Store(core.stats.PanicCount.Load())
+		m.stats.CoreStats[i].QueueLen.Store(m.calculateCoreQueueLen(core))
+	}
+
+	return &m.stats
 }
 
-// GetTask 获取异步结果任务
-func (t *SchedulerBaseTask) GetTask() *model.BaseTask[any] {
-	return t.BaseTask
+// calculateCoreQueueLen 计算核心的实际队列长度
+func (m *TaskScheduler) calculateCoreQueueLen(core *SchedulerCore) int64 {
+	tasks := core.getOrderedTasks()
+	queueLen := 0
+	for _, task := range tasks {
+		queueLen += task.QueueLen()
+	}
+	return int64(queueLen)
 }
 
-// setScheduler 设置调度器引用
-func (t *SchedulerBaseTask) setScheduler(s *TaskScheduler) {
-	t.scheduler = s
-}
-
-// setSchedulerWithOrder 设置调度器引用和 ExecutionOrder
-func (t *SchedulerBaseTask) setSchedulerWithOrder(s *TaskScheduler, executionOrder int) {
-	t.scheduler = s
-	t.executionOrder = executionOrder
-}
-
-// GetTaskStatus 获取任务状态（调度队列视角）
-func (t *SchedulerBaseTask) GetTaskStatus() TaskStatus {
-	return TaskStatus(t.taskStatus.Load())
+// HealthCheck 健康检查
+func (m *TaskScheduler) HealthCheck() error {
+	for i, core := range m.cores {
+		if core.stats.PanicCount.Load() > 0 {
+			return errors.CorePanicDetected(i)
+		}
+		queueLen := m.calculateCoreQueueLen(core)
+		if queueLen > MaxQueueLengthHealthCheck {
+			return errors.CoreQueueTooLong(i, queueLen)
+		}
+	}
+	return nil
 }

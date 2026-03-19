@@ -1,290 +1,510 @@
-// Package concurrency 并发控制和任务调度机制基准测试
+// Copyright 2026 NexKV Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 package concurrency
 
 import (
+	"context"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
 // ==========================================
-// 队列操作基准测试
+// Benchmark Helper Types
 // ==========================================
 
-func BenchmarkSchedulerBaseTask_Enqueue(b *testing.B) {
-	task := NewSchedulerBaseTask("bench-task", model.TaskPriorityNormal, 1)
+// benchmarkShardItem 基准测试用的 ShardItem
+type benchmarkShardItem struct {
+	shardID int
+}
+
+func (i *benchmarkShardItem) ShardID() int {
+	return i.shardID
+}
+
+func (i *benchmarkShardItem) MaxRetries() int {
+	return 0
+}
+
+func (i *benchmarkShardItem) IncAttempts() int {
+	return 0
+}
+
+// ==========================================
+// ShardTask 基准测试
+// ==========================================
+
+// BenchmarkShardTask_Enqueue 测试入队性能
+func BenchmarkShardTask_Enqueue(b *testing.B) {
+	task := NewShardTask("bench-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		task.Enqueue(i)
+		item := &benchmarkShardItem{shardID: i}
+		_ = task.Enqueue(item)
 	}
 }
 
-func BenchmarkSchedulerBaseTask_Peek(b *testing.B) {
-	task := NewSchedulerBaseTask("bench-task", model.TaskPriorityNormal, 1)
+// BenchmarkShardTask_PeekDequeue 测试 Peek + Dequeue 性能
+func BenchmarkShardTask_PeekDequeue(b *testing.B) {
+	task := NewShardTask("bench-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
 
 	// 预填充队列
-	for i := 0; i < 1000; i++ {
-		task.Enqueue(i)
+	for i := 0; i < 10000; i++ {
+		item := &benchmarkShardItem{shardID: i}
+		_ = task.Enqueue(item)
 	}
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	var item any
 	for i := 0; i < b.N; i++ {
-		task.Peek(&item)
-	}
-}
-
-func BenchmarkSchedulerBaseTask_Dequeue(b *testing.B) {
-	task := NewSchedulerBaseTask("bench-task", model.TaskPriorityNormal, 1)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		// 每次入队后立即出队
-		task.Enqueue(i)
 		var item any
-		task.Dequeue(&item)
+		if task.Peek(&item) {
+			task.Dequeue(&item)
+		}
 	}
 }
 
 // ==========================================
-// 优先级排序基准测试
+// TaskScheduler 单核心基准测试
 // ==========================================
 
-func BenchmarkTaskScheduler_GetSortedTasks_Small(b *testing.B) {
-	scheduler := NewTaskScheduler("bench-scheduler")
+// BenchmarkTaskScheduler_SingleTask_SingleCore 测试单任务单核心吞吐量
+func BenchmarkTaskScheduler_SingleTask_SingleCore(b *testing.B) {
+	scheduler := NewTaskScheduler("bench", 1)
 
-	// 注册 5 个任务
-	for i := 0; i < 5; i++ {
-		task := NewSchedulerBaseTask("task", model.TaskPriorityNormal, i+1)
-		scheduler.RegisterTask(task, i+1)
+	var processed atomic.Int64
+
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus {
+			processed.Add(1)
+			return TaskPassed
+		},
+		"bench-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	if err != nil {
+		b.Fatal(err)
 	}
+
+	executor := &syncExecutor{maxWorkers: 1}
+	err = scheduler.Start(executor)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer scheduler.Stop()
 
 	b.ResetTimer()
-	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
-		scheduler.getOrderedTasks()
-	}
-}
-
-func BenchmarkTaskScheduler_GetSortedTasks_Medium(b *testing.B) {
-	scheduler := NewTaskScheduler("bench-scheduler")
-
-	// 注册 20 个任务
-	for i := 0; i < 20; i++ {
-		task := NewSchedulerBaseTask("task", model.TaskPriorityNormal, i+1)
-		scheduler.RegisterTask(task, i+1)
-	}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		scheduler.getOrderedTasks()
-	}
-}
-
-func BenchmarkTaskScheduler_GetSortedTasks_Large(b *testing.B) {
-	scheduler := NewTaskScheduler("bench-scheduler")
-
-	// 注册 100 个任务
-	for i := 0; i < 100; i++ {
-		task := NewSchedulerBaseTask("task", model.TaskPriorityNormal, i+1)
-		scheduler.RegisterTask(task, i+1)
-	}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		scheduler.getOrderedTasks()
-	}
-}
-
-// ==========================================
-// 并发入队基准测试
-// ==========================================
-
-func BenchmarkSchedulerBaseTask_ConcurrentEnqueue_SingleGoroutine(b *testing.B) {
-	task := NewSchedulerBaseTask("bench-task", model.TaskPriorityNormal, 1)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		task.Enqueue(i)
-	}
-}
-
-func BenchmarkSchedulerBaseTask_ConcurrentEnqueue_4Goroutines(b *testing.B) {
-	task := NewSchedulerBaseTask("bench-task", model.TaskPriorityNormal, 1)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
+	// 并发提交任务
 	var wg sync.WaitGroup
-	goroutines := 4
-	perGoroutine := b.N / goroutines
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < b.N/10; j++ {
+				item := &benchmarkShardItem{shardID: workerID}
+				_ = scheduler.EnqueueWithShard(item, "bench-task")
+			}
+		}(i)
+	}
+	wg.Wait()
 
-	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
+	// 等待处理完成
+	for processed.Load() < int64(b.N) {
+		// busy wait for benchmark
+	}
+}
+
+// BenchmarkTaskScheduler_SingleTask_FourCores 测试单任务4核心吞吐量
+func BenchmarkTaskScheduler_SingleTask_FourCores(b *testing.B) {
+	scheduler := NewTaskScheduler("bench", 4)
+
+	var processed atomic.Int64
+
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus {
+			processed.Add(1)
+			return TaskPassed
+		},
+		"bench-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	executor := &syncExecutor{maxWorkers: 4}
+	err = scheduler.Start(executor)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer scheduler.Stop()
+
+	b.ResetTimer()
+
+	// 并发提交任务
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < b.N/10; j++ {
+				item := &benchmarkShardItem{shardID: workerID}
+				_ = scheduler.EnqueueWithShard(item, "bench-task")
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// 等待处理完成
+	for processed.Load() < int64(b.N) {
+	}
+}
+
+// BenchmarkTaskScheduler_SingleTask_EightCores 测试单任务8核心吞吐量
+func BenchmarkTaskScheduler_SingleTask_EightCores(b *testing.B) {
+	scheduler := NewTaskScheduler("bench", 8)
+
+	var processed atomic.Int64
+
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus {
+			processed.Add(1)
+			return TaskPassed
+		},
+		"bench-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	executor := &syncExecutor{maxWorkers: 8}
+	err = scheduler.Start(executor)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer scheduler.Stop()
+
+	b.ResetTimer()
+
+	// 并发提交任务
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < b.N/10; j++ {
+				item := &benchmarkShardItem{shardID: workerID}
+				_ = scheduler.EnqueueWithShard(item, "bench-task")
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// 等待处理完成
+	for processed.Load() < int64(b.N) {
+	}
+}
+
+// ==========================================
+// ShardID 路由性能基准测试
+// ==========================================
+
+// BenchmarkTaskScheduler_ShardRouting_Fixed 测试固定 ShardID 路由性能
+func BenchmarkTaskScheduler_ShardRouting_Fixed(b *testing.B) {
+	scheduler := NewTaskScheduler("bench", 4)
+
+	var processed atomic.Int64
+
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus {
+			processed.Add(1)
+			return TaskPassed
+		},
+		"bench-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	executor := &syncExecutor{maxWorkers: 4}
+	err = scheduler.Start(executor)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer scheduler.Stop()
+
+	b.ResetTimer()
+
+	// 测试固定 ShardID 路由（每个 worker 使用不同的 shardID）
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(shardID int) {
+			defer wg.Done()
+			for j := 0; j < b.N/4; j++ {
+				item := &benchmarkShardItem{shardID: shardID}
+				_ = scheduler.EnqueueWithShard(item, "bench-task")
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for processed.Load() < int64(b.N) {
+	}
+}
+
+// BenchmarkTaskScheduler_ShardRouting_Dynamic 测试动态负载均衡路由性能
+func BenchmarkTaskScheduler_ShardRouting_Dynamic(b *testing.B) {
+	scheduler := NewTaskScheduler("bench", 4)
+
+	var processed atomic.Int64
+
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus {
+			processed.Add(1)
+			return TaskPassed
+		},
+		"bench-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	executor := &syncExecutor{maxWorkers: 4}
+	err = scheduler.Start(executor)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer scheduler.Stop()
+
+	b.ResetTimer()
+
+	// 测试 shardID=0 动态负载均衡
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < perGoroutine; j++ {
-				task.Enqueue(j)
+			for j := 0; j < b.N/10; j++ {
+				item := &benchmarkShardItem{shardID: 0} // 动态负载均衡
+				_ = scheduler.EnqueueWithShard(item, "bench-task")
 			}
 		}()
 	}
 	wg.Wait()
+
+	for processed.Load() < int64(b.N) {
+	}
 }
 
-func BenchmarkSchedulerBaseTask_ConcurrentEnqueue_8Goroutines(b *testing.B) {
-	task := NewSchedulerBaseTask("bench-task", model.TaskPriorityNormal, 1)
+// ==========================================
+// 多任务并发基准测试
+// ==========================================
+
+// BenchmarkTaskScheduler_MultiTasks 测试多任务并发性能
+func BenchmarkTaskScheduler_MultiTasks(b *testing.B) {
+	scheduler := NewTaskScheduler("bench", 4)
+
+	var processed atomic.Int64
+
+	// 注册 4 个不同的任务
+	for i := 0; i < 4; i++ {
+		taskName := fmt.Sprintf("task-%d", i)
+		err := scheduler.RegisterTask(
+			func(item any) TaskStatus {
+				processed.Add(1)
+				return TaskPassed
+			},
+			taskName,
+			model.TaskPriorityNormal,
+			i+1,
+		)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	executor := &syncExecutor{maxWorkers: 4}
+	err := scheduler.Start(executor)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer scheduler.Stop()
 
 	b.ResetTimer()
-	b.ReportAllocs()
 
+	// 并发提交到不同任务
 	var wg sync.WaitGroup
-	goroutines := 8
-	perGoroutine := b.N / goroutines
-
-	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
-		go func() {
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(taskID int) {
 			defer wg.Done()
-			for j := 0; j < perGoroutine; j++ {
-				task.Enqueue(j)
+			taskName := fmt.Sprintf("task-%d", taskID)
+			for j := 0; j < b.N/4; j++ {
+				item := &benchmarkShardItem{shardID: taskID}
+				_ = scheduler.EnqueueWithShard(item, taskName)
 			}
-		}()
+		}(i)
 	}
 	wg.Wait()
-}
 
-// ==========================================
-// 调度器性能基准测试
-// ==========================================
-
-func BenchmarkTaskScheduler_RegisterTask(b *testing.B) {
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		scheduler := NewTaskScheduler("bench-scheduler")
-		task := NewSchedulerBaseTask("task", model.TaskPriorityNormal, 1)
-		scheduler.RegisterTask(task, 1)
-	}
-}
-
-func BenchmarkTaskScheduler_UnregisterTask(b *testing.B) {
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		scheduler := NewTaskScheduler("bench-scheduler")
-		task := NewSchedulerBaseTask("task", model.TaskPriorityNormal, 1)
-		scheduler.RegisterTask(task, 1)
-		b.StartTimer()
-
-		scheduler.UnregisterTask("task")
+	for processed.Load() < int64(b.N) {
 	}
 }
 
 // ==========================================
-// Wakeup 机制基准测试
+// 扩展性基准测试
 // ==========================================
 
-func BenchmarkTaskScheduler_Wakeup(b *testing.B) {
-	scheduler := NewTaskScheduler("bench-scheduler")
-	task := NewSchedulerBaseTask("bench-task", model.TaskPriorityNormal, 1)
-	scheduler.RegisterTask(task, 1)
+// BenchmarkTaskScheduler_Scalability 测试不同核心数的扩展性
+func BenchmarkTaskScheduler_Scalability(b *testing.B) {
+	coreCounts := []int{1, 2, 4, 8}
 
-	b.ResetTimer()
-	b.ReportAllocs()
+	for _, cores := range coreCounts {
+		b.Run(fmt.Sprintf("%d-cores", cores), func(b *testing.B) {
+			scheduler := NewTaskScheduler("bench", cores)
 
-	for i := 0; i < b.N; i++ {
-		scheduler.wakeup()
-	}
-}
+			var processed atomic.Int64
 
-func BenchmarkTaskScheduler_EnqueueWithWakeup(b *testing.B) {
-	scheduler := NewTaskScheduler("bench-scheduler")
-	task := NewSchedulerBaseTask("bench-task", model.TaskPriorityNormal, 1)
-	scheduler.RegisterTask(task, 1)
+			err := scheduler.RegisterTask(
+				func(item any) TaskStatus {
+					processed.Add(1)
+					return TaskPassed
+				},
+				"bench-task",
+				model.TaskPriorityNormal,
+				1,
+			)
+			if err != nil {
+				b.Fatal(err)
+			}
 
-	b.ResetTimer()
-	b.ReportAllocs()
+			executor := &syncExecutor{maxWorkers: cores}
+			err = scheduler.Start(executor)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer scheduler.Stop()
 
-	for i := 0; i < b.N; i++ {
-		task.Enqueue(i)
-	}
-}
+			b.ResetTimer()
 
-// ==========================================
-// 吞吐量基准测试
-// ==========================================
+			// 并发提交任务
+			var wg sync.WaitGroup
+			for i := 0; i < cores; i++ {
+				wg.Add(1)
+				go func(shardID int) {
+					defer wg.Done()
+					for j := 0; j < b.N/cores; j++ {
+						item := &benchmarkShardItem{shardID: shardID}
+						_ = scheduler.EnqueueWithShard(item, "bench-task")
+					}
+				}(i)
+			}
+			wg.Wait()
 
-func BenchmarkSchedulerBaseTask_Throughput_EnqueueDequeue(b *testing.B) {
-	task := NewSchedulerBaseTask("bench-task", model.TaskPriorityNormal, 1)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		task.Enqueue(i)
-		var item any
-		task.Dequeue(&item)
-	}
-}
-
-func BenchmarkSchedulerBaseTask_Throughput_PeekDequeue(b *testing.B) {
-	task := NewSchedulerBaseTask("bench-task", model.TaskPriorityNormal, 1)
-
-	// 预填充队列
-	for i := 0; i < 1000; i++ {
-		task.Enqueue(i)
-	}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	var item any
-	for i := 0; i < b.N; i++ {
-		task.Peek(&item)
-		task.Dequeue(&item)
-		task.Enqueue(i) // 保持队列有元素
+			for processed.Load() < int64(b.N) {
+			}
+		})
 	}
 }
 
 // ==========================================
-// 内存分配基准测试
+// 并发提交基准测试
 // ==========================================
 
-func BenchmarkSchedulerBaseTask_Allocations(b *testing.B) {
-	b.ResetTimer()
-	b.ReportAllocs()
+// BenchmarkTaskScheduler_ConcurrentSubmit 测试并发提交性能
+func BenchmarkTaskScheduler_ConcurrentSubmit(b *testing.B) {
+	scheduler := NewTaskScheduler("bench", 4)
 
-	for i := 0; i < b.N; i++ {
-		task := NewSchedulerBaseTask("bench-task", model.TaskPriorityNormal, 1)
-		task.Enqueue(i)
+	var processed atomic.Int64
+
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus {
+			processed.Add(1)
+			return TaskPassed
+		},
+		"bench-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	executor := &syncExecutor{maxWorkers: 4}
+	err = scheduler.Start(executor)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer scheduler.Stop()
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		shardID := 0
+		for pb.Next() {
+			shardID++
+			if shardID > 100 {
+				shardID = 0
+			}
+			item := &benchmarkShardItem{shardID: shardID}
+			_ = scheduler.EnqueueWithShard(item, "bench-task")
+		}
+	})
+
+	// 等待所有任务完成
+	for processed.Load() < int64(b.N) {
 	}
 }
 
-func BenchmarkTaskScheduler_Allocations(b *testing.B) {
-	b.ResetTimer()
-	b.ReportAllocs()
+// ==========================================
+// Mock Executor
+// ==========================================
 
-	for i := 0; i < b.N; i++ {
-		scheduler := NewTaskScheduler("bench-scheduler")
-		task := NewSchedulerBaseTask("bench-task", model.TaskPriorityNormal, 1)
-		scheduler.RegisterTask(task, 1)
-	}
+// syncExecutor 同步执行器（用于基准测试）
+type syncExecutor struct {
+	maxWorkers int
+	wg         sync.WaitGroup
+	sem        chan struct{}
+}
+
+func (e *syncExecutor) Submit(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(context.Context)) error {
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		// 模拟受限的并发执行
+		if e.sem != nil {
+			<-e.sem
+			defer func() { e.sem <- struct{}{} }()
+		}
+		fn(ctx)
+	}()
+	return nil
+}
+
+func (e *syncExecutor) Close() error {
+	e.wg.Wait()
+	return nil
 }

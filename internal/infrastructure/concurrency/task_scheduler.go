@@ -23,7 +23,7 @@ type ShardTask struct {
 	name           string
 	priority       model.TaskPriority
 	executionOrder int
-	queue          *RingQueue // 使用环形队列（O(1) 出队）
+	queue          []any
 	mu             sync.Mutex
 	taskStatus     atomic.Int32 // TaskStatus
 	executeFunc    func(any) TaskStatus
@@ -35,7 +35,7 @@ func NewShardTask(name string, priority model.TaskPriority, executionOrder int, 
 		name:           name,
 		priority:       priority,
 		executionOrder: executionOrder,
-		queue:          NewRingQueue(64),
+		queue:          make([]any, 0, 64),
 		executeFunc:    executeFunc,
 	}
 	t.taskStatus.Store(int32(TaskQueued))
@@ -47,13 +47,15 @@ func NewShardTask(name string, priority model.TaskPriority, executionOrder int, 
 // ==========================================
 
 func (t *ShardTask) QueueLen() int {
-	return t.queue.Len()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.queue)
 }
 
 func (t *ShardTask) Enqueue(item any) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.queue.Enqueue(item)
+	t.queue = append(t.queue, item)
 	t.taskStatus.Store(int32(TaskQueued))
 	return nil
 }
@@ -62,12 +64,11 @@ func (t *ShardTask) Peek(item *any) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	val, ok := t.queue.Peek()
-	if !ok {
+	if len(t.queue) == 0 {
 		return false
 	}
 
-	*item = val
+	*item = t.queue[0]
 	t.taskStatus.Store(int32(TaskExecuting))
 	return true
 }
@@ -76,12 +77,18 @@ func (t *ShardTask) Dequeue(item *any) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	val, ok := t.queue.Dequeue()
-	if !ok {
+	if len(t.queue) == 0 {
 		return false
 	}
 
-	*item = val
+	*item = t.queue[0]
+
+	// 避免内存泄漏：使用 copy 而不是切片
+	if len(t.queue) > 1 {
+		copy(t.queue, t.queue[1:])
+	}
+	t.queue = t.queue[:len(t.queue)-1]
+
 	return true
 }
 
@@ -168,7 +175,7 @@ func (c *SchedulerCore) RegisterTask(taskTemplate *ShardTask) error {
 		name:           taskTemplate.name,
 		priority:       taskTemplate.priority,
 		executionOrder: taskTemplate.executionOrder,
-		queue:          NewRingQueue(64),
+		queue:          make([]any, 0, 64),
 		executeFunc:    taskTemplate.executeFunc,
 	}
 	task.taskStatus.Store(int32(TaskQueued))

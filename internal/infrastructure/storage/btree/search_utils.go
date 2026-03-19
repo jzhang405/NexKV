@@ -6,8 +6,6 @@ package btree
 
 import (
 	"bytes"
-
-	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
 // BinarySearchResult holds the result of a binary search operation
@@ -44,41 +42,4 @@ func BinarySearch(keys [][]byte, key []byte) BinarySearchResult {
 		FoundIdx:  -1,
 		Found:     false,
 	}
-}
-
-// GetPageIDFromPage extracts PageID from a Page interface
-func GetPageIDFromPage(page interface{}) model.PageID {
-	switch p := page.(type) {
-	case *LeafPage:
-		return p.pageID
-	case *InternalPage:
-		return p.pageID
-	default:
-		return 0
-	}
-}
-
-// CloneByteSlices creates a deep copy of byte slices
-func CloneByteSlices(slices [][]byte) [][]byte {
-	if slices == nil {
-		return nil
-	}
-	result := make([][]byte, len(slices))
-	for i := range slices {
-		if slices[i] != nil {
-			result[i] = make([]byte, len(slices[i]))
-			copy(result[i], slices[i])
-		}
-	}
-	return result
-}
-
-// ClonePageRefs creates a shallow copy of PageRef slice
-func ClonePageRefs(refs []*PageRef) []*PageRef {
-	if refs == nil {
-		return nil
-	}
-	result := make([]*PageRef, len(refs))
-	copy(result, refs)
-	return result
 }

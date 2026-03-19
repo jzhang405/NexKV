@@ -28,7 +28,7 @@ func TestInternalPage_Split_WithChildren(t *testing.T) {
 
 	// 插入 18 个键，每个键带一个右子节点
 	// Insert 方法会在正确位置插入键和其右子节点
-	for i := 0; i < 18; i++ {
+	for i := range 18 {
 		key := []byte{byte(i)}
 		// 创建右子节点
 		childRef := NewPageRef()
@@ -65,12 +65,12 @@ func TestInternalPage_Split_WithChildren(t *testing.T) {
 	assert.Equal(t, 9, newPage.NumChildren(), "新页面应该有 9 个子节点") // Split 实现: p.children[mid+1:] = children[10:]
 
 	// 验证子节点引用完整性
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		childRef := page.GetChild(i)
 		assert.NotNil(t, childRef, "原页面子节点 %d 不应为空", i)
 	}
 
-	for i := 0; i < 9; i++ {
+	for i := range 9 {
 		childRef := newPage.GetChild(i)
 		assert.NotNil(t, childRef, "新页面子节点 %d 不应为空", i)
 	}
@@ -92,7 +92,7 @@ func TestBTree_splitInternal_Basic(t *testing.T) {
 	// 插入 17 * 16 = 272 个键，确保触发内部节点分裂
 	const numInserts = 272
 
-	for i := 0; i < numInserts; i++ {
+	for i := range numInserts {
 		key := make([]byte, 3)
 		key[0] = byte(i >> 8)
 		key[1] = byte(i & 0xFF)
@@ -149,7 +149,7 @@ func TestBTree_splitInternal_Recursive(t *testing.T) {
 	// 插入 16 * 16 * 16 = 4096 个键，触发 3 层分裂
 	const numInserts = 4096
 
-	for i := 0; i < numInserts; i++ {
+	for i := range numInserts {
 		key := make([]byte, 4)
 		key[0] = byte(i >> 24)
 		key[1] = byte(i >> 16)
@@ -244,7 +244,7 @@ func BenchmarkInternalPage_Split(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// 创建新的内部节点进行分裂测试
 		testPage := NewInternalPage(1)
-		for j := 0; j < 17; j++ {
+		for j := range 17 {
 			key := []byte{byte(j)}
 			childRef := NewPageRef()
 			testPage.Insert(key, childRef)

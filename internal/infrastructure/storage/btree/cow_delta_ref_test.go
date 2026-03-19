@@ -205,10 +205,10 @@ func TestCOWDeltaRef_Concurrent(t *testing.T) {
 	wg.Add(goroutines * 2) // 读者 + 写者
 
 	// 并发写入
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < opsPerGoroutine; j++ {
+			for j := range opsPerGoroutine {
 				key := []byte{byte(id)}
 				value := []byte{byte(j)}
 				ref.AppendDelta(Delta{op: DeltaInsert, key: key, value: value})
@@ -217,10 +217,10 @@ func TestCOWDeltaRef_Concurrent(t *testing.T) {
 	}
 
 	// 并发读取
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < opsPerGoroutine; j++ {
+			for range opsPerGoroutine {
 				_ = ref.GetDeltaCount()
 				_ = ref.GetDeltas()
 				_ = ref.GetVersion()

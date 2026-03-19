@@ -392,10 +392,20 @@ func (p *InternalPage) CloneWithDelta() *InternalPage {
 func (p *InternalPage) Serialize() ([]byte, error) {
 	// 物化：序列化前必须将 Delta Chain 合并为独立数据
 	// cowDelta 是内存优化结构，无法序列化到磁盘
+	// 修复：克隆页面后物化，避免并发访问竞态条件
 	if p.cowDelta != nil {
-		p.materialize()
+		// 创建深拷贝进行物化，避免修改原始页面
+		// 这解决了并发 Clone 读取时的竞态条件
+		cloned := p.CloneDeep()
+		cloned.materialize()
+		return cloned.serializeWithData()
 	}
+	return p.serializeWithData()
+}
 
+// serializeWithData 序列化已物化的页面（内部辅助方法）
+// 前提条件：p.cowDelta == nil（已物化）
+func (p *InternalPage) serializeWithData() ([]byte, error) {
 	const pageSize = 4096 // 固定页面大小
 
 	var buf bytes.Buffer

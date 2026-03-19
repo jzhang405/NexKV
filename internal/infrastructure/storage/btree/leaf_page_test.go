@@ -123,7 +123,7 @@ func TestLeafPage_Split(t *testing.T) {
 	page := NewLeafPage(1)
 
 	// 插入多个键值对
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		key := []byte{byte('a' + byte(i))}
 		value := []byte{byte('0' + byte(i))}
 		_, err := page.Insert(key, value)

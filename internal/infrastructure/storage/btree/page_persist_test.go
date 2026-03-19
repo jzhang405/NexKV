@@ -147,7 +147,7 @@ func TestPageManager_MultiplePages(t *testing.T) {
 	numPages := 10
 	pages := make([]model.PageID, numPages)
 
-	for i := 0; i < numPages; i++ {
+	for i := range numPages {
 		pageID := pm.AllocatePage()
 		pages[i] = pageID
 
@@ -247,11 +247,11 @@ func TestPageManager_ConcurrentAccess(t *testing.T) {
 	done := make(chan bool, numGoroutines)
 
 	// Concurrent writes
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(id int) {
 			defer func() { done <- true }()
 
-			for j := 0; j < pagesPerGoroutine; j++ {
+			for j := range pagesPerGoroutine {
 				pageID := pm.AllocatePage()
 				page := NewPage(pageID, model.LeafPage)
 
@@ -270,7 +270,7 @@ func TestPageManager_ConcurrentAccess(t *testing.T) {
 	}
 
 	// Wait for all goroutines
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		<-done
 	}
 
@@ -309,7 +309,7 @@ func BenchmarkPageManager_Read(b *testing.B) {
 
 	// Pre-allocate pages
 	numPages := 1000
-	for i := 0; i < numPages; i++ {
+	for range numPages {
 		pageID := pm.AllocatePage()
 		page := NewPage(pageID, model.LeafPage)
 		page.MarkDirty()

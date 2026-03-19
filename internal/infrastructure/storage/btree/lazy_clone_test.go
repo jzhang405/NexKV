@@ -329,14 +329,14 @@ func BenchmarkBTree_copyPathShallow(b *testing.B) {
 
 	internalInfo := NewPageInfo()
 	internal := NewInternalPage(model.PageID(2))
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		internal.keys = append(internal.keys, []byte{byte(i)})
 	}
 	internalInfo.SetPage(internal)
 
 	leafInfo := NewPageInfo()
 	leaf := NewLeafPage(model.PageID(3))
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		leaf.keys = append(leaf.keys, []byte{byte(i)})
 	}
 	leafInfo.SetPage(leaf)
@@ -363,7 +363,7 @@ func BenchmarkBTree_finalizeDeepClone(b *testing.B) {
 
 	leafInfo := NewPageInfo()
 	leaf := NewLeafPage(model.PageID(3))
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		leaf.keys = append(leaf.keys, []byte{byte(i)})
 	}
 	leafInfo.SetPage(leaf)

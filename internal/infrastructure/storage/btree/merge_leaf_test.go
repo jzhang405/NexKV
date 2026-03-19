@@ -23,7 +23,7 @@ func TestMergeLeaf_NoMergeNeeded(t *testing.T) {
 	ctx := context.Background()
 
 	// 插入足够多的键（10 > minKeys=8）
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
 		err := btree.Set(ctx, key, value)
@@ -60,7 +60,7 @@ func TestMergeLeaf_BorrowFromRight(t *testing.T) {
 
 	// 构造特定场景：右兄弟有足够键，当前节点键不足
 	// 1. 先插入足够的键触发分裂
-	for i := 0; i < 34; i++ {
+	for i := range 34 {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
 		err := btree.Set(ctx, key, value)
@@ -68,7 +68,7 @@ func TestMergeLeaf_BorrowFromRight(t *testing.T) {
 	}
 
 	// 2. 删除左侧叶子节点的键
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		err := btree.Delete(ctx, []byte{byte(i)})
 		require.NoError(t, err)
 	}
@@ -105,7 +105,7 @@ func TestMergeLeaf_BorrowBoundary(t *testing.T) {
 
 	// 测试边界条件：兄弟节点刚好有 minKeys+1 个键
 	// 1. 插入足够的键
-	for i := 0; i < 34; i++ {
+	for i := range 34 {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
 		err := btree.Set(ctx, key, value)
@@ -165,7 +165,7 @@ func TestMergeLeaf_ConcurrentDelete(t *testing.T) {
 
 	// 插入初始数据
 	const numKeys = 50
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
 		err := btree.Set(ctx, key, value)
@@ -179,14 +179,14 @@ func TestMergeLeaf_ConcurrentDelete(t *testing.T) {
 	var wg sync.WaitGroup
 	done := make(chan bool, numGoroutines)
 
-	for id := 0; id < numGoroutines; id++ {
+	for id := range numGoroutines {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
 			defer func() { done <- true }()
 
 			start := goroutineID * deletesPerGoroutine
-			for j := 0; j < deletesPerGoroutine; j++ {
+			for j := range deletesPerGoroutine {
 				key := []byte{byte(start + j)}
 				if start+j < numKeys {
 					err := btree.Delete(ctx, key)
@@ -199,7 +199,7 @@ func TestMergeLeaf_ConcurrentDelete(t *testing.T) {
 	}
 
 	// 等待所有 goroutine 完成
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		<-done
 	}
 	wg.Wait()

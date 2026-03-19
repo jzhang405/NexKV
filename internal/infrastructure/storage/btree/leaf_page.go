@@ -478,9 +478,20 @@ func (p *LeafPage) CloneWithDelta() *LeafPage {
 func (p *LeafPage) Serialize() ([]byte, error) {
 	// 物化：序列化前必须将 Delta Chain 合并为独立数据
 	// cowDelta 是内存优化结构，无法序列化到磁盘
+	// 修复：克隆页面后物化，避免并发访问竞态条件
 	if p.cowDelta != nil {
-		p.materialize()
+		// 创建深拷贝进行物化，避免修改原始页面
+		// 这解决了并发 Clone 读取时的竞态条件
+		cloned := p.CloneDeep()
+		cloned.materialize()
+		return cloned.serializeWithData()
 	}
+	return p.serializeWithData()
+}
+
+// serializeWithData 序列化已物化的页面（内部辅助方法）
+// 前提条件：p.cowDelta == nil（已物化）
+func (p *LeafPage) serializeWithData() ([]byte, error) {
 
 	// 调试：检查 keys 和 values 长度是否一致
 	if len(p.keys) != len(p.values) {

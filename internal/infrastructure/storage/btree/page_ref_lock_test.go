@@ -33,7 +33,7 @@ func TestPageRef_GetLock_ConcurrentInit(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// 并发调用 GetLock()
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

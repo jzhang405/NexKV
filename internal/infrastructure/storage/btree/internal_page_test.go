@@ -162,7 +162,7 @@ func TestInternalPage_Split(t *testing.T) {
 	page.children = append(page.children, NewPageRef())
 
 	// 插入 5 个键，每个键带一个右子节点
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		key := []byte{byte('a' + byte(i))}
 		child := NewPageRef()
 		_, err := page.Insert(key, child)
@@ -217,7 +217,7 @@ func TestInternalPage_Clone(t *testing.T) {
 	page.children = append(page.children, NewPageRef())
 
 	// 插入数据
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		key := []byte{byte('a' + byte(i))}
 		child := NewPageRef()
 		page.Insert(key, child)

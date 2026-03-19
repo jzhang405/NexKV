@@ -21,7 +21,7 @@ func TestBTree_copyPathWithDelta_Basic(t *testing.T) {
 	defer tree.Close()
 
 	// 初始化一些数据
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		key := []byte{byte(i)}
 		value := []byte("value")
 		err := tree.Set(context.Background(), key, value)
@@ -56,7 +56,7 @@ func TestBTree_copyPathWithDelta_VersusShallow(t *testing.T) {
 	defer tree.Close()
 
 	// 初始化一些数据
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		key := []byte{byte(i)}
 		value := []byte("value")
 		err := tree.Set(context.Background(), key, value)
@@ -94,31 +94,6 @@ func TestBTree_copyPathWithDelta_VersusShallow(t *testing.T) {
 	assert.False(t, leafInfoDelta.IsDeepClone(), "delta copy should not be marked as deep clone")
 }
 
-// TestBTree_shouldMaterializeBeforeCAS 测试物化决策逻辑
-func TestBTree_shouldMaterializeBeforeCAS(t *testing.T) {
-	config := &model.BTreeConfig{}
-	tree, err := OpenBTree("", config)
-	require.NoError(t, err)
-	defer tree.Close()
-
-	// 测试 1: 不在 Delta 模式，不需要物化
-	page := NewLeafPage(1)
-	page.Insert([]byte("key1"), []byte("val1"))
-	info := NewPageInfo()
-	info.SetPage(page)
-
-	assert.False(t, tree.shouldMaterializeBeforeCAS(info), "non-delta mode should not materialize")
-
-	// 测试 2: Delta 模式，但增量链少，不需要物化
-	deltaPage := page.CloneWithDelta()
-	info.SetPage(deltaPage)
-	assert.False(t, tree.shouldMaterializeBeforeCAS(info), "few deltas should not materialize")
-
-	// 测试 3: Delta 模式，增量链多（模拟），需要物化
-	// 注意：由于 materialize 会改变页面状态，这里只测试决策逻辑
-	// 实际场景中，大量增量会触发 ShouldMaterialize 返回 true
-}
-
 // TestBTree_copyPathWithDelta_InternalNode 测试内部节点的 Delta 克隆
 func TestBTree_copyPathWithDelta_InternalNode(t *testing.T) {
 	config := &model.BTreeConfig{}
@@ -129,7 +104,7 @@ func TestBTree_copyPathWithDelta_InternalNode(t *testing.T) {
 	ctx := context.Background()
 
 	// 初始化大量数据以触发内部节点创建
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		key := []byte{byte(i / 256), byte(i % 256)}
 		value := []byte("value")
 		err := tree.Set(context.Background(), key, value)
@@ -165,7 +140,7 @@ func TestBTree_CopyPathWithDelta_Integration(t *testing.T) {
 	defer tree.Close()
 
 	// 测试多次 Set 操作
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		key := []byte{byte(i)}
 		value := []byte("value")
 		err := tree.Set(context.Background(), key, value)

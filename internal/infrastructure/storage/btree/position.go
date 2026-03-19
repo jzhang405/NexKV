@@ -73,18 +73,6 @@ func DecodePagePos(pos int64) (chunkID, offset, pageType int) {
 	return
 }
 
-// ValidatePosition 验证位置是否有效
-func ValidatePosition(pos int64) bool {
-	if pos == 0 {
-		return false
-	}
-
-	chunkID, offset, pageType := DecodePagePos(pos)
-	return chunkID >= 0 && chunkID < MaxChunks &&
-		offset >= 0 && offset < MaxOffset &&
-		pageType >= 0 && pageType < MaxPageType
-}
-
 // GetChunkID 从位置编码中提取 ChunkID
 func GetChunkID(pos int64) int {
 	return int(pos >> 38)

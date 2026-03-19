@@ -8,32 +8,12 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"sync"
 )
 
 // PageSerializer 页面序列化辅助工具
 // 用于提取 LeafPage 和 InternalPage 的公共序列化逻辑
 type PageSerializer struct {
 	buf bytes.Buffer
-}
-
-// 对象池：复用 PageSerializer 对象
-var pageSerializerPool = sync.Pool{
-	New: func() any {
-		return &PageSerializer{}
-	},
-}
-
-// AcquirePageSerializer 从对象池获取序列化器
-func AcquirePageSerializer() *PageSerializer {
-	ps := pageSerializerPool.Get().(*PageSerializer)
-	ps.buf.Reset()
-	return ps
-}
-
-// ReleasePageSerializer 将序列化器放回对象池
-func ReleasePageSerializer(ps *PageSerializer) {
-	pageSerializerPool.Put(ps)
 }
 
 // NewPageSerializer 创建新的页面序列化器

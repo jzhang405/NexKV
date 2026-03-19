@@ -37,7 +37,7 @@ func TestMergeAPI_BorrowFromLeft(t *testing.T) {
 	// Step 1: 插入足够多的键触发分裂（触发 3 层树）
 	// 更新：maxKeys 现在是 200，需要超过 201 才能触发分裂
 	const numKeys = 250
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
 		err := btree.Set(ctx, key, value)
@@ -54,7 +54,7 @@ func TestMergeAPI_BorrowFromLeft(t *testing.T) {
 	// Step 2: 删除左侧节点的键，触发中间节点借键
 	// 删除前 15 个键，使左侧叶子节点键不足
 	deletedCount := 0
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		key := []byte{byte(i)}
 		err := btree.Delete(ctx, key)
 		if err == nil {
@@ -100,7 +100,7 @@ func TestMergeAPI_MergeWithLeft(t *testing.T) {
 
 	// Step 1: 插入键触发分裂
 	const numKeys = 35
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
 		err := btree.Set(ctx, key, value)
@@ -162,7 +162,7 @@ func TestMergeAPI_MergeWithRight(t *testing.T) {
 
 	// Step 1: 插入键触发分裂
 	const numKeys = 35
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
 		err := btree.Set(ctx, key, value)
@@ -224,7 +224,7 @@ func TestMergeAPI_MergeRootReduction(t *testing.T) {
 	// Step 1: 插入足够多的键触发多层分裂
 	// 插入 50 个键，应该会触发多层分裂
 	const numKeys = 50
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
 		err := btree.Set(ctx, key, value)
@@ -300,7 +300,7 @@ func TestMergeAPI_MultipleMerges(t *testing.T) {
 
 	// Step 1: 插入初始数据
 	const numKeys = 60
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
 		err := btree.Set(ctx, key, value)
@@ -312,7 +312,7 @@ func TestMergeAPI_MultipleMerges(t *testing.T) {
 	t.Logf("Initial: %d keys, height=%d", numKeys, initialHeight)
 
 	// Step 2: 多轮删除和插入
-	for round := 0; round < 3; round++ {
+	for round := range 3 {
 		// 删除一些键
 		start := round * 15
 		for i := start; i < start+10; i++ {
@@ -324,7 +324,7 @@ func TestMergeAPI_MultipleMerges(t *testing.T) {
 
 		// 插入一些新键
 		newKeyStart := numKeys + round*10
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			key := []byte{byte(newKeyStart + i)}
 			value := []byte{byte(200 + i)}
 			_ = btree.Set(ctx, key, value)
@@ -371,7 +371,7 @@ func TestMergeAPI_RandomOperations(t *testing.T) {
 	keyMutex := sync.Mutex{}
 
 	// 执行随机操作
-	for op := 0; op < numOperations; op++ {
+	for op := range numOperations {
 		keyVal := op % keyRange
 		key := []byte{byte(keyVal)}
 

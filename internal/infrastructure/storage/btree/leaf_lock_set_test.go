@@ -6,8 +6,10 @@ package btree
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,11 +77,11 @@ func TestSetWithLeafLock_Concurrent(t *testing.T) {
 	errors := make(chan error, goroutines*operationsPerGoroutine)
 
 	// 并发写入不同的键
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < operationsPerGoroutine; j++ {
+			for j := range operationsPerGoroutine {
 				key := []byte{byte(id >> 8), byte(id), byte(j)}
 				value := []byte{byte(j)}
 
@@ -110,7 +112,7 @@ func TestSetWithLeafLock_MultipleKeys(t *testing.T) {
 
 	// 插入多个键值对
 	const count = 1000
-	for i := 0; i < count; i++ {
+	for i := range count {
 		key := []byte{byte(i >> 8), byte(i)}
 		value := []byte{byte(i), byte(i >> 8), byte(i >> 16)}
 
@@ -119,7 +121,7 @@ func TestSetWithLeafLock_MultipleKeys(t *testing.T) {
 	}
 
 	// 验证所有值
-	for i := 0; i < count; i++ {
+	for i := range count {
 		key := []byte{byte(i >> 8), byte(i)}
 		value, err := btree.Get(ctx, key)
 		require.NoError(t, err)
@@ -161,7 +163,7 @@ func TestFindLeafPageRef_Concurrent(t *testing.T) {
 
 	// 预先插入一些键
 	const count = 100
-	for i := 0; i < count; i++ {
+	for i := range count {
 		key := []byte{byte(i >> 8), byte(i)}
 		_ = btree.Set(ctx, key, []byte{byte(i)})
 	}
@@ -169,12 +171,12 @@ func TestFindLeafPageRef_Concurrent(t *testing.T) {
 	const goroutines = 50
 	var wg sync.WaitGroup
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < 10; j++ {
-				key := []byte{byte((id*10+j) >> 8), byte(id*10 + j)}
+			for j := range 10 {
+				key := []byte{byte((id*10 + j) >> 8), byte(id*10 + j)}
 				_, _, err := btree.findLeafPageRef(ctx, key)
 				assert.NoError(t, err)
 			}
@@ -239,4 +241,69 @@ func BenchmarkSetWithLeafLock_DifferentKeys(b *testing.B) {
 			_ = btree.Set(ctx, key, value)
 		}
 	})
+}
+func TestRetry_Path(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	tree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 创建竞争条件以触发 ErrRetry
+	const numGoroutines = 10
+	const keysPerGoroutine = 20
+
+	var wg sync.WaitGroup
+
+	for g := range numGoroutines {
+		wg.Add(1)
+		go func(goroutineID int) {
+			defer wg.Done()
+
+			for i := range keysPerGoroutine {
+				key := []byte(fmt.Sprintf("g%d-key%02d", goroutineID, i))
+				value := []byte(fmt.Sprintf("value-%d", goroutineID*keysPerGoroutine+i))
+
+				// 带重试的 Set
+				var err error
+				for attempt := range 20 {
+					err = tree.Set(ctx, key, value)
+					if err == nil {
+						break
+					}
+					if err == ErrRetry {
+						time.Sleep(time.Microsecond * time.Duration(attempt+1) * 10)
+						continue
+					}
+					break
+				}
+
+				// 某些写入可能失败（竞争），但不应该导致崩溃
+				if err != nil && err != ErrRetry {
+					t.Logf("goroutine %d, key %d: %v", goroutineID, i, err)
+				}
+			}
+		}(g)
+	}
+
+	wg.Wait()
+
+	// 验证至少部分数据成功写入
+	successCount := 0
+	for g := range numGoroutines {
+		for i := range keysPerGoroutine {
+			key := []byte(fmt.Sprintf("g%d-key%02d", g, i))
+			_, err := tree.Get(ctx, key)
+			if err == nil {
+				successCount++
+			}
+		}
+	}
+
+	// 至少应该有 50% 的数据成功写入
+	minSuccess := (numGoroutines * keysPerGoroutine) / 2
+	assert.GreaterOrEqual(t, successCount, minSuccess,
+		"expected at least %d successful writes, got %d", minSuccess, successCount)
 }

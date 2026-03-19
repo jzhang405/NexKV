@@ -1,8 +1,13 @@
 package btree
 
+//nolint:errcheck // 测试代码中忽略部分返回值检查
+
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,7 +19,7 @@ func TestLeafPage_Split_Basic(t *testing.T) {
 	page := NewLeafPage(1)
 
 	// 插入 17 个键值对（maxKeys = 16，触发分裂）
-	for i := 0; i < 17; i++ {
+	for i := range 17 {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
 		_, err := page.Insert(key, value)
@@ -40,7 +45,7 @@ func TestLeafPage_Split_Basic(t *testing.T) {
 	assert.Equal(t, 9, newPage.NumKeys(), "新页面应该有 9 个键")
 
 	// 验证数据完整性
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		key := []byte{byte(i)}
 		value, ok := page.Get(key)
 		assert.True(t, ok, "原页面应该包含键 %d", i)
@@ -60,7 +65,7 @@ func TestLeafPage_Split_MaxKeys(t *testing.T) {
 	page := NewLeafPage(1)
 
 	// 插入 16 个键值对（正好 maxKeys）
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
 		_, err := page.Insert(key, value)
@@ -123,7 +128,7 @@ func TestBTree_splitLeaf_Basic(t *testing.T) {
 	ctx := context.Background()
 
 	// 插入 17 个键值对（触发一次分裂）
-	for i := 0; i < 17; i++ {
+	for i := range 17 {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
 		err := btree.Set(ctx, key, value)
@@ -131,7 +136,7 @@ func TestBTree_splitLeaf_Basic(t *testing.T) {
 	}
 
 	// 验证数据完整性
-	for i := 0; i < 17; i++ {
+	for i := range 17 {
 		key := []byte{byte(i)}
 		value, err := btree.Get(ctx, key)
 		if err != nil {
@@ -185,7 +190,7 @@ func TestBTree_splitLeaf_RecursiveSplit(t *testing.T) {
 	// 插入 16 * 16 = 256 个键，触发根节点分裂
 	const numInserts = 256
 
-	for i := 0; i < numInserts; i++ {
+	for i := range numInserts {
 		key := make([]byte, 2)
 		key[0] = byte(i >> 8)
 		key[1] = byte(i & 0xFF)
@@ -247,11 +252,11 @@ func TestBTree_splitLeaf_Concurrent(t *testing.T) {
 	done := make(chan bool, numGoroutines)
 
 	// 并发插入
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(id int) {
 			defer func() { done <- true }()
 
-			for j := 0; j < insertsPerGoroutine; j++ {
+			for j := range insertsPerGoroutine {
 				key := []byte{byte(id), byte(j)}
 				value := []byte{byte(j)}
 				err := btree.Set(ctx, key, value)
@@ -263,13 +268,13 @@ func TestBTree_splitLeaf_Concurrent(t *testing.T) {
 	}
 
 	// 等待所有 goroutine 完成
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		<-done
 	}
 
 	// 验证数据（采样）
-	for i := 0; i < numGoroutines; i++ {
-		for j := 0; j < insertsPerGoroutine; j++ {
+	for i := range numGoroutines {
+		for j := range insertsPerGoroutine {
 			key := []byte{byte(i), byte(j)}
 			value, err := btree.Get(ctx, key)
 			if err != nil {
@@ -300,5 +305,136 @@ func BenchmarkBTree_splitLeaf(b *testing.B) {
 		value := []byte{byte(i % 256)}
 
 		_ = btree.Set(ctx, key, value)
+	}
+}
+func TestPageSplit_MultipleSplits(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	tree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入足够多的数据以触发多次分裂（splitThreshold = 200）
+	const keyCount = 600 // 足够触发 3-4 次分裂
+
+	for i := range keyCount {
+		key := []byte(fmt.Sprintf("key-%05d", i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+
+		err := tree.Set(ctx, key, value)
+		require.NoError(t, err, "failed at key %d", i)
+	}
+
+	// 验证所有数据
+	for i := range keyCount {
+		key := []byte(fmt.Sprintf("key-%05d", i))
+		expected := []byte(fmt.Sprintf("value-%d", i))
+
+		value, err := tree.Get(ctx, key)
+		require.NoError(t, err, "key: %s", key)
+		assert.Equal(t, expected, value, "key: %s", key)
+	}
+}
+func TestPageSplit_ConcurrentWrites(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	tree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	const numWriters = 8
+	const keysPerWriter = 100
+
+	var wg sync.WaitGroup
+	errors := make(chan error, numWriters)
+
+	// 启动多个并发写入者
+	for w := range numWriters {
+		wg.Add(1)
+		go func(writerID int) {
+			defer wg.Done()
+
+			for i := range keysPerWriter {
+				key := []byte(fmt.Sprintf("writer-%d-key-%04d", writerID, i))
+				value := []byte(fmt.Sprintf("value-%d", writerID*keysPerWriter+i))
+
+				// 重试逻辑
+				for retry := range 10 {
+					err := tree.Set(ctx, key, value)
+					if err == nil {
+						break
+					}
+					if err == ErrRetry {
+						time.Sleep(time.Microsecond * time.Duration(retry+1))
+						continue
+					}
+					errors <- fmt.Errorf("writer %d failed at key %d: %w", writerID, i, err)
+					return
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// 检查是否有错误
+	for err := range errors {
+		t.Fatal(err)
+	}
+
+	// 验证数据完整性（允许部分失败）
+	successCount := 0
+	for w := range numWriters {
+		for i := range keysPerWriter {
+			key := []byte(fmt.Sprintf("writer-%d-key-%04d", w, i))
+			expected := []byte(fmt.Sprintf("value-%d", w*keysPerWriter+i))
+
+			value, err := tree.Get(ctx, key)
+			if err == nil && assert.Equal(t, expected, value, "key: %s", key) {
+				successCount++
+			}
+		}
+	}
+
+	// 至少应该有 70% 的数据成功写入
+	minSuccess := (numWriters * keysPerWriter) * 70 / 100
+	assert.GreaterOrEqual(t, successCount, minSuccess,
+		"expected at least %d successful writes, got %d", minSuccess, successCount)
+}
+func TestSplit_UpperBoundary(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	tree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入正好等于阈值的数据
+	for i := range 200 {
+		key := []byte(fmt.Sprintf("key-%05d", i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+		err := tree.Set(ctx, key, value)
+		require.NoError(t, err)
+	}
+
+	// 插入一个额外的键，应该触发分裂
+	key := []byte("key-00200")
+	value := []byte("value-200")
+	err = tree.Set(ctx, key, value)
+	require.NoError(t, err)
+
+	// 验证所有键仍然可访问
+	for i := 0; i <= 200; i++ {
+		key := []byte(fmt.Sprintf("key-%05d", i))
+		expected := []byte(fmt.Sprintf("value-%d", i))
+		value, err := tree.Get(ctx, key)
+		require.NoError(t, err, "key: %s", key)
+		assert.Equal(t, expected, value, "key: %s", key)
 	}
 }

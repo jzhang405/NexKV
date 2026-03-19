@@ -118,14 +118,14 @@ func TestLeafPage_CloneWithDelta_DeleteDelta(t *testing.T) {
 func TestLeafPage_CloneWithDelta_AutoMaterialize(t *testing.T) {
 	page := NewLeafPage(1)
 	// 添加初始数据
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		page.Insert([]byte(fmt.Sprintf("key%d", i)), []byte(fmt.Sprintf("val%d", i)))
 	}
 
 	clone := page.CloneWithDelta()
 
 	// 添加超过阈值的增量（maxDeltas = 10）
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		clone.Insert([]byte(fmt.Sprintf("new%d", i)), []byte(fmt.Sprintf("newval%d", i)))
 	}
 
@@ -152,7 +152,7 @@ func TestLeafPage_CloneWithDelta_Concurrent(t *testing.T) {
 	clone := page.CloneWithDelta()
 
 	// 预先添加一些数据
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		clone.Insert([]byte(fmt.Sprintf("key-%d", i)), []byte(fmt.Sprintf("val-%d", i)))
 	}
 
@@ -163,10 +163,10 @@ func TestLeafPage_CloneWithDelta_Concurrent(t *testing.T) {
 	wg.Add(goroutines)
 
 	// 并发读取（多读者是安全的）
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < opsPerGoroutine; j++ {
+			for j := range opsPerGoroutine {
 				key := []byte(fmt.Sprintf("key-%d", j%10))
 				clone.Get(key)
 			}

@@ -154,14 +154,8 @@ func (r *PageRef) GetLock() *PageLock {
 type BTree struct {
     // ... 现有字段 ...
 
-    // 新增：Leaf-Level Locking 支持（纯内存模式）
-    // pageLocks 使用 LRU 缓存限制锁数量，防止内存无限增长
-    pageLocks sync.Map // map[PageID]*PageLock（懒加载，复用 GetLock）
-    // 配置参数：
-    const (
-        MaxPageLocks = 10000  // LRU 缓存最大容量
-        LockScanInterval = 5 * time.Minute  // 定期扫描间隔
-    )
+    // 注意：无需新增字段，使用 PageRef.GetLock() 获取页面锁
+    // 锁内置于每个 PageRef，懒加载创建，生命周期与页面绑定
 
     // 移除（纯内存模式不需要）：
     // splitQueue chan *SplitTask  // ← 持久化模式需要
@@ -169,30 +163,11 @@ type BTree struct {
 }
 ```
 
-**LRU 缓存实现**（使用 `github.com/hashicorp/golang-lru`）：
-```go
-import lru "github.com/hashicorp/golang-lru/v2"
-
-type BTree struct {
-    lockCache *lru.Cache[PageID, *PageLock]
-}
-
-func NewBTree() *BTree {
-    cache, _ := lru.New[PageID, *PageLock](MaxPageLocks)
-    return &BTree{
-        lockCache: cache,
-    }
-}
-
-func (b *BTree) getPageLock(pageID PageID) *PageLock {
-    if lock, ok := b.lockCache.Get(pageID); ok {
-        return lock
-    }
-    newLock := NewPageLock()
-    b.lockCache.Add(pageID, newLock)
-    return newLock
-}
-```
+**锁管理策略**：
+- 每个 `PageRef` 内置 `pageLock atomic.Pointer[PageLock]`
+- 懒加载：首次调用 `GetLock()` 时创建
+- 内存占用：每个 Leaf Page 一个锁，可预测（假设 10000 个 Leaf Page，约 240KB）
+- 生命周期：锁与页面绑定，页面释放时锁自然释放
 
 **3. 锁模式枚举**（**新增**）：
 
@@ -315,10 +290,10 @@ func (b *BTree) handleSplitSync(leafInfo *PageInfo, path []*PageInfo) error {
 - 使用 `TryLock()` 快速失败，不阻塞
 - 超时机制：`LockWithTimeout(timeout)`
 
-**3. 内存泄漏预防**：
-- Leaf Locks 使用 LRU 缓存限制数量
-- Leaf 分裂后清理旧锁
-- 定期扫描未使用的锁
+**3. 内存占用控制**：
+- 每个 Leaf Page 一个锁，内存占用可预测
+- 锁生命周期与页面绑定，页面释放时锁自然释放
+- 无需额外的缓存管理或清理逻辑
 
 **4. 纯内存模式简化**：
 - ~~异步分裂队列~~ → 同步分裂，阻塞完成
@@ -336,9 +311,9 @@ internal/infrastructure/storage/btree/
 **修改文件**（3 个）：
 ```
 internal/infrastructure/storage/btree/
-├── page_ref.go           # 添加 pageLock 字段（懒加载，复用现有结构）
-├── btree.go              # 添加 pageLocks sync.Map 字段
-└── btree_ops.go          # 集成新 Set 流程
+├── page_ref.go           # 添加 pageLock 字段（atomic.Pointer，懒加载 CAS 初始化）
+├── btree.go              # 集成 setWithLeafLock 入口
+└── btree_ops.go          # 实现新的 Set 流程
 ```
 
 **不受影响**（无需修改）：
@@ -368,7 +343,7 @@ internal/infrastructure/storage/btree/
 
 **压力测试**：
 - `TestInsert_10MRecords`：插入 1000 万条记录，验证无内存泄漏
-- `TestMemoryLeak_LeafLocks`：**P0** 监控 pageLocks 数量，验证 LRU 淘汰有效
+- `TestMemoryLeak_PageLocks`：**P0** 监控 PageRef 锁数量，验证锁与页面生命周期绑定
 - `TestConcurrentSplit_Correctness`：**P0** 并发分裂场景下的数据一致性验证
 
 **性能测试**：
@@ -387,9 +362,9 @@ internal/infrastructure/storage/btree/
 | 风险点 | 影响等级 | 应对措施 |
 |--------|----------|----------|
 | **Leaf Lock 死锁** | **高** | 1. 严格加锁顺序：只锁定单个叶子节点<br>2. 分裂时按深度顺序加锁（自底向上）<br>3. 使用 TryLock() 快速失败，避免阻塞<br>4. 超时机制：LockWithTimeout(5*time.Second) |
-| 内存泄漏（LeafLocks 无限增长） | **中** | 1. 使用 LRU 缓存限制锁数量（最大 10000 个）<br>2. Leaf 分裂后清理旧页面锁<br>3. 定期扫描未使用的锁（LRU 淘汰） |
+| 内存占用增加 | **低** | 1. 每个 Leaf Page 一个锁，内存可预测<br>2. 假设 10000 个 Leaf Page，约 240KB（24B/锁）<br>3. 锁与页面绑定，页面释放时锁自然释放 |
 | 性能不达标 | **高** | 1. CPU Profile 分析热点<br>2. 减少内存分配<br>3. 优化锁竞争 |
-| 分裂期间锁传递不明确 | **中** | 1. 新分裂的页面继承父节点锁引用<br>2. 分裂完成后统一释放<br>3. 避免持有锁时进行长时间操作 |
+| 分裂期间锁传递不明确 | **中** | 1. 新分裂的页面创建独立的 PageRef 和锁<br>2. 分裂完成后释放旧页面锁<br>3. 避免持有锁时进行长时间操作 |
 
 **已移除风险**（**架构师审核意见**）：
 - ~~ABA 问题~~ → **tryLock 已解决**（锁获取后页面不会被重用）
@@ -442,10 +417,25 @@ internal/infrastructure/storage/btree/
 | 评审维度 | 评审人 | 核心评审意见 | 优化措施 | 状态 |
 |----------|--------|--------------|----------|------|
 | 架构设计 | 架构专家 | 4 个 P0/P1 问题需修复 | 1. 修复 GetLock() nil panic<br>2. 统一性能预期<br>3. 更新分支名称<br>4. 删除版本号描述 | ✅ 已全部修复 |
-| 风险评估 | QA 专家 | 缺少 3 个 P0 风险和 5 项关键测试 | 1. 补充死锁风险<br>2. 补充 LRU 缓存设计<br>3. 补充分裂锁传递说明<br>4. 补充 5 项关键测试 | ✅ 已全部补充 |
+| 风险评估 | QA 专家 | 缺少 3 个 P0 风险和 5 项关键测试 | 1. 补充死锁风险<br>2. 明确锁生命周期管理<br>3. 补充分裂锁传递说明<br>4. 补充 5 项关键测试 | ✅ 已全部补充 |
 | 测试覆盖 | QA 专家 | 评分 7.55/10，有条件通过 | 补充死锁检测、内存泄漏、并发分裂、锁竞争分析、迁移测试 | ✅ 已全部补充 |
 
 **评审结论**：✅ **批准开工**（所有 P0/P1 问题已修复）
+
+#### 5.1.2 第 2 轮：专家 AI 终审（2026-03-19）
+
+| 评审维度 | 评审人 | 核心评审意见 | 优化措施 | 状态 |
+|----------|--------|--------------|----------|------|
+| 架构设计 | 架构专家 | 发现两套锁方案并存（冗余） | 1. 删除 pageLocks sync.Map<br>2. 删除 lockCache LRU<br>3. 统一使用 PageRef.GetLock() | ✅ 已全部修复 |
+| 内存管理 | 架构专家 | LRU 相关描述需要更新 | 1. 更新风险评估：内存可预测<br>2. 更新容错设计：锁生命周期绑定<br>3. 更新测试名称 | ✅ 已全部更新 |
+| 文件变更 | 架构专家 | btree.go 修改说明不准确 | 更新为：无需新增字段，使用 PageRef.GetLock() | ✅ 已修正 |
+
+**关键修复**：
+- ✅ 统一使用 `PageRef.GetLock()` 方案（简单、高效、内存可控）
+- ✅ 删除冗余的 `pageLocks sync.Map` 和 `lockCache *lru.Cache`
+- ✅ 明确内存占用：每个 Leaf Page 一个锁，约 24B/锁
+
+**评审结论**：✅ **最终批准**（架构方案清晰、一致、可实施）
 
 #### 5.2 架构师审核意见（2026-03-19）
 

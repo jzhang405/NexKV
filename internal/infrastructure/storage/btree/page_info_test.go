@@ -180,11 +180,11 @@ func TestPageInfo_ConcurrentAccess(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// 并发 Touch
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 100; j++ {
+			for range 100 {
 				info.Touch()
 			}
 		}()
@@ -202,11 +202,11 @@ func TestPageInfo_DirtyMarkingConcurrency(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// 并发标记脏页
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 10; j++ {
+			for range 10 {
 				info.MarkDirty()
 				info.ClearDirty()
 			}

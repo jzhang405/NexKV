@@ -201,13 +201,6 @@ func (r *COWDeltaRef) ShouldMaterialize(baseSize int, refCount int32, memPressur
 	var isMemPressure bool
 	if len(memPressure) > 0 {
 		isMemPressure = memPressure[0]
-	} else {
-		// 自动检测内存压力（如果没有提供参数）
-		if r.config.MemoryPressureThreshold > 0 {
-			// 这里需要 MemoryMonitor，为了简化，暂时使用传入的参数
-			// 实际使用中应该由 BTree 传递 MemoryMonitor.IsUnderPressure() 结果
-			isMemPressure = false
-		}
 	}
 
 	if isMemPressure && refCount == 1 {

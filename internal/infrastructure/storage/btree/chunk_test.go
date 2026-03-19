@@ -212,7 +212,7 @@ func TestChunkManager_AutoRotate(t *testing.T) {
 	// 每个 Chunk 有 ChunkPagesPerChunk 个页面
 	pagesToAllocate := ChunkPagesPerChunk + 1
 
-	for i := 0; i < pagesToAllocate; i++ {
+	for i := range pagesToAllocate {
 		_, err := cm.AllocatePage(1)
 		require.NoError(t, err, "Allocation %d should succeed", i)
 	}
@@ -275,7 +275,7 @@ func TestChunkManager_Close(t *testing.T) {
 	require.NoError(t, err)
 
 	// 分配一些页面
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		_, err := cm.AllocatePage(1)
 		require.NoError(t, err)
 	}
@@ -297,7 +297,7 @@ func TestChunkManager_GetStats(t *testing.T) {
 	require.NoError(t, err)
 
 	// 分配一些页面
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		_, err := cm.AllocatePage(1)
 		require.NoError(t, err)
 	}

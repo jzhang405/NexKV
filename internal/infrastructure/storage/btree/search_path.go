@@ -143,3 +143,138 @@ func (b *BTree) findLeafPage(ctx context.Context, key []byte) (*PageInfo, []*Pag
 	leafInfo := path[len(path)-1]
 	return leafInfo, path, nil
 }
+
+// searchPathWithRefs 搜索从 Root 到 Leaf 的完整路径，同时收集 PageRef
+// 这是 findLeafPageRef 的优化版本，一次遍历同时收集 PageInfo 和 PageRef
+//
+// 参数：
+//
+//	ctx - 上下文（用于取消和超时）
+//	key - 搜索键
+//
+// 返回：
+//
+//	[]*PageInfo - 从 Root 到 Leaf 的路径（按深度排序）
+//	[]*PageRef - 对应的 PageRef 链（按深度排序）
+//	error - 错误信息
+func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo, []*PageRef, error) {
+	// 检查上下文取消
+	select {
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	default:
+	}
+
+	// 1. 获取 Root PageInfo（通过 RootPageRef）
+	if b.rootRef == nil {
+		return nil, nil, fmt.Errorf("root not initialized")
+	}
+
+	// 使用原子指针获取 Root PageInfo
+	rootInfo := b.rootRef.pInfo.Load()
+	if rootInfo == nil {
+		return nil, nil, fmt.Errorf("root page info is nil")
+	}
+
+	// 2. 从 Root PageInfo 开始搜索
+	var path []*PageInfo
+	var refs []*PageRef
+	currentInfo := rootInfo
+	currentRef := b.rootRef.PageRef
+
+	// 添加 Root 到路径和引用
+	path = append(path, currentInfo)
+	refs = append(refs, currentRef)
+
+	for {
+		// 2.1 懒加载当前页面（如果尚未加载）
+		currentPage, err := b.getPageOrLoad(currentInfo)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load page at depth %d: %w", len(path)-1, err)
+		}
+
+		// 2.2 判断是否为叶子节点
+		if leafPage, ok := currentPage.(*LeafPage); ok && leafPage != nil {
+			// 到达叶子节点，返回收集的路径和引用
+			break
+		}
+
+		// 2.3 处理内部节点
+		internalPage, ok := currentPage.(*InternalPage)
+		if !ok || internalPage == nil {
+			// 如果不是 InternalPage，可能是空树（Root 是 LeafPage）
+			if len(path) == 1 {
+				// Root 是一个空的 LeafPage，正常退出
+				break
+			}
+			return nil, nil, fmt.Errorf("expected internal page at depth %d, got %T", len(path)-1, currentPage)
+		}
+
+		// 2.4 查找子节点
+		childRef := internalPage.FindChildRef(key)
+		if childRef == nil {
+			// 没有子节点，可能是到达叶子
+			break
+		}
+
+		// 2.5 获取子节点的 PageInfo
+		childInfo := childRef.GetPageInfo()
+		if childInfo == nil {
+			return nil, nil, fmt.Errorf("child page info is nil at depth %d", len(path))
+		}
+
+		// 2.6 检查层级深度
+		if len(path) >= b.maxLevels {
+			return nil, nil, fmt.Errorf("search path exceeds max levels (%d)", b.maxLevels)
+		}
+
+		// 2.7 检查 context 取消
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		default:
+		}
+
+		// 2.8 同时收集 PageInfo 和 PageRef
+		path = append(path, childInfo)
+		refs = append(refs, childRef)
+
+		// 2.9 继续向下搜索
+		currentInfo = childInfo
+	}
+
+	return path, refs, nil
+}
+
+// findLeafPageRef 搜索叶子节点并返回其 PageRef（Leaf-Level Locking 专用）
+// 通过遍历路径收集 PageRef 链
+//
+// 参数：
+//
+//	ctx - 上下文
+//	key - 搜索键
+//
+// 返回：
+//
+//	*PageRef - 叶子节点的 PageRef
+//	[]*PageInfo - 完整路径（包括 Root 和 Leaf）
+//	error - 错误信息
+func (b *BTree) findLeafPageRef(ctx context.Context, key []byte) (*PageRef, []*PageInfo, error) {
+	// 使用优化版本：一次遍历同时收集 PageInfo 和 PageRef
+	path, refs, err := b.searchPathWithRefs(ctx, key)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if len(path) == 0 {
+		return nil, nil, fmt.Errorf("empty search path")
+	}
+
+	if len(refs) == 0 {
+		return nil, nil, fmt.Errorf("empty refs")
+	}
+
+	// 最后一个引用是叶子节点的 PageRef
+	leafRef := refs[len(refs)-1]
+	return leafRef, path, nil
+}

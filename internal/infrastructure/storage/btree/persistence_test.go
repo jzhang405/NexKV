@@ -152,7 +152,7 @@ func TestPersistence_SplitAndPersist(t *testing.T) {
 	ctx := context.Background()
 
 	// 插入 17 个键，触发分裂
-	for i := 0; i < 17; i++ {
+	for i := range 17 {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
 		err := btree.Set(ctx, key, value)

@@ -23,7 +23,7 @@ func BenchmarkCopyPath_Shallow(b *testing.B) {
 	ctx := context.Background()
 
 	// 初始化数据
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		key := []byte{byte(i)}
 		value := []byte("value")
 		tree.Set(ctx, key, value)
@@ -52,7 +52,7 @@ func BenchmarkCopyPath_WithDelta(b *testing.B) {
 	ctx := context.Background()
 
 	// 初始化数据
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		key := []byte{byte(i)}
 		value := []byte("value")
 		tree.Set(ctx, key, value)
@@ -72,7 +72,7 @@ func BenchmarkCopyPath_WithDelta(b *testing.B) {
 // BenchmarkLeafPage_Clone_Deep 基准测试深拷贝 Clone
 func BenchmarkLeafPage_Clone_Deep(b *testing.B) {
 	page := NewLeafPage(1)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		key := []byte{byte(i)}
 		value := []byte("value")
 		page.Insert(key, value)
@@ -88,7 +88,7 @@ func BenchmarkLeafPage_Clone_Deep(b *testing.B) {
 // BenchmarkLeafPage_CloneWithDelta 基准测试 Delta Chain Clone
 func BenchmarkLeafPage_CloneWithDelta(b *testing.B) {
 	page := NewLeafPage(1)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		key := []byte{byte(i)}
 		value := []byte("value")
 		page.Insert(key, value)
@@ -104,7 +104,7 @@ func BenchmarkLeafPage_CloneWithDelta(b *testing.B) {
 // BenchmarkLeafPage_SequentialWrites_WithDelta 基准测试 Delta Chain 写入性能
 func BenchmarkLeafPage_SequentialWrites_WithDelta(b *testing.B) {
 	page := NewLeafPage(1)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		key := []byte{byte(i)}
 		value := []byte("value")
 		page.Insert(key, value)

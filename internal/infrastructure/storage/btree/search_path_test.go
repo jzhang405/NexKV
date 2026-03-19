@@ -1,6 +1,9 @@
 package btree
 
+//nolint:errcheck // 测试代码中忽略部分返回值检查
+
 import (
+	"context"
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -128,4 +131,25 @@ func TestInternalPage_Children(t *testing.T) {
 	assert.Equal(t, children[0], result[0])
 	assert.Equal(t, children[1], result[1])
 	assert.Equal(t, children[2], result[2])
+}
+func TestSearchPath_EmptyKey(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	tree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入空键（如果允许）
+	err = tree.Set(ctx, []byte(""), []byte("empty-key-value"))
+	if err == nil {
+		// 如果支持空键，验证可以获取
+		value, err := tree.Get(ctx, []byte(""))
+		require.NoError(t, err)
+		assert.Equal(t, []byte("empty-key-value"), value)
+	} else {
+		// 如果不支持空键，这是合理的
+		assert.NotEqual(t, context.Canceled, err)
+	}
 }

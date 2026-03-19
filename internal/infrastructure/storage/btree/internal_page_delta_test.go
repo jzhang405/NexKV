@@ -16,7 +16,7 @@ func TestInternalPage_CloneWithDelta_Basic(t *testing.T) {
 	page := NewInternalPage(1)
 
 	// 添加一些键和子节点
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		key := []byte{byte(i)}
 		childRef := NewPageRef()
 		page.InsertKeyChild(key, childRef)
@@ -122,7 +122,7 @@ func TestInternalPage_CloneWithDelta_ChildIndependence(t *testing.T) {
 	page := NewInternalPage(1)
 
 	// 添加多个子节点
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		key := []byte{byte(i)}
 		childRef := NewPageRef()
 		page.InsertKeyChild(key, childRef)
@@ -181,7 +181,7 @@ func TestInternalPage_CloneWithDelta_LargePage(t *testing.T) {
 	page := NewInternalPage(1)
 
 	// 添加大量键（模拟真实场景）
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		key := []byte{byte(i % 256), byte(i / 256)}
 		childRef := NewPageRef()
 		page.InsertKeyChild(key, childRef)

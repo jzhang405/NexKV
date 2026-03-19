@@ -1,9 +1,14 @@
 package btree
 
+//nolint:errcheck // 测试代码中忽略部分返回值检查
+
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestPageRef_GetOrLoad_LazyLoading 测试懒加载机制
@@ -148,4 +153,81 @@ func TestPageInfo_GetInternalPage(t *testing.T) {
 
 	result2 := info2.GetInternalPage()
 	assert.Nil(t, result2)
+}
+func TestLazyLoad_PageNotInitiallyLoaded(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	tree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入数据并触发分裂
+	for i := range 250 {
+		key := []byte(fmt.Sprintf("key-%05d", i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+		err := tree.Set(ctx, key, value)
+		require.NoError(t, err)
+	}
+
+	// 访问深层的数据，触发懒加载
+	for i := range 50 {
+		key := []byte(fmt.Sprintf("key-%05d", i*5))
+		value, err := tree.Get(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, []byte(fmt.Sprintf("value-%d", i*5)), value)
+	}
+}
+func TestLoadPage_LazyLoading(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	tree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 插入足够多的数据以建立多层树
+	for i := range 300 {
+		key := []byte(fmt.Sprintf("key-%05d", i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+		err := tree.Set(ctx, key, value)
+		require.NoError(t, err)
+	}
+
+	// 访问深层页面的数据会触发懒加载
+	// loadPage 应该在这些操作中被调用
+	for i := range 10 {
+		key := []byte(fmt.Sprintf("key-%05d", i*30))
+		value, err := tree.Get(ctx, key)
+		require.NoError(t, err)
+		assert.NotNil(t, value)
+	}
+}
+func TestGetPageOrLoad_LazyLoadingPath(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	tree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// 创建需要懒加载的场景
+	// 插入数据后，某些页面可能未被完全加载
+	for i := range 50 {
+		key := []byte(fmt.Sprintf("lazy-key-%03d", i))
+		value := []byte(fmt.Sprintf("lazy-value-%d", i))
+		err := tree.Set(ctx, key, value)
+		require.NoError(t, err)
+	}
+
+	// 读取操作会触发懒加载
+	for i := range 50 {
+		key := []byte(fmt.Sprintf("lazy-key-%03d", i))
+		value, err := tree.Get(ctx, key)
+		require.NoError(t, err)
+		assert.NotNil(t, value)
+	}
 }

@@ -11,6 +11,7 @@ import (
 type PageRef struct {
 	pInfo     atomic.Pointer[PageInfo] // 原子指针，支持 CAS 更新
 	parentRef atomic.Value             // 优化：使用 atomic.Value 存储 *PageRef，移除 defer 开销
+	pageLock  atomic.Pointer[PageLock] // Leaf-Level Locking：页面锁（懒加载 + CAS 初始化）
 }
 
 // NewPageRef 创建新的 PageRef
@@ -111,14 +112,31 @@ func (r *PageRef) SetPos(pos int64) {
 	info.SetPos(pos)
 }
 
-// GetLock 获取页面锁
-// 如果 PageInfo 为 nil，返回 nil
+// GetLock 获取页面锁（懒加载 + CAS 初始化）
+// Leaf-Level Locking 核心方法：每个 PageRef 内置锁，懒加载创建
+//
+// 实现细节：
+// 1. 快速路径：如果锁已初始化，直接返回
+// 2. 慢速路径：使用 CAS 初始化，防止并发创建多个锁
+// 3. CAS 失败：重新加载（其他 goroutine 已创建）
+//
+// 返回：
+//
+//	*PageLock - 页面锁（保证非 nil）
 func (r *PageRef) GetLock() *PageLock {
-	info := r.pInfo.Load()
-	if info == nil {
-		return nil
+	// 快速路径：锁已初始化
+	if lock := r.pageLock.Load(); lock != nil {
+		return lock
 	}
-	return info.GetLock()
+
+	// 慢速路径：CAS 初始化（防止并发创建多个锁）
+	newLock := NewPageLock()
+	if r.pageLock.CompareAndSwap(nil, newLock) {
+		return newLock // CAS 成功，返回新创建的锁
+	}
+
+	// CAS 失败：其他 goroutine 已创建，重新加载
+	return r.pageLock.Load()
 }
 
 // Touch 更新访问时间（LRU）

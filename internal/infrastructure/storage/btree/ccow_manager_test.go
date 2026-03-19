@@ -262,7 +262,7 @@ func TestCCOWManager_ConcurrentSnapshots(t *testing.T) {
 	var wg sync.WaitGroup
 	snapshotIDs := make(chan uint64, goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

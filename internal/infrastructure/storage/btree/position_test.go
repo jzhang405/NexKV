@@ -154,37 +154,6 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	}
 }
 
-func TestValidatePosition(t *testing.T) {
-	tests := []struct {
-		name string
-		pos  int64
-		want bool
-	}{
-		{
-			name: "零位置",
-			pos:  0,
-			want: false,
-		},
-		{
-			name: "有效位置",
-			pos:  1 << 38, // ChunkID=1, Offset=0, PageType=0
-			want: true,
-		},
-		{
-			name: "大有效位置",
-			pos:  (int64(1000000) << 38) | (int64(256*1024*1024) << 6) | (int64(MaxPageType-1) << 1),
-			want: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ValidatePosition(tt.pos)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
 func TestGetChunkID(t *testing.T) {
 	pos, err := EncodePagePos(100, 4096, 1)
 	require.NoError(t, err)

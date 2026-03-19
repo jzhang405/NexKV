@@ -294,7 +294,30 @@ func (b *BTree) Set(ctx context.Context, key, value []byte) error {
 		return ErrClosed
 	}
 
-	// Classic lock-free CAS spin loop
+	// Leaf-Level Locking: 纯内存模式使用新路径（99.37% 写入无需 Root CAS）
+	// Feature flag: enableLeafLevelLocking（纯内存模式默认启用）
+	if enableLeafLevelLocking && b.chunkMgr == nil {
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			err := b.setWithLeafLock(ctx, key, value)
+			switch err {
+			case nil:
+				return nil
+			case ErrRetry:
+				runtime.Gosched()
+				continue
+			default:
+				return err
+			}
+		}
+	}
+
+	// 经典 Root CAS 路径（持久化模式或 feature flag 关闭）
 	for {
 		select {
 		case <-ctx.Done():

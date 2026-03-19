@@ -143,11 +143,12 @@ var (
 	ErrTaskModeUnknown = stderrors.New("task_mode: unknown task mode")
 
 	// TaskScheduler 错误
-	ErrTaskAlreadyRegistered = stderrors.New("scheduler: task already registered")
-	ErrTaskNotFound          = stderrors.New("scheduler: task not found")
-	ErrSchedulerNotStarted   = stderrors.New("scheduler: not started")
-	ErrSchedulerRunning      = stderrors.New("scheduler: already running")
-	ErrQueueTooLong          = stderrors.New("scheduler: queue too long")
+	ErrTaskAlreadyRegistered   = stderrors.New("scheduler: task already registered")
+	ErrTaskNotFound            = stderrors.New("scheduler: task not found")
+	ErrSchedulerNotStarted     = stderrors.New("scheduler: not started")
+	ErrSchedulerRunning        = stderrors.New("scheduler: already running")
+	ErrExecutionOrderConflict  = stderrors.New("scheduler: execution order already registered")
+	ErrQueueTooLong            = stderrors.New("scheduler: queue too long")
 
 	// ===========================
 	// Storage 层错误
@@ -331,7 +332,7 @@ func SchedulerAlreadyRunning() error {
 
 // ExecutionOrderConflict 执行顺序冲突错误
 func ExecutionOrderConflict(order int, existingTask string) error {
-	return Wrapf(ErrInvalidParam, "execution order %d already registered by task: %s", order, existingTask)
+	return Wrapf(ErrExecutionOrderConflict, "execution order %d already registered by task: %s", order, existingTask)
 }
 
 // CoreRegisterFailed 核心注册任务失败错误

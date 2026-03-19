@@ -18,7 +18,7 @@ import (
 )
 
 // ==========================================
-// 测试 ShardTask
+// 1. ShardTask 单元测试
 // ==========================================
 
 func TestShardTask_EnqueuePeekDequeue(t *testing.T) {
@@ -71,7 +71,7 @@ func TestShardTask_Execute(t *testing.T) {
 }
 
 // ==========================================
-// 测试 SchedulerCore
+// 2. SchedulerCore 单元测试
 // ==========================================
 
 func TestSchedulerCore_RegisterTask(t *testing.T) {
@@ -139,7 +139,7 @@ func TestSchedulerCore_IndependentTaskInstances(t *testing.T) {
 }
 
 // ==========================================
-// 测试 MultiTaskScheduler
+// 3. TaskScheduler 集成测试
 // ==========================================
 
 func TestNewTaskScheduler(t *testing.T) {

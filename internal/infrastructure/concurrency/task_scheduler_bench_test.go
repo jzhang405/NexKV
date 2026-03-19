@@ -21,7 +21,6 @@ import (
 // benchmarkShardItem 基准测试用的 ShardItem
 type benchmarkShardItem struct {
 	shardID int
-	data    [128]byte // 模拟真实数据负载
 }
 
 func (i *benchmarkShardItem) ShardID() int {

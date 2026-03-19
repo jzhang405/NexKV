@@ -35,7 +35,7 @@ func NewShardTask(name string, priority model.TaskPriority, executionOrder int, 
 		name:           name,
 		priority:       priority,
 		executionOrder: executionOrder,
-		queue:          make([]any, 0, 64),
+		queue:          make([]any, 0, DefaultShardTaskQueueCapacity),
 		executeFunc:    executeFunc,
 	}
 	t.taskStatus.Store(int32(TaskQueued))
@@ -140,8 +140,7 @@ type SchedulerCore struct {
 	wg         sync.WaitGroup
 	ctx        context.Context
 	cancel     context.CancelFunc
-	stats      CoreStats //
-	executor   service.TaskExecutor
+	stats      CoreStats     //
 	wakeupChan chan struct{} // 唤醒通道（替代 cond）
 }
 
@@ -151,7 +150,7 @@ func NewSchedulerCore(coreID int) *SchedulerCore {
 
 	return &SchedulerCore{
 		coreID:     coreID,
-		tasks:      make([]*ShardTask, 0, 8),
+		tasks:      make([]*ShardTask, 0, DefaultCoreTasksCapacity),
 		taskMap:    make(map[string]*ShardTask),
 		running:    atomic.Bool{},
 		ctx:        ctx,
@@ -465,11 +464,6 @@ func (m *TaskScheduler) Start(executor service.TaskExecutor) error {
 			sourceID,
 			model.TaskPriorityHigh,
 			func(ctx context.Context) {
-				defer func() {
-					if r := recover(); r != nil {
-						// panic 恢复
-					}
-				}()
 				core.runLoop()
 			},
 		)
@@ -533,7 +527,7 @@ func (m *TaskScheduler) HealthCheck() error {
 			return errors.CorePanicDetected(i)
 		}
 		queueLen := m.calculateCoreQueueLen(core)
-		if queueLen > 10000 {
+		if queueLen > MaxQueueLengthHealthCheck {
 			return errors.CoreQueueTooLong(i, queueLen)
 		}
 	}

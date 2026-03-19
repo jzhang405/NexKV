@@ -6,10 +6,10 @@ package concurrency
 import (
 	"context"
 	"fmt"
-	"os"
-	"strconv"
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -49,25 +49,25 @@ func waitForCompletion(ctx context.Context, completed *int64, target int) error 
 //
 // 运行方式：
 //
-// 1. 快速测试（开发/CI）:
-//    go test -short ./internal/infrastructure/concurrency/
-//    go test -short -run TestPerCore_CPUAffinity_PerfAnalysis ./internal/infrastructure/concurrency/
+//  1. 快速测试（开发/CI）:
+//     go test -short ./internal/infrastructure/concurrency/
+//     go test -short -run TestPerCore_CPUAffinity_PerfAnalysis ./internal/infrastructure/concurrency/
 //
-// 2. 自定义任务数量:
-//    PERF_TASK_COUNT=10000 go test -v -run TestPerCore_CPUAffinity_PerfAnalysis ./internal/infrastructure/concurrency/
+//  2. 自定义任务数量:
+//     PERF_TASK_COUNT=10000 go test -v -run TestPerCore_CPUAffinity_PerfAnalysis ./internal/infrastructure/concurrency/
 //
-// 3. Perf 分析（生产环境性能调优）:
-//    # 编译测试二进制
-//    go test -c -o /tmp/affinity_perf_test ./internal/infrastructure/concurrency/
+//  3. Perf 分析（生产环境性能调优）:
+//     # 编译测试二进制
+//     go test -c -o /tmp/affinity_perf_test ./internal/infrastructure/concurrency/
 //
-//    # CPU 性能分析
-//    perf record -g -e cycles,instructions,cache-references,cache-misses \
-//      /tmp/affinity_perf_test -test.run=TestPerCore_CPUAffinity_PerfAnalysis -test.v
-//    perf report
+//     # CPU 性能分析
+//     perf record -g -e cycles,instructions,cache-references,cache-misses \
+//     /tmp/affinity_perf_test -test.run=TestPerCore_CPUAffinity_PerfAnalysis -test.v
+//     perf report
 //
-//    # 缓存命中率分析
-//    perf stat -e cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses,cycles,instructions \
-//      /tmp/affinity_perf_test -test.run=TestPerCore_CPUAffinity_PerfAnalysis
+//     # 缓存命中率分析
+//     perf stat -e cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses,cycles,instructions \
+//     /tmp/affinity_perf_test -test.run=TestPerCore_CPUAffinity_PerfAnalysis
 //
 // 超时保护：
 //   - 整个测试: 5 分钟超时

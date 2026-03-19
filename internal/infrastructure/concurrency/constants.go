@@ -92,3 +92,18 @@ const (
 	// CPUSetSize CPU 集合大小
 	CPUSetSize = 1024
 )
+
+// ==========================================
+// TaskScheduler 配置常量
+// ==========================================
+
+const (
+	// DefaultShardTaskQueueCapacity 默认分片任务队列容量
+	DefaultShardTaskQueueCapacity = 64
+
+	// DefaultCoreTasksCapacity 默认核心任务列表容量
+	DefaultCoreTasksCapacity = 8
+
+	// MaxQueueLengthHealthCheck 健康检查最大队列长度阈值
+	MaxQueueLengthHealthCheck = 10000
+)

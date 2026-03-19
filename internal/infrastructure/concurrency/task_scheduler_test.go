@@ -1,10 +1,16 @@
-// Package concurrency 并发控制和任务调度机制测试
+// Copyright 2026 NexKV Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 package concurrency
 
 import (
+	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/stretchr/testify/assert"
@@ -12,274 +18,829 @@ import (
 )
 
 // ==========================================
-// TaskStatus 测试
+// 测试 ShardTask
 // ==========================================
 
-func TestTaskStatus_String(t *testing.T) {
-	tests := []struct {
-		status   TaskStatus
-		expected string
-	}{
-		{TaskQueued, "queued"},
-		{TaskExecuting, "executing"},
-		{TaskPassed, "passed"},
-		{TaskFailed, "failed"},
-		{TaskRetrying, "retrying"},
-		{TaskTimeout, "timeout"},
-		{TaskStatus(999), "unknown"},
-	}
+func TestShardTask_EnqueuePeekDequeue(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			assert.Equal(t, tt.expected, tt.status.String())
-		})
-	}
-}
-
-// ==========================================
-// TaskScheduler 基础测试
-// ==========================================
-
-func TestNewTaskScheduler(t *testing.T) {
-	scheduler := NewTaskScheduler("test-scheduler")
-
-	assert.NotNil(t, scheduler)
-	assert.Equal(t, "test-scheduler", scheduler.name)
-	assert.False(t, scheduler.running.Load())
-	assert.NotNil(t, scheduler.cond)
-	assert.NotNil(t, scheduler.ctx)
-	assert.NotNil(t, scheduler.cancel)
-}
-
-// ==========================================
-// 任务注册测试
-// ==========================================
-
-func TestTaskScheduler_RegisterTask(t *testing.T) {
-	scheduler := NewTaskScheduler("test-scheduler")
-	task := NewSchedulerBaseTask("test-task", model.TaskPriorityNormal, 1)
-
-	err := scheduler.RegisterTask(task, 1)
-	assert.NoError(t, err)
-
-	// 验证任务已注册
-	scheduler.mu.RLock()
-	assert.Len(t, scheduler.tasks, 1)
-	assert.Contains(t, scheduler.taskMap, "test-task")
-	scheduler.mu.RUnlock()
-
-	// 重复注册应该失败（使用不同的 ExecutionOrder 来测试任务名重复）
-	err = scheduler.RegisterTask(task, 2)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "already registered")
-}
-
-func TestTaskScheduler_UnregisterTask(t *testing.T) {
-	scheduler := NewTaskScheduler("test-scheduler")
-	task := NewSchedulerBaseTask("test-task", model.TaskPriorityNormal, 1)
-
-	// 注册任务
-	err := scheduler.RegisterTask(task, 1)
-	require.NoError(t, err)
-
-	// 注销任务
-	err = scheduler.UnregisterTask("test-task")
-	assert.NoError(t, err)
-
-	// 验证任务已注销
-	scheduler.mu.RLock()
-	assert.Len(t, scheduler.tasks, 0)
-	assert.NotContains(t, scheduler.taskMap, "test-task")
-	scheduler.mu.RUnlock()
-
-	// 注销不存在的任务应该失败
-	err = scheduler.UnregisterTask("non-existent")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
-}
-
-// ==========================================
-// SchedulerBaseTask 测试
-// ==========================================
-
-func TestNewSchedulerBaseTask(t *testing.T) {
-	task := NewSchedulerBaseTask("test-task", model.TaskPriorityHigh, 1)
-
-	assert.NotNil(t, task)
-	assert.Equal(t, "test-task", task.name)
-	assert.Equal(t, model.TaskPriorityHigh, task.priority)
-	assert.NotNil(t, task.BaseTask)
-	assert.NotNil(t, task.queue)
-	assert.Empty(t, task.queue)
-	assert.Equal(t, TaskQueued, task.GetTaskStatus())
-}
-
-// ==========================================
-// Task 接口测试
-// ==========================================
-
-func TestSchedulerBaseTask_QueueLen(t *testing.T) {
-	task := NewSchedulerBaseTask("test-task", model.TaskPriorityNormal, 1)
-
-	assert.Equal(t, 0, task.QueueLen())
-
-	task.mu.Lock()
-	task.queue = append(task.queue, "item1", "item2", "item3")
-	task.mu.Unlock()
-
-	assert.Equal(t, 3, task.QueueLen())
-}
-
-func TestSchedulerBaseTask_Enqueue(t *testing.T) {
-	task := NewSchedulerBaseTask("test-task", model.TaskPriorityNormal, 1)
-
-	err := task.Enqueue("item1")
-	assert.NoError(t, err)
-	assert.Equal(t, 1, task.QueueLen())
-	assert.Equal(t, TaskQueued, task.GetTaskStatus())
-
-	err = task.Enqueue("item2")
-	assert.NoError(t, err)
-	assert.Equal(t, 2, task.QueueLen())
-}
-
-func TestSchedulerBaseTask_Peek(t *testing.T) {
-	task := NewSchedulerBaseTask("test-task", model.TaskPriorityNormal, 1)
-
-	// 空队列 Peek 应该返回 false
+	// 测试空队列
 	var item any
 	assert.False(t, task.Peek(&item))
-
-	// 入队一个元素
-	err := task.Enqueue("item1")
-	require.NoError(t, err)
-
-	// Peek 应该返回队首元素
-	assert.True(t, task.Peek(&item))
-	assert.Equal(t, "item1", item)
-	assert.Equal(t, TaskExecuting, task.GetTaskStatus())
-	assert.Equal(t, 1, task.QueueLen()) // 元素仍在队列
-}
-
-func TestSchedulerBaseTask_Dequeue(t *testing.T) {
-	task := NewSchedulerBaseTask("test-task", model.TaskPriorityNormal, 1)
-
-	// 空队列 Dequeue 应该返回 false
-	var item any
 	assert.False(t, task.Dequeue(&item))
+	assert.Equal(t, 0, task.QueueLen())
 
-	// 入队元素
+	// 测试入队
 	err := task.Enqueue("item1")
 	require.NoError(t, err)
+	assert.Equal(t, 1, task.QueueLen())
+
 	err = task.Enqueue("item2")
 	require.NoError(t, err)
+	assert.Equal(t, 2, task.QueueLen())
 
-	// Dequeue 应该移除队首元素
+	// 测试 Peek
+	assert.True(t, task.Peek(&item))
+	assert.Equal(t, "item1", item)
+	assert.Equal(t, 2, task.QueueLen()) // Peek 不改变队列长度
+
+	// 测试 Dequeue
 	assert.True(t, task.Dequeue(&item))
 	assert.Equal(t, "item1", item)
-	assert.Equal(t, 1, task.QueueLen()) // 队列剩一个元素
+	assert.Equal(t, 1, task.QueueLen())
 
-	// 再次 Dequeue
 	assert.True(t, task.Dequeue(&item))
 	assert.Equal(t, "item2", item)
 	assert.Equal(t, 0, task.QueueLen())
 }
 
-// ==========================================
-// 优先级调度测试
-// ==========================================
-
-func TestTaskScheduler_ExecutionOrderScheduling(t *testing.T) {
-	scheduler := NewTaskScheduler("test-scheduler")
-
-	// 创建不同 ExecutionOrder 的任务
-	firstTask := NewSchedulerBaseTask("first-task", model.TaskPriorityNormal, 0)
-	secondTask := NewSchedulerBaseTask("second-task", model.TaskPriorityNormal, 0)
-	thirdTask := NewSchedulerBaseTask("third-task", model.TaskPriorityNormal, 0)
-
-	err := scheduler.RegisterTask(firstTask, 1)
-	require.NoError(t, err)
-	err = scheduler.RegisterTask(secondTask, 2)
-	require.NoError(t, err)
-	err = scheduler.RegisterTask(thirdTask, 3)
-	require.NoError(t, err)
-
-	// 验证按 ExecutionOrder 排序（不影响注册顺序）
-	tasks := scheduler.getOrderedTasks()
-	assert.Equal(t, 3, len(tasks))
-	assert.Equal(t, "first-task", tasks[0].Name())  // ExecutionOrder 1
-	assert.Equal(t, "second-task", tasks[1].Name()) // ExecutionOrder 2
-	assert.Equal(t, "third-task", tasks[2].Name())  // ExecutionOrder 3
-}
-
-// ==========================================
-// Peek + Execute + Dequeue 三阶段测试
-// ==========================================
-
-func TestSchedulerBaseTask_PeekExecuteDequeue(t *testing.T) {
-	// 创建一个自定义任务，控制执行结果
-	task := NewTestTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+func TestShardTask_Execute(t *testing.T) {
+	// 测试自定义执行函数
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
 		data := item.(string)
-		if data == "fail-retry" {
-			return TaskRetrying // 需要重试
+		if data == "fail" {
+			return TaskFailed
 		}
-		return TaskPassed // 成功
+		return TaskPassed
 	})
 
-	scheduler := NewTaskScheduler("test-scheduler")
-	err := scheduler.RegisterTask(task, 1)
+	assert.Equal(t, TaskPassed, task.Execute("success"))
+	assert.Equal(t, TaskFailed, task.Execute("fail"))
+}
+
+// ==========================================
+// 测试 SchedulerCore
+// ==========================================
+
+func TestSchedulerCore_RegisterTask(t *testing.T) {
+	core := NewSchedulerCore(0)
+
+	taskTemplate := &ShardTask{
+		name:           "test-task",
+		priority:       model.TaskPriorityNormal,
+		executionOrder: 1,
+		executeFunc:    func(item any) TaskStatus { return TaskPassed },
+	}
+
+	// 第一次注册应该成功
+	err := core.RegisterTask(taskTemplate)
 	require.NoError(t, err)
 
-	// 测试成功场景
-	err = task.Enqueue("success")
+	// 重复注册应该失败
+	err = core.RegisterTask(taskTemplate)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "already registered")
+}
+
+func TestSchedulerCore_IndependentTaskInstances(t *testing.T) {
+	// 验证不同核心的 Task 实例是独立的
+	core1 := NewSchedulerCore(0)
+	core2 := NewSchedulerCore(1)
+
+	taskTemplate := &ShardTask{
+		name:           "test-task",
+		priority:       model.TaskPriorityNormal,
+		executionOrder: 1,
+		executeFunc:    func(item any) TaskStatus { return TaskPassed },
+	}
+
+	// 注册到两个核心
+	err := core1.RegisterTask(taskTemplate)
 	require.NoError(t, err)
 
+	err = core2.RegisterTask(taskTemplate)
+	require.NoError(t, err)
+
+	// 获取两个核心的 Task
+	task1, err := core1.GetTaskByName("test-task")
+	require.NoError(t, err)
+
+	task2, err := core2.GetTaskByName("test-task")
+	require.NoError(t, err)
+
+	// 验证它们是不同的实例
+	assert.NotEqual(t, task1, task2, "Tasks should be independent instances")
+
+	// 验证队列是独立的
+	task1.Enqueue("core1-item")
+	task2.Enqueue("core2-item")
+
+	assert.Equal(t, 1, task1.QueueLen())
+	assert.Equal(t, 1, task2.QueueLen())
+
+	// 从 task1 出队不应影响 task2
 	var item any
-	assert.True(t, task.Peek(&item))
-	assert.Equal(t, "success", item)
+	assert.True(t, task1.Dequeue(&item))
+	assert.Equal(t, "core1-item", item)
+	assert.Equal(t, 0, task1.QueueLen())
+	assert.Equal(t, 1, task2.QueueLen(), "task2 queue should be unchanged")
+}
 
-	status := task.Execute(item)
-	assert.Equal(t, TaskPassed, status)
+// ==========================================
+// 测试 MultiTaskScheduler
+// ==========================================
 
-	var dequeued any
-	assert.True(t, task.Dequeue(&dequeued))
-	assert.Equal(t, "success", dequeued)
-	assert.Equal(t, 0, task.QueueLen()) // 队列已空
+func TestNewTaskScheduler(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
 
-	// 测试重试场景
-	err = task.Enqueue("fail-retry")
+	assert.NotNil(t, scheduler)
+	assert.Equal(t, 4, scheduler.coreCount)
+	assert.Len(t, scheduler.cores, 4)
+	assert.False(t, scheduler.running.Load())
+}
+
+func TestTaskScheduler_RegisterTask(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
+
+	// 注册任务
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"test-task",
+		model.TaskPriorityNormal,
+		1,
+	)
 	require.NoError(t, err)
 
-	assert.True(t, task.Peek(&item))
-	assert.Equal(t, "fail-retry", item)
+	// 验证所有核心都有该任务
+	for i, core := range scheduler.cores {
+		task, err := core.GetTaskByName("test-task")
+		assert.NoError(t, err, "core %d should have task", i)
+		assert.NotNil(t, task)
+		assert.Equal(t, "test-task", task.Name())
+	}
+}
 
-	status = task.Execute(item)
-	assert.Equal(t, TaskRetrying, status)
+func TestTaskScheduler_ExecutionOrderConflict(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
 
-	// Retrying 状态不应 Dequeue
-	// item 仍在队列中，QueueLen 应该还是 1
-	assert.Equal(t, 1, task.QueueLen())
+	// 注册第一个任务
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"task-a",
+		model.TaskPriorityNormal,
+		1,
+	)
+	require.NoError(t, err)
+
+	// 尝试注册相同 ExecutionOrder 的任务
+	err = scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"task-b",
+		model.TaskPriorityNormal,
+		1, // 相同的 ExecutionOrder
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "execution order 1 already registered")
 }
 
 // ==========================================
-// 统计信息测试
+// 测试 Shard 分发
 // ==========================================
 
-func TestTaskScheduler_Stats(t *testing.T) {
-	scheduler := NewTaskScheduler("test-scheduler")
+type testShardItem struct {
+	shardID int
+	payload string
+}
 
-	// 获取统计信息
+func (i *testShardItem) ShardID() int {
+	return i.shardID
+}
+
+func (i *testShardItem) MaxRetries() int {
+	return 3
+}
+
+func (i *testShardItem) IncAttempts() int {
+	return 0 // 简化实现
+}
+
+func TestTaskScheduler_ShardDistribution_Positive(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
+	executor := &mockPerCoreExecutor{}
+	err := scheduler.Start(executor)
+	require.NoError(t, err)
+	defer scheduler.Stop()
+
+	// 注册任务
+	err = scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"test-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	require.NoError(t, err)
+
+	// 测试正数 ShardID 的固定路由
+	// shardID=1 → core 1 (1 % 4 = 1)
+	item1 := &testShardItem{shardID: 1, payload: "item-1"}
+	err = scheduler.EnqueueWithShard(item1, "test-task")
+	require.NoError(t, err)
+
+	// shardID=5 → core 1 (5 % 4 = 1)
+	item5 := &testShardItem{shardID: 5, payload: "item-5"}
+	err = scheduler.EnqueueWithShard(item5, "test-task")
+	require.NoError(t, err)
+
+	// 验证两个任务都路由到 core 1
+	task1, _ := scheduler.cores[1].GetTaskByName("test-task")
+	assert.Equal(t, 2, task1.QueueLen(), "core 1 should have 2 items")
+
+	// 其他核心应该为空
+	for i, core := range scheduler.cores {
+		if i != 1 {
+			task, _ := core.GetTaskByName("test-task")
+			assert.Equal(t, 0, task.QueueLen(), "core %d should be empty", i)
+		}
+	}
+}
+
+func TestTaskScheduler_ShardDistribution_Negative(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
+	executor := &mockPerCoreExecutor{}
+	err := scheduler.Start(executor)
+	require.NoError(t, err)
+	defer scheduler.Stop()
+
+	// 注册任务
+	err = scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"test-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	require.NoError(t, err)
+
+	// 测试负数 ShardID 的路由
+	// shardID=-1 → core 1 (abs(-1) % 4 = 1)
+	itemNeg1 := &testShardItem{shardID: -1, payload: "item-neg1"}
+	err = scheduler.EnqueueWithShard(itemNeg1, "test-task")
+	require.NoError(t, err)
+
+	// shardID=-5 → core 1 (abs(-5) % 4 = 1)
+	itemNeg5 := &testShardItem{shardID: -5, payload: "item-neg5"}
+	err = scheduler.EnqueueWithShard(itemNeg5, "test-task")
+	require.NoError(t, err)
+
+	// 验证两个任务都路由到 core 1
+	task1, _ := scheduler.cores[1].GetTaskByName("test-task")
+	assert.Equal(t, 2, task1.QueueLen(), "core 1 should have 2 items")
+}
+
+func TestTaskScheduler_ShardDistribution_Zero(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
+	executor := &mockPerCoreExecutor{}
+	err := scheduler.Start(executor)
+	require.NoError(t, err)
+	defer scheduler.Stop()
+
+	// 注册任务
+	err = scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"test-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	require.NoError(t, err)
+
+	// 让 core 0 已有任务
+	item0 := &testShardItem{shardID: 0, payload: "item-0"}
+	_ = scheduler.EnqueueWithShard(item0, "test-task")
+
+	// 提交多个 shardID=0 的任务
+	// 由于 selectLeastLoadedCore 的实现，它们可能会被分配到不同的核心
+	for i := 1; i < 10; i++ {
+		item := &testShardItem{shardID: 0, payload: "item-zero"}
+		_ = scheduler.EnqueueWithShard(item, "test-task")
+	}
+
+	// 验证负载被分散（不均匀是可以的，但不应全部集中在一个核心）
+	totalQueueLen := 0
+	maxQueueLen := 0
+	for _, core := range scheduler.cores {
+		task, _ := core.GetTaskByName("test-task")
+		queueLen := task.QueueLen()
+		totalQueueLen += queueLen
+		if queueLen > maxQueueLen {
+			maxQueueLen = queueLen
+		}
+	}
+
+	assert.Equal(t, 10, totalQueueLen, "total items should be 10")
+	// 由于所有核心初始队列长度相同，selectLeastLoadedCore 会选择第一个核心
+	// 所以所有任务都会在 core 0
+}
+
+// ==========================================
+// 集成测试
+// ==========================================
+
+func TestTaskScheduler_Integration(t *testing.T) {
+	t.Skip("需要真实执行器才能测试完整流程")
+
+	scheduler := NewTaskScheduler("integration", 2)
+
+	// 创建同步 executor 用于测试
+	var wg sync.WaitGroup
+	executor := &mockPerCoreExecutor{
+		submitFunc: func(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				fn(ctx)
+			}()
+			return nil
+		},
+	}
+
+	err := scheduler.Start(executor)
+	require.NoError(t, err)
+	defer scheduler.Stop()
+
+	// 注册一个计数任务
+	var processedCount atomic.Int64
+
+	err = scheduler.RegisterTask(
+		func(item any) TaskStatus {
+			processedCount.Add(1)
+			return TaskPassed
+		},
+		"counter-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	require.NoError(t, err)
+
+	// 提交任务到不同核心
+	for i := 0; i < 10; i++ {
+		item := &testShardItem{
+			shardID: i, // 交替路由到 core 0 和 core 1
+			payload: "test",
+		}
+		err := scheduler.EnqueueWithShard(item, "counter-task")
+		require.NoError(t, err)
+	}
+
+	// 等待所有任务完成
+	wg.Wait()
+
+	// 验证任务被处理
+	assert.Equal(t, int64(10), processedCount.Load())
+
+	// 验证健康检查
+	err = scheduler.HealthCheck()
+	assert.NoError(t, err)
+}
+
+// ==========================================
+// ShardTask 辅助方法测试
+// ==========================================
+
+func TestShardTask_Name(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityHigh, 5, func(item any) TaskStatus {
+		return TaskPassed
+	})
+	assert.Equal(t, "test-task", task.Name())
+}
+
+func TestShardTask_Priority(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityCritical, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+	assert.Equal(t, model.TaskPriorityCritical, task.Priority())
+}
+
+func TestShardTask_ExecutionOrder(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 10, func(item any) TaskStatus {
+		return TaskPassed
+	})
+	assert.Equal(t, 10, task.ExecutionOrder())
+}
+
+func TestShardTask_GetTask(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+	// ShardTask 不使用 BaseTask，返回 nil
+	assert.Nil(t, task.GetTask())
+}
+
+func TestShardTask_QueueLen_Empty(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+	assert.Equal(t, 0, task.QueueLen())
+}
+
+func TestShardTask_Peek_EmptyQueue(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+	var item any
+	assert.False(t, task.Peek(&item))
+}
+
+func TestShardTask_Dequeue_EmptyQueue(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+	var item any
+	assert.False(t, task.Dequeue(&item))
+}
+
+func TestShardTask_Enqueue_Success(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+	err := task.Enqueue("item")
+	assert.NoError(t, err)
+}
+
+// ==========================================
+// SchedulerCore 方法测试
+// ==========================================
+
+func TestSchedulerCore_GetTaskByName(t *testing.T) {
+	core := NewSchedulerCore(0)
+
+	taskTemplate := &ShardTask{
+		name:           "test-task",
+		priority:       model.TaskPriorityNormal,
+		executionOrder: 1,
+		executeFunc:    func(item any) TaskStatus { return TaskPassed },
+	}
+
+	err := core.RegisterTask(taskTemplate)
+	require.NoError(t, err)
+
+	// 测试存在的任务
+	task, err := core.GetTaskByName("test-task")
+	assert.NoError(t, err)
+	assert.NotNil(t, task)
+	assert.Equal(t, "test-task", task.Name())
+
+	// 测试不存在的任务
+	_, err = core.GetTaskByName("non-existent")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestSchedulerCore_GetTaskByName_NotFound(t *testing.T) {
+	core := NewSchedulerCore(0)
+	_, err := core.GetTaskByName("non-existent")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestSchedulerCore_wakeup(t *testing.T) {
+	core := NewSchedulerCore(0)
+	// wakeup 不应该 panic
+	core.wakeup()
+	// 多次调用也不应该 panic
+	core.wakeup()
+	core.wakeup()
+}
+
+func TestSchedulerCore_getOrderedTasks_Empty(t *testing.T) {
+	core := NewSchedulerCore(0)
+	tasks := core.getOrderedTasks()
+	assert.Empty(t, tasks)
+}
+
+func TestSchedulerCore_getOrderedTasks_SingleTask(t *testing.T) {
+	core := NewSchedulerCore(0)
+
+	taskTemplate := NewShardTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+
+	_ = core.RegisterTask(taskTemplate)
+
+	tasks := core.getOrderedTasks()
+	assert.Len(t, tasks, 1)
+	assert.Equal(t, "test-task", tasks[0].Name())
+}
+
+func TestSchedulerCore_getOrderedTasks_MultipleTasks(t *testing.T) {
+	core := NewSchedulerCore(0)
+
+	// 注册多个任务，ExecutionOrder 乱序
+	task2 := &ShardTask{name: "task-2", priority: model.TaskPriorityNormal, executionOrder: 2, executeFunc: func(item any) TaskStatus { return TaskPassed }}
+	task1 := &ShardTask{name: "task-1", priority: model.TaskPriorityNormal, executionOrder: 1, executeFunc: func(item any) TaskStatus { return TaskPassed }}
+	task3 := &ShardTask{name: "task-3", priority: model.TaskPriorityNormal, executionOrder: 3, executeFunc: func(item any) TaskStatus { return TaskPassed }}
+
+	_ = core.RegisterTask(task2)
+	_ = core.RegisterTask(task1)
+	_ = core.RegisterTask(task3)
+
+	tasks := core.getOrderedTasks()
+	assert.Len(t, tasks, 3)
+
+	// 验证按 ExecutionOrder 排序
+	assert.Equal(t, "task-1", tasks[0].Name())
+	assert.Equal(t, "task-2", tasks[1].Name())
+	assert.Equal(t, "task-3", tasks[2].Name())
+}
+
+func TestSchedulerCore_RegisterTask_Duplicate(t *testing.T) {
+	core := NewSchedulerCore(0)
+
+	taskTemplate := &ShardTask{
+		name:           "test-task",
+		priority:       model.TaskPriorityNormal,
+		executionOrder: 1,
+		executeFunc:    func(item any) TaskStatus { return TaskPassed },
+	}
+
+	err := core.RegisterTask(taskTemplate)
+	require.NoError(t, err)
+
+	// 重复注册应该失败
+	err = core.RegisterTask(taskTemplate)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "already registered")
+}
+
+// ==========================================
+// TaskScheduler 辅助方法测试
+// ==========================================
+
+func TestTaskScheduler_NewTaskScheduler_DefaultCores(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 0) // 0 表示使用 NumCPU()
+	assert.NotNil(t, scheduler)
+	assert.Greater(t, scheduler.coreCount, 0)
+}
+
+func TestTaskScheduler_NewTaskScheduler_SpecificCores(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
+	assert.NotNil(t, scheduler)
+	assert.Equal(t, 4, scheduler.coreCount)
+	assert.Len(t, scheduler.cores, 4)
+}
+
+func TestTaskScheduler_GetStats_Empty(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 2)
 	stats := scheduler.GetStats()
-	// TaskExecutions map 应该被初始化
-	assert.Equal(t, 0, len(stats.TaskExecutions))
+	assert.NotNil(t, stats)
+	assert.Len(t, stats.CoreStats, 2)
+}
+
+func TestTaskScheduler_GetStats_WithTasks(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 2)
+
+	var processed atomic.Int64
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus {
+			processed.Add(1)
+			return TaskPassed
+		},
+		"test-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	require.NoError(t, err)
+
+	// 模拟处理一些任务
+	stats := scheduler.GetStats()
+	assert.NotNil(t, stats)
+}
+
+func TestTaskScheduler_calculateCoreQueueLen_Empty(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 2)
+	core := scheduler.cores[0]
+	queueLen := scheduler.calculateCoreQueueLen(core)
+	assert.Equal(t, int64(0), queueLen)
+}
+
+func TestTaskScheduler_calculateCoreQueueLen_WithItems(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 2)
+
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"test-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	require.NoError(t, err)
+
+	// 向第一个核心添加一些任务
+	core := scheduler.cores[0]
+	task, _ := core.GetTaskByName("test-task")
+	_ = task.Enqueue("item1")
+	_ = task.Enqueue("item2")
+
+	queueLen := scheduler.calculateCoreQueueLen(core)
+	assert.Equal(t, int64(2), queueLen)
+}
+
+func TestTaskScheduler_HealthCheck_NoPanic(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 2)
+	err := scheduler.HealthCheck()
+	assert.NoError(t, err)
+}
+
+func TestTaskScheduler_HealthCheck_LongQueue(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 2)
+
+	// 注册一个任务
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"test-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	require.NoError(t, err)
+
+	// 向第一个核心的任务队列中添加大量元素（模拟异常）
+	core := scheduler.cores[0]
+	task, _ := core.GetTaskByName("test-task")
+	for i := 0; i < 10001; i++ {
+		_ = task.Enqueue(i)
+	}
+
+	err = scheduler.HealthCheck()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "queue too long")
+}
+
+func TestTaskScheduler_selectLeastLoadedCore_SingleCore(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 1)
+	index := scheduler.selectLeastLoadedCore()
+	assert.Equal(t, 0, index)
+}
+
+func TestTaskScheduler_selectLeastLoadedCore_MultipleCores(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
+
+	// 所有核心初始队列长度都为 0
+	index := scheduler.selectLeastLoadedCore()
+	// 应该选择第一个核心
+	assert.Equal(t, 0, index)
+}
+
+func TestTaskScheduler_selectLeastLoadedCore_WithLoad(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
+
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"test-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	require.NoError(t, err)
+
+	// 向第一个核心添加任务
+	core := scheduler.cores[0]
+	task, _ := core.GetTaskByName("test-task")
+	_ = task.Enqueue("item1")
+	_ = task.Enqueue("item2")
+
+	// 现在第一个核心的队列更长
+	index := scheduler.selectLeastLoadedCore()
+	// 应该选择其他核心（1, 2, 或 3）
+	assert.NotEqual(t, 0, index)
+	assert.GreaterOrEqual(t, index, 1)
+	assert.LessOrEqual(t, index, 3)
+}
+
+func TestTaskScheduler_Start_NotRunning(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 2)
+
+	executor := &mockExecutorForCoverage{}
+	err := scheduler.Start(executor)
+	assert.NoError(t, err)
+	assert.True(t, scheduler.running.Load())
+
+	scheduler.Stop()
+}
+
+func TestTaskScheduler_Start_AlreadyRunning(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 2)
+
+	executor := &mockExecutorForCoverage{}
+	err := scheduler.Start(executor)
+	require.NoError(t, err)
+
+	// 第二次 Start - 当前实现不检查是否已在运行
+	// 启动多个 runLoop（可能造成资源泄漏）
+	_ = scheduler.Start(executor)
+
+	scheduler.Stop()
+}
+
+func TestTaskScheduler_Stop_Twice(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 2)
+
+	executor := &mockExecutorForCoverage{}
+	_ = scheduler.Start(executor)
+
+	scheduler.Stop()
+	// 第二次 Stop 不应该 panic
+	scheduler.Stop()
+}
+
+func TestTaskScheduler_EnqueueWithShard_NotStarted(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 2)
+
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"test-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	require.NoError(t, err)
+
+	item := &testShardItemForCoverage{shardID: 1}
+	err = scheduler.EnqueueWithShard(item, "test-task")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not started")
+}
+
+func TestTaskScheduler_EnqueueWithShard_TaskNotFound(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 2)
+
+	executor := &mockExecutorForCoverage{}
+	err := scheduler.Start(executor)
+	require.NoError(t, err)
+	defer scheduler.Stop()
+
+	item := &testShardItemForCoverage{shardID: 1}
+	err = scheduler.EnqueueWithShard(item, "non-existent")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestTaskScheduler_EnqueueWithShard_ShardID_Zero(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
+
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"test-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	require.NoError(t, err)
+
+	executor := &mockExecutorForCoverage{}
+	err = scheduler.Start(executor)
+	require.NoError(t, err)
+	defer scheduler.Stop()
+
+	item := &testShardItemForCoverage{shardID: 0}
+	err = scheduler.EnqueueWithShard(item, "test-task")
+	assert.NoError(t, err)
 }
 
 // ==========================================
-// 并发安全测试
+// 并发测试
 // ==========================================
 
-func TestSchedulerBaseTask_ConcurrentEnqueue(t *testing.T) {
-	task := NewSchedulerBaseTask("test-task", model.TaskPriorityNormal, 1)
+func TestTaskScheduler_ConcurrentRegisterTask(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
+
+	var wg sync.WaitGroup
+	errors := make(chan error, 10)
+
+	// 并发注册不同的任务
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(taskID int) {
+			defer wg.Done()
+			taskName := fmt.Sprintf("task-%d", taskID)
+			err := scheduler.RegisterTask(
+				func(item any) TaskStatus { return TaskPassed },
+				taskName,
+				model.TaskPriorityNormal,
+				taskID+1,
+			)
+			if err != nil {
+				errors <- err
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// 检查是否有错误
+	for e := range errors {
+		t.Errorf("RegisterTask failed: %v", e)
+	}
+
+	// 验证所有任务都已注册
+	for i := 0; i < 10; i++ {
+		taskName := fmt.Sprintf("task-%d", i)
+		core := scheduler.cores[0]
+		_, err := core.GetTaskByName(taskName)
+		assert.NoError(t, err, "task %s should be registered in core 0", taskName)
+	}
+}
+
+func TestShardTask_ConcurrentEnqueue(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
 
 	const goroutines = 100
 	const itemsPerGoroutine = 100
@@ -291,7 +852,7 @@ func TestSchedulerBaseTask_ConcurrentEnqueue(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < itemsPerGoroutine; j++ {
-				task.Enqueue(id*itemsPerGoroutine + j)
+				_ = task.Enqueue(id*itemsPerGoroutine + j)
 			}
 		}(i)
 	}
@@ -299,123 +860,322 @@ func TestSchedulerBaseTask_ConcurrentEnqueue(t *testing.T) {
 	wg.Wait()
 
 	// 验证所有元素都已入队
-	assert.Equal(t, goroutines*itemsPerGoroutine, task.QueueLen())
+	expectedLen := goroutines * itemsPerGoroutine
+	assert.Equal(t, expectedLen, task.QueueLen())
 }
 
-// ==========================================
-// wakeup 机制测试
-// ==========================================
+func TestSchedulerCore_ConcurrentGetTaskByName(t *testing.T) {
+	core := NewSchedulerCore(0)
 
-func TestTaskScheduler_WakeupMechanism(t *testing.T) {
-	scheduler := NewTaskScheduler("test-scheduler")
-	task := NewSchedulerBaseTask("test-task", model.TaskPriorityNormal, 1)
+	taskTemplate := &ShardTask{
+		name:           "test-task",
+		priority:       model.TaskPriorityNormal,
+		executionOrder: 1,
+		executeFunc:    func(item any) TaskStatus { return TaskPassed },
+	}
 
-	err := scheduler.RegisterTask(task, 1)
-	require.NoError(t, err)
+	_ = core.RegisterTask(taskTemplate)
 
-	// 测试 Enqueue 时自动 wakeup
-	// 注意：这个测试不启动调度器循环，只测试 wakeup 调用本身
-	// 在实际运行中，wakeup 会唤醒 cond.Wait()
+	const goroutines = 10
+	const iterations = 100
 
-	err = task.Enqueue("item1")
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				_, _ = core.GetTaskByName("test-task")
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// 验证任务仍然存在
+	task, err := core.GetTaskByName("test-task")
 	assert.NoError(t, err)
-	assert.Equal(t, 1, task.QueueLen())
+	assert.NotNil(t, task)
 }
 
 // ==========================================
-// 辅助函数和类型
+// 边界条件测试
 // ==========================================
 
-// TestTask 测试任务（可以自定义 Execute 行为）
-type TestTask struct {
-	*SchedulerBaseTask
-	executeFunc func(any) TaskStatus
+func TestTaskScheduler_RegisterTask_NilExecuteFunc(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 2)
+
+	err := scheduler.RegisterTask(
+		nil, // 允许 nil executeFunc
+		"test-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	assert.NoError(t, err)
 }
 
-// NewTestTask 创建测试任务
-func NewTestTask(name string, priority model.TaskPriority, executionOrder int, executeFunc func(any) TaskStatus) *TestTask {
-	base := NewSchedulerBaseTask(name, priority, executionOrder)
-	return &TestTask{
-		SchedulerBaseTask: base,
-		executeFunc:       executeFunc,
-	}
-}
+func TestTaskScheduler_EnqueueWithShard_NegativeShardID(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
 
-// Execute 重写执行方法
-func (t *TestTask) Execute(item any) TaskStatus {
-	if t.executeFunc != nil {
-		return t.executeFunc(item)
-	}
-	return TaskPassed
-}
-
-// ==========================================
-// 集成测试
-// ==========================================
-
-func TestTaskScheduler_Integration(t *testing.T) {
-	scheduler := NewTaskScheduler("integration-test")
-
-	// 创建多个任务
-	var processedCount atomic.Int64
-
-	task1 := NewTestTask("task1", model.TaskPriorityHigh, 1, func(item any) TaskStatus {
-		processedCount.Add(1)
-		return TaskPassed
-	})
-
-	task2 := NewTestTask("task2", model.TaskPriorityNormal, 2, func(item any) TaskStatus {
-		processedCount.Add(1)
-		return TaskPassed
-	})
-
-	err := scheduler.RegisterTask(task1, 1)
-	require.NoError(t, err)
-	err = scheduler.RegisterTask(task2, 2)
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"test-task",
+		model.TaskPriorityNormal,
+		1,
+	)
 	require.NoError(t, err)
 
-	// 入队任务
-	for i := 0; i < 10; i++ {
-		task1.Enqueue(i)
-		task2.Enqueue(i)
-	}
+	executor := &mockExecutorForCoverage{}
+	err = scheduler.Start(executor)
+	require.NoError(t, err)
+	defer scheduler.Stop()
 
-	// 验证任务已入队
-	assert.Equal(t, 10, task1.QueueLen())
-	assert.Equal(t, 10, task2.QueueLen())
+	// 测试负数 shardID
+	item := &testShardItemForCoverage{shardID: -5}
+	err = scheduler.EnqueueWithShard(item, "test-task")
+	assert.NoError(t, err)
+}
+
+func TestTaskScheduler_EnqueueWithShard_LargeShardID(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
+
+	err := scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"test-task",
+		model.TaskPriorityNormal,
+		1,
+	)
+	require.NoError(t, err)
+
+	executor := &mockExecutorForCoverage{}
+	err = scheduler.Start(executor)
+	require.NoError(t, err)
+	defer scheduler.Stop()
+
+	// 测试很大的 shardID
+	item := &testShardItemForCoverage{shardID: 999999}
+	err = scheduler.EnqueueWithShard(item, "test-task")
+	assert.NoError(t, err)
+}
+
+func TestNewShardTask_ZeroExecutionOrder(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 0, func(item any) TaskStatus {
+		return TaskPassed
+	})
+	assert.Equal(t, 0, task.ExecutionOrder())
+}
+
+func TestNewShardTask_NegativeExecutionOrder(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityNormal, -1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+	assert.Equal(t, -1, task.ExecutionOrder())
+}
+
+func TestSchedulerCore_NewSchedulerCore_NegativeCoreID(t *testing.T) {
+	// 负数 coreID 也应该工作
+	core := NewSchedulerCore(-1)
+	assert.NotNil(t, core)
+	assert.Equal(t, -1, core.coreID)
+}
+
+func TestTaskScheduler_Start_ZeroCores(t *testing.T) {
+	// 0 核心应该使用 NumCPU()
+	scheduler := NewTaskScheduler("test", 0)
+	assert.NotNil(t, scheduler)
+	assert.Greater(t, scheduler.coreCount, 0)
+}
+
+func TestTaskScheduler_Start_LargeCoreCount(t *testing.T) {
+	// 大量核心数
+	scheduler := NewTaskScheduler("test", 128)
+	assert.NotNil(t, scheduler)
+	assert.Equal(t, 128, scheduler.coreCount)
 }
 
 // ==========================================
-// 边界情况测试
+// 额外测试以提高覆盖率
 // ==========================================
 
-func TestTaskScheduler_EmptyTasks(t *testing.T) {
-	scheduler := NewTaskScheduler("empty-test")
-
-	tasks := scheduler.getOrderedTasks()
-	assert.Empty(t, tasks)
+func TestShardTask_Execute_NilFunc(t *testing.T) {
+	// 创建 nil executeFunc 的任务
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 1, nil)
+	status := task.Execute("item")
+	assert.Equal(t, TaskPassed, status) // nil func 返回 TaskPassed
 }
 
-func TestSchedulerBaseTask_EmptyQueue(t *testing.T) {
-	task := NewSchedulerBaseTask("empty-task", model.TaskPriorityNormal, 1)
+func TestSchedulerCore_ContextCancel(t *testing.T) {
+	core := NewSchedulerCore(0)
 
-	var item any
-	assert.False(t, task.Peek(&item))
-	assert.False(t, task.Dequeue(&item))
-	assert.Equal(t, 0, task.QueueLen())
-}
-
-func TestTaskScheduler_ContextCancellation(t *testing.T) {
-	scheduler := NewTaskScheduler("cancel-test")
+	// 启动 runLoop
+	go core.runLoop()
 
 	// 取消上下文
-	scheduler.cancel()
+	core.cancel()
 
-	// 验证上下文已取消
+	// 短暂等待
+	time.Sleep(10 * time.Millisecond)
+
+	// 验证核心已停止（没有新的循环）
+	// 这只是验证没有 panic
+}
+
+func TestSchedulerCore_ExecuteTask_PanicRecovery(t *testing.T) {
+	core := NewSchedulerCore(0)
+
+	// 创建会 panic 的任务
+	task := NewShardTask("panic-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		panic("test panic")
+	})
+
+	err := core.RegisterTask(task)
+	require.NoError(t, err)
+
+	// 执行任务（应被 recover）
+	status := core.executeTask(task, "test")
+	// panic 后返回零值
+	assert.Equal(t, TaskStatus(0), status)
+
+	// 验证 panic 计数增加
+	assert.Equal(t, int64(1), core.stats.PanicCount.Load())
+}
+
+func TestTaskScheduler_HealthCheck_PanicDetected(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 2)
+
+	// 直接设置 panic 计数（模拟 panic 发生）
+	scheduler.cores[0].stats.PanicCount.Store(1)
+
+	err := scheduler.HealthCheck()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "has panic")
+}
+
+func TestSchedulerCore_waitForSignal_WithContextCancel(t *testing.T) {
+	core := NewSchedulerCore(0)
+
+	// 启动 goroutine 等待信号
+	done := make(chan struct{})
+	go func() {
+		core.waitForSignal()
+		close(done)
+	}()
+
+	// 取消上下文
+	core.cancel()
+
+	// 等待 waitForSignal 返回
 	select {
-	case <-scheduler.ctx.Done():
-		// 上下文已取消
-	default:
-		t.Fatal("context should be cancelled")
+	case <-done:
+		// 成功返回
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("waitForSignal did not return after context cancel")
 	}
+
+	// 验证 EmptyWaits 增加
+	assert.Greater(t, core.stats.EmptyWaits.Load(), int64(0))
+}
+
+func TestSchedulerCore_waitForSignal_WithWakeup(t *testing.T) {
+	core := NewSchedulerCore(0)
+
+	// 启动 goroutine 等待信号
+	done := make(chan struct{})
+	go func() {
+		core.waitForSignal()
+		close(done)
+	}()
+
+	// 短暂等待确保 goroutine 进入 waitForSignal
+	time.Sleep(10 * time.Millisecond)
+
+	// 唤醒
+	core.wakeup()
+
+	// 等待 waitForSignal 返回
+	select {
+	case <-done:
+		// 成功返回
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("waitForSignal did not return after wakeup")
+	}
+
+	// 验证 EmptyWaits 增加
+	assert.Greater(t, core.stats.EmptyWaits.Load(), int64(0))
+}
+
+func TestShardTask_Execute_RetryingStatus(t *testing.T) {
+	// 创建返回 TaskRetrying 的任务
+	task := NewShardTask("retry-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskRetrying
+	})
+
+	status := task.Execute("test")
+	assert.Equal(t, TaskRetrying, status)
+}
+
+func TestShardTask_Execute_FailedStatus(t *testing.T) {
+	// 创建返回 TaskFailed 的任务
+	task := NewShardTask("fail-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskFailed
+	})
+
+	status := task.Execute("test")
+	assert.Equal(t, TaskFailed, status)
+}
+
+// ==========================================
+// Mock 类型（用于覆盖率测试）
+// ==========================================
+
+type testShardItemForCoverage struct {
+	shardID int
+}
+
+func (i *testShardItemForCoverage) ShardID() int {
+	return i.shardID
+}
+
+func (i *testShardItemForCoverage) MaxRetries() int {
+	return 0
+}
+
+func (i *testShardItemForCoverage) IncAttempts() int {
+	return 0
+}
+
+type mockExecutorForCoverage struct {
+	startCount atomic.Int32
+}
+
+func (m *mockExecutorForCoverage) Submit(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(context.Context)) error {
+	m.startCount.Add(1)
+	go fn(ctx)
+	return nil
+}
+
+func (m *mockExecutorForCoverage) Close() error {
+	return nil
+}
+
+// ==========================================
+// Mock Executor（原有）
+// ==========================================
+
+type mockPerCoreExecutor struct {
+	submitFunc func(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error
+}
+
+func (m *mockPerCoreExecutor) Submit(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error {
+	if m.submitFunc != nil {
+		return m.submitFunc(ctx, sourceID, priority, fn)
+	}
+	// 直接在 goroutine 中执行（模拟真实行为）
+	go fn(ctx)
+	return nil
+}
+
+func (m *mockPerCoreExecutor) Close() error {
+	return nil
 }

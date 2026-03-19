@@ -46,7 +46,7 @@ func TestAntsPoolExecutor_AutoScale(t *testing.T) {
 	var wg sync.WaitGroup
 	blockCh := make(chan struct{})
 
-	for i := 0; i < 90; i++ { // 90% 使用率
+	for i := range 90 { // 90% 使用率
 		wg.Add(1)
 		err := provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			runningCount.Add(1)
@@ -62,7 +62,7 @@ func TestAntsPoolExecutor_AutoScale(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// 提交更多任务以触发扩容检查
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		_ = provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
@@ -108,7 +108,7 @@ func TestAntsPoolExecutor_AutoShrink(t *testing.T) {
 	}
 
 	// 提交少量任务（低使用率）
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		_ = provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
@@ -136,7 +136,7 @@ func TestAntsPoolExecutor_AutoScale_Disabled(t *testing.T) {
 	defer provider.Close()
 
 	// 提交大量任务
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		_ = provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
@@ -171,7 +171,7 @@ func TestAntsPoolExecutor_AutoScale_MaxCapacity(t *testing.T) {
 	var wg sync.WaitGroup
 	blockCh := make(chan struct{})
 
-	for i := 0; i < 90; i++ {
+	for range 90 {
 		wg.Add(1)
 		_ = provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			<-blockCh
@@ -182,7 +182,7 @@ func TestAntsPoolExecutor_AutoScale_MaxCapacity(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// 提交更多任务以触发扩容检查
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		_ = provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 			time.Sleep(10 * time.Millisecond)
 		})
@@ -265,7 +265,7 @@ func TestAntsPoolExecutor_RaceCondition(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// 并发提交和获取状态
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

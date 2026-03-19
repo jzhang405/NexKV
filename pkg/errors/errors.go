@@ -142,6 +142,13 @@ var (
 	// TaskMode 错误
 	ErrTaskModeUnknown = stderrors.New("task_mode: unknown task mode")
 
+	// TaskScheduler 错误
+	ErrTaskAlreadyRegistered = stderrors.New("scheduler: task already registered")
+	ErrTaskNotFound          = stderrors.New("scheduler: task not found")
+	ErrSchedulerNotStarted   = stderrors.New("scheduler: not started")
+	ErrSchedulerRunning      = stderrors.New("scheduler: already running")
+	ErrQueueTooLong          = stderrors.New("scheduler: queue too long")
+
 	// ===========================
 	// Storage 层错误
 	// ===========================
@@ -296,4 +303,53 @@ func ActionEmpty() error {
 // UnknownTaskMode 创建未知任务模式错误
 func UnknownTaskMode(mode string) error {
 	return Wrapf(ErrTaskModeUnknown, "mode: %s", mode)
+}
+
+// ===========================
+// TaskScheduler 便捷错误函数
+// ===========================
+
+// TaskAlreadyRegistered 任务已注册错误
+func TaskAlreadyRegistered(taskName string) error {
+	return Wrapf(ErrTaskAlreadyRegistered, "task name: %s", taskName)
+}
+
+// TaskNotFound 任务未找到错误
+func TaskNotFound(taskName string) error {
+	return Wrapf(ErrTaskNotFound, "task name: %s", taskName)
+}
+
+// SchedulerNotStarted 调度器未启动错误
+func SchedulerNotStarted() error {
+	return ErrSchedulerNotStarted
+}
+
+// SchedulerAlreadyRunning 调度器已在运行错误
+func SchedulerAlreadyRunning() error {
+	return ErrSchedulerRunning
+}
+
+// ExecutionOrderConflict 执行顺序冲突错误
+func ExecutionOrderConflict(order int, existingTask string) error {
+	return Wrapf(ErrInvalidParam, "execution order %d already registered by task: %s", order, existingTask)
+}
+
+// CoreRegisterFailed 核心注册任务失败错误
+func CoreRegisterFailed(coreID int, err error) error {
+	return Wrapf(err, "register to core %d", coreID)
+}
+
+// CoreStartFailed 核心启动失败错误
+func CoreStartFailed(coreID int, err error) error {
+	return Wrapf(err, "start core %d", coreID)
+}
+
+// CorePanicDetected 核心检测到 panic 错误
+func CorePanicDetected(coreID int) error {
+	return Wrapf(ErrTaskPanic, "core %d has panic", coreID)
+}
+
+// CoreQueueTooLong 核心队列过长错误
+func CoreQueueTooLong(coreID int, queueLen int64) error {
+	return Wrapf(ErrQueueTooLong, "core %d queue too long: %d", coreID, queueLen)
 }

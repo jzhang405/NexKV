@@ -50,7 +50,7 @@ func BenchmarkOptimization_WithPadding(b *testing.B) {
 
 		// 模拟一些计算
 		counter := 0
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			counter += i
 		}
 		_ = counter
@@ -84,7 +84,7 @@ func BenchmarkOptimization_WithoutAffinity_NoPadding(b *testing.B) {
 		_ = logical
 
 		counter := 0
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			counter += i
 		}
 		_ = counter
@@ -121,7 +121,7 @@ func BenchmarkOptimization_WithAffinity_NoPadding(b *testing.B) {
 		_ = logical
 
 		counter := 0
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			counter += i
 		}
 		_ = counter
@@ -184,7 +184,7 @@ func BenchmarkOptimization_MemoryAccessPattern(b *testing.B) {
 
 		task := func(ctx context.Context) {
 			// 随机访问，导致缓存失效
-			for i := 0; i < 64; i++ {
+			for i := range 64 {
 				idx := int(time.Now().UnixNano()+int64(i)) % runtime.NumCPU()
 				data[idx][i%64] = i
 			}
@@ -216,7 +216,7 @@ func BenchmarkOptimization_BatchedStats(b *testing.B) {
 	task := func(ctx context.Context) {
 		// 模拟一些工作
 		counter := 0
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			counter += i
 		}
 
@@ -249,7 +249,7 @@ func TestOptimization_VerifyLocalData(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// 提交任务
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wg.Add(1)
 		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 			atomic.AddInt64(&executed, 1)

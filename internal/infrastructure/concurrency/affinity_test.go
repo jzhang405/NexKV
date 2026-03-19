@@ -38,7 +38,7 @@ func TestPerCoreExecutor_CPUAffinity(t *testing.T) {
 
 	// 提交任务验证执行
 	var executed int32
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		err := executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, func(ctx context.Context) {
 			atomic.AddInt32(&executed, 1)
 		})
@@ -108,7 +108,7 @@ func BenchmarkPerCoreExecutor_SimulatedWorkload(b *testing.B) {
 	task := func(ctx context.Context) {
 		// 模拟一些内存操作和简单计算
 		counter := 0
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			counter += i
 		}
 		_ = counter

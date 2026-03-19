@@ -90,14 +90,14 @@ func TestAntsPoolExecutor_CloseWithTimeout(t *testing.T) {
 		ctx := context.Background()
 
 		// 提交任务并等待执行
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {
 				executed.Add(1)
 			})
 		}
 
 		// 等待任务执行完成（轮询检查）
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			if provider.Stats().Running == 0 && executed.Load() == 10 {
 				break
 			}

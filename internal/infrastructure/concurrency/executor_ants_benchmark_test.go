@@ -21,7 +21,7 @@ func BenchmarkSubmit(b *testing.B) {
 	ctx := context.Background()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 	}
 }
@@ -33,7 +33,7 @@ func BenchmarkSubmitBatch_100(b *testing.B) {
 	ctx := context.Background()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for range 100 {
 			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 		}
@@ -47,7 +47,7 @@ func BenchmarkSubmitBatch_1000(b *testing.B) {
 	ctx := context.Background()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for range 1000 {
 			_ = provider.Submit(ctx, model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {})
 		}
@@ -71,7 +71,7 @@ func BenchmarkConcurrentSubmit(b *testing.B) {
 // BenchmarkCloseWithPendingTasks 关闭时的性能（有待处理任务）
 func BenchmarkCloseWithPendingTasks(b *testing.B) {
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		provider, _ := NewAntsExecutor(nil)
 		ctx := context.Background()
 
@@ -97,7 +97,9 @@ func BenchmarkSubmitWithPriority(b *testing.B) {
 	ctx := context.Background()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
+		i++
 		priority := service.PriorityNormal
 		if i%10 == 0 {
 			priority = service.PriorityHigh

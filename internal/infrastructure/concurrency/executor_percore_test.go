@@ -380,7 +380,7 @@ func BenchmarkPerCoreExecutor_Submit(b *testing.B) {
 	task := func(ctx context.Context) {}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 	}
 }
@@ -392,7 +392,9 @@ func BenchmarkPerCoreExecutor_SubmitWithPriority(b *testing.B) {
 	task := func(ctx context.Context) {}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
+		i++
 		priority := model.TaskPriority(i % 10)
 		_ = executor.SubmitWithPriority(context.Background(), priority, task)
 	}

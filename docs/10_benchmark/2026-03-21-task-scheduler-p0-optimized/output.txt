@@ -1,0 +1,22 @@
+2026/03/21 15:29:46 [concurrency] automaxprocs enabled successfully
+time="2026-03-21T15:29:46+08:00" level=info msg="[PerCore] Binding cleaner started (interval=30s, timeout=30s, strategy=mixed)"
+--- FAIL: BenchmarkShardRouting_Fixed
+    task_scheduler_e2e_test.go:188: Fixed (Core 1): max queue length = 5666822
+    task_scheduler_e2e_test.go:195: timeout waiting for tasks to complete, processed=36667, expected=5702816
+time="2026-03-21T15:30:09+08:00" level=info msg="[PerCore] Binding cleaner started (interval=30s, timeout=30s, strategy=mixed)"
+goos: linux
+goarch: amd64
+pkg: github.com/jzhang405/NexKV/internal/infrastructure/concurrency
+cpu: Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz
+BenchmarkShardRouting_RoundRobin-12     	10690893	       556.1 ns/op
+--- BENCH: BenchmarkShardRouting_RoundRobin-12
+    task_scheduler_e2e_test.go:258: RoundRobin (pre-allocated): max queue length = 9226
+time="2026-03-21T15:30:15+08:00" level=info msg="[PerCore] Binding cleaner started (interval=30s, timeout=30s, strategy=mixed)"
+time="2026-03-21T15:30:16+08:00" level=info msg="[PerCore] Cleaned 4 expired SourceID bindings"
+BenchmarkShardRouting_LoadBalance-12    	10851218	       547.3 ns/op
+--- BENCH: BenchmarkShardRouting_LoadBalance-12
+    task_scheduler_e2e_test.go:321: LoadBalance: max queue length = 3800
+FAIL
+exit status 1
+FAIL	github.com/jzhang405/NexKV/internal/infrastructure/concurrency	35.076s
+FAIL

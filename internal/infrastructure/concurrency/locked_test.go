@@ -159,7 +159,7 @@ func BenchmarkLocked_View(b *testing.B) {
 	locked := concurrency.NewLocked(42)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = locked.View(func(val int) error {
 			return nil
 		})
@@ -170,7 +170,7 @@ func BenchmarkLocked_Modify(b *testing.B) {
 	locked := concurrency.NewLocked(42)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = locked.Modify(func(val *int) error {
 			return nil
 		})
@@ -181,7 +181,7 @@ func BenchmarkLocked_GetDirect(b *testing.B) {
 	locked := concurrency.NewLocked(42)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = locked.GetDirect()
 	}
 }
@@ -190,7 +190,7 @@ func BenchmarkLocked_Get(b *testing.B) {
 	locked := concurrency.NewLocked(42)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = locked.Get()
 	}
 }
@@ -199,7 +199,7 @@ func BenchmarkLocked_Set(b *testing.B) {
 	locked := concurrency.NewLocked(42)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		locked.Set(100)
 	}
 }

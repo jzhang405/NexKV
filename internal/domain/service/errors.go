@@ -48,6 +48,10 @@ var (
 
 	// Middleware 层错误
 	ErrChainFrozen = errors.ErrChainFrozen
+
+	// TaskRunnerContext 层错误（复用 Pipeline 错误定义）
+	ErrTaskRunnerClosed          = errors.ErrPipelineClosed
+	ErrTaskRunnerShutdownTimeout = errors.ErrPipelineShutdownTimeout
 )
 
 // Wrap 和 Wrapf 从 pkg/errors 重新导出（便于 infrastructure 层使用）

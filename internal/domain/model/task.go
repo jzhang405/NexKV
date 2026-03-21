@@ -8,46 +8,59 @@ import (
 )
 
 // ==========================================
-// OpType 操作类型定义
+// TaskStatus 任务状态定义
 // ==========================================
 
-// OpType 操作类型
-// 用于标识任务的来源和类型
-type OpType int
+// TaskStatus 任务状态
+// 用于 TaskScheduler 和 BaseTask 的统一状态枚举
+type TaskStatus int
 
 const (
-	// OpRPC RPC 调用操作
-	OpRPC OpType = iota
-	// OpStorage 存储操作
-	OpStorage
-	// OpRaft Raft 协议操作
-	OpRaft
-	// OpCompaction 压缩操作
-	OpCompaction
-	// OpSnapshot 快照操作
-	OpSnapshot
+	// TaskQueued 任务已入队，等待执行
+	TaskQueued TaskStatus = iota
+	// TaskExecuting 正在执行（Peek 成功后）
+	TaskExecuting
+	// TaskPassed 执行成功，需要 Dequeue
+	TaskPassed
+	// TaskFailed 执行失败，需要 Dequeue
+	TaskFailed
+	// TaskTimeout 超时，需要 Dequeue
+	TaskTimeout
+	// TaskBusy 繁忙/资源冲突（可重试）
+	// 用于表示任务因临时资源冲突（如锁竞争）而无法完成，需要保留在队列中重试
+	TaskBusy
+	// TaskRetrying 需要重试，保留在队列
+	TaskRetrying
+	// TaskCompleted 任务成功完成（与 OperationStatus 兼容）
+	TaskCompleted
 )
 
-// String 返回操作类型字符串表示
-func (o OpType) String() string {
-	switch o {
-	case OpRPC:
-		return "rpc"
-	case OpStorage:
-		return "storage"
-	case OpRaft:
-		return "raft"
-	case OpCompaction:
-		return "compaction"
-	case OpSnapshot:
-		return "snapshot"
+// String 返回状态字符串
+func (s TaskStatus) String() string {
+	switch s {
+	case TaskQueued:
+		return "queued"
+	case TaskExecuting:
+		return "executing"
+	case TaskPassed:
+		return "passed"
+	case TaskFailed:
+		return "failed"
+	case TaskTimeout:
+		return "timeout"
+	case TaskBusy:
+		return "busy"
+	case TaskRetrying:
+		return "retrying"
+	case TaskCompleted:
+		return "completed"
 	default:
 		return "unknown"
 	}
 }
 
 // ==========================================
-// OperationStatus 操作状态定义
+// OperationStatus 操作状态定义（保留兼容性）
 // ==========================================
 
 // OperationStatus 操作状态
@@ -106,9 +119,9 @@ func (s OperationStatus) String() string {
 // TaskRunner 非泛型任务接口（Executor 视角）
 // ==========================================
 
-// PipelineContext Pipeline 接口（避免循环依赖）
-// 实际实现见 Pipeline 结构体
-type PipelineContext interface {
+// TaskRunnerContext 任务执行上下文接口（避免循环依赖）
+// 实际实现见 service.TaskRunnerContext
+type TaskRunnerContext interface {
 	// Submit 提交子任务
 	Submit(task TaskRunner) error
 
@@ -126,13 +139,39 @@ type TaskExecutorRef any
 type TaskRunner interface {
 	// Run 执行任务
 	// Pipeline 提供执行上下文和依赖
-	Run(ctx context.Context, pipeline PipelineContext)
+	Run(ctx context.Context, trCtx TaskRunnerContext)
 
 	// Priority 返回任务优先级
 	Priority() TaskPriority
 
 	// SourceID 返回任务来源标识（用于 CPU 亲和性）
 	SourceID() SourceID
+}
+
+// ==========================================
+// TaskResult 任务结果接口
+// ==========================================
+
+// TaskResult 任务结果接口
+// 提供任务执行结果的查询能力
+// 用于接口组合，允许不同类型统一访问任务状态和结果
+type TaskResult interface {
+	// Done 返回一个只读 channel，在任务完成时关闭
+	Done() <-chan struct{}
+
+	// WaitAny 等待任务完成并返回结果
+	// 返回的结果类型为 any，调用方需要进行类型断言
+	WaitAny(ctx context.Context) (any, error)
+
+	// Status 返回任务状态（统一为 TaskStatus）
+	Status() TaskStatus
+
+	// IsDone 检查任务是否完成
+	IsDone() bool
+
+	// GetError 获取任务执行错误
+	// 如果任务成功完成，返回 nil
+	GetError() error
 }
 
 // ==========================================
@@ -147,7 +186,7 @@ type Task[Result any] interface {
 
 	// Execute 执行任务并返回类型化结果
 	// 这是用户实现的主要方法
-	Execute(ctx context.Context, pipeline PipelineContext) (Result, error)
+	Execute(ctx context.Context, trCtx TaskRunnerContext) (Result, error)
 
 	// Wait 等待任务完成并返回结果
 	Wait(ctx context.Context) (Result, error)
@@ -161,61 +200,69 @@ type Task[Result any] interface {
 // ==========================================
 
 // ExecuteFunc 执行函数类型
-type ExecuteFunc[Result any] func(ctx context.Context, pipeline PipelineContext) (Result, error)
+type ExecuteFunc[Result any] func(ctx context.Context, trCtx TaskRunnerContext) (Result, error)
 
 // BaseTask[Result] 任务基类
 // 提供通用实现，用户传入 ExecuteFunc
 type BaseTask[Result any] struct {
-	// 任务元数据
-	opType   OpType
-	priority TaskPriority
-	sourceID SourceID
+	// ===== 任务元数据 =====
+	priority TaskPriority // 任务优先级
+	// 注意：sourceID 已移除，TaskScheduler 场景不需要此字段
+	// 如需 CPU 亲和性，请使用 PerCoreExecutor 并在外部管理 sourceID
 
-	// 执行函数
+	// ===== 执行函数 =====
 	execute ExecuteFunc[Result]
 
-	// 任务状态
-	done   chan struct{}
-	status atomic.Int32 // OperationStatus
+	// ===== 重试管理 =====
+	retryCount int        // 当前重试次数
+	maxRetries int        // 最大重试次数（0 表示不重试）
+	muRetry    sync.Mutex // 保护 retryCount
 
-	// 任务结果
+	// ===== 任务状态 =====
+	done   chan struct{}
+	status atomic.Int32 // TaskStatus
+
+	// ===== 任务结果 =====
 	result Result
 	err    error
 	mu     sync.RWMutex // 保护 result 和 err
 }
 
 // NewBaseTask 创建基础任务
-func NewBaseTask[Result any](opType OpType, priority TaskPriority, sourceID SourceID, execute ExecuteFunc[Result]) *BaseTask[Result] {
+// 参数：
+//   - priority: 任务优先级
+//   - maxRetries: 最大重试次数（0 表示不重试）
+//   - execute: 执行函数
+func NewBaseTask[Result any](priority TaskPriority, maxRetries int, execute ExecuteFunc[Result]) *BaseTask[Result] {
 	return &BaseTask[Result]{
-		opType:   opType,
-		priority: priority,
-		sourceID: sourceID,
-		execute:  execute,
-		done:     make(chan struct{}),
+		priority:   priority,
+		execute:    execute,
+		maxRetries: maxRetries,
+		done:       make(chan struct{}),
 	}
 }
 
 // Run 实现 TaskRunner 接口
 // 这是通用的执行逻辑，调用 Execute 方法并处理结果
-func (b *BaseTask[Result]) Run(ctx context.Context, pipeline PipelineContext) {
+func (b *BaseTask[Result]) Run(ctx context.Context, trCtx TaskRunnerContext) {
 	// 使用 CAS 操作确保只有一个 goroutine 执行任务
-	// 只有当状态为 StatusPending 时才能转换为 StatusRunning
-	if !b.status.CompareAndSwap(int32(StatusPending), int32(StatusRunning)) {
+	// 只有当状态为 TaskQueued 时才能转换为 TaskExecuting
+	if !b.status.CompareAndSwap(int32(TaskQueued), int32(TaskExecuting)) {
 		// 其他 goroutine 已经在执行或已完成
 		return
 	}
 
 	// 执行任务（调用 Execute 方法）
-	result, err := b.Execute(ctx, pipeline)
+	result, err := b.Execute(ctx, trCtx)
 
 	// 保存结果
 	b.mu.Lock()
 	b.result = result
 	b.err = err
 	if err != nil {
-		b.status.Store(int32(StatusFailed))
+		b.status.Store(int32(TaskFailed))
 	} else {
-		b.status.Store(int32(StatusCompleted))
+		b.status.Store(int32(TaskCompleted))
 	}
 	b.mu.Unlock()
 
@@ -225,9 +272,9 @@ func (b *BaseTask[Result]) Run(ctx context.Context, pipeline PipelineContext) {
 
 // Execute 实现 Task[Result] 接口
 // 调用内部的 execute 函数
-func (b *BaseTask[Result]) Execute(ctx context.Context, pipeline PipelineContext) (Result, error) {
+func (b *BaseTask[Result]) Execute(ctx context.Context, trCtx TaskRunnerContext) (Result, error) {
 	if b.execute != nil {
-		return b.execute(ctx, pipeline)
+		return b.execute(ctx, trCtx)
 	}
 	var zero Result
 	return zero, nil
@@ -239,14 +286,50 @@ func (b *BaseTask[Result]) Priority() TaskPriority {
 }
 
 // SourceID 实现 TaskRunner 接口
+// 返回默认值（TaskScheduler 场景不需要此字段）
 func (b *BaseTask[Result]) SourceID() SourceID {
-	return b.sourceID
+	return SourceDefault // 默认通用任务
+}
+
+// ==========================================
+// 重试管理方法（ShardItem 接口需要）
+// ==========================================
+
+// MaxRetries 返回最大重试次数
+// 0 表示不重试
+func (b *BaseTask[Result]) MaxRetries() int {
+	b.muRetry.Lock()
+	defer b.muRetry.Unlock()
+	return b.maxRetries
+}
+
+// IncAttempts 增加尝试次数并返回当前次数
+// 返回值 > MaxRetries() 时表示已超过最大重试次数
+func (b *BaseTask[Result]) IncAttempts() int {
+	b.muRetry.Lock()
+	defer b.muRetry.Unlock()
+	b.retryCount++
+	return b.retryCount
+}
+
+// ==========================================
+// 错误获取方法（TaskResult 接口需要）
+// ==========================================
+
+// GetError 获取任务执行错误
+// 如果任务成功完成，返回 nil
+// 如果任务尚未完成，阻塞直到完成
+func (b *BaseTask[Result]) GetError() error {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.err
 }
 
 // Execute 方法不在此实现，必须由具体的 Task 类型实现
 // BaseTask 只提供通用的状态管理和等待机制
 
 // Wait 等待任务完成并返回结果
+// 实现 Task[Result] 接口
 func (b *BaseTask[Result]) Wait(ctx context.Context) (Result, error) {
 	select {
 	case <-b.done:
@@ -257,6 +340,14 @@ func (b *BaseTask[Result]) Wait(ctx context.Context) (Result, error) {
 		var zero Result
 		return zero, ctx.Err()
 	}
+}
+
+// WaitAny 等待任务完成并返回结果（any 类型）
+// 实现 TaskResult 接口
+// 允许通过 TaskResult 接口统一获取任务结果
+func (b *BaseTask[Result]) WaitAny(ctx context.Context) (any, error) {
+	result, err := b.Wait(ctx)
+	return result, err
 }
 
 // Done 返回 done channel（用于 select）
@@ -281,9 +372,9 @@ func (b *BaseTask[Result]) GetResult() (Result, error) {
 	return b.result, b.err
 }
 
-// Status 获取任务状态
-func (b *BaseTask[Result]) Status() OperationStatus {
-	return OperationStatus(b.status.Load())
+// Status 获取任务状态（统一为 TaskStatus）
+func (b *BaseTask[Result]) Status() TaskStatus {
+	return TaskStatus(b.status.Load())
 }
 
 // TaskPriority 任务优先级
@@ -363,4 +454,59 @@ func (s TaskHealthStatus) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// ==========================================
+// BaseTask 对象池（性能优化）
+// ==========================================
+
+// baseTaskPool BaseTask 对象池，复用任务对象减少内存分配
+// 用于 struct{} 类型（无返回值场景，占 80%+ 使用）
+var baseTaskPool = sync.Pool{
+	New: func() any {
+		return &BaseTask[struct{}]{
+			done: make(chan struct{}),
+		}
+	},
+}
+
+// GetPooledTask 从对象池获取任务（优化性能）
+// 注意：使用完毕后必须调用 ReleasePooledTask 归还到池
+func GetPooledTask(priority TaskPriority, maxRetries int, execute ExecuteFunc[struct{}]) *BaseTask[struct{}] {
+	task := baseTaskPool.Get().(*BaseTask[struct{}])
+
+	// 快速路径：只重置必要字段
+	task.priority = priority
+	task.execute = execute
+	task.maxRetries = maxRetries
+	task.retryCount = 0
+
+	// 重置状态
+	task.status.Store(int32(TaskQueued))
+
+	// 复用 channel（不断开重连）
+	select {
+	case <-task.done:
+		// 已关闭，创建新的
+		task.done = make(chan struct{})
+	default:
+		// 未关闭，复用
+	}
+
+	return task
+}
+
+// ReleasePooledTask 归还任务到对象池
+// 注意：任务执行完成后才能归还，避免并发问题
+func ReleasePooledTask(task *BaseTask[struct{}]) {
+	// 确保 channel 已关闭，避免资源泄漏
+	select {
+	case <-task.done:
+		// 已关闭，正常归还
+	default:
+		// 未关闭，先关闭
+		close(task.done)
+	}
+
+	baseTaskPool.Put(task)
 }

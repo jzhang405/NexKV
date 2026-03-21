@@ -466,7 +466,6 @@ func (e *PerCoreExecutor) Submit(
 
 	// 检查执行器状态
 	if atomic.LoadInt32(&e.state) != RUNNING {
-		logrus.Debugf("[PerCore] Executor is closed, rejecting task")
 		return ErrExecutorClosed
 	}
 
@@ -503,7 +502,6 @@ func (e *PerCoreExecutor) Submit(
 	workerID, err := e.selectIdleWorker()
 	if err != nil {
 		e.bindingMu.Unlock()
-		logrus.Warnf("[PerCore] All workers busy, rejecting SourceID=%s", sourceKey)
 		return err
 	}
 
@@ -516,8 +514,6 @@ func (e *PerCoreExecutor) Submit(
 	e.bindingMu.Unlock()
 
 	worker := e.workers[workerID]
-	logrus.Debugf("[PerCore] SourceID %s bound to Worker %d", sourceKey, workerID)
-
 	return e.submitToWorker(ctx, workerID, worker, priority, task)
 }
 
@@ -547,8 +543,6 @@ func (e *PerCoreExecutor) selectIdleWorker() (int, error) {
 func (e *PerCoreExecutor) startBindingCleaner() {
 	// 防御性检查：避免 NewTicker(0) panic
 	if e.config.BindingCleanInterval <= 0 {
-		logrus.Warnf("[PerCore] Invalid BindingCleanInterval=%v, skipping cleaner start",
-			e.config.BindingCleanInterval)
 		return
 	}
 
@@ -568,9 +562,6 @@ func (e *PerCoreExecutor) startBindingCleaner() {
 			}
 		}
 	}()
-
-	logrus.Infof("[PerCore] Binding cleaner started (interval=%v, timeout=%v, strategy=mixed)",
-		e.config.BindingCleanInterval, e.config.BindingTimeout)
 }
 
 // cleanExpiredBindings 清理过期的 SourceID 绑定
@@ -588,15 +579,9 @@ func (e *PerCoreExecutor) cleanExpiredBindings() {
 		if now-lastUsed > timeoutNanos {
 			e.sourceBindings.Delete(key)
 			cleanedCount++
-			logrus.Debugf("[PerCore] Cleaned expired binding: SourceID=%s, WorkerID=%d, idle_time=%v",
-				key, binding.workerID, time.Duration(now-lastUsed))
 		}
 		return true
 	})
-
-	if cleanedCount > 0 {
-		logrus.Infof("[PerCore] Cleaned %d expired SourceID bindings", cleanedCount)
-	}
 }
 
 // submitToWorker 提交任务到指定 Worker（内部方法）
@@ -614,22 +599,18 @@ func (e *PerCoreExecutor) submitToWorker(
 		task:       task,
 	}
 
-	logrus.Debugf("[PerCore] Submitting task with priority %d to worker %d", priority, workerID)
-
 	// 持锁进行所有队列操作，避免读锁升级写锁问题
 	worker.cond.L.Lock()
 
 	// 检查状态（持锁期间）
 	if atomic.LoadInt32(&e.state) != RUNNING {
 		worker.cond.L.Unlock()
-		logrus.Debugf("[PerCore] Executor closed during submit")
 		return ErrExecutorClosed
 	}
 
 	// 检查队列容量（使用无锁版本，避免读锁升级写锁）
 	if worker.queue.LenUnsafe() >= e.config.QueueSize {
 		worker.cond.L.Unlock()
-		logrus.Warnf("[PerCore] Worker %d queue full (len=%d)", workerID, worker.queue.Len())
 		return errors.Wrapf(errors.ErrQueueFull, "worker %d", workerID)
 	}
 
@@ -662,7 +643,6 @@ func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority model
 
 	// 检查执行器状态
 	if atomic.LoadInt32(&e.state) != RUNNING {
-		logrus.Debugf("[PerCore] Executor is closed, rejecting task")
 		return ErrExecutorClosed
 	}
 
@@ -672,7 +652,6 @@ func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority model
 
 	// 优化：在持锁之前检查队列容量（快速失败）
 	if worker.queue.Len() >= e.config.QueueSize {
-		logrus.Warnf("[PerCore] Worker %d queue full (len=%d)", workerID, worker.queue.Len())
 		return errors.Wrapf(errors.ErrQueueFull, "worker %d", workerID)
 	}
 
@@ -683,22 +662,18 @@ func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority model
 		task:       task,
 	}
 
-	logrus.Debugf("[PerCore] Submitting task with priority %d to worker %d", priority, workerID)
-
 	// 优化：只在必要时持有锁
 	worker.cond.L.Lock()
 
 	// 再次检查状态（持锁期间）
 	if atomic.LoadInt32(&e.state) != RUNNING {
 		worker.cond.L.Unlock()
-		logrus.Debugf("[PerCore] Executor closed during submit")
 		return ErrExecutorClosed
 	}
 
 	// 再次检查队列容量（持锁期间，使用无锁版本避免读锁升级写锁）
 	if worker.queue.LenUnsafe() >= e.config.QueueSize {
 		worker.cond.L.Unlock()
-		logrus.Warnf("[PerCore] Worker %d queue full during submit (len=%d)", workerID, worker.queue.LenUnsafe())
 		return errors.Wrapf(errors.ErrQueueFull, "worker %d", workerID)
 	}
 

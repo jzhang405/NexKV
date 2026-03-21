@@ -7,48 +7,53 @@ package concurrency
 import "github.com/jzhang405/NexKV/internal/domain/model"
 
 // ==========================================
-// TaskStatus 调度队列视角的任务状态
+// ExecutionOrder 执行顺序常量
+// ==========================================
+
+// ExecutionOrder 任务执行顺序
+// TaskScheduler 按此顺序从小到大处理任务
+// 原则：依赖关系决定执行顺序（例如：WAL → BTree → Compaction）
+type ExecutionOrder int
+
+const (
+	// ExecutionOrderWALAppend WAL 追加（最高优先级，数据持久化）
+	ExecutionOrderWALAppend ExecutionOrder = 1
+
+	// ExecutionOrderBTreeSet BTree 更新（基于持久化数据更新内存索引）
+	ExecutionOrderBTreeSet ExecutionOrder = 2
+
+	// ExecutionOrderCompaction 压缩整理（后台任务，最低优先级）
+	ExecutionOrderCompaction ExecutionOrder = 3
+
+	// ExecutionOrderCustom 自定义任务起始值
+	// 用户任务应使用 >= 100 的值，避免与预定义任务冲突
+	ExecutionOrderCustom ExecutionOrder = 100
+)
+
+// Int 返回整数值（用于与 int 类型兼容）
+func (o ExecutionOrder) Int() int {
+	return int(o)
+}
+
+// ==========================================
+// TaskStatus 别名（使用 model.TaskStatus）
 // ==========================================
 
 // TaskStatus 调度队列视角的任务状态
-// 区别于 OperationStatus（BaseTask 的异步执行状态）
-// TaskStatus 控制队列中元素的 Dequeue 时机
-type TaskStatus int
+// 别名指向 model.TaskStatus，保持统一
+type TaskStatus = model.TaskStatus
 
+// 重新导出 TaskStatus 常量
 const (
-	// TaskQueued 任务已入队，等待执行
-	TaskQueued TaskStatus = iota
-	// TaskExecuting 正在执行（Peek 成功后）
-	TaskExecuting
-	// TaskPassed 执行成功，需要 Dequeue
-	TaskPassed
-	// TaskFailed 执行失败，需要 Dequeue
-	TaskFailed
-	// TaskRetrying 需要重试，保留在队列
-	TaskRetrying
-	// TaskTimeout 超时，需要 Dequeue
-	TaskTimeout
+	TaskQueued    = model.TaskQueued
+	TaskExecuting = model.TaskExecuting
+	TaskPassed    = model.TaskPassed
+	TaskFailed    = model.TaskFailed
+	TaskTimeout   = model.TaskTimeout
+	TaskBusy      = model.TaskBusy
+	TaskRetrying  = model.TaskRetrying
+	TaskCompleted = model.TaskCompleted
 )
-
-// String 返回状态字符串
-func (s TaskStatus) String() string {
-	switch s {
-	case TaskQueued:
-		return "queued"
-	case TaskExecuting:
-		return "executing"
-	case TaskPassed:
-		return "passed"
-	case TaskFailed:
-		return "failed"
-	case TaskRetrying:
-		return "retrying"
-	case TaskTimeout:
-		return "timeout"
-	default:
-		return "unknown"
-	}
-}
 
 // ==========================================
 // TaskQueueHandler 队列处理器接口

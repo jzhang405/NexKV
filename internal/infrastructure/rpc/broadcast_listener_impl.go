@@ -98,7 +98,7 @@ type asyncListenerWrapper struct {
 func (w *asyncListenerWrapper) OnSuccess(peer model.PeerID, resp model.Message, stats service.BroadcastStats) {
 	for _, cb := range w.callbacks {
 		cb := cb
-		_ = w.goroutineProvider.Submit(context.Background(), model.SourceBroadcast, service.PriorityNormal, func(ctx context.Context) {
+		_ = w.goroutineProvider.Submit(context.Background(), model.SourceRPCCallback, service.PriorityNormal, func(ctx context.Context) {
 			safeListenerExec(func() { cb.OnSuccess(peer, resp, stats) })
 		})
 	}
@@ -107,7 +107,7 @@ func (w *asyncListenerWrapper) OnSuccess(peer model.PeerID, resp model.Message, 
 func (w *asyncListenerWrapper) OnFailure(peer model.PeerID, err error, stats service.BroadcastStats) {
 	for _, cb := range w.callbacks {
 		cb := cb
-		_ = w.goroutineProvider.Submit(context.Background(), model.SourceBroadcast, service.PriorityNormal, func(ctx context.Context) {
+		_ = w.goroutineProvider.Submit(context.Background(), model.SourceRPCCallback, service.PriorityNormal, func(ctx context.Context) {
 			safeListenerExec(func() { cb.OnFailure(peer, err, stats) })
 		})
 	}
@@ -116,7 +116,7 @@ func (w *asyncListenerWrapper) OnFailure(peer model.PeerID, err error, stats ser
 func (w *asyncListenerWrapper) OnMajority(stats service.BroadcastStats) {
 	for _, cb := range w.callbacks {
 		cb := cb
-		_ = w.goroutineProvider.Submit(context.Background(), model.SourceBroadcast, service.PriorityNormal, func(ctx context.Context) {
+		_ = w.goroutineProvider.Submit(context.Background(), model.SourceRPCCallback, service.PriorityNormal, func(ctx context.Context) {
 			safeListenerExec(func() { cb.OnMajority(stats) })
 		})
 	}
@@ -125,7 +125,7 @@ func (w *asyncListenerWrapper) OnMajority(stats service.BroadcastStats) {
 func (w *asyncListenerWrapper) OnComplete(stats service.BroadcastStats) {
 	for _, cb := range w.callbacks {
 		cb := cb
-		_ = w.goroutineProvider.Submit(context.Background(), model.SourceBroadcast, service.PriorityNormal, func(ctx context.Context) {
+		_ = w.goroutineProvider.Submit(context.Background(), model.SourceRPCCallback, service.PriorityNormal, func(ctx context.Context) {
 			safeListenerExec(func() { cb.OnComplete(stats) })
 		})
 	}

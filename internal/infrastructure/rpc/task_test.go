@@ -34,7 +34,6 @@ func TestRPCCallTask_Execute_Success(t *testing.T) {
 		mockRPC,
 		model.PeerID("node-2"),
 		reqMsg,
-		model.SourceRPCCallback,
 		30*time.Second,
 	)
 
@@ -67,7 +66,6 @@ func TestRPCCallTask_Execute_Timeout(t *testing.T) {
 		mockRPC,
 		model.PeerID("node-2"),
 		reqMsg,
-		model.SourceRPCCallback,
 		10*time.Millisecond, // 很短的超时
 	)
 
@@ -97,7 +95,6 @@ func TestRPCCallTask_Execute_Error(t *testing.T) {
 		mockRPC,
 		model.PeerID("node-2"),
 		reqMsg,
-		model.SourceRPCCallback,
 		30*time.Second,
 	)
 
@@ -115,13 +112,10 @@ func TestRPCCallTask_Execute_Error(t *testing.T) {
 func TestRPCCallTask_Metadata(t *testing.T) {
 	// 准备
 	reqMsg := model.NewMessage("req-1", model.MessageTypeRequest, "node-1", "node-2", []byte("test"))
-	sourceID := model.MustParseSourceID("shard:1:write")
-
 	task := NewRPCCallTask(
 		&mockRPCSync{},
 		model.PeerID("node-2"),
 		reqMsg,
-		sourceID,
 		30*time.Second,
 	)
 
@@ -131,7 +125,8 @@ func TestRPCCallTask_Metadata(t *testing.T) {
 	assert.Equal(t, []byte("test"), task.GetRequest().Payload())
 	assert.Equal(t, 30*time.Second, task.GetTimeout())
 	assert.Equal(t, model.TaskPriorityNormal, task.Priority())
-	assert.Equal(t, sourceID, task.SourceID())
+	// BaseTask.SourceID() 现在返回 SourceDefault（不再存储 sourceID 字段）
+	assert.Equal(t, model.SourceDefault, task.SourceID())
 }
 
 // ==========================================
@@ -173,7 +168,6 @@ func TestBaseTask_Wait(t *testing.T) {
 		},
 		model.PeerID("node-2"),
 		reqMsg,
-		model.SourceRPCCallback,
 		30*time.Second,
 	)
 

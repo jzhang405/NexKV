@@ -102,11 +102,6 @@ func TestAntsPoolExecutor_AutoShrink(t *testing.T) {
 	}
 	defer provider.Close()
 
-	// 验证缩容检查器已启动
-	if provider.scaleCheckTicker == nil {
-		t.Error("expected shrink checker to be started")
-	}
-
 	// 提交少量任务（低使用率）
 	for range 10 {
 		_ = provider.Submit(context.Background(), model.SourceDefault, service.PriorityNormal, func(ctx context.Context) {

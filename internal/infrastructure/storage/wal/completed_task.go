@@ -34,12 +34,12 @@ func NewCompletedWALTask(fn func() (LSN, error)) model.Task[LSN] {
 }
 
 // Run 实现 TaskRunner 接口（已完成任务无需运行）
-func (t *completedWALTask) Run(ctx context.Context, pipeline model.PipelineContext) {
+func (t *completedWALTask) Run(ctx context.Context, pipeline model.TaskRunnerContext) {
 	// 已完成的任务，无需运行
 }
 
 // Execute 实现 Task 接口（直接返回结果）
-func (t *completedWALTask) Execute(ctx context.Context, pipeline model.PipelineContext) (LSN, error) {
+func (t *completedWALTask) Execute(ctx context.Context, pipeline model.TaskRunnerContext) (LSN, error) {
 	return t.result, t.err
 }
 
@@ -91,12 +91,12 @@ func NewCompletedTruncateTask(fn func() (struct{}, error)) model.Task[struct{}] 
 }
 
 // Run 实现 TaskRunner 接口（已完成任务无需运行）
-func (t *completedTruncateTask) Run(ctx context.Context, pipeline model.PipelineContext) {
+func (t *completedTruncateTask) Run(ctx context.Context, pipeline model.TaskRunnerContext) {
 	// 已完成的任务，无需运行
 }
 
 // Execute 实现 Task 接口（直接返回结果）
-func (t *completedTruncateTask) Execute(ctx context.Context, pipeline model.PipelineContext) (struct{}, error) {
+func (t *completedTruncateTask) Execute(ctx context.Context, pipeline model.TaskRunnerContext) (struct{}, error) {
 	return t.result, t.err
 }
 

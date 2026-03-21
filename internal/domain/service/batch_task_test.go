@@ -79,11 +79,10 @@ func TestBatchSubmitter_SubmitBatch(t *testing.T) {
 	// 创建测试任务
 	tasks := make([]model.TaskRunner, 20)
 	for i := 0; i < 20; i++ {
-		tasks[i] = model.NewBaseTask[struct{}](
-			model.OpRPC,
+		tasks[i] = model.NewBaseTask(
 			model.TaskPriorityNormal,
-			model.SourceNetwork,
-			func(ctx context.Context, pipeline model.PipelineContext) (struct{}, error) {
+			0, // maxRetries
+			func(ctx context.Context, pipeline model.TaskRunnerContext) (struct{}, error) {
 				return struct{}{}, nil
 			},
 		)
@@ -115,11 +114,10 @@ func TestBatchSubmitter_BackPressure(t *testing.T) {
 	// 创建 20 个任务
 	tasks := make([]model.TaskRunner, 20)
 	for i := 0; i < 20; i++ {
-		tasks[i] = model.NewBaseTask[struct{}](
-			model.OpRPC,
+		tasks[i] = model.NewBaseTask(
 			model.TaskPriorityNormal,
-			model.SourceNetwork,
-			func(ctx context.Context, pipeline model.PipelineContext) (struct{}, error) {
+			0, // maxRetries
+			func(ctx context.Context, pipeline model.TaskRunnerContext) (struct{}, error) {
 				return struct{}{}, nil
 			},
 		)
@@ -166,11 +164,10 @@ func TestBatchSubmitter_ConcurrentSubmit(t *testing.T) {
 
 			tasks := make([]model.TaskRunner, tasksPerBatch)
 			for j := 0; j < tasksPerBatch; j++ {
-				tasks[j] = model.NewBaseTask[struct{}](
-					model.OpRPC,
+				tasks[j] = model.NewBaseTask(
 					model.TaskPriorityNormal,
-					model.SourceNetwork,
-					func(ctx context.Context, pipeline model.PipelineContext) (struct{}, error) {
+					0, // maxRetries
+					func(ctx context.Context, pipeline model.TaskRunnerContext) (struct{}, error) {
 						atomic.AddInt32(&successCount, 1)
 						return struct{}{}, nil
 					},
@@ -213,11 +210,10 @@ func TestBatchSubmitter_ContextCancellation(t *testing.T) {
 	// 创建任务
 	tasks := make([]model.TaskRunner, 10)
 	for i := 0; i < 10; i++ {
-		tasks[i] = model.NewBaseTask[struct{}](
-			model.OpRPC,
+		tasks[i] = model.NewBaseTask(
 			model.TaskPriorityNormal,
-			model.SourceNetwork,
-			func(ctx context.Context, pipeline model.PipelineContext) (struct{}, error) {
+			0, // maxRetries
+			func(ctx context.Context, pipeline model.TaskRunnerContext) (struct{}, error) {
 				return struct{}{}, nil
 			},
 		)
@@ -265,11 +261,10 @@ func TestBatchSubmitter_NoGoroutineLeak(t *testing.T) {
 
 		tasks := make([]model.TaskRunner, 50)
 		for j := 0; j < 50; j++ {
-			tasks[j] = model.NewBaseTask[struct{}](
-				model.OpRPC,
+			tasks[j] = model.NewBaseTask(
 				model.TaskPriorityNormal,
-				model.SourceNetwork,
-				func(ctx context.Context, pipeline model.PipelineContext) (struct{}, error) {
+				0, // maxRetries
+				func(ctx context.Context, pipeline model.TaskRunnerContext) (struct{}, error) {
 					return struct{}{}, nil
 				},
 			)
@@ -307,11 +302,10 @@ func TestBatchSubmitter_HighLoad(t *testing.T) {
 	tasks := make([]model.TaskRunner, totalTasks)
 
 	for i := 0; i < totalTasks; i++ {
-		tasks[i] = model.NewBaseTask[struct{}](
-			model.OpRPC,
+		tasks[i] = model.NewBaseTask(
 			model.TaskPriorityNormal,
-			model.SourceNetwork,
-			func(ctx context.Context, pipeline model.PipelineContext) (struct{}, error) {
+			0, // maxRetries
+			func(ctx context.Context, pipeline model.TaskRunnerContext) (struct{}, error) {
 				return struct{}{}, nil
 			},
 		)
@@ -355,11 +349,10 @@ func TestBatchSubmitter_Close(t *testing.T) {
 
 	// 关闭后提交应该失败
 	tasks := make([]model.TaskRunner, 1)
-	tasks[0] = model.NewBaseTask[struct{}](
-		model.OpRPC,
+	tasks[0] = model.NewBaseTask(
 		model.TaskPriorityNormal,
-		model.SourceNetwork,
-		func(ctx context.Context, pipeline model.PipelineContext) (struct{}, error) {
+		0, // maxRetries
+		func(ctx context.Context, pipeline model.TaskRunnerContext) (struct{}, error) {
 			return struct{}{}, nil
 		},
 	)

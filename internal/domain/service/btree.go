@@ -21,3 +21,11 @@ type BTree interface {
 	DumpTree(ctx context.Context) (string, error)
 	Validate(ctx context.Context) error
 }
+
+// ==========================================
+// BTreeSetItem BTree 异步 SET 任务
+// ==========================================
+// 注意：BTreeSetItem 的示例实现已移至 concurrency 包
+// 详见：internal/infrastructure/concurrency/btree_set_item_example.go
+//
+// 原因：避免循环导入

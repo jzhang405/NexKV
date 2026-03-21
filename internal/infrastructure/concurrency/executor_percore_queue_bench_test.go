@@ -13,7 +13,9 @@ func BenchmarkMultiLevelQueue_PushPop(b *testing.B) {
 	queue := newTaskQueue(10000, 10*time.Second)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
+		i++
 		priority := model.TaskPriority(i % 10)
 		queue.Push(taskItem{
 			priority:   priority,
@@ -35,7 +37,7 @@ func BenchmarkExecutor_SubmitHighPriority(b *testing.B) {
 
 	ctx := context.Background()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = exec.SubmitWithPriority(ctx, model.TaskPriorityCritical, func(ctx context.Context) {})
 	}
 }
@@ -50,7 +52,7 @@ func BenchmarkExecutor_SubmitLowPriority(b *testing.B) {
 
 	ctx := context.Background()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = exec.SubmitWithPriority(ctx, model.TaskPriorityIdle, func(ctx context.Context) {})
 	}
 }
@@ -74,7 +76,7 @@ func BenchmarkExecutor_SubmitMixedPriority(b *testing.B) {
 
 	b.ResetTimer()
 	priorityIdx := 0
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = exec.SubmitWithPriority(ctx, priorities[priorityIdx%5], func(ctx context.Context) {})
 		priorityIdx++
 	}

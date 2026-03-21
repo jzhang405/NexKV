@@ -5,17 +5,35 @@
 package concurrency
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 
+	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/stretchr/testify/assert"
 )
 
 // mockShardItem 实现 ShardItem 接口用于测试
 type mockShardItem struct {
+	*model.BaseTask[struct{}]
 	shardID    int
 	maxRetries int
 	attempts   int64
+}
+
+// NewMockShardItem 创建 mockShardItem
+func NewMockShardItem(shardID, maxRetries int) *mockShardItem {
+	return &mockShardItem{
+		BaseTask: model.NewBaseTask[struct{}](
+			model.TaskPriorityNormal,
+			0,
+			func(ctx context.Context, pipeline model.TaskRunnerContext) (struct{}, error) {
+				return struct{}{}, nil
+			},
+		),
+		shardID:    shardID,
+		maxRetries: maxRetries,
+	}
 }
 
 func (m *mockShardItem) ShardID() int {
@@ -61,7 +79,7 @@ func TestShardItem_ShardID_Positive(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			item := &mockShardItem{shardID: tt.shardID}
+			item := NewMockShardItem(tt.shardID, 0)
 			assert.Equal(t, tt.expected, item.ShardID())
 		})
 	}
@@ -69,7 +87,7 @@ func TestShardItem_ShardID_Positive(t *testing.T) {
 
 // TestShardItem_ShardID_Zero 测试零值 ShardID
 func TestShardItem_ShardID_Zero(t *testing.T) {
-	item := &mockShardItem{shardID: 0}
+	item := NewMockShardItem(0, 0)
 	assert.Equal(t, 0, item.ShardID())
 }
 
@@ -99,7 +117,7 @@ func TestShardItem_ShardID_Negative(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			item := &mockShardItem{shardID: tt.shardID}
+			item := NewMockShardItem(tt.shardID, 0)
 			assert.Equal(t, tt.expected, item.ShardID())
 		})
 	}
@@ -141,7 +159,7 @@ func TestShardItem_MaxRetries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			item := &mockShardItem{maxRetries: tt.maxRetries}
+			item := NewMockShardItem(0, tt.maxRetries)
 			assert.Equal(t, tt.expected, item.MaxRetries(), tt.description)
 		})
 	}
@@ -150,7 +168,7 @@ func TestShardItem_MaxRetries(t *testing.T) {
 // TestShardItem_IncAttempts 测试 IncAttempts
 func TestShardItem_IncAttempts(t *testing.T) {
 	t.Run("初始为 0，每次调用 +1", func(t *testing.T) {
-		item := &mockShardItem{maxRetries: 3}
+		item := NewMockShardItem(0, 3)
 
 		// 初始 attempts 应该为 0
 		assert.Equal(t, int64(0), atomic.LoadInt64(&item.attempts))
@@ -177,7 +195,7 @@ func TestShardItem_IncAttempts_ThreadSafety(t *testing.T) {
 	const goroutines = 100
 	const callsPerGoroutine = 100
 
-	item := &mockShardItem{maxRetries: goroutines * callsPerGoroutine}
+	item := NewMockShardItem(0, goroutines*callsPerGoroutine)
 
 	done := make(chan struct{})
 	for i := 0; i < goroutines; i++ {
@@ -246,7 +264,7 @@ func TestShardItem_RetryLogic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			item := &mockShardItem{maxRetries: tt.maxRetries}
+			item := NewMockShardItem(0, tt.maxRetries)
 
 			// 模拟调用 IncAttempts() 多次
 			for i := 0; i < tt.callCount; i++ {
@@ -309,7 +327,7 @@ func TestShardItem_ShardID_ResourceAffinity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			item := &mockShardItem{shardID: tt.shardID}
+			item := NewMockShardItem(tt.shardID, 0)
 			shardID := item.ShardID()
 
 			var schedulerIndex int

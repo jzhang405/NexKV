@@ -27,11 +27,10 @@ type AntsPoolExecutor struct {
 	stats   service.TaskPoolStats
 	statsMu sync.RWMutex
 	closed  atomic.Bool
-	// 缩容相关
-	scaleCheckTicker *time.Ticker // 缩容检查定时器
-	currentCapacity  int          // 当前实际容量
-	// 扩容检查计数器
-	submitCounter atomic.Int64 // Submit 调用计数器
+	// 扩缩容相关
+	currentCapacity int          // 当前实际容量
+	submitCounter   atomic.Int64 // Submit 调用计数器（用于扩容和缩容检查）
+	lastShrinkCheck atomic.Int64 // 上次缩容检查时间（纳秒）
 }
 
 // ProviderConfig 任务池配置
@@ -123,11 +122,6 @@ func NewAntsExecutor(config *ProviderConfig) (*AntsPoolExecutor, error) {
 		},
 	}
 
-	// 启动缩容检查协程
-	if config.EnableAutoShrink {
-		provider.startShrinkChecker()
-	}
-
 	return provider, nil
 }
 
@@ -162,6 +156,9 @@ func (p *AntsPoolExecutor) Submit(ctx context.Context, sourceID model.SourceID, 
 	if p.config.ScaleCheckInterval > 0 && p.submitCounter.Add(1)%p.config.ScaleCheckInterval == 0 {
 		p.autoScale()
 	}
+
+	// 自动缩容检查（基于时间间隔，避免每次 Submit 都检查）
+	p.maybeCheckAndShrink()
 
 	// P0-01: 添加 panic 恢复
 	return p.pool.Submit(func() {
@@ -268,11 +265,6 @@ func (p *AntsPoolExecutor) Close() error {
 		return nil
 	}
 
-	// 停止缩容检查定时器
-	if p.scaleCheckTicker != nil {
-		p.scaleCheckTicker.Stop()
-	}
-
 	// 释放池资源
 	p.pool.Release()
 	return nil
@@ -337,18 +329,28 @@ func (p *AntsPoolExecutor) autoScale() {
 	}
 }
 
-// startShrinkChecker 启动缩容检查协程
-func (p *AntsPoolExecutor) startShrinkChecker() {
-	p.scaleCheckTicker = time.NewTicker(p.config.ShrinkCheckInterval)
+// maybeCheckAndShrink 检查是否需要缩容（在 Submit 中调用）
+// 使用时间间隔控制检查频率，避免每次 Submit 都检查
+func (p *AntsPoolExecutor) maybeCheckAndShrink() {
+	if !p.config.EnableAutoShrink || p.isClosed() {
+		return
+	}
 
-	go func() {
-		for range p.scaleCheckTicker.C {
-			if p.isClosed() {
-				return
-			}
-			p.checkAndShrink()
-		}
-	}()
+	now := time.Now().UnixNano()
+	lastCheck := p.lastShrinkCheck.Load()
+
+	// 检查是否达到时间间隔
+	if now-lastCheck < p.config.ShrinkCheckInterval.Nanoseconds() {
+		return
+	}
+
+	// CAS 更新检查时间（只有一个 goroutine 会执行检查）
+	if !p.lastShrinkCheck.CompareAndSwap(lastCheck, now) {
+		return
+	}
+
+	// 执行缩容检查
+	p.checkAndShrink()
 }
 
 // checkAndShrink 检查并执行缩容

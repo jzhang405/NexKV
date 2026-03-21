@@ -20,26 +20,52 @@ import (
 
 // benchmarkShardItem 基准测试用的 ShardItem
 type benchmarkShardItem struct {
+	*model.BaseTask[struct{}]
 	shardID int
+}
+
+// BenchmarkShardItemPool 使用 model.GetPooledTask 的对象池
+var BenchmarkShardItemPool = sync.Pool{
+	New: func() any {
+		return &benchmarkShardItem{
+			BaseTask: model.GetPooledTask(
+				model.TaskPriorityNormal,
+				0, // 不重试
+				func(ctx context.Context, pipeline model.TaskRunnerContext) (struct{}, error) {
+					return struct{}{}, nil
+				},
+			),
+		}
+	},
+}
+
+func NewBenchmarkShardItem(shardID int) *benchmarkShardItem {
+	item := BenchmarkShardItemPool.Get().(*benchmarkShardItem)
+	item.shardID = shardID
+	return item
+}
+
+// ReleaseBenchmarkShardItem 归还对象到池
+func ReleaseBenchmarkShardItem(item *benchmarkShardItem) {
+	// 先归还 BaseTask 到对象池
+	model.ReleasePooledTask(item.BaseTask)
+	// 再归还 wrapper
+	BenchmarkShardItemPool.Put(item)
 }
 
 func (i *benchmarkShardItem) ShardID() int {
 	return i.shardID
 }
 
-func (i *benchmarkShardItem) MaxRetries() int {
-	return 0
-}
-
-func (i *benchmarkShardItem) IncAttempts() int {
-	return 0
+func (i *benchmarkShardItem) Execute(ctx context.Context, pipeline model.TaskRunnerContext) (struct{}, error) {
+	return struct{}{}, nil
 }
 
 // ==========================================
 // ShardTask 基准测试
 // ==========================================
 
-// BenchmarkShardTask_Enqueue 测试入队性能
+// BenchmarkShardTask_Enqueue 测试入队性能（使用简单 int 避免对象分配干扰）
 func BenchmarkShardTask_Enqueue(b *testing.B) {
 	task := NewShardTask("bench-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
 		return TaskPassed
@@ -48,9 +74,156 @@ func BenchmarkShardTask_Enqueue(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
-		item := &benchmarkShardItem{shardID: i}
+	i := 0
+	for b.Loop() {
+		i++
+		// 使用简单 int，真实测试 Enqueue 性能（不含对象分配）
+		_ = task.Enqueue(i)
+	}
+}
+
+// BenchmarkShardTask_Enqueue_WithObject 测试入队性能（使用真实对象，包含分配开销）
+func BenchmarkShardTask_Enqueue_WithObject(b *testing.B) {
+	task := NewShardTask("bench-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	i := 0
+	for b.Loop() {
+		i++
+		item := NewBenchmarkShardItem(i)
 		_ = task.Enqueue(item)
+	}
+}
+
+// ==========================================
+// 轻量级 ShardItem（优化分配）
+// ==========================================
+
+// lightweightShardItem 轻量级 ShardItem，减少分配开销
+type lightweightShardItem struct {
+	shardID int
+}
+
+func (i *lightweightShardItem) ShardID() int { return i.shardID }
+
+// BenchmarkShardTask_Enqueue_Lightweight 测试入队性能（轻量级对象）
+func BenchmarkShardTask_Enqueue_Lightweight(b *testing.B) {
+	task := NewShardTask("bench-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	i := 0
+	for b.Loop() {
+		i++
+		// 只分配 shardID 字段，无其他开销
+		item := &lightweightShardItem{shardID: i}
+		_ = task.Enqueue(item)
+	}
+}
+
+// ==========================================
+// 零分配版本：使用 sync.Pool 和预分配切片
+// ==========================================
+
+var lightweightItemPool = sync.Pool{
+	New: func() any {
+		return &lightweightShardItem{}
+	},
+}
+
+// BenchmarkShardTask_Enqueue_ZeroAlloc 测试零分配入队（使用对象池）
+// 注意：这仅适用于可复用对象的场景
+func BenchmarkShardTask_Enqueue_ZeroAlloc(b *testing.B) {
+	task := NewShardTask("bench-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+
+	// 预分配对象池
+	for i := 0; i < 1000; i++ {
+		lightweightItemPool.Put(&lightweightShardItem{})
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	i := 0
+	for b.Loop() {
+		i++
+		item := lightweightItemPool.Get().(*lightweightShardItem)
+		item.shardID = i
+		_ = task.Enqueue(item)
+		// 注意：实际场景需要在任务处理完后归还到池
+		// 这里仅演示零分配 Enqueue 的理论性能
+	}
+}
+
+// BenchmarkShardTask_Enqueue_LightweightBatch 批量入队测试
+func BenchmarkShardTask_Enqueue_LightweightBatch(b *testing.B) {
+	task := NewShardTask("bench-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	// 批量提交：减少锁获取次数
+	batchSize := 100
+	items := make([]any, batchSize)
+	for i := 0; i < b.N; i += batchSize {
+		// 准备批次
+		for j := 0; j < batchSize && i+j < b.N; j++ {
+			items[j] = &lightweightShardItem{shardID: i + j}
+		}
+		// 批量入队
+		for j := 0; j < batchSize && i+j < b.N; j++ {
+			_ = task.Enqueue(items[j])
+		}
+	}
+}
+
+// BenchmarkShardTask_FullLifecycle_Pooled 完整生命周期（获取-执行-归还）
+func BenchmarkShardTask_FullLifecycle_Pooled(b *testing.B) {
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	i := 0
+	for b.Loop() {
+		i++
+		item := NewBenchmarkShardItem(i)
+		// 模拟执行
+		item.Execute(context.Background(), nil)
+		// 归还到池
+		ReleaseBenchmarkShardItem(item)
+	}
+}
+
+// BenchmarkShardTask_FullLifecycle_New 完整生命周期（新建）
+func BenchmarkShardTask_FullLifecycle_New(b *testing.B) {
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	i := 0
+	for b.Loop() {
+		i++
+		item := &benchmarkShardItem{
+			BaseTask: model.NewBaseTask(
+				model.TaskPriorityNormal,
+				0,
+				func(ctx context.Context, pipeline model.TaskRunnerContext) (struct{}, error) {
+					return struct{}{}, nil
+				},
+			),
+			shardID: i,
+		}
+		// 模拟执行
+		item.Execute(context.Background(), nil)
 	}
 }
 
@@ -62,14 +235,14 @@ func BenchmarkShardTask_PeekDequeue(b *testing.B) {
 
 	// 预填充队列
 	for i := 0; i < 10000; i++ {
-		item := &benchmarkShardItem{shardID: i}
+		item := NewBenchmarkShardItem(i)
 		_ = task.Enqueue(item)
 	}
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		var item any
 		if task.Peek(&item) {
 			task.Dequeue(&item)
@@ -116,7 +289,7 @@ func BenchmarkTaskScheduler_SingleTask_SingleCore(b *testing.B) {
 		go func(workerID int) {
 			defer wg.Done()
 			for j := 0; j < b.N/10; j++ {
-				item := &benchmarkShardItem{shardID: workerID}
+				item := NewBenchmarkShardItem(workerID)
 				_ = scheduler.EnqueueWithShard(item, "bench-task")
 			}
 		}(i)
@@ -164,7 +337,7 @@ func BenchmarkTaskScheduler_SingleTask_FourCores(b *testing.B) {
 		go func(workerID int) {
 			defer wg.Done()
 			for j := 0; j < b.N/10; j++ {
-				item := &benchmarkShardItem{shardID: workerID}
+				item := NewBenchmarkShardItem(workerID)
 				_ = scheduler.EnqueueWithShard(item, "bench-task")
 			}
 		}(i)
@@ -211,7 +384,7 @@ func BenchmarkTaskScheduler_SingleTask_EightCores(b *testing.B) {
 		go func(workerID int) {
 			defer wg.Done()
 			for j := 0; j < b.N/10; j++ {
-				item := &benchmarkShardItem{shardID: workerID}
+				item := NewBenchmarkShardItem(workerID)
 				_ = scheduler.EnqueueWithShard(item, "bench-task")
 			}
 		}(i)
@@ -262,7 +435,7 @@ func BenchmarkTaskScheduler_ShardRouting_Fixed(b *testing.B) {
 		go func(shardID int) {
 			defer wg.Done()
 			for j := 0; j < b.N/4; j++ {
-				item := &benchmarkShardItem{shardID: shardID}
+				item := NewBenchmarkShardItem(shardID)
 				_ = scheduler.EnqueueWithShard(item, "bench-task")
 			}
 		}(i)
@@ -308,7 +481,7 @@ func BenchmarkTaskScheduler_ShardRouting_Dynamic(b *testing.B) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < b.N/10; j++ {
-				item := &benchmarkShardItem{shardID: 0} // 动态负载均衡
+				item := NewBenchmarkShardItem(0) // 动态负载均衡
 				_ = scheduler.EnqueueWithShard(item, "bench-task")
 			}
 		}()
@@ -363,7 +536,7 @@ func BenchmarkTaskScheduler_MultiTasks(b *testing.B) {
 			defer wg.Done()
 			taskName := fmt.Sprintf("task-%d", taskID)
 			for j := 0; j < b.N/4; j++ {
-				item := &benchmarkShardItem{shardID: taskID}
+				item := NewBenchmarkShardItem(taskID)
 				_ = scheduler.EnqueueWithShard(item, taskName)
 			}
 		}(i)
@@ -417,7 +590,7 @@ func BenchmarkTaskScheduler_Scalability(b *testing.B) {
 				go func(shardID int) {
 					defer wg.Done()
 					for j := 0; j < b.N/cores; j++ {
-						item := &benchmarkShardItem{shardID: shardID}
+						item := NewBenchmarkShardItem(shardID)
 						_ = scheduler.EnqueueWithShard(item, "bench-task")
 					}
 				}(i)
@@ -469,7 +642,7 @@ func BenchmarkTaskScheduler_ConcurrentSubmit(b *testing.B) {
 			if shardID > 100 {
 				shardID = 0
 			}
-			item := &benchmarkShardItem{shardID: shardID}
+			item := NewBenchmarkShardItem(shardID)
 			_ = scheduler.EnqueueWithShard(item, "bench-task")
 		}
 	})

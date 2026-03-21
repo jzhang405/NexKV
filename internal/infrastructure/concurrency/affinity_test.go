@@ -88,7 +88,7 @@ func BenchmarkPerCoreExecutor_WithAffinity(b *testing.B) {
 
 	// 重置计时器，现在开始测量真实的绑核后性能
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = executor.Submit(context.Background(), model.SourceDefault, model.TaskPriorityNormal, task)
 	}
 }

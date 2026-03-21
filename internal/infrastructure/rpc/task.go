@@ -27,7 +27,7 @@ type RPCCallTask struct {
 
 // NewRPCCallTask 创建单播调用任务
 func NewRPCCallTask(rpc service.RPCSync, to model.PeerID, req model.Message,
-	sourceID model.SourceID, timeout time.Duration) *RPCCallTask {
+	timeout time.Duration) *RPCCallTask {
 	task := &RPCCallTask{
 		rpc:     rpc,
 		to:      to,
@@ -36,11 +36,11 @@ func NewRPCCallTask(rpc service.RPCSync, to model.PeerID, req model.Message,
 	}
 
 	// 创建 BaseTask 并传入执行函数
-	task.BaseTask = model.NewBaseTask[service.ResponseMsg](
-		model.OpRPC,
+	task.BaseTask = model.NewBaseTask(
 		model.TaskPriorityNormal,
-		sourceID,
-		func(ctx context.Context, pipeline model.PipelineContext) (service.ResponseMsg, error) {
+
+		0, // maxRetries
+		func(ctx context.Context, pipeline model.TaskRunnerContext) (service.ResponseMsg, error) {
 			// 创建带超时的上下文
 			var cancel context.CancelFunc
 			if task.timeout > 0 {
@@ -115,11 +115,10 @@ func NewRPCBroadcastTask(
 		callback: callback,
 	}
 
-	task.BaseTask = model.NewBaseTask[service.AsyncBroadcastResult](
-		model.OpRPC,
+	task.BaseTask = model.NewBaseTask(
 		model.TaskPriorityNormal,
-		model.SourceBroadcast,
-		func(ctx context.Context, pipeline model.PipelineContext) (service.AsyncBroadcastResult, error) {
+		0, // maxRetries
+		func(ctx context.Context, pipeline model.TaskRunnerContext) (service.AsyncBroadcastResult, error) {
 			// 参数验证
 			if rpc == nil {
 				return service.AsyncBroadcastResult{}, service.ErrNilRPC
@@ -212,11 +211,10 @@ func NewRPCQuorumTask(
 		callback: callback,
 	}
 
-	task.BaseTask = model.NewBaseTask[service.QuorumResult](
-		model.OpRPC,
+	task.BaseTask = model.NewBaseTask(
 		model.TaskPriorityNormal,
-		model.SourceBroadcast,
-		func(ctx context.Context, pipeline model.PipelineContext) (service.QuorumResult, error) {
+		0, // maxRetries
+		func(ctx context.Context, pipeline model.TaskRunnerContext) (service.QuorumResult, error) {
 			// 参数验证
 			if rpc == nil {
 				return service.QuorumResult{}, service.ErrNilRPC
@@ -301,11 +299,10 @@ func NewRPCWriteVTask(
 		callback: callback,
 	}
 
-	task.BaseTask = model.NewBaseTask[service.WriteVResult](
-		model.OpRPC,
+	task.BaseTask = model.NewBaseTask(
 		model.TaskPriorityNormal,
-		model.SourceBroadcast,
-		func(ctx context.Context, pipeline model.PipelineContext) (service.WriteVResult, error) {
+		0, // maxRetries
+		func(ctx context.Context, pipeline model.TaskRunnerContext) (service.WriteVResult, error) {
 			// 参数验证
 			if rpc == nil {
 				return service.WriteVResult{}, service.ErrNilRPC
@@ -374,11 +371,10 @@ func NewRPCWriteVCallTask(
 		callback: callback,
 	}
 
-	task.BaseTask = model.NewBaseTask[service.WriteVResult](
-		model.OpRPC,
+	task.BaseTask = model.NewBaseTask(
 		model.TaskPriorityNormal,
-		model.SourceBroadcast,
-		func(ctx context.Context, pipeline model.PipelineContext) (service.WriteVResult, error) {
+		0, // maxRetries
+		func(ctx context.Context, pipeline model.TaskRunnerContext) (service.WriteVResult, error) {
 			// 参数验证
 			if rpc == nil {
 				return service.WriteVResult{}, service.ErrNilRPC
@@ -423,11 +419,10 @@ func NewRPCWriteVCallTask(
 // NewFailedRPCTask 创建失败的 RPC 任务
 // 用于立即返回错误的场景
 func NewFailedRPCTask(err error) *model.BaseTask[service.ResponseMsg] {
-	return model.NewBaseTask[service.ResponseMsg](
-		model.OpRPC,
+	return model.NewBaseTask(
 		model.TaskPriorityNormal,
-		model.SourceRPCCallback,
-		func(ctx context.Context, pipeline model.PipelineContext) (service.ResponseMsg, error) {
+		0, // maxRetries
+		func(ctx context.Context, pipeline model.TaskRunnerContext) (service.ResponseMsg, error) {
 			return service.ResponseMsg{Err: err}, err
 		},
 	)

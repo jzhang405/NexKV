@@ -45,7 +45,7 @@ test: test-unit integration-test-race
 ## test-unit: 运行单元测试（组件级测试，快速反馈）
 test-unit:
 	@echo "运行单元测试..."
-	$(GO) test -v -short -race -timeout 5m ./internal/...
+	$(GO) test -v -short -race -failfast -timeout 5m ./internal/...
 
 ## test-e2e: 运行 E2E 测试框架测试
 # DDD 重构说明：E2E 测试待重新实现
@@ -65,12 +65,12 @@ test-e2e-coverage:
 ## integration-test: 运行集成测试框架测试（pkg/test/framework）
 integration-test:
 	@echo "运行集成测试框架测试..."
-	$(GO) test -v -timeout 10m ./test/integration/scenarios/...
+	$(GO) test -v -failfast -timeout 10m ./test/integration/scenarios/...
 
 ## integration-test-race: 运行集成测试（带竞态检测）
 integration-test-race:
 	@echo "运行集成测试（带竞态检测）..."
-	$(GO) test -v -race -timeout 10m ./test/integration/scenarios/...
+	$(GO) test -v -race -failfast -timeout 10m ./test/integration/scenarios/...
 
 ## integration-test-coverage: 运行集成测试并生成覆盖率报告
 integration-test-coverage:
@@ -79,16 +79,6 @@ integration-test-coverage:
 	$(GO) tool cover -func=integration-coverage.out
 	$(GO) tool cover -html=integration-coverage.out -o integration-coverage.html
 	@echo "覆盖率报告已生成: integration-coverage.html"
-
-## test-perf: 运行性能测试（不含竞态检测）
-# DDD 重构说明：性能测试待重新实现
-test-perf:
-	@echo "性能测试待 DDD 重构后重新实现"
-
-## test-verbose: 运行详细测试
-test-verbose:
-	@echo "运行详细测试..."
-	$(GO) test -v ./...
 
 ## test-coverage: 运行测试并生成覆盖率报告
 test-coverage:

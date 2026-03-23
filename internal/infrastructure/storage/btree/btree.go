@@ -59,6 +59,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/internal/infrastructure/concurrency"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/wal"
 )
 
@@ -112,6 +113,21 @@ type BTree struct {
 	// Performance optimization
 	stats            *PageStats // 页面访问统计（热数据识别）
 	hotPageThreshold int64      // 热数据阈值（来自配置）
+
+	// Scheduler for concurrent write operations (方案 2：移除 Direct 模式)
+	scheduler *concurrency.TaskScheduler // Task scheduler for concurrent operations
+}
+
+// BTreeSchedulerAdapter 实现 TaskScheduler 接口
+type BTreeSchedulerAdapter struct {
+	scheduler *concurrency.TaskScheduler
+}
+
+func (a *BTreeSchedulerAdapter) EnqueueWithShard(item interface{}, taskName string) error {
+	if shardItem, ok := item.(concurrency.ShardItem); ok {
+		return a.scheduler.EnqueueWithShard(shardItem, taskName)
+	}
+	return fmt.Errorf("item does not implement ShardItem interface")
 }
 
 // OpenBTree opens or creates a BTree storage engine with persistence support.
@@ -211,6 +227,56 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		}
 	}
 
+	// 方案 2：初始化内置 TaskScheduler
+	// 使用自动检测的 CPU 核心数
+	schedulerCores := runtime.NumCPU()
+	btree.scheduler = concurrency.NewTaskScheduler("btree", schedulerCores)
+
+	// 注册 btree-set 任务
+	err := btree.scheduler.RegisterTask(
+		func(item any) concurrency.TaskStatus {
+			return concurrency.TaskPassed
+		},
+		"btree-set",
+		model.TaskPriorityNormal,
+		1, // 每个核心处理 1 个 shard
+	)
+	if err != nil {
+		// 清理资源
+		if chunkMgr != nil {
+			chunkMgr.Close()
+		}
+		if walImpl != nil {
+			walImpl.Close()
+		}
+		return nil, fmt.Errorf("register btree-set task: %w", err)
+	}
+
+	// 启动 TaskScheduler
+	executor, err := concurrency.NewPerCoreExecutor()
+	if err != nil {
+		// 清理资源
+		if chunkMgr != nil {
+			chunkMgr.Close()
+		}
+		if walImpl != nil {
+			walImpl.Close()
+		}
+		btree.scheduler.Stop()
+		return nil, fmt.Errorf("create per-core executor: %w", err)
+	}
+
+	if err := btree.scheduler.Start(executor); err != nil {
+		// 清理资源
+		if chunkMgr != nil {
+			chunkMgr.Close()
+		}
+		if walImpl != nil {
+			walImpl.Close()
+		}
+		return nil, fmt.Errorf("start scheduler: %w", err)
+	}
+
 	return btree, nil
 }
 
@@ -291,8 +357,18 @@ func (b *BTree) Set(ctx context.Context, key, value []byte) error {
 		return ErrClosed
 	}
 
-	// Leaf-Level Locking: 所有模式（纯内存 + 持久化）都使用新路径
-	// 99.37% 写入无需 Root CAS，大幅提升并发性能
+	// 方案 2：使用 SetWithRetryAndQueue（经过优化的版本）
+	// 使用内置 TaskScheduler，在快速路径失败时自动切换到队列模式
+	if b.scheduler != nil {
+		return b.SetWithRetryAndQueue(ctx, &BTreeSchedulerAdapter{scheduler: b.scheduler}, key, value)
+	}
+
+	// Fallback：如果没有 scheduler，使用 Direct 模式
+	return b.setDirect(ctx, key, value)
+}
+
+// setDirect 直接写入模式（fallback，当 scheduler 未初始化时）
+func (b *BTree) setDirect(ctx context.Context, key, value []byte) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -543,6 +619,12 @@ func (b *BTree) Close() error {
 
 	if b.closed {
 		return nil // Already closed
+	}
+
+	// 方案 2：停止内置 TaskScheduler
+	if b.scheduler != nil {
+		b.scheduler.Stop()
+		b.scheduler = nil
 	}
 
 	// Close ChunkManager

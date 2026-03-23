@@ -45,4 +45,32 @@ type ShardItem interface {
 	// IncAttempts 增加尝试次数并返回当前次数
 	// 返回值 > MaxRetries() 时表示已超过最大重试次数
 	IncAttempts() int
+
+	// TaskOrder 返回任务执行顺序（executionOrder），用于直接数组索引访问
+	// 替代 map 查找，提升性能（数组访问 vs 哈希计算）
+	TaskOrder() int
+}
+
+// BatchShardItem 可批量处理的 ShardItem
+//
+// 用于 TaskScheduler 批量优化场景，允许任务声明其批量处理偏好。
+// TaskScheduler 可以根据此接口动态调整批量大小，优化队列操作开销。
+//
+// 设计原则：
+// - 每个 TaskQueue 通过 PreferredBatchSize() 决定自己的批量大小
+// - 批量策略："有多少 batch 多少"（min(batchSize, queueLen)）
+// - 至少 2 个才批量，否则使用单个处理
+type BatchShardItem interface {
+	ShardItem
+
+	// BatchType 返回批量类型标识
+	// 用于 TaskScheduler 识别可批量处理的任务类型
+	// 例如："btree-set", "btree-get", "wal-append"
+	BatchType() string
+
+	// PreferredBatchSize 返回建议的批量大小
+	// 每个任务类型可以有自己的最优批量大小
+	// 返回值将作为 TaskScheduler 的批量上限
+	// 实际批量大小 = min(PreferredBatchSize(), queueLen)
+	PreferredBatchSize() int
 }

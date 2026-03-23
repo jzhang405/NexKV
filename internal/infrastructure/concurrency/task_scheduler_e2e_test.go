@@ -132,6 +132,10 @@ func (i *simpleShardItem) Execute(ctx context.Context, trCtx model.TaskRunnerCon
 	return i.BaseTask.Execute(ctx, trCtx)
 }
 
+func (i *simpleShardItem) TaskOrder() int {
+	return 0 // 默认 order 0
+}
+
 // ==========================================
 // Benchmark: 固定 ShardID vs 负载均衡
 // ==========================================

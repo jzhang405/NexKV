@@ -1,0 +1,100 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 611  of event 'cycles:P'
+# Event count (approx.): 13054832904
+#
+# Overhead  Command          Shared Object         Symbol                                                                                                  
+# ........  ...............  ....................  ........................................................................................................
+#
+    36.15%  btree_perf_sche  btree_perf_scheduler  [.] runtime.tryDeferToSpanScan
+            |          
+             --35.70%--runtime.tryDeferToSpanScan
+                       |          
+                       |--17.97%--runtime.scanObject
+                       |          |          
+                       |          |--14.21%--runtime.gcDrain
+                       |          |          runtime.gcBgMarkWorker.func2
+                       |          |          runtime.systemstack.abi0
+                       |          |          runtime.gcBgMarkWorker
+                       |          |          runtime.gcBgMarkStartWorkers.gowrap1
+                       |          |          runtime.goexit.abi0
+                       |          |          
+                       |           --3.76%--runtime.gcDrainN
+                       |                     runtime.gcAssistAlloc1
+                       |                     runtime.gcAssistAlloc.func2
+                       |                     runtime.systemstack.abi0
+                       |                     runtime.gcAssistAlloc
+                       |                     runtime.deductAssistCredit
+                       |                     runtime.mallocgc
+                       |                     |          
+                       |                     |--2.60%--runtime.makeslice
+                       |                     |          |          
+                       |                     |           --1.33%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.insertSlice[go.shape.[]uint8]
+                       |                     |                     |          
+                       |                     |                      --0.84%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).materialize
+                       |                     |                                github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Insert
+                       |                     |                                github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithLeafLock
+                       |                     |                                github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).SetWithRetryAndQueue
+                       |                     |                                main.runTest.func1
+                       |                     |                                main.runTest.gowrap3
+                       |                     |                                runtime.goexit.abi0
+                       |                     |          
+                       |                      --0.80%--runtime.newobject
+                       |                                |          
+                       |                                 --0.54%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.NewPageInfo
+                       |                                           github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithLeafLock
+                       |                                           github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).SetWithRetryAndQueue
+                       |                                           main.runTest.func1
+                       |                                           main.runTest.gowrap3
+                       |                                           runtime.goexit.abi0
+                       |          
+                       |--16.58%--runtime.wbBufFlush1
+                       |          runtime.wbBufFlush.func1
+                       |          runtime.systemstack.abi0
+                       |          runtime.wbBufFlush
+                       |          |          
+                       |          |--13.16%--runtime.bulkBarrierPreWrite
+                       |          |          runtime.typedslicecopy
+                       |          |          |          
+                       |          |          |--9.47%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.insertSlice[go.shape.[]uint8]
+                       |          |          |          |          
+                       |          |          |           --9.23%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).materialize
+                       |          |          |                     github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Insert
+                       |          |          |                     github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithLeafLock
+                       |          |          |                     |          
+                       |          |          |                      --8.91%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).SetWithRetryAndQueue
+                       |          |          |                                main.runTest.func1
+                       |          |          |                                main.runTest.gowrap3
+                       |          |          |                                runtime.goexit.abi0
+                       |          |          |          
+                       |          |          |--1.72%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).materialize
+                       |          |          |          github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Insert
+                       |          |          |          github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithLeafLock
+                       |          |          |          |          
+                       |          |          |           --1.68%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).SetWithRetryAndQueue
+                       |          |          |                     main.runTest.func1
+                       |          |          |                     main.runTest.gowrap3
+                       |          |          |                     runtime.goexit.abi0
+                       |          |          |          
+                       |          |          |--0.86%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).handleSplitSync
+                       |          |          |          github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithLeafLock
+                       |          |          |          |          
+                       |          |          |           --0.79%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).SetWithRetryAndQueue
+                       |          |          |                     main.runTest.func1
+                       |          |          |                     main.runTest.gowrap3
+                       |          |          |                     runtime.goexit.abi0
+                       |          |          |          
+                       |          |           --0.52%--github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*LeafPage).Split
+                       |          |                     github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).handleSplitSync
+                       |          |                     github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).setWithLeafLock
+                       |          |                     github.com/jzhang405/NexKV/internal/infrastructure/storage/btree.(*BTree).SetWithRetryAndQueue
+                       |          |                     main.runTest.func1
+                       |          |                     main.runTest.gowrap3
+                       |          |                     runtime.goexit.abi0
+                       |          |          
+                       |           --2.86%--gcWriteBarrier
+                       |                     |          
+                       |                     |--0.84%--fmt.(*pp).printArg

@@ -61,6 +61,10 @@ func (i *benchmarkShardItem) Execute(ctx context.Context, pipeline model.TaskRun
 	return struct{}{}, nil
 }
 
+func (i *benchmarkShardItem) TaskOrder() int {
+	return 0 // 默认 order 0
+}
+
 // ==========================================
 // ShardTask 基准测试
 // ==========================================

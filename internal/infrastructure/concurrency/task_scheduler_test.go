@@ -215,6 +215,10 @@ func (i *testShardItem) Execute(ctx context.Context, pipeline model.TaskRunnerCo
 	return struct{}{}, nil
 }
 
+func (i *testShardItem) TaskOrder() int {
+	return 0 // 默认 order 0
+}
+
 func TestTaskScheduler_ShardDistribution_Positive(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 4)
 
@@ -506,6 +510,79 @@ func TestShardTask_Enqueue_Success(t *testing.T) {
 	})
 	err := task.Enqueue("item")
 	assert.NoError(t, err)
+}
+
+func TestShardTask_PeekN(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+
+	// 测试空队列
+	items := make([]any, 3)
+	n := task.PeekN(items)
+	assert.Equal(t, 0, n)
+
+	// 入队 5 个元素
+	for i := range 5 {
+		err := task.Enqueue(fmt.Sprintf("item%d", i))
+		require.NoError(t, err)
+	}
+
+	// PeekN 3 个元素
+	n = task.PeekN(items)
+	assert.Equal(t, 3, n)
+	assert.Equal(t, "item0", items[0])
+	assert.Equal(t, "item1", items[1])
+	assert.Equal(t, "item2", items[2])
+
+	// 队列长度不变
+	assert.Equal(t, 5, task.QueueLen())
+
+	// PeekN 超过队列大小
+	moreItems := make([]any, 10)
+	n = task.PeekN(moreItems)
+	assert.Equal(t, 5, n)
+
+	// 验证前 3 个元素仍然是 item0, item1, item2
+	assert.Equal(t, "item0", moreItems[0])
+	assert.Equal(t, "item1", moreItems[1])
+	assert.Equal(t, "item2", moreItems[2])
+	assert.Equal(t, "item3", moreItems[3])
+	assert.Equal(t, "item4", moreItems[4])
+}
+
+func TestShardTask_DequeueN(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+
+	// 测试空队列
+	n := task.DequeueN(3)
+	assert.Equal(t, 0, n)
+
+	// 入队 5 个元素
+	for i := range 5 {
+		err := task.Enqueue(fmt.Sprintf("item%d", i))
+		require.NoError(t, err)
+	}
+
+	// DequeueN 3 个元素（丢弃）
+	n = task.DequeueN(3)
+	assert.Equal(t, 3, n)
+
+	// 队列长度减少
+	assert.Equal(t, 2, task.QueueLen())
+
+	// DequeueN 剩余元素
+	n = task.DequeueN(2)
+	assert.Equal(t, 2, n)
+
+	// 队列为空
+	assert.Equal(t, 0, task.QueueLen())
+
+	// DequeueN 空队列
+	n = task.DequeueN(1)
+	assert.Equal(t, 0, n)
 }
 
 // ==========================================
@@ -1195,6 +1272,10 @@ func (i *testShardItemForCoverage) ShardID() int {
 
 func (i *testShardItemForCoverage) Execute(ctx context.Context, pipeline model.TaskRunnerContext) (struct{}, error) {
 	return struct{}{}, nil
+}
+
+func (i *testShardItemForCoverage) TaskOrder() int {
+	return 0 // 默认 order 0
 }
 
 type mockExecutorForCoverage struct {

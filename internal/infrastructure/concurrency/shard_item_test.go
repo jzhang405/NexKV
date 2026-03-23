@@ -48,6 +48,10 @@ func (m *mockShardItem) IncAttempts() int {
 	return int(atomic.AddInt64(&m.attempts, 1))
 }
 
+func (m *mockShardItem) TaskOrder() int {
+	return 0 // 默认 order 0
+}
+
 // TestMockShardItem_VerifyInterfaceImplement 验证 mockShardItem 实现了 ShardItem 接口
 func TestMockShardItem_VerifyInterfaceImplement(t *testing.T) {
 	var _ ShardItem = (*mockShardItem)(nil)

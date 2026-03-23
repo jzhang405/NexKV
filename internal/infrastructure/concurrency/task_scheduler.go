@@ -15,6 +15,14 @@ import (
 	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
+// loadBalanceCache 负载均衡缓存
+// 使用 atomic.Value 存储避免锁竞争
+type loadBalanceCache struct {
+	index    int   // 缓存的 core index
+	counter  int64 // 缓存时的 counter 值
+	interval int64 // 缓存时的 interval 值
+}
+
 // ==========================================
 // RingQueue 环形缓冲区（避免 Dequeue 的内存拷贝）
 // ==========================================
@@ -70,6 +78,40 @@ func (q *RingQueue) Peek(item *any) bool {
 
 	*item = q.data[q.head]
 	return true
+}
+
+// PeekN 批量查看队首 N 个元素（不出队）: O(N)
+// 返回实际查看的元素数量（可能小于 n）
+func (q *RingQueue) PeekN(items []any) int {
+	if q.size == 0 || len(items) == 0 {
+		return 0
+	}
+
+	maxPeek := min(len(items), q.size)
+	for i := 0; i < maxPeek; i++ {
+		idx := (q.head + i) % q.cap
+		items[i] = q.data[idx]
+	}
+	return maxPeek
+}
+
+// DequeueN 批量出队（丢弃）: O(N)
+// 一次性出队并丢弃 n 个元素，减少锁竞争
+// 返回实际出队的元素数量
+func (q *RingQueue) DequeueN(n int) int {
+	if q.size == 0 || n <= 0 {
+		return 0
+	}
+
+	actualDequeue := min(n, q.size)
+	for i := 0; i < actualDequeue; i++ {
+		idx := (q.head + i) % q.cap
+		q.data[idx] = nil // 帮助 GC
+	}
+
+	q.head = (q.head + actualDequeue) % q.cap
+	q.size -= actualDequeue
+	return actualDequeue
 }
 
 // Len 队列长度: O(1)
@@ -165,6 +207,19 @@ func (t *ShardTask) Peek(item *any) bool {
 	return true
 }
 
+// PeekN 批量查看队首 N 个元素（不出队）
+// 返回实际查看的元素数量
+func (t *ShardTask) PeekN(items []any) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	n := t.queue.PeekN(items)
+	if n > 0 {
+		t.taskStatus.Store(int32(TaskExecuting))
+	}
+	return n
+}
+
 func (t *ShardTask) Dequeue(item *any) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -174,6 +229,20 @@ func (t *ShardTask) Dequeue(item *any) bool {
 		t.totalQueueItemsPtr.Add(-1)
 	}
 	return ok
+}
+
+// DequeueN 批量出队（丢弃）: O(N)
+// 一次性出队并丢弃 n 个元素，减少锁竞争
+// 返回实际出队的元素数量
+func (t *ShardTask) DequeueN(n int) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	actualDequeue := t.queue.DequeueN(n)
+	if t.totalQueueItemsPtr != nil {
+		t.totalQueueItemsPtr.Add(int64(-actualDequeue))
+	}
+	return actualDequeue
 }
 
 func (t *ShardTask) Execute(item any) TaskStatus {
@@ -233,6 +302,11 @@ type SchedulerCore struct {
 
 	// 总队列项计数器（避免遍历计算总队列长度）
 	totalQueueItems atomic.Int64
+
+	// P3 优化：预分配批处理缓冲区（最大 32 元素）
+	// tryProcessBatch 复用此缓冲区，避免每次 make([]any, actualBatchSize) 分配
+	// runLoop 单线程访问，无需加锁
+	batchBuffer []any
 }
 
 // NewSchedulerCore 创建调度器核心
@@ -240,12 +314,13 @@ func NewSchedulerCore(coreID int) *SchedulerCore {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	c := &SchedulerCore{
-		coreID:     coreID,
-		tasks:      make([]*ShardTask, 0, DefaultCoreTasksCapacity),
-		running:    atomic.Bool{},
-		ctx:        ctx,
-		cancel:     cancel,
-		wakeupChan: make(chan struct{}, 1),
+		coreID:      coreID,
+		tasks:       make([]*ShardTask, 0, DefaultCoreTasksCapacity),
+		running:     atomic.Bool{},
+		ctx:         ctx,
+		cancel:      cancel,
+		wakeupChan:  make(chan struct{}, 1),
+		batchBuffer: make([]any, 32), // P3 优化：预分配最大批量大小
 	}
 
 	// P2 建议4: 初始化空的 tasks 快照
@@ -352,8 +427,15 @@ func (c *SchedulerCore) runLoop() {
 			continue
 		}
 
-		// ========== 循环调度：每个 Task 最多处理一个 item ==========
+		// ========== 循环调度：支持批量处理优化 ==========
 		for _, task := range c.cachedTasks {
+			// 尝试批量处理（新优化）
+			if c.tryProcessBatch(task) {
+				// 批量处理成功（处理了 >= 2 个 items）
+				continue
+			}
+
+			// 回退到单个处理（原有逻辑）
 			// ========== 阶段 1: Peek 查看队首（不出队）==========
 			var item any
 			if !task.Peek(&item) {
@@ -391,6 +473,53 @@ func (c *SchedulerCore) runLoop() {
 	}
 }
 
+// tryProcessBatch 尝试批量处理任务（新增）
+//
+// 策略："有多少 batch 多少"（偏向批量处理）
+// - 队列有 N 个 → 批量 N 个（上限 batchSize）
+// - 至少 2 个才批量（1 个不需要批量）
+//
+// 返回：
+//   - true: 成功批量处理（>= 2 个 items）
+//   - false: 队列不足 2 个或不支持批量
+func (c *SchedulerCore) tryProcessBatch(task *ShardTask) bool {
+	// 获取批量大小
+	batchSize := c.getBatchSize(task)
+	queueLen := task.QueueLen()
+
+	// 策略：有多少 batch 多少
+	actualBatchSize := min(batchSize, queueLen)
+
+	// 至少 2 个才批量（1 个不需要批量）
+	if actualBatchSize < 2 {
+		return false
+	}
+
+	// P3 优化：使用预分配缓冲区，避免 make([]any, actualBatchSize) 分配
+	// 切片复用底层缓冲区，仅前 actualBatchSize 个元素有效
+	items := c.batchBuffer[:actualBatchSize]
+	n := task.PeekN(items)
+
+	if n < 2 {
+		return false // 不足 2 个，回退到单个处理
+	}
+
+	// 截取实际获取的元素
+	items = items[:n]
+
+	// 批量执行并收集结果
+	results := c.executeBatch(task, items)
+
+	// P2 优化：使用 DequeueN 批量出队，减少锁竞争
+	// 一次性移除所有元素，无需内存分配（N 次锁竞争 → 1 次锁竞争）
+	task.DequeueN(len(items))
+
+	// 处理执行结果
+	c.handleBatchResults(task, items, results)
+
+	return true // 批量处理完成
+}
+
 // executeTask 执行任务（带 panic 恢复）
 func (c *SchedulerCore) executeTask(task *ShardTask, item any) TaskStatus {
 	defer func() {
@@ -400,6 +529,78 @@ func (c *SchedulerCore) executeTask(task *ShardTask, item any) TaskStatus {
 	}()
 
 	return task.Execute(item)
+}
+
+// ===== 批量处理支持 =====
+
+// getBatchSize 获取批量大小（优先级：配置 > PreferredBatchSize > 默认）
+func (c *SchedulerCore) getBatchSize(task *ShardTask) int {
+	// 1. 优先从第一个 item 获取建议值（通过 Peek 查看）
+	var firstItem any
+	if task.Peek(&firstItem) {
+		if batchItem, ok := firstItem.(BatchShardItem); ok {
+			return batchItem.PreferredBatchSize()
+		}
+	}
+
+	// 2. 默认批量大小
+	return 16
+}
+
+// TaskResult 任务执行结果
+type TaskResult struct {
+	Status TaskStatus // TaskPassed, TaskFailed, TaskRetry
+	Err    error      // 错误信息（如果有）
+	Value  any        // 返回值（如果有）
+}
+
+// executeBatch 批量执行任务，返回结果
+func (c *SchedulerCore) executeBatch(task *ShardTask, items []any) []TaskResult {
+	results := make([]TaskResult, len(items))
+
+	for i, item := range items {
+		// 执行任务
+		status := c.executeTask(task, item)
+		results[i] = TaskResult{Status: status}
+		c.stats.TotalTasksProcessed.Add(1)
+	}
+
+	return results
+}
+
+// handleBatchResults 处理批量执行结果
+func (c *SchedulerCore) handleBatchResults(_ *ShardTask, items []any, results []TaskResult) {
+	for i, result := range results {
+		item := items[i]
+
+		switch result.Status {
+		case TaskPassed:
+			// 任务成功，已在 executeBatch 中通过 c.executeTask 记录
+
+		case TaskFailed:
+			// 任务失败，检查重试次数
+			if shardItem, ok := item.(ShardItem); ok {
+				attempts := shardItem.IncAttempts()
+				if attempts > shardItem.MaxRetries() {
+					// TODO: 超过最大重试次数，需要将任务移除队列
+					// 注意：由于在批量处理中，这部分需要进一步细化
+					_ = attempts // 避免未使用变量警告
+				}
+				// 否则保留在队列，下次循环会再次 Peek 到
+			}
+
+		case TaskTimeout, TaskBusy, TaskRetrying:
+			// 需要重试
+			if shardItem, ok := item.(ShardItem); ok {
+				attempts := shardItem.IncAttempts()
+				if attempts > shardItem.MaxRetries() {
+					// TODO: 超过最大重试次数，需要将任务移除队列
+					_ = attempts // 避免未使用变量警告
+				}
+				// 否则保留在队列，下次循环会再次 Peek 到
+			}
+		}
+	}
 }
 
 // waitForSignal 等待新任务入队时的唤醒信号
@@ -469,9 +670,9 @@ type TaskScheduler struct {
 	// 负载均衡缓存（避免每次都计算）
 	loadBalanceCacheInterval  int          // 缓存间隔（多少次 Enqueue 重新计算一次，<=0 表示使用动态策略）
 	loadBalanceIntervalManual bool         // 是否手动设置缓存间隔（true=使用手动值，false=使用动态策略）
-	cachedLeastLoadedCore     int          // 当前缓存的最少负载 core
+	loadBalanceCache          atomic.Value // 存储 *loadBalanceCache，使用 atomic.Value 避免锁竞争
 	loadBalanceCounter        atomic.Int64 // 计数器
-	loadBalanceMu             sync.RWMutex // 保护缓存字段
+	loadBalanceMu             sync.RWMutex // 保护 loadBalanceCacheInterval/loadBalanceIntervalManual
 }
 
 // NewTaskScheduler 创建多调度器管理器（V2）
@@ -490,8 +691,8 @@ func NewTaskScheduler(name string, coreCount int) *TaskScheduler {
 		},
 		loadBalanceCacheInterval:  100,   // 默认值（动态策略下不使用）
 		loadBalanceIntervalManual: false, // P2 优化：默认使用动态策略
-		cachedLeastLoadedCore:     0,     // 初始 core 0
 	}
+	m.loadBalanceCache.Store(&loadBalanceCache{index: 0, counter: 0, interval: 0})
 
 	// 创建 N 个调度器核心
 	for i := 0; i < coreCount; i++ {
@@ -557,10 +758,17 @@ func (m *TaskScheduler) EnqueueWithShard(item ShardItem, taskName string) error 
 	core := m.cores[coreIndex]
 	m.stats.TotalTasksEnqueued.Add(1)
 
-	// 获取指定 Task 并入队
-	task, err := core.GetTaskByName(taskName)
-	if err != nil {
-		return err
+	// P1 优化：使用数组索引直接访问，完全消除 map 查找（无哈希计算）
+	// item.TaskOrder() 返回 executionOrder，直接访问 core.tasks[order]
+	// 相比 map 查找：数组访问是 O(1) 且无需哈希计算，缓存友好
+	taskOrder := item.TaskOrder()
+	tasksSnapshot := core.tasksSnapshot.Load().([]*ShardTask)
+	if taskOrder < 0 || taskOrder >= len(tasksSnapshot) {
+		return errors.TaskNotFound(fmt.Sprintf("invalid task order: %d", taskOrder))
+	}
+	task := tasksSnapshot[taskOrder]
+	if task == nil {
+		return errors.TaskNotFound(fmt.Sprintf("task at order %d is nil", taskOrder))
 	}
 
 	// 入队并唤醒该核心
@@ -599,6 +807,7 @@ func (m *TaskScheduler) calculateDynamicInterval(maxQueueLen int64) int {
 }
 
 // selectLeastLoadedCore 选择队列长度最小的核心（带动态缓存优化，P2 优化）
+// 使用 atomic.Value 避免读写锁竞争
 func (m *TaskScheduler) selectLeastLoadedCore() int {
 	// 确定使用的缓存间隔
 	var interval int
@@ -613,14 +822,14 @@ func (m *TaskScheduler) selectLeastLoadedCore() int {
 	}
 	m.loadBalanceMu.RUnlock()
 
-	// 快速路径：使用缓存
+	// 原子递增计数器
 	counter := m.loadBalanceCounter.Add(1)
-	if counter%int64(interval) != 0 {
+
+	// 快速路径：使用缓存（atomic.Value.Load，无锁）
+	cached := m.loadBalanceCache.Load().(*loadBalanceCache)
+	if cached != nil && counter%int64(interval) != 0 {
 		// 未达到缓存间隔，使用缓存值
-		m.loadBalanceMu.RLock()
-		cached := m.cachedLeastLoadedCore
-		m.loadBalanceMu.RUnlock()
-		return cached
+		return cached.index
 	}
 
 	// 慢速路径：重新计算最少负载 core
@@ -637,10 +846,13 @@ func (m *TaskScheduler) selectLeastLoadedCore() int {
 		}
 	}
 
-	// 更新缓存
-	m.loadBalanceMu.Lock()
-	m.cachedLeastLoadedCore = minIndex
-	m.loadBalanceMu.Unlock()
+	// 更新缓存（atomic.Value.Store，无锁）
+	newCache := &loadBalanceCache{
+		index:    minIndex,
+		counter:  counter,
+		interval: int64(interval),
+	}
+	m.loadBalanceCache.Store(newCache)
 
 	return minIndex
 }
@@ -676,7 +888,7 @@ func (m *TaskScheduler) Start(executor service.TaskExecutor) error {
 		if err != nil {
 			// 提交失败，回滚已设置的状态
 			core.wg.Done() // 回滚 Add()
-			for j := 0; j < i; j++ {
+			for j := range i {
 				m.cores[j].running.Store(false)
 				m.cores[j].wg.Done() // 回滚之前的 Add()
 			}

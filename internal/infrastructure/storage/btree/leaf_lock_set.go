@@ -7,23 +7,25 @@ package btree
 import (
 	"context"
 	"fmt"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree/offheap"
 )
 
-// setWithLeafLock 实现 Leaf-Level Locking 写入路径
-// 这是性能优化的核心：99.37% 的写入只需要 Leaf CAS，无需 Root CAS
+// setWithLeafLock 实现 Leaf-Level Locking 写入路径（Off-Heap 模式）
 //
 // 核心流程：
 // 1. findLeafPageRef：查找路径和 PageRef（只读，不克隆）
 // 2. Leaf.Lock：获取叶子节点锁
-// 3. copy：仅克隆叶子节点（使用 Delta Chain）
-// 4. Leaf CAS：原子替换叶子节点
+// 3. OffHeap Insert：使用 OffHeapAdapter.InsertToOffHeap() 插入
+// 4. Leaf CAS：原子替换叶子节点（如果 pageID 变化）
 // 5. Leaf.Unlock：释放锁
 // 6. 检查分裂：如果需要，调用分裂逻辑
 //
-// 性能优势：
-// - 路径克隆：O(log n) → O(1)（只克隆叶子）
-// - CAS 粒度：Root（全局竞争）→ Leaf（局部竞争）
-// - Root CAS 频率：100% → 0.001%（仅在树高度增加时）
+// Off-Heap 变更：
+// - 不再使用 Delta Chain（CloneWithDelta）
+// - 直接使用 OffHeapAdapter.InsertToOffHeap()
+// - pageID 可能变化（update 场景）
 func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 	// Step 1: 查找 PageRef 和路径（只读，不克隆）
 	leafRef, path, err := b.findLeafPageRef(ctx, key)
@@ -53,35 +55,21 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 		return fmt.Errorf("leaf page info is nil")
 	}
 
-	// Step 4: 验证并克隆叶子节点（只克隆 Leaf，不克隆路径）
-	// 重要：必须在锁保护下验证类型，因为分裂可能在获取锁前发生
-	oldPage := oldInfo.GetPage()
-	if oldPage == nil {
+	// Step 4: 验证页面已加载（Off-Heap 模式）
+	if !oldInfo.IsPageLoaded() {
 		return fmt.Errorf("leaf page not loaded")
 	}
 
-	leafPage, ok := oldPage.(*LeafPage)
-	if !ok || leafPage == nil {
-		// 类型验证失败：页面在获取锁后被修改了（如分裂操作）
-		// 返回 ErrRetry 让外层重试查找
-		return ErrRetry
-	}
-
-	// 使用 Delta Chain 克隆（写时复制优化）
-	newLeafPage := leafPage.CloneWithDelta()
-	if newLeafPage == nil {
-		return fmt.Errorf("clone leaf page failed")
-	}
-
-	// Step 5: 插入键值对
-	_, err = newLeafPage.Insert(key, value)
+	// Step 5: Off-Heap 插入（直接修改，不需要克隆）
+	oldPageID := model.PageID(oldInfo.GetPageID())
+	newPageID, splitRequired, err := b.offheapAdapter.InsertToOffHeap(oldPageID, key, value)
 	if err != nil {
-		return fmt.Errorf("insert into leaf: %w", err)
+		return fmt.Errorf("offheap insert: %w", err)
 	}
 
-	// Step 6: 创建新的 PageInfo
+	// Step 6: 创建新的 PageInfo（Off-Heap 模式）
 	newInfo := NewPageInfo()
-	newInfo.SetPage(newLeafPage)
+	newInfo.SetNodeRef(offheap.NewNodeRef(uint32(newPageID), true)) // true = isLeaf
 	// 继承其他属性
 	newInfo.SetPos(oldInfo.GetPos())
 	if oldInfo.IsDirty() {
@@ -89,18 +77,24 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 	}
 
 	// Step 7: Leaf-Level CAS（在锁保护下，几乎不会失败）
-	// tryLock 已阻止其他线程修改同一 Leaf
-	// ABA 问题被锁机制自然解决，无需版本号
+	// 注意：如果 pageID 变化（update 场景），CAS 会失败，需要更新 PageRefCache
 	if !leafRef.ReplacePage(oldInfo, newInfo) {
 		// CAS 失败（极少发生），返回重试
 		return ErrRetry
 	}
 
-	// Step 8: 检查是否需要分裂（同步，在锁保护下）
-	if newLeafPage.NumKeys() > splitThreshold {
-		// 需要分裂，调用分裂逻辑
+	// Step 8: 如果 pageID 变化，更新 PageRefCache
+	if newPageID != oldPageID {
+		// update 场景：删除旧引用，添加新引用
+		b.pageRefCache.Delete(oldPageID)
+		b.pageRefCache.Update(newPageID, leafRef)
+	}
+
+	// Step 9: 检查是否需要分裂（同步，在锁保护下）
+	if splitRequired {
+		// 需要分裂，调用 Off-Heap 分裂逻辑
 		// 注意：分裂会释放当前锁，按深度顺序获取新的锁
-		if err := b.handleSplitSync(leafRef, newInfo, path); err != nil {
+		if err := b.handleSplitOffHeapSync(leafRef, newInfo, newPageID, path); err != nil {
 			// 如果是 ErrRetry，直接返回（不包装）
 			if err == ErrRetry {
 				return ErrRetry
@@ -109,7 +103,7 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 		}
 	}
 
-	// Step 9: 持久化集成（仅持久化模式）
+	// Step 10: 持久化集成（仅持久化模式）
 	// Leaf-Level Locking 完成后，需要持久化整个树
 	if b.chunkMgr != nil {
 		// 获取全局写锁，防止并发修改干扰持久化
@@ -378,4 +372,27 @@ func (b *BTree) splitRootSync(leftLeafRef *PageRef, rightLeafInfo *PageInfo, spl
 	rightRef.SetParentRef(b.rootRef.PageRef)
 
 	return nil
+}
+
+// handleSplitOffHeapSync 处理叶子节点分裂（Off-Heap 模式，同步，带锁管理）
+//
+// 参数：
+//
+//	leafRef - 叶子节点的 PageRef
+//	leafInfo - 叶子节点的 PageInfo
+//	leafPageID - 叶子节点的 PageID
+//	path - 从 Root 到 Leaf 的路径
+//
+// 返回：
+//
+//	error - 错误信息（ErrRetry 表示需要重试）
+func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, leafPageID model.PageID, path []*PageInfo) error {
+	// TODO: 实现 Off-Heap 分裂逻辑
+	// 1. 调用 OffHeapAdapter.SplitOffHeapLeafPage(pageID)
+	// 2. 创建左右子节点的 PageRef
+	// 3. 更新父节点（如果需要）
+	// 4. 更新 PageRefCache
+
+	// 暂时返回未实现错误
+	return ErrNotImplemented
 }

@@ -369,32 +369,31 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 // Get retrieves a value by key with lazy loading support.
 //
 // This method implements the read path of the BTree:
-// 1. Find the path from Root to Leaf using searchPath()
-// 2. Lazy load pages at each level
-// 3. Search the leaf page for the key
-// 4. Return the value if found, or ErrKeyNotFound if not
+// 1. Find the path from Root to Leaf using searchPathWithRefs() (Off-Heap mode)
+// 2. Get the leaf PageRef and search for the key
+// 3. Return the value if found, or ErrKeyNotFound if not
 //
 // Performance:
 // - O(log n) page traversals
-// - Lazy loading: only pages needed are loaded from disk
-// - Lock-free reads after initial page load
+// - Off-Heap storage: no page loading overhead
+// - Lock-free reads using PageRefCache
 func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if b.closed {
 		return nil, ErrClosed
 	}
 
-	// Find the path to the leaf page using searchPath
-	path, err := b.searchPath(ctx, key)
+	// Off-Heap 模式：使用 searchPathWithRefs
+	leafRef, path, err := b.findLeafPageRef(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("search path: %w", err)
+		return nil, fmt.Errorf("find leaf ref: %w", err)
 	}
 
-	if len(path) == 0 {
+	if len(path) == 0 || leafRef == nil {
 		return nil, ErrKeyNotFound
 	}
 
-	// Get the last element in the path (leaf page)
-	leafInfo := path[len(path)-1]
+	// 获取叶子节点的 PageInfo
+	leafInfo := leafRef.GetPageInfo()
 	if leafInfo == nil {
 		return nil, ErrKeyNotFound
 	}

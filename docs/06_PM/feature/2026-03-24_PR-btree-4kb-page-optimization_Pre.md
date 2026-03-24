@@ -29,10 +29,14 @@
 #### 2.1 背景
 
 - **业务场景**：NexKV BTree 存储引擎在高并发写密集场景下存在内存复制开销大、缓存命中率低的问题
-- **现有性能**（2026-03-23 实测，GOGC=500）：
+- **现有性能**（纯内存模式，GOGC=500，来源：MEMORY.md 2026-03-18）：
   - 单线程：484K ops/sec
   - 8 线程：530K ops/sec
   - **问题**：并发扩展性差（8线程仅提升 9.5%）
+- **对比数据**（TaskScheduler 模式，来源：并发优化 PR 2026-03-23）：
+  - 单线程：591K ops/sec
+  - 8 线程：2.92M ops/sec
+  - **说明**：本次 P0 优化基于纯内存模式基准，不含 TaskScheduler 优化
 - **现有问题**：
   1. **内存复制开销**：每次修改都克隆整个 4KB 页面，即使只修改 1 个键值对（~88 bytes）
   2. **缓存未命中**：4KB 页面远大于 L1 Cache 行（64 bytes），导致缓存未命中率增加
@@ -112,18 +116,27 @@ flowchart TD
    ```go
    // LeafPage.Clone 当前实现（已包含 Delta Chain 优化）
    // 代码位置：internal/infrastructure/storage/btree/leaf_page.go:414-447
-   func (p *LeafPage) Clone(config ...*COWDeltaRef) *LeafPage
+   func (p *LeafPage) Clone(config ...*COWDeltaRefConfig) *LeafPage
 
    // COWDeltaRef.ShouldMaterialize 物化阈值判断
    // 优化目标：提高阈值，减少频繁物化
-   func (ref *COWDeltaRef) ShouldMaterialize(numKeys int, refCount int) bool
+   // 代码位置：internal/infrastructure/storage/btree/cow_delta_ref.go:179-211
+   func (ref *COWDeltaRef) ShouldMaterialize(baseSize int, refCount int32, memPressure ...bool) bool
+
+   // COWDeltaRefConfig 配置结构
+   type COWDeltaRefConfig struct {
+       MaxDeltas               int     // Delta 链长度阈值（默认 10）
+       DeltaRatio              float64 // 比例阈值（默认 0.2）
+       HotPageThreshold        int64   // 热数据阈值
+       MemoryPressureThreshold float64 // 内存压力阈值
+   }
    ```
 
 2. **核心机制**：
 
-   **当前 Clone 实现分析**：
+   **当前 Clone 实现分析**（实际代码）：
    ```go
-   func (p *LeafPage) Clone(config ...*COWDeltaRef) *LeafPage {
+   func (p *LeafPage) Clone(config ...*COWDeltaRefConfig) *LeafPage {
        // 情况1：已有 COW 引用，共享 Delta Chain
        if p.cowDelta != nil {
            p.cowDelta.Retain()
@@ -133,12 +146,26 @@ flowchart TD
                cowDelta: p.cowDelta,  // ← 共享，零拷贝
                keys:     p.cowDelta.GetSharedKeys(),
                values:   p.cowDelta.GetSharedValues(),
-               pageLock: nil,
+               pageLock: nil, // 性能优化：延迟创建页面锁
            }
        }
-       // 情况2：创建新的 COW 引用
-       cowRef := NewCOWDeltaRef(p.keys, p.values)
-       // ...
+
+       // 情况2：创建新的 COW 引用（共享 keys/values）
+       var cowRef *COWDeltaRef
+       if len(config) > 0 && config[0] != nil {
+           cowRef = NewCOWDeltaRefWithConfig(p.keys, p.values, config[0])
+       } else {
+           cowRef = NewCOWDeltaRef(p.keys, p.values)
+       }
+
+       return &LeafPage{
+           pageID:   p.pageID,
+           version:  p.version + 1,
+           cowDelta: cowRef,
+           keys:     cowRef.GetSharedKeys(),
+           values:   cowRef.GetSharedValues(),
+           pageLock: nil, // 性能优化：延迟创建页面锁
+       }
    }
    ```
 
@@ -165,7 +192,7 @@ flowchart TD
 | 风险点 | 影响等级 | 应对措施 |
 |--------|---------|----------|
 | **性能优化效果不达预期** | 中 | 1. 建立基准测试基线<br>2. 分阶段验证<br>3. 如 P0 收益 <10%，调整为 P2 优先 |
-| **Delta Chain 物化阈值过高导致内存泄漏** | 高 | 1. 渐进式调整阈值（当前 → ×2 → ×4）<br>2. 添加引用计数监控<br>3. 测试覆盖长时间运行场景 |
+| **Delta Chain 物化阈值过高导致内存泄漏** | 高 | 1. 渐进式调整阈值（当前 10 → 20 → 40）<br>2. 添加具体监控指标：<br>   &nbsp;&nbsp;- Delta Chain 长度分布（P50/P95/P99）<br>   &nbsp;&nbsp;- 引用计数泄漏检测<br>   &nbsp;&nbsp;- 内存使用趋势监控<br>3. 测试覆盖长时间运行场景（24h 稳定性测试） |
 | **并发安全性问题** | 中 | 1. 完整的并发测试覆盖<br>2. race detector 验证<br>3. stress test 验证 |
 | **向后兼容性** | 低 | 1. 保持 API 不变<br>2. 内部优化不影响外部接口 |
 

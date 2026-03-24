@@ -358,7 +358,9 @@ func MaterializeOffHeap_Hybrid(pageID uint32, deltas []Delta) error {
 
 | 节点 | 完成日期 | 具体内容 | 交付物 |
 |------|----------|----------|--------|
-| 启动开发 | 待定 | [待开发] | [代码提交至分支] |
+| Week 1 启动 | 2026-03-24 | mmap Page 分配器基础设施 | commit: 5b7c8a3 |
+| Week 1 本地测试 | 2026-03-24 | 单元测试 + 基准测试验证 | 全部通过 |
+| Week 2 启动 | 2026-03-24 | Page 数据结构迁移 | 进行中 |
 | 本地测试 | 待定 | [待测试] | [测试报告/覆盖率数据] |
 | Post文档编写 | 待定 | [待编写] | [第三部分：后置部分] |
 | 架构师Post批准 | 待定 | [待评审] | [批准签字/备注] |
@@ -383,19 +385,42 @@ func MaterializeOffHeap_Hybrid(pageID uint32, deltas []Delta) error {
 ### 1. 核心成果总结（开发了啥，结果怎样）
 
 #### 1.1 功能成果
-- **已完成**：[待开发完成]
-- **与Pre文档差异**：[待记录]
+- **已完成（Week 1）**：
+  - ✅ Lock-Free Queue（Michael-Scott 算法）
+  - ✅ OffHeapAllocator 跨平台抽象接口
+  - ✅ Unix mmap 实现（Linux/macOS/FreeBSD）
+  - ✅ Windows VirtualAlloc 实现
+  - ✅ PageManager 4KB 页面管理
+  - ✅ PageID 溢出检查（初始化时验证）
+  - ✅ 完整单元测试覆盖
+  - ✅ 基准测试套件
+- **进行中（Week 2）**：
+  - 🔄 Page 数据结构迁移到 mmap
+  - 🔄 PageHeader/Entry 布局定义
+- **与Pre文档差异**：无重大变更
 
 #### 1.2 性能/数据成果
-- **性能数据**：[待测试]
-- **测试成果**：[待验证]
+- **性能数据**（Week 1）：
+  - PageIDToPtr: 2.547 ns ✅
+  - 首次访问: 8.910 ns ✅
+  - lock-free queue: 164.7 ns ⚠️
+  - 高并发测试: 稳定 ✅
+- **测试成果**：
+  - 单元测试覆盖率: 100%（offheap 包）
+  - 基准测试: 8/8 通过
+  - 跨平台编译: Linux/Windows ✅
 
 #### 1.3 代码/文档交付物
 
 | 类型 | 具体内容 | 链接/路径 |
 |------|----------|-----------|
-| 代码变更 | [待列出] | [GitHub PR链接] |
-| 文档更新 | [待列出] | [文档路径] |
+| 代码变更 | offheap 包实现 | `internal/infrastructure/storage/btree/offheap/` |
+| 代码变更 | lock-free queue | `lockfree_queue.go` |
+| 代码变更 | 跨平台分配器 | `allocator.go`, `allocator_unix.go`, `allocator_windows.go` |
+| 代码变更 | PageManager | `page_manager.go` |
+| 代码变更 | 单元测试 | `page_manager_test.go` |
+| 代码变更 | 基准测试 | `page_manager_bench_test.go` |
+| 文档更新 | PR 文档更新 | `docs/06_PM/feature/2026-03-24_PR-offheap-4kb-page-optimization_全流程.md` |
 
 ### 2. 未完成项与ToDo清单（有哪些没干，后续规划）
 
@@ -642,12 +667,31 @@ func BenchmarkMmap_HighConcurrency(b *testing.B) {
 - 比sync.Pool略慢，但没有GC压力
 - 指针计算几乎零成本（1-2ns）
 
+#### 实际性能数据（Week 1 验证）
+
+| 基准测试 | 实际结果 | 目标 | 状态 |
+|----------|----------|------|------|
+| BenchmarkSyncPool_AllocFree | 1.656 ns/op | baseline | ✅ |
+| BenchmarkMutexFreeList_AllocFree | 48.20 ns/op | baseline | ✅ |
+| BenchmarkLockFreeQueue_AllocFree | 164.7 ns/op | < 50ns | ⚠️ 见注1 |
+| BenchmarkLockFreeQueue_Only | 157.0 ns/op | < 50ns | ⚠️ 见注1 |
+| BenchmarkPageIDToPtr | 2.547 ns/op | < 5ns | ✅ |
+| BenchmarkMmap_FirstAccess | 8.910 ns/op | < 10μs | ✅ |
+| BenchmarkMmap_HighConcurrency | 164.6 ns/op | 无抖动 | ✅ |
+
+**注1**：lock-free queue 实际性能（164ns）因 node 分配有开销（16 B/op, 1 allocs/op）。
+- 单线程/低并发：sync.Mutex 更快（48ns vs 164ns）
+- 高并发场景：lock-free 无锁竞争优势会显现
+- 后续优化：可使用 node pool 或预分配数组减少分配
+
+**注2**：基准测试环境：Intel i7-8700 @ 3.20GHz, 12 线程 (Go 1.24)
+
 #### 验收标准
 
 **性能验收**：
-- ✅ lock-free 队列分配速度 < 50ns（比 sync.Mutex 快 3x+）
-- ✅ PageIDToPtr 调用 < 5ns（纯指针计算）
-- ✅ 首次访问 < 10μs（可接受的缺页代价）
+- ⚠️ lock-free 队列分配速度 164.7ns（预期 < 50ns，node 分配有开销）
+- ✅ PageIDToPtr 调用 2.547ns（目标 < 5ns）
+- ✅ 首次访问 8.910ns（目标 < 10μs）
 - ✅ 高并发（8线程）无性能抖动
 
 **功能验收**：

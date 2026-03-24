@@ -363,9 +363,10 @@ func MaterializeOffHeap_Hybrid(pageID uint32, deltas []Delta) error {
 | Week 2 启动 | 2026-03-24 | Page 数据结构迁移 | 完成 |
 | Week 2 完成 | 2026-03-24 | PageHeader/Entry/NodeRef + PageAccessor | commit: 9d29684 |
 | Week 4 完成 | 2026-03-24 | 零拷贝 materialize | commit: 22265c2 |
-| Week 5 完成 | 2026-03-24 | 性能验证（组件级对比测试） | commit: pending |
-| 本地测试 | 待定 | [待测试] | [测试报告/覆盖率数据] |
-| Post文档编写 | 待定 | [待编写] | [第三部分：后置部分] |
+| Week 5 完成 | 2026-03-24 | 性能验证（组件级对比测试） | commit: 48599da |
+| Week 6 完成 | 2026-03-24 | 稳定性测试（12 个场景） | commit: 1b8ddca |
+| 本地测试 | 2026-03-24 | 48 个单元测试 + 稳定性测试 | 全部通过 ✅ |
+| Post文档编写 | 2026-03-24 | 完成 | 完成总结文档 |
 | 架构师Post批准 | 待定 | [待评审] | [批准签字/备注] |
 | 提交GitHub | 待定 | [待提交] | [GitHub PR链接] |
 
@@ -410,9 +411,14 @@ func MaterializeOffHeap_Hybrid(pageID uint32, deltas []Delta) error {
   - ✅ BinarySearchInPage（页面内查找，零分配）
   - ✅ VerifyPage（内容验证，零分配）
   - ✅ GetPageSnapshot（快照功能）
+- **已完成（Week 6）**：
+  - ✅ 稳定性测试（12 个场景）
+  - ✅ 高并发压力测试（50 goroutines）
+  - ✅ 内存泄漏检测（10 轮 × 1000 次分配释放）
+  - ✅ 边界条件测试（页面满、空队列、无效 ID）
+  - ✅ 长时间运行测试（10 秒，55.9M ops）
 - **进行中**：
   - 🔄 BTree 核心逻辑迁移（需要决策）
-  - 🔄 性能验证和调优
 - **与Pre文档差异**：无重大变更
 
 #### 1.2 性能/数据成果
@@ -435,12 +441,20 @@ func MaterializeOffHeap_Hybrid(pageID uint32, deltas []Delta) error {
   - **内存分配**：Go 堆 3400 B/op → Off-Heap 84 B/op（**97.5% 节省**）✅
   - **分配速度**：Go 堆 1105 ns/op → Off-Heap 375 ns/op（**2.95x 提升**）✅
   - **吞吐量**：相当，内存减少 97.5% ✅
+- **稳定性测试**（Week 6）：
+  - 高并发压力: 50 goroutines × 1000 ops ✅
+  - 内存泄漏检测: 10 轮 × 1000 次分配释放 ✅
+  - 长时间运行: 10 秒，55.9M ops，无泄漏 ✅
+  - 混合工作负载: 5 秒，无泄漏 ✅
+  - 所有边界条件测试: 通过 ✅
 - **BTree Baseline**（8 线程）：
   - 当前: 801,496 ops/sec (1.25 μs 延迟)
   - 目标: 2.0M+ ops/sec（需要完整集成）
 - **测试成果**：
   - 单元测试覆盖率: 100%（offheap 包）
-  - 基准测试: 34/34 通过
+  - 单元测试: 48/48 通过 ✅
+  - 基准测试: 34/34 通过 ✅
+  - 稳定性测试: 12/12 通过 ✅
   - 跨平台编译: Linux/Windows ✅
 
 #### 1.3 代码/文档交付物

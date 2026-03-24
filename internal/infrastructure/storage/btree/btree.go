@@ -60,6 +60,7 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/concurrency"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree/offheap"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/wal"
 )
 
@@ -99,6 +100,10 @@ type BTree struct {
 	// Storage
 	chunkMgr *ChunkManager // Append-only storage manager
 	wal      wal.WAL       // Write-Ahead Log for crash recovery
+
+	// Off-Heap storage (方案 B：完全替换)
+	offheapPM     *offheap.PageManager // Off-Heap 页面管理器
+	offheapAdapter *OffHeapAdapter      // Off-Heap 适配器
 
 	// Configuration
 	maxLevels int  // Maximum tree levels
@@ -180,11 +185,27 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		walImpl = w
 	}
 
-	// Create RootPageRef for atomic root updates
-	// 初始化空的根叶子节点
-	initialRootPage := NewLeafPage(model.PageID(0)) // 根叶子节点 ID = 0
+	// Off-Heap 存储（方案 B：完全替换）
+	// 创建 PageManager（默认 16MB）
+	mmapSize := 16 * 1024 * 1024 // 16MB，可根据机器调整
+	offheapPM, err := offheap.NewPageManager(mmapSize)
+	if err != nil {
+		return nil, fmt.Errorf("create offheap page manager: %w", err)
+	}
+
+	// 创建 OffHeapAdapter
+	offheapAdapter := NewOffHeapAdapter(offheapPM)
+
+	// 分配初始根叶子节点（使用 Off-Heap）
+	initialRootPageID, err := offheapAdapter.AllocLeafPage()
+	if err != nil {
+		offheapPM.Close()
+		return nil, fmt.Errorf("alloc initial root leaf page: %w", err)
+	}
+
+	// 创建初始根 PageInfo（使用 NodeRef）
 	initialRootInfo := NewPageInfo()
-	initialRootInfo.SetPage(initialRootPage)
+	initialRootInfo.SetNodeRef(offheap.NewNodeRef(uint32(initialRootPageID), true)) // true = isLeaf
 	initialRootInfo.SetParentRef(nil) // 根节点没有父引用
 
 	rootPageRef := NewRootPageRefWithInfo(initialRootInfo)
@@ -205,6 +226,8 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		rootRef:          rootPageRef,
 		chunkMgr:         chunkMgr,
 		wal:              walImpl,
+		offheapPM:        offheapPM,
+		offheapAdapter:   offheapAdapter,
 		maxLevels:        maxLevels,
 		enableWAL:        enableWAL,
 		stats:            stats,
@@ -233,7 +256,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	btree.scheduler = concurrency.NewTaskScheduler("btree", schedulerCores)
 
 	// 注册 btree-set 任务
-	err := btree.scheduler.RegisterTask(
+	err = btree.scheduler.RegisterTask(
 		func(item any) concurrency.TaskStatus {
 			return concurrency.TaskPassed
 		},
@@ -632,6 +655,11 @@ func (b *BTree) Close() error {
 		if err := b.chunkMgr.Close(); err != nil {
 			return fmt.Errorf("close chunk manager: %w", err)
 		}
+	}
+
+	// Close OffHeap PageManager
+	if b.offheapPM != nil {
+		b.offheapPM.Close()
 	}
 
 	// Close WAL

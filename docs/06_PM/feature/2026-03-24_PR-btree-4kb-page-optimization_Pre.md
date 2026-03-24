@@ -363,6 +363,184 @@ flowchart TD
 
 ---
 
+## 附录：P2 方案详细设计（CCOW 路径复制）
+
+> **说明**：P0 优化验证当前 Delta Chain + Clone 模式已接近极限，需要架构级优化。以下为 P2 方案的详细设计。
+
+### 1. 方案概述
+
+**核心思想**：只复制从叶子到根的一条路径，而非克隆整个 BTree。
+
+**基础对比**：
+| 特性 | 当前实现 | P2 优化后 |
+|------|---------|-----------|
+| 每次写入 | 克隆完整路径 | 仅原地修改 + Delta |
+| 分裂场景（~1%） | 克隆完整路径 | 只复制一条路径 O(log n) |
+| 写放大 | 较高 | 显著降低 |
+
+### 2. 性能预期
+
+**当前性能**（8线程，GOGC=500）：
+```
+1,648K ops/sec (0.61 μs)
+```
+
+**P2 优化后预期**：
+| 并发度 | 当前吞吐 | P2 优化后 | 提升 |
+|--------|---------|-----------|------|
+| 1 线程 | 574K ops/sec | **750K ops/sec** | +31% |
+| 2 线程 | 504K ops/sec | **1.2M ops/sec** | +138% |
+| 4 线程 | 536K ops/sec | **1.5M ops/sec** | +180% |
+| 8 线程 | 548K ops/sec | **1.8M ops/sec** | +233% |
+
+### 3. 核心设计
+
+#### 3.1 当前实现分析
+
+**当前 Set 流程**：
+```go
+func (b *BTree) Set(key, value []byte) error {
+    // 1. 查找路径（完整克隆）
+    path := b.findPath(key)  // 每个节点都 Clone
+
+    // 2. 修改叶子
+    leaf := path[len(path)-1].Clone()
+    leaf.Set(key, value)
+
+    // 3. 根指针 CAS
+    b.rootRef.CompareAndSet(oldRoot, newRoot)
+    return nil
+}
+```
+
+**问题**：每次写入都克隆完整路径，即使只修改一个叶子节点。
+
+#### 3.2 P2 优化设计
+
+**优化后 Set 流程**：
+```go
+func (b *BTree) setWithCCOW(key, value []byte) error {
+    // 1. 定位叶子页面（不克隆）
+    path := b.findPath(key)  // []PageRef，不克隆
+    leaf := path[len(path)-1].GetPage().(*LeafPage)
+
+    // 2. 原地修改（使用 Delta Chain）
+    if leaf.cowDelta == nil {
+        leaf.cowDelta = NewCOWDeltaRef(leaf.keys, leaf.values)
+    }
+    leaf.cowDelta.AppendDelta(Delta{
+        op:    DeltaInsert,
+        key:   key,
+        value: value,
+    })
+
+    // 3. 仅在需要分裂时，复制路径
+    if leaf.cowDelta.ShouldMaterialize(len(leaf.keys), 1) {
+        // 路径复制：Leaf' → Node' → ... → Root'
+        newPath := b.copyPath(path)
+
+        // 原子切换根指针
+        b.rootRef.CompareAndSet(oldRoot, newRoot)
+    }
+
+    return nil
+}
+```
+
+**关键优化点**：
+1. **正常写入（99%）**：只添加 Delta，不克隆任何节点
+2. **分裂场景（~1%）**：只复制一条路径 O(log n)
+
+#### 3.3 CCOW 路径复制示例
+
+**初始 BTree**（插入 key=42）：
+```
+        Root
+       /    \
+   Node[10]  Node[50]
+    /   \        \
+  L[1-9] L[10-20] L[30-50]  ← 目标叶子
+```
+
+**路径复制**（只复制目标路径）：
+```
+1. 复制 L[30-50] → L'[30-50,42]
+2. 复制 Node[50] → Node'[50] (更新子指针)
+3. 复制 Root → Root' (更新子指针)
+
+不复制：Node[10]、L[1-9]、L[10-20]
+```
+
+**原子切换**：
+```go
+rootRef.CompareAndSet(oldRoot, newRoot)  // 一步完成
+```
+
+### 4. 实施计划
+
+#### 4.1 任务清单（5-10 天）
+
+**Day 1-2：路径复制设计**
+- [ ] 分析当前克隆路径
+  - 文件：`btree_ops.go`, `search_path.go`
+  - 工具：pprof, flame graph
+- [ ] 设计路径复制接口
+  - 设计文档
+  - 评审：架构师 review
+
+**Day 3-5：路径复制实现**
+- [ ] 实现 `copyPath` 函数
+  - 文件：`btree_ops.go`
+  - 逻辑：只复制叶子→根的一条路径
+- [ ] 实现根指针 CAS
+  - 文件：`btree.go`
+  - 逻辑：`rootRef.CompareAndSet`
+
+**Day 6-7：测试验证**
+- [ ] 分裂场景测试
+  - 文件：`split_leaf_test.go`
+  - 场景：多层分裂
+- [ ] 性能基准测试
+  - 对比：优化前后性能数据
+
+**Day 8-10：调优和文档**
+- [ ] 性能调优
+- [ ] 更新文档
+- [ ] 代码审查
+
+#### 4.2 关键风险
+
+| 风险点 | 影响等级 | 应对措施 |
+|--------|---------|----------|
+| **并发安全性** | 高 | 1. 完整的并发测试覆盖<br>2. race detector 验证<br>3. stress test 验证 |
+| **路径复制正确性** | 中 | 1. 单元测试覆盖所有分裂场景<br>2. 验证父子指针一致性 |
+| **性能不达预期** | 中 | 1. 建立基准测试<br>2. 分阶段验证<br>3. 如收益 <50%，调整方案 |
+
+### 5. 对比 Lealone
+
+**性能对比**（8线程）：
+| 指标 | Lealone | NexKV 当前 | NexKV P0 | NexKV P2 |
+|------|---------|-----------|----------|----------|
+| 单线程 | 1.01M | 574K (57%) | - | 750K (74%) |
+| 8 线程 | 3.68M | 548K (15%) | - | 1.8M (49%) |
+| 扩展比 | 3.6x | 0.92x | - | 2.4x |
+
+**结论**：P2 方案可缩小与 Lealone 的差距，但仍有优化空间（如单写线程）。
+
+### 6. 参考资料
+
+1. **Lealone BTree 深度分析**：
+   - Delta Chain 优化（行 1805-1946）
+   - CCOW 机制深入（行 548-899）
+   - 性能数据：3.68M ops/sec @ 8线程
+
+2. **NexKV 当前实现**：
+   - `cow_delta_ref.go`: COWDeltaRef 数据结构
+   - `leaf_page.go`: LeafPage Delta Chain 使用
+   - `btree_ops.go`: Set 操作当前实现
+
+---
+
 ## 附录：参考资料
 
 1. **相关 PR 文档**：

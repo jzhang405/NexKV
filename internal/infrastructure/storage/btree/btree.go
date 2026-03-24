@@ -399,23 +399,19 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, ErrKeyNotFound
 	}
 
-	// Get the leaf page (lazy loaded)
-	leafPage, err := b.getPageOrLoad(leafInfo)
+	// Off-Heap 模式：验证页面已加载
+	if !leafInfo.IsPageLoaded() {
+		return nil, fmt.Errorf("leaf page not loaded")
+	}
+
+	// 获取叶子节点 PageID
+	leafPageID := model.PageID(leafInfo.GetPageID())
+
+	// 使用 OffHeapAdapter.GetFromOffHeap 直接读取
+	value, found, err := b.offheapAdapter.GetFromOffHeap(leafPageID, key)
 	if err != nil {
-		return nil, fmt.Errorf("load leaf page: %w", err)
+		return nil, fmt.Errorf("offheap get: %w", err)
 	}
-
-	// Type assertion to LeafPage
-	leaf, ok := leafPage.(*LeafPage)
-	if !ok || leaf == nil {
-		return nil, fmt.Errorf("invalid leaf page type: %T", leafPage)
-	}
-
-	// 性能优化：移除热数据统计调用，避免每次 Get() 都加锁
-	// 原代码：b.stats.IncrementReadCount(leaf.GetPageID())
-
-	// Search for the key in the leaf page
-	value, found := leaf.Get(key)
 	if !found {
 		return nil, ErrKeyNotFound
 	}

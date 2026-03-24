@@ -1,8 +1,6 @@
 # 【PR全流程文档】Feature - BTree 4KB 页面大小优化
 
 > **文档说明**：本文档包含「前置规划」和「后置总结」两部分，记录从需求对齐到开发完成的全流程，一个PR对应一份全流程文档，归档后作为项目追溯依据。
->
-> **关联文档**：`thoughts/4k-page-optimization-proposal.md`（完整技术分析与方案设计）
 
 ---
 
@@ -43,10 +41,10 @@
   3. **Delta Chain 频繁物化**：写密集场景下频繁触发 ShouldMaterialize
   4. **并发竞争**：每次写入都创建新对象（LeafPage 结构体分配），增加 GC 压力
 - **价值**：
-  - **理论收益**（基于 4k-page-optimization-proposal.md 分析）：
+  - **理论收益**：
     - P0 优化（原地修改）：8 线程性能 +30% (~700K ops/sec)
     - P2 优化（CCOW 路径复制）：8 线程性能 +122% (~1.2M ops/sec)
-    - M 方案（mmap 内存池）：8 线程性能 +1011% (~6M ops/sec)
+    - M 方案（内存池 mmap）：8 线程性能 +200-400% (~1.5-2.5M ops/sec）
 
 **基准数据验证**（2026-03-24）：
 ```bash
@@ -80,8 +78,8 @@ go test -bench=BenchmarkBTreeSet -benchmem -threads=1,8 ./internal/infrastructur
 #### 2.3 明确边界（不做什么，避免范围蔓延）
 
 - **本次不支持**（P0 阶段）：
-  - ❌ mmap 内存池方案（M 方案，工期 12-15 天，独立 PR）
-  - ❌ CCOW 路径复制（P2 方案，工期 5-10 天，后续 PR）
+  - ❌ M 方案：内存池 mmap（工期 12-15 天，仅限内存优化，不涉及文件持久化）
+  - ❌ P2 方案：CCOW 路径复制（工期 5-10 天，后续 PR）
   - ❌ 页面大小调整（保持 4KB，不调整）
 
 - **本次不优化**（留待后续）：
@@ -293,12 +291,18 @@ flowchart TD
 
 ## 附录：参考资料
 
-1. **完整技术分析**：`thoughts/4k-page-optimization-proposal.md`
-2. **当前实现**：
-   - `internal/infrastructure/storage/btree/leaf_page.go:414-447`（Clone）
-   - `internal/infrastructure/storage/btree/cow_delta_ref.go`（COWDeltaRef）
-3. **基准测试**：
-   - `internal/infrastructure/storage/btree/btree_bench_test.go`
-4. **相关 PR**：
+1. **相关 PR 文档**：
    - `2026-03-17_PR-cow-delta-chain-optimization_全流程.md`（Delta Chain 优化）
    - `2026-03-23_PR-btree-concurrent-optimization_全流程.md`（并发性能优化）
+
+2. **当前实现代码**：
+   - `internal/infrastructure/storage/btree/leaf_page.go:414-447`（Clone）
+   - `internal/infrastructure/storage/btree/cow_delta_ref.go:179-211`（ShouldMaterialize）
+   - `internal/infrastructure/storage/btree/btree_types.go:136-137`（配置常量）
+
+3. **基准测试**：
+   - `internal/infrastructure/storage/btree/btree_bench_test.go`
+   - `MEMORY.md`（性能基线数据）
+
+4. **方案说明**：
+   - **M 方案（内存池 mmap）**：仅涉及 4KB 页面的内存管理优化，使用 mmap 分配内存池以减少 GC 压力，**不涉及文件持久化**。文件持久化仍通过现有的 PageSerializer/PageDeserializer 机制实现。

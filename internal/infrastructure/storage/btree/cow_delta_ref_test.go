@@ -135,14 +135,8 @@ func TestCOWDeltaRef_ShouldMaterialize(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			keys := make([][]byte, tt.baseSize)
 			values := make([][]byte, tt.baseSize)
-			// 使用自定义配置创建 COWDeltaRef
-			config := &COWDeltaRefConfig{
-				MaxDeltas:               tt.maxDeltas,
-				DeltaRatio:              DefaultDeltaChainRatio,
-				HotPageThreshold:        DefaultHotPageThreshold,
-				MemoryPressureThreshold: DefaultMemoryPressureThreshold,
-			}
-			ref := NewCOWDeltaRefWithConfig(keys, values, config)
+			ref := NewCOWDeltaRef(keys, values)
+			ref.maxDeltas = tt.maxDeltas
 			ref.refCount.Store(tt.refCount)
 
 			// 添加增量

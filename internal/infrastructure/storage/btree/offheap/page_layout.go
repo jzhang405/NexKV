@@ -333,3 +333,28 @@ func (pa *PageAccessor) SetChild(pageID uint32, index int, child uint32) {
 	entry := pa.GetIndexEntry(pageID, index)
 	entry.child = child
 }
+
+// GetLeafEntryOffset 获取叶子条目的 key/value offset（用于跨包访问）
+func (pa *PageAccessor) GetLeafEntryOffset(pageID uint32, index int) (keyOff, keyLen, valOff, valLen uint32) {
+	entry := pa.GetLeafEntry(pageID, index)
+	return entry.keyOff, entry.keyLen, entry.valOff, entry.valLen
+}
+
+// GetIndexEntryOffset 获取索引条目的 key offset 和 child（用于跨包访问）
+func (pa *PageAccessor) GetIndexEntryOffset(pageID uint32, index int) (keyOff, keyLen uint32, child uint32) {
+	entry := pa.GetIndexEntry(pageID, index)
+	return entry.keyOff, entry.keyLen, entry.child
+}
+
+// GetIndexKey 获取索引节点的 key
+func (pa *PageAccessor) GetIndexKey(pageID uint32, index int) []byte {
+	entry := pa.GetIndexEntry(pageID, index)
+	return pa.GetKey(pageID, entry.keyOff, entry.keyLen)
+}
+
+// SearchChildIndex 在索引页面中搜索子节点
+// 返回 (childIndex, found)
+func (pa *PageAccessor) SearchChildIndex(pageID uint32, key []byte) (int, bool) {
+	return pa.SearchKey(pageID, key, false)
+}
+

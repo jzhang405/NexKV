@@ -27,7 +27,7 @@
 #### 2.1 背景
 
 - **业务场景**：NexKV BTree 存储引擎在高并发写密集场景下存在内存复制开销大、缓存命中率低的问题
-- **现有性能**（纯内存模式，GOGC=500，来源：MEMORY.md 2026-03-18）：
+- **现有性能**（纯内存模式，GOGC=500，来源：`docs/10_benchmark/2026-03-17_baseline/`）：
   - 单线程：484K ops/sec
   - 8 线程：530K ops/sec
   - **问题**：并发扩展性差（8线程仅提升 9.5%）
@@ -298,11 +298,11 @@ flowchart TD
 2. **当前实现代码**：
    - `internal/infrastructure/storage/btree/leaf_page.go:414-447`（Clone）
    - `internal/infrastructure/storage/btree/cow_delta_ref.go:179-211`（ShouldMaterialize）
-   - `internal/infrastructure/storage/btree/btree_types.go:136-137`（配置常量）
+   - `internal/domain/model/btree_types.go:136-137`（配置常量）
 
 3. **基准测试**：
    - `internal/infrastructure/storage/btree/btree_bench_test.go`
-   - `MEMORY.md`（性能基线数据）
+   - `docs/10_benchmark/2026-03-17_baseline/`（性能基线数据）
 
 4. **方案说明**：
    - **M 方案（内存池 mmap）**：仅涉及 4KB 页面的内存管理优化，使用 mmap 分配内存池以减少 GC 压力，**不涉及文件持久化**。文件持久化仍通过现有的 PageSerializer/PageDeserializer 机制实现。

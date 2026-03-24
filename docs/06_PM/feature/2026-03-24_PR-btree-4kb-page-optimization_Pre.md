@@ -365,78 +365,148 @@ flowchart TD
 
 ## 附录：P2 方案详细设计（CCOW 路径复制）
 
-> **说明**：P0 优化验证当前 Delta Chain + Clone 模式已接近极限，需要架构级优化。以下为 P2 方案的详细设计。
+> **重要发现**：经代码审查，当前实现已包含 Leaf-Level Locking + Delta Chain 优化。
+> **代码位置**：`internal/infrastructure/storage/btree/leaf_lock_set.go:27-141`
 
-### 1. 方案概述
+### 1. 当前实现分析
 
-**核心思想**：只复制从叶子到根的一条路径，而非克隆整个 BTree。
+#### 1.1 实际的 Set 流程（已优化）
 
-**基础对比**：
-| 特性 | 当前实现 | P2 优化后 |
-|------|---------|-----------|
-| 每次写入 | 克隆完整路径 | 仅原地修改 + Delta |
-| 分裂场景（~1%） | 克隆完整路径 | 只复制一条路径 O(log n) |
-| 写放大 | 较高 | 显著降低 |
-
-### 2. 性能预期
-
-**当前性能**（8线程，GOGC=500）：
-```
-1,648K ops/sec (0.61 μs)
-```
-
-**P2 优化后预期**：
-| 并发度 | 当前吞吐 | P2 优化后 | 提升 |
-|--------|---------|-----------|------|
-| 1 线程 | 574K ops/sec | **750K ops/sec** | +31% |
-| 2 线程 | 504K ops/sec | **1.2M ops/sec** | +138% |
-| 4 线程 | 536K ops/sec | **1.5M ops/sec** | +180% |
-| 8 线程 | 548K ops/sec | **1.8M ops/sec** | +233% |
-
-### 3. 核心设计
-
-#### 3.1 当前实现分析
-
-**当前 Set 流程**：
+**代码**（`leaf_lock_set.go:27-141`）：
 ```go
-func (b *BTree) Set(key, value []byte) error {
-    // 1. 查找路径（完整克隆）
-    path := b.findPath(key)  // 每个节点都 Clone
+func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
+    // Step 1: 查找路径（只读，不克隆）
+    leafRef, path, err := b.findLeafPageRef(ctx, key)
 
-    // 2. 修改叶子
-    leaf := path[len(path)-1].Clone()
-    leaf.Set(key, value)
+    // Step 2: 获取 Leaf 锁（Leaf-Level Locking）
+    pageLock := leafRef.GetLock()
+    pageLock.TryLock()
+    defer pageLock.Unlock()
 
-    // 3. 根指针 CAS
-    b.rootRef.CompareAndSet(oldRoot, newRoot)
+    // Step 3: 获取当前 PageInfo
+    oldInfo := leafRef.GetPageInfo()
+    leafPage := oldInfo.GetPage().(*LeafPage)
+
+    // Step 4: 只克隆叶子节点（使用 Delta Chain）
+    newLeafPage := leafPage.CloneWithDelta()  // ← 只克隆叶子！
+
+    // Step 5: 插入键值对
+    newLeafPage.Insert(key, value)
+
+    // Step 6: Leaf-Level CAS（不是 Root CAS！）
+    newInfo := NewPageInfo()
+    newInfo.SetPage(newLeafPage)
+    leafRef.ReplacePage(oldInfo, newInfo)  // ← Leaf CAS
+
+    // Step 7: 检查是否需要分裂（约 1% 概率）
+    if newLeafPage.NumKeys() > splitThreshold {
+        b.handleSplitSync(leafRef, newInfo, path)
+    }
+
     return nil
 }
 ```
 
-**问题**：每次写入都克隆完整路径，即使只修改一个叶子节点。
-
-#### 3.2 P2 优化设计
-
-**优化后 Set 流程**：
+**性能优势**（代码注释）：
 ```go
-func (b *BTree) setWithCCOW(key, value []byte) error {
-    // 1. 定位叶子页面（不克隆）
-    path := b.findPath(key)  // []PageRef，不克隆
-    leaf := path[len(path)-1].GetPage().(*LeafPage)
+// - 路径克隆：O(log n) → O(1)（只克隆叶子）
+// - CAS 粒度：Root（全局竞争）→ Leaf（局部竞争）
+// - Root CAS 频率：100% → 0.001%（仅在树高度增加时）
+```
 
-    // 2. 原地修改（使用 Delta Chain）
-    if leaf.cowDelta == nil {
-        leaf.cowDelta = NewCOWDeltaRef(leaf.keys, leaf.values)
-    }
-    leaf.cowDelta.AppendDelta(Delta{
-        op:    DeltaInsert,
-        key:   key,
-        value: value,
-    })
+#### 1.2 已实现的优化
 
-    // 3. 仅在需要分裂时，复制路径
-    if leaf.cowDelta.ShouldMaterialize(len(leaf.keys), 1) {
-        // 路径复制：Leaf' → Node' → ... → Root'
+| 优化项 | 状态 | 说明 |
+|--------|------|------|
+| **Leaf-Level Locking** | ✅ 已实现 | 只锁叶子节点，不锁整棵树 |
+| **Leaf-Level CAS** | ✅ 已实现 | 只 CAS 叶子节点，不是 Root CAS |
+| **Delta Chain 优化** | ✅ 已实现 | Clone() 共享底层数据，零拷贝 |
+| **只克隆叶子节点** | ✅ 已实现 | 不克隆完整路径 |
+
+### 2. P0 优化为何收益不明显
+
+**原因分析**：
+1. **当前代码已包含核心优化**：Leaf-Level Locking + Delta Chain
+2. **P0 优化内容**：
+   - 阈值调优（10→20）：影响较小，当前配置已较优
+   - 对象池优化：不适用 Clone 场景（已验证）
+
+**结论**：当前实现已经达到了 P2 方案的核心优化目标，P0 优化难以再提升。
+
+### 3. 与 Lealone 的差距分析
+
+**性能对比**（8线程）：
+| 指标 | Lealone | NexKV 当前 | 差距 |
+|------|---------|-----------|------|
+| 8 线程吞吐 | 3.68M ops/sec | 1.65M ops/sec | **2.23x** |
+| 扩展比 | 3.6x | 2.96x | 1.22x |
+
+**可能的原因**：
+1. **TaskScheduler 开销**：NexKV 使用多线程 + TaskScheduler
+2. **纯内存 vs 持久化**：Lealone 可能针对纯内存优化
+3. **实现细节差异**：分裂、合并、锁策略等
+
+### 4. 后续优化方向
+
+#### 4.1 性能分析建议
+
+**使用 pprof 分析瓶颈**：
+```bash
+# CPU 性能分析
+go test -cpuprofile=cpu.prof -bench=. ./internal/infrastructure/storage/btree/
+go tool pprof cpu.prof
+
+# 内存分析
+go test -memprofile=mem.prof -bench=. ./internal/infrastructure/storage/btree/
+go tool pprof mem.prof
+```
+
+**可能的热点**：
+1. **Delta Chain 物化**：`ShouldMaterialize` 调用频繁
+2. **Split/Merge 操作**：可能存在锁竞争
+3. **TaskScheduler 调度**：任务提交/等待开销
+4. **GC 压力**：对象分配/回收
+
+#### 4.2 优化建议
+
+**短期优化**（1-3 天）：
+1. 使用 pprof 定位热点
+2. 优化高频路径（如 `ShouldMaterialize`）
+3. 减少不必要的内存分配
+
+**中期优化**（5-10 天）：
+1. 参考 Lealone 实现细节
+2. 优化 Split/Merge 策略
+3. 调整 TaskScheduler 参数
+
+**长期优化**（10+ 天）：
+1. 考虑单写线程模式（如 Lealone）
+2. 自定义内存管理器（减少 GC 压力）
+3. SIMD 优化关键路径
+
+### 5. 修正后的结论
+
+**P0 优化结果**：
+- ✅ 完成并测试：阈值调优、对象池优化
+- ❌ 收益不达预期：-1.7% ~ -19%
+- ✅ **关键发现**：当前代码已实现 Leaf-Level Locking + Delta Chain
+
+**P2 方案**：
+- ❌ **无需实施**：核心优化已存在
+- ✅ **需要做**：使用 pprof 分析真正的瓶颈
+- ✅ **建议方向**：参考 Lealone 优化实现细节
+
+### 6. 参考资料
+
+1. **当前实现代码**：
+   - `internal/infrastructure/storage/btree/leaf_lock_set.go:27-141`（setWithLeafLock）
+   - `internal/infrastructure/storage/btree/leaf_page.go:414-447`（Clone with Delta）
+   - `internal/infrastructure/storage/btree/cow_delta_ref.go`（Delta Chain）
+
+2. **Lealone BTree**：
+   - Delta Chain 优化
+   - CCOW 路径复制机制
+   - 单写线程模式
         newPath := b.copyPath(path)
 
         // 原子切换根指针

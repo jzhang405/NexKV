@@ -52,7 +52,7 @@ func (tb *TestBTreeBuilder) Build() *BTree {
 }
 
 // SetRoot 设置根节点
-func (tb *TestBTreeBuilder) SetRoot(page interface{}) *TestBTreeBuilder {
+func (tb *TestBTreeBuilder) SetRoot(page any) *TestBTreeBuilder {
 	info := &PageInfo{
 		page:        page,
 		metaVersion: 1,
@@ -65,7 +65,7 @@ func (tb *TestBTreeBuilder) SetRoot(page interface{}) *TestBTreeBuilder {
 }
 
 // CreatePageRef 创建页面引用
-func (tb *TestBTreeBuilder) CreatePageRef(page interface{}) *PageRef {
+func (tb *TestBTreeBuilder) CreatePageRef(page any) *PageRef {
 	info := &PageInfo{
 		page:        page,
 		metaVersion: 1,

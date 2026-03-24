@@ -308,7 +308,7 @@ type TaskSchedulerAdapter struct {
 	scheduler *concurrency.TaskScheduler
 }
 
-func (a *TaskSchedulerAdapter) EnqueueWithShard(item interface{}, taskName string) error {
+func (a *TaskSchedulerAdapter) EnqueueWithShard(item any, taskName string) error {
 	if shardItem, ok := item.(concurrency.ShardItem); ok {
 		return a.scheduler.EnqueueWithShard(shardItem, taskName)
 	}

@@ -53,7 +53,7 @@ func NewChunkManager(dataDir string) (*ChunkManager, error) {
 	cm.chunkIndex.Store(chunkIndex)
 
 	// 初始化内存池
-	cm.pagePool.New = func() interface{} {
+	cm.pagePool.New = func() any {
 		buf := make([]byte, PageSize)
 		return &buf
 	}
@@ -177,7 +177,7 @@ func (cm *ChunkManager) ReadPage(pos int64) ([]byte, error) {
 //
 // 返回：
 //
-//	interface{} - 反序列化后的页面对象（实际类型为 *LeafPage 或 *InternalPage）
+//	any - 反序列化后的页面对象（实际类型为 *LeafPage 或 *InternalPage）
 //	error - 错误信息
 //
 // 懒加载流程：
@@ -185,7 +185,7 @@ func (cm *ChunkManager) ReadPage(pos int64) ([]byte, error) {
 // 2. 从对应的 Chunk 读取原始字节数据
 // 3. 根据 PageType 反序列化为具体类型
 // 4. 返回具体类型（需要类型断言使用）
-func (cm *ChunkManager) LoadPage(pos int64) (interface{}, error) {
+func (cm *ChunkManager) LoadPage(pos int64) (any, error) {
 	// 1. 解码位置信息
 	chunkID, offset, pageType := DecodePagePos(pos)
 

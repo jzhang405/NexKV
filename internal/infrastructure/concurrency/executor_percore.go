@@ -523,7 +523,7 @@ func (e *PerCoreExecutor) Submit(
 func (e *PerCoreExecutor) selectIdleWorker() (int, error) {
 	// 收集已绑定的 WorkerID
 	boundWorkers := make(map[int]bool)
-	e.sourceBindings.Range(func(_, value interface{}) bool {
+	e.sourceBindings.Range(func(_, value any) bool {
 		binding := value.(*sourceIDBinding)
 		boundWorkers[int(binding.workerID)] = true
 		return true
@@ -571,7 +571,7 @@ func (e *PerCoreExecutor) cleanExpiredBindings() {
 	timeoutNanos := e.config.BindingTimeout.Nanoseconds()
 
 	var cleanedCount int
-	e.sourceBindings.Range(func(key, value interface{}) bool {
+	e.sourceBindings.Range(func(key, value any) bool {
 		binding := value.(*sourceIDBinding)
 		lastUsed := atomic.LoadInt64(&binding.lastUsedTime)
 

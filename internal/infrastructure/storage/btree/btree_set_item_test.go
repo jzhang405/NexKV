@@ -111,11 +111,11 @@ func TestBTreeSetItem_Execute(t *testing.T) {
 
 // MockTaskScheduler 用于测试的 mock TaskScheduler
 type MockTaskScheduler struct {
-	itemsReceived []interface{}
+	itemsReceived []any
 	taskName      string
 }
 
-func (m *MockTaskScheduler) EnqueueWithShard(item interface{}, taskName string) error {
+func (m *MockTaskScheduler) EnqueueWithShard(item any, taskName string) error {
 	m.itemsReceived = append(m.itemsReceived, item)
 	m.taskName = taskName
 	return nil
@@ -133,7 +133,7 @@ func TestBTreeSetWithTask(t *testing.T) {
 
 	// 创建 mock scheduler
 	scheduler := &MockTaskScheduler{
-		itemsReceived: make([]interface{}, 0),
+		itemsReceived: make([]any, 0),
 	}
 
 	// 调用 SetWithTask
@@ -204,7 +204,7 @@ func TestBTreeSetWithRetryAndQueue_Success(t *testing.T) {
 
 	// 使用 mock scheduler
 	scheduler := &MockTaskScheduler{
-		itemsReceived: make([]interface{}, 0),
+		itemsReceived: make([]any, 0),
 	}
 
 	// 快速路径应该成功，不会进入队列

@@ -18,7 +18,7 @@ import (
 // 2. reset() 彻底清空状态，避免数据泄漏
 // 3. cleanup() 清空 map，避免持有引用
 var broadcastProgressPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		// 预分配固定容量，减少后续扩容
 		return &BroadcastProgress{
 			responses:    make(map[model.PeerID]model.Message, 16),

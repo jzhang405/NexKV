@@ -123,7 +123,7 @@ type BTreeSchedulerAdapter struct {
 	scheduler *concurrency.TaskScheduler
 }
 
-func (a *BTreeSchedulerAdapter) EnqueueWithShard(item interface{}, taskName string) error {
+func (a *BTreeSchedulerAdapter) EnqueueWithShard(item any, taskName string) error {
 	if shardItem, ok := item.(concurrency.ShardItem); ok {
 		return a.scheduler.EnqueueWithShard(shardItem, taskName)
 	}

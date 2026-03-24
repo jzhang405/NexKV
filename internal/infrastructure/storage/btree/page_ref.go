@@ -31,9 +31,9 @@ func NewPageRefWithInfo(info *PageInfo) *PageRef {
 }
 
 // GetPage 获取页面对象（原子操作）
-// 返回 interface{}，实际类型为 *LeafPage 或 *InternalPage
+// 返回 any，实际类型为 *LeafPage 或 *InternalPage
 // 如果 PageInfo 为 nil，返回 nil
-func (r *PageRef) GetPage() interface{} {
+func (r *PageRef) GetPage() any {
 	info := r.pInfo.Load()
 	if info == nil {
 		return nil

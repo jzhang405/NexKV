@@ -133,7 +133,7 @@ func NewDefaultBTreeConfig() *BTreeConfig {
 		EnablePool:              true, // Phase 0.5 validation: Node using pool has 14.9x improvement
 		Compression:             CompressionNone,
 		GCPercent:               100,  // 默认 GC 行为（生产环境）
-		DeltaChainThreshold:     10,   // Delta 链长度阈值
+		DeltaChainThreshold:     20,   // P0 优化：Delta 链长度阈值（10 → 20）
 		DeltaChainRatio:         0.2,  // 20% 比例阈值
 		HotPageThreshold:        1000, // 热数据读取阈值
 		MemoryPressureThreshold: 0.8,  // 80% 内存压力阈值

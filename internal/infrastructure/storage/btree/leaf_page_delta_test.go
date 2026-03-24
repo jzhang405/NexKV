@@ -115,6 +115,7 @@ func TestLeafPage_CloneWithDelta_DeleteDelta(t *testing.T) {
 }
 
 // TestLeafPage_CloneWithDelta_AutoMaterialize 测试自动物化
+// P0 优化：阈值从 10 提升到 20，需要添加更多增量触发物化
 func TestLeafPage_CloneWithDelta_AutoMaterialize(t *testing.T) {
 	page := NewLeafPage(1)
 	// 添加初始数据
@@ -124,8 +125,8 @@ func TestLeafPage_CloneWithDelta_AutoMaterialize(t *testing.T) {
 
 	clone := page.CloneWithDelta()
 
-	// 添加超过阈值的增量（maxDeltas = 10）
-	for i := range 15 {
+	// 添加超过阈值的增量（P0 优化后阈值 = 20）
+	for i := range 25 {
 		clone.Insert([]byte(fmt.Sprintf("new%d", i)), []byte(fmt.Sprintf("newval%d", i)))
 	}
 

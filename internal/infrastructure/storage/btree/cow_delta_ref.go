@@ -28,8 +28,9 @@ type Delta struct {
 }
 
 // 物化配置默认值
+// P0 优化：提高 Delta Chain 阈值，减少频繁物化
 const (
-	DefaultDeltaChainThreshold     = 10   // Delta 链长度阈值
+	DefaultDeltaChainThreshold     = 20   // Delta 链长度阈值（优化：10 → 20）
 	DefaultDeltaChainRatio         = 0.2  // 20% 比例阈值
 	DefaultHotPageThreshold        = 1000 // 热数据读取阈值
 	DefaultMemoryPressureThreshold = 0.8  // 80% 内存压力阈值

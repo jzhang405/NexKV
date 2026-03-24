@@ -564,13 +564,218 @@ func (b *BTree) splitRootOffHeapSync(leftRef, rightRef *PageRef, splitKey []byte
 }
 
 // splitInternalOffHeapSync 处理内部节点分裂（Off-Heap 模式，同步）
+//
+// 参数：
+//
+//	internalRef - 内部节点的 PageRef
+//	internalInfo - 内部节点的 PageInfo
+//	internalPageID - 内部节点的 PageID
+//	path - 从 Root 到 Internal 的路径（不包括 Internal 本身）
+//
+// 返回：
+//
+//	error - 错误信息（ErrRetry 表示需要重试）
 func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *PageInfo, internalPageID model.PageID, path []*PageInfo) error {
-	// TODO: 实现内部节点分裂逻辑
-	// 1. 收集内部节点的所有 keys 和 children
-	// 2. 分配两个新的内部页面
-	// 3. 物化左右两半
-	// 4. 更新父节点（递归或 Root Split）
+	// Step 1: 收集内部节点的所有 keys 和 children
+	count := b.offheapAdapter.pa.GetCount(uint32(internalPageID))
 
-	// 暂时返回未实现错误
-	return ErrNotImplemented
+	keys := make([][]byte, 0, count)
+	children := make([]uint32, 0, count+1)
+
+	// 收集所有 keys 和 children
+	for i := 0; i < int(count); i++ {
+		keyOff, keyLen, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(internalPageID), i)
+		key := b.offheapAdapter.pa.GetKey(uint32(internalPageID), keyOff, keyLen)
+
+		// 复制 key
+		keyCopy := make([]byte, len(key))
+		copy(keyCopy, key)
+		keys = append(keys, keyCopy)
+		children = append(children, child)
+	}
+
+	// 最后一个 child（索引节点的 children 数量 = keys 数量 + 1）
+	lastChild := b.offheapAdapter.pa.GetChild(uint32(internalPageID), int(count))
+	children = append(children, lastChild)
+
+	// Step 2: 找到中间位置作为分裂点
+	// B+ 树分裂规则：中间的 key 提升到父节点
+	mid := len(keys) / 2
+	splitKey := keys[mid] // 这个 key 会提升到父节点
+
+	// 左子节点：keys[:mid], children[:mid+1]
+	leftKeys := make([][]byte, mid)
+	copy(leftKeys, keys[:mid])
+	leftChildren := make([]uint32, mid+1)
+	copy(leftChildren, children[:mid+1])
+
+	// 右子节点：keys[mid+1:], children[mid+1:]
+	rightKeys := make([][]byte, len(keys)-mid-1)
+	copy(rightKeys, keys[mid+1:])
+	rightChildren := make([]uint32, len(children)-mid-1)
+	copy(rightChildren, children[mid+1:])
+
+	// Step 3: 分配两个新的内部页面
+	leftPageID, err := b.offheapAdapter.AllocIndexPage()
+	if err != nil {
+		return fmt.Errorf("alloc left index page: %w", err)
+	}
+	rightPageID, err := b.offheapAdapter.AllocIndexPage()
+	if err != nil {
+		b.offheapAdapter.pm.Free(uint32(leftPageID))
+		return fmt.Errorf("alloc right index page: %w", err)
+	}
+
+	// Step 4: 物化左右两半
+	err = b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(leftPageID), leftKeys, leftChildren)
+	if err != nil {
+		b.offheapAdapter.pm.Free(uint32(leftPageID))
+		b.offheapAdapter.pm.Free(uint32(rightPageID))
+		return fmt.Errorf("materialize left index page: %w", err)
+	}
+
+	err = b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(rightPageID), rightKeys, rightChildren)
+	if err != nil {
+		b.offheapAdapter.pm.Free(uint32(leftPageID))
+		b.offheapAdapter.pm.Free(uint32(rightPageID))
+		return fmt.Errorf("materialize right index page: %w", err)
+	}
+
+	// Step 5: 创建左右子节点的 PageRef
+	leftRef := b.pageRefCache.GetOrCreate(leftPageID, false)
+	rightRef := b.pageRefCache.GetOrCreate(rightPageID, false)
+
+	// Step 6: 更新子节点的 parentRef（需要遍历所有子节点的 PageRef）
+	// 注意：这是一个简化的实现，完整的实现需要更新所有子节点的 parentRef
+	// TODO: 递归更新所有子节点的 parentRef
+
+	// Step 7: 检查是否有父节点
+	if len(path) == 0 {
+		// 没有父节点，需要创建新的根节点（Root Split）
+		return b.splitRootOffHeapSyncForInternal(leftRef, rightRef, splitKey)
+	}
+
+	// Step 8: 获取父节点的 PageRef
+	parentInfo := path[len(path)-1]
+	if parentInfo == nil {
+		return fmt.Errorf("parent info is nil")
+	}
+
+	parentPageID := model.PageID(parentInfo.GetPageID())
+	parentRef := b.pageRefCache.GetOrCreate(parentPageID, false)
+
+	// Step 9: 获取父节点锁（自底向上加锁）
+	parentLock := parentRef.GetLock()
+	if parentLock == nil {
+		return fmt.Errorf("parent lock is nil")
+	}
+
+	if !parentLock.TryLock() {
+		// 锁获取失败，返回重试
+		return ErrRetry
+	}
+	defer parentLock.Unlock()
+
+	// Step 10: 获取父节点的当前 PageInfo
+	oldParentInfo := parentRef.GetPageInfo()
+	if oldParentInfo == nil {
+		return fmt.Errorf("parent page info is nil")
+	}
+
+	// Step 11: 在父节点中插入分裂键和新的右子节点
+	parentPageIDForSearch := model.PageID(oldParentInfo.GetPageID())
+	insertIndex := 0
+	parentCount := b.offheapAdapter.pa.GetCount(uint32(parentPageIDForSearch))
+
+	// 二分查找插入位置
+	for i := 0; i < int(parentCount); i++ {
+		keyOff, keyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(parentPageIDForSearch), i)
+		key := b.offheapAdapter.pa.GetKey(uint32(parentPageIDForSearch), keyOff, keyLen)
+		if bytes.Compare(key, splitKey) >= 0 {
+			insertIndex = i
+			break
+		}
+		insertIndex = i + 1
+	}
+
+	// Step 12: 插入索引条目（分裂键 + 右子节点）
+	err = b.offheapAdapter.InsertIndexEntry(parentPageIDForSearch, insertIndex, splitKey, model.PageID(rightPageID))
+	if err != nil {
+		return fmt.Errorf("insert index entry to parent: %w", err)
+	}
+
+	// Step 13: 创建新的父节点 PageInfo（Off-Heap 模式）
+	newParentInfo := NewPageInfo()
+	newParentInfo.SetNodeRef(offheap.NewNodeRef(uint32(parentPageIDForSearch), false))
+	newParentInfo.SetPos(oldParentInfo.GetPos())
+	if oldParentInfo.IsDirty() {
+		newParentInfo.MarkDirty()
+	}
+
+	// Step 14: CAS 更新父节点
+	if !parentRef.ReplacePage(oldParentInfo, newParentInfo) {
+		// CAS 失败，返回重试
+		return ErrRetry
+	}
+
+	// Step 15: 更新子节点的 parentRef
+	leftRef.SetParentRef(parentRef)
+	rightRef.SetParentRef(parentRef)
+
+	// Step 16: 更新 PageRefCache
+	b.pageRefCache.Delete(internalPageID)
+	b.pageRefCache.Update(leftPageID, leftRef)
+	b.pageRefCache.Update(rightPageID, rightRef)
+
+	// Step 17: 检查父节点是否需要分裂
+	newCount := b.offheapAdapter.pa.GetCount(uint32(parentPageIDForSearch))
+	if int(newCount) > maxInternalKeys {
+		// 父节点也需要分裂，递归处理
+		return b.splitInternalOffHeapSync(parentRef, newParentInfo, parentPageIDForSearch, path[:len(path)-1])
+	}
+
+	return nil
+}
+
+// splitRootOffHeapSyncForInternal 处理内部节点的根节点分裂（Off-Heap 模式，同步）
+// 当内部节点没有父节点时，创建新的根节点
+func (b *BTree) splitRootOffHeapSyncForInternal(leftRef, rightRef *PageRef, splitKey []byte) error {
+	// Step 1: 分配新的根索引页面
+	newRootPageID, err := b.offheapAdapter.AllocIndexPage()
+	if err != nil {
+		return fmt.Errorf("alloc index page: %w", err)
+	}
+
+	// Step 2: 物化根节点内容（splitKey + 左右子节点）
+	// 对于新根，我们需要存储 [splitKey][leftChild][rightChild]
+	leftPageID := uint32(leftRef.GetPageInfo().GetPageID())
+	rightPageID := uint32(rightRef.GetPageInfo().GetPageID())
+
+	keys := [][]byte{splitKey}
+	children := []uint32{leftPageID, rightPageID}
+
+	err = b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(newRootPageID), keys, children)
+	if err != nil {
+		return fmt.Errorf("materialize root index page: %w", err)
+	}
+
+	// Step 3: 创建新的根 PageInfo
+	newRootInfo := NewPageInfo()
+	newRootInfo.SetNodeRef(offheap.NewNodeRef(uint32(newRootPageID), false))
+
+	// Step 4: CAS 更新根节点（使用 RootPageRef）
+	oldRootInfo := b.rootRef.pInfo.Load()
+	if !b.rootRef.ReplacePage(oldRootInfo.GetPageID(), newRootInfo) {
+		// CAS 失败，返回重试
+		return ErrRetry
+	}
+
+	// Step 5: 更新子节点的 parentRef
+	leftRef.SetParentRef(b.rootRef.PageRef)
+	rightRef.SetParentRef(b.rootRef.PageRef)
+
+	// Step 6: 更新 PageRefCache
+	b.pageRefCache.Update(model.PageID(newRootPageID), b.rootRef.PageRef)
+
+	return nil
 }

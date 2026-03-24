@@ -10,7 +10,9 @@ const (
 	splitThreshold = 200
 
 	// maxInternalKeys 内部节点最大键数量
-	maxInternalKeys = 256
+	// 与 checkPageFull 中的 maxIndexEntries (180) 对齐
+	// 确保在页面真正满之前触发分裂
+	maxInternalKeys = 180
 
 	// InitialLeafCapacity 叶子节点初始容量
 	// 优化：增大初始容量，减少扩容次数，降低 GC 压力

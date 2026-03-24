@@ -89,12 +89,6 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 		dataEnd = 0
 	}
 
-	// 检查是否需要分页
-	isFull := a.checkPageFull(uint32(pageID), len(key), len(value), dataEnd)
-	if isFull {
-		return pageID, true, nil
-	}
-
 	// 查找插入位置
 	idx, found := a.pa.SearchKey(uint32(pageID), key, true)
 	if found {
@@ -105,16 +99,19 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 		return newPageID, false, err
 	}
 
-	// 插入新 KV（需要传递指针给 InsertLeafEntry）
+	// 插入新 KV（先插入，即使页面已满）
 	dataEndCopy := dataEnd
 	err := a.pa.InsertLeafEntry(uint32(pageID), idx, key, value, &dataEndCopy)
 	if err != nil {
-		return pageID, false, err
+		// 插入失败（页面确实满了），返回需要分裂
+		return pageID, true, nil
 	}
 	// 更新 dataEndMap
 	a.dataEndMap[uint32(pageID)] = dataEndCopy
 
-	return pageID, false, nil
+	// 检查插入后是否需要分裂（使用新的 dataEnd）
+	splitRequired := a.checkPageFull(uint32(pageID), 0, 0, dataEndCopy)
+	return pageID, splitRequired, nil
 }
 
 // checkPageFull 检查页面是否已满
@@ -332,11 +329,9 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	a.dataEndMap[leftPageID] = leftDataEnd
 	a.dataEndMap[rightPageID] = rightDataEnd
 
-	// 清除旧页面的 dataEndMap 状态
+	// 注意：不立即释放旧页面，由调用者在 CAS 成功后释放
+	// 清除旧页面的 dataEndMap 状态（页面可能仍在使用）
 	delete(a.dataEndMap, uint32(pageID))
-
-	// 释放旧页面
-	a.pm.Free(uint32(pageID))
 
 	return model.PageID(leftPageID), model.PageID(rightPageID), splitKey, nil
 }

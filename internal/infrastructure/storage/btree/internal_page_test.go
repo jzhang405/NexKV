@@ -27,13 +27,9 @@ func TestInternalPage_InsertChild(t *testing.T) {
 	page.children = append(page.children, NewPageRef())
 
 	// 创建子节点引用
-	child1 := NewPageRefWithInfo(&PageInfo{
-		page: &Page{ID: model.PageID(10)},
-	})
+	child1 := NewPageRef()
 
-	child2 := NewPageRefWithInfo(&PageInfo{
-		page: &Page{ID: model.PageID(11)},
-	})
+	child2 := NewPageRef()
 
 	// 插入第一个键和子节点
 	key1 := []byte("key1")

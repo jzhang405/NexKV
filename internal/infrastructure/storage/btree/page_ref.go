@@ -221,10 +221,8 @@ func (r *PageRef) HasParent() bool {
 //	*PageInfo - 页面信息（保证 page != nil）
 //	error - 错误信息
 //
-// 懒加载逻辑：
-// 1. 如果 pageInfo.page != nil，直接返回（已加载）
-// 2. 如果 pageInfo.page == nil 且 pageInfo.pos != 0，从 ChunkManager 加载
-// 3. 使用 CAS 更新 pageInfo.page，支持并发安全
+// 懒加载逻辑（Off-Heap 模式）：
+// Off-Heap 模式：NodeRef 始终有效，无需加载
 func (r *PageRef) GetOrLoad(chunkMgr *ChunkManager) (*PageInfo, error) {
 	// 1. 尝试从原子指针加载
 	info := r.pInfo.Load()
@@ -232,37 +230,14 @@ func (r *PageRef) GetOrLoad(chunkMgr *ChunkManager) (*PageInfo, error) {
 		return nil, fmt.Errorf("pageInfo is nil")
 	}
 
-	// 2. 如果 page 已加载，直接返回
-	if info.page != nil {
+	// 2. Off-Heap 模式：检查 NodeRef 是否有效
+	if info.IsPageLoaded() {
 		info.Touch() // 更新访问时间
 		return info, nil
 	}
 
-	// 3. Double-checked locking：如果 page == nil 且 pos != 0，触发加载
-	pos := info.GetPos()
-	if info.page == nil && pos != 0 {
-		// 从 ChunkManager 加载页面
-		page, err := chunkMgr.LoadPage(pos)
-		if err != nil {
-			return nil, fmt.Errorf("load page at %d: %w", pos, err)
-		}
-
-		// CAS 更新 pageInfo.page
-		newInfo := info.Clone()
-		newInfo.page = page
-
-		if !r.pInfo.CompareAndSwap(info, newInfo) {
-			// CAS 失败：其他 goroutine 已加载，重新加载
-			return r.GetOrLoad(chunkMgr)
-		}
-
-		// 成功加载
-		newInfo.Touch()
-		return newInfo, nil
-	}
-
-	// 4. 如果 pos == 0，说明页面从未持久化
-	return nil, fmt.Errorf("page not loaded and no position (pos=0)")
+	// 3. NodeRef 无效，返回错误
+	return nil, fmt.Errorf("page not loaded (invalid NodeRef)")
 }
 
 // Get 获取 PageInfo（简化版，不含加载逻辑）

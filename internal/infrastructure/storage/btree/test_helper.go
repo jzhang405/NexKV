@@ -7,6 +7,7 @@ package btree
 import (
 	"context"
 
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree/offheap"
 	"github.com/stretchr/testify/require"
 )
 
@@ -51,27 +52,31 @@ func (tb *TestBTreeBuilder) Build() *BTree {
 	return tb.btree
 }
 
-// SetRoot 设置根节点
-func (tb *TestBTreeBuilder) SetRoot(page any) *TestBTreeBuilder {
+// SetRoot 设置根节点（Off-Heap 模式）
+func (tb *TestBTreeBuilder) SetRoot(pageID uint32, isLeaf bool) *TestBTreeBuilder {
 	info := &PageInfo{
-		page:        page,
 		metaVersion: 1,
 		pageSize:    4096,
 	}
 	info.SetPos(0) // 使用 SetPos() 方法
+	// 设置 NodeRef
+	ref := offheap.NewNodeRef(pageID, isLeaf)
+	info.SetNodeRef(ref)
 
 	tb.rootRef.pInfo.Store(info)
 	return tb
 }
 
-// CreatePageRef 创建页面引用
-func (tb *TestBTreeBuilder) CreatePageRef(page any) *PageRef {
+// CreatePageRef 创建页面引用（Off-Heap 模式）
+func (tb *TestBTreeBuilder) CreatePageRef(pageID uint32, isLeaf bool) *PageRef {
 	info := &PageInfo{
-		page:        page,
 		metaVersion: 1,
 		pageSize:    4096,
 	}
 	info.SetPos(0) // 使用 SetPos() 方法
+	// 设置 NodeRef
+	ref := offheap.NewNodeRef(pageID, isLeaf)
+	info.SetNodeRef(ref)
 	return NewPageRefWithInfo(info)
 }
 

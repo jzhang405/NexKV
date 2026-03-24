@@ -13,22 +13,22 @@ func TestNewPageInfo(t *testing.T) {
 
 	assert.NotNil(t, info)
 	assert.Equal(t, int64(0), info.pos.Load())
-	assert.Nil(t, info.page)
-	assert.NotNil(t, info.pageLock)
 	assert.False(t, info.IsDirty())
 	assert.False(t, info.IsSplitted())
 	assert.Equal(t, int32(0), info.metaVersion)
-	assert.Equal(t, int32(PageSize), info.pageSize)
 	assert.Greater(t, info.lastTime.Load(), int64(0))
 	assert.Equal(t, int64(0), info.hits.Load())
+	// Off-Heap 模式：NodeRef 初始为 0（无效）
+	assert.Equal(t, uint64(0), info.nodeRef.Load())
 }
 
 func TestPageInfo_GetSetPage(t *testing.T) {
 	info := NewPageInfo()
-	page := &Page{ID: 1}
-
-	info.SetPage(page)
-	assert.Equal(t, page, info.GetPage())
+	// Off-Heap 模式：GetPage 返回 nil
+	assert.Nil(t, info.GetPage())
+	// SetPage 被忽略（兼容方法）
+	info.SetPage(&Page{ID: 1})
+	assert.Nil(t, info.GetPage())
 }
 
 func TestPageInfo_GetSetPos(t *testing.T) {
@@ -124,7 +124,6 @@ func TestPageInfo_Clone(t *testing.T) {
 	// 创建原始 PageInfo
 	original := NewPageInfo()
 	original.SetPos(12345)
-	original.SetPage(&Page{ID: 1})
 	original.MarkDirty()
 	original.MarkSplitted()
 	original.metaVersion = 5
@@ -135,7 +134,7 @@ func TestPageInfo_Clone(t *testing.T) {
 
 	// 验证字段复制
 	assert.Equal(t, original.pos.Load(), cloned.pos.Load())
-	assert.Equal(t, original.page, cloned.page) // 浅拷贝 Page 指针
+	assert.Equal(t, original.nodeRef.Load(), cloned.nodeRef.Load()) // NodeRef 共享
 	assert.Equal(t, original.lastTime.Load(), cloned.lastTime.Load())
 	assert.Equal(t, original.hits.Load(), cloned.hits.Load())
 	assert.Equal(t, original.IsDirty(), cloned.IsDirty())

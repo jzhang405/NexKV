@@ -1001,31 +1001,15 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 		pageInfoMap[pageID] = info
 	}
 
-	// Clone all PageInfos in the path (使用 CloneShallow)
-	// 原始实现：LeafPage 立即深拷贝
+	// Clone all PageInfos in the path（Off-Heap 模式）
+	// Off-Heap 模式：使用 Clone() 克隆 NodeRef
 	for i, info := range path {
-		var newInfo *PageInfo
-		if leafPage, ok := info.GetPage().(*LeafPage); ok && leafPage != nil {
-			// 原始实现：LeafPage 需要立即深拷贝，防止并发修改
-			newInfo = info.CloneShallow()
-			newInfo.page = leafPage.CloneDeep() // 深拷贝（独立数据）
-			newInfo.cloneStatus.Store(CloneStatusDeep)
-		} else {
-			// InternalPage 使用浅拷贝
-			newInfo = info.CloneShallow()
-		}
+		// Off-Heap 模式：统一使用 Clone()
+		newInfo := info.Clone()
 		copiedPath[i] = newInfo
 
-		// 更新映射表
-		var pageID model.PageID
-		switch p := newInfo.GetPage().(type) {
-		case *LeafPage:
-			pageID = p.pageID
-		case *InternalPage:
-			pageID = p.pageID
-		default:
-			continue
-		}
+		// 更新映射表（从 NodeRef 获取 PageID）
+		pageID := model.PageID(newInfo.GetPageID())
 		pageInfoMap[pageID] = newInfo
 	}
 

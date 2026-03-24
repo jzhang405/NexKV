@@ -80,6 +80,16 @@ func (ref NodeRef) IsValid() bool {
 	return ref.pageID != 0xFFFFFFFF // 0xFFFFFFFF 保留为无效值
 }
 
+// GetPageID 获取页面 ID
+func (ref NodeRef) GetPageID() uint32 {
+	return ref.pageID
+}
+
+// IsLeaf 检查是否为叶子节点
+func (ref NodeRef) IsLeaf() bool {
+	return ref.isLeaf
+}
+
 // PageAccessor 页面访问器（封装 unsafe 操作）
 type PageAccessor struct {
 	pm *PageManager

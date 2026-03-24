@@ -166,11 +166,10 @@ func (ccow *CCOWManager) CopyPathBottomUp(
 	return path[0], nil
 }
 
-// clonePageInfo 克隆 PageInfo
+// clonePageInfo 克隆 PageInfo（Off-Heap 模式）
 func (ccow *CCOWManager) clonePageInfo(info *PageInfo) *PageInfo {
 	// 创建新的 PageInfo（深拷贝 Page 数据）
 	newInfo := &PageInfo{
-		page:        info.GetPage(), // 暂时共享 Page，后续实现深拷贝
 		pageLock:    atomic.Value{}, // 性能优化：延迟创建 PageLock
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
@@ -185,7 +184,8 @@ func (ccow *CCOWManager) clonePageInfo(info *PageInfo) *PageInfo {
 	newInfo.flags.Store(info.flags.Load() &^ 0x01) // 保留 isSplitted，清除 isDirty
 	newInfo.parentRef.Store(info.parentRef.Load())
 
-	// 优化：移除 buff 复制逻辑（buff 字段已移除，序列化时使用 ChunkManager.pagePool）
+	// Off-Heap 模式：复制 NodeRef（共享 Off-Heap 页面）
+	newInfo.nodeRef.Store(info.nodeRef.Load())
 
 	return newInfo
 }

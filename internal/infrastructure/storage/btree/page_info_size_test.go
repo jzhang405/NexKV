@@ -12,9 +12,9 @@ func TestPageInfoSize(t *testing.T) {
 	fmt.Printf("PageInfo size: %d bytes\n", size)
 	fmt.Printf("PageInfo alignment: %d bytes\n", unsafe.Alignof(info))
 
-	// 打印字段偏移
+	// 打印字段偏移（Off-Heap 模式）
 	fmt.Printf("pos offset: %d\n", unsafe.Offsetof(info.pos))
-	fmt.Printf("page offset: %d\n", unsafe.Offsetof(info.page))
+	fmt.Printf("nodeRef offset: %d\n", unsafe.Offsetof(info.nodeRef))
 	fmt.Printf("pageLock offset: %d\n", unsafe.Offsetof(info.pageLock))
 	fmt.Printf("parentRef offset: %d\n", unsafe.Offsetof(info.parentRef))
 	fmt.Printf("flags offset: %d\n", unsafe.Offsetof(info.flags))

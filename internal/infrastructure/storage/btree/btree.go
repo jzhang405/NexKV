@@ -81,6 +81,62 @@ var (
 	ErrKeyNotFound = errors.New("key not found")
 )
 
+// PageRefCache 维护 PageID → PageRef 的映射（Off-Heap 模式）
+// 用于快速查找已有的 PageRef，避免重复创建
+type PageRefCache struct {
+	cache map[model.PageID]*PageRef
+	mu    sync.RWMutex
+}
+
+// NewPageRefCache 创建新的 PageRefCache
+func NewPageRefCache() *PageRefCache {
+	return &PageRefCache{
+		cache: make(map[model.PageID]*PageRef),
+	}
+}
+
+// GetOrCreate 获取或创建 PageRef
+func (c *PageRefCache) GetOrCreate(pageID model.PageID, isLeaf bool) *PageRef {
+	c.mu.RLock()
+	ref, ok := c.cache[pageID]
+	c.mu.RUnlock()
+
+	if ok {
+		return ref
+	}
+
+	// 需要创建新的 PageRef
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Double-check
+	if ref, ok := c.cache[pageID]; ok {
+		return ref
+	}
+
+	// 创建新的 PageInfo 和 PageRef
+	info := NewPageInfo()
+	info.SetNodeRef(offheap.NewNodeRef(uint32(pageID), isLeaf))
+
+	ref = NewPageRefWithInfo(info)
+	c.cache[pageID] = ref
+	return ref
+}
+
+// Update 更新 PageRef（用于分裂等场景）
+func (c *PageRefCache) Update(pageID model.PageID, ref *PageRef) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cache[pageID] = ref
+}
+
+// Delete 删除 PageRef
+func (c *PageRefCache) Delete(pageID model.PageID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.cache, pageID)
+}
+
 // BTree is the main BTree storage engine with CCOW and persistence.
 //
 // Architecture:
@@ -102,8 +158,9 @@ type BTree struct {
 	wal      wal.WAL       // Write-Ahead Log for crash recovery
 
 	// Off-Heap storage (方案 B：完全替换)
-	offheapPM     *offheap.PageManager // Off-Heap 页面管理器
-	offheapAdapter *OffHeapAdapter      // Off-Heap 适配器
+	offheapPM       *offheap.PageManager       // Off-Heap 页面管理器
+	offheapAdapter  *OffHeapAdapter            // Off-Heap 适配器
+	pageRefCache    *PageRefCache              // PageID → PageRef 映射（Off-Heap 模式）
 
 	// Configuration
 	maxLevels int  // Maximum tree levels
@@ -219,6 +276,9 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// 创建性能优化组件
 	stats := NewPageStats()
 
+	// 创建 PageRefCache（Off-Heap 模式）
+	pageRefCache := NewPageRefCache()
+
 	btree := &BTree{
 		config:           config,
 		cowConfig:        cowConfig,
@@ -228,6 +288,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		wal:              walImpl,
 		offheapPM:        offheapPM,
 		offheapAdapter:   offheapAdapter,
+		pageRefCache:     pageRefCache,
 		maxLevels:        maxLevels,
 		enableWAL:        enableWAL,
 		stats:            stats,

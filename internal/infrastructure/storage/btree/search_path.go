@@ -3,6 +3,8 @@ package btree
 import (
 	"context"
 	"fmt"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
 // searchPath 搜索从 Root 到 Leaf 的完整路径
@@ -187,37 +189,28 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 	refs = append(refs, currentRef)
 
 	for {
-		// 2.1 懒加载当前页面（如果尚未加载）
-		currentPage, err := b.getPageOrLoad(currentInfo)
-		if err != nil {
-			return nil, nil, fmt.Errorf("load page at depth %d: %w", len(path)-1, err)
-		}
-
-		// 2.2 判断是否为叶子节点
-		if leafPage, ok := currentPage.(*LeafPage); ok && leafPage != nil {
+		// 2.1 判断是否为叶子节点（Off-Heap 模式）
+		if currentInfo.IsLeaf() {
 			// 到达叶子节点，返回收集的路径和引用
 			break
 		}
 
-		// 2.3 处理内部节点
-		internalPage, ok := currentPage.(*InternalPage)
-		if !ok || internalPage == nil {
-			// 如果不是 InternalPage，可能是空树（Root 是 LeafPage）
-			if len(path) == 1 {
-				// Root 是一个空的 LeafPage，正常退出
-				break
-			}
-			return nil, nil, fmt.Errorf("expected internal page at depth %d, got %T", len(path)-1, currentPage)
-		}
+		// 2.2 获取当前页面 ID
+		currentPageID := model.PageID(currentInfo.GetPageID())
 
-		// 2.4 查找子节点
-		childRef := internalPage.FindChildRef(key)
-		if childRef == nil {
-			// 没有子节点，可能是到达叶子
+		// 2.3 查找子节点（Off-Heap 模式）
+		childPageID, found := b.offheapAdapter.SearchChild(currentPageID, key)
+		if !found || childPageID == 0 {
+			// 没有子节点，可能到达叶子
 			break
 		}
 
-		// 2.5 获取子节点的 PageInfo
+		// 2.4 判断子节点类型（叶子或内部）
+		// 默认假设是内部节点，继续搜索
+		isChildLeaf := b.offheapAdapter.IsLeaf(childPageID)
+
+		// 2.5 从缓存获取或创建子节点的 PageRef
+		childRef := b.pageRefCache.GetOrCreate(childPageID, isChildLeaf)
 		childInfo := childRef.GetPageInfo()
 		if childInfo == nil {
 			return nil, nil, fmt.Errorf("child page info is nil at depth %d", len(path))

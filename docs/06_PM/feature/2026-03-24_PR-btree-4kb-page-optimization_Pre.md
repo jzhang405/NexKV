@@ -294,10 +294,17 @@ flowchart TD
 
 #### 2.2 ToDo清单（优先级排序）
 
-| 优先级 | 任务内容 | 预估工期 | 关联PR/需求 | 备注 |
-|--------|----------|----------|-------------|------|
-| **高** | **P2 方案：CCOW 路径复制** | **5-10 天** | **后续 PR** | **P0 收益不明显，优先推进** |
-| 中 | 其他性能瓶颈分析 | 2-3 天 | 后续 PR | 使用 pprof 分析热点 |
+**基于 pprof 性能分析的优化建议**：
+
+| 优先级 | 任务内容 | 预估工期 | 预期收益 | 备注 |
+|--------|----------|----------|----------|------|
+| **高** | **NewPageInfo() 对象池优化** | **1-2 天** | **15-20%** | **使用 sync.Pool 重用 PageInfo** |
+| **高** | **materialize() 预分配优化** | **2-3 天** | **20-25%** | **优化 Delta Chain 物化内存分配** |
+| 中 | Insert() 二分查找优化 | 1-2 天 | 10-15% | 缓存上次查找位置 |
+| 中 | 批量 Delta 处理 | 2-3 天 | 10-15% | 合并多个 Delta 操作 |
+| 低 | 路径查找缓存 | 2-3 天 | 5-10% | 需权衡内存占用 |
+
+**详细分析见**：[附录：pprof 性能分析](#附录pprof-性能分析)
 
 ### 3. 下一步工作建议（建议干啥）
 
@@ -318,6 +325,134 @@ flowchart TD
 
 5. **反馈收集**：
    - P2 方案实施后，需与 Lealone 性能对比（3.68M ops/sec @ 8线程）
+
+---
+
+## 附录：pprof 性能分析
+
+### 1. 分析方法
+
+**测试命令**（2026-03-24）：
+```bash
+# CPU 和内存性能分析
+go test -cpuprofile=cpu.prof -memprofile=mem.prof \
+    -bench=BenchmarkSetWithLeafLock -benchmem \
+    -run=^$ ./internal/infrastructure/storage/btree/
+
+# 分析结果
+go tool pprof -http=:8080 cpu.prof
+go tool pprof -http=:8080 mem.prof
+```
+
+### 2. 基准测试结果
+
+**测试环境**（2026-03-24 最新）：
+- CPU: Intel(R) Core(TM) i7-8700 @ 3.20GHz
+- GOGC=500（生产环境配置）
+- 测试时长: 3s
+
+**BenchmarkSetWithLeafLock 系列**（GOGC=500，builtin 模式）：
+
+| 测试场景 | 延迟 | 内存分配 | 分配次数 |
+|---------|------|---------|---------|
+| WithCachedRef | 362.4 ns/op | 424 B/op | 5 allocs/op |
+| WithoutCachedRef | 457.3 ns/op | 448 B/op | 8 allocs/op |
+| 标准 SetWithLeafLock | 615.2 ns/op | 448 B/op | 8 allocs/op |
+| 并发场景 | 535.1 ns/op | 485 B/op | 11 allocs/op |
+| 不同键 | 305.3 ns/op | 1317 B/op | 6 allocs/op |
+
+### 3. 内存瓶颈分析（按分配量排序）
+
+**Top 内存分配器**（`alloc_space`，总计 28.81GB）：
+
+| 函数 | 分配量 | 占比 | 代码位置 |
+|------|--------|------|---------|
+| `materialize()` | 7.62GB | 26.43% | `leaf_page.go:193-197` |
+| `NewPageInfo()` | 6.97GB | 24.20% | `page_info.go` |
+| `Clone()` | 3.13GB | 10.87% (flat) | `leaf_page.go:414-447` |
+| `AppendDelta()` | 2.74GB | 9.49% | `cow_delta_ref.go` |
+| `Insert()` | 13.28GB | 46.09% (cum) | `leaf_page.go:Insert()` |
+
+**关键发现**：
+1. **`materialize()` 最大瓶颈**：当 Delta Chain 触发物化时，分配新的 `keys` 和 `values` 数组（7.62GB，26.43%）
+2. **`NewPageInfo()` 持续分配**：每次写入都创建新的 PageInfo 包装对象（6.97GB，24.20%）
+3. **`Clone()` 虽已优化但仍分配**：Delta Chain 模式下仍有 ~11% 的直接内存分配
+4. **`Insert()` 累计分配最大**：包括 `insertSlice`、`GetDeltas` 等子函数的累计分配（13.28GB，46.09%）
+
+### 4. CPU 瓶颈分析（`setWithLeafLock` 内部）
+
+**`setWithLeafLock` CPU 时间分解**（总计 34.63s，占 40.88%）：
+
+| 步骤 | CPU 时间 | 占比 | 代码位置 |
+|------|----------|------|---------|
+| `Insert()` | 12.22s | 35.3% | line 77 |
+| `findLeafPageRef()` | 9.23s | 26.6% | line 29 |
+| `NewPageInfo()` | 5.47s | 15.8% | line 83 |
+| `CloneWithDelta()` | 3.47s | 10.0% | line 71 |
+| 锁操作（TryLock/Unlock） | 930ms | 2.7% | line 45, 48 |
+| `ReplacePage()` | 350ms | 1.0% | line 94 |
+
+### 5. 优化建议（基于 pprof 数据）
+
+**高优先级**（预期收益 >20%）：
+
+1. **优化 `Insert()` 内存分配**：
+   - **问题**：累计分配 13.28GB（46.09%），包括 `insertSlice`（1.51GB）、`GetDeltas`（1.44GB）
+   - **方案**：
+     - 减少频繁的切片扩容（预分配容量）
+     - 优化 `GetDeltas` 返回值（当前每次复制整个切片）
+   - **代码位置**：`leaf_page.go:Insert()`，`cow_delta_ref.go:GetDeltas()`
+
+2. **优化 `materialize()` 内存分配**：
+   - **问题**：物化时分配 2 个完整数组（7.62GB，26.43%）
+   - **方案**：
+     - 预分配目标容量的数组（避免多次扩容）
+     - 考虑使用对象池重用大数组
+   - **代码位置**：`leaf_page.go:193-197`
+
+3. **优化 `NewPageInfo()` 分配**：
+   - **问题**：每次写入创建新 PageInfo（6.97GB，24.20%），CPU 5.47s（15.8%）
+   - **方案**：使用 sync.Pool 重用 PageInfo 对象
+   - **代码位置**：`page_info.go`
+
+**中优先级**（预期收益 10-20%）：
+
+4. **优化 `findLeafPageRef()` 路径查找**：
+   - **问题**：每次写入都从根节点查找（9.23s CPU，26.6%）
+   - **方案**：
+     - 添加 LRU 路径缓存（需要权衡内存占用）
+     - 优化 `searchPathWithRefs` 二分查找逻辑
+   - **代码位置**：`leaf_lock_set.go:29`，`search_path.go`
+
+5. **优化 `CloneWithDelta()` 开销**：
+   - **问题**：每次克隆调用 `Clone` + `NewCOWDeltaRefWithConfig`（3.47s CPU，10%）
+   - **方案**：
+     - 减少不必要的 `COWDeltaRefConfig` 创建
+     - 优化引用计数操作（原子操作开销）
+   - **代码位置**：`leaf_page.go:71`
+
+**低优先级**（预期收益 <10%）：
+
+6. **批量 Delta 处理**：
+   - **问题**：每次 Insert 都调用 `AppendDelta`（2.74GB 分配）
+   - **方案**：合并多个 Delta 操作，减少函数调用开销
+   - **权衡**：实现复杂度高，收益相对较小
+
+### 6. 结论
+
+**核心瓶颈**（基于实际 pprof 数据）：
+- **内存**：`Insert()` 累计 46.09%，`materialize()` 26.43%，`NewPageInfo()` 24.20%
+- **CPU**：`Insert()` 35.3%，`findLeafPageRef()` 26.6%，`NewPageInfo()` 15.8%
+
+**优先优化顺序**：
+1. **`Insert()` 内存分配优化**（复杂度中等，预期收益 25-30%）
+2. **`materialize()` 预分配优化**（简单，预期收益 20-25%）
+3. **`NewPageInfo()` 对象池**（简单，预期收益 15-20%）
+4. **路径查找优化**（复杂，预期收益 10-15%）
+
+**建议实施策略**：
+- 先实施简单优化（2、3），验证效果
+- 再实施复杂优化（1、4），需要仔细设计
 
 ---
 

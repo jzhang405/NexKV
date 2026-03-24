@@ -33,7 +33,7 @@ func TestOffHeapMaterializer_MaterializePageFromBytes(t *testing.T) {
 	}
 
 	// 物化到页面
-	err = m.MaterializePageFromBytes(pageID, keys, values)
+	_, err = m.MaterializePageFromBytes(pageID, keys, values)
 	require.NoError(t, err)
 
 	// 验证页面内容
@@ -65,7 +65,7 @@ func TestOffHeapMaterializer_MaterializeIndexPage(t *testing.T) {
 	children := []uint32{10, 20, 30}
 
 	// 物化到页面
-	err = m.MaterializeIndexPageFromBytes(pageID, keys, children)
+	_, err = m.MaterializeIndexPageFromBytes(pageID, keys, children)
 	require.NoError(t, err)
 
 	// 验证
@@ -105,7 +105,7 @@ func TestOffHeapMaterializer_BinarySearchInPage(t *testing.T) {
 		[]byte("purple"),
 	}
 
-	err = m.MaterializePageFromBytes(pageID, keys, values)
+	_, err = m.MaterializePageFromBytes(pageID, keys, values)
 	require.NoError(t, err)
 
 	// 测试查找存在的 key
@@ -154,7 +154,7 @@ func TestOffHeapMaterializer_ClonePageToBytes(t *testing.T) {
 		[]byte("value3"),
 	}
 
-	err = m.MaterializePageFromBytes(pageID, keys, values)
+	_, err = m.MaterializePageFromBytes(pageID, keys, values)
 	require.NoError(t, err)
 
 	// 克隆页面
@@ -200,7 +200,7 @@ func TestOffHeapMaterializer_EstimateSpaceUsage(t *testing.T) {
 		[]byte("red"),
 	}
 
-	err = m.MaterializePageFromBytes(pageID, keys, values)
+	_, err = m.MaterializePageFromBytes(pageID, keys, values)
 	require.NoError(t, err)
 
 	used, free, count = m.EstimateSpaceUsage(pageID)
@@ -230,7 +230,7 @@ func TestOffHeapMaterializer_VerifyPage(t *testing.T) {
 		[]byte("3"),
 	}
 
-	err = m.MaterializePageFromBytes(pageID, keys, values)
+	_, err = m.MaterializePageFromBytes(pageID, keys, values)
 	require.NoError(t, err)
 
 	// 验证正确
@@ -272,7 +272,7 @@ func TestOffHeapMaterializer_LargeDataset(t *testing.T) {
 	}
 
 	// 物化
-	err = m.MaterializePageFromBytes(pageID, keys, values)
+	_, err = m.MaterializePageFromBytes(pageID, keys, values)
 	require.NoError(t, err)
 
 	// 验证
@@ -322,7 +322,7 @@ func TestOffHeapMaterializer_PageFull(t *testing.T) {
 
 	// 验证所有数据
 	if count > 0 {
-		err = m.MaterializePageFromBytes(pageID, keys, values)
+		_, err = m.MaterializePageFromBytes(pageID, keys, values)
 		if err == nil {
 			assert.True(t, m.VerifyPage(pageID, keys))
 		}

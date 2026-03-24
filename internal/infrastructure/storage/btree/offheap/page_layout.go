@@ -31,9 +31,10 @@ type PageHeader struct {
 	version  uint64 // 8 bytes - 版本号（用于 CCOW）
 	prevPage uint32 // 4 bytes - 前一个页面 pageID（链表）
 	nextPage uint32 // 4 bytes - 后一个页面 pageID（链表）
+	extraChild uint32 // 4 bytes - 索引节点的 N+1 child（B+ 树语义，从 _pad 借用空间）
 	count    uint16 // 2 bytes - 条目数（entries 数量）
 	pageType uint8  // 1 byte  - 页面类型（0=索引 1=叶子）
-	_pad     [13]byte // 13 bytes - 对齐到 32 字节 (8+4+4+2+1+13 = 32)
+	_pad     [9]byte // 9 bytes - 对齐到 32 字节 (8+4+4+4+2+1+9 = 32)
 }
 
 // SizeofPageHeader PageHeader 大小（32 字节）
@@ -333,13 +334,26 @@ func (pa *PageAccessor) SetNextPage(pageID uint32, next uint32) {
 }
 
 // GetChild 获取索引节点的子节点
+// 支持 B+ 树的 N+1 child 语义：如果 index == count，返回 extraChild
 func (pa *PageAccessor) GetChild(pageID uint32, index int) uint32 {
+	header := pa.GetHeader(pageID)
+	if index == int(header.count) {
+		// 返回 N+1 child（最后一个 child）
+		return header.extraChild
+	}
 	entry := pa.GetIndexEntry(pageID, index)
 	return entry.child
 }
 
 // SetChild 设置索引节点的子节点
+// 支持 B+ 树的 N+1 child 语义：如果 index == count，设置 extraChild
 func (pa *PageAccessor) SetChild(pageID uint32, index int, child uint32) {
+	header := pa.GetHeader(pageID)
+	if index == int(header.count) {
+		// 设置 N+1 child（最后一个 child）
+		header.extraChild = child
+		return
+	}
 	entry := pa.GetIndexEntry(pageID, index)
 	entry.child = child
 }

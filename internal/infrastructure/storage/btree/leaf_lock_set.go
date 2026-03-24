@@ -511,36 +511,19 @@ func (b *BTree) splitRootOffHeapSync(leftRef, rightRef *PageRef, splitKey []byte
 		return fmt.Errorf("alloc index page: %w", err)
 	}
 
-	// Step 2: 物化根节点内容（splitKey + 左右子节点）
-	// 注意：索引页面存储的是 [key1][child1][key2][child2]... 格式
-	// 对于新根，我们需要存储 [splitKey][leftChild][rightChild]
-	// 但 Off-Heap 的 IndexEntry 格式是 [key][child]，所以需要特殊处理
+	// Step 2: 物化根节点内容（使用 B+ 树的 N+1 child 语义）
+	// 对于新根：keys = [splitKey], children = [leftPageID, rightPageID]
+	leftPageID := uint32(leftRef.GetPageInfo().GetPageID())
+	rightPageID := uint32(rightRef.GetPageInfo().GetPageID())
 
-	// 先物化一个空的根页面，然后插入第一个条目
-	err = b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(newRootPageID), [][]byte{}, []uint32{})
+	keys := [][]byte{splitKey}
+	children := []uint32{leftPageID, rightPageID}
+
+	rootDataEnd, err := b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(newRootPageID), keys, children)
 	if err != nil {
 		return fmt.Errorf("materialize root index page: %w", err)
 	}
-
-	// 插入 splitKey 和 leftChild
-	leftPageID := model.PageID(leftRef.GetPageInfo().GetPageID())
-	err = b.offheapAdapter.InsertIndexEntry(newRootPageID, 0, splitKey, leftPageID)
-	if err != nil {
-		return fmt.Errorf("insert first entry to root: %w", err)
-	}
-
-	// 插入一个 dummy key 和 rightChild（Off-Heap 索引页面的最后一个 child 没有对应的 key）
-	// 实际上，对于 B+ 树，索引节点的 children 数量 = keys 数量 + 1
-	// 最右边的 child 没有对应的 key
-	// 我们需要在 OffHeapAdapter 中添加 InsertLastChild 方法
-
-	// 临时方案：使用 InsertIndexEntry 在末尾插入
-	rightPageID := model.PageID(rightRef.GetPageInfo().GetPageID())
-	dummyKey := []byte{0xFF, 0xFF, 0xFF, 0xFF} // 最大可能的 key
-	err = b.offheapAdapter.InsertIndexEntry(newRootPageID, 1, dummyKey, rightPageID)
-	if err != nil {
-		return fmt.Errorf("insert second entry to root: %w", err)
-	}
+	b.offheapAdapter.dataEndMap[uint32(newRootPageID)] = rootDataEnd
 
 	// Step 3: 创建新的根 PageInfo
 	newRootInfo := NewPageInfo()
@@ -558,7 +541,7 @@ func (b *BTree) splitRootOffHeapSync(leftRef, rightRef *PageRef, splitKey []byte
 	rightRef.SetParentRef(b.rootRef.PageRef)
 
 	// Step 6: 更新 PageRefCache
-	b.pageRefCache.Update(newRootPageID, b.rootRef.PageRef)
+	b.pageRefCache.Update(model.PageID(newRootPageID), b.rootRef.PageRef)
 
 	return nil
 }
@@ -627,19 +610,21 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 	}
 
 	// Step 4: 物化左右两半
-	err = b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(leftPageID), leftKeys, leftChildren)
+	leftDataEnd, err := b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(leftPageID), leftKeys, leftChildren)
 	if err != nil {
 		b.offheapAdapter.pm.Free(uint32(leftPageID))
 		b.offheapAdapter.pm.Free(uint32(rightPageID))
 		return fmt.Errorf("materialize left index page: %w", err)
 	}
+	b.offheapAdapter.dataEndMap[uint32(leftPageID)] = leftDataEnd
 
-	err = b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(rightPageID), rightKeys, rightChildren)
+	rightDataEnd, err := b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(rightPageID), rightKeys, rightChildren)
 	if err != nil {
 		b.offheapAdapter.pm.Free(uint32(leftPageID))
 		b.offheapAdapter.pm.Free(uint32(rightPageID))
 		return fmt.Errorf("materialize right index page: %w", err)
 	}
+	b.offheapAdapter.dataEndMap[uint32(rightPageID)] = rightDataEnd
 
 	// Step 5: 创建左右子节点的 PageRef
 	leftRef := b.pageRefCache.GetOrCreate(leftPageID, false)
@@ -754,10 +739,11 @@ func (b *BTree) splitRootOffHeapSyncForInternal(leftRef, rightRef *PageRef, spli
 	keys := [][]byte{splitKey}
 	children := []uint32{leftPageID, rightPageID}
 
-	err = b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(newRootPageID), keys, children)
+	rootDataEnd, err := b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(newRootPageID), keys, children)
 	if err != nil {
 		return fmt.Errorf("materialize root index page: %w", err)
 	}
+	b.offheapAdapter.dataEndMap[uint32(newRootPageID)] = rootDataEnd
 
 	// Step 3: 创建新的根 PageInfo
 	newRootInfo := NewPageInfo()

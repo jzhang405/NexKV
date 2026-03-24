@@ -16,19 +16,19 @@ import (
 // OffHeapAdapter Off-Heap 页面适配器
 // 负责在现有 BTree 架构和 Off-Heap 存储之间转换
 type OffHeapAdapter struct {
-	pm         *offheap.PageManager
-	pa         *offheap.PageAccessor
+	pm           *offheap.PageManager
+	pa           *offheap.PageAccessor
 	materializer *offheap.OffHeapMaterializer
-	dataEndMap map[uint32]*uint16 // 页面 dataEnd 状态（用于跟踪数据区使用）
+	dataEndMap   map[uint32]uint16 // 页面 dataEnd 状态（用于跟踪数据区使用）
 }
 
 // NewOffHeapAdapter 创建 Off-Heap 适配器
 func NewOffHeapAdapter(pm *offheap.PageManager) *OffHeapAdapter {
 	return &OffHeapAdapter{
-		pm:         pm,
-		pa:         offheap.NewPageAccessor(pm),
+		pm:           pm,
+		pa:           offheap.NewPageAccessor(pm),
 		materializer: offheap.NewOffHeapMaterializer(pm),
-		dataEndMap: make(map[uint32]*uint16),
+		dataEndMap:   make(map[uint32]uint16),
 	}
 }
 
@@ -40,6 +40,8 @@ func (a *OffHeapAdapter) AllocLeafPage() (model.PageID, error) {
 		return 0, fmt.Errorf("alloc page: %w", err)
 	}
 	a.pa.InitLeafPage(pageID, 0)
+	// 初始化 dataEndMap
+	a.dataEndMap[pageID] = 0
 	return model.PageID(pageID), nil
 }
 
@@ -51,6 +53,8 @@ func (a *OffHeapAdapter) AllocIndexPage() (model.PageID, error) {
 		return 0, fmt.Errorf("alloc page: %w", err)
 	}
 	a.pa.InitIndexPage(pageID, 0)
+	// 初始化 dataEndMap
+	a.dataEndMap[pageID] = 0
 	return model.PageID(pageID), nil
 }
 
@@ -80,15 +84,13 @@ func (a *OffHeapAdapter) GetFromOffHeap(pageID model.PageID, key []byte) ([]byte
 // 返回 (pageID, splitRequired, error)
 func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte) (model.PageID, bool, error) {
 	// 获取或初始化 dataEnd
-	dataEndPtr := a.dataEndMap[uint32(pageID)]
-	if dataEndPtr == nil {
-		var initialDataEnd uint16 = 0
-		dataEndPtr = &initialDataEnd
-		a.dataEndMap[uint32(pageID)] = dataEndPtr
+	dataEnd, exists := a.dataEndMap[uint32(pageID)]
+	if !exists {
+		dataEnd = 0
 	}
 
 	// 检查是否需要分页
-	isFull := a.checkPageFull(uint32(pageID), len(key), len(value), *dataEndPtr)
+	isFull := a.checkPageFull(uint32(pageID), len(key), len(value), dataEnd)
 	if isFull {
 		return pageID, true, nil
 	}
@@ -103,9 +105,16 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 		return newPageID, false, err
 	}
 
-	// 插入新 KV
-	err := a.pa.InsertLeafEntry(uint32(pageID), idx, key, value, dataEndPtr)
-	return pageID, false, err
+	// 插入新 KV（需要传递指针给 InsertLeafEntry）
+	dataEndCopy := dataEnd
+	err := a.pa.InsertLeafEntry(uint32(pageID), idx, key, value, &dataEndCopy)
+	if err != nil {
+		return pageID, false, err
+	}
+	// 更新 dataEndMap
+	a.dataEndMap[uint32(pageID)] = dataEndCopy
+
+	return pageID, false, nil
 }
 
 // checkPageFull 检查页面是否已满
@@ -114,7 +123,8 @@ func (a *OffHeapAdapter) checkPageFull(pageID uint32, keyLen int, valLen int, da
 	headerSize := uint32(offheap.SizeofPageHeader)
 
 	var entrySize uint32
-	if a.pa.IsLeaf(pageID) {
+	isLeaf := a.pa.IsLeaf(pageID)
+	if isLeaf {
 		entrySize = uint32(offheap.SizeofLeafEntry)
 	} else {
 		entrySize = uint32(offheap.SizeofIndexEntry)
@@ -123,6 +133,30 @@ func (a *OffHeapAdapter) checkPageFull(pageID uint32, keyLen int, valLen int, da
 	// 计算已使用空间：header + entries + 数据区
 	usedSpace := headerSize + uint32(count)*entrySize + uint32(dataEnd)
 	requiredSpace := entrySize + uint32(keyLen) + uint32(valLen)
+
+	// 安全检查：如果页面条目数过多，强制触发分裂
+	// 即使空间计算显示未满，如果条目数超过阈值，也应该分裂
+	if isLeaf {
+		// 4KB 页面理论上最多约 87 个叶子条目（假设每个 KV 30 字节）
+		const maxLeafEntries = 80
+		if count > maxLeafEntries {
+			return true
+		}
+	} else {
+		// 索引页面：条目数 = keys 数量，children 数量 = keys + 1
+		// 4KB 页面理论上最多约 200 个索引条目（假设每个 key 12 字节）
+		const maxIndexEntries = 180
+		if count > maxIndexEntries {
+			return true
+		}
+	}
+
+	// 额外的安全检查：如果使用空间超过页面的 90%，触发分裂
+	const usageThreshold = offheap.PageSize * 90 / 100
+	if usedSpace > usageThreshold {
+		return true
+	}
+
 	return usedSpace+requiredSpace > offheap.PageSize
 }
 
@@ -161,11 +195,13 @@ func (a *OffHeapAdapter) updateLeafEntry(pageID model.PageID, idx int, key, valu
 	}
 
 	// 物化到新页面
-	err = a.materializer.MaterializePageFromBytes(newPageID, keys, values)
+	dataEnd, err := a.materializer.MaterializePageFromBytes(newPageID, keys, values)
 	if err != nil {
 		a.pm.Free(newPageID)
 		return 0, fmt.Errorf("materialize page: %w", err)
 	}
+	// 更新 dataEndMap
+	a.dataEndMap[newPageID] = dataEnd
 
 	return model.PageID(newPageID), nil
 }
@@ -196,11 +232,13 @@ func (a *OffHeapAdapter) MaterializeLeafPage(leaf *LeafPage) (model.PageID, erro
 		}
 	}
 
-	err = a.materializer.MaterializePageFromBytes(uint32(pageID), keys, values)
+	dataEnd, err := a.materializer.MaterializePageFromBytes(uint32(pageID), keys, values)
 	if err != nil {
 		a.pm.Free(uint32(pageID))
 		return 0, fmt.Errorf("materialize page: %w", err)
 	}
+	// 更新 dataEndMap
+	a.dataEndMap[uint32(pageID)] = dataEnd
 
 	return model.PageID(pageID), nil
 }
@@ -271,7 +309,7 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	}
 
 	// 物化左半部分
-	err = a.materializer.MaterializePageFromBytes(leftPageID, keys[:mid], values[:mid])
+	leftDataEnd, err := a.materializer.MaterializePageFromBytes(leftPageID, keys[:mid], values[:mid])
 	if err != nil {
 		a.pm.Free(leftPageID)
 		a.pm.Free(rightPageID)
@@ -279,7 +317,7 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	}
 
 	// 物化右半部分（包含 splitKey）
-	err = a.materializer.MaterializePageFromBytes(rightPageID, keys[mid:], values[mid:])
+	rightDataEnd, err := a.materializer.MaterializePageFromBytes(rightPageID, keys[mid:], values[mid:])
 	if err != nil {
 		a.pm.Free(leftPageID)
 		a.pm.Free(rightPageID)
@@ -289,6 +327,13 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	// 设置链表指针
 	a.pa.SetNextPage(leftPageID, rightPageID)
 	a.pa.SetPrevPage(rightPageID, leftPageID)
+
+	// 存储左右页面的 dataEnd（使用 MaterializePageFromBytes 返回的值）
+	a.dataEndMap[leftPageID] = leftDataEnd
+	a.dataEndMap[rightPageID] = rightDataEnd
+
+	// 清除旧页面的 dataEndMap 状态
+	delete(a.dataEndMap, uint32(pageID))
 
 	// 释放旧页面
 	a.pm.Free(uint32(pageID))
@@ -340,8 +385,38 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 
 // InsertIndexEntry 向 Off-Heap 索引页面插入条目
 func (a *OffHeapAdapter) InsertIndexEntry(pageID model.PageID, index int, key []byte, child model.PageID) error {
-	var dataEnd uint16 = 0
-	return a.pa.InsertIndexEntry(uint32(pageID), index, key, uint32(child), &dataEnd)
+	// 获取或初始化 dataEnd
+	dataEnd, exists := a.dataEndMap[uint32(pageID)]
+	if !exists {
+		// 如果 dataEndMap 中没有，从页面计算
+		dataEnd = a.calculateDataEndForIndexPage(uint32(pageID))
+	}
+
+	// 检查页面是否已满
+	if a.checkPageFull(uint32(pageID), len(key), 0, dataEnd) {
+		return fmt.Errorf("index page %d is full, cannot insert entry", pageID)
+	}
+
+	err := a.pa.InsertIndexEntry(uint32(pageID), index, key, uint32(child), &dataEnd)
+	if err != nil {
+		return err
+	}
+	// 更新 dataEndMap
+	a.dataEndMap[uint32(pageID)] = dataEnd
+	return nil
+}
+
+// calculateDataEndForIndexPage 计算索引页面的 dataEnd
+func (a *OffHeapAdapter) calculateDataEndForIndexPage(pageID uint32) uint16 {
+	count := a.pa.GetCount(pageID)
+	dataEnd := uint16(0)
+
+	for i := 0; i < int(count); i++ {
+		_, keyLen, _ := a.pa.GetIndexEntryOffset(pageID, i)
+		dataEnd += uint16(keyLen)
+	}
+
+	return dataEnd
 }
 
 // VerifyOffHeapPage 验证 Off-Heap 页面内容

@@ -190,23 +190,23 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 
 	for {
 		// 2.1 判断是否为叶子节点（Off-Heap 模式）
-		if currentInfo.IsLeaf() {
+		// 修复：使用 Off-Heap 页面的 pageType，而不是 PageInfo 的 NodeRef.isLeaf
+		currentPageID := model.PageID(currentInfo.GetPageID())
+		currentIsLeaf := b.offheapAdapter.IsLeaf(currentPageID)
+		if currentIsLeaf {
 			// 到达叶子节点，返回收集的路径和引用
 			break
 		}
 
-		// 2.2 获取当前页面 ID
-		currentPageID := model.PageID(currentInfo.GetPageID())
-
-		// 2.3 查找子节点（Off-Heap 模式）
-		childPageID, found := b.offheapAdapter.SearchChild(currentPageID, key)
-		if !found || childPageID == 0 {
+		// 2.2 查找子节点（Off-Heap 模式）
+		childPageID, _ := b.offheapAdapter.SearchChild(currentPageID, key)
+		if childPageID == 0 {
 			// 没有子节点，可能到达叶子
 			break
 		}
 
-		// 2.4 判断子节点类型（叶子或内部）
-		// 默认假设是内部节点，继续搜索
+		// 2.3 判断子节点类型（叶子或内部）
+		// 使用 Off-Heap 页面的 pageType
 		isChildLeaf := b.offheapAdapter.IsLeaf(childPageID)
 
 		// 2.5 从缓存获取或创建子节点的 PageRef

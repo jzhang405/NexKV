@@ -29,7 +29,7 @@ func BenchmarkOffHeapMaterializer_MaterializeSmall(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		pageID, _ := pm.Alloc()
-		_ = m.MaterializePageFromBytes(pageID, keys, values)
+		_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 		pm.Free(pageID)
 	}
 }
@@ -55,7 +55,7 @@ func BenchmarkOffHeapMaterializer_MaterializeMedium(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		pageID, _ := pm.Alloc()
-		_ = m.MaterializePageFromBytes(pageID, keys, values)
+		_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 		pm.Free(pageID)
 	}
 }
@@ -79,7 +79,7 @@ func BenchmarkOffHeapMaterializer_VerifyPage(b *testing.B) {
 	}
 
 	pageID, _ := pm.Alloc()
-	_ = m.MaterializePageFromBytes(pageID, keys, values)
+	_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -106,7 +106,7 @@ func BenchmarkOffHeapMaterializer_BinarySearch(b *testing.B) {
 	}
 
 	pageID, _ := pm.Alloc()
-	_ = m.MaterializePageFromBytes(pageID, keys, values)
+	_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 
 	// 搜索中间的 key
 	searchKey := keys[50]
@@ -136,7 +136,7 @@ func BenchmarkOffHeapMaterializer_GetSnapshot(b *testing.B) {
 	}
 
 	pageID, _ := pm.Alloc()
-	_ = m.MaterializePageFromBytes(pageID, keys, values)
+	_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

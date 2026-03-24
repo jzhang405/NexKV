@@ -54,7 +54,7 @@ func Benchmark_OffHeap_MaterializeMany(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			pageID, _ := pm.Alloc()
-			_ = m.MaterializePageFromBytes(pageID, keys, values)
+			_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 			pm.Free(pageID)
 		}
 	})
@@ -112,7 +112,7 @@ func Benchmark_OffHeap_SearchMany(b *testing.B) {
 	}
 
 	pageID, _ := pm.Alloc()
-	_ = m.MaterializePageFromBytes(pageID, keys, values)
+	_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 	searchKey := keys[50]
 
 	b.ResetTimer()
@@ -200,7 +200,7 @@ func Benchmark_OffHeap_Throughput(b *testing.B) {
 			pageID, _ := pm.Alloc()
 
 			// 物化 100 个 KV
-			_ = m.MaterializePageFromBytes(pageID, keys, values)
+			_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 
 			// 100 次查找
 			for i := 0; i < 100; i++ {
@@ -260,7 +260,7 @@ func Benchmark_MemoryAllocation_OffHeap(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		pageID, _ := pm.Alloc()
-		_ = m.MaterializePageFromBytes(pageID, keys, values)
+		_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 		pm.Free(pageID)
 	}
 }

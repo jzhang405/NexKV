@@ -33,10 +33,11 @@ func NewOffHeapMaterializer(pm *PageManager) *OffHeapMaterializer {
 // 4. Entry 包含 offset 指向数据区的 KV
 //
 // 零拷贝：数据只写入一次，不进行深拷贝
+// 返回 dataEnd（数据区结束位置）
 func (m *OffHeapMaterializer) MaterializePageFromBytes(
 	pageID uint32,
 	keys, values [][]byte,
-) error {
+) (uint16, error) {
 	// 初始化页面为叶子节点
 	m.pa.InitLeafPage(pageID, 0)
 	dataEnd := uint16(0)
@@ -46,19 +47,20 @@ func (m *OffHeapMaterializer) MaterializePageFromBytes(
 	for i := range keys {
 		err := m.pa.InsertLeafEntry(pageID, i, keys[i], values[i], &dataEnd)
 		if err != nil {
-			return err
+			return 0, err
 		}
 	}
 
-	return nil
+	return dataEnd, nil
 }
 
 // MaterializeIndexPageFromBytes 物化索引页面
+// 返回 dataEnd（数据区结束位置）
 func (m *OffHeapMaterializer) MaterializeIndexPageFromBytes(
 	pageID uint32,
 	keys [][]byte,
 	children []uint32,
-) error {
+) (uint16, error) {
 	// 初始化页面为索引节点
 	m.pa.InitIndexPage(pageID, 0)
 	dataEnd := uint16(0)
@@ -67,17 +69,20 @@ func (m *OffHeapMaterializer) MaterializeIndexPageFromBytes(
 	for i := range keys {
 		err := m.pa.InsertIndexEntry(pageID, i, keys[i], children[i], &dataEnd)
 		if err != nil {
-			return err
+			return 0, err
 		}
 	}
 
 	// 索引节点的 children 数量 = keys 数量 + 1
 	// 最后一个 child 需要特殊处理
 	if len(children) > len(keys) {
-		// TODO: 实现最后一个 child 的处理
+		// 设置 extraChild（N+1 child）
+		lastChild := children[len(keys)]
+		header := m.pa.GetHeader(pageID)
+		header.extraChild = lastChild
 	}
 
-	return nil
+	return dataEnd, nil
 }
 
 // VerifyPage 验证页面内容是否正确

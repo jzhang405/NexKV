@@ -355,7 +355,7 @@ func TestStability_ConcurrentPageOperations(t *testing.T) {
 				require.NoError(t, err)
 
 				// 物化到页面
-				_ = m.MaterializePageFromBytes(pageID, keys, values)
+				_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 
 				// 验证
 				assert.True(t, m.VerifyPage(pageID, keys))
@@ -411,7 +411,7 @@ func TestStability_MixedWorkload(t *testing.T) {
 				return
 			default:
 				pageID, _ := pm.Alloc()
-				_ = m.MaterializePageFromBytes(pageID, keys, values)
+				_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 				_ = m.VerifyPage(pageID, keys)
 				pm.Free(pageID)
 			}
@@ -436,7 +436,7 @@ func TestStability_MixedWorkload(t *testing.T) {
 				return
 			default:
 				pageID, _ := pm.Alloc()
-				_ = m.MaterializePageFromBytes(pageID, keys, values)
+				_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 				_, _, _ = m.BinarySearchInPage(pageID, keys[0])
 				pm.Free(pageID)
 			}

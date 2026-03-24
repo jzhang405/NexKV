@@ -27,14 +27,22 @@
 #### 2.1 背景
 
 - **业务场景**：NexKV BTree 存储引擎在高并发写密集场景下存在内存复制开销大、缓存命中率低的问题
-- **现有性能**（纯内存模式，GOGC=500，来源：`docs/10_benchmark/2026-03-17_baseline/`）：
+
+- **当前基准性能**（2026-03-24 实测，GOGC=500，builtin 模式）：
+  | 并发度 | 吞吐量 | 延迟 | 扩展比 |
+  |--------|--------|------|--------|
+  | 1 线程 | 557K ops/sec | 1.80 μs | 1.0x |
+  | 2 线程 | 1,014K ops/sec | 0.99 μs | 1.82x |
+  | 4 线程 | 1,449K ops/sec | 0.69 μs | 2.60x |
+  | 8 线程 | 1,648K ops/sec | 0.61 μs | 2.96x |
+
+  **测试命令**：`GOGC=500 go run cmd/btree_perf_scheduler/main.go -threads 1,2,4,8 -count 50000 -mode builtin`
+
+- **对比数据**（纯内存模式，来源：`docs/10_benchmark/2026-03-17_baseline/`）：
   - 单线程：484K ops/sec
   - 8 线程：530K ops/sec
-  - **问题**：并发扩展性差（8线程仅提升 9.5%）
-- **对比数据**（TaskScheduler 模式，来源：并发优化 PR 2026-03-23）：
-  - 单线程：591K ops/sec
-  - 8 线程：2.92M ops/sec
-  - **说明**：本次 P0 优化基于纯内存模式基准，不含 TaskScheduler 优化
+  - **说明**：纯内存模式不使用 TaskScheduler，作为保守基线参考
+
 - **现有问题**：
   1. **内存复制开销**：每次修改都克隆整个 4KB 页面，即使只修改 1 个键值对（~88 bytes）
   2. **缓存未命中**：4KB 页面远大于 L1 Cache 行（64 bytes），导致缓存未命中率增加
@@ -48,12 +56,14 @@
 
 **基准数据验证**（2026-03-24）：
 ```bash
-# 验证基准数据命令
-go test -bench=BenchmarkBTreeSet -benchmem -threads=1,8 ./internal/infrastructure/storage/btree/...
+# 运行基准测试
+GOGC=500 go run cmd/btree_perf_scheduler/main.go -threads 1,2,4,8 -count 50000 -mode builtin
 
 # 当前实测结果（GOGC=500）
-# 单线程：~484K ops/sec
-# 8 线程：~530K ops/sec
+# 1 线程：557K ops/sec (1.80 μs)
+# 2 线程：1,014K ops/sec (0.99 μs)
+# 4 线程：1,449K ops/sec (0.69 μs)
+# 8 线程：1,648K ops/sec (0.61 μs)
 ```
 
 #### 2.2 核心目标（可量化、可验证）
@@ -66,9 +76,12 @@ go test -bench=BenchmarkBTreeSet -benchmem -threads=1,8 ./internal/infrastructur
    - 实现批量 Delta 处理
 
 2. **性能目标**（P0 优化，估算值，实际需基准测试验证）：
-   - 单线程：~520K ops/sec（+7%，从当前 484K 提升）
-   - 8 线程：~700K ops/sec（+30%，从当前 530K 提升）
-   - 内存分配：减少 ~20%（避免不必要的 LeafPage 对象分配）
+   - **基于 builtin 模式当前基准**（1,648K ops/sec @ 8线程）：
+     - 单线程：~600K ops/sec（+8%，从当前 557K 提升）
+     - 8 线程：~2.1M ops/sec（+30%，从当前 1,648K 提升）
+     - 内存分配：减少 ~20%（避免不必要的 LeafPage 对象分配）
+   - **保守目标**（如收益 <10%）：
+     - 如 8 线程提升 <10%，调整为优先推进 P2 或 M 方案
 
 3. **可用性目标**：
    - 并发正确性完整测试覆盖

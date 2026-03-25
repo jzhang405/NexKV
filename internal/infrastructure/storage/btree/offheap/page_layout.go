@@ -101,6 +101,53 @@ func NewPageAccessor(pm *PageManager) *PageAccessor {
 	return &PageAccessor{pm: pm}
 }
 
+// GetDataEnd 从页面结构计算实际的 dataEnd
+// dataEnd 表示从页面末尾到第一个 KV 数据起点的距离
+// 注意：由于 entries 从前往后存储，而 KV 数据从后往前存储，
+// 所以"第一个" entry 的 KV 数据实际上在页面最末尾
+// 我们需要从"最后一个" entry 的 keyOff 计算（即逻辑上"第一个"插入的数据）
+func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
+	ptr := pa.pm.PageIDToPtr(pageID)
+	header := (*PageHeader)(unsafe.Pointer(ptr))
+
+	if header.count == 0 {
+		return 0
+	}
+
+	if pa.IsLeaf(pageID) {
+		// 叶子节点：从最后一个 entry 获取 key 的起始位置
+		// 最后一个 entry 的 keyOff 最小，是 KV 数据区的起点
+		lastIndex := int(header.count) - 1
+		entry := (*LeafEntry)(unsafe.Pointer(ptr + uintptr(SizeofPageHeader) + uintptr(lastIndex)*uintptr(SizeofLeafEntry)))
+		// dataEnd = 从页面末尾到 key 起点的距离
+		return uint16(PageSize - uint32(entry.keyOff))
+	} else {
+		// 索引节点：从最后一个 entry 获取 key 的起始位置
+		lastIndex := int(header.count) - 1
+		entry := (*IndexEntry)(unsafe.Pointer(ptr + uintptr(SizeofPageHeader) + uintptr(lastIndex)*uintptr(SizeofIndexEntry)))
+		return uint16(PageSize - uint32(entry.keyOff))
+	}
+}
+
+// GetSpaceUsage 计算页面空间使用率（0.0-1.0）
+func (pa *PageAccessor) GetSpaceUsage(pageID uint32) float64 {
+	ptr := pa.pm.PageIDToPtr(pageID)
+	header := (*PageHeader)(unsafe.Pointer(ptr))
+
+	var entrySize uint32
+	if pa.IsLeaf(pageID) {
+		entrySize = uint32(SizeofLeafEntry)
+	} else {
+		entrySize = uint32(SizeofIndexEntry)
+	}
+
+	// 计算已使用空间：header + entries + dataEnd
+	dataEnd := pa.GetDataEnd(pageID)
+	usedSpace := uint32(SizeofPageHeader) + uint32(header.count)*entrySize + uint32(dataEnd)
+
+	return float64(usedSpace) / float64(PageSize)
+}
+
 // GetHeader 获取页面头
 func (pa *PageAccessor) GetHeader(pageID uint32) *PageHeader {
 	ptr := pa.pm.PageIDToPtr(pageID)

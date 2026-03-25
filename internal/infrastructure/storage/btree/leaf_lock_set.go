@@ -610,12 +610,11 @@ func (b *BTree) splitRootOffHeapSync(oldLeafRef *PageRef, oldLeafInfo *PageInfo,
 	keys := [][]byte{splitKey}
 	children := []uint32{leftPageID, rightPageID}
 
-	rootDataEnd, err := b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(newRootPageID), keys, children)
+	_, err = b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(newRootPageID), keys, children)
 	if err != nil {
 		b.offheapAdapter.pm.Free(uint32(newRootPageID))
 		return fmt.Errorf("materialize root index page: %w", err)
 	}
-	b.offheapAdapter.dataEndMap[uint32(newRootPageID)] = rootDataEnd
 
 	// Step 3: 创建新的根 PageInfo
 	newRootInfo := NewPageInfo()
@@ -745,21 +744,19 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 
 
 	// Step 4: 物化左右两半
-	leftDataEnd, err := b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(leftPageID), leftKeys, leftChildren)
+	_, err = b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(leftPageID), leftKeys, leftChildren)
 	if err != nil {
 		b.offheapAdapter.pm.Free(uint32(leftPageID))
 		b.offheapAdapter.pm.Free(uint32(rightPageID))
 		return fmt.Errorf("materialize left index page: %w", err)
 	}
-	b.offheapAdapter.dataEndMap[uint32(leftPageID)] = leftDataEnd
 
-	rightDataEnd, err := b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(rightPageID), rightKeys, rightChildren)
+	_, err = b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(rightPageID), rightKeys, rightChildren)
 	if err != nil {
 		b.offheapAdapter.pm.Free(uint32(leftPageID))
 		b.offheapAdapter.pm.Free(uint32(rightPageID))
 		return fmt.Errorf("materialize right index page: %w", err)
 	}
-	b.offheapAdapter.dataEndMap[uint32(rightPageID)] = rightDataEnd
 
 	// Step 5: 创建左右子节点的 PageRef
 	leftRef := b.pageRefCache.GetOrCreate(leftPageID, false)
@@ -889,12 +886,11 @@ func (b *BTree) splitRootOffHeapSyncForInternal(leftRef, rightRef *PageRef, spli
 	keys := [][]byte{splitKey}
 	children := []uint32{leftPageID, rightPageID}
 
-	rootDataEnd, err := b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(newRootPageID), keys, children)
+	_, err = b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(newRootPageID), keys, children)
 	if err != nil {
 		b.offheapAdapter.pm.Free(uint32(newRootPageID))
 		return fmt.Errorf("materialize root index page: %w", err)
 	}
-	b.offheapAdapter.dataEndMap[uint32(newRootPageID)] = rootDataEnd
 
 	// Step 3: 创建新的根 PageInfo
 	newRootInfo := NewPageInfo()

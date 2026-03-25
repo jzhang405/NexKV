@@ -332,3 +332,111 @@ func TestPageAccessor_GetCount(t *testing.T) {
 
 	assert.Equal(t, uint16(1), pa.GetCount(pageID))
 }
+
+func TestPageAccessor_GetDataEnd(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	pa.InitLeafPage(pageID, 1)
+
+	// 空页面应该返回 0
+	dataEnd := pa.GetDataEnd(pageID)
+	assert.Equal(t, uint16(0), dataEnd)
+
+	// 插入第一个条目
+	key := []byte("test-key")
+	value := []byte("test-value")
+	var dataEndParam uint16 = 0
+	err = pa.InsertLeafEntry(pageID, 0, key, value, &dataEndParam)
+	require.NoError(t, err)
+
+	// 验证 GetDataEnd 返回正确的值
+	expectedDataEnd := uint16(len(key) + len(value))
+	actualDataEnd := pa.GetDataEnd(pageID)
+	assert.Equal(t, expectedDataEnd, actualDataEnd)
+
+	// 插入第二个条目
+	key2 := []byte("another-key")
+	value2 := []byte("another-value")
+	err = pa.InsertLeafEntry(pageID, 1, key2, value2, &dataEndParam)
+	require.NoError(t, err)
+
+	// 验证 dataEnd 增加了
+	expectedDataEnd = uint16(len(key) + len(value) + len(key2) + len(value2))
+	actualDataEnd = pa.GetDataEnd(pageID)
+	assert.Equal(t, expectedDataEnd, actualDataEnd)
+}
+
+func TestPageAccessor_GetDataEnd_IndexPage(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	pa.InitIndexPage(pageID, 1)
+
+	// 空页面应该返回 0
+	dataEnd := pa.GetDataEnd(pageID)
+	assert.Equal(t, uint16(0), dataEnd)
+
+	// 插入第一个条目
+	key := []byte("test-key")
+	child := uint32(100)
+	var dataEndParam uint16 = 0
+	err = pa.InsertIndexEntry(pageID, 0, key, child, &dataEndParam)
+	require.NoError(t, err)
+
+	// 验证 GetDataEnd 返回正确的值
+	expectedDataEnd := uint16(len(key))
+	actualDataEnd := pa.GetDataEnd(pageID)
+	assert.Equal(t, expectedDataEnd, actualDataEnd)
+
+	// 插入第二个条目
+	key2 := []byte("another-key")
+	child2 := uint32(200)
+	err = pa.InsertIndexEntry(pageID, 1, key2, child2, &dataEndParam)
+	require.NoError(t, err)
+
+	// 验证 dataEnd 增加了
+	expectedDataEnd = uint16(len(key) + len(key2))
+	actualDataEnd = pa.GetDataEnd(pageID)
+	assert.Equal(t, expectedDataEnd, actualDataEnd)
+}
+
+func TestPageAccessor_GetSpaceUsage(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	pa.InitLeafPage(pageID, 1)
+
+	// 空页面应该只有 header
+	usage := pa.GetSpaceUsage(pageID)
+	expectedUsage := float64(SizeofPageHeader) / float64(PageSize)
+	assert.InDelta(t, expectedUsage, usage, 0.001)
+
+	// 插入一个条目
+	key := []byte("key")
+	value := []byte("value")
+	var dataEndParam uint16 = 0
+	err = pa.InsertLeafEntry(pageID, 0, key, value, &dataEndParam)
+	require.NoError(t, err)
+
+	// 验证空间使用率增加
+	usage = pa.GetSpaceUsage(pageID)
+	usedSpace := SizeofPageHeader + SizeofLeafEntry + len(key) + len(value)
+	expectedUsage = float64(usedSpace) / float64(PageSize)
+	assert.InDelta(t, expectedUsage, usage, 0.001)
+}

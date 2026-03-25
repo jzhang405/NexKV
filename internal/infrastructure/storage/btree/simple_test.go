@@ -172,3 +172,90 @@ func TestOffHeap_SpaceBasedSplitting(t *testing.T) {
 	})
 }
 
+func TestOffHeap_25000Keys(t *testing.T) {
+	ctx := context.Background()
+	tree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	const numKeys = 25000
+	format := "key-%05d"
+
+	for i := range numKeys {
+		key := []byte(fmt.Sprintf(format, i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+
+		err := tree.Set(ctx, key, value)
+		if err != nil {
+			t.Logf("ERROR at key %d: %v", i, err)
+			t.FailNow()
+		}
+	}
+
+	for i := range numKeys {
+		key := []byte(fmt.Sprintf(format, i))
+		expectedValue := []byte(fmt.Sprintf("value-%d", i))
+
+		got, err := tree.Get(ctx, key)
+		if err != nil {
+			t.Logf("GET ERROR at key %d: %v", i, err)
+			t.Logf("Key bytes: %v", key)
+			t.FailNow()
+		}
+		if string(got) != string(expectedValue) {
+			t.Logf("VALUE MISMATCH at key %d: expected %s, got %s", i, string(expectedValue), string(got))
+			t.FailNow()
+		}
+
+		// 每 1000 个 key 打印一次进度
+		if (i+1)%1000 == 0 {
+			t.Logf("Verified %d keys", i+1)
+		}
+	}
+
+	t.Logf("SUCCESS: Inserted and retrieved %d keys", numKeys)
+}
+
+
+func TestOffHeap_35000Keys(t *testing.T) {
+	ctx := context.Background()
+	tree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	const numKeys = 35000
+	format := "key-%05d"
+
+	for i := range numKeys {
+		key := []byte(fmt.Sprintf(format, i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+
+		err := tree.Set(ctx, key, value)
+		if err != nil {
+			t.Logf("ERROR at key %d: %v", i, err)
+			t.FailNow()
+		}
+	}
+
+	for i := range numKeys {
+		key := []byte(fmt.Sprintf(format, i))
+		expectedValue := []byte(fmt.Sprintf("value-%d", i))
+
+		got, err := tree.Get(ctx, key)
+		if err != nil {
+			t.Logf("GET ERROR at key %d: %v", i, err)
+			t.Logf("Key bytes: %v", key)
+			t.FailNow()
+		}
+		if string(got) != string(expectedValue) {
+			t.Logf("VALUE MISMATCH at key %d: expected %s, got %s", i, string(expectedValue), string(got))
+			t.FailNow()
+		}
+
+		if (i+1)%1000 == 0 {
+			t.Logf("Verified %d keys", i+1)
+		}
+	}
+
+	t.Logf("SUCCESS: Inserted and retrieved %d keys", numKeys)
+}

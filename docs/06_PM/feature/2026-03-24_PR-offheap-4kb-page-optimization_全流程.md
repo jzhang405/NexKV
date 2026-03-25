@@ -366,6 +366,8 @@ func MaterializeOffHeap_Hybrid(pageID uint32, deltas []Delta) error {
 | Week 5 完成 | 2026-03-24 | 性能验证（组件级对比测试） | commit: 48599da |
 | Week 6 完成 | 2026-03-24 | 稳定性测试（12 个场景） | commit: 1b8ddca |
 | 本地测试 | 2026-03-24 | 48 个单元测试 + 稳定性测试 | 全部通过 ✅ |
+| 活锁修复 | 2026-03-25 | 修复级联分裂活锁问题（两层分裂机制） | commit: 65828a2 |
+| 规模化测试 | 2026-03-25 | 15000/25000/35000 keys 测试全部通过 | 全部通过 ✅ |
 | Post文档编写 | 2026-03-24 | 完成 | 完成总结文档 |
 | 架构师Post批准 | 待定 | [待评审] | [批准签字/备注] |
 | 提交GitHub | 待定 | [待提交] | [GitHub PR链接] |
@@ -417,6 +419,11 @@ func MaterializeOffHeap_Hybrid(pageID uint32, deltas []Delta) error {
   - ✅ 内存泄漏检测（10 轮 × 1000 次分配释放）
   - ✅ 边界条件测试（页面满、空队列、无效 ID）
   - ✅ 长时间运行测试（10 秒，55.9M ops）
+- **已完成（Week 7）**：
+  - ✅ 两层分裂机制（解决级联分裂活锁）
+  - ✅ 15000 keys 测试通过
+  - ✅ 25000 keys 测试通过
+  - ✅ 35000 keys 测试通过
 - **进行中**：
   - 🔄 BTree 核心逻辑迁移（需要决策）
 - **与Pre文档差异**：无重大变更
@@ -447,6 +454,13 @@ func MaterializeOffHeap_Hybrid(pageID uint32, deltas []Delta) error {
   - 长时间运行: 10 秒，55.9M ops，无泄漏 ✅
   - 混合工作负载: 5 秒，无泄漏 ✅
   - 所有边界条件测试: 通过 ✅
+- **两层分裂机制**（Week 7）：
+  - ✅ 第一层：提前检查（同步分裂父节点 3-10 次）
+  - ✅ 第二层：异步分裂（TaskScheduler 3-10 次）
+  - ✅ 15000 keys: 0.11s，6 次父节点分裂
+  - ✅ 25000 keys: 0.24s，14 次父节点分裂
+  - ✅ 35000 keys: 0.31s，20 次父节点分裂
+  - ✅ 无活锁，无无限循环
 - **BTree Baseline**（8 线程）：
   - 当前: 801,496 ops/sec (1.25 μs 延迟)
   - 目标: 2.0M+ ops/sec（需要完整集成）
@@ -1367,6 +1381,142 @@ package offheap
 - ✅ 所有 pprof 警告已修复
 - ✅ 代码通过 lint 和 vet 检查
 - ✅ 用户文档完整
+
+---
+
+## 附录E：两层分裂机制设计
+
+> 本附录说明级联分裂的活锁问题和两层分裂机制的设计。
+
+### 问题背景
+
+**级联分裂活锁问题**：
+- 当父节点满（count=180）时，叶子节点分裂无法更新父节点
+- 返回 `ErrRetry` 后重试，但父节点仍然满
+- 导致无限循环：活锁
+
+**错误日志**：
+```
+[HANDLE_SPLIT] parent page full (count=180 >= 180), splitting parent first: parentPageID=718
+[HANDLE_SPLIT] split parent FAILED: cas failed, retry operation
+[HANDLE_SPLIT] parent page full (count=180 >= 180), splitting parent first: parentPageID=718
+...（无限循环）
+```
+
+### 两层分裂机制
+
+基于 Lealone 的 `asyncSplitPage()` 设计，实现两层分裂机制协同工作：
+
+#### 第一层：提前检查（同步）
+
+**位置**：`setWithLeafLock` - 叶子节点分裂**之前**
+
+**逻辑**：
+```go
+// ✅ 提前检查父节点是否满了（避免活锁）
+if len(path) >= 2 {
+    parentInfo := path[len(path)-2]
+    if parentInfo != nil {
+        parentPageID := model.PageID(parentInfo.GetPageID())
+        parentCount := b.offheapAdapter.pa.GetCount(uint32(parentPageID))
+        if int(parentCount) >= maxInternalKeys {
+            // 父节点已满，先分裂父节点
+            parentRef := b.pageRefCache.GetOrCreate(parentPageID, false)
+            err := b.splitInternalOffHeapSync(parentRef, parentInfo, parentPageID, path[:len(path)-1])
+            // 父节点分裂成功，返回 ErrRetry 让外层重新搜索路径
+            return ErrRetry
+        }
+    }
+}
+```
+
+**作用**：
+- 避免"父节点满 → 无法更新 → 无限重试"的循环
+- 在叶子节点分裂**之前**，先确保父节点有空间
+
+#### 第二层：异步分裂
+
+**位置**：`handleSplitOffHeapSync` - 叶子节点分裂**成功后**
+
+**逻辑**：
+```go
+// 检查父节点是否需要分裂
+if int(currentParentCount) >= maxInternalKeys {
+    // ✅ 方案 A：异步分裂父节点（基于 Lealone asyncSplitPage）
+    if b.scheduler != nil {
+        // 创建异步任务
+        splitItem := NewParentSplitItem(
+            b, currentParentPageID,
+            uint32(leftPageID), uint32(rightPageID),
+            splitKey, path[:len(path)-1],
+            shardID, taskOrder,
+        )
+        // 提交到 TaskScheduler
+        b.scheduler.EnqueueWithShard(splitItem, "btree-split")
+        // ✅ 立即返回成功，不等待父节点分裂完成
+        return leftRef, nil
+    }
+}
+```
+
+**作用**：
+- 处理级联分裂（父节点在插入新的子节点引用后又满了）
+- 不阻塞当前操作，立即返回成功
+
+### 两层机制协作
+
+```
+时间线：
+T1: 叶子节点分裂前检查 → 父节点满 → 触发第一层（同步分裂）
+T2: 父节点分裂成功 → 返回 ErrRetry
+T3: 重新搜索路径 → 叶子节点分裂成功 → 更新父节点
+T4: 父节点插入后又满 → 触发第二层（异步分裂）
+T5: 异步任务在后台处理 → 当前操作立即返回成功
+```
+
+### 测试结果
+
+| 测试 | Keys | 时间 | 第一层分裂 | 第二层分裂 | 总分裂次数 |
+|------|------|------|-----------|-----------|-----------|
+| TestOffHeap_SimpleMultipleKeys | 15,000 | 0.11s | 3 次 | 3 次 | 6 次 |
+| TestOffHeap_25000Keys | 25,000 | 0.24s | 7 次 | 7 次 | 14 次 |
+| TestOffHeap_35000Keys | 35,000 | 0.31s | 10 次 | 10 次 | 20 次 |
+
+### 关键设计决策
+
+**为什么需要两层？**
+1. **父节点在不同阶段可能两次变满**：
+   - 第一次：在检查时就已经满了
+   - 第二次：在插入新的子节点引用后又满了
+
+2. **第一层（同步）**：避免活锁
+   - 在叶子节点分裂**之前**检查
+   - 如果父节点满了，先分裂它
+   - 确保后续操作不会卡住
+
+3. **第二层（异步）**：提升并发性能
+   - 在叶子节点分裂**之后**检查
+   - 如果父节点又满了，异步处理
+   - 不阻塞当前操作，立即返回
+
+**与 Lealone 的对比**：
+
+| 方面 | Lealone | NexKV |
+|------|---------|-------|
+| 异步触发时机 | 父节点更新**后**立即检查 | 两层机制都有 |
+| 异步任务调度 | Scheduler | TaskScheduler |
+| 立即返回 | ✅ 是 | ✅ 是 |
+| Root CAS 优化 | ~0.001% | 待验证 |
+
+### 相关文件
+
+- `internal/infrastructure/storage/btree/leaf_lock_set.go`
+  - `setWithLeafLock`: 第一层（提前检查）
+  - `handleSplitOffHeapSync`: 第二层（异步分裂）
+- `internal/infrastructure/storage/btree/parent_split_item.go`
+  - `ParentSplitItem`: 异步父节点分裂任务
+- `internal/infrastructure/storage/btree/btree.go`
+  - `btree-split` 任务注册
 
 ---
 

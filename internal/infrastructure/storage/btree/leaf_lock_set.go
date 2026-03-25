@@ -537,22 +537,23 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 
 	fmt.Printf("[DEBUG] Leaf split and parent update completed for page %d\n", leafPageID)
 
-	// 调试：打印根节点状态
-	currentRootInfo = b.rootRef.pInfo.Load()
-	if currentRootInfo != nil {
-		rootPageID := currentRootInfo.GetPageID()
-		rootCount := b.offheapAdapter.pa.GetCount(uint32(rootPageID))
-		fmt.Printf("[DEBUG] Current root is page %d with %d keys (source: rootInfo.Load after parent update)\n", rootPageID, rootCount)
+	// Step 15: 检查父节点是否需要分裂（不仅是根节点）
+	// 获取更新后的父节点信息
+	currentParentInfo := parentRef.GetPageInfo()
+	if currentParentInfo == nil {
+		return fmt.Errorf("parent info is nil after CAS")
+	}
+	currentParentPageID := model.PageID(currentParentInfo.GetPageID())
+	currentParentCount := b.offheapAdapter.pa.GetCount(uint32(currentParentPageID))
 
-		// Step 15: 检查父节点（根节点）是否需要分裂
-		if int(rootCount) > maxInternalKeys {
-			fmt.Printf("[DEBUG] Root node has %d keys, exceeding maxInternalKeys=%d, triggering root split\n", rootCount, maxInternalKeys)
-			// 根节点需要分裂，递归处理
-			// 重要：使用 parentRef.GetPageInfo() 获取最新的 PageInfo
-			// 因为 parentRef 可能已经被 CAS 更新，而参数 newParentInfo 是旧值
-			currentParentInfo := parentRef.GetPageInfo()
-			return b.splitInternalOffHeapSync(parentRef, currentParentInfo, model.PageID(newParentPageID), path[:len(path)-1])
-		}
+	// 调试：打印父节点状态
+	fmt.Printf("[DEBUG] Parent page %d has %d keys (maxInternalKeys=%d)\n", currentParentPageID, currentParentCount, maxInternalKeys)
+
+	// 检查父节点是否需要分裂
+	if int(currentParentCount) > maxInternalKeys {
+		fmt.Printf("[DEBUG] Parent node %d has %d keys, exceeding maxInternalKeys=%d, triggering parent split\n", currentParentPageID, currentParentCount, maxInternalKeys)
+		// 父节点需要分裂，递归处理
+		return b.splitInternalOffHeapSync(parentRef, currentParentInfo, currentParentPageID, path[:len(path)-1])
 	}
 
 	// Step 16: 确保所有更新对其他 goroutine 可见

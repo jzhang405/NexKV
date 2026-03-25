@@ -174,6 +174,14 @@ func (a *OffHeapAdapter) checkPageFull(pageID uint32, keyLen int, valLen int, da
 func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, value []byte) (model.PageID, error) {
 	// 收集所有 KV 对
 	count := a.pa.GetCount(uint32(pageID))
+
+	// 安全检查：如果页面条目数过多，拒绝更新
+	// 这防止页面在并发场景下不断累积条目
+	const maxSafeEntries = 200
+	if int(count) >= maxSafeEntries {
+		return 0, fmt.Errorf("page %d has %d entries, refusing update (max safe=%d)", pageID, count, maxSafeEntries)
+	}
+
 	keys := make([][]byte, 0, count)
 	values := make([][]byte, 0, count)
 

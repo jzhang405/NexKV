@@ -420,7 +420,6 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// 调试：记录查找的 key（仅第一次尝试）
 		if attempt == 0 && string(key) == "key-0040" {
-			fmt.Printf("[DEBUG] ===== Getting key %s =====\n", string(key))
 		}
 
 		// Off-Heap 模式：使用 searchPathWithRefs
@@ -440,7 +439,6 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 				continue
 			}
 			if string(key) == "key-0040" {
-				fmt.Printf("[DEBUG] No path or leafRef found for key %s\n", string(key))
 			}
 			return nil, ErrKeyNotFound
 		}
@@ -453,7 +451,6 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 				continue
 			}
 			if string(key) == "key-0040" {
-				fmt.Printf("[DEBUG] No leafInfo for key %s\n", string(key))
 			}
 			return nil, ErrKeyNotFound
 		}
@@ -464,53 +461,6 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		// Off-Heap 模式：验证页面已加载
 		if !leafInfo.IsPageLoaded() {
 			return nil, fmt.Errorf("leaf page not loaded")
-		}
-
-		// 调试：打印路径（针对 key-0040 和 key-0079，仅第一次尝试）
-		if attempt == 0 && (string(key) == "key-0040" || string(key) == "key-0079") {
-			fmt.Printf("[DEBUG] Search path length: %d\n", len(path))
-			for i, p := range path {
-				fmt.Printf("[DEBUG]   Path[%d]: pageID=%d\n", i, p.GetPageID())
-			}
-		}
-
-		if string(key) == "key-0040" && attempt == 0 {
-			fmt.Printf("[DEBUG] Found leaf page %d for key %s\n", leafPageID, string(key))
-			count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
-			fmt.Printf("[DEBUG] Leaf page %d has %d entries\n", leafPageID, count)
-
-			// 调试：打印页面的内容范围（前3个和后3个）
-			fmt.Printf("[DEBUG] Contents of page %d (first 3 and last 3):\n", leafPageID)
-			for i := 0; i < int(count) && i < 3; i++ {
-				keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
-				pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
-				fmt.Printf("[DEBUG]   Entry %d: key='%s'\n", i, string(pageKey))
-			}
-			if int(count) > 6 {
-				fmt.Printf("[DEBUG]   ...\n")
-				for i := int(count) - 3; i < int(count); i++ {
-					keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
-					pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
-					fmt.Printf("[DEBUG]   Entry %d: key='%s'\n", i, string(pageKey))
-				}
-			}
-
-			// 调试：打印根页面的内容
-			rootInfo := b.rootRef.pInfo.Load()
-			if rootInfo != nil {
-				rootPageID := rootInfo.GetPageID()
-				rootCount := b.offheapAdapter.pa.GetCount(uint32(rootPageID))
-				fmt.Printf("[DEBUG] Root page %d has %d entries:\n", rootPageID, rootCount)
-				for i := 0; i < int(rootCount) && i < 10; i++ {
-					keyOff, keyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(rootPageID), i)
-					pageKey := b.offheapAdapter.pa.GetKey(uint32(rootPageID), keyOff, keyLen)
-					childID := b.offheapAdapter.pa.GetChild(uint32(rootPageID), i)
-					fmt.Printf("[DEBUG]   Index %d: key='%s', child=%d\n", i, string(pageKey), childID)
-				}
-				// 打印 extra child (N+1 child)
-				extraChild := b.offheapAdapter.pa.GetChild(uint32(rootPageID), int(rootCount))
-				fmt.Printf("[DEBUG]   Extra child (index %d): %d\n", rootCount, extraChild)
-			}
 		}
 
 		// 使用 OffHeapAdapter.GetFromOffHeap 直接读取
@@ -536,12 +486,6 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		// 如果在页面分裂期间，可能出现临时找不到
 		// 策略：让出 CPU，重新搜索（而不是重试读取同一个页面）
 		if attempt < maxRetries-1 {
-			// 调试：打印未找到信息（仅第一次尝试）
-			if string(key) == "key-0079" && attempt == 0 {
-				count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
-				fmt.Printf("[DEBUG] Key '%s' not found in page %d (has %d entries), retrying with fresh search...\n", string(key), leafPageID, count)
-			}
-
 			// 让出 CPU，让其他 goroutine 完成分裂和缓存更新
 			runtime.Gosched()
 
@@ -550,18 +494,6 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 			continue
 		}
 
-		// 最后一次尝试仍然未找到
-		// 调试：打印页面的所有 keys
-		if string(key) == "key-0079" {
-			count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
-			fmt.Printf("[DEBUG] Key '%s' not found in page %d (has %d entries)\n", string(key), leafPageID, count)
-			fmt.Printf("[DEBUG] Dumping all keys in page %d:\n", leafPageID)
-			for i := 0; i < int(count); i++ {
-				keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
-				pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
-				fmt.Printf("[DEBUG]   Entry %d: key='%s'\n", i, string(pageKey))
-			}
-		}
 		return nil, ErrKeyNotFound
 	}
 
@@ -1215,11 +1147,10 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 	// 优化：预先构建 PageID -> PageInfo 映射表
 	pageInfoMap := make(map[model.PageID]*PageInfo, len(path))
 	for _, info := range path {
-		// 调试：检查原始 path 中的 InternalPage 不变式
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
 			if len(internalPage.children) != len(internalPage.keys)+1 {
-				fmt.Printf("[DEBUG] copyPathShallow: invariant violated in ORIGINAL path: pageID=%d, len(keys)=%d, len(children)=%d\n",
-					internalPage.pageID, len(internalPage.keys), len(internalPage.children))
+				// 不变式违反：children 数量应该是 keys 数量 + 1
+				continue
 			}
 		}
 

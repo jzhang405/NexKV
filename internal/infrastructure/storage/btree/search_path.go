@@ -220,24 +220,6 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 			return nil, nil, fmt.Errorf("child page info is nil at depth %d", len(path))
 		}
 
-		// 调试：打印子节点信息（仅针对 key-0079）
-		if len(path) == 1 && string(key) == "key-0079" {
-			fmt.Printf("[DEBUG] Child of Root: pageID=%d, isLeaf=%v, path depth=%d\n",
-				childPageID, isChildLeaf, len(path))
-			count := b.offheapAdapter.pa.GetCount(uint32(childPageID))
-			fmt.Printf("[DEBUG] Child page %d has %d entries\n", childPageID, count)
-			if count > 0 {
-				// 打印第一个和最后一个 key
-				if b.offheapAdapter.IsLeaf(childPageID) {
-					keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(childPageID), 0)
-					firstKey := b.offheapAdapter.pa.GetKey(uint32(childPageID), keyOff, keyLen)
-					keyOff2, keyLen2, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(childPageID), int(count)-1)
-					lastKey := b.offheapAdapter.pa.GetKey(uint32(childPageID), keyOff2, keyLen2)
-					fmt.Printf("[DEBUG]   First key='%s', Last key='%s'\n", string(firstKey), string(lastKey))
-				}
-			}
-		}
-
 		// 2.6 检查层级深度
 		if len(path) >= b.maxLevels {
 			return nil, nil, fmt.Errorf("search path exceeds max levels (%d)", b.maxLevels)

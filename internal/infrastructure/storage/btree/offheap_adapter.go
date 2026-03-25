@@ -109,6 +109,14 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 		return newPageID, false, err
 	}
 
+	// 插入新 KV 之前，预估是否需要分裂
+	// 使用 checkPageFull 进行预检查
+	if a.checkPageFull(uint32(pageID), len(key), len(value), dataEnd) {
+		// 页面可能已满，返回 splitRequired=true
+		// 注意：这是预检查，可能会误判，但能防止数据丢失
+		return pageID, true, nil
+	}
+
 	// 插入新 KV
 	dataEndCopy := dataEnd
 	insertErr := a.pa.InsertLeafEntry(uint32(pageID), idx, key, value, &dataEndCopy)
@@ -118,12 +126,12 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 		a.dataEndMu.Lock()
 		a.dataEndMap[uint32(pageID)] = dataEndCopy
 		a.dataEndMu.Unlock()
-		// 插入后检查是否需要分裂
+		// 插入成功，检查是否需要分裂
 		splitRequired := a.checkPageFull(uint32(pageID), len(key), len(value), dataEndCopy)
 		return pageID, splitRequired, nil
 	}
 
-	// 插入失败，返回错误（此时页面条目数 < 79，不应该触发分裂）
+	// 插入失败
 	return pageID, false, insertErr
 }
 
@@ -144,29 +152,6 @@ func (a *OffHeapAdapter) checkPageFull(pageID uint32, keyLen int, valLen int, da
 	usedSpace := headerSize + uint32(count)*entrySize + uint32(dataEnd)
 	requiredSpace := entrySize + uint32(keyLen) + uint32(valLen)
 
-	// 调试：追踪页面状态（已临时关闭）
-	// if isLeaf && count > 80 {
-	// 	fmt.Printf("[DEBUG] checkPageFull: pageID=%d, count=%d, usedSpace=%d, requiredSpace=%d, dataEnd=%d\n",
-	// 		pageID, count, usedSpace, requiredSpace, dataEnd)
-	// }
-
-	// 安全检查：防止极端情况下条目数过多导致性能问题
-	// 这只是最后的安全网，正常情况下应该由空间计算触发分裂
-	if isLeaf {
-		// 4KB 页面，假设最小 KV 8+8=16 字节，最多约 240 个条目
-		// 设置 200 为安全上限，实际应该在空间计算触发前就分裂
-		const maxSafeLeafEntries = 200
-		if count >= maxSafeLeafEntries {
-			return true
-		}
-	} else {
-		// 索引条目更小，可以容纳更多
-		const maxSafeIndexEntries = 380
-		if count >= maxSafeIndexEntries {
-			return true
-		}
-	}
-
 	// 核心分裂判断：基于实际空间使用
 	// 页面大小 = header + entries + data
 	// 分裂条件：当前使用 + 新增所需 > 页面大小
@@ -178,12 +163,8 @@ func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, valu
 	// 收集所有 KV 对
 	count := a.pa.GetCount(uint32(pageID))
 
-	// 安全检查：如果页面条目数过多，拒绝更新
-	// 这防止页面在并发场景下不断累积条目
-	const maxSafeEntries = 200
-	if int(count) >= maxSafeEntries {
-		return 0, fmt.Errorf("page %d has %d entries, refusing update (max safe=%d)", pageID, count, maxSafeEntries)
-	}
+	// 注意：移除了条目数限制，让实际的物化操作决定是否可以更新
+	// 如果页面太大，MaterializePageFromBytes 会返回错误
 
 	keys := make([][]byte, 0, count)
 	values := make([][]byte, 0, count)
@@ -374,7 +355,6 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	count := a.pa.GetCount(uint32(pageID))
 
 	// 调试：记录页面状态
-	// fmt.Printf("[DEBUG] SplitOffHeapLeafPage called for page %d with %d entries\n", pageID, count)
 
 	// 收集所有 KV
 	keys := make([][]byte, 0, count)
@@ -404,7 +384,6 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	}
 
 	// 调试：打印分配的页面ID
-	// fmt.Printf("[DEBUG] SplitOffHeapLeafPage: allocated left=%d, right=%d for page %d\n", leftPageID, rightPageID, pageID)
 
 	// 调试：验证分配的页面ID不同
 	if leftPageID == rightPageID {
@@ -420,8 +399,8 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	var success bool
 	countInt := int(count)
 
-	// 首先尝试 50/50 分裂
-	mid := countInt / 2
+	// 首先尝试 30/70 分裂（非常激进，确保右页面不会过大）
+	mid := int(float64(countInt) * 0.3) // 30%
 	if mid > 0 {
 		leftKeys := keys[:mid]
 		leftValues := values[:mid]
@@ -438,6 +417,7 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 			a.dataEndMap[leftPageID] = leftDataEnd
 			a.dataEndMap[rightPageID] = rightDataEnd
 			a.dataEndMu.Unlock()
+		} else {
 		}
 	}
 
@@ -506,7 +486,6 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 		}
 
 		if !success {
-			fmt.Printf("[DEBUG] SplitOffHeapLeafPage FAILED for page %d: all split ratios failed, count=%d\n", pageID, countInt)
 			return 0, 0, nil, fmt.Errorf("page too large to split: count=%d", countInt)
 		}
 	}
@@ -515,12 +494,10 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	splitKey := make([]byte, len(keys[splitIdx]))
 	copy(splitKey, keys[splitIdx])
 
-	// fmt.Printf("[DEBUG] Using splitIdx=%d for page %d (count=%d)\n", splitIdx, pageID, countInt)
 
 	// 物化左半部分
 	leftDataEnd, err := a.materializer.MaterializePageFromBytes(leftPageID, keys[:splitIdx], values[:splitIdx])
 	if err != nil {
-		fmt.Printf("[DEBUG] Materialize left page FAILED: %v\n", err)
 		a.pm.Free(leftPageID)
 		a.pm.Free(rightPageID)
 		return 0, 0, nil, fmt.Errorf("materialize left page: %w", err)
@@ -529,13 +506,11 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	// 物化右半部分（包含 splitKey）
 	rightDataEnd, err := a.materializer.MaterializePageFromBytes(rightPageID, keys[splitIdx:], values[splitIdx:])
 	if err != nil {
-		fmt.Printf("[DEBUG] Materialize right page FAILED: %v\n", err)
 		a.pm.Free(leftPageID)
 		a.pm.Free(rightPageID)
 		return 0, 0, nil, fmt.Errorf("materialize right page: %w", err)
 	}
 
-	// fmt.Printf("[DEBUG] SplitOffHeapLeafPage SUCCESS for page %d: left=%d, right=%d\n", pageID, leftPageID, rightPageID)
 
 	// 设置链表指针
 	a.pa.SetNextPage(leftPageID, rightPageID)

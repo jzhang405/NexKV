@@ -147,15 +147,16 @@ func (a *OffHeapAdapter) checkPageFull(pageID uint32, keyLen int, valLen int, da
 	// 安全检查：如果页面条目数过多，强制触发分裂
 	// 即使空间计算显示未满，如果条目数超过阈值，也应该分裂
 	if isLeaf {
-		// 4KB 页面理论上最多约 87 个叶子条目（假设每个 KV 30 字节）
-		const maxLeafEntries = 85  // 从 80 提高到 85，允许略微超过
+		// 4KB 页面最多约 85 个叶子条目（假设每个 KV 30 字节）
+		// 设置为 50 以留出足够的分裂空间，同时减少 UpdateLeafEntry 的压力
+		const maxLeafEntries = 50
 		if count >= maxLeafEntries {
 			return true
 		}
 	} else {
 		// 索引页面：条目数 = keys 数量，children 数量 = keys + 1
 		// 4KB 页面理论上最多约 200 个索引条目（假设每个 key 12 字节）
-		const maxIndexEntries = 190  // 从 180 提高到 190
+		const maxIndexEntries = 190 // 从 180 提高到 190
 		if count >= maxIndexEntries {
 			return true
 		}
@@ -230,11 +231,12 @@ func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, valu
 // 当子页面分裂时，替换旧子页面为新的左右子页面
 //
 // 参数：
-//   pageID - 父页面 ID
-//   index - 插入位置
-//   key - split key（要插入的新键）
-//   leftPageID - 左子页面（替换旧的子页面）
-//   rightPageID - 右子页面（新的子页面）
+//
+//	pageID - 父页面 ID
+//	index - 插入位置
+//	key - split key（要插入的新键）
+//	leftPageID - 左子页面（替换旧的子页面）
+//	rightPageID - 右子页面（新的子页面）
 //
 // 返回：新的父页面 ID
 func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []byte, leftPageID, rightPageID uint32) (model.PageID, error) {
@@ -466,28 +468,43 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	}
 
 	if !success {
-		// 所有比例都失败，使用最小分裂（1个元素在左侧）
-		splitIdx = 1
-		// 尝试最小分裂
-		leftKeys := keys[:splitIdx]
-		leftValues := values[:splitIdx]
-		rightKeys := keys[splitIdx:]
-		rightValues := values[splitIdx:]
+		for _, trySplitIdx := range []int{1, 0} {
+			newLeftPageID, err := a.pm.Alloc()
+			if err != nil {
+				continue
+			}
+			newRightPageID, err := a.pm.Alloc()
+			if err != nil {
+				a.pm.Free(newLeftPageID)
+				continue
+			}
 
-		leftDataEnd, leftErr := a.materializer.MaterializePageFromBytes(leftPageID, leftKeys, leftValues)
-		rightDataEnd, rightErr := a.materializer.MaterializePageFromBytes(rightPageID, rightKeys, rightValues)
+			leftKeys := keys[:trySplitIdx]
+			leftValues := values[:trySplitIdx]
+			rightKeys := keys[trySplitIdx:]
+			rightValues := values[trySplitIdx:]
 
-		if leftErr != nil && rightErr == nil {
-			success = true
-			a.dataEndMu.Lock()
-			a.dataEndMap[leftPageID] = leftDataEnd
-			a.dataEndMap[rightPageID] = rightDataEnd
-			a.dataEndMu.Unlock()
-		} else {
-			// 即使最小分裂也失败，返回错误
+			leftDataEnd, leftErr := a.materializer.MaterializePageFromBytes(newLeftPageID, leftKeys, leftValues)
+			rightDataEnd, rightErr := a.materializer.MaterializePageFromBytes(newRightPageID, rightKeys, rightValues)
+
+			if leftErr == nil && rightErr == nil {
+				splitIdx = trySplitIdx
+				success = true
+				leftPageID = newLeftPageID
+				rightPageID = newRightPageID
+				a.dataEndMu.Lock()
+				a.dataEndMap[leftPageID] = leftDataEnd
+				a.dataEndMap[rightPageID] = rightDataEnd
+				a.dataEndMu.Unlock()
+				break
+			}
+
+			a.pm.Free(newLeftPageID)
+			a.pm.Free(newRightPageID)
+		}
+
+		if !success {
 			fmt.Printf("[DEBUG] SplitOffHeapLeafPage FAILED for page %d: all split ratios failed, count=%d\n", pageID, countInt)
-			a.pm.Free(leftPageID)
-			a.pm.Free(rightPageID)
 			return 0, 0, nil, fmt.Errorf("page too large to split: count=%d", countInt)
 		}
 	}

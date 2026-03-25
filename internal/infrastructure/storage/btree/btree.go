@@ -53,6 +53,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -207,6 +208,84 @@ type BTree struct {
 
 	// Split coordination: 防止多个 goroutine 同时分裂同一页面
 	splitMuMap sync.Map // map[uint32]*sync.Mutex - 页面级别的分裂锁
+
+	// Epoch-based page release: 延迟释放页面避免竞态条件
+	epochBasedFreeList *EpochBasedFreeList
+}
+
+// EpochBasedFreeList 延迟释放列表
+// 页面在 CAS 成功后不立即释放，而是加入当前 epoch 的待释放列表
+// 在下一个 epoch 开始时才真正释放页面
+type EpochBasedFreeList struct {
+	currentEpoch uint64                 // 当前 epoch
+	pending      map[uint64][]model.PageID // epoch → 待释放页面列表
+	mu           sync.Mutex
+}
+
+// NewEpochBasedFreeList 创建延迟释放列表
+func NewEpochBasedFreeList() *EpochBasedFreeList {
+	return &EpochBasedFreeList{
+		currentEpoch: 0,
+		pending:      make(map[uint64][]model.PageID),
+	}
+}
+
+// Add 添加页面到当前 epoch 的待释放列表
+func (e *EpochBasedFreeList) Add(pageID model.PageID) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// 调试日志：记录页面释放请求
+	stack := debug.Stack()
+	// 提取关键调用栈信息
+	caller := "<unknown>"
+	stackStr := string(stack)
+	for _, line := range strings.Split(stackStr, "\n") {
+		if strings.Contains(line, "handleSplitOffHeapSync") || strings.Contains(line, "splitInternal") {
+			caller = "split"
+			break
+		}
+	}
+
+	fmt.Printf("[EPOCH_ADD] epoch=%d pageID=%d caller=%s pending_count=%d\n",
+		e.currentEpoch, pageID, caller, len(e.pending[e.currentEpoch]))
+
+	e.pending[e.currentEpoch] = append(e.pending[e.currentEpoch], pageID)
+}
+
+// AdvanceEpoch 推进 epoch，释放 2 个 epoch 之前的页面
+// 延迟 2 个 epoch 策略：
+// - 当前 epoch: N
+// - 正在使用的 epoch: N-1（可能还有 goroutine 在访问）
+// - 可以安全释放的 epoch: N-2（所有 goroutine 应该已经完成）
+func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	oldEpoch := e.currentEpoch
+	e.currentEpoch++
+
+	// 释放 2 个 epoch 之前的页面（currentEpoch - 2）
+	// 确保所有 goroutine 都已经完成对这些页面的访问
+	epochToFree := e.currentEpoch - 2
+	if epochToFree >= 0 {
+		pagesToFree := e.pending[epochToFree]
+		delete(e.pending, epochToFree)
+
+		// 调试日志：记录 epoch 推进
+		fmt.Printf("[EPOCH_ADVANCE] old=%d new=%d freeing_epoch=%d pages_to_free=%d\n",
+			oldEpoch, e.currentEpoch, epochToFree, len(pagesToFree))
+
+		// 真正释放页面
+		for _, pid := range pagesToFree {
+			fmt.Printf("[EPOCH_FREE] epoch=%d pageID=%d\n", epochToFree, pid)
+			pm.Free(uint32(pid))
+		}
+	} else {
+		// 还没有到达可以释放的 epoch
+		fmt.Printf("[EPOCH_ADVANCE] old=%d new=%d pages_to_free=0 (waiting for epoch 2)\n",
+			oldEpoch, e.currentEpoch)
+	}
 }
 
 // BTreeSchedulerAdapter 实现 TaskScheduler 接口
@@ -312,20 +391,24 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// 创建 PageRefCache（Off-Heap 模式）
 	pageRefCache := NewPageRefCache()
 
+	// 创建 Epoch-based 延迟释放列表
+	epochBasedFreeList := NewEpochBasedFreeList()
+
 	btree := &BTree{
-		config:           config,
-		cowConfig:        cowConfig,
-		closed:           false,
-		rootRef:          rootPageRef,
-		chunkMgr:         chunkMgr,
-		wal:              walImpl,
-		offheapPM:        offheapPM,
-		offheapAdapter:   offheapAdapter,
-		pageRefCache:     pageRefCache,
-		maxLevels:        maxLevels,
-		enableWAL:        enableWAL,
-		stats:            stats,
-		hotPageThreshold: config.HotPageThreshold,
+		config:              config,
+		cowConfig:           cowConfig,
+		closed:              false,
+		rootRef:             rootPageRef,
+		chunkMgr:            chunkMgr,
+		wal:                 walImpl,
+		offheapPM:           offheapPM,
+		offheapAdapter:      offheapAdapter,
+		pageRefCache:        pageRefCache,
+		maxLevels:           maxLevels,
+		enableWAL:           enableWAL,
+		stats:               stats,
+		hotPageThreshold:    config.HotPageThreshold,
+		epochBasedFreeList:  epochBasedFreeList,
 	}
 
 	// 应用 GC 配置（如果指定）
@@ -417,9 +500,12 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 
 	const maxRetries = 5  // 最多重试 5 次（增加以提高并发成功率）
 
+	// 调试：追踪 key-06151 的查找过程
+	debugThisKey := string(key) == "key-06151" || string(key) == "key-06150" || string(key) == "key-06152"
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		// 调试：记录查找的 key（仅第一次尝试）
-		if attempt == 0 && string(key) == "key-0040" {
+		if debugThisKey {
+			fmt.Printf("[GET_DEBUG] key=%s attempt=%d\n", string(key), attempt)
 		}
 
 		// Off-Heap 模式：使用 searchPathWithRefs
@@ -434,11 +520,12 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		}
 
 		if len(path) == 0 || leafRef == nil {
+			if debugThisKey {
+				fmt.Printf("[GET_DEBUG] key=%s path=%d leafRef=%v\n", string(key), len(path), leafRef != nil)
+			}
 			if attempt < maxRetries-1 {
 				runtime.Gosched()
 				continue
-			}
-			if string(key) == "key-0040" {
 			}
 			return nil, ErrKeyNotFound
 		}
@@ -446,11 +533,12 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		// 获取叶子节点的 PageInfo
 		leafInfo := leafRef.GetPageInfo()
 		if leafInfo == nil {
+			if debugThisKey {
+				fmt.Printf("[GET_DEBUG] key=%s leafInfo=nil\n", string(key))
+			}
 			if attempt < maxRetries-1 {
 				runtime.Gosched()
 				continue
-			}
-			if string(key) == "key-0040" {
 			}
 			return nil, ErrKeyNotFound
 		}
@@ -465,6 +553,32 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 
 		// 使用 OffHeapAdapter.GetFromOffHeap 直接读取
 		value, found, err := b.offheapAdapter.GetFromOffHeap(leafPageID, key)
+		if debugThisKey {
+			fmt.Printf("[GET_DEBUG] key=%s leafPageID=%d found=%v err=%v\n", string(key), leafPageID, found, err)
+			// 打印页面的所有 keys
+			count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
+			fmt.Printf("[GET_DEBUG] key=%s leafPageID=%d count=%d\n", string(key), leafPageID, count)
+			if count > 0 {
+				// 打印前5个和后5个 keys
+				maxPrint := 5
+				if int(count) <= maxPrint*2 {
+					maxPrint = int(count)
+				}
+				for i := 0; i < maxPrint; i++ {
+					keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
+					pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
+					fmt.Printf("[GET_DEBUG]   key[%d]=%s\n", i, string(pageKey))
+				}
+				if int(count) > maxPrint*2 {
+					fmt.Printf("[GET_DEBUG]   ... (%d more keys)\n", int(count)-maxPrint*2)
+					for i := int(count) - maxPrint; i < int(count); i++ {
+						keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
+						pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
+						fmt.Printf("[GET_DEBUG]   key[%d]=%s\n", i, string(pageKey))
+					}
+				}
+			}
+		}
 		if err != nil {
 			// 如果读取错误且不是最后一次尝试，重试
 			if attempt < maxRetries-1 {
@@ -475,6 +589,11 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		}
 
 		if found {
+			// 成功找到，推进 epoch 释放待释放页面
+			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
+			if debugThisKey {
+				fmt.Printf("[GET_DEBUG] key=%s FOUND\n", string(key))
+			}
 			return value, nil  // 成功找到，直接返回
 		}
 
@@ -540,6 +659,8 @@ func (b *BTree) setDirect(ctx context.Context, key, value []byte) error {
 		err := b.setWithLeafLock(ctx, key, value)
 		switch err {
 		case nil:
+			// 操作成功，推进 epoch 释放待释放页面
+			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
 			return nil
 		case ErrRetry:
 			runtime.Gosched()

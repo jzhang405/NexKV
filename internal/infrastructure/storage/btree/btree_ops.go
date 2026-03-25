@@ -226,6 +226,8 @@ func (b *BTree) SetWithRetryAndQueue(
 		err := b.setWithLeafLock(ctx, key, value)
 		switch err {
 		case nil:
+			// 操作成功，推进 epoch 释放待释放页面
+			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
 			return nil // 成功
 		case ErrRetry:
 			if attempt < maxFastRetries-1 {

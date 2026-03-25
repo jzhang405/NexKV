@@ -184,6 +184,12 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 	currentInfo := rootInfo
 	currentRef := b.rootRef.PageRef
 
+	// 调试：追踪 key-06151 的搜索路径
+	debugThisSearch := string(key) == "key-06151"
+	if debugThisSearch {
+		fmt.Printf("[SEARCH_PATH] key=%s starting search\n", string(key))
+	}
+
 	// 添加 Root 到路径和引用
 	path = append(path, currentInfo)
 	refs = append(refs, currentRef)
@@ -199,11 +205,17 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 		currentIsLeaf := b.offheapAdapter.IsLeaf(currentPageID)
 		if currentIsLeaf {
 			// 到达叶子节点，返回收集的路径和引用
+			if debugThisSearch {
+				fmt.Printf("[SEARCH_PATH] key=%s reached leaf pageID=%d\n", string(key), currentPageID)
+			}
 			break
 		}
 
 		// 2.2 查找子节点（Off-Heap 模式）
 		childPageID, _ := b.offheapAdapter.SearchChild(currentPageID, key)
+		if debugThisSearch {
+			fmt.Printf("[SEARCH_PATH] key=%s at parent pageID=%d found childPageID=%d\n", string(key), currentPageID, childPageID)
+		}
 		if childPageID == 0 {
 			// 没有子节点，可能到达叶子
 			break
@@ -228,6 +240,14 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 		// 2.7 循环引用检测
 		currentPageID = model.PageID(childInfo.GetPageID())
 		if visitedPages[uint64(currentPageID)] {
+			// 调试日志：打印完整路径
+			fmt.Printf("[CIRCULAR_REF] pageID=%d depth=%d\n", currentPageID, len(path))
+			fmt.Printf("[CIRCULAR_REF] Path: ")
+			for _, p := range path {
+				fmt.Printf("%d ", p.GetPageID())
+			}
+			fmt.Printf("\n")
+
 			return nil, nil, fmt.Errorf("circular reference detected at page %d (path depth: %d)", currentPageID, len(path))
 		}
 		visitedPages[uint64(currentPageID)] = true

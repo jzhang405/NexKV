@@ -55,3 +55,52 @@ func TestOffHeap_SimpleMultipleKeys(t *testing.T) {
 
 	t.Logf("SUCCESS: Inserted and retrieved %d keys", numKeys)
 }
+
+func TestOffHeap_FiveHundredThousandKeys(t *testing.T) {
+	ctx := context.Background()
+	tree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	const numKeys = 500000
+	format := "key-%06d"
+
+	for i := range numKeys {
+		key := []byte(fmt.Sprintf(format, i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+
+		err := tree.Set(ctx, key, value)
+		if err != nil {
+			t.Logf("ERROR at key %d: %v", i, err)
+			t.FailNow()
+		}
+
+		// 每 50000 个 key 打印一次进度
+		if (i+1)%50000 == 0 {
+			t.Logf("Inserted %d keys", i+1)
+		}
+	}
+
+	for i := range numKeys {
+		key := []byte(fmt.Sprintf(format, i))
+		expectedValue := []byte(fmt.Sprintf("value-%d", i))
+
+		got, err := tree.Get(ctx, key)
+		if err != nil {
+			t.Logf("GET ERROR at key %d: %v", i, err)
+			t.Logf("Key bytes: %v", key)
+			t.FailNow()
+		}
+		if string(got) != string(expectedValue) {
+			t.Logf("VALUE MISMATCH at key %d: expected %s, got %s", i, string(expectedValue), string(got))
+			t.FailNow()
+		}
+
+		// 每 50000 个 key 打印一次进度
+		if (i+1)%50000 == 0 {
+			t.Logf("Verified %d keys", i+1)
+		}
+	}
+
+	t.Logf("SUCCESS: Inserted and retrieved %d keys", numKeys)
+}

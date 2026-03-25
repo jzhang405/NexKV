@@ -7,6 +7,7 @@ package btree
 import (
 	"bytes"
 	"fmt"
+	"sync"
 	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -20,6 +21,7 @@ type OffHeapAdapter struct {
 	pa           *offheap.PageAccessor
 	materializer *offheap.OffHeapMaterializer
 	dataEndMap   map[uint32]uint16 // 页面 dataEnd 状态（用于跟踪数据区使用）
+	dataEndMu    sync.RWMutex      // 保护 dataEndMap 的并发访问
 }
 
 // NewOffHeapAdapter 创建 Off-Heap 适配器
@@ -41,7 +43,9 @@ func (a *OffHeapAdapter) AllocLeafPage() (model.PageID, error) {
 	}
 	a.pa.InitLeafPage(pageID, 0)
 	// 初始化 dataEndMap
+	a.dataEndMu.Lock()
 	a.dataEndMap[pageID] = 0
+	a.dataEndMu.Unlock()
 	return model.PageID(pageID), nil
 }
 
@@ -54,7 +58,9 @@ func (a *OffHeapAdapter) AllocIndexPage() (model.PageID, error) {
 	}
 	a.pa.InitIndexPage(pageID, 0)
 	// 初始化 dataEndMap
+	a.dataEndMu.Lock()
 	a.dataEndMap[pageID] = 0
+	a.dataEndMu.Unlock()
 	return model.PageID(pageID), nil
 }
 
@@ -84,7 +90,9 @@ func (a *OffHeapAdapter) GetFromOffHeap(pageID model.PageID, key []byte) ([]byte
 // 返回 (pageID, splitRequired, error)
 func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte) (model.PageID, bool, error) {
 	// 获取或初始化 dataEnd
+	a.dataEndMu.RLock()
 	dataEnd, exists := a.dataEndMap[uint32(pageID)]
+	a.dataEndMu.RUnlock()
 	if !exists {
 		dataEnd = 0
 	}
@@ -94,19 +102,11 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 	if found {
 		// 更新现有 key（需要重新分配页面，因为 Off-Heap 不可变）
 		// 清除旧页面的 dataEnd 状态
+		a.dataEndMu.Lock()
 		delete(a.dataEndMap, uint32(pageID))
+		a.dataEndMu.Unlock()
 		newPageID, err := a.UpdateLeafEntry(pageID, idx, key, value)
 		return newPageID, false, err
-	}
-
-	// 【关键修复】插入前先检查页面容量，防止页面过载
-	count := a.pa.GetCount(uint32(pageID))
-
-	// 如果页面已有 79+ 条目，不插入直接触发分裂
-	// 这样可以避免页面积累过多条目导致分裂失败
-	if int(count) >= 79 {
-		fmt.Printf("[DEBUG] page %d has %d entries >= 79, triggering split BEFORE insert\n", pageID, count)
-		return pageID, true, nil
 	}
 
 	// 插入新 KV
@@ -115,7 +115,9 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 
 	// 更新 dataEndMap（插入成功时）
 	if insertErr == nil {
+		a.dataEndMu.Lock()
 		a.dataEndMap[uint32(pageID)] = dataEndCopy
+		a.dataEndMu.Unlock()
 		// 插入后检查是否需要分裂
 		splitRequired := a.checkPageFull(uint32(pageID), len(key), len(value), dataEndCopy)
 		return pageID, splitRequired, nil
@@ -146,15 +148,15 @@ func (a *OffHeapAdapter) checkPageFull(pageID uint32, keyLen int, valLen int, da
 	// 即使空间计算显示未满，如果条目数超过阈值，也应该分裂
 	if isLeaf {
 		// 4KB 页面理论上最多约 87 个叶子条目（假设每个 KV 30 字节）
-		const maxLeafEntries = 80
-		if count > maxLeafEntries {
+		const maxLeafEntries = 85  // 从 80 提高到 85，允许略微超过
+		if count >= maxLeafEntries {
 			return true
 		}
 	} else {
 		// 索引页面：条目数 = keys 数量，children 数量 = keys + 1
 		// 4KB 页面理论上最多约 200 个索引条目（假设每个 key 12 字节）
-		const maxIndexEntries = 180
-		if count > maxIndexEntries {
+		const maxIndexEntries = 190  // 从 180 提高到 190
+		if count >= maxIndexEntries {
 			return true
 		}
 	}
@@ -209,7 +211,9 @@ func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, valu
 		return 0, fmt.Errorf("materialize page: %w", err)
 	}
 	// 更新 dataEndMap
+	a.dataEndMu.Lock()
 	a.dataEndMap[newPageID] = dataEnd
+	a.dataEndMu.Unlock()
 
 	return model.PageID(newPageID), nil
 }
@@ -230,18 +234,18 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 	keys := make([][]byte, 0, count+1)
 	children := make([]uint32, 0, count+2)
 
+	inserted := false
 	for i := 0; i < int(count); i++ {
 		keyOff, keyLen, _ := a.pa.GetIndexEntryOffset(uint32(pageID), i)
 		k := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
 		c := a.pa.GetChild(uint32(pageID), i)
 
 		if i == index {
-			// 分裂位置：插入 splitKey 和 left child
-			// 注意：不复制当前的 key k（它就是 splitKey）
-			// 添加 right child 替代原来的 child c
+			// 分裂位置：插入 splitKey 和 left/right child
 			keys = append(keys, key)
 			children = append(children, leftPageID)
 			children = append(children, rightPageID)
+			inserted = true
 		} else {
 			// 非分裂位置：保留原 key 和 child
 			kCopy := make([]byte, len(k))
@@ -251,9 +255,16 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 		}
 	}
 
+	// 如果 index == count（在最后插入），循环中没有插入
+	if !inserted {
+		keys = append(keys, key)
+		children = append(children, leftPageID)
+		children = append(children, rightPageID)
+	}
+
 	// 添加 extraChild（N+1 child）
-	// 如果分裂位置不是最后一个，extraChild 保持不变
-	// 如果分裂位置是最后一个（index == count），extraChild 已在上面处理
+	// 如果 index < count，说明在中间插入，extraChild 保持原值
+	// 如果 index == count，rightPageID 就是新的 extraChild（已在上面添加）
 	if index < int(count) {
 		extraChild := a.pa.GetChild(uint32(pageID), int(count))
 		children = append(children, extraChild)
@@ -266,12 +277,14 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 		return 0, fmt.Errorf("alloc new page: %w", err)
 	}
 
-	dataEnd, err := a.materializer.MaterializeIndexPageFromBytes(newPageID, keys, children)
+	dataEnd, err := a.materializer.MaterializeIndexPageFromBytes(uint32(newPageID), keys, children)
 	if err != nil {
 		a.pm.Free(newPageID)
 		return 0, fmt.Errorf("materialize index page: %w", err)
 	}
-	a.dataEndMap[newPageID] = dataEnd
+	a.dataEndMu.Lock()
+	a.dataEndMap[uint32(newPageID)] = dataEnd
+	a.dataEndMu.Unlock()
 
 	return model.PageID(newPageID), nil
 }
@@ -308,7 +321,9 @@ func (a *OffHeapAdapter) MaterializeLeafPage(leaf *LeafPage) (model.PageID, erro
 		return 0, fmt.Errorf("materialize page: %w", err)
 	}
 	// 更新 dataEndMap
+	a.dataEndMu.Lock()
 	a.dataEndMap[uint32(pageID)] = dataEnd
+	a.dataEndMu.Unlock()
 
 	return model.PageID(pageID), nil
 }
@@ -407,8 +422,10 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 		if leftErr == nil && rightErr == nil {
 			splitIdx = mid
 			success = true
+			a.dataEndMu.Lock()
 			a.dataEndMap[leftPageID] = leftDataEnd
 			a.dataEndMap[rightPageID] = rightDataEnd
+			a.dataEndMu.Unlock()
 		}
 	}
 
@@ -431,8 +448,10 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 			if leftErr == nil && rightErr == nil {
 				splitIdx = mid
 				success = true
+				a.dataEndMu.Lock()
 				a.dataEndMap[leftPageID] = leftDataEnd
 				a.dataEndMap[rightPageID] = rightDataEnd
+				a.dataEndMu.Unlock()
 				break
 			}
 		}
@@ -452,8 +471,10 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 
 		if leftErr != nil && rightErr == nil {
 			success = true
+			a.dataEndMu.Lock()
 			a.dataEndMap[leftPageID] = leftDataEnd
 			a.dataEndMap[rightPageID] = rightDataEnd
+			a.dataEndMu.Unlock()
 		} else {
 			// 即使最小分裂也失败，返回错误
 			fmt.Printf("[DEBUG] SplitOffHeapLeafPage FAILED for page %d: all split ratios failed, count=%d\n", pageID, countInt)
@@ -494,12 +515,14 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	a.pa.SetPrevPage(rightPageID, leftPageID)
 
 	// 存储左右页面的 dataEnd（使用 MaterializePageFromBytes 返回的值）
+	a.dataEndMu.Lock()
 	a.dataEndMap[leftPageID] = leftDataEnd
 	a.dataEndMap[rightPageID] = rightDataEnd
-
-	// 注意：不立即释放旧页面，由调用者在 CAS 成功后释放
 	// 清除旧页面的 dataEndMap 状态（页面可能仍在使用）
 	delete(a.dataEndMap, uint32(pageID))
+	a.dataEndMu.Unlock()
+
+	// 注意：不立即释放旧页面，由调用者在 CAS 成功后释放
 
 	return model.PageID(leftPageID), model.PageID(rightPageID), splitKey, nil
 }
@@ -566,7 +589,9 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 // InsertIndexEntry 向 Off-Heap 索引页面插入条目
 func (a *OffHeapAdapter) InsertIndexEntry(pageID model.PageID, index int, key []byte, child model.PageID) error {
 	// 获取或初始化 dataEnd
+	a.dataEndMu.RLock()
 	dataEnd, exists := a.dataEndMap[uint32(pageID)]
+	a.dataEndMu.RUnlock()
 	if !exists {
 		// 如果 dataEndMap 中没有，从页面计算
 		dataEnd = a.calculateDataEndForIndexPage(uint32(pageID))
@@ -582,7 +607,9 @@ func (a *OffHeapAdapter) InsertIndexEntry(pageID model.PageID, index int, key []
 		return err
 	}
 	// 更新 dataEndMap
+	a.dataEndMu.Lock()
 	a.dataEndMap[uint32(pageID)] = dataEnd
+	a.dataEndMu.Unlock()
 	return nil
 }
 

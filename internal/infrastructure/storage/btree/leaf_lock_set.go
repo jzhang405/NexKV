@@ -517,6 +517,12 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 		return ErrRetry
 	}
 
+	// Step 11.5: 强制删除旧父页面的 PageRefCache 条目
+	// 这确保任何持有旧页面 PageRef 的代码都会失效
+	// 同时删除新页面ID，确保下次访问时重新创建 PageRef
+	b.pageRefCache.Delete(oldParentPageID)
+	b.pageRefCache.Delete(model.PageID(newParentPageID))
+
 	// Step 12: CAS 成功后释放旧父页面
 	b.offheapAdapter.pm.Free(uint32(oldParentPageID))
 

@@ -102,6 +102,27 @@ func (c *PageRefCache) GetOrCreate(pageID model.PageID, isLeaf bool) *PageRef {
 	c.mu.RUnlock()
 
 	if ok {
+		// 验证 PageRef 是否仍然有效
+		// 如果缓存的 PageRef 的 pageID 与请求的 pageID 不匹配，说明缓存不一致
+		currentInfo := ref.GetPageInfo()
+		if currentInfo != nil && currentInfo.GetPageID() != uint64(pageID) {
+			// 缓存不一致：pageID 被重用，但缓存仍指向旧的 PageInfo
+			// 重新创建 PageRef
+			c.mu.Lock()
+			defer c.mu.Unlock()
+
+			// Double-check after acquiring write lock
+			if ref, ok := c.cache[pageID]; ok && ref.GetPageInfo().GetPageID() == uint64(pageID) {
+				return ref
+			}
+
+			// 创建新的 PageRef
+			info := NewPageInfo()
+			info.SetNodeRef(offheap.NewNodeRef(uint32(pageID), isLeaf))
+			newRef := NewPageRefWithInfo(info)
+			c.cache[pageID] = newRef
+			return newRef
+		}
 		return ref
 	}
 
@@ -404,8 +425,8 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, ErrKeyNotFound
 	}
 
-	// 调试：打印路径
-	if string(key) == "key-0040" {
+	// 调试：打印路径（针对 key-0040 和 key-0079）
+	if string(key) == "key-0040" || string(key) == "key-0079" {
 		fmt.Printf("[DEBUG] Search path length: %d\n", len(path))
 		for i, p := range path {
 			fmt.Printf("[DEBUG]   Path[%d]: pageID=%d\n", i, p.GetPageID())
@@ -474,6 +495,17 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, fmt.Errorf("offheap get: %w", err)
 	}
 	if !found {
+		// 调试：打印页面的所有 keys
+		if string(key) == "key-0079" {
+			count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
+			fmt.Printf("[DEBUG] Key '%s' not found in page %d (has %d entries)\n", string(key), leafPageID, count)
+			fmt.Printf("[DEBUG] Dumping all keys in page %d:\n", leafPageID)
+			for i := 0; i < int(count); i++ {
+				keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
+				pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
+				fmt.Printf("[DEBUG]   Entry %d: key='%s'\n", i, string(pageKey))
+			}
+		}
 		return nil, ErrKeyNotFound
 	}
 

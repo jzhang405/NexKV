@@ -152,6 +152,7 @@ func (pa *PageAccessor) InitPage(pageID uint32, pageType uint8, version uint64) 
 
 	header.pageType = pageType
 	header.count = 0
+	header.extraChild = 0 // 清空 N+1 child（防止页面重用时出现循环引用）
 	header.prevPage = 0xFFFFFFFF // 空链表
 	header.nextPage = 0xFFFFFFFF
 	header.version = version

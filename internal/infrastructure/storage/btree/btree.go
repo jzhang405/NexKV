@@ -447,6 +447,16 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// 注册 btree-set 任务
 	err = btree.scheduler.RegisterTask(
 		func(item any) concurrency.TaskStatus {
+			// 检查 item 是否实现了 TaskRunner 接口
+			if runner, ok := item.(model.TaskRunner); ok {
+				// 同步执行任务（TaskScheduler 已经在 Worker 线程中）
+				runner.Run(context.Background(), nil)
+				// 等待任务完成
+				if task, ok := item.(interface{ Wait(context.Context) (interface{}, error) }); ok {
+					_, _ = task.Wait(context.Background())
+				}
+				return concurrency.TaskPassed
+			}
 			return concurrency.TaskPassed
 		},
 		"btree-set",
@@ -468,7 +478,16 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// 基于 Lealone 的 asyncSplitPage() 设计
 	err = btree.scheduler.RegisterTask(
 		func(item any) concurrency.TaskStatus {
-			// Execute 方法在 ParentSplitItem.Execute 中实现
+			// 检查 item 是否实现了 TaskRunner 接口
+			if runner, ok := item.(model.TaskRunner); ok {
+				// 同步执行任务（TaskScheduler 已经在 Worker 线程中）
+				runner.Run(context.Background(), nil)
+				// 等待任务完成
+				if task, ok := item.(interface{ Wait(context.Context) (interface{}, error) }); ok {
+					_, _ = task.Wait(context.Background())
+				}
+				return concurrency.TaskPassed
+			}
 			return concurrency.TaskPassed
 		},
 		"btree-split",

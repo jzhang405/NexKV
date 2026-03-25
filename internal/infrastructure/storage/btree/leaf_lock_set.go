@@ -128,6 +128,32 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 	// Step 9: 检查是否需要分裂（同步，在锁保护下）
 	// 此时 newPageID == oldPageID，所以传递 newPageID 即可
 	if splitRequired {
+		// ✅ 提前检查父节点是否满了（避免活锁）
+		if len(path) >= 2 {
+			parentInfo := path[len(path)-2]
+			if parentInfo != nil {
+				parentPageID := model.PageID(parentInfo.GetPageID())
+				parentCount := b.offheapAdapter.pa.GetCount(uint32(parentPageID))
+				if int(parentCount) >= maxInternalKeys {
+					// 父节点已满，先分裂父节点
+					fmt.Printf("[SET_WITH_LEAF_LOCK] parent full (count=%d), splitting parent first: parentPageID=%d\n",
+						parentCount, parentPageID)
+
+					parentRef := b.pageRefCache.GetOrCreate(parentPageID, false)
+					err := b.splitInternalOffHeapSync(parentRef, parentInfo, parentPageID, path[:len(path)-1])
+					if err != nil {
+						fmt.Printf("[SET_WITH_LEAF_LOCK] split parent FAILED: %v\n", err)
+						// 父节点分裂失败，返回 ErrRetry 让外层重试
+						return ErrRetry
+					}
+
+					// 父节点分裂成功，返回 ErrRetry 让外层重新搜索路径
+					fmt.Printf("[SET_WITH_LEAF_LOCK] split parent SUCCESS, retrying with new path\n")
+					return ErrRetry
+				}
+			}
+		}
+
 		// 获取页面级别的分裂锁，防止多个 goroutine 同时分裂同一页面
 		splitMuAny, _ := b.splitMuMap.LoadOrStore(uint32(newPageID), &sync.Mutex{})
 		splitMu := splitMuAny.(*sync.Mutex)
@@ -744,10 +770,11 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	if err != nil {
 		// 检查是否是页面已满错误
 		if strings.Contains(err.Error(), "page full") {
-			// 父节点已满，返回 ErrRetry 让外层重试
-			// 注意：这里不尝试分裂父节点，避免复杂的级联分裂逻辑
+			// 父节点已满，但叶子节点已经分裂了（leftPageID, rightPageID 已创建）
+			// 这是一个问题：我们无法回滚，因为页面已经分配了
+			// 策略：使用活锁检测机制，让外层重试
 			fmt.Printf("[HANDLE_SPLIT] parent page full (UpdateIndexEntry failed), returning ErrRetry: parentPageID=%d err=%v\n",
-				parentPageIDForSearch, err)
+				oldParentPageID, err)
 			return nil, ErrRetry
 		}
 		return nil, fmt.Errorf("update parent index entry: %w", err)

@@ -265,9 +265,21 @@ func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
 	oldEpoch := e.currentEpoch
 	e.currentEpoch++
 
-	// 释放 2 个 epoch 之前的页面（currentEpoch - 2）
-	// 确保所有 goroutine 都已经完成对这些页面的访问
-	epochToFree := e.currentEpoch - 2
+	// 释放 3 个 epoch 之前的页面（currentEpoch - 3）- 增加延迟到 3 个 epoch
+	// 第一步：将 N-2 的页面加入延迟释放列表
+	epochToDelayed := e.currentEpoch - 2
+	if epochToDelayed >= 0 {
+		pagesToDelayed := e.pending[epochToDelayed]
+		delete(e.pending, epochToDelayed)
+
+		for _, pid := range pagesToDelayed {
+			fmt.Printf("[EPOCH_DELAYED] epoch=%d pageID=%d\n", epochToDelayed, pid)
+			pm.Free(uint32(pid))
+		}
+	}
+
+	// 第二步：将 N-3 的页面从延迟释放列表移到可用列表
+	epochToFree := e.currentEpoch - 3
 	if epochToFree >= 0 {
 		pagesToFree := e.pending[epochToFree]
 		delete(e.pending, epochToFree)
@@ -276,14 +288,14 @@ func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
 		fmt.Printf("[EPOCH_ADVANCE] old=%d new=%d freeing_epoch=%d pages_to_free=%d\n",
 			oldEpoch, e.currentEpoch, epochToFree, len(pagesToFree))
 
-		// 真正释放页面
-		for _, pid := range pagesToFree {
-			fmt.Printf("[EPOCH_FREE] epoch=%d pageID=%d\n", epochToFree, pid)
-			pm.Free(uint32(pid))
+		// 将延迟释放列表中的页面移到可用列表
+		moved := pm.AdvanceDelayedFreeList()
+		if moved > 0 {
+			fmt.Printf("[EPOCH_DELAYED_ADVANCE] moved=%d pages from delayed to available\n", moved)
 		}
 	} else {
 		// 还没有到达可以释放的 epoch
-		fmt.Printf("[EPOCH_ADVANCE] old=%d new=%d pages_to_free=0 (waiting for epoch 2)\n",
+		fmt.Printf("[EPOCH_ADVANCE] old=%d new=%d pages_to_free=0 (waiting for epoch 3)\n",
 			oldEpoch, e.currentEpoch)
 	}
 }

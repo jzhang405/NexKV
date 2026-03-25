@@ -592,6 +592,11 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	if debugThisSplit {
 		fmt.Printf("[SPLIT_DEBUG] Right page %d materialized OK\n", rightPageID)
 		fmt.Printf("[SPLIT_DEBUG] ========== SPLIT END pageID=%d -> left=%d right=%d ==========\n", pageID, leftPageID, rightPageID)
+		// 警告：如果返回的页面ID与输入相同，说明有严重bug
+		if leftPageID == uint32(pageID) || rightPageID == uint32(pageID) {
+			fmt.Printf("[SPLIT_DEBUG] *** WARNING: Circular reference detected! ***\n")
+			fmt.Printf("[SPLIT_DEBUG] *** input=%d left=%d right=%d ***\n", pageID, leftPageID, rightPageID)
+		}
 	}
 
 	// 获取原始页面的 prevPage 和 nextPage

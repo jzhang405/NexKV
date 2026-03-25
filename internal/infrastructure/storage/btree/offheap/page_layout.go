@@ -218,6 +218,7 @@ func (pa *PageAccessor) InitPage(pageID uint32, pageType uint8, version uint64) 
 	ptr := pa.pm.PageIDToPtr(pageID)
 	header := (*PageHeader)(unsafe.Pointer(ptr))
 
+	oldPageType := header.pageType
 	header.pageType = pageType
 	header.count = 0
 	header.extraChild = 0 // 清空 N+1 child（防止页面重用时出现循环引用）
@@ -225,6 +226,19 @@ func (pa *PageAccessor) InitPage(pageID uint32, pageType uint8, version uint64) 
 	header.nextPage = 0xFFFFFFFF
 	header.version = version
 	// _pad 自动初始化为零
+
+	// Debug logging for specific pages (539, 547, 548)
+	if pageID == 539 || pageID == 547 || pageID == 548 {
+		pageTypeName := "LEAF"
+		if pageType == PageTypeIndex {
+			pageTypeName = "INDEX"
+		}
+		oldTypeName := "LEAF"
+		if oldPageType == PageTypeIndex {
+			oldTypeName = "INDEX"
+		}
+		fmt.Printf("[INIT_PAGE] pageID=%d %s -> %s (version=%d)\n", pageID, oldTypeName, pageTypeName, version)
+	}
 }
 
 // InitIndexPage 初始化索引页面

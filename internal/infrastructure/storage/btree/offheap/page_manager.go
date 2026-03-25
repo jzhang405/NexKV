@@ -27,12 +27,14 @@ var (
 
 // PageManager 管理 Off-Heap 内存中的 4KB 页面
 type PageManager struct {
-	allocator OffHeapAllocator // 跨平台内存分配器
-	base      uintptr            // mmap 起始地址
-	total     uint32             // 总页数
-	used      atomic.Uint32      // 已使用页数
-	freeList  *LockFreeQueue     // 空闲 PageID 队列（lock-free）
-	initOnce  sync.Once          // 确保初始化一次
+	allocator       OffHeapAllocator // 跨平台内存分配器
+	base            uintptr            // mmap 起始地址
+	total           uint32             // 总页数
+	used            atomic.Uint32      // 已使用页数
+	nextPageID      atomic.Uint32      // 下一个要分配的页面ID（单调递增）
+	freeList        *LockFreeQueue     // 空闲 PageID 队列（lock-free，暂时保留但不使用）
+	delayedFreeList *LockFreeQueue     // 延迟释放 PageID 队列（已释放但需等待1个epoch）
+	initOnce        sync.Once          // 确保初始化一次
 }
 
 // InitPageManager 初始化全局 PageManager
@@ -77,40 +79,60 @@ func NewPageManager(mmapSize int) (*PageManager, error) {
 	}
 
 	pm := &PageManager{
-		allocator: allocator,
-		base:      base,
-		total:     uint32(maxPages),
-		freeList:  NewLockFreeQueue(),
+		allocator:       allocator,
+		base:            base,
+		total:           uint32(maxPages),
+		nextPageID:      atomic.Uint32{},  // 初始化为0
+		freeList:        NewLockFreeQueue(), // 保留但不使用
+		delayedFreeList: NewLockFreeQueue(),
 	}
 
-	// 预分配所有 PageID 到 freeList
-	for pageID := uint32(0); pageID < pm.total; pageID++ {
-		pm.freeList.Enqueue(pageID)
-	}
+	// 不再预分配所有 PageID，使用单调递增的 nextPageID
 
 	return pm, nil
 }
 
 // Alloc 分配一个页面
 // 返回 PageID，如果内存不足则返回错误
+// 使用单调递增的页面ID，不重用已释放的页面（避免循环引用）
 func (pm *PageManager) Alloc() (uint32, error) {
-	pageID, ok := pm.freeList.Dequeue()
-	if !ok {
+	pageID := pm.nextPageID.Load()
+	if pageID >= pm.total {
 		return 0, fmt.Errorf("out of memory: no free pages available (total: %d, used: %d)",
 			pm.total, pm.used.Load())
 	}
+	// 原子递增 nextPageID
+	pm.nextPageID.Add(1)
 	pm.used.Add(1)
+	// 调试日志：追踪页面分配
+	fmt.Printf("[ALLOC] pageID=%d\n", pageID)
 	return pageID, nil
 }
 
-// Free 释放一个页面
+// Free 释放一个页面（加入延迟释放列表）
+// 页面会在下一次 AdvanceDelayedFreeList 调用时才真正可被分配
 func (pm *PageManager) Free(pageID uint32) error {
 	if pageID >= pm.total {
 		return fmt.Errorf("invalid pageID %d (total: %d)", pageID, pm.total)
 	}
-	pm.freeList.Enqueue(pageID)
+	pm.delayedFreeList.Enqueue(pageID)
 	pm.used.Add(^uint32(0)) // decrement
 	return nil
+}
+
+// AdvanceDelayedFreeList 将延迟释放列表中的页面移到可用列表
+// 这应该在 epoch 推进后调用，确保没有 goroutine 仍在访问这些页面
+func (pm *PageManager) AdvanceDelayedFreeList() int {
+	moved := 0
+	for {
+		pageID, ok := pm.delayedFreeList.Dequeue()
+		if !ok {
+			break
+		}
+		pm.freeList.Enqueue(pageID)
+		moved++
+	}
+	return moved
 }
 
 // PageIDToPtr 将 PageID 转换为内存地址

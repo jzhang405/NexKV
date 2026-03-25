@@ -144,30 +144,32 @@ func (a *OffHeapAdapter) checkPageFull(pageID uint32, keyLen int, valLen int, da
 	usedSpace := headerSize + uint32(count)*entrySize + uint32(dataEnd)
 	requiredSpace := entrySize + uint32(keyLen) + uint32(valLen)
 
-	// 安全检查：如果页面条目数过多，强制触发分裂
-	// 即使空间计算显示未满，如果条目数超过阈值，也应该分裂
+	// 调试：追踪页面状态（已临时关闭）
+	// if isLeaf && count > 80 {
+	// 	fmt.Printf("[DEBUG] checkPageFull: pageID=%d, count=%d, usedSpace=%d, requiredSpace=%d, dataEnd=%d\n",
+	// 		pageID, count, usedSpace, requiredSpace, dataEnd)
+	// }
+
+	// 安全检查：防止极端情况下条目数过多导致性能问题
+	// 这只是最后的安全网，正常情况下应该由空间计算触发分裂
 	if isLeaf {
-		// 4KB 页面最多约 85 个叶子条目（假设每个 KV 30 字节）
-		// 设置为 50 以留出足够的分裂空间，同时减少 UpdateLeafEntry 的压力
-		const maxLeafEntries = 50
-		if count >= maxLeafEntries {
+		// 4KB 页面，假设最小 KV 8+8=16 字节，最多约 240 个条目
+		// 设置 200 为安全上限，实际应该在空间计算触发前就分裂
+		const maxSafeLeafEntries = 200
+		if count >= maxSafeLeafEntries {
 			return true
 		}
 	} else {
-		// 索引页面：条目数 = keys 数量，children 数量 = keys + 1
-		// 4KB 页面理论上最多约 200 个索引条目（假设每个 key 12 字节）
-		const maxIndexEntries = 190 // 从 180 提高到 190
-		if count >= maxIndexEntries {
+		// 索引条目更小，可以容纳更多
+		const maxSafeIndexEntries = 380
+		if count >= maxSafeIndexEntries {
 			return true
 		}
 	}
 
-	// 额外的安全检查：如果使用空间超过页面的 90%，触发分裂
-	const usageThreshold = offheap.PageSize * 90 / 100
-	if usedSpace > usageThreshold {
-		return true
-	}
-
+	// 核心分裂判断：基于实际空间使用
+	// 页面大小 = header + entries + data
+	// 分裂条件：当前使用 + 新增所需 > 页面大小
 	return usedSpace+requiredSpace > offheap.PageSize
 }
 
@@ -372,7 +374,7 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	count := a.pa.GetCount(uint32(pageID))
 
 	// 调试：记录页面状态
-	fmt.Printf("[DEBUG] SplitOffHeapLeafPage called for page %d with %d entries\n", pageID, count)
+	// fmt.Printf("[DEBUG] SplitOffHeapLeafPage called for page %d with %d entries\n", pageID, count)
 
 	// 收集所有 KV
 	keys := make([][]byte, 0, count)
@@ -402,7 +404,7 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	}
 
 	// 调试：打印分配的页面ID
-	fmt.Printf("[DEBUG] SplitOffHeapLeafPage: allocated left=%d, right=%d for page %d\n", leftPageID, rightPageID, pageID)
+	// fmt.Printf("[DEBUG] SplitOffHeapLeafPage: allocated left=%d, right=%d for page %d\n", leftPageID, rightPageID, pageID)
 
 	// 调试：验证分配的页面ID不同
 	if leftPageID == rightPageID {
@@ -513,7 +515,7 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	splitKey := make([]byte, len(keys[splitIdx]))
 	copy(splitKey, keys[splitIdx])
 
-	fmt.Printf("[DEBUG] Using splitIdx=%d for page %d (count=%d)\n", splitIdx, pageID, countInt)
+	// fmt.Printf("[DEBUG] Using splitIdx=%d for page %d (count=%d)\n", splitIdx, pageID, countInt)
 
 	// 物化左半部分
 	leftDataEnd, err := a.materializer.MaterializePageFromBytes(leftPageID, keys[:splitIdx], values[:splitIdx])
@@ -533,7 +535,7 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 		return 0, 0, nil, fmt.Errorf("materialize right page: %w", err)
 	}
 
-	fmt.Printf("[DEBUG] SplitOffHeapLeafPage SUCCESS for page %d: left=%d, right=%d\n", pageID, leftPageID, rightPageID)
+	// fmt.Printf("[DEBUG] SplitOffHeapLeafPage SUCCESS for page %d: left=%d, right=%d\n", pageID, leftPageID, rightPageID)
 
 	// 设置链表指针
 	a.pa.SetNextPage(leftPageID, rightPageID)

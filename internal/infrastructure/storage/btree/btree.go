@@ -204,6 +204,9 @@ type BTree struct {
 
 	// Scheduler for concurrent write operations (方案 2：移除 Direct 模式)
 	scheduler *concurrency.TaskScheduler // Task scheduler for concurrent operations
+
+	// Split coordination: 防止多个 goroutine 同时分裂同一页面
+	splitMuMap sync.Map // map[uint32]*sync.Mutex - 页面级别的分裂锁
 }
 
 // BTreeSchedulerAdapter 实现 TaskScheduler 接口

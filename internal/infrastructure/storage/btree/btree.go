@@ -512,8 +512,9 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 
 	const maxRetries = 5  // 最多重试 5 次（增加以提高并发成功率）
 
-	// 调试：追踪 key-06151、key-06267 和 key-06709 的查找过程
-	debugThisKey := string(key) == "key-06151" || string(key) == "key-06150" || string(key) == "key-06152" || string(key) == "key-06267" || string(key) == "key-06709"
+	// 调试：追踪 key-06151、key-06267、key-06709 和 key-09803 的查找过程
+	debugThisKey := string(key) == "key-06151" || string(key) == "key-06150" || string(key) == "key-06152" ||
+		string(key) == "key-06267" || string(key) == "key-06709" || string(key) == "key-09803"
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if debugThisKey {

@@ -60,8 +60,45 @@ func (a *OffHeapAdapter) FreePage(pageID model.PageID) error {
 // GetFromOffHeap 从 Off-Heap 叶子页面获取 key 对应的 value
 // 返回 (value, found, error)
 func (a *OffHeapAdapter) GetFromOffHeap(pageID model.PageID, key []byte) ([]byte, bool, error) {
+	// 调试：追踪 key-06267、key-06709 和 key-09803 的查找
+	debugThisKey := string(key) == "key-06267" || string(key) == "key-06266" || string(key) == "key-06268" || string(key) == "key-06709" || string(key) == "key-09803" || string(key) == "key-09802"
+
 	idx, found := a.pa.SearchKey(uint32(pageID), key, true)
+	if debugThisKey {
+		count := a.pa.GetCount(uint32(pageID))
+		nextPage := a.pa.GetNextPage(uint32(pageID))
+		fmt.Printf("[GET_OFFHEAP] key=%s pageID=%d idx=%d found=%v count=%d nextPage=%d\n",
+			string(key), pageID, idx, found, count, nextPage)
+		// 打印页面的第一个和最后一个 key
+		if count > 0 {
+			firstKeyOff, firstKeyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), 0)
+			firstKey := a.pa.GetKey(uint32(pageID), firstKeyOff, firstKeyLen)
+			lastKeyOff, lastKeyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), int(count)-1)
+			lastKey := a.pa.GetKey(uint32(pageID), lastKeyOff, lastKeyLen)
+			fmt.Printf("[GET_OFFHEAP] pageID=%d firstKey=%s lastKey=%s\n",
+				pageID, string(firstKey), string(lastKey))
+		}
+	}
 	if !found {
+		// 调试：如果没找到且 nextPage 有效，尝试在 nextPage 中查找
+		debugThisKey := string(key) == "key-06267" || string(key) == "key-06266" || string(key) == "key-06268" || string(key) == "key-09803" || string(key) == "key-09802"
+		if debugThisKey {
+			nextPage := a.pa.GetNextPage(uint32(pageID))
+			fmt.Printf("[GET_OFFHEAP] key=%s NOT FOUND in page %d, trying nextPage=%d\n", string(key), pageID, nextPage)
+			if nextPage != 0xFFFFFFFF {
+				// 在 nextPage 中查找
+				nextIdx, nextFound := a.pa.SearchKey(nextPage, key, true)
+				fmt.Printf("[GET_OFFHEAP] key=%s in nextPage=%d idx=%d found=%v\n", string(key), nextPage, nextIdx, nextFound)
+				if nextFound {
+					// 从 nextPage 获取 value
+					_, _, valOff, valLen := a.pa.GetLeafEntryOffset(nextPage, nextIdx)
+					nextVal := a.pa.GetValue(nextPage, valOff, valLen)
+					result := make([]byte, len(nextVal))
+					copy(result, nextVal)
+					return result, true, nil
+				}
+			}
+		}
 		return nil, false, nil
 	}
 
@@ -77,14 +114,21 @@ func (a *OffHeapAdapter) GetFromOffHeap(pageID model.PageID, key []byte) ([]byte
 // InsertToOffHeap 向 Off-Heap 叶子页面插入 KV 对
 // 返回 (pageID, splitRequired, error)
 func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte) (model.PageID, bool, error) {
-	// 调试：追踪 key-06151 的插入
-	debugThisInsert := string(key) == "key-06151" || string(key) == "key-06150"
+	// 调试：追踪 key-06151、key-06267 和 key-09803 的插入
+	debugThisInsert := string(key) == "key-06151" || string(key) == "key-06150" || string(key) == "key-06267" || string(key) == "key-09803"
 
 	// 查找插入位置
 	idx, found := a.pa.SearchKey(uint32(pageID), key, true)
 	if debugThisInsert {
 		count := a.pa.GetCount(uint32(pageID))
 		fmt.Printf("[INSERT_DEBUG] key=%s pageID=%d idx=%d found=%v count=%d\n", string(key), pageID, idx, found, count)
+		if count > 0 {
+			firstKeyOff, firstKeyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), 0)
+			firstKey := a.pa.GetKey(uint32(pageID), firstKeyOff, firstKeyLen)
+			lastKeyOff, lastKeyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), int(count)-1)
+			lastKey := a.pa.GetKey(uint32(pageID), lastKeyOff, lastKeyLen)
+			fmt.Printf("[INSERT_DEBUG] pageID=%d firstKey=%s lastKey=%s\n", pageID, string(firstKey), string(lastKey))
+		}
 	}
 	if found {
 		// 更新现有 key（需要重新分配页面，因为 Off-Heap 不可变）
@@ -248,6 +292,7 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 
 		if i == index {
 			// 分裂位置：插入 splitKey 和 left/right child
+			// 修复：不要保留原来的 child，因为它被替换为 leftPageID
 			keys = append(keys, key)
 			children = append(children, leftPageID)
 			children = append(children, rightPageID)
@@ -602,6 +647,12 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	// 获取原始页面的 prevPage 和 nextPage
 	oldPrevPage := a.pa.GetPrevPage(uint32(pageID))
 	oldNextPage := a.pa.GetNextPage(uint32(pageID))
+
+	// 调试：追踪页面 1317 附近的分裂
+	if pageID == 1317 || leftPageID == 1317 || rightPageID == 1317 || leftPageID == 1316 || rightPageID == 1318 {
+		fmt.Printf("[SPLIT_NEXT] before: pageID=%d left=%d right=%d oldPrev=%d oldNext=%d\n",
+			pageID, leftPageID, rightPageID, oldPrevPage, oldNextPage)
+	}
 
 	// 设置链表指针
 	// 1. 设置 left 和 right 之间的链接

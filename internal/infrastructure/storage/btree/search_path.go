@@ -184,8 +184,8 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 	currentInfo := rootInfo
 	currentRef := b.rootRef.PageRef
 
-	// 调试：追踪 key-06151 的搜索路径
-	debugThisSearch := string(key) == "key-06151"
+	// 调试：追踪 key-06151、key-06267 和 key-09803 的搜索路径
+	debugThisSearch := string(key) == "key-06151" || string(key) == "key-06267" || string(key) == "key-06266" || string(key) == "key-09803" || string(key) == "key-09802"
 	if debugThisSearch {
 		fmt.Printf("[SEARCH_PATH] key=%s starting search\n", string(key))
 	}
@@ -215,6 +215,17 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 		childPageID, _ := b.offheapAdapter.SearchChild(currentPageID, key)
 		if debugThisSearch {
 			fmt.Printf("[SEARCH_PATH] key=%s at parent pageID=%d found childPageID=%d\n", string(key), currentPageID, childPageID)
+			// 打印父节点的所有 keys 和 children
+			count := b.offheapAdapter.pa.GetCount(uint32(currentPageID))
+			fmt.Printf("[SEARCH_PATH] parent pageID=%d has %d keys:\n", currentPageID, count)
+			for i := 0; i < int(count); i++ {
+				keyOff, keyLen, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(currentPageID), i)
+				pageKey := b.offheapAdapter.pa.GetKey(uint32(currentPageID), keyOff, keyLen)
+				fmt.Printf("[SEARCH_PATH]   [%d] key=%s child=%d\n", i, string(pageKey), child)
+			}
+			// 打印 extraChild（N+1 child）
+			extraChild := b.offheapAdapter.pa.GetChild(uint32(currentPageID), int(count))
+			fmt.Printf("[SEARCH_PATH]   [%d] (extraChild)=%d\n", count, extraChild)
 		}
 		if childPageID == 0 {
 			// 没有子节点，可能到达叶子

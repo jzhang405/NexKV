@@ -227,8 +227,8 @@ func (pa *PageAccessor) InitPage(pageID uint32, pageType uint8, version uint64) 
 	header.version = version
 	// _pad 自动初始化为零
 
-	// Debug logging for specific pages (539, 547, 548)
-	if pageID == 539 || pageID == 547 || pageID == 548 {
+	// Debug logging for specific pages
+	if pageID == 539 || pageID == 547 || pageID == 548 || pageID == 1317 {
 		pageTypeName := "LEAF"
 		if pageType == PageTypeIndex {
 			pageTypeName = "INDEX"
@@ -237,7 +237,8 @@ func (pa *PageAccessor) InitPage(pageID uint32, pageType uint8, version uint64) 
 		if oldPageType == PageTypeIndex {
 			oldTypeName = "INDEX"
 		}
-		fmt.Printf("[INIT_PAGE] pageID=%d %s -> %s (version=%d)\n", pageID, oldTypeName, pageTypeName, version)
+		fmt.Printf("[INIT_PAGE] pageID=%d %s -> %s (version=%d) prev=0x%08x next=0x%08x\n",
+			pageID, oldTypeName, pageTypeName, version, header.prevPage, header.nextPage)
 	}
 }
 
@@ -414,6 +415,10 @@ func (pa *PageAccessor) GetNextPage(pageID uint32) uint32 {
 // SetNextPage 设置后一个页面
 func (pa *PageAccessor) SetNextPage(pageID uint32, next uint32) {
 	pa.GetHeader(pageID).nextPage = next
+	// 调试：追踪页面 1317 的 nextPage 设置
+	if pageID == 1317 || next == 1317 || next == 1318 || next == 1316 {
+		fmt.Printf("[SET_NEXT] pageID=%d next=%d\n", pageID, next)
+	}
 }
 
 // GetChild 获取索引节点的子节点

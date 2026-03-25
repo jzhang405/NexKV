@@ -384,7 +384,7 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 
 	// 调试：记录查找的 key
 	if string(key) == "key-0040" {
-		fmt.Printf("[DEBUG] Getting key %s\n", string(key))
+		fmt.Printf("[DEBUG] ===== Getting key %s =====\n", string(key))
 	}
 
 	// Off-Heap 模式：使用 searchPathWithRefs
@@ -398,6 +398,14 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 			fmt.Printf("[DEBUG] No path or leafRef found for key %s\n", string(key))
 		}
 		return nil, ErrKeyNotFound
+	}
+
+	// 调试：打印路径
+	if string(key) == "key-0040" {
+		fmt.Printf("[DEBUG] Search path length: %d\n", len(path))
+		for i, p := range path {
+			fmt.Printf("[DEBUG]   Path[%d]: pageID=%d\n", i, p.GetPageID())
+		}
 	}
 
 	// 获取叶子节点的 PageInfo
@@ -419,6 +427,41 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 
 	if string(key) == "key-0040" {
 		fmt.Printf("[DEBUG] Found leaf page %d for key %s\n", leafPageID, string(key))
+		count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
+		fmt.Printf("[DEBUG] Leaf page %d has %d entries\n", leafPageID, count)
+
+		// 调试：打印页面的内容范围（前3个和后3个）
+		fmt.Printf("[DEBUG] Contents of page %d (first 3 and last 3):\n", leafPageID)
+		for i := 0; i < int(count) && i < 3; i++ {
+			keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
+			pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
+			fmt.Printf("[DEBUG]   Entry %d: key='%s'\n", i, string(pageKey))
+		}
+		if int(count) > 6 {
+			fmt.Printf("[DEBUG]   ...\n")
+			for i := int(count) - 3; i < int(count); i++ {
+				keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
+				pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
+				fmt.Printf("[DEBUG]   Entry %d: key='%s'\n", i, string(pageKey))
+			}
+		}
+
+		// 调试：打印根页面的内容
+		rootInfo := b.rootRef.pInfo.Load()
+		if rootInfo != nil {
+			rootPageID := rootInfo.GetPageID()
+			rootCount := b.offheapAdapter.pa.GetCount(uint32(rootPageID))
+			fmt.Printf("[DEBUG] Root page %d has %d entries:\n", rootPageID, rootCount)
+			for i := 0; i < int(rootCount) && i < 10; i++ {
+				keyOff, keyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(rootPageID), i)
+				pageKey := b.offheapAdapter.pa.GetKey(uint32(rootPageID), keyOff, keyLen)
+				childID := b.offheapAdapter.pa.GetChild(uint32(rootPageID), i)
+				fmt.Printf("[DEBUG]   Index %d: key='%s', child=%d\n", i, string(pageKey), childID)
+			}
+			// 打印 extra child (N+1 child)
+			extraChild := b.offheapAdapter.pa.GetChild(uint32(rootPageID), int(rootCount))
+			fmt.Printf("[DEBUG]   Extra child (index %d): %d\n", rootCount, extraChild)
+		}
 	}
 
 	// 使用 OffHeapAdapter.GetFromOffHeap 直接读取

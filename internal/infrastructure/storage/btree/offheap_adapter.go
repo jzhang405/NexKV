@@ -95,7 +95,7 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 		// 更新现有 key（需要重新分配页面，因为 Off-Heap 不可变）
 		// 清除旧页面的 dataEnd 状态
 		delete(a.dataEndMap, uint32(pageID))
-		newPageID, err := a.updateLeafEntry(pageID, idx, key, value)
+		newPageID, err := a.UpdateLeafEntry(pageID, idx, key, value)
 		return newPageID, false, err
 	}
 
@@ -182,8 +182,8 @@ func (a *OffHeapAdapter) checkPageFull(pageID uint32, keyLen int, valLen int, da
 	return usedSpace+requiredSpace > offheap.PageSize
 }
 
-// updateLeafEntry 更新叶子条目（需要重新分配页面）
-func (a *OffHeapAdapter) updateLeafEntry(pageID model.PageID, idx int, key, value []byte) (model.PageID, error) {
+// UpdateLeafEntry 更新叶子条目（需要重新分配页面）
+func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, value []byte) (model.PageID, error) {
 	// 收集所有 KV 对
 	count := a.pa.GetCount(uint32(pageID))
 	keys := make([][]byte, 0, count)
@@ -223,6 +223,82 @@ func (a *OffHeapAdapter) updateLeafEntry(pageID model.PageID, idx int, key, valu
 		return 0, fmt.Errorf("materialize page: %w", err)
 	}
 	// 更新 dataEndMap
+	a.dataEndMap[newPageID] = dataEnd
+
+	return model.PageID(newPageID), nil
+}
+
+// UpdateIndexEntry 更新索引条目（需要重新分配页面）
+// 当子页面分裂时，替换旧子页面为新的左右子页面
+//
+// 参数：
+//   pageID - 父页面 ID
+//   index - 插入位置
+//   key - split key（要插入的新键）
+//   leftPageID - 左子页面（替换旧的子页面）
+//   rightPageID - 右子页面（新的子页面）
+//
+// 返回：新的父页面 ID
+func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []byte, leftPageID, rightPageID uint32) (model.PageID, error) {
+	count := a.pa.GetCount(uint32(pageID))
+	keys := make([][]byte, 0, count+1)
+	children := make([]uint32, 0, count+2)
+
+	for i := 0; i < int(count); i++ {
+		keyOff, keyLen, _ := a.pa.GetIndexEntryOffset(uint32(pageID), i)
+		k := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
+		c := a.pa.GetChild(uint32(pageID), i)
+
+		if i == index {
+			// 在此位置插入：key, left child
+			keys = append(keys, key)
+			children = append(children, leftPageID)
+			}
+
+		kCopy := make([]byte, len(k))
+		copy(kCopy, k)
+		keys = append(keys, kCopy)
+
+		// 注意：如果不匹配 index，保留原 child
+		// 如果匹配 index，已经在上面添加了 leftPageID，这里不添加 c
+		if i != index {
+			children = append(children, c)
+		}
+	}
+
+	// 处理 extraChild（N+1 child）和末尾插入
+	// 如果 index == count，说明在末尾插入
+	if index == int(count) {
+		// 先插入 split key 和 left child
+		keys = append(keys, key)
+		children = append(children, leftPageID)
+		// 然后 rightPageID 成为新的 extraChild
+		children = append(children, rightPageID)
+	} else {
+		// 在 index 位置之后插入 rightPageID
+		// children 当前长度是 count+1 (因为我们在 index 处插入了 leftPageID)
+		// 我们需要在 index+1 位置插入 rightPageID
+		if index+1 <= len(children) {
+			// 插入到中间
+			children = append(children[:index+1], append([]uint32{rightPageID}, children[index+1:]...)...)
+		} else {
+			// 追加到末尾
+			children = append(children, rightPageID)
+		}
+	}
+
+	a.pm.Free(uint32(pageID))
+
+	newPageID, err := a.pm.Alloc()
+	if err != nil {
+		return 0, fmt.Errorf("alloc new page: %w", err)
+	}
+
+	dataEnd, err := a.materializer.MaterializeIndexPageFromBytes(newPageID, keys, children)
+	if err != nil {
+		a.pm.Free(newPageID)
+		return 0, fmt.Errorf("materialize index page: %w", err)
+	}
 	a.dataEndMap[newPageID] = dataEnd
 
 	return model.PageID(newPageID), nil
@@ -481,9 +557,26 @@ func (a *OffHeapAdapter) GetChild(pageID model.PageID, index int) (model.PageID,
 
 // SearchChild 在 Off-Heap 索引页面中搜索子节点
 // 返回 (childPageID, found)
+//
+// B+ 树索引节点语义：
+// - keys = [k0, k1, ..., k(n-1)]
+// - children = [c0, k0, c1, k1, ..., k(n-1), cn] (N+1 child)
+// - 如果 key < k0，返回 c0
+// - 如果 key >= k(i) 且 key < k(i+1)，返回 c(i+1)
+// - 如果 key >= k(n-1)，返回 cn
+// - 如果精确匹配 k(i)，返回 c(i+1)（右子节点）
 func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.PageID, bool) {
 	idx, found := a.pa.SearchKey(uint32(pageID), key, false)
-	childID := a.pa.GetChild(uint32(pageID), idx)
+
+	// B+ 树：精确匹配时返回右子节点（idx+1）
+	// 例如：keys=['key-0040'], children=[1,2]
+	// 查找 'key-0040' 时，idx=0, found=true，应该返回 children[1]=2
+	childIdx := idx
+	if found {
+		childIdx = idx + 1
+	}
+
+	childID := a.pa.GetChild(uint32(pageID), childIdx)
 	return model.PageID(childID), found
 }
 

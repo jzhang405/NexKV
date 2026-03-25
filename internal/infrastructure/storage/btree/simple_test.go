@@ -21,7 +21,7 @@ func TestOffHeap_SimpleMultipleKeys(t *testing.T) {
 	const numKeys = 500
 	format := "key-%04d"
 
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		key := []byte(fmt.Sprintf(format, i))
 		value := []byte(fmt.Sprintf("value-%d", i))
 
@@ -32,7 +32,7 @@ func TestOffHeap_SimpleMultipleKeys(t *testing.T) {
 		}
 	}
 
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		key := []byte(fmt.Sprintf(format, i))
 		expectedValue := []byte(fmt.Sprintf("value-%d", i))
 

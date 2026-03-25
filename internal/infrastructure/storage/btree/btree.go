@@ -451,7 +451,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		},
 		"btree-set",
 		model.TaskPriorityNormal,
-		1, // 每个核心处理 1 个 shard
+		0, // executionOrder = 0 (数组索引 0)
 	)
 	if err != nil {
 		// 清理资源
@@ -462,6 +462,29 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 			walImpl.Close()
 		}
 		return nil, fmt.Errorf("register btree-set task: %w", err)
+	}
+
+	// 注册 btree-split 任务（异步父节点分裂）
+	// 基于 Lealone 的 asyncSplitPage() 设计
+	err = btree.scheduler.RegisterTask(
+		func(item any) concurrency.TaskStatus {
+			// Execute 方法在 ParentSplitItem.Execute 中实现
+			return concurrency.TaskPassed
+		},
+		"btree-split",
+		model.TaskPriorityHigh, // 高优先级，优先处理父节点分裂
+		1,                       // executionOrder = 1 (数组索引 1)
+	)
+	if err != nil {
+		// 清理资源
+		if chunkMgr != nil {
+			chunkMgr.Close()
+		}
+		if walImpl != nil {
+			walImpl.Close()
+		}
+		btree.scheduler.Stop()
+		return nil, fmt.Errorf("register btree-split task: %w", err)
 	}
 
 	// 启动 TaskScheduler

@@ -281,6 +281,12 @@ func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, valu
 // 返回：新的父页面 ID
 func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []byte, leftPageID, rightPageID uint32) (model.PageID, error) {
 	count := a.pa.GetCount(uint32(pageID))
+
+	// 检查父节点是否已满
+	if int(count) >= maxInternalKeys {
+		return 0, fmt.Errorf("parent page full: count=%d, max=%d", count, maxInternalKeys)
+	}
+
 	keys := make([][]byte, 0, count+1)
 	children := make([]uint32, 0, count+2)
 

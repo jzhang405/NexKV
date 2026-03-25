@@ -513,9 +513,11 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 		// 修复：备用策略也需要更新父节点
 		// 否则搜索路径仍然指向旧页面，导致找不到新插入的 key
 		if len(path) >= 2 {
+			fmt.Printf("[FALLBACK] len(path)=%d, attempting to update parent\n", len(path))
 			// 获取父节点的 PageRef
 			parentInfo := path[len(path)-2]
 			if parentInfo == nil {
+				fmt.Printf("[FALLBACK] parent info is nil\n")
 				return nil, fmt.Errorf("parent info is nil in fallback")
 			}
 
@@ -525,11 +527,13 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 			// 获取父节点锁
 			parentLock := parentRef.GetLock()
 			if parentLock == nil {
+				fmt.Printf("[FALLBACK] parent lock is nil\n")
 				return nil, fmt.Errorf("parent lock is nil in fallback")
 			}
 
 			if !parentLock.TryLock() {
 				// 锁获取失败，返回重试
+				fmt.Printf("[FALLBACK] parent lock trylock failed\n")
 				return nil, ErrRetry
 			}
 			defer parentLock.Unlock()
@@ -537,12 +541,25 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 			// 获取父节点的当前 PageInfo
 			oldParentInfo := parentRef.GetPageInfo()
 			if oldParentInfo == nil {
+				fmt.Printf("[FALLBACK] parent page info is nil\n")
 				return nil, fmt.Errorf("parent page info is nil in fallback")
 			}
 
 			// 查找旧页面在父节点中的位置
 			parentPageIDForSearch := model.PageID(oldParentInfo.GetPageID())
 			parentCount := b.offheapAdapter.pa.GetCount(uint32(parentPageIDForSearch))
+
+			// 检查父节点是否已满
+			if int(parentCount) >= maxInternalKeys {
+				// 父节点已满，需要先分裂父节点
+				fmt.Printf("[FALLBACK] parent page FULL (count=%d), need to split parent first\n", parentCount)
+
+				// 释放新页面（因为无法插入）
+				b.offheapAdapter.pm.Free(newPageID)
+
+				// 返回 ErrRetry，让外层处理父节点分裂
+				return nil, ErrRetry
+			}
 
 			insertIndex := 0
 			for i := 0; i < int(parentCount); i++ {
@@ -554,9 +571,13 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 				}
 			}
 
+			fmt.Printf("[FALLBACK] parentPageID=%d count=%d insertIndex=%d leafPageID=%d newPageID=%d\n",
+				parentPageIDForSearch, parentCount, insertIndex, leafPageID, newPageID)
+
 			// 使用 UpdateIndexEntry 更新父节点（将旧页面替换为新页面）
 			newParentPageID, err := b.offheapAdapter.UpdateIndexEntry(parentPageIDForSearch, insertIndex, nil, uint32(newPageID), 0)
 			if err != nil {
+				fmt.Printf("[FALLBACK] UpdateIndexEntry failed: %v\n", err)
 				return nil, fmt.Errorf("update parent in fallback: %w", err)
 			}
 
@@ -571,6 +592,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 			// CAS 更新父节点
 			if !parentRef.ReplacePage(oldParentInfo, newParentInfo) {
 				// CAS 失败，使用 epoch 延迟释放新父页面
+				fmt.Printf("[FALLBACK] parent CAS failed, adding to epoch delay list\n")
 				b.epochBasedFreeList.Add(model.PageID(newParentPageID))
 				return nil, ErrRetry
 			}
@@ -585,6 +607,11 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 			// 更新新页面的 parentRef
 			newLeafRef := b.pageRefCache.GetOrCreate(model.PageID(newPageID), true)
 			newLeafRef.SetParentRef(parentRef)
+
+			fmt.Printf("[FALLBACK] parent update SUCCESS: oldParent=%d newParent=%d\n",
+				parentPageIDForSearch, newParentPageID)
+		} else {
+			fmt.Printf("[FALLBACK] len(path)=%d, no parent to update\n", len(path))
 		}
 
 		// 返回成功

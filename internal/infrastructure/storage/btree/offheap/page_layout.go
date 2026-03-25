@@ -107,6 +107,27 @@ func (pa *PageAccessor) GetHeader(pageID uint32) *PageHeader {
 	return (*PageHeader)(unsafe.Pointer(ptr))
 }
 
+// IsValidPage 检查页面是否有效（未被释放）
+// 用于并发场景下 Get 操作的页面状态验证
+func (pa *PageAccessor) IsValidPage(pageID uint32) bool {
+	if pageID == 0 || pageID == 0xFFFFFFFF {
+		return false
+	}
+
+	// 通过检查页面的 pageType 来验证
+	// 已释放的页面 pageType 应该是 0（未初始化状态）
+	header := pa.GetHeader(pageID)
+	if header == nil {
+		return false
+	}
+
+	// pageType 为 0 表示页面未初始化或已释放
+	// 有效页面的 pageType 应该是 PageTypeIndex (0) 或 PageTypeLeaf (1)
+	// 但由于 PageTypeIndex = 0，我们需要额外检查版本号
+	// 已初始化的页面版本号 >= 1
+	return header.version >= 1
+}
+
 // GetIndexEntry 获取索引节点条目
 func (pa *PageAccessor) GetIndexEntry(pageID uint32, index int) *IndexEntry {
 	ptr := pa.pm.PageIDToPtr(pageID)

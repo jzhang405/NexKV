@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"runtime"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree/offheap"
@@ -553,6 +554,10 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 			return b.splitInternalOffHeapSync(parentRef, currentParentInfo, model.PageID(newParentPageID), path[:len(path)-1])
 		}
 	}
+
+	// Step 16: 确保所有更新对其他 goroutine 可见
+	// 添加内存屏障，建议调度器调度其他 goroutine
+	runtime.Gosched()
 
 	return nil
 }

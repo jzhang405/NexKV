@@ -79,6 +79,11 @@ var (
 
 	// ErrKeyNotFound is returned when a key is not found in the tree.
 	ErrKeyNotFound = errors.New("key not found")
+
+	// ErrPageStale is returned when a page state is stale during concurrent operations.
+	// This can happen when a Get operation reads a page that is being split or freed.
+	// The caller should retry the operation.
+	ErrPageStale = errors.New("page state stale, retry")
 )
 
 // PageRefCache 维护 PageID → PageRef 的映射（Off-Heap 模式）
@@ -407,94 +412,142 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, ErrClosed
 	}
 
-	// 调试：记录查找的 key
-	if string(key) == "key-0040" {
-		fmt.Printf("[DEBUG] ===== Getting key %s =====\n", string(key))
-	}
+	const maxRetries = 5  // 最多重试 5 次（增加以提高并发成功率）
 
-	// Off-Heap 模式：使用 searchPathWithRefs
-	leafRef, path, err := b.findLeafPageRef(ctx, key)
-	if err != nil {
-		return nil, fmt.Errorf("find leaf ref: %w", err)
-	}
-
-	if len(path) == 0 || leafRef == nil {
-		if string(key) == "key-0040" {
-			fmt.Printf("[DEBUG] No path or leafRef found for key %s\n", string(key))
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// 调试：记录查找的 key（仅第一次尝试）
+		if attempt == 0 && string(key) == "key-0040" {
+			fmt.Printf("[DEBUG] ===== Getting key %s =====\n", string(key))
 		}
-		return nil, ErrKeyNotFound
-	}
 
-	// 调试：打印路径（针对 key-0040 和 key-0079）
-	if string(key) == "key-0040" || string(key) == "key-0079" {
-		fmt.Printf("[DEBUG] Search path length: %d\n", len(path))
-		for i, p := range path {
-			fmt.Printf("[DEBUG]   Path[%d]: pageID=%d\n", i, p.GetPageID())
+		// Off-Heap 模式：使用 searchPathWithRefs
+		leafRef, path, err := b.findLeafPageRef(ctx, key)
+		if err != nil {
+			// 如果查找路径失败且不是最后一次尝试，重试
+			if attempt < maxRetries-1 {
+				runtime.Gosched()
+				continue
+			}
+			return nil, fmt.Errorf("find leaf ref: %w", err)
 		}
-	}
 
-	// 获取叶子节点的 PageInfo
-	leafInfo := leafRef.GetPageInfo()
-	if leafInfo == nil {
-		if string(key) == "key-0040" {
-			fmt.Printf("[DEBUG] No leafInfo for key %s\n", string(key))
+		if len(path) == 0 || leafRef == nil {
+			if attempt < maxRetries-1 {
+				runtime.Gosched()
+				continue
+			}
+			if string(key) == "key-0040" {
+				fmt.Printf("[DEBUG] No path or leafRef found for key %s\n", string(key))
+			}
+			return nil, ErrKeyNotFound
 		}
-		return nil, ErrKeyNotFound
-	}
 
-	// Off-Heap 模式：验证页面已加载
-	if !leafInfo.IsPageLoaded() {
-		return nil, fmt.Errorf("leaf page not loaded")
-	}
-
-	// 获取叶子节点 PageID
-	leafPageID := model.PageID(leafInfo.GetPageID())
-
-	if string(key) == "key-0040" {
-		fmt.Printf("[DEBUG] Found leaf page %d for key %s\n", leafPageID, string(key))
-		count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
-		fmt.Printf("[DEBUG] Leaf page %d has %d entries\n", leafPageID, count)
-
-		// 调试：打印页面的内容范围（前3个和后3个）
-		fmt.Printf("[DEBUG] Contents of page %d (first 3 and last 3):\n", leafPageID)
-		for i := 0; i < int(count) && i < 3; i++ {
-			keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
-			pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
-			fmt.Printf("[DEBUG]   Entry %d: key='%s'\n", i, string(pageKey))
+		// 获取叶子节点的 PageInfo
+		leafInfo := leafRef.GetPageInfo()
+		if leafInfo == nil {
+			if attempt < maxRetries-1 {
+				runtime.Gosched()
+				continue
+			}
+			if string(key) == "key-0040" {
+				fmt.Printf("[DEBUG] No leafInfo for key %s\n", string(key))
+			}
+			return nil, ErrKeyNotFound
 		}
-		if int(count) > 6 {
-			fmt.Printf("[DEBUG]   ...\n")
-			for i := int(count) - 3; i < int(count); i++ {
+
+		// 获取叶子节点 PageID
+		leafPageID := model.PageID(leafInfo.GetPageID())
+
+		// Off-Heap 模式：验证页面已加载
+		if !leafInfo.IsPageLoaded() {
+			return nil, fmt.Errorf("leaf page not loaded")
+		}
+
+		// 调试：打印路径（针对 key-0040 和 key-0079，仅第一次尝试）
+		if attempt == 0 && (string(key) == "key-0040" || string(key) == "key-0079") {
+			fmt.Printf("[DEBUG] Search path length: %d\n", len(path))
+			for i, p := range path {
+				fmt.Printf("[DEBUG]   Path[%d]: pageID=%d\n", i, p.GetPageID())
+			}
+		}
+
+		if string(key) == "key-0040" && attempt == 0 {
+			fmt.Printf("[DEBUG] Found leaf page %d for key %s\n", leafPageID, string(key))
+			count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
+			fmt.Printf("[DEBUG] Leaf page %d has %d entries\n", leafPageID, count)
+
+			// 调试：打印页面的内容范围（前3个和后3个）
+			fmt.Printf("[DEBUG] Contents of page %d (first 3 and last 3):\n", leafPageID)
+			for i := 0; i < int(count) && i < 3; i++ {
 				keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
 				pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
 				fmt.Printf("[DEBUG]   Entry %d: key='%s'\n", i, string(pageKey))
 			}
-		}
-
-		// 调试：打印根页面的内容
-		rootInfo := b.rootRef.pInfo.Load()
-		if rootInfo != nil {
-			rootPageID := rootInfo.GetPageID()
-			rootCount := b.offheapAdapter.pa.GetCount(uint32(rootPageID))
-			fmt.Printf("[DEBUG] Root page %d has %d entries:\n", rootPageID, rootCount)
-			for i := 0; i < int(rootCount) && i < 10; i++ {
-				keyOff, keyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(rootPageID), i)
-				pageKey := b.offheapAdapter.pa.GetKey(uint32(rootPageID), keyOff, keyLen)
-				childID := b.offheapAdapter.pa.GetChild(uint32(rootPageID), i)
-				fmt.Printf("[DEBUG]   Index %d: key='%s', child=%d\n", i, string(pageKey), childID)
+			if int(count) > 6 {
+				fmt.Printf("[DEBUG]   ...\n")
+				for i := int(count) - 3; i < int(count); i++ {
+					keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
+					pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
+					fmt.Printf("[DEBUG]   Entry %d: key='%s'\n", i, string(pageKey))
+				}
 			}
-			// 打印 extra child (N+1 child)
-			extraChild := b.offheapAdapter.pa.GetChild(uint32(rootPageID), int(rootCount))
-			fmt.Printf("[DEBUG]   Extra child (index %d): %d\n", rootCount, extraChild)
-		}
-	}
 
-	// 使用 OffHeapAdapter.GetFromOffHeap 直接读取
-	value, found, err := b.offheapAdapter.GetFromOffHeap(leafPageID, key)
-	if err != nil {
-		return nil, fmt.Errorf("offheap get: %w", err)
-	}
-	if !found {
+			// 调试：打印根页面的内容
+			rootInfo := b.rootRef.pInfo.Load()
+			if rootInfo != nil {
+				rootPageID := rootInfo.GetPageID()
+				rootCount := b.offheapAdapter.pa.GetCount(uint32(rootPageID))
+				fmt.Printf("[DEBUG] Root page %d has %d entries:\n", rootPageID, rootCount)
+				for i := 0; i < int(rootCount) && i < 10; i++ {
+					keyOff, keyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(rootPageID), i)
+					pageKey := b.offheapAdapter.pa.GetKey(uint32(rootPageID), keyOff, keyLen)
+					childID := b.offheapAdapter.pa.GetChild(uint32(rootPageID), i)
+					fmt.Printf("[DEBUG]   Index %d: key='%s', child=%d\n", i, string(pageKey), childID)
+				}
+				// 打印 extra child (N+1 child)
+				extraChild := b.offheapAdapter.pa.GetChild(uint32(rootPageID), int(rootCount))
+				fmt.Printf("[DEBUG]   Extra child (index %d): %d\n", rootCount, extraChild)
+			}
+		}
+
+		// 使用 OffHeapAdapter.GetFromOffHeap 直接读取
+		value, found, err := b.offheapAdapter.GetFromOffHeap(leafPageID, key)
+		if err != nil {
+			// 如果读取错误且不是最后一次尝试，重试
+			if attempt < maxRetries-1 {
+				runtime.Gosched()
+				continue
+			}
+			return nil, fmt.Errorf("offheap get: %w", err)
+		}
+
+		if found {
+			return value, nil  // 成功找到，直接返回
+		}
+
+		// 未找到，在并发场景下可能是由于：
+		// 1. 页面刚刚分裂，key 被移动到新页面
+		// 2. PageRefCache 缓存了旧的 PageRef
+		// 3. 搜索路径在分裂后变得无效
+
+		// 如果在页面分裂期间，可能出现临时找不到
+		// 策略：让出 CPU，重新搜索（而不是重试读取同一个页面）
+		if attempt < maxRetries-1 {
+			// 调试：打印未找到信息（仅第一次尝试）
+			if string(key) == "key-0079" && attempt == 0 {
+				count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
+				fmt.Printf("[DEBUG] Key '%s' not found in page %d (has %d entries), retrying with fresh search...\n", string(key), leafPageID, count)
+			}
+
+			// 让出 CPU，让其他 goroutine 完成分裂和缓存更新
+			runtime.Gosched()
+
+			// 继续下一次循环，重新执行 findLeafPageRef
+			// 这样可以获取到更新后的 PageRef 和路径
+			continue
+		}
+
+		// 最后一次尝试仍然未找到
 		// 调试：打印页面的所有 keys
 		if string(key) == "key-0079" {
 			count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
@@ -509,7 +562,7 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, ErrKeyNotFound
 	}
 
-	return value, nil
+	return nil, ErrKeyNotFound
 }
 
 // Set stores a key-value pair with Copy-on-Write and CAS.

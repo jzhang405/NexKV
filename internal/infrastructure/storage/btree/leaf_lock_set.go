@@ -770,6 +770,17 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 	if len(path) == 0 {
 		// 没有父节点，需要创建新的根节点（Root Split）
 		// 修复：传递完整的旧根信息，以便正确处理所有 children
+
+		// 调试：验证 children 是否被正确分配
+		fmt.Printf("[ROOT_SPLIT] Splitting root pageID=%d\n", internalPageID)
+		fmt.Printf("[ROOT_SPLIT] Old root has %d children, %d keys\n", len(children), len(keys))
+		fmt.Printf("[ROOT_SPLIT] Left page %d should have %d children (keys[:%d])\n",
+			uint32(leftRef.GetPageInfo().GetPageID()), mid+1, mid)
+		fmt.Printf("[ROOT_SPLIT] Right page %d should have %d children (keys[%d:])\n",
+			uint32(rightRef.GetPageInfo().GetPageID()), len(children)-mid-1, mid+1)
+		fmt.Printf("[ROOT_SPLIT] Total children in new pages: %d + %d = %d (should be %d)\n",
+			mid+1, len(children)-mid-1, (mid+1)+(len(children)-mid-1), len(children))
+
 		return b.splitRootOffHeapSyncForInternal(internalRef, internalInfo, internalPageID, leftRef, rightRef, splitKey, keys, children)
 	}
 

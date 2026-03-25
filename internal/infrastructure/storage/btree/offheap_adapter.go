@@ -99,44 +99,30 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 		return newPageID, false, err
 	}
 
-	// 调试：记录页面条目数
+	// 【关键修复】插入前先检查页面容量，防止页面过载
 	count := a.pa.GetCount(uint32(pageID))
-	if int(count) > 100 {
-		// 页面条目数异常，打印警告
-		fmt.Printf("[WARNING] page %d has %d entries before insert\n", pageID, count)
+
+	// 如果页面已有 79+ 条目，不插入直接触发分裂
+	// 这样可以避免页面积累过多条目导致分裂失败
+	if int(count) >= 79 {
+		fmt.Printf("[DEBUG] page %d has %d entries >= 79, triggering split BEFORE insert\n", pageID, count)
+		return pageID, true, nil
 	}
 
 	// 插入新 KV
 	dataEndCopy := dataEnd
 	insertErr := a.pa.InsertLeafEntry(uint32(pageID), idx, key, value, &dataEndCopy)
 
-	// 检查插入后的条目数，决定是否需要分裂
-	count = a.pa.GetCount(uint32(pageID))
-
-	// 更新 dataEndMap（无论是否需要分裂）
+	// 更新 dataEndMap（插入成功时）
 	if insertErr == nil {
 		a.dataEndMap[uint32(pageID)] = dataEndCopy
+		// 插入后检查是否需要分裂
+		splitRequired := a.checkPageFull(uint32(pageID), len(key), len(value), dataEndCopy)
+		return pageID, splitRequired, nil
 	}
 
-	// 如果插入失败，返回错误
-	if insertErr != nil {
-		// 但如果页面已满（条目数多），触发分裂
-		if int(count) >= 79 {
-			return pageID, true, nil
-		}
-		return pageID, false, insertErr
-	}
-
-	// 检查是否需要分裂（插入后检查）
-	splitRequired := a.checkPageFull(uint32(pageID), len(key), len(value), dataEndCopy)
-
-	// 安全检查：如果条目数已达到 80，强制触发分裂
-	if int(count) >= 80 {
-		splitRequired = true
-		fmt.Printf("[DEBUG] page %d count=%d, forcing split\n", pageID, count)
-	}
-
-	return pageID, splitRequired, nil
+	// 插入失败，返回错误（此时页面条目数 < 79，不应该触发分裂）
+	return pageID, false, insertErr
 }
 
 // checkPageFull 检查页面是否已满
@@ -250,41 +236,27 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 		c := a.pa.GetChild(uint32(pageID), i)
 
 		if i == index {
-			// 在此位置插入：key, left child
+			// 分裂位置：插入 splitKey 和 left child
+			// 注意：不复制当前的 key k（它就是 splitKey）
+			// 添加 right child 替代原来的 child c
 			keys = append(keys, key)
 			children = append(children, leftPageID)
-			}
-
-		kCopy := make([]byte, len(k))
-		copy(kCopy, k)
-		keys = append(keys, kCopy)
-
-		// 注意：如果不匹配 index，保留原 child
-		// 如果匹配 index，已经在上面添加了 leftPageID，这里不添加 c
-		if i != index {
+			children = append(children, rightPageID)
+		} else {
+			// 非分裂位置：保留原 key 和 child
+			kCopy := make([]byte, len(k))
+			copy(kCopy, k)
+			keys = append(keys, kCopy)
 			children = append(children, c)
 		}
 	}
 
-	// 处理 extraChild（N+1 child）和末尾插入
-	// 如果 index == count，说明在末尾插入
-	if index == int(count) {
-		// 先插入 split key 和 left child
-		keys = append(keys, key)
-		children = append(children, leftPageID)
-		// 然后 rightPageID 成为新的 extraChild
-		children = append(children, rightPageID)
-	} else {
-		// 在 index 位置之后插入 rightPageID
-		// children 当前长度是 count+1 (因为我们在 index 处插入了 leftPageID)
-		// 我们需要在 index+1 位置插入 rightPageID
-		if index+1 <= len(children) {
-			// 插入到中间
-			children = append(children[:index+1], append([]uint32{rightPageID}, children[index+1:]...)...)
-		} else {
-			// 追加到末尾
-			children = append(children, rightPageID)
-		}
+	// 添加 extraChild（N+1 child）
+	// 如果分裂位置不是最后一个，extraChild 保持不变
+	// 如果分裂位置是最后一个（index == count），extraChild 已在上面处理
+	if index < int(count) {
+		extraChild := a.pa.GetChild(uint32(pageID), int(count))
+		children = append(children, extraChild)
 	}
 
 	a.pm.Free(uint32(pageID))
@@ -402,6 +374,17 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	if err != nil {
 		a.pm.Free(leftPageID)
 		return 0, 0, nil, fmt.Errorf("alloc right page: %w", err)
+	}
+
+	// 调试：打印分配的页面ID
+	fmt.Printf("[DEBUG] SplitOffHeapLeafPage: allocated left=%d, right=%d for page %d\n", leftPageID, rightPageID, pageID)
+
+	// 调试：验证分配的页面ID不同
+	if leftPageID == rightPageID {
+		return 0, 0, nil, fmt.Errorf("allocator returned same pageID for left and right: %d", leftPageID)
+	}
+	if leftPageID == 0 || rightPageID == 0 {
+		return 0, 0, nil, fmt.Errorf("allocator returned invalid pageID: left=%d, right=%d", leftPageID, rightPageID)
 	}
 
 	// 智能分裂搜索：找到能使两侧都成功物化的分裂点

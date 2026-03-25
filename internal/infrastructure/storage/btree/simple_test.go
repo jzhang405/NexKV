@@ -216,7 +216,6 @@ func TestOffHeap_25000Keys(t *testing.T) {
 	t.Logf("SUCCESS: Inserted and retrieved %d keys", numKeys)
 }
 
-
 func TestOffHeap_35000Keys(t *testing.T) {
 	ctx := context.Background()
 	tree, err := OpenBTree("", nil)

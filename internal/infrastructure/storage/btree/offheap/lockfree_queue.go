@@ -11,8 +11,8 @@ import (
 // LockFreeQueue 基于 Michael-Scott 算法的无锁队列
 // 用于管理空闲 PageID，消除 sync.Mutex 的并发瓶颈
 type LockFreeQueue struct {
-	head atomic.Pointer[node]
-	tail atomic.Pointer[node]
+	head  atomic.Pointer[node]
+	tail  atomic.Pointer[node]
 	dummy node
 }
 

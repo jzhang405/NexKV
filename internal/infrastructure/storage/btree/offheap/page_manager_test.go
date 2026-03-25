@@ -59,7 +59,7 @@ func TestLockFreeQueue_Concurrent(t *testing.T) {
 	done := make(chan bool)
 	go func() {
 		for i := uint32(0); i < numItems; i++ {
-		q.Enqueue(i)
+			q.Enqueue(i)
 		}
 		done <- true
 	}()

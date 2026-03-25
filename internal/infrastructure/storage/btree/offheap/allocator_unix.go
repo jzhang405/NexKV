@@ -21,9 +21,9 @@ type mmapAllocator struct {
 func newPlatformAllocator(size int) (OffHeapAllocator, error) {
 	// 调用 mmap 系统调用
 	ptr, err := syscall.Mmap(
-		-1,                   // fd = -1 (匿名映射)
-		0,                    // offset = 0
-		size,                 // length
+		-1,   // fd = -1 (匿名映射)
+		0,    // offset = 0
+		size, // length
 		syscall.PROT_READ|syscall.PROT_WRITE,
 		syscall.MAP_ANON|syscall.MAP_PRIVATE,
 	)

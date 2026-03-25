@@ -185,9 +185,9 @@ type BTree struct {
 	wal      wal.WAL       // Write-Ahead Log for crash recovery
 
 	// Off-Heap storage (方案 B：完全替换)
-	offheapPM       *offheap.PageManager       // Off-Heap 页面管理器
-	offheapAdapter  *OffHeapAdapter            // Off-Heap 适配器
-	pageRefCache    *PageRefCache              // PageID → PageRef 映射（Off-Heap 模式）
+	offheapPM      *offheap.PageManager // Off-Heap 页面管理器
+	offheapAdapter *OffHeapAdapter      // Off-Heap 适配器
+	pageRefCache   *PageRefCache        // PageID → PageRef 映射（Off-Heap 模式）
 
 	// Configuration
 	maxLevels int  // Maximum tree levels
@@ -217,7 +217,7 @@ type BTree struct {
 // 页面在 CAS 成功后不立即释放，而是加入当前 epoch 的待释放列表
 // 在下一个 epoch 开始时才真正释放页面
 type EpochBasedFreeList struct {
-	currentEpoch uint64                 // 当前 epoch
+	currentEpoch uint64                    // 当前 epoch
 	pending      map[uint64][]model.PageID // epoch → 待释放页面列表
 	mu           sync.Mutex
 }
@@ -387,7 +387,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// 创建初始根 PageInfo（使用 NodeRef）
 	initialRootInfo := NewPageInfo()
 	initialRootInfo.SetNodeRef(offheap.NewNodeRef(uint32(initialRootPageID), true)) // true = isLeaf
-	initialRootInfo.SetParentRef(nil) // 根节点没有父引用
+	initialRootInfo.SetParentRef(nil)                                               // 根节点没有父引用
 
 	rootPageRef := NewRootPageRefWithInfo(initialRootInfo)
 
@@ -407,20 +407,20 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	epochBasedFreeList := NewEpochBasedFreeList()
 
 	btree := &BTree{
-		config:              config,
-		cowConfig:           cowConfig,
-		closed:              false,
-		rootRef:             rootPageRef,
-		chunkMgr:            chunkMgr,
-		wal:                 walImpl,
-		offheapPM:           offheapPM,
-		offheapAdapter:      offheapAdapter,
-		pageRefCache:        pageRefCache,
-		maxLevels:           maxLevels,
-		enableWAL:           enableWAL,
-		stats:               stats,
-		hotPageThreshold:    config.HotPageThreshold,
-		epochBasedFreeList:  epochBasedFreeList,
+		config:             config,
+		cowConfig:          cowConfig,
+		closed:             false,
+		rootRef:            rootPageRef,
+		chunkMgr:           chunkMgr,
+		wal:                walImpl,
+		offheapPM:          offheapPM,
+		offheapAdapter:     offheapAdapter,
+		pageRefCache:       pageRefCache,
+		maxLevels:          maxLevels,
+		enableWAL:          enableWAL,
+		stats:              stats,
+		hotPageThreshold:   config.HotPageThreshold,
+		epochBasedFreeList: epochBasedFreeList,
 	}
 
 	// 应用 GC 配置（如果指定）
@@ -452,7 +452,9 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 				// 同步执行任务（TaskScheduler 已经在 Worker 线程中）
 				runner.Run(context.Background(), nil)
 				// 等待任务完成
-				if task, ok := item.(interface{ Wait(context.Context) (interface{}, error) }); ok {
+				if task, ok := item.(interface {
+					Wait(context.Context) (interface{}, error)
+				}); ok {
 					_, _ = task.Wait(context.Background())
 				}
 				return concurrency.TaskPassed
@@ -483,7 +485,9 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 				// 同步执行任务（TaskScheduler 已经在 Worker 线程中）
 				runner.Run(context.Background(), nil)
 				// 等待任务完成
-				if task, ok := item.(interface{ Wait(context.Context) (interface{}, error) }); ok {
+				if task, ok := item.(interface {
+					Wait(context.Context) (interface{}, error)
+				}); ok {
 					_, _ = task.Wait(context.Background())
 				}
 				return concurrency.TaskPassed
@@ -492,7 +496,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		},
 		"btree-split",
 		model.TaskPriorityHigh, // 高优先级，优先处理父节点分裂
-		1,                       // executionOrder = 1 (数组索引 1)
+		1,                      // executionOrder = 1 (数组索引 1)
 	)
 	if err != nil {
 		// 清理资源
@@ -552,11 +556,11 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, ErrClosed
 	}
 
-	const maxRetries = 5  // 最多重试 5 次（增加以提高并发成功率）
+	const maxRetries = 5 // 最多重试 5 次（增加以提高并发成功率）
 
-	// 调试：追踪 key-06151、key-06267、key-06709 和 key-09803 的查找过程
+	// 调试：追踪 key-06151、key-06267、key-06709、key-09803 和 multi-key-2 的查找过程
 	debugThisKey := string(key) == "key-06151" || string(key) == "key-06150" || string(key) == "key-06152" ||
-		string(key) == "key-06267" || string(key) == "key-06709" || string(key) == "key-09803"
+		string(key) == "key-06267" || string(key) == "key-06709" || string(key) == "key-09803" || string(key) == "multi-key-2"
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if debugThisKey {
@@ -649,7 +653,7 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 			if debugThisKey {
 				DebugPrintf("[GET_DEBUG] key=%s FOUND\n", string(key))
 			}
-			return value, nil  // 成功找到，直接返回
+			return value, nil // 成功找到，直接返回
 		}
 
 		// 未找到，在并发场景下可能是由于：

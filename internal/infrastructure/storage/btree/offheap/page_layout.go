@@ -103,9 +103,7 @@ func NewPageAccessor(pm *PageManager) *PageAccessor {
 
 // GetDataEnd 从页面结构计算实际的 dataEnd
 // dataEnd 表示从页面末尾到第一个 KV 数据起点的距离
-// 注意：由于 entries 从前往后存储，而 KV 数据从后往前存储，
-// 所以"第一个" entry 的 KV 数据实际上在页面最末尾
-// 我们需要从"最后一个" entry 的 keyOff 计算（即逻辑上"第一个"插入的数据）
+// 通过扫描所有 entries 来计算实际的 KV 数据区大小
 func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
 	ptr := pa.pm.PageIDToPtr(pageID)
 	header := (*PageHeader)(unsafe.Pointer(ptr))
@@ -115,17 +113,26 @@ func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
 	}
 
 	if pa.IsLeaf(pageID) {
-		// 叶子节点：从最后一个 entry 获取 key 的起始位置
-		// 最后一个 entry 的 keyOff 最小，是 KV 数据区的起点
-		lastIndex := int(header.count) - 1
-		entry := (*LeafEntry)(unsafe.Pointer(ptr + uintptr(SizeofPageHeader) + uintptr(lastIndex)*uintptr(SizeofLeafEntry)))
-		// dataEnd = 从页面末尾到 key 起点的距离
-		return uint16(PageSize - uint32(entry.keyOff))
+		// 叶子节点：扫描所有 entries，找到最小的 keyOff（KV 数据区的起点）
+		minKeyOff := uint32(PageSize)
+		for i := 0; i < int(header.count); i++ {
+			entry := (*LeafEntry)(unsafe.Pointer(ptr + uintptr(SizeofPageHeader) + uintptr(i)*uintptr(SizeofLeafEntry)))
+			if entry.keyOff < minKeyOff {
+				minKeyOff = entry.keyOff
+			}
+		}
+		// dataEnd = 从页面末尾到 KV 数据区起点的距离
+		return uint16(PageSize - minKeyOff)
 	} else {
-		// 索引节点：从最后一个 entry 获取 key 的起始位置
-		lastIndex := int(header.count) - 1
-		entry := (*IndexEntry)(unsafe.Pointer(ptr + uintptr(SizeofPageHeader) + uintptr(lastIndex)*uintptr(SizeofIndexEntry)))
-		return uint16(PageSize - uint32(entry.keyOff))
+		// 索引节点：扫描所有 entries，找到最小的 keyOff（KV 数据区的起点）
+		minKeyOff := uint32(PageSize)
+		for i := 0; i < int(header.count); i++ {
+			entry := (*IndexEntry)(unsafe.Pointer(ptr + uintptr(SizeofPageHeader) + uintptr(i)*uintptr(SizeofIndexEntry)))
+			if entry.keyOff < minKeyOff {
+				minKeyOff = entry.keyOff
+			}
+		}
+		return uint16(PageSize - minKeyOff)
 	}
 }
 
@@ -269,8 +276,8 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 	if index < int(header.count) {
 		src := ptr + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofIndexEntry)
 		dst := ptr + uintptr(SizeofPageHeader) + uintptr(index+1)*uintptr(SizeofIndexEntry)
-		count := header.count - uint16(index)
-		moveSlice := unsafe.Slice((*byte)(unsafe.Pointer(src)), count*uint16(SizeofIndexEntry))
+		count := int(header.count - uint16(index))
+		moveSlice := unsafe.Slice((*byte)(unsafe.Pointer(src)), count*SizeofIndexEntry)
 		dstSlice := unsafe.Slice((*byte)(unsafe.Pointer(dst)), len(moveSlice))
 		copy(dstSlice, moveSlice)
 	}
@@ -311,8 +318,8 @@ func (pa *PageAccessor) InsertLeafEntry(pageID uint32, index int, key, value []b
 	if index < int(header.count) {
 		src := ptr + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofLeafEntry)
 		dst := ptr + uintptr(SizeofPageHeader) + uintptr(index+1)*uintptr(SizeofLeafEntry)
-		count := header.count - uint16(index)
-		moveSlice := unsafe.Slice((*byte)(unsafe.Pointer(src)), count*uint16(SizeofLeafEntry))
+		count := int(header.count - uint16(index))
+		moveSlice := unsafe.Slice((*byte)(unsafe.Pointer(src)), count*SizeofLeafEntry)
 		dstSlice := unsafe.Slice((*byte)(unsafe.Pointer(dst)), len(moveSlice))
 		copy(dstSlice, moveSlice)
 	}

@@ -19,17 +19,17 @@ type virtualAllocAllocator struct {
 }
 
 const (
-	MEM_COMMIT   = 0x00001000
-	MEM_RESERVE  = 0x00002000
-	MEM_RELEASE  = 0x8000
+	MEM_COMMIT     = 0x00001000
+	MEM_RESERVE    = 0x00002000
+	MEM_RELEASE    = 0x8000
 	PAGE_READWRITE = 0x04
 )
 
 func newPlatformAllocator(size int) (OffHeapAllocator, error) {
 	// 调用 VirtualAlloc
 	ptr, err := windows.VirtualAlloc(
-		0,                // 地址（0 表示系统选择）
-		uintptr(size),    // 大小
+		0,             // 地址（0 表示系统选择）
+		uintptr(size), // 大小
 		MEM_RESERVE|MEM_COMMIT,
 		windows.PAGE_READWRITE,
 	)

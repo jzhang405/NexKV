@@ -60,23 +60,23 @@ func (a *OffHeapAdapter) FreePage(pageID model.PageID) error {
 // GetFromOffHeap 从 Off-Heap 叶子页面获取 key 对应的 value
 // 返回 (value, found, error)
 func (a *OffHeapAdapter) GetFromOffHeap(pageID model.PageID, key []byte) ([]byte, bool, error) {
-	// 调试：追踪 key-06267、key-06709 和 key-09803 的查找
-	debugThisKey := string(key) == "key-06267" || string(key) == "key-06266" || string(key) == "key-06268" || string(key) == "key-06709" || string(key) == "key-09803" || string(key) == "key-09802"
+	// 调试：追踪 key-06267、key-06709、key-09803 和 multi-key-2 的查找
+	keyStr := string(key)
+	debugThisKey := keyStr == "key-06267" || keyStr == "key-06266" || keyStr == "key-06268" || keyStr == "key-06709" || keyStr == "key-09803" || keyStr == "key-09802" || keyStr == "multi-key-2" || keyStr == "multi-key-1" || keyStr == "multi-key-3" || keyStr == "multi-key-10" || keyStr == "multi-key-20"
 
 	idx, found := a.pa.SearchKey(uint32(pageID), key, true)
 	if debugThisKey {
 		count := a.pa.GetCount(uint32(pageID))
 		nextPage := a.pa.GetNextPage(uint32(pageID))
 		DebugPrintf("[GET_OFFHEAP] key=%s pageID=%d idx=%d found=%v count=%d nextPage=%d\n",
-			string(key), pageID, idx, found, count, nextPage)
+			keyStr, pageID, idx, found, count, nextPage)
 		// 打印页面的第一个和最后一个 key
 		if count > 0 {
 			firstKeyOff, firstKeyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), 0)
 			firstKey := a.pa.GetKey(uint32(pageID), firstKeyOff, firstKeyLen)
 			lastKeyOff, lastKeyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), int(count)-1)
 			lastKey := a.pa.GetKey(uint32(pageID), lastKeyOff, lastKeyLen)
-			DebugPrintf("[GET_OFFHEAP] pageID=%d firstKey=%s lastKey=%s\n",
-				pageID, string(firstKey), string(lastKey))
+			DebugPrintf("[GET_OFFHEAP] pageID=%d firstKey=%s lastKey=%s\n", pageID, string(firstKey), string(lastKey))
 		}
 	}
 	if !found {
@@ -298,7 +298,7 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 
 		if i == index {
 			// 分裂位置：插入 splitKey 和 left/right child
-			// 修复：不要保留原来的 child，因为它被替换为 leftPageID
+			// 注意：不复制原来的 child，因为它被替换为 leftPageID
 			keys = append(keys, key)
 			children = append(children, leftPageID)
 			children = append(children, rightPageID)
@@ -415,6 +415,19 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 
 	// 调试：追踪页面 530、533、536 的分裂
 	debugThisSplit := pageID == 530 || pageID == 538 || pageID == 539 || pageID == 532 || pageID == 533 || pageID == 536
+	// 调试：追踪所有包含 multi-key-2 的页面
+	if !debugThisSplit {
+		// 检查页面是否包含 multi-key-2
+		for i := 0; i < int(count); i++ {
+			keyOff, keyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), i)
+			key := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
+			if string(key) == "multi-key-2" {
+				debugThisSplit = true
+				break
+			}
+		}
+	}
+
 	if debugThisSplit {
 		DebugPrintf("[SPLIT_DEBUG] ========== SPLIT START pageID=%d count=%d ==========\n", pageID, count)
 		// 打印页面的内存地址以确认是否是同一个物理页面

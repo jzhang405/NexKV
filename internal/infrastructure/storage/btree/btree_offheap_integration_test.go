@@ -21,40 +21,45 @@ import (
 func TestOffHeap_BasicCRUD(t *testing.T) {
 	ctx := context.Background()
 
-	// 创建纯内存模式的 BTree（Off-Heap，无持久化）
-	tree, err := OpenBTree("", nil)
-	require.NoError(t, err)
-	defer tree.Close()
-
 	t.Run("Set and Get single key", func(t *testing.T) {
+		tree, err := OpenBTree("", nil)
+		require.NoError(t, err)
+		defer tree.Close()
+
 		key := []byte("test-key")
 		value := []byte("test-value")
 
-		// Set
-		err := tree.Set(ctx, key, value)
+		err = tree.Set(ctx, key, value)
 		require.NoError(t, err)
 
-		// Get
 		got, err := tree.Get(ctx, key)
 		require.NoError(t, err)
 		assert.Equal(t, value, got)
 	})
 
 	t.Run("Get non-existent key returns ErrKeyNotFound", func(t *testing.T) {
+		tree, err := OpenBTree("", nil)
+		require.NoError(t, err)
+		defer tree.Close()
+
 		key := []byte("non-existent")
 
-		_, err := tree.Get(ctx, key)
+		_, err = tree.Get(ctx, key)
 		assert.Error(t, err)
 		assert.Equal(t, ErrKeyNotFound, err)
 	})
 
 	t.Run("Set updates existing key", func(t *testing.T) {
+		tree, err := OpenBTree("", nil)
+		require.NoError(t, err)
+		defer tree.Close()
+
 		key := []byte("update-key")
 		value1 := []byte("value1")
 		value2 := []byte("value2")
 
 		// Set first value
-		err := tree.Set(ctx, key, value1)
+		err = tree.Set(ctx, key, value1)
 		require.NoError(t, err)
 
 		got1, err := tree.Get(ctx, key)
@@ -71,6 +76,10 @@ func TestOffHeap_BasicCRUD(t *testing.T) {
 	})
 
 	t.Run("Set and Get multiple keys", func(t *testing.T) {
+		tree, err := OpenBTree("", nil)
+		require.NoError(t, err)
+		defer tree.Close()
+
 		keys := make([][]byte, 100)
 		values := make([][]byte, 100)
 

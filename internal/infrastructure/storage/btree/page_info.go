@@ -52,14 +52,14 @@ func decodeNodeRef(encoded uint64) (pageID uint32, isLeaf bool) {
 // └─────────────────────────────────────────────────────────────────┘
 type PageInfo struct {
 	// Cache Line 1 (64 bytes) - 热数据（高并发访问）
-	pos      atomic.Int64  // 8 bytes  - 在 Chunk 中的位置（0=未写入）
-	nodeRef  atomic.Uint64 // 8 bytes  - Off-Heap NodeRef（压缩为 uint64）
+	pos     atomic.Int64  // 8 bytes  - 在 Chunk 中的位置（0=未写入）
+	nodeRef atomic.Uint64 // 8 bytes  - Off-Heap NodeRef（压缩为 uint64）
 	//   格式：[pageID:32 | isLeaf:1 | _pad:31]
 	// 性能优化：延迟 PageLock 创建（减少 15.45% 内存分配）
-	pageLock atomic.Value  // 8 bytes  - *PageLock（懒加载）
-	lastTime atomic.Int64  // 8 bytes  - LRU 时间戳（纳秒）并发安全
-	hits     atomic.Int64  // 8 bytes  - 访问计数 并发安全
-	_        [24]byte      // padding to 64 bytes
+	pageLock atomic.Value // 8 bytes  - *PageLock（懒加载）
+	lastTime atomic.Int64 // 8 bytes  - LRU 时间戳（纳秒）并发安全
+	hits     atomic.Int64 // 8 bytes  - 访问计数 并发安全
+	_        [24]byte     // padding to 64 bytes
 
 	// Cache Line 2 (64 bytes) - 不使用
 	_ [64]byte
@@ -87,10 +87,10 @@ func NewPageInfo() *PageInfo {
 	info.SetPos(0) // 使用 SetPos() 方法避免 noCopy 违规
 	info.lastTime.Store(time.Now().UnixNano())
 	info.hits.Store(0)
-	info.flags.Store(0)                    // 初始化所有标志位为 0
-	info.parentRef.Store((*PageRef)(nil))  // 显式初始化为 nil
+	info.flags.Store(0)                   // 初始化所有标志位为 0
+	info.parentRef.Store((*PageRef)(nil)) // 显式初始化为 nil
 	info.cloneStatus.Store(0)
-	info.nodeRef.Store(0)                  // 初始化为 0（无效）
+	info.nodeRef.Store(0) // 初始化为 0（无效）
 	return info
 }
 

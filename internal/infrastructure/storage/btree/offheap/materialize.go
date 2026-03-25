@@ -6,6 +6,7 @@ package offheap
 
 import (
 	"bytes"
+	"fmt"
 )
 
 // OffHeapMaterializer 零拷贝物化器
@@ -44,10 +45,11 @@ func (m *OffHeapMaterializer) MaterializePageFromBytes(
 
 	// 写入所有 KV 数据
 	// 注意：我们按顺序插入，PageAccessor 会处理布局
+	// 如果空间不足，InsertLeafEntry 会返回错误
 	for i := range keys {
 		err := m.pa.InsertLeafEntry(pageID, i, keys[i], values[i], &dataEnd)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("insert entry %d: %w", i, err)
 		}
 	}
 

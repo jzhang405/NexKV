@@ -39,11 +39,17 @@ func TestOffHeap_SimpleMultipleKeys(t *testing.T) {
 		got, err := tree.Get(ctx, key)
 		if err != nil {
 			t.Logf("GET ERROR at key %d: %v", i, err)
+			t.Logf("Key bytes: %v", key)
 			t.FailNow()
 		}
 		if string(got) != string(expectedValue) {
 			t.Logf("VALUE MISMATCH at key %d: expected %s, got %s", i, string(expectedValue), string(got))
 			t.FailNow()
+		}
+
+		// 每 50 个 key 打印一次进度
+		if (i+1)%50 == 0 {
+			t.Logf("Verified %d keys", i+1)
 		}
 	}
 

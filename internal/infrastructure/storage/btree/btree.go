@@ -382,6 +382,11 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, ErrClosed
 	}
 
+	// 调试：记录查找的 key
+	if string(key) == "key-0040" {
+		fmt.Printf("[DEBUG] Getting key %s\n", string(key))
+	}
+
 	// Off-Heap 模式：使用 searchPathWithRefs
 	leafRef, path, err := b.findLeafPageRef(ctx, key)
 	if err != nil {
@@ -389,12 +394,18 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 	}
 
 	if len(path) == 0 || leafRef == nil {
+		if string(key) == "key-0040" {
+			fmt.Printf("[DEBUG] No path or leafRef found for key %s\n", string(key))
+		}
 		return nil, ErrKeyNotFound
 	}
 
 	// 获取叶子节点的 PageInfo
 	leafInfo := leafRef.GetPageInfo()
 	if leafInfo == nil {
+		if string(key) == "key-0040" {
+			fmt.Printf("[DEBUG] No leafInfo for key %s\n", string(key))
+		}
 		return nil, ErrKeyNotFound
 	}
 
@@ -405,6 +416,10 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 
 	// 获取叶子节点 PageID
 	leafPageID := model.PageID(leafInfo.GetPageID())
+
+	if string(key) == "key-0040" {
+		fmt.Printf("[DEBUG] Found leaf page %d for key %s\n", leafPageID, string(key))
+	}
 
 	// 使用 OffHeapAdapter.GetFromOffHeap 直接读取
 	value, found, err := b.offheapAdapter.GetFromOffHeap(leafPageID, key)

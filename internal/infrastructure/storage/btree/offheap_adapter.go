@@ -99,18 +99,43 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 		return newPageID, false, err
 	}
 
-	// 插入新 KV（先插入，即使页面已满）
-	dataEndCopy := dataEnd
-	err := a.pa.InsertLeafEntry(uint32(pageID), idx, key, value, &dataEndCopy)
-	if err != nil {
-		// 插入失败（页面确实满了），返回需要分裂
-		return pageID, true, nil
+	// 调试：记录页面条目数
+	count := a.pa.GetCount(uint32(pageID))
+	if int(count) > 100 {
+		// 页面条目数异常，打印警告
+		fmt.Printf("[WARNING] page %d has %d entries before insert\n", pageID, count)
 	}
-	// 更新 dataEndMap
-	a.dataEndMap[uint32(pageID)] = dataEndCopy
 
-	// 检查插入后是否需要分裂（使用新的 dataEnd）
-	splitRequired := a.checkPageFull(uint32(pageID), 0, 0, dataEndCopy)
+	// 插入新 KV
+	dataEndCopy := dataEnd
+	insertErr := a.pa.InsertLeafEntry(uint32(pageID), idx, key, value, &dataEndCopy)
+
+	// 检查插入后的条目数，决定是否需要分裂
+	count = a.pa.GetCount(uint32(pageID))
+
+	// 更新 dataEndMap（无论是否需要分裂）
+	if insertErr == nil {
+		a.dataEndMap[uint32(pageID)] = dataEndCopy
+	}
+
+	// 如果插入失败，返回错误
+	if insertErr != nil {
+		// 但如果页面已满（条目数多），触发分裂
+		if int(count) >= 79 {
+			return pageID, true, nil
+		}
+		return pageID, false, insertErr
+	}
+
+	// 检查是否需要分裂（插入后检查）
+	splitRequired := a.checkPageFull(uint32(pageID), len(key), len(value), dataEndCopy)
+
+	// 安全检查：如果条目数已达到 80，强制触发分裂
+	if int(count) >= 80 {
+		splitRequired = true
+		fmt.Printf("[DEBUG] page %d count=%d, forcing split\n", pageID, count)
+	}
+
 	return pageID, splitRequired, nil
 }
 
@@ -273,6 +298,9 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	// 获取当前页面的所有 keys
 	count := a.pa.GetCount(uint32(pageID))
 
+	// 调试：记录页面状态
+	fmt.Printf("[DEBUG] SplitOffHeapLeafPage called for page %d with %d entries\n", pageID, count)
+
 	// 收集所有 KV
 	keys := make([][]byte, 0, count)
 	values := make([][]byte, 0, count)
@@ -289,12 +317,7 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 		values = append(values, valCopy)
 	}
 
-	// 分割点：中间位置
-	mid := count / 2
-	splitKey := make([]byte, len(keys[mid]))
-	copy(splitKey, keys[mid])
-
-	// 分配左右两个新页面
+	// 分配左右两个新页面（提前分配，避免重复分配）
 	leftPageID, err := a.pm.Alloc()
 	if err != nil {
 		return 0, 0, nil, fmt.Errorf("alloc left page: %w", err)
@@ -305,21 +328,107 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 		return 0, 0, nil, fmt.Errorf("alloc right page: %w", err)
 	}
 
+	// 智能分裂搜索：找到能使两侧都成功物化的分裂点
+	// 策略：渐进式尝试不同比例
+	var splitIdx int
+	var success bool
+	countInt := int(count)
+
+	// 首先尝试 50/50 分裂
+	mid := countInt / 2
+	if mid > 0 {
+		leftKeys := keys[:mid]
+		leftValues := values[:mid]
+		rightKeys := keys[mid:]
+		rightValues := values[mid:]
+
+		leftDataEnd, leftErr := a.materializer.MaterializePageFromBytes(leftPageID, leftKeys, leftValues)
+		rightDataEnd, rightErr := a.materializer.MaterializePageFromBytes(rightPageID, rightKeys, rightValues)
+
+		if leftErr == nil && rightErr == nil {
+			splitIdx = mid
+			success = true
+			a.dataEndMap[leftPageID] = leftDataEnd
+			a.dataEndMap[rightPageID] = rightDataEnd
+		}
+	}
+
+	// 如果 50/50 失败，尝试更极端的比例（从 2/3 开始向 9/10 推进）
+	if !success && countInt > 10 {
+		for divisor := 3; divisor <= 10; divisor++ {
+			mid := countInt * (divisor - 1) / divisor
+			if mid <= 1 || mid >= countInt-1 {
+				continue
+			}
+
+			leftKeys := keys[:mid]
+			leftValues := values[:mid]
+			rightKeys := keys[mid:]
+			rightValues := values[mid:]
+
+			leftDataEnd, leftErr := a.materializer.MaterializePageFromBytes(leftPageID, leftKeys, leftValues)
+			rightDataEnd, rightErr := a.materializer.MaterializePageFromBytes(rightPageID, rightKeys, rightValues)
+
+			if leftErr == nil && rightErr == nil {
+				splitIdx = mid
+				success = true
+				a.dataEndMap[leftPageID] = leftDataEnd
+				a.dataEndMap[rightPageID] = rightDataEnd
+				break
+			}
+		}
+	}
+
+	if !success {
+		// 所有比例都失败，使用最小分裂（1个元素在左侧）
+		splitIdx = 1
+		// 尝试最小分裂
+		leftKeys := keys[:splitIdx]
+		leftValues := values[:splitIdx]
+		rightKeys := keys[splitIdx:]
+		rightValues := values[splitIdx:]
+
+		leftDataEnd, leftErr := a.materializer.MaterializePageFromBytes(leftPageID, leftKeys, leftValues)
+		rightDataEnd, rightErr := a.materializer.MaterializePageFromBytes(rightPageID, rightKeys, rightValues)
+
+		if leftErr != nil && rightErr == nil {
+			success = true
+			a.dataEndMap[leftPageID] = leftDataEnd
+			a.dataEndMap[rightPageID] = rightDataEnd
+		} else {
+			// 即使最小分裂也失败，返回错误
+			fmt.Printf("[DEBUG] SplitOffHeapLeafPage FAILED for page %d: all split ratios failed, count=%d\n", pageID, countInt)
+			a.pm.Free(leftPageID)
+			a.pm.Free(rightPageID)
+			return 0, 0, nil, fmt.Errorf("page too large to split: count=%d", countInt)
+		}
+	}
+
+	// 使用找到的分裂点
+	splitKey := make([]byte, len(keys[splitIdx]))
+	copy(splitKey, keys[splitIdx])
+
+	fmt.Printf("[DEBUG] Using splitIdx=%d for page %d (count=%d)\n", splitIdx, pageID, countInt)
+
 	// 物化左半部分
-	leftDataEnd, err := a.materializer.MaterializePageFromBytes(leftPageID, keys[:mid], values[:mid])
+	leftDataEnd, err := a.materializer.MaterializePageFromBytes(leftPageID, keys[:splitIdx], values[:splitIdx])
 	if err != nil {
+		fmt.Printf("[DEBUG] Materialize left page FAILED: %v\n", err)
 		a.pm.Free(leftPageID)
 		a.pm.Free(rightPageID)
 		return 0, 0, nil, fmt.Errorf("materialize left page: %w", err)
 	}
 
 	// 物化右半部分（包含 splitKey）
-	rightDataEnd, err := a.materializer.MaterializePageFromBytes(rightPageID, keys[mid:], values[mid:])
+	rightDataEnd, err := a.materializer.MaterializePageFromBytes(rightPageID, keys[splitIdx:], values[splitIdx:])
 	if err != nil {
+		fmt.Printf("[DEBUG] Materialize right page FAILED: %v\n", err)
 		a.pm.Free(leftPageID)
 		a.pm.Free(rightPageID)
 		return 0, 0, nil, fmt.Errorf("materialize right page: %w", err)
 	}
+
+	fmt.Printf("[DEBUG] SplitOffHeapLeafPage SUCCESS for page %d: left=%d, right=%d\n", pageID, leftPageID, rightPageID)
 
 	// 设置链表指针
 	a.pa.SetNextPage(leftPageID, rightPageID)

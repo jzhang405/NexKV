@@ -18,7 +18,7 @@ func TestOffHeap_SimpleMultipleKeys(t *testing.T) {
 	require.NoError(t, err)
 	defer tree.Close()
 
-	const numKeys = 500
+	const numKeys = 1000
 	format := "key-%04d"
 
 	for i := range numKeys {

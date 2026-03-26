@@ -526,6 +526,11 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	var success bool
 	countInt := int(count)
 
+	// 边界检查：至少需要 2 个 key 才能分裂
+	if countInt < 2 {
+		return 0, 0, nil, fmt.Errorf("cannot split page with less than 2 keys (count=%d)", countInt)
+	}
+
 	// 首先尝试 30/70 分裂（非常激进，确保右页面不会过大）
 	mid := int(float64(countInt) * 0.3) // 30%
 	if mid > 0 {
@@ -622,6 +627,11 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	}
 
 	// 使用找到的分裂点
+	// splitKey 是右半部分的第一个 key，需要从 keys[splitIdx] 复制
+	// 边界检查：splitIdx 必须在 [0, len(keys)-1] 范围内
+	if splitIdx < 0 || splitIdx >= len(keys) {
+		return 0, 0, nil, fmt.Errorf("invalid splitIdx=%d for keys length=%d", splitIdx, len(keys))
+	}
 	splitKey := make([]byte, len(keys[splitIdx]))
 	copy(splitKey, keys[splitIdx])
 

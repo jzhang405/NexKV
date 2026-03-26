@@ -28,13 +28,13 @@ const (
 // PageHeader 页面头部（32 字节，Cache Line 对齐）
 // 字段按大小排序，确保无内部 padding
 type PageHeader struct {
-	version  uint64 // 8 bytes - 版本号（用于 CCOW）
-	prevPage uint32 // 4 bytes - 前一个页面 pageID（链表）
-	nextPage uint32 // 4 bytes - 后一个页面 pageID（链表）
-	extraChild uint32 // 4 bytes - 索引节点的 N+1 child（B+ 树语义，从 _pad 借用空间）
-	count    uint16 // 2 bytes - 条目数（entries 数量）
-	pageType uint8  // 1 byte  - 页面类型（0=索引 1=叶子）
-	_pad     [9]byte // 9 bytes - 对齐到 32 字节 (8+4+4+4+2+1+9 = 32)
+	version    uint64  // 8 bytes - 版本号（用于 CCOW）
+	prevPage   uint32  // 4 bytes - 前一个页面 pageID（链表）
+	nextPage   uint32  // 4 bytes - 后一个页面 pageID（链表）
+	extraChild uint32  // 4 bytes - 索引节点的 N+1 child（B+ 树语义，从 _pad 借用空间）
+	count      uint16  // 2 bytes - 条目数（entries 数量）
+	pageType   uint8   // 1 byte  - 页面类型（0=索引 1=叶子）
+	_pad       [9]byte // 9 bytes - 对齐到 32 字节 (8+4+4+4+2+1+9 = 32)
 }
 
 // SizeofPageHeader PageHeader 大小（32 字节）
@@ -228,7 +228,7 @@ func (pa *PageAccessor) InitPage(pageID uint32, pageType uint8, version uint64) 
 	oldPageType := header.pageType
 	header.pageType = pageType
 	header.count = 0
-	header.extraChild = 0 // 清空 N+1 child（防止页面重用时出现循环引用）
+	header.extraChild = 0        // 清空 N+1 child（防止页面重用时出现循环引用）
 	header.prevPage = 0xFFFFFFFF // 空链表
 	header.nextPage = 0xFFFFFFFF
 	header.version = version
@@ -476,4 +476,3 @@ func (pa *PageAccessor) GetIndexKey(pageID uint32, index int) []byte {
 func (pa *PageAccessor) SearchChildIndex(pageID uint32, key []byte) (int, bool) {
 	return pa.SearchKey(pageID, key, false)
 }
-

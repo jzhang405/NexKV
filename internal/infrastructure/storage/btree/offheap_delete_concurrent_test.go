@@ -36,7 +36,7 @@ func TestDelete_OffHeap_ConcurrentDelete(t *testing.T) {
 	}
 
 	// 多 goroutine 并发删除不同的 key（不重叠的范围）
-	const goroutines = 5  // 减少 goroutine 数量
+	const goroutines = 5          // 减少 goroutine 数量
 	const deletePerGoroutine = 40 // 5 × 40 = 200
 
 	var wg sync.WaitGroup
@@ -112,9 +112,10 @@ func TestDelete_OffHeap_ConcurrentDeleteSameKey(t *testing.T) {
 			<-start
 
 			err := tree.Delete(ctx, key)
-			if err == nil {
+			switch err {
+			case nil:
 				successCount.Add(1)
-			} else if err == ErrKeyNotFound {
+			case ErrKeyNotFound:
 				notFoundCount.Add(1)
 			}
 		}()

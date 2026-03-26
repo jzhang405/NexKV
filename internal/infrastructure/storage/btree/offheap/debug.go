@@ -14,7 +14,7 @@ import (
 var btreetDebugEnabled = os.Getenv("OFFHEAP_DEBUG") == "1"
 
 // DebugPrintf 条件调试输出
-func DebugPrintf(format string, args ...interface{}) {
+func DebugPrintf(format string, args ...any) {
 	if btreetDebugEnabled {
 		fmt.Printf(format, args...)
 	}

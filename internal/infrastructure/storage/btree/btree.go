@@ -453,7 +453,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 				runner.Run(context.Background(), nil)
 				// 等待任务完成
 				if task, ok := item.(interface {
-					Wait(context.Context) (interface{}, error)
+					Wait(context.Context) (any, error)
 				}); ok {
 					_, _ = task.Wait(context.Background())
 				}
@@ -486,7 +486,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 				runner.Run(context.Background(), nil)
 				// 等待任务完成
 				if task, ok := item.(interface {
-					Wait(context.Context) (interface{}, error)
+					Wait(context.Context) (any, error)
 				}); ok {
 					_, _ = task.Wait(context.Background())
 				}

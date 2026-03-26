@@ -239,9 +239,9 @@ func (e *EpochBasedFreeList) Add(pageID model.PageID) {
 	stack := debug.Stack()
 	// 提取关键调用栈信息
 	caller := "<unknown>"
-	stackStr := string(stack)
-	for _, line := range strings.Split(stackStr, "\n") {
-		if strings.Contains(line, "handleSplitOffHeapSync") || strings.Contains(line, "splitInternal") {
+	lines := strings.Split(string(stack), "\n")
+	for i := range len(lines) {
+		if strings.Contains(lines[i], "handleSplitOffHeapSync") || strings.Contains(lines[i], "splitInternal") {
 			caller = "split"
 			break
 		}

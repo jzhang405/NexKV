@@ -268,7 +268,7 @@ func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
 	// 释放 3 个 epoch 之前的页面（currentEpoch - 3）- 增加延迟到 3 个 epoch
 	// 第一步：将 N-2 的页面加入延迟释放列表
 	epochToDelayed := e.currentEpoch - 2
-	if epochToDelayed >= 0 {
+	if e.currentEpoch >= 2 {
 		pagesToDelayed := e.pending[epochToDelayed]
 		delete(e.pending, epochToDelayed)
 
@@ -280,7 +280,7 @@ func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
 
 	// 第二步：将 N-3 的页面从延迟释放列表移到可用列表
 	epochToFree := e.currentEpoch - 3
-	if epochToFree >= 0 {
+	if e.currentEpoch >= 3 {
 		pagesToFree := e.pending[epochToFree]
 		delete(e.pending, epochToFree)
 

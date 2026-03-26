@@ -816,3 +816,90 @@ func (a *OffHeapAdapter) GetStats() offheap.Stats {
 func (a *OffHeapAdapter) IsLeaf(pageID model.PageID) bool {
 	return a.pa.IsLeaf(uint32(pageID))
 }
+
+// DeleteFromLeafPage 从 Off-Heap 叶子页面删除指定 key
+// 返回新的页面 ID（原页面保持不变，遵循 COW 语义）
+func (a *OffHeapAdapter) DeleteFromLeafPage(
+	pageID model.PageID,
+	key []byte,
+) (model.PageID, error) {
+	// 1. 搜索 key 在页面中的位置
+	idx, found := a.pa.SearchKey(uint32(pageID), key, true)
+	if !found {
+		return pageID, ErrKeyNotFound
+	}
+
+	// 2. 收集剩余的 KV 对（跳过被删除的 key）
+	keys, values := a.pa.CollectKVExcept(uint32(pageID), idx)
+
+	// 3. 分配新页面
+	newPageID, err := a.pm.Alloc()
+	if err != nil {
+		return 0, fmt.Errorf("alloc new page for delete: %w", err)
+	}
+
+	// 4. 物化新页面（只包含剩余的 KV 对）
+	_, err = a.materializer.MaterializePageFromBytes(newPageID, keys, values)
+	if err != nil {
+		a.pm.Free(newPageID)
+		return 0, fmt.Errorf("materialize page after delete: %w", err)
+	}
+
+	return model.PageID(newPageID), nil
+}
+
+// UpdateChildIndex 更新索引节点中指定位置的 child 指针
+// 用于 Delete 操作后更新父节点指向新子页面
+// 返回：新的父页面 ID
+func (a *OffHeapAdapter) UpdateChildIndex(
+	parentPageID model.PageID,
+	childIndex int,
+	newChildPageID model.PageID,
+) (model.PageID, error) {
+	count := a.pa.GetCount(uint32(parentPageID))
+
+	// 收集所有 keys 和 children
+	keys := make([][]byte, 0, count)
+	children := make([]uint32, 0, count+1)
+
+	for i := 0; i < int(count); i++ {
+		keyOff, keyLen, child := a.pa.GetIndexEntryOffset(uint32(parentPageID), i)
+		k := a.pa.GetKey(uint32(parentPageID), keyOff, keyLen)
+
+		// 复制 key
+		kCopy := make([]byte, len(k))
+		copy(kCopy, k)
+		keys = append(keys, kCopy)
+
+		// 更新 child 指针（如果是指定位置）
+		if i == childIndex {
+			children = append(children, uint32(newChildPageID))
+		} else {
+			children = append(children, child)
+		}
+	}
+
+	// 添加 extraChild（N+1 child）
+	extraChild := a.pa.GetChild(uint32(parentPageID), int(count))
+	if childIndex == int(count) {
+		// 更新 extraChild
+		children = append(children, uint32(newChildPageID))
+	} else {
+		children = append(children, extraChild)
+	}
+
+	// 分配新页面
+	newParentPageID, err := a.pm.Alloc()
+	if err != nil {
+		return 0, fmt.Errorf("alloc new parent page: %w", err)
+	}
+
+	// 物化新父页面
+	_, err = a.materializer.MaterializeIndexPageFromBytes(uint32(newParentPageID), keys, children)
+	if err != nil {
+		a.pm.Free(newParentPageID)
+		return 0, fmt.Errorf("materialize parent page: %w", err)
+	}
+
+	return model.PageID(newParentPageID), nil
+}

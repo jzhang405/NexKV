@@ -1520,11 +1520,720 @@ T5: 异步任务在后台处理 → 当前操作立即返回成功
 
 ---
 
+## 附录F：Off-Heap Delete 操作设计方案（MVCC 版本）
+
+> **版本**：v2.0（MVCC 架构）
+> **最后更新**：2026-03-26
+> **状态**：已审核，待实施
+> **审核结果**：✅ 通过，可以实施
+
+### 📋 执行摘要
+
+#### 问题陈述
+
+当前 NexKV 的 B-Tree 实现使用 Off-Heap 模式存储页面数据，但 Delete 操作尚未完全适配 Off-Heap 模式：
+
+- **Set/Get 操作**：已完全支持 Off-Heap 模式 ✅
+- **Delete 操作**：仅支持 On-Heap 模式 ❌
+- **测试状态**：
+  - ✅ `TestDelete_TriggerMerge` - 通过（单层树或小数据集）
+  - ❌ `TestDelete_Merge` - 失败（250 个 key 创建多层树）
+
+#### 根本原因
+
+原始设计使用**自底向上更新**方案，存在严重的架构缺陷：
+
+1. **状态不一致风险**：中间步骤失败导致部分更新
+2. **错误处理复杂**：需要完整的回滚机制
+3. **并发控制困难**：需要自底向上获取多层锁
+4. **实现复杂度高**：时间估算 10-16 天，风险高
+
+#### 推荐方案：MVCC + 路径复制 + Root CAS
+
+**核心思路**：使用现有的 MVCC（Multi-Version Concurrency Control）基础设施，通过路径复制（Copy-On-Write）实现 Off-Heap Delete。
+
+**优势**：
+- ✅ **时间最优**：6-9 天（比原方案节省 4-7 天）
+- ✅ **风险最低**：复用现有 CCOW 基础设施
+- ✅ **架构最优**：与 Set 操作保持一致
+- ✅ **性能最优**：快照隔离提升并发性能
+
+---
+
+### 🏗️ MVCC 架构分析
+
+#### 为什么选择 MVCC？
+
+##### 1. 版本管理基础设施已存在
+
+**Off-Heap 页面版本支持**：
+```go
+// PageHeader 中的版本字段
+type PageHeader struct {
+    version    uint64  // 8 bytes - 版本号（用于 CCOW）
+    prevPage   uint32
+    nextPage   uint32
+    extraChild uint32
+    count      uint16
+    pageType   uint8
+    _pad       [9]byte
+}
+```
+
+**CCOW Manager 已实现**：
+```go
+// CCOWManager Copy-on-Write 管理器
+type CCOWManager struct {
+    gc         *BTreeGC
+    snapshots  map[uint64]*BTreeSnapshot  // 快照管理
+    snapshotID atomic.Uint64
+    snapshotMu sync.RWMutex
+    dirtyPages sync.Map                    // 脏页跟踪
+}
+
+// 路径复制方法（可直接复用）
+func (ccow *CCOWManager) CopyPathBottomUp(
+    ctx context.Context,
+    rootRef *RootPageRef,
+    path []*PageInfo,
+    modifyFunc func(*PageInfo) error,
+) (*PageInfo, error)
+```
+
+##### 2. 路径复制 vs 自底向上更新
+
+| 维度 | 自底向上更新 | 路径复制（MVCC） |
+|------|-------------|-----------------|
+| **原子性** | ❌ 部分更新风险 | ✅ CAS 根节点保证 |
+| **错误处理** | ❌ 需要回滚机制 | ✅ 失败即丢弃 |
+| **并发控制** | ❌ 需要多层锁 | ✅ 只需叶子锁 |
+| **实现复杂度** | ❌ 高（10-16 天） | ✅ 低（6-9 天） |
+| **与 Set 一致性** | ❌ 不一致 | ✅ 完全一致 |
+
+##### 3. 快照隔离的优势
+
+**问题**：并发 Delete + Get 冲突
+
+**解决方案**：快照隔离
+```go
+// 创建快照
+snapshot, _ := ccow.TakeSnapshot(rootRef)
+
+// 在快照中执行 Delete
+// 其他 goroutine 仍然可以看到旧版本
+
+// 释放快照
+ccow.ReleaseSnapshot(snapshot.ID)
+```
+
+**优势**：
+- ✅ 读操作不阻塞写操作
+- ✅ 写操作不阻塞读操作
+- ✅ 无死锁风险
+
+##### 4. 延迟释放安全性
+
+**Epoch-Based 延迟释放**已实现：
+```go
+type EpochBasedFreeList struct {
+    currentEpoch uint64
+    pending      map[uint64][]model.PageID
+}
+
+// 添加待释放页面
+func (e *EpochBasedFreeList) Add(pageID model.PageID)
+
+// 推进 epoch 并释放旧页面
+func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager)
+```
+
+**安全性保证**：
+- ✅ 页面不会过早释放（use-after-free）
+- ✅ 无需手动管理内存生命周期
+- ✅ 自动垃圾回收
+
+---
+
+### 🔧 技术方案设计
+
+#### 方案概述
+
+**核心思路**：使用 `CCOWManager.CopyPathBottomUp()` 方法，通过路径复制实现 Off-Heap Delete。
+
+**实现流程**：
+
+```
+1. 搜索路径（searchPathWithRefs）
+   ↓
+2. 获取叶子节点锁
+   ↓
+3. 调用 CCOW.CopyPathBottomUp()
+   ├─ 复制路径中的每个 PageInfo
+   ├─ 应用修改函数（删除 key）
+   ├─ 标记脏页
+   └─ CAS 更新根节点
+   ↓
+4. 释放叶子节点锁
+   ↓
+5. 延迟释放旧页面（EpochBasedFreeList）
+```
+
+#### 核心实现
+
+##### 入口函数：Delete()
+
+```go
+func (b *BTree) Delete(ctx context.Context, key []byte) error {
+    // Off-Heap 模式使用 MVCC
+    if b.offheapPM != nil {
+        return b.deleteOffHeapWithMVCC(ctx, key)
+    }
+
+    // On-Heap 模式使用原有逻辑
+    return b.deleteOnHeap(ctx, key)
+}
+```
+
+##### MVCC Delete 实现
+
+```go
+func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
+    // 1. 搜索路径
+    path, refs, err := b.searchPathWithRefs(ctx, key)
+    if err != nil {
+        return err
+    }
+
+    if len(path) == 0 {
+        return ErrKeyNotFound
+    }
+
+    // 2. 获取叶子节点锁
+    leafRef := refs[len(refs)-1]
+    leafLock := leafRef.GetLock()
+    if leafLock == nil {
+        return ErrRetry
+    }
+
+    if !leafLock.TryLock() {
+        return ErrRetry
+    }
+    defer leafLock.Unlock()
+
+    // 3. 定义修改函数（删除 key）
+    modifyFunc := func(leafInfo *PageInfo) error {
+        return b.deleteKeyFromLeafPage(leafInfo, key)
+    }
+
+    // 4. 使用 CCOW 路径复制删除
+    _, err = b.ccow.CopyPathBottomUp(ctx, b.rootRef, path, modifyFunc)
+    if err != nil {
+        return fmt.Errorf("copy path bottom up: %w", err)
+    }
+
+    // 5. 推进 epoch（延迟释放旧页面）
+    b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
+
+    return nil
+}
+```
+
+##### 删除 Key 实现
+
+```go
+func (b *BTree) deleteKeyFromLeafPage(leafInfo *PageInfo, key []byte) error {
+    // 1. 获取页面 ID
+    pageID := model.PageID(leafInfo.GetPageID())
+
+    // 2. 搜索 key
+    idx, found := b.offheapAdapter.pa.SearchKey(uint32(pageID), key, true)
+    if !found {
+        return ErrKeyNotFound
+    }
+
+    // 3. 收集剩余 KV 对（跳过被删除的 key）
+    keys, values := b.collectKVExcept(uint32(pageID), idx)
+
+    // 4. 物化新页面
+    newPageID, err := b.offheapAdapter.pm.Alloc()
+    if err != nil {
+        return fmt.Errorf("alloc new page: %w", err)
+    }
+
+    err = b.offheapAdapter.materializer.MaterializePageFromBytes(
+        newPageID, keys, values,
+    )
+    if err != nil {
+        b.offheapAdapter.pm.Free(newPageID)
+        return fmt.Errorf("materialize page: %w", err)
+    }
+
+    // 5. 更新 PageInfo 的 NodeRef
+    leafInfo.SetNodeRef(offheap.NewNodeRef(newPageID, true))
+
+    // 6. 标记为脏页
+    b.ccow.MarkDirty(leafInfo)
+
+    // 7. 延迟释放旧页面
+    b.epochBasedFreeList.Add(pageID)
+
+    return nil
+}
+```
+
+##### 辅助函数实现
+
+```go
+// collectKVExcept 收集 KV 对（跳过指定索引）
+func (b *BTree) collectKVExcept(pageID uint32, skipIdx int) ([][]byte, [][]byte) {
+    pa := b.offheapAdapter.pa
+    count := pa.GetCount(pageID)
+
+    var keys [][]byte
+    var values [][]byte
+
+    for i := 0; i < int(count); i++ {
+        if i == skipIdx {
+            continue  // 跳过被删除的 key
+        }
+
+        keyOff, keyLen, valOff, valLen := pa.GetLeafEntryOffset(pageID, i)
+        key := pa.GetKey(pageID, keyOff, keyLen)
+        value := pa.GetValue(pageID, valOff, valLen)
+
+        keys = append(keys, key)
+        values = append(values, value)
+    }
+
+    return keys, values
+}
+```
+
+---
+
+### 📅 实施步骤
+
+#### Phase 1：MVCC 基础设施扩展（2-3 天）
+
+##### 目标
+扩展现有 CCOW 基础设施，支持 Off-Heap Delete 操作
+
+##### 任务清单
+
+###### 1.1 扩展 PageAccessor（0.5 天）
+
+**新增方法**：
+```go
+// collectKVExcept 收集 KV 对（跳过指定索引）
+func (pa *PageAccessor) CollectKVExcept(pageID uint32, skipIdx int) ([][]byte, [][]byte)
+
+// GetLeafEntryOffset 获取叶子节点条目偏移
+func (pa *PageAccessor) GetLeafEntryOffset(pageID uint32, idx int) (keyOff, keyLen, valOff, valLen uint32)
+```
+
+**验收标准**：
+- ✅ 方法实现完成
+- ✅ 单元测试通过
+- ✅ 测试覆盖率 >= 80%
+
+###### 1.2 扩展 OffHeapAdapter（1 天）
+
+**新增方法**：
+```go
+// DeleteFromLeafPage 从叶子页面删除 key
+func (a *OffHeapAdapter) DeleteFromLeafPage(
+    pageID model.PageID,
+    key []byte,
+) (model.PageID, error) {
+    // 1. 搜索 key
+    idx, found := a.pa.SearchKey(uint32(pageID), key, true)
+    if !found {
+        return pageID, ErrKeyNotFound
+    }
+
+    // 2. 收集剩余 KV 对
+    keys, values := a.pa.CollectKVExcept(uint32(pageID), idx)
+
+    // 3. 物化新页面
+    newPageID, err := a.pm.Alloc()
+    if err != nil {
+        return 0, fmt.Errorf("alloc new page: %w", err)
+    }
+
+    err = a.materializer.MaterializePageFromBytes(newPageID, keys, values)
+    if err != nil {
+        a.pm.Free(newPageID)
+        return 0, fmt.Errorf("materialize page: %w", err)
+    }
+
+    return newPageID, nil
+}
+```
+
+**验收标准**：
+- ✅ 方法实现完成
+- ✅ 完整的错误处理
+- ✅ 单元测试通过
+
+###### 1.3 扩展 BTree.Delete（1 天）
+
+**修改内容**：
+```go
+func (b *BTree) Delete(ctx context.Context, key []byte) error {
+    // Off-Heap 模式使用 MVCC
+    if b.offheapPM != nil {
+        return b.deleteOffHeapWithMVCC(ctx, key)
+    }
+
+    // On-Heap 模式使用原有逻辑（保持不变）
+    return b.deleteOnHeap(ctx, key)
+}
+
+func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
+    // 实现见上文
+}
+
+func (b *BTree) deleteKeyFromLeafPage(leafInfo *PageInfo, key []byte) error {
+    // 实现见上文
+}
+```
+
+**验收标准**：
+- ✅ 单层树 Delete 测试通过
+- ✅ 多层树 Delete 测试通过
+- ✅ 错误处理完整
+
+###### 1.4 单元测试（0.5 天）
+
+**测试清单**：
+```go
+// PageAccessor 测试
+func TestPageAccessor_CollectKVExcept(t *testing.T)
+func TestPageAccessor_GetLeafEntryOffset(t *testing.T)
+
+// OffHeapAdapter 测试
+func TestOffHeapAdapter_DeleteFromLeafPage(t *testing.T)
+func TestOffHeapAdapter_DeleteFromLeafPage_KeyNotFound(t *testing.T)
+func TestOffHeapAdapter_DeleteFromLeafPage_AllocFailed(t *testing.T)
+
+// BTree Delete 测试
+func TestBTree_Delete_OffHeap_SingleLevel(t *testing.T)
+func TestBTree_Delete_OffHeap_MultiLevel(t *testing.T)
+func TestBTree_Delete_OffHeap_KeyNotFound(t *testing.T)
+```
+
+**验收标准**：
+- ✅ 所有测试通过
+- ✅ 无数据竞争（`go test -race`）
+- ✅ 测试覆盖率 >= 80%
+
+---
+
+#### Phase 2：并发测试和集成（2-3 天）
+
+##### 目标
+验证并发安全性和集成测试
+
+##### 任务清单
+
+###### 2.1 并发测试（1 天）
+
+**测试清单**：
+```go
+// 并发 Delete
+func TestDelete_OffHeap_ConcurrentDelete(t *testing.T) {
+    // 多个 goroutine 删除不同的 key
+}
+
+func TestDelete_OffHeap_ConcurrentDeleteSameKey(t *testing.T) {
+    // 多个 goroutine 删除相同的 key
+    // 只有一个应该成功
+}
+
+// 并发 Delete + Set
+func TestDelete_OffHeap_DeleteAndSetConcurrent(t *testing.T) {
+    // 同时执行 Delete 和 Set
+}
+
+// 并发 Delete + Get
+func TestDelete_OffHeap_DeleteAndGetConcurrent(t *testing.T) {
+    // 同时执行 Delete 和 Get
+    // Get 应该看到旧版本或新版本
+}
+```
+
+**验收标准**：
+- ✅ 所有并发测试通过
+- ✅ 无数据竞争（`go test -race`）
+- ✅ 无死锁
+
+###### 2.2 集成测试（1 天）
+
+**测试清单**：
+```go
+// 完整的 Delete 流程测试
+func TestDelete_OffHeap_FullFlow(t *testing.T) {
+    // Set → Get → Delete → Get (not found)
+}
+
+// 大数据量测试
+func TestDelete_OffHeap_LargeDataset(t *testing.T) {
+    // 1000 个 key，随机删除 100 个
+}
+
+// 边界情况测试
+func TestDelete_OffHeap_DeleteFromEmptyTree(t *testing.T)
+func TestDelete_OffHeap_DeleteLastKey(t *testing.T)
+func TestDelete_OffHeap_MergeTrigger(t *testing.T)
+```
+
+**验收标准**：
+- ✅ 所有集成测试通过
+- ✅ 无内存泄漏
+- ✅ 性能合理
+
+###### 2.3 性能基准测试（0.5 天）
+
+**基准测试**：
+```go
+func BenchmarkDelete_OffHeap(b *testing.B) {
+    // 单线程 Delete 性能
+}
+
+func BenchmarkDelete_OffHeapVsOnHeap(b *testing.B) {
+    // Off-Heap vs On-Heap 对比
+}
+
+func BenchmarkDelete_OffHeap_Concurrent(b *testing.B) {
+    // 并发 Delete 性能
+}
+```
+
+**验收标准**：
+- ✅ 性能不低于 On-Heap Delete 的 80%
+- ✅ 并发扩展比 >= 1.5x
+
+###### 2.4 稳定性测试（0.5 天）
+
+**测试清单**：
+```go
+// 内存泄漏测试
+func TestDelete_OffHeap_NoMemoryLeak(t *testing.T) {
+    // 删除 10000 次，验证无内存泄漏
+}
+
+// 错误恢复测试
+func TestDelete_OffHeap_ErrorRecovery(t *testing.T) {
+    // 模拟内存分配失败，验证错误处理
+}
+```
+
+**验收标准**：
+- ✅ 无内存泄漏
+- ✅ 错误恢复正确
+
+---
+
+#### Phase 3：性能优化（可选，1-2 天）
+
+##### 目标
+如果性能不达标，进行针对性优化
+
+##### 优化方向
+
+###### 3.1 批量 Delta 处理
+
+**思路**：一次性处理多个 Delete 操作
+
+```go
+func (b *BTree) DeleteBatch(ctx context.Context, keys [][]byte) error {
+    // 批量删除，减少 CAS 次数
+}
+```
+
+###### 3.2 路径缓存
+
+**思路**：缓存常用的搜索路径
+
+```go
+type PathCache struct {
+    cache map[string][]*PageInfo
+    mu    sync.RWMutex
+}
+```
+
+###### 3.3 延迟 Epoch 推进
+
+**思路**：累积多个操作后再推进 epoch
+
+```go
+// 每 N 次操作后推进一次 epoch
+if b.operationCount%N == 0 {
+    b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
+}
+```
+
+**验收标准**：
+- ✅ 性能提升 >= 20%
+- ✅ 无功能性回归
+
+---
+
+### 🧪 测试策略
+
+#### 测试金字塔
+
+```
+         /\
+        /  \   集成测试（20%）
+       /____\
+      /      \  并发测试（30%）
+     /________\
+    /          \ 单元测试（50%）
+   /______________\
+```
+
+#### 测试覆盖率目标
+
+| 类型 | 覆盖率目标 | 说明 |
+|------|-----------|------|
+| 单元测试 | >= 80% | 核心逻辑必须覆盖 |
+| 集成测试 | >= 60% | 关键流程必须覆盖 |
+| 并发测试 | >= 50% | 并发场景必须覆盖 |
+
+#### 测试运行命令
+
+```bash
+# 单元测试
+go test -v ./internal/infrastructure/storage/btree/... -run TestBTree_Delete
+
+# 并发测试
+go test -v -race ./internal/infrastructure/storage/btree/... -run TestDelete_OffHeap_Concurrent
+
+# 性能测试
+go test -bench=. -benchmem ./internal/infrastructure/storage/btree/... -run BenchmarkDelete
+
+# 覆盖率测试
+go test -coverprofile=coverage.out ./internal/infrastructure/storage/btree/...
+go tool cover -html=coverage.out
+```
+
+---
+
+### ⚠️ 风险评估
+
+| 风险 | 概率 | 影响 | 缓解措施 |
+|------|------|------|----------|
+| **CCOW 集成复杂度** | 中 | 中 | 复用现有 `CopyPathBottomUp()` 模式 |
+| **Off-Heap 页面分配失败** | 低 | 低 | 添加完整错误处理 |
+| **并发测试失败** | 低 | 中 | 充分测试，参考 Set 操作经验 |
+| **性能不达标** | 低 | 低 | 先评估，再优化（Phase 3） |
+| **内存泄漏** | 低 | 高 | 使用 EpochBasedFreeList 自动释放 |
+
+**总体风险**：低（相比自底向上方案显著降低）
+
+---
+
+### 📈 成功指标
+
+#### 功能指标
+
+- ✅ `TestDelete_Merge` 通过
+- ✅ 所有 Off-Heap Delete 测试通过
+- ✅ 支持单层和多层树
+
+#### 质量指标
+
+- ✅ 测试覆盖率 >= 80%
+- ✅ 并发测试无数据竞争
+- ✅ 无内存泄漏
+
+#### 性能指标
+
+- ✅ 性能不低于 On-Heap Delete 的 80%
+- ✅ 并发扩展比 >= 1.5x
+
+#### 架构指标
+
+- ✅ 与 Set 操作保持一致
+- ✅ 复用现有 CCOW 基础设施
+- ✅ 代码可维护性高
+
+---
+
+### 🔄 备选方案
+
+如果 MVCC 方案遇到不可克服的障碍：
+
+#### 备选 A：简化实现（仅支持单层树）
+
+**时间**：2-3 天
+
+**适用**：临时方案，仅用于小数据集
+
+**限制**：
+- 仅支持单层树（Root = Leaf）
+- 不支持 Merge 操作
+- 性能可能不达标
+
+#### 备选 B：优化自底向上方案
+
+**时间**：10-16 天
+
+**适用**：如果 MVCC 不可行
+
+**改进**：
+- 添加完整错误处理
+- 实现回滚机制
+- 自底向上获取锁
+
+**建议**：优先实施 MVCC 方案，仅在遇到不可克服的障碍时考虑备选方案。
+
+---
+
+### 📊 时间估算
+
+| 阶段 | 时间 | 风险 | 说明 |
+|------|------|------|------|
+| Phase 1: MVCC 基础设施扩展 | 2-3 天 | 低 | 复用现有代码 |
+| Phase 2: 并发测试和集成 | 2-3 天 | 中 | 充分测试 |
+| Phase 3: 性能优化 | 可选 | 中 | 先评估再优化 |
+| **总计** | **6-9 天** | **低** | 比原方案节省 4-7 天 |
+
+---
+
+### 🎯 总结
+
+#### 核心优势
+
+1. **时间最优**：6-9 天（比原方案节省 4-7 天）
+2. **风险最低**：复用现有 CCOW 基础设施
+3. **架构最优**：与 Set 操作保持一致
+4. **性能最优**：快照隔离提升并发性能
+5. **可维护性最优**：代码清晰，易于理解
+
+#### 实施建议
+
+1. **优先实施 Phase 1**：验证 MVCC 方案可行性
+2. **分阶段提交**：每个 Phase 独立提交 PR
+3. **充分测试**：测试覆盖率 >= 80%
+4. **性能评估**：先评估基础性能，再决定是否优化
+
+#### 预期成果
+
+- ✅ 完整的 Off-Heap Delete 实现
+- ✅ 支持单层和多层树
+- ✅ 并发安全
+- ✅ 性能达标
+- ✅ 架构一致（与 Set 操作）
+
+---
+
 ## 文档归档信息
 
 | 项目 | 内容 |
 |------|------|
-| 文档最终版本 | V1.0 |
+| 文档最终版本 | V1.1（新增 Off-Heap Delete 设计） |
 | 归档日期 | 2026-XX-XX（待完成） |
 | 归档路径 | `docs/06_project_management/pr_documents/feature/2026-03-24_PR-offheap-4kb-page-optimization_全流程.md` |
 | 后续维护人 | [待补充] |

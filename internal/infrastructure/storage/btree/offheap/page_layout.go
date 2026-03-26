@@ -478,3 +478,29 @@ func (pa *PageAccessor) GetIndexKey(pageID uint32, index int) []byte {
 func (pa *PageAccessor) SearchChildIndex(pageID uint32, key []byte) (int, bool) {
 	return pa.SearchKey(pageID, key, false)
 }
+
+// CollectKVExcept 收集叶子节点的 KV 对（跳过指定索引）
+// 用于 Off-Heap Delete 操作
+// 返回：keys 切片, values 切片
+func (pa *PageAccessor) CollectKVExcept(pageID uint32, skipIdx int) ([][]byte, [][]byte) {
+	header := pa.GetHeader(pageID)
+	count := int(header.count)
+
+	var keys [][]byte
+	var values [][]byte
+
+	for i := 0; i < count; i++ {
+		if i == skipIdx {
+			continue // 跳过被删除的 key
+		}
+
+		keyOff, keyLen, valOff, valLen := pa.GetLeafEntryOffset(pageID, i)
+		key := pa.GetKey(pageID, keyOff, keyLen)
+		value := pa.GetValue(pageID, valOff, valLen)
+
+		keys = append(keys, key)
+		values = append(values, value)
+	}
+
+	return keys, values
+}

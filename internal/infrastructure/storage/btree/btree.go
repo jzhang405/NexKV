@@ -730,13 +730,18 @@ func (b *BTree) setDirect(ctx context.Context, key, value []byte) error {
 	}
 }
 
-// Delete removes a key (not implemented).
+// Delete removes a key.
 func (b *BTree) Delete(ctx context.Context, key []byte) error {
 	if b.closed {
 		return ErrClosed
 	}
 
-	// 实现 Delete 操作，集成 mergeLeaf
+	// Off-Heap 模式：使用 Leaf-Level Locking + MVCC
+	if b.offheapPM != nil {
+		return b.deleteOffHeapWithMVCC(ctx, key)
+	}
+
+	// On-Heap 模式：原有实现
 	const maxRetries = 3
 
 	for attempt := range maxRetries {
@@ -804,6 +809,227 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 		// 7. 持久化
 		if b.chunkMgr != nil {
 			if err := b.persistRoot(newRootInfo); err != nil {
+				return fmt.Errorf("persist root: %w", err)
+			}
+		}
+
+		return nil
+	}
+
+	return ErrRetry
+}
+
+// deleteOffHeapWithMVCC 使用 MVCC + Leaf-Level Locking 实现 Off-Heap Delete
+// 参考 Set 操作的实现模式（leaf_lock_set.go）
+func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
+	const maxRetries = 3
+
+	for attempt := range maxRetries {
+		// 1. 检查上下文取消
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// 2. 查找叶子节点和路径（只读，不克隆）
+		leafRef, path, err := b.findLeafPageRef(ctx, key)
+		if err != nil {
+			return fmt.Errorf("find leaf ref: %w", err)
+		}
+
+		if len(path) == 0 {
+			return fmt.Errorf("empty path")
+		}
+
+		// 3. 获取叶子锁（懒加载，每个 PageRef 有独立的锁）
+		pageLock := leafRef.GetLock()
+		if pageLock == nil {
+			return fmt.Errorf("page lock is nil")
+		}
+
+		// 使用 TryLock 快速失败（避免死锁）
+		if !pageLock.TryLock() {
+			if attempt < maxRetries-1 {
+				runtime.Gosched()
+				continue
+			}
+			return ErrRetry
+		}
+		defer pageLock.Unlock()
+
+		// 4. 获取当前 PageInfo（在锁保护下）
+		oldInfo := leafRef.GetPageInfo()
+		if oldInfo == nil {
+			return fmt.Errorf("leaf page info is nil")
+		}
+
+		// 5. 验证页面已加载（Off-Heap 模式）
+		if !oldInfo.IsPageLoaded() {
+			return fmt.Errorf("leaf page not loaded")
+		}
+
+		// 6. Off-Heap 删除（使用 COW 语义）
+		oldPageID := model.PageID(oldInfo.GetPageID())
+		newPageID, err := b.offheapAdapter.DeleteFromLeafPage(oldPageID, key)
+		if err != nil {
+			if errors.Is(err, ErrKeyNotFound) {
+				return ErrKeyNotFound
+			}
+			return fmt.Errorf("offheap delete: %w", err)
+		}
+
+		// 7. 创建新的 PageInfo（Off-Heap 模式）
+		newInfo := NewPageInfo()
+		newInfo.SetNodeRef(offheap.NewNodeRef(uint32(newPageID), true)) // true = isLeaf
+		// 继承其他属性
+		newInfo.SetPos(oldInfo.GetPos())
+		if oldInfo.IsDirty() {
+			newInfo.MarkDirty()
+		}
+
+		// 8. Leaf-Level CAS（在锁保护下，几乎不会失败）
+		if !leafRef.ReplacePage(oldInfo, newInfo) {
+			// CAS 失败（极少发生），返回重试
+			if attempt < maxRetries-1 {
+				runtime.Gosched()
+				continue
+			}
+			return ErrRetry
+		}
+
+		// 9. 如果 pageID 变化，需要更新 root 或父节点
+		if newPageID != oldPageID {
+			// 检查是否是根节点（单层树）
+			if len(path) == 1 && leafRef == b.rootRef.PageRef {
+				// 特殊处理：根节点的 delete 场景
+				// 需要更新 rootRef 而不是只更新 PageRefCache
+				oldRootInfo := b.rootRef.pInfo.Load()
+				oldRootID := uint64(0)
+				if oldRootInfo != nil {
+					oldRootID = oldRootInfo.GetPageID()
+				}
+				if !b.rootRef.ReplacePage(oldRootID, newInfo) {
+					// CAS 失败，返回重试
+					if attempt < maxRetries-1 {
+						runtime.Gosched()
+						continue
+					}
+					return ErrRetry
+				}
+				// 更新 PageRefCache
+				b.pageRefCache.Delete(oldPageID)
+				b.pageRefCache.Update(newPageID, leafRef)
+			} else if len(path) >= 2 {
+				// 多层树：需要更新父节点的 child 指针
+				// 参考分裂操作的实现（leaf_lock_set.go:handleSplitOffHeapSync）
+
+				// 获取父节点的 PageInfo
+				parentInfo := path[len(path)-2]
+				if parentInfo == nil {
+					return fmt.Errorf("parent info is nil")
+				}
+
+				oldParentPageID := model.PageID(parentInfo.GetPageID())
+
+				// 检查父节点是否是根节点
+				currentRootInfo := b.rootRef.pInfo.Load()
+				parentRef := b.pageRefCache.GetOrCreate(oldParentPageID, false)
+				if currentRootInfo != nil && currentRootInfo.GetPageID() == uint64(oldParentPageID) {
+					// 父节点就是根节点，使用根的 PageRef
+					parentRef = b.rootRef.PageRef
+				}
+
+				// 获取父节点锁（自底向上加锁）
+				parentLock := parentRef.GetLock()
+				if parentLock == nil {
+					return fmt.Errorf("parent lock is nil")
+				}
+
+				if !parentLock.TryLock() {
+					// 锁获取失败，返回重试
+					if attempt < maxRetries-1 {
+						runtime.Gosched()
+						continue
+					}
+					return ErrRetry
+				}
+				defer parentLock.Unlock()
+
+				// 找到父节点中指向当前子节点的索引
+				// 通过二分查找找到 key 在父节点中的位置
+				childIndex := 0
+				count := b.offheapAdapter.pa.GetCount(uint32(oldParentPageID))
+				for i := 0; i < int(count); i++ {
+					keyOff, keyLen, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(oldParentPageID), i)
+					k := b.offheapAdapter.pa.GetKey(uint32(oldParentPageID), keyOff, keyLen)
+					// 如果找到匹配的 child 或者 key 大于当前 key，就找到了位置
+					if model.PageID(child) == oldPageID || bytes.Compare(k, key) > 0 {
+						childIndex = i
+						break
+					}
+					childIndex = i + 1
+				}
+
+				// 检查是否是 extraChild（N+1 child）
+				if childIndex == int(count) {
+					// extraChild 的情况
+					extraChild := b.offheapAdapter.pa.GetChild(uint32(oldParentPageID), int(count))
+					if model.PageID(extraChild) != oldPageID {
+						// 不是我们要找的 child，继续查找
+						// 这种情况不太可能发生，但为了安全起见
+						childIndex = -1
+					}
+				}
+
+				if childIndex < 0 {
+					// 没有找到对应的 child 指针，返回错误
+					return fmt.Errorf("child not found in parent page")
+				}
+
+				// 使用 UpdateChildIndex 更新父节点
+				newParentPageID, err := b.offheapAdapter.UpdateChildIndex(oldParentPageID, childIndex, newPageID)
+				if err != nil {
+					return fmt.Errorf("update parent child index: %w", err)
+				}
+
+				// 创建新的父节点 PageInfo
+				newParentInfo := NewPageInfo()
+				newParentInfo.SetNodeRef(offheap.NewNodeRef(uint32(newParentPageID), false))
+				newParentInfo.SetPos(parentInfo.GetPos())
+				if parentInfo.IsDirty() {
+					newParentInfo.MarkDirty()
+				}
+
+				// CAS 更新父节点
+				if !parentRef.ReplacePage(parentInfo, newParentInfo) {
+					// CAS 失败，返回重试
+					if attempt < maxRetries-1 {
+						runtime.Gosched()
+						continue
+					}
+					return ErrRetry
+				}
+
+				// 更新 PageRefCache
+				b.pageRefCache.Delete(oldParentPageID)
+				b.pageRefCache.Update(newParentPageID, parentRef)
+
+				// 延迟释放旧父页面
+				b.epochBasedFreeList.Add(oldParentPageID)
+			} else {
+				// 其他情况：更新 PageRefCache
+				b.pageRefCache.Delete(oldPageID)
+				b.pageRefCache.Update(newPageID, leafRef)
+			}
+		}
+
+		// 10. 推进 epoch 释放旧页面
+		b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
+
+		// 11. 持久化（如果有 ChunkManager）
+		if b.chunkMgr != nil {
+			if err := b.persistRoot(newInfo); err != nil {
 				return fmt.Errorf("persist root: %w", err)
 			}
 		}

@@ -105,8 +105,6 @@ func (pm *PageManager) Alloc() (uint32, error) {
 	// 原子递增 nextPageID
 	pm.nextPageID.Add(1)
 	pm.used.Add(1)
-	// 调试日志：追踪页面分配
-	fmt.Printf("[ALLOC] pageID=%d\n", pageID)
 	return pageID, nil
 }
 

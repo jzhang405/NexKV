@@ -116,7 +116,7 @@ func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
 		// 叶子节点：扫描所有 entries，找到最小的 keyOff（KV 数据区的起点）
 		minKeyOff := uint32(PageSize)
 		for i := 0; i < int(header.count); i++ {
-			entryPtr := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(i)*uintptr(SizeofLeafEntry))
+			entryPtr := unsafe.Add(ptr, SizeofPageHeader+i*SizeofLeafEntry)
 			entry := (*LeafEntry)(entryPtr)
 			if entry.keyOff < minKeyOff {
 				minKeyOff = entry.keyOff
@@ -128,7 +128,7 @@ func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
 		// 索引节点：扫描所有 entries，找到最小的 keyOff（KV 数据区的起点）
 		minKeyOff := uint32(PageSize)
 		for i := 0; i < int(header.count); i++ {
-			entryPtr := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(i)*uintptr(SizeofIndexEntry))
+			entryPtr := unsafe.Add(ptr, SizeofPageHeader+i*SizeofIndexEntry)
 			entry := (*IndexEntry)(entryPtr)
 			if entry.keyOff < minKeyOff {
 				minKeyOff = entry.keyOff
@@ -192,7 +192,7 @@ func (pa *PageAccessor) GetIndexEntry(pageID uint32, index int) *IndexEntry {
 		panic(fmt.Sprintf("index %d out of range (count: %d)", index, header.count))
 	}
 
-	entryPtr := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofIndexEntry))
+	entryPtr := unsafe.Add(ptr, SizeofPageHeader+index*SizeofIndexEntry)
 	return (*IndexEntry)(entryPtr)
 }
 
@@ -204,21 +204,21 @@ func (pa *PageAccessor) GetLeafEntry(pageID uint32, index int) *LeafEntry {
 		panic(fmt.Sprintf("index %d out of range (count: %d)", index, header.count))
 	}
 
-	entryPtr := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofLeafEntry))
+	entryPtr := unsafe.Add(ptr, SizeofPageHeader+index*SizeofLeafEntry)
 	return (*LeafEntry)(entryPtr)
 }
 
 // GetKey 获取 key（返回 Go 切片，指向 mmap 内存）
 func (pa *PageAccessor) GetKey(pageID uint32, keyOff, keyLen uint32) []byte {
 	ptr := pa.pm.PageIDToPtr(pageID)
-	keyPtr := unsafe.Pointer(uintptr(ptr) + uintptr(keyOff))
+	keyPtr := unsafe.Add(ptr, keyOff)
 	return unsafe.Slice((*byte)(keyPtr), keyLen)
 }
 
 // GetValue 获取 value（返回 Go 切片，指向 mmap 内存）
 func (pa *PageAccessor) GetValue(pageID uint32, valOff, valLen uint32) []byte {
 	ptr := pa.pm.PageIDToPtr(pageID)
-	valPtr := unsafe.Pointer(uintptr(ptr) + uintptr(valOff))
+	valPtr := unsafe.Add(ptr, valOff)
 	return unsafe.Slice((*byte)(valPtr), valLen)
 }
 
@@ -276,8 +276,8 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 
 	// 移动现有 entries（如果需要）
 	if index < int(header.count) {
-		src := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofIndexEntry))
-		dst := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index+1)*uintptr(SizeofIndexEntry))
+		src := unsafe.Add(ptr, SizeofPageHeader+index*SizeofIndexEntry)
+		dst := unsafe.Add(ptr, SizeofPageHeader+(index+1)*SizeofIndexEntry)
 		count := int(header.count - uint16(index))
 		moveSlice := unsafe.Slice((*byte)(src), count*SizeofIndexEntry)
 		dstSlice := unsafe.Slice((*byte)(dst), len(moveSlice))
@@ -287,12 +287,12 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 	// 写入 key（从页面尾部开始分配）
 	keyOff := PageSize - uint32(*dataEnd) - keyLen
 	*dataEnd += uint16(keyLen)
-	keyPtr := unsafe.Pointer(uintptr(ptr) + uintptr(keyOff))
+	keyPtr := unsafe.Add(ptr, keyOff)
 	keySlice := unsafe.Slice((*byte)(keyPtr), keyLen)
 	copy(keySlice, key)
 
 	// 写入 entry
-	entryPtr := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofIndexEntry))
+	entryPtr := unsafe.Add(ptr, SizeofPageHeader+index*SizeofIndexEntry)
 	entry := (*IndexEntry)(entryPtr)
 	entry.keyOff = uint32(keyOff)
 	entry.keyLen = keyLen
@@ -318,8 +318,8 @@ func (pa *PageAccessor) InsertLeafEntry(pageID uint32, index int, key, value []b
 
 	// 移动现有 entries（如果需要）
 	if index < int(header.count) {
-		src := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofLeafEntry))
-		dst := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index+1)*uintptr(SizeofLeafEntry))
+		src := unsafe.Add(ptr, SizeofPageHeader+index*SizeofLeafEntry)
+		dst := unsafe.Add(ptr, SizeofPageHeader+(index+1)*SizeofLeafEntry)
 		count := int(header.count - uint16(index))
 		moveSlice := unsafe.Slice((*byte)(src), count*SizeofLeafEntry)
 		dstSlice := unsafe.Slice((*byte)(dst), len(moveSlice))
@@ -329,19 +329,19 @@ func (pa *PageAccessor) InsertLeafEntry(pageID uint32, index int, key, value []b
 	// 写入 value（从页面尾部开始分配）
 	valOff := PageSize - uint32(*dataEnd) - valLen
 	*dataEnd += uint16(valLen)
-	valPtr := unsafe.Pointer(uintptr(ptr) + uintptr(valOff))
+	valPtr := unsafe.Add(ptr, valOff)
 	valSlice := unsafe.Slice((*byte)(valPtr), valLen)
 	copy(valSlice, value)
 
 	// 写入 key（在 value 前面）
 	keyOff := valOff - keyLen
 	*dataEnd += uint16(keyLen)
-	keyPtr := unsafe.Pointer(uintptr(ptr) + uintptr(keyOff))
+	keyPtr := unsafe.Add(ptr, keyOff)
 	keySlice := unsafe.Slice((*byte)(keyPtr), keyLen)
 	copy(keySlice, key)
 
 	// 写入 entry
-	entryPtr := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofLeafEntry))
+	entryPtr := unsafe.Add(ptr, SizeofPageHeader+index*SizeofLeafEntry)
 	entry := (*LeafEntry)(entryPtr)
 	entry.keyOff = uint32(keyOff)
 	entry.keyLen = keyLen

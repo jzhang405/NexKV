@@ -142,7 +142,7 @@ func (pm *PageManager) PageIDToPtr(pageID uint32) unsafe.Pointer {
 		panic(fmt.Sprintf("pageID %d out of range (total: %d)", pageID, pm.total))
 	}
 	offset := uintptr(pageID) * PageSize
-	return unsafe.Pointer(uintptr(pm.base) + offset)
+	return unsafe.Add(pm.base, offset)
 }
 
 // Stats 返回 PageManager 统计信息

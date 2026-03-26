@@ -891,6 +891,7 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 		// 8. Leaf-Level CAS（在锁保护下，几乎不会失败）
 		if !leafRef.ReplacePage(oldInfo, newInfo) {
 			// CAS 失败（极少发生），返回重试
+			// 注意：newInfo 由 Go GC 自动管理，无需手动释放
 			if attempt < maxRetries-1 {
 				runtime.Gosched()
 				continue
@@ -905,10 +906,10 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 				// 特殊处理：根节点的 delete 场景
 				// 需要更新 rootRef 而不是只更新 PageRefCache
 				oldRootInfo := b.rootRef.pInfo.Load()
-				oldRootID := uint64(0)
-				if oldRootInfo != nil {
-					oldRootID = oldRootInfo.GetPageID()
+				if oldRootInfo == nil {
+					return fmt.Errorf("root info is nil during root update")
 				}
+				oldRootID := oldRootInfo.GetPageID()
 				if !b.rootRef.ReplacePage(oldRootID, newInfo) {
 					// CAS 失败，返回重试
 					if attempt < maxRetries-1 {
@@ -937,6 +938,9 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 				parentRef := b.pageRefCache.GetOrCreate(oldParentPageID, false)
 				if currentRootInfo != nil && currentRootInfo.GetPageID() == uint64(oldParentPageID) {
 					// 父节点就是根节点，使用根的 PageRef
+					if b.rootRef.PageRef == nil {
+						return fmt.Errorf("root PageRef is nil during parent update")
+					}
 					parentRef = b.rootRef.PageRef
 				}
 
@@ -1004,6 +1008,7 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 				// CAS 更新父节点
 				if !parentRef.ReplacePage(parentInfo, newParentInfo) {
 					// CAS 失败，返回重试
+					// 注意：newParentInfo 由 Go GC 自动管理，无需手动释放
 					if attempt < maxRetries-1 {
 						runtime.Gosched()
 						continue

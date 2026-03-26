@@ -198,6 +198,7 @@ func TestPageManager_OutOfMemory(t *testing.T) {
 		id, err := pm.Alloc()
 		require.NoError(t, err)
 		pageIDs = append(pageIDs, id)
+		_ = pageIDs // 使用 pageIDs 避免 lint 警告
 	}
 
 	// 第 5 次分配应该失败

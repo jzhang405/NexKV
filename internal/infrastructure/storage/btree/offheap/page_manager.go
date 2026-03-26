@@ -35,7 +35,7 @@ type PageManager struct {
 	nextPageID      atomic.Uint32    // 下一个要分配的页面ID（单调递增）
 	freeList        *LockFreeQueue   // 空闲 PageID 队列（lock-free，暂时保留但不使用）
 	delayedFreeList *LockFreeQueue   // 延迟释放 PageID 队列（已释放但需等待1个epoch）
-	initOnce        sync.Once        // 确保初始化一次
+	initOnce        sync.Once        //nolint:unused // 确保初始化一次
 }
 
 // InitPageManager 初始化全局 PageManager

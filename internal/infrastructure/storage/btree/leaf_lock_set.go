@@ -311,7 +311,7 @@ func (b *BTree) buildPersistPath(root, target *PageInfo) []*PageInfo {
 //	path - 搜索路径（用于向上传播分裂）
 //
 // 返回：error - 错误信息
-func (b *BTree) handleSplitSync(leafRef *PageRef, leafInfo *PageInfo, path []*PageInfo) error {
+func (b *BTree) handleSplitSync(leafRef *PageRef, leafInfo *PageInfo, path []*PageInfo) error { //nolint:unused
 	// 获取叶子页面（已在 setWithLeafLock 中 CAS 更新）
 	leafPage := leafInfo.GetLeafPage()
 	if leafPage == nil {
@@ -441,7 +441,7 @@ func (b *BTree) handleSplitSync(leafRef *PageRef, leafInfo *PageInfo, path []*Pa
 
 // splitRootSync 处理根节点分裂（同步）
 // 当叶子节点没有父节点时，创建新的内部节点作为根
-func (b *BTree) splitRootSync(leftLeafRef *PageRef, rightLeafInfo *PageInfo, splitKey []byte) error {
+func (b *BTree) splitRootSync(leftLeafRef *PageRef, rightLeafInfo *PageInfo, splitKey []byte) error { //nolint:unused
 	// 获取左叶子节点的 PageInfo
 	leftLeafInfo := leftLeafRef.GetPageInfo()
 	if leftLeafInfo == nil {
@@ -1739,7 +1739,7 @@ func (b *BTree) splitRootOffHeapSyncForInternal(
 	// 验证 CAS 后的根节点状态
 	currentRoot := b.rootRef.pInfo.Load()
 	if currentRoot == nil {
-		return fmt.Errorf("CAS successful but root is nil!")
+		return fmt.Errorf("CAS successful but root is nil")
 	}
 	currentRootID := currentRoot.GetPageID()
 	DebugPrintf("[ROOT_SPLIT] After CAS, root pageID=%d (expected %d)\n", currentRootID, newRootPageID)
@@ -1757,7 +1757,7 @@ func (b *BTree) splitRootOffHeapSyncForInternal(
 	// 最终验证：检查根节点的 Off-Heap 页面
 	finalRoot := b.rootRef.pInfo.Load()
 	if finalRoot == nil {
-		return fmt.Errorf("After all updates, root is nil!")
+		return fmt.Errorf("after all updates, root is nil")
 	}
 	finalRootID := finalRoot.GetPageID()
 	DebugPrintf("[ROOT_SPLIT] Final root pageID=%d (expected %d)\n", finalRootID, newRootPageID)

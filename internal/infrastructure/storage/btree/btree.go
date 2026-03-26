@@ -194,7 +194,7 @@ type BTree struct {
 	enableWAL bool // Enable WAL logging
 
 	// PageID management
-	nextPageID atomic.Uint64 // Next page ID to allocate (lock-free)
+	nextPageID atomic.Uint64 //nolint:unused // Next page ID to allocate (lock-free)
 
 	// Persistence coordination
 	writeMu sync.Mutex // Global write lock for persistence operations
@@ -947,7 +947,7 @@ func (b *BTree) insertFromWAL(key, value []byte) error {
 // allocatePageID allocates a new unique page ID.
 // This ensures that each newly created page has a unique identifier.
 // 无锁实现：使用 atomic.Uint64
-func (b *BTree) allocatePageID() model.PageID {
+func (b *BTree) allocatePageID() model.PageID { //nolint:unused
 	// 使用 atomic.Add(1) 原子操作：读取旧值、加1、返回新值
 	// 完全无锁，多个 goroutine 可以并发调用
 	return model.PageID(b.nextPageID.Add(1))
@@ -1652,7 +1652,7 @@ func (b *BTree) rebuildChildRefs(copiedPath []*PageInfo) ([]*PageInfo, error) {
 // 5. 检查父节点是否需要递归分裂
 // 6. 处理根节点分裂
 // 7. 最后通过 CAS 更新根节点
-func (b *BTree) splitLeaf(leafInfo *PageInfo, key []byte, copiedPath []*PageInfo) error {
+func (b *BTree) splitLeaf(leafInfo *PageInfo, key []byte, copiedPath []*PageInfo) error { //nolint:unused
 	const maxKeys = 200 // LeafPage 最大键数量（优化性能）
 
 	// 1. 获取叶子节点
@@ -1727,7 +1727,7 @@ func (b *BTree) splitLeaf(leafInfo *PageInfo, key []byte, copiedPath []*PageInfo
 // 返回值：
 //   - bool: CAS 是否成功
 //   - error: 错误信息
-func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, key []byte, splitKey []byte, copiedPath []*PageInfo) (bool, error) {
+func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, key []byte, splitKey []byte, copiedPath []*PageInfo) (bool, error) { //nolint:unused
 	// 1. 创建新的内部节点作为根
 	newRootPage := NewInternalPage(b.allocatePageID()) // 分配唯一的 pageID
 	newRootPage.keys = [][]byte{splitKey}
@@ -1798,7 +1798,7 @@ func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, key []byte, spl
 // 返回：
 //
 //	error - 错误信息
-func (b *BTree) splitInternal(internalInfo *PageInfo, copiedPath []*PageInfo) error {
+func (b *BTree) splitInternal(internalInfo *PageInfo, copiedPath []*PageInfo) error { //nolint:unused
 	const maxKeys = 199 // InternalPage 最大键数量（优化性能，通常比 LeafPage 少 1）
 
 	// 1. 获取内部节点

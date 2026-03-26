@@ -184,7 +184,7 @@ type BTree struct {
 	chunkMgr *ChunkManager // Append-only storage manager
 	wal      wal.WAL       // Write-Ahead Log for crash recovery
 
-	// Off-Heap storage (方案 B：完全替换)
+	// Off-Heap storage
 	offheapPM      *offheap.PageManager // Off-Heap 页面管理器
 	offheapAdapter *OffHeapAdapter      // Off-Heap 适配器
 	pageRefCache   *PageRefCache        // PageID → PageRef 映射（Off-Heap 模式）
@@ -203,7 +203,7 @@ type BTree struct {
 	stats            *PageStats // 页面访问统计（热数据识别）
 	hotPageThreshold int64      // 热数据阈值（来自配置）
 
-	// Scheduler for concurrent write operations (方案 2：移除 Direct 模式)
+	// Scheduler for concurrent write operations
 	scheduler *concurrency.TaskScheduler // Task scheduler for concurrent operations
 
 	// Split coordination: 防止多个 goroutine 同时分裂同一页面

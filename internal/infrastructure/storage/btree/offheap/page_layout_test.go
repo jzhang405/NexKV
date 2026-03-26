@@ -440,3 +440,160 @@ func TestPageAccessor_GetSpaceUsage(t *testing.T) {
 	expectedUsage = float64(usedSpace) / float64(PageSize)
 	assert.InDelta(t, expectedUsage, usage, 0.001)
 }
+
+func TestPageAccessor_CollectKVExcept(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化叶子页面并插入多个 KV 对
+	pa.InitLeafPage(pageID, 1)
+	keys := [][]byte{
+		[]byte("key1"),
+		[]byte("key2"),
+		[]byte("key3"),
+		[]byte("key4"),
+		[]byte("key5"),
+	}
+	values := [][]byte{
+		[]byte("value1"),
+		[]byte("value2"),
+		[]byte("value3"),
+		[]byte("value4"),
+		[]byte("value5"),
+	}
+
+	var dataEnd uint16 = 0
+	for i := range keys {
+		err := pa.InsertLeafEntry(pageID, i, keys[i], values[i], &dataEnd)
+		require.NoError(t, err)
+	}
+
+	// 测试跳过中间的 key（跳过索引 2，即 "key3"）
+	skipIdx := 2
+	collectedKeys, collectedValues := pa.CollectKVExcept(pageID, skipIdx)
+
+	// 验证收集到的 KV 对数量（应该是 4 个）
+	assert.Equal(t, 4, len(collectedKeys))
+	assert.Equal(t, 4, len(collectedValues))
+
+	// 验证收集到的 KV 对内容（应该不包含 "key3"）
+	expectedKeys := [][]byte{
+		[]byte("key1"),
+		[]byte("key2"),
+		[]byte("key4"),
+		[]byte("key5"),
+	}
+	expectedValues := [][]byte{
+		[]byte("value1"),
+		[]byte("value2"),
+		[]byte("value4"),
+		[]byte("value5"),
+	}
+
+	for i := range expectedKeys {
+		assert.Equal(t, string(expectedKeys[i]), string(collectedKeys[i]))
+		assert.Equal(t, string(expectedValues[i]), string(collectedValues[i]))
+	}
+}
+
+func TestPageAccessor_CollectKVExcept_SkipFirst(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化叶子页面并插入多个 KV 对
+	pa.InitLeafPage(pageID, 1)
+	keys := [][]byte{
+		[]byte("key1"),
+		[]byte("key2"),
+		[]byte("key3"),
+	}
+	values := [][]byte{
+		[]byte("value1"),
+		[]byte("value2"),
+		[]byte("value3"),
+	}
+
+	var dataEnd uint16 = 0
+	for i := range keys {
+		err := pa.InsertLeafEntry(pageID, i, keys[i], values[i], &dataEnd)
+		require.NoError(t, err)
+	}
+
+	// 测试跳过第一个 key（索引 0）
+	collectedKeys, collectedValues := pa.CollectKVExcept(pageID, 0)
+
+	// 验证收集到的 KV 对
+	assert.Equal(t, 2, len(collectedKeys))
+	assert.Equal(t, []byte("key2"), collectedKeys[0])
+	assert.Equal(t, []byte("key3"), collectedKeys[1])
+	assert.Equal(t, []byte("value2"), collectedValues[0])
+	assert.Equal(t, []byte("value3"), collectedValues[1])
+}
+
+func TestPageAccessor_CollectKVExcept_SkipLast(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化叶子页面并插入多个 KV 对
+	pa.InitLeafPage(pageID, 1)
+	keys := [][]byte{
+		[]byte("key1"),
+		[]byte("key2"),
+		[]byte("key3"),
+	}
+	values := [][]byte{
+		[]byte("value1"),
+		[]byte("value2"),
+		[]byte("value3"),
+	}
+
+	var dataEnd uint16 = 0
+	for i := range keys {
+		err := pa.InsertLeafEntry(pageID, i, keys[i], values[i], &dataEnd)
+		require.NoError(t, err)
+	}
+
+	// 测试跳过最后一个 key（索引 2）
+	collectedKeys, collectedValues := pa.CollectKVExcept(pageID, 2)
+
+	// 验证收集到的 KV 对
+	assert.Equal(t, 2, len(collectedKeys))
+	assert.Equal(t, []byte("key1"), collectedKeys[0])
+	assert.Equal(t, []byte("key2"), collectedKeys[1])
+	assert.Equal(t, []byte("value1"), collectedValues[0])
+	assert.Equal(t, []byte("value2"), collectedValues[1])
+}
+
+func TestPageAccessor_CollectKVExcept_EmptyPage(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化空页面
+	pa.InitLeafPage(pageID, 1)
+
+	// 测试空页面（应该返回空切片）
+	collectedKeys, collectedValues := pa.CollectKVExcept(pageID, 0)
+
+	assert.Equal(t, 0, len(collectedKeys))
+	assert.Equal(t, 0, len(collectedValues))
+}

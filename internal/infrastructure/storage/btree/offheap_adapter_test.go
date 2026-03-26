@@ -294,3 +294,267 @@ func TestOffHeapAdapter_MaterializeFromLeafPage(t *testing.T) {
 	assert.True(t, found2)
 	assert.Equal(t, []byte("value2"), retrieved2)
 }
+
+// TestOffHeapAdapter_DeleteFromLeafPage 测试从叶子页面删除 key
+func TestOffHeapAdapter_DeleteFromLeafPage(t *testing.T) {
+	pm, err := offheap.NewPageManager(4 * offheap.PageSize)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	adapter := NewOffHeapAdapter(pm)
+
+	// 分配叶子页面并插入多个 KV 对
+	pageID, err := adapter.AllocLeafPage()
+	require.NoError(t, err)
+
+	keys := [][]byte{
+		[]byte("key1"),
+		[]byte("key2"),
+		[]byte("key3"),
+	}
+	values := [][]byte{
+		[]byte("value1"),
+		[]byte("value2"),
+		[]byte("value3"),
+	}
+
+	for i, key := range keys {
+		value := values[i]
+		pageID, _, err = adapter.InsertToOffHeap(pageID, key, value)
+		require.NoError(t, err)
+	}
+
+	// 删除中间的 key（"key2"）
+	deleteKey := []byte("key2")
+	newPageID, err := adapter.DeleteFromLeafPage(pageID, deleteKey)
+	require.NoError(t, err)
+
+	// 验证新页面 ID 不同（COW 语义）
+	assert.NotEqual(t, pageID, newPageID)
+
+	// 验证删除的 key 不存在
+	_, found, _ := adapter.GetFromOffHeap(newPageID, deleteKey)
+	assert.False(t, found)
+
+	// 验证其他 key 仍然存在
+	retrieved1, found1, _ := adapter.GetFromOffHeap(newPageID, []byte("key1"))
+	assert.True(t, found1)
+	assert.Equal(t, []byte("value1"), retrieved1)
+
+	retrieved3, found3, _ := adapter.GetFromOffHeap(newPageID, []byte("key3"))
+	assert.True(t, found3)
+	assert.Equal(t, []byte("value3"), retrieved3)
+
+	// 验证 key 数量减少
+	count := adapter.NumKeys(newPageID)
+	assert.Equal(t, 2, count)
+}
+
+// TestOffHeapAdapter_DeleteFromLeafPage_DeleteFirst 测试删除第一个 key
+func TestOffHeapAdapter_DeleteFromLeafPage_DeleteFirst(t *testing.T) {
+	pm, err := offheap.NewPageManager(4 * offheap.PageSize)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	adapter := NewOffHeapAdapter(pm)
+
+	pageID, err := adapter.AllocLeafPage()
+	require.NoError(t, err)
+
+	keys := [][]byte{
+		[]byte("key1"),
+		[]byte("key2"),
+		[]byte("key3"),
+	}
+	values := [][]byte{
+		[]byte("value1"),
+		[]byte("value2"),
+		[]byte("value3"),
+	}
+
+	for i, key := range keys {
+		value := values[i]
+		pageID, _, err = adapter.InsertToOffHeap(pageID, key, value)
+		require.NoError(t, err)
+	}
+
+	// 删除第一个 key
+	newPageID, err := adapter.DeleteFromLeafPage(pageID, []byte("key1"))
+	require.NoError(t, err)
+
+	// 验证删除结果
+	_, found1, _ := adapter.GetFromOffHeap(newPageID, []byte("key1"))
+	assert.False(t, found1)
+
+	retrieved2, found2, _ := adapter.GetFromOffHeap(newPageID, []byte("key2"))
+	assert.True(t, found2)
+	assert.Equal(t, []byte("value2"), retrieved2)
+
+	retrieved3, found3, _ := adapter.GetFromOffHeap(newPageID, []byte("key3"))
+	assert.True(t, found3)
+	assert.Equal(t, []byte("value3"), retrieved3)
+}
+
+// TestOffHeapAdapter_DeleteFromLeafPage_DeleteLast 测试删除最后一个 key
+func TestOffHeapAdapter_DeleteFromLeafPage_DeleteLast(t *testing.T) {
+	pm, err := offheap.NewPageManager(4 * offheap.PageSize)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	adapter := NewOffHeapAdapter(pm)
+
+	pageID, err := adapter.AllocLeafPage()
+	require.NoError(t, err)
+
+	keys := [][]byte{
+		[]byte("key1"),
+		[]byte("key2"),
+		[]byte("key3"),
+	}
+	values := [][]byte{
+		[]byte("value1"),
+		[]byte("value2"),
+		[]byte("value3"),
+	}
+
+	for i, key := range keys {
+		value := values[i]
+		pageID, _, err = adapter.InsertToOffHeap(pageID, key, value)
+		require.NoError(t, err)
+	}
+
+	// 删除最后一个 key
+	newPageID, err := adapter.DeleteFromLeafPage(pageID, []byte("key3"))
+	require.NoError(t, err)
+
+	// 验证删除结果
+	retrieved1, found1, _ := adapter.GetFromOffHeap(newPageID, []byte("key1"))
+	assert.True(t, found1)
+	assert.Equal(t, []byte("value1"), retrieved1)
+
+	retrieved2, found2, _ := adapter.GetFromOffHeap(newPageID, []byte("key2"))
+	assert.True(t, found2)
+	assert.Equal(t, []byte("value2"), retrieved2)
+
+	_, found3, _ := adapter.GetFromOffHeap(newPageID, []byte("key3"))
+	assert.False(t, found3)
+}
+
+// TestOffHeapAdapter_DeleteFromLeafPage_DeleteNonExistent 测试删除不存在的 key
+func TestOffHeapAdapter_DeleteFromLeafPage_DeleteNonExistent(t *testing.T) {
+	pm, err := offheap.NewPageManager(4 * offheap.PageSize)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	adapter := NewOffHeapAdapter(pm)
+
+	pageID, err := adapter.AllocLeafPage()
+	require.NoError(t, err)
+
+	// 插入一个 key
+	key := []byte("key1")
+	value := []byte("value1")
+	pageID, _, err = adapter.InsertToOffHeap(pageID, key, value)
+	require.NoError(t, err)
+
+	// 尝试删除不存在的 key
+	_, err = adapter.DeleteFromLeafPage(pageID, []byte("nonexistent"))
+	assert.Error(t, err)
+	assert.ErrorIs(t, ErrKeyNotFound, err)
+}
+
+// TestOffHeapAdapter_UpdateChildIndex 测试更新父节点的 child 指针
+func TestOffHeapAdapter_UpdateChildIndex(t *testing.T) {
+	pm, err := offheap.NewPageManager(4 * offheap.PageSize)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	adapter := NewOffHeapAdapter(pm)
+
+	// 创建父页面（索引页面）
+	parentPageID, err := adapter.AllocIndexPage()
+	require.NoError(t, err)
+
+	// 在父页面中插入几个 key-child 对
+	keys := [][]byte{
+		[]byte("key1"),
+		[]byte("key2"),
+		[]byte("key3"),
+	}
+	children := []model.PageID{
+		10,
+		20,
+		30,
+	}
+
+	for i, key := range keys {
+		err := adapter.InsertIndexEntry(parentPageID, i, key, children[i])
+		require.NoError(t, err)
+	}
+
+	// 更新索引 1 的 child 指针（从 20 改为 25）
+	newChildPageID := model.PageID(25)
+	newParentPageID, err := adapter.UpdateChildIndex(parentPageID, 1, newChildPageID)
+	require.NoError(t, err)
+
+	// 验证新页面 ID 不同（COW 语义）
+	assert.NotEqual(t, parentPageID, newParentPageID)
+
+	// 验证 child 指针已更新
+	updatedChild, err := adapter.GetChild(newParentPageID, 1)
+	require.NoError(t, err)
+	assert.Equal(t, newChildPageID, updatedChild)
+
+	// 验证其他 child 指针未改变
+	child0, _ := adapter.GetChild(newParentPageID, 0)
+	assert.Equal(t, model.PageID(10), child0)
+
+	child2, _ := adapter.GetChild(newParentPageID, 2)
+	assert.Equal(t, model.PageID(30), child2)
+}
+
+// TestOffHeapAdapter_UpdateChildIndex_ExtraChild 测试更新 extraChild（N+1 child）
+func TestOffHeapAdapter_UpdateChildIndex_ExtraChild(t *testing.T) {
+	pm, err := offheap.NewPageManager(4 * offheap.PageSize)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	adapter := NewOffHeapAdapter(pm)
+
+	// 创建父页面
+	parentPageID, err := adapter.AllocIndexPage()
+	require.NoError(t, err)
+
+	// 插入 2 个 key-child 对
+	keys := [][]byte{
+		[]byte("key1"),
+		[]byte("key2"),
+	}
+	children := []model.PageID{
+		10,
+		20,
+	}
+
+	for i, key := range keys {
+		err := adapter.InsertIndexEntry(parentPageID, i, key, children[i])
+		require.NoError(t, err)
+	}
+
+	// 更新 extraChild（索引 2，即 N+1 child）
+	newChildPageID := model.PageID(99)
+	newParentPageID, err := adapter.UpdateChildIndex(parentPageID, 2, newChildPageID)
+	require.NoError(t, err)
+
+	// 验证 extraChild 已更新
+	updatedChild, err := adapter.GetChild(newParentPageID, 2)
+	require.NoError(t, err)
+	assert.Equal(t, newChildPageID, updatedChild)
+
+	// 验证普通 child 未改变
+	child0, _ := adapter.GetChild(newParentPageID, 0)
+	assert.Equal(t, model.PageID(10), child0)
+
+	child1, _ := adapter.GetChild(newParentPageID, 1)
+	assert.Equal(t, model.PageID(20), child1)
+}
+

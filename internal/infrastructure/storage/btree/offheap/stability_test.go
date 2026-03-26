@@ -24,7 +24,7 @@ func TestStability_HighConcurrencyStress(t *testing.T) {
 	defer pm.Close()
 
 	const goroutines = 50
-	const opsPerGoroutine = 1000
+	const opsPerGoroutine = 300 // 50 × 300 = 15000 < 16384 (避免内存不足)
 
 	var wg sync.WaitGroup
 	start := time.Now()

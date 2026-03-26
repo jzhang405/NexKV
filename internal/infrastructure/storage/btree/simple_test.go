@@ -13,6 +13,11 @@ import (
 )
 
 func TestOffHeap_SimpleMultipleKeys(t *testing.T) {
+	t.Parallel() // 大型测试需要隔离，避免与并行测试产生资源竞争
+	if testing.Short() {
+		t.Skip("跳过大型压力测试（15000 keys）- 使用 -short 标志跳过")
+	}
+
 	ctx := context.Background()
 	tree, err := OpenBTree("", nil)
 	require.NoError(t, err)
@@ -112,6 +117,8 @@ func TestOffHeap_FiveHundredThousandKeys(t *testing.T) {
 
 // TestOffHeap_SpaceBasedSplitting 验证基于空间而非条数的分裂判断
 func TestOffHeap_SpaceBasedSplitting(t *testing.T) {
+	t.Parallel() // 大型测试需要隔离，避免与并行测试产生资源竞争
+
 	ctx := context.Background()
 	tree, err := OpenBTree("", nil)
 	require.NoError(t, err)
@@ -178,6 +185,11 @@ func TestOffHeap_SpaceBasedSplitting(t *testing.T) {
 }
 
 func TestOffHeap_25000Keys(t *testing.T) {
+	t.Parallel() // 大型测试需要隔离，避免与并行测试产生资源竞争
+	if testing.Short() {
+		t.Skip("跳过大型压力测试（25000 keys）- 使用 -short 标志跳过")
+	}
+
 	ctx := context.Background()
 	tree, err := OpenBTree("", nil)
 	require.NoError(t, err)
@@ -222,6 +234,11 @@ func TestOffHeap_25000Keys(t *testing.T) {
 }
 
 func TestOffHeap_35000Keys(t *testing.T) {
+	t.Parallel() // 大型测试需要隔离，避免与并行测试产生资源竞争
+	if testing.Short() {
+		t.Skip("跳过大型压力测试（35000 keys）- 使用 -short 标志跳过")
+	}
+
 	ctx := context.Background()
 	tree, err := OpenBTree("", nil)
 	require.NoError(t, err)

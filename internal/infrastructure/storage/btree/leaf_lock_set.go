@@ -409,14 +409,14 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 			}
 			defer parentLock.Unlock()
 
-			// 获取父节点的当前 PageInfo
+			// 获取父节点的当前 PageInfo（必须在锁内读取，避免竞态）
 			oldParentInfo := parentRef.GetPageInfo()
 			if oldParentInfo == nil {
 				DebugPrintf("[FALLBACK] parent page info is nil\n")
 				return nil, fmt.Errorf("parent page info is nil in fallback")
 			}
 
-			// 查找旧页面在父节点中的位置
+			// 查找旧页面在父节点中的位置（必须在锁内查找，避免竞态）
 			parentPageIDForSearch := model.PageID(oldParentInfo.GetPageID())
 			parentCount := b.offheapAdapter.pa.GetCount(uint32(parentPageIDForSearch))
 
@@ -433,20 +433,30 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 			}
 
 			insertIndex := 0
+			childFound := false
 			for i := range int(parentCount) {
 				_, _, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(parentPageIDForSearch), i)
 				if child == uint32(leafPageID) {
 					// 找到旧页面的位置，替换为新页面
 					insertIndex = i
+					childFound = true
 					break
 				}
+			}
+
+			// 验证找到了子节点（防止竞态条件）
+			if !childFound {
+				DebugPrintf("[FALLBACK] child pageID %d not found in parent %d (race condition), returning ErrRetry\n",
+					leafPageID, parentPageIDForSearch)
+				return nil, ErrRetry
 			}
 
 			DebugPrintf("[FALLBACK] parentPageID=%d count=%d insertIndex=%d leafPageID=%d newPageID=%d\n",
 				parentPageIDForSearch, parentCount, insertIndex, leafPageID, newPageID)
 
-			// 使用 UpdateIndexEntry 更新父节点（将旧页面替换为新页面）
-			newParentPageID, err := b.offheapAdapter.UpdateIndexEntry(parentPageIDForSearch, insertIndex, nil, uint32(newPageID), 0)
+			// 使用 ReplaceChild 替换父节点中的单个子节点（不增加子节点数量）
+			// 注意：这里不应该使用 UpdateIndexEntry，因为它会插入额外的子节点（rightPageID）
+			newParentPageID, err := b.offheapAdapter.ReplaceChild(parentPageIDForSearch, insertIndex, uint32(newPageID))
 			if err != nil {
 				DebugPrintf("[FALLBACK] UpdateIndexEntry failed: %v\n", err)
 				return nil, fmt.Errorf("update parent in fallback: %w", err)
@@ -593,14 +603,26 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	}
 	defer parentLock.Unlock()
 
-	// Step 8: 找到插入位置（二分查找）
-	insertIndex := 0
-	parentPageIDForSearch := model.PageID(parentInfo.GetPageID())
-	count = b.offheapAdapter.pa.GetCount(uint32(parentPageIDForSearch))
+	// Step 8: 找到插入位置（二分查找，必须在锁内进行以避免竞态）
+	// 重新读取父节点信息，因为可能在获取锁之前已变化
+	currentParentInfo := parentRef.GetPageInfo()
+	if currentParentInfo == nil {
+		return nil, fmt.Errorf("parent info is nil after acquiring lock")
+	}
 
+	currentParentPageID := model.PageID(currentParentInfo.GetPageID())
+	if currentParentPageID != oldParentPageID {
+		// 父节点已变化，返回重试
+		return nil, ErrRetry
+	}
+
+	var currentParentCount uint16
+	count = b.offheapAdapter.pa.GetCount(uint32(currentParentPageID))
+
+	insertIndex := 0
 	for i := range int(count) {
-		keyOff, keyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(parentPageIDForSearch), i)
-		key := b.offheapAdapter.pa.GetKey(uint32(parentPageIDForSearch), keyOff, keyLen)
+		keyOff, keyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(currentParentPageID), i)
+		key := b.offheapAdapter.pa.GetKey(uint32(currentParentPageID), keyOff, keyLen)
 		if bytes.Compare(key, splitKey) >= 0 {
 			insertIndex = i
 			break
@@ -610,7 +632,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 
 	// Step 9: 使用 UpdateIndexEntry 更新父节点（不可变方式）
 	// 替换旧的子页面为新的左右子页面
-	newParentPageID, err := b.offheapAdapter.UpdateIndexEntry(oldParentPageID, insertIndex, splitKey, uint32(leftPageID), uint32(rightPageID))
+	newParentPageID, err := b.offheapAdapter.UpdateIndexEntry(currentParentPageID, insertIndex, splitKey, uint32(leftPageID), uint32(rightPageID))
 	if err != nil {
 		// 检查是否是页面已满错误
 		if strings.Contains(err.Error(), "page full") {
@@ -692,12 +714,12 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 
 	// Step 15: 检查父节点是否需要分裂，或是否需要向上更新祖父节点
 	// 获取更新后的父节点信息
-	currentParentInfo := parentRef.GetPageInfo()
+	currentParentInfo = parentRef.GetPageInfo()
 	if currentParentInfo == nil {
 		return nil, fmt.Errorf("parent info is nil after CAS")
 	}
-	currentParentPageID := model.PageID(currentParentInfo.GetPageID())
-	currentParentCount := b.offheapAdapter.pa.GetCount(uint32(currentParentPageID))
+	currentParentPageID = model.PageID(currentParentInfo.GetPageID())
+	currentParentCount = b.offheapAdapter.pa.GetCount(uint32(currentParentPageID))
 
 	// 调试：打印父节点状态
 

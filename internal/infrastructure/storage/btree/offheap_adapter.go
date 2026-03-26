@@ -280,6 +280,14 @@ func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, valu
 //
 // 返回：新的父页面 ID
 func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []byte, leftPageID, rightPageID uint32) (model.PageID, error) {
+	// 防御性检查：rightPageID 必须非零（分裂操作需要两个子节点）
+	if rightPageID == 0 {
+		return 0, fmt.Errorf("UpdateIndexEntry: rightPageID cannot be 0 (use ReplaceChild for single child replacement)")
+	}
+	if leftPageID == 0 {
+		return 0, fmt.Errorf("UpdateIndexEntry: leftPageID cannot be 0")
+	}
+
 	count := a.pa.GetCount(uint32(pageID))
 
 	// 检查父节点是否已满
@@ -336,6 +344,71 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 		return 0, fmt.Errorf("alloc new page: %w", err)
 	}
 
+	_, err = a.materializer.MaterializeIndexPageFromBytes(uint32(newPageID), keys, children)
+	if err != nil {
+		a.pm.Free(newPageID)
+		return 0, fmt.Errorf("materialize index page: %w", err)
+	}
+
+	return model.PageID(newPageID), nil
+}
+
+// ReplaceChild 替换索引节点中的单个子节点（不增加子节点数量）
+// 用于 fallback 场景：将旧子节点替换为新子节点，但不分裂
+//
+// 参数：
+//
+//	pageID - 父页面 ID
+//	index - 要替换的子节点位置（可以是 0 到 count，其中 count 表示 extraChild）
+//	newChildID - 新的子节点 ID
+//
+// 返回：新的父页面 ID
+func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID uint32) (model.PageID, error) {
+	count := a.pa.GetCount(uint32(pageID))
+
+	// 验证索引有效（index 可以是 0 到 count，其中 count 表示 extraChild）
+	if index < 0 || index > int(count) {
+		return 0, fmt.Errorf("invalid child index: %d (count=%d)", index, count)
+	}
+
+	// 复制所有 keys 和 children，只替换指定位置的 child
+	keys := make([][]byte, 0, count)
+	children := make([]uint32, 0, count+1)
+
+	for i := 0; i < int(count); i++ {
+		keyOff, keyLen, _ := a.pa.GetIndexEntryOffset(uint32(pageID), i)
+		k := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
+
+		// 复制 key
+		kCopy := make([]byte, len(k))
+		copy(kCopy, k)
+		keys = append(keys, kCopy)
+
+		// 替换或复制 child（不包括 extraChild）
+		if i == index {
+			children = append(children, newChildID)
+		} else {
+			c := a.pa.GetChild(uint32(pageID), i)
+			children = append(children, c)
+		}
+	}
+
+	// 添加 extraChild（N+1 child）
+	// 如果 index == count，替换 extraChild；否则复制原 extraChild
+	extraChild := a.pa.GetChild(uint32(pageID), int(count))
+	if index == int(count) {
+		children = append(children, newChildID)
+	} else {
+		children = append(children, extraChild)
+	}
+
+	// 分配新页面
+	newPageID, err := a.pm.Alloc()
+	if err != nil {
+		return 0, fmt.Errorf("alloc new page: %w", err)
+	}
+
+	// 物化新页面
 	_, err = a.materializer.MaterializeIndexPageFromBytes(uint32(newPageID), keys, children)
 	if err != nil {
 		a.pm.Free(newPageID)

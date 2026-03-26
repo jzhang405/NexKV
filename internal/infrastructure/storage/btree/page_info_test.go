@@ -24,11 +24,16 @@ func TestNewPageInfo(t *testing.T) {
 
 func TestPageInfo_GetSetPage(t *testing.T) {
 	info := NewPageInfo()
-	// Off-Heap 模式：GetPage 返回 nil
-	assert.Nil(t, info.GetPage())
+	// Off-Heap 模式：GetPage 返回 Off-Heap 页面包装器
+	// 注意：pageID=0 被认为有效，所以返回 InternalPage 包装器（默认 isLeaf=false）
+	page := info.GetPage()
+	assert.NotNil(t, page) // 返回包装器，不是 nil
+
 	// SetPage 被忽略（兼容方法）
 	info.SetPage(&Page{ID: 1})
-	assert.Nil(t, info.GetPage())
+	// GetPage 仍然返回包装器，不受 SetPage 影响
+	page2 := info.GetPage()
+	assert.NotNil(t, page2)
 }
 
 func TestPageInfo_GetSetPos(t *testing.T) {

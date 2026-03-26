@@ -1557,12 +1557,12 @@ func (b *BTree) copyPathWithDelta(path []*PageInfo) ([]*PageInfo, error) {
 
 	// 重建子节点引用
 	// 注意：Delta Chain 模式下，children 仍然需要重建引用
-	return b.rebuildChildRefs(path, copiedPath)
+	return b.rebuildChildRefs(copiedPath)
 }
 
 // rebuildChildRefs 重建子节点引用（辅助方法）
 // 用于 copyPathWithDelta 和 copyPathShallow
-func (b *BTree) rebuildChildRefs(originalPath, copiedPath []*PageInfo) ([]*PageInfo, error) {
+func (b *BTree) rebuildChildRefs(copiedPath []*PageInfo) ([]*PageInfo, error) {
 	// 性能优化：使用 copiedPageIDMap（从 clonedPath 构建）
 	// 只重建路径中的节点引用，避免全局遍历
 	copiedPageIDMap := make(map[model.PageID]*PageInfo, len(copiedPath))

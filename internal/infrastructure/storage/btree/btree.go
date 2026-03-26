@@ -562,7 +562,7 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 	debugThisKey := string(key) == "key-06151" || string(key) == "key-06150" || string(key) == "key-06152" ||
 		string(key) == "key-06267" || string(key) == "key-06709" || string(key) == "key-09803" || string(key) == "multi-key-2"
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := range maxRetries {
 		if debugThisKey {
 			DebugPrintf("[GET_DEBUG] key=%s attempt=%d\n", string(key), attempt)
 		}

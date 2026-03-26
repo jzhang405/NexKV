@@ -4,6 +4,7 @@
 
 //go:build windows
 
+//nolint:staticcheck,unsafeptr // Windows 平台特定：VirtualAlloc 返回 uintptr，转换为 unsafe.Pointer 是安全的
 package offheap
 
 import (
@@ -39,11 +40,7 @@ func newPlatformAllocator(size int) (OffHeapAllocator, error) {
 	}
 
 	// VirtualAlloc 返回 uintptr，需要转换为 unsafe.Pointer
-	// 这是安全的，因为：
-	// 1. ptr 指向 OS 管理的内存，不在 Go 堆上
-	// 2. GC 不会移动这块内存
-	// 3. 转换后立即存储，没有中间 GC 点
-	//nolint:unsafeptr // VirtualAlloc 返回 uintptr，这是安全的转换
+	// 这是安全的：ptr 指向 OS 管理的内存，GC 不会移动它
 	return &virtualAllocAllocator{
 		base:     unsafe.Pointer(ptr),
 		size:     size,

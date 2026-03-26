@@ -186,10 +186,7 @@ func (m *OffHeapMaterializer) EstimateSpaceUsage(pageID uint32) (used, free int,
 	if entryCount > 0 {
 		lastEntry := m.pa.GetLeafEntry(pageID, entryCount-1)
 		// 数据从页面尾部开始，offset 是从页面起始位置计算
-		minOffset := lastEntry.valOff
-		if lastEntry.keyOff < minOffset {
-			minOffset = lastEntry.keyOff
-		}
+		minOffset := min(lastEntry.keyOff, lastEntry.valOff)
 		used = int(PageSize - minOffset)
 	}
 

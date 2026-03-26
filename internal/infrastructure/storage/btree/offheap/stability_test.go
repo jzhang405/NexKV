@@ -29,7 +29,7 @@ func TestStability_HighConcurrencyStress(t *testing.T) {
 	var wg sync.WaitGroup
 	start := time.Now()
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -68,11 +68,11 @@ func TestStability_RaceDetector(t *testing.T) {
 	const iterations = 1000
 
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < iterations; j++ {
+			for range iterations {
 				pageID, err := pm.Alloc()
 				if err != nil {
 					continue
@@ -96,10 +96,10 @@ func TestStability_MemoryLeakDetection(t *testing.T) {
 	defer pm.Close()
 
 	// 多轮分配和释放
-	for round := 0; round < 10; round++ {
+	for round := range 10 {
 		// 分配 1000 个页面
 		allocated := make([]uint32, 0, 1000)
-		for i := 0; i < 1000; i++ {
+		for range 1000 {
 			pageID, err := pm.Alloc()
 			require.NoError(t, err)
 			allocated = append(allocated, pageID)
@@ -124,7 +124,7 @@ func TestStability_BoundaryConditions(t *testing.T) {
 	defer pm.Close()
 
 	t.Run("分配后立即释放", func(t *testing.T) {
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			pageID, err := pm.Alloc()
 			require.NoError(t, err)
 			err = pm.Free(pageID)
@@ -156,7 +156,7 @@ func TestStability_BoundaryConditions(t *testing.T) {
 
 		// 分配所有页面
 		var allocated []uint32
-		for i := 0; i < 4; i++ {
+		for range 4 {
 			pageID, err := smallPM.Alloc()
 			require.NoError(t, err)
 			allocated = append(allocated, pageID)
@@ -174,7 +174,7 @@ func TestStability_BoundaryConditions(t *testing.T) {
 
 	t.Run("空队列边界", func(t *testing.T) {
 		// 从空队列连续分配
-		for i := 0; i < 1000; i++ {
+		for range 1000 {
 			pageID, err := pm.Alloc()
 			require.NoError(t, err)
 			_ = pm.Free(pageID)
@@ -191,7 +191,7 @@ func TestStability_RapidStress(t *testing.T) {
 	const operations = 10000
 	start := time.Now()
 
-	for i := 0; i < operations; i++ {
+	for i := range operations {
 		pageID, err := pm.Alloc()
 		require.NoError(t, err)
 
@@ -242,7 +242,7 @@ func TestStability_LongRunning(t *testing.T) {
 	start := time.Now()
 
 	// 启动多个 goroutine 持续操作
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(id int) {
 			for {
 				select {
@@ -289,10 +289,10 @@ func TestStability_PageAllocatorStability(t *testing.T) {
 	defer pm.Close()
 
 	// 测试大量分配释放循环
-	for cycle := 0; cycle < 100; cycle++ {
+	for range 100 {
 		// 每轮分配 100 个页面
 		allocated := make([]uint32, 0, 100)
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			pageID, err := pm.Alloc()
 			require.NoError(t, err)
 			allocated = append(allocated, pageID)
@@ -337,7 +337,7 @@ func TestStability_ConcurrentPageOperations(t *testing.T) {
 
 	var wg sync.WaitGroup
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -385,7 +385,7 @@ func TestStability_MixedWorkload(t *testing.T) {
 			case <-stopCh:
 				return
 			default:
-				for i := 0; i < 100; i++ {
+				for range 100 {
 					pageID, _ := pm.Alloc()
 					pm.Free(pageID)
 				}
@@ -464,7 +464,7 @@ func TestStability_ErrorHandling(t *testing.T) {
 		defer smallPM.Close()
 
 		// 分配所有页面
-		for i := 0; i < 4; i++ {
+		for range 4 {
 			_, err := smallPM.Alloc()
 			require.NoError(t, err)
 		}
@@ -507,7 +507,7 @@ func TestStability_MemoryPattern(t *testing.T) {
 
 	t.Run("顺序分配和释放", func(t *testing.T) {
 		var pageIDs []uint32
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			pageID, _ := pm.Alloc()
 			pageIDs = append(pageIDs, pageID)
 		}
@@ -523,7 +523,7 @@ func TestStability_MemoryPattern(t *testing.T) {
 
 	t.Run("逆序释放", func(t *testing.T) {
 		var pageIDs []uint32
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			pageID, _ := pm.Alloc()
 			pageIDs = append(pageIDs, pageID)
 		}
@@ -542,7 +542,7 @@ func TestStability_MemoryPattern(t *testing.T) {
 		allocated := make(map[uint32]bool)
 		operations := 1000
 
-		for i := 0; i < operations; i++ {
+		for i := range operations {
 			if i%3 == 0 && len(allocated) > 0 {
 				// 随机释放一个
 				for pageID := range allocated {
@@ -572,7 +572,7 @@ func TestStability_LockFreeQueueStability(t *testing.T) {
 	t.Run("空队列操作", func(t *testing.T) {
 		q := NewLockFreeQueue()
 		// 从空队列重复 Dequeue
-		for i := 0; i < 1000; i++ {
+		for range 1000 {
 			_, ok := q.Dequeue()
 			assert.False(t, ok)
 		}
@@ -583,7 +583,7 @@ func TestStability_LockFreeQueueStability(t *testing.T) {
 		q.Enqueue(42)
 
 		// 重复入队出队
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			val, ok := q.Dequeue()
 			assert.True(t, ok)
 			assert.Equal(t, uint32(42), val)
@@ -600,7 +600,7 @@ func TestStability_LockFreeQueueStability(t *testing.T) {
 		const count = 1000
 
 		// 入队
-		for i := 0; i < count; i++ {
+		for i := range count {
 			q.Enqueue(uint32(i))
 		}
 

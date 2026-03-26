@@ -20,7 +20,7 @@ func TestOffHeap_UpdatesOnly(t *testing.T) {
 	values := make([][]byte, numKeys)
 
 	// 第一次插入
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		keys[i] = []byte(fmt.Sprintf("update-key-%03d", i))
 		values[i] = []byte(fmt.Sprintf("update-value-v1-%03d", i))
 
@@ -29,14 +29,14 @@ func TestOffHeap_UpdatesOnly(t *testing.T) {
 	}
 
 	// 验证第一次插入
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		got, err := tree.Get(ctx, keys[i])
 		require.NoError(t, err, "Failed to get key %d (v1)", i)
 		require.Equal(t, values[i], got, "Value mismatch for key %d (v1)", i)
 	}
 
 	// 第二次更新
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		values[i] = []byte(fmt.Sprintf("update-value-v2-%03d", i))
 
 		err := tree.Set(ctx, keys[i], values[i])
@@ -44,7 +44,7 @@ func TestOffHeap_UpdatesOnly(t *testing.T) {
 	}
 
 	// 验证第二次更新
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		got, err := tree.Get(ctx, keys[i])
 		require.NoError(t, err, "Failed to get key %d (v2)", i)
 		require.Equal(t, values[i], got, "Value mismatch for key %d (v2)", i)

@@ -120,7 +120,7 @@ func TestOffHeap_LeafSplit(t *testing.T) {
 		keys := make([][]byte, numKeys)
 		values := make([][]byte, numKeys)
 
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			keys[i] = []byte(fmt.Sprintf("leaf-split-key-%04d", i))
 			values[i] = []byte(fmt.Sprintf("value-%d", i))
 
@@ -129,7 +129,7 @@ func TestOffHeap_LeafSplit(t *testing.T) {
 		}
 
 		// 验证所有键都可以读取
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			got, err := tree.Get(ctx, keys[i])
 			require.NoError(t, err)
 			assert.Equal(t, values[i], got)
@@ -155,7 +155,7 @@ func TestOffHeap_InternalSplit(t *testing.T) {
 		keys := make([][]byte, numKeys)
 		values := make([][]byte, numKeys)
 
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			keys[i] = []byte(fmt.Sprintf("internal-split-key-%05d", i))
 			values[i] = []byte(fmt.Sprintf("value-%d", i))
 
@@ -164,7 +164,7 @@ func TestOffHeap_InternalSplit(t *testing.T) {
 		}
 
 		// 验证所有键都可以读取
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			got, err := tree.Get(ctx, keys[i])
 			require.NoError(t, err)
 			assert.Equal(t, values[i], got)
@@ -190,7 +190,7 @@ func TestOffHeap_RootSplit(t *testing.T) {
 		keys := make([][]byte, numKeys)
 		values := make([][]byte, numKeys)
 
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			keys[i] = []byte(fmt.Sprintf("root-split-key-%06d", i))
 			values[i] = []byte(fmt.Sprintf("value-%d", i))
 
@@ -199,7 +199,7 @@ func TestOffHeap_RootSplit(t *testing.T) {
 		}
 
 		// 验证所有键都可以读取
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			got, err := tree.Get(ctx, keys[i])
 			require.NoError(t, err)
 			assert.Equal(t, values[i], got)
@@ -300,7 +300,7 @@ func TestOffHeap_TreeIntegrity(t *testing.T) {
 		const numKeys = 1000
 
 		// 插入顺序键
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			key := []byte(fmt.Sprintf("seq-key-%04d", i))
 			value := []byte(fmt.Sprintf("value-%d", i))
 
@@ -309,7 +309,7 @@ func TestOffHeap_TreeIntegrity(t *testing.T) {
 		}
 
 		// 验证所有键
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			key := []byte(fmt.Sprintf("seq-key-%04d", i))
 			expectedValue := []byte(fmt.Sprintf("value-%d", i))
 
@@ -332,7 +332,7 @@ func TestOffHeap_TreeIntegrity(t *testing.T) {
 		}
 
 		// 验证所有键
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			key := []byte(fmt.Sprintf("rev-key-%04d", i))
 			expectedValue := []byte(fmt.Sprintf("value-%d", i))
 

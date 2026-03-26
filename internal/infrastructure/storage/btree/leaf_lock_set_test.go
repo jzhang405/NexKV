@@ -198,7 +198,7 @@ func BenchmarkSetWithLeafLock(b *testing.B) {
 	value := []byte("benchmark-value")
 
 	b.StartTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = btree.Set(ctx, key, value)
 	}
 }

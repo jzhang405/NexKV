@@ -140,7 +140,7 @@ func TestCOWDeltaRef_ShouldMaterialize(t *testing.T) {
 			ref.refCount.Store(tt.refCount)
 
 			// 添加增量
-			for i := 0; i < tt.deltaCount; i++ {
+			for i := range tt.deltaCount {
 				ref.AppendDelta(Delta{op: DeltaInsert, key: []byte{byte(i)}, value: []byte("val")})
 			}
 

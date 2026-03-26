@@ -308,7 +308,7 @@ func TestBTree_copyPathShallow_Integration(t *testing.T) {
 	require.Len(t, copiedPath, 3)
 
 	// 验证路径完整性
-	for i := 0; i < len(copiedPath); i++ {
+	for i := range len(copiedPath) {
 		assert.NotNil(t, copiedPath[i])
 	}
 
@@ -347,7 +347,7 @@ func BenchmarkBTree_copyPathShallow(b *testing.B) {
 	path := []*PageInfo{rootInfo, internalInfo, leafInfo}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		bt.copyPathShallow(path)
 	}
 }
@@ -372,7 +372,7 @@ func BenchmarkBTree_finalizeDeepClone(b *testing.B) {
 	shallowPath, _ := bt.copyPathShallow(path)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		bt.finalizeDeepClone(shallowPath)
 	}
 }

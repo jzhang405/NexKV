@@ -181,7 +181,7 @@ func TestGetPageType(t *testing.T) {
 // Benchmark 编码解码性能
 func BenchmarkEncodePagePos(b *testing.B) {
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _ = EncodePagePos(1000, 4096, 1)
 	}
 }
@@ -189,14 +189,14 @@ func BenchmarkEncodePagePos(b *testing.B) {
 func BenchmarkDecodePagePos(b *testing.B) {
 	pos, _ := EncodePagePos(1000, 4096, 1)
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		DecodePagePos(pos)
 	}
 }
 
 func BenchmarkEncodeDecodeRoundTrip(b *testing.B) {
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		pos, _ := EncodePagePos(1000, 4096, 1)
 		DecodePagePos(pos)
 	}

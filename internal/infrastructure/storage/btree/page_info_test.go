@@ -221,7 +221,7 @@ func TestPageInfo_DirtyMarkingConcurrency(t *testing.T) {
 // Benchmark PageInfo 操作性能
 func BenchmarkPageInfo_NewPageInfo(b *testing.B) {
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = NewPageInfo()
 	}
 }
@@ -229,7 +229,7 @@ func BenchmarkPageInfo_NewPageInfo(b *testing.B) {
 func BenchmarkPageInfo_Touch(b *testing.B) {
 	info := NewPageInfo()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		info.Touch()
 	}
 }
@@ -238,7 +238,7 @@ func BenchmarkPageInfo_Clone(b *testing.B) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1})
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = info.Clone()
 	}
 }
@@ -247,7 +247,7 @@ func BenchmarkPageInfo_GetSetPage(b *testing.B) {
 	info := NewPageInfo()
 	page := &Page{ID: 1}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		info.SetPage(page)
 		_ = info.GetPage()
 	}
@@ -256,7 +256,7 @@ func BenchmarkPageInfo_GetSetPage(b *testing.B) {
 func BenchmarkPageInfo_MarkDirty(b *testing.B) {
 	info := NewPageInfo()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		info.MarkDirty()
 		info.ClearDirty()
 	}

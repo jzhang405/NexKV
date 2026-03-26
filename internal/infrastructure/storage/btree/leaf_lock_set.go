@@ -271,7 +271,7 @@ func (b *BTree) buildPersistPath(root, target *PageInfo) []*PageInfo {
 
 		// 遍历子节点
 		if internalPage, ok := current.GetPage().(*InternalPage); ok {
-			for i := 0; i < internalPage.NumChildren(); i++ {
+			for i := range internalPage.NumChildren() {
 				childRef := internalPage.GetChild(i)
 				if childRef == nil {
 					continue
@@ -607,7 +607,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 			}
 
 			insertIndex := 0
-			for i := 0; i < int(parentCount); i++ {
+			for i := range int(parentCount) {
 				_, _, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(parentPageIDForSearch), i)
 				if child == uint32(leafPageID) {
 					// 找到旧页面的位置，替换为新页面
@@ -772,7 +772,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	parentPageIDForSearch := model.PageID(parentInfo.GetPageID())
 	count = b.offheapAdapter.pa.GetCount(uint32(parentPageIDForSearch))
 
-	for i := 0; i < int(count); i++ {
+	for i := range int(count) {
 		keyOff, keyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(parentPageIDForSearch), i)
 		key := b.offheapAdapter.pa.GetKey(uint32(parentPageIDForSearch), keyOff, keyLen)
 		if bytes.Compare(key, splitKey) >= 0 {
@@ -813,7 +813,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	// Step 11: CAS 更新父节点（带重试机制）
 	const maxCASRetries = 2
 	var lastErr error
-	for casAttempt := 0; casAttempt < maxCASRetries; casAttempt++ {
+	for casAttempt := range maxCASRetries {
 		if parentRef.ReplacePage(parentInfo, newParentInfo) {
 			// CAS 成功，继续后续流程
 			lastErr = nil
@@ -995,7 +995,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 				children := make([]uint32, 0, grandParentCountInt+1)
 
 				// 收集所有 keys 和 children（除了最后一个 extraChild）
-				for i := 0; i < grandParentCountInt; i++ {
+				for i := range grandParentCountInt {
 					keyOff, keyLen, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(grandParentPageID), i)
 					key := b.offheapAdapter.pa.GetKey(uint32(grandParentPageID), keyOff, keyLen)
 
@@ -1188,7 +1188,7 @@ func (b *BTree) splitRootOffHeapSync(oldLeafRef *PageRef, oldLeafInfo *PageInfo,
 
 	// Step 4: CAS 更新根节点（使用 RootPageRef，带重试）
 	const maxRetries = 3
-	for i := 0; i < maxRetries; i++ {
+	for i := range maxRetries {
 		oldRootInfo := b.rootRef.pInfo.Load()
 		if oldRootInfo == nil {
 			// 根未初始化，直接设置
@@ -1264,7 +1264,7 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 	children := make([]uint32, 0, count+1)
 
 	// 收集所有 keys 和 children
-	for i := 0; i < int(count); i++ {
+	for i := range int(count) {
 		keyOff, keyLen, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(internalPageID), i)
 		key := b.offheapAdapter.pa.GetKey(uint32(internalPageID), keyOff, keyLen)
 
@@ -1436,7 +1436,7 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 		insertIndex := 0
 
 		// 二分查找插入位置
-		for i := 0; i < int(parentCount); i++ {
+		for i := range int(parentCount) {
 			keyOff, keyLen, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(parentPageIDForSearch), i)
 			_ = child // 未使用
 			key := b.offheapAdapter.pa.GetKey(uint32(parentPageIDForSearch), keyOff, keyLen)
@@ -1465,7 +1465,7 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 		// Step 14: CAS 更新父节点（带重试机制）
 		const maxCASRetries = 2
 		var lastErr error
-		for casAttempt := 0; casAttempt < maxCASRetries; casAttempt++ {
+		for casAttempt := range maxCASRetries {
 			if parentRef.ReplacePage(oldParentInfo, newParentInfo) {
 				// CAS 成功，继续后续流程
 				lastErr = nil
@@ -1706,7 +1706,7 @@ func (b *BTree) splitRootOffHeapSyncForInternal(
 
 	// Step 4: CAS 更新根节点（使用 RootPageRef，带重试）
 	const maxRetries = 3
-	for i := 0; i < maxRetries; i++ {
+	for i := range maxRetries {
 		oldRootInfo := b.rootRef.pInfo.Load()
 		if oldRootInfo == nil {
 			// 根未初始化，直接设置

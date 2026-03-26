@@ -55,7 +55,7 @@ func TestBTreeSetItem_IncAttempts(t *testing.T) {
 	const goroutines = 100
 	const incrementsPerGoroutine = 100
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -172,7 +172,7 @@ func TestBTreeSetItem_ConcurrentContention(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < updatesPerGoroutine; j++ {

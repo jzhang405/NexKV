@@ -229,12 +229,12 @@ func TestInternalPage_Clone(t *testing.T) {
 	assert.Equal(t, page.NumChildren(), cloned.NumChildren())
 
 	// 验证数据一致性（keys 是共享的 - Delta Chain 模式）
-	for i := 0; i < page.NumKeys(); i++ {
+	for i := range page.NumKeys() {
 		assert.Equal(t, page.keys[i], cloned.keys[i])
 	}
 
 	// 验证 children 引用相同（PageRef 是指针，共享引用）
-	for i := 0; i < page.NumChildren(); i++ {
+	for i := range page.NumChildren() {
 		assert.Same(t, page.children[i], cloned.children[i])
 	}
 

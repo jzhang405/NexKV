@@ -890,7 +890,7 @@ func TestGet_LargeKey(t *testing.T) {
 
 	// 创建一个较大的键
 	largeKey := make([]byte, 1024)
-	for i := 0; i < len(largeKey); i++ {
+	for i := range len(largeKey) {
 		largeKey[i] = byte(i % 256)
 	}
 

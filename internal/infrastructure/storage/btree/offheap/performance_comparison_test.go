@@ -20,7 +20,7 @@ func Benchmark_GoHeap_AllocMany(b *testing.B) {
 			keys := make([][]byte, 100)
 			values := make([][]byte, 100)
 
-			for i := 0; i < 100; i++ {
+			for i := range 100 {
 				keys[i] = []byte{byte(i), byte(i >> 8)}
 				values[i] = make([]byte, 30)
 			}
@@ -145,7 +145,7 @@ func Benchmark_GoHeap_Throughput(b *testing.B) {
 			keys := make([][]byte, 100)
 			values := make([][]byte, 100)
 
-			for i := 0; i < 100; i++ {
+			for i := range 100 {
 				keys[i] = []byte{byte(i), byte(i >> 8)}
 				values[i] = make([]byte, 30)
 			}
@@ -203,7 +203,7 @@ func Benchmark_OffHeap_Throughput(b *testing.B) {
 			_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 
 			// 100 次查找
-			for i := 0; i < 100; i++ {
+			for i := range 100 {
 				searchKey := searchKeys[i*2 : i*2+2]
 				_, _, _ = m.BinarySearchInPage(pageID, searchKey)
 			}
@@ -221,12 +221,12 @@ func Benchmark_OffHeap_Throughput(b *testing.B) {
 func Benchmark_MemoryAllocation_GoHeap(b *testing.B) {
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		// 分配 100 个 KV 对
 		keys := make([][]byte, 100)
 		values := make([][]byte, 100)
 
-		for j := 0; j < 100; j++ {
+		for j := range 100 {
 			keys[j] = []byte{byte(j), byte(j >> 8)}
 			values[j] = make([]byte, 30)
 		}
@@ -258,7 +258,7 @@ func Benchmark_MemoryAllocation_OffHeap(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		pageID, _ := pm.Alloc()
 		_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 		pm.Free(pageID)

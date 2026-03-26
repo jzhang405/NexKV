@@ -512,7 +512,7 @@ func (p *LeafPage) serializeWithData() ([]byte, error) {
 	}
 
 	// 写入键值对
-	for i := 0; i < len(p.keys); i++ {
+	for i := range len(p.keys) {
 		if err := ps.WriteKeyValue(p.keys[i], p.values[i]); err != nil {
 			return nil, err
 		}
@@ -568,7 +568,7 @@ func DeserializeLeafPage(data []byte) (*LeafPage, error) {
 	}
 
 	// 7. 读取键值对
-	for i := 0; i < int(numKeys); i++ {
+	for range int(numKeys) {
 		// 读取键长度
 		keyLenBytes, err := readBytes(reader, 2)
 		if err != nil {
@@ -603,7 +603,7 @@ func DeserializeLeafPage(data []byte) (*LeafPage, error) {
 
 // Range 遍历所有键值对
 func (p *LeafPage) Range(fn func(key, value []byte) error) error {
-	for i := 0; i < len(p.keys); i++ {
+	for i := range len(p.keys) {
 		if err := fn(p.keys[i], p.values[i]); err != nil {
 			return err
 		}
@@ -615,7 +615,7 @@ func (p *LeafPage) Range(fn func(key, value []byte) error) error {
 func (p *LeafPage) Size() int {
 	size := 8 + 8 + 4 // pageID + version + numKeys
 
-	for i := 0; i < len(p.keys); i++ {
+	for i := range len(p.keys) {
 		size += 2 + len(p.keys[i])   // keyLen + key
 		size += 2 + len(p.values[i]) // valueLen + value
 	}

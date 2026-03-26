@@ -296,7 +296,7 @@ func BenchmarkBTree_splitLeaf(b *testing.B) {
 	ctx := context.Background()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		key := make([]byte, 4)
 		key[0] = byte(i >> 24)
 		key[1] = byte(i >> 16)

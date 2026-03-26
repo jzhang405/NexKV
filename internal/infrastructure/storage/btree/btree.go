@@ -1252,7 +1252,7 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 		// 方法：使用 PageID 来匹配子节点，而不是对象地址
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
 			// 遍历所有子节点引用
-			for j := 0; j < len(internalPage.children); j++ {
+			for j := range len(internalPage.children) {
 				childRef := internalPage.children[j]
 				if childRef == nil {
 					continue
@@ -1362,7 +1362,7 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 	for _, info := range copiedPath {
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
 			// 遍历所有子节点引用
-			for j := 0; j < len(internalPage.children); j++ {
+			for j := range len(internalPage.children) {
 				childRef := internalPage.children[j]
 				if childRef == nil {
 					continue
@@ -1469,7 +1469,7 @@ func (b *BTree) finalizeDeepClone(copiedPath []*PageInfo) error {
 	for _, info := range copiedPath {
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
 			// 遍历所有子节点引用
-			for j := 0; j < len(internalPage.children); j++ {
+			for j := range len(internalPage.children) {
 				childRef := internalPage.children[j]
 				if childRef == nil {
 					continue
@@ -1586,7 +1586,7 @@ func (b *BTree) rebuildChildRefs(copiedPath []*PageInfo) ([]*PageInfo, error) {
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
 			selfPageID := internalPage.GetPageID()
 
-			for j := 0; j < len(internalPage.children); j++ {
+			for j := range len(internalPage.children) {
 				childRef := internalPage.children[j]
 				if childRef == nil {
 					continue
@@ -2090,7 +2090,7 @@ func (b *BTree) persistRoot(rootInfo *PageInfo) error {
 func (b *BTree) findChildIndexInParent(parent *InternalPage, childInfo *PageInfo) (int, error) {
 	childPageID := childInfo.GetPageID()
 
-	for i := 0; i < parent.NumChildren(); i++ {
+	for i := range parent.NumChildren() {
 		childRef := parent.GetChild(i)
 		if childRef != nil {
 			info := childRef.GetPageInfo()

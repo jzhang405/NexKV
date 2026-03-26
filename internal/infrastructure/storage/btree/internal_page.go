@@ -436,7 +436,7 @@ func (p *InternalPage) serializeWithData() ([]byte, error) {
 	}
 
 	// 写入键
-	for i := 0; i < len(p.keys); i++ {
+	for i := range len(p.keys) {
 		// 写入键长度 (2 bytes)
 		keyLen := uint16(len(p.keys[i]))
 		if err := binaryWrite(&buf, uint16ToBytes(keyLen)); err != nil {
@@ -450,7 +450,7 @@ func (p *InternalPage) serializeWithData() ([]byte, error) {
 	}
 
 	// 写入子节点 ID（暂时使用 PageID，后续可以改为位置编码）
-	for i := 0; i < len(p.children); i++ {
+	for i := range len(p.children) {
 		var childID uint64
 		if p.children[i] != nil {
 			if info := p.children[i].GetPageInfo(); info != nil {
@@ -533,7 +533,7 @@ func DeserializeInternalPage(data []byte) (*InternalPage, error) {
 	}
 
 	// 8. 读取键
-	for i := 0; i < int(numKeys); i++ {
+	for range int(numKeys) {
 		// 读取键长度
 		keyLenBytes, err := readBytes(reader, 2)
 		if err != nil {
@@ -550,7 +550,7 @@ func DeserializeInternalPage(data []byte) (*InternalPage, error) {
 	}
 
 	// 9. 读取子节点 ID
-	for i := 0; i < int(numChildren); i++ {
+	for range int(numChildren) {
 		childIDBytes, err := readBytes(reader, 8)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read child ID: %w", err)
@@ -600,7 +600,7 @@ func (p *InternalPage) UpdateChildrenRef(startIdx int) error {
 func (p *InternalPage) Size() int {
 	size := 8 + 8 + 4 + 4 // pageID + version + numKeys + numChildren
 
-	for i := 0; i < len(p.keys); i++ {
+	for i := range len(p.keys) {
 		size += 2 + len(p.keys[i]) // keyLen + key
 	}
 

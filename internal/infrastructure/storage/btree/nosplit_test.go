@@ -20,19 +20,19 @@ func TestOffHeap_BasicNoSplit(t *testing.T) {
 	keys := make([][]byte, numKeys)
 	values := make([][]byte, numKeys)
 
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		keys[i] = []byte(fmt.Sprintf("nosplit-key-%d", i))
 		values[i] = []byte(fmt.Sprintf("nosplit-value-%d", i))
 	}
 
 	// 批量插入
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		err := tree.Set(ctx, keys[i], values[i])
 		require.NoError(t, err, "Failed to set key %d", i)
 	}
 
 	// 验证所有键
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		got, err := tree.Get(ctx, keys[i])
 		require.NoError(t, err, "Failed to get key %d", i)
 		require.Equal(t, values[i], got, "Value mismatch for key %d", i)

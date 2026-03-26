@@ -80,7 +80,7 @@ func TestSetWithLeafLockAndRef_PageInfoChanged(t *testing.T) {
 	require.NoError(t, err)
 
 	// 触发页面分裂（插入大量数据导致分裂）
-	for i := 0; i < 500; i++ {
+	for i := range 500 {
 		splitKey := []byte(fmt.Sprintf("split-key-%04d", i))
 		_ = tree.Set(ctx, splitKey, []byte{byte(i)})
 	}
@@ -187,7 +187,7 @@ func TestProcessBatch_PageIDGrouping(t *testing.T) {
 	defer tree.Close()
 
 	// 先插入一批数据，确保分布在多个页面
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		key := []byte(fmt.Sprintf("prefix-key-%04d", i))
 		_ = tree.Set(ctx, key, []byte{byte(i)})
 	}
@@ -360,7 +360,7 @@ func BenchmarkProcessBatch(b *testing.B) {
 		}
 		b.StartTimer()
 
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			tree.processBatch(ctx, items)
 		}
 	})
@@ -371,7 +371,7 @@ func BenchmarkProcessBatch(b *testing.B) {
 		value := []byte("bench-value-single")
 		b.StartTimer()
 
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			_ = tree.Set(ctx, key, value)
 		}
 	})
@@ -392,13 +392,13 @@ func BenchmarkSetWithLeafLockAndRef(b *testing.B) {
 	value := []byte("bench-value")
 
 	b.Run("WithCachedRef", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			_ = tree.setWithLeafLockAndRef(ctx, leafRef, key, value)
 		}
 	})
 
 	b.Run("WithoutCachedRef", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			_ = tree.Set(ctx, key, value)
 		}
 	})
@@ -423,7 +423,7 @@ func TestBatchSizeOptimization(t *testing.T) {
 
 	for _, batchSize := range batchSizes {
 		// 预热
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			key := []byte(fmt.Sprintf("warmup-%d", i))
 			_ = tree.Set(ctx, key, []byte{byte(i)})
 		}

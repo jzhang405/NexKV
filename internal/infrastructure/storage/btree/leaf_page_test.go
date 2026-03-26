@@ -212,7 +212,7 @@ func TestLeafPage_Range(t *testing.T) {
 	keys := [][]byte{[]byte("key1"), []byte("key2"), []byte("key3")}
 	values := [][]byte{[]byte("value1"), []byte("value2"), []byte("value3")}
 
-	for i := 0; i < len(keys); i++ {
+	for i := range len(keys) {
 		page.Insert(keys[i], values[i])
 	}
 

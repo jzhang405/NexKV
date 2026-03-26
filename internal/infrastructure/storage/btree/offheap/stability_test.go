@@ -490,7 +490,7 @@ func TestStability_ErrorHandling(t *testing.T) {
 		// 恢复原始测试逻辑，即使它有 bug
 		// TODO: 重新设计这个测试以反映单调递增 pageID 的行为
 		pageID, _ := smallPM.Alloc() // 会失败，返回 pageID=0
-		_ = smallPM.Free(pageID)      // 释放无效 pageID=0，无效果
+		_ = smallPM.Free(pageID)     // 释放无效 pageID=0，无效果
 
 		// 由于单调递增 pageID，分配仍然会失败
 		_, err = smallPM.Alloc()

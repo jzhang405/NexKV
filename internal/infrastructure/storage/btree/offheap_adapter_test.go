@@ -557,4 +557,3 @@ func TestOffHeapAdapter_UpdateChildIndex_ExtraChild(t *testing.T) {
 	child1, _ := adapter.GetChild(newParentPageID, 1)
 	assert.Equal(t, model.PageID(20), child1)
 }
-

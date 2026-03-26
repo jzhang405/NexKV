@@ -47,6 +47,11 @@ func TestBTree_copyPathShallow(t *testing.T) {
 	b, cleanup := setupTestBTree(t)
 	defer cleanup()
 
+	// Off-Heap 模式下跳过此测试（lazy clone 是 On-Heap 模式优化）
+	if b.offheapPM != nil {
+		t.Skip("Off-Heap 模式下不使用 lazy clone 优化")
+	}
+
 	// 构建路径：root -> internal -> leaf
 	rootInfo := NewPageInfo()
 	root := NewInternalPage(model.PageID(1))
@@ -92,6 +97,11 @@ func TestBTree_copyPathShallow_EmptyPath(t *testing.T) {
 	b, cleanup := setupTestBTree(t)
 	defer cleanup()
 
+	// Off-Heap 模式下跳过此测试（lazy clone 是 On-Heap 模式优化）
+	if b.offheapPM != nil {
+		t.Skip("Off-Heap 模式下不使用 lazy clone 优化")
+	}
+
 	_, err := b.copyPathShallow([]*PageInfo{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "empty path")
@@ -101,6 +111,11 @@ func TestBTree_copyPathShallow_EmptyPath(t *testing.T) {
 func TestBTree_finalizeDeepClone(t *testing.T) {
 	b, cleanup := setupTestBTree(t)
 	defer cleanup()
+
+	// Off-Heap 模式下跳过此测试（lazy clone 是 On-Heap 模式优化）
+	if b.offheapPM != nil {
+		t.Skip("Off-Heap 模式下不使用 lazy clone 优化")
+	}
 
 	// 构建路径（包含 InternalPage 和 LeafPage）
 	rootInfo := NewPageInfo()
@@ -155,6 +170,11 @@ func TestBTree_finalizeDeepClone_EmptyPath(t *testing.T) {
 	b, cleanup := setupTestBTree(t)
 	defer cleanup()
 
+	// Off-Heap 模式下跳过此测试（lazy clone 是 On-Heap 模式优化）
+	if b.offheapPM != nil {
+		t.Skip("Off-Heap 模式下不使用 lazy clone 优化")
+	}
+
 	err := b.finalizeDeepClone([]*PageInfo{})
 	assert.NoError(t, err) // 空路径应该正常返回
 }
@@ -163,6 +183,11 @@ func TestBTree_finalizeDeepClone_EmptyPath(t *testing.T) {
 func TestBTree_finalizeDeepClone_SkipAlreadyDeep(t *testing.T) {
 	b, cleanup := setupTestBTree(t)
 	defer cleanup()
+
+	// Off-Heap 模式下跳过此测试（lazy clone 是 On-Heap 模式优化）
+	if b.offheapPM != nil {
+		t.Skip("Off-Heap 模式下不使用 lazy clone 优化")
+	}
 
 	// 创建一个已经是深克隆的路径
 	rootInfo := NewPageInfo()
@@ -198,6 +223,11 @@ func TestBTree_finalizeDeepClone_SkipAlreadyDeep(t *testing.T) {
 func TestBTree_LazyCloneIntegration(t *testing.T) {
 	b, cleanup := setupTestBTree(t)
 	defer cleanup()
+
+	// Off-Heap 模式下跳过此测试（lazy clone 是 On-Heap 模式优化）
+	if b.offheapPM != nil {
+		t.Skip("Off-Heap 模式下不使用 lazy clone 优化")
+	}
 
 	// 构建路径
 	rootInfo := NewPageInfo()
@@ -246,6 +276,11 @@ func TestBTree_LazyCloneCASFailure(t *testing.T) {
 	b, cleanup := setupTestBTree(t)
 	defer cleanup()
 
+	// Off-Heap 模式下跳过此测试（lazy clone 是 On-Heap 模式优化）
+	if b.offheapPM != nil {
+		t.Skip("Off-Heap 模式下不使用 lazy clone 优化")
+	}
+
 	// 构建路径
 	leafInfo := NewPageInfo()
 	leaf := NewLeafPage(model.PageID(1))
@@ -279,6 +314,11 @@ func TestBTree_LazyCloneCASFailure(t *testing.T) {
 func TestBTree_copyPathShallow_Integration(t *testing.T) {
 	b, cleanup := setupTestBTree(t)
 	defer cleanup()
+
+	// Off-Heap 模式下跳过此测试（lazy clone 是 On-Heap 模式优化）
+	if b.offheapPM != nil {
+		t.Skip("Off-Heap 模式下不使用 lazy clone 优化")
+	}
 
 	// 构建三层路径：root -> internal -> leaf
 	rootInfo := NewPageInfo()

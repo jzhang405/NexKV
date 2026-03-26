@@ -1578,10 +1578,10 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 	}
 
 	// Clone all PageInfos in the path（Off-Heap 模式）
-	// Off-Heap 模式：使用 Clone() 克隆 NodeRef
+	// Off-Heap 模式：使用 CloneShallow() 克隆 NodeRef（正确设置 cloneStatus）
 	for i, info := range path {
-		// Off-Heap 模式：统一使用 Clone()
-		newInfo := info.Clone()
+		// Off-Heap 模式：使用 CloneShallow() 设置正确的克隆状态
+		newInfo := info.CloneShallow()
 		copiedPath[i] = newInfo
 
 		// 更新映射表（从 NodeRef 获取 PageID）

@@ -42,6 +42,7 @@ func newPlatformAllocator(size int) (OffHeapAllocator, error) {
 	// VirtualAlloc 返回 uintptr，需要转换为 unsafe.Pointer
 	// 这是安全的：ptr 指向 OS 管理的内存，GC 不会移动它
 	return &virtualAllocAllocator{
+		//lint:ignore SA1030 we need this unsafe conversion for Windows API
 		base:     unsafe.Pointer(ptr),
 		size:     size,
 		pageSize: 4096, // Windows 默认页面大小

@@ -106,7 +106,7 @@ func NewPageAccessor(pm *PageManager) *PageAccessor {
 // 通过扫描所有 entries 来计算实际的 KV 数据区大小
 func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
 	ptr := pa.pm.PageIDToPtr(pageID)
-	header := (*PageHeader)(unsafe.Pointer(ptr))
+	header := (*PageHeader)(ptr)
 
 	if header.count == 0 {
 		return 0
@@ -116,7 +116,8 @@ func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
 		// 叶子节点：扫描所有 entries，找到最小的 keyOff（KV 数据区的起点）
 		minKeyOff := uint32(PageSize)
 		for i := 0; i < int(header.count); i++ {
-			entry := (*LeafEntry)(unsafe.Pointer(ptr + uintptr(SizeofPageHeader) + uintptr(i)*uintptr(SizeofLeafEntry)))
+			entryPtr := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(i)*uintptr(SizeofLeafEntry))
+			entry := (*LeafEntry)(entryPtr)
 			if entry.keyOff < minKeyOff {
 				minKeyOff = entry.keyOff
 			}
@@ -127,7 +128,8 @@ func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
 		// 索引节点：扫描所有 entries，找到最小的 keyOff（KV 数据区的起点）
 		minKeyOff := uint32(PageSize)
 		for i := 0; i < int(header.count); i++ {
-			entry := (*IndexEntry)(unsafe.Pointer(ptr + uintptr(SizeofPageHeader) + uintptr(i)*uintptr(SizeofIndexEntry)))
+			entryPtr := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(i)*uintptr(SizeofIndexEntry))
+			entry := (*IndexEntry)(entryPtr)
 			if entry.keyOff < minKeyOff {
 				minKeyOff = entry.keyOff
 			}
@@ -139,7 +141,7 @@ func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
 // GetSpaceUsage 计算页面空间使用率（0.0-1.0）
 func (pa *PageAccessor) GetSpaceUsage(pageID uint32) float64 {
 	ptr := pa.pm.PageIDToPtr(pageID)
-	header := (*PageHeader)(unsafe.Pointer(ptr))
+	header := (*PageHeader)(ptr)
 
 	var entrySize uint32
 	if pa.IsLeaf(pageID) {
@@ -158,7 +160,7 @@ func (pa *PageAccessor) GetSpaceUsage(pageID uint32) float64 {
 // GetHeader 获取页面头
 func (pa *PageAccessor) GetHeader(pageID uint32) *PageHeader {
 	ptr := pa.pm.PageIDToPtr(pageID)
-	return (*PageHeader)(unsafe.Pointer(ptr))
+	return (*PageHeader)(ptr)
 }
 
 // IsValidPage 检查页面是否有效（未被释放）
@@ -185,45 +187,45 @@ func (pa *PageAccessor) IsValidPage(pageID uint32) bool {
 // GetIndexEntry 获取索引节点条目
 func (pa *PageAccessor) GetIndexEntry(pageID uint32, index int) *IndexEntry {
 	ptr := pa.pm.PageIDToPtr(pageID)
-	header := (*PageHeader)(unsafe.Pointer(ptr))
+	header := (*PageHeader)(ptr)
 	if index >= int(header.count) {
 		panic(fmt.Sprintf("index %d out of range (count: %d)", index, header.count))
 	}
 
-	entryPtr := ptr + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofIndexEntry)
-	return (*IndexEntry)(unsafe.Pointer(entryPtr))
+	entryPtr := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofIndexEntry))
+	return (*IndexEntry)(entryPtr)
 }
 
 // GetLeafEntry 获取叶子节点条目
 func (pa *PageAccessor) GetLeafEntry(pageID uint32, index int) *LeafEntry {
 	ptr := pa.pm.PageIDToPtr(pageID)
-	header := (*PageHeader)(unsafe.Pointer(ptr))
+	header := (*PageHeader)(ptr)
 	if index >= int(header.count) {
 		panic(fmt.Sprintf("index %d out of range (count: %d)", index, header.count))
 	}
 
-	entryPtr := ptr + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofLeafEntry)
-	return (*LeafEntry)(unsafe.Pointer(entryPtr))
+	entryPtr := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofLeafEntry))
+	return (*LeafEntry)(entryPtr)
 }
 
 // GetKey 获取 key（返回 Go 切片，指向 mmap 内存）
 func (pa *PageAccessor) GetKey(pageID uint32, keyOff, keyLen uint32) []byte {
 	ptr := pa.pm.PageIDToPtr(pageID)
-	keyPtr := ptr + uintptr(keyOff)
-	return unsafe.Slice((*byte)(unsafe.Pointer(keyPtr)), keyLen)
+	keyPtr := unsafe.Pointer(uintptr(ptr) + uintptr(keyOff))
+	return unsafe.Slice((*byte)(keyPtr), keyLen)
 }
 
 // GetValue 获取 value（返回 Go 切片，指向 mmap 内存）
 func (pa *PageAccessor) GetValue(pageID uint32, valOff, valLen uint32) []byte {
 	ptr := pa.pm.PageIDToPtr(pageID)
-	valPtr := ptr + uintptr(valOff)
-	return unsafe.Slice((*byte)(unsafe.Pointer(valPtr)), valLen)
+	valPtr := unsafe.Pointer(uintptr(ptr) + uintptr(valOff))
+	return unsafe.Slice((*byte)(valPtr), valLen)
 }
 
 // InitPage 初始化新页面
 func (pa *PageAccessor) InitPage(pageID uint32, pageType uint8, version uint64) {
 	ptr := pa.pm.PageIDToPtr(pageID)
-	header := (*PageHeader)(unsafe.Pointer(ptr))
+	header := (*PageHeader)(ptr)
 
 	oldPageType := header.pageType
 	header.pageType = pageType
@@ -262,7 +264,7 @@ func (pa *PageAccessor) InitLeafPage(pageID uint32, version uint64) {
 // InsertIndexEntry 插入索引条目（返回写入的 offset）
 func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, child uint32, dataEnd *uint16) error {
 	ptr := pa.pm.PageIDToPtr(pageID)
-	header := (*PageHeader)(unsafe.Pointer(ptr))
+	header := (*PageHeader)(ptr)
 
 	// 检查是否有空间
 	keyLen := uint32(len(key))
@@ -274,24 +276,24 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 
 	// 移动现有 entries（如果需要）
 	if index < int(header.count) {
-		src := ptr + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofIndexEntry)
-		dst := ptr + uintptr(SizeofPageHeader) + uintptr(index+1)*uintptr(SizeofIndexEntry)
+		src := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofIndexEntry))
+		dst := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index+1)*uintptr(SizeofIndexEntry))
 		count := int(header.count - uint16(index))
-		moveSlice := unsafe.Slice((*byte)(unsafe.Pointer(src)), count*SizeofIndexEntry)
-		dstSlice := unsafe.Slice((*byte)(unsafe.Pointer(dst)), len(moveSlice))
+		moveSlice := unsafe.Slice((*byte)(src), count*SizeofIndexEntry)
+		dstSlice := unsafe.Slice((*byte)(dst), len(moveSlice))
 		copy(dstSlice, moveSlice)
 	}
 
 	// 写入 key（从页面尾部开始分配）
 	keyOff := PageSize - uint32(*dataEnd) - keyLen
 	*dataEnd += uint16(keyLen)
-	keyPtr := ptr + uintptr(keyOff)
-	keySlice := unsafe.Slice((*byte)(unsafe.Pointer(keyPtr)), keyLen)
+	keyPtr := unsafe.Pointer(uintptr(ptr) + uintptr(keyOff))
+	keySlice := unsafe.Slice((*byte)(keyPtr), keyLen)
 	copy(keySlice, key)
 
 	// 写入 entry
-	entryPtr := ptr + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofIndexEntry)
-	entry := (*IndexEntry)(unsafe.Pointer(entryPtr))
+	entryPtr := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofIndexEntry))
+	entry := (*IndexEntry)(entryPtr)
 	entry.keyOff = uint32(keyOff)
 	entry.keyLen = keyLen
 	entry.child = child
@@ -303,7 +305,7 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 // InsertLeafEntry 插入叶子条目（返回写入的 offset）
 func (pa *PageAccessor) InsertLeafEntry(pageID uint32, index int, key, value []byte, dataEnd *uint16) error {
 	ptr := pa.pm.PageIDToPtr(pageID)
-	header := (*PageHeader)(unsafe.Pointer(ptr))
+	header := (*PageHeader)(ptr)
 
 	// 检查是否有空间
 	keyLen := uint32(len(key))
@@ -316,31 +318,31 @@ func (pa *PageAccessor) InsertLeafEntry(pageID uint32, index int, key, value []b
 
 	// 移动现有 entries（如果需要）
 	if index < int(header.count) {
-		src := ptr + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofLeafEntry)
-		dst := ptr + uintptr(SizeofPageHeader) + uintptr(index+1)*uintptr(SizeofLeafEntry)
+		src := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofLeafEntry))
+		dst := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index+1)*uintptr(SizeofLeafEntry))
 		count := int(header.count - uint16(index))
-		moveSlice := unsafe.Slice((*byte)(unsafe.Pointer(src)), count*SizeofLeafEntry)
-		dstSlice := unsafe.Slice((*byte)(unsafe.Pointer(dst)), len(moveSlice))
+		moveSlice := unsafe.Slice((*byte)(src), count*SizeofLeafEntry)
+		dstSlice := unsafe.Slice((*byte)(dst), len(moveSlice))
 		copy(dstSlice, moveSlice)
 	}
 
 	// 写入 value（从页面尾部开始分配）
 	valOff := PageSize - uint32(*dataEnd) - valLen
 	*dataEnd += uint16(valLen)
-	valPtr := ptr + uintptr(valOff)
-	valSlice := unsafe.Slice((*byte)(unsafe.Pointer(valPtr)), valLen)
+	valPtr := unsafe.Pointer(uintptr(ptr) + uintptr(valOff))
+	valSlice := unsafe.Slice((*byte)(valPtr), valLen)
 	copy(valSlice, value)
 
 	// 写入 key（在 value 前面）
 	keyOff := valOff - keyLen
 	*dataEnd += uint16(keyLen)
-	keyPtr := ptr + uintptr(keyOff)
-	keySlice := unsafe.Slice((*byte)(unsafe.Pointer(keyPtr)), keyLen)
+	keyPtr := unsafe.Pointer(uintptr(ptr) + uintptr(keyOff))
+	keySlice := unsafe.Slice((*byte)(keyPtr), keyLen)
 	copy(keySlice, key)
 
 	// 写入 entry
-	entryPtr := ptr + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofLeafEntry)
-	entry := (*LeafEntry)(unsafe.Pointer(entryPtr))
+	entryPtr := unsafe.Pointer(uintptr(ptr) + uintptr(SizeofPageHeader) + uintptr(index)*uintptr(SizeofLeafEntry))
+	entry := (*LeafEntry)(entryPtr)
 	entry.keyOff = uint32(keyOff)
 	entry.keyLen = keyLen
 	entry.valOff = uint32(valOff)

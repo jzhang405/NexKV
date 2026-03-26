@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 const (
@@ -28,7 +29,7 @@ var (
 // PageManager 管理 Off-Heap 内存中的 4KB 页面
 type PageManager struct {
 	allocator       OffHeapAllocator // 跨平台内存分配器
-	base            uintptr          // mmap 起始地址
+	base            unsafe.Pointer   // mmap 起始地址
 	total           uint32           // 总页数
 	used            atomic.Uint32    // 已使用页数
 	nextPageID      atomic.Uint32    // 下一个要分配的页面ID（单调递增）
@@ -136,12 +137,12 @@ func (pm *PageManager) AdvanceDelayedFreeList() int {
 }
 
 // PageIDToPtr 将 PageID 转换为内存地址
-func (pm *PageManager) PageIDToPtr(pageID uint32) uintptr {
+func (pm *PageManager) PageIDToPtr(pageID uint32) unsafe.Pointer {
 	if pageID >= pm.total {
 		panic(fmt.Sprintf("pageID %d out of range (total: %d)", pageID, pm.total))
 	}
 	offset := uintptr(pageID) * PageSize
-	return pm.base + offset
+	return unsafe.Pointer(uintptr(pm.base) + offset)
 }
 
 // Stats 返回 PageManager 统计信息

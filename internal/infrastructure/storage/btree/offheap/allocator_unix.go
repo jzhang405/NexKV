@@ -13,7 +13,7 @@ import (
 )
 
 type mmapAllocator struct {
-	base     uintptr
+	base     unsafe.Pointer
 	size     int
 	pageSize int
 }
@@ -32,24 +32,24 @@ func newPlatformAllocator(size int) (OffHeapAllocator, error) {
 	}
 
 	return &mmapAllocator{
-		base:     uintptr(unsafe.Pointer(&ptr[0])),
+		base:     unsafe.Pointer(&ptr[0]),
 		size:     size,
 		pageSize: syscall.Getpagesize(),
 	}, nil
 }
 
-func (m *mmapAllocator) Alloc(size int) (uintptr, error) {
+func (m *mmapAllocator) Alloc(size int) (unsafe.Pointer, error) {
 	// 简单实现：返回固定基地址
 	// 实际 PageManager 会管理具体的页面分配
 	if size > m.size {
-		return 0, fmt.Errorf("alloc size %d exceeds allocator size %d", size, m.size)
+		return nil, fmt.Errorf("alloc size %d exceeds allocator size %d", size, m.size)
 	}
 	return m.base, nil
 }
 
-func (m *mmapAllocator) Free(ptr uintptr, size int) error {
-	// 将 uintptr 转换为 []byte 用于 Munmap
-	b := (*[1 << 30]byte)(unsafe.Pointer(ptr))[:size:size]
+func (m *mmapAllocator) Free(ptr unsafe.Pointer, size int) error {
+	// 将 unsafe.Pointer 转换为 []byte 用于 Munmap
+	b := (*[1 << 30]byte)(ptr)[:size:size]
 	return syscall.Munmap(b)
 }
 

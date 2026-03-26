@@ -12,10 +12,10 @@ import (
 // OffHeapAllocator 跨平台 Off-Heap 内存分配接口
 type OffHeapAllocator interface {
 	// Alloc 分配指定大小的 Off-Heap 内存
-	Alloc(size int) (uintptr, error)
+	Alloc(size int) (unsafe.Pointer, error)
 
 	// Free 释放 Off-Heap 内存
-	Free(ptr uintptr, size int) error
+	Free(ptr unsafe.Pointer, size int) error
 
 	// Platform 返回支持的平台名称
 	Platform() string
@@ -37,13 +37,4 @@ func NewAllocator(size int) (OffHeapAllocator, error) {
 func platformPageSize() int {
 	// 默认 4KB，各平台实现会覆盖
 	return 4096
-}
-
-// uintptrToSlice 将 uintptr 转换为 byte slice
-// 注意：slice 不会影响底层数据的生命周期
-func uintptrToSlice(ptr uintptr, length int) []byte {
-	if length == 0 {
-		return []byte{}
-	}
-	return unsafe.Slice((*byte)(unsafe.Pointer(ptr)), length)
 }

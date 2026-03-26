@@ -393,11 +393,9 @@ func (a *OffHeapAdapter) CloneOffHeapPage(pageID model.PageID, isLeaf bool) (mod
 	dstPtr := a.pm.PageIDToPtr(newPageID)
 
 	// 4KB 页面复制
-	// 注意：这里 srcPtr/dstPtr 是 uintptr，指向 mmap 内存（不在 Go 堆上）
-	// 转换后立即使用，没有中间 GC 点，所以是安全的
-	// 参考：https://pkg.go.dev/unsafe#Pointer
-	srcSlice := unsafe.Slice((*byte)(unsafe.Pointer(srcPtr)), offheap.PageSize)
-	dstSlice := unsafe.Slice((*byte)(unsafe.Pointer(dstPtr)), offheap.PageSize)
+	// srcPtr/dstPtr 是 unsafe.Pointer，指向 mmap 内存（不在 Go 堆上）
+	srcSlice := unsafe.Slice((*byte)(srcPtr), offheap.PageSize)
+	dstSlice := unsafe.Slice((*byte)(dstPtr), offheap.PageSize)
 	copy(dstSlice, srcSlice)
 
 	// 更新新页面的版本号

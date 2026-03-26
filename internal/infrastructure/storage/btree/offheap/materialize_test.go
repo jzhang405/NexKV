@@ -266,7 +266,7 @@ func TestOffHeapMaterializer_LargeDataset(t *testing.T) {
 	keys := make([][]byte, count)
 	values := make([][]byte, count)
 
-	for i := 0; i < count; i++ {
+	for i := range count {
 		keys[i] = []byte{byte(i >> 8), byte(i & 0xFF)}
 		values[i] = make([]byte, 30) // 30 字节 value
 	}

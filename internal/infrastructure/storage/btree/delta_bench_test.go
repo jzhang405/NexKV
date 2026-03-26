@@ -31,8 +31,10 @@ func BenchmarkCopyPath_Shallow(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		_, path, err := tree.findLeafPage(ctx, []byte{byte(i % 100)})
+		i++
 		if err != nil {
 			continue
 		}
@@ -60,8 +62,10 @@ func BenchmarkCopyPath_WithDelta(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		_, path, err := tree.findLeafPage(ctx, []byte{byte(i % 100)})
+		i++
 		if err != nil {
 			continue
 		}
@@ -80,7 +84,7 @@ func BenchmarkLeafPage_Clone_Deep(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = page.Clone()
 	}
 }
@@ -96,7 +100,7 @@ func BenchmarkLeafPage_CloneWithDelta(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = page.CloneWithDelta()
 	}
 }
@@ -115,9 +119,11 @@ func BenchmarkLeafPage_SequentialWrites_WithDelta(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		// 每次写入不同的 key，触发增量追加
 		key := []byte{byte(i % 100)}
+		i++
 		value := []byte("value")
 		clonedPage.Insert(key, value)
 	}

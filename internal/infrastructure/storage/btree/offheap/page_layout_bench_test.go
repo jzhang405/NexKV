@@ -21,7 +21,7 @@ func BenchmarkPageAccessor_GetHeader(b *testing.B) {
 	pa.InitLeafPage(pageID, 1)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = pa.GetHeader(pageID)
 	}
 }
@@ -40,7 +40,7 @@ func BenchmarkPageAccessor_SearchKey(b *testing.B) {
 	var dataEnd uint16 = 0
 
 	// 插入 100 个条目
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		key := []byte{byte(i >> 8), byte(i & 0xFF)}
 		value := make([]byte, 30)
 		_ = pa.InsertLeafEntry(pageID, i, key, value, &dataEnd)
@@ -50,7 +50,7 @@ func BenchmarkPageAccessor_SearchKey(b *testing.B) {
 	searchKey := []byte{99, 0}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _ = pa.SearchKey(pageID, searchKey, true)
 	}
 }
@@ -66,7 +66,7 @@ func BenchmarkPageAccessor_InsertLeafEntry(b *testing.B) {
 	pa := NewPageAccessor(pm)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		// 每次使用新页面
 		pageID, _ := pm.Alloc()
 		pa.InitLeafPage(pageID, 1)
@@ -91,7 +91,7 @@ func BenchmarkPageAccessor_InsertIndexEntry(b *testing.B) {
 	pa := NewPageAccessor(pm)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		// 每次使用新页面
 		pageID, _ := pm.Alloc()
 		pa.InitIndexPage(pageID, 1)
@@ -125,7 +125,7 @@ func BenchmarkPageAccessor_GetKey(b *testing.B) {
 	entry := pa.GetLeafEntry(pageID, 0)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = pa.GetKey(pageID, entry.keyOff, entry.keyLen)
 	}
 }
@@ -150,7 +150,7 @@ func BenchmarkPageAccessor_GetValue(b *testing.B) {
 	entry := pa.GetLeafEntry(pageID, 0)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = pa.GetValue(pageID, entry.valOff, entry.valLen)
 	}
 }
@@ -168,7 +168,7 @@ func BenchmarkPageAccessor_Version(b *testing.B) {
 	pa.InitLeafPage(pageID, 42)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = pa.GetVersion(pageID)
 	}
 }

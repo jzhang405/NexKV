@@ -94,9 +94,11 @@ func BenchmarkMmap_FirstAccess(b *testing.B) {
 	defer pm.Close()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		// 循环使用前 100 个页面
 		pageID := uint32(i % 100)
+		i++
 		// 分配（如果需要）
 		if pageID >= pm.GetStats().Total {
 			b.Fatal("ran out of pages")
@@ -144,7 +146,7 @@ func BenchmarkPageIDToPtr(b *testing.B) {
 	pageID, _ := pm.Alloc()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		ptr := pm.PageIDToPtr(pageID)
 		slice := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), 1)
 		_ = slice[0]

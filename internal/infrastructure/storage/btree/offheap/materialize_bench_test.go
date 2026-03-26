@@ -27,7 +27,7 @@ func BenchmarkOffHeapMaterializer_MaterializeSmall(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		pageID, _ := pm.Alloc()
 		_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 		pm.Free(pageID)
@@ -53,7 +53,7 @@ func BenchmarkOffHeapMaterializer_MaterializeMedium(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		pageID, _ := pm.Alloc()
 		_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 		pm.Free(pageID)
@@ -82,7 +82,7 @@ func BenchmarkOffHeapMaterializer_VerifyPage(b *testing.B) {
 	_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = m.VerifyPage(pageID, keys)
 	}
 }
@@ -112,7 +112,7 @@ func BenchmarkOffHeapMaterializer_BinarySearch(b *testing.B) {
 	searchKey := keys[50]
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, _ = m.BinarySearchInPage(pageID, searchKey)
 	}
 }
@@ -139,7 +139,7 @@ func BenchmarkOffHeapMaterializer_GetSnapshot(b *testing.B) {
 	_, _ = m.MaterializePageFromBytes(pageID, keys, values)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = m.GetPageSnapshot(pageID)
 	}
 }
@@ -155,7 +155,7 @@ func BenchmarkTraditionalDeepCopy(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		// 深拷贝 keys
 		newKeys := make([][]byte, len(keys))
 		copy(newKeys, keys)

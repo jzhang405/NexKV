@@ -38,10 +38,12 @@ func newPlatformAllocator(size int) (OffHeapAllocator, error) {
 		return nil, fmt.Errorf("VirtualAlloc failed: %w", err)
 	}
 
-	// VirtualAlloc 返回的指针指向 OS 管理的内存，不在 Go 堆上
-	// 因此可以安全地从 uintptr 转换为 unsafe.Pointer 存储
-	// 参考：https://pkg.go.dev/unsafe#Pointer
-	// "It is valid both to convert a pointer to uintptr and back"
+	// VirtualAlloc 返回 uintptr，需要转换为 unsafe.Pointer
+	// 这是安全的，因为：
+	// 1. ptr 指向 OS 管理的内存，不在 Go 堆上
+	// 2. GC 不会移动这块内存
+	// 3. 转换后立即存储，没有中间 GC 点
+	//nolint:unsafeptr // VirtualAlloc 返回 uintptr，这是安全的转换
 	return &virtualAllocAllocator{
 		base:     unsafe.Pointer(ptr),
 		size:     size,

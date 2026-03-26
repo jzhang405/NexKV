@@ -6,6 +6,7 @@ package offheap
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -237,7 +238,7 @@ func TestStability_LongRunning(t *testing.T) {
 	const goroutines = 10
 
 	stopCh := make(chan struct{})
-	var opsCount uint64
+	var opsCountAtomic atomic.Uint64
 
 	start := time.Now()
 
@@ -256,10 +257,10 @@ func TestStability_LongRunning(t *testing.T) {
 
 					// 模拟使用
 					pa := NewPageAccessor(pm)
-					pa.InitLeafPage(pageID, uint64(opsCount))
+					pa.InitLeafPage(pageID, opsCountAtomic.Load())
 
 					pm.Free(pageID)
-					opsCount++
+					opsCountAtomic.Add(1)
 				}
 			}
 		}(i)
@@ -273,6 +274,7 @@ func TestStability_LongRunning(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	elapsed := time.Since(start)
+	opsCount := opsCountAtomic.Load()
 	t.Logf("长运行测试：运行 %v，完成 %d 次操作，吞吐量：%.0f ops/sec",
 		elapsed, opsCount, float64(opsCount)/elapsed.Seconds())
 

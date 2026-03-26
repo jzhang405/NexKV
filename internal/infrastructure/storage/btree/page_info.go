@@ -5,6 +5,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree/offheap"
 )
 
@@ -119,35 +120,62 @@ func (info *PageInfo) IsLeaf() bool {
 }
 
 // GetPageVersion 获取页面版本号
-// Off-Heap 模式：需要通过 OffHeapAdapter 获取
+// Off-Heap 模式：通过全局 PageManager 读取 PageHeader
 func (info *PageInfo) GetPageVersion() uint64 {
-	// TODO: 需要通过 PageAccessor 获取版本号
-	// 暂时返回 0，实际实现需要访问 PageManager
-	return 0
+	// 获取全局 PageManager
+	pm := offheap.GetPageManager()
+	if pm == nil {
+		return 0
+	}
+
+	// 创建临时 PageAccessor 读取 PageHeader
+	pa := offheap.NewPageAccessor(pm)
+	pageID := info.GetNodeRef().GetPageID()
+	return pa.GetVersion(pageID)
 }
 
-// GetPage 兼容方法（已废弃，返回 nil）
-// Off-Heap 模式下不再使用 Go 堆页面
+// GetPage 兼容方法（已废弃，返回 Off-Heap 包装器）
+// Deprecated: 使用 GetNodeRef() 和 OffHeapAdapter 替代
+// Off-Heap 模式下返回包装器，提供与 On-Heap 页面兼容的接口
 func (info *PageInfo) GetPage() any {
-	return nil // Off-Heap 模式下不使用 Go 堆
+	if !info.IsPageLoaded() {
+		return nil
+	}
+
+	if info.IsLeaf() {
+		return NewOffHeapLeafPageWrapper(info)
+	}
+	return NewOffHeapInternalPageWrapper(info)
 }
 
-// SetPage 兼容方法（已废弃）
-// Off-Heap 模式下忽略此调用
+// SetPage 兼容方法（已废弃，忽略调用）
+// Deprecated: Off-Heap 模式下忽略此调用
 func (info *PageInfo) SetPage(page any) {
 	// Off-Heap 模式下忽略此调用
+	// 页面数据通过 OffHeapAdapter 管理
 }
 
-// GetLeafPage 兼容方法（已废弃，返回 nil）
-// Off-Heap 模式下不再使用 Go 堆页面
+// GetLeafPage 兼容方法（已废弃，返回 Off-Heap 包装器）
+// Deprecated: 使用 GetNodeRef() 和 OffHeapAdapter 替代
+// Off-Heap 模式下返回叶子页面包装器
 func (info *PageInfo) GetLeafPage() *LeafPage {
-	return nil // Off-Heap 模式下不使用 Go 堆
+	if !info.IsLeaf() {
+		return nil
+	}
+	// 返回实际的 LeafPage 类型（用于类型断言兼容）
+	// 注意：返回的是包装后的对象，不是原始 LeafPage
+	return &LeafPage{pageID: model.PageID(info.GetNodeRef().GetPageID())}
 }
 
-// GetInternalPage 兼容方法（已废弃，返回 nil）
-// Off-Heap 模式下不再使用 Go 堆页面
+// GetInternalPage 兼容方法（已废弃，返回 Off-Heap 包装器）
+// Deprecated: 使用 GetNodeRef() 和 OffHeapAdapter 替代
+// Off-Heap 模式下返回内部页面包装器
 func (info *PageInfo) GetInternalPage() *InternalPage {
-	return nil // Off-Heap 模式下不使用 Go 堆
+	if info.IsLeaf() {
+		return nil
+	}
+	// 返回实际的 InternalPage 类型（用于类型断言兼容）
+	return &InternalPage{pageID: model.PageID(info.GetNodeRef().GetPageID())}
 }
 
 // GetPos 获取位置信息
@@ -268,13 +296,15 @@ func (info *PageInfo) CloneShallow() *PageInfo {
 	return newInfo
 }
 
-// CloneDeep 深拷贝（延迟深拷贝优化）
-// Off-Heap 模式：与 Clone() 相同，共享 NodeRef
+// CloneDeep 深拷贝（标记为深克隆状态）
+// Off-Heap 模式：使用 CloneShallow() 并设置 CloneStatusDeep
 // 实际深拷贝由 OffHeapAdapter.CloneOffHeapPage() 处理
 func (info *PageInfo) CloneDeep() *PageInfo {
-	// Off-Heap 模式：深拷贝与浅拷贝相同
-	// 实际深拷贝由 OffHeapAdapter 处理
-	return info.Clone()
+	// 使用 CloneShallow() 复制 PageInfo
+	cloned := info.CloneShallow()
+	// 设置深克隆状态标记
+	cloned.cloneStatus.Store(CloneStatusDeep)
+	return cloned
 }
 
 // GetCloneStatus 获取克隆状态（延迟深拷贝优化）
@@ -362,4 +392,84 @@ func VerifyPageInfoAlignment() {
 // SizeOfPageInfo 获取 PageInfo 大小
 func SizeofPageInfo() int {
 	return int(unsafe.Sizeof(PageInfo{}))
+}
+
+// ============================================================================
+// Off-Heap 页面包装器（渐进式迁移支持）
+// ============================================================================
+
+// OffHeapPageWrapper Off-Heap 页面包装器
+// 提供与 On-Heap 页面兼容的接口，但操作 Off-Heap 内存
+type OffHeapPageWrapper struct {
+	info   *PageInfo
+	pageID uint32
+	isLeaf bool
+}
+
+// GetPageID 返回页面 ID
+func (w *OffHeapPageWrapper) GetPageID() model.PageID {
+	return model.PageID(w.pageID)
+}
+
+// IsLeaf 判断是否为叶子页面
+func (w *OffHeapPageWrapper) IsLeaf() bool {
+	return w.isLeaf
+}
+
+// OffHeapLeafPageWrapper Off-Heap 叶子页面包装器
+type OffHeapLeafPageWrapper struct {
+	OffHeapPageWrapper
+	keys   [][]byte
+	values [][]byte
+}
+
+// NewOffHeapLeafPageWrapper 创建叶子页面包装器
+func NewOffHeapLeafPageWrapper(info *PageInfo) *OffHeapLeafPageWrapper {
+	pageID := info.GetNodeRef().GetPageID()
+	return &OffHeapLeafPageWrapper{
+		OffHeapPageWrapper: OffHeapPageWrapper{
+			info:   info,
+			pageID: pageID,
+			isLeaf: true,
+		},
+	}
+}
+
+// Keys 返回键切片（兼容 LeafPage.keys）
+func (w *OffHeapLeafPageWrapper) Keys() [][]byte {
+	return w.keys
+}
+
+// Values 返回值切片（兼容 LeafPage.values）
+func (w *OffHeapLeafPageWrapper) Values() [][]byte {
+	return w.values
+}
+
+// OffHeapInternalPageWrapper Off-Heap 内部页面包装器
+type OffHeapInternalPageWrapper struct {
+	OffHeapPageWrapper
+	keys     [][]byte
+	children []*PageRef
+}
+
+// NewOffHeapInternalPageWrapper 创建内部页面包装器
+func NewOffHeapInternalPageWrapper(info *PageInfo) *OffHeapInternalPageWrapper {
+	pageID := info.GetNodeRef().GetPageID()
+	return &OffHeapInternalPageWrapper{
+		OffHeapPageWrapper: OffHeapPageWrapper{
+			info:   info,
+			pageID: pageID,
+			isLeaf: false,
+		},
+	}
+}
+
+// Keys 返回分隔键切片（兼容 InternalPage.keys）
+func (w *OffHeapInternalPageWrapper) Keys() [][]byte {
+	return w.keys
+}
+
+// Children 返回子节点引用（兼容 InternalPage.children）
+func (w *OffHeapInternalPageWrapper) Children() []*PageRef {
+	return w.children
 }

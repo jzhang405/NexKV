@@ -116,32 +116,57 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 		return ErrRetry
 	}
 
-	// Step 8: 如果 pageID 变化（update 场景），返回 ErrRetry
-	// 因为 UpdateLeafEntry 重新分配了页面，分裂应该基于新页面而不是旧页面
+	// Step 8: 如果 pageID 变化（update 场景），区分两种情况
+	// 场景 1：UpdateLeafEntry 重新分配了页面，数据已写入，不需要重试
+	// 场景 2：需要分裂，必须重试以获取新的路径
 	if newPageID != oldPageID {
-		// 检查是否是根节点（单层树）
-		if len(path) == 1 && leafRef == b.rootRef.PageRef {
-			// 特殊处理：根节点的 update 场景
-			// 需要更新 rootRef 而不是只更新 PageRefCache
-			oldRootInfo := b.rootRef.pInfo.Load()
-			oldRootID := uint64(0)
-			if oldRootInfo != nil {
-				oldRootID = oldRootInfo.GetPageID()
+		if !splitRequired {
+			// ✅ 场景 1：UpdateLeafEntry，数据已写入，直接返回成功
+			// 检查是否是根节点（单层树）
+			if len(path) == 1 && leafRef == b.rootRef.PageRef {
+				// 特殊处理：根节点的 update 场景
+				// 需要更新 rootRef 而不是只更新 PageRefCache
+				oldRootInfo := b.rootRef.pInfo.Load()
+				oldRootID := uint64(0)
+				if oldRootInfo != nil {
+					oldRootID = oldRootInfo.GetPageID()
+				}
+				if !b.rootRef.ReplacePage(oldRootID, newInfo) {
+					// CAS 失败，返回重试
+					return ErrRetry
+				}
+				// 更新 PageRefCache（原子操作）
+				b.pageRefCache.Replace(oldPageID, newPageID, leafRef)
+			} else {
+				// 非根节点的 update 场景：原子更新 PageRefCache
+				b.pageRefCache.Replace(oldPageID, newPageID, leafRef)
 			}
-			if !b.rootRef.ReplacePage(oldRootID, newInfo) {
-				// CAS 失败，返回重试
-				return ErrRetry
-			}
-			// 更新 PageRefCache
-			b.pageRefCache.Delete(oldPageID)
-			b.pageRefCache.Update(newPageID, leafRef)
+			// ✅ 不重试，避免覆盖其他数据（数据已经成功写入）
+			return nil
 		} else {
-			// 非根节点的 update 场景：正常处理
-			b.pageRefCache.Delete(oldPageID)
-			b.pageRefCache.Update(newPageID, leafRef)
+			// ⚠️ 场景 2：需要分裂，返回 ErrRetry 重新搜索路径
+			// 检查是否是根节点（单层树）
+			if len(path) == 1 && leafRef == b.rootRef.PageRef {
+				// 特殊处理：根节点的 update 场景
+				// 需要更新 rootRef 而不是只更新 PageRefCache
+				oldRootInfo := b.rootRef.pInfo.Load()
+				oldRootID := uint64(0)
+				if oldRootInfo != nil {
+					oldRootID = oldRootInfo.GetPageID()
+				}
+				if !b.rootRef.ReplacePage(oldRootID, newInfo) {
+					// CAS 失败，返回重试
+					return ErrRetry
+				}
+				// 更新 PageRefCache（原子操作）
+				b.pageRefCache.Replace(oldPageID, newPageID, leafRef)
+			} else {
+				// 非根节点的 update 场景：原子更新 PageRefCache
+				b.pageRefCache.Replace(oldPageID, newPageID, leafRef)
+			}
+			// 返回 ErrRetry，让外层重新搜索路径并处理新页面的分裂
+			return ErrRetry
 		}
-		// 返回 ErrRetry，让外层重新搜索路径并处理新页面的分裂
-		return ErrRetry
 	}
 
 	// Step 9: 检查是否需要分裂（同步，在锁保护下）

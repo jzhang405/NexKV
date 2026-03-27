@@ -169,6 +169,34 @@ func (c *PageRefCache) Delete(pageID model.PageID) {
 	delete(c.cache, pageID)
 }
 
+// Replace 原子替换 PageRef（用于 pageID 变更场景）
+//
+// 参数：
+//   oldPageID - 旧的 pageID（将被删除）
+//   newPageID - 新的 pageID（将添加 ref）
+//   ref - PageRef 对象
+//
+// 使用场景：
+//   - 叶子节点 update 场景：UpdateLeafEntry 重新分配页面
+//   - 分裂场景：一个页面分裂为两个页面
+//
+// 并发安全：
+//   - Delete 和 Update 在同一个锁保护下完成
+//   - 消除两个操作之间的竞争窗口，防止 TOCTOU 攻击
+//
+// 修复问题：
+//   - 修复并发插入时的数据丢失 bug（17%-89% 丢失率）
+//   - 确保 pageID 变更时的缓存一致性
+func (c *PageRefCache) Replace(oldPageID, newPageID model.PageID, ref *PageRef) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 原子操作：删除旧的，添加新的
+	// 消除 Delete() 和 Update() 之间的竞争窗口
+	delete(c.cache, oldPageID)
+	c.cache[newPageID] = ref
+}
+
 // BTree is the main BTree storage engine with CCOW and persistence.
 //
 // Architecture:

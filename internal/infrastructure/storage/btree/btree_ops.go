@@ -227,10 +227,15 @@ func (b *BTree) SetWithRetryAndQueue(
 		err := b.setWithLeafLock(ctx, key, value)
 		switch err {
 		case nil:
-			// 操作成功，推进 epoch 释放待释放页面
+			// ✅ 只有真正成功（不重试）才推进 epoch
+			// ErrRetry 意味着操作未完成（例如 pageID 变化需要重试）
+			// 过早推进 epoch 会导致页面被释放，其他 goroutine 可能访问已释放的页面
 			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
 			return nil // 成功
 		case ErrRetry:
+			// ✅ ErrRetry：数据可能未真正写入，不要推进 epoch
+			// 例如：UpdateLeafEntry 成功但 pageID 变化，需要重试
+			// 如果此时推进 epoch，可能导致旧页面被释放，其他 goroutine 访问失败
 			if attempt < maxFastRetries-1 {
 				runtime.Gosched()
 			}

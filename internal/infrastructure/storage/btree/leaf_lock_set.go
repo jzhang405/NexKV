@@ -435,7 +435,8 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 			insertIndex := 0
 			childFound := false
 			for i := range int(parentCount) {
-				_, _, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(parentPageIDForSearch), i)
+				_, _, encodedChild := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(parentPageIDForSearch), i)
+				child, _ := b.offheapAdapter.DecodeChildWithVersion(encodedChild)
 				if child == uint32(leafPageID) {
 					// 找到旧页面的位置，替换为新页面
 					insertIndex = i

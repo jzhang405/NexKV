@@ -1000,7 +1000,8 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 				childIndex := 0
 				count := b.offheapAdapter.pa.GetCount(uint32(oldParentPageID))
 				for i := 0; i < int(count); i++ {
-					keyOff, keyLen, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(oldParentPageID), i)
+					keyOff, keyLen, encodedChild := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(oldParentPageID), i)
+					child, _ := b.offheapAdapter.DecodeChildWithVersion(encodedChild)
 					k := b.offheapAdapter.pa.GetKey(uint32(oldParentPageID), keyOff, keyLen)
 					// 如果找到匹配的 child 或者 key 大于当前 key，就找到了位置
 					if model.PageID(child) == oldPageID || bytes.Compare(k, key) > 0 {

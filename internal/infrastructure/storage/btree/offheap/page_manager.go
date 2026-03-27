@@ -28,14 +28,15 @@ var (
 
 // PageManager 管理 Off-Heap 内存中的 4KB 页面
 type PageManager struct {
-	allocator       OffHeapAllocator // 跨平台内存分配器
-	base            unsafe.Pointer   // mmap 起始地址
-	total           uint32           // 总页数
-	used            atomic.Uint32    // 已使用页数
-	nextPageID      atomic.Uint32    // 下一个要分配的页面ID（单调递增）
-	freeList        *LockFreeQueue   // 空闲 PageID 队列（lock-free，暂时保留但不使用）
-	delayedFreeList *LockFreeQueue   // 延迟释放 PageID 队列（已释放但需等待1个epoch）
-	initOnce        sync.Once        //nolint:unused // 确保初始化一次
+	allocator       OffHeapAllocator       // 跨平台内存分配器
+	base            unsafe.Pointer          // mmap 起始地址
+	total           uint32                  // 总页数
+	used            atomic.Uint32           // 已使用页数
+	nextPageID      atomic.Uint32           // 下一个要分配的页面ID（单调递增）
+	freeList        *LockFreeQueue          // 空闲 PageID 队列（lock-free，暂时保留但不使用）
+	delayedFreeList *LockFreeQueue          // 延迟释放 PageID 队列（已释放但需等待1个epoch）
+	tracker         *PageLifecycleTracker   // 页面生命周期追踪器（调试用）
+	initOnce        sync.Once               //nolint:unused // 确保初始化一次
 }
 
 // InitPageManager 初始化全局 PageManager
@@ -86,6 +87,7 @@ func NewPageManager(mmapSize int) (*PageManager, error) {
 		nextPageID:      atomic.Uint32{},    // 初始化为0
 		freeList:        NewLockFreeQueue(), // 保留但不使用
 		delayedFreeList: NewLockFreeQueue(),
+		tracker:         NewPageLifecycleTracker(false), // 默认禁用追踪
 	}
 
 	// 不再预分配所有 PageID，使用单调递增的 nextPageID
@@ -105,6 +107,10 @@ func (pm *PageManager) Alloc() (uint32, error) {
 	// 原子递增 nextPageID
 	pm.nextPageID.Add(1)
 	pm.used.Add(1)
+
+	// 调试追踪：记录页面分配
+	pm.tracker.RecordAlloc(pageID)
+
 	return pageID, nil
 }
 
@@ -114,6 +120,10 @@ func (pm *PageManager) Free(pageID uint32) error {
 	if pageID >= pm.total {
 		return fmt.Errorf("invalid pageID %d (total: %d)", pageID, pm.total)
 	}
+
+	// 调试追踪：记录页面释放
+	pm.tracker.RecordFree(pageID)
+
 	pm.delayedFreeList.Enqueue(pageID)
 	pm.used.Add(^uint32(0)) // decrement
 	return nil
@@ -183,4 +193,36 @@ func (pm *PageManager) Platform() string {
 // PageSize 返回页面大小
 func (pm *PageManager) PageSize() int {
 	return PageSize
+}
+
+// EnablePageTracking 启用页面生命周期追踪（调试用）
+func (pm *PageManager) EnablePageTracking() {
+	pm.tracker.Enable()
+	DebugPrintf("[PAGE_MANAGER] Page lifecycle tracking ENABLED")
+}
+
+// DisablePageTracking 禁用页面生命周期追踪
+func (pm *PageManager) DisablePageTracking() {
+	pm.tracker.Disable()
+	DebugPrintf("[PAGE_MANAGER] Page lifecycle tracking DISABLED")
+}
+
+// GetPageTracker 获取页面生命周期追踪器（调试用）
+func (pm *PageManager) GetPageTracker() *PageLifecycleTracker {
+	return pm.tracker
+}
+
+// GetPage4095Report 获取 Page 4095 的专门报告（调试用）
+func (pm *PageManager) GetPage4095Report() string {
+	return pm.tracker.GetPage4095Report()
+}
+
+// GetHighPageIDReport 获取所有 > 4000 的页面报告（调试用）
+func (pm *PageManager) GetHighPageIDReport() string {
+	return pm.tracker.GetHighPageIDReport()
+}
+
+// GetPageTrackingStats 获取追踪统计信息（调试用）
+func (pm *PageManager) GetPageTrackingStats() map[string]interface{} {
+	return pm.tracker.Stats()
 }

@@ -13,22 +13,27 @@ func TestNewPageInfo(t *testing.T) {
 
 	assert.NotNil(t, info)
 	assert.Equal(t, int64(0), info.pos.Load())
-	assert.Nil(t, info.page)
-	assert.NotNil(t, info.pageLock)
 	assert.False(t, info.IsDirty())
 	assert.False(t, info.IsSplitted())
 	assert.Equal(t, int32(0), info.metaVersion)
-	assert.Equal(t, int32(PageSize), info.pageSize)
 	assert.Greater(t, info.lastTime.Load(), int64(0))
 	assert.Equal(t, int64(0), info.hits.Load())
+	// Off-Heap 模式：NodeRef 初始为 0（无效）
+	assert.Equal(t, uint64(0), info.nodeRef.Load())
 }
 
 func TestPageInfo_GetSetPage(t *testing.T) {
 	info := NewPageInfo()
-	page := &Page{ID: 1}
+	// Off-Heap 模式：GetPage 返回 Off-Heap 页面包装器
+	// 注意：pageID=0 被认为有效，所以返回 InternalPage 包装器（默认 isLeaf=false）
+	page := info.GetPage()
+	assert.NotNil(t, page) // 返回包装器，不是 nil
 
-	info.SetPage(page)
-	assert.Equal(t, page, info.GetPage())
+	// SetPage 被忽略（兼容方法）
+	info.SetPage(&Page{ID: 1})
+	// GetPage 仍然返回包装器，不受 SetPage 影响
+	page2 := info.GetPage()
+	assert.NotNil(t, page2)
 }
 
 func TestPageInfo_GetSetPos(t *testing.T) {
@@ -124,7 +129,6 @@ func TestPageInfo_Clone(t *testing.T) {
 	// 创建原始 PageInfo
 	original := NewPageInfo()
 	original.SetPos(12345)
-	original.SetPage(&Page{ID: 1})
 	original.MarkDirty()
 	original.MarkSplitted()
 	original.metaVersion = 5
@@ -135,7 +139,7 @@ func TestPageInfo_Clone(t *testing.T) {
 
 	// 验证字段复制
 	assert.Equal(t, original.pos.Load(), cloned.pos.Load())
-	assert.Equal(t, original.page, cloned.page) // 浅拷贝 Page 指针
+	assert.Equal(t, original.nodeRef.Load(), cloned.nodeRef.Load()) // NodeRef 共享
 	assert.Equal(t, original.lastTime.Load(), cloned.lastTime.Load())
 	assert.Equal(t, original.hits.Load(), cloned.hits.Load())
 	assert.Equal(t, original.IsDirty(), cloned.IsDirty())
@@ -222,7 +226,7 @@ func TestPageInfo_DirtyMarkingConcurrency(t *testing.T) {
 // Benchmark PageInfo 操作性能
 func BenchmarkPageInfo_NewPageInfo(b *testing.B) {
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = NewPageInfo()
 	}
 }
@@ -230,7 +234,7 @@ func BenchmarkPageInfo_NewPageInfo(b *testing.B) {
 func BenchmarkPageInfo_Touch(b *testing.B) {
 	info := NewPageInfo()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		info.Touch()
 	}
 }
@@ -239,7 +243,7 @@ func BenchmarkPageInfo_Clone(b *testing.B) {
 	info := NewPageInfo()
 	info.SetPage(&Page{ID: 1})
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = info.Clone()
 	}
 }
@@ -248,7 +252,7 @@ func BenchmarkPageInfo_GetSetPage(b *testing.B) {
 	info := NewPageInfo()
 	page := &Page{ID: 1}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		info.SetPage(page)
 		_ = info.GetPage()
 	}
@@ -257,7 +261,7 @@ func BenchmarkPageInfo_GetSetPage(b *testing.B) {
 func BenchmarkPageInfo_MarkDirty(b *testing.B) {
 	info := NewPageInfo()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		info.MarkDirty()
 		info.ClearDirty()
 	}

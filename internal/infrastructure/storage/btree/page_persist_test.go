@@ -290,7 +290,7 @@ func BenchmarkPageManager_Write(b *testing.B) {
 	defer pm.Close()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		pageID := pm.AllocatePage()
 		page := NewPage(pageID, model.LeafPage)
 		page.MarkDirty()
@@ -317,7 +317,7 @@ func BenchmarkPageManager_Read(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		pageID := model.PageID(i % numPages)
 		_, _ = pm.ReadPage(pageID)
 	}

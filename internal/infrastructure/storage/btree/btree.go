@@ -53,6 +53,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -60,6 +61,7 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/concurrency"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree/offheap"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/wal"
 )
 
@@ -78,7 +80,94 @@ var (
 
 	// ErrKeyNotFound is returned when a key is not found in the tree.
 	ErrKeyNotFound = errors.New("key not found")
+
+	// ErrPageStale is returned when a page state is stale during concurrent operations.
+	// This can happen when a Get operation reads a page that is being split or freed.
+	// The caller should retry the operation.
+	ErrPageStale = errors.New("page state stale, retry")
+
+	// ErrCircularReference is returned when a circular reference is detected in the B-Tree.
+	// This can happen during concurrent operations when a page is reused after being freed.
+	// The caller should retry the operation with exponential backoff.
+	ErrCircularReference = errors.New("circular reference detected, retry with backoff")
 )
+
+// PageRefCache 维护 PageID → PageRef 的映射（Off-Heap 模式）
+// 用于快速查找已有的 PageRef，避免重复创建
+type PageRefCache struct {
+	cache map[model.PageID]*PageRef
+	mu    sync.RWMutex
+}
+
+// NewPageRefCache 创建新的 PageRefCache
+func NewPageRefCache() *PageRefCache {
+	return &PageRefCache{
+		cache: make(map[model.PageID]*PageRef),
+	}
+}
+
+// GetOrCreate 获取或创建 PageRef
+func (c *PageRefCache) GetOrCreate(pageID model.PageID, isLeaf bool) *PageRef {
+	c.mu.RLock()
+	ref, ok := c.cache[pageID]
+	c.mu.RUnlock()
+
+	if ok {
+		// 验证 PageRef 是否仍然有效
+		// 如果缓存的 PageRef 的 pageID 与请求的 pageID 不匹配，说明缓存不一致
+		currentInfo := ref.GetPageInfo()
+		if currentInfo != nil && currentInfo.GetPageID() != uint64(pageID) {
+			// 缓存不一致：pageID 被重用，但缓存仍指向旧的 PageInfo
+			// 重新创建 PageRef
+			c.mu.Lock()
+			defer c.mu.Unlock()
+
+			// Double-check after acquiring write lock
+			if ref, ok := c.cache[pageID]; ok && ref.GetPageInfo().GetPageID() == uint64(pageID) {
+				return ref
+			}
+
+			// 创建新的 PageRef
+			info := NewPageInfo()
+			info.SetNodeRef(offheap.NewNodeRef(uint32(pageID), isLeaf))
+			newRef := NewPageRefWithInfo(info)
+			c.cache[pageID] = newRef
+			return newRef
+		}
+		return ref
+	}
+
+	// 需要创建新的 PageRef
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Double-check
+	if ref, ok := c.cache[pageID]; ok {
+		return ref
+	}
+
+	// 创建新的 PageInfo 和 PageRef
+	info := NewPageInfo()
+	info.SetNodeRef(offheap.NewNodeRef(uint32(pageID), isLeaf))
+
+	ref = NewPageRefWithInfo(info)
+	c.cache[pageID] = ref
+	return ref
+}
+
+// Update 更新 PageRef（用于分裂等场景）
+func (c *PageRefCache) Update(pageID model.PageID, ref *PageRef) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cache[pageID] = ref
+}
+
+// Delete 删除 PageRef
+func (c *PageRefCache) Delete(pageID model.PageID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.cache, pageID)
+}
 
 // BTree is the main BTree storage engine with CCOW and persistence.
 //
@@ -100,12 +189,17 @@ type BTree struct {
 	chunkMgr *ChunkManager // Append-only storage manager
 	wal      wal.WAL       // Write-Ahead Log for crash recovery
 
+	// Off-Heap storage
+	offheapPM      *offheap.PageManager // Off-Heap 页面管理器
+	offheapAdapter *OffHeapAdapter      // Off-Heap 适配器
+	pageRefCache   *PageRefCache        // PageID → PageRef 映射（Off-Heap 模式）
+
 	// Configuration
 	maxLevels int  // Maximum tree levels
 	enableWAL bool // Enable WAL logging
 
 	// PageID management
-	nextPageID atomic.Uint64 // Next page ID to allocate (lock-free)
+	nextPageID atomic.Uint64 //nolint:unused // Next page ID to allocate (lock-free)
 
 	// Persistence coordination
 	writeMu sync.Mutex // Global write lock for persistence operations
@@ -114,8 +208,101 @@ type BTree struct {
 	stats            *PageStats // 页面访问统计（热数据识别）
 	hotPageThreshold int64      // 热数据阈值（来自配置）
 
-	// Scheduler for concurrent write operations (方案 2：移除 Direct 模式)
+	// Scheduler for concurrent write operations
 	scheduler *concurrency.TaskScheduler // Task scheduler for concurrent operations
+
+	// Split coordination: 防止多个 goroutine 同时分裂同一页面
+	splitMuMap sync.Map // map[uint32]*sync.Mutex - 页面级别的分裂锁
+
+	// Epoch-based page release: 延迟释放页面避免竞态条件
+	epochBasedFreeList *EpochBasedFreeList
+}
+
+// EpochBasedFreeList 延迟释放列表
+// 页面在 CAS 成功后不立即释放，而是加入当前 epoch 的待释放列表
+// 在下一个 epoch 开始时才真正释放页面
+type EpochBasedFreeList struct {
+	currentEpoch uint64                    // 当前 epoch
+	pending      map[uint64][]model.PageID // epoch → 待释放页面列表
+	mu           sync.Mutex
+}
+
+// NewEpochBasedFreeList 创建延迟释放列表
+func NewEpochBasedFreeList() *EpochBasedFreeList {
+	return &EpochBasedFreeList{
+		currentEpoch: 0,
+		pending:      make(map[uint64][]model.PageID),
+	}
+}
+
+// Add 添加页面到当前 epoch 的待释放列表
+func (e *EpochBasedFreeList) Add(pageID model.PageID) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// 调试日志：记录页面释放请求
+	stack := debug.Stack()
+	// 提取关键调用栈信息
+	caller := "<unknown>"
+	lines := strings.Split(string(stack), "\n")
+	for i := range len(lines) {
+		if strings.Contains(lines[i], "handleSplitOffHeapSync") || strings.Contains(lines[i], "splitInternal") {
+			caller = "split"
+			break
+		}
+	}
+
+	DebugPrintf("[EPOCH_ADD] epoch=%d pageID=%d caller=%s pending_count=%d\n",
+		e.currentEpoch, pageID, caller, len(e.pending[e.currentEpoch]))
+
+	e.pending[e.currentEpoch] = append(e.pending[e.currentEpoch], pageID)
+}
+
+// AdvanceEpoch 推进 epoch，释放 2 个 epoch 之前的页面
+// 延迟 2 个 epoch 策略：
+// - 当前 epoch: N
+// - 正在使用的 epoch: N-1（可能还有 goroutine 在访问）
+// - 可以安全释放的 epoch: N-2（所有 goroutine 应该已经完成）
+func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	oldEpoch := e.currentEpoch
+	e.currentEpoch++
+
+	// 释放 3 个 epoch 之前的页面（currentEpoch - 3）- 增加延迟到 3 个 epoch
+	// 第一步：将 N-2 的页面加入延迟释放列表
+	epochToDelayed := e.currentEpoch - 2
+	if e.currentEpoch >= 2 {
+		pagesToDelayed := e.pending[epochToDelayed]
+		delete(e.pending, epochToDelayed)
+
+		for _, pid := range pagesToDelayed {
+			DebugPrintf("[EPOCH_DELAYED] epoch=%d pageID=%d\n", epochToDelayed, pid)
+			pm.Free(uint32(pid))
+		}
+	}
+
+	// 第二步：将 N-3 的页面从延迟释放列表移到可用列表
+	epochToFree := e.currentEpoch - 3
+	if e.currentEpoch >= 3 {
+		pagesToFree := e.pending[epochToFree]
+		delete(e.pending, epochToFree)
+
+		// 调试日志：记录 epoch 推进
+		DebugPrintf("[EPOCH_ADVANCE] old=%d new=%d freeing_epoch=%d pages_to_free=%d\n",
+			oldEpoch, e.currentEpoch, epochToFree, len(pagesToFree))
+
+		// 将延迟释放列表中的页面移到可用列表
+		moved := pm.AdvanceDelayedFreeList()
+		if moved > 0 {
+			DebugPrintf("[EPOCH_DELAYED_ADVANCE] moved=%d pages from delayed to available\n", moved)
+		}
+	} else {
+		// 还没有到达可以释放的 epoch
+		DebugPrintf("[EPOCH_ADVANCE] old=%d new=%d pages_to_free=0 (waiting for epoch 3)\n",
+			oldEpoch, e.currentEpoch)
+	}
 }
 
 // BTreeSchedulerAdapter 实现 TaskScheduler 接口
@@ -180,12 +367,32 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		walImpl = w
 	}
 
-	// Create RootPageRef for atomic root updates
-	// 初始化空的根叶子节点
-	initialRootPage := NewLeafPage(model.PageID(0)) // 根叶子节点 ID = 0
+	// Off-Heap 存储（方案 B：完全替换）
+	// 创建 PageManager（64MB，支持 50000+ keys）
+	// 计算：50000 keys / 40 keys/page = 1250 页
+	//      内部节点约 1250/180 * 3层 ≈ 21 页
+	//      分裂开销 2x ≈ 2500 页
+	//      2500 * 4KB = 10MB（64MB 提供充足余量）
+	mmapSize := 64 * 1024 * 1024 // 64MB
+	offheapPM, err := offheap.NewPageManager(mmapSize)
+	if err != nil {
+		return nil, fmt.Errorf("create offheap page manager: %w", err)
+	}
+
+	// 创建 OffHeapAdapter
+	offheapAdapter := NewOffHeapAdapter(offheapPM)
+
+	// 分配初始根叶子节点（使用 Off-Heap）
+	initialRootPageID, err := offheapAdapter.AllocLeafPage()
+	if err != nil {
+		offheapPM.Close()
+		return nil, fmt.Errorf("alloc initial root leaf page: %w", err)
+	}
+
+	// 创建初始根 PageInfo（使用 NodeRef）
 	initialRootInfo := NewPageInfo()
-	initialRootInfo.SetPage(initialRootPage)
-	initialRootInfo.SetParentRef(nil) // 根节点没有父引用
+	initialRootInfo.SetNodeRef(offheap.NewNodeRef(uint32(initialRootPageID), true)) // true = isLeaf
+	initialRootInfo.SetParentRef(nil)                                               // 根节点没有父引用
 
 	rootPageRef := NewRootPageRefWithInfo(initialRootInfo)
 
@@ -198,17 +405,27 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// 创建性能优化组件
 	stats := NewPageStats()
 
+	// 创建 PageRefCache（Off-Heap 模式）
+	pageRefCache := NewPageRefCache()
+
+	// 创建 Epoch-based 延迟释放列表
+	epochBasedFreeList := NewEpochBasedFreeList()
+
 	btree := &BTree{
-		config:           config,
-		cowConfig:        cowConfig,
-		closed:           false,
-		rootRef:          rootPageRef,
-		chunkMgr:         chunkMgr,
-		wal:              walImpl,
-		maxLevels:        maxLevels,
-		enableWAL:        enableWAL,
-		stats:            stats,
-		hotPageThreshold: config.HotPageThreshold,
+		config:             config,
+		cowConfig:          cowConfig,
+		closed:             false,
+		rootRef:            rootPageRef,
+		chunkMgr:           chunkMgr,
+		wal:                walImpl,
+		offheapPM:          offheapPM,
+		offheapAdapter:     offheapAdapter,
+		pageRefCache:       pageRefCache,
+		maxLevels:          maxLevels,
+		enableWAL:          enableWAL,
+		stats:              stats,
+		hotPageThreshold:   config.HotPageThreshold,
+		epochBasedFreeList: epochBasedFreeList,
 	}
 
 	// 应用 GC 配置（如果指定）
@@ -233,13 +450,25 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	btree.scheduler = concurrency.NewTaskScheduler("btree", schedulerCores)
 
 	// 注册 btree-set 任务
-	err := btree.scheduler.RegisterTask(
+	err = btree.scheduler.RegisterTask(
 		func(item any) concurrency.TaskStatus {
+			// 检查 item 是否实现了 TaskRunner 接口
+			if runner, ok := item.(model.TaskRunner); ok {
+				// 同步执行任务（TaskScheduler 已经在 Worker 线程中）
+				runner.Run(context.Background(), nil)
+				// 等待任务完成
+				if task, ok := item.(interface {
+					Wait(context.Context) (any, error)
+				}); ok {
+					_, _ = task.Wait(context.Background())
+				}
+				return concurrency.TaskPassed
+			}
 			return concurrency.TaskPassed
 		},
 		"btree-set",
 		model.TaskPriorityNormal,
-		1, // 每个核心处理 1 个 shard
+		0, // executionOrder = 0 (数组索引 0)
 	)
 	if err != nil {
 		// 清理资源
@@ -250,6 +479,40 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 			walImpl.Close()
 		}
 		return nil, fmt.Errorf("register btree-set task: %w", err)
+	}
+
+	// 注册 btree-split 任务（异步父节点分裂）
+	// 基于 Lealone 的 asyncSplitPage() 设计
+	err = btree.scheduler.RegisterTask(
+		func(item any) concurrency.TaskStatus {
+			// 检查 item 是否实现了 TaskRunner 接口
+			if runner, ok := item.(model.TaskRunner); ok {
+				// 同步执行任务（TaskScheduler 已经在 Worker 线程中）
+				runner.Run(context.Background(), nil)
+				// 等待任务完成
+				if task, ok := item.(interface {
+					Wait(context.Context) (any, error)
+				}); ok {
+					_, _ = task.Wait(context.Background())
+				}
+				return concurrency.TaskPassed
+			}
+			return concurrency.TaskPassed
+		},
+		"btree-split",
+		model.TaskPriorityHigh, // 高优先级，优先处理父节点分裂
+		1,                      // executionOrder = 1 (数组索引 1)
+	)
+	if err != nil {
+		// 清理资源
+		if chunkMgr != nil {
+			chunkMgr.Close()
+		}
+		if walImpl != nil {
+			walImpl.Close()
+		}
+		btree.scheduler.Stop()
+		return nil, fmt.Errorf("register btree-split task: %w", err)
 	}
 
 	// 启动 TaskScheduler
@@ -285,58 +548,139 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 // Get retrieves a value by key with lazy loading support.
 //
 // This method implements the read path of the BTree:
-// 1. Find the path from Root to Leaf using searchPath()
-// 2. Lazy load pages at each level
-// 3. Search the leaf page for the key
-// 4. Return the value if found, or ErrKeyNotFound if not
+// 1. Find the path from Root to Leaf using searchPathWithRefs() (Off-Heap mode)
+// 2. Get the leaf PageRef and search for the key
+// 3. Return the value if found, or ErrKeyNotFound if not
 //
 // Performance:
 // - O(log n) page traversals
-// - Lazy loading: only pages needed are loaded from disk
-// - Lock-free reads after initial page load
+// - Off-Heap storage: no page loading overhead
+// - Lock-free reads using PageRefCache
 func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if b.closed {
 		return nil, ErrClosed
 	}
 
-	// Find the path to the leaf page using searchPath
-	path, err := b.searchPath(ctx, key)
-	if err != nil {
-		return nil, fmt.Errorf("search path: %w", err)
-	}
+	const maxRetries = 5 // 最多重试 5 次（增加以提高并发成功率）
 
-	if len(path) == 0 {
+	// 调试：追踪 key-06151、key-06267、key-06709、key-09803 和 multi-key-2 的查找过程
+	debugThisKey := string(key) == "key-06151" || string(key) == "key-06150" || string(key) == "key-06152" ||
+		string(key) == "key-06267" || string(key) == "key-06709" || string(key) == "key-09803" || string(key) == "multi-key-2"
+
+	for attempt := range maxRetries {
+		if debugThisKey {
+			DebugPrintf("[GET_DEBUG] key=%s attempt=%d\n", string(key), attempt)
+		}
+
+		// Off-Heap 模式：使用 searchPathWithRefs
+		leafRef, path, err := b.findLeafPageRef(ctx, key)
+		if err != nil {
+			// 如果查找路径失败且不是最后一次尝试，重试
+			if attempt < maxRetries-1 {
+				runtime.Gosched()
+				continue
+			}
+			return nil, fmt.Errorf("find leaf ref: %w", err)
+		}
+
+		if len(path) == 0 || leafRef == nil {
+			if debugThisKey {
+				DebugPrintf("[GET_DEBUG] key=%s path=%d leafRef=%v\n", string(key), len(path), leafRef != nil)
+			}
+			if attempt < maxRetries-1 {
+				runtime.Gosched()
+				continue
+			}
+			return nil, ErrKeyNotFound
+		}
+
+		// 获取叶子节点的 PageInfo
+		leafInfo := leafRef.GetPageInfo()
+		if leafInfo == nil {
+			if debugThisKey {
+				DebugPrintf("[GET_DEBUG] key=%s leafInfo=nil\n", string(key))
+			}
+			if attempt < maxRetries-1 {
+				runtime.Gosched()
+				continue
+			}
+			return nil, ErrKeyNotFound
+		}
+
+		// 获取叶子节点 PageID
+		leafPageID := model.PageID(leafInfo.GetPageID())
+
+		// Off-Heap 模式：验证页面已加载
+		if !leafInfo.IsPageLoaded() {
+			return nil, fmt.Errorf("leaf page not loaded")
+		}
+
+		// 使用 OffHeapAdapter.GetFromOffHeap 直接读取
+		value, found, err := b.offheapAdapter.GetFromOffHeap(leafPageID, key)
+		if debugThisKey {
+			DebugPrintf("[GET_DEBUG] key=%s leafPageID=%d found=%v err=%v\n", string(key), leafPageID, found, err)
+			// 打印页面的所有 keys
+			count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
+			DebugPrintf("[GET_DEBUG] key=%s leafPageID=%d count=%d\n", string(key), leafPageID, count)
+			if count > 0 {
+				// 打印前5个和后5个 keys
+				maxPrint := 5
+				if int(count) <= maxPrint*2 {
+					maxPrint = int(count)
+				}
+				for i := 0; i < maxPrint; i++ {
+					keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
+					pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
+					DebugPrintf("[GET_DEBUG]   key[%d]=%s\n", i, string(pageKey))
+				}
+				if int(count) > maxPrint*2 {
+					DebugPrintf("[GET_DEBUG]   ... (%d more keys)\n", int(count)-maxPrint*2)
+					for i := int(count) - maxPrint; i < int(count); i++ {
+						keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
+						pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
+						DebugPrintf("[GET_DEBUG]   key[%d]=%s\n", i, string(pageKey))
+					}
+				}
+			}
+		}
+		if err != nil {
+			// 如果读取错误且不是最后一次尝试，重试
+			if attempt < maxRetries-1 {
+				runtime.Gosched()
+				continue
+			}
+			return nil, fmt.Errorf("offheap get: %w", err)
+		}
+
+		if found {
+			// 成功找到，推进 epoch 释放待释放页面
+			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
+			if debugThisKey {
+				DebugPrintf("[GET_DEBUG] key=%s FOUND\n", string(key))
+			}
+			return value, nil // 成功找到，直接返回
+		}
+
+		// 未找到，在并发场景下可能是由于：
+		// 1. 页面刚刚分裂，key 被移动到新页面
+		// 2. PageRefCache 缓存了旧的 PageRef
+		// 3. 搜索路径在分裂后变得无效
+
+		// 如果在页面分裂期间，可能出现临时找不到
+		// 策略：让出 CPU，重新搜索（而不是重试读取同一个页面）
+		if attempt < maxRetries-1 {
+			// 让出 CPU，让其他 goroutine 完成分裂和缓存更新
+			runtime.Gosched()
+
+			// 继续下一次循环，重新执行 findLeafPageRef
+			// 这样可以获取到更新后的 PageRef 和路径
+			continue
+		}
+
 		return nil, ErrKeyNotFound
 	}
 
-	// Get the last element in the path (leaf page)
-	leafInfo := path[len(path)-1]
-	if leafInfo == nil {
-		return nil, ErrKeyNotFound
-	}
-
-	// Get the leaf page (lazy loaded)
-	leafPage, err := b.getPageOrLoad(leafInfo)
-	if err != nil {
-		return nil, fmt.Errorf("load leaf page: %w", err)
-	}
-
-	// Type assertion to LeafPage
-	leaf, ok := leafPage.(*LeafPage)
-	if !ok || leaf == nil {
-		return nil, fmt.Errorf("invalid leaf page type: %T", leafPage)
-	}
-
-	// 性能优化：移除热数据统计调用，避免每次 Get() 都加锁
-	// 原代码：b.stats.IncrementReadCount(leaf.GetPageID())
-
-	// Search for the key in the leaf page
-	value, found := leaf.Get(key)
-	if !found {
-		return nil, ErrKeyNotFound
-	}
-
-	return value, nil
+	return nil, ErrKeyNotFound
 }
 
 // Set stores a key-value pair with Copy-on-Write and CAS.
@@ -369,7 +713,10 @@ func (b *BTree) Set(ctx context.Context, key, value []byte) error {
 
 // setDirect 直接写入模式（fallback，当 scheduler 未初始化时）
 func (b *BTree) setDirect(ctx context.Context, key, value []byte) error {
-	for {
+	const maxRetries = 10 // 增加重试次数以处理循环引用
+
+	for attempt := range maxRetries {
+		// 检查上下文取消
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -377,25 +724,59 @@ func (b *BTree) setDirect(ctx context.Context, key, value []byte) error {
 		}
 
 		err := b.setWithLeafLock(ctx, key, value)
-		switch err {
-		case nil:
+		if err == nil {
+			// 操作成功，推进 epoch 释放待释放页面
+			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
 			return nil
-		case ErrRetry:
+		}
+
+		// 智能重试逻辑
+		switch {
+		case errors.Is(err, ErrRetry):
+			// CAS 失败：快速重试
 			runtime.Gosched()
 			continue
+
+		case errors.Is(err, ErrCircularReference):
+			// 循环引用错误：指数退避后重试
+			// 这是由于页面释放后重新分配导致的临时不一致
+			if attempt < maxRetries-1 {
+				// 指数退避：1ms, 2ms, 4ms, 8ms, ... 最多 512ms
+				backoffDuration := time.Duration(1<<uint(attempt)) * time.Millisecond
+				if backoffDuration > 512*time.Millisecond {
+					backoffDuration = 512 * time.Millisecond
+				}
+				select {
+				case <-time.After(backoffDuration):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				continue
+			}
+			// 达到最大重试次数，返回错误
+			return fmt.Errorf("circular reference retry exhausted after %d attempts: %w", maxRetries, err)
+
 		default:
+			// 其他错误：不重试，直接返回
 			return err
 		}
 	}
+
+	return fmt.Errorf("max retries (%d) exceeded", maxRetries)
 }
 
-// Delete removes a key (not implemented).
+// Delete removes a key.
 func (b *BTree) Delete(ctx context.Context, key []byte) error {
 	if b.closed {
 		return ErrClosed
 	}
 
-	// 实现 Delete 操作，集成 mergeLeaf
+	// Off-Heap 模式：使用 Leaf-Level Locking + MVCC
+	if b.offheapPM != nil {
+		return b.deleteOffHeapWithMVCC(ctx, key)
+	}
+
+	// On-Heap 模式：原有实现
 	const maxRetries = 3
 
 	for attempt := range maxRetries {
@@ -463,6 +844,232 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 		// 7. 持久化
 		if b.chunkMgr != nil {
 			if err := b.persistRoot(newRootInfo); err != nil {
+				return fmt.Errorf("persist root: %w", err)
+			}
+		}
+
+		return nil
+	}
+
+	return ErrRetry
+}
+
+// deleteOffHeapWithMVCC 使用 MVCC + Leaf-Level Locking 实现 Off-Heap Delete
+// 参考 Set 操作的实现模式（leaf_lock_set.go）
+func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
+	const maxRetries = 3
+
+	for attempt := range maxRetries {
+		// 1. 检查上下文取消
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// 2. 查找叶子节点和路径（只读，不克隆）
+		leafRef, path, err := b.findLeafPageRef(ctx, key)
+		if err != nil {
+			return fmt.Errorf("find leaf ref: %w", err)
+		}
+
+		if len(path) == 0 {
+			return fmt.Errorf("empty path")
+		}
+
+		// 3. 获取叶子锁（懒加载，每个 PageRef 有独立的锁）
+		pageLock := leafRef.GetLock()
+		if pageLock == nil {
+			return fmt.Errorf("page lock is nil")
+		}
+
+		// 使用 TryLock 快速失败（避免死锁）
+		if !pageLock.TryLock() {
+			if attempt < maxRetries-1 {
+				runtime.Gosched()
+				continue
+			}
+			return ErrRetry
+		}
+		defer pageLock.Unlock()
+
+		// 4. 获取当前 PageInfo（在锁保护下）
+		oldInfo := leafRef.GetPageInfo()
+		if oldInfo == nil {
+			return fmt.Errorf("leaf page info is nil")
+		}
+
+		// 5. 验证页面已加载（Off-Heap 模式）
+		if !oldInfo.IsPageLoaded() {
+			return fmt.Errorf("leaf page not loaded")
+		}
+
+		// 6. Off-Heap 删除（使用 COW 语义）
+		oldPageID := model.PageID(oldInfo.GetPageID())
+		newPageID, err := b.offheapAdapter.DeleteFromLeafPage(oldPageID, key)
+		if err != nil {
+			if errors.Is(err, ErrKeyNotFound) {
+				return ErrKeyNotFound
+			}
+			return fmt.Errorf("offheap delete: %w", err)
+		}
+
+		// 7. 创建新的 PageInfo（Off-Heap 模式）
+		newInfo := NewPageInfo()
+		newInfo.SetNodeRef(offheap.NewNodeRef(uint32(newPageID), true)) // true = isLeaf
+		// 继承其他属性
+		newInfo.SetPos(oldInfo.GetPos())
+		if oldInfo.IsDirty() {
+			newInfo.MarkDirty()
+		}
+
+		// 8. Leaf-Level CAS（在锁保护下，几乎不会失败）
+		if !leafRef.ReplacePage(oldInfo, newInfo) {
+			// CAS 失败（极少发生），返回重试
+			// 注意：newInfo 由 Go GC 自动管理，无需手动释放
+			if attempt < maxRetries-1 {
+				runtime.Gosched()
+				continue
+			}
+			return ErrRetry
+		}
+
+		// 9. 如果 pageID 变化，需要更新 root 或父节点
+		if newPageID != oldPageID {
+			// 检查是否是根节点（单层树）
+			if len(path) == 1 && leafRef == b.rootRef.PageRef {
+				// 特殊处理：根节点的 delete 场景
+				// 需要更新 rootRef 而不是只更新 PageRefCache
+				oldRootInfo := b.rootRef.pInfo.Load()
+				if oldRootInfo == nil {
+					return fmt.Errorf("root info is nil during root update")
+				}
+				oldRootID := oldRootInfo.GetPageID()
+				if !b.rootRef.ReplacePage(oldRootID, newInfo) {
+					// CAS 失败，返回重试
+					if attempt < maxRetries-1 {
+						runtime.Gosched()
+						continue
+					}
+					return ErrRetry
+				}
+				// 更新 PageRefCache
+				b.pageRefCache.Delete(oldPageID)
+				b.pageRefCache.Update(newPageID, leafRef)
+			} else if len(path) >= 2 {
+				// 多层树：需要更新父节点的 child 指针
+				// 参考分裂操作的实现（leaf_lock_set.go:handleSplitOffHeapSync）
+
+				// 获取父节点的 PageInfo
+				parentInfo := path[len(path)-2]
+				if parentInfo == nil {
+					return fmt.Errorf("parent info is nil")
+				}
+
+				oldParentPageID := model.PageID(parentInfo.GetPageID())
+
+				// 检查父节点是否是根节点
+				currentRootInfo := b.rootRef.pInfo.Load()
+				parentRef := b.pageRefCache.GetOrCreate(oldParentPageID, false)
+				if currentRootInfo != nil && currentRootInfo.GetPageID() == uint64(oldParentPageID) {
+					// 父节点就是根节点，使用根的 PageRef
+					if b.rootRef.PageRef == nil {
+						return fmt.Errorf("root PageRef is nil during parent update")
+					}
+					parentRef = b.rootRef.PageRef
+				}
+
+				// 获取父节点锁（自底向上加锁）
+				parentLock := parentRef.GetLock()
+				if parentLock == nil {
+					return fmt.Errorf("parent lock is nil")
+				}
+
+				if !parentLock.TryLock() {
+					// 锁获取失败，返回重试
+					if attempt < maxRetries-1 {
+						runtime.Gosched()
+						continue
+					}
+					return ErrRetry
+				}
+				defer parentLock.Unlock()
+
+				// 找到父节点中指向当前子节点的索引
+				// 通过二分查找找到 key 在父节点中的位置
+				childIndex := 0
+				count := b.offheapAdapter.pa.GetCount(uint32(oldParentPageID))
+				for i := 0; i < int(count); i++ {
+					keyOff, keyLen, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(oldParentPageID), i)
+					k := b.offheapAdapter.pa.GetKey(uint32(oldParentPageID), keyOff, keyLen)
+					// 如果找到匹配的 child 或者 key 大于当前 key，就找到了位置
+					if model.PageID(child) == oldPageID || bytes.Compare(k, key) > 0 {
+						childIndex = i
+						break
+					}
+					childIndex = i + 1
+				}
+
+				// 检查是否是 extraChild（N+1 child）
+				if childIndex == int(count) {
+					// extraChild 的情况
+					extraChild := b.offheapAdapter.pa.GetChild(uint32(oldParentPageID), int(count))
+					if model.PageID(extraChild) != oldPageID {
+						// 不是我们要找的 child，继续查找
+						// 这种情况不太可能发生，但为了安全起见
+						childIndex = -1
+					}
+				}
+
+				if childIndex < 0 {
+					// 没有找到对应的 child 指针，返回错误
+					return fmt.Errorf("child not found in parent page")
+				}
+
+				// 使用 UpdateChildIndex 更新父节点
+				newParentPageID, err := b.offheapAdapter.UpdateChildIndex(oldParentPageID, childIndex, newPageID)
+				if err != nil {
+					return fmt.Errorf("update parent child index: %w", err)
+				}
+
+				// 创建新的父节点 PageInfo
+				newParentInfo := NewPageInfo()
+				newParentInfo.SetNodeRef(offheap.NewNodeRef(uint32(newParentPageID), false))
+				newParentInfo.SetPos(parentInfo.GetPos())
+				if parentInfo.IsDirty() {
+					newParentInfo.MarkDirty()
+				}
+
+				// CAS 更新父节点
+				if !parentRef.ReplacePage(parentInfo, newParentInfo) {
+					// CAS 失败，返回重试
+					// 注意：newParentInfo 由 Go GC 自动管理，无需手动释放
+					if attempt < maxRetries-1 {
+						runtime.Gosched()
+						continue
+					}
+					return ErrRetry
+				}
+
+				// 更新 PageRefCache
+				b.pageRefCache.Delete(oldParentPageID)
+				b.pageRefCache.Update(newParentPageID, parentRef)
+
+				// 延迟释放旧父页面
+				b.epochBasedFreeList.Add(oldParentPageID)
+			} else {
+				// 其他情况：更新 PageRefCache
+				b.pageRefCache.Delete(oldPageID)
+				b.pageRefCache.Update(newPageID, leafRef)
+			}
+		}
+
+		// 10. 推进 epoch 释放旧页面
+		b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
+
+		// 11. 持久化（如果有 ChunkManager）
+		if b.chunkMgr != nil {
+			if err := b.persistRoot(newInfo); err != nil {
 				return fmt.Errorf("persist root: %w", err)
 			}
 		}
@@ -603,15 +1210,6 @@ func (b *BTree) insertFromWAL(key, value []byte) error {
 	return b.Set(ctx, key, value)
 }
 
-// allocatePageID allocates a new unique page ID.
-// This ensures that each newly created page has a unique identifier.
-// 无锁实现：使用 atomic.Uint64
-func (b *BTree) allocatePageID() model.PageID {
-	// 使用 atomic.Add(1) 原子操作：读取旧值、加1、返回新值
-	// 完全无锁，多个 goroutine 可以并发调用
-	return model.PageID(b.nextPageID.Add(1))
-}
-
 // Close closes the BTree storage engine and releases resources.
 func (b *BTree) Close() error {
 	b.closedMu.Lock()
@@ -632,6 +1230,11 @@ func (b *BTree) Close() error {
 		if err := b.chunkMgr.Close(); err != nil {
 			return fmt.Errorf("close chunk manager: %w", err)
 		}
+	}
+
+	// Close OffHeap PageManager
+	if b.offheapPM != nil {
+		b.offheapPM.Close()
 	}
 
 	// Close WAL
@@ -906,7 +1509,7 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 		// 方法：使用 PageID 来匹配子节点，而不是对象地址
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
 			// 遍历所有子节点引用
-			for j := 0; j < len(internalPage.children); j++ {
+			for j := range len(internalPage.children) {
 				childRef := internalPage.children[j]
 				if childRef == nil {
 					continue
@@ -981,11 +1584,10 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 	// 优化：预先构建 PageID -> PageInfo 映射表
 	pageInfoMap := make(map[model.PageID]*PageInfo, len(path))
 	for _, info := range path {
-		// 调试：检查原始 path 中的 InternalPage 不变式
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
 			if len(internalPage.children) != len(internalPage.keys)+1 {
-				fmt.Printf("[DEBUG] copyPathShallow: invariant violated in ORIGINAL path: pageID=%d, len(keys)=%d, len(children)=%d\n",
-					internalPage.pageID, len(internalPage.keys), len(internalPage.children))
+				// 不变式违反：children 数量应该是 keys 数量 + 1
+				continue
 			}
 		}
 
@@ -1001,31 +1603,15 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 		pageInfoMap[pageID] = info
 	}
 
-	// Clone all PageInfos in the path (使用 CloneShallow)
-	// 原始实现：LeafPage 立即深拷贝
+	// Clone all PageInfos in the path（Off-Heap 模式）
+	// Off-Heap 模式：使用 CloneShallow() 克隆 NodeRef（正确设置 cloneStatus）
 	for i, info := range path {
-		var newInfo *PageInfo
-		if leafPage, ok := info.GetPage().(*LeafPage); ok && leafPage != nil {
-			// 原始实现：LeafPage 需要立即深拷贝，防止并发修改
-			newInfo = info.CloneShallow()
-			newInfo.page = leafPage.CloneDeep() // 深拷贝（独立数据）
-			newInfo.cloneStatus.Store(CloneStatusDeep)
-		} else {
-			// InternalPage 使用浅拷贝
-			newInfo = info.CloneShallow()
-		}
+		// Off-Heap 模式：使用 CloneShallow() 设置正确的克隆状态
+		newInfo := info.CloneShallow()
 		copiedPath[i] = newInfo
 
-		// 更新映射表
-		var pageID model.PageID
-		switch p := newInfo.GetPage().(type) {
-		case *LeafPage:
-			pageID = p.pageID
-		case *InternalPage:
-			pageID = p.pageID
-		default:
-			continue
-		}
+		// 更新映射表（从 NodeRef 获取 PageID）
+		pageID := model.PageID(newInfo.GetPageID())
 		pageInfoMap[pageID] = newInfo
 	}
 
@@ -1033,7 +1619,7 @@ func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 	for _, info := range copiedPath {
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
 			// 遍历所有子节点引用
-			for j := 0; j < len(internalPage.children); j++ {
+			for j := range len(internalPage.children) {
 				childRef := internalPage.children[j]
 				if childRef == nil {
 					continue
@@ -1140,7 +1726,7 @@ func (b *BTree) finalizeDeepClone(copiedPath []*PageInfo) error {
 	for _, info := range copiedPath {
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
 			// 遍历所有子节点引用
-			for j := 0; j < len(internalPage.children); j++ {
+			for j := range len(internalPage.children) {
 				childRef := internalPage.children[j]
 				if childRef == nil {
 					continue
@@ -1228,12 +1814,12 @@ func (b *BTree) copyPathWithDelta(path []*PageInfo) ([]*PageInfo, error) {
 
 	// 重建子节点引用
 	// 注意：Delta Chain 模式下，children 仍然需要重建引用
-	return b.rebuildChildRefs(path, copiedPath)
+	return b.rebuildChildRefs(copiedPath)
 }
 
 // rebuildChildRefs 重建子节点引用（辅助方法）
 // 用于 copyPathWithDelta 和 copyPathShallow
-func (b *BTree) rebuildChildRefs(originalPath, copiedPath []*PageInfo) ([]*PageInfo, error) {
+func (b *BTree) rebuildChildRefs(copiedPath []*PageInfo) ([]*PageInfo, error) {
 	// 性能优化：使用 copiedPageIDMap（从 clonedPath 构建）
 	// 只重建路径中的节点引用，避免全局遍历
 	copiedPageIDMap := make(map[model.PageID]*PageInfo, len(copiedPath))
@@ -1257,7 +1843,7 @@ func (b *BTree) rebuildChildRefs(originalPath, copiedPath []*PageInfo) ([]*PageI
 		if internalPage, ok := info.GetPage().(*InternalPage); ok && internalPage != nil {
 			selfPageID := internalPage.GetPageID()
 
-			for j := 0; j < len(internalPage.children); j++ {
+			for j := range len(internalPage.children) {
 				childRef := internalPage.children[j]
 				if childRef == nil {
 					continue
@@ -1301,323 +1887,6 @@ func (b *BTree) rebuildChildRefs(originalPath, copiedPath []*PageInfo) ([]*PageI
 	}
 
 	return copiedPath, nil
-}
-
-// splitLeaf 分裂叶子节点（CCOW 版本）
-// 当叶子节点满时（len(keys) > maxKeys），进行分裂操作
-//
-// 参数：
-//
-//	leafInfo - 需要分裂的叶子节点 PageInfo（来自 copiedPath）
-//	copiedPath - 复制的路径（CCOW 操作的路径副本）
-//
-// 返回：
-//
-//	error - 错误信息
-//
-// 分裂步骤（CCOW 架构）：
-// 1. 调用 leaf.Split() 创建新页面
-// 2. 在 copiedPath 中创建新页面的 PageInfo
-// 3. 将分裂键插入父节点（也在 copiedPath 中）
-// 4. 更新父节点的 children 引用
-// 5. 检查父节点是否需要递归分裂
-// 6. 处理根节点分裂
-// 7. 最后通过 CAS 更新根节点
-func (b *BTree) splitLeaf(leafInfo *PageInfo, key []byte, copiedPath []*PageInfo) error {
-	const maxKeys = 200 // LeafPage 最大键数量（优化性能）
-
-	// 1. 获取叶子节点
-	leafPage := leafInfo.GetLeafPage()
-	if leafPage == nil {
-		return fmt.Errorf("leaf page not loaded")
-	}
-
-	// 2. 检查是否需要分裂（防御性检查）
-	if leafPage.NumKeys() <= maxKeys {
-		return nil // 无需分裂
-	}
-
-	// 3. 调用 Split 方法（leafPage 已经被修改）
-	newPage, splitKey, err := leafPage.Split()
-	if err != nil {
-		return fmt.Errorf("leaf split failed: %w", err)
-	}
-
-	// 为新页面分配唯一的 pageID
-	newPage.pageID = b.allocatePageID()
-
-	// 4. 创建新页面的 PageInfo（直接使用，不创建 PageRef）
-	newPageInfo := NewPageInfo()
-	newPageInfo.SetPage(newPage)
-	// parentRef 稍后设置
-
-	// 5. 检查是否有父节点
-	if len(copiedPath) < 2 {
-		// 没有父节点，说明当前只有根叶子节点
-		// 需要创建新的内部节点作为根
-		casSuccess, err := b.splitRootFromLeaf(leafInfo, newPageInfo, key, splitKey, copiedPath)
-		if err != nil {
-			return err
-		}
-		if !casSuccess {
-			return ErrRetry
-		}
-		return nil
-	}
-
-	// 6. 获取父节点（在 copiedPath 中）
-	parentInfo := copiedPath[len(copiedPath)-2]
-	parentPage := parentInfo.GetInternalPage()
-	if parentPage == nil {
-		return fmt.Errorf("parent page not loaded or not internal")
-	}
-
-	// 7. 将分裂键插入父节点
-	// 注意：我们需要创建临时 PageRef 来包装 newPageInfo
-	newPageRef := NewPageRefWithInfo(newPageInfo)
-
-	if err := parentPage.InsertKeyChild(splitKey, newPageRef); err != nil {
-		return fmt.Errorf("insert split key to parent failed: %w", err)
-	}
-
-	// 8. 检查父节点是否需要分裂
-	if parentPage.NumKeys() > maxInternalKeys {
-		// 父节点也需要分裂
-		return b.splitInternal(parentInfo, copiedPath[:len(copiedPath)-1])
-	}
-
-	// 9. 更新 parentRef（可选，用于引用链完整性）
-	// 在当前的简化实现中，我们可以跳过这一步
-
-	// 10. 分裂完成，copiedPath 已更新
-	// 调用者负责最终的 CAS 更新
-	return nil
-}
-
-// splitRootFromLeaf 从叶子节点分裂创建新的根节点
-// 返回值：
-//   - bool: CAS 是否成功
-//   - error: 错误信息
-func (b *BTree) splitRootFromLeaf(leftInfo, rightInfo *PageInfo, key []byte, splitKey []byte, copiedPath []*PageInfo) (bool, error) {
-	// 1. 创建新的内部节点作为根
-	newRootPage := NewInternalPage(b.allocatePageID()) // 分配唯一的 pageID
-	newRootPage.keys = [][]byte{splitKey}
-
-	// 2. 创建左右子节点的 PageRef
-	leftRef := NewPageRefWithInfo(leftInfo)
-	rightRef := NewPageRefWithInfo(rightInfo)
-	newRootPage.children = []*PageRef{leftRef, rightRef}
-
-	// 3. 创建新的 Root PageInfo
-	newRootInfo := NewPageInfo()
-	newRootInfo.SetPage(newRootPage)
-	newRootInfo.SetParentRef(nil) // 根节点没有父引用
-
-	// 4. CAS 更新根节点
-	oldRootInfo := b.rootRef.pInfo.Load()
-	oldRootID := uint64(0)
-	if oldRootInfo != nil {
-		oldRootID = oldRootInfo.GetPageID()
-	}
-	if !b.rootRef.ReplacePage(oldRootID, newRootInfo) {
-		// CAS 失败，返回 false 让调用者重试
-		return false, nil
-	}
-
-	// CAS 成功，更新 copiedPath[0] 以保持一致性
-	copiedPath[0] = newRootInfo
-
-	// 修复：确定新键应该去哪个子节点，更新 copiedPath[len(copiedPath)-1]
-	// LeafPage.Split() 后，左页面包含键 [0, mid)，右页面包含键 [mid, end)
-	// 分裂键 splitKey = keys[mid] 在右页面中
-	// 所以：key < splitKey 去 leftInfo，key >= splitKey 去 rightInfo
-	var targetLeafInfo *PageInfo
-	if bytes.Compare(key, splitKey) < 0 {
-		targetLeafInfo = leftInfo
-	} else {
-		targetLeafInfo = rightInfo
-	}
-	copiedPath[len(copiedPath)-1] = targetLeafInfo
-
-	// 5. 引用更新机制
-	// 更新子节点的 parentRef
-	leftInfo.SetParentRef(b.rootRef.PageRef)
-	rightInfo.SetParentRef(b.rootRef.PageRef)
-
-	// 6. 持久化集成
-	// 分裂完成后，持久化整个树
-	if b.chunkMgr != nil {
-		if err := b.persistRoot(newRootInfo); err != nil {
-			return false, fmt.Errorf("persist root after split: %w", err)
-		}
-	}
-
-	// CAS 成功，返回 true
-	return true, nil
-}
-
-// splitInternal 分裂内部节点（CCOW 版本）
-// 当内部节点满时（len(keys) > 15），进行分裂操作
-//
-// 完整实现，支持 CCOW 和引用更新
-//
-// 参数：
-//
-//	internalInfo - 需要分裂的内部节点 PageInfo（来自 copiedPath）
-//	copiedPath - 复制的路径（CCOW 操作的路径副本）
-//
-// 返回：
-//
-//	error - 错误信息
-func (b *BTree) splitInternal(internalInfo *PageInfo, copiedPath []*PageInfo) error {
-	const maxKeys = 199 // InternalPage 最大键数量（优化性能，通常比 LeafPage 少 1）
-
-	// 1. 获取内部节点
-	internalPage := internalInfo.GetInternalPage()
-	if internalPage == nil {
-		return fmt.Errorf("internal page not loaded")
-	}
-
-	// 2. 检查是否需要分裂（防御性检查）
-	if internalPage.NumKeys() <= maxKeys {
-		return nil // 无需分裂
-	}
-
-	// 3. 调用 Split 方法
-	newPage, splitKey, err := internalPage.Split()
-	if err != nil {
-		return fmt.Errorf("internal split failed: %w", err)
-	}
-
-	// 为新页面分配唯一的 pageID
-	newPage.pageID = b.allocatePageID()
-
-	// 4. 检查是否有父节点
-	if len(copiedPath) < 2 {
-		// 没有父节点，说明是根节点，需要创建新的根
-		// 创建新的 PageInfo 包装
-		leftInfo := NewPageInfo()
-		leftInfo.SetPage(internalPage)
-		leftInfo.SetParentRef(nil) // 稍后设置
-
-		rightInfo := NewPageInfo()
-		rightInfo.SetPage(newPage)
-		rightInfo.SetParentRef(nil) // 稍后设置
-
-		return b.splitRootFromInternal(leftInfo, rightInfo, splitKey, copiedPath)
-	}
-
-	// 5. 获取父节点（在 copiedPath 中）
-	parentInfo := copiedPath[len(copiedPath)-2]
-	parentPage := parentInfo.GetInternalPage()
-	if parentPage == nil {
-		return fmt.Errorf("parent page not loaded or not internal")
-	}
-
-	// 6. 将分裂键插入父节点
-	// 创建新页面的 PageRef 和 PageInfo
-	newPageInfo := NewPageInfo()
-	newPageInfo.SetPage(newPage)
-	newPageRef := NewPageRefWithInfo(newPageInfo)
-
-	if err := parentPage.InsertKeyChild(splitKey, newPageRef); err != nil {
-		return fmt.Errorf("insert split key to parent failed: %w", err)
-	}
-
-	// 7. 检查父节点是否需要继续分裂
-	if parentPage.NumKeys() > maxKeys {
-		return b.splitInternal(parentInfo, copiedPath[:len(copiedPath)-1])
-	}
-
-	// 8. 分裂完成，copiedPath 已更新
-	// 调用者负责最终的 CAS 更新
-	return nil
-}
-
-// splitRootFromInternal 从内部节点分裂创建新的根节点
-func (b *BTree) splitRootFromInternal(leftInfo, rightInfo *PageInfo, splitKey []byte, copiedPath []*PageInfo) error { //nolint:unused // copiedPath 预留用于未来优化
-	// 1. 创建新的内部节点作为根
-	newRootPage := NewInternalPage(b.allocatePageID()) // 分配唯一的 pageID
-	newRootPage.keys = [][]byte{splitKey}
-
-	// 2. 创建左右子节点的 PageRef
-	leftRef := NewPageRefWithInfo(leftInfo)
-	rightRef := NewPageRefWithInfo(rightInfo)
-	newRootPage.children = []*PageRef{leftRef, rightRef}
-
-	// 3. 创建新的 Root PageInfo
-	newRootInfo := NewPageInfo()
-	newRootInfo.SetPage(newRootPage)
-	newRootInfo.SetParentRef(nil) // 根节点没有父引用
-
-	// 4. CAS 更新根节点
-	oldRootInfo := b.rootRef.pInfo.Load()
-	oldRootID := uint64(0)
-	if oldRootInfo != nil {
-		oldRootID = oldRootInfo.GetPageID()
-	}
-	if !b.rootRef.ReplacePage(oldRootID, newRootInfo) {
-		return ErrRetry
-	}
-
-	// 5. 引用更新机制
-	// 更新子节点的 parentRef
-	leftInfo.SetParentRef(b.rootRef.PageRef)
-	rightInfo.SetParentRef(b.rootRef.PageRef)
-
-	// 6. 递归更新子节点树
-	// 更新左子树的所有子孙节点的 parentRef
-	b.updateChildrenParentRefs(leftInfo, b.rootRef.PageRef)
-	// 更新右子树的所有子孙节点的 parentRef
-	b.updateChildrenParentRefs(rightInfo, b.rootRef.PageRef)
-
-	// 7. 持久化集成
-	// 分裂完成后，持久化整个树
-	if b.chunkMgr != nil {
-		if err := b.persistRoot(newRootInfo); err != nil {
-			return fmt.Errorf("persist root after split: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// updateChildrenParentRefs 递归更新子节点树的 parentRef
-// 引用更新机制的核心方法
-//
-// 参数：
-//
-//	pageInfo - 父节点的 PageInfo
-//	parentRef - 新的父节点引用
-func (b *BTree) updateChildrenParentRefs(pageInfo *PageInfo, parentRef *PageRef) {
-	if pageInfo == nil || !pageInfo.IsPageLoaded() {
-		return
-	}
-
-	page := pageInfo.GetPage()
-	if page == nil {
-		return
-	}
-
-	// 根据页面类型处理
-	switch p := page.(type) {
-	case *InternalPage:
-		// 内部节点：递归更新所有子节点
-		for _, childRef := range p.Children() {
-			if childRef != nil {
-				childInfo := childRef.GetPageInfo()
-				if childInfo != nil {
-					// 更新子节点的 parentRef
-					childInfo.SetParentRef(parentRef)
-					// 递归更新子节点的子树
-					b.updateChildrenParentRefs(childInfo, childRef)
-				}
-			}
-		}
-	case *LeafPage:
-		// 叶子节点：没有子节点，无需继续递归
-		return
-	}
 }
 
 // ===== Persistence Integration =====
@@ -1761,7 +2030,7 @@ func (b *BTree) persistRoot(rootInfo *PageInfo) error {
 func (b *BTree) findChildIndexInParent(parent *InternalPage, childInfo *PageInfo) (int, error) {
 	childPageID := childInfo.GetPageID()
 
-	for i := 0; i < parent.NumChildren(); i++ {
+	for i := range parent.NumChildren() {
 		childRef := parent.GetChild(i)
 		if childRef != nil {
 			info := childRef.GetPageInfo()

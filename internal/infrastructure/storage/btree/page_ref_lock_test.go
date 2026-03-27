@@ -91,7 +91,7 @@ func BenchmarkPageRef_GetLock(b *testing.B) {
 	_ = ref.GetLock()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = ref.GetLock()
 	}
 }

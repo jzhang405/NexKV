@@ -20,6 +20,12 @@ func TestBTree_copyPathWithDelta_Basic(t *testing.T) {
 	require.NoError(t, err)
 	defer tree.Close()
 
+	// 修复：Off-Heap 模式下 GetPage() 返回包装器，不是 *LeafPage
+	// Delta Chain 功能是 On-Heap 专用，Off-Heap 模式不支持
+	if tree.offheapPM != nil {
+		t.Skip("Off-Heap 模式不支持 Delta Chain（On-Heap 专用功能）")
+	}
+
 	// 初始化一些数据
 	for i := range 10 {
 		key := []byte{byte(i)}
@@ -54,6 +60,12 @@ func TestBTree_copyPathWithDelta_VersusShallow(t *testing.T) {
 	tree, err := OpenBTree("", config)
 	require.NoError(t, err)
 	defer tree.Close()
+
+	// 修复：Off-Heap 模式下 GetPage() 返回包装器，不是 On-Heap 页面
+	// Delta Chain 功能是 On-Heap 专用，Off-Heap 模式不支持
+	if tree.offheapPM != nil {
+		t.Skip("Off-Heap 模式不支持 Delta Chain（On-Heap 专用功能）")
+	}
 
 	// 初始化一些数据
 	for i := range 10 {

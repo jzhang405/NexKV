@@ -193,49 +193,8 @@ func TestBTree_splitInternal_Recursive(t *testing.T) {
 	}
 }
 
-// TestUpdateChildrenParentRefs 测试引用更新机制
-func TestUpdateChildrenParentRefs(t *testing.T) {
-	dir := t.TempDir()
-	btree, err := OpenBTree(dir, nil)
-	require.NoError(t, err)
-	defer btree.Close()
-
-	// 创建测试的内部节点结构
-	// Root (Internal) -> Left (Leaf), Right (Leaf)
-	rootPage := NewInternalPage(1)
-	rootPage.keys = [][]byte{{8}}
-
-	// 创建左叶子节点
-	leftLeaf := NewLeafPage(2)
-	leftLeaf.keys = [][]byte{{0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}}
-	leftInfo := NewPageInfo()
-	leftInfo.SetPage(leftLeaf)
-	leftRef := NewPageRefWithInfo(leftInfo)
-
-	// 创建右叶子节点
-	rightLeaf := NewLeafPage(3)
-	rightLeaf.keys = [][]byte{{8}, {9}, {10}, {11}, {12}, {13}, {14}, {15}}
-	rightInfo := NewPageInfo()
-	rightInfo.SetPage(rightLeaf)
-	rightRef := NewPageRefWithInfo(rightInfo)
-
-	rootPage.children = []*PageRef{leftRef, rightRef}
-
-	// 创建根 PageInfo
-	rootInfo := NewPageInfo()
-	rootInfo.SetPage(rootPage)
-
-	// 测试引用更新
-	// 模拟分裂场景：创建新的父节点引用
-	newParentRef := btree.rootRef
-
-	// 更新子节点的 parentRef
-	btree.updateChildrenParentRefs(rootInfo, newParentRef.PageRef)
-
-	// 验证引用更新
-	assert.Equal(t, newParentRef.PageRef, leftInfo.GetParentRef(), "左子节点 parentRef 应该指向新父节点")
-	assert.Equal(t, newParentRef.PageRef, rightInfo.GetParentRef(), "右子节点 parentRef 应该指向新父节点")
-}
+// TestUpdateChildrenParentRefs 测试引用更新机制（已删除 - On-Heap 死代码）
+// Off-Heap Only 迁移：updateChildrenParentRefs 是 On-Heap CCOW 专用函数，已不再使用
 
 // BenchmarkInternalPage_Split 性能基准测试
 func BenchmarkInternalPage_Split(b *testing.B) {

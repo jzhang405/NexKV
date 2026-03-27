@@ -4,6 +4,9 @@ import (
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree/offheap"
 )
 
 const cacheLineSize = 64
@@ -15,42 +18,59 @@ const (
 	CloneStatusDeep    = 2 // 深克隆（PageInfo 和 Page 都独立）
 )
 
-// PageInfo 页面信息（Cache Line 对齐优化）
-// 减少伪共享（false sharing），提升并发性能
+// encodeNodeRef 将 NodeRef 编码为 uint64
+// 格式：[pageID:32 | isLeaf:1 | _pad:31]
+func encodeNodeRef(pageID uint32, isLeaf bool) uint64 {
+	ref := uint64(pageID)
+	if isLeaf {
+		ref |= 0x100000000 // 设置 bit 32
+	}
+	return ref
+}
+
+// decodeNodeRef 将 uint64 解码为 NodeRef
+func decodeNodeRef(encoded uint64) (pageID uint32, isLeaf bool) {
+	pageID = uint32(encoded & 0xFFFFFFFF)
+	isLeaf = (encoded & 0x100000000) != 0
+	return
+}
+
+// PageInfo 页面信息（Off-Heap 版本）
+//
+// **重大变更**：不再存储 Go 堆页面指针，而是存储 Off-Heap NodeRef
+// 内存布局保持不变，只是 page any 替换为 nodeRef atomic.Uint64
 //
 // 内存布局（3 个 cache lines，192 bytes）：
 // ┌─────────────────────────────────────────────────────────────────┐
 // │ Cache Line 1 (64 bytes) - 热数据（高并发访问）                    │
-// │ pos(8) │ page(8) │ pageLock(8) │ lastTime(8) │ hits(8) │ pad(24)│
+// │ pos(8) │ nodeRef(8) │ pageLock(8) │ lastTime(8) │ hits(8) │ pad(24)│
 // ├─────────────────────────────────────────────────────────────────┤
 // │ Cache Line 2 (64 bytes) - 温数据（序列化缓冲区）                  │
-// │ buff(24) │ padding(40)                                             │
+// │ padding(64)                                                     │
 // ├─────────────────────────────────────────────────────────────────┤
 // │ Cache Line 3 (64 bytes) - 冷数据（元数据，低频写入）               │
 // │ parentRef(8) │ isDirty(1) │ isSplitted(1) │ metaVersion(4) │ pageSize(4) │ pad(46)│
 // └─────────────────────────────────────────────────────────────────┘
 type PageInfo struct {
 	// Cache Line 1 (64 bytes) - 热数据（高并发访问）
-	pos  atomic.Int64 // 8 bytes  - 在 Chunk 中的位置（0=未写入）使用原子操作
-	page any          // 8 bytes  - 页面对象（*LeafPage 或 *InternalPage）
+	pos     atomic.Int64  // 8 bytes  - 在 Chunk 中的位置（0=未写入）
+	nodeRef atomic.Uint64 // 8 bytes  - Off-Heap NodeRef（压缩为 uint64）
+	//   格式：[pageID:32 | isLeaf:1 | _pad:31]
 	// 性能优化：延迟 PageLock 创建（减少 15.45% 内存分配）
-	// 纯内存模式下不需要锁，仅在持久化模式的分裂/合并时使用
 	pageLock atomic.Value // 8 bytes  - *PageLock（懒加载）
 	lastTime atomic.Int64 // 8 bytes  - LRU 时间戳（纳秒）并发安全
 	hits     atomic.Int64 // 8 bytes  - 访问计数 并发安全
 	_        [24]byte     // padding to 64 bytes
 
-	// Cache Line 2 (64 bytes) - 优化：移除 buff 字段，使用 ChunkManager.pagePool 管理
-	// 原 buff []byte 字段已移除，减少1个指针（25%↓），序列化时使用 ChunkManager.AcquirePageBuffer()
-	_ [0]byte // 占位，保持对齐
+	// Cache Line 2 (64 bytes) - 不使用
+	_ [64]byte
 
 	// Cache Line 3 (64 bytes) - 冷数据（元数据，低频写入）
-	parentRef   atomic.Value  // 8 bytes - 优化：使用 atomic.Value 存储 *PageRef，移除 defer 开销
+	parentRef   atomic.Value  // 8 bytes - 父 PageRef（使用 atomic.Value）
 	flags       atomic.Uint32 // 4 bytes  - 并发安全标志位: bit0=isDirty, bit1=isSplitted
 	metaVersion int32         // 4 bytes  - 元数据版本
 	pageSize    int32         // 4 bytes  - 页面实际大小（固定 4KB）
 	// 克隆状态标记（放在最后，避免对齐问题）
-	// 0=共享原始 Page, 1=浅克隆（PageInfo 独立，Page 共享）, 2=深克隆（PageInfo 和 Page 都独立）
 	cloneStatus atomic.Uint32 // 4 bytes
 	_           [56]byte      // padding to 64 bytes
 }
@@ -58,13 +78,12 @@ type PageInfo struct {
 // NewPageInfo 创建新的 PageInfo
 func NewPageInfo() *PageInfo {
 	info := &PageInfo{
-		page: nil,
 		// 性能优化：pageLock 延迟创建，减少内存分配
 		// 纯内存模式下不需要锁，仅在需要时才创建
 		pageLock: atomic.Value{},
 		// parentRef 使用 atomic.Value，不需要显式初始化为 nil
 		metaVersion: 0,
-		pageSize:    PageSize,
+		pageSize:    offheap.PageSize,
 	}
 	info.SetPos(0) // 使用 SetPos() 方法避免 noCopy 违规
 	info.lastTime.Store(time.Now().UnixNano())
@@ -72,36 +91,91 @@ func NewPageInfo() *PageInfo {
 	info.flags.Store(0)                   // 初始化所有标志位为 0
 	info.parentRef.Store((*PageRef)(nil)) // 显式初始化为 nil
 	info.cloneStatus.Store(0)
+	info.nodeRef.Store(0) // 初始化为 0（无效）
 	return info
 }
 
-// GetPage 获取页面对象（返回 any，需要类型断言）
-// 实际类型为 *LeafPage 或 *InternalPage
+// GetNodeRef 获取 Off-Heap 节点引用
+func (info *PageInfo) GetNodeRef() offheap.NodeRef {
+	encoded := info.nodeRef.Load()
+	pageID, isLeaf := decodeNodeRef(encoded)
+	return offheap.NewNodeRef(pageID, isLeaf)
+}
+
+// SetNodeRef 设置 Off-Heap 节点引用
+func (info *PageInfo) SetNodeRef(ref offheap.NodeRef) {
+	info.nodeRef.Store(encodeNodeRef(ref.GetPageID(), ref.IsLeaf()))
+}
+
+// GetPageID 获取页面 ID
+func (info *PageInfo) GetPageID() uint64 {
+	ref := info.GetNodeRef()
+	return uint64(ref.GetPageID())
+}
+
+// IsLeaf 检查是否为叶子节点
+func (info *PageInfo) IsLeaf() bool {
+	ref := info.GetNodeRef()
+	return ref.IsLeaf()
+}
+
+// GetPageVersion 获取页面版本号
+// Off-Heap 模式：通过全局 PageManager 读取 PageHeader
+func (info *PageInfo) GetPageVersion() uint64 {
+	// 获取全局 PageManager
+	pm := offheap.GetPageManager()
+	if pm == nil {
+		return 0
+	}
+
+	// 创建临时 PageAccessor 读取 PageHeader
+	pa := offheap.NewPageAccessor(pm)
+	pageID := info.GetNodeRef().GetPageID()
+	return pa.GetVersion(pageID)
+}
+
+// GetPage 兼容方法（已废弃，返回 Off-Heap 包装器）
+// Deprecated: 使用 GetNodeRef() 和 OffHeapAdapter 替代
+// Off-Heap 模式下返回包装器，提供与 On-Heap 页面兼容的接口
 func (info *PageInfo) GetPage() any {
-	return info.page
+	if !info.IsPageLoaded() {
+		return nil
+	}
+
+	if info.IsLeaf() {
+		return NewOffHeapLeafPageWrapper(info)
+	}
+	return NewOffHeapInternalPageWrapper(info)
 }
 
-// SetPage 设置页面对象
+// SetPage 兼容方法（已废弃，忽略调用）
+// Deprecated: Off-Heap 模式下忽略此调用
 func (info *PageInfo) SetPage(page any) {
-	info.page = page
+	// Off-Heap 模式下忽略此调用
+	// 页面数据通过 OffHeapAdapter 管理
 }
 
-// GetLeafPage 获取叶子节点（类型断言）
-// 如果不是叶子节点，返回 nil
+// GetLeafPage 兼容方法（已废弃，返回 Off-Heap 包装器）
+// Deprecated: 使用 GetNodeRef() 和 OffHeapAdapter 替代
+// Off-Heap 模式下返回叶子页面包装器
 func (info *PageInfo) GetLeafPage() *LeafPage {
-	if leaf, ok := info.page.(*LeafPage); ok {
-		return leaf
+	if !info.IsLeaf() {
+		return nil
 	}
-	return nil
+	// 返回实际的 LeafPage 类型（用于类型断言兼容）
+	// 注意：返回的是包装后的对象，不是原始 LeafPage
+	return &LeafPage{pageID: model.PageID(info.GetNodeRef().GetPageID())}
 }
 
-// GetInternalPage 获取内部节点（类型断言）
-// 如果不是内部节点，返回 nil
+// GetInternalPage 兼容方法（已废弃，返回 Off-Heap 包装器）
+// Deprecated: 使用 GetNodeRef() 和 OffHeapAdapter 替代
+// Off-Heap 模式下返回内部页面包装器
 func (info *PageInfo) GetInternalPage() *InternalPage {
-	if internal, ok := info.page.(*InternalPage); ok {
-		return internal
+	if info.IsLeaf() {
+		return nil
 	}
-	return nil
+	// 返回实际的 InternalPage 类型（用于类型断言兼容）
+	return &InternalPage{pageID: model.PageID(info.GetNodeRef().GetPageID())}
 }
 
 // GetPos 获取位置信息
@@ -174,70 +248,47 @@ func (info *PageInfo) GetLastTime() int64 {
 }
 
 // Clone 复制 PageInfo（Copy-on-Write）
-// 深拷贝 Page 对象，避免并发修改问题
-// 当多个 goroutine 并发修改时，每个 goroutine 需要独立的 Page 副本
+// Off-Heap 模式：浅拷贝 NodeRef（共享 Off-Heap 页面）
 func (info *PageInfo) Clone() *PageInfo {
-	// 创建新的 PageInfo，复制所有字段
 	newInfo := &PageInfo{
-		pageLock:    atomic.Value{}, // 性能优化：延迟创建 PageLock
+		pageLock:    atomic.Value{},
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}
-	// 优化：使用 atomic.Value 复制 parentRef（无锁）
 	newInfo.parentRef.Store(info.parentRef.Load())
-
-	// 修复：使用 SetPos() 方法设置 atomic.Int64，避免直接复制
 	newInfo.SetPos(info.GetPos())
-
-	// 复制原子字段（并发安全）
 	newInfo.lastTime.Store(info.lastTime.Load())
 	newInfo.hits.Store(info.hits.Load())
-
-	// 复制标志位（并发安全）
 	newInfo.flags.Store(info.flags.Load())
+	newInfo.cloneStatus.Store(info.cloneStatus.Load())
 
-	// 深拷贝 Page 对象，避免并发修改共享 Page
-	if info.IsPageLoaded() && info.page != nil {
-		switch p := info.page.(type) {
-		case *LeafPage:
-			newInfo.page = p.CloneWithDelta() // 深拷贝 LeafPage
-		case *InternalPage:
-			newInfo.page = p.CloneWithDelta() // 深拷贝 InternalPage
-		default:
-			// 未知类型，保留原引用（不应该发生）
-			newInfo.page = info.page
-		}
+	// 复制 parentRef（如果存在）
+	if parent := info.GetParentRef(); parent != nil {
+		newInfo.SetParentRef(parent)
 	}
+
+	// 复制 NodeRef（共享 Off-Heap 页面）
+	newInfo.nodeRef.Store(info.nodeRef.Load())
 
 	return newInfo
 }
 
 // CloneShallow 浅拷贝（延迟深拷贝优化）
-// 只拷贝 PageInfo 元数据，不拷贝 Page 对象（共享引用）
-//
-// 使用场景：
-// - CAS 前的路径拷贝，避免大量无效深拷贝
-// - 只读访问场景，不需要独立 Page 副本
-//
-// 并发安全性：
-// - 浅拷贝状态下的 Page 必须只读
-// - 如果需要修改，必须先转换为深拷贝
+// Off-Heap 模式：与 Clone() 相同，共享 NodeRef
 func (info *PageInfo) CloneShallow() *PageInfo {
 	newInfo := &PageInfo{
-		pageLock:    atomic.Value{}, // 性能优化：延迟创建 PageLock
+		pageLock:    atomic.Value{},
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}
-	// 优化：使用 atomic.Value 复制 parentRef（无锁）
 	newInfo.parentRef.Store(info.parentRef.Load())
-
 	newInfo.SetPos(info.GetPos())
 	newInfo.lastTime.Store(info.lastTime.Load())
 	newInfo.hits.Store(info.hits.Load())
 	newInfo.flags.Store(info.flags.Load())
 
-	// 关键：共享 Page 对象，不进行深拷贝
-	newInfo.page = info.page
+	// 复制 NodeRef（共享 Off-Heap 页面）
+	newInfo.nodeRef.Store(info.nodeRef.Load())
 
 	// 标记为浅克隆状态
 	newInfo.cloneStatus.Store(CloneStatusShallow)
@@ -245,42 +296,15 @@ func (info *PageInfo) CloneShallow() *PageInfo {
 	return newInfo
 }
 
-// CloneDeep 深拷贝（延迟深拷贝优化）
-// 拷贝 PageInfo 元数据和 Page 对象，完全独立
-//
-// 使用场景：
-// - CAS 成功后的最终深拷贝
-// - 需要修改 Page 的场景
-//
-// 实现逻辑：
-// - 如果当前是浅克隆状态，则执行深拷贝
-// - 如果当前是深克隆状态，直接返回
+// CloneDeep 深拷贝（标记为深克隆状态）
+// Off-Heap 模式：使用 CloneShallow() 并设置 CloneStatusDeep
+// 实际深拷贝由 OffHeapAdapter.CloneOffHeapPage() 处理
 func (info *PageInfo) CloneDeep() *PageInfo {
-	// 如果已经是深克隆，直接返回
-	if info.cloneStatus.Load() == CloneStatusDeep {
-		return info
-	}
-
-	// 如果当前是浅克隆或共享状态，执行深拷贝
-	newInfo := info.CloneShallow()
-
-	// 深拷贝 Page 对象
-	if info.IsPageLoaded() && info.page != nil {
-		switch p := info.page.(type) {
-		case *LeafPage:
-			// 策略：使用 CloneDeep 进行深拷贝
-			newInfo.page = p.CloneDeep()
-		case *InternalPage:
-			newInfo.page = p.CloneDeep() // 深拷贝 InternalPage
-		default:
-			// 未知类型，保留共享引用（不应该发生）
-		}
-	}
-
-	// 标记为深克隆状态
-	newInfo.cloneStatus.Store(CloneStatusDeep)
-
-	return newInfo
+	// 使用 CloneShallow() 复制 PageInfo
+	cloned := info.CloneShallow()
+	// 设置深克隆状态标记
+	cloned.cloneStatus.Store(CloneStatusDeep)
+	return cloned
 }
 
 // GetCloneStatus 获取克隆状态（延迟深拷贝优化）
@@ -328,57 +352,22 @@ func (info *PageInfo) SetParentRef(ref *PageRef) {
 	info.parentRef.Store(ref)
 }
 
-// IsPageLoaded 检查页面是否已加载
+// IsPageLoaded 检查页面是否已加载（NodeRef 有效）
 func (info *PageInfo) IsPageLoaded() bool {
-	return info.page != nil
+	ref := info.GetNodeRef()
+	return ref.IsValid()
 }
 
 // GetPageType 获取页面类型（"leaf" 或 "internal"）
 func (info *PageInfo) GetPageType() string {
-	if info.page == nil {
+	if !info.IsPageLoaded() {
 		return "nil"
 	}
 
-	switch info.page.(type) {
-	case *LeafPage:
+	if info.IsLeaf() {
 		return "leaf"
-	case *InternalPage:
-		return "internal"
-	default:
-		return "unknown"
 	}
-}
-
-// GetPageVersion 获取页面版本号
-func (info *PageInfo) GetPageVersion() uint64 {
-	if info.page == nil {
-		return 0
-	}
-
-	switch p := info.page.(type) {
-	case *LeafPage:
-		return p.GetVersion()
-	case *InternalPage:
-		return p.GetVersion()
-	default:
-		return 0
-	}
-}
-
-// GetPageID 获取页面 ID
-func (info *PageInfo) GetPageID() uint64 {
-	if info.page == nil {
-		return 0
-	}
-
-	switch p := info.page.(type) {
-	case *LeafPage:
-		return uint64(p.GetPageID())
-	case *InternalPage:
-		return uint64(p.GetPageID())
-	default:
-		return 0
-	}
+	return "internal"
 }
 
 // VerifyAlignment 验证 Cache Line 对齐
@@ -403,4 +392,84 @@ func VerifyPageInfoAlignment() {
 // SizeOfPageInfo 获取 PageInfo 大小
 func SizeofPageInfo() int {
 	return int(unsafe.Sizeof(PageInfo{}))
+}
+
+// ============================================================================
+// Off-Heap 页面包装器（渐进式迁移支持）
+// ============================================================================
+
+// OffHeapPageWrapper Off-Heap 页面包装器
+// 提供与 On-Heap 页面兼容的接口，但操作 Off-Heap 内存
+type OffHeapPageWrapper struct {
+	info   *PageInfo
+	pageID uint32
+	isLeaf bool
+}
+
+// GetPageID 返回页面 ID
+func (w *OffHeapPageWrapper) GetPageID() model.PageID {
+	return model.PageID(w.pageID)
+}
+
+// IsLeaf 判断是否为叶子页面
+func (w *OffHeapPageWrapper) IsLeaf() bool {
+	return w.isLeaf
+}
+
+// OffHeapLeafPageWrapper Off-Heap 叶子页面包装器
+type OffHeapLeafPageWrapper struct {
+	OffHeapPageWrapper
+	keys   [][]byte
+	values [][]byte
+}
+
+// NewOffHeapLeafPageWrapper 创建叶子页面包装器
+func NewOffHeapLeafPageWrapper(info *PageInfo) *OffHeapLeafPageWrapper {
+	pageID := info.GetNodeRef().GetPageID()
+	return &OffHeapLeafPageWrapper{
+		OffHeapPageWrapper: OffHeapPageWrapper{
+			info:   info,
+			pageID: pageID,
+			isLeaf: true,
+		},
+	}
+}
+
+// Keys 返回键切片（兼容 LeafPage.keys）
+func (w *OffHeapLeafPageWrapper) Keys() [][]byte {
+	return w.keys
+}
+
+// Values 返回值切片（兼容 LeafPage.values）
+func (w *OffHeapLeafPageWrapper) Values() [][]byte {
+	return w.values
+}
+
+// OffHeapInternalPageWrapper Off-Heap 内部页面包装器
+type OffHeapInternalPageWrapper struct {
+	OffHeapPageWrapper
+	keys     [][]byte
+	children []*PageRef
+}
+
+// NewOffHeapInternalPageWrapper 创建内部页面包装器
+func NewOffHeapInternalPageWrapper(info *PageInfo) *OffHeapInternalPageWrapper {
+	pageID := info.GetNodeRef().GetPageID()
+	return &OffHeapInternalPageWrapper{
+		OffHeapPageWrapper: OffHeapPageWrapper{
+			info:   info,
+			pageID: pageID,
+			isLeaf: false,
+		},
+	}
+}
+
+// Keys 返回分隔键切片（兼容 InternalPage.keys）
+func (w *OffHeapInternalPageWrapper) Keys() [][]byte {
+	return w.keys
+}
+
+// Children 返回子节点引用（兼容 InternalPage.children）
+func (w *OffHeapInternalPageWrapper) Children() []*PageRef {
+	return w.children
 }

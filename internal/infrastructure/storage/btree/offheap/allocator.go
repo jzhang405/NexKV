@@ -36,5 +36,5 @@ func NewAllocator(size int) (OffHeapAllocator, error) {
 // platformPageSize 返回当前平台的内存页大小
 func platformPageSize() int { //nolint:unused
 	// 默认 4KB，各平台实现会覆盖
-	return 4096
+	return PageSize
 }

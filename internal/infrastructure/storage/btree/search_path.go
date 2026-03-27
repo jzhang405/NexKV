@@ -184,12 +184,6 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 	currentInfo := rootInfo
 	currentRef := b.rootRef.PageRef
 
-	// 调试：追踪 key-06151、key-06267 和 key-09803 的搜索路径
-	debugThisSearch := string(key) == "key-06151" || string(key) == "key-06267" || string(key) == "key-06266" || string(key) == "key-09803" || string(key) == "key-09802"
-	if debugThisSearch {
-		DebugPrintf("[SEARCH_PATH] key=%s starting search\n", string(key))
-	}
-
 	// 添加 Root 到路径和引用
 	path = append(path, currentInfo)
 	refs = append(refs, currentRef)
@@ -204,16 +198,8 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 		currentPageID := model.PageID(currentInfo.GetPageID())
 		currentIsLeaf := b.offheapAdapter.IsLeaf(currentPageID)
 
-		// ✅ 添加 key-05655 的调试日志
-		if string(key) == "key-05655" {
-			fmt.Printf("\n[SEARCH_PATH key-05655] currentPageID=%d currentIsLeaf=%v\n", currentPageID, currentIsLeaf)
-		}
-
 		if currentIsLeaf {
 			// 到达叶子节点，返回收集的路径和引用
-			if debugThisSearch {
-				DebugPrintf("[SEARCH_PATH] key=%s reached leaf pageID=%d\n", string(key), currentPageID)
-			}
 			break
 		}
 
@@ -224,20 +210,6 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 			// 返回 ErrRetry 让外层重试
 			// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
 			return nil, nil, ErrRetry
-		}
-		if debugThisSearch {
-			DebugPrintf("[SEARCH_PATH] key=%s at parent pageID=%d found childPageID=%d\n", string(key), currentPageID, childPageID)
-			// 打印父节点的所有 keys 和 children
-			count := b.offheapAdapter.pa.GetCount(uint32(currentPageID))
-			DebugPrintf("[SEARCH_PATH] parent pageID=%d has %d keys:\n", currentPageID, count)
-			for i := 0; i < int(count); i++ {
-				keyOff, keyLen, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(currentPageID), i)
-				pageKey := b.offheapAdapter.pa.GetKey(uint32(currentPageID), keyOff, keyLen)
-				DebugPrintf("[SEARCH_PATH]   [%d] key=%s child=%d\n", i, string(pageKey), child)
-			}
-			// 打印 extraChild（N+1 child）
-			extraChild := b.offheapAdapter.pa.GetChild(uint32(currentPageID), int(count))
-			DebugPrintf("[SEARCH_PATH]   [%d] (extraChild)=%d\n", count, extraChild)
 		}
 		if childPageID == 0 {
 			// 没有子节点，可能到达叶子

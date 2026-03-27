@@ -45,7 +45,7 @@ func newPlatformAllocator(size int) (OffHeapAllocator, error) {
 		//lint:ignore SA1030 we need this unsafe conversion for Windows API
 		base:     unsafe.Pointer(ptr),
 		size:     size,
-		pageSize: 4096, // Windows 默认页面大小
+		pageSize: PageSize, // Windows 默认页面大小
 	}, nil
 }
 

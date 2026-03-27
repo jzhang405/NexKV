@@ -601,15 +601,7 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 
 	const maxRetries = 5 // 最多重试 5 次（增加以提高并发成功率）
 
-	// 调试：追踪 key-06151、key-06267、key-06709、key-09803 和 multi-key-2 的查找过程
-	debugThisKey := string(key) == "key-06151" || string(key) == "key-06150" || string(key) == "key-06152" ||
-		string(key) == "key-06267" || string(key) == "key-06709" || string(key) == "key-09803" || string(key) == "multi-key-2"
-
 	for attempt := range maxRetries {
-		if debugThisKey {
-			DebugPrintf("[GET_DEBUG] key=%s attempt=%d\n", string(key), attempt)
-		}
-
 		// Off-Heap 模式：使用 searchPathWithRefs
 		leafRef, path, _, err := b.findLeafPageRef(ctx, key)
 		if err != nil {
@@ -623,9 +615,6 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		}
 
 		if len(path) == 0 || leafRef == nil {
-			if debugThisKey {
-				DebugPrintf("[GET_DEBUG] key=%s path=%d leafRef=%v\n", string(key), len(path), leafRef != nil)
-			}
 			if attempt < maxRetries-1 {
 				runtime.Gosched()
 				continue
@@ -636,9 +625,6 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		// 获取叶子节点的 PageInfo
 		leafInfo := leafRef.GetPageInfo()
 		if leafInfo == nil {
-			if debugThisKey {
-				DebugPrintf("[GET_DEBUG] key=%s leafInfo=nil\n", string(key))
-			}
 			if attempt < maxRetries-1 {
 				runtime.Gosched()
 				continue
@@ -656,32 +642,6 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 
 		// 使用 OffHeapAdapter.GetFromOffHeap 直接读取
 		value, found, err := b.offheapAdapter.GetFromOffHeap(leafPageID, key)
-		if debugThisKey {
-			DebugPrintf("[GET_DEBUG] key=%s leafPageID=%d found=%v err=%v\n", string(key), leafPageID, found, err)
-			// 打印页面的所有 keys
-			count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
-			DebugPrintf("[GET_DEBUG] key=%s leafPageID=%d count=%d\n", string(key), leafPageID, count)
-			if count > 0 {
-				// 打印前5个和后5个 keys
-				maxPrint := 5
-				if int(count) <= maxPrint*2 {
-					maxPrint = int(count)
-				}
-				for i := 0; i < maxPrint; i++ {
-					keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
-					pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
-					DebugPrintf("[GET_DEBUG]   key[%d]=%s\n", i, string(pageKey))
-				}
-				if int(count) > maxPrint*2 {
-					DebugPrintf("[GET_DEBUG]   ... (%d more keys)\n", int(count)-maxPrint*2)
-					for i := int(count) - maxPrint; i < int(count); i++ {
-						keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
-						pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
-						DebugPrintf("[GET_DEBUG]   key[%d]=%s\n", i, string(pageKey))
-					}
-				}
-			}
-		}
 		if err != nil {
 			// 如果读取错误且不是最后一次尝试，重试
 			if attempt < maxRetries-1 {
@@ -694,9 +654,6 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		if found {
 			// 成功找到，推进 epoch 释放待释放页面
 			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
-			if debugThisKey {
-				DebugPrintf("[GET_DEBUG] key=%s FOUND\n", string(key))
-			}
 			return value, nil // 成功找到，直接返回
 		}
 

@@ -35,26 +35,11 @@ import (
 // - 使用 splitMutexMap 防止多个 goroutine 同时分裂同一页面
 // - 正在分裂的页面会标记为 splitting，其他 goroutine 等待分裂完成
 func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
-	// 调试：追踪 key-09803 和 multi-key-2 的完整执行路径
-	debugKey := string(key) == "key-09803" || string(key) == "multi-key-2"
-	if debugKey {
-		DebugPrintf("[SET_WITH_LEAF_LOCK] Starting SET for key=%s\n", string(key))
-	}
-
 	// Step 1: 查找 PageRef 和路径（只读，不克隆）
 	leafRef, path, refs, err := b.findLeafPageRef(ctx, key)
 	if err != nil {
-		if string(key) == "key-09803" {
-			DebugPrintf("[SET_WITH_LEAF_LOCK] findLeafPageRef FAILED for key=%s: %v\n", string(key), err)
-		}
 		// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
 		return err
-	}
-
-	if string(key) == "key-09803" {
-		leafInfo := leafRef.GetPageInfo()
-		DebugPrintf("[SET_WITH_LEAF_LOCK] findLeafPageRef SUCCESS for key=%s, leafPageID=%d, pathLen=%d\n",
-			string(key), leafInfo.GetPageID(), len(path))
 	}
 
 	if len(path) == 0 {
@@ -86,25 +71,9 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 
 	// Step 5: Off-Heap 插入（直接修改，不需要克隆）
 	oldPageID := model.PageID(oldInfo.GetPageID())
-	if string(key) == "key-09803" {
-		DebugPrintf("[SET_WITH_LEAF_LOCK] Before InsertToOffHeap for key=%s, oldPageID=%d\n", string(key), oldPageID)
-	}
 	newPageID, splitRequired, err := b.offheapAdapter.InsertToOffHeap(oldPageID, key, value)
 	if err != nil {
-		if string(key) == "key-09803" {
-			DebugPrintf("[SET_WITH_LEAF_LOCK] InsertToOffHeap FAILED for key=%s: %v\n", string(key), err)
-		}
 		return fmt.Errorf("offheap insert: %w", err)
-	}
-	if string(key) == "key-09803" {
-		DebugPrintf("[SET_WITH_LEAF_LOCK] After InsertToOffHeap for key=%s, newPageID=%d, splitRequired=%v\n",
-			string(key), newPageID, splitRequired)
-	}
-	// ✅ 添加 key-05655 的调试日志（使用 fmt.Printf 确保输出）
-	if string(key) == "key-05655" {
-		fmt.Printf("\n[=========== SET_WITH_LEAF_LOCK for key-05655 ===========]\n")
-		fmt.Printf("[SET_WITH_LEAF_LOCK] InsertToOffHeap: newPageID=%d, splitRequired=%v\n", newPageID, splitRequired)
-		fmt.Printf("[=====================================================]\n\n")
 	}
 
 	// Step 6: 创建新的 PageInfo（Off-Heap 模式）
@@ -221,12 +190,6 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 	// Step 9: 检查是否需要分裂（同步，在锁保护下）
 	// 此时 newPageID == oldPageID，所以传递 newPageID 即可
 	if splitRequired {
-		if string(key) == "key-05655" {
-			fmt.Printf("\n[=========== SPLIT_REQUIRED for key-05655 ===========]\n")
-			fmt.Printf("[SET_WITH_LEAF_LOCK] Entering splitRequired branch\n")
-			fmt.Printf("[=================================================]\n\n")
-		}
-
 		// ✅ 修复：删除提前检查父节点是否满的逻辑
 		// BUG: 之前在父节点满时先分裂父节点然后返回 ErrRetry
 		// 但原始 key-value 从未插入（InsertToOffHeap 在页面满时不插入）
@@ -245,19 +208,8 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 		// 需要分裂，调用 Off-Heap 分裂逻辑
 		// 注意：分裂会释放当前锁，按深度顺序获取新的锁
 		// 传递 key-value，分裂后需要重新插入
-		if string(key) == "key-09803" {
-			DebugPrintf("[SET_WITH_LEAF_LOCK] Before handleSplitOffHeapSync for key=%s, newPageID=%d\n", string(key), newPageID)
-		}
-		if string(key) == "key-05655" {
-			fmt.Printf("\n[=========== CALLING handleSplitOffHeapSync for key-05655 ===========]\n")
-			fmt.Printf("[SET_WITH_LEAF_LOCK] About to call handleSplitOffHeapSync\n")
-			fmt.Printf("[=============================================================\n]\n")
-		}
 		leftRef, err := b.handleSplitOffHeapSync(leafRef, newInfo, newPageID, path, key, value)
 		if err != nil {
-			if string(key) == "key-09803" {
-				DebugPrintf("[SET_WITH_LEAF_LOCK] handleSplitOffHeapSync FAILED for key=%s: %v\n", string(key), err)
-			}
 			// 分裂失败，返回 ErrRetry 让外层重试
 			// 注意：如果 SplitOffHeapLeafPage 失败，页面可能已处于不一致状态
 			return ErrRetry
@@ -266,19 +218,8 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 		// 更新 newInfo 以便后续持久化使用正确的页面信息
 		newInfo = leftRef.GetPageInfo()
 		if newInfo == nil {
-			if string(key) == "key-09803" {
-				DebugPrintf("[SET_WITH_LEAF_LOCK] leftRef page info is nil after split for key=%s\n", string(key))
-			}
 			return fmt.Errorf("leftRef page info is nil after split")
 		}
-		if string(key) == "key-09803" {
-			DebugPrintf("[SET_WITH_LEAF_LOCK] handleSplitOffHeapSync SUCCESS for key=%s, newInfo.pageID=%d\n",
-				string(key), newInfo.GetPageID())
-		}
-	}
-
-	if string(key) == "key-09803" {
-		DebugPrintf("[SET_WITH_LEAF_LOCK] SET COMPLETE for key=%s\n", string(key))
 	}
 
 	// Step 10: 持久化集成（仅持久化模式）
@@ -309,9 +250,6 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 		}
 	}
 
-	if string(key) == "key-05655" {
-		fmt.Printf("[SET_WITH_LEAF_LOCK] *** RETURNING SUCCESS *** (line 270)\n")
-	}
 	return nil
 }
 
@@ -395,74 +333,12 @@ func (b *BTree) buildPersistPath(root, target *PageInfo) []*PageInfo {
 //	*PageRef - 分裂后的左子节点 PageRef（用于后续持久化）
 //	error - 错误信息（ErrRetry 表示需要重试）
 func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, leafPageID model.PageID, path []*PageInfo, key, value []byte) (*PageRef, error) {
-	if string(key) == "key-05655" {
-		fmt.Printf("\n[=========== INSIDE handleSplitOffHeapSync for key-05655 ===========]\n")
-		fmt.Printf("[HANDLE_SPLIT] *** FUNCTION ENTERED *** leafPageID=%d, pathLen=%d\n", leafPageID, len(path))
-		fmt.Printf("[===============================================================\n]\n")
-	}
-
 	// ✅ 修复：检查传入的页面类型
 	// BUG: 有时候 leafPageID 指向的是 INDEX 节点（例如根节点），而不是 LEAF 节点
 	// 原因：页面类型损坏或页面 ID 重用
 	// 修复：检查页面类型，如果是 INDEX 节点，调用内部节点分裂逻辑
 	count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
 	isLeaf := b.offheapAdapter.IsLeaf(leafPageID)
-
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] Page type check: leafPageID=%d isLeaf=%v count=%d\n", leafPageID, isLeaf, count)
-
-		// 检查实际根节点
-		rootInfo := b.rootRef.pInfo.Load()
-		if rootInfo != nil {
-			rootPageID := model.PageID(rootInfo.GetPageID())
-			rootIsLeaf := b.offheapAdapter.IsLeaf(rootPageID)
-			fmt.Printf("[HANDLE_SPLIT] Actual root: pageID=%d isLeaf=%v\n", rootPageID, rootIsLeaf)
-		}
-
-		// 打印 path 内容
-		fmt.Printf("[HANDLE_SPLIT] Path contents (len=%d):\n", len(path))
-		for i, p := range path {
-			pID := model.PageID(p.GetPageID())
-			pIsLeaf := b.offheapAdapter.IsLeaf(pID)
-			fmt.Printf("[HANDLE_SPLIT]   [%d] pageID=%d isLeaf=%v\n", i, pID, pIsLeaf)
-		}
-		fmt.Printf("[HANDLE_SPLIT] End of path contents\n")
-
-		// 打印 pageID=646 的前几个和最后几个 keys 来确认它是 LEAF 还是 INDEX
-		fmt.Printf("[HANDLE_SPLIT] Page %d contents (first 5 and last 5 keys, count=%d):\n", leafPageID, count)
-		for i := 0; i < 5 && i < int(count); i++ {
-			keyOff, keyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(leafPageID), i)
-			pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
-			fmt.Printf("[HANDLE_SPLIT]   [%d] key=%s\n", i, string(pageKey))
-		}
-		if count > 5 {
-			fmt.Printf("[HANDLE_SPLIT]   ...\n")
-			for i := int(count) - 5; i < int(count); i++ {
-				keyOff, keyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(leafPageID), i)
-				pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
-				fmt.Printf("[HANDLE_SPLIT]   [%d] key=%s\n", i, string(pageKey))
-			}
-		}
-
-		// 打印父节点（pageID=647）的内容
-		if len(path) >= 2 {
-			parentPageID := model.PageID(path[0].GetPageID())
-			parentCount := b.offheapAdapter.pa.GetCount(uint32(parentPageID))
-			fmt.Printf("[HANDLE_SPLIT] Parent page %d contents (count=%d keys, %d children):\n", parentPageID, parentCount, parentCount+1)
-			for i := 0; i < int(parentCount); i++ {
-				keyOff, keyLen, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(parentPageID), i)
-				pageKey := b.offheapAdapter.pa.GetKey(uint32(parentPageID), keyOff, keyLen)
-				fmt.Printf("[HANDLE_SPLIT]   [%d] key=%s child=%d\n", i, string(pageKey), child)
-			}
-			// 获取 extraChild（第 N+1 个 child）
-			extraChild := b.offheapAdapter.pa.GetChild(uint32(parentPageID), int(parentCount))
-			fmt.Printf("[HANDLE_SPLIT]   [%d] (extraChild)=%d\n", parentCount, extraChild)
-		}
-	}
-
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] Before first if !isLeaf check (line 370)\n")
-	}
 
 	if !isLeaf {
 		// 传入的是 INDEX 节点，应该调用 splitInternalOffHeapSync
@@ -480,14 +356,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 
 	// 活锁检测：检查当前页面是否已经被多次加入延迟释放列表
 	// 通过检查当前 epoch 的待释放列表来判断
-
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] Before livelock detection\n")
-	}
 	b.epochBasedFreeList.mu.Lock()
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] Lock acquired, checking pending list...\n")
-	}
 	currentEpoch := b.epochBasedFreeList.currentEpoch
 	currentEpochPending := b.epochBasedFreeList.pending[currentEpoch]
 	pendingCount := 0
@@ -497,10 +366,6 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 		}
 	}
 	b.epochBasedFreeList.mu.Unlock()
-
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] After livelock check: pendingCount=%d, isLeaf=%v\n", pendingCount, isLeaf)
-	}
 
 	if pendingCount > 15 {
 		// 同一个页面被多次尝试分裂，可能存在活锁
@@ -588,9 +453,6 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 			// 检查父节点是否已满
 			if int(parentCount) >= maxInternalKeys {
 				// 父节点已满，需要先分裂父节点
-				if string(key) == "key-05655" {
-					fmt.Printf("[FALLBACK] parent page FULL (count=%d), calling splitInternalOffHeapSync\n", parentCount)
-				}
 				DebugPrintf("[FALLBACK] parent page FULL (count=%d), calling splitInternalOffHeapSync\n", parentCount)
 
 				// 调用内部节点分裂来分裂父节点
@@ -605,9 +467,6 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 
 				// 父节点分裂成功，现在可以更新父节点索引
 				// 但为了简化逻辑，直接返回 ErrRetry 让外层重新处理
-				if string(key) == "key-05655" {
-					fmt.Printf("[FALLBACK] parent split SUCCESS, freeing new page and returning ErrRetry\n")
-				}
 				DebugPrintf("[FALLBACK] parent split SUCCESS, freeing new page and returning ErrRetry\n")
 				b.offheapAdapter.pm.Free(newPageID)
 				return nil, ErrRetry
@@ -682,37 +541,8 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	}
 
 	// 调试：记录页面 ID 和 leafRef 状态
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] Before leaf split logic: leafPageID=%d isLeaf=%v count=%d\n", leafPageID, isLeaf, count)
-		fmt.Printf("[HANDLE_SPLIT] About to check if isLeaf...\n")
-	}
 	DebugPrintf("[HANDLE_SPLIT] pageID=%d isLeaf=%v count=%d pendingCount=%d key=%s\n",
 		leafPageID, isLeaf, count, pendingCount, string(key))
-
-	// 注意：这里 leafPageID 是旧页面 ID，leafInfo 指向新页面
-	// 但当页面已满时，InsertToOffHeap 返回 splitRequired=true 但不插入数据
-	// 所以我们需要从旧页面分裂，然后插入新数据
-
-	// 修复：如果是索引节点，调用索引节点分裂逻辑
-	if !isLeaf {
-		if string(key) == "key-05655" {
-			fmt.Printf("[HANDLE_SPLIT] Detected INDEX node, calling splitInternalOffHeapSync\n")
-		}
-		DebugPrintf("[HANDLE_SPLIT] pageID=%d is INDEX node, calling splitInternalOffHeapSync\n", leafPageID)
-		// 索引节点分裂：需要递归向上处理
-		// 注意：此时 leafRef 实际上是索引节点的 PageRef
-		err := b.splitInternalOffHeapSync(leafRef, leafInfo, leafPageID, path[:len(path)-1])
-		if err != nil {
-			return nil, err
-		}
-		// 索引节点分裂后，返回 ErrRetry 让外层重新搜索
-		return nil, ErrRetry
-	}
-
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] Confirmed LEAF node, proceeding to leaf split logic\n")
-		fmt.Printf("[HANDLE_SPLIT] About to call SplitOffHeapLeafPage...\n")
-	}
 
 	// 注意：这里 leafPageID 是旧页面 ID，leafInfo 指向新页面
 	// 但当页面已满时，InsertToOffHeap 返回 splitRequired=true 但不插入数据
@@ -735,32 +565,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	// Step 1: 调用 OffHeapAdapter.SplitOffHeapLeafPage（从旧页面分裂）
 	DebugPrintf("[HANDLE_SPLIT] Step 1: Splitting leaf pageID=%d\n", leafPageID)
 
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] About to call SplitOffHeapLeafPage(leafPageID=%d)\n", leafPageID)
-	}
-
 	leftPageID, rightPageID, splitKey, err := b.offheapAdapter.SplitOffHeapLeafPage(leafPageID)
-
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] SplitOffHeapLeafPage returned: leftPageID=%d rightPageID=%d splitKey=%s err=%v\n",
-			leftPageID, rightPageID, string(splitKey), err)
-
-		// 打印分裂后的左右页面内容
-		leftCount := b.offheapAdapter.pa.GetCount(uint32(leftPageID))
-		rightCount := b.offheapAdapter.pa.GetCount(uint32(rightPageID))
-		fmt.Printf("[HANDLE_SPLIT] Left page %d count=%d (first 3 keys):\n", leftPageID, leftCount)
-		for i := 0; i < 3 && i < int(leftCount); i++ {
-			keyOff, keyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(leftPageID), i)
-			pageKey := b.offheapAdapter.pa.GetKey(uint32(leftPageID), keyOff, keyLen)
-			fmt.Printf("[HANDLE_SPLIT]   [%d] key=%s\n", i, string(pageKey))
-		}
-		fmt.Printf("[HANDLE_SPLIT] Right page %d count=%d (first 3 keys):\n", rightPageID, rightCount)
-		for i := 0; i < 3 && i < int(rightCount); i++ {
-			keyOff, keyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(rightPageID), i)
-			pageKey := b.offheapAdapter.pa.GetKey(uint32(rightPageID), keyOff, keyLen)
-			fmt.Printf("[HANDLE_SPLIT]   [%d] key=%s\n", i, string(pageKey))
-		}
-	}
 
 	if err != nil {
 		// 分裂失败，返回 ErrRetry 让外层重试
@@ -776,14 +581,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	rightRef := b.pageRefCache.GetOrCreate(rightPageID, true)
 
 	// Step 3: 检查是否有父节点（根分裂场景需要特殊处理）
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] Checking split scenario: len(path)=%d\n", len(path))
-	}
-
 	if len(path) < 2 {
-		if string(key) == "key-05655" {
-			fmt.Printf("[HANDLE_SPLIT] ROOT SPLIT scenario (len(path)=%d)\n", len(path))
-		}
 		DebugPrintf("[HANDLE_SPLIT] len(path)=%d, ROOT SPLIT scenario\n", len(path))
 		// 没有父节点，需要创建新的根节点（Root Split）
 		// 根分裂场景下，不要提前更新 leafRef，让 splitRootOffHeapSync 原子性地处理所有更新
@@ -829,10 +627,6 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	}
 
 	// 非根分裂场景：正常更新 leafRef
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] NON-ROOT SPLIT scenario (len(path)=%d)\n", len(path))
-	}
-
 	// Step 4: 更新 leafRef 的 PageInfo（指向新的左页面）
 	newLeftInfo := NewPageInfo()
 	newLeftInfo.SetNodeRef(offheap.NewNodeRef(uint32(leftPageID), true))
@@ -931,17 +725,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	// 替换旧的子页面为新的左右子页面
 	// 注意：无论 insertIndex 是否等于 count，都使用 UpdateIndexEntry
 	// UpdateIndexEntry 会正确处理所有情况
-
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] About to call UpdateIndexEntry: parentPageID=%d insertIndex=%d splitKey=%s left=%d right=%d\n",
-			currentParentPageID, insertIndex, string(splitKey), leftPageID, rightPageID)
-	}
-
 	newParentPageID, err := b.offheapAdapter.UpdateIndexEntry(currentParentPageID, insertIndex, splitKey, uint32(leftPageID), uint32(rightPageID))
-
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] UpdateIndexEntry returned: newParentPageID=%d err=%v\n", newParentPageID, err)
-	}
 
 	if err != nil {
 		// 检查是否是页面已满错误
@@ -953,10 +737,6 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 				// path[1] = Leaf
 				// Root 满了，需要专门处理
 
-				if string(key) == "key-05655" {
-					fmt.Printf("[HANDLE_SPLIT] 2-layer tree detected, calling handleRootSplitOnly\n")
-					fmt.Printf("[HANDLE_SPLIT]   rootPageID=%d\n", currentParentPageID)
-				}
 				DebugPrintf("[HANDLE_SPLIT] 2-layer tree root split: rootPageID=%d\n", currentParentPageID)
 
 				// 释放父节点锁（handleRootSplitOnly 会重新获取）
@@ -979,9 +759,6 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 				}
 
 				// Root Split 成功，返回 ErrRetry 让外层重试
-				if string(key) == "key-05655" {
-					fmt.Printf("[HANDLE_SPLIT] handleRootSplitOnly SUCCESS, returning ErrRetry\n")
-				}
 				DebugPrintf("[HANDLE_SPLIT] handleRootSplitOnly SUCCESS, returning ErrRetry\n")
 				return nil, ErrRetry
 			}
@@ -1352,9 +1129,6 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 
 	// 分裂成功，返回 leftRef 和 nil
 	// 注意：原始 key-value 现在已经插入到正确的页面中
-	if string(key) == "key-05655" {
-		fmt.Printf("[HANDLE_SPLIT] *** RETURNING SUCCESS *** leftRef.pageID=%d\n", leftRef.GetPageInfo().GetPageID())
-	}
 	return leftRef, nil
 }
 
@@ -1970,11 +1744,6 @@ func (b *BTree) handleRootSplitOnly(
 	splitKey []byte,
 	originalKey []byte,
 ) error {
-	if string(originalKey) == "key-05655" {
-		fmt.Printf("[ROOT_SPLIT_ONLY] Starting 2-layer root split: rootPageID=%d\n", rootPageID)
-		fmt.Printf("[ROOT_SPLIT_ONLY]   leftPageID=%d rightPageID=%d splitKey=%s\n",
-			leftRef.GetPageInfo().GetPageID(), rightRef.GetPageInfo().GetPageID(), string(splitKey))
-	}
 	DebugPrintf("[ROOT_SPLIT_ONLY] Starting: rootPageID=%d\n", rootPageID)
 
 	// Step 1: 收集旧 Root 的所有 keys 和 children
@@ -2107,9 +1876,6 @@ func (b *BTree) handleRootSplitOnly(
 	b.pageRefCache.Update(model.PageID(newInternalPageID), b.pageRefCache.GetOrCreate(model.PageID(newInternalPageID), false))
 	b.pageRefCache.Update(model.PageID(rightPageID), rightRef)
 
-	if string(originalKey) == "key-05655" {
-		fmt.Printf("[ROOT_SPLIT_ONLY] SUCCESS: 2-layer -> 3-layer, oldRoot=%d -> newRoot=%d\n", rootPageID, newRootPageID)
-	}
 	DebugPrintf("[ROOT_SPLIT_ONLY] SUCCESS: 2-layer -> 3-layer complete\n")
 
 	return nil

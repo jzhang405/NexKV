@@ -6,6 +6,7 @@ package btree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -128,7 +129,7 @@ func TestSetWithLeafLockAndRef_Concurrent(t *testing.T) {
 	const updatesPerGoroutine = 20
 
 	var wg sync.WaitGroup
-	errors := make(chan error, goroutines*updatesPerGoroutine)
+	errCh := make(chan error, goroutines*updatesPerGoroutine)
 
 	for i := range goroutines {
 		wg.Add(1)
@@ -137,18 +138,18 @@ func TestSetWithLeafLockAndRef_Concurrent(t *testing.T) {
 			for j := range updatesPerGoroutine {
 				value := []byte(fmt.Sprintf("value-%d-%d", id, j))
 				// 使用缓存的 leafRef
-				if err := tree.setWithLeafLockAndRef(ctx, leafRef, key, value); err != nil && err != ErrRetry {
-					errors <- err
+				if err := tree.setWithLeafLockAndRef(ctx, leafRef, key, value); err != nil && !errors.Is(err, ErrRetry) {
+					errCh <- err
 				}
 			}
 		}(i)
 	}
 
 	wg.Wait()
-	close(errors)
+	close(errCh)
 
 	// 检查是否有非 ErrRetry 错误
-	for err := range errors {
+	for err := range errCh {
 		t.Errorf("Unexpected error: %v", err)
 	}
 
@@ -223,7 +224,7 @@ func TestProcessBatch_PageIDGrouping(t *testing.T) {
 	// 修复：Off-Heap 模式下 ErrRetry 是正常的（页面分裂或并发冲突）
 	// 验证所有操作成功或返回 ErrRetry
 	for i, err := range results {
-		if err != nil && err != ErrRetry {
+		if err != nil && !errors.Is(err, ErrRetry) {
 			assert.NoError(t, err, "item %d should succeed", i)
 		}
 	}
@@ -265,7 +266,7 @@ func TestProcessBatch_SameKey(t *testing.T) {
 	// 修复：Off-Heap 模式下 ErrRetry 是正常的（页面分裂或并发冲突）
 	// 所有操作应该成功或返回 ErrRetry
 	for i, err := range results {
-		if err != nil && err != ErrRetry {
+		if err != nil && !errors.Is(err, ErrRetry) {
 			assert.NoError(t, err, "item %d should succeed", i)
 		}
 	}
@@ -289,7 +290,7 @@ func TestProcessBatch_Concurrent(t *testing.T) {
 	const itemsPerBatch = 20
 
 	var wg sync.WaitGroup
-	errors := make(chan error, batches*itemsPerBatch)
+	errCh := make(chan error, batches*itemsPerBatch)
 
 	for b := range batches {
 		wg.Add(1)
@@ -305,19 +306,19 @@ func TestProcessBatch_Concurrent(t *testing.T) {
 
 			results := tree.processBatch(ctx, items)
 			for i, err := range results {
-				if err != nil && err != ErrRetry {
-					errors <- fmt.Errorf("batch %d, item %d: %w", batchID, i, err)
+				if err != nil && !errors.Is(err, ErrRetry) {
+					errCh <- fmt.Errorf("batch %d, item %d: %w", batchID, i, err)
 				}
 			}
 		}(b)
 	}
 
 	wg.Wait()
-	close(errors)
+	close(errCh)
 
 	// 检查是否有错误
 	errCount := 0
-	for err := range errors {
+	for err := range errCh {
 		t.Errorf("Concurrent batch error: %v", err)
 		errCount++
 	}

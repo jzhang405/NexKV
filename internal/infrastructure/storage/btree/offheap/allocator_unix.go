@@ -7,9 +7,10 @@
 package offheap
 
 import (
-	"fmt"
 	"syscall"
 	"unsafe"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 type mmapAllocator struct {
@@ -28,7 +29,7 @@ func newPlatformAllocator(size int) (OffHeapAllocator, error) {
 		syscall.MAP_ANON|syscall.MAP_PRIVATE,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("mmap failed: %w", err)
+		return nil, errpkg.OffHeapMMapFailed(err)
 	}
 
 	return &mmapAllocator{
@@ -42,7 +43,7 @@ func (m *mmapAllocator) Alloc(size int) (unsafe.Pointer, error) {
 	// 简单实现：返回固定基地址
 	// 实际 PageManager 会管理具体的页面分配
 	if size > m.size {
-		return nil, fmt.Errorf("alloc size %d exceeds allocator size %d", size, m.size)
+		return nil, errpkg.OffHeapAllocExceedsSize(int64(size), int64(m.size))
 	}
 	return m.base, nil
 }

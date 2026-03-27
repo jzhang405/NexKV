@@ -8,6 +8,7 @@ package btree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -257,7 +258,7 @@ func TestConcurrent_SplitAndRead(t *testing.T) {
 				value := []byte(fmt.Sprintf("value-%d", i))
 
 				err := tree.Set(ctx, key, value)
-				if err != nil && err != ErrRetry {
+				if err != nil && !errors.Is(err, ErrRetry) {
 					t.Errorf("writer %d failed to set key %d: %v", writerID, i, err)
 					return
 				}
@@ -521,7 +522,7 @@ func TestConcurrent_DeleteAndWrite(t *testing.T) {
 			for j := start; j < keyCount; j += 5 {
 				key := []byte(fmt.Sprintf("key-%03d", j))
 				err := tree.Delete(ctx, key)
-				if err != nil && err != ErrKeyNotFound && err != ErrRetry {
+				if err != nil && err != ErrKeyNotFound && !errors.Is(err, ErrRetry) {
 					errorChan <- fmt.Errorf("delete failed: %w", err)
 				}
 			}
@@ -538,14 +539,12 @@ func TestConcurrent_DeleteAndWrite(t *testing.T) {
 					if err == nil {
 						break
 					}
-					if err == ErrRetry {
+					if errors.Is(err, ErrRetry) {
 						time.Sleep(time.Microsecond * 100)
 						continue
 					}
-					if err != ErrRetry {
-						errorChan <- fmt.Errorf("set failed: %w", err)
-						return
-					}
+					errorChan <- fmt.Errorf("set failed: %w", err)
+					return
 				}
 			}
 		}(i)
@@ -587,7 +586,7 @@ func TestConcurrent_ReadWrite(t *testing.T) {
 			for range 100 {
 				key := keys[readerID%keyCount]
 				_, err := tree.Get(ctx, key)
-				if err != nil && err != ErrKeyNotFound && err != ErrRetry {
+				if err != nil && err != ErrKeyNotFound && !errors.Is(err, ErrRetry) {
 					t.Errorf("reader %d failed: %v", readerID, err)
 					return
 				}
@@ -608,13 +607,11 @@ func TestConcurrent_ReadWrite(t *testing.T) {
 					if err == nil {
 						break
 					}
-					if err == ErrRetry {
+					if errors.Is(err, ErrRetry) {
 						continue
 					}
-					if err != ErrRetry {
-						t.Errorf("writer %d failed: %v", writerID, err)
-						return
-					}
+					t.Errorf("writer %d failed: %v", writerID, err)
+					return
 				}
 			}
 		}(w)

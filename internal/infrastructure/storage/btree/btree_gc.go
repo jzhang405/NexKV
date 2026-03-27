@@ -1,10 +1,11 @@
 package btree
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // GC 类型
@@ -251,8 +252,7 @@ func (gc *BTreeGC) AllocateMemory(size int64) error {
 		// 再次检查
 		newUsed = gc.usedMemory.Load() + size
 		if newUsed > gc.maxMemory {
-			return fmt.Errorf("out of memory: used=%d, requesting=%d, limit=%d",
-				gc.usedMemory.Load(), size, gc.maxMemory)
+			return errpkg.BTreeOutOfMemory(gc.usedMemory.Load(), size, gc.maxMemory)
 		}
 	}
 

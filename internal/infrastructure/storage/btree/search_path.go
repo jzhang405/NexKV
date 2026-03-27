@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // searchPath 搜索从 Root 到 Leaf 的完整路径
@@ -43,13 +44,13 @@ func (b *BTree) searchPath(ctx context.Context, key []byte) ([]*PageInfo, error)
 
 	// 1. 获取 Root PageInfo（通过 RootPageRef）
 	if b.rootRef == nil {
-		return nil, fmt.Errorf("root not initialized")
+		return nil, errpkg.BTreePathRootNotInit()
 	}
 
 	// 使用原子指针获取 Root PageInfo
 	rootInfo := b.rootRef.pInfo.Load()
 	if rootInfo == nil {
-		return nil, fmt.Errorf("root page info is nil")
+		return nil, errpkg.BTreePathRootPageInfoNil()
 	}
 
 	// 2. 从 Root PageInfo 开始搜索
@@ -63,7 +64,7 @@ func (b *BTree) searchPath(ctx context.Context, key []byte) ([]*PageInfo, error)
 		// 2.2 懒加载当前页面（如果尚未加载）
 		currentPage, err := b.getPageOrLoad(currentInfo)
 		if err != nil {
-			return nil, fmt.Errorf("load page at depth %d: %w", len(path)-1, err)
+			return nil, errpkg.BTreePathLoadPageAtDepth(len(path)-1, err)
 		}
 
 		// 2.3 判断是否为叶子节点
@@ -83,7 +84,7 @@ func (b *BTree) searchPath(ctx context.Context, key []byte) ([]*PageInfo, error)
 				// Root 是一个空的 LeafPage，正常退出
 				break
 			}
-			return nil, fmt.Errorf("expected internal page at depth %d, got %T", len(path)-1, currentPage)
+			return nil, errpkg.BTreePathExpectedInternalAtDepth(len(path)-1, fmt.Sprintf("%T", currentPage))
 		}
 
 		// 2.5 查找子节点
@@ -96,12 +97,12 @@ func (b *BTree) searchPath(ctx context.Context, key []byte) ([]*PageInfo, error)
 		// 2.6 获取子节点的 PageInfo
 		childInfo := childRef.GetPageInfo()
 		if childInfo == nil {
-			return nil, fmt.Errorf("child page info is nil at depth %d", len(path))
+			return nil, errpkg.BTreePathChildPageInfoNil(len(path))
 		}
 
 		// 2.7 检查层级深度
 		if len(path) >= b.maxLevels {
-			return nil, fmt.Errorf("search path exceeds max levels (%d)", b.maxLevels)
+			return nil, errpkg.BTreePathExceedsMaxLevels(b.maxLevels)
 		}
 
 		// 2.8 检查 context 取消
@@ -138,7 +139,7 @@ func (b *BTree) findLeafPage(ctx context.Context, key []byte) (*PageInfo, []*Pag
 	}
 
 	if len(path) == 0 {
-		return nil, nil, fmt.Errorf("empty search path")
+		return nil, nil, errpkg.BTreeEmptyPath()
 	}
 
 	// 路径的最后一个元素是叶子节点
@@ -169,13 +170,13 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 
 	// 1. 获取 Root PageInfo（通过 RootPageRef）
 	if b.rootRef == nil {
-		return nil, nil, fmt.Errorf("root not initialized")
+		return nil, nil, errpkg.BTreePathRootNotInit()
 	}
 
 	// 使用原子指针获取 Root PageInfo
 	rootInfo := b.rootRef.pInfo.Load()
 	if rootInfo == nil {
-		return nil, nil, fmt.Errorf("root page info is nil")
+		return nil, nil, errpkg.BTreePathRootPageInfoNil()
 	}
 
 	// 2. 从 Root PageInfo 开始搜索
@@ -236,12 +237,12 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 		childRef := b.pageRefCache.GetOrCreate(childPageID, isChildLeaf)
 		childInfo := childRef.GetPageInfo()
 		if childInfo == nil {
-			return nil, nil, fmt.Errorf("child page info is nil at depth %d", len(path))
+			return nil, nil, errpkg.BTreePathChildPageInfoNil(len(path))
 		}
 
 		// 2.6 检查层级深度
 		if len(path) >= b.maxLevels {
-			return nil, nil, fmt.Errorf("search path exceeds max levels (%d)", b.maxLevels)
+			return nil, nil, errpkg.BTreePathExceedsMaxLevels(b.maxLevels)
 		}
 
 		// 2.7 循环引用检测
@@ -255,7 +256,7 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 			}
 			DebugPrintf("\n")
 
-			return nil, nil, fmt.Errorf("%w: at page %d (path depth: %d)", ErrCircularReference, currentPageID, len(path))
+			return nil, nil, errpkg.BTreeCircularReferenceAfterParentUpdate(uint64(currentPageID))
 		}
 		visitedPages[uint64(currentPageID)] = true
 
@@ -299,11 +300,11 @@ func (b *BTree) findLeafPageRef(ctx context.Context, key []byte) (*PageRef, []*P
 	}
 
 	if len(path) == 0 {
-		return nil, nil, nil, fmt.Errorf("empty search path")
+		return nil, nil, nil, errpkg.BTreeEmptyPath()
 	}
 
 	if len(refs) == 0 {
-		return nil, nil, nil, fmt.Errorf("empty refs")
+		return nil, nil, nil, errpkg.BTreePathEmptyRefs()
 	}
 
 	// 最后一个引用是叶子节点的 PageRef
@@ -412,21 +413,18 @@ func (b *BTree) validateParentSplitIntegrity(
 
 	// 验证：旧子节点不应该存在
 	if foundOld {
-		return fmt.Errorf("old child %d still exists after split at parent %d",
-			oldChild, parentPageID)
+		return errpkg.BTreePathOldChildStillExists(uint64(oldChild), uint64(parentPageID))
 	}
 
 	// 验证：新子节点必须存在
 	if !foundLeft || !foundRight {
-		return fmt.Errorf("new children not found in parent %d: left=%v, right=%v",
-			parentPageID, foundLeft, foundRight)
+		return errpkg.BTreePathNewChildrenNotFound(uint64(parentPageID), uint64(leftChild), uint64(rightChild))
 	}
 
 	// 验证：子节点数量应该正确（count keys + 1 children）
 	expectedChildren := int(count) + 1
 	if childCount != expectedChildren {
-		return fmt.Errorf("child count mismatch: expected %d, got %d",
-			expectedChildren, childCount)
+		return errpkg.BTreePathChildCountMismatch(expectedChildren, childCount)
 	}
 
 	return nil

@@ -7,8 +7,6 @@ package btree
 import (
 	"context"
 	"encoding/binary"
-	"errors"
-	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -16,17 +14,19 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
+// 别名引用：保持包内兼容性
 var (
 	// ErrPageNotFound is returned when a page cannot be found.
-	ErrPageNotFound = errors.New("page not found")
+	ErrPageNotFound = errpkg.ErrBTreePagePersistNotFound
 
 	// ErrPageCorrupted is returned when page data is corrupted.
-	ErrPageCorrupted = errors.New("page corrupted")
+	ErrPageCorrupted = errpkg.ErrBTreePagePersistCorrupted
 
 	// ErrStoreClosed is returned when operating on a closed store.
-	ErrStoreClosed = errors.New("store closed")
+	ErrStoreClosed = errpkg.ErrBTreePageStoreClosed
 )
 
 // PageManager manages page persistence to disk.
@@ -67,14 +67,14 @@ func NewPageManager(path string) (*PageManager, error) {
 	// Open file (create if not exists)
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
-		return nil, fmt.Errorf("open file: %w", err)
+		return nil, errpkg.BTreeOpenFileError(err)
 	}
 
 	// Get file size to determine next page ID
 	info, err := file.Stat()
 	if err != nil {
 		file.Close()
-		return nil, fmt.Errorf("stat file: %w", err)
+		return nil, errpkg.BTreeStatFileError(err)
 	}
 
 	fileSize := info.Size()
@@ -108,7 +108,7 @@ func (pm *PageManager) WritePage(page *Page) error {
 	}
 
 	if page == nil {
-		return errors.New("WritePage: page is nil")
+		return errpkg.BTreeWritePageIsNil()
 	}
 
 	if !page.IsDirty() {
@@ -139,7 +139,7 @@ func (pm *PageManager) flushPage(page *Page) error {
 	// Seek to offset
 	_, err := pm.file.Seek(offset, io.SeekStart)
 	if err != nil {
-		return fmt.Errorf("seek to offset %d: %w", offset, err)
+		return errpkg.BTreeSeekOffset(offset, err)
 	}
 
 	// Serialize page to buffer
@@ -152,12 +152,12 @@ func (pm *PageManager) flushPage(page *Page) error {
 	// Write to file
 	_, err = pm.file.Write(buf)
 	if err != nil {
-		return fmt.Errorf("write page %d: %w", page.ID, err)
+		return errpkg.BTreeWritePageFailed(int(page.ID), err)
 	}
 
 	// Optimization: Sync only in batch (not per-page)
 	if err := pm.file.Sync(); err != nil {
-		return fmt.Errorf("sync page %d: %w", page.ID, err)
+		return errpkg.BTreeSyncPageFailed(int(page.ID), err)
 	}
 
 	// Clear dirty flag
@@ -232,7 +232,7 @@ func (pm *PageManager) writePageNoSync(page *Page) error {
 	// Seek to offset
 	_, err := pm.file.Seek(offset, io.SeekStart)
 	if err != nil {
-		return fmt.Errorf("seek to offset %d: %w", offset, err)
+		return errpkg.BTreeSeekOffset(offset, err)
 	}
 
 	// Serialize page to buffer
@@ -245,7 +245,7 @@ func (pm *PageManager) writePageNoSync(page *Page) error {
 	// Write to file (no sync yet)
 	_, err = pm.file.Write(buf)
 	if err != nil {
-		return fmt.Errorf("write page %d: %w", page.ID, err)
+		return errpkg.BTreeWritePageFailed(int(page.ID), err)
 	}
 
 	page.ClearDirty()
@@ -267,17 +267,17 @@ func (pm *PageManager) ReadPage(pageID model.PageID) (*Page, error) {
 	// Seek to offset
 	_, err := pm.file.Seek(offset, io.SeekStart)
 	if err != nil {
-		return nil, fmt.Errorf("seek to offset %d: %w", offset, err)
+		return nil, errpkg.BTreeSeekOffset(offset, err)
 	}
 
 	// Read page data
 	buf := make([]byte, PageSize)
 	n, err := pm.file.Read(buf)
 	if err != nil {
-		return nil, fmt.Errorf("read page %d: %w", pageID, err)
+		return nil, errpkg.BTreeReadPageFailed(int(pageID), err)
 	}
 	if n != PageSize {
-		return nil, fmt.Errorf("incomplete read: %d < %d", n, PageSize)
+		return nil, errpkg.BTreeIncompleteRead(n, PageSize)
 	}
 
 	// Deserialize page
@@ -310,7 +310,7 @@ func (pm *PageManager) Flush() error {
 
 	// Sync file
 	if err := pm.file.Sync(); err != nil {
-		return fmt.Errorf("sync file: %w", err)
+		return errpkg.BTreeSyncFileError(err)
 	}
 
 	return nil
@@ -333,12 +333,12 @@ func (pm *PageManager) Close() error {
 
 	// Sync file
 	if err := pm.file.Sync(); err != nil {
-		return fmt.Errorf("sync file: %w", err)
+		return errpkg.BTreeSyncFileError(err)
 	}
 
 	// Close file
 	if err := pm.file.Close(); err != nil {
-		return fmt.Errorf("close file: %w", err)
+		return errpkg.BTreeCloseFileError(err)
 	}
 
 	pm.closed.Store(true)

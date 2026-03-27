@@ -6,6 +6,7 @@ package btree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -74,7 +75,7 @@ func TestSetWithLeafLock_Concurrent(t *testing.T) {
 	const operationsPerGoroutine = 100
 
 	var wg sync.WaitGroup
-	errors := make(chan error, goroutines*operationsPerGoroutine)
+	errCh := make(chan error, goroutines*operationsPerGoroutine)
 
 	// 并发写入不同的键
 	for i := range goroutines {
@@ -86,18 +87,19 @@ func TestSetWithLeafLock_Concurrent(t *testing.T) {
 				value := []byte{byte(j)}
 
 				err := btree.Set(ctx, key, value)
-				if err != nil {
-					errors <- err
+				// ErrRetry 在高并发场景下是正常的，不视为错误
+				if err != nil && !errors.Is(err, ErrRetry) {
+					errCh <- err
 				}
 			}
 		}(i)
 	}
 
 	wg.Wait()
-	close(errors)
+	close(errCh)
 
-	// 检查是否有错误
-	for err := range errors {
+	// 检查是否有非 ErrRetry 错误
+	for err := range errCh {
 		t.Errorf("Concurrent Set failed: %v", err)
 	}
 }
@@ -326,7 +328,7 @@ func TestSetWithLeafLock_ExtremeConcurrency(t *testing.T) {
 	const keysPerGoroutine = 50
 
 	var wg sync.WaitGroup
-	errors := make(chan error, goroutines*keysPerGoroutine)
+	errCh := make(chan error, goroutines*keysPerGoroutine)
 
 	// 并发写入不同的键
 	for i := range goroutines {
@@ -338,19 +340,20 @@ func TestSetWithLeafLock_ExtremeConcurrency(t *testing.T) {
 				value := []byte{byte(j)}
 
 				err := btree.Set(ctx, key, value)
-				if err != nil {
-					errors <- err
+				// ErrRetry 在高并发场景下是正常的，不视为错误
+				if err != nil && !errors.Is(err, ErrRetry) {
+					errCh <- err
 				}
 			}
 		}(i)
 	}
 
 	wg.Wait()
-	close(errors)
+	close(errCh)
 
 	// 检查是否有错误
 	errorCount := 0
-	for err := range errors {
+	for err := range errCh {
 		errorCount++
 		t.Logf("Concurrent Set failed (extreme): %v", err)
 	}

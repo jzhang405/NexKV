@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"fmt"
 	"unsafe"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // 页面类型常量
@@ -286,7 +288,7 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 	requiredSpace := uint32(SizeofIndexEntry) + keyLen
 	usedSpace := uint32(SizeofPageHeader) + uint32(header.count)*uint32(SizeofIndexEntry) + uint32(*dataEnd)
 	if usedSpace+requiredSpace > PageSize {
-		return fmt.Errorf("page full: used=%d, required=%d, total=%d", usedSpace, requiredSpace, PageSize)
+		return errpkg.OffHeapPageFull(int(usedSpace), int(requiredSpace), PageSize)
 	}
 
 	// 移动现有 entries（如果需要）
@@ -347,7 +349,7 @@ func (pa *PageAccessor) InsertLeafEntry(pageID uint32, index int, key, value []b
 	requiredSpace := uint32(SizeofLeafEntry) + keyLen + valLen
 	usedSpace := uint32(SizeofPageHeader) + uint32(header.count)*uint32(SizeofLeafEntry) + uint32(*dataEnd)
 	if usedSpace+requiredSpace > PageSize {
-		return fmt.Errorf("page full: used=%d, required=%d, total=%d", usedSpace, requiredSpace, PageSize)
+		return errpkg.OffHeapPageFull(int(usedSpace), int(requiredSpace), PageSize)
 	}
 
 	// 移动现有 entries（如果需要）

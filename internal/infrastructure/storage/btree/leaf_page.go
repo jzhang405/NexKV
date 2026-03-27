@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // LeafPage 叶子节点
@@ -378,7 +379,7 @@ func (p *LeafPage) Update(key, value []byte) error {
 // - 右页面：键 (mid, end]
 func (p *LeafPage) Split() (*LeafPage, []byte, error) {
 	if len(p.keys) < 2 {
-		return nil, nil, fmt.Errorf("cannot split page with less than 2 keys")
+		return nil, nil, errpkg.BTreeCannotSplitMinKeysError(len(p.keys))
 	}
 
 	mid := len(p.keys) / 2
@@ -528,7 +529,7 @@ func DeserializeLeafPage(data []byte) (*LeafPage, error) {
 
 	// 检查数据长度
 	if len(data) != pageSize {
-		return nil, fmt.Errorf("invalid data size: expected %d bytes, got %d", pageSize, len(data))
+		return nil, errpkg.BTreeInvalidDataSize(pageSize, len(data))
 	}
 
 	// 1. 读取实际内容长度（前 4 字节）
@@ -541,21 +542,21 @@ func DeserializeLeafPage(data []byte) (*LeafPage, error) {
 	// 3. 读取 pageID
 	pageIDBytes, err := readBytes(reader, 8)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read pageID: %w", err)
+		return nil, errpkg.BTreeDeserializeReadPageID(err)
 	}
 	pageID := model.PageID(bytesToUint64(pageIDBytes))
 
 	// 4. 读取 version
 	versionBytes, err := readBytes(reader, 8)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read version: %w", err)
+		return nil, errpkg.BTreeDeserializeReadVersion(err)
 	}
 	version := bytesToUint64(versionBytes)
 
 	// 5. 读取键数量
 	numKeysBytes, err := readBytes(reader, 4)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read numKeys: %w", err)
+		return nil, errpkg.BTreeDeserializeReadNumKeys(err)
 	}
 	numKeys := bytesToUint32(numKeysBytes)
 
@@ -572,28 +573,28 @@ func DeserializeLeafPage(data []byte) (*LeafPage, error) {
 		// 读取键长度
 		keyLenBytes, err := readBytes(reader, 2)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read key len: %w", err)
+			return nil, errpkg.BTreeDeserializeReadKeyLen(err)
 		}
 		keyLen := bytesToUint16(keyLenBytes)
 
 		// 读取键数据
 		key, err := readBytes(reader, int(keyLen))
 		if err != nil {
-			return nil, fmt.Errorf("failed to read key data: %w", err)
+			return nil, errpkg.BTreeDeserializeReadKeyData(err)
 		}
 		page.keys = append(page.keys, key)
 
 		// 读取值长度
 		valueLenBytes, err := readBytes(reader, 2)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read value len: %w", err)
+			return nil, errpkg.BTreeDeserializeReadValueLen(err)
 		}
 		valueLen := bytesToUint16(valueLenBytes)
 
 		// 读取值数据
 		value, err := readBytes(reader, int(valueLen))
 		if err != nil {
-			return nil, fmt.Errorf("failed to read value data: %w", err)
+			return nil, errpkg.BTreeDeserializeReadValueData(err)
 		}
 		page.values = append(page.values, value)
 	}

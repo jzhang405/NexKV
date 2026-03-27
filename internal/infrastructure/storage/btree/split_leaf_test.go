@@ -4,6 +4,7 @@ package btree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -350,7 +351,7 @@ func TestPageSplit_ConcurrentWrites(t *testing.T) {
 	const keysPerWriter = 100
 
 	var wg sync.WaitGroup
-	errors := make(chan error, numWriters)
+	errCh := make(chan error, numWriters)
 
 	// 启动多个并发写入者
 	for w := range numWriters {
@@ -368,11 +369,11 @@ func TestPageSplit_ConcurrentWrites(t *testing.T) {
 					if err == nil {
 						break
 					}
-					if err == ErrRetry {
+					if errors.Is(err, ErrRetry) {
 						time.Sleep(time.Microsecond * time.Duration(retry+1))
 						continue
 					}
-					errors <- fmt.Errorf("writer %d failed at key %d: %w", writerID, i, err)
+					errCh <- fmt.Errorf("writer %d failed at key %d: %w", writerID, i, err)
 					return
 				}
 			}
@@ -380,10 +381,10 @@ func TestPageSplit_ConcurrentWrites(t *testing.T) {
 	}
 
 	wg.Wait()
-	close(errors)
+	close(errCh)
 
 	// 检查是否有错误
-	for err := range errors {
+	for err := range errCh {
 		t.Fatal(err)
 	}
 

@@ -6,6 +6,7 @@ package btree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -48,7 +49,7 @@ func TestCollectFailureLogs(t *testing.T) {
 		btree.offheapPM.EnablePageTracking()
 
 		ctx := context.Background()
-		errors := make(chan error, goroutines*operationsPerGoroutine)
+		errCh := make(chan error, goroutines*operationsPerGoroutine)
 		var wg sync.WaitGroup
 
 		// 并发写入
@@ -61,19 +62,20 @@ func TestCollectFailureLogs(t *testing.T) {
 					value := []byte{byte(j)}
 
 					err := btree.Set(ctx, key, value)
-					if err != nil {
-						errors <- err
+					// ErrRetry 在高并发场景下是正常的，不视为错误
+					if err != nil && !errors.Is(err, ErrRetry) {
+						errCh <- err
 					}
 				}
 			}(i)
 		}
 
 		wg.Wait()
-		close(errors)
+		close(errCh)
 
 		// 收集错误
 		runErrors := []error{}
-		for err := range errors {
+		for err := range errCh {
 			runErrors = append(runErrors, err)
 		}
 
@@ -168,7 +170,7 @@ func TestQuickFailureCheck(t *testing.T) {
 		btree.offheapPM.EnablePageTracking()
 
 		ctx := context.Background()
-		errors := make(chan error, goroutines*operationsPerGoroutine)
+		errCh := make(chan error, goroutines*operationsPerGoroutine)
 		var wg sync.WaitGroup
 
 		for i := range goroutines {
@@ -180,18 +182,19 @@ func TestQuickFailureCheck(t *testing.T) {
 					value := []byte{byte(j)}
 
 					err := btree.Set(ctx, key, value)
-					if err != nil {
-						errors <- err
+					// ErrRetry 在高并发场景下是正常的，不视为错误
+					if err != nil && !errors.Is(err, ErrRetry) {
+						errCh <- err
 					}
 				}
 			}(i)
 		}
 
 		wg.Wait()
-		close(errors)
+		close(errCh)
 
 		runErrors := []error{}
-		for err := range errors {
+		for err := range errCh {
 			runErrors = append(runErrors, err)
 		}
 

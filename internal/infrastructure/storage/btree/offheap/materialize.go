@@ -6,8 +6,9 @@ package offheap
 
 import (
 	"bytes"
-	"fmt"
 	"sort"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // OffHeapMaterializer 零拷贝物化器
@@ -63,7 +64,7 @@ func (m *OffHeapMaterializer) MaterializePageFromBytes(
 	for i := range sortedKeys {
 		err := m.pa.InsertLeafEntry(pageID, i, sortedKeys[i], sortedValues[i], &dataEnd)
 		if err != nil {
-			return 0, fmt.Errorf("insert entry %d: %w", i, err)
+			return 0, errpkg.OffHeapInsertEntry(i, err)
 		}
 	}
 

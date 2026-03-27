@@ -5,15 +5,17 @@
 package btree
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
+// 别名引用：保持包内兼容性（root_page_ref.go 等文件引用）
 var (
-	ErrNotOwner     = fmt.Errorf("not the lock owner")
-	ErrInvalidState = fmt.Errorf("invalid lock state")
+	ErrNotOwner     = errpkg.ErrBTreeNotOwner
+	ErrInvalidState = errpkg.ErrBTreeLockInvalidState
 )
 
 // PageLock 支持重入和超时的轻量级锁
@@ -100,7 +102,7 @@ func (l *PageLock) lockWithTimeout(timeout time.Duration) bool {
 func (l *PageLock) Unlock() error {
 	oldState := l.state.Load()
 	if oldState == int64(unlockedState) {
-		return fmt.Errorf("cannot unlock unlocked lock")
+		return errpkg.BTreeCannotUnlockUnlocked()
 	}
 
 	lockCount := oldState & ((1 << ownerIDShift) - 1)
@@ -108,14 +110,14 @@ func (l *PageLock) Unlock() error {
 		// 重入计数减 1
 		newState := oldState - 1
 		if !l.state.CompareAndSwap(oldState, newState) {
-			return fmt.Errorf("unlock failed: state changed")
+			return errpkg.BTreeUnlockStateChanged()
 		}
 		return nil
 	}
 
 	// 完全解锁
 	if !l.state.CompareAndSwap(oldState, int64(unlockedState)) {
-		return fmt.Errorf("unlock failed: state changed")
+		return errpkg.BTreeUnlockStateChanged()
 	}
 
 	// 唤醒等待者

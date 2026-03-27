@@ -11,6 +11,7 @@ import (
 	"runtime"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ===== 已实现的辅助函数 =====
@@ -186,7 +187,7 @@ func (b *BTree) SetWithTask(
 	// 必须等待任务执行完成并检查结果
 	result, err := item.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("task execution failed: %w", err)
+		return errpkg.BTreeTaskExecutionFailed(err)
 	}
 
 	_ = result // result 是 struct{}，无需使用
@@ -348,13 +349,13 @@ func (b *BTree) setWithLeafLockAndRef(
 	// 使用 Delta Chain 克隆（写时复制优化）
 	newLeafPage := leafPage.CloneWithDelta()
 	if newLeafPage == nil {
-		return fmt.Errorf("clone leaf page failed")
+		return errpkg.BTreeCloneLeafPageFailed()
 	}
 
 	// 在克隆的叶节点上插入键值对
 	_, err := newLeafPage.Insert(key, value)
 	if err != nil {
-		return fmt.Errorf("insert into leaf: %w", err)
+		return errpkg.BTreeInsertIntoLeafFailed(err)
 	}
 
 	// 创建新的 PageInfo
@@ -388,7 +389,7 @@ func (b *BTree) setWithLeafLockAndRef(
 		// 获取当前 Root（CAS 后可能已改变）
 		currentRoot := b.rootRef.pInfo.Load()
 		if currentRoot == nil {
-			return fmt.Errorf("root page info is nil after persist")
+			return errpkg.BTreeRootPageInfoNilAfterPersist()
 		}
 
 		// 构建持久化路径：从 Root 到 Leaf 的完整路径
@@ -396,12 +397,12 @@ func (b *BTree) setWithLeafLockAndRef(
 
 		// 深拷贝路径（确保数据独立）
 		if err := b.finalizeDeepClone(persistPath); err != nil {
-			return fmt.Errorf("finalize deep clone: %w", err)
+			return errpkg.BTreeFinalizeDeepCloneErr(err)
 		}
 
 		// 持久化根节点（会递归持久化整个树）
 		if err := b.persistRoot(currentRoot); err != nil {
-			return fmt.Errorf("persist root: %w", err)
+			return errpkg.BTreePersistRootErr(err)
 		}
 	}
 

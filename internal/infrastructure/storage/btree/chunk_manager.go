@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ChunkManager 管理 Append-Only 文件
@@ -37,7 +39,7 @@ type ChunkManager struct {
 func NewChunkManager(dataDir string) (*ChunkManager, error) {
 	// 确保数据目录存在
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create data directory %s: %w", dataDir, err)
+		return nil, errpkg.BTreeCreateDataDirectory(dataDir, err)
 	}
 
 	cm := &ChunkManager{
@@ -60,7 +62,7 @@ func NewChunkManager(dataDir string) (*ChunkManager, error) {
 
 	// 加载现有的 Chunk 文件
 	if err := cm.loadExistingChunks(); err != nil {
-		return nil, fmt.Errorf("failed to load existing chunks: %w", err)
+		return nil, errpkg.BTreeLoadExistingChunks(err)
 	}
 
 	// 构建初始索引
@@ -73,7 +75,7 @@ func NewChunkManager(dataDir string) (*ChunkManager, error) {
 func (cm *ChunkManager) loadExistingChunks() error {
 	entries, err := os.ReadDir(cm.dataDir)
 	if err != nil {
-		return fmt.Errorf("failed to read data directory: %w", err)
+		return errpkg.BTreeReadDataDirectory(err)
 	}
 
 	maxID := int64(-1)
@@ -89,7 +91,7 @@ func (cm *ChunkManager) loadExistingChunks() error {
 		filePath := filepath.Join(cm.dataDir, entry.Name())
 		chunk, err := NewChunk(id, filePath, true) // 只读模式
 		if err != nil {
-			return fmt.Errorf("failed to open chunk %d: %w", id, err)
+			return errpkg.BTreeOpenExistingChunk(id, err)
 		}
 
 		cm.mu.Lock()
@@ -112,7 +114,7 @@ func (cm *ChunkManager) loadExistingChunks() error {
 func (cm *ChunkManager) AllocatePage(pageType int) (int64, error) {
 	// 确保有可写入的 Chunk
 	if err := cm.ensureCurrentChunk(); err != nil {
-		return 0, fmt.Errorf("failed to ensure current chunk: %w", err)
+		return 0, errpkg.BTreeEnsureCurrentChunk(err)
 	}
 
 	// 从当前 Chunk 分配页面
@@ -121,14 +123,14 @@ func (cm *ChunkManager) AllocatePage(pageType int) (int64, error) {
 	if err != nil {
 		// Chunk 已满，创建新的 Chunk
 		if err := cm.rotateChunk(); err != nil {
-			return 0, fmt.Errorf("failed to rotate chunk: %w", err)
+			return 0, errpkg.BTreeRotateChunk(err)
 		}
 
 		// 从新的 Chunk 分配
 		chunk = cm.getCurrentChunk()
 		pos, err = chunk.AllocatePage()
 		if err != nil {
-			return 0, fmt.Errorf("failed to allocate page from new chunk: %w", err)
+			return 0, errpkg.BTreeAllocPageFromNewChunk(err)
 		}
 	}
 
@@ -136,7 +138,7 @@ func (cm *ChunkManager) AllocatePage(pageType int) (int64, error) {
 	chunkID := chunk.GetID()
 	encodedPos, err := EncodePagePos(chunkID, int(pos), pageType)
 	if err != nil {
-		return 0, fmt.Errorf("failed to encode page position: %w", err)
+		return 0, errpkg.BTreeEncodePagePosition(err)
 	}
 
 	return encodedPos, nil
@@ -149,7 +151,7 @@ func (cm *ChunkManager) WritePage(pos int64, data []byte) error {
 
 	chunk := cm.getChunkByID(int(chunkID))
 	if chunk == nil {
-		return fmt.Errorf("chunk %d not found", chunkID)
+		return errpkg.BTreeChunkNotFound(int(chunkID))
 	}
 
 	return chunk.WritePage(int64(offset), data)
@@ -162,7 +164,7 @@ func (cm *ChunkManager) ReadPage(pos int64) ([]byte, error) {
 
 	chunk := cm.getChunkByID(int(chunkID))
 	if chunk == nil {
-		return nil, fmt.Errorf("chunk %d not found", chunkID)
+		return nil, errpkg.BTreeChunkNotFound(int(chunkID))
 	}
 
 	return chunk.ReadPage(int64(offset))
@@ -192,13 +194,13 @@ func (cm *ChunkManager) LoadPage(pos int64) (any, error) {
 	// 2. 查找 Chunk
 	chunk := cm.getChunkByID(int(chunkID))
 	if chunk == nil {
-		return nil, fmt.Errorf("chunk %d not found", chunkID)
+		return nil, errpkg.BTreeChunkNotFound(int(chunkID))
 	}
 
 	// 3. 读取原始字节数据
 	data, err := chunk.ReadPage(int64(offset))
 	if err != nil {
-		return nil, fmt.Errorf("read page from chunk %d at offset %d: %w", chunkID, offset, err)
+		return nil, errpkg.BTreeReadPageFromChunk(int(chunkID), offset, err)
 	}
 
 	// 4. 根据 PageType 反序列化
@@ -206,19 +208,19 @@ func (cm *ChunkManager) LoadPage(pos int64) (any, error) {
 	case PageTypeLeaf:
 		leafPage, err := DeserializeLeafPage(data)
 		if err != nil {
-			return nil, fmt.Errorf("deserialize leaf page: %w", err)
+			return nil, errpkg.BTreeDeserializeLeafPage(err)
 		}
 		return leafPage, nil
 
 	case PageTypeInternal:
 		internalPage, err := DeserializeInternalPage(data)
 		if err != nil {
-			return nil, fmt.Errorf("deserialize internal page: %w", err)
+			return nil, errpkg.BTreeDeserializeInternalPage(err)
 		}
 		return internalPage, nil
 
 	default:
-		return nil, fmt.Errorf("unknown page type: %d", pageType)
+		return nil, errpkg.BTreeUnknownPageTypeLoad(pageType)
 	}
 }
 
@@ -251,7 +253,7 @@ func (cm *ChunkManager) rotateChunk() error {
 
 	chunk, err := NewChunk(newID, filePath, false)
 	if err != nil {
-		return fmt.Errorf("failed to create new chunk %d: %w", newID, err)
+		return errpkg.BTreeCreateNewChunk(newID, err)
 	}
 
 	cm.currentChunk = chunk
@@ -321,7 +323,7 @@ func (cm *ChunkManager) Sync() error {
 	// 同步活跃 Chunk
 	for _, chunk := range cm.activeChunks {
 		if err := chunk.Sync(); err != nil {
-			return fmt.Errorf("failed to sync chunk %d: %w", chunk.GetID(), err)
+			return errpkg.BTreeSyncChunk(chunk.GetID(), err)
 		}
 	}
 

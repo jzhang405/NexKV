@@ -2,10 +2,11 @@ package btree
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // CCOWManager Copy-on-Write 管理器
@@ -46,7 +47,7 @@ func (ccow *CCOWManager) TakeSnapshot(rootRef *RootPageRef) (*BTreeSnapshot, err
 	// 获取当前根节点的 PageInfo
 	rootInfo := rootRef.GetPageInfo()
 	if rootInfo == nil {
-		return nil, fmt.Errorf("root page info is nil")
+		return nil, errpkg.BTreeRootPageInfoNilSnapshot()
 	}
 
 	// 生成新的快照 ID
@@ -123,7 +124,7 @@ func (ccow *CCOWManager) CopyPathBottomUp(
 	modifyFunc func(*PageInfo) error,
 ) (*PageInfo, error) {
 	if len(path) == 0 {
-		return nil, fmt.Errorf("empty path")
+		return nil, errpkg.BTreeEmptyPathCCOW()
 	}
 
 	// 从叶子节点开始，向上复制
@@ -135,7 +136,7 @@ func (ccow *CCOWManager) CopyPathBottomUp(
 
 		// 应用修改
 		if err := modifyFunc(clonedInfo); err != nil {
-			return nil, fmt.Errorf("modify failed: %w", err)
+			return nil, errpkg.BTreeModifyFailed(err)
 		}
 
 		// 标记为脏页
@@ -145,7 +146,7 @@ func (ccow *CCOWManager) CopyPathBottomUp(
 		if i > 0 {
 			parentInfo := path[i-1]
 			if err := ccow.updateChildRef(parentInfo, pageInfo, clonedInfo); err != nil {
-				return nil, fmt.Errorf("update child ref failed: %w", err)
+				return nil, errpkg.BTreeUpdateChildRefFailed(err)
 			}
 		} else {
 			// 根节点，使用 CAS 更新 RootPageRef
@@ -156,7 +157,7 @@ func (ccow *CCOWManager) CopyPathBottomUp(
 					oldRootID = oldRootInfo.GetPageID()
 				}
 				if !rootRef.ReplacePage(oldRootID, clonedInfo) {
-					return nil, fmt.Errorf("CAS update root failed: concurrent modification detected")
+					return nil, errpkg.BTreeCASUpdateRootFailed()
 				}
 			}
 			// 如果 rootRef 为 nil，跳过 CAS 更新（测试场景）
@@ -255,7 +256,7 @@ func (ccow *CCOWManager) FlushDirtyPages(ctx context.Context) error {
 
 	// 收集脏页（自底向上写入）
 	if err := ccow.gc.collectDirtyPages(dirtyPageSet); err != nil {
-		return fmt.Errorf("collect dirty pages failed: %w", err)
+		return errpkg.BTreeCollectDirtyPagesFailed(err)
 	}
 
 	// 清除脏页标记
@@ -270,17 +271,17 @@ func (ccow *CCOWManager) FlushDirtyPages(ctx context.Context) error {
 func (ccow *CCOWManager) VerifySnapshotIntegrity(snapshotID uint64) (bool, error) {
 	snapshot, exists := ccow.GetSnapshot(snapshotID)
 	if !exists {
-		return false, fmt.Errorf("snapshot not found")
+		return false, errpkg.BTreeSnapshotNotFound()
 	}
 
 	// 验证根节点
 	if snapshot.RootRef == nil {
-		return false, fmt.Errorf("snapshot root ref is nil")
+		return false, errpkg.BTreeSnapshotRootRefNil()
 	}
 
 	rootInfo := snapshot.RootRef.GetPageInfo()
 	if rootInfo == nil {
-		return false, fmt.Errorf("snapshot root info is nil")
+		return false, errpkg.BTreeSnapshotRootInfoNil()
 	}
 
 	// 验证版本

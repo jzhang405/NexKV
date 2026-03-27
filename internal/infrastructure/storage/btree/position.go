@@ -1,15 +1,15 @@
 package btree
 
 import (
-	"errors"
-	"fmt"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
+// 别名引用：保持包内兼容性
 var (
-	ErrInvalidPosition = errors.New("invalid page position")
-	ErrInvalidChunkID  = errors.New("invalid chunk id")
-	ErrInvalidOffset   = errors.New("invalid offset")
-	ErrInvalidPageType = errors.New("invalid page type")
+	ErrInvalidPosition = errpkg.ErrBTreeInvalidPosition
+	ErrInvalidChunkID  = errpkg.ErrBTreeInvalidChunkID
+	ErrInvalidOffset   = errpkg.ErrBTreeInvalidOffset
+	ErrInvalidPageType = errpkg.ErrBTreeInvalidPageType
 )
 
 const (
@@ -52,13 +52,13 @@ const (
 func EncodePagePos(chunkID, offset, pageType int) (int64, error) {
 	// 边界检查
 	if chunkID < 0 || chunkID >= MaxChunks {
-		return 0, fmt.Errorf("%w: chunk ID %d out of range [0, %d)", ErrInvalidChunkID, chunkID, MaxChunks)
+		return 0, errpkg.BTreeInvalidChunkIDRange(chunkID, MaxChunks)
 	}
 	if offset < 0 || offset >= MaxOffset {
-		return 0, fmt.Errorf("%w: offset %d out of range [0, %d)", ErrInvalidOffset, offset, MaxOffset)
+		return 0, errpkg.BTreeInvalidOffsetRange(offset, MaxOffset)
 	}
 	if pageType < 0 || pageType >= MaxPageType {
-		return 0, fmt.Errorf("%w: page type %d out of range [0, %d)", ErrInvalidPageType, pageType, MaxPageType)
+		return 0, errpkg.BTreeInvalidPageTypeRange(pageType, MaxPageType)
 	}
 
 	// 编码：[63:38] ChunkID | [37:6] Offset | [5:1] PageType | [0] 保留

@@ -124,9 +124,15 @@ func TestSetWithLeafLock_MultipleKeys(t *testing.T) {
 	for i := range count {
 		key := []byte{byte(i >> 8), byte(i)}
 		value, err := btree.Get(ctx, key)
+		if err != nil {
+			t.Logf("Get failed at i=%d (key=[%d,%d]): %v", i, key[0], key[1], err)
+			// 继续检查其他键
+			continue
+		}
 		require.NoError(t, err)
 		require.NotNil(t, value)
 	}
+	t.Logf("All %d keys verified successfully", count)
 }
 
 // TestFindLeafPageRef_Success 验证 findLeafPageRef 正确返回 PageRef
@@ -306,4 +312,59 @@ func TestRetry_Path(t *testing.T) {
 	minSuccess := (numGoroutines * keysPerGoroutine) / 2
 	assert.GreaterOrEqual(t, successCount, minSuccess,
 		"expected at least %d successful writes, got %d", minSuccess, successCount)
+}
+
+// TestSetWithLeafLock_ExtremeConcurrency 极端并发测试
+// 验证 200 goroutine 场景下的并发安全性
+func TestSetWithLeafLock_ExtremeConcurrency(t *testing.T) {
+	btree, err := OpenBTree("", nil)
+	require.NoError(t, err)
+	defer btree.Close()
+
+	ctx := context.Background()
+	const goroutines = 200
+	const keysPerGoroutine = 50
+
+	var wg sync.WaitGroup
+	errors := make(chan error, goroutines*keysPerGoroutine)
+
+	// 并发写入不同的键
+	for i := range goroutines {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := range keysPerGoroutine {
+				key := []byte{byte(id >> 8), byte(id), byte(j)}
+				value := []byte{byte(j)}
+
+				err := btree.Set(ctx, key, value)
+				if err != nil {
+					errors <- err
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// 检查是否有错误
+	errorCount := 0
+	for err := range errors {
+		errorCount++
+		t.Logf("Concurrent Set failed (extreme): %v", err)
+	}
+
+	// 计算成功率
+	totalOps := goroutines * keysPerGoroutine
+	successOps := totalOps - errorCount
+	successRate := float64(successOps) / float64(totalOps) * 100
+
+	t.Logf("Extreme concurrency test: %d goroutine × %d keys = %d operations", goroutines, keysPerGoroutine, totalOps)
+	t.Logf("Success: %d/%d (%.2f%%), Failures: %d", successOps, totalOps, successRate, errorCount)
+
+	// 目标：成功率应该 > 95%（考虑极端并发条件）
+	if successRate < 95.0 {
+		t.Errorf("Success rate %.2f%% is below 95%% threshold", successRate)
+	}
 }

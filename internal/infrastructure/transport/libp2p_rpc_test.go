@@ -1427,7 +1427,8 @@ func TestLibp2pRPC_BroadcastAsync_PeerUnreachable(t *testing.T) {
 
 	// BroadcastAsync 需要 6 个参数
 	err := rpc.BroadcastAsync(context.Background(), peers, msg, service.ResponseAll, nil, func(from model.PeerID, resp model.Message, err error) {
-		t.Logf("BroadcastAsync callback: from=%s, err=%v", from, err)
+		// 修复：移除 t.Logf 避免数据竞争（回调在异步 goroutine 中执行）
+		// t.Logf("BroadcastAsync callback: from=%s, err=%v", from, err)
 	})
 	if err != nil {
 		t.Logf("BroadcastAsync() error: %v", err)

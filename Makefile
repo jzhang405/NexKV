@@ -45,7 +45,7 @@ test: test-unit integration-test-race
 ## test-unit: 运行单元测试（组件级测试，快速反馈）
 test-unit:
 	@echo "运行单元测试..."
-	$(GO) test -v -short -race -failfast -timeout 5m ./internal/...
+	$(GO) test -v -short -race -timeout 5m ./internal/...
 
 ## test-e2e: 运行 E2E 测试框架测试
 # DDD 重构说明：E2E 测试待重新实现

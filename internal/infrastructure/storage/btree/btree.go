@@ -210,6 +210,10 @@ type BTree struct {
 	closed    bool
 	closedMu  sync.RWMutex
 
+	// Context management for background goroutines
+	ctx        context.Context    // Context for controlling background goroutines
+	cancelFunc context.CancelFunc // Cancel function to stop all background goroutines
+
 	// Root management
 	rootRef *RootPageRef // Root page reference (atomic updates)
 
@@ -422,7 +426,10 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	initialRootInfo.SetNodeRef(offheap.NewNodeRef(uint32(initialRootPageID), true)) // true = isLeaf
 	initialRootInfo.SetParentRef(nil)                                               // 根节点没有父引用
 
-	rootPageRef := NewRootPageRefWithInfo(initialRootInfo)
+	// ✅ 修复 goroutine 泄漏：创建 context 用于控制后台 goroutines（必须在创建 RootPageRef 之前）
+	ctx, cancelFunc := context.WithCancel(context.Background())
+
+	rootPageRef := NewRootPageRefWithInfo(ctx, initialRootInfo)
 
 	// Calculate max levels based on config
 	maxLevels := 10 // Default value
@@ -443,6 +450,8 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		config:             config,
 		cowConfig:          cowConfig,
 		closed:             false,
+		ctx:                ctx,
+		cancelFunc:         cancelFunc,
 		rootRef:            rootPageRef,
 		chunkMgr:           chunkMgr,
 		wal:                walImpl,
@@ -1251,6 +1260,13 @@ func (b *BTree) Close() error {
 	if b.closed {
 		return nil // Already closed
 	}
+
+	// ✅ 修复 goroutine 泄漏：首先取消所有后台 goroutines
+	if b.cancelFunc != nil {
+		b.cancelFunc()
+		b.cancelFunc = nil
+	}
+	b.ctx = nil
 
 	// 方案 2：停止内置 TaskScheduler
 	if b.scheduler != nil {

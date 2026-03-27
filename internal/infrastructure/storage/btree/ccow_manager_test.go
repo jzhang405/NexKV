@@ -32,7 +32,7 @@ func TestCCOWManager_TakeSnapshot(t *testing.T) {
 	rootPage := NewLeafPage(1)
 	rootInfo := NewPageInfo()
 	rootInfo.SetPage(rootPage)
-	rootRef := NewRootPageRef()
+	rootRef := NewRootPageRef(context.Background())
 	rootRef.pInfo.Store(rootInfo)
 
 	// 创建快照
@@ -59,7 +59,7 @@ func TestCCOWManager_ReleaseSnapshot(t *testing.T) {
 	rootPage := NewLeafPage(1)
 	rootInfo := NewPageInfo()
 	rootInfo.SetPage(rootPage)
-	rootRef := NewRootPageRef()
+	rootRef := NewRootPageRef(context.Background())
 	rootRef.pInfo.Store(rootInfo)
 
 	snapshot, err := ccow.TakeSnapshot(rootRef)
@@ -183,7 +183,7 @@ func TestCCOWManager_VerifySnapshotIntegrity(t *testing.T) {
 	rootPage := NewLeafPage(1)
 	rootInfo := NewPageInfo()
 	rootInfo.SetPage(rootPage)
-	rootRef := NewRootPageRef()
+	rootRef := NewRootPageRef(context.Background())
 	rootRef.pInfo.Store(rootInfo)
 
 	snapshot, err := ccow.TakeSnapshot(rootRef)
@@ -216,7 +216,7 @@ func TestCCOWManager_MultipleSnapshots(t *testing.T) {
 	rootPage := NewLeafPage(1)
 	rootInfo := NewPageInfo()
 	rootInfo.SetPage(rootPage)
-	rootRef := NewRootPageRef()
+	rootRef := NewRootPageRef(context.Background())
 	rootRef.pInfo.Store(rootInfo)
 
 	// 创建第一个快照（version = 0）
@@ -260,7 +260,7 @@ func TestCCOWManager_ConcurrentSnapshots(t *testing.T) {
 	rootPage := NewLeafPage(1)
 	rootInfo := NewPageInfo()
 	rootInfo.SetPage(rootPage)
-	rootRef := NewRootPageRef()
+	rootRef := NewRootPageRef(context.Background())
 	rootRef.pInfo.Store(rootInfo)
 
 	// 并发创建快照

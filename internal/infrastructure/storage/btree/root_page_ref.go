@@ -11,19 +11,22 @@ import (
 // 处理 Root Page 的 CAS 更新和引用链维护
 type RootPageRef struct {
 	*PageRef
+	ctx context.Context // Context for controlling background goroutines
 }
 
 // NewRootPageRef 创建新的 RootPageRef
-func NewRootPageRef() *RootPageRef {
+func NewRootPageRef(ctx context.Context) *RootPageRef {
 	return &RootPageRef{
 		PageRef: NewPageRef(),
+		ctx:     ctx,
 	}
 }
 
 // NewRootPageRefWithInfo 创建带有初始 PageInfo 的 RootPageRef
-func NewRootPageRefWithInfo(info *PageInfo) *RootPageRef {
+func NewRootPageRefWithInfo(ctx context.Context, info *PageInfo) *RootPageRef {
 	return &RootPageRef{
 		PageRef: NewPageRefWithInfo(info),
+		ctx:     ctx,
 	}
 }
 
@@ -117,12 +120,29 @@ func (r *RootPageRef) updateChildrenParentRef(page *Page, newParent *PageRef) {
 // 简化实现：
 // - 使用固定延迟（100ms）等待活跃读操作完成
 // - 后续版本可以优化为基于引用计数的精确释放
+//
+// ✅ 修复 goroutine 泄漏：使用 context 控制 goroutine 生命周期
 func (r *RootPageRef) scheduleDelayedRelease(info *PageInfo) {
 	// 在后台 goroutine 中延迟释放
 	go func() {
+		// ✅ 检查 context 是否已取消
+		select {
+		case <-r.ctx.Done():
+			// BTree 已关闭，立即返回
+			return
+		default:
+			// 继续执行
+		}
+
 		// 等待活跃读操作完成（使用固定延迟）
 		// 后续版本可以使用引用计数或读写锁检测
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-time.After(100 * time.Millisecond):
+			// 正常延迟完成
+		case <-r.ctx.Done():
+			// BTree 在等待期间关闭，立即返回
+			return
+		}
 
 		// 清理 PageInfo 中的大对象（page 对象和 buff）
 		// 注意：不清理 PageInfo 本身，因为它可能还在使用中

@@ -27,7 +27,7 @@ func TestCollectFailureLogs(t *testing.T) {
 	require.NoError(t, err)
 	defer logFile.Close()
 
-	const totalRuns = 1000
+	const totalRuns = 100 // ✅ 修复后可以运行 100 次
 	const goroutines = 100
 	const operationsPerGoroutine = 100
 

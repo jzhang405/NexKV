@@ -84,7 +84,7 @@ func (m *OffHeapMaterializer) MaterializeIndexPageFromBytes(
 		if lastChild != 0 {
 			childVersion := m.pa.GetVersion(lastChild)
 			header := m.pa.GetHeader(pageID)
-			header.extraChild = EncodeChildWithVersion(lastChild, childVersion)
+			header.extraChild = EncodeChildWithVersion(lastChild, uint64(childVersion))
 		} else {
 			header := m.pa.GetHeader(pageID)
 			header.extraChild = 0

@@ -330,14 +330,31 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 	}
 
 	// 添加 extraChild（N+1 child）
-	// 如果 index < count，说明在中间插入，extraChild 保持原值
-	// 如果 index == count，rightPageID 就是新的 extraChild（已在上面添加）
+	// B+Tree 语义：splitKey 和 rightChild 插入后，extraChild 位置发生变化
+	//
+	// 如果 index < count（中间插入）：
+	//   原结构: [k0, ..., k(index-1), k(index), ..., k(count-1)] | [c0, ..., c(index), ..., c(count)]  (c(count) 是 extraChild)
+	//   新结构: [k0, ..., k(index-1), splitKey, k(index), ..., k(count-1)] | [c0, ..., c(index-1), left, right, ..., c(count)]
+	//   extraChild 保持不变 (c(count))
+	//
+	// 如果 index == count（末尾插入）：
+	//   原结构: [k0, ..., k(count-1)] | [c0, ..., c(count)]  (c(count) 是 extraChild)
+	//   新结构: [k0, ..., k(count-1), splitKey] | [c0, ..., c(count-1), left]
+	//   rightPageID 成为新的 extraChild
+	//
+	// 注意：当 index == count 时，上面的循环已经添加了 leftPageID，
+	//       但没有添加 extraChild，所以这里需要添加 rightPageID
 	if index < int(count) {
+		// 中间插入：保留原 extraChild
 		// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
 		encodedExtraChild := a.pa.GetChild(uint32(pageID), int(count))
 		extraChild, _ := a.DecodeChildWithVersion(encodedExtraChild)
 		children = append(children, extraChild)
 	}
+	// index == count 的情况：rightPageID 已经作为 extraChild 在上面被添加了
+	// (line 328: children = append(children, leftPageID))
+	// (line 329: children = append(children, rightPageID))
+	// 所以这里不需要额外处理
 
 	// 注意：不在此时释放旧页面 pageID
 	// 调用者 (handleSplitOffHeapSync) 会延迟释放

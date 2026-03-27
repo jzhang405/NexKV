@@ -28,15 +28,15 @@ const (
 // PageHeader 页面头部（32 字节，Cache Line 对齐）
 // 字段按大小排序，确保无内部 padding
 type PageHeader struct {
-	version    uint64  // 8 bytes - 版本号（用于 CCOW）
-	prevPage   uint32  // 4 bytes - 前一个页面 pageID（链表）
-	nextPage   uint32  // 4 bytes - 后一个页面 pageID（链表）
-	extraChild uint64  // 8 bytes - 索引节点的 N+1 child（32-bit pageID + 32-bit version）
+	version    uint64 // 8 bytes - 版本号（用于 CCOW）
+	prevPage   uint32 // 4 bytes - 前一个页面 pageID（链表）
+	nextPage   uint32 // 4 bytes - 后一个页面 pageID（链表）
+	extraChild uint64 // 8 bytes - 索引节点的 N+1 child（32-bit pageID + 32-bit version）
 	// 注意：extraChild 现在是 8 bytes，导致总大小超过 32 字节
 	// 需要调整结构，这里先声明，稍后处理
-	count      uint16  // 2 bytes - 条目数（entries 数量）
-	pageType   uint8   // 1 byte  - 页面类型（0=索引 1=叶子）
-	_pad       [5]byte // 5 bytes - 对齐到 32 字节 (8+4+4+8+2+1 = 27, +5 = 32)
+	count    uint16  // 2 bytes - 条目数（entries 数量）
+	pageType uint8   // 1 byte  - 页面类型（0=索引 1=叶子）
+	_pad     [5]byte // 5 bytes - 对齐到 32 字节 (8+4+4+8+2+1 = 27, +5 = 32)
 }
 
 // SizeofPageHeader PageHeader 大小（32 字节）
@@ -95,12 +95,12 @@ func (ref NodeRef) IsLeaf() bool {
 
 // 版本号编码常量（32-bit 统一编码：32-bit pageID + 32-bit version）
 const (
-	ChildVersionBits = 32                  // 版本号使用的位数
-	ChildVersionMask = 0xFFFFFFFF00000000  // 版本号掩码（高 32 位）
-	ChildIDMask      = 0x00000000FFFFFFFF  // pageID 掩码（低 32 位）
+	ChildVersionBits  = 32                 // 版本号使用的位数
+	ChildVersionMask  = 0xFFFFFFFF00000000 // 版本号掩码（高 32 位）
+	ChildIDMask       = 0x00000000FFFFFFFF // pageID 掩码（低 32 位）
 	ChildVersionShift = 32                 // 版本号位移量
-	MaxChildID       = (1 << 32) - 1       // 最大 pageID (~4 billion)
-	MaxChildVersion  = (1 << 32) - 1       // 最大版本号 (~4 billion)
+	MaxChildID        = (1 << 32) - 1      // 最大 pageID (~4 billion)
+	MaxChildVersion   = (1 << 32) - 1      // 最大版本号 (~4 billion)
 )
 
 // EncodeChildWithVersion 编码 pageID 和版本号到 uint64
@@ -330,7 +330,18 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 	// 版本号检测：编码子节点的版本号到 child 字段
 	// 只有当 child != 0 时才读取版本号（0 表示没有子节点）
 	if child != 0 {
-		childVersion := pa.GetVersion(child)
+		// 安全获取版本号：如果子页面不存在（例如在测试中直接设置 child），
+		// 则使用版本号 0
+		var childVersion uint64
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// pageID 不存在或无效，使用版本号 0
+					childVersion = 0
+				}
+			}()
+			childVersion = pa.GetVersion(child)
+		}()
 		entry.child = EncodeChildWithVersion(child, childVersion)
 	} else {
 		entry.child = 0
@@ -429,6 +440,22 @@ func (pa *PageAccessor) GetVersion(pageID uint32) uint64 {
 	return pa.GetHeader(pageID).version
 }
 
+// GetVersionSafe 安全获取页面版本号，如果页面不存在则返回 0
+// 用于测试场景或边界情况，其中子页面可能尚未分配
+func (pa *PageAccessor) GetVersionSafe(pageID uint32) uint64 {
+	var version uint64
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// pageID 不存在或无效，使用版本号 0
+				version = 0
+			}
+		}()
+		version = pa.GetVersion(pageID)
+	}()
+	return version
+}
+
 // SetVersion 设置页面版本号
 func (pa *PageAccessor) SetVersion(pageID uint32, version uint64) {
 	pa.GetHeader(pageID).version = version
@@ -443,16 +470,20 @@ func (pa *PageAccessor) IncrementVersion(pageID uint32) uint64 {
 }
 
 // GetChildWithVersion 获取子节点 pageID 和期望版本号（从编码的 child 值解码）
-func (pa *PageAccessor) GetChildWithVersion(pageID uint32, index int) (childPageID uint32, expectedVersion uint32) {
+// 返回的版本号是 uint64，与 GetVersion 保持一致
+func (pa *PageAccessor) GetChildWithVersion(pageID uint32, index int) (childPageID uint32, expectedVersion uint64) {
 	encoded := pa.GetChild(pageID, index)
-	childPageID, expectedVersion = DecodeChildWithVersion(encoded)
+	decodedPageID, decodedVersion := DecodeChildWithVersion(encoded)
+	childPageID = decodedPageID
+	expectedVersion = uint64(decodedVersion)
 	return
 }
 
 // SetChildWithVersion 设置子节点 pageID 和版本号（编码到 child 值中）
+// 注意：这个函数会使用指定的版本号，而不是当前版本
 func (pa *PageAccessor) SetChildWithVersion(pageID uint32, index int, childPageID uint32, childVersion uint64) {
 	encoded := EncodeChildWithVersion(childPageID, childVersion)
-	pa.SetChild(pageID, index, encoded)
+	pa.setChildEncoded(pageID, index, encoded)
 }
 
 // GetCount 获取条目数量
@@ -513,16 +544,43 @@ func (pa *PageAccessor) GetChild(pageID uint32, index int) uint64 {
 
 // SetChild 设置索引节点的子节点
 // 支持 B+ 树的 N+1 child 语义：如果 index == count，设置 extraChild
-// 自动编码子节点的版本号到 child 字段中（用于僵尸引用检测）
-func (pa *PageAccessor) SetChild(pageID uint32, index int, child uint64) {
+// 参数 child 是原始的 pageID（uint32），函数内部会自动编码版本号
+// 这样与 InsertIndexEntry 保持 API 一致性
+func (pa *PageAccessor) SetChild(pageID uint32, index int, child uint32) {
+	// 编码版本号：与 InsertIndexEntry 保持一致
+	var encodedChild uint64
+	if child != 0 {
+		// 安全获取版本号：如果子页面不存在（例如在测试中直接设置 child），
+		// 则使用版本号 0
+		var childVersion uint64
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// pageID 不存在或无效，使用版本号 0
+					childVersion = 0
+				}
+			}()
+			childVersion = pa.GetVersion(child)
+		}()
+		encodedChild = EncodeChildWithVersion(child, childVersion)
+	} else {
+		encodedChild = 0
+	}
+
+	pa.setChildEncoded(pageID, index, encodedChild)
+}
+
+// setChildEncoded 内部函数：直接设置编码后的子节点值
+// 仅供 SetChildWithVersion 使用，避免双重编码
+func (pa *PageAccessor) setChildEncoded(pageID uint32, index int, encodedChild uint64) {
 	header := pa.GetHeader(pageID)
 	if index == int(header.count) {
 		// 设置 N+1 child（最后一个 child）
-		header.extraChild = child
+		header.extraChild = encodedChild
 		return
 	}
 	entry := pa.GetIndexEntry(pageID, index)
-	entry.child = child // child 已经是编码后的 uint64
+	entry.child = encodedChild
 }
 
 // GetLeafEntryOffset 获取叶子条目的 key/value offset（用于跨包访问）

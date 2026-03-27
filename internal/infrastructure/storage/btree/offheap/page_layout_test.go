@@ -18,8 +18,9 @@ func TestSizeofPageHeader(t *testing.T) {
 }
 
 func TestSizeofIndexEntry(t *testing.T) {
-	// IndexEntry 应该是 12 字节
-	assert.Equal(t, 12, SizeofIndexEntry, "IndexEntry should be 12 bytes")
+	// IndexEntry 应该是 16 字节
+	// 字段布局：keyOff(4) + keyLen(4) + child(8) = 16
+	assert.Equal(t, 16, SizeofIndexEntry, "IndexEntry should be 16 bytes")
 }
 
 func TestSizeofLeafEntry(t *testing.T) {
@@ -90,7 +91,9 @@ func TestPageAccessor_InsertIndexEntry(t *testing.T) {
 	// 验证
 	assert.Equal(t, uint16(1), pa.GetCount(pageID))
 	entry := pa.GetIndexEntry(pageID, 0)
-	assert.Equal(t, uint32(100), entry.child)
+	// entry.child 现在是编码后的 uint64 值，需要解码
+	decodedChild, _ := DecodeChildWithVersion(entry.child)
+	assert.Equal(t, uint32(100), decodedChild)
 	assert.Equal(t, key1, pa.GetKey(pageID, entry.keyOff, entry.keyLen))
 
 	// 插入第二个条目（在前面）
@@ -102,9 +105,11 @@ func TestPageAccessor_InsertIndexEntry(t *testing.T) {
 	// 验证顺序
 	assert.Equal(t, uint16(2), pa.GetCount(pageID))
 	entry0 := pa.GetIndexEntry(pageID, 0)
-	assert.Equal(t, uint32(99), entry0.child)
+	decodedChild0, _ := DecodeChildWithVersion(entry0.child)
+	assert.Equal(t, uint32(99), decodedChild0)
 	entry1 := pa.GetIndexEntry(pageID, 1)
-	assert.Equal(t, uint32(100), entry1.child)
+	decodedChild1, _ := DecodeChildWithVersion(entry1.child)
+	assert.Equal(t, uint32(100), decodedChild1)
 }
 
 func TestPageAccessor_InsertLeafEntry(t *testing.T) {
@@ -203,7 +208,10 @@ func TestPageAccessor_SearchKey(t *testing.T) {
 	idx, found = pa.SearchKey(indexID, []byte("key200"), false)
 	assert.True(t, found)
 	assert.Equal(t, 1, idx)
-	assert.Equal(t, uint32(20), pa.GetChild(indexID, idx))
+	// GetChild 返回编码后的 uint64 值，需要解码
+	encodedChild := pa.GetChild(indexID, idx)
+	decodedChild, _ := DecodeChildWithVersion(encodedChild)
+	assert.Equal(t, uint32(20), decodedChild)
 
 	// 测试未找到
 	idx, found = pa.SearchKey(indexID, []byte("key250"), false)
@@ -306,12 +314,21 @@ func TestPageAccessor_GetChild(t *testing.T) {
 	err = pa.InsertIndexEntry(pageID, 1, []byte("key2"), child2, &dataEnd)
 	require.NoError(t, err)
 
-	assert.Equal(t, child1, pa.GetChild(pageID, 0))
-	assert.Equal(t, child2, pa.GetChild(pageID, 1))
+	// GetChild 返回编码后的 uint64 值，需要解码
+	encodedChild1 := pa.GetChild(pageID, 0)
+	decodedChild1, _ := DecodeChildWithVersion(encodedChild1)
+	assert.Equal(t, child1, decodedChild1)
 
-	// 修改子节点
-	pa.SetChild(pageID, 0, 999)
-	assert.Equal(t, uint32(999), pa.GetChild(pageID, 0))
+	encodedChild2 := pa.GetChild(pageID, 1)
+	decodedChild2, _ := DecodeChildWithVersion(encodedChild2)
+	assert.Equal(t, child2, decodedChild2)
+
+	// 修改子节点（SetChild 现在接受原始 pageID）
+	newChild := uint32(999)
+	pa.SetChild(pageID, 0, newChild)
+	encodedNewChild := pa.GetChild(pageID, 0)
+	decodedNewChild, _ := DecodeChildWithVersion(encodedNewChild)
+	assert.Equal(t, newChild, decodedNewChild)
 }
 
 func TestPageAccessor_GetCount(t *testing.T) {

@@ -28,15 +28,15 @@ var (
 
 // PageManager 管理 Off-Heap 内存中的 4KB 页面
 type PageManager struct {
-	allocator       OffHeapAllocator       // 跨平台内存分配器
-	base            unsafe.Pointer          // mmap 起始地址
-	total           uint32                  // 总页数
-	used            atomic.Uint32           // 已使用页数
-	nextPageID      atomic.Uint32           // 下一个要分配的页面ID（单调递增）
-	freeList        *LockFreeQueue          // 空闲 PageID 队列（lock-free，暂时保留但不使用）
-	delayedFreeList *LockFreeQueue          // 延迟释放 PageID 队列（已释放但需等待1个epoch）
-	tracker         *PageLifecycleTracker   // 页面生命周期追踪器（调试用）
-	initOnce        sync.Once               //nolint:unused // 确保初始化一次
+	allocator       OffHeapAllocator      // 跨平台内存分配器
+	base            unsafe.Pointer        // mmap 起始地址
+	total           uint32                // 总页数
+	used            atomic.Uint32         // 已使用页数
+	nextPageID      atomic.Uint32         // 下一个要分配的页面ID（单调递增）
+	freeList        *LockFreeQueue        // 空闲 PageID 队列（lock-free，暂时保留但不使用）
+	delayedFreeList *LockFreeQueue        // 延迟释放 PageID 队列（已释放但需等待1个epoch）
+	tracker         *PageLifecycleTracker // 页面生命周期追踪器（调试用）
+	initOnce        sync.Once             //nolint:unused // 确保初始化一次
 }
 
 // InitPageManager 初始化全局 PageManager

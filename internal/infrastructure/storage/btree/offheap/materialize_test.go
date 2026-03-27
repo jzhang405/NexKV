@@ -76,7 +76,9 @@ func TestOffHeapMaterializer_MaterializeIndexPage(t *testing.T) {
 		entry := m.pa.GetIndexEntry(pageID, i)
 		pageKey := m.pa.GetKey(pageID, entry.keyOff, entry.keyLen)
 		assert.Equal(t, key, pageKey)
-		assert.Equal(t, children[i], entry.child)
+		// entry.child 现在是编码后的 uint64 值，需要解码
+		decodedChild, _ := DecodeChildWithVersion(entry.child)
+		assert.Equal(t, children[i], decodedChild)
 	}
 }
 

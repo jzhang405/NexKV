@@ -14,11 +14,11 @@ import (
 // PageLifecycleTracker 追踪页面生命周期（用于调试循环引用问题）
 // 这是一个调试工具，仅在调查阶段使用，不应在生产环境启用
 type PageLifecycleTracker struct {
-	enabled   bool                       // 是否启用追踪
-	history   map[uint32]*PageLifecycle  // 页面生命周期历史
-	mu        sync.RWMutex               // 保护 history 的并发访问
-	allocHook func(uint32)               // 分配钩子
-	freeHook  func(uint32)               // 释放钩子
+	enabled   bool                      // 是否启用追踪
+	history   map[uint32]*PageLifecycle // 页面生命周期历史
+	mu        sync.RWMutex              // 保护 history 的并发访问
+	allocHook func(uint32)              // 分配钩子
+	freeHook  func(uint32)              // 释放钩子
 }
 
 // PageLifecycle 记录单个页面的生命周期

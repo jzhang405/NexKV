@@ -43,7 +43,7 @@ func TestInitPage_ClearsExtraChild(t *testing.T) {
 
 	// 5. 验证 extraChild 被清空
 	newHeader := pa.GetHeader(newPageID)
-	assert.Equal(t, uint32(0), newHeader.extraChild,
+	assert.Equal(t, uint64(0), newHeader.extraChild,
 		"extraChild should be 0 after InitPage")
 }
 
@@ -63,6 +63,6 @@ func TestInitIndexPage_CreatesValidPage(t *testing.T) {
 	header := pa.GetHeader(pageID)
 	assert.Equal(t, uint8(PageTypeIndex), header.pageType)
 	assert.Equal(t, uint16(0), header.count)
-	assert.Equal(t, uint32(0), header.extraChild, "extraChild should be 0")
+	assert.Equal(t, uint64(0), header.extraChild, "extraChild should be 0")
 	assert.Equal(t, uint64(1), header.version)
 }

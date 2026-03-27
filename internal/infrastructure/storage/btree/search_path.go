@@ -216,7 +216,8 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 		if err != nil {
 			// 版本号不匹配，检测到僵尸引用
 			// 返回 ErrRetry 让外层重试
-			return nil, nil, fmt.Errorf("search child: %w", ErrRetry)
+			// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
+			return nil, nil, ErrRetry
 		}
 		if debugThisSearch {
 			DebugPrintf("[SEARCH_PATH] key=%s at parent pageID=%d found childPageID=%d\n", string(key), currentPageID, childPageID)

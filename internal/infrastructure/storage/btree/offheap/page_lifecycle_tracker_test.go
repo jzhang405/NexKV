@@ -106,17 +106,17 @@ func TestPageLifecycleTracker_ParentChildTracking(t *testing.T) {
 	tracker.RecordAlloc(200)
 	tracker.SetPageType(200, "Internal")
 	tracker.SetParentPageID(200, 100) // 200 的父节点是 100
-	tracker.SetChildPageID(100, 200)    // 100 的子节点是 200
+	tracker.SetChildPageID(100, 200)  // 100 的子节点是 200
 
 	tracker.RecordAlloc(300)
 	tracker.SetPageType(300, "Leaf")
 	tracker.SetParentPageID(300, 200) // 300 的父节点是 200
-	tracker.SetChildPageID(200, 300)   // 200 的子节点是 300
+	tracker.SetChildPageID(200, 300)  // 200 的子节点是 300
 
 	tracker.RecordAlloc(301)
 	tracker.SetPageType(301, "Leaf")
 	tracker.SetParentPageID(301, 200) // 301 的父节点是 200
-	tracker.SetChildPageID(200, 301)   // 200 的子节点是 301
+	tracker.SetChildPageID(200, 301)  // 200 的子节点是 301
 
 	// 验证关系
 	lifecycle200, _ := tracker.GetLifecycle(200)

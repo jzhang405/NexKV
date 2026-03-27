@@ -906,7 +906,7 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 	// 版本号检测：读取子页面的实际版本号
 	actualVersion := a.pa.GetVersion(childID)
 
-	if actualVersion != uint64(expectedVersion) {
+	if actualVersion != expectedVersion {
 		// 版本号不匹配，说明父节点存储的是陈旧的子节点引用（僵尸引用）
 		// 这可能发生在：
 		// 1. 子节点被释放并重新分配

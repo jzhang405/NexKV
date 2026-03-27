@@ -42,7 +42,7 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 	}
 
 	// Step 1: 查找 PageRef 和路径（只读，不克隆）
-	leafRef, path, err := b.findLeafPageRef(ctx, key)
+	leafRef, path, refs, err := b.findLeafPageRef(ctx, key)
 	if err != nil {
 		if string(key) == "key-09803" {
 			DebugPrintf("[SET_WITH_LEAF_LOCK] findLeafPageRef FAILED for key=%s: %v\n", string(key), err)
@@ -128,7 +128,7 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 	// 场景 2：需要分裂，必须重试以获取新的路径
 	if newPageID != oldPageID {
 		if !splitRequired {
-			// ✅ 场景 1：UpdateLeafEntry，数据已写入，直接返回成功
+			// ✅ 场景 1：UpdateLeafEntry，数据已写入
 			// 检查是否是根节点（单层树）
 			if len(path) == 1 && leafRef == b.rootRef.PageRef {
 				// 特殊处理：根节点的 update 场景
@@ -145,7 +145,49 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 				// 更新 PageRefCache（原子操作）
 				b.pageRefCache.Replace(oldPageID, newPageID, leafRef)
 			} else {
-				// 非根节点的 update 场景：原子更新 PageRefCache
+				// 非根节点的 update 场景：
+				// 1. 更新 leafRef 的 PageInfo
+				// 2. 更新父节点的 child 指针
+
+				// 获取父节点的 PageRef（refs[len(refs)-2]）
+				if len(refs) >= 2 {
+					parentRef := refs[len(refs)-2]
+					parentInfo := parentRef.GetPageInfo()
+					if parentInfo != nil {
+						parentPageID := uint32(parentInfo.GetPageID())
+
+						// 找到旧 child 的索引
+						childIndex := b.offheapAdapter.FindChildIndex(parentPageID, uint32(oldPageID))
+						if childIndex >= 0 {
+							// 更新父节点的 child 指针（分配新页面）
+							newParentPageID, err := b.offheapAdapter.ReplaceChild(
+								model.PageID(parentPageID),
+								childIndex,
+								uint32(newPageID),
+							)
+							if err != nil {
+								// 更新失败，返回重试
+								return fmt.Errorf("replace child in parent: %w", err)
+							}
+
+							// 创建新的 parent Info
+							newParentInfo := NewPageInfo()
+							newParentInfo.SetNodeRef(offheap.NewNodeRef(uint32(newParentPageID), false)) // false = isLeaf
+							newParentInfo.SetPos(parentInfo.GetPos())
+
+							// CAS 更新 parentRef
+							if !parentRef.ReplacePage(parentInfo, newParentInfo) {
+								// CAS 失败，返回重试
+								return ErrRetry
+							}
+
+							// 更新 PageRefCache（原子操作）
+							b.pageRefCache.Replace(model.PageID(parentPageID), model.PageID(newParentPageID), parentRef)
+						}
+					}
+				}
+
+				// 更新 leafRef 的 PageInfo
 				b.pageRefCache.Replace(oldPageID, newPageID, leafRef)
 			}
 			// ✅ 不重试，避免覆盖其他数据（数据已经成功写入）

@@ -149,7 +149,7 @@ func TestFindLeafPageRef_Success(t *testing.T) {
 	_ = btree.Set(ctx, key, value)
 
 	// 查找 PageRef
-	leafRef, path, err := btree.findLeafPageRef(ctx, key)
+	leafRef, path, _, err := btree.findLeafPageRef(ctx, key)
 	require.NoError(t, err)
 	require.NotNil(t, leafRef, "leafRef should not be nil")
 	require.NotEmpty(t, path, "path should not be empty")
@@ -183,7 +183,7 @@ func TestFindLeafPageRef_Concurrent(t *testing.T) {
 			defer wg.Done()
 			for j := range 10 {
 				key := []byte{byte((id*10 + j) >> 8), byte(id*10 + j)}
-				_, _, err := btree.findLeafPageRef(ctx, key)
+				_, _, _, err := btree.findLeafPageRef(ctx, key)
 				assert.NoError(t, err)
 			}
 		}(i)

@@ -161,7 +161,7 @@ func (b *BTree) SetWithTask(
 	shardID := 0 // 默认值
 	var leafRef *PageRef
 
-	leafRef, _, err := b.findLeafPageRef(ctx, key)
+	leafRef, _, _, err := b.findLeafPageRef(ctx, key)
 	if err == nil && leafRef != nil {
 		pageInfo := leafRef.GetPageInfo()
 		if pageInfo != nil {

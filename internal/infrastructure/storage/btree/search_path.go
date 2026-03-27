@@ -317,25 +317,26 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 //
 //	*PageRef - 叶子节点的 PageRef
 //	[]*PageInfo - 完整路径（包括 Root 和 Leaf）
+//	[]*PageRef - 完整路径的 PageRef 引用（包括 Root 和 Leaf）
 //	error - 错误信息
-func (b *BTree) findLeafPageRef(ctx context.Context, key []byte) (*PageRef, []*PageInfo, error) {
+func (b *BTree) findLeafPageRef(ctx context.Context, key []byte) (*PageRef, []*PageInfo, []*PageRef, error) {
 	// 使用优化版本：一次遍历同时收集 PageInfo 和 PageRef
 	path, refs, err := b.searchPathWithRefs(ctx, key)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	if len(path) == 0 {
-		return nil, nil, fmt.Errorf("empty search path")
+		return nil, nil, nil, fmt.Errorf("empty search path")
 	}
 
 	if len(refs) == 0 {
-		return nil, nil, fmt.Errorf("empty refs")
+		return nil, nil, nil, fmt.Errorf("empty refs")
 	}
 
 	// 最后一个引用是叶子节点的 PageRef
 	leafRef := refs[len(refs)-1]
-	return leafRef, path, nil
+	return leafRef, path, refs, nil
 }
 
 // hasCycleFrom 检测从指定页面开始是否存在循环引用

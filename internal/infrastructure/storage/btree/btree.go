@@ -611,7 +611,7 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		}
 
 		// Off-Heap 模式：使用 searchPathWithRefs
-		leafRef, path, err := b.findLeafPageRef(ctx, key)
+		leafRef, path, _, err := b.findLeafPageRef(ctx, key)
 		if err != nil {
 			// 如果查找路径失败且不是最后一次尝试，重试
 			if attempt < maxRetries-1 {
@@ -907,7 +907,7 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 		}
 
 		// 2. 查找叶子节点和路径（只读，不克隆）
-		leafRef, path, err := b.findLeafPageRef(ctx, key)
+		leafRef, path, _, err := b.findLeafPageRef(ctx, key)
 		if err != nil {
 			// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
 			return err

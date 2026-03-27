@@ -88,7 +88,7 @@ func TestBTreeRegression_MultiLayerSupport(t *testing.T) {
 	require.NoError(t, err)
 	defer tree.Close()
 
-	const keyCount = 20000  // 足够触发多层分裂
+	const keyCount = 20000 // 足够触发多层分裂
 
 	t.Logf("插入 %d 个 keys...", keyCount)
 	for i := 0; i < keyCount; i++ {

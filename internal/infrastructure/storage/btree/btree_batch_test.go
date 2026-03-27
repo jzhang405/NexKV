@@ -30,7 +30,7 @@ func TestSetWithLeafLockAndRef_Success(t *testing.T) {
 	_ = tree.Set(ctx, key, value)
 
 	// 查找 leafRef
-	leafRef, _, err := tree.findLeafPageRef(ctx, key)
+	leafRef, _, _, err := tree.findLeafPageRef(ctx, key)
 	require.NoError(t, err)
 	require.NotNil(t, leafRef)
 
@@ -85,7 +85,7 @@ func TestSetWithLeafLockAndRef_PageInfoChanged(t *testing.T) {
 
 	// 获取初始 leafRef
 	_ = tree.Set(ctx, key, []byte("initial"))
-	_, _, err = tree.findLeafPageRef(ctx, key)
+	_, _, _, err = tree.findLeafPageRef(ctx, key)
 	require.NoError(t, err)
 
 	// 修复：Off-Heap 模式下，测试 PageInfo 变更后 setWithLeafLockAndRef 的行为
@@ -121,7 +121,7 @@ func TestSetWithLeafLockAndRef_Concurrent(t *testing.T) {
 	// 预先插入键以获取 leafRef
 	key := []byte("hot-key")
 	_ = tree.Set(ctx, key, []byte("initial"))
-	leafRef, _, err := tree.findLeafPageRef(ctx, key)
+	leafRef, _, _, err := tree.findLeafPageRef(ctx, key)
 	require.NoError(t, err)
 
 	const goroutines = 50
@@ -407,7 +407,7 @@ func BenchmarkSetWithLeafLockAndRef(b *testing.B) {
 
 	key := []byte("bench-key-cached")
 	_ = tree.Set(ctx, key, []byte("initial"))
-	leafRef, _, err := tree.findLeafPageRef(ctx, key)
+	leafRef, _, _, err := tree.findLeafPageRef(ctx, key)
 	require.NoError(b, err)
 
 	value := []byte("bench-value")

@@ -404,6 +404,30 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 	return model.PageID(newPageID), nil
 }
 
+// FindChildIndex 查找父页面中指定 child 的索引位置
+//
+// 参数：
+//
+//	parentPageID - 父页面 ID
+//	childPageID - 要查找的子页面 ID
+//
+// 返回：child 的索引位置（0 到 count），如果未找到返回 -1
+// 注意：会遍历所有 child（包括 extraChild），因为 key 索引和 child 索引不同
+func (a *OffHeapAdapter) FindChildIndex(parentPageID uint32, childPageID uint32) int {
+	count := a.pa.GetCount(parentPageID)
+
+	// 遍历所有 child（包括 extraChild）
+	for i := 0; i <= int(count); i++ {
+		encodedChild := a.pa.GetChild(parentPageID, i)
+		child, _ := a.DecodeChildWithVersion(encodedChild)
+		if child == childPageID {
+			return i
+		}
+	}
+
+	return -1 // 未找到
+}
+
 // ReplaceChild 替换索引节点中的单个子节点（不增加子节点数量）
 // 用于 fallback 场景：将旧子节点替换为新子节点，但不分裂
 //

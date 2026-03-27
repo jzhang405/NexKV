@@ -117,11 +117,14 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 	// 调试：追踪 key-06151、key-06267 和 key-09803 的插入
 	debugThisInsert := string(key) == "key-06151" || string(key) == "key-06150" || string(key) == "key-06267" || string(key) == "key-09803"
 
-	// 查找插入位置
-	idx, found := a.pa.SearchKey(uint32(pageID), key, true)
+	// 修复：方案 C - 使用线性搜索替代二分查找
+	// SearchKey 依赖 keys 有序的假设，但页面可能已无序
+	// 使用线性搜索确保即使 keys 无序也能找到正确位置
+	idx, found := a.linearSearchLeaf(uint32(pageID), key)
+
 	if debugThisInsert {
 		count := a.pa.GetCount(uint32(pageID))
-		DebugPrintf("[INSERT_DEBUG] key=%s pageID=%d idx=%d found=%v count=%d\n", string(key), pageID, idx, found, count)
+		DebugPrintf("[INSERT_DEBUG] key=%s pageID=%d idx=%d found=%v count=%d (LINEAR SEARCH)\n", string(key), pageID, idx, found, count)
 		if count > 0 {
 			firstKeyOff, firstKeyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), 0)
 			firstKey := a.pa.GetKey(uint32(pageID), firstKeyOff, firstKeyLen)
@@ -172,6 +175,30 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 		DebugPrintf("[INSERT_DEBUG] key=%s INSERT FAILED: %v\n", string(key), insertErr)
 	}
 	return pageID, false, insertErr
+}
+
+// linearSearchLeaf 线性搜索叶子页面，找到正确的插入位置
+// 方案 C：不依赖 keys 有序的假设，确保即使页面已损坏也能正确插入
+// 返回：(插入索引, 是否找到)
+func (a *OffHeapAdapter) linearSearchLeaf(pageID uint32, key []byte) (int, bool) {
+	count := a.pa.GetCount(pageID)
+
+	// 遍历所有现有 keys
+	for i := 0; i < int(count); i++ {
+		keyOff, keyLen, _, _ := a.pa.GetLeafEntryOffset(pageID, i)
+		existingKey := a.pa.GetKey(pageID, keyOff, keyLen)
+		cmp := bytes.Compare(key, existingKey)
+		if cmp == 0 {
+			// 找到相同的 key
+			return i, true
+		} else if cmp < 0 {
+			// 新 key 应该插入到当前位置之前
+			return i, false
+		}
+	}
+
+	// 所有现有 keys 都小于新 key，插入到末尾
+	return int(count), false
 }
 
 // checkPageFull 检查页面是否已满（直接从页面读取 dataEnd）
@@ -308,8 +335,11 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 
 		if i == index {
 			// 分裂位置：插入 splitKey 和 left/right child
-			// 注意：不复制原来的 child，因为它被替换为 leftPageID
-			keys = append(keys, key)
+			// 修复：必须复制原来的 key[index]，否则会导致 key 丢失
+			keys = append(keys, key) // splitKey
+			kCopy := make([]byte, len(k))
+			copy(kCopy, k)
+			keys = append(keys, kCopy) // 复制 key[index]
 			children = append(children, leftPageID)
 			children = append(children, rightPageID)
 			inserted = true

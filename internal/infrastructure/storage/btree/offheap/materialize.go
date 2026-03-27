@@ -43,11 +43,31 @@ func (m *OffHeapMaterializer) MaterializePageFromBytes(
 	m.pa.InitLeafPage(pageID, 0)
 	dataEnd := uint16(0)
 
-	// 写入所有 KV 数据
-	// 注意：我们按顺序插入，PageAccessor 会处理布局
-	// 如果空间不足，InsertLeafEntry 会返回错误
-	for i := range keys {
-		err := m.pa.InsertLeafEntry(pageID, i, keys[i], values[i], &dataEnd)
+	// 修复：方案 C - 在物化前对 keys 进行排序
+	// 如果输入的 keys 无序（例如从损坏的页面分裂而来），
+	// 直接按索引插入会导致输出页面也无序。
+	// 排序后可以确保输出页面有序，打破恶性循环。
+	sortedKeys := make([][]byte, len(keys))
+	sortedValues := make([][]byte, len(values))
+	copy(sortedKeys, keys)
+	copy(sortedValues, values)
+
+	// 对 keys 进行排序，同时保持 values 与 keys 的对应关系
+	// 使用简单的冒泡排序（对于小数据集足够快）
+	for i := 0; i < len(sortedKeys); i++ {
+		for j := i + 1; j < len(sortedKeys); j++ {
+			if bytes.Compare(sortedKeys[i], sortedKeys[j]) > 0 {
+				// 交换 keys
+				sortedKeys[i], sortedKeys[j] = sortedKeys[j], sortedKeys[i]
+				// 交换对应的 values
+				sortedValues[i], sortedValues[j] = sortedValues[j], sortedValues[i]
+			}
+		}
+	}
+
+	// 写入所有 KV 数据（使用排序后的数据）
+	for i := range sortedKeys {
+		err := m.pa.InsertLeafEntry(pageID, i, sortedKeys[i], sortedValues[i], &dataEnd)
 		if err != nil {
 			return 0, fmt.Errorf("insert entry %d: %w", i, err)
 		}
@@ -67,7 +87,9 @@ func (m *OffHeapMaterializer) MaterializeIndexPageFromBytes(
 	m.pa.InitIndexPage(pageID, 0)
 	dataEnd := uint16(0)
 
-	// 写入所有 keys 和 children
+	// 修复：不进行排序！排序会破坏 B+Tree 的 key-child 对应关系
+	// UpdateIndexEntry 调用者应该确保传入的 keys 已经是有序的
+	// 直接按输入顺序写入所有 keys 和 children
 	for i := range keys {
 		err := m.pa.InsertIndexEntry(pageID, i, keys[i], children[i], &dataEnd)
 		if err != nil {

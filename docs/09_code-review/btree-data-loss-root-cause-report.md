@@ -113,3 +113,76 @@ for left <= right {
 - 2026-03-27 10:10 - 发现 keys 无序根本原因
 - 累计调查时间：约 5 小时
 - 尝试修复次数：5 次（1 次成功，4 次失败）
+
+---
+
+## 最终根本原因（2026-03-27 10:37 确认）
+
+### 真正的 Bug：UpdateIndexEntry 不复制 key[index]
+
+**错误的代码逻辑**（offheap_adapter.go:336-342）：
+```go
+if i == index {
+    // 分裂位置：插入 splitKey 和 left/right child
+    // 注意：不复制原来的 child，因为它被替换为 leftPageID
+    keys = append(keys, key)  // ❌ 只添加 splitKey
+    children = append(children, leftPageID)
+    children = append(children, rightPageID)
+    inserted = true
+}
+```
+
+**问题**：
+- 注释说"不复制原来的 child"，但实际上**连 key[index] 也没有复制**
+- 导致父节点在 index 位置的 key 丢失
+- 如果父节点有 2 个 keys（count=2），在 index=1 处插入：
+  - 期望：[key[0], splitKey, key[1]]
+  - 实际：[key[0], splitKey]（key[1] 丢失！）
+
+**正确代码**：
+```go
+if i == index {
+    // 分裂位置：插入 splitKey 和 left/right child
+    // 修复：必须复制原来的 key[index]，否则会导致 key 丢失
+    keys = append(keys, key)  // splitKey
+    kCopy := make([]byte, len(k))
+    copy(kCopy, k)
+    keys = append(keys, kCopy)  // ✅ 复制 key[index]
+    children = append(children, leftPageID)
+    children = append(children, rightPageID)
+    inserted = true
+}
+```
+
+### 修复方案总结
+
+1. **核心修复**：UpdateIndexEntry 复制 key[index]
+   - 文件：`offheap_adapter.go:336-342`
+   - 影响：父节点所有 keys 都被保留
+
+2. **辅助修复 1**：MaterializePageFromBytes 排序
+   - 文件：`offheap/materialize.go:46-66`
+   - 目的：确保叶子页面 keys 有序
+
+3. **辅助修复 2**：MaterializeIndexPageFromBytes 不排序
+   - 文件：`offheap/materialize.go:90-92`
+   - 目的：保持 key-child 对应关系
+
+4. **辅助修复 3**：InsertToOffHeap 线性搜索
+   - 文件：`offheap_adapter.go:120-203`
+   - 目的：不依赖 keys 有序假设
+
+### 测试验证
+
+- ✅ TestSingleThread1076: 1076/1076 keys present
+- ✅ TestSetWithLeafLock_Concurrent: PASS
+- ✅ 根节点所有子页面正确分配数据
+
+## 时间线（更新）
+
+- 2026-03-27 10:05 - 开始系统性调查
+- 2026-03-27 10:10 - 发现 keys 无序根本原因
+- 2026-03-27 10:37 - **找到真正 Bug：UpdateIndexEntry 不复制 key[index]**
+- 2026-03-27 10:38 - **修复完成，所有测试通过**
+- 累计调查时间：约 5.5 小时
+- 尝试修复次数：8 次（**第 8 次成功**）

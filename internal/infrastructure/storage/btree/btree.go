@@ -172,9 +172,10 @@ func (c *PageRefCache) Delete(pageID model.PageID) {
 // Replace 原子替换 PageRef（用于 pageID 变更场景）
 //
 // 参数：
-//   oldPageID - 旧的 pageID（将被删除）
-//   newPageID - 新的 pageID（将添加 ref）
-//   ref - PageRef 对象
+//
+//	oldPageID - 旧的 pageID（将被删除）
+//	newPageID - 新的 pageID（将添加 ref）
+//	ref - PageRef 对象
 //
 // 使用场景：
 //   - 叶子节点 update 场景：UpdateLeafEntry 重新分配页面

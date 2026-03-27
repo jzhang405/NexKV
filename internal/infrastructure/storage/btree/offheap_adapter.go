@@ -905,17 +905,16 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 
 	// 版本号检测：读取子页面的实际版本号
 	actualVersion := a.pa.GetVersion(childID)
-	actualVersion16 := uint16(actualVersion)
 
-	if actualVersion16 != expectedVersion {
+	if actualVersion != uint64(expectedVersion) {
 		// 版本号不匹配，说明父节点存储的是陈旧的子节点引用（僵尸引用）
 		// 这可能发生在：
 		// 1. 子节点被释放并重新分配
 		// 2. 父节点未更新子节点引用
 		DebugPrintf("[STALE_REF] parent=%d childIdx=%d childID=%d expectedVer=%d actualVer=%d\n",
-			pageID, childIdx, childID, expectedVersion, actualVersion16)
+			pageID, childIdx, childID, expectedVersion, actualVersion)
 		return 0, false, fmt.Errorf("stale child reference: parent=%d child=%d expectedVersion=%d actualVersion=%d",
-			pageID, childID, expectedVersion, actualVersion16)
+			pageID, childID, expectedVersion, actualVersion)
 	}
 
 	return model.PageID(childID), found, nil
@@ -1076,22 +1075,22 @@ func (a *OffHeapAdapter) UpdateChildIndex(
 }
 
 // DecodeChildWithVersion 解码子节点引用
-// 从编码后的 uint32 中提取真实的 pageID 和版本号
+// 从编码后的 uint64 中提取真实的 pageID 和版本号
 //
 // 返回：(pageID, version)
-func (a *OffHeapAdapter) DecodeChildWithVersion(encoded uint32) (pageID uint32, version uint16) {
+func (a *OffHeapAdapter) DecodeChildWithVersion(encoded uint64) (pageID uint32, version uint32) {
 	return offheap.DecodeChildWithVersion(encoded)
 }
 
 // EncodeChildWithVersion 编码子节点引用
-// 将 pageID 和版本号编码到 uint32 中
+// 将 pageID 和版本号编码到 uint64 中
 //
 // 参数：
 //
 //	pageID - 子节点页面 ID
 //	version - 子节点版本号
 //
-// 返回：编码后的 uint32 值
-func (a *OffHeapAdapter) EncodeChildWithVersion(pageID uint32, version uint64) uint32 {
+// 返回：编码后的 uint64 值
+func (a *OffHeapAdapter) EncodeChildWithVersion(pageID uint32, version uint64) uint64 {
 	return offheap.EncodeChildWithVersion(pageID, version)
 }

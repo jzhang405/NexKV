@@ -31,23 +31,25 @@ type PageHeader struct {
 	version    uint64  // 8 bytes - 版本号（用于 CCOW）
 	prevPage   uint32  // 4 bytes - 前一个页面 pageID（链表）
 	nextPage   uint32  // 4 bytes - 后一个页面 pageID（链表）
-	extraChild uint32  // 4 bytes - 索引节点的 N+1 child（B+ 树语义，从 _pad 借用空间）
+	extraChild uint64  // 8 bytes - 索引节点的 N+1 child（32-bit pageID + 32-bit version）
+	// 注意：extraChild 现在是 8 bytes，导致总大小超过 32 字节
+	// 需要调整结构，这里先声明，稍后处理
 	count      uint16  // 2 bytes - 条目数（entries 数量）
 	pageType   uint8   // 1 byte  - 页面类型（0=索引 1=叶子）
-	_pad       [9]byte // 9 bytes - 对齐到 32 字节 (8+4+4+4+2+1+9 = 32)
+	_pad       [5]byte // 5 bytes - 对齐到 32 字节 (8+4+4+8+2+1 = 27, +5 = 32)
 }
 
 // SizeofPageHeader PageHeader 大小（32 字节）
 const SizeofPageHeader = int(unsafe.Sizeof(PageHeader{}))
 
-// IndexEntry 索引节点条目（12 字节）
+// IndexEntry 索引节点条目（16 字节）
 type IndexEntry struct {
 	keyOff uint32 // 4 bytes - key 在页内的偏移（从页面尾部开始）
 	keyLen uint32 // 4 bytes - key 长度
-	child  uint32 // 4 bytes - 子节点 pageID
+	child  uint64 // 8 bytes - 子节点（32-bit pageID + 32-bit version）
 }
 
-// SizeofIndexEntry IndexEntry 大小（12 字节）
+// SizeofIndexEntry IndexEntry 大小（16 字节）
 const SizeofIndexEntry = int(unsafe.Sizeof(IndexEntry{}))
 
 // LeafEntry 叶子节点条目（16 字节）
@@ -91,31 +93,31 @@ func (ref NodeRef) IsLeaf() bool {
 	return ref.isLeaf
 }
 
-// 版本号编码常量（用于 IndexEntry.child 字段）
+// 版本号编码常量（32-bit 统一编码：32-bit pageID + 32-bit version）
 const (
-	ChildVersionBits = 16                  // 版本号使用的位数
-	ChildVersionMask = 0xFFFF0000          // 版本号掩码（高 16 位）
-	ChildIDMask      = 0x0000FFFF          // pageID 掩码（低 16 位）
-	ChildVersionShift = 16                 // 版本号位移量
-	MaxChildID       = (1 << 16) - 1       // 最大 pageID (65535)
-	MaxChildVersion  = (1 << 16) - 1       // 最大版本号 (65535)
+	ChildVersionBits = 32                  // 版本号使用的位数
+	ChildVersionMask = 0xFFFFFFFF00000000  // 版本号掩码（高 32 位）
+	ChildIDMask      = 0x00000000FFFFFFFF  // pageID 掩码（低 32 位）
+	ChildVersionShift = 32                 // 版本号位移量
+	MaxChildID       = (1 << 32) - 1       // 最大 pageID (~4 billion)
+	MaxChildVersion  = (1 << 32) - 1       // 最大版本号 (~4 billion)
 )
 
-// EncodeChildWithVersion 编码 pageID 和版本号到 uint32
-// 高 16 位：版本号的低 16 位
-// 低 16 位：pageID
-func EncodeChildWithVersion(pageID uint32, version uint64) uint32 {
+// EncodeChildWithVersion 编码 pageID 和版本号到 uint64
+// 高 32 位：版本号
+// 低 32 位：pageID
+func EncodeChildWithVersion(pageID uint32, version uint64) uint64 {
 	if pageID > MaxChildID {
 		panic(fmt.Sprintf("pageID %d exceeds max %d", pageID, MaxChildID))
 	}
-	version16 := uint16(version) & MaxChildVersion
-	return (uint32(version16) << ChildVersionShift) | (pageID & ChildIDMask)
+	version32 := uint32(version) & MaxChildVersion
+	return (uint64(version32) << ChildVersionShift) | (uint64(pageID) & ChildIDMask)
 }
 
-// DecodeChildWithVersion 从 uint32 解码 pageID 和版本号
-func DecodeChildWithVersion(encoded uint32) (pageID uint32, version uint16) {
-	pageID = encoded & ChildIDMask
-	version = uint16((encoded & ChildVersionMask) >> ChildVersionShift)
+// DecodeChildWithVersion 从 uint64 解码 pageID 和版本号
+func DecodeChildWithVersion(encoded uint64) (pageID uint32, version uint32) {
+	pageID = uint32(encoded & ChildIDMask)
+	version = uint32((encoded & ChildVersionMask) >> ChildVersionShift)
 	return
 }
 
@@ -441,7 +443,7 @@ func (pa *PageAccessor) IncrementVersion(pageID uint32) uint64 {
 }
 
 // GetChildWithVersion 获取子节点 pageID 和期望版本号（从编码的 child 值解码）
-func (pa *PageAccessor) GetChildWithVersion(pageID uint32, index int) (childPageID uint32, expectedVersion uint16) {
+func (pa *PageAccessor) GetChildWithVersion(pageID uint32, index int) (childPageID uint32, expectedVersion uint32) {
 	encoded := pa.GetChild(pageID, index)
 	childPageID, expectedVersion = DecodeChildWithVersion(encoded)
 	return
@@ -492,7 +494,7 @@ func (pa *PageAccessor) SetNextPage(pageID uint32, next uint32) {
 //
 // 并发安全：在读取 GetIndexEntry 前重新验证 index 范围，
 // 防止 TOCTOU 竞态条件（页面在检查和使用之间被修改）
-func (pa *PageAccessor) GetChild(pageID uint32, index int) uint32 {
+func (pa *PageAccessor) GetChild(pageID uint32, index int) uint64 {
 	header := pa.GetHeader(pageID)
 	if index == int(header.count) {
 		// 返回 N+1 child（最后一个 child）
@@ -512,25 +514,15 @@ func (pa *PageAccessor) GetChild(pageID uint32, index int) uint32 {
 // SetChild 设置索引节点的子节点
 // 支持 B+ 树的 N+1 child 语义：如果 index == count，设置 extraChild
 // 自动编码子节点的版本号到 child 字段中（用于僵尸引用检测）
-func (pa *PageAccessor) SetChild(pageID uint32, index int, child uint32) {
+func (pa *PageAccessor) SetChild(pageID uint32, index int, child uint64) {
 	header := pa.GetHeader(pageID)
 	if index == int(header.count) {
 		// 设置 N+1 child（最后一个 child）
-		if child != 0 {
-			childVersion := pa.GetVersion(child)
-			header.extraChild = EncodeChildWithVersion(child, childVersion)
-		} else {
-			header.extraChild = 0
-		}
+		header.extraChild = child
 		return
 	}
 	entry := pa.GetIndexEntry(pageID, index)
-	if child != 0 {
-		childVersion := pa.GetVersion(child)
-		entry.child = EncodeChildWithVersion(child, childVersion)
-	} else {
-		entry.child = 0
-	}
+	entry.child = child // child 已经是编码后的 uint64
 }
 
 // GetLeafEntryOffset 获取叶子条目的 key/value offset（用于跨包访问）
@@ -540,7 +532,7 @@ func (pa *PageAccessor) GetLeafEntryOffset(pageID uint32, index int) (keyOff, ke
 }
 
 // GetIndexEntryOffset 获取索引条目的 key offset 和 child（用于跨包访问）
-func (pa *PageAccessor) GetIndexEntryOffset(pageID uint32, index int) (keyOff, keyLen uint32, child uint32) {
+func (pa *PageAccessor) GetIndexEntryOffset(pageID uint32, index int) (keyOff, keyLen uint32, child uint64) {
 	entry := pa.GetIndexEntry(pageID, index)
 	return entry.keyOff, entry.keyLen, entry.child
 }

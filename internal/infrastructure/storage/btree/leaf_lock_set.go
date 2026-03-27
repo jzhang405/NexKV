@@ -619,19 +619,34 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	var currentParentCount uint16
 	count = b.offheapAdapter.pa.GetCount(uint32(currentParentPageID))
 
-	insertIndex := 0
-	for i := range int(count) {
-		keyOff, keyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(currentParentPageID), i)
-		key := b.offheapAdapter.pa.GetKey(uint32(currentParentPageID), keyOff, keyLen)
-		if bytes.Compare(key, splitKey) >= 0 {
+	// 修复：基于子节点 ID 定位，而不是 splitKey
+	// 原逻辑使用 splitKey 的二分查找，但并发场景下父节点的 keys 可能被修改
+	// 导致 insertIndex 指向错误的子节点，从而产生循环引用
+	insertIndex := -1
+	for i := 0; i <= int(count); i++ {
+		child := b.offheapAdapter.pa.GetChild(uint32(currentParentPageID), i)
+		if child == uint32(leafPageID) {
 			insertIndex = i
 			break
 		}
-		insertIndex = i + 1
+	}
+
+	if insertIndex == -1 {
+		// 子节点未找到，父节点已被其他 goroutine 修改
+		DebugPrintf("[HANDLE_SPLIT] Child %d not found in parent %d (count=%d)\n",
+			leafPageID, currentParentPageID, count)
+		return nil, ErrRetry
+	}
+
+	// 防御性检查：确保找到的位置合理
+	if insertIndex < 0 || insertIndex > int(count) {
+		return nil, fmt.Errorf("invalid insertIndex %d (count=%d)", insertIndex, count)
 	}
 
 	// Step 9: 使用 UpdateIndexEntry 更新父节点（不可变方式）
 	// 替换旧的子页面为新的左右子页面
+	// 注意：无论 insertIndex 是否等于 count，都使用 UpdateIndexEntry
+	// UpdateIndexEntry 会正确处理所有情况
 	newParentPageID, err := b.offheapAdapter.UpdateIndexEntry(currentParentPageID, insertIndex, splitKey, uint32(leftPageID), uint32(rightPageID))
 	if err != nil {
 		// 检查是否是页面已满错误
@@ -658,31 +673,34 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	DebugPrintf("[PARENT_UPDATE] Starting: oldParent=%d newParent=%d\n",
 		oldParentPageID, newParentPageID)
 
-	// Step 11: CAS 更新父节点（带重试机制）
+	// Step 11: CAS 更新父节点（使用 currentParentInfo 而不是 parentInfo）
+	// 关键修复：必须使用锁内读取的 currentParentInfo，而不是锁前的 parentInfo
 	const maxCASRetries = 2
 	var lastErr error
 	for casAttempt := range maxCASRetries {
-		if parentRef.ReplacePage(parentInfo, newParentInfo) {
+		// 每次重试都重新读取最新的父节点信息
+		latestParentInfo := parentRef.GetPageInfo()
+		if latestParentInfo == nil {
+			lastErr = fmt.Errorf("parent info is nil during CAS retry")
+			break
+		}
+
+		// 验证 pageID 未变化
+		if latestParentInfo.GetPageID() != currentParentInfo.GetPageID() {
+			// 父节点已被其他 goroutine 更新到不同的 pageID
+			lastErr = fmt.Errorf("parent pageID changed during CAS retry: was %d, now %d",
+				currentParentInfo.GetPageID(), latestParentInfo.GetPageID())
+			break
+		}
+
+		// 使用最新的 parentInfo 进行 CAS
+		if parentRef.ReplacePage(latestParentInfo, newParentInfo) {
 			// CAS 成功，继续后续流程
 			lastErr = nil
 			break
 		}
 
-		// CAS 失败，重新读取父节点信息并重试
-		currentParentInfo := parentRef.GetPageInfo()
-		if currentParentInfo == nil {
-			lastErr = fmt.Errorf("parent info is nil during CAS retry")
-			break
-		}
-
-		// 检查父节点是否已被其他 goroutine 更新
-		if currentParentInfo.GetPageID() != parentInfo.GetPageID() {
-			// 父节点已变化，不需要继续重试
-			lastErr = fmt.Errorf("parent pageID changed during CAS retry")
-			break
-		}
-
-		// 父节点未变化，继续重试
+		// CAS 失败，继续重试
 		lastErr = fmt.Errorf("CAS retry %d failed", casAttempt)
 	}
 
@@ -695,18 +713,35 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 		return nil, ErrRetry
 	}
 
-	// Step 11.5: 强制删除旧父页面的 PageRefCache 条目
-	// 这确保任何持有旧页面 PageRef 的代码都会失效
-	// 同时删除新页面ID，确保下次访问时重新创建 PageRef
+	// Step 11.5: 验证新父节点没有循环引用（防御性检查）
+	if b.hasCycleFrom(newParentPageID) {
+		// 检测到循环引用，回滚操作
+		DebugPrintf("[PARENT_UPDATE] CIRCULAR REFERENCE DETECTED after split: newParentPageID=%d\n", newParentPageID)
+		b.epochBasedFreeList.Add(model.PageID(newParentPageID))
+		b.epochBasedFreeList.Add(leftPageID)
+		b.epochBasedFreeList.Add(rightPageID)
+		return nil, fmt.Errorf("circular reference detected after parent update at page %d", newParentPageID)
+	}
+
+	// Step 11.6: 验证新父节点的分裂完整性（确保旧子节点被正确移除）
+	err = b.validateParentSplitIntegrity(newParentPageID, leafPageID, leftPageID, rightPageID)
+	if err != nil {
+		// 完整性验证失败，回滚操作
+		DebugPrintf("[PARENT_UPDATE] Integrity check failed: %v\n", err)
+		b.epochBasedFreeList.Add(model.PageID(newParentPageID))
+		b.epochBasedFreeList.Add(leftPageID)
+		b.epochBasedFreeList.Add(rightPageID)
+		return nil, fmt.Errorf("parent split integrity check failed: %w", err)
+	}
+
+	// Step 11.6: CAS 成功后更新 PageRefCache
+	// 只删除旧父页面的缓存条目，更新新父页面的缓存条目
+	// 注意：不要删除 newParentPageID，因为这会导致短暂的不一致状态
 	b.pageRefCache.Delete(oldParentPageID)
-	b.pageRefCache.Delete(model.PageID(newParentPageID))
+	b.pageRefCache.Update(newParentPageID, parentRef)
 
 	// Step 12: CAS 成功后释放旧父页面
 	b.offheapAdapter.pm.Free(uint32(oldParentPageID))
-
-	// Step 13: 更新 PageRefCache
-	b.pageRefCache.Delete(oldParentPageID)
-	b.pageRefCache.Update(newParentPageID, parentRef)
 
 	// Step 14: 更新子节点的 parentRef
 	leftRef.SetParentRef(parentRef)

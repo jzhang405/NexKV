@@ -85,6 +85,11 @@ var (
 	// This can happen when a Get operation reads a page that is being split or freed.
 	// The caller should retry the operation.
 	ErrPageStale = errors.New("page state stale, retry")
+
+	// ErrCircularReference is returned when a circular reference is detected in the B-Tree.
+	// This can happen during concurrent operations when a page is reused after being freed.
+	// The caller should retry the operation with exponential backoff.
+	ErrCircularReference = errors.New("circular reference detected, retry with backoff")
 )
 
 // PageRefCache 维护 PageID → PageRef 的映射（Off-Heap 模式）
@@ -708,7 +713,10 @@ func (b *BTree) Set(ctx context.Context, key, value []byte) error {
 
 // setDirect 直接写入模式（fallback，当 scheduler 未初始化时）
 func (b *BTree) setDirect(ctx context.Context, key, value []byte) error {
-	for {
+	const maxRetries = 10 // 增加重试次数以处理循环引用
+
+	for attempt := range maxRetries {
+		// 检查上下文取消
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -716,18 +724,45 @@ func (b *BTree) setDirect(ctx context.Context, key, value []byte) error {
 		}
 
 		err := b.setWithLeafLock(ctx, key, value)
-		switch err {
-		case nil:
+		if err == nil {
 			// 操作成功，推进 epoch 释放待释放页面
 			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
 			return nil
-		case ErrRetry:
+		}
+
+		// 智能重试逻辑
+		switch {
+		case errors.Is(err, ErrRetry):
+			// CAS 失败：快速重试
 			runtime.Gosched()
 			continue
+
+		case errors.Is(err, ErrCircularReference):
+			// 循环引用错误：指数退避后重试
+			// 这是由于页面释放后重新分配导致的临时不一致
+			if attempt < maxRetries-1 {
+				// 指数退避：1ms, 2ms, 4ms, 8ms, ... 最多 512ms
+				backoffDuration := time.Duration(1<<uint(attempt)) * time.Millisecond
+				if backoffDuration > 512*time.Millisecond {
+					backoffDuration = 512 * time.Millisecond
+				}
+				select {
+				case <-time.After(backoffDuration):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				continue
+			}
+			// 达到最大重试次数，返回错误
+			return fmt.Errorf("circular reference retry exhausted after %d attempts: %w", maxRetries, err)
+
 		default:
+			// 其他错误：不重试，直接返回
 			return err
 		}
 	}
+
+	return fmt.Errorf("max retries (%d) exceeded", maxRetries)
 }
 
 // Delete removes a key.

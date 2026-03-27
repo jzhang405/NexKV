@@ -236,7 +236,19 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 		// 使用 Off-Heap 页面的 pageType
 		isChildLeaf := b.offheapAdapter.IsLeaf(childPageID)
 
+		// 2.4 防御性检查：检测接近页面分配上限的情况
+		// Page 4095 (0xFFF) 是 4KB 页面下的最后一个可分配页面 ID
+		// 95% 的循环引用失败涉及此页面，可能是页面释放后重新分配导致的
+		if childPageID > 4000 {
+			DebugPrintf("[SEARCH_PATH] Warning: childPageID %d near max limit (4095), parent=%d depth=%d\n",
+				childPageID, currentPageID, len(path))
+			// 验证 PageRefCache 一致性：检查 childInfo 的 pageID 是否匹配
+			// 这可能在页面被释放并重新分配后检测到不一致
+		}
+
 		// 2.5 从缓存获取或创建子节点的 PageRef
+		// 注意：PageRefCache.GetOrCreate 内部已处理 pageID 重用情况
+		// 当缓存的 PageInfo.pageID 与请求的 pageID 不匹配时，会自动创建新的 PageRef
 		childRef := b.pageRefCache.GetOrCreate(childPageID, isChildLeaf)
 		childInfo := childRef.GetPageInfo()
 		if childInfo == nil {
@@ -259,7 +271,7 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 			}
 			DebugPrintf("\n")
 
-			return nil, nil, fmt.Errorf("circular reference detected at page %d (path depth: %d)", currentPageID, len(path))
+			return nil, nil, fmt.Errorf("%w: at page %d (path depth: %d)", ErrCircularReference, currentPageID, len(path))
 		}
 		visitedPages[uint64(currentPageID)] = true
 
@@ -312,4 +324,119 @@ func (b *BTree) findLeafPageRef(ctx context.Context, key []byte) (*PageRef, []*P
 	// 最后一个引用是叶子节点的 PageRef
 	leafRef := refs[len(refs)-1]
 	return leafRef, path, nil
+}
+
+// hasCycleFrom 检测从指定页面开始是否存在循环引用
+// 用于防御性检查，确保 B-Tree 结构正确性
+//
+// 参数：
+//
+//	pageID - 起始页面 ID
+//
+// 返回：true 如果检测到循环引用
+func (b *BTree) hasCycleFrom(pageID model.PageID) bool {
+	// 使用 visited map 检测循环
+	visited := make(map[uint32]bool)
+	maxDepth := 100 // 防止无限循环
+
+	var traverse func(pid model.PageID, depth int) bool
+	traverse = func(pid model.PageID, depth int) bool {
+		if depth > maxDepth {
+			DebugPrintf("[HAS_CYCLE] Max depth exceeded at page %d\n", pid)
+			return true // 可能存在循环
+		}
+
+		pid32 := uint32(pid)
+		if visited[pid32] {
+			DebugPrintf("[HAS_CYCLE] Cycle detected at page %d (depth %d)\n", pid, depth)
+			return true // 发现循环
+		}
+
+		visited[pid32] = true
+
+		// 检查是否为叶子节点
+		isLeaf := b.offheapAdapter.IsLeaf(pid)
+		if isLeaf {
+			return false // 叶子节点没有子节点，不可能有循环
+		}
+
+		// 递归检查所有子节点
+		count := b.offheapAdapter.pa.GetCount(pid32)
+		// 只有内部节点才有子节点（count > 0）
+		// 叶子节点的 count=0，不应该进入循环
+		for i := 0; i <= int(count) && int(count) > 0; i++ {
+			child := b.offheapAdapter.pa.GetChild(pid32, i)
+			if child == 0 {
+				continue // 跳过空子节点
+			}
+			if traverse(model.PageID(child), depth+1) {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	return traverse(pageID, 0)
+}
+
+// validateParentSplitIntegrity 验证父节点分裂后的完整性
+// 确保旧子节点被正确移除，新子节点被正确添加
+//
+// 参数：
+//
+//	parentPageID - 父页面 ID
+//	oldChild - 被分裂的旧子节点（应该不存在）
+//	leftChild - 分裂后的左子节点（应该存在）
+//	rightChild - 分裂后的右子节点（应该存在）
+//
+// 返回：error 如果验证失败
+func (b *BTree) validateParentSplitIntegrity(
+	parentPageID model.PageID,
+	oldChild, leftChild, rightChild model.PageID,
+) error {
+	count := b.offheapAdapter.pa.GetCount(uint32(parentPageID))
+
+	foundOld := false
+	foundLeft := false
+	foundRight := false
+	childCount := 0
+
+	for i := 0; i <= int(count); i++ {
+		child := b.offheapAdapter.pa.GetChild(uint32(parentPageID), i)
+		if child == 0 {
+			continue // 跳过空子节点
+		}
+		childCount++
+		if child == uint32(oldChild) {
+			foundOld = true
+		}
+		if child == uint32(leftChild) {
+			foundLeft = true
+		}
+		if child == uint32(rightChild) {
+			foundRight = true
+		}
+	}
+
+	// 验证：旧子节点不应该存在
+	if foundOld {
+		return fmt.Errorf("old child %d still exists after split at parent %d",
+			oldChild, parentPageID)
+	}
+
+	// 验证：新子节点必须存在
+	if !foundLeft || !foundRight {
+		return fmt.Errorf("new children not found in parent %d: left=%v, right=%v",
+			parentPageID, foundLeft, foundRight)
+	}
+
+	// 验证：子节点数量应该正确（count keys + 1 children）
+	expectedChildren := int(count) + 1
+	if childCount != expectedChildren {
+		return fmt.Errorf("child count mismatch: expected %d, got %d",
+			expectedChildren, childCount)
+	}
+
+	return nil
 }

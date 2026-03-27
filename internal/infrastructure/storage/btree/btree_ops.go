@@ -177,7 +177,20 @@ func (b *BTree) SetWithTask(
 	item := NewBTreeSetItem(b, key, value, 3, shardID, leafRef, btreeSetTaskOrder)
 
 	// 提交到调度器
-	return scheduler.EnqueueWithShard(item, "btree-set")
+	if err := scheduler.EnqueueWithShard(item, "btree-set"); err != nil {
+		return err
+	}
+
+	// ✅ Phase 1 修复：同步等待任务完成，避免假成功
+	// EnqueueWithShard 只是异步入队，后台任务可能失败
+	// 必须等待任务执行完成并检查结果
+	result, err := item.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("task execution failed: %w", err)
+	}
+
+	_ = result // result 是 struct{}，无需使用
+	return nil
 }
 
 // SetWithRetryAndQueue 实现 Set 操作的完整重试策略

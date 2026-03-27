@@ -47,7 +47,8 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 		if string(key) == "key-09803" {
 			DebugPrintf("[SET_WITH_LEAF_LOCK] findLeafPageRef FAILED for key=%s: %v\n", string(key), err)
 		}
-		return fmt.Errorf("find leaf ref: %w", err)
+		// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
+		return err
 	}
 
 	if string(key) == "key-09803" {

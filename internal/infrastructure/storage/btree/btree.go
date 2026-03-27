@@ -608,7 +608,8 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 				runtime.Gosched()
 				continue
 			}
-			return nil, fmt.Errorf("find leaf ref: %w", err)
+			// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
+			return nil, err
 		}
 
 		if len(path) == 0 || leafRef == nil {
@@ -898,7 +899,8 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 		// 2. 查找叶子节点和路径（只读，不克隆）
 		leafRef, path, err := b.findLeafPageRef(ctx, key)
 		if err != nil {
-			return fmt.Errorf("find leaf ref: %w", err)
+			// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
+			return err
 		}
 
 		if len(path) == 0 {

@@ -296,7 +296,6 @@ type SchedulerCore struct {
 	cancel        context.CancelFunc
 	stats         CoreStats  //
 	cond          *sync.Cond // 条件变量，用于等待/唤醒
-	condMu        sync.Mutex // 保护条件变量的锁
 
 	// runLoop 缓存：每次循环开始时更新，避免多次调用 getOrderedTasks()
 	cachedTasks []*ShardTask
@@ -424,7 +423,9 @@ func (c *SchedulerCore) runLoop() {
 
 		// ========== 预检查：总队列为空则等待 ==========
 		if c.totalQueueItems.Load() == 0 {
-			c.waitForSignal()
+			if c.waitForSignal() {
+				return // Context 已取消
+			}
 			continue
 		}
 
@@ -605,11 +606,23 @@ func (c *SchedulerCore) handleBatchResults(_ *ShardTask, items []any, results []
 }
 
 // waitForSignal 等待新任务入队时的唤醒信号
-func (c *SchedulerCore) waitForSignal() {
+// 返回值表示是否因为 context 取消而返回（true 表示应该退出）
+func (c *SchedulerCore) waitForSignal() bool {
 	c.stats.EmptyWaits.Add(1)
 	c.cond.L.Lock()
 	defer c.cond.L.Unlock()
+
+	// 检查 context 是否已取消
+	if c.ctx.Err() != nil {
+		return true
+	}
+
+	// 等待 Signal 或 Broadcast
 	c.cond.Wait()
+
+	// 被唤醒后（无论是 Signal 还是虚假唤醒），返回让调用者检查队列
+	// 如果此时 context 已被取消，调用者会检查并退出
+	return c.ctx.Err() != nil
 }
 
 // wakeup 唤醒调度器（由 Enqueue 时调用）

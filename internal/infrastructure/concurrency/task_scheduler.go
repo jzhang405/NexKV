@@ -294,8 +294,9 @@ type SchedulerCore struct {
 	wg            sync.WaitGroup
 	ctx           context.Context
 	cancel        context.CancelFunc
-	stats         CoreStats     //
-	wakeupChan    chan struct{} // 唤醒通道（替代 cond）
+	stats         CoreStats  //
+	cond          *sync.Cond // 条件变量，用于等待/唤醒
+	condMu        sync.Mutex // 保护条件变量的锁
 
 	// runLoop 缓存：每次循环开始时更新，避免多次调用 getOrderedTasks()
 	cachedTasks []*ShardTask
@@ -319,7 +320,7 @@ func NewSchedulerCore(coreID int) *SchedulerCore {
 		running:     atomic.Bool{},
 		ctx:         ctx,
 		cancel:      cancel,
-		wakeupChan:  make(chan struct{}, 1),
+		cond:        sync.NewCond(&sync.Mutex{}),
 		batchBuffer: make([]any, 32), // P3 优化：预分配最大批量大小
 	}
 
@@ -606,22 +607,16 @@ func (c *SchedulerCore) handleBatchResults(_ *ShardTask, items []any, results []
 // waitForSignal 等待新任务入队时的唤醒信号
 func (c *SchedulerCore) waitForSignal() {
 	c.stats.EmptyWaits.Add(1)
-	select {
-	case <-c.wakeupChan:
-		// 被唤醒
-	case <-c.ctx.Done():
-		// 上下文取消
-	}
+	c.cond.L.Lock()
+	defer c.cond.L.Unlock()
+	c.cond.Wait()
 }
 
 // wakeup 唤醒调度器（由 Enqueue 时调用）
 func (c *SchedulerCore) wakeup() {
-	select {
-	case c.wakeupChan <- struct{}{}:
-		// 成功发送唤醒信号
-	default:
-		// 通道已有信号，无需重复发送
-	}
+	c.cond.L.Lock()
+	defer c.cond.L.Unlock()
+	c.cond.Signal()
 }
 
 // getOrderedTasks 获取按 ExecutionOrder 排序的任务列表

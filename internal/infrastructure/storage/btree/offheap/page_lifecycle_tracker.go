@@ -59,6 +59,9 @@ func (t *PageLifecycleTracker) Disable() {
 
 // RecordAlloc 记录页面分配
 func (t *PageLifecycleTracker) RecordAlloc(pageID uint32) {
+	// 无条件调试日志（用于调试）
+	DebugPrintf("[TRACKER_RAW] RecordAlloc called: pageID=%d, enabled=%v", pageID, t.enabled)
+
 	if !t.enabled {
 		return
 	}

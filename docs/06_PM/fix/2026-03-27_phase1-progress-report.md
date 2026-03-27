@@ -59,7 +59,7 @@
 
 ---
 
-## Phase 1.2: Page 4095 生命周期追踪
+## Phase 1.2: Page 4095 生命周期追踪 ✅
 
 ### 实施内容
 
@@ -78,6 +78,8 @@
 **测试文件**：
 - `internal/infrastructure/storage/btree/offheap/page_lifecycle_tracker_test.go`
   - 所有测试通过 ✅
+- `internal/infrastructure/storage/btree/page_tracker_verification_test.go`
+  - 验证追踪器工作正常
 
 ### 功能特性
 
@@ -100,33 +102,35 @@
    - 自动检测页面 ID 重用
    - 记录重用次数
 
-### 问题发现
+### 问题发现与解决 ✅
 
-**追踪器未能捕获 Page 4095 的分配**
+**最初问题**：追踪器未能捕获 Page 4095 的分配
 
-**现象**：
+**原因**：测试只插入 10 个 key，没有触发页面分配（4KB 页面可容纳 ~40 个 entry）
+
+**解决方案**：修改测试插入 100 个 key（使用更大的 value），成功触发页面分配和分裂
+
+**验证结果**：
 ```
-Page 4095 Report:
-    Page 4095 not found in history
+Total allocs: 1 → 12 (新增 11 个分配)
+Total frees: 5
+Active pages: 7
 ```
 
-**可能原因**：
-1. **Off-Heap 页面分配绕过了 PageManager.Alloc()**
-   - Page 4095 可能是通过其他代码路径分配的
-   - 需要检查 Off-Heap Adapter 的实现
+### 重大发现：Page 4095 是僵尸引用
 
-2. **页面 ID 是计算得出的，而非分配的**
-   - 4095 = 0xFFF 可能是某种特殊值
-   - 需要验证 Page 4095 是真实的页面 ID 还是错误值
+**证据**：
+1. `Page 4095 not found in history` - 追踪器从未捕获 Page 4095 的分配
+2. `Total allocs: 2064, High pageID count: 0` - 没有分配过 > 4000 的页面
+3. **Page 4095 来自父节点的 `IndexEntry.child` 字段**
 
-3. **追踪器未正确启用**
-   - 测试中已调用 `btree.offheapPM.EnablePageTracking()`
-   - 但可能 B-Tree 使用的是不同的 PageManager 实例
+**根本原因**：
+- 页面被释放后（加入 `epochBasedFreeList`）
+- 父节点的 `IndexEntry.child` 字段**仍然是旧的 pageID**
+- 页面被重新分配后，父节点仍指向错误的 pageID
+- 形成循环引用
 
-**下一步调查**：
-1. 检查 Off-Heap Adapter 的页面分配逻辑
-2. 验证 Page 4095 是否真的是分配的页面 ID
-3. 在更底层添加追踪（如 Off-Heap Adapter）
+**详细分析**：见 `2026-03-27_page-4095-investigation.md`
 
 ---
 

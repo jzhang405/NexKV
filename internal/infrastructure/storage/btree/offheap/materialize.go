@@ -79,9 +79,16 @@ func (m *OffHeapMaterializer) MaterializeIndexPageFromBytes(
 	// 最后一个 child 需要特殊处理
 	if len(children) > len(keys) {
 		// 设置 extraChild（N+1 child）
+		// 修复：编码子节点的版本号到 extraChild 字段中（用于僵尸引用检测）
 		lastChild := children[len(keys)]
-		header := m.pa.GetHeader(pageID)
-		header.extraChild = lastChild
+		if lastChild != 0 {
+			childVersion := m.pa.GetVersion(lastChild)
+			header := m.pa.GetHeader(pageID)
+			header.extraChild = EncodeChildWithVersion(lastChild, childVersion)
+		} else {
+			header := m.pa.GetHeader(pageID)
+			header.extraChild = 0
+		}
 	}
 
 	return dataEnd, nil

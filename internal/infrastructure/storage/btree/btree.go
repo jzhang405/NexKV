@@ -1013,7 +1013,9 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 				// 检查是否是 extraChild（N+1 child）
 				if childIndex == int(count) {
 					// extraChild 的情况
-					extraChild := b.offheapAdapter.pa.GetChild(uint32(oldParentPageID), int(count))
+					// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
+					encodedExtraChild := b.offheapAdapter.pa.GetChild(uint32(oldParentPageID), int(count))
+					extraChild, _ := b.offheapAdapter.DecodeChildWithVersion(encodedExtraChild)
 					if model.PageID(extraChild) != oldPageID {
 						// 不是我们要找的 child，继续查找
 						// 这种情况不太可能发生，但为了安全起见

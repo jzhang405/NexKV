@@ -91,6 +91,34 @@ func (ref NodeRef) IsLeaf() bool {
 	return ref.isLeaf
 }
 
+// 版本号编码常量（用于 IndexEntry.child 字段）
+const (
+	ChildVersionBits = 16                  // 版本号使用的位数
+	ChildVersionMask = 0xFFFF0000          // 版本号掩码（高 16 位）
+	ChildIDMask      = 0x0000FFFF          // pageID 掩码（低 16 位）
+	ChildVersionShift = 16                 // 版本号位移量
+	MaxChildID       = (1 << 16) - 1       // 最大 pageID (65535)
+	MaxChildVersion  = (1 << 16) - 1       // 最大版本号 (65535)
+)
+
+// EncodeChildWithVersion 编码 pageID 和版本号到 uint32
+// 高 16 位：版本号的低 16 位
+// 低 16 位：pageID
+func EncodeChildWithVersion(pageID uint32, version uint64) uint32 {
+	if pageID > MaxChildID {
+		panic(fmt.Sprintf("pageID %d exceeds max %d", pageID, MaxChildID))
+	}
+	version16 := uint16(version) & MaxChildVersion
+	return (uint32(version16) << ChildVersionShift) | (pageID & ChildIDMask)
+}
+
+// DecodeChildWithVersion 从 uint32 解码 pageID 和版本号
+func DecodeChildWithVersion(encoded uint32) (pageID uint32, version uint16) {
+	pageID = encoded & ChildIDMask
+	version = uint16((encoded & ChildVersionMask) >> ChildVersionShift)
+	return
+}
+
 // PageAccessor 页面访问器（封装 unsafe 操作）
 type PageAccessor struct {
 	pm *PageManager
@@ -296,7 +324,15 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 	entry := (*IndexEntry)(entryPtr)
 	entry.keyOff = uint32(keyOff)
 	entry.keyLen = keyLen
-	entry.child = child
+
+	// 版本号检测：编码子节点的版本号到 child 字段
+	// 只有当 child != 0 时才读取版本号（0 表示没有子节点）
+	if child != 0 {
+		childVersion := pa.GetVersion(child)
+		entry.child = EncodeChildWithVersion(child, childVersion)
+	} else {
+		entry.child = 0
+	}
 
 	header.count++
 	return nil
@@ -396,6 +432,27 @@ func (pa *PageAccessor) SetVersion(pageID uint32, version uint64) {
 	pa.GetHeader(pageID).version = version
 }
 
+// IncrementVersion 递增页面版本号（用于版本号检测机制）
+// 返回新版本号
+func (pa *PageAccessor) IncrementVersion(pageID uint32) uint64 {
+	header := pa.GetHeader(pageID)
+	header.version++
+	return header.version
+}
+
+// GetChildWithVersion 获取子节点 pageID 和期望版本号（从编码的 child 值解码）
+func (pa *PageAccessor) GetChildWithVersion(pageID uint32, index int) (childPageID uint32, expectedVersion uint16) {
+	encoded := pa.GetChild(pageID, index)
+	childPageID, expectedVersion = DecodeChildWithVersion(encoded)
+	return
+}
+
+// SetChildWithVersion 设置子节点 pageID 和版本号（编码到 child 值中）
+func (pa *PageAccessor) SetChildWithVersion(pageID uint32, index int, childPageID uint32, childVersion uint64) {
+	encoded := EncodeChildWithVersion(childPageID, childVersion)
+	pa.SetChild(pageID, index, encoded)
+}
+
 // GetCount 获取条目数量
 func (pa *PageAccessor) GetCount(pageID uint32) uint16 {
 	return pa.GetHeader(pageID).count
@@ -432,11 +489,21 @@ func (pa *PageAccessor) SetNextPage(pageID uint32, next uint32) {
 
 // GetChild 获取索引节点的子节点
 // 支持 B+ 树的 N+1 child 语义：如果 index == count，返回 extraChild
+//
+// 并发安全：在读取 GetIndexEntry 前重新验证 index 范围，
+// 防止 TOCTOU 竞态条件（页面在检查和使用之间被修改）
 func (pa *PageAccessor) GetChild(pageID uint32, index int) uint32 {
 	header := pa.GetHeader(pageID)
 	if index == int(header.count) {
 		// 返回 N+1 child（最后一个 child）
 		return header.extraChild
+	}
+	// 重新读取 header.count，防止 TOCTOU
+	header = pa.GetHeader(pageID)
+	if index >= int(header.count) {
+		// 页面被修改，index 越界
+		// 返回 0 表示无效子节点
+		return 0
 	}
 	entry := pa.GetIndexEntry(pageID, index)
 	return entry.child
@@ -444,15 +511,26 @@ func (pa *PageAccessor) GetChild(pageID uint32, index int) uint32 {
 
 // SetChild 设置索引节点的子节点
 // 支持 B+ 树的 N+1 child 语义：如果 index == count，设置 extraChild
+// 自动编码子节点的版本号到 child 字段中（用于僵尸引用检测）
 func (pa *PageAccessor) SetChild(pageID uint32, index int, child uint32) {
 	header := pa.GetHeader(pageID)
 	if index == int(header.count) {
 		// 设置 N+1 child（最后一个 child）
-		header.extraChild = child
+		if child != 0 {
+			childVersion := pa.GetVersion(child)
+			header.extraChild = EncodeChildWithVersion(child, childVersion)
+		} else {
+			header.extraChild = 0
+		}
 		return
 	}
 	entry := pa.GetIndexEntry(pageID, index)
-	entry.child = child
+	if child != 0 {
+		childVersion := pa.GetVersion(child)
+		entry.child = EncodeChildWithVersion(child, childVersion)
+	} else {
+		entry.child = 0
+	}
 }
 
 // GetLeafEntryOffset 获取叶子条目的 key/value offset（用于跨包访问）

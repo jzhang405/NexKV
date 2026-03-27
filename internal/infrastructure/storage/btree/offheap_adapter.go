@@ -302,7 +302,9 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 	for i := 0; i < int(count); i++ {
 		keyOff, keyLen, _ := a.pa.GetIndexEntryOffset(uint32(pageID), i)
 		k := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
-		c := a.pa.GetChild(uint32(pageID), i)
+		// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
+		encodedChild := a.pa.GetChild(uint32(pageID), i)
+		child, _ := a.DecodeChildWithVersion(encodedChild)
 
 		if i == index {
 			// 分裂位置：插入 splitKey 和 left/right child
@@ -316,7 +318,7 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 			kCopy := make([]byte, len(k))
 			copy(kCopy, k)
 			keys = append(keys, kCopy)
-			children = append(children, c)
+			children = append(children, child)
 		}
 	}
 
@@ -331,7 +333,9 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 	// 如果 index < count，说明在中间插入，extraChild 保持原值
 	// 如果 index == count，rightPageID 就是新的 extraChild（已在上面添加）
 	if index < int(count) {
-		extraChild := a.pa.GetChild(uint32(pageID), int(count))
+		// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
+		encodedExtraChild := a.pa.GetChild(uint32(pageID), int(count))
+		extraChild, _ := a.DecodeChildWithVersion(encodedExtraChild)
 		children = append(children, extraChild)
 	}
 
@@ -385,20 +389,24 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 		keys = append(keys, kCopy)
 
 		// 替换或复制 child（不包括 extraChild）
+		// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
 		if i == index {
 			children = append(children, newChildID)
 		} else {
-			c := a.pa.GetChild(uint32(pageID), i)
-			children = append(children, c)
+			encodedChild := a.pa.GetChild(uint32(pageID), i)
+			child, _ := a.DecodeChildWithVersion(encodedChild)
+			children = append(children, child)
 		}
 	}
 
 	// 添加 extraChild（N+1 child）
 	// 如果 index == count，替换 extraChild；否则复制原 extraChild
-	extraChild := a.pa.GetChild(uint32(pageID), int(count))
+	// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
+	encodedExtraChild := a.pa.GetChild(uint32(pageID), int(count))
 	if index == int(count) {
 		children = append(children, newChildID)
 	} else {
+		extraChild, _ := a.DecodeChildWithVersion(encodedExtraChild)
 		children = append(children, extraChild)
 	}
 
@@ -807,13 +815,15 @@ func (a *OffHeapAdapter) SetPrevNextPage(pageID model.PageID, prev, next model.P
 }
 
 // GetChild 获取 Off-Heap 索引页面的子节点
+// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
 func (a *OffHeapAdapter) GetChild(pageID model.PageID, index int) (model.PageID, error) {
-	childID := a.pa.GetChild(uint32(pageID), index)
+	encodedChildID := a.pa.GetChild(uint32(pageID), index)
+	childID, _ := a.DecodeChildWithVersion(encodedChildID)
 	return model.PageID(childID), nil
 }
 
 // SearchChild 在 Off-Heap 索引页面中搜索子节点
-// 返回 (childPageID, found)
+// 返回 (childPageID, found, error)
 //
 // B+ 树索引节点语义：
 // - keys = [k0, k1, ..., k(n-1)]
@@ -822,7 +832,12 @@ func (a *OffHeapAdapter) GetChild(pageID model.PageID, index int) (model.PageID,
 // - 如果 key >= k(i) 且 key < k(i+1)，返回 c(i+1)
 // - 如果 key >= k(n-1)，返回 cn
 // - 如果精确匹配 k(i)，返回 c(i+1)（右子节点）
-func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.PageID, bool) {
+//
+// 版本号检测：
+// - 从父节点读取子节点的 pageID 和期望版本号
+// - 验证子页面的实际版本号是否匹配
+// - 不匹配说明是僵尸引用，返回 ErrRetry
+func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.PageID, bool, error) {
 	idx, found := a.pa.SearchKey(uint32(pageID), key, false)
 
 	// B+ 树：精确匹配时返回右子节点（idx+1）
@@ -833,8 +848,30 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 		childIdx = idx + 1
 	}
 
-	childID := a.pa.GetChild(uint32(pageID), childIdx)
-	return model.PageID(childID), found
+	// 读取子节点的 pageID 和期望版本号（编码在 child 字段中）
+	childID, expectedVersion := a.pa.GetChildWithVersion(uint32(pageID), childIdx)
+
+	// 如果 childID == 0，说明没有子节点（可能到达叶子）
+	if childID == 0 {
+		return 0, found, nil
+	}
+
+	// 版本号检测：读取子页面的实际版本号
+	actualVersion := a.pa.GetVersion(childID)
+	actualVersion16 := uint16(actualVersion)
+
+	if actualVersion16 != expectedVersion {
+		// 版本号不匹配，说明父节点存储的是陈旧的子节点引用（僵尸引用）
+		// 这可能发生在：
+		// 1. 子节点被释放并重新分配
+		// 2. 父节点未更新子节点引用
+		DebugPrintf("[STALE_REF] parent=%d childIdx=%d childID=%d expectedVer=%d actualVer=%d\n",
+			pageID, childIdx, childID, expectedVersion, actualVersion16)
+		return 0, false, fmt.Errorf("stale child reference: parent=%d child=%d expectedVersion=%d actualVersion=%d",
+			pageID, childID, expectedVersion, actualVersion16)
+	}
+
+	return model.PageID(childID), found, nil
 }
 
 // InsertIndexEntry 向 Off-Heap 索引页面插入条目
@@ -946,7 +983,7 @@ func (a *OffHeapAdapter) UpdateChildIndex(
 	children := make([]uint32, 0, count+1)
 
 	for i := 0; i < int(count); i++ {
-		keyOff, keyLen, child := a.pa.GetIndexEntryOffset(uint32(parentPageID), i)
+		keyOff, keyLen, encodedChild := a.pa.GetIndexEntryOffset(uint32(parentPageID), i)
 		k := a.pa.GetKey(uint32(parentPageID), keyOff, keyLen)
 
 		// 复制 key
@@ -955,19 +992,23 @@ func (a *OffHeapAdapter) UpdateChildIndex(
 		keys = append(keys, kCopy)
 
 		// 更新 child 指针（如果是指定位置）
+		// 修复：GetIndexEntryOffset 返回编码后的值，需要解码才能获取真实的 pageID
 		if i == childIndex {
 			children = append(children, uint32(newChildPageID))
 		} else {
+			child, _ := a.DecodeChildWithVersion(encodedChild)
 			children = append(children, child)
 		}
 	}
 
 	// 添加 extraChild（N+1 child）
-	extraChild := a.pa.GetChild(uint32(parentPageID), int(count))
+	// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
+	encodedExtraChild := a.pa.GetChild(uint32(parentPageID), int(count))
 	if childIndex == int(count) {
 		// 更新 extraChild
 		children = append(children, uint32(newChildPageID))
 	} else {
+		extraChild, _ := a.DecodeChildWithVersion(encodedExtraChild)
 		children = append(children, extraChild)
 	}
 
@@ -985,4 +1026,25 @@ func (a *OffHeapAdapter) UpdateChildIndex(
 	}
 
 	return model.PageID(newParentPageID), nil
+}
+
+// DecodeChildWithVersion 解码子节点引用
+// 从编码后的 uint32 中提取真实的 pageID 和版本号
+//
+// 返回：(pageID, version)
+func (a *OffHeapAdapter) DecodeChildWithVersion(encoded uint32) (pageID uint32, version uint16) {
+	return offheap.DecodeChildWithVersion(encoded)
+}
+
+// EncodeChildWithVersion 编码子节点引用
+// 将 pageID 和版本号编码到 uint32 中
+//
+// 参数：
+//
+//	pageID - 子节点页面 ID
+//	version - 子节点版本号
+//
+// 返回：编码后的 uint32 值
+func (a *OffHeapAdapter) EncodeChildWithVersion(pageID uint32, version uint64) uint32 {
+	return offheap.EncodeChildWithVersion(pageID, version)
 }

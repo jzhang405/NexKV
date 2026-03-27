@@ -212,7 +212,12 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 		}
 
 		// 2.2 查找子节点（Off-Heap 模式）
-		childPageID, _ := b.offheapAdapter.SearchChild(currentPageID, key)
+		childPageID, _, err := b.offheapAdapter.SearchChild(currentPageID, key)
+		if err != nil {
+			// 版本号不匹配，检测到僵尸引用
+			// 返回 ErrRetry 让外层重试
+			return nil, nil, fmt.Errorf("search child: %w", ErrRetry)
+		}
 		if debugThisSearch {
 			DebugPrintf("[SEARCH_PATH] key=%s at parent pageID=%d found childPageID=%d\n", string(key), currentPageID, childPageID)
 			// 打印父节点的所有 keys 和 children
@@ -365,10 +370,13 @@ func (b *BTree) hasCycleFrom(pageID model.PageID) bool {
 		// 只有内部节点才有子节点（count > 0）
 		// 叶子节点的 count=0，不应该进入循环
 		for i := 0; i <= int(count) && int(count) > 0; i++ {
-			child := b.offheapAdapter.pa.GetChild(pid32, i)
-			if child == 0 {
+			// 修复：GetChild 返回编码后的值（包含版本号）
+			// 需要解码才能获取真实的 pageID
+			encodedChild := b.offheapAdapter.pa.GetChild(pid32, i)
+			if encodedChild == 0 {
 				continue // 跳过空子节点
 			}
+			child, _ := b.offheapAdapter.DecodeChildWithVersion(encodedChild)
 			if traverse(model.PageID(child), depth+1) {
 				return true
 			}
@@ -403,10 +411,13 @@ func (b *BTree) validateParentSplitIntegrity(
 	childCount := 0
 
 	for i := 0; i <= int(count); i++ {
-		child := b.offheapAdapter.pa.GetChild(uint32(parentPageID), i)
-		if child == 0 {
+		// 修复：GetChild 返回编码后的值（包含版本号）
+		// 需要解码才能获取真实的 pageID
+		encodedChild := b.offheapAdapter.pa.GetChild(uint32(parentPageID), i)
+		if encodedChild == 0 {
 			continue // 跳过空子节点
 		}
+		child, _ := b.offheapAdapter.DecodeChildWithVersion(encodedChild)
 		childCount++
 		if child == uint32(oldChild) {
 			foundOld = true

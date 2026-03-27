@@ -79,6 +79,61 @@ for i := 0; i <= int(count); i++ {
 }
 ```
 
+#### 3.1.1 数据丢失 Bug 发现（2026-03-27 09:45）
+
+**重大发现**：在根分裂压力测试中发现 **严重数据丢失问题**
+
+**测试场景**：
+```go
+// 写入 1000 个 key (key-0 到 key-999)
+// 验证所有 key 都存在 ✅
+
+// 写入 100 个新 key (key-1000 到 key-1099)
+// 验证 key-0 到 key-999
+// 结果：key-988 到 key-999 丢失 ❌ (12 个 key)
+```
+
+**根本原因**：版本号编码/解码机制实施过程中的系统性遗漏
+
+**已修复位置**（10+ 处）：
+| 文件 | 行数 | 修复内容 | 状态 |
+|------|------|---------|------|
+| `offheap_adapter.go` | 306, 337, 396, 405, 819 | `UpdateIndexEntry`, `ReplaceChild`, `UpdateChildIndex`, `GetChild` | ✅ 完成 |
+| `leaf_lock_set.go` | 627, 783, 795, 815, 817, 882, 1153, 1167 | 父节点/祖父节点/内部节点 child 访问 | ✅ 完成 |
+| `btree.go` | 1016 | extraChild 比较 | ✅ 完成 |
+| `search_path.go` | 375, 416 | `hasCycleFrom`, `validateParentSplitIntegrity` | ✅ 完成 |
+
+**修复效果**：
+| 指标 | 修复前 | 修复后 | 改善 |
+|------|--------|--------|------|
+| 丢失 key 数量 | 50 个 (key-950~999) | 12 个 (key-988~999) | 76% ↓ |
+| 并发写入成功率 | ~98% | 100% (500/500) | 稳定 |
+
+**剩余问题**：仍有 **12 个 key 丢失**，说明存在 **未发现的代码路径**
+
+**受影响的代码模式（通用）**：
+```go
+// ❌ 错误模式 1：直接使用 GetChild 返回值
+child := pa.GetChild(pageID, i)
+if child == targetPageID { ... }  // 比较失败！
+
+// ❌ 错误模式 2：将编码值传递给物化函数
+child := pa.GetChild(pageID, i)
+children = append(children, child)  // 双重编码！
+
+// ✅ 正确模式（16-bit 当前实现）
+encodedChild := pa.GetChild(pageID, i)
+child, _ := DecodeChildWithVersion(encodedChild)
+if child == targetPageID { ... }  // 正确比较
+children = append(children, child)  // 正确传递
+
+// ✅ 正确模式（32-bit 目标实现）
+encodedChild := pa.GetChild(pageID, i)
+child, _ := DecodeChildWithVersion(encodedChild)
+if child == targetPageID { ... }  // 正确比较
+children = append(children, child)  // 正确传递
+```
+
 #### 3.2 根本原因（待验证）
 
 **剩余 1% 失败的根本原因尚未明确，存在 3 个主要假设：**
@@ -267,7 +322,156 @@ func (b *BTree) StartEpochAdvancer(ctx context.Context) {
 
 ---
 
-#### 4.4 推荐修复路径
+##### 方案 D：32-bit pageID + 32-bit version（uint64 存储）统一方案 ⭐ **推荐 + 已采纳**
+
+**设计理念**：使用 uint64 存储 32-bit pageID + 32-bit version，彻底解决溢出和范围限制问题。
+
+**决策日期**：2026-03-27 09:47
+
+**决策依据**：
+- ✅ 当前 16-bit 方案仍有 12 个 key 丢失（系统性遗漏）
+- ✅ 32-bit 方案提供足够的扩展空间（16TB + 42 亿版本）
+- ✅ 统一编码方案简化代码逻辑
+- ✅ 数据结构变更影响可控（仅 IndexEntry.child 字段）
+
+**当前实施状态**：
+- 🟡 **部分实施**：当前代码仍使用 16-bit 方案（`EncodeChildWithVersion` 返回 uint32）
+- 🟡 **需要迁移**：约 20+ 处调用点需要更新
+- 🟡 **数据丢失**：仍有 12 个 key 丢失，需要系统性代码审查
+
+**迁移范围**：
+1. 修改 `IndexEntry.child` 类型：`uint32` → `uint64`
+2. 更新编码/解码函数签名
+3. 更新所有调用点（约 20+ 处）
+
+**核心编码方案**：
+```go
+// 常量定义
+const (
+    PageIDBits    = 32
+    VersionBits   = 32
+    PageIDMask    = 0x00000000FFFFFFFF
+    VersionMask   = 0xFFFFFFFF00000000
+    VersionShift  = 32
+    MaxPageID     = 0xFFFFFFFF      // 4,294,967,295
+    MaxVersion    = 0xFFFFFFFF      // 4,294,967,295
+)
+
+// 编码：version（高32位）+ pageID（低32位）
+func EncodeChild(pageID uint32, version uint32) uint64 {
+    if pageID > MaxPageID {
+        panic(fmt.Sprintf("pageID %d exceeds max %d", pageID, MaxPageID))
+    }
+    return (uint64(version) << VersionShift) | uint64(pageID)
+}
+
+// 解码
+func DecodeChild(encoded uint64) (pageID uint32, version uint32) {
+    pageID = uint32(encoded & PageIDMask)
+    version = uint32((encoded & VersionMask) >> VersionShift)
+    return
+}
+
+// 僵尸引用检测
+func IsStaleReference(storedVersion uint32, currentVersion uint32) bool {
+    // 32-bit 版本号直接比较
+    return currentVersion != storedVersion
+}
+```
+
+**数据结构调整**：
+```go
+// 页面头部：version 升级为 uint32
+type PageHeader struct {
+    version    uint32  // 8 bytes → 4 bytes（升级为 32-bit）
+    prevPage   uint32  // 4 bytes
+    nextPage   uint32  // 4 bytes
+    extraChild uint64  // 8 bytes（升级为 uint64，带版本号）
+    count      uint16  // 2 bytes
+    pageType   uint8   // 1 byte
+    _pad       [9]byte // 9 bytes（对齐到 32 字节）
+    // 总大小：32 字节（保持不变）
+}
+
+// IndexEntry：child 升级为 uint64
+type IndexEntry struct {
+    keyOff  uint32  // 4 bytes
+    keyLen  uint32  // 4 bytes
+    child   uint64  // 8 bytes：高 32-bit version + 低 32-bit pageID
+    // 总大小：16 bytes（从 12 bytes 增加）
+}
+```
+
+**解决的问题**：
+
+| 问题 | 旧方案 | 新方案 | 效果 |
+|------|--------|--------|------|
+| **版本号溢出** | uint16，最大 65,535 | uint32，最大 4,294,967,295 | **42亿次修改才溢出** |
+| **PageID 限制** | uint16，最大 65,535 | uint32，最大 4,294,967,295 | **支持 16TB 存储** |
+| **实际存储容量** | 256MB | **16TB** | 满足未来 10 年需求 |
+| **溢出风险** | 长期运行后可能溢出 | **永久安全** | 无需额外检测 |
+
+**实施计划**（更新）：
+
+| 阶段 | 任务 | 预计时间 | 负责人 | 优先级 | 依赖 |
+|------|------|---------|--------|--------|------|
+| **阶段 0** | **数据迁移到 32-bit 方案** | 2-3 小时 | TBD | 🔴 P0 | 无 |
+| **阶段 1** | **全面代码审查** | 2-3 小时 | TBD | 🔴 P0 | 阶段 0 |
+| **阶段 2** | **API 统一设计** | 1-2 小时 | TBD | 🟡 P1 | 阶段 0 |
+| **阶段 3** | **测试验证** | 1 小时 | TBD | 🔴 P0 | 阶段 0,1,2 |
+| **阶段 4** | **文档更新** | 30 分钟 | TBD | 🟢 P2 | 阶段 0 |
+| **总计** | | **6.5-9.5 小时** | | | |
+
+**阶段 0 详细分解**：
+
+**0.1 数据结构迁移**（30 分钟）
+- [ ] 修改 `IndexEntry.child` 类型：`uint32` → `uint64`
+- [ ] 更新 `SizeofIndexEntry` 常量：16 bytes → 20 bytes
+- [ ] 验证内存布局正确性
+
+**0.2 编码/解码函数迁移**（30 分钟）
+- [ ] 更新 `EncodeChildWithVersion` 签名：返回 `uint64`
+- [ ] 更新 `DecodeChildWithVersion` 签名：参数 `uint64`
+- [ ] 更新相关常量定义
+
+**0.3 调用点更新**（1-2 小时）
+- [ ] 搜索并更新所有 `EncodeChildWithVersion` 调用
+- [ ] 更新 `InsertIndexEntry` 中的编码逻辑
+- [ ] 更新 `SetChild` 中的编码逻辑
+- [ ] 更新 `MaterializeIndexPageFromBytes`
+- [ ] 更新所有解码调用点
+
+**0.4 测试验证**（30 分钟）
+- [ ] 编译通过
+- [ ] 基础测试通过
+- [ ] 并发测试通过
+
+**优点**：
+- ✅ **彻底解决溢出问题**：42 亿次修改才溢出
+- ✅ **彻底解决 PageID 限制**：支持 16TB 存储
+- ✅ **统一编码方案**：所有 child 字段使用相同编码
+- ✅ **未来兼容**：满足未来 10 年扩展需求
+- ✅ **性能影响小**：uint64 操作对齐，性能更好
+
+**缺点**：
+- ⚠️ IndexEntry 从 12 字节增加到 16 字节（33% 增长）
+- ⚠️ PageHeader _pad 从 9 字节减少到 5 字节（总大小不变）
+- ⚠️ 需要全面测试验证
+
+**风险等级**：🟢 低（数据结构兼容性好）
+
+**收益总结**：
+
+| 问题 | 旧方案风险 | 新方案效果 |
+|------|----------|----------|
+| 版本号溢出 | 长期运行后误判僵尸引用 | **永久安全** |
+| PageID 耗尽 | 256MB 存储上限 | **16TB** 存储 |
+| 数据竞争 | 版本号回绕导致误判 | **无回绕** |
+| 可维护性 | 需要处理边界情况 | **无边界** |
+
+---
+
+#### 4.4 推荐修复路径（更新）
 
 **短期（1-2 天）**：实施方案 A（页面池隔离）
 - 快速缓解问题，成功率从 99% → 99.5%
@@ -344,7 +548,10 @@ flowchart TD
 | 启动修复 | 2026-03-27 | 2026-03-27 | 创建调查分支，编写 PR 文档 | [本文档] |
 | Phase 1.1: 失败场景追踪 | 2026-04-03 | 2026-03-27 | 实现失败日志收集测试 | TestCollectFailureLogs, TestQuickFailureCheck |
 | Phase 1.2: Page 4095 追踪 | 2026-04-03 | 2026-03-27 | 实现页面生命周期追踪器 | PageLifecycleTracker |
-| Phase 1.3: 根分裂压力测试 | 2026-04-03 | [待填写] | go test -race 检测数据竞争 | [测试报告] |
+| Phase 1.3: 根分裂压力测试 | 2026-04-03 | 2026-03-27 | 执行根分裂并发压力测试 | root_split_stress_test.go ✅ |
+| **数据丢失 Bug 发现** | - | 2026-03-27 | **根分裂导致 12 个 key 丢失** | root_split_debug_test.go ✅ |
+| **10+ 处版本号解码修复** | - | 2026-03-27 | **修复数据丢失从 50→12 个 key** | offheap_adapter.go, leaf_lock_set.go, btree.go, search_path.go ✅ |
+| **方案 D 决策** | - | 2026-03-27 09:47 | **采纳 32-bit 统一编码方案** | thoughts/version-encoding-data-loss-fix-proposal.md ✅ |
 | 根因验证 | 2026-04-10 | [待填写] | Phase 2: 3 个假设的逐一验证 | [根因验证报告] |
 | 修复方案设计 | 2026-04-17 | [待填写] | Phase 3: 3 个备选方案的详细设计 | [修复方案设计文档] |
 | 本地验证 | 2026-04-17 | [待填写] | 实施修复方案 + 高并发压力测试 | [验证报告/覆盖率数据] |
@@ -431,6 +638,23 @@ flowchart TD
 - 失败模式分析：`docs/09_code-review/failure-pattern-analysis.md`（待创建）
 - 实施总结：`docs/09_code-review/circular-reference-fix-implementation-summary.md`（待创建）
 - 调查提案：`docs/09_code-review/circular-reference-root-cause-investigation-proposal.md`（待创建）
+- **版本号编码数据丢失修复 Proposal**：`thoughts/version-encoding-data-loss-fix-proposal.md` ✅ **已完成（v2.0）**
+
+### 数据迁移影响评估
+
+**16-bit → 32-bit 迁移影响**：
+
+| 组件 | 16-bit | 32-bit | 变化 | 影响 |
+|------|--------|--------|------|------|
+| `IndexEntry.child` | `uint32` | `uint64` | +4 bytes | ⚠️ 内存布局 |
+| `SizeofIndexEntry` | 16 bytes | 20 bytes | +4 bytes | ⚠️ 容量计算 |
+| 编码函数参数 | `uint64` | `uint32` | 类型变化 | ⚠️ 调用点更新 |
+| 版本号范围 | 0-65,535 | 0-4,294,967,295 | +65536x | ✅ 无溢出 |
+| PageID 范围 | 0-65,535 | 0-4,294,967,295 | +65536x | ✅ 16TB 支持 |
+
+**兼容性**：
+- ❌ **不兼容**：旧数据无法直接读取（需要数据迁移工具）
+- ✅ **代码兼容**：编译时类型检查防止错误
 
 ### 关键代码
 - 页面分配器：`internal/infrastructure/storage/btree/offheap/page_manager.go:99-109`

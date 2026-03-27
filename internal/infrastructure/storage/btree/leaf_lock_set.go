@@ -624,7 +624,9 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	// 导致 insertIndex 指向错误的子节点，从而产生循环引用
 	insertIndex := -1
 	for i := 0; i <= int(count); i++ {
-		child := b.offheapAdapter.pa.GetChild(uint32(currentParentPageID), i)
+		// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
+		encodedChild := b.offheapAdapter.pa.GetChild(uint32(currentParentPageID), i)
+		child, _ := b.offheapAdapter.DecodeChildWithVersion(encodedChild)
 		if child == uint32(leafPageID) {
 			insertIndex = i
 			break
@@ -778,7 +780,9 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 			grandParentCount := b.offheapAdapter.pa.GetCount(uint32(grandParentPageID))
 			foundIndex := -1
 			for i := 0; i <= int(grandParentCount); i++ {
-				child := b.offheapAdapter.pa.GetChild(uint32(grandParentPageID), i)
+				// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
+				encodedChild := b.offheapAdapter.pa.GetChild(uint32(grandParentPageID), i)
+				child, _ := b.offheapAdapter.DecodeChildWithVersion(encodedChild)
 				if child == uint32(oldParentPageID) {
 					foundIndex = i
 					break
@@ -790,7 +794,8 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 					oldParentPageID, grandParentPageID, grandParentCount)
 				// 打印祖父节点的所有 children
 				for i := 0; i <= int(grandParentCount); i++ {
-					child := b.offheapAdapter.pa.GetChild(uint32(grandParentPageID), i)
+					encodedChild := b.offheapAdapter.pa.GetChild(uint32(grandParentPageID), i)
+					child, _ := b.offheapAdapter.DecodeChildWithVersion(encodedChild)
 					DebugPrintf("[UPDATE_GRANDPARENT]   child[%d]=%d\n", i, child)
 				}
 				return nil, fmt.Errorf("old parent %d not found in grandparent %d", oldParentPageID, grandParentPageID)
@@ -808,11 +813,14 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 				key := b.offheapAdapter.pa.GetKey(uint32(grandParentPageID), keyOff, keyLen)
 
 				// 获取右边的子节点（如果有的话）
+				// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
 				var rightChild uint32
 				if foundIndex+1 < int(grandParentCount) {
-					rightChild = b.offheapAdapter.pa.GetChild(uint32(grandParentPageID), foundIndex+1)
+					encodedRightChild := b.offheapAdapter.pa.GetChild(uint32(grandParentPageID), foundIndex+1)
+					rightChild, _ = b.offheapAdapter.DecodeChildWithVersion(encodedRightChild)
 				} else {
-					rightChild = b.offheapAdapter.pa.GetChild(uint32(grandParentPageID), int(grandParentCount))
+					encodedExtraChild := b.offheapAdapter.pa.GetChild(uint32(grandParentPageID), int(grandParentCount))
+					rightChild, _ = b.offheapAdapter.DecodeChildWithVersion(encodedExtraChild)
 				}
 
 				newGrandParentPageID, err := b.offheapAdapter.UpdateIndexEntry(
@@ -879,12 +887,14 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 
 				// 收集所有 keys 和 children（除了最后一个 extraChild）
 				for i := range grandParentCountInt {
-					keyOff, keyLen, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(grandParentPageID), i)
+					keyOff, keyLen, encodedChild := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(grandParentPageID), i)
 					key := b.offheapAdapter.pa.GetKey(uint32(grandParentPageID), keyOff, keyLen)
 
 					keyCopy := make([]byte, len(key))
 					copy(keyCopy, key)
 					keys = append(keys, keyCopy)
+					// 修复：GetIndexEntryOffset 返回编码后的值，需要解码才能获取真实的 pageID
+					child, _ := b.offheapAdapter.DecodeChildWithVersion(encodedChild)
 					children = append(children, child)
 				}
 
@@ -1148,18 +1158,22 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 
 	// 收集所有 keys 和 children
 	for i := range int(count) {
-		keyOff, keyLen, child := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(internalPageID), i)
+		keyOff, keyLen, encodedChild := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(internalPageID), i)
 		key := b.offheapAdapter.pa.GetKey(uint32(internalPageID), keyOff, keyLen)
 
 		// 复制 key
 		keyCopy := make([]byte, len(key))
 		copy(keyCopy, key)
 		keys = append(keys, keyCopy)
+		// 修复：GetIndexEntryOffset 返回编码后的值，需要解码才能获取真实的 pageID
+		child, _ := b.offheapAdapter.DecodeChildWithVersion(encodedChild)
 		children = append(children, child)
 	}
 
 	// 最后一个 child（索引节点的 children 数量 = keys 数量 + 1）
-	lastChild := b.offheapAdapter.pa.GetChild(uint32(internalPageID), int(count))
+	// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
+	encodedLastChild := b.offheapAdapter.pa.GetChild(uint32(internalPageID), int(count))
+	lastChild, _ := b.offheapAdapter.DecodeChildWithVersion(encodedLastChild)
 	children = append(children, lastChild)
 
 	// Step 2: 找到中间位置作为分裂点

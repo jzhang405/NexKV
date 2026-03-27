@@ -6,6 +6,7 @@ package btree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 
@@ -234,6 +235,13 @@ func (b *BTree) SetWithRetryAndQueue(
 				runtime.Gosched()
 			}
 		default:
+			// 检查是否为可重试错误（如循环引用）
+			if errors.Is(err, ErrCircularReference) {
+				if attempt < maxFastRetries-1 {
+					runtime.Gosched()
+				}
+				break // 继续重试
+			}
 			return err // 其他错误直接返回
 		}
 	}

@@ -203,6 +203,12 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 		// 修复：使用 Off-Heap 页面的 pageType，而不是 PageInfo 的 NodeRef.isLeaf
 		currentPageID := model.PageID(currentInfo.GetPageID())
 		currentIsLeaf := b.offheapAdapter.IsLeaf(currentPageID)
+
+		// ✅ 添加 key-05655 的调试日志
+		if string(key) == "key-05655" {
+			fmt.Printf("\n[SEARCH_PATH key-05655] currentPageID=%d currentIsLeaf=%v\n", currentPageID, currentIsLeaf)
+		}
+
 		if currentIsLeaf {
 			// 到达叶子节点，返回收集的路径和引用
 			if debugThisSearch {

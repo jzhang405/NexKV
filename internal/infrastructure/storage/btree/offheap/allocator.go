@@ -5,8 +5,9 @@
 package offheap
 
 import (
-	"fmt"
 	"unsafe"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // OffHeapAllocator 跨平台 Off-Heap 内存分配接口
@@ -27,7 +28,7 @@ type OffHeapAllocator interface {
 // NewAllocator 创建当前平台的 Off-Heap 分配器
 func NewAllocator(size int) (OffHeapAllocator, error) {
 	if size <= 0 {
-		return nil, fmt.Errorf("allocator size must be positive: %d", size)
+		return nil, errpkg.OffHeapAllocatorSizeMustBePositive(size)
 	}
 
 	return newPlatformAllocator(size)
@@ -36,5 +37,5 @@ func NewAllocator(size int) (OffHeapAllocator, error) {
 // platformPageSize 返回当前平台的内存页大小
 func platformPageSize() int { //nolint:unused
 	// 默认 4KB，各平台实现会覆盖
-	return 4096
+	return PageSize
 }

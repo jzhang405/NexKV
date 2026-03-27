@@ -6,10 +6,10 @@ package btree
 
 import (
 	"context"
-	"fmt"
 	"sync/atomic"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // BTreeSetItem 实现 ShardItem 接口
@@ -77,7 +77,7 @@ func NewBTreeSetItem(
 				// setWithLeafLockAndRef 会验证 PageInfo 未变更，失效时自动回退
 				err := bt.setWithLeafLockAndRef(ctx, leafRef, key, value)
 				if err != nil {
-					return struct{}{}, fmt.Errorf("btree set with leaf ref failed: %w", err)
+					return struct{}{}, errpkg.BTreeSetWithLeafRefFailed(err)
 				}
 				return struct{}{}, nil
 			},

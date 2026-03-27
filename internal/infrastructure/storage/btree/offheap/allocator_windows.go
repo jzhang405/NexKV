@@ -8,9 +8,9 @@
 package offheap
 
 import (
-	"fmt"
 	"unsafe"
 
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"golang.org/x/sys/windows"
 )
 
@@ -36,7 +36,7 @@ func newPlatformAllocator(size int) (OffHeapAllocator, error) {
 		windows.PAGE_READWRITE,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("VirtualAlloc failed: %w", err)
+		return nil, errpkg.OffHeapVirtualAllocFailed(err)
 	}
 
 	// VirtualAlloc 返回 uintptr，需要转换为 unsafe.Pointer
@@ -45,13 +45,13 @@ func newPlatformAllocator(size int) (OffHeapAllocator, error) {
 		//lint:ignore SA1030 we need this unsafe conversion for Windows API
 		base:     unsafe.Pointer(ptr),
 		size:     size,
-		pageSize: 4096, // Windows 默认页面大小
+		pageSize: PageSize, // Windows 默认页面大小
 	}, nil
 }
 
 func (v *virtualAllocAllocator) Alloc(size int) (unsafe.Pointer, error) {
 	if size > v.size {
-		return nil, fmt.Errorf("alloc size %d exceeds allocator size %d", size, v.size)
+		return nil, errpkg.OffHeapAllocExceedsSize(int64(size), int64(v.size))
 	}
 	return v.base, nil
 }
@@ -59,7 +59,7 @@ func (v *virtualAllocAllocator) Alloc(size int) (unsafe.Pointer, error) {
 func (v *virtualAllocAllocator) Free(ptr unsafe.Pointer, size int) error {
 	err := windows.VirtualFree(uintptr(ptr), 0, MEM_RELEASE)
 	if err != nil {
-		return fmt.Errorf("VirtualFree failed: %w", err)
+		return errpkg.OffHeapVirtualFreeFailed(err)
 	}
 	return nil
 }

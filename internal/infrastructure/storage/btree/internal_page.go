@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // InternalPage 内部节点
@@ -85,7 +86,7 @@ func (p *InternalPage) GetChild(idx int) *PageRef {
 // SetChild 设置子节点
 func (p *InternalPage) SetChild(idx int, child *PageRef) error {
 	if idx < 0 || idx >= len(p.children) {
-		return fmt.Errorf("child index %d out of range [0, %d)", idx, len(p.children)-1)
+		return errpkg.BTreeChildIndexOutOfRangeError(idx, len(p.children)-1)
 	}
 	p.children[idx] = child
 	p.version++
@@ -192,7 +193,7 @@ func (p *InternalPage) InsertKeyChild(key []byte, childRef *PageRef) error {
 			p.children = p.children[:expectedChildren]
 		} else {
 			// 如果 children 太少，返回错误
-			return fmt.Errorf("InternalPage invariant violated: len(children)=%d, len(keys)=%d", len(p.children), len(p.keys))
+			return errpkg.BTreeInvariantViolatedError(len(p.children), len(p.keys))
 		}
 	}
 
@@ -210,7 +211,7 @@ func (p *InternalPage) InsertKeyChild(key []byte, childRef *PageRef) error {
 func (p *InternalPage) Delete(key []byte) (*PageRef, error) {
 	idx, found := p.findKeyIndex(key)
 	if !found {
-		return nil, fmt.Errorf("key not found")
+		return nil, errpkg.BTreeKeyNotFoundInPageError()
 	}
 
 	// 删除键
@@ -249,15 +250,15 @@ func (p *InternalPage) findKeyIndex(key []byte) (int, bool) {
 func (p *InternalPage) UpdateKey(oldKey, newKey []byte) (bool, error) {
 	idx, found := p.findKeyIndex(oldKey)
 	if !found {
-		return false, fmt.Errorf("key not found")
+		return false, errpkg.BTreeKeyNotFoundInPageError()
 	}
 
 	// 检查新键的位置是否正确
 	if idx > 0 && bytes.Compare(p.keys[idx-1], newKey) > 0 {
-		return false, fmt.Errorf("new key would violate ordering")
+		return false, errpkg.BTreeKeyOrderViolationError()
 	}
 	if idx < len(p.keys)-1 && bytes.Compare(p.keys[idx+1], newKey) < 0 {
-		return false, fmt.Errorf("new key would violate ordering")
+		return false, errpkg.BTreeKeyOrderViolationError()
 	}
 
 	p.keys[idx] = newKey
@@ -279,7 +280,7 @@ func (p *InternalPage) UpdateKey(oldKey, newKey []byte) (bool, error) {
 // - 保留原页面子节点的 parentRef 指向原页面
 func (p *InternalPage) Split() (*InternalPage, []byte, error) {
 	if len(p.keys) < 2 {
-		return nil, nil, fmt.Errorf("cannot split page with less than 2 keys")
+		return nil, nil, errpkg.BTreeCannotSplitMinKeysError(len(p.keys))
 	}
 
 	mid := len(p.keys) / 2
@@ -486,7 +487,7 @@ func DeserializeInternalPage(data []byte) (*InternalPage, error) {
 
 	// 检查数据长度
 	if len(data) != pageSize {
-		return nil, fmt.Errorf("invalid data size: expected %d bytes, got %d", pageSize, len(data))
+		return nil, errpkg.BTreeInvalidDataSize(pageSize, len(data))
 	}
 
 	// 1. 读取实际内容长度（前 4 字节）
@@ -499,28 +500,28 @@ func DeserializeInternalPage(data []byte) (*InternalPage, error) {
 	// 3. 读取 pageID
 	pageIDBytes, err := readBytes(reader, 8)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read pageID: %w", err)
+		return nil, errpkg.BTreeDeserializeReadPageID(err)
 	}
 	pageID := model.PageID(bytesToUint64(pageIDBytes))
 
 	// 4. 读取 version
 	versionBytes, err := readBytes(reader, 8)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read version: %w", err)
+		return nil, errpkg.BTreeDeserializeReadVersion(err)
 	}
 	version := bytesToUint64(versionBytes)
 
 	// 5. 读取键数量
 	numKeysBytes, err := readBytes(reader, 4)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read numKeys: %w", err)
+		return nil, errpkg.BTreeDeserializeReadNumKeys(err)
 	}
 	numKeys := bytesToUint32(numKeysBytes)
 
 	// 6. 读取子节点数量
 	numChildrenBytes, err := readBytes(reader, 4)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read numChildren: %w", err)
+		return nil, errpkg.BTreeDeserializeReadNumChildren(err)
 	}
 	numChildren := bytesToUint32(numChildrenBytes)
 
@@ -537,14 +538,14 @@ func DeserializeInternalPage(data []byte) (*InternalPage, error) {
 		// 读取键长度
 		keyLenBytes, err := readBytes(reader, 2)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read key len: %w", err)
+			return nil, errpkg.BTreeDeserializeReadKeyLen(err)
 		}
 		keyLen := bytesToUint16(keyLenBytes)
 
 		// 读取键数据
 		key, err := readBytes(reader, int(keyLen))
 		if err != nil {
-			return nil, fmt.Errorf("failed to read key data: %w", err)
+			return nil, errpkg.BTreeDeserializeReadKeyData(err)
 		}
 		page.keys = append(page.keys, key)
 	}
@@ -553,7 +554,7 @@ func DeserializeInternalPage(data []byte) (*InternalPage, error) {
 	for range int(numChildren) {
 		childIDBytes, err := readBytes(reader, 8)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read child ID: %w", err)
+			return nil, errpkg.BTreeDeserializeReadChildID(err)
 		}
 		childID := bytesToUint64(childIDBytes)
 
@@ -578,7 +579,7 @@ func DeserializeInternalPage(data []byte) (*InternalPage, error) {
 // 用于 Split 后更新子节点的 parentRef
 func (p *InternalPage) UpdateChildrenRef(startIdx int) error {
 	if startIdx < 0 || startIdx >= len(p.children) {
-		return fmt.Errorf("start index %d out of range [0, %d]", startIdx, len(p.children)-1)
+		return errpkg.BTreeIndexOutOfRangeError(startIdx, len(p.children)-1)
 	}
 
 	// 获取当前 InternalPage 的 PageRef

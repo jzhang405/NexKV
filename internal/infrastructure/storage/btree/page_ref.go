@@ -1,8 +1,9 @@
 package btree
 
 import (
-	"fmt"
 	"sync/atomic"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // PageRef 页面引用（间接寻址）
@@ -227,7 +228,7 @@ func (r *PageRef) GetOrLoad(chunkMgr *ChunkManager) (*PageInfo, error) {
 	// 1. 尝试从原子指针加载
 	info := r.pInfo.Load()
 	if info == nil {
-		return nil, fmt.Errorf("pageInfo is nil")
+		return nil, errpkg.BTreePageInfoNilRef()
 	}
 
 	// 2. Off-Heap 模式：检查 NodeRef 是否有效
@@ -237,7 +238,7 @@ func (r *PageRef) GetOrLoad(chunkMgr *ChunkManager) (*PageInfo, error) {
 	}
 
 	// 3. NodeRef 无效，返回错误
-	return nil, fmt.Errorf("page not loaded (invalid NodeRef)")
+	return nil, errpkg.BTreePageNotLoadedInvalidNodeRef()
 }
 
 // Get 获取 PageInfo（简化版，不含加载逻辑）

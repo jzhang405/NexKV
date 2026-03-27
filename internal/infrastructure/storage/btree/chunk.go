@@ -1,10 +1,11 @@
 package btree
 
 import (
-	"fmt"
 	"os"
 	"sync"
 	"sync/atomic"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 const (
@@ -37,7 +38,7 @@ func NewChunk(id int, filePath string, readOnly bool) (*Chunk, error) {
 
 	file, err := os.OpenFile(filePath, flags, 0644)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open chunk file %s: %w", filePath, err)
+		return nil, errpkg.BTreeOpenChunkFile(filePath, err)
 	}
 
 	// 如果不是只读，定位到文件末尾
@@ -46,7 +47,7 @@ func NewChunk(id int, filePath string, readOnly bool) (*Chunk, error) {
 		info, err := file.Stat()
 		if err != nil {
 			file.Close()
-			return nil, fmt.Errorf("failed to stat chunk file %s: %w", filePath, err)
+			return nil, errpkg.BTreeStatChunkFile(filePath, err)
 		}
 		writePos = info.Size()
 	}
@@ -69,7 +70,7 @@ func NewChunk(id int, filePath string, readOnly bool) (*Chunk, error) {
 // 返回：页面位置（在 Chunk 中的字节偏移）
 func (c *Chunk) AllocatePage() (int64, error) {
 	if c.isReadOnly {
-		return 0, fmt.Errorf("chunk %d is read-only", c.id)
+		return 0, errpkg.BTreeChunkReadOnly(c.id)
 	}
 
 	c.mu.Lock()
@@ -81,7 +82,7 @@ func (c *Chunk) AllocatePage() (int64, error) {
 	// 检查是否超出 Chunk 大小
 	chunkSize := int64(ChunkSize)
 	if pos+PageSize > chunkSize {
-		return 0, fmt.Errorf("chunk %d is full (size: %d, current: %d)", c.id, chunkSize, pos)
+		return 0, errpkg.BTreeChunkFull(c.id, chunkSize, pos)
 	}
 
 	// 更新写入位置
@@ -95,16 +96,16 @@ func (c *Chunk) AllocatePage() (int64, error) {
 // WritePage 写入页面到指定位置
 func (c *Chunk) WritePage(pos int64, data []byte) error {
 	if c.isReadOnly {
-		return fmt.Errorf("chunk %d is read-only", c.id)
+		return errpkg.BTreeChunkReadOnly(c.id)
 	}
 
 	if len(data) != PageSize {
-		return fmt.Errorf("page size must be %d bytes, got %d", PageSize, len(data))
+		return errpkg.BTreeChunkPageSizeMismatch(PageSize, len(data))
 	}
 
 	// 边界检查
 	if pos < 0 || pos+PageSize > int64(ChunkSize) {
-		return fmt.Errorf("position %d out of chunk bounds [0, %d]", pos, ChunkSize)
+		return errpkg.BTreeChunkPositionOutOfRange(pos, ChunkSize)
 	}
 
 	c.mu.Lock()
@@ -113,7 +114,7 @@ func (c *Chunk) WritePage(pos int64, data []byte) error {
 	// 写入文件
 	_, err := c.file.WriteAt(data, pos)
 	if err != nil {
-		return fmt.Errorf("failed to write page at pos %d: %w", pos, err)
+		return errpkg.BTreeWritePageAt(pos, err)
 	}
 
 	return nil
@@ -123,7 +124,7 @@ func (c *Chunk) WritePage(pos int64, data []byte) error {
 func (c *Chunk) ReadPage(pos int64) ([]byte, error) {
 	// 边界检查
 	if pos < 0 || pos+PageSize > int64(ChunkSize) {
-		return nil, fmt.Errorf("position %d out of chunk bounds [0, %d]", pos, ChunkSize)
+		return nil, errpkg.BTreeChunkPositionOutOfRange(pos, ChunkSize)
 	}
 
 	c.mu.Lock()
@@ -133,7 +134,7 @@ func (c *Chunk) ReadPage(pos int64) ([]byte, error) {
 	data := make([]byte, PageSize)
 	_, err := c.file.ReadAt(data, pos)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read page at pos %d: %w", pos, err)
+		return nil, errpkg.BTreeReadPageAt(pos, err)
 	}
 
 	return data, nil

@@ -6,9 +6,9 @@ package btree
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // ParentSplitItem 实现异步父节点分裂任务
@@ -72,7 +72,7 @@ func NewParentSplitItem(
 
 				if err != nil {
 					DebugPrintf("[ASYNC_PARENT_SPLIT] FAILED: parentPageID=%d err=%v\n", parentPageID, err)
-					return struct{}{}, fmt.Errorf("async parent split pageID=%d: %w", parentPageID, err)
+					return struct{}{}, errpkg.BTreeAsyncParentSplitFailed(int(parentPageID), err)
 				}
 
 				DebugPrintf("[ASYNC_PARENT_SPLIT] SUCCESS: parentPageID=%d\n", parentPageID)

@@ -6,7 +6,9 @@ package offheap
 
 import (
 	"bytes"
-	"fmt"
+	"sort"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // OffHeapMaterializer 零拷贝物化器
@@ -53,23 +55,16 @@ func (m *OffHeapMaterializer) MaterializePageFromBytes(
 	copy(sortedValues, values)
 
 	// 对 keys 进行排序，同时保持 values 与 keys 的对应关系
-	// 使用简单的冒泡排序（对于小数据集足够快）
-	for i := 0; i < len(sortedKeys); i++ {
-		for j := i + 1; j < len(sortedKeys); j++ {
-			if bytes.Compare(sortedKeys[i], sortedKeys[j]) > 0 {
-				// 交换 keys
-				sortedKeys[i], sortedKeys[j] = sortedKeys[j], sortedKeys[i]
-				// 交换对应的 values
-				sortedValues[i], sortedValues[j] = sortedValues[j], sortedValues[i]
-			}
-		}
-	}
+	// 使用 sort.SliceStable，保持相等元素的相对顺序
+	sort.SliceStable(sortedKeys, func(i, j int) bool {
+		return bytes.Compare(sortedKeys[i], sortedKeys[j]) < 0
+	})
 
 	// 写入所有 KV 数据（使用排序后的数据）
 	for i := range sortedKeys {
 		err := m.pa.InsertLeafEntry(pageID, i, sortedKeys[i], sortedValues[i], &dataEnd)
 		if err != nil {
-			return 0, fmt.Errorf("insert entry %d: %w", i, err)
+			return 0, errpkg.OffHeapInsertEntry(i, err)
 		}
 	}
 

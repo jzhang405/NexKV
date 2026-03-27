@@ -63,33 +63,18 @@ import (
 	"github.com/jzhang405/NexKV/internal/infrastructure/concurrency"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree/offheap"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/wal"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 var (
-	// ErrNotImplemented is returned when a method is not yet implemented.
-	ErrNotImplemented = errors.New("not implemented")
-
-	// ErrClosed is returned when operations are performed on a closed BTree.
-	ErrClosed = errors.New("btree is closed")
-
-	// ErrRetry is returned when a CAS operation fails and the caller should retry.
-	ErrRetry = errors.New("cas failed, retry operation")
-
-	// ErrInvalidPath is returned when path finding fails due to invalid node structure.
-	ErrInvalidPath = errors.New("invalid path: node structure inconsistent")
-
-	// ErrKeyNotFound is returned when a key is not found in the tree.
-	ErrKeyNotFound = errors.New("key not found")
-
-	// ErrPageStale is returned when a page state is stale during concurrent operations.
-	// This can happen when a Get operation reads a page that is being split or freed.
-	// The caller should retry the operation.
-	ErrPageStale = errors.New("page state stale, retry")
-
-	// ErrCircularReference is returned when a circular reference is detected in the B-Tree.
-	// This can happen during concurrent operations when a page is reused after being freed.
-	// The caller should retry the operation with exponential backoff.
-	ErrCircularReference = errors.New("circular reference detected, retry with backoff")
+	// Use centralized errors from pkg/errors
+	ErrNotImplemented    = errpkg.ErrBTreeNotImplemented
+	ErrClosed            = errpkg.ErrBTreeClosed
+	ErrRetry             = errpkg.ErrBTreeRetry
+	ErrInvalidPath       = errpkg.ErrBTreeInvalidPath
+	ErrKeyNotFound       = errpkg.ErrBTreeKeyNotFound
+	ErrPageStale         = errpkg.ErrBTreePageStale
+	ErrCircularReference = errpkg.ErrBTreeCircularReference
 )
 
 // PageRefCache 维护 PageID → PageRef 的映射（Off-Heap 模式）
@@ -242,7 +227,8 @@ type BTree struct {
 	hotPageThreshold int64      // 热数据阈值（来自配置）
 
 	// Scheduler for concurrent write operations
-	scheduler *concurrency.TaskScheduler // Task scheduler for concurrent operations
+	scheduler       *concurrency.TaskScheduler   // Task scheduler for concurrent operations
+	perCoreExecutor *concurrency.PerCoreExecutor // Per-Core executor (owned by scheduler)
 
 	// Split coordination: 防止多个 goroutine 同时分裂同一页面
 	splitMuMap sync.Map // map[uint32]*sync.Mutex - 页面级别的分裂锁
@@ -347,7 +333,7 @@ func (a *BTreeSchedulerAdapter) EnqueueWithShard(item any, taskName string) erro
 	if shardItem, ok := item.(concurrency.ShardItem); ok {
 		return a.scheduler.EnqueueWithShard(shardItem, taskName)
 	}
-	return fmt.Errorf("item does not implement ShardItem interface")
+	return errpkg.BTreeShardItemInterface()
 }
 
 // OpenBTree opens or creates a BTree storage engine with persistence support.
@@ -369,7 +355,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// Create directory if not exists
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return nil, fmt.Errorf("create directory: %w", err)
+			return nil, errpkg.BTreeCreateDirectory(dir, err)
 		}
 	}
 
@@ -382,7 +368,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		// Open ChunkManager for append-only storage
 		cm, err := NewChunkManager(dir)
 		if err != nil {
-			return nil, fmt.Errorf("open chunk manager: %w", err)
+			return nil, errpkg.BTreeOpenChunkManager(dir, err)
 		}
 		chunkMgr = cm
 
@@ -395,7 +381,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		})
 		if err != nil {
 			chunkMgr.Close()
-			return nil, fmt.Errorf("open WAL: %w", err)
+			return nil, errpkg.BTreeOpenWAL(walDir, err)
 		}
 		walImpl = w
 	}
@@ -409,7 +395,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	mmapSize := 64 * 1024 * 1024 // 64MB
 	offheapPM, err := offheap.NewPageManager(mmapSize)
 	if err != nil {
-		return nil, fmt.Errorf("create offheap page manager: %w", err)
+		return nil, errpkg.BTreeCreateOffheapManager(err)
 	}
 
 	// 创建 OffHeapAdapter
@@ -419,7 +405,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	initialRootPageID, err := offheapAdapter.AllocLeafPage()
 	if err != nil {
 		offheapPM.Close()
-		return nil, fmt.Errorf("alloc initial root leaf page: %w", err)
+		return nil, errpkg.BTreeAllocRootPage(err)
 	}
 
 	// 创建初始根 PageInfo（使用 NodeRef）
@@ -478,7 +464,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 			// Close resources on error
 			chunkMgr.Close()
 			walImpl.Close()
-			return nil, fmt.Errorf("replay WAL: %w", err)
+			return nil, errpkg.BTreeReplayWAL(err)
 		}
 	}
 
@@ -494,11 +480,18 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 			if runner, ok := item.(model.TaskRunner); ok {
 				// 同步执行任务（TaskScheduler 已经在 Worker 线程中）
 				runner.Run(context.Background(), nil)
-				// 等待任务完成
+				// 等待任务完成并检查结果
 				if task, ok := item.(interface {
 					Wait(context.Context) (any, error)
 				}); ok {
-					_, _ = task.Wait(context.Background())
+					_, err := task.Wait(context.Background())
+					if err != nil {
+						// ErrRetry 表示应该重试
+						if errors.Is(err, ErrRetry) {
+							return concurrency.TaskRetrying
+						}
+						return concurrency.TaskFailed
+					}
 				}
 				return concurrency.TaskPassed
 			}
@@ -516,7 +509,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		if walImpl != nil {
 			walImpl.Close()
 		}
-		return nil, fmt.Errorf("register btree-set task: %w", err)
+		return nil, errpkg.BTreeRegisterTask("set", err)
 	}
 
 	// 注册 btree-split 任务（异步父节点分裂）
@@ -527,11 +520,18 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 			if runner, ok := item.(model.TaskRunner); ok {
 				// 同步执行任务（TaskScheduler 已经在 Worker 线程中）
 				runner.Run(context.Background(), nil)
-				// 等待任务完成
+				// 等待任务完成并检查结果
 				if task, ok := item.(interface {
 					Wait(context.Context) (any, error)
 				}); ok {
-					_, _ = task.Wait(context.Background())
+					_, err := task.Wait(context.Background())
+					if err != nil {
+						// ErrRetry 表示应该重试
+						if errors.Is(err, ErrRetry) {
+							return concurrency.TaskRetrying
+						}
+						return concurrency.TaskFailed
+					}
 				}
 				return concurrency.TaskPassed
 			}
@@ -550,7 +550,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 			walImpl.Close()
 		}
 		btree.scheduler.Stop()
-		return nil, fmt.Errorf("register btree-split task: %w", err)
+		return nil, errpkg.BTreeRegisterTask("split", err)
 	}
 
 	// 启动 TaskScheduler
@@ -564,8 +564,9 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 			walImpl.Close()
 		}
 		btree.scheduler.Stop()
-		return nil, fmt.Errorf("create per-core executor: %w", err)
+		return nil, errpkg.BTreeCreateExecutor(err)
 	}
+	btree.perCoreExecutor = executor // 保存 executor 引用
 
 	if err := btree.scheduler.Start(executor); err != nil {
 		// 清理资源
@@ -575,7 +576,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		if walImpl != nil {
 			walImpl.Close()
 		}
-		return nil, fmt.Errorf("start scheduler: %w", err)
+		return nil, errpkg.BTreeStartScheduler(err)
 	}
 
 	return btree, nil
@@ -601,17 +602,9 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 
 	const maxRetries = 5 // 最多重试 5 次（增加以提高并发成功率）
 
-	// 调试：追踪 key-06151、key-06267、key-06709、key-09803 和 multi-key-2 的查找过程
-	debugThisKey := string(key) == "key-06151" || string(key) == "key-06150" || string(key) == "key-06152" ||
-		string(key) == "key-06267" || string(key) == "key-06709" || string(key) == "key-09803" || string(key) == "multi-key-2"
-
 	for attempt := range maxRetries {
-		if debugThisKey {
-			DebugPrintf("[GET_DEBUG] key=%s attempt=%d\n", string(key), attempt)
-		}
-
 		// Off-Heap 模式：使用 searchPathWithRefs
-		leafRef, path, err := b.findLeafPageRef(ctx, key)
+		leafRef, path, _, err := b.findLeafPageRef(ctx, key)
 		if err != nil {
 			// 如果查找路径失败且不是最后一次尝试，重试
 			if attempt < maxRetries-1 {
@@ -623,9 +616,6 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		}
 
 		if len(path) == 0 || leafRef == nil {
-			if debugThisKey {
-				DebugPrintf("[GET_DEBUG] key=%s path=%d leafRef=%v\n", string(key), len(path), leafRef != nil)
-			}
 			if attempt < maxRetries-1 {
 				runtime.Gosched()
 				continue
@@ -636,9 +626,6 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		// 获取叶子节点的 PageInfo
 		leafInfo := leafRef.GetPageInfo()
 		if leafInfo == nil {
-			if debugThisKey {
-				DebugPrintf("[GET_DEBUG] key=%s leafInfo=nil\n", string(key))
-			}
 			if attempt < maxRetries-1 {
 				runtime.Gosched()
 				continue
@@ -651,52 +638,23 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 
 		// Off-Heap 模式：验证页面已加载
 		if !leafInfo.IsPageLoaded() {
-			return nil, fmt.Errorf("leaf page not loaded")
+			return nil, errpkg.BTreeLeafPageNotLoaded()
 		}
 
 		// 使用 OffHeapAdapter.GetFromOffHeap 直接读取
 		value, found, err := b.offheapAdapter.GetFromOffHeap(leafPageID, key)
-		if debugThisKey {
-			DebugPrintf("[GET_DEBUG] key=%s leafPageID=%d found=%v err=%v\n", string(key), leafPageID, found, err)
-			// 打印页面的所有 keys
-			count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
-			DebugPrintf("[GET_DEBUG] key=%s leafPageID=%d count=%d\n", string(key), leafPageID, count)
-			if count > 0 {
-				// 打印前5个和后5个 keys
-				maxPrint := 5
-				if int(count) <= maxPrint*2 {
-					maxPrint = int(count)
-				}
-				for i := 0; i < maxPrint; i++ {
-					keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
-					pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
-					DebugPrintf("[GET_DEBUG]   key[%d]=%s\n", i, string(pageKey))
-				}
-				if int(count) > maxPrint*2 {
-					DebugPrintf("[GET_DEBUG]   ... (%d more keys)\n", int(count)-maxPrint*2)
-					for i := int(count) - maxPrint; i < int(count); i++ {
-						keyOff, keyLen, _, _ := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(leafPageID), i)
-						pageKey := b.offheapAdapter.pa.GetKey(uint32(leafPageID), keyOff, keyLen)
-						DebugPrintf("[GET_DEBUG]   key[%d]=%s\n", i, string(pageKey))
-					}
-				}
-			}
-		}
 		if err != nil {
 			// 如果读取错误且不是最后一次尝试，重试
 			if attempt < maxRetries-1 {
 				runtime.Gosched()
 				continue
 			}
-			return nil, fmt.Errorf("offheap get: %w", err)
+			return nil, errpkg.BTreeOffheapGet(err)
 		}
 
 		if found {
 			// 成功找到，推进 epoch 释放待释放页面
 			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
-			if debugThisKey {
-				DebugPrintf("[GET_DEBUG] key=%s FOUND\n", string(key))
-			}
 			return value, nil // 成功找到，直接返回
 		}
 
@@ -793,7 +751,7 @@ func (b *BTree) setDirect(ctx context.Context, key, value []byte) error {
 				continue
 			}
 			// 达到最大重试次数，返回错误
-			return fmt.Errorf("circular reference retry exhausted after %d attempts: %w", maxRetries, err)
+			return errpkg.BTreeCircularReferenceRetry(maxRetries, err)
 
 		default:
 			// 其他错误：不重试，直接返回
@@ -801,7 +759,7 @@ func (b *BTree) setDirect(ctx context.Context, key, value []byte) error {
 		}
 	}
 
-	return fmt.Errorf("max retries (%d) exceeded", maxRetries)
+	return errpkg.BTreeMaxRetriesExceeded(maxRetries)
 }
 
 // Delete removes a key.
@@ -829,13 +787,13 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 		// 2. 查找键的路径
 		_, path, err := b.findLeafPage(ctx, key)
 		if err != nil {
-			return fmt.Errorf("find leaf page: %w", err)
+			return errpkg.BTreeFindLeafPage(err)
 		}
 
 		// 3. CCOW：复制路径
 		copiedPath, err := b.copyPath(path)
 		if err != nil {
-			return fmt.Errorf("copy path: %w", err)
+			return errpkg.BTreeCopyPath(err)
 		}
 
 		// 4. 删除键
@@ -844,7 +802,7 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 
 		deleted, err := leaf.Delete(key)
 		if err != nil {
-			return fmt.Errorf("delete from leaf: %w", err)
+			return errpkg.BTreeDeleteFromLeaf(err)
 		}
 
 		if !deleted {
@@ -856,7 +814,7 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 		if leaf.NumKeys() < minKeys && len(path) >= 2 {
 			// 重新启用 Merge，使用原始 path 访问兄弟节点
 			if err := b.mergeLeaf(leafInfo, copiedPath, path); err != nil {
-				return fmt.Errorf("merge leaf: %w", err)
+				return errpkg.BTreeMergeLeaf(err)
 			}
 		}
 
@@ -883,7 +841,7 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error {
 		// 7. 持久化
 		if b.chunkMgr != nil {
 			if err := b.persistRoot(newRootInfo); err != nil {
-				return fmt.Errorf("persist root: %w", err)
+				return errpkg.BTreePersistRoot(err)
 			}
 		}
 
@@ -907,20 +865,20 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 		}
 
 		// 2. 查找叶子节点和路径（只读，不克隆）
-		leafRef, path, err := b.findLeafPageRef(ctx, key)
+		leafRef, path, _, err := b.findLeafPageRef(ctx, key)
 		if err != nil {
 			// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
 			return err
 		}
 
 		if len(path) == 0 {
-			return fmt.Errorf("empty path")
+			return errpkg.BTreeEmptyPath()
 		}
 
 		// 3. 获取叶子锁（懒加载，每个 PageRef 有独立的锁）
 		pageLock := leafRef.GetLock()
 		if pageLock == nil {
-			return fmt.Errorf("page lock is nil")
+			return errpkg.BTreePageLockNil()
 		}
 
 		// 使用 TryLock 快速失败（避免死锁）
@@ -936,12 +894,12 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 		// 4. 获取当前 PageInfo（在锁保护下）
 		oldInfo := leafRef.GetPageInfo()
 		if oldInfo == nil {
-			return fmt.Errorf("leaf page info is nil")
+			return errpkg.BTreeLeafPageInfoNil()
 		}
 
 		// 5. 验证页面已加载（Off-Heap 模式）
 		if !oldInfo.IsPageLoaded() {
-			return fmt.Errorf("leaf page not loaded")
+			return errpkg.BTreeLeafPageNotLoaded2()
 		}
 
 		// 6. Off-Heap 删除（使用 COW 语义）
@@ -951,7 +909,7 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 			if errors.Is(err, ErrKeyNotFound) {
 				return ErrKeyNotFound
 			}
-			return fmt.Errorf("offheap delete: %w", err)
+			return errpkg.BTreeOffheapDelete(err)
 		}
 
 		// 7. 创建新的 PageInfo（Off-Heap 模式）
@@ -982,7 +940,7 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 				// 需要更新 rootRef 而不是只更新 PageRefCache
 				oldRootInfo := b.rootRef.pInfo.Load()
 				if oldRootInfo == nil {
-					return fmt.Errorf("root info is nil during root update")
+					return errpkg.BTreeRootInfoNil("root update")
 				}
 				oldRootID := oldRootInfo.GetPageID()
 				if !b.rootRef.ReplacePage(oldRootID, newInfo) {
@@ -1003,7 +961,7 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 				// 获取父节点的 PageInfo
 				parentInfo := path[len(path)-2]
 				if parentInfo == nil {
-					return fmt.Errorf("parent info is nil")
+					return errpkg.BTreeParentInfoNil("delete")
 				}
 
 				oldParentPageID := model.PageID(parentInfo.GetPageID())
@@ -1014,7 +972,7 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 				if currentRootInfo != nil && currentRootInfo.GetPageID() == uint64(oldParentPageID) {
 					// 父节点就是根节点，使用根的 PageRef
 					if b.rootRef.PageRef == nil {
-						return fmt.Errorf("root PageRef is nil during parent update")
+						return errpkg.BTreeRootPageRefNil("parent update")
 					}
 					parentRef = b.rootRef.PageRef
 				}
@@ -1022,7 +980,7 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 				// 获取父节点锁（自底向上加锁）
 				parentLock := parentRef.GetLock()
 				if parentLock == nil {
-					return fmt.Errorf("parent lock is nil")
+					return errpkg.BTreeParentLockNil()
 				}
 
 				if !parentLock.TryLock() {
@@ -1066,13 +1024,13 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 
 				if childIndex < 0 {
 					// 没有找到对应的 child 指针，返回错误
-					return fmt.Errorf("child not found in parent page")
+					return errpkg.BTreeChildNotFound(uint64(oldParentPageID), uint64(oldPageID))
 				}
 
 				// 使用 UpdateChildIndex 更新父节点
 				newParentPageID, err := b.offheapAdapter.UpdateChildIndex(oldParentPageID, childIndex, newPageID)
 				if err != nil {
-					return fmt.Errorf("update parent child index: %w", err)
+					return errpkg.BTreeUpdateParentChildIndex(err)
 				}
 
 				// 创建新的父节点 PageInfo
@@ -1113,7 +1071,7 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 		// 11. 持久化（如果有 ChunkManager）
 		if b.chunkMgr != nil {
 			if err := b.persistRoot(newInfo); err != nil {
-				return fmt.Errorf("persist root: %w", err)
+				return errpkg.BTreePersistRoot(err)
 			}
 		}
 
@@ -1170,7 +1128,7 @@ func (b *BTree) BeginTx(ctx context.Context, opts ...service.TxOption) (service.
 	if b.closed {
 		return nil, ErrClosed
 	}
-	return nil, errors.New("BeginTx: not implemented")
+	return nil, errpkg.BTreeBeginTxNotImplemented()
 }
 
 // CreateSnapshot creates a snapshot (not implemented).
@@ -1180,7 +1138,7 @@ func (b *BTree) CreateSnapshot(ctx context.Context) (service.SnapshotID, error) 
 	if b.closed {
 		return 0, ErrClosed
 	}
-	return 0, errors.New("CreateSnapshot: not implemented")
+	return 0, errpkg.BTreeCreateSnapshotNotImplemented()
 }
 
 // ReleaseSnapshot releases a snapshot (not implemented).
@@ -1190,7 +1148,7 @@ func (b *BTree) ReleaseSnapshot(ctx context.Context, id service.SnapshotID) erro
 	if b.closed {
 		return ErrClosed
 	}
-	return errors.New("ReleaseSnapshot: not implemented")
+	return errpkg.BTreeReleaseSnapshotNotImplemented()
 }
 
 // Stats returns storage statistics (not implemented).
@@ -1232,7 +1190,7 @@ func (b *BTree) replayWAL() error {
 	if len(entries) > 0 {
 		lastLSN := entries[len(entries)-1].LSN
 		if err := b.wal.Truncate(lastLSN); err != nil {
-			return fmt.Errorf("truncate WAL: %w", err)
+			return errpkg.BTreeTruncateWAL(err)
 		}
 	}
 
@@ -1275,10 +1233,16 @@ func (b *BTree) Close() error {
 		b.scheduler = nil
 	}
 
+	// 关闭 PerCoreExecutor（停止 worker pool）
+	if b.perCoreExecutor != nil {
+		b.perCoreExecutor.Close()
+		b.perCoreExecutor = nil
+	}
+
 	// Close ChunkManager
 	if b.chunkMgr != nil {
 		if err := b.chunkMgr.Close(); err != nil {
-			return fmt.Errorf("close chunk manager: %w", err)
+			return errpkg.BTreeCloseChunkManager(err)
 		}
 	}
 
@@ -1290,7 +1254,7 @@ func (b *BTree) Close() error {
 	// Close WAL
 	if b.wal != nil {
 		if err := b.wal.Close(); err != nil {
-			return fmt.Errorf("close WAL: %w", err)
+			return errpkg.BTreeCloseWAL(err)
 		}
 	}
 
@@ -1415,13 +1379,13 @@ func (b *BTree) findPageByID(rootInfo *PageInfo, pageID model.PageID) any {
 func (b *BTree) loadPage(pos int64) (any, error) {
 	// 1. 检查 ChunkManager（仅持久化模式需要）
 	if b.chunkMgr == nil {
-		return nil, fmt.Errorf("chunk manager not initialized (in-memory mode)")
+		return nil, errpkg.BTreeChunkManagerNotInit()
 	}
 
 	// 2. 调用 ChunkManager.LoadPage()（根据位置编码加载页面）
 	page, err := b.chunkMgr.LoadPage(pos)
 	if err != nil {
-		return nil, fmt.Errorf("load page at %d: %w", pos, err)
+		return nil, errpkg.BTreeLoadPageAt(pos, err)
 	}
 
 	return page, nil
@@ -1440,7 +1404,7 @@ func (b *BTree) loadPage(pos int64) (any, error) {
 //	error - 错误信息
 func (b *BTree) getPageOrLoad(info *PageInfo) (any, error) {
 	if info == nil {
-		return nil, fmt.Errorf("pageInfo is nil")
+		return nil, errpkg.BTreePageInfoNil()
 	}
 
 	// 如果 page 已加载，直接返回
@@ -1450,13 +1414,13 @@ func (b *BTree) getPageOrLoad(info *PageInfo) (any, error) {
 
 	// 如果 pos == 0，说明页面从未持久化
 	if info.GetPos() == 0 {
-		return nil, fmt.Errorf("page not loaded and no position (pos=0)")
+		return nil, errpkg.BTreePageNotLoadedNoPos()
 	}
 
 	// 懒加载：从 ChunkManager 加载
 	page, err := b.loadPage(info.GetPos())
 	if err != nil {
-		return nil, fmt.Errorf("load page: %w", err)
+		return nil, errpkg.BTreeLoadPage(err)
 	}
 
 	// 更新 PageInfo.page
@@ -1513,7 +1477,7 @@ func (b *BTree) Validate(ctx context.Context) error {
 // 修复：使用 PageID 来正确匹配和更新 InternalPage 的子节点引用
 func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 	if len(path) == 0 {
-		return nil, fmt.Errorf("empty path")
+		return nil, errpkg.BTreeEmptyPath()
 	}
 
 	copiedPath := make([]*PageInfo, len(path))
@@ -1626,7 +1590,7 @@ func (b *BTree) copyPath(path []*PageInfo) ([]*PageInfo, error) {
 // - CAS 成功后的修改会触发深拷贝
 func (b *BTree) copyPathShallow(path []*PageInfo) ([]*PageInfo, error) {
 	if len(path) == 0 {
-		return nil, fmt.Errorf("empty path")
+		return nil, errpkg.BTreeEmptyPath()
 	}
 
 	copiedPath := make([]*PageInfo, len(path))
@@ -1831,7 +1795,7 @@ func (b *BTree) finalizeDeepClone(copiedPath []*PageInfo) error {
 // - CAS 失败率高：使用 copyPathShallow 避免重复物化
 func (b *BTree) copyPathWithDelta(path []*PageInfo) ([]*PageInfo, error) {
 	if len(path) == 0 {
-		return nil, fmt.Errorf("empty path")
+		return nil, errpkg.BTreeEmptyPath()
 	}
 
 	copiedPath := make([]*PageInfo, len(path))
@@ -1954,17 +1918,17 @@ func (b *BTree) rebuildChildRefs(copiedPath []*PageInfo) ([]*PageInfo, error) {
 //	error - 错误信息
 func (b *BTree) persistPage(pageInfo *PageInfo, pageType int) (int64, error) {
 	if b.chunkMgr == nil {
-		return 0, fmt.Errorf("chunk manager not initialized")
+		return 0, errpkg.BTreeChunkManagerNotInit()
 	}
 
 	// 1. 获取页面
 	if !pageInfo.IsPageLoaded() {
-		return 0, fmt.Errorf("page not loaded")
+		return 0, errpkg.BTreePageNotLoaded()
 	}
 
 	page := pageInfo.GetPage()
 	if page == nil {
-		return 0, fmt.Errorf("page is nil")
+		return 0, errpkg.BTreePageInfoNil()
 	}
 
 	// 2. 序列化页面
@@ -1975,26 +1939,26 @@ func (b *BTree) persistPage(pageInfo *PageInfo, pageType int) (int64, error) {
 	case *LeafPage:
 		data, err = p.Serialize()
 		if err != nil {
-			return 0, fmt.Errorf("serialize leaf page: %w", err)
+			return 0, errpkg.BTreeSerializeLeafPage(err)
 		}
 	case *InternalPage:
 		data, err = p.Serialize()
 		if err != nil {
-			return 0, fmt.Errorf("serialize internal page: %w", err)
+			return 0, errpkg.BTreeSerializeInternalPage(err)
 		}
 	default:
-		return 0, fmt.Errorf("unknown page type: %T", page)
+		return 0, errpkg.BTreeUnknownPageType(fmt.Sprintf("%T", page))
 	}
 
 	// 3. 分配页面空间
 	pos, err := b.chunkMgr.AllocatePage(pageType)
 	if err != nil {
-		return 0, fmt.Errorf("allocate page: %w", err)
+		return 0, errpkg.BTreeAllocatePage(err)
 	}
 
 	// 4. 写入页面
 	if err := b.chunkMgr.WritePage(pos, data); err != nil {
-		return 0, fmt.Errorf("write page to chunk: %w", err)
+		return 0, errpkg.BTreeWritePageToChunk(err)
 	}
 
 	// 5. 更新 PageInfo 的位置
@@ -2031,7 +1995,7 @@ func (b *BTree) persistPageRecursive(pageInfo *PageInfo) error {
 				childInfo := childRef.GetPageInfo()
 				if childInfo != nil {
 					if err := b.persistPageRecursive(childInfo); err != nil {
-						return fmt.Errorf("persist child page: %w", err)
+						return errpkg.BTreePersistChildPage(childInfo.GetPageID(), err)
 					}
 				}
 			}
@@ -2040,14 +2004,14 @@ func (b *BTree) persistPageRecursive(pageInfo *PageInfo) error {
 		// 1.2 持久化当前内部节点
 		_, err := b.persistPage(pageInfo, PageTypeInternal)
 		if err != nil {
-			return fmt.Errorf("persist internal page: %w", err)
+			return errpkg.BTreePersistInternalPageErr(err)
 		}
 
 	case *LeafPage:
 		// 2. 持久化叶子节点
 		_, err := b.persistPage(pageInfo, PageTypeLeaf)
 		if err != nil {
-			return fmt.Errorf("persist leaf page: %w", err)
+			return errpkg.BTreePersistLeafPageErr(err)
 		}
 	}
 
@@ -2067,7 +2031,7 @@ func (b *BTree) persistPageRecursive(pageInfo *PageInfo) error {
 // 没有并发修改导致页面结构不一致
 func (b *BTree) persistRoot(rootInfo *PageInfo) error {
 	if rootInfo == nil {
-		return fmt.Errorf("root page info is nil")
+		return errpkg.BTreeRootPageInfoNil()
 	}
 
 	// 递归持久化整个树（自底向上）
@@ -2090,7 +2054,7 @@ func (b *BTree) findChildIndexInParent(parent *InternalPage, childInfo *PageInfo
 		}
 	}
 
-	return -1, fmt.Errorf("child not found in parent")
+	return -1, errpkg.BTreeChildNotFoundInParent(childPageID)
 }
 
 // ensurePageLoaded 确保页面已加载（懒加载）
@@ -2104,7 +2068,7 @@ func (b *BTree) ensurePageLoaded(pageInfo *PageInfo) error {
 		if pos := pageInfo.GetPos(); pos != 0 {
 			page, err := b.chunkMgr.LoadPage(pos)
 			if err != nil {
-				return fmt.Errorf("load page from chunk: %w", err)
+				return errpkg.BTreeLoadPageFromChunk(err)
 			}
 			pageInfo.SetPage(page)
 		}
@@ -2137,19 +2101,19 @@ func (b *BTree) mergeLeaf(leafInfo *PageInfo, copiedPath, path []*PageInfo) erro
 
 	// 从 copiedPath 获取父节点（用于修改和访问兄弟节点）
 	if len(copiedPath) < 2 {
-		return fmt.Errorf("copiedPath too short: expected at least 2, got %d", len(copiedPath))
+		return errpkg.BTreeCopiedPathTooShort(2, len(copiedPath))
 	}
 
 	parentInfo := copiedPath[len(copiedPath)-2]
 	parent := parentInfo.GetInternalPage()
 	if parent == nil {
-		return fmt.Errorf("parent page not loaded in copiedPath")
+		return errpkg.BTreeParentPageNotLoaded()
 	}
 
 	// 2. 找到当前节点在父节点中的位置
 	leafIndex, err := b.findChildIndexInParent(parent, leafInfo)
 	if err != nil {
-		return fmt.Errorf("find child index: %w", err)
+		return errpkg.BTreeFindChildIndex(err)
 	}
 
 	// 3. 尝试从左兄弟借键
@@ -2466,11 +2430,10 @@ func (b *BTree) redistributeInternalLeft(
 
 	// P0 修复: 防御性检查 - 确保左兄弟有足够的键和子节点
 	if leftSibling.NumKeys() < 2 {
-		return fmt.Errorf("left sibling has insufficient keys to borrow: %d", leftSibling.NumKeys())
+		return errpkg.BTreeLeftSiblingInsufficientKeys(leftSibling.NumKeys())
 	}
 	if len(leftSibling.children) != leftSibling.NumKeys()+1 {
-		return fmt.Errorf("left sibling children count mismatch: keys=%d, children=%d",
-			leftSibling.NumKeys(), len(leftSibling.children))
+		return errpkg.BTreeLeftSiblingChildrenMismatch(leftSibling.NumKeys(), len(leftSibling.children))
 	}
 
 	// 1. 从父节点获取分隔键
@@ -2482,8 +2445,7 @@ func (b *BTree) redistributeInternalLeft(
 
 	// P0 修复: 添加边界检查，防止数组越界
 	if lastIdx+1 >= len(leftSibling.children) {
-		return fmt.Errorf("left sibling children index out of range: lastIdx=%d, children_len=%d",
-			lastIdx, len(leftSibling.children))
+		return errpkg.BTreeLeftSiblingIndexOutOfRange(lastIdx, len(leftSibling.children))
 	}
 	borrowedChild := leftSibling.children[lastIdx+1] // 最后一个子节点
 
@@ -2529,11 +2491,10 @@ func (b *BTree) redistributeInternalRight(
 
 	// P0 修复: 防御性检查 - 确保右兄弟有足够的键和子节点
 	if rightSibling.NumKeys() < 1 {
-		return fmt.Errorf("right sibling has insufficient keys to borrow: %d", rightSibling.NumKeys())
+		return errpkg.BTreeRightSiblingInsufficientKeys(rightSibling.NumKeys())
 	}
 	if len(rightSibling.children) != rightSibling.NumKeys()+1 {
-		return fmt.Errorf("right sibling children count mismatch: keys=%d, children=%d",
-			rightSibling.NumKeys(), len(rightSibling.children))
+		return errpkg.BTreeRightSiblingChildrenMismatch(rightSibling.NumKeys(), len(rightSibling.children))
 	}
 
 	// 1. 从父节点获取分隔键
@@ -2544,7 +2505,7 @@ func (b *BTree) redistributeInternalRight(
 
 	// P0 修复: 添加边界检查，防止空切片访问
 	if len(rightSibling.children) == 0 {
-		return fmt.Errorf("right sibling has no children")
+		return errpkg.BTreeRightSiblingNoChildren()
 	}
 	borrowedChild := rightSibling.children[0] // 第一个子节点
 
@@ -2595,19 +2556,19 @@ func (b *BTree) mergeInternal(nodeInfo *PageInfo, copiedPath, path []*PageInfo) 
 
 	// 从 copiedPath 获取父节点（用于修改和访问兄弟节点）
 	if len(copiedPath) < 2 {
-		return fmt.Errorf("copiedPath too short: expected at least 2, got %d", len(copiedPath))
+		return errpkg.BTreeCopiedPathTooShort(2, len(copiedPath))
 	}
 
 	parentInfo := copiedPath[len(copiedPath)-2]
 	parent := parentInfo.GetInternalPage()
 	if parent == nil {
-		return fmt.Errorf("parent page not loaded in copiedPath")
+		return errpkg.BTreeParentPageNotLoaded()
 	}
 
 	// 2. 找到当前节点在父节点中的位置
 	nodeIndex, err := b.findChildIndexInParent(parent, nodeInfo)
 	if err != nil {
-		return fmt.Errorf("find child index: %w", err)
+		return errpkg.BTreeFindChildIndex(err)
 	}
 
 	// 3. 尝试从左兄弟借键

@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"fmt"
 	"unsafe"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // 页面类型常量
@@ -18,8 +20,8 @@ const (
 
 // 4KB 页面布局：
 // ┌──────────────┬──────────────┬──────────────┬──────────────┐
-// │ PageHeader   │ Entry 数组   │ 空闲区       │ KV 数据区     │
-// │ 32B          │ N×12/16B     │ (预留增长)   │ key[]+val[]   │
+// │ PageHeader   │ Entry 数组    │ 空闲区        │ KV 数据区     │
+// │ 32B          │ N×12/16B     │ (预留增长)     │ key[]+val[]  │
 // └──────────────┴──────────────┴──────────────┴──────────────┘
 //
 // 空闲区从后往前分配，Entry 数组从前往后增长
@@ -257,7 +259,6 @@ func (pa *PageAccessor) InitPage(pageID uint32, pageType uint8, version uint64) 
 	ptr := pa.pm.PageIDToPtr(pageID)
 	header := (*PageHeader)(ptr)
 
-	oldPageType := header.pageType
 	header.pageType = pageType
 	header.count = 0
 	header.extraChild = 0        // 清空 N+1 child（防止页面重用时出现循环引用）
@@ -265,20 +266,6 @@ func (pa *PageAccessor) InitPage(pageID uint32, pageType uint8, version uint64) 
 	header.nextPage = 0xFFFFFFFF
 	header.version = version
 	// _pad 自动初始化为零
-
-	// Debug logging for specific pages
-	if pageID == 539 || pageID == 547 || pageID == 548 || pageID == 1317 {
-		pageTypeName := "LEAF"
-		if pageType == PageTypeIndex {
-			pageTypeName = "INDEX"
-		}
-		oldTypeName := "LEAF"
-		if oldPageType == PageTypeIndex {
-			oldTypeName = "INDEX"
-		}
-		fmt.Printf("[INIT_PAGE] pageID=%d %s -> %s (version=%d) prev=0x%08x next=0x%08x\n",
-			pageID, oldTypeName, pageTypeName, version, header.prevPage, header.nextPage)
-	}
 }
 
 // InitIndexPage 初始化索引页面
@@ -301,7 +288,7 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 	requiredSpace := uint32(SizeofIndexEntry) + keyLen
 	usedSpace := uint32(SizeofPageHeader) + uint32(header.count)*uint32(SizeofIndexEntry) + uint32(*dataEnd)
 	if usedSpace+requiredSpace > PageSize {
-		return fmt.Errorf("page full: used=%d, required=%d, total=%d", usedSpace, requiredSpace, PageSize)
+		return errpkg.OffHeapPageFull(int(usedSpace), int(requiredSpace), PageSize)
 	}
 
 	// 移动现有 entries（如果需要）
@@ -362,7 +349,7 @@ func (pa *PageAccessor) InsertLeafEntry(pageID uint32, index int, key, value []b
 	requiredSpace := uint32(SizeofLeafEntry) + keyLen + valLen
 	usedSpace := uint32(SizeofPageHeader) + uint32(header.count)*uint32(SizeofLeafEntry) + uint32(*dataEnd)
 	if usedSpace+requiredSpace > PageSize {
-		return fmt.Errorf("page full: used=%d, required=%d, total=%d", usedSpace, requiredSpace, PageSize)
+		return errpkg.OffHeapPageFull(int(usedSpace), int(requiredSpace), PageSize)
 	}
 
 	// 移动现有 entries（如果需要）
@@ -514,10 +501,6 @@ func (pa *PageAccessor) GetNextPage(pageID uint32) uint32 {
 // SetNextPage 设置后一个页面
 func (pa *PageAccessor) SetNextPage(pageID uint32, next uint32) {
 	pa.GetHeader(pageID).nextPage = next
-	// 调试：追踪页面 1317 的 nextPage 设置
-	if pageID == 1317 || next == 1317 || next == 1318 || next == 1316 {
-		fmt.Printf("[SET_NEXT] pageID=%d next=%d\n", pageID, next)
-	}
 }
 
 // GetChild 获取索引节点的子节点

@@ -7,7 +7,8 @@ package btree
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // PageSerializer 页面序列化辅助工具
@@ -147,7 +148,7 @@ type PageDeserializer struct {
 // NewPageDeserializer 创建新的页面反序列化器
 func NewPageDeserializer(data []byte) (*PageDeserializer, error) {
 	if len(data) != PageSize {
-		return nil, fmt.Errorf("invalid data size: expected %d bytes, got %d", PageSize, len(data))
+		return nil, errpkg.BTreeInvalidDataSize(PageSize, len(data))
 	}
 
 	// 读取实际内容长度（前 4 字节）
@@ -162,7 +163,7 @@ func NewPageDeserializer(data []byte) (*PageDeserializer, error) {
 // readBytes 读取指定字节数
 func (pd *PageDeserializer) readBytes(n int) ([]byte, error) {
 	if pd.pos+n > len(pd.data) {
-		return nil, fmt.Errorf("unexpected EOF: expected %d bytes, got %d", n, len(pd.data)-pd.pos)
+		return nil, errpkg.BTreeUnexpectedEOF(n, len(pd.data)-pd.pos)
 	}
 	result := pd.data[pd.pos : pd.pos+n]
 	pd.pos += n

@@ -6,11 +6,11 @@ package btree
 
 import (
 	"bytes"
-	"fmt"
 	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree/offheap"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // OffHeapAdapter Off-Heap 页面适配器
@@ -35,7 +35,7 @@ func NewOffHeapAdapter(pm *offheap.PageManager) *OffHeapAdapter {
 func (a *OffHeapAdapter) AllocLeafPage() (model.PageID, error) {
 	pageID, err := a.pm.Alloc()
 	if err != nil {
-		return 0, fmt.Errorf("alloc page: %w", err)
+		return 0, errpkg.BTreeAllocPageAdapter(err)
 	}
 	a.pa.InitLeafPage(pageID, 0)
 	return model.PageID(pageID), nil
@@ -46,7 +46,7 @@ func (a *OffHeapAdapter) AllocLeafPage() (model.PageID, error) {
 func (a *OffHeapAdapter) AllocIndexPage() (model.PageID, error) {
 	pageID, err := a.pm.Alloc()
 	if err != nil {
-		return 0, fmt.Errorf("alloc page: %w", err)
+		return 0, errpkg.BTreeAllocPageAdapter(err)
 	}
 	a.pa.InitIndexPage(pageID, 0)
 	return model.PageID(pageID), nil
@@ -273,7 +273,7 @@ func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, valu
 	// 分配新页面
 	newPageID, err := a.pm.Alloc()
 	if err != nil {
-		return 0, fmt.Errorf("alloc new page: %w", err)
+		return 0, errpkg.BTreeAllocNewPageForSplit(err)
 	}
 
 	if debugThisUpdate {
@@ -284,7 +284,7 @@ func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, valu
 	_, err = a.materializer.MaterializePageFromBytes(newPageID, keys, values)
 	if err != nil {
 		a.pm.Free(newPageID)
-		return 0, fmt.Errorf("materialize page: %w", err)
+		return 0, errpkg.BTreeMaterializePageAdapter(err)
 	}
 
 	if debugThisUpdate {
@@ -309,17 +309,17 @@ func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, valu
 func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []byte, leftPageID, rightPageID uint32) (model.PageID, error) {
 	// 防御性检查：rightPageID 必须非零（分裂操作需要两个子节点）
 	if rightPageID == 0 {
-		return 0, fmt.Errorf("UpdateIndexEntry: rightPageID cannot be 0 (use ReplaceChild for single child replacement)")
+		return 0, errpkg.BTreeUpdateIndexEntryRightZero()
 	}
 	if leftPageID == 0 {
-		return 0, fmt.Errorf("UpdateIndexEntry: leftPageID cannot be 0")
+		return 0, errpkg.BTreeUpdateIndexEntryLeftZero()
 	}
 
 	count := a.pa.GetCount(uint32(pageID))
 
 	// 检查父节点是否已满
 	if int(count) >= maxInternalKeys {
-		return 0, fmt.Errorf("parent page full: count=%d, max=%d", count, maxInternalKeys)
+		return 0, errpkg.BTreeParentFull(int(count), maxInternalKeys)
 	}
 
 	keys := make([][]byte, 0, count+1)
@@ -392,16 +392,40 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 
 	newPageID, err := a.pm.Alloc()
 	if err != nil {
-		return 0, fmt.Errorf("alloc new page: %w", err)
+		return 0, errpkg.BTreeAllocNewPageForSplit(err)
 	}
 
 	_, err = a.materializer.MaterializeIndexPageFromBytes(uint32(newPageID), keys, children)
 	if err != nil {
 		a.pm.Free(newPageID)
-		return 0, fmt.Errorf("materialize index page: %w", err)
+		return 0, errpkg.BTreeMaterializePageForSplit(err)
 	}
 
 	return model.PageID(newPageID), nil
+}
+
+// FindChildIndex 查找父页面中指定 child 的索引位置
+//
+// 参数：
+//
+//	parentPageID - 父页面 ID
+//	childPageID - 要查找的子页面 ID
+//
+// 返回：child 的索引位置（0 到 count），如果未找到返回 -1
+// 注意：会遍历所有 child（包括 extraChild），因为 key 索引和 child 索引不同
+func (a *OffHeapAdapter) FindChildIndex(parentPageID uint32, childPageID uint32) int {
+	count := a.pa.GetCount(parentPageID)
+
+	// 遍历所有 child（包括 extraChild）
+	for i := 0; i <= int(count); i++ {
+		encodedChild := a.pa.GetChild(parentPageID, i)
+		child, _ := a.DecodeChildWithVersion(encodedChild)
+		if child == childPageID {
+			return i
+		}
+	}
+
+	return -1 // 未找到
 }
 
 // ReplaceChild 替换索引节点中的单个子节点（不增加子节点数量）
@@ -419,7 +443,7 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 
 	// 验证索引有效（index 可以是 0 到 count，其中 count 表示 extraChild）
 	if index < 0 || index > int(count) {
-		return 0, fmt.Errorf("invalid child index: %d (count=%d)", index, count)
+		return 0, errpkg.BTreeInvalidChildIndexAt(index, int(count))
 	}
 
 	// 复制所有 keys 和 children，只替换指定位置的 child
@@ -460,14 +484,14 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 	// 分配新页面
 	newPageID, err := a.pm.Alloc()
 	if err != nil {
-		return 0, fmt.Errorf("alloc new page: %w", err)
+		return 0, errpkg.BTreeAllocNewPageForSplit(err)
 	}
 
 	// 物化新页面
 	_, err = a.materializer.MaterializeIndexPageFromBytes(uint32(newPageID), keys, children)
 	if err != nil {
 		a.pm.Free(newPageID)
-		return 0, fmt.Errorf("materialize index page: %w", err)
+		return 0, errpkg.BTreeMaterializePageForSplit(err)
 	}
 
 	return model.PageID(newPageID), nil
@@ -478,7 +502,7 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 func (a *OffHeapAdapter) MaterializeLeafPage(leaf *LeafPage) (model.PageID, error) {
 	pageID, err := a.pm.Alloc()
 	if err != nil {
-		return 0, fmt.Errorf("alloc page: %w", err)
+		return 0, errpkg.BTreeAllocPageAdapter(err)
 	}
 
 	// 收集 keys 和 values（跳过 Delta，只物化基线数据）
@@ -502,7 +526,7 @@ func (a *OffHeapAdapter) MaterializeLeafPage(leaf *LeafPage) (model.PageID, erro
 	_, err = a.materializer.MaterializePageFromBytes(uint32(pageID), keys, values)
 	if err != nil {
 		a.pm.Free(uint32(pageID))
-		return 0, fmt.Errorf("materialize page: %w", err)
+		return 0, errpkg.BTreeMaterializePageAdapter(err)
 	}
 
 	return model.PageID(pageID), nil
@@ -513,7 +537,7 @@ func (a *OffHeapAdapter) MaterializeLeafPage(leaf *LeafPage) (model.PageID, erro
 func (a *OffHeapAdapter) CloneOffHeapPage(pageID model.PageID, isLeaf bool) (model.PageID, error) {
 	newPageID, err := a.pm.Alloc()
 	if err != nil {
-		return 0, fmt.Errorf("alloc page: %w", err)
+		return 0, errpkg.BTreeAllocPageAdapter(err)
 	}
 
 	// 获取源页面和目标页面的指针
@@ -630,22 +654,22 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	// 分配左右两个新页面（提前分配，避免重复分配）
 	leftPageID, err := a.pm.Alloc()
 	if err != nil {
-		return 0, 0, nil, fmt.Errorf("alloc left page: %w", err)
+		return 0, 0, nil, errpkg.BTreeAllocLeftPage(err)
 	}
 	rightPageID, err := a.pm.Alloc()
 	if err != nil {
 		a.pm.Free(leftPageID)
-		return 0, 0, nil, fmt.Errorf("alloc right page: %w", err)
+		return 0, 0, nil, errpkg.BTreeAllocRightPage(err)
 	}
 
 	// 调试：打印分配的页面ID
 
 	// 调试：验证分配的页面ID不同
 	if leftPageID == rightPageID {
-		return 0, 0, nil, fmt.Errorf("allocator returned same pageID for left and right: %d", leftPageID)
+		return 0, 0, nil, errpkg.BTreeDuplicatePageIDAlloc(leftPageID)
 	}
 	if leftPageID == 0 || rightPageID == 0 {
-		return 0, 0, nil, fmt.Errorf("allocator returned invalid pageID: left=%d, right=%d", leftPageID, rightPageID)
+		return 0, 0, nil, errpkg.BTreeInvalidPageIDAlloc(leftPageID, rightPageID)
 	}
 
 	// 智能分裂搜索：找到能使两侧都成功物化的分裂点
@@ -656,7 +680,7 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 
 	// 边界检查：至少需要 2 个 key 才能分裂
 	if countInt < 2 {
-		return 0, 0, nil, fmt.Errorf("cannot split page with less than 2 keys (count=%d)", countInt)
+		return 0, 0, nil, errpkg.BTreeSplitMinKeys(countInt)
 	}
 
 	// 首先尝试 30/70 分裂（非常激进，确保右页面不会过大）
@@ -750,7 +774,7 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 		}
 
 		if !success {
-			return 0, 0, nil, fmt.Errorf("page too large to split: count=%d", countInt)
+			return 0, 0, nil, errpkg.BTreePageTooLargeToSplit(countInt)
 		}
 	}
 
@@ -758,7 +782,7 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	// splitKey 是右半部分的第一个 key，需要从 keys[splitIdx] 复制
 	// 边界检查：splitIdx 必须在 [0, len(keys)-1] 范围内
 	if splitIdx < 0 || splitIdx >= len(keys) {
-		return 0, 0, nil, fmt.Errorf("invalid splitIdx=%d for keys length=%d", splitIdx, len(keys))
+		return 0, 0, nil, errpkg.BTreeInvalidSplitIdx(splitIdx, len(keys))
 	}
 	splitKey := make([]byte, len(keys[splitIdx]))
 	copy(splitKey, keys[splitIdx])
@@ -774,7 +798,7 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	if err != nil {
 		a.pm.Free(leftPageID)
 		a.pm.Free(rightPageID)
-		return 0, 0, nil, fmt.Errorf("materialize left page: %w", err)
+		return 0, 0, nil, errpkg.BTreeMaterializeLeftPage(err)
 	}
 
 	if debugThisSplit {
@@ -786,7 +810,7 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	if err != nil {
 		a.pm.Free(leftPageID)
 		a.pm.Free(rightPageID)
-		return 0, 0, nil, fmt.Errorf("materialize right page: %w", err)
+		return 0, 0, nil, errpkg.BTreeMaterializeRightPage(err)
 	}
 
 	if debugThisSplit {
@@ -913,8 +937,7 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 		// 2. 父节点未更新子节点引用
 		DebugPrintf("[STALE_REF] parent=%d childIdx=%d childID=%d expectedVer=%d actualVer=%d\n",
 			pageID, childIdx, childID, expectedVersion, actualVersion)
-		return 0, false, fmt.Errorf("stale child reference: parent=%d child=%d expectedVersion=%d actualVersion=%d",
-			pageID, childID, expectedVersion, actualVersion)
+		return 0, false, errpkg.BTreeStaleChildRef(uint64(pageID), uint64(childID), expectedVersion, actualVersion)
 	}
 
 	return model.PageID(childID), found, nil
@@ -924,7 +947,7 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 func (a *OffHeapAdapter) InsertIndexEntry(pageID model.PageID, index int, key []byte, child model.PageID) error {
 	// 检查页面是否已满（现在直接从页面读取 dataEnd）
 	if a.checkPageFull(uint32(pageID), len(key), 0) {
-		return fmt.Errorf("index page %d is full, cannot insert entry", pageID)
+		return errpkg.BTreeIndexPageFull(uint64(pageID))
 	}
 
 	// 插入索引条目
@@ -966,7 +989,7 @@ func (a *OffHeapAdapter) VerifyOffHeapPage(pageID model.PageID) (bool, error) {
 	// 验证 keys 是否有序
 	for i := 1; i < len(keys); i++ {
 		if bytes.Compare(keys[i-1], keys[i]) >= 0 {
-			return false, fmt.Errorf("keys not sorted: [%d] %v >= [%d] %v", i-1, keys[i-1], i, keys[i])
+			return false, errpkg.BTreeKeyOrderViolationAt(i, keys[i-1], keys[i])
 		}
 	}
 
@@ -1001,14 +1024,14 @@ func (a *OffHeapAdapter) DeleteFromLeafPage(
 	// 3. 分配新页面
 	newPageID, err := a.pm.Alloc()
 	if err != nil {
-		return 0, fmt.Errorf("alloc new page for delete: %w", err)
+		return 0, errpkg.BTreeAllocNewPageForDelete(err)
 	}
 
 	// 4. 物化新页面（只包含剩余的 KV 对）
 	_, err = a.materializer.MaterializePageFromBytes(newPageID, keys, values)
 	if err != nil {
 		a.pm.Free(newPageID)
-		return 0, fmt.Errorf("materialize page after delete: %w", err)
+		return 0, errpkg.BTreeMaterializePageAfterDelete(err)
 	}
 
 	return model.PageID(newPageID), nil
@@ -1061,14 +1084,14 @@ func (a *OffHeapAdapter) UpdateChildIndex(
 	// 分配新页面
 	newParentPageID, err := a.pm.Alloc()
 	if err != nil {
-		return 0, fmt.Errorf("alloc new parent page: %w", err)
+		return 0, errpkg.BTreeAllocNewParentPage(err)
 	}
 
 	// 物化新父页面
 	_, err = a.materializer.MaterializeIndexPageFromBytes(uint32(newParentPageID), keys, children)
 	if err != nil {
 		a.pm.Free(newParentPageID)
-		return 0, fmt.Errorf("materialize parent page: %w", err)
+		return 0, errpkg.BTreeMaterializeParentPage(err)
 	}
 
 	return model.PageID(newParentPageID), nil

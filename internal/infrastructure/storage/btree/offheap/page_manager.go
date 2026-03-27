@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"unsafe"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 const (
@@ -63,21 +65,20 @@ func NewPageManager(mmapSize int) (*PageManager, error) {
 	// 溢出检查：确保 mmap 大小不超过 32 位 PageID 限制
 	maxPages := mmapSize / PageSize
 	if maxPages > int(MaxPageID) {
-		return nil, fmt.Errorf("mmap size %d exceeds 32-bit PageID limit (%d pages)",
-			mmapSize, MaxPageID)
+		return nil, errpkg.OffHeapMMapSizeExceedsLimit(int64(mmapSize), int64(MaxPageID))
 	}
 
 	// 创建内存分配器
 	allocator, err := NewAllocator(mmapSize)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create allocator: %w", err)
+		return nil, errpkg.OffHeapCreateAllocatorFailed(err)
 	}
 
 	// 获取基地址
 	base, err := allocator.Alloc(mmapSize)
 	if err != nil {
 		allocator.Free(base, mmapSize)
-		return nil, fmt.Errorf("failed to allocate memory: %w", err)
+		return nil, errpkg.OffHeapAllocMemoryFailed(err)
 	}
 
 	pm := &PageManager{
@@ -101,8 +102,7 @@ func NewPageManager(mmapSize int) (*PageManager, error) {
 func (pm *PageManager) Alloc() (uint32, error) {
 	pageID := pm.nextPageID.Load()
 	if pageID >= pm.total {
-		return 0, fmt.Errorf("out of memory: no free pages available (total: %d, used: %d)",
-			pm.total, pm.used.Load())
+		return 0, errpkg.OffHeapOutOfMemory(int(pm.total), int(pm.used.Load()))
 	}
 	// 原子递增 nextPageID
 	pm.nextPageID.Add(1)
@@ -118,7 +118,7 @@ func (pm *PageManager) Alloc() (uint32, error) {
 // 页面会在下一次 AdvanceDelayedFreeList 调用时才真正可被分配
 func (pm *PageManager) Free(pageID uint32) error {
 	if pageID >= pm.total {
-		return fmt.Errorf("invalid pageID %d (total: %d)", pageID, pm.total)
+		return errpkg.OffHeapInvalidPageID(int(pageID), int(pm.total))
 	}
 
 	// 调试追踪：记录页面释放

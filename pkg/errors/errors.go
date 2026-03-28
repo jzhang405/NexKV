@@ -1553,12 +1553,12 @@ func BTreeMaterializePageAfterDelete(err error) error {
 
 // BTreeAllocNewParentPage 分配新父页面失败
 func BTreeAllocNewParentPage(err error) error {
-	return Wrapf(ErrBTreeAllocPageFailed, "alloc new parent page: %v", err)
+	return err
 }
 
 // BTreeMaterializeParentPage 物化父页面失败
 func BTreeMaterializeParentPage(err error) error {
-	return Wrapf(ErrBTreeMaterializePageFailed, "materialize parent page: %v", err)
+	return err
 }
 
 // BTreeDuplicatePageIDAlloc 分配器返回了相同的 pageID

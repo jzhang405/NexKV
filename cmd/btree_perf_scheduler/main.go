@@ -197,50 +197,66 @@ func runTest(numThreads, totalOps int, useScheduler bool) (float64, float64) {
 	var wg sync.WaitGroup
 	startTime := time.Now()
 
+	// 预生成 keys/values（消除热路径 fmt.Sprintf 开销）
+	type threadData struct {
+		keys   [][]byte
+		values [][]byte
+	}
+	threadDataArr := make([]threadData, numThreads)
+	for i := 0; i < numThreads; i++ {
+		td := threadData{}
+		td.keys = make([][]byte, opsPerThread)
+		td.values = make([][]byte, opsPerThread)
+		randBytes := make([]byte, opsPerThread)
+		for r := range randBytes {
+			randBytes[r] = byte(r % 256)
+		}
+		for j := 0; j < opsPerThread; j++ {
+			var key string
+			switch opType {
+			case "get":
+				idx := j % initCount
+				key = fmt.Sprintf("%ckey-%d", randBytes[idx], idx)
+			case "set":
+				key = fmt.Sprintf("%ckey-%d-%d", randBytes[j], i, j%initCount)
+			case "mixed":
+				key = fmt.Sprintf("%ckey-%d-%d", randBytes[j], i, j%initCount)
+			}
+			td.keys[j] = []byte(key)
+			td.values[j] = []byte(fmt.Sprintf("value-%d", j))
+		}
+		threadDataArr[i] = td
+	}
+
 	for i := 0; i < numThreads; i++ {
 		wg.Add(1)
-		go func(threadID int) {
+		go func(threadID int, td threadData) {
 			defer wg.Done()
 
-			randBytes := make([]byte, opsPerThread)
-			for r := range randBytes {
-				randBytes[r] = byte(r % 256)
-			}
-
 			for j := 0; j < opsPerThread; j++ {
-				var key string
-				switch opType {
-				case "get":
-					// 用 j%initCount 索引确保和初始化时相同的前缀
-					idx := j % initCount
-					key = fmt.Sprintf("%ckey-%d", randBytes[idx], idx)
-				case "set":
-					key = fmt.Sprintf("%ckey-%d-%d", randBytes[j], threadID, j%initCount)
-				case "mixed":
-					key = fmt.Sprintf("%ckey-%d-%d", randBytes[j], threadID, j%initCount)
-				}
+				key := td.keys[j]
 
 				var opErr error
 				switch opType {
 				case "get":
-					_, opErr = tree.Get(ctx, []byte(key))
+					_, opErr = tree.Get(ctx, key)
 				case "set":
-					value := fmt.Sprintf("value-%d", j)
+					value := td.values[j]
 					if useScheduler {
-						opErr = tree.SetWithRetryAndQueue(ctx, schedulerAdapter, []byte(key), []byte(value))
+						opErr = tree.SetWithRetryAndQueue(ctx, schedulerAdapter, key, value)
 					} else {
-						opErr = tree.Set(ctx, []byte(key), []byte(value))
+						opErr = tree.Set(ctx, key, value)
 					}
 				case "mixed":
-					value := fmt.Sprintf("value-%d", j)
 					if j%2 == 0 {
+						value := td.values[j]
 						if useScheduler {
-							opErr = tree.SetWithRetryAndQueue(ctx, schedulerAdapter, []byte(key), []byte(value))
+							opErr = tree.SetWithRetryAndQueue(ctx, schedulerAdapter, key, value)
 						} else {
-							opErr = tree.Set(ctx, []byte(key), []byte(value))
+							opErr = tree.Set(ctx, key, value)
 						}
 					} else {
-						_, opErr = tree.Get(ctx, []byte(key))
+						_, opErr = tree.Get(ctx, key)
 					}
 				}
 
@@ -248,7 +264,7 @@ func runTest(numThreads, totalOps int, useScheduler bool) (float64, float64) {
 					successCount.Add(1)
 				}
 			}
-		}(i)
+		}(i, threadDataArr[i])
 	}
 
 	wg.Wait()
@@ -276,13 +292,19 @@ func initializeData(ctx context.Context, tree *btree.BTree, count int) {
 		randBytes[i] = byte(i % 256)
 	}
 
+	// 预生成 keys/values
+	initKeys := make([][]byte, count)
+	initValues := make([][]byte, count)
+	for j := 0; j < count; j++ {
+		initKeys[j] = []byte(fmt.Sprintf("%ckey-%d", randBytes[j], j))
+		initValues[j] = []byte(fmt.Sprintf("init-value-%d", j))
+	}
+
 	for i := 0; i < count; i += batchSize {
 		end := min(i+batchSize, count)
 
 		for j := i; j < end; j++ {
-			key := fmt.Sprintf("%ckey-%d", randBytes[j], j)
-			value := fmt.Sprintf("init-value-%d", j)
-			if err := tree.Set(ctx, []byte(key), []byte(value)); err != nil {
+			if err := tree.Set(ctx, initKeys[j], initValues[j]); err != nil {
 				fmt.Fprintf(os.Stderr, "初始化失败: %v\n", err)
 			}
 		}
@@ -296,20 +318,28 @@ func initializeData(ctx context.Context, tree *btree.BTree, count int) {
 }
 
 func warmup(ctx context.Context, tree *btree.BTree, scheduler btree.TaskScheduler, useScheduler bool, count int) {
+	// 预生成 keys/values
+	warmupKeys := make([][]byte, count)
+	warmupValues := make([][]byte, count)
 	for i := 0; i < count; i++ {
-		key := fmt.Sprintf("warmup-key-%d", i%100)
-		value := fmt.Sprintf("warmup-value-%d", i)
+		warmupKeys[i] = []byte(fmt.Sprintf("warmup-key-%d", i%100))
+		warmupValues[i] = []byte(fmt.Sprintf("warmup-value-%d", i))
+	}
 
+	for i := 0; i < count; i++ {
 		if useScheduler && scheduler != nil {
-			tree.SetWithRetryAndQueue(ctx, scheduler, []byte(key), []byte(value))
+			tree.SetWithRetryAndQueue(ctx, scheduler, warmupKeys[i], warmupValues[i])
 		} else {
-			tree.Set(ctx, []byte(key), []byte(value))
+			tree.Set(ctx, warmupKeys[i], warmupValues[i])
 		}
 	}
 
+	deleteKeys := make([][]byte, 100)
 	for i := 0; i < 100; i++ {
-		key := fmt.Sprintf("warmup-key-%d", i)
-		tree.Delete(ctx, []byte(key))
+		deleteKeys[i] = []byte(fmt.Sprintf("warmup-key-%d", i))
+	}
+	for i := 0; i < 100; i++ {
+		tree.Delete(ctx, deleteKeys[i])
 	}
 
 	runtime.GC()

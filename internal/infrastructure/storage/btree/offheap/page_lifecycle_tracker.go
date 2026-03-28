@@ -59,9 +59,6 @@ func (t *PageLifecycleTracker) Disable() {
 
 // RecordAlloc 记录页面分配
 func (t *PageLifecycleTracker) RecordAlloc(pageID uint32) {
-	// 无条件调试日志（用于调试）
-	DebugPrintf("[TRACKER_RAW] RecordAlloc called: pageID=%d, enabled=%v", pageID, t.enabled)
-
 	if !t.enabled {
 		return
 	}
@@ -74,8 +71,6 @@ func (t *PageLifecycleTracker) RecordAlloc(pageID uint32) {
 	// 检查是否已存在（说明页面被重用了）
 	if existing, ok := t.history[pageID]; ok {
 		existing.ReusedCount++
-		DebugPrintf("[PAGE_TRACKER] Page %d REUSED (reused count: %d), previous alloc: %s, caller: %s",
-			pageID, existing.ReusedCount, existing.AllocTime.Format("15:04:05.000"), existing.AllocCaller)
 
 		// 更新现有记录而不是创建新的
 		existing.AllocTime = time.Now()
@@ -97,18 +92,6 @@ func (t *PageLifecycleTracker) RecordAlloc(pageID uint32) {
 		t.history[pageID] = lifecycle
 	}
 
-	// 调试：重点关注 Page 4095
-	if pageID == 4095 {
-		DebugPrintf("[PAGE_4095] ALLOCATED at %s, caller: %s",
-			lifecycle.AllocTime.Format("15:04:05.000"), lifecycle.AllocCaller)
-	}
-
-	// 调试：关注接近上限的页面
-	if pageID > 4000 {
-		DebugPrintf("[PAGE_TRACKER] High pageID %d allocated at %s, caller: %s",
-			pageID, lifecycle.AllocTime.Format("15:04:05.000"), lifecycle.AllocCaller)
-	}
-
 	// 调用分配钩子
 	if t.allocHook != nil {
 		t.allocHook(pageID)
@@ -126,20 +109,11 @@ func (t *PageLifecycleTracker) RecordFree(pageID uint32) {
 
 	lifecycle, ok := t.history[pageID]
 	if !ok {
-		DebugPrintf("[PAGE_TRACKER] WARNING: Freeing untracked page %d at %s, caller: %s",
-			pageID, time.Now().Format("15:04:05.000"), getCaller(3))
 		return
 	}
 
 	lifecycle.FreeTime = time.Now()
 	lifecycle.FreeCaller = getCaller(3)
-
-	// 调试：重点关注 Page 4095
-	if pageID == 4095 {
-		DebugPrintf("[PAGE_4095] FREED at %s, caller: %s, lifespan: %s",
-			lifecycle.FreeTime.Format("15:04:05.000"), lifecycle.FreeCaller,
-			lifecycle.FreeTime.Sub(lifecycle.AllocTime).Round(time.Millisecond))
-	}
 
 	// 调用释放钩子
 	if t.freeHook != nil {
@@ -170,11 +144,6 @@ func (t *PageLifecycleTracker) SetParentPageID(pageID, parentPageID uint32) {
 
 	lifecycle.ParentPageIDs = append(lifecycle.ParentPageIDs, parentPageID)
 	lifecycle.LastAccessType = time.Now()
-
-	// 调试：关注 Page 4095 的父节点关系
-	if pageID == 4095 || parentPageID == 4095 {
-		DebugPrintf("[PAGE_TRACKER] Parent relationship: parent=%d, child=%d", parentPageID, pageID)
-	}
 }
 
 // SetChildPageID 设置子节点（用于 B-Tree）
@@ -200,11 +169,6 @@ func (t *PageLifecycleTracker) SetChildPageID(pageID, childPageID uint32) {
 
 	lifecycle.ChildPageIDs = append(lifecycle.ChildPageIDs, childPageID)
 	lifecycle.LastAccessType = time.Now()
-
-	// 调试：关注 Page 4095 的子节点关系
-	if pageID == 4095 || childPageID == 4095 {
-		DebugPrintf("[PAGE_TRACKER] Child relationship: parent=%d, child=%d", pageID, childPageID)
-	}
 }
 
 // SetPageType 设置页面类型
@@ -223,11 +187,6 @@ func (t *PageLifecycleTracker) SetPageType(pageID uint32, pageType string) {
 
 	lifecycle.PageType = pageType
 	lifecycle.LastAccessType = time.Now()
-
-	// 调试：关注 Page 4095 的类型
-	if pageID == 4095 {
-		DebugPrintf("[PAGE_4095] Page type set to: %s", pageType)
-	}
 }
 
 // RecordAccess 记录页面访问
@@ -258,8 +217,8 @@ func (t *PageLifecycleTracker) GetLifecycle(pageID uint32) (*PageLifecycle, bool
 	}
 
 	// 返回副本，避免并发修改
-	copy := *lifecycle
-	return &copy, true
+	cp := *lifecycle
+	return &cp, true
 }
 
 // GetAllLifecycles 获取所有页面生命周期信息
@@ -269,8 +228,8 @@ func (t *PageLifecycleTracker) GetAllLifecycles() map[uint32]*PageLifecycle {
 
 	result := make(map[uint32]*PageLifecycle, len(t.history))
 	for pageID, lifecycle := range t.history {
-		copy := *lifecycle
-		result[pageID] = &copy
+		cp := *lifecycle
+		result[pageID] = &cp
 	}
 	return result
 }
@@ -285,19 +244,11 @@ func (t *PageLifecycleTracker) GetPage4095Report() string {
 		return "Page 4095 not found in history"
 	}
 
-	report := fmt.Sprintf(`
-=== Page 4095 Lifecycle Report ===
-Allocated: %s
-Caller: %s
-Freed: %s
-Caller: %s
-Lifespan: %s
-Reused Count: %d
-Page Type: %s
-Parent Page IDs: %v
-Child Page IDs: %v
-Last Access: %s
-`,
+	report := fmt.Sprintf(
+		"=== Page 4095 Lifecycle Report ===\n"+
+			"Allocated: %s\nCaller: %s\nFreed: %s\nCaller: %s\n"+
+			"Lifespan: %s\nReused Count: %d\nPage Type: %s\n"+
+			"Parent Page IDs: %v\nChild Page IDs: %v\nLast Access: %s\n",
 		lifecycle.AllocTime.Format("2006-01-02 15:04:05.000"),
 		lifecycle.AllocCaller,
 		lifecycle.FreeTime.Format("2006-01-02 15:04:05.000"),

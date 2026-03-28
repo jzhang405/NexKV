@@ -19,6 +19,9 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/infrastructure/concurrency"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree"
+
+	"net/http"
+	_ "net/http/pprof"
 )
 
 var (
@@ -48,6 +51,14 @@ func init() {
 
 func main() {
 	flag.Parse()
+
+	// 启动 pprof HTTP server
+	go func() {
+		fmt.Fprintf(os.Stderr, "pprof server: http://localhost:6060/debug/pprof/\n")
+		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+			fmt.Fprintf(os.Stderr, "pprof server error: %v\n", err)
+		}
+	}()
 
 	// 解析并发度列表
 	threads := parseThreadList(threadList)

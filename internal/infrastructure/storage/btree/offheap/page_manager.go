@@ -198,13 +198,11 @@ func (pm *PageManager) PageSize() int {
 // EnablePageTracking 启用页面生命周期追踪（调试用）
 func (pm *PageManager) EnablePageTracking() {
 	pm.tracker.Enable()
-	DebugPrintf("[PAGE_MANAGER] Page lifecycle tracking ENABLED")
 }
 
 // DisablePageTracking 禁用页面生命周期追踪
 func (pm *PageManager) DisablePageTracking() {
 	pm.tracker.Disable()
-	DebugPrintf("[PAGE_MANAGER] Page lifecycle tracking DISABLED")
 }
 
 // GetPageTracker 获取页面生命周期追踪器（调试用）

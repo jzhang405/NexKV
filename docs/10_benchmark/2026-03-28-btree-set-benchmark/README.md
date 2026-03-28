@@ -96,9 +96,22 @@ memory 中的历史基准（GOGC=500, builtin 模式）：
 
 **说明**: ops 数量和 init 数据量不同，不能直接对比绝对值。但 1T/2T 的延迟从 μs 级降到 sub-10μs 级别，说明小数据集下性能良好。4T/8T 仍然存在负扩展性，需要后续优化锁竞争和 CAS 重试。
 
+### Phase 0.1: offheap DebugPrintf 清空 (2026-03-28)
+
+移除 offheap 包（page_lifecycle_tracker, page_manager）中所有 `DebugPrintf` 调用。
+
+| 并发度 | Phase 0 (ops/s) | Phase 0.1 (ops/s) | 变化 | Phase 0 (μs) | Phase 0.1 (μs) |
+|--------|----------------|-------------------|------|-------------|---------------|
+| 1 | 118,959 | 121,544 | +2.2% | 8.41 | 8.23 |
+| 2 | 353,448 | 270,495 | -23.5% | 2.83 | 3.70 |
+| 4 | 35,511 | 55,538 | **+56.5%** | 28.16 | 18.01 |
+| 8 | 19,703 | 51,746 | **+162.6%** | 50.75 | 19.33 |
+
 ## 详细数据
 
 - [builtin-gogc500-50k.md](./builtin-gogc500-50k.md) — GOGC=500, 50K ops (基线)
 - [builtin-gogc500-10k.md](./builtin-gogc500-10k.md) — GOGC=500, 10K ops
 - [builtin-gogcoff-50k.md](./builtin-gogcoff-50k.md) — GOGC=off, 50K ops
 - [pprof-analysis.md](./pprof-analysis.md) — CPU profiling 分析
+- [phase0-debugprintf-noop.md](./phase0-debugprintf-noop.md) — Phase 0: btree DebugPrintf no-op
+- [phase0.1-offheap-debugprintf-noop.md](./phase0.1-offheap-debugprintf-noop.md) — Phase 0.1: offheap DebugPrintf 移除

@@ -655,3 +655,65 @@ go tool pprof -top -flat cpu.prof
 | 21 | Insert 遇活跃 delta chain 时 pending delta 丢失 | 中 | ✅ 已修正 | found=false 且 deltaCount>0 时先物化再 Insert |
 | 22 | PageRef 伪代码与实际 struct 字段不匹配 | 低 | ✅ 已修正 | 伪代码改为与 page_ref.go 一致 |
 | 23 | 写路径 double linearSearchLeaf（fallback 时） | 低 | 📝 已记录 | 优先级低，后续优化 |
+
+---
+
+## Phase 1 实施结果（2026-03-28）
+
+### 实施方案变更
+
+**原方案**：BulkInitLeafFromSource + OverwriteLeafValue（在 COW 副本上覆盖 value）
+
+**实际问题**：OverwriteLeafValue 更新 `valLen` 为较小值后，后续更大的 value 无法命中快速路径。benchmark workload 中 `val-0`(5B) → `val-200`(7B)，第一次 update 后 valLen=5，后续 update 全部 fallback 到 FullMaterialization。
+
+**实际方案**：逐条拷贝+替换（InsertLeafEntry 循环）
+
+```go
+// updateLeafEntryBulkCOW 核心逻辑
+for i := 0; i < count; i++ {
+    if i == idx {
+        InsertLeafEntry(newPageID, i, key, value, &dataEnd)  // 新 value
+    } else {
+        // 非目标 entry：mmap 切片直读，零 Go 堆分配
+        keyOff, keyLen, valOff, valLen := GetLeafEntryOffset(srcPageID, i)
+        InsertLeafEntry(newPageID, i, GetKey(srcPageID, keyOff, keyLen), GetValue(srcPageID, valOff, valLen), &dataEnd)
+    }
+}
+```
+
+**优势**：valLen 始终正确反映实际值长度，所有 update 场景通用（不限于 valLen 不增长）。
+
+### 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| `offheap/page_layout.go` | 新增 `OverwriteLeafValue`（Phase 2 Delta Chain 物化备用） |
+| `offheap_adapter.go` | 重命名 `UpdateLeafEntry` → `updateLeafEntryFullMaterialization`（fallback）；新增 `updateLeafEntryBulkCOW`（逐条拷贝+替换）；新 `UpdateLeafEntry` 调度 |
+| `pkg/errors/errors.go` | 新增 `BTreeBulkInitFailed` 错误构造函数 |
+
+### 性能结果
+
+| 并发度 | 优化前 (ops/s) | 优化后 (ops/s) | 提升 | 扩展比 |
+|--------|---------------|---------------|------|--------|
+| 1T | 35,000 | **90,000** | **+157%** | 1.00x |
+| 2T | 32,000 | **119,000** | **+272%** | **1.32x** |
+| 4T | 34,000 | 43,000 | +27% | 0.48x |
+| 8T | 21,000 | 28,000 | +34% | 0.31x |
+
+### CPU Profile 对比（单线程）
+
+| 函数 | 优化前 (Phase 6) | 优化后 |
+|------|:---:|:---:|
+| UpdateLeafEntry | 51.6% | **0%**（不在 top 15） |
+| GC 总计 (gcBgMark+gcDrain+scan+mallocgc) | 69.35% | **~0%** |
+| memmove | 3.2% | 22.2%（mmap 页面拷贝，零 GC） |
+| InitPage | 4.8% | 11.1% |
+
+**结论**：GC 开销从 69.35% 降至接近零。瓶颈已从 Go 堆分配转移至 mmap 页面拷贝（memmove）和锁竞争（多线程）。
+
+### 待优化
+
+| 优化 | 预期效果 | 优先级 | 说明 |
+|------|---------|--------|------|
+| Phase 2 Delta Chain | 减少 90% mmap copy | 中 | 积攒 Delta 后物化，需改读路径 |
+| 锁竞争优化 | 8T 扩展比 0.3x → 0.8x | 低 | 等其他优化完成后再评估 |

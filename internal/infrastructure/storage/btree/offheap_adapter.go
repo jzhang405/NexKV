@@ -160,8 +160,9 @@ func (a *OffHeapAdapter) checkPageFull(pageID uint32, keyLen int, valLen int) bo
 	return usedSpace+requiredSpace > offheap.PageSize
 }
 
-// UpdateLeafEntry 更新叶子条目（需要重新分配页面）
-func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, value []byte) (model.PageID, error) {
+// updateLeafEntryFullMaterialization 完整物化路径（fallback）
+// 用于新 value 长度 > 旧 value 长度的场景，或 BulkInit COW 失败时的降级路径
+func (a *OffHeapAdapter) updateLeafEntryFullMaterialization(pageID model.PageID, idx int, key, value []byte) (model.PageID, error) {
 
 	// 收集所有 KV 对
 	count := a.pa.GetCount(uint32(pageID))
@@ -207,6 +208,67 @@ func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, valu
 	}
 
 	return model.PageID(newPageID), nil
+}
+
+// updateLeafEntryBulkCOW BulkInit COW 路径（零 Go 堆分配）
+//
+// 核心优化：逐条从源 mmap 页面读取 KV，直接插入新页面。
+// GetKey/GetValue 返回 mmap 切片（指向 mmap 内存），不经 Go 堆分配。
+// 仅目标 entry 使用传入的 key/value 参数，保证 valLen 正确反映新值长度。
+//
+// 流程:
+//  1. Alloc 新页面（先分配，比当前"先释放再分配"更安全）
+//  2. 逐条 InsertLeafEntry：非目标条目用 mmap 切片，目标条目用新 value
+//  3. Free 旧页面
+func (a *OffHeapAdapter) updateLeafEntryBulkCOW(
+	pageID model.PageID, idx int, key, value []byte,
+) (model.PageID, error) {
+	srcPageID := uint32(pageID)
+	count := int(a.pa.GetCount(srcPageID))
+
+	// 1. 分配新页面（先于释放旧页面，避免 alloc 失败导致数据丢失）
+	newRawPageID, err := a.pm.Alloc()
+	if err != nil {
+		return 0, errpkg.BTreeAllocNewPageForSplit(err)
+	}
+
+	// 2. 初始化新页面
+	a.pa.InitLeafPage(newRawPageID, a.pa.GetVersion(srcPageID))
+	var dataEnd uint16
+
+	// 3. 逐条拷贝，替换目标 entry
+	for i := 0; i < count; i++ {
+		if i == idx {
+			// 目标 entry：使用新的 key 和 value
+			if err := a.pa.InsertLeafEntry(newRawPageID, i, key, value, &dataEnd); err != nil {
+				a.pm.Free(newRawPageID)
+				// BulkInit 失败（页面空间不足），降级到完整物化
+				return a.updateLeafEntryFullMaterialization(pageID, idx, key, value)
+			}
+			continue
+		}
+		// 非目标 entry：直接从 mmap 读取 KV（零 Go 堆分配）
+		keyOff, keyLen, valOff, valLen := a.pa.GetLeafEntryOffset(srcPageID, i)
+		srcKey := a.pa.GetKey(srcPageID, keyOff, keyLen)
+		srcVal := a.pa.GetValue(srcPageID, valOff, valLen)
+		if err := a.pa.InsertLeafEntry(newRawPageID, i, srcKey, srcVal, &dataEnd); err != nil {
+			a.pm.Free(newRawPageID)
+			return a.updateLeafEntryFullMaterialization(pageID, idx, key, value)
+		}
+	}
+
+	// 4. 释放旧页面
+	a.pm.Free(srcPageID)
+
+	return model.PageID(newRawPageID), nil
+}
+
+// UpdateLeafEntry 更新叶子条目（COW 路径选择）
+// 优先使用 BulkInit COW（零堆分配），失败时降级到完整物化
+func (a *OffHeapAdapter) UpdateLeafEntry(
+	pageID model.PageID, idx int, key, value []byte,
+) (model.PageID, error) {
+	return a.updateLeafEntryBulkCOW(pageID, idx, key, value)
 }
 
 // UpdateIndexEntry 更新索引条目（需要重新分配页面）

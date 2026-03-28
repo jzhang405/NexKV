@@ -605,6 +605,34 @@ func (pa *PageAccessor) BulkInitLeafFromSource(
 	return dataEnd, nil
 }
 
+// OverwriteLeafValue 在指定叶子条目的 value 区域覆盖写入新数据
+// 前置条件: len(newValue) <= entry.valLen，调用者已持有页面锁
+// 该方法仅修改 value 数据区域，不修改 LeafEntry 元数据（valOff/valLen 不变）
+// 注意: 该方法仅应在 COW 副本页面上调用，不应在原始不可变页面上调用
+func (pa *PageAccessor) OverwriteLeafValue(pageID uint32, idx int, newValue []byte) bool {
+	ptr := pa.getPtr(pageID)
+	header := (*PageHeader)(ptr)
+	if idx < 0 || idx >= int(header.count) {
+		return false
+	}
+
+	entryPtr := unsafe.Add(ptr, SizeofPageHeader+idx*SizeofLeafEntry)
+	entry := (*LeafEntry)(entryPtr)
+
+	if uint32(len(newValue)) > entry.valLen {
+		return false
+	}
+
+	valPtr := unsafe.Add(ptr, uintptr(entry.valOff))
+	valSlice := unsafe.Slice((*byte)(valPtr), entry.valLen)
+	copy(valSlice, newValue)
+
+	// 更新 valLen 为实际新值长度（可能小于原始 valLen）
+	entry.valLen = uint32(len(newValue))
+
+	return true
+}
+
 // BulkInitIndexFromSource 从源索引页面批量拷贝连续条目范围到目标页面
 // 跳过 Go 堆分配：key 直接从源 mmap 页面读取，逐条插入目标页面
 //

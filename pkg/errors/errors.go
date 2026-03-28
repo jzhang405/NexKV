@@ -1605,3 +1605,8 @@ func BTreeAllocLeftPage(err error) error {
 func BTreeAllocRightPage(err error) error {
 	return err
 }
+
+// BTreeBulkInitFailed BulkInit 页面拷贝失败
+func BTreeBulkInitFailed(err error) error {
+	return err
+}

@@ -2,8 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// BTree Set 操作性能对比测试工具
-// 对比 Set() vs SetWithRetryAndQueue() + TaskScheduler 的性能
+// BTree Set/Get 操作性能测试工具
 package main
 
 import (
@@ -25,17 +24,11 @@ import (
 )
 
 var (
-	// 并发度列表
-	threadList string
-
-	// 每线程操作数
+	threadList   string
 	opsPerThread int
-
-	// 测试模式：direct, scheduler, both
-	mode string
-
-	// 初始化数据量
-	initCount int
+	mode         string
+	initCount    int
+	opType       string // "set", "get", "mixed"
 )
 
 func init() {
@@ -47,6 +40,8 @@ func init() {
 		"测试模式: builtin(BTree内置Scheduler), custom(自定义Scheduler对比测试)")
 	flag.IntVar(&initCount, "init", 0,
 		"初始化数据量 (默认: 0, 每线程 opsPerThread/10)")
+	flag.StringVar(&opType, "op", "set",
+		"操作类型: set, get, mixed(50%%set+50%%get)")
 }
 
 func main() {
@@ -60,14 +55,16 @@ func main() {
 		}
 	}()
 
-	// 解析并发度列表
 	threads := parseThreadList(threadList)
 	if len(threads) == 0 {
 		fmt.Fprintf(os.Stderr, "无效的并发度列表: %s\n", threadList)
 		os.Exit(1)
 	}
 
-	// 自动设置初始化数据量
+	// Get 模式需要先有数据
+	if opType == "get" && initCount == 0 {
+		initCount = opsPerThread * threads[len(threads)-1]
+	}
 	if initCount == 0 {
 		initCount = opsPerThread * threads[len(threads)-1] / 10
 		if initCount < 1000 {
@@ -76,20 +73,18 @@ func main() {
 	}
 
 	fmt.Printf("========================================\n")
-	fmt.Printf("BTree Set 性能测试\n")
+	fmt.Printf("BTree 性能测试\n")
 	fmt.Printf("========================================\n")
+	fmt.Printf("操作类型: %s\n", opType)
 	fmt.Printf("测试模式: %s\n", mode)
 	fmt.Printf("并发度: %v\n", threads)
 	fmt.Printf("每线程操作数: %d\n", opsPerThread)
 	fmt.Printf("初始化数据量: %d\n", initCount)
-	fmt.Printf("说明: Builtin=内置Scheduler, Custom=嵌套Scheduler(对比用)\n")
 	fmt.Printf("========================================\n\n")
 
-	// 运行性能测试
 	runBenchmark(threads)
 }
 
-// parseThreadList 解析线程列表
 func parseThreadList(s string) []int {
 	parts := splitAndTrim(s, ",")
 	result := make([]int, 0, len(parts))
@@ -102,7 +97,6 @@ func parseThreadList(s string) []int {
 	return result
 }
 
-// splitAndTrim 分割字符串并去除空格
 func splitAndTrim(s, sep string) []string {
 	parts := make([]string, 0)
 	current := ""
@@ -122,12 +116,11 @@ func splitAndTrim(s, sep string) []string {
 	return parts
 }
 
-// TestMode 测试模式
 type TestMode int
 
 const (
-	ModeBuiltin TestMode = iota // 使用 BTree 内置 TaskScheduler (推荐，无嵌套)
-	ModeCustom                  // 使用自定义 TaskScheduler (对比测试，嵌套 scheduler)
+	ModeBuiltin TestMode = iota
+	ModeCustom
 )
 
 func parseMode(s string) TestMode {
@@ -136,7 +129,6 @@ func parseMode(s string) TestMode {
 		return ModeBuiltin
 	case "custom":
 		return ModeCustom
-	// 兼容旧参数名
 	case "direct":
 		return ModeBuiltin
 	case "scheduler":
@@ -146,30 +138,26 @@ func parseMode(s string) TestMode {
 	}
 }
 
-// runBenchmark 运行性能测试
 func runBenchmark(threads []int) {
 	testMode := parseMode(mode)
 
-	// 结果表格
-	fmt.Printf("%-10s | %-12s | %-12s | %-14s | %-14s\n",
-		"并发度", "模式", "总操作数", "吞吐量(ops/s)", "平均延迟(μs)")
+	fmt.Printf("%-10s | %-12s | %-14s | %-14s | %-14s\n",
+		"并发度", "操作", "总操作数", "吞吐量(ops/s)", "平均延迟(μs)")
 	fmt.Printf("-----------|--------------|--------------|----------------|----------------\n")
 
 	for _, numThreads := range threads {
 		totalOps := numThreads * opsPerThread
 
-		// 测试 Builtin 模式 (BTree 内置 TaskScheduler，推荐)
 		if testMode == ModeBuiltin {
 			throughput, latency := runTest(numThreads, totalOps, false)
-			fmt.Printf("%-10d | %-12s | %-12d | %-14.0f | %-14.2f\n",
-				numThreads, "Builtin", totalOps, throughput, latency)
+			fmt.Printf("%-10d | %-12s | %-14d | %-14.0f | %-14.2f\n",
+				numThreads, opType, totalOps, throughput, latency)
 		}
 
-		// 测试 Custom 模式 (自定义 TaskScheduler，对比测试)
 		if testMode == ModeCustom {
 			throughput, latency := runTest(numThreads, totalOps, true)
-			fmt.Printf("%-10d | %-12s | %-12d | %-14.0f | %-14.2f\n",
-				numThreads, "Custom", totalOps, throughput, latency)
+			fmt.Printf("%-10d | %-12s | %-14d | %-14.0f | %-14.2f\n",
+				numThreads, opType, totalOps, throughput, latency)
 		}
 
 		if numThreads != threads[len(threads)-1] {
@@ -178,11 +166,9 @@ func runBenchmark(threads []int) {
 	}
 }
 
-// runTest 运行单次测试
 func runTest(numThreads, totalOps int, useScheduler bool) (float64, float64) {
 	ctx := context.Background()
 
-	// 创建 BTree
 	tree, err := btree.OpenBTree("", &model.BTreeConfig{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open BTree: %v\n", err)
@@ -190,18 +176,16 @@ func runTest(numThreads, totalOps int, useScheduler bool) (float64, float64) {
 	}
 	defer tree.Close()
 
-	// 创建 TaskScheduler（如果需要）
 	var scheduler *concurrency.TaskScheduler
 	var schedulerAdapter btree.TaskScheduler
 	if useScheduler {
-		// 自动检测 CPU 核心数
 		schedulerCores := runtime.NumCPU()
 		scheduler = concurrency.NewTaskScheduler("btree-perf", schedulerCores)
 		schedulerAdapter = &TaskSchedulerAdapter{scheduler: scheduler}
 		defer scheduler.Stop()
 	}
 
-	// 初始化数据（如果需要）
+	// 初始化数据
 	if initCount > 0 {
 		initializeData(ctx, tree, initCount)
 	}
@@ -209,7 +193,6 @@ func runTest(numThreads, totalOps int, useScheduler bool) (float64, float64) {
 	// 预热
 	warmup(ctx, tree, schedulerAdapter, useScheduler, 1000)
 
-	// 运行测试
 	successCount := atomic.Int64{}
 	var wg sync.WaitGroup
 	startTime := time.Now()
@@ -219,25 +202,49 @@ func runTest(numThreads, totalOps int, useScheduler bool) (float64, float64) {
 		go func(threadID int) {
 			defer wg.Done()
 
-			// 每个线程预生成随机字节
 			randBytes := make([]byte, opsPerThread)
 			for r := range randBytes {
 				randBytes[r] = byte(r % 256)
 			}
 
 			for j := 0; j < opsPerThread; j++ {
-				// 使用随机字节作为第一个字节，增加 key 分散性
-				key := fmt.Sprintf("%ckey-%d-%d", randBytes[j], threadID, j%initCount)
-				value := fmt.Sprintf("value-%d", j)
-
-				var err error
-				if useScheduler {
-					err = tree.SetWithRetryAndQueue(ctx, schedulerAdapter, []byte(key), []byte(value))
-				} else {
-					err = tree.Set(ctx, []byte(key), []byte(value))
+				var key string
+				switch opType {
+				case "get":
+					// 用 j%initCount 索引确保和初始化时相同的前缀
+					idx := j % initCount
+					key = fmt.Sprintf("%ckey-%d", randBytes[idx], idx)
+				case "set":
+					key = fmt.Sprintf("%ckey-%d-%d", randBytes[j], threadID, j%initCount)
+				case "mixed":
+					key = fmt.Sprintf("%ckey-%d-%d", randBytes[j], threadID, j%initCount)
 				}
 
-				if err == nil {
+				var opErr error
+				switch opType {
+				case "get":
+					_, opErr = tree.Get(ctx, []byte(key))
+				case "set":
+					value := fmt.Sprintf("value-%d", j)
+					if useScheduler {
+						opErr = tree.SetWithRetryAndQueue(ctx, schedulerAdapter, []byte(key), []byte(value))
+					} else {
+						opErr = tree.Set(ctx, []byte(key), []byte(value))
+					}
+				case "mixed":
+					value := fmt.Sprintf("value-%d", j)
+					if j%2 == 0 {
+						if useScheduler {
+							opErr = tree.SetWithRetryAndQueue(ctx, schedulerAdapter, []byte(key), []byte(value))
+						} else {
+							opErr = tree.Set(ctx, []byte(key), []byte(value))
+						}
+					} else {
+						_, opErr = tree.Get(ctx, []byte(key))
+					}
+				}
+
+				if opErr == nil {
 					successCount.Add(1)
 				}
 			}
@@ -249,24 +256,21 @@ func runTest(numThreads, totalOps int, useScheduler bool) (float64, float64) {
 
 	success := successCount.Load()
 	if success == 0 {
-		success = 1 // 避免除零
+		success = 1
 	}
 
-	// 计算吞吐量和延迟
 	throughput := float64(success) / duration.Seconds()
-	latency := float64(duration.Nanoseconds()) / float64(success) / 1000 // μs
+	latency := float64(duration.Nanoseconds()) / float64(success) / 1000
 
 	return throughput, latency
 }
 
-// initializeData 初始化数据
 func initializeData(ctx context.Context, tree *btree.BTree, count int) {
 	fmt.Printf("初始化 %d 条数据...\n", count)
 
 	start := time.Now()
 	batchSize := 1000
 
-	// 预生成随机字节用于 key 前缀
 	randBytes := make([]byte, count)
 	for i := range randBytes {
 		randBytes[i] = byte(i % 256)
@@ -276,7 +280,6 @@ func initializeData(ctx context.Context, tree *btree.BTree, count int) {
 		end := min(i+batchSize, count)
 
 		for j := i; j < end; j++ {
-			// 使用随机字节作为第一个字节
 			key := fmt.Sprintf("%ckey-%d", randBytes[j], j)
 			value := fmt.Sprintf("init-value-%d", j)
 			if err := tree.Set(ctx, []byte(key), []byte(value)); err != nil {
@@ -292,7 +295,6 @@ func initializeData(ctx context.Context, tree *btree.BTree, count int) {
 	fmt.Printf("\n初始化完成，耗时: %v\n\n", time.Since(start))
 }
 
-// warmup 预热
 func warmup(ctx context.Context, tree *btree.BTree, scheduler btree.TaskScheduler, useScheduler bool, count int) {
 	for i := 0; i < count; i++ {
 		key := fmt.Sprintf("warmup-key-%d", i%100)
@@ -305,7 +307,6 @@ func warmup(ctx context.Context, tree *btree.BTree, scheduler btree.TaskSchedule
 		}
 	}
 
-	// 清理预热数据
 	for i := 0; i < 100; i++ {
 		key := fmt.Sprintf("warmup-key-%d", i)
 		tree.Delete(ctx, []byte(key))
@@ -314,7 +315,6 @@ func warmup(ctx context.Context, tree *btree.BTree, scheduler btree.TaskSchedule
 	runtime.GC()
 }
 
-// TaskSchedulerAdapter 适配器，将 *concurrency.TaskScheduler 转换为 btree.TaskScheduler
 type TaskSchedulerAdapter struct {
 	scheduler *concurrency.TaskScheduler
 }

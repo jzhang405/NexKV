@@ -53,7 +53,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -259,21 +258,6 @@ func (e *EpochBasedFreeList) Add(pageID model.PageID) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// 调试日志：记录页面释放请求
-	stack := debug.Stack()
-	// 提取关键调用栈信息
-	caller := "<unknown>"
-	lines := strings.Split(string(stack), "\n")
-	for i := range len(lines) {
-		if strings.Contains(lines[i], "handleSplitOffHeapSync") || strings.Contains(lines[i], "splitInternal") {
-			caller = "split"
-			break
-		}
-	}
-
-	DebugPrintf("[EPOCH_ADD] epoch=%d pageID=%d caller=%s pending_count=%d\n",
-		e.currentEpoch, pageID, caller, len(e.pending[e.currentEpoch]))
-
 	e.pending[e.currentEpoch] = append(e.pending[e.currentEpoch], pageID)
 }
 
@@ -286,7 +270,6 @@ func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	oldEpoch := e.currentEpoch
 	e.currentEpoch++
 
 	// 释放 3 个 epoch 之前的页面（currentEpoch - 3）- 增加延迟到 3 个 epoch
@@ -297,7 +280,6 @@ func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
 		delete(e.pending, epochToDelayed)
 
 		for _, pid := range pagesToDelayed {
-			DebugPrintf("[EPOCH_DELAYED] epoch=%d pageID=%d\n", epochToDelayed, pid)
 			pm.Free(uint32(pid))
 		}
 	}
@@ -305,22 +287,10 @@ func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
 	// 第二步：将 N-3 的页面从延迟释放列表移到可用列表
 	epochToFree := e.currentEpoch - 3
 	if e.currentEpoch >= 3 {
-		pagesToFree := e.pending[epochToFree]
 		delete(e.pending, epochToFree)
 
-		// 调试日志：记录 epoch 推进
-		DebugPrintf("[EPOCH_ADVANCE] old=%d new=%d freeing_epoch=%d pages_to_free=%d\n",
-			oldEpoch, e.currentEpoch, epochToFree, len(pagesToFree))
-
 		// 将延迟释放列表中的页面移到可用列表
-		moved := pm.AdvanceDelayedFreeList()
-		if moved > 0 {
-			DebugPrintf("[EPOCH_DELAYED_ADVANCE] moved=%d pages from delayed to available\n", moved)
-		}
-	} else {
-		// 还没有到达可以释放的 epoch
-		DebugPrintf("[EPOCH_ADVANCE] old=%d new=%d pages_to_free=0 (waiting for epoch 3)\n",
-			oldEpoch, e.currentEpoch)
+		pm.AdvanceDelayedFreeList()
 	}
 }
 
@@ -611,7 +581,7 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 				runtime.Gosched()
 				continue
 			}
-			// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
+			// 不要包装 ErrRetry，否则 errors.Is() 检查会失败
 			return nil, err
 		}
 
@@ -867,7 +837,7 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 		// 2. 查找叶子节点和路径（只读，不克隆）
 		leafRef, path, _, err := b.findLeafPageRef(ctx, key)
 		if err != nil {
-			// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
+			// 不要包装 ErrRetry，否则 errors.Is() 检查会失败
 			return err
 		}
 

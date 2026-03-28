@@ -1178,7 +1178,7 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 		// 父节点已满，开始分裂
 		splitErr := b.splitInternalOffHeapSync(parentRef, oldParentInfo, parentPageIDForSearch, path[:len(path)-1])
 		if splitErr != nil {
-			return errpkg.Wrapf(splitErr, "split parent index page")
+			return splitErr
 		}
 
 		// 父节点分裂后，原来的父节点已经被分裂成两个新节点
@@ -1335,7 +1335,7 @@ func (b *BTree) splitInternalOffHeapSyncRecursive(
 				path[:len(path)-1],
 			)
 			if recursiveErr != nil {
-				return errpkg.Wrapf(recursiveErr, "recursive split grandparent")
+				return recursiveErr
 			}
 
 			// 递归分裂完成，重新尝试分裂父节点
@@ -1347,7 +1347,7 @@ func (b *BTree) splitInternalOffHeapSyncRecursive(
 				path,
 			)
 		}
-		return errpkg.Wrapf(err, "split parent")
+		return err
 	}
 
 	return nil

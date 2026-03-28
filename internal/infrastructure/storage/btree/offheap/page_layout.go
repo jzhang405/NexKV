@@ -126,8 +126,12 @@ func NewPageAccessor(pm *PageManager) *PageAccessor {
 	return &PageAccessor{pm: pm}
 }
 
+func (pa *PageAccessor) getPtr(pageID uint32) unsafe.Pointer {
+	return pa.pm.pageIDToPtrUnchecked(pageID)
+}
+
 func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
-	ptr := pa.pm.PageIDToPtr(pageID)
+	ptr := pa.getPtr(pageID)
 	header := (*PageHeader)(ptr)
 
 	if header.count == 0 {
@@ -157,7 +161,7 @@ func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
 
 // GetSpaceUsage 计算页面空间使用率（0.0-1.0）
 func (pa *PageAccessor) GetSpaceUsage(pageID uint32) float64 {
-	ptr := pa.pm.PageIDToPtr(pageID)
+	ptr := pa.getPtr(pageID)
 	header := (*PageHeader)(ptr)
 
 	var entrySize uint32
@@ -176,7 +180,7 @@ func (pa *PageAccessor) GetSpaceUsage(pageID uint32) float64 {
 
 // GetHeader 获取页面头
 func (pa *PageAccessor) GetHeader(pageID uint32) *PageHeader {
-	ptr := pa.pm.PageIDToPtr(pageID)
+	ptr := pa.getPtr(pageID)
 	return (*PageHeader)(ptr)
 }
 
@@ -193,7 +197,7 @@ func (pa *PageAccessor) IsValidPage(pageID uint32) bool {
 
 // GetIndexEntry 获取索引节点条目
 func (pa *PageAccessor) GetIndexEntry(pageID uint32, index int) *IndexEntry {
-	ptr := pa.pm.PageIDToPtr(pageID)
+	ptr := pa.getPtr(pageID)
 	header := (*PageHeader)(ptr)
 	if index >= int(header.count) {
 		panic(fmt.Sprintf("index %d out of range (count: %d)", index, header.count))
@@ -205,7 +209,7 @@ func (pa *PageAccessor) GetIndexEntry(pageID uint32, index int) *IndexEntry {
 
 // GetLeafEntry 获取叶子节点条目
 func (pa *PageAccessor) GetLeafEntry(pageID uint32, index int) *LeafEntry {
-	ptr := pa.pm.PageIDToPtr(pageID)
+	ptr := pa.getPtr(pageID)
 	header := (*PageHeader)(ptr)
 	if index >= int(header.count) {
 		panic(fmt.Sprintf("index %d out of range (count: %d)", index, header.count))
@@ -217,30 +221,29 @@ func (pa *PageAccessor) GetLeafEntry(pageID uint32, index int) *LeafEntry {
 
 // GetKey 获取 key（返回 Go 切片，指向 mmap 内存）
 func (pa *PageAccessor) GetKey(pageID uint32, keyOff, keyLen uint32) []byte {
-	ptr := pa.pm.PageIDToPtr(pageID)
+	ptr := pa.getPtr(pageID)
 	keyPtr := unsafe.Add(ptr, keyOff)
 	return unsafe.Slice((*byte)(keyPtr), keyLen)
 }
 
 // GetValue 获取 value（返回 Go 切片，指向 mmap 内存）
 func (pa *PageAccessor) GetValue(pageID uint32, valOff, valLen uint32) []byte {
-	ptr := pa.pm.PageIDToPtr(pageID)
+	ptr := pa.getPtr(pageID)
 	valPtr := unsafe.Add(ptr, valOff)
 	return unsafe.Slice((*byte)(valPtr), valLen)
 }
 
 // InitPage 初始化新页面
 func (pa *PageAccessor) InitPage(pageID uint32, pageType uint8, version uint64) {
-	ptr := pa.pm.PageIDToPtr(pageID)
+	ptr := pa.getPtr(pageID)
 	header := (*PageHeader)(ptr)
 
 	header.pageType = pageType
 	header.count = 0
-	header.extraChild = 0        // 清空 N+1 child（防止页面重用时出现循环引用）
-	header.prevPage = 0xFFFFFFFF // 空链表
+	header.extraChild = 0
+	header.prevPage = 0xFFFFFFFF
 	header.nextPage = 0xFFFFFFFF
 	header.version = version
-	// _pad 自动初始化为零
 }
 
 // InitIndexPage 初始化索引页面
@@ -255,7 +258,7 @@ func (pa *PageAccessor) InitLeafPage(pageID uint32, version uint64) {
 
 // InsertIndexEntry 插入索引条目
 func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, child uint32, dataEnd *uint16) error {
-	ptr := pa.pm.PageIDToPtr(pageID)
+	ptr := pa.getPtr(pageID)
 	header := (*PageHeader)(ptr)
 
 	keyLen := uint32(len(key))
@@ -306,7 +309,7 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 
 // InsertLeafEntry 插入叶子条目
 func (pa *PageAccessor) InsertLeafEntry(pageID uint32, index int, key, value []byte, dataEnd *uint16) error {
-	ptr := pa.pm.PageIDToPtr(pageID)
+	ptr := pa.getPtr(pageID)
 	header := (*PageHeader)(ptr)
 
 	keyLen := uint32(len(key))

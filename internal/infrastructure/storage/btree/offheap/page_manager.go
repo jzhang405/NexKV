@@ -5,7 +5,6 @@
 package offheap
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -132,10 +131,14 @@ func (pm *PageManager) AdvanceDelayedFreeList() int {
 // PageIDToPtr 将 PageID 转换为内存地址
 func (pm *PageManager) PageIDToPtr(pageID uint32) unsafe.Pointer {
 	if pageID >= pm.total {
-		panic(fmt.Sprintf("pageID %d out of range (total: %d)", pageID, pm.total))
+		panic("offheap: pageID out of range")
 	}
-	offset := uintptr(pageID) * PageSize
-	return unsafe.Add(pm.base, offset)
+	return unsafe.Add(pm.base, uintptr(pageID)*PageSize)
+}
+
+//go:inline
+func (pm *PageManager) pageIDToPtrUnchecked(pageID uint32) unsafe.Pointer {
+	return unsafe.Add(pm.base, uintptr(pageID)*PageSize)
 }
 
 // Stats 返回 PageManager 统计信息

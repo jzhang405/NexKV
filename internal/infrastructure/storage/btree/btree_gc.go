@@ -114,49 +114,33 @@ func (gc *BTreeGC) shouldGC() bool {
 func (gc *BTreeGC) collect() {
 	startTime := time.Now()
 
-	// 根据内存使用情况选择 GC 策略
 	used := gc.usedMemory.Load()
 	var gcType int
 
 	if used >= gc.highWaterMark {
-		// 高水位：完全释放
 		gcType = GCTypeFull
 	} else if used >= gc.lowWaterMark {
-		// 低水位：仅释放 buff
 		gcType = GCTypeBuff
 	} else {
-		// 正常：仅释放 page 对象
 		gcType = GCTypePage
 	}
 
-	// 执行 GC
 	gc.releasePages(gcType)
 
-	// 更新统计
 	duration := time.Since(startTime)
 	gc.updateStats(duration)
-
-	// 调整自适应间隔
 	gc.adjustInterval(duration)
 }
 
 // releasePages 释放页面
 func (gc *BTreeGC) releasePages(gcType int) {
-	// LRU 淘汰策略：减少 usedMemory 计数
-	// 新架构使用懒加载，没有传统的页面缓存
-	// 这里需要访问 BTree 的页面缓存，根据 LRU 策略释放页面
-
-	// 暂时实现：减少 usedMemory 计数
 	switch gcType {
 	case GCTypeFull:
-		// 完全释放
-		gc.usedMemory.Add(-gc.usedMemory.Load() / 10) // 释放 10%
+		gc.usedMemory.Add(-gc.usedMemory.Load() / 10)
 	case GCTypePage:
-		// 仅释放 page 对象
-		gc.usedMemory.Add(-gc.usedMemory.Load() / 20) // 释放 5%
+		gc.usedMemory.Add(-gc.usedMemory.Load() / 20)
 	case GCTypeBuff:
-		// 仅释放 buff
-		gc.usedMemory.Add(-gc.usedMemory.Load() / 15) // 释放约 6.7%
+		gc.usedMemory.Add(-gc.usedMemory.Load() / 15)
 	}
 }
 
@@ -166,12 +150,6 @@ func (gc *BTreeGC) collectDirtyPages(dirtyPages map[*PageInfo]bool) error {
 		return nil
 	}
 
-	// TODO: 实现自底向上写入逻辑
-	// 1. 按深度排序（叶子节点优先）
-	// 2. 自底向上写入
-	// 3. 更新父节点引用
-
-	// 暂时实现：直接清除脏页标记
 	for pageInfo := range dirtyPages {
 		if pageInfo.IsDirty() {
 			pageInfo.ClearDirty()

@@ -240,47 +240,23 @@ func (p *InternalPage) UpdateKey(oldKey, newKey []byte) (bool, error) {
 	return true, nil
 }
 
-// Split 分裂页面（带引用更新）
-// 返回：新页面，分裂键（提升到父节点）
-// 均匀分裂策略：将键平均分配到两个页面，中间的键提升到父节点
-//
-// B+Tree 标准分裂逻辑（内部节点）：
-// - 左页面：键 [0, mid)，子节点 [0:mid+1]
-// - 分裂键：键 [mid]（提升到父节点，不在左右页面中）
-// - 右页面：键 [mid+1:]，子节点 [mid+1:]
-//
-// 添加引用更新机制
-// - 更新新页面子节点的 parentRef 指向新页面
-// - 保留原页面子节点的 parentRef 指向原页面
+// Split 分裂页面
 func (p *InternalPage) Split() (*InternalPage, []byte, error) {
 	if len(p.keys) < 2 {
 		return nil, nil, errpkg.BTreeCannotSplitMinKeysError(len(p.keys))
 	}
 
 	mid := len(p.keys) / 2
-
-	// 分裂键（提升到父节点）
 	splitKey := p.keys[mid]
 
-	// 创建新页面，包含中间键之后的键和子节点
-	newPage := NewInternalPage(model.PageID(p.pageID + 1)) // 临时 ID
-
-	// 修复：B+Tree 标准分裂逻辑 - 分裂键提升到父节点，不在左右页面中
-	// 修复：使用 make + copy 创建独立的 slice，避免共享底层数组
-	// 分裂键 keys[mid] 提升到父节点：
-	// - 左页面: keys[0:mid], children[0:mid+1]
-	// - 右页面: keys[mid+1:], children[mid+1:]
-	// 左页面最后一个键 (keys[mid-1]) 的右子节点是 children[mid]
-	// 右页面第一个键 (keys[mid+1]) 的左子节点是 children[mid+1]
+	newPage := NewInternalPage(model.PageID(p.pageID + 1))
 	newPage.keys = make([][]byte, len(p.keys[mid+1:]))
 	copy(newPage.keys, p.keys[mid+1:])
 	newPage.children = make([]*PageRef, len(p.children[mid+1:]))
 	copy(newPage.children, p.children[mid+1:])
-	//parentRef 更新将在 splitInternal() 中处理
 
-	// 当前页面保留中间键之前的键和子节点（不包含分裂键）
-	p.keys = p.keys[:mid]           // 不包含分裂键
-	p.children = p.children[:mid+1] // 保留前 mid+1 个子节点（0 到 mid，包含分裂键的左子节点）
+	p.keys = p.keys[:mid]
+	p.children = p.children[:mid+1]
 	p.version++
 
 	return newPage, splitKey, nil

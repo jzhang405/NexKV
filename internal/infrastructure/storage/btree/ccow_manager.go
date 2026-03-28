@@ -167,52 +167,38 @@ func (ccow *CCOWManager) CopyPathBottomUp(
 	return path[0], nil
 }
 
-// clonePageInfo 克隆 PageInfo（Off-Heap 模式）
+// clonePageInfo 克隆 PageInfo
 func (ccow *CCOWManager) clonePageInfo(info *PageInfo) *PageInfo {
-	// 创建新的 PageInfo（深拷贝 Page 数据）
 	newInfo := &PageInfo{
-		pageLock:    atomic.Value{}, // 性能优化：延迟创建 PageLock
+		pageLock:    atomic.Value{},
 		metaVersion: info.metaVersion,
 		pageSize:    info.pageSize,
 	}
 
-	// 修复：使用 Store() 方法设置原子字段
 	newInfo.SetPos(info.GetPos())
 	newInfo.lastTime.Store(time.Now().UnixNano())
-	newInfo.hits.Store(0) // 重置访问计数
-
-	// 复制标志位（并发安全），但重置 isDirty
-	newInfo.flags.Store(info.flags.Load() &^ 0x01) // 保留 isSplitted，清除 isDirty
+	newInfo.hits.Store(0)
+	newInfo.flags.Store(info.flags.Load() &^ 0x01)
 	newInfo.parentRef.Store(info.parentRef.Load())
-
-	// Off-Heap 模式：复制 NodeRef（共享 Off-Heap 页面）
 	newInfo.nodeRef.Store(info.nodeRef.Load())
 
 	return newInfo
 }
 
 // updateChildRef 更新子节点引用
-//
-// 从父节点的 children 数组中找到旧的孩子引用，将其替换为新的孩子引用
 func (ccow *CCOWManager) updateChildRef(parentInfo, oldChild, newChild *PageInfo) error {
-	// 获取父页面
 	parentPage := parentInfo.GetPage()
 	if parentPage == nil {
-		// 父页面为 nil，跳过更新（可能只是占位符 PageInfo）
 		return nil
 	}
 
-	// 只处理 InternalPage（叶子节点没有子节点）
 	internalPage, ok := parentPage.(*InternalPage)
 	if !ok {
-		// 不是 InternalPage，跳过更新
 		return nil
 	}
 
-	// 获取旧孩子的 PageID
 	oldChildID := oldChild.GetPageID()
 
-	// 在父节点的 children 数组中查找并替换
 	for i, childRef := range internalPage.children {
 		if childRef == nil {
 			continue
@@ -223,15 +209,9 @@ func (ccow *CCOWManager) updateChildRef(parentInfo, oldChild, newChild *PageInfo
 			continue
 		}
 
-		// 通过 PageID 匹配找到旧的孩子
 		if childInfo.GetPageID() == oldChildID {
-			// 创建新的 PageRef 指向新的 PageInfo
 			newChildRef := NewPageRefWithInfo(newChild)
-
-			// 替换子节点引用
 			internalPage.children[i] = newChildRef
-
-			// 更新父节点版本
 			internalPage.version++
 			break
 		}

@@ -264,20 +264,14 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	isLeaf := b.offheapAdapter.IsLeaf(leafPageID)
 
 	if !isLeaf {
-		return nil, errpkg.BTreeHandleSplitNotLeaf()
-	}
-
-		// 调用内部节点分裂
 		err := b.splitInternalOffHeapSync(leafRef, leafInfo, leafPageID, path)
 		if err != nil {
 			return nil, err
 		}
-
-		// 内部节点分裂成功，返回 ErrRetry 让外层重试
 		return nil, ErrRetry
 	}
 
-	// 活锁检测：检查当前页面是否已经被多次加入延迟释放列表
+	// 活锁检测
 	// 通过检查当前 epoch 的待释放列表来判断
 	b.epochBasedFreeList.mu.Lock()
 	currentEpoch := b.epochBasedFreeList.currentEpoch

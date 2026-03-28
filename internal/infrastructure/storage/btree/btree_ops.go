@@ -136,18 +136,6 @@ type TaskScheduler interface {
 }
 
 // SetWithTask 提交 Set 操作到 TaskScheduler 队列
-//
-// 此方法用于高并发场景下，当快速路径（3 次同步重试）失败后，
-// 将操作提交到 TaskScheduler 队列，利用 CPU 核心亲和性减少跨核心锁竞争
-//
-// 参数：
-//   - ctx: 上下文
-//   - scheduler: TaskScheduler 实例
-//   - key: 要设置的键
-//   - value: 要设置的值
-//
-// 返回：
-//   - error: 操作失败时返回错误
 func (b *BTree) SetWithTask(
 	ctx context.Context,
 	scheduler TaskScheduler,
@@ -157,61 +145,34 @@ func (b *BTree) SetWithTask(
 		return ErrClosed
 	}
 
-	// P0 + P1 优化：只在慢速路径时查找 leafRef（快速路径成功时不会执行到这里）
-	// 计算 ShardID：基于 key 所在的 PageID
-	shardID := 0 // 默认值
+	shardID := 0
 	var leafRef *PageRef
 
 	leafRef, _, _, err := b.findLeafPageRef(ctx, key)
 	if err == nil && leafRef != nil {
 		pageInfo := leafRef.GetPageInfo()
 		if pageInfo != nil {
-			// ShardID = PageID + 1（避免 0 值，0 保留给动态负载均衡）
 			shardID = int(pageInfo.GetPageID()) + 1
 		}
 	}
 
-	// 创建任务项（传入提前计算的 shardID 和缓存的 leafRef）
-	// Execute 时使用 setWithLeafLockAndRef 避免双重路径查找
-	// P2 优化：btree-set 的 taskOrder 固定为 0（假设是第一个注册的 task）
 	const btreeSetTaskOrder = 0
 	item := NewBTreeSetItem(b, key, value, 3, shardID, leafRef, btreeSetTaskOrder)
 
-	// 提交到调度器
 	if err := scheduler.EnqueueWithShard(item, "btree-set"); err != nil {
 		return err
 	}
 
-	// ✅ Phase 1 修复：同步等待任务完成，避免假成功
-	// EnqueueWithShard 只是异步入队，后台任务可能失败
-	// 必须等待任务执行完成并检查结果
 	result, err := item.Wait(ctx)
 	if err != nil {
 		return errpkg.BTreeTaskExecutionFailed(err)
 	}
 
-	_ = result // result 是 struct{}，无需使用
+	_ = result
 	return nil
 }
 
 // SetWithRetryAndQueue 实现 Set 操作的完整重试策略
-//
-// 快速路径：3 次同步重试（路径搜索 + TryLock）
-// - 大多数情况下 1-2 次重试即可成功
-// - 每次重试需要重新搜索路径（~500 ns）
-//
-// 慢速路径：3 次失败后提交到 TaskScheduler 队列
-// - 利用 CPU 核心亲和性减少跨核心锁竞争
-// - 适合高并发热点 key 场景
-//
-// 参数：
-//   - ctx: 上下文
-//   - scheduler: TaskScheduler 实例（如果为 nil，3 次失败后返回 ErrRetry）
-//   - key: 要设置的键
-//   - value: 要设置的值
-//
-// 返回：
-//   - error: 操作成功返回 nil，失败返回错误
 func (b *BTree) SetWithRetryAndQueue(
 	ctx context.Context,
 	scheduler TaskScheduler,
@@ -221,17 +182,9 @@ func (b *BTree) SetWithRetryAndQueue(
 		return ErrClosed
 	}
 
-	// 快速路径：3 次重试
-	// 性能测试对比（8 线程，3轮平均）：
-	//   - 1 次重试：~1.638M ops/sec（基准）
-	//   - 2 次重试：~1.627M ops/sec（-0.7%）
-	//   - 3 次重试：~1.664M ops/sec（+1.6%）✓ 略优
-	//   - 5 次重试：~1.617M ops/sec（-1.3%）
-	// 结论：差异很小（<3%），使用 3 次作为平衡点
 	const maxFastRetries = 3
 
 	for attempt := range maxFastRetries {
-		// 检查上下文取消
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -241,36 +194,27 @@ func (b *BTree) SetWithRetryAndQueue(
 		err := b.setWithLeafLock(ctx, key, value)
 		switch err {
 		case nil:
-			// ✅ 只有真正成功（不重试）才推进 epoch
-			// ErrRetry 意味着操作未完成（例如 pageID 变化需要重试）
-			// 过早推进 epoch 会导致页面被释放，其他 goroutine 可能访问已释放的页面
 			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
-			return nil // 成功
+			return nil
 		case ErrRetry:
-			// ✅ ErrRetry：数据可能未真正写入，不要推进 epoch
-			// 例如：UpdateLeafEntry 成功但 pageID 变化，需要重试
-			// 如果此时推进 epoch，可能导致旧页面被释放，其他 goroutine 访问失败
 			if attempt < maxFastRetries-1 {
 				runtime.Gosched()
 			}
 		default:
-			// 检查是否为可重试错误（如循环引用）
 			if errors.Is(err, ErrCircularReference) {
 				if attempt < maxFastRetries-1 {
 					runtime.Gosched()
 				}
-				break // 继续重试
+				break
 			}
-			return err // 其他错误直接返回
+			return err
 		}
 	}
 
-	// 慢速路径：3 次重试均失败，提交到 TaskScheduler 队列
 	if scheduler != nil {
 		return b.SetWithTask(ctx, scheduler, key, value)
 	}
 
-	// 没有 TaskScheduler，返回 ErrRetry
 	return ErrRetry
 }
 

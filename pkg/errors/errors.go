@@ -576,7 +576,7 @@ func BTreeOffheapSet(err error) error {
 }
 
 func BTreeOffheapInsert(err error) error {
-	return stderrors.Join(ErrBTreeInsertIntoLeafFailed, err)
+	return err
 }
 
 func BTreeOffheapDelete(err error) error {
@@ -625,11 +625,11 @@ func BTreeParentLockNil() error {
 }
 
 func BTreeParentInfoNilOp(op string) error {
-	return stderrors.Join(ErrBTreeParentInfoNil, stderrors.New(op))
+	return ErrBTreeParentInfoNil
 }
 
 func BTreeParentLockNilOp(op string) error {
-	return stderrors.Join(ErrBTreeParentLockNil, stderrors.New(op))
+	return ErrBTreeParentLockNil
 }
 
 func BTreeChildNotFound(parentID, childID uint64) error {
@@ -853,19 +853,19 @@ func BTreeFinalizeDeepClone(err error) error {
 }
 
 func BTreeAllocFallbackPage(err error) error {
-	return stderrors.Join(ErrBTreeAllocPageFailed, err)
+	return err
 }
 
 func BTreeFallbackInsert(err error) error {
-	return stderrors.Join(ErrBTreeFallbackInsertFailed, err)
+	return err
 }
 
 func BTreeParentInfoNilInFallback(op string) error {
-	return stderrors.Join(ErrBTreeParentInfoNil, stderrors.New(op))
+	return ErrBTreeParentInfoNil
 }
 
 func BTreeParentLockNilInFallback(op string) error {
-	return stderrors.Join(ErrBTreeParentLockNil, stderrors.New(op))
+	return ErrBTreeParentLockNil
 }
 
 func BTreeUpdateParentInFallback(err error) error {
@@ -873,11 +873,11 @@ func BTreeUpdateParentInFallback(err error) error {
 }
 
 func BTreeRootSplitPostSplitInsertFailed(err error) error {
-	return stderrors.Join(ErrBTreePostSplitInsertFailed, err)
+	return err
 }
 
 func BTreeInvalidInsertIndex(insertIndex, count int) error {
-	return stderrors.Join(ErrBTreeInvalidInsertIndex, fmt.Errorf("insertIndex %d (count=%d)", insertIndex, count))
+	return ErrBTreeInvalidInsertIndex
 }
 
 func BTreeUpdateParentIndex(err error) error {
@@ -909,7 +909,7 @@ func BTreeParentInfoNilAfterCASOp() error {
 }
 
 func BTreeGrandparentInfoNilOp(op string) error {
-	return stderrors.Join(ErrBTreeGrandparentInfoNil, stderrors.New(op))
+	return ErrBTreeGrandparentInfoNil
 }
 
 func BTreeOldParentNotFoundInGrandparent(oldParent, grandParent uint64) error {
@@ -921,31 +921,31 @@ func BTreeUpdateGrandparent(err error) error {
 }
 
 func BTreeGrandparentLockNilOp(op string) error {
-	return stderrors.Join(ErrBTreeGrandparentLockNil, stderrors.New(op))
+	return ErrBTreeGrandparentLockNil
 }
 
 func BTreeAllocGrandparentPage(err error) error {
-	return stderrors.Join(ErrBTreeAllocPageFailed, err)
+	return err
 }
 
 func BTreeMaterializeGrandparentPage(err error) error {
-	return stderrors.Join(ErrBTreeMaterializePageFailed, err)
+	return err
 }
 
 func BTreeGrandparentLockNilAfterAlloc(op string) error {
-	return stderrors.Join(ErrBTreeGrandparentLockNil, stderrors.New(op))
+	return ErrBTreeGrandparentLockNil
 }
 
 func BTreePostSplitInsert(err error) error {
-	return stderrors.Join(ErrBTreePostSplitInsertFailed, err)
+	return err
 }
 
 func BTreeAllocIndexPage(err error) error {
-	return stderrors.Join(ErrBTreeAllocPageFailed, err)
+	return err
 }
 
 func BTreeMaterializeRootIndexPage(err error) error {
-	return stderrors.Join(ErrBTreeMaterializePageFailed, err)
+	return err
 }
 
 func BTreeCASFailed(oldRootID, newRootPageID uint64, retry int) error {
@@ -953,15 +953,15 @@ func BTreeCASFailed(oldRootID, newRootPageID uint64, retry int) error {
 }
 
 func BTreeAllocLeftIndexPage(err error) error {
-	return stderrors.Join(ErrBTreeAllocPageFailed, err)
+	return err
 }
 
 func BTreeAllocRightIndexPage(err error) error {
-	return stderrors.Join(ErrBTreeAllocPageFailed, err)
+	return err
 }
 
 func BTreeMaterializeLeftIndexPage(err error) error {
-	return stderrors.Join(ErrBTreeMaterializePageFailed, err)
+	return err
 }
 
 func BTreeMaterializationBugLeft(pageID uint64, expected, got int) error {
@@ -969,7 +969,7 @@ func BTreeMaterializationBugLeft(pageID uint64, expected, got int) error {
 }
 
 func BTreeMaterializeRightIndexPage(err error) error {
-	return stderrors.Join(ErrBTreeMaterializePageFailed, err)
+	return err
 }
 
 func BTreeMaterializationBugRight(pageID uint64, expected, got int) error {
@@ -1021,27 +1021,27 @@ func BTreeCASSuccessButRootNil() error {
 }
 
 func BTreeAllocIndexPageForRoot(err error) error {
-	return stderrors.Join(ErrBTreeAllocPageFailed, err)
+	return err
 }
 
 func BTreeMaterializeRootPage(err error) error {
-	return stderrors.Join(ErrBTreeMaterializePageFailed, err)
+	return err
 }
 
 func BTreeAllocNewInternalPage(err error) error {
-	return stderrors.Join(ErrBTreeAllocPageFailed, err)
+	return err
 }
 
 func BTreeMaterializeNewInternalPage(err error) error {
-	return stderrors.Join(ErrBTreeMaterializePageFailed, err)
+	return err
 }
 
 func BTreeAllocNewRootPage(err error) error {
-	return stderrors.Join(ErrBTreeAllocPageFailed, err)
+	return err
 }
 
 func BTreeMaterializeNewRootPage(err error) error {
-	return stderrors.Join(ErrBTreeMaterializePageFailed, err)
+	return err
 }
 
 func BTreeUpdateParentIndexEntry(err error) error {
@@ -1074,7 +1074,7 @@ func BTreeKeyOrderViolationError() error {
 
 // BTreeCannotSplitMinKeysError 创建分裂键数不足错误
 func BTreeCannotSplitMinKeysError(count int) error {
-	return stderrors.Join(ErrBTreeCannotSplitMinKeys)
+	return ErrBTreeCannotSplitMinKeys
 }
 
 // BTreeDeserializeReadPageID 创建反序列化读取 pageID 失败错误
@@ -1483,22 +1483,22 @@ func OffHeapInvalidPageID(pageID, total int) error {
 
 // BTreeAllocPageAdapter 分配页面失败（AllocLeafPage/AllocIndexPage）
 func BTreeAllocPageAdapter(err error) error {
-	return stderrors.Join(ErrBTreeAllocPageFailed, err)
+	return err
 }
 
 // BTreeMaterializePageAdapter 物化页面失败（通用）
 func BTreeMaterializePageAdapter(err error) error {
-	return stderrors.Join(ErrBTreeMaterializePageFailed, err)
+	return err
 }
 
 // BTreeAllocNewPageForSplit 分配新页面用于更新/分裂
 func BTreeAllocNewPageForSplit(err error) error {
-	return stderrors.Join(ErrBTreeAllocPageFailed, err)
+	return err
 }
 
 // BTreeMaterializePageForSplit 物化索引页面失败（UpdateIndexEntry/ReplaceChild）
 func BTreeMaterializePageForSplit(err error) error {
-	return stderrors.Join(ErrBTreeMaterializePageFailed, err)
+	return err
 }
 
 // BTreeInvalidParamMsg 创建带消息的参数无效错误
@@ -1563,45 +1563,45 @@ func BTreeMaterializeParentPage(err error) error {
 
 // BTreeDuplicatePageIDAlloc 分配器返回了相同的 pageID
 func BTreeDuplicatePageIDAlloc(pageID uint32) error {
-	return stderrors.Join(ErrBTreeDuplicatePageIDAlloc, fmt.Errorf("duplicate pageID: %d", pageID))
+	return ErrBTreeDuplicatePageIDAlloc
 }
 
 // BTreeInvalidPageIDAlloc 分配器返回了无效的 pageID
 func BTreeInvalidPageIDAlloc(left, right uint32) error {
-	return stderrors.Join(ErrBTreeInvalidPageIDAlloc, fmt.Errorf("invalid pageID: left=%d right=%d", left, right))
+	return ErrBTreeInvalidPageIDAlloc
 }
 
 // BTreeSplitMinKeys 分裂时键数不足
 func BTreeSplitMinKeys(count int) error {
-	return stderrors.Join(ErrBTreeCannotSplitMinKeys)
+	return ErrBTreeCannotSplitMinKeys
 }
 
 // BTreePageTooLargeToSplit 页面过大无法分裂
 func BTreePageTooLargeToSplit(count int) error {
-	return stderrors.Join(ErrBTreePageTooLarge)
+	return ErrBTreePageTooLarge
 }
 
 // BTreeInvalidSplitIdx 无效的分裂索引
 func BTreeInvalidSplitIdx(splitIdx, keysLen int) error {
-	return stderrors.Join(ErrBTreeInvalidSplitIndex)
+	return ErrBTreeInvalidSplitIndex
 }
 
 // BTreeMaterializeLeftPage 物化左页面失败
 func BTreeMaterializeLeftPage(err error) error {
-	return stderrors.Join(ErrBTreeMaterializePageFailed, err)
+	return err
 }
 
 // BTreeMaterializeRightPage 物化右页面失败
 func BTreeMaterializeRightPage(err error) error {
-	return stderrors.Join(ErrBTreeMaterializePageFailed, err)
+	return err
 }
 
 // BTreeAllocLeftPage 分配左页面失败
 func BTreeAllocLeftPage(err error) error {
-	return stderrors.Join(ErrBTreeAllocPageFailed, err)
+	return err
 }
 
 // BTreeAllocRightPage 分配右页面失败
 func BTreeAllocRightPage(err error) error {
-	return stderrors.Join(ErrBTreeAllocPageFailed, err)
+	return err
 }

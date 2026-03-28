@@ -20,11 +20,10 @@ type mmapAllocator struct {
 }
 
 func newPlatformAllocator(size int) (OffHeapAllocator, error) {
-	// 调用 mmap 系统调用
 	ptr, err := syscall.Mmap(
-		-1,   // fd = -1 (匿名映射)
-		0,    // offset = 0
-		size, // length
+		-1,
+		0,
+		size,
 		syscall.PROT_READ|syscall.PROT_WRITE,
 		syscall.MAP_ANON|syscall.MAP_PRIVATE,
 	)
@@ -40,8 +39,6 @@ func newPlatformAllocator(size int) (OffHeapAllocator, error) {
 }
 
 func (m *mmapAllocator) Alloc(size int) (unsafe.Pointer, error) {
-	// 简单实现：返回固定基地址
-	// 实际 PageManager 会管理具体的页面分配
 	if size > m.size {
 		return nil, errpkg.OffHeapAllocExceedsSize(int64(size), int64(m.size))
 	}

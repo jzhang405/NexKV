@@ -27,40 +27,22 @@ func NewOffHeapMaterializer(pm *PageManager) *OffHeapMaterializer {
 }
 
 // MaterializePageFromBytes 从字节数组物化到 mmap 页面
-// 这是简化版本，用于迁移阶段
-//
-// 工作原理：
-// 1. 初始化目标页面
-// 2. 将所有 KV 数据写入页面尾部（数据区）
-// 3. 在页面头部创建 Entry 数组（索引区）
-// 4. Entry 包含 offset 指向数据区的 KV
-//
-// 零拷贝：数据只写入一次，不进行深拷贝
-// 返回 dataEnd（数据区结束位置）
 func (m *OffHeapMaterializer) MaterializePageFromBytes(
 	pageID uint32,
 	keys, values [][]byte,
 ) (uint16, error) {
-	// 初始化页面为叶子节点
 	m.pa.InitLeafPage(pageID, 0)
 	dataEnd := uint16(0)
 
-	// 修复：方案 C - 在物化前对 keys 进行排序
-	// 如果输入的 keys 无序（例如从损坏的页面分裂而来），
-	// 直接按索引插入会导致输出页面也无序。
-	// 排序后可以确保输出页面有序，打破恶性循环。
 	sortedKeys := make([][]byte, len(keys))
 	sortedValues := make([][]byte, len(values))
 	copy(sortedKeys, keys)
 	copy(sortedValues, values)
 
-	// 对 keys 进行排序，同时保持 values 与 keys 的对应关系
-	// 使用 sort.SliceStable，保持相等元素的相对顺序
 	sort.SliceStable(sortedKeys, func(i, j int) bool {
 		return bytes.Compare(sortedKeys[i], sortedKeys[j]) < 0
 	})
 
-	// 写入所有 KV 数据（使用排序后的数据）
 	for i := range sortedKeys {
 		err := m.pa.InsertLeafEntry(pageID, i, sortedKeys[i], sortedValues[i], &dataEnd)
 		if err != nil {
@@ -72,19 +54,14 @@ func (m *OffHeapMaterializer) MaterializePageFromBytes(
 }
 
 // MaterializeIndexPageFromBytes 物化索引页面
-// 返回 dataEnd（数据区结束位置）
 func (m *OffHeapMaterializer) MaterializeIndexPageFromBytes(
 	pageID uint32,
 	keys [][]byte,
 	children []uint32,
 ) (uint16, error) {
-	// 初始化页面为索引节点
 	m.pa.InitIndexPage(pageID, 0)
 	dataEnd := uint16(0)
 
-	// 修复：不进行排序！排序会破坏 B+Tree 的 key-child 对应关系
-	// UpdateIndexEntry 调用者应该确保传入的 keys 已经是有序的
-	// 直接按输入顺序写入所有 keys 和 children
 	for i := range keys {
 		err := m.pa.InsertIndexEntry(pageID, i, keys[i], children[i], &dataEnd)
 		if err != nil {
@@ -92,15 +69,9 @@ func (m *OffHeapMaterializer) MaterializeIndexPageFromBytes(
 		}
 	}
 
-	// 索引节点的 children 数量 = keys 数量 + 1
-	// 最后一个 child 需要特殊处理
 	if len(children) > len(keys) {
-		// 设置 extraChild（N+1 child）
-		// 修复：编码子节点的版本号到 extraChild 字段中（用于僵尸引用检测）
 		lastChild := children[len(keys)]
 		if lastChild != 0 {
-			// 使用 GetVersionSafe 避免在测试场景中 panic
-			// 测试可能使用硬编码的 pageID，这些页面尚未分配
 			childVersion := m.pa.GetVersionSafe(lastChild)
 			header := m.pa.GetHeader(pageID)
 			header.extraChild = EncodeChildWithVersion(lastChild, childVersion)

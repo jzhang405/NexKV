@@ -21,24 +21,21 @@ const (
 // 4KB 页面布局：
 // ┌──────────────┬──────────────┬──────────────┬──────────────┐
 // │ PageHeader   │ Entry 数组    │ 空闲区        │ KV 数据区     │
-// │ 32B          │ N×12/16B     │ (预留增长)     │ key[]+val[]  │
+// │ 32B          │ N×12/16B    │ (预留增长)    │ key[]+val[]  │
 // └──────────────┴──────────────┴──────────────┴──────────────┘
 //
 // 空闲区从后往前分配，Entry 数组从前往后增长
 // KV 数据区紧凑存储，支持变长 key/value
 
-// PageHeader 页面头部（32 字节，Cache Line 对齐）
-// 字段按大小排序，确保无内部 padding
+// PageHeader 页面头部（32 字节）
 type PageHeader struct {
-	version    uint64 // 8 bytes - 版本号（用于 CCOW）
-	prevPage   uint32 // 4 bytes - 前一个页面 pageID（链表）
-	nextPage   uint32 // 4 bytes - 后一个页面 pageID（链表）
-	extraChild uint64 // 8 bytes - 索引节点的 N+1 child（32-bit pageID + 32-bit version）
-	// 注意：extraChild 现在是 8 bytes，导致总大小超过 32 字节
-	// 需要调整结构，这里先声明，稍后处理
-	count    uint16  // 2 bytes - 条目数（entries 数量）
-	pageType uint8   // 1 byte  - 页面类型（0=索引 1=叶子）
-	_pad     [5]byte // 5 bytes - 对齐到 32 字节 (8+4+4+8+2+1 = 27, +5 = 32)
+	version    uint64 // 版本号（CCOW）
+	prevPage   uint32 // 前一个页面 pageID
+	nextPage   uint32 // 后一个页面 pageID
+	extraChild uint64 // 索引节点的 N+1 child（pageID + version）
+	count      uint16 // 条目数
+	pageType   uint8  // 页面类型（0=索引 1=叶子）
+	_pad       [5]byte
 }
 
 // SizeofPageHeader PageHeader 大小（32 字节）
@@ -74,15 +71,12 @@ type NodeRef struct {
 
 // NewNodeRef 创建节点引用
 func NewNodeRef(pageID uint32, isLeaf bool) NodeRef {
-	return NodeRef{
-		pageID: pageID,
-		isLeaf: isLeaf,
-	}
+	return NodeRef{pageID: pageID, isLeaf: isLeaf}
 }
 
 // IsValid 检查节点引用是否有效
 func (ref NodeRef) IsValid() bool {
-	return ref.pageID != 0xFFFFFFFF // 0xFFFFFFFF 保留为无效值
+	return ref.pageID != 0xFFFFFFFF
 }
 
 // GetPageID 获取页面 ID
@@ -95,14 +89,13 @@ func (ref NodeRef) IsLeaf() bool {
 	return ref.isLeaf
 }
 
-// 版本号编码常量（32-bit 统一编码：32-bit pageID + 32-bit version）
 const (
-	ChildVersionBits  = 32                 // 版本号使用的位数
-	ChildVersionMask  = 0xFFFFFFFF00000000 // 版本号掩码（高 32 位）
-	ChildIDMask       = 0x00000000FFFFFFFF // pageID 掩码（低 32 位）
-	ChildVersionShift = 32                 // 版本号位移量
-	MaxChildID        = (1 << 32) - 1      // 最大 pageID (~4 billion)
-	MaxChildVersion   = (1 << 32) - 1      // 最大版本号 (~4 billion)
+	ChildVersionBits  = 32
+	ChildVersionMask  = 0xFFFFFFFF00000000
+	ChildIDMask       = 0x00000000FFFFFFFF
+	ChildVersionShift = 32
+	MaxChildID        = (1 << 32) - 1
+	MaxChildVersion   = (1 << 32) - 1
 )
 
 // EncodeChildWithVersion 编码 pageID 和版本号到 uint64
@@ -133,9 +126,6 @@ func NewPageAccessor(pm *PageManager) *PageAccessor {
 	return &PageAccessor{pm: pm}
 }
 
-// GetDataEnd 从页面结构计算实际的 dataEnd
-// dataEnd 表示从页面末尾到第一个 KV 数据起点的距离
-// 通过扫描所有 entries 来计算实际的 KV 数据区大小
 func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
 	ptr := pa.pm.PageIDToPtr(pageID)
 	header := (*PageHeader)(ptr)
@@ -144,9 +134,8 @@ func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
 		return 0
 	}
 
+	minKeyOff := uint32(PageSize)
 	if pa.IsLeaf(pageID) {
-		// 叶子节点：扫描所有 entries，找到最小的 keyOff（KV 数据区的起点）
-		minKeyOff := uint32(PageSize)
 		for i := 0; i < int(header.count); i++ {
 			entryPtr := unsafe.Add(ptr, SizeofPageHeader+i*SizeofLeafEntry)
 			entry := (*LeafEntry)(entryPtr)
@@ -154,11 +143,7 @@ func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
 				minKeyOff = entry.keyOff
 			}
 		}
-		// dataEnd = 从页面末尾到 KV 数据区起点的距离
-		return uint16(PageSize - minKeyOff)
 	} else {
-		// 索引节点：扫描所有 entries，找到最小的 keyOff（KV 数据区的起点）
-		minKeyOff := uint32(PageSize)
 		for i := 0; i < int(header.count); i++ {
 			entryPtr := unsafe.Add(ptr, SizeofPageHeader+i*SizeofIndexEntry)
 			entry := (*IndexEntry)(entryPtr)
@@ -166,8 +151,8 @@ func (pa *PageAccessor) GetDataEnd(pageID uint32) uint16 {
 				minKeyOff = entry.keyOff
 			}
 		}
-		return uint16(PageSize - minKeyOff)
 	}
+	return uint16(PageSize - minKeyOff)
 }
 
 // GetSpaceUsage 计算页面空间使用率（0.0-1.0）
@@ -195,24 +180,14 @@ func (pa *PageAccessor) GetHeader(pageID uint32) *PageHeader {
 	return (*PageHeader)(ptr)
 }
 
-// IsValidPage 检查页面是否有效（未被释放）
-// 用于并发场景下 Get 操作的页面状态验证
 func (pa *PageAccessor) IsValidPage(pageID uint32) bool {
 	if pageID == 0 || pageID == 0xFFFFFFFF {
 		return false
 	}
-
-	// 通过检查页面的 pageType 来验证
-	// 已释放的页面 pageType 应该是 0（未初始化状态）
 	header := pa.GetHeader(pageID)
 	if header == nil {
 		return false
 	}
-
-	// pageType 为 0 表示页面未初始化或已释放
-	// 有效页面的 pageType 应该是 PageTypeIndex (0) 或 PageTypeLeaf (1)
-	// 但由于 PageTypeIndex = 0，我们需要额外检查版本号
-	// 已初始化的页面版本号 >= 1
 	return header.version >= 1
 }
 
@@ -278,12 +253,11 @@ func (pa *PageAccessor) InitLeafPage(pageID uint32, version uint64) {
 	pa.InitPage(pageID, PageTypeLeaf, version)
 }
 
-// InsertIndexEntry 插入索引条目（返回写入的 offset）
+// InsertIndexEntry 插入索引条目
 func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, child uint32, dataEnd *uint16) error {
 	ptr := pa.pm.PageIDToPtr(pageID)
 	header := (*PageHeader)(ptr)
 
-	// 检查是否有空间
 	keyLen := uint32(len(key))
 	requiredSpace := uint32(SizeofIndexEntry) + keyLen
 	usedSpace := uint32(SizeofPageHeader) + uint32(header.count)*uint32(SizeofIndexEntry) + uint32(*dataEnd)
@@ -291,7 +265,6 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 		return errpkg.OffHeapPageFull(int(usedSpace), int(requiredSpace), PageSize)
 	}
 
-	// 移动现有 entries（如果需要）
 	if index < int(header.count) {
 		src := unsafe.Add(ptr, SizeofPageHeader+index*SizeofIndexEntry)
 		dst := unsafe.Add(ptr, SizeofPageHeader+(index+1)*SizeofIndexEntry)
@@ -301,29 +274,22 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 		copy(dstSlice, moveSlice)
 	}
 
-	// 写入 key（从页面尾部开始分配）
 	keyOff := PageSize - uint32(*dataEnd) - keyLen
 	*dataEnd += uint16(keyLen)
 	keyPtr := unsafe.Add(ptr, keyOff)
 	keySlice := unsafe.Slice((*byte)(keyPtr), keyLen)
 	copy(keySlice, key)
 
-	// 写入 entry
 	entryPtr := unsafe.Add(ptr, SizeofPageHeader+index*SizeofIndexEntry)
 	entry := (*IndexEntry)(entryPtr)
 	entry.keyOff = uint32(keyOff)
 	entry.keyLen = keyLen
 
-	// 版本号检测：编码子节点的版本号到 child 字段
-	// 只有当 child != 0 时才读取版本号（0 表示没有子节点）
 	if child != 0 {
-		// 安全获取版本号：如果子页面不存在（例如在测试中直接设置 child），
-		// 则使用版本号 0
 		var childVersion uint64
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					// pageID 不存在或无效，使用版本号 0
 					childVersion = 0
 				}
 			}()
@@ -338,12 +304,11 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 	return nil
 }
 
-// InsertLeafEntry 插入叶子条目（返回写入的 offset）
+// InsertLeafEntry 插入叶子条目
 func (pa *PageAccessor) InsertLeafEntry(pageID uint32, index int, key, value []byte, dataEnd *uint16) error {
 	ptr := pa.pm.PageIDToPtr(pageID)
 	header := (*PageHeader)(ptr)
 
-	// 检查是否有空间
 	keyLen := uint32(len(key))
 	valLen := uint32(len(value))
 	requiredSpace := uint32(SizeofLeafEntry) + keyLen + valLen
@@ -352,7 +317,6 @@ func (pa *PageAccessor) InsertLeafEntry(pageID uint32, index int, key, value []b
 		return errpkg.OffHeapPageFull(int(usedSpace), int(requiredSpace), PageSize)
 	}
 
-	// 移动现有 entries（如果需要）
 	if index < int(header.count) {
 		src := unsafe.Add(ptr, SizeofPageHeader+index*SizeofLeafEntry)
 		dst := unsafe.Add(ptr, SizeofPageHeader+(index+1)*SizeofLeafEntry)
@@ -362,21 +326,18 @@ func (pa *PageAccessor) InsertLeafEntry(pageID uint32, index int, key, value []b
 		copy(dstSlice, moveSlice)
 	}
 
-	// 写入 value（从页面尾部开始分配）
 	valOff := PageSize - uint32(*dataEnd) - valLen
 	*dataEnd += uint16(valLen)
 	valPtr := unsafe.Add(ptr, valOff)
 	valSlice := unsafe.Slice((*byte)(valPtr), valLen)
 	copy(valSlice, value)
 
-	// 写入 key（在 value 前面）
 	keyOff := valOff - keyLen
 	*dataEnd += uint16(keyLen)
 	keyPtr := unsafe.Add(ptr, keyOff)
 	keySlice := unsafe.Slice((*byte)(keyPtr), keyLen)
 	copy(keySlice, key)
 
-	// 写入 entry
 	entryPtr := unsafe.Add(ptr, SizeofPageHeader+index*SizeofLeafEntry)
 	entry := (*LeafEntry)(entryPtr)
 	entry.keyOff = uint32(keyOff)
@@ -504,21 +465,14 @@ func (pa *PageAccessor) SetNextPage(pageID uint32, next uint32) {
 }
 
 // GetChild 获取索引节点的子节点
-// 支持 B+ 树的 N+1 child 语义：如果 index == count，返回 extraChild
-//
-// 并发安全：在读取 GetIndexEntry 前重新验证 index 范围，
-// 防止 TOCTOU 竞态条件（页面在检查和使用之间被修改）
+// index == count 时返回 extraChild
 func (pa *PageAccessor) GetChild(pageID uint32, index int) uint64 {
 	header := pa.GetHeader(pageID)
 	if index == int(header.count) {
-		// 返回 N+1 child（最后一个 child）
 		return header.extraChild
 	}
-	// 重新读取 header.count，防止 TOCTOU
 	header = pa.GetHeader(pageID)
 	if index >= int(header.count) {
-		// 页面被修改，index 越界
-		// 返回 0 表示无效子节点
 		return 0
 	}
 	entry := pa.GetIndexEntry(pageID, index)
@@ -526,20 +480,14 @@ func (pa *PageAccessor) GetChild(pageID uint32, index int) uint64 {
 }
 
 // SetChild 设置索引节点的子节点
-// 支持 B+ 树的 N+1 child 语义：如果 index == count，设置 extraChild
-// 参数 child 是原始的 pageID（uint32），函数内部会自动编码版本号
-// 这样与 InsertIndexEntry 保持 API 一致性
+// index == count 时设置 extraChild
 func (pa *PageAccessor) SetChild(pageID uint32, index int, child uint32) {
-	// 编码版本号：与 InsertIndexEntry 保持一致
 	var encodedChild uint64
 	if child != 0 {
-		// 安全获取版本号：如果子页面不存在（例如在测试中直接设置 child），
-		// 则使用版本号 0
 		var childVersion uint64
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					// pageID 不存在或无效，使用版本号 0
 					childVersion = 0
 				}
 			}()

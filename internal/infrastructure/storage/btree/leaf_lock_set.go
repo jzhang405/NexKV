@@ -16,29 +16,10 @@ import (
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
-// setWithLeafLock 实现 Leaf-Level Locking 写入路径（Off-Heap 模式）
-//
-// 核心流程：
-// 1. findLeafPageRef：查找路径和 PageRef（只读，不克隆）
-// 2. Leaf.Lock：获取叶子节点锁
-// 3. OffHeap Insert：使用 OffHeapAdapter.InsertToOffHeap() 插入
-// 4. Leaf CAS：原子替换叶子节点（如果 pageID 变化）
-// 5. Leaf.Unlock：释放锁
-// 6. 检查分裂：如果需要，调用分裂逻辑
-//
-// Off-Heap 变更：
-// - 不再使用 Delta Chain（CloneWithDelta）
-// - 直接使用 OffHeapAdapter.InsertToOffHeap()
-// - pageID 可能变化（update 场景）
-//
-// 并发分裂协调：
-// - 使用 splitMutexMap 防止多个 goroutine 同时分裂同一页面
-// - 正在分裂的页面会标记为 splitting，其他 goroutine 等待分裂完成
+// setWithLeafLock 实现 Leaf-Level Locking 写入路径
 func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
-	// Step 1: 查找 PageRef 和路径（只读，不克隆）
 	leafRef, path, refs, err := b.findLeafPageRef(ctx, key)
 	if err != nil {
-		// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
 		return err
 	}
 
@@ -46,55 +27,49 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 		return errpkg.BTreeEmptyPath()
 	}
 
-	// Step 2: 获取锁（懒加载，每个 PageRef 有独立的锁）
+	// Step 2: 获取锁
 	pageLock := leafRef.GetLock()
 	if pageLock == nil {
 		return errpkg.BTreePageLockNil()
 	}
 
-	// 使用 TryLock 快速失败（避免死锁）
 	if !pageLock.TryLock() {
-		return ErrRetry // 快速失败，让外层重试
+		return ErrRetry
 	}
 	defer pageLock.Unlock()
 
-	// Step 3: 获取当前 PageInfo（在锁保护下）
+	// Step 3: 获取当前 PageInfo
 	oldInfo := leafRef.GetPageInfo()
 	if oldInfo == nil {
 		return errpkg.BTreeLeafPageInfoNil()
 	}
 
-	// Step 4: 验证页面已加载（Off-Heap 模式）
+	// Step 4: 验证页面已加载
 	if !oldInfo.IsPageLoaded() {
 		return errpkg.BTreeLeafPageNotLoaded2()
 	}
 
-	// Step 5: Off-Heap 插入（直接修改，不需要克隆）
+	// Step 5: Off-Heap 插入
 	oldPageID := model.PageID(oldInfo.GetPageID())
 	newPageID, splitRequired, err := b.offheapAdapter.InsertToOffHeap(oldPageID, key, value)
 	if err != nil {
 		return errpkg.BTreeOffheapInsert(err)
 	}
 
-	// Step 6: 创建新的 PageInfo（Off-Heap 模式）
+	// Step 6: 创建新的 PageInfo
 	newInfo := NewPageInfo()
-	newInfo.SetNodeRef(offheap.NewNodeRef(uint32(newPageID), true)) // true = isLeaf
-	// 继承其他属性
+	newInfo.SetNodeRef(offheap.NewNodeRef(uint32(newPageID), true))
 	newInfo.SetPos(oldInfo.GetPos())
 	if oldInfo.IsDirty() {
 		newInfo.MarkDirty()
 	}
 
-	// Step 7: Leaf-Level CAS（在锁保护下，几乎不会失败）
-	// 注意：如果 pageID 变化（update 场景），CAS 会失败，需要更新 PageRefCache
+	// Step 7: Leaf-Level CAS
 	if !leafRef.ReplacePage(oldInfo, newInfo) {
-		// CAS 失败（极少发生），返回重试
 		return ErrRetry
 	}
 
-	// Step 8: 如果 pageID 变化（update 场景），区分两种情况
-	// 场景 1：UpdateLeafEntry 重新分配了页面，数据已写入，不需要重试
-	// 场景 2：需要分裂，必须重试以获取新的路径
+	// Step 8: pageID 变化处理
 	if newPageID != oldPageID {
 		if !splitRequired {
 			// ✅ 场景 1：UpdateLeafEntry，数据已写入
@@ -187,49 +162,28 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 		}
 	}
 
-	// Step 9: 检查是否需要分裂（同步，在锁保护下）
-	// 此时 newPageID == oldPageID，所以传递 newPageID 即可
+	// Step 9: 检查是否需要分裂
 	if splitRequired {
-		// ✅ 修复：删除提前检查父节点是否满的逻辑
-		// BUG: 之前在父节点满时先分裂父节点然后返回 ErrRetry
-		// 但原始 key-value 从未插入（InsertToOffHeap 在页面满时不插入）
-		// 导致：key-05655 丢失
-		// 修复：让正常的分裂流程（handleSplitOffHeapSync）处理父节点满的情况
-		// handleSplitOffHeapSync 会先插入 key-value，然后处理父节点分裂
-
-		// 获取页面级别的分裂锁，防止多个 goroutine 同时分裂同一页面
 		splitMuAny, _ := b.splitMuMap.LoadOrStore(uint32(newPageID), &sync.Mutex{})
 		splitMu := splitMuAny.(*sync.Mutex)
 		splitMu.Lock()
 		defer splitMu.Unlock()
-		// 不删除锁，永久保留（内存开销可忽略：< 1MB）
-		// 删除锁会导致竞态条件：其他 goroutine 可能获取新锁并访问已释放的页面
 
-		// 需要分裂，调用 Off-Heap 分裂逻辑
-		// 注意：分裂会释放当前锁，按深度顺序获取新的锁
-		// 传递 key-value，分裂后需要重新插入
 		leftRef, err := b.handleSplitOffHeapSync(leafRef, newInfo, newPageID, path, key, value)
 		if err != nil {
-			// 分裂失败，返回 ErrRetry 让外层重试
-			// 注意：如果 SplitOffHeapLeafPage 失败，页面可能已处于不一致状态
 			return ErrRetry
 		}
-		// 分裂成功，leafRef 现在指向 leftPageID
-		// 更新 newInfo 以便后续持久化使用正确的页面信息
 		newInfo = leftRef.GetPageInfo()
 		if newInfo == nil {
 			return errpkg.BTreeLeftRefPageInfoNil()
 		}
 	}
 
-	// Step 10: 持久化集成（仅持久化模式）
-	// Leaf-Level Locking 完成后，需要持久化整个树
+	// Step 10: 持久化集成
 	if b.chunkMgr != nil {
-		// 获取全局写锁，防止并发修改干扰持久化
 		b.writeMu.Lock()
 		defer b.writeMu.Unlock()
 
-		// 获取当前 Root（CAS 和分裂后可能已改变）
 		currentRoot := b.rootRef.pInfo.Load()
 		if currentRoot == nil {
 			return errpkg.BTreeRootPageInfoNilAfterPersist()
@@ -303,45 +257,15 @@ func (b *BTree) buildPersistPath(root, target *PageInfo) []*PageInfo {
 	return []*PageInfo{root}
 }
 
-// handleSplitSync 处理叶子节点分裂（同步，带锁管理）
-//
-// 这是 Leaf-Level Locking 的关键部分：
-// 1. 叶子节点已被 setWithLeafLock 锁定
-// 2. 按深度顺序获取锁（leaf → parent → grandparent）
-// 3. 使用 CAS 原子更新父节点
-// 4. 避免直接修改父节点导致的并发读冲突
-//
-// 参数：
-//
-//	leafRef - 叶子节点的 PageRef（已锁定）
-//	leafInfo - 叶子节点的 PageInfo（已 CAS 更新到新版本）
-//	path - 搜索路径（用于向上传播分裂）
-//
-// 返回：error - 错误信息
-
-// handleSplitOffHeapSync 处理叶子节点分裂（Off-Heap 模式，同步，带锁管理）
-//
-// 参数：
-//
-//	leafRef - 叶子节点的 PageRef
-//	leafInfo - 叶子节点的 PageInfo
-//	leafPageID - 叶子节点的 PageID
-//	path - 从 Root 到 Leaf 的路径
-//
-// 返回：
-//
-//	*PageRef - 分裂后的左子节点 PageRef（用于后续持久化）
-//	error - 错误信息（ErrRetry 表示需要重试）
+// handleSplitOffHeapSync 处理叶子节点分裂
 func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, leafPageID model.PageID, path []*PageInfo, key, value []byte) (*PageRef, error) {
-	// ✅ 修复：检查传入的页面类型
-	// BUG: 有时候 leafPageID 指向的是 INDEX 节点（例如根节点），而不是 LEAF 节点
-	// 原因：页面类型损坏或页面 ID 重用
-	// 修复：检查页面类型，如果是 INDEX 节点，调用内部节点分裂逻辑
 	count := b.offheapAdapter.pa.GetCount(uint32(leafPageID))
+	_ = count
 	isLeaf := b.offheapAdapter.IsLeaf(leafPageID)
 
 	if !isLeaf {
-		// 传入的是 INDEX 节点，应该调用 splitInternalOffHeapSync
+		return nil, errpkg.BTreeHandleSplitNotLeaf()
+	}
 
 		// 调用内部节点分裂
 		err := b.splitInternalOffHeapSync(leafRef, leafInfo, leafPageID, path)
@@ -507,8 +431,6 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 			// 更新新页面的 parentRef
 			newLeafRef := b.pageRefCache.GetOrCreate(model.PageID(newPageID), true)
 			newLeafRef.SetParentRef(parentRef)
-
-		} else {
 		}
 
 		// 返回成功
@@ -990,9 +912,6 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 				// 更新 parentRef 的父节点引用
 				parentRef.SetParentRef(grandParentRef)
 			}
-		} else {
-			// 没有祖父节点，说明父节点就是根节点
-			// 根节点已经通过 CAS 更新了，不需要额外处理
 		}
 	}
 

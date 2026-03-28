@@ -139,18 +139,11 @@ func (p *InternalPage) FindChild(key []byte) (*PageRef, bool) {
 	return nil, false
 }
 
-// FindChildRef 查找键对应的子节点引用（简化版，用于 searchPath）
-// 返回：子节点引用（不关心是否精确匹配）
-//
-// BTree 搜索逻辑：
-// - 如果 key == keys[i]，搜索应该在右子节点（children[i+1]）
-// - 如果 keys[i-1] < key < keys[i]，搜索应该在子节点（children[i]）
+// FindChildRef 查找键对应的子节点引用
 func (p *InternalPage) FindChildRef(key []byte) *PageRef {
 	idx := p.search(key)
 
-	// 边界检查
 	if idx < 0 || idx >= len(p.children) {
-		// 返回最右边的子节点
 		if len(p.children) > 0 {
 			return p.children[len(p.children)-1]
 		}
@@ -160,22 +153,12 @@ func (p *InternalPage) FindChildRef(key []byte) *PageRef {
 	return p.children[idx]
 }
 
-// Insert 插入键和子节点（右子节点）
-// 返回：是否插入成功
-//
-// B+Tree 语义：插入键 key 时，child 是 key 的右子节点
-// - key 插入到 keys[idx]
-// - child 插入到 children[idx+1]
+// Insert 插入键和子节点
 func (p *InternalPage) Insert(key []byte, child *PageRef) (bool, error) {
 	idx := p.search(key)
-
-	// 插入键
 	p.keys = insertSlice(p.keys, idx, key)
-
-	// 插入右子节点（在 idx+1 位置，因为 key 的左子节点是 children[idx]）
 	p.children = insertSlice(p.children, idx+1, child)
 	p.version++
-
 	return true, nil
 }
 
@@ -183,41 +166,32 @@ func (p *InternalPage) Insert(key []byte, child *PageRef) (bool, error) {
 // 在指定位置插入键和右子节点
 // 返回：错误信息
 func (p *InternalPage) InsertKeyChild(key []byte, childRef *PageRef) error {
-	// 防御性修复：检查并修复不变量
 	expectedChildren := len(p.keys) + 1
 	if len(p.children) != expectedChildren {
-		// 如果 children 太多，截断
 		if len(p.children) > expectedChildren {
 			fmt.Printf("[WARN] InsertKeyChild: fixing invariant before insert: pageID=%d, keys=%d, children=%d -> %d\n",
 				p.pageID, len(p.keys), len(p.children), expectedChildren)
 			p.children = p.children[:expectedChildren]
 		} else {
-			// 如果 children 太少，返回错误
 			return errpkg.BTreeInvariantViolatedError(len(p.children), len(p.keys))
 		}
 	}
 
 	idx := p.search(key)
-	// 插入键
 	p.keys = insertSlice(p.keys, idx, key)
-	// 插入右子节点（在 idx+1 位置）
 	p.children = insertSlice(p.children, idx+1, childRef)
 	p.version++
 	return nil
 }
 
 // Delete 删除键和子节点
-// 返回：被删除的子节点引用
 func (p *InternalPage) Delete(key []byte) (*PageRef, error) {
 	idx, found := p.findKeyIndex(key)
 	if !found {
 		return nil, errpkg.BTreeKeyNotFoundInPageError()
 	}
 
-	// 删除键
 	p.keys = append(p.keys[:idx], p.keys[idx+1:]...)
-
-	// 删除子节点引用
 	removedChild := p.children[idx+1]
 	p.children = append(p.children[:idx+1], p.children[idx+2:]...)
 	p.version++

@@ -60,8 +60,6 @@ func (t *PageLifecycleTracker) Disable() {
 
 // RecordAlloc 记录页面分配
 func (t *PageLifecycleTracker) RecordAlloc(pageID uint32) {
-	// 无条件调试日志（用于调试）
-
 	if !t.enabled {
 		return
 	}
@@ -69,22 +67,15 @@ func (t *PageLifecycleTracker) RecordAlloc(pageID uint32) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	var lifecycle *PageLifecycle
-
-	// 检查是否已存在（说明页面被重用了）
 	if existing, ok := t.history[pageID]; ok {
 		existing.ReusedCount++
-
-		// 更新现有记录而不是创建新的
 		existing.AllocTime = time.Now()
 		existing.AllocCaller = getCaller(3)
-		existing.FreeTime = time.Time{} // 重置释放时间
+		existing.FreeTime = time.Time{}
 		existing.FreeCaller = ""
 		existing.LastAccessType = time.Now()
-		lifecycle = existing
 	} else {
-		// 创建新的生命周期记录
-		lifecycle = &PageLifecycle{
+		t.history[pageID] = &PageLifecycle{
 			PageID:         pageID,
 			AllocTime:      time.Now(),
 			AllocCaller:    getCaller(3),
@@ -92,10 +83,8 @@ func (t *PageLifecycleTracker) RecordAlloc(pageID uint32) {
 			ChildPageIDs:   make([]uint32, 0),
 			LastAccessType: time.Now(),
 		}
-		t.history[pageID] = lifecycle
 	}
 
-	// 调用分配钩子
 	if t.allocHook != nil {
 		t.allocHook(pageID)
 	}
@@ -118,13 +107,12 @@ func (t *PageLifecycleTracker) RecordFree(pageID uint32) {
 	lifecycle.FreeTime = time.Now()
 	lifecycle.FreeCaller = getCaller(3)
 
-	// 调用释放钩子
 	if t.freeHook != nil {
 		t.freeHook(pageID)
 	}
 }
 
-// SetParentPageID 设置父节点（用于 B-Tree）
+// SetParentPageID 设置父节点
 func (t *PageLifecycleTracker) SetParentPageID(pageID, parentPageID uint32) {
 	if !t.enabled {
 		return
@@ -138,17 +126,15 @@ func (t *PageLifecycleTracker) SetParentPageID(pageID, parentPageID uint32) {
 		return
 	}
 
-	// 避免重复添加
 	if slices.Contains(lifecycle.ParentPageIDs, parentPageID) {
 		return
 	}
 
 	lifecycle.ParentPageIDs = append(lifecycle.ParentPageIDs, parentPageID)
 	lifecycle.LastAccessType = time.Now()
-
 }
 
-// SetChildPageID 设置子节点（用于 B-Tree）
+// SetChildPageID 设置子节点
 func (t *PageLifecycleTracker) SetChildPageID(pageID, childPageID uint32) {
 	if !t.enabled {
 		return
@@ -162,7 +148,6 @@ func (t *PageLifecycleTracker) SetChildPageID(pageID, childPageID uint32) {
 		return
 	}
 
-	// 避免重复添加
 	if slices.Contains(lifecycle.ChildPageIDs, childPageID) {
 		return
 	}

@@ -60,45 +60,9 @@ func (a *OffHeapAdapter) FreePage(pageID model.PageID) error {
 // GetFromOffHeap 从 Off-Heap 叶子页面获取 key 对应的 value
 // 返回 (value, found, error)
 func (a *OffHeapAdapter) GetFromOffHeap(pageID model.PageID, key []byte) ([]byte, bool, error) {
-	// 调试：追踪 key-06267、key-06709、key-09803 和 multi-key-2 的查找
-	keyStr := string(key)
-	debugThisKey := keyStr == "key-06267" || keyStr == "key-06266" || keyStr == "key-06268" || keyStr == "key-06709" || keyStr == "key-09803" || keyStr == "key-09802" || keyStr == "multi-key-2" || keyStr == "multi-key-1" || keyStr == "multi-key-3" || keyStr == "multi-key-10" || keyStr == "multi-key-20"
-
 	idx, found := a.pa.SearchKey(uint32(pageID), key, true)
-	if debugThisKey {
-		count := a.pa.GetCount(uint32(pageID))
-		nextPage := a.pa.GetNextPage(uint32(pageID))
-		DebugPrintf("[GET_OFFHEAP] key=%s pageID=%d idx=%d found=%v count=%d nextPage=%d\n",
-			keyStr, pageID, idx, found, count, nextPage)
-		// 打印页面的第一个和最后一个 key
-		if count > 0 {
-			firstKeyOff, firstKeyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), 0)
-			firstKey := a.pa.GetKey(uint32(pageID), firstKeyOff, firstKeyLen)
-			lastKeyOff, lastKeyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), int(count)-1)
-			lastKey := a.pa.GetKey(uint32(pageID), lastKeyOff, lastKeyLen)
-			DebugPrintf("[GET_OFFHEAP] pageID=%d firstKey=%s lastKey=%s\n", pageID, string(firstKey), string(lastKey))
-		}
-	}
+
 	if !found {
-		// 调试：如果没找到且 nextPage 有效，尝试在 nextPage 中查找
-		debugThisKey := string(key) == "key-06267" || string(key) == "key-06266" || string(key) == "key-06268" || string(key) == "key-09803" || string(key) == "key-09802"
-		if debugThisKey {
-			nextPage := a.pa.GetNextPage(uint32(pageID))
-			DebugPrintf("[GET_OFFHEAP] key=%s NOT FOUND in page %d, trying nextPage=%d\n", string(key), pageID, nextPage)
-			if nextPage != 0xFFFFFFFF {
-				// 在 nextPage 中查找
-				nextIdx, nextFound := a.pa.SearchKey(nextPage, key, true)
-				DebugPrintf("[GET_OFFHEAP] key=%s in nextPage=%d idx=%d found=%v\n", string(key), nextPage, nextIdx, nextFound)
-				if nextFound {
-					// 从 nextPage 获取 value
-					_, _, valOff, valLen := a.pa.GetLeafEntryOffset(nextPage, nextIdx)
-					nextVal := a.pa.GetValue(nextPage, valOff, valLen)
-					result := make([]byte, len(nextVal))
-					copy(result, nextVal)
-					return result, true, nil
-				}
-			}
-		}
 		return nil, false, nil
 	}
 
@@ -114,31 +78,14 @@ func (a *OffHeapAdapter) GetFromOffHeap(pageID model.PageID, key []byte) ([]byte
 // InsertToOffHeap 向 Off-Heap 叶子页面插入 KV 对
 // 返回 (pageID, splitRequired, error)
 func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte) (model.PageID, bool, error) {
-	// 调试：追踪 key-06151、key-06267 和 key-09803 的插入
-	debugThisInsert := string(key) == "key-06151" || string(key) == "key-06150" || string(key) == "key-06267" || string(key) == "key-09803"
-
-	// 修复：方案 C - 使用线性搜索替代二分查找
+	// 使用线性搜索替代二分查找
 	// SearchKey 依赖 keys 有序的假设，但页面可能已无序
 	// 使用线性搜索确保即使 keys 无序也能找到正确位置
 	idx, found := a.linearSearchLeaf(uint32(pageID), key)
 
-	if debugThisInsert {
-		count := a.pa.GetCount(uint32(pageID))
-		DebugPrintf("[INSERT_DEBUG] key=%s pageID=%d idx=%d found=%v count=%d (LINEAR SEARCH)\n", string(key), pageID, idx, found, count)
-		if count > 0 {
-			firstKeyOff, firstKeyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), 0)
-			firstKey := a.pa.GetKey(uint32(pageID), firstKeyOff, firstKeyLen)
-			lastKeyOff, lastKeyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), int(count)-1)
-			lastKey := a.pa.GetKey(uint32(pageID), lastKeyOff, lastKeyLen)
-			DebugPrintf("[INSERT_DEBUG] pageID=%d firstKey=%s lastKey=%s\n", pageID, string(firstKey), string(lastKey))
-		}
-	}
 	if found {
 		// 更新现有 key（需要重新分配页面，因为 Off-Heap 不可变）
 		newPageID, err := a.UpdateLeafEntry(pageID, idx, key, value)
-		if debugThisInsert {
-			DebugPrintf("[INSERT_DEBUG] key=%s UPDATE -> newPageID=%d err=%v\n", string(key), newPageID, err)
-		}
 		return newPageID, false, err
 	}
 
@@ -146,34 +93,20 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 	// checkPageFull 现在直接从页面读取 dataEnd，无需缓存
 	if a.checkPageFull(uint32(pageID), len(key), len(value)) {
 		// 页面可能已满，返回 splitRequired=true
-		if debugThisInsert {
-			DebugPrintf("[INSERT_DEBUG] key=%s page FULL -> splitRequired=true\n", string(key))
-		}
 		return pageID, true, nil
 	}
 
 	// 插入新 KV
 	// 重要：需要从页面读取当前的 dataEnd，因为 InsertLeafEntry 使用它来分配空间
 	dataEnd := a.pa.GetDataEnd(uint32(pageID))
-	if debugThisInsert {
-		DebugPrintf("[INSERT_DEBUG] key=%s BEFORE InsertLeafEntry dataEnd=%d\n", string(key), dataEnd)
-	}
 	insertErr := a.pa.InsertLeafEntry(uint32(pageID), idx, key, value, &dataEnd)
 
 	if insertErr == nil {
 		// 插入成功，检查是否需要分裂
 		splitRequired := a.checkPageFull(uint32(pageID), len(key), len(value))
-		if debugThisInsert {
-			newCount := a.pa.GetCount(uint32(pageID))
-			DebugPrintf("[INSERT_DEBUG] key=%s INSERT SUCCESS count=%d->%d splitRequired=%v\n", string(key), idx, newCount, splitRequired)
-		}
 		return pageID, splitRequired, nil
 	}
 
-	// 插入失败
-	if debugThisInsert {
-		DebugPrintf("[INSERT_DEBUG] key=%s INSERT FAILED: %v\n", string(key), insertErr)
-	}
 	return pageID, false, insertErr
 }
 
@@ -229,12 +162,6 @@ func (a *OffHeapAdapter) checkPageFull(pageID uint32, keyLen int, valLen int) bo
 
 // UpdateLeafEntry 更新叶子条目（需要重新分配页面）
 func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, value []byte) (model.PageID, error) {
-	// 调试：追踪所有 UpdateLeafEntry 调用，特别是页面 530
-	debugThisUpdate := pageID == 530
-
-	if debugThisUpdate {
-		DebugPrintf("[UPDATE_DEBUG] ========== UPDATE START pageID=%d idx=%d ==========\n", pageID, idx)
-	}
 
 	// 收集所有 KV 对
 	count := a.pa.GetCount(uint32(pageID))
@@ -263,10 +190,6 @@ func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, valu
 		values = append(values, vCopy)
 	}
 
-	if debugThisUpdate {
-		DebugPrintf("[UPDATE_DEBUG] pageID=%d count=%d keys=%d\n", pageID, count, len(keys))
-	}
-
 	// 释放旧页面
 	a.pm.Free(uint32(pageID))
 
@@ -276,19 +199,11 @@ func (a *OffHeapAdapter) UpdateLeafEntry(pageID model.PageID, idx int, key, valu
 		return 0, errpkg.BTreeAllocNewPageForSplit(err)
 	}
 
-	if debugThisUpdate {
-		DebugPrintf("[UPDATE_DEBUG] FREED pageID=%d, allocated newPageID=%d\n", pageID, newPageID)
-	}
-
 	// 物化到新页面
 	_, err = a.materializer.MaterializePageFromBytes(newPageID, keys, values)
 	if err != nil {
 		a.pm.Free(newPageID)
 		return 0, errpkg.BTreeMaterializePageAdapter(err)
-	}
-
-	if debugThisUpdate {
-		DebugPrintf("[UPDATE_DEBUG] ========== UPDATE END pageID=%d -> newPageID=%d ==========\n", pageID, newPageID)
 	}
 
 	return model.PageID(newPageID), nil
@@ -563,33 +478,6 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	// 获取当前页面的所有 keys
 	count := a.pa.GetCount(uint32(pageID))
 
-	// 调试：追踪页面 530、533、536 的分裂
-	debugThisSplit := pageID == 530 || pageID == 538 || pageID == 539 || pageID == 532 || pageID == 533 || pageID == 536
-	// 调试：追踪所有包含 multi-key-2 的页面
-	if !debugThisSplit {
-		// 检查页面是否包含 multi-key-2
-		for i := 0; i < int(count); i++ {
-			keyOff, keyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), i)
-			key := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
-			if string(key) == "multi-key-2" {
-				debugThisSplit = true
-				break
-			}
-		}
-	}
-
-	if debugThisSplit {
-		DebugPrintf("[SPLIT_DEBUG] ========== SPLIT START pageID=%d count=%d ==========\n", pageID, count)
-		// 打印页面的内存地址以确认是否是同一个物理页面
-		ptr := a.pm.PageIDToPtr(uint32(pageID))
-		DebugPrintf("[SPLIT_DEBUG] pageID=%d ptr=%x\n", pageID, ptr)
-	}
-
-	// 特别追踪页面 533（包含 key-06150 和 key-06151）
-	check533Content := (pageID == 533)
-	found6150 := false
-	found6151 := false
-
 	// 收集所有 KV
 	keys := make([][]byte, 0, count)
 	values := make([][]byte, 0, count)
@@ -599,30 +487,6 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 		key := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
 		val := a.pa.GetValue(uint32(pageID), valOff, valLen)
 
-		// 追踪 key-06150 和 key-06151
-		if pageID == 530 {
-			if string(key) == "key-06150" {
-				found6150 = true
-				DebugPrintf("[SPLIT_DEBUG] pageID=530 FOUND key-06150 at index %d\n", i)
-			}
-			if string(key) == "key-06151" {
-				found6151 = true
-				DebugPrintf("[SPLIT_DEBUG] pageID=530 FOUND key-06151 at index %d\n", i)
-			}
-		}
-
-		// 特别追踪页面 533 的 keys
-		if check533Content {
-			if string(key) == "key-06150" {
-				found6150 = true
-				DebugPrintf("[SPLIT_DEBUG] pageID=533 FOUND key-06150 at index %d\n", i)
-			}
-			if string(key) == "key-06151" {
-				found6151 = true
-				DebugPrintf("[SPLIT_DEBUG] pageID=533 FOUND key-06151 at index %d\n", i)
-			}
-		}
-
 		// 复制 KV
 		keyCopy := make([]byte, len(key))
 		copy(keyCopy, key)
@@ -630,25 +494,6 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 		copy(valCopy, val)
 		keys = append(keys, keyCopy)
 		values = append(values, valCopy)
-
-		// 调试：打印所有 keys
-		if debugThisSplit && (i < 5 || i >= int(count)-5 || (pageID == 533 && i >= 30 && i <= 40)) {
-			DebugPrintf("[SPLIT_DEBUG]   [%d] key=%s\n", i, string(key))
-		}
-	}
-
-	if debugThisSplit {
-		if pageID == 530 {
-			DebugPrintf("[SPLIT_DEBUG] pageID=530 search result: found6150=%v found6151=%v\n", found6150, found6151)
-		}
-		if check533Content {
-			DebugPrintf("[SPLIT_DEBUG] pageID=533 search result: found6150=%v found6151=%v\n", found6150, found6151)
-		}
-		if int(count) > 10 && !check533Content {
-			DebugPrintf("[SPLIT_DEBUG]   ... total %d keys\n", count)
-		} else if check533Content {
-			DebugPrintf("[SPLIT_DEBUG]   ... total %d keys\n", count)
-		}
 	}
 
 	// 分配左右两个新页面（提前分配，避免重复分配）
@@ -661,8 +506,6 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 		a.pm.Free(leftPageID)
 		return 0, 0, nil, errpkg.BTreeAllocRightPage(err)
 	}
-
-	// 调试：打印分配的页面ID
 
 	// 调试：验证分配的页面ID不同
 	if leftPageID == rightPageID {
@@ -691,29 +534,12 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 		rightKeys := keys[mid:]
 		rightValues := values[mid:]
 
-		if debugThisSplit {
-			DebugPrintf("[SPLIT_DEBUG] Trying 30%% split: mid=%d leftKeys=%d rightKeys=%d\n", mid, len(leftKeys), len(rightKeys))
-			if len(leftKeys) > 0 {
-				DebugPrintf("[SPLIT_DEBUG]   left[0]=%s left[-1]=%s\n", string(leftKeys[0]), string(leftKeys[len(leftKeys)-1]))
-			}
-			if len(rightKeys) > 0 {
-				DebugPrintf("[SPLIT_DEBUG]   right[0]=%s right[-1]=%s\n", string(rightKeys[0]), string(rightKeys[len(rightKeys)-1]))
-			}
-		}
-
 		_, leftErr := a.materializer.MaterializePageFromBytes(leftPageID, leftKeys, leftValues)
 		_, rightErr := a.materializer.MaterializePageFromBytes(rightPageID, rightKeys, rightValues)
 
 		if leftErr == nil && rightErr == nil {
 			splitIdx = mid
 			success = true
-			if debugThisSplit {
-				DebugPrintf("[SPLIT_DEBUG] 30%% split SUCCESS\n")
-			}
-		} else {
-			if debugThisSplit {
-				DebugPrintf("[SPLIT_DEBUG] 30%% split FAILED: leftErr=%v rightErr=%v\n", leftErr, rightErr)
-			}
 		}
 	}
 
@@ -787,22 +613,12 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	splitKey := make([]byte, len(keys[splitIdx]))
 	copy(splitKey, keys[splitIdx])
 
-	if debugThisSplit {
-		DebugPrintf("[SPLIT_DEBUG] Final splitIdx=%d splitKey=%s\n", splitIdx, string(splitKey))
-		DebugPrintf("[SPLIT_DEBUG]   leftKeys: %d [%s...%s]\n", splitIdx, string(keys[0]), string(keys[splitIdx-1]))
-		DebugPrintf("[SPLIT_DEBUG]   rightKeys: %d [%s...%s]\n", len(keys[splitIdx:]), string(keys[splitIdx]), string(keys[len(keys)-1]))
-	}
-
 	// 物化左半部分
 	_, err = a.materializer.MaterializePageFromBytes(leftPageID, keys[:splitIdx], values[:splitIdx])
 	if err != nil {
 		a.pm.Free(leftPageID)
 		a.pm.Free(rightPageID)
 		return 0, 0, nil, errpkg.BTreeMaterializeLeftPage(err)
-	}
-
-	if debugThisSplit {
-		DebugPrintf("[SPLIT_DEBUG] Left page %d materialized OK\n", leftPageID)
 	}
 
 	// 物化右半部分（包含 splitKey）
@@ -813,25 +629,9 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 		return 0, 0, nil, errpkg.BTreeMaterializeRightPage(err)
 	}
 
-	if debugThisSplit {
-		DebugPrintf("[SPLIT_DEBUG] Right page %d materialized OK\n", rightPageID)
-		DebugPrintf("[SPLIT_DEBUG] ========== SPLIT END pageID=%d -> left=%d right=%d ==========\n", pageID, leftPageID, rightPageID)
-		// 警告：如果返回的页面ID与输入相同，说明有严重bug
-		if leftPageID == uint32(pageID) || rightPageID == uint32(pageID) {
-			DebugPrintf("[SPLIT_DEBUG] *** WARNING: Circular reference detected! ***\n")
-			DebugPrintf("[SPLIT_DEBUG] *** input=%d left=%d right=%d ***\n", pageID, leftPageID, rightPageID)
-		}
-	}
-
 	// 获取原始页面的 prevPage 和 nextPage
 	oldPrevPage := a.pa.GetPrevPage(uint32(pageID))
 	oldNextPage := a.pa.GetNextPage(uint32(pageID))
-
-	// 调试：追踪页面 1317 附近的分裂
-	if pageID == 1317 || leftPageID == 1317 || rightPageID == 1317 || leftPageID == 1316 || rightPageID == 1318 {
-		DebugPrintf("[SPLIT_NEXT] before: pageID=%d left=%d right=%d oldPrev=%d oldNext=%d\n",
-			pageID, leftPageID, rightPageID, oldPrevPage, oldNextPage)
-	}
 
 	// 设置链表指针
 	// 1. 设置 left 和 right 之间的链接
@@ -935,8 +735,6 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 		// 这可能发生在：
 		// 1. 子节点被释放并重新分配
 		// 2. 父节点未更新子节点引用
-		DebugPrintf("[STALE_REF] parent=%d childIdx=%d childID=%d expectedVer=%d actualVer=%d\n",
-			pageID, childIdx, childID, expectedVersion, actualVersion)
 		return 0, false, errpkg.BTreeStaleChildRef(uint64(pageID), uint64(childID), expectedVersion, actualVersion)
 	}
 

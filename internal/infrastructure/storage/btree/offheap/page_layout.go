@@ -566,3 +566,85 @@ func (pa *PageAccessor) CollectKVExcept(pageID uint32, skipIdx int) ([][]byte, [
 
 	return keys, values
 }
+
+// BulkInitLeafFromSource 从源叶子页面批量拷贝连续条目范围到目标页面
+// 跳过 Go 堆分配：key/value 直接从源 mmap 页面读取，逐条插入目标页面
+//
+// srcPageID: 源页面
+// dstPageID: 目标页面（必须已分配）
+// startIdx, endIdx: 源页面中的条目范围 [startIdx, endIdx)
+//
+// 返回 dataEnd（KV 数据区大小）和 error
+func (pa *PageAccessor) BulkInitLeafFromSource(
+	srcPageID, dstPageID uint32,
+	startIdx, endIdx int,
+) (uint16, error) {
+	srcHeader := pa.GetHeader(srcPageID)
+	totalCount := int(srcHeader.count)
+
+	if startIdx < 0 || endIdx > totalCount || startIdx >= endIdx {
+		return 0, fmt.Errorf("invalid range [%d, %d) (count: %d)", startIdx, endIdx, totalCount)
+	}
+
+	// 初始化目标页面
+	pa.InitLeafPage(dstPageID, srcHeader.version)
+	dataEnd := uint16(0)
+
+	// 逐条从源页面读取并插入目标页面
+	// key/value 是 mmap 切片，不经过 Go 堆分配
+	for i := startIdx; i < endIdx; i++ {
+		entry := pa.GetLeafEntry(srcPageID, i)
+		key := pa.GetKey(srcPageID, entry.keyOff, entry.keyLen)
+		value := pa.GetValue(srcPageID, entry.valOff, entry.valLen)
+		dstIdx := i - startIdx
+		if err := pa.InsertLeafEntry(dstPageID, dstIdx, key, value, &dataEnd); err != nil {
+			return 0, err
+		}
+	}
+
+	return dataEnd, nil
+}
+
+// BulkInitIndexFromSource 从源索引页面批量拷贝连续条目范围到目标页面
+// 跳过 Go 堆分配：key 直接从源 mmap 页面读取，逐条插入目标页面
+//
+// srcPageID: 源页面
+// dstPageID: 目标页面（必须已分配）
+// startIdx, endIdx: 源页面中的条目范围 [startIdx, endIdx)
+// extraChild: 额外的子节点（最后一个条目右边的子节点，编码后的 uint64）
+//
+// 返回 dataEnd（key 数据区大小）和 error
+func (pa *PageAccessor) BulkInitIndexFromSource(
+	srcPageID, dstPageID uint32,
+	startIdx, endIdx int,
+	extraChild uint64,
+) (uint16, error) {
+	srcHeader := pa.GetHeader(srcPageID)
+	totalCount := int(srcHeader.count)
+
+	if startIdx < 0 || endIdx > totalCount || startIdx >= endIdx {
+		return 0, fmt.Errorf("invalid range [%d, %d) (count: %d)", startIdx, endIdx, totalCount)
+	}
+
+	// 初始化目标页面
+	pa.InitIndexPage(dstPageID, srcHeader.version)
+	dataEnd := uint16(0)
+
+	// 逐条从源页面读取并插入目标页面
+	// key 是 mmap 切片，不经过 Go 堆分配
+	for i := startIdx; i < endIdx; i++ {
+		entry := pa.GetIndexEntry(srcPageID, i)
+		key := pa.GetKey(srcPageID, entry.keyOff, entry.keyLen)
+		child, _ := DecodeChildWithVersion(entry.child)
+		dstIdx := i - startIdx
+		if err := pa.InsertIndexEntry(dstPageID, dstIdx, key, child, &dataEnd); err != nil {
+			return 0, err
+		}
+	}
+
+	// 设置 extraChild（N+1 child）
+	dstHeader := pa.GetHeader(dstPageID)
+	dstHeader.extraChild = extraChild
+
+	return dataEnd, nil
+}

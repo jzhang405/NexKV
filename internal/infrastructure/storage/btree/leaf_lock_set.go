@@ -1059,50 +1059,28 @@ func (b *BTree) splitRootOffHeapSync(oldLeafRef *PageRef, oldLeafInfo *PageInfo,
 //	error - 错误信息（ErrRetry 表示需要重试）
 func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *PageInfo, internalPageID model.PageID, path []*PageInfo) error {
 
-	// Step 1: 收集内部节点的所有 keys 和 children
+	// Step 1: 获取条目数量和分裂点
 	count := b.offheapAdapter.pa.GetCount(uint32(internalPageID))
-
-	keys := make([][]byte, 0, count)
-	children := make([]uint32, 0, count+1)
-
-	// 收集所有 keys 和 children
-	for i := range int(count) {
-		keyOff, keyLen, encodedChild := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(internalPageID), i)
-		key := b.offheapAdapter.pa.GetKey(uint32(internalPageID), keyOff, keyLen)
-
-		// 复制 key
-		keyCopy := make([]byte, len(key))
-		copy(keyCopy, key)
-		keys = append(keys, keyCopy)
-		// 修复：GetIndexEntryOffset 返回编码后的值，需要解码才能获取真实的 pageID
-		child, _ := b.offheapAdapter.DecodeChildWithVersion(encodedChild)
-		children = append(children, child)
+	countInt := int(count)
+	if countInt < 2 {
+		return errpkg.BTreeSplitMinKeys(countInt)
 	}
 
-	// 最后一个 child（索引节点的 children 数量 = keys 数量 + 1）
-	// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
-	encodedLastChild := b.offheapAdapter.pa.GetChild(uint32(internalPageID), int(count))
-	lastChild, _ := b.offheapAdapter.DecodeChildWithVersion(encodedLastChild)
-	children = append(children, lastChild)
+	mid := countInt / 2
 
-	// Step 2: 找到中间位置作为分裂点
-	// B+ 树分裂规则：中间的 key 提升到父节点
-	mid := len(keys) / 2
-	splitKey := keys[mid] // 这个 key 会提升到父节点
+	// Step 2: 从源页面直接获取 splitKey（mid 位置的 key）
+	splitKeyOff, splitKeyLen, _ := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(internalPageID), mid)
+	splitKey := b.offheapAdapter.pa.GetKey(uint32(internalPageID), splitKeyOff, splitKeyLen)
+	splitKeyCopy := make([]byte, len(splitKey))
+	copy(splitKeyCopy, splitKey)
 
-	// 左子节点：keys[:mid], children[:mid+1]
-	leftKeys := make([][]byte, mid)
-	copy(leftKeys, keys[:mid])
-	leftChildren := make([]uint32, mid+1)
-	copy(leftChildren, children[:mid+1])
+	// Step 3: 获取 extraChild 用于 BulkInit
+	// 左半 extraChild = 源页面 entry[mid].child（编码值）
+	leftExtraChild := b.offheapAdapter.pa.GetChild(uint32(internalPageID), mid)
+	// 右半 extraChild = 源页面的 lastChild（header.extraChild）
+	rightExtraChild := b.offheapAdapter.pa.GetChild(uint32(internalPageID), countInt)
 
-	// 右子节点：keys[mid+1:], children[mid+1:]
-	rightKeys := make([][]byte, len(keys)-mid-1)
-	copy(rightKeys, keys[mid+1:])
-	rightChildren := make([]uint32, len(children)-mid-1)
-	copy(rightChildren, children[mid+1:])
-
-	// Step 3: 分配两个新的内部页面
+	// Step 4: 分配两个新的内部页面
 	leftPageID, err := b.offheapAdapter.AllocIndexPage()
 	if err != nil {
 		return errpkg.BTreeAllocLeftIndexPage(err)
@@ -1113,48 +1091,52 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 		return errpkg.BTreeAllocRightIndexPage(err)
 	}
 
-	// Step 4: 物化左右两半
-	_, err = b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(leftPageID), leftKeys, leftChildren)
+	// Step 5: 使用 BulkInit 零拷贝物化左右两半
+	_, err = b.offheapAdapter.pa.BulkInitIndexFromSource(
+		uint32(internalPageID), uint32(leftPageID),
+		0, mid,
+		leftExtraChild,
+	)
 	if err != nil {
 		b.offheapAdapter.pm.Free(uint32(leftPageID))
 		b.offheapAdapter.pm.Free(uint32(rightPageID))
 		return errpkg.BTreeMaterializeLeftIndexPage(err)
 	}
 
-	// 验证物化后的 children 数量（GetCount 返回 keys 数量，children = keys + 1）
-	leftCountAfter := b.offheapAdapter.pa.GetCount(uint32(leftPageID))
-	leftChildrenExpected := leftCountAfter + 1
-	if len(leftChildren) != int(leftChildrenExpected) {
-		return errpkg.BTreeMaterializationBugLeft(uint64(leftPageID), len(leftChildren), int(leftChildrenExpected))
-	}
-
-	_, err = b.offheapAdapter.materializer.MaterializeIndexPageFromBytes(uint32(rightPageID), rightKeys, rightChildren)
+	_, err = b.offheapAdapter.pa.BulkInitIndexFromSource(
+		uint32(internalPageID), uint32(rightPageID),
+		mid+1, countInt,
+		rightExtraChild,
+	)
 	if err != nil {
 		b.offheapAdapter.pm.Free(uint32(leftPageID))
 		b.offheapAdapter.pm.Free(uint32(rightPageID))
 		return errpkg.BTreeMaterializeRightIndexPage(err)
 	}
 
-	// 验证物化后的 children 数量（GetCount 返回 keys 数量，children = keys + 1）
-	rightCountAfter := b.offheapAdapter.pa.GetCount(uint32(rightPageID))
-	rightChildrenExpected := rightCountAfter + 1
-	if len(rightChildren) != int(rightChildrenExpected) {
-		return errpkg.BTreeMaterializationBugRight(uint64(rightPageID), len(rightChildren), int(rightChildrenExpected))
-	}
-
-	// Step 5: 创建左右子节点的 PageRef
+	// Step 6: 创建左右子节点的 PageRef
 	leftRef := b.pageRefCache.GetOrCreate(leftPageID, false)
 	rightRef := b.pageRefCache.GetOrCreate(rightPageID, false)
 
-	// Step 6: 更新子节点的 parentRef（需要遍历所有子节点的 PageRef）
-	// 注意：这是一个简化的实现，完整的实现需要更新所有子节点的 parentRef
-	// TODO: 递归更新所有子节点的 parentRef
-
 	// Step 7: 检查是否有父节点
 	if len(path) == 0 {
-		// 没有父节点，需要创建新的根节点（Root Split）
-		// 修复：传递完整的旧根信息，以便正确处理所有 children
-		return b.splitRootOffHeapSyncForInternal(internalRef, internalInfo, internalPageID, leftRef, rightRef, splitKey, keys, children)
+		// Root split 路径（极稀有）：延迟收集完整 keys/children 数组
+		keys := make([][]byte, 0, countInt)
+		children := make([]uint32, 0, countInt+1)
+		for i := range countInt {
+			keyOff, keyLen, encodedChild := b.offheapAdapter.pa.GetIndexEntryOffset(uint32(internalPageID), i)
+			key := b.offheapAdapter.pa.GetKey(uint32(internalPageID), keyOff, keyLen)
+			keyCopy := make([]byte, len(key))
+			copy(keyCopy, key)
+			keys = append(keys, keyCopy)
+			child, _ := b.offheapAdapter.DecodeChildWithVersion(encodedChild)
+			children = append(children, child)
+		}
+		encodedLastChild := b.offheapAdapter.pa.GetChild(uint32(internalPageID), countInt)
+		lastChild, _ := b.offheapAdapter.DecodeChildWithVersion(encodedLastChild)
+		children = append(children, lastChild)
+
+		return b.splitRootOffHeapSyncForInternal(internalRef, internalInfo, internalPageID, leftRef, rightRef, splitKeyCopy, keys, children)
 	}
 
 	// 调试：追踪为什么没有进入根分裂

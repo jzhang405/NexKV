@@ -1074,7 +1074,7 @@ func BTreeKeyOrderViolationError() error {
 
 // BTreeCannotSplitMinKeysError 创建分裂键数不足错误
 func BTreeCannotSplitMinKeysError(count int) error {
-	return ErrBTreeCannotSplitMinKeys
+	return fmt.Errorf("btree: cannot split page with less than 2 keys, got %d", count)
 }
 
 // BTreeDeserializeReadPageID 创建反序列化读取 pageID 失败错误
@@ -1571,9 +1571,9 @@ func BTreeInvalidPageIDAlloc(left, right uint32) error {
 	return ErrBTreeInvalidPageIDAlloc
 }
 
-// BTreeSplitMinKeys 分裂时键数不足
+// BTreeSplitMinKeys 分裂时键数不足（需要 less than 2 keys）
 func BTreeSplitMinKeys(count int) error {
-	return ErrBTreeCannotSplitMinKeys
+	return fmt.Errorf("btree: cannot split page with less than 2 keys, got %d", count)
 }
 
 // BTreePageTooLargeToSplit 页面过大无法分裂

@@ -474,7 +474,114 @@ func (a *OffHeapAdapter) CloneOffHeapPage(pageID model.PageID, isLeaf bool) (mod
 
 // SplitOffHeapLeafPage 分割 Off-Heap 叶子页面
 // 返回 (leftPageID, rightPageID, splitKey, error)
+//
+// 优化策略：优先使用零拷贝路径（BulkInitLeafFromSource），
+// 消除 Go 堆中转分配。失败时回退到原有 Go 堆路径。
 func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID, model.PageID, []byte, error) {
+	count := a.pa.GetCount(uint32(pageID))
+	countInt := int(count)
+
+	if countInt < 2 {
+		return 0, 0, nil, errpkg.BTreeSplitMinKeys(countInt)
+	}
+
+	// 分配左右两个新页面
+	leftPageID, err := a.pm.Alloc()
+	if err != nil {
+		return 0, 0, nil, errpkg.BTreeAllocLeftPage(err)
+	}
+	rightPageID, err := a.pm.Alloc()
+	if err != nil {
+		a.pm.Free(leftPageID)
+		return 0, 0, nil, errpkg.BTreeAllocRightPage(err)
+	}
+
+	if leftPageID == rightPageID {
+		a.pm.Free(leftPageID)
+		a.pm.Free(rightPageID)
+		return 0, 0, nil, errpkg.BTreeDuplicatePageIDAlloc(leftPageID)
+	}
+	if leftPageID == 0 || rightPageID == 0 {
+		a.pm.Free(leftPageID)
+		a.pm.Free(rightPageID)
+		return 0, 0, nil, errpkg.BTreeInvalidPageIDAlloc(leftPageID, rightPageID)
+	}
+
+	var success bool
+
+	// 搜索策略：恢复原始 11 个比例（三次审核 P1）
+	// 1. 30/70
+	mid := int(float64(countInt) * 0.3)
+	if mid > 0 {
+		_, leftErr := a.pa.BulkInitLeafFromSource(uint32(pageID), leftPageID, 0, mid)
+		_, rightErr := a.pa.BulkInitLeafFromSource(uint32(pageID), rightPageID, mid, countInt)
+		if leftErr == nil && rightErr == nil {
+			success = true
+		}
+	}
+
+	// 2. 渐进式比例：2/3, 3/4, ..., 9/10
+	if !success && countInt > 10 {
+		for divisor := 3; divisor <= 10; divisor++ {
+			mid = countInt * (divisor - 1) / divisor
+			if mid <= 1 || mid >= countInt-1 {
+				continue
+			}
+			_, leftErr := a.pa.BulkInitLeafFromSource(uint32(pageID), leftPageID, 0, mid)
+			_, rightErr := a.pa.BulkInitLeafFromSource(uint32(pageID), rightPageID, mid, countInt)
+			if leftErr == nil && rightErr == nil {
+				success = true
+				break
+			}
+		}
+	}
+
+	// 3. 极端比例：splitIdx=1, splitIdx=0
+	if !success {
+		for _, tryMid := range []int{1, 0} {
+			mid = tryMid
+			_, leftErr := a.pa.BulkInitLeafFromSource(uint32(pageID), leftPageID, 0, mid)
+			_, rightErr := a.pa.BulkInitLeafFromSource(uint32(pageID), rightPageID, mid, countInt)
+			if leftErr == nil && rightErr == nil {
+				success = true
+				break
+			}
+		}
+	}
+
+	if !success {
+		// 零拷贝路径全部失败，回退到 Go 堆路径
+		a.pm.Free(leftPageID)
+		a.pm.Free(rightPageID)
+		return a.splitOffHeapLeafPageFallback(pageID)
+	}
+
+	// 获取 splitKey（从右页面第一个条目）
+	keyOff, keyLen, _, _ := a.pa.GetLeafEntryOffset(rightPageID, 0)
+	splitKey := a.pa.GetKey(rightPageID, keyOff, keyLen)
+	splitKeyCopy := make([]byte, len(splitKey))
+	copy(splitKeyCopy, splitKey)
+
+	// 设置链表指针
+	// 注意：调用者负责在 CAS 成功后更新相邻页面的反向指针
+	oldPrevPage := a.pa.GetPrevPage(uint32(pageID))
+	oldNextPage := a.pa.GetNextPage(uint32(pageID))
+
+	a.pa.SetNextPage(leftPageID, rightPageID)
+	a.pa.SetPrevPage(rightPageID, leftPageID)
+
+	if oldPrevPage != 0xFFFFFFFF {
+		a.pa.SetPrevPage(leftPageID, oldPrevPage)
+	}
+	if oldNextPage != 0xFFFFFFFF {
+		a.pa.SetNextPage(rightPageID, oldNextPage)
+	}
+
+	return model.PageID(leftPageID), model.PageID(rightPageID), splitKeyCopy, nil
+}
+
+// splitOffHeapLeafPageFallback Go 堆路径分裂（极端 KV 大小不均时使用）
+func (a *OffHeapAdapter) splitOffHeapLeafPageFallback(pageID model.PageID) (model.PageID, model.PageID, []byte, error) {
 	// 获取当前页面的所有 keys
 	count := a.pa.GetCount(uint32(pageID))
 

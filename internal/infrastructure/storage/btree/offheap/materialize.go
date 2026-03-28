@@ -34,17 +34,17 @@ func (m *OffHeapMaterializer) MaterializePageFromBytes(
 	m.pa.InitLeafPage(pageID, 0)
 	dataEnd := uint16(0)
 
-	sortedKeys := make([][]byte, len(keys))
-	sortedValues := make([][]byte, len(values))
-	copy(sortedKeys, keys)
-	copy(sortedValues, values)
-
-	sort.SliceStable(sortedKeys, func(i, j int) bool {
-		return bytes.Compare(sortedKeys[i], sortedKeys[j]) < 0
+	// 使用索引排序，确保 keys 和 values 同步重排
+	indices := make([]int, len(keys))
+	for i := range indices {
+		indices[i] = i
+	}
+	sort.SliceStable(indices, func(i, j int) bool {
+		return bytes.Compare(keys[indices[i]], keys[indices[j]]) < 0
 	})
 
-	for i := range sortedKeys {
-		err := m.pa.InsertLeafEntry(pageID, i, sortedKeys[i], sortedValues[i], &dataEnd)
+	for i, idx := range indices {
+		err := m.pa.InsertLeafEntry(pageID, i, keys[idx], values[idx], &dataEnd)
 		if err != nil {
 			return 0, errpkg.OffHeapInsertEntry(i, err)
 		}

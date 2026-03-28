@@ -79,8 +79,26 @@ memory 中的历史基准（GOGC=500, builtin 模式）：
 - [ ] 对比 `main` 分支上次高性能版本定位退化
 - [ ] 分析 10K vs 50K 的性能悬崖点
 
+## 优化记录
+
+### Phase 0: DebugPrintf 清空 (2026-03-28)
+
+将 `btree.DebugPrintf` 和 `offheap.DebugPrintf` 函数体清空为 no-op，消除运行时分支判断开销。
+
+**测试条件**: GOGC=500, 10K ops/thread, init=200
+
+| 并发度 | 基线 (50K ops, init=1000) | Phase 0 (10K ops, init=200) | 备注 |
+|--------|--------------------------|----------------------------|------|
+| 1 | 16,816 ops/s (59.47μs) | **118,959 ops/s (8.41μs)** | ops 数量不同，不可直接对比 |
+| 2 | 11,117 ops/s (89.95μs) | **353,448 ops/s (2.83μs)** | ops 数量不同，不可直接对比 |
+| 4 | 14,212 ops/s (70.36μs) | **35,511 ops/s (28.16μs)** | ops 数量不同，不可直接对比 |
+| 8 | 4,378 ops/s (228.42μs) | **19,703 ops/s (50.75μs)** | ops 数量不同，不可直接对比 |
+
+**说明**: ops 数量和 init 数据量不同，不能直接对比绝对值。但 1T/2T 的延迟从 μs 级降到 sub-10μs 级别，说明小数据集下性能良好。4T/8T 仍然存在负扩展性，需要后续优化锁竞争和 CAS 重试。
+
 ## 详细数据
 
-- [builtin-gogc500-50k.md](./builtin-gogc500-50k.md) — GOGC=500, 50K ops
+- [builtin-gogc500-50k.md](./builtin-gogc500-50k.md) — GOGC=500, 50K ops (基线)
 - [builtin-gogc500-10k.md](./builtin-gogc500-10k.md) — GOGC=500, 10K ops
 - [builtin-gogcoff-50k.md](./builtin-gogcoff-50k.md) — GOGC=off, 50K ops
+- [pprof-analysis.md](./pprof-analysis.md) — CPU profiling 分析

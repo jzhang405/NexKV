@@ -58,6 +58,7 @@ func NewParentSplitItem(
 			3,                      // 最大重试 3 次
 			func(ctx context.Context, trCtx model.TaskRunnerContext) (struct{}, error) {
 				// Execute 逻辑：在这里实现父节点分裂
+				DebugPrintf("[ASYNC_PARENT_SPLIT] Starting async split: parentPageID=%d\n", parentPageID)
 
 				// 执行父节点分裂（完整流程）
 				// 注意：这是在独立的 goroutine 中执行
@@ -70,9 +71,11 @@ func NewParentSplitItem(
 				)
 
 				if err != nil {
+					DebugPrintf("[ASYNC_PARENT_SPLIT] FAILED: parentPageID=%d err=%v\n", parentPageID, err)
 					return struct{}{}, errpkg.BTreeAsyncParentSplitFailed(int(parentPageID), err)
 				}
 
+				DebugPrintf("[ASYNC_PARENT_SPLIT] SUCCESS: parentPageID=%d\n", parentPageID)
 				return struct{}{}, nil
 			},
 		),

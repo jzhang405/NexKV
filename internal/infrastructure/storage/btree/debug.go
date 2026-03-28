@@ -3,3 +3,9 @@
 // found in the LICENSE file.
 
 package btree
+
+// DebugPrintf no-op placeholder for debug logging
+func DebugPrintf(format string, args ...any) {}
+
+// IsDebugEnabled returns false
+func IsDebugEnabled() bool { return false }

@@ -3,3 +3,6 @@
 // license that can be found in the LICENSE file.
 
 package offheap
+
+// DebugPrintf no-op placeholder for debug logging
+func DebugPrintf(format string, args ...any) {}

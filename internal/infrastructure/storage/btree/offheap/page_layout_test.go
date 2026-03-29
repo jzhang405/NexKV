@@ -175,14 +175,14 @@ func TestPageAccessor_SearchKey(t *testing.T) {
 	}
 
 	// 测试找到
-	idx, found := pa.SearchKey(leafID, []byte("banana"), true)
+	idx, found, _ := pa.SearchKey(leafID, []byte("banana"), true)
 	assert.True(t, found)
 	assert.Equal(t, 1, idx)
 	entry := pa.GetLeafEntry(leafID, idx)
 	assert.Equal(t, values[1], pa.GetValue(leafID, entry.valOff, entry.valLen))
 
 	// 测试未找到
-	idx, found = pa.SearchKey(leafID, []byte("grape"), true)
+	idx, found, _ = pa.SearchKey(leafID, []byte("grape"), true)
 	assert.False(t, found)
 	assert.Equal(t, 3, idx) // 应该插入到位置 3
 
@@ -205,7 +205,7 @@ func TestPageAccessor_SearchKey(t *testing.T) {
 	}
 
 	// 测试找到
-	idx, found = pa.SearchKey(indexID, []byte("key200"), false)
+	idx, found, _ = pa.SearchKey(indexID, []byte("key200"), false)
 	assert.True(t, found)
 	assert.Equal(t, 1, idx)
 	// GetChild 返回编码后的 uint64 值，需要解码
@@ -214,7 +214,7 @@ func TestPageAccessor_SearchKey(t *testing.T) {
 	assert.Equal(t, uint32(20), decodedChild)
 
 	// 测试未找到
-	idx, found = pa.SearchKey(indexID, []byte("key250"), false)
+	idx, found, _ = pa.SearchKey(indexID, []byte("key250"), false)
 	assert.False(t, found)
 	assert.Equal(t, 2, idx) // 应该插入到位置 2
 }

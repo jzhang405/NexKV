@@ -219,6 +219,29 @@ func (pa *PageAccessor) GetLeafEntry(pageID uint32, index int) *LeafEntry {
 	return (*LeafEntry)(entryPtr)
 }
 
+// GetIndexEntrySafe 安全版本，并发场景下 index 越界返回 error 而非 panic
+// 用于 SearchKey 等无锁读取路径，当页面被并发修改时 count 可能已变化
+func (pa *PageAccessor) GetIndexEntrySafe(pageID uint32, index int) (*IndexEntry, error) {
+	ptr := pa.getPtr(pageID)
+	header := (*PageHeader)(ptr)
+	if index >= int(header.count) {
+		return nil, fmt.Errorf("index %d out of range (count: %d)", index, header.count)
+	}
+	entryPtr := unsafe.Add(ptr, SizeofPageHeader+index*SizeofIndexEntry)
+	return (*IndexEntry)(entryPtr), nil
+}
+
+// GetLeafEntrySafe 安全版本，并发场景下 index 越界返回 error 而非 panic
+func (pa *PageAccessor) GetLeafEntrySafe(pageID uint32, index int) (*LeafEntry, error) {
+	ptr := pa.getPtr(pageID)
+	header := (*PageHeader)(ptr)
+	if index >= int(header.count) {
+		return nil, fmt.Errorf("index %d out of range (count: %d)", index, header.count)
+	}
+	entryPtr := unsafe.Add(ptr, SizeofPageHeader+index*SizeofLeafEntry)
+	return (*LeafEntry)(entryPtr), nil
+}
+
 // GetKey 获取 key（返回 Go 切片，指向 mmap 内存）
 func (pa *PageAccessor) GetKey(pageID uint32, keyOff, keyLen uint32) []byte {
 	ptr := pa.getPtr(pageID)
@@ -346,7 +369,9 @@ func (pa *PageAccessor) InsertLeafEntry(pageID uint32, index int, key, value []b
 
 // SearchKey 二分查找 key
 // 返回：索引位置，是否找到
-func (pa *PageAccessor) SearchKey(pageID uint32, key []byte, isLeaf bool) (int, bool) {
+// 注意：并发场景下页面可能被原地修改（分裂/更新父节点），// 此时 count 可能比初始读取时更小，导致 GetIndexEntry/GetLeafEntry panic
+// 改用 Safe 版本，遇到不一致返回 error 让上层 ErrRetry
+func (pa *PageAccessor) SearchKey(pageID uint32, key []byte, isLeaf bool) (int, bool, error) {
 	header := pa.GetHeader(pageID)
 	left, right := 0, int(header.count)-1
 
@@ -357,16 +382,22 @@ func (pa *PageAccessor) SearchKey(pageID uint32, key []byte, isLeaf bool) (int, 
 		mid := left + (right-left)/2
 		var midKey []byte
 		if isLeaf {
-			entry := pa.GetLeafEntry(pageID, mid)
+			entry, err := pa.GetLeafEntrySafe(pageID, mid)
+			if err != nil {
+				return 0, false, err
+			}
 			midKey = pa.GetKey(pageID, entry.keyOff, entry.keyLen)
 		} else {
-			entry := pa.GetIndexEntry(pageID, mid)
+			entry, err := pa.GetIndexEntrySafe(pageID, mid)
+			if err != nil {
+				return 0, false, err
+			}
 			midKey = pa.GetKey(pageID, entry.keyOff, entry.keyLen)
 		}
 
 		cmp := bytes.Compare(key, midKey)
 		if cmp == 0 {
-			return mid, true
+			return mid, true, nil
 		} else if cmp < 0 {
 			right = mid - 1
 		} else {
@@ -375,7 +406,7 @@ func (pa *PageAccessor) SearchKey(pageID uint32, key []byte, isLeaf bool) (int, 
 		}
 	}
 
-	return result, found
+	return result, found, nil
 }
 
 // GetVersion 获取页面版本号
@@ -517,7 +548,8 @@ func (pa *PageAccessor) GetIndexKey(pageID uint32, index int) []byte {
 // SearchChildIndex 在索引页面中搜索子节点
 // 返回 (childIndex, found)
 func (pa *PageAccessor) SearchChildIndex(pageID uint32, key []byte) (int, bool) {
-	return pa.SearchKey(pageID, key, false)
+	idx, found, _ := pa.SearchKey(pageID, key, false)
+	return idx, found
 }
 
 // CollectKVExcept 收集叶子节点的 KV 对（跳过指定索引）

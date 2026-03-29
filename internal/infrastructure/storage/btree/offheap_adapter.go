@@ -61,7 +61,10 @@ func (a *OffHeapAdapter) FreePage(pageID model.PageID) error {
 // GetFromOffHeap 从 Off-Heap 叶子页面获取 key 对应的 value
 // 返回 (value, found, error)
 func (a *OffHeapAdapter) GetFromOffHeap(pageID model.PageID, key []byte) ([]byte, bool, error) {
-	idx, found := a.pa.SearchKey(uint32(pageID), key, true)
+	idx, found, err := a.pa.SearchKey(uint32(pageID), key, true)
+	if err != nil {
+		return nil, false, err
+	}
 
 	if !found {
 		return nil, false, nil
@@ -873,7 +876,10 @@ func (a *OffHeapAdapter) GetChild(pageID model.PageID, index int) (model.PageID,
 // - 验证子页面的实际版本号是否匹配
 // - 不匹配说明是僵尸引用，返回 ErrRetry
 func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.PageID, bool, error) {
-	idx, found := a.pa.SearchKey(uint32(pageID), key, false)
+	idx, found, err := a.pa.SearchKey(uint32(pageID), key, false)
+	if err != nil {
+		return 0, false, err
+	}
 
 	// B+ 树：精确匹配时返回右子节点（idx+1）
 	// 例如：keys=['key-0040'], children=[1,2]
@@ -975,7 +981,10 @@ func (a *OffHeapAdapter) DeleteFromLeafPage(
 	key []byte,
 ) (model.PageID, error) {
 	// 1. 搜索 key 在页面中的位置
-	idx, found := a.pa.SearchKey(uint32(pageID), key, true)
+	idx, found, err := a.pa.SearchKey(uint32(pageID), key, true)
+		if err != nil {
+			return pageID, err
+		}
 	if !found {
 		return pageID, ErrKeyNotFound
 	}

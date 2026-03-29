@@ -38,7 +38,7 @@ type ShardTask struct {
 	name           string
 	priority       model.TaskPriority
 	executionOrder int
-	queue          *MPSCRingBuffer // 无锁环形缓冲区（MPSC）
+	queue          *MPSCExtQueue // 无锁扩展环形缓冲区（数组+链表）
 	mu             sync.Mutex
 	taskStatus     atomic.Int32 // TaskStatus
 	executeFunc    func(any) TaskStatus
@@ -53,7 +53,7 @@ func NewShardTask(name string, priority model.TaskPriority, executionOrder int, 
 		name:           name,
 		priority:       priority,
 		executionOrder: executionOrder,
-		queue:          NewMPSCRingBuffer(),
+		queue:          NewMPSCExtQueue(),
 		executeFunc:    executeFunc,
 	}
 	t.taskStatus.Store(int32(TaskQueued))
@@ -73,7 +73,8 @@ func (t *ShardTask) QueueLen() int {
 func (t *ShardTask) Enqueue(item any) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	box := &taskBox{item: item}
+	box := new(taskBox)
+	box.item = item
 	ok := t.queue.Enqueue(unsafe.Pointer(box))
 	if ok && t.totalQueueItemsPtr != nil {
 		t.totalQueueItemsPtr.Add(1)
@@ -127,8 +128,8 @@ func (t *ShardTask) Dequeue(item *any) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	ptr := t.queue.Dequeue()
-	if ptr == nil {
+	ptr, ok := t.queue.Dequeue()
+	if !ok {
 		return false
 	}
 	box := (*taskBox)(ptr)
@@ -264,7 +265,7 @@ func (c *SchedulerCore) createTaskInstance(template *ShardTask) *ShardTask {
 		name:               template.name,
 		priority:           template.priority,
 		executionOrder:     template.executionOrder,
-		queue:              NewMPSCRingBuffer(),
+		queue:              NewMPSCExtQueue(),
 		executeFunc:        template.executeFunc,
 		totalQueueItemsPtr: &c.totalQueueItems,
 	}

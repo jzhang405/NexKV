@@ -9,266 +9,238 @@ import (
 	"unsafe"
 )
 
-// ==========================================
-// 配置
-// ==========================================
-
 const (
-	// ringBufferSize 环形缓冲区大小（必须是 2 的幂）
-	// 16384 容纳 ShardTask 压力测试场景（10001 items）
+	// ringBufferSize 环形缓冲区初始大小（必须是 2 的幂）
+	// 每 core 一个 buffer：16K × 64B = 1MB / core
 	ringBufferSize = 16384
-	// ringMask 取模掩码（ringBufferSize - 1，要求 2^n）
-	ringMask = ringBufferSize - 1
-	// cacheLineSize CPU 缓存行大小（防止伪共享）
-	cacheLineSize = 64
+	ringBufferMask = ringBufferSize - 1
+	cacheLineSize  = 64
+	ptrSize        = 8 // unsafe.Pointer = 8 bytes (64-bit)
 )
 
 // ==========================================
-// 缓存行对齐结构（杜绝伪共享）
+// MPSC 扩展队列（固定 Ring + 链表溢出）
+//
+// 1. Fast path: 固定 16K 数组（cache hot，零分配）
+// 2. Slow path: 链表溢出（无限扩展，吸收 burst）
+// 3. Per-core 设计：1 queue / CPU core
 // ==========================================
 
-type taskPtr struct {
-	ptr unsafe.Pointer
+// slot 缓存行对齐的数组槽位
+// 使用 unsafe.Pointer 字段 + atomic.LoadPointer/StorePointer
+// 避免 uintptr ↔ unsafe.Pointer 转换触发 checkptr
+type slot struct {
+	task unsafe.Pointer // atomic access via runtime
+	_    [cacheLineSize - ptrSize]byte
 }
 
-type paddedTask struct {
-	task atomic.Value
-	_    [cacheLineSize - 8]byte
+// node 链表溢出节点
+type node struct {
+	next atomic.Pointer[node]
+	task unsafe.Pointer                   // atomic access via runtime
+	_    [cacheLineSize - 8 - ptrSize]byte // next(8) + task(8) + pad → 64
 }
 
-// ==========================================
-// MPSC 无锁环形缓冲区
-//
-// Multi-Producer: 多个 goroutine 并发 Enqueue（通过 CAS 抢占 slot）
-// Single-Consumer: 单个 goroutine 串行 Peek/Dequeue（无需 CAS）
-//
-// 核心原理：
-//   - writeIdx: 原子 CAS（多生产者竞争）
-//   - readIdx:  单线程修改（无需同步）
-//   - slot 在 write 后、read 前这段时间内被独占，无竞争
-// ==========================================
+// MPSCExtQueue 固定 Ring + 链表溢出
+type MPSCExtQueue struct {
+	buffer [ringBufferSize]slot
+	_      [cacheLineSize]byte
 
-type MPSCRingBuffer struct {
-	// === 生产者端（多 goroutine 竞争）===
 	writeIdx atomic.Uint64
 	_        [cacheLineSize]byte
+	readIdx  atomic.Uint64
+	_        [cacheLineSize]byte
 
-	// === 消费者端（单 goroutine，无竞争）===
-	readIdx atomic.Uint64
-	_       [cacheLineSize]byte
-
-	// 数据区（每个 slot 独占一个缓存行）
-	buffer [ringBufferSize]paddedTask
+	overflowHead atomic.Pointer[node]
+	overflowTail atomic.Pointer[node]
+	overflowLen  atomic.Int64 // overflow 链表中的节点数
+	_            [cacheLineSize]byte
 }
 
-// NewMPSCRingBuffer 创建 MPSC 环形缓冲区
-func NewMPSCRingBuffer() *MPSCRingBuffer {
-	return &MPSCRingBuffer{}
+// NewMPSCExtQueue 创建 MPSCExtQueue
+func NewMPSCExtQueue() *MPSCExtQueue {
+	q := &MPSCExtQueue{}
+	stub := &node{}
+	q.overflowHead.Store(stub)
+	q.overflowTail.Store(stub)
+	return q
 }
 
 // ==========================================
-// MP: 多生产者入队（多 goroutine 安全）
+// MP: 多生产者入队（永远成功）
 // ==========================================
 
-// Enqueue 单条入队
-//
-// 多生产者安全：CAS 抢占 slot
-// 返回值：
-//   - true:  入队成功
-//   - false: 队列满
-func (r *MPSCRingBuffer) Enqueue(task unsafe.Pointer) bool {
+func (q *MPSCExtQueue) Enqueue(task unsafe.Pointer) bool {
 	for {
-		read := r.readIdx.Load()
-		write := r.writeIdx.Load()
+		read := q.readIdx.Load()
+		write := q.writeIdx.Load()
 
-		// 队列满（write 领先 read 超过 buffer 容量）
-		if write-read >= ringBufferSize {
-			return false
+		// Fast path: 固定 ring buffer
+		if write-read < ringBufferSize {
+			if q.writeIdx.CompareAndSwap(write, write+1) {
+				slotPtr := &q.buffer[write&ringBufferMask].task
+				atomic.StorePointer(slotPtr, task)
+				return true
+			}
+			continue
 		}
 
-		// CAS 抢占下一个可用 slot
-		if r.writeIdx.CompareAndSwap(write, write+1) {
-			r.buffer[write&ringMask].task.Store(taskPtr{ptr: task})
-			return true
-		}
-		// CAS 失败：其他生产者抢占了，循环重试
+		// Slow path: 链表溢出（无限扩展）
+		q.enqueueOverflow(task)
+		return true
 	}
 }
 
-// EnqueueN 批量入队
-//
-// 原子抢占连续 k 个 slot，然后批量写入。
-// 返回实际写入的数量（可能小于请求数量）。
-func (r *MPSCRingBuffer) EnqueueN(tasks []unsafe.Pointer) int {
-	n := len(tasks)
-	if n == 0 {
-		return 0
+func (q *MPSCExtQueue) enqueueOverflow(task unsafe.Pointer) {
+	newNode := &node{}
+	atomic.StorePointer(&newNode.task, task)
+
+	for {
+		tail := q.overflowTail.Load()
+		next := tail.next.Load()
+
+		if tail == q.overflowTail.Load() {
+			if next == nil {
+				if tail.next.CompareAndSwap(nil, newNode) {
+					q.overflowTail.CompareAndSwap(tail, newNode)
+					q.overflowLen.Add(1)
+					return
+				}
+			} else {
+				q.overflowTail.CompareAndSwap(tail, next)
+			}
+		}
 	}
-
-	read := r.readIdx.Load()
-	write := r.writeIdx.Load()
-	free := ringBufferSize - (write - read)
-	if free == 0 {
-		return 0
-	}
-
-	k := min(n, int(free))
-
-	// 原子抢占连续 k 个 slot
-	old := r.writeIdx.Add(uint64(k)) - uint64(k)
-
-	// 批量写入
-	for i := 0; i < k; i++ {
-		pos := (old + uint64(i)) & ringMask
-		r.buffer[pos].task.Store(taskPtr{ptr: tasks[i]})
-	}
-
-	return k
 }
 
 // ==========================================
-// SC: 单消费者 Peek（只读不消费）
+// SC: Peek / PeekN
 // ==========================================
 
-// Peek 查看队首元素（只读，不移动 readIdx）
-//
-// 单消费者安全：readIdx 仅由此 goroutine 修改，无竞争。
-// 返回值：
-//   - (task, true):  查看成功
-//   - (nil, false):  队列空
-func (r *MPSCRingBuffer) Peek() (unsafe.Pointer, bool) {
-	write := r.writeIdx.Load()
-	read := r.readIdx.Load()
+func (q *MPSCExtQueue) Peek() (unsafe.Pointer, bool) {
+	read := q.readIdx.Load()
+	write := q.writeIdx.Load()
 
-	if write == read {
+	if read < write {
+		ptr := atomic.LoadPointer(&q.buffer[read&ringBufferMask].task)
+		return ptr, true
+	}
+
+	head := q.overflowHead.Load()
+	next := head.next.Load()
+	if next == nil {
 		return nil, false
 	}
-
-	task := r.buffer[read&ringMask].task.Load().(taskPtr).ptr
-	if task != nil {
-		return task, true
-	}
-	return nil, false
+	ptr := atomic.LoadPointer(&next.task)
+	return ptr, true
 }
 
-// PeekN 批量查看（只读，不移动 readIdx）
-//
-// 单消费者安全。
-// 参数 out：预分配的输出缓冲区（避免每次分配）
-// 返回值：
-//   - > 0:  实际查看到的元素数量
-//   - 0:    队列空
-func (r *MPSCRingBuffer) PeekN(out []unsafe.Pointer) int {
-	write := r.writeIdx.Load()
-	read := r.readIdx.Load()
-	avail := write - read
-	if avail == 0 {
-		return 0
-	}
-
-	k := len(out)
-	if uint64(k) > avail {
-		k = int(avail)
-	}
-
-	for i := 0; i < k; i++ {
-		pos := (read + uint64(i)) & ringMask
-		out[i] = r.buffer[pos].task.Load().(taskPtr).ptr
-	}
-	return k
-}
-
-// ==========================================
-// SC: 单消费者 Commit（确认消费，推进读指针）
-// ==========================================
-
-// Commit 确认消费 1 个元素（推进 readIdx）
-//
-// 单消费者安全：直接 Add 无需 CAS。
-func (r *MPSCRingBuffer) Commit() {
-	r.readIdx.Add(1)
-}
-
-// CommitN 批量确认消费（推进 readIdx）
-//
-// 单消费者安全。
-func (r *MPSCRingBuffer) CommitN(n uint64) {
-	r.readIdx.Add(n)
-}
-
-// ==========================================
-// SC: 快速出队（fire-and-forget，无重试）
-// ==========================================
-
-// Dequeue 出队 1 个元素（消费并推进 readIdx）
-//
-// 单消费者安全。
-// 返回值：
-//   - task:  出队成功
-//   - nil:   队列空
-func (r *MPSCRingBuffer) Dequeue() unsafe.Pointer {
-	write := r.writeIdx.Load()
-	read := r.readIdx.Load()
-	if write == read {
-		return nil
-	}
-
-	taskVal := r.buffer[read&ringMask].task.Load()
-	if taskVal == nil {
-		return nil
-	}
-	task := taskVal.(taskPtr).ptr
-	r.readIdx.Store(read + 1)
-	return task
-}
-
-// DequeueN 批量出队（消费并推进 readIdx）
-//
-// 单消费者安全。
-// 参数 out：预分配的输出缓冲区。
-// 返回值：实际出队的元素数量。
-func (r *MPSCRingBuffer) DequeueN(out []unsafe.Pointer) int {
+func (q *MPSCExtQueue) PeekN(out []unsafe.Pointer) int {
 	n := len(out)
-	if n == 0 {
-		return 0
+	count := 0
+	read := q.readIdx.Load()
+	write := q.writeIdx.Load()
+
+	for count < n && read < write {
+		ptr := atomic.LoadPointer(&q.buffer[read&ringBufferMask].task)
+		out[count] = ptr
+		read++
+		count++
 	}
 
-	write := r.writeIdx.Load()
-	read := r.readIdx.Load()
-	avail := write - read
-	if avail == 0 {
-		return 0
+	if count < n {
+		curr := q.overflowHead.Load()
+		for count < n {
+			next := curr.next.Load()
+			if next == nil {
+				break
+			}
+			ptr := atomic.LoadPointer(&next.task)
+			out[count] = ptr
+			curr = next
+			count++
+		}
 	}
 
-	k := n
-	if uint64(k) > avail {
-		k = int(avail)
+	return count
+}
+
+// ==========================================
+// SC: Commit / CommitN（推进读指针）
+// ==========================================
+
+func (q *MPSCExtQueue) Commit() {
+	read := q.readIdx.Load()
+	write := q.writeIdx.Load()
+
+	if read < write {
+		q.readIdx.Store(read + 1)
+		return
 	}
 
-	for i := 0; i < k; i++ {
-		pos := (read + uint64(i)) & ringMask
-		out[i] = r.buffer[pos].task.Load().(taskPtr).ptr
+	head := q.overflowHead.Load()
+	next := head.next.Load()
+	if next != nil {
+		q.overflowHead.Store(next)
+		q.overflowLen.Add(-1)
 	}
+}
 
-	r.readIdx.Store(read + uint64(k))
-	return k
+func (q *MPSCExtQueue) CommitN(n uint64) {
+	for i := uint64(0); i < n; i++ {
+		q.Commit()
+	}
+}
+
+// ==========================================
+// SC: Dequeue / DequeueN（Peek + Commit 便捷组合）
+// ==========================================
+
+func (q *MPSCExtQueue) Dequeue() (unsafe.Pointer, bool) {
+	task, ok := q.Peek()
+	if !ok {
+		return nil, false
+	}
+	q.Commit()
+	return task, true
+}
+
+func (q *MPSCExtQueue) DequeueN(out []unsafe.Pointer) int {
+	n := q.PeekN(out)
+	if n > 0 {
+		q.CommitN(uint64(n))
+	}
+	return n
 }
 
 // ==========================================
 // 状态查询
 // ==========================================
 
-// Size 返回当前队列长度
-func (r *MPSCRingBuffer) Size() uint64 {
-	return r.writeIdx.Load() - r.readIdx.Load()
+func (q *MPSCExtQueue) Size() uint64 {
+	ringSize := q.writeIdx.Load() - q.readIdx.Load()
+	return ringSize + uint64(q.overflowLen.Load())
 }
 
-// IsEmpty 判断队列是否为空
-func (r *MPSCRingBuffer) IsEmpty() bool {
-	return r.Size() == 0
+func (q *MPSCExtQueue) IsEmpty() bool {
+	read := q.readIdx.Load()
+	write := q.writeIdx.Load()
+	if read < write {
+		return false
+	}
+	head := q.overflowHead.Load()
+	return head.next.Load() == nil
 }
 
-// IsFull 判断队列是否已满
-func (r *MPSCRingBuffer) IsFull() bool {
-	return r.Size() >= ringBufferSize
+func (q *MPSCExtQueue) IsFull() bool {
+	return (q.writeIdx.Load() - q.readIdx.Load()) >= ringBufferSize
+}
+
+func (q *MPSCExtQueue) Reset() {
+	q.writeIdx.Store(0)
+	q.readIdx.Store(0)
+	stub := &node{}
+	q.overflowHead.Store(stub)
+	q.overflowTail.Store(stub)
+	q.overflowLen.Store(0)
 }

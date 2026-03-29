@@ -11,8 +11,8 @@ import (
 	"unsafe"
 )
 
-func TestMPSCRingBuffer_Basic(t *testing.T) {
-	r := NewMPSCRingBuffer()
+func TestMPSCExtQueue_Basic(t *testing.T) {
+	r := NewMPSCExtQueue()
 
 	// 空队列
 	if !r.IsEmpty() {
@@ -49,23 +49,23 @@ func TestMPSCRingBuffer_Basic(t *testing.T) {
 		t.Errorf("size unchanged after Peek = %d, want 1", size)
 	}
 
-	// Commit
-	r.Commit()
+	// Dequeue
+	r.Dequeue()
 	if size := r.Size(); size != 0 {
-		t.Errorf("size after Commit = %d, want 0", size)
+		t.Errorf("size after Dequeue = %d, want 0", size)
 	}
 	if !r.IsEmpty() {
-		t.Error("ring should be empty after commit")
+		t.Error("ring should be empty after dequeue")
 	}
 
 	// Dequeue 空队列
-	if got := r.Dequeue(); got != nil {
-		t.Error("Dequeue on empty ring should return nil")
+	if got, ok := r.Dequeue(); ok || got != nil {
+		t.Error("Dequeue on empty ring should return nil, false")
 	}
 }
 
-func TestMPSCRingBuffer_FIFO(t *testing.T) {
-	r := NewMPSCRingBuffer()
+func TestMPSCExtQueue_FIFO(t *testing.T) {
+	r := NewMPSCExtQueue()
 
 	// 按顺序入队，验证 FIFO
 	tasks := make([]unsafe.Pointer, 5)
@@ -76,14 +76,13 @@ func TestMPSCRingBuffer_FIFO(t *testing.T) {
 
 	// 顺序出队
 	for i := range 5 {
-		got, ok := r.Peek()
+		got, ok := r.Dequeue()
 		if !ok {
-			t.Fatalf("Peek %d failed", i)
+			t.Fatalf("Dequeue %d returned false", i)
 		}
 		if got != tasks[i] {
-			t.Errorf("Peek[%d] = %v, want %v", i, got, tasks[i])
+			t.Errorf("Dequeue[%d] = %v, want %v", i, got, tasks[i])
 		}
-		r.Commit()
 	}
 
 	if !r.IsEmpty() {
@@ -91,30 +90,49 @@ func TestMPSCRingBuffer_FIFO(t *testing.T) {
 	}
 }
 
-func TestMPSCRingBuffer_Overflow(t *testing.T) {
-	r := NewMPSCRingBuffer()
+func TestMPSCExtQueue_Overflow(t *testing.T) {
+	r := NewMPSCExtQueue()
 
-	// 填满队列
+	// 填满数组
 	for i := range ringBufferSize {
 		task := unsafe.Pointer(&i)
 		if !r.Enqueue(task) {
-			t.Errorf("Enqueue %d failed, ring should not be full yet", i)
+			t.Errorf("Enqueue %d failed, array should not be full yet", i)
 		}
 	}
 
 	if !r.IsFull() {
-		t.Error("ring should be full")
+		t.Error("array should be full")
 	}
 
-	// 继续入队应该失败
-	task := unsafe.Pointer(new(int))
-	if r.Enqueue(task) {
-		t.Error("Enqueue should fail when ring is full")
+	// 继续入队应该成功（溢出到链表）
+	overflowTask := unsafe.Pointer(new(int))
+	if !r.Enqueue(overflowTask) {
+		t.Error("Enqueue should succeed via overflow")
+	}
+
+	// 队列总大小 = 数组 + 溢出
+	if size := r.Size(); size != ringBufferSize+1 {
+		t.Errorf("size = %d, want %d (array + 1 overflow)", size, ringBufferSize+1)
+	}
+
+	// 消费所有 items，包括溢出的
+	count := 0
+	for {
+		got, ok := r.Dequeue()
+		if !ok {
+			break
+		}
+		_ = got
+		count++
+	}
+	if count != ringBufferSize+1 {
+		t.Errorf("dequeued %d, want %d", count, ringBufferSize+1)
 	}
 }
 
-func TestMPSCRingBuffer_Dequeue(t *testing.T) {
-	r := NewMPSCRingBuffer()
+func TestMPSCExtQueue_Dequeue(t *testing.T) {
+	r := NewMPSCExtQueue()
 
 	// 入队 3 个
 	for i := range 3 {
@@ -124,10 +142,11 @@ func TestMPSCRingBuffer_Dequeue(t *testing.T) {
 
 	// Dequeue 2 个
 	for i := range 2 {
-		got := r.Dequeue()
-		if got == nil {
-			t.Errorf("Dequeue %d returned nil", i)
+		got, ok := r.Dequeue()
+		if !ok {
+			t.Errorf("Dequeue %d returned false", i)
 		}
+		_ = got
 	}
 
 	if size := r.Size(); size != 1 {
@@ -135,40 +154,49 @@ func TestMPSCRingBuffer_Dequeue(t *testing.T) {
 	}
 
 	// Dequeue 剩余 1 个
-	got := r.Dequeue()
-	if got == nil {
-		t.Error("last Dequeue returned nil")
+	got, ok := r.Dequeue()
+	if !ok {
+		t.Error("last Dequeue returned false")
 	}
+	_ = got
 
 	// 再 Dequeue 应该 nil
-	if got := r.Dequeue(); got != nil {
-		t.Error("Dequeue on empty should return nil")
+	if got, ok := r.Dequeue(); ok || got != nil {
+		t.Error("Dequeue on empty should return nil, false")
 	}
 }
 
-func TestMPSCRingBuffer_CommitN(t *testing.T) {
-	r := NewMPSCRingBuffer()
+func TestMPSCExtQueue_DequeueN_Basic(t *testing.T) {
+	r := NewMPSCExtQueue()
 
 	// 入队 5 个
 	for i := range 5 {
 		r.Enqueue(unsafe.Pointer(&i))
 	}
 
-	// CommitN 3 个
-	r.CommitN(3)
+	// DequeueN 3 个
+	buf := make([]unsafe.Pointer, 3)
+	n := r.DequeueN(buf)
+	if n != 3 {
+		t.Errorf("DequeueN returned %d, want 3", n)
+	}
 	if size := r.Size(); size != 2 {
-		t.Errorf("size after CommitN(3) = %d, want 2", size)
+		t.Errorf("size after DequeueN(3) = %d, want 2", size)
 	}
 
-	// CommitN 2 个
-	r.CommitN(2)
+	// DequeueN 2 个
+	buf2 := make([]unsafe.Pointer, 2)
+	n2 := r.DequeueN(buf2)
+	if n2 != 2 {
+		t.Errorf("DequeueN returned %d, want 2", n2)
+	}
 	if size := r.Size(); size != 0 {
-		t.Errorf("size after CommitN(2) = %d, want 0", size)
+		t.Errorf("size after DequeueN(2) = %d, want 0", size)
 	}
 }
 
-func TestMPSCRingBuffer_PeekN(t *testing.T) {
-	r := NewMPSCRingBuffer()
+func TestMPSCExtQueue_PeekN(t *testing.T) {
+	r := NewMPSCExtQueue()
 
 	// 入队 5 个
 	for i := range 5 {
@@ -195,8 +223,8 @@ func TestMPSCRingBuffer_PeekN(t *testing.T) {
 	}
 }
 
-func TestMPSCRingBuffer_PeekN_Empty(t *testing.T) {
-	r := NewMPSCRingBuffer()
+func TestMPSCExtQueue_PeekN_Empty(t *testing.T) {
+	r := NewMPSCExtQueue()
 
 	buf := make([]unsafe.Pointer, 3)
 	n := r.PeekN(buf)
@@ -205,8 +233,8 @@ func TestMPSCRingBuffer_PeekN_Empty(t *testing.T) {
 	}
 }
 
-func TestMPSCRingBuffer_Retry(t *testing.T) {
-	r := NewMPSCRingBuffer()
+func TestMPSCExtQueue_Retry(t *testing.T) {
+	r := NewMPSCExtQueue()
 
 	// 入队 2 个
 	t1 := unsafe.Pointer(&[1]int{1})
@@ -237,8 +265,8 @@ func TestMPSCRingBuffer_Retry(t *testing.T) {
 		t.Errorf("Peek 2 = %v, want t1 (not advanced)", got2)
 	}
 
-	// Commit 后再 Peek，得到 t2
-	r.Commit()
+	// Dequeue 后再 Peek，得到 t2
+	r.Dequeue()
 	got3, ok3 := r.Peek()
 	if !ok3 {
 		t.Fatal("Peek 3 failed")
@@ -248,8 +276,8 @@ func TestMPSCRingBuffer_Retry(t *testing.T) {
 	}
 }
 
-func TestMPSCRingBuffer_RetryBatch(t *testing.T) {
-	r := NewMPSCRingBuffer()
+func TestMPSCExtQueue_RetryBatch(t *testing.T) {
+	r := NewMPSCExtQueue()
 
 	// 入队 5 个
 	tasks := make([]unsafe.Pointer, 5)
@@ -265,8 +293,8 @@ func TestMPSCRingBuffer_RetryBatch(t *testing.T) {
 	}
 
 	// 假设第 3 个任务失败，前 2 个成功
-	// Commit 已处理的前 2 个
-	r.CommitN(2)
+	// DequeueN 已处理的前 2 个
+	r.DequeueN(buf[:2])
 
 	// 重新 PeekN，应该还是从第 3 个开始
 	buf2 := make([]unsafe.Pointer, 5)
@@ -279,8 +307,8 @@ func TestMPSCRingBuffer_RetryBatch(t *testing.T) {
 	}
 }
 
-func TestMPSCRingBuffer_ConcurrentEnqueue(t *testing.T) {
-	r := NewMPSCRingBuffer()
+func TestMPSCExtQueue_ConcurrentEnqueue(t *testing.T) {
+	r := NewMPSCExtQueue()
 
 	const goroutines = 10
 	const perGoroutine = 100
@@ -322,9 +350,11 @@ func TestMPSCRingBuffer_ConcurrentEnqueue(t *testing.T) {
 	// 验证 FIFO：全部出队
 	count := 0
 	for {
-		if r.Dequeue() == nil {
+		got, ok := r.Dequeue()
+		if !ok {
 			break
 		}
+		_ = got
 		count++
 	}
 	if count != goroutines*perGoroutine {
@@ -332,8 +362,8 @@ func TestMPSCRingBuffer_ConcurrentEnqueue(t *testing.T) {
 	}
 }
 
-func TestMPSCRingBuffer_ConcurrentEnqueueDequeue(t *testing.T) {
-	r := NewMPSCRingBuffer()
+func TestMPSCExtQueue_ConcurrentEnqueueDequeue(t *testing.T) {
+	r := NewMPSCExtQueue()
 
 	const producers = 8
 	const itemsPerProducer = 100
@@ -349,13 +379,14 @@ func TestMPSCRingBuffer_ConcurrentEnqueueDequeue(t *testing.T) {
 	go func() {
 		defer consumerWg.Done()
 		for {
-			got := r.Dequeue()
-			if got == nil {
+			got, ok := r.Dequeue()
+			if !ok {
 				if done.Load() && r.IsEmpty() {
 					break
 				}
 				continue
 			}
+			_ = got
 			totalDequeued.Add(1)
 		}
 	}()
@@ -388,58 +419,8 @@ func TestMPSCRingBuffer_ConcurrentEnqueueDequeue(t *testing.T) {
 	}
 }
 
-func TestMPSCRingBuffer_EnqueueN(t *testing.T) {
-	r := NewMPSCRingBuffer()
-
-	batch := make([]unsafe.Pointer, 5)
-	for i := range 5 {
-		batch[i] = unsafe.Pointer(&i)
-	}
-
-	n := r.EnqueueN(batch)
-	if n != 5 {
-		t.Errorf("EnqueueN returned %d, want 5", n)
-	}
-
-	if size := r.Size(); size != 5 {
-		t.Errorf("size = %d, want 5", size)
-	}
-
-	// 出队验证
-	count := 0
-	for {
-		if r.Dequeue() == nil {
-			break
-		}
-		count++
-	}
-	if count != 5 {
-		t.Errorf("dequeued %d, want 5", count)
-	}
-}
-
-func TestMPSCRingBuffer_EnqueueN_Partial(t *testing.T) {
-	r := NewMPSCRingBuffer()
-
-	// 先入队填满大部分
-	for i := range ringBufferSize - 3 {
-		r.Enqueue(unsafe.Pointer(&i))
-	}
-
-	// 尝试批量入队 10 个，应该只能入 3 个
-	batch := make([]unsafe.Pointer, 10)
-	for i := range 10 {
-		batch[i] = unsafe.Pointer(&i)
-	}
-
-	n := r.EnqueueN(batch)
-	if n != 3 {
-		t.Errorf("EnqueueN returned %d, want 3 (remaining space)", n)
-	}
-}
-
-func TestMPSCRingBuffer_DequeueN(t *testing.T) {
-	r := NewMPSCRingBuffer()
+func TestMPSCExtQueue_DequeueN_Partial(t *testing.T) {
+	r := NewMPSCExtQueue()
 
 	// 入队 10 个
 	for i := range 10 {
@@ -458,8 +439,8 @@ func TestMPSCRingBuffer_DequeueN(t *testing.T) {
 	}
 }
 
-func TestMPSCRingBuffer_DequeueN_Empty(t *testing.T) {
-	r := NewMPSCRingBuffer()
+func TestMPSCExtQueue_DequeueN_Empty(t *testing.T) {
+	r := NewMPSCExtQueue()
 
 	buf := make([]unsafe.Pointer, 3)
 	n := r.DequeueN(buf)
@@ -470,9 +451,9 @@ func TestMPSCRingBuffer_DequeueN_Empty(t *testing.T) {
 
 // ==================== 基准测试 ====================
 
-// Peek + Commit（单条）：模拟 Scheduler runLoop 的热路径
-func BenchmarkMPSCRingBuffer_PeekCommit(b *testing.B) {
-	r := NewMPSCRingBuffer()
+// Peek + Dequeue（单条）：模拟 Scheduler runLoop 的热路径
+func BenchmarkMPSCExtQueue_PeekDequeue(b *testing.B) {
+	r := NewMPSCExtQueue()
 	task := unsafe.Pointer(&[1]int{0})
 
 	// 预填队列
@@ -485,15 +466,15 @@ func BenchmarkMPSCRingBuffer_PeekCommit(b *testing.B) {
 
 	for range b.N {
 		if t, ok := r.Peek(); ok {
-			r.Commit()
+			r.Dequeue()
 			_ = t
 		}
 	}
 }
 
-// PeekN + CommitN（批量）：模拟批量处理场景
-func BenchmarkMPSCRingBuffer_PeekNCommit(b *testing.B) {
-	r := NewMPSCRingBuffer()
+// PeekN + DequeueN（批量）：模拟批量处理场景
+func BenchmarkMPSCExtQueue_PeekNDequeueN(b *testing.B) {
+	r := NewMPSCExtQueue()
 	task := unsafe.Pointer(&[1]int{0})
 
 	// 预填队列
@@ -508,6 +489,6 @@ func BenchmarkMPSCRingBuffer_PeekNCommit(b *testing.B) {
 
 	for range b.N {
 		n := r.PeekN(buf)
-		r.CommitN(uint64(n))
+		r.DequeueN(buf[:n])
 	}
 }

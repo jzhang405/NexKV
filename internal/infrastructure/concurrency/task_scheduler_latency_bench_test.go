@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
@@ -22,6 +23,20 @@ import (
 //
 // 目标：确认每种模式下单次调度开销（ns/op）的 baseline
 // ==========================================
+
+const benchWaitTimeout = 10 * time.Second
+
+// waitProcessed 等待 processed 达到 target，带超时保护
+func waitProcessed(b *testing.B, processed *atomic.Int64, target int64) {
+	deadline := time.Now().Add(benchWaitTimeout)
+	for processed.Load() < target {
+		if time.Now().After(deadline) {
+			b.Logf("WARNING: waitProcessed timeout, got %d/%d after %v", processed.Load(), target, benchWaitTimeout)
+			return
+		}
+		runtime.Gosched()
+	}
+}
 
 // benchRegisterAndStartNoRelease 注册不归还 item 的 handler（用于 PureEnqueue 复用同一 item）
 func benchRegisterAndStartNoRelease(b *testing.B, coreCount int) (*TaskScheduler, *atomic.Int64) {
@@ -94,7 +109,6 @@ func BenchmarkSchedLatency_PureEnqueue_FixedShard_1Core(b *testing.B) {
 	scheduler, processed := benchRegisterAndStartNoRelease(b, 1)
 	defer scheduler.Stop()
 
-	// 预创建 item（排除分配开销）
 	item := NewBenchmarkShardItem(1)
 
 	b.ResetTimer()
@@ -103,15 +117,13 @@ func BenchmarkSchedLatency_PureEnqueue_FixedShard_1Core(b *testing.B) {
 	for b.Loop() {
 		_ = scheduler.EnqueueWithShard(item, "latency-task")
 	}
-	for processed.Load() < int64(b.N) {
-	}
+	waitProcessed(b, processed, int64(b.N))
 }
 
 func BenchmarkSchedLatency_PureEnqueue_FixedShard_AllCores(b *testing.B) {
 	scheduler, processed := benchRegisterAndStartNoRelease(b, 0)
 	defer scheduler.Stop()
 
-	// 预创建 item
 	item := NewBenchmarkShardItem(1)
 
 	b.ResetTimer()
@@ -120,8 +132,7 @@ func BenchmarkSchedLatency_PureEnqueue_FixedShard_AllCores(b *testing.B) {
 	for b.Loop() {
 		_ = scheduler.EnqueueWithShard(item, "latency-task")
 	}
-	for processed.Load() < int64(b.N) {
-	}
+	waitProcessed(b, processed, int64(b.N))
 }
 
 func BenchmarkSchedLatency_PureEnqueue_LoadBalance_AllCores(b *testing.B) {
@@ -136,8 +147,7 @@ func BenchmarkSchedLatency_PureEnqueue_LoadBalance_AllCores(b *testing.B) {
 	for b.Loop() {
 		_ = scheduler.EnqueueWithShard(item, "latency-task")
 	}
-	for processed.Load() < int64(b.N) {
-	}
+	waitProcessed(b, processed, int64(b.N))
 }
 
 // ========== 1. FixedShard: 固定 shardID，全部路由到同一个 core ==========
@@ -153,8 +163,7 @@ func BenchmarkSchedLatency_FixedShard_1Core(b *testing.B) {
 		item := NewBenchmarkShardItem(1)
 		_ = scheduler.EnqueueWithShard(item, "latency-task")
 	}
-	for processed.Load() < int64(b.N) {
-	}
+	waitProcessed(b, processed, int64(b.N))
 }
 
 func BenchmarkSchedLatency_FixedShard_AllCores(b *testing.B) {
@@ -167,12 +176,10 @@ func BenchmarkSchedLatency_FixedShard_AllCores(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		// 固定 shardID=1，全部路由到 core[1%coreCount]
 		item := NewBenchmarkShardItem(1)
 		_ = scheduler.EnqueueWithShard(item, "latency-task")
 	}
-	for processed.Load() < int64(b.N) {
-	}
+	waitProcessed(b, processed, int64(b.N))
 	b.Logf("coreCount=%d", coreCount)
 }
 
@@ -188,12 +195,10 @@ func BenchmarkSchedLatency_LoadBalance_AllCores(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		// shardID=0 触发 selectLeastLoadedCore
 		item := NewBenchmarkShardItem(0)
 		_ = scheduler.EnqueueWithShard(item, "latency-task")
 	}
-	for processed.Load() < int64(b.N) {
-	}
+	waitProcessed(b, processed, int64(b.N))
 	b.Logf("coreCount=%d", coreCount)
 }
 
@@ -217,8 +222,7 @@ func BenchmarkSchedLatency_RoundRobin_AllCores(b *testing.B) {
 		item := NewBenchmarkShardItem(shardID)
 		_ = scheduler.EnqueueWithShard(item, "latency-task")
 	}
-	for processed.Load() < int64(b.N) {
-	}
+	waitProcessed(b, processed, int64(b.N))
 	b.Logf("coreCount=%d", coreCount)
 }
 
@@ -239,8 +243,7 @@ func BenchmarkSchedLatency_FixedShard_AllCores_Parallel(b *testing.B) {
 			_ = scheduler.EnqueueWithShard(item, "latency-task")
 		}
 	})
-	for processed.Load() < int64(b.N) {
-	}
+	waitProcessed(b, processed, int64(b.N))
 	_ = coreCount
 }
 
@@ -259,8 +262,7 @@ func BenchmarkSchedLatency_LoadBalance_AllCores_Parallel(b *testing.B) {
 			_ = scheduler.EnqueueWithShard(item, "latency-task")
 		}
 	})
-	for processed.Load() < int64(b.N) {
-	}
+	waitProcessed(b, processed, int64(b.N))
 	_ = coreCount
 }
 
@@ -284,7 +286,6 @@ func BenchmarkSchedLatency_RoundRobin_AllCores_Parallel(b *testing.B) {
 			_ = scheduler.EnqueueWithShard(item, "latency-task")
 		}
 	})
-	for processed.Load() < int64(b.N) {
-	}
+	waitProcessed(b, processed, int64(b.N))
 	_ = coreCount
 }

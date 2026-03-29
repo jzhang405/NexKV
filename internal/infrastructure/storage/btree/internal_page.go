@@ -139,18 +139,11 @@ func (p *InternalPage) FindChild(key []byte) (*PageRef, bool) {
 	return nil, false
 }
 
-// FindChildRef 查找键对应的子节点引用（简化版，用于 searchPath）
-// 返回：子节点引用（不关心是否精确匹配）
-//
-// BTree 搜索逻辑：
-// - 如果 key == keys[i]，搜索应该在右子节点（children[i+1]）
-// - 如果 keys[i-1] < key < keys[i]，搜索应该在子节点（children[i]）
+// FindChildRef 查找键对应的子节点引用
 func (p *InternalPage) FindChildRef(key []byte) *PageRef {
 	idx := p.search(key)
 
-	// 边界检查
 	if idx < 0 || idx >= len(p.children) {
-		// 返回最右边的子节点
 		if len(p.children) > 0 {
 			return p.children[len(p.children)-1]
 		}
@@ -160,22 +153,12 @@ func (p *InternalPage) FindChildRef(key []byte) *PageRef {
 	return p.children[idx]
 }
 
-// Insert 插入键和子节点（右子节点）
-// 返回：是否插入成功
-//
-// B+Tree 语义：插入键 key 时，child 是 key 的右子节点
-// - key 插入到 keys[idx]
-// - child 插入到 children[idx+1]
+// Insert 插入键和子节点
 func (p *InternalPage) Insert(key []byte, child *PageRef) (bool, error) {
 	idx := p.search(key)
-
-	// 插入键
 	p.keys = insertSlice(p.keys, idx, key)
-
-	// 插入右子节点（在 idx+1 位置，因为 key 的左子节点是 children[idx]）
 	p.children = insertSlice(p.children, idx+1, child)
 	p.version++
-
 	return true, nil
 }
 
@@ -183,41 +166,32 @@ func (p *InternalPage) Insert(key []byte, child *PageRef) (bool, error) {
 // 在指定位置插入键和右子节点
 // 返回：错误信息
 func (p *InternalPage) InsertKeyChild(key []byte, childRef *PageRef) error {
-	// 防御性修复：检查并修复不变量
 	expectedChildren := len(p.keys) + 1
 	if len(p.children) != expectedChildren {
-		// 如果 children 太多，截断
 		if len(p.children) > expectedChildren {
 			fmt.Printf("[WARN] InsertKeyChild: fixing invariant before insert: pageID=%d, keys=%d, children=%d -> %d\n",
 				p.pageID, len(p.keys), len(p.children), expectedChildren)
 			p.children = p.children[:expectedChildren]
 		} else {
-			// 如果 children 太少，返回错误
 			return errpkg.BTreeInvariantViolatedError(len(p.children), len(p.keys))
 		}
 	}
 
 	idx := p.search(key)
-	// 插入键
 	p.keys = insertSlice(p.keys, idx, key)
-	// 插入右子节点（在 idx+1 位置）
 	p.children = insertSlice(p.children, idx+1, childRef)
 	p.version++
 	return nil
 }
 
 // Delete 删除键和子节点
-// 返回：被删除的子节点引用
 func (p *InternalPage) Delete(key []byte) (*PageRef, error) {
 	idx, found := p.findKeyIndex(key)
 	if !found {
 		return nil, errpkg.BTreeKeyNotFoundInPageError()
 	}
 
-	// 删除键
 	p.keys = append(p.keys[:idx], p.keys[idx+1:]...)
-
-	// 删除子节点引用
 	removedChild := p.children[idx+1]
 	p.children = append(p.children[:idx+1], p.children[idx+2:]...)
 	p.version++
@@ -266,47 +240,23 @@ func (p *InternalPage) UpdateKey(oldKey, newKey []byte) (bool, error) {
 	return true, nil
 }
 
-// Split 分裂页面（带引用更新）
-// 返回：新页面，分裂键（提升到父节点）
-// 均匀分裂策略：将键平均分配到两个页面，中间的键提升到父节点
-//
-// B+Tree 标准分裂逻辑（内部节点）：
-// - 左页面：键 [0, mid)，子节点 [0:mid+1]
-// - 分裂键：键 [mid]（提升到父节点，不在左右页面中）
-// - 右页面：键 [mid+1:]，子节点 [mid+1:]
-//
-// 添加引用更新机制
-// - 更新新页面子节点的 parentRef 指向新页面
-// - 保留原页面子节点的 parentRef 指向原页面
+// Split 分裂页面
 func (p *InternalPage) Split() (*InternalPage, []byte, error) {
 	if len(p.keys) < 2 {
 		return nil, nil, errpkg.BTreeCannotSplitMinKeysError(len(p.keys))
 	}
 
 	mid := len(p.keys) / 2
-
-	// 分裂键（提升到父节点）
 	splitKey := p.keys[mid]
 
-	// 创建新页面，包含中间键之后的键和子节点
-	newPage := NewInternalPage(model.PageID(p.pageID + 1)) // 临时 ID
-
-	// 修复：B+Tree 标准分裂逻辑 - 分裂键提升到父节点，不在左右页面中
-	// 修复：使用 make + copy 创建独立的 slice，避免共享底层数组
-	// 分裂键 keys[mid] 提升到父节点：
-	// - 左页面: keys[0:mid], children[0:mid+1]
-	// - 右页面: keys[mid+1:], children[mid+1:]
-	// 左页面最后一个键 (keys[mid-1]) 的右子节点是 children[mid]
-	// 右页面第一个键 (keys[mid+1]) 的左子节点是 children[mid+1]
+	newPage := NewInternalPage(model.PageID(p.pageID + 1))
 	newPage.keys = make([][]byte, len(p.keys[mid+1:]))
 	copy(newPage.keys, p.keys[mid+1:])
 	newPage.children = make([]*PageRef, len(p.children[mid+1:]))
 	copy(newPage.children, p.children[mid+1:])
-	//parentRef 更新将在 splitInternal() 中处理
 
-	// 当前页面保留中间键之前的键和子节点（不包含分裂键）
-	p.keys = p.keys[:mid]           // 不包含分裂键
-	p.children = p.children[:mid+1] // 保留前 mid+1 个子节点（0 到 mid，包含分裂键的左子节点）
+	p.keys = p.keys[:mid]
+	p.children = p.children[:mid+1]
 	p.version++
 
 	return newPage, splitKey, nil

@@ -66,8 +66,7 @@ func NewChunk(id int, filePath string, readOnly bool) (*Chunk, error) {
 	return chunk, nil
 }
 
-// AllocatePage 分配新页面（追加写入）
-// 返回：页面位置（在 Chunk 中的字节偏移）
+// AllocatePage 分配新页面
 func (c *Chunk) AllocatePage() (int64, error) {
 	if c.isReadOnly {
 		return 0, errpkg.BTreeChunkReadOnly(c.id)
@@ -76,16 +75,13 @@ func (c *Chunk) AllocatePage() (int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 计算新页面位置
 	pos := c.writePos
 
-	// 检查是否超出 Chunk 大小
 	chunkSize := int64(ChunkSize)
 	if pos+PageSize > chunkSize {
 		return 0, errpkg.BTreeChunkFull(c.id, chunkSize, pos)
 	}
 
-	// 更新写入位置
 	c.writePos += PageSize
 	c.pageCount.Add(1)
 	c.pageIndex.Add(1)
@@ -103,7 +99,6 @@ func (c *Chunk) WritePage(pos int64, data []byte) error {
 		return errpkg.BTreeChunkPageSizeMismatch(PageSize, len(data))
 	}
 
-	// 边界检查
 	if pos < 0 || pos+PageSize > int64(ChunkSize) {
 		return errpkg.BTreeChunkPositionOutOfRange(pos, ChunkSize)
 	}
@@ -111,7 +106,6 @@ func (c *Chunk) WritePage(pos int64, data []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 写入文件
 	_, err := c.file.WriteAt(data, pos)
 	if err != nil {
 		return errpkg.BTreeWritePageAt(pos, err)
@@ -122,7 +116,6 @@ func (c *Chunk) WritePage(pos int64, data []byte) error {
 
 // ReadPage 读取页面
 func (c *Chunk) ReadPage(pos int64) ([]byte, error) {
-	// 边界检查
 	if pos < 0 || pos+PageSize > int64(ChunkSize) {
 		return nil, errpkg.BTreeChunkPositionOutOfRange(pos, ChunkSize)
 	}
@@ -130,7 +123,6 @@ func (c *Chunk) ReadPage(pos int64) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 读取页面
 	data := make([]byte, PageSize)
 	_, err := c.file.ReadAt(data, pos)
 	if err != nil {

@@ -53,7 +53,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -98,21 +97,13 @@ func (c *PageRefCache) GetOrCreate(pageID model.PageID, isLeaf bool) *PageRef {
 	c.mu.RUnlock()
 
 	if ok {
-		// 验证 PageRef 是否仍然有效
-		// 如果缓存的 PageRef 的 pageID 与请求的 pageID 不匹配，说明缓存不一致
 		currentInfo := ref.GetPageInfo()
 		if currentInfo != nil && currentInfo.GetPageID() != uint64(pageID) {
-			// 缓存不一致：pageID 被重用，但缓存仍指向旧的 PageInfo
-			// 重新创建 PageRef
 			c.mu.Lock()
 			defer c.mu.Unlock()
-
-			// Double-check after acquiring write lock
 			if ref, ok := c.cache[pageID]; ok && ref.GetPageInfo().GetPageID() == uint64(pageID) {
 				return ref
 			}
-
-			// 创建新的 PageRef
 			info := NewPageInfo()
 			info.SetNodeRef(offheap.NewNodeRef(uint32(pageID), isLeaf))
 			newRef := NewPageRefWithInfo(info)
@@ -122,19 +113,15 @@ func (c *PageRefCache) GetOrCreate(pageID model.PageID, isLeaf bool) *PageRef {
 		return ref
 	}
 
-	// 需要创建新的 PageRef
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Double-check
 	if ref, ok := c.cache[pageID]; ok {
 		return ref
 	}
 
-	// 创建新的 PageInfo 和 PageRef
 	info := NewPageInfo()
 	info.SetNodeRef(offheap.NewNodeRef(uint32(pageID), isLeaf))
-
 	ref = NewPageRefWithInfo(info)
 	c.cache[pageID] = ref
 	return ref
@@ -154,31 +141,11 @@ func (c *PageRefCache) Delete(pageID model.PageID) {
 	delete(c.cache, pageID)
 }
 
-// Replace 原子替换 PageRef（用于 pageID 变更场景）
-//
-// 参数：
-//
-//	oldPageID - 旧的 pageID（将被删除）
-//	newPageID - 新的 pageID（将添加 ref）
-//	ref - PageRef 对象
-//
-// 使用场景：
-//   - 叶子节点 update 场景：UpdateLeafEntry 重新分配页面
-//   - 分裂场景：一个页面分裂为两个页面
-//
-// 并发安全：
-//   - Delete 和 Update 在同一个锁保护下完成
-//   - 消除两个操作之间的竞争窗口，防止 TOCTOU 攻击
-//
-// 修复问题：
-//   - 修复并发插入时的数据丢失 bug（17%-89% 丢失率）
-//   - 确保 pageID 变更时的缓存一致性
+// Replace 原子替换 PageRef
 func (c *PageRefCache) Replace(oldPageID, newPageID model.PageID, ref *PageRef) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 原子操作：删除旧的，添加新的
-	// 消除 Delete() 和 Update() 之间的竞争窗口
 	delete(c.cache, oldPageID)
 	c.cache[newPageID] = ref
 }
@@ -227,8 +194,7 @@ type BTree struct {
 	hotPageThreshold int64      // 热数据阈值（来自配置）
 
 	// Scheduler for concurrent write operations
-	scheduler       *concurrency.TaskScheduler   // Task scheduler for concurrent operations
-	perCoreExecutor *concurrency.PerCoreExecutor // Per-Core executor (owned by scheduler)
+	scheduler *concurrency.TaskScheduler // Task scheduler for concurrent operations
 
 	// Split coordination: 防止多个 goroutine 同时分裂同一页面
 	splitMuMap sync.Map // map[uint32]*sync.Mutex - 页面级别的分裂锁
@@ -237,90 +203,64 @@ type BTree struct {
 	epochBasedFreeList *EpochBasedFreeList
 }
 
-// EpochBasedFreeList 延迟释放列表
-// 页面在 CAS 成功后不立即释放，而是加入当前 epoch 的待释放列表
-// 在下一个 epoch 开始时才真正释放页面
+// EpochBasedFreeList 延迟释放列表（批量优化版）
+// 使用 atomic 计数器 + 批量处理减少 mutex 竞争
 type EpochBasedFreeList struct {
-	currentEpoch uint64                    // 当前 epoch
+	currentEpoch atomic.Uint64             // 当前 epoch（atomic）
 	pending      map[uint64][]model.PageID // epoch → 待释放页面列表
 	mu           sync.Mutex
+	batchSize    int          // 批量处理阈值
+	batchCounter atomic.Int64 // 批量计数器
 }
 
-// NewEpochBasedFreeList 创建延迟释放列表
 func NewEpochBasedFreeList() *EpochBasedFreeList {
 	return &EpochBasedFreeList{
-		currentEpoch: 0,
-		pending:      make(map[uint64][]model.PageID),
+		pending:   make(map[uint64][]model.PageID),
+		batchSize: 1000, // 每 1000 次操作推进一次 epoch
 	}
 }
 
-// Add 添加页面到当前 epoch 的待释放列表
 func (e *EpochBasedFreeList) Add(pageID model.PageID) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	// 调试日志：记录页面释放请求
-	stack := debug.Stack()
-	// 提取关键调用栈信息
-	caller := "<unknown>"
-	lines := strings.Split(string(stack), "\n")
-	for i := range len(lines) {
-		if strings.Contains(lines[i], "handleSplitOffHeapSync") || strings.Contains(lines[i], "splitInternal") {
-			caller = "split"
-			break
-		}
-	}
-
-	DebugPrintf("[EPOCH_ADD] epoch=%d pageID=%d caller=%s pending_count=%d\n",
-		e.currentEpoch, pageID, caller, len(e.pending[e.currentEpoch]))
-
-	e.pending[e.currentEpoch] = append(e.pending[e.currentEpoch], pageID)
+	epoch := e.currentEpoch.Load()
+	e.pending[epoch] = append(e.pending[epoch], pageID)
+	e.mu.Unlock()
 }
 
-// AdvanceEpoch 推进 epoch，释放 2 个 epoch 之前的页面
-// 延迟 2 个 epoch 策略：
-// - 当前 epoch: N
-// - 正在使用的 epoch: N-1（可能还有 goroutine 在访问）
-// - 可以安全释放的 epoch: N-2（所有 goroutine 应该已经完成）
-func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
+// TryAdvanceEpoch 尝试推进 epoch（批量优化)
+// 返回 true 表示需要调用 AdvanceEpochNow
+func (e *EpochBasedFreeList) TryAdvanceEpoch() bool {
+	count := e.batchCounter.Add(1)
+	return count%int64(e.batchSize) == 0
+}
+
+// AdvanceEpochNow 立即推进 epoch 并释放页面
+func (e *EpochBasedFreeList) AdvanceEpochNow(pm *offheap.PageManager) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	oldEpoch := e.currentEpoch
-	e.currentEpoch++
+	newEpoch := e.currentEpoch.Add(1)
 
-	// 释放 3 个 epoch 之前的页面（currentEpoch - 3）- 增加延迟到 3 个 epoch
-	// 第一步：将 N-2 的页面加入延迟释放列表
-	epochToDelayed := e.currentEpoch - 2
-	if e.currentEpoch >= 2 {
+	epochToDelayed := newEpoch - 2
+	if newEpoch >= 2 {
 		pagesToDelayed := e.pending[epochToDelayed]
 		delete(e.pending, epochToDelayed)
-
 		for _, pid := range pagesToDelayed {
-			DebugPrintf("[EPOCH_DELAYED] epoch=%d pageID=%d\n", epochToDelayed, pid)
 			pm.Free(uint32(pid))
 		}
 	}
 
-	// 第二步：将 N-3 的页面从延迟释放列表移到可用列表
-	epochToFree := e.currentEpoch - 3
-	if e.currentEpoch >= 3 {
-		pagesToFree := e.pending[epochToFree]
+	epochToFree := newEpoch - 3
+	if newEpoch >= 3 {
 		delete(e.pending, epochToFree)
+		pm.AdvanceDelayedFreeList()
+	}
+}
 
-		// 调试日志：记录 epoch 推进
-		DebugPrintf("[EPOCH_ADVANCE] old=%d new=%d freeing_epoch=%d pages_to_free=%d\n",
-			oldEpoch, e.currentEpoch, epochToFree, len(pagesToFree))
-
-		// 将延迟释放列表中的页面移到可用列表
-		moved := pm.AdvanceDelayedFreeList()
-		if moved > 0 {
-			DebugPrintf("[EPOCH_DELAYED_ADVANCE] moved=%d pages from delayed to available\n", moved)
-		}
-	} else {
-		// 还没有到达可以释放的 epoch
-		DebugPrintf("[EPOCH_ADVANCE] old=%d new=%d pages_to_free=0 (waiting for epoch 3)\n",
-			oldEpoch, e.currentEpoch)
+// AdvanceEpoch 兼容旧接口（批量优化版）
+func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
+	if e.TryAdvanceEpoch() {
+		e.AdvanceEpochNow(pm)
 	}
 }
 
@@ -554,21 +494,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	}
 
 	// 启动 TaskScheduler
-	executor, err := concurrency.NewPerCoreExecutor()
-	if err != nil {
-		// 清理资源
-		if chunkMgr != nil {
-			chunkMgr.Close()
-		}
-		if walImpl != nil {
-			walImpl.Close()
-		}
-		btree.scheduler.Stop()
-		return nil, errpkg.BTreeCreateExecutor(err)
-	}
-	btree.perCoreExecutor = executor // 保存 executor 引用
-
-	if err := btree.scheduler.Start(executor); err != nil {
+	if err := btree.scheduler.Start(); err != nil {
 		// 清理资源
 		if chunkMgr != nil {
 			chunkMgr.Close()
@@ -611,7 +537,7 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 				runtime.Gosched()
 				continue
 			}
-			// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
+			// 不要包装 ErrRetry，否则 errors.Is() 检查会失败
 			return nil, err
 		}
 
@@ -639,6 +565,23 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 		// Off-Heap 模式：验证页面已加载
 		if !leafInfo.IsPageLoaded() {
 			return nil, errpkg.BTreeLeafPageNotLoaded()
+		}
+
+		// Phase 2: 检查 Delta Chain（叶子锁保护下追加的更新）
+		chain := leafRef.deltaChain.Load()
+		if chain != nil {
+			deltas := chain.GetDeltas()
+			for i := len(deltas) - 1; i >= 0; i-- {
+				if bytes.Equal(deltas[i].key, key) {
+					if deltas[i].op == DeltaUpdate {
+						result := make([]byte, len(deltas[i].value))
+						copy(result, deltas[i].value)
+						b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
+						return result, nil
+					}
+					break
+				}
+			}
 		}
 
 		// 使用 OffHeapAdapter.GetFromOffHeap 直接读取
@@ -867,7 +810,7 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 		// 2. 查找叶子节点和路径（只读，不克隆）
 		leafRef, path, _, err := b.findLeafPageRef(ctx, key)
 		if err != nil {
-			// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
+			// 不要包装 ErrRetry，否则 errors.Is() 检查会失败
 			return err
 		}
 
@@ -931,6 +874,11 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 			}
 			return ErrRetry
 		}
+
+		// 8.5 Phase 2: Delete 后清除 deltaChain
+		// Delete 创建了新页面（COW），旧 deltaChain 中的 delta 可能引用已删除的 key
+		// 必须清除，否则 Get 会从 stale delta 返回已删除的值
+		leafRef.deltaChain.Store(nil)
 
 		// 9. 如果 pageID 变化，需要更新 root 或父节点
 		if newPageID != oldPageID {
@@ -1231,12 +1179,6 @@ func (b *BTree) Close() error {
 	if b.scheduler != nil {
 		b.scheduler.Stop()
 		b.scheduler = nil
-	}
-
-	// 关闭 PerCoreExecutor（停止 worker pool）
-	if b.perCoreExecutor != nil {
-		b.perCoreExecutor.Close()
-		b.perCoreExecutor = nil
 	}
 
 	// Close ChunkManager

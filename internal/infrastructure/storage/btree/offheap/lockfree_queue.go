@@ -36,11 +36,9 @@ func (q *LockFreeQueue) Enqueue(value uint32) {
 		tail := q.tail.Load()
 		next := tail.next.Load()
 		if tail != q.tail.Load() {
-			// tail 已移动，重试
 			continue
 		}
 		if next != nil {
-			// 帮助推进 tail
 			q.tail.CompareAndSwap(tail, next)
 			continue
 		}
@@ -52,28 +50,23 @@ func (q *LockFreeQueue) Enqueue(value uint32) {
 }
 
 // Dequeue 从队列取出 PageID
-// 返回 (pageID, true) 或 (0, false) 如果队列为空
 func (q *LockFreeQueue) Dequeue() (uint32, bool) {
 	for {
 		head := q.head.Load()
 		tail := q.tail.Load()
 		next := head.next.Load()
 		if head != q.head.Load() {
-			// head 已移动，重试
 			continue
 		}
 		if next == nil {
-			// 队列为空
 			return 0, false
 		}
 		if head == tail {
-			// 帮助推进 tail
 			q.tail.CompareAndSwap(tail, next)
 			continue
 		}
 		value := next.value
 		if q.head.CompareAndSwap(head, next) {
-			// 成功取出，清空 next 指针帮助 GC
 			head.next.Store(nil)
 			return value, true
 		}

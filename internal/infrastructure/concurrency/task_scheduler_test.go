@@ -231,15 +231,7 @@ func TestTaskScheduler_ShardDistribution_Positive(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// 使用 controlled executor：先记录但不执行 runLoop
-	var runFuncs []func(context.Context)
-	executor := &mockPerCoreExecutor{
-		submitFunc: func(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error {
-			runFuncs = append(runFuncs, fn)
-			return nil
-		},
-	}
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	require.NoError(t, err)
 
 	// 测试正数 ShardID 的固定路由
@@ -265,12 +257,6 @@ func TestTaskScheduler_ShardDistribution_Positive(t *testing.T) {
 		}
 	}
 
-	// 清理：启动并停止所有 runLoop
-	for _, fn := range runFuncs {
-		go fn(context.Background())
-	}
-	// 等待 goroutine 启动并进入 runLoop
-	time.Sleep(10 * time.Millisecond)
 	scheduler.Stop()
 }
 
@@ -286,15 +272,7 @@ func TestTaskScheduler_ShardDistribution_Negative(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// 使用 controlled executor：先记录但不执行 runLoop
-	var runFuncs []func(context.Context)
-	executor := &mockPerCoreExecutor{
-		submitFunc: func(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error {
-			runFuncs = append(runFuncs, fn)
-			return nil
-		},
-	}
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	require.NoError(t, err)
 
 	// 测试负数 ShardID 的路由
@@ -312,12 +290,6 @@ func TestTaskScheduler_ShardDistribution_Negative(t *testing.T) {
 	task1, _ := scheduler.cores[1].GetTaskByName("test-task")
 	assert.Equal(t, 2, task1.QueueLen(), "core 1 should have 2 items")
 
-	// 清理：启动并停止所有 runLoop
-	for _, fn := range runFuncs {
-		go fn(context.Background())
-	}
-	// 等待 goroutine 启动并进入 runLoop
-	time.Sleep(10 * time.Millisecond)
 	scheduler.Stop()
 }
 
@@ -333,58 +305,34 @@ func TestTaskScheduler_ShardDistribution_Zero(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// 使用 controlled executor：先记录但不执行 runLoop
-	var runFuncs []func(context.Context)
-	executor := &mockPerCoreExecutor{
-		submitFunc: func(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error {
-			runFuncs = append(runFuncs, fn)
-			return nil
-		},
-	}
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	require.NoError(t, err)
+	defer scheduler.Stop()
 
-	// 提交多个 shardID=0 的任务
-	// 由于 selectLeastLoadedCore 的实现，它们会被分配到最少负载的核心
-	for i := 0; i < 10; i++ {
+	// 入队 10 个 shardID=0 的任务
+	// 低负载走 RoundRobin，均匀分配到各 core
+	for i := range 10 {
 		item := &testShardItem{shardID: 0, payload: fmt.Sprintf("item-zero-%d", i)}
 		_ = scheduler.EnqueueWithShard(item, "test-task")
 	}
 
-	// 验证负载被分散（runLoop 尚未执行，队列保留）
-	totalQueueLen := 0
-	maxQueueLen := 0
+	// 等待所有 item 被处理（检查各 core 的 processed 总和）
+	require.Eventually(t, func() bool {
+		var total int64
+		for _, core := range scheduler.cores {
+			total += core.stats.TotalTasksProcessed.Load()
+		}
+		return total >= 10
+	}, 2*time.Second, 10*time.Millisecond)
+
+	// 验证多个 core 参与了处理（RoundRobin 分配效果）
+	coresUsed := 0
 	for _, core := range scheduler.cores {
-		task, _ := core.GetTaskByName("test-task")
-		queueLen := task.QueueLen()
-		totalQueueLen += queueLen
-		if queueLen > maxQueueLen {
-			maxQueueLen = queueLen
+		if core.stats.TotalTasksProcessed.Load() > 0 {
+			coresUsed++
 		}
 	}
-
-	assert.Equal(t, 10, totalQueueLen, "total items should be 10")
-	// 所有核心初始队列长度相同，selectLeastLoadedCore 会轮询分配
-	// 验证至少有多个核心收到了任务（不是全部集中在一个核心）
-	coresWithTasks := 0
-	for _, core := range scheduler.cores {
-		task, _ := core.GetTaskByName("test-task")
-		if task.QueueLen() > 0 {
-			coresWithTasks++
-		}
-	}
-	// 当所有核心初始队列长度相同时，selectLeastLoadedCore 返回第一个核心
-	// 所以所有任务都分配到 core 0，这是正确的行为
-	assert.Greater(t, coresWithTasks, 0, "at least one core should have tasks")
-	assert.LessOrEqual(t, coresWithTasks, 4, "at most all cores should have tasks")
-
-	// 清理：启动并停止所有 runLoop
-	for _, fn := range runFuncs {
-		go fn(context.Background())
-	}
-	// 等待 goroutine 启动并进入 runLoop
-	time.Sleep(10 * time.Millisecond)
-	scheduler.Stop()
+	assert.GreaterOrEqual(t, coresUsed, 2, "round robin should use at least 2 cores")
 }
 
 // ==========================================
@@ -398,18 +346,8 @@ func TestTaskScheduler_Integration(t *testing.T) {
 
 	// 创建同步 executor 用于测试
 	var wg sync.WaitGroup
-	executor := &mockPerCoreExecutor{
-		submitFunc: func(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				fn(ctx)
-			}()
-			return nil
-		},
-	}
 
-	err := scheduler.Start(executor)
+	err := scheduler.Start()
 	require.NoError(t, err)
 	defer scheduler.Stop()
 
@@ -428,7 +366,7 @@ func TestTaskScheduler_Integration(t *testing.T) {
 	require.NoError(t, err)
 
 	// 提交任务到不同核心
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		item := &testShardItem{
 			shardID: i, // 交替路由到 core 0 和 core 1
 			payload: "test",
@@ -783,7 +721,7 @@ func TestTaskScheduler_HealthCheck_LongQueue(t *testing.T) {
 	// 向第一个核心的任务队列中添加大量元素（模拟异常）
 	core := scheduler.cores[0]
 	task, _ := core.GetTaskByName("test-task")
-	for i := 0; i < 10001; i++ {
+	for i := range 10001 {
 		_ = task.Enqueue(i)
 	}
 
@@ -801,10 +739,19 @@ func TestTaskScheduler_selectLeastLoadedCore_SingleCore(t *testing.T) {
 func TestTaskScheduler_selectLeastLoadedCore_MultipleCores(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 4)
 
-	// 所有核心初始队列长度都为 0
+	// 所有核心初始队列长度都为 0，走 RoundRobin 快速路径
+	// RoundRobin 会在 [0, coreCount) 间轮转，验证返回有效 core index
 	index := scheduler.selectLeastLoadedCore()
-	// 应该选择第一个核心
-	assert.Equal(t, 0, index)
+	assert.GreaterOrEqual(t, index, 0)
+	assert.Less(t, index, 4)
+
+	// 连续调用应均匀分布到不同 core
+	seen := make(map[int]bool)
+	for range 8 {
+		idx := scheduler.selectLeastLoadedCore()
+		seen[idx] = true
+	}
+	assert.GreaterOrEqual(t, len(seen), 2, "round robin should distribute across cores")
 }
 
 func TestTaskScheduler_selectLeastLoadedCore_WithLoad(t *testing.T) {
@@ -818,8 +765,8 @@ func TestTaskScheduler_selectLeastLoadedCore_WithLoad(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// 设置缓存间隔为 1，每次都重新计算（测试需要）
-	scheduler.SetLoadBalanceCacheInterval(1)
+	// 设置低阈值确保高负载时走精确选择路径
+	scheduler.SetLoadBalanceThreshold(1)
 
 	// 向第一个核心添加任务
 	core := scheduler.cores[0]
@@ -838,8 +785,7 @@ func TestTaskScheduler_selectLeastLoadedCore_WithLoad(t *testing.T) {
 func TestTaskScheduler_Start_NotRunning(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 2)
 
-	executor := &mockExecutorForCoverage{}
-	err := scheduler.Start(executor)
+	err := scheduler.Start()
 	assert.NoError(t, err)
 	assert.True(t, scheduler.running.Load())
 
@@ -849,12 +795,11 @@ func TestTaskScheduler_Start_NotRunning(t *testing.T) {
 func TestTaskScheduler_Start_AlreadyRunning(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 2)
 
-	executor := &mockExecutorForCoverage{}
-	err := scheduler.Start(executor)
+	err := scheduler.Start()
 	require.NoError(t, err)
 
 	// 第二次 Start 应该返回错误
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, nexerrors.ErrSchedulerRunning))
 
@@ -864,8 +809,7 @@ func TestTaskScheduler_Start_AlreadyRunning(t *testing.T) {
 func TestTaskScheduler_Stop_Twice(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 2)
 
-	executor := &mockExecutorForCoverage{}
-	_ = scheduler.Start(executor)
+	_ = scheduler.Start()
 
 	scheduler.Stop()
 	// 第二次 Stop 不应该 panic
@@ -892,8 +836,7 @@ func TestTaskScheduler_EnqueueWithShard_NotStarted(t *testing.T) {
 func TestTaskScheduler_EnqueueWithShard_TaskNotFound(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 2)
 
-	executor := &mockExecutorForCoverage{}
-	err := scheduler.Start(executor)
+	err := scheduler.Start()
 	require.NoError(t, err)
 	defer scheduler.Stop()
 
@@ -914,8 +857,7 @@ func TestTaskScheduler_EnqueueWithShard_ShardID_Zero(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	executor := &mockExecutorForCoverage{}
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	require.NoError(t, err)
 	defer scheduler.Stop()
 
@@ -935,7 +877,7 @@ func TestTaskScheduler_ConcurrentRegisterTask(t *testing.T) {
 	errors := make(chan error, 10)
 
 	// 并发注册不同的任务
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(taskID int) {
 			defer wg.Done()
@@ -961,7 +903,7 @@ func TestTaskScheduler_ConcurrentRegisterTask(t *testing.T) {
 	}
 
 	// 验证所有任务都已注册
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		taskName := fmt.Sprintf("task-%d", i)
 		core := scheduler.cores[0]
 		_, err := core.GetTaskByName(taskName)
@@ -980,10 +922,10 @@ func TestShardTask_ConcurrentEnqueue(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < itemsPerGoroutine; j++ {
+			for j := range itemsPerGoroutine {
 				_ = task.Enqueue(id*itemsPerGoroutine + j)
 			}
 		}(i)
@@ -1014,10 +956,10 @@ func TestSchedulerCore_ConcurrentGetTaskByName(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < iterations; j++ {
+			for range iterations {
 				_, _ = core.GetTaskByName("test-task")
 			}
 		}()
@@ -1058,8 +1000,7 @@ func TestTaskScheduler_EnqueueWithShard_NegativeShardID(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	executor := &mockExecutorForCoverage{}
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	require.NoError(t, err)
 	defer scheduler.Stop()
 
@@ -1080,8 +1021,7 @@ func TestTaskScheduler_EnqueueWithShard_LargeShardID(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	executor := &mockExecutorForCoverage{}
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	require.NoError(t, err)
 	defer scheduler.Stop()
 
@@ -1276,39 +1216,4 @@ func (i *testShardItemForCoverage) Execute(ctx context.Context, pipeline model.T
 
 func (i *testShardItemForCoverage) TaskOrder() int {
 	return 0 // 默认 order 0
-}
-
-type mockExecutorForCoverage struct {
-	startCount atomic.Int32
-}
-
-func (m *mockExecutorForCoverage) Submit(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(context.Context)) error {
-	m.startCount.Add(1)
-	go fn(ctx)
-	return nil
-}
-
-func (m *mockExecutorForCoverage) Close() error {
-	return nil
-}
-
-// ==========================================
-// Mock Executor（原有）
-// ==========================================
-
-type mockPerCoreExecutor struct {
-	submitFunc func(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error
-}
-
-func (m *mockPerCoreExecutor) Submit(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error {
-	if m.submitFunc != nil {
-		return m.submitFunc(ctx, sourceID, priority, fn)
-	}
-	// 直接在 goroutine 中执行（模拟真实行为）
-	go fn(ctx)
-	return nil
-}
-
-func (m *mockPerCoreExecutor) Close() error {
-	return nil
 }

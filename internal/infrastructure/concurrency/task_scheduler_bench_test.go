@@ -277,8 +277,7 @@ func BenchmarkTaskScheduler_SingleTask_SingleCore(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	executor := &syncExecutor{maxWorkers: 1}
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -325,11 +324,6 @@ func BenchmarkTaskScheduler_SingleTask_FourCores(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	executor := &syncExecutor{maxWorkers: 4}
-	err = scheduler.Start(executor)
-	if err != nil {
-		b.Fatal(err)
-	}
 	defer scheduler.Stop()
 
 	b.ResetTimer()
@@ -372,11 +366,6 @@ func BenchmarkTaskScheduler_SingleTask_EightCores(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	executor := &syncExecutor{maxWorkers: 8}
-	err = scheduler.Start(executor)
-	if err != nil {
-		b.Fatal(err)
-	}
 	defer scheduler.Stop()
 
 	b.ResetTimer()
@@ -423,11 +412,6 @@ func BenchmarkTaskScheduler_ShardRouting_Fixed(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	executor := &syncExecutor{maxWorkers: 4}
-	err = scheduler.Start(executor)
-	if err != nil {
-		b.Fatal(err)
-	}
 	defer scheduler.Stop()
 
 	b.ResetTimer()
@@ -469,11 +453,6 @@ func BenchmarkTaskScheduler_ShardRouting_Dynamic(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	executor := &syncExecutor{maxWorkers: 4}
-	err = scheduler.Start(executor)
-	if err != nil {
-		b.Fatal(err)
-	}
 	defer scheduler.Stop()
 
 	b.ResetTimer()
@@ -523,8 +502,7 @@ func BenchmarkTaskScheduler_MultiTasks(b *testing.B) {
 		}
 	}
 
-	executor := &syncExecutor{maxWorkers: 4}
-	err := scheduler.Start(executor)
+	err := scheduler.Start()
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -578,11 +556,6 @@ func BenchmarkTaskScheduler_Scalability(b *testing.B) {
 				b.Fatal(err)
 			}
 
-			executor := &syncExecutor{maxWorkers: cores}
-			err = scheduler.Start(executor)
-			if err != nil {
-				b.Fatal(err)
-			}
 			defer scheduler.Stop()
 
 			b.ResetTimer()
@@ -630,11 +603,6 @@ func BenchmarkTaskScheduler_ConcurrentSubmit(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	executor := &syncExecutor{maxWorkers: 4}
-	err = scheduler.Start(executor)
-	if err != nil {
-		b.Fatal(err)
-	}
 	defer scheduler.Stop()
 
 	b.ResetTimer()
@@ -659,29 +627,3 @@ func BenchmarkTaskScheduler_ConcurrentSubmit(b *testing.B) {
 // ==========================================
 // Mock Executor
 // ==========================================
-
-// syncExecutor 同步执行器（用于基准测试）
-type syncExecutor struct {
-	maxWorkers int
-	wg         sync.WaitGroup
-	sem        chan struct{}
-}
-
-func (e *syncExecutor) Submit(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(context.Context)) error {
-	e.wg.Add(1)
-	go func() {
-		defer e.wg.Done()
-		// 模拟受限的并发执行
-		if e.sem != nil {
-			<-e.sem
-			defer func() { e.sem <- struct{}{} }()
-		}
-		fn(ctx)
-	}()
-	return nil
-}
-
-func (e *syncExecutor) Close() error {
-	e.wg.Wait()
-	return nil
-}

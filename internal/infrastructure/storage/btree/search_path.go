@@ -221,17 +221,7 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 		// 使用 Off-Heap 页面的 pageType
 		isChildLeaf := b.offheapAdapter.IsLeaf(childPageID)
 
-		// 2.4 防御性检查：检测接近页面分配上限的情况
-		// Page 4095 (0xFFF) 是 4KB 页面下的最后一个可分配页面 ID
-		// 95% 的循环引用失败涉及此页面，可能是页面释放后重新分配导致的
-		if childPageID > 4000 {
-			DebugPrintf("[SEARCH_PATH] Warning: childPageID %d near max limit (4095), parent=%d depth=%d\n",
-				childPageID, currentPageID, len(path))
-			// 验证 PageRefCache 一致性：检查 childInfo 的 pageID 是否匹配
-			// 这可能在页面被释放并重新分配后检测到不一致
-		}
-
-		// 2.5 从缓存获取或创建子节点的 PageRef
+		// 2.4 从缓存获取或创建子节点的 PageRef
 		// 注意：PageRefCache.GetOrCreate 内部已处理 pageID 重用情况
 		// 当缓存的 PageInfo.pageID 与请求的 pageID 不匹配时，会自动创建新的 PageRef
 		childRef := b.pageRefCache.GetOrCreate(childPageID, isChildLeaf)
@@ -240,38 +230,30 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 			return nil, nil, errpkg.BTreePathChildPageInfoNil(len(path))
 		}
 
-		// 2.6 检查层级深度
+		// 2.5 检查层级深度
 		if len(path) >= b.maxLevels {
 			return nil, nil, errpkg.BTreePathExceedsMaxLevels(b.maxLevels)
 		}
 
-		// 2.7 循环引用检测
+		// 2.6 循环引用检测
 		currentPageID = model.PageID(childInfo.GetPageID())
 		if visitedPages[uint64(currentPageID)] {
-			// 调试日志：打印完整路径
-			DebugPrintf("[CIRCULAR_REF] pageID=%d depth=%d\n", currentPageID, len(path))
-			DebugPrintf("[CIRCULAR_REF] Path: ")
-			for _, p := range path {
-				DebugPrintf("%d ", p.GetPageID())
-			}
-			DebugPrintf("\n")
-
 			return nil, nil, errpkg.BTreeCircularReferenceAfterParentUpdate(uint64(currentPageID))
 		}
 		visitedPages[uint64(currentPageID)] = true
 
-		// 2.8 检查 context 取消
+		// 2.7 检查 context 取消
 		select {
 		case <-ctx.Done():
 			return nil, nil, ctx.Err()
 		default:
 		}
 
-		// 2.9 同时收集 PageInfo 和 PageRef
+		// 2.8 同时收集 PageInfo 和 PageRef
 		path = append(path, childInfo)
 		refs = append(refs, childRef)
 
-		// 2.10 继续向下搜索
+		// 2.9 继续向下搜索
 		currentInfo = childInfo
 	}
 
@@ -328,13 +310,11 @@ func (b *BTree) hasCycleFrom(pageID model.PageID) bool {
 	var traverse func(pid model.PageID, depth int) bool
 	traverse = func(pid model.PageID, depth int) bool {
 		if depth > maxDepth {
-			DebugPrintf("[HAS_CYCLE] Max depth exceeded at page %d\n", pid)
 			return true // 可能存在循环
 		}
 
 		pid32 := uint32(pid)
 		if visited[pid32] {
-			DebugPrintf("[HAS_CYCLE] Cycle detected at page %d (depth %d)\n", pid, depth)
 			return true // 发现循环
 		}
 

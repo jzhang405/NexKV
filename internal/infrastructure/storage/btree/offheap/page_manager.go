@@ -5,7 +5,6 @@
 package offheap
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -62,19 +61,16 @@ func GetPageManager() *PageManager {
 
 // NewPageManager 创建新的 PageManager
 func NewPageManager(mmapSize int) (*PageManager, error) {
-	// 溢出检查：确保 mmap 大小不超过 32 位 PageID 限制
 	maxPages := mmapSize / PageSize
 	if maxPages > int(MaxPageID) {
 		return nil, errpkg.OffHeapMMapSizeExceedsLimit(int64(mmapSize), int64(MaxPageID))
 	}
 
-	// 创建内存分配器
 	allocator, err := NewAllocator(mmapSize)
 	if err != nil {
 		return nil, errpkg.OffHeapCreateAllocatorFailed(err)
 	}
 
-	// 获取基地址
 	base, err := allocator.Alloc(mmapSize)
 	if err != nil {
 		allocator.Free(base, mmapSize)
@@ -85,47 +81,35 @@ func NewPageManager(mmapSize int) (*PageManager, error) {
 		allocator:       allocator,
 		base:            base,
 		total:           uint32(maxPages),
-		nextPageID:      atomic.Uint32{},    // 初始化为0
-		freeList:        NewLockFreeQueue(), // 保留但不使用
+		nextPageID:      atomic.Uint32{},
+		freeList:        NewLockFreeQueue(),
 		delayedFreeList: NewLockFreeQueue(),
-		tracker:         NewPageLifecycleTracker(false), // 默认禁用追踪
+		tracker:         NewPageLifecycleTracker(false),
 	}
-
-	// 不再预分配所有 PageID，使用单调递增的 nextPageID
 
 	return pm, nil
 }
 
 // Alloc 分配一个页面
-// 返回 PageID，如果内存不足则返回错误
-// 使用单调递增的页面ID，不重用已释放的页面（避免循环引用）
 func (pm *PageManager) Alloc() (uint32, error) {
 	pageID := pm.nextPageID.Load()
 	if pageID >= pm.total {
 		return 0, errpkg.OffHeapOutOfMemory(int(pm.total), int(pm.used.Load()))
 	}
-	// 原子递增 nextPageID
 	pm.nextPageID.Add(1)
 	pm.used.Add(1)
-
-	// 调试追踪：记录页面分配
 	pm.tracker.RecordAlloc(pageID)
-
 	return pageID, nil
 }
 
 // Free 释放一个页面（加入延迟释放列表）
-// 页面会在下一次 AdvanceDelayedFreeList 调用时才真正可被分配
 func (pm *PageManager) Free(pageID uint32) error {
 	if pageID >= pm.total {
 		return errpkg.OffHeapInvalidPageID(int(pageID), int(pm.total))
 	}
-
-	// 调试追踪：记录页面释放
 	pm.tracker.RecordFree(pageID)
-
 	pm.delayedFreeList.Enqueue(pageID)
-	pm.used.Add(^uint32(0)) // decrement
+	pm.used.Add(^uint32(0))
 	return nil
 }
 
@@ -147,10 +131,14 @@ func (pm *PageManager) AdvanceDelayedFreeList() int {
 // PageIDToPtr 将 PageID 转换为内存地址
 func (pm *PageManager) PageIDToPtr(pageID uint32) unsafe.Pointer {
 	if pageID >= pm.total {
-		panic(fmt.Sprintf("pageID %d out of range (total: %d)", pageID, pm.total))
+		panic("offheap: pageID out of range")
 	}
-	offset := uintptr(pageID) * PageSize
-	return unsafe.Add(pm.base, offset)
+	return unsafe.Add(pm.base, uintptr(pageID)*PageSize)
+}
+
+//go:inline
+func (pm *PageManager) pageIDToPtrUnchecked(pageID uint32) unsafe.Pointer {
+	return unsafe.Add(pm.base, uintptr(pageID)*PageSize)
 }
 
 // Stats 返回 PageManager 统计信息
@@ -198,13 +186,11 @@ func (pm *PageManager) PageSize() int {
 // EnablePageTracking 启用页面生命周期追踪（调试用）
 func (pm *PageManager) EnablePageTracking() {
 	pm.tracker.Enable()
-	DebugPrintf("[PAGE_MANAGER] Page lifecycle tracking ENABLED")
 }
 
 // DisablePageTracking 禁用页面生命周期追踪
 func (pm *PageManager) DisablePageTracking() {
 	pm.tracker.Disable()
-	DebugPrintf("[PAGE_MANAGER] Page lifecycle tracking DISABLED")
 }
 
 // GetPageTracker 获取页面生命周期追踪器（调试用）
@@ -223,6 +209,6 @@ func (pm *PageManager) GetHighPageIDReport() string {
 }
 
 // GetPageTrackingStats 获取追踪统计信息（调试用）
-func (pm *PageManager) GetPageTrackingStats() map[string]interface{} {
+func (pm *PageManager) GetPageTrackingStats() map[string]any {
 	return pm.tracker.Stats()
 }

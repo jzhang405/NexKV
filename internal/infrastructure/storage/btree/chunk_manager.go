@@ -109,24 +109,19 @@ func (cm *ChunkManager) loadExistingChunks() error {
 	return nil
 }
 
-// AllocatePage 分配新页面（追加写入）
-// 返回：64 位位置编码（ChunkID + Offset + PageType）
+// AllocatePage 分配新页面
 func (cm *ChunkManager) AllocatePage(pageType int) (int64, error) {
-	// 确保有可写入的 Chunk
 	if err := cm.ensureCurrentChunk(); err != nil {
 		return 0, errpkg.BTreeEnsureCurrentChunk(err)
 	}
 
-	// 从当前 Chunk 分配页面
 	chunk := cm.getCurrentChunk()
 	pos, err := chunk.AllocatePage()
 	if err != nil {
-		// Chunk 已满，创建新的 Chunk
 		if err := cm.rotateChunk(); err != nil {
 			return 0, errpkg.BTreeRotateChunk(err)
 		}
 
-		// 从新的 Chunk 分配
 		chunk = cm.getCurrentChunk()
 		pos, err = chunk.AllocatePage()
 		if err != nil {
@@ -134,7 +129,6 @@ func (cm *ChunkManager) AllocatePage(pageType int) (int64, error) {
 		}
 	}
 
-	// 编码位置
 	chunkID := chunk.GetID()
 	encodedPos, err := EncodePagePos(chunkID, int(pos), pageType)
 	if err != nil {
@@ -170,40 +164,20 @@ func (cm *ChunkManager) ReadPage(pos int64) ([]byte, error) {
 	return chunk.ReadPage(int64(offset))
 }
 
-// LoadPage 加载并反序列化页面（懒加载核心）
-// 从 Chunk 文件读取页面数据并反序列化为具体的 Page 类型（LeafPage 或 InternalPage）
-//
-// 参数：
-//
-//	pos - 64 位位置编码（包含 ChunkID、Offset、PageType）
-//
-// 返回：
-//
-//	any - 反序列化后的页面对象（实际类型为 *LeafPage 或 *InternalPage）
-//	error - 错误信息
-//
-// 懒加载流程：
-// 1. 解码 pos，获取 ChunkID、Offset、PageType
-// 2. 从对应的 Chunk 读取原始字节数据
-// 3. 根据 PageType 反序列化为具体类型
-// 4. 返回具体类型（需要类型断言使用）
+// LoadPage 加载并反序列化页面
 func (cm *ChunkManager) LoadPage(pos int64) (any, error) {
-	// 1. 解码位置信息
 	chunkID, offset, pageType := DecodePagePos(pos)
 
-	// 2. 查找 Chunk
 	chunk := cm.getChunkByID(int(chunkID))
 	if chunk == nil {
 		return nil, errpkg.BTreeChunkNotFound(int(chunkID))
 	}
 
-	// 3. 读取原始字节数据
 	data, err := chunk.ReadPage(int64(offset))
 	if err != nil {
 		return nil, errpkg.BTreeReadPageFromChunk(int(chunkID), offset, err)
 	}
 
-	// 4. 根据 PageType 反序列化
 	switch pageType {
 	case PageTypeLeaf:
 		leafPage, err := DeserializeLeafPage(data)

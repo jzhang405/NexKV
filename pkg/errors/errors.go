@@ -576,7 +576,7 @@ func BTreeOffheapSet(err error) error {
 }
 
 func BTreeOffheapInsert(err error) error {
-	return Wrapf(err, "offheap insert")
+	return err
 }
 
 func BTreeOffheapDelete(err error) error {
@@ -625,11 +625,11 @@ func BTreeParentLockNil() error {
 }
 
 func BTreeParentInfoNilOp(op string) error {
-	return Wrapf(ErrBTreeParentInfoNil, "parent info is nil during %s", op)
+	return ErrBTreeParentInfoNil
 }
 
 func BTreeParentLockNilOp(op string) error {
-	return Wrapf(ErrBTreeParentLockNil, "parent lock is nil during %s", op)
+	return ErrBTreeParentLockNil
 }
 
 func BTreeChildNotFound(parentID, childID uint64) error {
@@ -837,7 +837,7 @@ func BTreePathChildCountMismatch(expected, got int) error {
 
 // LeafLockSet 错误
 func BTreeReplaceChildInParent(err error) error {
-	return Wrapf(err, "replace child in parent")
+	return err
 }
 
 func BTreeLeftRefPageInfoNil() error {
@@ -853,35 +853,35 @@ func BTreeFinalizeDeepClone(err error) error {
 }
 
 func BTreeAllocFallbackPage(err error) error {
-	return Wrapf(err, "alloc fallback page")
+	return err
 }
 
 func BTreeFallbackInsert(err error) error {
-	return Wrapf(err, "fallback insert failed")
+	return err
 }
 
 func BTreeParentInfoNilInFallback(op string) error {
-	return Wrapf(ErrBTreeParentInfoNil, "parent info is nil in fallback: %s", op)
+	return ErrBTreeParentInfoNil
 }
 
 func BTreeParentLockNilInFallback(op string) error {
-	return Wrapf(ErrBTreeParentLockNil, "parent lock is nil in fallback: %s", op)
+	return ErrBTreeParentLockNil
 }
 
 func BTreeUpdateParentInFallback(err error) error {
-	return Wrapf(err, "update parent in fallback")
+	return err
 }
 
 func BTreeRootSplitPostSplitInsertFailed(err error) error {
-	return Wrapf(err, "root split post-split insert failed")
+	return err
 }
 
 func BTreeInvalidInsertIndex(insertIndex, count int) error {
-	return Wrapf(ErrBTreeInvalidInsertIndex, "invalid insertIndex %d (count=%d)", insertIndex, count)
+	return ErrBTreeInvalidInsertIndex
 }
 
 func BTreeUpdateParentIndex(err error) error {
-	return Wrapf(err, "update parent index entry")
+	return err
 }
 
 func BTreeParentInfoNilDuringCASRetry() error {
@@ -889,19 +889,19 @@ func BTreeParentInfoNilDuringCASRetry() error {
 }
 
 func BTreeParentPageIDChangedDuringRetry(was, now uint64) error {
-	return Wrapf(ErrBTreeParentPageIDChanged, "parent pageID changed during CAS retry: was %d, now %d", was, now)
+	return ErrBTreeParentPageIDChanged
 }
 
 func BTreeCASRetryExhausted(casAttempt int) error {
-	return Wrapf(ErrBTreeCASRetryExhausted, "CAS retry %d failed", casAttempt)
+	return ErrBTreeCASRetryExhausted
 }
 
 func BTreeCircularReferenceAfterParentUpdate(pageID uint64) error {
-	return Wrapf(ErrBTreeCircularReference, "circular reference detected after parent update at page %d", pageID)
+	return ErrBTreeCircularReference
 }
 
 func BTreeParentSplitIntegrityCheck(err error) error {
-	return Wrapf(err, "parent split integrity check failed")
+	return err
 }
 
 func BTreeParentInfoNilAfterCASOp() error {
@@ -909,43 +909,43 @@ func BTreeParentInfoNilAfterCASOp() error {
 }
 
 func BTreeGrandparentInfoNilOp(op string) error {
-	return Wrapf(ErrBTreeGrandparentInfoNil, "grandparent info is nil: %s", op)
+	return ErrBTreeGrandparentInfoNil
 }
 
 func BTreeOldParentNotFoundInGrandparent(oldParent, grandParent uint64) error {
-	return Wrapf(ErrBTreeOldChildStillExists, "old parent %d not found in grandparent %d", oldParent, grandParent)
+	return ErrBTreeOldChildStillExists
 }
 
 func BTreeUpdateGrandparent(err error) error {
-	return Wrapf(err, "update grandparent")
+	return err
 }
 
 func BTreeGrandparentLockNilOp(op string) error {
-	return Wrapf(ErrBTreeGrandparentLockNil, "grandparent lock is nil: %s", op)
+	return ErrBTreeGrandparentLockNil
 }
 
 func BTreeAllocGrandparentPage(err error) error {
-	return Wrapf(err, "alloc new grandparent page")
+	return err
 }
 
 func BTreeMaterializeGrandparentPage(err error) error {
-	return Wrapf(err, "materialize new grandparent page")
+	return err
 }
 
 func BTreeGrandparentLockNilAfterAlloc(op string) error {
-	return Wrapf(ErrBTreeGrandparentLockNil, "grandparent lock is nil: %s", op)
+	return ErrBTreeGrandparentLockNil
 }
 
 func BTreePostSplitInsert(err error) error {
-	return Wrapf(err, "post-split insert failed")
+	return err
 }
 
 func BTreeAllocIndexPage(err error) error {
-	return Wrapf(err, "alloc index page")
+	return err
 }
 
 func BTreeMaterializeRootIndexPage(err error) error {
-	return Wrapf(err, "materialize root index page")
+	return err
 }
 
 func BTreeCASFailed(oldRootID, newRootPageID uint64, retry int) error {
@@ -953,15 +953,15 @@ func BTreeCASFailed(oldRootID, newRootPageID uint64, retry int) error {
 }
 
 func BTreeAllocLeftIndexPage(err error) error {
-	return Wrapf(err, "alloc left index page")
+	return err
 }
 
 func BTreeAllocRightIndexPage(err error) error {
-	return Wrapf(err, "alloc right index page")
+	return err
 }
 
 func BTreeMaterializeLeftIndexPage(err error) error {
-	return Wrapf(err, "materialize left index page")
+	return err
 }
 
 func BTreeMaterializationBugLeft(pageID uint64, expected, got int) error {
@@ -969,7 +969,7 @@ func BTreeMaterializationBugLeft(pageID uint64, expected, got int) error {
 }
 
 func BTreeMaterializeRightIndexPage(err error) error {
-	return Wrapf(err, "materialize right index page")
+	return err
 }
 
 func BTreeMaterializationBugRight(pageID uint64, expected, got int) error {
@@ -1021,31 +1021,31 @@ func BTreeCASSuccessButRootNil() error {
 }
 
 func BTreeAllocIndexPageForRoot(err error) error {
-	return Wrapf(err, "alloc index page for root")
+	return err
 }
 
 func BTreeMaterializeRootPage(err error) error {
-	return Wrapf(err, "materialize root page")
+	return err
 }
 
 func BTreeAllocNewInternalPage(err error) error {
-	return Wrapf(err, "alloc new internal page")
+	return err
 }
 
 func BTreeMaterializeNewInternalPage(err error) error {
-	return Wrapf(err, "materialize new internal page")
+	return err
 }
 
 func BTreeAllocNewRootPage(err error) error {
-	return Wrapf(err, "alloc new root page")
+	return err
 }
 
 func BTreeMaterializeNewRootPage(err error) error {
-	return Wrapf(err, "materialize new root page")
+	return err
 }
 
 func BTreeUpdateParentIndexEntry(err error) error {
-	return Wrapf(err, "update parent index entry")
+	return err
 }
 
 // ===========================
@@ -1074,7 +1074,7 @@ func BTreeKeyOrderViolationError() error {
 
 // BTreeCannotSplitMinKeysError 创建分裂键数不足错误
 func BTreeCannotSplitMinKeysError(count int) error {
-	return Wrapf(ErrBTreeCannotSplitMinKeys, "cannot split page with less than 2 keys (got %d)", count)
+	return fmt.Errorf("btree: cannot split page with less than 2 keys, got %d", count)
 }
 
 // BTreeDeserializeReadPageID 创建反序列化读取 pageID 失败错误
@@ -1483,22 +1483,22 @@ func OffHeapInvalidPageID(pageID, total int) error {
 
 // BTreeAllocPageAdapter 分配页面失败（AllocLeafPage/AllocIndexPage）
 func BTreeAllocPageAdapter(err error) error {
-	return Wrapf(ErrBTreeAllocPageFailed, "alloc page: %v", err)
+	return err
 }
 
 // BTreeMaterializePageAdapter 物化页面失败（通用）
 func BTreeMaterializePageAdapter(err error) error {
-	return Wrapf(ErrBTreeMaterializePageFailed, "materialize page: %v", err)
+	return err
 }
 
 // BTreeAllocNewPageForSplit 分配新页面用于更新/分裂
 func BTreeAllocNewPageForSplit(err error) error {
-	return Wrapf(ErrBTreeAllocPageFailed, "alloc new page: %v", err)
+	return err
 }
 
 // BTreeMaterializePageForSplit 物化索引页面失败（UpdateIndexEntry/ReplaceChild）
 func BTreeMaterializePageForSplit(err error) error {
-	return Wrapf(ErrBTreeMaterializePageFailed, "materialize index page: %v", err)
+	return err
 }
 
 // BTreeInvalidParamMsg 创建带消息的参数无效错误
@@ -1553,55 +1553,60 @@ func BTreeMaterializePageAfterDelete(err error) error {
 
 // BTreeAllocNewParentPage 分配新父页面失败
 func BTreeAllocNewParentPage(err error) error {
-	return Wrapf(ErrBTreeAllocPageFailed, "alloc new parent page: %v", err)
+	return err
 }
 
 // BTreeMaterializeParentPage 物化父页面失败
 func BTreeMaterializeParentPage(err error) error {
-	return Wrapf(ErrBTreeMaterializePageFailed, "materialize parent page: %v", err)
+	return err
 }
 
 // BTreeDuplicatePageIDAlloc 分配器返回了相同的 pageID
 func BTreeDuplicatePageIDAlloc(pageID uint32) error {
-	return Wrapf(ErrBTreeDuplicatePageIDAlloc, "allocator returned same pageID for left and right: %d", pageID)
+	return ErrBTreeDuplicatePageIDAlloc
 }
 
 // BTreeInvalidPageIDAlloc 分配器返回了无效的 pageID
 func BTreeInvalidPageIDAlloc(left, right uint32) error {
-	return Wrapf(ErrBTreeInvalidPageIDAlloc, "allocator returned invalid pageID: left=%d, right=%d", left, right)
+	return ErrBTreeInvalidPageIDAlloc
 }
 
-// BTreeSplitMinKeys 分裂时键数不足
+// BTreeSplitMinKeys 分裂时键数不足（需要 less than 2 keys）
 func BTreeSplitMinKeys(count int) error {
-	return Wrapf(ErrBTreeCannotSplitMinKeys, "cannot split page with less than 2 keys (count=%d)", count)
+	return fmt.Errorf("btree: cannot split page with less than 2 keys, got %d", count)
 }
 
 // BTreePageTooLargeToSplit 页面过大无法分裂
 func BTreePageTooLargeToSplit(count int) error {
-	return Wrapf(ErrBTreePageTooLarge, "page too large to split: count=%d", count)
+	return ErrBTreePageTooLarge
 }
 
 // BTreeInvalidSplitIdx 无效的分裂索引
 func BTreeInvalidSplitIdx(splitIdx, keysLen int) error {
-	return Wrapf(ErrBTreeInvalidSplitIndex, "invalid splitIdx=%d for keys length=%d", splitIdx, keysLen)
+	return ErrBTreeInvalidSplitIndex
 }
 
 // BTreeMaterializeLeftPage 物化左页面失败
 func BTreeMaterializeLeftPage(err error) error {
-	return Wrapf(ErrBTreeMaterializePageFailed, "materialize left page: %v", err)
+	return err
 }
 
 // BTreeMaterializeRightPage 物化右页面失败
 func BTreeMaterializeRightPage(err error) error {
-	return Wrapf(ErrBTreeMaterializePageFailed, "materialize right page: %v", err)
+	return err
 }
 
 // BTreeAllocLeftPage 分配左页面失败
 func BTreeAllocLeftPage(err error) error {
-	return Wrapf(ErrBTreeAllocPageFailed, "alloc left page: %v", err)
+	return err
 }
 
 // BTreeAllocRightPage 分配右页面失败
 func BTreeAllocRightPage(err error) error {
-	return Wrapf(ErrBTreeAllocPageFailed, "alloc right page: %v", err)
+	return err
+}
+
+// BTreeBulkInitFailed BulkInit 页面拷贝失败
+func BTreeBulkInitFailed(err error) error {
+	return err
 }

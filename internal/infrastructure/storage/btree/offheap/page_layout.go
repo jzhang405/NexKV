@@ -474,15 +474,7 @@ func (pa *PageAccessor) GetChild(pageID uint32, index int) uint64 {
 func (pa *PageAccessor) SetChild(pageID uint32, index int, child uint32) {
 	var encodedChild uint64
 	if child != 0 {
-		var childVersion uint64
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					childVersion = 0
-				}
-			}()
-			childVersion = pa.GetVersion(child)
-		}()
+		childVersion := pa.GetVersionSafe(child)
 		encodedChild = EncodeChildWithVersion(child, childVersion)
 	} else {
 		encodedChild = 0

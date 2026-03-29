@@ -892,7 +892,7 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 	}
 
 	// 版本号检测：读取子页面的实际版本号
-	actualVersion := a.pa.GetVersion(childID)
+	actualVersion := a.pa.GetVersionSafe(childID)
 
 	if actualVersion != expectedVersion {
 		// 版本号不匹配，说明父节点存储的是陈旧的子节点引用（僵尸引用）

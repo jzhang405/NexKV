@@ -13,6 +13,11 @@ type PageRef struct {
 	pInfo     atomic.Pointer[PageInfo] // 原子指针，支持 CAS 更新
 	parentRef atomic.Value             // 优化：使用 atomic.Value 存储 *PageRef，移除 defer 开销
 	pageLock  atomic.Pointer[PageLock] // Leaf-Level Locking：页面锁（懒加载 + CAS 初始化）
+
+	// Delta Chain: 与 pInfo 解耦，CAS 替换 pInfo 时不影响 deltaChain
+	// 使用 atomic.Pointer 保证读路径无锁安全访问
+	// 仅用于 Update 操作，Insert/Delete/Split 不使用
+	deltaChain atomic.Pointer[COWDeltaRef] // nil 表示无 delta（初始状态）
 }
 
 // NewPageRef 创建新的 PageRef

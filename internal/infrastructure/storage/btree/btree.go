@@ -203,34 +203,46 @@ type BTree struct {
 	epochBasedFreeList *EpochBasedFreeList
 }
 
-// EpochBasedFreeList 延迟释放列表
+// EpochBasedFreeList 延迟释放列表（批量优化版）
+// 使用 atomic 计数器 + 批量处理减少 mutex 竞争
 type EpochBasedFreeList struct {
-	currentEpoch uint64                    // 当前 epoch
+	currentEpoch atomic.Uint64               // 当前 epoch（atomic）
 	pending      map[uint64][]model.PageID // epoch → 待释放页面列表
 	mu           sync.Mutex
+	batchSize    int                                // 批量处理阈值
+	batchCounter atomic.Int64                    // 批量计数器
 }
 
 func NewEpochBasedFreeList() *EpochBasedFreeList {
 	return &EpochBasedFreeList{
-		currentEpoch: 0,
 		pending:      make(map[uint64][]model.PageID),
+		batchSize:    1000, // 每 1000 次操作推进一次 epoch
 	}
 }
 
 func (e *EpochBasedFreeList) Add(pageID model.PageID) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.pending[e.currentEpoch] = append(e.pending[e.currentEpoch], pageID)
+	epoch := e.currentEpoch.Load()
+	e.pending[epoch] = append(e.pending[epoch], pageID)
+	e.mu.Unlock()
 }
 
-func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
+// TryAdvanceEpoch 尝试推进 epoch（批量优化)
+// 返回 true 表示需要调用 AdvanceEpochNow
+func (e *EpochBasedFreeList) TryAdvanceEpoch() bool {
+	count := e.batchCounter.Add(1)
+	return count%int64(e.batchSize) == 0
+}
+
+// AdvanceEpochNow 立即推进 epoch 并释放页面
+func (e *EpochBasedFreeList) AdvanceEpochNow(pm *offheap.PageManager) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	e.currentEpoch++
+	newEpoch := e.currentEpoch.Add(1)
 
-	epochToDelayed := e.currentEpoch - 2
-	if e.currentEpoch >= 2 {
+	epochToDelayed := newEpoch - 2
+	if newEpoch >= 2 {
 		pagesToDelayed := e.pending[epochToDelayed]
 		delete(e.pending, epochToDelayed)
 		for _, pid := range pagesToDelayed {
@@ -238,10 +250,17 @@ func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
 		}
 	}
 
-	epochToFree := e.currentEpoch - 3
-	if e.currentEpoch >= 3 {
+	epochToFree := newEpoch - 3
+	if newEpoch >= 3 {
 		delete(e.pending, epochToFree)
 		pm.AdvanceDelayedFreeList()
+	}
+}
+
+// AdvanceEpoch 兼容旧接口（批量优化版）
+func (e *EpochBasedFreeList) AdvanceEpoch(pm *offheap.PageManager) {
+	if e.TryAdvanceEpoch() {
+		e.AdvanceEpochNow(pm)
 	}
 }
 
@@ -548,6 +567,23 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error) {
 			return nil, errpkg.BTreeLeafPageNotLoaded()
 		}
 
+		// Phase 2: 检查 Delta Chain（叶子锁保护下追加的更新）
+		chain := leafRef.deltaChain.Load()
+		if chain != nil {
+			deltas := chain.GetDeltas()
+			for i := len(deltas) - 1; i >= 0; i-- {
+				if bytes.Equal(deltas[i].key, key) {
+					if deltas[i].op == DeltaUpdate {
+						result := make([]byte, len(deltas[i].value))
+						copy(result, deltas[i].value)
+						b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
+						return result, nil
+					}
+					break
+				}
+			}
+		}
+
 		// 使用 OffHeapAdapter.GetFromOffHeap 直接读取
 		value, found, err := b.offheapAdapter.GetFromOffHeap(leafPageID, key)
 		if err != nil {
@@ -838,6 +874,11 @@ func (b *BTree) deleteOffHeapWithMVCC(ctx context.Context, key []byte) error {
 			}
 			return ErrRetry
 		}
+
+		// 8.5 Phase 2: Delete 后清除 deltaChain
+		// Delete 创建了新页面（COW），旧 deltaChain 中的 delta 可能引用已删除的 key
+		// 必须清除，否则 Get 会从 stale delta 返回已删除的值
+		leafRef.deltaChain.Store(nil)
 
 		// 9. 如果 pageID 变化，需要更新 root 或父节点
 		if newPageID != oldPageID {

@@ -49,9 +49,16 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 		return errpkg.BTreeLeafPageNotLoaded2()
 	}
 
-	// Step 5: Off-Heap 插入
+	// Step 4.5: 准备 CAS 参数
+	// Delta Chain 已禁用： UpdateLeafEntry 使用 BulkInit + Overwrite 实现 O(1) COW
+	// Delta Chain 对 insert 工作负载有严重开销，而 BulkInit + Overwrite 已足够高效
 	oldPageID := model.PageID(oldInfo.GetPageID())
-	newPageID, splitRequired, err := b.offheapAdapter.InsertToOffHeap(oldPageID, key, value)
+	var newPageID model.PageID
+	var splitRequired bool
+
+	// Step 5: Off-Heap 插入（Insert 和 Update 都走这里）
+	// InsertToOffHeap 内部会调用 UpdateLeafEntry 来处理 Update
+	newPageID, splitRequired, err = b.offheapAdapter.InsertToOffHeap(oldPageID, key, value)
 	if err != nil {
 		return errpkg.BTreeOffheapInsert(err)
 	}
@@ -202,9 +209,69 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 		if err := b.persistRoot(currentRoot); err != nil {
 			return errpkg.BTreePersistRootErr(err)
 		}
+
 	}
 
+
 	return nil
+}
+
+// materializePageWithDeltas 将 Base Page + Delta Chain 物化为新页面
+// Phase 2 范围: 仅处理 DeltaUpdate
+//
+// 流程:
+//  1. Alloc 新页面
+//  2. 逐条拷贝 Base Page 条目，同时应用 Delta 更新
+//  3. 释放旧页面
+//  返回新页面 ID
+func (b *BTree) materializePageWithDeltas(
+	basePageID model.PageID,
+	chain *COWDeltaRef,
+) (model.PageID, error) {
+	count := int(b.offheapAdapter.pa.GetCount(uint32(basePageID)))
+
+	// 1. 分配新页面
+	newRawPageID, err := b.offheapAdapter.pm.Alloc()
+	if err != nil {
+		return 0, err
+	}
+
+	// 2. 初始化新页面（继承源页面 version）
+	b.offheapAdapter.pa.InitLeafPage(newRawPageID, b.offheapAdapter.pa.GetVersion(uint32(basePageID)))
+
+	// 3. 构建 Delta 查找 map（key → 最新 value），逆序遍历保留最新
+	deltas := chain.GetDeltas()
+	deltaMap := make(map[string][]byte, len(deltas))
+	for i := len(deltas) - 1; i >= 0; i-- {
+		k := string(deltas[i].key)
+		if _, exists := deltaMap[k]; !exists {
+			deltaMap[k] = deltas[i].value
+		}
+	}
+
+	// 4. 逐条拷贝 + 应用 Delta
+	var dataEnd uint16
+	for i := range count {
+		keyOff, keyLen, valOff, valLen := b.offheapAdapter.pa.GetLeafEntryOffset(uint32(basePageID), i)
+		srcKey := b.offheapAdapter.pa.GetKey(uint32(basePageID), keyOff, keyLen)
+		srcVal := b.offheapAdapter.pa.GetValue(uint32(basePageID), valOff, valLen)
+
+		// 检查 Delta Chain 是否有更新
+		targetVal := srcVal
+		if deltaVal, ok := deltaMap[string(srcKey)]; ok {
+			targetVal = deltaVal
+		}
+
+		if err := b.offheapAdapter.pa.InsertLeafEntry(newRawPageID, i, srcKey, targetVal, &dataEnd); err != nil {
+			b.offheapAdapter.pm.Free(newRawPageID)
+			return 0, err
+		}
+	}
+
+	// 5. 延迟释放旧页面（使用 epoch 避免并发搜索路径读到已释放页面）
+	b.epochBasedFreeList.Add(basePageID)
+
+	return model.PageID(newRawPageID), nil
 }
 
 // buildPersistPath 从 Root 到目标 PageInfo 构建完整路径
@@ -274,7 +341,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	// 活锁检测
 	// 通过检查当前 epoch 的待释放列表来判断
 	b.epochBasedFreeList.mu.Lock()
-	currentEpoch := b.epochBasedFreeList.currentEpoch
+	currentEpoch := b.epochBasedFreeList.currentEpoch.Load()
 	currentEpochPending := b.epochBasedFreeList.pending[currentEpoch]
 	pendingCount := 0
 	for _, pid := range currentEpochPending {

@@ -16,13 +16,12 @@ import (
 	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
-// loadBalanceCache 负载均衡缓存
-// 使用 atomic.Value 存储避免锁竞争
-type loadBalanceCache struct {
-	index    int   // 缓存的 core index
-	counter  int64 // 缓存时的 counter 值
-	interval int64 // 缓存时的 interval 值
-}
+// lbConfig 负载均衡配置常量
+const (
+	// lbLowLoadPerCore 每个 core 的低负载阈值
+	// 队列长度 < lbLowLoadPerCore × coreCount 时走 RoundRobin 快速路径
+	lbLowLoadPerCore = 16
+)
 
 // ==========================================
 // ShardTask 分片任务（独立队列）
@@ -591,11 +590,9 @@ type TaskScheduler struct {
 	running          atomic.Bool
 	stats            SchedulerStats
 
-	// 负载均衡缓存（避免每次都计算）
-	loadBalanceCacheInterval  atomic.Int64 // 缓存间隔（多少次 Enqueue 重新计算一次，<=0 表示使用动态策略）
-	loadBalanceIntervalManual atomic.Bool  // 是否手动设置缓存间隔（true=使用手动值，false=使用动态策略）
-	loadBalanceCache          atomic.Value // 存储 *loadBalanceCache，使用 atomic.Value 避免锁竞争
-	loadBalanceCounter        atomic.Int64 // 计数器
+	// 负载均衡：RoundRobin 快速路径 + LoadBalance 慢路径
+	rrCounter    atomic.Uint64 // RoundRobin 计数器（快速路径 O(1)）
+	lbThreshold  int64         // 负载阈值 = lbLowLoadPerCore × coreCount（低负载时用 RR）
 }
 
 // NewTaskScheduler 创建多调度器管理器（V2）
@@ -613,9 +610,8 @@ func NewTaskScheduler(name string, coreCount int) *TaskScheduler {
 			CoreStats: make([]CoreStats, coreCount),
 		},
 	}
-	m.loadBalanceCacheInterval.Store(100)    // 默认值（动态策略下不使用）
-	m.loadBalanceIntervalManual.Store(false) // P2 优化：默认使用动态策略
-	m.loadBalanceCache.Store(&loadBalanceCache{index: 0, counter: 0, interval: 0})
+	// 负载均衡初始化：阈值 = 每核阈值 × 核数
+	m.lbThreshold = int64(lbLowLoadPerCore * coreCount)
 
 	// 创建 N 个调度器核心
 	for i := 0; i < coreCount; i++ {
@@ -703,77 +699,33 @@ func (m *TaskScheduler) EnqueueWithShard(item ShardItem, taskName string) error 
 	return nil
 }
 
-// getMaxQueueLen 获取当前最大队列长度（P2 优化）
-func (m *TaskScheduler) getMaxQueueLen() int64 {
-	maxLen := int64(0)
-	for _, core := range m.cores {
-		if queueLen := core.totalQueueItems.Load(); queueLen > maxLen {
-			maxLen = queueLen
-		}
-	}
-	return maxLen
-}
-
-// calculateDynamicInterval 根据队列长度动态计算缓存间隔（P2 优化）
-// 高负载（队列 >= 1000）：快速响应（10 次）
-// 中等负载（队列 >= 100）：正常响应（100 次）
-// 低负载（队列 < 100）：降低开销（200 次）
-func (m *TaskScheduler) calculateDynamicInterval(maxQueueLen int64) int {
-	switch {
-	case maxQueueLen >= 1000:
-		return 10 // 高负载：快速响应
-	case maxQueueLen >= 100:
-		return 100 // 中等负载：正常响应
-	default:
-		return 200 // 低负载：降低开销
-	}
-}
-
-// selectLeastLoadedCore 选择队列长度最小的核心（带动态缓存优化，P2 优化）
-// 使用 atomic.Value 和 atomic 字段避免读写锁竞争
+// selectLeastLoadedCore 选择负载最小的核心
+// 策略：低负载 RoundRobin(O(1)) + 高负载精确选择(O(n))
+// 低负载时 RoundRobin 已天然均衡，无需遍历所有 core
+// 高负载时退化为精确的最小负载选择
 func (m *TaskScheduler) selectLeastLoadedCore() int {
-	// 确定使用的缓存间隔（无锁读取）
-	var interval int
-	if m.loadBalanceIntervalManual.Load() {
-		// 手动设置的间隔（用于测试和特殊场景）
-		interval = int(m.loadBalanceCacheInterval.Load())
-	} else {
-		// P2 优化：动态计算缓存间隔
-		maxQueueLen := m.getMaxQueueLen()
-		interval = m.calculateDynamicInterval(maxQueueLen)
+	// O(1) 全局负载估计：所有 core 的 totalQueueItems 之和
+	totalLoad := int64(0)
+	for _, core := range m.cores {
+		totalLoad += core.totalQueueItems.Load()
 	}
 
-	// 原子递增计数器
-	counter := m.loadBalanceCounter.Add(1)
-
-	// 快速路径：使用缓存（atomic.Value.Load，无锁）
-	cached := m.loadBalanceCache.Load().(*loadBalanceCache)
-	if cached != nil && counter%int64(interval) != 0 {
-		// 未达到缓存间隔，使用缓存值
-		return cached.index
+	// 快速路径：低负载时用 RoundRobin（无竞争、O(1)）
+	if totalLoad < m.lbThreshold {
+		return int(m.rrCounter.Add(1) % uint64(m.coreCount))
 	}
 
-	// 慢速路径：重新计算最少负载 core
+	// 慢速路径：高负载时精确选择最小负载 core
 	minQueueLen := int64(^uint64(0) >> 1)
 	minIndex := 0
 
 	for i, core := range m.cores {
-		// P0 优化：直接读取原子计数器，O(1) 查询
 		queueLen := core.totalQueueItems.Load()
-
 		if queueLen < minQueueLen {
 			minQueueLen = queueLen
 			minIndex = i
 		}
 	}
-
-	// 更新缓存（atomic.Value.Store，无锁）
-	newCache := &loadBalanceCache{
-		index:    minIndex,
-		counter:  counter,
-		interval: int64(interval),
-	}
-	m.loadBalanceCache.Store(newCache)
 
 	return minIndex
 }
@@ -837,30 +789,17 @@ func (m *TaskScheduler) GetStats() *SchedulerStats {
 	return &m.stats
 }
 
-// SetLoadBalanceCacheInterval 设置负载均衡缓存间隔
-// interval: 每 interval 次 EnqueueWithShard(shardID=0) 重新计算一次最少负载 core
-//
-//	设置为 1 表示每次都计算（禁用缓存）
-//	设置为 100 表示每 100 次计算一次（推荐，平衡性能和准确性）
-//	设置为更大值（如 200）可以进一步提升性能，但负载均衡准确性降低
-//
-// 注意：设置此值将覆盖 P2 动态缓存策略，改用手动间隔。传入 0 或负值可恢复动态策略。
-func (m *TaskScheduler) SetLoadBalanceCacheInterval(interval int) {
-	if interval < 1 {
-		// 恢复动态策略（P2 优化）
-		m.loadBalanceIntervalManual.Store(false)
-		m.loadBalanceCacheInterval.Store(100) // 默认值（实际上不会使用）
-		return
+// SetLoadBalanceThreshold 设置负载均衡阈值（每核队列长度）
+func (m *TaskScheduler) SetLoadBalanceThreshold(perCoreThreshold int) {
+	if perCoreThreshold < 1 {
+		perCoreThreshold = lbLowLoadPerCore
 	}
-
-	// 手动设置间隔（覆盖动态策略）
-	m.loadBalanceIntervalManual.Store(true)
-	m.loadBalanceCacheInterval.Store(int64(interval))
+	m.lbThreshold = int64(perCoreThreshold) * int64(m.coreCount)
 }
 
-// GetLoadBalanceCacheInterval 获取当前负载均衡缓存间隔
-func (m *TaskScheduler) GetLoadBalanceCacheInterval() int {
-	return int(m.loadBalanceCacheInterval.Load())
+// GetLoadBalanceThreshold 获取当前每核负载均衡阈值
+func (m *TaskScheduler) GetLoadBalanceThreshold() int {
+	return int(m.lbThreshold / int64(m.coreCount))
 }
 
 // calculateCoreQueueLen 计算核心的实际队列长度

@@ -333,58 +333,35 @@ func TestTaskScheduler_ShardDistribution_Zero(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// 使用 controlled executor：先记录但不执行 runLoop
-	var runFuncs []func(context.Context)
-	executor := &mockPerCoreExecutor{
-		submitFunc: func(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error {
-			runFuncs = append(runFuncs, fn)
-			return nil
-		},
-	}
+	executor := &mockPerCoreExecutor{}
 	err = scheduler.Start(executor)
 	require.NoError(t, err)
+	defer scheduler.Stop()
 
-	// 提交多个 shardID=0 的任务
-	// 由于 selectLeastLoadedCore 的实现，它们会被分配到最少负载的核心
+	// 入队 10 个 shardID=0 的任务
+	// 低负载走 RoundRobin，均匀分配到各 core
 	for i := 0; i < 10; i++ {
 		item := &testShardItem{shardID: 0, payload: fmt.Sprintf("item-zero-%d", i)}
 		_ = scheduler.EnqueueWithShard(item, "test-task")
 	}
 
-	// 验证负载被分散（runLoop 尚未执行，队列保留）
-	totalQueueLen := 0
-	maxQueueLen := 0
+	// 等待所有 item 被处理（检查各 core 的 processed 总和）
+	require.Eventually(t, func() bool {
+		var total int64
+		for _, core := range scheduler.cores {
+			total += core.stats.TotalTasksProcessed.Load()
+		}
+		return total >= 10
+	}, 2*time.Second, 10*time.Millisecond)
+
+	// 验证多个 core 参与了处理（RoundRobin 分配效果）
+	coresUsed := 0
 	for _, core := range scheduler.cores {
-		task, _ := core.GetTaskByName("test-task")
-		queueLen := task.QueueLen()
-		totalQueueLen += queueLen
-		if queueLen > maxQueueLen {
-			maxQueueLen = queueLen
+		if core.stats.TotalTasksProcessed.Load() > 0 {
+			coresUsed++
 		}
 	}
-
-	assert.Equal(t, 10, totalQueueLen, "total items should be 10")
-	// 所有核心初始队列长度相同，selectLeastLoadedCore 会轮询分配
-	// 验证至少有多个核心收到了任务（不是全部集中在一个核心）
-	coresWithTasks := 0
-	for _, core := range scheduler.cores {
-		task, _ := core.GetTaskByName("test-task")
-		if task.QueueLen() > 0 {
-			coresWithTasks++
-		}
-	}
-	// 当所有核心初始队列长度相同时，selectLeastLoadedCore 返回第一个核心
-	// 所以所有任务都分配到 core 0，这是正确的行为
-	assert.Greater(t, coresWithTasks, 0, "at least one core should have tasks")
-	assert.LessOrEqual(t, coresWithTasks, 4, "at most all cores should have tasks")
-
-	// 清理：启动并停止所有 runLoop
-	for _, fn := range runFuncs {
-		go fn(context.Background())
-	}
-	// 等待 goroutine 启动并进入 runLoop
-	time.Sleep(10 * time.Millisecond)
-	scheduler.Stop()
+	assert.GreaterOrEqual(t, coresUsed, 2, "round robin should use at least 2 cores")
 }
 
 // ==========================================
@@ -801,10 +778,19 @@ func TestTaskScheduler_selectLeastLoadedCore_SingleCore(t *testing.T) {
 func TestTaskScheduler_selectLeastLoadedCore_MultipleCores(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 4)
 
-	// 所有核心初始队列长度都为 0
+	// 所有核心初始队列长度都为 0，走 RoundRobin 快速路径
+	// RoundRobin 会在 [0, coreCount) 间轮转，验证返回有效 core index
 	index := scheduler.selectLeastLoadedCore()
-	// 应该选择第一个核心
-	assert.Equal(t, 0, index)
+	assert.GreaterOrEqual(t, index, 0)
+	assert.Less(t, index, 4)
+
+	// 连续调用应均匀分布到不同 core
+	seen := make(map[int]bool)
+	for i := 0; i < 8; i++ {
+		idx := scheduler.selectLeastLoadedCore()
+		seen[idx] = true
+	}
+	assert.GreaterOrEqual(t, len(seen), 2, "round robin should distribute across cores")
 }
 
 func TestTaskScheduler_selectLeastLoadedCore_WithLoad(t *testing.T) {
@@ -818,8 +804,8 @@ func TestTaskScheduler_selectLeastLoadedCore_WithLoad(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// 设置缓存间隔为 1，每次都重新计算（测试需要）
-	scheduler.SetLoadBalanceCacheInterval(1)
+	// 设置低阈值确保高负载时走精确选择路径
+	scheduler.SetLoadBalanceThreshold(1)
 
 	// 向第一个核心添加任务
 	core := scheduler.cores[0]

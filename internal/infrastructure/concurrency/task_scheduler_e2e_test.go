@@ -160,7 +160,7 @@ func BenchmarkShardRouting_Fixed(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	err = scheduler.Start(nil)
+	err = scheduler.Start()
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func BenchmarkShardRouting_RoundRobin(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	err = scheduler.Start(nil)
+	err = scheduler.Start()
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func BenchmarkShardRouting_LoadBalance(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	err = scheduler.Start(nil)
+	err = scheduler.Start()
 	if err != nil {
 		b.Fatal(err)
 	}

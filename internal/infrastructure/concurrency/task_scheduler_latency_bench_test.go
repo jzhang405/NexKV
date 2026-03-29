@@ -61,7 +61,7 @@ func benchRegisterAndStartNoRelease(b *testing.B, coreCount int) (*TaskScheduler
 		b.Fatal(err)
 	}
 
-	if err := scheduler.Start(nil); err != nil {
+	if err := scheduler.Start(); err != nil {
 		b.Fatal(err)
 	}
 
@@ -92,7 +92,7 @@ func benchRegisterAndStart(b *testing.B, coreCount int) (*TaskScheduler, *atomic
 		b.Fatal(err)
 	}
 
-	if err := scheduler.Start(nil); err != nil {
+	if err := scheduler.Start(); err != nil {
 		b.Fatal(err)
 	}
 

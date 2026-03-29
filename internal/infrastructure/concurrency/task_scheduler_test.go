@@ -233,13 +233,7 @@ func TestTaskScheduler_ShardDistribution_Positive(t *testing.T) {
 
 	// 使用 controlled executor：先记录但不执行 runLoop
 	var runFuncs []func(context.Context)
-	executor := &mockPerCoreExecutor{
-		submitFunc: func(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error {
-			runFuncs = append(runFuncs, fn)
-			return nil
-		},
-	}
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	require.NoError(t, err)
 
 	// 测试正数 ShardID 的固定路由
@@ -288,13 +282,7 @@ func TestTaskScheduler_ShardDistribution_Negative(t *testing.T) {
 
 	// 使用 controlled executor：先记录但不执行 runLoop
 	var runFuncs []func(context.Context)
-	executor := &mockPerCoreExecutor{
-		submitFunc: func(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error {
-			runFuncs = append(runFuncs, fn)
-			return nil
-		},
-	}
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	require.NoError(t, err)
 
 	// 测试负数 ShardID 的路由
@@ -333,14 +321,13 @@ func TestTaskScheduler_ShardDistribution_Zero(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	executor := &mockPerCoreExecutor{}
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	require.NoError(t, err)
 	defer scheduler.Stop()
 
 	// 入队 10 个 shardID=0 的任务
 	// 低负载走 RoundRobin，均匀分配到各 core
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		item := &testShardItem{shardID: 0, payload: fmt.Sprintf("item-zero-%d", i)}
 		_ = scheduler.EnqueueWithShard(item, "test-task")
 	}
@@ -375,18 +362,8 @@ func TestTaskScheduler_Integration(t *testing.T) {
 
 	// 创建同步 executor 用于测试
 	var wg sync.WaitGroup
-	executor := &mockPerCoreExecutor{
-		submitFunc: func(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				fn(ctx)
-			}()
-			return nil
-		},
-	}
 
-	err := scheduler.Start(executor)
+	err := scheduler.Start()
 	require.NoError(t, err)
 	defer scheduler.Stop()
 
@@ -405,7 +382,7 @@ func TestTaskScheduler_Integration(t *testing.T) {
 	require.NoError(t, err)
 
 	// 提交任务到不同核心
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		item := &testShardItem{
 			shardID: i, // 交替路由到 core 0 和 core 1
 			payload: "test",
@@ -824,8 +801,7 @@ func TestTaskScheduler_selectLeastLoadedCore_WithLoad(t *testing.T) {
 func TestTaskScheduler_Start_NotRunning(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 2)
 
-	executor := &mockExecutorForCoverage{}
-	err := scheduler.Start(executor)
+	err := scheduler.Start()
 	assert.NoError(t, err)
 	assert.True(t, scheduler.running.Load())
 
@@ -835,12 +811,11 @@ func TestTaskScheduler_Start_NotRunning(t *testing.T) {
 func TestTaskScheduler_Start_AlreadyRunning(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 2)
 
-	executor := &mockExecutorForCoverage{}
-	err := scheduler.Start(executor)
+	err := scheduler.Start()
 	require.NoError(t, err)
 
 	// 第二次 Start 应该返回错误
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, nexerrors.ErrSchedulerRunning))
 
@@ -850,8 +825,7 @@ func TestTaskScheduler_Start_AlreadyRunning(t *testing.T) {
 func TestTaskScheduler_Stop_Twice(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 2)
 
-	executor := &mockExecutorForCoverage{}
-	_ = scheduler.Start(executor)
+	_ = scheduler.Start()
 
 	scheduler.Stop()
 	// 第二次 Stop 不应该 panic
@@ -878,8 +852,7 @@ func TestTaskScheduler_EnqueueWithShard_NotStarted(t *testing.T) {
 func TestTaskScheduler_EnqueueWithShard_TaskNotFound(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 2)
 
-	executor := &mockExecutorForCoverage{}
-	err := scheduler.Start(executor)
+	err := scheduler.Start()
 	require.NoError(t, err)
 	defer scheduler.Stop()
 
@@ -900,8 +873,7 @@ func TestTaskScheduler_EnqueueWithShard_ShardID_Zero(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	executor := &mockExecutorForCoverage{}
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	require.NoError(t, err)
 	defer scheduler.Stop()
 
@@ -1044,8 +1016,7 @@ func TestTaskScheduler_EnqueueWithShard_NegativeShardID(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	executor := &mockExecutorForCoverage{}
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	require.NoError(t, err)
 	defer scheduler.Stop()
 
@@ -1066,8 +1037,7 @@ func TestTaskScheduler_EnqueueWithShard_LargeShardID(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	executor := &mockExecutorForCoverage{}
-	err = scheduler.Start(executor)
+	err = scheduler.Start()
 	require.NoError(t, err)
 	defer scheduler.Stop()
 

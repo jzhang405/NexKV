@@ -12,7 +12,6 @@ import (
 	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
-	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
@@ -584,7 +583,7 @@ type SchedulerStats struct {
 type TaskScheduler struct {
 	cores            []*SchedulerCore
 	coreCount        int
-	executor         service.TaskExecutor // 保留字段但内部不使用，委托方仍传参
+	// executor 已移除：runLoop 直接在 goroutine + LockOSThread 中运行
 	registeredOrders map[int]string       // ExecutionOrder → TaskName
 	mu               sync.RWMutex
 	running          atomic.Bool
@@ -732,13 +731,10 @@ func (m *TaskScheduler) selectLeastLoadedCore() int {
 
 // Start 启动所有调度器核心
 // executor 参数保留兼容（内部不使用），直接 goroutine + LockOSThread
-func (m *TaskScheduler) Start(executor service.TaskExecutor) error {
+func (m *TaskScheduler) Start() error {
 	if !m.running.CompareAndSwap(false, true) {
 		return errors.SchedulerAlreadyRunning()
 	}
-
-	// 兼容保留 executor 引用（内部不再使用）
-	m.executor = executor
 
 	for i, core := range m.cores {
 		core.running.Store(true)

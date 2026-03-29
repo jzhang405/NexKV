@@ -494,7 +494,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	}
 
 	// 启动 TaskScheduler
-	if err := btree.scheduler.Start(nil); err != nil {
+	if err := btree.scheduler.Start(); err != nil {
 		// 清理资源
 		if chunkMgr != nil {
 			chunkMgr.Close()

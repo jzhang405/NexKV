@@ -277,7 +277,7 @@ func BenchmarkTaskScheduler_SingleTask_SingleCore(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	err = scheduler.Start(nil)
+	err = scheduler.Start()
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -502,7 +502,7 @@ func BenchmarkTaskScheduler_MultiTasks(b *testing.B) {
 		}
 	}
 
-	err := scheduler.Start(nil)
+	err := scheduler.Start()
 	if err != nil {
 		b.Fatal(err)
 	}

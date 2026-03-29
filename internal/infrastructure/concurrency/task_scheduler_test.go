@@ -231,8 +231,6 @@ func TestTaskScheduler_ShardDistribution_Positive(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// 使用 controlled executor：先记录但不执行 runLoop
-	var runFuncs []func(context.Context)
 	err = scheduler.Start()
 	require.NoError(t, err)
 
@@ -259,12 +257,6 @@ func TestTaskScheduler_ShardDistribution_Positive(t *testing.T) {
 		}
 	}
 
-	// 清理：启动并停止所有 runLoop
-	for _, fn := range runFuncs {
-		go fn(context.Background())
-	}
-	// 等待 goroutine 启动并进入 runLoop
-	time.Sleep(10 * time.Millisecond)
 	scheduler.Stop()
 }
 
@@ -280,8 +272,6 @@ func TestTaskScheduler_ShardDistribution_Negative(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// 使用 controlled executor：先记录但不执行 runLoop
-	var runFuncs []func(context.Context)
 	err = scheduler.Start()
 	require.NoError(t, err)
 
@@ -300,12 +290,6 @@ func TestTaskScheduler_ShardDistribution_Negative(t *testing.T) {
 	task1, _ := scheduler.cores[1].GetTaskByName("test-task")
 	assert.Equal(t, 2, task1.QueueLen(), "core 1 should have 2 items")
 
-	// 清理：启动并停止所有 runLoop
-	for _, fn := range runFuncs {
-		go fn(context.Background())
-	}
-	// 等待 goroutine 启动并进入 runLoop
-	time.Sleep(10 * time.Millisecond)
 	scheduler.Stop()
 }
 
@@ -1233,4 +1217,3 @@ func (i *testShardItemForCoverage) Execute(ctx context.Context, pipeline model.T
 func (i *testShardItemForCoverage) TaskOrder() int {
 	return 0 // 默认 order 0
 }
-

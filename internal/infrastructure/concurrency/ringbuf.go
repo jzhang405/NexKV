@@ -15,7 +15,8 @@ import (
 
 const (
 	// ringBufferSize 环形缓冲区大小（必须是 2 的幂）
-	ringBufferSize = 1024
+	// 16384 容纳 ShardTask 压力测试场景（10001 items）
+	ringBufferSize = 16384
 	// ringMask 取模掩码（ringBufferSize - 1，要求 2^n）
 	ringMask = ringBufferSize - 1
 	// cacheLineSize CPU 缓存行大小（防止伪共享）
@@ -111,10 +112,7 @@ func (r *MPSCRingBuffer) EnqueueN(tasks []unsafe.Pointer) int {
 		return 0
 	}
 
-	k := n
-	if int(free) < k {
-		k = int(free)
-	}
+	k := min(n, int(free))
 
 	// 原子抢占连续 k 个 slot
 	old := r.writeIdx.Add(uint64(k)) - uint64(k)

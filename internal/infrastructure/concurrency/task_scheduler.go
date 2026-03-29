@@ -9,6 +9,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
@@ -148,12 +149,17 @@ func (q *RingQueue) expand() {
 // ShardTask 分片任务（独立队列）
 // ==========================================
 
+// taskBox 任务包装器（用于在 MPSC RingBuffer 中存储 any 类型）
+type taskBox struct {
+	item any
+}
+
 // ShardTask 分片任务（每个调度器独立实例）
 type ShardTask struct {
 	name           string
 	priority       model.TaskPriority
 	executionOrder int
-	queue          *RingQueue // 环形缓冲区优化：避免 Dequeue 的内存拷贝
+	queue          *MPSCRingBuffer // 无锁环形缓冲区（MPSC）
 	mu             sync.Mutex
 	taskStatus     atomic.Int32 // TaskStatus
 	executeFunc    func(any) TaskStatus
@@ -168,7 +174,7 @@ func NewShardTask(name string, priority model.TaskPriority, executionOrder int, 
 		name:           name,
 		priority:       priority,
 		executionOrder: executionOrder,
-		queue:          NewRingQueue(DefaultShardTaskQueueCapacity),
+		queue:          NewMPSCRingBuffer(),
 		executeFunc:    executeFunc,
 	}
 	t.taskStatus.Store(int32(TaskQueued))
@@ -182,26 +188,30 @@ func NewShardTask(name string, priority model.TaskPriority, executionOrder int, 
 func (t *ShardTask) QueueLen() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.queue.Len()
+	return int(t.queue.Size())
 }
 
 func (t *ShardTask) Enqueue(item any) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	err := t.queue.Enqueue(item)
-	if err == nil && t.totalQueueItemsPtr != nil {
+	box := &taskBox{item: item}
+	ok := t.queue.Enqueue(unsafe.Pointer(box))
+	if ok && t.totalQueueItemsPtr != nil {
 		t.totalQueueItemsPtr.Add(1)
 	}
-	return err
+	return nil
 }
 
 func (t *ShardTask) Peek(item *any) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if !t.queue.Peek(item) {
+	ptr, ok := t.queue.Peek()
+	if !ok {
 		return false
 	}
+	box := (*taskBox)(ptr)
+	*item = box.item
 
 	t.taskStatus.Store(int32(TaskExecuting))
 	return true
@@ -213,10 +223,24 @@ func (t *ShardTask) PeekN(items []any) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	n := t.queue.PeekN(items)
-	if n > 0 {
-		t.taskStatus.Store(int32(TaskExecuting))
+	if len(items) == 0 {
+		return 0
 	}
+
+	// 临时 buffer 用于 ring buffer
+	tmp := make([]unsafe.Pointer, len(items))
+	n := t.queue.PeekN(tmp)
+	if n == 0 {
+		return 0
+	}
+
+	// 解包并复制到输出
+	for i := range n {
+		box := (*taskBox)(tmp[i])
+		items[i] = box.item
+	}
+
+	t.taskStatus.Store(int32(TaskExecuting))
 	return n
 }
 
@@ -224,11 +248,17 @@ func (t *ShardTask) Dequeue(item *any) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	ok := t.queue.Dequeue(item)
-	if ok && t.totalQueueItemsPtr != nil {
+	ptr := t.queue.Dequeue()
+	if ptr == nil {
+		return false
+	}
+	box := (*taskBox)(ptr)
+	*item = box.item
+
+	if t.totalQueueItemsPtr != nil {
 		t.totalQueueItemsPtr.Add(-1)
 	}
-	return ok
+	return true
 }
 
 // DequeueN 批量出队（丢弃）: O(N)
@@ -238,7 +268,13 @@ func (t *ShardTask) DequeueN(n int) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	actualDequeue := t.queue.DequeueN(n)
+	if n <= 0 {
+		return 0
+	}
+
+	// 临时 buffer 用于接收（丢弃）
+	tmp := make([]unsafe.Pointer, n)
+	actualDequeue := t.queue.DequeueN(tmp)
 	if t.totalQueueItemsPtr != nil {
 		t.totalQueueItemsPtr.Add(int64(-actualDequeue))
 	}
@@ -349,7 +385,7 @@ func (c *SchedulerCore) createTaskInstance(template *ShardTask) *ShardTask {
 		name:               template.name,
 		priority:           template.priority,
 		executionOrder:     template.executionOrder,
-		queue:              NewRingQueue(64),
+		queue:              NewMPSCRingBuffer(),
 		executeFunc:        template.executeFunc,
 		totalQueueItemsPtr: &c.totalQueueItems,
 	}

@@ -737,7 +737,7 @@ func TestTaskScheduler_HealthCheck_LongQueue(t *testing.T) {
 	// 向第一个核心的任务队列中添加大量元素（模拟异常）
 	core := scheduler.cores[0]
 	task, _ := core.GetTaskByName("test-task")
-	for i := 0; i < 10001; i++ {
+	for i := range 10001 {
 		_ = task.Enqueue(i)
 	}
 
@@ -763,7 +763,7 @@ func TestTaskScheduler_selectLeastLoadedCore_MultipleCores(t *testing.T) {
 
 	// 连续调用应均匀分布到不同 core
 	seen := make(map[int]bool)
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		idx := scheduler.selectLeastLoadedCore()
 		seen[idx] = true
 	}
@@ -893,7 +893,7 @@ func TestTaskScheduler_ConcurrentRegisterTask(t *testing.T) {
 	errors := make(chan error, 10)
 
 	// 并发注册不同的任务
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(taskID int) {
 			defer wg.Done()
@@ -919,7 +919,7 @@ func TestTaskScheduler_ConcurrentRegisterTask(t *testing.T) {
 	}
 
 	// 验证所有任务都已注册
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		taskName := fmt.Sprintf("task-%d", i)
 		core := scheduler.cores[0]
 		_, err := core.GetTaskByName(taskName)
@@ -938,10 +938,10 @@ func TestShardTask_ConcurrentEnqueue(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < itemsPerGoroutine; j++ {
+			for j := range itemsPerGoroutine {
 				_ = task.Enqueue(id*itemsPerGoroutine + j)
 			}
 		}(i)
@@ -972,10 +972,10 @@ func TestSchedulerCore_ConcurrentGetTaskByName(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < iterations; j++ {
+			for range iterations {
 				_, _ = core.GetTaskByName("test-task")
 			}
 		}()
@@ -1234,37 +1234,3 @@ func (i *testShardItemForCoverage) TaskOrder() int {
 	return 0 // 默认 order 0
 }
 
-type mockExecutorForCoverage struct {
-	startCount atomic.Int32
-}
-
-func (m *mockExecutorForCoverage) Submit(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(context.Context)) error {
-	m.startCount.Add(1)
-	go fn(ctx)
-	return nil
-}
-
-func (m *mockExecutorForCoverage) Close() error {
-	return nil
-}
-
-// ==========================================
-// Mock Executor（原有）
-// ==========================================
-
-type mockPerCoreExecutor struct {
-	submitFunc func(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error
-}
-
-func (m *mockPerCoreExecutor) Submit(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(ctx context.Context)) error {
-	if m.submitFunc != nil {
-		return m.submitFunc(ctx, sourceID, priority, fn)
-	}
-	// 直接在 goroutine 中执行（模拟真实行为）
-	go fn(ctx)
-	return nil
-}
-
-func (m *mockPerCoreExecutor) Close() error {
-	return nil
-}

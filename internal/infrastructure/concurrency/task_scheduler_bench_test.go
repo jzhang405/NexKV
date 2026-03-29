@@ -628,28 +628,3 @@ func BenchmarkTaskScheduler_ConcurrentSubmit(b *testing.B) {
 // Mock Executor
 // ==========================================
 
-// syncExecutor 同步执行器（用于基准测试）
-type syncExecutor struct {
-	maxWorkers int
-	wg         sync.WaitGroup
-	sem        chan struct{}
-}
-
-func (e *syncExecutor) Submit(ctx context.Context, sourceID model.SourceID, priority model.TaskPriority, fn func(context.Context)) error {
-	e.wg.Add(1)
-	go func() {
-		defer e.wg.Done()
-		// 模拟受限的并发执行
-		if e.sem != nil {
-			<-e.sem
-			defer func() { e.sem <- struct{}{} }()
-		}
-		fn(ctx)
-	}()
-	return nil
-}
-
-func (e *syncExecutor) Close() error {
-	e.wg.Wait()
-	return nil
-}

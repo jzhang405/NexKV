@@ -53,8 +53,8 @@ func main() {
 		td.values = make([][]byte, count)
 		for j := 0; j < count; j++ {
 			// 使用 init keys 进行真正的 update 操作
-			td.keys[j] = []byte(fmt.Sprintf("init-%05d", (t*count+j)%initCount))  // 和 init keys 重叠
-			td.values[j] = []byte(fmt.Sprintf("v%05d", j%initCount))  // 固定 6 bytes (<= init value 长度)
+			td.keys[j] = []byte(fmt.Sprintf("init-%05d", (t*count+j)%initCount)) // 和 init keys 重叠
+			td.values[j] = []byte(fmt.Sprintf("v%05d", j%initCount))             // 固定 6 bytes (<= init value 长度)
 		}
 		threadDataArr[t] = td
 	}
@@ -63,8 +63,8 @@ func main() {
 	initKeys := make([][]byte, initCount)
 	initValues := make([][]byte, initCount)
 	for i := 0; i < initCount; i++ {
-		initKeys[i] = []byte(fmt.Sprintf("init-%05d", i))  // 固定 10 bytes
-		initValues[i] = []byte(fmt.Sprintf("v%05d", i))  // 固定 6 bytes
+		initKeys[i] = []byte(fmt.Sprintf("init-%05d", i)) // 固定 10 bytes
+		initValues[i] = []byte(fmt.Sprintf("v%05d", i))   // 固定 6 bytes
 	}
 	fmt.Fprintf(os.Stderr, "初始化 %d 条...\n", initCount)
 	for i := 0; i < initCount; i++ {

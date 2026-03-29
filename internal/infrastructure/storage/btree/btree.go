@@ -206,17 +206,17 @@ type BTree struct {
 // EpochBasedFreeList 延迟释放列表（批量优化版）
 // 使用 atomic 计数器 + 批量处理减少 mutex 竞争
 type EpochBasedFreeList struct {
-	currentEpoch atomic.Uint64               // 当前 epoch（atomic）
+	currentEpoch atomic.Uint64             // 当前 epoch（atomic）
 	pending      map[uint64][]model.PageID // epoch → 待释放页面列表
 	mu           sync.Mutex
-	batchSize    int                                // 批量处理阈值
-	batchCounter atomic.Int64                    // 批量计数器
+	batchSize    int          // 批量处理阈值
+	batchCounter atomic.Int64 // 批量计数器
 }
 
 func NewEpochBasedFreeList() *EpochBasedFreeList {
 	return &EpochBasedFreeList{
-		pending:      make(map[uint64][]model.PageID),
-		batchSize:    1000, // 每 1000 次操作推进一次 epoch
+		pending:   make(map[uint64][]model.PageID),
+		batchSize: 1000, // 每 1000 次操作推进一次 epoch
 	}
 }
 

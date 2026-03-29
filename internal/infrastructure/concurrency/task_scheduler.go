@@ -581,17 +581,17 @@ type SchedulerStats struct {
 
 // TaskScheduler 多调度器管理器（V2：独立队列架构）
 type TaskScheduler struct {
-	cores            []*SchedulerCore
-	coreCount        int
+	cores     []*SchedulerCore
+	coreCount int
 	// executor 已移除：runLoop 直接在 goroutine + LockOSThread 中运行
-	registeredOrders map[int]string       // ExecutionOrder → TaskName
+	registeredOrders map[int]string // ExecutionOrder → TaskName
 	mu               sync.RWMutex
 	running          atomic.Bool
 	stats            SchedulerStats
 
 	// 负载均衡：RoundRobin 快速路径 + LoadBalance 慢路径
-	rrCounter    atomic.Uint64 // RoundRobin 计数器（快速路径 O(1)）
-	lbThreshold  int64         // 负载阈值 = lbLowLoadPerCore × coreCount（低负载时用 RR）
+	rrCounter   atomic.Uint64 // RoundRobin 计数器（快速路径 O(1)）
+	lbThreshold int64         // 负载阈值 = lbLowLoadPerCore × coreCount（低负载时用 RR）
 }
 
 // NewTaskScheduler 创建多调度器管理器（V2）

@@ -37,7 +37,7 @@ type slot struct {
 // node 链表溢出节点
 type node struct {
 	next atomic.Pointer[node]
-	task unsafe.Pointer                   // atomic access via runtime
+	task unsafe.Pointer                    // atomic access via runtime
 	_    [cacheLineSize - 8 - ptrSize]byte // next(8) + task(8) + pad → 64
 }
 

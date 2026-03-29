@@ -289,15 +289,7 @@ func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, c
 	entry.keyLen = keyLen
 
 	if child != 0 {
-		var childVersion uint64
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					childVersion = 0
-				}
-			}()
-			childVersion = pa.GetVersion(child)
-		}()
+		childVersion := pa.GetVersionSafe(child)
 		entry.child = EncodeChildWithVersion(child, childVersion)
 	} else {
 		entry.child = 0
@@ -394,17 +386,12 @@ func (pa *PageAccessor) GetVersion(pageID uint32) uint64 {
 // GetVersionSafe 安全获取页面版本号，如果页面不存在则返回 0
 // 用于测试场景或边界情况，其中子页面可能尚未分配
 func (pa *PageAccessor) GetVersionSafe(pageID uint32) uint64 {
-	var version uint64
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				// pageID 不存在或无效，使用版本号 0
-				version = 0
-			}
-		}()
-		version = pa.GetVersion(pageID)
-	}()
-	return version
+	// pageID 为 0 或超出已分配范围时直接返回 0
+	// 避免访问未映射的 mmap 内存导致 SIGBUS（OS 信号不可被 recover 捕获）
+	if pageID == 0 || pageID >= pa.pm.nextPageID.Load() {
+		return 0
+	}
+	return pa.GetHeader(pageID).version
 }
 
 // SetVersion 设置页面版本号

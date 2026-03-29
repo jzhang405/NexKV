@@ -669,7 +669,7 @@ type SchedulerStats struct {
 type TaskScheduler struct {
 	cores            []*SchedulerCore
 	coreCount        int
-	executor         service.TaskExecutor
+	executor         service.TaskExecutor // 保留字段但内部不使用，委托方仍传参
 	registeredOrders map[int]string // ExecutionOrder → TaskName
 	mu               sync.RWMutex
 	running          atomic.Bool
@@ -866,46 +866,27 @@ func (m *TaskScheduler) selectLeastLoadedCore() int {
 }
 
 // Start 启动所有调度器核心
+// executor 参数保留兼容（内部不使用），直接 goroutine + LockOSThread
 func (m *TaskScheduler) Start(executor service.TaskExecutor) error {
-	// 使用 CompareAndSwap 确保原子性：如果已启动则返回错误
 	if !m.running.CompareAndSwap(false, true) {
 		return errors.SchedulerAlreadyRunning()
 	}
 
+	// 兼容保留 executor 引用（内部不再使用）
 	m.executor = executor
 
-	// 提交所有核心到 Executor
 	for i, core := range m.cores {
 		core.running.Store(true)
-		// P0 修复：在 Submit 之前调用 wg.Add()，确保时序正确
 		core.wg.Add(1)
 
-		sourceID := model.MustParseSourceID(fmt.Sprintf("multi-scheduler-v2:%d:runloop", i))
-
-		err := executor.Submit(
-			context.Background(),
-			sourceID,
-			model.TaskPriorityHigh,
-			func(ctx context.Context) {
-				// P0 修复：在 defer 中调用 Done()，确保一定被调用
-				defer core.wg.Done()
-				core.runLoop()
-			},
-		)
-
-		if err != nil {
-			// 提交失败，回滚已设置的状态
-			core.wg.Done() // 回滚 Add()
-			for j := range i {
-				m.cores[j].running.Store(false)
-				m.cores[j].wg.Done() // 回滚之前的 Add()
-			}
-			m.running.Store(false)
-			return errors.CoreStartFailed(i, err)
-		}
+		go func(coreIdx int, c *SchedulerCore) {
+			defer c.wg.Done()
+			runtime.LockOSThread()
+			_ = pinToCore(coreIdx)
+			c.runLoop()
+		}(i, core)
 	}
 
-	// 所有核心成功启动，running 已在开始时通过 CompareAndSwap 设置为 true
 	return nil
 }
 
@@ -915,17 +896,15 @@ func (m *TaskScheduler) Stop() {
 		return
 	}
 
-	// 先取消每个核心的 context（触发 runLoop 中的 ctx.Done() 检查）
 	for _, core := range m.cores {
 		core.cancel()
 	}
 
-	// 唤醒所有核心
+	// 唤醒所有阻塞在 cond.Wait 的 runLoop
 	for _, core := range m.cores {
 		core.wakeup()
 	}
 
-	// 等待所有核心退出
 	for _, core := range m.cores {
 		core.wg.Wait()
 	}

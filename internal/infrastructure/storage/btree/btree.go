@@ -194,8 +194,7 @@ type BTree struct {
 	hotPageThreshold int64      // 热数据阈值（来自配置）
 
 	// Scheduler for concurrent write operations
-	scheduler       *concurrency.TaskScheduler   // Task scheduler for concurrent operations
-	perCoreExecutor *concurrency.PerCoreExecutor // Per-Core executor (owned by scheduler)
+	scheduler *concurrency.TaskScheduler // Task scheduler for concurrent operations
 
 	// Split coordination: 防止多个 goroutine 同时分裂同一页面
 	splitMuMap sync.Map // map[uint32]*sync.Mutex - 页面级别的分裂锁
@@ -476,21 +475,7 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	}
 
 	// 启动 TaskScheduler
-	executor, err := concurrency.NewPerCoreExecutor()
-	if err != nil {
-		// 清理资源
-		if chunkMgr != nil {
-			chunkMgr.Close()
-		}
-		if walImpl != nil {
-			walImpl.Close()
-		}
-		btree.scheduler.Stop()
-		return nil, errpkg.BTreeCreateExecutor(err)
-	}
-	btree.perCoreExecutor = executor // 保存 executor 引用
-
-	if err := btree.scheduler.Start(executor); err != nil {
+	if err := btree.scheduler.Start(nil); err != nil {
 		// 清理资源
 		if chunkMgr != nil {
 			chunkMgr.Close()
@@ -1153,12 +1138,6 @@ func (b *BTree) Close() error {
 	if b.scheduler != nil {
 		b.scheduler.Stop()
 		b.scheduler = nil
-	}
-
-	// 关闭 PerCoreExecutor（停止 worker pool）
-	if b.perCoreExecutor != nil {
-		b.perCoreExecutor.Close()
-		b.perCoreExecutor = nil
 	}
 
 	// Close ChunkManager

@@ -277,8 +277,7 @@ func BenchmarkTaskScheduler_SingleTask_SingleCore(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	executor := &syncExecutor{maxWorkers: 1}
-	err = scheduler.Start(executor)
+	err = scheduler.Start(nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -325,11 +324,6 @@ func BenchmarkTaskScheduler_SingleTask_FourCores(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	executor := &syncExecutor{maxWorkers: 4}
-	err = scheduler.Start(executor)
-	if err != nil {
-		b.Fatal(err)
-	}
 	defer scheduler.Stop()
 
 	b.ResetTimer()
@@ -372,11 +366,6 @@ func BenchmarkTaskScheduler_SingleTask_EightCores(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	executor := &syncExecutor{maxWorkers: 8}
-	err = scheduler.Start(executor)
-	if err != nil {
-		b.Fatal(err)
-	}
 	defer scheduler.Stop()
 
 	b.ResetTimer()
@@ -423,11 +412,6 @@ func BenchmarkTaskScheduler_ShardRouting_Fixed(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	executor := &syncExecutor{maxWorkers: 4}
-	err = scheduler.Start(executor)
-	if err != nil {
-		b.Fatal(err)
-	}
 	defer scheduler.Stop()
 
 	b.ResetTimer()
@@ -469,11 +453,6 @@ func BenchmarkTaskScheduler_ShardRouting_Dynamic(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	executor := &syncExecutor{maxWorkers: 4}
-	err = scheduler.Start(executor)
-	if err != nil {
-		b.Fatal(err)
-	}
 	defer scheduler.Stop()
 
 	b.ResetTimer()
@@ -523,8 +502,7 @@ func BenchmarkTaskScheduler_MultiTasks(b *testing.B) {
 		}
 	}
 
-	executor := &syncExecutor{maxWorkers: 4}
-	err := scheduler.Start(executor)
+	err := scheduler.Start(nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -578,11 +556,6 @@ func BenchmarkTaskScheduler_Scalability(b *testing.B) {
 				b.Fatal(err)
 			}
 
-			executor := &syncExecutor{maxWorkers: cores}
-			err = scheduler.Start(executor)
-			if err != nil {
-				b.Fatal(err)
-			}
 			defer scheduler.Stop()
 
 			b.ResetTimer()
@@ -630,11 +603,6 @@ func BenchmarkTaskScheduler_ConcurrentSubmit(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	executor := &syncExecutor{maxWorkers: 4}
-	err = scheduler.Start(executor)
-	if err != nil {
-		b.Fatal(err)
-	}
 	defer scheduler.Stop()
 
 	b.ResetTimer()

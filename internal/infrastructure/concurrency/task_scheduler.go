@@ -670,17 +670,16 @@ type TaskScheduler struct {
 	cores            []*SchedulerCore
 	coreCount        int
 	executor         service.TaskExecutor // 保留字段但内部不使用，委托方仍传参
-	registeredOrders map[int]string // ExecutionOrder → TaskName
+	registeredOrders map[int]string       // ExecutionOrder → TaskName
 	mu               sync.RWMutex
 	running          atomic.Bool
 	stats            SchedulerStats
 
 	// 负载均衡缓存（避免每次都计算）
-	loadBalanceCacheInterval  int          // 缓存间隔（多少次 Enqueue 重新计算一次，<=0 表示使用动态策略）
-	loadBalanceIntervalManual bool         // 是否手动设置缓存间隔（true=使用手动值，false=使用动态策略）
+	loadBalanceCacheInterval  atomic.Int64 // 缓存间隔（多少次 Enqueue 重新计算一次，<=0 表示使用动态策略）
+	loadBalanceIntervalManual atomic.Bool  // 是否手动设置缓存间隔（true=使用手动值，false=使用动态策略）
 	loadBalanceCache          atomic.Value // 存储 *loadBalanceCache，使用 atomic.Value 避免锁竞争
 	loadBalanceCounter        atomic.Int64 // 计数器
-	loadBalanceMu             sync.RWMutex // 保护 loadBalanceCacheInterval/loadBalanceIntervalManual
 }
 
 // NewTaskScheduler 创建多调度器管理器（V2）
@@ -697,9 +696,9 @@ func NewTaskScheduler(name string, coreCount int) *TaskScheduler {
 		stats: SchedulerStats{
 			CoreStats: make([]CoreStats, coreCount),
 		},
-		loadBalanceCacheInterval:  100,   // 默认值（动态策略下不使用）
-		loadBalanceIntervalManual: false, // P2 优化：默认使用动态策略
 	}
+	m.loadBalanceCacheInterval.Store(100)    // 默认值（动态策略下不使用）
+	m.loadBalanceIntervalManual.Store(false) // P2 优化：默认使用动态策略
 	m.loadBalanceCache.Store(&loadBalanceCache{index: 0, counter: 0, interval: 0})
 
 	// 创建 N 个调度器核心
@@ -815,20 +814,18 @@ func (m *TaskScheduler) calculateDynamicInterval(maxQueueLen int64) int {
 }
 
 // selectLeastLoadedCore 选择队列长度最小的核心（带动态缓存优化，P2 优化）
-// 使用 atomic.Value 避免读写锁竞争
+// 使用 atomic.Value 和 atomic 字段避免读写锁竞争
 func (m *TaskScheduler) selectLeastLoadedCore() int {
-	// 确定使用的缓存间隔
+	// 确定使用的缓存间隔（无锁读取）
 	var interval int
-	m.loadBalanceMu.RLock()
-	if m.loadBalanceIntervalManual {
+	if m.loadBalanceIntervalManual.Load() {
 		// 手动设置的间隔（用于测试和特殊场景）
-		interval = m.loadBalanceCacheInterval
+		interval = int(m.loadBalanceCacheInterval.Load())
 	} else {
 		// P2 优化：动态计算缓存间隔
 		maxQueueLen := m.getMaxQueueLen()
 		interval = m.calculateDynamicInterval(maxQueueLen)
 	}
-	m.loadBalanceMu.RUnlock()
 
 	// 原子递增计数器
 	counter := m.loadBalanceCounter.Add(1)
@@ -933,26 +930,21 @@ func (m *TaskScheduler) GetStats() *SchedulerStats {
 //
 // 注意：设置此值将覆盖 P2 动态缓存策略，改用手动间隔。传入 0 或负值可恢复动态策略。
 func (m *TaskScheduler) SetLoadBalanceCacheInterval(interval int) {
-	m.loadBalanceMu.Lock()
-	defer m.loadBalanceMu.Unlock()
-
 	if interval < 1 {
 		// 恢复动态策略（P2 优化）
-		m.loadBalanceIntervalManual = false
-		m.loadBalanceCacheInterval = 100 // 默认值（实际上不会使用）
+		m.loadBalanceIntervalManual.Store(false)
+		m.loadBalanceCacheInterval.Store(100) // 默认值（实际上不会使用）
 		return
 	}
 
 	// 手动设置间隔（覆盖动态策略）
-	m.loadBalanceIntervalManual = true
-	m.loadBalanceCacheInterval = interval
+	m.loadBalanceIntervalManual.Store(true)
+	m.loadBalanceCacheInterval.Store(int64(interval))
 }
 
 // GetLoadBalanceCacheInterval 获取当前负载均衡缓存间隔
 func (m *TaskScheduler) GetLoadBalanceCacheInterval() int {
-	m.loadBalanceMu.RLock()
-	defer m.loadBalanceMu.RUnlock()
-	return m.loadBalanceCacheInterval
+	return int(m.loadBalanceCacheInterval.Load())
 }
 
 // calculateCoreQueueLen 计算核心的实际队列长度

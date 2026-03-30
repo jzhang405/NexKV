@@ -302,49 +302,42 @@ func (e *EpochBasedFreeList) Add(pageID model.PageID) {
 
 | # | 锁 | 类型 | 文件:行 | 保护对象 | 热路径 | 争用风险 |
 |---|-----|------|---------|---------|--------|---------|
-| **1** | `BTree.mu` | `sync.RWMutex` | `btree.go:83` | rootRef 读写、Get/Set/Delete 全操作 | **每次 Set/Get 必经** | 🔴 极高 |
+| ~~1~~ | ~~`BTree.mu`~~ | ~~`sync.RWMutex`~~ | ~~btree.go:83~~ | ~~rootRef 读写~~ | ~~每次 Set/Get 必经~~ | ❌ **不存在，见修正说明** |
+| **1** | `PageRefCache.mu` | `sync.RWMutex` | `btree.go:83` | cache map[PageID]*PageRef（Go map 并发安全） | **每次 searchPath 必经** | 🟡 中（RLock 低开销） |
 | **2** | `BTree.writeMu` | `sync.Mutex` | `btree.go:190` | 持久化操作（chunkMgr 非空时） | Set 成功后（持久化模式） | 🟡 中（纯内存不触发） |
 | **3** | `BTree.closedMu` | `sync.RWMutex` | `btree.go:164` | closed 标志 | Close() | 🟢 低 |
 | **4** | `BTree.splitMuMap` | `sync.Map` → `*sync.Mutex` | `btree.go:200` | 按页面分裂协调 | 分裂时按 pageID | 🟡 中（热点页分裂） |
 | **5** | `BTree.epochBasedFreeList.mu` | `sync.Mutex` | `btree.go:211` | epoch → pending map | 分裂释放页面 + 活锁检测 | 🔴 高 |
-| **6** | `PageRefCache.mu` | `sync.RWMutex` | `btree.go:83` | cache map[PageID]*PageRef | **每次 searchPath 必经** | 🔴 极高 |
-| **7** | `PageLock.state` | `atomic.Int64` | `page_lock.go:24` | 叶子级锁状态（CAS） | TryLock/Lock/Unlock | 🔴 极高 |
-| **8** | `PageLock.mu` | `sync.Mutex` | `page_lock.go:25` | 保护 sync.Cond | Lock 阻塞路径 | 🟡 中 |
-| **9** | `COWDeltaRef.mu` | `sync.RWMutex` | `cow_delta_ref.go:80` | Delta 链读写 | Delta 操作（已禁用） | 🟢 低 |
-| **10** | `CCOWManager.snapshotMu` | `sync.RWMutex` | `ccow_manager.go:19` | 快照 ID | 快照操作 | 🟢 低 |
-| **11** | `ChunkManager.mu` | `sync.RWMutex` | `chunk_manager.go:32` | Chunk 索引 | 持久化路径 | 🟢 低（纯内存不触发） |
-| **12** | `Chunk.mu` | `sync.Mutex` | `chunk.go:29` | 文件 I/O | 持久化路径 | 🟢 低 |
-| **13** | `PagePersist.mu` | `sync.Mutex` | `page_persist.go:55` | 持久化操作序列化 | 持久化路径 | 🟢 低 |
-| **14** | `BTreeGC.mu` | `sync.Mutex` | `btree_gc.go:40` | GC 统计 | 后台 GC | 🟢 低 |
-| **15** | `PageLifecycleTracker.mu` | `sync.RWMutex` | `offheap/page_lifecycle_tracker.go:20` | 页面生命周期历史 | 调试/测试 | 🟢 低 |
+| **6** | `PageLock.state` | `atomic.Int64` | `page_lock.go:24` | 叶子级锁状态（CAS） | TryLock/Lock/Unlock | 🔴 极高 |
+| **7** | `PageLock.mu` | `sync.Mutex` | `page_lock.go:25` | 保护 sync.Cond | Lock 阻塞路径 | 🟡 中 |
+| **8** | `COWDeltaRef.mu` | `sync.RWMutex` | `cow_delta_ref.go:80` | Delta 链读写 | Delta 操作（已禁用） | 🟢 低 |
+| **9** | `CCOWManager.snapshotMu` | `sync.RWMutex` | `ccow_manager.go:19` | 快照 ID | 快照操作 | 🟢 低 |
+| **10** | `ChunkManager.mu` | `sync.RWMutex` | `chunk_manager.go:32` | Chunk 索引 | 持久化路径 | 🟢 低（纯内存不触发） |
+| **11** | `Chunk.mu` | `sync.Mutex` | `chunk.go:29` | 文件 I/O | 持久化路径 | 🟢 低 |
+| **12** | `PagePersist.mu` | `sync.Mutex` | `page_persist.go:55` | 持久化操作序列化 | 持久化路径 | 🟢 低 |
+| **13** | `BTreeGC.mu` | `sync.Mutex` | `btree_gc.go:40` | GC 统计 | 后台 GC | 🟢 低 |
+| **14** | `PageLifecycleTracker.mu` | `sync.RWMutex` | `offheap/page_lifecycle_tracker.go:20` | 页面生命周期历史 | 调试/测试 | 🟢 低 |
+
+> **⚠️ 修正说明 (2026-03-30)**: 原报告错误地将 `PageRefCache.mu`（btree.go:83，属于 `PageRefCache` 结构体）标记为 `BTree.mu`。`BTree` 结构体没有 `mu` 字段。Get/Set 路径不获取任何全局读写锁。详见 `btree-mu-lock-correction.md`。
 
 ### 6.2 锁详细分析（按争用风险排序）
 
 ---
 
-#### 🔴 锁 #1: `BTree.mu` — 全局读写锁
+#### ~~🔴 锁 #1: `BTree.mu` — 全局读写锁~~ ❌ 不存在
 
-```
-类型: sync.RWMutex
-位置: btree.go:83
-保护: rootRef 的读写操作
-```
-
-**获取位置**:
-
-| 调用点 | 操作 | 文件:行 |
-|--------|------|---------|
-| `BTree.Get()` | RLock | `btree.go:95` |
-| `BTree.Set()` | RLock → 可能升级 Lock | `btree.go:102-103` |
-| `BTree.Delete()` | RLock → 可能升级 Lock | `btree.go:116-117` |
-| `BTree.Close()` | Lock | `btree.go:132` |
-| 根节点分裂 | Lock | `btree.go:139-147` |
-
-**问题**: 每次 `SetWithRetryAndQueue` 调用 `BTree.Set()` 时获取 RLock。8 线程下所有写操作竞争同一把读锁。根节点分裂时升级为写锁，**阻塞所有读写操作**。
+> **⚠️ 修正 (2026-03-30)**: `BTree` 结构体没有 `mu` 字段。原报告将 `PageRefCache.mu`（btree.go:83）误认为 `BTree.mu`。
+>
+> **实际情况**:
+> - `BTree.Get()` (`btree.go:524`)：不获取任何全局锁，直接通过 atomic 指针读取
+> - `BTree.Set()` (`btree.go:639`)：不获取任何全局锁，委托给 `SetWithRetryAndQueue` → `setWithLeafLock`
+> - Root 更新：通过 `RootPageRef.ReplacePage()` 的 `atomic.Pointer.CompareAndSwap` 实现，无锁
+>
+> 详见 `btree-mu-lock-correction.md`。
 
 ---
 
-#### 🔴 锁 #6: `PageRefCache.mu` — 全局缓存锁
+#### 🟡 锁 #1 (修正): `PageRefCache.mu` — 缓存 map 线程安全锁
 
 ```
 类型: sync.RWMutex
@@ -501,11 +494,10 @@ func (e *EpochBasedFreeList) Add(pageID model.PageID) {
 
 ### 6.3 锁获取频率估算（8 线程, 50K ops/thread）
 
-单次 `Set` 成功操作的锁获取链路：
+单次 `Set` 成功操作的锁获取链路（⚠️ 已修正，移除不存在的 `BTree.mu`）：
 
 ```
 Set → SetWithRetryAndQueue
-  ├── BTree.mu.RLock()                          × 1 (per attempt)
   ├── searchPathWithRefs
   │   └── PageRefCache.GetOrCreate → mu.RLock   × ~3 (树深度)
   ├── PageLock.TryLock() (atomic CAS)            × 1
@@ -520,19 +512,18 @@ Set → SetWithRetryAndQueue
   │   ├── EpochBasedFreeList 活锁检测 → mu.Lock  × 1
   │   └── PageRefCache.Replace → mu.Lock         × 1-3
   ├── PageRefCache.Replace → mu.Lock             × 1
-  ├── [持久化路径]
-  │   └── writeMu.Lock()                         × 0-1 (纯内存跳过)
-  └── BTree.mu.RUnlock()                         × 1
+  └── [持久化路径]
+      └── writeMu.Lock()                         × 0-1 (纯内存跳过)
 ```
+
+> **注意**: Get/Set 路径不获取任何全局 BTree 锁。Root 更新通过 `atomic.Pointer.CompareAndSwap` 实现。
 
 **重试场景** (97% 操作): 每次重试重复上述锁获取链路，但 TryLock 失败后提前返回：
 
 ```
 Set → SetWithRetryAndQueue
-  ├── BTree.mu.RLock()                           × 1
   ├── PageRefCache.mu.RLock × 3
   ├── PageLock.TryLock() → FAIL                   × 1
-  ├── BTree.mu.RUnlock()                          × 1
   └── runtime.Gosched() → schedule → park         × 1
 ```
 
@@ -586,7 +577,11 @@ runtime.procyieldAsm                      5.65% (自旋等待)
 
 ## 8. 总结
 
-**核心瓶颈**: 不是某个特定锁，而是 **ErrRetry → 重试 → 调度** 的恶性循环:
+> **⚠️ 修正 (2026-03-30)**: 原报告错误声称 `BTree.mu` (sync.RWMutex) 存在于 btree.go:83 且 Get/Set 必经。
+> 实际上 `BTree` 结构体没有 `mu` 字段，Get/Set 不获取任何全局读写锁。
+> Root 更新通过 `atomic.Pointer.CompareAndSwap` 实现。详细分析见 `btree-mu-lock-correction.md`。
+
+**核心瓶颈**: 不是某个特定全局锁，而是 **ErrRetry → 重试 → 调度** 的恶性循环:
 
 1. **8 线程竞争少量叶子锁** → 7/8 操作 TryLock 失败
 2. **ErrRetry 触发 runtime.Gosched** → goroutine 被挂起

@@ -7,6 +7,7 @@ package btree
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"runtime"
 	"strings"
 	"sync"
@@ -1099,6 +1100,14 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 	if err != nil {
 		b.offheapAdapter.pm.Free(uint32(leftPageID))
 		return errpkg.BTreeAllocRightIndexPage(err)
+	}
+
+	// 安全检查：新页面不能等于源页面（页面回收重用会导致 BulkInit 清空源页面数据）
+	srcInternalID := uint32(internalPageID)
+	if uint32(leftPageID) == srcInternalID || uint32(rightPageID) == srcInternalID {
+		b.offheapAdapter.pm.Free(uint32(leftPageID))
+		b.offheapAdapter.pm.Free(uint32(rightPageID))
+		return fmt.Errorf("allocated page conflicts with source page %d", internalPageID)
 	}
 
 	// Step 5: 使用 BulkInit 零拷贝物化左右两半

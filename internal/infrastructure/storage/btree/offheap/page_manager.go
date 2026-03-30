@@ -34,7 +34,7 @@ type PageManager struct {
 	total           uint32                // 总页数
 	used            atomic.Uint32         // 已使用页数
 	nextPageID      atomic.Uint32         // 下一个要分配的页面ID（单调递增）
-	freeList        *LockFreeQueue        // 空闲 PageID 队列（lock-free，暂时保留但不使用）
+	freeList        *LockFreeQueue        // 空闲 PageID 队列（lock-free）
 	delayedFreeList *LockFreeQueue        // 延迟释放 PageID 队列（已释放但需等待1个epoch）
 	tracker         *PageLifecycleTracker // 页面生命周期追踪器（调试用）
 	initOnce        sync.Once             //nolint:unused // 确保初始化一次
@@ -91,7 +91,18 @@ func NewPageManager(mmapSize int) (*PageManager, error) {
 }
 
 // Alloc 分配一个页面
+// 优先从 freeList 回收已释放页面，nextPageID 作为 fallback
+// 注意：delayedFreeList → freeList 由 epoch 机制（AdvanceDelayedFreeList）管理
+// 不在 Alloc 中主动 flush，避免 COW 操作期间回收正在使用的源页面
 func (pm *PageManager) Alloc() (uint32, error) {
+	// 路径 1：从 freeList 取已释放页面（lock-free）
+	if pageID, ok := pm.freeList.Dequeue(); ok {
+		pm.used.Add(1)
+		pm.tracker.RecordAlloc(pageID)
+		return pageID, nil
+	}
+
+	// 路径 2：fallback，nextPageID 递增
 	pageID := pm.nextPageID.Load()
 	if pageID >= pm.total {
 		return 0, errpkg.OffHeapOutOfMemory(int(pm.total), int(pm.used.Load()))

@@ -20,6 +20,7 @@ type OffHeapAdapter struct {
 	pm           *offheap.PageManager
 	pa           *offheap.PageAccessor
 	materializer *offheap.OffHeapMaterializer
+	epochFree    func(model.PageID) // epoch 释放回调（COW 旧页面走 epoch 机制，由 BTree 层注入）
 }
 
 // NewOffHeapAdapter 创建 Off-Heap 适配器
@@ -28,6 +29,21 @@ func NewOffHeapAdapter(pm *offheap.PageManager) *OffHeapAdapter {
 		pm:           pm,
 		pa:           offheap.NewPageAccessor(pm),
 		materializer: offheap.NewOffHeapMaterializer(pm),
+	}
+}
+
+// SetEpochFree 设置 epoch 释放回调
+// COW 路径的旧页面通过此回调走 epoch 机制，避免 use-after-free
+func (a *OffHeapAdapter) SetEpochFree(fn func(model.PageID)) {
+	a.epochFree = fn
+}
+
+// freeOldPage 释放 COW 旧页面（走 epoch 机制或直接释放）
+func (a *OffHeapAdapter) freeOldPage(pageID uint32) {
+	if a.epochFree != nil {
+		a.epochFree(model.PageID(pageID))
+	} else {
+		a.pm.Free(pageID)
 	}
 }
 
@@ -195,8 +211,8 @@ func (a *OffHeapAdapter) updateLeafEntryFullMaterialization(pageID model.PageID,
 		values = append(values, vCopy)
 	}
 
-	// 释放旧页面
-	a.pm.Free(uint32(pageID))
+	// 释放旧页面（走 epoch 机制，避免并发读访问已回收页面）
+	a.freeOldPage(uint32(pageID))
 
 	// 分配新页面
 	newPageID, err := a.pm.Alloc()
@@ -236,6 +252,15 @@ func (a *OffHeapAdapter) updateLeafEntryBulkCOW(
 		return 0, errpkg.BTreeAllocNewPageForSplit(err)
 	}
 
+	// 关键安全检查：如果 Alloc 返回的页面恰好是源页面（页面被回收重用），
+	// BulkInitLeafFromSource 会先 InitLeafPage 清空目标页面（即源页面自身），
+	// 导致后续读取 count=0 而 panic。
+	// 降级到 fullMaterialization 路径（先将数据读到堆上再释放源页面）。
+	if newRawPageID == srcPageID {
+		a.pm.Free(newRawPageID)
+		return a.updateLeafEntryFullMaterialization(pageID, idx, nil, value)
+	}
+
 	// 2. BulkInitLeafFromSource 一次性拷贝所有条目（零堆拷贝）
 	_, err = a.pa.BulkInitLeafFromSource(srcPageID, newRawPageID, 0, count)
 	if err != nil {
@@ -249,8 +274,8 @@ func (a *OffHeapAdapter) updateLeafEntryBulkCOW(
 		return 0, fmt.Errorf("overwrite leaf value failed: valLen insufficient")
 	}
 
-	// 4. 释放旧页面
-	a.pm.Free(srcPageID)
+	// 4. 释放旧页面（走 epoch 机制，避免并发读访问已回收页面）
+	a.freeOldPage(srcPageID)
 
 	return model.PageID(newRawPageID), nil
 }
@@ -556,10 +581,12 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 		return 0, 0, nil, errpkg.BTreeAllocRightPage(err)
 	}
 
-	if leftPageID == rightPageID {
+	srcRawID := uint32(pageID)
+	if leftPageID == rightPageID || leftPageID == srcRawID || rightPageID == srcRawID {
 		a.pm.Free(leftPageID)
 		a.pm.Free(rightPageID)
-		return 0, 0, nil, errpkg.BTreeDuplicatePageIDAlloc(leftPageID)
+		// 源页面被回收重用，降级到 Go 堆路径（先将数据拷贝到堆上再释放源页面）
+		return a.splitOffHeapLeafPageFallback(pageID)
 	}
 	if leftPageID == 0 || rightPageID == 0 {
 		a.pm.Free(leftPageID)
@@ -982,9 +1009,9 @@ func (a *OffHeapAdapter) DeleteFromLeafPage(
 ) (model.PageID, error) {
 	// 1. 搜索 key 在页面中的位置
 	idx, found, err := a.pa.SearchKey(uint32(pageID), key, true)
-		if err != nil {
-			return pageID, err
-		}
+	if err != nil {
+		return pageID, err
+	}
 	if !found {
 		return pageID, ErrKeyNotFound
 	}

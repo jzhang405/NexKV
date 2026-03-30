@@ -373,6 +373,11 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// 创建 Epoch-based 延迟释放列表
 	epochBasedFreeList := NewEpochBasedFreeList()
 
+	// 注入 epoch 释放回调：COW 旧页面走 epoch 机制，避免 use-after-free
+	offheapAdapter.SetEpochFree(func(pageID model.PageID) {
+		epochBasedFreeList.Add(pageID)
+	})
+
 	btree := &BTree{
 		config:             config,
 		cowConfig:          cowConfig,
@@ -1202,6 +1207,14 @@ func (b *BTree) Close() error {
 
 	b.closed = true
 	return nil
+}
+
+// GetOffHeapAdapterStats 暴露 OffHeap 页面统计（调试用）
+func (b *BTree) GetOffHeapAdapterStats() offheap.Stats {
+	if b.offheapAdapter == nil {
+		return offheap.Stats{}
+	}
+	return b.offheapAdapter.GetStats()
 }
 
 // ===== 性能优化：热数据和内存监控 =====

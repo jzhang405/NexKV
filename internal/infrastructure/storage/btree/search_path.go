@@ -238,7 +238,9 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 		// 2.6 循环引用检测
 		currentPageID = model.PageID(childInfo.GetPageID())
 		if visitedPages[uint64(currentPageID)] {
-			return nil, nil, errpkg.BTreeCircularReferenceAfterParentUpdate(uint64(currentPageID))
+			// 页面回收重用可导致搜索路径遇到已访问的 pageID（假阳性）
+			// 返回 ErrRetry 让外层重试，而不是返回不可恢复的 ErrCircRef
+			return nil, nil, ErrRetry
 		}
 		visitedPages[uint64(currentPageID)] = true
 

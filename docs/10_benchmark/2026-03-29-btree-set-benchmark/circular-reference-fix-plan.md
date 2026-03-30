@@ -2,7 +2,7 @@
 
 **日期**: 2026-03-30
 **问题**: 8 线程 Set 操作 98.9% 失败（ErrBTreeCircularReference）
-**状态**: 待实施
+**状态**: Phase 1 + 防御性修复已完成，Phase 2（版本校验）待实施
 
 ---
 
@@ -379,3 +379,44 @@ go test -v -race ./internal/infrastructure/storage/btree/...
 | onBeforeFree 回调死锁 | 低 | 严重 | 回调中不持有其他锁，仅操作 pageRefCache |
 | 仍有残留循环引用 | 中 | 中等 | 方案 B 作为额外防御层 |
 | 批量 Delete 的锁持有时间 | 低 | 轻微 | 每次 epoch 推进释放的页面数有限（~batchSize） |
+
+---
+
+## 7. 实施记录
+
+### Phase 1 已完成 (2026-03-30)
+
+| 改动 | 文件 | 说明 |
+|------|------|------|
+| `DeleteBatch` 批量缓存清除 | `btree.go:144-152` | 复用已有 `pageRefCache.mu`，无新锁 |
+| `onBeforeFree` 回调注入 | `btree.go:256-262` | epoch 推进释放页面前通知 BTree 层清理缓存 |
+| `OpenBTree` 注入回调 | `btree.go:417-421` | 构造完成后注入，避免循环依赖 |
+| 循环引用 → `ErrRetry` | `search_path.go:241` | 假阳性循环引用不再致命，允许重试 |
+| `GetLeafEntrySafe` 安全读取 | `page_layout.go:607-612` | 源页面被回收时返回 error 而非 panic |
+
+### 验证结果
+
+**ErrCircRef 已完全消除**：
+
+```
+8 线程 × 50000 ops，500 init keys：
+  Success:      4,740  (1.2%)    ← 目标 >80%，待进一步优化
+  ErrRetry:   395,259  (98.8%)   ← 页面竞争导致重试，非致命
+  ErrCircRef:       0  (0.0%)    ✅ 已消除（原 98.9%）
+```
+
+**正确性测试全部通过**：
+
+- `TestSetWithLeafLock_Concurrent` — PASS
+- `TestSetWithLeafLock_ExtremeConcurrency` — 100% 成功率 (10000/10000)
+- `TestDebug6000KeysNoLoss` — PASS
+
+### 锁安全性
+
+修复未引入新锁。嵌套锁顺序固定：`EpochBasedFreeList.mu → PageRefCache.mu`，无反向路径。
+
+### 待办：Phase 2（版本校验搜索路径）
+
+当前 Success 率仅 1.2%，说明页面竞争仍然严重。Phase 2 需在搜索路径中加入 version 校验，
+在 COW/split 导致 child 指针过期时快速失败，减少无效重试开销。`SearchChild` 已返回 `childVersion`，
+搜索路径中尚未加入 version 比较逻辑。

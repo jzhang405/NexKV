@@ -604,7 +604,12 @@ func (pa *PageAccessor) BulkInitLeafFromSource(
 	// 逐条从源页面读取并插入目标页面
 	// key/value 是 mmap 切片，不经过 Go 堆分配
 	for i := startIdx; i < endIdx; i++ {
-		entry := pa.GetLeafEntry(srcPageID, i)
+		entry, err := pa.GetLeafEntrySafe(srcPageID, i)
+		if err != nil {
+			// 源页面在拷贝过程中被回收重用（count 已变）
+			// 返回错误让调用者重试，而非 panic
+			return 0, fmt.Errorf("source page recycled during bulk init: %w", err)
+		}
 		key := pa.GetKey(srcPageID, entry.keyOff, entry.keyLen)
 		value := pa.GetValue(srcPageID, entry.valOff, entry.valLen)
 		dstIdx := i - startIdx

@@ -69,6 +69,11 @@ type BTreeConfig struct {
 	// EnablePool enables object pooling (based on Phase 0.5 validation).
 	EnablePool bool
 
+	// DisableScheduler disables internal TaskScheduler.
+	// When true, Set() uses direct path (setWithLeafLock) without scheduler overhead.
+	// Useful for benchmarking direct vs scheduler path performance.
+	DisableScheduler bool
+
 	// Compression is the compression type.
 	Compression CompressionType
 

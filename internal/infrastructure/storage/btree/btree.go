@@ -435,93 +435,94 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		}
 	}
 
-	// 方案 2：初始化内置 TaskScheduler
-	// 使用自动检测的 CPU 核心数
-	schedulerCores := runtime.NumCPU()
-	btree.scheduler = concurrency.NewTaskScheduler("btree", schedulerCores)
+	// 方案 2：初始化内置 TaskScheduler（可通过 DisableScheduler 跳过）
+	if config == nil || !config.DisableScheduler {
+		schedulerCores := runtime.NumCPU()
+		btree.scheduler = concurrency.NewTaskScheduler("btree", schedulerCores)
 
-	// 注册 btree-set 任务
-	err = btree.scheduler.RegisterTask(
-		func(item any) concurrency.TaskStatus {
-			runner, ok := item.(model.TaskRunner)
-			if !ok {
-				return concurrency.TaskPassed
-			}
-			// Run() 是同步执行，内部 CAS(TaskQueued→TaskExecuting) 后直接执行并 close(done)
-			runner.Run(context.Background(), nil)
-			// Run() 已完成，直接读错误字段，无需 Wait() 阻塞
-			if errItem, ok := item.(interface{ GetError() error }); ok {
-				if err := errItem.GetError(); err != nil {
-					if errors.Is(err, ErrRetry) {
-						return concurrency.TaskRetrying
-					}
-					return concurrency.TaskFailed
+		// 注册 btree-set 任务
+		err = btree.scheduler.RegisterTask(
+			func(item any) concurrency.TaskStatus {
+				runner, ok := item.(model.TaskRunner)
+				if !ok {
+					return concurrency.TaskPassed
 				}
-			}
-			return concurrency.TaskPassed
-		},
-		"btree-set",
-		model.TaskPriorityNormal,
-		0, // executionOrder = 0 (数组索引 0)
-	)
-	if err != nil {
-		// 清理资源
-		if chunkMgr != nil {
-			chunkMgr.Close()
-		}
-		if walImpl != nil {
-			walImpl.Close()
-		}
-		return nil, errpkg.BTreeRegisterTask("set", err)
-	}
-
-	// 注册 btree-split 任务（异步父节点分裂）
-	// 基于 Lealone 的 asyncSplitPage() 设计
-	err = btree.scheduler.RegisterTask(
-		func(item any) concurrency.TaskStatus {
-			runner, ok := item.(model.TaskRunner)
-			if !ok {
-				return concurrency.TaskPassed
-			}
-			// Run() 是同步执行，内部 CAS(TaskQueued→TaskExecuting) 后直接执行并 close(done)
-			runner.Run(context.Background(), nil)
-			// Run() 已完成，直接读错误字段，无需 Wait() 阻塞
-			if errItem, ok := item.(interface{ GetError() error }); ok {
-				if err := errItem.GetError(); err != nil {
-					if errors.Is(err, ErrRetry) {
-						return concurrency.TaskRetrying
+				// Run() 是同步执行，内部 CAS(TaskQueued→TaskExecuting) 后直接执行并 close(done)
+				runner.Run(context.Background(), nil)
+				// Run() 已完成，直接读错误字段，无需 Wait() 阻塞
+				if errItem, ok := item.(interface{ GetError() error }); ok {
+					if err := errItem.GetError(); err != nil {
+						if errors.Is(err, ErrRetry) {
+							return concurrency.TaskRetrying
+						}
+						return concurrency.TaskFailed
 					}
-					return concurrency.TaskFailed
 				}
+				return concurrency.TaskPassed
+			},
+			"btree-set",
+			model.TaskPriorityNormal,
+			0, // executionOrder = 0
+		)
+		if err != nil {
+			// 清理资源
+			if chunkMgr != nil {
+				chunkMgr.Close()
 			}
-			return concurrency.TaskPassed
-		},
-		"btree-split",
-		model.TaskPriorityHigh, // 高优先级，优先处理父节点分裂
-		1,                      // executionOrder = 1 (数组索引 1)
-	)
-	if err != nil {
-		// 清理资源
-		if chunkMgr != nil {
-			chunkMgr.Close()
+			if walImpl != nil {
+				walImpl.Close()
+			}
+			return nil, errpkg.BTreeRegisterTask("set", err)
 		}
-		if walImpl != nil {
-			walImpl.Close()
-		}
-		btree.scheduler.Stop()
-		return nil, errpkg.BTreeRegisterTask("split", err)
-	}
 
-	// 启动 TaskScheduler
-	if err := btree.scheduler.Start(); err != nil {
-		// 清理资源
-		if chunkMgr != nil {
-			chunkMgr.Close()
+		// 注册 btree-split 任务（异步父节点分裂）
+		// 基于 Lealone 的 asyncSplitPage() 设计
+		err = btree.scheduler.RegisterTask(
+			func(item any) concurrency.TaskStatus {
+				runner, ok := item.(model.TaskRunner)
+				if !ok {
+					return concurrency.TaskPassed
+				}
+				// Run() 是同步执行，内部 CAS(TaskQueued→TaskExecuting) 后直接执行并 close(done)
+				runner.Run(context.Background(), nil)
+				// Run() 已完成，直接读错误字段，无需 Wait() 阻塞
+				if errItem, ok := item.(interface{ GetError() error }); ok {
+					if err := errItem.GetError(); err != nil {
+						if errors.Is(err, ErrRetry) {
+							return concurrency.TaskRetrying
+						}
+						return concurrency.TaskFailed
+					}
+				}
+				return concurrency.TaskPassed
+			},
+			"btree-split",
+			model.TaskPriorityHigh, // 高优先级，优先处理父节点分裂
+			1,                      // executionOrder = 1
+		)
+		if err != nil {
+			// 清理资源
+			if chunkMgr != nil {
+				chunkMgr.Close()
+			}
+			if walImpl != nil {
+				walImpl.Close()
+			}
+			btree.scheduler.Stop()
+			return nil, errpkg.BTreeRegisterTask("split", err)
 		}
-		if walImpl != nil {
-			walImpl.Close()
+
+		// 启动 TaskScheduler
+		if err := btree.scheduler.Start(); err != nil {
+			// 清理资源
+			if chunkMgr != nil {
+				chunkMgr.Close()
+			}
+			if walImpl != nil {
+				walImpl.Close()
+			}
+			return nil, errpkg.BTreeStartScheduler(err)
 		}
-		return nil, errpkg.BTreeStartScheduler(err)
 	}
 
 	return btree, nil

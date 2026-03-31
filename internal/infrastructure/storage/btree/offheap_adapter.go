@@ -101,7 +101,12 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 	// 使用线性搜索替代二分查找
 	// SearchKey 依赖 keys 有序的假设，但页面可能已无序
 	// 使用线性搜索确保即使 keys 无序也能找到正确位置
-	idx, found := a.linearSearchLeaf(uint32(pageID), key)
+	idx, found, count, err := a.linearSearchLeaf(uint32(pageID), key)
+	if err != nil {
+		// TOCTOU: 叶子页在搜索期间被 COW 替换 + epoch 回收 + 重用
+		// 包装为 ErrRetry 让上层自动重试
+		return pageID, false, fmt.Errorf("InsertToOffHeap TOCTOU: %w", ErrRetry)
+	}
 
 	if found {
 		// 更新现有 key（需要重新分配页面，因为 Off-Heap 不可变）
@@ -114,6 +119,18 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 	if a.checkPageFull(uint32(pageID), len(key), len(value)) {
 		// 页面可能已满，返回 splitRequired=true
 		return pageID, true, nil
+	}
+
+	// 原地插入前 TOCTOU 防御：校验页面类型和 count
+	pid := uint32(pageID)
+	if !a.pa.IsLeaf(pid) {
+		// 页面已被回收重用为非叶子页
+		return pageID, false, fmt.Errorf("InsertToOffHeap: page %d is not a leaf page: %w", pageID, ErrRetry)
+	}
+	currentCount := a.pa.GetCount(pid)
+	if currentCount != count {
+		// count 已变化，页面可能已被回收重用
+		return pageID, false, fmt.Errorf("InsertToOffHeap: page %d count changed (%d → %d): %w", pageID, count, currentCount, ErrRetry)
 	}
 
 	// 插入新 KV
@@ -132,26 +149,36 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 
 // linearSearchLeaf 线性搜索叶子页面，找到正确的插入位置
 // 方案 C：不依赖 keys 有序的假设，确保即使页面已损坏也能正确插入
-// 返回：(插入索引, 是否找到)
-func (a *OffHeapAdapter) linearSearchLeaf(pageID uint32, key []byte) (int, bool) {
+// 返回：(插入索引, 是否找到, 搜索时 count, error)
+// TOCTOU 防御：使用 GetLeafEntryOffsetSafe 替代 GetLeafEntryOffset，遇到页面被回收重用时返回 error
+func (a *OffHeapAdapter) linearSearchLeaf(pageID uint32, key []byte) (int, bool, uint16, error) {
 	count := a.pa.GetCount(pageID)
 
 	// 遍历所有现有 keys
 	for i := 0; i < int(count); i++ {
-		keyOff, keyLen, _, _ := a.pa.GetLeafEntryOffset(pageID, i)
+		keyOff, keyLen, _, _, err := a.pa.GetLeafEntryOffsetSafe(pageID, i)
+		if err != nil {
+			// 页面已被回收重用，count 发生变化
+			return 0, false, 0, fmt.Errorf("linearSearchLeaf: page %d TOCTOU: %w", pageID, err)
+		}
 		existingKey := a.pa.GetKey(pageID, keyOff, keyLen)
 		cmp := bytes.Compare(key, existingKey)
 		if cmp == 0 {
 			// 找到相同的 key
-			return i, true
+			return i, true, count, nil
 		} else if cmp < 0 {
 			// 新 key 应该插入到当前位置之前
-			return i, false
+			return i, false, count, nil
 		}
 	}
 
+	// 二次校验：确认页面未被回收重用（count 在扫描期间可能已变化）
+	if a.pa.GetCount(pageID) != count {
+		return 0, false, 0, fmt.Errorf("linearSearchLeaf: page %d count changed during scan", pageID)
+	}
+
 	// 所有现有 keys 都小于新 key，插入到末尾
-	return int(count), false
+	return int(count), false, count, nil
 }
 
 // checkPageFull 检查页面是否已满（直接从页面读取 dataEnd）

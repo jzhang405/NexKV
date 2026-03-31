@@ -192,21 +192,19 @@ func (b *BTree) SetWithRetryAndQueue(
 		}
 
 		err := b.setWithLeafLock(ctx, key, value)
-		switch err {
-		case nil:
+		switch {
+		case err == nil:
 			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
 			return nil
-		case ErrRetry:
+		case errors.Is(err, ErrRetry):
+			if attempt < maxFastRetries-1 {
+				runtime.Gosched()
+			}
+		case errors.Is(err, ErrCircularReference):
 			if attempt < maxFastRetries-1 {
 				runtime.Gosched()
 			}
 		default:
-			if errors.Is(err, ErrCircularReference) {
-				if attempt < maxFastRetries-1 {
-					runtime.Gosched()
-				}
-				break
-			}
 			return err
 		}
 	}

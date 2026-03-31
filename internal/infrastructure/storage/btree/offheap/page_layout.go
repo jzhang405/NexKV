@@ -533,6 +533,16 @@ func (pa *PageAccessor) GetLeafEntryOffset(pageID uint32, index int) (keyOff, ke
 	return entry.keyOff, entry.keyLen, entry.valOff, entry.valLen
 }
 
+// GetLeafEntryOffsetSafe 安全获取叶子条目 offset（TOCTOU 防御）
+// 与 GetLeafEntryOffset 的区别：遇到越界返回 error 而非 panic
+func (pa *PageAccessor) GetLeafEntryOffsetSafe(pageID uint32, index int) (keyOff, keyLen, valOff, valLen uint32, err error) {
+	entry, entryErr := pa.GetLeafEntrySafe(pageID, index)
+	if entryErr != nil {
+		return 0, 0, 0, 0, entryErr
+	}
+	return entry.keyOff, entry.keyLen, entry.valOff, entry.valLen, nil
+}
+
 // GetIndexEntryOffset 获取索引条目的 key offset 和 child（用于跨包访问）
 func (pa *PageAccessor) GetIndexEntryOffset(pageID uint32, index int) (keyOff, keyLen uint32, child uint64) {
 	entry := pa.GetIndexEntry(pageID, index)

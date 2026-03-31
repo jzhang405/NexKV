@@ -413,10 +413,18 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 	}
 
 	// 如果 index == count（在最后插入），循环中没有插入
+	// 正确逻辑：保留原来的所有 children，在末尾添加 leftPageID 和 rightPageID
+	// MaterializeIndexPageFromBytes 会把 children[len(keys)] 作为 extraChild
 	if !inserted {
 		keys = append(keys, key)
-		children = append(children, leftPageID)
-		children = append(children, rightPageID)
+		// 获取原来的 extraChild，添加到 children 末尾
+		// MaterializeIndexPageFromBytes 会把 children[len(keys)] 作为 extraChild
+		encodedExtraChild := a.pa.GetChild(uint32(pageID), int(count))
+		extraChild, _ := a.DecodeChildWithVersion(encodedExtraChild)
+		children = append(children, extraChild)  // 原来的 extraChild
+		children = append(children, leftPageID)  // 新的 left child
+		children = append(children, rightPageID)  // 新的 right child
+		// MaterializeIndexPageFromBytes 会设置 extraChild = children[2] = rightPageID
 	}
 
 	// 添加 extraChild（N+1 child）

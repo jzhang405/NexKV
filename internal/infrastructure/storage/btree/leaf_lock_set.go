@@ -1134,21 +1134,41 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 	fmt.Fprintf(os.Stderr, "[DEBUG] splitInternalOffHeapSync: internalPageID=%d, leftExtraChild=%d, rightExtraChild=%d\n", internalPageID, leftExtraChildPageID, rightExtraChildPageID)
 
 	// Step 4: 分配两个新的内部页面
-	leftPageID, err := b.offheapAdapter.AllocIndexPage()
+	// 方案 A+：使用 defer 模式确保所有失败路径都清理孤儿页面
+	// 注意：ErrRetry 不是致命错误，split 页面仍然有效，不需要清理
+	var leftPageID, rightPageID model.PageID
+	var needCleanup bool // 标记是否需要清理（只有在真正的致命错误时才清理）
+
+	cleanup := func() {
+		if needCleanup {
+			// 释放所有孤儿页面
+			if leftPageID != 0 {
+				b.offheapAdapter.pm.Free(uint32(leftPageID))
+			}
+			if rightPageID != 0 {
+				b.offheapAdapter.pm.Free(uint32(rightPageID))
+			}
+		}
+	}
+	defer cleanup()
+
+	var err error
+	leftPageID, err = b.offheapAdapter.AllocIndexPage()
 	if err != nil {
 		return errpkg.BTreeAllocLeftIndexPage(err)
 	}
-	rightPageID, err := b.offheapAdapter.AllocIndexPage()
+	needCleanup = true // 分配成功，需要在后续错误时清理
+
+	rightPageID, err = b.offheapAdapter.AllocIndexPage()
 	if err != nil {
-		b.offheapAdapter.pm.Free(uint32(leftPageID))
+		// leftPageID 会在 defer 中释放
 		return errpkg.BTreeAllocRightIndexPage(err)
 	}
 
 	// 安全检查：新页面不能等于源页面（页面回收重用会导致 BulkInit 清空源页面数据）
 	srcInternalID := uint32(internalPageID)
 	if uint32(leftPageID) == srcInternalID || uint32(rightPageID) == srcInternalID {
-		b.offheapAdapter.pm.Free(uint32(leftPageID))
-		b.offheapAdapter.pm.Free(uint32(rightPageID))
+		// defer 会清理
 		return fmt.Errorf("allocated page conflicts with source page %d", internalPageID)
 	}
 
@@ -1159,8 +1179,7 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 		leftExtraChild,
 	)
 	if err != nil {
-		b.offheapAdapter.pm.Free(uint32(leftPageID))
-		b.offheapAdapter.pm.Free(uint32(rightPageID))
+		// defer 会清理
 		return errpkg.BTreeMaterializeLeftIndexPage(err)
 	}
 
@@ -1170,8 +1189,7 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 		rightExtraChild,
 	)
 	if err != nil {
-		b.offheapAdapter.pm.Free(uint32(leftPageID))
-		b.offheapAdapter.pm.Free(uint32(rightPageID))
+		// defer 会清理
 		return errpkg.BTreeMaterializeRightIndexPage(err)
 	}
 
@@ -1336,6 +1354,8 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 	b.pageRefCache.Update(leftPageID, leftRef)
 	b.pageRefCache.Update(rightPageID, rightRef)
 
+	// CAS 成功，禁用清理
+	needCleanup = false
 	return nil
 }
 

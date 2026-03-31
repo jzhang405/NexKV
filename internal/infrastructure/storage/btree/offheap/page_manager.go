@@ -156,7 +156,8 @@ func (pm *PageManager) Alloc() (uint32, error) {
 }
 
 // Free 释放一个页面（加入延迟释放列表）
-// 修改记录 (2026-04-01): 添加 deleted、deleteEpoch 和 version++ 支持 Epoch 延迟回收
+// 修改记录 (2026-04-01): 添加 deleted 和 deleteEpoch 支持 Epoch 延迟回收
+// 注意：不再增加 version++，因为 epoch 延迟机制已经可以防止页面过早被重用
 func (pm *PageManager) Free(pageID uint32) error {
 	if pageID >= pm.total {
 		return errpkg.OffHeapInvalidPageID(int(pageID), int(pm.total))
@@ -167,7 +168,7 @@ func (pm *PageManager) Free(pageID uint32) error {
 	header := (*PageHeader)(ptr)
 	header.deleted = 1
 	header.deleteEpoch = pm.currentEpoch.Load()
-	header.version++ // 版本号增加，旧引用失效
+	// header.version++ // 暂时移除，epoch 延迟机制已经足够
 
 	pm.tracker.RecordFree(pageID)
 	pm.delayedFreeList.Enqueue(pageID)

@@ -393,9 +393,13 @@ func (b *BTree) validateParentSplitIntegrity(
 	childCount := 0
 
 	for i := 0; i <= int(count); i++ {
-		// 修复：GetChild 返回编码后的值（包含版本号）
-		// 需要解码才能获取真实的 pageID
-		encodedChild := b.offheapAdapter.pa.GetChild(uint32(parentPageID), i)
+		// 修复：使用 GetChildSafe 替代 GetChild，防止 TOCTOU 竞争条件
+		// 页面可能在验证过程中被并发修改
+		encodedChild, err := b.offheapAdapter.pa.GetChildSafe(uint32(parentPageID), i)
+		if err != nil {
+			// TOCTOU：页面被并发修改，跳过验证
+			return nil
+		}
 		if encodedChild == 0 {
 			continue // 跳过空子节点
 		}

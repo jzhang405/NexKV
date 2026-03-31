@@ -1054,9 +1054,8 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 
 	if actualVersion != expectedVersion {
 		// 版本号不匹配，说明父节点存储的是陈旧的子节点引用（僵尸引用）
-		// 这可能发生在：
-		// 1. 子节点被释放并重新分配
-		// 2. 父节点未更新子节点引用
+		fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild stale: pageID=%d, childID=%d, expected=%d, actual=%d\n",
+			pageID, childID, expectedVersion, actualVersion)
 		return 0, false, errpkg.BTreeStaleChildRef(uint64(pageID), uint64(childID), expectedVersion, actualVersion)
 	}
 

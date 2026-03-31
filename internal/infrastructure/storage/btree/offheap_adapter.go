@@ -1032,6 +1032,8 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 	currentCount := int(a.pa.GetCount(uint32(pageID)))
 	if childIdx > currentCount {
 		// childIdx 超出范围，说明页面被并发修改，返回 ErrRetry
+		fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild TOCTOU1: pageID=%d, childIdx=%d, currentCount=%d\n",
+			pageID, childIdx, currentCount)
 		return 0, false, errpkg.ErrBTreeRetry
 	}
 
@@ -1044,6 +1046,8 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 		// 检查是否是内部节点且 childIdx 在有效范围内
 		// 如果是，说明页面被并发修改，返回 ErrRetry
 		if childIdx <= currentCount {
+			fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild TOCTOU2: pageID=%d, childIdx=%d, currentCount=%d\n",
+				pageID, childIdx, currentCount)
 			return 0, false, errpkg.ErrBTreeRetry
 		}
 		return 0, found, nil

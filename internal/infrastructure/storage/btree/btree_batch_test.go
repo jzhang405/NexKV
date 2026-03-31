@@ -365,7 +365,7 @@ func TestBTreeSetItem_BatchShardItem(t *testing.T) {
 	assert.Equal(t, "btree-set", item.BatchType())
 
 	// 测试 PreferredBatchSize
-	assert.Equal(t, 8, item.PreferredBatchSize())
+	assert.Equal(t, 1, item.PreferredBatchSize())
 }
 
 // BenchmarkProcessBatch 性能基准测试：批量处理 vs 单个处理

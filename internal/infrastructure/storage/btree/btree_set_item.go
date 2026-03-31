@@ -109,7 +109,7 @@ func (item *BTreeSetItem) BatchType() string {
 
 // PreferredBatchSize 返回建议的批量大小
 func (item *BTreeSetItem) PreferredBatchSize() int {
-	const btreeSetBatchSize = 8
+	const btreeSetBatchSize = 1
 	return btreeSetBatchSize
 }
 

@@ -495,7 +495,7 @@ func (c *SchedulerCore) getBatchSize(task *ShardTask) int {
 	}
 
 	// 2. 默认批量大小（不实现 BatchShardItem 的任务使用）
-	return 16
+	return 1
 }
 
 // TaskResult 任务执行结果

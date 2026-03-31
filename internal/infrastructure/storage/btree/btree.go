@@ -443,24 +443,20 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// 注册 btree-set 任务
 	err = btree.scheduler.RegisterTask(
 		func(item any) concurrency.TaskStatus {
-			// 检查 item 是否实现了 TaskRunner 接口
-			if runner, ok := item.(model.TaskRunner); ok {
-				// 同步执行任务（TaskScheduler 已经在 Worker 线程中）
-				runner.Run(context.Background(), nil)
-				// 等待任务完成并检查结果
-				if task, ok := item.(interface {
-					Wait(context.Context) (any, error)
-				}); ok {
-					_, err := task.Wait(context.Background())
-					if err != nil {
-						// ErrRetry 表示应该重试
-						if errors.Is(err, ErrRetry) {
-							return concurrency.TaskRetrying
-						}
-						return concurrency.TaskFailed
-					}
-				}
+			runner, ok := item.(model.TaskRunner)
+			if !ok {
 				return concurrency.TaskPassed
+			}
+			// Run() 是同步执行，内部 CAS(TaskQueued→TaskExecuting) 后直接执行并 close(done)
+			runner.Run(context.Background(), nil)
+			// Run() 已完成，直接读错误字段，无需 Wait() 阻塞
+			if errItem, ok := item.(interface{ GetError() error }); ok {
+				if err := errItem.GetError(); err != nil {
+					if errors.Is(err, ErrRetry) {
+						return concurrency.TaskRetrying
+					}
+					return concurrency.TaskFailed
+				}
 			}
 			return concurrency.TaskPassed
 		},
@@ -483,24 +479,20 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// 基于 Lealone 的 asyncSplitPage() 设计
 	err = btree.scheduler.RegisterTask(
 		func(item any) concurrency.TaskStatus {
-			// 检查 item 是否实现了 TaskRunner 接口
-			if runner, ok := item.(model.TaskRunner); ok {
-				// 同步执行任务（TaskScheduler 已经在 Worker 线程中）
-				runner.Run(context.Background(), nil)
-				// 等待任务完成并检查结果
-				if task, ok := item.(interface {
-					Wait(context.Context) (any, error)
-				}); ok {
-					_, err := task.Wait(context.Background())
-					if err != nil {
-						// ErrRetry 表示应该重试
-						if errors.Is(err, ErrRetry) {
-							return concurrency.TaskRetrying
-						}
-						return concurrency.TaskFailed
-					}
-				}
+			runner, ok := item.(model.TaskRunner)
+			if !ok {
 				return concurrency.TaskPassed
+			}
+			// Run() 是同步执行，内部 CAS(TaskQueued→TaskExecuting) 后直接执行并 close(done)
+			runner.Run(context.Background(), nil)
+			// Run() 已完成，直接读错误字段，无需 Wait() 阻塞
+			if errItem, ok := item.(interface{ GetError() error }); ok {
+				if err := errItem.GetError(); err != nil {
+					if errors.Is(err, ErrRetry) {
+						return concurrency.TaskRetrying
+					}
+					return concurrency.TaskFailed
+				}
 			}
 			return concurrency.TaskPassed
 		},

@@ -32,15 +32,16 @@ var (
 
 // PageManager 管理 Off-Heap 内存中的 4KB 页面
 type PageManager struct {
-	allocator       OffHeapAllocator      // 跨平台内存分配器
-	base            unsafe.Pointer        // mmap 起始地址
-	total           uint32                // 总页数
-	used            atomic.Uint32         // 已使用页数
-	nextPageID      atomic.Uint32         // 下一个要分配的页面ID（单调递增）
-	freeList        *LockFreeQueue        // 空闲 PageID 队列（lock-free）
-	delayedFreeList *LockFreeQueue        // 延迟释放 PageID 队列（已释放但需等待1个epoch）
-	tracker         *PageLifecycleTracker // 页面生命周期追踪器（调试用）
-	initOnce        sync.Once             //nolint:unused // 确保初始化一次
+	allocator        OffHeapAllocator      // 跨平台内存分配器
+	base             unsafe.Pointer        // mmap 起始地址
+	total            uint32                // 总页数
+	used             atomic.Uint32         // 已使用页数
+	nextPageID       atomic.Uint32         // 下一个要分配的页面ID（单调递增）
+	freeList         *LockFreeQueue        // 空闲 PageID 队列（lock-free）
+	delayedFreeList  *LockFreeQueue        // 延迟释放 PageID 队列（已释放但需等待1个epoch）
+	currentEpoch     atomic.Uint64         // 当前 epoch（用于延迟回收）
+	tracker          *PageLifecycleTracker // 页面生命周期追踪器（调试用）
+	initOnce         sync.Once             //nolint:unused // 确保初始化一次
 }
 
 // InitPageManager 初始化全局 PageManager
@@ -155,10 +156,19 @@ func (pm *PageManager) Alloc() (uint32, error) {
 }
 
 // Free 释放一个页面（加入延迟释放列表）
+// 修改记录 (2026-04-01): 添加 deleted、deleteEpoch 和 version++ 支持 Epoch 延迟回收
 func (pm *PageManager) Free(pageID uint32) error {
 	if pageID >= pm.total {
 		return errpkg.OffHeapInvalidPageID(int(pageID), int(pm.total))
 	}
+
+	// 设置删除标记和 epoch
+	ptr := pm.PageIDToPtr(pageID)
+	header := (*PageHeader)(ptr)
+	header.deleted = 1
+	header.deleteEpoch = pm.currentEpoch.Load()
+	header.version++ // 版本号增加，旧引用失效
+
 	pm.tracker.RecordFree(pageID)
 	pm.delayedFreeList.Enqueue(pageID)
 	pm.used.Add(^uint32(0))
@@ -167,13 +177,31 @@ func (pm *PageManager) Free(pageID uint32) error {
 
 // AdvanceDelayedFreeList 将延迟释放列表中的页面移到可用列表
 // 这应该在 epoch 推进后调用，确保没有 goroutine 仍在访问这些页面
+// 修改记录 (2026-04-01): 实现 epoch 延迟逻辑，防止页面过早被重用
 func (pm *PageManager) AdvanceDelayedFreeList() int {
 	moved := 0
+	minEpochDiff := uint64(5) // 至少 5 个 epoch 的延迟
+
+	currentEpoch := pm.currentEpoch.Load()
+
 	for {
 		pageID, ok := pm.delayedFreeList.Dequeue()
 		if !ok {
 			break
 		}
+
+		// 检查页面是否过了足够的 epoch
+		ptr := pm.PageIDToPtr(pageID)
+		header := (*PageHeader)(ptr)
+
+		// 如果页面太新，放回队列尾部等待
+		if currentEpoch-header.deleteEpoch < minEpochDiff {
+			pm.delayedFreeList.Enqueue(pageID)
+			break // 队列已排序，越老越前面
+		}
+
+		// 页面够老，移到 freeList
+		header.deleted = 0 // 清除删除标记（页面现在可用）
 		pm.freeList.Enqueue(pageID)
 		moved++
 	}

@@ -12,9 +12,11 @@ import (
 )
 
 func TestSizeofPageHeader(t *testing.T) {
-	// PageHeader 应该是 32 字节（Cache Line 对齐）
-	// 字段布局：version(8) + prevPage(4) + nextPage(4) + count(2) + pageType(1) + _pad(13) = 32
-	assert.Equal(t, 32, SizeofPageHeader, "PageHeader should be 32 bytes for cache line alignment")
+	// PageHeader 应该是 48 字节（8 字节对齐）
+	// 字段布局：version(8) + prevPage(4) + nextPage(4) + extraChild(8) + count(2) + pageType(1) + deleted(1) + deleteEpoch(8) + _pad(7) = 43
+	// 加上尾部填充：48 字节（8 字节对齐）
+	// 修改记录 (2026-04-01): 添加 deleted 和 deleteEpoch 支持 Epoch 延迟回收
+	assert.Equal(t, 48, SizeofPageHeader, "PageHeader should be 48 bytes for 8-byte alignment")
 }
 
 func TestSizeofIndexEntry(t *testing.T) {

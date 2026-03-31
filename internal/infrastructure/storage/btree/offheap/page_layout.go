@@ -27,18 +27,21 @@ const (
 // 空闲区从后往前分配，Entry 数组从前往后增长
 // KV 数据区紧凑存储，支持变长 key/value
 
-// PageHeader 页面头部（32 字节）
+// PageHeader 页面头部（40 字节）
+// 修改记录 (2026-04-01): 添加 deleted 和 deleteEpoch 支持 Epoch 延迟回收
 type PageHeader struct {
-	version    uint64 // 版本号（CCOW）
-	prevPage   uint32 // 前一个页面 pageID
-	nextPage   uint32 // 后一个页面 pageID
-	extraChild uint64 // 索引节点的 N+1 child（pageID + version）
-	count      uint16 // 条目数
-	pageType   uint8  // 页面类型（0=索引 1=叶子）
-	_pad       [5]byte
+	version     uint64 // 版本号（CCOW）
+	prevPage    uint32 // 前一个页面 pageID
+	nextPage    uint32 // 后一个页面 pageID
+	extraChild  uint64 // 索引节点的 N+1 child（pageID + version）
+	count       uint16 // 条目数
+	pageType    uint8  // 页面类型（0=索引 1=叶子）
+	deleted     uint8  // 标记为已删除（0=正常, 1=已删除）
+	deleteEpoch uint64 // 删除时的 epoch（用于延迟回收）
+	_pad        [7]byte // 对齐填充（使结构体大小为 40 字节）
 }
 
-// SizeofPageHeader PageHeader 大小（32 字节）
+// SizeofPageHeader PageHeader 大小（40 字节）
 const SizeofPageHeader = int(unsafe.Sizeof(PageHeader{}))
 
 // IndexEntry 索引节点条目（16 字节）

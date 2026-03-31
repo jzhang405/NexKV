@@ -98,17 +98,31 @@ func (c *PageRefCache) GetOrCreate(pageID model.PageID, isLeaf bool) *PageRef {
 
 	if ok {
 		currentInfo := ref.GetPageInfo()
-		if currentInfo != nil && currentInfo.GetPageID() != uint64(pageID) {
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			if ref, ok := c.cache[pageID]; ok && ref.GetPageInfo().GetPageID() == uint64(pageID) {
-				return ref
+		if currentInfo != nil {
+			// 检查 pageID 是否匹配（页面被回收重用为不同的 pageID）
+			if currentInfo.GetPageID() != uint64(pageID) {
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				if ref, ok := c.cache[pageID]; ok && ref.GetPageInfo().GetPageID() == uint64(pageID) {
+					return ref
+				}
+				info := NewPageInfo()
+				info.SetNodeRef(offheap.NewNodeRef(uint32(pageID), isLeaf))
+				newRef := NewPageRefWithInfo(info)
+				c.cache[pageID] = newRef
+				return newRef
 			}
-			info := NewPageInfo()
-			info.SetNodeRef(offheap.NewNodeRef(uint32(pageID), isLeaf))
-			newRef := NewPageRefWithInfo(info)
-			c.cache[pageID] = newRef
-			return newRef
+			// 检查 isLeaf 是否匹配（页面被回收重用为不同的类型）
+			if currentInfo.IsLeaf() != isLeaf {
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				// 重新创建 PageRef，使用正确的 isLeaf
+				info := NewPageInfo()
+				info.SetNodeRef(offheap.NewNodeRef(uint32(pageID), isLeaf))
+				newRef := NewPageRefWithInfo(info)
+				c.cache[pageID] = newRef
+				return newRef
+			}
 		}
 		return ref
 	}
@@ -689,6 +703,7 @@ func (b *BTree) setDirect(ctx context.Context, key, value []byte) error {
 			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
 			return nil
 		}
+		fmt.Printf("[DEBUG] setDirect: attempt %d, err=%v\n", attempt, err)
 
 		// 智能重试逻辑
 		switch {

@@ -3,6 +3,7 @@ package btree
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
@@ -210,10 +211,22 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 			// 版本号不匹配，检测到僵尸引用
 			// 返回 ErrRetry 让外层重试
 			// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
+			fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild failed: currentPageID=%d, err=%v\n", currentPageID, err)
+			return nil, nil, ErrRetry
+		}
+		if childPageID == currentPageID {
+			// 检测到自环
+			fmt.Fprintf(os.Stderr, "[DEBUG] Self-loop detected: currentPageID=%d, childPageID=%d\n", currentPageID, childPageID)
 			return nil, nil, ErrRetry
 		}
 		if childPageID == 0 {
-			// 没有子节点，可能到达叶子
+			// 没有子节点，检查当前节点是否为叶子节点
+			if !currentIsLeaf {
+				// 当前节点不是叶子节点，但是也没有子节点，说明 B-Tree 结构损坏
+				fmt.Fprintf(os.Stderr, "[DEBUG] Internal node has no child: currentPageID=%d\n", currentPageID)
+				return nil, nil, ErrRetry
+			}
+			// 到达叶子节点，返回收集的路径和引用
 			break
 		}
 
@@ -236,13 +249,19 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 		}
 
 		// 2.6 循环引用检测
-		currentPageID = model.PageID(childInfo.GetPageID())
-		if visitedPages[uint64(currentPageID)] {
+		childPageIDFromInfo := model.PageID(childInfo.GetPageID())
+		if visitedPages[uint64(childPageIDFromInfo)] {
 			// 页面回收重用可导致搜索路径遇到已访问的 pageID（假阳性）
 			// 返回 ErrRetry 让外层重试，而不是返回不可恢复的 ErrCircRef
+			// 打印路径以便调试
+			pathStr := ""
+			for _, p := range path {
+				pathStr += fmt.Sprintf("%d->", p.GetPageID())
+			}
+			fmt.Fprintf(os.Stderr, "[DEBUG] Circular reference: currentPageID=%d, path=%s%d\n", childPageIDFromInfo, pathStr, childPageIDFromInfo)
 			return nil, nil, ErrRetry
 		}
-		visitedPages[uint64(currentPageID)] = true
+		visitedPages[uint64(childPageIDFromInfo)] = true
 
 		// 2.7 检查 context 取消
 		select {
@@ -257,6 +276,7 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 
 		// 2.9 继续向下搜索
 		currentInfo = childInfo
+		currentRef = childRef
 	}
 
 	return path, refs, nil

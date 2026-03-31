@@ -149,8 +149,10 @@ func (s *errStats) record(err error) {
 		s.errCircRef.Add(1)
 	case errors.Is(err, errpkg.ErrBTreeMaxRetriesExceeded):
 		s.errMaxRetry.Add(1)
+		fmt.Fprintf(os.Stderr, "[DEBUG] ErrMaxRetry: %v\n", err)
 	default:
 		s.errOther.Add(1)
+		fmt.Fprintf(os.Stderr, "[DEBUG] ErrOther: %v\n", err)
 		msg := err.Error()
 		if len(msg) > 100 {
 			msg = msg[:100]
@@ -164,6 +166,8 @@ func (s *errStats) record(err error) {
 func (s *errStats) print(totalOps int64) {
 	succ := s.success.Load()
 	fmt.Printf("\n--- 错误分类 ---\n")
+	fmt.Printf("Debug: success=%d, errRetry=%d, errCircRef=%d, errMaxRetry=%d, errOther=%d\n",
+		s.success.Load(), s.errRetry.Load(), s.errCircRef.Load(), s.errMaxRetry.Load(), s.errOther.Load())
 	fmt.Printf("Success:       %6d (%.1f%%)\n", succ, float64(succ)/float64(totalOps)*100)
 	if s.errRetry.Load() > 0 {
 		fmt.Printf("ErrRetry:      %6d (%.1f%%)\n", s.errRetry.Load(), float64(s.errRetry.Load())/float64(totalOps)*100)
@@ -253,6 +257,9 @@ func runTest(numThreads, totalOps int, useScheduler bool) (float64, float64) {
 					}
 				}
 
+				if opErr != nil {
+					fmt.Fprintf(os.Stderr, "[DEBUG] opErr: %v, type: %T\n", opErr, opErr)
+				}
 				stats.record(opErr)
 			}
 		}(i, threadDataArr[i])
@@ -292,7 +299,8 @@ func initializeData(ctx context.Context, tree *btree.BTree, count int) {
 
 		for j := i; j < end; j++ {
 			if err := tree.Set(ctx, initKeys[j], initValues[j]); err != nil {
-				fmt.Fprintf(os.Stderr, "初始化失败: %v\n", err)
+				fmt.Fprintf(os.Stderr, "\n初始化失败 at j=%d: %v\n", j, err)
+				os.Exit(1)
 			}
 		}
 

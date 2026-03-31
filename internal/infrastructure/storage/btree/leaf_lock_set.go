@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 	leafRef, path, refs, err := b.findLeafPageRef(ctx, key)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[DEBUG] findLeafPageRef failed: %v\n", err)
 		return err
 	}
 
@@ -55,6 +57,14 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 	// Delta Chain 已禁用： UpdateLeafEntry 使用 BulkInit + Overwrite 实现 O(1) COW
 	// Delta Chain 对 insert 工作负载有严重开销，而 BulkInit + Overwrite 已足够高效
 	oldPageID := model.PageID(oldInfo.GetPageID())
+
+	// TOCTOU 防御：获取锁后重新检查页面类型
+	if !b.offheapAdapter.IsLeaf(oldPageID) {
+		// 页面已被回收重用为非叶子页，返回重试
+		fmt.Fprintf(os.Stderr, "[DEBUG] IsLeaf check failed: oldPageID=%d\n", oldPageID)
+		return ErrRetry
+	}
+
 	var newPageID model.PageID
 	var splitRequired bool
 
@@ -75,6 +85,13 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 
 	// Step 7: Leaf-Level CAS
 	if !leafRef.ReplacePage(oldInfo, newInfo) {
+		// 调试：打印 CAS 失败的原因
+		currentInfo := leafRef.GetPageInfo()
+		if currentInfo != nil {
+			fmt.Fprintf(os.Stderr, "[DEBUG] Leaf-Level CAS failed: oldPageID=%d, newPageID=%d, currentPageID=%d\n", oldPageID, newPageID, currentInfo.GetPageID())
+		} else {
+			fmt.Fprintf(os.Stderr, "[DEBUG] Leaf-Level CAS failed: oldPageID=%d, newPageID=%d, currentInfo=nil\n", oldPageID, newPageID)
+		}
 		return ErrRetry
 	}
 
@@ -138,6 +155,13 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 							if !parentRef.ReplacePage(parentInfo, newParentInfo) {
 								// CAS 失败，释放新分配的父页面（走 epoch 机制避免 use-after-free）
 								b.offheapAdapter.freeOldPage(uint32(newParentPageID))
+								// 调试：打印 CAS 失败的原因
+								currentInfo := parentRef.GetPageInfo()
+								if currentInfo != nil {
+									fmt.Fprintf(os.Stderr, "[DEBUG] Parent CAS failed: parentPageID=%d, newParentPageID=%d, currentPageID=%d\n", parentPageID, newParentPageID, currentInfo.GetPageID())
+								} else {
+									fmt.Fprintf(os.Stderr, "[DEBUG] Parent CAS failed: parentPageID=%d, newParentPageID=%d, currentInfo=nil\n", parentPageID, newParentPageID)
+								}
 								return ErrRetry
 							}
 
@@ -1104,6 +1128,11 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 	// 右半 extraChild = 源页面的 lastChild（header.extraChild）
 	rightExtraChild := b.offheapAdapter.pa.GetChild(uint32(internalPageID), countInt)
 
+	// 调试：打印 extraChild 的值
+	leftExtraChildPageID, _ := b.offheapAdapter.DecodeChildWithVersion(leftExtraChild)
+	rightExtraChildPageID, _ := b.offheapAdapter.DecodeChildWithVersion(rightExtraChild)
+	fmt.Fprintf(os.Stderr, "[DEBUG] splitInternalOffHeapSync: internalPageID=%d, leftExtraChild=%d, rightExtraChild=%d\n", internalPageID, leftExtraChildPageID, rightExtraChildPageID)
+
 	// Step 4: 分配两个新的内部页面
 	leftPageID, err := b.offheapAdapter.AllocIndexPage()
 	if err != nil {
@@ -1438,6 +1467,12 @@ func (b *BTree) splitRootOffHeapSyncForInternal(
 	newRootPageID, err := b.offheapAdapter.AllocIndexPage()
 	if err != nil {
 		return errpkg.BTreeAllocIndexPageForRoot(err)
+	}
+
+	// 安全检查：新根页面不能等于左右子页面（防止自环）
+	if uint32(newRootPageID) == leftPageID || uint32(newRootPageID) == rightPageID {
+		b.offheapAdapter.pm.Free(uint32(newRootPageID))
+		return fmt.Errorf("new root page %d conflicts with left %d or right %d", newRootPageID, leftPageID, rightPageID)
 	}
 
 	// Step 6: 物化根节点内容（splitKey + 左右子节点）

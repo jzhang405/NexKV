@@ -6,6 +6,8 @@ package offheap
 
 import (
 	"bytes"
+	"fmt"
+	"os"
 	"sort"
 
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
@@ -59,10 +61,23 @@ func (m *OffHeapMaterializer) MaterializeIndexPageFromBytes(
 	keys [][]byte,
 	children []uint32,
 ) (uint16, error) {
+	// 安全检查：修复自环的 children
+	for i, child := range children {
+		if child == pageID {
+			// 打印调试信息
+			fmt.Fprintf(os.Stderr, "[DEBUG] MaterializeIndexPageFromBytes: fixing self-loop child at index %d, pageID=%d\n", i, pageID)
+			children[i] = 0 // 用 0 替换自环的 child
+		}
+	}
+
 	m.pa.InitIndexPage(pageID, 0)
 	dataEnd := uint16(0)
 
 	for i := range keys {
+		if i >= len(children) {
+			// children 数量不足，返回错误
+			return 0, fmt.Errorf("not enough children for keys: pageID=%d, keys=%d, children=%d", pageID, len(keys), len(children))
+		}
 		err := m.pa.InsertIndexEntry(pageID, i, keys[i], children[i], &dataEnd)
 		if err != nil {
 			return 0, err

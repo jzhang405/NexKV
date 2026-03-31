@@ -117,6 +117,16 @@ func NewPageManager(mmapSize int) (*PageManager, error) {
 	return pm, nil
 }
 
+// clearPage 清零页面内容
+func (pm *PageManager) clearPage(pageID uint32) {
+	ptr := pm.PageIDToPtr(pageID)
+	// 清零整个页面
+	slice := unsafe.Slice((*byte)(ptr), PageSize)
+	for i := range slice {
+		slice[i] = 0
+	}
+}
+
 // Alloc 分配一个页面
 // 优先从 freeList 回收已释放页面，nextPageID 作为 fallback
 // 注意：delayedFreeList → freeList 由 epoch 机制（AdvanceDelayedFreeList）管理
@@ -124,17 +134,21 @@ func NewPageManager(mmapSize int) (*PageManager, error) {
 func (pm *PageManager) Alloc() (uint32, error) {
 	// 路径 1：从 freeList 取已释放页面（lock-free）
 	if pageID, ok := pm.freeList.Dequeue(); ok {
+		// 清零页面内容，防止旧数据污染
+		pm.clearPage(pageID)
 		pm.used.Add(1)
 		pm.tracker.RecordAlloc(pageID)
 		return pageID, nil
 	}
 
-	// 路径 2：fallback，nextPageID 递增
+	// // 路径 2：fallback，nextPageID 递增
 	pageID := pm.nextPageID.Load()
 	if pageID >= pm.total {
 		return 0, errpkg.OffHeapOutOfMemory(int(pm.total), int(pm.used.Load()))
 	}
 	pm.nextPageID.Add(1)
+	// 清零页面内容，防止旧数据污染
+	pm.clearPage(pageID)
 	pm.used.Add(1)
 	pm.tracker.RecordAlloc(pageID)
 	return pageID, nil

@@ -7,6 +7,7 @@ package btree
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -364,7 +365,8 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 
 	// 显式边界检查：防止 index 超出范围导致 panic（TOCTOU 场景）
 	// GetLeafEntry/GetIndexEntry 使用 index >= count 作为越界条件
-	if index < 0 || index >= int(count) {
+	// 但 UpdateIndexEntry 允许 index == count，表示在末尾插入
+	if index < 0 || index > int(count) {
 		return 0, errpkg.BTreeConcurrentModificationError()
 	}
 
@@ -384,6 +386,12 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 		// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
 		encodedChild := a.pa.GetChild(uint32(pageID), i)
 		child, _ := a.DecodeChildWithVersion(encodedChild)
+
+		// 安全检查：修复自环的 child
+		if child == uint32(pageID) {
+			fmt.Fprintf(os.Stderr, "[DEBUG] UpdateIndexEntry: fixing self-loop child at index %d, pageID=%d\n", i, pageID)
+			child = 0 // 用 0 替换自环的 child
+		}
 
 		if i == index {
 			// 分裂位置：插入 splitKey 和 left/right child
@@ -431,6 +439,11 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 		// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
 		encodedExtraChild := a.pa.GetChild(uint32(pageID), int(count))
 		extraChild, _ := a.DecodeChildWithVersion(encodedExtraChild)
+		// 安全检查：修复自环的 extraChild
+		if extraChild == uint32(pageID) {
+			fmt.Fprintf(os.Stderr, "[DEBUG] UpdateIndexEntry: fixing self-loop extraChild, pageID=%d\n", pageID)
+			extraChild = 0 // 用 0 替换自环的 extraChild
+		}
 		children = append(children, extraChild)
 	}
 	// index == count 的情况：rightPageID 已经作为 extraChild 在上面被添加了
@@ -541,6 +554,11 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 				return 0, errpkg.ErrBTreeRetry
 			}
 			child, _ := a.DecodeChildWithVersion(encodedChild)
+			// 安全检查：修复自环的 child
+			if child == pid {
+				fmt.Fprintf(os.Stderr, "[DEBUG] ReplaceChild: fixing self-loop child at index %d, pageID=%d\n", i, pid)
+				child = 0 // 用 0 替换自环的 child
+			}
 			children = append(children, child)
 		}
 	}
@@ -556,6 +574,11 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 		children = append(children, newChildID)
 	} else {
 		extraChild, _ := a.DecodeChildWithVersion(encodedExtraChild)
+		// 安全检查：修复自环的 extraChild
+		if extraChild == pid {
+			fmt.Fprintf(os.Stderr, "[DEBUG] ReplaceChild: fixing self-loop extraChild, pageID=%d\n", pid)
+			extraChild = 0 // 用 0 替换自环的 extraChild
+		}
 		children = append(children, extraChild)
 	}
 

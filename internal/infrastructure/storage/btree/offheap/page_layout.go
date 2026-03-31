@@ -713,6 +713,10 @@ func (pa *PageAccessor) BulkInitIndexFromSource(
 		entry := pa.GetIndexEntry(srcPageID, i)
 		key := pa.GetKey(srcPageID, entry.keyOff, entry.keyLen)
 		child, _ := DecodeChildWithVersion(entry.child)
+		// 安全检查：修复自环的 child
+		if child == srcPageID {
+			child = 0 // 用 0 替换自环的 child
+		}
 		dstIdx := i - startIdx
 		if err := pa.InsertIndexEntry(dstPageID, dstIdx, key, child, &dataEnd); err != nil {
 			return 0, err
@@ -720,6 +724,11 @@ func (pa *PageAccessor) BulkInitIndexFromSource(
 	}
 
 	// 设置 extraChild（N+1 child）
+	// 安全检查：修复自环的 extraChild
+	extraChildPageID, _ := DecodeChildWithVersion(extraChild)
+	if extraChildPageID == srcPageID {
+		extraChild = 0 // 用 0 替换自环的 extraChild
+	}
 	dstHeader := pa.GetHeader(dstPageID)
 	dstHeader.extraChild = extraChild
 

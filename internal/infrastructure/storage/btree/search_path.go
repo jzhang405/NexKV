@@ -276,7 +276,6 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 
 		// 2.9 继续向下搜索
 		currentInfo = childInfo
-		currentRef = childRef
 	}
 
 	return path, refs, nil

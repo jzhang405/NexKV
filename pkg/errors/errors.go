@@ -266,14 +266,14 @@ var (
 	ErrBTreeDataDirError      = stderrors.New("btree: data directory error")
 
 	// BTree 页面操作错误（internal_page / leaf_page）
-	ErrBTreeChildIndexOutOfRange     = stderrors.New("btree: child index out of range")
-	ErrBTreeInvariantViolated        = stderrors.New("btree: page invariant violated")
-	ErrBTreeConcurrentModification   = stderrors.New("btree: page modified concurrently during update")
-	ErrBTreeKeyNotFoundInPage     = stderrors.New("btree: key not found in page")
-	ErrBTreeKeyOrderViolation     = stderrors.New("btree: key ordering violation")
-	ErrBTreeCannotSplitMinKeys    = stderrors.New("btree: cannot split page with minimum keys")
-	ErrBTreeDeserializeReadFailed = stderrors.New("btree: failed to read during deserialize")
-	ErrBTreeIndexOutOfRange       = stderrors.New("btree: index out of range")
+	ErrBTreeChildIndexOutOfRange   = stderrors.New("btree: child index out of range")
+	ErrBTreeInvariantViolated      = stderrors.New("btree: page invariant violated")
+	ErrBTreeConcurrentModification = stderrors.New("btree: page modified concurrently during update")
+	ErrBTreeKeyNotFoundInPage      = stderrors.New("btree: key not found in page")
+	ErrBTreeKeyOrderViolation      = stderrors.New("btree: key ordering violation")
+	ErrBTreeCannotSplitMinKeys     = stderrors.New("btree: cannot split page with minimum keys")
+	ErrBTreeDeserializeReadFailed  = stderrors.New("btree: failed to read during deserialize")
+	ErrBTreeIndexOutOfRange        = stderrors.New("btree: index out of range")
 
 	// BTree PageRef 错误
 	ErrBTreePageNotLoadedInvalidNodeRef = stderrors.New("btree: page not loaded (invalid NodeRef)")

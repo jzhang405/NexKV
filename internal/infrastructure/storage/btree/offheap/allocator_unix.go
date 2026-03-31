@@ -47,7 +47,8 @@ func (m *mmapAllocator) Alloc(size int) (unsafe.Pointer, error) {
 
 func (m *mmapAllocator) Free(ptr unsafe.Pointer, size int) error {
 	// 将 unsafe.Pointer 转换为 []byte 用于 Munmap
-	b := (*[1 << 30]byte)(ptr)[:size:size]
+	// 使用 unsafe.Slice 替代固定数组指针，支持任意大小的 mmap 区域
+	b := unsafe.Slice((*byte)(ptr), size)
 	return syscall.Munmap(b)
 }
 

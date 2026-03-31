@@ -51,7 +51,7 @@ func BenchmarkPageAccessor_SearchKey(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		_, _ = pa.SearchKey(pageID, searchKey, true)
+		_, _, _ = pa.SearchKey(pageID, searchKey, true)
 	}
 }
 

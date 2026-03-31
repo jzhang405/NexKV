@@ -20,6 +20,7 @@ type OffHeapAdapter struct {
 	pm           *offheap.PageManager
 	pa           *offheap.PageAccessor
 	materializer *offheap.OffHeapMaterializer
+	epochFree    func(model.PageID) // epoch 释放回调（COW 旧页面走 epoch 机制，由 BTree 层注入）
 }
 
 // NewOffHeapAdapter 创建 Off-Heap 适配器
@@ -28,6 +29,21 @@ func NewOffHeapAdapter(pm *offheap.PageManager) *OffHeapAdapter {
 		pm:           pm,
 		pa:           offheap.NewPageAccessor(pm),
 		materializer: offheap.NewOffHeapMaterializer(pm),
+	}
+}
+
+// SetEpochFree 设置 epoch 释放回调
+// COW 路径的旧页面通过此回调走 epoch 机制，避免 use-after-free
+func (a *OffHeapAdapter) SetEpochFree(fn func(model.PageID)) {
+	a.epochFree = fn
+}
+
+// freeOldPage 释放 COW 旧页面（走 epoch 机制或直接释放）
+func (a *OffHeapAdapter) freeOldPage(pageID uint32) {
+	if a.epochFree != nil {
+		a.epochFree(model.PageID(pageID))
+	} else {
+		a.pm.Free(pageID)
 	}
 }
 
@@ -61,7 +77,10 @@ func (a *OffHeapAdapter) FreePage(pageID model.PageID) error {
 // GetFromOffHeap 从 Off-Heap 叶子页面获取 key 对应的 value
 // 返回 (value, found, error)
 func (a *OffHeapAdapter) GetFromOffHeap(pageID model.PageID, key []byte) ([]byte, bool, error) {
-	idx, found := a.pa.SearchKey(uint32(pageID), key, true)
+	idx, found, err := a.pa.SearchKey(uint32(pageID), key, true)
+	if err != nil {
+		return nil, false, err
+	}
 
 	if !found {
 		return nil, false, nil
@@ -82,7 +101,12 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 	// 使用线性搜索替代二分查找
 	// SearchKey 依赖 keys 有序的假设，但页面可能已无序
 	// 使用线性搜索确保即使 keys 无序也能找到正确位置
-	idx, found := a.linearSearchLeaf(uint32(pageID), key)
+	idx, found, count, err := a.linearSearchLeaf(uint32(pageID), key)
+	if err != nil {
+		// TOCTOU: 叶子页在搜索期间被 COW 替换 + epoch 回收 + 重用
+		// 包装为 ErrRetry 让上层自动重试
+		return pageID, false, fmt.Errorf("InsertToOffHeap TOCTOU: %w", ErrRetry)
+	}
 
 	if found {
 		// 更新现有 key（需要重新分配页面，因为 Off-Heap 不可变）
@@ -95,6 +119,18 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 	if a.checkPageFull(uint32(pageID), len(key), len(value)) {
 		// 页面可能已满，返回 splitRequired=true
 		return pageID, true, nil
+	}
+
+	// 原地插入前 TOCTOU 防御：校验页面类型和 count
+	pid := uint32(pageID)
+	if !a.pa.IsLeaf(pid) {
+		// 页面已被回收重用为非叶子页
+		return pageID, false, fmt.Errorf("InsertToOffHeap: page %d is not a leaf page: %w", pageID, ErrRetry)
+	}
+	currentCount := a.pa.GetCount(pid)
+	if currentCount != count {
+		// count 已变化，页面可能已被回收重用
+		return pageID, false, fmt.Errorf("InsertToOffHeap: page %d count changed (%d → %d): %w", pageID, count, currentCount, ErrRetry)
 	}
 
 	// 插入新 KV
@@ -113,26 +149,36 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 
 // linearSearchLeaf 线性搜索叶子页面，找到正确的插入位置
 // 方案 C：不依赖 keys 有序的假设，确保即使页面已损坏也能正确插入
-// 返回：(插入索引, 是否找到)
-func (a *OffHeapAdapter) linearSearchLeaf(pageID uint32, key []byte) (int, bool) {
+// 返回：(插入索引, 是否找到, 搜索时 count, error)
+// TOCTOU 防御：使用 GetLeafEntryOffsetSafe 替代 GetLeafEntryOffset，遇到页面被回收重用时返回 error
+func (a *OffHeapAdapter) linearSearchLeaf(pageID uint32, key []byte) (int, bool, uint16, error) {
 	count := a.pa.GetCount(pageID)
 
 	// 遍历所有现有 keys
 	for i := 0; i < int(count); i++ {
-		keyOff, keyLen, _, _ := a.pa.GetLeafEntryOffset(pageID, i)
+		keyOff, keyLen, _, _, err := a.pa.GetLeafEntryOffsetSafe(pageID, i)
+		if err != nil {
+			// 页面已被回收重用，count 发生变化
+			return 0, false, 0, fmt.Errorf("linearSearchLeaf: page %d TOCTOU: %w", pageID, err)
+		}
 		existingKey := a.pa.GetKey(pageID, keyOff, keyLen)
 		cmp := bytes.Compare(key, existingKey)
 		if cmp == 0 {
 			// 找到相同的 key
-			return i, true
+			return i, true, count, nil
 		} else if cmp < 0 {
 			// 新 key 应该插入到当前位置之前
-			return i, false
+			return i, false, count, nil
 		}
 	}
 
+	// 二次校验：确认页面未被回收重用（count 在扫描期间可能已变化）
+	if a.pa.GetCount(pageID) != count {
+		return 0, false, 0, fmt.Errorf("linearSearchLeaf: page %d count changed during scan", pageID)
+	}
+
 	// 所有现有 keys 都小于新 key，插入到末尾
-	return int(count), false
+	return int(count), false, count, nil
 }
 
 // checkPageFull 检查页面是否已满（直接从页面读取 dataEnd）
@@ -192,8 +238,8 @@ func (a *OffHeapAdapter) updateLeafEntryFullMaterialization(pageID model.PageID,
 		values = append(values, vCopy)
 	}
 
-	// 释放旧页面
-	a.pm.Free(uint32(pageID))
+	// 释放旧页面（走 epoch 机制，避免并发读访问已回收页面）
+	a.freeOldPage(uint32(pageID))
 
 	// 分配新页面
 	newPageID, err := a.pm.Alloc()
@@ -233,6 +279,15 @@ func (a *OffHeapAdapter) updateLeafEntryBulkCOW(
 		return 0, errpkg.BTreeAllocNewPageForSplit(err)
 	}
 
+	// 关键安全检查：如果 Alloc 返回的页面恰好是源页面（页面被回收重用），
+	// BulkInitLeafFromSource 会先 InitLeafPage 清空目标页面（即源页面自身），
+	// 导致后续读取 count=0 而 panic。
+	// 降级到 fullMaterialization 路径（先将数据读到堆上再释放源页面）。
+	if newRawPageID == srcPageID {
+		a.pm.Free(newRawPageID)
+		return a.updateLeafEntryFullMaterialization(pageID, idx, nil, value)
+	}
+
 	// 2. BulkInitLeafFromSource 一次性拷贝所有条目（零堆拷贝）
 	_, err = a.pa.BulkInitLeafFromSource(srcPageID, newRawPageID, 0, count)
 	if err != nil {
@@ -246,8 +301,8 @@ func (a *OffHeapAdapter) updateLeafEntryBulkCOW(
 		return 0, fmt.Errorf("overwrite leaf value failed: valLen insufficient")
 	}
 
-	// 4. 释放旧页面
-	a.pm.Free(srcPageID)
+	// 4. 释放旧页面（走 epoch 机制，避免并发读访问已回收页面）
+	a.freeOldPage(srcPageID)
 
 	return model.PageID(newRawPageID), nil
 }
@@ -411,7 +466,22 @@ func (a *OffHeapAdapter) FindChildIndex(parentPageID uint32, childPageID uint32)
 //
 // 返回：新的父页面 ID
 func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID uint32) (model.PageID, error) {
-	count := a.pa.GetCount(uint32(pageID))
+	pid := uint32(pageID)
+
+	// TOCTOU 防御 Layer 2a: 页面类型检查
+	// 父页面被 epoch 回收重用为叶子页时，pageType 变为 PageTypeLeaf
+	if a.pa.IsLeaf(pid) {
+		return 0, errpkg.ErrBTreeParentPageRecycled
+	}
+
+	count := a.pa.GetCount(pid)
+
+	// TOCTOU 防御 Layer 2b: count 合理性检查
+	// 被回收重用的页面 count=0（InitPage 重置为 0）
+	// maxInternalKeys=180 (constants.go)
+	if count == 0 || count > maxInternalKeys {
+		return 0, errpkg.ErrBTreeInvalidParentState
+	}
 
 	// 验证索引有效（index 可以是 0 到 count，其中 count 表示 extraChild）
 	if index < 0 || index > int(count) {
@@ -423,8 +493,8 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 	children := make([]uint32, 0, count+1)
 
 	for i := 0; i < int(count); i++ {
-		keyOff, keyLen, _ := a.pa.GetIndexEntryOffset(uint32(pageID), i)
-		k := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
+		keyOff, keyLen, _ := a.pa.GetIndexEntryOffset(pid, i)
+		k := a.pa.GetKey(pid, keyOff, keyLen)
 
 		// 复制 key
 		kCopy := make([]byte, len(k))
@@ -436,7 +506,7 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 		if i == index {
 			children = append(children, newChildID)
 		} else {
-			encodedChild := a.pa.GetChild(uint32(pageID), i)
+			encodedChild := a.pa.GetChild(pid, i)
 			child, _ := a.DecodeChildWithVersion(encodedChild)
 			children = append(children, child)
 		}
@@ -445,7 +515,7 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 	// 添加 extraChild（N+1 child）
 	// 如果 index == count，替换 extraChild；否则复制原 extraChild
 	// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
-	encodedExtraChild := a.pa.GetChild(uint32(pageID), int(count))
+	encodedExtraChild := a.pa.GetChild(pid, int(count))
 	if index == int(count) {
 		children = append(children, newChildID)
 	} else {
@@ -553,10 +623,12 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 		return 0, 0, nil, errpkg.BTreeAllocRightPage(err)
 	}
 
-	if leftPageID == rightPageID {
+	srcRawID := uint32(pageID)
+	if leftPageID == rightPageID || leftPageID == srcRawID || rightPageID == srcRawID {
 		a.pm.Free(leftPageID)
 		a.pm.Free(rightPageID)
-		return 0, 0, nil, errpkg.BTreeDuplicatePageIDAlloc(leftPageID)
+		// 源页面被回收重用，降级到 Go 堆路径（先将数据拷贝到堆上再释放源页面）
+		return a.splitOffHeapLeafPageFallback(pageID)
 	}
 	if leftPageID == 0 || rightPageID == 0 {
 		a.pm.Free(leftPageID)
@@ -873,7 +945,10 @@ func (a *OffHeapAdapter) GetChild(pageID model.PageID, index int) (model.PageID,
 // - 验证子页面的实际版本号是否匹配
 // - 不匹配说明是僵尸引用，返回 ErrRetry
 func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.PageID, bool, error) {
-	idx, found := a.pa.SearchKey(uint32(pageID), key, false)
+	idx, found, err := a.pa.SearchKey(uint32(pageID), key, false)
+	if err != nil {
+		return 0, false, err
+	}
 
 	// B+ 树：精确匹配时返回右子节点（idx+1）
 	// 例如：keys=['key-0040'], children=[1,2]
@@ -975,7 +1050,10 @@ func (a *OffHeapAdapter) DeleteFromLeafPage(
 	key []byte,
 ) (model.PageID, error) {
 	// 1. 搜索 key 在页面中的位置
-	idx, found := a.pa.SearchKey(uint32(pageID), key, true)
+	idx, found, err := a.pa.SearchKey(uint32(pageID), key, true)
+	if err != nil {
+		return pageID, err
+	}
 	if !found {
 		return pageID, ErrKeyNotFound
 	}

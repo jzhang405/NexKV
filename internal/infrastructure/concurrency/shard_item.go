@@ -46,8 +46,10 @@ type ShardItem interface {
 	// 返回值 > MaxRetries() 时表示已超过最大重试次数
 	IncAttempts() int
 
-	// TaskOrder 返回任务执行顺序（executionOrder），用于直接数组索引访问
-	// 替代 map 查找，提升性能（数组访问 vs 哈希计算）
+	// TaskOrder 返回任务执行顺序（executionOrder）
+	//
+	// Deprecated: 路由已改用 taskMap[taskName] 查找（O(1) map lookup），
+	// 此方法仅在调试/日志场景保留。新代码不应依赖此方法做路由决策。
 	TaskOrder() int
 }
 

@@ -7,6 +7,7 @@ package btree
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"runtime"
 	"strings"
 	"sync"
@@ -110,6 +111,12 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 						// 找到旧 child 的索引
 						childIndex := b.offheapAdapter.FindChildIndex(parentPageID, uint32(oldPageID))
 						if childIndex >= 0 {
+							// TOCTOU 防御 Layer 1: 检查 parentRef 是否仍指向我们的快照
+							// 如果另一个线程已完成 CAS，GetPageInfo() 返回的指针会不同
+							if parentRef.GetPageInfo() != parentInfo {
+								return ErrRetry
+							}
+
 							// 更新父节点的 child 指针（分配新页面）
 							newParentPageID, err := b.offheapAdapter.ReplaceChild(
 								model.PageID(parentPageID),
@@ -128,7 +135,8 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 
 							// CAS 更新 parentRef
 							if !parentRef.ReplacePage(parentInfo, newParentInfo) {
-								// CAS 失败，返回重试
+								// CAS 失败，释放新分配的父页面（走 epoch 机制避免 use-after-free）
+								b.offheapAdapter.freeOldPage(uint32(newParentPageID))
 								return ErrRetry
 							}
 
@@ -1099,6 +1107,14 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 	if err != nil {
 		b.offheapAdapter.pm.Free(uint32(leftPageID))
 		return errpkg.BTreeAllocRightIndexPage(err)
+	}
+
+	// 安全检查：新页面不能等于源页面（页面回收重用会导致 BulkInit 清空源页面数据）
+	srcInternalID := uint32(internalPageID)
+	if uint32(leftPageID) == srcInternalID || uint32(rightPageID) == srcInternalID {
+		b.offheapAdapter.pm.Free(uint32(leftPageID))
+		b.offheapAdapter.pm.Free(uint32(rightPageID))
+		return fmt.Errorf("allocated page conflicts with source page %d", internalPageID)
 	}
 
 	// Step 5: 使用 BulkInit 零拷贝物化左右两半

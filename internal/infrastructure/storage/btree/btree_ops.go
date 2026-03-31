@@ -156,6 +156,8 @@ func (b *BTree) SetWithTask(
 		}
 	}
 
+	// btreeSetTaskOrder 已废弃：路由已改用 taskMap[taskName] 查找，
+	// 保留常量仅为兼容 ShardItem.TaskOrder() 接口实现
 	const btreeSetTaskOrder = 0
 	item := NewBTreeSetItem(b, key, value, 3, shardID, leafRef, btreeSetTaskOrder)
 
@@ -192,21 +194,19 @@ func (b *BTree) SetWithRetryAndQueue(
 		}
 
 		err := b.setWithLeafLock(ctx, key, value)
-		switch err {
-		case nil:
+		switch {
+		case err == nil:
 			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
 			return nil
-		case ErrRetry:
+		case errors.Is(err, ErrRetry):
+			if attempt < maxFastRetries-1 {
+				runtime.Gosched()
+			}
+		case errors.Is(err, ErrCircularReference):
 			if attempt < maxFastRetries-1 {
 				runtime.Gosched()
 			}
 		default:
-			if errors.Is(err, ErrCircularReference) {
-				if attempt < maxFastRetries-1 {
-					runtime.Gosched()
-				}
-				break
-			}
 			return err
 		}
 	}

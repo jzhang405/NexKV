@@ -160,7 +160,7 @@ func (m *OffHeapMaterializer) BinarySearchInPage(
 	pageID uint32,
 	key []byte,
 ) (int, bool, []byte) {
-	idx, found := m.pa.SearchKey(pageID, key, true)
+	idx, found, _ := m.pa.SearchKey(pageID, key, true)
 
 	if !found {
 		return idx, false, nil

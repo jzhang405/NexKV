@@ -141,6 +141,16 @@ func (c *PageRefCache) Delete(pageID model.PageID) {
 	delete(c.cache, pageID)
 }
 
+// DeleteBatch 批量从缓存中移除 PageRef（减少锁开销）
+// 在 epoch 推进释放页面时调用，确保下次访问时重新加载
+func (c *PageRefCache) DeleteBatch(pageIDs []model.PageID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, pid := range pageIDs {
+		delete(c.cache, pid)
+	}
+}
+
 // Replace 原子替换 PageRef
 func (c *PageRefCache) Replace(oldPageID, newPageID model.PageID, ref *PageRef) {
 	c.mu.Lock()
@@ -209,8 +219,9 @@ type EpochBasedFreeList struct {
 	currentEpoch atomic.Uint64             // 当前 epoch（atomic）
 	pending      map[uint64][]model.PageID // epoch → 待释放页面列表
 	mu           sync.Mutex
-	batchSize    int          // 批量处理阈值
-	batchCounter atomic.Int64 // 批量计数器
+	batchSize    int                  // 批量处理阈值
+	batchCounter atomic.Int64         // 批量计数器
+	onBeforeFree func([]model.PageID) // 页面释放前回调（清理 pageRefCache）
 }
 
 func NewEpochBasedFreeList() *EpochBasedFreeList {
@@ -245,6 +256,12 @@ func (e *EpochBasedFreeList) AdvanceEpochNow(pm *offheap.PageManager) {
 	if newEpoch >= 2 {
 		pagesToDelayed := e.pending[epochToDelayed]
 		delete(e.pending, epochToDelayed)
+
+		// 通知 BTree 层清理这些页面的缓存（在 Free 之前）
+		if e.onBeforeFree != nil && len(pagesToDelayed) > 0 {
+			e.onBeforeFree(pagesToDelayed)
+		}
+
 		for _, pid := range pagesToDelayed {
 			pm.Free(uint32(pid))
 		}
@@ -327,12 +344,11 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	}
 
 	// Off-Heap 存储（方案 B：完全替换）
-	// 创建 PageManager（64MB，支持 50000+ keys）
-	// 计算：50000 keys / 40 keys/page = 1250 页
-	//      内部节点约 1250/180 * 3层 ≈ 21 页
-	//      分裂开销 2x ≈ 2500 页
-	//      2500 * 4KB = 10MB（64MB 提供充足余量）
-	mmapSize := 64 * 1024 * 1024 // 64MB
+	// mmap 大小根据系统物理内存动态计算（60%），最小 64MB，最大 6GB（10% 物理内存）
+	mmapSize, err := offheap.GetRecommendedMmapSize(0.1)
+	if err != nil {
+		return nil, errpkg.BTreeCreateOffheapManager(err)
+	}
 	offheapPM, err := offheap.NewPageManager(mmapSize)
 	if err != nil {
 		return nil, errpkg.BTreeCreateOffheapManager(err)
@@ -373,6 +389,11 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	// 创建 Epoch-based 延迟释放列表
 	epochBasedFreeList := NewEpochBasedFreeList()
 
+	// 注入 epoch 释放回调：COW 旧页面走 epoch 机制，避免 use-after-free
+	offheapAdapter.SetEpochFree(func(pageID model.PageID) {
+		epochBasedFreeList.Add(pageID)
+	})
+
 	btree := &BTree{
 		config:             config,
 		cowConfig:          cowConfig,
@@ -390,6 +411,12 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 		stats:              stats,
 		hotPageThreshold:   config.HotPageThreshold,
 		epochBasedFreeList: epochBasedFreeList,
+	}
+
+	// 注入缓存清理回调：epoch 推进释放页面前清理 pageRefCache
+	// 必须在 epochBasedFreeList 和 pageRefCache 都构造完成后注入
+	epochBasedFreeList.onBeforeFree = func(pageIDs []model.PageID) {
+		pageRefCache.DeleteBatch(pageIDs)
 	}
 
 	// 应用 GC 配置（如果指定）
@@ -1202,6 +1229,14 @@ func (b *BTree) Close() error {
 
 	b.closed = true
 	return nil
+}
+
+// GetOffHeapAdapterStats 暴露 OffHeap 页面统计（调试用）
+func (b *BTree) GetOffHeapAdapterStats() offheap.Stats {
+	if b.offheapAdapter == nil {
+		return offheap.Stats{}
+	}
+	return b.offheapAdapter.GetStats()
 }
 
 // ===== 性能优化：热数据和内存监控 =====

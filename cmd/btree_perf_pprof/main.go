@@ -1,8 +1,10 @@
-// BTree Set pprof 性能分析工具
+// BTree Set retry 诊断工具
+// 目标：1 线程下搞清楚 Set 失败的错误路径
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 var (
@@ -22,7 +25,7 @@ var (
 )
 
 func init() {
-	flag.IntVar(&flagThreads, "threads", 8, "并发线程数")
+	flag.IntVar(&flagThreads, "threads", 1, "并发线程数")
 	flag.IntVar(&flagCount, "count", 50000, "每线程操作数")
 	flag.IntVar(&flagInit, "init", 200, "初始数据量")
 }
@@ -52,9 +55,8 @@ func main() {
 		td.keys = make([][]byte, count)
 		td.values = make([][]byte, count)
 		for j := 0; j < count; j++ {
-			// 使用 init keys 进行真正的 update 操作
-			td.keys[j] = []byte(fmt.Sprintf("init-%05d", (t*count+j)%initCount)) // 和 init keys 重叠
-			td.values[j] = []byte(fmt.Sprintf("v%05d", j%initCount))             // 固定 6 bytes (<= init value 长度)
+			td.keys[j] = []byte(fmt.Sprintf("init-%05d", (t*count+j)%initCount))
+			td.values[j] = []byte(fmt.Sprintf("v%05d", j%initCount))
 		}
 		threadDataArr[t] = td
 	}
@@ -63,8 +65,8 @@ func main() {
 	initKeys := make([][]byte, initCount)
 	initValues := make([][]byte, initCount)
 	for i := 0; i < initCount; i++ {
-		initKeys[i] = []byte(fmt.Sprintf("init-%05d", i)) // 固定 10 bytes
-		initValues[i] = []byte(fmt.Sprintf("v%05d", i))   // 固定 6 bytes
+		initKeys[i] = []byte(fmt.Sprintf("init-%05d", i))
+		initValues[i] = []byte(fmt.Sprintf("v%05d", i))
 	}
 	fmt.Fprintf(os.Stderr, "初始化 %d 条...\n", initCount)
 	for i := 0; i < initCount; i++ {
@@ -84,9 +86,22 @@ func main() {
 	pprof.StartCPUProfile(f)
 
 	totalOps := numThreads * count
-	fmt.Fprintf(os.Stderr, "开始 CPU profiling: %d 线程 × %d 次 Set = %d ops...\n", numThreads, count, totalOps)
+	fmt.Fprintf(os.Stderr, "开始: %d 线程 × %d 次 Set = %d ops...\n", numThreads, count, totalOps)
 
-	var successCount atomic.Int64
+	// 错误分类统计
+	type errStats struct {
+		success     atomic.Int64
+		errRetry    atomic.Int64 // ErrRetry (CAS fail / lock fail)
+		errCircRef  atomic.Int64 // ErrCircularReference
+		errMaxRetry atomic.Int64 // ErrMaxRetriesExceeded
+		errOther    atomic.Int64 // 所有其他错误
+	}
+	var stats errStats
+
+	// 详细的 "other" 错误收集（只收集前 20 个不同的错误消息）
+	var otherMu sync.Mutex
+	otherErrors := make(map[string]int64)
+
 	var wg sync.WaitGroup
 	start := time.Now()
 
@@ -95,8 +110,26 @@ func main() {
 		go func(threadID int, td threadData) {
 			defer wg.Done()
 			for j := 0; j < count; j++ {
-				if err := tree.Set(ctx, td.keys[j], td.values[j]); err == nil {
-					successCount.Add(1)
+				err := tree.Set(ctx, td.keys[j], td.values[j])
+				switch {
+				case err == nil:
+					stats.success.Add(1)
+				case errors.Is(err, errpkg.ErrBTreeRetry):
+					stats.errRetry.Add(1)
+				case errors.Is(err, errpkg.ErrBTreeCircularReference):
+					stats.errCircRef.Add(1)
+				case errors.Is(err, errpkg.ErrBTreeMaxRetriesExceeded):
+					stats.errMaxRetry.Add(1)
+				default:
+					stats.errOther.Add(1)
+					msg := err.Error()
+					// 截取前 100 字符作为 key
+					if len(msg) > 100 {
+						msg = msg[:100]
+					}
+					otherMu.Lock()
+					otherErrors[msg]++
+					otherMu.Unlock()
 				}
 			}
 		}(t, threadDataArr[t])
@@ -108,8 +141,28 @@ func main() {
 	pprof.StopCPUProfile()
 	f.Close()
 
-	success := successCount.Load()
-	fmt.Fprintf(os.Stderr, "完成: %d/%d ops in %v, %.0f ops/s, %.2f μs/op\n",
-		success, totalOps, duration, float64(success)/duration.Seconds(), float64(duration.Nanoseconds())/float64(success)/1000)
-	fmt.Fprintf(os.Stderr, "CPU profile -> cpu.prof\n")
+	success := stats.success.Load()
+	errRetry := stats.errRetry.Load()
+	errCircRef := stats.errCircRef.Load()
+	errMaxRetry := stats.errMaxRetry.Load()
+	errOther := stats.errOther.Load()
+
+	fmt.Fprintf(os.Stderr, "\n========== 结果 ==========\n")
+	fmt.Fprintf(os.Stderr, "耗时: %v, %.0f ops/s\n", duration, float64(success)/duration.Seconds())
+	fmt.Fprintf(os.Stderr, "总 ops: %d\n\n", totalOps)
+	fmt.Fprintf(os.Stderr, "--- 错误分类 ---\n")
+	fmt.Fprintf(os.Stderr, "Success:            %6d (%.1f%%)\n", success, float64(success)/float64(totalOps)*100)
+	fmt.Fprintf(os.Stderr, "ErrRetry:           %6d (%.1f%%)\n", errRetry, float64(errRetry)/float64(totalOps)*100)
+	fmt.Fprintf(os.Stderr, "ErrCircRef:         %6d (%.1f%%)\n", errCircRef, float64(errCircRef)/float64(totalOps)*100)
+	fmt.Fprintf(os.Stderr, "ErrMaxRetries:      %6d (%.1f%%)\n", errMaxRetry, float64(errMaxRetry)/float64(totalOps)*100)
+	fmt.Fprintf(os.Stderr, "ErrOther:           %6d (%.1f%%)\n", errOther, float64(errOther)/float64(totalOps)*100)
+
+	if len(otherErrors) > 0 {
+		fmt.Fprintf(os.Stderr, "\n--- Other 错误明细 ---\n")
+		for msg, cnt := range otherErrors {
+			fmt.Fprintf(os.Stderr, "  [%6d] %s\n", cnt, msg)
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "\nCPU profile -> cpu.prof\n")
 }

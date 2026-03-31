@@ -293,6 +293,10 @@ var (
 	ErrBTreeDuplicatePageIDAlloc = stderrors.New("btree: allocator returned same pageID")
 	ErrBTreeInvalidPageIDAlloc   = stderrors.New("btree: allocator returned invalid pageID")
 
+	// BTree ReplaceChild TOCTOU 防御错误（热路径，直接返回 sentinel error）
+	ErrBTreeParentPageRecycled = stderrors.New("btree: parent page recycled")
+	ErrBTreeInvalidParentState = stderrors.New("btree: parent page invalid state")
+
 	// BTree ParentSplit 错误
 	ErrBTreeAsyncParentSplitFailed = stderrors.New("btree: async parent split failed")
 

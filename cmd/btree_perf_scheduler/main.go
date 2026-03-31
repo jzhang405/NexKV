@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 
 	"net/http"
 	_ "net/http/pprof"
@@ -121,10 +123,73 @@ func parseThreadList(s string) []int {
 	return result
 }
 
+type errStats struct {
+	success     atomic.Int64
+	errRetry    atomic.Int64
+	errCircRef  atomic.Int64
+	errMaxRetry atomic.Int64
+	errOther    atomic.Int64
+	otherMu     sync.Mutex
+	otherErrors map[string]int64
+}
+
+func newErrStats() *errStats {
+	return &errStats{otherErrors: make(map[string]int64)}
+}
+
+func (s *errStats) record(err error) {
+	if err == nil {
+		s.success.Add(1)
+		return
+	}
+	switch {
+	case errors.Is(err, errpkg.ErrBTreeRetry):
+		s.errRetry.Add(1)
+	case errors.Is(err, errpkg.ErrBTreeCircularReference):
+		s.errCircRef.Add(1)
+	case errors.Is(err, errpkg.ErrBTreeMaxRetriesExceeded):
+		s.errMaxRetry.Add(1)
+	default:
+		s.errOther.Add(1)
+		msg := err.Error()
+		if len(msg) > 100 {
+			msg = msg[:100]
+		}
+		s.otherMu.Lock()
+		s.otherErrors[msg]++
+		s.otherMu.Unlock()
+	}
+}
+
+func (s *errStats) print(totalOps int64) {
+	succ := s.success.Load()
+	fmt.Printf("\n--- 错误分类 ---\n")
+	fmt.Printf("Success:       %6d (%.1f%%)\n", succ, float64(succ)/float64(totalOps)*100)
+	if s.errRetry.Load() > 0 {
+		fmt.Printf("ErrRetry:      %6d (%.1f%%)\n", s.errRetry.Load(), float64(s.errRetry.Load())/float64(totalOps)*100)
+	}
+	if s.errCircRef.Load() > 0 {
+		fmt.Printf("ErrCircRef:    %6d (%.1f%%)\n", s.errCircRef.Load(), float64(s.errCircRef.Load())/float64(totalOps)*100)
+	}
+	if s.errMaxRetry.Load() > 0 {
+		fmt.Printf("ErrMaxRetry:   %6d (%.1f%%)\n", s.errMaxRetry.Load(), float64(s.errMaxRetry.Load())/float64(totalOps)*100)
+	}
+	if s.errOther.Load() > 0 {
+		fmt.Printf("ErrOther:      %6d (%.1f%%)\n", s.errOther.Load(), float64(s.errOther.Load())/float64(totalOps)*100)
+	}
+	s.otherMu.Lock()
+	defer s.otherMu.Unlock()
+	if len(s.otherErrors) > 0 {
+		fmt.Printf("--- Other 错误明细 ---\n")
+		for msg, cnt := range s.otherErrors {
+			fmt.Printf("  [%6d] %s\n", cnt, msg)
+		}
+	}
+}
+
 func runTest(numThreads, totalOps int, useScheduler bool) (float64, float64) {
 	ctx := context.Background()
 
-	// 核心区别：DisableScheduler 控制是否走 TaskScheduler 路径
 	config := &model.BTreeConfig{
 		DisableScheduler: !useScheduler,
 	}
@@ -143,11 +208,11 @@ func runTest(numThreads, totalOps int, useScheduler bool) (float64, float64) {
 	// 预热
 	warmup(ctx, tree, 1000)
 
-	successCount := atomic.Int64{}
+	stats := newErrStats()
 	var wg sync.WaitGroup
 	startTime := time.Now()
 
-	// 预生成 keys/values（消除热路径 fmt.Sprintf 开销）
+	// 预生成 keys/values
 	type threadData struct {
 		keys   [][]byte
 		values [][]byte
@@ -188,9 +253,7 @@ func runTest(numThreads, totalOps int, useScheduler bool) (float64, float64) {
 					}
 				}
 
-				if opErr == nil {
-					successCount.Add(1)
-				}
+				stats.record(opErr)
 			}
 		}(i, threadDataArr[i])
 	}
@@ -198,10 +261,12 @@ func runTest(numThreads, totalOps int, useScheduler bool) (float64, float64) {
 	wg.Wait()
 	duration := time.Since(startTime)
 
-	success := successCount.Load()
+	success := stats.success.Load()
 	if success == 0 {
 		success = 1
 	}
+
+	stats.print(int64(totalOps))
 
 	throughput := float64(success) / duration.Seconds()
 	latency := float64(duration.Nanoseconds()) / float64(success) / 1000
@@ -215,7 +280,6 @@ func initializeData(ctx context.Context, tree *btree.BTree, count int) {
 	start := time.Now()
 	batchSize := 1000
 
-	// 预生成 keys/values
 	initKeys := make([][]byte, count)
 	initValues := make([][]byte, count)
 	for j := 0; j < count; j++ {
@@ -241,7 +305,6 @@ func initializeData(ctx context.Context, tree *btree.BTree, count int) {
 }
 
 func warmup(ctx context.Context, tree *btree.BTree, count int) {
-	// 预生成 keys/values
 	warmupKeys := make([][]byte, count)
 	warmupValues := make([][]byte, count)
 	for i := 0; i < count; i++ {

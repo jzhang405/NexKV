@@ -266,8 +266,9 @@ var (
 	ErrBTreeDataDirError      = stderrors.New("btree: data directory error")
 
 	// BTree 页面操作错误（internal_page / leaf_page）
-	ErrBTreeChildIndexOutOfRange  = stderrors.New("btree: child index out of range")
-	ErrBTreeInvariantViolated     = stderrors.New("btree: page invariant violated")
+	ErrBTreeChildIndexOutOfRange     = stderrors.New("btree: child index out of range")
+	ErrBTreeInvariantViolated        = stderrors.New("btree: page invariant violated")
+	ErrBTreeConcurrentModification   = stderrors.New("btree: page modified concurrently during update")
 	ErrBTreeKeyNotFoundInPage     = stderrors.New("btree: key not found in page")
 	ErrBTreeKeyOrderViolation     = stderrors.New("btree: key ordering violation")
 	ErrBTreeCannotSplitMinKeys    = stderrors.New("btree: cannot split page with minimum keys")
@@ -1064,6 +1065,11 @@ func BTreeChildIndexOutOfRangeError(idx, max int) error {
 // BTreeInvariantViolatedError 创建页面不变量违反错误
 func BTreeInvariantViolatedError(children, keys int) error {
 	return Wrapf(ErrBTreeInvariantViolated, "InternalPage invariant violated: len(children)=%d, len(keys)=%d", children, keys)
+}
+
+// BTreeConcurrentModificationError 创建页面并发修改错误
+func BTreeConcurrentModificationError() error {
+	return ErrBTreeConcurrentModification
 }
 
 // BTreeKeyNotFoundInPageError 创建页面内键未找到错误

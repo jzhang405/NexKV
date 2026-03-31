@@ -87,7 +87,11 @@ func (a *OffHeapAdapter) GetFromOffHeap(pageID model.PageID, key []byte) ([]byte
 	}
 
 	// 获取 LeafEntry offsets
-	_, _, valOff, valLen := a.pa.GetLeafEntryOffset(uint32(pageID), idx)
+	// 使用 Safe 版本防止页面被回收重用后越界 panic
+	_, _, valOff, valLen, err := a.pa.GetLeafEntryOffsetSafe(uint32(pageID), idx)
+	if err != nil {
+		return nil, false, err
+	}
 	val := a.pa.GetValue(uint32(pageID), valOff, valLen)
 	// 复制 value（因为指向 mmap 内存）
 	result := make([]byte, len(val))
@@ -221,7 +225,12 @@ func (a *OffHeapAdapter) updateLeafEntryFullMaterialization(pageID model.PageID,
 	values := make([][]byte, 0, count)
 
 	for i := 0; i < int(count); i++ {
-		keyOff, keyLen, valOff, valLen := a.pa.GetLeafEntryOffset(uint32(pageID), i)
+		// 使用 Safe 版本：页面可能在迭代过程中被并发修改/回收
+		keyOff, keyLen, valOff, valLen, err := a.pa.GetLeafEntryOffsetSafe(uint32(pageID), i)
+		if err != nil {
+			// 页面被并发修改，返回 ErrRetry 让调用方重试
+			return 0, errpkg.ErrBTreeRetry
+		}
 		k := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
 		v := a.pa.GetValue(uint32(pageID), valOff, valLen)
 		if i == idx {
@@ -313,7 +322,11 @@ func (a *OffHeapAdapter) UpdateLeafEntry(
 	pageID model.PageID, idx int, key, value []byte,
 ) (model.PageID, error) {
 	// 检查 valLen
-	_, _, _, valLen := a.pa.GetLeafEntryOffset(uint32(pageID), idx)
+	// 使用 Safe 版本：页面可能被回收重用
+	_, _, _, valLen, err := a.pa.GetLeafEntryOffsetSafe(uint32(pageID), idx)
+	if err != nil {
+		return 0, errpkg.ErrBTreeRetry
+	}
 
 	if uint32(len(value)) <= valLen {
 		return a.updateLeafEntryBulkCOW(pageID, idx, value)
@@ -349,11 +362,23 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 		return 0, errpkg.BTreeParentFull(int(count), maxInternalKeys)
 	}
 
+	// 显式边界检查：防止 index 超出范围导致 panic（TOCTOU 场景）
+	// GetLeafEntry/GetIndexEntry 使用 index >= count 作为越界条件
+	if index < 0 || index >= int(count) {
+		return 0, errpkg.BTreeConcurrentModificationError()
+	}
+
 	keys := make([][]byte, 0, count+1)
 	children := make([]uint32, 0, count+2)
 
 	inserted := false
 	for i := 0; i < int(count); i++ {
+		// TOCTOU 防护：每次迭代前重新读取 count，防止并发修改导致越界
+		currentCount := a.pa.GetCount(uint32(pageID))
+		if int(currentCount) != int(count) {
+			// 页面被并发修改，退出并让调用方重试
+			return 0, errpkg.BTreeConcurrentModificationError()
+		}
 		keyOff, keyLen, _ := a.pa.GetIndexEntryOffset(uint32(pageID), i)
 		k := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
 		// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
@@ -493,7 +518,11 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 	children := make([]uint32, 0, count+1)
 
 	for i := 0; i < int(count); i++ {
-		keyOff, keyLen, _ := a.pa.GetIndexEntryOffset(pid, i)
+		// 使用 Safe 版本防止并发修改导致越界 panic
+		keyOff, keyLen, _, err := a.pa.GetIndexEntryOffsetSafe(pid, i)
+		if err != nil {
+			return 0, errpkg.ErrBTreeRetry
+		}
 		k := a.pa.GetKey(pid, keyOff, keyLen)
 
 		// 复制 key
@@ -506,7 +535,11 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 		if i == index {
 			children = append(children, newChildID)
 		} else {
-			encodedChild := a.pa.GetChild(pid, i)
+			// Safe 版本：页面可能在循环中被并发修改
+			encodedChild, err := a.pa.GetChildSafe(pid, i)
+			if err != nil {
+				return 0, errpkg.ErrBTreeRetry
+			}
 			child, _ := a.DecodeChildWithVersion(encodedChild)
 			children = append(children, child)
 		}
@@ -514,8 +547,11 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 
 	// 添加 extraChild（N+1 child）
 	// 如果 index == count，替换 extraChild；否则复制原 extraChild
-	// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
-	encodedExtraChild := a.pa.GetChild(pid, int(count))
+	// Safe 版本：防止 extraChild 访问越界
+	encodedExtraChild, err := a.pa.GetChildSafe(pid, int(count))
+	if err != nil {
+		return 0, errpkg.ErrBTreeRetry
+	}
 	if index == int(count) {
 		children = append(children, newChildID)
 	} else {
@@ -686,7 +722,12 @@ func (a *OffHeapAdapter) SplitOffHeapLeafPage(pageID model.PageID) (model.PageID
 	}
 
 	// 获取 splitKey（从右页面第一个条目）
-	keyOff, keyLen, _, _ := a.pa.GetLeafEntryOffset(rightPageID, 0)
+	// 使用 Safe 版本：页面可能为空（count=0）导致越界
+	keyOff, keyLen, _, _, err := a.pa.GetLeafEntryOffsetSafe(rightPageID, 0)
+	if err != nil {
+		// rightPage 为空，返回 ErrRetry 让调用方重试
+		return 0, 0, nil, errpkg.ErrBTreeRetry
+	}
 	splitKey := a.pa.GetKey(rightPageID, keyOff, keyLen)
 	splitKeyCopy := make([]byte, len(splitKey))
 	copy(splitKeyCopy, splitKey)
@@ -719,7 +760,12 @@ func (a *OffHeapAdapter) splitOffHeapLeafPageFallback(pageID model.PageID) (mode
 	values := make([][]byte, 0, count)
 
 	for i := 0; i < int(count); i++ {
-		keyOff, keyLen, valOff, valLen := a.pa.GetLeafEntryOffset(uint32(pageID), i)
+		// 使用 Safe 版本防止并发修改导致越界 panic
+		keyOff, keyLen, valOff, valLen, err := a.pa.GetLeafEntryOffsetSafe(uint32(pageID), i)
+		if err != nil {
+			// 页面在迭代过程中被并发修改，返回 ErrRetry 让调用方重试
+			return 0, 0, nil, errpkg.ErrBTreeRetry
+		}
 		key := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
 		val := a.pa.GetValue(uint32(pageID), valOff, valLen)
 
@@ -1007,7 +1053,11 @@ func (a *OffHeapAdapter) VerifyOffHeapPage(pageID model.PageID) (bool, error) {
 	keys := make([][]byte, 0, int(count))
 	if isLeaf {
 		for i := 0; i < int(count); i++ {
-			keyOff, keyLen, _, _ := a.pa.GetLeafEntryOffset(uint32(pageID), i)
+			// Safe 版本防止页面被回收时 panic
+			keyOff, keyLen, _, _, err := a.pa.GetLeafEntryOffsetSafe(uint32(pageID), i)
+			if err != nil {
+				return false, err
+			}
 			key := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
 			keyCopy := make([]byte, len(key))
 			copy(keyCopy, key)
@@ -1015,7 +1065,11 @@ func (a *OffHeapAdapter) VerifyOffHeapPage(pageID model.PageID) (bool, error) {
 		}
 	} else {
 		for i := 0; i < int(count); i++ {
-			keyOff, keyLen, _ := a.pa.GetIndexEntryOffset(uint32(pageID), i)
+			// Safe 版本防止页面被回收时 panic
+			keyOff, keyLen, _, err := a.pa.GetIndexEntryOffsetSafe(uint32(pageID), i)
+			if err != nil {
+				return false, err
+			}
 			key := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
 			keyCopy := make([]byte, len(key))
 			copy(keyCopy, key)
@@ -1092,7 +1146,11 @@ func (a *OffHeapAdapter) UpdateChildIndex(
 	children := make([]uint32, 0, count+1)
 
 	for i := 0; i < int(count); i++ {
-		keyOff, keyLen, encodedChild := a.pa.GetIndexEntryOffset(uint32(parentPageID), i)
+		// Safe 版本防止并发修改导致越界 panic
+		keyOff, keyLen, encodedChild, err := a.pa.GetIndexEntryOffsetSafe(uint32(parentPageID), i)
+		if err != nil {
+			return 0, errpkg.ErrBTreeRetry
+		}
 		k := a.pa.GetKey(uint32(parentPageID), keyOff, keyLen)
 
 		// 复制 key

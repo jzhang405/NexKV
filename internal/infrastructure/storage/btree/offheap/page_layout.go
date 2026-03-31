@@ -485,6 +485,20 @@ func (pa *PageAccessor) SetNextPage(pageID uint32, next uint32) {
 	pa.GetHeader(pageID).nextPage = next
 }
 
+// GetChildSafe 安全获取索引节点的子节点（TOCTOU 防御）
+// index == count 时返回 extraChild；越界时返回 error 而非 panic
+func (pa *PageAccessor) GetChildSafe(pageID uint32, index int) (uint64, error) {
+	header := pa.GetHeader(pageID)
+	if index == int(header.count) {
+		return header.extraChild, nil
+	}
+	entry, err := pa.GetIndexEntrySafe(pageID, index)
+	if err != nil {
+		return 0, err
+	}
+	return entry.child, nil
+}
+
 // GetChild 获取索引节点的子节点
 // index == count 时返回 extraChild
 func (pa *PageAccessor) GetChild(pageID uint32, index int) uint64 {
@@ -547,6 +561,15 @@ func (pa *PageAccessor) GetLeafEntryOffsetSafe(pageID uint32, index int) (keyOff
 func (pa *PageAccessor) GetIndexEntryOffset(pageID uint32, index int) (keyOff, keyLen uint32, child uint64) {
 	entry := pa.GetIndexEntry(pageID, index)
 	return entry.keyOff, entry.keyLen, entry.child
+}
+
+// GetIndexEntryOffsetSafe 安全获取索引条目的 key offset 和 child（TOCTOU 防御）
+func (pa *PageAccessor) GetIndexEntryOffsetSafe(pageID uint32, index int) (keyOff, keyLen uint32, child uint64, err error) {
+	entry, entryErr := pa.GetIndexEntrySafe(pageID, index)
+	if entryErr != nil {
+		return 0, 0, 0, entryErr
+	}
+	return entry.keyOff, entry.keyLen, entry.child, nil
 }
 
 // GetIndexKey 获取索引节点的 key

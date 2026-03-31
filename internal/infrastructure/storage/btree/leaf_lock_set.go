@@ -7,6 +7,7 @@ package btree
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
@@ -622,6 +623,11 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	newParentPageID, err := b.offheapAdapter.UpdateIndexEntry(currentParentPageID, insertIndex, splitKey, uint32(leftPageID), uint32(rightPageID))
 
 	if err != nil {
+		// 检查是否是页面并发修改错误
+		if errors.Is(err, errpkg.ErrBTreeConcurrentModification) {
+			// 页面在操作过程中被并发修改，返回 ErrRetry 让外层重试
+			return nil, ErrRetry
+		}
 		// 检查是否是页面已满错误
 		if strings.Contains(err.Error(), "page full") {
 			// ✅ 检查树的高度

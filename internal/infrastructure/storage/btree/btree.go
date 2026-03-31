@@ -344,12 +344,11 @@ func OpenBTree(dir string, config *model.BTreeConfig) (*BTree, error) {
 	}
 
 	// Off-Heap 存储（方案 B：完全替换）
-	// 创建 PageManager（64MB，支持 50000+ keys）
-	// 计算：50000 keys / 40 keys/page = 1250 页
-	//      内部节点约 1250/180 * 3层 ≈ 21 页
-	//      分裂开销 2x ≈ 2500 页
-	//      2500 * 4KB = 10MB（64MB 提供充足余量）
-	mmapSize := 64 * 1024 * 1024 // 64MB
+	// mmap 大小根据系统物理内存动态计算（60%），最小 64MB，最大 6GB（10% 物理内存）
+	mmapSize, err := offheap.GetRecommendedMmapSize(0.1)
+	if err != nil {
+		return nil, errpkg.BTreeCreateOffheapManager(err)
+	}
 	offheapPM, err := offheap.NewPageManager(mmapSize)
 	if err != nil {
 		return nil, errpkg.BTreeCreateOffheapManager(err)

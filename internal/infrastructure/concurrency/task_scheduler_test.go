@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/bits"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -568,13 +569,17 @@ func TestSchedulerCore_wakeup(t *testing.T) {
 	core.wakeup()
 }
 
-func TestSchedulerCore_getOrderedTasks_Empty(t *testing.T) {
+func TestSchedulerCore_getOrderedBuckets_Empty(t *testing.T) {
 	core := NewSchedulerCore(0)
-	tasks := core.getOrderedTasks()
-	assert.Empty(t, tasks)
+	buckets := core.getOrderedBuckets()
+	totalTasks := 0
+	for _, bucket := range buckets {
+		totalTasks += len(bucket)
+	}
+	assert.Equal(t, 0, totalTasks)
 }
 
-func TestSchedulerCore_getOrderedTasks_SingleTask(t *testing.T) {
+func TestSchedulerCore_getOrderedBuckets_SingleTask(t *testing.T) {
 	core := NewSchedulerCore(0)
 
 	taskTemplate := NewShardTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
@@ -583,30 +588,58 @@ func TestSchedulerCore_getOrderedTasks_SingleTask(t *testing.T) {
 
 	_ = core.RegisterTask(taskTemplate)
 
-	tasks := core.getOrderedTasks()
-	assert.Len(t, tasks, 1)
-	assert.Equal(t, "test-task", tasks[0].Name())
+	buckets := core.getOrderedBuckets()
+	// TaskPriorityNormal = 5
+	assert.Len(t, buckets[model.TaskPriorityNormal], 1)
+	assert.Equal(t, "test-task", buckets[model.TaskPriorityNormal][0].Name())
 }
 
-func TestSchedulerCore_getOrderedTasks_MultipleTasks(t *testing.T) {
+func TestSchedulerCore_getOrderedBuckets_MultiplePriorities(t *testing.T) {
 	core := NewSchedulerCore(0)
 
-	// 注册多个任务，ExecutionOrder 乱序
-	task2 := &ShardTask{name: "task-2", priority: model.TaskPriorityNormal, executionOrder: 2, executeFunc: func(item any) TaskStatus { return TaskPassed }}
-	task1 := &ShardTask{name: "task-1", priority: model.TaskPriorityNormal, executionOrder: 1, executeFunc: func(item any) TaskStatus { return TaskPassed }}
-	task3 := &ShardTask{name: "task-3", priority: model.TaskPriorityNormal, executionOrder: 3, executeFunc: func(item any) TaskStatus { return TaskPassed }}
+	// 注册不同优先级的任务
+	taskNormal := &ShardTask{name: "btree-set", priority: model.TaskPriorityNormal, executionOrder: 0, executeFunc: func(item any) TaskStatus { return TaskPassed }}
+	taskHigh := &ShardTask{name: "btree-split", priority: model.TaskPriorityHigh, executionOrder: 1, executeFunc: func(item any) TaskStatus { return TaskPassed }}
 
-	_ = core.RegisterTask(task2)
-	_ = core.RegisterTask(task1)
-	_ = core.RegisterTask(task3)
+	_ = core.RegisterTask(taskNormal)
+	_ = core.RegisterTask(taskHigh)
 
-	tasks := core.getOrderedTasks()
-	assert.Len(t, tasks, 3)
+	buckets := core.getOrderedBuckets()
 
-	// 验证按 ExecutionOrder 排序
-	assert.Equal(t, "task-1", tasks[0].Name())
-	assert.Equal(t, "task-2", tasks[1].Name())
-	assert.Equal(t, "task-3", tasks[2].Name())
+	// 验证各优先级桶分配正确
+	assert.Len(t, buckets[model.TaskPriorityHigh], 1)
+	assert.Equal(t, "btree-split", buckets[model.TaskPriorityHigh][0].Name())
+
+	assert.Len(t, buckets[model.TaskPriorityNormal], 1)
+	assert.Equal(t, "btree-set", buckets[model.TaskPriorityNormal][0].Name())
+}
+
+// TestSchedulerCore_PriorityScheduling_VerifiesBitmapOrder 验证 bitmap 遍历顺序
+// High priority (p=1) 的 task 应在 Normal priority (p=5) 之前被处理
+func TestSchedulerCore_PriorityScheduling_VerifiesBitmapOrder(t *testing.T) {
+	core := NewSchedulerCore(0)
+
+	taskNormal := &ShardTask{name: "btree-set", priority: model.TaskPriorityNormal, executionOrder: 0, executeFunc: func(item any) TaskStatus { return TaskPassed }}
+	taskHigh := &ShardTask{name: "btree-split", priority: model.TaskPriorityHigh, executionOrder: 1, executeFunc: func(item any) TaskStatus { return TaskPassed }}
+
+	_ = core.RegisterTask(taskNormal)
+	_ = core.RegisterTask(taskHigh)
+
+	// 验证 activeBitmap = 0b0100010 (bit 1 + bit 5)
+	assert.Equal(t, uint16(0b0100010), core.activeBitmap)
+
+	// 验证 bitmap 遍历顺序：TrailingZeros16 先返回 p=1 (High)，再 p=5 (Normal)
+	var order []int
+	bitmap := core.activeBitmap
+	for bitmap != 0 {
+		p := bits.TrailingZeros16(bitmap)
+		if p >= NumPriorityLevels {
+			break
+		}
+		order = append(order, p)
+		bitmap &^= (1 << p)
+	}
+	assert.Equal(t, []int{1, 5}, order) // High(1) before Normal(5)
 }
 
 func TestSchedulerCore_RegisterTask_Duplicate(t *testing.T) {
@@ -1216,4 +1249,150 @@ func (i *testShardItemForCoverage) Execute(ctx context.Context, pipeline model.T
 
 func (i *testShardItemForCoverage) TaskOrder() int {
 	return 0 // 默认 order 0
+}
+
+// ==========================================
+// P1-4: 桶内 executionOrder 排序测试
+// ==========================================
+
+func TestSchedulerCore_getOrderedBuckets_SortingWithinBucket(t *testing.T) {
+	core := NewSchedulerCore(0)
+
+	// 在同一优先级桶内注册多个任务，验证 executionOrder 排序
+	taskA := &ShardTask{name: "task-a", priority: model.TaskPriorityNormal, executionOrder: 3, executeFunc: func(item any) TaskStatus { return TaskPassed }}
+	taskB := &ShardTask{name: "task-b", priority: model.TaskPriorityNormal, executionOrder: 1, executeFunc: func(item any) TaskStatus { return TaskPassed }}
+	taskC := &ShardTask{name: "task-c", priority: model.TaskPriorityNormal, executionOrder: 2, executeFunc: func(item any) TaskStatus { return TaskPassed }}
+
+	// 注册顺序：A(3), B(1), C(2)
+	require.NoError(t, core.RegisterTask(taskA))
+	require.NoError(t, core.RegisterTask(taskB))
+	require.NoError(t, core.RegisterTask(taskC))
+
+	buckets := core.getOrderedBuckets()
+
+	// 验证桶内按 executionOrder 升序排列：B(1), C(2), A(3)
+	normalBucket := buckets[model.TaskPriorityNormal]
+	require.Len(t, normalBucket, 3)
+	assert.Equal(t, "task-b", normalBucket[0].Name()) // eo=1
+	assert.Equal(t, "task-c", normalBucket[1].Name()) // eo=2
+	assert.Equal(t, "task-a", normalBucket[2].Name()) // eo=3
+}
+
+// ==========================================
+// P1-5: 饥饿防护测试
+// ==========================================
+
+func TestShardTask_LastSubmitTime_And_PriorityBoost(t *testing.T) {
+	task := NewShardTask("test-task", model.TaskPriorityNormal, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+
+	// 初始值
+	assert.Equal(t, int64(0), task.LastSubmitTime())
+	assert.False(t, task.HasPriorityBoost())
+
+	// Enqueue 后记录时间
+	core := NewSchedulerCore(0)
+	require.NoError(t, core.RegisterTask(task))
+	registeredTask, _ := core.GetTaskByName("test-task")
+	require.NoError(t, registeredTask.Enqueue("item1"))
+	assert.Greater(t, registeredTask.LastSubmitTime(), int64(0))
+
+	// 设置/清除 priorityBoost
+	registeredTask.SetPriorityBoost(true)
+	assert.True(t, registeredTask.HasPriorityBoost())
+	registeredTask.SetPriorityBoost(false)
+	assert.False(t, registeredTask.HasPriorityBoost())
+}
+
+func TestSchedulerCore_checkStarvation_PromotesStarvedTask(t *testing.T) {
+	core := NewSchedulerCore(0)
+
+	task := NewShardTask("starved-task", model.TaskPriorityLow, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+	require.NoError(t, core.RegisterTask(task))
+
+	registeredTask, _ := core.GetTaskByName("starved-task")
+
+	// 手动设置 lastSubmitTime 为很久之前（超过 starvationTimeout=100ms）
+	oldTime := time.Now().Add(-200 * time.Millisecond).UnixNano()
+	registeredTask.lastSubmitTime.Store(oldTime)
+
+	// 初始化 cachedBuckets（模拟 runLoop 启动时的缓存）
+	core.cachedBuckets = core.getOrderedBuckets()
+
+	// 重置 starvationCheck 以允许检查
+	core.starvationCheck = 0
+
+	// 执行饥饿检查
+	core.checkStarvation()
+
+	// 验证被提升
+	assert.True(t, registeredTask.HasPriorityBoost(), "starved task should be priority-boosted")
+}
+
+func TestSchedulerCore_checkStarvation_SkipsRecentTask(t *testing.T) {
+	core := NewSchedulerCore(0)
+
+	task := NewShardTask("recent-task", model.TaskPriorityLow, 1, func(item any) TaskStatus {
+		return TaskPassed
+	})
+	require.NoError(t, core.RegisterTask(task))
+
+	registeredTask, _ := core.GetTaskByName("recent-task")
+
+	// 设置 lastSubmitTime 为最近（未超时）
+	registeredTask.lastSubmitTime.Store(time.Now().UnixNano())
+
+	// 重置 starvationCheck
+	core.starvationCheck = 0
+
+	// 执行饥饿检查
+	core.checkStarvation()
+
+	// 不应被提升
+	assert.False(t, registeredTask.HasPriorityBoost(), "recent task should not be priority-boosted")
+}
+
+// ==========================================
+// P1-6: taskName 路由测试
+// ==========================================
+
+func TestTaskScheduler_EnqueueWithShard_TaskNameRouting(t *testing.T) {
+	scheduler := NewTaskScheduler("test", 4)
+
+	// 注册多个任务类型
+	require.NoError(t, scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"btree-set",
+		model.TaskPriorityNormal,
+		0,
+	))
+	require.NoError(t, scheduler.RegisterTask(
+		func(item any) TaskStatus { return TaskPassed },
+		"btree-split",
+		model.TaskPriorityHigh,
+		1,
+	))
+
+	require.NoError(t, scheduler.Start())
+	defer scheduler.Stop()
+
+	// 路由 btree-set 任务
+	setItem := &testShardItemForCoverage{shardID: 1}
+	err := scheduler.EnqueueWithShard(setItem, "btree-set")
+	assert.NoError(t, err, "btree-set task should route successfully")
+
+	// 路由 btree-split 任务
+	splitItem := &testShardItemForCoverage{shardID: 1}
+	err = scheduler.EnqueueWithShard(splitItem, "btree-split")
+	assert.NoError(t, err, "btree-split task should route successfully")
+
+	// 验证两个任务分别路由到正确的 task
+	core := scheduler.cores[1]
+	setTask, _ := core.GetTaskByName("btree-set")
+	splitTask, _ := core.GetTaskByName("btree-split")
+	assert.Greater(t, setTask.QueueLen(), 0, "btree-set queue should have items")
+	assert.Greater(t, splitTask.QueueLen(), 0, "btree-split queue should have items")
 }

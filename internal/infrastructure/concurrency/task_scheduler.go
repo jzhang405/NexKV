@@ -4,16 +4,20 @@ package concurrency
 import (
 	"context"
 	"fmt"
-	"maps"
+	"math/bits"
 	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/pkg/errors"
 )
+
+// NumPriorityLevels 优先级级别数量（与 executor_percore.go 保持一致）
+// TaskPriorityCritical(0) ~ TaskPriorityIdle(9)
 
 // lbConfig 负载均衡配置常量
 const (
@@ -43,6 +47,10 @@ type ShardTask struct {
 
 	// 队列项计数指针（指向 SchedulerCore.totalQueueItems，用于 O(1) 总队列长度查询）
 	totalQueueItemsPtr *atomic.Int64
+
+	// 饥饿防护（参考 executor_percore.go:146-147）
+	lastSubmitTime atomic.Int64 // 最近一次 Enqueue 的时间（UnixNano）
+	priorityBoost  atomic.Bool  // 饥饿防护：临时提升标志
 }
 
 // NewShardTask 创建分片任务
@@ -76,6 +84,8 @@ func (t *ShardTask) Enqueue(item any) error {
 	ok := t.queue.Enqueue(unsafe.Pointer(box))
 	if ok && t.totalQueueItemsPtr != nil {
 		t.totalQueueItemsPtr.Add(1)
+		// 记录入队时间，为饥饿防护提供时间戳
+		t.lastSubmitTime.Store(time.Now().UnixNano())
 	}
 	return nil
 }
@@ -183,6 +193,21 @@ func (t *ShardTask) GetTask() *model.BaseTask[any] {
 	return nil
 }
 
+// LastSubmitTime 返回最近一次 Enqueue 的纳秒时间戳
+func (t *ShardTask) LastSubmitTime() int64 {
+	return t.lastSubmitTime.Load()
+}
+
+// SetPriorityBoost 设置/清除临时优先级提升
+func (t *ShardTask) SetPriorityBoost(boost bool) {
+	t.priorityBoost.Store(boost)
+}
+
+// HasPriorityBoost 检查是否有临时优先级提升
+func (t *ShardTask) HasPriorityBoost() bool {
+	return t.priorityBoost.Load()
+}
+
 // ==========================================
 // SchedulerCore 单个调度器核心
 // ==========================================
@@ -199,28 +224,33 @@ type CoreStats struct {
 
 // SchedulerCore 单个调度器核心（对应一个 CPU 核心）
 type SchedulerCore struct {
-	coreID        int
-	tasks         []*ShardTask // 独立的 Task 实例
-	tasksSnapshot atomic.Value // 不可变切片快照，类型为 []*ShardTask
-	taskMap       atomic.Value // 不可变 map 快照，类型为 map[string]*ShardTask
-	mu            sync.Mutex   // RegisterTask 时尚需锁
-	running       atomic.Bool
-	wg            sync.WaitGroup
-	ctx           context.Context
-	cancel        context.CancelFunc
-	stats         CoreStats  //
-	cond          *sync.Cond // 条件变量，用于等待/唤醒
+	coreID int
 
-	// runLoop 缓存：每次循环开始时更新，避免多次调用 getOrderedTasks()
-	cachedTasks []*ShardTask
+	// 优先级桶：替代原来的 tasks []*ShardTask 平面数组
+	// 参考 executor_percore.go taskQueue.queues
+	priorityBuckets [NumPriorityLevels][]*ShardTask // 按优先级分桶，桶内按 executionOrder 排序
+	activeBitmap    uint16                          // 位图：标记哪些优先级桶有注册的 ShardTask
 
-	// 总队列项计数器（避免遍历计算总队列长度）
+	// taskMap: 只读（Start 后不再写入），并发只读安全，无需锁
+	taskMap map[string]*ShardTask // name → ShardTask（RegisterTask 时填充，只读）
+
+	// runLoop 缓存（避免每轮重建）
+	cachedBuckets [NumPriorityLevels][]*ShardTask
+
+	// 饥饿防护（参考 executor_percore.go:146-147）
+	starvationCheck   int64 // 上次饥饿检查时间（纳秒）
+	starvationTimeout int64 // 饥饿防护超时（纳秒），默认 100ms
+	checkInterval     int64 // 检查间隔（纳秒），默认 10ms
+
+	mu              sync.Mutex
+	running         atomic.Bool
+	wg              sync.WaitGroup
+	ctx             context.Context
+	cancel          context.CancelFunc
+	stats           CoreStats
+	cond            *sync.Cond
 	totalQueueItems atomic.Int64
-
-	// P3 优化：预分配批处理缓冲区（最大 32 元素）
-	// tryProcessBatch 复用此缓冲区，避免每次 make([]any, actualBatchSize) 分配
-	// runLoop 单线程访问，无需加锁
-	batchBuffer []any
+	batchBuffer     []any
 }
 
 // NewSchedulerCore 创建调度器核心
@@ -228,33 +258,18 @@ func NewSchedulerCore(coreID int) *SchedulerCore {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	c := &SchedulerCore{
-		coreID:      coreID,
-		tasks:       make([]*ShardTask, 0, DefaultCoreTasksCapacity),
-		running:     atomic.Bool{},
-		ctx:         ctx,
-		cancel:      cancel,
-		cond:        sync.NewCond(&sync.Mutex{}),
-		batchBuffer: make([]any, 32), // P3 优化：预分配最大批量大小
+		coreID:            coreID,
+		taskMap:           make(map[string]*ShardTask),
+		running:           atomic.Bool{},
+		ctx:               ctx,
+		cancel:            cancel,
+		cond:              sync.NewCond(&sync.Mutex{}),
+		batchBuffer:       make([]any, 32),
+		starvationTimeout: int64(100 * time.Millisecond),
+		checkInterval:     int64(10 * time.Millisecond),
 	}
-
-	// P2 建议4: 初始化空的 tasks 快照
-	emptyTasks := make([]*ShardTask, 0)
-	c.tasksSnapshot.Store(emptyTasks)
-
-	// GetTaskByName 优化: 初始化空的 taskMap 快照
-	emptyMap := make(map[string]*ShardTask)
-	c.taskMap.Store(emptyMap)
 
 	return c
-}
-
-// validateTaskRegistration 验证任务是否可以注册（P1 重构）
-func (c *SchedulerCore) validateTaskRegistration(name string) error {
-	currentMap := c.taskMap.Load().(map[string]*ShardTask)
-	if _, exists := currentMap[name]; exists {
-		return errors.TaskAlreadyRegistered(name)
-	}
-	return nil
 }
 
 // createTaskInstance 创建任务实例（P1 重构）
@@ -271,50 +286,52 @@ func (c *SchedulerCore) createTaskInstance(template *ShardTask) *ShardTask {
 	return task
 }
 
-// insertTaskOrdered 按执行顺序插入任务（P1 重构）
+// insertTaskOrdered 按优先级桶 + executionOrder 插入任务
+// 参考 executor_percore.go taskQueue.Push 的分桶模式
 func (c *SchedulerCore) insertTaskOrdered(task *ShardTask) {
-	insertPos := sort.Search(len(c.tasks), func(i int) bool {
-		return c.tasks[i].ExecutionOrder() >= task.ExecutionOrder()
+	p := int(task.Priority())
+	if p < 0 {
+		p = 0
+	}
+	if p >= NumPriorityLevels {
+		p = NumPriorityLevels - 1
+	}
+
+	bucket := c.priorityBuckets[p]
+
+	// 桶内仍按 executionOrder 排序（保持同优先级内的确定性顺序）
+	insertPos := sort.Search(len(bucket), func(i int) bool {
+		return bucket[i].ExecutionOrder() >= task.ExecutionOrder()
 	})
-	c.tasks = append(c.tasks, nil)
-	copy(c.tasks[insertPos+1:], c.tasks[insertPos:])
-	c.tasks[insertPos] = task
-}
 
-// updateTaskSnapshots 更新任务快照（tasksSnapshot 和 taskMap）（P1 重构）
-func (c *SchedulerCore) updateTaskSnapshots(task *ShardTask) {
-	// 更新 tasksSnapshot (COW)
-	tasksCopy := make([]*ShardTask, len(c.tasks))
-	copy(tasksCopy, c.tasks)
-	c.tasksSnapshot.Store(tasksCopy)
+	bucket = append(bucket, nil)
+	copy(bucket[insertPos+1:], bucket[insertPos:])
+	bucket[insertPos] = task
+	c.priorityBuckets[p] = bucket
 
-	// 更新 taskMap (COW)
-	currentMap := c.taskMap.Load().(map[string]*ShardTask)
-	newMap := make(map[string]*ShardTask, len(currentMap)+1)
-	maps.Copy(newMap, currentMap)
-	newMap[task.Name()] = task
-	c.taskMap.Store(newMap)
+	// bitmap 置位：标记该优先级桶有注册的 ShardTask
+	// 注意：这是静态注册标记，运行时不修改
+	c.activeBitmap |= (1 << p)
 }
 
 // RegisterTask 注册任务（创建独立的 Task 实例）
-// P1 重构：拆分为多个小方法，提高可读性和可维护性
 func (c *SchedulerCore) RegisterTask(taskTemplate *ShardTask) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// 步骤 1: 验证
-	if err := c.validateTaskRegistration(taskTemplate.Name()); err != nil {
-		return err
+	if _, exists := c.taskMap[taskTemplate.Name()]; exists {
+		return errors.TaskAlreadyRegistered(taskTemplate.Name())
 	}
 
 	// 步骤 2: 创建
 	task := c.createTaskInstance(taskTemplate)
 
-	// 步骤 3: 有序插入
+	// 步骤 3: 写入优先级桶 + bitmap 更新
 	c.insertTaskOrdered(task)
 
-	// 步骤 4: 更新快照
-	c.updateTaskSnapshots(task)
+	// 步骤 4: 更新 taskMap（普通 map，RegisterTask 仅启动时调用，并发安全）
+	c.taskMap[task.Name()] = task
 
 	return nil
 }
@@ -322,8 +339,8 @@ func (c *SchedulerCore) RegisterTask(taskTemplate *ShardTask) error {
 // runLoop 调度循环（独立运行）
 // P0 修复：wg.Add() 和 wg.Done() 已移至 Start() 方法中，确保时序正确
 func (c *SchedulerCore) runLoop() {
-	// 初始化任务缓存（假设 RegisterTask 只在启动时调用）
-	c.cachedTasks = c.getOrderedTasks()
+	// 初始化桶缓存（假设 RegisterTask 只在启动时调用）
+	c.cachedBuckets = c.getOrderedBuckets()
 
 	for {
 		// 检查上下文是否已取消（优先检查，避免竞态）
@@ -343,48 +360,66 @@ func (c *SchedulerCore) runLoop() {
 			continue
 		}
 
-		// ========== 循环调度：支持批量处理优化 ==========
-		for _, task := range c.cachedTasks {
-			// 尝试批量处理（新优化）
-			if c.tryProcessBatch(task) {
-				// 批量处理成功（处理了 >= 2 个 items）
-				continue
+		// ========== 饥饿防护：检查并提升超时的低优先级任务 ==========
+		c.checkStarvation()
+
+		// ========== Phase 1: 处理被提升的低优先级 ShardTask ==========
+		for p := NumPriorityLevels - 1; p >= 1; p-- {
+			for _, task := range c.cachedBuckets[p] {
+				if task.HasPriorityBoost() {
+					c.tryProcessBatch(task)
+					task.SetPriorityBoost(false) // 一次性提升，用完恢复
+				}
+			}
+		}
+
+		// ========== Phase 2: bitmap O(1) 优先级遍历 ==========
+		// 遍历所有有注册 ShardTask 的优先级桶（bitmap 是静态注册标记）
+		// 参考 executor_percore.go:227-238 的 bits.TrailingZeros16 模式
+		bitmap := c.activeBitmap
+		for bitmap != 0 {
+			// O(1) 找最高优先级非空桶
+			p := bits.TrailingZeros16(bitmap)
+			if p >= NumPriorityLevels {
+				break
 			}
 
-			// 回退到单个处理（原有逻辑）
-			// ========== 阶段 1: Peek 查看队首（不出队）==========
-			var item any
-			if !task.Peek(&item) {
-				continue // 队列空，跳过
-			}
+			// 处理该优先级桶内所有 ShardTask
+			for _, task := range c.cachedBuckets[p] {
+				// 尝试批量处理
+				if c.tryProcessBatch(task) {
+					continue
+				}
 
-			// ========== 阶段 2: Execute 执行（返回状态）==========
-			status := c.executeTask(task, item)
-			c.stats.TotalTasksProcessed.Add(1)
+				// 回退到单个处理
+				var item any
+				if !task.Peek(&item) {
+					continue // 队列空，跳过
+				}
 
-			// ========== 阶段 3: 根据返回状态决定是否 Dequeue ==========
-			switch status {
-			case TaskPassed, TaskFailed:
-				// 执行完成（成功或永久失败），出队
-				var dequeued any
-				task.Dequeue(&dequeued)
+				status := c.executeTask(task, item)
+				c.stats.TotalTasksProcessed.Add(1)
 
-			case TaskTimeout, TaskBusy, TaskRetrying:
-				// 需要重试的状态
-				// 检查重试次数：超过最大重试次数则出队
-				if shardItem, ok := item.(ShardItem); ok {
-					if shardItem.IncAttempts() > shardItem.MaxRetries() {
-						// 超过最大重试次数，出队
+				switch status {
+				case TaskPassed, TaskFailed:
+					var dequeued any
+					task.Dequeue(&dequeued)
+
+				case TaskTimeout, TaskBusy, TaskRetrying:
+					if shardItem, ok := item.(ShardItem); ok {
+						if shardItem.IncAttempts() > shardItem.MaxRetries() {
+							var dequeued any
+							task.Dequeue(&dequeued)
+						}
+					} else {
 						var dequeued any
 						task.Dequeue(&dequeued)
 					}
-					// 否则保留在队列，下次循环会再次 Peek 到
-				} else {
-					// 不是 ShardItem 类型，直接出队
-					var dequeued any
-					task.Dequeue(&dequeued)
 				}
 			}
+
+			// 清除局部变量位，继续下一个优先级
+			bitmap &^= (1 << p)
 		}
 	}
 }
@@ -459,7 +494,7 @@ func (c *SchedulerCore) getBatchSize(task *ShardTask) int {
 		}
 	}
 
-	// 2. 默认批量大小
+	// 2. 默认批量大小（不实现 BatchShardItem 的任务使用）
 	return 16
 }
 
@@ -546,22 +581,54 @@ func (c *SchedulerCore) wakeup() {
 	c.cond.Signal()
 }
 
-// getOrderedTasks 获取按 ExecutionOrder 排序的任务列表
-// P0 优化：c.tasks 在 RegisterTask 时已保持有序，这里只需复制切片，无需排序
-// P2 建议4: 使用 atomic.Value 加载不可变快照，完全无锁且避免复制
-func (c *SchedulerCore) getOrderedTasks() []*ShardTask {
-	// 原子加载快照，无需锁，无需复制
-	return c.tasksSnapshot.Load().([]*ShardTask)
+// getOrderedBuckets 返回所有桶的缓存副本（只读，供 runLoop 使用）
+// runLoop 启动后调用一次，后续读 cachedBuckets 即可
+func (c *SchedulerCore) getOrderedBuckets() [NumPriorityLevels][]*ShardTask {
+	var result [NumPriorityLevels][]*ShardTask
+	for i := 0; i < NumPriorityLevels; i++ {
+		if len(c.priorityBuckets[i]) > 0 {
+			bucket := make([]*ShardTask, len(c.priorityBuckets[i]))
+			copy(bucket, c.priorityBuckets[i])
+			result[i] = bucket
+		}
+	}
+	return result
+}
+
+// checkStarvation 定期检查并提升超时的低优先级 ShardTask
+// 参考 executor_percore.go:255-292 的 promoteStarvedTasks
+func (c *SchedulerCore) checkStarvation() {
+	if c.starvationTimeout <= 0 {
+		return
+	}
+
+	now := time.Now().UnixNano()
+	lastCheck := atomic.LoadInt64(&c.starvationCheck)
+
+	// 每 10ms 检查一次（避免频繁扫描的开销）
+	if now-lastCheck <= c.checkInterval {
+		return
+	}
+
+	if !atomic.CompareAndSwapInt64(&c.starvationCheck, lastCheck, now) {
+		return // 另一个 goroutine 已在检查
+	}
+
+	// 从低优先级到高优先级遍历（跳过最高优先级 0）
+	for p := NumPriorityLevels - 1; p >= 1; p-- {
+		for _, task := range c.cachedBuckets[p] {
+			submitTime := task.LastSubmitTime()
+			if submitTime > 0 && now-submitTime > c.starvationTimeout {
+				task.SetPriorityBoost(true)
+			}
+		}
+	}
 }
 
 // GetTaskByName 获取指定名称的任务
-// GetTaskByName 优化: 使用 atomic.Value 加载不可变 map 快照，完全无锁
-// 前提: RegisterTask 只在启动时调用，runLoop 启动后 taskMap 不再修改
+// taskMap: 只读（Start 后不再写入），并发只读安全，无需锁
 func (c *SchedulerCore) GetTaskByName(name string) (*ShardTask, error) {
-	// 原子加载 map 快照，无需锁
-	taskMap := c.taskMap.Load().(map[string]*ShardTask)
-
-	task, exists := taskMap[name]
+	task, exists := c.taskMap[name]
 	if !exists {
 		return nil, errors.TaskNotFound(name)
 	}
@@ -676,17 +743,11 @@ func (m *TaskScheduler) EnqueueWithShard(item ShardItem, taskName string) error 
 	core := m.cores[coreIndex]
 	m.stats.TotalTasksEnqueued.Add(1)
 
-	// P1 优化：使用数组索引直接访问，完全消除 map 查找（无哈希计算）
-	// item.TaskOrder() 返回 executionOrder，直接访问 core.tasks[order]
-	// 相比 map 查找：数组访问是 O(1) 且无需哈希计算，缓存友好
-	taskOrder := item.TaskOrder()
-	tasksSnapshot := core.tasksSnapshot.Load().([]*ShardTask)
-	if taskOrder < 0 || taskOrder >= len(tasksSnapshot) {
-		return errors.TaskNotFound(fmt.Sprintf("invalid task order: %d", taskOrder))
-	}
-	task := tasksSnapshot[taskOrder]
-	if task == nil {
-		return errors.TaskNotFound(fmt.Sprintf("task at order %d is nil", taskOrder))
+	// 使用 taskMap 按名称查找 ShardTask（替代原来的 tasksSnapshot[taskOrder]）
+	// taskMap 是普通 map，RegisterTask 仅启动时写入，Start 后只读，并发只读安全
+	task, exists := core.taskMap[taskName]
+	if !exists {
+		return errors.TaskNotFound(fmt.Sprintf("task %q not registered on core %d", taskName, coreIndex))
 	}
 
 	// 入队并唤醒该核心
@@ -800,10 +861,11 @@ func (m *TaskScheduler) GetLoadBalanceThreshold() int {
 
 // calculateCoreQueueLen 计算核心的实际队列长度
 func (m *TaskScheduler) calculateCoreQueueLen(core *SchedulerCore) int64 {
-	tasks := core.getOrderedTasks()
 	queueLen := 0
-	for _, task := range tasks {
-		queueLen += task.QueueLen()
+	for p := 0; p < NumPriorityLevels; p++ {
+		for _, task := range core.priorityBuckets[p] {
+			queueLen += task.QueueLen()
+		}
 	}
 	return int64(queueLen)
 }

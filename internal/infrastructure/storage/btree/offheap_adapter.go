@@ -439,7 +439,22 @@ func (a *OffHeapAdapter) FindChildIndex(parentPageID uint32, childPageID uint32)
 //
 // 返回：新的父页面 ID
 func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID uint32) (model.PageID, error) {
-	count := a.pa.GetCount(uint32(pageID))
+	pid := uint32(pageID)
+
+	// TOCTOU 防御 Layer 2a: 页面类型检查
+	// 父页面被 epoch 回收重用为叶子页时，pageType 变为 PageTypeLeaf
+	if a.pa.IsLeaf(pid) {
+		return 0, errpkg.ErrBTreeParentPageRecycled
+	}
+
+	count := a.pa.GetCount(pid)
+
+	// TOCTOU 防御 Layer 2b: count 合理性检查
+	// 被回收重用的页面 count=0（InitPage 重置为 0）
+	// maxInternalKeys=180 (constants.go)
+	if count == 0 || count > maxInternalKeys {
+		return 0, errpkg.ErrBTreeInvalidParentState
+	}
 
 	// 验证索引有效（index 可以是 0 到 count，其中 count 表示 extraChild）
 	if index < 0 || index > int(count) {
@@ -451,8 +466,8 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 	children := make([]uint32, 0, count+1)
 
 	for i := 0; i < int(count); i++ {
-		keyOff, keyLen, _ := a.pa.GetIndexEntryOffset(uint32(pageID), i)
-		k := a.pa.GetKey(uint32(pageID), keyOff, keyLen)
+		keyOff, keyLen, _ := a.pa.GetIndexEntryOffset(pid, i)
+		k := a.pa.GetKey(pid, keyOff, keyLen)
 
 		// 复制 key
 		kCopy := make([]byte, len(k))
@@ -464,7 +479,7 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 		if i == index {
 			children = append(children, newChildID)
 		} else {
-			encodedChild := a.pa.GetChild(uint32(pageID), i)
+			encodedChild := a.pa.GetChild(pid, i)
 			child, _ := a.DecodeChildWithVersion(encodedChild)
 			children = append(children, child)
 		}
@@ -473,7 +488,7 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 	// 添加 extraChild（N+1 child）
 	// 如果 index == count，替换 extraChild；否则复制原 extraChild
 	// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
-	encodedExtraChild := a.pa.GetChild(uint32(pageID), int(count))
+	encodedExtraChild := a.pa.GetChild(pid, int(count))
 	if index == int(count) {
 		children = append(children, newChildID)
 	} else {

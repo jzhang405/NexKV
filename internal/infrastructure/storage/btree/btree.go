@@ -219,9 +219,9 @@ type EpochBasedFreeList struct {
 	currentEpoch atomic.Uint64             // 当前 epoch（atomic）
 	pending      map[uint64][]model.PageID // epoch → 待释放页面列表
 	mu           sync.Mutex
-	batchSize    int                        // 批量处理阈值
-	batchCounter atomic.Int64               // 批量计数器
-	onBeforeFree func([]model.PageID)       // 页面释放前回调（清理 pageRefCache）
+	batchSize    int                  // 批量处理阈值
+	batchCounter atomic.Int64         // 批量计数器
+	onBeforeFree func([]model.PageID) // 页面释放前回调（清理 pageRefCache）
 }
 
 func NewEpochBasedFreeList() *EpochBasedFreeList {

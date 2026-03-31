@@ -111,6 +111,12 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 						// 找到旧 child 的索引
 						childIndex := b.offheapAdapter.FindChildIndex(parentPageID, uint32(oldPageID))
 						if childIndex >= 0 {
+							// TOCTOU 防御 Layer 1: 检查 parentRef 是否仍指向我们的快照
+							// 如果另一个线程已完成 CAS，GetPageInfo() 返回的指针会不同
+							if parentRef.GetPageInfo() != parentInfo {
+								return ErrRetry
+							}
+
 							// 更新父节点的 child 指针（分配新页面）
 							newParentPageID, err := b.offheapAdapter.ReplaceChild(
 								model.PageID(parentPageID),
@@ -129,7 +135,8 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 
 							// CAS 更新 parentRef
 							if !parentRef.ReplacePage(parentInfo, newParentInfo) {
-								// CAS 失败，返回重试
+								// CAS 失败，释放新分配的父页面（走 epoch 机制避免 use-after-free）
+								b.offheapAdapter.freeOldPage(uint32(newParentPageID))
 								return ErrRetry
 							}
 

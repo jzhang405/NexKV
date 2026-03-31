@@ -413,18 +413,10 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 	}
 
 	// 如果 index == count（在最后插入），循环中没有插入
-	// 正确逻辑：保留原来的所有 children，在末尾添加 leftPageID 和 rightPageID
-	// MaterializeIndexPageFromBytes 会把 children[len(keys)] 作为 extraChild
 	if !inserted {
 		keys = append(keys, key)
-		// 获取原来的 extraChild，添加到 children 末尾
-		// MaterializeIndexPageFromBytes 会把 children[len(keys)] 作为 extraChild
-		encodedExtraChild := a.pa.GetChild(uint32(pageID), int(count))
-		extraChild, _ := a.DecodeChildWithVersion(encodedExtraChild)
-		children = append(children, extraChild)  // 原来的 extraChild
-		children = append(children, leftPageID)  // 新的 left child
-		children = append(children, rightPageID)  // 新的 right child
-		// MaterializeIndexPageFromBytes 会设置 extraChild = children[2] = rightPageID
+		children = append(children, leftPageID)
+		children = append(children, rightPageID)
 	}
 
 	// 添加 extraChild（N+1 child）
@@ -1035,11 +1027,25 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 		childIdx = idx + 1
 	}
 
+	// TOCTOU 防护：重新读取 count，确保 childIdx 在有效范围内
+	// 页面可能在 SearchKey 和 GetChildWithVersion 之间被并发修改
+	currentCount := int(a.pa.GetCount(uint32(pageID)))
+	if childIdx > currentCount {
+		// childIdx 超出范围，说明页面被并发修改，返回 ErrRetry
+		return 0, false, errpkg.ErrBTreeRetry
+	}
+
 	// 读取子节点的 pageID 和期望版本号（编码在 child 字段中）
 	childID, expectedVersion := a.pa.GetChildWithVersion(uint32(pageID), childIdx)
 
-	// 如果 childID == 0，说明没有子节点（可能到达叶子）
+	// 如果 childID == 0，说明没有子节点
+	// 但内部节点不应该有空的子节点，这可能是页面被并发修改导致的
 	if childID == 0 {
+		// 检查是否是内部节点且 childIdx 在有效范围内
+		// 如果是，说明页面被并发修改，返回 ErrRetry
+		if childIdx <= currentCount {
+			return 0, false, errpkg.ErrBTreeRetry
+		}
 		return 0, found, nil
 	}
 

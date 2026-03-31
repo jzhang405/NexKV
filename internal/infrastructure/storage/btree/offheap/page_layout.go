@@ -506,7 +506,6 @@ func (pa *PageAccessor) GetChild(pageID uint32, index int) uint64 {
 	if index == int(header.count) {
 		return header.extraChild
 	}
-	header = pa.GetHeader(pageID)
 	if index >= int(header.count) {
 		return 0
 	}

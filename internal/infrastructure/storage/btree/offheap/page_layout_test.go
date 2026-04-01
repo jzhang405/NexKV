@@ -730,3 +730,103 @@ func TestPageAccessor_ValidatePage_ExtraChildZero(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "extraChild=0")
 }
+
+// Phase 4: 边界测试
+
+func TestBulkInitIndexFromSource_SelfLoop(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	srcPageID, err := pm.Alloc()
+	require.NoError(t, err)
+	dstPageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化源索引页面
+	pa.InitIndexPage(srcPageID, 0)
+
+	// 插入 keys 和 children
+	keys := [][]byte{[]byte("key1"), []byte("key2")}
+	children := []uint32{10, 20} // 正常 children
+
+	var dataEnd uint16
+	for i := range keys {
+		err := pa.InsertIndexEntry(srcPageID, i, keys[i], children[i], &dataEnd)
+		require.NoError(t, err)
+	}
+
+	// 设置 extraChild
+	srcHeader := pa.GetHeader(srcPageID)
+	srcHeader.extraChild = EncodeChildWithVersion(30, 0)
+
+	// 测试正常 BulkInit（不应该出错）
+	_, err = pa.BulkInitIndexFromSource(srcPageID, dstPageID, 0, 2, srcHeader.extraChild)
+	assert.NoError(t, err)
+}
+
+func TestAdvanceDelayedFreeList_EpochDelay(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化页面
+	pa := NewPageAccessor(pm)
+	pa.InitLeafPage(pageID, 1)
+
+	// 获取当前的 epoch
+	currentEpochBeforeFree := pm.currentEpoch.Load()
+
+	// 释放页面
+	err = pm.Free(pageID)
+	require.NoError(t, err)
+
+	// 验证页面状态
+	ptr := pm.PageIDToPtr(pageID)
+	header := (*PageHeader)(ptr)
+	assert.Equal(t, uint8(1), header.deleted, "页面应该被标记为已删除")
+	assert.Equal(t, currentEpochBeforeFree, header.deleteEpoch, "deleteEpoch 应该等于释放时的 epoch")
+
+	// 验证 AdvanceDelayedFreeList 的行为
+	// 页面刚释放，不应该被移动到 freeList
+	// (因为需要 5 个 epoch 的延迟)
+	moved := pm.AdvanceDelayedFreeList()
+	assert.Equal(t, 0, moved, "新释放的页面不应该立即移动到 freeList")
+}
+
+func TestBulkInitIndexFromSource_InvalidRange(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	srcPageID, err := pm.Alloc()
+	require.NoError(t, err)
+	dstPageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化源索引页面
+	pa.InitIndexPage(srcPageID, 0)
+
+	// 插入一些 keys
+	keys := [][]byte{[]byte("key1"), []byte("key2")}
+	var dataEnd uint16
+	for i := range keys {
+		err := pa.InsertIndexEntry(srcPageID, i, keys[i], uint32(i+10), &dataEnd)
+		require.NoError(t, err)
+	}
+
+	// 测试无效范围：startIdx > endIdx
+	_, err = pa.BulkInitIndexFromSource(srcPageID, dstPageID, 2, 1, 0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid range")
+
+	// 测试无效范围：startIdx < 0
+	_, err = pa.BulkInitIndexFromSource(srcPageID, dstPageID, -1, 2, 0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid range")
+}

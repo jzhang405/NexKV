@@ -25,8 +25,6 @@ import (
 // 修复方案：实现专门的 2 层树 Root Split 逻辑，
 // 构造 3 层树结构：New Root → Old Root (Internal) → Leaves
 func TestBTreeRegression_2LayerRootSplit(t *testing.T) {
-	t.Skip("flaky test: skip until handleSplitOffHeapSync race is fixed")
-
 	ctx := context.Background()
 	tree, err := OpenBTree("", nil)
 	require.NoError(t, err)
@@ -77,8 +75,6 @@ func TestBTreeRegression_2LayerRootSplit(t *testing.T) {
 // - 所有 keys 能够正确检索
 // - 0% 数据丢失
 func TestBTreeRegression_MultiLayerSupport(t *testing.T) {
-	t.Skip("flaky test: skip until handleSplitOffHeapSync race is fixed")
-
 	ctx := context.Background()
 	tree, err := OpenBTree("", nil)
 	require.NoError(t, err)
@@ -140,8 +136,6 @@ func TestBTreeRegression_MultiLayerSupport(t *testing.T) {
 // 这是触发 2 层树 Root Split 的关键测试用例
 // 确保 key-05655 能够正确插入和检索
 func TestBTreeRegression_Key05655Specific(t *testing.T) {
-	t.Skip("flaky test: skip until handleSplitOffHeapSync race is fixed")
-
 	ctx := context.Background()
 	tree, err := OpenBTree("", nil)
 	require.NoError(t, err)

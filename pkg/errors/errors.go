@@ -335,6 +335,7 @@ var (
 	ErrOffHeapMMapExceedsLimit     = stderrors.New("offheap: mmap size exceeds 32-bit PageID limit")
 	ErrOffHeapOutOfMemory          = stderrors.New("offheap: out of memory")
 	ErrOffHeapInvalidPageID        = stderrors.New("offheap: invalid page ID")
+	ErrOffHeapConstraintViolation  = stderrors.New("offheap: constraint violation")
 )
 
 // ===========================
@@ -1485,6 +1486,10 @@ func OffHeapOutOfMemory(total, used int) error {
 
 func OffHeapInvalidPageID(pageID, total int) error {
 	return Wrapf(ErrOffHeapInvalidPageID, "invalid pageID %d (total: %d)", pageID, total)
+}
+
+func OffHeapConstraintViolation(msg string) error {
+	return Wrapf(ErrOffHeapConstraintViolation, "%s", msg)
 }
 
 // ===========================

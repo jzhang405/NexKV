@@ -679,9 +679,9 @@ func TestPageAccessor_ValidatePage_ChildZero(t *testing.T) {
 	// 初始化索引页面
 	pa.InitIndexPage(pageID, 0)
 
-	// 插入 keys 和 children，其中一个 child=0
+	// 先插入正常的 keys 和 children
 	keys := [][]byte{[]byte("key1"), []byte("key2")}
-	children := []uint32{10, 0, 20} // child[1] = 0（错误）
+	children := []uint32{10, 20}
 
 	var dataEnd uint16
 	for i := range keys {
@@ -689,14 +689,24 @@ func TestPageAccessor_ValidatePage_ChildZero(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// 设置有效的 extraChild
+	// 手动设置 extraChild
 	header := pa.GetHeader(pageID)
-	header.extraChild = EncodeChildWithVersion(children[2], 0)
+	header.extraChild = EncodeChildWithVersion(children[1], 0)
+
+	// 验证 ValidatePage 能检测到 child=0（通过直接修改 entry.child）
+	// 注意：这里需要手动设置一个 child=0 来测试 ValidatePage
+	// 因为 InsertIndexEntry 现在会拒绝 child=0
+	entry := pa.GetIndexEntry(pageID, 0)
+	originalChild := entry.child // 保存原始值
+	entry.child = 0            // 模拟 child=0 的错误状态
 
 	// 验证页面应该失败（child=0）
 	err = pa.ValidatePage(pageID)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "child=0")
+
+	// 恢复原始值
+	entry.child = originalChild
 }
 
 func TestPageAccessor_ValidatePage_ExtraChildZero(t *testing.T) {

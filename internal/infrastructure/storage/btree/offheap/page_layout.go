@@ -313,6 +313,11 @@ func (pa *PageAccessor) InitLeafPage(pageID uint32, version uint64) {
 
 // InsertIndexEntry 插入索引条目
 func (pa *PageAccessor) InsertIndexEntry(pageID uint32, index int, key []byte, child uint32, dataEnd *uint16) error {
+	// Phase 6: 事前约束检查 - child 不能为 0
+	if child == 0 {
+		return errpkg.OffHeapConstraintViolation("child cannot be 0")
+	}
+
 	ptr := pa.getPtr(pageID)
 	header := (*PageHeader)(ptr)
 

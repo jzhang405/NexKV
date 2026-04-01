@@ -887,31 +887,58 @@ func TestAdvanceDelayedFreeList_EpochDelay(t *testing.T) {
 	require.NoError(t, err)
 	defer pm.Close()
 
-	pageID, err := pm.Alloc()
-	require.NoError(t, err)
-
-	// 初始化页面
 	pa := NewPageAccessor(pm)
-	pa.InitLeafPage(pageID, 1)
 
-	// 获取当前的 epoch
-	currentEpochBeforeFree := pm.currentEpoch.Load()
+	t.Run("无引用直接回收", func(t *testing.T) {
+		pageID, err := pm.Alloc()
+		require.NoError(t, err)
+		pa.InitLeafPage(pageID, 1)
 
-	// 释放页面
-	err = pm.Free(pageID)
-	require.NoError(t, err)
+		// refCount==0 时 Free 直接进入 freeList
+		err = pm.Free(pageID)
+		require.NoError(t, err)
 
-	// 验证页面状态
-	ptr := pm.PageIDToPtr(pageID)
-	header := (*PageHeader)(ptr)
-	assert.Equal(t, uint8(1), header.deleted, "页面应该被标记为已删除")
-	assert.Equal(t, currentEpochBeforeFree, header.deleteEpoch, "deleteEpoch 应该等于释放时的 epoch")
+		ptr := pm.PageIDToPtr(pageID)
+		header := (*PageHeader)(ptr)
+		assert.Equal(t, uint8(0), header.deleted, "无引用页面不应设 deleted")
+		assert.Equal(t, 1, pm.GetFreeListSize(), "应直接进入 freeList")
+		assert.Equal(t, 0, pm.GetDelayedFreeListSize(), "不应进入 delayedFreeList")
+	})
 
-	// 验证 AdvanceDelayedFreeList 的行为
-	// 页面刚释放，不应该被移动到 freeList
-	// (因为需要 5 个 epoch 的延迟)
-	moved := pm.AdvanceDelayedFreeList()
-	assert.Equal(t, 0, moved, "新释放的页面不应该立即移动到 freeList")
+	t.Run("有引用延迟回收", func(t *testing.T) {
+		// 跳过 pageID=0（保留页面），确保 AddRef/Free 生效
+		skipID, _ := pm.Alloc()
+		_ = skipID
+
+		pageID, err := pm.Alloc()
+		require.NoError(t, err)
+		require.NotEqual(t, uint32(0), pageID, "pageID 不应为 0")
+		pa.InitLeafPage(pageID, 1)
+
+		// 模拟有活跃引用
+		pm.AddRef(pageID)
+		require.Equal(t, int32(1), pm.GetRefCount(pageID), "AddRef 后 refCount 应为 1")
+		currentEpochBeforeFree := pm.currentEpoch.Load()
+
+		// refCount>0 时 Free 标记 deleted=1，进入 delayedFreeList
+		err = pm.Free(pageID)
+		require.NoError(t, err)
+
+		ptr := pm.PageIDToPtr(pageID)
+		header := (*PageHeader)(ptr)
+		assert.Equal(t, uint8(1), header.deleted, "有引用页面应标记为已删除")
+		assert.Equal(t, currentEpochBeforeFree, header.deleteEpoch, "deleteEpoch 应等于释放时的 epoch")
+
+		// 先释放引用，再推进 epoch
+		pm.Release(pageID)
+		require.Equal(t, int32(0), pm.GetRefCount(pageID), "Release 后 refCount 应为 0")
+
+		// 推进 6 个 epoch，页面应从 delayedFreeList 移到 freeList
+		for i := 0; i < 6; i++ {
+			pm.AdvanceEpoch()
+		}
+		assert.Equal(t, 1, pm.GetFreeListSize(), "释放引用并推进 epoch 后应可回收")
+	})
 }
 
 func TestBulkInitIndexFromSource_InvalidRange(t *testing.T) {

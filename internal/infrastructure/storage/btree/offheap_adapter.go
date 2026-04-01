@@ -1040,6 +1040,14 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 		return 0, false, errpkg.ErrBTreeRetry
 	}
 
+	// TOCTOU 防护：检查父页面是否正在被删除
+	// 如果父页面被 Free（deleted=1），说明页面正在被回收，header 内容可能已清零
+	// 此时不应该继续读取，返回 ErrRetry
+	if a.pa.IsPageDeleted(uint32(pageID)) {
+		fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild parent deleted: pageID=%d, childIdx=%d\n", pageID, childIdx)
+		return 0, false, errpkg.ErrBTreeRetry
+	}
+
 	// 读取子节点的 pageID 和期望版本号（编码在 child 字段中）
 	childID, expectedVersion := a.pa.GetChildWithVersion(uint32(pageID), childIdx)
 

@@ -1114,6 +1114,12 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 		return errpkg.BTreeSplitMinKeys(countInt)
 	}
 
+	// Phase 3.5: 防御性验证 - 分裂前验证源页面完整性
+	if err := b.offheapAdapter.pa.ValidatePage(uint32(internalPageID)); err != nil {
+		fmt.Fprintf(os.Stderr, "[WARN] splitInternalOffHeapSync: source page %d validation failed: %v\n", internalPageID, err)
+		// 继续执行，因为这是防御性验证
+	}
+
 	mid := countInt / 2
 
 	// Step 2: 从源页面直接获取 splitKey（mid 位置的 key）

@@ -616,3 +616,117 @@ func TestPageAccessor_CollectKVExcept_EmptyPage(t *testing.T) {
 	assert.Equal(t, 0, len(collectedKeys))
 	assert.Equal(t, 0, len(collectedValues))
 }
+
+// Phase 3.5: ValidatePage 防御性验证测试
+
+func TestPageAccessor_ValidatePage_ValidIndexPage(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化有效的索引页面
+	pa.InitIndexPage(pageID, 0)
+
+	// 插入有效的 keys 和 children
+	keys := [][]byte{[]byte("key1"), []byte("key2"), []byte("key3")}
+	children := []uint32{10, 20, 30, 40} // N+1 children
+
+	var dataEnd uint16
+	for i := range keys {
+		err := pa.InsertIndexEntry(pageID, i, keys[i], children[i], &dataEnd)
+		require.NoError(t, err)
+	}
+
+	// 设置 extraChild
+	header := pa.GetHeader(pageID)
+	header.extraChild = EncodeChildWithVersion(children[3], 0)
+
+	// 验证页面应该通过
+	err = pa.ValidatePage(pageID)
+	assert.NoError(t, err)
+}
+
+func TestPageAccessor_ValidatePage_EmptyPage(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化空索引页面
+	pa.InitIndexPage(pageID, 0)
+
+	// 空页面验证应该通过（count=0 时不检查 extraChild）
+	err = pa.ValidatePage(pageID)
+	assert.NoError(t, err)
+}
+
+func TestPageAccessor_ValidatePage_ChildZero(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化索引页面
+	pa.InitIndexPage(pageID, 0)
+
+	// 插入 keys 和 children，其中一个 child=0
+	keys := [][]byte{[]byte("key1"), []byte("key2")}
+	children := []uint32{10, 0, 20} // child[1] = 0（错误）
+
+	var dataEnd uint16
+	for i := range keys {
+		err := pa.InsertIndexEntry(pageID, i, keys[i], children[i], &dataEnd)
+		require.NoError(t, err)
+	}
+
+	// 设置有效的 extraChild
+	header := pa.GetHeader(pageID)
+	header.extraChild = EncodeChildWithVersion(children[2], 0)
+
+	// 验证页面应该失败（child=0）
+	err = pa.ValidatePage(pageID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "child=0")
+}
+
+func TestPageAccessor_ValidatePage_ExtraChildZero(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化索引页面
+	pa.InitIndexPage(pageID, 0)
+
+	// 插入有效的 keys 和 children
+	keys := [][]byte{[]byte("key1"), []byte("key2"), []byte("key3")}
+	children := []uint32{10, 20, 30}
+
+	var dataEnd uint16
+	for i := range keys {
+		err := pa.InsertIndexEntry(pageID, i, keys[i], children[i], &dataEnd)
+		require.NoError(t, err)
+	}
+
+	// 设置 extraChild=0（错误）
+	header := pa.GetHeader(pageID)
+	header.extraChild = 0 // 错误：count > 0 时 extraChild 不能为 0
+
+	// 验证页面应该失败（extraChild=0）
+	err = pa.ValidatePage(pageID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "extraChild=0")
+}

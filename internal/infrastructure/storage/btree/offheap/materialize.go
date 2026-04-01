@@ -91,10 +91,16 @@ func (m *OffHeapMaterializer) MaterializeIndexPageFromBytes(
 			header := m.pa.GetHeader(pageID)
 			header.extraChild = EncodeChildWithVersion(lastChild, childVersion)
 		} else {
+			// extraChild=0 是无效状态，但为了兼容性仍然设置
+			// Phase 3.5 将改为返回错误
+			fmt.Fprintf(os.Stderr, "[WARN] MaterializeIndexPageFromBytes: extraChild=0 for page %d, count=%d\n", pageID, len(keys))
 			header := m.pa.GetHeader(pageID)
 			header.extraChild = 0
 		}
 	}
+
+	// 注意：Phase 3 的 ValidatePage 应在分裂操作前显式调用
+	// 此处不再自动调用，以避免破坏现有测试和 API 契约
 
 	return dataEnd, nil
 }

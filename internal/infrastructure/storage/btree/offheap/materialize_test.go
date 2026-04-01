@@ -57,12 +57,13 @@ func TestOffHeapMaterializer_MaterializeIndexPage(t *testing.T) {
 	require.NoError(t, err)
 
 	// 准备测试数据
+	// 注意：children 数量 = keys 数量 + 1（最后一个是 extraChild）
 	keys := [][]byte{
 		[]byte("key100"),
 		[]byte("key200"),
 		[]byte("key300"),
 	}
-	children := []uint32{10, 20, 30}
+	children := []uint32{10, 20, 30, 40} // 4 个 children (N+1)
 
 	// 物化到页面
 	_, err = m.MaterializeIndexPageFromBytes(pageID, keys, children)

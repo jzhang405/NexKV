@@ -198,6 +198,35 @@ func (pa *PageAccessor) IsValidPage(pageID uint32) bool {
 	return header.version >= 1
 }
 
+// ValidatePage 验证页面完整性（防御性验证）
+// 返回 error 如果页面存在问题
+//
+// 检查项：
+// 1. count > 0 时，所有 child 不能为 0
+// 2. count > 0 时，extraChild 不能为 0
+func (pa *PageAccessor) ValidatePage(pageID uint32) error {
+	header := pa.GetHeader(pageID)
+	count := header.count
+
+	// 验证所有 child 不为 0
+	for i := 0; i < int(count); i++ {
+		child, _ := DecodeChildWithVersion(pa.GetIndexEntry(pageID, i).child)
+		if child == 0 {
+			return fmt.Errorf("page %d has child=0 at index %d", pageID, i)
+		}
+	}
+
+	// 验证 extraChild（count > 0 时必须有效）
+	if count > 0 {
+		extraChild, _ := DecodeChildWithVersion(header.extraChild)
+		if extraChild == 0 {
+			return fmt.Errorf("page %d has extraChild=0 with count=%d", pageID, count)
+		}
+	}
+
+	return nil
+}
+
 // GetIndexEntry 获取索引节点条目
 func (pa *PageAccessor) GetIndexEntry(pageID uint32, index int) *IndexEntry {
 	ptr := pa.getPtr(pageID)

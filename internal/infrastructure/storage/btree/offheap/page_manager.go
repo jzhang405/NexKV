@@ -230,6 +230,9 @@ func (pm *PageManager) Free(pageID uint32) error {
 	}
 
 	// refCount == 0 且 deleted == 0，无活跃引用，直接加入 freeList
+	// 重要：仍然设置 deleted=1，防止 SearchChild 在页面进入 freeList 后
+	// 但尚未被 Alloc 回收前，误读到已释放页面的脏数据导致自环
+	header.deleted = 1
 	pm.freeList.Enqueue(pageID)
 	pm.used.Add(^uint32(0))
 	pm.tracker.RecordFree(pageID)

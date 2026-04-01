@@ -7,7 +7,6 @@ package btree
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -102,10 +101,7 @@ func (a *OffHeapAdapter) GetFromOffHeap(pageID model.PageID, key []byte) ([]byte
 
 // InsertToOffHeap 向 Off-Heap 叶子页面插入 KV 对
 // 返回 (pageID, splitRequired, error)
-func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte) (model.PageID, bool, error) {
-	// DEBUG
-	fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: pageID=%d, key=%s\n", pageID, key)
-
+func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte) (model.PageID, bool, bool, error) {
 	// TOCTOU 修复：如果页面已经有 SplitInfo，说明之前已经分裂过
 	// 需要跟随重定向到新的左右页面，而不是在旧页面上操作
 	//
@@ -116,11 +112,10 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 		if splitInfo.IsRedirecting(key) {
 			// key > SplitKey，应该使用右页面（新创建的页面）
 			newPageID := splitInfo.GetNewPageRef()
-			fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap REDIRECT: pageID=%d -> %d (RIGHT), key=%s\n", pageID, newPageID, key)
-			return a.InsertToOffHeap(newPageID, key, value)
+			pid, splitReq, inserted, err := a.InsertToOffHeap(newPageID, key, value)
+			return pid, splitReq, inserted, err
 		}
 		// key <= SplitKey，应该使用左页面（就是原始的 pageID，因为原页面被更新为左页面）
-		fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap REDIRECT: pageID=%d -> %d (LEFT, original), key=%s\n", pageID, pageID, key)
 		// 不需要递归，直接在当前页面（现在是左页面）继续操作
 		// 注意：这里不用递归调用，否则会无限循环
 	}
@@ -132,41 +127,32 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 	if err != nil {
 		// TOCTOU: 叶子页在搜索期间被 COW 替换 + epoch 回收 + 重用
 		// 包装为 ErrRetry 让上层自动重试
-		fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap TOCTOU: pageID=%d, key=%s, err=%v\n", pageID, key, err)
-		return pageID, false, fmt.Errorf("InsertToOffHeap TOCTOU: %w", ErrRetry)
+		return pageID, false, false, fmt.Errorf("InsertToOffHeap TOCTOU: %w", ErrRetry)
 	}
-
-	fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: found=%v, idx=%d, count=%d, key=%s\n", found, idx, count, key)
 
 	if found {
 		// 更新现有 key（需要重新分配页面，因为 Off-Heap 不可变）
 		newPageID, err := a.UpdateLeafEntry(pageID, idx, key, value)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap UpdateLeafEntry failed: pageID=%d, idx=%d, key=%s, err=%v\n", pageID, idx, key, err)
-		}
-		return newPageID, false, err
+		return newPageID, false, false, err
 	}
 
 	// 插入新 KV 之前，预估是否需要分裂
 	// checkPageFull 现在直接从页面读取 dataEnd，无需缓存
 	if a.checkPageFull(uint32(pageID), len(key), len(value)) {
 		// 页面可能已满，返回 splitRequired=true
-		fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: page full, splitRequired=true, pageID=%d, key=%s\n", pageID, key)
-		return pageID, true, nil
+		return pageID, true, false, nil // 路径 A：预估满，数据未插入
 	}
 
 	// 原地插入前 TOCTOU 防御：校验页面类型和 count
 	pid := uint32(pageID)
 	if !a.pa.IsLeaf(pid) {
 		// 页面已被回收重用为非叶子页
-		fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: page not a leaf, pageID=%d, key=%s\n", pageID, key)
-		return pageID, false, fmt.Errorf("InsertToOffHeap: page %d is not a leaf page: %w", pageID, ErrRetry)
+		return pageID, false, false, fmt.Errorf("InsertToOffHeap: page %d is not a leaf page: %w", pageID, ErrRetry)
 	}
 	currentCount := a.pa.GetCount(pid)
 	if currentCount != count {
 		// count 已变化，页面可能已被回收重用
-		fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: count changed, pageID=%d, key=%s, count=%d, currentCount=%d\n", pageID, key, count, currentCount)
-		return pageID, false, fmt.Errorf("InsertToOffHeap: page %d count changed (%d → %d): %w", pageID, count, currentCount, ErrRetry)
+		return pageID, false, false, fmt.Errorf("InsertToOffHeap: page %d count changed (%d → %d): %w", pageID, count, currentCount, ErrRetry)
 	}
 
 	// 插入新 KV
@@ -177,12 +163,10 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 	if insertErr == nil {
 		// 插入成功，检查是否需要分裂
 		splitRequired := a.checkPageFull(uint32(pageID), len(key), len(value))
-		fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: inserted, pageID=%d, key=%s, splitRequired=%v\n", pageID, key, splitRequired)
-		return pageID, splitRequired, nil
+		return pageID, splitRequired, true, nil // 路径 B：数据已插入
 	}
 
-	fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: insert failed, pageID=%d, key=%s, err=%v\n", pageID, key, insertErr)
-	return pageID, false, insertErr
+	return pageID, false, false, insertErr
 }
 
 // linearSearchLeaf 线性搜索叶子页面，找到正确的插入位置
@@ -483,7 +467,6 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 		extraChild, _ := a.DecodeChildWithVersion(encodedExtraChild)
 		// 安全检查：extraChild 不能为 0
 		if extraChild == 0 {
-			fmt.Fprintf(os.Stderr, "[DEBUG] UpdateIndexEntry extraChild=0: pageID=%d, count=%d\n", pageID, count)
 			return 0, errpkg.ErrBTreeRetry
 		}
 		children = append(children, extraChild)
@@ -598,7 +581,6 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 			child, _ := a.DecodeChildWithVersion(encodedChild)
 			// 安全检查：child 不能为 0
 			if child == 0 {
-				fmt.Fprintf(os.Stderr, "[DEBUG] ReplaceChild child=0: pid=%d, i=%d\n", pid, i)
 				return 0, errpkg.ErrBTreeRetry
 			}
 			children = append(children, child)
@@ -1071,8 +1053,6 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 	currentCount := int(a.pa.GetCount(uint32(pageID)))
 	if childIdx > currentCount {
 		// childIdx 超出范围，说明页面被并发修改，返回 ErrRetry
-		fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild TOCTOU1: pageID=%d, childIdx=%d, currentCount=%d\n",
-			pageID, childIdx, currentCount)
 		return 0, false, errpkg.ErrBTreeRetry
 	}
 
@@ -1080,7 +1060,6 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 	// 如果父页面被 Free（deleted=1），说明页面正在被回收，header 内容可能已清零
 	// 此时不应该继续读取，返回 ErrRetry
 	if a.pa.IsPageDeleted(uint32(pageID)) {
-		fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild parent deleted: pageID=%d, childIdx=%d\n", pageID, childIdx)
 		return 0, false, errpkg.ErrBTreeRetry
 	}
 
@@ -1095,8 +1074,6 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 		// 检查是否是内部节点且 childIdx 在有效范围内
 		// 如果是，说明页面被并发修改，返回 ErrRetry
 		if childIdx <= currentCount {
-			fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild TOCTOU2: pageID=%d, childIdx=%d, currentCount=%d\n",
-				pageID, childIdx, currentCount)
 			return 0, false, errpkg.ErrBTreeRetry
 		}
 		return 0, found, nil
@@ -1106,7 +1083,6 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 	// 如果页面正在被删除或 refCount==0，TryAcquire 返回 false
 	// TryAcquire 内部会检查 deleted 标志
 	if !a.pm.TryAcquire(childID) {
-		fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild TryAcquire failed: childID=%d, parent=%d\n", childID, pageID)
 		return 0, false, errpkg.ErrBTreeRetry
 	}
 

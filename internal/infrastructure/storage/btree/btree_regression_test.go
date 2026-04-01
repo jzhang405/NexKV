@@ -100,12 +100,14 @@ func TestBTreeRegression_MultiLayerSupport(t *testing.T) {
 	lost := 0
 	firstLost := -1
 	lastLost := -1
+	var lostKeys []int
 
 	for i := 0; i < keyCount; i++ {
 		key := fmt.Sprintf("key-%05d", i)
 		_, err := tree.Get(ctx, []byte(key))
 		if err != nil {
 			lost++
+			lostKeys = append(lostKeys, i)
 			if firstLost == -1 {
 				firstLost = i
 			}
@@ -122,6 +124,29 @@ func TestBTreeRegression_MultiLayerSupport(t *testing.T) {
 		lossRate := float64(lost) * 100 / float64(keyCount)
 		t.Logf("✗ 丢失 keys: %d / %d (%.2f%%)", lost, keyCount, lossRate)
 		t.Logf("丢失范围: key-%05d 到 key-%05d", firstLost, lastLost)
+
+		// 分析丢失模式
+		if len(lostKeys) > 0 {
+			// 分段分析
+			segments := [][]int{{lostKeys[0]}}
+			for i := 1; i < len(lostKeys); i++ {
+				if lostKeys[i]-lostKeys[i-1] == 1 {
+					segments[len(segments)-1] = append(segments[len(segments)-1], lostKeys[i])
+				} else {
+					segments = append(segments, []int{lostKeys[i]})
+				}
+			}
+			t.Logf("丢失 key 分成 %d 段:", len(segments))
+			for si, seg := range segments {
+				if si < 10 || si == len(segments)-1 {
+					t.Logf("  段%d: key-%05d..key-%05d (%d keys)", si, seg[0], seg[len(seg)-1], len(seg))
+				} else if si == 10 {
+					t.Logf("  ... (跳过中间 %d 段)", len(segments)-11)
+				}
+			}
+			t.Logf("前20个丢失: %v", lostKeys[:min(20, len(lostKeys))])
+		}
+
 		t.Errorf("发现 %d/%d 个 keys 丢失 (%.2f%%)", lost, keyCount, lossRate)
 	} else {
 		t.Logf("✓ 所有 keys 都成功检索（%d/%d），多层树支持正常！", retrieved, keyCount)

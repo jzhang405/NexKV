@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -68,7 +67,7 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 
 	// Step 5: Off-Heap 插入（Insert 和 Update 都走这里）
 	// InsertToOffHeap 内部会调用 UpdateLeafEntry 来处理 Update
-	newPageID, splitRequired, err = b.offheapAdapter.InsertToOffHeap(oldPageID, key, value)
+	newPageID, splitRequired, _, err = b.offheapAdapter.InsertToOffHeap(oldPageID, key, value)
 	if err != nil {
 		return errpkg.BTreeOffheapInsert(err)
 	}
@@ -83,13 +82,6 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 
 	// Step 7: Leaf-Level CAS
 	if !leafRef.ReplacePage(oldInfo, newInfo) {
-		// 调试：打印 CAS 失败的原因
-		currentInfo := leafRef.GetPageInfo()
-		if currentInfo != nil {
-			fmt.Fprintf(os.Stderr, "[DEBUG] Leaf-Level CAS failed: oldPageID=%d, newPageID=%d, currentPageID=%d\n", oldPageID, newPageID, currentInfo.GetPageID())
-		} else {
-			fmt.Fprintf(os.Stderr, "[DEBUG] Leaf-Level CAS failed: oldPageID=%d, newPageID=%d, currentInfo=nil\n", oldPageID, newPageID)
-		}
 		return ErrRetry
 	}
 
@@ -153,13 +145,6 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 							if !parentRef.ReplacePage(parentInfo, newParentInfo) {
 								// CAS 失败，释放新分配的父页面（走 epoch 机制避免 use-after-free）
 								b.offheapAdapter.freeOldPage(uint32(newParentPageID))
-								// 调试：打印 CAS 失败的原因
-								currentInfo := parentRef.GetPageInfo()
-								if currentInfo != nil {
-									fmt.Fprintf(os.Stderr, "[DEBUG] Parent CAS failed: parentPageID=%d, newParentPageID=%d, currentPageID=%d\n", parentPageID, newParentPageID, currentInfo.GetPageID())
-								} else {
-									fmt.Fprintf(os.Stderr, "[DEBUG] Parent CAS failed: parentPageID=%d, newParentPageID=%d, currentInfo=nil\n", parentPageID, newParentPageID)
-								}
 								return ErrRetry
 							}
 
@@ -207,13 +192,10 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 		splitMu.Lock()
 		defer splitMu.Unlock()
 
-		fmt.Fprintf(os.Stderr, "[DEBUG] handleSplitOffHeapSync START: oldPageID=%d, newPageID=%d, key=%s\n", oldPageID, newPageID, key)
 		leftRef, err := b.handleSplitOffHeapSync(leafRef, newInfo, newPageID, path, key, value)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[DEBUG] handleSplitOffHeapSync FAILED: oldPageID=%d, newPageID=%d, key=%s, err=%v\n", oldPageID, newPageID, key, err)
 			return ErrRetry
 		}
-		fmt.Fprintf(os.Stderr, "[DEBUG] handleSplitOffHeapSync SUCCESS: oldPageID=%d, newPageID=%d, key=%s, leftRef=%v\n", oldPageID, newPageID, key, leftRef)
 		newInfo = leftRef.GetPageInfo()
 		if newInfo == nil {
 			return errpkg.BTreeLeftRefPageInfoNil()
@@ -340,7 +322,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 		}
 
 		// 直接插入 key-value 到新页面
-		_, splitRequiredFallback, err := b.offheapAdapter.InsertToOffHeap(model.PageID(newPageID), key, value)
+		_, splitRequiredFallback, _, err := b.offheapAdapter.InsertToOffHeap(model.PageID(newPageID), key, value)
 		if err != nil {
 			b.offheapAdapter.pm.Free(newPageID)
 			return nil, errpkg.BTreeFallbackInsert(err)
@@ -535,7 +517,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 		}
 
 		// 重新插入 key-value 到目标页面
-		_, splitRequired2, err := b.offheapAdapter.InsertToOffHeap(targetPageID, key, value)
+		_, splitRequired2, _, err := b.offheapAdapter.InsertToOffHeap(targetPageID, key, value)
 		if err != nil {
 			return nil, errpkg.BTreeRootSplitPostSplitInsertFailed(err)
 		}
@@ -557,14 +539,9 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 		newLeftInfo.MarkDirty()
 	}
 
-	fmt.Fprintf(os.Stderr, "[DEBUG] CAS Replace: leafRef=%p, leafInfo=%p(pageID=%d), newLeftInfo=%p(pageID=%d)\n",
-		leafRef, leafInfo, leafInfo.GetPageID(), newLeftInfo, newLeftInfo.GetPageID())
 	// 在锁保护下 CAS 更新 leafRef
 	if !leafRef.ReplacePage(leafInfo, newLeftInfo) {
 		// CAS 失败，返回重试
-		currentInfo := leafRef.GetPageInfo()
-		fmt.Fprintf(os.Stderr, "[DEBUG] CAS Replace FAILED: currentInfo=%p(pageID=%d)\n",
-			currentInfo, currentInfo.GetPageID())
 		return nil, ErrRetry
 	}
 
@@ -799,8 +776,6 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	currentParentPageID = model.PageID(currentParentInfo.GetPageID())
 	currentParentCount = b.offheapAdapter.pa.GetCount(uint32(currentParentPageID))
 
-	// 调试：打印父节点状态
-
 	// 检查父节点 pageID 是否发生了变化（COW 更新）
 	if currentParentPageID != oldParentPageID {
 		// 父节点被更新（例如 547 -> 553），需要向上更新祖父节点的子节点指针
@@ -999,7 +974,7 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 
 	// 重新插入 key-value 到目标页面
 	// 注意：必须在父节点分裂前插入，因为父节点分裂会返回 ErrRetry
-	_, splitRequired2, err := b.offheapAdapter.InsertToOffHeap(targetPageID, key, value)
+	_, splitRequired2, _, err := b.offheapAdapter.InsertToOffHeap(targetPageID, key, value)
 	if err != nil {
 		return nil, errpkg.BTreePostSplitInsert(err)
 	}
@@ -1141,17 +1116,11 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 	}
 
 	// Phase 3.5: 防御性验证 - 分裂前验证源页面完整性
-	if err := b.offheapAdapter.pa.ValidatePage(uint32(internalPageID)); err != nil {
-		fmt.Fprintf(os.Stderr, "[WARN] splitInternalOffHeapSync: source page %d validation failed: %v\n", internalPageID, err)
-		// 继续执行，因为这是防御性验证
-	}
+	_ = b.offheapAdapter.pa.ValidatePage(uint32(internalPageID))
 
 	// Phase 6: Pre-condition validation - 确保分裂前页面状态有效
-	if err := b.offheapAdapter.pa.CheckPageInvariants(uint32(internalPageID)); err != nil {
-		fmt.Fprintf(os.Stderr, "[WARN] splitInternalOffHeapSync: pre-condition failed for page %d: %v\n", internalPageID, err)
-		// 继续执行，因为这是防御性验证
-	}
-
+	// Phase 6: Pre-condition validation
+	_ = b.offheapAdapter.pa.CheckPageInvariants(uint32(internalPageID))
 	mid := countInt / 2
 
 	// Step 2: 从源页面直接获取 splitKey（mid 位置的 key）
@@ -1165,11 +1134,6 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 	leftExtraChild := b.offheapAdapter.pa.GetChild(uint32(internalPageID), mid)
 	// 右半 extraChild = 源页面的 lastChild（header.extraChild）
 	rightExtraChild := b.offheapAdapter.pa.GetChild(uint32(internalPageID), countInt)
-
-	// 调试：打印 extraChild 的值
-	leftExtraChildPageID, _ := b.offheapAdapter.DecodeChildWithVersion(leftExtraChild)
-	rightExtraChildPageID, _ := b.offheapAdapter.DecodeChildWithVersion(rightExtraChild)
-	fmt.Fprintf(os.Stderr, "[DEBUG] splitInternalOffHeapSync: internalPageID=%d, leftExtraChild=%d, rightExtraChild=%d\n", internalPageID, leftExtraChildPageID, rightExtraChildPageID)
 
 	// Step 4: 分配两个新的内部页面
 	// 方案 A+：使用 defer 模式确保所有失败路径都清理孤儿页面
@@ -1231,15 +1195,9 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 		return errpkg.BTreeMaterializeRightIndexPage(err)
 	}
 
-	// Phase 6: Invariant validation - 分裂后验证左右页面不变式
-	if err := b.offheapAdapter.pa.CheckPageInvariants(uint32(leftPageID)); err != nil {
-		fmt.Fprintf(os.Stderr, "[WARN] splitInternalOffHeapSync: left page %d invariant violated: %v\n", leftPageID, err)
-		// 继续执行
-	}
-	if err := b.offheapAdapter.pa.CheckPageInvariants(uint32(rightPageID)); err != nil {
-		fmt.Fprintf(os.Stderr, "[WARN] splitInternalOffHeapSync: right page %d invariant violated: %v\n", rightPageID, err)
-		// 继续执行
-	}
+		// Phase 6: Invariant validation - 分裂后验证左右页面不变式
+		_ = b.offheapAdapter.pa.CheckPageInvariants(uint32(leftPageID))
+		_ = b.offheapAdapter.pa.CheckPageInvariants(uint32(rightPageID))
 
 	// Step 6: 创建左右子节点的 PageRef
 	leftRef := b.pageRefCache.GetOrCreate(leftPageID, false)
@@ -1265,8 +1223,6 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 
 		return b.splitRootOffHeapSyncForInternal(internalRef, internalInfo, internalPageID, leftRef, rightRef, splitKeyCopy, keys, children)
 	}
-
-	// 调试：追踪为什么没有进入根分裂
 
 	// Step 8: 获取父节点的 PageRef
 	parentInfo := path[len(path)-1]

@@ -703,7 +703,6 @@ func (b *BTree) setDirect(ctx context.Context, key, value []byte) error {
 			b.epochBasedFreeList.AdvanceEpoch(b.offheapPM)
 			return nil
 		}
-		fmt.Printf("[DEBUG] setDirect: attempt %d, err=%v\n", attempt, err)
 
 		// 智能重试逻辑
 		switch {

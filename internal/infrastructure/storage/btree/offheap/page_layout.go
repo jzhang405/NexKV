@@ -30,16 +30,16 @@ const (
 // PageHeader 页面头部（48 字节）
 // 修改记录 (2026-04-01): 添加 refCount 支持 Reference Counting
 type PageHeader struct {
-	version     uint64 // 版本号（CCOW）
-	prevPage    uint32 // 前一个页面 pageID
-	nextPage    uint32 // 后一个页面 pageID
-	extraChild  uint64 // 索引节点的 N+1 child（pageID + version）
-	count       uint16 // 条目数
-	pageType    uint8  // 页面类型（0=索引 1=叶子）
-	deleted     uint8  // 标记为已删除（0=正常, 1=已删除）
-	deleteEpoch uint64 // 删除时的 epoch（用于延迟回收）
-	refCount    int32  // 引用计数（Reference Counting）⭐ 新增
-	inQueue     uint32 // 标记页面是否已在 delayedFreeList 中（防止重复添加）⭐ 新增
+	version     uint64  // 版本号（CCOW）
+	prevPage    uint32  // 前一个页面 pageID
+	nextPage    uint32  // 后一个页面 pageID
+	extraChild  uint64  // 索引节点的 N+1 child（pageID + version）
+	count       uint16  // 条目数
+	pageType    uint8   // 页面类型（0=索引 1=叶子）
+	deleted     uint8   // 标记为已删除（0=正常, 1=已删除）
+	deleteEpoch uint64  // 删除时的 epoch（用于延迟回收）
+	refCount    int32   // 引用计数（Reference Counting）⭐ 新增
+	inQueue     uint32  // 标记页面是否已在 delayedFreeList 中（防止重复添加）⭐ 新增
 	_pad        [3]byte // 对齐填充
 }
 

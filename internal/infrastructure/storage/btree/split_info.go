@@ -199,3 +199,15 @@ func compareKeys(a, b []byte) int {
 func nowNano() int64 {
 	return time.Now().UnixNano()
 }
+
+// DumpAllSplitInfo 转储所有 SplitInfo（调试用）
+func DumpAllSplitInfo() map[model.PageID]*SplitInfo {
+	result := make(map[model.PageID]*SplitInfo)
+	globalSplitInfoMap.m.Range(func(key, value any) bool {
+		pid := key.(model.PageID)
+		info := value.(*SplitInfo)
+		result[pid] = info
+		return true
+	})
+	return result
+}

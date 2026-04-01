@@ -6,8 +6,6 @@ package btree
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"sync/atomic"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -60,7 +58,6 @@ func NewBTreeSetItem(
 			func(ctx context.Context, trCtx model.TaskRunnerContext) (struct{}, error) {
 				err := bt.setWithLeafLockAndRef(ctx, leafRef, key, value)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "[DEBUG] setWithLeafLockAndRef failed: key=%s, err=%v\n", key, err)
 					return struct{}{}, errpkg.BTreeSetWithLeafRefFailed(err)
 				}
 				return struct{}{}, nil

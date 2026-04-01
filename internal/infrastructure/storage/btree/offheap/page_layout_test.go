@@ -699,7 +699,7 @@ func TestPageAccessor_ValidatePage_ChildZero(t *testing.T) {
 	// 因为 InsertIndexEntry 现在会拒绝 child=0
 	entry := pa.GetIndexEntry(pageID, 0)
 	originalChild := entry.child // 保存原始值
-	entry.child = 0            // 模拟 child=0 的错误状态
+	entry.child = 0              // 模拟 child=0 的错误状态
 
 	// 验证页面应该失败（child=0）
 	err = pa.ValidatePage(pageID)
@@ -894,13 +894,14 @@ func TestAdvanceDelayedFreeList_EpochDelay(t *testing.T) {
 		require.NoError(t, err)
 		pa.InitLeafPage(pageID, 1)
 
-		// refCount==0 时 Free 直接进入 freeList
+		// refCount==0 时 Free 直接进入 freeList，但仍设 deleted=1
+		// 防止 SearchChild 在页面被 Alloc 回收前误读脏数据
 		err = pm.Free(pageID)
 		require.NoError(t, err)
 
 		ptr := pm.PageIDToPtr(pageID)
 		header := (*PageHeader)(ptr)
-		assert.Equal(t, uint8(0), header.deleted, "无引用页面不应设 deleted")
+		assert.Equal(t, uint8(1), header.deleted, "Free 后应设 deleted=1（即使 refCount==0）")
 		assert.Equal(t, 1, pm.GetFreeListSize(), "应直接进入 freeList")
 		assert.Equal(t, 0, pm.GetDelayedFreeListSize(), "不应进入 delayedFreeList")
 	})

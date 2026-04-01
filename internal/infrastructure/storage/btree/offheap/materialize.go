@@ -90,6 +90,9 @@ func (m *OffHeapMaterializer) MaterializeIndexPageFromBytes(
 		if lastChild == 0 {
 			return 0, fmt.Errorf("extraChild=0 for page %d, count=%d", pageID, len(keys))
 		}
+		if lastChild == pageID {
+			return 0, fmt.Errorf("extraChild self-loop detected: page %d, extraChild=%d", pageID, lastChild)
+		}
 		childVersion := m.pa.GetVersionSafe(lastChild)
 		header := m.pa.GetHeader(pageID)
 		header.extraChild = EncodeChildWithVersion(lastChild, childVersion)

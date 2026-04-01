@@ -3,7 +3,6 @@ package btree
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
@@ -211,19 +210,16 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 			// 版本号不匹配，检测到僵尸引用
 			// 返回 ErrRetry 让外层重试
 			// ✅ 修复：不要包装 ErrRetry，否则 errors.Is() 检查会失败
-			fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild failed: currentPageID=%d, err=%v\n", currentPageID, err)
 			return nil, nil, ErrRetry
 		}
 		if childPageID == currentPageID {
 			// 检测到自环
-			fmt.Fprintf(os.Stderr, "[DEBUG] Self-loop detected: currentPageID=%d, childPageID=%d\n", currentPageID, childPageID)
 			return nil, nil, ErrRetry
 		}
 		if childPageID == 0 {
 			// 没有子节点，检查当前节点是否为叶子节点
 			if !currentIsLeaf {
 				// 当前节点不是叶子节点，但是也没有子节点，说明 B-Tree 结构损坏
-				fmt.Fprintf(os.Stderr, "[DEBUG] Internal node has no child: currentPageID=%d\n", currentPageID)
 				return nil, nil, ErrRetry
 			}
 			// 到达叶子节点，返回收集的路径和引用
@@ -258,7 +254,6 @@ func (b *BTree) searchPathWithRefs(ctx context.Context, key []byte) ([]*PageInfo
 			for _, p := range path {
 				pathStr += fmt.Sprintf("%d->", p.GetPageID())
 			}
-			fmt.Fprintf(os.Stderr, "[DEBUG] Circular reference: currentPageID=%d, path=%s%d\n", childPageIDFromInfo, pathStr, childPageIDFromInfo)
 			return nil, nil, ErrRetry
 		}
 		visitedPages[uint64(childPageIDFromInfo)] = true
@@ -340,6 +335,12 @@ func (b *BTree) hasCycleFrom(pageID model.PageID) bool {
 		}
 
 		visited[pid32] = true
+
+		// 跳过已删除的页面：已释放页面的旧数据可能指向已被重用的页面
+		// 造成假阳性循环检测
+		if b.offheapAdapter.pa.IsPageDeleted(pid32) {
+			return false
+		}
 
 		// 检查是否为叶子节点
 		isLeaf := b.offheapAdapter.IsLeaf(pid)

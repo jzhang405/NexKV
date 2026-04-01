@@ -169,8 +169,6 @@ func (p *InternalPage) InsertKeyChild(key []byte, childRef *PageRef) error {
 	expectedChildren := len(p.keys) + 1
 	if len(p.children) != expectedChildren {
 		if len(p.children) > expectedChildren {
-			fmt.Printf("[WARN] InsertKeyChild: fixing invariant before insert: pageID=%d, keys=%d, children=%d -> %d\n",
-				p.pageID, len(p.keys), len(p.children), expectedChildren)
 			p.children = p.children[:expectedChildren]
 		} else {
 			return errpkg.BTreeInvariantViolatedError(len(p.children), len(p.keys))

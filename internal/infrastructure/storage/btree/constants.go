@@ -5,10 +5,6 @@
 package btree
 
 const (
-	// splitThreshold 触发分裂的键数量阈值
-	// 优化：与 maxKeys 对齐，确保分裂检查一致性
-	splitThreshold = 200
-
 	// maxInternalKeys 内部节点最大键数量
 	// 与 checkPageFull 中的 maxIndexEntries (180) 对齐
 	// 确保在页面真正满之前触发分裂
@@ -16,7 +12,6 @@ const (
 
 	// InitialLeafCapacity 叶子节点初始容量
 	// 优化：增大初始容量，减少扩容次数，降低 GC 压力
-	// 更新：从 128 → 200（与 splitThreshold 对齐）
 	InitialLeafCapacity = 200
 
 	// InitialInternalCapacity 内部节点初始容量

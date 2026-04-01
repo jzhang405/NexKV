@@ -52,7 +52,7 @@ func TestOffHeapAdapter_InsertAndGet(t *testing.T) {
 	// 插入 KV 对
 	key := []byte("hello")
 	value := []byte("world")
-	newPageID, splitRequired, err := adapter.InsertToOffHeap(pageID, key, value)
+	newPageID, splitRequired, _, err := adapter.InsertToOffHeap(pageID, key, value)
 	require.NoError(t, err)
 	assert.False(t, splitRequired, "不应该需要分页")
 	assert.Equal(t, pageID, newPageID, "页面ID 应该不变")
@@ -92,7 +92,7 @@ func TestOffHeapAdapter_MultipleInserts(t *testing.T) {
 
 	for i, key := range keys {
 		value := values[i]
-		newPageID, splitRequired, err := adapter.InsertToOffHeap(pageID, key, value)
+		newPageID, splitRequired, _, err := adapter.InsertToOffHeap(pageID, key, value)
 		require.NoError(t, err)
 		assert.False(t, splitRequired, "不应该需要分页")
 		pageID = newPageID
@@ -127,12 +127,12 @@ func TestOffHeapAdapter_Update(t *testing.T) {
 	// 插入 KV
 	key := []byte("test")
 	value1 := []byte("value1")
-	pageID, _, err = adapter.InsertToOffHeap(pageID, key, value1)
+	pageID, _, _, err = adapter.InsertToOffHeap(pageID, key, value1)
 	require.NoError(t, err)
 
 	// 更新 KV
 	value2 := []byte("value2")
-	newPageID, splitRequired, err := adapter.InsertToOffHeap(pageID, key, value2)
+	newPageID, splitRequired, _, err := adapter.InsertToOffHeap(pageID, key, value2)
 	require.NoError(t, err)
 	assert.False(t, splitRequired)
 
@@ -160,7 +160,7 @@ func TestOffHeapAdapter_Split(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		key := []byte{byte(i >> 8), byte(i & 0xFF)}
 		value := make([]byte, 20)
-		newPageID, splitRequired, err := adapter.InsertToOffHeap(pageID, key, value)
+		newPageID, splitRequired, _, err := adapter.InsertToOffHeap(pageID, key, value)
 		require.NoError(t, err)
 
 		if splitRequired {
@@ -219,7 +219,7 @@ func TestOffHeapAdapter_Verify(t *testing.T) {
 
 	for i, key := range keys {
 		value := values[i]
-		pageID, _, err = adapter.InsertToOffHeap(pageID, key, value)
+		pageID, _, _, err = adapter.InsertToOffHeap(pageID, key, value)
 		require.NoError(t, err)
 	}
 
@@ -243,7 +243,7 @@ func TestOffHeapAdapter_Clone(t *testing.T) {
 
 	key := []byte("test")
 	value := []byte("value")
-	pageID, _, err = adapter.InsertToOffHeap(pageID, key, value)
+	pageID, _, _, err = adapter.InsertToOffHeap(pageID, key, value)
 	require.NoError(t, err)
 
 	// 克隆页面
@@ -320,7 +320,7 @@ func TestOffHeapAdapter_DeleteFromLeafPage(t *testing.T) {
 
 	for i, key := range keys {
 		value := values[i]
-		pageID, _, err = adapter.InsertToOffHeap(pageID, key, value)
+		pageID, _, _, err = adapter.InsertToOffHeap(pageID, key, value)
 		require.NoError(t, err)
 	}
 
@@ -374,7 +374,7 @@ func TestOffHeapAdapter_DeleteFromLeafPage_DeleteFirst(t *testing.T) {
 
 	for i, key := range keys {
 		value := values[i]
-		pageID, _, err = adapter.InsertToOffHeap(pageID, key, value)
+		pageID, _, _, err = adapter.InsertToOffHeap(pageID, key, value)
 		require.NoError(t, err)
 	}
 
@@ -419,7 +419,7 @@ func TestOffHeapAdapter_DeleteFromLeafPage_DeleteLast(t *testing.T) {
 
 	for i, key := range keys {
 		value := values[i]
-		pageID, _, err = adapter.InsertToOffHeap(pageID, key, value)
+		pageID, _, _, err = adapter.InsertToOffHeap(pageID, key, value)
 		require.NoError(t, err)
 	}
 
@@ -454,7 +454,7 @@ func TestOffHeapAdapter_DeleteFromLeafPage_DeleteNonExistent(t *testing.T) {
 	// 插入一个 key
 	key := []byte("key1")
 	value := []byte("value1")
-	pageID, _, err = adapter.InsertToOffHeap(pageID, key, value)
+	pageID, _, _, err = adapter.InsertToOffHeap(pageID, key, value)
 	require.NoError(t, err)
 
 	// 尝试删除不存在的 key

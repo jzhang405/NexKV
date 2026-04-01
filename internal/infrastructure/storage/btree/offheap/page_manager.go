@@ -160,8 +160,11 @@ func (pm *PageManager) Alloc() (uint32, error) {
 	pm.nextPageID.Add(1)
 	// 清零页面内容，防止旧数据污染
 	pm.clearPage(pageID)
-	// 路径 2 是全新页面，version=0 是正确的初始值
-	// 不需要额外设置
+	// 路径 2 是全新页面，但也要设置 version=1
+	// 确保与路径 1 一致，避免同一页面不同 version
+	ptr := pm.PageIDToPtr(pageID)
+	header := (*PageHeader)(ptr)
+	header.version = 1
 
 	pm.used.Add(1)
 	pm.tracker.RecordAlloc(pageID)

@@ -475,7 +475,7 @@ func TestOffHeapAdapter_UpdateChildIndex(t *testing.T) {
 	parentPageID, err := adapter.AllocIndexPage()
 	require.NoError(t, err)
 
-	// 在父页面中插入几个 key-child 对
+	// 在父页面中插入 key-child 对（需要 N+1 children）
 	keys := [][]byte{
 		[]byte("key1"),
 		[]byte("key2"),
@@ -485,12 +485,18 @@ func TestOffHeapAdapter_UpdateChildIndex(t *testing.T) {
 		10,
 		20,
 		30,
+		40, // extraChild (N+1 child)
 	}
 
 	for i, key := range keys {
 		err := adapter.InsertIndexEntry(parentPageID, i, key, children[i])
 		require.NoError(t, err)
 	}
+
+	// 设置 extraChild（索引为 len(keys)，即 N+1 child）
+	// 使用 SetChild 方法，index == count 时会设置 extraChild
+	pa := offheap.NewPageAccessor(pm)
+	pa.SetChild(uint32(parentPageID), len(keys), uint32(children[3]))
 
 	// 更新索引 1 的 child 指针（从 20 改为 25）
 	newChildPageID := model.PageID(25)

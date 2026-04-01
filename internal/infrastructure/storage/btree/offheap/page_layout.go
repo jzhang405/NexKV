@@ -790,9 +790,9 @@ func (pa *PageAccessor) BulkInitIndexFromSource(
 		entry := pa.GetIndexEntry(srcPageID, i)
 		key := pa.GetKey(srcPageID, entry.keyOff, entry.keyLen)
 		child, _ := DecodeChildWithVersion(entry.child)
-		// 安全检查：修复自环的 child
+		// Phase 6: 禁止 child=0 - 自环检测，返回错误
 		if child == srcPageID {
-			child = 0 // 用 0 替换自环的 child
+			return 0, fmt.Errorf("self-loop detected in source page %d at index %d", srcPageID, i)
 		}
 		dstIdx := i - startIdx
 		if err := pa.InsertIndexEntry(dstPageID, dstIdx, key, child, &dataEnd); err != nil {
@@ -801,10 +801,10 @@ func (pa *PageAccessor) BulkInitIndexFromSource(
 	}
 
 	// 设置 extraChild（N+1 child）
-	// 安全检查：修复自环的 extraChild
+	// Phase 6: 禁止 child=0 - 自环检测，返回错误
 	extraChildPageID, _ := DecodeChildWithVersion(extraChild)
 	if extraChildPageID == srcPageID {
-		extraChild = 0 // 用 0 替换自环的 extraChild
+		return 0, fmt.Errorf("self-loop detected in source page %d extraChild", srcPageID)
 	}
 	dstHeader := pa.GetHeader(dstPageID)
 	dstHeader.extraChild = extraChild

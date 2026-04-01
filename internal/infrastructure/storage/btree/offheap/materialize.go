@@ -7,7 +7,6 @@ package offheap
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"sort"
 
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
@@ -61,12 +60,10 @@ func (m *OffHeapMaterializer) MaterializeIndexPageFromBytes(
 	keys [][]byte,
 	children []uint32,
 ) (uint16, error) {
-	// 安全检查：修复自环的 children
+	// Phase 6: 禁止 child=0 - 自环检测，返回错误而不是静默修复
 	for i, child := range children {
 		if child == pageID {
-			// 打印调试信息
-			fmt.Fprintf(os.Stderr, "[DEBUG] MaterializeIndexPageFromBytes: fixing self-loop child at index %d, pageID=%d\n", i, pageID)
-			children[i] = 0 // 用 0 替换自环的 child
+			return 0, fmt.Errorf("self-loop detected: page %d, index %d", pageID, i)
 		}
 	}
 
@@ -84,23 +81,16 @@ func (m *OffHeapMaterializer) MaterializeIndexPageFromBytes(
 		}
 	}
 
+	// Phase 6: 禁止 child=0 - extraChild 不能为 0
 	if len(children) > len(keys) {
 		lastChild := children[len(keys)]
-		if lastChild != 0 {
-			childVersion := m.pa.GetVersionSafe(lastChild)
-			header := m.pa.GetHeader(pageID)
-			header.extraChild = EncodeChildWithVersion(lastChild, childVersion)
-		} else {
-			// extraChild=0 是无效状态，但为了兼容性仍然设置
-			// Phase 3.5 将改为返回错误
-			fmt.Fprintf(os.Stderr, "[WARN] MaterializeIndexPageFromBytes: extraChild=0 for page %d, count=%d\n", pageID, len(keys))
-			header := m.pa.GetHeader(pageID)
-			header.extraChild = 0
+		if lastChild == 0 {
+			return 0, fmt.Errorf("extraChild=0 for page %d, count=%d", pageID, len(keys))
 		}
+		childVersion := m.pa.GetVersionSafe(lastChild)
+		header := m.pa.GetHeader(pageID)
+		header.extraChild = EncodeChildWithVersion(lastChild, childVersion)
 	}
-
-	// 注意：Phase 3 的 ValidatePage 应在分裂操作前显式调用
-	// 此处不再自动调用，以避免破坏现有测试和 API 契约
 
 	return dataEnd, nil
 }

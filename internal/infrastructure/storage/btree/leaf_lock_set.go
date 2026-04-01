@@ -562,6 +562,13 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 		return nil, ErrRetry
 	}
 
+	// Phase 1: 在释放旧页面之前存储 SplitInfo
+	// 这允许持有旧引用的线程跟随重定向到新页面
+	// 注意：此时父节点可能还未更新，但 SplitInfo 仍然有帮助
+	// 因为旧页面的子节点（如果有的话）可能仍然需要跟随
+	splitInfo := NewSplitInfo(leafPageID, leftPageID, splitKey, b.epochBasedFreeList.currentEpoch.Load())
+	SetSplitInfo(leafPageID, splitInfo)
+
 	// CAS 成功后延迟释放旧页面（使用 epoch 避免立即重用）
 	b.epochBasedFreeList.Add(leafPageID)
 

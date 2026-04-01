@@ -137,6 +137,16 @@ func (pm *PageManager) Alloc() (uint32, error) {
 	if pageID, ok := pm.freeList.Dequeue(); ok {
 		// 清零页面内容，防止旧数据污染
 		pm.clearPage(pageID)
+
+		// 修复：重置版本号为 1
+		// 问题：clearPage 将整个页面清零，导致 header.version 变成 0
+		// 旧引用期望的版本可能是非零值，而 GetVersionSafe 返回 0
+		// 这导致版本不匹配错误（stale child reference），实际上是页面已被正确回收
+		// 解决：在清零后设置版本号为 1，确保旧引用能正确检测到版本不匹配
+		ptr := pm.PageIDToPtr(pageID)
+		header := (*PageHeader)(ptr)
+		header.version = 1
+
 		pm.used.Add(1)
 		pm.tracker.RecordAlloc(pageID)
 		return pageID, nil
@@ -150,6 +160,9 @@ func (pm *PageManager) Alloc() (uint32, error) {
 	pm.nextPageID.Add(1)
 	// 清零页面内容，防止旧数据污染
 	pm.clearPage(pageID)
+	// 路径 2 是全新页面，version=0 是正确的初始值
+	// 不需要额外设置
+
 	pm.used.Add(1)
 	pm.tracker.RecordAlloc(pageID)
 	return pageID, nil
@@ -157,7 +170,7 @@ func (pm *PageManager) Alloc() (uint32, error) {
 
 // Free 释放一个页面（加入延迟释放列表）
 // 修改记录 (2026-04-01): 添加 deleted 和 deleteEpoch 支持 Epoch 延迟回收
-// 注意：不再增加 version++，因为 epoch 延迟机制已经可以防止页面过早被重用
+// 注意：不再增加 version++，因为 epoch 延迟机制 + Alloc 时 version=1 设置已经足够
 func (pm *PageManager) Free(pageID uint32) error {
 	if pageID >= pm.total {
 		return errpkg.OffHeapInvalidPageID(int(pageID), int(pm.total))
@@ -168,7 +181,8 @@ func (pm *PageManager) Free(pageID uint32) error {
 	header := (*PageHeader)(ptr)
 	header.deleted = 1
 	header.deleteEpoch = pm.currentEpoch.Load()
-	// header.version++ // 暂时移除，epoch 延迟机制已经足够
+	// 不再 version++，因为 epoch 延迟机制已经可以防止页面过早被重用
+	// 且 version++ 在 Free 中会与正在读取该页面的 goroutine 产生竞态
 
 	pm.tracker.RecordFree(pageID)
 	pm.delayedFreeList.Enqueue(pageID)

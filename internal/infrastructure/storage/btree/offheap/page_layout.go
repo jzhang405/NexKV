@@ -503,6 +503,15 @@ func (pa *PageAccessor) GetVersionSafe(pageID uint32) uint64 {
 	return pa.GetHeader(pageID).version
 }
 
+// IsPageDeleted 检查页面是否被标记为已删除
+// 用于在读取路径检测正在被回收的页面，避免访问已释放页面
+func (pa *PageAccessor) IsPageDeleted(pageID uint32) bool {
+	if pageID == 0 || pageID >= pa.pm.nextPageID.Load() {
+		return true // 无效页面视为已删除
+	}
+	return pa.GetHeader(pageID).deleted == 1
+}
+
 // SetVersion 设置页面版本号
 func (pa *PageAccessor) SetVersion(pageID uint32, version uint64) {
 	pa.GetHeader(pageID).version = version
@@ -791,8 +800,8 @@ func (pa *PageAccessor) BulkInitIndexFromSource(
 		key := pa.GetKey(srcPageID, entry.keyOff, entry.keyLen)
 		child, _ := DecodeChildWithVersion(entry.child)
 		// Phase 6: 禁止 child=0 - 自环检测，返回错误
-		if child == srcPageID {
-			return 0, fmt.Errorf("self-loop detected in source page %d at index %d", srcPageID, i)
+		if child == srcPageID || child == 0 {
+			return 0, fmt.Errorf("self-loop (or zero) detected in source page %d at index %d, child=%d", srcPageID, i, child)
 		}
 		dstIdx := i - startIdx
 		if err := pa.InsertIndexEntry(dstPageID, dstIdx, key, child, &dataEnd); err != nil {

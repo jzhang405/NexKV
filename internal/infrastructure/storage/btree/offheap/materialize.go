@@ -60,10 +60,13 @@ func (m *OffHeapMaterializer) MaterializeIndexPageFromBytes(
 	keys [][]byte,
 	children []uint32,
 ) (uint16, error) {
-	// Phase 6: 禁止 child=0 - 自环检测，返回错误而不是静默修复
+	// Phase 6: 禁止 child=0 - 自环和零值检测
 	for i, child := range children {
 		if child == pageID {
 			return 0, fmt.Errorf("self-loop detected: page %d, index %d", pageID, i)
+		}
+		if child == 0 {
+			return 0, fmt.Errorf("child zero detected: page %d, index %d", pageID, i)
 		}
 	}
 

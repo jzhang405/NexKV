@@ -355,6 +355,13 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 	if leftPageID == 0 {
 		return 0, errpkg.BTreeUpdateIndexEntryLeftZero()
 	}
+	// 自环检测：leftPageID 或 rightPageID 不能等于 pageID
+	if leftPageID == uint32(pageID) {
+		return 0, fmt.Errorf("self-loop detected: leftPageID=%d == pageID=%d", leftPageID, pageID)
+	}
+	if rightPageID == uint32(pageID) {
+		return 0, fmt.Errorf("self-loop detected: rightPageID=%d == pageID=%d", rightPageID, pageID)
+	}
 
 	count := a.pa.GetCount(uint32(pageID))
 
@@ -387,11 +394,10 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 		encodedChild := a.pa.GetChild(uint32(pageID), i)
 		child, _ := a.DecodeChildWithVersion(encodedChild)
 
-		// 安全检查：修复自环的 child
-		if child == uint32(pageID) {
-			fmt.Fprintf(os.Stderr, "[DEBUG] UpdateIndexEntry: fixing self-loop child at index %d, pageID=%d\n", i, pageID)
-			child = 0 // 用 0 替换自环的 child
-		}
+		// 安全检查：自环 child 保持原样，让 Materialize 检测
+		// 注意：不要将 child 设置为 0，否则 InsertIndexEntry 会报 child cannot be 0 错误
+		// 如果是自环（child == pageID），Materialize 会检测到并报 self-loop detected 错误
+		// 这是正确的行为 - 检测到错误而不是静默处理
 
 		if i == index {
 			// 分裂位置：插入 splitKey 和 left/right child
@@ -439,10 +445,10 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 		// 修复：GetChild 返回编码后的值，需要解码才能获取真实的 pageID
 		encodedExtraChild := a.pa.GetChild(uint32(pageID), int(count))
 		extraChild, _ := a.DecodeChildWithVersion(encodedExtraChild)
-		// 安全检查：修复自环的 extraChild
-		if extraChild == uint32(pageID) {
-			fmt.Fprintf(os.Stderr, "[DEBUG] UpdateIndexEntry: fixing self-loop extraChild, pageID=%d\n", pageID)
-			extraChild = 0 // 用 0 替换自环的 extraChild
+		// 安全检查：extraChild 不能为 0
+		if extraChild == 0 {
+			fmt.Fprintf(os.Stderr, "[DEBUG] UpdateIndexEntry extraChild=0: pageID=%d, count=%d\n", pageID, count)
+			return 0, errpkg.ErrBTreeRetry
 		}
 		children = append(children, extraChild)
 	}
@@ -554,10 +560,10 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 				return 0, errpkg.ErrBTreeRetry
 			}
 			child, _ := a.DecodeChildWithVersion(encodedChild)
-			// 安全检查：修复自环的 child
-			if child == pid {
-				fmt.Fprintf(os.Stderr, "[DEBUG] ReplaceChild: fixing self-loop child at index %d, pageID=%d\n", i, pid)
-				child = 0 // 用 0 替换自环的 child
+			// 安全检查：child 不能为 0
+			if child == 0 {
+				fmt.Fprintf(os.Stderr, "[DEBUG] ReplaceChild child=0: pid=%d, i=%d\n", pid, i)
+				return 0, errpkg.ErrBTreeRetry
 			}
 			children = append(children, child)
 		}
@@ -574,11 +580,8 @@ func (a *OffHeapAdapter) ReplaceChild(pageID model.PageID, index int, newChildID
 		children = append(children, newChildID)
 	} else {
 		extraChild, _ := a.DecodeChildWithVersion(encodedExtraChild)
-		// 安全检查：修复自环的 extraChild
-		if extraChild == pid {
-			fmt.Fprintf(os.Stderr, "[DEBUG] ReplaceChild: fixing self-loop extraChild, pageID=%d\n", pid)
-			extraChild = 0 // 用 0 替换自环的 extraChild
-		}
+		// 安全检查：自环 extraChild 保持原样，让 Materialize 检测
+		// 注意：不要将 extraChild 设置为 0，否则 InsertIndexEntry 会报 child cannot be 0 错误
 		children = append(children, extraChild)
 	}
 
@@ -1056,10 +1059,25 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 	// 版本号检测：读取子页面的实际版本号
 	actualVersion := a.pa.GetVersionSafe(childID)
 
+	// 先检查页面是否正在被回收（deleted 标志）
+	// deleted=1 说明页面正在延迟回收流程中（等待 5 个 epoch）
+	// 此时不应被访问，返回 ErrRetry 让调用者重试
+	// 这个检查必须在 version 比较之前，因为回收页面的 version 可能不匹配
+	if a.pa.IsPageDeleted(childID) {
+		fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild deleted: childID=%d, parent=%d\n", childID, pageID)
+		return 0, false, errpkg.ErrBTreeRetry
+	}
+
 	if actualVersion != expectedVersion {
 		// 版本号不匹配，说明父节点存储的是陈旧的子节点引用（僵尸引用）
-		fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild stale: pageID=%d, childID=%d, expected=%d, actual=%d\n",
-			pageID, childID, expectedVersion, actualVersion)
+		// Phase 1: 检查是否有 SplitInfo 可以跟随重定向
+		if splitInfo, ok := GetSplitInfo(model.PageID(childID)); ok {
+			// 找到 SplitInfo，检查 key 是否需要重定向到新页面
+			if splitInfo.IsRedirecting(key) {
+				// key > splitKey，应该使用右页面（新页面）
+				return splitInfo.GetNewPageRef(), found, nil
+			}
+		}
 		return 0, false, errpkg.BTreeStaleChildRef(uint64(pageID), uint64(childID), expectedVersion, actualVersion)
 	}
 

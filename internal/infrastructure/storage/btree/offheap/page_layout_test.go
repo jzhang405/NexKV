@@ -741,6 +741,111 @@ func TestPageAccessor_ValidatePage_ExtraChildZero(t *testing.T) {
 	assert.Contains(t, err.Error(), "extraChild=0")
 }
 
+// Phase 6: CheckPageInvariants 不变式检查测试
+
+func TestPageAccessor_CheckPageInvariants_ValidPage(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化有效的索引页面
+	pa.InitIndexPage(pageID, 0)
+
+	// 插入有效的 keys 和 children（keys 升序）
+	keys := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
+	children := []uint32{10, 20, 30, 40} // N+1 children
+
+	var dataEnd uint16
+	for i := range keys {
+		err := pa.InsertIndexEntry(pageID, i, keys[i], children[i], &dataEnd)
+		require.NoError(t, err)
+	}
+
+	// 设置 extraChild
+	header := pa.GetHeader(pageID)
+	header.extraChild = EncodeChildWithVersion(children[3], 0)
+
+	// CheckPageInvariants 应该通过
+	err = pa.CheckPageInvariants(pageID)
+	assert.NoError(t, err)
+}
+
+func TestPageAccessor_CheckPageInvariants_KeysNotSorted(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化索引页面
+	pa.InitIndexPage(pageID, 0)
+
+	// 先插入正常数据
+	keys := [][]byte{[]byte("a"), []byte("b")}
+	children := []uint32{10, 20, 30}
+	var dataEnd uint16
+	for i := range keys {
+		err := pa.InsertIndexEntry(pageID, i, keys[i], children[i], &dataEnd)
+		require.NoError(t, err)
+	}
+
+	header := pa.GetHeader(pageID)
+	header.extraChild = EncodeChildWithVersion(children[2], 0)
+
+	// 手动破坏 key 有序性：交换两个 key 的内容
+	entry0 := pa.GetIndexEntry(pageID, 0)
+	entry1 := pa.GetIndexEntry(pageID, 1)
+	// 交换 keyOff 来破坏有序性（让后面的 key 指向前面）
+	entry0.keyOff, entry1.keyOff = entry1.keyOff, entry0.keyOff
+
+	// CheckPageInvariants 应该失败（keys not sorted）
+	err = pa.CheckPageInvariants(pageID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "keys not sorted")
+
+	// 恢复（不做清理，因为这个测试页面会被释放）
+}
+
+func TestPageAccessor_CheckPageInvariants_ChildZero(t *testing.T) {
+	pm, err := NewPageManager(64 << 20)
+	require.NoError(t, err)
+	defer pm.Close()
+
+	pa := NewPageAccessor(pm)
+	pageID, err := pm.Alloc()
+	require.NoError(t, err)
+
+	// 初始化索引页面
+	pa.InitIndexPage(pageID, 0)
+
+	// 插入正常数据
+	keys := [][]byte{[]byte("a"), []byte("b")}
+	children := []uint32{10, 20}
+	var dataEnd uint16
+	for i := range keys {
+		err := pa.InsertIndexEntry(pageID, i, keys[i], children[i], &dataEnd)
+		require.NoError(t, err)
+	}
+
+	header := pa.GetHeader(pageID)
+	header.extraChild = EncodeChildWithVersion(children[1], 0)
+
+	// 手动设置 child=0
+	entry := pa.GetIndexEntry(pageID, 0)
+	entry.child = 0
+
+	// CheckPageInvariants 应该失败（child=0）
+	err = pa.CheckPageInvariants(pageID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "child=0")
+}
+
 // Phase 4: 边界测试
 
 func TestBulkInitIndexFromSource_SelfLoop(t *testing.T) {

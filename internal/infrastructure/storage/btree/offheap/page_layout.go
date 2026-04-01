@@ -227,6 +227,47 @@ func (pa *PageAccessor) ValidatePage(pageID uint32) error {
 	return nil
 }
 
+// CheckPageInvariants 检查页面不变式（Phase 6 验证机制改进）
+// 返回 error 如果页面违反不变式
+//
+// 不变式：
+// 1. keys 按升序排列
+// 2. 所有 child 不为 0
+// 3. count > 0 时 extraChild 不为 0
+func (pa *PageAccessor) CheckPageInvariants(pageID uint32) error {
+	header := pa.GetHeader(pageID)
+	count := header.count
+
+	// 验证 keys 有序（升序）
+	for i := 1; i < int(count); i++ {
+		prevEntry := pa.GetIndexEntry(pageID, i-1)
+		currEntry := pa.GetIndexEntry(pageID, i)
+		prevKey := pa.GetKey(pageID, prevEntry.keyOff, prevEntry.keyLen)
+		currKey := pa.GetKey(pageID, currEntry.keyOff, currEntry.keyLen)
+		if bytes.Compare(prevKey, currKey) >= 0 {
+			return fmt.Errorf("page %d invariant violated: keys not sorted at index %d", pageID, i)
+		}
+	}
+
+	// 验证所有 child 不为 0
+	for i := 0; i < int(count); i++ {
+		child, _ := DecodeChildWithVersion(pa.GetIndexEntry(pageID, i).child)
+		if child == 0 {
+			return fmt.Errorf("page %d invariant violated: child=0 at index %d", pageID, i)
+		}
+	}
+
+	// 验证 extraChild（count > 0 时必须有效）
+	if count > 0 {
+		extraChild, _ := DecodeChildWithVersion(header.extraChild)
+		if extraChild == 0 {
+			return fmt.Errorf("page %d invariant violated: extraChild=0 with count=%d", pageID, count)
+		}
+	}
+
+	return nil
+}
+
 // GetIndexEntry 获取索引节点条目
 func (pa *PageAccessor) GetIndexEntry(pageID uint32, index int) *IndexEntry {
 	ptr := pa.getPtr(pageID)

@@ -103,6 +103,28 @@ func (a *OffHeapAdapter) GetFromOffHeap(pageID model.PageID, key []byte) ([]byte
 // InsertToOffHeap 向 Off-Heap 叶子页面插入 KV 对
 // 返回 (pageID, splitRequired, error)
 func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte) (model.PageID, bool, error) {
+	// DEBUG
+	fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: pageID=%d, key=%s\n", pageID, key)
+
+	// TOCTOU 修复：如果页面已经有 SplitInfo，说明之前已经分裂过
+	// 需要跟随重定向到新的左右页面，而不是在旧页面上操作
+	//
+	// 分裂逻辑：
+	// - 左页面 = 原始 pageID（被更新为包含 <= SplitKey 的 keys）
+	// - 右页面 = NewPageRef（包含 > SplitKey 的 keys）
+	if splitInfo, ok := GetSplitInfo(pageID); ok {
+		if splitInfo.IsRedirecting(key) {
+			// key > SplitKey，应该使用右页面（新创建的页面）
+			newPageID := splitInfo.GetNewPageRef()
+			fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap REDIRECT: pageID=%d -> %d (RIGHT), key=%s\n", pageID, newPageID, key)
+			return a.InsertToOffHeap(newPageID, key, value)
+		}
+		// key <= SplitKey，应该使用左页面（就是原始的 pageID，因为原页面被更新为左页面）
+		fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap REDIRECT: pageID=%d -> %d (LEFT, original), key=%s\n", pageID, pageID, key)
+		// 不需要递归，直接在当前页面（现在是左页面）继续操作
+		// 注意：这里不用递归调用，否则会无限循环
+	}
+
 	// 使用线性搜索替代二分查找
 	// SearchKey 依赖 keys 有序的假设，但页面可能已无序
 	// 使用线性搜索确保即使 keys 无序也能找到正确位置
@@ -110,12 +132,18 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 	if err != nil {
 		// TOCTOU: 叶子页在搜索期间被 COW 替换 + epoch 回收 + 重用
 		// 包装为 ErrRetry 让上层自动重试
+		fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap TOCTOU: pageID=%d, key=%s, err=%v\n", pageID, key, err)
 		return pageID, false, fmt.Errorf("InsertToOffHeap TOCTOU: %w", ErrRetry)
 	}
+
+	fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: found=%v, idx=%d, count=%d, key=%s\n", found, idx, count, key)
 
 	if found {
 		// 更新现有 key（需要重新分配页面，因为 Off-Heap 不可变）
 		newPageID, err := a.UpdateLeafEntry(pageID, idx, key, value)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap UpdateLeafEntry failed: pageID=%d, idx=%d, key=%s, err=%v\n", pageID, idx, key, err)
+		}
 		return newPageID, false, err
 	}
 
@@ -123,6 +151,7 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 	// checkPageFull 现在直接从页面读取 dataEnd，无需缓存
 	if a.checkPageFull(uint32(pageID), len(key), len(value)) {
 		// 页面可能已满，返回 splitRequired=true
+		fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: page full, splitRequired=true, pageID=%d, key=%s\n", pageID, key)
 		return pageID, true, nil
 	}
 
@@ -130,11 +159,13 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 	pid := uint32(pageID)
 	if !a.pa.IsLeaf(pid) {
 		// 页面已被回收重用为非叶子页
+		fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: page not a leaf, pageID=%d, key=%s\n", pageID, key)
 		return pageID, false, fmt.Errorf("InsertToOffHeap: page %d is not a leaf page: %w", pageID, ErrRetry)
 	}
 	currentCount := a.pa.GetCount(pid)
 	if currentCount != count {
 		// count 已变化，页面可能已被回收重用
+		fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: count changed, pageID=%d, key=%s, count=%d, currentCount=%d\n", pageID, key, count, currentCount)
 		return pageID, false, fmt.Errorf("InsertToOffHeap: page %d count changed (%d → %d): %w", pageID, count, currentCount, ErrRetry)
 	}
 
@@ -146,9 +177,11 @@ func (a *OffHeapAdapter) InsertToOffHeap(pageID model.PageID, key, value []byte)
 	if insertErr == nil {
 		// 插入成功，检查是否需要分裂
 		splitRequired := a.checkPageFull(uint32(pageID), len(key), len(value))
+		fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: inserted, pageID=%d, key=%s, splitRequired=%v\n", pageID, key, splitRequired)
 		return pageID, splitRequired, nil
 	}
 
+	fmt.Fprintf(os.Stderr, "[DEBUG] InsertToOffHeap: insert failed, pageID=%d, key=%s, err=%v\n", pageID, key, insertErr)
 	return pageID, false, insertErr
 }
 
@@ -380,7 +413,12 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 	keys := make([][]byte, 0, count+1)
 	children := make([]uint32, 0, count+2)
 
-	inserted := false
+	// 使用 writeIdx 追踪写入位置，解决中间插入时的位移问题
+	// Bug fix: 原来的代码在 i==index 时插入 left/right，
+	//         然后 i+1 时复制 children[index+1] 到位置 index+1（覆盖了 right！）
+	//         这导致 children[index] 被丢失
+	// 正确逻辑：所有 children[i] (i >= index) 都应该位移 2 个位置
+	writeIdx := 0
 	for i := 0; i < int(count); i++ {
 		// TOCTOU 防护：每次迭代前重新读取 count，防止并发修改导致越界
 		currentCount := a.pa.GetCount(uint32(pageID))
@@ -394,32 +432,30 @@ func (a *OffHeapAdapter) UpdateIndexEntry(pageID model.PageID, index int, key []
 		encodedChild := a.pa.GetChild(uint32(pageID), i)
 		child, _ := a.DecodeChildWithVersion(encodedChild)
 
-		// 安全检查：自环 child 保持原样，让 Materialize 检测
-		// 注意：不要将 child 设置为 0，否则 InsertIndexEntry 会报 child cannot be 0 错误
-		// 如果是自环（child == pageID），Materialize 会检测到并报 self-loop detected 错误
-		// 这是正确的行为 - 检测到错误而不是静默处理
-
 		if i == index {
 			// 分裂位置：插入 splitKey 和 left/right child
-			// 修复：必须复制原来的 key[index]，否则会导致 key 丢失
+			// 注意：原来的 children[index] 应该保留在原位置（因为 B+Tree 分裂语义）
+			//       实际需要移动的是 keys[index]（分裂键上升），不是 children[index]
 			keys = append(keys, key) // splitKey
 			kCopy := make([]byte, len(k))
 			copy(kCopy, k)
 			keys = append(keys, kCopy) // 复制 key[index]
 			children = append(children, leftPageID)
 			children = append(children, rightPageID)
-			inserted = true
+			writeIdx += 2
 		} else {
 			// 非分裂位置：保留原 key 和 child
 			kCopy := make([]byte, len(k))
 			copy(kCopy, k)
 			keys = append(keys, kCopy)
 			children = append(children, child)
+			writeIdx++
 		}
 	}
 
-	// 如果 index == count（在最后插入），循环中没有插入
-	if !inserted {
+	// 如果 index == count（在最后插入），循环中没有处理这种情况
+	// 需要在 keys 末尾添加 splitKey，在 children 末尾添加 leftPageID 和 rightPageID
+	if index == int(count) {
 		keys = append(keys, key)
 		children = append(children, leftPageID)
 		children = append(children, rightPageID)
@@ -1012,10 +1048,10 @@ func (a *OffHeapAdapter) GetChild(pageID model.PageID, index int) (model.PageID,
 // - 如果 key >= k(n-1)，返回 cn
 // - 如果精确匹配 k(i)，返回 c(i+1)（右子节点）
 //
-// 版本号检测：
-// - 从父节点读取子节点的 pageID 和期望版本号
-// - 验证子页面的实际版本号是否匹配
-// - 不匹配说明是僵尸引用，返回 ErrRetry
+// Reference Counting（Phase 2）：
+// - 获取 childID 后，调用 TryAcquire(childID) 获取引用
+// - 使用 defer Release(childID) 确保所有路径都会释放引用
+// - 如果 TryAcquire 失败（页面正在被删除或 refCount==0），返回 ErrRetry
 func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.PageID, bool, error) {
 	idx, found, err := a.pa.SearchKey(uint32(pageID), key, false)
 	if err != nil {
@@ -1049,7 +1085,9 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 	}
 
 	// 读取子节点的 pageID 和期望版本号（编码在 child 字段中）
-	childID, expectedVersion := a.pa.GetChildWithVersion(uint32(pageID), childIdx)
+	// 使用 GetChildWithVersionByCount 避免 TOCTOU：传入预先读取的 currentCount
+	// 这样不会再次读取 header.count，避免与 GetCount 之间的窗口期
+	childID, expectedVersion := a.pa.GetChildWithVersionByCount(uint32(pageID), childIdx, uint16(currentCount))
 
 	// 如果 childID == 0，说明没有子节点
 	// 但内部节点不应该有空的子节点，这可能是页面被并发修改导致的
@@ -1064,18 +1102,23 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 		return 0, found, nil
 	}
 
-	// 版本号检测：读取子页面的实际版本号
-	actualVersion := a.pa.GetVersionSafe(childID)
-
-	// 先检查页面是否正在被回收（deleted 标志）
-	// deleted=1 说明页面正在延迟回收流程中（等待 5 个 epoch）
-	// 此时不应被访问，返回 ErrRetry 让调用者重试
-	// 这个检查必须在 version 比较之前，因为回收页面的 version 可能不匹配
-	if a.pa.IsPageDeleted(childID) {
-		fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild deleted: childID=%d, parent=%d\n", childID, pageID)
+	// ⭐ Reference Counting: 尝试获取子页面引用
+	// 如果页面正在被删除或 refCount==0，TryAcquire 返回 false
+	// TryAcquire 内部会检查 deleted 标志
+	if !a.pm.TryAcquire(childID) {
+		fmt.Fprintf(os.Stderr, "[DEBUG] SearchChild TryAcquire failed: childID=%d, parent=%d\n", childID, pageID)
 		return 0, false, errpkg.ErrBTreeRetry
 	}
 
+	// ⭐ 访问完成后必须 Release
+	// 使用 defer 确保在所有返回路径上都会释放引用
+	defer a.pm.Release(childID)
+
+	// 版本号检测：读取子页面的实际版本号
+	actualVersion := a.pa.GetVersionSafe(childID)
+
+	// 版本号不匹配时，检查是否有 SplitInfo 可以跟随重定向
+	// 优先检查 SplitInfo，因为即使子页面已被删除，SplitInfo 可能仍然有效
 	if actualVersion != expectedVersion {
 		// 版本号不匹配，说明父节点存储的是陈旧的子节点引用（僵尸引用）
 		// Phase 1: 检查是否有 SplitInfo 可以跟随重定向
@@ -1083,12 +1126,29 @@ func (a *OffHeapAdapter) SearchChild(pageID model.PageID, key []byte) (model.Pag
 			// 找到 SplitInfo，检查 key 是否需要重定向到新页面
 			if splitInfo.IsRedirecting(key) {
 				// key > splitKey，应该使用右页面（新页面）
+				// ⭐ 注意：SplitInfo 重定向时，原 childID 的引用已经通过 defer Release 释放
+				// 新页面由调用者负责 acquire/release
 				return splitInfo.GetNewPageRef(), found, nil
 			}
 		}
+		// 没有 SplitInfo 或不需要重定向
 		return 0, false, errpkg.BTreeStaleChildRef(uint64(pageID), uint64(childID), expectedVersion, actualVersion)
 	}
 
+	// 版本号匹配但页面可能被删除，先检查 SplitInfo
+	// 如果有 SplitInfo 且需要重定向，应该跟随重定向而不是返回错误
+	if splitInfo, ok := GetSplitInfo(model.PageID(childID)); ok {
+		// 找到 SplitInfo，检查 key 是否需要重定向到新页面
+		if splitInfo.IsRedirecting(key) {
+			// key > splitKey，应该使用右页面（新页面）
+			// ⭐ 注意：SplitInfo 重定向时，原 childID 的引用已经通过 defer Release 释放
+			// 新页面由调用者负责 acquire/release
+			return splitInfo.GetNewPageRef(), found, nil
+		}
+	}
+
+	// 版本号匹配且没有有效的 SplitInfo，页面安全可访问
+	// deleted 检查已在 TryAcquire 中完成
 	return model.PageID(childID), found, nil
 }
 

@@ -134,31 +134,65 @@ func TestPageManager_AllocReuse(t *testing.T) {
 	require.NoError(t, err)
 	defer pm.Close()
 
-	// 分配几个页面
+	// 分配几个页面（跳过 pageID 0，因为它是保留的）
+	id0, _ := pm.Alloc() // 分配并丢弃 pageID 0
 	id1, _ := pm.Alloc()
 	id2, _ := pm.Alloc()
 	id3, _ := pm.Alloc()
+	t.Logf("Allocated: id0=%d, id1=%d, id2=%d, id3=%d", id0, id1, id2, id3)
+	require.NotEqual(t, uint32(0), id1, "id1 should not be 0")
+	require.NotEqual(t, uint32(0), id2, "id2 should not be 0")
+	require.NotEqual(t, uint32(0), id3, "id3 should not be 0")
 
-	// 释放一些页面
-	_ = pm.Free(id2)
+	// 验证 id1, id2, id3 都不同
+	require.NotEqual(t, id1, id2)
+	require.NotEqual(t, id1, id3)
+	require.NotEqual(t, id2, id3)
+
+	// 使用 AddRef/Release 测试 Reference Counting
+	pm.AddRef(id1)
+	pm.AddRef(id2)
+	t.Logf("After AddRef: id1 refCount=%d, id2 refCount=%d", pm.GetRefCount(id1), pm.GetRefCount(id2))
+
+	// 释放所有页面
+	// id1: refCount=1, deleted=0 -> Free 设置 deleted=1, 进入 delayedFreeList
+	// id2: refCount=1, deleted=0 -> Free 设置 deleted=1, 进入 delayedFreeList
+	// id3: refCount=0, deleted=0 -> Free 直接进入 freeList
 	_ = pm.Free(id1)
+	_ = pm.Free(id2)
+	_ = pm.Free(id3)
+	t.Logf("After Free: freeList=%d, delayedFreeList=%d", pm.GetFreeListSize(), pm.GetDelayedFreeListSize())
 
-	// 继续分配
-	id4, _ := pm.Alloc()
+	// Release 释放引用
+	pm.Release(id1) // refCount 从 1 减到 0，但因为 deleted==1,inQueue==1，不重复添加
+	pm.Release(id2) // 同上
+	t.Logf("After Release: freeList=%d, delayedFreeList=%d", pm.GetFreeListSize(), pm.GetDelayedFreeListSize())
 
-	// 验证分配的页面都是有效的（不重复，在范围内）
-	allocatedIDs := []uint32{id1, id2, id3, id4}
-	uniqueIDs := make(map[uint32]bool)
-	for _, id := range allocatedIDs {
-		if _, exists := uniqueIDs[id]; exists {
-			t.Errorf("duplicate pageID allocated: %d", id)
-		}
-		uniqueIDs[id] = true
+	// 推进 epoch，将 delayedFreeList 中的页面移到 freeList
+	// 需要推进至少 5 次（因为 minEpochDiff = 5）
+	for i := 0; i < 6; i++ {
+		pm.AdvanceEpoch()
+		t.Logf("After AdvanceEpoch %d: freeList=%d, delayedFreeList=%d", i+1, pm.GetFreeListSize(), pm.GetDelayedFreeListSize())
 	}
+
+	// 现在 freeList 应该有 3 个页面
+	require.Equal(t, 3, pm.GetFreeListSize(), "all 3 pages should be in freeList")
+
+	// 重新分配 3 个页面
+	id4, _ := pm.Alloc()
+	id5, _ := pm.Alloc()
+	id6, _ := pm.Alloc()
+	t.Logf("Reallocated: id4=%d, id5=%d, id6=%d", id4, id5, id6)
+
+	// FIFO 顺序：id3 先入 freeList 先出，id1 后入后出
+	// 所以应该是 id4=id3, id5=id1, id6=id2
+	require.Equal(t, id3, id4, "id4 should be id3 (FIFO)")
+	require.Equal(t, id1, id5, "id5 should be id1 (FIFO)")
+	require.Equal(t, id2, id6, "id6 should be id2 (FIFO)")
 
 	// 验证统计信息
 	stats := pm.GetStats()
-	assert.Equal(t, uint32(2), stats.Used) // id3 和 id4 还在使用
+	assert.Equal(t, uint32(4), stats.Used, "id0, id4, id5, id6 should be in use")
 }
 
 func TestPageManager_PageIDToPtr(t *testing.T) {

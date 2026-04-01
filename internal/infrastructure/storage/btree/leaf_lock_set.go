@@ -23,7 +23,6 @@ import (
 func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 	leafRef, path, refs, err := b.findLeafPageRef(ctx, key)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[DEBUG] findLeafPageRef failed: %v\n", err)
 		return err
 	}
 
@@ -61,7 +60,6 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 	// TOCTOU 防御：获取锁后重新检查页面类型
 	if !b.offheapAdapter.IsLeaf(oldPageID) {
 		// 页面已被回收重用为非叶子页，返回重试
-		fmt.Fprintf(os.Stderr, "[DEBUG] IsLeaf check failed: oldPageID=%d\n", oldPageID)
 		return ErrRetry
 	}
 
@@ -209,10 +207,13 @@ func (b *BTree) setWithLeafLock(ctx context.Context, key, value []byte) error {
 		splitMu.Lock()
 		defer splitMu.Unlock()
 
+		fmt.Fprintf(os.Stderr, "[DEBUG] handleSplitOffHeapSync START: oldPageID=%d, newPageID=%d, key=%s\n", oldPageID, newPageID, key)
 		leftRef, err := b.handleSplitOffHeapSync(leafRef, newInfo, newPageID, path, key, value)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "[DEBUG] handleSplitOffHeapSync FAILED: oldPageID=%d, newPageID=%d, key=%s, err=%v\n", oldPageID, newPageID, key, err)
 			return ErrRetry
 		}
+		fmt.Fprintf(os.Stderr, "[DEBUG] handleSplitOffHeapSync SUCCESS: oldPageID=%d, newPageID=%d, key=%s, leftRef=%v\n", oldPageID, newPageID, key, leftRef)
 		newInfo = leftRef.GetPageInfo()
 		if newInfo == nil {
 			return errpkg.BTreeLeftRefPageInfoNil()
@@ -556,9 +557,14 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 		newLeftInfo.MarkDirty()
 	}
 
+	fmt.Fprintf(os.Stderr, "[DEBUG] CAS Replace: leafRef=%p, leafInfo=%p(pageID=%d), newLeftInfo=%p(pageID=%d)\n",
+		leafRef, leafInfo, leafInfo.GetPageID(), newLeftInfo, newLeftInfo.GetPageID())
 	// 在锁保护下 CAS 更新 leafRef
 	if !leafRef.ReplacePage(leafInfo, newLeftInfo) {
 		// CAS 失败，返回重试
+		currentInfo := leafRef.GetPageInfo()
+		fmt.Fprintf(os.Stderr, "[DEBUG] CAS Replace FAILED: currentInfo=%p(pageID=%d)\n",
+			currentInfo, currentInfo.GetPageID())
 		return nil, ErrRetry
 	}
 
@@ -566,11 +572,17 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	// 这允许持有旧引用的线程跟随重定向到新页面
 	// 注意：此时父节点可能还未更新，但 SplitInfo 仍然有帮助
 	// 因为旧页面的子节点（如果有的话）可能仍然需要跟随
-	splitInfo := NewSplitInfo(leafPageID, leftPageID, splitKey, b.epochBasedFreeList.currentEpoch.Load())
+	//
+	// 重要：NewPageRef 应该存储 rightPageID
+	// - key > splitKey（应该去右页面）时，InsertToOffHeap 会返回 rightPageID
+	// - key <= splitKey（应该留在左页面）时，不执行重定向，继续在原页面操作
+	// 这样就形成了正确的分流逻辑
+	splitInfo := NewSplitInfo(leafPageID, rightPageID, splitKey, b.epochBasedFreeList.currentEpoch.Load())
 	SetSplitInfo(leafPageID, splitInfo)
 
-	// CAS 成功后延迟释放旧页面（使用 epoch 避免立即重用）
-	b.epochBasedFreeList.Add(leafPageID)
+	// 注意：不要在这里添加 epochBasedFreeList.Add(leafPageID)
+	// leafPageID 必须在父页面更新成功后才添加到延迟释放列表
+	// 否则如果父页面更新失败，leafPageID 会被过早释放，导致搜索路径失败
 
 	// Step 5: 更新 PageRefCache
 	// 旧的 leafPageID 现在指向 leftRef
@@ -764,8 +776,15 @@ func (b *BTree) handleSplitOffHeapSync(leafRef *PageRef, leafInfo *PageInfo, lea
 	b.pageRefCache.Delete(oldParentPageID)
 	b.pageRefCache.Update(newParentPageID, parentRef)
 
-	// Step 12: CAS 成功后释放旧父页面
-	b.offheapAdapter.pm.Free(uint32(oldParentPageID))
+	// Step 11.7: 父节点 CAS 成功后，删除 SplitInfo
+	// 因为搜索路径已经更新为直接指向新的左右页面，不再需要通过旧页面的 SplitInfo 重定向
+	// 这避免了后续操作通过过长的 SplitInfo 链
+	DeleteSplitInfo(leafPageID)
+
+	// Step 12: CAS 成功后延迟释放旧父页面（使用 epoch 避免立即重用）
+	// 修复：使用 epochBasedFreeList.Add 替代直接 pm.Free
+	// 直接 pm.Free 会立即标记 deleted=1，导致正在访问该父页面的搜索路径失败
+	b.epochBasedFreeList.Add(oldParentPageID)
 
 	// Step 14: 更新子节点的 parentRef
 	leftRef.SetParentRef(parentRef)
@@ -1363,8 +1382,10 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 		leftRef.SetParentRef(parentRef)
 		rightRef.SetParentRef(parentRef)
 
-		// CAS 成功后释放旧父页面
-		b.offheapAdapter.pm.Free(uint32(parentPageIDForSearch))
+		// CAS 成功后延迟释放旧父页面（使用 epoch 避免立即重用）
+		// 修复：使用 epochBasedFreeList.Add 替代直接 pm.Free
+		// 直接 pm.Free 会立即标记 deleted=1，导致正在访问该父页面的搜索路径失败
+		b.epochBasedFreeList.Add(parentPageIDForSearch)
 
 		// 更新 PageRefCache
 		b.pageRefCache.Delete(parentPageIDForSearch)

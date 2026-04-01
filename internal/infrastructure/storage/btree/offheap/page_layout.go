@@ -27,8 +27,8 @@ const (
 // 空闲区从后往前分配，Entry 数组从前往后增长
 // KV 数据区紧凑存储，支持变长 key/value
 
-// PageHeader 页面头部（40 字节）
-// 修改记录 (2026-04-01): 添加 deleted 和 deleteEpoch 支持 Epoch 延迟回收
+// PageHeader 页面头部（48 字节）
+// 修改记录 (2026-04-01): 添加 refCount 支持 Reference Counting
 type PageHeader struct {
 	version     uint64 // 版本号（CCOW）
 	prevPage    uint32 // 前一个页面 pageID
@@ -38,7 +38,9 @@ type PageHeader struct {
 	pageType    uint8  // 页面类型（0=索引 1=叶子）
 	deleted     uint8  // 标记为已删除（0=正常, 1=已删除）
 	deleteEpoch uint64 // 删除时的 epoch（用于延迟回收）
-	_pad        [7]byte // 对齐填充（使结构体大小为 40 字节）
+	refCount    int32  // 引用计数（Reference Counting）⭐ 新增
+	inQueue     uint32 // 标记页面是否已在 delayedFreeList 中（防止重复添加）⭐ 新增
+	_pad        [3]byte // 对齐填充
 }
 
 // SizeofPageHeader PageHeader 大小（40 字节）
@@ -529,6 +531,36 @@ func (pa *PageAccessor) IncrementVersion(pageID uint32) uint64 {
 // 返回的版本号是 uint64，与 GetVersion 保持一致
 func (pa *PageAccessor) GetChildWithVersion(pageID uint32, index int) (childPageID uint32, expectedVersion uint64) {
 	encoded := pa.GetChild(pageID, index)
+	decodedPageID, decodedVersion := DecodeChildWithVersion(encoded)
+	childPageID = decodedPageID
+	expectedVersion = uint64(decodedVersion)
+	return
+}
+
+// GetChildEncodedWithCount 获取索引节点的编码子节点值（包含 pageID 和版本号）
+// callerCount 是调用者预先读取的 count 值，用于避免 TOCTOU 问题
+// callerCount 是调用者预先读取的 count 值，用于避免 TOCTOU 问题
+// 这个函数不会再次读取 header.count，而是使用传入的 callerCount 进行 bounds 检查
+func (pa *PageAccessor) GetChildEncodedWithCount(pageID uint32, index int, callerCount uint16) uint64 {
+	if index == int(callerCount) {
+		ptr := pa.getPtr(pageID)
+		header := (*PageHeader)(ptr)
+		return header.extraChild
+	}
+	if index >= int(callerCount) {
+		return 0
+	}
+	// callerCount 有效，不需要再次检查 bounds，直接读取 entry
+	ptr := pa.getPtr(pageID)
+	entryPtr := unsafe.Add(ptr, SizeofPageHeader+index*SizeofIndexEntry)
+	return (*IndexEntry)(entryPtr).child
+}
+
+// GetChildWithVersionByCount 获取子节点 pageID 和期望版本号
+// callerCount 是调用者预先读取的 count 值，用于避免 TOCTOU 问题
+// 这个函数不会再次读取 header.count，而是使用传入的 callerCount 进行 bounds 检查
+func (pa *PageAccessor) GetChildWithVersionByCount(pageID uint32, index int, callerCount uint16) (childPageID uint32, expectedVersion uint64) {
+	encoded := pa.GetChildEncodedWithCount(pageID, index, callerCount)
 	decodedPageID, decodedVersion := DecodeChildWithVersion(encoded)
 	childPageID = decodedPageID
 	expectedVersion = uint64(decodedVersion)

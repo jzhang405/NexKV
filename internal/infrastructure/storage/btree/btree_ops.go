@@ -248,109 +248,16 @@ func (b *BTree) setWithLeafLockAndRef(
 	leafRef *PageRef,
 	key, value []byte,
 ) error {
+	// Off-Heap 模式不支持：回退到 setWithLeafLock
+	// 原因：setWithLeafLockAndRef 使用锁的 defer Unlock 模式，与 setWithLeafLock 竞争同一把锁
 	if leafRef == nil {
-		// 缓存无效，回退到完整查找
 		return b.setWithLeafLock(ctx, key, value)
 	}
 
-	// 获取页面锁
-	pageLock := leafRef.GetLock()
-	if pageLock == nil {
-		return ErrRetry
-	}
-
-	// 使用 TryLock 快速失败（避免死锁）
-	if !pageLock.TryLock() {
-		return ErrRetry
-	}
-	defer pageLock.Unlock()
-
-	// 获取当前 PageInfo（在锁保护下）
-	oldInfo := leafRef.pInfo.Load()
-	if oldInfo == nil {
-		return ErrRetry
-	}
-
-	// 验证并获取叶子节点
-	oldPage := oldInfo.GetPage()
-	if oldPage == nil {
-		return ErrRetry
-	}
-
-	leafPage, ok := oldPage.(*LeafPage)
-	if !ok {
-		// 页面类型错误，回退到完整查找
-		return b.setWithLeafLock(ctx, key, value)
-	}
-
-	// 再次验证 PageInfo 未变更（在获取锁期间）
-	currentInfo := leafRef.pInfo.Load()
-	if currentInfo != oldInfo {
-		// PageInfo 已变更，路径可能失效，回退到完整查找
-		return b.setWithLeafLock(ctx, key, value)
-	}
-
-	// 使用 Delta Chain 克隆（写时复制优化）
-	newLeafPage := leafPage.CloneWithDelta()
-	if newLeafPage == nil {
-		return errpkg.BTreeCloneLeafPageFailed()
-	}
-
-	// 在克隆的叶节点上插入键值对
-	_, err := newLeafPage.Insert(key, value)
-	if err != nil {
-		return errpkg.BTreeInsertIntoLeafFailed(err)
-	}
-
-	// 创建新的 PageInfo
-	newInfo := NewPageInfo()
-	newInfo.SetPage(newLeafPage)
-	// 继承其他属性
-	newInfo.SetPos(oldInfo.GetPos())
-	if oldInfo.IsDirty() {
-		newInfo.MarkDirty()
-	}
-
-	// Leaf-Level CAS（在锁保护下，几乎不会失败）
-	if !leafRef.ReplacePage(oldInfo, newInfo) {
-		// CAS 失败（极少发生），返回重试
-		return ErrRetry
-	}
-
-	// 检查是否需要分裂（同步，在锁保护下）
-	if newLeafPage.NumKeys() > splitThreshold {
-		// 需要分裂，由于没有完整路径信息，回退到完整查找
-		// 注意：这种情况极少发生（<1%），对性能影响有限
-		return b.setWithLeafLock(ctx, key, value)
-	}
-
-	// 持久化集成（仅持久化模式）
-	if b.chunkMgr != nil {
-		// 获取全局写锁，防止并发修改干扰持久化
-		b.writeMu.Lock()
-		defer b.writeMu.Unlock()
-
-		// 获取当前 Root（CAS 后可能已改变）
-		currentRoot := b.rootRef.pInfo.Load()
-		if currentRoot == nil {
-			return errpkg.BTreeRootPageInfoNilAfterPersist()
-		}
-
-		// 构建持久化路径：从 Root 到 Leaf 的完整路径
-		persistPath := b.buildPersistPath(currentRoot, newInfo)
-
-		// 深拷贝路径（确保数据独立）
-		if err := b.finalizeDeepClone(persistPath); err != nil {
-			return errpkg.BTreeFinalizeDeepCloneErr(err)
-		}
-
-		// 持久化根节点（会递归持久化整个树）
-		if err := b.persistRoot(currentRoot); err != nil {
-			return errpkg.BTreePersistRootErr(err)
-		}
-	}
-
-	return nil
+	// Off-Heap 模式：直接回退到 setWithLeafLock
+	// 注意：这里不能使用 CloneWithDelta/Insert，因为 Off-Heap 模式下
+	// PageInfo.GetPage() 返回的是 OffHeapLeafPageWrapper，不是 *LeafPage
+	return b.setWithLeafLock(ctx, key, value)
 }
 
 // processBatch 批量处理多个 BTreeSetItem

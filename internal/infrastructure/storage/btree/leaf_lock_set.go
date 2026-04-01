@@ -1120,6 +1120,12 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 		// 继续执行，因为这是防御性验证
 	}
 
+	// Phase 6: Pre-condition validation - 确保分裂前页面状态有效
+	if err := b.offheapAdapter.pa.CheckPageInvariants(uint32(internalPageID)); err != nil {
+		fmt.Fprintf(os.Stderr, "[WARN] splitInternalOffHeapSync: pre-condition failed for page %d: %v\n", internalPageID, err)
+		// 继续执行，因为这是防御性验证
+	}
+
 	mid := countInt / 2
 
 	// Step 2: 从源页面直接获取 splitKey（mid 位置的 key）
@@ -1197,6 +1203,16 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 	if err != nil {
 		// defer 会清理
 		return errpkg.BTreeMaterializeRightIndexPage(err)
+	}
+
+	// Phase 6: Invariant validation - 分裂后验证左右页面不变式
+	if err := b.offheapAdapter.pa.CheckPageInvariants(uint32(leftPageID)); err != nil {
+		fmt.Fprintf(os.Stderr, "[WARN] splitInternalOffHeapSync: left page %d invariant violated: %v\n", leftPageID, err)
+		// 继续执行
+	}
+	if err := b.offheapAdapter.pa.CheckPageInvariants(uint32(rightPageID)); err != nil {
+		fmt.Fprintf(os.Stderr, "[WARN] splitInternalOffHeapSync: right page %d invariant violated: %v\n", rightPageID, err)
+		// 继续执行
 	}
 
 	// Step 6: 创建左右子节点的 PageRef

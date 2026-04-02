@@ -314,7 +314,11 @@ func (h *nodePageHandle) IsFull() bool {
 func (h *nodePageHandle) Search(key []byte) (int, bool) {
 	rawID := uint32(h.id)
 	idx, found := h.pa.SearchChildIndex(rawID, key)
-	return idx, found
+	if found {
+		// B+Tree: exact match on key[i] → go to right subtree (child[i+1])
+		return idx + 1, true
+	}
+	return idx, false
 }
 
 func (h *nodePageHandle) GetKey(idx int) []byte {
@@ -334,18 +338,137 @@ func (h *nodePageHandle) ChildCount() int {
 	return h.Count() + 1 // B+Tree: N keys → N+1 children
 }
 
-func (h *nodePageHandle) ReplaceChild(_ int, _ model.PageID) (NodePage, error) {
-	panic("btree2: NodePage.ReplaceChild not implemented until Phase 3")
+func (h *nodePageHandle) ReplaceChild(idx int, newChildID model.PageID) (NodePage, error) {
+	count := h.Count()
+	if idx < 0 || idx > count {
+		return nil, fmt.Errorf("btree2: node replace child: index %d out of range [0, %d]", idx, count)
+	}
+
+	newRawID, err := h.storage.pm.Alloc()
+	if err != nil {
+		return nil, fmt.Errorf("btree2: node replace child alloc: %w", err)
+	}
+	srcPtr := h.storage.pm.PageIDToPtr(uint32(h.id))
+	dstPtr := h.storage.pm.PageIDToPtr(newRawID)
+	srcSlice := unsafe.Slice((*byte)(srcPtr), offheap.PageSize)
+	dstSlice := unsafe.Slice((*byte)(dstPtr), offheap.PageSize)
+	copy(dstSlice, srcSlice)
+
+	srcVersion := h.pa.GetVersion(uint32(h.id))
+	h.pa.SetVersion(newRawID, srcVersion+1)
+
+	h.pa.SetChild(newRawID, idx, uint32(newChildID))
+
+	newID := model.PageID(newRawID)
+	return &nodePageHandle{id: newID, pa: h.pa, storage: h.storage}, nil
 }
-func (h *nodePageHandle) InsertChild(_ int, _ []byte, _, _ model.PageID) (NodePage, error) {
-	panic("btree2: NodePage.InsertChild not implemented until Phase 3")
+func (h *nodePageHandle) InsertChild(idx int, splitKey []byte, left, right model.PageID) (NodePage, error) {
+	count := h.Count()
+	if idx < 0 || idx > count {
+		return nil, fmt.Errorf("btree2: node insert child: index %d out of range [0, %d]", idx, count)
+	}
+
+	newRawID, err := h.storage.pm.Alloc()
+	if err != nil {
+		return nil, fmt.Errorf("btree2: node insert child alloc: %w", err)
+	}
+	srcPtr := h.storage.pm.PageIDToPtr(uint32(h.id))
+	dstPtr := h.storage.pm.PageIDToPtr(newRawID)
+	srcSlice := unsafe.Slice((*byte)(srcPtr), offheap.PageSize)
+	dstSlice := unsafe.Slice((*byte)(dstPtr), offheap.PageSize)
+	copy(dstSlice, srcSlice)
+
+	srcVersion := h.pa.GetVersion(uint32(h.id))
+	h.pa.SetVersion(newRawID, srcVersion+1)
+
+	dataEnd := h.pa.GetDataEnd(newRawID)
+
+	if idx < count {
+		// Middle insert: SetChild(idx, right) first, then InsertIndexEntry(idx, splitKey, left)
+		// After: entries[idx]=(splitKey, left), entries[idx+1]=(old_key, right)
+		h.pa.SetChild(newRawID, idx, uint32(right))
+		if err := h.pa.InsertIndexEntry(newRawID, idx, splitKey, uint32(left), &dataEnd); err != nil {
+			h.storage.pm.Free(newRawID)
+			return nil, fmt.Errorf("btree2: node insert child entry: %w", err)
+		}
+	} else {
+		// End insert: extraChild splits into left and right
+		if err := h.pa.InsertIndexEntry(newRawID, count, splitKey, uint32(left), &dataEnd); err != nil {
+			h.storage.pm.Free(newRawID)
+			return nil, fmt.Errorf("btree2: node insert child at end: %w", err)
+		}
+		// After insert, count = old_count+1. SetChild(new_count, right) → sets extraChild
+		h.pa.SetChild(newRawID, count+1, uint32(right))
+	}
+
+	newID := model.PageID(newRawID)
+	return &nodePageHandle{id: newID, pa: h.pa, storage: h.storage}, nil
 }
 func (h *nodePageHandle) RemoveChild(_ int) (NodePage, error) {
 	panic("btree2: NodePage.RemoveChild not implemented until Phase 6.5")
 }
 func (h *nodePageHandle) Split() (NodePage, NodePage, []byte, error) {
-	panic("btree2: NodePage.Split not implemented until Phase 3")
+	count := h.Count()
+	if count < 2 {
+		return nil, nil, nil, fmt.Errorf("btree2: node split: page has %d entries, need at least 2", count)
+	}
+
+	mid := count / 2
+
+	// move-up: splitKey is removed from both left and right, promoted to parent
+	splitKey := h.GetKey(mid)
+	splitKeyCopy := make([]byte, len(splitKey))
+	copy(splitKeyCopy, splitKey)
+
+	leftRawID, err := h.storage.pm.Alloc()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("btree2: node split alloc left: %w", err)
+	}
+	rightRawID, err := h.storage.pm.Alloc()
+	if err != nil {
+		h.storage.pm.Free(leftRawID)
+		return nil, nil, nil, fmt.Errorf("btree2: node split alloc right: %w", err)
+	}
+
+	srcRawID := uint32(h.id)
+	srcVersion := h.pa.GetVersion(srcRawID)
+
+	// Left: entries[0..mid), extraChild = child[mid] (child before splitKey)
+	leftExtraChild := h.pa.GetChild(srcRawID, mid)
+	if _, err := h.pa.BulkInitIndexFromSource(srcRawID, leftRawID, 0, mid, leftExtraChild); err != nil {
+		h.storage.pm.Free(leftRawID)
+		h.storage.pm.Free(rightRawID)
+		return nil, nil, nil, fmt.Errorf("btree2: node split left bulk init: %w", err)
+	}
+	h.pa.SetVersion(leftRawID, srcVersion+1)
+
+	// Right: entries[mid+1..count), extraChild = original extraChild (child[count])
+	rightExtraChild := h.pa.GetChild(srcRawID, count)
+	if _, err := h.pa.BulkInitIndexFromSource(srcRawID, rightRawID, mid+1, count, rightExtraChild); err != nil {
+		h.storage.pm.Free(leftRawID)
+		h.storage.pm.Free(rightRawID)
+		return nil, nil, nil, fmt.Errorf("btree2: node split right bulk init: %w", err)
+	}
+	h.pa.SetVersion(rightRawID, srcVersion+1)
+
+	left := &nodePageHandle{id: model.PageID(leftRawID), pa: h.pa, storage: h.storage}
+	right := &nodePageHandle{id: model.PageID(rightRawID), pa: h.pa, storage: h.storage}
+	return left, right, splitKeyCopy, nil
 }
 func (h *nodePageHandle) Validate() error {
-	return fmt.Errorf("btree2: NodePage.Validate not implemented until Phase 3")
+	count := h.Count()
+	if count < 0 {
+		return fmt.Errorf("btree2: node validate: negative count %d", count)
+	}
+	for i := 1; i < count; i++ {
+		prev := h.GetKey(i - 1)
+		curr := h.GetKey(i)
+		if bytes.Compare(prev, curr) >= 0 {
+			return fmt.Errorf("btree2: node validate: key ordering violation at idx %d: %q >= %q", i, prev, curr)
+		}
+	}
+	if h.ChildCount() != count+1 {
+		return fmt.Errorf("btree2: node validate: child count %d != key count %d + 1", h.ChildCount(), count)
+	}
+	return nil
 }

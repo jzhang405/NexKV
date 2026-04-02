@@ -1195,9 +1195,9 @@ func (b *BTree) splitInternalOffHeapSync(internalRef *PageRef, internalInfo *Pag
 		return errpkg.BTreeMaterializeRightIndexPage(err)
 	}
 
-		// Phase 6: Invariant validation - 分裂后验证左右页面不变式
-		_ = b.offheapAdapter.pa.CheckPageInvariants(uint32(leftPageID))
-		_ = b.offheapAdapter.pa.CheckPageInvariants(uint32(rightPageID))
+	// Phase 6: Invariant validation - 分裂后验证左右页面不变式
+	_ = b.offheapAdapter.pa.CheckPageInvariants(uint32(leftPageID))
+	_ = b.offheapAdapter.pa.CheckPageInvariants(uint32(rightPageID))
 
 	// Step 6: 创建左右子节点的 PageRef
 	leftRef := b.pageRefCache.GetOrCreate(leftPageID, false)

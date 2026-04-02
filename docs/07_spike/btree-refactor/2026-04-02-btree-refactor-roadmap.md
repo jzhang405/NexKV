@@ -1,7 +1,7 @@
 # BTree2 重构 Action Plan
 
 > 创建时间：2026-04-02
-> 状态：Phase 2 完成，准备 Phase 3
+> 状态：Phase 3 完成，准备 Phase 4
 > 范围：v1 最小可用版本（Get/Set/Delete + Split + Merge，不含 WAL）
 
 ## 0. 协作原则
@@ -310,17 +310,29 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error
   - `TestLeafDuplicateInsert` / `TestLeafInsertReverseOrder` / `TestLeafInsertEmptyKey`
   - `TestLeafValidate`
 
-### Phase 3: NodePageHandle + Search（2-3 天）
+### Phase 3: NodePageHandle + Search ✅ 已完成（2026-04-02）
 
-**产出**：索引页操作 + root→leaf 遍历
+**产出**：索引页 COW 操作 + 简化版 resolvePath
 
-- [ ] 创建 `btree2/node_page.go`
-- [ ] 创建 `btree2/search.go`
-- [ ] 复用：`offheap_adapter.go` 中的 SearchChildIndex、GetChildPageID
-- [ ] 验证：
-  - `TestSearchPathToLeaf` — 路径长度和顺序正确
-  - `TestSearchEmptyTree` — 空树优雅处理
-  - `TestNodeChildNavigation` — 2 层树搜索正确
+- [x] 修改 `btree2/page_handle.go` — nodePageHandle 4 个 COW 方法实现（替换 panic stub）
+- [x] 创建 `btree2/search.go` — ResolvedPath 类型 + resolvePath 导航（简化版，不含 PageRef）
+- [x] 复用 `offheap.PageAccessor` API：SearchChildIndex、SetChild、InsertIndexEntry、BulkInitIndexFromSource
+- [x] **ReplaceChild**: COW alloc → memcpy 4096B → SetChild，支持 idx==count 更新 extraChild
+- [x] **InsertChild**: 两路分支算法 — idx<count: SetChild(idx, right) + InsertIndexEntry(idx, splitKey, left)；idx==count: InsertIndexEntry(count, splitKey, left) + SetChild(count+1, right)
+- [x] **Split**: move-up 语义 — splitKey 从 left 和 right 中移除，提升到父节点。使用 BulkInitIndexFromSource 进行批量复制
+- [x] **Validate**: key 排序检查 + ChildCount == Count+1 一致性检查
+- [x] **Search 修复**: 精确匹配时返回 idx+1（右子树），而非 key index（idx）
+- [x] 创建 `btree2/node_page_test.go` — 19 个测试
+- [x] 验证（67 个测试全部通过，含 `-race`）：
+  - `TestNodeSearchChildIndex` — key 落在各区间返回正确 child index（7 个子用例）
+  - `TestNodeSearchEqualKey` — 精确匹配走右子树
+  - `TestNodeReplaceChild` / `TestNodeReplaceChildExtraChild` / `TestNodeReplaceChildCOW` — COW 替换子页面
+  - `TestNodeInsertChildMiddle` / `TestNodeInsertChildAtEnd` / `TestNodeInsertChildCOW` — 插入子页面
+  - `TestNodeSplit` / `TestNodeSplitChildren` / `TestNodeSplitTooFew` — 内部节点分裂
+  - `TestNodeValidate` / `TestNodeValidateEmpty` — 校验
+  - `TestResolvePathSingleLeaf` / `TestResolvePathToLeaf` / `TestResolvePathNavigation` — 多层路径解析
+  - `TestNodeInsertChildPreservesOtherKeys` — 插入不破坏已有数据
+  - `TestNodeGetKeyFormat` / `TestNodeReplaceChildOutOfBounds` / `TestNodeInsertChildOutOfBounds` — 边界
 
 ### Phase 4: PageRef + RootPageRef（1-2 天）
 
@@ -461,7 +473,7 @@ go test -run TestBTreeLargeDataset              # 10k+ keys
 | Phase 0: 脚手架 | 0.5 天 | 0.5 天 | ✅ 完成（d9a6553）|
 | Phase 1: BTreeStorage | 1-2 天 | 1.5-2.5 天 | ✅ 完成（d5d4c63）|
 | Phase 2: LeafPageHandle | 2-3 天 | 3.5-5.5 天 | ✅ 完成（2026-04-02）|
-| Phase 3: NodePageHandle + Search | 2-3 天 | 5.5-8.5 天 |
+| Phase 3: NodePageHandle + Search | 2-3 天 | 5.5-8.5 天 | ✅ 完成（2026-04-02）|
 | Phase 4: PageRef + RootPageRef | 1-2 天 | 6.5-10.5 天 |
 | Phase 5: BTree 核心 | 3-4 天 | 9.5-14.5 天 |
 | Phase 6: Split 传播 | 2-3 天 | 11.5-17.5 天 |

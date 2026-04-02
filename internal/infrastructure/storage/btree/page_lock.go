@@ -16,17 +16,26 @@ type SchedulerLock struct {
 }
 
 // Lock spins until acquiring the lock.
+// Uses exponential backoff: spins locally for the first ~16 attempts,
+// then yields the CPU via runtime.Gosched() to reduce contention.
 func (l *SchedulerLock) Lock() {
-	for !l.state.CompareAndSwap(0, 1) {
-		runtime.Gosched()
+	for i := 0; !l.state.CompareAndSwap(0, 1); i++ {
+		if i > SpinLockBackoffThreshold {
+			runtime.Gosched()
+		}
 	}
 }
 
+// TryLock attempts to acquire the lock without blocking.
+// Returns true if the lock was acquired, false otherwise.
+func (l *SchedulerLock) TryLock() bool {
+	return l.state.CompareAndSwap(0, 1)
+}
+
 // Unlock releases the lock.
-// Uses CAS to detect double-unlock — panics if the lock was already unlocked
-// (I2 fix: catches defer Unlock + manual Unlock bugs).
+// Uses CAS to detect double-unlock — panics if the lock was already unlocked.
 func (l *SchedulerLock) Unlock() {
 	if !l.state.CompareAndSwap(1, 0) {
-		panic("btree2: unlock of unlocked SchedulerLock")
+		panic("btree: unlock of unlocked SchedulerLock")
 	}
 }

@@ -6,7 +6,7 @@ package btree
 
 import "github.com/jzhang405/NexKV/internal/domain/model"
 
-// BTreeStorage is the bridge between btree2 and the offheap page layer.
+// BTreeStorage is the bridge between btree and the offheap page layer.
 // All page allocation, COW copy, and deallocation go through this interface.
 type BTreeStorage interface {
 	// Alloc allocates a new leaf or index page and returns its PageID.

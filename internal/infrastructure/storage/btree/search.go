@@ -4,10 +4,109 @@
 
 package btree
 
-import "github.com/jzhang405/NexKV/internal/domain/model"
+import (
+	"fmt"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
+)
+
+// PathEntry records one node on the search path from root to leaf.
+type PathEntry struct {
+	Ref   *PageRef // page reference (Retained during searchPath)
+	Index int      // child index chosen at this level (-1 for leaf)
+}
+
+// SearchPath is the traversal path from root to leaf.
+// path[0] = root, path[len-1] = leaf.
+// Every PageRef on the path has been Retained; caller must call ReleaseAll
+// when done (CAS failure retry, or after operation completes).
+type SearchPath []PathEntry
+
+// ReleaseAll decrements reference count for every PageRef on the path.
+// Must be called when the search path is no longer needed:
+//   - CAS failure before retry
+//   - Read operation after value is copied
+//   - Write operation after mutation is fully propagated
+func (p SearchPath) ReleaseAll() {
+	for _, entry := range p {
+		entry.Ref.Release()
+	}
+}
+
+// Leaf returns the leaf-level PathEntry (last element).
+func (p SearchPath) Leaf() PathEntry {
+	if len(p) == 0 {
+		panic("btree: SearchPath.Leaf() called on empty path")
+	}
+	return p[len(p)-1]
+}
+
+// ParentPath returns the path excluding the leaf (root to leaf's parent).
+// Useful for split/merge propagation which walks upward from leaf's parent.
+func (p SearchPath) ParentPath() []PathEntry {
+	if len(p) <= 1 {
+		return nil
+	}
+	return p[:len(p)-1]
+}
+
+// searchPath traverses from rootRef down to the leaf page that would contain key.
+// Every PageRef on the returned path has been Retained; caller must ReleaseAll.
+// Handles concurrent splits via SplitMarker following (D5 decision).
+//
+//nolint:unused // Phase 5 BTree core will call this
+func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) (SearchPath, error) {
+	var path SearchPath
+
+	currentRef := &rootRef.PageRef
+	currentRef.Retain()
+
+	for {
+		pInfo := currentRef.GetPageInfo()
+		if pInfo == nil {
+			path.ReleaseAll()
+			return nil, fmt.Errorf("btree: searchPath: nil PageInfo on page %d", currentRef.pageID)
+		}
+
+		// Check if leaf — stop descending
+		if storage.pa.IsLeaf(uint32(pInfo.PageID)) {
+			path = append(path, PathEntry{Ref: currentRef, Index: -1})
+			return path, nil
+		}
+
+		// Internal node: search for child index
+		node := &nodePageHandle{id: pInfo.PageID, pa: storage.pa, storage: storage}
+		idx, _ := node.Search(key)
+		path = append(path, PathEntry{Ref: currentRef, Index: idx})
+
+		// Get or lazily create child refs
+		children := currentRef.GetOrCreateChildren(storage)
+		if idx >= len(children) || children[idx] == nil {
+			path.ReleaseAll()
+			return nil, fmt.Errorf("btree: searchPath: child[%d] not found on page %d", idx, pInfo.PageID)
+		}
+
+		childRef := children[idx]
+
+		// SplitMarker following (D5): if the child was recently split, the marker
+		// tells us which side (left/right) our key belongs to — without waiting
+		// for the parent CAS to publish the updated child list.
+		if followed, ok := childRef.FollowSplit(key); ok {
+			childRef = followed
+			childRef.Retain()
+		} else {
+			childRef.Retain()
+		}
+
+		currentRef = childRef
+	}
+}
+
+// --- Legacy path resolution (pre-Phase 5, used by tests) ---
 
 // ResolvedPath records the navigation path from a root page to a leaf page.
-// This is a simplified version without PageRef tracking (Phase 4 will add the full version).
+// Uses raw PageID traversal without reference counting.
+// Prefer SearchPath for production use.
 type ResolvedPath struct {
 	PageIDs []model.PageID // page IDs traversed from root to leaf
 	Indices []int          // child index chosen at each level (-1 for leaf)
@@ -16,6 +115,7 @@ type ResolvedPath struct {
 
 // resolvePath navigates from rootID down to the leaf page that would contain key.
 // Uses direct pageID traversal without reference counting.
+// Retained for backward compatibility with existing tests.
 func resolvePath(storage *OffheapBTreeStorage, rootID model.PageID, key []byte) (*ResolvedPath, error) {
 	path := &ResolvedPath{}
 	currentPageID := rootID

@@ -80,7 +80,7 @@ func (r *PageRef) Retain() {
 // Panics if called when refCount is already zero (use-after-free bug).
 func (r *PageRef) Release() {
 	if v := r.refCount.Add(-1); v < 0 {
-		panic("btree2: Release() called on PageRef with zero refCount")
+		panic("btree: Release() called on pageRef with zero refCount")
 	} else if v == 0 {
 		if r.freeFunc != nil && r.pageID != model.InvalidPageID {
 			r.freeFunc(r.pageID)

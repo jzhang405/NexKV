@@ -29,7 +29,7 @@ func TestErrorSentinels(t *testing.T) {
 	}
 
 	// Verify pairwise inequality.
-	for i := 0; i < len(sentinels); i++ {
+	for i := range len(sentinels) {
 		for j := i + 1; j < len(sentinels); j++ {
 			assert.NotEqual(t, sentinels[i], sentinels[j],
 				"errors[%d] and errors[%d] must differ", i, j)

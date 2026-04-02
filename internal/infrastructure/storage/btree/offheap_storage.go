@@ -15,7 +15,7 @@ import (
 )
 
 // OffheapBTreeStorage implements BTreeStorage using mmap-backed offheap pages.
-// It is the sole bridge between btree2 and the offheap layer.
+// It is the sole bridge between btree and the offheap layer.
 type OffheapBTreeStorage struct {
 	pm     *offheap.PageManager
 	pa     *offheap.PageAccessor
@@ -26,7 +26,7 @@ type OffheapBTreeStorage struct {
 func NewOffheapBTreeStorage(mmapSize int) (*OffheapBTreeStorage, error) {
 	pm, err := offheap.NewPageManager(mmapSize)
 	if err != nil {
-		return nil, fmt.Errorf("btree2: create page manager: %w", err)
+		return nil, fmt.Errorf("btree: create page manager: %w", err)
 	}
 	return &OffheapBTreeStorage{
 		pm: pm,
@@ -49,7 +49,7 @@ func (s *OffheapBTreeStorage) AllocLeafPage() (model.PageID, error) {
 	}
 	rawID, err := s.pm.Alloc()
 	if err != nil {
-		return 0, fmt.Errorf("btree2: alloc leaf page: %w", err)
+		return 0, fmt.Errorf("btree: alloc leaf page: %w", err)
 	}
 	s.pa.InitLeafPage(rawID, 1)
 	return model.PageID(rawID), nil
@@ -61,7 +61,7 @@ func (s *OffheapBTreeStorage) AllocNodePage() (model.PageID, error) {
 	}
 	rawID, err := s.pm.Alloc()
 	if err != nil {
-		return 0, fmt.Errorf("btree2: alloc node page: %w", err)
+		return 0, fmt.Errorf("btree: alloc node page: %w", err)
 	}
 	s.pa.InitIndexPage(rawID, 1)
 	return model.PageID(rawID), nil
@@ -76,7 +76,7 @@ func (s *OffheapBTreeStorage) copyPage(rawSrcID uint32) (uint32, error) {
 
 	newRawID, err := s.pm.Alloc()
 	if err != nil {
-		return 0, fmt.Errorf("btree2: alloc for cow: %w", err)
+		return 0, fmt.Errorf("btree: alloc for cow: %w", err)
 	}
 
 	srcPtr := s.pm.PageIDToPtr(rawSrcID)
@@ -125,7 +125,7 @@ func (s *OffheapBTreeStorage) GetLeafPage(pageID model.PageID) (LeafPage, error)
 		return nil, err
 	}
 	if !s.pa.IsLeaf(rawID) {
-		return nil, fmt.Errorf("btree2: page %d is not a leaf page", pageID)
+		return nil, fmt.Errorf("btree: page %d is not a leaf page", pageID)
 	}
 	return &leafPageHandle{id: pageID, pa: s.pa, storage: s}, nil
 }
@@ -136,7 +136,7 @@ func (s *OffheapBTreeStorage) GetNodePage(pageID model.PageID) (NodePage, error)
 		return nil, err
 	}
 	if s.pa.IsLeaf(rawID) {
-		return nil, fmt.Errorf("btree2: page %d is not a node page", pageID)
+		return nil, fmt.Errorf("btree: page %d is not a node page", pageID)
 	}
 	return &nodePageHandle{id: pageID, pa: s.pa, storage: s}, nil
 }
@@ -190,7 +190,7 @@ func (s *OffheapBTreeStorage) BorrowFromRightNode(_, _ NodePage, _ []byte) (Node
 
 func (s *OffheapBTreeStorage) validatePageID(id model.PageID) (uint32, error) {
 	if id > math.MaxUint32 {
-		return 0, fmt.Errorf("btree2: pageID %d exceeds uint32 max: %w", id, ErrInvalidPage)
+		return 0, fmt.Errorf("btree: pageID %d exceeds uint32 max: %w", id, ErrInvalidPage)
 	}
 	return uint32(id), nil
 }

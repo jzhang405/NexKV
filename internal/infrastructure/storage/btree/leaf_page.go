@@ -1,0 +1,239 @@
+// Copyright 2026 NexKV Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package btree
+
+import (
+	"bytes"
+	"fmt"
+	"unsafe"
+
+	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
+)
+
+// leafPageHandle is a read-only handle to a leaf page in offheap memory.
+// Short-lived: created per operation, discarded after use.
+// All mutation methods follow COW semantics.
+type leafPageHandle struct {
+	id      model.PageID
+	pa      *offheap.PageAccessor
+	storage *OffheapBTreeStorage
+}
+
+func (h *leafPageHandle) PageID() model.PageID { return h.id }
+func (h *leafPageHandle) IsLeaf() bool         { return true }
+
+func (h *leafPageHandle) Count() int {
+	rawID := uint32(h.id)
+	return int(h.pa.GetCount(rawID))
+}
+
+func (h *leafPageHandle) Capacity() float64 {
+	rawID := uint32(h.id)
+	return h.pa.GetSpaceUsage(rawID)
+}
+
+func (h *leafPageHandle) IsFull() bool {
+	return h.Capacity() > 0.95
+}
+
+func (h *leafPageHandle) Search(key []byte) (int, bool) {
+	rawID := uint32(h.id)
+	idx, found, _ := h.pa.SearchKey(rawID, key, true)
+	return int(idx), found
+}
+
+func (h *leafPageHandle) GetKey(idx int) []byte {
+	rawID := uint32(h.id)
+	keyOff, keyLen, _, _ := h.pa.GetLeafEntryOffset(rawID, idx)
+	raw := h.pa.GetKey(rawID, keyOff, keyLen)
+	cp := make([]byte, len(raw))
+	copy(cp, raw)
+	return cp
+}
+
+func (h *leafPageHandle) GetValue(idx int) []byte {
+	rawID := uint32(h.id)
+	_, _, valOff, valLen := h.pa.GetLeafEntryOffset(rawID, idx)
+	raw := h.pa.GetValue(rawID, valOff, valLen)
+	cp := make([]byte, len(raw))
+	copy(cp, raw)
+	return cp
+}
+
+func (h *leafPageHandle) Insert(key, value []byte) (LeafPage, error) {
+	// COW: allocate new page, copy 4096 bytes, modify the copy
+	newRawID, err := h.storage.pm.Alloc()
+	if err != nil {
+		return nil, fmt.Errorf("btree: leaf insert alloc: %w", err)
+	}
+
+	srcPtr := h.storage.pm.PageIDToPtr(uint32(h.id))
+	dstPtr := h.storage.pm.PageIDToPtr(newRawID)
+	srcSlice := unsafe.Slice((*byte)(srcPtr), offheap.PageSize)
+	dstSlice := unsafe.Slice((*byte)(dstPtr), offheap.PageSize)
+	copy(dstSlice, srcSlice)
+
+	srcVersion := h.pa.GetVersion(uint32(h.id))
+	h.pa.SetVersion(newRawID, srcVersion+1)
+
+	// Search in the new (copied) page
+	rawNewID := newRawID
+	idx, found, _ := h.pa.SearchKey(rawNewID, key, true)
+	if found {
+		h.storage.pm.Free(newRawID)
+		return nil, ErrDuplicateKey
+	}
+
+	dataEnd := h.pa.GetDataEnd(rawNewID)
+	if err := h.pa.InsertLeafEntry(rawNewID, int(idx), key, value, &dataEnd); err != nil {
+		h.storage.pm.Free(newRawID)
+		return nil, fmt.Errorf("btree: leaf insert entry: %w", err)
+	}
+
+	newID := model.PageID(newRawID)
+	return &leafPageHandle{id: newID, pa: h.pa, storage: h.storage}, nil
+}
+
+func (h *leafPageHandle) Update(idx int, value []byte) (LeafPage, error) {
+	if idx < 0 || idx >= h.Count() {
+		return nil, fmt.Errorf("btree: leaf update: index %d out of range [0, %d): %w", idx, h.Count(), ErrKeyNotFound)
+	}
+
+	// COW copy
+	newRawID, err := h.storage.pm.Alloc()
+	if err != nil {
+		return nil, fmt.Errorf("btree: leaf update alloc: %w", err)
+	}
+	srcPtr := h.storage.pm.PageIDToPtr(uint32(h.id))
+	dstPtr := h.storage.pm.PageIDToPtr(newRawID)
+	srcSlice := unsafe.Slice((*byte)(srcPtr), offheap.PageSize)
+	dstSlice := unsafe.Slice((*byte)(dstPtr), offheap.PageSize)
+	copy(dstSlice, srcSlice)
+
+	srcVersion := h.pa.GetVersion(uint32(h.id))
+	h.pa.SetVersion(newRawID, srcVersion+1)
+
+	// Try in-place overwrite on the new page
+	if h.pa.OverwriteLeafValue(newRawID, idx, value) {
+		newID := model.PageID(newRawID)
+		return &leafPageHandle{id: newID, pa: h.pa, storage: h.storage}, nil
+	}
+
+	// Value is larger than original — fall back to delete + insert
+	key := h.GetKey(idx) // returns a copy from the original page
+	keys, vals := h.pa.CollectKVExcept(newRawID, idx)
+	h.storage.pm.Free(newRawID)
+
+	// Rebuild page without the old entry, then insert new KV
+	rebuildRawID, err := h.storage.pm.Alloc()
+	if err != nil {
+		return nil, fmt.Errorf("btree: leaf update rebuild alloc: %w", err)
+	}
+	h.pa.InitLeafPage(rebuildRawID, srcVersion+1)
+	dataEnd := uint16(0)
+	for i := range keys {
+		if err := h.pa.InsertLeafEntry(rebuildRawID, i, keys[i], vals[i], &dataEnd); err != nil {
+			h.storage.pm.Free(rebuildRawID)
+			return nil, fmt.Errorf("btree: leaf update rebuild: %w", err)
+		}
+	}
+	// Insert the new KV pair
+	insertIdx, _, _ := h.pa.SearchKey(rebuildRawID, key, true)
+	if err := h.pa.InsertLeafEntry(rebuildRawID, insertIdx, key, value, &dataEnd); err != nil {
+		h.storage.pm.Free(rebuildRawID)
+		return nil, fmt.Errorf("btree: leaf update reinsert: %w", err)
+	}
+
+	newID := model.PageID(rebuildRawID)
+	return &leafPageHandle{id: newID, pa: h.pa, storage: h.storage}, nil
+}
+
+func (h *leafPageHandle) Delete(idx int) (LeafPage, error) {
+	count := h.Count()
+	if idx < 0 || idx >= count {
+		return nil, fmt.Errorf("btree: leaf delete: index %d out of range [0, %d): %w", idx, count, ErrKeyNotFound)
+	}
+
+	keys, vals := h.pa.CollectKVExcept(uint32(h.id), idx)
+
+	newRawID, err := h.storage.pm.Alloc()
+	if err != nil {
+		return nil, fmt.Errorf("btree: leaf delete alloc: %w", err)
+	}
+	srcVersion := h.pa.GetVersion(uint32(h.id))
+	h.pa.InitLeafPage(newRawID, srcVersion+1)
+
+	dataEnd := uint16(0)
+	for i := range keys {
+		if err := h.pa.InsertLeafEntry(newRawID, i, keys[i], vals[i], &dataEnd); err != nil {
+			h.storage.pm.Free(newRawID)
+			return nil, fmt.Errorf("btree: leaf delete rebuild: %w", err)
+		}
+	}
+
+	newID := model.PageID(newRawID)
+	return &leafPageHandle{id: newID, pa: h.pa, storage: h.storage}, nil
+}
+
+func (h *leafPageHandle) Split() (LeafPage, LeafPage, []byte, error) {
+	count := h.Count()
+	if count < 2 {
+		return nil, nil, nil, fmt.Errorf("btree: leaf split: page has %d entries, need at least 2", count)
+	}
+
+	mid := count / 2
+
+	// splitKey = right page's first key (copy-up: retained in right, also copied up to parent)
+	keyOff, keyLen, _, _ := h.pa.GetLeafEntryOffset(uint32(h.id), mid)
+	splitKey := h.pa.GetKey(uint32(h.id), keyOff, keyLen)
+	splitKeyCopy := make([]byte, len(splitKey))
+	copy(splitKeyCopy, splitKey)
+
+	leftRawID, err := h.storage.pm.Alloc()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("btree: leaf split alloc left: %w", err)
+	}
+	rightRawID, err := h.storage.pm.Alloc()
+	if err != nil {
+		h.storage.pm.Free(leftRawID)
+		return nil, nil, nil, fmt.Errorf("btree: leaf split alloc right: %w", err)
+	}
+
+	srcVersion := h.pa.GetVersion(uint32(h.id))
+
+	if _, err := h.pa.BulkInitLeafFromSource(uint32(h.id), leftRawID, 0, mid); err != nil {
+		h.storage.pm.Free(leftRawID)
+		h.storage.pm.Free(rightRawID)
+		return nil, nil, nil, fmt.Errorf("btree: leaf split left bulk init: %w", err)
+	}
+	h.pa.SetVersion(leftRawID, srcVersion+1)
+
+	if _, err := h.pa.BulkInitLeafFromSource(uint32(h.id), rightRawID, mid, count); err != nil {
+		h.storage.pm.Free(leftRawID)
+		h.storage.pm.Free(rightRawID)
+		return nil, nil, nil, fmt.Errorf("btree: leaf split right bulk init: %w", err)
+	}
+	h.pa.SetVersion(rightRawID, srcVersion+1)
+
+	left := &leafPageHandle{id: model.PageID(leftRawID), pa: h.pa, storage: h.storage}
+	right := &leafPageHandle{id: model.PageID(rightRawID), pa: h.pa, storage: h.storage}
+	return left, right, splitKeyCopy, nil
+}
+
+func (h *leafPageHandle) Validate() error {
+	count := h.Count()
+	if count < 0 {
+		return fmt.Errorf("btree: leaf validate: negative count %d", count)
+	}
+	for i := 1; i < count; i++ {
+		prev := h.GetKey(i - 1)
+		curr := h.GetKey(i)
+		if bytes.Compare(prev, curr) >= 0 {
+			return fmt.Errorf("btree: leaf validate: key ordering violation at idx %d: %q >= %q", i, prev, curr)
+		}
+	}
+	return nil
+}

@@ -155,14 +155,26 @@ func (pm *PageManager) Free(pageID uint32) error {
 #### LeafPageHandle 结构
 
 ```go
-type LeafPageHandle struct {
-    pageID model.PageID
-    pa     *offheap.PageAccessor  // 不持有，通过 BTreeStorage 访问
+type leafPageHandle struct {
+    id      model.PageID
+    pa      *offheap.PageAccessor
+    storage *OffheapBTreeStorage  // 持有具体类型，用于 COW copy + pm.Alloc/Free
 }
 ```
 
-**设计**：LeafPageHandle 是无状态的 — 只有 pageID + accessor 引用。
-所有数据从 mmap 实时读取，不做 Go 侧缓存。
+**设计决策（Phase 2 新增）**：leafPageHandle 持有 `*OffheapBTreeStorage` 具体类型而非 `BTreeStorage` 接口。
+
+**原因**：
+1. Delete 需要 `pm.Alloc()` + `pa.InitLeafPage()` + `CollectKVExcept()` + 逐条 `InsertLeafEntry()`
+2. Split 需要 `pm.Alloc()` + `pa.BulkInitLeafFromSource()`
+3. 这些底层操作不应暴露到 `BTreeStorage` 接口上（接口面向上层 BTree 消费者）
+4. leafPageHandle 是包内私有类型，与 OffheapBTreeStorage 同包，直接依赖合理（P1-9 决策：btree2 和 offheap 都在 infrastructure 层）
+
+**调用方式**：
+- `h.storage.CopyLeafPage(h.id)` — COW 复制
+- `h.storage.pm.Alloc()` — 直接访问 PageManager 分配页面
+- `h.storage.pa.BulkInitLeafFromSource(...)` — 批量初始化
+- `h.pa.InsertLeafEntry(...)` — 逐条插入（pa 与 storage.pa 是同一个引用）
 
 #### Search（二分查找）
 
@@ -186,51 +198,77 @@ Search(key):
 
 ```
 Insert(key, value):
-1. dstID, leaf := storage.CopyLeafPage(pageID)   // COW：整页复制
-2. idx, found := leaf.Search(key)
-3. if found:
-4.     return ErrDuplicateKey  // 或覆盖写入（由 writeOperation 决定）
-5. // 在 dst 上原地插入（dst 是独占的新页面）
-6. pa.InsertLeafEntry(dstID, idx, key, value, &dataEnd)
-7. return &LeafPageHandle{pageID: dstID, pa: pa}, nil
+1. rawID := uint32(h.id)
+2. srcVersion := h.pa.GetVersion(rawID)
+3. newRawID, err := h.storage.pm.Alloc()           // 分配新物理页面
+4. srcPtr := h.storage.pm.PageIDToPtr(rawID)
+5. dstPtr := h.storage.pm.PageIDToPtr(newRawID)
+6. copy(dstSlice, srcSlice)                          // 4096B memcpy
+7. h.pa.SetVersion(newRawID, srcVersion+1)           // version++
+8.
+9. // 在 newRawID 上原地插入（独占的新页面）
+10. idx, found := h.Search(key)
+11. if found:
+12.     h.storage.pm.Free(newRawID)                  // 回滚：释放刚分配的页面
+13.     return nil, ErrDuplicateKey
+14. dataEnd := h.pa.GetDataEnd(newRawID)
+15. err = h.pa.InsertLeafEntry(newRawID, idx, key, value, &dataEnd)
+16. if err != nil:
+17.     h.storage.pm.Free(newRawID)                  // 回滚
+18.     return nil, fmt.Errorf("insert entry: %w", err)
+19. newID := model.PageID(newRawID)
+20. return &leafPageHandle{id: newID, pa: h.pa, storage: h.storage}, nil
 ```
 
 **关键**：Insert 在 COW 后的新页面上操作，旧页面完全不变。
+如果 DuplicateKey 或 InsertLeafEntry 失败，立即释放新分配的页面（回滚）。
 调用方（writeOperation）负责 CAS 替换 PageRef 的 PageInfo。
 
 #### Split（叶子分裂）
 
 ```
 Split():
-1. count := pa.GetCount(pageID)
-2. mid := count / 2
-3. splitKey := pa.GetKey(pageID, keyOff[mid], keyLen[mid])  // 中间 key 的副本
+1. count := h.Count()
+2. if count < 2: return nil, nil, nil, fmt.Errorf("split: page has < 2 entries")
+3. mid := count / 2
 4.
-5. // 分配左页面
-6. leftID := pm.Alloc()
-7. leftPage := pm.GetPage(leftID)
-8. leftPage.SetPageType(PageTypeLeaf)
-9. leftPage.SetCount(mid)
-10. // 复制前 mid 个 entry + KV 数据到 leftPage
-11. copyEntries(leftPage, src, 0, mid)
-12.
-13. // 分配右页面
-14. rightID := pm.Alloc()
-15. rightPage := pm.GetPage(rightID)
-16. rightPage.SetPageType(PageTypeLeaf)
-17. rightPage.SetCount(count - mid)
-18. copyEntries(rightPage, src, mid, count)
-19.
-20. left := &LeafPageHandle{pageID: leftID, pa: pa}
-21. right := &LeafPageHandle{pageID: rightID, pa: pa}
-22. return left, right, splitKey, nil
+5. // splitKey = 右页面第一个 key 的副本（copy-up 语义）
+6. keyOff, keyLen, _, _ := h.pa.GetLeafEntryOffset(uint32(h.id), mid)
+7. splitKey := h.pa.GetKey(uint32(h.id), keyOff, keyLen)
+8. splitKeyCopy := make([]byte, len(splitKey))
+9. copy(splitKeyCopy, splitKey)
+10.
+11. // 分配左页面（通过 storage.pm 直接分配）
+12. leftRawID, err := h.storage.pm.Alloc()
+13. rightRawID, err := h.storage.pm.Alloc()
+14. if err != nil: return nil, nil, nil, fmt.Errorf("split alloc: %w", err)
+15.
+16. // 零拷贝批量初始化（BulkInitLeafFromSource 内部调用 InitLeafPage + 逐条 Insert）
+17. _, err = h.pa.BulkInitLeafFromSource(uint32(h.id), leftRawID, 0, mid)
+18. _, err = h.pa.BulkInitLeafFromSource(uint32(h.id), rightRawID, mid, count)
+19. if err != nil:
+20.     h.storage.pm.Free(leftRawID)
+21.     h.storage.pm.Free(rightRawID)
+22.     return nil, nil, nil, fmt.Errorf("split bulk init: %w", err)
+23.
+24. left := &leafPageHandle{id: model.PageID(leftRawID), pa: h.pa, storage: h.storage}
+25. right := &leafPageHandle{id: model.PageID(rightRawID), pa: h.pa, storage: h.storage}
+26. return left, right, splitKeyCopy, nil
 ```
+
+**注意**：叶子 Split 是 copy-up 语义（splitKey 保留在右页面中，同时也复制提升到父节点）。
+BulkInitLeafFromSource 接收 [startIdx, endIdx) 范围，自动调用 InitLeafPage + 逐条 InsertLeafEntry。
 
 ### 集成要点
 
+- **leafPageHandle 持有 `*OffheapBTreeStorage`**（具体类型），可直接访问 `pm`/`pa` 进行底层操作
 - LeafPageHandle 不持有 mmap []byte，每次操作通过 PageAccessor 实时读取
 - GetKey/GetValue 返回副本（`make([]byte, len)` + `copy`）
-- Capacity() = `float64(usedBytes) / float64(PageSize - HeaderSize)`
+- Capacity() = `float64(usedBytes) / float64(PageSize)`
+- **Delete 实现**：`CollectKVExcept(idx)` → `pm.Alloc()` → `InitLeafPage(newID, version+1)` → 逐条 `InsertLeafEntry` → 返回新 handle
+- **Split 实现**：`pm.Alloc()` × 2 → `BulkInitLeafFromSource` × 2 → copy-up splitKey
+- **Update 实现**：先 COW copy → `OverwriteLeafValue(newRawID, idx, newValue)` → 若 value 更大则走 delete+insert 路径
+- **错误回滚**：COW/Alloc 失败时立即 `pm.Free()` 释放已分配的页面，不留垃圾
 
 ### 验证
 

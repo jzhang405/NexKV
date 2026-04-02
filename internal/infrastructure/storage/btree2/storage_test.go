@@ -240,10 +240,10 @@ func TestConcurrentAllocFree(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for g := 0; g < goroutines; g++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
-			for i := 0; i < opsPerGoroutine; i++ {
+			for range opsPerGoroutine {
 				id, err := s.AllocLeafPage()
 				if err != nil {
 					t.Logf("alloc failed: %v", err)

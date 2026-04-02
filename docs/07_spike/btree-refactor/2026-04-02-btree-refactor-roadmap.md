@@ -1,7 +1,7 @@
 # BTree2 重构 Action Plan
 
 > 创建时间：2026-04-02
-> 状态：Phase 1 完成，准备 Phase 2
+> 状态：Phase 2 完成，准备 Phase 3
 > 范围：v1 最小可用版本（Get/Set/Delete + Split + Merge，不含 WAL）
 
 ## 0. 协作原则
@@ -284,18 +284,31 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error
   - `TestConcurrentAllocFree` — 多 goroutine 并发安全
   - `TestMergeLeavesStub` / `TestBorrowStubs` — Phase 6.5 stub
 
-### Phase 2: LeafPageHandle（2-3 天）
+### Phase 2: LeafPageHandle ✅ 已完成（2026-04-02）
 
 **产出**：COW 语义的叶子页操作
 
-- [ ] 创建 `btree2/page_handle.go` — PageHandle + NodePageHandle 接口
-- [ ] 创建 `btree2/leaf_page.go` — LeafPageHandle 实现
-- [ ] 复用：`offheap_adapter.go` 中的二分查找、KV 读写、页面分裂逻辑
-- [ ] 验证：
-  - `TestLeafInsertSearch` — 插入 + 搜索
-  - `TestLeafCOW` — 插入返回新 pageID，原页面不变
-  - `TestLeafSplit` — 满页分裂，两半数据正确
-  - `TestLeafKeyOrdering` — 操作后 key 始终有序
+- [x] 修改 `btree2/page_handle.go` — leafPageHandle 持有 `*OffheapBTreeStorage`，替换 panic stub 为 COW 实现
+- [x] 修改 `btree2/offheap_storage.go` — 所有 handle 创建点补充 `storage: s` 字段
+- [x] 复用 `offheap.PageAccessor` API：SearchKey、InsertLeafEntry、OverwriteLeafValue、CollectKVExcept、BulkInitLeafFromSource
+- [x] **Insert**: COW alloc → memcpy 4096B → Search → InsertLeafEntry，重复 key 返回 ErrDuplicateKey
+- [x] **Update**: COW → OverwriteLeafValue（值更小/等大），否则降级为 CollectKVExcept + 重建 + 重插
+- [x] **Delete**: CollectKVExcept → Alloc → InitLeafPage → 逐条 InsertLeafEntry
+- [x] **Split**: Alloc×2 → BulkInitLeafFromSource×2（copy-up 语义），splitKey 复制提升
+- [x] **Validate**: key 排序检查
+- [x] **GetKey/GetValue**: 返回 `make([]byte) + copy` 的副本（P1-2 决策）
+- [x] 创建 `btree2/leaf_page_test.go` — 21 个测试
+- [x] 验证（48 个测试全部通过，含 `-race`）：
+  - `TestLeafInsertSearch` / `TestLeafSearchMiss` — 插入 + 搜索命中/未命中
+  - `TestLeafCOW` / `TestLeafCOWOriginalImmutable` — COW 后原页面不变
+  - `TestLeafInsertKeyOrdering` — 逆序插入后 key 有序
+  - `TestLeafUpdateValue` — Update 不改变 count
+  - `TestLeafDeleteMiddle` / `TestLeafDeleteFirst` / `TestLeafDeleteLast` / `TestLeafDeleteNotFound`
+  - `TestLeafSplit` / `TestLeafSplitKeyBoundary` / `TestLeafSplitEvenOdd` / `TestLeafSplitTooFew`
+  - `TestLeafGetKeyReturnsCopy` / `TestLeafGetValueReturnsCopy`
+  - `TestLeafIsFull` / `TestLeafCapacity`
+  - `TestLeafDuplicateInsert` / `TestLeafInsertReverseOrder` / `TestLeafInsertEmptyKey`
+  - `TestLeafValidate`
 
 ### Phase 3: NodePageHandle + Search（2-3 天）
 
@@ -447,7 +460,7 @@ go test -run TestBTreeLargeDataset              # 10k+ keys
 |-------|------|------|------|
 | Phase 0: 脚手架 | 0.5 天 | 0.5 天 | ✅ 完成（d9a6553）|
 | Phase 1: BTreeStorage | 1-2 天 | 1.5-2.5 天 | ✅ 完成（d5d4c63）|
-| Phase 2: LeafPageHandle | 2-3 天 | 3.5-5.5 天 |
+| Phase 2: LeafPageHandle | 2-3 天 | 3.5-5.5 天 | ✅ 完成（2026-04-02）|
 | Phase 3: NodePageHandle + Search | 2-3 天 | 5.5-8.5 天 |
 | Phase 4: PageRef + RootPageRef | 1-2 天 | 6.5-10.5 天 |
 | Phase 5: BTree 核心 | 3-4 天 | 9.5-14.5 天 |

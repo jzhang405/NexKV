@@ -101,7 +101,7 @@ func (s *OffheapBTreeStorage) CopyLeafPage(srcID model.PageID) (model.PageID, Le
 		return 0, nil, err
 	}
 	newID := model.PageID(newRawID)
-	return newID, &leafPageHandle{id: newID, pa: s.pa}, nil
+	return newID, &leafPageHandle{id: newID, pa: s.pa, storage: s}, nil
 }
 
 func (s *OffheapBTreeStorage) CopyNodePage(srcID model.PageID) (model.PageID, NodePage, error) {
@@ -114,7 +114,7 @@ func (s *OffheapBTreeStorage) CopyNodePage(srcID model.PageID) (model.PageID, No
 		return 0, nil, err
 	}
 	newID := model.PageID(newRawID)
-	return newID, &nodePageHandle{id: newID, pa: s.pa}, nil
+	return newID, &nodePageHandle{id: newID, pa: s.pa, storage: s}, nil
 }
 
 // --- Page Access ---
@@ -127,7 +127,7 @@ func (s *OffheapBTreeStorage) GetLeafPage(pageID model.PageID) (LeafPage, error)
 	if !s.pa.IsLeaf(rawID) {
 		return nil, fmt.Errorf("btree2: page %d is not a leaf page", pageID)
 	}
-	return &leafPageHandle{id: pageID, pa: s.pa}, nil
+	return &leafPageHandle{id: pageID, pa: s.pa, storage: s}, nil
 }
 
 func (s *OffheapBTreeStorage) GetNodePage(pageID model.PageID) (NodePage, error) {
@@ -138,7 +138,7 @@ func (s *OffheapBTreeStorage) GetNodePage(pageID model.PageID) (NodePage, error)
 	if s.pa.IsLeaf(rawID) {
 		return nil, fmt.Errorf("btree2: page %d is not a node page", pageID)
 	}
-	return &nodePageHandle{id: pageID, pa: s.pa}, nil
+	return &nodePageHandle{id: pageID, pa: s.pa, storage: s}, nil
 }
 
 // --- Free ---

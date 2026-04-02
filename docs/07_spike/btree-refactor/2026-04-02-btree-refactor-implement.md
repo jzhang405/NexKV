@@ -516,7 +516,8 @@ func (l *SchedulerLock) Unlock() {
 | `TestSplitMarkerSetGet` | SetSplitMarker 后 GetSplitMarker 返回正确值 |
 | `TestSplitMarkerFollowSplit` | FollowSplit 根据 key 选择 Left 或 Right |
 
----
+> **Phase 4 代码审查发现的问题及修复方案**见 [附录：Phase 4 代码审查修复方案](#phase-4-代码审查修复方案2026-04-02)。
+
 
 ## Phase 5: BTree 核心 + WriteOperation
 
@@ -1448,3 +1449,289 @@ func (s *OffheapBTreeStorage) validatePageID(id model.PageID) (uint32, error) {
 1. **P0-2**：InsertChild 缺少 extraChild 处理 — 直接导致分裂传播时子页面指针丢失
 2. **P0-4**：SplitMarker 设置时机错误 — 直接导致 reader 在分裂窗口期看到不完整数据
 3. **P0-3**：双重 refCount — 直接导致页面回收错误（泄漏或过早释放）
+
+---
+
+## Phase 4 代码审查修复方案（2026-04-02）
+
+> 审查基于当前已实现的代码，发现 4 个 Critical、6 个 Important 问题。
+> 本节记录每个问题的分析、修复方案和影响范围。
+> 对应的设计文档更新见 `2026-04-02-btree-refactor-interface.md` §5 设计决策记录。
+
+### Critical 级别
+
+#### C1. Release() freeFunc 的 TOCTOU 竞态
+
+**文件**：`page_ref.go:75-86`
+
+**当前代码**：
+
+```go
+func (r *PageRef) Release() {
+    if v := r.refCount.Add(-1); v < 0 {
+        panic("...")
+    } else if v == 0 {
+        if r.freeFunc != nil {
+            info := r.GetPageInfo()       // ← 这里读 pInfo
+            if info != nil {
+                r.freeFunc(info.PageID)   // ← 可能释放了错误的 PageID
+            }
+        }
+    }
+}
+```
+
+**竞态时序**：
+
+```
+T1: refCount 1→0, 进入 freeFunc 分支
+T2: CAS(pInfo, newInfo) 成功, pInfo 变为新值
+T1: GetPageInfo() 读到新 pInfo
+T1: freeFunc(newPageID) — 释放了新页面而非旧页面
+```
+
+**分析**：在正常使用模式中（searchPath Retain → 操作 → Release），Release 调用时不会有并发 CAS。但 `atomic.Pointer[PageInfo]` 允许任意时刻 CAS，Release 不应依赖 pInfo 的瞬时值。
+
+**根因**：PageRef 的 PageID 不是固定的 — CAS 可以替换 pInfo 中的 PageID。但 PageRef 的语义是"一个页面的引用"，COW 后旧页面被新 PageRef 引用，旧 PageRef 引用旧页面。实际上同一个 PageRef 的 PageID 不应变化。
+
+**修复方案**：在 `PageRef` 中增加 `pageID model.PageID` 字段，创建时绑定，Release 直接使用，不从 pInfo 读取。
+
+```go
+type PageRef struct {
+    pageID     model.PageID              // 创建时绑定，不变
+    pInfo      atomic.Pointer[PageInfo]  // 原子可替换（Version 用于 CAS 冲突检测）
+    // ...其余字段不变
+}
+
+func (r *PageRef) Release() {
+    if v := r.refCount.Add(-1); v < 0 {
+        panic("...")
+    } else if v == 0 {
+        if r.freeFunc != nil {
+            r.freeFunc(r.pageID)  // 使用绑定的 pageID
+        }
+    }
+}
+```
+
+**影响**：PageInfo 中的 PageID 字段变得冗余，但保留用于调试和 CAS 校验。
+
+---
+
+#### C2. ReplaceRoot 签名与设计文档不一致
+
+**文件**：`root_ref.go:28`
+
+**当前实现**：`ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren []*PageRef) bool`
+**原始设计**：`ReplaceRoot(newRoot *PageRef, newInfo *PageInfo) bool`
+
+**问题**：
+1. 缺少 `oldInfo` 参数（已修复 — 上一轮已加入）
+2. 没有 `newRoot *PageRef` 参数 — ReplaceRoot 不知道"新根"是谁
+3. 设计文档要求"设置 newRoot 的 parentRef 为自己"，但当前实现只传播了 children 的 parentRef
+
+**修复方案**：保持当前签名 `ReplaceRoot(oldInfo, newInfo, newChildren)` — 因为 RootPageRef 本身就是 root，不需要 newRoot 参数。RootPageRef.ReplaceRoot 替换的是自己的 pInfo，newChildren 是新根的子节点。这在设计上是合理的，interface 文档已更新（见 D7 决策）。
+
+**不需要额外代码修改**，但需要在 interface 文档中记录这个偏差（已完成）。
+
+---
+
+#### C3. ReplaceRoot CAS 后才设置 parentRef — 并发读者窗口期
+
+**文件**：`root_ref.go:28-42`
+
+**当前代码**：
+
+```go
+func (r *RootPageRef) ReplaceRoot(...) bool {
+    if !r.CAS(oldInfo, newInfo) {  // (1) CAS publish
+        return false
+    }
+    for _, child := range newChildren {  // (2) 设置 parentRef
+        child.SetParentRef(&r.PageRef)
+    }
+    return true
+}
+```
+
+**竞态时序**：
+
+```
+Writer: CAS 成功 → pInfo 已更新（publish point）
+Reader: 看到 newInfo → 遍历到 child → GetParentRef() == nil
+Writer: SetParentRef 完成
+```
+
+窗口期 `parentRef == nil`，如果 reader 依赖 `GetPathToRoot()` 做路径回溯，会在中间节点处提前终止。
+
+**修复方案**：将 SetParentRef 移到 CAS 之前。
+
+```go
+func (r *RootPageRef) ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren []*PageRef) bool {
+    // 先设置 parentRef（CAS 之前，子节点尚未对读者可见）
+    for _, child := range newChildren {
+        if child != nil {
+            child.SetParentRef(&r.PageRef)
+        }
+    }
+    // CAS publish
+    if !r.CAS(oldInfo, newInfo) {
+        // CAS 失败时：不回滚 parentRef
+        // 原因：(1) pInfo 没变，读者不会遍历到这些 children
+        //       (2) 这些 children 会在调用方重试时被丢弃
+        return false
+    }
+    return true
+}
+```
+
+**CAS 失败不回滚的理由**：
+1. CAS 失败意味着 pInfo 没变 → 读者不会看到 newChildren → parentRef 值无所谓
+2. 调用方（propagateSplit）会创建全新的 PageRef 重试 → 旧的 newChildren 被丢弃
+3. 回滚 `SetParentRef(nil)` 引入额外 atomic store，增加竞争面
+
+---
+
+#### C4. GetOrCreateChildren 静默吞掉存储错误
+
+**文件**：`page_ref.go:133-136`
+
+**当前代码**：
+
+```go
+page, err := storage.GetNodePage(info.PageID)
+if err != nil {
+    // Leaf page or invalid — no children
+    return nil
+}
+```
+
+**问题**：`ErrTreeClosed`（存储已关闭）和 `ErrInvalidPage`（pageID 非法）与"叶子页无子节点"混为一谈。调用方无法区分"这是叶子"和"存储出错了"。
+
+**修复方案**：保持 `([]*PageRef, error)` 不做 — 理由如下：
+
+1. **返回签名变更影响面太大**：GetOrCreateChildren 被 searchPath、propagateSplit、PrintTree 等多处调用，改为 `(result, error)` 需要所有调用方处理错误
+2. **实际场景分析**：
+   - `GetNodePage` 对叶子页返回 error（因为叶子不是 node page 类型）
+   - `ErrTreeClosed` 在 Close 后不会再有并发操作
+   - `ErrInvalidPage` 是编程错误，应在测试中发现
+3. **当前行为可接受**：error 时返回 nil（等同于叶子），searchPath 会认为这是叶子并停止向下遍历。对于正常操作路径，这不会导致数据损坏
+
+**替代方案**（如果后续发现问题）：在 offheap 层增加 `IsLeafPage(pageID) bool` 方法，GetOrCreateChildren 先判断类型再调用 GetNodePage，避免用 error 做控制流。
+
+**当前决策**：不修改，在代码注释中明确 error 路径的语义。
+
+---
+
+### Important 级别
+
+#### I1. SetSplitMarker SplitKey 未做防御性拷贝
+
+**文件**：`page_ref.go:170-177`
+
+```go
+func (r *PageRef) SetSplitMarker(left, right *PageRef, splitKey []byte) {
+    marker := &SplitMarker{
+        SplitKey: splitKey,  // 直接引用传入的 slice
+    }
+}
+```
+
+**风险**：如果调用方复用了 splitKey 的底层 buffer，SplitMarker 中的 SplitKey 也会被改变，导致 FollowSplit 路由错误。
+
+**修复方案**：做防御性拷贝。
+
+```go
+keyCopy := make([]byte, len(splitKey))
+copy(keyCopy, splitKey)
+```
+
+**影响**：每次 split 多一次 key 拷贝（通常 < 64 字节），在 split 频率下可忽略。
+
+---
+
+#### I2. SchedulerLock Unlock 未做 CAS 保护
+
+**文件**：`page_lock.go:26-28`
+
+**当前代码**：`l.state.Store(0)` — 直接 store，未检查当前状态。
+
+**设计文档**：`Unlock()` 应使用 CAS 从 1→0，如果当前不是 1 则 panic。
+
+**修复方案**：
+
+```go
+func (l *SchedulerLock) Unlock() {
+    if !l.state.CompareAndSwap(1, 0) {
+        panic("btree2: unlock of unlocked SchedulerLock")
+    }
+}
+```
+
+**影响**：防止 double-unlock 导致的锁失效。在 B+Tree 写路径中，如果 defer Unlock + 手动 Unlock 同时存在，这个检查能立即暴露 bug。
+
+---
+
+#### I3. GetOrCreateChildren CAS 失败方创建的 PageRef 泄漏
+
+**文件**：`page_ref.go:149-153`
+
+**问题**：CAS 失败的 goroutine 创建了 N 个 PageRef（含 freeFunc 绑定），但这些 PageRef 没有被 Release，也没有被任何引用持有，成为孤儿对象。
+
+**修复方案**：CAS 失败时不做任何操作 — 这些孤儿 PageRef 的 refCount=0，freeFunc 不会被调用（因为没有 Release 到 0 → 实际上 refCount 从 0 到 -1 会 panic）。
+
+实际上 refCount 初始为 0，孤儿 PageRef 不会被 Release，也不会触发 freeFunc。它们只是占用 Go 堆内存，等待 GC 回收。这和 `make([]*PageRef, N)` 创建但未使用是一样的 — GC 会回收。
+
+**当前决策**：不修改。CAS 失败方的 PageRef 是纯粹的 Go 堆对象（没有 mmap 资源），GC 会处理。
+
+---
+
+#### I4. GetOrCreateChildren 子 PageRef version=0
+
+**文件**：`page_ref.go:146`
+
+```go
+newChildren[i] = NewPageRef(childID, 0, r, r.freeFunc)
+```
+
+**问题**：子 PageRef 的 Version 被硬编码为 0。
+
+**分析**：
+1. CAS 通过指针比较（`atomic.Pointer[PageInfo].CompareAndSwap`），不比较 Version 数值
+2. Version 主要用于调试和一致性检查
+3. mmap 侧的 version 存储在 PageHeader 中，但 GetOrCreateChildren 是懒加载，不需要实时同步
+
+**当前决策**：不修改。Version=0 表示"未初始化"，后续第一次 CAS 时会替换为新 PageInfo。如果调试需要，可以后续从 mmap 读取实际 version。
+
+---
+
+### 不修改的项（设计合理）
+
+| 项 | 理由 |
+|----|------|
+| parentRef 用 `atomic.Pointer[PageRef]` | 比 `*PageRef` 更安全，Get/Set 被并发调用（interface D9） |
+| TryFollowSplit 返回 `*SplitMarker` | 比 `*PageRef` 语义更明确，调用方需要 Left/Right 路由信息（interface D8） |
+| Release 下溢 panic | 及时暴露 use-after-free，比静默损坏好 |
+| freeFunc 创建时绑定 | Release 无参数，热路径零分配 |
+
+---
+
+### 修复执行清单
+
+按优先级排序。每个修复对应一个 git commit。
+
+| # | 级别 | 修复项 | 涉及文件 | 测试 |
+|---|------|--------|---------|------|
+| 1 | Critical | C3: ReplaceRoot 先 SetParentRef 后 CAS | `root_ref.go` | 更新 `TestRootPageRefReplaceRootWithChildren` 验证时序 |
+| 2 | Critical | C1: Release 使用绑定 pageID | `page_ref.go` | 新增 `TestPageRefReleaseCorrectPageID` |
+| 3 | Important | I1: SetSplitMarker 拷贝 splitKey | `page_ref.go` | 新增 `TestSplitMarkerKeyCopy` |
+| 4 | Important | I2: Unlock CAS 保护 | `page_lock.go` | 新增 `TestSchedulerLockDoubleUnlockPanics` |
+| 5 | Important | C4: GetOrCreateChildren 错误注释 | `page_ref.go` | 只改注释，不改行为 |
+
+### 验证
+
+```bash
+go build ./internal/infrastructure/storage/btree2/...
+go test -race -count=1 -v ./internal/infrastructure/storage/btree2/...
+golangci-lint run ./internal/infrastructure/storage/btree2/...
+```

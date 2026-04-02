@@ -139,15 +139,31 @@ type RootPageRef struct {
 }
 
 // ReplaceRoot 原子替换根页面。
-// 1. 设置 newRoot 的 parentRef 为自己
-// 2. 传播 parentRef 到 newRoot 的所有子节点
-// 3. CAS 替换 PageInfo
-func (r *RootPageRef) ReplaceRoot(newRoot *PageRef, newInfo *PageInfo) bool
+//
+// 参数：
+//   - oldInfo: 调用方在操作前捕获的预期当前 PageInfo（乐观锁）
+//   - newInfo: 替换后的新 PageInfo（新根的 pageID + version）
+//   - newChildren: 新根的子节点列表（用于传播 parentRef）
+//
+// 执行顺序（P0-10 修正，见下方审查意见）：
+//   1. 先为所有 newChildren 设置 parentRef（CAS 前）
+//   2. CAS(oldInfo, newInfo) 原子发布
+//   3. CAS 失败时不回滚 parentRef（子节点会在下次重试时重新创建）
+//
+// 返回 true 表示 CAS 成功。
+func (r *RootPageRef) ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren []*PageRef) bool
 
-// TryFollowSplit 检查根是否发生分裂，返回新的根引用。
-// 无分裂返回 (nil, false)；有分裂返回 (newRootRef, true)。
-func (r *RootPageRef) TryFollowSplit() (*PageRef, bool)
+// TryFollowSplit 检查根是否发生分裂。
+// 无分裂返回 (nil, false)；有分裂返回 (SplitMarker, true)。
+// 调用方从 SplitMarker 中获取 Left/Right 子树引用。
+func (r *RootPageRef) TryFollowSplit() (*SplitMarker, bool)
 ```
+
+#### Phase 4 实现决策记录
+
+> Phase 4 代码审查产生的设计决策详见 [§13 设计决策记录 D11-D14](#d11-replaceroot-签名变更)。
+
+
 
 ### SchedulerLock
 
@@ -787,6 +803,34 @@ func (p *PrettyPagePrinter) PrintPath(path SearchPath) string
 - BTree.Delete 只释放叶子条目占用的页面空间，不会自动释放溢出页面或外部对象
 - 协调机制：上层在调用 BTree.Delete 前，先解码 value 释放外部资源，再调用 Delete
 **参考**：`thoughts/2026-04-02-kimi-cr-02.md`（方案 A：BTree 层透明）
+
+### D11. ReplaceRoot 签名变更
+
+**决策**：`ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren []*PageRef) bool` — 保持当前签名，不使用 `newRoot *PageRef` 参数。
+**理由**：RootPageRef 本身就是 root，替换的是自己的 pInfo，newChildren 是新根的子节点。RootPageRef 嵌入 PageRef，无需额外 newRoot 参数。
+**审查修订**：原始设计 `ReplaceRoot(newRoot *PageRef, newInfo *PageInfo) bool`（P4-1 审查前）。
+
+### D12. TryFollowSplit 返回 SplitMarker
+
+**决策**：`TryFollowSplit() (*SplitMarker, bool)` — 返回完整的 SplitMarker 而非 `*PageRef`。
+**理由**：调用方需要 Left/Right 两个子树引用进行路由，单一 `*PageRef` 语义不明确。SplitMarker 包含 SplitKey 用于 key 比较。
+**审查修订**：原始设计返回 `(targetRef *PageRef, ok bool)`（P4-2 审查前）。
+
+### D13. parentRef 使用 atomic.Pointer[PageRef]
+
+**决策**：`parentRef atomic.Pointer[PageRef]`（而非普通 `*PageRef`）。
+**理由**：parentRef 被 SetParentRef 和 GetParentRef 并发调用（ReplaceRoot 设置 parentRef 时 reader 可能同时读取）。Go race detector 对非 atomic 并发读写报告 data race。
+**审查修订**：原始设计 `parentRef *PageRef`（interface 文档初版）。
+
+### D14. ReplaceRoot 先 SetParentRef 后 CAS
+
+**决策**：ReplaceRoot 在 CAS **之前**为所有 newChildren 设置 parentRef。
+**理由**：CAS 后设置 parentRef 存在并发 reader 窗口期 — reader 看到 newInfo 后遍历到 child，此时 parentRef 仍为 nil，GetPathToRoot 提前终止。
+**执行顺序**：
+1. 先为所有 newChildren 设置 parentRef（CAS 前，子节点尚未对读者可见）
+2. CAS(oldInfo, newInfo) 原子发布
+3. CAS 失败时不回滚 parentRef（调用方重试时创建新 PageRef）
+**审查修订**：原始代码 CAS 后设置 parentRef（C3 审查发现）。
 
 ## 14. 文件映射
 

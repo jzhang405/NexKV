@@ -1,253 +1,208 @@
+// Copyright 2026 NexKV Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 package btree
 
 import (
+	"bytes"
 	"sync/atomic"
 
-	errpkg "github.com/jzhang405/NexKV/pkg/errors"
+	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
-// PageRef 页面引用（间接寻址）
-// 使用 atomic.Pointer[PageInfo] 实现无锁并发访问
-// 要求：Go 1.19+ (atomic.Pointer 泛型支持)
+// SplitMarker records a page split for concurrent reader visibility.
+// Set by propagateSplit after parent CAS succeeds.
+// Readers check this marker to follow splits without waiting for parent update.
+type SplitMarker struct {
+	Left     *PageRef
+	Right    *PageRef
+	SplitKey []byte
+}
+
+// PageRef manages concurrent access to a single page in the B+Tree.
+// Each PageRef corresponds to one page in the tree, linked via parentRef
+// to form a path from leaf to root.
+//
+// Lifecycle: exists as long as the page is part of the tree.
+// Created during split/merge propagation or tree initialization.
 type PageRef struct {
-	pInfo     atomic.Pointer[PageInfo] // 原子指针，支持 CAS 更新
-	parentRef atomic.Value             // 优化：使用 atomic.Value 存储 *PageRef，移除 defer 开销
-	pageLock  atomic.Pointer[PageLock] // Leaf-Level Locking：页面锁（懒加载 + CAS 初始化）
-
-	// Delta Chain: 与 pInfo 解耦，CAS 替换 pInfo 时不影响 deltaChain
-	// 使用 atomic.Pointer 保证读路径无锁安全访问
-	// 仅用于 Update 操作，Insert/Delete/Split 不使用
-	deltaChain atomic.Pointer[COWDeltaRef] // nil 表示无 delta（初始状态）
+	pageID      model.PageID                // bound at creation, immutable — used by Release
+	pInfo       atomic.Pointer[PageInfo]    // atomically replaced page info
+	parentRef   atomic.Pointer[PageRef]     // parent reference; nil for root (managed by RootPageRef)
+	children    atomic.Pointer[[]*PageRef]  // lazy-loaded child refs; nil = leaf or not populated
+	refCount    atomic.Int32                // reference count; zero triggers freeFunc
+	splitMarker atomic.Pointer[SplitMarker] // split visibility marker
+	freeFunc    func(model.PageID)          // bound at creation; called when refCount reaches 0
+	lock        SchedulerLock               // leaf-level spin lock
 }
 
-// NewPageRef 创建新的 PageRef
-func NewPageRef() *PageRef {
-	ref := &PageRef{}
-	ref.pInfo.Store(nil)
-	ref.parentRef.Store((*PageRef)(nil)) // 显式初始化为 nil
-	return ref
-}
-
-// NewPageRefWithInfo 创建带有初始 PageInfo 的 PageRef
-func NewPageRefWithInfo(info *PageInfo) *PageRef {
-	ref := &PageRef{}
-	ref.pInfo.Store(info)
-	ref.parentRef.Store((*PageRef)(nil)) // 显式初始化为 nil
-	return ref
-}
-
-// GetPage 获取页面对象（原子操作）
-// 返回 any，实际类型为 *LeafPage 或 *InternalPage
-// 如果 PageInfo 为 nil，返回 nil
-func (r *PageRef) GetPage() any {
-	info := r.pInfo.Load()
-	if info == nil {
-		return nil
+// NewPageRef creates a new PageRef with the given page identity and parent.
+// freeFunc is called when the refCount reaches zero (typically storage.FreePage).
+// pageID is bound at creation and never changes — Release uses it directly
+// to avoid TOCTOU race with concurrent CAS replacing pInfo (C1 fix).
+func NewPageRef(pageID model.PageID, version uint64, parentRef *PageRef, freeFunc func(model.PageID)) *PageRef {
+	r := &PageRef{
+		pageID:   pageID,
+		freeFunc: freeFunc,
 	}
-	return info.GetPage()
+	r.parentRef.Store(parentRef)
+	r.pInfo.Store(&PageInfo{
+		PageID:  pageID,
+		Version: version,
+	})
+	return r
 }
 
-// GetPageInfo 获取 PageInfo 对象（原子操作）
+// GetPageInfo atomically reads the current PageInfo.
+// Caller must Retain the PageRef before using the returned PageInfo
+// to ensure the page is not freed during use.
 func (r *PageRef) GetPageInfo() *PageInfo {
 	return r.pInfo.Load()
 }
 
-// ReplacePage 替换 PageInfo（CAS 操作）
-// 使用 Compare-And-Swap 确保原子性
-//
-// 参数：
-//
-//	oldInfo - 期望的当前 PageInfo（可以为 nil）
-//	newInfo - 新的 PageInfo（不能为 nil）
-//
-// 返回：
-//
-//	true - CAS 成功，替换成功
-//	false - CAS 失败，当前值不是 oldInfo
-func (r *PageRef) ReplacePage(oldInfo, newInfo *PageInfo) bool {
-	if newInfo == nil {
-		panic("newInfo cannot be nil")
-	}
-	return r.pInfo.CompareAndSwap(oldInfo, newInfo)
+// CAS atomically replaces PageInfo if current equals old.
+// Returns true if the swap succeeded.
+func (r *PageRef) CAS(old, newInfo *PageInfo) bool {
+	return r.pInfo.CompareAndSwap(old, newInfo)
 }
 
-// SetPage 直接设置 PageInfo（非原子，用于初始化）
-// 注意：此方法不使用 CAS，仅用于单线程初始化场景
-func (r *PageRef) SetPage(info *PageInfo) {
-	r.pInfo.Store(info)
+// Retain increments the reference count.
+// Called during searchPath for each PageRef on the traversal path.
+func (r *PageRef) Retain() {
+	r.refCount.Add(1)
 }
 
-// MarkDirty 标记页面为脏页
-// 如果 PageInfo 为 nil，返回 false
-func (r *PageRef) MarkDirty() bool {
-	info := r.pInfo.Load()
-	if info == nil {
-		return false
+// Release decrements the reference count.
+// When refCount reaches zero, calls the bound freeFunc with the immutable pageID
+// to reclaim the page. Uses r.pageID (bound at creation) instead of reading
+// from pInfo to avoid TOCTOU race with concurrent CAS (C1 fix).
+// Panics if called when refCount is already zero (use-after-free bug).
+func (r *PageRef) Release() {
+	if v := r.refCount.Add(-1); v < 0 {
+		panic("btree2: Release() called on PageRef with zero refCount")
+	} else if v == 0 {
+		if r.freeFunc != nil && r.pageID != model.InvalidPageID {
+			r.freeFunc(r.pageID)
+		}
 	}
-	info.MarkDirty()
-	return true
 }
 
-// IsDirty 检查是否为脏页
-// 如果 PageInfo 为 nil，返回 false
-func (r *PageRef) IsDirty() bool {
-	info := r.pInfo.Load()
-	if info == nil {
-		return false
-	}
-	return info.IsDirty()
+// RefCount returns the current reference count (for testing/debugging).
+func (r *PageRef) RefCount() int32 {
+	return r.refCount.Load()
 }
 
-// GetPos 获取页面位置
-// 如果 PageInfo 为 nil，返回 0
-func (r *PageRef) GetPos() int64 {
-	info := r.pInfo.Load()
-	if info == nil {
-		return 0
-	}
-	return info.GetPos()
+// Lock acquires the leaf-level spin lock.
+func (r *PageRef) Lock() {
+	r.lock.Lock()
 }
 
-// SetPos 设置页面位置
-// 如果 PageInfo 为 nil，直接返回
-func (r *PageRef) SetPos(pos int64) {
-	info := r.pInfo.Load()
-	if info == nil {
-		return
-	}
-	info.SetPos(pos)
+// Unlock releases the leaf-level spin lock.
+func (r *PageRef) Unlock() {
+	r.lock.Unlock()
 }
 
-// GetLock 获取页面锁（懒加载 + CAS 初始化）
-// Leaf-Level Locking 核心方法：每个 PageRef 内置锁，懒加载创建
-//
-// 实现细节：
-// 1. 快速路径：如果锁已初始化，直接返回
-// 2. 慢速路径：使用 CAS 初始化，防止并发创建多个锁
-// 3. CAS 失败：重新加载（其他 goroutine 已创建）
-//
-// 返回：
-//
-//	*PageLock - 页面锁（保证非 nil）
-func (r *PageRef) GetLock() *PageLock {
-	// 快速路径：锁已初始化
-	if lock := r.pageLock.Load(); lock != nil {
-		return lock
-	}
-
-	// 慢速路径：CAS 初始化（防止并发创建多个锁）
-	newLock := NewPageLock()
-	if r.pageLock.CompareAndSwap(nil, newLock) {
-		return newLock // CAS 成功，返回新创建的锁
-	}
-
-	// CAS 失败：其他 goroutine 已创建，重新加载
-	return r.pageLock.Load()
-}
-
-// Touch 更新访问时间（LRU）
-// 如果 PageInfo 为 nil，直接返回
-func (r *PageRef) Touch() {
-	info := r.pInfo.Load()
-	if info == nil {
-		return
-	}
-	info.Touch()
-}
-
-// GetHits 获取访问计数
-// 如果 PageInfo 为 nil，返回 0
-func (r *PageRef) GetHits() int64 {
-	info := r.pInfo.Load()
-	if info == nil {
-		return 0
-	}
-	return info.GetHits()
-}
-
-// GetLastTime 获取最后访问时间
-// 如果 PageInfo 为 nil，返回 0
-func (r *PageRef) GetLastTime() int64 {
-	info := r.pInfo.Load()
-	if info == nil {
-		return 0
-	}
-	return info.GetLastTime()
-}
-
-// GetParentRef 获取父引用（无锁，atomic.Value）
-// 优化：移除 defer，减少 tryDeferToSpanScan 开销
+// GetParentRef returns the parent PageRef.
+// Returns nil for root nodes (managed by RootPageRef).
 func (r *PageRef) GetParentRef() *PageRef {
-	return r.parentRef.Load().(*PageRef)
+	return r.parentRef.Load()
 }
 
-// SetParentRef 设置父引用（无锁，atomic.Value）
-// 优化：移除 defer，减少 tryDeferToSpanScan 开销
+// SetParentRef updates the parent reference.
+// Used by RootPageRef.ReplaceRoot to propagate parent pointers.
 func (r *PageRef) SetParentRef(parent *PageRef) {
 	r.parentRef.Store(parent)
 }
 
-// Clone 克隆 PageRef（浅拷贝 PageInfo）
-// 创建新的 PageRef，共享同一个 PageInfo
-func (r *PageRef) Clone() *PageRef {
-	info := r.pInfo.Load()
-	return NewPageRefWithInfo(info)
-}
+// GetOrCreateChildren returns the child PageRef slice for this node.
+// For leaf pages, returns nil.
+// For internal nodes, lazily constructs children from page data on first access.
+// Thread-safe via CAS.
+func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) []*PageRef {
+	if c := r.children.Load(); c != nil {
+		return *c
+	}
 
-// IsLoaded 检查页面是否已加载（PageInfo 不为 nil）
-func (r *PageRef) IsLoaded() bool {
-	return r.pInfo.Load() != nil
-}
-
-// Unload 卸载页面（设置 PageInfo 为 nil）
-// 返回卸载前的 PageInfo
-func (r *PageRef) Unload() *PageInfo {
-	oldInfo := r.pInfo.Load()
-	r.pInfo.Store(nil)
-	return oldInfo
-}
-
-// HasParent 检查是否有父引用（无锁，atomic.Value）
-// 优化：移除 defer，减少 tryDeferToSpanScan 开销
-func (r *PageRef) HasParent() bool {
-	return r.parentRef.Load().(*PageRef) != nil
-}
-
-// 优化：移除 GetBuff/SetBuff 方法，序列化缓冲区现在由 ChunkManager.pagePool 管理
-
-// GetOrLoad 获取 PageInfo，如果未加载则从 ChunkManager 加载（懒加载）
-// 懒加载模式核心：只有 Root 常驻内存，其他页面按需加载
-//
-// 参数：
-//
-//	chunkMgr - ChunkManager 用于加载页面数据
-//
-// 返回：
-//
-//	*PageInfo - 页面信息（保证 page != nil）
-//	error - 错误信息
-//
-// 懒加载逻辑（Off-Heap 模式）：
-// Off-Heap 模式：NodeRef 始终有效，无需加载
-func (r *PageRef) GetOrLoad(chunkMgr *ChunkManager) (*PageInfo, error) {
-	// 1. 尝试从原子指针加载
-	info := r.pInfo.Load()
+	info := r.GetPageInfo()
 	if info == nil {
-		return nil, errpkg.BTreePageInfoNilRef()
+		return nil
 	}
 
-	// 2. Off-Heap 模式：检查 NodeRef 是否有效
-	if info.IsPageLoaded() {
-		info.Touch() // 更新访问时间
-		return info, nil
+	// Check if this is a leaf — leaves have no children
+	if storage == nil {
+		return nil
+	}
+	page, err := storage.GetNodePage(info.PageID)
+	if err != nil {
+		// Error from storage: could be a leaf page (expected), ErrTreeClosed,
+		// or ErrInvalidPage (programming error). For leaf pages, GetNodePage
+		// returns an error because the page type is not InternalPage.
+		// Returning nil causes searchPath to treat this as a leaf and stop
+		// descending. Safe for normal operation (C4 design decision).
+		return nil
+	}
+	if page.IsLeaf() {
+		return nil
 	}
 
-	// 3. NodeRef 无效，返回错误
-	return nil, errpkg.BTreePageNotLoadedInvalidNodeRef()
+	childCount := page.ChildCount()
+	newChildren := make([]*PageRef, childCount)
+	for i := range childCount {
+		childID := page.GetChild(i)
+		newChildren[i] = NewPageRef(childID, 0, r, r.freeFunc)
+	}
+
+	if r.children.CompareAndSwap(nil, &newChildren) {
+		return newChildren
+	}
+	// Another goroutine won the CAS race
+	return *r.children.Load()
 }
 
-// Get 获取 PageInfo（简化版，不含加载逻辑）
-// 返回 nil 如果未加载
-func (r *PageRef) Get() *PageInfo {
-	return r.pInfo.Load()
+// GetPathToRoot traverses parentRef chain from this node up to the root.
+// Returns slice where index 0 = this node, last = root.
+func (r *PageRef) GetPathToRoot() []*PageRef {
+	var path []*PageRef
+	current := r
+	for current != nil {
+		path = append(path, current)
+		current = current.GetParentRef()
+	}
+	return path
+}
+
+// SetSplitMarker sets the split marker for this page.
+// Makes a defensive copy of splitKey to prevent caller from mutating the
+// marker through a shared buffer (I1 fix).
+func (r *PageRef) SetSplitMarker(left, right *PageRef, splitKey []byte) {
+	keyCopy := make([]byte, len(splitKey))
+	copy(keyCopy, splitKey)
+	marker := &SplitMarker{
+		Left:     left,
+		Right:    right,
+		SplitKey: keyCopy,
+	}
+	r.splitMarker.Store(marker)
+}
+
+// GetSplitMarker reads the current split marker.
+// Returns nil if no split has occurred.
+func (r *PageRef) GetSplitMarker() *SplitMarker {
+	return r.splitMarker.Load()
+}
+
+// FollowSplit checks for a split marker and returns the correct
+// child PageRef based on the given key.
+// Returns (targetRef, true) if a split was followed,
+// (nil, false) if no split marker exists.
+func (r *PageRef) FollowSplit(key []byte) (*PageRef, bool) {
+	marker := r.splitMarker.Load()
+	if marker == nil {
+		return nil, false
+	}
+	if bytes.Compare(key, marker.SplitKey) < 0 {
+		return marker.Left, true
+	}
+	return marker.Right, true
 }

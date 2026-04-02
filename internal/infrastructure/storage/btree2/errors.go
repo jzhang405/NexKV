@@ -33,4 +33,7 @@ var (
 
 	// ErrDuplicateKey is returned when inserting a key that already exists.
 	ErrDuplicateKey = errors.New("btree2: duplicate key")
+
+	// ErrNotImplemented is returned by methods that are not yet implemented.
+	ErrNotImplemented = errors.New("btree2: not implemented")
 )

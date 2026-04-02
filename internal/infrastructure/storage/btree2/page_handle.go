@@ -76,7 +76,7 @@ type leafPageHandle struct {
 }
 
 func (h *leafPageHandle) PageID() model.PageID { return h.id }
-func (h *leafPageHandle) IsLeaf() bool          { return true }
+func (h *leafPageHandle) IsLeaf() bool         { return true }
 
 func (h *leafPageHandle) Count() int {
 	rawID := uint32(h.id)
@@ -295,7 +295,7 @@ type nodePageHandle struct {
 }
 
 func (h *nodePageHandle) PageID() model.PageID { return h.id }
-func (h *nodePageHandle) IsLeaf() bool          { return false }
+func (h *nodePageHandle) IsLeaf() bool         { return false }
 
 func (h *nodePageHandle) Count() int {
 	rawID := uint32(h.id)

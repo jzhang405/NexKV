@@ -185,27 +185,38 @@ func updateDirectParent(b *BTree, parentEntry PathEntry, splitKey []byte, leftID
 }
 ```
 
-### 2.2 方案 B：批量传播
+### 2.2 方案 B：批量传播（延后到 Phase 7+）
 
-**核心思想**：累积多个 split，一次性批量更新
+**核心思想**：累积多个 split，交给 Task Scheduler 批量处理
 
 **实现步骤**：
 
 ```
-1. 维护全局 SplitQueue
+1. 维护全局 SplitQueue（无锁队列）
 2. 写入操作检测到 split，加入队列
-3. 后台线程定期批量处理 split
+3. Task Scheduler 定期批量处理 split
 4. 批量更新减少 CAS 冲突
 ```
 
 **优点**：
 - ✅ 批量处理减少 CAS 冲突
 - ✅ 写入操作不被阻塞
+- ✅ 与 Task Scheduler 集成（已有基础设施）
 
 **缺点**：
-- ❌ 需要后台线程
-- ❌ 实现复杂度高
-- ❌ 读取可能看到不一致状态
+- ❌ 需要后台任务机制
+- ❌ 实现复杂度中等
+- ❌ 读取可能看到短暂不一致状态
+
+**延后原因**：
+- ⏸️ **优先级较低**：方案 A 已能满足 Phase 6 需求
+- ⏸️ **依赖基础设施**：需要先完成 Task Scheduler 集成
+- ⏸️ **复杂度权衡**：收益不足以抵消本阶段的实现成本
+
+**触发条件**（Phase 7+ 考虑）：
+- 如果写入吞吐量成为瓶颈（> 1M writes/sec）
+- 如果 CAS 冲突率 > 50%
+- 如果需要更高并发扩展性（64+ 核心场景）
 
 ### ~~2.3 方案 C：路径压缩~~（已废弃）
 
@@ -490,8 +501,10 @@ go test -bench=BenchmarkBTreeSet -benchtime=3s ./...
 
 ### 7.2 延后决策
 
-- ⏸️ **方案 B（批量传播）**：等 Phase 6 完成后评估
-- ⏸️ **方案 C（路径压缩）**：Phase 7+ 考虑
+- ⏸️ **方案 B（批量传播）**：Phase 7+ 考虑，由 Task Scheduler 处理
+  - **触发条件**：写入吞吐量 > 1M/sec 或 CAS 冲突率 > 50%
+  - **依赖**：Task Scheduler 基础设施（已有）
+  - **收益**：进一步减少 CAS 冲突，提升高并发性能
 - ⏸️ **后台清理线程**：如果 marker 泄漏严重再添加
 
 ---

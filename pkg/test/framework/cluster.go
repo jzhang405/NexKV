@@ -5,7 +5,6 @@ package framework
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/jzhang405/NexKV/pkg/errors"
@@ -236,7 +235,7 @@ func (c *DefaultCluster) RemoveNode(id string) error {
 	if node.IsRunning() {
 		ctx := context.Background()
 		if err := node.Stop(ctx); err != nil {
-			return errors.Wrap(err, fmt.Sprintf("failed to stop node %s", id))
+			return errors.WrapString(err, "failed to stop node", id)
 		}
 	}
 
@@ -274,7 +273,7 @@ func (c *DefaultCluster) StartAll(ctx context.Context) error {
 
 		if !node.IsRunning() {
 			if err := node.Start(ctx); err != nil {
-				return errors.Wrap(err, fmt.Sprintf("failed to start node %s", node.ID()))
+				return errors.WrapString(err, "failed to start node", node.ID())
 			}
 		}
 	}
@@ -299,7 +298,7 @@ func (c *DefaultCluster) StopAll(ctx context.Context) error {
 
 		if node.IsRunning() {
 			if err := node.Stop(ctx); err != nil {
-				return errors.Wrap(err, fmt.Sprintf("failed to stop node %s", node.ID()))
+				return errors.WrapString(err, "failed to stop node", node.ID())
 			}
 		}
 	}

@@ -5,7 +5,11 @@
 // Package btree implements a concurrent B+Tree with COW semantics.
 package btree
 
-import "errors"
+import (
+	"errors"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
+)
 
 // Sentinel errors for btree operations.
 // All errors are comparable via errors.Is.
@@ -23,7 +27,8 @@ var (
 	ErrTreeClosed = errors.New("btree: tree closed")
 
 	// ErrInvalidPage is returned when encountering an invalid page.
-	ErrInvalidPage = errors.New("btree: invalid page")
+	// 使用 pkg/errors 中的统一定义，确保错误链正确传播
+	ErrInvalidPage = errpkg.ErrBTreeInvalidPage
 
 	// ErrPageFull is returned when a page has no space for a new entry.
 	ErrPageFull = errors.New("btree: page full")

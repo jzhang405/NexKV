@@ -3,7 +3,6 @@ package framework
 import (
 	"container/list"
 	"context"
-	"fmt"
 	"io"
 	"sync"
 
@@ -104,7 +103,7 @@ func (r *ComponentRegistry) ResolveDependencies(componentTypes []ComponentType) 
 
 		comp, err := factory()
 		if err != nil {
-			return nil, errors.Wrap(err, fmt.Sprintf("failed to create component %s", ct))
+			return nil, errors.WrapString(err, "failed to create component", string(ct))
 		}
 
 		// 清理临时组件实例
@@ -115,7 +114,7 @@ func (r *ComponentRegistry) ResolveDependencies(componentTypes []ComponentType) 
 		for _, dep := range comp.GetDependencies() {
 			if !typeSet[dep] {
 				return nil, errors.Wrap(errors.ErrDependencyNotMet,
-					fmt.Sprintf("component %s depends on %s which is not in the input set", ct, dep))
+					"component dependency not met: "+string(ct)+" -> "+string(dep))
 			}
 			graph[dep] = append(graph[dep], ct)
 			inDegree[ct]++
@@ -180,7 +179,7 @@ func (r *ComponentRegistry) CreateAll(ctx context.Context, componentTypes []Comp
 
 		comp, err := r.CreateComponent(ct)
 		if err != nil {
-			return nil, errors.Wrap(err, fmt.Sprintf("failed to create component %s", ct))
+			return nil, errors.WrapString(err, "failed to create component", string(ct))
 		}
 		components[ct] = comp
 	}

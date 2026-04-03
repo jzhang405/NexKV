@@ -2,9 +2,9 @@
 package transport
 
 import (
+	"context"
 	"fmt"
 	"github.com/jzhang405/NexKV/pkg/errors"
-	"context"
 	"log"
 	"runtime/debug"
 	"sync"
@@ -400,7 +400,7 @@ func (t *Libp2pTransport) SetStreamHandler(proto string, handler func(service.St
 			if r := recover(); r != nil {
 				// 记录 panic 信息到日志（便于问题追踪）
 				panicErr := errors.Wrap(service.ErrCallbackPanic,
-				fmt.Sprintf("callback panic: stream=%s, panic=%v", s.ID(), r))
+					fmt.Sprintf("callback panic: stream=%s, panic=%v", s.ID(), r))
 				log.Printf("[Transport] %v\n%s", panicErr, debug.Stack())
 				if err := s.Reset(); err != nil {
 					transportLog.WithField("error", err).Warn("failed to reset stream after panic")

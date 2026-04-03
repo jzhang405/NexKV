@@ -245,7 +245,6 @@ func TestErrors_Export(t *testing.T) {
 func TestWrap_Functions(t *testing.T) {
 	// 验证 Wrap 函数已正确导出
 	assert.NotNil(t, Wrap)
-	assert.NotNil(t, Wrapf)
 
 	// 测试 Wrap 功能
 	err := Wrap(assert.AnError, "wrapped")

@@ -25,7 +25,7 @@ type LengthPrefixedCodec struct{}
 func (c *LengthPrefixedCodec) Encode(w io.Writer, data []byte) error {
 	// 1. 检查消息大小
 	if len(data) > MaxMessageSize {
-		return errors.Wrapf(errors.ErrMessageTooLarge, "size=%d, max=%d", len(data), MaxMessageSize)
+		return errors.WrapInt2(errors.ErrMessageTooLarge, "size exceeds max", len(data), MaxMessageSize)
 	}
 
 	// 2. 写入长度前缀（4字节，大端序）- 确保完整写入
@@ -57,7 +57,7 @@ func (c *LengthPrefixedCodec) Decode(r io.Reader) ([]byte, error) {
 
 	// 2. 先检查长度合法性，再分配内存（防止 DoS 攻击）
 	if length > MaxMessageSize {
-		return nil, errors.Wrapf(errors.ErrMessageTooLarge, "length=%d, max=%d", length, MaxMessageSize)
+		return nil, errors.WrapUint32(errors.ErrMessageTooLarge, "length exceeds max", length)
 	}
 	if length == 0 {
 		return nil, errors.Wrap(errors.ErrInvalidMessage, "zero length message")

@@ -1,7 +1,3 @@
-// Copyright 2026 NexKV Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
-
 package btree
 
 import (
@@ -31,10 +27,11 @@ func BenchmarkBTreeSequentialSet(b *testing.B) {
 	tree, _ := newBenchmarkBTree(b)
 	ctx := context.Background()
 
+	const maxKeys = 100 // Limited to avoid triggering split
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		key := []byte("key-" + strconv.Itoa(i%100))
-		value := []byte("value-" + strconv.Itoa(i%100))
+		key := []byte("key-" + strconv.Itoa(i%maxKeys))
+		value := []byte("value-" + strconv.Itoa(i%maxKeys))
 		if err := tree.Set(ctx, key, value); err != nil {
 			b.Fatalf("Set failed: %v", err)
 		}

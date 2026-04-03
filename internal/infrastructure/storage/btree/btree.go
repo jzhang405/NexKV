@@ -24,6 +24,7 @@ type BTree struct {
 	storage *OffheapBTreeStorage // page storage backend
 	size    atomic.Int64         // KV pair count
 	closed  atomic.Bool          // closed flag
+	metrics *BTreeMetrics        // performance counters (optional)
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -32,6 +33,12 @@ var _ service.KVStore = (*BTree)(nil)
 // NewBTree creates a new BTree backed by the given storage.
 // Initializes with a single empty leaf page as root.
 func NewBTree(storage *OffheapBTreeStorage) (*BTree, error) {
+	return NewBTreeWithMetrics(storage, nil)
+}
+
+// NewBTreeWithMetrics creates a new BTree with optional metrics collection.
+// If metrics is nil, no metrics are collected.
+func NewBTreeWithMetrics(storage *OffheapBTreeStorage, metrics *BTreeMetrics) (*BTree, error) {
 	pageID, err := storage.AllocLeafPage()
 	if err != nil {
 		return nil, errpkg.BTreeInitRootLeaf(err)
@@ -46,6 +53,7 @@ func NewBTree(storage *OffheapBTreeStorage) (*BTree, error) {
 	return &BTree{
 		rootRef: rootRef,
 		storage: storage,
+		metrics: metrics,
 	}, nil
 }
 
@@ -90,6 +98,11 @@ func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
 		return nil, ErrKeyNotFound
 	}
 
+	// Update metrics
+	if b.metrics != nil {
+		b.metrics.ReadCount.Add(1)
+	}
+
 	return leaf.GetValue(idx), nil
 }
 
@@ -101,7 +114,7 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 		return err
 	}
 
-	return writeOperation(b, key, func(leaf LeafPage) (*leafMutation, error) {
+	err := writeOperation(b, key, func(leaf LeafPage) (*leafMutation, error) {
 		idx, found := leaf.Search(key)
 		if found {
 			// Update existing key
@@ -125,6 +138,12 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 			delta:     1,
 		}, nil
 	})
+
+	if err == nil && b.metrics != nil {
+		b.metrics.WriteCount.Add(1)
+	}
+
+	return err
 }
 
 // Delete removes the given key from the B+Tree.
@@ -134,7 +153,7 @@ func (b *BTree) Delete(_ context.Context, key []byte) error {
 		return err
 	}
 
-	return writeOperation(b, key, func(leaf LeafPage) (*leafMutation, error) {
+	err := writeOperation(b, key, func(leaf LeafPage) (*leafMutation, error) {
 		idx, found := leaf.Search(key)
 		if !found {
 			return nil, ErrKeyNotFound
@@ -149,11 +168,27 @@ func (b *BTree) Delete(_ context.Context, key []byte) error {
 			delta:     -1,
 		}, nil
 	})
+
+	if err == nil && b.metrics != nil {
+		b.metrics.DeleteCount.Add(1)
+	}
+
+	return err
 }
 
 // Size returns the number of key-value pairs in the tree.
 func (b *BTree) Size() int64 {
 	return b.size.Load()
+}
+
+// GetMetrics returns a snapshot of current performance metrics.
+// Returns nil if metrics collection is not enabled.
+func (b *BTree) GetMetrics() *MetricsSnapshot {
+	if b.metrics == nil {
+		return nil
+	}
+	snapshot := b.metrics.Snapshot()
+	return &snapshot
 }
 
 // Close closes the BTree and releases all resources.

@@ -85,6 +85,12 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			_ = b.storage.FreePage(result.newPageID)
 			leafRef.Unlock()
 			path.ReleaseAll()
+
+			// Track CAS retry
+			if b.metrics != nil {
+				b.metrics.IncrementCASRetry()
+			}
+
 			continue
 		}
 
@@ -100,6 +106,8 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		b.size.Add(result.delta)
 
 		// Step 10: Release path
+		// NOTE: Page reclamation happens via PageRef.refCount when path.ReleaseAll()
+		// decrements refCounts. Old pages are freed automatically when no longer referenced.
 		path.ReleaseAll()
 		return nil
 	}

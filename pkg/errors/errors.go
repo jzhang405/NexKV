@@ -5,6 +5,8 @@ package errors
 import (
 	stderrors "errors"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // ===========================
@@ -222,12 +224,121 @@ func Wrap(err error, details string) *NexError {
 
 // Wrapf 包装标准错误，格式化详情
 // 如果 err 本身是 *NexError，会自动解包并合并详情，防止嵌套
+//
+// Deprecated: 在热路径上使用会导致 fmt.Sprintf 分配，建议使用 Wrap* 系列专用函数
 func Wrapf(err error, format string, args ...any) *NexError {
 	// P0-2 修复：nil 错误返回 nil，避免 panic
 	if err == nil {
 		return nil
 	}
 	return mergeNexError(err, fmt.Sprintf(format, args...))
+}
+
+// ===========================
+// 热路径优化包装函数（避免 fmt.Sprintf 分配）
+// ===========================
+
+// WrapInt 包装错误并附带单个 int 值（零分配）
+func WrapInt(err error, prefix string, val int) *NexError {
+	if err == nil {
+		return nil
+	}
+	var sb strings.Builder
+	sb.WriteString(prefix)
+	sb.WriteString(": ")
+	sb.WriteString(strconv.Itoa(val))
+	return mergeNexError(err, sb.String())
+}
+
+// WrapInt2 包装错误并附带两个 int 值（零分配）
+func WrapInt2(err error, prefix string, v1, v2 int) *NexError {
+	if err == nil {
+		return nil
+	}
+	var sb strings.Builder
+	sb.WriteString(prefix)
+	sb.WriteString(": ")
+	sb.WriteString(strconv.Itoa(v1))
+	sb.WriteString(", ")
+	sb.WriteString(strconv.Itoa(v2))
+	return mergeNexError(err, sb.String())
+}
+
+// WrapUint32 包装错误并附带单个 uint32 值（零分配）
+func WrapUint32(err error, prefix string, val uint32) *NexError {
+	if err == nil {
+		return nil
+	}
+	var sb strings.Builder
+	sb.WriteString(prefix)
+	sb.WriteString(": ")
+	sb.WriteString(strconv.FormatUint(uint64(val), 10))
+	return mergeNexError(err, sb.String())
+}
+
+// WrapUint64 包装错误并附带单个 uint64 值（零分配）
+func WrapUint64(err error, prefix string, val uint64) *NexError {
+	if err == nil {
+		return nil
+	}
+	var sb strings.Builder
+	sb.WriteString(prefix)
+	sb.WriteString(": ")
+	sb.WriteString(strconv.FormatUint(val, 10))
+	return mergeNexError(err, sb.String())
+}
+
+// WrapBytes 包装错误并附带单个 []byte 值（零分配）
+func WrapBytes(err error, prefix string, val []byte) *NexError {
+	if err == nil {
+		return nil
+	}
+	var sb strings.Builder
+	sb.WriteString(prefix)
+	sb.WriteString(": ")
+	sb.Write(val)
+	return mergeNexError(err, sb.String())
+}
+
+// WrapString 包装错误并附带单个 string 值（零分配）
+func WrapString(err error, prefix string, val string) *NexError {
+	if err == nil {
+		return nil
+	}
+	var sb strings.Builder
+	sb.WriteString(prefix)
+	sb.WriteString(": ")
+	sb.WriteString(val)
+	return mergeNexError(err, sb.String())
+}
+
+// WrapUint32Idx 包装错误并附带 pageID 和 idx（BTree 热路径专用）
+func WrapUint32Idx(err error, prefix string, pageID uint32, idx int) *NexError {
+	if err == nil {
+		return nil
+	}
+	var sb strings.Builder
+	sb.WriteString(prefix)
+	sb.WriteString(": pageID=")
+	sb.WriteString(strconv.FormatUint(uint64(pageID), 10))
+	sb.WriteString(", idx=")
+	sb.WriteString(strconv.Itoa(idx))
+	return mergeNexError(err, sb.String())
+}
+
+// WrapIntRange 包装错误并附带索引范围（BTree 热路径专用）
+func WrapIntRange(err error, prefix string, idx, count int) *NexError {
+	if err == nil {
+		return nil
+	}
+	var sb strings.Builder
+	sb.WriteString(prefix)
+	sb.WriteString(": index ")
+	sb.WriteString(strconv.Itoa(idx))
+	sb.WriteString(" out of range [0, ")
+	sb.WriteString(strconv.Itoa(count))
+	sb.WriteString(")")
+	return mergeNexError(err, sb.String())
 }
 
 // mergeNexError 合并 NexError 详情（内部方法）
@@ -383,168 +494,204 @@ func BTreeAllocForCOW(err error) error {
 }
 
 func BTreePageIDExceedsMax(id uint64) error {
-	return Wrapf(ErrBTreeInvalidPage, "pageID %d exceeds uint32 max", id)
+	return WrapUint64(ErrBTreeInvalidPage, "pageID exceeds uint32 max", id)
+}
+
+func BTreePageNotLeafPage(pageID uint64) error {
+	return WrapUint64(ErrBTreeInvalidPage, "page is not a leaf page", pageID)
+}
+
+func BTreePageNotNodePage(pageID uint64) error {
+	return WrapUint64(ErrBTreeInvalidPage, "page is not a node page", pageID)
 }
 
 // BTree Leaf Page 错误
 func BTreeLeafInsertAlloc(err error) error {
-	return Wrapf(err, "leaf insert alloc")
+	return Wrap(err, "leaf insert alloc")
 }
 
 func BTreeLeafInsertEntry(err error) error {
-	return Wrapf(err, "leaf insert entry")
+	return Wrap(err, "leaf insert entry")
 }
 
 func BTreeLeafUpdateIndexOutOfRange(idx, count int) error {
-	return Wrapf(ErrBTreeKeyNotFound, "leaf update: index %d out of range [0, %d)", idx, count)
+	return WrapIntRange(ErrBTreeKeyNotFound, "leaf update", idx, count)
 }
 
 func BTreeLeafUpdateAlloc(err error) error {
-	return Wrapf(err, "leaf update alloc")
+	return Wrap(err, "leaf update alloc")
 }
 
 func BTreeLeafUpdateRebuildAlloc(err error) error {
-	return Wrapf(err, "leaf update rebuild alloc")
+	return Wrap(err, "leaf update rebuild alloc")
 }
 
 func BTreeLeafUpdateRebuild(err error) error {
-	return Wrapf(err, "leaf update rebuild")
+	return Wrap(err, "leaf update rebuild")
 }
 
 func BTreeLeafUpdateReinsert(err error) error {
-	return Wrapf(err, "leaf update reinsert")
+	return Wrap(err, "leaf update reinsert")
 }
 
 func BTreeLeafDeleteIndexOutOfRange(idx, count int) error {
-	return Wrapf(ErrBTreeKeyNotFound, "leaf delete: index %d out of range [0, %d)", idx, count)
+	return WrapIntRange(ErrBTreeKeyNotFound, "leaf delete", idx, count)
 }
 
 func BTreeLeafDeleteAlloc(err error) error {
-	return Wrapf(err, "leaf delete alloc")
+	return Wrap(err, "leaf delete alloc")
 }
 
 func BTreeLeafDeleteRebuild(err error) error {
-	return Wrapf(err, "leaf delete rebuild")
+	return Wrap(err, "leaf delete rebuild")
 }
 
 func BTreeLeafSplitMinKeys(count int) error {
-	return Wrapf(ErrBTreeNotImplemented, "leaf split: page has %d entries, need at least 2", count)
+	return WrapInt(ErrBTreeNotImplemented, "leaf split: page has entries", count)
 }
 
 func BTreeLeafSplitAllocLeft(err error) error {
-	return Wrapf(err, "leaf split alloc left")
+	return Wrap(err, "leaf split alloc left")
 }
 
 func BTreeLeafSplitAllocRight(err error) error {
-	return Wrapf(err, "leaf split alloc right")
+	return Wrap(err, "leaf split alloc right")
 }
 
 func BTreeLeafSplitLeftBulkInit(err error) error {
-	return Wrapf(err, "leaf split left bulk init")
+	return Wrap(err, "leaf split left bulk init")
 }
 
 func BTreeLeafSplitRightBulkInit(err error) error {
-	return Wrapf(err, "leaf split right bulk init")
+	return Wrap(err, "leaf split right bulk init")
 }
 
 func BTreeLeafValidateNegativeCount(count int) error {
-	return Wrapf(ErrBTreeInvalidPage, "leaf validate: negative count %d", count)
+	return WrapInt(ErrBTreeInvalidPage, "leaf validate: negative count", count)
 }
 
 func BTreeLeafValidateKeyOrderingViolation(idx int, prev, curr []byte) error {
-	return Wrapf(ErrBTreeInvalidPage, "leaf validate: key ordering violation at idx %d: %q >= %q", idx, prev, curr)
+	if prev == nil || curr == nil {
+		return WrapInt(ErrBTreeInvalidPage, "leaf validate: key ordering violation at idx", idx)
+	}
+	// 热路径优化：使用 strings.Builder 避免 fmt.Sprintf
+	var sb strings.Builder
+	sb.WriteString("leaf validate: key ordering violation at idx ")
+	sb.WriteString(strconv.Itoa(idx))
+	sb.WriteString(": ")
+	sb.Write(prev)
+	sb.WriteString(" >= ")
+	sb.Write(curr)
+	return mergeNexError(ErrBTreeInvalidPage, sb.String())
 }
 
 // BTree 错误
 func BTreeInitRootLeaf(err error) error {
-	return Wrapf(err, "init root leaf")
+	return Wrap(err, "init root leaf")
 }
 
 func BTreeGetOrCreateChildren(err error) error {
-	return Wrapf(err, "GetOrCreateChildren")
+	return Wrap(err, "GetOrCreateChildren")
 }
 
 // BTree Search 错误
 func BTreeSearchPathNilPageInfo(pageID uint64) error {
-	return Wrapf(ErrBTreeInvalidPage, "searchPath: nil PageInfo on page %d", pageID)
+	return WrapUint64(ErrBTreeInvalidPage, "searchPath: nil PageInfo on page", pageID)
 }
 
 func BTreeSearchPathError(err error) error {
-	return Wrapf(err, "searchPath")
+	return Wrap(err, "searchPath")
 }
 
 func BTreeSearchPathChildNotFound(idx int, pageID uint64) error {
-	return Wrapf(ErrBTreeInvalidPage, "searchPath: child[%d] not found on page %d", idx, pageID)
+	// 热路径优化
+	var sb strings.Builder
+	sb.WriteString("searchPath: child[")
+	sb.WriteString(strconv.Itoa(idx))
+	sb.WriteString("] not found on page ")
+	sb.WriteString(strconv.FormatUint(pageID, 10))
+	return mergeNexError(ErrBTreeInvalidPage, sb.String())
 }
 
 // BTree Operations 错误
 func BTreeWriteOpSearch(err error) error {
-	return Wrapf(err, "write operation search")
+	return Wrap(err, "write operation search")
 }
 
 func BTreeWriteOpGetLeaf(err error) error {
-	return Wrapf(err, "write operation get leaf")
+	return Wrap(err, "write operation get leaf")
 }
 
 // BTree Node Page 错误
 func BTreeNodeReplaceChildIndexOutOfRange(idx, count int) error {
-	return Wrapf(ErrBTreeInvalidPage, "node replace child: index %d out of range [0, %d)", idx, count)
+	return WrapIntRange(ErrBTreeInvalidPage, "node replace child", idx, count)
 }
 
 func BTreeNodeReplaceChildAlloc(err error) error {
-	return Wrapf(err, "node replace child alloc")
+	return Wrap(err, "node replace child alloc")
 }
 
 func BTreeNodeInsertChildIndexOutOfRange(idx, count int) error {
-	return Wrapf(ErrBTreeInvalidPage, "node insert child: index %d out of range [0, %d)", idx, count)
+	return WrapIntRange(ErrBTreeInvalidPage, "node insert child", idx, count)
 }
 
 func BTreeNodeInsertChildAlloc(err error) error {
-	return Wrapf(err, "node insert child alloc")
+	return Wrap(err, "node insert child alloc")
 }
 
 func BTreeNodeInsertChildEntry(err error) error {
-	return Wrapf(err, "node insert child entry")
+	return Wrap(err, "node insert child entry")
 }
 
 func BTreeNodeInsertChildAtEnd(err error) error {
-	return Wrapf(err, "node insert child at end")
+	return Wrap(err, "node insert child at end")
 }
 
 func BTreeNodeRemoveChildNotImplemented() error {
-	return Wrapf(ErrBTreeNotImplemented, "NodePage.RemoveChild not implemented")
+	return Wrap(ErrBTreeNotImplemented, "NodePage.RemoveChild not implemented")
 }
 
 func BTreeNodeSplitMinKeys(count int) error {
-	return Wrapf(ErrBTreeNotImplemented, "node split: page has %d entries, need at least 2", count)
+	return WrapInt(ErrBTreeNotImplemented, "node split: page has entries", count)
 }
 
 func BTreeNodeSplitAllocLeft(err error) error {
-	return Wrapf(err, "node split alloc left")
+	return Wrap(err, "node split alloc left")
 }
 
 func BTreeNodeSplitAllocRight(err error) error {
-	return Wrapf(err, "node split alloc right")
+	return Wrap(err, "node split alloc right")
 }
 
 func BTreeNodeSplitLeftBulkInit(err error) error {
-	return Wrapf(err, "node split left bulk init")
+	return Wrap(err, "node split left bulk init")
 }
 
 func BTreeNodeSplitRightBulkInit(err error) error {
-	return Wrapf(err, "node split right bulk init")
+	return Wrap(err, "node split right bulk init")
 }
 
 func BTreeNodeValidateNegativeCount(count int) error {
-	return Wrapf(ErrBTreeInvalidPage, "node validate: negative count %d", count)
+	return WrapInt(ErrBTreeInvalidPage, "node validate: negative count", count)
 }
 
 func BTreeNodeValidateKeyOrderingViolation(idx int, prev, curr []byte) error {
-	return Wrapf(ErrBTreeInvalidPage, "node validate: key ordering violation at idx %d: %q >= %q", idx, prev, curr)
+	if prev == nil || curr == nil {
+		return WrapInt(ErrBTreeInvalidPage, "node validate: key ordering violation at idx", idx)
+	}
+	// 热路径优化：使用 strings.Builder 避免 fmt.Sprintf
+	var sb strings.Builder
+	sb.WriteString("node validate: key ordering violation at idx ")
+	sb.WriteString(strconv.Itoa(idx))
+	sb.WriteString(": ")
+	sb.Write(prev)
+	sb.WriteString(" >= ")
+	sb.Write(curr)
+	return mergeNexError(ErrBTreeInvalidPage, sb.String())
 }
 
 func BTreeNodeValidateChildCountMismatch(childCount, keyCount int) error {
-	return Wrapf(ErrBTreeInvalidPage, "node validate: child count %d != key count %d + 1", childCount, keyCount)
+	return WrapInt2(ErrBTreeInvalidPage, "node validate: child count != key count + 1", childCount, keyCount)
 }
 
 // ===========================
@@ -552,41 +699,65 @@ func BTreeNodeValidateChildCountMismatch(childCount, keyCount int) error {
 // ===========================
 
 func OffHeapPageHasChildAtZero(pageID uint32, idx int) error {
-	return Wrapf(ErrOffHeapConstraintViolation, "page %d has child=0 at index %d", pageID, idx)
+	return WrapUint32Idx(ErrOffHeapConstraintViolation, "page has child=0 at index", pageID, idx)
 }
 
 func OffHeapPageHasExtraChildAtZero(pageID uint32, count uint16) error {
-	return Wrapf(ErrOffHeapConstraintViolation, "page %d has extraChild=0 with count=%d", pageID, count)
+	return WrapUint32(ErrOffHeapConstraintViolation, "page has extraChild=0 with count", pageID)
 }
 
 func OffHeapPageKeysNotSortedViolation(pageID uint32, idx int) error {
-	return Wrapf(ErrOffHeapConstraintViolation, "page %d invariant violated: keys not sorted at index %d", pageID, idx)
+	return WrapUint32Idx(ErrOffHeapConstraintViolation, "page invariant violated: keys not sorted at index", pageID, idx)
 }
 
 func OffHeapPageChildAtZeroViolation(pageID uint32, idx int) error {
-	return Wrapf(ErrOffHeapConstraintViolation, "page %d invariant violated: child=0 at index %d", pageID, idx)
+	return WrapUint32Idx(ErrOffHeapConstraintViolation, "page invariant violated: child=0 at index", pageID, idx)
 }
 
 func OffHeapPageExtraChildAtZeroViolation(pageID uint32, count uint16) error {
-	return Wrapf(ErrOffHeapConstraintViolation, "page %d invariant violated: extraChild=0 with count=%d", pageID, count)
+	return WrapUint32(ErrOffHeapConstraintViolation, "page invariant violated: extraChild=0 with count", pageID)
 }
 
 func OffHeapIndexOutOfRange(index int, count uint16) error {
-	return Wrapf(ErrOffHeapInvalidPageID, "index %d out of range (count: %d)", index, count)
+	// 热路径优化：使用 strings.Builder 避免 fmt.Sprintf
+	var sb strings.Builder
+	sb.WriteString("index ")
+	sb.WriteString(strconv.Itoa(index))
+	sb.WriteString(" out of range (count: ")
+	sb.WriteString(strconv.FormatUint(uint64(count), 10))
+	sb.WriteString(")")
+	return mergeNexError(ErrOffHeapInvalidPageID, sb.String())
 }
 
 func OffHeapInvalidRange(startIdx, endIdx, totalCount int) error {
-	return Wrapf(ErrOffHeapInvalidPageID, "invalid range [%d, %d) (count: %d)", startIdx, endIdx, totalCount)
+	// 热路径优化：使用 strings.Builder 避免 fmt.Sprintf
+	var sb strings.Builder
+	sb.WriteString("invalid range [")
+	sb.WriteString(strconv.Itoa(startIdx))
+	sb.WriteString(", ")
+	sb.WriteString(strconv.Itoa(endIdx))
+	sb.WriteString(") (count: ")
+	sb.WriteString(strconv.Itoa(totalCount))
+	sb.WriteString(")")
+	return mergeNexError(ErrOffHeapInvalidPageID, sb.String())
 }
 
 func OffHeapSourcePageRecycled(err error) error {
-	return Wrapf(err, "source page recycled during bulk init")
+	return Wrap(err, "source page recycled during bulk init")
 }
 
 func OffHeapSelfLoopDetected(srcPageID uint32, idx int, child uint32) error {
-	return Wrapf(ErrOffHeapConstraintViolation, "self-loop (or zero) detected in source page %d at index %d, child=%d", srcPageID, idx, child)
+	// 热路径优化：使用 strings.Builder 避免 fmt.Sprintf
+	var sb strings.Builder
+	sb.WriteString("self-loop (or zero) detected in source page ")
+	sb.WriteString(strconv.FormatUint(uint64(srcPageID), 10))
+	sb.WriteString(" at index ")
+	sb.WriteString(strconv.Itoa(idx))
+	sb.WriteString(", child=")
+	sb.WriteString(strconv.FormatUint(uint64(child), 10))
+	return mergeNexError(ErrOffHeapConstraintViolation, sb.String())
 }
 
 func OffHeapSelfLoopInExtraChild(srcPageID uint32) error {
-	return Wrapf(ErrOffHeapConstraintViolation, "self-loop detected in source page %d extraChild", srcPageID)
+	return WrapUint32(ErrOffHeapConstraintViolation, "self-loop detected in source page extraChild", srcPageID)
 }

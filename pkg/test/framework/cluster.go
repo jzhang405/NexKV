@@ -123,7 +123,7 @@ func (c *DefaultCluster) Init(ctx context.Context) error {
 	defer c.mu.Unlock()
 
 	if c.status != EnvironmentStatusCreated {
-		return errors.Wrapf(errors.ErrInvalidState, "cluster must be in created state to init, current: %s", c.status)
+		return errors.WrapString(errors.ErrInvalidState, "cluster must be in created state to init, current: %s", c.status.String())
 	}
 
 	c.status = EnvironmentStatusCreating
@@ -138,7 +138,7 @@ func (c *DefaultCluster) Start(ctx context.Context) error {
 	defer c.mu.Unlock()
 
 	if c.status != EnvironmentStatusCreated && c.status != EnvironmentStatusStopped {
-		return errors.Wrapf(errors.ErrInvalidState, "cluster must be in created or stopped state to start, current: %s", c.status)
+		return errors.WrapString(errors.ErrInvalidState, "cluster must be in created or stopped state to start, current: %s", c.status.String())
 	}
 
 	c.status = EnvironmentStatusStarting
@@ -156,7 +156,7 @@ func (c *DefaultCluster) Stop(ctx context.Context) error {
 	defer c.mu.Unlock()
 
 	if c.status != EnvironmentStatusRunning {
-		return errors.Wrapf(errors.ErrInvalidState, "cluster must be in running state to stop, current: %s", c.status)
+		return errors.WrapString(errors.ErrInvalidState, "cluster must be in running state to stop, current: %s", c.status.String())
 	}
 
 	c.status = EnvironmentStatusStopping
@@ -228,8 +228,8 @@ func (c *DefaultCluster) RemoveNode(id string) error {
 
 	node, exists := c.nodes[id]
 	if !exists {
-		return errors.Wrapf(errors.ErrTestNodeNotFound, "node %s not found", id)
-	}
+		return errors.WrapString(errors.ErrTestNodeNotFound, "node %s not found", id)
+        }
 
 	// 停止节点
 	if node.IsRunning() {

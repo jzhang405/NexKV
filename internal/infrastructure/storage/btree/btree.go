@@ -6,8 +6,9 @@ package btree
 
 import (
 	"context"
-	"fmt"
 	"sync/atomic"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
@@ -33,7 +34,7 @@ var _ service.KVStore = (*BTree)(nil)
 func NewBTree(storage *OffheapBTreeStorage) (*BTree, error) {
 	pageID, err := storage.AllocLeafPage()
 	if err != nil {
-		return nil, fmt.Errorf("btree: init root leaf: %w", err)
+		return nil, errpkg.BTreeInitRootLeaf(err)
 	}
 
 	// Phase 5: COW场景下页面由writeOperation显式管理

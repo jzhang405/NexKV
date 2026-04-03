@@ -221,7 +221,7 @@ func (a *TransportAdapter) GetComponent(name string) (framework.TestComponent, e
 			return dep, nil
 		}
 	}
-	return nil, errors.Wrapf(errors.ErrComponentNotFound, "component %s not found", name)
+	return nil, errors.WrapString(errors.ErrComponentNotFound, "component not found", name)
 }
 
 // IsHealthy 检查节点健康状态
@@ -242,7 +242,7 @@ func (a *TransportAdapter) ConnectTo(ctx context.Context, target framework.TestN
 	// 解析多地址
 	maddr, err := multiaddr.NewMultiaddr(targetAddr)
 	if err != nil {
-		return errors.Wrapf(err, "invalid address %s", targetAddr)
+		return errors.WrapString(err, "invalid address", targetAddr)
 	}
 
 	// 从多地址中提取 Peer ID
@@ -266,7 +266,7 @@ func (a *TransportAdapter) DisconnectFrom(ctx context.Context, target framework.
 	targetID := target.ID()
 	pid, err := peer.Decode(targetID)
 	if err != nil {
-		return errors.Wrapf(err, "invalid peer ID %s", targetID)
+		return errors.WrapString(err, "invalid peer ID", targetID)
 	}
 
 	return a.host.Network().ClosePeer(pid)
@@ -392,7 +392,7 @@ func (a *TransportAdapter) HealthCheck(ctx context.Context) error {
 		}
 	}
 
-	return errors.Wrapf(lastErr, "health check failed after %d retries", config.RetryCount)
+	return errors.WrapInt(lastErr, "health check failed after retries", config.RetryCount)
 }
 
 // doHealthCheck 执行实际的健康检查逻辑

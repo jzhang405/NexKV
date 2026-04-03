@@ -47,7 +47,7 @@ func (r RequestID) IsEmpty() bool {
 func (r RequestID) parse() (nodeID string, timestamp int64, sequence uint32, err error) {
 	parts := strings.Split(string(r), "-")
 	if len(parts) != 4 {
-		return "", 0, 0, errors.Wrapf(errors.ErrRequestIDInvalidFormat, "expected 4 parts, got %d", len(parts))
+		return "", 0, 0, errors.WrapInt(errors.ErrRequestIDInvalidFormat, "expected 4 parts, got", len(parts))
 	}
 
 	nodeID = parts[0]

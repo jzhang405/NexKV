@@ -5,7 +5,7 @@
 package btree
 
 import (
-	"fmt"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
@@ -42,7 +42,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		// Step 1: Search path to leaf
 		path, err := searchPath(b.storage, b.rootRef, key)
 		if err != nil {
-			return fmt.Errorf("btree: write operation search: %w", err)
+			return errpkg.BTreeWriteOpSearch(err)
 		}
 
 		// Step 2: Lock leaf
@@ -63,7 +63,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		if err != nil {
 			leafRef.Unlock()
 			path.ReleaseAll()
-			return fmt.Errorf("btree: write operation get leaf: %w", err)
+			return errpkg.BTreeWriteOpGetLeaf(err)
 		}
 
 		// Step 5: Apply COW mutation

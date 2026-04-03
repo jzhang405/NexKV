@@ -1735,3 +1735,286 @@ go build ./internal/infrastructure/storage/btree2/...
 go test -race -count=1 -v ./internal/infrastructure/storage/btree2/...
 golangci-lint run ./internal/infrastructure/storage/btree2/...
 ```
+
+---
+
+## Phase 6.0: Split 传播设计
+
+> **日期**: 2026-04-04
+> **状态**: 设计完成，待实现
+> **目标**: 实现多级 BTree 的 split 传播机制
+
+### 核心问题：传统 Split 传播的级联更新
+
+**问题描述**：
+```
+叶子 split (key-100 插入)
+  → 父节点索引更新 (添加 splitKey)
+    → 父节点也满了，需要 split
+      → 祖父节点索引更新
+        → ... 直到 root
+```
+
+**影响范围**：
+- 每次叶子 split 可能触发 O(log N) 次父节点更新
+- 高频写入场景下，大量 CAS 冲突
+- 整个路径上的节点都需要 COW
+
+**性能影响**：
+- CPU：多次 COW + CAS 操作
+- 内存：路径上每个节点都创建新页面
+- 并发：路径上所有锁竞争
+
+### 解决方案 A：最小化传播（推荐）
+
+**核心思想**：Split 后只更新直接父节点，避免级联
+
+**实现步骤**：
+
+```
+1. 叶子 split：
+   - 创建 left/right 叶子
+   - 生成 splitKey
+
+2. 直接父节点更新（仅一层）：
+   - COW 父节点
+   - 插入 splitKey + right child
+   - CAS 更新父节点的 PageRef
+
+3. 父节点 split（如果需要）：
+   - 检测父节点是否已满
+   - 如果已满 → 标记为 "待 split"，但不立即执行
+   - 后续操作时再处理
+
+4. 延迟高层更新：
+   - 高层节点的 split 延迟到下次访问时
+   - 使用 SplitMarker 标记
+```
+
+**优点**：
+- ✅ 单次 split 只影响直接父节点（1 层）
+- ✅ 减少 CAS 冲突范围
+- ✅ 降低内存分配
+
+**缺点**：
+- ⚠️ 读取时可能遇到 SplitMarker，需要额外处理
+- ⚠️ 实现复杂度增加
+
+**关键代码示例**：
+
+```go
+// operations.go
+
+func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
+    for attempt := 0; attempt < MaxCASRetries; attempt++ {
+        // ... 原有逻辑 ...
+
+        // Step 6: Check if split needed
+        if result.needsSplit {
+            // 执行 split
+            left, right, splitKey, err := oldLeaf.Split()
+            if err != nil {
+                // ...
+            }
+
+            // Step 7: 只更新直接父节点（一层）
+            parentUpdated := false
+            if parentPath := path.ParentPath(); len(parentPath) > 0 {
+                directParent := parentPath[len(parentPath)-1]
+                parentUpdated = updateDirectParent(b, directParent, splitKey, left.PageID(), right.PageID())
+            }
+
+            // Step 8: 如果父节点也满了，标记但不立即处理
+            if !parentUpdated {
+                // 标记父节点需要 split（延迟处理）
+                markParentNeedsSplit(directParent)
+            }
+
+            // 更新叶子节点的 PageRef
+            newInfo := &PageInfo{
+                PageID:  left.PageID(),  // 使用 left 作为新页面
+                Version: oldInfo.Version + 1,
+            }
+
+            if !leafRef.CAS(oldInfo, newInfo) {
+                // CAS 冲突，清理
+                _ = b.storage.FreePage(left.PageID())
+                _ = b.storage.FreePage(right.PageID())
+                continue
+            }
+
+            // 更新 size
+            b.size.Add(result.delta)
+            path.ReleaseAll()
+            return nil
+        }
+
+        // ... 原有的非 split 逻辑 ...
+    }
+}
+```
+
+### SplitMarker 机制
+
+**数据结构**：
+
+```go
+// page_ref.go
+
+type SplitMarker struct {
+    SplitKey   []byte
+    LeftChild  model.PageID
+    RightChild model.PageID
+    Timestamp  time.Time
+}
+
+type PageRef struct {
+    // ... 原有字段 ...
+    splitMarker atomic.Pointer[SplitMarker]
+}
+
+// 标记 split 事件
+func (r *PageRef) MarkSplit(splitKey []byte, left, right model.PageID) {
+    marker := &SplitMarker{
+        SplitKey:   splitKey,
+        LeftChild:  left,
+        RightChild: right,
+        Timestamp:  time.Now(),
+    }
+    r.splitMarker.Store(marker)
+}
+
+// 检查是否有 split 标记
+func (r *PageRef) GetSplitMarker() *SplitMarker {
+    return r.splitMarker.Load()
+}
+```
+
+**读取时的 Split 处理**：
+
+```go
+// search.go
+
+func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) (*SearchPath, error) {
+    path := &SearchPath{}
+    currentRef := rootRef.PageRef
+
+    for {
+        // 检查 split marker
+        if marker := currentRef.GetSplitMarker(); marker != nil {
+            // 触发父节点更新
+            if err := resolveSplitMarker(storage, currentRef, marker); err != nil {
+                // 更新失败，继续使用旧数据
+            }
+        }
+
+        pInfo := currentRef.GetPageInfo()
+        if pInfo == nil {
+            return nil, ErrPageFreed
+        }
+
+        // ... 原有的搜索逻辑 ...
+    }
+}
+```
+
+### 方案 B：批量传播（延后到 Phase 7+）
+
+**核心思想**：累积多个 split，交给 Task Scheduler 批量处理
+
+**优点**：
+- ✅ 批量处理减少 CAS 冲突
+- ✅ 写入操作不被阻塞
+- ✅ 与 Task Scheduler 集成（已有基础设施）
+
+**延后原因**：
+- ⏸️ **优先级较低**：方案 A 已能满足 Phase 6 需求
+- ⏸️ **依赖基础设施**：需要先完成 Task Scheduler 集成
+- ⏸️ **复杂度权衡**：收益不足以抵消本阶段的实现成本
+
+**触发条件**（Phase 7+ 考虑）：
+- 如果写入吞吐量成为瓶颈（> 1M writes/sec）
+- 如果 CAS 冲突率 > 50%
+- 如果需要更高并发扩展性（64+ 核心场景）
+
+### 性能预期
+
+**Split 频率分析**（1M keys 数据集）：
+
+| 指标 | 传统设计 | 最小化传播 | 改进 |
+|------|---------|-----------|------|
+| **每次 split 影响层数** | O(log N) ≈ 20 层 | 1 层 | **-95%** |
+| **立即更新次数** | 8000 × 20 = 160,000 | 8000 × 1 = 8,000 | **-95%** |
+| **写入 CAS 冲突** | 高（级联） | 低（单层） | **-95%** |
+| **内存使用（split 期间）** | ~160,000 页面 | ~16,000 页面 | **-90%** |
+| **写入延迟** | O(log N) | O(1) | **20x 更快** |
+
+### 实现计划（4-5 天）
+
+**Task 6.1**: SplitMarker 基础设施（0.5 天）
+- [ ] 添加 `SplitMarker` 结构体
+- [ ] 扩展 `PageRef` 添加 marker 字段
+- [ ] 实现 `MarkSplit()` / `GetSplitMarker()`
+
+**Task 6.2**: Leaf Split 检测（0.5 天）
+- [ ] 添加 `LeafPage.NeedsSplit()` 方法
+- [ ] 修改 `writeOperation` 检测 split 条件
+- [ ] 测试：`TestLeafSplitDetection`
+
+**Task 6.3**: 直接父节点更新（1 天）
+- [ ] 实现 `updateDirectParent()` 函数
+- [ ] 处理父节点 split 标记
+- [ ] 测试：`TestDirectParentUpdate`
+
+**Task 6.4**: 延迟高层更新（1 天）
+- [ ] 实现 `resolveSplitMarker()` 函数
+- [ ] 修改 `searchPath` 检查 marker
+- [ ] 测试：`TestLazySplitResolution`
+
+**Task 6.5**: Root Split（0.5 天）
+- [ ] 实现 `splitRoot()` 方法
+- [ ] 创建新的 root 节点
+- [ ] 测试：`TestRootSplit`
+
+**Task 6.6**: 集成测试（0.5 天）
+- [ ] `TestMultiLevelRandomOperations`
+- [ ] `TestConcurrentSplitMerge`
+- [ ] 压力测试：10000+ keys
+
+### 验证标准
+
+```bash
+# 功能测试
+go test -run TestLeafSplit ./...
+go test -run TestDirectParentUpdate ./...
+go test -run TestRootSplit ./...
+
+# 并发测试
+go test -run TestMultiLevelRandomOperations -race ./...
+go test -run TestConcurrentSplitMerge -race ./...
+
+# 压力测试
+go test -run TestLargeDataset ./...
+
+# 性能基准
+go test -bench=BenchmarkBTreeSet -benchtime=3s ./...
+```
+
+### 风险与缓解
+
+**风险 1**: SplitMarker 泄漏
+- **缓解**: 超时机制（5 秒后强制清理）+ 后台扫描 + 读取失败时清理
+
+**风险 2**: 读取性能退化
+- **缓解**: Marker 是低频事件（< 1%）+ 限制重试次数 + 监控
+
+**风险 3**: 并发正确性
+- **缓解**: 全面 `-race` 测试 + 压力测试（1000 并发写入）+ 不变式检查
+
+### 参考
+
+- **Lealone 实现**: `thoughts/Lealone/btree/concurrent_cow_btree_2.java`
+- **理论基础**: B-Link Tree + Lazy Maintenance + Optimistic Concurrency
+- **关键类**: `SplitMarker`, `BTreeMap`, `PageReference`
+
+---

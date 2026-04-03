@@ -499,3 +499,18 @@ func TestNodeInsertChildOutOfBounds(t *testing.T) {
 	_, err = node.InsertChild(5, []byte("x"), 1, 2)
 	assert.True(t, errors.Is(err, ErrInvalidPage) || err != nil, "out of bounds should error")
 }
+
+// TestNodeRemoveChild_NotImplemented verifies RemoveChild returns error instead of panic.
+func TestNodeRemoveChild_NotImplemented(t *testing.T) {
+	s := newTestStorage(t)
+	keys := [][]byte{[]byte("a")}
+	children := allocDummyChildren(t, s, 2)
+	node := newTestNodeWithChildren(t, s, keys, children)
+
+	// Should return error, not panic
+	_, err := node.RemoveChild(0)
+	assert.Error(t, err, "RemoveChild should return error")
+	assert.Contains(t, err.Error(), "not implemented", "Error should mention not implemented")
+}
+
+// RemoveChild full functionality is a Phase 6 feature

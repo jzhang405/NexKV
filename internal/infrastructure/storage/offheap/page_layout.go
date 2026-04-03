@@ -210,7 +210,7 @@ func (pa *PageAccessor) ValidatePage(pageID uint32) error {
 	for i := 0; i < int(count); i++ {
 		child, _ := DecodeChildWithVersion(pa.GetIndexEntry(pageID, i).child)
 		if child == 0 {
-			return fmt.Errorf("page %d has child=0 at index %d", pageID, i)
+			return errpkg.OffHeapPageHasChildAtZero(pageID, i)
 		}
 	}
 
@@ -218,7 +218,7 @@ func (pa *PageAccessor) ValidatePage(pageID uint32) error {
 	if count > 0 {
 		extraChild, _ := DecodeChildWithVersion(header.extraChild)
 		if extraChild == 0 {
-			return fmt.Errorf("page %d has extraChild=0 with count=%d", pageID, count)
+			return errpkg.OffHeapPageHasExtraChildAtZero(pageID, count)
 		}
 	}
 
@@ -243,7 +243,7 @@ func (pa *PageAccessor) CheckPageInvariants(pageID uint32) error {
 		prevKey := pa.GetKey(pageID, prevEntry.keyOff, prevEntry.keyLen)
 		currKey := pa.GetKey(pageID, currEntry.keyOff, currEntry.keyLen)
 		if bytes.Compare(prevKey, currKey) >= 0 {
-			return fmt.Errorf("page %d invariant violated: keys not sorted at index %d", pageID, i)
+			return errpkg.OffHeapPageKeysNotSortedViolation(pageID, i)
 		}
 	}
 
@@ -251,7 +251,7 @@ func (pa *PageAccessor) CheckPageInvariants(pageID uint32) error {
 	for i := 0; i < int(count); i++ {
 		child, _ := DecodeChildWithVersion(pa.GetIndexEntry(pageID, i).child)
 		if child == 0 {
-			return fmt.Errorf("page %d invariant violated: child=0 at index %d", pageID, i)
+			return errpkg.OffHeapPageChildAtZeroViolation(pageID, i)
 		}
 	}
 
@@ -259,7 +259,7 @@ func (pa *PageAccessor) CheckPageInvariants(pageID uint32) error {
 	if count > 0 {
 		extraChild, _ := DecodeChildWithVersion(header.extraChild)
 		if extraChild == 0 {
-			return fmt.Errorf("page %d invariant violated: extraChild=0 with count=%d", pageID, count)
+			return errpkg.OffHeapPageExtraChildAtZeroViolation(pageID, count)
 		}
 	}
 
@@ -296,7 +296,7 @@ func (pa *PageAccessor) GetIndexEntrySafe(pageID uint32, index int) (*IndexEntry
 	ptr := pa.getPtr(pageID)
 	header := (*PageHeader)(ptr)
 	if index >= int(header.count) {
-		return nil, fmt.Errorf("index %d out of range (count: %d)", index, header.count)
+		return nil, errpkg.OffHeapIndexOutOfRange(index, header.count)
 	}
 	entryPtr := unsafe.Add(ptr, SizeofPageHeader+index*SizeofIndexEntry)
 	return (*IndexEntry)(entryPtr), nil
@@ -307,7 +307,7 @@ func (pa *PageAccessor) GetLeafEntrySafe(pageID uint32, index int) (*LeafEntry, 
 	ptr := pa.getPtr(pageID)
 	header := (*PageHeader)(ptr)
 	if index >= int(header.count) {
-		return nil, fmt.Errorf("index %d out of range (count: %d)", index, header.count)
+		return nil, errpkg.OffHeapIndexOutOfRange(index, header.count)
 	}
 	entryPtr := unsafe.Add(ptr, SizeofPageHeader+index*SizeofLeafEntry)
 	return (*LeafEntry)(entryPtr), nil
@@ -755,7 +755,7 @@ func (pa *PageAccessor) BulkInitLeafFromSource(
 		if err != nil {
 			// 源页面在拷贝过程中被回收重用（count 已变）
 			// 返回错误让调用者重试，而非 panic
-			return 0, fmt.Errorf("source page recycled during bulk init: %w", err)
+			return 0, errpkg.OffHeapSourcePageRecycled(err)
 		}
 		key := pa.GetKey(srcPageID, entry.keyOff, entry.keyLen)
 		value := pa.GetValue(srcPageID, entry.valOff, entry.valLen)
@@ -829,7 +829,7 @@ func (pa *PageAccessor) BulkInitIndexFromSource(
 		child, _ := DecodeChildWithVersion(entry.child)
 		// Phase 6: 禁止 child=0 - 自环检测，返回错误
 		if child == srcPageID || child == 0 {
-			return 0, fmt.Errorf("self-loop (or zero) detected in source page %d at index %d, child=%d", srcPageID, i, child)
+			return 0, errpkg.OffHeapSelfLoopDetected(srcPageID, i, child)
 		}
 		dstIdx := i - startIdx
 		if err := pa.InsertIndexEntry(dstPageID, dstIdx, key, child, &dataEnd); err != nil {
@@ -841,7 +841,7 @@ func (pa *PageAccessor) BulkInitIndexFromSource(
 	// Phase 6: 禁止 child=0 - 自环检测，返回错误
 	extraChildPageID, _ := DecodeChildWithVersion(extraChild)
 	if extraChildPageID == srcPageID {
-		return 0, fmt.Errorf("self-loop detected in source page %d extraChild", srcPageID)
+		return 0, errpkg.OffHeapSelfLoopInExtraChild(srcPageID)
 	}
 	dstHeader := pa.GetHeader(dstPageID)
 	dstHeader.extraChild = extraChild

@@ -6,6 +6,8 @@ package btree
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 	"sync/atomic"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -116,34 +118,39 @@ func (r *PageRef) SetParentRef(parent *PageRef) {
 }
 
 // GetOrCreateChildren returns the child PageRef slice for this node.
-// For leaf pages, returns nil.
+// For leaf pages, returns (nil, nil).
 // For internal nodes, lazily constructs children from page data on first access.
 // Thread-safe via CAS.
-func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) []*PageRef {
+//
+// Error handling:
+// - Returns (nil, nil) for leaf pages (expected condition)
+// - Returns (nil, error) for real errors (tree closed, invalid page)
+func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) ([]*PageRef, error) {
 	if c := r.children.Load(); c != nil {
-		return *c
+		return *c, nil
 	}
 
 	info := r.GetPageInfo()
 	if info == nil {
-		return nil
+		return nil, nil
 	}
 
 	// Check if this is a leaf — leaves have no children
 	if storage == nil {
-		return nil
+		return nil, nil
 	}
 	page, err := storage.GetNodePage(info.PageID)
 	if err != nil {
-		// Error from storage: could be a leaf page (expected), ErrTreeClosed,
-		// or ErrInvalidPage (programming error). For leaf pages, GetNodePage
-		// returns an error because the page type is not InternalPage.
-		// Returning nil causes searchPath to treat this as a leaf and stop
-		// descending. Safe for normal operation (C4 design decision).
-		return nil
+		// Check if this is the expected "not a node page" error (leaf page)
+		// This is the normal case when traversing to a leaf
+		if isLeafPageError(err) {
+			return nil, nil
+		}
+		// Real error: tree closed, invalid page, etc.
+		return nil, fmt.Errorf("GetOrCreateChildren: %w", err)
 	}
 	if page.IsLeaf() {
-		return nil
+		return nil, nil
 	}
 
 	childCount := page.ChildCount()
@@ -154,10 +161,16 @@ func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) []*PageRef {
 	}
 
 	if r.children.CompareAndSwap(nil, &newChildren) {
-		return newChildren
+		return newChildren, nil
 	}
 	// Another goroutine won the CAS race
-	return *r.children.Load()
+	return *r.children.Load(), nil
+}
+
+// isLeafPageError checks if the error indicates the page is a leaf (expected condition).
+func isLeafPageError(err error) bool {
+	// GetNodePage returns "btree: page X is not a node page" when the page type is LeafPage
+	return strings.Contains(err.Error(), "is not a node page")
 }
 
 // GetPathToRoot traverses parentRef chain from this node up to the root.

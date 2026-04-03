@@ -80,7 +80,11 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 		path = append(path, PathEntry{Ref: currentRef, Index: idx})
 
 		// Get or lazily create child refs
-		children := currentRef.GetOrCreateChildren(storage)
+		children, err := currentRef.GetOrCreateChildren(storage)
+		if err != nil {
+			path.ReleaseAll()
+			return nil, fmt.Errorf("btree: searchPath: %w", err)
+		}
 		if idx >= len(children) || children[idx] == nil {
 			path.ReleaseAll()
 			return nil, fmt.Errorf("btree: searchPath: child[%d] not found on page %d", idx, pInfo.PageID)

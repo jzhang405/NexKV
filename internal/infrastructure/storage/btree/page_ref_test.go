@@ -170,7 +170,8 @@ func TestPageRefGetOrCreateChildrenLeaf(t *testing.T) {
 
 	r, _ := newTestPageRef(t, id, 1, nil)
 
-	children := r.GetOrCreateChildren(s)
+	children, err := r.GetOrCreateChildren(s)
+	assert.NoError(t, err)
 	assert.Nil(t, children, "leaf page should have no children")
 }
 
@@ -192,8 +193,8 @@ func TestPageRefGetOrCreateChildrenNode(t *testing.T) {
 	s.pa.SetChild(uint32(rootID), 1, uint32(c2))
 
 	r, _ := newTestPageRef(t, rootID, 1, nil)
-	children := r.GetOrCreateChildren(s)
-
+	children, err := r.GetOrCreateChildren(s)
+	require.NoError(t, err)
 	require.Len(t, children, 2)
 	assert.Equal(t, c1, children[0].GetPageInfo().PageID)
 	assert.Equal(t, c2, children[1].GetPageInfo().PageID)
@@ -220,12 +221,15 @@ func TestPageRefGetOrCreateChildrenConcurrent(t *testing.T) {
 	const goroutines = 10
 	var wg sync.WaitGroup
 	results := make([][]*PageRef, goroutines)
+	errResults := make([]error, goroutines)
 
 	for i := range goroutines {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			results[idx] = r.GetOrCreateChildren(s)
+			children, err := r.GetOrCreateChildren(s)
+			results[idx] = children
+			errResults[idx] = err
 		}(i)
 	}
 	wg.Wait()
@@ -233,6 +237,7 @@ func TestPageRefGetOrCreateChildrenConcurrent(t *testing.T) {
 	// All goroutines should get the same children slice
 	for i := 1; i < goroutines; i++ {
 		assert.Equal(t, results[0], results[i], "all goroutines should see same children")
+		assert.NoError(t, errResults[i], "GetOrCreateChildren should not return error")
 	}
 }
 

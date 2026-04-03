@@ -5,6 +5,7 @@
 package btree
 
 import (
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"bytes"
 	"fmt"
 	"unsafe"
@@ -67,7 +68,7 @@ func (h *leafPageHandle) Insert(key, value []byte) (LeafPage, error) {
 	// COW: allocate new page, copy 4096 bytes, modify the copy
 	newRawID, err := h.storage.pm.Alloc()
 	if err != nil {
-		return nil, fmt.Errorf("btree: leaf insert alloc: %w", err)
+		return nil, errpkg.BTreeLeafInsertAlloc(err)
 	}
 
 	srcPtr := h.storage.pm.PageIDToPtr(uint32(h.id))
@@ -90,7 +91,7 @@ func (h *leafPageHandle) Insert(key, value []byte) (LeafPage, error) {
 	dataEnd := h.pa.GetDataEnd(rawNewID)
 	if err := h.pa.InsertLeafEntry(rawNewID, int(idx), key, value, &dataEnd); err != nil {
 		h.storage.pm.Free(newRawID)
-		return nil, fmt.Errorf("btree: leaf insert entry: %w", err)
+		return nil, errpkg.BTreeLeafInsertEntry(err)
 	}
 
 	newID := model.PageID(newRawID)
@@ -105,7 +106,7 @@ func (h *leafPageHandle) Update(idx int, value []byte) (LeafPage, error) {
 	// COW copy
 	newRawID, err := h.storage.pm.Alloc()
 	if err != nil {
-		return nil, fmt.Errorf("btree: leaf update alloc: %w", err)
+		return nil, errpkg.BTreeLeafUpdateAlloc(err)
 	}
 	srcPtr := h.storage.pm.PageIDToPtr(uint32(h.id))
 	dstPtr := h.storage.pm.PageIDToPtr(newRawID)
@@ -130,21 +131,21 @@ func (h *leafPageHandle) Update(idx int, value []byte) (LeafPage, error) {
 	// Rebuild page without the old entry, then insert new KV
 	rebuildRawID, err := h.storage.pm.Alloc()
 	if err != nil {
-		return nil, fmt.Errorf("btree: leaf update rebuild alloc: %w", err)
+		return nil, errpkg.BTreeLeafUpdateRebuildAlloc(err)
 	}
 	h.pa.InitLeafPage(rebuildRawID, srcVersion+1)
 	dataEnd := uint16(0)
 	for i := range keys {
 		if err := h.pa.InsertLeafEntry(rebuildRawID, i, keys[i], vals[i], &dataEnd); err != nil {
 			h.storage.pm.Free(rebuildRawID)
-			return nil, fmt.Errorf("btree: leaf update rebuild: %w", err)
+			return nil, errpkg.BTreeLeafUpdateRebuild(err)
 		}
 	}
 	// Insert the new KV pair
 	insertIdx, _, _ := h.pa.SearchKey(rebuildRawID, key, true)
 	if err := h.pa.InsertLeafEntry(rebuildRawID, insertIdx, key, value, &dataEnd); err != nil {
 		h.storage.pm.Free(rebuildRawID)
-		return nil, fmt.Errorf("btree: leaf update reinsert: %w", err)
+		return nil, errpkg.BTreeLeafUpdateReinsert(err)
 	}
 
 	newID := model.PageID(rebuildRawID)
@@ -161,7 +162,7 @@ func (h *leafPageHandle) Delete(idx int) (LeafPage, error) {
 
 	newRawID, err := h.storage.pm.Alloc()
 	if err != nil {
-		return nil, fmt.Errorf("btree: leaf delete alloc: %w", err)
+		return nil, errpkg.BTreeLeafDeleteAlloc(err)
 	}
 	srcVersion := h.pa.GetVersion(uint32(h.id))
 	h.pa.InitLeafPage(newRawID, srcVersion+1)
@@ -170,7 +171,7 @@ func (h *leafPageHandle) Delete(idx int) (LeafPage, error) {
 	for i := range keys {
 		if err := h.pa.InsertLeafEntry(newRawID, i, keys[i], vals[i], &dataEnd); err != nil {
 			h.storage.pm.Free(newRawID)
-			return nil, fmt.Errorf("btree: leaf delete rebuild: %w", err)
+			return nil, errpkg.BTreeLeafDeleteRebuild(err)
 		}
 	}
 
@@ -181,7 +182,7 @@ func (h *leafPageHandle) Delete(idx int) (LeafPage, error) {
 func (h *leafPageHandle) Split() (LeafPage, LeafPage, []byte, error) {
 	count := h.Count()
 	if count < 2 {
-		return nil, nil, nil, fmt.Errorf("btree: leaf split: page has %d entries, need at least 2", count)
+		return nil, nil, nil, errpkg.BTreeLeafSplitMinKeys(count)
 	}
 
 	mid := count / 2
@@ -194,12 +195,12 @@ func (h *leafPageHandle) Split() (LeafPage, LeafPage, []byte, error) {
 
 	leftRawID, err := h.storage.pm.Alloc()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("btree: leaf split alloc left: %w", err)
+		return nil, nil, nil, errpkg.BTreeLeafSplitAllocLeft(err)
 	}
 	rightRawID, err := h.storage.pm.Alloc()
 	if err != nil {
 		h.storage.pm.Free(leftRawID)
-		return nil, nil, nil, fmt.Errorf("btree: leaf split alloc right: %w", err)
+		return nil, nil, nil, errpkg.BTreeLeafSplitAllocRight(err)
 	}
 
 	srcVersion := h.pa.GetVersion(uint32(h.id))
@@ -207,14 +208,14 @@ func (h *leafPageHandle) Split() (LeafPage, LeafPage, []byte, error) {
 	if _, err := h.pa.BulkInitLeafFromSource(uint32(h.id), leftRawID, 0, mid); err != nil {
 		h.storage.pm.Free(leftRawID)
 		h.storage.pm.Free(rightRawID)
-		return nil, nil, nil, fmt.Errorf("btree: leaf split left bulk init: %w", err)
+		return nil, nil, nil, errpkg.BTreeLeafSplitLeftBulkInit(err)
 	}
 	h.pa.SetVersion(leftRawID, srcVersion+1)
 
 	if _, err := h.pa.BulkInitLeafFromSource(uint32(h.id), rightRawID, mid, count); err != nil {
 		h.storage.pm.Free(leftRawID)
 		h.storage.pm.Free(rightRawID)
-		return nil, nil, nil, fmt.Errorf("btree: leaf split right bulk init: %w", err)
+		return nil, nil, nil, errpkg.BTreeLeafSplitRightBulkInit(err)
 	}
 	h.pa.SetVersion(rightRawID, srcVersion+1)
 
@@ -226,13 +227,13 @@ func (h *leafPageHandle) Split() (LeafPage, LeafPage, []byte, error) {
 func (h *leafPageHandle) Validate() error {
 	count := h.Count()
 	if count < 0 {
-		return fmt.Errorf("btree: leaf validate: negative count %d", count)
+		return errpkg.BTreeLeafValidateNegativeCount(count)
 	}
 	for i := 1; i < count; i++ {
 		prev := h.GetKey(i - 1)
 		curr := h.GetKey(i)
 		if bytes.Compare(prev, curr) >= 0 {
-			return fmt.Errorf("btree: leaf validate: key ordering violation at idx %d: %q >= %q", i, prev, curr)
+			return errpkg.BTreeLeafValidateKeyOrderingViolation(i, prev, curr)
 		}
 	}
 	return nil

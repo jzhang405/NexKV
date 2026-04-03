@@ -1,8 +1,11 @@
-# BTree2 重构 Action Plan
+# BTree 重构 Action Plan
 
 > 创建时间：2026-04-02
-> 状态：Phase 3 完成，准备 Phase 4
+> 最后更新：2026-04-03
+> 状态：Phase 5 完成 ✅
 > 范围：v1 最小可用版本（Get/Set/Delete + Split + Merge，不含 WAL）
+>
+> **审核报告**: `thoughts/btree-code-review-round2-final-report-20260403.md`
 
 ## 0. 协作原则
 
@@ -334,40 +337,149 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error
   - `TestNodeInsertChildPreservesOtherKeys` — 插入不破坏已有数据
   - `TestNodeGetKeyFormat` / `TestNodeReplaceChildOutOfBounds` / `TestNodeInsertChildOutOfBounds` — 边界
 
-### Phase 4: PageRef + RootPageRef（1-2 天）
+### Phase 4: PageRef + RootPageRef ✅ 已完成
 
 **产出**：CAS 可替换的引用链
 
-- [ ] 创建 `btree2/page_info.go` — 不可变 PageInfo
-- [ ] 创建 `btree2/page_ref.go` — atomic CAS + parentRef
-- [ ] 创建 `btree2/root_ref.go` — root 特化：CAS + 子节点 parentRef 传播
-- [ ] 创建 `btree2/page_lock.go` — SchedulerLock
-- [ ] 验证：
-  - `TestPageRefCASSuccess` — CAS 成功
-  - `TestPageRefCASConflict` — CAS 失败返回 false
-  - `TestParentRefChain` — GetPathToRoot 正确
-  - `TestConcurrentCAS` — 多 goroutine 竞争
+- [x] `page_info.go` — 不可变 PageInfo
+- [x] `page_ref.go` — atomic CAS + 引用计数管理
+- [x] `root_ref.go` — root 特化：CAS + 子节点传播
+- [x] `page_lock.go` — SchedulerLock（spin + TryLock）
+- [x] 验证通过：
+  - `TestPageRefCASSuccess` / `TestPageRefCASConflict`
+  - `TestSchedulerLock` / `TestTryLock_*`（6 个测试）
+  - `TestConcurrentCAS`
 
-### Phase 5: BTree 核心 + WriteOperation（3-4 天）
+### Phase 5: BTree 核心 + WriteOperation ✅ 已完成
 
-**产出**：Get/Set/Delete 实现
+**产出**：Get/Set/Delete 实现（单叶子操作，不含 Split 传播）
 
-- [ ] 创建 `btree2/operations.go` — WriteOperation 模板方法
-- [ ] 创建 `btree2/btree.go` — BTree 结构体实现 service.KVStore
-- [ ] 验证：
-  - `TestBTreeSetGet` — 基本读写
-  - `TestBTreeUpdate` — 覆盖写入
-  - `TestBTreeDelete` — 删除
-  - `TestBTreeConcurrentSet` — 多 goroutine 并发写
-  - `TestBTreeLargeDataset` — 10k+ keys 全部可检索
-  - `TestBTreeNoDataLoss` — 移植 btree_regression_test.go 场景
+- [x] `operations.go` — WriteOperation 模板方法
+- [x] `btree.go` — BTree 结构体实现 service.KVStore
+- [x] 验证通过（79% 测试覆盖率）：
+  - `TestBTreeSetGet` / `TestBTreeUpdate` / `TestBTreeDelete`
+  - `TestBTreeConcurrentSet` / `TestBTreeNoDataLoss`（并发数据一致性）
+  - `TestBTreeClose` / `TestBTreeSize` / `TestBTreeStubMethods`
+  - 所有测试通过（含 `-race`）
+
+**当前代码质量评估**（2026-04-03）：
+| 维度 | 评分 | 说明 |
+|------|------|------|
+| 并发安全性 | 9.5/10 ⭐⭐⭐⭐⭐ | 引用计数+CAS 设计优秀 |
+| 资源管理 | 9.0/10 ⭐⭐⭐⭐⭐ | 无泄漏风险，defer 覆盖完整 |
+| 错误处理 | 8.5/10 ⭐⭐⭐⭐ | 一致性好，1 个静默忽略问题 |
+| 测试覆盖 | 8.0/10 ⭐⭐⭐⭐ | 功能测试完整，缺性能测试 |
+| 性能 | 7.0/10 ⭐⭐⭐⭐ | 读卓越（13.8M ops/s），写有优化空间 |
+
+**总体评分**: 8.4/10 ⭐⭐⭐⭐
+**生产就绪度**: ✅ Phase 5 已就绪（单叶子操作范围内）
+
+---
+
+## 下一步：按需优化路线图
+
+> ⚠️ **重要原则：不要过早优化！**
+> 
+> 参考：`thoughts/btree-code-review-round2-final-report-20260403.md`
+
+### Phase 5.5: 性能基准测试基础设施（本周）
+
+**目标**：建立性能测量基础设施，**不实施优化**
+
+**任务**：
+- [ ] 添加性能基准测试
+  ```go
+  // btree_test.go
+  func BenchmarkBTreeSetSequential(b *testing.B)
+  func BenchmarkBTreeSetParallel(b *testing.B)
+  func BenchmarkBTreeGetSequential(b *testing.B)
+  func BenchmarkBTreeGetParallel(b *testing.B)
+  ```
+
+- [ ] 添加性能监控指标
+  ```go
+  // metrics.go (新文件)
+  type BTreeMetrics struct {
+      ReadCount       atomic.Int64
+      WriteCount      atomic.Int64
+      CASRetryCount   atomic.Int64
+      SplitCount      atomic.Int64
+      MergeCount      atomic.Int64
+  }
+  ```
+
+**验证**：
+```bash
+go test -bench=. -benchmem ./internal/infrastructure/storage/btree/...
+```
+
+### Phase 5.6: 观察与分析（下周）
+
+**目标**：使用基准测试收集真实性能数据
+
+**任务**：
+- [ ] 运行性能测试（收集 1 周数据）
+- [ ] 使用 pprof 分析瓶颈
+  ```bash
+  go test -bench=. -cpuprofile=cpu.prof -memprofile=mem.prof
+  go tool pprof cpu.prof
+  go tool pprof mem.prof
+  ```
+- [ ] 识别真正的热点（而非假设）
+
+**决策点**：
+- 如果 SearchPath 分配是热点 → 实施 P2 优化
+- 如果 COW 复制是热点 → 考虑路径压缩
+- 如果锁竞争是热点 → 考虑分片 BTree
+
+### Phase 6.0: 功能完整性（1-2 个月后）
+
+**目标**：实现多级树功能
+
+**前置条件**：
+- ✅ Phase 5.5 完成（有性能基准）
+- ✅ Phase 5.6 完成（有瓶颈数据）
+
+**任务**：
+- [ ] Split 集成
+  - 在 writeOperation 中添加 split 检测
+  - 实现 propagateSplit 逻辑
+  
+- [ ] Merge 实现
+  - 实现 RemoveChild 逻辑（已修复 panic → error）
+  - 实现页面下溢检测
+
+**验证**：
+```bash
+go test -run TestMultiLevelRandomOperations ./...
+go test -run TestConcurrentSplitMerge ./...
+```
+
+### Phase 6.5: 性能优化（按需，2-3 个月后）
+
+**目标**：基于真实瓶颈数据优化
+
+**前置条件**：
+- ✅ Phase 6.0 完成（功能完整）
+- ✅ 有真实的性能问题数据
+
+**可选优化**（仅在被证明需要时）：
+
+1. **P2**: SearchPath 对象池（如果 pprof 显示是热点）
+2. **P2**: SchedulerLock 超时（如果检测到死锁）
+3. **P2**: CAS 退避策略（如果 CAS 冲突严重）
+4. **P2**: 分片 BTree（如果并发扩展性不足）
+
+---
+
+## 原始计划（参考）
 
 ### Phase 6: Split 传播（2-3 天）
 
 **产出**：叶子分裂 → 父节点更新 → 根分裂 → 新根创建
 
-- [ ] 修改 `btree2/operations.go` — 分裂处理
-- [ ] 修改 `btree2/btree.go` — `splitRoot` 方法
+- [ ] 修改 `operations.go` — 分裂处理
+- [ ] 修改 `btree.go` — `splitRoot` 方法
 - [ ] 验证：
   - `TestSplitPropagation` — 触发叶子分裂，父节点更新
   - `TestRootSplit` — 根分裂，树高度增长
@@ -474,13 +586,16 @@ go test -run TestBTreeLargeDataset              # 10k+ keys
 | Phase 1: BTreeStorage | 1-2 天 | 1.5-2.5 天 | ✅ 完成（d5d4c63）|
 | Phase 2: LeafPageHandle | 2-3 天 | 3.5-5.5 天 | ✅ 完成（2026-04-02）|
 | Phase 3: NodePageHandle + Search | 2-3 天 | 5.5-8.5 天 | ✅ 完成（2026-04-02）|
-| Phase 4: PageRef + RootPageRef | 1-2 天 | 6.5-10.5 天 |
-| Phase 5: BTree 核心 | 3-4 天 | 9.5-14.5 天 |
-| Phase 6: Split 传播 | 2-3 天 | 11.5-17.5 天 |
-| Phase 6.5: Lazy Merge | 2-3 天 | 13.5-20.5 天 |
-| Phase 7: 调试基础设施 | 1-2 天 | 14.5-22.5 天 |
+| Phase 4: PageRef + RootPageRef | 1-2 天 | 6.5-10.5 天 | ✅ 完成（2026-04-03）|
+| Phase 5: BTree 核心 | 3-4 天 | 9.5-14.5 天 | ✅ 完成（2026-04-03）|
+| Phase 5.5: 性能基准基础设施 | 0.5 天 | 10-15 天 | ⏳ 待开始 |
+| Phase 5.6: 观察与分析 | 1 周 | - | ⏸ 数据收集 |
+| Phase 6: Split 传播 | 2-3 天 | 11.5-17.5 天 | 📋 计划中 |
+| Phase 6.5: Lazy Merge | 2-3 天 | 13.5-20.5 天 | 📋 计划中 |
+| Phase 6.5+: 性能优化 | 按需 | - | ⏸ 仅在需要时 |
 
-**总计**：约 3-4.5 周。
+**Phase 5 完成时间**：2026-04-03
+**当前状态**：Phase 5 已就绪，等待 Phase 5.5（性能基准基础设施）
 
 ## 12. Out of Scope（btree2 不处理）
 

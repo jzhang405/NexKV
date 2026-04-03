@@ -5,6 +5,7 @@
 package btree
 
 import (
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"bytes"
 	"fmt"
 	"unsafe"
@@ -74,7 +75,7 @@ func (h *nodePageHandle) ReplaceChild(idx int, newChildID model.PageID) (NodePag
 
 	newRawID, err := h.storage.pm.Alloc()
 	if err != nil {
-		return nil, fmt.Errorf("btree: node replace child alloc: %w", err)
+		return nil, errpkg.BTreeNodeReplaceChildAlloc(err)
 	}
 	srcPtr := h.storage.pm.PageIDToPtr(uint32(h.id))
 	dstPtr := h.storage.pm.PageIDToPtr(newRawID)
@@ -99,7 +100,7 @@ func (h *nodePageHandle) InsertChild(idx int, splitKey []byte, left, right model
 
 	newRawID, err := h.storage.pm.Alloc()
 	if err != nil {
-		return nil, fmt.Errorf("btree: node insert child alloc: %w", err)
+		return nil, errpkg.BTreeNodeInsertChildAlloc(err)
 	}
 	srcPtr := h.storage.pm.PageIDToPtr(uint32(h.id))
 	dstPtr := h.storage.pm.PageIDToPtr(newRawID)
@@ -118,13 +119,13 @@ func (h *nodePageHandle) InsertChild(idx int, splitKey []byte, left, right model
 		h.pa.SetChild(newRawID, idx, uint32(right))
 		if err := h.pa.InsertIndexEntry(newRawID, idx, splitKey, uint32(left), &dataEnd); err != nil {
 			h.storage.pm.Free(newRawID)
-			return nil, fmt.Errorf("btree: node insert child entry: %w", err)
+			return nil, errpkg.BTreeNodeInsertChildEntry(err)
 		}
 	} else {
 		// End insert: extraChild splits into left and right
 		if err := h.pa.InsertIndexEntry(newRawID, count, splitKey, uint32(left), &dataEnd); err != nil {
 			h.storage.pm.Free(newRawID)
-			return nil, fmt.Errorf("btree: node insert child at end: %w", err)
+			return nil, errpkg.BTreeNodeInsertChildAtEnd(err)
 		}
 		// After insert, count = old_count+1. SetChild(new_count, right) → sets extraChild
 		h.pa.SetChild(newRawID, count+1, uint32(right))
@@ -135,13 +136,13 @@ func (h *nodePageHandle) InsertChild(idx int, splitKey []byte, left, right model
 }
 
 func (h *nodePageHandle) RemoveChild(_ int) (NodePage, error) {
-	panic("btree: NodePage.RemoveChild not implemented until Phase 6.5")
+	return nil, fmt.Errorf("btree: NodePage.RemoveChild not implemented until Phase 6.5")
 }
 
 func (h *nodePageHandle) Split() (NodePage, NodePage, []byte, error) {
 	count := h.Count()
 	if count < 2 {
-		return nil, nil, nil, fmt.Errorf("btree: node split: page has %d entries, need at least 2", count)
+		return nil, nil, nil, errpkg.BTreeNodeSplitMinKeys(count)
 	}
 
 	mid := count / 2
@@ -153,12 +154,12 @@ func (h *nodePageHandle) Split() (NodePage, NodePage, []byte, error) {
 
 	leftRawID, err := h.storage.pm.Alloc()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("btree: node split alloc left: %w", err)
+		return nil, nil, nil, errpkg.BTreeNodeSplitAllocLeft(err)
 	}
 	rightRawID, err := h.storage.pm.Alloc()
 	if err != nil {
 		h.storage.pm.Free(leftRawID)
-		return nil, nil, nil, fmt.Errorf("btree: node split alloc right: %w", err)
+		return nil, nil, nil, errpkg.BTreeNodeSplitAllocRight(err)
 	}
 
 	srcRawID := uint32(h.id)
@@ -169,7 +170,7 @@ func (h *nodePageHandle) Split() (NodePage, NodePage, []byte, error) {
 	if _, err := h.pa.BulkInitIndexFromSource(srcRawID, leftRawID, 0, mid, leftExtraChild); err != nil {
 		h.storage.pm.Free(leftRawID)
 		h.storage.pm.Free(rightRawID)
-		return nil, nil, nil, fmt.Errorf("btree: node split left bulk init: %w", err)
+		return nil, nil, nil, errpkg.BTreeNodeSplitLeftBulkInit(err)
 	}
 	h.pa.SetVersion(leftRawID, srcVersion+1)
 
@@ -178,7 +179,7 @@ func (h *nodePageHandle) Split() (NodePage, NodePage, []byte, error) {
 	if _, err := h.pa.BulkInitIndexFromSource(srcRawID, rightRawID, mid+1, count, rightExtraChild); err != nil {
 		h.storage.pm.Free(leftRawID)
 		h.storage.pm.Free(rightRawID)
-		return nil, nil, nil, fmt.Errorf("btree: node split right bulk init: %w", err)
+		return nil, nil, nil, errpkg.BTreeNodeSplitRightBulkInit(err)
 	}
 	h.pa.SetVersion(rightRawID, srcVersion+1)
 
@@ -190,13 +191,13 @@ func (h *nodePageHandle) Split() (NodePage, NodePage, []byte, error) {
 func (h *nodePageHandle) Validate() error {
 	count := h.Count()
 	if count < 0 {
-		return fmt.Errorf("btree: node validate: negative count %d", count)
+		return errpkg.BTreeNodeValidateNegativeCount(count)
 	}
 	for i := 1; i < count; i++ {
 		prev := h.GetKey(i - 1)
 		curr := h.GetKey(i)
 		if bytes.Compare(prev, curr) >= 0 {
-			return fmt.Errorf("btree: node validate: key ordering violation at idx %d: %q >= %q", i, prev, curr)
+			return errpkg.BTreeNodeValidateKeyOrderingViolation(i, prev, curr)
 		}
 	}
 	if h.ChildCount() != count+1 {

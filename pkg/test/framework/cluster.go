@@ -5,6 +5,7 @@ package framework
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/jzhang405/NexKV/pkg/errors"
@@ -202,7 +203,7 @@ func (c *DefaultCluster) AddNode(config NodeConfig) (TestNode, error) {
 	defer c.mu.Unlock()
 
 	if _, exists := c.nodes[config.ID]; exists {
-		return nil, errors.Wrapf(errors.ErrComponentExists, "node %s already exists", config.ID)
+		return nil, errors.WrapString(errors.ErrComponentExists, "node already exists", config.ID)
 	}
 
 	// 创建节点（具体实现由子类提供）
@@ -216,7 +217,7 @@ func (c *DefaultCluster) GetNode(id string) (TestNode, error) {
 
 	node, exists := c.nodes[id]
 	if !exists {
-		return nil, errors.Wrapf(errors.ErrTestNodeNotFound, "node %s not found", id)
+		return nil, errors.WrapString(errors.ErrTestNodeNotFound, "node not found", id)
 	}
 	return node, nil
 }
@@ -228,14 +229,14 @@ func (c *DefaultCluster) RemoveNode(id string) error {
 
 	node, exists := c.nodes[id]
 	if !exists {
-		return errors.WrapString(errors.ErrTestNodeNotFound, "node %s not found", id)
-        }
+		return errors.WrapString(errors.ErrTestNodeNotFound, "node not found", id)
+	}
 
 	// 停止节点
 	if node.IsRunning() {
 		ctx := context.Background()
 		if err := node.Stop(ctx); err != nil {
-			return errors.Wrapf(err, "failed to stop node %s", id)
+			return errors.Wrap(err, fmt.Sprintf("failed to stop node %s", id))
 		}
 	}
 
@@ -273,7 +274,7 @@ func (c *DefaultCluster) StartAll(ctx context.Context) error {
 
 		if !node.IsRunning() {
 			if err := node.Start(ctx); err != nil {
-				return errors.Wrapf(err, "failed to start node %s", node.ID())
+				return errors.Wrap(err, fmt.Sprintf("failed to start node %s", node.ID()))
 			}
 		}
 	}
@@ -298,7 +299,7 @@ func (c *DefaultCluster) StopAll(ctx context.Context) error {
 
 		if node.IsRunning() {
 			if err := node.Stop(ctx); err != nil {
-				return errors.Wrapf(err, "failed to stop node %s", node.ID())
+				return errors.Wrap(err, fmt.Sprintf("failed to stop node %s", node.ID()))
 			}
 		}
 	}

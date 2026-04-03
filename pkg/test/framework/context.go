@@ -190,7 +190,7 @@ func generateTempDir() (string, error) {
 
 	// 创建目录（检查错误）
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		return "", errors.Wrapf(err, "failed to create temp directory %s", tempDir)
+		return "", errors.Wrap(err, fmt.Sprintf("failed to create temp directory %s", tempDir))
 	}
 
 	return tempDir, nil
@@ -209,7 +209,7 @@ func generateTempDirWithSeed(seed int64) (string, error) {
 
 	// 创建目录（检查错误）
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		return "", errors.Wrapf(err, "failed to create temp directory %s", tempDir)
+		return "", errors.Wrap(err, fmt.Sprintf("failed to create temp directory %s", tempDir))
 	}
 
 	return tempDir, nil

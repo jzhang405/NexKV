@@ -3,6 +3,7 @@ package framework
 import (
 	"container/list"
 	"context"
+	"fmt"
 	"io"
 	"sync"
 
@@ -32,7 +33,7 @@ func (r *ComponentRegistry) Register(componentType ComponentType, factory Compon
 	defer r.mu.Unlock()
 
 	if _, exists := r.factories[componentType]; exists {
-		return errors.Wrapf(errors.ErrComponentExists, "component type %s already registered", componentType)
+		return errors.WrapString(errors.ErrComponentExists, "component type already registered", string(componentType))
 	}
 
 	r.factories[componentType] = factory
@@ -46,7 +47,7 @@ func (r *ComponentRegistry) GetFactory(componentType ComponentType) (ComponentFa
 
 	factory, exists := r.factories[componentType]
 	if !exists {
-		return nil, errors.Wrapf(errors.ErrComponentNotFound, "component type %s not registered", componentType)
+		return nil, errors.WrapString(errors.ErrComponentNotFound, "component type not registered", string(componentType))
 	}
 
 	return factory, nil
@@ -98,12 +99,12 @@ func (r *ComponentRegistry) ResolveDependencies(componentTypes []ComponentType) 
 	for _, ct := range componentTypes {
 		factory, exists := r.factories[ct]
 		if !exists {
-			return nil, errors.Wrapf(errors.ErrComponentNotFound, "component type %s not registered", ct)
+			return nil, errors.WrapString(errors.ErrComponentNotFound, "component type not registered", string(ct))
 		}
 
 		comp, err := factory()
 		if err != nil {
-			return nil, errors.Wrapf(err, "failed to create component %s", ct)
+			return nil, errors.Wrap(err, fmt.Sprintf("failed to create component %s", ct))
 		}
 
 		// 清理临时组件实例
@@ -113,7 +114,8 @@ func (r *ComponentRegistry) ResolveDependencies(componentTypes []ComponentType) 
 
 		for _, dep := range comp.GetDependencies() {
 			if !typeSet[dep] {
-				return nil, errors.Wrapf(errors.ErrDependencyNotMet, "component %s depends on %s which is not in the input set", ct, dep)
+				return nil, errors.Wrap(errors.ErrDependencyNotMet,
+					fmt.Sprintf("component %s depends on %s which is not in the input set", ct, dep))
 			}
 			graph[dep] = append(graph[dep], ct)
 			inDegree[ct]++
@@ -178,7 +180,7 @@ func (r *ComponentRegistry) CreateAll(ctx context.Context, componentTypes []Comp
 
 		comp, err := r.CreateComponent(ct)
 		if err != nil {
-			return nil, errors.Wrapf(err, "failed to create component %s", ct)
+			return nil, errors.Wrap(err, fmt.Sprintf("failed to create component %s", ct))
 		}
 		components[ct] = comp
 	}

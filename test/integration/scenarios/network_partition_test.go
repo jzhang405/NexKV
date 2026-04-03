@@ -3,6 +3,7 @@ package scenarios
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -36,7 +37,7 @@ func (s *NetworkPartitionScenario) Setup(ctx context.Context, cluster framework.
 	for i := range 3 {
 		node, err := adapters.NewTransportAdapter(nil)
 		if err != nil {
-			return errors.Wrapf(err, "failed to create node%d", i+1)
+			return errors.Wrap(err, fmt.Sprintf("failed to create node%d", i+1))
 		}
 		s.nodes = append(s.nodes, node)
 	}
@@ -44,7 +45,7 @@ func (s *NetworkPartitionScenario) Setup(ctx context.Context, cluster framework.
 	// 启动所有节点
 	for i, node := range s.nodes {
 		if err := node.Start(ctx); err != nil {
-			return errors.Wrapf(err, "failed to start node%d", i+1)
+			return errors.Wrap(err, fmt.Sprintf("failed to start node%d", i+1))
 		}
 	}
 
@@ -53,7 +54,7 @@ func (s *NetworkPartitionScenario) Setup(ctx context.Context, cluster framework.
 		for j, target := range s.nodes {
 			if i != j {
 				if err := source.ConnectTo(ctx, target); err != nil {
-					return errors.Wrapf(err, "node%d failed to connect to node%d", i+1, j+1)
+					return errors.Wrap(err, fmt.Sprintf("node%d failed to connect to node%d", i+1, j+1))
 				}
 			}
 		}

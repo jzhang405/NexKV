@@ -2,6 +2,8 @@
 package transport
 
 import (
+	"fmt"
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"context"
 	"log"
 	"runtime/debug"
@@ -114,7 +116,7 @@ func validatePeerID(peerID model.PeerID) error {
 		return service.Wrap(service.ErrPeerIDInvalid, "empty")
 	}
 	if len(peerID) > constants.MaxPeerIDLength {
-		return service.Wrapf(service.ErrPeerIDInvalid, "too long: %d > %d", len(peerID), constants.MaxPeerIDLength)
+		return errors.WrapInt2(service.ErrPeerIDInvalid, "peer ID too long", len(peerID), constants.MaxPeerIDLength)
 	}
 	return nil
 }
@@ -124,7 +126,7 @@ func validateAddr(addr string) error {
 		return service.Wrap(service.ErrAddrInvalid, "empty")
 	}
 	if len(addr) > constants.MaxAddrLength {
-		return service.Wrapf(service.ErrAddrTooLong, "%d > %d", len(addr), constants.MaxAddrLength)
+		return errors.WrapInt2(service.ErrAddrTooLong, "address too long", len(addr), constants.MaxAddrLength)
 	}
 	return nil
 }
@@ -179,7 +181,7 @@ func (t *Libp2pTransport) Connect(ctx context.Context, addr string) (model.PeerI
 	}
 
 	if err := t.host.Connect(ctx, *info); err != nil {
-		return "", service.Wrapf(service.ErrConnectionFailed, "peer=%s, reason=%v", info.ID.String(), err)
+		return "", errors.Wrap(service.ErrConnectionFailed, fmt.Sprintf("peer=%s connection failed", info.ID.String()))
 	}
 
 	return model.PeerID(info.ID.String()), nil
@@ -297,7 +299,7 @@ func (t *Libp2pTransport) OpenStream(ctx context.Context, peerID model.PeerID, p
 
 	stream, err := t.host.NewStream(ctx, pid, protocol.ID(proto))
 	if err != nil {
-		return nil, service.Wrapf(service.ErrConnectionFailed, "open stream: %v", err)
+		return nil, errors.Wrap(err, "open stream failed")
 	}
 
 	return NewLibp2pStream(stream, proto), nil
@@ -397,7 +399,8 @@ func (t *Libp2pTransport) SetStreamHandler(proto string, handler func(service.St
 		defer func() {
 			if r := recover(); r != nil {
 				// 记录 panic 信息到日志（便于问题追踪）
-				panicErr := service.Wrapf(service.ErrCallbackPanic, "stream=%s, panic=%v", s.ID(), r)
+				panicErr := errors.Wrap(service.ErrCallbackPanic,
+				fmt.Sprintf("callback panic: stream=%s, panic=%v", s.ID(), r))
 				log.Printf("[Transport] %v\n%s", panicErr, debug.Stack())
 				if err := s.Reset(); err != nil {
 					transportLog.WithField("error", err).Warn("failed to reset stream after panic")

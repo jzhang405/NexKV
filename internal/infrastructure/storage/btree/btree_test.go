@@ -17,7 +17,7 @@ import (
 // newTestBTree creates a BTree for testing with cleanup.
 func newTestBTree(t *testing.T) (*BTree, *OffheapBTreeStorage) {
 	t.Helper()
-	storage, err := NewOffheapBTreeStorage(4 * 1024 * 1024) // 4MB
+	storage, err := NewOffheapBTreeStorage(4 * 1024 * 1024 * 1024) // 4GB
 	require.NoError(t, err)
 	tree, err := NewBTree(storage)
 	require.NoError(t, err)
@@ -106,13 +106,13 @@ func TestBTreeConcurrentSet(t *testing.T) {
 	const keysPerGoroutine = 10
 
 	var wg sync.WaitGroup
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < keysPerGoroutine; j++ {
-				key := []byte(fmt.Sprintf("key-%d-%d", id, j))
-				value := []byte(fmt.Sprintf("value-%d-%d", id, j))
+			for j := range keysPerGoroutine {
+				key := fmt.Appendf(nil, "key-%d-%d", id, j)
+				value := fmt.Appendf(nil, "value-%d-%d", id, j)
 				err := tree.Set(ctx, key, value)
 				require.NoError(t, err)
 			}
@@ -123,10 +123,10 @@ func TestBTreeConcurrentSet(t *testing.T) {
 	assert.Equal(t, int64(goroutines*keysPerGoroutine), tree.Size())
 
 	// Verify all keys exist
-	for i := 0; i < goroutines; i++ {
-		for j := 0; j < keysPerGoroutine; j++ {
-			key := []byte(fmt.Sprintf("key-%d-%d", i, j))
-			expectedValue := []byte(fmt.Sprintf("value-%d-%d", i, j))
+	for i := range goroutines {
+		for j := range keysPerGoroutine {
+			key := fmt.Appendf(nil, "key-%d-%d", i, j)
+			expectedValue := fmt.Appendf(nil, "value-%d-%d", i, j)
 			val, err := tree.Get(ctx, key)
 			require.NoError(t, err, "key %s should exist", key)
 			assert.Equal(t, expectedValue, val)
@@ -249,14 +249,14 @@ func TestBTreeNoDataLoss(t *testing.T) {
 	const uniqueKeys = 10 // Multiple goroutines compete for same keys
 
 	var wg sync.WaitGroup
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < uniqueKeys; j++ {
-				key := fmt.Sprintf("key-%d", j)
-				value := fmt.Sprintf("value-%d-%d", id, j)
-				err := tree.Set(ctx, []byte(key), []byte(value))
+			for j := range uniqueKeys {
+				key := fmt.Appendf(nil, "key-%d", j)
+				value := fmt.Appendf(nil, "value-%d-%d", id, j)
+				err := tree.Set(ctx, key, value)
 				require.NoError(t, err)
 			}
 		}(i)
@@ -264,8 +264,8 @@ func TestBTreeNoDataLoss(t *testing.T) {
 	wg.Wait()
 
 	// Verify: each key has a value, tree is not corrupted
-	for i := 0; i < uniqueKeys; i++ {
-		val, err := tree.Get(ctx, []byte(fmt.Sprintf("key-%d", i)))
+	for i := range uniqueKeys {
+		val, err := tree.Get(ctx, fmt.Appendf(nil, "key-%d", i))
 		require.NoError(t, err, "key-%d should exist", i)
 		require.NotNil(t, val, "key-%d value should not be nil", i)
 		// Value should be one of the written values (format: value-{goroutineID}-{iteration})

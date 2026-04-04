@@ -42,7 +42,7 @@ type mutateFunc func(leaf LeafPage) (*leafMutation, error)
 // On CAS conflict: free the new page, release path, retry from step 1.
 // After MaxCASRetries failures, returns ErrCASConflict.
 func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
-	for attempt := 0; attempt < MaxCASRetries; attempt++ {
+	for range MaxCASRetries {
 		// Step 1: Search path to leaf
 		path, err := searchPath(b.storage, b.rootRef, key)
 		if err != nil {
@@ -77,13 +77,16 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		// Step 5: CR-08 — IsFull check BEFORE mutate
 		// Extract key/value from mutate closure for IsFull check
 		// Since mutate is a closure, we check by trying Insert
-		if oldLeaf.IsFull(len(key), 0) { // Approximate check; precise check needs value
+		isFull := oldLeaf.IsFull(len(key), 0)
+		if isFull { // Approximate check; precise check needs value
 			leafRef.Unlock()
-			path.ReleaseAll()
+			// ★ BUG FIX: Don't ReleaseAll() here — handleLeafSplit/handleRootSplit need the path.
+			// The path will be released by the split handlers or after they return.
 
 			// ★ CR-08: Root Split detection — path length < 2 means root is leaf
 			if len(path) < 2 {
 				splitErr := b.handleRootSplit(leafRef, oldInfo, path, key, mutate)
+				path.ReleaseAll() // Release after split handling
 				if splitErr == nil {
 					return nil // Split + Insert completed atomically
 				}
@@ -94,6 +97,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			}
 
 			splitErr := b.handleLeafSplit(leafRef, oldInfo, path, key, mutate)
+			path.ReleaseAll() // Release after split handling
 			if splitErr == nil {
 				return nil // ★ CR-08: Strong consistency — Split + Insert in one shot
 			}
@@ -282,11 +286,11 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	// Determine child IDs for InsertChild
 	var leftChildID, rightChildID model.PageID
 	if bytes.Compare(key, splitKey) < 0 {
-		leftChildID = mutation.newPageID    // target=left, left mutated
-		rightChildID = rightPage.PageID()  // right unchanged
+		leftChildID = mutation.newPageID  // target=left, left mutated
+		rightChildID = rightPage.PageID() // right unchanged
 	} else {
-		leftChildID = leftPage.PageID()    // left unchanged
-		rightChildID = mutation.newPageID   // target=right, right mutated
+		leftChildID = leftPage.PageID()   // left unchanged
+		rightChildID = mutation.newPageID // target=right, right mutated
 	}
 
 	newParent, err := oldParent.InsertChild(parentEntry.Index, splitKey, leftChildID, rightChildID)
@@ -338,14 +342,17 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	//   PageRef objects from old children array. Prevents duplicate PageRef for
 	//   same pageID → refCount confusion → UAF.
 	oldChildren := parentRef.children.Load()
-	newChildCount := oldParent.Count() + 1 // After InsertChild: count+1
+	// ★ BUG FIX: ChildCount = Count + 1, and InsertChild adds 1 more child
+	// So new child count = (oldParent.Count() + 1) + 1 = oldParent.Count() + 2
+	newChildCount := oldParent.Count() + 2 // After InsertChild: entries+1, children+1
 	newChildren := make([]*PageRef, newChildCount)
-	for i := 0; i < newChildCount; i++ {
-		if i == parentEntry.Index {
+	for i := range newChildCount {
+		switch {
+		case i == parentEntry.Index:
 			newChildren[i] = leftRef // Direct insert, no extra Retain needed
-		} else if i == parentEntry.Index+1 {
+		case i == parentEntry.Index+1:
 			newChildren[i] = rightRef // Direct insert, no extra Retain needed
-		} else {
+		default:
 			// ★ B19 fix: Reuse existing PageRef from old children
 			srcIdx := i
 			if i > parentEntry.Index+1 {
@@ -378,7 +385,6 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	//   Note: Don't Release leftRef/rightRef! Their lifecycle is managed by parent.children.
 	//   Recycling: when parent.children is invalidated (split or tree close),
 	//              each childRef in old children is Released (including leftRef/rightRef).
-
 	return nil
 }
 
@@ -427,11 +433,11 @@ func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
 	// Step 4: Determine final left/right child IDs
 	var leftChildID, rightChildID model.PageID
 	if bytes.Compare(key, splitKey) < 0 {
-		leftChildID = mutation.newPageID    // left mutated
-		rightChildID = rightPage.PageID()  // right unchanged
+		leftChildID = mutation.newPageID  // left mutated
+		rightChildID = rightPage.PageID() // right unchanged
 	} else {
-		leftChildID = leftPage.PageID()    // left unchanged
-		rightChildID = mutation.newPageID   // right mutated
+		leftChildID = leftPage.PageID()   // left unchanged
+		rightChildID = mutation.newPageID // right mutated
 	}
 
 	// Step 5: Create new root node page
@@ -475,9 +481,9 @@ func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
 		leftRef.Release()
 		rightRef.Release()
 		// Explicit recycle of orphan pages (not managed by any PageRef)
-		_ = b.storage.FreePage(orphanPageID)          // Original split page replaced by double-COW
-		_ = b.storage.FreePage(newRootID)             // InsertChild COW replaced blank NodePage
-		_ = b.storage.FreePage(newRootPage.PageID())  // InsertChild COW output page
+		_ = b.storage.FreePage(orphanPageID)         // Original split page replaced by double-COW
+		_ = b.storage.FreePage(newRootID)            // InsertChild COW replaced blank NodePage
+		_ = b.storage.FreePage(newRootPage.PageID()) // InsertChild COW output page
 		return ErrCASConflict
 	}
 

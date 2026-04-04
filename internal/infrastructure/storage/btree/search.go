@@ -83,7 +83,7 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 		// Internal node: search for child index
 		node := &nodePageHandle{id: pInfo.PageID, pa: storage.pa, storage: storage}
 		idx, _ := node.Search(key)
-		path = append(path, PathEntry{Ref: currentRef, Index: idx})
+		// Note: idx may be corrected below if FollowSplit redirects us to right sibling
 
 		// Get or lazily create child refs
 		children, err := currentRef.GetOrCreateChildren(storage)
@@ -106,14 +106,20 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 		//
 		// ★ P0-1 fix: FollowSplit Retains before returning (marker holds its own refs).
 		// We release the original childRef when we abandon it to avoid leaking.
+		//
+		// Bug fix: if FollowSplit redirects us to the right sibling (key >= splitKey),
+		// we actually descended to children[idx+1], so we must store idx+1 in the path.
+		actualIdx := idx
 		if followed, ok := childRef.FollowSplit(key); ok {
 			childRef.Release() // release the original — we abandoned it
 			childRef = followed
 			// NO Retain here — FollowSplit already Retained for us (P0-1 fix)
+			actualIdx = idx + 1 // we descended to right sibling
 		} else {
 			childRef.Retain() // for the non-marker path, we still need to Retain
 		}
 
+		path = append(path, PathEntry{Ref: currentRef, Index: actualIdx})
 		currentRef = childRef
 	}
 }

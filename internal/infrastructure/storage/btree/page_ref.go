@@ -188,7 +188,12 @@ func (r *PageRef) GetPathToRoot() []*PageRef {
 // SetSplitMarker sets the split marker for this page.
 // Makes a defensive copy of splitKey to prevent caller from mutating the
 // marker through a shared buffer (I1 fix).
+// Retains both left and right PageRefs to keep them alive while the marker exists (C3 fix).
 func (r *PageRef) SetSplitMarker(left, right *PageRef, splitKey []byte) {
+	// ✅ C3 fix: Retain PageRefs to prevent premature release
+	left.Retain()
+	right.Retain()
+
 	keyCopy := make([]byte, len(splitKey))
 	copy(keyCopy, splitKey)
 	marker := &SplitMarker{
@@ -197,6 +202,17 @@ func (r *PageRef) SetSplitMarker(left, right *PageRef, splitKey []byte) {
 		SplitKey: keyCopy,
 	}
 	r.splitMarker.Store(marker)
+}
+
+// ClearSplitMarker removes the split marker and releases the retained PageRefs.
+// Must be called when the marker is no longer needed to prevent memory leaks (C3 fix).
+func (r *PageRef) ClearSplitMarker() {
+	marker := r.splitMarker.Swap(nil)
+	if marker != nil {
+		// ✅ C3 fix: Release PageRefs when marker is cleared
+		marker.Left.Release()
+		marker.Right.Release()
+	}
 }
 
 // GetSplitMarker reads the current split marker.

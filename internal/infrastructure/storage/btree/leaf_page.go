@@ -36,8 +36,18 @@ func (h *leafPageHandle) Capacity() float64 {
 	return h.pa.GetSpaceUsage(rawID)
 }
 
-func (h *leafPageHandle) IsFull() bool {
-	return h.Capacity() > 0.95
+func (h *leafPageHandle) IsFull(keyLen, valueLen int) bool {
+	rawID := uint32(h.id)
+
+	// 使用实际 key/value 长度精确计算空间需求
+	requiredSpace := uint32(offheap.SizeofLeafEntry) + uint32(keyLen) + uint32(valueLen)
+
+	count := h.pa.GetCount(rawID)
+	dataEnd := h.pa.GetDataEnd(rawID)
+	usedSpace := uint32(offheap.SizeofPageHeader) + uint32(count)*uint32(offheap.SizeofLeafEntry) + uint32(dataEnd)
+
+	totalUsedAfterInsert := usedSpace + requiredSpace
+	return float64(totalUsedAfterInsert)/float64(offheap.PageSize) > 0.95
 }
 
 func (h *leafPageHandle) Search(key []byte) (int, bool) {

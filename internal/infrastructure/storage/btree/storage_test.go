@@ -299,7 +299,7 @@ func TestNodePageHandle_CapacityAndIsFull(t *testing.T) {
 	require.NoError(t, err)
 
 	// 空节点页面
-	assert.False(t, node.IsFull(), "empty node page should not be full")
+	assert.False(t, node.IsFull(4, 0), "empty node page should not be full")
 	assert.GreaterOrEqual(t, node.Capacity(), 0.0, "capacity should be >= 0")
 
 	// InsertChild 是 COW 操作，每次返回新的节点
@@ -314,7 +314,7 @@ func TestNodePageHandle_CapacityAndIsFull(t *testing.T) {
 		current = newNode
 	}
 
-	assert.True(t, current.IsFull(), "page should be full after MaxInternalKeys inserts")
+	assert.True(t, current.IsFull(8, 0), "page should be full after MaxInternalKeys inserts")
 }
 
 func TestNodePageHandle_InsertChildMiddle(t *testing.T) {

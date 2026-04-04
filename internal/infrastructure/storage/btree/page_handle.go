@@ -14,7 +14,7 @@ type PageHandle interface {
 	// Identity
 	PageID() model.PageID
 	Count() int
-	IsFull() bool
+	IsFull(keyLen, valueLen int) bool
 	IsLeaf() bool
 	Capacity() float64
 

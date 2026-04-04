@@ -36,8 +36,24 @@ func (h *nodePageHandle) Capacity() float64 {
 	return h.pa.GetSpaceUsage(rawID)
 }
 
-func (h *nodePageHandle) IsFull() bool {
-	return h.Count() >= MaxInternalKeys
+func (h *nodePageHandle) IsFull(keyLen, _ int) bool {
+	// Node 不存储 value，valueLen 被忽略。
+	// 双重判定：空间计算（处理长 key 场景）+ count 上限兜底（处理短 key 场景）。
+	//
+	// 为什么需要 count 兜底：
+	//   8B key × 126 entries = 1008B key + 2016B entry + 40B header = 3064B
+	//   3064/4096 = 74.8%，远低于空间阈值，但 126 已是合理的最大 key 数
+	rawID := uint32(h.id)
+	count := h.pa.GetCount(rawID)
+	if int(count) >= MaxInternalKeys {
+		return true
+	}
+
+	requiredSpace := uint32(offheap.SizeofIndexEntry) + uint32(keyLen)
+	dataEnd := h.pa.GetDataEnd(rawID)
+	usedSpace := uint32(offheap.SizeofPageHeader) + uint32(count)*uint32(offheap.SizeofIndexEntry) + uint32(dataEnd)
+	totalUsedAfterInsert := usedSpace + requiredSpace
+	return float64(totalUsedAfterInsert)/float64(offheap.PageSize) > 0.90
 }
 
 func (h *nodePageHandle) Search(key []byte) (int, bool) {

@@ -328,7 +328,7 @@ func TestLeafGetValueReturnsCopy(t *testing.T) {
 
 func TestLeafIsFull(t *testing.T) {
 	leaf, _ := newTestLeaf(t)
-	assert.False(t, leaf.IsFull(), "empty page should not be full")
+	assert.False(t, leaf.IsFull(4, 4), "empty page should not be full")
 
 	// Fill until full or until alloc fails
 	current := leaf

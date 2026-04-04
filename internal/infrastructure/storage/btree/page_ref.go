@@ -225,13 +225,20 @@ func (r *PageRef) GetSplitMarker() *SplitMarker {
 // child PageRef based on the given key.
 // Returns (targetRef, true) if a split was followed,
 // (nil, false) if no split marker exists.
+//
+// ★ P0-1 fix: Retain before returning to keep the ref safe for caller.
+// Caller must NOT Retain again when this returns true.
 func (r *PageRef) FollowSplit(key []byte) (*PageRef, bool) {
 	marker := r.splitMarker.Load()
 	if marker == nil {
 		return nil, false
 	}
+	var target *PageRef
 	if bytes.Compare(key, marker.SplitKey) < 0 {
-		return marker.Left, true
+		target = marker.Left
+	} else {
+		target = marker.Right
 	}
-	return marker.Right, true
+	target.Retain() // ★ P0-1 fix: retain so caller gets safe ref
+	return target, true
 }

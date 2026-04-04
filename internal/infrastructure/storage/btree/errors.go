@@ -17,6 +17,10 @@ var (
 	// ErrCASConflict is returned when a CAS operation fails after max retries.
 	ErrCASConflict = errors.New("btree: cas conflict after max retries")
 
+	// ErrRetry is returned when a transient condition requires retry.
+	// Used for SplitMarker windows where the split is not yet visible.
+	ErrRetry = errors.New("btree: retry operation")
+
 	// ErrPageFreed is returned when accessing a page that has been freed.
 	ErrPageFreed = errors.New("btree: page already freed")
 

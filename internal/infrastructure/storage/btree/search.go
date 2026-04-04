@@ -68,6 +68,12 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 			return nil, fmt.Errorf("btree: searchPath: nil PageInfo on page %d", currentRef.pageID)
 		}
 
+		// ★ B3/B4 fix: Tombstone check — stop if this page has been split
+		if pInfo.Tombstone {
+			path.ReleaseAll()
+			return nil, ErrRetry // split in progress, retry from root
+		}
+
 		// Check if leaf — stop descending
 		if storage.pa.IsLeaf(uint32(pInfo.PageID)) {
 			path = append(path, PathEntry{Ref: currentRef, Index: -1})
@@ -85,9 +91,11 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 			path.ReleaseAll()
 			return nil, fmt.Errorf("btree: searchPath: %w", err)
 		}
+
+		// ★ P1-1 fix: bounds check — idx could be out of range during concurrent split
 		if idx >= len(children) || children[idx] == nil {
 			path.ReleaseAll()
-			return nil, fmt.Errorf("btree: searchPath: child[%d] not found on page %d", idx, pInfo.PageID)
+			return nil, ErrRetry // children list invalidated, retry from root
 		}
 
 		childRef := children[idx]
@@ -95,11 +103,15 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 		// SplitMarker following (D5): if the child was recently split, the marker
 		// tells us which side (left/right) our key belongs to — without waiting
 		// for the parent CAS to publish the updated child list.
+		//
+		// ★ P0-1 fix: FollowSplit Retains before returning (marker holds its own refs).
+		// We release the original childRef when we abandon it to avoid leaking.
 		if followed, ok := childRef.FollowSplit(key); ok {
+			childRef.Release() // release the original — we abandoned it
 			childRef = followed
-			childRef.Retain()
+			// NO Retain here — FollowSplit already Retained for us (P0-1 fix)
 		} else {
-			childRef.Retain()
+			childRef.Retain() // for the non-marker path, we still need to Retain
 		}
 
 		currentRef = childRef

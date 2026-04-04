@@ -192,7 +192,7 @@ type PageHandle interface {
     // Identity
     PageID() model.PageID
     Count() int     // 条目数（leaf = KV 数，node = key 数）
-    IsFull() bool   // 是否达到分裂阈值
+    IsFull(keyLen, valueLen int) bool // 是否达到分裂阈值（基于实际 key/value 长度计算空间）
     IsLeaf() bool   // 是否为叶子页
     Capacity() float64 // 页面利用率 0.0~1.0，用于 writeOperation 判断 split/merge
 
@@ -439,17 +439,26 @@ func (p SearchPath) ReleaseAll()
 //   3. leafRef.Lock()
 //   4. pInfo := leafRef.GetPageInfo()
 //   5. leaf := storage.GetLeafPage(pInfo.PageID)
-//   6. newLeaf := mutate(leaf)          // 具体操作由调用方定义
-//   7. newInfo := &PageInfo{PageID: newLeaf.PageID(), Version: pInfo.Version+1}
-//   8. if leafRef.CAS(pInfo, newInfo):
-//   9.     leafRef.Unlock()
-//   10.    propagate(path, newLeaf)      // 向上传播分裂/合并
-//   11.    path.ReleaseAll()             // 释放路径引用
-//   12. else:
-//   13.    storage.FreePage(newLeaf.PageID())
-//   14.    leafRef.Unlock()
-//   15.    path.ReleaseAll()             // 释放旧路径（防止泄漏）
-//   16.    goto 1                        // 重试
+//   6. [Split check] if leaf.IsFull():
+//      a. handleLeafSplit(leafRef, path, key, mutate)  // CR-08: 传入 mutate
+//         - Split → determine target → mutate(target)
+//         - Parent CAS with InsertChild
+//      b. 成功: SetSplitMarker, Unlock, return nil
+//      c. 失败(ErrCASConflict): cleanup, Unlock, goto 1
+//   7. newLeaf := mutate(leaf)          // 具体操作由调用方定义
+//   8. newInfo := &PageInfo{PageID: newLeaf.PageID(), Version: pInfo.Version+1}
+//   9. if leafRef.CAS(pInfo, newInfo):
+//  10.     leafRef.Unlock()
+//  11.     propagate(path, newLeaf)      // 向上传播分裂/合并（Best-Effort）
+//  12.     path.ReleaseAll()             // 释放路径引用
+//  13. else:
+//  14.     storage.FreePage(newLeaf.PageID())
+//  15.     leafRef.Unlock()
+//  16.     path.ReleaseAll()             // 释放旧路径（防止泄漏）
+//  17.     goto 1                        // 重试
+//
+// CR-08 决策 (D15): Split 检查在 mutate 之前，handleLeafSplit 接收 mutate 函数，
+// 在 Split 后同一调用栈内完成 key 插入，返回 nil（强一致性）而非 ErrCASConflict。
 func (b *BTree) writeOperation(ctx context.Context, key []byte, mutate func(LeafPage) (LeafPage, error)) error
 ```
 
@@ -496,7 +505,7 @@ sequenceDiagram
     end
 ```
 
-### Set 操作序列图（触发叶子分裂）
+### Set 操作序列图（触发叶子分裂 — CR-08 Split + Immediate Insert）
 
 ```mermaid
 sequenceDiagram
@@ -516,58 +525,65 @@ sequenceDiagram
     BTree->>Storage: GetLeafPage(X)
     Storage-->>BTree: leaf
 
-    BTree->>BTree: mutate(leaf) → Insert → COW newLeaf
-    Note over BTree: newLeaf.IsFull() == true
+    Note over BTree: Step 6: IsFull() check (before mutate!)
+    BTree->>BTree: leaf.IsFull()
+    BTree-->>BTree: true (需要分裂)
 
-    BTree->>LeafPage: newLeaf.Split()
-    Note over LeafPage,Storage: COW: Alloc Y1(left) + Alloc Y2(right)<br/>X前半 → Y1, X后半 → Y2
+    Note over BTree: CR-08: Split + Immediate Insert
+    BTree->>LeafPage: leaf.Split()
+    Note over LeafPage,Storage: Alloc Y1(left) + Alloc Y2(right)<br/>X前半 → Y1, X后半 → Y2
     LeafPage-->>BTree: left{Y1}, right{Y2}, splitKey
 
-    BTree->>LeafRef: CAS(pInfo, {PageID=Y1, Version++})
+    Note over BTree: 确定目标子页面
+    BTree->>BTree: bytes.Compare(key, splitKey)
+    Note over BTree: target = key < splitKey ? left : right
 
-    alt CAS 成功
-        LeafRef-->>BTree: true
-        BTree->>LeafRef: SetSplitMarker(left, right, splitKey)
-        Note over LeafRef: 并发 reader 通过 SplitMarker<br/>跟随到 left 或 right
-        BTree->>LeafRef: Unlock()
+    Note over BTree: 在 target 上执行 mutate (double-COW)
+    BTree->>Storage: mutate(targetPage) → COW
+    Storage-->>BTree: mutatedPage{Z}
 
-        rect rgb(240, 248, 255)
-            Note over BTree,ParentRef: propagateSplit(leafRef, left, right, splitKey)
-            BTree->>ParentRef: path.Leaf().Ref.GetParentRef()
-            ParentRef-->>BTree: parentRef
+    rect rgb(240, 248, 255)
+        Note over BTree,ParentRef: handleLeafSplit — Parent CAS
+        BTree->>ParentRef: path.Leaf().Ref.GetParentRef()
+        ParentRef-->>BTree: parentRef
 
-            alt parentRef != nil（非根分裂）
-                BTree->>ParentRef: Lock()
-                BTree->>ParentRef: GetPageInfo()
-                ParentRef-->>BTree: parentInfo
-                BTree->>Storage: GetNodePage(parentInfo.PageID)
-                Storage-->>BTree: parent
-                BTree->>NodePage: InsertChild(idx, splitKey, Y1, Y2)
-                Note over NodePage,Storage: COW: CopyNodePage → Z<br/>在 Z 上插入新子节点
-                NodePage-->>BTree: newParent{Z}
+        alt parentRef != nil（非根分裂）
+            BTree->>Storage: GetNodePage → CopyNodePage → Z'
+            BTree->>NodePage: InsertChild(idx, splitKey, mutatedPageID, siblingPageID)
+            NodePage-->>BTree: newParent{Z'}
 
-                BTree->>ParentRef: CAS(parentInfo, {PageID=Z, Version++})
-                alt CAS 成功
-                    ParentRef-->>BTree: true
-                    BTree->>ParentRef: Unlock()
-                    Note over BTree: newParent.IsFull()?<br/>是 → 递归 propagateSplit
-                else CAS 失败
-                    ParentRef-->>BTree: false
-                    BTree->>Storage: FreePage(Z)
-                    BTree->>ParentRef: Unlock()
-                    Note over BTree: 重试 parent CAS
-                end
+            BTree->>ParentRef: CAS(parentInfo, {PageID=Z', Version++})
+            alt CAS 成功
+                ParentRef-->>BTree: true
+                Note over ParentRef: SetSplitMarker(targetRef, siblingRef, splitKey)
+                BTree->>LeafRef: Unlock()
+                Note over BTree: size.Add(delta)
+                BTree->>BTree: path.ReleaseAll()
+                BTree-->>Client: Success (nil)
+            else CAS 失败
+                ParentRef-->>BTree: false
+                Note over BTree: cleanup(all new pages)
+                BTree->>LeafRef: Unlock()
+                BTree->>BTree: path.ReleaseAll()
+                Note over BTree: goto Step 1 (完整重试)
+            end
 
-            else parentRef == nil（根分裂）
-                BTree->>Storage: AllocNodePage()
-                Note over Storage: 创建新根：[left, right, splitKey]
-                Storage-->>BTree: newRootID
-                BTree->>RootRef: ReplaceRoot(newRootRef, newRootInfo)
-                Note over RootRef: 原子切换根指针<br/>传播 parentRef 到子节点
+        else parentRef == nil（根分裂）
+            BTree->>Storage: AllocNodePage()
+            Note over Storage: 创建新根：[target, sibling, splitKey]
+            Storage-->>BTree: newRootID
+            BTree->>RootRef: ReplaceRoot(oldRootInfo, newRootInfo, newChildren)
+            Note over RootRef: 原子切换根指针
+
+            alt ReplaceRoot 成功
+                Note over RootRef: SetSplitMarker
+                BTree->>LeafRef: Unlock()
+                Note over BTree: size.Add(delta)
+                BTree-->>Client: Success (nil)
+            else ReplaceRoot 失败
+                Note over BTree: cleanup + goto Step 1
             end
         end
-
-        BTree->>BTree: path.ReleaseAll()
     end
 ```
 
@@ -832,6 +848,28 @@ func (p *PrettyPagePrinter) PrintPath(path SearchPath) string
 3. CAS 失败时不回滚 parentRef（调用方重试时创建新 PageRef）
 **审查修订**：原始代码 CAS 后设置 parentRef（C3 审查发现）。
 
+### D15. Split + Immediate Insert（CR-08）
+
+**决策**：writeOperation 在 mutate 之前检查 `leaf.IsFull()`，若满则调用 `handleLeafSplit` 传入 `mutate` 函数，Split 后在同一调用栈内完成 key 插入。
+
+**理由**：
+1. **强一致性**：操作返回 nil 后，所有读取立即可见新结构和新 key，无需等待重试
+2. **减少 CAS 冲突重试**：原方案 Split 后返回 ErrCASConflict 触发完整重试（searchPath + Lock + CAS），新方案一次完成
+3. **消除不一致窗口**：原方案 T2-T3 之间其他读取可能看不到新结构
+
+**CR-08 修复项**：
+- 拒绝 `findOrCreatePageRef(targetLeafID)`（未定义 API），直接使用 leftRef/rightRef
+- 保持 leaf lock 贯穿 split+insert（拒绝 unlock 后 split 的 TOCTOU 风险）
+- 不对 target child 加锁（新创建页面，无并发访问）
+- Double-COW（split 分配新页 + mutate 再 COW）标注为优化项
+
+**SplitMarker 设置时机**：不变（Parent CAS 成功后设置）
+
+**与 D1 的关系**：
+- D1（propagateUpward Best-Effort）保持不变
+- D15 只改变 Split 路径：handleLeafSplit 内部完成 split+insert，成功返回 nil
+- 普通 CAS 冲突（非 Split 场景）仍走 Best-Effort 重试
+
 ## 14. 文件映射
 
 | 文件 | 主要内容 |
@@ -1010,11 +1048,12 @@ func (r *PageRef) Release() // 内部调用 freeFunc
 
 **建议**：在 COW 语义规则中补充：left 和 right 都是新分配页面（COW），splitKey 返回副本。
 
-#### P2-5. 缺少页面容量查询
+#### P2-5. 缺少页面容量查询（✅ 已解决）
 
-**问题**：`IsFull()` 只返回 bool，但 writeOperation 需要知道"多满"来决定分裂。
-
-**建议**：增加 `UsedBytes() int` 和 `TotalBytes() int`，或在 LeafPage/NodePage 接口增加 `Capacity() float64`（0.0~1.0）。
+`IsFull(keyLen, valueLen int)` 接受实际 key/value 长度参数进行精确的空间计算：
+- Leaf: `SizeofLeafEntry(16) + keyLen + valueLen` 与页面剩余空间比较，阈值 0.95
+- Node: 双重判定 — `count >= MaxInternalKeys` 兜底 + 猺间计算（阈值 0.90）处理短 key 场景
+- Capacity() 返回 `float64(usedBytes) / PageSize`，已实现。
 
 ### 审查通过项
 

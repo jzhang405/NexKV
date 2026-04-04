@@ -62,7 +62,7 @@ btree2/
 - `maxInternalKeys = 180` → `MaxInternalKeys = 126`（基于 avgKey=16B：`(4096-56)/(16+16)=126`）
 - `DefaultPageSize = 4096` → 直接引用 `model.DefaultPageSize`
 - `InitialLeafCapacity = 200` → 不需要（btree2 不用 Go slice 缓存）
-- MaxLeafKeys → 不固定，叶子 IsFull() 用空间计算而非 count
+- MaxLeafKeys → 不固定，叶子 IsFull(keyLen, valueLen) 用空间计算而非 count
 - 分裂保护：运行时 `UsedSpace() + required > PageSize` → `ErrPageFull`
 
 ### 验证
@@ -265,6 +265,10 @@ BulkInitLeafFromSource 接收 [startIdx, endIdx) 范围，自动调用 InitLeafP
 - LeafPageHandle 不持有 mmap []byte，每次操作通过 PageAccessor 实时读取
 - GetKey/GetValue 返回副本（`make([]byte, len)` + `copy`）
 - Capacity() = `float64(usedBytes) / float64(PageSize)`
+- **IsFull(keyLen, valueLen) 精确空间计算**：
+  - Leaf: `UsedSpace + SizeofLeafEntry + keyLen + valueLen > PageSize × 0.95`
+  - Node: 双重判定 — `count >= MaxInternalKeys` 兜底 + 空间计算（阈值 0.90，处理短 key 场景下 count 先到但空间未满的情况）
+  - Node 需要 count 兜底是因为 126 entries × 8B key = 74.8% 空间利用率，低于空间阈值
 - **Delete 实现**：`CollectKVExcept(idx)` → `pm.Alloc()` → `InitLeafPage(newID, version+1)` → 逐条 `InsertLeafEntry` → 返回新 handle
 - **Split 实现**：`pm.Alloc()` × 2 → `BulkInitLeafFromSource` × 2 → copy-up splitKey
 - **Update 实现**：先 COW copy → `OverwriteLeafValue(newRawID, idx, newValue)` → 若 value 更大则走 delete+insert 路径
@@ -288,7 +292,7 @@ BulkInitLeafFromSource 接收 [startIdx, endIdx) 范围，自动调用 InitLeafP
 | `TestLeafSplitEvenOdd` | count 为奇数/偶数时 Split 结果均正确 |
 | `TestLeafGetKeyReturnsCopy` | GetKey 返回副本，修改不影响页面数据 |
 | `TestLeafGetValueReturnsCopy` | GetValue 返回副本，修改不影响页面数据 |
-| `TestLeafIsFull` | 填满页面后 IsFull() == true，空页面 == false |
+| `TestLeafIsFull` | 填满页面后 IsFull(keyLen, valueLen) == true，空页面 == false |
 | `TestLeafCapacity` | Capacity() 在空页面接近 0.0，满页面接近 1.0 |
 | `TestLeafDuplicateInsert` | 插入重复 key 返回 ErrDuplicateKey |
 | `TestLeafInsertReverseOrder` | 逆序插入 N 个 key，全部 Search 命中且有序 |
@@ -571,7 +575,7 @@ for attempt := 0; attempt < maxRetries; attempt++:
     if leafRef.CAS(pInfo, newInfo):
         // P0-4: SplitMarker 在叶子 CAS 成功后立即设置（Unlock 前）
         // Split 操作在 CAS+Unlock 之前完成判断
-        if checkSplit && newLeaf.IsFull():
+        if checkSplit && newLeaf.IsFull(keyLen, valueLen):
             left, right, splitKey := newLeaf.Split()
             leafRef.SetSplitMarker(left.Ref, right.Ref, splitKey)
             leafRef.Unlock()
@@ -708,7 +712,7 @@ propagateSplit(childRef, left, right, splitKey):
 21. if parentRef.CAS(parentInfo, newParentInfo):
 22.     parentRef.Unlock()
 23.     // 级联：检查父节点是否也需要分裂
-24.     if newParent.IsFull():
+24.     if newParent.IsFull(keyLen, valueLen):
 25.         parentLeft, parentRight, parentSplitKey := newParent.Split()
 26.         propagateSplit(parentRef, parentLeft, parentRight, parentSplitKey)
 27. else:
@@ -998,7 +1002,7 @@ AssertInvariants():
 | `TestLeafSplitEvenOdd` | count 奇偶均正确 | count=奇/偶时 Split 后两边数据正确 |
 | `TestLeafGetKeyReturnsCopy` | GetKey 返回副本 | 修改返回值不影响页面 |
 | `TestLeafGetValueReturnsCopy` | GetValue 返回副本 | 同上 |
-| `TestLeafIsFull` | 满页判定 | 填满后 `IsFull() == true`, 空 `== false` |
+| `TestLeafIsFull` | 满页判定 | 填满后 `IsFull(keyLen, valueLen) == true`, 空 `== false` |
 | `TestLeafCapacity` | 利用率计算 | 空≈0.0, 半满≈0.5, 满≈1.0 |
 | `TestLeafDuplicateInsert` | 插入重复 key | `Insert` 返回 `ErrDuplicateKey` |
 | `TestLeafInsertReverseOrder` | 逆序插入有序 | 逆序插入 N 个 key，全部 Search 命中且有序 |
@@ -1186,7 +1190,7 @@ AssertInvariants():
 > **决策**：✅ 已修正
 > - 文档 PageHeader 48B → 56B（含 padding 说明）
 > - `MaxInternalKeys` 180 → **126**（基于 avgKey=16B 保守估计）
-> - 叶子节点不设固定 MaxLeafKeys，`IsFull()` 用空间计算
+> - 叶子节点不设固定 MaxLeafKeys，`IsFull(keyLen, valueLen)` 用空间计算
 > - 分裂保护：运行时 `UsedSpace() + required > PageSize` → `ErrPageFull`
 
 ---
@@ -1233,7 +1237,7 @@ if leafRef.CAS(pInfo, newInfo):
 
 #### P0-5. writeOperation 中 Split 和 Merge 检查时序错误
 
-**问题**：Phase 5 的 writeOperation 中，CAS 成功后同时检查 `IsFull()`（Split）和 `Capacity() < 0.5`（Merge）。但：
+**问题**：Phase 5 的 writeOperation 中，CAS 成功后同时检查 `IsFull(keyLen, valueLen)`（Split）和 `Capacity() < 0.5`（Merge）。但：
 1. Insert 后不可能立即需要 Merge，Delete 后不可能触发 Split
 2. CAS 成功后 Unlock，此时其他 writer 可能已更新 leafRef，Split 操作对象可能已过时
 3. `goto retry` 无重试上限，高并发下可能活锁
@@ -1402,9 +1406,13 @@ func (s *OffheapBTreeStorage) validatePageID(id model.PageID) (uint32, error) {
 
 > **决策**：✅ 接受
 
-#### P2-3. IsFull() 判定条件未定义
+#### P2-3. IsFull(keyLen, valueLen) 判定条件（✅ 已实现）
 
 > **决策**：✅ 接受
+> **实现**：
+> - Leaf: `UsedSpace + SizeofLeafEntry + keyLen + valueLen > PageSize × 0.95`
+> - Node: 双重判定 — `count >= MaxInternalKeys` 兜底 + 空间计算（阈值 0.90）
+> - Node 需要 count 兜底是因为 8B key × 126 entries 仅占 74.8% 空间
 
 #### P2-5. FreePage 应重置页面内容
 
@@ -1738,283 +1746,1451 @@ golangci-lint run ./internal/infrastructure/storage/btree2/...
 
 ---
 
-## Phase 6.0: Split 传播设计
+## Phase 6.0 - Split Propagation 实现方案
 
-> **日期**: 2026-04-04
-> **状态**: 设计完成，待实现
-> **目标**: 实现多级 BTree 的 split 传播机制
+**日期**: 2026-04-04
+**目标**: 实现最小化 Split 传播，支持 >100 keys
+**预期收益**: 减少 95% CAS 冲突，解锁写入性能测试
 
-### 核心问题：传统 Split 传播的级联更新
+---
 
-**问题描述**：
+### 6.0.1 核心设计
+
+#### 最小化传播策略
+
+**核心思想**: 只在 Split 发生时传播到直接父节点，不级联到 Root。
+
+**优势**:
+- ✅ O(log N) → O(1) 传播复杂度
+- ✅ 减少 95% Parent CAS 冲突
+- ✅ 使用 SplitMarker 机制延迟高层更新
+
+**对比 Lealone**:
+
+| 场景 | Lealone CAS 比例 | NexKV Phase 6.0 |
+|------|-----------------|-----------------|
+| 正常写入 | 0% (单写线程) | 0% (Leaf CAS) |
+| Leaf Split | ~0.625% | ~1% (Parent CAS) |
+| Root Split | ~0.001% | ~0% (延迟到下次访问) |
+
+---
+
+### 6.0.2 Mermaid 时序图
+
+#### 正常写入流程（无 Split）
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant BTree
+    participant LeafRef as "PageRef(Leaf)"
+    participant LeafPage
+    participant Metrics
+
+    Client->>BTree: Set(key, value)
+
+    Note over BTree: 1. 搜索路径
+    BTree->>BTree: searchPath(key)
+    BTree-->>LeafRef: PathEntry{Ref: LeafRef}
+
+    Note over LeafRef: 2. 获取锁
+    LeafRef->>LeafRef: Lock()
+
+    Note over LeafRef: 3. 检查是否需要 Split
+    LeafRef->>LeafPage: IsFull(keyLen, valueLen)
+    LeafPage-->>LeafRef: false (容量足够)
+
+    Note over LeafRef: 4. Leaf-Level CAS
+    LeafRef->>LeafPage: Insert(key, value)
+    LeafPage-->>LeafRef: newLeafPage (COW)
+
+    LeafRef->>LeafRef: CAS(oldInfo, newInfo)
+
+    alt CAS 成功
+        LeafRef->>Metrics: IncrementWrite()
+        LeafRef->>LeafRef: Unlock()
+        LeafRef-->>BTree: nil
+        BTree-->>Client: Success
+    else CAS 失败
+        LeafRef->>Metrics: IncrementCASRetry()
+        Note right of LeafRef: 释放 newLeafPage
+        LeafRef->>LeafRef: Unlock()
+        Note right of BTree: 重试整个操作
+        BTree->>BTree: goto Step 1
+    end
 ```
-叶子 split (key-100 插入)
-  → 父节点索引更新 (添加 splitKey)
-    → 父节点也满了，需要 split
-      → 祖父节点索引更新
-        → ... 直到 root
+
+#### Split 传播流程（Phase 6.0 核心 — Split + Immediate Insert）
+
+> CR-08 决策：Split 后在同一调用栈内立即完成插入，返回 nil（成功）而非 ErrCASConflict。
+> 优势：强一致性（操作返回后所有读取立即可见新结构和新 key），减少重试。
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant BTree
+    participant LeafRef as "PageRef(Leaf)"
+    participant ParentRef as "PageRef(Parent)"
+    participant Storage
+
+    Client->>BTree: Set(key, value)
+
+    Note over BTree: 1. 搜索路径
+    BTree->>BTree: searchPath(key)
+    BTree-->>LeafRef: PathEntry{Ref: LeafRef, Parent: ParentRef}
+
+    Note over LeafRef: 2. 获取锁
+    LeafRef->>LeafRef: Lock()
+
+    Note over LeafRef: 3. 检查是否需要 Split（mutate 之前）
+    LeafRef->>LeafRef: IsFull(keyLen, valueLen)
+    LeafRef-->>LeafRef: true (需要分裂)
+
+    Note over LeafRef: 4. 执行 Leaf Split
+    LeafRef->>Storage: Split()
+    Storage-->>LeafRef: leftPage, rightPage, splitKey
+
+    Note over LeafRef: 5. 确定目标子页面（key 应插入哪一侧）
+    LeafRef->>LeafRef: bytes.Compare(key, splitKey)
+    LeafRef-->>LeafRef: targetPage = left or right
+
+    Note over LeafRef: 6. 在目标子页面执行 mutate
+    LeafRef->>Storage: mutate(targetPage)
+    Note over Storage: COW 分配新页面（double-COW 优化项）
+    Storage-->>LeafRef: mutatedPage
+
+    Note over LeafRef: 7. 创建 PageRef（使用 mutatedPage.PageID）
+    LeafRef->>LeafRef: targetRef = NewPageRef(mutatedPage)
+    LeafRef->>LeafRef: siblingRef = NewPageRef(siblingPage)
+
+    Note over ParentRef: 8. Parent CAS（最小化传播）
+    LeafRef->>ParentRef: CAS with InsertChild(targetRef, siblingRef, splitKey)
+
+    alt Parent CAS 成功
+        Note over ParentRef: 9. 设置 SplitMarker
+        ParentRef->>ParentRef: SetSplitMarker(targetRef, siblingRef, splitKey)
+
+        ParentRef-->>LeafRef: Success
+        LeafRef->>LeafRef: Unlock()
+        Note over BTree: size.Add(delta)
+        BTree->>BTree: path.ReleaseAll()
+        BTree-->>Client: Success (nil)
+    else Parent CAS 失败
+        Note right of LeafRef: 10. Full Retry（清理 + 重试）
+        LeafRef->>LeafRef: cleanup(targetRef, siblingRef, newParentPage)
+        LeafRef->>LeafRef: Unlock()
+        Note right of BTree: 重试整个操作（从 Step 1 开始）
+        BTree->>BTree: goto Step 1
+    end
 ```
 
-**影响范围**：
-- 每次叶子 split 可能触发 O(log N) 次父节点更新
-- 高频写入场景下，大量 CAS 冲突
-- 整个路径上的节点都需要 COW
+#### 读操作遇到 SplitMarker
 
-**性能影响**：
-- CPU：多次 COW + CAS 操作
-- 内存：路径上每个节点都创建新页面
-- 并发：路径上所有锁竞争
+```mermaid
+sequenceDiagram
+    participant Client
+    participant BTree
+    participant ParentRef as PageRef(Parent)
+    participant LeafRef as PageRef(Leaf)
+    participant SplitMarker
 
-### 解决方案 A：最小化传播（推荐）
+    Client->>BTree: Get(key)
 
-**核心思想**：Split 后只更新直接父节点，避免级联
+    Note over BTree: 1. 搜索路径
+    BTree->>BTree: searchPath(key)
 
-**实现步骤**：
+    loop 每个父节点
+        BTree->>ParentRef: GetPageInfo()
+        ParentRef-->>BTree: pInfo
 
+        Note over ParentRef: 2. 检查 SplitMarker
+        ParentRef->>SplitMarker: GetSplitMarker()
+        SplitMarker-->>ParentRef: marker (可能为 nil)
+
+        alt 有 SplitMarker
+            Note over ParentRef: 3. Follow Split
+            ParentRef->>SplitMarker: FollowSplit(key)
+            SplitMarker-->>ParentRef: correctChildRef
+            ParentRef-->>BTree: correctChildRef
+        else 无 SplitMarker
+            Note over ParentRef: 4. 正常遍历
+            ParentRef-->>BTree: childRef
+        end
+    end
+
+    BTree->>LeafRef: GetPageInfo()
+    LeafRef-->>BTree: pInfo (最新数据)
+
+    BTree->>LeafRef: GetValue(key)
+    LeafRef-->>BTree: value
+    BTree-->>Client: value
 ```
-1. 叶子 split：
-   - 创建 left/right 叶子
-   - 生成 splitKey
 
-2. 直接父节点更新（仅一层）：
-   - COW 父节点
-   - 插入 splitKey + right child
-   - CAS 更新父节点的 PageRef
+#### Root Split（极少数情况）
 
-3. 父节点 split（如果需要）：
-   - 检测父节点是否已满
-   - 如果已满 → 标记为 "待 split"，但不立即执行
-   - 后续操作时再处理
+```mermaid
+sequenceDiagram
+    participant Client
+    participant BTree
+    participant RootRef as RootPageRef
+    participant OldRoot as Old Root Page
+    participant NewRoot as New Root Page
 
-4. 延迟高层更新：
-   - 高层节点的 split 延迟到下次访问时
-   - 使用 SplitMarker 标记
+    Client->>BTree: Set(key, value)
+
+    Note over BTree: 1. 搜索路径
+    BTree->>BTree: searchPath(key)
+    BTree-->>RootRef: PathEntry{Ref: RootRef}
+
+    Note over RootRef: 2. Root 满了（极少数）
+    RootRef->>OldRoot: IsFull(keyLen, valueLen)
+    OldRoot-->>RootRef: true
+
+    Note over RootRef: 3. Root Split
+    RootRef->>OldRoot: Split()
+    OldRoot-->>RootRef: leftPage, rightPage, splitKey
+
+    Note over RootRef: 4. 创建新的 Root
+    RootRef->>NewRoot: NewNodePage()
+    RootRef->>NewRoot: InsertChild(0, splitKey, left, right)
+
+    Note over RootRef: 5. 原子替换 Root
+    RootRef->>RootRef: CAS(oldRoot, newRoot)
+
+    alt CAS 成功
+        RootRef-->>BTree: Success
+        BTree-->>Client: Success
+    else CAS 失败
+        Note over BTree: 6. Full Retry
+        Note over BTree: 释放 leftPage, rightPage, newRoot
+        BTree->>BTree: goto Step 1
+    end
 ```
 
-**优点**：
-- ✅ 单次 split 只影响直接父节点（1 层）
-- ✅ 减少 CAS 冲突范围
-- ✅ 降低内存分配
+---
 
-**缺点**：
-- ⚠️ 读取时可能遇到 SplitMarker，需要额外处理
-- ⚠️ 实现复杂度增加
+### 6.0.3 Critical Issues 修复（Agent Review 发现）
 
-**关键代码示例**：
+#### Agent Review 评审结果
 
+**评审日期**: 2026-04-04
+**总体评分**: 6.5/10 ⚠️
+**状态**: 需要修复 Critical Issues 后才能实施
+
+#### Critical Issues 清单
+
+| ID | 问题 | 严重性 | 状态 | 影响 |
+|----|------|--------|------|------|
+| **C1** | PageRef 生命周期管理缺失 | Critical | ✅ 已验证 | Use-After-Free |
+| **C2** | CAS 失败后清理不完整 | Critical | ✅ 已验证 | 内存泄漏 |
+| **C3** | SplitMarker 引用计数管理 | Critical | ✅ 已验证 | Use-After-Free |
+| **C4** | searchPath SplitMarker following | Critical | ❌ 误报 | 已实现 |
+| **C5** | handleRootSplit 逻辑错误 | Critical | ⚠️ 需验证 | API 错误 |
+| **C6** | InsertChild 中间插入覆盖 extraChild | Critical | ⚠️ 新发现 | Tree 结构损坏 |
+| **D1** | propagateUpward 改 Full Retry | High | ❌ 设计错误 | 性能退化 |
+
+---
+
+#### C1 修复：PageRef 生命周期管理
+
+**问题代码**:
 ```go
-// operations.go
+// ❌ 错误：创建 PageRef 后没有 Retain
+leftRef := NewPageRef(leftPage.PageID(), 0, parentRef, b.storage.FreePage)
+rightRef := NewPageRef(rightPage.PageID(), 0, parentRef, b.storage.FreePage)
+// refCount = 0（atomic.Int64 零值）
+```
 
-func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
-    for attempt := 0; attempt < MaxCASRetries; attempt++ {
-        // ... 原有逻辑 ...
+**根本原因**:
+- `NewPageRef()` 创建的 PageRef 的 `refCount` 初始为 0
+- 如果 CAS 失败，调用 `FreePage()` 但 refCount 仍为 0
+- 后续调用 `Release()` 会导致 refCount < 0，触发 panic
 
-        // Step 6: Check if split needed
-        if result.needsSplit {
-            // 执行 split
-            left, right, splitKey, err := oldLeaf.Split()
-            if err != nil {
-                // ...
-            }
+**修复方案**:
+```go
+// ✅ 正确：创建后立即 Retain
+leftRef := NewPageRef(leftPage.PageID(), 0, parentRef, b.storage.FreePage)
+rightRef := NewPageRef(rightPage.PageID(), 0, parentRef, b.storage.FreePage)
+leftRef.Retain()   // ✅ 防止过早释放
+rightRef.Retain()  // ✅ 防止过早释放
 
-            // Step 7: 只更新直接父节点（一层）
-            parentUpdated := false
-            if parentPath := path.ParentPath(); len(parentPath) > 0 {
-                directParent := parentPath[len(parentPath)-1]
-                parentUpdated = updateDirectParent(b, directParent, splitKey, left.PageID(), right.PageID())
-            }
+// ... CAS 逻辑 ...
 
-            // Step 8: 如果父节点也满了，标记但不立即处理
-            if !parentUpdated {
-                // 标记父节点需要 split（延迟处理）
-                markParentNeedsSplit(directParent)
-            }
+if !parentRef.CAS(oldParentInfo, newParentInfo) {
+    // ✅ 先 Release PageRefs
+    leftRef.Release()
+    rightRef.Release()
+    // 再 FreePage
+    _ = b.storage.FreePage(leftPage.PageID())
+    _ = b.storage.FreePage(rightPage.PageID())
+    _ = b.storage.FreePage(newParentPage.PageID())
+    return ErrCASConflict
+}
 
-            // 更新叶子节点的 PageRef
-            newInfo := &PageInfo{
-                PageID:  left.PageID(),  // 使用 left 作为新页面
-                Version: oldInfo.Version + 1,
-            }
+// 成功：PageRefs 已是树的一部分，会被 searchPath Retain
+```
 
-            if !leafRef.CAS(oldInfo, newInfo) {
-                // CAS 冲突，清理
-                _ = b.storage.FreePage(left.PageID())
-                _ = b.storage.FreePage(right.PageID())
-                continue
-            }
+---
 
-            // 更新 size
-            b.size.Add(result.delta)
-            path.ReleaseAll()
-            return nil
-        }
+#### C2 修复：CAS 失败后的完整清理
 
-        // ... 原有的非 split 逻辑 ...
-    }
+**问题代码**:
+```go
+// ❌ 错误：只释放了新页面，没有释放 PageRefs
+if !parentRef.CAS(oldParentInfo, newParentInfo) {
+    _ = b.storage.FreePage(newNode.PageID())
+    return  // 缺少：Release PageRefs, Free split pages
 }
 ```
 
-### SplitMarker 机制
-
-**数据结构**：
-
+**修复方案**:
 ```go
-// page_ref.go
+if !parentRef.CAS(oldParentInfo, newParentInfo) {
+    // ✅ 完整的清理顺序：
+    // 1. Release 所有已 Retain 的 PageRefs
+    leftRef.Release()
+    rightRef.Release()
 
-type SplitMarker struct {
-    SplitKey   []byte
-    LeftChild  model.PageID
-    RightChild model.PageID
-    Timestamp  time.Time
+    // 2. Free 所有已分配的页面
+    _ = b.storage.FreePage(leftPage.PageID())
+    _ = b.storage.FreePage(rightPage.PageID())
+    _ = b.storage.FreePage(newParentPage.PageID())
+
+    // 3. 返回错误触发重试
+    return ErrCASConflict
 }
+```
 
-type PageRef struct {
-    // ... 原有字段 ...
-    splitMarker atomic.Pointer[SplitMarker]
-}
+---
 
-// 标记 split 事件
-func (r *PageRef) MarkSplit(splitKey []byte, left, right model.PageID) {
+#### C3 修复：SplitMarker 引用计数管理
+
+**问题代码**:
+```go
+// ❌ 错误：SetSplitMarker 存储 PageRef 指针但没有 Retain
+func (r *PageRef) SetSplitMarker(left, right *PageRef, splitKey []byte) {
     marker := &SplitMarker{
-        SplitKey:   splitKey,
-        LeftChild:  left,
-        RightChild: right,
-        Timestamp:  time.Now(),
+        Left:  left,   // ❌ 没有 Retain()
+        Right: right,  // ❌ 没有 Retain()
+    }
+    r.splitMarker.Store(marker)
+}
+```
+
+**根本原因**:
+- SplitMarker 持有 `*PageRef` 指针但没有增加引用计数
+- 如果 PageRef 的 refCount 降为 0，会被释放但 SplitMarker 仍持有指针
+- 后续 `FollowSplit()` 会访问已释放的内存 → **Use-After-Free**
+
+**修复方案（推荐）**:
+```go
+// page_ref.go - 修改
+func (r *PageRef) SetSplitMarker(left, right *PageRef, splitKey []byte) {
+    // ✅ Retain 以保持 PageRefs 存活
+    left.Retain()
+    right.Retain()
+
+    keyCopy := make([]byte, len(splitKey))
+    copy(keyCopy, splitKey)
+    marker := &SplitMarker{
+        Left:     left,
+        Right:    right,
+        SplitKey: keyCopy,
     }
     r.splitMarker.Store(marker)
 }
 
-// 检查是否有 split 标记
-func (r *PageRef) GetSplitMarker() *SplitMarker {
-    return r.splitMarker.Load()
-}
-```
-
-**读取时的 Split 处理**：
-
-```go
-// search.go
-
-func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) (*SearchPath, error) {
-    path := &SearchPath{}
-    currentRef := rootRef.PageRef
-
-    for {
-        // 检查 split marker
-        if marker := currentRef.GetSplitMarker(); marker != nil {
-            // 触发父节点更新
-            if err := resolveSplitMarker(storage, currentRef, marker); err != nil {
-                // 更新失败，继续使用旧数据
-            }
-        }
-
-        pInfo := currentRef.GetPageInfo()
-        if pInfo == nil {
-            return nil, ErrPageFreed
-        }
-
-        // ... 原有的搜索逻辑 ...
+// ✅ 添加 ClearSplitMarker 方法
+func (r *PageRef) ClearSplitMarker() {
+    marker := r.splitMarker.Swap(nil)
+    if marker != nil {
+        marker.Left.Release()
+        marker.Right.Release()
     }
 }
 ```
 
-### 方案 B：批量传播（延后到 Phase 7+）
+**优势**:
+- 简单，保持现有设计
+- 性能更好（无需查找）
 
-**核心思想**：累积多个 split，交给 Task Scheduler 批量处理
+**劣势**:
+- SplitMarker 永久持有引用（需要在 Phase 6.5 添加后台清理）
 
-**优点**：
-- ✅ 批量处理减少 CAS 冲突
-- ✅ 写入操作不被阻塞
-- ✅ 与 Task Scheduler 集成（已有基础设施）
+**替代方案（不推荐）**:
+- 存储 `model.PageID` 而非 `*PageRef`
+- 需要在 `FollowSplit()` 时查找 PageRef
+- 性能略差，实现更复杂
 
-**延后原因**：
-- ⏸️ **优先级较低**：方案 A 已能满足 Phase 6 需求
-- ⏸️ **依赖基础设施**：需要先完成 Task Scheduler 集成
-- ⏸️ **复杂度权衡**：收益不足以抵消本阶段的实现成本
+---
 
-**触发条件**（Phase 7+ 考虑）：
-- 如果写入吞吐量成为瓶颈（> 1M writes/sec）
-- 如果 CAS 冲突率 > 50%
-- 如果需要更高并发扩展性（64+ 核心场景）
+#### D1: propagateUpward 模式选择（设计修正）
 
-### 性能预期
+**Agent Review 建议（❌ 错误）**:
+> C3: `propagateUpward` 改为 Full Retry 模式
 
-**Split 频率分析**（1M keys 数据集）：
+**正确设计（✅ 区分场景）**:
 
-| 指标 | 传统设计 | 最小化传播 | 改进 |
-|------|---------|-----------|------|
-| **每次 split 影响层数** | O(log N) ≈ 20 层 | 1 层 | **-95%** |
-| **立即更新次数** | 8000 × 20 = 160,000 | 8000 × 1 = 8,000 | **-95%** |
-| **写入 CAS 冲突** | 高（级联） | 低（单层） | **-95%** |
-| **内存使用（split 期间）** | ~160,000 页面 | ~16,000 页面 | **-90%** |
-| **写入延迟** | O(log N) | O(1) | **20x 更快** |
+##### 场景 1: Split 传播（必须 Full Retry）
 
-### 实现计划（4-5 天）
+```go
+// ✅ Split 传播：必须 Full Retry
+func (b *BTree) handleLeafSplit(...) error {
+    // 1. Split leaf → 创建新页面
+    leftPage, rightPage, splitKey := leafPage.Split()
 
-**Task 6.1**: SplitMarker 基础设施（0.5 天）
-- [ ] 添加 `SplitMarker` 结构体
-- [ ] 扩展 `PageRef` 添加 marker 字段
-- [ ] 实现 `MarkSplit()` / `GetSplitMarker()`
+    // 2. 创建新 PageRefs
+    leftRef := NewPageRef(...)
+    rightRef := NewPageRef(...)
+    leftRef.Retain()
+    rightRef.Retain()
 
-**Task 6.2**: Leaf Split 检测（0.5 天）
-- [ ] 添加 `LeafPage.NeedsSplit()` 方法
-- [ ] 修改 `writeOperation` 检测 split 条件
-- [ ] 测试：`TestLeafSplitDetection`
+    // 3. Parent CAS（必须成功）
+    if !parentRef.CAS(oldInfo, newInfo) {
+        // ❌ 失败：新页面无法被访问（孤儿页面）
+        // ✅ 必须清理并重试
+        leftRef.Release()
+        rightRef.Release()
+        FreePage(leftPage)
+        FreePage(rightPage)
+        return ErrCASConflict  // ✅ 触发 Full Retry
+    }
 
-**Task 6.3**: 直接父节点更新（1 天）
-- [ ] 实现 `updateDirectParent()` 函数
-- [ ] 处理父节点 split 标记
-- [ ] 测试：`TestDirectParentUpdate`
-
-**Task 6.4**: 延迟高层更新（1 天）
-- [ ] 实现 `resolveSplitMarker()` 函数
-- [ ] 修改 `searchPath` 检查 marker
-- [ ] 测试：`TestLazySplitResolution`
-
-**Task 6.5**: Root Split（0.5 天）
-- [ ] 实现 `splitRoot()` 方法
-- [ ] 创建新的 root 节点
-- [ ] 测试：`TestRootSplit`
-
-**Task 6.6**: 集成测试（0.5 天）
-- [ ] `TestMultiLevelRandomOperations`
-- [ ] `TestConcurrentSplitMerge`
-- [ ] 压力测试：10000+ keys
-
-### 验证标准
-
-```bash
-# 功能测试
-go test -run TestLeafSplit ./...
-go test -run TestDirectParentUpdate ./...
-go test -run TestRootSplit ./...
-
-# 并发测试
-go test -run TestMultiLevelRandomOperations -race ./...
-go test -run TestConcurrentSplitMerge -race ./...
-
-# 压力测试
-go test -run TestLargeDataset ./...
-
-# 性能基准
-go test -bench=BenchmarkBTreeSet -benchtime=3s ./...
+    // 4. 成功：设置 SplitMarker
+    parentRef.SetSplitMarker(leftRef, rightRef, splitKey)
+}
 ```
 
-### 风险与缓解
+**为什么 Split 必须 Full Retry？**
+- Split 创建了新页面（leftPage, rightPage）
+- 如果 Parent CAS 失败，这些页面无法被访问（孤儿页面）
+- 必须清理并重试整个操作，否则会内存泄漏
 
-**风险 1**: SplitMarker 泄漏
-- **缓解**: 超时机制（5 秒后强制清理）+ 后台扫描 + 读取失败时清理
+##### 场景 2: 普通更新传播（应该 Best-Effort）
 
-**风险 2**: 读取性能退化
-- **缓解**: Marker 是低频事件（< 1%）+ 限制重试次数 + 监控
+```go
+// ✅ 普通更新：Best-Effort 即可（Phase 5 设计）
+func propagateUpward(b *BTree, parentPath []PathEntry, newChildID model.PageID, childIdx int) error {
+    for i := len(parentPath) - 1; i >= 0; i-- {
+        // ... 准备新 parent 节点 ...
 
-**风险 3**: 并发正确性
-- **缓解**: 全面 `-race` 测试 + 压力测试（1000 并发写入）+ 不变式检查
+        if !parentRef.CAS(oldInfo, newInfo) {
+            // ✅ 失败：只清理当前节点，不重试
+            _ = b.storage.FreePage(newNode.PageID())
+            return nil  // ✅ 返回 nil（不触发重试）
+        }
 
-### 参考
+        // 成功，继续向上一层
+    }
+    return nil
+}
+```
 
-- **Lealone 实现**: `thoughts/Lealone/btree/concurrent_cow_btree_2.java`
-- **理论基础**: B-Link Tree + Lazy Maintenance + Optimistic Concurrency
-- **关键类**: `SplitMarker`, `BTreeMap`, `PageReference`
+**为什么普通更新应该 Best-Effort？**
+
+1. **Leaf-Level CAS 已经成功**
+   - 数据已经持久化到 leaf
+   - 读者通过 `searchPath()` 可以找到正确的 leaf
+   - Parent 更新失败不影响正确性
+
+2. **Parent 更新是优化，不是必须**
+   - 更新 parent 指向新 child 只是为了下次访问更快
+   - 即使失败，下次操作会重新 `searchPath()`，自然找到新位置
+
+3. **性能考虑**
+   - 避免级联重试（O(log N) 层级）
+   - 减少写放大
+   - 降低 CAS 冲突影响
+
+**性能对比**:
+
+| 模式 | CAS 失败影响 | 性能 | 正确性 |
+|------|-------------|------|--------|
+| **Best-Effort** | 仅当前层级 | ✅ 好 | ✅ 正确 |
+| **Full Retry** | 整个路径（O(log N)） | ❌ 差 | ✅ 正确 |
+
+**结论**: 普通更新传播应保持 **Best-Effort**（Phase 5 设计正确）
+
+---
+
+#### C4: searchPath SplitMarker Following
+
+**状态**: ✅ **已实现，误报**
+
+**验证** (search.go:98-103):
+```go
+// ✅ searchPath 已实现 SplitMarker following
+if followed, ok := childRef.FollowSplit(key); ok {
+    childRef = followed
+    childRef.Retain()
+} else {
+    childRef.Retain()
+}
+```
+
+**结论**: C4 是误报，无需修改。
+
+---
+
+#### C5 修复：handleRootSplit 逻辑
+
+**问题代码**:
+```go
+// ❌ 错误：使用了不存在的 API
+if !b.root.CompareAndSwap(rootRef, newRootRef) {  // ❌ 错误 API
+```
+
+**根本原因**:
+- `RootPageRef` 没有 `CompareAndSwap` 方法
+- 应该使用 `ReplaceRoot(oldInfo, newInfo, newChildren)`
+
+**修复方案**:
+```go
+func (b *BTree) handleRootSplit(
+    ctx context.Context,
+    rootRef *RootPageRef,
+    key, value []byte,
+) error {
+    // ... split 逻辑 ...
+
+    newRootInfo := &PageInfo{
+        PageID:  newRootPage.PageID(),
+        Version: oldRootInfo.Version + 1,
+    }
+
+    // ✅ 使用 ReplaceRoot 并传入 children
+    newChildren := []*PageRef{leftRef, rightRef}
+    if !rootRef.ReplaceRoot(oldRootInfo, newRootInfo, newChildren) {
+        // CAS 失败，清理
+        leftRef.Release()
+        rightRef.Release()
+        _ = b.storage.FreePage(leftPage.PageID())
+        _ = b.storage.FreePage(rightPage.PageID())
+        _ = b.storage.FreePage(newRootPage.PageID())
+        return ErrCASConflict
+    }
+
+    // ✅ 在旧 root（现在是 child）上设置 SplitMarker
+    rootRef.SetSplitMarker(leftRef, rightRef, splitKey)
+
+    return nil
+}
+```
+
+---
+
+#### C6: InsertChild 中间插入导致 Children/Entries 错位
+
+**状态**: ⚠️ **新发现，需修复**
+
+**发现日期**: 2026-04-04
+**影响**: 插入 200+ keys 时 key-000 丢失
+
+---
+
+##### B+Tree Node 结构复习
+
+对于有 N 个 keys 的 internal node：
+
+```
+children 数组: [c0, c1, ..., cN]     (N+1 个 children)
+entries 数组: [e0, e1, ..., eN-1]    (N 个 entries)
+
+结构关系:
+- entries[i] 包含 (key[i], child[i]) 作为 left child
+- entries[i] 的 right child 是 children[i+1]
+- children[N] 是 extraChild（最后一个 entry 的右孩子）
+```
+
+**示例**: 2 个 keys 的 node
+
+```
+children: [c0, c1, c2]  (3 个 children)
+entries:  [e0, e1]      (2 个 entries)
+
+对应关系:
+- e0: key="k0", left child = c0, right child = c1
+- e1: key="k1", left child = c1, right child = c2 (extraChild)
+```
+
+---
+
+##### 问题分析
+
+当执行 `InsertChild(idx, splitKey, left, right)` 时（`idx < count`，即中间插入）：
+
+**当前代码逻辑**:
+```go
+if idx < count {
+    // 1. Shift children 数组
+    for i := count - 1; i >= idx; i-- {
+        childPageID, childVersion := h.pa.GetChildWithVersion(newRawID, i)
+        h.pa.SetChildWithVersion(newRawID, i+1, childPageID, childVersion)
+    }
+
+    // 2. 设置新的 children
+    h.pa.SetChild(newRawID, idx, uint32(left))
+    h.pa.SetChild(newRawID, idx+1, uint32(right))
+
+    // 3. 插入 entry
+    h.pa.InsertIndexEntry(newRawID, idx, splitKey, uint32(left), &dataEnd)
+}
+```
+
+**问题**: `InsertIndexEntry` 只 shift 了 **entries 数组**，但没有同步处理 **children 数组**！
+
+**具体示例**:
+
+假设 node 有 count=2（3 个 children: [c0, c1, c2]），在 idx=1 位置插入 left=A, right=B:
+
+**操作前状态**:
+```
+children: [c0, c1, c2]
+entries:  [e0, e1]
+
+e0: key="k0", child=c0
+e1: key="k1", child=c1
+
+期望插入后:
+- e0: key="k0", child=c0 (不变)
+- e1: key="splitKey", child=A  ← 新插入
+- children[0]=c0, children[1]=A, children[2]=B, children[3]=c1, extraChild=c2
+```
+
+**操作后（当前代码实际结果）**:
+```go
+// Step 1: Shift children
+// i=1: children[2] = children[1] → children = [c0, c1, c1]  (c2 被覆盖!)
+// i=2: 无操作（循环结束）
+
+// Step 2: Set new children
+// children[1] = A → children = [c0, A, c1]
+// children[2] = B → children = [c0, A, B]
+
+// Step 3: InsertIndexEntry(idx=1, splitKey, A)
+// 移动 entries[1] → entries[2]: entries = [e0, ???, e1]
+// 插入 entry[1] = (splitKey, A)
+
+// 问题! entry[1] 的 child 字段是 A，但 children[2]=B
+// 这意味着 entry[1] 的右孩子是 B，符合预期
+// 但是 children[3] 不存在！（extraChild c2 被覆盖丢失）
+```
+
+**根本问题**:
+1. children shift 循环从 `count-1` 到 `idx`，但 `count=2` 意味着只有 `children[0]` 和 `children[1]`
+2. `extraChild` 存储在 `children[count]` = `children[2]` = c2
+3. 当 `i=1` 时，`children[2] = children[1]` 把 c2 覆盖了！
+4. 最终 `children = [c0, A, B]`，丢失了原始的 c2
+
+---
+
+##### 正确的 InsertChild 中间插入逻辑
+
+**正确的 children shift**:
+```go
+if idx < count {
+    // Shift children from count down to idx+1 (inclusive)
+    // This preserves children[idx] which becomes the right child of the new entry
+    for i := count; i > idx; i-- {
+        childPageID, childVersion := h.pa.GetChildWithVersion(newRawID, i)
+        h.pa.SetChildWithVersion(newRawID, i+1, childPageID, childVersion)
+    }
+
+    // Set the new children
+    h.pa.SetChild(newRawID, idx, uint32(left))       // new left child
+    h.pa.SetChild(newRawID, idx+1, uint32(right))    // new right child (was children[idx])
+
+    // Insert the index entry
+    h.pa.InsertIndexEntry(newRawID, idx, splitKey, uint32(left), &dataEnd)
+}
+```
+
+**关键差异**:
+- 原代码: `for i := count - 1; i >= idx; i--` — 从 `count-1` 开始，**覆盖了 extraChild**
+- 正确代码: `for i := count; i > idx; i--` — 从 `count` 开始，**正确保留 extraChild**
+
+---
+
+##### 验证示例
+
+假设 count=2, children=[c0, c1, c2], extraChild=c2:
+
+**正确操作后**:
+```
+Step 1: Shift children (i from 2 down to 2)
+- i=2: children[3] = children[2] → children = [c0, c1, c2, c2]
+
+Step 2: Set new children
+- children[1] = A → children = [c0, A, c2, c2]
+- children[2] = B → children = [c0, A, B, c2]
+
+Step 3: InsertIndexEntry(idx=1, splitKey, A)
+- entries[1] 插入 (splitKey, A)
+- entries[1] 的左孩子是 A，右孩子是 children[2]=B ✓
+- extraChild 是 children[3]=c2 ✓
+```
+
+---
+
+##### 修复代码
+
+```go
+if idx < count {
+    // ✅ 正确: 从 count 开始 shift，避免覆盖 extraChild
+    for i := count; i > idx; i-- {
+        childPageID, childVersion := h.pa.GetChildWithVersion(newRawID, i)
+        h.pa.SetChildWithVersion(newRawID, i+1, childPageID, childVersion)
+    }
+
+    // Set the new children
+    h.pa.SetChild(newRawID, idx, uint32(left))
+    h.pa.SetChild(newRawID, idx+1, uint32(right))
+
+    // Insert the index entry
+    if err := h.pa.InsertIndexEntry(newRawID, idx, splitKey, uint32(left), &dataEnd); err != nil {
+        h.storage.pm.Free(newRawID)
+        return nil, errpkg.BTreeNodeInsertChildEntry(err)
+    }
+}
+```
+
+---
+
+##### 影响评估
+
+| 场景 | 当前行为 | 正确行为 |
+|------|---------|---------|
+| idx=0 插入 | ❌ 覆盖 children[0] | ✅ 正确 shift |
+| idx=count 插入 | ✅ 不触发 shift | ✅ 不触发 shift |
+| idx=中间插入 | ❌ 覆盖 extraChild | ✅ 正确 shift |
+
+**严重性**: Critical — 导致 tree 结构损坏，key 丢失
+
+---
+
+### 6.0.4 代码变更详情
+
+#### 保留现有 SplitMarker 实现（无需修改）
+
+**文件**: `internal/infrastructure/storage/btree/page_ref.go`
+
+```go
+// ✅ 保留现有实现（已验证可行）
+type SplitMarker struct {
+    Left     *PageRef      // 直接持有 PageRef 引用
+    Right    *PageRef
+    SplitKey []byte
+}
+
+// ✅ 已实现的方法（无需修改）
+func (r *PageRef) SetSplitMarker(left, right *PageRef, splitKey []byte)
+func (r *PageRef) GetSplitMarker() *SplitMarker
+func (r *PageRef) FollowSplit(key []byte) (*PageRef, bool)
+```
+
+**验证结论**（C1）: 现有实现已满足需求，无需改为 `model.PageID`。
+
+---
+
+#### 新增 Split 传播逻辑（核心变更，已修复 Critical Issues）
+
+**文件**: `internal/infrastructure/storage/btree/operations.go`
+
+##### 变更 1: `writeOperation` Split 检查（CR-08: IsFull 在 mutate 之前）
+
+```go
+// CR-08: IsFull(keyLen, valueLen) 检查移到 mutate 之前，传入 mutate 给 handleLeafSplit
+func (b *BTree) writeOperation(
+    ctx context.Context,
+    key []byte,
+    mutate func(LeafPage) (*leafMutation, error),
+) error {
+    const maxRetries = 100
+    for attempt := 0; attempt < maxRetries; attempt++ {
+        // ... ctx 检查 ...
+
+        path := searchPath(b.rootRef, b.storage, key)
+        leafRef := path.Leaf().Ref
+        leafRef.Lock()
+
+        pInfo := leafRef.GetPageInfo()
+        leaf := b.storage.GetLeafPage(pInfo.PageID)
+
+        // ===== CR-08 核心：Split 检查在 mutate 之前 =====
+        if leaf.IsFull(keyLen, valueLen) {
+            // Split + Immediate Insert：传递 mutate 给 handleLeafSplit
+            splitErr := b.handleLeafSplit(ctx, leafRef, path, key, nil, mutate)
+            leafRef.Unlock()
+            path.ReleaseAll()
+
+            if splitErr == nil {
+                return nil  // ✅ Split + Insert 都已完成，强一致性
+            }
+            if errors.Is(splitErr, ErrCASConflict) {
+                continue  // Parent CAS 失败，完整重试
+            }
+            return splitErr  // 其他错误（如 ErrDuplicateKey）
+        }
+
+        // ... 原有 mutate(leaf) → CAS 逻辑 ...
+
+        newLeaf, err := mutate(leaf)
+        if err != nil {
+            leafRef.Unlock()
+            path.ReleaseAll()
+            return err
+        }
+
+        newInfo := &PageInfo{
+            PageID:  newLeaf.pageID,
+            Version: pInfo.Version + 1,
+        }
+
+        if leafRef.CAS(pInfo, newInfo) {
+            // CAS 成功（无 split）
+            leafRef.Unlock()
+            b.size.Add(newLeaf.delta)
+            path.ReleaseAll()
+            return nil
+        }
+
+        // CAS 失败
+        _ = b.storage.FreePage(newLeaf.pageID)
+        leafRef.Unlock()
+        path.ReleaseAll()
+    }
+    return ErrCASConflict
+}
+
+// ===== 新增函数：处理 Leaf Split（CR-08: Split + Immediate Insert）=====
+//
+// CR-08 核心思路：Split 后在同一调用栈内完成 key 的插入，
+// 返回 nil（成功）而非 ErrCASConflict，实现强一致性。
+//
+// 与原方案的区别：
+//   - 原方案：Split → 返回 ErrCASConflict → 调用者重试 → 第二次 Set
+//   - CR-08：Split → 确定 target → mutate(target) → Parent CAS → 返回 nil
+//
+// CR-08 修复项：
+//   - 不使用 findOrCreatePageRef（未定义），直接用 leftRef/rightRef
+//   - 保持 leaf lock 贯穿 split+insert（防止 TOCTOU）
+//   - 不对 target 加锁（新创建页面，无并发访问）
+//   - Double-COW 是已知优化项（split 分配新页 + mutate 再 COW）
+func (b *BTree) handleLeafSplit(
+    ctx context.Context,
+    leafRef *PageRef,
+    path *SearchPath,
+    key, value []byte,
+    mutate func(LeafPage) (*leafMutation, error),  // CR-08: 接收 mutate 函数
+) error {
+    // 1. 获取父节点
+    if len(path.entries) < 2 {
+        // Root split（极少数）
+        return b.handleRootSplit(ctx, leafRef, key, value, mutate)
+    }
+
+    parentEntry := path.entries[len(path.entries)-2]
+    parentRef := parentEntry.Ref
+    childIdx := parentEntry.Index
+
+    // 2. 执行 Split
+    leafPage, err := b.storage.GetLeafPage(leafRef.GetPageInfo().PageID)
+    if err != nil {
+        return err
+    }
+
+    leftPage, rightPage, splitKey, err := leafPage.Split()
+    if err != nil {
+        return err
+    }
+
+    // 3. 确定 key 应该去 left 还是 right（CR-08 核心步骤）
+    var targetPage LeafPage
+    var siblingPage LeafPage
+    if bytes.Compare(key, splitKey) < 0 {
+        targetPage = leftPage
+        siblingPage = rightPage
+    } else {
+        targetPage = rightPage
+        siblingPage = leftPage
+    }
+
+    // 4. 在 target 子页面立即执行 mutate（CR-08 核心步骤）
+    // 注意：这是 double-COW（split 已分配新页，mutate 再 COW 一次）
+    // TODO: 优化 double-COW — 可直接在 split 产生的新页上原地修改，
+    //       避免额外的 Alloc + memcpy。但需修改 Split API 返回可写页面。
+    mutation, err := mutate(targetPage)
+    if err != nil {
+        // mutate 失败（如 ErrDuplicateKey）：清理 split 产物
+        _ = b.storage.FreePage(leftPage.PageID())
+        _ = b.storage.FreePage(rightPage.PageID())
+        return err
+    }
+
+    // 5. 创建 PageRef（使用 mutate 后的 PageID）
+    // target 侧使用 mutation 后的新 PageID，sibling 侧保持原 split 产物
+    var targetRef, siblingRef *PageRef
+    if bytes.Compare(key, splitKey) < 0 {
+        targetRef = NewPageRef(mutation.pageID, 0, parentRef, b.storage.FreePage)
+        siblingRef = NewPageRef(rightPage.PageID(), 0, parentRef, b.storage.FreePage)
+    } else {
+        siblingRef = NewPageRef(leftPage.PageID(), 0, parentRef, b.storage.FreePage)
+        targetRef = NewPageRef(mutation.pageID, 0, parentRef, b.storage.FreePage)
+    }
+    targetRef.Retain()   // ✅ C1 修复：防止过早释放
+    siblingRef.Retain()  // ✅ C1 修复：防止过早释放
+
+    // 6. Parent CAS（最小化传播）
+    oldParentInfo := parentRef.GetPageInfo()
+    oldParentPage, err := b.storage.GetNodePage(oldParentInfo.PageID)
+    if err != nil {
+        // ✅ C2 修复：完整清理
+        targetRef.Release()
+        siblingRef.Release()
+        _ = b.storage.FreePage(mutation.pageID)
+        _ = b.storage.FreePage(leftPage.PageID())
+        _ = b.storage.FreePage(rightPage.PageID())
+        return err
+    }
+
+    newParentPage, err := oldParentPage.InsertChild(childIdx, splitKey,
+        targetRef.pageID, siblingRef.pageID)
+    if err != nil {
+        targetRef.Release()
+        siblingRef.Release()
+        _ = b.storage.FreePage(mutation.pageID)
+        _ = b.storage.FreePage(leftPage.PageID())
+        _ = b.storage.FreePage(rightPage.PageID())
+        return err
+    }
+
+    newParentInfo := &PageInfo{
+        PageID:  newParentPage.PageID(),
+        Version: oldParentInfo.Version + 1,
+    }
+
+    // 7. Parent CAS（✅ C2 修复：完整清理）
+    if !parentRef.CAS(oldParentInfo, newParentInfo) {
+        targetRef.Release()
+        siblingRef.Release()
+        _ = b.storage.FreePage(mutation.pageID)
+        _ = b.storage.FreePage(leftPage.PageID())
+        _ = b.storage.FreePage(rightPage.PageID())
+        _ = b.storage.FreePage(newParentPage.PageID())
+        return ErrCASConflict  // 触发上层完整重试
+    }
+
+    // 8. 成功：设置 SplitMarker（✅ C3 修复：SetSplitMarker 会 Retain）
+    parentRef.SetSplitMarker(targetRef, siblingRef, splitKey)
+
+    // 9. 更新 size（CR-08: 在这里更新，而非延迟到重试后）
+    b.size.Add(mutation.delta)
+
+    // 10. 更新 metrics
+    if b.metrics != nil {
+        b.metrics.IncrementSplit()
+    }
+
+    // 11. 释放我们的引用（SplitMarker 持有自己的 Retain）
+    targetRef.Release()
+    siblingRef.Release()
+
+    // 12. 释放旧页面（Page reclamation）
+    // ... 现有的 Release 逻辑 ...
+
+    return nil  // ✅ CR-08: 成功返回 nil，不需要调用者重试
+}
+```
+
+##### 变更 2: `propagateUpward` 保持 Best-Effort 模式（Phase 5 设计正确）
+
+**状态**: ✅ **无需修改**
+
+**验证**: Phase 5 的 Best-Effort 设计是正确的，应该保留。
+
+```go
+// ✅ Phase 5: Best-Effort（正确，保持不变）
+func propagateUpward(b *BTree, parentPath []PathEntry, newChildID model.PageID, childIdx int) {
+    for i := len(parentPath) - 1; i >= 0; i-- {
+        // ... 准备新节点 ...
+
+        if !parentRef.CAS(oldInfo, newInfo) {
+            // ✅ 失败：只清理当前节点，不重试
+            _ = b.storage.FreePage(newNode.PageID())
+            return  // Phase 5: Best-Effort（正确）
+        }
+
+        // ... 继续向上一层 ...
+    }
+}
+```
+
+**为什么 Best-Effort 是正确的？**
+- Leaf-Level CAS 已经成功，数据已持久化
+- Parent 更新失败不影响正确性（下次操作会重新 searchPath）
+- 避免级联重试（O(log N) 层级），性能更好
+
+**Split 传播的 Full Retry 在哪里？**
+- `handleLeafSplit()` 函数内部实现 Full Retry
+- 不需要修改 `propagateUpward()`
+
+---
+
+#### 修改 `searchPath` 支持 SplitMarker（已实现）
+
+**状态**: ✅ **已实现，无需修改**
+
+**验证** (search.go:98-103):
+```go
+// ✅ searchPath 已实现 SplitMarker following
+if followed, ok := childRef.FollowSplit(key); ok {
+    childRef = followed
+    childRef.Retain()
+} else {
+    childRef.Retain()
+}
+```
+
+**结论**: SplitMarker following 已经在 `searchPath()` 中实现，无需修改。
+
+---
+
+#### 新增 Root Split 处理（极少数情况，已修复 C5）
+
+**文件**: `internal/infrastructure/storage/btree/operations.go`
+
+```go
+// 新增函数：处理 Root Split（✅ 已修复 C5：使用 ReplaceRoot）
+// CR-08: 接收 mutate，Split 后立即在目标子页面完成插入
+
+func (b *BTree) handleRootSplit(
+    ctx context.Context,
+    rootRef *RootPageRef,
+    key, value []byte,
+    mutate func(LeafPage) (*leafMutation, error),  // CR-08: 接收 mutate 函数
+) error {
+    // 1. 获取 Root Page
+    oldRootInfo := rootRef.GetPageInfo()
+
+    // 判断 root 是否为叶子（只有叶子 root 才可能被 Set 触发 split）
+    rootLeaf, leafErr := b.storage.GetLeafPage(oldRootInfo.PageID)
+    if leafErr != nil {
+        // 非 leaf page 的 root split（内部节点分裂）
+        // 这种情况由 propagateSplit 触发，不走此路径
+        return leafErr
+    }
+
+    // 2. 执行 Split
+    leftPage, rightPage, splitKey, err := rootLeaf.Split()
+    if err != nil {
+        return err
+    }
+
+    // 3. 确定 target 并执行 mutate（CR-08 核心步骤）
+    var targetPage LeafPage
+    if bytes.Compare(key, splitKey) < 0 {
+        targetPage = leftPage
+    } else {
+        targetPage = rightPage
+    }
+
+    // TODO: optimize double-COW — 同 handleLeafSplit
+    mutation, err := mutate(targetPage)
+    if err != nil {
+        _ = b.storage.FreePage(leftPage.PageID())
+        _ = b.storage.FreePage(rightPage.PageID())
+        return err
+    }
+
+    // 4. 创建新的 Root
+    newRootPage, err := b.storage.NewNodePage()
+    if err != nil {
+        _ = b.storage.FreePage(mutation.pageID)
+        _ = b.storage.FreePage(leftPage.PageID())
+        _ = b.storage.FreePage(rightPage.PageID())
+        return err
+    }
+
+    // InsertChild 使用 mutate 后的 PageID（target 侧）
+    var leftChildID, rightChildID model.PageID
+    if bytes.Compare(key, splitKey) < 0 {
+        leftChildID = mutation.pageID    // target 在左，使用 mutate 结果
+        rightChildID = rightPage.PageID()
+    } else {
+        leftChildID = leftPage.PageID()
+        rightChildID = mutation.pageID   // target 在右，使用 mutate 结果
+    }
+
+    err = newRootPage.InsertChild(0, splitKey, leftChildID, rightChildID)
+    if err != nil {
+        _ = b.storage.FreePage(mutation.pageID)
+        _ = b.storage.FreePage(leftPage.PageID())
+        _ = b.storage.FreePage(rightPage.PageID())
+        _ = b.storage.FreePage(newRootPage.PageID())
+        return err
+    }
+
+    // 5. 创建 PageRefs（使用正确的 PageID）
+    leftRef := NewPageRef(leftChildID, 0, rootRef, b.storage.FreePage)
+    rightRef := NewPageRef(rightChildID, 0, rootRef, b.storage.FreePage)
+    leftRef.Retain()   // ✅ C1 修复：防止过早释放
+    rightRef.Retain()  // ✅ C1 修复：防止过早释放
+
+    // 6. 原子替换 Root（✅ C5 修复：使用 ReplaceRoot）
+    newRootInfo := &PageInfo{
+        PageID:  newRootPage.PageID(),
+        Version: oldRootInfo.Version + 1,
+    }
+    newChildren := []*PageRef{leftRef, rightRef}
+    if !rootRef.ReplaceRoot(oldRootInfo, newRootInfo, newChildren) {
+        leftRef.Release()
+        rightRef.Release()
+        _ = b.storage.FreePage(mutation.pageID)
+        _ = b.storage.FreePage(leftPage.PageID())
+        _ = b.storage.FreePage(rightPage.PageID())
+        _ = b.storage.FreePage(newRootPage.PageID())
+        return ErrCASConflict
+    }
+
+    // 7. 成功：在旧 root（现在是 child）上设置 SplitMarker
+    rootRef.SetSplitMarker(leftRef, rightRef, splitKey)
+
+    // 8. 更新 size（CR-08: 在这里更新）
+    b.size.Add(mutation.delta)
+
+    // 9. 释放引用（SplitMarker 持有自己的 Retain）
+    leftRef.Release()
+    rightRef.Release()
+
+    // 10. 更新 metrics
+    if b.metrics != nil {
+        b.metrics.IncrementSplit()
+    }
+
+    return nil  // ✅ CR-08: 成功返回 nil
+}
+```
+
+---
+
+### 6.0.5 实现步骤
+
+#### Phase 6.0.0: 修复 Critical Issues（1 天）
+
+**目标**: 修复 C1, C2, C3, C5 后再实施 Split 逻辑
+
+**任务清单**:
+- [ ] 1. 修改 `SetSplitMarker()` 增加 Retain（C3 修复）
+- [ ] 2. 添加 `ClearSplitMarker()` 方法（C3 修复）
+- [ ] 3. 编写生命周期测试
+  - `TestPageRef_SplitMarker_RefCount`
+  - `TestHandleLeafSplit_CASFailure_Cleanup`
+  - `TestHandleRootSplit_ReplaceRoot`
+
+**验收标准**:
+- ✅ 所有测试通过（含 `-race`）
+- ✅ 无 Use-After-Free（通过测试验证）
+- ✅ 无内存泄漏（通过 benchmark 验证）
+
+---
+
+#### Phase 6.0.1: 基础 Split 支持（2-3 天）
+
+**目标**: 支持 Leaf Split，解锁 >100 keys
+
+**任务清单**:
+- [ ] 1. 实现 `handleLeafSplit()` 函数
+- [ ] 2. 修改 `executeSetWithLeafLock()` 增加 `IsFull(keyLen, valueLen)` 检查
+- [ ] 3. 测试：插入 1000 keys（验证 Split 正确性）
+- [ ] 4. 测试：插入 10000 keys（验证性能）
+
+**验收标准**:
+- ✅ 支持插入 >100 keys
+- ✅ 数据完整性（无丢失）
+- ✅ Split 正确性（左右子树平衡）
+
+---
+
+#### Phase 6.0.2: 最小化传播（1-2 天）
+
+**目标**: 只传播到 Parent，设置 SplitMarker
+
+**任务清单**:
+- [ ] 1. 修改 `handleLeafSplit()` 设置 `SetSplitMarker()`
+- [ ] 2. 修改 `searchPath()` 支持 `FollowSplit()`
+- [ ] 3. 测试：并发 Split（验证 SplitMarker 正确性）
+- [ ] 4. 基准测试：CAS 冲突率（预期 <1%）
+
+**验收标准**:
+- ✅ SplitMarker 正确引导读操作
+- ✅ 并发 Split 无数据丢失
+- ✅ Parent CAS 比例 <1%
+
+---
+
+#### Phase 6.0.3: Split 传播 Full Retry 验证（0.5 天）
+
+**目标**: 验证 `handleLeafSplit()` 的 Full Retry 逻辑
+
+**关键设计**:
+- ✅ **Split 传播**：必须 Full Retry（`handleLeafSplit()` 内部实现）
+- ✅ **普通更新传播**：保持 Best-Effort（`propagateUpward()` 无需修改）
+
+**任务清单**:
+- [ ] 1. 验证 `handleLeafSplit()` 返回 `ErrCASConflict` 触发重试
+- [ ] 2. 测试：高并发写入（验证重试正确性）
+- [ ] 3. 测试：Split 传播失败时正确清理（无内存泄漏）
+- [ ] 4. 基准测试：验证 Best-Effort 性能优势
+
+**验收标准**:
+- ✅ Split 传播失败时正确重试
+- ✅ 无数据不一致
+- ✅ 重试次数合理（<3 次）
+- ✅ `propagateUpward()` 保持 Best-Effort（性能不退化）
+
+---
+
+#### Phase 6.0.4: Root Split 支持（0.5 天）
+
+**目标**: 支持 Root Split（极少数情况）
+
+**任务清单**:
+- [ ] 1. 实现 `handleRootSplit()` 函数
+- [ ] 2. 测试：大量插入触发 Root Split
+- [ ] 3. 测试：并发 Root Split
+
+**验收标准**:
+- ✅ Root Split 正确执行
+- ✅ 树高度正确增长
+- ✅ 并发 Root Split 无问题
+
+---
+
+#### Phase 6.0.5: 性能验证（1 天）
+
+**目标**: 验证性能提升
+
+**任务清单**:
+- [ ] 1. 基准测试：写入吞吐量（预期 +20-30%）
+- [ ] 2. 基准测试：CAS 冲突率（预期 <1%）
+- [ ] 3. 基准测试：长时间运行（10 秒）
+- [ ] 4. CPU/Memory Profile 分析
+
+**验收标准**:
+- ✅ 写入吞吐量 >2.0M ops/sec（@8核）
+- ✅ CAS 冲突率 <1%
+- ✅ 无内存泄漏
+
+---
+
+### 6.0.6 风险评估
+
+#### 已识别风险
+
+| 风险 | 级别 | 缓解措施 | 状态 |
+|------|------|---------|------|
+| Split 逻辑复杂 | 中 | 分阶段实现，充分测试 | ✅ 已缓解 |
+| 并发 Split 冲突 | 中 | SplitMarker + Full Retry | ✅ 已缓解 |
+| Root CAS 瓶颈 | 低 | 极少数情况（<0.001%） | ✅ 可接受 |
+| 测试覆盖不足 | 低 | 增加集成测试 | ✅ 计划中 |
+
+#### 回滚策略
+
+**如果 Phase 6.0 失败**：
+1. 回滚到 Phase 5 代码（已有稳定版本）
+2. 保留 Phase 5.5/5.6 的性能基准
+3. 重新评估优化策略
+
+---
+
+### 6.0.7 预期收益
+
+#### 功能收益
+
+- ✅ **支持 >100 keys**（解锁写入性能测试）
+- ✅ **支持任意容量**（理论上无上限）
+- ✅ **完整的 B+Tree 功能**
+
+#### 性能收益
+
+| 指标 | Phase 5 | Phase 6.0 | 提升 |
+|------|---------|-----------|------|
+| 最大容量 | 100 keys | **无限** | ∞ |
+| CAS 冲突率 | ~5% | **<1%** | -80% |
+| 写入吞吐量 | 1.65M | **2.0-2.2M** | +20-35% |
+| 扩展比 | 2.96x | **3.2-3.5x** | +8-18% |
+
+#### 后续优化空间
+
+**Phase 6.5+ 优化路径**：
+1. **P1 优化**（+30-40%）: 对象池、引用计数优化
+2. **P2 优化**（+20-30%）: 批量 Delta、PageLock 懒加载
+3. **长期优化**: Partitioned BTree
+
+**最终目标**: 2.5-2.8M ops/sec（接近 Lealone 水平）
+
+---
+
+### 6.0.8 总结
+
+#### 核心设计决策
+
+1. **保留现有 SplitMarker 实现**（`Left/Right *PageRef`）
+   - ✅ 已实现且工作良好
+   - ✅ 无需改为 `model.PageID`
+
+2. **使用 `IsFull(keyLen, valueLen)` 方法**（而非 `NeedsSplit()`）
+   - ✅ 功能等价，命名不同
+   - ✅ 无需新增接口
+
+3. **传播模式区分**（✅ 设计修正）
+   - **Split 传播**：Full Retry（`handleLeafSplit()` 内部实现）
+   - **普通更新传播**：Best-Effort（`propagateUpward()` 保持不变）
+   - ✅ 避免性能退化（Best-Effort 保持 O(1) CAS 开销）
+   - ✅ 保证 Split 原子性（Full Retry 确保新页面可访问）
+
+#### 实施优先级
+
+```
+Phase 6.0.1 (基础 Split) → 6.0.2 (最小化传播) → 6.0.3 (Full Retry) → 6.0.4 (Root Split) → 6.0.5 (性能验证)
+```
+
+**总工期**: 5-7 天
+
+**建议**: 优先完成 Phase 6.0.1（解锁 >100 keys），再逐步优化。
+
+---
+
+### 6.0.9 参考资料
+
+- **Phase 6.0 设计文档**: `docs/07_spike/btree-refactor/2026-04-02-btree-refactor-implement.md`
+- **Phase 5.6 性能分析**: `docs/07_spike/btree-refactor/phase5.6-performance-analysis-report.md`
+- **Write Queue 评审**: `thoughts/2026-04-04-write-queue-review.md`
+- **Lealone 性能对比**: `thoughts/performance-gap-analysis-lealone.md`
+
+---
+
+**文档创建**: 2026-04-04
+**最后更新**: 2026-04-04
+**状态**: ✅ v1.4 — CR-08 Split + Immediate Insert 已集成
+
+---
+
+### 6.0.10 修订历史
+
+#### v1.4 (2026-04-04) - CR-08 评审：Split + Immediate Insert
+
+**变更**:
+- ✅ 采纳 CR-08 核心思路：handleLeafSplit/handleRootSplit 接收 `mutate` 函数
+- ✅ Split 后立即确定 target 子页面（`bytes.Compare(key, splitKey)`）
+- ✅ 在 target 上执行 `mutate(targetPage)` 完成插入
+- ✅ 成功返回 `nil`（而非 `ErrCASConflict`），实现强一致性
+- ✅ writeOperation 中 IsFull(keyLen, valueLen) 检查移到 mutate 之前
+- ✅ SplitMarker 设置时机不变（Parent CAS 成功后）
+
+**CR-08 修复项**:
+- 拒绝 `findOrCreatePageRef`（未定义），直接使用 leftRef/rightRef
+- 拒绝 unlock leaf 后 split（TOCTOU 风险），保持 leaf lock 贯穿 split+insert
+- 不对 target child 加锁（新创建页面，无并发访问）
+- Double-COW 标注为 `// TODO: optimize double-COW` 优化项
+
+**关键变化**:
+
+| 方面 | v1.3（延迟重试） | v1.4（CR-08 立即插入） |
+|------|-----------------|----------------------|
+| Split 返回值 | `ErrCASConflict` | `nil`（成功）或 `ErrCASConflict`（真正冲突） |
+| 插入时机 | 下次重试时 | Split 后立即 |
+| 一致性 | 最终一致性 | 强一致性 |
+| handleLeafSplit 签名 | `(key, value)` | `(key, value, mutate)` |
+| writeOperation 流程 | mutate → IsFull → split | IsFull → split+mutate → CAS |
+| 调用栈深度 | 可能多次重试 | 一次完成（含递归 parent CAS） |
+
+#### v1.3 (2026-04-04) - 新增 C6: InsertChild 中间插入 Bug
+
+**变更**:
+- ✅ 添加 C6: InsertChild 中间插入导致 children/entries 错位
+- ✅ 详细分析 B+Tree children/entries 数组结构
+- ✅ 证明问题根因：children shift 循环覆盖 extraChild
+- ✅ 提供正确的修复代码
+
+**问题**:
+- `InsertChild(idx < count)` 时，children shift 循环从 `count-1` 开始
+- 但 extraChild 存储在 `children[count]`
+- 循环条件 `i >= idx` 导致 extraChild 被覆盖丢失
+
+**正确逻辑**:
+- shift 循环应从 `count` 开始，向 `idx+1` 方向移动
+- 确保 `children[count]`（extraChild）被正确转移到 `children[count+1]`
+
+**影响**:
+- Critical — Tree 结构损坏，key 丢失
+- **阻塞 Phase 6.0.1 实施**
+
+#### v1.2 (2026-04-04) - 设计修正：propagateUpward 模式
+
+**变更**:
+- ✅ 添加 D1: propagateUpward 模式选择（High 级别）
+- ✅ 修正设计：区分 Split 传播（Full Retry）vs 普通更新传播（Best-Effort）
+- ✅ 保留 Phase 5 的 Best-Effort 设计（正确）
+- ✅ 只在 `handleLeafSplit()` 中实现 Full Retry
+- ✅ 更新代码示例和实施步骤
+
+**影响**:
+- 避免性能退化（Best-Effort 保持 O(1) CAS 开销）
+- Split 传播仍然保证原子性（Full Retry）
+- 正确性不受影响（两种模式都保证正确性）
+
+#### v1.1 (2026-04-04) - Critical Issues 修复
+
+**变更**:
+- ✅ 添加 Critical Issues 修复（Agent Review 发现）
+- ✅ 修复 C1: PageRef 生命周期管理（立即 Retain）
+- ✅ 修复 C2: CAS 失败后完整清理（Release + FreePage）
+- ✅ 修复 C3: SplitMarker 引用计数管理（Retain in SetSplitMarker）
+- ✅ 修复 C5: handleRootSplit 逻辑（使用 ReplaceRoot）
+- ✅ 更新所有代码示例以反映修复
+- ✅ 添加 Phase 6.0.0（修复 Critical Issues，1天）
+
+**影响**:
+- 防止 Use-After-Free bugs (C1, C3)
+- 防止内存泄漏 (C2)
+- 修正 Root Split API (C5)
+
+#### v1.0 (2026-04-04) - 初始版本
+
+**内容**:
+- 核心设计：最小化传播策略
+- Mermaid 时序图（正常写入、Split 传播、读操作、Root Split）
+- 代码变更详情
+- 实施步骤（5 个阶段，5-7 天）
+- 风险评估
+- 预期收益
+
+---
+
+### 6.0.11 下一步行动
+
+**当前状态**: ⚠️ **C6 阻塞实施** — InsertChild Bug 尚未修复
+
+**建议顺序**:
+1. ⚠️ **Phase 6.0.P**: 修复 C6 InsertChild Bug（阻塞）
+   - 修复 `node_page.go` 的 InsertChild 中间插入逻辑
+   - 验证 children shift 循环从 `count` 而非 `count-1` 开始
+2. ✅ **Phase 6.0.0**: 修复 Critical Issues（1 天）
+   - 修改 `page_ref.go` 的 `SetSplitMarker()`（C3）
+   - 添加生命周期测试
+3. ⏳ **Phase 6.0.1**: 基础 Split 支持（2-3 天）
+   - 实现 `handleLeafSplit()`（包含 Full Retry 逻辑）
+   - 测试 >100 keys
+4. ⏳ **Phase 6.0.2-6.0.5**: 完整实现（3-4 天）
+
+**总工期**: 6-8 天（含测试）
+
+**关键修正**（v1.3）:
+- ⚠️ **C6 阻塞 Phase 6.0.1** — InsertChild Bug 导致 tree 结构损坏
+- ✅ **children shift 应从 count 开始** — 正确保留 extraChild
+- ✅ **详细分析见 C6 章节**
+
+**下一步**: 修复 C6 InsertChild Bug
 
 ---

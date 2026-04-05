@@ -14,7 +14,7 @@ import (
 // TestProfileGetParallel is a long-running test for CPU/memory profiling.
 // Run with: go test -run=TestProfileGetParallel -cpuprofile=cpu.prof -memprofile=mem.prof
 func TestProfileGetParallel(t *testing.T) {
-	storage, err := NewOffheapBTreeStorage(512 * 1024 * 1024)
+	storage, err := NewOffheapBTreeStorage(4 * 1024 * 1024 * 1024)
 	if err != nil {
 		t.Fatalf("failed to create storage: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestProfileGetParallel(t *testing.T) {
 	ctx := context.Background()
 
 	// Pre-populate with 1000 keys
-	const maxKeys = 1000
+	const maxKeys = 10000
 	for i := range maxKeys {
 		key := []byte("key-" + strconv.Itoa(i))
 		value := []byte("value-" + strconv.Itoa(i))
@@ -80,7 +80,7 @@ func TestProfileGetParallel(t *testing.T) {
 func TestProfileSetSequential(t *testing.T) {
 	t.Skip("Phase 5 limitation: COW pages not reclaimed, causes memory exhaustion. Enable in Phase 6.")
 
-	storage, err := NewOffheapBTreeStorage(512 * 1024 * 1024)
+	storage, err := NewOffheapBTreeStorage(4 * 1024 * 1024 * 1024)
 	if err != nil {
 		t.Fatalf("failed to create storage: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestProfileSetSequential(t *testing.T) {
 
 	start := time.Now()
 	iterations := 0
-	const maxKeys = 1000
+	const maxKeys = 10000
 
 	for time.Since(start) < duration {
 		for i := range 1000 {

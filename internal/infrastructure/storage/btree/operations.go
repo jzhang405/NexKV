@@ -351,10 +351,10 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	newChildCount := oldParent.Count() + 2 // After InsertChild: entries+1, children+1
 	newChildren := make([]*PageRef, newChildCount)
 	for i := range newChildCount {
-		switch {
-		case i == parentEntry.Index:
+		switch i {
+		case parentEntry.Index:
 			newChildren[i] = leftRef // Direct insert, no extra Retain needed
-		case i == parentEntry.Index+1:
+		case parentEntry.Index + 1:
 			newChildren[i] = rightRef // Direct insert, no extra Retain needed
 		default:
 			// ★ B19 fix: Reuse existing PageRef from old children

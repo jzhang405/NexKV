@@ -19,13 +19,13 @@ import (
 // Lifecycle: exists as long as the page is part of the tree.
 // Created during split/merge propagation or tree initialization.
 type PageRef struct {
-	pageID      model.PageID                // bound at creation, immutable — used by Release
-	pInfo       atomic.Pointer[PageInfo]    // atomically replaced page info
-	parentRef   atomic.Pointer[PageRef]     // parent reference; nil for root (managed by RootPageRef)
-	children    atomic.Pointer[[]*PageRef]  // lazy-loaded child refs; nil = leaf or not populated
-	refCount    atomic.Int32                // reference count; zero triggers freeFunc
-	freeFunc    func(model.PageID)          // bound at creation; called when refCount reaches 0
-	lock        SchedulerLock               // leaf-level spin lock
+	pageID    model.PageID               // bound at creation, immutable — used by Release
+	pInfo     atomic.Pointer[PageInfo]   // atomically replaced page info
+	parentRef atomic.Pointer[PageRef]    // parent reference; nil for root (managed by RootPageRef)
+	children  atomic.Pointer[[]*PageRef] // lazy-loaded child refs; nil = leaf or not populated
+	refCount  atomic.Int32               // reference count; zero triggers freeFunc
+	freeFunc  func(model.PageID)         // bound at creation; called when refCount reaches 0
+	lock      SchedulerLock              // leaf-level spin lock
 }
 
 // NewPageRef creates a new PageRef with the given page identity and parent.
@@ -173,4 +173,3 @@ func (r *PageRef) GetPathToRoot() []*PageRef {
 	}
 	return path
 }
-

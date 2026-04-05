@@ -3191,6 +3191,438 @@ Phase 6.0.1 (基础 Split) → 6.0.2 (最小化传播) → 6.0.3 (Full Retry) �
 - ✅ **children shift 应从 count 开始** — 正确保留 extraChild
 - ✅ **详细分析见 C6 章节**
 
-**下一步**: 修复 C6 InsertChild Bug
+**下一步**: 实施 Redirect+NewRef 替代 SplitMarker（见 Phase 6.1）
 
 ---
+
+## Phase 6.1: Redirect+NewRef 替代 SplitMarker
+
+> 日期: 2026-04-05
+> 状态: 设计中
+> 决策依据: `thoughts/2026-04-05-architecture-review.md`
+> 设计参考: `thoughts/2026-04-05-lealone-btree-architecture-design.md`
+
+### 6.1.1 设计决策
+
+**核心变更**: 用 `Redirect + NewRef`（Lealone 方式）替代 `SplitMarker`。
+
+**动机**:
+1. SplitMarker 是独立于 CAS 的原子操作，需要单独的生命周期管理（Retain/Release/ClearSplitMarker）
+2. SplitMarker 的设置时机难以正确把握（P0-4 问题：叶子 CAS 后、Parent CAS 前的窗口期）
+3. Redirect+NewRef 是 CAS 原子操作的一部分——PageInfo 本身包含 Redirect 标记，无需额外管理
+
+**审核约束**（来自 `thoughts/2026-04-05-architecture-review.md`）:
+- 保留 RC（引用计数），不用"无锁回收器"的 10ms 时间延迟方案
+- 保留 Entry Index + 二分查找，不降级为线性扫描
+- ParentID 放 PageRef（Go 堆），不放入 offheap PageHeader
+- Split 时机保持 mutate-first：先 mutate → 检查 IsFull → split
+
+### 6.1.2 结构变更
+
+#### PageInfo 新增字段
+
+```go
+// 修改前:
+type PageInfo struct {
+    PageID    model.PageID
+    Version   uint64
+    Tombstone bool
+}
+
+// 修改后:
+type PageInfo struct {
+    PageID    model.PageID
+    Version   uint64
+    Tombstone bool
+    Redirect  bool       // 新增：数据结构变化（分裂/合并）
+    NewRef     *PageRef   // 新增：Redirect 时指向新页面入口
+}
+```
+
+**关键**: Redirect 和 NewRef 是通过 CAS 原子设置的，与 Tombstone 在同一次 CAS 中完成。
+
+#### PageRef 移除 SplitMarker
+
+```go
+// 修改前:
+type PageRef struct {
+    pageID      model.PageID
+    pInfo       atomic.Pointer[PageInfo]
+    parentRef   atomic.Pointer[PageRef]
+    children    atomic.Pointer[[]*PageRef]
+    refCount    atomic.Int32
+    splitMarker atomic.Pointer[SplitMarker]   // 移除
+    freeFunc    func(model.PageID)
+    lock        SchedulerLock
+}
+
+// 修改后:
+type PageRef struct {
+    pageID      model.PageID
+    pInfo       atomic.Pointer[PageInfo]
+    parentRef   atomic.Pointer[PageRef]
+    children    atomic.Pointer[[]*PageRef]
+    refCount    atomic.Int32
+    freeFunc    func(model.PageID)
+    lock        SchedulerLock
+}
+```
+
+**移除内容**:
+- `splitMarker atomic.Pointer[SplitMarker]` 字段
+- `SetSplitMarker()` 方法
+- `GetSplitMarker()` 方法
+- `FollowSplit()` 方法
+- `ClearSplitMarker()` 方法
+- `SplitMarker` 结构体定义
+
+### 6.1.3 Split 流程变更
+
+#### 修改前（SplitMarker 方式）
+
+```
+1. Leaf Split → 创建 left/right 页面
+2. Parent CAS(newParentInfo)  → CAS 原子替换父节点
+3. parentRef.SetSplitMarker(leftRef, rightRef, splitKey)  ← 独立操作，存在窗口期
+4. searchPath 中: childRef.FollowSplit(key) → 检查 SplitMarker
+```
+
+**问题**: Step 2 和 Step 3 之间有窗口期——父节点 CAS 成功但 SplitMarker 尚未设置。
+
+#### 修改后（Redirect+NewRef 方式）
+
+```
+1. Leaf Split → 创建 left/right 页面
+2. oldLeafRef.CAS(oldInfo, {Tombstone:true, Redirect:true, NewRef:leftRef})  ← CAS 原子标记旧叶子
+3. Parent CAS(newParentInfo)  → CAS 原子替换父节点
+4. searchPath 中: 检查 childInfo.Redirect → 跟随 NewRef 或从 parent 重新搜索
+```
+
+**关键区别**: Step 2 中 Tombstone+Redirect+NewRef 在同一次 CAS 中完成，无窗口期。
+
+#### 具体流程
+
+```go
+func (b *BTree) handleLeafSplit(
+    ctx context.Context,
+    leafRef *PageRef,
+    path *SearchPath,
+    key []byte,
+    mutate func(LeafPage) (*leafMutation, error),
+) error {
+    // 1. 获取父节点
+    if len(path.entries) < 2 {
+        return b.handleRootSplit(ctx, leafRef, key, mutate)
+    }
+
+    parentEntry := path.entries[len(path.entries)-2]
+    parentRef := parentEntry.Ref
+    childIdx := parentEntry.Index
+
+    // 2. 执行 Split
+    pInfo := leafRef.GetPageInfo()
+    leafPage := b.storage.GetLeafPage(pInfo.PageID)
+    leftPage, rightPage, splitKey := leafPage.Split()
+
+    // 3. 确定 target 并执行 mutate（CR-08: Split + Immediate Insert）
+    var targetPage, siblingPage LeafPage
+    if bytes.Compare(key, splitKey) < 0 {
+        targetPage = leftPage
+        siblingPage = rightPage
+    } else {
+        targetPage = rightPage
+        siblingPage = leftPage
+    }
+
+    mutation, err := mutate(targetPage)
+    if err != nil {
+        b.storage.FreePage(leftPage.PageID())
+        b.storage.FreePage(rightPage.PageID())
+        return err
+    }
+
+    // 4. 创建 PageRef
+    var targetRef, siblingRef *PageRef
+    if bytes.Compare(key, splitKey) < 0 {
+        targetRef = NewPageRef(mutation.pageID, 0, parentRef, b.storage.FreePage)
+        siblingRef = NewPageRef(rightPage.PageID(), 0, parentRef, b.storage.FreePage)
+    } else {
+        siblingRef = NewPageRef(leftPage.PageID(), 0, parentRef, b.storage.FreePage)
+        targetRef = NewPageRef(mutation.pageID, 0, parentRef, b.storage.FreePage)
+    }
+    targetRef.Retain()
+    siblingRef.Retain()
+
+    // ====== 核心变更：Redirect+NewRef 替代 SplitMarker ======
+
+    // 5. 原子标记旧叶子为 Redirect（替代 SetSplitMarker）
+    redirectInfo := &PageInfo{
+        PageID:    pInfo.PageID,
+        Version:   pInfo.Version + 1,
+        Tombstone: true,
+        Redirect:  true,
+        NewRef:     targetRef,  // 指向新页面入口（leftRef）
+    }
+    if !leafRef.CAS(pInfo, redirectInfo) {
+        // CAS 失败（其他线程已修改此叶子），清理并重试
+
+        targetRef.Release()
+        siblingRef.Release()
+        b.storage.FreePage(mutation.pageID)
+        b.storage.FreePage(leftPage.PageID())
+        b.storage.FreePage(rightPage.PageID())
+        return ErrCASConflict
+    }
+    // CAS 成功：旧叶子已原子标记为 Redirect
+    // 旧叶面的物理页面将在 refCount 归零时被回收
+
+    // 6. Parent CAS（插入 left + right 子页面）
+    oldParentInfo := parentRef.GetPageInfo()
+    oldParentPage := b.storage.GetNodePage(oldParentInfo.PageID)
+    newParentPage, err := oldParentPage.InsertChild(childIdx, splitKey,
+        targetRef.pageID, siblingRef.pageID)
+    if err != nil {
+        // 注意：leaf redirect 已设置，但 parent 更新失败
+        // reader 会通过 redirect 找到正确子页面（见 6.1.4 searchPath）
+        // 但 parent 的 children cache 不更新
+        // 这是可接受的——下次操作会重新搜索
+        targetRef.Release()
+        siblingRef.Release()
+        return ErrCASConflict  // 触发 Full Retry
+    }
+
+    newParentInfo := &PageInfo{
+        PageID:  newParentPage.PageID(),
+        Version: oldParentInfo.Version + 1,
+    }
+    if !parentRef.CAS(oldParentInfo, newParentInfo) {
+        targetRef.Release()
+        siblingRef.Release()
+        b.storage.FreePage(newParentPage.PageID())
+        return ErrCASConflict
+    }
+
+    // 7. 更新 size 和 metrics
+    b.size.Add(mutation.delta)
+    if b.metrics != nil {
+        b.metrics.IncrementSplit()
+    }
+
+    targetRef.Release()
+    siblingRef.Release()
+    return nil
+}
+```
+
+### 6.1.4 searchPath 变更
+
+#### 修改前（SplitMarker 方式）
+
+```go
+// Phase 3 的 searchPath:
+marker := childRef.GetSplitMarker()
+if marker != nil {
+    if bytes.Compare(key, marker.SplitKey) < 0 {
+        childRef = marker.Left
+    } else {
+        childRef = marker.Right
+    }
+}
+```
+
+#### 修改后（Redirect+NewRef 方式）
+
+```go
+// searchPath 中遍历子节点时:
+childInfo := childRef.GetPageInfo()
+
+// 检查 Redirect（替代 SplitMarker 检查）
+if childInfo.Tombstone && childInfo.Redirect {
+    // 方法 A: 直接通过 NewRef 获取入口，然后从 parent 重新搜索
+    // NewRef 指向 left 子页面
+    newRef := childInfo.NewRef
+    if newRef != nil {
+        // 从 parent 重新搜索以确定 key 在 left 还是 right
+        parentNode := b.storage.GetNodePage(parentInfo.PageID)
+        idx, _ := parentNode.Search(key)
+
+        children := parentRef.GetOrCreateChildren(b.storage)
+        if idx < len(children) {
+            // Release 旧 childRef（Redirect 的页面不再使用）
+            childRef.Release()
+            childRef = children[idx]
+            childRef.Retain()
+        }
+    }
+}
+```
+
+**关键**: Redirect 检查替代了 SplitMarker 检查。由于 Redirect 是 PageInfo 的一部分（CAS 原子设置），不存在窗口期问题。
+
+### 6.1.5 Root Split 变更
+
+Root Split 不需要 Redirect（因为 RootPageRef.ReplaceRoot 是原子操作）。
+
+```go
+func (b *BTree) handleRootSplit(
+    ctx context.Context,
+    rootRef *RootPageRef,
+    key []byte,
+    mutate func(LeafPage) (*leafMutation, error),
+) error {
+    oldRootInfo := rootRef.GetPageInfo()
+    rootLeaf := b.storage.GetLeafPage(oldRootInfo.PageID)
+    leftPage, rightPage, splitKey := rootLeaf.Split()
+
+    // CR-08: 确定 target 并 mutate
+    var targetPage LeafPage
+    if bytes.Compare(key, splitKey) < 0 {
+        targetPage = leftPage
+    } else {
+        targetPage = rightPage
+    }
+    mutation, err := mutate(targetPage)
+    if err != nil {
+        b.storage.FreePage(leftPage.PageID())
+        b.storage.FreePage(rightPage.PageID())
+        return err
+    }
+
+    // 创建新 Root
+    newRootPage := b.storage.NewNodePage()
+    var leftChildID, rightChildID model.PageID
+    if bytes.Compare(key, splitKey) < 0 {
+        leftChildID = mutation.pageID
+        rightChildID = rightPage.PageID()
+    } else {
+        leftChildID = leftPage.PageID()
+        rightChildID = mutation.pageID
+    }
+    newRootPage.InsertChild(0, splitKey, leftChildID, rightChildID)
+
+    leftRef := NewPageRef(leftChildID, 0, rootRef, b.storage.FreePage)
+    rightRef := NewPageRef(rightChildID, 0, rootRef, b.storage.FreePage)
+    leftRef.Retain()
+    rightRef.Retain()
+
+    newRootInfo := &PageInfo{
+        PageID:  newRootPage.PageID(),
+        Version: oldRootInfo.Version + 1,
+    }
+    newChildren := []*PageRef{leftRef, rightRef}
+
+    if !rootRef.ReplaceRoot(oldRootInfo, newRootInfo, newChildren) {
+        leftRef.Release()
+        rightRef.Release()
+        b.storage.FreePage(mutation.pageID)
+        b.storage.FreePage(leftPage.PageID())
+        b.storage.FreePage(rightPage.PageID())
+        b.storage.FreePage(newRootPage.PageID())
+        return ErrCASConflict
+    }
+
+    // 无需设置 Redirect（旧 root 已被原子替换）
+    // 无需 SetSplitMarker（已移除）
+
+    b.size.Add(mutation.delta)
+    leftRef.Release()
+    rightRef.Release()
+    return nil
+}
+```
+
+### 6.1.6 移除清单
+
+以下 SplitMarker 相关代码将被移除:
+
+| 文件 | 移除项 |
+|------|-------|
+| `page_ref.go` | `splitMarker atomic.Pointer[SplitMarker]` 字段 |
+| `page_ref.go` | `SplitMarker` 结构体定义 |
+| `page_ref.go` | `SetSplitMarker()` 方法 |
+| `page_ref.go` | `GetSplitMarker()` 方法 |
+| `page_ref.go` | `FollowSplit()` 方法 |
+| `page_ref.go` | `ClearSplitMarker()` 方法 |
+| `search.go` | `GetSplitMarker()` 调用和 `FollowSplit()` 调用 |
+| `operations.go` | 所有 `SetSplitMarker()` 调用 |
+
+### 6.1.7 与 Phase 6.0 的差异对照
+
+| 方面 | Phase 6.0 (SplitMarker) | Phase 6.1 (Redirect+NewRef) |
+|------|------------------------|----------------------------|
+| **原子性** | 独立操作（非 CAS） | CAS 原子（PageInfo 的一部分） |
+| **设置时机** | Parent CAS 后 | Leaf CAS 同时 |
+| **窗口期** | 有（Parent CAS → SetSplitMarker） | 无 |
+| **生命周期管理** | 需手动 Retain/Release/Clear | 随 PageInfo 自然管理 |
+| **代码复杂度** | 高（SplitMarker 结构体 + 5 个方法） | 低（PageInfo 增加两个字段） |
+| **searchPath 检查** | `GetSplitMarker() != nil` | `childInfo.Redirect` |
+
+### 6.1.8 实施步骤
+
+| 步骤 | 内容 | 预计时间 |
+|------|------|---------|
+| 1 | PageInfo 添加 Redirect + NewRef 字段 | 0.5h |
+| 2 | PageRef 移除 SplitMarker 相关字段和方法 | 0.5h |
+| 3 | searchPath 改用 Redirect 检查 | 1h |
+| 4 | handleLeafSplit 改用 Redirect+NewRef | 1h |
+| 5 | handleRootSplit 移除 SetSplitMarker | 0.5h |
+| 6 | 移除 SplitMarker 相关测试，添加 Redirect 测试 | 1h |
+| 7 | 集成测试验证 | 1h |
+
+**总计**: ~5.5h
+
+### 6.1.9 测试变更
+
+#### 移除的测试
+
+| 测试名 | 原因 |
+|--------|------|
+| `TestSplitMarkerSetGet` | SplitMarker 已移除 |
+| `TestSplitMarkerFollowSplit` | SplitMarker 已移除 |
+| `TestSearchSplitMarkerFollow` | 改为 Redirect 测试 |
+| `TestSearchSplitMarkerRefCount` | 改为 Redirect 测试 |
+| `TestSplitMarkerSetOnLeafCAS` | Redirect 是 CAS 原子的 |
+| `TestSplitMarkerReaderFollows` | 改为 Redirect 测试 |
+| `TestSplitDuringConcurrentRead` | 改为 Redirect 测试 |
+
+#### 新增的测试
+
+| 测试名 | 目的 |
+|--------|------|
+| `TestPageInfoRedirectFields` | PageInfo 的 Redirect/NewRef 字段正确设置 |
+| `TestSearchFollowsRedirect` | searchPath 遇到 Redirect 时正确跟随 |
+| `TestRedirectCASAtomic` | Redirect+NewRef 在同一次 CAS 中设置 |
+| `TestRedirectNoWindowGap` | 无窗口期验证（并发读写测试） |
+| `TestRedirectRefCountCorrect` | NewRef 指向的 PageRef 引用计数正确 |
+| `TestRootSplitNoRedirectNeeded` | Root Split 不设置 Redirect |
+| `TestConcurrentSplitRedirect` | 并发 Split 通过 Redirect 正确引导 |
+
+### 6.1.10 风险评估
+
+| 风险 | 级别 | 缓解 |
+|------|------|------|
+| Redirect 后 parent 尚未更新 | 低 | reader 从 parent 重新搜索，自然找到正确 child |
+| NewRef 指针悬挂 | 低 | PageInfo 由 PageRef 持有，PageRef 有 RC 保护 |
+| 并发 Redirect 检查竞争 | 低 | PageInfo 通过 atomic.Pointer 访问，无竞争 |
+
+---
+
+### 6.1.11 修订历史
+
+#### Phase 6.1 v1.0 (2026-04-05) - Redirect+NewRef 替代 SplitMarker
+
+**变更**:
+- 新增 Phase 6.1: Redirect+NewRef 设计
+- PageInfo 添加 `Redirect bool` 和 `NewRef *PageRef` 字段
+- 移除 SplitMarker 结构体及相关方法（5个）
+- searchPath 改用 Redirect 检查
+- handleLeafSplit 改用 CAS 设置 Redirect（替代 SetSplitMarker）
+- handleRootSplit 移除 SetSplitMarker 调用
+
+**审核依据**: `thoughts/2026-04-05-architecture-review.md`
+
+**审核约束（已采纳）**:
+- 保留 RC（引用计数）
+- 保留 Entry Index + 二分查找
+- ParentID 放 PageRef（Go 堆）而非 offheap PageHeader
+- Split 时机保持 mutate-first

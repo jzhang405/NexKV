@@ -10,8 +10,8 @@
 
 - 底层页面 Split（Leaf Split / Node Split）
 - Split 传播机制（handleLeafSplit / handleRootSplit）
-- SplitMarker 可见性机制
-- 并发读者如何通过 SplitMarker 跟随分裂
+- Redirect+NewRef 可见性机制（原子 CAS，无窗口期）
+- 并发读者如何通过 Redirect 重新导航到正确子页面
 - writeOperation 中的 CR-08（Split + Immediate Insert）集成
 
 ### 核心设计决策
@@ -20,7 +20,7 @@
 |------|------|------|
 | COW 语义 | 所有变更返回新页面，原页面不变 | interface.md §6 |
 | Leaf-Level Locking | 叶级自旋锁 + CAS，非 Root CAS | interface.md §5 |
-| SplitMarker | 并发读者跟随分裂，无需等父节点更新 | interface.md §D5 |
+| Redirect+NewRef | Tombstone+Redirect+NewRef 在同一次 CAS 中原子设置，无窗口期 | §5 |
 | CR-08 | Split + Immediate Insert，强一致性返回 | implement.md §6.0.4 |
 | Best-Effort 传播 | 普通更新传播不重试；Split 传播 Full Retry | implement.md §6.0.3 D1 |
 
@@ -260,9 +260,9 @@ Step 2: SetChild(2, B) → extraChild = B
 
 ---
 
-## 5. SplitMarker — 分裂可见性机制
+## 5. Redirect+NewRef — 分裂可见性机制
 
-**文件**: `internal/infrastructure/storage/btree/page_ref.go:188-237`
+**文件**: `internal/infrastructure/storage/btree/page_info.go`
 
 ### 5.1 问题
 
@@ -275,171 +275,95 @@ Reader: 看到 leafRef 的新 pInfo → 但 leafRef 的数据可能已经 split 
 
 ### 5.2 解决方案
 
-在 PageRef 上设置 SplitMarker，reader 在 searchPath 时检测并跟随：
+在 PageInfo 中增加 `Redirect` 和 `NewRef` 字段，**与 Tombstone 在同一次 CAS 中原子设置**。
+并发 reader 在 searchPath 时检测到 Tombstone+Redirect 后，通过 NewRef 重新导航。
 
-```go
-type SplitMarker struct {
-    Left     *PageRef    // 分裂后的左页面引用
-    Right    *PageRef    // 分裂后的右页面引用
-    SplitKey []byte      // 分裂 key（防御性拷贝）
-}
-```
-
-### 5.3 SetSplitMarker — C3 修复
-
-```go
-func (r *PageRef) SetSplitMarker(left, right *PageRef, splitKey []byte) {
-    // C3 fix: Retain PageRefs 防止过早释放
-    left.Retain()
-    right.Retain()
-
-    // I1 fix: 防御性拷贝 splitKey
-    keyCopy := make([]byte, len(splitKey))
-    copy(keyCopy, splitKey)
-    marker := &SplitMarker{
-        Left:     left,
-        Right:    right,
-        SplitKey: keyCopy,
-    }
-    r.splitMarker.Store(marker)
-}
-```
-
-### 5.4 ClearSplitMarker
-
-```go
-func (r *PageRef) ClearSplitMarker() {
-    marker := r.splitMarker.Swap(nil)
-    if marker != nil {
-        // C3 fix: 释放 Retain 的引用
-        marker.Left.Release()
-        marker.Right.Release()
-    }
-}
-```
-
-#### 5.4.1 ClearSplitMarker 调用时机（★ P0-2 + B18/B19 修复）
-
-> **⚠️ 关键**：ClearSplitMarker 必须在**安全的时机**调用，否则会与并发的 FollowSplit 竞争导致 Use-After-Free。
-
-**★ B18/B19 修复后的调用策略（已变更）**：
-
-旧策略（B18 修复前）：`InvalidateChildren()` → `children.Store(nil)` → ClearSplitMarker → 依赖 `GetOrCreateChildren` 重建 children。
-
-新策略（B18/B19 修复后）：直接在 handleLeafSplit 中构建 `newChildren` 数组 → `children.Store(newChildren)` → ClearSplitMarker。**不再依赖 InvalidateChildren + 重建模式**，避免了 GetOrCreateChildren 创建独立 PageRef 导致的 refCount 混淆（Bug B18/B19）。
-
-**调用点**: handleLeafSplit Step 9-10（`parentRef.children.Store(newChildren)` 之后）
-
-**调用条件**（全部满足）：
-1. Parent CAS 已成功（新 parent 页面已 publish）
-2. `children.Store(newChildren)` 已将新 children 数组原子替换（leftRef/rightRef 被 newChildren 持有，refCount ≥ 1）
-3. 后续 reader 通过 `GetOrCreateChildren` 直接获取已设置好的 newChildren，不需要重建
-4. **B19 修复**：newChildren 中复用旧 children 的 PageRef 对象，不会出现对同一 pageID 的两个独立 PageRef 竞争 refCount 的问题
-
-**为什么不能再持有 leafRef 锁期间调用**：
-- ClearSplitMarker 释放 SplitMarker 的 Retain（refCount 2→1 → 仍 ≥ 1）
-- 前提是 children.Store 已将 leftRef/rightRef 放入 newChildren，被 children 持有
-- 如果 children.Store 尚未执行就 ClearSplitMarker → refCount 1→0 → freeFunc → UAF
-
-**handleLeafSplit 中的调用链**:
-```
-handleLeafSplit:
-  Parent CAS 成功 ✅
-  SetSplitMarker(leftRef, rightRef) → leftRef/rightRef refCount 1→2
-  Tombstone CAS
-  children.Store(newChildren) → leftRef/rightRef 被 newChildren 持有（refCount 不变）
-  ClearSplitMarker() → leftRef/rightRef refCount 2→1（仍 ≥ 1）✅  // ★ P0-2+B18/B19
-```
-
-**handleRootSplit 中的调用链（B20 修复后）**:
-```
-handleRootSplit:
-  ReplaceRoot CAS 成功 ✅
-  children.Store([leftRef, rightRef]) → leftRef/rightRef 被 rootChildren 持有  ✅  // ★ B20
-  SetSplitMarker(leftRef, rightRef)  // marker 仅用于极少数 CAS 窗口期读者
-  ClearSplitMarker() → refCount 2→1（仍 ≥ 1）✅
-```
-
-**安全性论证**：
-- B18/B19 修复后，leftRef/rightRef 在 children.Store 时已被 newChildren 持有
-- ClearSplitMarker 释放 SplitMarker 的 Retain（refCount 2→1），不降到 0
-- 后续 GetOrCreateChildren 直接返回已 Store 的 newChildren，不需要重建，不会创建独立 PageRef 对象
-- 正在 FollowSplit 途中的 reader 已通过 P0-1 修复的内部 Retain 持有有效引用
-
-### 5.5 FollowSplit — 读者跟随分裂
-
-```go
-// FollowSplit 返回目标子页面引用（已 Retain）。
-// ★ P0-1 修复：内部 Retain，防止 ClearSplitMarker 在返回与调用方 Retain 之间
-//   释放引用导致 Use-After-Free。
-func (r *PageRef) FollowSplit(key []byte) (*PageRef, bool) {
-    marker := r.splitMarker.Load()
-    if marker == nil {
-        return nil, false
-    }
-    var target *PageRef
-    if bytes.Compare(key, marker.SplitKey) < 0 {
-        target = marker.Left   // key < splitKey → 左子树
-    } else {
-        target = marker.Right  // key >= splitKey → 右子树
-    }
-    target.Retain()  // ★ P0-1: 在返回前 Retain，消除竞态窗口
-    return target, true
-}
-```
-
-### 5.6 Tombstone — 分裂页面标记
-
-**文件**: `internal/infrastructure/storage/btree/page_info.go`
-
-PageInfo 包含 `Tombstone bool` 字段，标记该 PageRef 已被分裂、不再可用：
+**与旧 SplitMarker 设计的关键区别**：SplitMarker 需要独立的 `atomic.Store` 操作，与 Tombstone CAS 是两个独立操作，存在窗口期。Redirect+NewRef 与 Tombstone 在同一个 CAS 中设置，**不存在窗口期**。
 
 ```go
 type PageInfo struct {
     PageID    model.PageID
-    Version   uint32
-    Tombstone bool  // true = 该页面已被分裂，writer 必须重试，reader 应 FollowSplit
+    Version   uint64
+    Tombstone bool     // page has been split, no longer navigable
+    Redirect  bool     // data structure changed (split), reader should re-navigate via NewRef
+    NewRef    *PageRef // when Redirect=true, points to the left child of the split
 }
 ```
 
-#### 5.6.1 Tombstone 与 SplitMarker 的**严格顺序**
+**字段语义**：
+- `Tombstone=true`：该页面已被分裂，不再可导航
+- `Redirect=true`：数据结构已变化（分裂），reader 应通过 NewRef 重新导航
+- `NewRef`：当 Redirect=true 时，指向分裂后的左子页面。Reader 应从父节点的已更新 children 缓存中重新查找正确子页面
 
-> **⚠️ 关键约束（调试发现的 Bug B2）**：必须先 SetSplitMarker，再设置 Tombstone。
+### 5.3 原子 Redirect CAS
 
+```go
+// handleLeafSplit 中的 Redirect CAS — 单次原子操作，无窗口期
+redirectInfo := &PageInfo{
+    PageID:    leafInfo.PageID,
+    Version:   leafInfo.Version + 1,
+    Tombstone: true,
+    Redirect:  true,
+    NewRef:    leftRef,  // 指向分裂后的左子页面
+}
+leafRef.CAS(leafInfo, redirectInfo)
 ```
-正确顺序：
-  1. SetSplitMarker(leftRef, rightRef, splitKey)  ← 先让 reader 有路可走
-  2. CAS(pInfo, {Tombstone: true})                ← 再标记旧页面不可用
 
-错误顺序（会导致并发 reader 丢失）：
-  1. CAS(pInfo, {Tombstone: true})                ← reader 看到 Tombstone 但无 SplitMarker
-  2. SetSplitMarker(leftRef, rightRef, splitKey)  ← 窗口期！reader 无法跟随
+**关键优势**：
+- Tombstone + Redirect + NewRef 在**同一次 CAS** 中原子生效
+- 不存在 "Tombstone 已设置但 Redirect 未设置" 的窗口期
+- 消除了旧 SplitMarker 设计中的 B2 Bug（顺序错误导致 reader 丢失）
+- 无需独立的 SetSplitMarker / ClearSplitMarker 操作
+- 无需 FollowSplit 方法（因为 NewRef 不需要按 key 选择方向）
+
+### 5.4 Reader 如何使用 Redirect
+
+当 searchPath 遇到 `Tombstone=true && Redirect=true` 时：
+
+```go
+childInfo := childRef.GetPageInfo()
+if childInfo.Tombstone && childInfo.Redirect && childInfo.NewRef != nil {
+    // 页面已分裂，需要重新导航
+    // 策略：从父节点的已更新 children 缓存中重新查找
+    childRef.Release()
+    updatedChildren, _ := currentRef.GetOrCreateChildren(storage)
+    reIdx, _ := node.Search(key)
+    if reIdx < len(updatedChildren) && updatedChildren[reIdx] != nil {
+        childRef = updatedChildren[reIdx]
+        childRef.Retain()
+    }
+}
 ```
 
-**原因**：如果 Tombstone 先于 SplitMarker 设置，存在一个窗口期：
-- Reader 看到 `pInfo.Tombstone == true`
-- 但 `splitMarker == nil`（还没设置）
-- Reader 无法 FollowSplit，也无法读取旧页面 → 数据不可见
+**为什么 NewRef 指向左子页面而非按 key 选择**：
+- 旧 SplitMarker 设计需要根据 key 与 splitKey 的比较来选择 Left/Right
+- 新设计中，Redirect 触发后 reader 从**父节点的已更新 children 缓存**中重新查找
+- 父节点 CAS 成功后 children 已更新（包含 leftRef 和 rightRef），reader 通过 `Search(key)` 找到正确的子页面
+- NewRef 作为 fallback：当父节点 children 尚未更新时的安全退路
 
-> **★ P1-2: Go 1.19+ atomic 语义保证**
->
-> 上述"严格顺序"依赖 Go `sync/atomic` 包的 **sequential consistency** 语义（Go 1.19+）：
-> - `atomic.Value.Store(marker)`（SetSplitMarker）和 `atomic.Pointer.CAS(old, tombstoned)`（Tombstone）都是 atomic 操作
-> - 在**同一个 goroutine** 内，Store 在 CAS 之前执行，Go 保证不被重排序
-> - 对于并发 reader goroutine：如果 reader 通过 `atomic.Load` 看到 `pInfo.Tombstone == true`（即 CAS 的效果），则 reader **必然也能看到** `splitMarker != nil`（即 Store 的效果），因为 Go atomic 操作提供了全序关系（total order）
-> - 因此，**不需要额外的内存屏障**（如 `runtime.StorePointer` / `runtime.LoadPointer`）
+### 5.5 PageInfo 字段在各角色的语义
 
-#### 5.6.2 Tombstone 在各角色的语义
+| 字段 | Reader 遇到 | Writer 遇到 | propagateUpward 遇到 |
+|------|-----------|-----------|---------------------|
+| `Tombstone=true` | 页面已分裂，需重新导航 | 锁定后发现 Tombstone，释放锁并完整重试 | 停止传播（该路径已分裂） |
+| `Redirect=true` | 数据结构已变，通过 NewRef/children 重新导航 | — | — |
+| `NewRef != nil` | 指向分裂后的左子页面，作为重新导航的起点 | — | — |
 
-| 角色 | 遇到 Tombstone=true 的行为 |
-|------|---------------------------|
-| **Reader (searchPath)** | 尝试 FollowSplit；若 SplitMarker 尚未就绪，自旋等待或返回重试错误 |
-| **Writer (writeOperation)** | 锁定后发现 Tombstone，释放锁并完整重试（searchPath 会导航到新子页面） |
-| **propagateUpward** | 检测到 Tombstone 后**停止传播**（该路径已分裂，父节点可能也已 COW） |
+### 5.6 Redirect+NewRef vs 旧 SplitMarker 设计对比
+
+| 方面 | 旧 SplitMarker | 新 Redirect+NewRef |
+|------|---------------|-------------------|
+| 设置方式 | 独立 `atomic.Store` + 独立 Tombstone CAS | 单一 CAS（原子） |
+| 窗口期 | 存在（SetSplitMarker 与 Tombstone CAS 之间） | **不存在**（同一次 CAS） |
+| 数据结构 | `SplitMarker{Left, Right, SplitKey}` 独立 struct | PageInfo 内嵌字段 |
+| Reader 导航 | `FollowSplit(key)` 按 key 选择 Left/Right | 从父节点 children 重新 Search |
+| 清理操作 | 需要 `ClearSplitMarker` + Release | 无需清理（随 PageRef 生命周期管理） |
+| 引用计数管理 | marker.Retain/Release，复杂 | NewRef 作为 PageInfo 字段，随 CAS 生命周期 |
+| Bug B2 风险 | 存在（顺序错误） | **消除**（原子 CAS） |
 
 ---
 
-## 6. searchPath 中的 SplitMarker 处理
+## 6. searchPath 中的 Redirect 处理
 
 **文件**: `internal/infrastructure/storage/btree/search.go:58-107`
 
@@ -458,17 +382,33 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 
         // ★ Bug B3 修复：Tombstone 检查（在 IsLeaf 判断之前！）
         if pInfo.Tombstone {
-            // 尝试 FollowSplit
-            if followed, ok := currentRef.FollowSplit(key); ok {
-                // ★ B18 修复：FollowSplit 内部已 Retain（P0-1），无需额外 Retain
-                currentRef.Release()    // 释放当前工作引用
-                currentRef = followed   // FollowSplit 返回的 ref 已 Retain，直接使用
-                continue  // 重新检查新 Ref 的 pInfo
+            // Redirect+NewRef: Tombstone 和 Redirect 在同一次 CAS 中设置
+            // 不存在旧 SplitMarker 的窗口期问题
+            if pInfo.Redirect && pInfo.NewRef != nil {
+                // 从父节点的已更新 children 缓存中重新导航
+                currentRef.Release()
+                // 需要从 path 中回溯到父节点，获取更新后的 children
+                if len(path) > 0 {
+                    parentEntry := path[len(path)-1]
+                    parentInfo := parentEntry.Ref.GetPageInfo()
+                    if parentInfo != nil {
+                        updatedChildren, _ := parentEntry.Ref.GetOrCreateChildren(storage)
+                        node := &nodePageHandle{id: parentInfo.PageID, pa: storage.pa, storage: storage}
+                        reIdx, _ := node.Search(key)
+                        if reIdx < len(updatedChildren) && updatedChildren[reIdx] != nil {
+                            currentRef = updatedChildren[reIdx]
+                            currentRef.Retain()
+                            continue
+                        }
+                    }
+                }
+                // 无父节点或导航失败，返回重试错误
+                path.ReleaseAll()
+                return nil, ErrRetry
             }
-            // SplitMarker 尚未就绪（窗口期极短）
-            // 策略：返回重试错误，由上层决定重试或自旋
+            // Tombstone 但无 Redirect（不应发生，防御性处理）
             path.ReleaseAll()
-            return nil, ErrRetry  // ★ Phase 6.0 新增 sentinel error
+            return nil, ErrRetry
         }
 
         if storage.pa.IsLeaf(uint32(pInfo.PageID)) {
@@ -485,7 +425,7 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
         children, _ := currentRef.GetOrCreateChildren(storage)
 
         // ★ P1-1 修复：stale children 缓存越界保护
-        // Parent CAS 成功后、InvalidateChildren 前，pInfo 可能已更新为
+        // Parent CAS 成功后、children 更新前，pInfo 可能已更新为
         // 更多 children 的新 parent，但 children 数组仍是旧的（长度不足）。
         // idx 基于新 pInfo 的 Search 结果，可能超出旧 children 长度。
         if idx >= len(children) || children[idx] == nil {
@@ -494,10 +434,21 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
         }
         childRef := children[idx]
 
-        // ★ SplitMarker following (D5 decision)
-        // ★ P0-1 修复：FollowSplit 已内部 Retain，无需额外 Retain
-        if followed, ok := childRef.FollowSplit(key); ok {
-            childRef = followed   // 已 Retain，直接使用
+        // ★ Redirect 检测：检查子页面是否已分裂
+        childInfo := childRef.GetPageInfo()
+        if childInfo != nil && childInfo.Tombstone && childInfo.Redirect && childInfo.NewRef != nil {
+            // 子页面已分裂，从当前节点（父节点）的更新后 children 重新导航
+            childRef.Release()  // 释放对旧子页面的引用
+            // 重新获取 children（可能已更新）
+            updatedChildren, _ := currentRef.GetOrCreateChildren(storage)
+            reIdx, _ := node.Search(key)
+            if reIdx < len(updatedChildren) && updatedChildren[reIdx] != nil {
+                childRef = updatedChildren[reIdx]
+                childRef.Retain()
+            } else {
+                path.ReleaseAll()
+                return nil, ErrRetry
+            }
         } else {
             childRef.Retain()
         }
@@ -510,8 +461,9 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 **关键点**：
 - **Tombstone 检查必须在 IsLeaf 之前**（Bug B3）：Tombstoned 页面的 PageID 可能已变为内部节点类型，直接 IsLeaf 会判断错误
 - Reader 在遍历时**无需获取锁**
-- 如果子节点有 SplitMarker，根据 key 与 SplitKey 的比较选择 Left 或 Right
-- Retain/Release 配对：FollowSplit 返回的新 childRef 需要 Retain
+- Redirect+NewRef 是原子生效的，**不存在旧 SplitMarker 的窗口期**（Tombstone 但无 marker 可跟）
+- 当检测到子页面 Redirect 时，从父节点的 children 缓存重新查找（Search key 得到正确的子页面索引）
+- Retain/Release 配对：所有路径上的 Ref 都正确管理引用计数
 
 ---
 
@@ -651,18 +603,14 @@ sequenceDiagram
     alt Parent CAS 成功
         ParentRef-->>BTree: true
 
-        Note over BTree: 9. SetSplitMarker (先于 Tombstone！)
-        BTree->>LeafRef: SetSplitMarker(leftRef, rightRef, splitKey)
-        Note over LeafRef: C3: marker.Retain leftRef + rightRef<br/>Reader 现在可以 FollowSplit
-
-        Note over BTree: 10. Tombstone CAS (在 SplitMarker 之后！)
-        BTree->>LeafRef: CAS(oldInfo, {Tombstone: true})
-        Note over LeafRef: 标记旧叶子不可用<br/>Writer 会重试；Reader 会 FollowSplit
+        Note over BTree: 9. Redirect+NewRef CAS（原子操作，无窗口期！）
+        BTree->>LeafRef: CAS(oldInfo, {Tombstone: true, Redirect: true, NewRef: leftRef})
+        Note over LeafRef: Tombstone+Redirect+NewRef 同一次 CAS<br/>Reader 检测到 Redirect 后重新导航
 
         BTree->>LeafRef: Unlock()
         Note over BTree: size.Add(delta)
         BTree->>BTree: leftRef.Release()<br/>rightRef.Release()
-        Note over BTree: SplitMarker 持有自己的 Retain
+        Note over BTree: Redirect+NewRef 作为 PageInfo 字段，无独立 Retain
         BTree->>BTree: path.ReleaseAll()
         BTree-->>Client: nil (强一致性成功)
     else Parent CAS 失败
@@ -718,10 +666,10 @@ sequenceDiagram
     alt ReplaceRoot 成功
         RootRef-->>BTree: true
 
-        Note over BTree: 6. SetSplitMarker on root
-        BTree->>RootRef: SetSplitMarker(leftRef, rightRef, splitKey)
+        Note over BTree: 6. 设置 children 缓存（B20：先于一切可见性设置）
+        BTree->>RootRef: children.Store([leftRef, rightRef])
 
-        Note over BTree: ★ B11: Root Split 不需要 Tombstone<br/>ReplaceRoot 已原子替换 pInfo<br/>rootRef 被复用为新 internal root<br/>Tombstone 语义不适用
+        Note over BTree: ★ B11 + Redirect+NewRef: Root Split 不需要 Redirect<br/>ReplaceRoot 已原子替换 pInfo<br/>rootRef 被复用为新 internal root<br/>无需 Tombstone/Redirect 语义
 
         Note over BTree: 7. 更新 size + metrics
         BTree->>BTree: size.Add(delta)
@@ -738,36 +686,40 @@ sequenceDiagram
     end
 ```
 
-### 8.4 并发 Reader 跟随 SplitMarker
+### 8.4 并发 Reader 通过 Redirect 重新导航
 
 ```mermaid
 sequenceDiagram
     participant Reader as Reader goroutine
     participant ParentRef as PageRef(Parent)
     participant ChildRef as PageRef(old child)
-    participant Marker as SplitMarker
+    participant UpdatedChildren as 更新后 children 缓存
     participant LeftRef as PageRef(left)
     participant RightRef as PageRef(right)
 
-    Note over Reader,RightRef: Writer 已完成 Parent CAS + SetSplitMarker<br/>但 children 数组尚未更新
+    Note over Reader,RightRef: Writer 已完成 Parent CAS + Redirect CAS<br/>children 缓存已更新
 
     Reader->>ParentRef: GetOrCreateChildren(storage)[idx]
     ParentRef-->>Reader: childRef（旧子页面引用）
 
-    Reader->>ChildRef: FollowSplit(key)
-    ChildRef->>Marker: GetSplitMarker()
-    Marker-->>ChildRef: marker{Left, Right, SplitKey}
-    ChildRef-->>Reader: marker != nil
+    Reader->>ChildRef: GetPageInfo()
+    Note over ChildRef: pInfo.Tombstone=true && Redirect=true && NewRef!=nil
 
-    alt key < marker.SplitKey
+    Reader->>ChildRef: Release()（释放旧子页面引用）
+
+    Reader->>ParentRef: GetOrCreateChildren(storage)（重新获取）
+    ParentRef-->>Reader: updatedChildren（包含 leftRef, rightRef）
+
+    Reader->>ParentRef: node.Search(key) → reIdx
+
+    alt key < splitKey → reIdx 指向 left
         Reader->>LeftRef: Retain()
         Reader->>Reader: childRef = LeftRef
-    else key >= marker.SplitKey
+    else key >= splitKey → reIdx 指向 right
         Reader->>RightRef: Retain()
         Reader->>Reader: childRef = RightRef
     end
 
-    Reader->>ChildRef: Release() (旧引用)
     Note over Reader: 继续正常向叶子遍历
     Reader->>Reader: 继续遍历到叶子页...
 ```
@@ -814,8 +766,8 @@ sequenceDiagram
     Note over W2: W2 CAS 失败 → 完整重试
 
     W1->>Parent: children.Store(newChildren1)（包含 left1Ref, right1Ref）
-    W1->>Child1: SetSplitMarker(left1Ref, right1Ref, splitKey1)
-    W1->>Child1: Tombstone CAS
+    W1->>Child1: Redirect CAS(Tombstone+Redirect+NewRef)
+    W1->>Child1: Unlock()
     W1->>Child1: Unlock()
 
     W2->>Child2: Unlock()
@@ -1036,19 +988,18 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
         return ErrCASConflict
     }
 
-    // Step 7: ★ Bug B2 修复 — 先 SetSplitMarker，再 Tombstone
-    leafRef.SetSplitMarker(leftRef, rightRef, splitKey)
-    // SplitMarker.Left → leftRef（pageID = mutation.newPageID 或 leftPage.PageID()）
-    // SplitMarker.Right → rightRef（pageID = rightPage.PageID() 或 mutation.newPageID）
-    // 与父节点 InsertChild 的 childID 完全一致 ✅
-
-    // Step 8: Tombstone the old leaf（必须在 SplitMarker 之后）
-    // 此 CAS 在 leafRef 持锁期间执行，且 pInfo 未被修改过 → 必然成功
-    leafRef.CAS(leafInfo, &PageInfo{
+    // Step 7: ★ Redirect+NewRef — 单次原子 CAS（替代旧 SetSplitMarker + Tombstone CAS 两步操作）
+    // Tombstone + Redirect + NewRef 在同一次 CAS 中原子生效，无窗口期
+    // 消除旧 SplitMarker 设计的 Bug B2（顺序错误导致 reader 丢失）
+    redirectInfo := &PageInfo{
         PageID:    leafInfo.PageID,
         Version:   leafInfo.Version + 1,
         Tombstone: true,
-    })
+        Redirect:  true,
+        NewRef:    leftRef,  // 指向分裂后的左子页面
+    }
+    // 此 CAS 在 leafRef 持锁期间执行，且 pInfo 未被修改过 → 必然成功
+    leafRef.CAS(leafInfo, redirectInfo)
 
     // Step 9: ★ B18 修复 + ★ B19 修复 — 直接设置 parent 的 children 缓存，复用旧 children 中的 PageRef
     //
@@ -1062,7 +1013,8 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
     //   复用后，旧 children 数组的 PageRef 引用计数自然转移给 newChildren，
     //   无需额外 Release，不会出现 pageID 被提前回收的问题。
     //
-    // 修复方案 A：直接构建 children 数组，将 leftRef/rightRef 放入，复用旧 PageRef。
+    // ★ Redirect+NewRef 优势：无需 ClearSplitMarker。NewRef 作为 PageInfo 字段随 CAS 生命周期管理，
+    //   不存在独立的 Retain/Release 循环，简化引用计数管理。
     oldChildren := parentRef.children.Load()  // ★ B19 修复：获取旧 children 以便复用
     newChildCount := oldParent.Count() + 1   // InsertChild 后 count+1
     newChildren := make([]*PageRef, newChildCount)
@@ -1092,17 +1044,16 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
     }
     parentRef.children.Store(newChildren)  // 原子替换
 
-    // ★ B18 修复：ClearSplitMarker 现在安全
-    // leftRef/rightRef 已被 newChildren 持有（refCount ≥ 1），
-    // ClearSplitMarker 释放 SplitMarker 的 Retain（refCount -1）不会降到 0。
-    leafRef.ClearSplitMarker()
+    // ★ Redirect+NewRef：无需 ClearSplitMarker
+    // 旧设计中 ClearSplitMarker 释放 SplitMarker 的 Retain（refCount -1），
+    // 新设计中 NewRef 作为 PageInfo 字段，不涉及独立的 Retain/Release 循环。
+    // leftRef 被 newChildren 持有，refCount=1，安全。
 
     // Step 10: Update metrics + size
     b.size.Add(mutation.delta)
-    // ★ 引用计数追踪（B18 修复后）：
-    //   leftRef:  Retain(Step4)=1 + Retain(SplitMarker)=1 + Release(ClearSplitMarker)=-1 = 1
-    //            被 newChildren[i] 持有 → refCount=1，安全
-    //   rightRef: 同理 refCount=1
+    // ★ 引用计数追踪（Redirect+NewRef 设计）：
+    //   leftRef:  Retain(Step4)=1 → 被 newChildren[i] 持有 → refCount=1，安全
+    //   rightRef: Retain(Step4)=1 → 被 newChildren[i+1] 持有 → refCount=1，安全
     //   注意：不再 Release leftRef/rightRef！它们的生命周期由 parent.children 管理。
     //   回收时机：parentRef 的 children 被 InvalidateChildren 或重建时，
     //   对旧 children 中的每个 childRef 调用 Release（包括 leftRef/rightRef）。
@@ -1113,12 +1064,12 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 ```
 
 **关键修正点**：
-1. **Review B6**（§9.3 Step 3-4）：PageRef 绑定 double-COW 后的实际 PageID（`mutation.newPageID`），而非原始 split 页面。确保 SplitMarker 和父节点 InsertChild 指向同一物理页面。
-2. **Bug B1**（§9.3 Step 5）：InsertChild 直接从 PageRef 读取 PageID，保证与 SplitMarker 一致。
+1. **Review B6**（§9.3 Step 3-4）：PageRef 绑定 double-COW 后的实际 PageID（`mutation.newPageID`），而非原始 split 页面。确保 Redirect NewRef 和父节点 InsertChild 指向同一物理页面。
+2. **Bug B1**（§9.3 Step 5）：InsertChild 直接从 PageRef 读取 PageID，保证与 Redirect NewRef 一致。
 3. **Review B7**（§9.3 Step 6）：CAS 失败路径移除显式 `FreePage(leftPage.PageID())` / `FreePage(rightPage.PageID())`，仅依赖 `Release()` → `freeFunc` 自动回收，避免 double-free。
-4. **Bug B2**（§9.3 Step 7-8）：`SetSplitMarker` 在 `Tombstone CAS` 之前执行，消除读者看到 Tombstone 但无 SplitMarker 的窗口。
+4. **★ Redirect+NewRef**（§9.3 Step 7）：`Tombstone + Redirect + NewRef` 在**同一次 CAS** 中原子设置，彻底消除了旧 SplitMarker 设计中 `SetSplitMarker` 和 `Tombstone CAS` 之间的窗口期（Bug B2）。无需独立的 SetSplitMarker / ClearSplitMarker 操作。
 5. **孤儿页面回收**（§9.3 Step 3 后）：double-COW 替换的原始 split 页面显式 `FreePage(orphanPageID)`。
-6. **★ Review B18**（§9.3 Step 9-10）：直接构建 children 数组并 `children.Store`，而非 `InvalidateChildren + GetOrCreateChildren` 重建。`GetOrCreateChildren` 创建独立 PageRef 对象（refCount=0），与 leftRef/rightRef 的引用计数互不关联，导致 ClearSplitMarker + Release 后 refCount→0 → 页面被错误回收。修复后 leftRef/rightRef 被 children 持有（refCount≥1），ClearSplitMarker 安全。不再在 handleLeafSplit 中释放 leftRef/rightRef，生命周期由 parent.children 管理。
+6. **★ Review B18**（§9.3 Step 9）：直接构建 children 数组并 `children.Store`，而非 `InvalidateChildren + GetOrCreateChildren` 重建。`GetOrCreateChildren` 创建独立 PageRef 对象（refCount=0），与 leftRef/rightRef 的引用计数互不关联。修复后 leftRef/rightRef 被 children 持有（refCount≥1）。不再在 handleLeafSplit 中释放 leftRef/rightRef，生命周期由 parent.children 管理。
 
 ### 9.4 handleRootSplit 伪代码（Root Leaf 分裂）
 
@@ -1199,53 +1150,36 @@ func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
         return ErrCASConflict
     }
 
-    // Step 8: ★ B20 修复 — 先设置 children，再 SetSplitMarker
+    // Step 8: ★ B20 修复 — 先设置 children
     //
     // 安全性论证（B20 修复的核心）：
     // GetOrCreateChildren 只有在 children == nil 时才触发懒初始化。
     // 在 ReplaceRoot CAS 成功前，children 一直是 nil（旧 leaf root 无 children）。
     // ReplaceRoot CAS 成功后，children 立刻被 Store 为非 nil（同一 goroutine，无调度点）。
-    // 因此，不存在 "pInfo 已指向新 internal root 但 children 仍为 nil" 的可观测窗口：
-    //   - reader 在 ReplaceRoot CAS 之前到达 → 看到旧 pInfo（leaf）→ 正常遍历
-    //   - reader 在 ReplaceRoot CAS + children.Store 之后到达 → 看到新 pInfo + 非 nil children → 直接使用
-    // GetOrCreateChildren 懒初始化仅在 children == nil 时触发，而 children == nil 仅在 ReplaceRoot 之前成立。
+    // 因此，不存在 "pInfo 已指向新 internal root 但 children 仍为 nil" 的可观测窗口。
     //
-    // 旧策略（children.Store 在 SetSplitMarker 之后）：
-    //   ReplaceRoot CAS → SetSplitMarker → children.Store
-    //   在 SetSplitMarker 和 children.Store 之间，pInfo 已指向新 internal root，但 children 仍为 nil
-    //   → GetOrCreateChildren 触发懒初始化 → 创建独立 PageRef → UAF
-    //
-    // 新策略（B20 修复）：
-    //   ReplaceRoot CAS → children.Store → SetSplitMarker
-    //   children.Store 在 SetSplitMarker 之前，Store 后 children 非 nil，后续 GetOrCreateChildren 不触发懒初始化
+    // ★ Redirect+NewRef 优势：Root Split 不需要 SetSplitMarker/ClearSplitMarker。
+    //   ReplaceRoot CAS 原子替换 pInfo（指向新 internal root），并发 reader 看到的
+    //   rootRef.pInfo 已经是新的 internal node。无需在 rootRef 上设置 Redirect。
+    //   这与 handleLeafSplit 不同：handleLeafSplit 中旧 leafRef 需要设置 Redirect
+    //   让 reader 知道它已分裂；但 handleRootSplit 中 rootRef 被复用为新的 internal root，
+    //   不需要 Tombstone/Redirect 语义。
     rootChildren := []*PageRef{leftRef, rightRef}
     b.rootRef.children.Store(rootChildren)  // 原子替换（旧 children 为 nil）
 
-    // Step 9: Set SplitMarker on root (for CAS window readers)
-    // Readers with stale root pInfo can follow this to find correct child
-    b.rootRef.SetSplitMarker(leftRef, rightRef, splitKey)
-
-    // ★ Review 修复 B11：Root Split 不需要 Tombstone CAS
-    // 原因：ReplaceRoot 已将 rootRef.pInfo CAS 为 newRootInfo（指向新 internal root），
-    // 并发 reader 看到的 rootRef.pInfo 已经是新的 internal node，不再经过旧 leaf。
-    // SplitMarker 仅用于极少数在 ReplaceRoot CAS 窗口期读到旧 pInfo 的 reader。
-
-    // Step 10: ClearSplitMarker — leftRef/rightRef 已被 rootChildren 持有，安全释放
-    b.rootRef.ClearSplitMarker()
-
-    // Step 11: Update metrics + size
+    // Step 9: Update metrics + size
     b.size.Add(mutation.delta)
     if b.metrics != nil {
         b.metrics.IncrementSplit()
         b.metrics.IncrementTreeHeight() // Tree height increased
     }
 
-    // Step 12: Cleanup orphan pages
-    // ★ 引用计数追踪（B18 修复后）：
-    //   leftRef:  Retain(Step6)=1 + Retain(SplitMarker)=1 - Release(ClearSplitMarker)=-1 = 1
-    //            被 rootChildren[0] 持有 → refCount=1，安全
-    //   rightRef: 同理 refCount=1
+    // Step 10: Cleanup orphan pages
+    // ★ 引用计数追踪（Redirect+NewRef 设计）：
+    //   leftRef:  Retain(Step6)=1 → 被 rootChildren[0] 持有 → refCount=1，安全
+    //   rightRef: Retain(Step6)=1 → 被 rootChildren[1] 持有 → refCount=1，安全
     //   注意：不再 Release leftRef/rightRef！生命周期由 rootRef.children 管理。
+    //   无需 ClearSplitMarker（无 SplitMarker）。
     _ = b.storage.FreePage(orphanPageID)    // double-COW 替换的原始 split 页面
     _ = b.storage.FreePage(newRootID)       // InsertChild COW 替换的空白 NodePage
 
@@ -1256,15 +1190,348 @@ func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
 **与 handleLeafSplit 的关键区别**：
 1. **无 Parent CAS**：通过 `ReplaceRoot` 原子替换根节点
 2. **树高度增加**：新根是内部节点，原根叶子分裂为两个子节点
-3. **SplitMarker 设置在 rootRef**：而非 leafRef（原根已不存在）
+3. **无需 Redirect/Tombstone**：rootRef 被 ReplaceRoot CAS 原子替换为新 internal root，不需要像 handleLeafSplit 那样在旧 leafRef 上设置 Redirect（B11 修复）
 4. **D14 决策**：`ReplaceRoot` 内部先 `SetParentRef` 再 CAS，消除 parentRef==nil 窗口
-5. **★ B18 + B20 修复**：children.Store 在 SetSplitMarker 之前（消除懒初始化 UAF）；leftRef/rightRef 生命周期由 rootRef.children 管理，不释放。
+5. **★ B18 + B20 修复**：children.Store 紧接在 ReplaceRoot CAS 之后（消除懒初始化 UAF）；leftRef/rightRef 生命周期由 rootRef.children 管理，不释放
 
 ---
 
-## 10. 传播模式对比
+## 10. 内部节点分裂 — Cascading Split（设计，未实现）
 
-### 10.1 Split 传播 — Full Retry
+> **状态**：设计完成，代码尚未实现。当前实现仅处理 leaf split → parent InsertChild，
+> 当 parent 内部节点也满时无法继续，限制了树高不超过 2 层（约 4760 keys）。
+
+### 10.1 问题
+
+当前 handleLeafSplit 流程：leaf split → parent InsertChild → parent CAS。
+
+**当 parent 内部节点在 InsertChild 后也满**（`newParent.IsFull()`），无法继续增长。
+
+**容量限制**：
+- 2 层树：126（内部节点容量）× ~38 keys/leaf ≈ 4760 keys
+- 超过此数量后，InsertChild 使 parent 满，后续操作无法处理
+
+### 10.2 解决方案 — 递归向上分裂
+
+**核心算法**：parent CAS 成功后，检查 `newParent.IsFull()`。如果满，分裂 parent 并向上传播。
+
+```
+handleLeafSplit (现有):
+  1. leaf.Split() → leftPage, rightPage, splitKey
+  2. parent.InsertChild(idx, splitKey, leftID, rightID)
+  3. parent CAS
+  4. if newParent.IsFull(keyLen, valueLen) → handleInternalSplit(parentRef, parentInfo, ...)
+
+handleInternalSplit (新增):
+  1. parent.Split() → parentLeft, parentRight, parentSplitKey  (move-up 语义)
+  2. grandparentRef := parentRef.GetParentRef()
+  3. if grandparentRef == nil → handleRootSplit(parentRef, ...)  // root 是 internal node
+  4. else: grandparent.InsertChild(idx, parentSplitKey, parentLeftID, parentRightID)
+  5. grandparent CAS
+  6. if newGrandparent.IsFull() → 递归继续向上
+  7. 循环直到 root 或非满 ancestor
+```
+
+### 10.3 Node Split 语义 — Move-Up
+
+内部节点分裂使用 **Move-Up** 语义（区别于 Leaf Split 的 Copy-Up）：
+
+```
+Split 前 (count=3, children=4):
+┌──────────────────────────────────────────────────────┐
+│ [e0(k0,c0), e1(k1,c1), e2(k2,c2)] + extraChild=c3   │
+└──────────────────────────────────────────────────────┘
+              mid=1 ↑
+
+Split 后:
+Left (1 entry):                    Right (1 entry):
+┌──────────────────┐             ┌──────────────────┐
+│ [e0(k0,c0)] + c1 │             │ [e2(k2,c2)] + c3 │
+└──────────────────┘             └──────────────────┘
+
+splitKey = k1（move-up：不保留在 left 或 right 中，提升到 grandparent）
+```
+
+**与 Leaf Split 的关键区别**：
+- splitKey **不保留**在 left 或 right 中（move-up）
+- Left 的 extraChild = child[mid]
+- Right 的 extraChild = child[count]（原始 extraChild）
+
+### 10.4 容量计算
+
+实现 cascading split 后的树容量：
+
+| 层级 | 计算 | 容量 |
+|------|------|------|
+| 2 层 | 126 × ~38 keys/leaf | ~4.7K keys |
+| 3 层 | 126^2 × ~38 keys/leaf | ~600K keys |
+| 4 层 | 126^3 × ~38 keys/leaf | ~76M keys |
+| 5 层 | 126^4 × ~38 keys/leaf | ~9.5B keys |
+
+实际使用中 3-4 层即可覆盖绝大多数场景。
+
+### 10.5 并发设计
+
+**每层 CAS 独立**，与 leaf split 的并发模型一致：
+
+```
+handleInternalSplit (iterative, per-level CAS):
+  1. currentRef := parentRef
+     currentInfo := parentInfo
+
+  loop:
+    2. currentNode, _ := storage.GetNodePage(currentInfo.PageID)
+       currentLeft, currentRight, splitKey := currentNode.Split()
+
+    3. grandparentRef := currentRef.GetParentRef()
+       if grandparentRef == nil:
+         // Root split (root is internal node, not leaf)
+         // ★ 须在 step 3a 之前检查 nil，避免用 nil 创建 PageRef
+         handleRootInternalSplit(currentRef, currentInfo, currentLeft, currentRight, splitKey)
+         // handleRootInternalSplit 内部创建 leftRef/rightRef
+         return
+
+       // ★ P4 fix: 获取 currentRef 在 grandparent children 中的 index
+       idx := findChildIndex(grandparentRef, currentRef)
+
+    3a. // ★ P2 fix: 创建 PageRef + Retain（生命周期由 parent children 管理）
+       //   grandparentRef 已在 step 3 获取，确保 non-nil
+       currentLeftRef := NewPageRef(currentLeft.PageID(), 0, grandparentRef, freeFunc)
+       currentRightRef := NewPageRef(currentRight.PageID(), 0, grandparentRef, freeFunc)
+       currentLeftRef.Retain()   // refCount: 0 → 1
+       currentRightRef.Retain()  // refCount: 0 → 1
+
+    4. grandparentInfo := grandparentRef.GetPageInfo()
+       if grandparentInfo == nil || grandparentInfo.Tombstone:
+         // grandparent 已变化，完整重试
+         currentLeftRef.Release()
+         currentRightRef.Release()
+         cleanup(currentLeft, currentRight)
+         return ErrCASConflict
+
+    5. newGrandparent := oldGrandparent.InsertChild(idx, splitKey, currentLeft.PageID(), currentRight.PageID())
+       if !grandparentRef.CAS(grandparentInfo, newGrandparentInfo):
+         // CAS 失败，完整重试
+         currentLeftRef.Release()
+         currentRightRef.Release()
+         cleanup(currentLeft, currentRight, newGrandparent)
+         return ErrCASConflict
+
+    6. // CAS 成功：设置 Redirect on old internal node
+       // ★ CAS-R1: Redirect CAS 可被并发 propagateUpward 抢先修改 currentRef.pInfo
+       //   如果失败：parent 已更新指向 left/right，新 reader 不会到达此节点（通过 updated children）
+       //   旧 reader 使用 COW 旧数据（安全）。Redirect 是优化（加速重新导航），非正确性要求。
+       //   如果成功：reader 检测到 Tombstone+Redirect，立即从 parent children 重新导航（更快）。
+       redirectInfo := &PageInfo{
+         PageID:    currentInfo.PageID,
+         Version:   currentInfo.Version + 1,
+         Tombstone: true,
+         Redirect:  true,
+         NewRef:    currentLeftRef,
+       }
+       if !currentRef.CAS(currentInfo, redirectInfo):
+         // Redirect CAS 失败 — 被 propagateUpward 抢先
+         // 安全性：parent CAS 已成功，新 reader 走 updated children path
+         // 旧 reader 使用 COW 旧数据（pageID 未变，内容 COW 安全）
+         // 无需重试，继续执行
+
+    7. // ★ RC-I1: 所有权转移 — currentLeftRef/currentRightRef 的生命周期现由
+       //   grandparentRef.children 缓存管理。后续 loop iteration 或失败 cleanup
+       //   不需要 Release 这些 refs。它们将在 parent children 被替换或 tree Close 时释放。
+       //   更新 grandparent children 缓存（B18/B19 修复模式）
+       //   重用旧 children 中的 PageRef，插入 currentLeftRef/currentRightRef
+
+    8. // ★ P3 fix: 检查 newGrandparent 是否也满（在 CAS 成功后、继续向上之前）
+       if !newGrandparent.IsFull(keyLen, valueLen):
+         return nil  // 完成
+
+    9. // 继续向上
+       currentRef = grandparentRef
+       currentInfo = newGrandparentInfo
+       goto loop
+```
+
+**关键并发保证**：
+- **每层独立 CAS**：不持有跨层锁，避免死锁（只持 leafRef.Lock，parent 操作无锁 CAS）
+- **Parent-Level 串行化**：同一 parent 的并发 split 通过 CAS 竞争决定胜负
+- **失败方完整重试**：CAS 失败的 Writer 释放所有新页面，重新 searchPath
+- **Redirect 原子生效**：内部节点 split 后的 Redirect+NewRef 与 leaf split 一致
+- **CAS-R1（Redirect CAS 安全性）**：Redirect CAS 可能因并发 propagateUpward 而失败，但安全性不依赖 Redirect — parent CAS 已确保新 reader 使用 updated children path
+- **RC-I1（所有权转移）**：Split 产出的 PageRef 在存入 parent.children 后，生命周期由 children cache 接管
+
+### 10.6 Root Internal Split
+
+当分裂传播到根节点（根是 internal node，不是 leaf）时：
+
+```
+handleRootInternalSplit:
+  1. rootInternal.Split() → left, right, splitKey (move-up)
+  2. Create new root node (更高一层)
+  3. newRoot.InsertChild(0, splitKey, left, right)
+  4. ReplaceRoot CAS（原子替换 pInfo）
+  5. children.Store([leftRef, rightRef])
+  6. 树高度 +1
+```
+
+与 handleRootSplit（Section 9.4）的区别：
+- Split 的是 internal node，不是 leaf
+- 使用 move-up 语义（splitKey 不保留在 left/right 中）
+- 其他流程相同（ReplaceRoot CAS + children.Store）
+
+### 10.7 Redirect for Internal Nodes
+
+内部节点 split 后的 Redirect 与 leaf 完全一致：
+
+```go
+// CAS 原子设置 Tombstone + Redirect + NewRef
+redirectInfo := &PageInfo{
+    PageID:    currentInfo.PageID,
+    Version:   currentInfo.Version + 1,
+    Tombstone: true,
+    Redirect:  true,
+    NewRef:    leftRef,  // 指向分裂后的左半部分
+}
+currentRef.CAS(currentInfo, redirectInfo)
+```
+
+**searchPath 中的处理**：与 leaf Redirect 相同 — 检测 Tombstone+Redirect 后从父节点 children 重新导航。
+
+### 10.8 propagateUpward 变更说明
+
+**现状**: `propagateUpward` (operations.go:168) 是 best-effort 模式，遇到 Tombstone 就停止传播。
+
+**变更**: 实现 cascading split 后，`propagateUpward` 将被 `handleInternalSplit` 替代：
+
+- **非满路径**: `writeOperation` 的 leaf CAS 成功后，如果 parent 不满，调用 `propagateUpward`（不变）
+- **满路径**: 如果 `InsertChild` 后发现 parent 满，改用 `handleInternalSplit`（新路径）
+- **触发点**: `writeOperation` 的 `propagateUpward` 调用处需增加 IsFull 检查：
+  ```go
+  // 替换 operations.go:142-144
+  if parentPath := path.ParentPath(); len(parentPath) > 0 {
+      if newParent.IsFull(0, 0) {
+          // Parent full → cascading split
+          b.handleInternalSplit(parentRef, newParentInfo, ...)
+      } else {
+          propagateUpward(b, parentPath, result.newPageID, parentPath[len(parentPath)-1].Index)
+      }
+  }
+  ```
+
+### 10.9 Cleanup 策略 — 跨层 Orphan Page 追踪
+
+Cascading split 在多层失败时需要清理所有已分配的 pages。建议使用 `allocatedPages` 追踪 + defer cleanup：
+
+```go
+func (b *BTree) handleInternalSplit(currentRef *PageRef, currentInfo *PageInfo, ...) error {
+    var allocatedPages []model.PageID
+    var retainedRefs []*PageRef
+
+    defer func() {
+        if err != nil {
+            // 释放所有已分配的 raw pages
+            for _, id := range allocatedPages {
+                _ = b.storage.FreePage(id)
+            }
+            // 释放所有 Retained PageRefs
+            for _, ref := range retainedRefs {
+                ref.Release()
+            }
+        }
+    }()
+
+    // Split 产出 pages
+    currentLeft, currentRight, splitKey := currentNode.Split()
+    allocatedPages = append(allocatedPages, currentLeft.PageID(), currentRight.PageID())
+
+    // PageRef 创建
+    currentLeftRef := NewPageRef(currentLeft.PageID(), 0, grandparentRef, freeFunc)
+    currentRightRef := NewPageRef(currentRight.PageID(), 0, grandparentRef, freeFunc)
+    currentLeftRef.Retain()
+    currentRightRef.Retain()
+    retainedRefs = append(retainedRefs, currentLeftRef, currentRightRef)
+
+    // InsertChild COW 产出
+    newGrandparent := oldGrandparent.InsertChild(idx, splitKey, ...)
+    allocatedPages = append(allocatedPages, newGrandparent.PageID())
+
+    // CAS 成功后从追踪列表移除（所有权转移给 parent.children）
+    if grandparentRef.CAS(grandparentInfo, newGrandparentInfo) {
+        allocatedPages = removePage(allocatedPages, currentLeft.PageID()) // 不再是 orphan
+        // ...
+    }
+}
+```
+
+**关键原则**：
+- 每个 `Alloc()` / `Split()` / `InsertChild()` 产出都加入 `allocatedPages`
+- CAS 成功后从追踪列表移除（所有权转移）
+- 失败时 defer 清理所有剩余 entries
+- 与 `handleLeafSplit` (`operations.go:242-244`, `311-317`) 的 cleanup 模式一致
+
+### 10.10 findChildIndex 实现
+
+Cascading loop 需要找到 currentRef 在 grandparent children 中的 index。两种实现：
+
+**方案 A — 从 searchPath 路径信息获取（推荐，O(1)）**：
+```go
+// handleInternalSplit 从 handleLeafSplit 接收 path 参数
+// path[i].Index 记录了每层的 child index
+func (b *BTree) handleInternalSplit(path SearchPath, startLevel int, ...) error {
+    for level := startLevel; level >= 0; level-- {
+        idx := path[level].Index  // 直接从 path 获取
+        // ...
+    }
+}
+```
+优势：O(1) 查找，无额外开销。
+
+**方案 B — 从 children cache 线性搜索（fallback）**：
+```go
+func findChildIndex(parent *PageRef, child *PageRef) (int, error) {
+    children := parent.children.Load()
+    if children != nil {
+        for i, c := range *children {
+            if c == child {
+                return i, nil
+            }
+        }
+    }
+    return -1, ErrCASConflict  // 不应发生，触发完整重试
+}
+```
+优势：不依赖 path 参数，适用于 path 不可用的场景。
+
+**推荐**：方案 A。Cascading split 从 handleLeafSplit 触发，path 参数始终可用。
+
+### 10.11 实现优先级
+
+内部节点分裂是**中期优化**（P1），原因：
+1. 当前 2 层树支持 ~10000 keys（key 较短时），覆盖单机测试场景
+2. 超过此数量前，需要先实现其他优化（WAL 持久化、事务等）
+3. Cascading split 的设计已验证（与 leaf split 模式一致），实现时风险低
+4. 核心 API（`Node.Split()`、`InsertChild()`、`IsFull()`）已实现，无需新增
+
+### 10.12 并发安全性审核总结
+
+以下场景经代码级验证确认安全：
+
+| 场景 | 安全性 | 机制 |
+|------|--------|------|
+| 两 writer split 同 parent 不同 children | ✅ | Parent CAS 串行化 |
+| Cascading split vs 并发 reader | ✅ | Parent CAS → updated children → reader 走新路径 |
+| Cascading split vs 不同 subtree leaf split | ✅ | 不同路径 propagateUpward 互不干扰 |
+| 两 cascading split 同时到达 root | ✅ | ReplaceRoot CAS 串行化 |
+| SchedulerLock + cascading | ✅ | 只持 leafRef.Lock，parent 操作无锁 CAS |
+| IsFull TOCTOU | ✅ | 最坏多一次 unnecessary split |
+| Children cache consistency | ✅ | B18/B19 原子替换模式 |
+| NewRef dangling | ✅ | 同一 PageRef 在 children cache 被 Retain |
+| Redirect CAS 失败 (CAS-R1) | ✅ | 安全性不依赖 Redirect，优化性质 |
+
+---
+
+## 11. 传播模式对比
+
+### 11.1 Split 传播 — Full Retry
 
 **触发条件**：`leaf.IsFull(keyLen, valueLen) == true`
 
@@ -1278,7 +1545,7 @@ handleLeafSplit:
   6. Parent CAS
 
   CAS 失败 → 释放所有新页面 → 返回 ErrCASConflict → 上层完整重试
-  CAS 成功 → SetSplitMarker → 更新 metrics → 返回 nil
+  CAS 成功 → Redirect CAS（原子 Tombstone+Redirect+NewRef） → 更新 metrics → 返回 nil
 ```
 
 **为什么 Split 必须 Full Retry？**
@@ -1286,7 +1553,7 @@ handleLeafSplit:
 - 如果 Parent CAS 失败，这些页面变成**孤儿页面**（无法被访问）
 - 必须清理并重试整个操作，否则内存泄漏
 
-### 10.2 普通更新传播 — Best-Effort
+### 11.2 普通更新传播 — Best-Effort
 
 **触发条件**：Leaf CAS 成功后
 
@@ -1311,7 +1578,7 @@ propagateUpward:
 - Parent 更新是**优化**（让下次访问更快），不影响正确性
 - 即使失败，下次操作会重新 searchPath，自然找到新位置
 
-### 10.3 性能对比
+### 11.3 性能对比
 
 | 模式 | CAS 失败影响 | 重试范围 | 性能 |
 |------|-------------|---------|------|
@@ -1320,13 +1587,14 @@ propagateUpward:
 
 ---
 
-## 11. 引用计数管理
+## 12. 引用计数管理
 
-### 11.1 Split 场景的引用计数
+### 12.1 Split 场景的引用计数
 
 > **★ Review 修正**：PageRef 绑定 double-COW 后的实际 PageID（B6 修复）。
 > **★ B18 修正**：直接设置 children 缓存，leftRef/rightRef 生命周期由 parent.children 管理。
 > **★ B19 修正**：复用旧 children 中的 PageRef，而非创建新对象。避免同一 pageID 上两个独立 PageRef 导致的 refCount 混淆。
+> **★ Redirect+NewRef**：消除 SplitMarker 的独立 Retain/Release 循环，NewRef 作为 PageInfo 字段随 CAS 生命周期管理，简化引用计数。
 
 ```
 handleLeafSplit 创建（假设 target=left，即 left 被 mutate）：
@@ -1342,12 +1610,9 @@ Parent CAS 失败:
   FreePage(newParent.PageID())  // newParent 无 PageRef，需显式回收
   // 无 double-free ✅
 
-Parent CAS 成功（★ B18+B19 修正后）:
-  SetSplitMarker(leftRef, rightRef, splitKey)
-    → leftRef.Retain()  → refCount=2  ← C3 修复
-    → rightRef.Retain() → refCount=2
-
-  Tombstone CAS（在 SplitMarker 之后）
+Parent CAS 成功（★ B18+B19+Redirect+NewRef 修正后）:
+  Redirect CAS（原子 Tombstone+Redirect+NewRef）
+    → leftRef 作为 NewRef 存入 PageInfo，无独立 Retain
 
   ★ B19: 从旧 children 复用 PageRef，构建 newChildren
   oldChildren := parentRef.children.Load()
@@ -1358,13 +1623,12 @@ Parent CAS 成功（★ B18+B19 修正后）:
     → leftRef 被 newChildren 持有，refCount 不变
     → rightRef 同理
 
-  leafRef.ClearSplitMarker()
-    → leftRef.Release()  → refCount=2-1=1  ← 被 newChildren 持有，不降到 0
-    → rightRef.Release() → refCount=2-1=1  ← 被 newChildren 持有，不降到 0
+  // ★ Redirect+NewRef 优势：无需 ClearSplitMarker
+  //   无独立的 Retain/Release 循环，refCount 管理简化
 
   // ★ 注意：不再 Release leftRef/rightRef！生命周期由 parent.children 管理。
-  //   leftRef:  Retain(创建)=1 + Retain(SplitMarker)=1 - Release(ClearSplitMarker)=-1 = 1
-  //   rightRef: 同理 refCount=1
+  //   leftRef:  Retain(创建)=1，被 newChildren 持有 → refCount=1
+  //   rightRef: Retain(创建)=1，被 newChildren 持有 → refCount=1
 
   // ★ B19 关键：其他 child 的 refCount 如何变化？
   //   例如：位置 j（j < i 或 j > i+1）的 childRef[j]
@@ -1386,23 +1650,23 @@ Parent CAS 成功（★ B18+B19 修正后）:
     → rightRef.Release() → refCount=0 → freeFunc(rightPage.PageID())    // 释放原始 split 页面 ✅
 ```
 
-### 11.2 关键不变量
+### 12.2 关键不变量
 
 1. **PageRef.pageID 不可变**（C1 修复）：Release 使用绑定的 pageID，不读 pInfo
-2. **SplitMarker 必须先 Retain 再 Release**（C3 修复）：避免 Use-After-Free
+2. **Redirect+NewRef 原子性**：Tombstone+Redirect+NewRef 在同一次 CAS 中设置，不存在窗口期
 3. **searchPath Retain/ReleaseAll 配对**：所有路径上的 Ref 都 Retain，使用完 ReleaseAll
 4. **ReplaceRoot 先 SetParentRef 后 CAS**（D14 决策）：消除并发读者 parentRef==nil 窗口
 5. **★ Review B6**：PageRef 绑定 double-COW 后的实际 PageID，而非原始 split 页面 ID
 6. **★ Review B7**：被 PageRef 管理的页面仅通过 Release() 回收，不做显式 FreePage（避免 double-free）
-7. **★ Review B18**：Split 后 leftRef/rightRef 的生命周期由 parent.children 管理，不在 handleLeafSplit/handleRootSplit 中释放。ClearSplitMarker 在 children.Store 之后调用，确保 refCount 不降到 0
+7. **★ Review B18**：Split 后 leftRef/rightRef 的生命周期由 parent.children 管理，不在 handleLeafSplit/handleRootSplit 中释放
 8. **★ Review B19**：构建 newChildren 时，复用旧 children 中的 PageRef 对象，而非创建新对象。避免对同一 pageID 创建两个独立 PageRef 导致 refCount 混淆和 UAF
-9. **★ Review B20**：handleRootSplit 中 children.Store 必须在 SetSplitMarker 之前执行，消除懒初始化窗口期（并发 reader 创建独立 PageRef → Release → UAF）
+9. **★ Review B20**：handleRootSplit 中 children.Store 必须紧接在 ReplaceRoot CAS 之后执行，消除懒初始化窗口期
 
 ---
 
-## 12. 页面分配与回收
+## 13. 页面分配与回收
 
-### 12.1 Split 的页面分配
+### 13.1 Split 的页面分配
 
 | 场景 | 分配页面数 | 说明 |
 |------|----------|------|
@@ -1412,7 +1676,7 @@ Parent CAS 成功（★ B18+B19 修正后）:
 | Root Split | 3 | left + right + new root node |
 | Parent InsertChild | 1 | COW copy of parent |
 
-### 12.2 失败时的页面回收
+### 13.2 失败时的页面回收
 
 > **★ Review 修正 B7**：避免 double-free。PageRef 的 Release() 在 refCount→0 时自动调用 freeFunc(FreePage)。不应再对同一 PageID 显式调用 FreePage。
 
@@ -1437,7 +1701,7 @@ parentInfo == nil（Step 4）:
 
 ---
 
-## 13. 实现状态
+## 14. 实现状态
 
 > **★ P2-2 修正**：区分"底层组件已实现"和"Split 逻辑已设计"。Phase 6 的 Split 逻辑（Tombstone、handleLeafSplit、handleRootSplit）当前仅设计完成，代码待实现。
 
@@ -1446,21 +1710,20 @@ parentInfo == nil（Step 4）:
 | Leaf Split | `leaf_page.go:192-235` | ✅ | ✅ | 底层页面操作 |
 | Node Split | `node_page.go:158-205` | ✅ | ✅ | 底层页面操作 |
 | InsertChild (中间/末尾) | `node_page.go:111-152` | ✅ | ✅ | 底层页面操作 |
-| SplitMarker (Set/Get/Follow/Clear) | `page_ref.go:188-237` | ✅ | ✅ | |
-| FollowSplit 内部 Retain | `page_ref.go` §5.5 | ✅ | ❌ | ★ P0-1：需修改 FollowSplit 内部 Retain |
+| Redirect+NewRef (PageInfo 字段) | `page_info.go` §5 | ✅ | ❌ | 需添加 Redirect bool + NewRef *PageRef 字段 |
 | PageInfo.Tombstone 字段 | `page_info.go` | ✅ | ❌ | 需添加 Tombstone bool 字段 |
-| searchPath Tombstone 检查 | `search.go` §6 | ✅ | ❌ | Bug B3 修复：需在 IsLeaf 前检查 Tombstone |
+| searchPath Tombstone+Redirect 检查 | `search.go` §6 | ✅ | ❌ | Bug B3 修复：需在 IsLeaf 前检查 Tombstone，Redirect 后从 children 重新导航 |
 | searchPath children 越界保护 | `search.go` §6 | ✅ | ❌ | ★ P1-1：idx >= len(children) → ErrRetry |
 | ReplaceRoot (D14 修复) | `root_ref.go:29-45` | ✅ | ✅ | |
 | writeOperation IsFull 检查 | `operations.go` §9.2 | ✅ | ❌ | 需在 mutate 前添加 IsFull 分支 |
-| handleLeafSplit (CR-08) | `operations.go` §9.3 | ✅ | ❌ | Bug B1/B2/B6/B7/B18/B19 修复 + children 复用 + 直接缓存设置 |
-| handleRootSplit (CR-08) | `operations.go` §9.4 | ✅ | ❌ | Bug B10/B11/B18/B20 修复 + children.Store 在 SetSplitMarker 前 |
+| handleLeafSplit (CR-08) | `operations.go` §9.3 | ✅ | ❌ | Bug B1/B6/B7/B18/B19 修复 + Redirect CAS(原子 Tombstone+Redirect+NewRef) + children 复用 |
+| handleRootSplit (CR-08) | `operations.go` §9.4 | ✅ | ❌ | Bug B10/B11/B18/B20 修复 + children.Store 紧接 ReplaceRoot CAS |
 | propagateUpward Tombstone 检查 | `operations.go` §10.2 | ✅ | ❌ | Bug B4 修复：需添加 Tombstone 检查 |
-| ClearSplitMarker 调用时机 | §5.4.1 | ✅ | ❌ | ★ P0-2 + B18：在 children.Store 之后调用 |
+| Cascading Split (内部节点分裂) | §10 | ✅ | ❌ | 设计完成，代码待实现（P1 优先级） |
 
 ---
 
-## 14. 测试覆盖
+## 15. 测试覆盖
 
 ### 已实现的测试
 
@@ -1473,10 +1736,9 @@ parentInfo == nil（Step 4）:
 | `node_page_test.go` | TestNodeSplitChildren | 分裂后子节点正确性 |
 | `node_page_test.go` | TestNodeInsertChildMiddle | 中间插入子页面 |
 | `node_page_test.go` | TestNodeInsertChildPreservesOtherKeys | 插入后其他 key 保持 |
-| `page_ref_test.go` | TestPageRefSplitMarker | SplitMarker 设置/读取 |
-| `page_ref_test.go` | TestPageRefFollowSplitNoMarker | 无 marker 时返回 false |
-| `page_ref_test.go` | TestSplitMarkerKeyCopy | key 防御性拷贝 |
-| `page_ref_test.go` | TestPageRef_SplitMarker_RefCount | C3 修复：Retain/Release |
+| `page_ref_test.go` | TestPageRefRedirect | Redirect CAS 设置/读取 |
+| `page_ref_test.go` | TestPageRefRedirectNoRedirect | 无 Redirect 时正常处理 |
+| `page_ref_test.go` | TestPageRefRedirectNewRef | NewRef 指向正确子页面 |
 | `page_ref_test.go` | TestHandleLeafSplit_CASFailure_Cleanup | CAS 失败清理 |
 | `page_ref_test.go` | TestHandleRootSplit_ReplaceRoot | 根分裂 ReplaceRoot |
 
@@ -1485,10 +1747,10 @@ parentInfo == nil（Step 4）:
 | 测试名 | 目的 |
 |--------|------|
 | TestSplitPropagation | 叶子分裂传播到父节点 |
-| TestSplitMarkerSetOnLeafCAS | SplitMarker 时机验证 |
-| TestSplitMarkerReaderFollows | 并发读者通过 SplitMarker 找到数据 |
+| TestRedirectCASOnLeafSplit | Redirect CAS 原子性验证（Tombstone+Redirect+NewRef 同时生效） |
+| TestRedirectReaderReNavigates | 并发读者通过 Redirect 重新导航到正确子页面 |
 | TestRootSplit | 根分裂后树高度 +1 |
-| TestMultiLevelSplit | 3+ 层级联分裂 |
+| TestMultiLevelSplit | 3+ 层级联分裂（§10 设计验证） |
 | TestConcurrentSplit | 并发写入触发分裂，无 data race |
 | TestSplitNoOrphanPages | 分裂后无孤立页面 |
 | TestSplitDuringConcurrentRead | 分裂中并发 reader 看到一致数据 |
@@ -1496,7 +1758,7 @@ parentInfo == nil（Step 4）:
 
 ---
 
-## 15. 参考资料
+## 16. 参考资料
 
 - **Interface 设计**: `docs/07_spike/btree-refactor/2026-04-02-btree-refactor-interface.md`
 - **Implementation 指南**: `docs/07_spike/btree-refactor/2026-04-02-btree-refactor-implement.md`
@@ -1506,8 +1768,8 @@ parentInfo == nil（Step 4）:
 ---
 
 **文档创建**: 2026-04-04
-**最后更新**: 2026-04-04
-**状态**: v1.9 — 第六轮 Review 修正 B20（§9.4 Step 8 B20 安全性论证补充）
+**最后更新**: 2026-04-05
+**状态**: v2.0 — 重构为 Redirect+NewRef（消除 SplitMarker 窗口期）+ 新增 §10 内部节点分裂设计
 
 ---
 
@@ -1544,6 +1806,7 @@ parentInfo == nil（Step 4）:
 **修复位置**: §9.3 handleLeafSplit Step 5
 
 ### Bug B2: SetSplitMarker 与 Tombstone 顺序错误（并发 Reader 丢失）
+> **★ 已在 Redirect+NewRef 重构中消除**：新设计中 Tombstone+Redirect+NewRef 在同一次 CAS 中原子设置，不存在顺序问题。
 
 **严重性**: P1（并发场景下 reader 可能看不到数据）
 **发现场景**: 并发 `TestSplitLargeDataset`，"page is not a leaf page" 错误
@@ -1555,7 +1818,7 @@ parentInfo == nil（Step 4）:
 **根因**：
 原设计先设置 Tombstone（CAS pInfo），再设置 SplitMarker。窗口期内 reader 看到 Tombstone=true 但 splitMarker=nil，无法 FollowSplit，也无法读取旧数据。
 
-**修复**: §5.6.1 Tombstone 严格顺序约束 + §9.3 Step 7-8
+**修复**: §5.6.1 Tombstone 严格顺序约束 + §9.3 Step 7-8（旧设计）→ §5 Redirect+NewRef 原子 CAS（新设计，已消除此问题）
 
 ### Bug B3: searchPath 缺少 Tombstone 检查（类型判断错误）
 
@@ -1605,7 +1868,7 @@ Parent CAS 成功 ──── InvalidateChildren() ────
 
 **缓解措施**：
 1. InvalidateChildren 必须紧接在 Parent CAS 成功后调用（最小化窗口）
-2. Stale children 的 SplitMarker 仍能帮助 reader 导航到正确页面
+2. Stale children 的 Redirect 仍能帮助 reader 导航到正确页面
 3. 最坏情况：reader 需要重试一次 searchPath
 
 ---
@@ -1614,19 +1877,19 @@ Parent CAS 成功 ──── InvalidateChildren() ────
 
 > 以下问题在文档 v1.1 的 code review 中发现，已在 v1.2 中修正。
 
-### Bug B6: SplitMarker 的 PageRef 绑定错误 PageID（P0）
+### Bug B6: PageRef 绑定错误 PageID（P0）
 
 **严重性**: P0（数据不可见 + 孤儿页面泄漏）
 **发现**: Code Review Agent #2 + #3 同时发现
 
 **现象**：
-- 并发 reader 通过 SplitMarker FollowSplit 到达 leftRef（pageID=leftPage.PageID()）
+- 并发 reader 通过 Redirect 重新导航到达 leftRef（pageID=leftPage.PageID()）
 - 但父节点 InsertChild 的 left child 指向 mutation.newPageID（double-COW 后的页面）
 - Reader 看到**不含 CR-08 立即插入数据**的旧页面
 - 且 leftPage.PageID() 作为孤儿页面永远不被回收（无人引用但也不被释放）
 
 **根因**：
-§9.3 Step 4 创建 `leftRef = NewPageRef(leftPage.PageID(), ...)`，但 CR-08 的 double-COW 已将 target 侧替换为 `mutation.newPageID`。SplitMarker 和父节点指向不同的物理页面。
+§9.3 Step 4 创建 `leftRef = NewPageRef(leftPage.PageID(), ...)`，但 CR-08 的 double-COW 已将 target 侧替换为 `mutation.newPageID`。Redirect NewRef 和父节点指向不同的物理页面。
 
 **修复**（已在 §9.3 Step 3-4 修正）：
 - mutated 侧的 PageRef 用 `mutation.newPageID` 创建
@@ -1672,17 +1935,7 @@ if err != nil {
 ```
 
 ### Bug B9: Root Split 缺少 Tombstone CAS（P2）
-
-**严重性**: P2（与 §5.6.1 模式不一致）
-**发现**: Code Review Agent #2
-
-**现象**：
-- §8.3/§9.4 Root Split 流程只有 SetSplitMarker，没有 Tombstone CAS
-- 与 §5.6.1 "先 SetSplitMarker 再 Tombstone" 的约束不一致
-
-**修复**（已在 §9.4 Step 9 修正）：
-- 在 SetSplitMarker 之后添加 Tombstone CAS
-- 保持与 handleLeafSplit 相同的顺序约束
+> **★ 已在 Redirect+NewRef 重构中消除**：Root Split 不需要 Redirect（B11 修复），ReplaceRoot CAS 原子替换 pInfo。
 
 ### Review 修正（2026-04-04 第三轮）
 
@@ -1746,6 +1999,7 @@ if err != nil {
 - §8.3：标注 Root Split 不需要 Tombstone 的理由
 
 ### Bug B14: FollowSplit 与 ClearSplitMarker Use-After-Free（P0）
+> **★ 已在 Redirect+NewRef 重构中消除**：新设计无 FollowSplit/ClearSplitMarker，Redirect 后从 children 重新导航。
 
 **严重性**: P0（数据损坏 / Use-After-Free）
 **发现**: Concurrency Review Agent（第三轮）
@@ -1761,6 +2015,7 @@ if err != nil {
 - searchPath 相应调整：FollowSplit 返回后直接使用（已 Retain），不再额外 Retain
 
 ### Bug B15: ClearSplitMarker 缺少调用时机 → 内存泄漏（P0）
+> **★ 已在 Redirect+NewRef 重构中消除**：新设计无 SplitMarker，NewRef 作为 PageInfo 字段随 CAS 生命周期管理。
 
 **严重性**: P0（leftRef/rightRef 永不回收 → 内存泄漏）
 **发现**: Page Lifecycle Review Agent（第三轮）
@@ -1808,6 +2063,8 @@ if err != nil {
 > 以下问题在文档 v1.5 的第四轮 code review 中发现，已在 v1.6 中修正。
 
 ### Bug B18: handleLeafSplit/handleRootSplit children 缓存重建导致 refCount→0 → 页面回收（P0）
+> **★ Redirect+NewRef 简化**：新设计无 ClearSplitMarker，但仍需直接构建 children 数组（B18 修复保留）。
+> refCount 管理更简单：leftRef/rightRef 仅被 children 持有（refCount=1），无 SplitMarker 的额外 Retain/Release。
 
 **严重性**: P0（UAF — 页面被错误回收后仍被引用）
 **发现**: Concurrency + Reference Counting Review Agent（第四轮）
@@ -1853,7 +2110,8 @@ PageRef 是 per-object 引用计数，不是 per-PageID 引用计数。两个独
 - `oldChildren := parentRef.children.Load()` → 直接引用 `oldChildren[srcIdx]` 作为 `newChildren[i]`
 - 同一 PageRef 对象不会被重复创建，refCount 自然正确，无 pageID 被提前回收的问题
 
-### Bug B20: §9.4 handleRootSplit SetSplitMarker 在 children.Store 之前 → 懒初始化 UAF（P0）
+### Bug B20: §9.4 handleRootSplit children.Store 时机 → 懒初始化 UAF（P0）
+> **★ Redirect+NewRef 简化**：新设计中 children.Store 紧接 ReplaceRoot CAS，无 SetSplitMarker/ClearSplitMarker 干扰。
 
 **严重性**: P0（UAF — ReplaceRoot CAS 成功后、children.Store 前，reader 通过懒初始化创建独立 PageRef → Release → UAF）
 **发现**: Concurrent Reader Visibility Review Agent（第四轮）

@@ -317,19 +317,23 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 		return ErrCASConflict
 	}
 
-	// Step 6: ★ B2 fix — SetSplitMarker BEFORE Tombstone
-	leafRef.SetSplitMarker(leftRef, rightRef, splitKey)
-	// SplitMarker.Left → leftRef (pageID = mutation.newPageID or leftPage.PageID())
-	// SplitMarker.Right → rightRef (pageID = rightPage.PageID() or mutation.newPageID)
-	// Matches parent InsertChild childID exactly ✅
-
-	// Step 7: Tombstone the old leaf (must be AFTER SplitMarker)
-	// This CAS succeeds because pInfo hasn't been modified while leafRef is locked
-	leafRef.CAS(leafInfo, &PageInfo{
+	// Step 6: Atomically set Tombstone + Redirect + NewRef (replaces SetSplitMarker + Tombstone CAS)
+	// Redirect+NewRef is CAS-atomic with Tombstone — no window gap between split and redirect visibility.
+	// NewRef points to leftRef so searchPath can re-navigate via parent's updated children cache.
+	redirectInfo := &PageInfo{
 		PageID:    leafInfo.PageID,
 		Version:   leafInfo.Version + 1,
 		Tombstone: true,
-	})
+		Redirect:  true,
+		NewRef:    leftRef,
+	}
+	if !leafRef.CAS(leafInfo, redirectInfo) {
+		// CAS failed: concurrent modification — release resources and retry
+		leftRef.Release()
+		rightRef.Release()
+		_ = b.storage.FreePage(newParent.PageID())
+		return ErrCASConflict
+	}
 
 	// Step 8: ★ B18+B19 fix — Direct children cache setting, reuse old child PageRefs
 	//
@@ -371,17 +375,15 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	}
 	parentRef.children.Store(&newChildren) // Atomic replacement
 
-	// ★ B18 fix: ClearSplitMarker now safe
-	// leftRef/rightRef are held by newChildren (refCount ≥ 1),
-	// ClearSplitMarker releases SplitMarker's Retain (refCount -1) but won't reach 0.
-	leafRef.ClearSplitMarker()
+	// No ClearSplitMarker needed — Redirect+NewRef is managed by PageInfo lifecycle.
+	// NewRef (leftRef) lives as long as the old leaf's PageInfo; released when PageRef is recycled.
 
 	// Step 9: Update metrics + size
 	b.size.Add(mutation.delta)
-	// ★ RefCount tracking (B18 fix):
-	//   leftRef:  Retain(Step3)=1 + Retain(SplitMarker)=1 - Release(ClearSplitMarker)=-1 = 1
-	//             Held by newChildren[i] → refCount=1, safe
-	//   rightRef: Same refCount=1
+	// ★ RefCount tracking (updated for Redirect):
+	//   leftRef:  Retain(Step3)=1 → Held by newChildren[i] → refCount=1, safe
+	//             redirectInfo.NewRef points to leftRef but does NOT Retain (CAS-publish only).
+	//   rightRef: Retain(Step3)=1 → Held by newChildren[i] → refCount=1, safe
 	//   Note: Don't Release leftRef/rightRef! Their lifecycle is managed by parent.children.
 	//   Recycling: when parent.children is invalidated (split or tree close),
 	//              each childRef in old children is Released (including leftRef/rightRef).
@@ -487,52 +489,26 @@ func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
 		return ErrCASConflict
 	}
 
-	// Step 8: ★ B20 fix — Set children BEFORE SetSplitMarker
-	//
-	// Safety argument (B20 fix core):
-	// GetOrCreateChildren only triggers lazy-init when children == nil.
-	// Before ReplaceRoot CAS, children stays nil (old leaf root has no children).
-	// After ReplaceRoot CAS, children is immediately Store'd as non-nil (same goroutine, no schedule point).
-	// So there is NO observable window where "pInfo already points to new internal root but children still nil":
-	//   - Reader before ReplaceRoot CAS → sees old pInfo (leaf) → normal traversal
-	//   - Reader after ReplaceRoot CAS + children.Store → sees new pInfo + non-nil children → uses directly
-	// GetOrCreateChildren lazy-init only triggers when children == nil, which only holds before ReplaceRoot.
-	//
-	// Old strategy (children.Store after SetSplitMarker):
-	//   ReplaceRoot CAS → SetSplitMarker → children.Store
-	//   Between SetSplitMarker and children.Store, pInfo already points to new internal root but children still nil
-	//   → GetOrCreateChildren triggers lazy-init → creates independent PageRef → UAF
-	//
-	// New strategy (B20 fix):
-	//   ReplaceRoot CAS → children.Store → SetSplitMarker
-	//   children.Store before SetSplitMarker, after Store children non-nil, subsequent GetOrCreateChildren doesn't trigger lazy-init
+	// Step 8: Set children (B20 fix: children.Store before readers can observe new pInfo)
 	rootChildren := []*PageRef{leftRef, rightRef}
 	b.rootRef.children.Store(&rootChildren) // Atomic replacement (old children was nil)
 
-	// Step 9: Set SplitMarker on root (for CAS window readers)
-	// Readers with stale root pInfo can follow this to find correct child
-	b.rootRef.SetSplitMarker(leftRef, rightRef, splitKey)
+	// No SplitMarker needed for root split — ReplaceRoot CAS atomically replaces pInfo.
+	// No Redirect needed — old root leaf is replaced by new internal root in one CAS.
+	// Readers who see old pInfo still see a leaf (pre-split state), which is correct.
+	// Readers who see new pInfo see an internal node with children already set.
 
-	// ★ B11 fix: Root Split does NOT need Tombstone CAS
-	// Reason: ReplaceRoot already CAS'd rootRef.pInfo to newRootInfo (points to new internal root),
-	// concurrent reader sees rootRef.pInfo already as new internal node, doesn't go through old leaf.
-	// SplitMarker only for极少数在 ReplaceRoot CAS 窗口期读到旧 pInfo 的 reader.
-
-	// Step 10: ClearSplitMarker — leftRef/rightRef held by rootChildren, safe to release
-	b.rootRef.ClearSplitMarker()
-
-	// Step 11: Update metrics + size
+	// Step 9: Update metrics + size
 	b.size.Add(mutation.delta)
 	if b.metrics != nil {
 		b.metrics.IncrementSplit()
 		// Note: Tree height increased — consider adding IncrementTreeHeight metric if needed
 	}
 
-	// Step 12: Cleanup orphan pages
-	// ★ RefCount tracking (B18 fix):
-	//   leftRef:  Retain(Step6)=1 + Retain(SplitMarker)=1 - Release(ClearSplitMarker)=-1 = 1
-	//             Held by rootChildren[0] → refCount=1, safe
-	//   rightRef: Same refCount=1
+	// Step 10: Cleanup orphan pages
+	// ★ RefCount tracking (updated for Redirect):
+	//   leftRef:  Retain(Step6)=1 → Held by rootChildren[0] → refCount=1, safe
+	//   rightRef: Retain(Step6)=1 → Held by rootChildren[1] → refCount=1, safe
 	//   Note: Don't Release leftRef/rightRef! Lifecycle managed by rootRef.children.
 	_ = b.storage.FreePage(orphanPageID) // double-COW replaced original split page
 	_ = b.storage.FreePage(newRootID)    // InsertChild COW replaced blank NodePage

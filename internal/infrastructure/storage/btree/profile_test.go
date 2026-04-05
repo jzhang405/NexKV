@@ -27,8 +27,8 @@ func TestProfileGetParallel(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Pre-populate with 100 keys
-	const maxKeys = 100
+	// Pre-populate with 1000 keys
+	const maxKeys = 1000
 	for i := range maxKeys {
 		key := []byte("key-" + strconv.Itoa(i))
 		value := []byte("value-" + strconv.Itoa(i))
@@ -99,7 +99,7 @@ func TestProfileSetSequential(t *testing.T) {
 
 	start := time.Now()
 	iterations := 0
-	const maxKeys = 100
+	const maxKeys = 1000
 
 	for time.Since(start) < duration {
 		for i := range 1000 {

@@ -100,23 +100,31 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 
 		childRef := children[idx]
 
-		// SplitMarker following (D5): if the child was recently split, the marker
-		// tells us which side (left/right) our key belongs to — without waiting
-		// for the parent CAS to publish the updated child list.
-		//
-		// ★ P0-1 fix: FollowSplit Retains before returning (marker holds its own refs).
-		// We release the original childRef when we abandon it to avoid leaking.
-		//
-		// Bug fix: if FollowSplit redirects us to the right sibling (key >= splitKey),
-		// we actually descended to children[idx+1], so we must store idx+1 in the path.
+		// Redirect following: if child has Tombstone+Redirect in PageInfo,
+		// re-navigate via the parent's updated children cache.
+		// Redirect is set atomically via CAS on PageInfo — no window gap.
+		childInfo := childRef.GetPageInfo()
 		actualIdx := idx
-		if followed, ok := childRef.FollowSplit(key); ok {
-			childRef.Release() // release the original — we abandoned it
-			childRef = followed
-			// NO Retain here — FollowSplit already Retained for us (P0-1 fix)
-			actualIdx = idx + 1 // we descended to right sibling
+		if childInfo.Tombstone && childInfo.Redirect {
+			// Page was split — re-navigate from parent's updated children
+			childRef.Release()
+			updatedChildren, _ := currentRef.GetOrCreateChildren(storage)
+			if updatedChildren != nil {
+				reIdx, _ := node.Search(key)
+				if reIdx < len(updatedChildren) && updatedChildren[reIdx] != nil {
+					childRef = updatedChildren[reIdx]
+					childRef.Retain()
+					actualIdx = reIdx
+				} else {
+					path.ReleaseAll()
+					return nil, ErrRetry
+				}
+			} else {
+				path.ReleaseAll()
+				return nil, ErrRetry
+			}
 		} else {
-			childRef.Retain() // for the non-marker path, we still need to Retain
+			childRef.Retain()
 		}
 
 		path = append(path, PathEntry{Ref: currentRef, Index: actualIdx})

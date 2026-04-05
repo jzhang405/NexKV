@@ -12,5 +12,7 @@ import "github.com/jzhang405/NexKV/internal/domain/model"
 type PageInfo struct {
 	PageID    model.PageID
 	Version   uint64
-	Tombstone bool // true = page has been split, no longer navigable (B3/B4 fix)
+	Tombstone bool     // page has been split, no longer navigable (B3/B4 fix)
+	Redirect  bool     // data structure changed (split), reader should re-navigate via NewRef
+	NewRef    *PageRef // when Redirect=true, points to the left child of the split
 }

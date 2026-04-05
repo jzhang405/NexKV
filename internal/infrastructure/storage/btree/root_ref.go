@@ -43,14 +43,3 @@ func (r *RootPageRef) ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren []*Pag
 
 	return true
 }
-
-// TryFollowSplit checks if the root has split.
-// If a split marker exists, returns the split marker info.
-// The caller (searchPath) uses this to navigate to the correct subtree.
-func (r *RootPageRef) TryFollowSplit() (*SplitMarker, bool) {
-	marker := r.GetSplitMarker()
-	if marker == nil {
-		return nil, false
-	}
-	return marker, true
-}

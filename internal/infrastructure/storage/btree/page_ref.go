@@ -5,22 +5,12 @@
 package btree
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 	"sync/atomic"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
-
-// SplitMarker records a page split for concurrent reader visibility.
-// Set by propagateSplit after parent CAS succeeds.
-// Readers check this marker to follow splits without waiting for parent update.
-type SplitMarker struct {
-	Left     *PageRef
-	Right    *PageRef
-	SplitKey []byte
-}
 
 // PageRef manages concurrent access to a single page in the B+Tree.
 // Each PageRef corresponds to one page in the tree, linked via parentRef
@@ -34,7 +24,6 @@ type PageRef struct {
 	parentRef   atomic.Pointer[PageRef]     // parent reference; nil for root (managed by RootPageRef)
 	children    atomic.Pointer[[]*PageRef]  // lazy-loaded child refs; nil = leaf or not populated
 	refCount    atomic.Int32                // reference count; zero triggers freeFunc
-	splitMarker atomic.Pointer[SplitMarker] // split visibility marker
 	freeFunc    func(model.PageID)          // bound at creation; called when refCount reaches 0
 	lock        SchedulerLock               // leaf-level spin lock
 }
@@ -185,60 +174,3 @@ func (r *PageRef) GetPathToRoot() []*PageRef {
 	return path
 }
 
-// SetSplitMarker sets the split marker for this page.
-// Makes a defensive copy of splitKey to prevent caller from mutating the
-// marker through a shared buffer (I1 fix).
-// Retains both left and right PageRefs to keep them alive while the marker exists (C3 fix).
-func (r *PageRef) SetSplitMarker(left, right *PageRef, splitKey []byte) {
-	// ✅ C3 fix: Retain PageRefs to prevent premature release
-	left.Retain()
-	right.Retain()
-
-	keyCopy := make([]byte, len(splitKey))
-	copy(keyCopy, splitKey)
-	marker := &SplitMarker{
-		Left:     left,
-		Right:    right,
-		SplitKey: keyCopy,
-	}
-	r.splitMarker.Store(marker)
-}
-
-// ClearSplitMarker removes the split marker and releases the retained PageRefs.
-// Must be called when the marker is no longer needed to prevent memory leaks (C3 fix).
-func (r *PageRef) ClearSplitMarker() {
-	marker := r.splitMarker.Swap(nil)
-	if marker != nil {
-		// ✅ C3 fix: Release PageRefs when marker is cleared
-		marker.Left.Release()
-		marker.Right.Release()
-	}
-}
-
-// GetSplitMarker reads the current split marker.
-// Returns nil if no split has occurred.
-func (r *PageRef) GetSplitMarker() *SplitMarker {
-	return r.splitMarker.Load()
-}
-
-// FollowSplit checks for a split marker and returns the correct
-// child PageRef based on the given key.
-// Returns (targetRef, true) if a split was followed,
-// (nil, false) if no split marker exists.
-//
-// ★ P0-1 fix: Retain before returning to keep the ref safe for caller.
-// Caller must NOT Retain again when this returns true.
-func (r *PageRef) FollowSplit(key []byte) (*PageRef, bool) {
-	marker := r.splitMarker.Load()
-	if marker == nil {
-		return nil, false
-	}
-	var target *PageRef
-	if bytes.Compare(key, marker.SplitKey) < 0 {
-		target = marker.Left
-	} else {
-		target = marker.Right
-	}
-	target.Retain() // ★ P0-1 fix: retain so caller gets safe ref
-	return target, true
-}

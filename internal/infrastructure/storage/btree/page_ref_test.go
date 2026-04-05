@@ -119,46 +119,59 @@ func TestPageRefGetPathToRoot(t *testing.T) {
 	assert.Equal(t, model.PageID(1), path[2].GetPageInfo().PageID)
 }
 
-// --- SplitMarker Tests ---
+// --- Redirect Tests ---
 
-func TestPageRefSplitMarker(t *testing.T) {
+func TestPageRefRedirect(t *testing.T) {
 	r, _ := newTestPageRef(t, 1, 1, nil)
 	left, _ := newTestPageRef(t, 2, 1, nil)
-	right, _ := newTestPageRef(t, 3, 1, nil)
 
-	// Initially no marker
-	assert.Nil(t, r.GetSplitMarker())
+	// Initially no redirect
+	info := r.GetPageInfo()
+	assert.False(t, info.Redirect)
+	assert.Nil(t, info.NewRef)
 
-	// Set marker
-	r.SetSplitMarker(left, right, []byte("e"))
+	// Set redirect via CAS
+	newInfo := &PageInfo{
+		PageID:    info.PageID,
+		Version:   info.Version + 1,
+		Tombstone: true,
+		Redirect:  true,
+		NewRef:    left,
+	}
+	assert.True(t, r.CAS(info, newInfo))
 
-	marker := r.GetSplitMarker()
-	require.NotNil(t, marker)
-	assert.Equal(t, left, marker.Left)
-	assert.Equal(t, right, marker.Right)
-	assert.Equal(t, []byte("e"), marker.SplitKey)
-
-	// FollowSplit: key < splitKey → left
-	target, ok := r.FollowSplit([]byte("a"))
-	assert.True(t, ok)
-	assert.Equal(t, left, target)
-
-	// FollowSplit: key >= splitKey → right
-	target, ok = r.FollowSplit([]byte("e"))
-	assert.True(t, ok)
-	assert.Equal(t, right, target)
-
-	target, ok = r.FollowSplit([]byte("z"))
-	assert.True(t, ok)
-	assert.Equal(t, right, target)
+	// Verify redirect fields
+	updated := r.GetPageInfo()
+	assert.True(t, updated.Tombstone)
+	assert.True(t, updated.Redirect)
+	assert.Equal(t, left, updated.NewRef)
 }
 
-func TestPageRefFollowSplitNoMarker(t *testing.T) {
+func TestPageRefRedirectCASAtomic(t *testing.T) {
 	r, _ := newTestPageRef(t, 1, 1, nil)
+	left, _ := newTestPageRef(t, 2, 1, nil)
 
-	target, ok := r.FollowSplit([]byte("a"))
-	assert.False(t, ok)
-	assert.Nil(t, target)
+	// Tombstone + Redirect + NewRef set in single CAS — no window gap
+	oldInfo := r.GetPageInfo()
+	redirectInfo := &PageInfo{
+		PageID:    oldInfo.PageID,
+		Version:   oldInfo.Version + 1,
+		Tombstone: true,
+		Redirect:  true,
+		NewRef:    left,
+	}
+	assert.True(t, r.CAS(oldInfo, redirectInfo))
+
+	// Second CAS with same oldInfo should fail
+	right, _ := newTestPageRef(t, 3, 1, nil)
+	failInfo := &PageInfo{
+		PageID:    oldInfo.PageID,
+		Version:   oldInfo.Version + 2,
+		Tombstone: true,
+		Redirect:  true,
+		NewRef:    right,
+	}
+	assert.False(t, r.CAS(oldInfo, failInfo))
 }
 
 // --- GetOrCreateChildren Tests ---
@@ -266,23 +279,33 @@ func TestRootPageRefReplaceRoot(t *testing.T) {
 	assert.Equal(t, model.PageID(2), current.PageID)
 }
 
-func TestRootPageRefTryFollowSplit(t *testing.T) {
+func TestRootPageRefNoRedirectNeeded(t *testing.T) {
+	// Root Split uses ReplaceRoot which atomically replaces pInfo + sets children.
+	// No Redirect needed on root — concurrent readers either see old leaf (correct)
+	// or new internal root (correct, with children already set via B20 fix).
 	root := NewRootPageRef(1, 1, func(model.PageID) {})
 
-	// No split initially
-	_, ok := root.TryFollowSplit()
-	assert.False(t, ok)
+	// Verify root has no Redirect
+	info := root.GetPageInfo()
+	assert.False(t, info.Redirect)
+	assert.Nil(t, info.NewRef)
 
-	// Set split marker
+	// Simulate root split: ReplaceRoot atomically switches to new internal root
 	left := NewPageRef(2, 2, nil, func(model.PageID) {})
 	right := NewPageRef(3, 2, nil, func(model.PageID) {})
-	root.SetSplitMarker(left, right, []byte("m"))
 
-	marker, ok := root.TryFollowSplit()
-	assert.True(t, ok)
-	require.NotNil(t, marker)
-	assert.Equal(t, left, marker.Left)
-	assert.Equal(t, right, marker.Right)
+	newRootInfo := &PageInfo{
+		PageID:  10, // new internal root page
+		Version: info.Version + 1,
+	}
+	newChildren := []*PageRef{left, right}
+	assert.True(t, root.ReplaceRoot(info, newRootInfo, newChildren))
+
+	// After ReplaceRoot: root's pInfo is the new internal root (no Redirect)
+	updated := root.GetPageInfo()
+	assert.Equal(t, model.PageID(10), updated.PageID)
+	assert.False(t, updated.Redirect)
+	assert.Nil(t, updated.NewRef)
 }
 
 // --- SchedulerLock Tests ---
@@ -450,41 +473,6 @@ func TestPageRefSetParentRefConcurrent(t *testing.T) {
 	assert.NotNil(t, final)
 }
 
-// --- SplitMarker + RootPageRef interaction ---
-
-func TestRootPageRefSplitMarkerInteraction(t *testing.T) {
-	root := NewRootPageRef(1, 1, func(model.PageID) {})
-
-	// Initially no split
-	marker, ok := root.TryFollowSplit()
-	assert.False(t, ok)
-	assert.Nil(t, marker)
-
-	// Set split marker on root
-	left := NewPageRef(2, 2, nil, func(model.PageID) {})
-	right := NewPageRef(3, 2, nil, func(model.PageID) {})
-	root.SetSplitMarker(left, right, []byte("m"))
-
-	// TryFollowSplit should now return the marker
-	marker, ok = root.TryFollowSplit()
-	assert.True(t, ok)
-	require.NotNil(t, marker)
-	assert.Equal(t, left, marker.Left)
-	assert.Equal(t, right, marker.Right)
-	assert.Equal(t, []byte("m"), marker.SplitKey)
-
-	// ReplaceRoot should not clear the split marker
-	oldInfo := root.GetPageInfo()
-	newInfo := &PageInfo{PageID: 4, Version: 3}
-	ok = root.ReplaceRoot(oldInfo, newInfo, nil)
-	assert.True(t, ok)
-
-	// Split marker should still be accessible
-	marker2, ok := root.TryFollowSplit()
-	assert.True(t, ok)
-	assert.Equal(t, marker, marker2)
-}
-
 // --- Fix Verification Tests ---
 
 // TestPageRefReleaseCorrectPageID verifies C1 fix:
@@ -511,25 +499,27 @@ func TestPageRefReleaseCorrectPageID(t *testing.T) {
 		"Release should free the original pageID bound at creation, not the CAS'd one")
 }
 
-// TestSplitMarkerKeyCopy verifies I1 fix:
-// Modifying the original splitKey after SetSplitMarker should not
-// affect the marker's internal copy.
-func TestSplitMarkerKeyCopy(t *testing.T) {
+// TestPageInfoRedirectImmutable verifies redirect info is read-only via GetPageInfo.
+// PageInfo is immutable after CAS — readers see consistent snapshots.
+func TestPageInfoRedirectImmutable(t *testing.T) {
 	r, _ := newTestPageRef(t, 1, 1, nil)
 	left, _ := newTestPageRef(t, 2, 1, nil)
-	right, _ := newTestPageRef(t, 3, 1, nil)
 
-	// Use a mutable slice as splitKey
-	key := []byte("hello")
-	r.SetSplitMarker(left, right, key)
+	oldInfo := r.GetPageInfo()
+	redirectInfo := &PageInfo{
+		PageID:    oldInfo.PageID,
+		Version:   oldInfo.Version + 1,
+		Tombstone: true,
+		Redirect:  true,
+		NewRef:    left,
+	}
+	require.True(t, r.CAS(oldInfo, redirectInfo))
 
-	// Mutate the original slice
-	key[0] = 'z'
-
-	marker := r.GetSplitMarker()
-	require.NotNil(t, marker)
-	assert.Equal(t, []byte("hello"), marker.SplitKey,
-		"marker should have its own copy, immune to caller mutation")
+	// Read back — should match exactly
+	got := r.GetPageInfo()
+	assert.True(t, got.Tombstone)
+	assert.True(t, got.Redirect)
+	assert.Equal(t, left, got.NewRef)
 }
 
 // TestSchedulerLockDoubleUnlockPanics verifies I2 fix:
@@ -580,91 +570,42 @@ func TestPageRef_LockConcurrency(t *testing.T) {
 	wg.Wait()
 }
 
-// --- C3 Fix Tests: SplitMarker RefCount Management ---
+// --- Redirect RefCount Tests ---
 
-// TestPageRef_SplitMarker_RefCount verifies C3 fix:
-// SetSplitMarker should Retain PageRefs, preventing premature release.
-func TestPageRef_SplitMarker_RefCount(t *testing.T) {
-	var freedLeft, freedRight atomic.Int64
-
-	// Create PageRefs with custom freeFunc
-	left := NewPageRef(10, 1, nil, func(id model.PageID) {
-		freedLeft.Store(int64(id))
-	})
-	right := NewPageRef(20, 1, nil, func(id model.PageID) {
-		freedRight.Store(int64(id))
-	})
-
-	// Initial refCount = 0
-	assert.Equal(t, int32(0), left.RefCount(), "initial refCount should be 0")
-	assert.Equal(t, int32(0), right.RefCount(), "initial refCount should be 0")
-
-	// SetSplitMarker should Retain both PageRefs
-	parent := NewPageRef(1, 1, nil, nil)
-	parent.SetSplitMarker(left, right, []byte("m"))
-
-	// ✅ C3 fix: refCount should be 1 (Retained by marker)
-	assert.Equal(t, int32(1), left.RefCount(), "left refCount should be 1 after SetSplitMarker")
-	assert.Equal(t, int32(1), right.RefCount(), "right refCount should be 1 after SetSplitMarker")
-
-	// Release our references (if any)
-	// left/right were created with refCount=0, so no need to release
-
-	// Verify pages are not freed yet
-	assert.Equal(t, int64(0), freedLeft.Load(), "left should not be freed yet")
-	assert.Equal(t, int64(0), freedRight.Load(), "right should not be freed yet")
-
-	// Clear marker should Release PageRefs
-	parent.ClearSplitMarker()
-
-	// ✅ C3 fix: refCount should be 0, pages should be freed
-	assert.Equal(t, int32(0), left.RefCount(), "left refCount should be 0 after ClearSplitMarker")
-	assert.Equal(t, int32(0), right.RefCount(), "right refCount should be 0 after ClearSplitMarker")
-	assert.Equal(t, int64(10), freedLeft.Load(), "left should be freed after ClearSplitMarker")
-	assert.Equal(t, int64(20), freedRight.Load(), "right should be freed after ClearSplitMarker")
-}
-
-// TestPageRef_SplitMarker_NoUseAfterFree verifies C3 fix:
-// SetSplitMarker Retains PageRefs. When external Release is called,
-// it consumes marker's Retain (refCount: 1 -> 0, triggers freeFunc).
-// This is correct behavior: marker's Retain was used to keep the ref alive.
-func TestPageRef_SplitMarker_NoUseAfterFree(t *testing.T) {
+// TestPageRef_Redirect_NewRefRefCount verifies that NewRef in PageInfo
+// does NOT need explicit Retain — it's just a pointer in an immutable PageInfo.
+// The PageRef lifecycle is managed by the parent's children cache.
+func TestPageRef_Redirect_NewRefRefCount(t *testing.T) {
 	var freedLeft atomic.Int64
-	var freedRight atomic.Int64
 
 	left := NewPageRef(10, 1, nil, func(id model.PageID) {
 		freedLeft.Store(int64(id))
 	})
-	right := NewPageRef(20, 1, nil, func(id model.PageID) {
-		freedRight.Store(int64(id))
-	})
 
-	// ✅ C3 fix: SetSplitMarker Retains both PageRefs
+	// Retain leftRef (as handleLeafSplit does in Step 3)
+	left.Retain()
+	assert.Equal(t, int32(1), left.RefCount())
+
+	// Set redirect — NewRef is a pointer in PageInfo, no extra Retain
 	parent := NewPageRef(1, 1, nil, nil)
-	assert.Equal(t, int32(0), left.RefCount(), "left refCount should be 0 before SetSplitMarker")
-	assert.Equal(t, int32(0), right.RefCount(), "right refCount should be 0 before SetSplitMarker")
-	parent.SetSplitMarker(left, right, []byte("m"))
-	assert.Equal(t, int32(1), left.RefCount(), "left refCount should be 1 after SetSplitMarker (Retained)")
-	assert.Equal(t, int32(1), right.RefCount(), "right refCount should be 1 after SetSplitMarker (Retained)")
+	oldInfo := parent.GetPageInfo()
+	redirectInfo := &PageInfo{
+		PageID:    oldInfo.PageID,
+		Version:   oldInfo.Version + 1,
+		Tombstone: true,
+		Redirect:  true,
+		NewRef:    left,
+	}
+	require.True(t, parent.CAS(oldInfo, redirectInfo))
 
-	// ✅ External Release: consumes marker's Retain (refCount: 1 -> 0)
-	// This WILL trigger freeFunc because refCount transitions to 0
+	// leftRef still refCount=1 (only our Retain, no extra from redirect)
+	assert.Equal(t, int32(1), left.RefCount())
+	assert.Equal(t, int64(0), freedLeft.Load(), "left not freed while Retained")
+
+	// Release our reference → refCount=0 → freed
 	left.Release()
-	assert.Equal(t, int64(10), freedLeft.Load(), "left should be freed after Release (marker's Retain consumed)")
-	right.Release()
-	assert.Equal(t, int64(20), freedRight.Load(), "right should be freed after Release (marker's Retain consumed)")
-
-	// ✅ Marker still holds pointers (but PageRefs are freed)
-	// This is safe because marker's Retain was consumed by external Release
-	marker := parent.GetSplitMarker()
-	require.NotNil(t, marker)
-	assert.Equal(t, left, marker.Left)   // ✅ Pointer is still valid (no use-after-free)
-	assert.Equal(t, right, marker.Right) // ✅ Pointer is still valid
-
-	// ✅ ClearSplitMarker is safe (no double-free, refCount already 0)
-	// Note: ClearSplitMarker will call Release again, which will panic
-	// because refCount is already 0
-	// This is expected behavior: use-after-free should panic
+	assert.Equal(t, int32(0), left.RefCount())
+	assert.Equal(t, int64(10), freedLeft.Load(), "left freed after Release")
 }
 
 // TestHandleLeafSplit_CASFailure_Cleanup verifies C1/C2 fix:
@@ -738,40 +679,43 @@ func TestHandleRootSplit_ReplaceRoot(t *testing.T) {
 	assert.Equal(t, uint64(2), oldRoot.GetPageInfo().Version, "root version should be incremented")
 }
 
-// TestPageRef_SplitMarker_ConcurrentAccess verifies C3 fix:
-// Concurrent access to SplitMarker with Retain/Release is safe.
-func TestPageRef_SplitMarker_ConcurrentAccess(t *testing.T) {
+// TestPageRef_Redirect_ConcurrentCAS verifies concurrent CAS on PageInfo
+// with Redirect+NewRef fields is safe (no data race).
+func TestPageRef_Redirect_ConcurrentCAS(t *testing.T) {
 	parent := NewPageRef(1, 1, nil, nil)
 
 	var wg sync.WaitGroup
 	const numGoroutines = 10
 
-	// Concurrent Set/Clear/Get SplitMarker
 	for i := 0; i < numGoroutines; i++ {
-		wg.Add(3)
+		wg.Add(2)
 
-		// Writer: SetSplitMarker
+		// Writer: CAS redirect info
 		go func(id int) {
 			defer wg.Done()
-			left := NewPageRef(model.PageID(id*2), 1, nil, nil)
-			right := NewPageRef(model.PageID(id*2+1), 1, nil, nil)
-			parent.SetSplitMarker(left, right, []byte("m"))
+			ref := NewPageRef(model.PageID(id*2), 1, nil, nil)
+			for {
+				old := parent.GetPageInfo()
+				newInfo := &PageInfo{
+					PageID:    old.PageID,
+					Version:   old.Version + 1,
+					Tombstone: true,
+					Redirect:  true,
+					NewRef:    ref,
+				}
+				if parent.CAS(old, newInfo) {
+					break
+				}
+			}
 		}(i)
 
-		// Reader: GetSplitMarker
+		// Reader: GetPageInfo (atomic read)
 		go func() {
 			defer wg.Done()
-			marker := parent.GetSplitMarker()
-			if marker != nil {
-				_ = marker.Left
-				_ = marker.Right
+			info := parent.GetPageInfo()
+			if info.Redirect && info.NewRef != nil {
+				_ = info.NewRef.GetPageInfo()
 			}
-		}()
-
-		// Cleaner: ClearSplitMarker
-		go func() {
-			defer wg.Done()
-			parent.ClearSplitMarker()
 		}()
 	}
 

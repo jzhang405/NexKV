@@ -40,8 +40,10 @@ func NewPageRef(pageID model.PageID, version uint64, parentRef *PageRef, freeFun
 	}
 	r.parentRef.Store(parentRef)
 	r.pInfo.Store(&PageInfo{
-		PageID:  pageID,
-		Version: version,
+		PageID:    pageID,
+		Version:   version,
+		IsLeaf:    true,     // default: leaf; internal split handlers override
+		NodeState: NodeNormal,
 	})
 	return r
 }
@@ -147,7 +149,21 @@ func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) ([]*PageRef, error) 
 	newChildren := make([]*PageRef, childCount)
 	for i := range childCount {
 		childID := page.GetChild(i)
-		newChildren[i] = NewPageRef(childID, 0, r, r.freeFunc)
+		childRef := NewPageRef(childID, 0, r, r.freeFunc)
+		// 查询物理层确定 IsLeaf（页面在线，父节点是 internal node）
+		isLeaf := true // 默认 leaf
+		childNode, err := storage.GetNodePage(childID)
+		if err == nil {
+			isLeaf = childNode.IsLeaf()
+		}
+		// isLeafPageError → 保持默认 isLeaf=true（正常 leaf 路径）
+		childRef.pInfo.Store(&PageInfo{
+			PageID:    childID,
+			Version:   1,
+			IsLeaf:    isLeaf,
+			NodeState: NodeNormal,
+		})
+		newChildren[i] = childRef
 	}
 
 	if r.children.CompareAndSwap(nil, &newChildren) {

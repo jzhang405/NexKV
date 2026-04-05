@@ -53,8 +53,10 @@ func (b *BTree) handleParentCASWithSpin(
 		}
 
 		newInfo := &PageInfo{
-			PageID:  newParent.PageID(),
-			Version: curInfo.Version + 1,
+			PageID:    newParent.PageID(),
+			Version:   curInfo.Version + 1,
+			IsLeaf:    false,
+			NodeState: curInfo.NodeState, // preserve root/normal
 		}
 
 		success := parentRef.CAS(curInfo, newInfo)
@@ -103,8 +105,8 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 
 		// Step 3: Read current page info
 		oldInfo := leafRef.GetPageInfo()
-		if oldInfo == nil {
-			// Page freed, retry
+		if oldInfo == nil || oldInfo.NodeState == NodeRedirect {
+			// Page freed or already split — retry
 			leafRef.Unlock()
 			path.ReleaseAll()
 			continue
@@ -163,6 +165,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		newInfo := &PageInfo{
 			PageID:  result.newPageID,
 			Version: oldInfo.Version + 1,
+			IsLeaf:  true,
 		}
 
 		if !leafRef.CAS(oldInfo, newInfo) {
@@ -276,6 +279,19 @@ func (b *BTree) handleInternalSplit(
 		// Step 3a: Create PageRefs for split children
 		currentLeftRef := NewPageRef(currentLeft.PageID(), 0, grandparentRef, b.rootRef.freeFunc)
 		currentRightRef := NewPageRef(currentRight.PageID(), 0, grandparentRef, b.rootRef.freeFunc)
+		// internal split 子节点 → IsLeaf=false（刚创建无竞争，直接 Store）
+		currentLeftRef.pInfo.Store(&PageInfo{
+			PageID:    currentLeft.PageID(),
+			Version:   1,
+			IsLeaf:    false,
+			NodeState: NodeNormal,
+		})
+		currentRightRef.pInfo.Store(&PageInfo{
+			PageID:    currentRight.PageID(),
+			Version:   1,
+			IsLeaf:    false,
+			NodeState: NodeNormal,
+		})
 		currentLeftRef.Retain()  // refCount: 0 → 1
 		currentRightRef.Retain() // refCount: 0 → 1
 		toRelease = append(toRelease, currentLeftRef, currentRightRef)
@@ -303,8 +319,10 @@ func (b *BTree) handleInternalSplit(
 		toFree = append(toFree, newGrandparent.PageID())
 
 		newGrandparentInfo := &PageInfo{
-			PageID:  newGrandparent.PageID(),
-			Version: grandparentInfo.Version + 1,
+			PageID:    newGrandparent.PageID(),
+			Version:   grandparentInfo.Version + 1,
+			IsLeaf:    false,
+			NodeState: grandparentInfo.NodeState, // preserve root/normal
 		}
 
 		// Step 6: Grandparent CAS
@@ -330,10 +348,12 @@ func (b *BTree) handleInternalSplit(
 
 		// Step 7: Redirect CAS on currentRef (best-effort, CAS-R1)
 		redirectInfo := &PageInfo{
-			PageID:   currentInfo.PageID,
-			Version:  currentInfo.Version + 1,
-			Redirect: true,
-			NewRef:   currentLeftRef,
+			PageID:    currentInfo.PageID,
+			Version:   currentInfo.Version + 1,
+			IsLeaf:    currentInfo.IsLeaf,
+			NodeState: NodeRedirect,
+			Redirect:  true,
+			NewRef:    currentLeftRef,
 		}
 		_ = currentRef.CAS(currentInfo, redirectInfo) // best-effort, ignore result
 
@@ -372,6 +392,19 @@ func (b *BTree) handleRootInternalSplit(
 	// Step 1: Create PageRefs for left/right children of new root
 	leftRef := NewPageRef(leftPage.PageID(), 0, &b.rootRef.PageRef, b.rootRef.freeFunc)
 	rightRef := NewPageRef(rightPage.PageID(), 0, &b.rootRef.PageRef, b.rootRef.freeFunc)
+	// internal split 子节点 → IsLeaf=false（刚创建无竞争，直接 Store）
+	leftRef.pInfo.Store(&PageInfo{
+		PageID:    leftPage.PageID(),
+		Version:   1,
+		IsLeaf:    false,
+		NodeState: NodeNormal,
+	})
+	rightRef.pInfo.Store(&PageInfo{
+		PageID:    rightPage.PageID(),
+		Version:   1,
+		IsLeaf:    false,
+		NodeState: NodeNormal,
+	})
 	leftRef.Retain()  // refCount: 0 → 1
 	rightRef.Retain() // refCount: 0 → 1
 	*toRelease = append(*toRelease, leftRef, rightRef)
@@ -402,8 +435,10 @@ func (b *BTree) handleRootInternalSplit(
 
 	// Step 3: Prepare ReplaceRoot
 	newRootInfo := &PageInfo{
-		PageID:  newRootPage.PageID(),
-		Version: rootInfo.Version + 1,
+		PageID:    newRootPage.PageID(),
+		Version:   rootInfo.Version + 1,
+		IsLeaf:    false,
+		NodeState: NodeRoot,
 	}
 	newChildren := []*PageRef{leftRef, rightRef}
 
@@ -425,10 +460,12 @@ func (b *BTree) handleRootInternalSplit(
 
 	// Step 6: Redirect CAS on old root (best-effort)
 	redirectInfo := &PageInfo{
-		PageID:   rootInfo.PageID,
-		Version:  rootInfo.Version + 1,
-		Redirect: true,
-		NewRef:   leftRef,
+		PageID:    rootInfo.PageID,
+		Version:   rootInfo.Version + 1,
+		IsLeaf:    rootInfo.IsLeaf,
+		NodeState: NodeRedirect,
+		Redirect:  true,
+		NewRef:    leftRef,
 	}
 	_ = rootRef.CAS(rootInfo, redirectInfo) // best-effort
 
@@ -481,8 +518,10 @@ func propagateUpward(b *BTree, parentPath []PathEntry, newChildID model.PageID, 
 		}
 
 		newInfo := &PageInfo{
-			PageID:  newNode.PageID(),
-			Version: oldInfo.Version + 1,
+			PageID:    newNode.PageID(),
+			Version:   oldInfo.Version + 1,
+			IsLeaf:    false,
+			NodeState: oldInfo.NodeState,
 		}
 
 		if !parentRef.CAS(oldInfo, newInfo) {
@@ -694,10 +733,12 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	// Redirect+NewRef is CAS-atomic with Tombstone — no window gap between split and redirect visibility.
 	// NewRef points to leftRef so searchPath can re-navigate via parent's updated children cache.
 	redirectInfo := &PageInfo{
-		PageID:   leafInfo.PageID,
-		Version:  leafInfo.Version + 1,
-		Redirect: true,
-		NewRef:   leftRef,
+		PageID:    leafInfo.PageID,
+		Version:   leafInfo.Version + 1,
+		IsLeaf:    true,
+		NodeState: NodeRedirect,
+		Redirect:  true,
+		NewRef:    leftRef,
 	}
 	if !leafRef.CAS(leafInfo, redirectInfo) {
 		// CAS failed: concurrent modification — release resources and retry
@@ -813,8 +854,10 @@ func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
 
 	// Step 7: ReplaceRoot (D14: SetParentRef before CAS)
 	newRootInfo := &PageInfo{
-		PageID:  newRootPage.PageID(),
-		Version: rootInfo.Version + 1,
+		PageID:    newRootPage.PageID(),
+		Version:   rootInfo.Version + 1,
+		IsLeaf:    false,
+		NodeState: NodeRoot,
 	}
 	newChildren := []*PageRef{leftRef, rightRef}
 

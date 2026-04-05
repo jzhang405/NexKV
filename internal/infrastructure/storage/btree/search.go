@@ -69,7 +69,9 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 		}
 
 		// Check if leaf — stop descending
-		if storage.pa.IsLeaf(uint32(pInfo.PageID)) {
+		// Uses PageInfo.IsLeaf (set at PageRef creation/CAS) to avoid TOCTOU race
+		// with page allocator reuse.
+		if pInfo.IsLeaf {
 			path = append(path, PathEntry{Ref: currentRef, Index: -1})
 			return path, nil
 		}

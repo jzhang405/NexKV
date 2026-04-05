@@ -16,8 +16,18 @@ type RootPageRef struct {
 // NewRootPageRef creates a root PageRef.
 // parentRef is always nil for root nodes.
 func NewRootPageRef(pageID model.PageID, version uint64, freeFunc func(model.PageID)) *RootPageRef {
+	ref := NewPageRef(pageID, version, nil, freeFunc)
+	// Override: root starts as leaf with NodeRoot state
+	info := ref.GetPageInfo()
+	rootInfo := &PageInfo{
+		PageID:    info.PageID,
+		Version:   info.Version,
+		IsLeaf:    true,
+		NodeState: NodeRoot,
+	}
+	ref.CAS(info, rootInfo)
 	return &RootPageRef{
-		PageRef: *NewPageRef(pageID, version, nil, freeFunc),
+		PageRef: *ref,
 	}
 }
 

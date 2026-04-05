@@ -15,20 +15,19 @@ type RootPageRef struct {
 
 // NewRootPageRef creates a root PageRef.
 // parentRef is always nil for root nodes.
+// Constructs in-place to avoid copying PageRef (which contains SchedulerLock).
 func NewRootPageRef(pageID model.PageID, version uint64, freeFunc func(model.PageID)) *RootPageRef {
-	ref := NewPageRef(pageID, version, nil, freeFunc)
-	// Override: root starts as leaf with NodeRoot state
-	info := ref.GetPageInfo()
-	rootInfo := &PageInfo{
-		PageID:    info.PageID,
-		Version:   info.Version,
+	r := &RootPageRef{}
+	r.pageID = pageID
+	r.freeFunc = freeFunc
+	// parentRef stays nil (zero value) — root has no parent
+	r.pInfo.Store(&PageInfo{
+		PageID:    pageID,
+		Version:   version,
 		IsLeaf:    true,
 		NodeState: NodeRoot,
-	}
-	ref.CAS(info, rootInfo)
-	return &RootPageRef{
-		PageRef: *ref,
-	}
+	})
+	return r
 }
 
 // ReplaceRoot atomically replaces the root page.

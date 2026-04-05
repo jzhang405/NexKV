@@ -132,17 +132,15 @@ func TestPageRefRedirect(t *testing.T) {
 
 	// Set redirect via CAS
 	newInfo := &PageInfo{
-		PageID:    info.PageID,
-		Version:   info.Version + 1,
-		Tombstone: true,
-		Redirect:  true,
-		NewRef:    left,
+		PageID:   info.PageID,
+		Version:  info.Version + 1,
+		Redirect: true,
+		NewRef:   left,
 	}
 	assert.True(t, r.CAS(info, newInfo))
 
 	// Verify redirect fields
 	updated := r.GetPageInfo()
-	assert.True(t, updated.Tombstone)
 	assert.True(t, updated.Redirect)
 	assert.Equal(t, left, updated.NewRef)
 }
@@ -154,22 +152,20 @@ func TestPageRefRedirectCASAtomic(t *testing.T) {
 	// Tombstone + Redirect + NewRef set in single CAS — no window gap
 	oldInfo := r.GetPageInfo()
 	redirectInfo := &PageInfo{
-		PageID:    oldInfo.PageID,
-		Version:   oldInfo.Version + 1,
-		Tombstone: true,
-		Redirect:  true,
-		NewRef:    left,
+		PageID:   oldInfo.PageID,
+		Version:  oldInfo.Version + 1,
+		Redirect: true,
+		NewRef:   left,
 	}
 	assert.True(t, r.CAS(oldInfo, redirectInfo))
 
 	// Second CAS with same oldInfo should fail
 	right, _ := newTestPageRef(t, 3, 1, nil)
 	failInfo := &PageInfo{
-		PageID:    oldInfo.PageID,
-		Version:   oldInfo.Version + 2,
-		Tombstone: true,
-		Redirect:  true,
-		NewRef:    right,
+		PageID:   oldInfo.PageID,
+		Version:  oldInfo.Version + 2,
+		Redirect: true,
+		NewRef:   right,
 	}
 	assert.False(t, r.CAS(oldInfo, failInfo))
 }
@@ -507,17 +503,15 @@ func TestPageInfoRedirectImmutable(t *testing.T) {
 
 	oldInfo := r.GetPageInfo()
 	redirectInfo := &PageInfo{
-		PageID:    oldInfo.PageID,
-		Version:   oldInfo.Version + 1,
-		Tombstone: true,
-		Redirect:  true,
-		NewRef:    left,
+		PageID:   oldInfo.PageID,
+		Version:  oldInfo.Version + 1,
+		Redirect: true,
+		NewRef:   left,
 	}
 	require.True(t, r.CAS(oldInfo, redirectInfo))
 
 	// Read back — should match exactly
 	got := r.GetPageInfo()
-	assert.True(t, got.Tombstone)
 	assert.True(t, got.Redirect)
 	assert.Equal(t, left, got.NewRef)
 }
@@ -559,7 +553,7 @@ func TestPageRef_LockConcurrency(t *testing.T) {
 	const n = 100
 	wg.Add(n)
 
-	for i := 0; i < n; i++ {
+	for range n {
 		go func() {
 			defer wg.Done()
 			r.Lock()
@@ -590,11 +584,10 @@ func TestPageRef_Redirect_NewRefRefCount(t *testing.T) {
 	parent := NewPageRef(1, 1, nil, nil)
 	oldInfo := parent.GetPageInfo()
 	redirectInfo := &PageInfo{
-		PageID:    oldInfo.PageID,
-		Version:   oldInfo.Version + 1,
-		Tombstone: true,
-		Redirect:  true,
-		NewRef:    left,
+		PageID:   oldInfo.PageID,
+		Version:  oldInfo.Version + 1,
+		Redirect: true,
+		NewRef:   left,
 	}
 	require.True(t, parent.CAS(oldInfo, redirectInfo))
 
@@ -697,11 +690,10 @@ func TestPageRef_Redirect_ConcurrentCAS(t *testing.T) {
 			for {
 				old := parent.GetPageInfo()
 				newInfo := &PageInfo{
-					PageID:    old.PageID,
-					Version:   old.Version + 1,
-					Tombstone: true,
-					Redirect:  true,
-					NewRef:    ref,
+					PageID:   old.PageID,
+					Version:  old.Version + 1,
+					Redirect: true,
+					NewRef:   ref,
 				}
 				if parent.CAS(old, newInfo) {
 					break

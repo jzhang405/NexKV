@@ -40,4 +40,8 @@ const (
 	// the CPU via runtime.Gosched(). Below this threshold, the lock spins on the
 	// cache line to minimize latency; above it, yields to reduce contention.
 	SpinLockBackoffThreshold = 16
+
+	// MaxParentCASSpins is the maximum number of spin iterations for parent CAS
+	// in handleParentCASWithSpin before giving up and returning ErrCASConflict.
+	MaxParentCASSpins = 100
 )

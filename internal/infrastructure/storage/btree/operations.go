@@ -25,6 +25,50 @@ type leafMutation struct {
 // (ErrKeyNotFound, ErrDuplicateKey, ErrPageFull, etc.).
 type mutateFunc func(leaf LeafPage) (*leafMutation, error)
 
+// handleParentCASWithSpin uses spin-waiting to handle parent CAS.
+// Each spin iteration re-reads the parent, re-InsertsChild, and re-generates newPageInfo.
+func (b *BTree) handleParentCASWithSpin(
+	parentRef *PageRef,
+	leftChildID, rightChildID model.PageID,
+	splitKey []byte,
+	childIdx int,
+) (*PageInfo, NodePage, error) {
+	for i := 0; i < MaxParentCASSpins; i++ {
+		curInfo := parentRef.GetPageInfo()
+		if curInfo == nil || curInfo.Redirect {
+			return nil, nil, ErrCASConflict
+		}
+
+		parentRef.Retain()
+		oldParent, err := b.storage.GetNodePage(curInfo.PageID)
+		if err != nil {
+			parentRef.Release()
+			return nil, nil, err
+		}
+
+		newParent, err := oldParent.InsertChild(childIdx, splitKey, leftChildID, rightChildID)
+		if err != nil {
+			parentRef.Release()
+			return nil, nil, err
+		}
+
+		newInfo := &PageInfo{
+			PageID:  newParent.PageID(),
+			Version: curInfo.Version + 1,
+		}
+
+		success := parentRef.CAS(curInfo, newInfo)
+		parentRef.Release()
+
+		if success {
+			return newInfo, newParent, nil
+		}
+		// CAS failed → continue loop
+	}
+
+	return nil, nil, ErrCASConflict
+}
+
 // writeOperation is the CAS retry template for leaf mutations.
 //
 // Algorithm (D-ops-1):
@@ -59,8 +103,8 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 
 		// Step 3: Read current page info
 		oldInfo := leafRef.GetPageInfo()
-		if oldInfo == nil || oldInfo.Tombstone {
-			// Page freed or split, retry
+		if oldInfo == nil {
+			// Page freed, retry
 			leafRef.Unlock()
 			path.ReleaseAll()
 			continue
@@ -191,6 +235,12 @@ func (b *BTree) handleInternalSplit(
 		}
 	}()
 
+	// Step 0: Acquire split latch — only one goroutine can split this node at a time
+	if !currentRef.TryAcquireSplitLatch() {
+		return ErrCASConflict
+	}
+	defer currentRef.ReleaseSplitLatch()
+
 	for {
 		// Step 1: Split current internal node (move-up semantics)
 		currentNode, err := b.storage.GetNodePage(currentInfo.PageID)
@@ -235,7 +285,7 @@ func (b *BTree) handleInternalSplit(
 
 		// Step 4: Get grandparent info
 		grandparentInfo := grandparentRef.GetPageInfo()
-		if grandparentInfo == nil || grandparentInfo.Tombstone {
+		if grandparentInfo == nil {
 			// Grandparent changed concurrently, signal retry
 			return ErrCASConflict
 		}
@@ -280,11 +330,10 @@ func (b *BTree) handleInternalSplit(
 
 		// Step 7: Redirect CAS on currentRef (best-effort, CAS-R1)
 		redirectInfo := &PageInfo{
-			PageID:    currentInfo.PageID,
-			Version:   currentInfo.Version + 1,
-			Tombstone: true,
-			Redirect:  true,
-			NewRef:    currentLeftRef,
+			PageID:   currentInfo.PageID,
+			Version:  currentInfo.Version + 1,
+			Redirect: true,
+			NewRef:   currentLeftRef,
 		}
 		_ = currentRef.CAS(currentInfo, redirectInfo) // best-effort, ignore result
 
@@ -376,11 +425,10 @@ func (b *BTree) handleRootInternalSplit(
 
 	// Step 6: Redirect CAS on old root (best-effort)
 	redirectInfo := &PageInfo{
-		PageID:    rootInfo.PageID,
-		Version:   rootInfo.Version + 1,
-		Tombstone: true,
-		Redirect:  true,
-		NewRef:    leftRef,
+		PageID:   rootInfo.PageID,
+		Version:  rootInfo.Version + 1,
+		Redirect: true,
+		NewRef:   leftRef,
 	}
 	_ = rootRef.CAS(rootInfo, redirectInfo) // best-effort
 
@@ -415,7 +463,7 @@ func propagateUpward(b *BTree, parentPath []PathEntry, newChildID model.PageID, 
 		parentRef := entry.Ref
 
 		oldInfo := parentRef.GetPageInfo()
-		if oldInfo == nil || oldInfo.Tombstone {
+		if oldInfo == nil {
 			// ★ B4 fix: Tombstone check — stop propagation if parent was split
 			// Parent is no longer navigable, don't update it
 			return
@@ -557,6 +605,12 @@ func updateChildrenCache(
 func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	path SearchPath, key []byte, mutate mutateFunc) error {
 
+	// Step 0: Acquire split latch — only one goroutine can split this leaf at a time
+	if !leafRef.TryAcquireSplitLatch() {
+		return ErrCASConflict
+	}
+	defer leafRef.ReleaseSplitLatch()
+
 	// Step 1: Split leaf → left + right + splitKey
 	leaf, err := b.storage.GetLeafPage(leafInfo.PageID)
 	if err != nil {
@@ -617,13 +671,6 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 		return ErrCASConflict
 	}
 
-	oldParent, err := b.storage.GetNodePage(parentInfo.PageID)
-	if err != nil {
-		leftRef.Release()
-		rightRef.Release()
-		return err
-	}
-
 	// Determine child IDs for InsertChild
 	var leftChildID, rightChildID model.PageID
 	if bytes.Compare(key, splitKey) < 0 {
@@ -634,39 +681,23 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 		rightChildID = mutation.newPageID // target=right, right mutated
 	}
 
-	newParent, err := oldParent.InsertChild(parentEntry.Index, splitKey, leftChildID, rightChildID)
+	// Step 5: Parent CAS with spin-waiting
+	newParentInfo, newParent, err := b.handleParentCASWithSpin(parentRef,
+		leftChildID, rightChildID, splitKey, parentEntry.Index)
 	if err != nil {
 		leftRef.Release()
 		rightRef.Release()
 		return err
 	}
 
-	newParentInfo := &PageInfo{
-		PageID:    newParent.PageID(),
-		Version:   parentInfo.Version + 1,
-		Tombstone: false,
-	}
-
-	// Step 5: Parent CAS
-	if !parentRef.CAS(parentInfo, newParentInfo) {
-		// CAS failed → cleanup
-		// ★ B7 fix: Only Release, no explicit FreePage (avoid double-free)
-		// Release() calls freeFunc when refCount reaches 0
-		leftRef.Release()
-		rightRef.Release()
-		_ = b.storage.FreePage(newParent.PageID()) // newParent has no PageRef, free explicitly
-		return ErrCASConflict
-	}
-
 	// Step 6: Atomically set Tombstone + Redirect + NewRef (replaces SetSplitMarker + Tombstone CAS)
 	// Redirect+NewRef is CAS-atomic with Tombstone — no window gap between split and redirect visibility.
 	// NewRef points to leftRef so searchPath can re-navigate via parent's updated children cache.
 	redirectInfo := &PageInfo{
-		PageID:    leafInfo.PageID,
-		Version:   leafInfo.Version + 1,
-		Tombstone: true,
-		Redirect:  true,
-		NewRef:    leftRef,
+		PageID:   leafInfo.PageID,
+		Version:  leafInfo.Version + 1,
+		Redirect: true,
+		NewRef:   leftRef,
 	}
 	if !leafRef.CAS(leafInfo, redirectInfo) {
 		// CAS failed: concurrent modification — release resources and retry
@@ -782,9 +813,8 @@ func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
 
 	// Step 7: ReplaceRoot (D14: SetParentRef before CAS)
 	newRootInfo := &PageInfo{
-		PageID:    newRootPage.PageID(),
-		Version:   rootInfo.Version + 1,
-		Tombstone: false,
+		PageID:  newRootPage.PageID(),
+		Version: rootInfo.Version + 1,
 	}
 	newChildren := []*PageRef{leftRef, rightRef}
 

@@ -68,12 +68,6 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 			return nil, fmt.Errorf("btree: searchPath: nil PageInfo on page %d", currentRef.pageID)
 		}
 
-		// ★ B3/B4 fix: Tombstone check — stop if this page has been split
-		if pInfo.Tombstone {
-			path.ReleaseAll()
-			return nil, ErrRetry // split in progress, retry from root
-		}
-
 		// Check if leaf — stop descending
 		if storage.pa.IsLeaf(uint32(pInfo.PageID)) {
 			path = append(path, PathEntry{Ref: currentRef, Index: -1})
@@ -100,12 +94,12 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 
 		childRef := children[idx]
 
-		// Redirect following: if child has Tombstone+Redirect in PageInfo,
+		// Redirect following: if child has Redirect in PageInfo,
 		// re-navigate via the parent's updated children cache.
 		// Redirect is set atomically via CAS on PageInfo — no window gap.
 		childInfo := childRef.GetPageInfo()
 		actualIdx := idx
-		if childInfo.Tombstone && childInfo.Redirect {
+		if childInfo.Redirect {
 			// Page was split — re-navigate from parent's updated children
 			childRef.Release()
 			updatedChildren, _ := currentRef.GetOrCreateChildren(storage)

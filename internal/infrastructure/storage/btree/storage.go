@@ -25,6 +25,10 @@ type BTreeStorage interface {
 	// Free returns a page to the free list.
 	FreePage(pageID model.PageID) error
 
+	// IsLeafPage reads the physical page type to determine if pageID is a leaf.
+	// Safe for live pages referenced by the tree.
+	IsLeafPage(pageID model.PageID) bool
+
 	// Close releases all resources held by the storage.
 	Close() error
 

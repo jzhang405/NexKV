@@ -21,8 +21,8 @@ const (
 type PageInfo struct {
 	PageID    model.PageID
 	Version   uint64
-	Redirect  bool       // data structure changed (split), reader should re-navigate via NewRef
-	NewRef    *PageRef   // when Redirect=true, points to the left child of the split
-	IsLeaf    bool       // whether this page is a leaf (stored to avoid TOCTOU race with page reuse)
-	NodeState NodeState  // logical node state: Normal, Root, or Redirect
+	Redirect  bool      // data structure changed (split), reader should re-navigate via NewRef
+	NewRef    *PageRef  // when Redirect=true, points to the left child of the split
+	IsLeaf    bool      // whether this page is a leaf (stored to avoid TOCTOU race with page reuse)
+	NodeState NodeState // logical node state: Normal, Root, or Redirect
 }

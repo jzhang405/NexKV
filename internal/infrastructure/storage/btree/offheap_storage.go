@@ -151,6 +151,15 @@ func (s *OffheapBTreeStorage) FreePage(pageID model.PageID) error {
 	return s.pm.Free(rawID)
 }
 
+// IsLeafPage reads the physical page header to determine if pageID is a leaf.
+func (s *OffheapBTreeStorage) IsLeafPage(pageID model.PageID) bool {
+	rawID, err := s.validatePageID(pageID)
+	if err != nil {
+		return false
+	}
+	return s.pa.IsLeaf(rawID)
+}
+
 // --- Close ---
 
 func (s *OffheapBTreeStorage) Close() error {

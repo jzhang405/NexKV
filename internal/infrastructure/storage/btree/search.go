@@ -103,7 +103,6 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 		actualIdx := idx
 		if childInfo.Redirect {
 			// Page was split — re-navigate from parent's updated children
-			childRef.Release()
 			updatedChildren, _ := currentRef.GetOrCreateChildren(storage)
 			if updatedChildren != nil {
 				reIdx, _ := node.Search(key)

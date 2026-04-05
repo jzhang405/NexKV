@@ -105,7 +105,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 
 		// Step 3: Read current page info
 		oldInfo := leafRef.GetPageInfo()
-		if oldInfo == nil || oldInfo.NodeState == NodeRedirect {
+		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || !oldInfo.IsLeaf {
 			// Page freed or already split — retry
 			leafRef.Unlock()
 			path.ReleaseAll()
@@ -500,7 +500,7 @@ func propagateUpward(b *BTree, parentPath []PathEntry, newChildID model.PageID, 
 		parentRef := entry.Ref
 
 		oldInfo := parentRef.GetPageInfo()
-		if oldInfo == nil {
+		if oldInfo == nil || oldInfo.Redirect {
 			// ★ B4 fix: Tombstone check — stop propagation if parent was split
 			// Parent is no longer navigable, don't update it
 			return
@@ -509,6 +509,10 @@ func propagateUpward(b *BTree, parentPath []PathEntry, newChildID model.PageID, 
 		// COW: copy parent, replace child
 		oldNode, err := b.storage.GetNodePage(oldInfo.PageID)
 		if err != nil {
+			return
+		}
+
+		if childIdx < 0 || childIdx >= oldNode.Count() {
 			return
 		}
 

@@ -29,6 +29,9 @@ type BTreeMetrics struct {
 
 	// MergeCount tracks the number of page merges (Phase 6.5+).
 	MergeCount atomic.Int64
+
+	// TreeHeightCount tracks the number of times the tree height has increased.
+	TreeHeightCount atomic.Int64
 }
 
 // NewBTreeMetrics creates a new metrics instance with all counters initialized to 0.
@@ -66,16 +69,22 @@ func (m *BTreeMetrics) IncrementMerge() {
 	m.MergeCount.Add(1)
 }
 
+// IncrementTreeHeight atomically increments the tree height counter.
+func (m *BTreeMetrics) IncrementTreeHeight() {
+	m.TreeHeightCount.Add(1)
+}
+
 // Snapshot returns a point-in-time snapshot of all metrics.
 // The returned values are consistent but not transactional.
 func (m *BTreeMetrics) Snapshot() MetricsSnapshot {
 	return MetricsSnapshot{
-		ReadCount:     m.ReadCount.Load(),
-		WriteCount:    m.WriteCount.Load(),
-		DeleteCount:   m.DeleteCount.Load(),
-		CASRetryCount: m.CASRetryCount.Load(),
-		SplitCount:    m.SplitCount.Load(),
-		MergeCount:    m.MergeCount.Load(),
+		ReadCount:       m.ReadCount.Load(),
+		WriteCount:      m.WriteCount.Load(),
+		DeleteCount:     m.DeleteCount.Load(),
+		CASRetryCount:   m.CASRetryCount.Load(),
+		SplitCount:      m.SplitCount.Load(),
+		MergeCount:      m.MergeCount.Load(),
+		TreeHeightCount: m.TreeHeightCount.Load(),
 	}
 }
 
@@ -88,24 +97,26 @@ func (m *BTreeMetrics) Reset() {
 	m.CASRetryCount.Store(0)
 	m.SplitCount.Store(0)
 	m.MergeCount.Store(0)
+	m.TreeHeightCount.Store(0)
 }
 
 // MetricsSnapshot is an immutable snapshot of BTreeMetrics.
 type MetricsSnapshot struct {
-	ReadCount     int64
-	WriteCount    int64
-	DeleteCount   int64
-	CASRetryCount int64
-	SplitCount    int64
-	MergeCount    int64
+	ReadCount       int64
+	WriteCount      int64
+	DeleteCount     int64
+	CASRetryCount   int64
+	SplitCount      int64
+	MergeCount      int64
+	TreeHeightCount int64
 }
 
 // String returns a formatted string representation of the metrics.
 func (s MetricsSnapshot) String() string {
 	return fmt.Sprintf(
-		"Read=%d Write=%d Delete=%d CASRetries=%d Splits=%d Merges=%d",
+		"Read=%d Write=%d Delete=%d CASRetries=%d Splits=%d Merges=%d TreeHeight=%d",
 		s.ReadCount, s.WriteCount, s.DeleteCount,
-		s.CASRetryCount, s.SplitCount, s.MergeCount,
+		s.CASRetryCount, s.SplitCount, s.MergeCount, s.TreeHeightCount,
 	)
 }
 

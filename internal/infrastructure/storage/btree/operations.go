@@ -154,6 +154,249 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 	return ErrCASConflict
 }
 
+// handleInternalSplit performs cascading internal node splits upward.
+// Called when a parent internal node becomes full after InsertChild from a child split.
+//
+// Algorithm (§10.5 iterative per-level CAS loop):
+//
+//	Loop from currentLevel upward:
+//	  1. Split current node (move-up semantics)
+//	  2. InsertChild into grandparent
+//	  3. Grandparent CAS
+//	  4. If CAS fails → cleanup → return ErrCASConflict
+//	  5. If grandparent is nil → handleRootInternalSplit
+//	  6. If grandparent not full → done
+//	  7. Move up one level, continue
+//
+// Cleanup strategy (§10.9): track allocated pages and retained refs,
+// cleanup on error via defer.
+func (b *BTree) handleInternalSplit(
+	currentRef *PageRef,
+	currentInfo *PageInfo,
+	path SearchPath,
+	currentLevel int,
+) (retErr error) {
+	// Cleanup tracking (§10.9)
+	var toFree []model.PageID
+	var toRelease []*PageRef
+
+	defer func() {
+		if retErr != nil {
+			for _, id := range toFree {
+				_ = b.storage.FreePage(id)
+			}
+			for _, ref := range toRelease {
+				ref.Release()
+			}
+		}
+	}()
+
+	for {
+		// Step 1: Split current internal node (move-up semantics)
+		currentNode, err := b.storage.GetNodePage(currentInfo.PageID)
+		if err != nil {
+			return fmt.Errorf("btree: handleInternalSplit get node: %w", err)
+		}
+		currentLeft, currentRight, splitKey, err := currentNode.Split()
+		if err != nil {
+			return fmt.Errorf("btree: handleInternalSplit split node: %w", err)
+		}
+		toFree = append(toFree, currentLeft.PageID(), currentRight.PageID())
+
+		// Step 2: Check if we reached root (no grandparent)
+		grandparentRef := currentRef.GetParentRef()
+		if grandparentRef == nil {
+			// Root internal split — currentRef IS the root
+			return b.handleRootInternalSplit(
+				currentRef, currentInfo,
+				currentLeft, currentRight, splitKey,
+				&toFree, &toRelease,
+			)
+		}
+
+		// Step 3: Get child index from path (§10.10 Option A: O(1) lookup)
+		// path[i].Index = child index chosen at level i
+		// currentRef is at path[currentLevel], so its index in grandparent is path[currentLevel-1].Index
+		if currentLevel < 1 {
+			// Shouldn't happen — level 0 is root, handled above
+			return fmt.Errorf("btree: handleInternalSplit: unexpected level %d with non-nil parent", currentLevel)
+		}
+		idx := path[currentLevel-1].Index
+
+		// Step 3a: Create PageRefs for split children
+		currentLeftRef := NewPageRef(currentLeft.PageID(), 0, grandparentRef, b.rootRef.freeFunc)
+		currentRightRef := NewPageRef(currentRight.PageID(), 0, grandparentRef, b.rootRef.freeFunc)
+		currentLeftRef.Retain()  // refCount: 0 → 1
+		currentRightRef.Retain() // refCount: 0 → 1
+		toRelease = append(toRelease, currentLeftRef, currentRightRef)
+
+		// ★ B18/B19 fix: Distribute old children cache to left/right
+		distributeChildrenAfterSplit(currentRef, currentLeftRef, currentRightRef, currentLeft)
+
+		// Step 4: Get grandparent info
+		grandparentInfo := grandparentRef.GetPageInfo()
+		if grandparentInfo == nil || grandparentInfo.Tombstone {
+			// Grandparent changed concurrently, signal retry
+			return ErrCASConflict
+		}
+
+		// Step 5: Grandparent InsertChild (COW)
+		oldGrandparent, err := b.storage.GetNodePage(grandparentInfo.PageID)
+		if err != nil {
+			return fmt.Errorf("btree: handleInternalSplit get grandparent: %w", err)
+		}
+
+		newGrandparent, err := oldGrandparent.InsertChild(idx, splitKey, currentLeft.PageID(), currentRight.PageID())
+		if err != nil {
+			return fmt.Errorf("btree: handleInternalSplit insert child: %w", err)
+		}
+		toFree = append(toFree, newGrandparent.PageID())
+
+		newGrandparentInfo := &PageInfo{
+			PageID:  newGrandparent.PageID(),
+			Version: grandparentInfo.Version + 1,
+		}
+
+		// Step 6: Grandparent CAS
+		if !grandparentRef.CAS(grandparentInfo, newGrandparentInfo) {
+			// CAS failed — cleanup and signal retry
+			// Remove from tracking since we're about to clean up
+			_ = b.storage.FreePage(newGrandparent.PageID())
+			// Remove last 3 entries from toFree (newGrandparent already freed, remove left/right)
+			toFree = toFree[:len(toFree)-3]
+			// Release retained refs
+			currentLeftRef.Release()
+			currentRightRef.Release()
+			// Remove last 2 entries from toRelease
+			toRelease = toRelease[:len(toRelease)-2]
+			return ErrCASConflict
+		}
+
+		// CAS succeeded — remove integrated entries from cleanup tracking
+		// left/right pages are now owned by grandparent's children
+		// newGrandparent page is now the live parent page
+		toFree = toFree[:len(toFree)-3]          // Remove leftID, rightID, newGrandparentID
+		toRelease = toRelease[:len(toRelease)-2] // Remove leftRef, rightRef
+
+		// Step 7: Redirect CAS on currentRef (best-effort, CAS-R1)
+		redirectInfo := &PageInfo{
+			PageID:    currentInfo.PageID,
+			Version:   currentInfo.Version + 1,
+			Tombstone: true,
+			Redirect:  true,
+			NewRef:    currentLeftRef,
+		}
+		_ = currentRef.CAS(currentInfo, redirectInfo) // best-effort, ignore result
+
+		// Step 8: Update grandparent children cache (B18/B19 pattern)
+		updateChildrenCache(grandparentRef, idx, currentLeftRef, currentRightRef, newGrandparent)
+
+		// Step 9: Update metrics
+		if b.metrics != nil {
+			b.metrics.IncrementSplit()
+		}
+
+		// Step 10: Check if grandparent is now full
+		if !newGrandparent.IsFull(0, 0) {
+			return nil // Done — no more cascading needed
+		}
+
+		// Step 11: Move up one level
+		currentRef = grandparentRef
+		currentInfo = newGrandparentInfo
+		currentLevel--
+		// Continue loop
+	}
+}
+
+// handleRootInternalSplit handles cascading split reaching the root
+// when the root is an internal node (not a leaf).
+// Creates a new root one level higher, promoting the splitKey.
+func (b *BTree) handleRootInternalSplit(
+	rootRef *PageRef,
+	rootInfo *PageInfo,
+	leftPage, rightPage NodePage,
+	splitKey []byte,
+	toFree *[]model.PageID,
+	toRelease *[]*PageRef,
+) error {
+	// Step 1: Create PageRefs for left/right children of new root
+	leftRef := NewPageRef(leftPage.PageID(), 0, &b.rootRef.PageRef, b.rootRef.freeFunc)
+	rightRef := NewPageRef(rightPage.PageID(), 0, &b.rootRef.PageRef, b.rootRef.freeFunc)
+	leftRef.Retain()  // refCount: 0 → 1
+	rightRef.Retain() // refCount: 0 → 1
+	*toRelease = append(*toRelease, leftRef, rightRef)
+
+	// ★ B18/B19 fix: Distribute old children cache to leftRef/rightRef
+	// Without this, GetOrCreateChildren creates brand new PageRef objects (version=0)
+	// that diverge from the original leaf PageRefs → data corruption.
+	distributeChildrenAfterSplit(rootRef, leftRef, rightRef, leftPage)
+
+	// Step 2: Create new root node page
+	newRootID, err := b.storage.AllocNodePage()
+	if err != nil {
+		return fmt.Errorf("btree: handleRootInternalSplit alloc root: %w", err)
+	}
+	*toFree = append(*toFree, newRootID)
+
+	newRootPage, err := b.storage.GetNodePage(newRootID)
+	if err != nil {
+		return fmt.Errorf("btree: handleRootInternalSplit get new root: %w", err)
+	}
+
+	// Insert left/right as children of new root
+	newRootPage, err = newRootPage.InsertChild(0, splitKey, leftPage.PageID(), rightPage.PageID())
+	if err != nil {
+		return fmt.Errorf("btree: handleRootInternalSplit insert child: %w", err)
+	}
+	*toFree = append(*toFree, newRootPage.PageID())
+
+	// Step 3: Prepare ReplaceRoot
+	newRootInfo := &PageInfo{
+		PageID:  newRootPage.PageID(),
+		Version: rootInfo.Version + 1,
+	}
+	newChildren := []*PageRef{leftRef, rightRef}
+
+	// Step 4: ReplaceRoot CAS (D14: SetParentRef before CAS)
+	if !b.rootRef.ReplaceRoot(rootInfo, newRootInfo, newChildren) {
+		// CAS failed — cleanup handled by defer in handleInternalSplit
+		// Explicitly free newRootPage since it has no PageRef managing it
+		return ErrCASConflict
+	}
+
+	// CAS succeeded — remove integrated entries from cleanup tracking
+	// Remove leftID, rightID, newRootID, newRootPageID from toFree
+	*toFree = (*toFree)[:len(*toFree)-4] // 2 from Split + 2 from root creation
+	*toRelease = (*toRelease)[:len(*toRelease)-2]
+
+	// Step 5: Set children cache (B20 fix: immediately after ReplaceRoot)
+	rootChildren := []*PageRef{leftRef, rightRef}
+	b.rootRef.children.Store(&rootChildren)
+
+	// Step 6: Redirect CAS on old root (best-effort)
+	redirectInfo := &PageInfo{
+		PageID:    rootInfo.PageID,
+		Version:   rootInfo.Version + 1,
+		Tombstone: true,
+		Redirect:  true,
+		NewRef:    leftRef,
+	}
+	_ = rootRef.CAS(rootInfo, redirectInfo) // best-effort
+
+	// Step 7: Update metrics
+	if b.metrics != nil {
+		b.metrics.IncrementSplit()
+		b.metrics.IncrementTreeHeight()
+	}
+
+	// Step 8: Cleanup orphan pages (COW-replaced originals)
+	// newRootID was COW-replaced by InsertChild → orphan
+	_ = b.storage.FreePage(newRootID)
+
+	return nil
+}
+
 // propagateUpward updates parent PageRefs along the search path after a leaf mutation.
 //
 // Walks from leaf's direct parent up to root, doing COW ReplaceChild + CAS at each level.
@@ -206,6 +449,104 @@ func propagateUpward(b *BTree, parentPath []PathEntry, newChildID model.PageID, 
 			childIdx = parentPath[i-1].Index
 		}
 	}
+}
+
+// distributeChildrenAfterSplit distributes the old node's children cache to the
+// split halves (leftRef and rightRef). This is the B18/B19 fix for internal node splits.
+//
+// Without this, GetOrCreateChildren creates brand new PageRef objects (version=0)
+// that diverge from the original leaf PageRefs → concurrent writes via different
+// PageRef objects cause data corruption.
+//
+// Split semantics: if old node had count entries and count+1 children,
+// with mid = count/2:
+//   - Left:  entries[0..mid),  children[0..mid+1]   → mid+1 children
+//   - Right: entries[mid+1..count), children[mid+1..count+1] → count-mid children
+//
+// Parameters:
+//   - oldRef:     the node that was split (has the old children cache)
+//   - leftRef:   the left half PageRef (receives first mid+1 children)
+//   - rightRef:  the right half PageRef (receives remaining children)
+//   - leftPage:  the left split page (used for child count)
+func distributeChildrenAfterSplit(oldRef, leftRef, rightRef *PageRef, leftPage NodePage) {
+	oldChildren := oldRef.children.Load()
+	if oldChildren == nil {
+		return // No children cache to distribute (shouldn't happen for internal nodes)
+	}
+
+	leftCount := leftPage.ChildCount() // mid+1 children
+	allChildren := *oldChildren
+
+	if leftCount <= len(allChildren) {
+		// Distribute children: first leftCount to leftRef, rest to rightRef
+		leftChildren := make([]*PageRef, leftCount)
+		copy(leftChildren, allChildren[:leftCount])
+		leftRef.children.Store(&leftChildren)
+
+		rightCount := len(allChildren) - leftCount
+		if rightCount > 0 {
+			rightChildren := make([]*PageRef, rightCount)
+			copy(rightChildren, allChildren[leftCount:])
+			rightRef.children.Store(&rightChildren)
+		}
+
+		// Update parentRef for all children to point to their new parent
+		for _, child := range allChildren[:leftCount] {
+			if child != nil {
+				child.SetParentRef(leftRef)
+			}
+		}
+		for _, child := range allChildren[leftCount:] {
+			if child != nil {
+				child.SetParentRef(rightRef)
+			}
+		}
+	}
+}
+
+// updateChildrenCache atomically replaces parent's children cache with a new array
+// that incorporates the two new child refs at the specified split index.
+// Reuses existing PageRef objects from old children (B19 fix).
+//
+// Parameters:
+//   - parentRef:    the parent whose children cache is being updated
+//   - splitIdx:     the index where oldChild was replaced by leftRef + rightRef
+//   - leftRef:      the left child PageRef (already Retained by caller)
+//   - rightRef:     the right child PageRef (already Retained by caller)
+//   - newNodePage:  the new parent NodePage (for fallback child ID lookup)
+func updateChildrenCache(
+	parentRef *PageRef,
+	splitIdx int,
+	leftRef, rightRef *PageRef,
+	newNodePage NodePage,
+) {
+	oldChildren := parentRef.children.Load()
+	newChildCount := newNodePage.ChildCount()
+	newChildren := make([]*PageRef, newChildCount)
+	for i := range newChildCount {
+		switch i {
+		case splitIdx:
+			newChildren[i] = leftRef
+		case splitIdx + 1:
+			newChildren[i] = rightRef
+		default:
+			// ★ B19 fix: Reuse existing PageRef from old children
+			srcIdx := i
+			if i > splitIdx+1 {
+				srcIdx = i - 1 // Skip replaced position
+			}
+			if oldChildren != nil && srcIdx < len(*oldChildren) && (*oldChildren)[srcIdx] != nil {
+				newChildren[i] = (*oldChildren)[srcIdx] // Reuse: same PageRef object, refCount unchanged
+			} else {
+				// Defense: old children nil or OOB — build from newNodePage data (shouldn't happen)
+				childID := newNodePage.GetChild(i)
+				ref := NewPageRef(childID, 0, parentRef, parentRef.freeFunc)
+				ref.Retain()
+				newChildren[i] = ref
+			}
+		}
+	}
+	parentRef.children.Store(&newChildren) // Atomic replacement
 }
 
 // handleLeafSplit handles leaf page split with CR-08 immediate insert.
@@ -336,47 +677,17 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	}
 
 	// Step 8: ★ B18+B19 fix — Direct children cache setting, reuse old child PageRefs
-	//
-	// B18 fix: GetOrCreateChildren creates new PageRef objects (refCount=0),
-	//   independent from leftRef/rightRef. InvalidateChildren + Release →
-	//   refCount→0 → freeFunc → page freed, but parent child pointer still
-	//   points to that PageID → UAF.
-	//
-	// B19 fix: Instead of creating new PageRef objects, directly reuse existing
-	//   PageRef objects from old children array. Prevents duplicate PageRef for
-	//   same pageID → refCount confusion → UAF.
-	oldChildren := parentRef.children.Load()
-	// ★ BUG FIX: ChildCount = Count + 1, and InsertChild adds 1 more child
-	// So new child count = (oldParent.Count() + 1) + 1 = oldParent.Count() + 2
-	newChildCount := oldParent.Count() + 2 // After InsertChild: entries+1, children+1
-	newChildren := make([]*PageRef, newChildCount)
-	for i := range newChildCount {
-		switch i {
-		case parentEntry.Index:
-			newChildren[i] = leftRef // Direct insert, no extra Retain needed
-		case parentEntry.Index + 1:
-			newChildren[i] = rightRef // Direct insert, no extra Retain needed
-		default:
-			// ★ B19 fix: Reuse existing PageRef from old children
-			srcIdx := i
-			if i > parentEntry.Index+1 {
-				srcIdx = i - 1 // Skip replaced position
-			}
-			if oldChildren != nil && srcIdx < len(*oldChildren) && (*oldChildren)[srcIdx] != nil {
-				newChildren[i] = (*oldChildren)[srcIdx] // Reuse: same PageRef object, refCount unchanged
-			} else {
-				// Defense: old children nil or OOB — build from newParent data (shouldn't happen)
-				childID := newParent.GetChild(i)
-				ref := NewPageRef(childID, 0, parentRef, parentRef.freeFunc)
-				ref.Retain()
-				newChildren[i] = ref
-			}
-		}
-	}
-	parentRef.children.Store(&newChildren) // Atomic replacement
+	updateChildrenCache(parentRef, parentEntry.Index, leftRef, rightRef, newParent)
 
-	// No ClearSplitMarker needed — Redirect+NewRef is managed by PageInfo lifecycle.
-	// NewRef (leftRef) lives as long as the old leaf's PageInfo; released when PageRef is recycled.
+	// ★ Cascading split: parent full after InsertChild → propagate upward
+	// path structure: path[0]=root, ..., path[len-2]=parent, path[len-1]=leaf
+	// parentRef is at path[len(path)-2], cascading starts from parent level.
+	if newParent.IsFull(0, 0) {
+		_ = b.handleInternalSplit(parentRef, newParentInfo, path, len(path)-2)
+		// Best-effort: don't propagate error — CR-08 data is already committed
+		// (Redirect CAS + children cache updated). Parent overflow is transient;
+		// next write to this subtree will trigger another split attempt.
+	}
 
 	// Step 9: Update metrics + size
 	b.size.Add(mutation.delta)

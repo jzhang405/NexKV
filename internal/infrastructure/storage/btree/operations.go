@@ -44,7 +44,11 @@ func (b *BTree) handleParentCASWithSpin(
 		oldParent, err := b.storage.GetNodePage(curInfo.PageID)
 		if err != nil {
 			parentRef.Release()
-			return nil, nil, err
+			// Retry if parent page type changed concurrently (common in splits)
+			if strings.Contains(err.Error(), "is not a node page") {
+				continue
+			}
+			return nil, nil, fmt.Errorf("btree: handleParentCASWithSpin get parent: %w", err)
 		}
 
 		newParent, err := oldParent.InsertChild(childIdx, splitKey, leftChildID, rightChildID)

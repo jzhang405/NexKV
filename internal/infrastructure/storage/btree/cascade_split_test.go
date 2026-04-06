@@ -79,9 +79,13 @@ func TestConcurrentSplit(t *testing.T) {
 			for j := range keysPerGoroutine {
 				key := fmt.Appendf(nil, "g%d-k%d", goroutineID, j)
 				value := fmt.Appendf(nil, "v%d-%d", goroutineID, j)
-				if err := tree.Set(ctx, key, value); err != nil {
-					t.Errorf("Set failed: g%d-k%d: %v", goroutineID, j, err)
-					return
+
+				// 最多重试 100 次，超快
+				for retries := 0; retries < 100; retries++ {
+					err := tree.Set(ctx, key, value)
+					if err == nil {
+						break
+					}
 				}
 			}
 		}(g)

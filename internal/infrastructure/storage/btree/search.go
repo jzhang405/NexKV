@@ -6,6 +6,7 @@ package btree
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
@@ -76,8 +77,15 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 			return path, nil
 		}
 
-		// Internal node: search for child index
-		node := &nodePageHandle{id: pInfo.PageID, pa: storage.pa, storage: storage}
+		// Internal node: search for child index (with type validation)
+		node, err := storage.GetNodePage(pInfo.PageID)
+		if err != nil {
+			path.ReleaseAll()
+			if strings.Contains(err.Error(), "is not a node page") {
+				return nil, ErrRetry
+			}
+			return nil, fmt.Errorf("btree: searchPath get node: %w", err)
+		}
 		idx, _ := node.Search(key)
 		// Note: idx may be corrected below if FollowSplit redirects us to right sibling
 

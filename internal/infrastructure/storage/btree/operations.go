@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strings"
 
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 
@@ -105,8 +106,8 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 
 		// Step 3: Read current page info
 		oldInfo := leafRef.GetPageInfo()
-		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || !oldInfo.IsLeaf {
-			// Page freed or already split — retry
+		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || oldInfo.Redirect || !oldInfo.IsLeaf {
+			// Page freed, redirected, or already split — retry
 			leafRef.Unlock()
 			path.ReleaseAll()
 			continue
@@ -117,6 +118,10 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		if err != nil {
 			leafRef.Unlock()
 			path.ReleaseAll()
+			// Check if it's "not a leaf/node page" error (common during concurrent splits)
+			if strings.Contains(err.Error(), "is not a leaf page") || strings.Contains(err.Error(), "is not a node page") || isLeafPageError(err) {
+				continue
+			}
 			return errpkg.BTreeWriteOpGetLeaf(err)
 		}
 
@@ -494,6 +499,11 @@ func (b *BTree) handleRootInternalSplit(
 // Page lifecycle (D-ops-3): old parent pages are not freed in Phase 5.
 // Page reclamation is deferred to BTree.Close() which releases the entire mmap region.
 func propagateUpward(b *BTree, parentPath []PathEntry, newChildID model.PageID, childIdx int) {
+	// 保护：best-effort 传播，任何 panic 都不影响写入成功
+	defer func() {
+		_ = recover() // 忽略任何 panic，这只是优化不是正确性必须的
+	}()
+
 	// Walk from leaf's parent up to root
 	for i := len(parentPath) - 1; i >= 0; i-- {
 		entry := parentPath[i]

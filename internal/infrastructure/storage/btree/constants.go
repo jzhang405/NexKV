@@ -34,7 +34,7 @@ const (
 	MergeThreshold = 0.5
 
 	// MaxCASRetries is the maximum number of CAS retry attempts in writeOperation.
-	MaxCASRetries = 100
+	MaxCASRetries = 1000
 
 	// SpinLockBackoffThreshold is the number of CAS spin attempts before yielding
 	// the CPU via runtime.Gosched(). Below this threshold, the lock spins on the

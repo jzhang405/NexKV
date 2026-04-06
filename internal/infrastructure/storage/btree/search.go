@@ -108,7 +108,6 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 				reIdx, _ := node.Search(key)
 				if reIdx < len(updatedChildren) && updatedChildren[reIdx] != nil {
 					childRef = updatedChildren[reIdx]
-					childRef.Retain()
 					actualIdx = reIdx
 				} else {
 					path.ReleaseAll()

@@ -33,6 +33,7 @@ func (b *BTree) handleParentCASWithSpin(
 	leftChildID, rightChildID model.PageID,
 	splitKey []byte,
 	childIdx int,
+	leftRef, rightRef *PageRef, // ★ Added for children cache update
 ) (*PageInfo, NodePage, error) {
 	for i := 0; i < MaxParentCASSpins; i++ {
 		curInfo := parentRef.GetPageInfo()
@@ -68,6 +69,11 @@ func (b *BTree) handleParentCASWithSpin(
 		parentRef.Release()
 
 		if success {
+			// ★ FIX: Update children cache immediately after CAS.
+			// handleParentCASWithSpin does InsertChild (n → n+1 children).
+			// Without this, concurrent searchPath reads stale children cache
+			// causing idx_out_of_bounds (idx=n but children cache only has n-1 entries).
+			updateChildrenCache(parentRef, childIdx, leftRef, rightRef, newParent)
 			return newInfo, newParent, nil
 		}
 		// CAS failed → continue loop
@@ -114,6 +120,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			// Page freed, redirected, or already split — retry
 			leafRef.Unlock()
 			path.ReleaseAll()
+			// GlobalTracer.LogOp("writeOp.leafSkip", "reason", "redirect_or_split", "pageID", leafRef.pageID, "attempt", attempt, "key", string(key))
 			continue
 		}
 
@@ -124,6 +131,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			path.ReleaseAll()
 			// Check if it's "not a leaf/node page" error (common during concurrent splits)
 			if strings.Contains(err.Error(), "is not a leaf page") || strings.Contains(err.Error(), "is not a node page") || isLeafPageError(err) {
+				// GlobalTracer.LogOp("writeOp.leafTypeRetry", "pageID", oldInfo.PageID, "attempt", attempt)
 				continue
 			}
 			return errpkg.BTreeWriteOpGetLeaf(err)
@@ -463,9 +471,8 @@ func (b *BTree) handleRootInternalSplit(
 	*toFree = (*toFree)[:len(*toFree)-4] // 2 from Split + 2 from root creation
 	*toRelease = (*toRelease)[:len(*toRelease)-2]
 
-	// Step 5: Set children cache (B20 fix: immediately after ReplaceRoot)
-	rootChildren := []*PageRef{leftRef, rightRef}
-	b.rootRef.children.Store(&rootChildren)
+	// Step 5: children cache already set atomically by ReplaceRoot (race condition fix)
+	// No separate children.Store needed — ReplaceRoot does it immediately after CAS
 
 	// Step 6: Redirect CAS on old root (best-effort)
 	redirectInfo := &PageInfo{
@@ -503,10 +510,6 @@ func (b *BTree) handleRootInternalSplit(
 // Page lifecycle (D-ops-3): old parent pages are not freed in Phase 5.
 // Page reclamation is deferred to BTree.Close() which releases the entire mmap region.
 func propagateUpward(b *BTree, parentPath []PathEntry, newChildID model.PageID, childIdx int) {
-	// 保护：best-effort 传播，任何 panic 都不影响写入成功
-	defer func() {
-		_ = recover() // 忽略任何 panic，这只是优化不是正确性必须的
-	}()
 
 	// Walk from leaf's parent up to root
 	for i := len(parentPath) - 1; i >= 0; i-- {
@@ -664,6 +667,7 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 
 	// Step 0: Acquire split latch — only one goroutine can split this leaf at a time
 	if !leafRef.TryAcquireSplitLatch() {
+		GlobalTracer.LogOp("handleLeafSplit.latchBusy", "pageID", leafRef.pageID)
 		return ErrCASConflict
 	}
 	defer leafRef.ReleaseSplitLatch()
@@ -677,6 +681,7 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	if err != nil {
 		return err
 	}
+	GlobalTracer.LogOp("handleLeafSplit.SplitStart", "pageID", leafInfo.PageID, "leftID", leftPage.PageID(), "rightID", rightPage.PageID(), "splitKey", string(splitKey))
 
 	// Step 2: CR-08 — determine target child and immediate insert
 	var target LeafPage
@@ -740,7 +745,7 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 
 	// Step 5: Parent CAS with spin-waiting
 	newParentInfo, newParent, err := b.handleParentCASWithSpin(parentRef,
-		leftChildID, rightChildID, splitKey, parentEntry.Index)
+		leftChildID, rightChildID, splitKey, parentEntry.Index, leftRef, rightRef)
 	if err != nil {
 		leftRef.Release()
 		rightRef.Release()
@@ -765,9 +770,6 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 		_ = b.storage.FreePage(newParent.PageID())
 		return ErrCASConflict
 	}
-
-	// Step 8: ★ B18+B19 fix — Direct children cache setting, reuse old child PageRefs
-	updateChildrenCache(parentRef, parentEntry.Index, leftRef, rightRef, newParent)
 
 	// ★ Cascading split: parent full after InsertChild → propagate upward
 	// path structure: path[0]=root, ..., path[len-2]=parent, path[len-1]=leaf
@@ -891,9 +893,8 @@ func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
 		return ErrCASConflict
 	}
 
-	// Step 8: Set children (B20 fix: children.Store before readers can observe new pInfo)
-	rootChildren := []*PageRef{leftRef, rightRef}
-	b.rootRef.children.Store(&rootChildren) // Atomic replacement (old children was nil)
+	// Step 8: children cache already set atomically by ReplaceRoot (race condition fix)
+	// No separate children.Store needed — ReplaceRoot does it immediately after CAS
 
 	// No SplitMarker needed for root split — ReplaceRoot CAS atomically replaces pInfo.
 	// No Redirect needed — old root leaf is replaced by new internal root in one CAS.

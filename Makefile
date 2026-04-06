@@ -1,7 +1,7 @@
 # NexKV Makefile
 # 提供 build、test、clean 等常用命令
 
-.PHONY: all build test test-unit test-intg test-e2e integration-test integration-test-race integration-test-coverage clean run fmt vet lint docker-build docker-run help version
+.PHONY: all build test test-unit test-intg test-e2e integration-test integration-test-race integration-test-coverage clean run fmt vet lint docker-build docker-run help version build-debug test-debug
 
 # 变量定义
 BINARY_NAME=nexkv
@@ -38,6 +38,13 @@ build:
 	$(GO) build $(GOFLAGS) -ldflags "$(NEXKV_LDFLAGS)" -o bin/$(BINARY_NAME) $(NEXKV_PATH)/main.go
 	$(GO) build $(GOFLAGS) -ldflags "$(NEXKVD_LDFLAGS)" -o bin/$(DAEMON_NAME) $(NEXKVD_PATH)/main.go
 
+## build-debug: 编译项目（启用 tracer 调试）
+build-debug:
+	@echo "编译 $(BINARY_NAME) 和 $(DAEMON_NAME)（启用 tracer）..."
+	@mkdir -p bin
+	$(GO) build $(GOFLAGS) -tags enable_tracer -ldflags "$(NEXKV_LDFLAGS)" -o bin/$(BINARY_NAME) $(NEXKV_PATH)/main.go
+	$(GO) build $(GOFLAGS) -tags enable_tracer -ldflags "$(NEXKVD_LDFLAGS)" -o bin/$(DAEMON_NAME) $(NEXKVD_PATH)/main.go
+
 
 ## test: 运行所有测试（单元测试 + 集成测试）
 test: test-unit integration-test-race
@@ -46,6 +53,11 @@ test: test-unit integration-test-race
 test-unit:
 	@echo "运行单元测试..."
 	$(GO) test -v -short -race -timeout 5m ./internal/...
+
+## test-debug: 运行测试（启用 tracer 调试）
+test-debug:
+	@echo "运行测试（启用 tracer）..."
+	$(GO) test -v -race -tags enable_tracer -timeout 10m ./internal/...
 
 ## test-e2e: 运行 E2E 测试框架测试
 # DDD 重构说明：E2E 测试待重新实现
@@ -187,6 +199,10 @@ help:
 	@echo "  make docker-run    - 运行 Docker 容器"
 	@echo "  make version       - 显示构建版本信息"
 	@echo "  make help          - 显示此帮助信息"
+	@echo ""
+	@echo "调试模式（启用 tracer）:"
+	@echo "  make build-debug   - 编译项目（启用 tracer 调试日志）"
+	@echo "  make test-debug    - 运行测试（启用 tracer 调试日志）"
 	@echo ""
 	@echo "版本信息覆盖:"
 	@echo "  make build VERSION=0.0.1  - 使用指定版本号构建"

@@ -37,6 +37,8 @@ func pinToCore(coreID int) error {
 // isAffinitySupported 检查平台是否支持 CPU 绑核
 // macOS 返回 false，因为不支持指定 CPU 核心
 // 但 pinToCore() 仍然会通过 LockOSThread 提供一定优化
+//
+//nolint:unused // U1000 - used in test files (affinity_test.go)
 func isAffinitySupported() bool {
 	return false // macOS 平台不支持指定 CPU 核心
 }

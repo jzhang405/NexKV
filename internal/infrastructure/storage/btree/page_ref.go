@@ -6,6 +6,8 @@ package btree
 
 import (
 	"fmt"
+	"log"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 
@@ -42,7 +44,7 @@ func NewPageRef(pageID model.PageID, version uint64, parentRef *PageRef, freeFun
 	r.pInfo.Store(&PageInfo{
 		PageID:    pageID,
 		Version:   version,
-		IsLeaf:    true,     // default: leaf; internal split handlers override
+		IsLeaf:    true, // default: leaf; internal split handlers override
 		NodeState: NodeNormal,
 	})
 	return r
@@ -58,13 +60,25 @@ func (r *PageRef) GetPageInfo() *PageInfo {
 // CAS atomically replaces PageInfo if current equals old.
 // Returns true if the swap succeeded.
 func (r *PageRef) CAS(old, newInfo *PageInfo) bool {
-	return r.pInfo.CompareAndSwap(old, newInfo)
+	success := r.pInfo.CompareAndSwap(old, newInfo)
+	if !success {
+		GlobalTracer.LogPageRefOp(r, "CAS.fail", map[string]interface{}{
+			"oldPageID":  old.PageID,
+			"newPageID":  newInfo.PageID,
+			"oldVersion": old.Version,
+			"newVersion": newInfo.Version,
+		})
+	}
+	return success
 }
 
 // Retain increments the reference count.
 // Called during searchPath for each PageRef on the traversal path.
 func (r *PageRef) Retain() {
-	r.refCount.Add(1)
+	old := r.refCount.Add(1)
+	if old < 0 {
+		panic(fmt.Sprintf("Retain on pageRef with negative refCount: %d, pageID=%d", old, r.pageID))
+	}
 }
 
 // Release decrements the reference count.
@@ -73,7 +87,26 @@ func (r *PageRef) Retain() {
 // from pInfo to avoid TOCTOU race with concurrent CAS (C1 fix).
 // Panics if called when refCount is already zero (use-after-free bug).
 func (r *PageRef) Release() {
-	if v := r.refCount.Add(-1); v < 0 {
+	defer func() {
+		if p := recover(); p != nil {
+			// 记录 debug 信息
+			debug.PrintStack()
+			log.Printf("PANIC in Release: pageID=%d, refCount=%d, pInfo=%v",
+				r.pageID, r.refCount.Load(), r.pInfo.Load())
+			panic(p) // 重新抛出
+		}
+	}()
+
+	old := r.refCount.Load()
+	if old <= 0 {
+		debug.PrintStack()
+		panic(fmt.Sprintf("Release() called on pageRef with refCount=%d, pageID=%d, pInfo=%v",
+			old, r.pageID, r.pInfo.Load()))
+	}
+
+	v := r.refCount.Add(-1)
+
+	if v < 0 {
 		panic("btree: Release() called on pageRef with zero refCount")
 	} else if v == 0 {
 		if r.freeFunc != nil && r.pageID != model.InvalidPageID {

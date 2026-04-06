@@ -1127,6 +1127,7 @@ func TestLibp2pRPC_NilConfig(t *testing.T) {
 
 	if rpc == nil {
 		t.Fatal("NewLibp2pRPC with nil config returned nil")
+		return //nolint:govet // unreachable, satisfies staticcheck SA5011
 	}
 
 	// 验证使用了默认配置

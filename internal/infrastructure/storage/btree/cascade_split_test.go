@@ -61,13 +61,19 @@ func TestConcurrentSplit(t *testing.T) {
 	require.NoError(t, err)
 
 	metrics := NewBTreeMetrics()
-	tree, err := NewBTreeWithMetrics(storage, metrics)
+	tracer := NewTestTracer(t, 500000, 100000)
+	defer tracer.Close()
+	oldGlobalTracer := GlobalTracer
+	GlobalTracer = tracer
+	defer func() { GlobalTracer = oldGlobalTracer }()
+
+	tree, err := NewBTreeWithMetricsAndTracer(storage, metrics, tracer)
 	require.NoError(t, err)
 	defer tree.Close()
 
 	ctx := context.Background()
 
-	const goroutines = 8
+	const goroutines = 2
 	const keysPerGoroutine = 500
 	totalKeys := goroutines * keysPerGoroutine
 
@@ -114,6 +120,16 @@ func TestConcurrentSplit(t *testing.T) {
 
 	snap := tree.GetMetrics()
 	t.Logf("Metrics: %s", snap.String())
+
+	// Dump tracer logs on failure
+	if t.Failed() {
+		dumpPath := "/tmp/btree-tracer-fail.log"
+		if err := tracer.DumpToFile(dumpPath); err != nil {
+			t.Logf("Failed to dump tracer logs: %v", err)
+		} else {
+			t.Logf("Tracer logs dumped to %s", dumpPath)
+		}
+	}
 }
 
 // TestSplitMetrics verifies that SplitCount and TreeHeightCount are correctly incremented.

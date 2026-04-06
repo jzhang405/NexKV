@@ -50,5 +50,14 @@ func (r *RootPageRef) ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren []*Pag
 		return false
 	}
 
+	// ★ Trace root replacement (AFTER CAS success)
+	GlobalTracer.LogOp("ReplaceRoot.success", "oldPageID", oldInfo.PageID, "newPageID", newInfo.PageID, "oldVersion", oldInfo.Version, "newIsLeaf", newInfo.IsLeaf)
+
+	// ★ CRITICAL FIX: Store children IMMEDIATELY after CAS succeeds.
+	// This eliminates the window where readers see IsLeaf=false but children=nil.
+	// Before this fix, children.Store was done separately by the caller,
+	// creating a race condition that caused 710K+ redirect loops.
+	r.children.Store(&newChildren)
+
 	return true
 }

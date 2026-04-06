@@ -25,6 +25,7 @@ type BTree struct {
 	size    atomic.Int64         // KV pair count
 	closed  atomic.Bool          // closed flag
 	metrics *BTreeMetrics        // performance counters (optional)
+	tracer  Tracer               // operation tracer for debugging (optional)
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -33,15 +34,26 @@ var _ service.KVStore = (*BTree)(nil)
 // NewBTree creates a new BTree backed by the given storage.
 // Initializes with a single empty leaf page as root.
 func NewBTree(storage *OffheapBTreeStorage) (*BTree, error) {
-	return NewBTreeWithMetrics(storage, nil)
+	return NewBTreeWithMetricsAndTracer(storage, nil, nil)
 }
 
 // NewBTreeWithMetrics creates a new BTree with optional metrics collection.
 // If metrics is nil, no metrics are collected.
 func NewBTreeWithMetrics(storage *OffheapBTreeStorage, metrics *BTreeMetrics) (*BTree, error) {
+	return NewBTreeWithMetricsAndTracer(storage, metrics, nil)
+}
+
+// NewBTreeWithMetricsAndTracer creates a new BTree with optional metrics and tracer.
+// If metrics is nil, no metrics are collected.
+// If tracer is nil, DefaultTracer is used.
+func NewBTreeWithMetricsAndTracer(storage *OffheapBTreeStorage, metrics *BTreeMetrics, tracer Tracer) (*BTree, error) {
 	pageID, err := storage.AllocLeafPage()
 	if err != nil {
 		return nil, errpkg.BTreeInitRootLeaf(err)
+	}
+
+	if tracer == nil {
+		tracer = DefaultTracer
 	}
 
 	// Phase 5: COW场景下页面由writeOperation显式管理
@@ -54,6 +66,7 @@ func NewBTreeWithMetrics(storage *OffheapBTreeStorage, metrics *BTreeMetrics) (*
 		rootRef: rootRef,
 		storage: storage,
 		metrics: metrics,
+		tracer:  tracer,
 	}, nil
 }
 

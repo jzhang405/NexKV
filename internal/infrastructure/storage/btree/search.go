@@ -82,6 +82,7 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 		if err != nil {
 			path.ReleaseAll()
 			if strings.Contains(err.Error(), "is not a node page") {
+				// GlobalTracer.LogOp("searchPath.ErrRetry", "reason=not_node_page", "pageID", pInfo.PageID, "key", string(key))
 				return nil, ErrRetry
 			}
 			return nil, fmt.Errorf("btree: searchPath get node: %w", err)
@@ -99,6 +100,7 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 		// ★ P1-1 fix: bounds check — idx could be out of range during concurrent split
 		if idx >= len(children) || children[idx] == nil {
 			path.ReleaseAll()
+			// GlobalTracer.LogOp("searchPath.ErrRetry", "reason=idx_out_of_bounds", "pageID", pInfo.PageID, "idx", idx, "childrenLen", len(children), "key", string(key))
 			return nil, ErrRetry // children list invalidated, retry from root
 		}
 
@@ -111,6 +113,7 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 		actualIdx := idx
 		if childInfo.Redirect {
 			// Page was split — re-navigate from parent's updated children
+			// GlobalTracer.LogOp("searchPath.Redirect", "pageID", childRef.pageID, "idx", idx, "key", string(key))
 			updatedChildren, _ := currentRef.GetOrCreateChildren(storage)
 			if updatedChildren != nil {
 				reIdx, _ := node.Search(key)

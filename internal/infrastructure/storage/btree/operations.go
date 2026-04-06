@@ -202,10 +202,17 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		// Step 8: Unlock leaf
 		leafRef.Unlock()
 
-		// Step 9: Propagate upward
-		if parentPath := path.ParentPath(); len(parentPath) > 0 {
-			propagateUpward(b, parentPath, result.newPageID, parentPath[len(parentPath)-1].Index)
-		}
+		// Step 9: Propagate upward — DISABLED.
+		// In a COW B+Tree where readers navigate via PageRef chains,
+		// propagateUpward causes more harm than benefit:
+		//   - Changes parent pInfo.PageID (COW) but doesn't update children cache
+		//   - CAS conflicts with concurrent splits
+		//   - Page allocator reuse causes TOCTOU when reading stale pInfo.PageID
+		// Readers always reach the correct leaf via PageRef.GetPageInfo(),
+		// regardless of parent node page content.
+		// if parentPath := path.ParentPath(); len(parentPath) > 0 {
+		// 	propagateUpward(b, parentPath, result.newPageID, parentPath[len(parentPath)-1].Index)
+		// }
 
 		// Step 10: Update size counter
 		b.size.Add(result.delta)
@@ -511,8 +518,10 @@ func (b *BTree) handleRootInternalSplit(
 // Page reclamation is deferred to BTree.Close() which releases the entire mmap region.
 func propagateUpward(b *BTree, parentPath []PathEntry, newChildID model.PageID, childIdx int) {
 
-	// Walk from leaf's parent up to root
-	for i := len(parentPath) - 1; i >= 0; i-- {
+	// Walk from leaf's parent up to (but NOT including) root.
+	// Root is managed exclusively by ReplaceRoot — propagating into root
+	// causes CAS conflicts with concurrent splits and can corrupt root pInfo.
+	for i := len(parentPath) - 1; i >= 1; i-- {
 		entry := parentPath[i]
 		parentRef := entry.Ref
 
@@ -553,7 +562,7 @@ func propagateUpward(b *BTree, parentPath []PathEntry, newChildID model.PageID, 
 
 		// Update tracking for next level up
 		newChildID = newNode.PageID()
-		if i > 0 {
+		if i > 1 {
 			childIdx = parentPath[i-1].Index
 		}
 	}

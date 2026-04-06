@@ -3,6 +3,7 @@
 > 创建时间：2026-04-04
 > 状态：设计中（Phase 6.0）
 > 配套：`2026-04-02-btree-refactor-interface.md` + `2026-04-02-btree-refactor-implement.md`
+> **⚠️ ChildrenCache 改造影响**：本节已标注 `ChildrenCache` 方案（内嵌 separator keys）的变更点。详见 `2026-04-06-children-cache-separators.md`。
 
 ## 1. 概述
 
@@ -324,22 +325,29 @@ leafRef.CAS(leafInfo, redirectInfo)
 childInfo := childRef.GetPageInfo()
 if childInfo.Tombstone && childInfo.Redirect && childInfo.NewRef != nil {
     // 页面已分裂，需要重新导航
-    // 策略：从父节点的已更新 children 缓存中重新查找
+    // 策略：从父节点的已更新 ChildrenCache 中重新查找
     childRef.Release()
-    updatedChildren, _ := currentRef.GetOrCreateChildren(storage)
-    reIdx, _ := node.Search(key)
-    if reIdx < len(updatedChildren) && updatedChildren[reIdx] != nil {
-        childRef = updatedChildren[reIdx]
-        childRef.Retain()
+    updatedCache := currentRef.children.Load()  // ★ ChildrenCache 改造：直接读原子指针
+    if updatedCache != nil {
+        reIdx := updatedCache.Search(key)  // ★ 用内嵌 separators 二分搜索，不读 NodePage
+        if reIdx < len(updatedCache.Children) && updatedCache.Children[reIdx] != nil {
+            childRef = updatedCache.Children[reIdx]
+            childRef.Retain()
+        }
     }
 }
 ```
 
 **为什么 NewRef 指向左子页面而非按 key 选择**：
 - 旧 SplitMarker 设计需要根据 key 与 splitKey 的比较来选择 Left/Right
-- 新设计中，Redirect 触发后 reader 从**父节点的已更新 children 缓存**中重新查找
-- 父节点 CAS 成功后 children 已更新（包含 leftRef 和 rightRef），reader 通过 `Search(key)` 找到正确的子页面
-- NewRef 作为 fallback：当父节点 children 尚未更新时的安全退路
+- 新设计中，Redirect 触发后 reader 从**父节点的已更新 ChildrenCache** 中重新查找
+- 父节点 CAS 成功后 ChildrenCache 已更新（包含 leftRef、rightRef 和 separator keys），reader 通过 `cache.Search(key)` 找到正确的子页面
+- NewRef 作为 fallback：当父节点 ChildrenCache 尚未更新时的安全退路
+
+**★ ChildrenCache 改造要点**：
+- `currentRef.children` 类型从 `atomic.Pointer[[]*PageRef]` 改为 `atomic.Pointer[ChildrenCache]`
+- 重新导航不再调用 `node.Search(key)`（读物理页），改用 `cache.Search(key)`（读内嵌 separators）
+- 优势：separators 与 children 在同一 ChildrenCache 对象中原子更新，不存在不一致
 
 ### 5.5 PageInfo 字段在各角色的语义
 
@@ -367,6 +375,8 @@ if childInfo.Tombstone && childInfo.Redirect && childInfo.NewRef != nil {
 
 **文件**: `internal/infrastructure/storage/btree/search.go:58-107`
 
+> **★ ChildrenCache 改造**：`searchPath` 的核心变化是 **不再调用 `storage.GetNodePage` 做导航**，改用 `ChildrenCache.Search(key)` 二分搜索内嵌的 separator keys。仅在 cache 未命中（首次访问）时读 NodePage 懒初始化。
+
 ```go
 func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) (SearchPath, error) {
     var path SearchPath
@@ -385,28 +395,24 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
             // Redirect+NewRef: Tombstone 和 Redirect 在同一次 CAS 中设置
             // 不存在旧 SplitMarker 的窗口期问题
             if pInfo.Redirect && pInfo.NewRef != nil {
-                // 从父节点的已更新 children 缓存中重新导航
+                // 从父节点的已更新 ChildrenCache 中重新导航
                 currentRef.Release()
-                // 需要从 path 中回溯到父节点，获取更新后的 children
                 if len(path) > 0 {
                     parentEntry := path[len(path)-1]
-                    parentInfo := parentEntry.Ref.GetPageInfo()
-                    if parentInfo != nil {
-                        updatedChildren, _ := parentEntry.Ref.GetOrCreateChildren(storage)
-                        node := &nodePageHandle{id: parentInfo.PageID, pa: storage.pa, storage: storage}
-                        reIdx, _ := node.Search(key)
-                        if reIdx < len(updatedChildren) && updatedChildren[reIdx] != nil {
-                            currentRef = updatedChildren[reIdx]
+                    // ★ ChildrenCache 改造：直接读原子指针，不调 GetNodePage
+                    updatedCache := parentEntry.Ref.children.Load()
+                    if updatedCache != nil {
+                        reIdx := updatedCache.Search(key)  // ★ 内嵌 separators 二分搜索
+                        if reIdx < len(updatedCache.Children) && updatedCache.Children[reIdx] != nil {
+                            currentRef = updatedCache.Children[reIdx]
                             currentRef.Retain()
                             continue
                         }
                     }
                 }
-                // 无父节点或导航失败，返回重试错误
                 path.ReleaseAll()
                 return nil, ErrRetry
             }
-            // Tombstone 但无 Redirect（不应发生，防御性处理）
             path.ReleaseAll()
             return nil, ErrRetry
         }
@@ -416,35 +422,39 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
             return path, nil
         }
 
-        // Internal node: search for child index
-        node := &nodePageHandle{id: pInfo.PageID, pa: storage.pa, storage: storage}
-        idx, _ := node.Search(key)
+        // ★ ChildrenCache 改造：Internal node 导航改用 cache.Search(key)
+        // 旧代码：node = GetNodePage(pInfo.PageID); idx = node.Search(key); children = GetOrCreateChildren()
+        // 新代码：cache = GetOrCreateChildren(); idx = cache.Search(key); childRef = cache.Children[idx]
+        cache, _ := currentRef.GetOrCreateChildren(storage)  // 返回 *ChildrenCache
+        if cache == nil {
+            path.ReleaseAll()
+            return nil, ErrRetry  // leaf 不应有 cache
+        }
+        idx := cache.Search(key)  // ★ 内嵌 separators 二分搜索，不读物理页
         path = append(path, PathEntry{Ref: currentRef, Index: idx})
 
-        // Get or lazily create child refs
-        children, _ := currentRef.GetOrCreateChildren(storage)
-
-        // ★ P1-1 修复：stale children 缓存越界保护
-        // Parent CAS 成功后、children 更新前，pInfo 可能已更新为
-        // 更多 children 的新 parent，但 children 数组仍是旧的（长度不足）。
-        // idx 基于新 pInfo 的 Search 结果，可能超出旧 children 长度。
-        if idx >= len(children) || children[idx] == nil {
+        // ★ P1-1 修复：stale cache 越界保护
+        if idx >= len(cache.Children) || cache.Children[idx] == nil {
             path.ReleaseAll()
             return nil, ErrRetry  // stale cache，重试即可
         }
-        childRef := children[idx]
+        childRef := cache.Children[idx]
 
         // ★ Redirect 检测：检查子页面是否已分裂
         childInfo := childRef.GetPageInfo()
         if childInfo != nil && childInfo.Tombstone && childInfo.Redirect && childInfo.NewRef != nil {
-            // 子页面已分裂，从当前节点（父节点）的更新后 children 重新导航
-            childRef.Release()  // 释放对旧子页面的引用
-            // 重新获取 children（可能已更新）
-            updatedChildren, _ := currentRef.GetOrCreateChildren(storage)
-            reIdx, _ := node.Search(key)
-            if reIdx < len(updatedChildren) && updatedChildren[reIdx] != nil {
-                childRef = updatedChildren[reIdx]
-                childRef.Retain()
+            childRef.Release()
+            // ★ ChildrenCache 改造：重新加载 parent cache，用内嵌 separators 重新搜索
+            updatedCache := currentRef.children.Load()
+            if updatedCache != nil {
+                reIdx := updatedCache.Search(key)  // ★ 不再调 node.Search
+                if reIdx < len(updatedCache.Children) && updatedCache.Children[reIdx] != nil {
+                    childRef = updatedCache.Children[reIdx]
+                    childRef.Retain()
+                } else {
+                    path.ReleaseAll()
+                    return nil, ErrRetry
+                }
             } else {
                 path.ReleaseAll()
                 return nil, ErrRetry
@@ -462,7 +472,8 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 - **Tombstone 检查必须在 IsLeaf 之前**（Bug B3）：Tombstoned 页面的 PageID 可能已变为内部节点类型，直接 IsLeaf 会判断错误
 - Reader 在遍历时**无需获取锁**
 - Redirect+NewRef 是原子生效的，**不存在旧 SplitMarker 的窗口期**（Tombstone 但无 marker 可跟）
-- 当检测到子页面 Redirect 时，从父节点的 children 缓存重新查找（Search key 得到正确的子页面索引）
+- **★ ChildrenCache 改造核心**：`searchPath` 在 cache 命中时不调用 `storage.GetNodePage`，separator keys 与 children 在同一 `ChildrenCache` 对象中，**消除不一致窗口**
+- 当检测到子页面 Redirect 时，从父节点的 ChildrenCache 重新查找（`cache.Search(key)` 得到正确的子页面索引）
 - Retain/Release 配对：所有路径上的 Ref 都正确管理引用计数
 
 ---
@@ -471,13 +482,17 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 
 **文件**: `internal/infrastructure/storage/btree/root_ref.go:29-45`
 
+> **★ ChildrenCache 改造**：`ReplaceRoot` 参数从 `newChildren []*PageRef` 改为 `newChildren *ChildrenCache`，内部遍历 `newChildren.Children` 设置 parentRef，`children.Store(newChildren)` 参数已是指针无需取地址。
+
 ```go
-func (r *RootPageRef) ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren []*PageRef) bool {
+func (r *RootPageRef) ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren *ChildrenCache) bool {
     // ★ D14 决策：CAS 之前设置 parentRef
     // 子节点尚未对读者可见（CAS 未执行），设置 parentRef 是安全的
-    for _, child := range newChildren {
-        if child != nil {
-            child.SetParentRef(&r.PageRef)
+    if newChildren != nil {
+        for _, child := range newChildren.Children {  // ★ 遍历 ChildrenCache.Children
+            if child != nil {
+                child.SetParentRef(&r.PageRef)
+            }
         }
     }
 
@@ -607,6 +622,9 @@ sequenceDiagram
         BTree->>LeafRef: CAS(oldInfo, {Tombstone: true, Redirect: true, NewRef: leftRef})
         Note over LeafRef: Tombstone+Redirect+NewRef 同一次 CAS<br/>Reader 检测到 Redirect 后重新导航
 
+        Note over BTree: 9a. ★ updateChildrenCache（构建 ChildrenCache 内嵌 separators）
+        Note over BTree: 从 CAS 后的 newNodePage 提取 separator keys（copy）<br/>构建 ChildrenCache{Children, Separators}<br/>children.Store(cache) 原子替换
+
         BTree->>LeafRef: Unlock()
         Note over BTree: size.Add(delta)
         BTree->>BTree: leftRef.Release()<br/>rightRef.Release()
@@ -660,14 +678,14 @@ sequenceDiagram
     BTree->>BTree: leftRef = NewPageRef(...)<br/>rightRef = NewPageRef(...)<br/>leftRef.Retain()<br/>rightRef.Retain()
 
     Note over BTree: 5. ReplaceRoot (D14: 先 SetParentRef 后 CAS)
-    BTree->>RootRef: ReplaceRoot(oldInfo, newInfo, [leftRef, rightRef])
-    Note over RootRef: 先设置 children.parentRef<br/>再 CAS publish
+    BTree->>RootRef: ReplaceRoot(oldInfo, newInfo, &ChildrenCache{Children: [leftRef, rightRef], Separators: [copyKey(splitKey)]})
+    Note over RootRef: 先设置 children.parentRef（遍历 cache.Children）<br/>再 CAS publish
 
     alt ReplaceRoot 成功
         RootRef-->>BTree: true
 
-        Note over BTree: 6. 设置 children 缓存（B20：先于一切可见性设置）
-        BTree->>RootRef: children.Store([leftRef, rightRef])
+        Note over BTree: 6. 设置 ChildrenCache（B20：先于一切可见性设置）
+        BTree->>RootRef: children.Store(&ChildrenCache{Children: [leftRef, rightRef], Separators: [copyKey(splitKey)]})
 
         Note over BTree: ★ B11 + Redirect+NewRef: Root Split 不需要 Redirect<br/>ReplaceRoot 已原子替换 pInfo<br/>rootRef 被复用为新 internal root<br/>无需 Tombstone/Redirect 语义
 
@@ -688,16 +706,18 @@ sequenceDiagram
 
 ### 8.4 并发 Reader 通过 Redirect 重新导航
 
+> **★ ChildrenCache 改造**：Reader 重新导航时不再调 `GetNodePage + node.Search(key)`，改用 `updatedCache.Search(key)` 在内嵌 separators 上二分搜索。
+
 ```mermaid
 sequenceDiagram
     participant Reader as Reader goroutine
     participant ParentRef as PageRef(Parent)
     participant ChildRef as PageRef(old child)
-    participant UpdatedChildren as 更新后 children 缓存
+    participant UpdatedCache as 更新后 ChildrenCache
     participant LeftRef as PageRef(left)
     participant RightRef as PageRef(right)
 
-    Note over Reader,RightRef: Writer 已完成 Parent CAS + Redirect CAS<br/>children 缓存已更新
+    Note over Reader,RightRef: Writer 已完成 Parent CAS + Redirect CAS<br/>ChildrenCache 已更新（含 separators）
 
     Reader->>ParentRef: GetOrCreateChildren(storage)[idx]
     ParentRef-->>Reader: childRef（旧子页面引用）
@@ -707,10 +727,10 @@ sequenceDiagram
 
     Reader->>ChildRef: Release()（释放旧子页面引用）
 
-    Reader->>ParentRef: GetOrCreateChildren(storage)（重新获取）
-    ParentRef-->>Reader: updatedChildren（包含 leftRef, rightRef）
+    Reader->>ParentRef: children.Load()（重新获取 ChildrenCache）
+    ParentRef-->>Reader: updatedCache（包含 Children: [leftRef, rightRef], Separators: [splitKey]）
 
-    Reader->>ParentRef: node.Search(key) → reIdx
+    Reader->>ParentRef: updatedCache.Search(key) → reIdx（★ 用内嵌 separators 二分搜索，不读 NodePage）
 
     alt key < splitKey → reIdx 指向 left
         Reader->>LeftRef: Retain()
@@ -765,7 +785,7 @@ sequenceDiagram
 
     Note over W2: W2 CAS 失败 → 完整重试
 
-    W1->>Parent: children.Store(newChildren1)（包含 left1Ref, right1Ref）
+    W1->>Parent: children.Store(&ChildrenCache{Children: newChildren1, Separators: newSeps1})（★ 含 separators）
     W1->>Child1: Redirect CAS(Tombstone+Redirect+NewRef)
     W1->>Child1: Unlock()
     W1->>Child1: Unlock()
@@ -786,10 +806,8 @@ sequenceDiagram
 - **Parent-Level 串行化**：Parent CAS 确保同一时刻只有一个 Split 成功
 - **失败方清理**：W2 CAS 失败后，释放所有新分配的页面（left2, right2, newParent2）
 - **无死锁**：不同 Writer 锁定不同的 Child，Parent CAS 决定胜负
-
----
-
-## 9. writeOperation 集成（CR-08 目标状态）
+- **★ ChildrenCache 原子更新**：children.Store 替换为 ChildrenCache（含 separators + children），读者通过 cache.Search(key) 导航，不依赖物理 NodePage
+- **★ 重试必须重新 searchPath**：W2 重试时必须重新执行 `searchPath` 获取最新的 parentInfo，基于新的 pInfo 重新 `cache.Search(key)` 计算正确的 idx。**不能直接使用 CAS 失败前缓存的旧 idx**，因为 parent 的 ChildrenCache 已被替换（插入了新的 left1Ref/right1Ref 和更新的 separators）
 
 **文件**: `internal/infrastructure/storage/btree/operations.go`
 
@@ -1001,38 +1019,43 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
     // 此 CAS 在 leafRef 持锁期间执行，且 pInfo 未被修改过 → 必然成功
     leafRef.CAS(leafInfo, redirectInfo)
 
-    // Step 9: ★ B18 修复 + ★ B19 修复 — 直接设置 parent 的 children 缓存，复用旧 children 中的 PageRef
+    // Step 9: ★ B18 修复 + ★ B19 修复 — 直接设置 parent 的 ChildrenCache（含 separators），复用旧 children 中的 PageRef
+    //
+    // ★ ChildrenCache 改造：构建 ChildrenCache{Children, Separators}，而非 []*PageRef
+    //   Separators 从 CAS 后的 newNodePage（= newParent）提取 separator keys（必须 copy，GetKey 返回 mmap slice）
+    //   同时按 B19 修复：复用旧 ChildrenCache.Children 中的 PageRef 对象
     //
     // B18 修复：GetOrCreateChildren 创建全新的 PageRef 对象（refCount=0），
     //   与 leftRef/rightRef 是独立对象。InvalidateChildren 后 Release leftRef/rightRef
     //   → refCount→0 → freeFunc → 物理页面被回收，但 parent 的 child pointer 仍指向该 PageID → UAF。
     //
     // B19 修复：不在 children.Store 前创建新的 PageRef 对象，
-    //   而是从旧 children 数组中直接复用现有 PageRef 对象。
-    //   避免同一 pageID 上创建两个独立 PageRef → 旧 children 被替换后 refCount 混淆 → UAF。
-    //   复用后，旧 children 数组的 PageRef 引用计数自然转移给 newChildren，
-    //   无需额外 Release，不会出现 pageID 被提前回收的问题。
+    //   而是从旧 ChildrenCache.Children 数组中直接复用现有 PageRef 对象。
+    //   避免同一 pageID 上创建两个独立 PageRef → 旧 cache 被替换后 refCount 混淆 → UAF。
     //
     // ★ Redirect+NewRef 优势：无需 ClearSplitMarker。NewRef 作为 PageInfo 字段随 CAS 生命周期管理，
     //   不存在独立的 Retain/Release 循环，简化引用计数管理。
-    oldChildren := parentRef.children.Load()  // ★ B19 修复：获取旧 children 以便复用
+
+    // --- 构建新的 Children 数组（B19 复用模式不变）---
+    oldCache := parentRef.children.Load()  // ★ B19 修复：获取旧 cache 以便复用其 Children
+    var oldChildren []*PageRef
+    if oldCache != nil {
+        oldChildren = oldCache.Children
+    }
     newChildCount := oldParent.Count() + 1   // InsertChild 后 count+1
     newChildren := make([]*PageRef, newChildCount)
     for i := 0; i < newChildCount; i++ {
         if i == parentEntry.Index {
-            newChildren[i] = leftRef   // ★ 直接放入，无需额外 Retain（handleLeafSplit 的 Retain 已在 Step 4）
+            newChildren[i] = leftRef   // ★ 直接放入，无需额外 Retain
         } else if i == parentEntry.Index+1 {
             newChildren[i] = rightRef  // ★ 同上
         } else {
-            // ★ B19 修复：直接从旧 children 数组中获取现有 PageRef，复用而非重建
-            // 原因：旧 children 中的 PageRef 已经过正确的 Retain/Release 生命周期管理，
-            // 创建新的 PageRef 对象反而会引入对同一 pageID 的重复引用，导致 refCount 混淆。
             srcIdx := i
             if i > parentEntry.Index+1 {
-                srcIdx = i - 1  // 跳过被替换的位置（leftRef/rightRef 占用两个槽位）
+                srcIdx = i - 1
             }
             if oldChildren != nil && srcIdx < len(oldChildren) && oldChildren[srcIdx] != nil {
-                newChildren[i] = oldChildren[srcIdx]  // 复用：同一 PageRef 对象，refCount 不变
+                newChildren[i] = oldChildren[srcIdx]  // ★ B19: 复用同一 PageRef 对象
             } else {
                 // 防御：旧 children 为 nil 或越界时，从 newParent 页面数据构建（理论上不会发生）
                 childID := newParent.GetChildID(i)
@@ -1042,7 +1065,20 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
             }
         }
     }
-    parentRef.children.Store(newChildren)  // 原子替换
+
+    // --- ★ ChildrenCache 改造：从 CAS 后的 newParent 提取 separator keys（copy）---
+    newSeparators := make([][]byte, newChildCount-1)  // len(Separators) == len(Children) - 1
+    for i := 0; i < newChildCount-1; i++ {
+        keyOff, keyLen := newParent.GetKeyOffset(i)  // 从 COW 后的 newParent 提取
+        rawKey := newParent.pa.GetKey(uint32(newParent.PageID()), keyOff, keyLen)
+        newSeparators[i] = copyKey(rawKey)  // ★ 必须拷贝（GetKey 返回 mmap slice）
+    }
+
+    newCache := &ChildrenCache{
+        Children:   newChildren,
+        Separators: newSeparators,
+    }
+    parentRef.children.Store(newCache)  // ★ 原子替换（类型从 []*PageRef 变为 *ChildrenCache）
 
     // ★ Redirect+NewRef：无需 ClearSplitMarker
     // 旧设计中 ClearSplitMarker 释放 SplitMarker 的 Retain（refCount -1），
@@ -1069,7 +1105,7 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 3. **Review B7**（§9.3 Step 6）：CAS 失败路径移除显式 `FreePage(leftPage.PageID())` / `FreePage(rightPage.PageID())`，仅依赖 `Release()` → `freeFunc` 自动回收，避免 double-free。
 4. **★ Redirect+NewRef**（§9.3 Step 7）：`Tombstone + Redirect + NewRef` 在**同一次 CAS** 中原子设置，彻底消除了旧 SplitMarker 设计中 `SetSplitMarker` 和 `Tombstone CAS` 之间的窗口期（Bug B2）。无需独立的 SetSplitMarker / ClearSplitMarker 操作。
 5. **孤儿页面回收**（§9.3 Step 3 后）：double-COW 替换的原始 split 页面显式 `FreePage(orphanPageID)`。
-6. **★ Review B18**（§9.3 Step 9）：直接构建 children 数组并 `children.Store`，而非 `InvalidateChildren + GetOrCreateChildren` 重建。`GetOrCreateChildren` 创建独立 PageRef 对象（refCount=0），与 leftRef/rightRef 的引用计数互不关联。修复后 leftRef/rightRef 被 children 持有（refCount≥1）。不再在 handleLeafSplit 中释放 leftRef/rightRef，生命周期由 parent.children 管理。
+6. **★ Review B18 + ChildrenCache**（§9.3 Step 9）：直接构建 `ChildrenCache{Children, Separators}` 并 `children.Store`，而非 `InvalidateChildren + GetOrCreateChildren` 重建。`GetOrCreateChildren` 创建独立 PageRef 对象（refCount=0），与 leftRef/rightRef 的引用计数互不关联。修复后 leftRef/rightRef 被 cache.Children 持有（refCount≥1），Separators 从 CAS 后的 newParent 提取（copy）。不再在 handleLeafSplit 中释放 leftRef/rightRef，生命周期由 parent.children（`*ChildrenCache`）管理。
 
 ### 9.4 handleRootSplit 伪代码（Root Leaf 分裂）
 
@@ -1136,7 +1172,11 @@ func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
         PageID:  newRootPage.PageID(),
         Version: rootInfo.Version + 1,
     }
-    newChildren := []*PageRef{leftRef, rightRef}
+    // ★ ChildrenCache 改造：ReplaceRoot 参数从 []*PageRef 改为 *ChildrenCache
+    newChildren := &ChildrenCache{
+        Children:   []*PageRef{leftRef, rightRef},
+        Separators: [][]byte{copyKey(splitKey)},  // ★ 1 个 separator（2 个 children - 1）
+    }
 
     if !b.rootRef.ReplaceRoot(rootInfo, newRootInfo, newChildren) {
         // CAS 失败 → cleanup
@@ -1164,8 +1204,10 @@ func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
     //   这与 handleLeafSplit 不同：handleLeafSplit 中旧 leafRef 需要设置 Redirect
     //   让 reader 知道它已分裂；但 handleRootSplit 中 rootRef 被复用为新的 internal root，
     //   不需要 Tombstone/Redirect 语义。
-    rootChildren := []*PageRef{leftRef, rightRef}
-    b.rootRef.children.Store(rootChildren)  // 原子替换（旧 children 为 nil）
+    //
+    // ★ ChildrenCache 改造：Store 的是 *ChildrenCache，而非 []*PageRef
+    //   newChildren 已在 Step 7 构建（含 Separators）
+    b.rootRef.children.Store(newChildren)  // ★ 参数已是指针，Store(newChildren) 而非 Store(&newChildren)
 
     // Step 9: Update metrics + size
     b.size.Add(mutation.delta)
@@ -1175,10 +1217,10 @@ func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
     }
 
     // Step 10: Cleanup orphan pages
-    // ★ 引用计数追踪（Redirect+NewRef 设计）：
-    //   leftRef:  Retain(Step6)=1 → 被 rootChildren[0] 持有 → refCount=1，安全
-    //   rightRef: Retain(Step6)=1 → 被 rootChildren[1] 持有 → refCount=1，安全
-    //   注意：不再 Release leftRef/rightRef！生命周期由 rootRef.children 管理。
+    // ★ 引用计数追踪（Redirect+NewRef + ChildrenCache 设计）：
+    //   leftRef:  Retain(Step6)=1 → 被 newChildren.Children[0] 持有 → refCount=1，安全
+    //   rightRef: Retain(Step6)=1 → 被 newChildren.Children[1] 持有 → refCount=1，安全
+    //   注意：不再 Release leftRef/rightRef！生命周期由 rootRef.children（*ChildrenCache）管理。
     //   无需 ClearSplitMarker（无 SplitMarker）。
     _ = b.storage.FreePage(orphanPageID)    // double-COW 替换的原始 split 页面
     _ = b.storage.FreePage(newRootID)       // InsertChild COW 替换的空白 NodePage
@@ -1191,8 +1233,9 @@ func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
 1. **无 Parent CAS**：通过 `ReplaceRoot` 原子替换根节点
 2. **树高度增加**：新根是内部节点，原根叶子分裂为两个子节点
 3. **无需 Redirect/Tombstone**：rootRef 被 ReplaceRoot CAS 原子替换为新 internal root，不需要像 handleLeafSplit 那样在旧 leafRef 上设置 Redirect（B11 修复）
-4. **D14 决策**：`ReplaceRoot` 内部先 `SetParentRef` 再 CAS，消除 parentRef==nil 窗口
-5. **★ B18 + B20 修复**：children.Store 紧接在 ReplaceRoot CAS 之后（消除懒初始化 UAF）；leftRef/rightRef 生命周期由 rootRef.children 管理，不释放
+4. **D14 决策**：`ReplaceRoot` 内部先 `SetParentRef`（遍历 `newChildren.Children`）再 CAS，消除 parentRef==nil 窗口
+5. **★ B18 + B20 修复**：children.Store 紧接在 ReplaceRoot CAS 之后（消除懒初始化 UAF）；leftRef/rightRef 生命周期由 rootRef.children（`*ChildrenCache`）管理，不释放
+6. **★ ChildrenCache 改造**：`ReplaceRoot` 参数从 `[]*PageRef` 改为 `*ChildrenCache`；`children.Store` 存储含 separators 的 ChildrenCache，searchPath 用 `cache.Search(key)` 导航
 
 ---
 
@@ -1336,10 +1379,11 @@ handleInternalSplit (iterative, per-level CAS):
          // 无需重试，继续执行
 
     7. // ★ RC-I1: 所有权转移 — currentLeftRef/currentRightRef 的生命周期现由
-       //   grandparentRef.children 缓存管理。后续 loop iteration 或失败 cleanup
+       //   grandparentRef.children（*ChildrenCache）管理。后续 loop iteration 或失败 cleanup
        //   不需要 Release 这些 refs。它们将在 parent children 被替换或 tree Close 时释放。
-       //   更新 grandparent children 缓存（B18/B19 修复模式）
-       //   重用旧 children 中的 PageRef，插入 currentLeftRef/currentRightRef
+       //   ★ ChildrenCache 改造：更新 grandparent children 缓存（B18/B19 修复模式 + separators）
+       //   重用旧 ChildrenCache.Children 中的 PageRef，插入 currentLeftRef/currentRightRef
+       //   同时从 CAS 后的 newGrandparent 提取 separator keys（copy）构建新 ChildrenCache
 
     8. // ★ P3 fix: 检查 newGrandparent 是否也满（在 CAS 成功后、继续向上之前）
        if !newGrandparent.IsFull(keyLen, valueLen):
@@ -1368,8 +1412,8 @@ handleRootInternalSplit:
   1. rootInternal.Split() → left, right, splitKey (move-up)
   2. Create new root node (更高一层)
   3. newRoot.InsertChild(0, splitKey, left, right)
-  4. ReplaceRoot CAS（原子替换 pInfo）
-  5. children.Store([leftRef, rightRef])
+  4. ReplaceRoot CAS（原子替换 pInfo）★ 参数为 *ChildrenCache{Children:[leftRef,rightRef], Separators:[copyKey(splitKey)]}
+  5. children.Store 已在 ReplaceRoot 后执行（★ 与 handleRootSplit 一致）
   6. 树高度 +1
 ```
 
@@ -1398,20 +1442,26 @@ currentRef.CAS(currentInfo, redirectInfo)
 
 ### 10.8 propagateUpward 变更说明
 
-**现状**: `propagateUpward` (operations.go:168) 是 best-effort 模式，遇到 Tombstone 就停止传播。
+> **★ propagateUpward 已禁用**：`propagateUpward` 在 ChildrenCache 改造后确认禁用。原因：propagateUpward 改 parent pInfo 后，ChildrenCache 中的 separators 与新物理页不一致，会引入新的导航错误。如果未来恢复，**必须同时更新 parent 的 ChildrenCache（含 separator keys）**，否则引入新的不一致。详见 `2026-04-06-children-cache-separators.md` Step 4。
+
+**现状**: `propagateUpward` (operations.go:168) 已被注释禁用（best-effort 模式，遇到 Tombstone 就停止传播）。
 
 **变更**: 实现 cascading split 后，`propagateUpward` 将被 `handleInternalSplit` 替代：
 
-- **非满路径**: `writeOperation` 的 leaf CAS 成功后，如果 parent 不满，调用 `propagateUpward`（不变）
+> **★ propagateUpward 已禁用**（ChildrenCache 改造后）：`propagateUpward` 在当前代码中已被注释禁用。原因：它改 parent pInfo 后不更新 ChildrenCache 中的 separators，导致 readers 用 stale separators 导航。如果未来恢复 propagateUpward，**必须同时更新 parent 的 ChildrenCache（含 separator keys）**。详见 `2026-04-06-children-cache-separators.md` Step 4。
+
+- **非满路径**: `writeOperation` 的 leaf CAS 成功后，如果 parent 不满，~~调用 `propagateUpward`~~（当前已禁用）
 - **满路径**: 如果 `InsertChild` 后发现 parent 满，改用 `handleInternalSplit`（新路径）
 - **触发点**: `writeOperation` 的 `propagateUpward` 调用处需增加 IsFull 检查：
   ```go
   // 替换 operations.go:142-144
+  // ★ 注意：当前 propagateUpward 已禁用，以下代码为未来恢复时的目标状态
   if parentPath := path.ParentPath(); len(parentPath) > 0 {
       if newParent.IsFull(0, 0) {
           // Parent full → cascading split
           b.handleInternalSplit(parentRef, newParentInfo, ...)
       } else {
+          // ★ 恢复 propagateUpward 时必须同时更新 parent 的 ChildrenCache（含 separators）
           propagateUpward(b, parentPath, result.newPageID, parentPath[len(parentPath)-1].Index)
       }
   }
@@ -1485,12 +1535,12 @@ func (b *BTree) handleInternalSplit(path SearchPath, startLevel int, ...) error 
 ```
 优势：O(1) 查找，无额外开销。
 
-**方案 B — 从 children cache 线性搜索（fallback）**：
+**方案 B — 从 ChildrenCache 线性搜索（fallback）**：
 ```go
 func findChildIndex(parent *PageRef, child *PageRef) (int, error) {
-    children := parent.children.Load()
-    if children != nil {
-        for i, c := range *children {
+    cache := parent.children.Load()  // ★ *ChildrenCache
+    if cache != nil {
+        for i, c := range cache.Children {  // ★ 遍历 ChildrenCache.Children
             if c == child {
                 return i, nil
             }
@@ -1553,9 +1603,11 @@ handleLeafSplit:
 - 如果 Parent CAS 失败，这些页面变成**孤儿页面**（无法被访问）
 - 必须清理并重试整个操作，否则内存泄漏
 
-### 11.2 普通更新传播 — Best-Effort
+### 11.2 普通更新传播 — Best-Effort（★ 当前已禁用）
 
-**触发条件**：Leaf CAS 成功后
+> **★ propagateUpward 已禁用**：ChildrenCache 改造后，propagateUpward 改 parent pInfo 会导致 ChildrenCache 中的 separators 与新物理页不一致。如果未来恢复，必须同时更新 parent 的 ChildrenCache（含 separator keys）。
+
+**触发条件**：Leaf CAS 成功后（当前代码中此路径已被注释禁用）
 
 ```
 propagateUpward:
@@ -1614,12 +1666,13 @@ Parent CAS 成功（★ B18+B19+Redirect+NewRef 修正后）:
   Redirect CAS（原子 Tombstone+Redirect+NewRef）
     → leftRef 作为 NewRef 存入 PageInfo，无独立 Retain
 
-  ★ B19: 从旧 children 复用 PageRef，构建 newChildren
-  oldChildren := parentRef.children.Load()
-  newChildren[i] = leftRef           // leftRef 被 newChildren 持有
-  newChildren[i+1] = rightRef       // rightRef 被 newChildren 持有
-  newChildren[其他位置] = oldChildren[相应位置]  // ★ B19: 复用现有 PageRef，不创建新对象
-  parentRef.children.Store(newChildren)
+  ★ B19: 从旧 ChildrenCache.Children 复用 PageRef，构建新的 ChildrenCache
+  oldCache := parentRef.children.Load()
+  newChildren.Children[i] = leftRef           // leftRef 被 newChildren.Children 持有
+  newChildren.Children[i+1] = rightRef       // rightRef 被 newChildren.Children 持有
+  newChildren.Children[其他位置] = oldCache.Children[相应位置]  // ★ B19: 复用现有 PageRef，不创建新对象
+  newChildren.Separators = [从 newNodePage 提取并 copy]  // ★ ChildrenCache 改造：含 separators
+  parentRef.children.Store(newCache)           // ★ 存储 *ChildrenCache
     → leftRef 被 newChildren 持有，refCount 不变
     → rightRef 同理
 
@@ -1639,13 +1692,13 @@ Parent CAS 成功（★ B18+B19+Redirect+NewRef 修正后）:
   //   结果：childRef[j] 的 refCount 不变，无泄漏，无 UAF ✅
 
 后续:
-  searchPath 遍历到 leftRef（通过 parentRef.children[i]）→ Retain → refCount=2
+  searchPath 遍历到 leftRef（通过 cache.Children[i]）→ Retain → refCount=2
   离开路径 → Release → refCount=1
   ...
 
 最终（parent 被 split 或 tree 关闭时）:
-  parentRef.children 被重建或 InvalidateChildren 替换
-    → 对旧 children 中的每个 childRef 调用 Release
+  parentRef.children（*ChildrenCache）被重建或替换
+    → 对旧 cache.Children 中的每个 childRef 调用 Release
     → leftRef.Release()  → refCount=0 → freeFunc(mutation.newPageID)    // 释放 COW 后的页面 ✅
     → rightRef.Release() → refCount=0 → freeFunc(rightPage.PageID())    // 释放原始 split 页面 ✅
 ```
@@ -1658,9 +1711,10 @@ Parent CAS 成功（★ B18+B19+Redirect+NewRef 修正后）:
 4. **ReplaceRoot 先 SetParentRef 后 CAS**（D14 决策）：消除并发读者 parentRef==nil 窗口
 5. **★ Review B6**：PageRef 绑定 double-COW 后的实际 PageID，而非原始 split 页面 ID
 6. **★ Review B7**：被 PageRef 管理的页面仅通过 Release() 回收，不做显式 FreePage（避免 double-free）
-7. **★ Review B18**：Split 后 leftRef/rightRef 的生命周期由 parent.children 管理，不在 handleLeafSplit/handleRootSplit 中释放
-8. **★ Review B19**：构建 newChildren 时，复用旧 children 中的 PageRef 对象，而非创建新对象。避免对同一 pageID 创建两个独立 PageRef 导致 refCount 混淆和 UAF
+7. **★ Review B18**：Split 后 leftRef/rightRef 的生命周期由 parent.children（`*ChildrenCache`）管理，不在 handleLeafSplit/handleRootSplit 中释放
+8. **★ Review B19**：构建 newChildren 时，复用旧 ChildrenCache.Children 中的 PageRef 对象，而非创建新对象。避免对同一 pageID 创建两个独立 PageRef 导致 refCount 混淆和 UAF
 9. **★ Review B20**：handleRootSplit 中 children.Store 必须紧接在 ReplaceRoot CAS 之后执行，消除懒初始化窗口期
+10. **★ ChildrenCache 原子性**：children 和 separators 在同一 `*ChildrenCache` 对象中原子更新（`children.Store`），读者不会看到 children 与 separators 不一致的状态
 
 ---
 
@@ -1710,16 +1764,18 @@ parentInfo == nil（Step 4）:
 | Leaf Split | `leaf_page.go:192-235` | ✅ | ✅ | 底层页面操作 |
 | Node Split | `node_page.go:158-205` | ✅ | ✅ | 底层页面操作 |
 | InsertChild (中间/末尾) | `node_page.go:111-152` | ✅ | ✅ | 底层页面操作 |
+| **★ ChildrenCache 结构体** | **新建** `children_cache.go` | ✅ | ❌ | `ChildrenCache{Children, Separators, Search(key)}` + `copyKey()`；详见 `2026-04-06-children-cache-separators.md` Step 1 |
 | Redirect+NewRef (PageInfo 字段) | `page_info.go` §5 | ✅ | ❌ | 需添加 Redirect bool + NewRef *PageRef 字段 |
 | PageInfo.Tombstone 字段 | `page_info.go` | ✅ | ❌ | 需添加 Tombstone bool 字段 |
-| searchPath Tombstone+Redirect 检查 | `search.go` §6 | ✅ | ❌ | Bug B3 修复：需在 IsLeaf 前检查 Tombstone，Redirect 后从 children 重新导航 |
-| searchPath children 越界保护 | `search.go` §6 | ✅ | ❌ | ★ P1-1：idx >= len(children) → ErrRetry |
-| ReplaceRoot (D14 修复) | `root_ref.go:29-45` | ✅ | ✅ | |
+| **★ PageRef.children 类型** | `page_ref.go` §6 | ✅ | ❌ | `atomic.Pointer[[]*PageRef]` → `atomic.Pointer[ChildrenCache]`；`GetOrCreateChildren` 返回 `*ChildrenCache`，懒初始化时提取 separator keys（copy） |
+| searchPath Tombstone+Redirect 检查 | `search.go` §6 | ✅ | ❌ | ★ Bug B3 + ChildrenCache：cache 命中时不读 NodePage，用 `cache.Search(key)` 导航 |
+| searchPath children 越界保护 | `search.go` §6 | ✅ | ❌ | ★ P1-1：idx >= len(cache.Children) → ErrRetry |
+| **★ ReplaceRoot 签名变更** | `root_ref.go:29-45` | ✅ | ❌ | `newChildren []*PageRef` → `newChildren *ChildrenCache`；SetParentRef 遍历 `newChildren.Children` |
 | writeOperation IsFull 检查 | `operations.go` §9.2 | ✅ | ❌ | 需在 mutate 前添加 IsFull 分支 |
-| handleLeafSplit (CR-08) | `operations.go` §9.3 | ✅ | ❌ | Bug B1/B6/B7/B18/B19 修复 + Redirect CAS(原子 Tombstone+Redirect+NewRef) + children 复用 |
-| handleRootSplit (CR-08) | `operations.go` §9.4 | ✅ | ❌ | Bug B10/B11/B18/B20 修复 + children.Store 紧接 ReplaceRoot CAS |
-| propagateUpward Tombstone 检查 | `operations.go` §10.2 | ✅ | ❌ | Bug B4 修复：需添加 Tombstone 检查 |
-| Cascading Split (内部节点分裂) | §10 | ✅ | ❌ | 设计完成，代码待实现（P1 优先级） |
+| handleLeafSplit (CR-08) | `operations.go` §9.3 | ✅ | ❌ | ★ Bug B1/B6/B7/B18/B19 修复 + Redirect CAS + **构建 ChildrenCache（含 separators）** |
+| handleRootSplit (CR-08) | `operations.go` §9.4 | ✅ | ❌ | ★ Bug B10/B11/B18/B20 + **ReplaceRoot 传 `&ChildrenCache{Children, Separators}`** + `children.Store(cache)` |
+| propagateUpward | `operations.go` §10.2 | ✅ | ❌ | ★ **已禁用**：ChildrenCache 改造后 propagateUpward 改 parent pInfo 导致 separators 不一致。未来恢复需同时更新 ChildrenCache |
+| Cascading Split (内部节点分裂) | §10 | ✅ | ❌ | 设计完成，代码待实现（P1 优先级）；**distributeChildrenAfterSplit 需分配 separators** |
 
 ---
 
@@ -1768,8 +1824,8 @@ parentInfo == nil（Step 4）:
 ---
 
 **文档创建**: 2026-04-04
-**最后更新**: 2026-04-05
-**状态**: v2.0 — 重构为 Redirect+NewRef（消除 SplitMarker 窗口期）+ 新增 §10 内部节点分裂设计
+**最后更新**: 2026-04-06
+**状态**: v3.0 — ★ ChildrenCache 改造标注：`children` 字段从 `[]*PageRef` 改为 `*ChildrenCache{Children, Separators}`，searchPath 用 `cache.Search(key)` 导航，ReplaceRoot 签名变更，propagateUpward 禁用。详见 `2026-04-06-children-cache-separators.md`
 
 ---
 

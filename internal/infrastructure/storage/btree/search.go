@@ -6,8 +6,6 @@ package btree
 
 import (
 	"fmt"
-
-	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
 // PathEntry records one node on the search path from root to leaf.
@@ -54,12 +52,10 @@ func (p SearchPath) ParentPath() []PathEntry {
 // Every PageRef on the returned path has been Retained; caller must ReleaseAll.
 // Handles concurrent splits via SplitMarker following (D5 decision).
 //
-// Navigates using ChildrenCache.Search(key) — no physical NodePage reads needed.
-// This eliminates the inconsistency window where pInfo changes after CAS
-// but the physical page doesn't match the children cache.
-//
-//nolint:unused // Phase 5 BTree core will call this
-func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) (SearchPath, error) {
+// ★ Uses GetChildren() — never creates new PageRef objects.
+// All children caches are pre-populated by split/ReplaceRoot operations.
+// If cache is nil for a non-leaf node, returns ErrRetry (cache not yet ready).
+func searchPath(rootRef *RootPageRef, key []byte) (SearchPath, error) {
 	var path SearchPath
 
 	currentRef := &rootRef.PageRef
@@ -76,34 +72,38 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 		// Uses PageInfo.IsLeaf (set at PageRef creation/CAS) to avoid TOCTOU race
 		// with page allocator reuse.
 		if pInfo.IsLeaf {
+			// ★ FIX: Leaf with Redirect means this leaf was split but searchPath
+			// didn't catch it at the parent level (e.g., root leaf split).
+			// Return ErrRetry to force re-traversal from root.
+			if pInfo.Redirect {
+				path.ReleaseAll()
+				return nil, ErrRetry
+			}
 			path = append(path, PathEntry{Ref: currentRef, Index: -1})
 			return path, nil
 		}
 
-		// Internal node: navigate using children cache (no physical page read).
-		// Cache contains separator keys, so we can binary search without GetNodePage.
-		cache, err := currentRef.GetOrCreateChildren(storage)
-		if err != nil {
-			path.ReleaseAll()
-			return nil, fmt.Errorf("btree: searchPath: %w", err)
-		}
+		// Internal node: navigate using children cache.
+		// ★ GetChildren() only reads existing cache — never creates new PageRef objects.
+		// Cache is always pre-populated by split/ReplaceRoot operations.
+		cache := currentRef.GetChildren()
 		if cache == nil {
-			// Cache nil but IsLeaf=false — concurrent state change, retry
+			// Cache not yet ready — another goroutine is mid-split.
+			// Retry from root to get a consistent view.
 			path.ReleaseAll()
 			return nil, ErrRetry
 		}
 
 		idx := cache.Search(key)
-		// Note: idx may be corrected below if FollowSplit redirects us to right sibling
 
 		// ★ P1-1 fix: bounds check — idx could be out of range during concurrent split
 		if idx >= len(cache.Children) || cache.Children[idx] == nil {
 			path.ReleaseAll()
-			// GlobalTracer.LogOp("searchPath.ErrRetry", "reason=idx_out_of_bounds", "pageID", pInfo.PageID, "idx", idx, "childrenLen", len(cache.Children), "key", string(key))
 			return nil, ErrRetry // children list invalidated, retry from root
 		}
 
 		childRef := cache.Children[idx]
+		childRef.Retain() // ★ Retain immediately — prevents concurrent freeFunc recycling
 
 		// Redirect following: if child has Redirect in PageInfo,
 		// re-navigate via the parent's updated children cache.
@@ -111,9 +111,9 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 		childInfo := childRef.GetPageInfo()
 		actualIdx := idx
 		if childInfo.Redirect {
-			// Page was split — re-navigate from parent's updated children
-			// GlobalTracer.LogOp("searchPath.Redirect", "pageID", childRef.pageID, "idx", idx, "key", string(key))
-			updatedCache, _ := currentRef.GetOrCreateChildren(storage)
+			// Page was split — release stale childRef and re-navigate.
+			childRef.Release()
+			updatedCache := currentRef.GetChildren()
 			if updatedCache != nil {
 				reIdx := updatedCache.Search(key)
 				if reIdx < len(updatedCache.Children) && updatedCache.Children[reIdx] != nil {
@@ -128,48 +128,9 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 				path.ReleaseAll()
 				return nil, ErrRetry
 			}
-		} else {
-			childRef.Retain()
 		}
 
 		path = append(path, PathEntry{Ref: currentRef, Index: actualIdx})
 		currentRef = childRef
-	}
-}
-
-// --- Legacy path resolution (pre-Phase 5, used by tests) ---
-
-// ResolvedPath records the navigation path from a root page to a leaf page.
-// Uses raw PageID traversal without reference counting.
-// Prefer SearchPath for production use.
-type ResolvedPath struct {
-	PageIDs []model.PageID // page IDs traversed from root to leaf
-	Indices []int          // child index chosen at each level (-1 for leaf)
-	LeafID  model.PageID   // the final leaf page ID
-}
-
-// resolvePath navigates from rootID down to the leaf page that would contain key.
-// Uses direct pageID traversal without reference counting.
-// Retained for backward compatibility with existing tests.
-func resolvePath(storage *OffheapBTreeStorage, rootID model.PageID, key []byte) (*ResolvedPath, error) {
-	path := &ResolvedPath{}
-	currentPageID := rootID
-
-	for {
-		rawID := uint32(currentPageID)
-		if storage.pa.IsLeaf(rawID) {
-			path.LeafID = currentPageID
-			path.PageIDs = append(path.PageIDs, currentPageID)
-			path.Indices = append(path.Indices, -1)
-			return path, nil
-		}
-
-		node := &nodePageHandle{id: currentPageID, pa: storage.pa, storage: storage}
-		idx, _ := node.Search(key)
-		path.PageIDs = append(path.PageIDs, currentPageID)
-		path.Indices = append(path.Indices, idx)
-
-		childID := node.GetChild(idx)
-		currentPageID = childID
 	}
 }

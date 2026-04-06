@@ -143,6 +143,7 @@ var (
 	ErrPipelineShutdownTimeout = stderrors.New("pipeline: graceful shutdown timeout")
 	// BTree 核心错误（新版)
 	ErrBTreeCASConflict    = stderrors.New("btree: cas conflict after max retries")
+	ErrBTreeRetry          = stderrors.New("btree: retry operation")
 	ErrBTreePageFreed      = stderrors.New("btree: page already freed")
 	ErrBTreeKeyNotFound    = stderrors.New("btree: key not found")
 	ErrBTreeClosed         = stderrors.New("btree: tree closed")

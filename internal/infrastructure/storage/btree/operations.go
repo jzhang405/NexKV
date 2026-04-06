@@ -30,12 +30,13 @@ type mutateFunc func(leaf LeafPage) (*leafMutation, error)
 // Each spin iteration re-reads the parent, re-InsertsChild, and re-generates newPageInfo.
 func (b *BTree) handleParentCASWithSpin(
 	parentRef *PageRef,
+	oldChildID model.PageID,
 	leftChildID, rightChildID model.PageID,
 	splitKey []byte,
 	childIdx int,
-	leftRef, rightRef *PageRef, // ★ Added for children cache update
+	leftRef, rightRef *PageRef,
 ) (*PageInfo, NodePage, error) {
-	for i := 0; i < MaxParentCASSpins; i++ {
+	for range MaxParentCASSpins {
 		curInfo := parentRef.GetPageInfo()
 		if curInfo == nil || curInfo.Redirect {
 			return nil, nil, ErrCASConflict
@@ -52,7 +53,21 @@ func (b *BTree) handleParentCASWithSpin(
 			return nil, nil, fmt.Errorf("btree: handleParentCASWithSpin get parent: %w", err)
 		}
 
-		newParent, err := oldParent.InsertChild(childIdx, splitKey, leftChildID, rightChildID)
+		// ★ FIX: Re-derive childIdx from parent page — the original childIdx
+		// from searchPath may be stale due to concurrent splits on the same parent.
+		actualIdx := childIdx
+		for ci := range oldParent.ChildCount() {
+			if oldParent.GetChild(ci) == oldChildID {
+				actualIdx = ci
+				break
+			}
+		}
+		if actualIdx >= oldParent.ChildCount() {
+			parentRef.Release()
+			return nil, nil, ErrCASConflict // oldChildID not found — parent changed drastically
+		}
+
+		newParent, err := oldParent.InsertChild(actualIdx, splitKey, leftChildID, rightChildID)
 		if err != nil {
 			parentRef.Release()
 			return nil, nil, err
@@ -73,7 +88,7 @@ func (b *BTree) handleParentCASWithSpin(
 			// handleParentCASWithSpin does InsertChild (n → n+1 children).
 			// Without this, concurrent searchPath reads stale children cache
 			// causing idx_out_of_bounds (idx=n but children cache only has n-1 entries).
-			updateChildrenCache(parentRef, childIdx, leftRef, rightRef, newParent)
+			updateChildrenCache(parentRef, oldChildID, leftRef, rightRef, splitKey)
 			return newInfo, newParent, nil
 		}
 		// CAS failed → continue loop
@@ -99,10 +114,13 @@ func (b *BTree) handleParentCASWithSpin(
 // On CAS conflict: free the new page, release path, retry from step 1.
 // After MaxCASRetries failures, returns ErrCASConflict.
 func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
-	for range MaxCASRetries {
+	var searchRetryCount, leafSkipCount, leafTypeRetryCount, isFullCount, casRetryCount int
+	var attempt int
+	for attempt = range MaxCASRetries {
 		// Step 1: Search path to leaf
-		path, err := searchPath(b.storage, b.rootRef, key)
+		path, err := searchPath(b.rootRef, key)
 		if err != nil {
+			searchRetryCount++
 			if errors.Is(err, ErrRetry) {
 				continue // Tombstone window, retry from root
 			}
@@ -118,38 +136,49 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		oldInfo := leafRef.GetPageInfo()
 		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || oldInfo.Redirect || !oldInfo.IsLeaf {
 			// Page freed, redirected, or already split — retry
+			leafSkipCount++
 			leafRef.Unlock()
 			path.ReleaseAll()
-			// GlobalTracer.LogOp("writeOp.leafSkip", "reason", "redirect_or_split", "pageID", leafRef.pageID, "attempt", attempt, "key", string(key))
 			continue
 		}
 
 		// Step 4: Get current leaf page handle
 		oldLeaf, err := b.storage.GetLeafPage(oldInfo.PageID)
 		if err != nil {
+			leafTypeRetryCount++
 			leafRef.Unlock()
 			path.ReleaseAll()
 			// Check if it's "not a leaf/node page" error (common during concurrent splits)
 			if strings.Contains(err.Error(), "is not a leaf page") || strings.Contains(err.Error(), "is not a node page") || isLeafPageError(err) {
-				// GlobalTracer.LogOp("writeOp.leafTypeRetry", "pageID", oldInfo.PageID, "attempt", attempt)
 				continue
 			}
 			return errpkg.BTreeWriteOpGetLeaf(err)
 		}
 
-		// Step 5: CR-08 — IsFull check BEFORE mutate
-		// Extract key/value from mutate closure for IsFull check
-		// Since mutate is a closure, we check by trying Insert
-		isFull := oldLeaf.IsFull(len(key), 0)
-		if isFull { // Approximate check; precise check needs value
+		// Step 5: Re-check redirect AFTER lock + page read.
+		// Between Step 3's GetPageInfo and now, another goroutine may have completed
+		// a split on this leaf (CAS'd Redirect=true). If we proceed with IsFull → split,
+		// we'll CAS-conflict and waste retries. Detect early and retry searchPath.
+		curInfo := leafRef.GetPageInfo()
+		if curInfo == nil || curInfo.Redirect || curInfo.NodeState == NodeRedirect {
 			leafRef.Unlock()
-			// ★ BUG FIX: Don't ReleaseAll() here — handleLeafSplit/handleRootSplit need the path.
-			// The path will be released by the split handlers or after they return.
+			path.ReleaseAll()
+			continue // Re-navigate from root via updated parent cache
+		}
+
+		isFull := oldLeaf.IsFull(len(key), 0)
+		if isFull {
+			isFullCount++ // Approximate check; precise check needs value
+			// ★ BUG FIX: Keep leaf lock held during entire split flow.
+			// Releasing lock before Redirect CAS creates a TOCTOU window where
+			// concurrent writers CAS old pInfo -> insert into stale leaf -> data loss.
+			// Lock order: Lock -> IsFull -> Split -> CAS Redirect -> Unlock.
 
 			// ★ CR-08: Root Split detection — path length < 2 means root is leaf
 			if len(path) < 2 {
 				splitErr := b.handleRootSplit(leafRef, oldInfo, path, key, mutate)
-				path.ReleaseAll() // Release after split handling
+				leafRef.Unlock()
+				path.ReleaseAll()
 				if splitErr == nil {
 					return nil // Split + Insert completed atomically
 				}
@@ -160,7 +189,8 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			}
 
 			splitErr := b.handleLeafSplit(leafRef, oldInfo, path, key, mutate)
-			path.ReleaseAll() // Release after split handling
+			leafRef.Unlock()
+			path.ReleaseAll()
 			if splitErr == nil {
 				return nil // ★ CR-08: Strong consistency — Split + Insert in one shot
 			}
@@ -203,16 +233,6 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		leafRef.Unlock()
 
 		// Step 9: Propagate upward — DISABLED.
-		// In a COW B+Tree where readers navigate via PageRef chains,
-		// propagateUpward causes more harm than benefit:
-		//   - Changes parent pInfo.PageID (COW) but doesn't update children cache
-		//   - CAS conflicts with concurrent splits
-		//   - Page allocator reuse causes TOCTOU when reading stale pInfo.PageID
-		// Readers always reach the correct leaf via PageRef.GetPageInfo(),
-		// regardless of parent node page content.
-		// if parentPath := path.ParentPath(); len(parentPath) > 0 {
-		// 	propagateUpward(b, parentPath, result.newPageID, parentPath[len(parentPath)-1].Index)
-		// }
 
 		// Step 10: Update size counter
 		b.size.Add(result.delta)
@@ -222,6 +242,9 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		return nil
 	}
 
+	GlobalTracer.LogOp("writeOp.EXHAUSTED", "key", string(key), "attempt", attempt,
+		"searchRetry", searchRetryCount, "leafSkip", leafSkipCount,
+		"leafTypeRetry", leafTypeRetryCount, "isFull", isFullCount, "casRetry", casRetryCount)
 	return ErrCASConflict
 }
 
@@ -382,7 +405,7 @@ func (b *BTree) handleInternalSplit(
 		_ = currentRef.CAS(currentInfo, redirectInfo) // best-effort, ignore result
 
 		// Step 8: Update grandparent children cache (B18/B19 pattern)
-		updateChildrenCache(grandparentRef, idx, currentLeftRef, currentRightRef, newGrandparent)
+		updateChildrenCache(grandparentRef, currentRef.pageID, currentLeftRef, currentRightRef, splitKey)
 
 		// Step 9: Update metrics
 		if b.metrics != nil {
@@ -534,12 +557,14 @@ func distributeChildrenAfterSplit(oldRef, leftRef, rightRef *PageRef, leftPage N
 	leftCount := leftPage.ChildCount() // mid+1 children
 	allChildren := oldCache.Children
 
-	if leftCount <= len(allChildren) {
+	if leftCount > 0 && leftCount <= len(allChildren) {
 		// Distribute children: first leftCount to leftRef, rest to rightRef
 		leftChildren := make([]*PageRef, leftCount)
 		copy(leftChildren, allChildren[:leftCount])
 		leftSeps := make([][]byte, leftCount-1)
-		copy(leftSeps, oldCache.Separators[:leftCount-1])
+		for i := range leftSeps {
+			leftSeps[i] = copyKey(oldCache.Separators[i])
+		}
 		leftRef.children.Store(&ChildrenCache{
 			Children:   leftChildren,
 			Separators: leftSeps,
@@ -551,7 +576,9 @@ func distributeChildrenAfterSplit(oldRef, leftRef, rightRef *PageRef, leftPage N
 			copy(rightChildren, allChildren[leftCount:])
 			// Skip separator at index leftCount-1 (the split key moved to parent)
 			rightSeps := make([][]byte, rightCount-1)
-			copy(rightSeps, oldCache.Separators[leftCount:])
+			for i := range rightSeps {
+				rightSeps[i] = copyKey(oldCache.Separators[leftCount+i])
+			}
 			rightRef.children.Store(&ChildrenCache{
 				Children:   rightChildren,
 				Separators: rightSeps,
@@ -572,58 +599,85 @@ func distributeChildrenAfterSplit(oldRef, leftRef, rightRef *PageRef, leftPage N
 	}
 }
 
-// updateChildrenCache atomically replaces parent's children cache with a new array
-// that incorporates the two new child refs at the specified split index.
-// Reuses existing PageRef objects from old children (B19 fix).
+// updateChildrenCache atomically replaces oldChildID in parent's children cache
+// with [leftRef, rightRef] and inserts splitKey as separator, using CAS loop
+// for lock-free concurrency safety.
+//
+// ★ Immutable replacement: creates entirely new ChildrenCache on every attempt.
+// The old cache is never modified — readers holding stale references continue
+// to see consistent (though possibly outdated) data.
+//
+// ★ CAS loop guarantees linearizability: if two goroutines split different
+// children of the same parent concurrently, each retry sees the latest cache
+// including the other's update, so no updates are lost.
 //
 // Parameters:
-//   - parentRef:    the parent whose children cache is being updated
-//   - splitIdx:     the index where oldChild was replaced by leftRef + rightRef
-//   - leftRef:      the left child PageRef (already Retained by caller)
-//   - rightRef:     the right child PageRef (already Retained by caller)
-//   - newNodePage:  the new parent NodePage (for fallback child ID lookup)
+//   - parentRef:   the parent whose children cache is being updated
+//   - oldChildID:  the pageID of the child that was split
+//   - leftRef:     the left child PageRef (already Retained by caller)
+//   - rightRef:    the right child PageRef (already Retained by caller)
+//   - splitKey:    the separator key between leftRef and rightRef
 func updateChildrenCache(
 	parentRef *PageRef,
-	splitIdx int,
+	oldChildID model.PageID,
 	leftRef, rightRef *PageRef,
-	newNodePage NodePage,
+	splitKey []byte,
 ) {
-	oldCache := parentRef.children.Load()
-	newChildCount := newNodePage.ChildCount()
-	newChildren := make([]*PageRef, newChildCount)
-	for i := range newChildCount {
-		switch i {
-		case splitIdx:
-			newChildren[i] = leftRef
-		case splitIdx + 1:
-			newChildren[i] = rightRef
-		default:
-			// ★ B19 fix: Reuse existing PageRef from old children
-			srcIdx := i
-			if i > splitIdx+1 {
-				srcIdx = i - 1 // Skip replaced position
-			}
-			if oldCache != nil && srcIdx < len(oldCache.Children) && oldCache.Children[srcIdx] != nil {
-				newChildren[i] = oldCache.Children[srcIdx] // Reuse: same PageRef object, refCount unchanged
-			} else {
-				// Defense: old children nil or OOB — build from newNodePage data (shouldn't happen)
-				childID := newNodePage.GetChild(i)
-				ref := NewPageRef(childID, 0, parentRef, parentRef.freeFunc)
-				ref.Retain()
-				newChildren[i] = ref
+	for {
+		curCache := parentRef.children.Load()
+		if curCache == nil {
+			// No cache — shouldn't happen for internal nodes after ReplaceRoot
+			return
+		}
+
+		// Find oldChildID in current cache by page ID
+		idx := -1
+		for i, child := range curCache.Children {
+			if child != nil && child.pageID == oldChildID {
+				idx = i
+				break
 			}
 		}
+
+		if idx == -1 {
+			// oldChildID not in cache — already replaced by a concurrent updateChildrenCache.
+			// Check if our refs are already there.
+			for _, child := range curCache.Children {
+				if child != nil && child.pageID == leftRef.pageID {
+					GlobalTracer.LogOp("updateChildrenCache.alreadyPresent", "oldChildID", oldChildID, "leftRefID", leftRef.pageID)
+					return
+				}
+			}
+			GlobalTracer.LogOp("updateChildrenCache.NOT_FOUND", "oldChildID", oldChildID, "cacheChildren", len(curCache.Children), "leftRefID", leftRef.pageID)
+			return
+		}
+
+		GlobalTracer.LogOp("updateChildrenCache.cas", "oldChildID", oldChildID, "idx", idx, "splitKey", string(splitKey), "leftRefID", leftRef.pageID, "rightRefID", rightRef.pageID, "cacheChildren", len(curCache.Children))
+
+		// Build entirely new cache (immutable — no mutation of curCache)
+		newChildren := make([]*PageRef, len(curCache.Children)+1)
+		copy(newChildren[:idx], curCache.Children[:idx])
+		newChildren[idx] = leftRef
+		newChildren[idx+1] = rightRef
+		copy(newChildren[idx+2:], curCache.Children[idx+1:])
+
+		newSeps := make([][]byte, len(curCache.Separators)+1)
+		copy(newSeps[:idx], curCache.Separators[:idx])
+		newSeps[idx] = copyKey(splitKey)
+		copy(newSeps[idx+1:], curCache.Separators[idx:])
+
+		newCache := &ChildrenCache{
+			Children:   newChildren,
+			Separators: newSeps,
+		}
+
+		// CAS: only succeeds if no other goroutine modified the cache since our Load()
+		if parentRef.children.CompareAndSwap(curCache, newCache) {
+			return // success
+		}
+		// CAS failed — another goroutine updated the cache. Retry with latest state.
+		GlobalTracer.LogOp("updateChildrenCache.casRetry", "oldChildID", oldChildID)
 	}
-	// Extract separator keys from the new parent page
-	keyCount := newNodePage.Count()
-	separators := make([][]byte, keyCount)
-	for i := range keyCount {
-		separators[i] = copyKey(newNodePage.GetKey(i))
-	}
-	parentRef.children.Store(&ChildrenCache{
-		Children:   newChildren,
-		Separators: separators,
-	})
 }
 
 // handleLeafSplit handles leaf page split with CR-08 immediate insert.
@@ -714,6 +768,7 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 
 	// Step 5: Parent CAS with spin-waiting
 	newParentInfo, newParent, err := b.handleParentCASWithSpin(parentRef,
+		leafRef.pageID, // oldChildID: use PageRef's immutable pageID (stable across COW mutations)
 		leftChildID, rightChildID, splitKey, parentEntry.Index, leftRef, rightRef)
 	if err != nil {
 		leftRef.Release()
@@ -733,9 +788,12 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 		NewRef:    leftRef,
 	}
 	if !leafRef.CAS(leafInfo, redirectInfo) {
-		// CAS failed: concurrent modification — release resources and retry
-		leftRef.Release()
-		rightRef.Release()
+		// CAS failed on leaf — another goroutine set a newer pInfo on leafRef.
+		// The split data (left/right pages) is already committed in parent's children
+		// cache via handleParentCASWithSpin.
+		// ★ FIX: Do NOT Release leftRef/rightRef! Their refCount=1 is owned by
+		// parent.children[splitIdx/splitIdx+1]. Releasing would drop refCount to 0,
+		// triggering freeFunc → page recycled → data loss for all subsequent operations.
 		_ = b.storage.FreePage(newParent.PageID())
 		return ErrCASConflict
 	}
@@ -767,8 +825,8 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 //
 // ★ CR-08 double-COW: target child mutated immediately after split.
 // Bug fixes: B10/B11/B18/B20
-func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
-	path SearchPath, key []byte, mutate mutateFunc) error {
+func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
+	_ SearchPath, key []byte, mutate mutateFunc) error {
 
 	// Step 1: Split root leaf → left + right + splitKey
 	rootLeaf, err := b.storage.GetLeafPage(rootInfo.PageID)

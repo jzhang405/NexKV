@@ -87,7 +87,7 @@ func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
 	}
 
 	// Search path to leaf (retains all PageRefs)
-	path, err := searchPath(b.storage, b.rootRef, key)
+	path, err := searchPath(b.rootRef, key)
 	if err != nil {
 		return nil, err
 	}

@@ -24,7 +24,7 @@ type PageRef struct {
 	pageID     model.PageID                  // bound at creation, immutable — used by Release
 	pInfo      atomic.Pointer[PageInfo]      // atomically replaced page info
 	parentRef  atomic.Pointer[PageRef]       // parent reference; nil for root (managed by RootPageRef)
-	children   atomic.Pointer[ChildrenCache] // lazy-loaded child refs with embedded separator keys
+	children   atomic.Pointer[ChildrenCache] // lazy-loaded child refs with embedded separator keys; updated via CAS
 	refCount   atomic.Int32                  // reference count; zero triggers freeFunc
 	freeFunc   func(model.PageID)            // bound at creation; called when refCount reaches 0
 	lock       SchedulerLock                 // leaf-level spin lock
@@ -142,6 +142,22 @@ func (r *PageRef) SetParentRef(parent *PageRef) {
 	r.parentRef.Store(parent)
 }
 
+// GetChildren returns the existing ChildrenCache for this PageRef.
+// Returns nil if no cache has been set (leaf pages, or internal node
+// whose cache hasn't been populated by split/ReplaceRoot yet).
+//
+// ★ DOES NOT create new PageRef objects. The only valid sources of
+// children cache are: ReplaceRoot, updateChildrenCache, and
+// distributeChildrenAfterSplit. These operations reuse existing
+// PageRef objects, preserving redirect state and version info.
+//
+// Previously, GetOrCreateChildren would create brand-new PageRef objects
+// (version=0, no redirect info) when the cache was nil. This caused
+// searchPath to navigate via stale PageRefs → data loss.
+func (r *PageRef) GetChildren() *ChildrenCache {
+	return r.children.Load()
+}
+
 // GetOrCreateChildren returns the ChildrenCache for this node.
 // For leaf pages, returns (nil, nil).
 // For internal nodes, lazily constructs ChildrenCache from page data on first access,
@@ -213,11 +229,20 @@ func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) (*ChildrenCache, err
 		Separators: separators,
 	}
 
-	if r.children.CompareAndSwap(nil, newCache) {
-		return newCache, nil
+	// ★ Fix: Never overwrite an existing cache. ReplaceRoot/handleLeafSplit
+	// may have stored a newer cache (with correct children + separators)
+	// after we read nil. CAS(nil, newCache) would overwrite that newer data,
+	// causing searchPath to navigate via stale children → data loss.
+	if !r.children.CompareAndSwap(nil, newCache) {
+		// Someone else stored a cache — return theirs, discard ours
+		existing := r.children.Load()
+		if existing != nil {
+			return existing, nil
+		}
+		// Extremely rare: CAS failed AND Load returned nil (concurrent store+load race).
+		// Return our cache anyway — better than nil.
 	}
-	// Another goroutine won the CAS race
-	return r.children.Load(), nil
+	return newCache, nil
 }
 
 // isLeafPageError checks if the error indicates the page is a leaf (expected condition).

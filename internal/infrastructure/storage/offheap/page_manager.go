@@ -231,6 +231,12 @@ func (pm *PageManager) GetFreeListSize() int {
 	return pm.freeList.Size()
 }
 
+// NextPageID 返回下一个要分配的 PageID（即已分配页面的上限，不含 freeList 回收页面）。
+// 用于 Inspector 遍历所有可能存活的页面：pageID ∈ [1, NextPageID())。
+func (pm *PageManager) NextPageID() uint32 {
+	return pm.nextPageID.Load()
+}
+
 // IsDeleted 检查页面是否被标记为已删除（调试用）
 func (pm *PageManager) IsDeleted(pageID uint32) bool {
 	if pageID == 0 || pageID >= pm.total {

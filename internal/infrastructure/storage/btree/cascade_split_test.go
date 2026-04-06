@@ -87,10 +87,13 @@ func TestConcurrentSplit(t *testing.T) {
 				value := fmt.Appendf(nil, "v%d-%d", goroutineID, j)
 
 				// 最多重试 100 次，超快
-				for range 100 {
+				for retry := range 100 {
 					err := tree.Set(ctx, key, value)
 					if err == nil {
 						break
+					}
+					if retry == 99 {
+						t.Logf("g%d-k%d: EXHAUSTED 100 retries: %v", goroutineID, j, err)
 					}
 				}
 			}

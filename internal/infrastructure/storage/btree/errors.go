@@ -6,43 +6,41 @@
 package btree
 
 import (
-	"errors"
-
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // Sentinel errors for btree operations.
 // All errors are comparable via errors.Is.
+// 这些错误统一从 pkg/errors 导入，确保跨包一致性。
 var (
 	// ErrCASConflict is returned when a CAS operation fails after max retries.
-	ErrCASConflict = errors.New("btree: cas conflict after max retries")
+	ErrCASConflict = errpkg.ErrBTreeCASConflict
 
 	// ErrRetry is returned when a transient condition requires retry.
 	// Used for SplitMarker windows where the split is not yet visible.
-	ErrRetry = errors.New("btree: retry operation")
+	ErrRetry = errpkg.ErrBTreeRetry
 
 	// ErrPageFreed is returned when accessing a page that has been freed.
-	ErrPageFreed = errors.New("btree: page already freed")
+	ErrPageFreed = errpkg.ErrBTreePageFreed
 
 	// ErrKeyNotFound is returned when the requested key does not exist.
-	ErrKeyNotFound = errors.New("btree: key not found")
+	ErrKeyNotFound = errpkg.ErrBTreeKeyNotFound
 
 	// ErrTreeClosed is returned when operating on a closed tree.
-	ErrTreeClosed = errors.New("btree: tree closed")
+	ErrTreeClosed = errpkg.ErrBTreeClosed
 
 	// ErrInvalidPage is returned when encountering an invalid page.
-	// 使用 pkg/errors 中的统一定义，确保错误链正确传播
 	ErrInvalidPage = errpkg.ErrBTreeInvalidPage
 
 	// ErrPageFull is returned when a page has no space for a new entry.
-	ErrPageFull = errors.New("btree: page full")
+	ErrPageFull = errpkg.ErrBTreePageFull
 
 	// ErrPageEmpty is returned when operating on an empty page.
-	ErrPageEmpty = errors.New("btree: page empty")
+	ErrPageEmpty = errpkg.ErrBTreePageEmpty
 
 	// ErrDuplicateKey is returned when inserting a key that already exists.
-	ErrDuplicateKey = errors.New("btree: duplicate key")
+	ErrDuplicateKey = errpkg.ErrBTreeDuplicateKey
 
 	// ErrNotImplemented is returned by methods that are not yet implemented.
-	ErrNotImplemented = errors.New("btree: not implemented")
+	ErrNotImplemented = errpkg.ErrBTreeNotImplemented
 )

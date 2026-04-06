@@ -709,7 +709,7 @@ func (pa *PageAccessor) CollectKVExcept(pageID uint32, skipIdx int) ([][]byte, [
 	var keys [][]byte
 	var values [][]byte
 
-	for i := 0; i < count; i++ {
+	for i := range count {
 		if i == skipIdx {
 			continue // 跳过被删除的 key
 		}

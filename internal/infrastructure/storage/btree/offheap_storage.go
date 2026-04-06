@@ -152,6 +152,16 @@ func (s *OffheapBTreeStorage) FreePage(pageID model.PageID) error {
 }
 
 // IsLeafPage reads the physical page header to determine if pageID is a leaf.
+// GetPageAccessor 返回底层的 PageAccessor，用于 Inspector 遍历物理页面。
+func (s *OffheapBTreeStorage) GetPageAccessor() *offheap.PageAccessor {
+	return s.pa
+}
+
+// AllocatedPageCount 返回已分配过的页面数量上限（pageID ∈ [1, AllocatedPageCount())）。
+func (s *OffheapBTreeStorage) AllocatedPageCount() uint32 {
+	return s.pm.NextPageID()
+}
+
 func (s *OffheapBTreeStorage) IsLeafPage(pageID model.PageID) bool {
 	rawID, err := s.validatePageID(pageID)
 	if err != nil {

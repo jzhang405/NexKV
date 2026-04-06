@@ -359,7 +359,21 @@ func (b *BTree) handleInternalSplit(
 			return fmt.Errorf("btree: handleInternalSplit get grandparent: %w", err)
 		}
 
-		newGrandparent, err := oldGrandparent.InsertChild(idx, splitKey, currentLeft.PageID(), currentRight.PageID())
+		// ★ FIX: Re-derive idx from physical page — path[currentLevel-1].Index
+		// may be stale due to concurrent splits inserting children before our position.
+		actualIdx := idx
+		for ci := range oldGrandparent.ChildCount() {
+			if oldGrandparent.GetChild(ci) == currentRef.pageID {
+				actualIdx = ci
+				break
+			}
+		}
+		if actualIdx >= oldGrandparent.ChildCount() {
+			// currentRef.pageID not in grandparent — already replaced by concurrent split
+			return ErrCASConflict
+		}
+
+		newGrandparent, err := oldGrandparent.InsertChild(actualIdx, splitKey, currentLeft.PageID(), currentRight.PageID())
 		if err != nil {
 			return fmt.Errorf("btree: handleInternalSplit insert child: %w", err)
 		}

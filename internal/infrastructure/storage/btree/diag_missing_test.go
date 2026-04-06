@@ -19,10 +19,19 @@ func TestDiagMissingRanges(t *testing.T) {
 	require.NoError(t, err)
 	defer tree.Close()
 
+	// ★ Enable tracer to capture operation sequence
+	tracer := NewTestTracer(t, 100000, 200000)
+	GlobalTracer = tracer
+	defer func() {
+		GlobalTracer = &nilTracer{}
+		tracer.Close()
+	}()
+
 	ctx := context.Background()
 
 	const goroutines = 2
 	const keysPerG = 500
+	var missing []string
 
 	var wg sync.WaitGroup
 	for g := range goroutines {
@@ -114,7 +123,6 @@ func TestDiagMissingRanges(t *testing.T) {
 	t.Logf("Total keys in leaf pages: %d", len(allPhysicalKeys))
 
 	// Check which keys are missing from Get()
-	var missing []string
 	for g := range goroutines {
 		for j := range keysPerG {
 			key := fmt.Appendf(nil, "g%d-k%04d", g, j)

@@ -10,6 +10,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -91,20 +93,51 @@ func (t *TestTracer) consumeLogs() {
 	}
 }
 
-func (t *TestTracer) LogOp(op string, args ...any) {
-	msg := fmt.Sprintf("[%s] %v", time.Now().Format(time.RFC3339Nano), op)
-	if len(args) > 0 {
-		msg += fmt.Sprintf(" %v", args)
+// callerStack returns the caller function name and two parent callers.
+// skip=0 returns the direct caller; increase skip to skip more frames.
+func callerStack(skip int) (caller, c1, c2 string) {
+	pc := make([]uintptr, 4)
+	n := runtime.Callers(skip+2, pc) // +2 for runtime.Callers + callerStack itself
+	if n >= 1 {
+		caller = path.Base(runtime.FuncForPC(pc[0]).Name())
 	}
+	if n >= 2 {
+		c1 = path.Base(runtime.FuncForPC(pc[1]).Name())
+	}
+	if n >= 3 {
+		c2 = path.Base(runtime.FuncForPC(pc[2]).Name())
+	}
+	return
+}
+
+// formatArgs formats alternating key-value pairs as " key=val" strings.
+func formatArgs(args []any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	pairs := make([]byte, 0, 128)
+	for i := 0; i+1 < len(args); i += 2 {
+		pairs = append(pairs, fmt.Sprintf(" %v=%v", args[i], args[i+1])...)
+	}
+	if len(args)%2 == 1 {
+		pairs = append(pairs, fmt.Sprintf(" %v", args[len(args)-1])...)
+	}
+	return string(pairs)
+}
+
+func (t *TestTracer) LogOp(op string, args ...any) {
+	caller, c1, c2 := callerStack(0)
+	ts := time.Now().Format("15:04:05.000")
+	msg := fmt.Sprintf("[%s] %-40s | %s ← %s ← %s%s",
+		ts, op, caller, c1, c2, formatArgs(args))
 	t.sendAsync(msg)
 }
 
 func (t *TestTracer) LogPageRefOp(ref *PageRef, op string, args ...any) {
-	msg := fmt.Sprintf("[%s][PageRef:%p][%s] pageID=%d",
-		time.Now().Format(time.RFC3339Nano), ref, op, ref.pageID)
-	if len(args) > 0 {
-		msg += fmt.Sprintf(", args=%v", args)
-	}
+	caller, c1, c2 := callerStack(0)
+	ts := time.Now().Format("15:04:05.000")
+	msg := fmt.Sprintf("[%s] PageRef:%p %-30s pageID=%d | %s ← %s ← %s%s",
+		ts, ref, op, ref.pageID, caller, c1, c2, formatArgs(args))
 	t.sendAsync(msg)
 
 	// Fine-grained ref tracking
@@ -119,8 +152,10 @@ func (t *TestTracer) LogPageRefOp(ref *PageRef, op string, args ...any) {
 }
 
 func (t *TestTracer) LogPageOp(pageID model.PageID, op string, args ...any) {
-	msg := fmt.Sprintf("[%s][Page:%d][%s] %v",
-		time.Now().Format(time.RFC3339Nano), pageID, op, args)
+	caller, c1, c2 := callerStack(0)
+	ts := time.Now().Format("15:04:05.000")
+	msg := fmt.Sprintf("[%s] Page:%-4d %-30s | %s ← %s ← %s%s",
+		ts, pageID, op, caller, c1, c2, formatArgs(args))
 	t.sendAsync(msg)
 
 	t.pageMu.Lock()
@@ -129,8 +164,10 @@ func (t *TestTracer) LogPageOp(pageID model.PageID, op string, args ...any) {
 }
 
 func (t *TestTracer) LogPageData(pageID model.PageID, desc string, data any) {
-	msg := fmt.Sprintf("[%s][PageData:%d][%s] %#v",
-		time.Now().Format(time.RFC3339Nano), pageID, desc, data)
+	caller, c1, c2 := callerStack(0)
+	ts := time.Now().Format("15:04:05.000")
+	msg := fmt.Sprintf("[%s] PageData:%-4d %-30s | %s ← %s ← %s %s",
+		ts, pageID, desc, caller, c1, c2, fmt.Sprintf("%#v", data))
 	t.sendAsync(msg)
 }
 

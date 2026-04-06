@@ -202,13 +202,16 @@ func TestPageRefGetOrCreateChildrenNode(t *testing.T) {
 	s.pa.SetChild(uint32(rootID), 1, uint32(c2))
 
 	r, _ := newTestPageRef(t, rootID, 1, nil)
+	// Mark as internal node so GetOrCreateChildren doesn't fast-return on IsLeaf check
+	r.pInfo.Store(&PageInfo{PageID: rootID, Version: 1, IsLeaf: false, NodeState: NodeNormal})
 	children, err := r.GetOrCreateChildren(s)
 	require.NoError(t, err)
-	require.Len(t, children, 2)
-	assert.Equal(t, c1, children[0].GetPageInfo().PageID)
-	assert.Equal(t, c2, children[1].GetPageInfo().PageID)
-	assert.Equal(t, r, children[0].GetParentRef())
-	assert.Equal(t, r, children[1].GetParentRef())
+	require.NotNil(t, children)
+	require.Len(t, children.Children, 2)
+	assert.Equal(t, c1, children.Children[0].GetPageInfo().PageID)
+	assert.Equal(t, c2, children.Children[1].GetPageInfo().PageID)
+	assert.Equal(t, r, children.Children[0].GetParentRef())
+	assert.Equal(t, r, children.Children[1].GetParentRef())
 }
 
 func TestPageRefGetOrCreateChildrenConcurrent(t *testing.T) {
@@ -226,10 +229,12 @@ func TestPageRefGetOrCreateChildrenConcurrent(t *testing.T) {
 	s.pa.SetChild(uint32(rootID), 1, uint32(c2))
 
 	r, _ := newTestPageRef(t, rootID, 1, nil)
+	// Mark as internal node
+	r.pInfo.Store(&PageInfo{PageID: rootID, Version: 1, IsLeaf: false, NodeState: NodeNormal})
 
 	const goroutines = 10
 	var wg sync.WaitGroup
-	results := make([][]*PageRef, goroutines)
+	results := make([]*ChildrenCache, goroutines)
 	errResults := make([]error, goroutines)
 
 	for i := range goroutines {
@@ -294,7 +299,7 @@ func TestRootPageRefNoRedirectNeeded(t *testing.T) {
 		PageID:  10, // new internal root page
 		Version: info.Version + 1,
 	}
-	newChildren := []*PageRef{left, right}
+	newChildren := &ChildrenCache{Children: []*PageRef{left, right}}
 	assert.True(t, root.ReplaceRoot(info, newRootInfo, newChildren))
 
 	// After ReplaceRoot: root's pInfo is the new internal root (no Redirect)
@@ -402,7 +407,7 @@ func TestRootPageRefReplaceRootWithChildren(t *testing.T) {
 	oldInfo := root.GetPageInfo()
 	newInfo := &PageInfo{PageID: 2, Version: 2}
 
-	ok := root.ReplaceRoot(oldInfo, newInfo, []*PageRef{child1, child2})
+	ok := root.ReplaceRoot(oldInfo, newInfo, &ChildrenCache{Children: []*PageRef{child1, child2}})
 	assert.True(t, ok)
 
 	// Children should have parentRef pointing to root's embedded PageRef
@@ -659,7 +664,7 @@ func TestHandleRootSplit_ReplaceRoot(t *testing.T) {
 		PageID:  2,
 		Version: oldInfo.Version + 1,
 	}
-	newChildren := []*PageRef{left, right}
+	newChildren := &ChildrenCache{Children: []*PageRef{left, right}}
 
 	success := oldRoot.ReplaceRoot(oldInfo, newInfo, newChildren)
 	assert.True(t, success, "ReplaceRoot should succeed")

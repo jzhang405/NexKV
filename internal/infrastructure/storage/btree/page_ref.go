@@ -21,14 +21,14 @@ import (
 // Lifecycle: exists as long as the page is part of the tree.
 // Created during split/merge propagation or tree initialization.
 type PageRef struct {
-	pageID     model.PageID               // bound at creation, immutable — used by Release
-	pInfo      atomic.Pointer[PageInfo]   // atomically replaced page info
-	parentRef  atomic.Pointer[PageRef]    // parent reference; nil for root (managed by RootPageRef)
-	children   atomic.Pointer[[]*PageRef] // lazy-loaded child refs; nil = leaf or not populated
-	refCount   atomic.Int32               // reference count; zero triggers freeFunc
-	freeFunc   func(model.PageID)         // bound at creation; called when refCount reaches 0
-	lock       SchedulerLock              // leaf-level spin lock
-	splitLatch atomic.Int32               // split mutex; 0 = free, 1 = held
+	pageID     model.PageID                  // bound at creation, immutable — used by Release
+	pInfo      atomic.Pointer[PageInfo]      // atomically replaced page info
+	parentRef  atomic.Pointer[PageRef]       // parent reference; nil for root (managed by RootPageRef)
+	children   atomic.Pointer[ChildrenCache] // lazy-loaded child refs with embedded separator keys
+	refCount   atomic.Int32                  // reference count; zero triggers freeFunc
+	freeFunc   func(model.PageID)            // bound at creation; called when refCount reaches 0
+	lock       SchedulerLock                 // leaf-level spin lock
+	splitLatch atomic.Int32                  // split mutex; 0 = free, 1 = held
 }
 
 // NewPageRef creates a new PageRef with the given page identity and parent.
@@ -142,17 +142,18 @@ func (r *PageRef) SetParentRef(parent *PageRef) {
 	r.parentRef.Store(parent)
 }
 
-// GetOrCreateChildren returns the child PageRef slice for this node.
+// GetOrCreateChildren returns the ChildrenCache for this node.
 // For leaf pages, returns (nil, nil).
-// For internal nodes, lazily constructs children from page data on first access.
+// For internal nodes, lazily constructs ChildrenCache from page data on first access,
+// including separator keys copied from the physical page.
 // Thread-safe via CAS.
 //
 // Error handling:
 // - Returns (nil, nil) for leaf pages (expected condition)
 // - Returns (nil, error) for real errors (tree closed, invalid page)
-func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) ([]*PageRef, error) {
+func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) (*ChildrenCache, error) {
 	if c := r.children.Load(); c != nil {
-		return *c, nil
+		return c, nil
 	}
 
 	info := r.GetPageInfo()
@@ -160,18 +161,19 @@ func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) ([]*PageRef, error) 
 		return nil, nil
 	}
 
-	// Check if this is a leaf — leaves have no children
+	// Fast path: check IsLeaf from PageInfo before attempting GetNodePage
+	if info.IsLeaf {
+		return nil, nil
+	}
+
 	if storage == nil {
 		return nil, nil
 	}
 	page, err := storage.GetNodePage(info.PageID)
 	if err != nil {
-		// Check if this is the expected "not a node page" error (leaf page)
-		// This is the normal case when traversing to a leaf
 		if isLeafPageError(err) {
 			return nil, nil
 		}
-		// Real error: tree closed, invalid page, etc.
 		return nil, fmt.Errorf("GetOrCreateChildren: %w", err)
 	}
 	if page.IsLeaf() {
@@ -183,13 +185,12 @@ func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) ([]*PageRef, error) 
 	for i := range childCount {
 		childID := page.GetChild(i)
 		childRef := NewPageRef(childID, 0, r, r.freeFunc)
-		// 查询物理层确定 IsLeaf（页面在线，父节点是 internal node）
-		isLeaf := true // 默认 leaf
+		// Query physical layer to determine IsLeaf
+		isLeaf := true // default: leaf
 		childNode, err := storage.GetNodePage(childID)
 		if err == nil {
 			isLeaf = childNode.IsLeaf()
 		}
-		// isLeafPageError → 保持默认 isLeaf=true（正常 leaf 路径）
 		childRef.pInfo.Store(&PageInfo{
 			PageID:    childID,
 			Version:   1,
@@ -199,11 +200,24 @@ func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) ([]*PageRef, error) 
 		newChildren[i] = childRef
 	}
 
-	if r.children.CompareAndSwap(nil, &newChildren) {
-		return newChildren, nil
+	// Extract separator keys (one per key entry in the node page)
+	// page.Count() returns the number of keys; ChildCount() = Count() + 1
+	keyCount := page.Count()
+	separators := make([][]byte, keyCount)
+	for i := range keyCount {
+		separators[i] = copyKey(page.GetKey(i))
+	}
+
+	newCache := &ChildrenCache{
+		Children:   newChildren,
+		Separators: separators,
+	}
+
+	if r.children.CompareAndSwap(nil, newCache) {
+		return newCache, nil
 	}
 	// Another goroutine won the CAS race
-	return *r.children.Load(), nil
+	return r.children.Load(), nil
 }
 
 // isLeafPageError checks if the error indicates the page is a leaf (expected condition).

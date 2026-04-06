@@ -6,7 +6,6 @@ package btree
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
@@ -55,6 +54,10 @@ func (p SearchPath) ParentPath() []PathEntry {
 // Every PageRef on the returned path has been Retained; caller must ReleaseAll.
 // Handles concurrent splits via SplitMarker following (D5 decision).
 //
+// Navigates using ChildrenCache.Search(key) — no physical NodePage reads needed.
+// This eliminates the inconsistency window where pInfo changes after CAS
+// but the physical page doesn't match the children cache.
+//
 //nolint:unused // Phase 5 BTree core will call this
 func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) (SearchPath, error) {
 	var path SearchPath
@@ -77,34 +80,30 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 			return path, nil
 		}
 
-		// Internal node: search for child index (with type validation)
-		node, err := storage.GetNodePage(pInfo.PageID)
-		if err != nil {
-			path.ReleaseAll()
-			if strings.Contains(err.Error(), "is not a node page") {
-				// GlobalTracer.LogOp("searchPath.ErrRetry", "reason=not_node_page", "pageID", pInfo.PageID, "key", string(key))
-				return nil, ErrRetry
-			}
-			return nil, fmt.Errorf("btree: searchPath get node: %w", err)
-		}
-		idx, _ := node.Search(key)
-		// Note: idx may be corrected below if FollowSplit redirects us to right sibling
-
-		// Get or lazily create child refs
-		children, err := currentRef.GetOrCreateChildren(storage)
+		// Internal node: navigate using children cache (no physical page read).
+		// Cache contains separator keys, so we can binary search without GetNodePage.
+		cache, err := currentRef.GetOrCreateChildren(storage)
 		if err != nil {
 			path.ReleaseAll()
 			return nil, fmt.Errorf("btree: searchPath: %w", err)
 		}
+		if cache == nil {
+			// Cache nil but IsLeaf=false — concurrent state change, retry
+			path.ReleaseAll()
+			return nil, ErrRetry
+		}
+
+		idx := cache.Search(key)
+		// Note: idx may be corrected below if FollowSplit redirects us to right sibling
 
 		// ★ P1-1 fix: bounds check — idx could be out of range during concurrent split
-		if idx >= len(children) || children[idx] == nil {
+		if idx >= len(cache.Children) || cache.Children[idx] == nil {
 			path.ReleaseAll()
-			// GlobalTracer.LogOp("searchPath.ErrRetry", "reason=idx_out_of_bounds", "pageID", pInfo.PageID, "idx", idx, "childrenLen", len(children), "key", string(key))
+			// GlobalTracer.LogOp("searchPath.ErrRetry", "reason=idx_out_of_bounds", "pageID", pInfo.PageID, "idx", idx, "childrenLen", len(cache.Children), "key", string(key))
 			return nil, ErrRetry // children list invalidated, retry from root
 		}
 
-		childRef := children[idx]
+		childRef := cache.Children[idx]
 
 		// Redirect following: if child has Redirect in PageInfo,
 		// re-navigate via the parent's updated children cache.
@@ -114,11 +113,11 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 		if childInfo.Redirect {
 			// Page was split — re-navigate from parent's updated children
 			// GlobalTracer.LogOp("searchPath.Redirect", "pageID", childRef.pageID, "idx", idx, "key", string(key))
-			updatedChildren, _ := currentRef.GetOrCreateChildren(storage)
-			if updatedChildren != nil {
-				reIdx, _ := node.Search(key)
-				if reIdx < len(updatedChildren) && updatedChildren[reIdx] != nil {
-					childRef = updatedChildren[reIdx]
+			updatedCache, _ := currentRef.GetOrCreateChildren(storage)
+			if updatedCache != nil {
+				reIdx := updatedCache.Search(key)
+				if reIdx < len(updatedCache.Children) && updatedCache.Children[reIdx] != nil {
+					childRef = updatedCache.Children[reIdx]
 					childRef.Retain()
 					actualIdx = reIdx
 				} else {

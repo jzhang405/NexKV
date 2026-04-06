@@ -35,13 +35,15 @@ func NewRootPageRef(pageID model.PageID, version uint64, freeFunc func(model.Pag
 // Sets parentRef for all newChildren BEFORE the CAS publish to eliminate
 // the window where a concurrent reader could see the child but find parentRef==nil.
 // Returns true if the CAS succeeded.
-func (r *RootPageRef) ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren []*PageRef) bool {
+func (r *RootPageRef) ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren *ChildrenCache) bool {
 	// Set parentRef BEFORE CAS — children are not yet visible to readers,
 	// so setting parentRef here is safe. CAS failure is harmless: the caller
 	// will create fresh PageRef objects on retry (D14 decision).
-	for _, child := range newChildren {
-		if child != nil {
-			child.SetParentRef(&r.PageRef)
+	if newChildren != nil {
+		for _, child := range newChildren.Children {
+			if child != nil {
+				child.SetParentRef(&r.PageRef)
+			}
 		}
 	}
 
@@ -57,7 +59,7 @@ func (r *RootPageRef) ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren []*Pag
 	// This eliminates the window where readers see IsLeaf=false but children=nil.
 	// Before this fix, children.Store was done separately by the caller,
 	// creating a race condition that caused 710K+ redirect loops.
-	r.children.Store(&newChildren)
+	r.children.Store(newChildren)
 
 	return true
 }

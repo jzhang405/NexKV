@@ -464,7 +464,10 @@ func (b *BTree) handleRootInternalSplit(
 		IsLeaf:    false,
 		NodeState: NodeRoot,
 	}
-	newChildren := []*PageRef{leftRef, rightRef}
+	newChildren := &ChildrenCache{
+		Children:   []*PageRef{leftRef, rightRef},
+		Separators: [][]byte{copyKey(splitKey)},
+	}
 
 	// Step 4: ReplaceRoot CAS (D14: SetParentRef before CAS)
 	if !b.rootRef.ReplaceRoot(rootInfo, newRootInfo, newChildren) {
@@ -505,69 +508,6 @@ func (b *BTree) handleRootInternalSplit(
 	return nil
 }
 
-// propagateUpward updates parent PageRefs along the search path after a leaf mutation.
-//
-// Walks from leaf's direct parent up to root, doing COW ReplaceChild + CAS at each level.
-//
-// Phase 5 behavior (D-ops-2): best-effort propagation.
-// CAS failure at any level stops propagation without error.
-// This is safe because the leaf's pInfo is already updated — readers who reach
-// the leaf via the PageRef chain will see the correct pInfo regardless of parent state.
-//
-// Page lifecycle (D-ops-3): old parent pages are not freed in Phase 5.
-// Page reclamation is deferred to BTree.Close() which releases the entire mmap region.
-func propagateUpward(b *BTree, parentPath []PathEntry, newChildID model.PageID, childIdx int) {
-
-	// Walk from leaf's parent up to (but NOT including) root.
-	// Root is managed exclusively by ReplaceRoot — propagating into root
-	// causes CAS conflicts with concurrent splits and can corrupt root pInfo.
-	for i := len(parentPath) - 1; i >= 1; i-- {
-		entry := parentPath[i]
-		parentRef := entry.Ref
-
-		oldInfo := parentRef.GetPageInfo()
-		if oldInfo == nil || oldInfo.Redirect {
-			// ★ B4 fix: Tombstone check — stop propagation if parent was split
-			// Parent is no longer navigable, don't update it
-			return
-		}
-
-		// COW: copy parent, replace child
-		oldNode, err := b.storage.GetNodePage(oldInfo.PageID)
-		if err != nil {
-			return
-		}
-
-		if childIdx < 0 || childIdx >= oldNode.Count() {
-			return
-		}
-
-		newNode, err := oldNode.ReplaceChild(childIdx, newChildID)
-		if err != nil {
-			return
-		}
-
-		newInfo := &PageInfo{
-			PageID:    newNode.PageID(),
-			Version:   oldInfo.Version + 1,
-			IsLeaf:    false,
-			NodeState: oldInfo.NodeState,
-		}
-
-		if !parentRef.CAS(oldInfo, newInfo) {
-			// CAS conflict — free new page and stop propagation
-			_ = b.storage.FreePage(newNode.PageID())
-			return
-		}
-
-		// Update tracking for next level up
-		newChildID = newNode.PageID()
-		if i > 1 {
-			childIdx = parentPath[i-1].Index
-		}
-	}
-}
-
 // distributeChildrenAfterSplit distributes the old node's children cache to the
 // split halves (leftRef and rightRef). This is the B18/B19 fix for internal node splits.
 //
@@ -586,25 +526,36 @@ func propagateUpward(b *BTree, parentPath []PathEntry, newChildID model.PageID, 
 //   - rightRef:  the right half PageRef (receives remaining children)
 //   - leftPage:  the left split page (used for child count)
 func distributeChildrenAfterSplit(oldRef, leftRef, rightRef *PageRef, leftPage NodePage) {
-	oldChildren := oldRef.children.Load()
-	if oldChildren == nil {
+	oldCache := oldRef.children.Load()
+	if oldCache == nil {
 		return // No children cache to distribute (shouldn't happen for internal nodes)
 	}
 
 	leftCount := leftPage.ChildCount() // mid+1 children
-	allChildren := *oldChildren
+	allChildren := oldCache.Children
 
 	if leftCount <= len(allChildren) {
 		// Distribute children: first leftCount to leftRef, rest to rightRef
 		leftChildren := make([]*PageRef, leftCount)
 		copy(leftChildren, allChildren[:leftCount])
-		leftRef.children.Store(&leftChildren)
+		leftSeps := make([][]byte, leftCount-1)
+		copy(leftSeps, oldCache.Separators[:leftCount-1])
+		leftRef.children.Store(&ChildrenCache{
+			Children:   leftChildren,
+			Separators: leftSeps,
+		})
 
 		rightCount := len(allChildren) - leftCount
 		if rightCount > 0 {
 			rightChildren := make([]*PageRef, rightCount)
 			copy(rightChildren, allChildren[leftCount:])
-			rightRef.children.Store(&rightChildren)
+			// Skip separator at index leftCount-1 (the split key moved to parent)
+			rightSeps := make([][]byte, rightCount-1)
+			copy(rightSeps, oldCache.Separators[leftCount:])
+			rightRef.children.Store(&ChildrenCache{
+				Children:   rightChildren,
+				Separators: rightSeps,
+			})
 		}
 
 		// Update parentRef for all children to point to their new parent
@@ -637,7 +588,7 @@ func updateChildrenCache(
 	leftRef, rightRef *PageRef,
 	newNodePage NodePage,
 ) {
-	oldChildren := parentRef.children.Load()
+	oldCache := parentRef.children.Load()
 	newChildCount := newNodePage.ChildCount()
 	newChildren := make([]*PageRef, newChildCount)
 	for i := range newChildCount {
@@ -652,8 +603,8 @@ func updateChildrenCache(
 			if i > splitIdx+1 {
 				srcIdx = i - 1 // Skip replaced position
 			}
-			if oldChildren != nil && srcIdx < len(*oldChildren) && (*oldChildren)[srcIdx] != nil {
-				newChildren[i] = (*oldChildren)[srcIdx] // Reuse: same PageRef object, refCount unchanged
+			if oldCache != nil && srcIdx < len(oldCache.Children) && oldCache.Children[srcIdx] != nil {
+				newChildren[i] = oldCache.Children[srcIdx] // Reuse: same PageRef object, refCount unchanged
 			} else {
 				// Defense: old children nil or OOB — build from newNodePage data (shouldn't happen)
 				childID := newNodePage.GetChild(i)
@@ -663,7 +614,16 @@ func updateChildrenCache(
 			}
 		}
 	}
-	parentRef.children.Store(&newChildren) // Atomic replacement
+	// Extract separator keys from the new parent page
+	keyCount := newNodePage.Count()
+	separators := make([][]byte, keyCount)
+	for i := range keyCount {
+		separators[i] = copyKey(newNodePage.GetKey(i))
+	}
+	parentRef.children.Store(&ChildrenCache{
+		Children:   newChildren,
+		Separators: separators,
+	})
 }
 
 // handleLeafSplit handles leaf page split with CR-08 immediate insert.
@@ -888,7 +848,10 @@ func (b *BTree) handleRootSplit(leafRef *PageRef, rootInfo *PageInfo,
 		IsLeaf:    false,
 		NodeState: NodeRoot,
 	}
-	newChildren := []*PageRef{leftRef, rightRef}
+	newChildren := &ChildrenCache{
+		Children:   []*PageRef{leftRef, rightRef},
+		Separators: [][]byte{copyKey(splitKey)},
+	}
 
 	if !b.rootRef.ReplaceRoot(rootInfo, newRootInfo, newChildren) {
 		// CAS failed → cleanup

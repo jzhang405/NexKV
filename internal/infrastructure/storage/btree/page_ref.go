@@ -28,7 +28,6 @@ type PageRef struct {
 	refCount   atomic.Int32                  // reference count; zero triggers freeFunc
 	freeFunc   func(model.PageID)            // bound at creation; called when refCount reaches 0
 	lock       SchedulerLock                 // leaf-level spin lock
-	splitLatch atomic.Int32                  // split mutex; 0 = free, 1 = held
 }
 
 // NewPageRef creates a new PageRef with the given page identity and parent.
@@ -174,6 +173,7 @@ func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) (*ChildrenCache, err
 
 	info := r.GetPageInfo()
 	if info == nil {
+		GlobalTracer.LogOp("GetOrCreateChildren.nilInfo", "refPageID", r.pageID)
 		return nil, nil
 	}
 
@@ -198,8 +198,10 @@ func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) (*ChildrenCache, err
 
 	childCount := page.ChildCount()
 	newChildren := make([]*PageRef, childCount)
+	childIDs := make([]model.PageID, childCount)
 	for i := range childCount {
 		childID := page.GetChild(i)
+		childIDs[i] = childID
 		childRef := NewPageRef(childID, 0, r, r.freeFunc)
 		// Query physical layer to determine IsLeaf
 		isLeaf := true // default: leaf
@@ -213,6 +215,7 @@ func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) (*ChildrenCache, err
 			IsLeaf:    isLeaf,
 			NodeState: NodeNormal,
 		})
+		childRef.Retain()
 		newChildren[i] = childRef
 	}
 
@@ -220,14 +223,20 @@ func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) (*ChildrenCache, err
 	// page.Count() returns the number of keys; ChildCount() = Count() + 1
 	keyCount := page.Count()
 	separators := make([][]byte, keyCount)
+	sepStrs := make([]string, keyCount)
 	for i := range keyCount {
 		separators[i] = copyKey(page.GetKey(i))
+		sepStrs[i] = string(separators[i])
 	}
 
 	newCache := &ChildrenCache{
 		Children:   newChildren,
 		Separators: separators,
 	}
+
+	GlobalTracer.LogOp("GetOrCreateChildren.build", "refPageID", r.pageID,
+		"dataPageID", info.PageID, "childCount", childCount,
+		"children", childIDs, "separators", sepStrs)
 
 	// ★ Fix: Never overwrite an existing cache. ReplaceRoot/handleLeafSplit
 	// may have stored a newer cache (with correct children + separators)
@@ -237,6 +246,8 @@ func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) (*ChildrenCache, err
 		// Someone else stored a cache — return theirs, discard ours
 		existing := r.children.Load()
 		if existing != nil {
+			GlobalTracer.LogOp("GetOrCreateChildren.casFailed", "refPageID", r.pageID,
+				"existingChildren", len(existing.Children))
 			return existing, nil
 		}
 		// Extremely rare: CAS failed AND Load returned nil (concurrent store+load race).
@@ -263,18 +274,3 @@ func (r *PageRef) GetPathToRoot() []*PageRef {
 	return path
 }
 
-// TryAcquireSplitLatch attempts to acquire the split latch.
-// Returns true if the latch was acquired, false if another goroutine holds it.
-func (r *PageRef) TryAcquireSplitLatch() bool {
-	return r.splitLatch.CompareAndSwap(0, 1)
-}
-
-// ReleaseSplitLatch releases the split latch.
-func (r *PageRef) ReleaseSplitLatch() {
-	r.splitLatch.Store(0)
-}
-
-// IsSplitting returns true if the split latch is currently held.
-func (r *PageRef) IsSplitting() bool {
-	return r.splitLatch.Load() == 1
-}

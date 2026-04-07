@@ -160,6 +160,16 @@ func TestDiagMissingRanges(t *testing.T) {
 		}
 	}
 
+	// Dump tracer log sample
+	logs := tracer.DumpLogs()
+	t.Logf("Tracer log entries: %d", len(logs))
+	for i, l := range logs {
+		if i >= 50 {
+			break
+		}
+		t.Logf("  TRACE[%d]: %s", i, l)
+	}
+
 	assert.Equal(t, 0, len(missing), "no keys should be missing")
 }
 

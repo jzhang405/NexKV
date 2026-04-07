@@ -285,12 +285,6 @@ func (b *BTree) handleInternalSplit(
 		}
 	}()
 
-	// Step 0: Acquire split latch — only one goroutine can split this node at a time
-	if !currentRef.TryAcquireSplitLatch() {
-		return ErrCASConflict
-	}
-	defer currentRef.ReleaseSplitLatch()
-
 	for {
 		// Step 1: Split current internal node (move-up semantics)
 		currentNode, err := b.storage.GetNodePage(currentInfo.PageID)
@@ -701,13 +695,6 @@ func updateChildrenCache(
 // Bug fixes: B1/B2/B6/B7/B18/B19
 func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	path SearchPath, key []byte, mutate mutateFunc) error {
-
-	// Step 0: Acquire split latch — only one goroutine can split this leaf at a time
-	if !leafRef.TryAcquireSplitLatch() {
-		GlobalTracer.LogOp("handleLeafSplit.latchBusy", "pageID", leafRef.pageID)
-		return ErrCASConflict
-	}
-	defer leafRef.ReleaseSplitLatch()
 
 	// Step 1: Split leaf → left + right + splitKey
 	leaf, err := b.storage.GetLeafPage(leafInfo.PageID)

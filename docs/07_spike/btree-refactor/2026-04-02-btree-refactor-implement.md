@@ -1,8 +1,28 @@
 # BTree2 Implementation Guide
 
 > 创建时间：2026-04-02
-> 状态：设计中
+> 最后更新：2026-04-09
+> 状态：已实现（Phase 6.0 完成）
 > 配套：`2026-04-02-btree-refactor-interface.md` + `2026-04-02-btree-refactor-roadmap.md`
+
+> **⚠️ Phase 6.0 更新（2026-04-09）**：
+> 本文档中以下章节描述的设计已被 Spike 文档取代，仅供参考。实际实现以代码为准：
+>
+> | 章节 | 过时内容 | 取代方案 | Spike 文档 |
+> |------|---------|---------|-----------|
+> | PageRef 实现 | `parentRef` 字段、`lock SchedulerLock`、`splitMarker` | path 数组索引 + CAS 乐观锁 + Redirect+NewRef+ChildrenCache | [04-06](./2026-04-06-children-cache-separators.md) [04-08](./2026-04-08-schedulerlock-to-optimistic-cas.md) |
+> | writeOperation | `Lock()/Unlock()` 调用 | CAS 乐观锁 + NodeSplitting 状态 + defer 回滚 | [04-08 §3.4](./2026-04-08-schedulerlock-to-optimistic-cas.md#34-改造后的-writeoperation) |
+> | handleInternalSplit | `GetParentRef()` 调用 | `path[currentLevel-1].Ref` 索引 | [04-08 §4](./2026-04-08-schedulerlock-to-optimistic-cas.md#4-移除-parentref附带清理) |
+> | distributeChildrenAfterSplit | `SetParentRef` 循环 | ChildrenCache 分配（含 separators） | [04-06 §Step 4](./2026-04-06-children-cache-separators.md) |
+> | searchPath | `GetOrCreateChildren()` + `node.Search(key)` | `cache.Search(key)`（ChildrenCache 内嵌 separators） | [04-06 §Step 5](./2026-04-06-children-cache-separators.md#step-5-修改-searchgo) |
+> | SplitMarker | 独立原子字段 | Redirect+NewRef（嵌入 PageInfo CAS） | [04-08 §3.5](./2026-04-08-schedulerlock-to-optimistic-cas.md#35-handleleafsplit-调整) |
+> | propagateUpward | Best-Effort 向上传播 | **已禁用**（ChildrenCache 原子更新后不再需要） | [04-06](./2026-04-06-children-cache-separators.md) |
+>
+> **新增组件**：
+> - `children_cache.go` — ChildrenCache 结构体 + Search(key) + copyKey()
+> - `NodeSplitting=3` 状态 — CAS 乐观锁 split 标记
+> - `doSplitWithSplitting()` — 独立辅助函数，defer 保证 Splitting 回滚
+> - `updateChildrenCache()` — CAS 循环原子更新 ChildrenCache
 
 ## 总览
 

@@ -1,9 +1,28 @@
 # NexKV B+Tree Split 实现详解
 
 > 创建时间：2026-04-04
-> 状态：设计中（Phase 6.0）
+> 最后更新：2026-04-09
+> 状态：已实现（Phase 6.0 完成）
 > 配套：`2026-04-02-btree-refactor-interface.md` + `2026-04-02-btree-refactor-implement.md`
-> **⚠️ ChildrenCache 改造影响**：本节已标注 `ChildrenCache` 方案（内嵌 separator keys）的变更点。详见 `2026-04-06-children-cache-separators.md`。
+
+> **⚠️ Phase 6.0 更新（2026-04-09）**：
+> 本文档已部分更新以反映 ChildrenCache 和 CAS 乐观锁改造。以下内容已过时，实际实现以代码为准：
+>
+> | 过时内容 | 取代方案 | Spike 文档 |
+> |---------|---------|-----------|
+> | Leaf-Level Locking（SchedulerLock） | CAS 乐观锁 + NodeSplitting 状态 + defer 回滚 | [04-08](./2026-04-08-schedulerlock-to-optimistic-cas.md) |
+> | `Lock()/Unlock()` 调用 | 无锁 read → mutate → CAS → 失败重试 | [04-08 §3.4](./2026-04-08-schedulerlock-to-optimistic-cas.md#34-改造后的-writeoperation) |
+> | `GetParentRef()` 调用 | `path[currentLevel-1].Ref` 索引 | [04-08 §4](./2026-04-08-schedulerlock-to-optimistic-cas.md#4-移除-parentref附带清理) |
+> | `SetParentRef` 循环 | 已删除（parentRef 已移除） | [04-08 §5](./2026-04-08-schedulerlock-to-optimistic-cas.md#5-可删除的文件和代码) |
+> | propagateUpward Best-Effort | **已禁用**（ChildrenCache 原子更新替代） | [04-06](./2026-04-06-children-cache-separators.md) |
+>
+> **新增机制**：
+> - `NodeSplitting=3` — CAS 原子标记"正在分裂"
+> - `doSplitWithSplitting()` — 独立辅助函数，defer 保证 Splitting 回滚
+> - `ChildrenCache` — 内嵌 separators + CAS 循环原子更新
+> - `updateChildrenCache()` — 不可变替换，CAS 线性化
+>
+> 底层 Split 算法（Leaf/Node Split copy-up/move-up 语义）未变，本文档 §3 仍然有效。
 
 ## 1. 概述
 
@@ -20,10 +39,10 @@
 | 决策 | 说明 | 参考 |
 |------|------|------|
 | COW 语义 | 所有变更返回新页面，原页面不变 | interface.md §6 |
-| Leaf-Level Locking | 叶级自旋锁 + CAS，非 Root CAS | interface.md §5 |
+| Leaf-Level Locking → CAS 乐观锁 | CAS + NodeSplitting 状态标记，无 SchedulerLock | [04-08 Spike](./2026-04-08-schedulerlock-to-optimistic-cas.md) |
 | Redirect+NewRef | Tombstone+Redirect+NewRef 在同一次 CAS 中原子设置，无窗口期 | §5 |
 | CR-08 | Split + Immediate Insert，强一致性返回 | implement.md §6.0.4 |
-| Best-Effort 传播 | 普通更新传播不重试；Split 传播 Full Retry | implement.md §6.0.3 D1 |
+| Best-Effort 传播（已禁用） | ChildrenCache 原子更新后 propagateUpward 不再需要 | [04-06 Spike](./2026-04-06-children-cache-separators.md) |
 
 ---
 
@@ -482,34 +501,22 @@ func searchPath(storage *OffheapBTreeStorage, rootRef *RootPageRef, key []byte) 
 
 **文件**: `internal/infrastructure/storage/btree/root_ref.go:29-45`
 
-> **★ ChildrenCache 改造**：`ReplaceRoot` 参数从 `newChildren []*PageRef` 改为 `newChildren *ChildrenCache`，内部遍历 `newChildren.Children` 设置 parentRef，`children.Store(newChildren)` 参数已是指针无需取地址。
+> **★ ChildrenCache 改造**：`ReplaceRoot` 参数改为 `newChildren *ChildrenCache`，CAS 成功后立即 `children.Store(newChildren)`。
+> **⚠️ Phase 6.0 更新**：SetParentRef 已删除（parentRef 移除）。ReplaceRoot 简化为 CAS + children.Store 两步。
 
 ```go
+// 当前实现（Phase 6.0）
 func (r *RootPageRef) ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren *ChildrenCache) bool {
-    // ★ D14 决策：CAS 之前设置 parentRef
-    // 子节点尚未对读者可见（CAS 未执行），设置 parentRef 是安全的
-    if newChildren != nil {
-        for _, child := range newChildren.Children {  // ★ 遍历 ChildrenCache.Children
-            if child != nil {
-                child.SetParentRef(&r.PageRef)
-            }
-        }
-    }
-
-    // CAS publish
     if !r.CAS(oldInfo, newInfo) {
-        // CAS 失败：不回滚 parentRef（D14 理由见下方）
         return false
     }
+    // ★ CAS 成功后立即 Store children — 消除 IsLeaf=false 但 children=nil 窗口
+    r.children.Store(newChildren)
     return true
 }
 ```
 
-**D14 设计决策 — CAS 失败不回滚 parentRef**：
-
-1. CAS 失败 → pInfo 不变 → 读者不会看到 newChildren → parentRef 值无所谓
-2. 调用方（handleRootSplit）会创建全新的 PageRef 重试
-3. 回滚 `SetParentRef(nil)` 引入额外 atomic store，增加竞争面
+~~**D14 设计决策 — CAS 失败不回滚 parentRef**~~：已过时。parentRef 已删除。ReplaceRoot 不再涉及 SetParentRef。
 
 ---
 
@@ -842,6 +849,8 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 
 ### 9.2 CR-08 目标状态（Phase 6.0）
 
+> **⚠️ Phase 6.0 最终实现**：以下伪代码中的 `Lock()/Unlock()` 已被 CAS 乐观锁替代。实际实现见 [04-08 Spike §3.4](./2026-04-08-schedulerlock-to-optimistic-cas.md#34-改造后的-writeoperation)。CAS 乐观锁版本使用 `NodeSplitting` 状态标记 + `doSplitWithSplitting()` 辅助函数（defer 保证回滚）替代 `leafRef.Lock()/Unlock()`。
+
 ```go
 func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
     for attempt := 0; attempt < MaxCASRetries; attempt++ {
@@ -915,6 +924,8 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 ```
 
 ### 9.3 handleLeafSplit 伪代码（含 Bug 修复）
+
+> **⚠️ Phase 6.0 更新**：伪代码中 `leafRef.Lock()/Unlock()` 已被 CAS 乐观锁替代。调用方 `doSplitWithSplitting` 先 CAS 标记 `NodeSplitting`，再调用 `handleLeafSplit`。handleLeafSplit 内部不再有 Lock/Unlock。实际实现见 `operations.go:696-822`。
 
 ```go
 func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
@@ -1108,6 +1119,8 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 6. **★ Review B18 + ChildrenCache**（§9.3 Step 9）：直接构建 `ChildrenCache{Children, Separators}` 并 `children.Store`，而非 `InvalidateChildren + GetOrCreateChildren` 重建。`GetOrCreateChildren` 创建独立 PageRef 对象（refCount=0），与 leftRef/rightRef 的引用计数互不关联。修复后 leftRef/rightRef 被 cache.Children 持有（refCount≥1），Separators 从 CAS 后的 newParent 提取（copy）。不再在 handleLeafSplit 中释放 leftRef/rightRef，生命周期由 parent.children（`*ChildrenCache`）管理。
 
 ### 9.4 handleRootSplit 伪代码（Root Leaf 分裂）
+
+> **⚠️ Phase 6.0 更新**：同 9.3，Lock/Unlock 已被 CAS 乐观锁替代。实际实现见 `operations.go:829-951`。
 
 当树只有一个叶子根节点（`len(path) < 2`）且该叶子满时，需要创建新的根节点。
 

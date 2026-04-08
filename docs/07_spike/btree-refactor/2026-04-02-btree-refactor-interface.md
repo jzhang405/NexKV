@@ -1,16 +1,18 @@
 # BTree2 Interface Design
 
 > 创建时间：2026-04-02
-> 状态：设计中
+> 最后更新：2026-04-09
+> 状态：已实现（Phase 6.0 完成）
 > 参考：Lealone CCOW 架构 + 现有 offheap mmap 实现
 > Roadmap：`2026-04-02-btree-refactor-roadmap.md`
+> Spike 文档：[ChildrenCache Separators](./2026-04-06-children-cache-separators.md) | [CAS 乐观锁](./2026-04-08-schedulerlock-to-optimistic-cas.md)
 
 ## 1. 设计原则
 
 1. **PageRef 与 PageHandle 分离**：PageRef 管理并发（长生命周期，构成树结构），PageHandle 管理数据（短生命周期，每次操作创建）。
 2. **不可变 PageInfo**：页面元数据是不可变值，通过 PageRef.CAS 原子替换。
 3. **COW 语义**：所有变更返回新实例，原实例不变。失败时丢弃新实例，无需回滚。
-4. **懒加载 children**：子 PageRef 在首次遍历时创建，冷页面不占内存。
+4. **懒加载 children**：子 PageRef 在首次遍历时创建（通过 ChildrenCache 内嵌 separators），冷页面不占内存。
 5. **返回副本**：GetKey/GetValue 返回数据副本，调用方可安全持有。
 6. **零 printf**：调试信息通过 PrettyPagePrinter 返回 string，不直接打印。
 
@@ -18,24 +20,23 @@
 
 | Lealone (Java) | btree2 (Go) | 说明 |
 |---------------|-------------|------|
-| `PageReference` | `PageRef` struct | 原子 CAS + parentRef + refCount |
-| `RootPageReference` | `RootPageRef` struct | 根特化：CAS root 切换 + parentRef 传播 |
-| `PageInfo` | `PageInfo` struct | 不可变值：pageID, version |
+| `PageReference` | `PageRef` struct | 原子 CAS + refCount + ChildrenCache |
+| `RootPageReference` | `RootPageRef` struct | 根特化：CAS root 切换 + children 原子传播 |
+| `PageInfo` | `PageInfo` struct | 不可变值：pageID, version, NodeState |
 | `Page` (abstract) | `PageHandle` interface | 页面数据的只读视图 |
 | `LeafPage` | `LeafPage` interface | 叶子页 KV 操作 + COW 变更 |
 | `NodePage` | `NodePage` interface | 索引页子页面管理 + COW 变更 |
 | `BTreeStorage` | `BTreeStorage` interface | 页面生命周期：alloc/get/free/copy |
 | `BTreeMap` | `BTree` struct | 顶层结构，实现 `service.KVStore` |
-| `PageOperations` | `operations.go` | CAS 冲突重试模板方法 |
-| `SchedulerLock` | `SchedulerLock` struct | 自旋锁（spin + runtime.Gosched） |
+| `PageOperations` | `operations.go` | CAS 乐观锁重试模板方法 |
 
 ### 关键差异
 
 | 方面 | Lealone (Java) | btree2 (Go) |
 |------|---------------|-------------|
 | Page 数据 | Java 堆对象 (`Object[]`) | offheap mmap `[]byte`（通过 PageHandle 视图访问） |
-| PageRef.children | `PageReference[]`（强引用） | `atomic.Pointer[[]*PageRef]`（CAS 懒创建，首次遍历时填充） |
-| 并发写 | 单写线程 Scheduler | 叶级锁 + CAS（更高并发） |
+| PageRef.children | `PageReference[]`（强引用） | `atomic.Pointer[ChildrenCache]`（内嵌 separators，CAS 原子更新） |
+| 并发写 | 单写线程 Scheduler | CAS 乐观锁 + NodeSplitting 状态标记（无锁） |
 | COW | Java 对象 `copy()` | mmap 页面 copy（`storage.CopyPage` → alloc + memcpy） |
 | GC | JVM GC 管理 | refCount 归零 → `storage.FreePage` |
 
@@ -67,16 +68,33 @@
 // 通过 PageRef.CAS 原子替换，每次 COW 变更产生新实例。
 // 一旦创建，字段不可修改。
 type PageInfo struct {
-    PageID  model.PageID
-    Version uint64
+    PageID    model.PageID
+    Version   uint64
+    IsLeaf    bool
+    NodeState NodeState // Normal=0, Root=1, Redirect=2, Splitting=3
+    Redirect  bool      // true 时 NewRef 指向 redirect 目标
+    NewRef    *PageRef  // Redirect 目标（Redirect=true 时有效）
 }
+
+// NodeState 页面状态枚举
+type NodeState uint8
+
+const (
+    NodeNormal    NodeState = 0 // 正常页面
+    NodeRoot      NodeState = 1 // 根页面
+    NodeRedirect  NodeState = 2 // 已分裂/替换，指向新页面
+    NodeSplitting NodeState = 3 // 正在分裂（CAS 乐观锁标记）
+)
 ```
 
 **设计说明**：
 
 - Lealone 的 PageInfo 有 10+ 字段（page, buff, pageLength, dirty, removed, metaVersion 等），因为 Java 需要管理页面加载、脏页标记、GC 等。
-- btree2 的 PageInfo 只需 2 个字段：PageID（标识）、Version（CAS 比较）。页面数据通过 PageHandle 从 mmap 读取，脏页管理通过 COW 隐式处理。
-- mmap 偏移量是 OffheapBTreeStorage 的内部实现细节，通过 `pageOffset(id) uintptr` 方法计算，不暴露到 PageInfo（避免 uint32 溢出和抽象泄漏）。
+- btree2 的 PageInfo 包含：PageID（标识）、Version（CAS 比较）、IsLeaf（页面类型）、NodeState（状态机）、Redirect+NewRef（分裂重定向）。
+- NodeSplitting 状态用于 CAS 乐观锁：标记"正在分裂"防止并发 split，用 defer 保证所有退出路径清理。
+- mmap 偏移量是 OffheapBTreeStorage 的内部实现细节，不暴露到 PageInfo。
+
+> **详见**: [Spike: CAS 乐观锁 §3.3](./2026-04-08-schedulerlock-to-optimistic-cas.md#33-nodestate-扩展)（NodeState 流转图）
 
 ## 5. PageRef — 并发控制层
 
@@ -84,16 +102,16 @@ type PageInfo struct {
 
 ```go
 // PageRef 管理页面的并发访问。
-// 每个 PageRef 对应树中一个页面，通过 parentRef 形成从叶到根的链。
+// 每个 PageRef 对应树中一个页面。
+// 父子关系通过 SearchPath 数组索引解析（path[currentLevel-1].Ref），
+// 而非 parentRef 指针 — 消除并发 split 中悬垂指针风险。
 // 生命周期：与页面在树中的存在时间一致（分裂/合并时替换）。
 type PageRef struct {
-    pInfo       atomic.Pointer[PageInfo]   // 原子可替换的页面信息
-    parentRef   *PageRef                   // 父引用，nil 表示根（RootPageRef）
-    children    atomic.Pointer[[]*PageRef] // 子引用，nil=叶子 or 未填充；CAS 懒加载
-    refCount    atomic.Int32               // 引用计数，归零时释放页面
-    splitMarker atomic.Pointer[SplitMarker] // 分裂标记，nil = 无分裂
-    freeFunc    func(model.PageID)         // 创建时绑定，Release 归零时调用
-    lock        SchedulerLock              // 叶级锁
+    pageID   model.PageID                  // 创建时绑定，不可变 — Release 使用此字段
+    pInfo    atomic.Pointer[PageInfo]      // 原子可替换的页面信息
+    children atomic.Pointer[ChildrenCache] // 子引用 + 内嵌 separator keys；CAS 原子更新
+    refCount atomic.Int32                  // 引用计数，归零时释放页面
+    freeFunc func(model.PageID)            // 创建时绑定，Release 归零时调用
 }
 
 // GetPageInfo 原子读取当前 PageInfo。
@@ -108,32 +126,46 @@ func (r *PageRef) CAS(old, new *PageInfo) bool
 func (r *PageRef) Retain()
 
 // Release 减少引用计数。归零时调用创建时绑定的 freeFunc 释放页面。
+// 使用不可变的 r.pageID（非 pInfo.PageID）避免 TOCTOU 竞态。
 func (r *PageRef) Release()
 
-// Lock/Unlock 获取/释放叶级锁。
-func (r *PageRef) Lock()
-func (r *PageRef) Unlock()
-
-// GetParentRef 返回父引用。根节点返回 nil。
-func (r *PageRef) GetParentRef() *PageRef
-
-// GetOrCreateChildren 返回子引用切片。叶子页返回 nil。
-// 懒填充：首次调用时从页面数据构建，使用 CAS 保证并发安全。
-func (r *PageRef) GetOrCreateChildren(storage BTreeStorage) []*PageRef
-
-// GetPathToRoot 沿 parentRef 向上收集到根的路径。
-// 返回切片索引 0 = 当前节点，末尾 = 根。
-func (r *PageRef) GetPathToRoot() []*PageRef
+// GetChildren 返回现有 ChildrenCache（可能为 nil）。
+// 不创建新 PageRef 对象。cache 来源：ReplaceRoot、updateChildrenCache、
+// distributeChildrenAfterSplit。
+func (r *PageRef) GetChildren() *ChildrenCache
 ```
+
+**已删除的方法**（Phase 6.0 清理）：
+- `GetParentRef()` / `SetParentRef()` — 用 path 数组索引替代
+- `GetOrCreateChildren()` — 死代码路径，searchPath 用 `GetChildren()`
+- `GetPathToRoot()` — 用 path 数组替代
+- `Lock()` / `Unlock()` — CAS 乐观锁替代 SchedulerLock
+
+> **详见**: [Spike: CAS 乐观锁 §4](./2026-04-08-schedulerlock-to-optimistic-cas.md#4-移除-parentref附带清理)（parentRef 移除论证）
+
+### ChildrenCache — 子节点缓存（内嵌 separators）
+
+```go
+// ChildrenCache 原子持有子节点引用和 separator keys。
+// searchPath 用 cache.Search(key) 导航，cache 命中时不读取物理 NodePage。
+// 通过 CAS 原子更新（updateChildrenCache），保证 separators 与 children 一致。
+type ChildrenCache struct {
+    Children   []*PageRef   // 子节点 PageRef，有序
+    Separators [][]byte     // Separators[i] 分隔 Children[i] 和 Children[i+1]
+                             // len(Separators) == len(Children) - 1
+}
+
+// Search 二分搜索，语义与 NodePage.Search 一致。
+func (c *ChildrenCache) Search(key []byte) int
+```
+
+> **详见**: [Spike: ChildrenCache Separators](./2026-04-06-children-cache-separators.md)（完整设计 + 并发正确性论证）
 
 ### RootPageRef — 根页面特化
 
-> 对应 Lealone `RootPageReference`。
-
 ```go
 // RootPageRef 是根页面的 PageRef。
-// 负责原子切换根指针，并在切换时传播 parentRef 到所有子节点。
-// parentRef 始终为 nil。
+// 负责原子切换根指针，并在切换时原子设置 children cache。
 type RootPageRef struct {
     PageRef
 }
@@ -143,39 +175,14 @@ type RootPageRef struct {
 // 参数：
 //   - oldInfo: 调用方在操作前捕获的预期当前 PageInfo（乐观锁）
 //   - newInfo: 替换后的新 PageInfo（新根的 pageID + version）
-//   - newChildren: 新根的子节点列表（用于传播 parentRef）
+//   - newChildren: 新根的 ChildrenCache（Children + Separators）
 //
-// 执行顺序（P0-10 修正，见下方审查意见）：
-//   1. 先为所有 newChildren 设置 parentRef（CAS 前）
-//   2. CAS(oldInfo, newInfo) 原子发布
-//   3. CAS 失败时不回滚 parentRef（子节点会在下次重试时重新创建）
+// 执行顺序：
+//   1. CAS(oldInfo, newInfo) 原子发布新根
+//   2. CAS 成功后立即 children.Store(newChildren) — 消除 IsLeaf=false 但 children=nil 的窗口
 //
 // 返回 true 表示 CAS 成功。
-func (r *RootPageRef) ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren []*PageRef) bool
-
-// TryFollowSplit 检查根是否发生分裂。
-// 无分裂返回 (nil, false)；有分裂返回 (SplitMarker, true)。
-// 调用方从 SplitMarker 中获取 Left/Right 子树引用。
-func (r *RootPageRef) TryFollowSplit() (*SplitMarker, bool)
-```
-
-#### Phase 4 实现决策记录
-
-> Phase 4 代码审查产生的设计决策详见 [§13 设计决策记录 D11-D14](#d11-replaceroot-签名变更)。
-
-
-
-### SchedulerLock
-
-```go
-// SchedulerLock 是轻量级自旋锁。
-// 适用于持有时间极短的场景（微秒级 BTree 写操作）。
-type SchedulerLock struct {
-    state atomic.Int32 // 0 = unlocked, 1 = locked
-}
-
-func (l *SchedulerLock) Lock()   // spin + runtime.Gosched
-func (l *SchedulerLock) Unlock()
+func (r *RootPageRef) ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren *ChildrenCache) bool
 ```
 
 ## 6. PageHandle — 数据操作层
@@ -354,7 +361,7 @@ func (b *BTree) Get(ctx context.Context, key []byte) ([]byte, error)
 // Update 不增加 count → 不触发 Split；Insert 增加 count → 可能触发 Split。
 func (b *BTree) Set(ctx context.Context, key, value []byte) error
 
-// Delete 叶级锁写：searchPath → lock leaf → COW delete → CAS → maybe merge
+// Delete CAS 乐观锁写：searchPath → 无锁读 → COW delete → CAS → maybe merge
 func (b *BTree) Delete(ctx context.Context, key []byte) error
 
 // Close 关闭树，释放所有资源
@@ -386,7 +393,7 @@ type BTreeMetrics struct {
 // PathEntry 记录搜索路径中的一个节点。
 type PathEntry struct {
     Ref   *PageRef // 页面引用
-    Index int      // 在父节点中的子页面索引（叶子节点为 -1）
+    Index int      // 在父节点中的子页面索引
 }
 
 // SearchPath 是从根到叶的遍历路径。
@@ -396,73 +403,77 @@ type SearchPath []PathEntry
 // Leaf 返回叶子节点的 PathEntry。
 func (p SearchPath) Leaf() PathEntry
 
-// ParentPath 返回从叶子到根的父路径（不含叶子）。
-func (p SearchPath) ParentPath() []PathEntry
-
 // ReleaseAll 释放路径上所有 PageRef 的引用计数。
 // CAS 失败重试前必须调用，防止引用计数泄漏。
 func (p SearchPath) ReleaseAll()
 ```
 
-搜索过程：
+搜索过程（使用 ChildrenCache 内嵌 separators）：
 
 ```
 1. rootRef.GetPageInfo() → pInfo → rootRef.Retain()
-2. page := storage.GetNodePage(pInfo.PageID)
-3. idx := page.Search(key)
-4. childRef := rootRef.GetOrCreateChildren(storage)[idx]
+2. cache := rootRef.GetChildren()  // ChildrenCache{Children, Separators}
+3. idx := cache.Search(key)         // 用内嵌 separators 二分搜索
+4. childRef := cache.Children[idx]  // 同一 cache 对象，separators/children 一致
 5. childRef.Retain()
-6. // 检查分裂标记（D5 SplitMarker）
-7. if childRef.GetSplitMarker() != nil:
-8.     childRef = childRef.FollowSplit(key)
-11.    childRef.Retain()
-12. 重复 2-11 直到叶子页
-13. 返回 SearchPath（路径上所有 Ref 已 Retain）
+6. // 检查 Redirect（pInfo.Redirect 或 pInfo.NewRef）
+7. if childInfo.Redirect:
+8.     重新加载 parent cache → 重新导航 → ErrRetry 兜底
+9. 重复 2-8 直到叶子页
+10. 返回 SearchPath（路径上所有 Ref 已 Retain）
 ```
+
+**关键优势**：cache 命中时不读取物理 NodePage，消除 separator/children 不一致窗口。
+**Redirect 处理**：cache 未更新窗口由 ErrRetry 从根重试兜底。
+
+> **详见**: [Spike: ChildrenCache Separators §Step 5](./2026-04-06-children-cache-separators.md#step-5-修改-searchgo)
 
 **Reader 引用计数规则（P0-3 修复）**：
 - searchPath 期间：每访问一个 PageRef 就 Retain，保证使用期间页面不被释放
 - Get 操作：读取 value（副本）后，调用 `path.ReleaseAll()` 释放路径
 - Set/Delete 操作：CAS 成功后由 writeOperation 释放路径；CAS 失败先 `path.ReleaseAll()` 再重试
 
-## 10. WriteOperation — 写操作模板
+## 10. WriteOperation — 写操作模板（CAS 乐观锁）
 
-> 对应 Lealone `PageOperations`。
+> 对应 Lealone `PageOperations`，使用 CAS 乐观锁替代 SchedulerLock。
 
 ```go
-// WriteOperation 是写操作的模板方法。
+// writeOperation 是写操作的模板方法。
 // 封装 CAS 冲突重试逻辑，Set 和 Delete 共用。
+// 采用乐观锁：无锁读 → 操作 → CAS → 失败重试。
 //
 // 流程：
-//   1. searchPath(key) → path（路径上所有 Ref 已 Retain）
+//   1. searchPath(key) → path（路径上所有 Ref 已 Retain）— 无锁
 //   2. leafRef := path.Leaf().Ref
-//   3. leafRef.Lock()
-//   4. pInfo := leafRef.GetPageInfo()
-//   5. leaf := storage.GetLeafPage(pInfo.PageID)
-//   6. [Split check] if leaf.IsFull():
-//      a. handleLeafSplit(leafRef, path, key, mutate)  // CR-08: 传入 mutate
-//         - Split → determine target → mutate(target)
-//         - Parent CAS with InsertChild
-//      b. 成功: SetSplitMarker, Unlock, return nil
-//      c. 失败(ErrCASConflict): cleanup, Unlock, goto 1
-//   7. newLeaf := mutate(leaf)          // 具体操作由调用方定义
-//   8. newInfo := &PageInfo{PageID: newLeaf.PageID(), Version: pInfo.Version+1}
-//   9. if leafRef.CAS(pInfo, newInfo):
-//  10.     leafRef.Unlock()
-//  11.     propagate(path, newLeaf)      // 向上传播分裂/合并（Best-Effort）
-//  12.     path.ReleaseAll()             // 释放路径引用
-//  13. else:
-//  14.     storage.FreePage(newLeaf.PageID())
-//  15.     leafRef.Unlock()
-//  16.     path.ReleaseAll()             // 释放旧路径（防止泄漏）
-//  17.     goto 1                        // 重试
+//   3. oldInfo := leafRef.GetPageInfo() — 无锁原子读取
+//   4. if Splitting: backoff + continue — 专用退避计数器
+//   5. oldLeaf := storage.GetLeafPage(oldInfo.PageID)
+//   6. double-check pInfo 未被并发修改 — TOCTOU 防御
+//   7. if full:
+//      a. CAS(oldInfo, splittingInfo) — 原子标记 Splitting
+//      b. doSplitWithSplitting() — 独立函数，defer 保证回滚
+//         - handleLeafSplit: Split + mutate(target) + parent CAS + Redirect CAS
+//         - handleRootSplit: Split + mutate(target) + ReplaceRoot
+//      c. 成功: return nil（defer 不回滚）
+//      d. 非 transient 错误(ErrDuplicateKey): return（defer 回滚 Splitting）
+//      e. Transient 错误(ErrCASConflict): continue（defer 回滚 Splitting）
+//   8. else:
+//      a. newLeaf := mutate(oldLeaf)
+//      b. if leafRef.CAS(oldInfo, newInfo): return nil
+//      c. else: FreePage + continue
+//
+// ★ Split 提取到 doSplitWithSplitting 辅助函数：
+//   defer 在辅助函数返回时触发（非 writeOperation 返回），
+//   解决 for 循环中 continue 不触发 defer 的问题。
 //
 // CR-08 决策 (D15): Split 检查在 mutate 之前，handleLeafSplit 接收 mutate 函数，
 // 在 Split 后同一调用栈内完成 key 插入，返回 nil（强一致性）而非 ErrCASConflict。
-func (b *BTree) writeOperation(ctx context.Context, key []byte, mutate func(LeafPage) (LeafPage, error)) error
+func (b *BTree) writeOperation(key []byte, mutate mutateFunc) error
 ```
 
-### Set 操作序列图（无分裂）
+> **详见**: [Spike: CAS 乐观锁 §3.4](./2026-04-08-schedulerlock-to-optimistic-cas.md#34-改造后的-writeoperation)（完整伪代码 + 三轮专家评审）
+
+### Set 操作序列图（无分裂 — CAS 乐观锁）
 
 ```mermaid
 sequenceDiagram
@@ -475,37 +486,38 @@ sequenceDiagram
 
     Client->>BTree: Set(key, value)
     BTree->>SearchPath: searchPath(key)
-    Note over SearchPath: 路径上每个 Ref.Retain()
+    Note over SearchPath: 路径上每个 Ref.Retain() — 无锁
     SearchPath-->>BTree: path
 
-    BTree->>LeafRef: path.Leaf().Ref.Lock()
-    BTree->>LeafRef: GetPageInfo()
-    LeafRef-->>BTree: pInfo{PageID=X, Version=3}
+    BTree->>LeafRef: GetPageInfo() — 无锁原子读取
+    LeafRef-->>BTree: oldInfo{PageID=X, Version=3}
 
     BTree->>Storage: GetLeafPage(X)
     Storage-->>BTree: leaf
 
+    Note over BTree: Double-check pInfo 未被并发修改
+    BTree->>LeafRef: GetPageInfo()
+    LeafRef-->>BTree: curInfo == oldInfo ✓
+
     BTree->>LeafPage: mutate(leaf) → Insert(key, value)
-    Note over LeafPage,Storage: COW: Storage.CopyLeafPage(X)→Y<br/>在 Y 上应用 insert
+    Note over LeafPage,Storage: COW: 分配新页 Y → memcpy → 在 Y 上 insert
     LeafPage-->>BTree: newLeaf{PageID=Y}
 
-    BTree->>LeafRef: CAS(pInfo, {PageID=Y, Version=4})
+    BTree->>LeafRef: CAS(oldInfo, {PageID=Y, Version=4})
 
     alt CAS 成功
         LeafRef-->>BTree: true
-        BTree->>LeafRef: Unlock()
         BTree->>BTree: path.ReleaseAll()
         Note over BTree: 成功返回
     else CAS 失败（并发修改）
         LeafRef-->>BTree: false
         BTree->>Storage: FreePage(Y)
-        BTree->>LeafRef: Unlock()
         BTree->>BTree: path.ReleaseAll()
-        Note over BTree: goto 1，重新 searchPath
+        Note over BTree: continue，重新 searchPath
     end
 ```
 
-### Set 操作序列图（触发叶子分裂 — CR-08 Split + Immediate Insert）
+### Set 操作序列图（触发叶子分裂 — CAS Splitting + CR-08）
 
 ```mermaid
 sequenceDiagram
@@ -518,206 +530,96 @@ sequenceDiagram
     participant RootRef as RootPageRef
 
     Client->>BTree: Set(key, value)
-    BTree->>SearchPath: searchPath(key)
+    BTree->>SearchPath: searchPath(key) — 无锁
     SearchPath-->>BTree: path
 
-    BTree->>LeafRef: Lock()
-    BTree->>Storage: GetLeafPage(X)
-    Storage-->>BTree: leaf
+    BTree->>LeafRef: GetPageInfo() → oldInfo
+    BTree->>Storage: GetLeafPage(X) → leaf
+    Note over BTree: Double-check + IsFull() check
+    BTree->>BTree: leaf.IsFull() → true
 
-    Note over BTree: Step 6: IsFull() check (before mutate!)
-    BTree->>BTree: leaf.IsFull()
-    BTree-->>BTree: true (需要分裂)
+    Note over BTree: CAS 标记 Splitting（原子操作）
+    BTree->>LeafRef: CAS(oldInfo, splittingInfo{Splitting})
+    LeafRef-->>BTree: true
+
+    Note over BTree: doSplitWithSplitting() — 独立函数
+    Note over BTree: defer: if pInfo==splittingInfo → CAS 回滚
 
     Note over BTree: CR-08: Split + Immediate Insert
-    BTree->>LeafPage: leaf.Split()
-    Note over LeafPage,Storage: Alloc Y1(left) + Alloc Y2(right)<br/>X前半 → Y1, X后半 → Y2
-    LeafPage-->>BTree: left{Y1}, right{Y2}, splitKey
-
-    Note over BTree: 确定目标子页面
-    BTree->>BTree: bytes.Compare(key, splitKey)
-    Note over BTree: target = key < splitKey ? left : right
-
-    Note over BTree: 在 target 上执行 mutate (double-COW)
-    BTree->>Storage: mutate(targetPage) → COW
+    BTree->>Storage: leaf.Split() → left, right, splitKey
+    BTree->>BTree: mutate(target) → double-COW
     Storage-->>BTree: mutatedPage{Z}
 
     rect rgb(240, 248, 255)
-        Note over BTree,ParentRef: handleLeafSplit — Parent CAS
-        BTree->>ParentRef: path.Leaf().Ref.GetParentRef()
-        ParentRef-->>BTree: parentRef
+        Note over BTree,ParentRef: handleLeafSplit — Parent CAS (spin)
+        BTree->>ParentRef: path[len(path)-2].Ref (path 索引)
 
-        alt parentRef != nil（非根分裂）
-            BTree->>Storage: GetNodePage → CopyNodePage → Z'
-            BTree->>NodePage: InsertChild(idx, splitKey, mutatedPageID, siblingPageID)
-            NodePage-->>BTree: newParent{Z'}
-
-            BTree->>ParentRef: CAS(parentInfo, {PageID=Z', Version++})
+        alt path 有父节点（非根分裂）
+            BTree->>Storage: GetNodePage → InsertChild → newParent
+            BTree->>ParentRef: CAS(parentInfo, newParentInfo)
             alt CAS 成功
                 ParentRef-->>BTree: true
-                Note over ParentRef: SetSplitMarker(targetRef, siblingRef, splitKey)
-                BTree->>LeafRef: Unlock()
-                Note over BTree: size.Add(delta)
+                Note over ParentRef: updateChildrenCache（CAS 循环）
+                BTree->>LeafRef: CAS(splittingInfo, redirectInfo)
+                Note over BTree: defer 检测 pInfo≠splittingInfo → 不回滚 ✓
                 BTree->>BTree: path.ReleaseAll()
                 BTree-->>Client: Success (nil)
             else CAS 失败
-                ParentRef-->>BTree: false
-                Note over BTree: cleanup(all new pages)
-                BTree->>LeafRef: Unlock()
-                BTree->>BTree: path.ReleaseAll()
-                Note over BTree: goto Step 1 (完整重试)
+                ParentRef-->>BTree: false → 重试 spin
             end
 
-        else parentRef == nil（根分裂）
-            BTree->>Storage: AllocNodePage()
-            Note over Storage: 创建新根：[target, sibling, splitKey]
-            Storage-->>BTree: newRootID
+        else path 只有 root（根分裂）
+            BTree->>Storage: AllocNodePage → InsertChild
             BTree->>RootRef: ReplaceRoot(oldRootInfo, newRootInfo, newChildren)
-            Note over RootRef: 原子切换根指针
+            Note over RootRef: CAS + children.Store 原子切换
 
             alt ReplaceRoot 成功
-                Note over RootRef: SetSplitMarker
-                BTree->>LeafRef: Unlock()
-                Note over BTree: size.Add(delta)
+                Note over BTree: defer 检测 pInfo≠splittingInfo → 不回滚 ✓
                 BTree-->>Client: Success (nil)
             else ReplaceRoot 失败
-                Note over BTree: cleanup + goto Step 1
+                Note over BTree: defer 回滚 Splitting → continue
             end
         end
     end
 ```
 
-### 并发 Reader 跟随 SplitMarker
-
-```mermaid
-sequenceDiagram
-    participant Reader as Reader goroutine
-    participant ParentRef as PageRef(parent)
-    participant ChildRef as PageRef(old child)
-    participant LeftRef as PageRef(left)
-    participant RightRef as PageRef(right)
-
-    Note over Reader,RightRef: Writer 已完成叶子 CAS + SetSplitMarker<br/>但父节点尚未更新
-
-    Reader->>ParentRef: GetOrCreateChildren(storage)[idx]
-    ParentRef-->>Reader: childRef（旧子页面引用）
-
-    Reader->>ChildRef: GetSplitMarker()
-    ChildRef-->>Reader: marker{Left, Right, SplitKey}
-
-    alt marker != nil
-        alt key < marker.SplitKey
-            Reader->>LeftRef: Retain()
-            Reader->>Reader: childRef = LeftRef
-        else key >= marker.SplitKey
-            Reader->>RightRef: Retain()
-            Reader->>Reader: childRef = RightRef
-        end
-        Reader->>ChildRef: Release()
-        Note over Reader: 继续正常遍历
-    end
-
-    Reader->>Reader: 继续向叶子遍历...
-```
-
-### 分裂传播
+### 级联分裂（path 数组索引）
 
 ```
-propagateSplit(leafRef, left, right, splitKey):
-1. parentRef := leafRef.GetParentRef()
-2. if parentRef == nil:
-3.     // 根分裂：创建新根
-4.     newRoot := createNodeWithChildren(left, right, splitKey)
-5.     rootRef.ReplaceRoot(newRoot)
-6.     return
-7.
-8. parentRef.Lock()
-9. parentInfo := parentRef.GetPageInfo()
-10. parent := storage.GetNodePage(parentInfo.PageID)
-11. newParent := parent.InsertChild(idx, splitKey, left.PageID(), right.PageID())
-12. newParentInfo := &PageInfo{PageID: newParent.PageID(), Version: parentInfo.Version+1}
-13. if parentRef.CAS(parentInfo, newParentInfo):
-14.     parentRef.Unlock()
-15.     // 设置分裂标记（方案 B）：让并发 reader 能跟随到新的子页面
-16.     leafRef.SetSplitMarker(left, right, splitKey)
-17.     // 继续向上检查是否需要分裂
-18.     if newParent.IsFull():
-19.         propagateSplit(parentRef, newParentLeft, newParentRight, ...)
-20. else:
-21.     storage.FreePage(newParent.PageID())
-22.     parentRef.Unlock()
-23.     goto 8  // 重试
+handleInternalSplit(currentRef, currentInfo, path, currentLevel):
+Loop:
+  1. Split current node (move-up semantics)
+  2. if currentLevel < 1:  // 无 grandparent → 根分裂
+       handleRootInternalSplit(...)
+       return
+  3. grandparentRef := path[currentLevel-1].Ref  // ★ path 索引替代 GetParentRef()
+  4. Re-derive idx from physical page (防 stale index)
+  5. Create leftRef, rightRef PageRefs
+  6. distributeChildrenAfterSplit(oldRef, leftRef, rightRef)  // 分配 ChildrenCache
+  7. Grandparent InsertChild (COW)
+  8. Grandparent CAS (失败 → ErrCASConflict)
+  9. updateChildrenCache(grandparentRef, ...)  // CAS 循环原子更新
+  10. Redirect CAS on currentRef (best-effort)
+  11. if grandparent not full: return
+  12. Move up: currentRef = grandparentRef, currentLevel--
 ```
-
-### SplitMarker — 分裂可见性机制（方案 B）
-
-> 对应 Lealone `PageInfo.isDataStructureChanged()` + `getNewRef()`。
-
-**问题**：叶子 CAS 成功后、父节点更新前，并发 reader 遍历到旧叶子可能看到不一致数据。
-
-**方案**：PageRef 增加分裂标记，reader 检测后自动跟随到新页面。
-
-```go
-// SplitMarker 记录页面的分裂信息。
-// 父节点 CAS 成功后立即设置，reader 在搜索时检查。
-type SplitMarker struct {
-    Left     *PageRef    // 分裂后的左页面
-    Right    *PageRef    // 分裂后的右页面
-    SplitKey []byte      // 分裂 key
-}
-
-// PageRef 中的分裂标记字段
-type PageRef struct {
-    // ...existing fields...
-    splitMarker atomic.Pointer[SplitMarker] // nil = 无分裂
-}
-
-// SetSplitMarker 设置分裂标记（propagateSplit 中调用）。
-func (r *PageRef) SetSplitMarker(left, right *PageRef, splitKey []byte)
-
-// GetSplitMarker 读取分裂标记。
-func (r *PageRef) GetSplitMarker() *SplitMarker
-
-// FollowSplit 如果存在分裂标记，根据 key 决定跟随左或右子页面。
-// 返回目标 PageRef；无分裂标记返回 nil。
-func (r *PageRef) FollowSplit(key []byte) *PageRef
-```
-
-**Reader 搜索时的处理**：
-
-```
-searchPath 遍历过程中：
-1. 获取 childRef
-2. marker := childRef.GetSplitMarker()
-3. if marker != nil:
-4.     if key < marker.SplitKey:
-5.         childRef = marker.Left
-6.     else:
-7.         childRef = marker.Right
-8.     // 继续正常遍历
-```
-
-**生命周期**：
-- 设置时机：propagateSplit 中父节点 CAS 成功后立即设置
-- 清除时机：分裂传播完全完成后（父节点稳定后），可延迟清除
-- GC：当旧 PageRef 的 refCount 归零时，SplitMarker 随之释放
 
 ### 合并传播
 
 ```
 propagateMerge(leafRef, merged):
-1. parentRef := leafRef.GetParentRef()
-2. if parentRef == nil:
+1. parentRef := path[currentLevel-1].Ref  // path 数组索引
+2. if path 级别 < 1:
 3.     // 根合并：如果是单子节点，降低树高度
 4.     tryReduceRoot()
 5.     return
 6.
-7. parentRef.Lock()
-8. parentInfo := parentRef.GetPageInfo()
-9. parent := storage.GetNodePage(parentInfo.PageID)
-10. newParent := storage.MergeNodes(leftChild, rightChild, separator)
-11. newParentInfo := &PageInfo{PageID: newParent.PageID(), Version: parentInfo.Version+1}
-12. if parentRef.CAS(parentInfo, newParentInfo):
+7. parentInfo := parentRef.GetPageInfo()
+8. parent := storage.GetNodePage(parentInfo.PageID)
+9. newParent := storage.MergeNodes(leftChild, rightChild, separator)
+10. newParentInfo := &PageInfo{PageID: newParent.PageID(), Version: parentInfo.Version+1}
+11. if parentRef.CAS(parentInfo, newParentInfo):
+12.     updateChildrenCache(parentRef, ...)
 13.     if newParent.Capacity() < 0.5:
 14.         propagateMerge(parentRef, newParent)
 15. else:
@@ -765,11 +667,11 @@ func (p *PrettyPagePrinter) PrintPath(path SearchPath) string
 **理由**：DDD 要求接口作为契约；Go 接口隐式满足，实现返回具体类型；性能开销可接受。
 **评估时间**：实现 Phase 2 时用 benchmark 验证。
 
-### D2. PageRef.children: atomic.Pointer 懒填充
+### D2. PageRef.children: atomic.Pointer[ChildrenCache]
 
-**决策**：`children atomic.Pointer[[]*PageRef]`，CAS 懒加载，冷页面不占内存。
-**理由**：与 Lealone `getOrReadPage()` 一致；CAS 保证并发安全，避免 data race。
-**审查修订**：原 `[]*PageRef` 改为 `atomic.Pointer[[]*PageRef]`（P0-1）。
+**决策**：`children atomic.Pointer[ChildrenCache]`，内嵌 separator keys，CAS 原子更新。
+**理由**：ChildrenCache 同时持有 Children 和 Separators，searchPath 用 cache.Search(key) 导航，cache 命中时不读取物理 NodePage，消除 separator/children 不一致窗口。
+**审查修订**：原 `[]*PageRef` → `atomic.Pointer[[]*PageRef]`（P0-1）→ `atomic.Pointer[ChildrenCache]`（04-06 Spike）。
 
 ### D3. GetKey/GetValue: 返回副本
 
@@ -782,11 +684,13 @@ func (p *PrettyPagePrinter) PrintPath(path SearchPath) string
 **理由**：Merge 需要批量访问两个页面的全部数据，逐条 GetKey/GetValue 导致 128+ 次虚调用。BTreeStorage 内部可直接操作 mmap []byte，绕过接口层。
 **审查修订**：原设计 Merge 在 Page 接口上（P1-2）。
 
-### D5. SplitMarker — 分裂可见性方案 B
+### D5. 分裂可见性 — Redirect + ChildrenCache（替代 SplitMarker）
 
-**决策**：PageRef 增加 `atomic.Pointer[SplitMarker]`，reader 检测后自动跟随到新页面。
-**理由**：叶子 CAS 成功后、父节点更新前，并发 reader 可能看到不一致树结构。SplitMarker 让 reader 无需等待父节点锁即可找到正确页面。
-**替代方案**：方案 A（锁覆盖传播）简单但并发度低，分裂期间阻塞所有经过该路径的写操作。
+**决策**：使用 `PageInfo.Redirect=true + NewRef` 指向左侧子节点 + `ChildrenCache` 原子更新。
+**理由**：SplitMarker 是独立的原子字段，与 pInfo CAS 存在竞态窗口。Redirect+NewRef 直接嵌入 PageInfo，CAS 原子设置，消除了"SplitMarker 已设置但 pInfo 未更新"的不一致窗口。ChildrenCache 原子更新保证 separators/children 一致。
+**审查修订**：原始设计使用 SplitMarker（方案 B）。Phase 6.0 实现时改为 Redirect+NewRef+ChildrenCache。
+
+> **详见**: [Spike: ChildrenCache Separators](./2026-04-06-children-cache-separators.md)
 
 ### D6. freeFunc 绑定到 PageRef
 
@@ -822,31 +726,29 @@ func (p *PrettyPagePrinter) PrintPath(path SearchPath) string
 
 ### D11. ReplaceRoot 签名变更
 
-**决策**：`ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren []*PageRef) bool` — 保持当前签名，不使用 `newRoot *PageRef` 参数。
-**理由**：RootPageRef 本身就是 root，替换的是自己的 pInfo，newChildren 是新根的子节点。RootPageRef 嵌入 PageRef，无需额外 newRoot 参数。
+**决策**：`ReplaceRoot(oldInfo, newInfo *PageInfo, newChildren *ChildrenCache) bool` — newChildren 使用 ChildrenCache 类型。
+**理由**：RootPageRef 本身就是 root，替换的是自己的 pInfo，newChildren 包含子节点引用和 separators。CAS 成功后立即 children.Store 保证可见性。
 **审查修订**：原始设计 `ReplaceRoot(newRoot *PageRef, newInfo *PageInfo) bool`（P4-1 审查前）。
 
-### D12. TryFollowSplit 返回 SplitMarker
+### D12. ~~TryFollowSplit 返回 SplitMarker~~ (已废弃)
 
-**决策**：`TryFollowSplit() (*SplitMarker, bool)` — 返回完整的 SplitMarker 而非 `*PageRef`。
-**理由**：调用方需要 Left/Right 两个子树引用进行路由，单一 `*PageRef` 语义不明确。SplitMarker 包含 SplitKey 用于 key 比较。
-**审查修订**：原始设计返回 `(targetRef *PageRef, ok bool)`（P4-2 审查前）。
+**决策**：SplitMarker 已被 Redirect+NewRef+ChildrenCache 替代。
+**理由**：Redirect 直接嵌入 PageInfo 的 CAS 原子操作，消除了 SplitMarker 与 pInfo 的竞态窗口。searchPath 通过 ChildrenCache 原子更新的 separators 导航。
 
-### D13. parentRef 使用 atomic.Pointer[PageRef]
+### D13. ~~parentRef 使用 atomic.Pointer[PageRef]~~ (已删除)
 
-**决策**：`parentRef atomic.Pointer[PageRef]`（而非普通 `*PageRef`）。
-**理由**：parentRef 被 SetParentRef 和 GetParentRef 并发调用（ReplaceRoot 设置 parentRef 时 reader 可能同时读取）。Go race detector 对非 atomic 并发读写报告 data race。
-**审查修订**：原始设计 `parentRef *PageRef`（interface 文档初版）。
+**决策**：parentRef 字段已完全移除。用 path 数组索引 `path[currentLevel-1].Ref` 替代。
+**理由**：parentRef 在并发 split 中容易产生悬垂指针，且维护成本高（SetParentRef 需在 ReplaceRoot/distributeChildrenAfterSplit 中调用）。path 数组是 searchPath 的天然产物，无额外维护开销。
+**审查修订**：D13 原决策为使用 atomic.Pointer，Phase 6.0 实现时改为完全移除。
 
-### D14. ReplaceRoot 先 SetParentRef 后 CAS
+> **详见**: [Spike: CAS 乐观锁 §4](./2026-04-08-schedulerlock-to-optimistic-cas.md#4-移除-parentref附带清理)
 
-**决策**：ReplaceRoot 在 CAS **之前**为所有 newChildren 设置 parentRef。
-**理由**：CAS 后设置 parentRef 存在并发 reader 窗口期 — reader 看到 newInfo 后遍历到 child，此时 parentRef 仍为 nil，GetPathToRoot 提前终止。
-**执行顺序**：
-1. 先为所有 newChildren 设置 parentRef（CAS 前，子节点尚未对读者可见）
-2. CAS(oldInfo, newInfo) 原子发布
-3. CAS 失败时不回滚 parentRef（调用方重试时创建新 PageRef）
-**审查修订**：原始代码 CAS 后设置 parentRef（C3 审查发现）。
+### D14. ~~ReplaceRoot 先 SetParentRef 后 CAS~~ (已删除)
+
+**决策**：SetParentRef 已随 parentRef 删除。ReplaceRoot 简化为 CAS + children.Store。
+**执行顺序（新）**：
+1. CAS(oldInfo, newInfo) 原子发布
+2. CAS 成功后立即 children.Store(newChildren) — 消除 IsLeaf=false 但 children=nil 的窗口
 
 ### D15. Split + Immediate Insert（CR-08）
 
@@ -858,32 +760,34 @@ func (p *PrettyPagePrinter) PrintPath(path SearchPath) string
 3. **消除不一致窗口**：原方案 T2-T3 之间其他读取可能看不到新结构
 
 **CR-08 修复项**：
-- 拒绝 `findOrCreatePageRef(targetLeafID)`（未定义 API），直接使用 leftRef/rightRef
-- 保持 leaf lock 贯穿 split+insert（拒绝 unlock 后 split 的 TOCTOU 风险）
+- 直接使用 leftRef/rightRef（不依赖 findOrCreatePageRef）
+- CAS 乐观锁替代 leaf lock — CAS 标记 Splitting，defer 保证回滚
 - 不对 target child 加锁（新创建页面，无并发访问）
 - Double-COW（split 分配新页 + mutate 再 COW）标注为优化项
+- Redirect CAS 替代 SplitMarker — 原子设置 Redirect+NewRef
 
-**SplitMarker 设置时机**：不变（Parent CAS 成功后设置）
+**propagateUpward 禁用**：ChildrenCache 原子更新后不再需要 propagateUpward。未来如恢复需同时更新 ChildrenCache 的 separators。
 
 **与 D1 的关系**：
-- D1（propagateUpward Best-Effort）保持不变
-- D15 只改变 Split 路径：handleLeafSplit 内部完成 split+insert，成功返回 nil
-- 普通 CAS 冲突（非 Split 场景）仍走 Best-Effort 重试
+- D1（propagateUpward Best-Effort）已禁用
+- D15 的 Split 路径在 handleLeafSplit 内部完成 split+insert，成功返回 nil
+- 普通 CAS 冲突（非 Split 场景）走 CAS 重试
 
 ## 14. 文件映射
 
 | 文件 | 主要内容 |
 |------|---------|
-| `page_info.go` | `PageInfo` struct |
-| `page_ref.go` | `PageRef` struct + 方法 |
+| `page_info.go` | `PageInfo` struct + `NodeState` 枚举 |
+| `page_ref.go` | `PageRef` struct + CAS/Retain/Release/GetChildren |
 | `root_ref.go` | `RootPageRef` struct + `ReplaceRoot` |
-| `page_lock.go` | `SchedulerLock` struct |
+| ~~`page_lock.go`~~ | ~~`SchedulerLock` struct~~ — **已删除**（CAS 乐观锁替代） |
+| `children_cache.go` | `ChildrenCache` struct + `Search(key)` + `copyKey()` |
 | `page_handle.go` | `PageHandle`, `LeafPage`, `NodePage` 接口定义 |
 | `leaf_page.go` | `LeafPageHandle` 实现 |
 | `node_page.go` | `NodePageHandle` 实现 |
 | `storage.go` | `BTreeStorage` 接口 + `OffheapBTreeStorage` 实现 |
-| `search.go` | `SearchPath`, `PathEntry`, `searchPath()` |
-| `operations.go` | `writeOperation`, `propagateSplit`, `propagateMerge` |
+| `search.go` | `SearchPath`, `PathEntry`, `searchPath()`（ChildrenCache 导航） |
+| `operations.go` | `writeOperation`（CAS 乐观锁）+ split/merge handlers |
 | `btree.go` | `BTree` struct + `Get`/`Set`/`Delete` |
 | `debug.go` | `PrettyPagePrinter` |
 | `metrics.go` | `BTreeMetrics` |
@@ -895,17 +799,25 @@ func (p *PrettyPagePrinter) PrintPath(path SearchPath) string
 ## 附录 A：审查意见（2026-04-02）
 
 > 审查者：DDD 架构师 + Go 工程师
-> 状态：已决策（2026-04-02）
+> 状态：已决策（2026-04-02），Phase 6.0 已实现
 
-**决策汇总**：
+**决策汇总（Phase 6.0 更新）**：
 - P0 全部接受，已反映到接口定义中
 - P1-1（RangeScan）：不在 v1 scope
 - P1-2（Merge 移到 Storage）：已接受，已更新 BTreeStorage 接口
-- P1-3（Split 可见性）：选方案 B（SplitMarker），已添加到 PageRef
+- P1-3（Split 可见性）：原选方案 B（SplitMarker），Phase 6.0 改为 Redirect+NewRef+ChildrenCache
 - P1-4（构造函数）：已补充 NewBTree/OpenBTree
 - P2-1（freeFunc 绑定）：已接受，Release() 改为无参
 - P2-2（COW 堆分配）：待 benchmark，D9 记录
 - P2-3~P2-5：已接受
+
+> **Phase 6.0 更新（2026-04-09）**：
+> - SchedulerLock 已删除，CAS 乐观锁替代
+> - parentRef 已删除，path 数组索引替代
+> - SplitMarker 已废弃，Redirect+NewRef+ChildrenCache 替代
+> - GetOrCreateChildren 已删除，searchPath 用 GetChildren()
+> - propagateUpward 已禁用
+> - 详见 [04-06 Spike](./2026-04-06-children-cache-separators.md) 和 [04-08 Spike](./2026-04-08-schedulerlock-to-optimistic-cas.md)
 
 ### P0 — 必须在编码前解决
 
@@ -913,24 +825,9 @@ func (p *PrettyPagePrinter) PrintPath(path SearchPath) string
 
 **问题**：`children []*PageRef` 是普通 slice，无 atomic/mutex 保护。多个 goroutine 同时首次遍历同一 NodePage 时 data race。
 
-**建议**：改用 `atomic.Pointer[[]*PageRef]` + CAS 懒加载：
+**建议**：改用 `atomic.Pointer[ChildrenCache]`（内嵌 separators）+ CAS 原子更新：
 
-```go
-type PageRef struct {
-    children atomic.Pointer[[]*PageRef] // nil = 未填充
-}
-
-func (r *PageRef) GetOrCreateChildren(storage BTreeStorage, pageID model.PageID) []*PageRef {
-    if c := r.children.Load(); c != nil {
-        return *c
-    }
-    newChildren := loadChildrenFrom(storage, pageID)
-    if r.children.CompareAndSwap(nil, &newChildren) {
-        return newChildren
-    }
-    return *r.children.Load()
-}
-```
+> **已实现**: ChildrenCache 方案。详见 [Spike: ChildrenCache Separators](./2026-04-06-children-cache-separators.md)。
 
 #### P0-2. SearchPath Retain/Release 不配对
 
@@ -995,6 +892,9 @@ type BTreeStorage interface {
 **建议**：分裂传播期间需要确保读者看到一致的树结构。可选方案：
 - A) 分裂传播在叶子锁持有期间完成（锁覆盖整个传播过程）
 - B) 使用"分裂标记"（类似 Lealone 的 dataStructureChanged 标志），reader 检测到后跟随新引用
+- **C) 已实现方案**: Redirect+NewRef+ChildrenCache — CAS 原子设置 Redirect，ChildrenCache 原子更新 separators/children，ErrRetry 兜底
+
+> **详见**: [Spike: CAS 乐观锁 §7.6.3](./2026-04-08-schedulerlock-to-optimistic-cas.md#763-split-协议完整性分析)（Split 协议完整性分析）
 
 #### P1-4. 缺少 BTree 构造函数
 
@@ -1063,6 +963,9 @@ func (r *PageRef) Release() // 内部调用 freeFunc
 | PageRef/PageHandle 分离 | 长短生命周期解耦，并发控制和数据访问职责清晰 |
 | BTreeStorage 接口边界 | offheap 完全封装，8 个方法可 mock |
 | LeafPage/NodePage 接口拆分 | 符合 ISP，公共只读 + 各自特化 |
-| atomic.Pointer[PageInfo] | 无 ABA 问题（每次 COW 新实例，指针地址不同） |
+| atomic.Pointer[PageInfo] | 无 ABA 问题（Go GC 保证指针唯一性，每次 COW 新实例）。详见 [04-08 Spike §P2-2](./2026-04-08-schedulerlock-to-optimistic-cas.md) |
 | 错误类型独立 | 不依赖 btree1，符合 Go 惯例 |
-| PrettyPagePrinter | 返回 string 零副作用，调试设计正确 |
+| CAS 乐观锁 | 替代 SchedulerLock — [04-08](./2026-04-08-schedulerlock-to-optimistic-cas.md) |
+| ChildrenCache | 内嵌 separators — [04-06](./2026-04-06-children-cache-separators.md) |
+
+> **审查通过项说明**：以上 Phase 6.0 新增条目基于 04-06/04-08 Spike 文档的三轮专家评审结论，与原始审查意见（P0-P2）一致。

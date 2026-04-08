@@ -1,11 +1,12 @@
 # BTree 重构 Action Plan
 
 > 创建时间：2026-04-02
-> 最后更新：2026-04-03
-> 状态：Phase 5 完成 ✅
+> 最后更新：2026-04-09
+> 状态：Phase 6.0 完成 ✅（含 CAS 乐观锁改造 + parentRef 清理）
 > 范围：v1 最小可用版本（Get/Set/Delete + Split + Merge，不含 WAL）
 >
 > **审核报告**: `thoughts/btree-code-review-round2-final-report-20260403.md`
+> **Spike 文档**: [ChildrenCache Separators](./2026-04-06-children-cache-separators.md) | [CAS 乐观锁](./2026-04-08-schedulerlock-to-optimistic-cas.md)
 
 ## 0. 协作原则
 
@@ -72,7 +73,7 @@
 2. **可维护**：改一个功能只改一个文件
 3. **可调试**：PrettyPagePrinter + AssertInvariants，零 printf
 4. **DDD 分层**：domain model / infrastructure / service 边界清晰
-5. **参考 Lealone**：CCOW + 纯引用计数 + parentRef 链
+5. **参考 Lealone**：CCOW + 纯引用计数 + path 数组索引（替代 parentRef 链）
 
 ## 3. 目录结构
 
@@ -80,9 +81,9 @@
 internal/infrastructure/storage/btree2/
   btree.go            # BTree 结构体，实现 service.KVStore（< 300 行）
   root_ref.go         # RootPageRef：CAS root 切换
-  page_ref.go         # PageRef：atomic pInfo + parentRef + lock
-  page_info.go        # PageInfo：不可变值类型（pageID, version, pos, dirty）
-  page_lock.go        # SchedulerLock：轻量级自旋锁（spin + runtime.Gosched）
+  page_ref.go         # PageRef：atomic pInfo + ChildrenCache（内嵌 separators）
+  page_info.go        # PageInfo：不可变值类型（pageID, version, NodeState）
+  children_cache.go   # ChildrenCache：Children + Separators + Search(key)
   storage.go          # BTreeStorage：页面生命周期（alloc/get/free），封装 offheap
   page_handle.go      # PageHandle 接口：统一 leaf/node 操作抽象
   leaf_page.go        # LeafPageHandle：COW 语义的叶子页操作
@@ -96,6 +97,8 @@ internal/infrastructure/storage/btree2/
 
 共 14 个文件，每个 < 300 行。
 
+> **注**: `page_lock.go`（SchedulerLock）已在 Phase 6.0 CAS 乐观锁改造中删除。详见 [Spike: CAS 乐观锁](./2026-04-08-schedulerlock-to-optimistic-cas.md)。
+
 ## 4. 核心设计决策
 
 ### 4.1 页面回收：纯引用计数（移除 Epoch）
@@ -107,14 +110,16 @@ internal/infrastructure/storage/btree2/
 
 **原因**：引用计数精确追踪读者，Epoch 延迟回收是冗余的。双机制互相干扰是当前 bug 的主要来源。
 
-### 4.2 分裂重定向：parentRef 链（移除 SplitInfo）
+### 4.2 分裂重定向：path 数组索引（移除 SplitInfo + parentRef）
 
 ```
 当前：全局 SplitInfo sync.Map → pageID → {SplitKey, NewPageRef}
-新的：PageRef.parentRef → 向上遍历找到父节点直接更新
+新的：SearchPath 数组索引 → path[currentLevel-1].Ref 访问祖先
 ```
 
-**原因**：消除全局状态，parentRef 链天然提供向上的导航能力。
+**原因**：消除全局状态。parentRef 在并发 split 中容易产生悬垂指针，path 数组是 searchPath 的天然产物，无额外维护开销。
+
+> **详见**: [Spike: CAS 乐观锁 §4](./2026-04-08-schedulerlock-to-optimistic-cas.md#4-移除-parentref附带清理)
 
 ### 4.3 页面查找：PageRef 链（移除 PageRefCache）
 
@@ -134,14 +139,18 @@ internal/infrastructure/storage/btree2/
 
 **原因**：真正不可变，无竞态窗口。失败直接丢弃新页面即可，无需回滚。
 
-### 4.5 并发控制：SchedulerLock
+### 4.5 并发控制：CAS 乐观锁（替代 SchedulerLock）
 
 ```
-当前：PageLock (reentrant + sync.Cond) → 重量级
-新的：SchedulerLock (spin + runtime.Gosched) → 轻量级
+旧方案（已删除）：SchedulerLock (spin + runtime.Gosched) → 轻量级但冗余
+当前方案：CAS 乐观锁 + NodeSplitting 状态标记
+  - 非分裂路径：无锁读 → mutate → CAS → 失败重试
+  - 分裂路径：CAS 标记 Splitting → split → CAS 提交/defer 回滚
 ```
 
-**原因**：BTree 写操作持有锁时间短（微秒级），自旋锁更高效。
+**原因**：`CAS(oldInfo, newInfo)` 本身已是原子操作，SchedulerLock 在 CAS 之上再加互斥是冗余的。Split 路径用 `NodeSplitting` 状态（CAS 原子标记）防止并发 split，用 `defer` 保证所有退出路径（含 panic）清理状态。
+
+> **详见**: [Spike: CAS 乐观锁](./2026-04-08-schedulerlock-to-optimistic-cas.md)（含三轮专家评审 + 时序对比图）
 
 ### 4.6 调试：结构化输出（零 printf）
 
@@ -232,28 +241,38 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error
 
 ## 6. WriteOperation 模板方法
 
-参考 Lealone 的 `PageOperations.WriteOperation`：
+参考 Lealone 的 `PageOperations.WriteOperation`，采用 CAS 乐观锁：
 
 ```
-1. searchPath(key) → leafRef + path
-2. leafRef.Lock()
-3. oldInfo = leafRef.GetPageInfo()
+1. searchPath(key) → leafRef + path         // 无锁遍历
+2. oldInfo = leafRef.GetPageInfo()          // 无锁读取
+3. if Splitting: backoff + continue         // 专用退避计数器
 4. oldPage = storage.GetLeafPage(oldInfo.pageID)
-5. newPage = oldPage.Insert(key, value)  // COW：分配新页面
-6. newInfo = &PageInfo{pageID: newPage.PageID(), version: oldInfo.version+1}
-7. if leafRef.CAS(oldInfo, newInfo):
-8.     propagateUpward(path)  // 沿 parentRef 链 CAS 更新祖先
-9.     storage.FreePage(oldInfo.pageID)
-10. else:
-11.    storage.FreePage(newPage.PageID())
-12.    goto 1  // 重试
+5. double-check pInfo 未被并发修改           // TOCTOU 防御
+6. if full:
+     CAS(oldInfo, splittingInfo)            // 原子标记 Splitting
+     → doSplitWithSplitting()               // 独立函数，defer 保证回滚
+     → 成功: return nil
+     → 失败: defer 回滚 Splitting → continue
+7. else:
+     newPage = mutate(oldPage)              // COW：分配新页面
+     newInfo = &PageInfo{pageID, version+1}
+     if leafRef.CAS(oldInfo, newInfo):      // 无锁提交
+         return nil
+     else:
+         FreePage(newPage.PageID())         // CAS 失败，回收新页面
+         continue                           // 重试
 ```
 
 **关键简化**：
+- 无 SchedulerLock（CAS 乐观锁替代）
 - 无 Epoch 推进
 - 无 SplitInfo 注册
 - 无 PageRefCache 查找/更新
-- 父节点更新是自然的向上 CAS 遍历
+- 无 parentRef 链（path 数组索引替代）
+- 父节点更新沿 path 数组向上 CAS 遍历
+
+> **详见**: [Spike: CAS 乐观锁 §3.4](./2026-04-08-schedulerlock-to-optimistic-cas.md#34-改造后的-writeoperation)
 
 ## 7. 分阶段实施计划
 
@@ -341,10 +360,10 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error
 
 **产出**：CAS 可替换的引用链
 
-- [x] `page_info.go` — 不可变 PageInfo
-- [x] `page_ref.go` — atomic CAS + 引用计数管理
-- [x] `root_ref.go` — root 特化：CAS + 子节点传播
-- [x] `page_lock.go` — SchedulerLock（spin + TryLock）
+- [x] `page_info.go` — 不可变 PageInfo（含 NodeSplitting=3 状态）
+- [x] `page_ref.go` — atomic CAS + 引用计数 + ChildrenCache（内嵌 separators）
+- [x] `root_ref.go` — root 特化：CAS + 子节点原子传播
+- [x] ~~`page_lock.go` — SchedulerLock~~ （已删除，CAS 乐观锁替代）
 - [x] 验证通过：
   - `TestPageRefCASSuccess` / `TestPageRefCASConflict`
   - `TestSchedulerLock` / `TestTryLock_*`（6 个测试）
@@ -352,10 +371,11 @@ func (b *BTree) Delete(ctx context.Context, key []byte) error
 
 ### Phase 5: BTree 核心 + WriteOperation ✅ 已完成
 
-**产出**：Get/Set/Delete 实现（单叶子操作，不含 Split 传播）
+**产出**：Get/Set/Delete 实现（含 CAS 乐观锁 + Split 传播）
 
-- [x] `operations.go` — WriteOperation 模板方法
+- [x] `operations.go` — WriteOperation CAS 乐观锁模板方法（无 SchedulerLock）
 - [x] `btree.go` — BTree 结构体实现 service.KVStore
+- [x] `children_cache.go` — ChildrenCache 内嵌 separator keys（消除 searchPath 对物理 Page 的依赖）
 - [x] 验证通过（79% 测试覆盖率）：
   - `TestBTreeSetGet` / `TestBTreeUpdate` / `TestBTreeDelete`
   - `TestBTreeConcurrentSet` / `TestBTreeNoDataLoss`（并发数据一致性）
@@ -461,7 +481,7 @@ go test -bench=. -benchmem ./internal/infrastructure/storage/btree/...
 
 **提交**: `profile_test.go` - 长时间性能分析测试（用于 pprof）
 
-### Phase 6.0: 功能完整性（下一步）
+### Phase 6.0: 功能完整性 ✅ 已完成
 
 **目标**：实现多级树功能
 
@@ -469,12 +489,18 @@ go test -bench=. -benchmem ./internal/infrastructure/storage/btree/...
 - ✅ Phase 5.5 完成（有性能基准）
 - ✅ Phase 5.6 完成（有瓶颈数据）
 
-**任务**：
-- [ ] Split 集成
+**已完成任务**：
+- [x] Split 集成
   - 在 writeOperation 中添加 split 检测
-  - 实现 propagateSplit 逻辑
+  - 实现 handleLeafSplit / handleRootSplit / handleInternalSplit
+  - CAS 乐观锁替代 SchedulerLock（详见 [04-08 Spike](./2026-04-08-schedulerlock-to-optimistic-cas.md)）
+  - NodeSplitting 状态标记 + defer 回滚机制
+  - ChildrenCache 内嵌 separators（详见 [04-06 Spike](./2026-04-06-children-cache-separators.md)）
+  - parentRef 移除，改用 path 数组索引
+  - GetOrCreateChildren 删除（死代码路径，searchPath 用 GetChildren()）
+  - propagateUpward 禁用（ChildrenCache 原子更新后不再需要）
 
-- [ ] Merge 实现
+- [ ] Merge 实现（延后到 Phase 6.5）
   - 实现 RemoveChild 逻辑（已修复 panic → error）
   - 实现页面下溢检测
 
@@ -579,12 +605,15 @@ go test -run TestConcurrentSplitMerge ./...
 
 ## 原始计划（参考）
 
-### Phase 6: Split 传播（2-3 天）
+### Phase 6: Split 传播 ✅ 已完成
 
 **产出**：叶子分裂 → 父节点更新 → 根分裂 → 新根创建
 
-- [ ] 修改 `operations.go` — 分裂处理
-- [ ] 修改 `btree.go` — `splitRoot` 方法
+- [x] 修改 `operations.go` — 分裂处理（CAS 乐观锁 + NodeSplitting）
+- [x] 修改 `btree.go` — split 流程集成
+- [x] `children_cache.go` — ChildrenCache 内嵌 separators
+- [x] parentRef 移除 → path 数组索引
+- [x] SchedulerLock 移除 → CAS 乐观锁
 - [ ] 验证：
   - `TestSplitPropagation` — 触发叶子分裂，父节点更新
   - `TestRootSplit` — 根分裂，树高度增长
@@ -596,9 +625,7 @@ go test -run TestConcurrentSplitMerge ./...
 
 **产出**：删除触发的延迟页面合并，复用 Phase 6 的 parentRef 向上传播机制
 
-**策略**：Lazy Merge — 删除后不立即合并，当页面利用率低于阈值时触发。避免高频 delete+insert 场景下反复分裂/合并的抖动。
-
-- [ ] 在 `PageHandle` 接口补充 Merge 相关方法：
+**策略**：Lazy Merge — 删除后不立即合并，当页面利用率低于阈值时触发。复用 path 数组向上传播机制（Phase 6.0 已验证 path 索引在级联操作中的正确性）。
   ```go
   // 判断是否需要 merge（利用率 < 阈值）
   NeedMerge(threshold float64) bool
@@ -628,7 +655,7 @@ go test -run TestConcurrentSplitMerge ./...
 - [ ] 创建 `btree2/debug.go`
 - [ ] 创建 `btree2/metrics.go`
 - [ ] PrettyPagePrinter：`PrintTree()`, `PrintPage()` 返回 string
-- [ ] AssertInvariants：key 排序、parentRef 一致、refCount ≥ 0
+- [ ] AssertInvariants：key 排序、ChildrenCache 一致、refCount ≥ 0
 - [ ] BTreeMetrics：CASAttempts, CASConflicts, Splits, Retries 原子计数
 - [ ] 验证：
   - `TestPrettyPrintFormat` — 输出格式正确
@@ -651,8 +678,10 @@ go test -run TestConcurrentSplitMerge ./...
 | PageRef | **重写** | `page_ref.go` |
 | Epoch | **移除** | 纯引用计数替代 |
 | Delta Chain | **v2 延后** | 不在 v1 实现 |
-| PageRefCache | **移除** | parentRef 链替代 |
-| SplitInfo | **移除** | parentRef 链替代 |
+| PageRefCache | **移除** | ChildrenCache + path 数组替代 |
+| parentRef | **移除** | path 数组索引替代（handleInternalSplit 用 path[currentLevel-1].Ref） |
+| SchedulerLock | **移除** | CAS 乐观锁 + NodeSplitting 状态替代 |
+| SplitInfo | **移除** | path 数组索引替代 |
 
 ## 9. 可调试性保证
 
@@ -693,14 +722,14 @@ go test -run TestBTreeLargeDataset              # 10k+ keys
 | Phase 3: NodePageHandle + Search | 2-3 天 | 5.5-8.5 天 | ✅ 完成（2026-04-02）|
 | Phase 4: PageRef + RootPageRef | 1-2 天 | 6.5-10.5 天 | ✅ 完成（2026-04-03）|
 | Phase 5: BTree 核心 | 3-4 天 | 9.5-14.5 天 | ✅ 完成（2026-04-03）|
-| Phase 5.5: 性能基准基础设施 | 0.5 天 | 10-15 天 | ⏳ 待开始 |
-| Phase 5.6: 观察与分析 | 1 周 | - | ⏸ 数据收集 |
-| Phase 6: Split 传播 | 2-3 天 | 11.5-17.5 天 | 📋 计划中 |
+| Phase 5.5: 性能基准基础设施 | 0.5 天 | 10-15 天 | ✅ 完成（2026-04-04）|
+| Phase 5.6: 观察与分析 | 1 周 | - | ✅ 完成（2026-04-04）|
+| Phase 6.0: Split + CAS 乐观锁 | 5 天 | 11.5-17.5 天 | ✅ 完成（2026-04-09）|
 | Phase 6.5: Lazy Merge | 2-3 天 | 13.5-20.5 天 | 📋 计划中 |
 | Phase 6.5+: 性能优化 | 按需 | - | ⏸ 仅在需要时 |
 
-**Phase 5 完成时间**：2026-04-03
-**当前状态**：Phase 5 已就绪，等待 Phase 5.5（性能基准基础设施）
+**Phase 6.0 完成时间**：2026-04-09
+**当前状态**：Phase 6.0 已完成（Split 传播 + CAS 乐观锁 + parentRef 清理），等待 Phase 6.5（Lazy Merge）
 
 ## 12. Out of Scope（btree2 不处理）
 

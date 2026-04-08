@@ -91,7 +91,7 @@ func TestNilTracer_NoPanic(t *testing.T) {
 	tr.LogPageRefOp(nil, "test")
 	tr.LogPageOp(1, "test")
 	tr.LogPageData(1, "test", nil)
-	result := tr.WithContext(nil)
+	result := tr.WithContext(context.TODO())
 	assert.NotNil(t, result)
 }
 
@@ -102,7 +102,7 @@ func TestTestTracer_NoPanic(t *testing.T) {
 	tr.LogPageRefOp(nil, "test")
 	tr.LogPageOp(1, "test")
 	tr.LogPageData(1, "test", nil)
-	tr.WithContext(nil)
+	tr.WithContext(context.TODO())
 	assert.Nil(t, tr.DumpLogs())
 	assert.NoError(t, tr.DumpToFile(""))
 	assert.Equal(t, 0, tr.GetRefCount(0))

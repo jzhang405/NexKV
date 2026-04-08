@@ -275,3 +275,41 @@ func TestBTreeNoDataLoss(t *testing.T) {
 	// Verify size is correct (only uniqueKeys entries)
 	assert.Equal(t, int64(uniqueKeys), tree.Size())
 }
+
+func TestBTreeClose_DeleteReturnsErr(t *testing.T) {
+	storage, err := NewOffheapBTreeStorage(4 * 1024 * 1024)
+	require.NoError(t, err)
+	tree, err := NewBTree(storage)
+	require.NoError(t, err)
+
+	err = tree.Close()
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	err = tree.Delete(ctx, []byte("key"))
+	assert.ErrorIs(t, err, ErrTreeClosed)
+}
+
+func TestBTreeLargeDataset_Integrity(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	const numKeys = 2000
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Appendf(nil, "intkey-%05d", i)
+		value := fmt.Appendf(nil, "intval-%05d", i)
+		err := tree.Set(ctx, key, value)
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, int64(numKeys), tree.Size())
+
+	// Verify all keys
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Appendf(nil, "intkey-%05d", i)
+		val, err := tree.Get(ctx, key)
+		require.NoError(t, err, "key %s should exist", key)
+		expected := fmt.Appendf(nil, "intval-%05d", i)
+		assert.Equal(t, expected, val)
+	}
+}

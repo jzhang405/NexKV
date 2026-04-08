@@ -5,10 +5,13 @@
 package btree
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestErrorSentinels(t *testing.T) {
@@ -51,4 +54,57 @@ func TestConstantValues(t *testing.T) {
 	assert.Equal(t, 4096-56, UsableSize, "UsableSize must be PageSize - HeaderSize")
 	assert.Equal(t, 0.5, MergeThreshold, "MergeThreshold must be 0.5")
 	assert.Equal(t, 100, MaxCASRetries, "MaxCASRetries must be 100")
+}
+
+func TestNewBTreeWithMetricsAndTracer_NilTracer(t *testing.T) {
+	storage, err := NewOffheapBTreeStorage(4 * 1024 * 1024)
+	require.NoError(t, err)
+	defer storage.Close()
+
+	metrics := &BTreeMetrics{}
+	tree, err := NewBTreeWithMetricsAndTracer(storage, metrics, nil)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	// Verify tree works with nil tracer (uses DefaultTracer)
+	ctx := context.Background()
+	err = tree.Set(ctx, []byte("key"), []byte("val"))
+	require.NoError(t, err)
+}
+
+func TestIncrementMerge(t *testing.T) {
+	m := NewBTreeMetrics()
+	m.IncrementMerge()
+	s := m.Snapshot()
+	assert.Equal(t, int64(1), s.MergeCount)
+}
+
+func TestIsLeafPageError(t *testing.T) {
+	assert.True(t, isLeafPageError(fmt.Errorf("page 5 is not a node page")))
+	assert.False(t, isLeafPageError(fmt.Errorf("some other error")))
+}
+
+func TestNilTracer_NoPanic(t *testing.T) {
+	// Verify nilTracer no-op methods don't panic (coverage for tracer.go).
+	tr := &nilTracer{}
+	tr.LogOp("test")
+	tr.LogPageRefOp(nil, "test")
+	tr.LogPageOp(1, "test")
+	tr.LogPageData(1, "test", nil)
+	result := tr.WithContext(nil)
+	assert.NotNil(t, result)
+}
+
+func TestTestTracer_NoPanic(t *testing.T) {
+	// Verify TestTracer no-op stubs don't panic (coverage for tracer_release.go).
+	tr := NewTestTracer(t, 0, 0)
+	tr.LogOp("test")
+	tr.LogPageRefOp(nil, "test")
+	tr.LogPageOp(1, "test")
+	tr.LogPageData(1, "test", nil)
+	tr.WithContext(nil)
+	assert.Nil(t, tr.DumpLogs())
+	assert.NoError(t, tr.DumpToFile(""))
+	assert.Equal(t, 0, tr.GetRefCount(0))
+	tr.Close()
 }

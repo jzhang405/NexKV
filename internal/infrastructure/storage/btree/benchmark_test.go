@@ -227,3 +227,78 @@ func BenchmarkBTreeConcurrentContention(b *testing.B) {
 	snapshot := metrics.Snapshot()
 	b.ReportMetric(float64(snapshot.CASRetryCount)/float64(b.N), "cas_retries/op")
 }
+
+// newProfileBTree creates a BTree with large storage for profiling benchmarks.
+func newProfileBTree(b *testing.B) *BTree {
+	b.Helper()
+	storage, err := NewOffheapBTreeStorage(4 * 1024 * 1024 * 1024)
+	if err != nil {
+		b.Fatalf("failed to create storage: %v", err)
+	}
+	tree, err := NewBTree(storage)
+	if err != nil {
+		b.Fatalf("failed to create btree: %v", err)
+	}
+	b.Cleanup(func() { tree.Close() })
+	return tree
+}
+
+// BenchmarkProfileGetParallel measures parallel read performance with pre-populated data.
+// Use with: go test -bench=BenchmarkProfileGetParallel -cpuprofile=cpu.prof -memprofile=mem.prof
+func BenchmarkProfileGetParallel(b *testing.B) {
+	tree := newProfileBTree(b)
+	ctx := context.Background()
+
+	// Pre-populate with 10000 keys
+	const maxKeys = 10000
+	for i := range maxKeys {
+		key := []byte("key-" + strconv.Itoa(i))
+		value := []byte("value-" + strconv.Itoa(i))
+		if err := tree.Set(ctx, key, value); err != nil {
+			b.Fatalf("Setup Set failed: %v", err)
+		}
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			key := []byte("key-" + strconv.Itoa(i%maxKeys))
+			_, err := tree.Get(ctx, key)
+			if err != nil {
+				b.Fatalf("Get failed: %v", err)
+			}
+			i++
+		}
+	})
+}
+
+// BenchmarkProfileSetSequential measures sequential write performance with metrics.
+func BenchmarkProfileSetSequential(b *testing.B) {
+	storage, err := NewOffheapBTreeStorage(4 * 1024 * 1024 * 1024)
+	if err != nil {
+		b.Fatalf("failed to create storage: %v", err)
+	}
+	metrics := &BTreeMetrics{}
+	tree, err := NewBTreeWithMetrics(storage, metrics)
+	if err != nil {
+		b.Fatalf("failed to create btree: %v", err)
+	}
+	b.Cleanup(func() { tree.Close() })
+
+	ctx := context.Background()
+	const maxKeys = 10000
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := []byte("key-" + strconv.Itoa(i%maxKeys))
+		value := []byte("value-" + strconv.Itoa(i%maxKeys))
+		if err := tree.Set(ctx, key, value); err != nil {
+			b.Fatalf("Set failed: %v", err)
+		}
+	}
+
+	snapshot := metrics.Snapshot()
+	b.ReportMetric(float64(snapshot.CASRetryCount)/float64(b.N), "cas_retries/op")
+	b.ReportMetric(float64(snapshot.SplitCount), "splits")
+}

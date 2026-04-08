@@ -360,3 +360,52 @@ func TestNodePageHandle_InsertChildOutOfRange(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "out of range")
 }
+
+// --- Page Accessor & Count Tests ---
+
+func TestGetPageAccessor(t *testing.T) {
+	s := newTestStorage(t)
+
+	pa := s.GetPageAccessor()
+	assert.NotNil(t, pa, "GetPageAccessor should return non-nil PageAccessor")
+}
+
+func TestAllocatedPageCount(t *testing.T) {
+	s := newTestStorage(t)
+
+	assert.Equal(t, uint32(0), s.AllocatedPageCount(), "no pages allocated yet")
+
+	_, err := s.AllocLeafPage()
+	require.NoError(t, err)
+	assert.Equal(t, uint32(1), s.AllocatedPageCount(), "one page allocated")
+
+	_, err = s.AllocNodePage()
+	require.NoError(t, err)
+	assert.Equal(t, uint32(2), s.AllocatedPageCount(), "two pages allocated")
+}
+
+func TestIsLeafPage(t *testing.T) {
+	s := newTestStorage(t)
+
+	leafID, err := s.AllocLeafPage()
+	require.NoError(t, err)
+	assert.True(t, s.IsLeafPage(leafID), "leaf page should return true")
+
+	nodeID, err := s.AllocNodePage()
+	require.NoError(t, err)
+	assert.False(t, s.IsLeafPage(nodeID), "node page should return false")
+}
+
+func TestCopyLeafPage_InvalidID(t *testing.T) {
+	s := newTestStorage(t)
+
+	_, _, err := s.CopyLeafPage(model.PageID(math.MaxUint32) + 1)
+	assert.Error(t, err, "CopyLeafPage with overflow PageID should fail")
+}
+
+func TestCopyNodePage_InvalidID(t *testing.T) {
+	s := newTestStorage(t)
+
+	_, _, err := s.CopyNodePage(model.PageID(math.MaxUint32) + 1)
+	assert.Error(t, err, "CopyNodePage with overflow PageID should fail")
+}

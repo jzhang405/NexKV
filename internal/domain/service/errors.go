@@ -56,6 +56,5 @@ var (
 
 // Wrap 和 Wrapf 从 pkg/errors 重新导出（便于 infrastructure 层使用）
 var (
-	Wrap  = errors.Wrap
-	Wrapf = errors.Wrapf
+	Wrap = errors.Wrap
 )

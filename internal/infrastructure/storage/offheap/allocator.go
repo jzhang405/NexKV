@@ -1,0 +1,35 @@
+// Copyright 2026 NexKV Authors. All rights reserved.
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file.
+
+package offheap
+
+import (
+	"unsafe"
+
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
+)
+
+// OffHeapAllocator 跨平台 Off-Heap 内存分配接口
+type OffHeapAllocator interface {
+	// Alloc 分配指定大小的 Off-Heap 内存
+	Alloc(size int) (unsafe.Pointer, error)
+
+	// Free 释放 Off-Heap 内存
+	Free(ptr unsafe.Pointer, size int) error
+
+	// Platform 返回支持的平台名称
+	Platform() string
+
+	// PageSize 返回平台内存页大小
+	PageSize() int
+}
+
+// NewAllocator 创建当前平台的 Off-Heap 分配器
+func NewAllocator(size int) (OffHeapAllocator, error) {
+	if size <= 0 {
+		return nil, errpkg.OffHeapAllocatorSizeMustBePositive(size)
+	}
+
+	return newPlatformAllocator(size)
+}

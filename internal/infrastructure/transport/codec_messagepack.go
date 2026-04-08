@@ -9,6 +9,7 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/constants"
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/pkg/errors"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -57,7 +58,7 @@ func (c *MessagePackCodec) Encode(msg model.Message) ([]byte, error) {
 
 	data, err := msgpack.Marshal(wire)
 	if err != nil {
-		return nil, service.Wrapf(service.ErrCodecFailure, "%v", err)
+		return nil, errors.Wrap(err, "msgpack marshal failed")
 	}
 
 	return data, nil
@@ -71,7 +72,7 @@ func (c *MessagePackCodec) Decode(data []byte) (model.Message, error) {
 
 	var wire messageWire
 	if err := msgpack.Unmarshal(data, &wire); err != nil {
-		return nil, service.Wrapf(service.ErrCodecFailure, "%v", err)
+		return nil, errors.Wrap(err, "msgpack unmarshal failed")
 	}
 
 	// P1-2 修复：字段验证
@@ -80,7 +81,7 @@ func (c *MessagePackCodec) Decode(data []byte) (model.Message, error) {
 	}
 	// MessageType 是 int 类型，检查是否在有效范围内
 	if wire.Type < model.MessageTypeRequest || wire.Type > model.MessageTypeEvent {
-		return nil, service.Wrapf(service.ErrCodecFailure, "invalid message type: %d", wire.Type)
+		return nil, errors.WrapInt(service.ErrCodecFailure, "invalid message type", int(wire.Type))
 	}
 	// Source 和 Target 可以为空（用于广播场景）
 	// 但需要验证格式是否有效
@@ -176,7 +177,7 @@ func (c *MessagePackStreamCodec) EncodeToWriter(w io.Writer, msg model.Message) 
 	// 2. 写入长度前缀（大端序）
 	length := uint32(len(data))
 	if err := binary.Write(w, binary.BigEndian, length); err != nil {
-		return service.Wrapf(service.ErrCodecFailure, "failed to write length: %v", err)
+		return errors.Wrap(err, "failed to write length")
 	}
 
 	// 3. 写入消息数据（循环确保完全写入）
@@ -184,7 +185,7 @@ func (c *MessagePackStreamCodec) EncodeToWriter(w io.Writer, msg model.Message) 
 	for written < len(data) {
 		n, err := w.Write(data[written:])
 		if err != nil {
-			return service.Wrapf(service.ErrCodecFailure, "failed to write data: %v", err)
+			return errors.Wrap(err, "failed to write data")
 		}
 		written += n
 	}
@@ -201,19 +202,19 @@ func (c *MessagePackStreamCodec) DecodeFromReader(r io.Reader) (model.Message, e
 		if err == io.EOF {
 			return nil, io.EOF
 		}
-		return nil, service.Wrapf(service.ErrCodecFailure, "failed to read length: %v", err)
+		return nil, errors.Wrap(err, "failed to read length")
 	}
 
 	// 2. 检查消息大小（使用可配置的限制）
 	if length > c.maxMessageSize {
-		return nil, service.Wrapf(service.ErrMessageTooLarge, "message too large (%d bytes, limit %d bytes)",
-			length, c.maxMessageSize)
+		return nil, errors.WrapInt2(errors.ErrMessageTooLarge, "message too large",
+			int(length), int(c.maxMessageSize))
 	}
 
 	// 3. 读取消息数据
 	data := make([]byte, length)
 	if _, err := io.ReadFull(r, data); err != nil {
-		return nil, service.Wrapf(service.ErrCodecFailure, "failed to read data: %v", err)
+		return nil, errors.Wrap(err, "failed to read data")
 	}
 
 	// 4. 解码消息

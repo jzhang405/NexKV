@@ -34,7 +34,7 @@ func (s *ThreeNodesClusterScenario) Setup(ctx context.Context, cluster framework
 	for i := range 3 {
 		node, err := adapters.NewTransportAdapter(nil)
 		if err != nil {
-			return errors.Wrapf(err, "failed to create node%d", i+1)
+			return errors.WrapInt(err, "failed to create node", i+1)
 		}
 		s.nodes = append(s.nodes, node)
 	}
@@ -42,7 +42,7 @@ func (s *ThreeNodesClusterScenario) Setup(ctx context.Context, cluster framework
 	// 启动所有节点
 	for i, node := range s.nodes {
 		if err := node.Start(ctx); err != nil {
-			return errors.Wrapf(err, "failed to start node%d", i+1)
+			return errors.WrapInt(err, "failed to start node", i+1)
 		}
 	}
 
@@ -63,7 +63,7 @@ func (s *ThreeNodesClusterScenario) Execute(ctx context.Context, cluster framewo
 			}
 
 			if err := source.ConnectTo(ctx, target); err != nil {
-				return errors.Wrapf(err, "node%d failed to connect to node%d", i+1, j+1)
+				return errors.WrapInt2(err, "node failed to connect", i+1, j+1)
 			}
 		}
 	}
@@ -80,7 +80,7 @@ func (s *ThreeNodesClusterScenario) Verify(ctx context.Context, cluster framewor
 	for i, node := range s.nodes {
 		peers := node.GetConnectedPeers()
 		if len(peers) != 2 {
-			return errors.Wrapf(errors.ErrConnectionFailed, "node%d should have 2 peers, got %d", i+1, len(peers))
+			return errors.WrapInt2(errors.ErrConnectionFailed, "node should have 2 peers, got", i+1, len(peers))
 		}
 	}
 
@@ -92,7 +92,7 @@ func (s *ThreeNodesClusterScenario) Verify(ctx context.Context, cluster framewor
 			}
 
 			if !node.IsConnectedTo(target.ID()) {
-				return errors.Wrapf(errors.ErrConnectionFailed, "node%d is not connected to node%d", i+1, j+1)
+				return errors.WrapInt2(errors.ErrConnectionFailed, "node is not connected to node", i+1, j+1)
 			}
 		}
 	}

@@ -38,3 +38,5 @@ go.work.sum
 bin/*
 thoughts/
 .claude/worktrees/
+.claude/hooks/
+.claude/settings.local.json

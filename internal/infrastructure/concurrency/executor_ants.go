@@ -3,6 +3,7 @@ package concurrency
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,8 +96,7 @@ func NewAntsExecutor(config *ProviderConfig) (*AntsPoolExecutor, error) {
 
 	// P0-04: 容量验证
 	if config.Capacity < MinPoolCapacity || config.Capacity > MaxPoolCapacity {
-		return nil, errors.Wrapf(errors.ErrInvalidParam, "invalid pool capacity: %d (must be between %d and %d)",
-			config.Capacity, MinPoolCapacity, MaxPoolCapacity)
+		return nil, errors.WrapInt(errors.ErrInvalidParam, "invalid pool capacity", config.Capacity)
 	}
 
 	pool, err := ants.NewPool(
@@ -245,8 +245,7 @@ func (p *AntsPoolExecutor) SetCapacity(capacity int) error {
 
 	// P0-04: 容量验证
 	if capacity < MinPoolCapacity || capacity > MaxPoolCapacity {
-		return errors.Wrapf(errors.ErrInvalidParam, "invalid capacity: %d (must be between %d and %d)",
-			capacity, MinPoolCapacity, MaxPoolCapacity)
+		return errors.WrapInt(errors.ErrInvalidParam, "invalid capacity", capacity)
 	}
 
 	p.pool.Tune(capacity)
@@ -284,7 +283,7 @@ func (p *AntsPoolExecutor) CloseWithTimeout(timeout time.Duration) error {
 	case <-time.After(timeout):
 		// 超时后强制标记为关闭
 		p.closed.Store(true)
-		return errors.Wrapf(errors.ErrTaskTimeout, "close timeout after %v", timeout)
+		return errors.Wrap(errors.ErrTaskTimeout, fmt.Sprintf("close timeout after %v", timeout))
 	}
 }
 

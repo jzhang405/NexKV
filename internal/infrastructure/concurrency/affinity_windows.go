@@ -46,7 +46,7 @@ func pinToCore(coreID int) error {
 	)
 
 	if ret == 0 {
-		return errors.Wrapf(errors.ErrCPUSetAffinityMask, "errno: %v", errno)
+		return errors.WrapInt(errors.ErrCPUSetAffinityMask, "errno", int(errno))
 	}
 
 	return nil

@@ -21,6 +21,7 @@ func TestDefaultRPCConfig(t *testing.T) {
 
 	if config == nil {
 		t.Fatal("DefaultRPCConfig should not return nil")
+		return //nolint:govet // unreachable, satisfies staticcheck SA5011
 	}
 
 	// 验证默认值

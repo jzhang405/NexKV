@@ -145,7 +145,7 @@ func (h *HLC) MarshalBinary() ([]byte, error) {
 // UnmarshalBinary 从二进制反序列化 HLC
 func (h *HLC) UnmarshalBinary(data []byte) error {
 	if len(data) != 10 {
-		return errors.Wrapf(errors.ErrClockInvalidSize, "expected 10 bytes, got %d", len(data))
+		return errors.WrapInt(errors.ErrClockInvalidSize, "expected 10 bytes, got", len(data))
 	}
 
 	buf := bytes.NewReader(data)

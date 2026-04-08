@@ -4,29 +4,44 @@
 
 package btree
 
+import "github.com/jzhang405/NexKV/internal/domain/model"
+
 const (
-	// splitThreshold 触发分裂的键数量阈值
-	// 优化：与 maxKeys 对齐，确保分裂检查一致性
-	splitThreshold = 200
+	// HeaderSize is the size of the PageHeader struct in bytes.
+	// Go compiler inserts padding between deleted(uint8) and deleteEpoch(uint64)
+	// for alignment, resulting in 56 bytes total.
+	HeaderSize = 56
 
-	// maxInternalKeys 内部节点最大键数量
-	// 与 checkPageFull 中的 maxIndexEntries (180) 对齐
-	// 确保在页面真正满之前触发分裂
-	maxInternalKeys = 180
+	// MaxInternalKeys is the maximum number of keys in an internal node.
+	// Calculated as: (PageSize - HeaderSize) / (IndexEntrySize + avgKeySize)
+	// = (4096 - 56) / (16 + 16) = 126 (based on avgKeySize=16B).
+	MaxInternalKeys = 126
 
-	// InitialLeafCapacity 叶子节点初始容量
-	// 优化：增大初始容量，减少扩容次数，降低 GC 压力
-	// 更新：从 128 → 200（与 splitThreshold 对齐）
-	InitialLeafCapacity = 200
+	// IndexEntrySize is the size of an IndexEntry (keyOff + keyLen + child) in bytes.
+	IndexEntrySize = 16
 
-	// InitialInternalCapacity 内部节点初始容量
-	InitialInternalCapacity = 16
+	// LeafEntrySize is the size of a LeafEntry (keyOff + keyLen + valOff + valLen) in bytes.
+	LeafEntrySize = 16
 
-	// DefaultSliceCapacity 默认切片容量
-	// 优化：从 8 → 32 → 256，大幅减少扩容次数和 GC 压力
-	// 分析显示 insertSlice 占 51% 内存分配，主要原因是频繁扩容
-	DefaultSliceCapacity = 256
+	// PageSize is the page size, referencing the domain model default.
+	PageSize = model.DefaultPageSize
 
-	// DefaultChildSlots 默认子节点槽数量
-	DefaultChildSlots = 17
+	// UsableSize is the number of usable bytes per page (excluding header).
+	UsableSize = PageSize - HeaderSize
+
+	// MergeThreshold is the capacity threshold below which a merge is triggered.
+	// A page with Capacity() < MergeThreshold should be considered for merge.
+	MergeThreshold = 0.5
+
+	// MaxCASRetries is the maximum number of CAS retry attempts in writeOperation.
+	MaxCASRetries = 100
+
+	// SpinLockBackoffThreshold is the number of Splitting retry attempts before
+	// yielding the CPU via runtime.Gosched(). Below this threshold, the goroutine
+	// spins on the cache line to minimize latency; above it, yields to reduce contention.
+	SpinLockBackoffThreshold = 16
+
+	// MaxParentCASSpins is the maximum number of spin iterations for parent CAS
+	// in handleParentCASWithSpin before giving up and returning ErrCASConflict.
+	MaxParentCASSpins = 100
 )

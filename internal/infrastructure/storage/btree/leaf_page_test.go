@@ -1,310 +1,465 @@
-package btree
+// Copyright 2026 NexKV Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
-//nolint:errcheck // 测试代码中忽略部分返回值检查
+package btree
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"testing"
 
-	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewLeafPage(t *testing.T) {
-	page := NewLeafPage(1)
+// --- Helpers ---
 
-	assert.Equal(t, model.PageID(1), page.GetPageID())
-	assert.Equal(t, uint64(0), page.GetVersion())
-	assert.Equal(t, 0, page.NumKeys())
+// newTestLeaf creates an empty leaf page and returns its LeafPage handle.
+func newTestLeaf(t *testing.T) (LeafPage, *OffheapBTreeStorage) {
+	t.Helper()
+	s := newTestStorage(t)
+	id, err := s.AllocLeafPage()
+	require.NoError(t, err)
+	leaf, err := s.GetLeafPage(id)
+	require.NoError(t, err)
+	return leaf, s
 }
 
-func TestLeafPage_InsertGet(t *testing.T) {
-	page := NewLeafPage(1)
+// insertEntries inserts key-value pairs sequentially and returns the last LeafPage handle.
+func insertEntries(t *testing.T, leaf LeafPage, keys, vals [][]byte) LeafPage {
+	t.Helper()
+	current := leaf
+	for i := range keys {
+		var err error
+		current, err = current.Insert(keys[i], vals[i])
+		require.NoError(t, err, "Insert(%q) failed", keys[i])
+	}
+	return current
+}
 
-	// 插入第一个键值对
-	key1 := []byte("key1")
-	value1 := []byte("value1")
-	ok, err := page.Insert(key1, value1)
+// --- Insert + Search ---
+
+func TestLeafInsertSearch(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	keys := [][]byte{[]byte("a"), []byte("b"), []byte("c"), []byte("d"), []byte("e")}
+	vals := [][]byte{[]byte("1"), []byte("2"), []byte("3"), []byte("4"), []byte("5")}
+	leaf = insertEntries(t, leaf, keys, vals)
+
+	for i, k := range keys {
+		idx, found := leaf.Search(k)
+		assert.True(t, found, "Search(%q) should find key", k)
+		assert.Equal(t, i, idx, "Search(%q) index", k)
+		assert.Equal(t, vals[i], leaf.GetValue(idx))
+	}
+}
+
+func TestLeafSearchMiss(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	leaf, _ = leaf.Insert([]byte("b"), []byte("2"))
+	leaf, _ = leaf.Insert([]byte("d"), []byte("4"))
+
+	idx, found := leaf.Search([]byte("a"))
+	assert.False(t, found)
+	assert.Equal(t, 0, idx)
+
+	idx, found = leaf.Search([]byte("c"))
+	assert.False(t, found)
+	assert.Equal(t, 1, idx)
+
+	idx, found = leaf.Search([]byte("e"))
+	assert.False(t, found)
+	assert.Equal(t, 2, idx)
+
+	idx, found = leaf.Search([]byte("z"))
+	assert.False(t, found)
+	assert.Equal(t, 2, idx)
+}
+
+// --- COW Immutability ---
+
+func TestLeafCOW(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	leaf, _ = leaf.Insert([]byte("key1"), []byte("val1"))
+	origID := leaf.PageID()
+
+	newLeaf, err := leaf.Insert([]byte("key2"), []byte("val2"))
 	require.NoError(t, err)
-	assert.True(t, ok)
-	assert.Equal(t, 1, page.NumKeys())
 
-	// 验证插入
-	value, found := page.Get(key1)
+	assert.NotEqual(t, origID, newLeaf.PageID(), "Insert must return new pageID")
+	// Original page should still have key1
+	idx, found := leaf.Search([]byte("key1"))
 	assert.True(t, found)
-	assert.Equal(t, value1, value)
-
-	// 插入第二个键值对
-	key2 := []byte("key2")
-	value2 := []byte("value2")
-	ok, err = page.Insert(key2, value2)
-	require.NoError(t, err)
-	assert.True(t, ok)
-	assert.Equal(t, 2, page.NumKeys())
-
-	// 验证顺序（键应该有序）
-	assert.Equal(t, -1, bytes.Compare(page.keys[0], page.keys[1]))
+	assert.Equal(t, []byte("val1"), leaf.GetValue(idx))
 }
 
-func TestLeafPage_InsertDuplicate(t *testing.T) {
-	page := NewLeafPage(1)
+func TestLeafCOWOriginalImmutable(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
 
-	key := []byte("key")
-	value1 := []byte("value1")
-	value2 := []byte("value2")
+	leaf, _ = leaf.Insert([]byte("k1"), []byte("v1"))
+	origCount := leaf.Count()
+	origKey := leaf.GetKey(0)
+	origVal := leaf.GetValue(0)
 
-	// 第一次插入
-	ok, err := page.Insert(key, value1)
+	// Mutate via Insert
+	newLeaf, err := leaf.Insert([]byte("k2"), []byte("v2"))
 	require.NoError(t, err)
-	assert.True(t, ok)
 
-	// 第二次插入（更新）
-	ok, err = page.Insert(key, value2)
-	require.NoError(t, err)
-	assert.False(t, ok) // 不是新插入
+	// Original unchanged
+	assert.Equal(t, origCount, leaf.Count(), "original count must not change")
+	assert.Equal(t, origKey, leaf.GetKey(0))
+	assert.Equal(t, origVal, leaf.GetValue(0))
 
-	// 验证值被更新
-	value, found := page.Get(key)
-	assert.True(t, found)
-	assert.Equal(t, value2, value)
+	// New page has both entries
+	assert.Equal(t, 2, newLeaf.Count())
 }
 
-func TestLeafPage_Delete(t *testing.T) {
-	page := NewLeafPage(1)
+// --- Key Ordering ---
 
-	// 插入键值对
-	key1 := []byte("key1")
-	value1 := []byte("value1")
-	key2 := []byte("key2")
-	value2 := []byte("value2")
+func TestLeafInsertKeyOrdering(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
 
-	_, err := page.Insert(key1, value1)
+	// Insert in reverse order
+	keys := [][]byte{[]byte("e"), []byte("c"), []byte("a"), []byte("d"), []byte("b")}
+	vals := [][]byte{[]byte("5"), []byte("3"), []byte("1"), []byte("4"), []byte("2")}
+	leaf = insertEntries(t, leaf, keys, vals)
+
+	count := leaf.Count()
+	for i := 1; i < count; i++ {
+		prev := leaf.GetKey(i - 1)
+		curr := leaf.GetKey(i)
+		assert.True(t, bytes.Compare(prev, curr) < 0,
+			"keys must be sorted: %q < %q at idx %d", prev, curr, i)
+	}
+}
+
+// --- Update ---
+
+func TestLeafUpdateValue(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	leaf, _ = leaf.Insert([]byte("key"), []byte("old"))
+	origCount := leaf.Count()
+
+	newLeaf, err := leaf.Update(0, []byte("new"))
 	require.NoError(t, err)
-	_, err = page.Insert(key2, value2)
+
+	assert.Equal(t, origCount, newLeaf.Count(), "Update must not change count")
+	assert.Equal(t, []byte("new"), newLeaf.GetValue(0))
+}
+
+// --- Delete ---
+
+func TestLeafDeleteMiddle(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	keys := [][]byte{[]byte("a"), []byte("b"), []byte("c"), []byte("d")}
+	vals := [][]byte{[]byte("1"), []byte("2"), []byte("3"), []byte("4")}
+	leaf = insertEntries(t, leaf, keys, vals)
+
+	// Delete "b" (idx 1)
+	newLeaf, err := leaf.Delete(1)
 	require.NoError(t, err)
 
-	// 删除存在的键
-	ok, err := page.Delete(key1)
-	require.NoError(t, err)
-	assert.True(t, ok)
-	assert.Equal(t, 1, page.NumKeys())
+	assert.Equal(t, 3, newLeaf.Count())
 
-	// 验证删除
-	_, found := page.Get(key1)
+	// "b" should not be found
+	_, found := newLeaf.Search([]byte("b"))
 	assert.False(t, found)
 
-	// 删除不存在的键
-	ok, err = page.Delete([]byte("notexist"))
-	require.NoError(t, err)
-	assert.False(t, ok)
+	// Remaining keys should be ordered
+	assert.Equal(t, []byte("a"), newLeaf.GetKey(0))
+	assert.Equal(t, []byte("c"), newLeaf.GetKey(1))
+	assert.Equal(t, []byte("d"), newLeaf.GetKey(2))
 }
 
-func TestLeafPage_Update(t *testing.T) {
-	page := NewLeafPage(1)
+func TestLeafDeleteFirst(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
 
-	key := []byte("key")
-	value1 := []byte("value1")
-	value2 := []byte("value2")
+	leaf, _ = leaf.Insert([]byte("a"), []byte("1"))
+	leaf, _ = leaf.Insert([]byte("b"), []byte("2"))
+	leaf, _ = leaf.Insert([]byte("c"), []byte("3"))
 
-	_, err := page.Insert(key, value1)
+	newLeaf, err := leaf.Delete(0)
 	require.NoError(t, err)
 
-	// 更新存在的键
-	err = page.Update(key, value2)
-	require.NoError(t, err)
-
-	value, found := page.Get(key)
-	assert.True(t, found)
-	assert.Equal(t, value2, value)
+	assert.Equal(t, 2, newLeaf.Count())
+	assert.Equal(t, []byte("b"), newLeaf.GetKey(0))
+	assert.Equal(t, []byte("c"), newLeaf.GetKey(1))
 }
 
-func TestLeafPage_Split(t *testing.T) {
-	page := NewLeafPage(1)
+func TestLeafDeleteLast(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
 
-	// 插入多个键值对
-	for i := range 5 {
-		key := []byte{byte('a' + byte(i))}
-		value := []byte{byte('0' + byte(i))}
-		_, err := page.Insert(key, value)
+	leaf, _ = leaf.Insert([]byte("a"), []byte("1"))
+	leaf, _ = leaf.Insert([]byte("b"), []byte("2"))
+	leaf, _ = leaf.Insert([]byte("c"), []byte("3"))
+
+	newLeaf, err := leaf.Delete(2)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, newLeaf.Count())
+	assert.Equal(t, []byte("a"), newLeaf.GetKey(0))
+	assert.Equal(t, []byte("b"), newLeaf.GetKey(1))
+}
+
+func TestLeafDeleteNotFound(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	leaf, _ = leaf.Insert([]byte("a"), []byte("1"))
+
+	_, err := leaf.Delete(-1)
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, ErrKeyNotFound))
+
+	_, err = leaf.Delete(5)
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, ErrKeyNotFound))
+}
+
+// --- Split ---
+
+func TestLeafSplit(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	// Fill with enough entries
+	for i := 0; i < 10; i++ {
+		key := []byte(fmt.Sprintf("key-%03d", i))
+		val := []byte(fmt.Sprintf("val-%03d", i))
+		var err error
+		leaf, err = leaf.Insert(key, val)
 		require.NoError(t, err)
 	}
 
-	// 分裂页面
-	newPage, splitKey, err := page.Split()
+	origCount := leaf.Count()
+	left, right, splitKey, err := leaf.Split()
 	require.NoError(t, err)
-	assert.NotNil(t, newPage)
-	assert.NotNil(t, splitKey)
-	assert.Equal(t, []byte("c"), splitKey) // 第3个键作为分裂键
 
-	// 验证原页面保留前半部分（不包含分裂键）
-	assert.Equal(t, 2, page.NumKeys())
-	assert.Equal(t, []byte("a"), page.keys[0])
-	assert.Equal(t, []byte("b"), page.keys[1])
+	assert.Equal(t, origCount, left.Count()+right.Count(),
+		"left.Count + right.Count must equal original count")
+	assert.NotEmpty(t, splitKey)
 
-	// 新分裂逻辑 - 右子节点包含分裂键
-	// 验证新页面包含后半部分（包含分裂键）
-	assert.Equal(t, 3, newPage.NumKeys())
-	assert.Equal(t, []byte("c"), newPage.keys[0]) // 包含分裂键
-	assert.Equal(t, []byte("d"), newPage.keys[1])
-	assert.Equal(t, []byte("e"), newPage.keys[2])
+	// splitKey boundary: all left keys < splitKey <= all right keys
+	for i := 0; i < left.Count(); i++ {
+		assert.True(t, bytes.Compare(left.GetKey(i), splitKey) < 0,
+			"left key %q must be < splitKey %q", left.GetKey(i), splitKey)
+	}
+	for i := 0; i < right.Count(); i++ {
+		assert.True(t, bytes.Compare(right.GetKey(i), splitKey) >= 0,
+			"right key %q must be >= splitKey %q", right.GetKey(i), splitKey)
+	}
 }
 
-func TestLeafPage_SplitError(t *testing.T) {
-	page := NewLeafPage(1)
+func TestLeafSplitKeyBoundary(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
 
-	// 只有一个键，无法分裂
-	key := []byte("key")
-	value := []byte("value")
-	page.Insert(key, value)
+	keys := [][]byte{[]byte("a"), []byte("b"), []byte("c"), []byte("d"), []byte("e")}
+	vals := [][]byte{[]byte("1"), []byte("2"), []byte("3"), []byte("4"), []byte("5")}
+	leaf = insertEntries(t, leaf, keys, vals)
 
-	_, _, err := page.Split()
+	left, right, splitKey, err := leaf.Split()
+	require.NoError(t, err)
+
+	// splitKey must be the first key of right page
+	assert.Equal(t, right.GetKey(0), splitKey)
+	_ = left // left is valid
+}
+
+func TestLeafSplitEvenOdd(t *testing.T) {
+	for _, n := range []int{4, 5, 6, 7, 10, 11} {
+		t.Run(fmt.Sprintf("count=%d", n), func(t *testing.T) {
+			leaf, _ := newTestLeaf(t)
+
+			for i := 0; i < n; i++ {
+				key := []byte(fmt.Sprintf("k%03d", i))
+				val := []byte(fmt.Sprintf("v%03d", i))
+				var err error
+				leaf, err = leaf.Insert(key, val)
+				require.NoError(t, err)
+			}
+
+			left, right, splitKey, err := leaf.Split()
+			require.NoError(t, err)
+			assert.Equal(t, n, left.Count()+right.Count())
+			assert.NotEmpty(t, splitKey)
+		})
+	}
+}
+
+func TestLeafSplitTooFew(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	_, _, _, err := leaf.Split()
+	assert.Error(t, err, "Split on empty page should fail")
+
+	leaf, _ = leaf.Insert([]byte("a"), []byte("1"))
+	_, _, _, err = leaf.Split()
+	assert.Error(t, err, "Split on single-entry page should fail")
+}
+
+// --- GetKey/GetValue returns copy ---
+
+func TestLeafGetKeyReturnsCopy(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	leaf, _ = leaf.Insert([]byte("original"), []byte("val"))
+	key := leaf.GetKey(0)
+	key[0] = 'X' // mutate returned copy
+
+	// Original should be unchanged
+	assert.Equal(t, []byte("original"), leaf.GetKey(0))
+}
+
+func TestLeafGetValueReturnsCopy(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	leaf, _ = leaf.Insert([]byte("key"), []byte("original"))
+	val := leaf.GetValue(0)
+	val[0] = 'X' // mutate returned copy
+
+	assert.Equal(t, []byte("original"), leaf.GetValue(0))
+}
+
+// --- IsFull / Capacity ---
+
+func TestLeafIsFull(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+	assert.False(t, leaf.IsFull(4, 4), "empty page should not be full")
+
+	// Fill until full or until alloc fails
+	current := leaf
+	for i := 0; i < 200; i++ {
+		key := []byte(fmt.Sprintf("k%03d", i))
+		val := []byte(fmt.Sprintf("v%03d", i))
+		newLeaf, insertErr := current.Insert(key, val)
+		if insertErr != nil {
+			// Page full — this is expected
+			require.NotNil(t, current, "current leaf must not be nil before break")
+			break
+		}
+		current = newLeaf
+	}
+	require.NotNil(t, current, "current leaf must not be nil")
+	assert.True(t, current.Capacity() > 0.8, "page should be mostly full after many inserts")
+}
+
+func TestLeafCapacity(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+	// Empty page has header overhead but no KV data; capacity should be very small
+	assert.True(t, leaf.Capacity() < 0.05, "empty page capacity should be near 0, got %f", leaf.Capacity())
+
+	leaf, _ = leaf.Insert([]byte("key"), []byte("val"))
+	assert.True(t, leaf.Capacity() > 0, "page with data should have capacity > 0")
+	assert.True(t, leaf.Capacity() < 1.0, "page with one entry should have capacity < 1.0")
+}
+
+// --- Duplicate Insert ---
+
+func TestLeafDuplicateInsert(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	leaf, _ = leaf.Insert([]byte("key"), []byte("val1"))
+	_, err := leaf.Insert([]byte("key"), []byte("val2"))
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "less than 2 keys")
+	assert.True(t, errors.Is(err, ErrDuplicateKey))
 }
 
-func TestLeafPage_Clone(t *testing.T) {
-	page := NewLeafPage(1)
+// --- Reverse order insert ---
 
-	// 插入数据
-	for i := 1; i <= 3; i++ {
-		key := []byte{byte('a' + byte(i))}
-		value := []byte{byte('0' + byte(i))}
-		page.Insert(key, value)
+func TestLeafInsertReverseOrder(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	keys := [][]byte{[]byte("z"), []byte("y"), []byte("x"), []byte("w"), []byte("v")}
+	vals := [][]byte{[]byte("5"), []byte("4"), []byte("3"), []byte("2"), []byte("1")}
+	leaf = insertEntries(t, leaf, keys, vals)
+
+	// All keys should be searchable
+	for _, k := range keys {
+		_, found := leaf.Search(k)
+		assert.True(t, found, "Search(%q) should find key", k)
 	}
 
-	// 克隆
-	cloned := page.Clone()
-
-	// 验证克隆的页面
-	assert.Equal(t, page.GetPageID(), cloned.GetPageID())
-	assert.Equal(t, page.GetVersion()+1, cloned.GetVersion()) // Clone 会增加版本号
-	assert.Equal(t, page.NumKeys(), cloned.NumKeys())
-
-	// 验证数据一致性（通过 Get 方法）
-	for i := 1; i <= 3; i++ {
-		key := []byte{byte('a' + byte(i))}
-		expectedValue := []byte{byte('0' + byte(i))}
-		val, found := cloned.Get(key)
-		assert.True(t, found)
-		assert.Equal(t, expectedValue, val)
+	// Keys should be in ascending order
+	for i := 1; i < leaf.Count(); i++ {
+		assert.True(t, bytes.Compare(leaf.GetKey(i-1), leaf.GetKey(i)) < 0)
 	}
-
-	// 验证独立性：通过 Insert 修改 clone
-	newKey := []byte("new")
-	newValue := []byte("new_val")
-	cloned.Insert(newKey, newValue)
-
-	// original 的 Get 应该找不到 newKey
-	_, found := page.Get(newKey)
-	assert.False(t, found)
-
-	// cloned 的 Get 应该能找到 newKey
-	val, found := cloned.Get(newKey)
-	assert.True(t, found)
-	assert.Equal(t, newValue, val)
 }
 
-func TestLeafPage_Range(t *testing.T) {
-	page := NewLeafPage(1)
+// --- Empty key ---
 
-	// 插入数据
-	keys := [][]byte{[]byte("key1"), []byte("key2"), []byte("key3")}
-	values := [][]byte{[]byte("value1"), []byte("value2"), []byte("value3")}
+func TestLeafInsertEmptyKey(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
 
-	for i := range len(keys) {
-		page.Insert(keys[i], values[i])
-	}
+	leaf, err := leaf.Insert([]byte{}, []byte("val"))
+	require.NoError(t, err, "Insert empty key should not panic")
 
-	// 遍历
-	count := 0
-	err := page.Range(func(key, value []byte) error {
-		count++
-		assert.Equal(t, keys[count-1], key)
-		assert.Equal(t, values[count-1], value)
-		return nil
-	})
+	idx, found := leaf.Search([]byte{})
+	assert.True(t, found, "Search empty key should find it")
+	assert.Equal(t, 0, idx)
+	assert.Equal(t, []byte("val"), leaf.GetValue(idx))
+}
 
+// --- Validate ---
+
+func TestLeafValidate(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	keys := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
+	vals := [][]byte{[]byte("1"), []byte("2"), []byte("3")}
+	leaf = insertEntries(t, leaf, keys, vals)
+
+	err := leaf.Validate()
+	assert.NoError(t, err)
+}
+
+// --- Update Tests ---
+
+func TestLeafUpdate_Success(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+
+	leaf, _ = leaf.Insert([]byte("key1"), []byte("val1"))
+	leaf, _ = leaf.Insert([]byte("key2"), []byte("val2"))
+
+	// Update with same-size value (OverwriteLeafValue path)
+	updated, err := leaf.Update(0, []byte("new1"))
 	require.NoError(t, err)
-	assert.Equal(t, 3, count)
+	assert.Equal(t, []byte("new1"), updated.GetValue(0))
+	assert.Equal(t, []byte("val2"), updated.GetValue(1))
 }
 
-func TestLeafPage_Serialize(t *testing.T) {
-	page := NewLeafPage(1)
+func TestLeafUpdate_OutOfRange(t *testing.T) {
+	leaf, _ := newTestLeaf(t)
+	leaf, _ = leaf.Insert([]byte("key1"), []byte("val1"))
 
-	// 插入数据
-	key := []byte("test")
-	value := []byte("test value")
-	page.Insert(key, value)
+	_, err := leaf.Update(-1, []byte("x"))
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, ErrKeyNotFound))
 
-	// 序列化
-	data, err := page.Serialize()
-	require.NoError(t, err)
-	assert.NotNil(t, data)
-	assert.Greater(t, len(data), 0)
-
-	// 反序列化
-	deserialized, err := DeserializeLeafPage(data)
-	require.NoError(t, err)
-	assert.NotNil(t, deserialized)
-
-	// 验证数据
-	assert.Equal(t, page.GetPageID(), deserialized.GetPageID())
-	assert.Equal(t, page.GetVersion(), deserialized.GetVersion())
-	assert.Equal(t, page.NumKeys(), deserialized.NumKeys())
-
-	// 验证键值对
-	origValue, _ := page.Get(key)
-	deserValue, _ := deserialized.Get(key)
-	assert.Equal(t, origValue, deserValue)
+	_, err = leaf.Update(99, []byte("x"))
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, ErrKeyNotFound))
 }
 
-func TestLeafPage_Size(t *testing.T) {
-	page := NewLeafPage(1)
+func TestLeafUpdate_LargerValue_NoPanic(t *testing.T) {
+	// This test covers the rebuild path in Update() when OverwriteLeafValue
+	// returns false (value is larger than original slot).
+	leaf, _ := newTestLeaf(t)
 
-	// 空页面大小
-	baseSize := page.Size()
-	assert.Greater(t, baseSize, 0)
+	leaf, _ = leaf.Insert([]byte("k"), []byte("v"))
+	leaf, _ = leaf.Insert([]byte("k2"), []byte("v2"))
 
-	// 插入数据后大小
-	key := []byte("key")
-	value := []byte("value")
-	page.Insert(key, value)
-
-	newSize := page.Size()
-	assert.Greater(t, newSize, baseSize)
-}
-
-func TestLeafPage_IsFull(t *testing.T) {
-	page := NewLeafPage(1)
-	maxKeys := 16
-
-	// 未满
-	assert.False(t, page.IsFull(maxKeys))
-
-	// 添加到 maxKeys-1
-	for i := 0; i < maxKeys-1; i++ {
-		key := []byte{byte('a' + byte(i%26))}
-		value := []byte("value")
-		page.Insert(key, value)
-		assert.False(t, page.IsFull(maxKeys))
+	bigVal := make([]byte, 200)
+	for i := range bigVal {
+		bigVal[i] = byte(i)
 	}
 
-	// 添加第 maxKeys 个
-	key := []byte("z")
-	value := []byte("last")
-	page.Insert(key, value)
-	assert.True(t, page.IsFull(maxKeys))
-}
-
-func TestLeafPage_GetVersion(t *testing.T) {
-	page := NewLeafPage(1)
-
-	assert.Equal(t, uint64(0), page.GetVersion())
-
-	page.SetVersion(5)
-	assert.Equal(t, uint64(5), page.GetVersion())
-
-	page.IncrementVersion()
-	assert.Equal(t, uint64(6), page.GetVersion())
+	// The main goal: Update with larger value should not panic or return unexpected error
+	updated, err := leaf.Update(0, bigVal)
+	require.NoError(t, err)
+	assert.NotNil(t, updated)
+	assert.Equal(t, 2, updated.Count())
 }

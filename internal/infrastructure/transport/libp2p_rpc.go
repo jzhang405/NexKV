@@ -10,6 +10,7 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/id"
+	"github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // Libp2pRPC 基于 libp2p 的 RPC 实现
@@ -199,7 +200,7 @@ func (r *Libp2pRPC) BroadcastCall(
 	// P1-2 修复：验证 PeerID 有效性
 	for i, peer := range to {
 		if peer == "" {
-			return service.BroadcastResult{}, service.Wrapf(service.ErrPeerIDInvalid, "empty PeerID at index %d", i)
+			return service.BroadcastResult{}, errors.WrapInt(service.ErrPeerIDInvalid, "empty PeerID at index", i)
 		}
 	}
 
@@ -261,7 +262,7 @@ func (r *Libp2pRPC) BroadcastAsync(
 func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []model.Message, tracker service.BroadcastProgress) error {
 	// P1-2 修复：输入验证
 	if len(targets) != len(msgs) {
-		return service.Wrapf(service.ErrInvalidParam, "targets and messages length mismatch: %d vs %d", len(targets), len(msgs))
+		return errors.WrapInt2(service.ErrInvalidParam, "targets and messages length mismatch", len(targets), len(msgs))
 	}
 
 	if len(targets) == 0 {
@@ -271,10 +272,10 @@ func (r *Libp2pRPC) WriteV(ctx context.Context, targets []model.PeerID, msgs []m
 	// P1-2 修复：验证 PeerID 和消息有效性
 	for i, target := range targets {
 		if target == "" {
-			return service.Wrapf(service.ErrPeerIDInvalid, "empty PeerID at index %d", i)
+			return errors.WrapInt(service.ErrPeerIDInvalid, "empty PeerID at index", i)
 		}
 		if msgs[i] == nil {
-			return service.Wrapf(service.ErrInvalidMessage, "nil message at index %d", i)
+			return errors.WrapInt(service.ErrInvalidMessage, "nil message at index", i)
 		}
 	}
 
@@ -340,7 +341,7 @@ func (r *Libp2pRPC) WriteVCall(
 
 	// P1-2 修复：输入验证
 	if len(targets) != len(msgs) {
-		return service.WriteVResult{}, service.Wrapf(service.ErrInvalidParam, "targets and messages length mismatch: %d vs %d", len(targets), len(msgs))
+		return service.WriteVResult{}, errors.WrapInt2(service.ErrInvalidParam, "targets and messages length mismatch", len(targets), len(msgs))
 	}
 
 	if len(targets) == 0 {
@@ -354,10 +355,10 @@ func (r *Libp2pRPC) WriteVCall(
 	// P1-2 修复：验证 PeerID 和消息有效性
 	for i, target := range targets {
 		if target == "" {
-			return service.WriteVResult{}, service.Wrapf(service.ErrPeerIDInvalid, "empty PeerID at index %d", i)
+			return service.WriteVResult{}, errors.WrapInt(service.ErrPeerIDInvalid, "empty PeerID at index", i)
 		}
 		if msgs[i] == nil {
-			return service.WriteVResult{}, service.Wrapf(service.ErrInvalidMessage, "nil message at index %d", i)
+			return service.WriteVResult{}, errors.WrapInt(service.ErrInvalidMessage, "nil message at index", i)
 		}
 	}
 
@@ -493,13 +494,13 @@ func (r *Libp2pRPC) doSendRequestAndWaitResponse(ctx context.Context, to model.P
 	// 打开流
 	stream, err := r.transport.OpenStream(ctx, to, "/nexkv/rpc/1.0.0")
 	if err != nil {
-		return service.Wrapf(service.ErrPeerUnreachable, "%v", err)
+		return errors.Wrap(err, "peer unreachable")
 	}
 
 	// P1-5 修复：使用 StreamCodec 编码请求（支持大消息和分帧）
 	if err := r.streamCodec.EncodeToWriter(stream, req); err != nil {
 		stream.Close()
-		return service.Wrapf(service.ErrCodecFailure, "%v", err)
+		return errors.Wrap(err, "codec failure")
 	}
 
 	// 异步读取响应（使用 StreamCodec 支持大消息）
@@ -553,13 +554,13 @@ func (r *Libp2pRPC) doSendRequestNoResponse(ctx context.Context, to model.PeerID
 	// 打开流
 	stream, err := r.transport.OpenStream(ctx, to, "/nexkv/rpc/1.0.0")
 	if err != nil {
-		return service.Wrapf(service.ErrPeerUnreachable, "%v", err)
+		return errors.Wrap(err, "peer unreachable")
 	}
 	defer stream.Close()
 
 	// 写入数据
 	if _, err := stream.Write(data); err != nil {
-		return service.Wrapf(service.ErrCodecFailure, "%v", err)
+		return errors.Wrap(err, "codec failure")
 	}
 
 	return nil

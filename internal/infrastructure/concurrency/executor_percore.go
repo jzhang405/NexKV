@@ -5,6 +5,7 @@ import (
 	"context"
 	"math/bits"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -405,13 +406,13 @@ func NewPerCoreExecutor(opts ...PerCoreOption) (*PerCoreExecutor, error) {
 // validateConfig 验证配置
 func validateConfig(config *PerCoreConfig) error {
 	if config.NumCores <= 0 {
-		return errors.Wrapf(ErrInvalidConfig, "NumCores must be positive, got %d", config.NumCores)
+		return errors.WrapInt(ErrInvalidConfig, "NumCores", config.NumCores)
 	}
 	if config.NumCores > MaxCores {
-		return errors.Wrapf(ErrInvalidConfig, "NumCores (%d) exceeds maximum (%d)", config.NumCores, MaxCores)
+		return errors.WrapInt2(ErrInvalidConfig, "NumCores exceeds max", config.NumCores, MaxCores)
 	}
 	if config.QueueSize <= 0 {
-		return errors.Wrapf(ErrInvalidConfig, "QueueSize must be positive, got %d", config.QueueSize)
+		return errors.WrapInt(ErrInvalidConfig, "QueueSize", config.QueueSize)
 	}
 	if config.PanicHandler == nil {
 		config.PanicHandler = defaultPanicHandler
@@ -611,7 +612,7 @@ func (e *PerCoreExecutor) submitToWorker(
 	// 检查队列容量（使用无锁版本，避免读锁升级写锁）
 	if worker.queue.LenUnsafe() >= e.config.QueueSize {
 		worker.cond.L.Unlock()
-		return errors.Wrapf(errors.ErrQueueFull, "worker %d", workerID)
+		return errors.WrapString(errors.ErrQueueFull, "worker", strconv.Itoa(workerID))
 	}
 
 	// Push 到队列（持锁）
@@ -652,7 +653,7 @@ func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority model
 
 	// 优化：在持锁之前检查队列容量（快速失败）
 	if worker.queue.Len() >= e.config.QueueSize {
-		return errors.Wrapf(errors.ErrQueueFull, "worker %d", workerID)
+		return errors.WrapString(errors.ErrQueueFull, "worker", strconv.Itoa(workerID))
 	}
 
 	// 创建任务项（在锁外，减少临界区）
@@ -674,7 +675,7 @@ func (e *PerCoreExecutor) SubmitWithPriority(ctx context.Context, priority model
 	// 再次检查队列容量（持锁期间，使用无锁版本避免读锁升级写锁）
 	if worker.queue.LenUnsafe() >= e.config.QueueSize {
 		worker.cond.L.Unlock()
-		return errors.Wrapf(errors.ErrQueueFull, "worker %d", workerID)
+		return errors.WrapString(errors.ErrQueueFull, "worker", strconv.Itoa(workerID))
 	}
 
 	// 添加到多级队列（O(1) 操作，已经在 queue.Push 内部处理锁）

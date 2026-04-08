@@ -59,7 +59,7 @@ func pinToCore(coreID int) error {
 	)
 
 	if errno != 0 {
-		return errors.Wrapf(errors.ErrCPUSetAffinityFailed, "errno: %v", errno)
+		return errors.WrapInt(errors.ErrCPUSetAffinityFailed, "errno", int(errno))
 	}
 
 	return nil

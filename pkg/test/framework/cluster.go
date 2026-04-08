@@ -123,7 +123,7 @@ func (c *DefaultCluster) Init(ctx context.Context) error {
 	defer c.mu.Unlock()
 
 	if c.status != EnvironmentStatusCreated {
-		return errors.Wrapf(errors.ErrInvalidState, "cluster must be in created state to init, current: %s", c.status)
+		return errors.WrapString(errors.ErrInvalidState, "cluster must be in created state to init, current: %s", c.status.String())
 	}
 
 	c.status = EnvironmentStatusCreating
@@ -138,7 +138,7 @@ func (c *DefaultCluster) Start(ctx context.Context) error {
 	defer c.mu.Unlock()
 
 	if c.status != EnvironmentStatusCreated && c.status != EnvironmentStatusStopped {
-		return errors.Wrapf(errors.ErrInvalidState, "cluster must be in created or stopped state to start, current: %s", c.status)
+		return errors.WrapString(errors.ErrInvalidState, "cluster must be in created or stopped state to start, current: %s", c.status.String())
 	}
 
 	c.status = EnvironmentStatusStarting
@@ -156,7 +156,7 @@ func (c *DefaultCluster) Stop(ctx context.Context) error {
 	defer c.mu.Unlock()
 
 	if c.status != EnvironmentStatusRunning {
-		return errors.Wrapf(errors.ErrInvalidState, "cluster must be in running state to stop, current: %s", c.status)
+		return errors.WrapString(errors.ErrInvalidState, "cluster must be in running state to stop, current: %s", c.status.String())
 	}
 
 	c.status = EnvironmentStatusStopping
@@ -202,7 +202,7 @@ func (c *DefaultCluster) AddNode(config NodeConfig) (TestNode, error) {
 	defer c.mu.Unlock()
 
 	if _, exists := c.nodes[config.ID]; exists {
-		return nil, errors.Wrapf(errors.ErrComponentExists, "node %s already exists", config.ID)
+		return nil, errors.WrapString(errors.ErrComponentExists, "node already exists", config.ID)
 	}
 
 	// 创建节点（具体实现由子类提供）
@@ -216,7 +216,7 @@ func (c *DefaultCluster) GetNode(id string) (TestNode, error) {
 
 	node, exists := c.nodes[id]
 	if !exists {
-		return nil, errors.Wrapf(errors.ErrTestNodeNotFound, "node %s not found", id)
+		return nil, errors.WrapString(errors.ErrTestNodeNotFound, "node not found", id)
 	}
 	return node, nil
 }
@@ -228,14 +228,14 @@ func (c *DefaultCluster) RemoveNode(id string) error {
 
 	node, exists := c.nodes[id]
 	if !exists {
-		return errors.Wrapf(errors.ErrTestNodeNotFound, "node %s not found", id)
+		return errors.WrapString(errors.ErrTestNodeNotFound, "node not found", id)
 	}
 
 	// 停止节点
 	if node.IsRunning() {
 		ctx := context.Background()
 		if err := node.Stop(ctx); err != nil {
-			return errors.Wrapf(err, "failed to stop node %s", id)
+			return errors.WrapString(err, "failed to stop node", id)
 		}
 	}
 
@@ -273,7 +273,7 @@ func (c *DefaultCluster) StartAll(ctx context.Context) error {
 
 		if !node.IsRunning() {
 			if err := node.Start(ctx); err != nil {
-				return errors.Wrapf(err, "failed to start node %s", node.ID())
+				return errors.WrapString(err, "failed to start node", node.ID())
 			}
 		}
 	}
@@ -298,7 +298,7 @@ func (c *DefaultCluster) StopAll(ctx context.Context) error {
 
 		if node.IsRunning() {
 			if err := node.Stop(ctx); err != nil {
-				return errors.Wrapf(err, "failed to stop node %s", node.ID())
+				return errors.WrapString(err, "failed to stop node", node.ID())
 			}
 		}
 	}

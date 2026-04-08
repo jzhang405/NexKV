@@ -114,12 +114,14 @@ func (pm *PageManager) Alloc() (uint32, error) {
 		return pageID, nil
 	}
 
-	// 路径 2：fallback，nextPageID 递增
-	pageID := pm.nextPageID.Load()
+	// 路径 2：fallback，nextPageID 原子递增
+	// Add(1) 返回递增后的值，减 1 得到本次分配的 pageID。
+	// 原子操作保证并发安全——多个 goroutine 不会获得相同 pageID。
+	newVal := pm.nextPageID.Add(1)
+	pageID := newVal - 1
 	if pageID >= pm.total {
 		return 0, errpkg.OffHeapOutOfMemory(int(pm.total), int(pm.used.Load()))
 	}
-	pm.nextPageID.Add(1)
 	pm.clearPage(pageID)
 	ptr := pm.PageIDToPtr(pageID)
 	header := (*PageHeader)(ptr)

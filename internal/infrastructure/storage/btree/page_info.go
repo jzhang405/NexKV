@@ -10,9 +10,10 @@ import "github.com/jzhang405/NexKV/internal/domain/model"
 type NodeState int8
 
 const (
-	NodeNormal   NodeState = 0 // 普通节点（内部节点或叶子）
-	NodeRoot     NodeState = 1 // 根节点
-	NodeRedirect NodeState = 2 // 已分裂重定向（旧节点）
+	NodeNormal    NodeState = 0 // 普通节点（内部节点或叶子）
+	NodeRoot      NodeState = 1 // 根节点
+	NodeRedirect  NodeState = 2 // 已分裂重定向（旧节点）
+	NodeSplitting NodeState = 3 // 正在分裂（乐观锁标记，防止并发 split）
 )
 
 // PageInfo is an immutable snapshot of a page's metadata.

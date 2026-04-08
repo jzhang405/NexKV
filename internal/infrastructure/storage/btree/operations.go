@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
@@ -98,26 +99,25 @@ func (b *BTree) handleParentCASWithSpin(
 }
 
 // writeOperation is the CAS retry template for leaf mutations.
+// Uses optimistic locking: lock-free read → mutate → CAS → retry on failure.
 //
-// Algorithm (D-ops-1):
-//  1. searchPath → find the leaf PageRef
-//  2. Lock the leaf (SchedulerLock)
-//  3. Read current PageInfo
-//  4. Get current leaf page from storage
-//  5. Apply COW mutation via mutateFunc (insert/update/delete)
-//  6. CAS the leaf's PageInfo (old → new)
-//  7. Unlock the leaf
-//  8. Propagate changes upward (best-effort in Phase 5)
-//  9. Update size counter
-//  10. Release all path references
+// Algorithm:
+//  1. searchPath → find the leaf PageRef (lock-free)
+//  2. Read current PageInfo (lock-free, atomic load)
+//  3. Check Splitting state → backoff if another goroutine is splitting
+//  4. Get current leaf page from storage (lock-free, I/O)
+//  5. Double-check PageInfo not concurrently modified
+//  6. If full: CAS Splitting marker → doSplitWithSplitting (defer rollback)
+//     If not full: mutate → CAS
+//  7. Non-transient errors (ErrDuplicateKey etc.) return immediately
+//     Transient errors (ErrCASConflict, ErrRetry) retry from step 1
+//  8. Update size counter
 //
-// On CAS conflict: free the new page, release path, retry from step 1.
 // After MaxCASRetries failures, returns ErrCASConflict.
 func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
-	var searchRetryCount, leafSkipCount, leafTypeRetryCount, isFullCount, casRetryCount int
-	var attempt int
+	var searchRetryCount, splittingRetry, attempt int
 	for attempt = range MaxCASRetries {
-		// Step 1: Search path to leaf
+		// Step 1: Search path to leaf (lock-free)
 		path, err := searchPath(b.rootRef, key)
 		if err != nil {
 			searchRetryCount++
@@ -127,88 +127,83 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			return errpkg.BTreeWriteOpSearch(err)
 		}
 
-		// Step 2: Lock leaf
-		leafEntry := path.Leaf()
-		leafRef := leafEntry.Ref
-		leafRef.Lock()
+		leafRef := path.Leaf().Ref
 
-		// Step 3: Read current page info
+		// Step 2: Lock-free PageInfo read
 		oldInfo := leafRef.GetPageInfo()
 		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || oldInfo.Redirect || !oldInfo.IsLeaf {
-			// Page freed, redirected, or already split — retry
-			leafSkipCount++
-			leafRef.Unlock()
 			path.ReleaseAll()
 			continue
 		}
+		// Splitting backoff: dedicated counter + runtime.Gosched()
+		if oldInfo.NodeState == NodeSplitting {
+			splittingRetry++
+			path.ReleaseAll()
+			if splittingRetry > SpinLockBackoffThreshold {
+				runtime.Gosched() // yield CPU, Splitting backoff
+			}
+			continue
+		}
 
-		// Step 4: Get current leaf page handle
+		// Step 3: GetLeafPage (lock-free, I/O operation)
+		// TOCTOU window: pInfo may be CAS'd during GetLeafPage.
+		// Step 4 double-check catches stale reads; CAS provides final correctness.
 		oldLeaf, err := b.storage.GetLeafPage(oldInfo.PageID)
 		if err != nil {
-			leafTypeRetryCount++
-			leafRef.Unlock()
 			path.ReleaseAll()
-			// Check if it's "not a leaf/node page" error (common during concurrent splits)
-			if strings.Contains(err.Error(), "is not a leaf page") || strings.Contains(err.Error(), "is not a node page") || isLeafPageError(err) {
+			if strings.Contains(err.Error(), "is not a leaf page") ||
+				strings.Contains(err.Error(), "is not a node page") ||
+				isLeafPageError(err) {
 				continue
 			}
 			return errpkg.BTreeWriteOpGetLeaf(err)
 		}
 
-		// Step 5: Re-check redirect AFTER lock + page read.
-		// Between Step 3's GetPageInfo and now, another goroutine may have completed
-		// a split on this leaf (CAS'd Redirect=true). If we proceed with IsFull → split,
-		// we'll CAS-conflict and waste retries. Detect early and retry searchPath.
+		// Step 4: Double-check pInfo not concurrently modified
+		// Pointer comparison: if pInfo changed since Step 2, retry (CAS would fail anyway).
+		// This handles all states: Redirect, Splitting, nil, or any concurrent CAS.
+		// Note: NodeRoot and NodeNormal are both valid for leaf writes.
 		curInfo := leafRef.GetPageInfo()
-		if curInfo == nil || curInfo.Redirect || curInfo.NodeState == NodeRedirect {
-			leafRef.Unlock()
+		if curInfo != oldInfo {
 			path.ReleaseAll()
-			continue // Re-navigate from root via updated parent cache
+			continue
 		}
 
-		isFull := oldLeaf.IsFull(len(key), 0)
-		if isFull {
-			isFullCount++ // Approximate check; precise check needs value
-			// ★ BUG FIX: Keep leaf lock held during entire split flow.
-			// Releasing lock before Redirect CAS creates a TOCTOU window where
-			// concurrent writers CAS old pInfo -> insert into stale leaf -> data loss.
-			// Lock order: Lock -> IsFull -> Split -> CAS Redirect -> Unlock.
-
-			// ★ CR-08: Root Split detection — path length < 2 means root is leaf
-			if len(path) < 2 {
-				splitErr := b.handleRootSplit(leafRef, oldInfo, path, key, mutate)
-				leafRef.Unlock()
+		if oldLeaf.IsFull(len(key), 0) {
+			// ---- Split path ----
+			// CAS mark Splitting to prevent concurrent split on same leaf
+			splittingInfo := &PageInfo{
+				PageID:    oldInfo.PageID,
+				Version:   oldInfo.Version + 1,
+				IsLeaf:    true,
+				NodeState: NodeSplitting,
+			}
+			if !leafRef.CAS(oldInfo, splittingInfo) {
 				path.ReleaseAll()
-				if splitErr == nil {
-					return nil // Split + Insert completed atomically
-				}
-				if errors.Is(splitErr, ErrCASConflict) {
-					continue
-				}
+				continue // another goroutine is operating on this leaf
+			}
+
+			// Delegate to helper: defer triggers on helper return, not on loop continue
+			splitErr := b.doSplitWithSplitting(leafRef, splittingInfo, oldInfo, path, key, mutate)
+
+			if splitErr == nil {
+				return nil // Split + Insert success
+			}
+			// Non-transient errors: return directly (defer in helper rolled back Splitting)
+			if !errors.Is(splitErr, ErrCASConflict) && !errors.Is(splitErr, ErrRetry) {
 				return splitErr
 			}
-
-			splitErr := b.handleLeafSplit(leafRef, oldInfo, path, key, mutate)
-			leafRef.Unlock()
-			path.ReleaseAll()
-			if splitErr == nil {
-				return nil // ★ CR-08: Strong consistency — Split + Insert in one shot
-			}
-			if errors.Is(splitErr, ErrCASConflict) {
-				continue
-			}
-			return splitErr // Other errors (ErrDuplicateKey, etc.)
+			// Transient errors: retry (defer in helper already rolled back Splitting)
+			continue
 		}
 
-		// Step 6: Apply COW mutation (non-full path)
+		// ---- Non-split path ----
 		result, err := mutate(oldLeaf)
 		if err != nil {
-			leafRef.Unlock()
 			path.ReleaseAll()
-			return err // non-retryable
+			return err // non-retryable business error
 		}
 
-		// Step 7: CAS leaf PageInfo
 		newInfo := &PageInfo{
 			PageID:  result.newPageID,
 			Version: oldInfo.Version + 1,
@@ -218,34 +213,51 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		if !leafRef.CAS(oldInfo, newInfo) {
 			// CAS conflict — free new page and retry
 			_ = b.storage.FreePage(result.newPageID)
-			leafRef.Unlock()
 			path.ReleaseAll()
 
-			// Track CAS retry
 			if b.metrics != nil {
 				b.metrics.IncrementCASRetry()
 			}
-
 			continue
 		}
 
-		// Step 8: Unlock leaf
-		leafRef.Unlock()
-
-		// Step 9: Propagate upward — DISABLED.
-
-		// Step 10: Update size counter
-		b.size.Add(result.delta)
-
-		// Step 11: Release path
+		// Success
 		path.ReleaseAll()
+		b.size.Add(result.delta)
 		return nil
 	}
 
 	GlobalTracer.LogOp("writeOp.EXHAUSTED", "key", string(key), "attempt", attempt,
-		"searchRetry", searchRetryCount, "leafSkip", leafSkipCount,
-		"leafTypeRetry", leafTypeRetryCount, "isFull", isFullCount, "casRetry", casRetryCount)
+		"searchRetry", searchRetryCount, "splittingRetry", splittingRetry)
 	return ErrCASConflict
+}
+
+// doSplitWithSplitting executes the Split operation after Splitting CAS succeeds.
+// Extracted as a separate function so that defer triggers on each call return
+// (not delayed until writeOperation's for-loop iteration ends).
+//
+// On return:
+//   - path is ReleaseAll'd (defer guaranteed, including panic paths)
+//   - if pInfo still points to splittingInfo, it is rolled back to oldInfo (defer guaranteed)
+func (b *BTree) doSplitWithSplitting(leafRef *PageRef, splittingInfo, oldInfo *PageInfo,
+	path SearchPath, key []byte, mutate mutateFunc) error {
+
+	// LIFO defer order: ReleaseAll first, then Splitting rollback.
+	// ReleaseAll releasing path refs does not affect leafRef's pInfo CAS.
+	defer func() {
+		// If pInfo still points to splittingInfo, the split did not complete successfully.
+		// handleRootSplit success: ReplaceRoot replaced pInfo → GetPageInfo() != splittingInfo → skip rollback.
+		if leafRef.GetPageInfo() == splittingInfo {
+			leafRef.CAS(splittingInfo, oldInfo) // Rollback to Normal
+		}
+	}()
+	defer path.ReleaseAll() // Guarantee cleanup even on panic
+
+	if len(path) < 2 {
+		// Root split: handleRootSplit success → ReplaceRoot CAS replaces pInfo → defer skips rollback
+		return b.handleRootSplit(leafRef, splittingInfo, path, key, mutate)
+	}
+	return b.handleLeafSplit(leafRef, splittingInfo, path, key, mutate)
 }
 
 // handleInternalSplit performs cascading internal node splits upward.
@@ -298,28 +310,27 @@ func (b *BTree) handleInternalSplit(
 		toFree = append(toFree, currentLeft.PageID(), currentRight.PageID())
 
 		// Step 2: Check if we reached root (no grandparent)
-		grandparentRef := currentRef.GetParentRef()
-		if grandparentRef == nil {
-			// Root internal split — currentRef IS the root
+		// Use path array instead of parentRef chain.
+		// path[0]=root, ..., path[currentLevel]=currentRef.
+		// grandparent is at path[currentLevel-1].
+		if currentLevel < 1 {
+			// Root internal split — currentRef IS the root (at path[0])
 			return b.handleRootInternalSplit(
 				currentRef, currentInfo,
 				currentLeft, currentRight, splitKey,
 				&toFree, &toRelease,
 			)
 		}
+		grandparentRef := path[currentLevel-1].Ref
 
 		// Step 3: Get child index from path (§10.10 Option A: O(1) lookup)
 		// path[i].Index = child index chosen at level i
 		// currentRef is at path[currentLevel], so its index in grandparent is path[currentLevel-1].Index
-		if currentLevel < 1 {
-			// Shouldn't happen — level 0 is root, handled above
-			return fmt.Errorf("btree: handleInternalSplit: unexpected level %d with non-nil parent", currentLevel)
-		}
 		idx := path[currentLevel-1].Index
 
 		// Step 3a: Create PageRefs for split children
-		currentLeftRef := NewPageRef(currentLeft.PageID(), 0, grandparentRef, b.rootRef.freeFunc)
-		currentRightRef := NewPageRef(currentRight.PageID(), 0, grandparentRef, b.rootRef.freeFunc)
+		currentLeftRef := NewPageRef(currentLeft.PageID(), 0, b.rootRef.freeFunc)
+		currentRightRef := NewPageRef(currentRight.PageID(), 0, b.rootRef.freeFunc)
 		// internal split 子节点 → IsLeaf=false（刚创建无竞争，直接 Store）
 		currentLeftRef.pInfo.Store(&PageInfo{
 			PageID:    currentLeft.PageID(),
@@ -445,8 +456,8 @@ func (b *BTree) handleRootInternalSplit(
 	toRelease *[]*PageRef,
 ) error {
 	// Step 1: Create PageRefs for left/right children of new root
-	leftRef := NewPageRef(leftPage.PageID(), 0, &b.rootRef.PageRef, b.rootRef.freeFunc)
-	rightRef := NewPageRef(rightPage.PageID(), 0, &b.rootRef.PageRef, b.rootRef.freeFunc)
+	leftRef := NewPageRef(leftPage.PageID(), 0, b.rootRef.freeFunc)
+	rightRef := NewPageRef(rightPage.PageID(), 0, b.rootRef.freeFunc)
 	// internal split 子节点 → IsLeaf=false（刚创建无竞争，直接 Store）
 	leftRef.pInfo.Store(&PageInfo{
 		PageID:    leftPage.PageID(),
@@ -500,7 +511,7 @@ func (b *BTree) handleRootInternalSplit(
 		Separators: [][]byte{copyKey(splitKey)},
 	}
 
-	// Step 4: ReplaceRoot CAS (D14: SetParentRef before CAS)
+	// Step 4: ReplaceRoot CAS
 	if !b.rootRef.ReplaceRoot(rootInfo, newRootInfo, newChildren) {
 		// CAS failed — cleanup handled by defer in handleInternalSplit
 		// Explicitly free newRootPage since it has no PageRef managing it
@@ -593,17 +604,6 @@ func distributeChildrenAfterSplit(oldRef, leftRef, rightRef *PageRef, leftPage N
 			})
 		}
 
-		// Update parentRef for all children to point to their new parent
-		for _, child := range allChildren[:leftCount] {
-			if child != nil {
-				child.SetParentRef(leftRef)
-			}
-		}
-		for _, child := range allChildren[leftCount:] {
-			if child != nil {
-				child.SetParentRef(rightRef)
-			}
-		}
 	}
 }
 
@@ -620,7 +620,7 @@ func distributeChildrenAfterSplit(oldRef, leftRef, rightRef *PageRef, leftPage N
 // including the other's update, so no updates are lost.
 //
 // Parameters:
-//   - parentRef:   the parent whose children cache is being updated
+//   - parentRef:   the parent PageRef whose children cache is being updated
 //   - oldChildID:  the pageID of the child that was split
 //   - leftRef:     the left child PageRef (already Retained by caller)
 //   - rightRef:    the right child PageRef (already Retained by caller)
@@ -731,13 +731,13 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	var orphanPageID model.PageID
 	if bytes.Compare(key, splitKey) < 0 {
 		// target = left → left was mutated
-		leftRef = NewPageRef(mutation.newPageID, 0, nil, b.rootRef.freeFunc)
-		rightRef = NewPageRef(rightPage.PageID(), 0, nil, b.rootRef.freeFunc)
+		leftRef = NewPageRef(mutation.newPageID, 0, b.rootRef.freeFunc)
+		rightRef = NewPageRef(rightPage.PageID(), 0, b.rootRef.freeFunc)
 		orphanPageID = leftPage.PageID() // leftPage replaced by double-COW
 	} else {
 		// target = right → right was mutated
-		leftRef = NewPageRef(leftPage.PageID(), 0, nil, b.rootRef.freeFunc)
-		rightRef = NewPageRef(mutation.newPageID, 0, nil, b.rootRef.freeFunc)
+		leftRef = NewPageRef(leftPage.PageID(), 0, b.rootRef.freeFunc)
+		rightRef = NewPageRef(mutation.newPageID, 0, b.rootRef.freeFunc)
 		orphanPageID = rightPage.PageID() // rightPage replaced by double-COW
 	}
 	leftRef.Retain()  // refCount: 0 → 1
@@ -894,13 +894,13 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 		return err
 	}
 
-	// Step 6: Create PageRefs with parentRef = rootRef
-	leftRef := NewPageRef(leftChildID, 0, &b.rootRef.PageRef, b.rootRef.freeFunc)
-	rightRef := NewPageRef(rightChildID, 0, &b.rootRef.PageRef, b.rootRef.freeFunc)
+	// Step 6: Create PageRefs as children of root
+	leftRef := NewPageRef(leftChildID, 0, b.rootRef.freeFunc)
+	rightRef := NewPageRef(rightChildID, 0, b.rootRef.freeFunc)
 	leftRef.Retain()
 	rightRef.Retain()
 
-	// Step 7: ReplaceRoot (D14: SetParentRef before CAS)
+	// Step 7: ReplaceRoot CAS
 	newRootInfo := &PageInfo{
 		PageID:    newRootPage.PageID(),
 		Version:   rootInfo.Version + 1,

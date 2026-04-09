@@ -313,3 +313,171 @@ func TestBTreeLargeDataset_Integrity(t *testing.T) {
 		assert.Equal(t, expected, val)
 	}
 }
+
+// --- Tombstone Phase 1 测试 ---
+
+func TestBTreeTombstoneDelete_GetReturnsNotFound(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	err := tree.Set(ctx, []byte("key"), []byte("value"))
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), tree.Size())
+
+	err = tree.Delete(ctx, []byte("key"))
+	require.NoError(t, err)
+
+	// Get 已删除的 Key 应返回 ErrKeyNotFound
+	_, err = tree.Get(ctx, []byte("key"))
+	assert.ErrorIs(t, err, ErrKeyNotFound)
+
+	// Size 应减少
+	assert.Equal(t, int64(0), tree.Size())
+}
+
+func TestBTreeTombstoneDoubleDelete(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	err := tree.Set(ctx, []byte("key"), []byte("value"))
+	require.NoError(t, err)
+
+	err = tree.Delete(ctx, []byte("key"))
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), tree.Size())
+
+	// 第二次删除应返回 ErrKeyNotFound，Size 不变
+	err = tree.Delete(ctx, []byte("key"))
+	assert.ErrorIs(t, err, ErrKeyNotFound)
+	assert.Equal(t, int64(0), tree.Size())
+}
+
+func TestBTreeTombstoneRecovery(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	// Set → Delete → Set 同 Key：Size 应正确恢复
+	err := tree.Set(ctx, []byte("key"), []byte("val1"))
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), tree.Size())
+
+	err = tree.Delete(ctx, []byte("key"))
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), tree.Size())
+
+	err = tree.Set(ctx, []byte("key"), []byte("val2"))
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), tree.Size()) // 恢复为 1
+
+	// Get 应返回新 Value
+	val, err := tree.Get(ctx, []byte("key"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("val2"), val)
+}
+
+func TestBTreeTombstoneSizeSemantics(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	// 完整 Size 语义验证
+	assert.Equal(t, int64(0), tree.Size())
+
+	tree.Set(ctx, []byte("a"), []byte("1"))
+	assert.Equal(t, int64(1), tree.Size())
+
+	tree.Set(ctx, []byte("b"), []byte("2"))
+	assert.Equal(t, int64(2), tree.Size())
+
+	tree.Delete(ctx, []byte("a"))
+	assert.Equal(t, int64(1), tree.Size())
+
+	// Tombstone 恢复
+	tree.Set(ctx, []byte("a"), []byte("3"))
+	assert.Equal(t, int64(2), tree.Size())
+
+	// 再删除
+	tree.Delete(ctx, []byte("a"))
+	assert.Equal(t, int64(1), tree.Size())
+
+	// 验证剩余 Key
+	val, err := tree.Get(ctx, []byte("b"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("2"), val)
+
+	_, err = tree.Get(ctx, []byte("a"))
+	assert.ErrorIs(t, err, ErrKeyNotFound)
+}
+
+func TestBTreeTombstoneConcurrentDelete(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	const numKeys = 50
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Appendf(nil, "key-%03d", i)
+		err := tree.Set(ctx, key, []byte("value"))
+		require.NoError(t, err)
+	}
+	assert.Equal(t, int64(numKeys), tree.Size())
+
+	// 并发删除所有 Key
+	var wg sync.WaitGroup
+	for i := 0; i < numKeys; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			key := fmt.Appendf(nil, "key-%03d", idx)
+			err := tree.Delete(ctx, key)
+			assert.NoError(t, err, "Delete key-%03d should succeed", idx)
+		}(i)
+	}
+	wg.Wait()
+
+	assert.Equal(t, int64(0), tree.Size())
+
+	// 所有 Key 应不可见
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Appendf(nil, "key-%03d", i)
+		_, err := tree.Get(ctx, key)
+		assert.ErrorIs(t, err, ErrKeyNotFound, "key-%03d should be tombstoned", i)
+	}
+}
+
+func TestBTreeTombstoneConcurrentSetDelete(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	const goroutines = 20
+	const opsPerGoroutine = 50
+
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < opsPerGoroutine; j++ {
+				key := fmt.Appendf(nil, "key-%d", j)
+				if id%2 == 0 {
+					_ = tree.Set(ctx, key, []byte(fmt.Sprintf("val-%d-%d", id, j)))
+				} else {
+					_ = tree.Delete(ctx, key)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// 树不应崩溃，Size >= 0
+	assert.True(t, tree.Size() >= 0, "Size should be non-negative, got %d", tree.Size())
+
+	// Size 应与实际可见 Key 数量一致
+	var visibleCount int64
+	for j := 0; j < opsPerGoroutine; j++ {
+		key := fmt.Appendf(nil, "key-%d", j)
+		if _, err := tree.Get(ctx, key); err == nil {
+			visibleCount++
+		}
+	}
+	assert.Equal(t, visibleCount, tree.Size(),
+		"Size should match actual visible key count")
+}

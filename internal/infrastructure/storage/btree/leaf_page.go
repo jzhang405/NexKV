@@ -135,7 +135,7 @@ func (h *leafPageHandle) Update(idx int, value []byte) (LeafPage, error) {
 
 	// Value is larger than original — fall back to delete + insert
 	key := h.GetKey(idx) // returns a copy from the original page
-	keys, vals := h.pa.CollectKVExcept(newRawID, idx)
+	keys, vals := h.pa.CollectKVExcept(uint32(h.id), idx)
 	h.storage.pm.Free(newRawID)
 
 	// Rebuild page without the old entry, then insert new KV

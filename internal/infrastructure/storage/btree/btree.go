@@ -1,6 +1,6 @@
 // Copyright 2026 NexKV Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file.
 
 package btree
 
@@ -12,6 +12,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
 )
 
 // BTree is a concurrent B+Tree with COW semantics.
@@ -79,8 +80,8 @@ func (b *BTree) checkOpen() error {
 }
 
 // Get retrieves the value for the given key.
-// Returns ErrKeyNotFound if the key does not exist.
-// Read path is lock-free: searchPath → read leaf → return value.
+// Returns ErrKeyNotFound if the key does not exist or has been tombstoned.
+// Read path is lock-free: searchPath → read leaf → parse flag → return value.
 func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
 	if err := b.checkOpen(); err != nil {
 		return nil, err
@@ -116,12 +117,19 @@ func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
 		b.metrics.ReadCount.Add(1)
 	}
 
-	return leaf.GetValue(idx), nil
+	// 解析 Value Flag，Tombstone 条目返回 ErrKeyNotFound
+	raw := leaf.GetValue(idx)
+	flag, realVal := offheap.ParseValueWithFlag(raw)
+	if flag == offheap.FlagTombstone {
+		return nil, ErrKeyNotFound
+	}
+	return realVal, nil
 }
 
 // Set inserts or updates a key-value pair.
 // Uses CAS retry loop for concurrent safety.
 // If the key already exists, updates the value (upsert semantics).
+// If the key was previously tombstoned, restores it with delta=+1.
 func (b *BTree) Set(_ context.Context, key, value []byte) error {
 	if err := b.checkOpen(); err != nil {
 		return err
@@ -130,19 +138,25 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 	err := writeOperation(b, key, func(leaf LeafPage) (*leafMutation, error) {
 		idx, found := leaf.Search(key)
 		if found {
-			// Update existing key
-			newLeaf, err := leaf.Update(idx, value)
+			// Update existing key — 检查 Tombstone 恢复
+			raw := leaf.GetValue(idx)
+			flag, _ := offheap.ParseValueWithFlag(raw)
+			newLeaf, err := leaf.Update(idx, offheap.BuildValueWithFlag(offheap.FlagNormal, value))
 			if err != nil {
 				return nil, err
 			}
+			delta := int64(0)
+			if flag == offheap.FlagTombstone {
+				delta = +1 // Tombstone 恢复：Key 重新可见
+			}
 			return &leafMutation{
 				newPageID: newLeaf.PageID(),
-				delta:     0, // update doesn't change count
+				delta:     delta,
 			}, nil
 		}
 
-		// Insert new key
-		newLeaf, err := leaf.Insert(key, value)
+		// Insert new key — Value 带 Flag 前缀
+		newLeaf, err := leaf.Insert(key, offheap.BuildValueWithFlag(offheap.FlagNormal, value))
 		if err != nil {
 			return nil, err
 		}
@@ -159,8 +173,9 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 	return err
 }
 
-// Delete removes the given key from the B+Tree.
-// Returns ErrKeyNotFound if the key does not exist.
+// Delete logically removes the given key from the B+Tree via Tombstone.
+// Returns ErrKeyNotFound if the key does not exist or is already tombstoned.
+// Physical deletion is deferred to Phase 3 Compaction.
 func (b *BTree) Delete(_ context.Context, key []byte) error {
 	if err := b.checkOpen(); err != nil {
 		return err
@@ -172,7 +187,16 @@ func (b *BTree) Delete(_ context.Context, key []byte) error {
 			return nil, ErrKeyNotFound
 		}
 
-		newLeaf, err := leaf.Delete(idx)
+		// 防重复删除：检查现有 Flag
+		raw := leaf.GetValue(idx)
+		flag, _ := offheap.ParseValueWithFlag(raw)
+		if flag == offheap.FlagTombstone {
+			return nil, ErrKeyNotFound // 已删除，no-op
+		}
+
+		// Tombstone：Update 快路径（1-byte Value <= 原 Value，OverwriteLeafValue 必成功）
+		tombstoneVal := offheap.BuildValueWithFlag(offheap.FlagTombstone, nil)
+		newLeaf, err := leaf.Update(idx, tombstoneVal)
 		if err != nil {
 			return nil, err
 		}
@@ -190,6 +214,7 @@ func (b *BTree) Delete(_ context.Context, key []byte) error {
 }
 
 // Size returns the number of key-value pairs in the tree.
+// After Tombstone: Size = logical visible key count (excludes tombstoned keys).
 func (b *BTree) Size() int64 {
 	return b.size.Load()
 }

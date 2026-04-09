@@ -18,6 +18,40 @@ const (
 	PageTypeLeaf  = 1 // 叶子节点
 )
 
+// Value Flag 常量（Tombstone Phase 1）
+// Value 布局：Flag(1byte) | RealValue
+// ValLen = 1 + len(RealValue)，LeafEntry 结构不变。
+const (
+	FlagNormal    byte = 0x00 // 正常数据
+	FlagTombstone byte = 0x01 // 已删除（逻辑删除标记）
+)
+
+// ParseValueWithFlag 解析带 Flag 的 Value。
+// 纯函数，无共享状态，天然 goroutine 安全。
+func ParseValueWithFlag(val []byte) (flag byte, realVal []byte) {
+	if len(val) == 0 {
+		return FlagNormal, nil // 防御性：空 Value 视为 Normal
+	}
+	return val[0], val[1:]
+}
+
+// tombstoneValue 是预分配的 Tombstone 值（私有，只读，可安全共享）。
+// OverwriteLeafValue 会将内容拷贝到 mmap 页面，不修改此切片本身。
+var tombstoneValue = []byte{FlagTombstone}
+
+// BuildValueWithFlag 构建带 Flag 的 Value。
+// 纯函数，无共享状态，天然 goroutine 安全。
+// Tombstone 场景（flag=FlagTombstone, realVal=nil）返回共享常量，避免重复分配。
+func BuildValueWithFlag(flag byte, realVal []byte) []byte {
+	if flag == FlagTombstone && len(realVal) == 0 {
+		return tombstoneValue
+	}
+	result := make([]byte, 1+len(realVal))
+	result[0] = flag
+	copy(result[1:], realVal)
+	return result
+}
+
 // 4KB 页面布局：
 // ┌──────────────┬──────────────┬──────────────┬──────────────┐
 // │ PageHeader   │ Entry 数组    │ 空闲区        │ KV 数据区     │

@@ -1379,3 +1379,60 @@ func TestPageAccessor_GetVersionSafe(t *testing.T) {
 	v = pa.GetVersionSafe(pm.nextPageID.Load() + 100)
 	assert.Equal(t, uint64(0), v)
 }
+
+// --- Value Flag 辅助函数测试 ---
+
+func TestParseValueWithFlag_Normal(t *testing.T) {
+	val := BuildValueWithFlag(FlagNormal, []byte("hello"))
+	flag, realVal := ParseValueWithFlag(val)
+	assert.Equal(t, FlagNormal, flag)
+	assert.Equal(t, []byte("hello"), realVal)
+}
+
+func TestParseValueWithFlag_Tombstone(t *testing.T) {
+	val := BuildValueWithFlag(FlagTombstone, nil)
+	flag, realVal := ParseValueWithFlag(val)
+	assert.Equal(t, FlagTombstone, flag)
+	assert.Empty(t, realVal)
+}
+
+func TestParseValueWithFlag_Empty(t *testing.T) {
+	flag, realVal := ParseValueWithFlag([]byte{})
+	assert.Equal(t, FlagNormal, flag)
+	assert.Empty(t, realVal)
+}
+
+func TestBuildValueWithFlag_Normal(t *testing.T) {
+	result := BuildValueWithFlag(FlagNormal, []byte("data"))
+	assert.Equal(t, []byte{0x00, 'd', 'a', 't', 'a'}, result)
+}
+
+func TestBuildValueWithFlag_Tombstone(t *testing.T) {
+	result := BuildValueWithFlag(FlagTombstone, nil)
+	assert.Equal(t, []byte{0x01}, result)
+}
+
+func TestBuildValueWithFlag_NilValue(t *testing.T) {
+	result := BuildValueWithFlag(FlagNormal, nil)
+	assert.Equal(t, []byte{0x00}, result)
+}
+
+func TestBuildValueWithFlag_EmptyValue(t *testing.T) {
+	result := BuildValueWithFlag(FlagNormal, []byte{})
+	assert.Equal(t, []byte{0x00}, result)
+}
+
+func TestParseBuildRoundTrip(t *testing.T) {
+	originals := [][]byte{
+		[]byte("hello world"),
+		{},
+		nil,
+		{0x00, 0x01, 0x02},
+	}
+	for _, orig := range originals {
+		built := BuildValueWithFlag(FlagNormal, orig)
+		flag, parsed := ParseValueWithFlag(built)
+		assert.Equal(t, FlagNormal, flag)
+		assert.Equal(t, len(orig), len(parsed))
+	}
+}

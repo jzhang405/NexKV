@@ -6,10 +6,10 @@ package offheap
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"unsafe"
 
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
@@ -19,12 +19,11 @@ const (
 	PageTypeLeaf  = 1 // 叶子节点
 )
 
-// Value Flag 常量（Tombstone Phase 1）
-// Value 布局：Flag(1byte) | RealValue
-// ValLen = 1 + len(RealValue)，LeafEntry 结构不变。
+// Value Flag constants.
+// Deprecated: Use mvcc.FlagNormal and mvcc.FlagTombstone instead.
 const (
-	FlagNormal    byte = 0x00 // 正常数据
-	FlagTombstone byte = 0x01 // 已删除（逻辑删除标记）
+	FlagNormal    byte = 0x00 // Normal data
+	FlagTombstone byte = 0x01 // Logically deleted (tombstone marker)
 )
 
 // ParseValueWithFlag 解析带 Flag 的 Value。
@@ -55,26 +54,31 @@ func BuildValueWithFlag(flag byte, realVal []byte) []byte {
 	return result
 }
 
-// MVCCHeaderSize is the fixed header size for MVCC values: 1(Flag) + 8(beginTS) = 9 bytes.
-const MVCCHeaderSize = 9
+// MVCCHeaderSize is the fixed header size for MVCC values.
+// Deprecated: Use mvcc.MVCCHeaderSize instead.
+const MVCCHeaderSize = mvcc.MVCCHeaderSize
 
 // ParseValueWithMVCC decodes a Phase 2 MVCC value into flag, beginTS, and realVal.
-// Panics on values shorter than MVCCHeaderSize — all B+Tree values must be MVCC-encoded.
-// Phase 2 稳定后可改为返回 error。
+// Panics on values shorter than MVCCHeaderSize or invalid flag — all B+Tree values must be MVCC-encoded.
+//
+// Deprecated: Use mvcc.ParseMVCC instead (returns error instead of panic).
 func ParseValueWithMVCC(val []byte) (flag byte, beginTS uint64, realVal []byte) {
-	if len(val) < MVCCHeaderSize {
-		panic(fmt.Sprintf("mvcc: value too short: got %d bytes, need %d", len(val), MVCCHeaderSize))
+	mvccVal, err := mvcc.ParseMVCC(val)
+	if err != nil {
+		panic(fmt.Sprintf("mvcc: %v", err))
 	}
-	return val[0], binary.BigEndian.Uint64(val[1:9]), val[9:]
+	return mvccVal.Flag, mvccVal.BeginTS, mvccVal.RealVal
 }
 
 // BuildMVCCValue encodes a Phase 2 MVCC value: [1B Flag][8B beginTS][realVal].
-// Pure function, goroutine safe.
+// Panics on invalid flag or zero beginTS.
+//
+// Deprecated: Use mvcc.BuildMVCC instead (returns error instead of panic).
 func BuildMVCCValue(flag byte, beginTS uint64, realVal []byte) []byte {
-	result := make([]byte, MVCCHeaderSize+len(realVal))
-	result[0] = flag
-	binary.BigEndian.PutUint64(result[1:9], beginTS)
-	copy(result[9:], realVal)
+	result, err := mvcc.BuildMVCC(flag, beginTS, realVal)
+	if err != nil {
+		panic(fmt.Sprintf("mvcc: %v", err))
+	}
 	return result
 }
 

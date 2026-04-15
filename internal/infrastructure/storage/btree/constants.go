@@ -34,7 +34,8 @@ const (
 	MergeThreshold = 0.5
 
 	// MaxCASRetries is the maximum number of CAS retry attempts in writeOperation.
-	// Phase 2a: MVCC 9B header increases page pressure → more splits → more retries under race detector.
+	// MVCC 9-byte header increases per-value space, causing more page splits under heavy write load.
+	// 200 retries balances latency (each retry is cheap — COW copy + memcmp) against livelock avoidance.
 	MaxCASRetries = 200
 
 	// SpinLockBackoffThreshold is the number of Splitting retry attempts before

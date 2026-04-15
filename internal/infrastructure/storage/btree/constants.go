@@ -34,7 +34,8 @@ const (
 	MergeThreshold = 0.5
 
 	// MaxCASRetries is the maximum number of CAS retry attempts in writeOperation.
-	MaxCASRetries = 100
+	// Phase 2a: MVCC 9B header increases page pressure → more splits → more retries under race detector.
+	MaxCASRetries = 200
 
 	// SpinLockBackoffThreshold is the number of Splitting retry attempts before
 	// yielding the CPU via runtime.Gosched(). Below this threshold, the goroutine

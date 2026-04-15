@@ -6,6 +6,7 @@ package offheap
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"unsafe"
 
@@ -42,6 +43,8 @@ var tombstoneValue = []byte{FlagTombstone}
 // BuildValueWithFlag 构建带 Flag 的 Value。
 // 纯函数，无共享状态，天然 goroutine 安全。
 // Tombstone 场景（flag=FlagTombstone, realVal=nil）返回共享常量，避免重复分配。
+//
+// Deprecated: Phase 2 MVCC 路径使用 BuildMVCCValue 替代。
 func BuildValueWithFlag(flag byte, realVal []byte) []byte {
 	if flag == FlagTombstone && len(realVal) == 0 {
 		return tombstoneValue
@@ -49,6 +52,29 @@ func BuildValueWithFlag(flag byte, realVal []byte) []byte {
 	result := make([]byte, 1+len(realVal))
 	result[0] = flag
 	copy(result[1:], realVal)
+	return result
+}
+
+// MVCCHeaderSize is the fixed header size for MVCC values: 1(Flag) + 8(beginTS) = 9 bytes.
+const MVCCHeaderSize = 9
+
+// ParseValueWithMVCC decodes a Phase 2 MVCC value into flag, beginTS, and realVal.
+// Panics on values shorter than MVCCHeaderSize — all B+Tree values must be MVCC-encoded.
+// Phase 2 稳定后可改为返回 error。
+func ParseValueWithMVCC(val []byte) (flag byte, beginTS uint64, realVal []byte) {
+	if len(val) < MVCCHeaderSize {
+		panic(fmt.Sprintf("mvcc: value too short: got %d bytes, need %d", len(val), MVCCHeaderSize))
+	}
+	return val[0], binary.BigEndian.Uint64(val[1:9]), val[9:]
+}
+
+// BuildMVCCValue encodes a Phase 2 MVCC value: [1B Flag][8B beginTS][realVal].
+// Pure function, goroutine safe.
+func BuildMVCCValue(flag byte, beginTS uint64, realVal []byte) []byte {
+	result := make([]byte, MVCCHeaderSize+len(realVal))
+	result[0] = flag
+	binary.BigEndian.PutUint64(result[1:9], beginTS)
+	copy(result[9:], realVal)
 	return result
 }
 

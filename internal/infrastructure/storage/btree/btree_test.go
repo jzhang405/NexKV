@@ -12,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
 )
 
 // newTestBTree creates a BTree for testing with cleanup.
@@ -480,4 +482,96 @@ func TestBTreeTombstoneConcurrentSetDelete(t *testing.T) {
 	}
 	assert.Equal(t, visibleCount, tree.Size(),
 		"Size should match actual visible key count")
+}
+
+// --- MVCC Phase 2a Tests ---
+
+func TestBTreeMVCC_BeginTSAssigned(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	err := tree.Set(ctx, []byte("mvcc-key"), []byte("mvcc-val"))
+	require.NoError(t, err)
+
+	// GetRaw should return MVCC-encoded value with beginTS > 0
+	raw, err := tree.GetRaw(ctx, []byte("mvcc-key"))
+	require.NoError(t, err)
+
+	flag, beginTS, realVal := offheap.ParseValueWithMVCC(raw)
+	assert.Equal(t, offheap.FlagNormal, flag)
+	assert.Greater(t, beginTS, uint64(0), "beginTS must be assigned")
+	assert.Equal(t, []byte("mvcc-val"), realVal)
+}
+
+func TestBTreeMVCC_BeginTSIncreasing(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	// First Set
+	err := tree.Set(ctx, []byte("key"), []byte("val1"))
+	require.NoError(t, err)
+	raw1, err := tree.GetRaw(ctx, []byte("key"))
+	require.NoError(t, err)
+	_, ts1, _ := offheap.ParseValueWithMVCC(raw1)
+
+	// Second Set (update) — beginTS should increase
+	err = tree.Set(ctx, []byte("key"), []byte("val2"))
+	require.NoError(t, err)
+	raw2, err := tree.GetRaw(ctx, []byte("key"))
+	require.NoError(t, err)
+	flag2, ts2, realVal2 := offheap.ParseValueWithMVCC(raw2)
+
+	assert.Greater(t, ts2, ts1, "beginTS should increase on update")
+	assert.Equal(t, offheap.FlagNormal, flag2)
+	assert.Equal(t, []byte("val2"), realVal2)
+}
+
+func TestBTreeMVCC_DeleteBeginTS(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	err := tree.Set(ctx, []byte("key"), []byte("val"))
+	require.NoError(t, err)
+
+	err = tree.Delete(ctx, []byte("key"))
+	require.NoError(t, err)
+
+	// GetRaw should return Tombstone with beginTS
+	raw, err := tree.GetRaw(ctx, []byte("key"))
+	require.NoError(t, err)
+
+	flag, beginTS, realVal := offheap.ParseValueWithMVCC(raw)
+	assert.Equal(t, offheap.FlagTombstone, flag)
+	assert.Greater(t, beginTS, uint64(0), "Tombstone should have beginTS")
+	assert.Empty(t, realVal)
+}
+
+func TestBTreeMVCC_GetRaw_TombstoneVisible(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	err := tree.Set(ctx, []byte("key"), []byte("val"))
+	require.NoError(t, err)
+
+	err = tree.Delete(ctx, []byte("key"))
+	require.NoError(t, err)
+
+	// Get returns ErrKeyNotFound (filters Tombstone)
+	_, err = tree.Get(ctx, []byte("key"))
+	assert.Equal(t, ErrKeyNotFound, err)
+
+	// GetRaw returns the raw MVCC value (Tombstone visible)
+	raw, err := tree.GetRaw(ctx, []byte("key"))
+	require.NoError(t, err)
+	flag, _, _ := offheap.ParseValueWithMVCC(raw)
+	assert.Equal(t, offheap.FlagTombstone, flag)
+}
+
+func TestBTreeMVCC_GetRaw_NotFound(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	// Key never existed → ErrKeyNotFound
+	_, err := tree.GetRaw(ctx, []byte("nonexistent"))
+	assert.Equal(t, ErrKeyNotFound, err)
 }

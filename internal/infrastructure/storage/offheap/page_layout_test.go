@@ -1436,3 +1436,76 @@ func TestParseBuildRoundTrip(t *testing.T) {
 		assert.Equal(t, len(orig), len(parsed))
 	}
 }
+
+// --- MVCC Value 编解码测试（Phase 2a）---
+
+func TestMVCCHeaderSize(t *testing.T) {
+	assert.Equal(t, 9, MVCCHeaderSize, "MVCCHeaderSize = 1(Flag) + 8(beginTS) = 9 bytes")
+}
+
+func TestParseValueWithMVCC_Normal(t *testing.T) {
+	val := BuildMVCCValue(FlagNormal, 42, []byte("hello"))
+	flag, beginTS, realVal := ParseValueWithMVCC(val)
+	assert.Equal(t, FlagNormal, flag)
+	assert.Equal(t, uint64(42), beginTS)
+	assert.Equal(t, []byte("hello"), realVal)
+}
+
+func TestParseValueWithMVCC_Tombstone(t *testing.T) {
+	val := BuildMVCCValue(FlagTombstone, 100, nil)
+	flag, beginTS, realVal := ParseValueWithMVCC(val)
+	assert.Equal(t, FlagTombstone, flag)
+	assert.Equal(t, uint64(100), beginTS)
+	assert.Empty(t, realVal)
+}
+
+func TestParseValueWithMVCC_EmptyRealVal(t *testing.T) {
+	val := BuildMVCCValue(FlagNormal, 1, nil)
+	flag, beginTS, realVal := ParseValueWithMVCC(val)
+	assert.Equal(t, FlagNormal, flag)
+	assert.Equal(t, uint64(1), beginTS)
+	assert.Empty(t, realVal)
+	assert.Equal(t, MVCCHeaderSize, len(val), "Normal with nil realVal = header only")
+}
+
+func TestParseValueWithMVCC_TooShort(t *testing.T) {
+	// 过短 Value 必须触发 panic（开发阶段强制暴露格式错误）
+	shortVals := [][]byte{
+		{},
+		{0x00},
+		{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07}, // 8 bytes < 9
+	}
+	for _, v := range shortVals {
+		assert.Panics(t, func() {
+			ParseValueWithMVCC(v)
+		}, "value shorter than MVCCHeaderSize must panic")
+	}
+}
+
+func TestBuildMVCCValue_RoundTrip(t *testing.T) {
+	cases := []struct {
+		name    string
+		flag    byte
+		beginTS uint64
+		realVal []byte
+	}{
+		{"Normal with data", FlagNormal, 42, []byte("hello")},
+		{"Normal with nil", FlagNormal, 1, nil},
+		{"Tombstone", FlagTombstone, 100, nil},
+		{"Large data", FlagNormal, 999, make([]byte, 4096)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			built := BuildMVCCValue(tc.flag, tc.beginTS, tc.realVal)
+			assert.Equal(t, MVCCHeaderSize+len(tc.realVal), len(built))
+
+			flag, beginTS, realVal := ParseValueWithMVCC(built)
+			assert.Equal(t, tc.flag, flag)
+			assert.Equal(t, tc.beginTS, beginTS)
+			assert.Equal(t, len(tc.realVal), len(realVal))
+			if len(tc.realVal) > 0 {
+				assert.Equal(t, tc.realVal, realVal)
+			}
+		})
+	}
+}

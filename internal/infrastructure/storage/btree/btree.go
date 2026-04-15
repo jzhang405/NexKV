@@ -12,6 +12,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
 )
 
@@ -27,6 +28,7 @@ type BTree struct {
 	closed  atomic.Bool          // closed flag
 	metrics *BTreeMetrics        // performance counters (optional)
 	tracer  Tracer               // operation tracer for debugging (optional)
+	tsGen   mvcc.TSGenerator     // MVCC timestamp generator (Phase 2a)
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -68,6 +70,7 @@ func NewBTreeWithMetricsAndTracer(storage *OffheapBTreeStorage, metrics *BTreeMe
 		storage: storage,
 		metrics: metrics,
 		tracer:  tracer,
+		tsGen:   mvcc.NewLocalTS(),
 	}, nil
 }
 
@@ -117,13 +120,52 @@ func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
 		b.metrics.ReadCount.Add(1)
 	}
 
-	// 解析 Value Flag，Tombstone 条目返回 ErrKeyNotFound
+	// 解析 MVCC Value（Phase 2a）：Flag + beginTS + realVal
 	raw := leaf.GetValue(idx)
-	flag, realVal := offheap.ParseValueWithFlag(raw)
+	flag, _, realVal := offheap.ParseValueWithMVCC(raw)
 	if flag == offheap.FlagTombstone {
 		return nil, ErrKeyNotFound
 	}
 	return realVal, nil
+}
+
+// GetRaw returns the complete MVCC-encoded value for the given key.
+// Unlike Get, it does not filter Tombstone entries — callers see Flag + beginTS + realVal.
+// Returns ErrKeyNotFound only if the key does not physically exist in the tree.
+// Used by MVCC readers that need to inspect beginTS or Tombstone status.
+func (b *BTree) GetRaw(_ context.Context, key []byte) ([]byte, error) {
+	if err := b.checkOpen(); err != nil {
+		return nil, err
+	}
+
+	path, err := searchPath(b.rootRef, key)
+	if err != nil {
+		return nil, err
+	}
+	defer path.ReleaseAll()
+
+	leafEntry := path.Leaf()
+	pInfo := leafEntry.Ref.GetPageInfo()
+	if pInfo == nil {
+		return nil, ErrPageFreed
+	}
+
+	leaf, err := b.storage.GetLeafPage(pInfo.PageID)
+	if err != nil {
+		return nil, err
+	}
+
+	idx, found := leaf.Search(key)
+	if !found {
+		return nil, ErrKeyNotFound
+	}
+
+	if b.metrics != nil {
+		b.metrics.ReadCount.Add(1)
+	}
+
+	// leaf.GetValue(idx) returns a deepCopy (Go heap), safe to return directly
+	return leaf.GetValue(idx), nil
 }
 
 // Set inserts or updates a key-value pair.
@@ -140,8 +182,8 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 		if found {
 			// Update existing key — 检查 Tombstone 恢复
 			raw := leaf.GetValue(idx)
-			flag, _ := offheap.ParseValueWithFlag(raw)
-			newLeaf, err := leaf.Update(idx, offheap.BuildValueWithFlag(offheap.FlagNormal, value))
+			flag, _, _ := offheap.ParseValueWithMVCC(raw)
+			newLeaf, err := leaf.Update(idx, offheap.BuildMVCCValue(offheap.FlagNormal, b.tsGen.NextTS(), value))
 			if err != nil {
 				return nil, err
 			}
@@ -155,8 +197,8 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 			}, nil
 		}
 
-		// Insert new key — Value 带 Flag 前缀
-		newLeaf, err := leaf.Insert(key, offheap.BuildValueWithFlag(offheap.FlagNormal, value))
+		// Insert new key — Value 带 MVCC Header（Phase 2a）
+		newLeaf, err := leaf.Insert(key, offheap.BuildMVCCValue(offheap.FlagNormal, b.tsGen.NextTS(), value))
 		if err != nil {
 			return nil, err
 		}
@@ -189,13 +231,13 @@ func (b *BTree) Delete(_ context.Context, key []byte) error {
 
 		// 防重复删除：检查现有 Flag
 		raw := leaf.GetValue(idx)
-		flag, _ := offheap.ParseValueWithFlag(raw)
+		flag, _, _ := offheap.ParseValueWithMVCC(raw)
 		if flag == offheap.FlagTombstone {
 			return nil, ErrKeyNotFound // 已删除，no-op
 		}
 
-		// Tombstone：Update 快路径（1-byte Value <= 原 Value，OverwriteLeafValue 必成功）
-		tombstoneVal := offheap.BuildValueWithFlag(offheap.FlagTombstone, nil)
+		// Tombstone：Phase 2a 使用 9-byte MVCC header，若原 Value >= 9B 走快路径，否则 Delete+Insert
+		tombstoneVal := offheap.BuildMVCCValue(offheap.FlagTombstone, b.tsGen.NextTS(), nil)
 		newLeaf, err := leaf.Update(idx, tombstoneVal)
 		if err != nil {
 			return nil, err

@@ -22,6 +22,8 @@ const MVCCHeaderSize = 9
 type MVCCValue struct {
 	Flag    byte
 	BeginTS uint64
+	// RealVal is a sub-slice of the byte array passed to ParseMVCC.
+	// Callers must not modify it; make a copy if mutation is needed.
 	RealVal []byte
 }
 

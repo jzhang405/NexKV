@@ -21,6 +21,7 @@ const (
 
 // Value Flag constants.
 // Deprecated: Use mvcc.FlagNormal and mvcc.FlagTombstone instead.
+// Removal: v0.4.0 — no external callers outside offheap tests.
 const (
 	FlagNormal    byte = 0x00 // Normal data
 	FlagTombstone byte = 0x01 // Logically deleted (tombstone marker)
@@ -43,7 +44,8 @@ var tombstoneValue = []byte{FlagTombstone}
 // 纯函数，无共享状态，天然 goroutine 安全。
 // Tombstone 场景（flag=FlagTombstone, realVal=nil）返回共享常量，避免重复分配。
 //
-// Deprecated: Phase 2 MVCC 路径使用 BuildMVCCValue 替代。
+// Deprecated: Phase 2 MVCC 路径使用 mvcc.BuildMVCC 替代.
+// Removal: v0.4.0 — no external callers outside offheap tests.
 func BuildValueWithFlag(flag byte, realVal []byte) []byte {
 	if flag == FlagTombstone && len(realVal) == 0 {
 		return tombstoneValue
@@ -56,12 +58,14 @@ func BuildValueWithFlag(flag byte, realVal []byte) []byte {
 
 // MVCCHeaderSize is the fixed header size for MVCC values.
 // Deprecated: Use mvcc.MVCCHeaderSize instead.
+// Removal: v0.4.0.
 const MVCCHeaderSize = mvcc.MVCCHeaderSize
 
 // ParseValueWithMVCC decodes a Phase 2 MVCC value into flag, beginTS, and realVal.
 // Panics on values shorter than MVCCHeaderSize or invalid flag — all B+Tree values must be MVCC-encoded.
 //
 // Deprecated: Use mvcc.ParseMVCC instead (returns error instead of panic).
+// Removal: v0.4.0 — no external callers outside offheap tests.
 func ParseValueWithMVCC(val []byte) (flag byte, beginTS uint64, realVal []byte) {
 	mvccVal, err := mvcc.ParseMVCC(val)
 	if err != nil {
@@ -74,6 +78,7 @@ func ParseValueWithMVCC(val []byte) (flag byte, beginTS uint64, realVal []byte) 
 // Panics on invalid flag or zero beginTS.
 //
 // Deprecated: Use mvcc.BuildMVCC instead (returns error instead of panic).
+// Removal: v0.4.0 — no external callers outside offheap tests.
 func BuildMVCCValue(flag byte, beginTS uint64, realVal []byte) []byte {
 	result, err := mvcc.BuildMVCC(flag, beginTS, realVal)
 	if err != nil {

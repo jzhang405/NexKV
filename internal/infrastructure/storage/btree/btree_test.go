@@ -202,8 +202,10 @@ func TestBTreeStubMethods(t *testing.T) {
 	})
 
 	t.Run("BeginTx", func(t *testing.T) {
-		_, err := tree.BeginTx(ctx)
-		assert.ErrorIs(t, err, ErrNotImplemented)
+		tx, err := tree.BeginTx(ctx)
+		assert.NoError(t, err)
+		assert.NotNil(t, tx)
+		tx.Rollback(ctx)
 	})
 
 	t.Run("CreateSnapshot", func(t *testing.T) {

@@ -28,6 +28,7 @@ type BTree struct {
 	metrics *BTreeMetrics        // performance counters (optional)
 	tracer  Tracer               // operation tracer for debugging (optional)
 	tsGen   mvcc.TSGenerator     // MVCC timestamp generator (Phase 2a)
+	txMgr   mvcc.TxManager       // MVCC transaction manager (Phase 2b)
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -70,13 +71,19 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 	rootRef := NewRootPageRef(pageID, 1, func(id model.PageID) {
 		_ = storage.FreePage(id)
 	})
-	return &BTree{
+
+	bt := &BTree{
 		rootRef: rootRef,
 		storage: storage,
 		metrics: cfg.metrics,
 		tracer:  cfg.tracer,
 		tsGen:   cfg.tsGen,
-	}, nil
+	}
+	// TxManager uses btreeStorageAdapter (bypasses BTree's MVCC encoding)
+	// — transaction layer handles BuildMVCC/ParseMVCC internally.
+	bt.txMgr = cfg.buildTxManager(newStorageAdapter(bt))
+
+	return bt, nil
 }
 
 // checkOpen returns ErrTreeClosed if the tree is closed.
@@ -324,8 +331,41 @@ func (b *BTree) RangeScan(_ context.Context, _, _ []byte) (service.Iterator, err
 	return nil, ErrNotImplemented
 }
 
-func (b *BTree) BeginTx(_ context.Context, _ ...service.TxOption) (service.Transaction, error) {
-	return nil, ErrNotImplemented
+func (b *BTree) BeginTx(ctx context.Context, _ ...service.TxOption) (service.Transaction, error) {
+	if err := b.checkOpen(); err != nil {
+		return nil, err
+	}
+	tx, err := b.txMgr.BeginTx(ctx, mvcc.SnapshotIsolation)
+	if err != nil {
+		return nil, err
+	}
+	return &txAdapter{tx: tx}, nil
+}
+
+// txAdapter adapts mvcc.Tx to service.Transaction.
+// mvcc.Tx has context-free Put/Delete/Rollback; service.Transaction passes ctx.
+type txAdapter struct {
+	tx mvcc.Tx
+}
+
+func (a *txAdapter) Get(ctx context.Context, key []byte) ([]byte, error) {
+	return a.tx.Get(ctx, key)
+}
+
+func (a *txAdapter) Set(_ context.Context, key, value []byte) error {
+	return a.tx.Put(key, value)
+}
+
+func (a *txAdapter) Delete(_ context.Context, key []byte) error {
+	return a.tx.Delete(key)
+}
+
+func (a *txAdapter) Commit(ctx context.Context) error {
+	return a.tx.Commit(ctx)
+}
+
+func (a *txAdapter) Rollback(_ context.Context) error {
+	return a.tx.Rollback()
 }
 
 func (b *BTree) CreateSnapshot(_ context.Context) (service.SnapshotID, error) {

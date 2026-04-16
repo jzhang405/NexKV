@@ -16,6 +16,7 @@ type btreeConfig struct {
 	metrics *BTreeMetrics
 	tracer  Tracer
 	tsGen   mvcc.TSGenerator
+	txMgr   mvcc.TxManager
 }
 
 // newBTreeConfig applies all options and fills in defaults.
@@ -30,6 +31,15 @@ func newBTreeConfig(opts ...BTreeOption) *btreeConfig {
 		cfg.tracer = DefaultTracer
 	}
 	return cfg
+}
+
+// buildTxManager creates a TxManager from config, using the provided StorageBackend.
+// If WithTxManager was called, uses that; otherwise creates a default one.
+func (cfg *btreeConfig) buildTxManager(storage mvcc.StorageBackend) mvcc.TxManager {
+	if cfg.txMgr != nil {
+		return cfg.txMgr
+	}
+	return mvcc.NewTxManager(storage, cfg.tsGen)
 }
 
 // WithMetrics enables metrics collection for the BTree.
@@ -54,6 +64,16 @@ func WithTSGenerator(tsGen mvcc.TSGenerator) BTreeOption {
 	return func(cfg *btreeConfig) {
 		if tsGen != nil {
 			cfg.tsGen = tsGen
+		}
+	}
+}
+
+// WithTxManager sets a custom transaction manager.
+// If not set, a default TxManager is created from the BTree's TSGenerator.
+func WithTxManager(txMgr mvcc.TxManager) BTreeOption {
+	return func(cfg *btreeConfig) {
+		if txMgr != nil {
+			cfg.txMgr = txMgr
 		}
 	}
 }

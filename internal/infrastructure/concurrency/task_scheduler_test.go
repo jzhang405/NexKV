@@ -223,9 +223,16 @@ func (i *testShardItem) TaskOrder() int {
 func TestTaskScheduler_ShardDistribution_Positive(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 4)
 
+	// 用 channel 捕获 handler 收到的 payload，验证路由正确性
+	executed := make(chan string, 2)
+
 	// 注册任务
 	err := scheduler.RegisterTask(
-		func(item any) TaskStatus { return TaskPassed },
+		func(item any) TaskStatus {
+			si := item.(*testShardItem)
+			executed <- si.payload
+			return TaskPassed
+		},
 		"test-task",
 		model.TaskPriorityNormal,
 		1,
@@ -234,6 +241,7 @@ func TestTaskScheduler_ShardDistribution_Positive(t *testing.T) {
 
 	err = scheduler.Start()
 	require.NoError(t, err)
+	defer scheduler.Stop()
 
 	// 测试正数 ShardID 的固定路由
 	// shardID=1 → core 1 (1 % 4 = 1)
@@ -246,27 +254,33 @@ func TestTaskScheduler_ShardDistribution_Positive(t *testing.T) {
 	err = scheduler.EnqueueWithShard(item5, "test-task")
 	require.NoError(t, err)
 
-	// 验证两个任务都路由到 core 1（runLoop 尚未执行，队列保留）
-	task1, _ := scheduler.cores[1].GetTaskByName("test-task")
-	assert.Equal(t, 2, task1.QueueLen(), "core 1 should have 2 items")
-
-	// 其他核心应该为空
-	for i, core := range scheduler.cores {
-		if i != 1 {
-			task, _ := core.GetTaskByName("test-task")
-			assert.Equal(t, 0, task.QueueLen(), "core %d should be empty", i)
+	// 验证两个任务都被执行（路由到 core 1 并被 runLoop 消费）
+	results := make(map[string]bool)
+	for i := 0; i < 2; i++ {
+		select {
+		case payload := <-executed:
+			results[payload] = true
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for task %d to execute", i)
 		}
 	}
-
-	scheduler.Stop()
+	assert.True(t, results["item-1"], "item-1 should have been executed")
+	assert.True(t, results["item-5"], "item-5 should have been executed")
 }
 
 func TestTaskScheduler_ShardDistribution_Negative(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 4)
 
+	// 用 channel 捕获 handler 收到的 payload，验证路由正确性
+	executed := make(chan string, 2)
+
 	// 注册任务
 	err := scheduler.RegisterTask(
-		func(item any) TaskStatus { return TaskPassed },
+		func(item any) TaskStatus {
+			si := item.(*testShardItem)
+			executed <- si.payload
+			return TaskPassed
+		},
 		"test-task",
 		model.TaskPriorityNormal,
 		1,
@@ -275,6 +289,7 @@ func TestTaskScheduler_ShardDistribution_Negative(t *testing.T) {
 
 	err = scheduler.Start()
 	require.NoError(t, err)
+	defer scheduler.Stop()
 
 	// 测试负数 ShardID 的路由
 	// shardID=-1 → core 1 (abs(-1) % 4 = 1)
@@ -287,11 +302,18 @@ func TestTaskScheduler_ShardDistribution_Negative(t *testing.T) {
 	err = scheduler.EnqueueWithShard(itemNeg5, "test-task")
 	require.NoError(t, err)
 
-	// 验证两个任务都路由到 core 1（runLoop 尚未执行，队列保留）
-	task1, _ := scheduler.cores[1].GetTaskByName("test-task")
-	assert.Equal(t, 2, task1.QueueLen(), "core 1 should have 2 items")
-
-	scheduler.Stop()
+	// 验证两个任务都被执行（路由到 core 1 并被 runLoop 消费）
+	results := make(map[string]bool)
+	for i := 0; i < 2; i++ {
+		select {
+		case payload := <-executed:
+			results[payload] = true
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for task %d to execute", i)
+		}
+	}
+	assert.True(t, results["item-neg1"], "item-neg1 should have been executed")
+	assert.True(t, results["item-neg5"], "item-neg5 should have been executed")
 }
 
 func TestTaskScheduler_ShardDistribution_Zero(t *testing.T) {

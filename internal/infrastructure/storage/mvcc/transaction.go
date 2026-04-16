@@ -154,80 +154,99 @@ func (tx *SnapshotTx) Get(ctx context.Context, key []byte) ([]byte, error) {
 	return tx.snapshotGet(ctx, key)
 }
 
-// snapshotGet implements the core snapshot read algorithm.
+// snapshotGet implements the core snapshot read algorithm using optimistic retry.
+//
+// The read path is lock-free: it reads B+Tree then traverses VersionChain without
+// acquiring KeyLock. To handle the Set-before-Prepend window (where B+Tree is updated
+// but VersionChain hasn't been prepended yet) and rollback concurrency, we use an
+// optimistic consistency check: record the chain's Generation() before traversal,
+// and re-check after. If generation changed (a concurrent commit or rollback modified
+// the chain), we retry the entire read.
+//
+// This avoids read-path locking overhead while guaranteeing snapshot consistency.
+const snapshotGetMaxRetries = 3
+
 func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, error) {
-	// Step 1: Read B+Tree (atomic single read)
-	raw, err := tx.engine.storage.GetRaw(ctx, key)
-	if err != nil {
-		if err == ErrKeyNotFound {
-			return nil, ErrKeyNotFound
-		}
-		return nil, fmt.Errorf("snapshot get: storage read failed for key %s: %w", string(key), err)
-	}
-
-	mvccVal, parseErr := ParseMVCC(raw)
-	if parseErr != nil {
-		return nil, parseErr
-	}
-
-	// Step 2: B+Tree version visible → return
-	if mvccVal.BeginTS <= tx.snapshotTS {
-		if mvccVal.IsTombstone() {
-			return nil, ErrKeyNotFound
-		}
-		return deepCopy(mvccVal.RealVal), nil
-	}
-
-	// Step 3: B+Tree version too new → traverse VersionChain
 	keyStr := string(key)
-	const maxRetries = 100
-	var chainVal *VersionChain
-	for i := 0; i < maxRetries; i++ {
+
+	for range snapshotGetMaxRetries {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
-		chainVal = tx.engine.versionStore.Load(keyStr)
-		if chainVal != nil {
-			break
-		}
-		if i <= 20 {
-			runtime.Gosched()
-		} else {
-			yields := 2 + (i-20)/5
-			for j := 0; j < yields; j++ {
-				runtime.Gosched()
+
+		// Step 1: Read B+Tree (atomic single read)
+		raw, err := tx.engine.storage.GetRaw(ctx, key)
+		if err != nil {
+			if err == ErrKeyNotFound {
+				return nil, ErrKeyNotFound
 			}
+			return nil, fmt.Errorf("snapshot get: storage read failed for key %s: %w", keyStr, err)
 		}
-	}
-	if chainVal == nil {
+
+		mvccVal, parseErr := ParseMVCC(raw)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+
+		// Step 2: B+Tree version visible → return directly (no chain involvement)
+		if mvccVal.BeginTS <= tx.snapshotTS {
+			if mvccVal.IsTombstone() {
+				return nil, ErrKeyNotFound
+			}
+			return deepCopy(mvccVal.RealVal), nil
+		}
+
+		// Step 3: B+Tree version too new → traverse VersionChain
+		chainVal := tx.engine.versionStore.Load(keyStr)
+		if chainVal == nil {
+			// Chain not yet created — the B+Tree was updated but commitKey's
+			// LoadOrStore hasn't executed yet. This should be extremely rare since
+			// LoadOrStore runs before KeyLock acquisition in commitKey.
+			runtime.Gosched()
+			continue
+		}
+
+		// Record generation before traversal for optimistic consistency check.
+		// If a concurrent commit (Prepend) or rollback (CAS revert) changes the chain
+		// during our traversal, generation will differ and we retry.
+		genBefore := chainVal.Generation()
+
+		// Step 4: Traverse chain, find bestNode (min commitTS > snapshotTS, not rolledBack)
+		var bestNode *VersionNode
+		node := chainVal.Load()
+		for node != nil {
+			if node.commitTS > tx.snapshotTS && !node.rolledBack.Load() {
+				if bestNode == nil || node.commitTS < bestNode.commitTS {
+					bestNode = node
+				}
+			}
+			node = node.next
+		}
+
+		// Optimistic validation: if generation changed, the chain was modified
+		// during our traversal (Set-before-Prepend window or rollback). Retry.
+		if chainVal.Generation() != genBefore {
+			runtime.Gosched()
+			continue
+		}
+
+		if bestNode != nil {
+			if bestNode.flag == FlagTombstone {
+				return nil, ErrKeyNotFound
+			}
+			return deepCopy(bestNode.value), nil
+		}
+
+		// bestNode == nil: no visible version in chain.
+		// This can happen for Insert (Insert doesn't Prepend, so chain has no nodes
+		// for the snapshot's key). The key didn't exist at snapshot time.
 		return nil, ErrKeyNotFound
 	}
 
-	// Step 4: Traverse chain, find bestNode (min commitTS > snapshotTS, not rolledBack)
-	// VersionChain node.commitTS is the commitTS of the transaction that replaced this old value.
-	// This old value is visible to transactions with snapshotTS < commitTS (the value was
-	// still in B+Tree when this transaction took its snapshot).
-	// We want the node with the smallest commitTS > snapshotTS (the most recent replacement
-	// that happened after our snapshot — meaning the value just before that replacement).
-	var bestNode *VersionNode
-	node := chainVal.Load()
-	for node != nil {
-		if node.commitTS > tx.snapshotTS && !node.rolledBack.Load() {
-			if bestNode == nil || node.commitTS < bestNode.commitTS {
-				bestNode = node
-			}
-		}
-		node = node.next
-	}
-	if bestNode != nil {
-		if bestNode.flag == FlagTombstone {
-			return nil, ErrKeyNotFound
-		}
-		return deepCopy(bestNode.value), nil
-	}
-
+	// Exhausted retries — highly unlikely under normal operation.
+	// This indicates extreme contention on this key.
 	return nil, ErrKeyNotFound
 }
 
@@ -351,10 +370,16 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 	}
 
 	tx.cleanup()
+	// Clear references after cleanup so checkActive can distinguish Committed from RolledBack.
+	// cleanup sets completed=true (CAS), providing happens-before for these writes.
+	tx.writeBuffer = nil
+	tx.readSet = nil
 	return nil
 }
 
 // preCheck verifies that all keys in the read set have unchanged ValueHash.
+// NOTE: PreCheck is a best-effort fast-fail optimization. The definitive conflict
+// detection happens in commitKey under KeyLock (beginTS validation).
 func (tx *SnapshotTx) preCheck(ctx context.Context) error {
 	for keyStr, fp := range tx.readSet {
 		select {
@@ -608,13 +633,15 @@ func (tx *SnapshotTx) rollbackOneKey(entry UndoEntry) (retErr error) {
 	// Path 1: head still our node → CAS revert
 	currentHead := chain.Load()
 	if currentHead != nil && currentHead.commitTS == entry.CommitTS {
-		chain.head.CompareAndSwap(currentHead, entry.PrePrependHead)
-		chain.generation.Add(1)
-		return nil
+		if chain.head.CompareAndSwap(currentHead, entry.PrePrependHead) {
+			chain.generation.Add(1)
+			return nil
+		}
+		// CAS failed: another Prepend raced us, fall through to Path 2
 	}
 
-	// Path 2: head changed by later commit → mark our node rolledBack
-	node := currentHead
+	// Path 2: head changed by later commit or CAS lost → mark our node rolledBack
+	node := chain.Load() // re-load head after potential CAS failure
 	for node != nil {
 		if node.commitTS == entry.CommitTS {
 			node.rolledBack.Store(true)

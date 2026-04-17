@@ -246,8 +246,10 @@ func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, erro
 	}
 
 	// Exhausted retries — highly unlikely under normal operation.
-	// This indicates extreme contention on this key.
-	return nil, ErrKeyNotFound
+	// This indicates extreme contention on this key. Return a contention error
+	// rather than ErrKeyNotFound to avoid confusing the caller about key existence.
+	return nil, fmt.Errorf("snapshot read contention for key %s after %d retries: %w",
+		keyStr, snapshotGetMaxRetries, ErrVersionChainConflict)
 }
 
 // ---------------------------------------------------------------------------
@@ -432,7 +434,7 @@ func (tx *SnapshotTx) applyWriteBuffer(ctx context.Context, commitTS uint64) err
 
 // commitKey atomically commits a single key under KeyLock protection.
 // Executes GetRaw → validate → Set → Prepend within the lock.
-func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry, commitTS uint64) (*UndoEntry, error) {
+func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry, commitTS uint64) (retUndo *UndoEntry, retErr error) {
 	// Ensure VersionChain exists before acquiring KeyLock (avoid sync.Map mutex in critical section)
 	tm.versionStore.LoadOrStore(key)
 
@@ -443,6 +445,14 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 		return nil, fmt.Errorf("key %s lock timeout: %w", key, err)
 	}
 	defer kl.Unlock()
+
+	// Recover from panic in critical section to prevent B+Tree/VersionChain inconsistency
+	// from propagating. The caller (applyWriteBuffer) will attempt rollback via undoBuf.
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("commit key %s: panic: %v", key, r)
+		}
+	}()
 
 	// ===== Critical section: strictly serialized per-key =====
 
@@ -504,11 +514,18 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 
 	switch entry.Op {
 	case OpInsert:
-		// Insert does NOT create a version chain node: the key did not exist before,
-		// so there is no historical value to preserve. If a later Update follows,
-		// the Update's Prepend will store the Insert's value as the old value.
-		// Snapshot reads with snapshotTS < commitTS correctly return ErrKeyNotFound
-		// (the key did not exist at their snapshot time).
+		// Insert Prepends a Tombstone marker node to indicate "key did not exist before
+		// this commitTS". Without this marker, an Insert→Update scenario would violate
+		// snapshot isolation: the Update's Prepend stores the Insert's value as an old
+		// version, and a snapshot reader with snapshotTS < Insert's commitTS would
+		// incorrectly return that value (the key didn't exist at their snapshot time).
+		// The Tombstone marker causes snapshotGet to return ErrKeyNotFound for snapshots
+		// that precede the Insert.
+		if err := tm.versionStore.Prepend(key, commitTS, nil, FlagTombstone); err != nil {
+			return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
+					PrePrependHead: prePrependHead, PrependSucceeded: false},
+				fmt.Errorf("version chain prepend (insert marker) failed for key %s: %w", key, err)
+		}
 	case OpUpdate, OpDelete:
 		if err := tm.versionStore.Prepend(key, commitTS, entry.OldValue, entry.OldFlag); err != nil {
 			return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
@@ -641,10 +658,12 @@ func (tx *SnapshotTx) rollbackOneKey(entry UndoEntry) (retErr error) {
 	}
 
 	// Path 2: head changed by later commit or CAS lost → mark our node rolledBack
+	// Must increment generation so concurrent snapshotGet detects the chain modification.
 	node := chain.Load() // re-load head after potential CAS failure
 	for node != nil {
 		if node.commitTS == entry.CommitTS {
 			node.rolledBack.Store(true)
+			chain.generation.Add(1)
 			return nil
 		}
 		node = node.next

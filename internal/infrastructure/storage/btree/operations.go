@@ -201,7 +201,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		result, err := mutate(oldLeaf)
 		if err != nil {
 			path.ReleaseAll()
-			return err // non-retryable business error
+			return fmt.Errorf("btree: write operation mutate key %q: %w", key, err)
 		}
 
 		newInfo := &PageInfo{

@@ -12,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 )
 
 // newTestBTree creates a BTree for testing with cleanup.
@@ -200,8 +202,10 @@ func TestBTreeStubMethods(t *testing.T) {
 	})
 
 	t.Run("BeginTx", func(t *testing.T) {
-		_, err := tree.BeginTx(ctx)
-		assert.ErrorIs(t, err, ErrNotImplemented)
+		tx, err := tree.BeginTx(ctx)
+		assert.NoError(t, err)
+		assert.NotNil(t, tx)
+		tx.Rollback(ctx)
 	})
 
 	t.Run("CreateSnapshot", func(t *testing.T) {
@@ -480,4 +484,128 @@ func TestBTreeTombstoneConcurrentSetDelete(t *testing.T) {
 	}
 	assert.Equal(t, visibleCount, tree.Size(),
 		"Size should match actual visible key count")
+}
+
+// --- MVCC Phase 2a Tests ---
+
+func TestBTreeMVCC_BeginTSAssigned(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	err := tree.Set(ctx, []byte("mvcc-key"), []byte("mvcc-val"))
+	require.NoError(t, err)
+
+	// GetRaw returns decoded MVCC value with beginTS > 0
+	mvccVal, err := tree.GetRaw(ctx, []byte("mvcc-key"))
+	require.NoError(t, err)
+
+	assert.Equal(t, mvcc.FlagNormal, mvccVal.Flag)
+	assert.Greater(t, mvccVal.BeginTS, uint64(0), "beginTS must be assigned")
+	assert.Equal(t, []byte("mvcc-val"), mvccVal.RealVal)
+}
+
+func TestBTreeMVCC_BeginTSIncreasing(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	// First Set
+	err := tree.Set(ctx, []byte("key"), []byte("val1"))
+	require.NoError(t, err)
+	mvccVal1, err := tree.GetRaw(ctx, []byte("key"))
+	require.NoError(t, err)
+
+	// Second Set (update) -- beginTS should increase
+	err = tree.Set(ctx, []byte("key"), []byte("val2"))
+	require.NoError(t, err)
+	mvccVal2, err := tree.GetRaw(ctx, []byte("key"))
+	require.NoError(t, err)
+
+	assert.Greater(t, mvccVal2.BeginTS, mvccVal1.BeginTS, "beginTS should increase on update")
+	assert.Equal(t, mvcc.FlagNormal, mvccVal2.Flag)
+	assert.Equal(t, []byte("val2"), mvccVal2.RealVal)
+}
+
+func TestBTreeMVCC_DeleteBeginTS(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	err := tree.Set(ctx, []byte("key"), []byte("val"))
+	require.NoError(t, err)
+
+	err = tree.Delete(ctx, []byte("key"))
+	require.NoError(t, err)
+
+	// GetRaw returns Tombstone with beginTS
+	mvccVal, err := tree.GetRaw(ctx, []byte("key"))
+	require.NoError(t, err)
+
+	assert.Equal(t, mvcc.FlagTombstone, mvccVal.Flag)
+	assert.Greater(t, mvccVal.BeginTS, uint64(0), "Tombstone should have beginTS")
+	assert.Empty(t, mvccVal.RealVal)
+}
+
+func TestBTreeMVCC_GetRaw_TombstoneVisible(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	err := tree.Set(ctx, []byte("key"), []byte("val"))
+	require.NoError(t, err)
+
+	err = tree.Delete(ctx, []byte("key"))
+	require.NoError(t, err)
+
+	// Get returns ErrKeyNotFound (filters Tombstone)
+	_, err = tree.Get(ctx, []byte("key"))
+	assert.Equal(t, ErrKeyNotFound, err)
+
+	// GetRaw returns the decoded MVCC value (Tombstone visible)
+	mvccVal, err := tree.GetRaw(ctx, []byte("key"))
+	require.NoError(t, err)
+	assert.Equal(t, mvcc.FlagTombstone, mvccVal.Flag)
+}
+
+func TestBTreeMVCC_GetRaw_NotFound(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	// Key never existed → ErrKeyNotFound
+	_, err := tree.GetRaw(ctx, []byte("nonexistent"))
+	assert.Equal(t, ErrKeyNotFound, err)
+}
+
+// TestBTreeMVCC_ConcurrentTSAssignment verifies that concurrent Set operations
+// assign unique, monotonically increasing timestamps without data corruption.
+func TestBTreeMVCC_ConcurrentTSAssignment(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	const goroutines = 20
+	const keysPerGoroutine = 50
+
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < keysPerGoroutine; j++ {
+				key := fmt.Appendf(nil, "key-%d", j)
+				value := fmt.Appendf(nil, "val-%d-%d", id, j)
+				err := tree.Set(ctx, key, value)
+				require.NoError(t, err)
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	// Verify all keys exist with valid MVCC values
+	for j := 0; j < keysPerGoroutine; j++ {
+		key := fmt.Appendf(nil, "key-%d", j)
+		mvccVal, err := tree.GetRaw(ctx, key)
+		require.NoError(t, err, "key-%d should exist", j)
+		assert.Equal(t, mvcc.FlagNormal, mvccVal.Flag)
+		assert.Greater(t, mvccVal.BeginTS, uint64(0), "key-%d should have beginTS", j)
+		assert.NotEmpty(t, mvccVal.RealVal)
+	}
+
+	assert.Equal(t, int64(keysPerGoroutine), tree.Size())
 }

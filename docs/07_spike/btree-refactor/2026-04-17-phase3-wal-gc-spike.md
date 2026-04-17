@@ -395,12 +395,250 @@ func (cm *CheckpointManager) RecoverFromCheckpoint() error
 | WAL sync 性能瓶颈 | 写入吞吐下降 | Group Commit 批量刷盘 |
 | Checkpoint 期间脏页追踪 | 实现 BTree 脏页标记 | 考虑 page-level LSN |
 
-### 6.2 开放问题（需 Spike 进一步探索）
+### 6.2 开放问题研究成果
 
-1. **BTree 脏页追踪**：当前 BTree 无脏页标记。Checkpoint 需要知道哪些页面被修改过。方案 A：遍历整棵 BTree 写出；方案 B：维护脏页位图。
-2. **WAL 是 logical 还是 physical**：当前设计是 logical（记录 Key/Value 操作）。Physical WAL（记录页面变更）恢复更快但 WAL 更大。NexKV 推荐 logical，与 MVCC 语义一致。
-3. **分布式场景的 WAL**：当前只考虑单机。分布式 WAL 需要 Leader/Follower 复制机制（远期）。
-4. **VersionChain 持久化**：崩溃恢复后 VersionChain 如何重建？建议从 BTree 的 beginTS + WAL 重放重建。
+#### 问题 1：BTree 脏页追踪
+
+**背景**：Checkpoint 需要知道哪些页面被修改过，才能高效刷脏页。当前 NexKV BTree 无脏页标记。
+
+**三种主流方案对比**：
+
+| 方案 | 原理 | 优点 | 缺点 | 代表实现 |
+|------|------|------|------|----------|
+| **A. 全量遍历** | Checkpoint 时遍历整棵 BTree，逐页判断是否需要写出 | 无额外内存开销，实现简单 | O(N) 遍历，N=所有页面，Checkpoint 慢 | SQLite 早期版本 |
+| **B. 脏页位图** | 修改页面时标记 `dirty=1`，Checkpoint 只刷标记页 | 只写真正脏页，Checkpoint 快 | 需要 MMU/操作系统支持或每页一个 bit | RocksDB、Badger |
+| **C. Copy-on-Write** | 页面修改时写入新位置，旧位置保留为快照 | 天然支持并发读取，无写放大 | 内存翻倍风险，需要定期合并 | OrioleDB |
+| **D. Page-level LSN** | 每页记录最新修改的 LSN，Checkpoint 时比较 LSN 判断是否需要写出 | 精度高，可增量Checkpoint | 每页额外 8 字节 LSN 字段 | PostgreSQL |
+
+**NexKV 推荐方案：B（脏页位图）+ 混合 A（全量遍历兜底）**
+
+理由：
+- NexKV 是纯内存 BTree（`sync.Map` 或自定义 B+Tree），无 MMU 保护层
+- 脏页位图实现简单：`map[pageID]bool` 或 `bitset`
+- 触发 Checkpoint 时全量遍历 BTree 可作为兜底（简单保守）
+- 未来可演进到 Page-level LSN 支持增量 Checkpoint
+
+**建议实现**：
+
+```go
+// btree/dirty_tracker.go
+type DirtyTracker struct {
+    mu    sync.Mutex
+    dirty map[pageID]struct{} // pageID → dirty flag
+}
+
+func (dt *DirtyTracker) MarkDirty(pid pageID) {
+    dt.mu.Lock()
+    defer dt.mu.Unlock()
+    dt.dirty[pid] = struct{}{}
+}
+
+func (dt *DirtyTracker) GetDirtyPages() []pageID {
+    dt.mu.Lock()
+    defer dt.mu.Unlock()
+    pages := make([]pageID, 0, len(dt.dirty))
+    for pid := range dt.dirty {
+        pages = append(pages, pid)
+    }
+    return pages
+}
+
+func (dt *DirtyTracker) Clear(pids []pageID) {
+    dt.mu.Lock()
+    defer dt.mu.Unlock()
+    for _, pid := range pids {
+        delete(dt.dirty, pid)
+    }
+}
+```
+
+**触发时机**：每次 `BTree.Set` / `BTree.Delete` 时调用 `MarkDirty`。
+
+---
+
+#### 问题 2：WAL 是 Logical 还是 Physical
+
+**定义区分**：
+
+| 类型 | 记录内容 | 例子 | 适用场景 |
+|------|---------|------|----------|
+| **Physical WAL** | 页面物理变更（修改了哪个文件的哪个偏移写入什么字节） | PostgreSQL：`PageFooter + full page image` | 崩溃恢复、基于块的复制（流复制） |
+| **Logical WAL** | 逻辑操作（INSERT INTO t VALUES(...)）| PostgreSQL logical decoding：`REDO function calls` | CDC、跨版本迁移、逻辑复制 |
+| **Logical-with-redo-info** | 逻辑操作 + 重做所需的最小物理信息 | LeanXcale：`operation + key + value` | KV 存储的 MVCC 恢复 |
+
+**关键澄清**：NexKV 文档中的 "logical" 指的是 **KV 层面的逻辑操作**（Key/Value Set/Delete），不同于 PostgreSQL 的 logical decoding（SQL 层面的逻辑变更）。
+
+**当前 NexKV 设计**：
+
+```
+[CRC:4][LSN:8][Type:1][TxID:8][Timestamp:8][PrevLSN:8][KeyLen:4][ValueLen:4][Key:N][Value:M]
+```
+
+这是 **Logical-with-redo-info** 模式——记录了 Key/Value 逻辑变更，加上足够重建的数据（value 本身）。
+
+**生产系统对比**：
+
+| 系统 | WAL 类型 | 原因 |
+|------|---------|------|
+| PostgreSQL | Physical（主要）+ Logical（可选） | 崩溃恢复需要物理一致性，logical decoding 用于 CDC |
+| RocksDB | Logical（kvPair） | MemTable 已是 kv 结构，WAL = MemTable 的镜像 |
+| Badger | Logical（kvPair） | 同 RocksDB，value log 分离 |
+| OrioleDB | Physical + Undo | MVCC 行版本存于页面内，WAL 记录物理页面变更 + Undo log |
+| **NexKV（推荐）** | **Logical（kvPair）** | 与 MVCC VersionChain 语义一致，恢复时重放 kv 操作 |
+
+**推荐决定：保持 Logical-with-redo-info**
+
+理由：
+1. **与 MVCC 语义一致**：MVCC 事务记录的是 Key/Value 版本变更，WAL 直接对应这些版本
+2. **实现简单**：不需要维护页面布局的物理一致性
+3. **跨版本兼容**：页面格式变化时，Logical WAL 更易兼容
+4. **足够用于恢复**：崩溃恢复只需重放 kv 操作，不需要知道 BTree 页面布局
+
+**演进路径**：当前 → Logical-with-redo-info → 可选的 physical redo 增强（如果未来发现 recovery 慢）
+
+---
+
+#### 问题 3：分布式场景的 WAL
+
+**背景**：NexKV 是去中心化 KV（3-100 节点，无单点故障）。单机 WAL 设计无法直接扩展到分布式。
+
+**分布式 WAL 的核心挑战**（来源：VLDB 2024 PALF Paper）：
+
+> "Design a replicated logging system as the foundation of a distributed database with ACID transactions is still a non-trivial problem."
+
+**三种分布式 WAL 模式对比**：
+
+| 模式 | 原理 | 代表系统 | WAL 复制方式 | 适用场景 |
+|------|------|---------|-------------|----------|
+| **Leader-based WAL** | 所有写入经 Leader WAL 串行化，Follower 异步复制 | PostgreSQL 流复制、etcd | WAL 块同步复制到 Follower | 强一致事务 |
+| **Quorum-based WAL** | 写入时写 W 个节点，WAL 条目带全局序号 | DynamoDB、Cassandra | 无中心 WAL，每个节点有本地 WAL | 最终一致 KV |
+| **Replicated WAL Service** | 独立的 WAL Service（如 Kafka），状态机复制 | CockroachDB、TiKV | Raft 复制 WAL entries | 分布式事务 |
+| **Gossip-based WAL** | 无全局 WAL，每个节点本地 WAL，定期 gossip 同步 | DyWAL、自研实验系统 | 最终一致，冲突合并 | 弱一致场景 |
+
+**NexKV 当前能力边界**：
+
+- NexKV 使用 **Quorum（读写）** 做强一致写入
+- 本地 WAL 只保证本地节点 crash recovery
+- **跨节点数据一致性**由分片副本的 Quorum 写保证
+
+**分布式 WAL 的核心问题**：本地 WAL 无法保证跨节点事务原子性
+
+```
+场景：节点 A 执行跨分片事务（分片1 和分片2）
+- A 的 WAL 记录了 "写入分片1" 和 "写入分片2"
+- 如果节点 A 在完成分片2 写入后 crash
+- 节点 B（持有分片2 的另一个副本）没有这个事务的 WAL 记录
+- 分片1 和分片2 数据不一致
+```
+
+**解决方案评估**：
+
+| 方案 | 描述 | 实现成本 | 适用范围 |
+|------|------|---------|---------|
+| **1. 单机 WAL + 无跨节点原子性** | 维持现状，跨分片事务仅靠 KeyLock 保证 | 无 | 当前 MVP |
+| **2. WAL 即 Service（Kafka-style）** | 独立 WAL Service，所有节点写入 WAL Service | 高，需要 Raft 复制 WAL Service | 强一致跨分片事务 |
+| **3. 2PC + WAL** | prepare 阶段写 WAL，commit 阶段同步 | 中，需要改造事务层 | 跨分片原子性 |
+| **4. Chain Replication** | 分片副本链式复制，WAL 随链传播 | 中低，适合线性拓扑 | 强一致读副本 |
+
+**远期建议：采用 2PC + WAL 方案**
+
+Step 1（Phase 3-4）：单机 WAL + Checkpoint 稳定
+Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
+
+**结论**：分布式 WAL 是远期问题，**不阻塞 Phase 3 单机 WAL 实现**。建议在文档中标注：`"分布式 WAL 需要 Phase 4+ 考虑，当前 MVP 只保证单机事务原子性"`
+
+---
+
+#### 问题 4：VersionChain 崩溃恢复重建
+
+**背景**：崩溃后内存中的 VersionChain 丢失。BTree 数据（含 beginTS）和 WAL 仍然存在。如何从这两者重建 VersionChain？
+
+**生产系统重建方案对比**：
+
+| 系统 | 重建方式 | 持久化内容 | 重建过程 |
+|------|---------|-----------|---------|
+| **PostgreSQL** | Undo Log 回滚 | 行版本存于 Heap 页面内 | 从 Heap 读取最新行 → 遍历 Undo chain → 重构可见版本 |
+| **MySQL InnoDB** | Rollback Segment | Undo Log + MVCC 链表 | 读取 clustered index → 跟随 MVCC 链表 → 过滤不可见版本 |
+| **OrioleDB** | Undo + Copy-on-Write | 页面内 Tuple 版本 | 读取页面 → 跟随 Undo chain → 重构 B-Tree 版本 |
+| **LeanXcale** | KV-log + MVCC | Undo Log | 读取 KV → 应用 Undo → 恢复历史版本 |
+
+**NexKV 当前数据布局**：
+
+```
+BTree Key → { beginTS, value, flags }
+VersionChain（纯内存）→ { commitTS, prevPtr, generation }
+```
+
+**VersionChain 重建的三种路径**：
+
+| 路径 | 原理 | 优点 | 缺点 |
+|------|------|------|------|
+| **A. WAL 全量重放** | 扫描所有 WAL entry，按 TxID 分组，找到所有 Commit 的版本，重建 VersionChain | 完整，不丢数据 | 慢（要扫描全量 WAL），只适合小数据量 |
+| **B. BTree-only 重建** | 从 BTree 读取所有 Key 的当前版本（包含 beginTS），构建只含最新版本的简化 VersionChain | 快，无需 WAL | 丢失历史版本（违反 MVCC 快照语义） |
+| **C. Checkpoint + WAL Delta（推荐）** | Checkpoint 时持久化 VersionChain 的"快照"（每个 Key 的链头 LSN），恢复时从 Checkpoint + Delta WAL 重放 | 平衡速度和完整性 | 需要 Checkpoint 支持 |
+| **D. Undo Log 化** | 每个 VersionNode 写入时同时写 Undo Log，恢复时从 Undo 重建 | PostgreSQL 验证可行 | 需要额外的 Undo 存储 |
+
+**NexKV 推荐：路径 C（Checkpoint + WAL Delta）**
+
+**理由**：
+- WAL 全量重放太慢（每次 crash 都要扫描所有 WAL）
+- BTree-only 丢失快照隔离能力（Phase 2 的核心价值）
+- Checkpoint + Delta 是工业标准做法（PostgreSQL、InnoDB 都用类似机制）
+
+**具体设计**：
+
+```
+Checkpoint 时：
+  - 对每个活跃 VersionChain，记录链头指针（commitTS + LSN）
+  - 将链头指针写入 Checkpoint WAL entry
+
+恢复时：
+  1. 加载最近的 Checkpoint，获得每个 Key 的链头 LSN
+  2. 从 Checkpoint LSN 之后开始重放 WAL delta
+  3. 按 TxID 分组过滤，只重放已 Commit 的事务
+  4. 重放过程中重建 VersionChain
+```
+
+**简化方案（Phase 3 MVP）**：
+
+由于 Phase 3 Checkpoint 还未实现，**先用路径 B 过渡**：
+
+```go
+// 简化恢复：从 BTree 重建 VersionChain（只含最新可见版本）
+func RecoverVersionChains(bt *BTree) error {
+    iter := bt.NewIterator()
+    for iter.SeekFirst(); iter.Valid(); iter.Next() {
+        node := iter.Current()
+        if node.IsDeleted() { continue }
+        // 构建只含最新版本的 VersionChain
+        vc := &VersionChain{
+            head: &VersionNode{
+                commitTS: node.commitTS,
+                value:    node.value,
+                generation: 0,
+                next: nil,
+            },
+        }
+        bt.SetVersionChain(node.key, vc)
+    }
+    return nil
+}
+```
+
+**此简化方案的限制**：只能恢复最新版本，**丢失历史快照**。这是 MVP 可接受的权衡，因为 Phase 3 主要目标是崩溃恢复可用，不是完整 MVCC 历史。
+
+**完整路径 C 的前置依赖**：Checkpoint 实现（Phase 3 Step 3）
+
+---
+
+### 6.3 开放问题决策汇总
+
+| 问题 | 结论 | 阻塞 Phase 3？ | 备注 |
+|------|------|--------------|------|
+| BTree 脏页追踪 | 脏页位图 + 全量遍历兜底 | 否（Checkpoint 独立 Step） | 建议在 Step 3 实现 |
+| WAL logical vs physical | 保持 Logical-with-redo-info | 否 | 与 MVCC 语义一致 |
+| 分布式 WAL | 远期问题（Phase 4+） | 否 | 当前 MVP 只保证单机原子性 |
+| VersionChain 恢复 | Checkpoint + WAL Delta（远期）；MVP 用 BTree-only | 否（Checkpoint 独立 Step） | 简化方案可接受 |
 
 ---
 
@@ -417,6 +655,8 @@ func (cm *CheckpointManager) RecoverFromCheckpoint() error
 
 ---
 
-**文档版本**: v1.0
+**文档版本**: v1.1
 **创建日期**: 2026-04-17
+**最后更新**: 2026-04-17
+**更新内容**: 补充 4 个开放问题研究成果（脏页追踪、WAL 类型、分布式 WAL、VersionChain 恢复）
 **状态**: Draft — 等待评审后决定实施顺序

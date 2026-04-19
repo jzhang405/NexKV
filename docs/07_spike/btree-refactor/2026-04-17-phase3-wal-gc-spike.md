@@ -52,8 +52,8 @@ type WAL interface {
 ```
 
 **DiskWAL 实现** — `internal/infrastructure/storage/wal/diskwal.go`：
-- Segment-based 文件（按 LSN 命名，默认 64MB/segment）
-- CRC32 校验
+- ⚠️ **当前为单文件 WAL**（`SegmentSize` 配置存在但未使用），**Phase 3 Step 2 必须实现 Segment 轮转**
+- CRC32 校验（⚠️ 当前使用 IEEE 多项式，建议替换为 Castagnoli/CRC32C）
 - 三种 Sync 策略：PerWrite / EverySecond / Batch
 - Recovery：扫描 `.wal` 文件目录
 
@@ -156,22 +156,27 @@ Recovery:
 
 > ⚠️ **"保守策略"是拟改进**：当前 `Recover()` 实现是"跳过继续"（`wal/diskwal.go` MVP 限制）。Step 2 计划修改为遇损坏即停。
 
-**⚠️ 关键缺失 — commitTS 重建机制**：
+**⚠️ commitTS 重建机制**（三专家审核：必须修复）：
 
-WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。因此 Commit marker entry 格式必须携带 commitTS：
+WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。Commit marker 的 Key 区域存放 CommitTS（`KeyLen=8, ValueLen=0`，Key = 8 字节大端编码）。
 
-```go
-// WAL entry Type=Commit 时携带 commitTS
-type CommitMarker struct {
-    LSN      LSN
-    TxID     uint64
-    CommitTS uint64   // ← 核心：嵌入 commitTS
-}
+**Recovery 重建 VersionChain 流程**（路径 C — 三专家审核采纳）：
+
+```
+1. 扫描所有 .wal segment → 按 LSN 排序
+2. 按 TxID 分组：
+   - 有 Commit marker → 已提交事务
+   - 无 Commit marker 或有 Rollback → 丢弃
+3. 对已提交事务，从 Commit marker 提取 commitTS
+4. 按 LSN 顺序重放已提交事务的 WriteBuffer entries：
+   a. 同一 TxID 的 entries 共享 commitTS
+   b. BTree.Set/Delete（携带 commitTS）
+   c. 按 commitTS 重建 VersionChain（保证 SI 语义）
+5. 清理 .wal.deleting 残留文件
+6. 设置下一个 LSN
 ```
 
-Recovery 流程：扫描到 Commit marker 时提取 commitTS → 向前回溯同一 TxID 的 WriteBuffer entries → 按 LSN 顺序重放，统一使用该 commitTS。
-
-**⚠️ 评审发现**：如果 Commit marker 格式不含 commitTS，Recovery 无法正确重建 BTree 的 MVCC 字段（beginTS/commitTS）。这是 WAL entry 格式的待修复项。
+**⚠️ 直接采用路径 C**（三专家审核一致）：放弃路径 B（BTree-only 重建），因为路径 B 只保留最新版本，崩溃恢复后快照隔离语义被违反。详见 Section 6.2 问题 4。
 
 ### 3.3 WAL 格式增强（基于 UnisonDB 研究）
 
@@ -182,23 +187,23 @@ Recovery 流程：扫描到 Commit marker 时提取 commitTS → 向前回溯同
 | 无 Trailer/结束标记 | 断电后无法区分截断 vs 正常结束 | 增加 `0xDEADBEEF` trailer |
 | ~~CRC 未实际计算~~ | ~~损坏检测失效~~ | ~~实现 CRC32 校验~~ — **已实现**（`types.go:147`） |
 | 无 8-byte 对齐 | 跨扇区撕裂写入风险 | `alignUp(n + 7) & ^7` |
-| **Commit marker 不含 commitTS** | **Recovery 无法重建 commitTS** | **新增 commitTS 字段到 Commit marker** |
+| **Commit marker 不含 commitTS** | **Recovery 无法重建 commitTS** | **Type=Commit 时 KeyLen=8，Key 区域存 CommitTS 大端编码** |
 
-**⚠️ Length 字段用途说明**：`Length:4` 放在 CRC 之后、LSN 之前，用于**变长 entry 的自我描述**。读取时先读 Length 跳到下一个 entry（跳跃扫描），用于损坏后快速定位下一条记录。CRC 计算范围为 `[Length之后]` 到 `[Trailer之前]`，Length 本身不纳入 CRC。
+**⚠️ Length 字段用途说明**：`Length:4` 放在 CRC 之后、LSN 之前，用于**变长 entry 的自我描述**。读取时先读 Length 跳到下一个 entry（跳跃扫描），用于损坏后快速定位下一条记录。
 
-**建议格式**：
+**建议格式**（三专家审核修正）：
 
 ```
 [CRC32:4][Length:4][LSN:8][Type:1][TxID:8][Timestamp:8][PrevLSN:8]
-[KeyLen:4][ValueLen:4][Key:N][Value:M][Padding:0~7][Trailer:8]
+[KeyLen:4][ValueLen:4][Key:N][Value:M][Padding:0~7][Trailer:4]
 ```
 
-- CRC 覆盖范围：`Length` 到 `Padding`（不含 CRC 本身）
-- `Padding`：对齐到 8 字节（公式 `alignUp(n + 7) & ^7 - n`）
-- `Trailer`：`0xDEADBEEF`，用于检测截断。若写入中断电，可能只写了部分 trailer，此时 CRC 校验失败
-- `Type=Commit` 时 `KeyLen=ValueLen=0`，`Key/Value` 区域存放 `CommitTS:8`
+- **CRC 覆盖范围**：从 `Length` 字段开始到 `Padding` 结束（**含 Length**，不含 CRC 本身和 Trailer）。这确保 Length 损坏时可被 CRC 检测，避免跳跃扫描定位错误。
+- `Padding`：对齐到 8 字节，公式 `paddedLen = (totalLen + 7) &^ 7`，其中 `totalLen` 不含 CRC 和 Trailer。Padding 长度 = `paddedLen - totalLen`。
+- `Trailer`：**4 字节** `0xDEADBEEF`（修正：原文档错误标记为 8 字节，但 `0xDEADBEEF` 是 32 位值）。用于检测截断。若写入中断电，Trailer 不完整，此时 CRC 校验失败。
+- **`Type=Commit` 时**：`KeyLen=8, ValueLen=0`，Key 区域存放 `CommitTS` 的 8 字节大端编码。**修正**：原文档错误标记为 `KeyLen=0`，8 字节 CommitTS 无法放入长度为 0 的区域。
 
-> ⚠️ **Trailer 检测逻辑**：读取 entry 后，检查最后 8 字节是否为 `0xDEADBEEF`。若不是，说明 entry 不完整（写入中断）。此检查在 CRC 校验之后执行。
+> ⚠️ **Trailer 检测逻辑**：读取 entry 后，检查最后 4 字节是否为 `0xDEADBEEF`。若不是，说明 entry 不完整（写入中断）。此检查在 CRC 校验之后执行。
 
 ### 3.4 Sync 策略：Group Commit
 
@@ -230,12 +235,17 @@ fsync batch 完成顺序：B 先于 A
 
 ```go
 // Append 时：LSN 顺序即 commitTS 顺序
-entry.LSN = atomic.AddUint64(&wal.lsnCounter, 1)
+// CRITICAL: LSN 和 commitTS 必须在同一临界区内分配，
+// 确保 LSN 顺序与 commitTS 顺序一致。
+// 修改此锁策略时必须重新评估 Group Commit 的单调性保证。
+entry.LSN = atomic.AddUint64(&wal.lsnCounter, 1)  // atomic 已隐式 seqcst，无需额外 barrier
 entry.commitTS = wal.nextCommitTS()  // 单调递增，与 LSN 一致
 // 不再等 Sync 才分配 commitTS
 ```
 
 Group Commit 只控制 **fsync 时机**，不改变 commitTS 分配顺序。
+
+**⚠️ Group Commit Sync 容错**（H4）：syncWorker 需 `recover()` 保护防止 panic 导致等待者永久阻塞。等待 Sync 的事务使用 `select + ctx.Done()` 处理取消。
 
 ### 3.5 Checkpoint 设计
 
@@ -299,14 +309,18 @@ Phase 2 的 VersionChain 是 append-only 不可变链表。每次 commit 在链�
 
 | 方案 | 原理 | 优点 | 缺点 |
 |------|------|------|------|
-| **Watermark GC** (推荐) | 后台 GC 遍历所有 VersionChain，回收 `commitTS < watermark` 的中间版本 | 实现简单，无热路径开销 | 长事务阻塞所有 GC |
-| **Eager Pruning** (Steam 论文) | ~~每次 Prepend 时顺便裁剪~~ | 链长度有界 | ~~热路径 O(n) 开销，不应在 Prepend 内执行~~ |
+| **Mark-and-Sweep** (采纳) | GC 只标记节点为 `reclaimed`，不修改链拓扑；`snapshotGet` 跳过已标记节点；`Prepend` 时顺便清理 | **无 data race**，热路径开销极低，侵入性最低 | 被标记节点仍占内存直到 Prepend 清理 |
+| **Copy-on-Prune** | CAS 替换整个链头，新链是缩短后的版本 | 旧链自然不可达 | 每次需重建缩短后的链 |
+| **per-chain RWMutex** | GC 持写锁，Prepend/snapshotGet 持读锁 | 实现简单 | 热路径增加 RWMutex 开销 |
 | **Epoch-based Reclamation** | 全局 epoch 推进后回收 | 安全释放内存 | Go 适配复杂 |
-| **Epoch-based + 后台 Eager** | Epoch 推进 + 后台并发裁剪 | 各取所长 | 实现复杂度中等 |
 
-> ⚠️ **评审修订**：原"混合方案（Watermark + Eager Pruning）"中 Eager Pruning 在 `Prepend` 热路径执行 O(n) 遍历，引入不确定延迟到 commit 关键路径，且遍历过程中链可能被并发修改。**Eager Pruning 应作为独立后台任务**，不在 Prepend 内同步执行。
+**采纳方案：Mark-and-Sweep（三专家审核一致推荐）**
 
-**修正推荐方案**：Watermark GC + 后台 Eager Pruning（独立 goroutine）
+理由：
+1. **唯一不破坏并发遍历安全**的方案——当前 `VersionNode.next` 是非 atomic 的 `*VersionNode`，直接修改会与 `snapshotGet` 的无锁遍历形成数据竞争（Go 未定义行为）
+2. **热路径几乎无损耗**——`snapshotGet` 只需增加 `node.reclaimed.Load()` 检查（atomic.Bool Load 在 x86 上编译为普通 MOV）
+3. **符合 VersionChain 不可变设计哲学**——链的拓扑结构在 GC 期间不变，只有 Prepend（已有 CAS 保护）时才清理
+4. **Tombstone 安全**——GC 保留规则确保删除标记不会被误回收
 
 ### 4.3 ActiveTxRegistry + Watermark GC
 
@@ -318,86 +332,138 @@ watermark = min(所有活跃事务的 snapshotTS)
 
 任何 `commitTS < watermark` 且**不是链中该 watermark 之前的最新可见版本**的节点可以回收。
 
-**⚠️ txID 来源**：当前 `SnapshotTx` 结构体（`transaction.go:114-123`）**无 txID 字段**。ActiveTxRegistry 需要新增 txID 生成方案：
+**⚠️ txID 来源**：`txID` 由 `txManager` 统一分配（`txIDCounter atomic.Uint64`），在 `BeginTx` 时生成。`ActiveTxRegistry` 不维护独立计数器，接受外部传入的 txID。`SnapshotTx` 需新增 `txID uint64` 字段。
 
-```go
-// 方案：从 TSGenerator 分配 txID（与 commitTS 同源）
-type ActiveTxRegistry struct {
-    txs sync.Map // txID → snapshotTS
-    lastTxID atomic.Uint64
-}
-
-func (r *ActiveTxRegistry) Register(tx *SnapshotTx) uint64 {
-    txID := atomic.AddUint64(&r.lastTxID, 1)
-    r.txs.Store(txID, tx.snapshotTS)
-    return txID
-}
-```
-
-**ActiveTxRegistry**（新增）：
+**ActiveTxRegistry**（采纳方案：`sync.Mutex` 保护普通 `map`，三专家审核一致）：
 
 ```go
 type ActiveTxRegistry struct {
-    mu      sync.Mutex
-    txs     sync.Map // txID → snapshotTS
+    mu  sync.Mutex
+    txs map[uint64]uint64 // txID → snapshotTS（Mutex 保护）
 }
 
-func (r *ActiveTxRegistry) Register(txID uint64, snapshotTS uint64)    // BeginTx 时调用
-func (r *ActiveTxRegistry) Unregister(txID uint64)                      // Commit/Rollback 时调用
-func (r *ActiveTxRegistry) Watermark() uint64                           // GC 时调用（需加锁保护）
+func (r *ActiveTxRegistry) Register(txID uint64, snapshotTS uint64) {  // BeginTx 时调用
+    r.mu.Lock()
+    r.txs[txID] = snapshotTS
+    r.mu.Unlock()
+}
+
+func (r *ActiveTxRegistry) Unregister(txID uint64) {                   // Commit/Rollback 时调用
+    r.mu.Lock()
+    delete(r.txs, txID)
+    r.mu.Unlock()
+}
+
+func (r *ActiveTxRegistry) Watermark() uint64 {                        // GC 时调用
+    r.mu.Lock()
+    defer r.mu.Unlock()
+    if len(r.txs) == 0 { return 0 }
+    min := ^uint64(0)
+    for _, ts := range r.txs {
+        if ts < min { min = ts }
+    }
+    return min
+}
 ```
 
-**⚠️ Watermark 计算和 GC 执行之间存在 TOCTOU 窗口**：
+**弃用 `sync.Map` 的理由**（三专家审核）：
+1. `sync.Map` 优化"读多写少"场景，但 Register/Unregister 是高频写操作（每个事务 Begin/Commit 各一次）
+2. `sync.Map.Range` 文档明确声明不保证看到并发的 `Store`，导致 Register/Watermark 之间无 happens-before 保证
+3. `sync.Mutex` 的 Lock/Unlock 提供 happens-before 保证：Watermark 在 Lock 时，所有在 Lock 之前完成的 Register 操作对 Watermark 可见
 
+**⚠️ Register 必须在 BeginTx 时调用**（三专家审核一致）：
+
+如果 Register 在 Commit 时调用，长事务从 BeginTx 到 Commit 的整个生命周期内不被 GC 感知，其需要的版本可能被回收。
+
+```go
+// BeginTx 中：
+txID := tm.txIDCounter.Add(1)
+tm.activeTxRegistry.Register(txID, snapshotTS)
+
+// Commit/Rollback 中（defer 保护确保 Rollback 路径也执行）：
+defer tm.activeTxRegistry.Unregister(tx.txID)
 ```
-T1: watermark = 100（所有活跃 tx snapshotTS >= 100）
-T2: 新事务 T2 开始，snapshotTS = 50（在 watermark 计算之后注册）
-T3: GC 开始回收 commitTS < 100 的节点
-T4: T2 的 snapshotTS = 50，这些节点对它可见！但已被 GC 回收
-```
 
-**缓解**：BeginTx 注册和 GC 之间需要内存屏障（`atomic` 操作保证可见性），且 GC 遍历期间新注册的事务不受当前 watermark 约束（它们的 snapshotTS 更大，不会读到被回收的节点）。
-
-### 4.4 后台 Eager Pruning（独立任务，不在 Prepend 内）
+### 4.4 后台 Mark-and-Sweep Pruning（采纳方案）
 
 ```
 PruneBackground(watermark):
   1. 获取 VersionStore.chains 的 snapshot（sync.Map Range）
   2. 对每个 key 的链：
-     a. 遍历链，找到可回收节点（commitTS < watermark 且非链中第一个 < watermark）
-     b. CAS 修改 next 指针摘除节点
-     c. 将摘除节点放入 limbo channel（不保留引用，由 Go GC 自然回收）
+     a. 遍历链，跳过链头（始终保留）
+     b. 找到 watermark 之前的最新可见版本（含 Tombstone）→ 保留
+     c. 更老的中间节点：node.reclaimed.Store(true)（仅标记，不修改 next）
+  3. Prepend 时顺便清理：从链头开始剔除连续的 reclaimed 节点
 ```
 
-**⚠️ pruneVersionChains 无 per-key 同步**：GC 遍历 VersionChain 时无 per-key 锁，与并发 `commitKey` 的 KeyLock 无协调。需引入 epoch 或 per-chain mutex 保护。
+**GC 保留规则（三专家审核：H1 Tombstone 不复活）**：
+
+```
+VersionChain: head → V5(500) → V4(400,Tombstone) → V3(300) → V2(200) → V1(100)
+watermark=450 时：
+  - V5(500): 链头，始终保留
+  - V4(400,Tombstone): watermark 前最新可见版本，必须保留（防止 key 复活）
+  - V3(300): 可标记 reclaimed
+  - V2(200): 可标记 reclaimed
+  - V1(100): 可标记 reclaimed
+```
+
+**snapshotGet 配合修改**：
+
+```go
+// 遍历时增加 reclaimed 检查
+for node != nil {
+    if node.reclaimed.Load() {
+        node = node.next
+        continue  // 跳过已回收节点
+    }
+    // ... 原有逻辑
+}
+```
 
 ### 4.5 后台 GC Goroutine
 
 ```go
 func (tm *TransactionEngine) runGC(ctx context.Context) {
     ticker := time.NewTicker(tm.config.GCInterval) // 默认 5s
+    defer ticker.Stop()
     for {
         select {
         case <-ticker.C:
             watermark := tm.activeTxRegistry.Watermark()
             if watermark == 0 { continue } // 无活跃事务
-            tm.pruneVersionChains(watermark)
+            tm.pruneVersionChains(ctx, watermark) // 传入 ctx，支持优雅退出
         case <-ctx.Done():
             return
         }
     }
 }
+
+// pruneVersionChains 传入 ctx，在 Range 回调中检查退出信号
+func (tm *TransactionEngine) pruneVersionChains(ctx context.Context, watermark uint64) {
+    tm.versionStore.chains.Range(func(key, value any) bool {
+        select {
+        case <-ctx.Done():
+            return false // 提前退出
+        default:
+        }
+        chain := value.(*VersionChain)
+        chain.Prune(watermark)
+        return true
+    })
+}
 ```
 
-### 4.6 Limbo Bag 语义
+### 4.6 节点回收机制（简化设计）
 
-**推荐使用 channel 方式**：
+**采纳方案：直接让节点不可达，Go GC 自然回收**
 
-```go
-limbo chan *VersionNode  // 节点不可达，Go GC 自然回收
-```
+Mark-and-Sweep 方案下，被标记为 `reclaimed` 的节点仍在链中（`next` 未修改），但 `snapshotGet` 会跳过它们。当 `Prepend` 清理链头连续的 reclaimed 节点时，这些节点从链中物理断开，变为不可达，由 Go GC 自动回收。
 
-> ⚠️ 若使用 `[]*VersionNode` slice 持有引用，会造成内存泄漏。若使用 `runtime.SetFinalizer`，可确保节点最终释放。
+**无需 Limbo Bag / channel**（三专家审核一致）：
+- Go GC 已足够安全高效，不需要手动管理节点生命周期
+- channel 持有引用反而阻止 Go GC 回收，造成内存泄漏
+- Prepend 的 CAS 保护确保清理操作的并发安全
 
 ### 4.7 GC 与 WAL 的交互
 
@@ -440,17 +506,26 @@ Step 3: Checkpoint（依赖 WAL Truncate）
 ```go
 // 新增：mvcc/active_tx_registry.go
 type ActiveTxRegistry struct {
-    mu      sync.Mutex
-    txs     sync.Map // txID → snapshotTS
-    lastTxID atomic.Uint64  // txID 生成器
+    mu  sync.Mutex
+    txs map[uint64]uint64 // txID → snapshotTS（Mutex 保护）
 }
-// BeginTx: txID := registry.Register(snapshotTS)
-// Commit/Rollback: registry.Unregister(txID)
 
-func (r *ActiveTxRegistry) Watermark() uint64  // 需加锁遍历
+func (r *ActiveTxRegistry) Register(txID uint64, snapshotTS uint64)    // BeginTx 时调用
+func (r *ActiveTxRegistry) Unregister(txID uint64)                      // Commit/Rollback 时调用
+func (r *ActiveTxRegistry) Watermark() uint64                           // GC 时调用
 
 // 修改：mvcc/version_chain.go
-func (vc *VersionChain) Prune(watermark uint64) int  // 后台任务调用，非 Prepend 内
+// VersionNode 新增 reclaimed atomic.Bool 字段
+type VersionNode struct {
+    commitTS   uint64
+    value      []byte
+    flag       byte
+    rolledBack atomic.Bool
+    reclaimed  atomic.Bool  // Phase 3 新增：GC 标记
+    next       *VersionNode
+}
+
+func (vc *VersionChain) Prune(watermark uint64) int  // 后台任务调用：标记 reclaimed，不修改 next
 
 // 新增：mvcc/gc.go
 type GCConfig struct {
@@ -459,11 +534,11 @@ type GCConfig struct {
     BatchSize   int           // 每次GC处理的 key 数
 }
 
-func (tm *txManager) runGC(ctx context.Context)   // 后台 goroutine
-func (tm *txManager) pruneVersionChains(watermark uint64)  // 遍历所有 chains
+func (tm *txManager) runGC(ctx context.Context)                     // 后台 goroutine
+func (tm *txManager) pruneVersionChains(ctx context.Context, watermark uint64)  // 遍历所有 chains，传入 ctx
 ```
 
-> ⚠️ **关键新增**：ActiveTxRegistry 需要在 `BeginTx` 时分配 txID（从 `lastTxID` 原子递增），并与 `SnapshotTx` 生命周期绑定。
+> ⚠️ **关键新增**：ActiveTxRegistry 在 `BeginTx` 时 `Register(txID, snapshotTS)`，在 `Commit/Rollback` 时 `Unregister(txID)`（defer 保护）。`txID` 由 `txManager.txIDCounter` 统一分配，不维护独立计数器。
 
 **验证标准**：
 - [ ] GC 后 VersionChain 长度 ≤ MaxVersions（充分条件非必要）
@@ -477,47 +552,62 @@ func (tm *txManager) pruneVersionChains(watermark uint64)  // 遍历所有 chain
 **⚠️ 关键接口变更**（相较于原计划）：
 
 ```go
-// 修改：wal/types.go WALEntry 格式
-// Type=Commit 时新增 CommitTS 字段（其他类型不含）
-type WALEntry struct {
-    LSN      LSN
-    Type     EntryType
-    TxID     uint64
-    Timestamp uint64
-    PrevLSN  LSN
-    Key      []byte
-    Value    []byte
-    CommitTS uint64  // 仅 Type=Commit 时有效
+// 修改：wal/types.go WALEntry — Type=Commit 时 CommitTS 编码到 Key 字段
+// Wire format: KeyLen=8, ValueLen=0, Key = CommitTS 8字节大端编码
+// 其他 Type 的 WALEntry 格式不变（Key/Value 正常使用）
+
+// 修改：mvcc/transaction.go BeginTx 方法
+func (tm *txManager) BeginTx(ctx context.Context, level IsolationLevel) (Tx, error) {
+    snapshotTS := tm.tsGen.NextTS()
+    txID := tm.txIDCounter.Add(1)                  // txID 统一来源
+    tx := &SnapshotTx{
+        engine: tm, snapshotTS: snapshotTS, txID: txID,
+    }
+    // 关键：BeginTx 时注册，让 GC 感知此事务
+    tm.activeTxRegistry.Register(txID, snapshotTS)
+    return tx, nil
 }
 
 // 修改：mvcc/transaction.go Commit 方法
 func (tx *SnapshotTx) Commit(ctx context.Context) error {
-    txID := tx.engine.txIDCounter.Add(1)
-    commitTS := tx.engine.tsGen.NextTS()           // 分配 commitTS（在 WAL Append 之前）
-    registry.Register(txID, tx.snapshotTS)         // 注册活跃事务
+    // 注意：Register 已在 BeginTx 时完成
+    defer tx.engine.activeTxRegistry.Unregister(tx.txID)
 
-    // WAL.Append 前：WriteBuffer entries 携带 commitTS
+    commitTS := tx.engine.tsGen.NextTS()           // 分配 commitTS（在 WAL Append 之前）
+
+    // WAL.Append 前：WriteBuffer entries 携带 commitTS（待实现 ToWALEntries）
     entries := tx.writeBuffer.ToWALEntries(commitTS)
     for _, entry := range entries {
         tx.engine.wal.Append(entry)
     }
 
-    // Commit marker 携带 commitTS
-    commitEntry := &WALEntry{Type: Commit, TxID: txID, CommitTS: commitTS}
+    // Commit marker：KeyLen=8, ValueLen=0, Key 区域存 CommitTS 大端编码
+    commitEntry := &WALEntry{
+        Type:  EntryTypeCommit,
+        TxID:  tx.txID,
+        Key:   encodeUint64BE(commitTS),
+        Value: nil,
+    }
     tx.engine.wal.Append(commitEntry)
     tx.engine.wal.Sync()
 
     // Apply 在 Sync 之后（确保 Commit marker 已持久化）
     if err := tx.applyWriteBuffer(ctx, commitTS); err != nil {
-        registry.Unregister(txID)
-        return err
+        return err  // Apply 失败视为系统级错误，Recovery 中处理
     }
-    registry.Unregister(txID)
     return nil
+}
+
+// Rollback 中也执行 Unregister（defer 在 Commit 中设置，Rollback 需显式调用）
+func (tx *SnapshotTx) Rollback() error {
+    tx.engine.activeTxRegistry.Unregister(tx.txID)
+    // ... 原有清理逻辑
 }
 ```
 
-> ⚠️ **原计划错误**：原计划"commitTS 移到 WAL.Sync() 之后"会导致 Apply 在 Commit marker 之前，违反 all-or-nothing。正确的分配顺序是：**commitTS 在 WAL.Append 之前分配并嵌入 WriteBuffer entries**。
+> ⚠️ **Apply 失败处理**（H5）：WAL 中 Commit marker 已持久化，不可回滚。Apply 失败视为系统级错误，Recovery 流程中需要补偿/重试机制。
+>
+> ⚠️ **AppendBatch**（H7）：Group Commit 场景下，建议引入 `WAL.AppendBatch(entries []*WALEntry)` 保证单事务 entries 连续写入，减少交错碎片。
 
 **验证标准**：
 - [ ] 写入数据 → kill 模拟 → 恢复后数据完整
@@ -541,7 +631,9 @@ type CheckpointManager struct {
 }
 
 func (cm *CheckpointManager) FuzzyCheckpoint() error
-func (cm *CheckpointManager) SharpCheckpoint() error
+    // 关键：开始时 atomic load rootRef 快照，基于固定 root 遍历
+    // COW 保证旧 root 子树不被就地修改（LMDB/BoltDB 经典做法）
+    // checkpointStartLSN 之后的修改由 WAL 重放补偿
     // 1. 暂停写入
     // 2. 刷所有脏页（见 6.2 问题 1 脏页追踪方案）
     // 3. WAL.Append(Checkpoint entry)
@@ -565,15 +657,15 @@ func (cm *CheckpointManager) RecoverFromCheckpoint() error
 
 | 风险 | 影响 | 缓解 |
 |------|------|------|
-| ~~GC 裁剪与并发 snapshotGet 竞争~~ | ~~generation 检查 + Go GC 内存安全~~ | **已重新设计**：Eager Pruning 移出 Prepend 热路径，改为后台任务 |
+| ~~GC 裁剪与并发 snapshotGet 竞争~~ | ~~CAS 修改 next 指针与无锁遍历竞争~~ | **已修复**：采纳 Mark-and-Sweep 方案，只标记不剪链，不修改 next 指针 |
 | WAL sync 性能瓶颈 | 写入吞吐下降 | Group Commit 批量刷盘 |
 | Checkpoint 期间脏页追踪 | **COW BTree 语义下方案需重新评估** | 见 6.2 问题 1 |
 | **Apply 在 Commit marker 之前（原始设计）** | **BTree 残留未提交脏数据** | **已修复**：Commit marker → Sync → Apply |
 | **Recovery 无 commitTS 重建机制** | **MVCC 可见性系统无法工作** | **已计划**：Commit marker 携带 commitTS |
 | **Group Commit 破坏 LSN→commitTS 单调性** | **MVCC 时间戳单调性被违反** | **已计划**：commitTS 在 Append 时按 LSN 顺序分配 |
-| **Eager Pruning 在 Prepend 热路径执行 O(n)** | **commit 关键路径引入不确定延迟** | **已修复**：独立后台 goroutine |
-| **GC 执行和 Watermark 计算非原子** | **新事务在 GC 期间注册可能读到正在回收的版本** | 需 epoch/barrier 机制 |
-| **pruneVersionChains 无 per-key 同步** | **GC 与并发 commitKey 并发修改同一 key 时无安全保证** | 需 per-chain mutex 或 epoch 保护 |
+| **Eager Pruning 在 Prepend 热路径执行 O(n)** | **commit 关键路径引入不确定延迟** | **已修复**：采纳 Mark-and-Sweep，不修改链拓扑，延迟到 Prepend 时清理 |
+| **GC 执行和 Watermark 计算非原子** | **新事务在 GC 期间注册可能读到正在回收的版本** | **已修复**：统一 Mutex 保护，Register/Watermark 共享同一把锁 |
+| **pruneVersionChains 无 per-key 同步** | **GC 与并发 commitKey 并发修改同一 key 时无安全保证** | **已修复**：Mark-and-Sweep 只标记 reclaimed，不修改链结构，与 commitKey 无冲突 |
 
 ### 6.2 开放问题研究成果
 
@@ -730,46 +822,20 @@ Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
 | **C. WAL 全量重放 + BTree 辅助** | WAL 重放时，对于每个 Key 按 commitTS 顺序重建链 | 正确，不依赖额外存储 | 复杂度高，需要 WAL 有完整 commitTS |
 | **D. Undo Log** | 每个 VersionNode 写入时同时写 Undo Log | PostgreSQL 验证可行 | 需要额外存储，属于大改动 |
 
-**NexKV 推荐：路径 C（WAL 全量重放 + BTree 辅助）**
+**NexKV 采纳：路径 C（WAL 全量重放 + BTree 辅助）**（三专家审核一致）
+
+**直接采用路径 C，不做路径 B 过渡**。理由：
+
+1. **路径 B 违反 SI 语义**：只保留最新版本，崩溃恢复后 `snapshotTS=130` 的事务应看到 `commitTS=120` 的旧值，但路径 B 只保留 `commitTS=150` 的值
+2. **Commit marker 携带 commitTS 是 Step 2 阻塞项**：路径 C 不需要额外工作
+3. **路径 B 的"快速过渡"价值被高估**：核心工作量在 Commit marker 格式改造，路径 B 的 BTree-only 重建代码反而增加维护负担
 
 > ⚠️ **路径 C 的关键前提**：WAL entry 需要携带 commitTS（见 Section 3.1/3.2 修复）。如果 Commit marker 携带 commitTS，Recovery 时：
 > 1. 按 TxID 分组扫描 Commit marker → 获得 commitTS
 > 2. 同一 TxID 的 WriteBuffer entries 拥有相同 commitTS
 > 3. WAL entries 按 LSN 顺序 → 即 commitTS 顺序 → 可重建正确的 VersionChain 拓扑
 
-**简化方案（Phase 3 MVP）—— 路径 B**：
-
-由于 Commit marker 格式改造（携带 commitTS）工作量较大，**Phase 3 MVP 先用路径 B 过渡**：
-
-```go
-// 简化恢复：从 BTree 重建 VersionChain（只含最新可见版本）
-func RecoverVersionChains(bt *BTree) error {
-    iter := bt.NewIterator()
-    for iter.SeekFirst(); iter.Valid(); iter.Next() {
-        node := iter.Current()
-        if node.IsDeleted() { continue }
-        vc := &VersionChain{
-            head: &VersionNode{
-                commitTS: node.commitTS,
-                value:    node.value,
-                generation: 0,
-                next: nil,
-            },
-        }
-        bt.SetVersionChain(node.key, vc)
-    }
-    return nil
-}
-```
-
-**⚠️ 此简化方案的风险（被低估）**：
-1. 崩溃后**丢失所有历史快照**——长时间运行的 SI 读事务在重启后可能看到不一致的历史
-2. Read-Your-Own-Writes 保障在重启后可能失效
-3. MVCC 快照隔离的核心价值被削弱
-
-> ⚠️ **Phase 3 后期应升级到路径 C**：修改 Commit marker 携带 commitTS，WAL 重放时重建完整 VersionChain。
-
-**完整路径 D（Undo Log）的远期考虑**：如果 Phase 3 之后需要完整 MVCC 历史恢复能力，可引入 Undo Log（参考 PostgreSQL）。这是 Phase 4+ 的选项。
+**完整路径 D（Undo Log）的远期考虑**：如果 Phase 3 之后需要更高效的 MVCC 历史恢复能力（避免全量 WAL 扫描），可引入 Undo Log（参考 PostgreSQL）。这是 Phase 4+ 的选项。
 
 ---
 
@@ -780,9 +846,11 @@ func RecoverVersionChains(bt *BTree) error {
 | BTree 脏页追踪 | **修正**：利用 COW 特性，Checkpoint 遍历活跃路径即可，无需脏页位图 | 否（Checkpoint 独立 Step） | 需 Step 3 验证 COW 语义假设 |
 | WAL logical vs physical | 保持 Logical-with-redo-info | 否 | 与 MVCC 语义一致 |
 | 分布式 WAL | 远期问题（Phase 4+） | 否 | ⚠️ **新增风险警告**：跨分片事务在节点崩溃后可能部分提交，当前 MVP 只保证单分片原子性 |
-| VersionChain 恢复 | **修正**：MVP 路径 B（BTree-only）；远期路径 C（WAL 重放 + CommitTS） | 否（Checkpoint 独立 Step） | ⚠️ **原路径 C 方案有误**（链头指针无法重建链表） |
-| **WAL commitTS 嵌入** | **新增**：Commit marker 必须携带 commitTS | **是（Step 2 必须修复）** | 当前 WAL entry 格式不含 commitTS，Recovery 无法重建 MVCC |
-| **DirtyTracker 接口** | 新增接口，当前代码无调用点 | 是（Step 3 必须实现） | COW 语义下DirtyTracker 方案已修正为活跃路径遍历 |
+| VersionChain 恢复 | **修正**：直接采用路径 C（WAL 全量重放 + CommitTS），放弃路径 B | 否（与 Step 2 合并） | ⚠️ **原路径 B 方案已删除**（违反 SI 语义） |
+| **WAL commitTS 嵌入** | **修正**：Type=Commit 时 `KeyLen=8, ValueLen=0`，Key 区域存 CommitTS 大端编码 | **是（Step 2 必须修复）** | 当前 WAL entry 格式不含 commitTS，Recovery 无法重建 MVCC |
+| **DiskWAL Segment 轮转** | **新增**：当前代码为单文件 WAL，Segment 轮转是 Checkpoint 前置依赖 | **是（Step 2 必须实现）** | SegmentSize 配置存在但未使用 |
+| **DirtyTracker 接口** | 新增接口，当前代码无调用点 | 是（Step 3 必须实现） | COW 语义下 DirtyTracker 方案已修正为活跃路径遍历 |
+| **分布式 WAL 2PC 约束** | **新增**：2PC + WAL 仅适用 Quorum 强一致分片 | 否（远期） | 涉及 Gossip 最终一致分片的跨分片事务使用 best-effort + 冲突合并 |
 
 ---
 
@@ -799,20 +867,22 @@ func RecoverVersionChains(bt *BTree) error {
 
 ---
 
-**文档版本**: v1.2
+**文档版本**: v2.0
 **创建日期**: 2026-04-17
-**最后更新**: 2026-04-17
-**更新内容**: 全部 4 个 Review Agent 评审后系统性修复：
-- Section 3.1: WAL 流程修正（Commit marker→Sync→Apply）
-- Section 3.2: Recovery commitTS 重建机制
-- Section 3.3: WAL 格式增强（Length 字段用途说明，CommitTS 字段新增，CRC32 已实现状态修正）
-- Section 3.4: Group Commit LSN→commitTS 单调性修复
-- Section 3.5: Checkpoint Truncate 原子性（rename-before-delete + fsync 目录）
-- Section 4.2-4.6: GC 方案全面修订（Eager Pruning 移出 Prepend 热路径，改为后台任务；Limbo Bag 语义明确；Watermark TOCTOU 窗口说明）
-- Section 5: 实施路线修正（GC↔WAL 并行非依赖，时间估算修订，CRC32 已实现修正，ActiveTxRegistry txID 来源补充）
-- Section 6.1: 高风险列表更新（新增 5 项，修订 1 项）
-- Section 6.2 问题 1: COW 脏页追踪语义修正
-- Section 6.2 问题 3: 分布式 WAL 风险警告补充
-- Section 6.2 问题 4: 链头指针无法重建链表错误，远期路径修正
-- Section 6.3: 决策汇总修订（新增 WAL commitTS 嵌入和 DirtyTracker 为阻塞项）
+**最后更新**: 2026-04-18
+**更新内容**: 三专家审核（存储引擎 / 分布式系统 / Go 并发安全）修复，基于 `2026-04-18-phase3-review-action-plan.md`：
+- C1: GC 方案全面修订为 Mark-and-Sweep（标记清除），弃用 CAS 修改 next 指针
+- C2: ActiveTxRegistry 改为 Mutex + 普通 map，弃用 sync.Map
+- C3: Register 从 Commit 移至 BeginTx，txID 由 txManager 统一分配
+- C4: Recovery 直接采用路径 C（WAL 全量重放），删除路径 B 过渡方案
+- C5: Commit marker 格式修正为 KeyLen=8, ValueLen=0（修正原文 KeyLen=0 错误）
+- C6: DiskWAL 标注 Segment 轮转未实现，作为 Step 2 前置依赖
+- H1: GC 保留规则明确包含 Tombstone 防复活
+- H4: Group Commit Sync 容错机制（ctx.Done + recover）
+- H6: CRC 覆盖范围修正为含 Length
+- M5: GC goroutine 传入 ctx 支持优雅退出
+- M6: 删除 Limbo Bag 设计，直接让节点不可达
+- M8: 分布式 WAL 2PC 约束明确仅适用 Quorum 分片
+- L1: Trailer 修正为 4 字节
+- L5: 删除 memory barrier 误导描述
 **状态**: Draft — 等待架构师评审

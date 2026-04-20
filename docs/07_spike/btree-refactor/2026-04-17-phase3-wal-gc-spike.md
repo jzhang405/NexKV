@@ -31,6 +31,17 @@
 | commitTS 分配 | Commit 前直接分配 | WAL sync **前**分配并嵌入 WriteBuffer entries（防止时间戳空洞） |
 | 跨 key 原子性 | 单 key KeyLock 保证 | WAL + 2PC prepare（远期） |
 
+> ⚠️ **Phase 3 范围声明**（第二轮审核 C6）：
+>
+> Phase 3 WAL + GC **仅用于单节点场景**，以下为明确的分布式限制：
+>
+> | 限制 | 说明 | 远期方案 |
+> |------|------|---------|
+> | commitTS 单调性 | `TSGenerator` 使用本地 `atomic.Uint64` 计数器，不保证跨节点全局单调 | Phase 4: HLC 或 Timestamp Oracle；预留 commitTS 高 16 位 nodeID 编码 |
+> | 事务范围 | 当前 MVP 事务只能操作同一分片内的 key，跨分片 key 返回错误 | Phase 4+: 2PC + WAL |
+> | Checkpoint | Phase 3 Checkpoint 仅保证单节点恢复一致性 | Phase 4: 分布式 Checkpoint 协调协议 |
+> | GC Watermark | `ActiveTxRegistry.Watermark()` 仅反映本节点活跃事务 | Phase 4: Global Watermark 协议（Gossip 交换各节点 Watermark） |
+
 ---
 
 ## 二、已有基础设施盘点
@@ -52,7 +63,7 @@ type WAL interface {
 ```
 
 **DiskWAL 实现** — `internal/infrastructure/storage/wal/diskwal.go`：
-- ⚠️ **当前为单文件 WAL**（`SegmentSize` 配置存在但未使用），**Phase 3 Step 2 必须实现 Segment 轮转**
+- ⚠️ **当前为单文件 WAL**（`SegmentSize` 配置存在但未使用），**Phase 3 Step 2 必须实现 Segment 轮转**——当前 `Truncate()` 按文件粒度删除，单文件模式下会误删后续 entries，Truncate 不可用
 - CRC32 校验（⚠️ 当前使用 IEEE 多项式，建议替换为 Castagnoli/CRC32C）
 - 三种 Sync 策略：PerWrite / EverySecond / Batch
 - Recovery：扫描 `.wal` 文件目录
@@ -164,6 +175,11 @@ WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。
 
 ```
 1. 扫描所有 .wal segment → 按 LSN 排序
+   ⚠️ C4 修复：当前 scanWALDirectory() 使用 os.ReadDir() 遍历，
+   跨文件 entries 不保证全局 LSN 顺序。
+   必须在收集所有 entries 后按 LSN 排序（sort.Slice），
+   或先按文件名 LSN 排序再逐文件读取。
+   这是 Step 2 的阻塞项。
 2. 按 TxID 分组：
    - 有 Commit marker → 已提交事务
    - 无 Commit marker 或有 Rollback → 丢弃
@@ -172,6 +188,7 @@ WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。
    a. 同一 TxID 的 entries 共享 commitTS
    b. BTree.Set/Delete（携带 commitTS）
    c. 按 commitTS 重建 VersionChain（保证 SI 语义）
+   d. ⚠️ 幂等性保护：重放前检查目标 key 的 beginTS 是否等于 commitTS（见 C1）
 5. 清理 .wal.deleting 残留文件
 6. 设置下一个 LSN
 ```
@@ -233,14 +250,16 @@ fsync batch 完成顺序：B 先于 A
 
 **解决方案**：commitTS **在 Append 时按 LSN 顺序预留**，不等 Sync 完成才分配。
 
+> ⚠️ **第二轮审核（H2/H3/H5）**：以上代码片段存在以下问题，**Group Commit 需要独立设计文档**：
+>
+> 1. **LSN 乱序风险**（H5）：`atomic.AddUint64` 分配 LSN 与 Mutex 保护的文件写入之间存在窗口——两个 goroutine 可能按不同 LSN 顺序获得锁，导致 WAL 文件中 LSN 乱序。推荐方案：channel-based 单一写入 goroutine（LSN 在写入时分配，保证顺序）
+> 2. **syncWorker 生命周期缺失**（H3）：syncWorker 由谁启动、如何退出、panic 后等待者如何唤醒——全部未描述。syncWorker 异常退出会导致所有等待 Sync 的事务 goroutine 永久阻塞
+> 3. **commitTS 归属矛盾**（M6）：Section 3.4 由 WAL 层分配 `wal.nextCommitTS()`，但 Section 5.3 由事务层分配 `tx.engine.tsGen.NextTS()`——应统一为事务层分配，WAL 层只负责存储
+
 ```go
-// Append 时：LSN 顺序即 commitTS 顺序
-// CRITICAL: LSN 和 commitTS 必须在同一临界区内分配，
-// 确保 LSN 顺序与 commitTS 顺序一致。
-// 修改此锁策略时必须重新评估 Group Commit 的单调性保证。
-entry.LSN = atomic.AddUint64(&wal.lsnCounter, 1)  // atomic 已隐式 seqcst，无需额外 barrier
-entry.commitTS = wal.nextCommitTS()  // 单调递增，与 LSN 一致
-// 不再等 Sync 才分配 commitTS
+// ⚠️ 以下为原理示意，具体实现需在 Group Commit 设计文档中定义
+// commitTS 统一由事务层 tsGen.NextTS() 分配（不在 WAL 层）
+// LSN 在单一写入 goroutine 中分配（保证文件内 LSN 顺序）
 ```
 
 Group Commit 只控制 **fsync 时机**，不改变 commitTS 分配顺序。
@@ -380,9 +399,15 @@ func (r *ActiveTxRegistry) Watermark() uint64 {                        // GC 时
 txID := tm.txIDCounter.Add(1)
 tm.activeTxRegistry.Register(txID, snapshotTS)
 
-// Commit/Rollback 中（defer 保护确保 Rollback 路径也执行）：
+// Commit/Rollback 中（defer 保护确保 panic 也执行）：
+// Commit 中：
+defer tm.activeTxRegistry.Unregister(tx.txID)
+
+// Rollback 中（C3 修复：同样 defer 保护）：
 defer tm.activeTxRegistry.Unregister(tx.txID)
 ```
+
+> ⚠️ **双重 Unregister 安全性**（C3 修复说明）：Commit 和 Rollback 不会同时执行（`completed` CAS 保护），但 Rollback 的 defer 确保 panic 时也能 Unregister。`delete(map, key)` 对不存在的 key 是 no-op，即使 Commit 和 Rollback 路径都被触发也不会 panic。
 
 ### 4.4 后台 Mark-and-Sweep Pruning（采纳方案）
 
@@ -391,21 +416,38 @@ PruneBackground(watermark):
   1. 获取 VersionStore.chains 的 snapshot（sync.Map Range）
   2. 对每个 key 的链：
      a. 遍历链，跳过链头（始终保留）
-     b. 找到 watermark 之前的最新可见版本（含 Tombstone）→ 保留
+     b. 找到 watermark 之前的最新可见版本（含其后被 Tombstone 遮盖的所有非 Tombstone 版本）→ 保留（详见下方 GC 保留规则）
      c. 更老的中间节点：node.reclaimed.Store(true)（仅标记，不修改 next）
+     d. ⚠️ Prune 完成后必须 chain.generation.Add(1)（确保 snapshotGet 的乐观一致性校验能检测到链的逻辑修改）
   3. Prepend 时顺便清理：从链头开始剔除连续的 reclaimed 节点
 ```
 
-**GC 保留规则（三专家审核：H1 Tombstone 不复活）**：
+**GC 保留规则（三专家审核：H1 Tombstone 不复活 + 第二轮审核 H1 修正）**：
+
+> ⚠️ **第二轮审核发现（H1）**：原规则"只保留 watermark 前最新可见版本"不充分。当最新可见版本是 Tombstone 时，被它"遮盖"的更老非 Tombstone 版本不能被回收——否则 snapshotTS < Tombstone.commitTS 的活跃事务会错误地看到 ErrKeyNotFound。
+
+**修正后的保留规则**：
+1. 链头始终保留
+2. watermark 前的**最新可见版本**保留（含 Tombstone）
+3. 如果最新可见版本是 Tombstone，**从该 Tombstone 向前回溯到第一个非 Tombstone 可见版本也必须保留**
+4. 更老的版本可标记 reclaimed
 
 ```
 VersionChain: head → V5(500) → V4(400,Tombstone) → V3(300) → V2(200) → V1(100)
-watermark=450 时：
+
+场景 A — watermark=450：
   - V5(500): 链头，始终保留
-  - V4(400,Tombstone): watermark 前最新可见版本，必须保留（防止 key 复活）
-  - V3(300): 可标记 reclaimed
+  - V4(400,Tombstone): watermark 前最新可见版本，保留（防止 key 复活）
+  - V3(300): 可标记 reclaimed（无活跃事务 snapshotTS < 400 需要 V3 之前的值）
   - V2(200): 可标记 reclaimed
   - V1(100): 可标记 reclaimed
+
+场景 B — watermark=250（有 snapshotTS=300 的活跃事务）：
+  - V5(500): 链头，始终保留
+  - V4(400,Tombstone): 保留
+  - V3(300): 保留（snapshotTS=300 的事务需要看到 V3 之前的值）
+  - V2(200): 保留（被 Tombstone V4 遮盖，但 V3 的可见性需要 V2 作为回退）
+  - V1(100): 可标记 reclaimed（V2 已是 V3 的有效前驱）
 ```
 
 **snapshotGet 配合修改**：
@@ -413,11 +455,24 @@ watermark=450 时：
 ```go
 // 遍历时增加 reclaimed 检查
 for node != nil {
-    if node.reclaimed.Load() {
+    if node.reclaimed.Load() || node.rolledBack.Load() {
         node = node.next
-        continue  // 跳过已回收节点
+        continue  // 跳过已回收或已回滚节点
     }
     // ... 原有逻辑
+}
+```
+
+**⚠️ Prune 必须递增 generation（C2 — Go 并发专家审核）**：
+
+`snapshotGet`（`transaction.go:211-233`）使用乐观一致性校验：遍历前后比较 `chain.Generation()`，如果 generation 变化则重试。Prune 标记 reclaimed 改变了链的"逻辑可见性"，但如果不递增 generation，snapshotGet 无法检测到这一变化，可能漏掉本应可见的版本——**直接违反快照隔离语义**。
+
+```go
+// Prune 完成后递增 generation
+func (vc *VersionChain) Prune(watermark uint64) int {
+    // ... 标记 reclaimed 节点 ...
+    vc.generation.Add(1)  // 确保 snapshotGet 检测到链的逻辑修改
+    return marked
 }
 ```
 
@@ -599,8 +654,10 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 }
 
 // Rollback 中也执行 Unregister（defer 在 Commit 中设置，Rollback 需显式调用）
+// ⚠️ C3 修复：Rollback 也使用 defer 保护，防止 panic 导致 txID 泄漏
+// 双重 Unregister 安全：delete(map, key) 对不存在的 key 是 no-op
 func (tx *SnapshotTx) Rollback() error {
-    tx.engine.activeTxRegistry.Unregister(tx.txID)
+    defer tx.engine.activeTxRegistry.Unregister(tx.txID)
     // ... 原有清理逻辑
 }
 ```
@@ -835,6 +892,22 @@ Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
 > 2. 同一 TxID 的 WriteBuffer entries 拥有相同 commitTS
 > 3. WAL entries 按 LSN 顺序 → 即 commitTS 顺序 → 可重建正确的 VersionChain 拓扑
 
+**⚠️ Recovery 重放幂等性（C1 — 三专家审核）**：
+
+`commitKey` 的 Prepend 不是幂等的——CAS 基于 head 指针而非 commitTS 去重。如果 Recovery 重放时某个 key 的部分 Apply 已在崩溃前完成，重放会产生重复 VersionNode。
+
+**幂等性保护**：
+1. **Recovery 侧**：重放每个 key 前，检查 BTree 中该 key 的当前 `beginTS` 是否等于 entry 的 `commitTS`。若相等，跳过该 key（已 Apply）
+2. **Prepend 侧**：新增 commitTS 去重检查——遍历链头前几个节点，如果已存在相同 commitTS 的节点，直接返回（不重复 Prepend）
+
+```
+Recovery 重放单 key 流程（幂等）：
+  1. 读取 entry 的 commitTS
+  2. BTree.Get(key) → 获取当前 beginTS
+  3. 如果 beginTS == commitTS → 跳过（已 Apply）
+  4. 否则 → BTree.Set + VersionChain.Prepend（Prepend 内部也有去重）
+```
+
 **完整路径 D（Undo Log）的远期考虑**：如果 Phase 3 之后需要更高效的 MVCC 历史恢复能力（避免全量 WAL 扫描），可引入 Undo Log（参考 PostgreSQL）。这是 Phase 4+ 的选项。
 
 ---
@@ -848,9 +921,15 @@ Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
 | 分布式 WAL | 远期问题（Phase 4+） | 否 | ⚠️ **新增风险警告**：跨分片事务在节点崩溃后可能部分提交，当前 MVP 只保证单分片原子性 |
 | VersionChain 恢复 | **修正**：直接采用路径 C（WAL 全量重放 + CommitTS），放弃路径 B | 否（与 Step 2 合并） | ⚠️ **原路径 B 方案已删除**（违反 SI 语义） |
 | **WAL commitTS 嵌入** | **修正**：Type=Commit 时 `KeyLen=8, ValueLen=0`，Key 区域存 CommitTS 大端编码 | **是（Step 2 必须修复）** | 当前 WAL entry 格式不含 commitTS，Recovery 无法重建 MVCC |
-| **DiskWAL Segment 轮转** | **新增**：当前代码为单文件 WAL，Segment 轮转是 Checkpoint 前置依赖 | **是（Step 2 必须实现）** | SegmentSize 配置存在但未使用 |
+| **DiskWAL Segment 轮转** | **新增**：当前代码为单文件 WAL，Segment 轮转是 Step 2/3 前置依赖，单文件下 Truncate 不可用 | **是（Step 2 阻塞项，不可跳过）** | SegmentSize 配置存在但未使用；轮转逻辑：文件大小超 SegmentSize 时创建新 segment |
 | **DirtyTracker 接口** | 新增接口，当前代码无调用点 | 是（Step 3 必须实现） | COW 语义下 DirtyTracker 方案已修正为活跃路径遍历 |
 | **分布式 WAL 2PC 约束** | **新增**：2PC + WAL 仅适用 Quorum 强一致分片 | 否（远期） | 涉及 Gossip 最终一致分片的跨分片事务使用 best-effort + 冲突合并 |
+| **Recovery LSN 排序保证** | **新增**（C4）：`Recover()` 必须在收集所有 entries 后按 LSN 排序 | **是（Step 2 阻塞项）** | 当前 `scanWALDirectory()` 不保证跨文件全局 LSN 顺序 |
+| **Phase 3 单节点限制** | **新增**（C6）：commitTS/GC/Checkpoint 仅保证单节点场景 | 否（文档标注） | 见 Section 1.2 Phase 3 范围声明表 |
+| **Recovery 重放幂等性** | **新增**（C1）：重放前检查 beginTS==commitTS 跳过已 Apply 的 key | **是（Step 2 必须实现）** | Prepend 需增加 commitTS 去重检查 |
+| **GC Prune 递增 generation** | **新增**（C2）：Prune 标记 reclaimed 后必须 `chain.generation.Add(1)` | **是（Step 1 必须实现）** | 否则 snapshotGet 无法检测链逻辑修改，违反 SI 语义 |
+| **GC Tombstone 保留规则** | **修正**（H1）：Tombstone 遮盖的非 Tombstone 可见版本也必须保留 | **是（Step 1 必须实现）** | 见 Section 4.4 场景 B 示例 |
+| **Group Commit 详细设计** | **新增**（H2/H3）：LSN 分配与文件写入原子性、syncWorker 生命周期 | **是（需独立设计文档）** | 当前 Group Commit 设计停留在原理层面，goroutine 级设计缺失 |
 
 ---
 
@@ -867,9 +946,9 @@ Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
 
 ---
 
-**文档版本**: v2.0
+**文档版本**: v2.1
 **创建日期**: 2026-04-17
-**最后更新**: 2026-04-18
+**最后更新**: 2026-04-20
 **更新内容**: 三专家审核（存储引擎 / 分布式系统 / Go 并发安全）修复，基于 `2026-04-18-phase3-review-action-plan.md`：
 - C1: GC 方案全面修订为 Mark-and-Sweep（标记清除），弃用 CAS 修改 next 指针
 - C2: ActiveTxRegistry 改为 Mutex + 普通 map，弃用 sync.Map
@@ -885,4 +964,14 @@ Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
 - M8: 分布式 WAL 2PC 约束明确仅适用 Quorum 分片
 - L1: Trailer 修正为 4 字节
 - L5: 删除 memory barrier 误导描述
+
+**v2.1 更新**（2026-04-20）— 第二轮三专家审核修复：
+- C1: Recovery 重放幂等性保护（beginTS==commitTS 跳过 + Prepend commitTS 去重）
+- C2: GC Prune 标记 reclaimed 后必须递增 chain.generation（否则 snapshotGet 无法检测链逻辑修改，违反 SI 语义）
+- C3: Rollback 路径 Unregister 改为 defer 保护（防止 panic 导致 watermark 永久卡死）
+- C4: Recover() 收集 entries 后必须按 LSN 排序（当前 scanWALDirectory 不保证全局 LSN 顺序）
+- C5: DiskWAL Segment 轮转标注为 Step 2 阻塞项（单文件下 Truncate 不可用）
+- C6: 新增 Phase 3 范围声明（commitTS/GC/Checkpoint 仅保证单节点场景）
+- H1: GC 保留规则修正——Tombstone 遮盖的非 Tombstone 可见版本也必须保留
+- H2/H3: Group Commit 标注需独立设计文档（LSN 乱序风险 + syncWorker 生命周期缺失 + commitTS 归属矛盾）
 **状态**: Draft — 等待架构师评审

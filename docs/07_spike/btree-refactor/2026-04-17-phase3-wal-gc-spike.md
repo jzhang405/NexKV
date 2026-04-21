@@ -210,6 +210,16 @@ WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。
 
 **建议格式**（三专家审核修正）：
 
+> ⚠️ **Phase 3 格式升级声明**（N4 — 第三轮审核）：
+>
+> Phase 3 WAL 格式是**破坏性升级**，与 Phase 2 WAL 文件**不兼容**。差异包括：
+> 1. 新增 `Length:4` 字段（CRC 之后）
+> 2. 新增 `Padding`（8 字节对齐）和 `Trailer`（4 字节 `0xDEADBEEF`）
+> 3. CRC 覆盖范围从 `buf[4:]`（LSN 开始）改为从 `Length` 字段开始
+>
+> **兼容性决策**：Phase 2 是纯内存引擎，**无 WAL 持久化需求**（`DiskWAL` 的 `.wal` 文件在进程退出后即可删除）。Phase 3 升级时无需实现旧格式检测/迁移。
+> 如需防御性编程，可在 segment 文件头增加 **Magic Number**（如 `0x4E584B33` = "NXK3"），Recovery 时检测并拒绝无法识别的格式。
+
 ```
 [CRC32:4][Length:4][LSN:8][Type:1][TxID:8][Timestamp:8][PrevLSN:8]
 [KeyLen:4][ValueLen:4][Key:N][Value:M][Padding:0~7][Trailer:4]
@@ -221,6 +231,24 @@ WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。
 - **`Type=Commit` 时**：`KeyLen=8, ValueLen=0`，Key 区域存放 `CommitTS` 的 8 字节大端编码。**修正**：原文档错误标记为 `KeyLen=0`，8 字节 CommitTS 无法放入长度为 0 的区域。
 
 > ⚠️ **Trailer 检测逻辑**：读取 entry 后，检查最后 4 字节是否为 `0xDEADBEEF`。若不是，说明 entry 不完整（写入中断）。此检查在 CRC 校验之后执行。
+
+**⚠️ WALEntry 是否携带 OldValue/OldFlag（N3 — 第三轮审核决策）**：
+
+Recovery 重建 VersionChain 时，需要为每个 key 创建正确的历史版本链。核心问题是 WALEntry 是否需要存储旧值：
+
+| 方案 | 优点 | 缺点 |
+|------|------|------|
+| **A. WALEntry 携带 OldValue/OldFlag** | Recovery 可完全重建 VersionChain，无需依赖 BTree 状态 | WAL entry 体积翻倍（每个 Update 写两份值），增加 I/O |
+| **B. Recovery 时从 BTree 当前状态推导** | WAL entry 保持轻量，无额外 I/O | half-Apply 场景下 BTree 已被更新，旧值丢失；但两阶段幂等检查（N1）可跳过已 Apply 的 key |
+
+**采纳方案 B（Recovery 时从 BTree 推导）**，理由：
+1. **两阶段幂等检查保证安全性**：N1 的两阶段检查确保 half-Apply 的 key 会被正确跳过（BTree+VersionChain 都已完成）或仅补充 Prepend（BTree 已完成但 VersionChain 未完成——此时 BTree 的旧值就是正确的 Prepend 输入）
+2. **WAL 体积敏感**：Phase 3 目标是轻量级单节点部署，WAL entry 翻倍的 I/O 开销不可接受
+3. **Insert 场景天然安全**：Insert 没有"旧值"，Prepend 的旧值就是 `nil`（key 不存在本身就是 ErrKeyNotFound 语义）
+
+具体实现：`ToWALEntries(commitTS)` 只写入新值（NewValue/NewFlag/Type），Recovery 重放时：
+- 对于未 Apply 的 key：先 `BTree.Get(key)` 获取当前值作为 OldValue，然后 `BTree.Set` 写入新值，最后 `Prepend(OldValue, OldFlag)` 重建 VersionChain
+- 对于已 Apply 的 key：两阶段幂等检查跳过
 
 ### 3.4 Sync 策略：Group Commit
 
@@ -486,7 +514,12 @@ func (tm *TransactionEngine) runGC(ctx context.Context) {
         select {
         case <-ticker.C:
             watermark := tm.activeTxRegistry.Watermark()
-            if watermark == 0 { continue } // 无活跃事务
+            if watermark == 0 {
+                // ⚠️ N2 修正：无活跃事务时恰恰是最需要 GC 的时刻。
+                // 使用当前 TS 作为 watermark，相当于"所有版本都可被回收（保留链头+规则要求版本）"。
+                // 需要在 TSGenerator 接口新增 CurrentTS() uint64 方法（只读，不递增）。
+                watermark = tm.tsGen.CurrentTS()
+            }
             tm.pruneVersionChains(ctx, watermark) // 传入 ctx，支持优雅退出
         case <-ctx.Done():
             return
@@ -591,6 +624,10 @@ type GCConfig struct {
 
 func (tm *txManager) runGC(ctx context.Context)                     // 后台 goroutine
 func (tm *txManager) pruneVersionChains(ctx context.Context, watermark uint64)  // 遍历所有 chains，传入 ctx
+
+// 修改：mvcc/ts_generator.go
+// 新增 CurrentTS() 方法（只读当前值，不递增），用于无活跃事务时 GC 的 watermark fallback
+func (g *LocalTS) CurrentTS() uint64  // return g.counter.Load()
 ```
 
 > ⚠️ **关键新增**：ActiveTxRegistry 在 `BeginTx` 时 `Register(txID, snapshotTS)`，在 `Commit/Rollback` 时 `Unregister(txID)`（defer 保护）。`txID` 由 `txManager.txIDCounter` 统一分配，不维护独立计数器。
@@ -896,16 +933,20 @@ Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
 
 `commitKey` 的 Prepend 不是幂等的——CAS 基于 head 指针而非 commitTS 去重。如果 Recovery 重放时某个 key 的部分 Apply 已在崩溃前完成，重放会产生重复 VersionNode。
 
-**幂等性保护**：
-1. **Recovery 侧**：重放每个 key 前，检查 BTree 中该 key 的当前 `beginTS` 是否等于 entry 的 `commitTS`。若相等，跳过该 key（已 Apply）
-2. **Prepend 侧**：新增 commitTS 去重检查——遍历链头前几个节点，如果已存在相同 commitTS 的节点，直接返回（不重复 Prepend）
+**幂等性保护（两阶段检查）**：
+1. **第一阶段 — BTree 检查**：重放每个 key 前，检查 BTree 中该 key 的当前 `beginTS` 是否等于 entry 的 `commitTS`。若相等，进入第二阶段验证
+2. **第二阶段 — VersionChain 节点存在性检查**（第三轮审核 N1）：即使 `beginTS == commitTS`，仍需检查 VersionChain 中是否已存在该 commitTS 的节点。因为崩溃可能发生在 `commitKey` Step 4（BTree.Set 完成）和 Step 5（VersionChain.Prepend 未完成）之间——此时 BTree 已写入但 VersionChain 缺少节点
+3. **Prepend 侧**：新增 commitTS 去重检查——遍历链头前几个节点，如果已存在相同 commitTS 的节点，直接返回（不重复 Prepend）
 
 ```
-Recovery 重放单 key 流程（幂等）：
+Recovery 重放单 key 流程（两阶段幂等）：
   1. 读取 entry 的 commitTS
   2. BTree.Get(key) → 获取当前 beginTS
-  3. 如果 beginTS == commitTS → 跳过（已 Apply）
-  4. 否则 → BTree.Set + VersionChain.Prepend（Prepend 内部也有去重）
+  3. 如果 beginTS == commitTS：
+     a. 检查 VersionChain 是否已有 commitTS 对应的节点
+     b. 若已有 → 跳过（BTree 和 VersionChain 都已 Apply）
+     c. 若没有 → 仅补充 Prepend（BTree 已写入，VersionChain 缺失）
+  4. 如果 beginTS != commitTS → BTree.Set + VersionChain.Prepend（Prepend 内部也有去重）
 ```
 
 **完整路径 D（Undo Log）的远期考虑**：如果 Phase 3 之后需要更高效的 MVCC 历史恢复能力（避免全量 WAL 扫描），可引入 Undo Log（参考 PostgreSQL）。这是 Phase 4+ 的选项。
@@ -926,7 +967,7 @@ Recovery 重放单 key 流程（幂等）：
 | **分布式 WAL 2PC 约束** | **新增**：2PC + WAL 仅适用 Quorum 强一致分片 | 否（远期） | 涉及 Gossip 最终一致分片的跨分片事务使用 best-effort + 冲突合并 |
 | **Recovery LSN 排序保证** | **新增**（C4）：`Recover()` 必须在收集所有 entries 后按 LSN 排序 | **是（Step 2 阻塞项）** | 当前 `scanWALDirectory()` 不保证跨文件全局 LSN 顺序 |
 | **Phase 3 单节点限制** | **新增**（C6）：commitTS/GC/Checkpoint 仅保证单节点场景 | 否（文档标注） | 见 Section 1.2 Phase 3 范围声明表 |
-| **Recovery 重放幂等性** | **新增**（C1）：重放前检查 beginTS==commitTS 跳过已 Apply 的 key | **是（Step 2 必须实现）** | Prepend 需增加 commitTS 去重检查 |
+| **Recovery 重放幂等性** | **新增**（C1）：重放前检查 beginTS==commitTS 跳过已 Apply 的 key；**第三轮 N1 修正**：增加 VersionChain 节点存在性检查（BTree 已写入但 Prepend 未完成的 half-Apply 场景） | **是（Step 2 必须实现）** | 两阶段幂等：BTree beginTS 检查 + VersionChain 节点存在性检查 + Prepend commitTS 去重 |
 | **GC Prune 递增 generation** | **新增**（C2）：Prune 标记 reclaimed 后必须 `chain.generation.Add(1)` | **是（Step 1 必须实现）** | 否则 snapshotGet 无法检测链逻辑修改，违反 SI 语义 |
 | **GC Tombstone 保留规则** | **修正**（H1）：Tombstone 遮盖的非 Tombstone 可见版本也必须保留 | **是（Step 1 必须实现）** | 见 Section 4.4 场景 B 示例 |
 | **Group Commit 详细设计** | **新增**（H2/H3）：LSN 分配与文件写入原子性、syncWorker 生命周期 | **是（需独立设计文档）** | 当前 Group Commit 设计停留在原理层面，goroutine 级设计缺失 |
@@ -946,9 +987,9 @@ Recovery 重放单 key 流程（幂等）：
 
 ---
 
-**文档版本**: v2.1
+**文档版本**: v2.2
 **创建日期**: 2026-04-17
-**最后更新**: 2026-04-20
+**最后更新**: 2026-04-21
 **更新内容**: 三专家审核（存储引擎 / 分布式系统 / Go 并发安全）修复，基于 `2026-04-18-phase3-review-action-plan.md`：
 - C1: GC 方案全面修订为 Mark-and-Sweep（标记清除），弃用 CAS 修改 next 指针
 - C2: ActiveTxRegistry 改为 Mutex + 普通 map，弃用 sync.Map
@@ -974,4 +1015,10 @@ Recovery 重放单 key 流程（幂等）：
 - C6: 新增 Phase 3 范围声明（commitTS/GC/Checkpoint 仅保证单节点场景）
 - H1: GC 保留规则修正——Tombstone 遮盖的非 Tombstone 可见版本也必须保留
 - H2/H3: Group Commit 标注需独立设计文档（LSN 乱序风险 + syncWorker 生命周期缺失 + commitTS 归属矛盾）
+
+**v2.2 更新**（2026-04-21）— 第三轮三专家审核修复：
+- N1 (CRITICAL): Recovery 幂等性升级为两阶段检查——BTree beginTS 检查 + VersionChain 节点存在性检查（解决 BTree 已写入但 Prepend 未完成的 half-Apply 场景）
+- N2 (HIGH): Watermark=0 时 GC 改为使用 `tsGen.CurrentTS()` 而非直接跳过（无活跃事务时恰恰最需要 GC）
+- N3 (HIGH): WALEntry 不携带 OldValue/OldFlag，Recovery 时从 BTree 当前状态推导（两阶段幂等检查保证安全性）
+- N4 (HIGH): WAL 格式升级标注为破坏性变更，与 Phase 2 不兼容（Phase 2 无持久化需求，无需迁移）
 **状态**: Draft — 等待架构师评审

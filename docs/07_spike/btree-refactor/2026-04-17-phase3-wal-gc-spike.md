@@ -4,7 +4,7 @@
 > **创建日期**: 2026-04-17
 > **分支**: `spike/phase3-wal-gc-proposal`
 > **前置**: Phase 2 MVCC 快照隔离事务引擎（已完成）
-> **状态**: Draft
+> **状态**: Draft（已完成六轮专家审核）
 
 ---
 
@@ -32,15 +32,29 @@
 | 跨 key 原子性 | 单 key KeyLock 保证 | WAL + 2PC prepare（远期） |
 
 > ⚠️ **Phase 3 范围声明**（第二轮审核 C6）：
+> ⚠️ **分布式 WAL 路线选择**（第六轮 H3）：见 §6.2-3 C3 CAP/PACELC 分析（Phase 4 决策）
 >
 > Phase 3 WAL + GC **仅用于单节点场景**，以下为明确的分布式限制：
 >
 > | 限制 | 说明 | 远期方案 |
 > |------|------|---------|
-> | commitTS 单调性 | `TSGenerator` 使用本地 `atomic.Uint64` 计数器，不保证跨节点全局单调 | ⚠️ **第五轮审核 C4**：高 16 位 nodeID 编码**不能独立建立全局排序**——nodeID 主导下 localCounter 在跨节点比较时几乎无意义。**必须依赖 HLC**（Hybrid Logical Clock）建立跨节点 causal order：低 48 位 = HLC 的 physical+logical 部分，高 16 位 = nodeID（冲突优先级，非排序依据）。详见 Issue-5：commitTS HLC 演进 |
+> | commitTS 单调性 | `TSGenerator` 使用本地 `atomic.Uint64` 计数器，不保证跨节点全局单调 | ⚠️ **第五轮审核 C4**：高 16 位 nodeID 编码**不能独立建立全局排序**——nodeID 主导下 localCounter 在跨节点比较时几乎无意义。**必须依赖 HLC**（Hybrid Logical Clock）建立跨节点 causal order：低 48 位 = HLC 的 physical+logical 部分，高 16 位 = nodeID（**仅用于 HLC 相同时的冲突裁决，不参与跨节点排序**）。详见 Issue-5：commitTS HLC 演进 |
 > | 事务范围 | 当前 MVP 事务只能操作同一分片内的 key，跨分片 key 返回错误（第五轮 M4：**单节点部署**下为事务路由层面的逻辑检查；**分布式部署**下为物理限制——跨节点 RTT + 网络故障） | Phase 4+: 2PC + WAL |
 > | Checkpoint | Phase 3 Checkpoint 仅保证单节点恢复一致性 | Phase 4: 分布式 Checkpoint 协调协议 |
 > | GC Watermark | `ActiveTxRegistry.Watermark()` 仅反映本节点活跃事务 | Phase 4: Global Watermark 协议（Gossip 交换各节点 Watermark） |
+>
+> ⚠️ **HLC 64-bit 可行性分析**（第六轮 C3）：
+> 采用 NTP 校时 + HLC 混合逻辑时钟方案，64-bit 位分配与溢出分析：
+>
+> | 字段 | 位数 | 范围 | 说明 |
+> |------|------|------|------|
+> | Physical Timestamp | 40 bits | ~34.8 年（以 1ms 精度计） | Unix ms 时间戳低 40 位，容纳 2026-2060 年 |
+> | Logical Counter | 8 bits | 0-255 | 同 ms 内事件排序，溢出时 physical++ |
+> | NodeID | 16 bits | 0-65535 | 冲突优先级，非跨节点排序依据 |
+>
+> **Logical Counter 溢出风险**：单节点在 1ms 内超过 256 个事务的概率 ≈ 0（1ms 内 256 事务 = 256,000 TPS，远超单节点能力上限）。若发生溢出，HLC 将 physical 递增 1ms 重置 counter，此时 physical 时间略快于 NTP 时间，NTP 回拨时 HLC 的 `max(p, c) >= wall` 保证不会倒退。**结论：8 bit logical counter 在实际 TPS 范围内无溢出风险。**
+>
+> **Physical 溢出风险**：40 bits @ 1ms 精度 → ~34.8 年（2026-2060），系统生命周期内安全。若需超长期运行，可使用 44 bits（~278 年）但需从 NodeID 借用位——NexKV 最多 100 节点，7 bits 足够（128），可释放 9 bits 给 physical。**当前 40 bits 满足设计寿命，溢出时间远早于系统 EOL。**
 
 ---
 
@@ -153,6 +167,8 @@ Tx.Commit:
 
 ### 3.2 WAL 恢复流程
 
+> ⚠️ **第六轮 C6-3**：Recovery **必须在单 goroutine 中顺序执行**，且在整个引擎接受请求之前完成。Recovery 期间所有其他引擎 API 必须返回 `ErrEngineNotReady`。禁止并发调用 Recovery —— 两个 Recovery goroutine 同时对同一 key 执行 Prepend CAS 和 BTree.Set 会导致 VersionChain 拓扑错乱和三阶段幂等检查失效。
+
 ```
 Recovery:
   1. 扫描所有 .wal segment 文件（按 LSN 排序）
@@ -167,6 +183,8 @@ Recovery:
 ```
 
 **恢复策略**：**保守策略**（遇损坏即停），而非当前的"跳过继续"。
+
+> ⚠️ **Recovery 分阶段行为差异**（第六轮 H2-6）：Step 2（无 Checkpoint，BTree 为空）下 `BTree.GetWithMeta` 总是返回 key 不存在，三阶段幂等检查退化为"全部重放"；Step 3（有 Checkpoint，BTree 含基础数据）下才有真正的三路分支。两者 Recovery 逻辑共用但前提条件不同，Step 2 的 recovery 代码可省略 beginTS 比较这类只在 Step 3 有意义的检查。
 
 > ⚠️ **恢复性能基线**（第五轮审核 H2）：Step 3（Checkpoint）完成前 WAL 无法 Truncate，Recovery 必须全量扫描。估算基线：30s Checkpoint 间隔、1 万 TPS、128B/entry → 约 **38MB/周期** WAL 体积。按 TxID 分组需全量加载内存，大并发场景（10 万并发 Tx）下分组 map 的内存和 GC 压力不可忽略。建议 Step 2 实现流式分组——边扫描边处理已确定提交的事务 entries，减少内存峰值。
 
@@ -211,7 +229,14 @@ WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。
 >
 > **Prepend 失败回滚**：如果 Prepend 成功但 BTree.Set 失败，VersionChain 中会多一个"孤儿节点"（commitTS 对应的版本）。但这个孤儿节点不影响正确性——snapshotGet 遍历时会看到这个节点，但 BTree 中的值仍是旧值（beginTS < commitTS），Recovery 重放 BTree.Set 后状态恢复一致。Prepend 的 CAS 去重（commitTS 检查）确保 Recovery 不会重复 Prepend。
 >
-> ⚠️ **孤儿节点累积风险**（第五轮审核 M3）：孤儿节点的 `commitTS > watermark`，GC 不会回收。高频写入场景下孤儿节点持续累积，增加 snapshotGet 遍历开销。建议在 Prepend 清理逻辑中增加孤儿节点检测——清理时检查 BTree 中对应 key 的 beginTS 是否匹配 commitTS，若不匹配说明是孤儿节点，可直接清理。
+> ⚠️ **孤儿节点累积风险**（第五轮审核 M3；第六轮 H6-6 约束修正）：孤儿节点的 `commitTS > watermark`，GC 不会回收。高频写入场景下孤儿节点持续累积，增加 snapshotGet 遍历开销。
+>
+> ⚠️ **孤儿节点物理移除范围约束**（第六轮 H6-6 — M3 vs M7 冲突调和）：M3 的"孤儿节点检测清理"与 M7 的"仅限链头连续 reclaimed 段"约束存在结构性冲突——孤儿节点可能在链中间（被更旧的存活节点引用），物理移除需要修改中间节点的 `next` 指针，违反"不修改 next"的并发安全约束。
+>
+> **调和方案**：
+> 1. **链头孤儿节点**：Prepend 清理时检测到（BTree beginTS 不匹配 commitTS），直接物理移除（与链头 reclaimed 清理同类）
+> 2. **链中间孤儿节点**：不做物理移除，通过 `generation.Add(1)` 触发 snapshotGet 重试来间接容忍。**统计上报到 metrics** 用于运维监控孤儿增长率，作为 future optimization 的依据
+> 3. **长期缓解**：孤儿节点仅产生于 Prepend 成功→BTree.Set 失败的 half-Apply 窗口，概率极低。高频写入场景下 Prepend-before-Set 执行顺序已将窗口缩至最小
 >
 > **源码参考**：当前 `commitKey`（transaction.go:499-535）执行顺序为 Set→Prepend，Phase 3 需调换。KeyLock 保证同一 key 不会并发 commitKey，Prepend-before-Set 不引入新的竞争条件。
 
@@ -233,6 +258,7 @@ WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。
 > 2. 根据 Length 跳到候选的下一条 entry 位置（对齐到 8 字节）
 > 3. 尝试验证候选 entry 的 CRC — 若通过则继续扫描
 > 4. 若失败，尝试下一个 8 字节对齐位置作为候选
+> 5. ⚠️ **跳跃扫描后 PrevLSN 校验策略**（第六轮 H4-6）：跳跃扫描成功跳过后，被跳过 entry 破坏了 PrevLSN 链式连续性，recovered entry 的 `PrevLSN ≠ 前一 entry 的 LSN`。此时 PrevLSN 校验**应降级为警告而非中止 Recovery**——跳跃扫描的核心价值是"容忍局部损坏继续恢复"，若 PrevLSN 校验中止则跳跃扫描失去意义。规则：跳跃扫描恢复的 segment 中 PrevLSN 连续性检查降级为 `log.Warn`，继续 Recovery。
 
 **建议格式**（三专家审核修正）：
 
@@ -253,6 +279,7 @@ WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。
 
 - **CRC 覆盖范围**：从 `Length` 字段开始到 `Padding` 结束（**含 Length**，不含 CRC 本身和 Trailer）。这确保 Length 损坏时可被 CRC 检测，避免跳跃扫描定位错误。
 - `Padding`：对齐到 8 字节，公式 `paddedLen = (totalLen + 7) &^ 7`，其中 `totalLen` 不含 CRC 和 Trailer。Padding 长度 = `paddedLen - totalLen`。
+- ⚠️ **ShardID 预留**（第六轮 H2）：当前单节点 WAL 格式不包含 ShardID。Phase 4 分布式场景下，Recovery 需要按 ShardID 过滤 entry（验证 key 所属分片是否仍由本节点负责）。**建议 Phase 3 在 `Type` 后预留 `ShardID:2` 字节**（或利用 `TxID` 高 16 位编码 ShardID）。调整后格式：`[CRC32:4][Length:4][LSN:8][Type:1][ShardID:2][TxID:8]...`。若 Phase 3 不预留，Phase 4 格式升级将破坏 Phase 3 WAL 兼容性。
 - `Trailer`：**4 字节** `0xDEADBEEF`（修正：原文档错误标记为 8 字节，但 `0xDEADBEEF` 是 32 位值）。用于检测截断。若写入中断电，Trailer 不完整，此时 CRC 校验失败。
 - **`Type=Commit` 时**：`KeyLen=8, ValueLen=0`，Key 区域存放 `CommitTS` 的 8 字节大端编码。**修正**：原文档错误标记为 `KeyLen=0`，8 字节 CommitTS 无法放入长度为 0 的区域。
 - **`PrevLSN`**：用于完整性校验——验证 entry N 的 `PrevLSN == entry N-1` 的 LSN，确保链式连续性。同时预留与未来分布式 WAL 模式的兼容性（分布式场景下 LSN 排序需要链式校验）。
@@ -325,12 +352,21 @@ Group Commit 只控制 **fsync 时机**，不改变 commitTS 分配顺序。
 
 ```go
 type syncWorker struct {
-    ch     chan *syncRequest    // 事务提交 sync 请求
-    done   chan struct{}        // 优雅退出通知
+    ch      chan *syncRequest   // 事务提交 sync 请求（带缓冲，减少竞争）
+    done    chan struct{}       // 优雅退出通知
+    started sync.WaitGroup     // 启动同步：确保 goroutine 就绪后才接受请求
+}
+
+// Init 在 TransactionEngine.Init() 中同步调用
+func (w *syncWorker) Init() {
+    w.ch = make(chan *syncRequest, 64)  // ⚠️ 带缓冲 + Init 中创建
+    w.done = make(chan struct{})        //     避免 unbuffered channel 启动竞争
+    w.started.Add(1)                    //     ch 必须在 go w.run() 之前就绪
 }
 
 func (w *syncWorker) run(ctx context.Context) {
     // 启动者：TransactionEngine.Init() 中 go w.run(ctx)
+    w.started.Done()  // 通知 Init() goroutine 已启动
     defer func() {
         if r := recover(); r != nil {
             w.broadcastError(fmt.Errorf("syncWorker panic: %v", r))
@@ -347,13 +383,32 @@ func (w *syncWorker) run(ctx context.Context) {
         }
     }
 }
+
+// Init 调用序列：sw.Init() → go sw.run(ctx) → sw.started.Wait() → 引擎标记 Ready
+// ⚠️ 确保 ch 在 goroutine 启动前就绪，消除 unbuffered channel 的发送端阻塞竞争
+// 缓冲 64 可吸收 goroutine 调度延迟期间的突发请求
+
+// broadcastError 和 drainWithError 实现要点（第六轮 H6-2）：
+// - broadcastError: 遍历 w.pending（已接收但未完成 fsync 的请求列表），
+//   对每个请求的 errCh 发送 panic 错误。必须在 recover() 后、run() 返回前完成，
+//   避免等待者永久阻塞。pending 列表由 processBatch 填充，run 方法独占访问无需锁。
+// - drainWithError: 在 ctx.Done() 路径中，drain w.ch 中剩余所有请求，
+//   对每个请求的 errCh 发送 ctx.Err()，然后关闭 done channel 通知退出完成。
+//   必须 drain 而非直接 return——否则 ch 中的请求发送者永久阻塞。
+//
+// syncRequest 结构（示意）：
+// type syncRequest struct {
+//     entries []*WALEntry     // 待同步的 entry batch
+//     errCh   chan error       // 等待者 goroutine 在此 channel 上等待 fsync 完成通知
+// }
 ```
 
 Key 设计约束：
-- **启动者**：`TransactionEngine.Init()` 中 `go sw.run(ctx)` — 保证在引擎接受请求前完成
+- **启动者**：`TransactionEngine.Init()` 中 `sw.Init()` 创建 channel → `go sw.run(ctx)` → `sw.started.Wait()` 等待 goroutine 就绪 → 引擎标记 Ready。**channel 创建必须在 goroutine 启动前完成**，否则未初始化 channel 的发送操作导致永久阻塞
 - **退出路径**：监听 `ctx.Done()`，退出前 drain 所有待处理请求并广播错误
 - **panic 恢复**：`recover()` 后 `broadcastError()` 唤醒所有等待者，防止 goroutine 泄漏
 - **等待者超时**：`select { case <-sw.syncCh: ...; case <-ctx.Done(): ... }`
+- **缓冲 channel**：`ch = make(chan *syncRequest, 64)` 带缓冲，吸收 Init→goroutine 就绪窗口期内的突发请求
 
 ### 3.5 Checkpoint 设计
 
@@ -373,10 +428,16 @@ Key 设计约束：
 3. 基于固定 rootRef DFS 遍历 BTree 活跃路径，逐页写入主存储
 4. 记录 checkpointEndLSN
 5. 写入 Checkpoint WAL entry
-6. Truncate LSN < checkpointEndLSN 的 WAL segments
+6. 原子化 Truncate LSN < checkpointEndLSN 的 WAL segments（见下方标准工业做法）
 ```
 
+> ⚠️ **Sharp vs Fuzzy 区分**（第六轮 M5-6）：
+> - Fuzzy Checkpoint（在线）：不暂停写入，基于 COW root 快照遍历。步骤 1-4 是 Fuzzy 特有，步骤 5-6 是 Shared（Fuzzy + Sharp 共用）
+> - Sharp Checkpoint（关闭/快照）：暂停写入（drain 所有 inflight），刷全部脏页，然后执行步骤 5-6。**无步骤 1-4**（不需要 root 快照，因为已暂停写入，root 不会改变）
+
 > ⚠️ **Atomic Root Snapshot 必要性**（第五轮审核 C1）：DFS 遍历过程中，CAS-based COW B+Tree 的 root pointer 可能因 Split 传播被 CAS 更新。`atomic.LoadPointer` 获取固定 rootRef 确保遍历基于一致的 BTree 快照。COW 保证旧 root 子树不被就地修改（LMDB/BoltDB 经典做法），checkpointStartLSN 之后的增量变更由 WAL 重放补偿。
+>
+> ⚠️ **COW 遍历语义**（第六轮 H1-6）：COW B+Tree 的"活跃路径"在此处的含义为**从当前 rootRef 可达的整棵树**（含所有存活分支），而非 root 到 leaf 的单一路径。rootRef 的类型需兼容 `atomic` 操作——若 BTree root 为 `*node` 类型，需使用 `(*unsafe.Pointer)(unsafe.Pointer(&btree.root))` 转换。**rootRef 与 checkpointStartLSN 的顺序**：rootRef 在 checkpointStartLSN 之前完成。rootRef Load 之后、checkpointStartLSN 记录之前的 LSN 分配写入因 LSN < checkpointStartLSN 而不被 Recovery 重放——需要确认这些写入的 root 变更在旧 rootRef 中不可达（COW 保证插入/更新创建新页面，旧 root 子树不变），因此不受影响。
 
 **触发条件**：
 - WAL segment 数量超过阈值
@@ -386,7 +447,7 @@ Key 设计约束：
 
 **⚠️ 评审发现 — Truncate 非原子，crash 后可能不一致**：
 
-Sharp Checkpoint 第 5 步"Truncate WAL segments"是非原子操作。如果在删除部分 segment 后 crash（只删了 segment-1 和 segment-2，但还没删 segment-3），文件系统状态和 Checkpoint entry 中的 `checkpointEndLSN` 不一致。
+Fuzzy/Sharp Checkpoint 的"Truncate WAL segments"步骤（步骤 6/5）是非原子操作。如果在删除部分 segment 后 crash（只删了 segment-1 和 segment-2，但还没删 segment-3），文件系统状态和 Checkpoint entry 中的 `checkpointEndLSN` 不一致。
 
 **标准工业做法**：
 
@@ -485,9 +546,21 @@ func (r *ActiveTxRegistry) Watermark() uint64 {                        // GC 时
 3. `sync.Mutex` 的 Lock/Unlock 提供 happens-before 保证：Watermark 在 Lock 时，所有在 Lock 之前完成的 Register 操作对 Watermark 可见
 
 **⚠️ Global Watermark 分布式约束**（第五轮审核 H4）：当前 `Watermark()` 仅反映本节点活跃事务，扩展到分布式时需考虑：
-- **安全条件**：一个节点只能在确认**所有节点**的 watermark 都大于该版本 commitTS 后才能回收该版本。即：`safeGC_ts = min(all_nodes_watermarks)`，而非 `min(local_watermark)`
+- **安全条件**（第六轮 C2 修正）：`safeGC_ts = min(watermarks of nodes holding replicas of this version's shard)`，非简单 `min(all_nodes)`。不持有该分片的节点不应纳入计算。此外需配套节点活性检测——死节点的 watermark 永久驻留会导致 GC 阻塞，必须通过 Gossip 心跳超时排除死节点
+- **陈旧 watermark 检测**：`SetRemoteWatermark(nodeID, watermark)` 必须保证 watermark 单调递增，接口层做 `max(existing, incoming)` 保护，防止 Gossip 延迟导致的旧值覆盖新值
 - **Gossip 传播延迟**：Gossip 保证最终一致的 watermark 信息，但 GC 是周期性的。传播延迟可能超过 GC 周期，导致节点回收被其他节点仍需的版本
 - **接口预留**：`ActiveTxRegistry` 预留 `SetRemoteWatermark(nodeID, watermark)` 方法（Phase 4 实现），当前留空
+
+> ⚠️ **节点故障检测与 watermark 淘汰机制**（第六轮 H1 — 分布式）：
+>
+> **问题**：死节点的 watermark 永久驻留在 Global Watermark 集合中，导致 min(all_alive_nodes) 被死节点锁定，GC 永久阻塞。
+>
+> **设计方案**：
+> 1. **Gossip 心跳超时**：每个节点在 Gossip 协议中维护 `lastSeen[nodeID]`。超过 `NodeDeadTimeout`（建议 3 × Gossip 周期）未收到心跳的节点标记为 DEAD
+> 2. **Watermark 淘汰规则**：DEAD 节点的 watermark 自动从 Global Watermark 集合中排除。死节点恢复后必须通过全量状态同步追上进度
+> 3. **安全恢复**：死节点不应在一个 Gossip 周期内立即被排除——足够长的超时窗口（~15s）防止网络抖动导致的误淘汰
+> 4. **Quorum 确认**：节点标记 DEAD 前需至少 N/2+1 个其他节点确认该节点不可达（防止单节点误判）
+> - Phase 3 不涉及，此设计作为 Phase 4 Global Watermark 协议的约束输入
 
 **⚠️ Register 必须在 BeginTx 时调用**（三专家审核一致）：
 
@@ -519,8 +592,10 @@ PruneBackground(watermark):
      b. 找到 watermark 之前的最新可见版本（含其后被 Tombstone 遮盖的所有非 Tombstone 版本）→ 保留（详见下方 GC 保留规则）
      c. 更老的中间节点：node.reclaimed.Store(true)（仅标记，不修改 next）
      d. ⚠️ Prune 完成后必须 chain.generation.Add(1)（确保 snapshotGet 的乐观一致性校验能检测到链的逻辑修改）
+  e. ⚠️ **sync.Map Range 内不删除 key**（第六轮 M6-3）：Range 回调期间调用 `sync.Map.Delete()` 可能与其他 goroutine 的 `Store()` 并发，Go 文档允许 Range+Delete 但行为依赖底层实现——某些实现可能 skip 其他 key。**正确做法**：Range 内仅标记空链（如链只有 chain head 一个 claimed 节点），Range 结束后再遍历已标记的 key 执行 Delete。或者不做 Delete——空链的 head 永不 nil，GC 直接跳过，无正确性影响
   3. Prepend 时顺便清理：从链头开始剔除连续的 reclaimed 节点（⚠️ 只修改 head CAS，不修改任何 VersionNode.next 指针——这是并发安全的保证）
      ⚠️ **清理范围约束**（第五轮审核 M7）：NEW-6 的"扩展清理"**仅限于从链头开始的连续 reclaimed 段**。对于链中间的 reclaimed 节点（如 V3 存活、V2 已回收、V1 存活），物理断开需要修改 V3.next 指针，这与"不修改 next"的根本约束冲突。深度 reclaimed 节点通过 generation bump 触发的 snapshotGet 重试来间接容忍。
+     ⚠️ **Prepend 清理的 CAS 竞争窗口**（第六轮 M6-6/M6-2）：清理链头 reclaimed 节点使用 CAS(&head, oldHead, newHead) 与 Prepend 的 CAS(&head, oldHead, newNode) 可能并发。若 Prepend 的 CAS 赢得竞争但清理的 CAS 失败，清理到的 reclaimed 节点仍附着在链上——不影响正确性（snapshotGet 跳过 reclaimed），下一次 Prepend 会重试清理。**不构成活锁**：每次成功 Prepend 后 head 变化，下次 Prepend 时重新观察 head，总有新的清理机会。
 ```
 
 **GC 保留规则（三专家审核：H1 Tombstone 不复活 + 第二轮审核 H1 修正）**：
@@ -605,6 +680,10 @@ func (tm *TransactionEngine) runGC(ctx context.Context) {
                 // ⚠️ N2 修正：无活跃事务时恰恰是最需要 GC 的时刻。
                 // 使用当前 TS 作为 watermark，相当于"所有版本都可被回收（保留链头+规则要求版本）"。
                 // 需要在 TSGenerator 接口新增 CurrentTS() uint64 方法（只读，不递增）。
+                // ⚠️ M3-6：watermark == 0 的双重含义保护。
+                //   前提：tsGen 从 1 开始计数（tsGen.Init(1)），0 永不作为合法 TS。
+                //   若 tsGen 从 0 开始，watermark == 0 可能是"事务 snapshotTS=0"的合法值，
+                //   与"无活跃事务"语义混淆。必须在 TSGenerator 初始化时设置起始值为 1。
                 watermark = tm.tsGen.CurrentTS()
             }
             tm.pruneVersionChains(ctx, watermark) // 传入 ctx，支持优雅退出
@@ -716,9 +795,12 @@ func (tm *txManager) pruneVersionChains(ctx context.Context, watermark uint64)  
 // 新增 CurrentTS() 方法（只读当前值，不递增），用于无活跃事务时 GC 的 watermark fallback
 func (g *LocalTS) CurrentTS() uint64  // return g.counter.Load()
 
-// 新增：mvcc/codec.go（第五轮审核 H1）
+// 新增：mvcc/codec.go（第五轮审核 H1，第六轮 H3-6 明确）
 // 三阶段幂等检查的 BTree 部分需要读取当前值的 beginTS。
 // Recovery 流程调用 BTree.GetWithMeta(key) 获取 value + beginTS（即 commitTS）。
+// ⚠️ value 返回**完整 wire format**：[Flag:1][beginTS:8][RealValue:N]，
+// 调用者通过 extractBeginTS() 从 value bytes 中解码 beginTS。
+// 不返回 strip 后的 pure value——避免 GetWithMeta 与现有 Get 的内部 buffer 管理冲突。
 func (bt *BTree) GetWithMeta(key []byte) (value []byte, beginTS uint64, err error)
 // Wire format: [Flag:1][beginTS:8][RealValue:N]，extractBeginTS() 从 value bytes 中解码 beginTS
 ```
@@ -752,6 +834,10 @@ func (tm *txManager) BeginTx(ctx context.Context, level IsolationLevel) (Tx, err
     tm.activeTxRegistry.txs[txID] = snapshotTS    // 直接写入，避免二次 Lock
     tm.activeTxRegistry.mu.Unlock()
 
+    // ⚠️ M2-6/M6-1：Register 后到 return 之间发生 panic 会导致 txID 泄漏。
+    // 若 tx 构造 panic（OOM、nil pointer 等），必须确保已注册的 txID 被 Unregister。
+    // 现场代码中 tx 构造无 panic 路径（纯赋值），此窗口极窄。
+    // 如需防御性编程：使用 defer func() { if tx == nil { r.Unregister(txID) } }
     tx := &SnapshotTx{
         engine: tm, snapshotTS: snapshotTS, txID: txID,
     }
@@ -759,8 +845,12 @@ func (tm *txManager) BeginTx(ctx context.Context, level IsolationLevel) (Tx, err
 }
 
 // 修改：mvcc/transaction.go Commit 方法
+// ⚠️ 第六轮 C6-2：伪代码必须包含 completed CAS 保护
 func (tx *SnapshotTx) Commit(ctx context.Context) error {
     // 注意：Register 已在 BeginTx 时完成
+    if !tx.completed.CompareAndSwap(false, true) {
+        return nil  // 防止 Commit 和 Rollback 并发执行
+    }
     defer tx.engine.activeTxRegistry.Unregister(tx.txID)
 
     commitTS := tx.engine.tsGen.NextTS()           // 分配 commitTS（在 WAL Append 之前）
@@ -783,7 +873,9 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 
     // Apply 在 Sync 之后（确保 Commit marker 已持久化）
     if err := tx.applyWriteBuffer(ctx, commitTS); err != nil {
-        return err  // Apply 失败视为系统级错误，Recovery 中处理
+        log.Fatalf("Apply 失败，进程终止：commitTS=%d, txID=%d, err=%v", commitTS, tx.txID, err)
+        // ⚠️ 第五轮 C2 + 第六轮 H5-6：运行时 Apply 失败不可回滚，必须终止进程。
+        // Recovery 将重新重放该事务。
     }
     return nil
 }
@@ -791,7 +883,11 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 // Rollback 中也执行 Unregister（defer 在 Commit 中设置，Rollback 需显式调用）
 // ⚠️ C3 修复：Rollback 也使用 defer 保护，防止 panic 导致 txID 泄漏
 // 双重 Unregister 安全：delete(map, key) 对不存在的 key 是 no-op
+// ⚠️ 第六轮 C6-2：伪代码必须包含 completed CAS 保护
 func (tx *SnapshotTx) Rollback() error {
+    if !tx.completed.CompareAndSwap(false, true) {
+        return nil  // 防止 Commit 和 Rollback 并发执行
+    }
     defer tx.engine.activeTxRegistry.Unregister(tx.txID)
     // ... 原有清理逻辑
 }
@@ -910,11 +1006,14 @@ Checkpoint 时：
 
 **关键澄清**：NexKV 文档中的 "logical" 指的是 **KV 层面的逻辑操作**（Key/Value Set/Delete），不同于 PostgreSQL 的 logical decoding（SQL 层面的逻辑变更）。
 
-**当前 NexKV 设计**：
+**当前 NexKV 设计（Phase 3 增强格式，见 §3.3）**：
 
 ```
-[CRC:4][LSN:8][Type:1][TxID:8][Timestamp:8][PrevLSN:8][KeyLen:4][ValueLen:4][Key:N][Value:M]
+[CRC32:4][Length:4][LSN:8][Type:1][TxID:8][Timestamp:8][PrevLSN:8]
+[KeyLen:4][ValueLen:4][Key:N][Value:M][Padding:0~7][Trailer:4]
 ```
+
+> ⚠️ **§3.3 与本节保持一致**（第六轮 M1-6）：§3.3 定义了 Phase 3 最终 WAL 格式（含 Length、Padding、Trailer），此处引用已同步。Format 差异见 §3.3 Phase 3 格式升级声明。
 
 这是 **Logical-with-redo-info** 模式——记录了 Key/Value 逻辑变更，加上足够重建的数据（value 本身）。
 
@@ -987,7 +1086,7 @@ Checkpoint 时：
 Step 1（Phase 3-4）：单机 WAL + Checkpoint 稳定
 Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
 
-> ⚠️ **2PC Coordinator 崩溃风险**（第五轮审核 H6）：2PC 在 Coordinator 故障时可能阻塞锁资源释放（Prepare 后 Coordinator 崩溃，participants 持有锁等待决策）。此为 2PC 经典问题，Phase 3 不涉及跨节点事务，此风险在当前 scope 之外。如需缓解阻塞问题，建议远期评估 3PC 或 Paxos/EPaxos 替代方案。
+> ⚠️ **2PC Coordinator 崩溃风险**（第五轮审核 H6）：2PC 在 Coordinator 故障时可能阻塞锁资源释放（Prepare 后 Coordinator 崩溃，participants 持有锁等待决策）。此为 2PC 经典问题，Phase 3 不涉及跨节点事务，此风险在当前 scope 之外。如需缓解阻塞问题，建议远期评估 Paxos/EPaxos 替代方案（第六轮 M2：3PC 不具备网络分区容忍性——分区发生时 3PC 的 timeout abort 可能导致脑裂，对 NexKV 去中心化架构适用性有限）
 
 **CAP/PACELC 分析**（第五轮审核 C3）：
 
@@ -996,7 +1095,7 @@ Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
 | 模式 | CAP 分类 | PACELC | 分区行为 |
 |------|---------|--------|---------|
 | **Leader-based WAL** | CP | PC+EC | 分区时 Leader 失联后停止服务 |
-| **Quorum-based WAL** | AP（最终一致） | PA+EL | 分区时继续提供服务 |
+| **Quorum-based WAL** | AP（R+W≤N）/CP（R+W>N）<br>⚠️ 第六轮 C1：CAP 分类由 R/W quorum 配置决定，非 WAL 模式固有属性 | PA+EL / PC+EC | 分区时取决于 quorum 配置 |
 | **Replicated WAL Service** | CP | PC+EC | 多数派存活即可服务 |
 | **2PC + WAL（远期推荐）** | **CP** | **PC+EC** | **分区时阻塞（持有锁等待 Coordinator）** |
 | **Gossip-based WAL** | AP | PA+EL | 分区时完全可用，但冲突需合并 |
@@ -1054,11 +1153,7 @@ Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
 
 `commitKey` 的 Prepend 不是幂等的——CAS 基于 head 指针而非 commitTS 去重。如果 Recovery 重放时某个 key 的部分 Apply 已在崩溃前完成，重放会产生重复 VersionNode。
 
-**幂等性保护（三阶段检查 — 第四轮审核修订）**：
-1. **前向跳过检查**（第四轮 NEW-1）：如果 `beginTS > commitTS`，说明崩溃前已有更新的事务完成了 Apply，直接跳过——重放会导致用旧值覆盖新值
-2. **第一阶段 — BTree 检查**：如果 `beginTS == commitTS`，进入第二阶段验证
-3. **第二阶段 — VersionChain 节点存在性检查**（第三轮 N1）：即使 `beginTS == commitTS`，仍需检查 VersionChain 中是否已存在该 commitTS 的节点。如果不存在，说明崩溃发生在 Prepend 之前
-4. **Prepend 侧**：新增 commitTS 去重检查——遍历链头前几个节点，如果已存在相同 commitTS 的节点，直接返回（不重复 Prepend）
+> ⚠️ **Recovery 重放顺序与正常顺序不对称**（第六轮 H7-6）：Recovery 使用 `Get(OldValue) → Set → Prepend`，正常运行使用 `Prepend → Set`。两者顺序不同但正确性有保障——三阶段幂等检查中 `beginTS == commitTS` 的 key 被跳过（BTree 和 VersionChain 都已 Apply），只有 `beginTS < commitTS` 的 key 需要完整重放，此时 BTree 中的值就是正确的 OldValue（无论是否 half-Apply）。Prepend 的 commitTS 去重确保不会重复产生 VersionNode。总体安全论证：**Recovery 的 Get→Set→Prepend 和正常 Prepend→Set 产生相同的最终状态**（BTree 值 + VersionChain 节点一致）。
 
 ```
 Recovery 重放单 key 流程（三阶段幂等）：
@@ -1130,10 +1225,38 @@ Recovery 重放单 key 流程（三阶段幂等）：
 
 ---
 
-**文档版本**: v2.4
+**文档版本**: v2.5
 **创建日期**: 2026-04-17
 **最后更新**: 2026-04-24
-**更新内容**: 第五轮三专家审核修复（存储引擎 / 分布式系统 / Go 并发安全），基于 `2026-04-24-phase3-review-action-plan.md`：
+**更新内容**: 第六轮三专家审核修复，基于第六轮审核发现的 6 CRITICAL + 11 HIGH + 11 MEDIUM + 4 LOW 修复：
+- C1 (CRITICAL): Quorum CAP 表修正——AP（R+W≤N）/CP（R+W>N），非 WAL 模式固有属性
+- C2 (CRITICAL): Global Watermark 安全条件从 `min(all_nodes)` 修正为 `min(nodes holding replica of this shard)`
+- C3 (CRITICAL): §1.2 增加 HLC 64-bit 可行性分析（40+8+16 位分配、logical counter 溢出速率、physical 溢出时间）
+- C6-1 (CRITICAL): syncWorker 增加 Init() 方法和 started sync.WaitGroup，消除 unbuffered channel 启动竞争
+- C6-2 (CRITICAL): Commit/Rollback 伪代码增加 completed CAS 保护
+- C6-3 (CRITICAL): Recovery 标注单 goroutine 顺序执行 + 引擎未就绪拒绝请求
+- H1-6 (HIGH): COW B+Tree rootRef 类型转换和 checkpointStartLSN 排序论证
+- H2-6 (HIGH): Recovery 分阶段行为差异——Step 2 退化为"全部重放"，Step 3 才有三路分支
+- H3-6 (HIGH): GetWithMeta 返回完整 wire format，不 strip
+- H4-6 (HIGH): 跳跃扫描后 PrevLSN 校验降级为 log.Warn
+- H5-6 (HIGH): Apply 运行时失败使用 log.Fatalf
+- H7-6 (HIGH): Recovery 顺序不对称安全论证
+- H6-6 (HIGH): 孤儿节点 M3 vs M7 冲突调和——链中间孤儿节点不做物理移除，通过 generation bump 容忍
+- H1 (HIGH): §4.3 增加节点故障检测与 watermark 淘汰机制设计（Gossip 心跳、Quorum 确认、超时窗口）
+- H2 (HIGH): §3.3 WAL 格式增加 ShardID 预留字段说明（Phase 4 分布式兼容）
+- H6-2 (HIGH): syncWorker 增加 broadcastError/drainWithError 实现说明
+- M1-6 (MEDIUM): §6.2-2 WAL 格式与 §3.3 同步（添加 Length/Padding/Trailer）
+- M2-6 (MEDIUM): BeginTx Register 后 panic 导致 txID 泄漏的防御性编程注释
+- M3-6 (MEDIUM): Watermark=0 双重含义保护——tsGen 从 1 开始，0 永不作为合法 TS
+- M5-6 (MEDIUM): Sharp vs Fuzzy Checkpoint 段落分离，明确共享步骤
+- M6-6 (MEDIUM): Prepend 清理的 CAS 竞争窗口说明
+- M1 (MEDIUM): nodeID 角色表述从"冲突优先级"细化为"仅用于 HLC 相同时的冲突裁决"
+- M2 (MEDIUM): 3PC 替代方案限定——不具备网络分区容忍性，不推荐
+- M6-3 (MEDIUM): sync.Map Range 内不删除 key 的安全约束
+- L1-6 (LOW): Recovery 重放顺序 blockquote 修复（≥ → >）
+- 其他 LOW 级别文档注释补充
+
+**v2.4 更新**（2026-04-24）— 第五轮三专家审核修复（存储引擎 / 分布式系统 / Go 并发安全），基于 `2026-04-24-phase3-review-action-plan.md`：
 - C1 (CRITICAL): Fuzzy Checkpoint 增加 Atomic Root Snapshot 机制——`atomic.LoadPointer(&btree.root)` 获取固定 root 快照，Checkpoint 全程基于该快照遍历
 - C2 (CRITICAL): Apply 失败策略从"跳过继续"改为"暂停 Recovery + 上报运维"——VersionChain 重建存在隐含 key 冲突依赖
 - C3 (CRITICAL): Section 6.2 增加 CAP/PACELC 分析小节，明确 2PC+WAL 属于 CP 系统，标注分区阻塞风险
@@ -1197,4 +1320,5 @@ Recovery 重放单 key 流程（三阶段幂等）：
 - NEW-7 (MEDIUM): Prune 与 snapshotGet 并发安全性论证补充
 - NEW-9 (MEDIUM): GC 保留规则场景 B 解释修正
 - NEW-10 (LOW): 增加 beginTS == commitTS 术语映射说明
-**状态**: Draft — 等待架构师评审
+
+**状态**: Draft — 等待架构师评审（已完成六轮专家审核）

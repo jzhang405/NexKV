@@ -37,8 +37,8 @@
 >
 > | 限制 | 说明 | 远期方案 |
 > |------|------|---------|
-> | commitTS 单调性 | `TSGenerator` 使用本地 `atomic.Uint64` 计数器，不保证跨节点全局单调 | Phase 4: HLC 或 Timestamp Oracle；预留 commitTS 高 16 位 nodeID 编码 |
-> | 事务范围 | 当前 MVP 事务只能操作同一分片内的 key，跨分片 key 返回错误 | Phase 4+: 2PC + WAL |
+> | commitTS 单调性 | `TSGenerator` 使用本地 `atomic.Uint64` 计数器，不保证跨节点全局单调 | ⚠️ **第五轮审核 C4**：高 16 位 nodeID 编码**不能独立建立全局排序**——nodeID 主导下 localCounter 在跨节点比较时几乎无意义。**必须依赖 HLC**（Hybrid Logical Clock）建立跨节点 causal order：低 48 位 = HLC 的 physical+logical 部分，高 16 位 = nodeID（冲突优先级，非排序依据）。详见 Issue-5：commitTS HLC 演进 |
+> | 事务范围 | 当前 MVP 事务只能操作同一分片内的 key，跨分片 key 返回错误（第五轮 M4：**单节点部署**下为事务路由层面的逻辑检查；**分布式部署**下为物理限制——跨节点 RTT + 网络故障） | Phase 4+: 2PC + WAL |
 > | Checkpoint | Phase 3 Checkpoint 仅保证单节点恢复一致性 | Phase 4: 分布式 Checkpoint 协调协议 |
 > | GC Watermark | `ActiveTxRegistry.Watermark()` 仅反映本节点活跃事务 | Phase 4: Global Watermark 协议（Gossip 交换各节点 Watermark） |
 
@@ -81,6 +81,8 @@ Type 枚举：Insert / Update / Delete / Commit / Rollback / Checkpoint / Split
 - ~~CRC 字段 "reserved, calculated last"（未实际计算）~~ **已实现**（`types.go:147`：`CRC = crc32.ChecksumIEEE(buf[4:])`）— 文档信息已过时
 - Recovery 无事务语义（不按 TxID 分组过滤）— **拟改进**：Step 2 实现
 - Checkpoint 类型已定义但未消费 — **拟改进**：Step 3 实现
+
+> ⚠️ **术语说明**：BTree MVCC 编码中的 `beginTS` 字段（`codec.go: [Flag][beginTS][RealVal]`），在 `commitKey` 执行 BTree.Set 时被赋值为事务的 `commitTS`。Recovery 文档中提到的"BTree 的 beginTS"和"commitTS"是同一值的不同视角。
 
 ### 2.2 MVCC Commit 路径（WAL 接入点）
 
@@ -135,7 +137,7 @@ Tx.Commit:
   3. WAL.Append(WriteBuffer entries)        ← 带上 commitTS
   4. WAL.Append(Commit marker + commitTS)  ← 一次性 Append（原子单位）
   5. WAL.Sync()                            ← Group Commit 或 PerWrite
-  6. Apply WriteBuffer（BTree + VersionChain）
+  6. Apply WriteBuffer（⚠️ 执行顺序：VersionChain.Prepend → BTree.Set，见第四轮 NEW-2）
 ```
 
 **关键约束**：
@@ -158,12 +160,15 @@ Recovery:
   3. 丢弃未提交事务的 entries（Rollback + 无 Commit marker）
   4. 按原始顺序重放已提交事务：
      a. 读取 Key/Value/Type + commitTS（来自 Commit marker）
-     b. 调用 BTree.Set / BTree.Delete（携带 commitTS）
-     c. 重建 VersionChain（如果 MVCC 开启）
+     b. ⚠️ 三阶段幂等检查：beginTS > commitTS → 跳过；beginTS == commitTS → VersionChain 存在性检查；beginTS < commitTS → 完整重放（见 Section 6.2 问题 4）
+     c. 调用 BTree.Set / BTree.Delete（携带 commitTS）
+     d. 重建 VersionChain（如果 MVCC 开启）
   5. 恢复完成，设置下一个 LSN
 ```
 
 **恢复策略**：**保守策略**（遇损坏即停），而非当前的"跳过继续"。
+
+> ⚠️ **恢复性能基线**（第五轮审核 H2）：Step 3（Checkpoint）完成前 WAL 无法 Truncate，Recovery 必须全量扫描。估算基线：30s Checkpoint 间隔、1 万 TPS、128B/entry → 约 **38MB/周期** WAL 体积。按 TxID 分组需全量加载内存，大并发场景（10 万并发 Tx）下分组 map 的内存和 GC 压力不可忽略。建议 Step 2 实现流式分组——边扫描边处理已确定提交的事务 entries，减少内存峰值。
 
 > ⚠️ **"保守策略"是拟改进**：当前 `Recover()` 实现是"跳过继续"（`wal/diskwal.go` MVP 限制）。Step 2 计划修改为遇损坏即停。
 
@@ -175,6 +180,9 @@ WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。
 
 ```
 1. 扫描所有 .wal segment → 按 LSN 排序
+   ⚠️ H5（第五轮审核）：恢复期间需验证 key 所属分片是否仍由本节点负责。
+   Phase 4 扩展：在 WALEntry 中预留 ShardID 字段，或确认 key 已包含分片路由信息（如前缀编码）。
+   当前单节点场景下跳过此检查。
    ⚠️ C4 修复：当前 scanWALDirectory() 使用 os.ReadDir() 遍历，
    跨文件 entries 不保证全局 LSN 顺序。
    必须在收集所有 entries 后按 LSN 排序（sort.Slice），
@@ -195,6 +203,18 @@ WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。
 
 **⚠️ 直接采用路径 C**（三专家审核一致）：放弃路径 B（BTree-only 重建），因为路径 B 只保留最新版本，崩溃恢复后快照隔离语义被违反。详见 Section 6.2 问题 4。
 
+> ⚠️ **commitKey 执行顺序变更**（第四轮 NEW-2 — 三专家审核）：
+>
+> 将 `commitKey` 的执行顺序从 **Set→Prepend** 改为 **Prepend→Set**。
+>
+> **原因**：Set-before-Prepend 在 half-Apply 场景下（BTree.Set 完成、Prepend 未完成），BTree 中的旧值已被新值覆盖，Recovery 无法推导 Prepend 所需的 OldValue。改为 Prepend-before-Set 后，half-Apply 变为"Prepend 完成、BTree.Set 未完成"——Recovery 只需重放 BTree.Set（幂等），VersionChain 节点已存在且正确。
+>
+> **Prepend 失败回滚**：如果 Prepend 成功但 BTree.Set 失败，VersionChain 中会多一个"孤儿节点"（commitTS 对应的版本）。但这个孤儿节点不影响正确性——snapshotGet 遍历时会看到这个节点，但 BTree 中的值仍是旧值（beginTS < commitTS），Recovery 重放 BTree.Set 后状态恢复一致。Prepend 的 CAS 去重（commitTS 检查）确保 Recovery 不会重复 Prepend。
+>
+> ⚠️ **孤儿节点累积风险**（第五轮审核 M3）：孤儿节点的 `commitTS > watermark`，GC 不会回收。高频写入场景下孤儿节点持续累积，增加 snapshotGet 遍历开销。建议在 Prepend 清理逻辑中增加孤儿节点检测——清理时检查 BTree 中对应 key 的 beginTS 是否匹配 commitTS，若不匹配说明是孤儿节点，可直接清理。
+>
+> **源码参考**：当前 `commitKey`（transaction.go:499-535）执行顺序为 Set→Prepend，Phase 3 需调换。KeyLock 保证同一 key 不会并发 commitKey，Prepend-before-Set 不引入新的竞争条件。
+
 ### 3.3 WAL 格式增强（基于 UnisonDB 研究）
 
 **当前缺失**：
@@ -207,6 +227,12 @@ WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。
 | **Commit marker 不含 commitTS** | **Recovery 无法重建 commitTS** | **Type=Commit 时 KeyLen=8，Key 区域存 CommitTS 大端编码** |
 
 **⚠️ Length 字段用途说明**：`Length:4` 放在 CRC 之后、LSN 之前，用于**变长 entry 的自我描述**。读取时先读 Length 跳到下一个 entry（跳跃扫描），用于损坏后快速定位下一条记录。
+
+> ⚠️ **跳跃扫描模式**（第五轮审核 H3）：损坏 entry 的 CRC 校验必然失败，但跳跃扫描需要**先于 CRC 验证**读取 Length 来猜测下一条边界。正确的"乐观猜测 + CRC 验证"模式：
+> 1. 当前 entry CRC 失败 → 直接读取 Length（不做 CRC）
+> 2. 根据 Length 跳到候选的下一条 entry 位置（对齐到 8 字节）
+> 3. 尝试验证候选 entry 的 CRC — 若通过则继续扫描
+> 4. 若失败，尝试下一个 8 字节对齐位置作为候选
 
 **建议格式**（三专家审核修正）：
 
@@ -229,6 +255,7 @@ WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。
 - `Padding`：对齐到 8 字节，公式 `paddedLen = (totalLen + 7) &^ 7`，其中 `totalLen` 不含 CRC 和 Trailer。Padding 长度 = `paddedLen - totalLen`。
 - `Trailer`：**4 字节** `0xDEADBEEF`（修正：原文档错误标记为 8 字节，但 `0xDEADBEEF` 是 32 位值）。用于检测截断。若写入中断电，Trailer 不完整，此时 CRC 校验失败。
 - **`Type=Commit` 时**：`KeyLen=8, ValueLen=0`，Key 区域存放 `CommitTS` 的 8 字节大端编码。**修正**：原文档错误标记为 `KeyLen=0`，8 字节 CommitTS 无法放入长度为 0 的区域。
+- **`PrevLSN`**：用于完整性校验——验证 entry N 的 `PrevLSN == entry N-1` 的 LSN，确保链式连续性。同时预留与未来分布式 WAL 模式的兼容性（分布式场景下 LSN 排序需要链式校验）。
 
 > ⚠️ **Trailer 检测逻辑**：读取 entry 后，检查最后 4 字节是否为 `0xDEADBEEF`。若不是，说明 entry 不完整（写入中断）。此检查在 CRC 校验之后执行。
 
@@ -294,6 +321,40 @@ Group Commit 只控制 **fsync 时机**，不改变 commitTS 分配顺序。
 
 **⚠️ Group Commit Sync 容错**（H4）：syncWorker 需 `recover()` 保护防止 panic 导致等待者永久阻塞。等待 Sync 的事务使用 `select + ctx.Done()` 处理取消。
 
+**⚠️ syncWorker goroutine 生命周期**（第五轮审核 C5 — Group Commit 独立设计文档必须覆盖）：
+
+```go
+type syncWorker struct {
+    ch     chan *syncRequest    // 事务提交 sync 请求
+    done   chan struct{}        // 优雅退出通知
+}
+
+func (w *syncWorker) run(ctx context.Context) {
+    // 启动者：TransactionEngine.Init() 中 go w.run(ctx)
+    defer func() {
+        if r := recover(); r != nil {
+            w.broadcastError(fmt.Errorf("syncWorker panic: %v", r))
+            // 必须广播错误给所有等待者，防止永久阻塞
+        }
+    }()
+    for {
+        select {
+        case req := <-w.ch:
+            w.processBatch(req)  // fsync 批量刷盘
+        case <-ctx.Done():
+            w.drainWithError(ctx.Err())  // 优雅退出，唤醒所有等待者
+            return
+        }
+    }
+}
+```
+
+Key 设计约束：
+- **启动者**：`TransactionEngine.Init()` 中 `go sw.run(ctx)` — 保证在引擎接受请求前完成
+- **退出路径**：监听 `ctx.Done()`，退出前 drain 所有待处理请求并广播错误
+- **panic 恢复**：`recover()` 后 `broadcastError()` 唤醒所有等待者，防止 goroutine 泄漏
+- **等待者超时**：`select { case <-sw.syncCh: ...; case <-ctx.Done(): ... }`
+
 ### 3.5 Checkpoint 设计
 
 **分层策略**：
@@ -307,12 +368,15 @@ Group Commit 只控制 **fsync 时机**，不改变 commitTS 分配顺序。
 **Fuzzy Checkpoint 流程**：
 
 ```
-1. 记录 checkpointStartLSN
-2. 后台遍历 BTree 脏页，逐页写入主存储
-3. 记录 checkpointEndLSN
-4. 写入 Checkpoint WAL entry
-5. Truncate LSN < checkpointEndLSN 的 WAL segments
+1. rootRef = atomic.LoadPointer(&btree.root)     ← 固定 root 快照（C1：防止遍历期间 Split 更新 root）
+2. 记录 checkpointStartLSN
+3. 基于固定 rootRef DFS 遍历 BTree 活跃路径，逐页写入主存储
+4. 记录 checkpointEndLSN
+5. 写入 Checkpoint WAL entry
+6. Truncate LSN < checkpointEndLSN 的 WAL segments
 ```
+
+> ⚠️ **Atomic Root Snapshot 必要性**（第五轮审核 C1）：DFS 遍历过程中，CAS-based COW B+Tree 的 root pointer 可能因 Split 传播被 CAS 更新。`atomic.LoadPointer` 获取固定 rootRef 确保遍历基于一致的 BTree 快照。COW 保证旧 root 子树不被就地修改（LMDB/BoltDB 经典做法），checkpointStartLSN 之后的增量变更由 WAL 重放补偿。
 
 **触发条件**：
 - WAL segment 数量超过阈值
@@ -339,6 +403,8 @@ Sharp Checkpoint 第 5 步"Truncate WAL segments"是非原子操作。如果在�
 - 从最新 Checkpoint entry 的 `checkpointEndLSN` 开始重放
 
 **Fuzzy Checkpoint 的边界情况**：`步骤3(记录checkpointEndLSN)` 和 `步骤4(写入Checkpoint entry)` 之间 crash，此时脏页已写出但 checkpoint 位置丢失。正确策略：**从上一个有效 Checkpoint 开始重放**，而非截断到 checkpointEndLSN。
+
+**分布式 Checkpoint 协调**（第五轮审核 M5）：Phase 4 分布式场景下，Checkpoint 截断需要全局一致的时间点——所有节点的 LSN 截断点必须一致。思路：基于 Global Watermark 协议选择全局最小 LSN 作为截断基准。Phase 3 不涉及。
 
 ---
 
@@ -418,6 +484,11 @@ func (r *ActiveTxRegistry) Watermark() uint64 {                        // GC 时
 2. `sync.Map.Range` 文档明确声明不保证看到并发的 `Store`，导致 Register/Watermark 之间无 happens-before 保证
 3. `sync.Mutex` 的 Lock/Unlock 提供 happens-before 保证：Watermark 在 Lock 时，所有在 Lock 之前完成的 Register 操作对 Watermark 可见
 
+**⚠️ Global Watermark 分布式约束**（第五轮审核 H4）：当前 `Watermark()` 仅反映本节点活跃事务，扩展到分布式时需考虑：
+- **安全条件**：一个节点只能在确认**所有节点**的 watermark 都大于该版本 commitTS 后才能回收该版本。即：`safeGC_ts = min(all_nodes_watermarks)`，而非 `min(local_watermark)`
+- **Gossip 传播延迟**：Gossip 保证最终一致的 watermark 信息，但 GC 是周期性的。传播延迟可能超过 GC 周期，导致节点回收被其他节点仍需的版本
+- **接口预留**：`ActiveTxRegistry` 预留 `SetRemoteWatermark(nodeID, watermark)` 方法（Phase 4 实现），当前留空
+
 **⚠️ Register 必须在 BeginTx 时调用**（三专家审核一致）：
 
 如果 Register 在 Commit 时调用，长事务从 BeginTx 到 Commit 的整个生命周期内不被 GC 感知，其需要的版本可能被回收。
@@ -442,12 +513,14 @@ defer tm.activeTxRegistry.Unregister(tx.txID)
 ```
 PruneBackground(watermark):
   1. 获取 VersionStore.chains 的 snapshot（sync.Map Range）
+     ⚠️ M2: Range 不保证看到并发 Store 的 key，新 key 可能被跳过一次 GC 周期——不影响正确性（新链只有 head），但可能使一次周期内版本数临时超 MaxVersions
   2. 对每个 key 的链：
      a. 遍历链，跳过链头（始终保留）
      b. 找到 watermark 之前的最新可见版本（含其后被 Tombstone 遮盖的所有非 Tombstone 版本）→ 保留（详见下方 GC 保留规则）
      c. 更老的中间节点：node.reclaimed.Store(true)（仅标记，不修改 next）
      d. ⚠️ Prune 完成后必须 chain.generation.Add(1)（确保 snapshotGet 的乐观一致性校验能检测到链的逻辑修改）
-  3. Prepend 时顺便清理：从链头开始剔除连续的 reclaimed 节点
+  3. Prepend 时顺便清理：从链头开始剔除连续的 reclaimed 节点（⚠️ 只修改 head CAS，不修改任何 VersionNode.next 指针——这是并发安全的保证）
+     ⚠️ **清理范围约束**（第五轮审核 M7）：NEW-6 的"扩展清理"**仅限于从链头开始的连续 reclaimed 段**。对于链中间的 reclaimed 节点（如 V3 存活、V2 已回收、V1 存活），物理断开需要修改 V3.next 指针，这与"不修改 next"的根本约束冲突。深度 reclaimed 节点通过 generation bump 触发的 snapshotGet 重试来间接容忍。
 ```
 
 **GC 保留规则（三专家审核：H1 Tombstone 不复活 + 第二轮审核 H1 修正）**：
@@ -472,11 +545,13 @@ VersionChain: head → V5(500) → V4(400,Tombstone) → V3(300) → V2(200) →
 
 场景 B — watermark=250（有 snapshotTS=300 的活跃事务）：
   - V5(500): 链头，始终保留
-  - V4(400,Tombstone): 保留
-  - V3(300): 保留（snapshotTS=300 的事务需要看到 V3 之前的值）
-  - V2(200): 保留（被 Tombstone V4 遮盖，但 V3 的可见性需要 V2 作为回退）
-  - V1(100): 可标记 reclaimed（V2 已是 V3 的有效前驱）
+  - V4(400,Tombstone): 保留（watermark 前最新可见版本）
+  - V3(300): 保留 — 虽然 V3 的 commitTS >= watermark，但 Tombstone V4 遮盖了 V3。snapshotTS 在 250-300 之间的事务需要 V3 作为可见版本（V4 的 commitTS=400 > snapshotTS，不可见）
+  - V2(200): 保留 — 如果 snapshotTS 在 200-250 之间，V2 是它们的可见版本（V3 commitTS=300 > snapshotTS，不可见）
+  - V1(100): 可标记 reclaimed（V2 已是 watermark 前的可见版本，V1 更老无需保留）
 ```
+
+> ⚠️ **跨节点可见性**（第五轮审核 M6）：当前 GC 保留规则仅基于本节点 ActiveTxRegistry 的 watermark。扩展到分布式后，节点 A 无法看到节点 B 上的活跃事务——如果节点 B 有 snapshotTS=300 的事务读取 key k，节点 A 的 GC 可能错误回收 V3(300)。修正为：**跨节点场景下必须基于 Global Watermark 协议**的 min(all_nodes_watermarks)。当前单节点场景此规则成立。
 
 **snapshotGet 配合修改**：
 
@@ -494,6 +569,18 @@ for node != nil {
 **⚠️ Prune 必须递增 generation（C2 — Go 并发专家审核）**：
 
 `snapshotGet`（`transaction.go:211-233`）使用乐观一致性校验：遍历前后比较 `chain.Generation()`，如果 generation 变化则重试。Prune 标记 reclaimed 改变了链的"逻辑可见性"，但如果不递增 generation，snapshotGet 无法检测到这一变化，可能漏掉本应可见的版本——**直接违反快照隔离语义**。
+
+> ⚠️ **Prune 与 snapshotGet 并发的安全性论证**（第四轮 NEW-7）：
+> Prune 标记 reclaimed 的节点都是 `commitTS < watermark` 的节点。所有活跃事务的 `snapshotTS >= watermark`（Watermark 是最小活跃 snapshotTS）。因此被 Prune 回收的节点的 `commitTS < watermark <= snapshotTS`，这些节点不满足 snapshotGet 的 `commitTS > snapshotTS` 可见性条件——**snapshotGet 根本不会选择这些节点作为 bestNode**。即使 generation 检查窗口内 snapshotGet 读到了 Prune 的"中间状态"（部分节点已标记 reclaimed），结果仍然正确。
+>
+> **内存序推理链**（第五轮审核 H7）：`snapshotGet` 依赖于以下 happens-before 链来保证看到 Prune 的 `reclaimed.Store(true)`：
+> ```
+> Prune goroutine: reclaimed.Store(true) → generation.Add(1)
+>                                             ↑ program order
+> snapshotGet:     generation.Load()     → reclaimed.Load()
+>                                             ↑ program order
+> ```
+> `generation.Add(1)` 是一个 `sync/atomic` 递增操作。当 `snapshotGet` 的 `generation.Load()` 观察到 `Add(1)` 写入的值时，通过 happens-before 传递性，`reclaimed.Store(true)` 对后续的 `reclaimed.Load()` 可见。这个推理链正确，但**修删其中任一 atomic 操作都会破坏可见性**。
 
 ```go
 // Prune 完成后递增 generation
@@ -628,6 +715,12 @@ func (tm *txManager) pruneVersionChains(ctx context.Context, watermark uint64)  
 // 修改：mvcc/ts_generator.go
 // 新增 CurrentTS() 方法（只读当前值，不递增），用于无活跃事务时 GC 的 watermark fallback
 func (g *LocalTS) CurrentTS() uint64  // return g.counter.Load()
+
+// 新增：mvcc/codec.go（第五轮审核 H1）
+// 三阶段幂等检查的 BTree 部分需要读取当前值的 beginTS。
+// Recovery 流程调用 BTree.GetWithMeta(key) 获取 value + beginTS（即 commitTS）。
+func (bt *BTree) GetWithMeta(key []byte) (value []byte, beginTS uint64, err error)
+// Wire format: [Flag:1][beginTS:8][RealValue:N]，extractBeginTS() 从 value bytes 中解码 beginTS
 ```
 
 > ⚠️ **关键新增**：ActiveTxRegistry 在 `BeginTx` 时 `Register(txID, snapshotTS)`，在 `Commit/Rollback` 时 `Unregister(txID)`（defer 保护）。`txID` 由 `txManager.txIDCounter` 统一分配，不维护独立计数器。
@@ -649,14 +742,19 @@ func (g *LocalTS) CurrentTS() uint64  // return g.counter.Load()
 // 其他 Type 的 WALEntry 格式不变（Key/Value 正常使用）
 
 // 修改：mvcc/transaction.go BeginTx 方法
+// ⚠️ NEW-3 修复：NextTS + Register 在同一 Mutex 临界区内完成，
+// 消除 GC goroutine 在两者之间的窗口内使用过期 Watermark 的风险。
+// 代价：将 NextTS 放入 Mutex，但 Mutex 只保护 Register/Unregister/Watermark（非热路径），性能影响可忽略。
 func (tm *txManager) BeginTx(ctx context.Context, level IsolationLevel) (Tx, error) {
+    tm.activeTxRegistry.mu.Lock()
     snapshotTS := tm.tsGen.NextTS()
     txID := tm.txIDCounter.Add(1)                  // txID 统一来源
+    tm.activeTxRegistry.txs[txID] = snapshotTS    // 直接写入，避免二次 Lock
+    tm.activeTxRegistry.mu.Unlock()
+
     tx := &SnapshotTx{
         engine: tm, snapshotTS: snapshotTS, txID: txID,
     }
-    // 关键：BeginTx 时注册，让 GC 感知此事务
-    tm.activeTxRegistry.Register(txID, snapshotTS)
     return tx, nil
 }
 
@@ -699,7 +797,10 @@ func (tx *SnapshotTx) Rollback() error {
 }
 ```
 
-> ⚠️ **Apply 失败处理**（H5）：WAL 中 Commit marker 已持久化，不可回滚。Apply 失败视为系统级错误，Recovery 流程中需要补偿/重试机制。
+> ⚠️ **Apply 失败处理**（H5 + 第四轮 NEW-5 + 第五轮审核 C2）：WAL 中 Commit marker 已持久化，不可回滚。Apply 失败视为系统级错误。Recovery 流程中的处理策略：
+>
+> 1. **运行时 Apply 失败**（`Commit` 中）：进程应终止，依赖下次 Recovery 重放
+> 2. **Recovery 重放 Apply 失败**：最多重试 3 次。重试仍失败：**暂停 Recovery + 上报运维**（第五轮审核 C2 — 改为保守策略）。原因：VersionChain 重建存在隐含 key 冲突依赖——被跳过的事务可能写入后续事务引用的 key，导致后续事务 `Prepend(OldValue)` 的 OldValue 错误。启动完成后由运维介入修复。
 >
 > ⚠️ **AppendBatch**（H7）：Group Commit 场景下，建议引入 `WAL.AppendBatch(entries []*WALEntry)` 保证单事务 entries 连续写入，减少交错碎片。
 
@@ -886,6 +987,26 @@ Checkpoint 时：
 Step 1（Phase 3-4）：单机 WAL + Checkpoint 稳定
 Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
 
+> ⚠️ **2PC Coordinator 崩溃风险**（第五轮审核 H6）：2PC 在 Coordinator 故障时可能阻塞锁资源释放（Prepare 后 Coordinator 崩溃，participants 持有锁等待决策）。此为 2PC 经典问题，Phase 3 不涉及跨节点事务，此风险在当前 scope 之外。如需缓解阻塞问题，建议远期评估 3PC 或 Paxos/EPaxos 替代方案。
+
+**CAP/PACELC 分析**（第五轮审核 C3）：
+
+不同分布式 WAL 模式对应不同的一致性-延迟-可用性权衡，当前文档的工程对比缺少理论框架约束：
+
+| 模式 | CAP 分类 | PACELC | 分区行为 |
+|------|---------|--------|---------|
+| **Leader-based WAL** | CP | PC+EC | 分区时 Leader 失联后停止服务 |
+| **Quorum-based WAL** | AP（最终一致） | PA+EL | 分区时继续提供服务 |
+| **Replicated WAL Service** | CP | PC+EC | 多数派存活即可服务 |
+| **2PC + WAL（远期推荐）** | **CP** | **PC+EC** | **分区时阻塞（持有锁等待 Coordinator）** |
+| **Gossip-based WAL** | AP | PA+EL | 分区时完全可用，但冲突需合并 |
+
+**对 Phase 3 的影响**：
+- 当前单节点 WAL 属于 **CP**（无网络分区问题）
+- 远期 2PC+WAL 明确属于 CP 系统，与 NexKV 去中心化目标存在根本张力
+- 如果未来引入 Gossip 最终一致分片，2PC 不适用（需 PA+EL 方案），需独立的分布式 WAL 机制（如 Gossip-based WAL + CRDT 冲突合并）
+- **建议**：在 Phase 4 分布式 WAL 设计时，明确选择 CP vs AP 路线，这影响整个架构演进方向
+
 **结论**：分布式 WAL 是远期问题，**不阻塞 Phase 3 单机 WAL 实现**。建议在文档中标注：`"分布式 WAL 需要 Phase 4+ 考虑，当前 MVP 只保证单机事务原子性"`
 
 ---
@@ -933,21 +1054,28 @@ Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
 
 `commitKey` 的 Prepend 不是幂等的——CAS 基于 head 指针而非 commitTS 去重。如果 Recovery 重放时某个 key 的部分 Apply 已在崩溃前完成，重放会产生重复 VersionNode。
 
-**幂等性保护（两阶段检查）**：
-1. **第一阶段 — BTree 检查**：重放每个 key 前，检查 BTree 中该 key 的当前 `beginTS` 是否等于 entry 的 `commitTS`。若相等，进入第二阶段验证
-2. **第二阶段 — VersionChain 节点存在性检查**（第三轮审核 N1）：即使 `beginTS == commitTS`，仍需检查 VersionChain 中是否已存在该 commitTS 的节点。因为崩溃可能发生在 `commitKey` Step 4（BTree.Set 完成）和 Step 5（VersionChain.Prepend 未完成）之间——此时 BTree 已写入但 VersionChain 缺少节点
-3. **Prepend 侧**：新增 commitTS 去重检查——遍历链头前几个节点，如果已存在相同 commitTS 的节点，直接返回（不重复 Prepend）
+**幂等性保护（三阶段检查 — 第四轮审核修订）**：
+1. **前向跳过检查**（第四轮 NEW-1）：如果 `beginTS > commitTS`，说明崩溃前已有更新的事务完成了 Apply，直接跳过——重放会导致用旧值覆盖新值
+2. **第一阶段 — BTree 检查**：如果 `beginTS == commitTS`，进入第二阶段验证
+3. **第二阶段 — VersionChain 节点存在性检查**（第三轮 N1）：即使 `beginTS == commitTS`，仍需检查 VersionChain 中是否已存在该 commitTS 的节点。如果不存在，说明崩溃发生在 Prepend 之前
+4. **Prepend 侧**：新增 commitTS 去重检查——遍历链头前几个节点，如果已存在相同 commitTS 的节点，直接返回（不重复 Prepend）
 
 ```
-Recovery 重放单 key 流程（两阶段幂等）：
-  1. 读取 entry 的 commitTS
+Recovery 重放单 key 流程（三阶段幂等）：
+  1. 读取 entry 的 commitTS（从 Commit marker）和 Type（Insert/Update/Delete）
   2. BTree.Get(key) → 获取当前 beginTS
-  3. 如果 beginTS == commitTS：
+  3. 如果 beginTS > commitTS → 跳过（已有更新版本，无需重放）
+  4. 如果 beginTS == commitTS：
      a. 检查 VersionChain 是否已有 commitTS 对应的节点
      b. 若已有 → 跳过（BTree 和 VersionChain 都已 Apply）
-     c. 若没有 → 仅补充 Prepend（BTree 已写入，VersionChain 缺失）
-  4. 如果 beginTS != commitTS → BTree.Set + VersionChain.Prepend（Prepend 内部也有去重）
+     c. 若没有 → 根据 entry.Type 补充 Prepend（见下方说明）
+  5. 如果 beginTS < commitTS（或 key 不存在）→ 完整重放（Prepend + BTree.Set）
 ```
+
+> ⚠️ **Recovery 重放 Op 类型来源**（第四轮 NEW-4）：重放时的操作类型直接从 `WALEntry.Type` 字段（Insert/Update/Delete）获取，不从 BTree 状态推导。
+> - `Type=Insert`：Prepend Tombstone marker（`commitTS, nil, FlagTombstone`），无需从 BTree 获取旧值
+> - `Type=Update`：先 `BTree.Get(key)` 获取当前值作为 OldValue，然后 `BTree.Set` 写入新值，最后 `Prepend(OldValue, OldFlag)` 重建 VersionChain
+> - `Type=Delete`：类似 Update，Prepend 删除前的值
 
 **完整路径 D（Undo Log）的远期考虑**：如果 Phase 3 之后需要更高效的 MVCC 历史恢复能力（避免全量 WAL 扫描），可引入 Undo Log（参考 PostgreSQL）。这是 Phase 4+ 的选项。
 
@@ -967,10 +1095,25 @@ Recovery 重放单 key 流程（两阶段幂等）：
 | **分布式 WAL 2PC 约束** | **新增**：2PC + WAL 仅适用 Quorum 强一致分片 | 否（远期） | 涉及 Gossip 最终一致分片的跨分片事务使用 best-effort + 冲突合并 |
 | **Recovery LSN 排序保证** | **新增**（C4）：`Recover()` 必须在收集所有 entries 后按 LSN 排序 | **是（Step 2 阻塞项）** | 当前 `scanWALDirectory()` 不保证跨文件全局 LSN 顺序 |
 | **Phase 3 单节点限制** | **新增**（C6）：commitTS/GC/Checkpoint 仅保证单节点场景 | 否（文档标注） | 见 Section 1.2 Phase 3 范围声明表 |
-| **Recovery 重放幂等性** | **新增**（C1）：重放前检查 beginTS==commitTS 跳过已 Apply 的 key；**第三轮 N1 修正**：增加 VersionChain 节点存在性检查（BTree 已写入但 Prepend 未完成的 half-Apply 场景） | **是（Step 2 必须实现）** | 两阶段幂等：BTree beginTS 检查 + VersionChain 节点存在性检查 + Prepend commitTS 去重 |
+| **Recovery 重放幂等性** | **新增**（C1）：重放前检查 beginTS==commitTS 跳过已 Apply 的 key；**第三轮 N1**：VersionChain 节点存在性检查；**第四轮 NEW-1**：增加 `beginTS > commitTS → 跳过` 前向检查；**第四轮 NEW-2**：commitKey 改为 Prepend-before-Set 执行顺序 | **是（Step 2 必须实现）** | 三阶段幂等 + Prepend-before-Set 消除 half-Apply 旧值丢失 |
 | **GC Prune 递增 generation** | **新增**（C2）：Prune 标记 reclaimed 后必须 `chain.generation.Add(1)` | **是（Step 1 必须实现）** | 否则 snapshotGet 无法检测链逻辑修改，违反 SI 语义 |
 | **GC Tombstone 保留规则** | **修正**（H1）：Tombstone 遮盖的非 Tombstone 可见版本也必须保留 | **是（Step 1 必须实现）** | 见 Section 4.4 场景 B 示例 |
-| **Group Commit 详细设计** | **新增**（H2/H3）：LSN 分配与文件写入原子性、syncWorker 生命周期 | **是（需独立设计文档）** | 当前 Group Commit 设计停留在原理层面，goroutine 级设计缺失 |
+| **Group Commit 详细设计** | **新增**（H2/H3）：LSN 分配与文件写入原子性、syncWorker 生命周期 | **是（需独立设计文档，Step 2 前完成）** | 当前 Group Commit 设计停留在原理层面，goroutine 级设计缺失 |
+| **commitKey 执行顺序** | **新增**（第四轮 NEW-2）：Prepend-before-Set，消除 half-Apply 时 OldValue 丢失 | **是（Step 2 必须实现）** | 当前 Set→Prepend 顺序在 half-Apply 时 BTree 旧值被覆盖 |
+| **Fuzzy Checkpoint Root Snapshot** | **新增**（第五轮 C1）：DFS 遍历前必须 `atomic.LoadPointer(&btree.root)` | **是（Step 3 阻塞项）** | 防止遍历期间 Split 更新 root |
+| **Apply 失败策略** | **修正**（第五轮 C2）：从"跳过继续"改为"暂停 Recovery + 上报运维" | **是（Step 2 必须实现）** | VersionChain 重建存在隐含 key 冲突依赖 |
+| **CAP/PACELC 理论框架** | **新增**（第五轮 C3）：明确 2PC+WAL 属于 CP 系统（分区阻塞），标注 NexKV 去中心化张力 | 否（远期 Phase 4 决策） | 见 §6.2-3 |
+| **commitTS nodeID 编码约束** | **修正**（第五轮 C4）：高 16 位 nodeID 不能独立建立全局排序，必须依赖 HLC | 否（文档标注） | 低 48 位 = HLC 的 physical+logical，高 16 位 = nodeID（冲突优先级） |
+| **syncWorker goroutine 生命周期** | **新增**（第五轮 C5）：启动者/ctx 优雅退出/panic broadcastError | **是（Step 2 阻塞项，Group Commit 设计）** | 见 §3.4 设计代码和 Key 约束 |
+| **BTree.GetWithMeta 接口** | **新增**（第五轮 H1）：Recovery 三阶段幂等需要读取 beginTS | **是（Step 2 阻塞项）** | Wire: [Flag:1][beginTS:8][RealValue:N] |
+| **WAL 全量扫描性能基线** | **新增**（第五轮 H2）：30s/1万TPS/128B → ~38MB/周期 | 否（文档标注） | 建议流式分组减少内存峰值 |
+| **跳跃扫描模式** | **新增**（第五轮 H3）：乐观读取 Length + CRC 验证 | 否（文档标注） | 见 §3.3 |
+| **Global Watermark 安全条件** | **新增**（第五轮 H4）：安全条件为 min(all_nodes_watermarks) | 否（远期 Phase 4） | 见 §4.3 分布式约束小节 |
+| **路径 C 分片归属检查** | **新增**（第五轮 H5）：恢复重放前检查 key 所属分片 | 否（远期 Phase 4 扩展） | 当前单节点跳过 |
+| **2PC+WAL Coordinator 崩溃** | **新增**（第五轮 H6）：2PC Prepare 后 Coordinator 崩溃阻塞锁释放 | 否（远期 Phase 4 决策） | 建议同时评估 3PC/Paxos |
+| **reclaimed 可见性内存序** | **新增**（第五轮 H7）：reclaimed.Store + generation.Add 的 happens-before 推理链注释 | **是（Step 1 必须实现）** | 防止未来修改破坏可见性 |
+| **孤儿节点累积** | **新增**（第五轮 M3）：Prepend 清理时检测 BTree beginTS 不匹配的孤儿节点 | **是（Step 1 必须实现）** | 高频写入场景长期累积 |
+| **NEW-6 清理范围约束** | **修正**（第五轮 M7）：仅限于从链头开始的连续 reclaimed 段 | **是（Step 1 文档标注）** | 修改 next 与并发安全约束冲突 |
 
 ---
 
@@ -987,10 +1130,32 @@ Recovery 重放单 key 流程（两阶段幂等）：
 
 ---
 
-**文档版本**: v2.2
+**文档版本**: v2.4
 **创建日期**: 2026-04-17
-**最后更新**: 2026-04-21
-**更新内容**: 三专家审核（存储引擎 / 分布式系统 / Go 并发安全）修复，基于 `2026-04-18-phase3-review-action-plan.md`：
+**最后更新**: 2026-04-24
+**更新内容**: 第五轮三专家审核修复（存储引擎 / 分布式系统 / Go 并发安全），基于 `2026-04-24-phase3-review-action-plan.md`：
+- C1 (CRITICAL): Fuzzy Checkpoint 增加 Atomic Root Snapshot 机制——`atomic.LoadPointer(&btree.root)` 获取固定 root 快照，Checkpoint 全程基于该快照遍历
+- C2 (CRITICAL): Apply 失败策略从"跳过继续"改为"暂停 Recovery + 上报运维"——VersionChain 重建存在隐含 key 冲突依赖
+- C3 (CRITICAL): Section 6.2 增加 CAP/PACELC 分析小节，明确 2PC+WAL 属于 CP 系统，标注分区阻塞风险
+- C4 (CRITICAL): commitTS 高 16 位 nodeID 方案标注为"本地单调，跨节点需 HLC"，增加 HLC 演进路径说明
+- C5 (CRITICAL): Section 3.4 增加 syncWorker goroutine 生命周期设计（启动者、ctx 退出、panic broadcastError 唤醒等待者）
+- H1 (HIGH): 新增 `BTree.GetWithMeta(key) → (value, beginTS, error)` 接口定义，作为 Step 2 阻塞项
+- H2 (HIGH): 标注 WAL 全量扫描恢复的性能基线——30s Checkpoint、1万 TPS 下 WAL 体积约 38MB/周期
+- H3 (HIGH): 增加 Length 跳跃扫描的"乐观猜测 + CRC 验证"模式说明
+- H4 (HIGH): Section 4.3 增加 Global Watermark 核心约束——安全条件为 min(all_nodes_watermarks)
+- H5 (HIGH): 路径 C 恢复增加分片归属检查预留注释（Phase 4 扩展）
+- H6 (HIGH): 2PC+WAL 方案标注 Coordinator 崩溃阻塞风险，建议远期评估 3PC/Paxos
+- H7 (HIGH): Prune 和 snapshotGet 代码增加 reclaimed 可见性内存序推理注释
+- M1 (MEDIUM): PrevLSN 标注为完整性校验用途，非移除（保持与未来分布式模式兼容）
+- M2 (MEDIUM): GC sync.Map.Range 跳过新 key 的边界情况已文档化
+- M3 (MEDIUM): 新增孤儿节点检测机制——Prepend 清理时检查 BTree 中 beginTS 是否匹配
+- M4 (MEDIUM): 范围声明表增加"部署形态"列，区分单节点 vs 分布式部署语义
+- M5 (MEDIUM): Checkpoint Truncate 分布式协调标注为 Phase 4 工作项
+- M6 (MEDIUM): GC 保留规则增加跨节点可见性标注——当前仅对本地事务安全
+- M7 (MEDIUM): NEW-6 清理范围约束修正——仅限链头连续段，深度 reclaimed 通过 generation bump 容忍
+- L1-L6: 多个 LOW 级别文档注释和边界声明补充
+
+**v2.3 更新**（2026-04-22）— 第四轮三专家审核修复：
 - C1: GC 方案全面修订为 Mark-and-Sweep（标记清除），弃用 CAS 修改 next 指针
 - C2: ActiveTxRegistry 改为 Mutex + 普通 map，弃用 sync.Map
 - C3: Register 从 Commit 移至 BeginTx，txID 由 txManager 统一分配
@@ -1021,4 +1186,15 @@ Recovery 重放单 key 流程（两阶段幂等）：
 - N2 (HIGH): Watermark=0 时 GC 改为使用 `tsGen.CurrentTS()` 而非直接跳过（无活跃事务时恰恰最需要 GC）
 - N3 (HIGH): WALEntry 不携带 OldValue/OldFlag，Recovery 时从 BTree 当前状态推导（两阶段幂等检查保证安全性）
 - N4 (HIGH): WAL 格式升级标注为破坏性变更，与 Phase 2 不兼容（Phase 2 无持久化需求，无需迁移）
+
+**v2.3 更新**（2026-04-22）— 第四轮三专家审核修复：
+- NEW-1 (CRITICAL): Recovery 增加三阶段幂等检查——`beginTS > commitTS → 跳过`（前向检查，防止旧值覆盖新值）
+- NEW-2 (CRITICAL): commitKey 执行顺序从 Set→Prepend 改为 Prepend→Set（消除 half-Apply 时 OldValue 丢失）
+- NEW-3 (HIGH): BeginTx 中 NextTS + Register 放入同一 Mutex 临界区（消除 GC Watermark 窗口）
+- NEW-4 (HIGH): 明确 Recovery 重放 Op 类型来源为 WALEntry.Type 字段
+- NEW-5 (HIGH): Recovery Apply 失败增加重试上限（3 次）+ 继续重放后续事务策略
+- NEW-6 (MEDIUM): Prepend 清理范围标注可扩展到可达路径连续 reclaimed 段
+- NEW-7 (MEDIUM): Prune 与 snapshotGet 并发安全性论证补充
+- NEW-9 (MEDIUM): GC 保留规则场景 B 解释修正
+- NEW-10 (LOW): 增加 beginTS == commitTS 术语映射说明
 **状态**: Draft — 等待架构师评审

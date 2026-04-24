@@ -4,7 +4,7 @@
 > **创建日期**: 2026-04-17
 > **分支**: `spike/phase3-wal-gc-proposal`
 > **前置**: Phase 2 MVCC 快照隔离事务引擎（已完成）
-> **状态**: Draft（已完成六轮专家审核）
+> **状态**: Draft（已完成七轮专家审核）
 
 ---
 
@@ -160,6 +160,7 @@ Tx.Commit:
 1. **commitTS 必须在 WAL Append 前分配**，否则 WAL 丢失时时间戳空洞
 2. **Commit marker 必须在 Apply 前 sync**，否则崩溃后 BTree 有脏数据残留
 3. **WAL.Sync() 是可靠性屏障**：同步或异步 Apply 的分叉点。Sync 成功后 WAL 已持久化，Apply 失败或未执行均可通过 Recovery 重放恢复（**异步模式下日志即承诺——WAL 落地即事务持久，BTree 写入可延迟**）
+4. **⚠️ LSN 必须在单一写入 goroutine 中分配（Hard Requirement，C8）**：`atomic.AddUint64` 分配 LSN + Mutex 文件写入的模式可能导致 LSN 乱序——goroutine A 拿到 LSN=100 但 goroutine B 先获得 Mutex 写入 LSN=101，文件内顺序 [101, 100]。Recovery 按 LSN 排序重建 commitTS 序列时，若文件内 LSN 与分配顺序不一致，恢复的 commitTS 序列将偏离原始提交顺序。**必须在 Group Commit 的单一写入 goroutine 中同时完成 LSN 分配和文件写入**（channel-based，见 §3.4），消除分配与写入之间的乱序窗口。
 
 **WriteBuffer entry 需要携带 commitTS**（当前 WAL entry 格式不含 commitTS，需修改）。Commit marker entry 携带 commitTS，Recovery 时用于重放分配。
 
@@ -242,6 +243,57 @@ WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。
 > 3. **长期缓解**：孤儿节点仅产生于 Prepend 成功→BTree.Set 失败的 half-Apply 窗口，概率极低。高频写入场景下 Prepend-before-Set 执行顺序已将窗口缩至最小
 >
 > **源码参考**：当前 `commitKey`（transaction.go:499-535）执行顺序为 Set→Prepend，Phase 3 需调换。KeyLock 保证同一 key 不会并发 commitKey，Prepend-before-Set 不引入新的竞争条件。
+
+> ⚠️ **Recovery Prepend 去重退化（第八轮 C3 — CRITICAL）**：
+>
+> **问题**：正常运行中 Prepend 使用 `CAS(&head, oldHead, newNode)` 基于 head **指针地址**去重——同一 key 的两个并发 Prepend，只有第一个 CAS 成功。但 Recovery 时 head 是从 BTree 重新扫描构造的（**内存地址完全不同**），基于指针的 CAS 退化——head 指针不同但 commitTS 可能相同，CAS 可能错误执行 Prepend，产生重复 VersionNode。
+>
+> **解决方案：独立 commitTSDedupSet**：
+>
+> ```go
+> // TransactionEngine.Recovery 中增加去重集合
+> type TransactionEngine struct {
+>     // ...
+>     recoveryDedup *commitTSDedupSet  // Recovery 期间 Prepend 去重，正常运行时 nil
+> }
+>
+> // commitTSDedupSet 按 key 追踪已 Prepend 的 commitTS
+> // 使用 sync.Map + 并发安全，Recovery 单 goroutine 执行无需锁
+> type commitTSDedupSet struct {
+>     mu    sync.Mutex
+>     seen  map[string]uint64  // key → 已 Prepend 的最大 commitTS
+> }
+>
+> func (d *commitTSDedupSet) AlreadyPrepended(key []byte, commitTS uint64) bool {
+>     d.mu.Lock()
+>     defer d.mu.Unlock()
+>     prev, ok := d.seen[string(key)]
+>     if ok && prev >= commitTS { return true }  // 已 Prepend 过
+>     d.seen[string(key)] = commitTS
+>     return false
+> }
+> ```
+>
+> **Recovery 中使用**：在 Prepend 之前检查 `recoveryDedup.AlreadyPrepended(key, commitTS)`。若返回 true 则跳过 Prepend（因为已通过 WAL 重放 Prepend 过）。正常运行时 `recoveryDedup == nil`，此检查短路（零开销）。
+>
+> ```go
+> // Recovery Prepend 伪代码：
+> func recoverPrepend(chain *VersionChain, key []byte, commitTS uint64, oldValue []byte, oldFlag byte) {
+>     if engine.recoveryDedup != nil {
+>         if engine.recoveryDedup.AlreadyPrepended(key, commitTS) {
+>             return  // 已 Prepend，跳过
+>         }
+>     }
+>     chain.Prepend(commitTS, oldValue, oldFlag)
+> }
+> ```
+>
+> **三段式去重策略总结**：
+> 1. **三阶段幂等检查**（BTree beginTS）：跳过 `beginTS == commitTS` 的 key（最外层过滤）
+> 2. **commitTSDedupSet**：Recovery 专属，按 (key, commitTS) 精确去重（中间层保护）
+> 3. **Prepend CAS**：正常运行时基于 head 指针去重（最内层，Recovery 时退化但由前两层兜底）
+>
+> 三层共同确保：**无论 Recovery 重放多少次，Prepend 不会产生重复 VersionNode**。
 
 ### 3.3 WAL 格式增强（基于 UnisonDB 研究）
 
@@ -337,7 +389,7 @@ fsync batch 完成顺序：B 先于 A
 
 > ⚠️ **第二轮审核（H2/H3/H5）**：以上代码片段存在以下问题，**Group Commit 需要独立设计文档**：
 >
-> 1. **LSN 乱序风险**（H5）：`atomic.AddUint64` 分配 LSN 与 Mutex 保护的文件写入之间存在窗口——两个 goroutine 可能按不同 LSN 顺序获得锁，导致 WAL 文件中 LSN 乱序。推荐方案：channel-based 单一写入 goroutine（LSN 在写入时分配，保证顺序）
+> 1. **LSN 乱序风险**（H5 / 第八轮 C8）：`atomic.AddUint64` 分配 LSN 与 Mutex 保护的文件写入之间存在窗口——两个 goroutine 可能按不同 LSN 顺序获得锁，导致 WAL 文件中 LSN 乱序。**Hard Requirement（非设计选择）**：必须采用 channel-based 单一写入 goroutine（LSN 在写入时分配，保证分配顺序 == 文件写入顺序）。此约束影响整个 Group Commit 架构——`syncWorker.run()` 必须在同一 goroutine 中完成 LSN 分配 + 文件写入 + fsync，不允许在 Enqueue 时预先分配 LSN。
 > 2. **syncWorker 生命周期缺失**（H3）：syncWorker 由谁启动、如何退出、panic 后等待者如何唤醒——全部未描述。syncWorker 异常退出会导致所有等待 Sync 的事务 goroutine 永久阻塞
 > 3. **commitTS 归属矛盾**（M6）：Section 3.4 由 WAL 层分配 `wal.nextCommitTS()`，但 Section 5.3 由事务层分配 `tx.engine.tsGen.NextTS()`——应统一为事务层分配，WAL 层只负责存储
 
@@ -470,6 +522,17 @@ Fuzzy/Sharp Checkpoint 的"Truncate WAL segments"步骤（步骤 6/5）是非原
 
 **分布式 Checkpoint 协调**（第五轮审核 M5）：Phase 4 分布式场景下，Checkpoint 截断需要全局一致的时间点——所有节点的 LSN 截断点必须一致。思路：基于 Global Watermark 协议选择全局最小 LSN 作为截断基准。Phase 3 不涉及。
 
+> ⚠️ **Fuzzy Checkpoint 与异步 Apply 兼容性分析**（第八轮 C4）：
+>
+> **问题**：Fuzzy Checkpoint（§3.5）在固定 `rootRef` 后 DFS 遍历所有活跃页面，同时异步 Apply（§3.6）可能在后台通过 COW 创建新页面。这引入了一类"部分持久化"中间状态——Checkpoint 持有了异步 Apply 的部分写入（某些页面被写出，某些未被写出），重启后 Recovery 需要正确区分"Checkpoint 已包含"和"Checkpoint 未包含"的写入。
+>
+> **分析**：
+> 1. Fuzzy Checkpoint 的 DFS 遍历基于 `atomic.LoadPointer(&btree.root)` 固定的旧 rootRef。异步 Apply 创建的 COW 新页面要么在旧 rootRef 中不可达（DFS 未遍历，由 Recovery 补偿），要么在旧 rootRef 中可达但版本较旧（不影响 Checkpoint 正确性——旧值写出，新值通过 WAL 重放恢复）
+> 2. 三阶段幂等检查（§3.2）保证：Recovery 重放时 `beginTS > commitTS → 跳过`、`beginTS == commitTS → 检查 VersionChain`、`beginTS < commitTS → 完整重放`。此机制可正确区分"已 Apply"和"未 Apply"的 entry
+> 3. **形式化论证**：记 Fuzzy Checkpoint 固定 rootRef 的时刻为 T_f。T_f 之后异步 Apply 完成的写入满足：(a) 其 COW 新页面在旧 rootRef 中不可达 → Checkpoint 未包含 → Recovery 必然重放；(b) 其 commitTS > checkpointEndLSN 对应的最小 LSN → Recovery 从 checkpointEndLSN 之后重放时必然覆盖
+>
+> **结论**：Fuzzy Checkpoint + 异步 Apply 的组合在三阶段幂等检查的保护下是安全的。Checkpoint 要么完全不包含异步 Apply 的写入（页面在旧 rootRef 中不可达），要么包含但不影响正确性（旧 rootRef 中已有旧值，新值由 Recovery 覆盖）。**无需额外的协调机制**。
+
 ### 3.6 异步 BTree Apply（基于 TaskScheduler）
 
 **动机**：§3.1 中步骤 6 的同步 Apply 在 Commit 路径上执行 BTree.Set + VersionChain.Prepend，这些操作涉及 CAS 乐观锁、Split 传播和 COW 页面分配。高频写入场景下 BTree 写入延迟（尤其是 Split 传播）会直接阻塞 Commit 返回，增大事务 P99 延迟。
@@ -512,9 +575,17 @@ type BTreeApplyItem struct {
 func (item *BTreeApplyItem) ShardID() int { return item.keyHash }
 func (item *BTreeApplyItem) MaxRetries() int { return 0 }  // 不重试——WAL 已持久化，崩溃后由 Recovery 处理
 func (item *BTreeApplyItem) Run() error {
+    defer close(item.done)  // ⚠️ C1：必须 close done channel，否则 CommitAndWait 永久阻塞
     return item.buf.ApplyToBTree(item.txID, item.commitTS)
 }
 func (item *BTreeApplyItem) Done() <-chan struct{} { return item.done }
+
+// ShardID 永不返回 0（防止 EnqueueWithShard 走 selectLeastLoadedCore 破坏同 key 顺序）
+func NewBTreeApplyItem(...) *BTreeApplyItem {
+    item := &BTreeApplyItem{...}
+    if item.keyHash == 0 { item.keyHash = 1 }  // hash 为 0 时映射到 core 1
+    return item
+}
 ```
 
 **注册与路由**：
@@ -554,7 +625,9 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
         keyHash: int(tx.writeBuffer.Keys()[0].Hash()),  // 路由到同一 Core
         done: make(chan struct{}),
     }
+    tx.applyDone = item.done  // ⚠️ C1：绑定 item.done 到 tx.applyDone，供 CommitAndWait 等待
     if err := tx.engine.scheduler.EnqueueWithShard(item, TaskNameBTreeApply); err != nil {
+        close(item.done)  // ⚠️ C2：Enqueue 失败必须关闭 done channel，防止 CommitAndWait 永久阻塞
         log.Errorf("Enqueue BTreeApplyItem failed: txID=%d, err=%v", tx.txID, err)
         // 不阻塞 Commit 返回——WAL 已持久化，Recovery 重放时会 Apply
     }
@@ -573,15 +646,25 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 | **Shutdown 未处理任务** | Engine.Close() 前必须 drain TaskScheduler 队列（`scheduler.Stop()` 等待所有 task 完成），或通过 `ctx.Done()` 取消未执行 task——WAL 已持久化，未 Apply 的 task 等价于崩溃后 Recovery |
 | **Memory 压力** | WriteBuffer.Snapshot() 在 Enqueue 后继续持有内存直到 TaskScheduler 消费。高吞吐场景下任务积压可能导致瞬时内存上升。建议限制 scheduler 队列长度或使用背压 |
 | **Batch 优化** | BTreeApplyItem 实现 `BatchShardItem` 接口时，同 Core 的多个 Apply 任务可批量执行 `applyWriteBuffer`，分摊 COW 页面分配开销 |
+| **⚠️ SI 违反**（C5） | **这是异步模式最严重的风险**。时序：Tx1 异步 Commit（commitTS=100，BTree 未 Apply），Tx2 snapshotTS=101 开始读 key K——BTree 中无 Tx1 的版本。按 SI 定义 Tx2 应看到 Tx1 的提交，但看不到。**这不是只读己写问题，而是 SI 语义违反**：一个已提交事务对所有 snapshotTS > commitTS 的后续事务不可见。**必须默认同步 Apply，异步仅作为 opt-in 并标注"可能违反 SI"** |
+| **⚠️ 分布式 Quorum 破坏**（C6） | 分布式部署下，一个副本异步 Apply 而另一副本同步 Apply 时，W+R>N 不保证读到最新写入——读的 R 个副本可能全落在未 Apply 的副本上。**分布式场景要么所有副本同模式（全同步或全异步），要么读路径必须直接检查 WAL** |
+
+> ⚠️ **异步模式隔离级别约束**（C5）：异步 BTree Apply 在 Read Committed（RC）隔离级别下是安全的（RC 不要求跨事务的 snapshot 一致性），但在 Snapshot Isolation（SI）和 Serializable 下**违反一致性语义**。默认 Commit 路径必须使用同步 Apply。异步模式仅在以下条件下启用：
+> 1. 隔离级别为 Read Committed（非 SI/Serializable）
+> 2. 或调用方使用 `CommitAndWait` 等待 Apply 完成（同一节点会话内）
+> 3. 或用户明确知晓 SI 违反风险并 opt-in（配置 `AsyncBTreeApply=true` 时记录 WARNING 日志）
 
 **适用决策**：
 
 | 场景 | 推荐模式 | 理由 |
 |------|---------|------|
-| 延迟敏感（前端请求） | 异步 | Commit 路径不阻塞 BTree 写入，P99 延迟最优 |
+| SI/Serializable 事务 | **同步（强制）** | 异步模式违反 SI 语义（C5），此场景下禁止启用异步 |
+| Read Committed 事务 | 异步 | RC 不要求跨事务 snapshot 一致性，异步安全 |
 | 写后即读一致性 | 同步或 `CommitAndWait` | 调用方需要立即看到自己的写入 |
 | 批量加载 | 同步 + batch | 没有并发读竞争，同步 Apply 更简单 |
 | Checkpoint 期间 | 异步（速率限制） | 避免 Checkpoint 与常规写入争抢 COW 页面 |
+| 多 key 写事务 | 同步或 CommitAndWait | 异步下多 key 的 BTree Apply 原子性依赖单 Core 路由 |
+| **分布式场景** | **同步（强制）** | 异步 Apply 破坏 Quorum 读（C6），所有副本必须同模式 |
 
 ---
 
@@ -1263,6 +1346,35 @@ Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
 - 如果未来引入 Gossip 最终一致分片，2PC 不适用（需 PA+EL 方案），需独立的分布式 WAL 机制（如 Gossip-based WAL + CRDT 冲突合并）
 - **建议**：在 Phase 4 分布式 WAL 设计时，明确选择 CP vs AP 路线，这影响整个架构演进方向
 
+> ⚠️ **CP vs AP 路线决策框架（第八轮 C7 — 自 Phase 4 启动时的必选项）**：
+>
+> **决策时间点**：Phase 4 启动前必须完成。建议在 Phase 3 与 Phase 4 之间插入一个专门的 spike（2 周），基于实际 workload 特征和 TLA+ 建模验证做出决策。
+>
+> **分岔决策树**：
+> ```
+> Phase 4 启动
+> ├─ Workload 特征：强一致事务（跨分片 ACID）占主导？
+> │  ├─ 是 → 评估 CP 路线
+> │  │  ├─ 2PC+WAL：实现成本低，但分区时阻塞（持有锁等待 Coordinator）
+> │  │  │  └─ TLA+ 验证点：阻塞频率 vs 可用性 SLA
+> │  │  └─ Replicated WAL Service (Raft)：多数派存活即可服务，但实现成本高
+> │  │     └─ TLA+ 验证点：Raft 开销 vs 2PC 阻塞代价
+> │  └─ 否 → 评估 AP 路线
+> │     └─ Gossip-based WAL + CRDT 冲突合并：最终一致，无阻塞
+> │        └─ 约束：不支持跨分片 ACID 事务，应用层需处理冲突
+> ├─ 决策依据：
+> │  - 如果跨分片事务占比 < 5%：AP (Gossip+CRDT) 更简单
+> │  - 如果跨分片事务占比 > 20%：CP (2PC+WAL 或 Raft) 更合适
+> │  - 5-20%：需 TLA+ 量化建模
+> └─ 默认建议：若工作量不确定，优先 AP (PA+EL) 路线——NexKV 的去中心化假设更倾向 AP，
+>    CP 系统（2PC）的单点瓶颈与去中心化目标存在结构矛盾。
+>    但 AP 路线意味着跨分片事务只能做 best-effort + 应用层冲突合并。
+> ```
+>
+> **TLA+ 规格验证计划**：
+> 1. 建模 2PC Coordinator 故障场景——量化阻塞时长和可用性影响
+> 2. 建模 Gossip-based WAL 的冲突合并正确性——验证 CRDT 因果序
+
 **结论**：分布式 WAL 是远期问题，**不阻塞 Phase 3 单机 WAL 实现**。建议在文档中标注：`"分布式 WAL 需要 Phase 4+ 考虑，当前 MVP 只保证单机事务原子性"`
 
 ---
@@ -1382,10 +1494,27 @@ Recovery 重放单 key 流程（三阶段幂等）：
 
 ---
 
-**文档版本**: v2.5
+**文档版本**: v2.7
 **创建日期**: 2026-04-17
-**最后更新**: 2026-04-24
-**更新内容**: 第六轮三专家审核修复，基于第六轮审核发现的 6 CRITICAL + 11 HIGH + 11 MEDIUM + 4 LOW 修复：
+**最后更新**: 2026-04-25
+**更新内容**: 第八轮三专家审核修复 v2.6+v2.7，基于第八轮审核发现的 8 CRITICAL 问题修复：
+
+**v2.7 更新**（2026-04-25）— 第八轮 Go 并发 + 存储引擎 + 分布式系统 CRITICAL 修复：
+- C1 (CRITICAL, Go并发): §3.6 `BTreeApplyItem.Run()` 增加 `defer close(item.done)`, `Commit()` 增加 `tx.applyDone = item.done` 绑定——防止 `CommitAndWait` 永久阻塞
+- C2 (CRITICAL, Go并发): §3.6 Enqueue 失败路径增加 `close(item.done)`——防止 `CommitAndWait` 在 Enqueue 失败时永久阻塞
+- C3 (CRITICAL, 存储引擎): §3.2 新增 `commitTSDedupSet` 独立去重机制——解决 Recovery 下 CAS 指针去重退化的正确性问题。三段式去重策略：三阶段幂等检查 → commitTSDedupSet → Prepend CAS
+- C4 (CRITICAL, 存储引擎): §3.5 新增 Fuzzy Checkpoint × 异步 Apply 兼容性分析——形式化论证三阶段幂等检查可消解"部分持久化"中间状态
+- C5 (CRITICAL, 分布式): §3.6 安全性论证增加 SI 违反分析——异步 BTree Apply 在 SI/Serializable 下违反快照隔离语义。**默认 Commit 路径改为同步 Apply，异步仅作为 opt-in**。增加隔离级别约束表
+- C6 (CRITICAL, 分布式): §3.6 安全性论证增加分布式 Quorum 破坏分析——异步模式下 W+R>N 不保证读到最新写入。**分布式场景强制同步 Apply**
+- C7 (CRITICAL, 分布式): §6.2-3 增加 CP vs AP 路线决策框架——分岔决策树（workload 分类）、TLA+ 验证计划、Phase 4 启动前的必选 spike
+- C8 (CRITICAL, 分布式): §3.1 增加第 4 条关键约束——LSN 必须在单一写入 goroutine 中分配（Hard Requirement）；§3.4 升级 LSN 乱序风险为 Hard Requirement
+
+**v2.6 更新**（2026-04-24）— 异步 BTree Apply 方案 + 时间线修正：
+- §3.6（新增）：完整异步 BTree Apply 设计（BTreeApplyItem、TaskScheduler 注册、Commit 路径集成）
+- §3.1 WAL 流程：增加同步/异步两种 Apply 模式图
+- §5.1 时间线：WAL 估算 5-7→7-9 天
+
+**v2.5 更新**（2026-04-24）— 第六轮三专家审核修复，基于第六轮审核发现的 6 CRITICAL + 11 HIGH + 11 MEDIUM + 4 LOW 修复：
 - C1 (CRITICAL): Quorum CAP 表修正——AP（R+W≤N）/CP（R+W>N），非 WAL 模式固有属性
 - C2 (CRITICAL): Global Watermark 安全条件从 `min(all_nodes)` 修正为 `min(nodes holding replica of this shard)`
 - C3 (CRITICAL): §1.2 增加 HLC 64-bit 可行性分析（40+8+16 位分配、logical counter 溢出速率、physical 溢出时间）
@@ -1478,4 +1607,4 @@ Recovery 重放单 key 流程（三阶段幂等）：
 - NEW-9 (MEDIUM): GC 保留规则场景 B 解释修正
 - NEW-10 (LOW): 增加 beginTS == commitTS 术语映射说明
 
-**状态**: Draft — 等待架构师评审（已完成六轮专家审核）
+**状态**: Draft — 等待架构师评审（已完成七轮专家审核）

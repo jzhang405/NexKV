@@ -151,12 +151,15 @@ Tx.Commit:
   3. WAL.Append(WriteBuffer entries)        ← 带上 commitTS
   4. WAL.Append(Commit marker + commitTS)  ← 一次性 Append（原子单位）
   5. WAL.Sync()                            ← Group Commit 或 PerWrite
-  6. Apply WriteBuffer（⚠️ 执行顺序：VersionChain.Prepend → BTree.Set，见第四轮 NEW-2）
+  6. Apply WriteBuffer ⚠️ 两种模式：
+     a. 同步（默认）：VersionChain.Prepend → BTree.Set（见第四轮 NEW-2）
+     b. 异步（§3.6）：Enqueue BTreeApplyTask → 返回调用方
 ```
 
 **关键约束**：
 1. **commitTS 必须在 WAL Append 前分配**，否则 WAL 丢失时时间戳空洞
 2. **Commit marker 必须在 Apply 前 sync**，否则崩溃后 BTree 有脏数据残留
+3. **WAL.Sync() 是可靠性屏障**：同步或异步 Apply 的分叉点。Sync 成功后 WAL 已持久化，Apply 失败或未执行均可通过 Recovery 重放恢复（**异步模式下日志即承诺——WAL 落地即事务持久，BTree 写入可延迟**）
 
 **WriteBuffer entry 需要携带 commitTS**（当前 WAL entry 格式不含 commitTS，需修改）。Commit marker entry 携带 commitTS，Recovery 时用于重放分配。
 
@@ -467,6 +470,119 @@ Fuzzy/Sharp Checkpoint 的"Truncate WAL segments"步骤（步骤 6/5）是非原
 
 **分布式 Checkpoint 协调**（第五轮审核 M5）：Phase 4 分布式场景下，Checkpoint 截断需要全局一致的时间点——所有节点的 LSN 截断点必须一致。思路：基于 Global Watermark 协议选择全局最小 LSN 作为截断基准。Phase 3 不涉及。
 
+### 3.6 异步 BTree Apply（基于 TaskScheduler）
+
+**动机**：§3.1 中步骤 6 的同步 Apply 在 Commit 路径上执行 BTree.Set + VersionChain.Prepend，这些操作涉及 CAS 乐观锁、Split 传播和 COW 页面分配。高频写入场景下 BTree 写入延迟（尤其是 Split 传播）会直接阻塞 Commit 返回，增大事务 P99 延迟。
+
+**核心思路**：WAL Sync 后将 WriteBuffer 的 Apply 封装为 `BTreeApplyTask`，通过 `TaskScheduler.EnqueueWithShard` 异步执行。WAL 已持久化保证事务原子性，Apply 可延迟到后台完成。
+
+```
+同步模式（默认）：    WAL Sync → [Apply BTree] → return
+异步模式（新增）：    WAL Sync → [Enqueue Task] → return
+                                    ↓
+                               TaskScheduler runLoop
+                                    ↓
+                              [Apply BTree]（后台）
+```
+
+**依赖的基础设施**（`internal/infrastructure/concurrency/`）：
+
+| 组件 | 用途 | 状态 |
+|------|------|------|
+| `TaskScheduler` | 多核优先调度器，已集成 `ExecutionOrderBTreeSet = 2` | 已实现 |
+| `ShardItem` 接口 | 带分片路由 + 重试 + 结果通知的任务项 | 已实现 |
+| `BatchShardItem` 接口 | 批量处理，`BatchType="btree-apply"`，`PreferredBatchSize=8` | 已实现 |
+| `EnqueueWithShard(item, "btree-apply")` | 按 key hash 路由到对应 Core，保证同 key 顺序执行 | 已实现 |
+
+**BTreeApplyTask 设计**：
+
+```go
+const TaskNameBTreeApply = "btree-apply"
+
+// BTreeApplyItem 异步 BTree Apply 任务项
+type BTreeApplyItem struct {
+    txID     uint64
+    commitTS uint64
+    buf      *WriteBuffer          // 待 Apply 的 WriteBuffer snapshot
+    keyHash  int                   // hash(buf.Keys[0])，用于 shard 路由
+    done     chan struct{}         // 结果通知（可选等待）
+    err      error                 // Apply 结果
+}
+
+func (item *BTreeApplyItem) ShardID() int { return item.keyHash }
+func (item *BTreeApplyItem) MaxRetries() int { return 0 }  // 不重试——WAL 已持久化，崩溃后由 Recovery 处理
+func (item *BTreeApplyItem) Run() error {
+    return item.buf.ApplyToBTree(item.txID, item.commitTS)
+}
+func (item *BTreeApplyItem) Done() <-chan struct{} { return item.done }
+```
+
+**注册与路由**：
+
+```go
+// TransactionEngine.Init() 中注册
+scheduler.RegisterTask(
+    executeFunc: func(item any) TaskStatus {
+        task := item.(*BTreeApplyItem)
+        if err := task.Run(); err != nil {
+            log.Errorf("BTree apply failed: txID=%d, err=%v", task.txID, err)
+            return TaskFailed  // WAL 已持久化，仅记日志，不阻塞 Recovery
+        }
+        return TaskPassed
+    },
+    name:           TaskNameBTreeApply,
+    priority:       TaskPriorityHigh,      // BTree 写入优先级高于后台 GC/Compaction
+    executionOrder: ExecutionOrderBTreeSet, // = 2
+)
+```
+
+**Commit 路径集成**：
+
+```go
+func (tx *SnapshotTx) Commit(ctx context.Context) error {
+    if !tx.completed.CompareAndSwap(false, true) { return nil }
+    defer tx.engine.activeTxRegistry.Unregister(tx.txID)
+
+    commitTS := tx.engine.tsGen.NextTS()
+    // ... WAL Append entries + Commit marker ...
+    tx.engine.wal.Sync()  // ⚠️ 可靠性屏障
+
+    // 异步 Apply（通过 TaskScheduler）
+    item := &BTreeApplyItem{
+        txID: tx.txID, commitTS: commitTS,
+        buf: tx.writeBuffer.Snapshot(),  // 深拷贝，所有权转移给 TaskScheduler
+        keyHash: int(tx.writeBuffer.Keys()[0].Hash()),  // 路由到同一 Core
+        done: make(chan struct{}),
+    }
+    if err := tx.engine.scheduler.EnqueueWithShard(item, TaskNameBTreeApply); err != nil {
+        log.Errorf("Enqueue BTreeApplyItem failed: txID=%d, err=%v", tx.txID, err)
+        // 不阻塞 Commit 返回——WAL 已持久化，Recovery 重放时会 Apply
+    }
+    return nil
+}
+```
+
+**安全性论证**：
+
+| 风险 | 分析 |
+|------|------|
+| **崩溃数据丢失** | WAL.Sync() 在 Enqueue 之前完成。崩溃时 BTreeApplyItem 虽丢失，但 Recovery 会重新扫描 WAL 并重放所有 committed entries。**零数据丢失** |
+| **同 key 顺序违反** | BTreeApplyItem 的 ShardID 基于首 key hash，同一 key 的所有操作路由到同一 Core，TaskScheduler 在单 Core 内 FIFO 执行。读操作通过 `ExecutionOrderBTreeSet=2` 保证在 GC/Compaction 之前 |
+| **Read-your-writes** | 异步模式下 Commit 返回时 BTree 可能尚未写入。**可选同步点**：若调用方需要立即读到自己的写入，可调用 `item.Wait()` 等待 Apply 完成。`SnapshotTx` 提供 `CommitAndWait(ctx)` 做同步 Apply |
+| **Enqueue 失败** | WAL 已持久化但 Enqueue 失败（如 Scheduler 未启动），Apply 丢失。Recovery 最终会弥补——与崩溃场景相同处理 |
+| **Shutdown 未处理任务** | Engine.Close() 前必须 drain TaskScheduler 队列（`scheduler.Stop()` 等待所有 task 完成），或通过 `ctx.Done()` 取消未执行 task——WAL 已持久化，未 Apply 的 task 等价于崩溃后 Recovery |
+| **Memory 压力** | WriteBuffer.Snapshot() 在 Enqueue 后继续持有内存直到 TaskScheduler 消费。高吞吐场景下任务积压可能导致瞬时内存上升。建议限制 scheduler 队列长度或使用背压 |
+| **Batch 优化** | BTreeApplyItem 实现 `BatchShardItem` 接口时，同 Core 的多个 Apply 任务可批量执行 `applyWriteBuffer`，分摊 COW 页面分配开销 |
+
+**适用决策**：
+
+| 场景 | 推荐模式 | 理由 |
+|------|---------|------|
+| 延迟敏感（前端请求） | 异步 | Commit 路径不阻塞 BTree 写入，P99 延迟最优 |
+| 写后即读一致性 | 同步或 `CommitAndWait` | 调用方需要立即看到自己的写入 |
+| 批量加载 | 同步 + batch | 没有并发读竞争，同步 Apply 更简单 |
+| Checkpoint 期间 | 异步（速率限制） | 避免 Checkpoint 与常规写入争抢 COW 页面 |
+
 ---
 
 ## 四、VersionChain GC 设计
@@ -749,7 +865,7 @@ Step 3: Checkpoint（依赖 WAL Truncate）
 | Step | 估算（评审修订） | 评审修订原因 |
 |------|----------------|-------------|
 | GC | 5-7 天（原 3-5 天） | ActiveTxRegistry txID 设计 + 并发 CAS 安全性验证 + 后台 Eager Pruning 独立任务 |
-| WAL | 5-7 天 | 基本合理，但需额外处理 commitTS 嵌入 WriteBuffer 格式 |
+| WAL | 7-9 天（原 5-7 天） | 基本合理，但需额外处理：commitTS 嵌入 WriteBuffer 格式 + **异步 BTree Apply 的 BTreeApplyItem 实现 + TaskScheduler 注册集成 + 异步模式下 Recovery 兼容性验证** |
 | Checkpoint | 7-10 天（原 3-5 天） | BTree 脏页追踪（COW 语义评估）+ Checkpoint 流程 + 与 WAL 协调 + Truncate 原子性 |
 | **总计** | **17-24 天**（原 11-17 天） | 实际工作量约为估算的 1.5-2x |
 
@@ -872,10 +988,46 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
     tx.engine.wal.Sync()
 
     // Apply 在 Sync 之后（确保 Commit marker 已持久化）
-    if err := tx.applyWriteBuffer(ctx, commitTS); err != nil {
-        log.Fatalf("Apply 失败，进程终止：commitTS=%d, txID=%d, err=%v", commitTS, tx.txID, err)
-        // ⚠️ 第五轮 C2 + 第六轮 H5-6：运行时 Apply 失败不可回滚，必须终止进程。
-        // Recovery 将重新重放该事务。
+    // ⚠️ 两种模式（见 §3.6）：
+    //
+    // 模式 A - 同步（默认）：
+    if !tx.engine.config.AsyncBTreeApply {
+        if err := tx.applyWriteBuffer(ctx, commitTS); err != nil {
+            log.Fatalf("Apply 失败，进程终止：commitTS=%d, txID=%d, err=%v", commitTS, tx.txID, err)
+        }
+        return nil
+    }
+    //
+    // 模式 B - 异步（通过 TaskScheduler）：
+    item := &BTreeApplyItem{
+        txID:     tx.txID,
+        commitTS: commitTS,
+        buf:      tx.writeBuffer.Snapshot(),
+        keyHash:  int(tx.writeBuffer.Keys()[0].Hash()),
+        done:     make(chan struct{}),
+    }
+    if err := tx.engine.scheduler.EnqueueWithShard(item, TaskNameBTreeApply); err != nil {
+        // WAL 已持久化，Enqueue 失败不影响正确性——Recovery 会重放
+        log.Errorf("Enqueue BTreeApplyItem 失败：txID=%d, err=%v", tx.txID, err)
+    }
+    return nil
+}
+
+// CommitAndWait 同步 Commit + 等待 BTree Apply 完成（异步模式下的读己之写保障）
+// 同步模式下等价于 Commit（Apply 在 Commit 路径内同步执行）
+func (tx *SnapshotTx) CommitAndWait(ctx context.Context) error {
+    if err := tx.Commit(ctx); err != nil {
+        return err
+    }
+    if tx.engine.config.AsyncBTreeApply {
+        // 等待 TaskScheduler 完成 BTree Apply
+        // 超时由 ctx 控制
+        select {
+        case <-tx.applyDone:
+            return nil
+        case <-ctx.Done():
+            return ctx.Err()
+        }
     }
     return nil
 }
@@ -895,8 +1047,11 @@ func (tx *SnapshotTx) Rollback() error {
 
 > ⚠️ **Apply 失败处理**（H5 + 第四轮 NEW-5 + 第五轮审核 C2）：WAL 中 Commit marker 已持久化，不可回滚。Apply 失败视为系统级错误。Recovery 流程中的处理策略：
 >
-> 1. **运行时 Apply 失败**（`Commit` 中）：进程应终止，依赖下次 Recovery 重放
-> 2. **Recovery 重放 Apply 失败**：最多重试 3 次。重试仍失败：**暂停 Recovery + 上报运维**（第五轮审核 C2 — 改为保守策略）。原因：VersionChain 重建存在隐含 key 冲突依赖——被跳过的事务可能写入后续事务引用的 key，导致后续事务 `Prepend(OldValue)` 的 OldValue 错误。启动完成后由运维介入修复。
+> 1. **运行时 Sync Apply 失败**（`Commit` 中同步模式）：进程应终止，依赖下次 Recovery 重放
+> 2. **运行时 Async Apply 失败**（§3.6 异步模式）：TaskScheduler 执行 `BTreeApplyItem.Run()` 返回 error 时仅记日志（`log.Errorf`），**不终止进程**。原因：WAL 已持久化，未 Apply 的 entry 在 Recovery 时会被重放。异步 Apply 的失败不是系统级错误——只是"延迟执行"，下次启动时 Recovery 会弥补
+> 3. **Recovery 重放 Apply 失败**：最多重试 3 次。重试仍失败：**暂停 Recovery + 上报运维**（第五轮审核 C2 — 改为保守策略）。原因：VersionChain 重建存在隐含 key 冲突依赖——被跳过的事务可能写入后续事务引用的 key，导致后续事务 `Prepend(OldValue)` 的 OldValue 错误。启动完成后由运维介入修复
+>
+> > ⚠️ **异步模式的关键区别**：Sync Apply 的 `log.Fatalf` 强制进程终止是因为事务 Apply 到一半、状态不可知；Async Apply 的 `log.Errorf` 容忍失败是因为 Apply 从未开始（WAL 全量保留），Recovery 必然可以重放。**日志即承诺——WAL 落地即事务持久。**
 >
 > ⚠️ **AppendBatch**（H7）：Group Commit 场景下，建议引入 `WAL.AppendBatch(entries []*WALEntry)` 保证单事务 entries 连续写入，减少交错碎片。
 
@@ -906,6 +1061,8 @@ func (tx *SnapshotTx) Rollback() error {
 - [ ] CRC 校验损坏的 WAL 被正确检测
 - [ ] Group Commit 吞吐优于 PerWrite Sync
 - [ ] **新增**：commitTS 按 LSN 顺序单调递增（Group Commit 场景下验证）
+- [ ] **异步 Apply**：Commit 路径延迟显著降低（BTree 写入移出热路径）
+- [ ] **异步 Apply**：崩溃后未 Apply 的 committed entries 被 Recovery 正确重放
 
 ### 5.4 Step 3: Checkpoint（预估 7-10 天）
 

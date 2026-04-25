@@ -160,7 +160,7 @@ Tx.Commit:
 1. **commitTS 必须在 WAL Append 前分配**，否则 WAL 丢失时时间戳空洞
 2. **Commit marker 必须在 Apply 前 sync**，否则崩溃后 BTree 有脏数据残留
 3. **WAL.Sync() 是可靠性屏障**：同步或异步 Apply 的分叉点。Sync 成功后 WAL 已持久化，Apply 失败或未执行均可通过 Recovery 重放恢复（**异步模式下日志即承诺——WAL 落地即事务持久，BTree 写入可延迟**）
-4. **⚠️ LSN 必须在单一写入 goroutine 中分配（Hard Requirement，C8）**：`atomic.AddUint64` 分配 LSN + Mutex 文件写入的模式可能导致 LSN 乱序——goroutine A 拿到 LSN=100 但 goroutine B 先获得 Mutex 写入 LSN=101，文件内顺序 [101, 100]。Recovery 按 LSN 排序重建 commitTS 序列时，若文件内 LSN 与分配顺序不一致，恢复的 commitTS 序列将偏离原始提交顺序。**必须使用 §3.4 的独立 syncWorker goroutine（channel-based），在同一 goroutine 中完成 LSN 分配 + 文件写入 + fsync**。WAL 不使用 TaskScheduler 路由（详见 §3.4 声明）。
+4. **⚠️ LSN 必须在单一写入 goroutine 中分配（Hard Requirement，C8）**：`atomic.AddUint64` 分配 LSN + Mutex 文件写入的模式可能导致 LSN 乱序——goroutine A 拿到 LSN=100 但 goroutine B 先获得 Mutex 写入 LSN=101，文件内顺序 [101, 100]。Recovery 按 LSN 排序重建 commitTS 序列时，若文件内 LSN 与分配顺序不一致，恢复的 commitTS 序列将偏离原始提交顺序。**解决方案**：WAL Append 也通过 TaskScheduler 注册为独立任务类型，`ShardID` 固定为 `ShardIDWAL=1`（正数，`1 % coreCount` 固定路由到 Core 1，**注意不能为 0——0 走 `selectLeastLoadedCore` 动态分配，破坏固定路由**），所有 WAL Append 被路由到同一 Core 的 runLoop 串行执行。该 Core 的 executeFunc 在同一 goroutine 中完成 `LSN 分配 → 文件写入 → fsync` 的原子序列，天然保证 LSN 顺序。
 
 **WriteBuffer entry 需要携带 commitTS**（当前 WAL entry 格式不含 commitTS，需修改）。Commit marker entry 携带 commitTS，Recovery 时用于重放分配。
 
@@ -361,15 +361,15 @@ Recovery 重建 VersionChain 时，需要为每个 key 创建正确的历史版�
 
 ### 3.4 Sync 策略：Group Commit
 
-> ⚠️ **WAL 不使用 TaskScheduler（第九轮 C8 — 架构决策）**：WAL 的 LSN 分配 + 文件写入 + fsync 必须在**单一 goroutine** 中串行完成（§3.1 第 4 条约束 Hard Requirement）。因此 WAL **不**通过 `TaskScheduler.EnqueueWithShard` 路由（那会分散到多个 Core），而是使用独立的 `syncWorker` goroutine（见下方设计）。TaskScheduler 仅用于 BTree Apply（§3.6）和 GC/Compaction 等后台任务，**不承担 WAL 写入职责**。
+> ⚠️ **统一使用 TaskScheduler（第九轮 C8 修正）**：WAL Append 也通过 TaskScheduler 调度。注册独立任务类型 `"wal-append"`，`ShardID` 固定为 `ShardIDWAL=1`（**正数固定路由，不能为 0**——`ShardID=0` 走 `selectLeastLoadedCore` 动态分配，每次路由到不同 Core，破坏 LSN 顺序），所有 WAL Append 路由到同一 Core 的 runLoop 串行执行，天然保证 LSN 分配顺序 == 文件写入顺序。Group Commit 的 batch 合并逻辑在 executeFunc 中实现（见下方设计）。
 
 **推荐演进路径**：`SyncPolicyEveryWrite` → `Group Commit`
 
 Group Commit 工作原理：
 1. 多个并发事务的 WAL Append 只写入 OS buffer（不 fsync）
-2. 后台 `syncWorker` goroutine 周期性（如 1ms）执行一次 fsync
+2. TaskScheduler 的 runLoop（ShardIDWAL=0 的固定 Core）周期性执行一次 batch fsync
 3. 所有在本次 fsync 前完成 Append 的事务一起被持久化
-4. 等待 Sync 的事务通过 channel/block 等待通知
+4. 等待 Sync 的事务通过 `WALAppendItem.errCh` 等待通知
 
 **收益**：fsync 是 WAL 的主要瓶颈（~1ms/次）。Group commit 将 N 次合并为 1 次，吞吐提升 N 倍。
 
@@ -391,7 +391,7 @@ fsync batch 完成顺序：B 先于 A
 
 > ⚠️ **第二轮审核（H2/H3/H5）**：以上代码片段存在以下问题，**Group Commit 需要独立设计文档**：
 >
-> 1. **LSN 乱序风险**（H5 / 第八轮 C8）：`atomic.AddUint64` 分配 LSN 与 Mutex 保护的文件写入之间存在窗口——两个 goroutine 可能按不同 LSN 顺序获得锁，导致 WAL 文件中 LSN 乱序。**Hard Requirement（非设计选择）**：必须采用 channel-based 单一写入 goroutine（LSN 在写入时分配，保证分配顺序 == 文件写入顺序）。此约束影响整个 Group Commit 架构——`syncWorker.run()` 必须在同一 goroutine 中完成 LSN 分配 + 文件写入 + fsync，不允许在 Enqueue 时预先分配 LSN。
+> 1. **LSN 乱序风险**（H5 / 第八轮 C8）：`atomic.AddUint64` 分配 LSN 与 Mutex 保护的文件写入之间存在窗口——两个 goroutine 可能按不同 LSN 顺序获得锁，导致 WAL 文件中 LSN 乱序。**Hard Requirement（非设计选择）**：WAL Append 通过 TaskScheduler 注册为固定 ShardID 的任务，所有 WAL 操作路由到同一 Core 的 runLoop 串行执行。executeFunc 在同一 goroutine 中完成 LSN 分配 + 文件写入 + fsync，消除分配与写入之间的乱序窗口。
 > 2. **syncWorker 生命周期缺失**（H3）：syncWorker 由谁启动、如何退出、panic 后等待者如何唤醒——全部未描述。syncWorker 异常退出会导致所有等待 Sync 的事务 goroutine 永久阻塞
 > 3. **commitTS 归属矛盾**（M6）：Section 3.4 由 WAL 层分配 `wal.nextCommitTS()`，但 Section 5.3 由事务层分配 `tx.engine.tsGen.NextTS()`——应统一为事务层分配，WAL 层只负责存储
 
@@ -403,69 +403,51 @@ fsync batch 完成顺序：B 先于 A
 
 Group Commit 只控制 **fsync 时机**，不改变 commitTS 分配顺序。
 
-**⚠️ Group Commit Sync 容错**（H4）：syncWorker 需 `recover()` 保护防止 panic 导致等待者永久阻塞。等待 Sync 的事务使用 `select + ctx.Done()` 处理取消。
+**⚠️ Group Commit Sync 容错**（H4）：任务 executeFunc 需 `recover()` 保护防止 panic 导致等待者永久阻塞。等待 Sync 的事务使用 `select + ctx.Done()` 处理取消。
 
-**⚠️ syncWorker goroutine 生命周期**（第五轮审核 C5 — Group Commit 独立设计文档必须覆盖）：
+**⚠️ Group Commit 适配 TaskScheduler**（第九轮 C8 修正）：
+
+WAL Append 的 Group Commit 逻辑不再使用独立 `syncWorker` goroutine，而是嵌入 TaskScheduler 的 executeFunc 中：
 
 ```go
-type syncWorker struct {
-    ch      chan *syncRequest   // 事务提交 sync 请求（带缓冲，减少竞争）
-    done    chan struct{}       // 优雅退出通知
-    started sync.WaitGroup     // 启动同步：确保 goroutine 就绪后才接受请求
+const TaskNameWALAppend = "wal-append"
+const ShardIDWAL = 1  // ⚠️ 正数固定路由（1 % coreCount → 同一 Core），不能为 0（0 走 selectLeastLoadedCore 动态分配，破坏 LSN 顺序）
+
+// WALAppendItem 封装一次 Append + Sync 请求
+type WALAppendItem struct {
+    entries []*WALEntry
+    errCh   chan error      // WAL.Sync() 完成后通知调用方
+    lsn     uint64          // LSN 在 executeFunc 中分配
 }
 
-// Init 在 TransactionEngine.Init() 中同步调用
-func (w *syncWorker) Init() {
-    w.ch = make(chan *syncRequest, 64)  // ⚠️ 带缓冲 + Init 中创建
-    w.done = make(chan struct{})        //     避免 unbuffered channel 启动竞争
-    w.started.Add(1)                    //     ch 必须在 go w.run() 之前就绪
-}
-
-func (w *syncWorker) run(ctx context.Context) {
-    // 启动者：TransactionEngine.Init() 中 go w.run(ctx)
-    w.started.Done()  // 通知 Init() goroutine 已启动
-    defer func() {
-        if r := recover(); r != nil {
-            w.broadcastError(fmt.Errorf("syncWorker panic: %v", r))
-            // 必须广播错误给所有等待者，防止永久阻塞
-        }
-    }()
-    for {
-        select {
-        case req := <-w.ch:
-            w.processBatch(req)  // fsync 批量刷盘
-        case <-ctx.Done():
-            w.drainWithError(ctx.Err())  // 优雅退出，唤醒所有等待者
-            return
-        }
+func (item *WALAppendItem) ShardID() int { return ShardIDWAL }
+func (item *WALAppendItem) Run(ctx context.Context, trCtx model.TaskRunnerContext) {
+    // ⚠️ 在 Single-Core runLoop 中串行执行：
+    //   LSN 分配 + 文件写入 + fsync 在同一 goroutine
+    for _, entry := range item.entries {
+        entry.LSN = atomic.AddUint64(&wal.nextLSN, 1)  // LSN 分配
+        // file.Write(entry) 写入 OS buffer
     }
+    // fsync 批量刷盘
+    if err := wal.file.Sync(); err != nil {
+        item.errCh <- err
+        return
+    }
+    close(item.errCh)
 }
-
-// Init 调用序列：sw.Init() → go sw.run(ctx) → sw.started.Wait() → 引擎标记 Ready
-// ⚠️ 确保 ch 在 goroutine 启动前就绪，消除 unbuffered channel 的发送端阻塞竞争
-// 缓冲 64 可吸收 goroutine 调度延迟期间的突发请求
-
-// broadcastError 和 drainWithError 实现要点（第六轮 H6-2）：
-// - broadcastError: 遍历 w.pending（已接收但未完成 fsync 的请求列表），
-//   对每个请求的 errCh 发送 panic 错误。必须在 recover() 后、run() 返回前完成，
-//   避免等待者永久阻塞。pending 列表由 processBatch 填充，run 方法独占访问无需锁。
-// - drainWithError: 在 ctx.Done() 路径中，drain w.ch 中剩余所有请求，
-//   对每个请求的 errCh 发送 ctx.Err()，然后关闭 done channel 通知退出完成。
-//   必须 drain 而非直接 return——否则 ch 中的请求发送者永久阻塞。
-//
-// syncRequest 结构（示意）：
-// type syncRequest struct {
-//     entries []*WALEntry     // 待同步的 entry batch
-//     errCh   chan error       // 等待者 goroutine 在此 channel 上等待 fsync 完成通知
-// }
 ```
 
+**Group Commit batch 合并策略**（在 executeFunc 中实现）：
+- executeFunc 消费 `BTreeApplyItem` 时同步处理 `WALAppendItem`
+- 输出端：taskScheduler 的 dequeue 批次自然形成 batch（`PeekN` / `DequeueN`），无需额外聚合
+- **注意**：WAL Append 和 BTree Apply 是不同 task 类型（`ExecutionOrderWALAppend=1` < `ExecutionOrderBTreeSet=2`），在 runLoop 中按优先级串行执行。WAL Append 的 executeFunc 先执行（Order 1），BTree Apply 后执行（Order 2），天然保证 WAL before BTree
+
 Key 设计约束：
-- **启动者**：`TransactionEngine.Init()` 中 `sw.Init()` 创建 channel → `go sw.run(ctx)` → `sw.started.Wait()` 等待 goroutine 就绪 → 引擎标记 Ready。**channel 创建必须在 goroutine 启动前完成**，否则未初始化 channel 的发送操作导致永久阻塞
-- **退出路径**：监听 `ctx.Done()`，退出前 drain 所有待处理请求并广播错误
-- **panic 恢复**：`recover()` 后 `broadcastError()` 唤醒所有等待者，防止 goroutine 泄漏
-- **等待者超时**：`select { case <-sw.syncCh: ...; case <-ctx.Done(): ... }`
-- **缓冲 channel**：`ch = make(chan *syncRequest, 64)` 带缓冲，吸收 Init→goroutine 就绪窗口期内的突发请求
+- **生命周期**：由 TaskScheduler 统一管理（RegisterTask → EnqueueWithShard → executeFunc），无需独立 goroutine 生命周期
+- **LSN 顺序**：单一 Core 的 runLoop 保证 LSN 分配顺序 == 文件写入顺序 == 提交顺序
+- **退出路径**：TaskScheduler.Stop() 时 drain 所有队列（含未处理的 `WALAppendItem`），通过 close(errCh) 唤醒等待者
+- **panic 恢复**：由 TaskScheduler 的 executeTask 统一 recover()
+- **等待者超时**：`select { case <-item.errCh: ...; case <-ctx.Done(): ... }`
 
 ### 3.5 Checkpoint 设计
 
@@ -1511,13 +1493,13 @@ Recovery 重放单 key 流程（三阶段幂等）：
 | **Recovery 重放幂等性** | **新增**（C1）：重放前检查 beginTS==commitTS 跳过已 Apply 的 key；**第三轮 N1**：VersionChain 节点存在性检查；**第四轮 NEW-1**：增加 `beginTS > commitTS → 跳过` 前向检查；**第四轮 NEW-2**：commitKey 改为 Prepend-before-Set 执行顺序 | **是（Step 2 必须实现）** | 三阶段幂等 + Prepend-before-Set 消除 half-Apply 旧值丢失 |
 | **GC Prune 递增 generation** | **新增**（C2）：Prune 标记 reclaimed 后必须 `chain.generation.Add(1)` | **是（Step 1 必须实现）** | 否则 snapshotGet 无法检测链逻辑修改，违反 SI 语义 |
 | **GC Tombstone 保留规则** | **修正**（H1）：Tombstone 遮盖的非 Tombstone 可见版本也必须保留 | **是（Step 1 必须实现）** | 见 Section 4.4 场景 B 示例 |
-| **Group Commit 详细设计** | **新增**（H2/H3）：LSN 分配与文件写入原子性、syncWorker 生命周期 | **是（需独立设计文档，Step 2 前完成）** | 当前 Group Commit 设计停留在原理层面，goroutine 级设计缺失 |
+| **Group Commit 详细设计** | **修正**（H2/H3 / 第九轮 C8 修）：LSN 分配与文件写入原子性、Group Commit 通过 TaskScheduler 固定 ShardID 实现 | **是（需独立设计文档，Step 2 前完成）** | Group Commit 的 batch 合并策略在 WALAppendItem.executeFunc 中实现 |
 | **commitKey 执行顺序** | **新增**（第四轮 NEW-2）：Prepend-before-Set，消除 half-Apply 时 OldValue 丢失 | **是（Step 2 必须实现）** | 当前 Set→Prepend 顺序在 half-Apply 时 BTree 旧值被覆盖 |
 | **Fuzzy Checkpoint Root Snapshot** | **新增**（第五轮 C1）：DFS 遍历前必须 `atomic.LoadPointer(&btree.root)` | **是（Step 3 阻塞项）** | 防止遍历期间 Split 更新 root |
 | **Apply 失败策略** | **修正**（第五轮 C2）：从"跳过继续"改为"暂停 Recovery + 上报运维" | **是（Step 2 必须实现）** | VersionChain 重建存在隐含 key 冲突依赖 |
 | **CAP/PACELC 理论框架** | **新增**（第五轮 C3）：明确 2PC+WAL 属于 CP 系统（分区阻塞），标注 NexKV 去中心化张力 | 否（远期 Phase 4 决策） | 见 §6.2-3 |
 | **commitTS nodeID 编码约束** | **修正**（第五轮 C4）：高 16 位 nodeID 不能独立建立全局排序，必须依赖 HLC | 否（文档标注） | 低 48 位 = HLC 的 physical+logical，高 16 位 = nodeID（冲突优先级） |
-| **syncWorker goroutine 生命周期** | **新增**（第五轮 C5）：启动者/ctx 优雅退出/panic broadcastError | **是（Step 2 阻塞项，Group Commit 设计）** | 见 §3.4 设计代码和 Key 约束 |
+| **WAL Append TaskScheduler 集成** | **修正**（第五轮 C5 / 第九轮 C8 修）：WAL Append 通过 TaskScheduler 注册为独立任务（固定 ShardID=0），生命周期由 TaskScheduler 统一管理 | **是（Step 2 阻塞项）** | 见 §3.4 WALAppendItem 设计和 Key 约束 |
 | **BTree.GetWithMeta 接口** | **新增**（第五轮 H1）：Recovery 三阶段幂等需要读取 beginTS | **是（Step 2 阻塞项）** | Wire: [Flag:1][beginTS:8][RealValue:N] |
 | **WAL 全量扫描性能基线** | **新增**（第五轮 H2）：30s/1万TPS/128B → ~38MB/周期 | 否（文档标注） | 建议流式分组减少内存峰值 |
 | **跳跃扫描模式** | **新增**（第五轮 H3）：乐观读取 Length + CRC 验证 | 否（文档标注） | 见 §3.3 |

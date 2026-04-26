@@ -160,7 +160,9 @@ Tx.Commit:
 1. **commitTS 必须在 WAL Append 前分配**，否则 WAL 丢失时时间戳空洞
 2. **Commit marker 必须在 Apply 前 sync**，否则崩溃后 BTree 有脏数据残留
 3. **WAL.Sync() 是可靠性屏障**：同步或异步 Apply 的分叉点。Sync 成功后 WAL 已持久化，Apply 失败或未执行均可通过 Recovery 重放恢复（**异步模式下日志即承诺——WAL 落地即事务持久，BTree 写入可延迟**）
-4. **⚠️ LSN 必须在单一写入 goroutine 中分配（Hard Requirement，C8）**：`atomic.AddUint64` 分配 LSN + Mutex 文件写入的模式可能导致 LSN 乱序——goroutine A 拿到 LSN=100 但 goroutine B 先获得 Mutex 写入 LSN=101，文件内顺序 [101, 100]。Recovery 按 LSN 排序重建 commitTS 序列时，若文件内 LSN 与分配顺序不一致，恢复的 commitTS 序列将偏离原始提交顺序。**解决方案**：WAL Append 也通过 TaskScheduler 注册为独立任务类型，`ShardID` 固定为 `ShardIDWAL=1`（正数，`1 % coreCount` 固定路由到 Core 1，**注意不能为 0——0 走 `selectLeastLoadedCore` 动态分配，破坏固定路由**），所有 WAL Append 被路由到同一 Core 的 runLoop 串行执行。该 Core 的 executeFunc 在同一 goroutine 中完成 `LSN 分配 → 文件写入 → fsync` 的原子序列，天然保证 LSN 顺序。
+4. **⚠️ LSN 必须在单一写入 goroutine 中分配（Hard Requirement，C8）**：`atomic.AddUint64` 分配 LSN + Mutex 文件写入的模式可能导致 LSN 乱序——goroutine A 拿到 LSN=100 但 goroutine B 先获得 Mutex 写入 LSN=101，文件内顺序 [101, 100]。Recovery 按 LSN 排序重放时，若文件内 LSN 与分配顺序不一致，恢复的 commitTS 序列将偏离原始提交顺序。**解决方案**：WAL Append 也通过 TaskScheduler 注册为独立任务类型，`ShardID` 固定为 `ShardIDWAL=1`（正数，`1 % coreCount` 固定路由到 Core 1，**注意不能为 0——0 走 `selectLeastLoadedCore` 动态分配，破坏固定路由**），所有 WAL Append 被路由到同一 Core 的 runLoop 串行执行。该 Core 的 executeFunc 在同一 goroutine 中完成 `LSN 分配 → 文件写入 → fsync` 的原子序列，天然保证 LSN 顺序。
+> 
+> **commitTS 与 LSN 分离注**：commitTS 由 `tsGen.NextTS()` 在调用 goroutine（Commit 路径）中分配，LSN 在 runLoop 中分配。两者分配时序不同，但 **Recovery 正确性不受影响**——(a) 同一 key 的 KeyLock 串行化保证 commitTS 分配顺序与 LSN 分配顺序一致（前一个 Commit 完成后一个才开始）；(b) 不同 key 的事务 Recovery 重放时使用 MVCC 可见性判断（`beginTS vs commitTS`），独立于 LSN 顺序；(c) 三阶段幂等检查（§3.2）兜底处理所有排序偏差。**结论**：commitTS 与 LSN 不必严格一一对应，LSN 保证文件内顺序一致即可。
 
 **WriteBuffer entry 需要携带 commitTS**（当前 WAL entry 格式不含 commitTS，需修改）。Commit marker entry 携带 commitTS，Recovery 时用于重放分配。
 
@@ -416,7 +418,7 @@ const ShardIDWAL = 1  // ⚠️ 正数固定路由（1 % coreCount → 同一 Co
 // WALAppendItem 封装一次 Append + Sync 请求
 type WALAppendItem struct {
     entries []*WALEntry
-    errCh   chan error      // WAL.Sync() 完成后通知调用方
+    errCh   chan error      // WAL.Sync() 完成后通知调用方（**必须为 buffered channel cap=1**，防止调用方超时后 send 阻塞 runLoop）
     lsn     uint64          // LSN 在 executeFunc 中分配
 }
 
@@ -430,6 +432,7 @@ func (item *WALAppendItem) Run(ctx context.Context, trCtx model.TaskRunnerContex
     }
     // fsync 批量刷盘
     if err := wal.file.Sync(); err != nil {
+        // ⚠️ C2：errCh 必须为 buffered channel（cap=1），此处不会阻塞 runLoop
         item.errCh <- err
         return
     }
@@ -437,17 +440,25 @@ func (item *WALAppendItem) Run(ctx context.Context, trCtx model.TaskRunnerContex
 }
 ```
 
+**BatchShardItem 接口**（C6 — 必须实现，否则 Group Commit 不会批量处理）：
+
+```go
+func (item *WALAppendItem) BatchType() string { return "wal-append" }
+func (item *WALAppendItem) PreferredBatchSize() int { return 16 }
+```
+
 **Group Commit batch 合并策略**（在 executeFunc 中实现）：
 - executeFunc 消费 `BTreeApplyItem` 时同步处理 `WALAppendItem`
 - 输出端：taskScheduler 的 dequeue 批次自然形成 batch（`PeekN` / `DequeueN`），无需额外聚合
-- **注意**：WAL Append 和 BTree Apply 是不同 task 类型（`ExecutionOrderWALAppend=1` < `ExecutionOrderBTreeSet=2`），在 runLoop 中按优先级串行执行。WAL Append 的 executeFunc 先执行（Order 1），BTree Apply 后执行（Order 2），天然保证 WAL before BTree
+- **batch fsync 后处理**（C6）：`tryProcessBatch` 的 `executeBatch` 对每个 item 单独调用 Run()，若 Run() 内含 fsync 则 N 个 item = N 个 fsync。Group Commit 的 batch 优化需要 batch 末尾的**一次 fsync**。两种实现方案：(a) 为 TaskNameWALAppend 在 tryProcessBatch 增加后处理钩子 `if task.Name() == TaskNameWALAppend { wal.file.Sync() }`；(b) 在 ShardTask 增加 `PostBatchHook func(items []any)` 字段。**Step 2 实现时选择**，推荐方案 (a) 最小侵入。
+- **注意**：WAL Append 和 BTree Apply 是不同 task 类型（`ExecutionOrderWALAppend=1` < `ExecutionOrderBTreeSet=2`）。此执行顺序**仅在单一 Core 内有效**——跨 Core 场景无全局排序保证。同步路径中 WAL→BTree 由 goroutine program order 保证；异步路径中 BTree Apply 可延迟，由 Recovery 补偿。
 
 Key 设计约束：
 - **生命周期**：由 TaskScheduler 统一管理（RegisterTask → EnqueueWithShard → executeFunc），无需独立 goroutine 生命周期
 - **LSN 顺序**：单一 Core 的 runLoop 保证 LSN 分配顺序 == 文件写入顺序 == 提交顺序
 - **退出路径**：TaskScheduler.Stop() 时 drain 所有队列（含未处理的 `WALAppendItem`），通过 close(errCh) 唤醒等待者
 - **panic 恢复**：由 TaskScheduler 的 executeTask 统一 recover()
-- **等待者超时**：`select { case <-item.errCh: ...; case <-ctx.Done(): ... }`
+- **等待者超时**：`select { case <-item.errCh: ...; case <-ctx.Done(): ... }`（`errCh` 必须是 `make(chan error, 1)` 带缓冲，防止调用方超时后 runLoop 的 `errCh <- err` 永久阻塞）
 
 ### 3.5 Checkpoint 设计
 
@@ -558,7 +569,7 @@ type BTreeApplyItem struct {
     done      chan struct{}         // 结果通知（可选等待）
     err       error                 // Apply 结果
     priority  int                   // 任务优先级
-    sourceID  string                // 任务源标识
+    sourceID  model.SourceID        // 任务源标识（model.SourceID 类型，非 string）
     retries   int                   // 当前重试次数
     taskOrder int                   // 执行顺序
 }
@@ -577,7 +588,7 @@ func (item *BTreeApplyItem) Run(ctx context.Context, trCtx model.TaskRunnerConte
 func (item *BTreeApplyItem) IncAttempts() int { item.retries++; return item.retries }
 func (item *BTreeApplyItem) TaskOrder() int { return item.taskOrder }
 func (item *BTreeApplyItem) Priority() model.TaskPriority { return model.TaskPriorityHigh }
-func (item *BTreeApplyItem) SourceID() string { return item.sourceID }
+func (item *BTreeApplyItem) SourceID() model.SourceID { return item.sourceID }
 
 // ===== TaskResult 接口实现 =====
 
@@ -604,7 +615,7 @@ func NewBTreeApplyItem(txID, commitTS uint64, buf *WriteBuffer, tx *SnapshotTx) 
         keyHash:   kh,
         done:      make(chan struct{}),
         priority:  int(model.TaskPriorityHigh),
-        sourceID:  string(model.SourceBTreeApply),
+        sourceID:  model.SourceBTreeApply,
         taskOrder: ExecutionOrderBTreeSet,
     }
 }
@@ -666,27 +677,28 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 | **同 key 顺序违反** | BTreeApplyItem 的 ShardID 基于首 key hash，同一 key 的所有操作路由到同一 Core，TaskScheduler 在单 Core 内 FIFO 执行。读操作通过 `ExecutionOrderBTreeSet=2` 保证在 GC/Compaction 之前 |
 | **Read-your-writes** | 异步模式下 Commit 返回时 BTree 可能尚未写入。**可选同步点**：若调用方需要立即读到自己的写入，可调用 `item.Wait()` 等待 Apply 完成。`SnapshotTx` 提供 `CommitAndWait(ctx)` 做同步 Apply |
 | **Enqueue 失败** | WAL 已持久化但 Enqueue 失败（如 Scheduler 未启动），Apply 丢失。Recovery 最终会弥补——与崩溃场景相同处理 |
-| **⚠️ Shutdown 未处理任务（C3 — 必须修复）** | **当前 `TaskScheduler.Stop()` 仅 `cancel()` + `wg.Wait()`，不 drain 队列**——runLoop 收到取消后直接 return，队列中所有未执行的 `BTreeApplyItem` 的 done channel 永不关闭，`CommitAndWait` 调用者永久阻塞。**必须增加 drain 阶段**：Stop() 中 cancel 所有 core → 遍历每个 core 的 ShardTask 队列，Dequeue 所有剩余 item，对其 done channel 执行 `close()` 并设置 `err = ErrSchedulerShutdown` → 再 wg.Wait()。WAL 已持久化，未 Apply 的 task 等价于崩溃后 Recovery |
+| **⚠️ Shutdown 未处理任务（C3/C5 — 必须修复）** | **当前 `TaskScheduler.Stop()` 仅 `cancel()` + `wg.Wait()`，不 drain 队列**——runLoop 收到取消后直接 return，队列中所有未执行的 item 的 done channel/errCh 永不关闭，调用者永久阻塞。**必须增加 drain 阶段**：Stop() 中 cancel 所有 core → 遍历每个 core 的 ShardTask 队列，Dequeue 所有剩余 item → 根据 item 类型 `close(done)` 或 `close(errCh)` → 再 wg.Wait()。**注意**：`model.TaskResult.Done()` 返回只读 channel，无法外部 close，需通过 item 的具体类型方法（如 `BTreeApplyItem.Cancel(err)`）封装。WAL 已持久化，未 Apply 的 task 等价于崩溃后 Recovery |
 | **Memory 压力** | WriteBuffer.Snapshot() 在 Enqueue 后继续持有内存直到 TaskScheduler 消费。高吞吐场景下任务积压可能导致瞬时内存上升。建议限制 scheduler 队列长度或使用背压 |
 | **Batch 优化** | BTreeApplyItem 实现 `BatchShardItem` 接口时，同 Core 的多个 Apply 任务可批量执行 `applyWriteBuffer`，分摊 COW 页面分配开销 |
 | **⚠️ SI 违反**（C5） | **这是异步模式最严重的风险**。时序：Tx1 异步 Commit（commitTS=100，BTree 未 Apply），Tx2 snapshotTS=101 开始读 key K——BTree 中无 Tx1 的版本。按 SI 定义 Tx2 应看到 Tx1 的提交，但看不到。**这不是只读己写问题，而是 SI 语义违反**：一个已提交事务对所有 snapshotTS > commitTS 的后续事务不可见。**必须默认同步 Apply，异步仅作为 opt-in 并标注"可能违反 SI"** |
 | **⚠️ 分布式 Quorum 破坏**（C6） | 分布式部署下，一个副本异步 Apply 而另一副本同步 Apply 时，W+R>N 不保证读到最新写入——读的 R 个副本可能全落在未 Apply 的副本上。**分布式场景要么所有副本同模式（全同步或全异步），要么读路径必须直接检查 WAL** |
 
-> ⚠️ **异步模式隔离级别约束**（C5）：异步 BTree Apply 在 Read Committed（RC）隔离级别下是安全的（RC 不要求跨事务的 snapshot 一致性），但在 Snapshot Isolation（SI）和 Serializable 下**违反一致性语义**。默认 Commit 路径必须使用同步 Apply。异步模式仅在以下条件下启用：
-> 1. 隔离级别为 Read Committed（非 SI/Serializable）
+> ⚠️ **异步模式隔离级别约束**（C5/C8）：异步 BTree Apply 在 Read Committed（RC）隔离级别下仅对**单 key 写事务**安全（RC 不要求跨事务 snapshot 一致性）。**多 key 写事务在异步模式下跨 Core 并发执行 `commitKey(Prepend→BTree.Set)`，Prepend CAS 互相覆盖导致版本数据丢失**。默认 Commit 路径必须使用同步 Apply。异步模式仅在以下条件下启用：
+> 1. 隔离级别为 Read Committed **且** WriteBuffer 仅含单个 key（单 key 写事务）
 > 2. 或调用方使用 `CommitAndWait` 等待 Apply 完成（同一节点会话内）
-> 3. 或用户明确知晓 SI 违反风险并 opt-in（配置 `AsyncBTreeApply=true` 时记录 WARNING 日志）
+> 3. 或用户明确知晓风险并 opt-in（配置 `AsyncBTreeApply=true` 时记录 WARNING 日志，仅限单 key）
 
 **适用决策**：
 
 | 场景 | 推荐模式 | 理由 |
 |------|---------|------|
 | SI/Serializable 事务 | **同步（强制）** | 异步模式违反 SI 语义（C5），此场景下禁止启用异步 |
-| Read Committed 事务 | 异步 | RC 不要求跨事务 snapshot 一致性，异步安全 |
+| Read Committed 事务 | 异步（仅单 key） | RC 不要求跨事务 snapshot 一致性；多 key 异步跨 Core 并发 Prepend CAS 互相覆盖（C8） |
 | 写后即读一致性 | 同步或 `CommitAndWait` | 调用方需要立即看到自己的写入 |
 | 批量加载 | 同步 + batch | 没有并发读竞争，同步 Apply 更简单 |
 | Checkpoint 期间 | 异步（速率限制） | 避免 Checkpoint 与常规写入争抢 COW 页面 |
-| 多 key 写事务 | 同步或 CommitAndWait | 异步下多 key 的 BTree Apply 原子性依赖单 Core 路由 |
+| **多 key 写事务** | **同步（强制）** | 异步模式下多 key 跨 Core 路由 → 不同 Core 并发执行 commitKey → Prepend CAS 互相覆盖，版本数据丢失 |
+| **单 key 写事务** | 异步（RC 下安全） | 单 key 全路由到同一 Core，串行化执行，无并发 Prepend 竞争 |
 | **分布式场景** | **同步（强制）** | 异步 Apply 破坏 Quorum 读（C6），所有副本必须同模式 |
 
 ---
@@ -1078,6 +1090,18 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
     }
     defer tx.engine.activeTxRegistry.Unregister(tx.txID)
 
+    // ⚠️ C7：SI/Serializable 检查必须在任何 WAL 操作之前，防止 WAL 已持久化但返回 error
+    if tx.engine.config.AsyncBTreeApply &&
+        tx.isolation >= SnapshotIsolation {
+        return ErrAsyncNotSupportedForSI
+    }
+    // ⚠️ C8：多 key 事务在异步模式下跨 Core 并发执行 commitKey，Prepend CAS 互相覆盖
+    // 异步模式仅限单 key 写事务
+    if tx.engine.config.AsyncBTreeApply &&
+        len(tx.writeBuffer.Keys()) > 1 {
+        return ErrAsyncNotSupportedMultiKey
+    }
+
     commitTS := tx.engine.tsGen.NextTS()
 
     // WAL.Append 前：WriteBuffer entries 携带 commitTS
@@ -1095,12 +1119,6 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
     }
     tx.engine.wal.Append(commitEntry)
     tx.engine.wal.Sync()
-
-    // ⚠️ C6：SI/Serializable 隔离级别下禁止异步 Apply
-    if tx.engine.config.AsyncBTreeApply &&
-        tx.isolation >= SnapshotIsolation {
-        return ErrAsyncNotSupportedForSI
-    }
 
     // Apply 在 Sync 之后（确保 Commit marker 已持久化）
     // ⚠️ 两种模式（见 §3.6）：
@@ -1499,7 +1517,7 @@ Recovery 重放单 key 流程（三阶段幂等）：
 | **Apply 失败策略** | **修正**（第五轮 C2）：从"跳过继续"改为"暂停 Recovery + 上报运维" | **是（Step 2 必须实现）** | VersionChain 重建存在隐含 key 冲突依赖 |
 | **CAP/PACELC 理论框架** | **新增**（第五轮 C3）：明确 2PC+WAL 属于 CP 系统（分区阻塞），标注 NexKV 去中心化张力 | 否（远期 Phase 4 决策） | 见 §6.2-3 |
 | **commitTS nodeID 编码约束** | **修正**（第五轮 C4）：高 16 位 nodeID 不能独立建立全局排序，必须依赖 HLC | 否（文档标注） | 低 48 位 = HLC 的 physical+logical，高 16 位 = nodeID（冲突优先级） |
-| **WAL Append TaskScheduler 集成** | **修正**（第五轮 C5 / 第九轮 C8 修）：WAL Append 通过 TaskScheduler 注册为独立任务（固定 ShardID=0），生命周期由 TaskScheduler 统一管理 | **是（Step 2 阻塞项）** | 见 §3.4 WALAppendItem 设计和 Key 约束 |
+| **WAL Append TaskScheduler 集成** | **修正**（第五轮 C5 / 第九轮 C8 修）：WAL Append 通过 TaskScheduler 注册为独立任务（固定 ShardIDWAL=1，**正数固定路由，不能为 0**），生命周期由 TaskScheduler 统一管理 | **是（Step 2 阻塞项）** | 见 §3.4 WALAppendItem 设计和 Key 约束 |
 | **BTree.GetWithMeta 接口** | **新增**（第五轮 H1）：Recovery 三阶段幂等需要读取 beginTS | **是（Step 2 阻塞项）** | Wire: [Flag:1][beginTS:8][RealValue:N] |
 | **WAL 全量扫描性能基线** | **新增**（第五轮 H2）：30s/1万TPS/128B → ~38MB/周期 | 否（文档标注） | 建议流式分组减少内存峰值 |
 | **跳跃扫描模式** | **新增**（第五轮 H3）：乐观读取 Length + CRC 验证 | 否（文档标注） | 见 §3.3 |

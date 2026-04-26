@@ -369,7 +369,7 @@ Recovery 重建 VersionChain 时，需要为每个 key 创建正确的历史版�
 
 Group Commit 工作原理：
 1. 多个并发事务的 WAL Append 只写入 OS buffer（不 fsync）
-2. TaskScheduler 的 runLoop（ShardIDWAL=0 的固定 Core）周期性执行一次 batch fsync
+2. TaskScheduler 的 runLoop（ShardIDWAL=1 的固定 Core）周期性执行一次 batch fsync
 3. 所有在本次 fsync 前完成 Append 的事务一起被持久化
 4. 等待 Sync 的事务通过 `WALAppendItem.errCh` 等待通知
 
@@ -416,41 +416,87 @@ const TaskNameWALAppend = "wal-append"
 const ShardIDWAL = 1  // ⚠️ 正数固定路由（1 % coreCount → 同一 Core），不能为 0（0 走 selectLeastLoadedCore 动态分配，破坏 LSN 顺序）
 
 // WALAppendItem 封装一次 Append + Sync 请求
+// 完整实现 ShardItem 接口（嵌入 model.TaskRunner + model.TaskResult）
 type WALAppendItem struct {
-    entries []*WALEntry
-    errCh   chan error      // WAL.Sync() 完成后通知调用方（**必须为 buffered channel cap=1**，防止调用方超时后 send 阻塞 runLoop）
-    lsn     uint64          // LSN 在 executeFunc 中分配
+    wal       *DiskWAL         // WAL 实例引用，Run() 中分配 LSN + 写入
+    entries   []*WALEntry
+    errCh     chan error      // WAL.Sync() 完成后通知（**buffered channel cap=1**，防调用方超时后 send 阻塞 runLoop）
+    lsn       uint64          // LSN 在 Run() 中分配
+    priority  int
+    sourceID  model.SourceID
+    retries   int
+    taskOrder int
+    done      chan struct{}   // ⚠️ batch fsync 完成后才 close，此前不通知调用方
 }
 
+// ===== ShardItem 接口 =====
 func (item *WALAppendItem) ShardID() int { return ShardIDWAL }
+func (item *WALAppendItem) MaxRetries() int { return 0 }  // WAL 不可重试（可重试的 err 由 ProcessBatch 兜底）
+func (item *WALAppendItem) IncAttempts() int { item.retries++; return item.retries }
+func (item *WALAppendItem) TaskOrder() int { return item.taskOrder }
+
+// ===== TaskRunner =====
 func (item *WALAppendItem) Run(ctx context.Context, trCtx model.TaskRunnerContext) {
-    // ⚠️ 在 Single-Core runLoop 中串行执行：
-    //   LSN 分配 + 文件写入 + fsync 在同一 goroutine
+    // ⚠️ C4：Run() 只做 LSN 分配 + 文件写入，**不 fsync、不 signal errCh**
+    //   fsync 由 tryProcessBatch 的 PostBatchHook 在 batch 末尾统一执行
+    //   errCh 在 PostBatchHook 中 fsync 成功后统一 signal
     for _, entry := range item.entries {
-        entry.LSN = atomic.AddUint64(&wal.nextLSN, 1)  // LSN 分配
-        // file.Write(entry) 写入 OS buffer
+        entry.LSN = atomic.AddUint64(&item.wal.nextLSN, 1)
+        // file.Write(entry) — 写入 OS buffer
     }
-    // fsync 批量刷盘
-    if err := wal.file.Sync(); err != nil {
-        // ⚠️ C2：errCh 必须为 buffered channel（cap=1），此处不会阻塞 runLoop
-        item.errCh <- err
-        return
-    }
-    close(item.errCh)
 }
-```
+func (item *WALAppendItem) Priority() model.TaskPriority { return model.TaskPriorityCritical }
+func (item *WALAppendItem) SourceID() model.SourceID { return item.sourceID }
 
-**BatchShardItem 接口**（C6 — 必须实现，否则 Group Commit 不会批量处理）：
+// ===== TaskResult =====
+func (item *WALAppendItem) Done() <-chan struct{} { return item.done }
+func (item *WALAppendItem) WaitAny(ctx context.Context) (any, error) {
+    select { case <-item.done: return nil, nil; case <-ctx.Done(): return nil, ctx.Err() }
+}
+func (item *WALAppendItem) Status() model.TaskStatus {
+    select { case <-item.done: return model.TaskStatusCompleted; default: return model.TaskStatusQueued }
+}
+func (item *WALAppendItem) IsDone() bool {
+    select { case <-item.done: return true; default: return false }
+}
+func (item *WALAppendItem) GetError() error { return nil }
 
-```go
+// ===== BatchShardItem =====
 func (item *WALAppendItem) BatchType() string { return "wal-append" }
 func (item *WALAppendItem) PreferredBatchSize() int { return 16 }
+
+// ===== Drain/Cancel =====
+func (item *WALAppendItem) Cancel(err error) {
+    item.errCh <- err  // buffered, 不会阻塞
+    close(item.done)
+}
 ```
 
-**Group Commit batch 合并策略**（在 executeFunc 中实现）：
-- executeFunc 消费 `BTreeApplyItem` 时同步处理 `WALAppendItem`
-- 输出端：taskScheduler 的 dequeue 批次自然形成 batch（`PeekN` / `DequeueN`），无需额外聚合
-- **batch fsync 后处理**（C6）：`tryProcessBatch` 的 `executeBatch` 对每个 item 单独调用 Run()，若 Run() 内含 fsync 则 N 个 item = N 个 fsync。Group Commit 的 batch 优化需要 batch 末尾的**一次 fsync**。两种实现方案：(a) 为 TaskNameWALAppend 在 tryProcessBatch 增加后处理钩子 `if task.Name() == TaskNameWALAppend { wal.file.Sync() }`；(b) 在 ShardTask 增加 `PostBatchHook func(items []any)` 字段。**Step 2 实现时选择**，推荐方案 (a) 最小侵入。
+**RegisterTask 与 batch fsync 后处理**：
+
+```go
+scheduler.RegisterTask(
+    executeFunc: func(arg any) TaskStatus {
+        item := arg.(*WALAppendItem)
+        item.Run(context.Background(), nil)  // ⚠️ 仅 LSN 分配 + 文件写入，不 fsync
+        return TaskPassed
+    },
+    name:           TaskNameWALAppend,
+    priority:       TaskPriorityCritical,
+    executionOrder: ExecutionOrderWALAppend,
+)
+
+// ⚠️ C4：batch fsync 后处理（PostBatchHook）
+// 方案 A（推荐）：在 tryProcessBatch 中为 TaskNameWALAppend 增加后处理：
+//   if task.Name() == TaskNameWALAppend {
+//       if err := wal.file.Sync(); err != nil {
+//           for _, item := range batch { item.Cancel(err) }
+//       } else {
+//           for _, item := range batch { close(item.done); close(item.errCh) }
+//       }
+//   }
+// 方案 B：在 ShardTask 增加 PostBatchHook func(items []any) 字段
+// Step 2 实现时选择，推荐方案 A（最小侵入）
 - **注意**：WAL Append 和 BTree Apply 是不同 task 类型（`ExecutionOrderWALAppend=1` < `ExecutionOrderBTreeSet=2`）。此执行顺序**仅在单一 Core 内有效**——跨 Core 场景无全局排序保证。同步路径中 WAL→BTree 由 goroutine program order 保证；异步路径中 BTree Apply 可延迟，由 Recovery 补偿。
 
 Key 设计约束：
@@ -593,8 +639,9 @@ func (item *BTreeApplyItem) SourceID() model.SourceID { return item.sourceID }
 // ===== TaskResult 接口实现 =====
 
 func (item *BTreeApplyItem) Done() <-chan struct{} { return item.done }
-func (item *BTreeApplyItem) Wait(ctx context.Context) error {
-    select { case <-item.done: return item.err; case <-ctx.Done(): return ctx.Err() }
+// ⚠️ C1：签名必须匹配 model.TaskResult.WaitAny(ctx) (any, error)
+func (item *BTreeApplyItem) WaitAny(ctx context.Context) (any, error) {
+    select { case <-item.done: return nil, item.err; case <-ctx.Done(): return nil, ctx.Err() }
 }
 func (item *BTreeApplyItem) Status() model.TaskStatus {
     select { case <-item.done: return model.TaskStatusCompleted; default: return model.TaskStatusQueued }
@@ -604,20 +651,34 @@ func (item *BTreeApplyItem) IsDone() bool {
 }
 func (item *BTreeApplyItem) GetError() error { return item.err }
 
+// ===== C3：Stop() drain 回调 =====
+// Cancel 在 TaskScheduler.Stop() drain 阶段被调用，通知等待者 scheduler 已关闭
+func (item *BTreeApplyItem) Cancel(err error) {
+    item.err = err
+    close(item.done)
+}
+
+// ===== BatchShardItem =====
+func (item *BTreeApplyItem) BatchType() string { return "btree-apply" }
+func (item *BTreeApplyItem) PreferredBatchSize() int { return 8 }
+
 // ===== 构造函数 =====
 
 func NewBTreeApplyItem(txID, commitTS uint64, buf *WriteBuffer, tx *SnapshotTx) *BTreeApplyItem {
     kh := int(buf.Keys()[0].Hash())
-    if kh < 0 { kh = -kh }         // 防止负 ShardID
-    if kh == 0 { kh = 1 }          // hash=0 映射到 core 1
-    return &BTreeApplyItem{
+    if kh < 0 { kh = -kh }
+    if kh == 0 { kh = 1 }
+    item := &BTreeApplyItem{
         txID: txID, commitTS: commitTS, buf: buf,
         keyHash:   kh,
         done:      make(chan struct{}),
         priority:  int(model.TaskPriorityHigh),
-        sourceID:  model.SourceBTreeApply,
+        sourceID:  model.MustParseSourceID("btree:apply:write"),  // ⚠️ C8
         taskOrder: ExecutionOrderBTreeSet,
     }
+    tx.applyDone = item.done   // ⚠️ C7：绑定供 CommitAndWait 等待
+    tx.applyItem = item        // ⚠️ C7：绑定供 CommitAndWait 读取 Apply 错误
+    return item
 }
 ```
 
@@ -644,26 +705,21 @@ scheduler.RegisterTask(
 **Commit 路径集成**：
 
 ```go
+// ⚠️ 此段为简化示意，完整实现见 §5.3 Commit 伪代码（含 WALAppendItem + 异步 Apply）
 func (tx *SnapshotTx) Commit(ctx context.Context) error {
     if !tx.completed.CompareAndSwap(false, true) { return nil }
     defer tx.engine.activeTxRegistry.Unregister(tx.txID)
 
     commitTS := tx.engine.tsGen.NextTS()
-    // ... WAL Append entries + Commit marker ...
-    tx.engine.wal.Sync()  // ⚠️ 可靠性屏障
+    // ... WAL Append via TaskScheduler WALAppendItem（ShardIDWAL=1）...
+    // ... 等待 errCh signal ...
 
     // 异步 Apply（通过 TaskScheduler）
-    item := &BTreeApplyItem{
-        txID: tx.txID, commitTS: commitTS,
-        buf: tx.writeBuffer.Snapshot(),  // 深拷贝，所有权转移给 TaskScheduler
-        keyHash: int(tx.writeBuffer.Keys()[0].Hash()),  // 路由到同一 Core
-        done: make(chan struct{}),
-    }
-    tx.applyDone = item.done  // ⚠️ C1：绑定 item.done 到 tx.applyDone，供 CommitAndWait 等待
+    item := NewBTreeApplyItem(tx.txID, commitTS, tx.writeBuffer.Snapshot(), tx)
+    // ⚠️ NewBTreeApplyItem 内已绑定 tx.applyDone + tx.applyItem（C7）
     if err := tx.engine.scheduler.EnqueueWithShard(item, TaskNameBTreeApply); err != nil {
-        close(item.done)  // ⚠️ C2：Enqueue 失败必须关闭 done channel，防止 CommitAndWait 永久阻塞
+        close(item.done)  // ⚠️ C2：Enqueue 失败关闭 done，防止 CommitAndWait 永久阻塞
         log.Errorf("Enqueue BTreeApplyItem failed: txID=%d, err=%v", tx.txID, err)
-        // 不阻塞 Commit 返回——WAL 已持久化，Recovery 重放时会 Apply
     }
     return nil
 }
@@ -1079,76 +1135,73 @@ func (tm *txManager) BeginTx(ctx context.Context, level IsolationLevel) (Tx, err
 }
 
 // 修改：mvcc/transaction.go Commit 方法
-// ⚠️ 第六轮 C6-2：伪代码必须包含 completed CAS 保护
+// ⚠️ C6：WAL Append 通过 TaskScheduler 的 WALAppendItem 路由到固定 Core，
+//   不再直接调用 tx.engine.wal.Append/Sync
 func (tx *SnapshotTx) Commit(ctx context.Context) error {
-    // 注意：Register 已在 BeginTx 时完成
     if !tx.completed.CompareAndSwap(false, true) {
-        // ⚠️ C2：CAS 失败时设置已关闭的 channel，防止 CommitAndWait 在 nil channel 上永久阻塞
-        tx.applyDone = make(chan struct{})
-        close(tx.applyDone)
+        tx.applyDone = make(chan struct{}); close(tx.applyDone)  // ⚠️ C2
         return nil
     }
     defer tx.engine.activeTxRegistry.Unregister(tx.txID)
 
-    // ⚠️ C7：SI/Serializable 检查必须在任何 WAL 操作之前，防止 WAL 已持久化但返回 error
-    if tx.engine.config.AsyncBTreeApply &&
-        tx.isolation >= SnapshotIsolation {
+    // ⚠️ C7：SI/Serializable 检查必须在 WAL 操作之前
+    if tx.engine.config.AsyncBTreeApply && tx.isolation >= SnapshotIsolation {
         return ErrAsyncNotSupportedForSI
     }
-    // ⚠️ C8：多 key 事务在异步模式下跨 Core 并发执行 commitKey，Prepend CAS 互相覆盖
-    // 异步模式仅限单 key 写事务
-    if tx.engine.config.AsyncBTreeApply &&
-        len(tx.writeBuffer.Keys()) > 1 {
+    // ⚠️ C8：多 key 事务在异步模式下跨 Core Prepend CAS 竞争，异步仅限单 key
+    if tx.engine.config.AsyncBTreeApply && len(tx.writeBuffer.Keys()) > 1 {
         return ErrAsyncNotSupportedMultiKey
     }
 
     commitTS := tx.engine.tsGen.NextTS()
-
-    // WAL.Append 前：WriteBuffer entries 携带 commitTS
     entries := tx.writeBuffer.ToWALEntries(commitTS)
-    for _, entry := range entries {
-        tx.engine.wal.Append(entry)
+
+    // ⚠️ C6：通过 TaskScheduler 执行 WAL Append（固定 ShardIDWAL=1 保证 LSN 顺序）
+    walItem := &WALAppendItem{
+        wal:     tx.engine.wal.(*DiskWAL),
+        entries: append(entries, &WALEntry{
+            Type: EntryTypeCommit, TxID: tx.txID,
+            Key: encodeUint64BE(commitTS), Value: nil,
+        }),
+        errCh:     make(chan error, 1),
+        done:      make(chan struct{}),
+        priority:  int(model.TaskPriorityCritical),
+        sourceID:  model.MustParseSourceID("wal:append"),
+        taskOrder: ExecutionOrderWALAppend,
+    }
+    if err := tx.engine.scheduler.EnqueueWithShard(walItem, TaskNameWALAppend); err != nil {
+        return err  // Scheduler 未启动或 task 未注册，直接返回
     }
 
-    // Commit marker：KeyLen=8, ValueLen=0, Key 区域存 CommitTS 大端编码
-    commitEntry := &WALEntry{
-        Type:  EntryTypeCommit,
-        TxID:  tx.txID,
-        Key:   encodeUint64BE(commitTS),
-        Value: nil,
+    // 等待 WAL Append + Sync 完成（或 batch fsync 后 signal）
+    select {
+    case err := <-walItem.errCh:
+        if err != nil { return err }
+    case <-ctx.Done():
+        return ctx.Err()
     }
-    tx.engine.wal.Append(commitEntry)
-    tx.engine.wal.Sync()
 
-    // Apply 在 Sync 之后（确保 Commit marker 已持久化）
-    // ⚠️ 两种模式（见 §3.6）：
-    //
-    // 模式 A - 同步（默认）：
+    // Apply（WAL 已持久化）
     if !tx.engine.config.AsyncBTreeApply {
+        // 模式 A - 同步（默认）
         if err := tx.applyWriteBuffer(ctx, commitTS); err != nil {
             log.Fatalf("Apply 失败，进程终止：commitTS=%d, txID=%d, err=%v", commitTS, tx.txID, err)
         }
         return nil
     }
-    //
-    // 模式 B - 异步（通过 TaskScheduler）：
-    // ⚠️ C5：KeyLock 在 Enqueue 后释放，后续事务可获取同 key 的 KeyLock。
-    // Prepend CAS 若因 head 已变而失败，属于正常竞争——WAL 已持久化，
-    // 后继事务的 commitTS 必然 > 当前 commitTS，VersionChain 拓扑正确。
+
+    // ⚠️ 模式 B - 异步（通过 TaskScheduler）
+    // KeyLock 在 Enqueue 后释放（注释：后继 commitTS 必然 > 当前 commitTS）
     item := NewBTreeApplyItem(tx.txID, commitTS, tx.writeBuffer.Snapshot(), tx)
-    // ⚠️ C1：tx.applyDone 已在 NewBTreeApplyItem 中绑定
+    // ⚠️ C7：BTreeApplyItem 持有的 buf 执行完后通过 item.err 回传，tx.applyDone 绑定在构造函数中
     if err := tx.engine.scheduler.EnqueueWithShard(item, TaskNameBTreeApply); err != nil {
-        close(item.done)            // ⚠️ C2：Enqueue 失败必须关闭 done
-        item.buf.Release()          // ⚠️ C4：释放 WriteBuffer 深拷贝
+        close(item.done); item.buf.Release()
         log.Errorf("Enqueue BTreeApplyItem 失败：txID=%d, err=%v", tx.txID, err)
-        // WAL 已持久化，Enqueue 失败不影响正确性——Recovery 会重放
     }
     return nil
 }
 
-// CommitAndWait 同步 Commit + 等待 BTree Apply 完成（异步模式下的读己之写保障）
-// 同步模式下等价于 Commit（Apply 在 Commit 路径内同步执行）
-// 异步模式下等待 TaskScheduler 完成 Apply 后返回（受 ctx 超时控制）
+// CommitAndWait 同步 Commit + 等待 BTree Apply 完成
 func (tx *SnapshotTx) CommitAndWait(ctx context.Context) error {
     if err := tx.Commit(ctx); err != nil {
         return err
@@ -1156,13 +1209,17 @@ func (tx *SnapshotTx) CommitAndWait(ctx context.Context) error {
     if tx.engine.config.AsyncBTreeApply {
         select {
         case <-tx.applyDone:
-            return tx.applyErr
+            // ⚠️ C7：错误通过 tx.applyItem.GetError() 传播
+            if tx.applyItem != nil { return tx.applyItem.GetError() }
+            return nil
         case <-ctx.Done():
             return ctx.Err()
         }
     }
     return nil
 }
+
+// ⚠️ C7：NewBTreeApplyItem 内已绑定 tx.applyFinished + tx.applyItem（见 §3.6 构造函数）
 
 // Rollback 中也执行 Unregister（defer 在 Commit 中设置，Rollback 需显式调用）
 // ⚠️ C3 修复：Rollback 也使用 defer 保护，防止 panic 导致 txID 泄漏

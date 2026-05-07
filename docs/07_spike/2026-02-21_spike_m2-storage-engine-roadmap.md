@@ -4,7 +4,18 @@
 > **创建日期**: 2026-02-21
 > **最后更新**: 2026-03-05
 > **分支**: `spike/m2-storage-engine`
-> **状态**: 📋 已批准（待实施）
+> **状态**: ❌ 已废弃 - Bf-Tree 路线，请使用 Lealone BTree 路线
+
+> ⚠️ **本文档基于已废弃的 Bf-Tree 技术路线编写，已不再适用。**
+>
+> **当前实际路线**：Lealone BTree 移植（Java → Go），详见：
+> - 重构路线图：[`docs/07_spike/btree-refactor/2026-04-02-btree-refactor-roadmap.md`](./btree-refactor/2026-04-02-btree-refactor-roadmap.md)
+> - 接口设计：[`docs/07_spike/btree-refactor/2026-04-02-btree-refactor-interface.md`](./btree-refactor/2026-04-02-btree-refactor-interface.md)
+> - 实现方案：[`docs/07_spike/btree-refactor/2026-04-02-btree-refactor-implement.md`](./btree-refactor/2026-04-02-btree-refactor-implement.md)
+> - 性能基线：[`docs/09_code-review/2026-03/2026-06-08-lealone-btree-performance-report.md`](../09_code-review/2026-03/2026-06-08-lealone-btree-performance-report.md)
+> - WAL+GC：[`docs/07_spike/btree-refactor/2026-04-17-phase3-wal-gc-spike.md`](./btree-refactor/2026-04-17-phase3-wal-gc-spike.md)
+>
+> **跨路线有效评审结论**（DDD/Go/分布式维度）：见 `docs/09_code-review/2026-05-02_review-m2-roadmap-cross-cutting-findings.md`
 
 ---
 

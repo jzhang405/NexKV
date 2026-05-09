@@ -64,29 +64,49 @@ type TxManager interface {
 
 // NewTxManager creates a new transaction manager bound to the given storage and TSGenerator.
 func NewTxManager(storage StorageBackend, tsGen TSGenerator) TxManager {
+	return NewTxManagerWithGC(storage, tsGen, nil)
+}
+
+// NewTxManagerWithGC creates a new transaction manager with GC support.
+// If gcCfg is nil, GC is disabled (Phase 2 compatibility).
+func NewTxManagerWithGC(storage StorageBackend, tsGen TSGenerator, gcCfg *GCConfig) TxManager {
 	return &txManager{
-		storage:      storage,
-		tsGen:        tsGen,
-		versionStore: &VersionStore{},
+		storage:           storage,
+		tsGen:             tsGen,
+		versionStore:      &VersionStore{},
+		activeTxRegistry:  NewActiveTxRegistry(),
+		gcCfg:             gcCfg,
 	}
 }
 
 type txManager struct {
-	storage      StorageBackend
-	tsGen        TSGenerator
-	versionStore *VersionStore
-	siCount      atomic.Int32
-	keyLocks     sync.Map // string → *KeyLock
+	storage           StorageBackend
+	tsGen             TSGenerator
+	versionStore      *VersionStore
+	activeTxRegistry  *ActiveTxRegistry
+	txIDCounter       atomic.Uint64
+	siCount           atomic.Int32
+	keyLocks          sync.Map // string → *KeyLock
+	gcCfg             *GCConfig
+	gcStats           GCStats
 }
 
 func (tm *txManager) BeginTx(ctx context.Context, level IsolationLevel) (Tx, error) {
+	// Allocate snapshotTS and register txID under the same Mutex to eliminate
+	// the GC window where a transaction is visible but its snapshotTS isn't tracked.
+	tm.activeTxRegistry.mu.Lock()
 	snapshotTS := tm.tsGen.NextTS()
+	txID := tm.txIDCounter.Add(1)
+	tm.activeTxRegistry.txs[txID] = snapshotTS
+	tm.activeTxRegistry.mu.Unlock()
+
 	if level == SnapshotIsolation {
 		tm.siCount.Add(1)
 	}
 	return &SnapshotTx{
 		engine:         tm,
 		snapshotTS:     snapshotTS,
+		txID:           txID,
 		isolationLevel: level,
 		writeBuffer:    NewWriteBuffer(),
 		readSet:        make(map[string]ReadFingerprint),
@@ -115,6 +135,7 @@ type UndoEntry struct {
 type SnapshotTx struct {
 	engine         *txManager
 	snapshotTS     uint64
+	txID           uint64 // Phase 3: unique transaction ID for GC tracking
 	isolationLevel IsolationLevel
 	writeBuffer    *WriteBuffer
 	readSet        map[string]ReadFingerprint
@@ -217,7 +238,7 @@ func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, erro
 		var bestNode *VersionNode
 		node := chainVal.Load()
 		for node != nil {
-			if node.commitTS > tx.snapshotTS && !node.rolledBack.Load() {
+			if node.commitTS > tx.snapshotTS && !node.rolledBack.Load() && !node.reclaimed.Load() {
 				if bestNode == nil || node.commitTS < bestNode.commitTS {
 					bestNode = node
 				}
@@ -352,7 +373,15 @@ func (tx *SnapshotTx) Delete(key []byte) error {
 
 // Commit executes PreCheck → allocate commitTS → applyWriteBuffer → cleanup.
 func (tx *SnapshotTx) Commit(ctx context.Context) error {
+	// Fast-fail: if already completed, return immediately.
+	// cleanup() below also uses CAS to guard against double completion.
+	if tx.completed.Load() {
+		return nil
+	}
+	defer tx.engine.activeTxRegistry.Unregister(tx.txID)
+
 	if err := tx.checkActive(); err != nil {
+		tx.cleanup()
 		return err
 	}
 
@@ -546,6 +575,11 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 
 // Rollback discards the WriteBuffer and cleans up.
 func (tx *SnapshotTx) Rollback() error {
+	if tx.completed.Load() {
+		return nil
+	}
+	defer tx.engine.activeTxRegistry.Unregister(tx.txID)
+
 	if err := tx.checkActive(); err != nil {
 		return err
 	}

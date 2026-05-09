@@ -12,12 +12,13 @@ import (
 
 // VersionNode is an immutable linked list node in the version chain.
 // After creation, commitTS/value/flag/next are never modified.
-// rolledBack may only transition from false→true (monotonic) via atomic store.
+// rolledBack and reclaimed may only transition from false→true (monotonic) via atomic store.
 type VersionNode struct {
 	commitTS   uint64
 	value      []byte       // deepCopy'd value (excludes Flag); nil for Tombstone
 	flag       byte         // FlagNormal / FlagTombstone
 	rolledBack atomic.Bool  // marks this node's transaction as rolled back; snapshot reads skip it
+	reclaimed  atomic.Bool  // Phase 3 GC: marked by Prune, skipped by snapshotGet
 	next       *VersionNode // read-only pointer to older version
 }
 
@@ -86,4 +87,107 @@ func (vs *VersionStore) Load(key string) *VersionChain {
 func (vs *VersionStore) LoadOrStore(key string) *VersionChain {
 	val, _ := vs.chains.LoadOrStore(key, &VersionChain{})
 	return val.(*VersionChain)
+}
+
+// Prune marks nodes eligible for GC as reclaimed based on the watermark.
+// GC retention rules:
+//  1. Chain head is always retained
+//  2. The latest visible version before watermark is retained (including Tombstone)
+//  3. If the latest visible version is a Tombstone, the first non-Tombstone visible version
+//     before it must also be retained (prevents key resurrection for old snapshots)
+//  4. Older versions are marked reclaimed
+//
+// Returns the number of nodes marked reclaimed.
+// Must be followed by vc.generation.Add(1) to ensure snapshotGet detects the change.
+func (vc *VersionChain) Prune(watermark uint64) int {
+	head := vc.head.Load()
+	if head == nil {
+		return 0
+	}
+
+	// Pass 1: find the first node to keep (watermark boundary).
+	// Track the position of the latest visible version before watermark and whether it's a Tombstone.
+	var (
+		marked   int
+		node     = head
+		keepFrom = head // default: keep everything from head
+		// Track the latest node with commitTS < watermark
+		lastBeforeWatermark *VersionNode
+		// Track the first non-Tombstone before the Tombstone boundary (rule 3)
+		firstNonTombstoneBeforeWM *VersionNode
+	)
+
+	for node != nil {
+		if node.commitTS < watermark {
+			lastBeforeWatermark = node
+			if node.flag != FlagTombstone && firstNonTombstoneBeforeWM == nil {
+				firstNonTombstoneBeforeWM = node
+			}
+		}
+		node = node.next
+	}
+
+	// If there's a node before watermark, it's the boundary.
+	// If it's a Tombstone, extend boundary to include the first non-Tombstone before it.
+	if lastBeforeWatermark != nil {
+		keepFrom = lastBeforeWatermark
+		if lastBeforeWatermark.flag == FlagTombstone && firstNonTombstoneBeforeWM != nil {
+			keepFrom = firstNonTombstoneBeforeWM
+		}
+	}
+
+	// Pass 2: mark all nodes older than keepFrom as reclaimed.
+	// Note: keepFrom itself and all nodes newer than it are NOT marked.
+	node = head
+	foundBoundary := false
+	for node != nil {
+		if node == keepFrom {
+			foundBoundary = true
+		}
+		if !foundBoundary && node != head {
+			node.reclaimed.Store(true)
+			marked++
+		}
+		node = node.next
+	}
+
+	return marked
+}
+
+// PrependWithCleanup atomically inserts a new version and cleans up consecutive
+// reclaimed nodes from the chain head. Used in the Prepend hot path during commit.
+// Returns the number of reclaimed nodes removed.
+func (vc *VersionChain) PrependWithCleanup(commitTS uint64, value []byte, flag byte) (int, error) {
+	const maxRetries = 16
+	cleaned := 0
+	for i := 0; i < maxRetries; i++ {
+		oldHead := vc.head.Load()
+
+		// Clean consecutive reclaimed nodes from the head
+		newOldHead := oldHead
+		for newOldHead != nil && newOldHead.reclaimed.Load() {
+			newOldHead = newOldHead.next
+			cleaned++
+		}
+
+		newNode := &VersionNode{
+			commitTS: commitTS,
+			value:    value,
+			flag:     flag,
+			next:     newOldHead,
+		}
+		if vc.head.CompareAndSwap(oldHead, newNode) {
+			vc.generation.Add(1)
+			return cleaned, nil
+		}
+		runtime.Gosched()
+	}
+	return cleaned, ErrVersionChainConflict
+}
+
+// Range calls fn for each chain in the store. If fn returns false, iteration stops.
+func (vs *VersionStore) Range(fn func(key string, chain *VersionChain) bool) {
+	vs.chains.Range(func(k, v any) bool {
+		return fn(k.(string), v.(*VersionChain))
+	})
 }

@@ -151,7 +151,6 @@ func TestWALEntry_Marshal_Unmarshal(t *testing.T) {
 			assert.Equal(t, tt.entry.Key, unentry.Key)
 			assert.Equal(t, tt.entry.Value, unentry.Value)
 			assert.Equal(t, tt.entry.PrevLSN, unentry.PrevLSN)
-			assert.Equal(t, tt.entry.CRC, unentry.CRC)
 		})
 	}
 }

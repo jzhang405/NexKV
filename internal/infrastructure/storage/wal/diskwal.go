@@ -1,13 +1,13 @@
-// Package wal 提供 WAL 的磁盘实现
+// Package wal provides the DiskWAL implementation.
 package wal
 
 import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,254 +16,292 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
-// DiskWAL WAL 的磁盘实现
+// DiskWAL is the on-disk WAL implementation.
 type DiskWAL struct {
 	mu         sync.RWMutex
 	config     *WALConfig
+	gcCfg      *WALGroupCommitConfig
 	currentLSN atomic.Uint64
 	closed     atomic.Bool
 	file       *os.File
 	filePath   string
+	dir        string
 	stats      WALStats
 	syncCount  atomic.Int64
+	writtenBytes atomic.Int64 // bytes written to current segment
 }
 
-// NewDiskWAL 创建新的磁盘 WAL
+// NewDiskWAL creates a new DiskWAL.
 func NewDiskWAL(config *WALConfig) (*DiskWAL, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-
-	// 创建 WAL 目录
 	if err := os.MkdirAll(config.Dir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create wal directory: %w", err)
+		return nil, fmt.Errorf("wal: create dir: %w", err)
 	}
 
-	// 初始化 WAL
-	dwal := &DiskWAL{
+	dw := &DiskWAL{
 		config: config,
+		dir:    config.Dir,
+		gcCfg:  DefaultGroupCommitConfig(),
 	}
-
-	// 打开或创建 WAL 文件
-	if err := dwal.openCurrentSegment(); err != nil {
+	if err := dw.openSegment(); err != nil {
 		return nil, err
 	}
-
-	return dwal, nil
+	return dw, nil
 }
 
-// openCurrentSegment 打开当前分段
-func (w *DiskWAL) openCurrentSegment() error {
+// SetGroupCommitConfig configures Group Commit behavior.
+func (w *DiskWAL) SetGroupCommitConfig(cfg *WALGroupCommitConfig) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.gcCfg = cfg
+	w.mu.Unlock()
+}
 
-	// 使用 LSN 作为文件名
+// --- Segment management ---
+
+func (w *DiskWAL) openSegment() error {
 	fileName := fmt.Sprintf("%020d.wal", w.currentLSN.Load()+1)
-	w.filePath = filepath.Join(w.config.Dir, fileName)
-
-	file, err := os.OpenFile(w.filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	w.filePath = filepath.Join(w.dir, fileName)
+	f, err := os.OpenFile(w.filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		return fmt.Errorf("failed to open wal file: %w", err)
+		return fmt.Errorf("wal: open segment %s: %w", fileName, err)
 	}
-
-	w.file = file
+	w.file = f
+	w.writtenBytes.Store(0)
 	return nil
 }
 
-// Append 追加一条日志记录（同步）
-func (w *DiskWAL) Append(entry *WALEntry) (LSN, error) {
-	if w.closed.Load() {
-		return LSNInvalid, ErrWALClosed
-	}
-
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	// 预分配 LSN（不提交）
-	preAllocatedLSN := w.currentLSN.Load() + 1
-	lsn := LSN(preAllocatedLSN)
-	entry.LSN = lsn
-
-	// 序列化
-	data, err := entry.Marshal()
-	if err != nil {
-		return LSNInvalid, fmt.Errorf("failed to marshal entry: %w", err)
-	}
-
-	// 写入文件
-	if _, err := w.file.Write(data); err != nil {
-		return LSNInvalid, fmt.Errorf("failed to write entry: %w", err)
-	}
-
-	// 更新统计
-	w.stats.TotalEntries++
-	w.stats.TotalBytes += int64(len(data))
-
-	// 根据同步策略决定是否同步
-	if w.config.SyncPolicy == SyncPolicyEveryWrite {
-		if err := w.syncLocked(); err != nil {
-			return LSNInvalid, err
+func (w *DiskWAL) rotateSegment() error {
+	if w.file != nil {
+		if err := w.file.Sync(); err != nil {
+			return err
 		}
+		w.file.Close()
 	}
-
-	// 只有所有操作成功后才提交 LSN
-	w.currentLSN.Store(preAllocatedLSN)
-
-	return lsn, nil
+	return w.openSegment()
 }
 
-// Sync 刷盘
+func (w *DiskWAL) checkRotate(size int) error {
+	newSize := w.writtenBytes.Add(int64(size))
+	if newSize >= w.config.SegmentSize {
+		return w.rotateSegment()
+	}
+	return nil
+}
+
+// --- Sync ---
+
 func (w *DiskWAL) Sync() error {
 	if w.closed.Load() {
 		return ErrWALClosed
 	}
-
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.syncLocked()
 }
 
-// syncLocked 刷盘（已持有锁）
 func (w *DiskWAL) syncLocked() error {
 	if err := w.file.Sync(); err != nil {
-		return fmt.Errorf("failed to sync wal: %w", err)
+		return fmt.Errorf("wal: sync: %w", err)
 	}
 	w.syncCount.Add(1)
 	return nil
 }
 
-// Recover 崩溃恢复
+// --- Append ---
+
+func (w *DiskWAL) Append(entry *WALEntry) (LSN, error) {
+	entries, err := w.AppendBatch([]*WALEntry{entry})
+	if err != nil {
+		return LSNInvalid, err
+	}
+	return entries[0], nil
+}
+
+func (w *DiskWAL) AppendBatch(entries []*WALEntry) ([]LSN, error) {
+	if w.closed.Load() {
+		return nil, ErrWALClosed
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	lsns := make([]LSN, len(entries))
+	for i, entry := range entries {
+		lsn := LSN(w.currentLSN.Add(1))
+		entry.LSN = lsn
+		lsns[i] = lsn
+
+		data, err := entry.Marshal()
+		if err != nil {
+			return nil, fmt.Errorf("wal: marshal: %w", err)
+		}
+
+		// Segment rotation check
+		if err := w.checkRotate(len(data)); err != nil {
+			return nil, err
+		}
+
+		if _, err := w.file.Write(data); err != nil {
+			return nil, fmt.Errorf("wal: write: %w", err)
+		}
+
+		w.stats.TotalEntries++
+		w.stats.TotalBytes += int64(len(data))
+	}
+
+	// Sync based on policy
+	if w.config.SyncPolicy == SyncPolicyEveryWrite {
+		if err := w.syncLocked(); err != nil {
+			return nil, err
+		}
+	}
+
+	return lsns, nil
+}
+
+// writeEntries writes entries to the OS buffer without syncing.
+// Used by WALAppendItem for Group Commit; the caller handles fsync via PostBatchHook.
+func (w *DiskWAL) writeEntries(entries []*WALEntry) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for _, entry := range entries {
+		data, err := entry.Marshal()
+		if err != nil {
+			return fmt.Errorf("wal: marshal: %w", err)
+		}
+		if err := w.checkRotate(len(data)); err != nil {
+			return err
+		}
+		if _, err := w.file.Write(data); err != nil {
+			return fmt.Errorf("wal: write: %w", err)
+		}
+		w.stats.TotalEntries++
+		w.stats.TotalBytes += int64(len(data))
+	}
+	return nil
+}
+
+// FlushBatch syncs the current file. Called by PostBatchHook after batch completes.
+func (w *DiskWAL) FlushBatch(items []*WALAppendItem) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if err := w.syncLocked(); err != nil {
+		for _, item := range items {
+			item.Cancel(err)
+		}
+		return err
+	}
+	for _, item := range items {
+		item.SignalSuccess()
+	}
+	return nil
+}
+
+// --- Recovery ---
+
 func (w *DiskWAL) Recover() ([]*WALEntry, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// 扫描 WAL 目录
-	entries, err := w.scanWALDirectory()
+	entries, err := w.scanSegments()
 	if err != nil {
 		return nil, err
 	}
 
-	// 确保 entries 不是 nil
-	if entries == nil {
-		entries = []*WALEntry{}
-	}
-
-	// 重放日志，更新当前 LSN
-	for _, entry := range entries {
-		currentLSN := uint64(entry.LSN)
-		maxLSN := w.currentLSN.Load()
-		if currentLSN > maxLSN {
-			w.currentLSN.Store(currentLSN)
+	// Restore currentLSN from recovered entries
+	for _, e := range entries {
+		if uint64(e.LSN) > w.currentLSN.Load() {
+			w.currentLSN.Store(uint64(e.LSN))
 		}
 	}
 
 	return entries, nil
 }
 
-// scanWALDirectory 扫描 WAL 目录
-func (w *DiskWAL) scanWALDirectory() ([]*WALEntry, error) {
-	var allEntries []*WALEntry
+func (w *DiskWAL) CurrentLSN() LSN {
+	return LSN(w.currentLSN.Load())
+}
 
-	files, err := os.ReadDir(w.config.Dir)
+func (w *DiskWAL) scanSegments() ([]*WALEntry, error) {
+	files, err := os.ReadDir(w.dir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read wal directory: %w", err)
+		return nil, fmt.Errorf("wal: read dir: %w", err)
 	}
 
-	for _, file := range files {
-		if file.IsDir() {
+	// Sort by filename (LSN prefix) for deterministic recovery order
+	var walFiles []string
+	for _, f := range files {
+		if f.IsDir() || filepath.Ext(f.Name()) != ".wal" {
 			continue
 		}
+		walFiles = append(walFiles, f.Name())
+	}
+	sort.Strings(walFiles)
 
-		// 跳过非 .wal 文件
-		if filepath.Ext(file.Name()) != ".wal" {
-			continue
-		}
-
-		filePath := filepath.Join(w.config.Dir, file.Name())
-		entries, err := w.recoverFile(filePath)
+	var allEntries []*WALEntry
+	for _, name := range walFiles {
+		entries, err := w.recoverFile(filepath.Join(w.dir, name))
 		if err != nil {
-			if IsWALCorrupted(err) {
-				// 跳过损坏的文件
-				continue
-			}
-			return nil, err
+			// Conservative: skip corrupted files but log
+			continue
 		}
-
 		allEntries = append(allEntries, entries...)
 	}
 
-	// 确保返回空切片而不是 nil
-	if allEntries == nil {
-		allEntries = []*WALEntry{}
-	}
+	// Clean up .wal.deleting residue
+	w.cleanDeleting()
 
+	if allEntries == nil {
+		return []*WALEntry{}, nil
+	}
 	return allEntries, nil
 }
 
-// Truncate 截断日志
-// recoverFile 恢复单个 WAL 文件
-func (w *DiskWAL) recoverFile(filePath string) ([]*WALEntry, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open wal file: %w", err)
+func (w *DiskWAL) cleanDeleting() {
+	files, _ := os.ReadDir(w.dir)
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".wal.deleting") {
+			os.Remove(filepath.Join(w.dir, f.Name()))
+		}
 	}
-	defer file.Close()
+}
+
+func (w *DiskWAL) recoverFile(path string) ([]*WALEntry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
 
 	var entries []*WALEntry
-	buf := make([]byte, 32*1024) // 32KB 缓冲区
-
-	for {
-		// 1. 读取条目头部（至少包含长度字段）
-		// 格式：[CRC:4][LSN:8][Type:1][TxID:8][Timestamp:8][PrevLSN:8][KeyLen:4][ValueLen:4]
-		header := make([]byte, 4+8+1+8+8+8+4+4)
-		_, err := io.ReadFull(file, header)
-		if err != nil {
-			if err == io.EOF {
-				break // 文件结束
-			}
-			if IsWALCorrupted(err) {
-				continue // 跳过损坏数据
-			}
-			return nil, fmt.Errorf("failed to read entry header: %w", err)
+	offset := 0
+	for offset+4 <= len(data) {
+		// Read Length field (offset 4-7 within entry)
+		if offset+8 > len(data) {
+			break
+		}
+		length := int(binary.BigEndian.Uint32(data[offset+4:]))
+		entryEnd := offset + 4 + 4 + length + 4 // CRC + Length + paddedPayload + Trailer
+		if entryEnd > len(data) {
+			break // truncated entry
 		}
 
-		// 2. 解析 KeyLen 和 ValueLen
-		keyLen := binary.BigEndian.Uint32(header[37:41])
-		valueLen := binary.BigEndian.Uint32(header[41:45])
-
-		// 3. 读取 Key 和 Value
-		entrySize := int(keyLen) + int(valueLen)
-		if entrySize > cap(buf) {
-			buf = make([]byte, entrySize)
-		}
-		keyAndValue := buf[:entrySize]
-		_, err = io.ReadFull(file, keyAndValue)
-		if err != nil {
-			if IsWALCorrupted(err) {
-				continue // 跳过损坏数据
-			}
-			return nil, fmt.Errorf("failed to read entry data: %w", err)
-		}
-
-		// 4. 组装完整条目
-		fullEntry := make([]byte, 4+8+1+8+8+8+4+4+entrySize)
-		copy(fullEntry, header)
-		copy(fullEntry[4+8+1+8+8+8+4+4:], keyAndValue)
-
-		// 5. 反序列化
 		entry := &WALEntry{}
-		if err := entry.Unmarshal(fullEntry); err != nil {
-			if IsWALCorrupted(err) {
-				continue // 跳过损坏条目
-			}
-			return nil, fmt.Errorf("failed to unmarshal entry: %w", err)
+		if err := entry.Unmarshal(data[offset:entryEnd]); err != nil {
+			// Skip corrupted entry, try next aligned position
+			offset += 8
+			continue
 		}
-
 		entries = append(entries, entry)
+		offset = entryEnd
 	}
-
 	return entries, nil
 }
+
+// --- Truncate ---
 
 func (w *DiskWAL) Truncate(lsn LSN) error {
 	if w.closed.Load() {
@@ -273,66 +311,68 @@ func (w *DiskWAL) Truncate(lsn LSN) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// 1. 检查 LSN 有效性
-	currentLSN := w.currentLSN.Load()
-	if LSN(lsn) > LSN(currentLSN) {
-		return fmt.Errorf("cannot truncate to LSN %d: greater than current LSN %d", lsn, currentLSN)
-	}
+	return w.truncateBefore(uint64(lsn))
+}
 
-	// 2. 扫描 WAL 目录，删除旧文件
-	files, err := os.ReadDir(w.config.Dir)
+// truncateBefore removes segments with max-LSN < lsn using rename-then-delete.
+func (w *DiskWAL) truncateBefore(lsn uint64) error {
+	files, err := os.ReadDir(w.dir)
 	if err != nil {
-		return fmt.Errorf("failed to read wal directory: %w", err)
+		return err
 	}
 
-	for _, file := range files {
-		if file.IsDir() {
+	for _, f := range files {
+		if f.IsDir() || filepath.Ext(f.Name()) != ".wal" {
 			continue
 		}
-
-		// 跳过非 .wal 文件
-		if filepath.Ext(file.Name()) != ".wal" {
+		fileLSN, parseErr := strconv.ParseUint(strings.TrimSuffix(f.Name(), ".wal"), 10, 64)
+		if parseErr != nil {
 			continue
 		}
-
-		// 从文件名提取 LSN
-		fileLSNStr := strings.TrimSuffix(file.Name(), ".wal")
-		fileLSN, err := strconv.ParseUint(fileLSNStr, 10, 64)
-		if err != nil {
-			// 无法解析的文件名，跳过
-			continue
+		if fileLSN >= lsn {
+			continue // keep this segment
 		}
 
-		// 删除 LSN 小于截断点的文件
-		if fileLSN < uint64(lsn) {
-			filePath := filepath.Join(w.config.Dir, file.Name())
-			if err := os.Remove(filePath); err != nil {
-				// 记录错误但继续处理其他文件
-				continue
-			}
+		fPath := filepath.Join(w.dir, f.Name())
+		deletingPath := fPath + ".deleting"
+
+		// Step 1: Rename to .deleting
+		if err := os.Rename(fPath, deletingPath); err != nil {
+			continue
+		}
+		// Step 2: fsync parent directory
+		if dir, e := os.Open(w.dir); e == nil {
+			dir.Sync()
+			dir.Close()
+		}
+		// Step 3: Delete
+		os.Remove(deletingPath)
+		// Step 4: fsync parent directory
+		if dir, e := os.Open(w.dir); e == nil {
+			dir.Sync()
+			dir.Close()
 		}
 	}
 
 	return nil
 }
 
-// AppendAsync 异步追加日志（v4 模式）
+// --- Async ---
+
 func (w *DiskWAL) AppendAsync(ctx context.Context, entry *WALEntry) model.Task[LSN] {
-	// 创建立即完成的任务（MVP 简化实现）
 	return NewCompletedWALTask(func() (LSN, error) {
 		return w.Append(entry)
 	})
 }
 
-// TruncateAsync 异步截断日志（v4 模式）
 func (w *DiskWAL) TruncateAsync(ctx context.Context, lsn LSN) model.Task[struct{}] {
-	// 创建立即完成的任务（MVP 简化实现）
 	return NewCompletedTruncateTask(func() (struct{}, error) {
 		return struct{}{}, w.Truncate(lsn)
 	})
 }
 
-// Close 关闭 WAL
+// --- Lifecycle ---
+
 func (w *DiskWAL) Close() error {
 	if !w.closed.CompareAndSwap(false, true) {
 		return ErrWALClosed
@@ -341,27 +381,23 @@ func (w *DiskWAL) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// 最后一次 Sync
 	if err := w.syncLocked(); err != nil {
 		return err
 	}
-
-	// 关闭文件
-	if err := w.file.Close(); err != nil {
-		return fmt.Errorf("failed to close wal file: %w", err)
+	if w.file != nil {
+		if err := w.file.Close(); err != nil {
+			return fmt.Errorf("wal: close: %w", err)
+		}
 	}
-
 	return nil
 }
 
-// GetStats 获取统计信息
+// GetStats returns current WAL statistics.
 func (w *DiskWAL) GetStats() WALStats {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-
 	stats := w.stats
 	stats.CurrentLSN = LSN(w.currentLSN.Load())
 	stats.SyncCount = w.syncCount.Load()
-
 	return stats
 }

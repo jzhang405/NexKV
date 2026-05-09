@@ -4,7 +4,8 @@
 > **创建日期**: 2026-04-17
 > **分支**: `spike/phase3-wal-gc-proposal`
 > **前置**: Phase 2 MVCC 快照隔离事务引擎（已完成）
-> **状态**: Draft（已完成七轮专家审核）
+> **状态**: Draft（已完成十轮专家审核，v2.8 修复 7 P0 CRITICAL）
+> **评审**: 2026-05-09 四专家（存储引擎/DDD/Go/分布式KV）补充评审，加权平均 ~5.7/10
 
 ---
 
@@ -62,7 +63,20 @@
 
 ### 2.1 WAL 模块（已实现）
 
-**接口定义** — `internal/infrastructure/storage/wal/wal.go`：
+> ⚠️ **CRITICAL — WAL 接口需要迁移到领域层（第十轮 C5）**：
+>
+> **现状**：WAL 接口定义在 `internal/infrastructure/storage/wal/wal.go`（基础设施层），但已有对等先例——`domain/service/btree.go` 定义了 `service.BTree` 接口。WAL 作为存储引擎的关键抽象，应遵循相同模式：
+> - `domain/service/wal.go` — 领域层接口 `service.WAL`（定义契约）
+> - `internal/infrastructure/storage/wal/` — 基础设施层实现（提供 `DiskWAL`）
+>
+> **当前违规**：§5.3 Commit 伪代码中出现 `wal.(*DiskWAL)` 具体类型断言，违反 DIP。Phase 3 实现时应改为持有 `service.WAL` 接口。
+>
+> **迁移步骤（Step 2 实施时执行）**：
+> 1. 在 `domain/service/wal.go` 中定义 `service.WAL` 接口
+> 2. `infrastructure/storage/wal/` 的现有定义改为 `type DiskWAL struct { ... }`，实现 `service.WAL`
+> 3. 所有调用方（含 `txManager`、`WALAppendItem`）通过 `service.WAL` 接口引用
+
+**接口定义** — `internal/infrastructure/storage/wal/wal.go`（⚠️ 待迁移至 `domain/service/wal.go`）：
 
 ```go
 type WAL interface {
@@ -330,13 +344,16 @@ WriteBuffer entries 本身不含 commitTS，commitTS 来自 **Commit marker**。
 > 如需防御性编程，可在 segment 文件头增加 **Magic Number**（如 `0x4E584B33` = "NXK3"），Recovery 时检测并拒绝无法识别的格式。
 
 ```
-[CRC32:4][Length:4][LSN:8][Type:1][TxID:8][Timestamp:8][PrevLSN:8]
+[CRC32:4][Length:4][LSN:8][Type:1][ShardID:2][Term:2][TxID:8][Timestamp:8][PrevLSN:8]
 [KeyLen:4][ValueLen:4][Key:N][Value:M][Padding:0~7][Trailer:4]
 ```
 
 - **CRC 覆盖范围**：从 `Length` 字段开始到 `Padding` 结束（**含 Length**，不含 CRC 本身和 Trailer）。这确保 Length 损坏时可被 CRC 检测，避免跳跃扫描定位错误。
+- **CRC 多项式**：必须使用 **CRC32C (Castagnoli)**，非 IEEE 多项式。CRC32C 在 x86/ARM 上有硬件指令加速（`crc32q`/`crc32w`），对 WAL Append/Recovery 热路径性能影响显著。
 - `Padding`：对齐到 8 字节，公式 `paddedLen = (totalLen + 7) &^ 7`，其中 `totalLen` 不含 CRC 和 Trailer。Padding 长度 = `paddedLen - totalLen`。
-- ⚠️ **ShardID 预留**（第六轮 H2）：当前单节点 WAL 格式不包含 ShardID。Phase 4 分布式场景下，Recovery 需要按 ShardID 过滤 entry（验证 key 所属分片是否仍由本节点负责）。**建议 Phase 3 在 `Type` 后预留 `ShardID:2` 字节**（或利用 `TxID` 高 16 位编码 ShardID）。调整后格式：`[CRC32:4][Length:4][LSN:8][Type:1][ShardID:2][TxID:8]...`。若 Phase 3 不预留，Phase 4 格式升级将破坏 Phase 3 WAL 兼容性。
+- ⚠️ **ShardID 预留**（第六轮 H2 → 第十轮升级为 Hard Requirement）：当前单节点 WAL 格式不包含 ShardID。Phase 4 分布式场景下，Recovery 需要按 ShardID 过滤 entry（验证 key 所属分片是否仍由本节点负责）。**Phase 3 必须在 `Type` 后预留 `ShardID:2` 字节**。调整后格式见上。若 Phase 3 不预留，Phase 4 格式升级将破坏 Phase 3 WAL 兼容性。
+- ⚠️ **Term 预留**（第十轮 C3 — CRITICAL）：**Phase 3 必须在 `ShardID` 后预留 `Term:2` 字节**。Lealone BTree 的 CAS 乐观锁在分布式环境下需要 Term（epoch number）检测过期 Leader 写入和脑裂防护。Term 不可从 key/LSN/TxID 推导——共识协议（Raft/Multi-Paxos/2PC Coordinator epoch）需要独立 epoch 标识。2 字节 Term（0-65535）在 3-100 节点集群的生命周期内足够。若 Phase 3 不预留，Phase 4 将面临 WAL 格式破坏性升级、旧 WAL 不可读、双格式兼容代码的迁移成本。
+> - **Term 字段在当前单节点 Phase 3 固定为 0**，Recovery 忽略值为 0 的 Term。Phase 4 分布式 WAL 中由共识协议写入非零值。
 - `Trailer`：**4 字节** `0xDEADBEEF`（修正：原文档错误标记为 8 字节，但 `0xDEADBEEF` 是 32 位值）。用于检测截断。若写入中断电，Trailer 不完整，此时 CRC 校验失败。
 - **`Type=Commit` 时**：`KeyLen=8, ValueLen=0`，Key 区域存放 `CommitTS` 的 8 字节大端编码。**修正**：原文档错误标记为 `KeyLen=0`，8 字节 CommitTS 无法放入长度为 0 的区域。
 - **`PrevLSN`**：用于完整性校验——验证 entry N 的 `PrevLSN == entry N-1` 的 LSN，确保链式连续性。同时预留与未来分布式 WAL 模式的兼容性（分布式场景下 LSN 排序需要链式校验）。
@@ -404,6 +421,26 @@ fsync batch 完成顺序：B 先于 A
 ```
 
 Group Commit 只控制 **fsync 时机**，不改变 commitTS 分配顺序。
+
+**⚠️ CRITICAL — Group Commit Batch 边界策略（第十轮 C6）**：
+
+原设计依赖 TaskScheduler 的 `tryProcessBatch` 决定 batch 边界，但未明确定义 batch 如何被"flushed"。**低负载下单个 WALAppendItem 可能在 batch 中无限等待，导致提交延迟不可预测。**
+
+**必须实现的混合策略**（数量阈值 + 时间窗口，两者谁先触发谁 flush）：
+
+```
+Batch 触发条件（任一满足即 flush + fsync）：
+  1. 累积 item 数量 >= PreferredBatchSize (默认 16)
+  2. 首个 item 入队后经过 batchTimeout (默认 1ms)
+  
+实现方式：
+  - tryProcessBatch 在处理首个 WALAppendItem 时记录 batchStartTime
+  - 每处理完一个 item，检查 len(batch) >= PreferredBatchSize → flush
+  - runLoop 的 select 增加 time.After(batchTimeout - elapsed) 分支 → timeout → flush
+  - PostBatchHook 在所有 flush 路径（数量触发/超时触发）统一执行 fsync
+```
+
+**超时值选择依据**：fsync 典型耗时 ~1ms。1ms 超时意味着即使在最低负载下（1 TPS），提交延迟也不会超过 2ms（1ms 等待 + 1ms fsync）。**禁止使用 0 超时**（退化为 PerWrite Sync，丧失 Group Commit 收益）。
 
 **⚠️ Group Commit Sync 容错**（H4）：任务 executeFunc 需 `recover()` 保护防止 panic 导致等待者永久阻塞。等待 Sync 的事务使用 `select + ctx.Done()` 处理取消。
 
@@ -519,13 +556,38 @@ Key 设计约束：
 **Fuzzy Checkpoint 流程**：
 
 ```
-1. rootRef = atomic.LoadPointer(&btree.root)     ← 固定 root 快照（C1：防止遍历期间 Split 更新 root）
-2. 记录 checkpointStartLSN
+1. 记录 checkpointStartLSN = wal.nextLSN      ← 先记录 Recovery 回放起点（C1：必须在 rootRef 之前）
+2. rootRef = atomic.LoadPointer(&btree.root)   ← 再固定 root 快照（C1：防止遍历期间 Split 更新 root）
 3. 基于固定 rootRef DFS 遍历 BTree 活跃路径，逐页写入主存储
-4. 记录 checkpointEndLSN
-5. 写入 Checkpoint WAL entry
-6. 原子化 Truncate LSN < checkpointEndLSN 的 WAL segments（见下方标准工业做法）
+4. 记录 checkpointEndLSN                      ← DFS 遍历结束时的 LSN（仅用于统计/监控）
+5. 写入 Checkpoint WAL entry（含 checkpointStartLSN 作为恢复起点、checkpointEndLSN 作为覆盖终点）
+6. 原子化 Truncate LSN < checkpointStartLSN 的 WAL segments（见下方标准工业做法）
 ```
+
+> ⚠️ **CRITICAL — Recovery 回放起点修正 + T0→T1 间隙消除（第十轮 C1 + 复核）**：
+>
+> **原设计双重缺陷**：
+> 1. Recovery 从 `checkpointEndLSN` 回放 → DFS 遍历期间提交的事务 LSN 在 [start, end] 之间被跳过 → 数据丢失
+> 2. rootRef 捕获在 checkpointStartLSN 记录之前 → T0→T1 窗口内的事务：COW 页面不在 rootRef 中（DFS 不写出）**且** LSN < checkpointStartLSN（Recovery 不回放）→ 数据丢失
+>
+> **修正（两步合一）**：
+> 1. Recovery 从 **`checkpointStartLSN`** 回放（修复缺陷 1）
+> 2. **先记录 checkpointStartLSN，再捕获 rootRef**（对调步骤 1 和 2，修复缺陷 2）
+>
+> **修正后时序证明**：
+> ```
+> T0: checkpointStartLSN = wal.nextLSN      ← 先记录 Recovery 回放起点
+> T1: rootRef = LoadPointer(&btree.root)    ← 再捕获 COW 快照
+> T2: DFS 遍历中...（并发写入 W，LSN=150，COW 新页面不在 rootRef 中）
+> T3: checkpointEndLSN = wal.nextLSN        ← DFS 结束，仅用于统计
+> T4: 写入 Checkpoint entry(checkpointStartLSN)
+>
+> T0 之后的所有写入 LSN ≥ checkpointStartLSN → Recovery 必然回放 ✓
+> T1 rootRef 包含 T1 之前所有已提交数据的快照 → Checkpoint 覆盖全 ✓
+> 两者覆盖范围的并集 = Checkpoint 数据 ∪ WAL 重放数据 = 全量正确数据 ✓
+> ```
+>
+> **Sharp Checkpoint 不受影响**：Sharp Checkpoint 暂停写入后执行，checkpointStartLSN == checkpointEndLSN，步骤顺序无关。
 
 > ⚠️ **Sharp vs Fuzzy 区分**（第六轮 M5-6）：
 > - Fuzzy Checkpoint（在线）：不暂停写入，基于 COW root 快照遍历。步骤 1-4 是 Fuzzy 特有，步骤 5-6 是 Shared（Fuzzy + Sharp 共用）
@@ -535,7 +597,7 @@ Key 设计约束：
 >
 > ⚠️ **Atomic Root Snapshot 必要性**（第五轮审核 C1）：DFS 遍历过程中，CAS-based COW B+Tree 的 root pointer 可能因 Split 传播被 CAS 更新。`atomic.LoadPointer` 获取固定 rootRef 确保遍历基于一致的 BTree 快照。COW 保证旧 root 子树不被就地修改（LMDB/BoltDB 经典做法），checkpointStartLSN 之后的增量变更由 WAL 重放补偿。
 >
-> ⚠️ **COW 遍历语义**（第六轮 H1-6）：COW B+Tree 的"活跃路径"在此处的含义为**从当前 rootRef 可达的整棵树**（含所有存活分支），而非 root 到 leaf 的单一路径。rootRef 的类型需兼容 `atomic` 操作——若 BTree root 为 `*node` 类型，需使用 `(*unsafe.Pointer)(unsafe.Pointer(&btree.root))` 转换。**rootRef 与 checkpointStartLSN 的顺序**：rootRef 在 checkpointStartLSN 之前完成。rootRef Load 之后、checkpointStartLSN 记录之前的 LSN 分配写入因 LSN < checkpointStartLSN 而不被 Recovery 重放——需要确认这些写入的 root 变更在旧 rootRef 中不可达（COW 保证插入/更新创建新页面，旧 root 子树不变），因此不受影响。
+> ⚠️ **COW 遍历语义**（第六轮 H1-6）：COW B+Tree 的"活跃路径"在此处的含义为**从当前 rootRef 可达的整棵树**（含所有存活分支），而非 root 到 leaf 的单一路径。rootRef 的类型需兼容 `atomic` 操作——若 BTree root 为 `*node` 类型，需使用 `(*unsafe.Pointer)(unsafe.Pointer(&btree.root))` 转换。
 
 **触发条件**：
 - WAL segment 数量超过阈值
@@ -543,25 +605,31 @@ Key 设计约束：
 - 脏页比例超过阈值
 - 手动触发
 
-**⚠️ 评审发现 — Truncate 非原子，crash 后可能不一致**：
+**⚠️ CRITICAL — Truncate 顺序修正：Checkpoint entry 必须先于删除写入（第十轮 C2）**：
 
-Fuzzy/Sharp Checkpoint 的"Truncate WAL segments"步骤（步骤 6/5）是非原子操作。如果在删除部分 segment 后 crash（只删了 segment-1 和 segment-2，但还没删 segment-3），文件系统状态和 Checkpoint entry 中的 `checkpointEndLSN` 不一致。
+Fuzzy/Sharp Checkpoint 的"Truncate WAL segments"步骤是非原子操作。**原设计将 Checkpoint entry 写在删除之后**——若 crash 发生在删除完成与 Checkpoint entry 写入之间，WAL segment 已被物理删除但无 Checkpoint entry 授权截断，Recovery 扫描到 LSN 缺口后无法判断是否为合法截断，导致恢复失败。
 
-**标准工业做法**：
+**修正后的标准工业做法（Checkpoint entry 必须先写）**：
 
 ```
-1. 将待删除的 segment 重命名为 .wal.deleting（如 segment-5.wal → segment-5.wal.deleting）
-2. fsync(父目录) — 确保重命名持久化
-3. 删除 .deleting 文件
-4. fsync(父目录) — 确保删除持久化
-5. 写入 Checkpoint entry（含 checkpointEndLSN）
+1. 写入 Checkpoint entry（含 checkpointStartLSN 作为截断授权）
+2. WAL.Sync() — 确保持久化（Checkpoint entry 是截断的"授权书"）
+3. 将待删除的 segment 重命名为 .wal.deleting（如 segment-5.wal → segment-5.wal.deleting）
+4. fsync(父目录) — 确保重命名持久化
+5. 删除 .deleting 文件
+6. fsync(父目录) — 确保删除持久化
 ```
+
+**崩溃恢复的正确性分析**：
+- crash 在步骤 1-2 之后、3-6 之前：Checkpoint entry 已持久化，Recovery 看到截断授权但 segment 仍在（未删除）。无妨——CRC+LSN 校验确认 segment 完整后，Checkpoint entry 的 `checkpointStartLSN` 标记"这些 segment 的数据已在 Checkpoint 中"，Recovery 直接跳过高 LSN 的 entry
+- crash 在步骤 3-6 期间：segment 被部分删除，Checkpoint entry 已授权。Recovery 检测到 LSN 缺口但 Checkpoint entry 确认截断合法，跳过缺口继续。`.wal.deleting` 残留文件被清理
+- crash 在步骤 1 之前（旧行为）：无 Checkpoint entry，无 segment 删除——安全，从上一个有效 Checkpoint 开始全量 WAL 重放
 
 若 crash 发生在任意步骤，重启后：
-- 扫描 WAL 目录，清理所有 `.wal.deleting` 文件
-- 从最新 Checkpoint entry 的 `checkpointEndLSN` 开始重放
+- 扫描 WAL 目录，清理所有 `.wal.deleting` 残留文件
+- 从最新 Checkpoint entry 的 **`checkpointStartLSN`**（不是 checkpointEndLSN）开始重放 WAL
 
-**Fuzzy Checkpoint 的边界情况**：`步骤3(记录checkpointEndLSN)` 和 `步骤4(写入Checkpoint entry)` 之间 crash，此时脏页已写出但 checkpoint 位置丢失。正确策略：**从上一个有效 Checkpoint 开始重放**，而非截断到 checkpointEndLSN。
+**Fuzzy Checkpoint 的边界情况**：若最新 Checkpoint entry 丢失（crash 在其写入前），正确策略：**从上一个有效 Checkpoint 的 checkpointStartLSN 开始重放**，三阶段幂等检查正确处理重复 entries。
 
 **分布式 Checkpoint 协调**（第五轮审核 M5）：Phase 4 分布式场景下，Checkpoint 截断需要全局一致的时间点——所有节点的 LSN 截断点必须一致。思路：基于 Global Watermark 协议选择全局最小 LSN 作为截断基准。Phase 3 不涉及。
 
@@ -873,6 +941,14 @@ defer tm.activeTxRegistry.Unregister(tx.txID)
 
 ### 4.4 后台 Mark-and-Sweep Pruning（采纳方案）
 
+> ⚠️ **CRITICAL — VersionChain.head 必须使用原子指针（第十轮 C4）**：
+>
+> **问题**：`snapshotGet` 遍历开始时读取 `chain.head`（`node := vc.head`），而 `Prepend` 通过 `CAS(&head, oldHead, newNode)` 写入 `head`。非原子读 + atomic CAS 写 = **Go data race（undefined behavior）**。`generation.Add(1)` 的 happens-before 保证不保护 `head` 的初始读取。
+>
+> **修复**：`VersionChain.head` 必须改为 `atomic.Pointer[VersionNode]`（Go 1.19+），所有读取入口使用 `head := vc.head.Load()`，所有写入通过 `vc.head.CompareAndSwap(old, new)` 或 `vc.head.Store(new)`。`snapshotGet` 的链遍历入口必须使用 `atomic.LoadPointer` 等价物。
+>
+> **验证**：修复后 `go test -race` 应通过 `TestVersionChainConcurrentPrependAndSnapshotGet` 测试（新增）。
+
 ```
 PruneBackground(watermark):
   1. 获取 VersionStore.chains 的 snapshot（sync.Map Range）
@@ -1103,6 +1179,8 @@ func (bt *BTree) GetWithMeta(key []byte) (value []byte, beginTS uint64, err erro
 - [ ] 并发 GC + 读写无竞态（`-race` 通过）
 - [ ] Watermark 在无活跃事务时正确回收所有旧版本
 - [ ] **新增**：长事务存在时，GC 正确保留旧版本（不被阻塞回收）
+- [ ] **goleak**：`goleak.VerifyTestMain(m)` 确保后台 GC goroutine（`runGC`）正常退出不泄漏
+- [ ] **Fuzz**：`FuzzVersionChainPrune` 对 `Prepend` + `Prune` + `snapshotGet` 并发 fuzz，验证无 panic 且快照隔离语义不变
 
 ### 5.3 Step 2: WAL 集成（预估 5-7 天）
 
@@ -1252,6 +1330,8 @@ func (tx *SnapshotTx) Rollback() error {
 - [ ] **新增**：commitTS 按 LSN 顺序单调递增（Group Commit 场景下验证）
 - [ ] **异步 Apply**：Commit 路径延迟显著降低（BTree 写入移出热路径）
 - [ ] **异步 Apply**：崩溃后未 Apply 的 committed entries 被 Recovery 正确重放
+- [ ] **goleak**：WAL segment 轮转 + Truncate + Async Append + Recovery 全路径 goroutine 泄漏检测
+- [ ] **Fuzz**：`FuzzWALRecovery` 构造乱序/损坏/截断的 WAL 文件，验证 Recovery 不 panic 且恢复结果幂等；`FuzzWALFormat` 对 WAL 编解码做字节级 fuzz
 
 ### 5.4 Step 3: Checkpoint（预估 7-10 天）
 
@@ -1285,6 +1365,8 @@ func (cm *CheckpointManager) RecoverFromCheckpoint() error
 - [ ] Checkpoint + WAL 恢复 = 完整数据
 - [ ] 定时 Checkpoint 正常触发
 - [ ] **新增**：DirtyTracker 标记的页面与实际修改页面一致（COW 语义下验证）
+- [ ] **goleak**：Checkpoint DFS 遍历 + 并发写入 + Truncate 全路径 goroutine 泄漏检测
+- [ ] **Fuzz**：`FuzzCheckpointRecovery` 随机序列写入 + Checkpoint + crash，验证恢复后数据完整且三阶段幂等检查正确
 
 ---
 
@@ -1429,8 +1511,46 @@ Checkpoint 时：
 
 **远期建议：采用 2PC + WAL 方案**
 
-Step 1（Phase 3-4）：单机 WAL + Checkpoint 稳定
-Step 2（远期）：引入 2PC prepare 写 WAL，commit 同步
+> ⚠️ **CRITICAL — 演进路径细化（第十轮 C7）**：原 Step 1→Step 2 跨越过大。单机 WAL 到分布式 2PC+WAL 之间必须插入 3 个中间里程碑，确保每一步都有可验证的交付物：
+
+```
+Phase 3: 单机 WAL + Checkpoint + GC（当前文档范围）
+    │  交付物：WAL 持久化、三阶段幂等 Recovery、Fuzzy/Sharp Checkpoint、
+    │          Group Commit、Mark-and-Sweep GC
+    │  验证：kill -9 崩溃恢复、Checkpoint 后 WAL 截断、GC 不违反 SI
+    ↓
+Phase 3.5: 分布式基础设施准备（Spike，~2 周）
+    │  交付物：HLC 跨节点时钟（替代 local TSGenerator）、Gossip 心跳机制、
+    │          WALEntry Term 字段激活（当前固定为 0）、Shard Ownership 表设计、
+    │          CAP 路线决策（CP vs AP 选型 + TLA+ 验证）
+    │  验证：HLC causal order 正确性、Gossip 收敛延迟 < 3 周期
+    ↓
+Phase 4.1: 分布式 WAL 基础（CP 路线，~4 周）
+    │  交付物：Per-shard Raft Group（每个分片独立复制，TiKV 模式）、
+    │          WAL 跨节点复制（Term 激活）、Global Watermark 协议（Gossip 交换）、
+    │          分布式 Checkpoint 协调
+    │  验证：单节点宕机后分片数据不丢失、Raft Leader 选举 < 1s
+    ↓
+Phase 4.2: 跨分片事务（~4 周）
+    │  交付物：2PC prepare→commit 的 WAL 集成、Coordinator 故障恢复、
+    │          分布式死锁检测、或评估 HLC+OCC (CockroachDB 模式) 作为替代
+    │  验证：跨分片 ACID、Coordinator 崩溃后事务正确回滚
+```
+
+**CAP 路线决策点（Phase 3.5 输出）**：
+- 如果跨分片事务占比 < 5%：AP (Gossip+CRDT)，放弃跨分片 ACID
+- 如果跨分片事务占比 > 20%：CP (Raft+2PC)，接受分区阻塞
+- 5-20%：TLA+ 量化建模决定
+
+**单机 WAL 阻碍分布式演进的关键障碍及 Phase 3 缓解**：
+
+| 障碍 | Phase 3 预留 | Phase 3.5 激活 |
+|------|-------------|---------------|
+| LSN 本地线性递增 | — | HLC 替代 TSGenerator |
+| Term/Index 缺失 | **WALEntry 预留 Term:2（第十轮 C3）** | Phase 3.5 写入非零值 |
+| ShardID 缺失 | **WALEntry 预留 ShardID:2** | Phase 3.5 写入实际分片 |
+| VersionChain 纯内存 | Go GC 回收 | Phase 4.1 评估跨节点重建 |
+| 单机 KeyLock | 本地串行化 | Phase 4.2 分布式锁协调 |
 
 > ⚠️ **2PC Coordinator 崩溃风险**（第五轮审核 H6）：2PC 在 Coordinator 故障时可能阻塞锁资源释放（Prepare 后 Coordinator 崩溃，participants 持有锁等待决策）。此为 2PC 经典问题，Phase 3 不涉及跨节点事务，此风险在当前 scope 之外。如需缓解阻塞问题，建议远期评估 Paxos/EPaxos 替代方案（第六轮 M2：3PC 不具备网络分区容忍性——分区发生时 3PC 的 timeout abort 可能导致脑裂，对 NexKV 去中心化架构适用性有限）
 
@@ -1584,6 +1704,13 @@ Recovery 重放单 key 流程（三阶段幂等）：
 | **reclaimed 可见性内存序** | **新增**（第五轮 H7）：reclaimed.Store + generation.Add 的 happens-before 推理链注释 | **是（Step 1 必须实现）** | 防止未来修改破坏可见性 |
 | **孤儿节点累积** | **新增**（第五轮 M3）：Prepend 清理时检测 BTree beginTS 不匹配的孤儿节点 | **是（Step 1 必须实现）** | 高频写入场景长期累积 |
 | **NEW-6 清理范围约束** | **修正**（第五轮 M7）：仅限于从链头开始的连续 reclaimed 段 | **是（Step 1 文档标注）** | 修改 next 与并发安全约束冲突 |
+| **Fuzzy Checkpoint Recovery 回放起点** | **修正**（第十轮 C1 — CRITICAL）：从 `checkpointEndLSN` 改为 `checkpointStartLSN` | **是（Step 3 阻塞项）** | DFS 遍历期间提交的事务 LSN 在 [start, end] 之间，用 end 回放会跳过 |
+| **Truncate 与 Checkpoint entry 顺序** | **修正**（第十轮 C2 — CRITICAL）：Checkpoint entry **必须**在 WAL segment 删除之前写入+fsync | **是（Step 3 阻塞项）** | 原顺序导致 crash 后 LSN 缺口无授权标记，Recovery 失败 |
+| **WALEntry Term 字段预留** | **修正**（第十轮 C3 — CRITICAL）：在 `ShardID` 后预留 `Term:2`，Phase 3 固定为 0 | **是（Step 2 格式化阻塞项）** | CAS 乐观锁的分布式演进需要 Term 检测过期 Leader，不可推导 |
+| **VersionChain.head 原子指针** | **修正**（第十轮 C4 — CRITICAL）：`head` 必须为 `atomic.Pointer[VersionNode]` | **是（Step 1 阻塞项）** | 非原子读 + CAS 写 = Go data race |
+| **WAL 接口领域层定位** | **修正**（第十轮 C5 — CRITICAL）：WAL 接口迁移至 `domain/service/wal.go`，消除 `wal.(*DiskWAL)` 类型断言 | **是（Step 2 实现阻塞项）** | 已有 `service.BTree` 先例，违反 DIP |
+| **Group Commit batch 边界策略** | **修正**（第十轮 C6 — CRITICAL）：数量阈值 (16) + 时间窗口 (1ms) 混合策略 | **是（Step 2 设计阻塞项）** | 低负载下单元素 batch 无限等待，提交延迟不可预测 |
+| **分布式演进路径里程碑** | **修正**（第十轮 C7 — CRITICAL）：Phase 3 → 3.5 (HLC+Gossip) → 4.1 (分布式WAL) → 4.2 (跨分片事务) | **是（文档标注）** | 原 Step 1→Step 2 跨越过大，缺少 3 个中间里程碑 |
 
 ---
 
@@ -1600,10 +1727,21 @@ Recovery 重放单 key 流程（三阶段幂等）：
 
 ---
 
-**文档版本**: v2.7
+**文档版本**: v2.8
 **创建日期**: 2026-04-17
-**最后更新**: 2026-04-25
-**更新内容**: 第八轮三专家审核修复 v2.6+v2.7，基于第八轮审核发现的 8 CRITICAL 问题修复：
+**最后更新**: 2026-05-09
+**评审记录**: 七轮三专家审核 (v2.0-v2.7) + 第十轮四专家补充评审 (v2.8)
+**更新内容**: 第十轮四专家（存储引擎/DDD/Go/分布式KV）CRITICAL 修复，修复 7 个 P0 问题：
+
+**v2.8 更新**（2026-05-09）— 第十轮四专家补充评审 CRITICAL 修复 + 复核修复：
+- C1 (CRITICAL, 存储引擎): §3.5 Fuzzy Checkpoint Recovery 回放起点从 `checkpointEndLSN` 修正为 `checkpointStartLSN`，并**对调步骤 1/2 消除 T0→T1 间隙**
+- C2 (CRITICAL, 存储引擎): §3.5 Truncate 顺序修正——Checkpoint entry **先于** WAL segment 删除写入（先授权，后删除）
+- C3 (CRITICAL, 存储引擎+分布式): §3.3 WALEntry 格式增加 `Term:2` 字段预留（Phase 3 固定为 0，Phase 4 激活）
+- C4 (CRITICAL, Go并发): §4.4 `VersionChain.head` 必须使用 `atomic.Pointer[VersionNode]`——非原子读 + CAS 写 = Go data race
+- C5 (CRITICAL, DDD): §2.1 WAL 接口需迁移至 `domain/service/wal.go`，消除 `wal.(*DiskWAL)` 具体类型依赖
+- C6 (CRITICAL, Go+存储引擎): §3.4 Group Commit batch 边界策略——数量阈值 (16) + 时间窗口 (1ms) 混合策略
+- C7 (CRITICAL, 分布式+DDD): §6.2-3 演进路径细化——Phase 3 → 3.5 (HLC+Gossip) → 4.1 (分布式WAL) → 4.2 (跨分片事务)
+- **复核修复** (存储引擎+Go): §3.5 T0→T1 间隙消除（对调步骤）、§5.2/5.3/5.4 验证标准增加 goleak + Fuzz 测试条目
 
 **v2.7 更新**（2026-04-25）— 第八轮 Go 并发 + 存储引擎 + 分布式系统 CRITICAL 修复：
 - C1 (CRITICAL, Go并发): §3.6 `BTreeApplyItem.Run()` 增加 `defer close(item.done)`, `Commit()` 增加 `tx.applyDone = item.done` 绑定——防止 `CommitAndWait` 永久阻塞

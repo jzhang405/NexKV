@@ -95,7 +95,7 @@ func (vs *VersionStore) LoadOrStore(key string) *VersionChain {
 //  2. The latest visible version before watermark is retained (including Tombstone)
 //  3. If the latest visible version is a Tombstone, the first non-Tombstone visible version
 //     before it must also be retained (prevents key resurrection for old snapshots)
-//  4. Older versions are marked reclaimed
+//  4. Older versions (commitTS < minRetainedCommitTS) are marked reclaimed
 //
 // Returns the number of nodes marked reclaimed.
 // Must be followed by vc.generation.Add(1) to ensure snapshotGet detects the change.
@@ -105,50 +105,45 @@ func (vc *VersionChain) Prune(watermark uint64) int {
 		return 0
 	}
 
-	// Pass 1: find the first node to keep (watermark boundary).
-	// Track the position of the latest visible version before watermark and whether it's a Tombstone.
+	// Pass 1: find the minimum commitTS that must be retained.
 	var (
-		marked   int
-		node     = head
-		keepFrom = head // default: keep everything from head
-		// Track the latest node with commitTS < watermark
-		lastBeforeWatermark *VersionNode
-		// Track the first non-Tombstone before the Tombstone boundary (rule 3)
+		lastBeforeWatermark        *VersionNode
 		firstNonTombstoneBeforeWM *VersionNode
 	)
-
-	for node != nil {
+	for node := head; node != nil; node = node.next {
 		if node.commitTS < watermark {
-			lastBeforeWatermark = node
+			if lastBeforeWatermark == nil {
+				lastBeforeWatermark = node
+			}
 			if node.flag != FlagTombstone && firstNonTombstoneBeforeWM == nil {
 				firstNonTombstoneBeforeWM = node
 			}
 		}
-		node = node.next
 	}
 
-	// If there's a node before watermark, it's the boundary.
-	// If it's a Tombstone, extend boundary to include the first non-Tombstone before it.
+	// Compute minRetainedCommitTS: the minimum commitTS that must be kept.
+	// All nodes with commitTS < minRetainedCommitTS can be reclaimed.
+	minRetainedCommitTS := uint64(0)
 	if lastBeforeWatermark != nil {
-		keepFrom = lastBeforeWatermark
+		minRetainedCommitTS = lastBeforeWatermark.commitTS
 		if lastBeforeWatermark.flag == FlagTombstone && firstNonTombstoneBeforeWM != nil {
-			keepFrom = firstNonTombstoneBeforeWM
+			// Also retain the first non-Tombstone covered by this Tombstone (rule 3).
+			if firstNonTombstoneBeforeWM.commitTS < minRetainedCommitTS {
+				minRetainedCommitTS = firstNonTombstoneBeforeWM.commitTS
+			}
 		}
 	}
 
-	// Pass 2: mark all nodes older than keepFrom as reclaimed.
-	// Note: keepFrom itself and all nodes newer than it are NOT marked.
-	node = head
-	foundBoundary := false
-	for node != nil {
-		if node == keepFrom {
-			foundBoundary = true
+	// Pass 2: mark all nodes (except head) with commitTS < minRetainedCommitTS.
+	var marked int
+	for node := head; node != nil; node = node.next {
+		if node == head {
+			continue
 		}
-		if !foundBoundary && node != head {
+		if node.commitTS < minRetainedCommitTS {
 			node.reclaimed.Store(true)
 			marked++
 		}
-		node = node.next
 	}
 
 	return marked

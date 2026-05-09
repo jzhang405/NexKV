@@ -55,6 +55,25 @@ func (r *PageRef) GetPageInfo() *PageInfo {
 	return r.pInfo.Load()
 }
 
+// IsLeaf returns whether this page is a leaf node.
+func (r *PageRef) IsLeaf() bool {
+	return r.pInfo.Load().IsLeaf
+}
+
+// ChildPageIDs returns the PageIDs of all children.
+// Used by checkpoint DFS traversal. Returns nil for leaf pages.
+func (r *PageRef) ChildPageIDs() []model.PageID {
+	cc := r.children.Load()
+	if cc == nil || len(cc.Children) == 0 {
+		return nil
+	}
+	ids := make([]model.PageID, len(cc.Children))
+	for i, child := range cc.Children {
+		ids[i] = child.pageID
+	}
+	return ids
+}
+
 // CAS atomically replaces PageInfo if current equals old.
 // Returns true if the swap succeeded.
 func (r *PageRef) CAS(old, newInfo *PageInfo) bool {

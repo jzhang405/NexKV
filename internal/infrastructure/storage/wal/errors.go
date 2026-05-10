@@ -25,6 +25,9 @@ var (
 
 	// ErrWALSegmentFull WAL 分段已满
 	ErrWALSegmentFull = errors.New("wal: segment full")
+
+	// ErrWALCorruptedTruncatedEntry WAL entry truncated (missing trailer)
+	ErrWALCorruptedTruncatedEntry = errors.New("wal: truncated entry")
 )
 
 // IsWALClosed 判断是否为 WAL 已关闭错误

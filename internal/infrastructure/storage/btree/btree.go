@@ -304,6 +304,13 @@ func (b *BTree) GetMetrics() *MetricsSnapshot {
 	return &snapshot
 }
 
+// RootPage returns the current root PageRef for checkpoint DFS traversal.
+// The returned PageRef is a snapshot-safe reference — COW guarantees that
+// concurrent writes create new pages without modifying the old root subtree.
+func (b *BTree) RootPage() *PageRef {
+	return &b.rootRef.PageRef
+}
+
 // Close closes the BTree and releases all resources.
 // Idempotent: subsequent Close calls are no-op.
 func (b *BTree) Close() error {

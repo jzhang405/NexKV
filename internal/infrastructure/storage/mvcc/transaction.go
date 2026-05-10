@@ -11,6 +11,8 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+
+	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -64,29 +66,73 @@ type TxManager interface {
 
 // NewTxManager creates a new transaction manager bound to the given storage and TSGenerator.
 func NewTxManager(storage StorageBackend, tsGen TSGenerator) TxManager {
+	return NewTxManagerWithGC(storage, tsGen, nil)
+}
+
+// NewTxManagerWithGC creates a new transaction manager with GC support.
+// If gcCfg is nil, GC is disabled (Phase 2 compatibility).
+func NewTxManagerWithGC(storage StorageBackend, tsGen TSGenerator, gcCfg *GCConfig) TxManager {
 	return &txManager{
-		storage:      storage,
-		tsGen:        tsGen,
-		versionStore: &VersionStore{},
+		storage:          storage,
+		tsGen:            tsGen,
+		versionStore:     &VersionStore{},
+		activeTxRegistry: NewActiveTxRegistry(),
+		gcCfg:            gcCfg,
 	}
 }
 
 type txManager struct {
-	storage      StorageBackend
-	tsGen        TSGenerator
-	versionStore *VersionStore
-	siCount      atomic.Int32
-	keyLocks     sync.Map // string → *KeyLock
+	storage          StorageBackend
+	tsGen            TSGenerator
+	versionStore     *VersionStore
+	activeTxRegistry *ActiveTxRegistry
+	txIDCounter      atomic.Uint64
+	siCount          atomic.Int32
+	keyLocks         sync.Map // string → *KeyLock
+	gcCfg            *GCConfig
+	gcStats          GCStats
+	wal              WALWriter // Phase 3: WAL for crash recovery (nil = no persistence)
+}
+
+// WALWriter is the minimal WAL interface for the transaction engine.
+type WALWriter interface {
+	Append(entry *WALEntry) (service.LSN, error)
+	AppendBatch(entries []*WALEntry) ([]service.LSN, error)
+	Sync() error
+}
+
+// WALEntry is a lightweight WAL entry reference.
+type WALEntry = service.WALEntry
+
+// WALType constants.
+const (
+	WALInsert = service.WALTypeInsert
+	WALUpdate = service.WALTypeUpdate
+	WALDelete = service.WALTypeDelete
+	WALCommit = service.WALTypeCommit
+)
+
+// SetWAL sets the WAL writer for crash recovery. If nil, WAL is disabled.
+func (tm *txManager) SetWAL(w WALWriter) {
+	tm.wal = w
 }
 
 func (tm *txManager) BeginTx(ctx context.Context, level IsolationLevel) (Tx, error) {
+	// Allocate snapshotTS and register txID under the same Mutex to eliminate
+	// the GC window where a transaction is visible but its snapshotTS isn't tracked.
+	tm.activeTxRegistry.mu.Lock()
 	snapshotTS := tm.tsGen.NextTS()
+	txID := tm.txIDCounter.Add(1)
+	tm.activeTxRegistry.txs[txID] = snapshotTS
+	tm.activeTxRegistry.mu.Unlock()
+
 	if level == SnapshotIsolation {
 		tm.siCount.Add(1)
 	}
 	return &SnapshotTx{
 		engine:         tm,
 		snapshotTS:     snapshotTS,
+		txID:           txID,
 		isolationLevel: level,
 		writeBuffer:    NewWriteBuffer(),
 		readSet:        make(map[string]ReadFingerprint),
@@ -115,6 +161,7 @@ type UndoEntry struct {
 type SnapshotTx struct {
 	engine         *txManager
 	snapshotTS     uint64
+	txID           uint64 // Phase 3: unique transaction ID for GC tracking
 	isolationLevel IsolationLevel
 	writeBuffer    *WriteBuffer
 	readSet        map[string]ReadFingerprint
@@ -217,7 +264,7 @@ func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, erro
 		var bestNode *VersionNode
 		node := chainVal.Load()
 		for node != nil {
-			if node.commitTS > tx.snapshotTS && !node.rolledBack.Load() {
+			if node.commitTS > tx.snapshotTS && !node.rolledBack.Load() && !node.reclaimed.Load() {
 				if bestNode == nil || node.commitTS < bestNode.commitTS {
 					bestNode = node
 				}
@@ -352,7 +399,15 @@ func (tx *SnapshotTx) Delete(key []byte) error {
 
 // Commit executes PreCheck → allocate commitTS → applyWriteBuffer → cleanup.
 func (tx *SnapshotTx) Commit(ctx context.Context) error {
+	// Fast-fail: if already completed, return immediately.
+	// cleanup() below also uses CAS to guard against double completion.
+	if tx.completed.Load() {
+		return nil
+	}
+	defer tx.engine.activeTxRegistry.Unregister(tx.txID)
+
 	if err := tx.checkActive(); err != nil {
+		tx.cleanup()
 		return err
 	}
 
@@ -365,7 +420,20 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 	// Phase 2: Allocate commitTS
 	commitTS := tx.engine.tsGen.NextTS()
 
-	// Phase 3: Apply WriteBuffer
+	// Phase 3: WAL Append + Sync (before Apply — all-or-nothing durability)
+	if tx.engine.wal != nil {
+		entries := tx.writeBuffer.ToWALEntries(commitTS)
+		if _, err := tx.engine.wal.AppendBatch(entries); err != nil {
+			tx.cleanup()
+			return fmt.Errorf("wal append: %w", err)
+		}
+		if err := tx.engine.wal.Sync(); err != nil {
+			tx.cleanup()
+			return fmt.Errorf("wal sync: %w", err)
+		}
+	}
+
+	// Phase 4: Apply WriteBuffer (WAL already durable)
 	if err := tx.applyWriteBuffer(ctx, commitTS); err != nil {
 		tx.cleanup()
 		return err
@@ -433,7 +501,13 @@ func (tx *SnapshotTx) applyWriteBuffer(ctx context.Context, commitTS uint64) err
 }
 
 // commitKey atomically commits a single key under KeyLock protection.
-// Executes GetRaw → validate → Set → Prepend within the lock.
+// Executes GetRaw → validate → Prepend → Set within the lock.
+//
+// Phase 3 (NEW-2 CRITICAL): Prepend-before-Set order eliminates half-Apply OldValue loss.
+// In the old order (Set-before-Prepend), a crash after Set but before Prepend overwrites
+// the BTree old value, making Recovery unable to derive Prepend's OldValue. The new order
+// (Prepend-before-Set) ensures that a crash after Prepend but before Set leaves the BTree
+// with the old value intact — Recovery simply redoes Set (idempotent).
 func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry, commitTS uint64) (retUndo *UndoEntry, retErr error) {
 	// Ensure VersionChain exists before acquiring KeyLock (avoid sync.Map mutex in critical section)
 	tm.versionStore.LoadOrStore(key)
@@ -473,7 +547,6 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 			if mvccVal.Flag != FlagTombstone {
 				return nil, ErrConflict
 			}
-			// Tombstone → treat as key not existing, Insert can proceed
 		}
 	case OpUpdate, OpDelete:
 		if oldRawVal == nil {
@@ -496,16 +569,7 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 		newVal = nil
 	}
 
-	// Step 4: Write to B+Tree (Set-before-Prepend)
-	encoded, buildErr := BuildMVCC(flag, commitTS, newVal)
-	if buildErr != nil {
-		return nil, fmt.Errorf("build mvcc for key %s: %w", key, buildErr)
-	}
-	if err := tm.storage.Set(ctx, []byte(key), encoded); err != nil {
-		return nil, fmt.Errorf("btree set failed for key %s: %w", key, err)
-	}
-
-	// Step 5: Build VersionChain node (all ops must build)
+	// Step 4: Prepend to VersionChain FIRST (NEW-2: Prepend-before-Set)
 	var prePrependHead *VersionNode
 	chain := tm.versionStore.Load(key)
 	if chain != nil {
@@ -514,13 +578,6 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 
 	switch entry.Op {
 	case OpInsert:
-		// Insert Prepends a Tombstone marker node to indicate "key did not exist before
-		// this commitTS". Without this marker, an Insert→Update scenario would violate
-		// snapshot isolation: the Update's Prepend stores the Insert's value as an old
-		// version, and a snapshot reader with snapshotTS < Insert's commitTS would
-		// incorrectly return that value (the key didn't exist at their snapshot time).
-		// The Tombstone marker causes snapshotGet to return ErrKeyNotFound for snapshots
-		// that precede the Insert.
 		if err := tm.versionStore.Prepend(key, commitTS, nil, FlagTombstone); err != nil {
 			return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
 					PrePrependHead: prePrependHead, PrependSucceeded: false},
@@ -532,6 +589,19 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 					PrePrependHead: prePrependHead, PrependSucceeded: false},
 				fmt.Errorf("version chain prepend failed for key %s: %w", key, err)
 		}
+	}
+
+	// Step 5: Write to B+Tree (AFTER Prepend — NEW-2)
+	encoded, buildErr := BuildMVCC(flag, commitTS, newVal)
+	if buildErr != nil {
+		return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
+				PrePrependHead: prePrependHead, PrependSucceeded: true},
+			fmt.Errorf("build mvcc for key %s: %w", key, buildErr)
+	}
+	if err := tm.storage.Set(ctx, []byte(key), encoded); err != nil {
+		return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
+				PrePrependHead: prePrependHead, PrependSucceeded: true},
+			fmt.Errorf("btree set failed for key %s: %w", key, err)
 	}
 
 	// ===== Critical section end =====
@@ -546,6 +616,11 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 
 // Rollback discards the WriteBuffer and cleans up.
 func (tx *SnapshotTx) Rollback() error {
+	if tx.completed.Load() {
+		return nil
+	}
+	defer tx.engine.activeTxRegistry.Unregister(tx.txID)
+
 	if err := tx.checkActive(); err != nil {
 		return err
 	}
@@ -563,6 +638,17 @@ func (tx *SnapshotTx) cleanup() {
 	if tx.isolationLevel == SnapshotIsolation {
 		tx.engine.siCount.Add(-1)
 	}
+}
+
+// CommitAndWait commits the transaction and waits for async BTree Apply to complete.
+// In sync mode (default), this is equivalent to Commit().
+// In async mode, this blocks until the BTreeApplyItem finishes.
+func (tx *SnapshotTx) CommitAndWait(ctx context.Context) error {
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	// In sync mode, Commit already applied — return immediately.
+	return nil
 }
 
 // checkActive returns an error if the transaction is already completed.

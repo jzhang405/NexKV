@@ -15,6 +15,10 @@ type TSGenerator interface {
 	// not contiguity. Gaps have no semantic impact on snapshot isolation.
 	// Panic on uint64 overflow (~585,000 years at 1M commits/sec).
 	NextTS() uint64
+
+	// CurrentTS returns the current timestamp without incrementing.
+	// Used for GC watermark fallback when no active transactions exist.
+	CurrentTS() uint64
 }
 
 // LocalTS is a local monotonic timestamp generator (Phase 2).
@@ -34,4 +38,10 @@ func (t *LocalTS) NextTS() uint64 {
 		panic("mvcc: timestamp overflow -- restart required")
 	}
 	return ts
+}
+
+// CurrentTS returns the current timestamp value without incrementing.
+// Used by GC as watermark fallback when no active transactions exist.
+func (t *LocalTS) CurrentTS() uint64 {
+	return t.counter.Load()
 }

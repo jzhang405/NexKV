@@ -3,39 +3,27 @@ package wal
 
 import (
 	"encoding/binary"
-	"hash/crc32"
 	"time"
 )
 
-// LSN 日志序列号（Log Sequence Number），唯一标识每条 WAL 记录
+// LSN is a log sequence number.
 type LSN uint64
 
-const (
-	// LSNInvalid 无效 LSN
-	LSNInvalid LSN = 0
-)
+const LSNInvalid LSN = 0
 
-// WALType WAL 日志类型
+// WALType enumerates WAL entry types.
 type WALType uint8
 
 const (
-	// WALTypeInsert 插入操作
 	WALTypeInsert WALType = iota
-	// WALTypeUpdate 更新操作
 	WALTypeUpdate
-	// WALTypeDelete 删除操作
 	WALTypeDelete
-	// WALTypeCommit 事务提交
 	WALTypeCommit
-	// WALTypeRollback 事务回滚
 	WALTypeRollback
-	// WALTypeCheckpoint 检查点
 	WALTypeCheckpoint
-	// WALTypeSplit BTree 节点分裂操作
 	WALTypeSplit
 )
 
-// String 返回 WALType 的字符串表示
 func (wt WALType) String() string {
 	switch wt {
 	case WALTypeInsert:
@@ -57,32 +45,33 @@ func (wt WALType) String() string {
 	}
 }
 
-// WALEntry WAL 日志条目
+// WALEntry is a WAL log entry.
+//
+// Phase 3 wire format:
+//
+//	[CRC32C:4][Length:4][LSN:8][Type:1][ShardID:2][Term:2][TxID:8]
+//	[Timestamp:8][PrevLSN:8][KeyLen:4][ValueLen:4][Key:N][Value:M]
+//	[Padding:0~7][Trailer:4(0xDEADBEEF)]
+//
+// CRC covers [Length:Padding]. Type=Commit encodes commitTS as big-endian
+// uint64 in Key with KeyLen=8, ValueLen=0.
 type WALEntry struct {
-	// LSN 日志序列号（在 Append 时分配）
-	LSN LSN
-	// TxID 事务ID（0 = 非事务操作）
-	TxID uint64
-	// Timestamp Unix 时间戳（微秒）
+	LSN       LSN
+	TxID      uint64
 	Timestamp int64
-	// Type 日志类型
-	Type WALType
-	// Key 键
-	Key []byte
-	// Value 值
-	Value []byte
-	// PrevLSN 前一条日志的 LSN（用于事务链）
-	PrevLSN LSN
-	// CRC32 校验和
-	CRC uint32
+	Type      WALType
+	Key       []byte
+	Value     []byte
+	PrevLSN   LSN
+	ShardID   uint16 // Phase 3 fixed at 0
+	Term      uint16 // Phase 3 fixed at 0
 }
 
-// NewWALEntry 创建新的 WAL 日志条目
+// NewWALEntry creates a new WAL entry.
 func NewWALEntry(entryType WALType, txID uint64, key, value []byte, prevLSN LSN) *WALEntry {
-	now := time.Now().UnixMicro()
 	return &WALEntry{
 		TxID:      txID,
-		Timestamp: now,
+		Timestamp: time.Now().UnixMicro(),
 		Type:      entryType,
 		Key:       key,
 		Value:     value,
@@ -90,45 +79,62 @@ func NewWALEntry(entryType WALType, txID uint64, key, value []byte, prevLSN LSN)
 	}
 }
 
-// Marshal 序列化 WAL 日志条目
-// 格式：[CRC:4][LSN:8][Type:1][TxID:8][Timestamp:8][PrevLSN:8][KeyLen:4][ValueLen:4][Key:N][Value:M]
+// Marshal serializes the entry to the Phase 3 wire format.
 func (e *WALEntry) Marshal() ([]byte, error) {
-	// 计算总长度
 	keyLen := len(e.Key)
 	valueLen := len(e.Value)
-	totalLen := 4 + 8 + 1 + 8 + 8 + 8 + 4 + 4 + keyLen + valueLen // CRC + LSN + Type + TxID + Timestamp + PrevLSN + KeyLen + ValueLen + Key + Value
 
+	// Payload: everything after Length through Value.
+	payloadLen := 8 + 1 + 2 + 2 + 8 + 8 + 8 + 4 + 4 + keyLen + valueLen
+	// Align to 8 bytes: (payloadLen + 7) &^ 7 = padded payload length.
+	paddedLen := (payloadLen + 7) &^ 7
+	paddingLen := paddedLen - payloadLen
+
+	// Total: CRC + Length + padded payload + Trailer.
+	totalLen := 4 + 4 + paddedLen + 4
 	buf := make([]byte, totalLen)
 	offset := 0
 
-	// CRC（预留，最后计算）
+	// CRC placeholder (offset 0-3)
 	offset += 4
 
-	// LSN
+	// Length (offset 4-7): number of bytes from LSN through Padding end.
+	binary.BigEndian.PutUint32(buf[offset:], uint32(paddedLen))
+	offset += 4
+
+	// LSN (offset 8-15)
 	binary.BigEndian.PutUint64(buf[offset:], uint64(e.LSN))
 	offset += 8
 
-	// Type
+	// Type (offset 16)
 	buf[offset] = byte(e.Type)
 	offset++
 
-	// TxID
+	// ShardID (offset 17-18)
+	binary.BigEndian.PutUint16(buf[offset:], e.ShardID)
+	offset += 2
+
+	// Term (offset 19-20)
+	binary.BigEndian.PutUint16(buf[offset:], e.Term)
+	offset += 2
+
+	// TxID (offset 21-28)
 	binary.BigEndian.PutUint64(buf[offset:], e.TxID)
 	offset += 8
 
-	// Timestamp
+	// Timestamp (offset 29-36)
 	binary.BigEndian.PutUint64(buf[offset:], uint64(e.Timestamp))
 	offset += 8
 
-	// PrevLSN
+	// PrevLSN (offset 37-44)
 	binary.BigEndian.PutUint64(buf[offset:], uint64(e.PrevLSN))
 	offset += 8
 
-	// KeyLen
+	// KeyLen (offset 45-48)
 	binary.BigEndian.PutUint32(buf[offset:], uint32(keyLen))
 	offset += 4
 
-	// ValueLen
+	// ValueLen (offset 49-52)
 	binary.BigEndian.PutUint32(buf[offset:], uint32(valueLen))
 	offset += 4
 
@@ -141,130 +147,155 @@ func (e *WALEntry) Marshal() ([]byte, error) {
 	// Value
 	if valueLen > 0 {
 		copy(buf[offset:], e.Value)
+		offset += valueLen
 	}
 
-	// 计算并写入 CRC（不包括 CRC 字段本身）
-	e.CRC = crc32.ChecksumIEEE(buf[4:])
-	binary.BigEndian.PutUint32(buf[0:], e.CRC)
+	// Padding (zero-filled)
+	for i := 0; i < paddingLen; i++ {
+		buf[offset] = 0
+		offset++
+	}
+
+	// Trailer
+	binary.BigEndian.PutUint32(buf[offset:], trailerMagic)
+
+	// CRC32C — covers [Length:Padding]
+	crc := CRC32C(buf[4 : 4+4+paddedLen])
+	binary.BigEndian.PutUint32(buf[0:], crc)
 
 	return buf, nil
 }
 
-// Unmarshal 反序列化 WAL 日志条目
+// Unmarshal deserializes from the Phase 3 wire format.
 func (e *WALEntry) Unmarshal(data []byte) error {
-	if len(data) < 4+8+1+8+8+8+4+4 {
+	if len(data) < 4+4+8+1+2+2+8+8+8+4+4+4 {
 		return ErrWALEntryCorrupted
 	}
 
 	offset := 0
 
-	// CRC
+	// CRC (offset 0-3)
 	crc := binary.BigEndian.Uint32(data[offset:])
 	offset += 4
 
-	// 验证 CRC
-	actualCRC := crc32.ChecksumIEEE(data[4:])
-	if actualCRC != crc {
+	// Length (offset 4-7)
+	length := binary.BigEndian.Uint32(data[offset:])
+	offset += 4
+
+	// Verify CRC (covers [Length:Padding])
+	paddedEnd := 4 + 4 + int(length)
+	if len(data) < paddedEnd+4 {
+		return ErrWALEntryCorrupted
+	}
+	if CRC32C(data[4:paddedEnd]) != crc {
 		return ErrWALChecksumMismatch
 	}
 
-	// LSN
+	// Verify trailer
+	trailer := binary.BigEndian.Uint32(data[paddedEnd : paddedEnd+4])
+	if trailer != trailerMagic {
+		return ErrWALCorruptedTruncatedEntry
+	}
+
+	// LSN (offset 8-15)
 	e.LSN = LSN(binary.BigEndian.Uint64(data[offset:]))
 	offset += 8
 
-	// Type
+	// Type (offset 16)
 	e.Type = WALType(data[offset])
 	offset++
 
-	// TxID
+	// ShardID (offset 17-18)
+	e.ShardID = binary.BigEndian.Uint16(data[offset:])
+	offset += 2
+
+	// Term (offset 19-20)
+	e.Term = binary.BigEndian.Uint16(data[offset:])
+	offset += 2
+
+	// TxID (offset 21-28)
 	e.TxID = binary.BigEndian.Uint64(data[offset:])
 	offset += 8
 
-	// Timestamp
+	// Timestamp (offset 29-36)
 	e.Timestamp = int64(binary.BigEndian.Uint64(data[offset:]))
 	offset += 8
 
-	// PrevLSN
+	// PrevLSN (offset 37-44)
 	e.PrevLSN = LSN(binary.BigEndian.Uint64(data[offset:]))
 	offset += 8
 
-	// KeyLen
+	// KeyLen (offset 45-48)
 	keyLen := int(binary.BigEndian.Uint32(data[offset:]))
 	offset += 4
 
-	// ValueLen
+	// ValueLen (offset 49-52)
 	valueLen := int(binary.BigEndian.Uint32(data[offset:]))
 	offset += 4
-
-	// 检查数据长度
-	if len(data) < offset+keyLen+valueLen {
-		return ErrWALEntryCorrupted
-	}
 
 	// Key
 	if keyLen > 0 {
 		e.Key = make([]byte, keyLen)
 		copy(e.Key, data[offset:offset+keyLen])
 		offset += keyLen
+	} else {
+		e.Key = nil
 	}
 
 	// Value
 	if valueLen > 0 {
 		e.Value = make([]byte, valueLen)
 		copy(e.Value, data[offset:offset+valueLen])
+		// offset += valueLen — not needed, we're done
+	} else {
+		e.Value = nil
 	}
-
-	// 保存 CRC
-	e.CRC = crc
 
 	return nil
 }
 
-// WALConfig WAL 配置
+// WALConfig holds WAL configuration.
 type WALConfig struct {
-	// Dir WAL 目录
-	Dir string
-	// SegmentSize 分段大小（字节），默认 64MB
+	Dir         string
 	SegmentSize int64
-	// SyncPolicy 同步策略
-	SyncPolicy SyncPolicy
+	SyncPolicy  SyncPolicy
 }
 
-// SyncPolicy 同步策略
 type SyncPolicy int
 
 const (
-	// SyncPolicyEveryWrite 每次写入都同步
 	SyncPolicyEveryWrite SyncPolicy = iota
-	// SyncPolicyEverySecond 每秒同步
 	SyncPolicyEverySecond
-	// SyncPolicyBatch 批量同步
 	SyncPolicyBatch
+	SyncPolicyGroupCommit // Phase 3: batch fsync with size+time triggers
 )
 
-// DefaultWALConfig 返回默认 WAL 配置
+// WALGroupCommitConfig tunes Group Commit behavior.
+type WALGroupCommitConfig struct {
+	PreferredBatchSize int   // default 16
+	BatchTimeoutMs     int64 // default 1 (millisecond)
+}
+
+func DefaultGroupCommitConfig() *WALGroupCommitConfig {
+	return &WALGroupCommitConfig{
+		PreferredBatchSize: 16,
+		BatchTimeoutMs:     1,
+	}
+}
+
 func DefaultWALConfig() *WALConfig {
 	return &WALConfig{
-		SegmentSize: 64 * 1024 * 1024, // 64MB
+		SegmentSize: 64 * 1024 * 1024,
 		SyncPolicy:  SyncPolicyEveryWrite,
 	}
 }
 
-// Validate 验证配置
 func (c *WALConfig) Validate() error {
 	if c.Dir == "" {
 		return ErrInvalidWALConfig
 	}
-	if c.SegmentSize < 1024*1024 { // 最小 1MB
+	if c.SegmentSize < 1024*1024 {
 		return ErrInvalidWALConfig
 	}
 	return nil
-}
-
-// WALEntryIterator WAL 日志迭代器
-type WALEntryIterator interface {
-	// Next 返回下一条日志
-	Next() (*WALEntry, error)
-	// Close 关闭迭代器
-	Close() error
 }

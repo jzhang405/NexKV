@@ -19,16 +19,16 @@ import (
 
 // DiskWAL is the on-disk WAL implementation.
 type DiskWAL struct {
-	mu         sync.RWMutex
-	config     *WALConfig
-	gcCfg      *WALGroupCommitConfig
-	currentLSN atomic.Uint64
-	closed     atomic.Bool
-	file       *os.File
-	filePath   string
-	dir        string
-	stats      WALStats
-	syncCount  atomic.Int64
+	mu           sync.RWMutex
+	config       *WALConfig
+	gcCfg        *WALGroupCommitConfig
+	currentLSN   atomic.Uint64
+	closed       atomic.Bool
+	file         *os.File
+	filePath     string
+	dir          string
+	stats        WALStats
+	syncCount    atomic.Int64
 	writtenBytes atomic.Int64 // bytes written to current segment
 }
 
@@ -398,7 +398,6 @@ func (w *DiskWAL) Close() error {
 	}
 	return nil
 }
-
 
 // StartBatchFlusher starts a background goroutine that periodically flushes
 // pending WAL batches. Implements the Group Commit time-window trigger (C6).

@@ -107,7 +107,7 @@ func (vc *VersionChain) Prune(watermark uint64) int {
 
 	// Pass 1: find the minimum commitTS that must be retained.
 	var (
-		lastBeforeWatermark        *VersionNode
+		lastBeforeWatermark       *VersionNode
 		firstNonTombstoneBeforeWM *VersionNode
 	)
 	for node := head; node != nil; node = node.next {

@@ -73,25 +73,25 @@ func NewTxManager(storage StorageBackend, tsGen TSGenerator) TxManager {
 // If gcCfg is nil, GC is disabled (Phase 2 compatibility).
 func NewTxManagerWithGC(storage StorageBackend, tsGen TSGenerator, gcCfg *GCConfig) TxManager {
 	return &txManager{
-		storage:           storage,
-		tsGen:             tsGen,
-		versionStore:      &VersionStore{},
-		activeTxRegistry:  NewActiveTxRegistry(),
-		gcCfg:             gcCfg,
+		storage:          storage,
+		tsGen:            tsGen,
+		versionStore:     &VersionStore{},
+		activeTxRegistry: NewActiveTxRegistry(),
+		gcCfg:            gcCfg,
 	}
 }
 
 type txManager struct {
-	storage           StorageBackend
-	tsGen             TSGenerator
-	versionStore      *VersionStore
-	activeTxRegistry  *ActiveTxRegistry
-	txIDCounter       atomic.Uint64
-	siCount           atomic.Int32
-	keyLocks          sync.Map // string → *KeyLock
-	gcCfg             *GCConfig
-	gcStats           GCStats
-	wal               WALWriter // Phase 3: WAL for crash recovery (nil = no persistence)
+	storage          StorageBackend
+	tsGen            TSGenerator
+	versionStore     *VersionStore
+	activeTxRegistry *ActiveTxRegistry
+	txIDCounter      atomic.Uint64
+	siCount          atomic.Int32
+	keyLocks         sync.Map // string → *KeyLock
+	gcCfg            *GCConfig
+	gcStats          GCStats
+	wal              WALWriter // Phase 3: WAL for crash recovery (nil = no persistence)
 }
 
 // WALWriter is the minimal WAL interface for the transaction engine.
@@ -420,19 +420,18 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 	// Phase 2: Allocate commitTS
 	commitTS := tx.engine.tsGen.NextTS()
 
-
-		// Phase 3: WAL Append + Sync (before Apply — all-or-nothing durability)
-		if tx.engine.wal != nil {
-			entries := tx.writeBuffer.ToWALEntries(commitTS)
-			if _, err := tx.engine.wal.AppendBatch(entries); err != nil {
-				tx.cleanup()
-				return fmt.Errorf("wal append: %w", err)
-			}
-			if err := tx.engine.wal.Sync(); err != nil {
-				tx.cleanup()
-				return fmt.Errorf("wal sync: %w", err)
-			}
+	// Phase 3: WAL Append + Sync (before Apply — all-or-nothing durability)
+	if tx.engine.wal != nil {
+		entries := tx.writeBuffer.ToWALEntries(commitTS)
+		if _, err := tx.engine.wal.AppendBatch(entries); err != nil {
+			tx.cleanup()
+			return fmt.Errorf("wal append: %w", err)
 		}
+		if err := tx.engine.wal.Sync(); err != nil {
+			tx.cleanup()
+			return fmt.Errorf("wal sync: %w", err)
+		}
+	}
 
 	// Phase 4: Apply WriteBuffer (WAL already durable)
 	if err := tx.applyWriteBuffer(ctx, commitTS); err != nil {

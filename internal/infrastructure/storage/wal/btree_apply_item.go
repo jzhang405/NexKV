@@ -14,17 +14,17 @@ import (
 // BTreeApplyItem is an async BTree Apply task for use with TaskScheduler.
 // Implements model.TaskRunner and model.TaskResult.
 type BTreeApplyItem struct {
-	txID     uint64
-	commitTS uint64
-	buf      *mvcc.WriteBufferSnapshot
-	keyHash  int
-	done     chan struct{}
-	err      error
-	priority int
-	sourceID model.SourceID
-	retries  int
+	txID      uint64
+	commitTS  uint64
+	buf       *mvcc.WriteBufferSnapshot
+	keyHash   int
+	done      chan struct{}
+	err       error
+	priority  int
+	sourceID  model.SourceID
+	retries   int
 	taskOrder int
-	applier  BTreeApplier
+	applier   BTreeApplier
 }
 
 // BTreeApplier applies a write buffer snapshot to BTree.
@@ -50,10 +50,10 @@ func NewBTreeApplyItem(txID, commitTS uint64, buf *mvcc.WriteBufferSnapshot, key
 
 // --- ShardItem ---
 
-func (item *BTreeApplyItem) ShardID() int    { return item.keyHash }
+func (item *BTreeApplyItem) ShardID() int     { return item.keyHash }
 func (item *BTreeApplyItem) MaxRetries() int  { return 0 }
 func (item *BTreeApplyItem) IncAttempts() int { item.retries++; return item.retries }
-func (item *BTreeApplyItem) TaskOrder() int    { return item.taskOrder }
+func (item *BTreeApplyItem) TaskOrder() int   { return item.taskOrder }
 
 // --- TaskRunner ---
 

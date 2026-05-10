@@ -40,9 +40,9 @@ func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor, vs *mvcc
 
 	// Step 3: Group by TxID, find committed transactions (those with Commit marker)
 	type txGroup struct {
-		entries     []*WALEntry
-		commitTS    uint64
-		hasCommit   bool
+		entries   []*WALEntry
+		commitTS  uint64
+		hasCommit bool
 	}
 	groups := make(map[uint64]*txGroup)
 	for _, e := range entries {
@@ -51,14 +51,15 @@ func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor, vs *mvcc
 			g = &txGroup{}
 			groups[e.TxID] = g
 		}
-		if e.Type == WALTypeCommit {
+		switch e.Type {
+		case WALTypeCommit:
 			g.hasCommit = true
 			if len(e.Key) == 8 {
 				g.commitTS = binary.BigEndian.Uint64(e.Key)
 			}
-		} else if e.Type == WALTypeRollback {
+		case WALTypeRollback:
 			g.hasCommit = false // explicit rollback
-		} else {
+		default:
 			g.entries = append(g.entries, e)
 		}
 	}

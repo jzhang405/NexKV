@@ -15,7 +15,7 @@ const LSNInvalid LSN = 0
 type WALType uint8
 
 const (
-	WALTypeInsert     WALType = iota
+	WALTypeInsert WALType = iota
 	WALTypeUpdate
 	WALTypeDelete
 	WALTypeCommit
@@ -66,9 +66,6 @@ type WALEntry struct {
 	ShardID   uint16 // Phase 3 fixed at 0
 	Term      uint16 // Phase 3 fixed at 0
 }
-
-// fixedOverhead is the wire format overhead excluding Key, Value, Padding, Trailer.
-const fixedOverhead = 4 + 4 + 8 + 1 + 2 + 2 + 8 + 8 + 8 + 4 + 4 // = 53 bytes
 
 // NewWALEntry creates a new WAL entry.
 func NewWALEntry(entryType WALType, txID uint64, key, value []byte, prevLSN LSN) *WALEntry {
@@ -161,7 +158,6 @@ func (e *WALEntry) Marshal() ([]byte, error) {
 
 	// Trailer
 	binary.BigEndian.PutUint32(buf[offset:], trailerMagic)
-	offset += 4
 
 	// CRC32C — covers [Length:Padding]
 	crc := CRC32C(buf[4 : 4+4+paddedLen])
@@ -268,7 +264,7 @@ type WALConfig struct {
 type SyncPolicy int
 
 const (
-	SyncPolicyEveryWrite  SyncPolicy = iota
+	SyncPolicyEveryWrite SyncPolicy = iota
 	SyncPolicyEverySecond
 	SyncPolicyBatch
 	SyncPolicyGroupCommit // Phase 3: batch fsync with size+time triggers

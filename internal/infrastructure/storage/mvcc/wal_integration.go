@@ -12,8 +12,8 @@ import (
 
 // WriteBufferSnapshot is an immutable snapshot of the write buffer for async apply.
 type WriteBufferSnapshot struct {
-	Entries  map[string]WriteEntry
-	Ordered  []string
+	Entries map[string]WriteEntry
+	Ordered []string
 }
 
 // Keys returns all active keys in the write buffer.
@@ -64,8 +64,8 @@ func (wb *WriteBuffer) ToWALEntries(commitTS uint64) []*service.WALEntry {
 			walType = service.WALTypeDelete
 		}
 		entries = append(entries, &service.WALEntry{
-			Type: walType,
-			Key:  []byte(key),
+			Type:  walType,
+			Key:   []byte(key),
 			Value: e.Value,
 		})
 	}

@@ -15,8 +15,5 @@ func CRC32C(data []byte) uint32 {
 	return crc32.Checksum(data, crc32cTable)
 }
 
-// magicNXK3 is the WAL segment magic number: "NXK3" (0x4E584B33).
-const magicNXK3 uint32 = 0x4E584B33
-
 // trailerMagic is the WAL entry trailer: 0xDEADBEEF.
 const trailerMagic uint32 = 0xDEADBEEF

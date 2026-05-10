@@ -30,7 +30,7 @@ func DefaultGCConfig() *GCConfig {
 
 // GCStats tracks GC metrics for monitoring.
 type GCStats struct {
-	Cycles        atomic.Uint64
+	Cycles         atomic.Uint64
 	TotalReclaimed atomic.Uint64
 	LastWatermark  atomic.Uint64
 	LastDurationMs atomic.Int64

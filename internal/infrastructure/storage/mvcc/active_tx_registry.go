@@ -50,7 +50,7 @@ func (r *ActiveTxRegistry) Watermark() uint64 {
 	if len(r.txs) == 0 {
 		return 0
 	}
-	var min uint64 = ^uint64(0)
+	min := ^uint64(0)
 	for _, ts := range r.txs {
 		if ts < min {
 			min = ts

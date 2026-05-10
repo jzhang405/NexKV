@@ -56,13 +56,13 @@ type Stats struct {
 
 // Manager orchestrates Fuzzy and Sharp checkpoints.
 type Manager struct {
-	wal     WALWriter
-	btree   BTreeScanner
-	config  *Config
-	stats   Stats
-	ctx     context.Context
-	cancel  context.CancelFunc
-	mu      sync.Mutex // prevents concurrent checkpoints
+	wal    WALWriter
+	btree  BTreeScanner
+	config *Config
+	stats  Stats
+	ctx    context.Context
+	cancel context.CancelFunc
+	mu     sync.Mutex // prevents concurrent checkpoints
 }
 
 // NewManager creates a checkpoint manager.
@@ -217,6 +217,6 @@ type checkpointPageRef struct {
 	isLeaf bool
 }
 
-func (p *checkpointPageRef) PageID() model.PageID   { return p.id }
-func (p *checkpointPageRef) IsLeaf() bool            { return p.isLeaf }
+func (p *checkpointPageRef) PageID() model.PageID     { return p.id }
+func (p *checkpointPageRef) IsLeaf() bool             { return p.isLeaf }
 func (p *checkpointPageRef) ChildIDs() []model.PageID { return nil }

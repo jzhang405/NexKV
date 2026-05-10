@@ -49,7 +49,7 @@ type WALEntry struct {
 type WALType uint8
 
 const (
-	WALTypeInsert     WALType = iota
+	WALTypeInsert WALType = iota
 	WALTypeUpdate
 	WALTypeDelete
 	WALTypeCommit

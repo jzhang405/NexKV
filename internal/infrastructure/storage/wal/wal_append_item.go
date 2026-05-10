@@ -17,14 +17,14 @@ const ShardIDWAL = 1
 // WALAppendItem encapsulates a batch of WAL entries to be appended and synced.
 // Implements model.TaskRunner and model.TaskResult for TaskScheduler integration.
 type WALAppendItem struct {
-	dw       *DiskWAL
-	entries  []*WALEntry
-	errCh    chan error
-	done     chan struct{}
-	lsn      LSN
-	priority int
-	sourceID model.SourceID
-	retries  int
+	dw        *DiskWAL
+	entries   []*WALEntry
+	errCh     chan error
+	done      chan struct{}
+	lsn       LSN
+	priority  int
+	sourceID  model.SourceID
+	retries   int
 	taskOrder int
 }
 
@@ -43,9 +43,9 @@ func NewWALAppendItem(dw *DiskWAL, entries []*WALEntry) *WALAppendItem {
 // --- ShardItem ---
 
 func (item *WALAppendItem) ShardID() int     { return ShardIDWAL }
-func (item *WALAppendItem) MaxRetries() int   { return 0 }
-func (item *WALAppendItem) IncAttempts() int  { item.retries++; return item.retries }
-func (item *WALAppendItem) TaskOrder() int     { return item.taskOrder }
+func (item *WALAppendItem) MaxRetries() int  { return 0 }
+func (item *WALAppendItem) IncAttempts() int { item.retries++; return item.retries }
+func (item *WALAppendItem) TaskOrder() int   { return item.taskOrder }
 
 // --- TaskRunner ---
 

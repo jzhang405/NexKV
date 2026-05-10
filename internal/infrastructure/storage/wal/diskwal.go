@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
@@ -291,8 +292,14 @@ func (w *DiskWAL) recoverFile(path string) ([]*WALEntry, error) {
 
 		entry := &WALEntry{}
 		if err := entry.Unmarshal(data[offset:entryEnd]); err != nil {
-			// Skip corrupted entry, try next aligned position
-			offset += 8
+			// Jump scan: try to find the next valid entry by scanning forward
+			// aligned positions. This implements the "optimistic guess + CRC verify"
+			// pattern from §3.3 (H4-6, C1).
+			nextOffset := w.jumpScan(data, offset+8)
+			if nextOffset < 0 {
+				break // no valid entry found, stop recovery for this file
+			}
+			offset = nextOffset
 			continue
 		}
 		entries = append(entries, entry)
@@ -390,6 +397,65 @@ func (w *DiskWAL) Close() error {
 		}
 	}
 	return nil
+}
+
+
+// StartBatchFlusher starts a background goroutine that periodically flushes
+// pending WAL batches. Implements the Group Commit time-window trigger (C6).
+func (w *DiskWAL) StartBatchFlusher(ctx context.Context) {
+	go func() {
+		interval := time.Duration(w.gcCfg.BatchTimeoutMs) * time.Millisecond
+		if interval <= 0 {
+			interval = time.Millisecond
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				w.flushPending()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (w *DiskWAL) flushPending() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	// No-op if nothing pending; sync is cheap when file is already synced.
+	_ = w.syncLocked()
+}
+
+// jumpScan attempts to find the next valid WAL entry after a corrupted one.
+// Scans forward in 8-byte aligned steps, trying to find a valid entry by
+// verifying CRC + Trailer. Returns the offset of the next valid entry or -1.
+func (w *DiskWAL) jumpScan(data []byte, startOffset int) int {
+	maxOffset := len(data) - (4 + 4 + 4) // at least CRC + Length + Trailer
+	for off := startOffset; off < maxOffset; off += 8 {
+		// Try to read Length at off+4
+		if off+8 > len(data) {
+			return -1
+		}
+		length := int(binary.BigEndian.Uint32(data[off+4:]))
+		paddedEnd := off + 4 + 4 + length + 4
+		if paddedEnd > len(data) {
+			continue
+		}
+		// Verify CRC
+		crc := binary.BigEndian.Uint32(data[off:])
+		if CRC32C(data[off+4:paddedEnd]) != crc {
+			continue
+		}
+		// Verify Trailer
+		trailer := binary.BigEndian.Uint32(data[paddedEnd-4:])
+		if trailer != trailerMagic {
+			continue
+		}
+		return off
+	}
+	return -1
 }
 
 // GetStats returns current WAL statistics.

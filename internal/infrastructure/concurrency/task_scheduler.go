@@ -830,6 +830,29 @@ func (m *TaskScheduler) Stop() {
 	for _, core := range m.cores {
 		core.wg.Wait()
 	}
+
+	// Phase 3: drain remaining queue items (C3/C5 — prevent goroutine leaks)
+	m.drainRemainingItems()
+}
+
+// drainRemainingItems dequeues all remaining items from all cores and cancels them.
+func (m *TaskScheduler) drainRemainingItems() {
+	for _, core := range m.cores {
+		for _, task := range core.taskMap {
+			for task.QueueLen() > 0 {
+				var item any
+				if !task.Peek(&item) {
+					break
+				}
+				var drained any
+				task.Dequeue(&drained) // remove from queue
+				// Signal cancellation if the item supports it
+				if canceller, ok := drained.(interface{ Cancel(error) }); ok {
+					canceller.Cancel(fmt.Errorf("scheduler stopped"))
+				}
+			}
+		}
+	}
 }
 
 // GetStats 获取统计信息

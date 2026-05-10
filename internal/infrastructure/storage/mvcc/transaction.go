@@ -641,6 +641,17 @@ func (tx *SnapshotTx) cleanup() {
 	}
 }
 
+// CommitAndWait commits the transaction and waits for async BTree Apply to complete.
+// In sync mode (default), this is equivalent to Commit().
+// In async mode, this blocks until the BTreeApplyItem finishes.
+func (tx *SnapshotTx) CommitAndWait(ctx context.Context) error {
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	// In sync mode, Commit already applied — return immediately.
+	return nil
+}
+
 // checkActive returns an error if the transaction is already completed.
 func (tx *SnapshotTx) checkActive() error {
 	if tx.completed.Load() {

@@ -964,4 +964,3 @@ func isNodeSparse(node NodePage, threshold float64) bool {
 }
 
 var _ = isNodeSparse // Phase 6.5: used when lazy merge is fully enabled
-

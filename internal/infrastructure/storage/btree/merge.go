@@ -75,8 +75,9 @@ func (s *OffheapBTreeStorage) BorrowFromLeftLeaf(self, sibling LeafPage) (LeafPa
 	borrowedVal := sibling.GetValue(lastIdx)
 
 	selfRawID := uint32(self.PageID())
-	selfKeys, selfVals := s.collectKVRange(selfRawID, 0, self.Count())
 
+	// COW: copy entire page, then insert borrowed key at position 0
+	// InsertLeafEntry shifts existing entries right automatically
 	newSelfRawID, err := s.pm.Alloc()
 	if err != nil {
 		return nil, nil, fmt.Errorf("btree: borrow left leaf self alloc: %w", err)
@@ -88,16 +89,11 @@ func (s *OffheapBTreeStorage) BorrowFromLeftLeaf(self, sibling LeafPage) (LeafPa
 	selfVersion := s.pa.GetVersion(selfRawID)
 	s.pa.SetVersion(newSelfRawID, selfVersion+1)
 
+	// Insert the borrowed key at position 0
 	dataEnd := s.pa.GetDataEnd(newSelfRawID)
 	if err := s.pa.InsertLeafEntry(newSelfRawID, 0, borrowedKey, borrowedVal, &dataEnd); err != nil {
 		s.pm.Free(newSelfRawID)
 		return nil, nil, fmt.Errorf("btree: borrow left leaf self insert: %w", err)
-	}
-	for i := range selfKeys {
-		if err := s.pa.InsertLeafEntry(newSelfRawID, i+1, selfKeys[i], selfVals[i], &dataEnd); err != nil {
-			s.pm.Free(newSelfRawID)
-			return nil, nil, fmt.Errorf("btree: borrow left leaf self rebuild: %w", err)
-		}
 	}
 
 	sibRawID := uint32(sibling.PageID())

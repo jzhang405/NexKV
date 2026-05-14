@@ -32,6 +32,9 @@ type BTreeMetrics struct {
 
 	// TreeHeightCount tracks the number of times the tree height has increased.
 	TreeHeightCount atomic.Int64
+
+	// CompactionCount tracks the number of compaction cycles (Phase 6.5).
+	CompactionCount atomic.Int64
 }
 
 // NewBTreeMetrics creates a new metrics instance with all counters initialized to 0.
@@ -74,6 +77,11 @@ func (m *BTreeMetrics) IncrementTreeHeight() {
 	m.TreeHeightCount.Add(1)
 }
 
+// IncrementCompact atomically increments the compaction counter.
+func (m *BTreeMetrics) IncrementCompact() {
+	m.CompactionCount.Add(1)
+}
+
 // Snapshot returns a point-in-time snapshot of all metrics.
 // The returned values are consistent but not transactional.
 func (m *BTreeMetrics) Snapshot() MetricsSnapshot {
@@ -85,6 +93,7 @@ func (m *BTreeMetrics) Snapshot() MetricsSnapshot {
 		SplitCount:      m.SplitCount.Load(),
 		MergeCount:      m.MergeCount.Load(),
 		TreeHeightCount: m.TreeHeightCount.Load(),
+		CompactionCount: m.CompactionCount.Load(),
 	}
 }
 
@@ -98,6 +107,7 @@ func (m *BTreeMetrics) Reset() {
 	m.SplitCount.Store(0)
 	m.MergeCount.Store(0)
 	m.TreeHeightCount.Store(0)
+	m.CompactionCount.Store(0)
 }
 
 // MetricsSnapshot is an immutable snapshot of BTreeMetrics.
@@ -108,15 +118,16 @@ type MetricsSnapshot struct {
 	CASRetryCount   int64
 	SplitCount      int64
 	MergeCount      int64
+	CompactionCount int64
 	TreeHeightCount int64
 }
 
 // String returns a formatted string representation of the metrics.
 func (s MetricsSnapshot) String() string {
 	return fmt.Sprintf(
-		"Read=%d Write=%d Delete=%d CASRetries=%d Splits=%d Merges=%d TreeHeight=%d",
+		"Read=%d Write=%d Delete=%d CASRetries=%d Splits=%d Merges=%d Compactions=%d TreeHeight=%d",
 		s.ReadCount, s.WriteCount, s.DeleteCount,
-		s.CASRetryCount, s.SplitCount, s.MergeCount, s.TreeHeightCount,
+		s.CASRetryCount, s.SplitCount, s.MergeCount, s.CompactionCount, s.TreeHeightCount,
 	)
 }
 

@@ -155,8 +155,8 @@ func (b *BTree) handleLeafMerge(path SearchPath, sparseRef *PageRef, leafPI *Pag
 		return nil
 	}
 
-		// Update parent children cache — remove the merged sibling
-		b.removeChildFromCache(parentRef, removeIdx)
+	// Update parent children cache — remove the merged sibling
+	b.removeChildFromCache(parentRef, removeIdx)
 
 	// Phase 4: Mark old pages NodeRedirect (must set Redirect:true — searchPath checks this field)
 	refA.CAS(markA, &PageInfo{PageID: piA.PageID, Version: markA.Version + 1, IsLeaf: true, NodeState: NodeRedirect, Redirect: true})
@@ -222,7 +222,19 @@ func (b *BTree) mergeRoot() error {
 			return nil
 		}
 		childID := oldRoot.GetChild(0)
-		cache := b.rootRef.GetChildren(); var childRef *PageRef; if cache != nil { for _, c := range cache.Children { if c.PageID() == childID { childRef = c; break } } }; if childRef == nil { childRef = NewPageRef(childID, 0, b.rootRef.freeFunc) }
+		cache := b.rootRef.GetChildren()
+		var childRef *PageRef
+		if cache != nil {
+			for _, c := range cache.Children {
+				if c.PageID() == childID {
+					childRef = c
+					break
+				}
+			}
+		}
+		if childRef == nil {
+			childRef = NewPageRef(childID, 0, b.rootRef.freeFunc)
+		}
 		childRef.Retain()
 		childPI := childRef.GetPageInfo()
 		if childPI == nil || childPI.IsBusy() {
@@ -245,3 +257,9 @@ func (b *BTree) mergeRoot() error {
 	}
 	return nil
 }
+
+// Phase 6.5: infrastructure functions, used when lazy merge is fully enabled
+var _ = (*BTree).handleLeafMerge
+var _ = (*BTree).handleInternalMerge
+var _ = (*BTree).removeChildFromCache
+

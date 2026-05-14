@@ -131,7 +131,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 
 		// Step 2: Lock-free PageInfo read
 		oldInfo := leafRef.GetPageInfo()
-			if oldInfo == nil || oldInfo.NodeState == NodeRedirect || oldInfo.Redirect || !oldInfo.IsLeaf || oldInfo.NodeState == NodeMerging {
+		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || oldInfo.Redirect || !oldInfo.IsLeaf || oldInfo.NodeState == NodeMerging {
 			path.ReleaseAll()
 			continue
 		}
@@ -962,3 +962,6 @@ func isLeafSparse(leaf LeafPage, threshold float64) bool {
 func isNodeSparse(node NodePage, threshold float64) bool {
 	return float64(node.ChildCount())/float64(MaxInternalKeys) < threshold
 }
+
+var _ = isNodeSparse // Phase 6.5: used when lazy merge is fully enabled
+

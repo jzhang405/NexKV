@@ -211,16 +211,16 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 				return nil, updateErr
 			}
 			delta := int64(0)
-				tombstoneDelta := int16(0)
-				if mvccVal.IsTombstone() {
-					delta = +1          // Tombstone recovery: key becomes visible again
-					tombstoneDelta = -1 // tombstone removed from count
-				}
-				return &leafMutation{
-					newPageID:      newLeaf.PageID(),
-					delta:          delta,
-					tombstoneDelta: tombstoneDelta,
-				}, nil
+			tombstoneDelta := int16(0)
+			if mvccVal.IsTombstone() {
+				delta = +1          // Tombstone recovery: key becomes visible again
+				tombstoneDelta = -1 // tombstone removed from count
+			}
+			return &leafMutation{
+				newPageID:      newLeaf.PageID(),
+				delta:          delta,
+				tombstoneDelta: tombstoneDelta,
+			}, nil
 		}
 
 		// Insert new key -- value with MVCC header (Phase 2a)

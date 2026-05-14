@@ -27,26 +27,26 @@ func (b *BTree) printSubtree(pageID model.PageID, isLeaf bool, depth int, sb *st
 	if isLeaf {
 		leaf, err := b.storage.GetLeafPage(pageID)
 		if err != nil {
-			sb.WriteString(fmt.Sprintf("%s[Leaf %d: ERROR %v]\n", indent, pageID, err))
+			fmt.Fprintf(sb, "%s[Leaf %d: ERROR %v]\n", indent, pageID, err)
 			return
 		}
-		sb.WriteString(fmt.Sprintf("%s[Leaf %d: %d keys]", indent, pageID, leaf.Count()))
+		fmt.Fprintf(sb, "%s[Leaf %d: %d keys]", indent, pageID, leaf.Count())
 		if leaf.Count() > 0 {
-			sb.WriteString(fmt.Sprintf(" [%s..%s]", truncate(string(leaf.GetKey(0)), 20),
-				truncate(string(leaf.GetKey(leaf.Count()-1)), 20)))
+			fmt.Fprintf(sb, " [%s..%s]", truncate(string(leaf.GetKey(0)), 20),
+				truncate(string(leaf.GetKey(leaf.Count()-1)), 20))
 		}
 		sb.WriteString("\n")
 		return
 	}
 	node, err := b.storage.GetNodePage(pageID)
 	if err != nil {
-		sb.WriteString(fmt.Sprintf("%s[Node %d: ERROR %v]\n", indent, pageID, err))
+		fmt.Fprintf(sb, "%s[Node %d: ERROR %v]\n", indent, pageID, err)
 		return
 	}
 	count := node.Count()
-	sb.WriteString(fmt.Sprintf("%s[Node %d: %d keys, %d children]\n", indent, pageID, count, node.ChildCount()))
+	fmt.Fprintf(sb, "%s[Node %d: %d keys, %d children]\n", indent, pageID, count, node.ChildCount())
 	for i := 0; i < count; i++ {
-		sb.WriteString(fmt.Sprintf("%s  key[%d] = %s\n", indent, i, truncate(string(node.GetKey(i)), 30)))
+		fmt.Fprintf(sb, "%s  key[%d] = %s\n", indent, i, truncate(string(node.GetKey(i)), 30))
 	}
 	for i := 0; i < node.ChildCount(); i++ {
 		childID := node.GetChild(i)
@@ -158,4 +158,3 @@ func truncate(s string, maxLen int) string {
 	}
 	return s[:maxLen-3] + "..."
 }
-

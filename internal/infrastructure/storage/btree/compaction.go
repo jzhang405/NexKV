@@ -88,7 +88,7 @@ func (b *BTree) compactCycle(wp WatermarkProvider, cfg CompactionConfig) error {
 		leafRef.Retain()
 	}
 
-if b.metrics != nil && compacted > 0 {
+	if b.metrics != nil && compacted > 0 {
 		b.metrics.IncrementCompact()
 	}
 	return nil
@@ -105,12 +105,12 @@ func (b *BTree) findLeftmostLeaf(rootPI *PageInfo) *PageRef {
 
 	for {
 		pi := currentRef.GetPageInfo()
-			if pi == nil {
-				return nil
-			}
-			if pi.IsLeaf {
-				return NewPageRef(pi.PageID, 0, b.rootRef.freeFunc)
-			}
+		if pi == nil {
+			return nil
+		}
+		if pi.IsLeaf {
+			return NewPageRef(pi.PageID, 0, b.rootRef.freeFunc)
+		}
 		node, err := b.storage.GetNodePage(pi.PageID)
 		if err != nil {
 			return nil

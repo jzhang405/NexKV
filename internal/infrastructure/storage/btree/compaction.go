@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
 )
 
@@ -87,8 +88,8 @@ func (b *BTree) compactCycle(wp WatermarkProvider, cfg CompactionConfig) error {
 		leafRef.Retain()
 	}
 
-	if b.metrics != nil && compacted > 0 {
-		_ = compacted
+if b.metrics != nil && compacted > 0 {
+		b.metrics.IncrementCompact()
 	}
 	return nil
 }
@@ -104,10 +105,12 @@ func (b *BTree) findLeftmostLeaf(rootPI *PageInfo) *PageRef {
 
 	for {
 		pi := currentRef.GetPageInfo()
-		if pi == nil || pi.IsLeaf {
-			ref := NewPageRef(pi.PageID, 0, b.rootRef.freeFunc)
-			return ref
-		}
+			if pi == nil {
+				return nil
+			}
+			if pi.IsLeaf {
+				return NewPageRef(pi.PageID, 0, b.rootRef.freeFunc)
+			}
 		node, err := b.storage.GetNodePage(pi.PageID)
 		if err != nil {
 			return nil
@@ -145,13 +148,13 @@ func (b *BTree) compactPage(ref *PageRef, oldPI *PageInfo, leaf LeafPage, wp Wat
 	var keepKeys, keepVals [][]byte
 	for i := 0; i < count; i++ {
 		val := leaf.GetValue(i)
-		mvccVal, err := parseMVCCFlag(val)
+		mvccVal, err := mvcc.ParseMVCC(val)
 		if err != nil {
 			keepKeys = append(keepKeys, leaf.GetKey(i))
 			keepVals = append(keepVals, val)
 			continue
 		}
-		if mvccVal.isTombstone && mvccVal.commitTS < watermark {
+		if mvccVal.IsTombstone() && mvccVal.BeginTS < watermark {
 			continue // safe to reclaim
 		}
 		keepKeys = append(keepKeys, leaf.GetKey(i))
@@ -184,30 +187,11 @@ func (b *BTree) compactPage(ref *PageRef, oldPI *PageInfo, leaf LeafPage, wp Wat
 
 	if !ref.CAS(oldPI, newPI) {
 		b.storage.pm.Free(newRawID)
-		return nil, nil // CAS conflict, skip
+		return nil, nil // CAS conflict (expected — another goroutine compacted this page)
 	}
 
 	_ = b.storage.pm.Free(uint32(oldPI.PageID))
 	return &leafPageHandle{id: model.PageID(newRawID), pa: b.storage.pa, storage: b.storage}, nil
-}
-
-// parseMVCCFlag parses MVCC flag from a value byte slice.
-type mvccParsed struct {
-	isTombstone bool
-	commitTS    uint64
-}
-
-func parseMVCCFlag(val []byte) (mvccParsed, error) {
-	if len(val) < 9 {
-		return mvccParsed{}, fmt.Errorf("btree: value too short for MVCC header")
-	}
-	flag := val[0]
-	ts := uint64(val[1]) | uint64(val[2])<<8 |
-		uint64(val[3])<<16 | uint64(val[4])<<24 |
-		uint64(val[5])<<32 | uint64(val[6])<<40 |
-		uint64(val[7])<<48 | uint64(val[8])<<56
-	const FlagTombstone byte = 1
-	return mvccParsed{isTombstone: flag == FlagTombstone, commitTS: ts}, nil
 }
 
 var _ = offheap.SizeofPageHeader // ensure offheap import is used

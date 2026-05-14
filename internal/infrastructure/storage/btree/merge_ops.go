@@ -14,7 +14,6 @@ func (b *BTree) maybeMergeAfterWrite(path SearchPath, leafRef *PageRef, delta in
 	_ = path
 	_ = leafRef
 	_ = delta
-	return
 
 	// Full implementation:
 	// if delta >= 0 { return }
@@ -140,11 +139,6 @@ func (b *BTree) handleLeafMerge(path SearchPath, sparseRef *PageRef, leafPI *Pag
 		return err
 	}
 	repIdx := removeIdx
-	if !selfIsLeft {
-		repIdx = removeIdx
-	} else {
-		repIdx = removeIdx
-	}
 	newParent, err = newParent.ReplaceChild(repIdx, merged.PageID())
 	if err != nil {
 		refA.CAS(markA, piA)
@@ -161,9 +155,12 @@ func (b *BTree) handleLeafMerge(path SearchPath, sparseRef *PageRef, leafPI *Pag
 		return nil
 	}
 
-	// Phase 4: Mark old pages NodeRedirect
-	refA.CAS(markA, &PageInfo{PageID: piA.PageID, Version: markA.Version + 1, IsLeaf: true, NodeState: NodeRedirect})
-	refB.CAS(markB, &PageInfo{PageID: piB.PageID, Version: markB.Version + 1, IsLeaf: true, NodeState: NodeRedirect})
+		// Update parent children cache — remove the merged sibling
+		b.removeChildFromCache(parentRef, removeIdx)
+
+	// Phase 4: Mark old pages NodeRedirect (must set Redirect:true — searchPath checks this field)
+	refA.CAS(markA, &PageInfo{PageID: piA.PageID, Version: markA.Version + 1, IsLeaf: true, NodeState: NodeRedirect, Redirect: true})
+	refB.CAS(markB, &PageInfo{PageID: piB.PageID, Version: markB.Version + 1, IsLeaf: true, NodeState: NodeRedirect, Redirect: true})
 
 	_ = b.storage.FreePage(piA.PageID)
 	_ = b.storage.FreePage(piB.PageID)
@@ -188,8 +185,31 @@ func (b *BTree) handleInternalMerge(path SearchPath, nodeRef *PageRef, _ *PageIn
 	return nil
 }
 
+func (b *BTree) removeChildFromCache(parentRef *PageRef, removeIdx int) {
+	cache := parentRef.GetChildren()
+	if cache == nil || removeIdx >= len(cache.Children) {
+		return
+	}
+	newChildren := make([]*PageRef, 0, len(cache.Children)-1)
+	newSeps := make([][]byte, 0, len(cache.Separators))
+	for i, child := range cache.Children {
+		if i == removeIdx+1 || i == removeIdx {
+			continue
+		}
+		newChildren = append(newChildren, child)
+	}
+	for i, sep := range cache.Separators {
+		if i == removeIdx {
+			continue
+		}
+		newSeps = append(newSeps, sep)
+	}
+	parentRef.children.Store(&ChildrenCache{Children: newChildren, Separators: newSeps})
+}
+
 func (b *BTree) mergeRoot() error {
-	for {
+	const maxMergeRootRetries = 100
+	for attempt := 0; attempt < maxMergeRootRetries; attempt++ {
 		oldRootPI := b.rootRef.GetPageInfo()
 		if oldRootPI == nil || oldRootPI.IsLeaf {
 			return nil
@@ -202,7 +222,7 @@ func (b *BTree) mergeRoot() error {
 			return nil
 		}
 		childID := oldRoot.GetChild(0)
-		childRef := NewPageRef(childID, 0, b.rootRef.freeFunc)
+		cache := b.rootRef.GetChildren(); var childRef *PageRef; if cache != nil { for _, c := range cache.Children { if c.PageID() == childID { childRef = c; break } } }; if childRef == nil { childRef = NewPageRef(childID, 0, b.rootRef.freeFunc) }
 		childRef.Retain()
 		childPI := childRef.GetPageInfo()
 		if childPI == nil || childPI.IsBusy() {
@@ -223,5 +243,5 @@ func (b *BTree) mergeRoot() error {
 		}
 		childRef.Release()
 	}
+	return nil
 }
-

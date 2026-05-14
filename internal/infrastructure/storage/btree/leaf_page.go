@@ -234,6 +234,16 @@ func (h *leafPageHandle) Split() (LeafPage, LeafPage, []byte, error) {
 	return left, right, splitKeyCopy, nil
 }
 
+// IncrementTombstone increments the tombstone count on the COW page.
+func (h *leafPageHandle) IncrementTombstone() {
+	h.pa.IncrementTombstone(uint32(h.id))
+}
+
+// DecrementTombstone decrements the tombstone count on the COW page.
+func (h *leafPageHandle) DecrementTombstone() {
+	h.pa.DecrementTombstone(uint32(h.id))
+}
+
 func (h *leafPageHandle) Validate() error {
 	count := h.Count()
 	if count < 0 {

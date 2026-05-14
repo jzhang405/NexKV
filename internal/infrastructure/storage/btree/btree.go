@@ -211,12 +211,15 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 				return nil, updateErr
 			}
 			delta := int64(0)
+			tombstoneDelta := int16(0)
 			if mvccVal.IsTombstone() {
-				delta = +1 // Tombstone recovery: key becomes visible again
+				delta = +1          // Tombstone recovery: key becomes visible again
+				tombstoneDelta = -1 // tombstone removed from count
 			}
 			return &leafMutation{
-				newPageID: newLeaf.PageID(),
-				delta:     delta,
+				newPageID:      newLeaf.PageID(),
+				delta:          delta,
+				tombstoneDelta: tombstoneDelta,
 			}, nil
 		}
 
@@ -230,8 +233,9 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 			return nil, insertErr
 		}
 		return &leafMutation{
-			newPageID: newLeaf.PageID(),
-			delta:     1,
+			newPageID:      newLeaf.PageID(),
+			delta:          1,
+			tombstoneDelta: 0,
 		}, nil
 	})
 
@@ -276,8 +280,9 @@ func (b *BTree) Delete(_ context.Context, key []byte) error {
 			return nil, updateErr
 		}
 		return &leafMutation{
-			newPageID: newLeaf.PageID(),
-			delta:     -1,
+			newPageID:      newLeaf.PageID(),
+			delta:          -1,
+			tombstoneDelta: 1,
 		}, nil
 	})
 

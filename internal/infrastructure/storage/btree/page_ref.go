@@ -60,6 +60,9 @@ func (r *PageRef) IsLeaf() bool {
 	return r.pInfo.Load().IsLeaf
 }
 
+// PageID returns the page ID of this reference.
+func (r *PageRef) PageID() model.PageID { return r.pageID }
+
 // ChildPageIDs returns the PageIDs of all children.
 // Used by checkpoint DFS traversal. Returns nil for leaf pages.
 func (r *PageRef) ChildPageIDs() []model.PageID {

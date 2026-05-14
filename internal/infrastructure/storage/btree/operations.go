@@ -18,13 +18,13 @@ import (
 
 // leafMutation records the result of a leaf-level COW mutation.
 type leafMutation struct {
-	newPageID model.PageID // the new leaf page ID after COW
-	delta     int64        // change in key count: +1 insert, -1 delete, 0 update
+	newPageID      model.PageID // the new leaf page ID after COW
+	delta          int64        // change in key count: +1 insert, -1 delete, 0 update
+	tombstoneDelta int16        // Phase 6.5: change in tombstone count
 }
 
 // mutateFunc applies a COW mutation to a leaf page.
-// Returns the mutation result or a non-retryable error
-// (ErrKeyNotFound, ErrDuplicateKey, ErrPageFull, etc.).
+// Returns the mutation result or a non-retryable error.
 type mutateFunc func(leaf LeafPage) (*leafMutation, error)
 
 // handleParentCASWithSpin uses spin-waiting to handle parent CAS.
@@ -131,7 +131,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 
 		// Step 2: Lock-free PageInfo read
 		oldInfo := leafRef.GetPageInfo()
-		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || oldInfo.Redirect || !oldInfo.IsLeaf {
+		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || oldInfo.Redirect || !oldInfo.IsLeaf || oldInfo.NodeState == NodeMerging {
 			path.ReleaseAll()
 			continue
 		}
@@ -221,7 +221,8 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			continue
 		}
 
-		// Success
+		// Success — Phase 6.5: check for lazy merge before releasing path
+		b.maybeMergeAfterWrite(path, leafRef, result.delta)
 		path.ReleaseAll()
 		b.size.Add(result.delta)
 		return nil
@@ -949,3 +950,17 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 
 	return nil
 }
+
+// --- Phase 6.5: Sparse detection helpers ---
+
+// isLeafSparse checks if a leaf page's utilization is below the given threshold.
+func isLeafSparse(leaf LeafPage, threshold float64) bool {
+	return leaf.Capacity() < threshold
+}
+
+// isNodeSparse checks if an internal node page's child utilization is below the given threshold.
+func isNodeSparse(node NodePage, threshold float64) bool {
+	return float64(node.ChildCount())/float64(MaxInternalKeys) < threshold
+}
+
+var _ = isNodeSparse // Phase 6.5: used when lazy merge is fully enabled

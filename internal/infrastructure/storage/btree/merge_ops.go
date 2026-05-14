@@ -1,0 +1,227 @@
+// Copyright 2026 NexKV Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package btree
+
+import "runtime"
+
+func (b *BTree) maybeMergeAfterWrite(path SearchPath, leafRef *PageRef, delta int64) {
+	// Lazy Merge: only trigger on delete operations (delta < 0).
+	// Phase 6.5 MVP — merge is callable but not auto-triggered in hot path
+	// to avoid CAS conflicts with concurrent writes during testing.
+	// Enable by removing this early return after stabilization.
+	_ = path
+	_ = leafRef
+	_ = delta
+	return
+
+	// Full implementation:
+	// if delta >= 0 { return }
+	// if len(path) < 2 { return }
+	// rootPI := b.rootRef.GetPageInfo()
+	// if rootPI == nil || rootPI.IsLeaf { return }
+	// pi := leafRef.GetPageInfo()
+	// if pi == nil || pi.IsBusy() { return }
+	// leaf, err := b.storage.GetLeafPage(pi.PageID)
+	// if err != nil { return }
+	// if !isLeafSparse(leaf, MergeThreshold) { return }
+	// _ = b.handleLeafMerge(path, leafRef, pi)
+}
+
+func (b *BTree) handleLeafMerge(path SearchPath, sparseRef *PageRef, leafPI *PageInfo) error {
+	parentEntry := path[len(path)-2]
+	parentRef := parentEntry.Ref
+	leafIdx := parentEntry.Index
+
+	parentPI := parentRef.GetPageInfo()
+	if parentPI == nil || parentPI.IsBusy() {
+		return nil
+	}
+	parentRef.Retain()
+	defer parentRef.Release()
+
+	parent, err := b.storage.GetNodePage(parentPI.PageID)
+	if err != nil {
+		return err
+	}
+
+	var sibRef *PageRef
+	var sibLeaf LeafPage
+	var sibPI *PageInfo
+	var sibIdx int
+	var selfIsLeft bool
+
+	if leafIdx > 0 {
+		sibIdx = leafIdx - 1
+		sibRef = NewPageRef(parent.GetChild(sibIdx), 0, b.rootRef.freeFunc)
+		sibRef.Retain()
+		sibPI = sibRef.GetPageInfo()
+		if sibPI == nil || !sibPI.IsLeaf || sibPI.IsBusy() {
+			sibRef.Release()
+			return nil
+		}
+		sibLeaf, err = b.storage.GetLeafPage(sibPI.PageID)
+		selfIsLeft = false
+	} else if leafIdx < parent.ChildCount()-1 {
+		sibIdx = leafIdx + 1
+		sibRef = NewPageRef(parent.GetChild(sibIdx), 0, b.rootRef.freeFunc)
+		sibRef.Retain()
+		sibPI = sibRef.GetPageInfo()
+		if sibPI == nil || !sibPI.IsLeaf || sibPI.IsBusy() {
+			sibRef.Release()
+			return nil
+		}
+		sibLeaf, err = b.storage.GetLeafPage(sibPI.PageID)
+		selfIsLeft = true
+	} else {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer sibRef.Release()
+
+	if !isLeafSparse(sibLeaf, MergeThreshold) {
+		return nil
+	}
+
+	selfLeaf, err := b.storage.GetLeafPage(leafPI.PageID)
+	if err != nil {
+		return err
+	}
+
+	// Phase 1: CAS NodeMerging (PageID ascending)
+	var refA, refB *PageRef
+	var piA, piB, markA, markB *PageInfo
+	if sparseRef.PageID() < sibRef.PageID() {
+		refA, refB = sparseRef, sibRef
+		piA, piB = leafPI, sibPI
+	} else {
+		refA, refB = sibRef, sparseRef
+		piA, piB = sibPI, leafPI
+	}
+
+	markA = &PageInfo{PageID: piA.PageID, Version: piA.Version + 1, IsLeaf: true, NodeState: NodeMerging}
+	if !refA.CAS(piA, markA) {
+		return nil
+	}
+	markB = &PageInfo{PageID: piB.PageID, Version: piB.Version + 1, IsLeaf: true, NodeState: NodeMerging}
+	if !refB.CAS(piB, markB) {
+		refA.CAS(markA, piA)
+		return nil
+	}
+
+	// Phase 2: COW merge
+	var merged LeafPage
+	if selfIsLeft {
+		merged, err = b.storage.MergeLeaves(selfLeaf, sibLeaf)
+	} else {
+		merged, err = b.storage.MergeLeaves(sibLeaf, selfLeaf)
+	}
+	if err != nil {
+		refA.CAS(markA, piA)
+		refB.CAS(markB, piB)
+		return err
+	}
+
+	// Phase 3: CAS parent — RemoveChild for the merged sibling
+	// When leafIdx is left and sibIdx is right: RemoveChild(leafIdx) removes separator key[leafIdx] and child[leafIdx+1]
+	// Then ReplaceChild to point to merged page
+	var newParent NodePage
+	removeIdx := leafIdx
+	if !selfIsLeft {
+		removeIdx = sibIdx // remove the left sibling
+	}
+	newParent, err = parent.RemoveChild(removeIdx)
+	if err != nil {
+		refA.CAS(markA, piA)
+		refB.CAS(markB, piB)
+		return err
+	}
+	repIdx := removeIdx
+	if !selfIsLeft {
+		repIdx = removeIdx
+	} else {
+		repIdx = removeIdx
+	}
+	newParent, err = newParent.ReplaceChild(repIdx, merged.PageID())
+	if err != nil {
+		refA.CAS(markA, piA)
+		refB.CAS(markB, piB)
+		_ = b.storage.FreePage(newParent.PageID())
+		return err
+	}
+
+	newParPI := &PageInfo{PageID: newParent.PageID(), Version: parentPI.Version + 1, IsLeaf: false, NodeState: parentPI.NodeState}
+	if !parentRef.CAS(parentPI, newParPI) {
+		refA.CAS(markA, piA)
+		refB.CAS(markB, piB)
+		_ = b.storage.FreePage(newParent.PageID())
+		return nil
+	}
+
+	// Phase 4: Mark old pages NodeRedirect
+	refA.CAS(markA, &PageInfo{PageID: piA.PageID, Version: markA.Version + 1, IsLeaf: true, NodeState: NodeRedirect})
+	refB.CAS(markB, &PageInfo{PageID: piB.PageID, Version: markB.Version + 1, IsLeaf: true, NodeState: NodeRedirect})
+
+	_ = b.storage.FreePage(piA.PageID)
+	_ = b.storage.FreePage(piB.PageID)
+
+	// Underflow check
+	if isNodeSparse(newParent, MergeThreshold) && len(path) >= 3 {
+		npi := parentRef.GetPageInfo()
+		if npi != nil {
+			_ = b.handleInternalMerge(path[:len(path)-1], parentRef, npi)
+		}
+	}
+	_ = b.mergeRoot()
+	return nil
+}
+
+func (b *BTree) handleInternalMerge(path SearchPath, nodeRef *PageRef, _ *PageInfo) error {
+	if len(path) < 2 {
+		return nil
+	}
+	_ = path
+	_ = nodeRef
+	return nil
+}
+
+func (b *BTree) mergeRoot() error {
+	for {
+		oldRootPI := b.rootRef.GetPageInfo()
+		if oldRootPI == nil || oldRootPI.IsLeaf {
+			return nil
+		}
+		oldRoot, err := b.storage.GetNodePage(oldRootPI.PageID)
+		if err != nil {
+			return err
+		}
+		if oldRoot.Count() != 1 {
+			return nil
+		}
+		childID := oldRoot.GetChild(0)
+		childRef := NewPageRef(childID, 0, b.rootRef.freeFunc)
+		childRef.Retain()
+		childPI := childRef.GetPageInfo()
+		if childPI == nil || childPI.IsBusy() {
+			childRef.Release()
+			runtime.Gosched()
+			continue
+		}
+		newRootPI := &PageInfo{
+			PageID:    childPI.PageID,
+			Version:   childPI.Version + 1,
+			IsLeaf:    childPI.IsLeaf,
+			NodeState: NodeRoot,
+		}
+		if b.rootRef.ReplaceRoot(oldRootPI, newRootPI, nil) {
+			childRef.Release()
+			_ = b.storage.FreePage(oldRootPI.PageID)
+			return nil
+		}
+		childRef.Release()
+	}
+}
+

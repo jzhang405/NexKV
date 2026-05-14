@@ -99,16 +99,19 @@ func BuildMVCCValue(flag byte, beginTS uint64, realVal []byte) []byte {
 // PageHeader 页面头部
 // 引用计数由 btree 层的 PageRef 管理（Go 级 atomic.Int32），不存储在 mmap 中。
 type PageHeader struct {
-	version    uint64 // 版本号（CCOW）
-	prevPage   uint32 // 前一个页面 pageID
-	nextPage   uint32 // 后一个页面 pageID
-	extraChild uint64 // 索引节点的 N+1 child（pageID + version）
-	count      uint16 // 条目数
-	pageType   uint8  // 页面类型（0=索引 1=叶子）
-	deleted    uint8  // 标记为已删除（0=正常, 1=已删除）
+	version        uint64 // 版本号（COW）
+	prevPage       uint32 // 前一个页面 pageID
+	nextPage       uint32 // 后一个页面 pageID
+	extraChild     uint64 // 索引节点的 N+1 child（pageID + version）
+	count          uint16 // 条目数
+	pageType       uint8  // 页面类型（0=索引 1=叶子）
+	deleted        uint8  // 标记为已删除（0=正常, 1=已删除）
+	tombstoneCount uint16 // Phase 6.5: 页面内 Tombstone 条目数（write-path metadata, maintained under COW atomicity guarantee）
+	deleteEpoch    uint64 // Phase 6.5: 安全物理回收 epoch（reserved for Phase 4+）
+	_              [16]byte // padding to align to 56 bytes (matches btree.HeaderSize)
 }
 
-// SizeofPageHeader PageHeader 大小（40 字节）
+// SizeofPageHeader PageHeader 大小（运行时由 unsafe.Sizeof 确定，须与 btree.HeaderSize 一致）
 const SizeofPageHeader = int(unsafe.Sizeof(PageHeader{}))
 
 // IndexEntry 索引节点条目（16 字节）
@@ -642,6 +645,34 @@ func (pa *PageAccessor) SetChildWithVersion(pageID uint32, index int, childPageI
 // GetCount 获取条目数量
 func (pa *PageAccessor) GetCount(pageID uint32) uint16 {
 	return pa.GetHeader(pageID).count
+}
+
+// GetTombstoneCount returns the number of tombstone entries in the page.
+func (pa *PageAccessor) GetTombstoneCount(pageID uint32) uint16 {
+	return pa.GetHeader(pageID).tombstoneCount
+}
+
+// SetTombstoneCount sets the tombstone count (COW target only).
+func (pa *PageAccessor) SetTombstoneCount(pageID uint32, n uint16) {
+	pa.GetHeader(pageID).tombstoneCount = n
+}
+
+// IncrementTombstone increments tombstoneCount with overflow guard.
+func (pa *PageAccessor) IncrementTombstone(pageID uint32) {
+	hdr := pa.GetHeader(pageID)
+	if hdr.tombstoneCount == 0xFFFF {
+		panic("offheap: tombstoneCount overflow")
+	}
+	hdr.tombstoneCount++
+}
+
+// DecrementTombstone decrements tombstoneCount with underflow guard.
+func (pa *PageAccessor) DecrementTombstone(pageID uint32) {
+	hdr := pa.GetHeader(pageID)
+	if hdr.tombstoneCount == 0 {
+		panic("offheap: tombstoneCount underflow")
+	}
+	hdr.tombstoneCount--
 }
 
 // IsLeaf 判断是否为叶子节点

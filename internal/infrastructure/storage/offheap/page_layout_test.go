@@ -12,10 +12,10 @@ import (
 )
 
 func TestSizeofPageHeader(t *testing.T) {
-	// PageHeader 字段布局：
-	//   version(8) + prevPage(4) + nextPage(4) + extraChild(8) + count(2) + pageType(1) + deleted(1) = 28
-	//   向上对齐到 8 字节：32 字节
-	assert.Equal(t, 32, SizeofPageHeader, "PageHeader should be 32 bytes for 8-byte alignment")
+	// Phase 6.5: PageHeader expanded with tombstoneCount + deleteEpoch + padding
+	// version(8)+prevPage(4)+nextPage(4)+extraChild(8)+count(2)+pageType(1)+deleted(1)
+	// +tombstoneCount(2)+pad(2)+deleteEpoch(8)+pad[16] = 56 bytes
+	assert.Equal(t, 56, SizeofPageHeader, "PageHeader should be 56 bytes (matches btree.HeaderSize)")
 }
 
 func TestSizeofIndexEntry(t *testing.T) {

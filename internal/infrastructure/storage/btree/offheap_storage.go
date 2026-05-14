@@ -190,3 +190,9 @@ func (s *OffheapBTreeStorage) validatePageID(id model.PageID) (uint32, error) {
 	}
 	return uint32(id), nil
 }
+
+func init() {
+	if offheap.SizeofPageHeader != HeaderSize {
+		panic("offheap.SizeofPageHeader != btree.HeaderSize: page layout mismatch")
+	}
+}

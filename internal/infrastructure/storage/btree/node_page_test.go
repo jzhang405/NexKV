@@ -406,17 +406,33 @@ func TestNodeInsertChildOutOfBounds(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrInvalidPage) || err != nil, "out of bounds should error")
 }
 
-// TestNodeRemoveChild_NotImplemented verifies RemoveChild returns error instead of panic.
-func TestNodeRemoveChild_NotImplemented(t *testing.T) {
+// TestNodeRemoveChild verifies RemoveChild correctly removes a child from a node page.
+func TestNodeRemoveChild(t *testing.T) {
+	s := newTestStorage(t)
+	// Create a node with 3 keys (4 children)
+	keys := [][]byte{[]byte("b"), []byte("d"), []byte("f")}
+	children := allocDummyChildren(t, s, 4)
+	node := newTestNodeWithChildren(t, s, keys, children)
+
+	// Remove the middle entry (key "d", child at index 1)
+	result, err := node.RemoveChild(1)
+	require.NoError(t, err)
+	assert.Equal(t, 2, result.Count(), "should have 2 keys after removal")
+	assert.Equal(t, []byte("b"), result.GetKey(0))
+	assert.Equal(t, []byte("f"), result.GetKey(1))
+
+	// Verify the original node is unchanged (COW)
+	assert.Equal(t, 3, node.Count())
+}
+
+// TestNodeRemoveChild_OnlyEntry verifies removing the only entry returns error.
+func TestNodeRemoveChild_OnlyEntry(t *testing.T) {
 	s := newTestStorage(t)
 	keys := [][]byte{[]byte("a")}
 	children := allocDummyChildren(t, s, 2)
 	node := newTestNodeWithChildren(t, s, keys, children)
 
-	// Should return error, not panic
 	_, err := node.RemoveChild(0)
-	assert.Error(t, err, "RemoveChild should return error")
-	assert.Contains(t, err.Error(), "not implemented", "Error should mention not implemented")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot remove only entry")
 }
-
-// RemoveChild full functionality is a Phase 6 feature

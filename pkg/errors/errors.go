@@ -152,6 +152,8 @@ var (
 	ErrBTreePageEmpty      = stderrors.New("btree: page empty")
 	ErrBTreeDuplicateKey   = stderrors.New("btree: duplicate key")
 	ErrBTreeNotImplemented = stderrors.New("btree: not implemented")
+	ErrBTreeBorrowSourceEmpty = stderrors.New("btree: borrow source page is empty")
+	ErrBTreeMergeNoSibling    = stderrors.New("btree: merge requires sibling page")
 	// OffHeap 错误
 	ErrOffHeapAllocatorSizeInvalid  = stderrors.New("offheap: allocator size must be positive")
 	ErrOffHeapAllocExceedsSize      = stderrors.New("offheap: alloc size exceeds allocator size")

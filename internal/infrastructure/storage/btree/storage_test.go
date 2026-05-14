@@ -260,31 +260,37 @@ func TestConcurrentAllocFree(t *testing.T) {
 	wg.Wait()
 }
 
-// --- Phase 6.5 Stub Tests ---
+// --- Phase 6.5 Merge/Borrow Tests ---
 
-func TestMergeLeavesStub(t *testing.T) {
+func TestMergeLeaves(t *testing.T) {
 	s := newTestStorage(t)
-	_, err := s.MergeLeaves(nil, nil)
-	assert.True(t, errors.Is(err, ErrNotImplemented))
+	leaf, _ := newTestLeaf(t)
+	// newTestLeaf uses its own storage, but we need pages in s's storage.
+	// Directly create leaf pages in s.
+	leftID, err := s.AllocLeafPage()
+	require.NoError(t, err)
+	rightID, err := s.AllocLeafPage()
+	require.NoError(t, err)
+
+	leftH := &leafPageHandle{id: leftID, pa: s.pa, storage: s}
+	rightH := &leafPageHandle{id: rightID, pa: s.pa, storage: s}
+
+	left, err := leftH.Insert([]byte("a"), []byte("val_a"))
+	require.NoError(t, err)
+	right, err := rightH.Insert([]byte("z"), []byte("val_z"))
+	require.NoError(t, err)
+
+	merged, err := s.MergeLeaves(left, right)
+	require.NoError(t, err)
+	assert.Equal(t, 2, merged.Count())
+	assert.Equal(t, []byte("a"), merged.GetKey(0))
+	assert.Equal(t, []byte("z"), merged.GetKey(1))
+	_ = leaf
 }
 
 func TestBorrowStubs(t *testing.T) {
-	s := newTestStorage(t)
-
-	_, _, err := s.BorrowFromLeftLeaf(nil, nil)
-	assert.True(t, errors.Is(err, ErrNotImplemented))
-
-	_, _, err = s.BorrowFromRightLeaf(nil, nil)
-	assert.True(t, errors.Is(err, ErrNotImplemented))
-
-	_, err = s.MergeNodes(nil, nil, nil)
-	assert.True(t, errors.Is(err, ErrNotImplemented))
-
-	_, _, _, err = s.BorrowFromLeftNode(nil, nil, nil)
-	assert.True(t, errors.Is(err, ErrNotImplemented))
-
-	_, _, _, err = s.BorrowFromRightNode(nil, nil, nil)
-	assert.True(t, errors.Is(err, ErrNotImplemented))
+	// Phase 6.5: all 6 methods are now implemented, no longer stubs.
+	// Real borrow tests are in merge_test.go.
 }
 
 // --- nodePageHandle 方法覆盖测试 ---

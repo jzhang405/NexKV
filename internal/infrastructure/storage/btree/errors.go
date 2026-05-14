@@ -43,4 +43,8 @@ var (
 
 	// ErrNotImplemented is returned by methods that are not yet implemented.
 	ErrNotImplemented = errpkg.ErrBTreeNotImplemented
+
+	// Phase 6.5: Merge/Borrow errors
+	ErrBorrowSourceEmpty = errpkg.ErrBTreeBorrowSourceEmpty
+	ErrMergeNoSibling    = errpkg.ErrBTreeMergeNoSibling
 )

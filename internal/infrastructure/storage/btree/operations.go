@@ -949,3 +949,15 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 
 	return nil
 }
+
+// --- Phase 6.5: Sparse detection helpers ---
+
+// isLeafSparse checks if a leaf page's utilization is below the given threshold.
+func isLeafSparse(leaf LeafPage, threshold float64) bool {
+	return leaf.Capacity() < threshold
+}
+
+// isNodeSparse checks if an internal node page's child utilization is below the given threshold.
+func isNodeSparse(node NodePage, threshold float64) bool {
+	return float64(node.ChildCount())/float64(MaxInternalKeys) < threshold
+}

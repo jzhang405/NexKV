@@ -179,31 +179,8 @@ func (s *OffheapBTreeStorage) Close() error {
 	return s.pm.Close()
 }
 
-// --- Phase 6.5 Stubs ---
-
-func (s *OffheapBTreeStorage) MergeLeaves(_, _ LeafPage) (LeafPage, error) {
-	return nil, ErrNotImplemented
-}
-
-func (s *OffheapBTreeStorage) BorrowFromLeftLeaf(_, _ LeafPage) (LeafPage, LeafPage, error) {
-	return nil, nil, ErrNotImplemented
-}
-
-func (s *OffheapBTreeStorage) BorrowFromRightLeaf(_, _ LeafPage) (LeafPage, LeafPage, error) {
-	return nil, nil, ErrNotImplemented
-}
-
-func (s *OffheapBTreeStorage) MergeNodes(_, _ NodePage, _ []byte) (NodePage, error) {
-	return nil, ErrNotImplemented
-}
-
-func (s *OffheapBTreeStorage) BorrowFromLeftNode(_, _ NodePage, _ []byte) (NodePage, NodePage, []byte, error) {
-	return nil, nil, nil, ErrNotImplemented
-}
-
-func (s *OffheapBTreeStorage) BorrowFromRightNode(_, _ NodePage, _ []byte) (NodePage, NodePage, []byte, error) {
-	return nil, nil, nil, ErrNotImplemented
-}
+// Compile-time interface satisfaction
+var _ PageMerger = (*OffheapBTreeStorage)(nil)
 
 // --- Internal Helpers ---
 

@@ -273,6 +273,153 @@ func BenchmarkProfileGetParallel(b *testing.B) {
 	})
 }
 
+// newLargeBenchmarkBTree creates a BTree with large storage for benchmarks.
+// Returns a new tree instance; caller must Close when done.
+func newLargeBenchmarkBTree(b *testing.B) (*BTree, *OffheapBTreeStorage) {
+	b.Helper()
+	storage, err := NewOffheapBTreeStorage(512 * 1024 * 1024) // 512MB
+	if err != nil {
+		b.Fatalf("failed to create storage: %v", err)
+	}
+	tree, err := NewBTree(storage)
+	if err != nil {
+		b.Fatalf("failed to create btree: %v", err)
+	}
+	b.Cleanup(func() { tree.Close() })
+	return tree, storage
+}
+
+// preloadDataSet preloads a BTree with n unique keys, measuring the time.
+func preloadDataSet(b *testing.B, tree *BTree, n int) {
+	b.Helper()
+	ctx := context.Background()
+	for i := 0; i < n; i++ {
+		key := []byte("key-" + strconv.Itoa(i))
+		value := []byte("value-" + strconv.Itoa(i))
+		if err := tree.Set(ctx, key, value); err != nil {
+			b.Fatalf("preload Set failed at %d: %v", i, err)
+		}
+	}
+}
+
+// BenchmarkBTreePreload measures the time to populate a tree of various sizes.
+func BenchmarkBTreePreload(b *testing.B) {
+	sizes := []int{1000, 5000}
+	for _, n := range sizes {
+		b.Run(strconv.Itoa(n)+"_keys", func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				tree, _ := newLargeBenchmarkBTree(b)
+				ctx := context.Background()
+				b.StartTimer()
+				for j := 0; j < n; j++ {
+					key := []byte("key-" + strconv.Itoa(j))
+					if err := tree.Set(ctx, key, []byte("val")); err != nil {
+						b.Fatalf("Set failed: %v", err)
+					}
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkBTreeGetLargeDataset measures read performance on pre-populated tree (5K keys).
+func BenchmarkBTreeGetLargeDataset(b *testing.B) {
+	tree, _ := newLargeBenchmarkBTree(b)
+	preloadDataSet(b, tree, 5000)
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := []byte("key-" + strconv.Itoa(i%5000))
+		if _, err := tree.Get(ctx, key); err != nil {
+			b.Fatalf("Get failed: %v", err)
+		}
+	}
+}
+
+// BenchmarkBTreeGetParallelLargeDataset measures parallel read on pre-populated tree.
+func BenchmarkBTreeGetParallelLargeDataset(b *testing.B) {
+	tree, _ := newLargeBenchmarkBTree(b)
+	preloadDataSet(b, tree, 5000)
+	ctx := context.Background()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			key := []byte("key-" + strconv.Itoa(i%5000))
+			if _, err := tree.Get(ctx, key); err != nil {
+				b.Fatalf("Get failed: %v", err)
+			}
+			i++
+		}
+	})
+}
+
+// BenchmarkBTreeMixedReadWriteLarge measures mixed read/write on pre-populated tree (80R:20W).
+func BenchmarkBTreeMixedReadWriteLarge(b *testing.B) {
+	tree, _ := newLargeBenchmarkBTree(b)
+	preloadDataSet(b, tree, 3000)
+	ctx := context.Background()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			if i%5 == 0 {
+				// 20% writes — overwrite existing keys
+				key := []byte("key-" + strconv.Itoa(i%3000))
+				_ = tree.Set(ctx, key, []byte("v"))
+			} else {
+				// 80% reads
+				key := []byte("key-" + strconv.Itoa(i%3000))
+				_, _ = tree.Get(ctx, key)
+			}
+			i++
+		}
+	})
+}
+
+// BenchmarkBTreeSetWithLatency measures preload + read with latency histograms enabled.
+// Note: COW page leak prevents sustained pure-write benchmarks;
+// uses preload + read pattern to exercise latency metrics.
+func BenchmarkBTreeSetWithLatency(b *testing.B) {
+	storage, err := NewOffheapBTreeStorage(512 * 1024 * 1024)
+	if err != nil {
+		b.Fatalf("failed to create storage: %v", err)
+	}
+	tree, err := NewBTree(storage, WithLatencyMetrics(), WithMetrics(NewBTreeMetrics()))
+	if err != nil {
+		b.Fatalf("failed to create btree: %v", err)
+	}
+	b.Cleanup(func() { tree.Close() })
+
+	ctx := context.Background()
+	for i := 0; i < 1000; i++ {
+		key := []byte("key-" + strconv.Itoa(i))
+		if err := tree.Set(ctx, key, []byte("val")); err != nil {
+			b.Fatalf("preload Set failed: %v", err)
+		}
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := []byte("key-" + strconv.Itoa(i%1000))
+		if _, err := tree.Get(ctx, key); err != nil {
+			b.Fatalf("Get failed: %v", err)
+		}
+	}
+
+	b.StopTimer()
+	ml := tree.metricsWithLatency()
+	if ml != nil {
+		readSnap := ml.ReadLat.Snapshot()
+		b.ReportMetric(float64(readSnap.Count), "lat_samples")
+		b.ReportMetric(float64(readSnap.AvgUs), "read_avg_us")
+		b.ReportMetric(float64(readSnap.P99Us), "read_p99_us")
+	}
+}
+
 // BenchmarkProfileSetSequential measures sequential write performance with metrics.
 func BenchmarkProfileSetSequential(b *testing.B) {
 	storage, err := NewOffheapBTreeStorage(4 * 1024 * 1024 * 1024)

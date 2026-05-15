@@ -157,46 +157,33 @@ func (h *nodePageHandle) RemoveChild(idx int) (NodePage, error) {
 		return nil, fmt.Errorf("btree: node remove child: index %d out of range [0, %d]", idx, count)
 	}
 
-	rawID := uint32(h.id)
-
-	// COW: allocate new page, copy all 4096 bytes
-	newRawID, err := h.storage.pm.Alloc()
-	if err != nil {
-		return nil, fmt.Errorf("btree: remove child alloc: %w", err)
-	}
-	srcPtr := h.storage.pm.PageIDToPtr(rawID)
-	dstPtr := h.storage.pm.PageIDToPtr(newRawID)
-	srcSlice := unsafe.Slice((*byte)(srcPtr), offheap.PageSize)
-	dstSlice := unsafe.Slice((*byte)(dstPtr), offheap.PageSize)
-	copy(dstSlice, srcSlice)
-
-	srcVersion := h.pa.GetVersion(rawID)
-	h.pa.SetVersion(newRawID, srcVersion+1)
-
-	// Rebuild without entry at idx, using COW copy as source for keys/children
-	// RemoveChild removes key[idx] and child[idx], merging child[idx] into the predecessor or successor.
-	// In B+Tree merge: remove key[idx] from parent and child[idx] → parent has one less key+child.
-	// extraChild handling: if count==1, removing the only entry leaves an empty node.
 	if count == 1 {
-		// Only one key + two children. Removing one key → node becomes empty (should not happen in merge context)
-		h.storage.pm.Free(newRawID)
 		return nil, fmt.Errorf("btree: remove child: cannot remove only entry, node would be empty")
 	}
 
-	// Rebuild from COW copy data
+	rawID := uint32(h.id)
+	srcVersion := h.pa.GetVersion(rawID)
+
+	// Extract remaining keys/children from source page (skip idx).
+	// No COW memcpy needed — InitIndexPage will wipe the new page anyway.
 	keys := make([][]byte, 0, count-1)
 	children := make([]uint32, 0, count)
 	for i := 0; i < count; i++ {
 		if i == idx {
 			continue
 		}
-		keyOff, keyLen, childU64 := h.pa.GetIndexEntryOffset(newRawID, i)
-		keys = append(keys, h.pa.GetKey(newRawID, keyOff, keyLen))
+		keyOff, keyLen, childU64 := h.pa.GetIndexEntryOffset(rawID, i)
+		keys = append(keys, h.pa.GetKey(rawID, keyOff, keyLen))
 		children = append(children, uint32(childU64))
 	}
-	extraChild := uint32(h.pa.GetChild(newRawID, count))
+	extraChild := uint32(h.pa.GetChild(rawID, count))
 
+	newRawID, err := h.storage.pm.Alloc()
+	if err != nil {
+		return nil, fmt.Errorf("btree: remove child alloc: %w", err)
+	}
 	h.pa.InitIndexPage(newRawID, srcVersion+1)
+
 	dataEnd := uint16(0)
 	for i := 0; i < len(keys); i++ {
 		if err := h.pa.InsertIndexEntry(newRawID, i, keys[i], children[i], &dataEnd); err != nil {

@@ -13,10 +13,11 @@ type BTreeOption func(*btreeConfig)
 
 // btreeConfig holds the resolved configuration for BTree construction.
 type btreeConfig struct {
-	metrics *BTreeMetrics
-	tracer  Tracer
-	tsGen   mvcc.TSGenerator
-	txMgr   mvcc.TxManager
+	metrics        *BTreeMetrics
+	tracer         Tracer
+	tsGen          mvcc.TSGenerator
+	txMgr          mvcc.TxManager
+	latencyMetrics *BTreeMetricsWithLatency
 }
 
 // newBTreeConfig applies all options and fills in defaults.
@@ -75,5 +76,14 @@ func WithTxManager(txMgr mvcc.TxManager) BTreeOption {
 		if txMgr != nil {
 			cfg.txMgr = txMgr
 		}
+	}
+}
+
+// WithLatencyMetrics enables latency histogram collection.
+// When enabled, every 1/64th operation records its latency in P50/P95/P99 histograms.
+// Default is disabled (nil) to avoid hot-path overhead.
+func WithLatencyMetrics() BTreeOption {
+	return func(cfg *btreeConfig) {
+		cfg.latencyMetrics = NewBTreeMetricsWithLatency()
 	}
 }

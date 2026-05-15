@@ -8,8 +8,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"runtime"
 	"strings"
+	"time"
 
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 
@@ -135,12 +135,20 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			path.ReleaseAll()
 			continue
 		}
-		// Splitting backoff: dedicated counter + runtime.Gosched()
+		// Splitting backoff: spin → exponential sleep → give up.
+		// Phase 3: replaces runtime.Gosched() (same-P only) with time.Sleep (cross-core).
 		if oldInfo.NodeState == NodeSplitting {
 			splittingRetry++
 			path.ReleaseAll()
+			if splittingRetry > SplitBackoffMaxRetries {
+				return ErrCASConflict
+			}
 			if splittingRetry > SpinLockBackoffThreshold {
-				runtime.Gosched() // yield CPU, Splitting backoff
+				backoff := time.Duration(1<<min(splittingRetry-SpinLockBackoffThreshold, 20)) * time.Microsecond
+				if backoff > time.Millisecond {
+					backoff = time.Millisecond
+				}
+				time.Sleep(backoff)
 			}
 			continue
 		}
@@ -221,8 +229,8 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			continue
 		}
 
-		// Success — Phase 6.5: check for lazy merge before releasing path
-		b.maybeMergeAfterWrite(path, leafRef, result.delta)
+		// Phase 6.5 TODO: Lazy Merge — trigger b.handleLeafMerge when
+		// leaf utilization drops below MergeThreshold after a Delete.
 		path.ReleaseAll()
 		b.size.Add(result.delta)
 		return nil
@@ -963,4 +971,4 @@ func isNodeSparse(node NodePage, threshold float64) bool {
 	return float64(node.ChildCount())/float64(MaxInternalKeys) < threshold
 }
 
-var _ = isNodeSparse // Phase 6.5: used when lazy merge is fully enabled
+// isNodeSparse is used by handleLeafMerge (Phase 6.5) — see merge_ops.go

@@ -186,25 +186,32 @@ func (b *BTree) handleInternalMerge(path SearchPath, nodeRef *PageRef, _ *PageIn
 }
 
 func (b *BTree) removeChildFromCache(parentRef *PageRef, removeIdx int) {
-	cache := parentRef.GetChildren()
-	if cache == nil || removeIdx >= len(cache.Children) {
-		return
-	}
-	newChildren := make([]*PageRef, 0, len(cache.Children)-1)
-	newSeps := make([][]byte, 0, len(cache.Separators))
-	for i, child := range cache.Children {
-		if i == removeIdx+1 || i == removeIdx {
-			continue
+	for {
+		curCache := parentRef.children.Load()
+		if curCache == nil || removeIdx >= len(curCache.Children) {
+			return
 		}
-		newChildren = append(newChildren, child)
-	}
-	for i, sep := range cache.Separators {
-		if i == removeIdx {
-			continue
+
+		newChildren := make([]*PageRef, 0, len(curCache.Children)-1)
+		newSeps := make([][]byte, 0, len(curCache.Separators))
+		for i, child := range curCache.Children {
+			if i == removeIdx+1 || i == removeIdx {
+				continue
+			}
+			newChildren = append(newChildren, child)
 		}
-		newSeps = append(newSeps, sep)
+		for i, sep := range curCache.Separators {
+			if i == removeIdx {
+				continue
+			}
+			newSeps = append(newSeps, sep)
+		}
+
+		if parentRef.children.CompareAndSwap(curCache, &ChildrenCache{Children: newChildren, Separators: newSeps}) {
+			return
+		}
+		// CAS failed — another goroutine updated the cache; retry with latest state
 	}
-	parentRef.children.Store(&ChildrenCache{Children: newChildren, Separators: newSeps})
 }
 
 func (b *BTree) mergeRoot() error {
@@ -259,6 +266,7 @@ func (b *BTree) mergeRoot() error {
 }
 
 // Phase 6.5: infrastructure functions, used when lazy merge is fully enabled
+var _ = (*BTree).maybeMergeAfterWrite
 var _ = (*BTree).handleLeafMerge
 var _ = (*BTree).handleInternalMerge
 var _ = (*BTree).removeChildFromCache

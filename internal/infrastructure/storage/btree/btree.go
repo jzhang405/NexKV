@@ -7,6 +7,7 @@ package btree
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 
@@ -21,14 +22,15 @@ import (
 // Phase 5 scope: single-leaf operations without split propagation.
 // Multi-level trees and split handling are added in Phase 6.
 type BTree struct {
-	rootRef *RootPageRef         // CAS-replaceable root reference
-	storage *OffheapBTreeStorage // page storage backend
-	size    atomic.Int64         // KV pair count
-	closed  atomic.Bool          // closed flag
-	metrics *BTreeMetrics        // performance counters (optional)
-	tracer  Tracer               // operation tracer for debugging (optional)
-	tsGen   mvcc.TSGenerator     // MVCC timestamp generator (Phase 2a)
-	txMgr   mvcc.TxManager       // MVCC transaction manager (Phase 2b)
+	rootRef        *RootPageRef             // CAS-replaceable root reference
+	storage        *OffheapBTreeStorage     // page storage backend
+	size           atomic.Int64             // KV pair count
+	closed         atomic.Bool              // closed flag
+	metrics        *BTreeMetrics            // performance counters (optional)
+	latencyMetrics *BTreeMetricsWithLatency // latency histograms (optional)
+	tracer         Tracer                   // operation tracer for debugging (optional)
+	tsGen          mvcc.TSGenerator         // MVCC timestamp generator (Phase 2a)
+	txMgr          mvcc.TxManager           // MVCC transaction manager (Phase 2b)
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -73,11 +75,12 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 	})
 
 	bt := &BTree{
-		rootRef: rootRef,
-		storage: storage,
-		metrics: cfg.metrics,
-		tracer:  cfg.tracer,
-		tsGen:   cfg.tsGen,
+		rootRef:        rootRef,
+		storage:        storage,
+		metrics:        cfg.metrics,
+		latencyMetrics: cfg.latencyMetrics,
+		tracer:         cfg.tracer,
+		tsGen:          cfg.tsGen,
 	}
 	// TxManager uses btreeStorageAdapter (bypasses BTree's MVCC encoding)
 	// — transaction layer handles BuildMVCC/ParseMVCC internally.
@@ -98,6 +101,11 @@ func (b *BTree) checkOpen() error {
 // Returns ErrKeyNotFound if the key does not exist or has been tombstoned.
 // Read path is lock-free: searchPath -> read leaf -> parse MVCC -> return value.
 func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
+	if b.latencyMetrics != nil {
+		start := time.Now()
+		defer func() { b.latencyMetrics.ReadLat.Record(time.Since(start)) }()
+	}
+
 	if err := b.checkOpen(); err != nil {
 		return nil, err
 	}
@@ -144,11 +152,9 @@ func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
 	return mvccVal.RealVal, nil
 }
 
-// GetRaw returns the complete MVCC-encoded value for the given key.
-// Unlike Get, it does not filter Tombstone entries -- callers see Flag + beginTS + realVal.
-// Returns ErrKeyNotFound only if the key does not physically exist in the tree.
-// Used by MVCC readers that need to inspect beginTS or Tombstone status.
-func (b *BTree) GetRaw(_ context.Context, key []byte) (*mvcc.MVCCValue, error) {
+// getRawBytes returns the raw MVCC-encoded bytes for key directly from the leaf page.
+// The returned slice is a copy and safe to retain. Used by GetRaw and GetWithMeta.
+func (b *BTree) getRawBytes(key []byte) ([]byte, error) {
 	if err := b.checkOpen(); err != nil {
 		return nil, err
 	}
@@ -179,8 +185,18 @@ func (b *BTree) GetRaw(_ context.Context, key []byte) (*mvcc.MVCCValue, error) {
 		b.metrics.ReadCount.Add(1)
 	}
 
-	// Decode raw MVCC value (deepCopy from leaf.GetValue)
-	raw := leaf.GetValue(idx)
+	return leaf.GetValue(idx), nil
+}
+
+// GetRaw returns the complete MVCC-encoded value for the given key.
+// Unlike Get, it does not filter Tombstone entries -- callers see Flag + beginTS + realVal.
+// Returns ErrKeyNotFound only if the key does not physically exist in the tree.
+// Used by MVCC readers that need to inspect beginTS or Tombstone status.
+func (b *BTree) GetRaw(_ context.Context, key []byte) (*mvcc.MVCCValue, error) {
+	raw, err := b.getRawBytes(key)
+	if err != nil {
+		return nil, err
+	}
 	return mvcc.ParseMVCC(raw)
 }
 
@@ -189,6 +205,11 @@ func (b *BTree) GetRaw(_ context.Context, key []byte) (*mvcc.MVCCValue, error) {
 // If the key already exists, updates the value (upsert semantics).
 // If the key was previously tombstoned, restores it with delta=+1.
 func (b *BTree) Set(_ context.Context, key, value []byte) error {
+	if b.latencyMetrics != nil {
+		start := time.Now()
+		defer func() { b.latencyMetrics.WriteLat.Record(time.Since(start)) }()
+	}
+
 	if err := b.checkOpen(); err != nil {
 		return err
 	}
@@ -250,6 +271,11 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 // Returns ErrKeyNotFound if the key does not exist or is already tombstoned.
 // Physical deletion is deferred to Phase 3 Compaction.
 func (b *BTree) Delete(_ context.Context, key []byte) error {
+	if b.latencyMetrics != nil {
+		start := time.Now()
+		defer func() { b.latencyMetrics.WriteLat.Record(time.Since(start)) }()
+	}
+
 	if err := b.checkOpen(); err != nil {
 		return err
 	}
@@ -307,6 +333,11 @@ func (b *BTree) GetMetrics() *MetricsSnapshot {
 	}
 	snapshot := b.metrics.Snapshot()
 	return &snapshot
+}
+
+// metricsWithLatency returns the latency metrics instance. Internal API for testing.
+func (b *BTree) metricsWithLatency() *BTreeMetricsWithLatency {
+	return b.latencyMetrics
 }
 
 // RootPage returns the current root PageRef for checkpoint DFS traversal.

@@ -9,7 +9,6 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
-	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
 )
 
 // WatermarkProvider supplies the GC safe watermark for Compaction.
@@ -135,6 +134,25 @@ func (b *BTree) getTombstoneCount(pageID model.PageID) int {
 	return int(b.storage.pa.GetTombstoneCount(uint32(pageID)))
 }
 
+// FIXME(CRITICAL): compactPage operates on a temporary PageRef created via NewPageRef
+// during leaf chain traversal, NOT the actual in-tree PageRef stored in the parent's
+// ChildrenCache. The CAS on line 188 therefore only updates the temporary object's pInfo;
+// the real in-tree PageRef retains the old pInfo pointing to the now-freed page ID.
+//
+// Additionally, even if CAS targeted the correct PageRef, the parent node's child pointer
+// (node.GetChild(idx)) would still reference the old page ID — compaction must also
+// COW-update the parent node to point to the newRawID.
+//
+// Correct fix requires:
+//  1. Walk from root (via searchPath) to find the leaf's parent node
+//  2. Get the real child PageRef from the parent's ChildrenCache
+//  3. CAS on the real PageRef
+//  4. COW the parent node to replace the child pointer with newRawID
+//  5. CAS on the parent's PageRef
+//  6. Update the parent's ChildrenCache
+//
+// This is equivalent to the split/merge COW mechanism and should be implemented
+// as part of a comprehensive compaction correctness pass.
 func (b *BTree) compactPage(ref *PageRef, oldPI *PageInfo, leaf LeafPage, wp WatermarkProvider) (LeafPage, error) {
 	count := leaf.Count()
 	if count == 0 {
@@ -194,4 +212,4 @@ func (b *BTree) compactPage(ref *PageRef, oldPI *PageInfo, leaf LeafPage, wp Wat
 	return &leafPageHandle{id: model.PageID(newRawID), pa: b.storage.pa, storage: b.storage}, nil
 }
 
-var _ = offheap.SizeofPageHeader // ensure offheap import is used
+// offheap imported for SizeofPageHeader init-time assertion in offheap_storage.go

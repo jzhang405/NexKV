@@ -54,6 +54,8 @@ func TestConstantValues(t *testing.T) {
 	assert.Equal(t, 4096-56, UsableSize, "UsableSize must be PageSize - HeaderSize")
 	assert.Equal(t, 0.5, MergeThreshold, "MergeThreshold must be 0.5")
 	assert.Equal(t, 200, MaxCASRetries, "MaxCASRetries must be 200")
+	assert.Equal(t, 50, MaxParentCASSpins, "MaxParentCASSpins must be 50")
+	assert.Equal(t, 96, SplitBackoffMaxRetries, "SplitBackoffMaxRetries must be 96")
 }
 
 func TestNewBTreeWithMetricsAndTracer_NilTracer(t *testing.T) {

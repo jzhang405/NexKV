@@ -287,11 +287,11 @@ func (s HistogramSnapshot) String() string {
 
 // BTreeMetricsWithLatency extends BTreeMetrics with latency histograms.
 type BTreeMetricsWithLatency struct {
-	Counters  *BTreeMetrics
-	ReadLat   *LatencyHistogram
-	WriteLat  *LatencyHistogram
-	SplitLat  *LatencyHistogram
-	MergeLat  *LatencyHistogram
+	Counters *BTreeMetrics
+	ReadLat  *LatencyHistogram
+	WriteLat *LatencyHistogram
+	SplitLat *LatencyHistogram
+	MergeLat *LatencyHistogram
 }
 
 // NewBTreeMetricsWithLatency creates a BTreeMetricsWithLatency with default 1/64 sampling.

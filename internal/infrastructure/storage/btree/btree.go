@@ -22,15 +22,15 @@ import (
 // Phase 5 scope: single-leaf operations without split propagation.
 // Multi-level trees and split handling are added in Phase 6.
 type BTree struct {
-	rootRef        *RootPageRef              // CAS-replaceable root reference
-	storage        *OffheapBTreeStorage      // page storage backend
-	size           atomic.Int64              // KV pair count
-	closed         atomic.Bool               // closed flag
-	metrics        *BTreeMetrics             // performance counters (optional)
-	latencyMetrics *BTreeMetricsWithLatency  // latency histograms (optional)
-	tracer         Tracer                    // operation tracer for debugging (optional)
-	tsGen          mvcc.TSGenerator          // MVCC timestamp generator (Phase 2a)
-	txMgr          mvcc.TxManager            // MVCC transaction manager (Phase 2b)
+	rootRef        *RootPageRef             // CAS-replaceable root reference
+	storage        *OffheapBTreeStorage     // page storage backend
+	size           atomic.Int64             // KV pair count
+	closed         atomic.Bool              // closed flag
+	metrics        *BTreeMetrics            // performance counters (optional)
+	latencyMetrics *BTreeMetricsWithLatency // latency histograms (optional)
+	tracer         Tracer                   // operation tracer for debugging (optional)
+	tsGen          mvcc.TSGenerator         // MVCC timestamp generator (Phase 2a)
+	txMgr          mvcc.TxManager           // MVCC transaction manager (Phase 2b)
 }
 
 // Verify BTree implements service.KVStore at compile time.

@@ -252,8 +252,8 @@ func TestHistogramSnapshot_String(t *testing.T) {
 
 func TestMetricsSnapshot_ComputeQPS(t *testing.T) {
 	prev := &MetricsSnapshot{
-		ReadCount:  1000,
-		WriteCount: 500,
+		ReadCount:   1000,
+		WriteCount:  500,
 		DeleteCount: 100,
 	}
 	curr := MetricsSnapshot{

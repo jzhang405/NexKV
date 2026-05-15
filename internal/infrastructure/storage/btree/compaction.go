@@ -24,7 +24,8 @@ type CompactionConfig struct {
 }
 
 // Compact performs one compaction cycle, reclaiming space from pages with high tombstone ratios.
-// Walks the leaf chain via nextPage pointers, skipping NodeMerging/NodeRedirect pages.
+// Walks the leaf chain via nextPage pointers to identify candidates, then uses searchPath
+// to obtain the real in-tree PageRef for COW-safe compaction.
 func (b *BTree) Compact(wp WatermarkProvider) error {
 	if err := b.checkOpen(); err != nil {
 		return err
@@ -39,29 +40,27 @@ func (b *BTree) compactCycle(wp WatermarkProvider, cfg CompactionConfig) error {
 		return nil
 	}
 
-	// Traverse leaf chain from the leftmost leaf
-	leafRef := b.findLeftmostLeaf(rootPI)
-	if leafRef == nil {
+	chainRef := b.findLeftmostLeaf(rootPI)
+	if chainRef == nil {
 		return nil
 	}
-	leafRef.Retain()
-	defer leafRef.Release()
+	chainRef.Retain()
+	defer chainRef.Release()
 
 	compacted := 0
-	for leafRef != nil {
-		pi := leafRef.GetPageInfo()
+	for chainRef != nil {
+		pi := chainRef.GetPageInfo()
 		if pi == nil || !pi.IsLeaf {
 			break
 		}
 
-		// Skip busy pages (being merged/split)
 		if pi.IsBusy() {
 			nextID := b.getNextPageID(pi.PageID)
 			if nextID == 0 {
 				break
 			}
-			leafRef = NewPageRef(model.PageID(nextID), 0, b.rootRef.freeFunc)
-			leafRef.Retain()
+			chainRef = NewPageRef(model.PageID(nextID), 0, b.rootRef.freeFunc)
+			chainRef.Retain()
 			continue
 		}
 
@@ -73,7 +72,7 @@ func (b *BTree) compactCycle(wp WatermarkProvider, cfg CompactionConfig) error {
 		tombstoneCount := b.getTombstoneCount(pi.PageID)
 		count := leaf.Count()
 		if count > 0 && float64(tombstoneCount)/float64(count) > cfg.Threshold {
-			if _, err := b.compactPage(leafRef, pi, leaf, wp); err == nil {
+			if b.tryCompactLeaf(wp, leaf, pi.PageID) {
 				compacted++
 			}
 		}
@@ -82,9 +81,9 @@ func (b *BTree) compactCycle(wp WatermarkProvider, cfg CompactionConfig) error {
 		if nextID == 0 {
 			break
 		}
-		leafRef.Release()
-		leafRef = NewPageRef(model.PageID(nextID), 0, b.rootRef.freeFunc)
-		leafRef.Retain()
+		chainRef.Release()
+		chainRef = NewPageRef(model.PageID(nextID), 0, b.rootRef.freeFunc)
+		chainRef.Retain()
 	}
 
 	if b.metrics != nil && compacted > 0 {
@@ -93,11 +92,195 @@ func (b *BTree) compactCycle(wp WatermarkProvider, cfg CompactionConfig) error {
 	return nil
 }
 
+// tryCompactLeaf uses searchPath to obtain the real in-tree PageRef and parent path,
+// then calls compactPageWithParent to perform COW-safe compaction.
+func (b *BTree) tryCompactLeaf(wp WatermarkProvider, leaf LeafPage, chainPageID model.PageID) bool {
+	if leaf.Count() == 0 {
+		return false
+	}
+
+	firstKey := leaf.GetKey(0) // defensive copy (GetKey copies from mmap)
+
+	path, err := searchPath(b.rootRef, firstKey)
+	if err != nil {
+		return false
+	}
+	defer path.ReleaseAll()
+
+	leafRef := path.Leaf().Ref
+	realPI := leafRef.GetPageInfo()
+
+	// Verify chain pageID matches tree pageID (catch concurrent splits/merges)
+	if realPI == nil || realPI.IsBusy() || realPI.PageID != chainPageID {
+		return false
+	}
+
+	// Re-read leaf via the tree-confirmed page ID
+	realLeaf, err := b.storage.GetLeafPage(chainPageID)
+	if err != nil {
+		return false
+	}
+
+	ok, _ := b.compactPageWithParent(leafRef, realPI, realLeaf, wp, path)
+	return ok
+}
+
+// compactPageWithParent performs COW compaction on a leaf page, using the real
+// in-tree PageRef from the parent's ChildrenCache (obtained via searchPath).
+//
+// Phases:
+//
+//	A: CAS leafRef to NodeCompacting (prevents concurrent splits/merges)
+//	B: Collect keep entries (non-tombstone or tombstone with commitTS >= watermark)
+//	C: Allocate COW page, insert keep entries, preserve leaf chain pointers
+//	D: COW parent node (ReplaceChild) + CAS parentRef (best-effort)
+//	E: CAS leafRef to final state (new page ID, NodeNormal)
+//
+// The old page is NOT explicitly freed — PageRef.Release handles lifecycle
+// when refCount drops to zero, consistent with writeOperation.
+func (b *BTree) compactPageWithParent(
+	leafRef *PageRef,
+	oldPI *PageInfo,
+	leaf LeafPage,
+	wp WatermarkProvider,
+	path SearchPath,
+) (bool, error) {
+	count := leaf.Count()
+	if count == 0 {
+		return false, nil
+	}
+
+	// Phase A: CAS to NodeCompacting (prevents concurrent structural changes)
+	compactingInfo := &PageInfo{
+		PageID:    oldPI.PageID,
+		Version:   oldPI.Version + 1,
+		IsLeaf:    true,
+		NodeState: NodeCompacting,
+	}
+	if !leafRef.CAS(oldPI, compactingInfo) {
+		return false, nil
+	}
+
+	// Rollback on any failure below
+	var newRawID uint32
+	cleanup := true
+	defer func() {
+		if cleanup {
+			if newRawID != 0 {
+				_ = b.storage.pm.Free(newRawID)
+			}
+			leafRef.CAS(compactingInfo, oldPI)
+		}
+	}()
+
+	// Phase B: Collect keep entries
+	watermark := wp.Watermark()
+	rawID := uint32(oldPI.PageID)
+
+	oldPrev := b.storage.pa.GetPrevPage(rawID)
+	oldNext := b.storage.pa.GetNextPage(rawID)
+
+	var keepKeys, keepVals [][]byte
+	for i := 0; i < count; i++ {
+		val := leaf.GetValue(i)
+		mvccVal, err := mvcc.ParseMVCC(val)
+		if err != nil {
+			keepKeys = append(keepKeys, leaf.GetKey(i))
+			keepVals = append(keepVals, val)
+			continue
+		}
+		if mvccVal.IsTombstone() && mvccVal.BeginTS < watermark {
+			continue
+		}
+		keepKeys = append(keepKeys, leaf.GetKey(i))
+		keepVals = append(keepVals, val)
+	}
+
+	if len(keepKeys) == count {
+		// No entries reclaimed — rollback
+		return false, nil
+	}
+
+	// Phase C: Allocate COW page and insert keep entries
+	var err error
+	newRawID, err = b.storage.pm.Alloc()
+	if err != nil {
+		return false, fmt.Errorf("btree: compact alloc: %w", err)
+	}
+
+	srcVersion := b.storage.pa.GetVersion(rawID)
+	b.storage.pa.InitLeafPage(newRawID, srcVersion+1)
+
+	// Preserve leaf chain position
+	b.storage.pa.SetPrevPage(newRawID, oldPrev)
+	b.storage.pa.SetNextPage(newRawID, oldNext)
+
+	dataEnd := uint16(0)
+	for i := range keepKeys {
+		if err := b.storage.pa.InsertLeafEntry(newRawID, i, keepKeys[i], keepVals[i], &dataEnd); err != nil {
+			return false, fmt.Errorf("btree: compact insert: %w", err)
+		}
+	}
+	b.storage.pa.SetTombstoneCount(newRawID, 0)
+
+	// Phase D: COW parent node (best-effort; runtime correctness only needs leafRef CAS)
+	if len(path) >= 2 {
+		parentEntry := path[len(path)-2]
+		parentRef := parentEntry.Ref
+
+		parentPI := parentRef.GetPageInfo()
+		if parentPI != nil && !parentPI.IsBusy() {
+			parent, perr := b.storage.GetNodePage(parentPI.PageID)
+			if perr == nil {
+				// Re-derive child index from parent page (path index may be stale)
+				actualIdx := parentEntry.Index
+				found := false
+				for ci := 0; ci < parent.ChildCount(); ci++ {
+					if parent.GetChild(ci) == leafRef.pageID {
+						actualIdx = ci
+						found = true
+						break
+					}
+				}
+				if found && actualIdx < parent.ChildCount() {
+					newParent, rerr := parent.ReplaceChild(actualIdx, model.PageID(newRawID))
+					if rerr == nil {
+						newParPI := &PageInfo{
+							PageID:    newParent.PageID(),
+							Version:   parentPI.Version + 1,
+							IsLeaf:    false,
+							NodeState: parentPI.NodeState,
+						}
+						if !parentRef.CAS(parentPI, newParPI) {
+							_ = b.storage.FreePage(newParent.PageID())
+						}
+						// ChildrenCache is automatically correct:
+						// leafRef (in the cache) is CAS'd to finalPI in Phase E
+					}
+				}
+			}
+		}
+	}
+
+	// Phase E: CAS leafRef to final state
+	finalPI := &PageInfo{
+		PageID:    model.PageID(newRawID),
+		Version:   compactingInfo.Version + 1,
+		IsLeaf:    true,
+		NodeState: NodeNormal,
+	}
+	if !leafRef.CAS(compactingInfo, finalPI) {
+		return false, nil
+	}
+
+	cleanup = false
+	return true, nil
+}
+
 func (b *BTree) findLeftmostLeaf(rootPI *PageInfo) *PageRef {
 	if rootPI.IsLeaf {
 		return NewPageRef(rootPI.PageID, 0, b.rootRef.freeFunc)
 	}
-	// Walk down the leftmost child path
 	currentRef := NewPageRef(rootPI.PageID, 0, b.rootRef.freeFunc)
 	currentRef.Retain()
 	defer currentRef.Release()
@@ -133,83 +316,3 @@ func (b *BTree) getNextPageID(pageID model.PageID) model.PageID {
 func (b *BTree) getTombstoneCount(pageID model.PageID) int {
 	return int(b.storage.pa.GetTombstoneCount(uint32(pageID)))
 }
-
-// FIXME(CRITICAL): compactPage operates on a temporary PageRef created via NewPageRef
-// during leaf chain traversal, NOT the actual in-tree PageRef stored in the parent's
-// ChildrenCache. The CAS on line 188 therefore only updates the temporary object's pInfo;
-// the real in-tree PageRef retains the old pInfo pointing to the now-freed page ID.
-//
-// Additionally, even if CAS targeted the correct PageRef, the parent node's child pointer
-// (node.GetChild(idx)) would still reference the old page ID — compaction must also
-// COW-update the parent node to point to the newRawID.
-//
-// Correct fix requires:
-//  1. Walk from root (via searchPath) to find the leaf's parent node
-//  2. Get the real child PageRef from the parent's ChildrenCache
-//  3. CAS on the real PageRef
-//  4. COW the parent node to replace the child pointer with newRawID
-//  5. CAS on the parent's PageRef
-//  6. Update the parent's ChildrenCache
-//
-// This is equivalent to the split/merge COW mechanism and should be implemented
-// as part of a comprehensive compaction correctness pass.
-func (b *BTree) compactPage(ref *PageRef, oldPI *PageInfo, leaf LeafPage, wp WatermarkProvider) (LeafPage, error) {
-	count := leaf.Count()
-	if count == 0 {
-		return nil, nil
-	}
-
-	watermark := wp.Watermark()
-
-	// Collect non-tombstone entries whose commitTS < watermark
-	rawID := uint32(oldPI.PageID)
-	var keepKeys, keepVals [][]byte
-	for i := 0; i < count; i++ {
-		val := leaf.GetValue(i)
-		mvccVal, err := mvcc.ParseMVCC(val)
-		if err != nil {
-			keepKeys = append(keepKeys, leaf.GetKey(i))
-			keepVals = append(keepVals, val)
-			continue
-		}
-		if mvccVal.IsTombstone() && mvccVal.BeginTS < watermark {
-			continue // safe to reclaim
-		}
-		keepKeys = append(keepKeys, leaf.GetKey(i))
-		keepVals = append(keepVals, val)
-	}
-
-	// Allocate COW page with only kept entries
-	newRawID, err := b.storage.pm.Alloc()
-	if err != nil {
-		return nil, fmt.Errorf("btree: compact page alloc: %w", err)
-	}
-	srcVersion := b.storage.pa.GetVersion(rawID)
-	b.storage.pa.InitLeafPage(newRawID, srcVersion+1)
-
-	dataEnd := uint16(0)
-	for i := range keepKeys {
-		if err := b.storage.pa.InsertLeafEntry(newRawID, i, keepKeys[i], keepVals[i], &dataEnd); err != nil {
-			b.storage.pm.Free(newRawID)
-			return nil, fmt.Errorf("btree: compact page insert: %w", err)
-		}
-	}
-	b.storage.pa.SetTombstoneCount(newRawID, 0)
-
-	newPI := &PageInfo{
-		PageID:    model.PageID(newRawID),
-		Version:   oldPI.Version + 1,
-		IsLeaf:    true,
-		NodeState: NodeNormal,
-	}
-
-	if !ref.CAS(oldPI, newPI) {
-		b.storage.pm.Free(newRawID)
-		return nil, nil // CAS conflict (expected — another goroutine compacted this page)
-	}
-
-	_ = b.storage.pm.Free(uint32(oldPI.PageID))
-	return &leafPageHandle{id: model.PageID(newRawID), pa: b.storage.pa, storage: b.storage}, nil
-}
-
-// offheap imported for SizeofPageHeader init-time assertion in offheap_storage.go

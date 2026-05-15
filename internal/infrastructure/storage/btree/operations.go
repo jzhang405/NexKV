@@ -229,8 +229,8 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			continue
 		}
 
-		// Success — Phase 6.5: check for lazy merge before releasing path
-		b.maybeMergeAfterWrite(path, leafRef, result.delta)
+		// Phase 6.5 TODO: Lazy Merge — trigger b.handleLeafMerge when
+		// leaf utilization drops below MergeThreshold after a Delete.
 		path.ReleaseAll()
 		b.size.Add(result.delta)
 		return nil
@@ -971,4 +971,4 @@ func isNodeSparse(node NodePage, threshold float64) bool {
 	return float64(node.ChildCount())/float64(MaxInternalKeys) < threshold
 }
 
-var _ = isNodeSparse // Phase 6.5: used when lazy merge is fully enabled
+// isNodeSparse is used by handleLeafMerge (Phase 6.5) — see merge_ops.go

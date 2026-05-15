@@ -50,10 +50,7 @@ func (b *BTree) printSubtree(pageID model.PageID, isLeaf bool, depth int, sb *st
 	}
 	for i := 0; i < node.ChildCount(); i++ {
 		childID := node.GetChild(i)
-		// Determine if this child is leaf or node
-		childRef := NewPageRef(childID, 0, b.rootRef.freeFunc)
-		childPI := childRef.GetPageInfo()
-		childIsLeaf := childPI != nil && childPI.IsLeaf
+		childIsLeaf := b.storage.IsLeafPage(childID)
 		b.printSubtree(childID, childIsLeaf, depth+1, sb)
 	}
 }
@@ -115,7 +112,9 @@ func (b *BTree) assertInternalInvariants(pageID model.PageID, minKey, maxKey []b
 		return fmt.Errorf("btree: node %d: child count %d != key count %d + 1",
 			pageID, node.ChildCount(), count)
 	}
-	// Recurse into children with key range constraints
+	// Recurse into children with key range constraints.
+	// Uses storage.IsLeafPage to read physical page type — avoids the
+	// NewPageRef default-IsLeaf bug where internal children are misidentified as leaves.
 	for i := 0; i < count; i++ {
 		childID := node.GetChild(i)
 		var childMin, childMax []byte
@@ -129,24 +128,14 @@ func (b *BTree) assertInternalInvariants(pageID model.PageID, minKey, maxKey []b
 		} else {
 			childMax = maxKey
 		}
-		childRef := NewPageRef(childID, 0, b.rootRef.freeFunc)
-		childPI := childRef.GetPageInfo()
-		if childPI == nil {
-			return fmt.Errorf("btree: node %d: child %d has nil PageInfo", pageID, i)
-		}
-		if err := b.assertNodeInvariants(childID, childPI.IsLeaf, childMin, childMax); err != nil {
+		if err := b.assertNodeInvariants(childID, b.storage.IsLeafPage(childID), childMin, childMax); err != nil {
 			return err
 		}
 	}
 	// Last child (extraChild)
 	lastChildID := node.GetChild(count)
-	lastRef := NewPageRef(lastChildID, 0, b.rootRef.freeFunc)
-	lastPI := lastRef.GetPageInfo()
-	if lastPI == nil {
-		return fmt.Errorf("btree: node %d: last child %d has nil PageInfo", pageID, lastChildID)
-	}
 	lastMin := node.GetKey(count - 1)
-	if err := b.assertNodeInvariants(lastChildID, lastPI.IsLeaf, lastMin, maxKey); err != nil {
+	if err := b.assertNodeInvariants(lastChildID, b.storage.IsLeafPage(lastChildID), lastMin, maxKey); err != nil {
 		return err
 	}
 	return nil

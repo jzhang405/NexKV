@@ -92,6 +92,7 @@ type txManager struct {
 	gcCfg            *GCConfig
 	gcStats          GCStats
 	wal              WALWriter // Phase 3: WAL for crash recovery (nil = no persistence)
+	walMu            sync.Mutex
 }
 
 // WALWriter is the minimal WAL interface for the transaction engine.
@@ -113,8 +114,11 @@ const (
 )
 
 // SetWAL sets the WAL writer for crash recovery. If nil, WAL is disabled.
+// Safe for concurrent use.
 func (tm *txManager) SetWAL(w WALWriter) {
+	tm.walMu.Lock()
 	tm.wal = w
+	tm.walMu.Unlock()
 }
 
 func (tm *txManager) BeginTx(ctx context.Context, level IsolationLevel) (Tx, error) {
@@ -421,13 +425,16 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 	commitTS := tx.engine.tsGen.NextTS()
 
 	// Phase 3: WAL Append + Sync (before Apply — all-or-nothing durability)
-	if tx.engine.wal != nil {
+	tx.engine.walMu.Lock()
+	wal := tx.engine.wal
+	tx.engine.walMu.Unlock()
+	if wal != nil {
 		entries := tx.writeBuffer.ToWALEntries(commitTS)
-		if _, err := tx.engine.wal.AppendBatch(entries); err != nil {
+		if _, err := wal.AppendBatch(entries); err != nil {
 			tx.cleanup()
 			return fmt.Errorf("wal append: %w", err)
 		}
-		if err := tx.engine.wal.Sync(); err != nil {
+		if err := wal.Sync(); err != nil {
 			tx.cleanup()
 			return fmt.Errorf("wal sync: %w", err)
 		}

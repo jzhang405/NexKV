@@ -6,6 +6,8 @@ package btree
 
 import (
 	"context"
+	"encoding/binary"
+	"fmt"
 
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 )
@@ -13,16 +15,17 @@ import (
 // GetWithMeta returns the raw wire-format value and its beginTS (commitTS).
 // Wire format: [Flag:1][beginTS:8][RealValue:N].
 // Used by WAL recovery for the three-phase idempotency check.
+//
+// Extracts beginTS directly from the raw MVCC header to avoid the
+// ParseMVCC → BuildMVCC round-trip present in the old implementation.
 func (b *BTree) GetWithMeta(ctx context.Context, key []byte) (raw []byte, beginTS uint64, err error) {
-	mv, err := b.GetRaw(ctx, key)
+	raw, err = b.getRawBytes(key)
 	if err != nil {
 		return nil, 0, err
 	}
-
-	// Rebuild raw wire format from MVCCValue fields.
-	raw, buildErr := mvcc.BuildMVCC(mv.Flag, mv.BeginTS, mv.RealVal)
-	if buildErr != nil {
-		return nil, 0, buildErr
+	if len(raw) < mvcc.MVCCHeaderSize {
+		return nil, 0, fmt.Errorf("btree: GetWithMeta: value too short: %d bytes", len(raw))
 	}
-	return raw, mv.BeginTS, nil
+	beginTS = binary.BigEndian.Uint64(raw[1:9])
+	return raw, beginTS, nil
 }

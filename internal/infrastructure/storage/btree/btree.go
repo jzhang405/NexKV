@@ -152,11 +152,9 @@ func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
 	return mvccVal.RealVal, nil
 }
 
-// GetRaw returns the complete MVCC-encoded value for the given key.
-// Unlike Get, it does not filter Tombstone entries -- callers see Flag + beginTS + realVal.
-// Returns ErrKeyNotFound only if the key does not physically exist in the tree.
-// Used by MVCC readers that need to inspect beginTS or Tombstone status.
-func (b *BTree) GetRaw(_ context.Context, key []byte) (*mvcc.MVCCValue, error) {
+// getRawBytes returns the raw MVCC-encoded bytes for key directly from the leaf page.
+// The returned slice is a copy and safe to retain. Used by GetRaw and GetWithMeta.
+func (b *BTree) getRawBytes(key []byte) ([]byte, error) {
 	if err := b.checkOpen(); err != nil {
 		return nil, err
 	}
@@ -187,8 +185,18 @@ func (b *BTree) GetRaw(_ context.Context, key []byte) (*mvcc.MVCCValue, error) {
 		b.metrics.ReadCount.Add(1)
 	}
 
-	// Decode raw MVCC value (deepCopy from leaf.GetValue)
-	raw := leaf.GetValue(idx)
+	return leaf.GetValue(idx), nil
+}
+
+// GetRaw returns the complete MVCC-encoded value for the given key.
+// Unlike Get, it does not filter Tombstone entries -- callers see Flag + beginTS + realVal.
+// Returns ErrKeyNotFound only if the key does not physically exist in the tree.
+// Used by MVCC readers that need to inspect beginTS or Tombstone status.
+func (b *BTree) GetRaw(_ context.Context, key []byte) (*mvcc.MVCCValue, error) {
+	raw, err := b.getRawBytes(key)
+	if err != nil {
+		return nil, err
+	}
 	return mvcc.ParseMVCC(raw)
 }
 

@@ -113,53 +113,64 @@ func (h *leafPageHandle) Update(idx int, value []byte) (LeafPage, error) {
 		return nil, fmt.Errorf("btree: leaf update: index %d out of range [0, %d): %w", idx, h.Count(), ErrKeyNotFound)
 	}
 
-	// COW copy
-	newRawID, err := h.storage.pm.Alloc()
-	if err != nil {
-		return nil, errpkg.BTreeLeafUpdateAlloc(err)
+	rawID := uint32(h.id)
+	srcVersion := h.pa.GetVersion(rawID)
+
+	// Check old value slot size: if new value fits, use fast COW+overwrite path.
+	_, _, _, oldValLen := h.pa.GetLeafEntryOffset(rawID, idx)
+	if len(value) <= int(oldValLen) {
+		newRawID, err := h.storage.pm.Alloc()
+		if err != nil {
+			return nil, errpkg.BTreeLeafUpdateAlloc(err)
+		}
+		srcPtr := h.storage.pm.PageIDToPtr(rawID)
+		dstPtr := h.storage.pm.PageIDToPtr(newRawID)
+		copy(unsafe.Slice((*byte)(dstPtr), offheap.PageSize), unsafe.Slice((*byte)(srcPtr), offheap.PageSize))
+		h.pa.SetVersion(newRawID, srcVersion+1)
+
+		if h.pa.OverwriteLeafValue(newRawID, idx, value) {
+			return &leafPageHandle{id: model.PageID(newRawID), pa: h.pa, storage: h.storage}, nil
+		}
+		h.storage.pm.Free(newRawID)
 	}
-	srcPtr := h.storage.pm.PageIDToPtr(uint32(h.id))
-	dstPtr := h.storage.pm.PageIDToPtr(newRawID)
-	srcSlice := unsafe.Slice((*byte)(srcPtr), offheap.PageSize)
-	dstSlice := unsafe.Slice((*byte)(dstPtr), offheap.PageSize)
-	copy(dstSlice, srcSlice)
 
-	srcVersion := h.pa.GetVersion(uint32(h.id))
-	h.pa.SetVersion(newRawID, srcVersion+1)
+	// Slow path: new value is larger than old slot. Skip wasted COW copy,
+	// directly rebuild page with new value at the correct position.
+	key := h.GetKey(idx)
+	keys, vals := h.pa.CollectKVExcept(rawID, idx)
 
-	// Try in-place overwrite on the new page
-	if h.pa.OverwriteLeafValue(newRawID, idx, value) {
-		newID := model.PageID(newRawID)
-		return &leafPageHandle{id: newID, pa: h.pa, storage: h.storage}, nil
-	}
-
-	// Value is larger than original — fall back to delete + insert
-	key := h.GetKey(idx) // returns a copy from the original page
-	keys, vals := h.pa.CollectKVExcept(uint32(h.id), idx)
-	h.storage.pm.Free(newRawID)
-
-	// Rebuild page without the old entry, then insert new KV
 	rebuildRawID, err := h.storage.pm.Alloc()
 	if err != nil {
 		return nil, errpkg.BTreeLeafUpdateRebuildAlloc(err)
 	}
 	h.pa.InitLeafPage(rebuildRawID, srcVersion+1)
+
+	// Find insert position for the new key within the collected keys (which are sorted).
+	insertPos := 0
+	for insertPos < len(keys) && bytes.Compare(keys[insertPos], key) < 0 {
+		insertPos++
+	}
+
+	// Build page: insert old entries before insertPos, then new entry, then rest.
 	dataEnd := uint16(0)
-	for i := range keys {
+	for i := 0; i < insertPos; i++ {
 		if err := h.pa.InsertLeafEntry(rebuildRawID, i, keys[i], vals[i], &dataEnd); err != nil {
 			h.storage.pm.Free(rebuildRawID)
 			return nil, errpkg.BTreeLeafUpdateRebuild(err)
 		}
 	}
-	// Insert the new KV pair
-	insertIdx, _, _ := h.pa.SearchKey(rebuildRawID, key, true)
-	if err := h.pa.InsertLeafEntry(rebuildRawID, insertIdx, key, value, &dataEnd); err != nil {
+	if err := h.pa.InsertLeafEntry(rebuildRawID, insertPos, key, value, &dataEnd); err != nil {
 		h.storage.pm.Free(rebuildRawID)
 		return nil, errpkg.BTreeLeafUpdateReinsert(err)
 	}
+	for i := insertPos; i < len(keys); i++ {
+		if err := h.pa.InsertLeafEntry(rebuildRawID, i+1, keys[i], vals[i], &dataEnd); err != nil {
+			h.storage.pm.Free(rebuildRawID)
+			return nil, errpkg.BTreeLeafUpdateRebuild(err)
+		}
+	}
 
-	newID := model.PageID(rebuildRawID)
-	return &leafPageHandle{id: newID, pa: h.pa, storage: h.storage}, nil
+	return &leafPageHandle{id: model.PageID(rebuildRawID), pa: h.pa, storage: h.storage}, nil
 }
 
 func (h *leafPageHandle) Delete(idx int) (LeafPage, error) {

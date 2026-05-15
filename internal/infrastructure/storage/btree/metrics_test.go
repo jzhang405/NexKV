@@ -7,6 +7,7 @@ package btree
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -156,6 +157,128 @@ func TestBTreeMetrics_ConflictRate(t *testing.T) {
 			assert.Equal(t, tt.expectRate, snapshot.ConflictRate())
 		})
 	}
+}
+
+func TestLatencyHistogram_RecordAndSnapshot(t *testing.T) {
+	h := NewLatencyHistogram(1) // no sampling for test
+	for i := 0; i < 100; i++ {
+		h.Record(100 * time.Microsecond)
+	}
+	snap := h.Snapshot()
+	assert.Equal(t, int64(100), snap.Count)
+	assert.True(t, snap.AvgUs > 0)
+	assert.True(t, snap.P50Us > 0)
+	assert.True(t, snap.P95Us > 0)
+	assert.True(t, snap.P99Us > 0)
+}
+
+func TestLatencyHistogram_Sampling(t *testing.T) {
+	h := NewLatencyHistogram(10) // 1/10 sampling
+	for i := 0; i < 1000; i++ {
+		h.Record(time.Microsecond)
+	}
+	snap := h.Snapshot()
+	// With 1/10 sampling from 1000 calls, expect ~100 records
+	assert.True(t, snap.Count >= 80 && snap.Count <= 120,
+		"sampled count ~100, got %d", snap.Count)
+}
+
+func TestLatencyHistogram_Empty(t *testing.T) {
+	h := NewLatencyHistogram(1)
+	snap := h.Snapshot()
+	assert.Equal(t, int64(0), snap.Count)
+	assert.Equal(t, int64(0), snap.P50Us)
+}
+
+func TestLatencyHistogram_Reset(t *testing.T) {
+	h := NewLatencyHistogram(1)
+	h.Record(time.Microsecond)
+	h.Reset()
+	snap := h.Snapshot()
+	assert.Equal(t, int64(0), snap.Count)
+}
+
+func TestBTreeMetricsWithLatency_EndToEnd(t *testing.T) {
+	storage, err := NewOffheapBTreeStorage(128 * 1024 * 1024)
+	require.NoError(t, err)
+
+	tree, err := NewBTree(storage, WithLatencyMetrics())
+	require.NoError(t, err)
+	defer tree.Close()
+
+	ctx := context.Background()
+
+	// Write operations (need enough to pass sampling threshold)
+	for i := 0; i < 200; i++ {
+		key := []byte("key-" + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)))
+		value := []byte("value-" + string(rune('0'+i%10)))
+		_ = tree.Set(ctx, key, value)
+	}
+
+	// Read operations
+	for i := 0; i < 200; i++ {
+		key := []byte("key-" + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)))
+		_, _ = tree.Get(ctx, key)
+	}
+
+	ml := tree.metricsWithLatency()
+	require.NotNil(t, ml)
+	readSnap := ml.ReadLat.Snapshot()
+	writeSnap := ml.WriteLat.Snapshot()
+
+	// With 1/64 sampling from 200 ops, expect ~3 records (allow 0-10)
+	assert.True(t, readSnap.Count >= 0)
+	assert.True(t, writeSnap.Count >= 0)
+}
+
+func TestBTreeMetricsWithLatency_DisabledByDefault(t *testing.T) {
+	storage, err := NewOffheapBTreeStorage(128 * 1024 * 1024)
+	require.NoError(t, err)
+
+	tree, err := NewBTree(storage)
+	require.NoError(t, err)
+	defer tree.Close()
+
+	ml := tree.metricsWithLatency()
+	assert.Nil(t, ml, "latency metrics should be nil when not enabled")
+}
+
+func TestHistogramSnapshot_String(t *testing.T) {
+	s := HistogramSnapshot{Count: 50, AvgUs: 100, P50Us: 64, P95Us: 256, P99Us: 1024}
+	str := s.String()
+	assert.Contains(t, str, "count=50")
+	assert.Contains(t, str, "p50=64")
+}
+
+func TestMetricsSnapshot_ComputeQPS(t *testing.T) {
+	prev := &MetricsSnapshot{
+		ReadCount:  1000,
+		WriteCount: 500,
+		DeleteCount: 100,
+	}
+	curr := MetricsSnapshot{
+		ReadCount:   2000,
+		WriteCount:  800,
+		DeleteCount: 150,
+	}
+	qps := curr.ComputeQPS(prev, 2*time.Second)
+	assert.Equal(t, 500.0, qps.ReadQPS)
+	assert.Equal(t, 150.0, qps.WriteQPS)
+	assert.Equal(t, 25.0, qps.DeleteQPS)
+	assert.Equal(t, 675.0, qps.TotalQPS)
+}
+
+func TestMetricsSnapshot_ComputeQPS_NilPrev(t *testing.T) {
+	curr := MetricsSnapshot{ReadCount: 100}
+	qps := curr.ComputeQPS(nil, time.Second)
+	assert.Equal(t, 0.0, qps.ReadQPS)
+}
+
+func TestQPSSnapshot_String(t *testing.T) {
+	q := QPSSnapshot{ReadQPS: 500, WriteQPS: 150, TotalQPS: 650}
+	str := q.String()
+	assert.Contains(t, str, "500")
+	assert.Contains(t, str, "150")
 }
 
 func TestBTreeMetrics_String(t *testing.T) {

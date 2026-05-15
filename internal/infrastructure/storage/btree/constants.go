@@ -34,16 +34,21 @@ const (
 	MergeThreshold = 0.5
 
 	// MaxCASRetries is the maximum number of CAS retry attempts in writeOperation.
-	// MVCC 9-byte header increases per-value space, causing more page splits under heavy write load.
-	// 200 retries balances latency (each retry is cheap — COW copy + memcmp) against livelock avoidance.
+	// Kept at 200: concurrent 100-goroutine tests need full budget during tree growth.
+	// SplitBackoffMaxRetries reduces CPU by limiting split-level spinning.
 	MaxCASRetries = 200
 
-	// SpinLockBackoffThreshold is the number of Splitting retry attempts before
-	// yielding the CPU via runtime.Gosched(). Below this threshold, the goroutine
-	// spins on the cache line to minimize latency; above it, yields to reduce contention.
+	// SpinLockBackoffThreshold is the retry count at which splitting backoff
+	// transitions from spin (low-latency) to exponential sleep (1us→1ms).
 	SpinLockBackoffThreshold = 16
+
+	// SplitBackoffMaxRetries is the maximum number of Splitting retries before
+	// returning ErrCASConflict. Beyond this, the goroutine re-enters the outer CAS loop.
+	SplitBackoffMaxRetries = 96
 
 	// MaxParentCASSpins is the maximum number of spin iterations for parent CAS
 	// in handleParentCASWithSpin before giving up and returning ErrCASConflict.
-	MaxParentCASSpins = 100
+	// Reduced from 100 to 50: with exponential backoff (Phase 3), each spin is
+	// more productive. Splitting backoff at the leaf level reduces parent contention.
+	MaxParentCASSpins = 50
 )

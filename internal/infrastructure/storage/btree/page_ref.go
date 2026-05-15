@@ -6,8 +6,6 @@ package btree
 
 import (
 	"fmt"
-	"log"
-	"runtime/debug"
 	"strings"
 	"sync/atomic"
 
@@ -107,31 +105,12 @@ func (r *PageRef) Retain() {
 // from pInfo to avoid TOCTOU race with concurrent CAS (C1 fix).
 // Panics if called when refCount is already zero (use-after-free bug).
 func (r *PageRef) Release() {
-	defer func() {
-		if p := recover(); p != nil {
-			// 记录 debug 信息
-			debug.PrintStack()
-			log.Printf("PANIC in Release: pageID=%d, refCount=%d, pInfo=%v",
-				r.pageID, r.refCount.Load(), r.pInfo.Load())
-			panic(p) // 重新抛出
-		}
-	}()
-
-	old := r.refCount.Load()
-	if old <= 0 {
-		debug.PrintStack()
-		panic(fmt.Sprintf("Release() called on pageRef with refCount=%d, pageID=%d, pInfo=%v",
-			old, r.pageID, r.pInfo.Load()))
-	}
-
 	v := r.refCount.Add(-1)
-
 	if v < 0 {
-		panic("btree: Release() called on pageRef with zero refCount")
-	} else if v == 0 {
-		if r.freeFunc != nil && r.pageID != model.InvalidPageID {
-			r.freeFunc(r.pageID)
-		}
+		panic(fmt.Sprintf("btree: PageRef.Release: refCount underflow: pageID=%d", r.pageID))
+	}
+	if v == 0 && r.freeFunc != nil && r.pageID != model.InvalidPageID {
+		r.freeFunc(r.pageID)
 	}
 }
 

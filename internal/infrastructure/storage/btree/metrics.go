@@ -7,6 +7,7 @@ package btree
 import (
 	"fmt"
 	"sync/atomic"
+	"time"
 )
 
 // BTreeMetrics holds performance counters for monitoring BTree operations.
@@ -143,4 +144,172 @@ func (s MetricsSnapshot) ConflictRate() float64 {
 		return 0
 	}
 	return float64(s.CASRetryCount) / float64(s.WriteCount)
+}
+
+// QPSSnapshot holds computed QPS values derived from two MetricsSnapshots.
+type QPSSnapshot struct {
+	ReadQPS   float64
+	WriteQPS  float64
+	DeleteQPS float64
+	TotalQPS  float64
+}
+
+// ComputeQPS calculates per-second rates between two snapshots over the given duration.
+// Returns zero values if duration is <= 0 or prev is nil.
+func (s MetricsSnapshot) ComputeQPS(prev *MetricsSnapshot, d time.Duration) QPSSnapshot {
+	if prev == nil || d <= 0 {
+		return QPSSnapshot{}
+	}
+	sec := d.Seconds()
+	return QPSSnapshot{
+		ReadQPS:   float64(s.ReadCount-prev.ReadCount) / sec,
+		WriteQPS:  float64(s.WriteCount-prev.WriteCount) / sec,
+		DeleteQPS: float64(s.DeleteCount-prev.DeleteCount) / sec,
+		TotalQPS:  float64(s.TotalOps()-prev.TotalOps()) / sec,
+	}
+}
+
+// String returns a formatted string of the QPS snapshot.
+func (q QPSSnapshot) String() string {
+	return fmt.Sprintf(
+		"Read=%.0f/s Write=%.0f/s Delete=%.0f/s Total=%.0f/s",
+		q.ReadQPS, q.WriteQPS, q.DeleteQPS, q.TotalQPS,
+	)
+}
+
+// LatencyHistogram tracks operation latency using power-of-2 buckets.
+// Bucket boundaries: 1us, 2us, 4us, 8us, ..., ~1s (64 buckets total).
+// Uses 1/64 sampling to avoid hot-path overhead.
+type LatencyHistogram struct {
+	buckets    [64]atomic.Int64
+	count      atomic.Int64
+	sumUs      atomic.Int64
+	sampleCtr  atomic.Int64
+	sampleRate int64 // 1/sampleRate calls are recorded
+}
+
+// NewLatencyHistogram creates a histogram with the given sampling rate.
+// sampleRate=64 means every 64th call is recorded; use 1 for no sampling.
+func NewLatencyHistogram(sampleRate int64) *LatencyHistogram {
+	if sampleRate < 1 {
+		sampleRate = 1
+	}
+	return &LatencyHistogram{sampleRate: sampleRate}
+}
+
+// Record records a latency observation. Uses sampling to avoid hot-path overhead.
+func (h *LatencyHistogram) Record(d time.Duration) {
+	ctr := h.sampleCtr.Add(1)
+	if ctr%h.sampleRate != 0 {
+		return
+	}
+	us := d.Microseconds()
+	h.sumUs.Add(us)
+	h.count.Add(1)
+	// Find bucket: 64 buckets, boundaries at 1<<bucket us
+	// Bucket 0: 0-1us, Bucket 1: 1-2us, ... Bucket 63: >= 2^63 us (~292 years)
+	bucket := 0
+	v := us
+	for v > 0 && bucket < 63 {
+		v >>= 1
+		bucket++
+	}
+	h.buckets[bucket].Add(1)
+}
+
+// Snapshot returns a point-in-time latency snapshot.
+func (h *LatencyHistogram) Snapshot() HistogramSnapshot {
+	total := h.count.Load()
+	if total == 0 {
+		return HistogramSnapshot{}
+	}
+	// Compute percentiles from bucket distribution
+	var buckets [64]int64
+	var cumSum int64
+	for i := range buckets {
+		buckets[i] = h.buckets[i].Load()
+	}
+	var p50, p95, p99 int64
+	p50Idx := total / 2
+	p95Idx := total * 95 / 100
+	p99Idx := total * 99 / 100
+	for i := range buckets {
+		cumSum += buckets[i]
+		if p50 == 0 && cumSum >= p50Idx {
+			p50 = 1 << i // upper bound of bucket i
+		}
+		if p95 == 0 && cumSum >= p95Idx {
+			p95 = 1 << i
+		}
+		if p99 == 0 && cumSum >= p99Idx {
+			p99 = 1 << i
+		}
+	}
+	avgUs := int64(0)
+	if total > 0 {
+		avgUs = h.sumUs.Load() / total
+	}
+	return HistogramSnapshot{
+		Count: total,
+		AvgUs: avgUs,
+		P50Us: p50,
+		P95Us: p95,
+		P99Us: p99,
+	}
+}
+
+// Reset clears all histogram counters.
+func (h *LatencyHistogram) Reset() {
+	for i := range h.buckets {
+		h.buckets[i].Store(0)
+	}
+	h.count.Store(0)
+	h.sumUs.Store(0)
+	h.sampleCtr.Store(0)
+}
+
+// HistogramSnapshot is an immutable snapshot of latency distribution.
+type HistogramSnapshot struct {
+	Count int64
+	AvgUs int64
+	P50Us int64
+	P95Us int64
+	P99Us int64
+}
+
+// String returns a formatted string of the latency snapshot.
+func (s HistogramSnapshot) String() string {
+	return fmt.Sprintf(
+		"count=%d avg=%dus p50=%dus p95=%dus p99=%dus",
+		s.Count, s.AvgUs, s.P50Us, s.P95Us, s.P99Us,
+	)
+}
+
+// BTreeMetricsWithLatency extends BTreeMetrics with latency histograms.
+type BTreeMetricsWithLatency struct {
+	Counters  *BTreeMetrics
+	ReadLat   *LatencyHistogram
+	WriteLat  *LatencyHistogram
+	SplitLat  *LatencyHistogram
+	MergeLat  *LatencyHistogram
+}
+
+// NewBTreeMetricsWithLatency creates a BTreeMetricsWithLatency with default 1/64 sampling.
+func NewBTreeMetricsWithLatency() *BTreeMetricsWithLatency {
+	return &BTreeMetricsWithLatency{
+		Counters: NewBTreeMetrics(),
+		ReadLat:  NewLatencyHistogram(64),
+		WriteLat: NewLatencyHistogram(64),
+		SplitLat: NewLatencyHistogram(64),
+		MergeLat: NewLatencyHistogram(64),
+	}
+}
+
+// Reset resets all counters and histograms.
+func (ml *BTreeMetricsWithLatency) Reset() {
+	ml.Counters.Reset()
+	ml.ReadLat.Reset()
+	ml.WriteLat.Reset()
+	ml.SplitLat.Reset()
+	ml.MergeLat.Reset()
 }

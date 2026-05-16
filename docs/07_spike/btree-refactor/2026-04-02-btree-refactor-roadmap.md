@@ -621,45 +621,27 @@ go test -run TestConcurrentSplitMerge ./...
   - `TestConcurrentSplit` — 并发触发分裂
   - 移植 `root_split_stress_test.go` 场景
 
-### Phase 6.5: Lazy Merge（2-3 天）
+### Phase 6.5: Lazy Merge（2-3 天）✅ 已完成（2026-05-14，提交 428a3d6）
 
-**产出**：删除触发的延迟页面合并，复用 Phase 6 的 parentRef 向上传播机制
+**产出**：Phase 6.5 全量实施 + Phase 7，squash merge 到 main
 
-**策略**：Lazy Merge — 删除后不立即合并，当页面利用率低于阈值时触发。复用 path 数组向上传播机制（Phase 6.0 已验证 path 索引在级联操作中的正确性）。
-  ```go
-  // 判断是否需要 merge（利用率 < 阈值）
-  NeedMerge(threshold float64) bool
-  // 与兄弟页面合并，返回新 PageHandle
-  MergeWith(sibling PageHandle) (PageHandle, error)
-  // 从兄弟页面借一个 key，返回两个新 PageHandle
-  BorrowFromLeft(sibling PageHandle) (self, sib PageHandle, err error)
-  BorrowFromRight(sibling PageHandle) (self, sib PageHandle, err error)
-  ```
-- [ ] 修改 `btree2/operations.go` — Delete 操作后检查 `NeedMerge`，触发向上传播
-- [ ] 修改 `btree2/node_page.go` — 索引页 Merge：子节点合并后移除 entry，可能级联
-- [ ] 修改 `btree2/btree.go` — `mergeRoot` 方法：根节点只剩一个子节点时降低树高度
-- [ ] 验证：
-  - `TestLeafMerge` — 两个半空叶子合并为一个满叶子
-  - `TestLeafBorrowLeft` — 从左兄弟借 key
-  - `TestLeafBorrowRight` — 从右兄弟借 key
-  - `TestMergePropagation` — 叶子合并 → 父节点 entry 删除
-  - `TestRootMerge` — 根节点降低树高度
-  - `TestMergeThreshold` — 利用率高于阈值不触发合并
-  - `TestConcurrentMerge` — 并发删除触发合并
-  - `TestDeleteHalfKeysNoSpaceLeak` — 删除 50% keys 后验证页面数回落
+- [x] `btree/page_merger.go` — PageMerger 独立接口（6 方法）
+- [x] `btree/merge.go` — 6 Merge/Borrow COW 方法（366 行）
+- [x] `btree/merge_ops.go` — handleLeafMerge 4-phase CAS + mergeRoot CAS 循环
+- [x] `btree/compaction.go` — Compact(WatermarkProvider) + 叶子链遍历
+- [x] `btree/node_page.go` — RemoveChild COW 实现
+- [x] `btree/operations.go` — writeOperation merge 集成点 + isLeafSparse
+- [x] `offheap/page_layout.go` — PageHeader 56B + tombstoneCount + padding
+- [x] `btree/page_info.go` — NodeMerging + ChildVersion + IsBusy
+- [x] 测试：10 专项测试（btree_merge_test.go, 379 行）
+- [x] 三专家 Code Review：4 CRITICAL 修复
+- [x] CI: Build(3 OS) + Test(Go 1.25/1.26) + Lint(0 issues) 全部通过
 
-### Phase 7: 调试基础设施（1-2 天）
+### Phase 7: 调试基础设施（1-2 天）✅ 已完成（2026-05-14，提交 428a3d6）
 
-**产出**：结构化调试工具
-
-- [ ] 创建 `btree2/debug.go`
-- [ ] 创建 `btree2/metrics.go`
-- [ ] PrettyPagePrinter：`PrintTree()`, `PrintPage()` 返回 string
-- [ ] AssertInvariants：key 排序、ChildrenCache 一致、refCount ≥ 0
-- [ ] BTreeMetrics：CASAttempts, CASConflicts, Splits, Retries 原子计数
-- [ ] 验证：
-  - `TestPrettyPrintFormat` — 输出格式正确
-  - `TestAssertDetectsCorruption` — 注入错误，检测到
+- [x] `btree/debug.go` — PrintTree() + AssertInvariants()（160 行）
+- [x] `btree/metrics.go` — CompactionCount + IncrementCompact()
+- [x] 测试：5 调试测试（btree_debug_test.go, 89 行）
 
 ## 8. 复用 vs 重写
 

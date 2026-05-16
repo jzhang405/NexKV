@@ -131,7 +131,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 
 		// Step 2: Lock-free PageInfo read
 		oldInfo := leafRef.GetPageInfo()
-		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || oldInfo.Redirect || !oldInfo.IsLeaf || oldInfo.NodeState == NodeMerging {
+		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || oldInfo.Redirect || !oldInfo.IsLeaf || oldInfo.NodeState == NodeMerging || oldInfo.NodeState == NodeCompacting {
 			path.ReleaseAll()
 			continue
 		}

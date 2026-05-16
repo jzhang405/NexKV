@@ -249,11 +249,9 @@ func TestCompactAllLeaves(t *testing.T) {
 
 	// Run multiple compaction cycles until no more pages are reclaimed
 	// Each cycle may compact different leaves
-	totalCompacted := 0
 	for range 5 {
 		err := tree.Compact(wp)
 		require.NoError(t, err)
-		totalCompacted++
 	}
 
 	// Verify remaining entries are correct

@@ -69,8 +69,15 @@ func (b *BTree) compactCycle(wp WatermarkProvider, cfg CompactionConfig) error {
 			break
 		}
 
-		tombstoneCount := b.getTombstoneCount(pi.PageID)
 		count := leaf.Count()
+		// Count tombstones by scanning — the page header tombstoneCount field
+		// is not maintained by Delete operations (Phase 6.5 follow-up).
+		tombstoneCount := 0
+		for i := 0; i < count; i++ {
+			if mv, err := mvcc.ParseMVCC(leaf.GetValue(i)); err == nil && mv.IsTombstone() {
+				tombstoneCount++
+			}
+		}
 		if count > 0 && float64(tombstoneCount)/float64(count) > cfg.Threshold {
 			if b.tryCompactLeaf(wp, leaf, pi.PageID) {
 				compacted++
@@ -313,6 +320,6 @@ func (b *BTree) getNextPageID(pageID model.PageID) model.PageID {
 	return model.PageID(next)
 }
 
-func (b *BTree) getTombstoneCount(pageID model.PageID) int {
-	return int(b.storage.pa.GetTombstoneCount(uint32(pageID)))
-}
+// NOTE: tombstoneCount in page header is not maintained by Delete operations.
+// The compaction threshold check counts tombstones by scanning leaf entries.
+// Fixing the header maintenance is a Phase 6.5 follow-up.

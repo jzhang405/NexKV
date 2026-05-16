@@ -122,7 +122,7 @@ PageInfo.pos (int64):
 
 | 约束 | 当前设计 | Phase 4 改造 |
 |------|---------|-------------|
-| `model.PageID` | `uint64`（单调 ID） | 保留作为逻辑 ID，新增 `ChunkPosition` 表示物理位置 |
+| `model.PageID` | `uint64`（领域模型定义） | 保留作为逻辑 ID；运行时映射（`pageLocs`）和磁盘格式（`CheckpointEntry`、`PageHeader`）使用 `uint32` 子集（4B × 4KB = 16TB 寻址范围，远超实际需求） |
 | `PageHeader` 大小 | 56 字节 (`btree.HeaderSize`) | 在现有 16 字节填充区嵌入 `chunkPos`（8 字节），剩余 `[8]byte` 填充，保持 56 字节不变 |
 | `OffheapBTreeStorage` | 直接调用 `PageManager.Alloc()` | 增加惰性加载路径：`ChunkManager.ReadPage()` → 反序列化 |
 | `CheckpointManager` | 仅 WAL 操作 | 增加页面遍历 + `ChunkManager.WritePage()` + Sync |
@@ -195,11 +195,14 @@ type ChunkManagerStats struct {
 type ChunkPosition uint64
 
 // 辅助方法
-func EncodeChunkPosition(chunkID uint32, offset uint32, pageType uint8) ChunkPosition
+func EncodeChunkPosition(chunkID uint32, offset uint32, pageType uint8) (ChunkPosition, error)
+    // 验证: chunkID 必须 ≤ MaxChunkID (2^26-1 = 67108863)，防止高位溢出到 FileOffset 区域
 func (p ChunkPosition) ChunkID() uint32
 func (p ChunkPosition) FileOffset() uint32
 func (p ChunkPosition) PageType() uint8
 func (p ChunkPosition) IsZero() bool  // 零值 = 未持久化
+
+const MaxChunkID = (1 << 26) - 1 // 67108863
 ```
 
 ### 3.3 ChunkFile 结构
@@ -257,13 +260,22 @@ type DiskChunkManager struct {
 func NewDiskChunkManager(dir string, chunkSize int64, maxChunks int) (*DiskChunkManager, error)
 
 // RestoreDiskChunkManager 从已有 .ao 文件恢复（重启场景）。
-// 实现流程:
-//   1. 扫描目录中所有 btree_*.ao 文件
-//   2. 验证超级块 Magic "NXAO" + CRC32C
-//   3. 跳过尾部损坏的文件（无 Trailer = 不完整 Checkpoint）
-//   4. 反序列化 FreeList 区域（从超级块 FreeListOff 偏移量读取）
-//   5. 校验 FreeList CRC32C，若损坏则从零重建（扫描文件找所有未使用位置）
-//   6. 按 chunkID 排序后重建 chunks 列表
+//
+// 两阶段 FreeList 重建策略:
+//   阶段 1 (Phase A — 无 pageLocs 依赖):
+//     1. 扫描目录中所有 btree_*.ao 文件
+//     2. 验证超级块 Magic "NXAO" + CRC32C
+//     3. 跳过尾部损坏的文件（无 Trailer = 不完整 Checkpoint）
+//     4. 从超级块 FreeListOff 偏移量读取 FreeList 区域
+//     5. 校验 FreeList CRC32C:
+//        a. 有效 → 加载到内存（信任持久化的 FreeList）
+//        b. 无效 → FreeList 初始化为空（推迟精确重建到 Phase B）
+//     6. 按 chunkID 排序后重建 chunks 列表
+//   阶段 2 (Phase B — pageLocs 可用后):
+//     若 FreeList 在阶段 1 因 CRC 损坏被置空:
+//       扫描所有 Chunk 文件的完整页面区域 [超级块之后, 文件尾之前]
+//       将未出现在 pageLocs 中的 4KB 对齐位置加入 FreeList
+//       → pageLocs 由 CheckpointEntry 恢复，提供完整的已用位置集合
 func RestoreDiskChunkManager(dir string) (*DiskChunkManager, error)
 ```
 
@@ -307,6 +319,7 @@ func (c *ChunkCompactor) Compact() error       { return nil }   // 存根，Phas
 btree_NNNN.ao:
 ┌───────────────────────────────────────────────────────────┐
 │ 超级块 (4KB)                                               │
+│超级块字段:       4+4+4+8+8+8+4+4=44 字节                      │
 │  ├─ Magic:        [4]byte  = {0x4E, 0x58, 0x41, 0x4F}     │
 │  │                       = "NXAO"                          │
 │  ├─ Version:      uint32  = 1                              │
@@ -316,13 +329,13 @@ btree_NNNN.ao:
 │  ├─ FreeListOff:  uint64  (空闲列表偏移量)                   │
 │  ├─ PageCount:    uint32                                   │
 │  ├─ CRC32C:       uint32  (覆盖超级块头部)                   │
-│  └─ Reserved:     [4048]byte                               │
+│  └─ Reserved:     [4052]byte  (4KB - 44B = 4052B)          │
 ├───────────────────────────────────────────────────────────┤
-│ 页面数据区域 (4KB 对齐)                                     │
-│  │ Page 0: [CRC32C:4][PageHeader + Data:4092]              │
-│  │ Page 1: [CRC32C:4][PageHeader + Data:4092]              │
+│ 页面数据区域 (页面边界对齐，每页 4100 字节)                    │
+│  │ Page 0: [CRC32C:4][PageHeader+Data:4096] = 4100 字节    │
+│  │ Page 1: [CRC32C:4][PageHeader+Data:4096] = 4100 字节    │
 │  │ ...                                                     │
-│  │ Page N: [CRC32C:4][PageHeader + Data:4092]              │
+│  │ Page N: [CRC32C:4][PageHeader+Data:4096] = 4100 字节    │
 ├───────────────────────────────────────────────────────────┤
 │ 空闲列表区域 (页面对齐)                                     │
 │  │ [Count:4][Pos1:8][Pos2:8]...[CRC32C:4]                  │
@@ -465,10 +478,13 @@ Phase 4 模糊检查点流程 (FuzzyCheckpoint with Page Flush + Mapping):
            否 → 跳过（已在 AO 中持久化）
   T3: 持久化 FreeList 到各 Chunk 文件尾部
   T4: cm.Sync()                                     ← AO 文件 fsync
+  T4a: pageLocs 批量更新 ← mapping                  ← AO Sync 后立即刷新映射（WAL 写入前）
   T5: wal.Append(CheckpointEntry{startLSN, rootPageID, mapping}) ← 授权 + 映射
   T6: wal.Sync()                                    ← WAL 持久化
   T7: wal.Truncate(startLSN)                        ← WAL GC
 ```
+
+`pageLocs` 在 AO Sync 后、WAL Append 前更新（T4a），确保内存中的映射表与 AO 文件状态一致。若后续 WAL Append 失败（T5-T6），pageLocs 中有新增映射条目但 WAL 中没有对应的 CheckpointEntry，下次恢复时这些条目不被识别，对应的 AO 位置会被 FreeList 扫描标记为"未使用"——安全回退，无数据丢失。
 
 **CheckpointEntry 扩展格式**（WAL entry Key 区域）：
 ```
@@ -614,33 +630,63 @@ func (s *OffheapBTreeStorage) CopyLeafPage(srcID model.PageID) (model.PageID, Le
 
 ### 6.3 CheckpointManager 集成
 
-```go
-// internal/infrastructure/storage/checkpoint/checkpoint_manager.go
+**接口扩展需求**：现有 `checkpoint.PageRef` 接口仅提供 `PageID()/IsLeaf()/ChildIDs()` 三个方法，不足以支撑 Phase 4 的页面刷新。需要新增 `BTreeScanner` 接口扩展和 `PageFlushItem` 返回值类型。
 
+```go
+// checkpoint 包接口扩展 (checkpoint_manager.go)
+
+// BTreeScanner 扩展 — 增加 EnumeratePages 方法
+type BTreeScanner interface {
+    RootPage() PageRef
+    // EnumeratePages 从根开始 DFS 遍历所有可达 PageRef，
+    // 返回带完整页面信息的列表，用于 Checkpoint 的序列化+刷新。
+    // 遍历过程中根快照由 COW 保证不可变性。
+    EnumeratePages(root PageRef) ([]PageFlushItem, error)
+}
+
+// PageFlushItem 封装 Checkpoint 页面刷新所需的完整信息
+type PageFlushItem struct {
+    PageID   model.PageID       // 逻辑页面 ID
+    PageType uint8              // 0=内部节点, 1=叶子
+    PagePtr  unsafe.Pointer     // mmap 页面指针（用于序列化）
+    ChunkPos ChunkPosition      // 当前 AO 位置 (0 = 脏页)
+}
+
+// PageRef 接口保持不变
+type PageRef interface {
+    PageID() model.PageID
+    IsLeaf() bool
+    ChildIDs() []model.PageID
+}
+```
+
+**职责分离**：`EnumeratePages` 在 BTree 内部完成遍历（BTree 拥有 `PageManager` 和 `PageAccessor`），CheckpointManager 只需接收结果列表，不直接操作 mmap 指针。这避免了 CheckpointManager 的职责膨胀。
+
+```go
+// Manager 结构体 — Phase 4 修改
 type Manager struct {
-    wal   service.WAL           // 不变
-    btree BTreeScanner          // 不变
-    cm    service.ChunkManager  // Phase 4 新增
+    wal        service.WAL
+    btree      BTreeScanner          // 扩展: EnumeratePages
+    cm         service.ChunkManager  // Phase 4 新增
+    serializer *chunk.PageSerializer // Phase 4 新增
 }
 
 func (m *Manager) FuzzyCheckpoint() error {
     startLSN := m.wal.CurrentLSN()
-
-    // Phase 4 新增：遍历并刷新脏页面
-    rootRef := m.btree.RootRef()
-    pages := m.btree.EnumeratePages(rootRef)
-    for _, ref := range pages {
-        if ref.ChunkPos() == 0 { // 脏页
-            buf, _ := m.serializer.Serialize(ref.PagePtr())
-            pos, _ := m.cm.Allocate(PageSize, ref.PageType())
+    mapping := make(map[uint32]ChunkPosition)
+    rootRef := m.btree.RootPage()
+    items, _ := m.btree.EnumeratePages(rootRef)
+    for _, item := range items {
+        mapping[uint32(item.PageID)] = item.ChunkPos
+        if item.ChunkPos == 0 {
+            buf, _ := m.serializer.Serialize(item.PagePtr)
+            pos, _ := m.cm.Allocate(PageSize, item.PageType)
             m.cm.WritePage(pos, buf)
-            ref.SetChunkPos(pos)
+            mapping[uint32(item.PageID)] = pos
         }
     }
-    m.cm.Sync() // ← AO 屏障
-
-    // 与 Phase 3 相同：WAL 授权 + 截断
-    entry := NewCheckpointEntry(startLSN, len(pages))
+    m.cm.Sync()
+    entry := NewCheckpointEntry(startLSN, rootRef.PageID(), mapping)
     m.wal.Append(entry)
     m.wal.Sync()
     m.wal.Truncate(startLSN)
@@ -662,18 +708,26 @@ Recovery 分为三个明确阶段：
 │   1. ChunkManager 初始化                                      │
 │      - 首次启动: NewDiskChunkManager()                        │
 │      - 重启恢复: RestoreDiskChunkManager() ← 扫描 .ao 文件    │
+│        ├─ 超级块 CRC 有效 → 加载 FreeList（阶段1）            │
+│        └─ 超级块 CRC 损坏 → FreeList 推迟到 Phase B（阶段2）  │
 │   2. PageManager 初始化（匿名 mmap，空页面池）                  │
 │   3. WAL 扫描: scanSegments() → 找最新 CheckpointEntry        │
 ├──────────────────────────────────────────────────────────────┤
 │ Phase B: BTree 结构重建（从 Checkpoint + AO）                  │
-│   4. 解析 CheckpointEntry:                                    │
-│      - rootPageID ← 恢复的根                                   │
-│      - mapping ← pageID→ChunkPosition 映射表                   │
-│   5. OffheapBTreeStorage.pageLocs ← mapping                   │
-│   6. 批量预加载根页面及其直接子页面到 PageManager               │
-│      （跳过惰性加载路径的惰性部分——直接调用 cm.ReadPage）       │
-│   7. BTree PageRef 图重建（见 6.4.2）                          │
-│   8. BTree 结构就绪，checkpointStartLSN 已记录                 │
+│   ┌─ 条件分支:                                                │
+│   │ 有 CheckpointEntry:                                       │
+│   │   4. 解析 CheckpointEntry → rootPageID + pageLocs 映射    │
+│   │   5. OffheapBTreeStorage.pageLocs ← mapping               │
+│   │   6. FreeList 阶段2 补全（若 Phase A 跳过）:               │
+│   │      扫描 Chunk 文件 → 排除 pageLocs 中的位置 → 入 FreeList│
+│   │   7. RebuildBTree(rootPageID, pageLocs) → PageRef 图      │
+│   │      （所有页面加载由 RebuildBTree 内部完成，不做预加载）    │
+│   │      （见 6.4.2 完整算法）                                │
+│   │   8. checkpointStartLSN 记录                               │
+│   │                                                           │
+│   └─ 无 CheckpointEntry (首次启动 / Phase 3 遗留):            │
+│       4'. BTree 初始化为空（NewBTree，无 pageLocs）            │
+│       5'. checkpointStartLSN = 0（全量 WAL 重放）             │
 ├──────────────────────────────────────────────────────────────┤
 │ Phase C: 增量 WAL 重放（BTree 已就绪）                         │
 │   9. 从 checkpointStartLSN 开始重放 WAL                        │
@@ -750,7 +804,24 @@ RebuildBTree(rootPageID, pageLocs, pm, cm, serializer):
       cache = NewChildrenCache(childPageRefs, separators)
       parentRef.children.Store(cache)
 
-  Step 4: 设置 BTree 结构
+  Step 4: 构建 pageID→PageRef 映射（用于叶子链接）
+    pageRefMap := make(map[uint32]*PageRef)
+    在 BFS 遍历过程中，每创建一个 PageRef 即记录:
+      pageRefMap[childPageID] = childRef
+
+  Step 5: 重建叶子节点链表
+    对于 pageRefMap 中的每个叶子 PageRef:
+      leafPageID = ref.PageID()
+      physPtr = pm.PageIDToPtr(leafPageID)
+      prevPageID = ReadPrevPage(physPtr)   // PageHeader.prevPage
+      nextPageID = ReadNextPage(physPtr)   // PageHeader.nextPage
+      if prevPageID != 0:
+        ref.SetPrevLeaf(pageRefMap[prevPageID])
+      if nextPageID != 0:
+        ref.SetNextLeaf(pageRefMap[nextPageID])
+    这保证了范围查询 (SeekFirst/SeekLast/叶级迭代器) 的正确性。
+
+  Step 6: 设置 BTree 结构
     tree = &BTree{
       rootRef:   rootRef,
       storage:   storage,  // OffheapBTreeStorage（已注入 pageLocs）
@@ -763,7 +834,7 @@ RebuildBTree(rootPageID, pageLocs, pm, cm, serializer):
 - **恢复阶段 BTree 不接受外部请求**：所有 API 返回 `ErrEngineNotReady`（与 Phase 3 C6-3 一致）
 - **Recovery 单 goroutine 执行**：禁止并发调用（与 Phase 3 约束一致）
 - **子节点分离器键从物理页面读取**：pageLocs 映射只包含 pageID→ChunkPosition，ChildrenCache 的 separator keys 需从父节点物理页面重新扫描
-- **叶子链表重建**：遍历叶子节点时，通过 `PageHeader.prevPage/nextPage` 字段链接相邻叶子
+- **page data 中的 child pageID 不直接用于导航**：RebuildBTree 从物理页面读取 child pageID 仅用于 `pageLocs` 查找 ChunkPosition；导航通过 `ChildrenCache`（持有 `[]*PageRef`），不使用 page data 中的 child entry。旧物理页面中存储的 child pageID 与新分配的 mmap slot（`pm.Alloc()` 返回的 pageID）不同，但 `ChildrenCache` 持有正确的 `*PageRef` 指针，隔离了新旧 pageID 的不一致
 
 **Recovery 恢复时长估算修正**（原 Phase 4.4 3-4 day → 修正为 5-7 day）：
 

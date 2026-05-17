@@ -13,7 +13,7 @@
 
 ### 1.1 当前状态
 
-NexKV BTree 存储引擎是一个**纯内存引擎**。以下表格总结了各模块的持久化现状：
+NexKV BTree 存储引擎基于 **mmap 匿名内存**（`MAP_ANON | MAP_PRIVATE`），页面驻留在 offheap 区域，进程退出即丢失。Phase 4 的目标是将 mmap 从匿名映射升级为**文件回退映射**（`MAP_SHARED` + `fallocate`），实现与 Lealone 对等的页面级磁盘持久化。
 
 | 模块 | 持久化状态 | 说明 |
 |------|-----------|------|
@@ -164,7 +164,7 @@ PageInfo.pos (int64):
 
 **Children-First 写入**：`NodePage.write()` 先递归调用 `writeChildren()` 写入所有子页面，获取子页面的 pos，再将自己的数据（含子页面 pos 数组）写入。这保证磁盘上的父页面始终指向有效的子页面位置。
 
-#### 2.1.5 PageListener 父链（脏页传播）
+#### 2.1.5 PageListener 父链（脏页传播）⚠️ NexKV Phase 4 不采用
 
 ```java
 class PageListener {
@@ -182,6 +182,8 @@ class PageListener {
 4. 重复直到根节点
 
 **并发保护**：每层使用 `PageListener` 版本号 —— 若父节点的 Listener 已变（页面被 GC 或分裂），传播停止并返回错误码（1=GC'd, 2=Split）。
+
+**NexKV Phase 4 不采用 PageListener 的原因**：当前 NexKV BTree 刻意**不存储父指针**（`page_ref.go` 注释明确说明：通过 SearchPath 数组索引解析父子关系，避免并发 Split 期间的过期指针风险）。引入 PageListener 反向指针会重新引入 NexKV 刻意规避的并发危害。Phase 4 的脏页检测通过 DFS 遍历 + `chunkPos == 0` 判断实现（见 §5.2），无需自底向上的父链传播。
 
 #### 2.1.6 Checkpoint 触发与流程
 
@@ -212,7 +214,7 @@ Lealone 的页面**不是固定 4096 字节**。每个页面有独立的 `pageLe
 
 | 维度 | Lealone | NexKV 当前 | 差距 |
 |------|---------|-----------|------|
-| **页面存储** | mmap + `.ao` 文件 | `MAP_ANON` 纯内存 | **无磁盘持久化** |
+| **页面存储** | mmap + `.ao` 文件 | `MAP_ANON` offheap mmap | **无文件回退持久化** |
 | **PageID 编码** | 64-bit pos (chunk+offset+type) | `uint32` PageID（单调递增） | 位置模型不兼容 |
 | **页面加载** | 按需惰性加载 (`getOrReadPage`) | 始终驻留内存 | **无磁盘读取路径** |
 | **脏页追踪** | `PageInfo.isDirty` + 自底向上标记 | 隐式 COW（Go GC 管理） | **需要显式 flush 机制** |
@@ -426,12 +428,14 @@ DiskChunkManager.Allocate(size, pageType):
        ii.  seq = ++maxSeq                       ← 全局序列号递增
        iii. path = fmt.Sprintf("btree_%d_%d.ao", chunkID, seq)
        iv.  fallocate(chunkSize) 预分配空间
-       v.   写入双块头部（两个相同的 4KB 块）
+       v.   页面写入起始于偏移量 ChunkHeaderSize (8192)
        vi.  chunks.append, idToChunk[id]=c, seqToID[seq]=id
        vii. lastChunk = c
        返回 ChunkPosition(newChunkID, ChunkHeaderSize, pageType)
 
 无 maxChunks 限制 (对齐 Lealone): Chunk 数量任意增长，由 ChunkCompactor (Phase 5) 控制空间回收。
+
+**Chunk 头部写入时机**（对齐 Lealone `Chunk.write()`）：头部**不在 Chunk 创建时写入**，而在 Chunk 关闭/Finalization 时写入（所有页面写入完成后）。此时的头部包含最终元数据（`pageCount`、`sumOfPageLength`、`rootPagePos` 等）。若头部有效则整个 Chunk 完整；若头部损坏则跳过该 Chunk（不完整 Checkpoint 的安全标记）。
 ```
 
 ### 3.6 ChunkCompactor
@@ -494,14 +498,14 @@ btree_[chunkId]_[seq].ao (对齐 Lealone c_[id]_[seq].db):
 
 **无超级块 Magic Number**（对齐 Lealone）：恢复时扫描目录 → 解析文件名 seq → 排序 → 取最高 seq chunk → 校验双块头部 Fletcher32。比单一 Magic + CRC32C 更健壮（容忍单扇区损坏）。
 
-### 4.2 页面磁盘格式
+### 4.2 页面磁盘格式（变长，上限 PageSize）
 
-采用**就地格式** — 磁盘格式与内存格式一致，仅在头部增加 4 字节 CRC32C。**磁盘页面大小为 4100 字节**（= `PageSize 4096 + CRCSize 4`）：
+**对齐 Lealone 变长页面**：每个页面有独立的 `pageLength`（存储在 `pagePositionToLengthMap` 中）。`MinPagePayload = SizeofPageHeader`（56 字节），`MaxPagePayload = PageSize`（4096 字节）。采用**就地格式** — 磁盘格式与内存格式一致，仅在头部增加 4 字节 CRC32C。
 
 ```
-每个页面的磁盘格式 (4100 字节):
+每个页面的磁盘格式 (变长 = CRCSize + pageLength):
 ┌────────────────────────────────────────────┐
-│ CRC32C      (4B)  Castagnoli 多项式         │ ◀── CRC 覆盖后续 4096 字节
+│ CRC32C      (4B)  Castagnoli 多项式         │ ◀── CRC 覆盖后续 pageLength 字节
 │ ═══════ 以下与内存 PageHeader+Data 一致 ════  │
 │ Version     (8B)  COW 版本号                │
 │ PrevPage    (4B)  前一个叶子页面（叶子链表）   │
@@ -518,11 +522,17 @@ btree_[chunkId]_[seq].ao (对齐 Lealone c_[id]_[seq].db):
 │ 条目数组    (变长)                           │
 │ 空闲区域    (变长)                           │
 │ KV 数据     (变长，从页尾向前分配)             │
-│ ═══════════ 4096 字节 数据区 ═══════════════ │
+│ ═══════ pageLength = Header(56) +            │
+│          Entries + KV Data ══════════════════ │
+│ 约束: 56 ≤ pageLength ≤ 4096                │
 └────────────────────────────────────────────┘
 ```
 
-**关键设计决策**：`ChunkPos` (8 字节) 使用 `PageHeader` 中原本的 16 字节填充区域的一部分。`HeaderSize` 保持 56 字节不变（= `offheap.SizeofPageHeader`）。**磁盘页面 = 4 字节 CRC + 4096 字节完整页面数据 = 4100 字节**，不会丢失任何 KV 数据。
+**关键设计决策**：
+- `ChunkPos` 使用 `PageHeader` 中原本的 16 字节填充区域的 8 字节，`Reserved [8]byte`
+- `HeaderSize` 保持 56 字节不变（= `offheap.SizeofPageHeader`）
+- 磁盘页面 = `CRCSize(4) + pageLength`，`pageLength` 由 `pagePositionToLengthMap` 精确记录
+- **不需要**将小页面填充到 4096 字节后再写磁盘（节省 I/O 和磁盘空间）
 
 ### 4.3 页面序列化协议
 
@@ -531,67 +541,75 @@ btree_[chunkId]_[seq].ao (对齐 Lealone c_[id]_[seq].db):
 
 import "hash/crc32"
 
-// crc32cTable 使用 Castagnoli 多项式，与 WAL 的 wal.CRC32C() 保持一致。
-// Castagnoli 具有 x86 SSE4.2 (crc32q) 和 ARM (crc32w) 硬件加速。
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
 const (
-    DiskPageSize = PageSize + CRCSize // 4100 字节 = 4096 + 4
-    CRCSize      = 4
-    PayloadSize  = PageSize           // 4096 字节
+    CRCSize          = 4
+    MinPagePayload   = SizeofPageHeader // 56 字节（空页面）
+    MaxPagePayload   = PageSize         // 4096 字节（满页面）
+    MinDiskPageSize  = CRCSize + MinPagePayload // 60
+    MaxDiskPageSize  = CRCSize + MaxPagePayload // 4100
 )
 ```
 
-**序列化约束**：`Serialize` 返回完整的 `[CRC32C:4][PageHeader+Data:4096]` = 4100 字节，确保页面数据区最后的 KV 数据不会丢失。
+**变长序列化约束**：页面大小由实际数据量决定（`pageLength` ∈ [56, 4096]），`pagePositionToLengthMap` 精确记录每页长度。小页面不填充、不浪费 I/O。
 
 ```go
 type PageSerializer struct{}
 
-// Serialize 将 mmap 页面编码为磁盘格式。
-// 输出: [CRC32C:4][PageHeader+Data:4096] = 4100 字节
-// CRC32C 覆盖 PageHeader+Data 部分（偏移 4 之后的 4096 字节）。
-// 使用 sync.Pool 复用缓冲区，减少 GC 压力。
-func (s *PageSerializer) Serialize(ptr unsafe.Pointer) ([]byte, error) {
-    buf := make([]byte, DiskPageSize) // 4100 字节
-    // CRC32C 占前 4 字节，先置零
+// Serialize 将 mmap 页面编码为变长磁盘格式。
+// pageLength: 页面实际数据长度 (SizeofPageHeader ≤ pageLength ≤ PageSize)。
+// 输出: [CRC32C:4][pageData:pageLength]。
+func (s *PageSerializer) Serialize(ptr unsafe.Pointer, pageLength int) ([]byte, error) {
+    if pageLength < MinPagePayload || pageLength > MaxPagePayload {
+        return nil, fmt.Errorf("invalid pageLength %d (range [%d,%d])", pageLength, MinPagePayload, MaxPagePayload)
+    }
+    diskLen := CRCSize + pageLength
+    buf := make([]byte, diskLen)
     binary.LittleEndian.PutUint32(buf[0:CRCSize], 0)
-    // 复制完整 PageHeader + Data (4096 字节) 到偏移 4 处
-    src := unsafe.Slice((*byte)(ptr), PageSize)
-    copy(buf[CRCSize:CRCSize+PageSize], src) // 复制完整的 4096 字节
-    // 计算 CRC32C — Castagnoli 多项式 (覆盖 buf[4:4100])
+    src := unsafe.Slice((*byte)(ptr), pageLength)
+    copy(buf[CRCSize:], src)
     crc := crc32.Checksum(buf[CRCSize:], crc32cTable)
     binary.LittleEndian.PutUint32(buf[0:CRCSize], crc)
     return buf, nil
 }
 
-// Deserialize 解码磁盘格式并写入 mmap 目标位置。
-// dst 必须是有效的 4096 字节 mmap 页面指针。
-func (s *PageSerializer) Deserialize(data []byte, dst unsafe.Pointer) error {
-    // 输入长度检查（防止短切片 panic 和数据不完整）
-    if len(data) < DiskPageSize {
-        return fmt.Errorf("page_serializer: short data %d < %d", len(data), DiskPageSize)
+// Deserialize 解码变长磁盘格式并写入 mmap 目标位置。
+// dst 必须是有效的 PageSize (4096) 字节 mmap 页面指针。
+// 返回实际 pageLength。
+func (s *PageSerializer) Deserialize(data []byte, dst unsafe.Pointer) (int, error) {
+    // 边界检查：下界（最小有效页面）+ 上界（防止异常大数据）
+    if len(data) < MinDiskPageSize || len(data) > MaxDiskPageSize {
+        return 0, fmt.Errorf("page_serializer: invalid data len %d (range [%d,%d])",
+            len(data), MinDiskPageSize, MaxDiskPageSize)
     }
     if dst == nil {
-        return ErrNilDestination
+        return 0, ErrNilDestination
     }
 
-    // 验证 CRC32C (Castagnoli 多项式)
+    pageLength := len(data) - CRCSize
+    // 验证 CRC32C (Castagnoli，覆盖 data[4:])
     expectedCRC := binary.LittleEndian.Uint32(data[0:CRCSize])
-    actualCRC := crc32.Checksum(data[CRCSize:CRCSize+PageSize], crc32cTable)
+    actualCRC := crc32.Checksum(data[CRCSize:], crc32cTable)
     if expectedCRC != actualCRC {
-        return ErrCRCMismatch
+        return 0, ErrCRCMismatch
     }
 
-    // 复制完整的 PageHeader + Data (4096 字节) 到 mmap
-    dstSlice := unsafe.Slice((*byte)(dst), PageSize)
-    copy(dstSlice, data[CRCSize:CRCSize+PageSize])
-    return nil
+    // 反序列化后完整性验证
+    dstSlice := unsafe.Slice((*byte)(dst), MaxPagePayload)
+    copy(dstSlice, data[CRCSize:])
+
+    // 快速合理性检查: PageHeader.pageType 必须为 0 或 1
+    pageType := dstSlice[SizeofPageHeader-8-8-2-1-1-2-2] // offset 预计算
+    if pageType != 0 && pageType != 1 {
+        return 0, fmt.Errorf("page_serializer: invalid pageType %d", pageType)
+    }
+
+    return pageLength, nil
 }
 ```
 
-**序列化成本分析**：一次 `Serialize` = 1 次 `make([]byte, 4100)` + 1 次 `copy(4096)` + 1 次 `crc32.Checksum(4096)`。在 x86（SSE4.2 CRC32C 硬件加速）上预期延迟 3-5μs。建议 Phase 4.1 使用 `sync.Pool` 复用 4100 字节缓冲区，Checkpoint 遍历大量页面时避免 GC 压力。
-
-**CRC 多项式一致性**：与 WAL 模块（`internal/infrastructure/storage/wal/crc.go`）共同使用 Castagnoli (CRC32C)，避免同一系统中两种 CRC 算法并存，统一验证工具链。
+**序列化成本**：`make([]byte, 4+pageLength)` + `copy(pageLength)` + `crc32.Checksum(pageLength)`。变长页面优于固定 4100 字节——小页面（如 < 1KB）的 I/O 和磁盘空间开销显著降低。CRC32C (Castagnoli, SSE4.2 硬件加速) 与 WAL 模块（`internal/infrastructure/storage/wal/crc.go`）一致。
 
 ---
 
@@ -626,7 +644,7 @@ Phase 4 模糊检查点流程 (FuzzyCheckpoint with Page Flush + Mapping):
                 pInfo CAS: chunkPos = pos（标记为已持久化）
                 mapping[pageID] = pos（更新为新的持久化位置）
            否 → 跳过（已在 AO 中持久化）
-  T3: 持久化 FreeList 到各 Chunk 文件尾部
+  T3: 持久化 removedPages 到各 Chunk 文件尾部
   T4: cm.Sync()                                     ← AO 文件 fsync
   T4a: pageLocs 批量更新 ← mapping                  ← AO Sync 后立即刷新映射（WAL 写入前）
   T5: wal.Append(CheckpointEntry{startLSN, rootPageID, mapping}) ← 授权 + 映射
@@ -634,7 +652,7 @@ Phase 4 模糊检查点流程 (FuzzyCheckpoint with Page Flush + Mapping):
   T7: wal.Truncate(startLSN)                        ← WAL GC
 ```
 
-`pageLocs` 在 AO Sync 后、WAL Append 前更新（T4a），确保内存中的映射表与 AO 文件状态一致。若后续 WAL Append 失败（T5-T6），pageLocs 中有新增映射条目但 WAL 中没有对应的 CheckpointEntry，下次恢复时这些条目不被识别，对应的 AO 位置会被 FreeList 扫描标记为"未使用"——安全回退，无数据丢失。
+`pageLocs` 在 AO Sync 后、WAL Append 前更新（T4a），确保内存中的映射表与 AO 文件状态一致。若后续 WAL Append 失败（T5-T6），pageLocs 中有新增映射条目但 WAL 中没有对应的 CheckpointEntry，下次恢复时这些条目不被识别，对应的 AO 位置会在下次恢复时被 removedPages 重建标记为"未使用"——安全回退，无数据丢失。
 
 **CheckpointEntry 扩展格式**（WAL entry Key 区域）：
 ```
@@ -797,18 +815,23 @@ func (s *OffheapBTreeStorage) CopyLeafPage(srcID model.PageID) (model.PageID, Le
 // BTreeScanner 扩展 — 增加 EnumeratePages 方法
 type BTreeScanner interface {
     RootPage() PageRef
-    // EnumeratePages 从根开始 DFS 遍历所有可达 PageRef，
+    // EnumeratePages 从根开始**后序遍历**(post-order DFS)所有可达 PageRef，
     // 返回带完整页面信息的列表，用于 Checkpoint 的序列化+刷新。
     // 遍历过程中根快照由 COW 保证不可变性。
+    //
+    // 后序遍历保证子页面在父页面之前出现在列表中，
+    // 配合 Children-First 写入语义（§2.1.4），确保父页面写入 AO 时子页面已完成。
     EnumeratePages(root PageRef) ([]PageFlushItem, error)
 }
 
-// PageFlushItem 封装 Checkpoint 页面刷新所需的完整信息
+// PageFlushItem 封装 Checkpoint 页面刷新所需的完整信息。
+// 序列化由 BTree 层内部完成（BTree 拥有 PageSerializer），
+// 对外只暴露预序列化的 []byte，避免 unsafe.Pointer 泄露到接口层。
 type PageFlushItem struct {
     PageID   model.PageID       // 逻辑页面 ID
     PageType uint8              // 0=内部节点, 1=叶子
-    PagePtr  unsafe.Pointer     // mmap 页面指针（用于序列化）
-    ChunkPos ChunkPosition      // 当前 AO 位置 (0 = 脏页)
+    PageData []byte             // 预序列化的页面数据 (CRC32C:4 + payload)；nil = 已持久化无需重写
+    ChunkPos ChunkPosition      // 当前 AO 位置 (0 = 脏页，需要 Alloc + Write)
 }
 
 // PageRef 接口保持不变
@@ -834,15 +857,16 @@ func (m *Manager) FuzzyCheckpoint() error {
     startLSN := m.wal.CurrentLSN()
     mapping := make(map[uint32]ChunkPosition)
     rootRef := m.btree.RootPage()
+    // EnumeratePages 后序遍历，子页面排在父页面之前 (Children-First 语义)
     items, _ := m.btree.EnumeratePages(rootRef)
     for _, item := range items {
         mapping[uint32(item.PageID)] = item.ChunkPos
-        if item.ChunkPos == 0 {
-            buf, _ := m.serializer.Serialize(item.PagePtr)
-            pos, _ := m.cm.Allocate(PageSize, item.PageType)
-            m.cm.WritePage(pos, buf)
+        if item.ChunkPos == 0 && item.PageData != nil { // 脏页 + 有序列化数据
+            pos, _ := m.cm.Allocate(len(item.PageData), item.PageType)
+            m.cm.WritePage(pos, item.PageData)
             mapping[uint32(item.PageID)] = pos
         }
+        // ChunkPos != 0 或 PageData == nil → 已持久化，跳过
     }
     m.cm.Sync()
     entry := NewCheckpointEntry(startLSN, rootRef.PageID(), mapping)
@@ -867,8 +891,8 @@ Recovery 分为三个明确阶段：
 │   1. ChunkManager 初始化                                      │
 │      - 首次启动: NewDiskChunkManager()                        │
 │      - 重启恢复: RestoreDiskChunkManager() ← 扫描 .ao 文件    │
-│        ├─ 超级块 CRC 有效 → 加载 FreeList（阶段1）            │
-│        └─ 超级块 CRC 损坏 → FreeList 推迟到 Phase B（阶段2）  │
+│        ├─ 头部校验通过 → 加载 removedPages（阶段1）          │
+│        └─ 头部校验失败 → removedPages 推迟到 Phase B（阶段2） │
 │   2. PageManager 初始化（匿名 mmap，空页面池）                  │
 │   3. WAL 扫描: scanSegments() → 找最新 CheckpointEntry        │
 ├──────────────────────────────────────────────────────────────┤
@@ -877,8 +901,8 @@ Recovery 分为三个明确阶段：
 │   │ 有 CheckpointEntry:                                       │
 │   │   4. 解析 CheckpointEntry → rootPageID + pageLocs 映射    │
 │   │   5. OffheapBTreeStorage.pageLocs ← mapping               │
-│   │   6. FreeList 阶段2 补全（若 Phase A 跳过）:               │
-│   │      扫描 Chunk 文件 → 排除 pageLocs 中的位置 → 入 FreeList│
+│   │   6. removedPages 阶段2 补全（若 Phase A 跳过）:          │
+│   │      扫描 Chunk 文件 → 排除 pageLocs 中的位置 → 入 removedPages│
 │   │   7. RebuildBTree(rootPageID, pageLocs) → PageRef 图      │
 │   │      （所有页面加载由 RebuildBTree 内部完成，不做预加载）    │
 │   │      （见 6.4.2 完整算法）                                │
@@ -1086,7 +1110,7 @@ Checkpoint (页面刷新 + 映射更新):
   2. 对每个可达 PageRef:
      a. 记录到 mapping
      b. chunkPos == 0? → serializer.Serialize(4100字节) → cm.WritePage → CAS chunkPos
-  3. 持久化 FreeList → cm.Sync()
+  3. 持久化 removedPages → cm.Sync()
   4. WAL CheckpointEntry{startLSN, rootPageID, mapping} → WAL.Sync()
   5. pageLocs 批量更新 ← mapping（运行时映射刷新）
   6. WAL.Truncate(startLSN)
@@ -1128,7 +1152,7 @@ Checkpoint (页面刷新 + 映射更新):
   T1: rootRef = LoadPointer(&tree.root)           ← COW 快照
   T2: DFS 遍历 + 脏页刷新到 .ao 文件
       mapping[pageID] = chunkPos                  ← 记录映射
-  T3: cm.Sync() (FreeList + 页面数据)             ← .ao fsync 屏障
+  T3: cm.Sync() (removedPages + 页面数据)             ← .ao fsync 屏障
   T4: wal.Append(CheckpointEntry{rootPageID, mapping}) ← 授权+映射
   T5: wal.Sync()                                  ← 授权持久化
   T6: wal.Truncate(startLSN)                      ← WAL GC
@@ -1177,9 +1201,11 @@ Checkpoint (页面刷新 + 映射更新):
 
 **决定**：`NodePage.write()` 先递归写入所有子页面（`writeChildren`），获取子页面 pos 数组，再写父页面数据。这保证磁盘上父页面始终持有有效的子页面位置。对齐 Lealone `NodePage.java` 的 children-first 顺序。
 
-### 决策 1d：PageListener 父链脏页传播（对齐 Lealone）
+### 决策 1d：脏页检测 — DFS + chunkPos==0（不采用 Lealone PageListener）
 
-**决定**：Phase 4 实现显式的 `PageListener` 父链机制。每个 `PageRef` 持有 `PageListener`（包含父节点引用），`markDirtyPage()` 自底向上沿链 CAS 标记，每层使用 Listener 版本号检测并发 GC/分裂。对齐 Lealone `PageReference.markDirtyPage0()` 的三路返回值（0=成功, 1=GC'd, 2=Split）。
+**决定**：Phase 4 使用 Checkpoint 时的 DFS 遍历 + `chunkPos == 0` 检测脏页，**不引入** Lealone 的 PageListener 父链机制。
+
+**理由**：当前 NexKV BTree 刻意不存储父指针（通过 SearchPath 数组索引解析父子关系，避免并发 Split 期间过期指针风险）。引入 PageListener 反向指针会重新引入此并发危害。DFS 遍历方案已足以识别所有脏页（从根快照出发，COW 保证可达子树不可变），无需自底向上的显式标记传播。若未来需要优化脏页收集性能，可采用全局 `dirtyPageIDs sync.Map` 而非侵入式父指针。
 
 ### 决策 1e：Checkpoint 脏内存阈值触发（对齐 Lealone）
 
@@ -1219,7 +1245,7 @@ Chunk 文件在其生命周期内保持打开，正常关闭时由生命周期�
 - `internal/infrastructure/storage/chunk/disk_chunk_manager.go` — 具体实现
 - `internal/infrastructure/storage/chunk/chunk_file.go` — ChunkFile 包装器
 - `internal/infrastructure/storage/chunk/chunk_position.go` — ChunkPosition 编码/解码
-- `internal/infrastructure/storage/chunk/free_list.go` — 空闲列表管理
+- `internal/infrastructure/storage/chunk/removed_pages.go` — 已删除页面追踪
 - `internal/infrastructure/storage/chunk/page_serializer.go` — 序列化/反序列化
 - `internal/infrastructure/storage/chunk/chunk_compactor.go` — 压缩器存根
 
@@ -1227,7 +1253,7 @@ Chunk 文件在其生命周期内保持打开，正常关闭时由生命周期�
 - [ ] ChunkManager 接口定义在领域层
 - [ ] DiskChunkManager：`.ao` 文件创建、追加写入、随机读取
 - [ ] PageSerializer：mmap ↔ 磁盘格式往返（CRC32C 校验）
-- [ ] FreeList 页面复用
+- [ ] removedPages 页面追踪 + 持久化
 - [ ] 单元测试：`TestDiskChunkManagerRoundtrip`, `FuzzDiskChunkManagerRoundtrip`
 - [ ] `go test -race -count=5` 通过
 - [ ] `goleak.VerifyTestMain(m)` goroutine 泄漏检查
@@ -1257,7 +1283,7 @@ Chunk 文件在其生命周期内保持打开，正常关闭时由生命周期�
 - [ ] COW 新页面 chunkPos == 0（脏标记）
 - [ ] 并发 Get 在惰性加载期间无竞争（`go test -race`）
 
-### Phase 4.3：Checkpoint + 页面刷新（4-5 天）
+### Phase 4.3：Checkpoint + 页面刷新（5-7 天）
 
 **修改文件**：
 - `internal/infrastructure/storage/checkpoint/checkpoint_manager.go` — 重大修改
@@ -1304,10 +1330,11 @@ Chunk 文件在其生命周期内保持打开，正常关闭时由生命周期�
 ```
 Phase 4.1: ChunkManager + 序列化    ████████         5-7 天
 Phase 4.2: 惰性加载 + pageLocs      █████            4-5 天
-Phase 4.3: Checkpoint + 页面刷新    ██████           4-5 天
+Phase 4.3: Checkpoint + 页面刷新    ███████          5-7 天
 Phase 4.4: 恢复 + BTree 重建        ███████          5-7 天
                                     ─────────────────
-                                    总计: 18-24 天
+                                    ─────────────────
+                                    总计: 22-29 天 (含 2-3 天集成缓冲)
 ```
 
 > **时间修正说明**：Phase 4.4 原估 3-4 天，经审查发现 BTree PageRef 图重建是额外不可缩减的工作量——需要从物理 `.ao` 页面递归重建 `RootPageRef → PageRef tree → ChildrenCache → PageInfo` 的完整结构。增加 2-3 天反映这一现实。
@@ -1333,6 +1360,8 @@ Phase 4.4: 恢复 + BTree 重建        ███████          5-7 天
 3. **Q3**：Checkpoint 期间的 I/O 优先级——Checkpoint 页面写入 vs WAL Group Commit 的调度策略
 4. **Q4**：AO 文件中部分写入页面的处理——Checkpoint 崩溃后如何安全恢复？
 5. **Q5**：`ChunkCompactor` 压缩时如何原子更新所有受影响 PageRef 的 `chunkPos`？
+6. **Q6**：`pageLocs` 陈旧条目清理 — 当 PageRef 被 GC（不再从根可达）后，其 `pageLocs` 条目仍存在（内存泄漏）且对应 AO 位置未加入 `removedPages`（磁盘泄漏）。Phase 4「仅 Checkpoint」策略下影响有限（每条目 ~12B），Phase 5 需规划：PageRef GC 时从 `pageLocs` 删除 + AO 位置加入 `removedPages`。
+7. **Q7**：`pageLocs sync.Map` 内存与数据集大小成比例 — 每条目 ~24B overhead，100 万页面 ≈ 25MB，TB 级数据集 ≈ 6GB。Phase 4 可接受，Phase 5+ 考虑使用分片有序 map 或文件回退映射。
 
 ---
 

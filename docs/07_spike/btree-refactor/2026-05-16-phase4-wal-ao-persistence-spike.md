@@ -13,7 +13,7 @@
 
 ### 1.1 当前状态
 
-NexKV BTree 存储引擎基于 **mmap 匿名内存**（`MAP_ANON | MAP_PRIVATE`），页面驻留在 offheap 区域，进程退出即丢失。Phase 4 的目标是将 mmap 从匿名映射升级为**文件回退映射**（`MAP_SHARED` + `fallocate`），实现与 Lealone 对等的页面级磁盘持久化。
+NexKV BTree 存储引擎基于 **mmap 匿名内存**（`MAP_ANON | MAP_PRIVATE`），页面驻留在 offheap 区域，进程退出即丢失。Phase 4 的设计是在**不改动现有 mmap 分配器**的前提下，新增独立的 ChunkManager 持久化层（`.ao` 文件），通过 Checkpoint 时序列化 mmap 页面到 AO 文件实现持久化。mmap 层继续作为内存缓存（读写路径不变），AO 层提供崩溃恢复和惰性加载能力。
 
 | 模块 | 持久化状态 | 说明 |
 |------|-----------|------|
@@ -228,7 +228,7 @@ Lealone 的页面**不是固定 4096 字节**。每个页面有独立的 `pageLe
 
 | 约束 | 当前设计 | Phase 4 改造 |
 |------|---------|-------------|
-| `model.PageID` | `uint64`（领域模型定义） | 保留作为逻辑 ID；运行时映射（`pageLocs`）和磁盘格式（`CheckpointEntry`、`PageHeader`）使用 `uint32` 子集（4B × 4KB = 16TB 寻址范围，远超实际需求） |
+| `model.PageID` | `uint64`（领域模型定义） | 保留作为逻辑 ID；`pageLocs` 使用 `model.PageID` 消除类型截断；磁盘格式（`CheckpointEntry`、`PageHeader`）使用 `uint32` 子集（4B × 4KB = 16TB 寻址范围，当前 offheap PageManager 上限 `math.MaxUint32`） |
 | `PageHeader` 大小 | 56 字节 (`btree.HeaderSize`) | 在现有 16 字节填充区嵌入 `chunkPos`（8 字节），剩余 `[8]byte` 填充，保持 56 字节不变 |
 | `OffheapBTreeStorage` | 直接调用 `PageManager.Alloc()` | 增加惰性加载路径：`ChunkManager.ReadPage()` → 反序列化 |
 | `CheckpointManager` | 仅 WAL 操作 | 增加页面遍历 + `ChunkManager.WritePage()` + Sync |
@@ -288,7 +288,7 @@ type ChunkManagerStats struct {
 
 ### 3.2 ChunkPosition 编码
 
-64 位编码，与 Lealone 的 `PageInfo.pos` 兼容：
+64 位编码，**参考** Lealone `PageUtils.getPagePos` 的位置编码设计（30-bit ChunkID + 32-bit Offset + 2-bit PageType），NexKV 调整位宽为 26+32+5+1 以适应更细粒度的 PageType 分类。**非二进制兼容**。
 
 ```go
 // ChunkPosition 是 .ao 文件中的 64 位页面位置。
@@ -600,7 +600,9 @@ func (s *PageSerializer) Deserialize(data []byte, dst unsafe.Pointer) (int, erro
     copy(dstSlice, data[CRCSize:])
 
     // 快速合理性检查: PageHeader.pageType 必须为 0 或 1
-    pageType := dstSlice[SizeofPageHeader-8-8-2-1-1-2-2] // offset 预计算
+    // 使用 unsafe.Offsetof 而非硬编码偏移量 (与 init() 断言布局一致)
+    pageTypeOffset := unsafe.Offsetof(PageHeader{}.pageType)
+    pageType := *(*uint8)(unsafe.Add(dst, pageTypeOffset))
     if pageType != 0 && pageType != 1 {
         return 0, fmt.Errorf("page_serializer: invalid pageType %d", pageType)
     }
@@ -632,7 +634,7 @@ func (s *PageSerializer) Deserialize(data []byte, dst unsafe.Pointer) (int, erro
 Phase 4 模糊检查点流程 (FuzzyCheckpoint with Page Flush + Mapping):
 
   T0: checkpointStartLSN = wal.CurrentLSN()       ← 先记录 LSN
-      mapping := make(map[uint32]ChunkPosition)    ← pageID→ChunkPos 映射表
+      mapping := make(map[model.PageID]ChunkPosition)    ← pageID→ChunkPos 映射表
   T1: rootRef = LoadPointer(&tree.root)            ← COW 快照根
   T2: DFS 遍历 rootRef，收集所有可达 PageRef
       对于每个 PageRef:
@@ -685,30 +687,36 @@ Phase 4 模糊检查点流程 (FuzzyCheckpoint with Page Flush + Mapping):
 // OffheapBTreeStorage 内部字段（Phase 4 新增）
 type OffheapBTreeStorage struct {
     // ... 现有字段 ...
-    pageLocs sync.Map  // map[uint32]ChunkPosition — pageID → .ao 物理位置
+    pageLocs sync.Map  // map[model.PageID]ChunkPosition — pageID → .ao 物理位置
 }
 ```
 
-**惰性加载路径**（从 `pageLocs` 映射查找，而非从 PageHeader.chunkPos 读取）：
+**惰性加载触发条件**（基于 NexKV 实际架构，无 `PageInfo.page` 字段）：
 
-```
-BTree 操作 (Get/Set/Delete) 中的页面访问路径:
-
-  GetLeafPage(pageID):
-    1. 尝试从 PageManager 获取内存页面
-       a. 命中 → 返回
-       b. 未命中 → 进入惰性加载
-    2. 从 pageLocs 映射查找 ChunkPosition
-       a. pageLocs.Load(pageID) → nil → 页面尚未持久化（新分配，仅在 Recovery 前出现）
-       b. pageLocs.Load(pageID) → pos → cm.ReadPage(pos) → deserialize → 分配 mmap → 返回
-    3. 验证反序列化后 PageHeader.chunkPos == pos（额外的完整性校验）
+`GetLeafPage(pageID)` 中的惰性加载判断：
+1. `pm.PageIDToPtr(pageID)` 返回非 nil → mmap 页面已分配，直接返回句柄（快速路径）
+2. mmap 未分配 → 需要惰性加载：
+   a. `pageLocs.Load(pageID)` → nil → **页面未分配且未持久化**（首次创建或 Recovery 前的脏页）
+   b. `pageLocs.Load(pageID)` → pos, pos != 0 → **已持久化但 mmap 未加载**：
+      - `pm.Alloc()` 分配新 mmap slot
+      - `cm.ReadPage(pos)` → data
+      - `serializer.Deserialize(data, ptr)` → 恢复 PageHeader+Data
+      - 验证 `PageHeader.chunkPos == pos`（辅助校验）
+      - `PageRef.CAS(oldPI, newPI{ChunkPos: pos})` → 原子发布新 PageInfo
+      - 返回 pageHandle
+   c. `pageLocs.Load(pageID)` → pos, pos == 0 → **已分配但未持久化**（脏页），mmap 应已存在，
+      若 mmap 未分配则异常（仅 Recovery 边界情况，回退到 WAL 重放）
 
   CopyLeafPage(srcID) (COW 写路径):
-    1. AllocLeafPage() → 分配新 mmap 页面
-    2. memcpy 4100 字节从 src → dst（包含 CRC）
-    3. pageLocs.Store(newPageID, ChunkPosition(0)) // 标记为"脏"
-    4. 设置新版 version
-    5. 返回新页面
+    1. copyPage(rawSrcID) 内部:
+       a. pm.Alloc() → 分配新 mmap slot
+       b. memcpy 4096 字节
+       c. pageLocs.Store(newPageID, ChunkPosition(0))  ← 与 Alloc 同 goroutine 顺序执行
+       d. 设置新版 version
+    2. 返回新 pageID + handle（PageInfo 由调用者 CAS 发布）
+    
+    重要: pageLocs.Store 必须在 copyPage 内部执行（memcpy 之后、返回之前），
+    与 pm.Alloc 在同一 goroutine，避免 Phase 5+ LRU 驱逐时的竞争窗口。
 
   Checkpoint 后更新:
     页面刷新到 AO 后 → pageLocs.Store(pageID, newChunkPos)
@@ -755,7 +763,7 @@ WAL 和 AO 使用独立的文件描述符和 I/O 路径，互不阻塞。
 
 ## 六、与现有代码的集成点
 
-### 6.1 PageHeader 添加 chunkPos
+### 6.1 PageInfo 添加 ChunkPos（权威）+ PageHeader 添加 chunkPos（辅助）
 
 ```go
 // internal/infrastructure/storage/offheap/page_layout.go
@@ -779,9 +787,30 @@ type PageHeader struct {
 // SizeofPageHeader 保持不变 (56 字节)
 ```
 
-`chunkPos` 使用 Header 中原本 16 字节填充区域的 8 字节，剩余 `[8]byte` 填充。保持 `HeaderSize` 不变（`btree.HeaderSize == offheap.SizeofPageHeader == 56`）。
+**ChunkPos 的双层存储设计**（对齐 NexKV 并发模型）：
 
-### 6.2 OffheapBTreeStorage 适配
+| 位置 | 字段 | 作用 | 并发保护 |
+|------|------|------|---------|
+| `PageInfo`（新增） | `ChunkPos ChunkPosition` | **权威持久化状态** — ChunkPos==0=脏页 | `PageRef.CAS` 原子发布 |
+| `PageHeader`（mmap） | `chunkPos uint64` | **辅助校验字段** — 反序列化后自检 | `clearPage` 清零初始化 |
+
+**为什么需要 PageInfo.ChunkPos**：Checkpoint 需要通过 `PageRef.CAS(oldPI, newPIWithChunkPos)` 原子发布"此页面已持久化"。`PageHeader` 是 mmap 共享内存，写入无 CAS 保护——并发读取者可能看到部分更新的 chunkPos。`PageInfo` 通过现有的 CAS 机制提供原子性。
+
+`chunkPos` 使用 Header 中原本 16 字节填充区域的 8 字节，剩余 `[8]byte` 填充。保持 `HeaderSize` 不变（`btree.HeaderSize == offheap.SizeofPageHeader == 56`）。`PageInfo.ChunkPos` 零值 = 脏页（与 Lealone `pos==0` 语义对齐）。
+
+### 6.2 OffheapBTreeStorage 适配 + ChunkManager 注入
+
+**ChunkManager 注入方式**：使用显式 setter 而非 BTreeOption（btreeConfig 保持纯配置语义，避免 I/O 依赖污染）：
+
+```go
+// btree.go
+func (t *BTree) SetChunkManager(cm service.ChunkManager, serializer *chunk.PageSerializer) {
+    t.storage.(*OffheapBTreeStorage).cm = cm
+    t.storage.(*OffheapBTreeStorage).serializer = serializer
+}
+```
+
+`NewBTree` 签名不变；调用者在 BTree 构建后显式注入 ChunkManager。
 
 ```go
 // internal/infrastructure/storage/btree/offheap_storage.go
@@ -790,7 +819,7 @@ type OffheapBTreeStorage struct {
     pm         *offheap.PageManager     // mmap 页面分配器
     cm         chunk.ChunkManager       // .ao 文件管理器 (Phase 4 新增)
     serializer *chunk.PageSerializer    // 页面序列化器
-    pageLocs   sync.Map                 // map[uint32]ChunkPosition (Phase 4 新增)
+    pageLocs   sync.Map                 // map[model.PageID]ChunkPosition (Phase 4 新增)
     closed     atomic.Bool
 }
 
@@ -842,7 +871,30 @@ type PageRef interface {
 }
 ```
 
-**职责分离**：`EnumeratePages` 在 BTree 内部完成遍历（BTree 拥有 `PageManager` 和 `PageAccessor`），CheckpointManager 只需接收结果列表，不直接操作 mmap 指针。这避免了 CheckpointManager 的职责膨胀。
+**DFS 并发安全协议**：`EnumeratePages` 遍历期间必须对每个 PageRef 调用 `Retain()`，遍历完成后 `Release()`。防止并发 Free+Alloc 导致的 TOCTOU——DFS 处理期间页面被回收、清零、重新分配给他人。
+
+```go
+func (t *BTree) EnumeratePages(root PageRef) ([]PageFlushItem, error) {
+    var items []PageFlushItem
+    // 后序遍历 (post-order DFS)
+    var dfs func(ref *PageRef)
+    dfs = func(ref *PageRef) {
+        ref.Retain()         // ← 防止并发 Free
+        defer ref.Release()
+        // 遍历子节点 (Children-First)
+        for _, child := range ref.ChildPageRefs() {
+            dfs(child)
+        }
+        // 序列化当前页面 (BTree 内部持有 PageSerializer)
+        item := serializeForFlush(ref)
+        items = append(items, item)
+    }
+    dfs(root.(*PageRef))
+    return items, nil
+}
+```
+
+**实现位置约束**：`EnumeratePages` 和 `RebuildBTree` 必须在 `btree` 包内实现（需要访问 `PageRef.children`、`pInfo` 等未导出字段）。`checkpoint.Manager` 通过 `BTreeScanner` 接口调用。
 
 ```go
 // Manager 结构体 — Phase 4 修改
@@ -855,16 +907,16 @@ type Manager struct {
 
 func (m *Manager) FuzzyCheckpoint() error {
     startLSN := m.wal.CurrentLSN()
-    mapping := make(map[uint32]ChunkPosition)
+    mapping := make(map[model.PageID]ChunkPosition)
     rootRef := m.btree.RootPage()
     // EnumeratePages 后序遍历，子页面排在父页面之前 (Children-First 语义)
     items, _ := m.btree.EnumeratePages(rootRef)
     for _, item := range items {
-        mapping[uint32(item.PageID)] = item.ChunkPos
-        if item.ChunkPos == 0 && item.PageData != nil { // 脏页 + 有序列化数据
+        mapping[item.PageID] = item.ChunkPos
+        if item.ChunkPos == 0 && item.PageData != nil {
             pos, _ := m.cm.Allocate(len(item.PageData), item.PageType)
             m.cm.WritePage(pos, item.PageData)
-            mapping[uint32(item.PageID)] = pos
+            mapping[item.PageID] = pos
         }
         // ChunkPos != 0 或 PageData == nil → 已持久化，跳过
     }
@@ -880,6 +932,24 @@ func (m *Manager) FuzzyCheckpoint() error {
 ### 6.4 Recovery 集成
 
 Recovery 是整个 Phase 4 最复杂的部分——不仅需要重放 WAL，还需要从 AO 文件中重建 BTree 的完整 PageRef 图结构（`RootPageRef` → `PageRef` tree → `ChildrenCache` → `PageInfo`）。
+
+**新增 RecoveryManager**（替代现有 `RecoverFromWAL` 的签名）：
+
+```go
+// internal/infrastructure/storage/wal/recovery.go
+
+type RecoveryManager struct {
+    wal        service.WAL
+    cm         service.ChunkManager
+    serializer *chunk.PageSerializer
+}
+
+// Recover 三阶段恢复
+func (rm *RecoveryManager) Recover(ctx context.Context) (*btree.BTree, error)
+    // Phase A: ChunkManager 初始化 + WAL 扫描
+    // Phase B: 解析 CheckpointEntry → pageLocs → RebuildBTree（或空 BTree）
+    // Phase C: 增量 WAL 重放
+```
 
 #### 6.4.1 Recovery 启动时序状态机
 
@@ -988,20 +1058,22 @@ RebuildBTree(rootPageID, pageLocs, pm, cm, serializer):
       parentRef.children.Store(cache)
 
   Step 4: 构建 pageID→PageRef 映射（用于叶子链接）
-    pageRefMap := make(map[uint32]*PageRef)
+    pageRefMap := make(map[model.PageID]*PageRef)
     在 BFS 遍历过程中，每创建一个 PageRef 即记录:
       pageRefMap[childPageID] = childRef
 
-  Step 5: 重建叶子节点链表
+  Step 5: 重建叶子节点链表（通过 PageAccessor 操作 mmap）
     对于 pageRefMap 中的每个叶子 PageRef:
-      leafPageID = ref.PageID()
-      physPtr = pm.PageIDToPtr(leafPageID)
-      prevPageID = ReadPrevPage(physPtr)   // PageHeader.prevPage
-      nextPageID = ReadNextPage(physPtr)   // PageHeader.nextPage
+      leafPageID := ref.PageID()
+      physPtr := pm.PageIDToPtr(uint32(leafPageID))
+      pa := offheap.NewPageAccessor(pm)
+      prevPageID := pa.GetPrevPage(uint32(leafPageID))  // PageHeader.prevPage
+      nextPageID := pa.GetNextPage(uint32(leafPageID))  // PageHeader.nextPage
       if prevPageID != 0:
-        ref.SetPrevLeaf(pageRefMap[prevPageID])
+        pa.SetNextPage(prevPageID, uint32(leafPageID))  // 前驱→当前
       if nextPageID != 0:
-        ref.SetNextLeaf(pageRefMap[nextPageID])
+        pa.SetPrevPage(nextPageID, uint32(leafPageID))  // 后继→当前
+    叶子链表通过 PageAccessor 的 mmap 级操作重建，PageRef 无 SetPrevLeaf/SetNextLeaf 方法。
     这保证了范围查询 (SeekFirst/SeekLast/叶级迭代器) 的正确性。
 
   Step 6: 设置 BTree 结构
@@ -1148,7 +1220,7 @@ Checkpoint (页面刷新 + 映射更新):
 ```
 正常操作 (Checkpoint):
   T0: checkpointStartLSN = wal.CurrentLSN()      ← 先记录
-      mapping := map[uint32]ChunkPosition{}       ← 映射表
+      mapping := map[model.PageID]ChunkPosition{}       ← 映射表
   T1: rootRef = LoadPointer(&tree.root)           ← COW 快照
   T2: DFS 遍历 + 脏页刷新到 .ao 文件
       mapping[pageID] = chunkPos                  ← 记录映射
@@ -1362,6 +1434,9 @@ Phase 4.4: 恢复 + BTree 重建        ███████          5-7 天
 5. **Q5**：`ChunkCompactor` 压缩时如何原子更新所有受影响 PageRef 的 `chunkPos`？
 6. **Q6**：`pageLocs` 陈旧条目清理 — 当 PageRef 被 GC（不再从根可达）后，其 `pageLocs` 条目仍存在（内存泄漏）且对应 AO 位置未加入 `removedPages`（磁盘泄漏）。Phase 4「仅 Checkpoint」策略下影响有限（每条目 ~12B），Phase 5 需规划：PageRef GC 时从 `pageLocs` 删除 + AO 位置加入 `removedPages`。
 7. **Q7**：`pageLocs sync.Map` 内存与数据集大小成比例 — 每条目 ~24B overhead，100 万页面 ≈ 25MB，TB 级数据集 ≈ 6GB。Phase 4 可接受，Phase 5+ 考虑使用分片有序 map 或文件回退映射。
+8. **Q8**：Compaction/Merge 释放旧 AO 位置 — `compactPageWithParent` 和 `handleLeafMerge` 完成后将旧 chunkPos 加入 `removedPages`。Phase 4 接受已知 AO 空间泄漏（留待 Phase 5 ChunkCompactor 扫描回收）。
+9. **Q9**：生产级初始化序列 — `NewBTree → SetChunkManager → NewCheckpointManager → RecoveryManager` 的 DI 连线。当前仅在测试中调用，Phase 4.3 需定义完整启动编排流程。
+10. **Q10**：`ExecutionOrder` 常量补充 — 新增 `ExecutionOrderCheckpoint = 3`（与 Compaction 同级，低于 WALAppend=1 和 BTreeSet=2），AO Lazy Load 内联在 BTree.Get 路径中（Order=2 同级）。
 
 ---
 

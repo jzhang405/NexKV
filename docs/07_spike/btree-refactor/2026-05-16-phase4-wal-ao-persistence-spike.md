@@ -759,6 +759,82 @@ Commit 路径 (WAL-first, AO-later):
 
 WAL 和 AO 使用独立的文件描述符和 I/O 路径，互不阻塞。
 
+### 5.6 文件目录与命名规范
+
+#### 5.6.1 WAL 文件
+
+WAL 文件由现有 `DiskWAL`（`internal/infrastructure/storage/wal/`）管理。
+
+**配置**（`types.go:258-262`）：
+```go
+type WALConfig struct {
+    Dir         string     // WAL 专用目录，必须非空
+    SegmentSize int64      // 默认 64MB，最小 1MB
+    SyncPolicy  SyncPolicy // EveryWrite / EverySecond / Batch / GroupCommit
+}
+```
+
+**命名格式**：`%020d.wal` — 20 位零填充的 LSN（Log Sequence Number）。
+
+**目录布局**：
+```
+{config.Dir}/                           ← os.MkdirAll(0755)
+├── 00000000000000000001.wal            ← LSN 1 起始的 segment
+├── 00000000000000042000.wal            ← LSN 42000 起始的 segment
+├── 00000000000000100000.wal            ← LSN 100000 起始的 segment
+└── 00000000000000030000.wal.deleting   ← 截断残留 (Recovery 时 os.Remove 清理)
+```
+
+**Segment 管理**（`diskwal.go:64-91`）：
+- `openSegment()`：以 `currentLSN+1` 为文件名创建新 segment
+- `rotateSegment()`：Sync + Close 当前 segment → `openSegment()`
+- `checkRotate(size)`：`writtenBytes >= SegmentSize` 时触发轮转
+- 权限：文件 `0644`（`os.O_CREATE|os.O_WRONLY|os.O_APPEND`）
+
+**发现与排序**（`diskwal.go:230-244`）：
+- `scanSegments()`：`os.ReadDir` → 过滤 `.wal` 扩展名 → `sort.Strings` 排序
+- 20 位零填充保证字符串序 = LSN 数值序（无需解析 LSN 后排序）
+
+**截断**（`diskwal.go:324-354`，rename-then-delete）：
+1. `os.Rename(file.wal, file.wal.deleting)` — 先改名
+2. `dir.Sync()` — 父目录 fsync
+3. `os.Remove(file.wal.deleting)` — 再删除
+
+**WAL Entry 线格式**（Phase 3，`types.go:82-119`）：
+```
+[CRC32C:4][Length:4][LSN:8][Type:1][ShardID:2][Term:2][TxID:8][Timestamp:8][PrevLSN:8]
+[KeyLen:4][ValueLen:4][Key:N][Value:M][Padding:0~7][Trailer:4(0xDEADBEEF)]
+```
+8 字节对齐，CRC32C Castagnoli 多项式。
+
+#### 5.6.2 AO/Chunk 文件（Phase 4 新增）
+
+**命名格式**：`btree_[chunkId]_[seq].ao`（对齐 Lealone `c_[id]_[seq].db`）。
+
+**目录布局**：
+```
+{chunkDir}/                             ← DiskChunkManager.dir
+├── btree_0_1.ao        ← Chunk (id=0, seq=1)
+├── btree_1_2.ao        ← Chunk (id=1, seq=2)  
+├── btree_5_3.ao        ← Chunk (id=5, seq=3)
+└── ... (无上限，Compactor 驱动回收)
+```
+
+**发现与排序**：`RestoreDiskChunkManager()` — 扫描 `btree_*_*.ao` → 解析 seq → 按 seq 排序 → 最高 seq 为当前 Chunk。
+
+#### 5.6.3 WAL 与 AO 目录对比
+
+| 维度 | WAL | AO/Chunk |
+|------|-----|----------|
+| 目录 | `config.Dir`（独立） | `DiskChunkManager.dir`（独立） |
+| 目录权限 | `0755` | `0700`（推荐） |
+| 文件权限 | `0644` | `0600`（推荐，KV 数据敏感性） |
+| 文件命名 | `%020d.wal`（LSN 零填充） | `btree_[chunkId]_[seq].ao` |
+| 发现方式 | 过滤 `.wal` + 字符串排序 | 正则 `btree_(\d+)_(\d+)\.ao` + 按 seq 排序 |
+| 排序依据 | LSN（文件名字符串序 = 数值序） | seq（解析文件名中的序列号） |
+| 截断/回收 | rename→`.deleting`→delete | 双块头部校验 → 跳过损坏 → Compactor 回收 |
+| I/O 隔离 | 独立 fd 集合，互不阻塞 | 独立 fd 集合，互不阻塞 |
+
 ---
 
 ## 六、与现有代码的集成点

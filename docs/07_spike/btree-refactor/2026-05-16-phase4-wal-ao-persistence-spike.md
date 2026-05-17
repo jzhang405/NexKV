@@ -290,7 +290,10 @@ type ChunkManagerStats struct {
 
 64 位编码，**参考** Lealone `PageUtils.getPagePos` 的位置编码设计（30-bit ChunkID + 32-bit Offset + 2-bit PageType），NexKV 调整位宽为 26+32+5+1 以适应更细粒度的 PageType 分类。**非二进制兼容**。
 
+**包归属**：`ChunkPosition` 定义在 `internal/domain/model/chunk_position.go`（领域层），与 `model.PageID` 同级。避免 `domain/service/chunk_manager.go` 反向依赖基础设施层。
+
 ```go
+// internal/domain/model/chunk_position.go
 // ChunkPosition 是 .ao 文件中的 64 位页面位置。
 //
 // 位布局（与 Lealone pos 字段一致）:
@@ -600,9 +603,9 @@ func (s *PageSerializer) Deserialize(data []byte, dst unsafe.Pointer) (int, erro
     copy(dstSlice, data[CRCSize:])
 
     // 快速合理性检查: PageHeader.pageType 必须为 0 或 1
-    // 使用 unsafe.Offsetof 而非硬编码偏移量 (与 init() 断言布局一致)
-    pageTypeOffset := unsafe.Offsetof(PageHeader{}.pageType)
-    pageType := *(*uint8)(unsafe.Add(dst, pageTypeOffset))
+    // 使用 offheap 包导出常量 (pageType 是未导出字段，跨包无法用 unsafe.Offsetof)
+    // offheap/page_layout.go 导出: const PageTypeFieldOffset = unsafe.Offsetof(PageHeader{}.pageType)
+    pageType := *(*uint8)(unsafe.Add(dst, offheap.PageTypeFieldOffset))
     if pageType != 0 && pageType != 1 {
         return 0, fmt.Errorf("page_serializer: invalid pageType %d", pageType)
     }
@@ -658,10 +661,15 @@ Phase 4 模糊检查点流程 (FuzzyCheckpoint with Page Flush + Mapping):
 
 **CheckpointEntry 扩展格式**（WAL entry Key 区域）：
 ```
-[StartLSN:8][RootPageID:4][MappingCount:4]
+[StartLSN:8][RootPageID:8][MappingCount:4]       ← RootPageID 升级为 8 字节 (匹配 model.PageID uint64)
 [Mapping: MappingCount × (PageID:4 + ChunkPos:8)]
 [CRC32C:4]
 ```
+
+**向后兼容**：Phase 3 的 `recovery.go:33` 硬编码 `len(e.Key) == 8` 检查会拒绝 Phase 4 的扩展 Key。解决方案：
+1. Phase 4 注册新的 `WALTypeCheckpointV2` 类型码（或 Key 首字节为 FormatVersion）
+2. Recovery 先尝试 `len(e.Key) >= 8+8+4` 解析 Phase 4 格式，失败则回退 Phase 3 格式
+3. 首次启动（无旧 WAL 文件）时无需兼容
 
 `mapping` 表是惰性加载和 BTree 重建的核心——它将每个逻辑 PageID 映射到 `.ao` 文件中的物理位置。Recovery 时，此映射被加载到 `OffheapBTreeStorage` 的内存中，惰性加载路径从此映射查找 `ChunkPosition`。
 
@@ -691,21 +699,29 @@ type OffheapBTreeStorage struct {
 }
 ```
 
-**惰性加载触发条件**（基于 NexKV 实际架构，无 `PageInfo.page` 字段）：
+**惰性加载触发条件**（基于 `page_ref.go:24` pageID 不可变契约）：
+
+`page_ref.go:24` 明确标注 `pageID model.PageID // bound at creation, immutable`。惰性加载**不分配新 pageID**——复用已有 mmap slot（`pm.PageIDToPtr` 返回已有指针，覆盖写入）。
 
 `GetLeafPage(pageID)` 中的惰性加载判断：
 1. `pm.PageIDToPtr(pageID)` 返回非 nil → mmap 页面已分配，直接返回句柄（快速路径）
-2. mmap 未分配 → 需要惰性加载：
-   a. `pageLocs.Load(pageID)` → nil → **页面未分配且未持久化**（首次创建或 Recovery 前的脏页）
-   b. `pageLocs.Load(pageID)` → pos, pos != 0 → **已持久化但 mmap 未加载**：
-      - `pm.Alloc()` 分配新 mmap slot
+2. mmap 未分配，且 `pageLocs.Load(pageID)` → (pos, ok):
+   a. `!ok` 或 `pos == 0` → **页面未持久化**（新分配脏页），mmap 应已存在，异常时回退 WAL
+   b. `pos != 0` → **已持久化但 mmap 未加载**（Phase 5+ LRU 驱逐后重新加载）:
+      - `ptr = pm.PageIDToPtr(pageID)` — 复用已有 mmap slot（不调用 Alloc）
       - `cm.ReadPage(pos)` → data
-      - `serializer.Deserialize(data, ptr)` → 恢复 PageHeader+Data
+      - `serializer.Deserialize(data, ptr)` → 覆盖写入 PageHeader+Data
       - 验证 `PageHeader.chunkPos == pos`（辅助校验）
-      - `PageRef.CAS(oldPI, newPI{ChunkPos: pos})` → 原子发布新 PageInfo
+      - `PageRef.CAS(oldPI, newPI{ChunkPos: pos, Version: oldPI.Version+1})` 
+        — **PageID 不变**（遵守不可变契约），仅更新 ChunkPos 和 Version
       - 返回 pageHandle
-   c. `pageLocs.Load(pageID)` → pos, pos == 0 → **已分配但未持久化**（脏页），mmap 应已存在，
-      若 mmap 未分配则异常（仅 Recovery 边界情况，回退到 WAL 重放）
+
+**为什么惰性加载不分配新 pageID**：`PageRef.Release()` 使用 `r.pageID`（构造时绑定的不可变字段）做 `freeFunc`。若 CAS 更换 pageID，旧 pageID 永远不会被释放 → mmap 泄漏。复用已有 slot 避免了此问题。
+
+**Phase 4 中的惰性加载发生时机**：
+- Recovery Phase B：`RebuildBTree` 已预先分配所有页面（非惰性，全量加载）
+- 正常运行：Phase 4 采用「仅 Checkpoint」策略，页面不驱逐 → **惰性加载不触发**
+- Phase 5+ LRU 驱逐后：被驱逐的页面重新加载时触发（届时 mmap slot 已存在）
 
   CopyLeafPage(srcID) (COW 写路径):
     1. copyPage(rawSrcID) 内部:
@@ -797,8 +813,9 @@ type WALConfig struct {
 
 **截断**（`diskwal.go:324-354`，rename-then-delete）：
 1. `os.Rename(file.wal, file.wal.deleting)` — 先改名
-2. `dir.Sync()` — 父目录 fsync
+2. `dir.Sync()` — 父目录 fsync（改名持久化）
 3. `os.Remove(file.wal.deleting)` — 再删除
+4. `dir.Sync()` — 父目录 fsync（删除持久化）
 
 **WAL Entry 线格式**（Phase 3，`types.go:82-119`）：
 ```
@@ -965,7 +982,9 @@ func (t *BTree) EnumeratePages(root PageRef) ([]PageFlushItem, error) {
         item := serializeForFlush(ref)
         items = append(items, item)
     }
-    dfs(root.(*PageRef))
+    rootRef, ok := root.(*PageRef)
+    if !ok { return nil, fmt.Errorf("EnumeratePages: root is not *PageRef") }
+    dfs(rootRef)
     return items, nil
 }
 ```
@@ -1098,14 +1117,16 @@ RebuildBTree(rootPageID, pageLocs, pm, cm, serializer):
 
   Step 1: 分配 root PageID 的 mmap 页面
     rootRawID = pm.Alloc()  // 分配物理 mmap 页
-    加载根页面: chunkPos, _ = pageLocs.Load(rootPageID)
-    data = cm.ReadPage(chunkPos.(ChunkPosition))
+    加载根页面: chunkPosVal, ok := pageLocs.Load(rootPageID)
+    if !ok { return nil, ErrPageNotFound }
+    data = cm.ReadPage(chunkPosVal.(ChunkPosition))
     serializer.Deserialize(data, pm.PageIDToPtr(rootRawID))
     验证 pageType
 
-  Step 2: 创建 RootPageRef
-    rootPI = NewPageInfo(rootRawID, pageType, chunkPos, NodeRoot)
-    rootRef = NewRootPageRef(rootPI)
+  Step 2: 创建 RootPageRef (对齐 page_ref.go:35 NewPageRef 签名)
+    rootRef = NewRootPageRef(pageID, version=1, freeFunc)
+    rootPI := &PageInfo{PageID: pageID, Version: 1, ChunkPos: chunkPos, IsLeaf: isLeaf, NodeState: NodeRoot}
+    rootRef.StorePI(rootPI)  // 或通过 CAS 发布
 
   Step 3: 递归重建（BFS 或 DFS）
     queue = [(rootRef, rootPI, rootPageID)]
@@ -1180,12 +1201,13 @@ Recovery 路径的实现复杂度远高于原估算，因为 BTree PageRef 图�
 ### 6.5 领域层接口变更
 
 新增文件：
-- `internal/domain/service/chunk_manager.go` — `service.ChunkManager` 接口
-- `internal/domain/service/chunk_manager_stats.go` — `ChunkManagerStats` 类型
+- `internal/domain/model/chunk_position.go` — `ChunkPosition` 类型 + 编解码（与 `model.PageID` 同级）
+- `internal/domain/service/chunk_manager.go` — `service.ChunkManager` 接口 + `ChunkManagerStats`
 - `internal/infrastructure/storage/btree/btree_rebuild.go` — `RebuildBTree()` 恢复时 PageRef 图重建
+- `internal/infrastructure/storage/offheap/page_layout.go` — 导出 `PageTypeFieldOffset` 常量
 
 新增包：
-- `internal/infrastructure/storage/chunk/` — `DiskChunkManager`, `ChunkFile`, `FreeList`, `PageSerializer`, `ChunkPosition`
+- `internal/infrastructure/storage/chunk/` — `DiskChunkManager`, `ChunkFile`, `removedPages`, `PageSerializer`
 
 修改文件：
 - `internal/infrastructure/storage/btree/offheap_storage.go` — 增加 ChunkManager + pageLocs + 惰性加载

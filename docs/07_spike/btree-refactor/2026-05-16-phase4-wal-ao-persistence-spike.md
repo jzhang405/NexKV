@@ -70,39 +70,143 @@ Phase 4 完成后，NexKV 将具备 Lealone 同等级别的双层持久化能力
 
 ## 二、差距分析：Lealone vs NexKV
 
-### 2.1 Lealone AOSE 存储模型
+### 2.1 Lealone AOSE 存储模型（源码级）
 
-Lealone 的存储引擎使用两个核心文件类型：
+基于 Lealone 源码（`lealone-aose/src/main/java/com/lealone/storage/aose/btree/`）的精确分析。
+
+#### 2.1.1 文件模型
+
+Lealone 使用 **单一 Chunk 文件** 承载页面数据 + Redo Log（无独立的 `.wal` 文件目录）：
 
 ```
-.ao 文件 (Append-Only Chunk):
-  - 存储 BTree 页面的物理数据
-  - 命名: btree_0000.ao, btree_0001.ao, ...
-  - 每个 Chunk 256MB, 最多 8 个活跃 Chunk
-  - 追加写入 + 空闲列表复用
-
-.wal 文件 (Write-Ahead Log):
-  - 记录事务操作日志
-  - 用于崩溃恢复
-  - Segment 轮转管理
+Chunk 文件命名: c_[chunkId]_[sequence].db
+  - chunkId: 由 BitField 分配的整数 ID（删除后可复用）
+  - sequence: 全局单调递增序列号（用于恢复排序）
+  - 扩展名: .db (AOStorage.SUFFIX_AO_FILE)
 ```
 
-核心数据结构 **PageInfo.pos** 使用 64 位编码定位页面在 `.ao` 文件中的物理位置：
+Redo Log（旧版本）存储在 `redo_log/` 目录中（独立 segment 文件），但新版已迁移为**嵌入 Chunk 文件的尾部追加**。NexKV 保留独立 `.wal` 文件设计（Go 惯用 + Group Commit 成熟实现）。
+
+#### 2.1.2 Chunk 文件格式（源码精确）
+
+Chunk 头部 = **双块写入**（8KB = 2 × 4096 字节），相同内容写两次用于崩溃安全：
+
+```
+偏移量 0:        头部块 1 (4096 字节) — 文本键值对
+偏移量 4096:      头部块 2 (4096 字节) — 完全相同副本
+偏移量 8192:      页面数据区域（变长页面）
+                  │ 页面 0: [变长二进制数据]
+                  │ 页面 1: [变长二进制数据]
+                  │ ...
+                  └─ pagePositionAndLengthOffset 处:
+                     pagePositionToLengthMap: (pos:8B, length:4B) × pageCount
+                     removedPages 表: (pos:8B) × removedPageCount
+                     尾部: Redo Log (变长追加)
+```
+
+**头部内容**（文本键值对，`DataUtils.parseMap/appendMap`）：
+
+| 字段 | 编码 | 描述 |
+|------|------|------|
+| `id` | hex int | Chunk ID |
+| `rootPagePos` | hex long | 根页面位置（64-bit pos） |
+| `pageCount` | hex int | Chunk 中的页面数 |
+| `sumOfPageLength` | hex long | 所有页面长度总和 |
+| `pagePositionAndLengthOffset` | hex int | 页面位置表在 Chunk 数据中的偏移量 |
+| `blockSize` | hex int | 始终为 4096 |
+| `format` | hex int | 格式版本 |
+| `removedPageOffset` | hex int | 已删除页面表偏移量 |
+| `removedPageCount` | hex int | 已删除页面数 |
+| `lastTransactionId` | hex long | 最后事务 ID（WAL GC 边界） |
+| `fletcher` | hex int | **Fletcher-32 校验和**（计算前排除自身） |
+
+**崩溃安全**：启动时分别校验偏移量 0 和 4096 处的两个 4KB 块。若第一块损坏但第二块完好 → 恢复成功。这比单一超级块 + CRC32C 更健壮（允许单扇区损坏）。
+
+#### 2.1.3 PageInfo.pos 编码（源码精确）
+
+`PageUtils.getPagePos(chunkId, offset, type)`:
 
 ```
 PageInfo.pos (int64):
-  ┌──────────────┬──────────────┬──────────────┬────────┐
-  │ ChunkID      │ FileOffset   │ PageType     │ Flags  │
-  │ 26 bits      │ 32 bits      │ 5 bits       │ 1 bit  │
-  └──────────────┴──────────────┴──────────────┴────────┘
-  maxChunks: 67M, maxChunkSize: 4GB, 理论上限: 268TB
+  ┌─────────────────┬─────────────────┬──────────┐
+  │ ChunkID         │ FileOffset      │ PageType │
+  │ 30 bits         │ 32 bits         │ 2 bits   │
+  └─────────────────┴─────────────────┴──────────┘
+  maxChunks: 2^30 (10亿), maxOffset: 4GB/chunk
+
+  PageType: 0=Leaf, 1=Node, 2=ColumnStorage
+  压缩标记: PAGE_COMPRESSED=2 (LZF), PAGE_COMPRESSED_HIGH=6 (Deflate)
 ```
 
-**Lealone 的 Chunk 生命周期**：
-1. `AllocateChunk()` → 创建 `btree_NNNN.ao` (256MB, fallocate)
-2. `WritePages(pageMap)` → Append-Only 写入，记录 pos
-3. `ReadPage(chunkID, offset)` → 反序列化为 PageInfo
-4. 当 `activeChunks > maxChunks` (8) 时触发 Chunk 压缩
+**关键语义：pos == 0 表示页面未持久化（脏页）**。`PageInfo.isDirty()` 返回 `pos == 0`。页面写入磁盘后获得非零 pos。无需额外的 `dirty` 布尔字段。
+
+#### 2.1.4 页面读写生命周期
+
+```
+读路径 (getOrReadPage):
+  pInfo.page != null → 返回缓存 (updateTime 记录 LRU 时间戳)
+  pInfo.page == null → readPage():
+    - buff != null? → 重用缓存 ByteBuffer 反序列化
+    - buff == null? → readPageBuffer(pos) → 从 FileStorage 读取
+    - CAS replacePage(pInfoOld, pInfoNew) → 安装新 PageInfo
+    - CAS 失败 → 递归重试
+
+写路径 (markDirtyPage + executeSave):
+  markDirtyPage():
+    - CAS pInfoOld(pos≠0) → pInfoNew(pos=0, buff=null)  ← 标记脏页
+    - 将旧 pos 加入 ChunkManager.removedPages
+    - 沿 PageListener 父链向上传播 (自底向上)，每层 CAS 标记
+  executeSave():
+    - collectDirtyMemory() → 遍历 root 估算脏内存
+    - NodePage.write() → children-first 递归写入
+    - Chunk.write() → 写头部 + 页面数据 + Sync
+```
+
+**Children-First 写入**：`NodePage.write()` 先递归调用 `writeChildren()` 写入所有子页面，获取子页面的 pos，再将自己的数据（含子页面 pos 数组）写入。这保证磁盘上的父页面始终指向有效的子页面位置。
+
+#### 2.1.5 PageListener 父链（脏页传播）
+
+```java
+class PageListener {
+    IPageReference pageReference;  // 当前页面的 PageRef
+    PageListener parent;           // 父节点的 Listener
+}
+```
+
+每个 `PageReference` 持有一个 `PageLock`，后者包含 `PageListener`。Listener 形成从叶子到根的父链。
+
+`markDirtyPage()` 自底向上传播：
+1. 在当前页面 CAS: `pInfo(pos≠0) → pInfo(pos=0)`
+2. 获取 `parentRef = getParentRef()`
+3. 在父节点 CAS: `pInfo → pInfo(pos=0)`（使用 `oldPageListener.getParent()` 版本号检测并发 GC/分裂）
+4. 重复直到根节点
+
+**并发保护**：每层使用 `PageListener` 版本号 —— 若父节点的 Listener 已变（页面被 GC 或分裂），传播停止并返回错误码（1=GC'd, 2=Split）。
+
+#### 2.1.6 Checkpoint 触发与流程
+
+```
+触发条件 (4种):
+  1. 强制: SQL CHECKPOINT / 关闭时
+  2. 周期: nextCheckpointTime (默认 12 小时)
+  3. 脏内存阈值: collectDirtyMemory() > cacheSize
+  4. WAL 写入计数: 每 512 个事务批次
+
+Checkpoint 流程:
+  1. lastTxnId = redoLog.getLastTransactionId()
+  2. 对于每个脏 map:
+     map.setLastTransactionId(lastTxnId)
+     map.save(size) → 刷新脏页到 Chunk 文件
+     map.setLastTransactionId(-1)
+  3. ChunkCompactor.executeCompact() → 重写低填充率 Chunk
+  4. 删除未使用的旧 Chunk 文件
+```
+
+**WAL GC**：Recovery 时扫描 `redo_log/` 目录，遇到 Checkpoint 标记后丢弃之前所有 redo 条目 —— 因为 Checkpoint 保证脏页已全部落盘。
+
+#### 2.1.7 页面变长存储
+
+Lealone 的页面**不是固定 4096 字节**。每个页面有独立的 `pageLength`，存储在 `pagePositionToLengthMap(ConcurrentHashMap<Long, Integer>)` 中。Chunk 写入时将此映射持久化为 `(pos:8B, length:4B) × pageCount`。页面大小受 `pageSize` 配置限制（默认 4KB，最大由页面分裂阈值决定）。
 
 ### 2.2 NexKV 当前状态
 
@@ -207,75 +311,102 @@ const MaxChunkID = (1 << 26) - 1 // 67108863
 
 ### 3.3 ChunkFile 结构
 
+对齐 Lealone `Chunk.java`：Chunk 头部双块写入 (8KB)，RemovedPages 替代 FreeList，无超级块 Magic。
+
 ```go
 // internal/infrastructure/storage/chunk/chunk_file.go
 
+const (
+    ChunkBlockSize      = 4096           // 物理扇区大小
+    ChunkHeaderBlocks   = 2              // 双块写入 (崩溃安全)
+    ChunkHeaderSize     = ChunkBlockSize * ChunkHeaderBlocks  // 8192 字节
+)
+
 type ChunkFile struct {
     id           uint32     // Chunk ID (0, 1, 2, ...)
+    seq          uint64     // 全局单调序列号 (恢复排序)
     file         *os.File   // 底层文件句柄
-    path         string     // 文件路径: btree_0000.ao
+    path         string     // btree_[id]_[seq].ao
     size         int64      // 当前文件大小
-    capacity     int64      // 最大容量 (256MB)
-    nextOffset   int64      // 下一个追加位置（文件尾部当前位置）
+    capacity     int64      // 最大容量 (256MB，对齐 Lealone maxChunkSize)
+    nextOffset   int64      // 下一个追加位置
+    // 页面元数据 (对齐 Lealone pagePositionToLengthMap)
+    pagePosToLen map[ChunkPosition]int32  // pos → pageLength (变长页面)
+    // 已删除页面集 (对齐 Lealone removedPages — ConcurrentSkipListSet<Long> 的 Go 对应)
+    removedPages map[ChunkPosition]struct{} // 待 Compactor 回收的位置
+    mu           sync.RWMutex
 }
 ```
 
-**FreeList 策略**：**启动时从 .ao 文件全量扫描重建，内存中维护，Checkpoint 结束时持久化**。
+**RemovedPages 替代 FreeList**（对齐 Lealone 设计）：Lealone 使用 `ConcurrentSkipListSet<Long> removedPages` 追踪已删除页面位置，而非显式 FreeList。空间复用由 `ChunkCompactor` 重写低填充率 Chunk 时合并 `removedPages` 实现。NexKV 采用相同模型：
 
-启动恢复时，`RestoreDiskChunkManager` 扫描所有 `.ao` 文件，通过超级块中的 `nextOffset` 和空闲列表区域识别未使用的 4KB 对齐位置，将这些位置加入内存中的 FreeList。这避免了 FreeList 增量持久化的一致性问题——崩溃后 FreeList 总是从磁盘状态重建，不存在双重分配窗口。
-
-运行时，FreeList 在内存中维护，**每次 Checkpoint 结束时**将 FreeList 序列化到各 Chunk 文件尾部。这样即使进程崩溃，下一次启动也能从最近一次 Checkpoint 的 FreeList 状态恢复。
+- **写路径**：页面被 COW 覆盖 → 旧 pos 加入 `removedPages`
+- **Checkpoint 时**：`removedPages` 持久化到 Chunk 文件尾部（`removedPageOffset + removedPageCount`）
+- **Compactor**（Phase 5）：扫描 `removedPages`，重写低填充率 Chunk，物理删除旧文件
 
 ```go
-// FreeList 在内存中维护，启动时从 .ao 文件重建。
-type FreeList struct {
-    positions []ChunkPosition
-    mu        sync.Mutex
+// Chunk 头部字段 (文本键值对格式，对齐 Lealone)
+type ChunkHeader struct {
+    ID                         uint32  // chunk id
+    RootPagePos                uint64  // 根页面位置 (64-bit ChunkPosition)
+    PageCount                  int32   // 页面总数
+    SumOfPageLength            int64   // 所有页面长度总和
+    SumOfLivePageLength        int64   // 存活页面长度总和
+    PagePositionAndLengthOffset int64  // pagePosToLen 映射在文件中的偏移量
+    BlockSize                  int32   // 始终为 4096
+    FormatVersion              int32   // 格式版本
+    RemovedPageOffset          int64   // removedPages 表在文件中的偏移量
+    RemovedPageCount           int32   // 已删除页面数
+    LastTransactionID          int64   // 最后事务 ID (WAL GC 边界)
+    MapSize                    int64   // BTreeMap 大小
+    Fletcher32                 uint32  // Fletcher-32 校验和
 }
-
-// Marshal 将 FreeList 序列化为磁盘格式:
-// [freeCount:4][pos0:8][pos1:8]...[CRC32C:4]
-func (fl *FreeList) Marshal() []byte
-
-// Unmarshal 从磁盘格式反序列化 FreeList。
-func (fl *FreeList) Unmarshal(data []byte) error
 ```
 
 ### 3.4 DiskChunkManager 实现
+
+对齐 Lealone `ChunkManager.java`：无 maxChunks 硬限制，序列号排序恢复，无超级块 Magic。
 
 ```go
 // internal/infrastructure/storage/chunk/disk_chunk_manager.go
 
 type DiskChunkManager struct {
-    dir         string               // Chunk 文件目录
-    chunkSize   int64                // 每 Chunk 大小 (256MB)
-    maxChunks   int                  // 最大 Chunk 数 (0 = 不限，生产环境建议 24 以匹配 6GB mmap)
-    chunks      []*ChunkFile         // 活跃 Chunk 列表
-    freeList    *FreeList            // 全局空闲位置列表（内存中维护，启动时重建）
-    mu          sync.RWMutex
-    stats       ChunkManagerStats
+    dir          string               // Chunk 文件目录
+    chunkSize    int64                // 每 Chunk 大小 (256MB，对齐 Lealone maxChunkSize)
+    chunks       []*ChunkFile         // 活跃 Chunk 列表（按 seq 排序）
+    lastChunk    *ChunkFile           // 最近写入的 Chunk 引用
+    maxSeq       uint64               // 全局最大序列号 (对齐 Lealone maxSeq)
+    chunkIDs     *bitset.BitSet       // Chunk ID 位图 (对齐 Lealone BitField)
+    idToChunk    map[uint32]*ChunkFile // chunkID → ChunkFile
+    seqToID      map[uint64]uint32    // seq → chunkID (对齐 Lealone seqToIdMap)
+    removedPages map[ChunkPosition]struct{} // 全局已删除页面集 (对齐 Lealone ConcurrentSkipListSet)
+    mu           sync.RWMutex
+    stats        ChunkManagerStats
 }
 
-// NewDiskChunkManager 首次创建（无已有 .ao 文件）。
-func NewDiskChunkManager(dir string, chunkSize int64, maxChunks int) (*DiskChunkManager, error)
+// NewDiskChunkManager 首次创建（无已有 Chunk 文件）。
+// 创建第一个 Chunk: btree_0_1.ao
+func NewDiskChunkManager(dir string, chunkSize int64) (*DiskChunkManager, error)
 
-// RestoreDiskChunkManager 从已有 .ao 文件恢复（重启场景）。
+// RestoreDiskChunkManager 从已有 Chunk 文件恢复（重启场景）。
+// 对齐 Lealone ChunkManager.init() 恢复协议:
+//   1. 扫描目录: 列出所有 btree_*_*.ao 文件
+//   2. 删除零长度文件 (崩溃时创建但未写入)
+//   3. 对每个文件:
+//      a. 解析文件名: btree_[chunkId]_[seq].ao → chunkID + seq
+//      b. 追踪 maxSeq 及其对应的 chunkID
+//      c. 处理重复 chunkID: 保留最高 seq 的文件名 (备份恢复)
+//   4. 按 seq 排序所有 Chunk
+//   5. 打开最高 seq 的 Chunk (lastChunk)
+//   6. 验证双块头部: 读 8192 字节，分别校验偏移量 0 和 4096 处的 4KB 块
+//      - Fletcher32 校验 → 有效 → 解析头部
+//      - 偏移量 0 损坏但 4096 完好 → 从副本恢复
+//      - 两者都损坏 → 标记为损坏，跳过 (ERROR_FILE_CORRUPT)
+//   7. 从头部恢复 lastTxnId, removedPages, pagePosToLen
+//   8. 重建 chunkIDs BitSet, idToChunk, seqToID
 //
-// 两阶段 FreeList 重建策略:
-//   阶段 1 (Phase A — 无 pageLocs 依赖):
-//     1. 扫描目录中所有 btree_*.ao 文件
-//     2. 验证超级块 Magic "NXAO" + CRC32C
-//     3. 跳过尾部损坏的文件（无 Trailer = 不完整 Checkpoint）
-//     4. 从超级块 FreeListOff 偏移量读取 FreeList 区域
-//     5. 校验 FreeList CRC32C:
-//        a. 有效 → 加载到内存（信任持久化的 FreeList）
-//        b. 无效 → FreeList 初始化为空（推迟精确重建到 Phase B）
-//     6. 按 chunkID 排序后重建 chunks 列表
-//   阶段 2 (Phase B — pageLocs 可用后):
-//     若 FreeList 在阶段 1 因 CRC 损坏被置空:
-//       扫描所有 Chunk 文件的完整页面区域 [超级块之后, 文件尾之前]
-//       将未出现在 pageLocs 中的 4KB 对齐位置加入 FreeList
-//       → pageLocs 由 CheckpointEntry 恢复，提供完整的已用位置集合
+// 无超级块 Magic: 恢复完全基于文件名序列号排序 + 双块头部校验，
+// 比单一超级块 + CRC32C 更健壮（容忍单扇区损坏）。
 func RestoreDiskChunkManager(dir string) (*DiskChunkManager, error)
 ```
 
@@ -283,66 +414,85 @@ func RestoreDiskChunkManager(dir string) (*DiskChunkManager, error)
 
 ### 3.5 块分配策略
 
+对齐 Lealone `BTreeStorage.executeSave()` 的 Chunk 选择逻辑：
+
 ```
 DiskChunkManager.Allocate(size, pageType):
-  1. 检查 FreeList 中是否有可用位置
-     a. 有 → 移除并返回（页面复用）
-     b. 无 → 进入步骤 2
-  2. 检查最后一个 Chunk 的追加位置
-     如果 appendOffset + size <= chunkSize → 在最后 Chunk 分配
-     否则 → 创建新 Chunk (btree_N.ao)
-       - 如果 len(chunks) >= maxChunks (8) → 触发压缩（存根，推迟到 Phase 5）
-       - 使用 fallocate(chunkSize) 预分配文件空间
-  3. 编码 ChunkPosition(chunkID, offset, pageType) 并返回
+  1. 获取 lastChunk
+  2. 检查 lastChunk 剩余空间: nextOffset + size <= capacity?
+     a. 是 → 在 lastChunk 分配（追加模式），返回 ChunkPosition(chunkID, nextOffset, pageType)
+     b. 否 → createChunk():
+       i.   chunkID = chunkIDs.nextClearBit(1)  ← BitField 分配 (对齐 Lealone)
+       ii.  seq = ++maxSeq                       ← 全局序列号递增
+       iii. path = fmt.Sprintf("btree_%d_%d.ao", chunkID, seq)
+       iv.  fallocate(chunkSize) 预分配空间
+       v.   写入双块头部（两个相同的 4KB 块）
+       vi.  chunks.append, idToChunk[id]=c, seqToID[seq]=id
+       vii. lastChunk = c
+       返回 ChunkPosition(newChunkID, ChunkHeaderSize, pageType)
+
+无 maxChunks 限制 (对齐 Lealone): Chunk 数量任意增长，由 ChunkCompactor (Phase 5) 控制空间回收。
 ```
 
-### 3.6 ChunkCompactor（存根）
+### 3.6 ChunkCompactor
+
+对齐 Lealone `ChunkCompactor.java`：基于填充率的重写 + 两阶段删除。
 
 ```go
 // internal/infrastructure/storage/chunk/chunk_compactor.go
 
 type ChunkCompactor struct {
-    cm *DiskChunkManager
+    cm          *DiskChunkManager
+    minFillRate int  // 最低填充率 (默认 30%, 对齐 Lealone，上限 50%)
 }
 
-func (c *ChunkCompactor) NeedCompaction() bool { return false } // 存根
-func (c *ChunkCompactor) Compact() error       { return nil }   // 存根，Phase 5 实现
+// executeCompact 对齐 Lealone 的压缩算法:
+//   1. 收集所有 removedPages (cm.removedPages + lastChunk.removedPages)
+//   2. 若 removedPages 为空 → 直接返回
+//   3. 读取包含已删除页面的 Chunk (跳过 NodePage)
+//   4. 计算每个 Chunk 的 fillRate = 1 + 98*live/total (对齐 Lealone getFillRate)
+//   5. 分离: fillRate==0 → unusedChunks; fillRate<=minFillRate → rewritable
+//   6. 按 fillRate 升序 + sumOfLivePageLength 升序排序
+//   7. 贪心选择尽可能多的 Chunk 重写，累计 liveSize <= MAX_SIZE
+//   8. 将选中 Chunk 的活跃页面写入新 Chunk，更新 PageRef 的 pos
+//   9. 两阶段删除: 先标记 unusedChunks，新 trunk 成功后物理删除
+
+func (c *ChunkCompactor) NeedCompaction() bool  // 返回 fillRate <= minFillRate 的 Chunk 数量 > 0
+func (c *ChunkCompactor) ExecuteCompact() error // 主入口 (Phase 5 实现)
 ```
 
 ---
 
 ## 四、AO 文件格式
 
+对齐 Lealone `Chunk.java` 源码格式：双块文本头部 + Fletcher32 + 变长页面 + pagePositionToLengthMap + removedPages 表。**无超级块 Magic Number**。
+
 ### 4.1 文件布局
 
 ```
-btree_NNNN.ao:
+btree_[chunkId]_[seq].ao (对齐 Lealone c_[id]_[seq].db):
 ┌───────────────────────────────────────────────────────────┐
-│ 超级块 (4KB)                                               │
-│超级块字段:       4+4+4+8+8+8+4+4=44 字节                      │
-│  ├─ Magic:        [4]byte  = {0x4E, 0x58, 0x41, 0x4F}     │
-│  │                       = "NXAO"                          │
-│  ├─ Version:      uint32  = 1                              │
-│  ├─ ChunkID:      uint32                                   │
-│  ├─ ChunkSize:    uint64                                   │
-│  ├─ CreatedAt:    int64   (UnixNano)                       │
-│  ├─ FreeListOff:  uint64  (空闲列表偏移量)                   │
-│  ├─ PageCount:    uint32                                   │
-│  ├─ CRC32C:       uint32  (覆盖超级块头部)                   │
-│  └─ Reserved:     [4052]byte  (4KB - 44B = 4052B)          │
+│ 头部块 1 (4096 字节) — 文本键值对                           │ ◀── 双块写入
+│  例: "id:1\nrootPagePos:1a2b3c...\npageCount:100\n..."    │     (崩溃安全)
+│  最后一个字段: fletcher:XXXXXXXX (计算前排除自身)            │
 ├───────────────────────────────────────────────────────────┤
-│ 页面数据区域 (页面边界对齐，每页 4100 字节)                    │
-│  │ Page 0: [CRC32C:4][PageHeader+Data:4096] = 4100 字节    │
-│  │ Page 1: [CRC32C:4][PageHeader+Data:4096] = 4100 字节    │
-│  │ ...                                                     │
-│  │ Page N: [CRC32C:4][PageHeader+Data:4096] = 4100 字节    │
+│ 头部块 2 (4096 字节) — 完全相同的副本                       │ ◀── 单扇区损坏可恢复
+├═══════════════════════════════════════════════════════════╡
+│ 页面数据区域 (从偏移量 8192 开始，变长页面)                  │
+│  │ Page 0: [CRC32C:4][PageHeader+Data:pageLength 字节]    │
+│  │ Page 1: [CRC32C:4][PageHeader+Data:pageLength 字节]    │
+│  │ ...                                                    │
+│  │ Page N: [CRC32C:4][PageHeader+Data:pageLength 字节]    │
 ├───────────────────────────────────────────────────────────┤
-│ 空闲列表区域 (页面对齐)                                     │
-│  │ [Count:4][Pos1:8][Pos2:8]...[CRC32C:4]                  │
+│ pagePositionAndLengthOffset 处:                           │
+│  │ pagePositionToLengthMap: (pos:8B + length:4B) × N     │
+├───────────────────────────────────────────────────────────┤
+│ removedPageOffset 处:                                     │
+│  │ removedPages 表: (pos:8B) × removedPageCount           │
 └───────────────────────────────────────────────────────────┘
 ```
 
-**超级块 Magic Number**：`"NXAO"` = `{0x4E, 0x58, 0x41, 0x4F}` — NexKV Append-Only
+**无超级块 Magic Number**（对齐 Lealone）：恢复时扫描目录 → 解析文件名 seq → 排序 → 取最高 seq chunk → 校验双块头部 Fletcher32。比单一 Magic + CRC32C 更健壮（容忍单扇区损坏）。
 
 ### 4.2 页面磁盘格式
 
@@ -499,6 +649,15 @@ Phase 4 模糊检查点流程 (FuzzyCheckpoint with Page Flush + Mapping):
 1. **checkpointStartLSN 必须在根快照之前记录**：防止快照后新写入的 WAL entry 被错误截断
 2. **页面必须在 WAL 授权之前持久化（先 AO 后 WAL）**：若先写 WAL 再写 AO，AO 写入失败时 WAL 已被截断，页面数据丢失
 3. **AO Sync 是屏障**：保证所有页面数据落盘后，才写入 Checkpoint 授权条目
+
+**Checkpoint 触发条件**（对齐 Lealone `CheckpointService`）：
+
+| 触发条件 | Lealone | NexKV Phase 4 |
+|---------|---------|--------------|
+| 周期 | 默认 12h (`checkpoint_period`) | 默认 30s (`Config.Interval`) |
+| 脏内存阈值 | `collectDirtyMemory() > cacheSize` | `dirtyMemory > CacheSize` (新增) |
+| 强制 | SQL CHECKPOINT / 关闭 | `ForceCheckpoint()` / Shutdown |
+| WAL 写入计数 | 每 512 个事务批次 | 保留 (可配置)
 
 ### 5.3 惰性页面加载协议
 
@@ -997,14 +1156,34 @@ Checkpoint (页面刷新 + 映射更新):
 
 ## 八、关键技术决策
 
-### 决策 1：页面序列化格式 — 就地格式（4100 字节磁盘页面）
+### 决策 1：页面序列化格式 — 就地变长格式（对齐 Lealone）
 
 | 选项 | 描述 | 优点 | 缺点 |
 |------|------|------|------|
-| **A. 就地（推荐）** | 磁盘格式 = [CRC32C:4] + [内存 PageHeader+Data:4096] = 4100 字节 | 零转换成本；不丢失任何 KV 数据 | 每页多 4 字节 CRC 开销 |
-| B. 独立格式 | 压缩/编码的磁盘表示 | 磁盘空间可能更小 | 读写需反序列化；实现复杂 |
+| **A. 就地变长（推荐）** | 磁盘格式 = [CRC32C:4] + [内存 PageHeader+Data:pageLength]，pageLength 可变 | 不浪费空间（小页面不填充） | 需要 pagePositionToLengthMap |
+| B. 固定 4100 字节 | 所有页面统一大小 | 实现简单 | 小页面浪费磁盘 I/O |
 
-**决定**：选项 A。磁盘页面 = `[CRC32C:4][内存 PageHeader+Data:4096]` = 4100 字节。CRC 与内存页面数据物理分离，`copy(dstSlice, data[CRCSize:CRCSize+PageSize])` 复制完整的 4096 字节。序列化/反序列化退化为 `copy` + `crc32.Checksum`（Castagnoli 多项式，SSE4.2 硬件加速），延迟 3-5μs。
+**决定**：选项 A（对齐 Lealone 变长页面）。页面长度由实际数据量决定，存储在 `pagePositionToLengthMap` 中。序列化时从 `pageLength` 参数确定输出大小，反序列化时返回实际长度。
+
+### 决策 1a：Chunk 头部格式 — 文本键值对 + Fletcher32 + 双块写入（对齐 Lealone）
+
+**决定**：采用 Lealone Chunk 头部格式 — 文本键值对（`DataUtils.appendMap/parseMap` 的 Go 对应） + Fletcher32 校验和。头部写两次（2 × 4096 字节），崩溃时任一完好块即可恢复。无 Magic Number，恢复基于文件名序列号扫描。
+
+### 决策 1b：RemovedPages 替代 FreeList（对齐 Lealone）
+
+**决定**：使用 `removedPages` 集合（`map[ChunkPosition]struct{}`）记录已删除页面位置，而非显式 FreeList。空间复用由 `ChunkCompactor` 重写低填充率 Chunk 时合并 `removedPages` 实现。初始实现中 `removedPages` 在 Chunk 文件尾部持久化，Compactor 推迟到 Phase 5。
+
+### 决策 1c：Children-First 递归写入（对齐 Lealone）
+
+**决定**：`NodePage.write()` 先递归写入所有子页面（`writeChildren`），获取子页面 pos 数组，再写父页面数据。这保证磁盘上父页面始终持有有效的子页面位置。对齐 Lealone `NodePage.java` 的 children-first 顺序。
+
+### 决策 1d：PageListener 父链脏页传播（对齐 Lealone）
+
+**决定**：Phase 4 实现显式的 `PageListener` 父链机制。每个 `PageRef` 持有 `PageListener`（包含父节点引用），`markDirtyPage()` 自底向上沿链 CAS 标记，每层使用 Listener 版本号检测并发 GC/分裂。对齐 Lealone `PageReference.markDirtyPage0()` 的三路返回值（0=成功, 1=GC'd, 2=Split）。
+
+### 决策 1e：Checkpoint 脏内存阈值触发（对齐 Lealone）
+
+**决定**：Checkpoint 触发条件增加「脏内存超过 `cacheSize`」阈值（对齐 Lealone `CheckpointService.collectDirtyMemory()`），保留固定 30s 周期作为兜底。
 
 ### 决策 2：惰性加载入口点
 
@@ -1211,6 +1390,48 @@ Phase 4.4: 恢复 + BTree 重建        ███████          5-7 天
 
 **文档版本**: v1.0
 **创建日期**: 2026-05-16
+**分支**: `spike/btree-wal-ao-persistence`
+**状态**: Draft
+**作者**: Claude Code
+
+---
+
+## 十三、附录 C：Lealone 源码对齐差异总表
+
+基于 Lealone 源码 (`lealone-aose/src/main/java/com/lealone/storage/aose/btree/`) 的精确分析，与 NexKV Phase 4 设计对齐。
+
+| # | 维度 | Lealone 源码 | NexKV Phase 4 对齐 | 状态 |
+|---|------|-------------|-------------------|------|
+| 1 | Chunk 命名 | `c_[id]_[seq].db` | `btree_[id]_[seq].ao` | ✅ 对齐（扩展名差异化） |
+| 2 | 超级块 | 无 — 序列号扫描恢复 | 无 — 序列号扫描 + 双块头部 | ✅ 对齐 |
+| 3 | 头部格式 | 文本键值对 + Fletcher32 | 文本键值对 + Fletcher32 | ✅ 对齐 |
+| 4 | 头部大小 | 8KB (2 × 4096 双块) | 8KB (2 × 4096 双块) | ✅ 对齐 |
+| 5 | 页面大小 | 变长 (pageLength) | 变长 (pageLength) | ✅ 对齐（Phase 4 改动） |
+| 6 | 页面→长度映射 | pagePositionToLengthMap | pagePosToLen map | ✅ 对齐 |
+| 7 | 脏标记 | `pos == 0` (PageInfo.isDirty) | `ChunkPosition == 0` | ✅ 对齐 |
+| 8 | 空闲空间 | removedPages + Compactor | removedPages + Compactor (Phase 5) | ✅ 对齐 |
+| 9 | maxChunks | 无硬限制 | 无硬限制 | ✅ 对齐（Phase 4 改动） |
+| 10 | Chunk 选择 | lastChunk 追加 / 新建 | lastChunk 追加 / 新建 | ✅ 对齐 |
+| 11 | 写入顺序 | Children-First 递归 | Children-First 递归 | ✅ 对齐（Phase 4 新增） |
+| 12 | 脏页传播 | PageListener 父链 CAS | PageListener 父链 CAS | ✅ 对齐（Phase 4 新增） |
+| 13 | Checkpoint 触发 | 脏内存阈值 + 周期 + 强制 | 脏内存阈值 + 30s 周期 + 强制 | ✅ 对齐 |
+| 14 | **WAL 位置** | 嵌入 Chunk 文件尾部 | **独立 .wal segment 文件** | ⚠️ NexKV 特有 |
+| 15 | **CRC 算法** | Fletcher32 | **CRC32C (Castagnoli)** | ⚠️ NexKV 特有 |
+| 16 | **原子操作** | AtomicReferenceFieldUpdater | **sync.Map / atomic.Value** | ⚠️ Go 惯用 |
+| 17 | **页表映射** | pos 编码直接寻址 | **pageLocs sync.Map 额外映射** | ⚠️ NexKV 特有 |
+
+**NexKV 特有设计理由**：
+- **独立 .wal 文件**：Go 中已有成熟 DiskWAL + Group Commit，独立 Segment 管理优于嵌入 Chunk
+- **CRC32C**：SSE4.2/ARM 硬件加速，与 WAL 模块统一（优于 Fletcher32 的软件计算）
+- **pageLocs 映射**：重启后 mmap 清零，必须从 CheckpointEntry 恢复 pageID→pos 映射（Lealone 无此问题——Java 堆内存由 GC 管理，PageReference 对象重启后从文件重新创建）
+
+**对齐覆盖率**：13/17 = 76%（4 项保留 NexKV 特有设计）
+
+---
+
+**文档版本**: v2.0
+**创建日期**: 2026-05-16
+**最后更新**: 2026-05-17 (Lealone 源码对齐)
 **分支**: `spike/btree-wal-ao-persistence`
 **状态**: Draft
 **作者**: Claude Code

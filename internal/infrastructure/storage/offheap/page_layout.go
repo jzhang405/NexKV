@@ -114,6 +114,10 @@ type PageHeader struct {
 // SizeofPageHeader PageHeader 大小（运行时由 unsafe.Sizeof 确定，须与 btree.HeaderSize 一致）
 const SizeofPageHeader = int(unsafe.Sizeof(PageHeader{}))
 
+	// PageTypeFieldOffset is the byte offset of the pageType field within PageHeader.
+	// Exported for use by the chunk.PageSerializer for cross-package deserialization validation.
+	const PageTypeFieldOffset = unsafe.Offsetof(PageHeader{}.pageType)
+
 // IndexEntry 索引节点条目（16 字节）
 type IndexEntry struct {
 	keyOff uint32 // 4 bytes - key 在页内的偏移（从页面尾部开始）

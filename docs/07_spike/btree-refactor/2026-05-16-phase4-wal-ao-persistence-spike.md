@@ -412,7 +412,7 @@ func NewDiskChunkManager(dir string, chunkSize int64) (*DiskChunkManager, error)
 func RestoreDiskChunkManager(dir string) (*DiskChunkManager, error)
 ```
 
-**Chunk 文件命名**：`btree_0000.ao`, `btree_0001.ao`, `btree_0002.ao`, ...
+**Chunk 文件命名**：`btree_[chunkId]_[seq].ao`，例 `btree_0_1.ao`（chunkId=0, seq=1）、`btree_5_12.ao`（chunkId=5, seq=12）。seq 为全局单调递增序列号（对齐 Lealone 序列号排序恢复）。
 
 ### 3.5 块分配策略
 
@@ -755,7 +755,7 @@ Commit 路径 (WAL-first, AO-later):
 | 文件类型 | 写入模式 | Sync 策略 | 文件描述符 |
 |---------|---------|----------|-----------|
 | `.wal` | 顺序追加 | Group Commit (1ms/batch) | 每 Segment 1 个 |
-| `.ao` | 随机写（Checkpoint 时） | Checkpoint 结束时 fsync | 每 Chunk 1 个 (最多 8 个) |
+| `.ao` | 随机写（Checkpoint 时） | Checkpoint 结束时 fsync | 每 Chunk 1 个 (无上限) |
 
 WAL 和 AO 使用独立的文件描述符和 I/O 路径，互不阻塞。
 
@@ -1154,7 +1154,7 @@ Recovery 路径的实现复杂度远高于原估算，因为 BTree PageRef 图�
 │  │ Manager        │         │                                     │
 │  │                │         │                                     │
 │  │ 页面刷新 +     │         │    .ao 文件                          │
-│  │ WAL 授权 +     │◀────────┼── btree_NNNN.ao                     │
+│  │ WAL 授权 +     │◀────────┼── btree_[id]_[seq].ao               │
 │  │ WAL 截断       │         │   fallocate + append-only           │
 │  └────────────────┘         │                                     │
 └──────────────────────────────────────────────────────────────────┘
@@ -1312,7 +1312,7 @@ Checkpoint (页面刷新 + 映射更新):
 | 文件类型 | 策略 | 原因 |
 |---------|------|------|
 | `.wal` | 每 Segment 1 个 fd，顺序写入 | 追加写入，低 fd 压力 |
-| `.ao` | 每 Chunk 1 个 fd，随机读取，追加写入 | 最多 8 个 fd，池化管理 |
+| `.ao` | 每 Chunk 1 个 fd，随机读取，追加写入 | 按需分配，池化管理 |
 
 Chunk 文件在其生命周期内保持打开，正常关闭时由生命周期管理器关闭。
 

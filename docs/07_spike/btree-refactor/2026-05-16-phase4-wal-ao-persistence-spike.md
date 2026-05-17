@@ -43,7 +43,7 @@ Phase 4 完成后，NexKV 将具备 Lealone 同等级别的双层持久化能力
 
 **Phase 4 范围（包含）**：
 - ChunkManager 接口定义 + `DiskChunkManager` 实现
-- `.ao` 文件格式定义（超级块 + 页面数据 + 空闲列表）
+- `.ao` 文件格式定义（双块文本头部 + 变长页面数据 + removedPages）
 - 页面序列化/反序列化（就地格式，与 mmap 内存布局一致）
 - `OffheapBTreeStorage` 惰性加载路径
 - Checkpoint 页面刷新集成（模糊检查点 + 锐检查点）
@@ -641,7 +641,7 @@ Phase 4 模糊检查点流程 (FuzzyCheckpoint with Page Flush + Mapping):
         a. 记录映射: mapping[pageID] = pInfo.chunkPos（或即将分配的 pos）
         b. 检查 pInfo.chunkPos == 0（脏页）?
            是 → serializer.Serialize(pagePtr) → buf (4100字节)
-                pos = cm.Allocate(PageSize, pageType)
+                pos = cm.Allocate(len(buf), pageType)  // 变长页面
                 cm.WritePage(pos, buf)
                 pInfo CAS: chunkPos = pos（标记为已持久化）
                 mapping[pageID] = pos（更新为新的持久化位置）
@@ -921,6 +921,10 @@ func (m *Manager) FuzzyCheckpoint() error {
         // ChunkPos != 0 或 PageData == nil → 已持久化，跳过
     }
     m.cm.Sync()
+    // T4a: pageLocs 批量更新 (AO Sync 后、WAL Append 前)
+    for pageID, pos := range mapping {
+        m.btree.UpdatePageLoc(pageID, pos)
+    }
     entry := NewCheckpointEntry(startLSN, rootRef.PageID(), mapping)
     m.wal.Append(entry)
     m.wal.Sync()
@@ -1018,8 +1022,8 @@ RebuildBTree(rootPageID, pageLocs, pm, cm, serializer):
 
   Step 1: 分配 root PageID 的 mmap 页面
     rootRawID = pm.Alloc()  // 分配物理 mmap 页
-    加载根页面: chunkPos = pageLocs[rootPageID]
-    data = cm.ReadPage(chunkPos)
+    加载根页面: chunkPos, _ = pageLocs.Load(rootPageID)
+    data = cm.ReadPage(chunkPos.(ChunkPosition))
     serializer.Deserialize(data, pm.PageIDToPtr(rootRawID))
     验证 pageType
 
@@ -1042,7 +1046,8 @@ RebuildBTree(rootPageID, pageLocs, pm, cm, serializer):
       // 为每个子节点创建 PageRef
       children = []
       for childPageID in childIDs:
-        childChunkPos = pageLocs[childPageID]
+        childChunkPos, _ = pageLocs.Load(childPageID)
+        childChunkPosTyped := childChunkPos.(ChunkPosition)
         childRawID = pm.Alloc()  // 分配 mmap
         data = cm.ReadPage(childChunkPos)
         serializer.Deserialize(data, pm.PageIDToPtr(childRawID))
@@ -1089,7 +1094,8 @@ RebuildBTree(rootPageID, pageLocs, pm, cm, serializer):
 - **恢复阶段 BTree 不接受外部请求**：所有 API 返回 `ErrEngineNotReady`（与 Phase 3 C6-3 一致）
 - **Recovery 单 goroutine 执行**：禁止并发调用（与 Phase 3 约束一致）
 - **子节点分离器键从物理页面读取**：pageLocs 映射只包含 pageID→ChunkPosition，ChildrenCache 的 separator keys 需从父节点物理页面重新扫描
-- **page data 中的 child pageID 不直接用于导航**：RebuildBTree 从物理页面读取 child pageID 仅用于 `pageLocs` 查找 ChunkPosition；导航通过 `ChildrenCache`（持有 `[]*PageRef`），不使用 page data 中的 child entry。旧物理页面中存储的 child pageID 与新分配的 mmap slot（`pm.Alloc()` 返回的 pageID）不同，但 `ChildrenCache` 持有正确的 `*PageRef` 指针，隔离了新旧 pageID 的不一致
+- **pageLocs 在 Recovery 后以 checkpoint 原始 pageID 为键**：`RebuildBTree` 分配新的 mmap pageID（`pm.Alloc()`），但 `pageLocs` 保留 checkpoint 原始 pageID→ChunkPosition。运行时通过 `pageLocs.Load(ref.PageID())` 查找——COW 新页面 `Store(newID, 0)` 标记脏页，checkpoint 页面保持原始 pageID 的映射。`ChildrenCache` 持有 `[]*PageRef` 指针（不依赖 pageID），隔离新旧 pageID 不一致。
+- **page data 中的 child pageID 仅用于 pageLocs 查找**，不用于直接导航
 
 **Recovery 恢复时长估算修正**（原 Phase 4.4 3-4 day → 修正为 5-7 day）：
 
@@ -1158,17 +1164,17 @@ Recovery 路径的实现复杂度远高于原估算，因为 BTree PageRef 图�
 
 ```
 读取者 (Get):
-  1. searchPath(key) → PageRef → LoadPageInfo()
-  2. pInfo.page == nil?
-     ├─ 否 → 返回缓存的页面指针（快速路径）
-     └─ 是 → 惰性加载:
-          ├─ pageLocs.Load(pageID) → pos
-          │   ├─ pos == 0? → 页面未持久化（新分配或 Recovery 前的脏页）
+  1. searchPath(key) → PageRef → GetLeafPage(pageID)
+  2. pm.PageIDToPtr(pageID) != nil?
+     ├─ 是 → 返回 pageHandle（快速路径，mmap 已分配）
+     └─ 否 → 惰性加载:
+          ├─ pageLocs.Load(pageID) → (pos, ok)
+          │   ├─ !ok 或 pos == 0 → 页面未持久化（新分配脏页或 Recovery 边界）
           │   └─ pos != 0 → cm.ReadPage(pos)
-          │                  → serializer.Deserialize(data, pagePtr) [4100→4096]
+          │                  → serializer.Deserialize(data, ptr)（变长）
           │                  → 验证 PageHeader.chunkPos == pos
-          │                  → pInfo CAS(page=ptr)
-          │                  → 返回
+          │                  → PageRef CAS: oldPI → newPI{ChunkPos: pos}
+          │                  → 返回 pageHandle
 
 写入者 (Set/COW):
   1. 分配新 mmap 页面 (pm.Alloc())
@@ -1178,13 +1184,17 @@ Recovery 路径的实现复杂度远高于原估算，因为 BTree PageRef 图�
   5. 返回（页面在 Checkpoint 之前保持"脏"状态）
 
 Checkpoint (页面刷新 + 映射更新):
-  1. 加载根快照
-  2. 对每个可达 PageRef:
-     a. 记录到 mapping
-     b. chunkPos == 0? → serializer.Serialize(4100字节) → cm.WritePage → CAS chunkPos
+  1. 加载根快照 (COW)
+  2. EnumeratePages (post-order DFS + Retain/Release):
+     对每个 PageFlushItem:
+       a. mapping[item.PageID] = item.ChunkPos
+       b. ChunkPos == 0 && PageData != nil?
+          → cm.Allocate(len(item.PageData), item.PageType)
+          → cm.WritePage(pos, item.PageData)
+          → mapping[item.PageID] = pos
   3. 持久化 removedPages → cm.Sync()
   4. WAL CheckpointEntry{startLSN, rootPageID, mapping} → WAL.Sync()
-  5. pageLocs 批量更新 ← mapping（运行时映射刷新）
+  5. pageLocs 批量更新 ← mapping (T4a: AO Sync 后、WAL Append 前)
   6. WAL.Truncate(startLSN)
 ```
 
@@ -1336,7 +1346,7 @@ Chunk 文件在其生命周期内保持打开，正常关闭时由生命周期�
 - [ ] Chunk 轮转：写满当前 Chunk 后自动创建新 Chunk
 - [ ] 空闲列表：FreePage → 后续 Allocate 复用该位置
 
-### Phase 4.2：惰性页面加载（3-4 天）
+### Phase 4.2：惰性页面加载 + pageLocs（4-5 天）
 
 **修改文件**：
 - `internal/infrastructure/storage/btree/offheap_storage.go`
@@ -1430,7 +1440,7 @@ Phase 4.4: 恢复 + BTree 重建        ███████          5-7 天
 1. **Q1**：页面驱逐策略——何时以及如何从内存中清除已持久化的页面？（推迟到 Phase 5）
 2. **Q2**：`PageHeader` 中 `chunkPos` 的精确位偏移量——是否与 `offheap.SizeofPageHeader` 对齐？（需要检查现有填充布局）
 3. **Q3**：Checkpoint 期间的 I/O 优先级——Checkpoint 页面写入 vs WAL Group Commit 的调度策略
-4. **Q4**：AO 文件中部分写入页面的处理——Checkpoint 崩溃后如何安全恢复？
+4. **Q4**：AO 文件中部分写入页面的处理——Checkpoint 崩溃后如何安全恢复？（与 §10.1 高风险第 5 项关联：未完整 Checkpoint 的 AO 文件尾部残缺页面通过 CRC32C 检测 + Recovery Phase A 跳过损坏 Chunk 处理）
 5. **Q5**：`ChunkCompactor` 压缩时如何原子更新所有受影响 PageRef 的 `chunkPos`？
 6. **Q6**：`pageLocs` 陈旧条目清理 — 当 PageRef 被 GC（不再从根可达）后，其 `pageLocs` 条目仍存在（内存泄漏）且对应 AO 位置未加入 `removedPages`（磁盘泄漏）。Phase 4「仅 Checkpoint」策略下影响有限（每条目 ~12B），Phase 5 需规划：PageRef GC 时从 `pageLocs` 删除 + AO 位置加入 `removedPages`。
 7. **Q7**：`pageLocs sync.Map` 内存与数据集大小成比例 — 每条目 ~24B overhead，100 万页面 ≈ 25MB，TB 级数据集 ≈ 6GB。Phase 4 可接受，Phase 5+ 考虑使用分片有序 map 或文件回退映射。
@@ -1517,7 +1527,7 @@ Phase 4.4: 恢复 + BTree 重建        ███████          5-7 天
 | 9 | maxChunks | 无硬限制 | 无硬限制 | ✅ 对齐（Phase 4 改动） |
 | 10 | Chunk 选择 | lastChunk 追加 / 新建 | lastChunk 追加 / 新建 | ✅ 对齐 |
 | 11 | 写入顺序 | Children-First 递归 | Children-First 递归 | ✅ 对齐（Phase 4 新增） |
-| 12 | 脏页传播 | PageListener 父链 CAS | PageListener 父链 CAS | ✅ 对齐（Phase 4 新增） |
+| 12 | 脏页传播 | PageListener 父链 CAS | DFS + chunkPos==0 遍历（不采用父链） | ⚠️ NexKV 特有 (架构分歧) |
 | 13 | Checkpoint 触发 | 脏内存阈值 + 周期 + 强制 | 脏内存阈值 + 30s 周期 + 强制 | ✅ 对齐 |
 | 14 | **WAL 位置** | 嵌入 Chunk 文件尾部 | **独立 .wal segment 文件** | ⚠️ NexKV 特有 |
 | 15 | **CRC 算法** | Fletcher32 | **CRC32C (Castagnoli)** | ⚠️ NexKV 特有 |
@@ -1529,7 +1539,7 @@ Phase 4.4: 恢复 + BTree 重建        ███████          5-7 天
 - **CRC32C**：SSE4.2/ARM 硬件加速，与 WAL 模块统一（优于 Fletcher32 的软件计算）
 - **pageLocs 映射**：重启后 mmap 清零，必须从 CheckpointEntry 恢复 pageID→pos 映射（Lealone 无此问题——Java 堆内存由 GC 管理，PageReference 对象重启后从文件重新创建）
 
-**对齐覆盖率**：13/17 = 76%（4 项保留 NexKV 特有设计）
+**对齐覆盖率**：12/17 = 71%（5 项保留 NexKV 特有设计：独立 WAL、CRC32C、Go 原子操作、pageLocs 映射、DFS 脏页检测替代 PageListener）
 
 ---
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
 )
 
 // DefaultChunkCapacity is the default maximum size of a single chunk file (256MB).
@@ -64,6 +65,9 @@ func (cm *DiskChunkManager) Allocate(size int, pageType uint8) (model.ChunkPosit
 		return 0, fmt.Errorf("chunk: invalid page size %d (range [%d,%d]): %w",
 			size, MinPagePayload, MaxPagePayload, ErrInvalidPageLength)
 	}
+	if pageType != offheap.PageTypeIndex && pageType != offheap.PageTypeLeaf {
+		return 0, fmt.Errorf("chunk: invalid pageType %d (expected 0 or 1)", pageType)
+	}
 
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -100,14 +104,13 @@ func (cm *DiskChunkManager) Allocate(size int, pageType uint8) (model.ChunkPosit
 
 // WritePage writes serialized page data at the given position.
 func (cm *DiskChunkManager) WritePage(pos model.ChunkPosition, data []byte) error {
+	chunkID := pos.ChunkID()
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
 	if cm.closed.Load() {
 		return ErrChunkClosed
 	}
-
-	chunkID := pos.ChunkID()
-	cm.mu.RLock()
 	c, ok := cm.idToChunk[chunkID]
-	cm.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("chunk: WritePage: chunk %d not found", chunkID)
 	}
@@ -115,6 +118,9 @@ func (cm *DiskChunkManager) WritePage(pos model.ChunkPosition, data []byte) erro
 	// Per-chunk lock protects pagePosToLen map and serializes I/O
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if cm.closed.Load() {
+		return ErrChunkClosed
+	}
 
 	offset := int64(pos.FileOffset())
 	if _, err := c.file.WriteAt(data, offset); err != nil {
@@ -126,20 +132,22 @@ func (cm *DiskChunkManager) WritePage(pos model.ChunkPosition, data []byte) erro
 
 // ReadPage reads serialized page data from the given position.
 func (cm *DiskChunkManager) ReadPage(pos model.ChunkPosition) ([]byte, error) {
+	chunkID := pos.ChunkID()
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
 	if cm.closed.Load() {
 		return nil, ErrChunkClosed
 	}
-
-	chunkID := pos.ChunkID()
-	cm.mu.RLock()
 	c, ok := cm.idToChunk[chunkID]
-	cm.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("chunk: ReadPage: chunk %d not found", chunkID)
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if cm.closed.Load() {
+		return nil, ErrChunkClosed
+	}
 
 	offset := int64(pos.FileOffset())
 	length, ok := c.pagePosToLen[pos]
@@ -157,21 +165,23 @@ func (cm *DiskChunkManager) ReadPage(pos model.ChunkPosition) ([]byte, error) {
 
 // FreePage marks a page position as removed.
 func (cm *DiskChunkManager) FreePage(pos model.ChunkPosition) error {
+	chunkID := pos.ChunkID()
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
 	if cm.closed.Load() {
 		return ErrChunkClosed
 	}
-
-	chunkID := pos.ChunkID()
-	cm.mu.RLock()
 	c, ok := cm.idToChunk[chunkID]
-	cm.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("chunk: FreePage: chunk %d not found", chunkID)
 	}
 
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cm.closed.Load() {
+		return ErrChunkClosed
+	}
 	c.removedPages[pos] = struct{}{}
-	c.mu.Unlock()
 	return nil
 }
 
@@ -202,9 +212,8 @@ func (cm *DiskChunkManager) Stats() service.ChunkManagerStats {
 		for _, l := range c.pagePosToLen {
 			usedBytes += int64(l)
 		}
-		c.mu.Unlock()
-		// Estimate free space (capacity minus used)
 		freeBytes += (c.capacity - c.nextOffset)
+		c.mu.Unlock()
 	}
 
 	return service.ChunkManagerStats{
@@ -285,6 +294,7 @@ func (cm *DiskChunkManager) createChunk() (*ChunkFile, error) {
 }
 
 // chunkIDBitSet is a simple bitset for tracking used chunk IDs.
+// All methods must be called with cm.mu held (external synchronization).
 type chunkIDBitSet struct {
 	words []uint64
 }

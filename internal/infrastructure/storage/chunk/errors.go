@@ -8,9 +8,6 @@ package chunk
 import "errors"
 
 var (
-	// ErrChunkFull indicates the chunk has no remaining space.
-	ErrChunkFull = errors.New("chunk: chunk full")
-
 	// ErrInvalidChunkHeader indicates the chunk header is corrupted or unreadable.
 	ErrInvalidChunkHeader = errors.New("chunk: invalid chunk header")
 
@@ -28,4 +25,7 @@ var (
 
 	// ErrInvalidPageLength indicates pageLength is outside the valid range.
 	ErrInvalidPageLength = errors.New("chunk: invalid page length")
+
+	// ErrChunkIDExhausted indicates all chunk IDs (0..MaxChunkID) are in use.
+	ErrChunkIDExhausted = errors.New("chunk: all chunk IDs exhausted")
 )

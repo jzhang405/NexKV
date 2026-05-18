@@ -52,7 +52,7 @@ func (p ChunkPosition) ChunkID() uint32 {
 	return uint32((uint64(p) >> chunkIDShift) & chunkIDMask)
 }
 
-// FileOffset extracts the byte offset within the chunk file (relative to ChunkHeaderSize).
+// FileOffset extracts the absolute byte offset within the chunk file.
 func (p ChunkPosition) FileOffset() uint32 {
 	return uint32((uint64(p) >> fileOffsetShift) & fileOffsetMask)
 }

@@ -5,6 +5,7 @@
 package chunk
 
 import (
+	"encoding/binary"
 	"testing"
 	"unsafe"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/wal"
 )
 
 func TestPageSerializer_Roundtrip_LeafPage(t *testing.T) {
@@ -125,4 +127,40 @@ func TestPageSerializer_Deserialize_NilDst(t *testing.T) {
 	_, err := serializer.Deserialize(data, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrNilDestination)
+}
+
+func TestPageSerializer_Serialize_NilPtr(t *testing.T) {
+	serializer := &PageSerializer{}
+	_, err := serializer.Serialize(nil, MinPagePayload)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNilDestination)
+}
+
+func TestPageSerializer_Deserialize_InvalidPageType(t *testing.T) {
+	require.NoError(t, offheap.InitPageManager(64*1024))
+	pm := offheap.GetPageManager()
+	pageID, _ := pm.Alloc()
+	pa := offheap.NewPageAccessor(pm)
+	pa.InitLeafPage(pageID, 1)
+
+	ptr := pm.PageIDToPtr(pageID)
+	serializer := &PageSerializer{}
+	data, err := serializer.Serialize(ptr, int(uint16(offheap.SizeofPageHeader)))
+	require.NoError(t, err)
+
+	// Corrupt the pageType byte in the serialized data (after CRC, at PageTypeFieldOffset)
+	pageTypeIdx := CRCSize + offheap.PageTypeFieldOffset
+	data[pageTypeIdx] = 99 // invalid pageType
+	// Recompute CRC so it matches the corrupted data
+	newCRC := wal.CRC32C(data[CRCSize:])
+	binary.LittleEndian.PutUint32(data[0:CRCSize], newCRC)
+
+	dstID, _ := pm.Alloc()
+	dstPtr := pm.PageIDToPtr(dstID)
+	_, err = serializer.Deserialize(data, dstPtr)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid pageType")
+
+	// Verify dst was not corrupted (fresh page starts with pageType=0)
+	assert.Equal(t, uint8(0), *(*uint8)(unsafe.Add(dstPtr, offheap.PageTypeFieldOffset)))
 }

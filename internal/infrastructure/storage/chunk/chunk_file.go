@@ -27,9 +27,7 @@ const (
 // Aligns with Lealone Chunk.java.
 type ChunkFile struct {
 	id         uint32   // chunk identifier
-	seq        uint64   // global monotonic sequence number
 	file       *os.File // underlying file handle
-	path       string   // btree_[id]_[seq].ao
 	capacity   int64    // max capacity (256MB default)
 	nextOffset int64    // next append position
 

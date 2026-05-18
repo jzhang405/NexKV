@@ -88,15 +88,15 @@ func (s *PageSerializer) Deserialize(data []byte, dst unsafe.Pointer) (int, erro
 		return 0, ErrCRCMismatch
 	}
 
-	// Copy PageHeader + Data to mmap
-	dstSlice := unsafe.Slice((*byte)(dst), MaxPagePayload)
-	copy(dstSlice, data[CRCSize:])
-
-	// Sanity check: pageType must be 0 or 1
-	pageType := *(*uint8)(unsafe.Add(dst, offheap.PageTypeFieldOffset))
+	// Validate pageType before copying to mmap (avoids corrupting dst on invalid data)
+	pageType := data[CRCSize+offheap.PageTypeFieldOffset]
 	if pageType != offheap.PageTypeIndex && pageType != offheap.PageTypeLeaf {
 		return 0, fmt.Errorf("page_serializer: invalid pageType %d", pageType)
 	}
+
+	// Copy PageHeader + Data to mmap
+	dstSlice := unsafe.Slice((*byte)(dst), MaxPagePayload)
+	copy(dstSlice, data[CRCSize:])
 
 	return pageLength, nil
 }

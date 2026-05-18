@@ -47,6 +47,7 @@ func (h *ChunkHeader) encode() []byte {
 
 //nolint:unused // Phase 4.2 RestoreDiskChunkManager will use this
 func parseHeader(text string) (map[string]string, error) {
+	text = strings.TrimRight(text, "\x00")
 	result := make(map[string]string)
 	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
 		if line == "" {
@@ -87,24 +88,32 @@ func decodeHeader(data []byte) (*ChunkHeader, error) {
 	return h, nil
 }
 
+// TODO(phase4.2): return error instead of silently defaulting to 0 on parse failure.
+//
 //nolint:unused // Phase 4.2 decodeHeader
 func parseUint32(s string) uint32 {
 	v, _ := strconv.ParseUint(s, 10, 32)
 	return uint32(v)
 }
 
+// TODO(phase4.2): return error instead of silently defaulting to 0 on parse failure.
+//
 //nolint:unused // Phase 4.2 decodeHeader
 func parseInt32(s string) int32 {
 	v, _ := strconv.ParseInt(s, 10, 32)
 	return int32(v)
 }
 
+// TODO(phase4.2): return error instead of silently defaulting to 0 on parse failure.
+//
 //nolint:unused // Phase 4.2 decodeHeader
 func parseInt64(s string) int64 {
 	v, _ := strconv.ParseInt(s, 10, 64)
 	return v
 }
 
+// TODO(phase4.2): return error instead of silently defaulting to 0 on parse failure.
+//
 //nolint:unused // Phase 4.2 decodeHeader
 func parseHexUint64(s string) uint64 {
 	v, _ := strconv.ParseUint(s, 16, 64)

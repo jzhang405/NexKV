@@ -7,6 +7,7 @@ package chunk
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
@@ -25,12 +26,14 @@ const (
 // ChunkFile represents a single .ao chunk file.
 // Aligns with Lealone Chunk.java.
 type ChunkFile struct {
-	id       uint32          // chunk identifier
-	seq      uint64          // global monotonic sequence number
-	file     *os.File        // underlying file handle
-	path     string          // btree_[id]_[seq].ao
-	capacity int64           // max capacity (256MB default)
-	nextOffset int64         // next append position
+	id         uint32   // chunk identifier
+	seq        uint64   // global monotonic sequence number
+	file       *os.File // underlying file handle
+	path       string   // btree_[id]_[seq].ao
+	capacity   int64    // max capacity (256MB default)
+	nextOffset int64    // next append position
+
+	mu sync.Mutex // protects pagePosToLen, removedPages, and concurrent I/O
 
 	// page metadata (Lealone pagePositionToLengthMap)
 	pagePosToLen map[model.ChunkPosition]int32 // pos → pageLength
@@ -87,6 +90,8 @@ func (c *ChunkFile) writeHeader(h *ChunkHeader) error {
 
 // readHeader reads and validates the dual-block header.
 // Tries block 0 first; falls back to block 1 if block 0 is corrupted.
+//
+//nolint:unused // Phase 4.2 RestoreDiskChunkManager
 func (c *ChunkFile) readHeader() (*ChunkHeader, error) {
 	buf := make([]byte, ChunkHeaderSize)
 	if _, err := c.file.ReadAt(buf, 0); err != nil {

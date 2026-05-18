@@ -23,7 +23,7 @@ func TestPageSerializer_Roundtrip_LeafPage(t *testing.T) {
 	pa := offheap.NewPageAccessor(pm)
 	pa.InitLeafPage(pageID, 1)
 
-	var dataEnd uint16 = uint16(offheap.SizeofPageHeader)
+	dataEnd := uint16(offheap.SizeofPageHeader)
 	pa.InsertLeafEntry(pageID, 0, []byte("hello"), []byte("world"), &dataEnd)
 	pa.InsertLeafEntry(pageID, 1, []byte("foo"), []byte("bar"), &dataEnd)
 	pa.InsertLeafEntry(pageID, 2, []byte("nxkv"), []byte("p4"), &dataEnd)
@@ -56,7 +56,7 @@ func TestPageSerializer_Roundtrip_IndexPage(t *testing.T) {
 	pa := offheap.NewPageAccessor(pm)
 	pa.InitIndexPage(pageID, 1)
 
-	var dataEnd uint16 = uint16(offheap.SizeofPageHeader)
+	dataEnd := uint16(offheap.SizeofPageHeader)
 	pa.InsertIndexEntry(pageID, 0, []byte("key1"), 42, &dataEnd)
 	pa.InsertIndexEntry(pageID, 1, []byte("key2"), 43, &dataEnd)
 	pa.SetChild(pageID, 2, 44)

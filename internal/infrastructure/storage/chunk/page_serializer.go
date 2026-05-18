@@ -41,6 +41,9 @@ type PageSerializer struct{}
 // pageLength must be in [MinPagePayload, MaxPagePayload].
 // Returns [CRC32C:4][pageData:pageLength].
 func (s *PageSerializer) Serialize(ptr unsafe.Pointer, pageLength int) ([]byte, error) {
+	if ptr == nil {
+		return nil, ErrNilDestination
+	}
 	if pageLength < MinPagePayload || pageLength > MaxPagePayload {
 		return nil, fmt.Errorf("page_serializer: invalid pageLength %d (range [%d,%d]): %w",
 			pageLength, MinPagePayload, MaxPagePayload, ErrInvalidPageLength)

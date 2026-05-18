@@ -24,17 +24,16 @@ type DiskChunkManager struct {
 	chunkSize int64  // per-chunk capacity
 
 	mu        sync.RWMutex
-	chunks    []*ChunkFile       // active chunks (sorted by seq)
-	lastChunk *ChunkFile         // most recently written chunk
-	maxSeq    uint64             // global max sequence number
-	chunkIDs  *chunkIDBitSet     // chunk ID bit field (Lealone BitField)
+	chunks    []*ChunkFile          // active chunks (sorted by seq)
+	lastChunk *ChunkFile            // most recently written chunk
+	maxSeq    uint64                // global max sequence number
+	chunkIDs  *chunkIDBitSet        // chunk ID bit field (Lealone BitField)
 	idToChunk map[uint32]*ChunkFile // chunkID → ChunkFile
-	seqToID   map[uint64]uint32  // seq → chunkID
+	seqToID   map[uint64]uint32     // seq → chunkID
 
-	closed      atomic.Bool
-	stats       service.ChunkManagerStats
-	readOps     atomic.Int64
-	writeOps    atomic.Int64
+	closed   atomic.Bool
+	readOps  atomic.Int64
+	writeOps atomic.Int64
 }
 
 // NewDiskChunkManager creates a new DiskChunkManager with no existing chunk files.
@@ -61,13 +60,17 @@ func (cm *DiskChunkManager) Allocate(size int, pageType uint8) (model.ChunkPosit
 	if cm.closed.Load() {
 		return 0, ErrChunkClosed
 	}
+	if size < MinPagePayload || size > MaxPagePayload {
+		return 0, fmt.Errorf("chunk: invalid page size %d (range [%d,%d]): %w",
+			size, MinPagePayload, MaxPagePayload, ErrInvalidPageLength)
+	}
 
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
 	// Try to append to the last chunk
 	if cm.lastChunk != nil {
-		nextOff := cm.lastChunk.nextOffset + ChunkHeaderSize
+		nextOff := cm.lastChunk.nextOffset
 		if nextOff+int64(size) <= cm.lastChunk.capacity {
 			pos, err := model.EncodeChunkPosition(cm.lastChunk.id, uint32(nextOff), pageType)
 			if err != nil {
@@ -109,6 +112,10 @@ func (cm *DiskChunkManager) WritePage(pos model.ChunkPosition, data []byte) erro
 		return fmt.Errorf("chunk: WritePage: chunk %d not found", chunkID)
 	}
 
+	// Per-chunk lock protects pagePosToLen map and serializes I/O
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	offset := int64(pos.FileOffset())
 	if _, err := c.file.WriteAt(data, offset); err != nil {
 		return fmt.Errorf("chunk: WritePage: %w", err)
@@ -130,6 +137,9 @@ func (cm *DiskChunkManager) ReadPage(pos model.ChunkPosition) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("chunk: ReadPage: chunk %d not found", chunkID)
 	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	offset := int64(pos.FileOffset())
 	length, ok := c.pagePosToLen[pos]
@@ -159,7 +169,9 @@ func (cm *DiskChunkManager) FreePage(pos model.ChunkPosition) error {
 		return fmt.Errorf("chunk: FreePage: chunk %d not found", chunkID)
 	}
 
+	c.mu.Lock()
 	c.removedPages[pos] = struct{}{}
+	c.mu.Unlock()
 	return nil
 }
 
@@ -182,9 +194,17 @@ func (cm *DiskChunkManager) Stats() service.ChunkManagerStats {
 	defer cm.mu.RUnlock()
 
 	var totalPages, freePages int64
+	var usedBytes, freeBytes int64
 	for _, c := range cm.chunks {
+		c.mu.Lock()
 		totalPages += int64(len(c.pagePosToLen))
 		freePages += int64(len(c.removedPages))
+		for _, l := range c.pagePosToLen {
+			usedBytes += int64(l)
+		}
+		c.mu.Unlock()
+		// Estimate free space (capacity minus used)
+		freeBytes += (c.capacity - c.nextOffset)
 	}
 
 	return service.ChunkManagerStats{
@@ -192,6 +212,8 @@ func (cm *DiskChunkManager) Stats() service.ChunkManagerStats {
 		ActiveChunks: len(cm.chunks),
 		TotalPages:   totalPages,
 		FreePages:    freePages,
+		UsedBytes:    usedBytes,
+		FreeBytes:    freeBytes,
 		ReadOps:      cm.readOps.Load(),
 		WriteOps:     cm.writeOps.Load(),
 	}
@@ -208,12 +230,13 @@ func (cm *DiskChunkManager) Close() error {
 
 	var firstErr error
 	for _, c := range cm.chunks {
+		c.mu.Lock()
 		// Write final header before closing (Lealone: header written at finalization)
 		h := &ChunkHeader{
-			ID:             c.id,
-			PageCount:      int32(len(c.pagePosToLen)),
-			BlockSize:      ChunkBlockSize,
-			FormatVersion:  1,
+			ID:               c.id,
+			PageCount:        int32(len(c.pagePosToLen)),
+			BlockSize:        ChunkBlockSize,
+			FormatVersion:    1,
 			RemovedPageCount: int32(len(c.removedPages)),
 		}
 		if err := c.writeHeader(h); err != nil && firstErr == nil {
@@ -222,6 +245,7 @@ func (cm *DiskChunkManager) Close() error {
 		if err := c.file.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
+		c.mu.Unlock()
 	}
 	return firstErr
 }
@@ -266,11 +290,11 @@ type chunkIDBitSet struct {
 }
 
 func newChunkIDBitSet() *chunkIDBitSet {
-	return &chunkIDBitSet{words: make([]uint64, (MaxChunkID+63)/64)}
+	return &chunkIDBitSet{words: make([]uint64, (model.MaxChunkID+63)/64)}
 }
 
 func (b *chunkIDBitSet) nextClearBit(start uint32) uint32 {
-	for i := uint32(start); i <= MaxChunkID; i++ {
+	for i := uint32(start); i <= model.MaxChunkID; i++ {
 		word := i / 64
 		bit := i % 64
 		if word >= uint32(len(b.words)) {
@@ -302,6 +326,3 @@ func (b *chunkIDBitSet) clear(id uint32) {
 		b.words[word] &^= 1 << (id % 64)
 	}
 }
-
-// MaxChunkID exported from the chunk package for the bitset.
-const MaxChunkID = model.MaxChunkID

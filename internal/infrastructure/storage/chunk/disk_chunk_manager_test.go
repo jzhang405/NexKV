@@ -51,9 +51,9 @@ func TestDiskChunkManager_WritePage_ReadPage_MultiplePages(t *testing.T) {
 	cm := setupTestChunkManager(t)
 	defer cm.Close()
 
-	data1 := []byte("page one data")
-	data2 := []byte("page two data here")
-	data3 := []byte("page three")
+	data1 := []byte("page one data here with enough padding to exceed MinPagePayload 56 bytes total")
+	data2 := []byte("page two data here with enough padding to exceed MinPagePayload 56 bytes total")
+	data3 := []byte("page three here with enough padding to exceed MinPagePayload 56 bytes total")
 
 	pos1, err := cm.Allocate(len(data1), 1)
 	require.NoError(t, err)

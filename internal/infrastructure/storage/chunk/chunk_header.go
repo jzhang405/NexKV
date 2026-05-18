@@ -13,18 +13,18 @@ import (
 // ChunkHeader is the text-encoded chunk metadata (Lealone Chunk header equivalent).
 // Stored as key-value pairs in the dual-block header area.
 type ChunkHeader struct {
-	ID                            uint32 // chunk id
-	RootPagePos                   uint64 // root page position (64-bit ChunkPosition)
-	PageCount                     int32  // total page count
-	SumOfPageLength               int64  // sum of all page lengths
-	SumOfLivePageLength           int64  // sum of live (non-removed) page lengths
-	PagePositionAndLengthOffset   int64  // offset of pagePosToLen map
-	BlockSize                     int32  // always 4096
-	FormatVersion                 int32  // format version
-	RemovedPageOffset             int64  // offset of removedPages table
-	RemovedPageCount              int32  // removed page count
-	LastTransactionID             int64  // last transaction ID (WAL GC boundary)
-	MapSize                       int64  // BTreeMap size
+	ID                          uint32 // chunk id
+	RootPagePos                 uint64 // root page position (64-bit ChunkPosition)
+	PageCount                   int32  // total page count
+	SumOfPageLength             int64  // sum of all page lengths
+	SumOfLivePageLength         int64  // sum of live (non-removed) page lengths
+	PagePositionAndLengthOffset int64  // offset of pagePosToLen map
+	BlockSize                   int32  // always 4096
+	FormatVersion               int32  // format version
+	RemovedPageOffset           int64  // offset of removedPages table
+	RemovedPageCount            int32  // removed page count
+	LastTransactionID           int64  // last transaction ID (WAL GC boundary)
+	MapSize                     int64  // BTreeMap size
 }
 
 // encode serializes the header as newline-separated key:value text.
@@ -45,7 +45,7 @@ func (h *ChunkHeader) encode() []byte {
 	return []byte(b.String())
 }
 
-// parseHeader parses a key:value text into a map.
+//nolint:unused // Phase 4.2 RestoreDiskChunkManager will use this
 func parseHeader(text string) (map[string]string, error) {
 	result := make(map[string]string)
 	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
@@ -61,7 +61,7 @@ func parseHeader(text string) (map[string]string, error) {
 	return result, nil
 }
 
-// decodeHeader parses the text header into a ChunkHeader.
+//nolint:unused // Phase 4.2 RestoreDiskChunkManager will use this
 func decodeHeader(data []byte) (*ChunkHeader, error) {
 	m, err := parseHeader(string(data))
 	if err != nil {
@@ -87,21 +87,25 @@ func decodeHeader(data []byte) (*ChunkHeader, error) {
 	return h, nil
 }
 
+//nolint:unused // Phase 4.2 decodeHeader
 func parseUint32(s string) uint32 {
 	v, _ := strconv.ParseUint(s, 10, 32)
 	return uint32(v)
 }
 
+//nolint:unused // Phase 4.2 decodeHeader
 func parseInt32(s string) int32 {
 	v, _ := strconv.ParseInt(s, 10, 32)
 	return int32(v)
 }
 
+//nolint:unused // Phase 4.2 decodeHeader
 func parseInt64(s string) int64 {
 	v, _ := strconv.ParseInt(s, 10, 64)
 	return v
 }
 
+//nolint:unused // Phase 4.2 decodeHeader
 func parseHexUint64(s string) uint64 {
 	v, _ := strconv.ParseUint(s, 16, 64)
 	return v

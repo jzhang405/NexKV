@@ -23,9 +23,9 @@ import (
 type OffheapBTreeStorage struct {
 	pm         *offheap.PageManager
 	pa         *offheap.PageAccessor
-	cm         service.ChunkManager    // Phase 4.3: .ao chunk persistence
-	serializer *chunk.PageSerializer   // Phase 4.3: page serialization
-	pageLocs   sync.Map                // Phase 4.3: map[model.PageID]model.ChunkPosition
+	cm         service.ChunkManager  // Phase 4.3: .ao chunk persistence
+	serializer *chunk.PageSerializer // Phase 4.3: page serialization
+	pageLocs   sync.Map              // Phase 4.3: map[model.PageID]model.ChunkPosition
 	closed     atomic.Bool
 }
 

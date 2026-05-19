@@ -291,7 +291,7 @@ func (w *DiskWAL) recoverFile(path string) ([]*WALEntry, error) {
 		}
 
 		entry := &WALEntry{}
-		if err := UnmarshalWALEntry(entry,data[offset:entryEnd]); err != nil {
+		if err := UnmarshalWALEntry(entry, data[offset:entryEnd]); err != nil {
 			// Jump scan: try to find the next valid entry by scanning forward
 			// aligned positions. This implements the "optimistic guess + CRC verify"
 			// pattern from §3.3 (H4-6, C1).

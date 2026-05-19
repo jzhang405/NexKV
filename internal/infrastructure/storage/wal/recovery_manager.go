@@ -9,10 +9,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sort"
-	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
-	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 )
 
@@ -33,12 +31,12 @@ import (
 //	Phase C: Incremental WAL replay
 //	  7. Replay WAL from checkpointStartLSN
 //	  8. Rebuild VersionChain
+//
+// TODO(phase4.3): Add cm (ChunkManager) and serializer fields for Phase B BTree rebuild.
+// Currently Recover takes a pre-built BTreeAccessor; full integration will create BTree
+// from pageLocs using RestoreDiskChunkManager + OffheapBTreeStorage + UpdatePageLocs.
 type RecoveryManager struct {
-	wal        *DiskWAL
-	cm         service.ChunkManager
-	serializer interface {
-		Deserialize(data []byte, dst unsafe.Pointer) (int, error)
-	}
+	wal *DiskWAL
 }
 
 // RecoverResult contains the result of recovery.

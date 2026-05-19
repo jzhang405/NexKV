@@ -99,17 +99,17 @@ func BuildMVCCValue(flag byte, beginTS uint64, realVal []byte) []byte {
 // PageHeader 页面头部
 // 引用计数由 btree 层的 PageRef 管理（Go 级 atomic.Int32），不存储在 mmap 中。
 type PageHeader struct {
-	version        uint64   // 版本号（COW）
-	prevPage       uint32   // 前一个页面 pageID
-	nextPage       uint32   // 后一个页面 pageID
-	extraChild     uint64   // 索引节点的 N+1 child（pageID + version）
-	count          uint16   // 条目数
-	pageType       uint8    // 页面类型（0=索引 1=叶子）
-	deleted        uint8    // 标记为已删除（0=正常, 1=已删除）
-	tombstoneCount uint16   // Phase 6.5: 页面内 Tombstone 条目数（write-path metadata, maintained under COW atomicity guarantee）
-	deleteEpoch    uint64   // Phase 6.5: 安全物理回收 epoch（reserved for Phase 4+）
-	chunkPos       uint64   // Phase 4.3: AO chunk position (auxiliary — PageInfo.ChunkPos is authoritative)
-	_              [8]byte  // padding to align to 56 bytes (matches btree.HeaderSize)
+	version        uint64  // 版本号（COW）
+	prevPage       uint32  // 前一个页面 pageID
+	nextPage       uint32  // 后一个页面 pageID
+	extraChild     uint64  // 索引节点的 N+1 child（pageID + version）
+	count          uint16  // 条目数
+	pageType       uint8   // 页面类型（0=索引 1=叶子）
+	deleted        uint8   // 标记为已删除（0=正常, 1=已删除）
+	tombstoneCount uint16  // Phase 6.5: 页面内 Tombstone 条目数（write-path metadata, maintained under COW atomicity guarantee）
+	deleteEpoch    uint64  // Phase 6.5: 安全物理回收 epoch（reserved for Phase 4+）
+	chunkPos       uint64  // Phase 4.3: AO chunk position (auxiliary — PageInfo.ChunkPos is authoritative)
+	_              [8]byte // padding to align to 56 bytes (matches btree.HeaderSize)
 }
 
 // SizeofPageHeader PageHeader 大小（运行时由 unsafe.Sizeof 确定，须与 btree.HeaderSize 一致）

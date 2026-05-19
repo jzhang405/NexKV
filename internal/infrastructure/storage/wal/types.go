@@ -17,13 +17,13 @@ const LSNInvalid LSN = 0
 type WALType = service.WALType
 
 const (
-	WALTypeInsert      = service.WALTypeInsert
-	WALTypeUpdate      = service.WALTypeUpdate
-	WALTypeDelete      = service.WALTypeDelete
-	WALTypeCommit      = service.WALTypeCommit
-	WALTypeRollback    = service.WALTypeRollback
-	WALTypeCheckpoint  = service.WALTypeCheckpoint
-	WALTypeSplit       = service.WALTypeSplit
+	WALTypeInsert       = service.WALTypeInsert
+	WALTypeUpdate       = service.WALTypeUpdate
+	WALTypeDelete       = service.WALTypeDelete
+	WALTypeCommit       = service.WALTypeCommit
+	WALTypeRollback     = service.WALTypeRollback
+	WALTypeCheckpoint   = service.WALTypeCheckpoint
+	WALTypeSplit        = service.WALTypeSplit
 	WALTypeCheckpointV2 = service.WALTypeCheckpointV2 // Phase 4
 )
 

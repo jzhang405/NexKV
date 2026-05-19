@@ -108,7 +108,8 @@ type PageHeader struct {
 	deleted        uint8    // 标记为已删除（0=正常, 1=已删除）
 	tombstoneCount uint16   // Phase 6.5: 页面内 Tombstone 条目数（write-path metadata, maintained under COW atomicity guarantee）
 	deleteEpoch    uint64   // Phase 6.5: 安全物理回收 epoch（reserved for Phase 4+）
-	_              [16]byte // padding to align to 56 bytes (matches btree.HeaderSize)
+	chunkPos       uint64   // Phase 4.3: AO chunk position (auxiliary — PageInfo.ChunkPos is authoritative)
+	_              [8]byte  // padding to align to 56 bytes (matches btree.HeaderSize)
 }
 
 // SizeofPageHeader PageHeader 大小（运行时由 unsafe.Sizeof 确定，须与 btree.HeaderSize 一致）

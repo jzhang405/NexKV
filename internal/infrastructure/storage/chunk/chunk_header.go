@@ -45,7 +45,6 @@ func (h *ChunkHeader) encode() []byte {
 	return []byte(b.String())
 }
 
-//nolint:unused // Phase 4.2 RestoreDiskChunkManager will use this
 func parseHeader(text string) (map[string]string, error) {
 	text = strings.TrimRight(text, "\x00")
 	result := make(map[string]string)
@@ -62,25 +61,49 @@ func parseHeader(text string) (map[string]string, error) {
 	return result, nil
 }
 
-//nolint:unused // Phase 4.2 RestoreDiskChunkManager will use this
 func decodeHeader(data []byte) (*ChunkHeader, error) {
 	m, err := parseHeader(string(data))
 	if err != nil {
 		return nil, err
 	}
 	h := &ChunkHeader{}
-	h.ID = parseUint32(m["id"])
-	h.RootPagePos = parseHexUint64(m["rootPagePos"])
-	h.PageCount = parseInt32(m["pageCount"])
-	h.SumOfPageLength = parseInt64(m["sumOfPageLength"])
-	h.SumOfLivePageLength = parseInt64(m["sumOfLivePageLength"])
-	h.PagePositionAndLengthOffset = parseInt64(m["pagePositionAndLengthOffset"])
-	h.BlockSize = parseInt32(m["blockSize"])
-	h.FormatVersion = parseInt32(m["format"])
-	h.RemovedPageOffset = parseInt64(m["removedPageOffset"])
-	h.RemovedPageCount = parseInt32(m["removedPageCount"])
-	h.LastTransactionID = parseInt64(m["lastTransactionId"])
-	h.MapSize = parseInt64(m["mapSize"])
+
+	if e := parseField(m, "id", &h.ID, parseUint32); e != nil {
+		return nil, e
+	}
+	if e := parseField(m, "rootPagePos", &h.RootPagePos, parseHexUint64); e != nil {
+		return nil, e
+	}
+	if e := parseField(m, "pageCount", &h.PageCount, parseInt32); e != nil {
+		return nil, e
+	}
+	if e := parseField(m, "sumOfPageLength", &h.SumOfPageLength, parseInt64); e != nil {
+		return nil, e
+	}
+	if e := parseField(m, "sumOfLivePageLength", &h.SumOfLivePageLength, parseInt64); e != nil {
+		return nil, e
+	}
+	if e := parseField(m, "pagePositionAndLengthOffset", &h.PagePositionAndLengthOffset, parseInt64); e != nil {
+		return nil, e
+	}
+	if e := parseField(m, "blockSize", &h.BlockSize, parseInt32); e != nil {
+		return nil, e
+	}
+	if e := parseField(m, "format", &h.FormatVersion, parseInt32); e != nil {
+		return nil, e
+	}
+	if e := parseField(m, "removedPageOffset", &h.RemovedPageOffset, parseInt64); e != nil {
+		return nil, e
+	}
+	if e := parseField(m, "removedPageCount", &h.RemovedPageCount, parseInt32); e != nil {
+		return nil, e
+	}
+	if e := parseField(m, "lastTransactionId", &h.LastTransactionID, parseInt64); e != nil {
+		return nil, e
+	}
+	if e := parseField(m, "mapSize", &h.MapSize, parseInt64); e != nil {
+		return nil, e
+	}
 
 	if h.BlockSize != ChunkBlockSize {
 		return nil, fmt.Errorf("chunk: unsupported block size %d", h.BlockSize)
@@ -88,34 +111,44 @@ func decodeHeader(data []byte) (*ChunkHeader, error) {
 	return h, nil
 }
 
-// TODO(phase4.2): return error instead of silently defaulting to 0 on parse failure.
-//
-//nolint:unused // Phase 4.2 decodeHeader
-func parseUint32(s string) uint32 {
-	v, _ := strconv.ParseUint(s, 10, 32)
-	return uint32(v)
+// parseField is a generic parse-and-set helper that reduces repetitive error handling in decodeHeader.
+func parseField[T any](m map[string]string, key string, dst *T, fn func(string) (T, error)) error {
+	v, err := fn(m[key])
+	if err != nil {
+		return err
+	}
+	*dst = v
+	return nil
 }
 
-// TODO(phase4.2): return error instead of silently defaulting to 0 on parse failure.
-//
-//nolint:unused // Phase 4.2 decodeHeader
-func parseInt32(s string) int32 {
-	v, _ := strconv.ParseInt(s, 10, 32)
-	return int32(v)
+func parseUint32(s string) (uint32, error) {
+	v, err := strconv.ParseUint(s, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("chunk: parse uint32 %q: %w", s, err)
+	}
+	return uint32(v), nil
 }
 
-// TODO(phase4.2): return error instead of silently defaulting to 0 on parse failure.
-//
-//nolint:unused // Phase 4.2 decodeHeader
-func parseInt64(s string) int64 {
-	v, _ := strconv.ParseInt(s, 10, 64)
-	return v
+func parseInt32(s string) (int32, error) {
+	v, err := strconv.ParseInt(s, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("chunk: parse int32 %q: %w", s, err)
+	}
+	return int32(v), nil
 }
 
-// TODO(phase4.2): return error instead of silently defaulting to 0 on parse failure.
-//
-//nolint:unused // Phase 4.2 decodeHeader
-func parseHexUint64(s string) uint64 {
-	v, _ := strconv.ParseUint(s, 16, 64)
-	return v
+func parseInt64(s string) (int64, error) {
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("chunk: parse int64 %q: %w", s, err)
+	}
+	return v, nil
+}
+
+func parseHexUint64(s string) (uint64, error) {
+	v, err := strconv.ParseUint(s, 16, 64)
+	if err != nil {
+		return 0, fmt.Errorf("chunk: parse hex uint64 %q: %w", s, err)
+	}
+	return v, nil
 }

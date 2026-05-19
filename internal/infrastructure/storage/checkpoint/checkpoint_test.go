@@ -159,8 +159,8 @@ func TestFuzzyCheckpoint_CheckpointEntryBeforeTruncate(t *testing.T) {
 	last := wal.entries[len(wal.entries)-1]
 	assert.Equal(t, service.WALTypeCheckpoint, last.Type)
 	// Key contains checkpointStartLSN in big-endian (8 bytes)
-	assert.Len(t, last.Key, 8)
-	checkpointLSN := binary.BigEndian.Uint64(last.Key)
+	assert.Len(t, last.Key, 12)
+	checkpointLSN := binary.BigEndian.Uint64(last.Key[0:8])
 	assert.Greater(t, checkpointLSN, uint64(0))
 }
 
@@ -182,8 +182,8 @@ func TestFuzzyCheckpoint_StartLSNBeforeRootSnapshot(t *testing.T) {
 	wal.mu.Lock()
 	defer wal.mu.Unlock()
 	for _, e := range wal.entries {
-		if e.Type == service.WALTypeCheckpoint && len(e.Key) == 8 {
-			lsn := binary.BigEndian.Uint64(e.Key)
+		if e.Type == service.WALTypeCheckpoint && len(e.Key) >= 12 {
+			lsn := binary.BigEndian.Uint64(e.Key[0:8])
 			// Pre-existing entries had LSN 1,2,3 so checkpoint start LSN was 3.
 			// The new checkpoint entry gets LSN 4 or higher.
 			// The Checkpoint entry's Key encodes the startLSN, not its own LSN.
@@ -191,7 +191,7 @@ func TestFuzzyCheckpoint_StartLSNBeforeRootSnapshot(t *testing.T) {
 			return
 		}
 	}
-	t.Fatal("expected a checkpoint entry with 8-byte key")
+	t.Fatal("expected a checkpoint entry")
 }
 
 func TestFuzzyCheckpoint_ValidatesRoot(t *testing.T) {
@@ -286,9 +286,9 @@ func FuzzCheckpointRecovery(f *testing.F) {
 		wal.mu.Lock()
 		foundCheckpoint := false
 		for _, e := range wal.entries {
-			if e.Type == service.WALTypeCheckpoint && len(e.Key) == 8 {
+			if e.Type == service.WALTypeCheckpoint && len(e.Key) >= 12 {
 				foundCheckpoint = true
-				assert.Equal(t, truncatedLSN, binary.BigEndian.Uint64(e.Key))
+				assert.Equal(t, truncatedLSN, binary.BigEndian.Uint64(e.Key[0:8]))
 				break
 			}
 		}

@@ -148,13 +148,9 @@ func (m *Manager) FuzzyCheckpoint() error {
 // encodeCheckpointKey encodes the checkpoint key.
 // Key format: [startLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]
 // PageCount=0 means no pageLocs (equivalent to old Phase 3 checkpoint)
+// Key format: [startLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]
+// PageCount=0 means no pageLocs (e.g., SharpCheckpoint without ChunkManager).
 func encodeCheckpointKey(startLSN uint64, pageLocs map[model.PageID]model.ChunkPosition) []byte {
-	if len(pageLocs) == 0 {
-		key := make([]byte, 8)
-		binary.BigEndian.PutUint64(key, startLSN)
-		return key
-	}
-	// Phase 4 format (no FormatVersion prefix — type field distinguishes)
 	n := 8 + 4 + len(pageLocs)*16
 	key := make([]byte, n)
 	binary.BigEndian.PutUint64(key[0:8], startLSN)

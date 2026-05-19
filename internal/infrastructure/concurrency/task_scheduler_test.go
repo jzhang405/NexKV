@@ -1385,14 +1385,15 @@ func TestTaskScheduler_EnqueueWithShard_TaskNameRouting(t *testing.T) {
 	scheduler := NewTaskScheduler("test", 4)
 
 	// 注册多个任务类型
+	var setDone, splitDone atomic.Bool
 	require.NoError(t, scheduler.RegisterTask(
-		func(item any) TaskStatus { return TaskPassed },
+		func(item any) TaskStatus { setDone.Store(true); return TaskPassed },
 		"btree-set",
 		model.TaskPriorityNormal,
 		0,
 	))
 	require.NoError(t, scheduler.RegisterTask(
-		func(item any) TaskStatus { return TaskPassed },
+		func(item any) TaskStatus { splitDone.Store(true); return TaskPassed },
 		"btree-split",
 		model.TaskPriorityHigh,
 		1,
@@ -1410,11 +1411,7 @@ func TestTaskScheduler_EnqueueWithShard_TaskNameRouting(t *testing.T) {
 	splitItem := &testShardItemForCoverage{shardID: 1}
 	err = scheduler.EnqueueWithShard(splitItem, "btree-split")
 	assert.NoError(t, err, "btree-split task should route successfully")
-
-	// 验证两个任务分别路由到正确的 task
-	core := scheduler.cores[1]
-	setTask, _ := core.GetTaskByName("btree-set")
-	splitTask, _ := core.GetTaskByName("btree-split")
-	assert.Greater(t, setTask.QueueLen(), 0, "btree-set queue should have items")
-	assert.Greater(t, splitTask.QueueLen(), 0, "btree-split queue should have items")
+	// 轮询等待异步任务执行（worker 可能已出队，不能依赖 QueueLen）
+	require.Eventually(t, func() bool { return setDone.Load() && splitDone.Load() },
+		2*time.Second, 10*time.Millisecond, "both tasks should be executed")
 }

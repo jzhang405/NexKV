@@ -60,28 +60,19 @@ func (rm *RecoveryManager) Recover(ctx context.Context, bt BTreeAccessor, vs *mv
 	var pageLocs map[model.PageID]model.ChunkPosition
 
 	for _, e := range entries {
-		if e.Type == WALTypeCheckpoint {
-			// Phase 4 format: [StartLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]
-			if len(e.Key) >= 12 {
-				cksn := LSN(binary.BigEndian.Uint64(e.Key[0:8]))
-				if cksn > checkpointStartLSN {
-					checkpointStartLSN = cksn
-					pageCount := binary.BigEndian.Uint32(e.Key[8:12])
-					pageLocs = make(map[model.PageID]model.ChunkPosition, pageCount)
-					offset := 12
-					for i := uint32(0); i < pageCount && offset+16 <= len(e.Key); i++ {
-						pid := model.PageID(binary.BigEndian.Uint64(e.Key[offset : offset+8]))
-						cpos := model.ChunkPosition(binary.BigEndian.Uint64(e.Key[offset+8 : offset+16]))
-						pageLocs[pid] = cpos
-						offset += 16
-					}
-				}
-			}
-		} else if e.Type == WALTypeCheckpoint && len(e.Key) == 8 {
-			// Phase 3 format: [StartLSN:8]
-			cksn := LSN(binary.BigEndian.Uint64(e.Key))
-			if cksn > checkpointStartLSN {
-				checkpointStartLSN = cksn
+		if e.Type != WALTypeCheckpoint || len(e.Key) < 12 {
+			continue
+		}
+		// Format: [StartLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]
+		cksn := LSN(binary.BigEndian.Uint64(e.Key[0:8]))
+		if cksn > checkpointStartLSN {
+			checkpointStartLSN = cksn
+			pageCount := binary.BigEndian.Uint32(e.Key[8:12])
+			pageLocs = make(map[model.PageID]model.ChunkPosition, pageCount)
+			for i, off := uint32(0), 12; i < pageCount && off+16 <= len(e.Key); i, off = i+1, off+16 {
+				pid := model.PageID(binary.BigEndian.Uint64(e.Key[off : off+8]))
+				cpos := model.ChunkPosition(binary.BigEndian.Uint64(e.Key[off+8 : off+16]))
+				pageLocs[pid] = cpos
 			}
 		}
 	}

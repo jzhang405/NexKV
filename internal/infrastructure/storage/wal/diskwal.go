@@ -134,7 +134,7 @@ func (w *DiskWAL) AppendBatch(entries []*WALEntry) ([]LSN, error) {
 		entry.LSN = lsn
 		lsns[i] = lsn
 
-		data, err := entry.Marshal()
+		data, err := MarshalWALEntry(entry)
 		if err != nil {
 			return nil, fmt.Errorf("wal: marshal: %w", err)
 		}
@@ -169,7 +169,7 @@ func (w *DiskWAL) writeEntries(entries []*WALEntry) error {
 	defer w.mu.Unlock()
 
 	for _, entry := range entries {
-		data, err := entry.Marshal()
+		data, err := MarshalWALEntry(entry)
 		if err != nil {
 			return fmt.Errorf("wal: marshal: %w", err)
 		}
@@ -291,7 +291,7 @@ func (w *DiskWAL) recoverFile(path string) ([]*WALEntry, error) {
 		}
 
 		entry := &WALEntry{}
-		if err := entry.Unmarshal(data[offset:entryEnd]); err != nil {
+		if err := UnmarshalWALEntry(entry, data[offset:entryEnd]); err != nil {
 			// Jump scan: try to find the next valid entry by scanning forward
 			// aligned positions. This implements the "optimistic guess + CRC verify"
 			// pattern from §3.3 (H4-6, C1).

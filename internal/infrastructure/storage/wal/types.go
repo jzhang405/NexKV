@@ -4,27 +4,30 @@ package wal
 import (
 	"encoding/binary"
 	"time"
+
+	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
-// LSN is a log sequence number.
-type LSN uint64
+// LSN is a log sequence number (alias to service.LSN).
+type LSN = service.LSN
 
 const LSNInvalid LSN = 0
 
-// WALType enumerates WAL entry types.
-type WALType uint8
+// WALType enumerates WAL entry types (alias to service.WALType).
+type WALType = service.WALType
 
 const (
-	WALTypeInsert WALType = iota
-	WALTypeUpdate
-	WALTypeDelete
-	WALTypeCommit
-	WALTypeRollback
-	WALTypeCheckpoint
-	WALTypeSplit
+	WALTypeInsert     = service.WALTypeInsert
+	WALTypeUpdate     = service.WALTypeUpdate
+	WALTypeDelete     = service.WALTypeDelete
+	WALTypeCommit     = service.WALTypeCommit
+	WALTypeRollback   = service.WALTypeRollback
+	WALTypeCheckpoint = service.WALTypeCheckpoint
+	WALTypeSplit      = service.WALTypeSplit
 )
 
-func (wt WALType) String() string {
+// WALTypeString returns the human-readable name of a WALType.
+func WALTypeString(wt WALType) string {
 	switch wt {
 	case WALTypeInsert:
 		return "Insert"
@@ -45,7 +48,7 @@ func (wt WALType) String() string {
 	}
 }
 
-// WALEntry is a WAL log entry.
+// WALEntry is a WAL log entry (alias to service.WALEntry).
 //
 // Phase 3 wire format:
 //
@@ -55,17 +58,7 @@ func (wt WALType) String() string {
 //
 // CRC covers [Length:Padding]. Type=Commit encodes commitTS as big-endian
 // uint64 in Key with KeyLen=8, ValueLen=0.
-type WALEntry struct {
-	LSN       LSN
-	TxID      uint64
-	Timestamp int64
-	Type      WALType
-	Key       []byte
-	Value     []byte
-	PrevLSN   LSN
-	ShardID   uint16 // Phase 3 fixed at 0
-	Term      uint16 // Phase 3 fixed at 0
-}
+type WALEntry = service.WALEntry
 
 // NewWALEntry creates a new WAL entry.
 func NewWALEntry(entryType WALType, txID uint64, key, value []byte, prevLSN LSN) *WALEntry {
@@ -79,8 +72,8 @@ func NewWALEntry(entryType WALType, txID uint64, key, value []byte, prevLSN LSN)
 	}
 }
 
-// Marshal serializes the entry to the Phase 3 wire format.
-func (e *WALEntry) Marshal() ([]byte, error) {
+// MarshalWALEntry serializes the entry to the Phase 3 wire format.
+func MarshalWALEntry(e *WALEntry) ([]byte, error) {
 	keyLen := len(e.Key)
 	valueLen := len(e.Value)
 
@@ -166,8 +159,8 @@ func (e *WALEntry) Marshal() ([]byte, error) {
 	return buf, nil
 }
 
-// Unmarshal deserializes from the Phase 3 wire format.
-func (e *WALEntry) Unmarshal(data []byte) error {
+// UnmarshalWALEntry deserializes from the Phase 3 wire format.
+func UnmarshalWALEntry(e *WALEntry, data []byte) error {
 	if len(data) < 4+4+8+1+2+2+8+8+8+4+4+4 {
 		return ErrWALEntryCorrupted
 	}

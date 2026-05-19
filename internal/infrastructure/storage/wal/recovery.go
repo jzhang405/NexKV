@@ -30,8 +30,8 @@ func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor, vs *mvcc
 	// Entries with LSN < checkpointStartLSN are already covered by Checkpoint data.
 	replayStart := LSNInvalid
 	for _, e := range entries {
-		if e.Type == WALTypeCheckpoint && len(e.Key) == 8 {
-			cksn := LSN(binary.BigEndian.Uint64(e.Key))
+		if e.Type == WALTypeCheckpoint && len(e.Key) >= 12 {
+			cksn := LSN(binary.BigEndian.Uint64(e.Key[0:8]))
 			if cksn > replayStart {
 				replayStart = cksn
 			}
@@ -54,7 +54,7 @@ func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor, vs *mvcc
 		switch e.Type {
 		case WALTypeCommit:
 			g.hasCommit = true
-			if len(e.Key) == 8 {
+			if len(e.Key) >= 12 {
 				g.commitTS = binary.BigEndian.Uint64(e.Key)
 			}
 		case WALTypeRollback:

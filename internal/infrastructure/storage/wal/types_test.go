@@ -57,7 +57,7 @@ func TestWALType_String(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.walType.String()
+			got := WALTypeString(tt.walType)
 			assert.Equal(t, tt.expected, got)
 		})
 	}
@@ -126,7 +126,7 @@ func TestWALEntry_Marshal_Unmarshal(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Marshal
-			data, err := tt.entry.Marshal()
+			data, err := MarshalWALEntry(tt.entry)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Marshal() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -137,7 +137,7 @@ func TestWALEntry_Marshal_Unmarshal(t *testing.T) {
 
 			// Unmarshal
 			unentry := &WALEntry{}
-			err = unentry.Unmarshal(data)
+			err = UnmarshalWALEntry(unentry, data)
 			if err != nil {
 				t.Errorf("Unmarshal() error = %v", err)
 				return
@@ -167,7 +167,7 @@ func TestWALEntry_Unmarshal_InvalidChecksum(t *testing.T) {
 		PrevLSN:   LSNInvalid,
 	}
 
-	data, err := entry.Marshal()
+	data, err := MarshalWALEntry(entry)
 	assert.NoError(t, err)
 
 	// 破坏 CRC
@@ -180,7 +180,7 @@ func TestWALEntry_Unmarshal_InvalidChecksum(t *testing.T) {
 
 	// Unmarshal 应该返回校验和错误
 	unentry := &WALEntry{}
-	err = unentry.Unmarshal(data)
+	err = UnmarshalWALEntry(unentry, data)
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrWALChecksumMismatch)
 }
@@ -190,7 +190,7 @@ func TestWALEntry_Unmarshal_TruncatedData(t *testing.T) {
 	shortData := []byte{1, 2, 3}
 
 	entry := &WALEntry{}
-	err := entry.Unmarshal(shortData)
+	err := UnmarshalWALEntry(entry, shortData)
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrWALEntryCorrupted)
 }

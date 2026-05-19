@@ -24,11 +24,12 @@ const (
 type PageInfo struct {
 	PageID       model.PageID
 	Version      uint64
-	Redirect     bool      // data structure changed (split), reader should re-navigate via NewRef
-	NewRef       *PageRef  // when Redirect=true, points to the left child of the split
-	IsLeaf       bool      // whether this page is a leaf (stored to avoid TOCTOU race with page reuse)
-	NodeState    NodeState // logical node state: Normal, Root, Redirect, Splitting, Merging
-	ChildVersion uint64    // Phase 6.5: incremented on InsertChild/RemoveChild/Borrow; CAS validation guard
+	Redirect     bool                // data structure changed (split), reader should re-navigate via NewRef
+	NewRef       *PageRef            // when Redirect=true, points to the left child of the split
+	IsLeaf       bool                // whether this page is a leaf (stored to avoid TOCTOU race with page reuse)
+	NodeState    NodeState           // logical node state: Normal, Root, Redirect, Splitting, Merging
+	ChildVersion uint64              // Phase 6.5: incremented on InsertChild/RemoveChild/Borrow; CAS validation guard
+	ChunkPos     model.ChunkPosition // Phase 4.3: AO position in .ao file (0 = dirty, not yet persisted)
 }
 
 // IsBusy returns true when the page is in a transient state that blocks concurrent structural changes.

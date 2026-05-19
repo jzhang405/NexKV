@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,31 +20,31 @@ import (
 // mockWAL implements WALWriter for testing.
 type mockWAL struct {
 	mu        sync.Mutex
-	entries   []*WALEntry
+	entries   []*service.WALEntry
 	lsn       atomic.Uint64
 	truncated atomic.Uint64
 }
 
 func newMockWAL() *mockWAL { return &mockWAL{} }
 
-func (m *mockWAL) Append(entry *WALEntry) (LSN, error) {
+func (m *mockWAL) Append(entry *service.WALEntry) (service.LSN, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	lsn := m.lsn.Add(1)
-	entry.LSN = LSN(lsn)
+	entry.LSN = service.LSN(lsn)
 	m.entries = append(m.entries, entry)
-	return LSN(lsn), nil
+	return service.LSN(lsn), nil
 }
 
 func (m *mockWAL) Sync() error { return nil }
 
-func (m *mockWAL) Truncate(lsn LSN) error {
+func (m *mockWAL) Truncate(lsn service.LSN) error {
 	m.truncated.Store(uint64(lsn))
 	return nil
 }
 
-func (m *mockWAL) CurrentLSN() LSN {
-	return LSN(m.lsn.Load())
+func (m *mockWAL) CurrentLSN() service.LSN {
+	return service.LSN(m.lsn.Load())
 }
 
 func (m *mockWAL) entryCount() int {
@@ -70,9 +71,13 @@ type mockBTreeScanner struct {
 
 func (m *mockBTreeScanner) RootPage() PageRef {
 	if m.root == nil {
-		return nil // Go interface nil pitfall: must return untyped nil, not typed nil pointer
+		return nil
 	}
 	return m.root
+}
+
+func (m *mockBTreeScanner) EnumeratePages(root PageRef) ([]PageFlushItem, error) {
+	return nil, nil // stub: no AO pages
 }
 
 func newTestBTree() *mockBTreeScanner {
@@ -97,7 +102,7 @@ func TestNewManager(t *testing.T) {
 	btree := newTestBTree()
 	cfg := DefaultConfig()
 
-	mgr := NewManager(wal, btree, cfg)
+	mgr := NewManager(wal, btree, nil, cfg)
 	assert.NotNil(t, mgr)
 	assert.NotNil(t, mgr.ctx)
 }
@@ -107,7 +112,7 @@ func TestFuzzyCheckpoint(t *testing.T) {
 	btree := newTestBTree()
 	cfg := DefaultConfig()
 
-	mgr := NewManager(wal, btree, cfg)
+	mgr := NewManager(wal, btree, nil, cfg)
 	err := mgr.FuzzyCheckpoint()
 	require.NoError(t, err)
 
@@ -122,10 +127,10 @@ func TestSharpCheckpoint(t *testing.T) {
 
 	// Write some entries so CurrentLSN > 0
 	for i := 0; i < 3; i++ {
-		_, _ = wal.Append(&WALEntry{Type: WALTypeCheckpoint, Key: []byte{byte(i)}})
+		_, _ = wal.Append(&service.WALEntry{Type: service.WALTypeCheckpoint, Key: []byte{byte(i)}})
 	}
 
-	mgr := NewManager(wal, btree, cfg)
+	mgr := NewManager(wal, btree, nil, cfg)
 	err := mgr.SharpCheckpoint()
 	require.NoError(t, err)
 
@@ -138,11 +143,11 @@ func TestFuzzyCheckpoint_CheckpointEntryBeforeTruncate(t *testing.T) {
 	btree := newTestBTree()
 	cfg := DefaultConfig()
 
-	mgr := NewManager(wal, btree, cfg)
+	mgr := NewManager(wal, btree, nil, cfg)
 
 	// Write some WAL entries before checkpoint
 	for i := 0; i < 5; i++ {
-		_, _ = wal.Append(&WALEntry{Type: WALTypeCheckpoint, Key: []byte{byte(i)}})
+		_, _ = wal.Append(&service.WALEntry{Type: service.WALTypeCheckpoint, Key: []byte{byte(i)}})
 	}
 
 	err := mgr.FuzzyCheckpoint()
@@ -152,10 +157,10 @@ func TestFuzzyCheckpoint_CheckpointEntryBeforeTruncate(t *testing.T) {
 	wal.mu.Lock()
 	defer wal.mu.Unlock()
 	last := wal.entries[len(wal.entries)-1]
-	assert.Equal(t, uint8(WALTypeCheckpoint), last.Type)
+	assert.Equal(t, service.WALTypeCheckpoint, last.Type)
 	// Key contains checkpointStartLSN in big-endian (8 bytes)
-	assert.Len(t, last.Key, 8)
-	checkpointLSN := binary.BigEndian.Uint64(last.Key)
+	assert.Len(t, last.Key, 12)
+	checkpointLSN := binary.BigEndian.Uint64(last.Key[0:8])
 	assert.Greater(t, checkpointLSN, uint64(0))
 }
 
@@ -166,10 +171,10 @@ func TestFuzzyCheckpoint_StartLSNBeforeRootSnapshot(t *testing.T) {
 
 	// Pre-write entries to increment LSN
 	for i := 0; i < 3; i++ {
-		_, _ = wal.Append(&WALEntry{Type: WALTypeCheckpoint, Key: []byte{byte(i)}})
+		_, _ = wal.Append(&service.WALEntry{Type: service.WALTypeCheckpoint, Key: []byte{byte(i)}})
 	}
 
-	mgr := NewManager(wal, btree, cfg)
+	mgr := NewManager(wal, btree, nil, cfg)
 	err := mgr.FuzzyCheckpoint()
 	require.NoError(t, err)
 
@@ -177,8 +182,8 @@ func TestFuzzyCheckpoint_StartLSNBeforeRootSnapshot(t *testing.T) {
 	wal.mu.Lock()
 	defer wal.mu.Unlock()
 	for _, e := range wal.entries {
-		if e.Type == WALTypeCheckpoint && len(e.Key) == 8 {
-			lsn := binary.BigEndian.Uint64(e.Key)
+		if e.Type == service.WALTypeCheckpoint && len(e.Key) >= 12 {
+			lsn := binary.BigEndian.Uint64(e.Key[0:8])
 			// Pre-existing entries had LSN 1,2,3 so checkpoint start LSN was 3.
 			// The new checkpoint entry gets LSN 4 or higher.
 			// The Checkpoint entry's Key encodes the startLSN, not its own LSN.
@@ -186,7 +191,7 @@ func TestFuzzyCheckpoint_StartLSNBeforeRootSnapshot(t *testing.T) {
 			return
 		}
 	}
-	t.Fatal("expected a checkpoint entry with 8-byte key")
+	t.Fatal("expected a checkpoint entry")
 }
 
 func TestFuzzyCheckpoint_ValidatesRoot(t *testing.T) {
@@ -196,7 +201,7 @@ func TestFuzzyCheckpoint_ValidatesRoot(t *testing.T) {
 	btree := &mockBTreeScanner{root: nil}
 	cfg := DefaultConfig()
 
-	mgr := NewManager(wal, btree, cfg)
+	mgr := NewManager(wal, btree, nil, cfg)
 	err := mgr.FuzzyCheckpoint()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil root page")
@@ -207,7 +212,7 @@ func TestSharpCheckpoint_DoubleCall(t *testing.T) {
 	btree := newTestBTree()
 	cfg := DefaultConfig()
 
-	mgr := NewManager(wal, btree, cfg)
+	mgr := NewManager(wal, btree, nil, cfg)
 
 	err := mgr.SharpCheckpoint()
 	require.NoError(t, err)
@@ -222,11 +227,11 @@ func TestCheckpoint_Stats(t *testing.T) {
 	btree := newTestBTree()
 	cfg := DefaultConfig()
 
-	mgr := NewManager(wal, btree, cfg)
+	mgr := NewManager(wal, btree, nil, cfg)
 
 	// Write entries to produce non-zero LSN
 	for i := 0; i < 3; i++ {
-		_, _ = wal.Append(&WALEntry{Type: WALTypeCheckpoint, Key: []byte{byte(i)}})
+		_, _ = wal.Append(&service.WALEntry{Type: service.WALTypeCheckpoint, Key: []byte{byte(i)}})
 	}
 
 	assert.Equal(t, uint64(0), mgr.stats.TotalCheckpoints.Load())
@@ -236,39 +241,6 @@ func TestCheckpoint_Stats(t *testing.T) {
 	assert.Greater(t, mgr.stats.LastCheckpointLSN.Load(), uint64(0))
 	// Duration may be zero on fast machines (sub-millisecond), so just check not negative
 	assert.GreaterOrEqual(t, mgr.stats.LastDurationMs.Load(), int64(0))
-}
-
-func TestEnumeratePages(t *testing.T) {
-	wal := newMockWAL()
-	btree := newTestBTree()
-	cfg := DefaultConfig()
-
-	mgr := NewManager(wal, btree, cfg)
-	ids := mgr.enumeratePages(btree.root)
-
-	assert.NotEmpty(t, ids)
-	// Root page (id=1) + 2 children should be visited
-	assert.GreaterOrEqual(t, len(ids), 3)
-}
-
-func TestEnumeratePages_Dedup(t *testing.T) {
-	wal := newMockWAL()
-
-	// Tree with diamond reference
-	btree := &mockBTreeScanner{
-		root: &mockPageRef{
-			id:   model.RootPageID,
-			leaf: false,
-			kids: []model.PageID{2, 2}, // duplicate child
-		},
-	}
-	cfg := DefaultConfig()
-
-	mgr := NewManager(wal, btree, cfg)
-	ids := mgr.enumeratePages(btree.root)
-
-	// Should only count page 2 once
-	assert.Equal(t, 2, len(ids))
 }
 
 // FuzzCheckpointRecovery tests checkpoint consistency under random WAL states.
@@ -287,11 +259,11 @@ func FuzzCheckpointRecovery(f *testing.F) {
 		btree := newTestBTree()
 		cfg := DefaultConfig()
 
-		mgr := NewManager(wal, btree, cfg)
+		mgr := NewManager(wal, btree, nil, cfg)
 
 		// Write some WAL entries before checkpoint
 		for i := 0; i < numPreEntries; i++ {
-			_, _ = wal.Append(&WALEntry{Type: uint8(i % 7), Key: []byte{byte(i)}})
+			_, _ = wal.Append(&service.WALEntry{Type: service.WALType(i % 7), Key: []byte{byte(i)}})
 		}
 
 		// Run checkpoint
@@ -303,7 +275,7 @@ func FuzzCheckpointRecovery(f *testing.F) {
 
 		// Write more entries after checkpoint
 		for i := 0; i < numPostEntries; i++ {
-			_, _ = wal.Append(&WALEntry{Type: uint8(i % 7), Key: []byte{byte(i + numPreEntries)}})
+			_, _ = wal.Append(&service.WALEntry{Type: service.WALType(i % 7), Key: []byte{byte(i + numPreEntries)}})
 		}
 
 		// Verify truncate was called with correct LSN
@@ -314,9 +286,9 @@ func FuzzCheckpointRecovery(f *testing.F) {
 		wal.mu.Lock()
 		foundCheckpoint := false
 		for _, e := range wal.entries {
-			if e.Type == WALTypeCheckpoint && len(e.Key) == 8 {
+			if e.Type == service.WALTypeCheckpoint && len(e.Key) >= 12 {
 				foundCheckpoint = true
-				assert.Equal(t, truncatedLSN, binary.BigEndian.Uint64(e.Key))
+				assert.Equal(t, truncatedLSN, binary.BigEndian.Uint64(e.Key[0:8]))
 				break
 			}
 		}

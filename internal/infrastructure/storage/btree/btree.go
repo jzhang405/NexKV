@@ -6,6 +6,7 @@ package btree
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/checkpoint"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/chunk"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 )
 
@@ -87,6 +90,87 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 	bt.txMgr = cfg.buildTxManager(newStorageAdapter(bt))
 
 	return bt, nil
+}
+
+// SetChunkManager injects the ChunkManager and PageSerializer for AO persistence (Phase 4.3).
+func (b *BTree) SetChunkManager(cm service.ChunkManager, serializer *chunk.PageSerializer) {
+	b.storage.SetChunkManager(cm, serializer)
+}
+
+// EnumeratePages performs post-order DFS from the BTree root, returning pre-serialized page data.
+// Children appear before parents (Children-First semantics) so parent writes are safe.
+// Each page is Retained during traversal and Released after children are processed,
+// preventing concurrent Free+Alloc TOCTOU.
+//
+// Implements checkpoint.BTreeScanner.EnumeratePages.
+func (b *BTree) EnumeratePages(_ checkpoint.PageRef) ([]checkpoint.PageFlushItem, error) {
+	if b.storage.serializer == nil {
+		return nil, errpkg.Wrap(errpkg.ErrBTreeNotImplemented, "EnumeratePages requires ChunkManager (call SetChunkManager first)")
+	}
+	return b.enumeratePagesInternal(b.rootRef)
+}
+
+func (b *BTree) enumeratePagesInternal(root *RootPageRef) ([]checkpoint.PageFlushItem, error) {
+	// visited guards against infinite recursion from structural bugs (安全网)
+	visited := make(map[model.PageID]bool)
+	var items []checkpoint.PageFlushItem
+	var dfs func(ref *PageRef) error
+
+	dfs = func(ref *PageRef) error {
+		pi := ref.GetPageInfo()
+		if visited[pi.PageID] {
+			return nil
+		}
+		visited[pi.PageID] = true
+
+		// Retain to prevent concurrent Free during DFS
+		ref.Retain()
+		defer ref.Release()
+
+		// Post-order: process children first
+		if !pi.IsLeaf {
+			cc := ref.GetChildren()
+			if cc != nil {
+				for _, childRef := range cc.Children {
+					if childRef != nil {
+						if err := dfs(childRef); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+
+		// Serialize current page
+		pageType := uint8(0) // index
+		if pi.IsLeaf {
+			pageType = 1 // leaf
+		}
+
+		item := checkpoint.PageFlushItem{
+			PageID:   pi.PageID,
+			PageType: pageType,
+			ChunkPos: pi.ChunkPos,
+		}
+
+		// If page is not yet persisted, serialize it
+		if pi.ChunkPos == 0 {
+			ptr := b.storage.pm.PageIDToPtr(uint32(pi.PageID))
+			data, serErr := b.storage.serializer.Serialize(ptr, chunk.MaxPagePayload)
+			if serErr != nil {
+				return fmt.Errorf("checkpoint: serialize page %d: %w", pi.PageID, serErr)
+			}
+			item.PageData = data
+		}
+
+		items = append(items, item)
+		return nil
+	}
+
+	if err := dfs(&root.PageRef); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 // checkOpen returns ErrTreeClosed if the tree is closed.

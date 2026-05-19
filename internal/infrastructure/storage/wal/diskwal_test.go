@@ -371,7 +371,7 @@ func BenchmarkWALEntry_Marshal(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		if _, err := entry.Marshal(); err != nil {
+		if _, err := MarshalWALEntry(entry); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -388,7 +388,7 @@ func BenchmarkWALEntry_Unmarshal(b *testing.B) {
 		PrevLSN:   LSNInvalid,
 	}
 
-	data, err := entry.Marshal()
+	data, err := MarshalWALEntry(entry)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -397,7 +397,7 @@ func BenchmarkWALEntry_Unmarshal(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		unentry := &WALEntry{}
-		if err := unentry.Unmarshal(data); err != nil {
+		if err := UnmarshalWALEntry(unentry, data); err != nil {
 			b.Fatal(err)
 		}
 	}

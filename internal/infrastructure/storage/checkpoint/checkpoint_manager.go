@@ -24,9 +24,19 @@ type WALWriter interface {
 	CurrentLSN() service.LSN
 }
 
+// PageFlushItem encapsulates the data needed to flush a single page to AO during checkpoint.
+type PageFlushItem struct {
+	PageID   model.PageID        // logical page ID
+	PageType uint8               // 0=index, 1=leaf
+	PageData []byte              // pre-serialized page data; nil = already persisted
+	ChunkPos model.ChunkPosition // current AO position (0 = dirty, needs Alloc+Write)
+}
+
 // BTreeScanner provides read-only access to the BTree for checkpoint DFS.
 type BTreeScanner interface {
 	RootPage() PageRef
+	// EnumeratePages performs post-order DFS from root, returning page flush items.
+	EnumeratePages(root PageRef) ([]PageFlushItem, error)
 }
 
 // PageRef is a BTree page reference for checkpoint traversal.
@@ -44,9 +54,6 @@ type Stats struct {
 }
 
 // Manager orchestrates Fuzzy and Sharp checkpoints.
-// Phase 4.3: cm (ChunkManager) is used for AO page persistence during checkpoint.
-// Serialization is handled internally by BTree.EnumeratePages (returns pre-serialized PageData),
-// so the Manager does not need a PageSerializer reference.
 type Manager struct {
 	wal    WALWriter
 	btree  BTreeScanner
@@ -72,22 +79,13 @@ func NewManager(wal WALWriter, btree BTreeScanner, cm service.ChunkManager, conf
 }
 
 // FuzzyCheckpoint performs an online checkpoint without pausing writes.
-//
-// Protocol (C1 CRITICAL — T0→T1 gap eliminated):
-//  1. checkpointStartLSN = wal.CurrentLSN()  ← record first
-//  2. rootRef = btree.RootPage()              ← capture COW snapshot second
-//  3. DFS traverse rootRef, enumerate pages
-//  4. checkpointEndLSN = wal.CurrentLSN()    ← stats only
-//  5. Write Checkpoint WALEntry(checkpointStartLSN)
-//  6. wal.Sync()
-//  7. wal.Truncate(checkpointStartLSN)       ← truncate below snapshot
 func (m *Manager) FuzzyCheckpoint() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	start := time.Now()
 
-	// Step 1: Record Recovery replay start (MUST be before root snapshot — C1 CRITICAL)
+	// Step 1: Record checkpoint start LSN (MUST be before root snapshot)
 	startLSN := uint64(m.wal.CurrentLSN())
 
 	// Step 2: Capture COW root snapshot
@@ -96,21 +94,43 @@ func (m *Manager) FuzzyCheckpoint() error {
 		return fmt.Errorf("checkpoint: nil root page")
 	}
 
-	// Step 3: DFS traverse — enumerate all reachable pages from root snapshot.
-	_ = m.enumeratePages(root) // page list for future persistent storage integration
+	// Step 3: Enumerate pages + flush dirty pages to AO (Phase 4.3)
+	var pageLocs map[model.PageID]model.ChunkPosition
+	if m.cm != nil {
+		items, err := m.btree.EnumeratePages(root)
+		if err != nil {
+			return fmt.Errorf("checkpoint: enumerate pages: %w", err)
+		}
+		pageLocs = make(map[model.PageID]model.ChunkPosition, len(items))
+		for _, item := range items {
+			pageLocs[item.PageID] = item.ChunkPos
+			if item.ChunkPos == 0 && item.PageData != nil {
+				pos, err := m.cm.Allocate(len(item.PageData), item.PageType)
+				if err != nil {
+					return fmt.Errorf("checkpoint: allocate page %d: %w", item.PageID, err)
+				}
+				if err := m.cm.WritePage(pos, item.PageData); err != nil {
+					return fmt.Errorf("checkpoint: write page %d: %w", item.PageID, err)
+				}
+				pageLocs[item.PageID] = pos
+			}
+		}
+		if err := m.cm.Sync(); err != nil {
+			return fmt.Errorf("checkpoint: sync chunks: %w", err)
+		}
+	}
 
 	// Step 4: Record end LSN (stats only)
-	_ = uint64(m.wal.CurrentLSN()) // endLSN — stats
+	_ = uint64(m.wal.CurrentLSN())
 
-	// Step 5: Write Checkpoint WAL entry (authorization for truncation)
-	ckpKey := make([]byte, 8)
-	binary.BigEndian.PutUint64(ckpKey, startLSN)
+	// Step 5: Write Checkpoint WAL entry
+	ckpKey := encodeCheckpointKey(startLSN, pageLocs)
 	ckpEntry := &service.WALEntry{Type: service.WALTypeCheckpoint, Key: ckpKey}
 	if _, err := m.wal.Append(ckpEntry); err != nil {
 		return fmt.Errorf("checkpoint: append entry: %w", err)
 	}
 
-	// Step 6: Sync — makes Checkpoint entry durable (C2 CRITICAL: authorize before delete)
+	// Step 6: Sync WAL
 	if err := m.wal.Sync(); err != nil {
 		return fmt.Errorf("checkpoint: sync: %w", err)
 	}
@@ -126,6 +146,30 @@ func (m *Manager) FuzzyCheckpoint() error {
 	m.stats.TotalCheckpoints.Add(1)
 
 	return nil
+}
+
+// encodeCheckpointKey encodes the checkpoint key.
+// Phase 3 format (no pageLocs): [startLSN:8]
+// Phase 4 format (with pageLocs): [FormatVersion:1=0x04][startLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]
+func encodeCheckpointKey(startLSN uint64, pageLocs map[model.PageID]model.ChunkPosition) []byte {
+	if len(pageLocs) == 0 {
+		key := make([]byte, 8)
+		binary.BigEndian.PutUint64(key, startLSN)
+		return key
+	}
+	// Phase 4 format
+	n := 1 + 8 + 4 + len(pageLocs)*16
+	key := make([]byte, n)
+	key[0] = 0x04 // FormatVersion: Phase 4
+	binary.BigEndian.PutUint64(key[1:9], startLSN)
+	binary.BigEndian.PutUint32(key[9:13], uint32(len(pageLocs)))
+	offset := 13
+	for pageID, pos := range pageLocs {
+		binary.BigEndian.PutUint64(key[offset:offset+8], uint64(pageID))
+		binary.BigEndian.PutUint64(key[offset+8:offset+16], uint64(pos))
+		offset += 16
+	}
+	return key
 }
 
 // SharpCheckpoint performs an offline checkpoint (pauses writes).
@@ -176,6 +220,7 @@ func (m *Manager) Shutdown() error {
 }
 
 // enumeratePages traverses all pages reachable from root and returns their IDs.
+// Deprecated: Use BTreeScanner.EnumeratePages for Phase 4.3 AO integration.
 func (m *Manager) enumeratePages(root PageRef) []model.PageID {
 	visited := make(map[model.PageID]bool)
 	var ids []model.PageID

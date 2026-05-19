@@ -13,6 +13,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/checkpoint"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/chunk"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 )
@@ -93,6 +94,71 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 // SetChunkManager injects the ChunkManager and PageSerializer for AO persistence (Phase 4.3).
 func (b *BTree) SetChunkManager(cm service.ChunkManager, serializer *chunk.PageSerializer) {
 	b.storage.SetChunkManager(cm, serializer)
+}
+
+// EnumeratePages performs post-order DFS from the BTree root, returning pre-serialized page data.
+// Children appear before parents (Children-First semantics) so parent writes are safe.
+// Each page is Retained during traversal and Released after children are processed,
+// preventing concurrent Free+Alloc TOCTOU.
+//
+// Implements checkpoint.BTreeScanner.EnumeratePages.
+func (b *BTree) EnumeratePages(_ checkpoint.PageRef) ([]checkpoint.PageFlushItem, error) {
+	if b.storage.serializer == nil {
+		return nil, errpkg.Wrap(errpkg.ErrBTreeNotImplemented, "EnumeratePages requires ChunkManager (call SetChunkManager first)")
+	}
+	return b.enumeratePagesInternal(b.rootRef)
+}
+
+func (b *BTree) enumeratePagesInternal(root *RootPageRef) ([]checkpoint.PageFlushItem, error) {
+	var items []checkpoint.PageFlushItem
+	var dfs func(ref *PageRef)
+
+	dfs = func(ref *PageRef) {
+		// Retain to prevent concurrent Free during DFS
+		ref.Retain()
+		defer ref.Release()
+
+		pi := ref.GetPageInfo()
+		// Post-order: process children first
+		if !pi.IsLeaf {
+			cc := ref.GetChildren()
+			if cc != nil {
+				for _, childRef := range cc.Children {
+					if childRef != nil {
+						dfs(childRef)
+					}
+				}
+			}
+		}
+
+		// Serialize current page
+		pageType := uint8(0) // index
+		if pi.IsLeaf {
+			pageType = 1 // leaf
+		}
+
+		item := checkpoint.PageFlushItem{
+			PageID:   pi.PageID,
+			PageType: pageType,
+			ChunkPos: pi.ChunkPos,
+		}
+
+		// If page is not yet persisted, serialize it
+		if pi.ChunkPos == 0 {
+			ptr := b.storage.pm.PageIDToPtr(uint32(pi.PageID))
+			data, serErr := b.storage.serializer.Serialize(ptr, chunk.MaxPagePayload)
+			if serErr != nil {
+				return
+			}
+			item.PageData = data
+		}
+		// ChunkPos != 0: already persisted, PageData remains nil (skipped by checkpoint)
+
+		items = append(items, item)
+	}
+
+	dfs(&root.PageRef)
+	return items, nil
 }
 
 // checkOpen returns ErrTreeClosed if the tree is closed.

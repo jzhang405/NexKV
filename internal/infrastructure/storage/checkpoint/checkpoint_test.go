@@ -71,9 +71,13 @@ type mockBTreeScanner struct {
 
 func (m *mockBTreeScanner) RootPage() PageRef {
 	if m.root == nil {
-		return nil // Go interface nil pitfall: must return untyped nil, not typed nil pointer
+		return nil
 	}
 	return m.root
+}
+
+func (m *mockBTreeScanner) EnumeratePages(root PageRef) ([]PageFlushItem, error) {
+	return nil, nil // stub: no AO pages
 }
 
 func newTestBTree() *mockBTreeScanner {

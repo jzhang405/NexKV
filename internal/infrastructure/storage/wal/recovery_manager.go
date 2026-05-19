@@ -60,7 +60,7 @@ func (rm *RecoveryManager) Recover(ctx context.Context, bt BTreeAccessor, vs *mv
 	var pageLocs map[model.PageID]model.ChunkPosition
 
 	for _, e := range entries {
-		if e.Type == WALTypeCheckpointV2 {
+		if e.Type == WALTypeCheckpoint {
 			// Phase 4 format: [StartLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]
 			if len(e.Key) >= 12 {
 				cksn := LSN(binary.BigEndian.Uint64(e.Key[0:8]))

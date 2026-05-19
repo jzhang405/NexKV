@@ -17,14 +17,13 @@ const LSNInvalid LSN = 0
 type WALType = service.WALType
 
 const (
-	WALTypeInsert       = service.WALTypeInsert
-	WALTypeUpdate       = service.WALTypeUpdate
-	WALTypeDelete       = service.WALTypeDelete
-	WALTypeCommit       = service.WALTypeCommit
-	WALTypeRollback     = service.WALTypeRollback
-	WALTypeCheckpoint   = service.WALTypeCheckpoint
-	WALTypeSplit        = service.WALTypeSplit
-	WALTypeCheckpointV2 = service.WALTypeCheckpointV2 // Phase 4: AO pageLocs
+	WALTypeInsert     = service.WALTypeInsert
+	WALTypeUpdate     = service.WALTypeUpdate
+	WALTypeDelete     = service.WALTypeDelete
+	WALTypeCommit     = service.WALTypeCommit
+	WALTypeRollback   = service.WALTypeRollback
+	WALTypeCheckpoint = service.WALTypeCheckpoint
+	WALTypeSplit      = service.WALTypeSplit
 )
 
 // WALTypeString returns the human-readable name of a WALType.
@@ -44,8 +43,6 @@ func WALTypeString(wt WALType) string {
 		return "Checkpoint"
 	case WALTypeSplit:
 		return "Split"
-	case WALTypeCheckpointV2:
-		return "CheckpointV2"
 	default:
 		return "Unknown"
 	}

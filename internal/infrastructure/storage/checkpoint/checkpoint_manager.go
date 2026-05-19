@@ -146,8 +146,8 @@ func (m *Manager) FuzzyCheckpoint() error {
 }
 
 // encodeCheckpointKey encodes the checkpoint key.
-// Phase 3 format (WALTypeCheckpoint): [startLSN:8]
-// Phase 4 format (WALTypeCheckpointV2): [startLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]
+// Key format: [startLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]
+// PageCount=0 means no pageLocs (equivalent to old Phase 3 checkpoint)
 func encodeCheckpointKey(startLSN uint64, pageLocs map[model.PageID]model.ChunkPosition) []byte {
 	if len(pageLocs) == 0 {
 		key := make([]byte, 8)

@@ -54,7 +54,6 @@ const (
 	WALTypeDelete
 	WALTypeCommit
 	WALTypeRollback
-	WALTypeCheckpoint
-	WALTypeSplit
-	WALTypeCheckpointV2 // 7 — Phase 4: checkpoint with pageLocs mapping
+	WALTypeCheckpoint // 5 — Phase 4: [startLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]; PageCount=0 = no pageLocs
+	WALTypeSplit      // 6
 )

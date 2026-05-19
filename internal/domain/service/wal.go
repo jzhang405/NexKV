@@ -56,5 +56,4 @@ const (
 	WALTypeRollback
 	WALTypeCheckpoint
 	WALTypeSplit
-	WALTypeCheckpointV2 // 7 — Phase 4: checkpoint with pageLocs mapping
 )

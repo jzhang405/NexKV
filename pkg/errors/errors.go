@@ -145,6 +145,7 @@ var (
 	ErrBTreeCASConflict       = stderrors.New("btree: cas conflict after max retries")
 	ErrBTreeRetry             = stderrors.New("btree: retry operation")
 	ErrBTreePageFreed         = stderrors.New("btree: page already freed")
+	ErrBTreePageNotInAO       = stderrors.New("btree: page not in AO (checkpoint not yet run or page not persisted)")
 	ErrBTreeKeyNotFound       = stderrors.New("btree: key not found")
 	ErrBTreeClosed            = stderrors.New("btree: tree closed")
 	ErrBTreeInvalidPage       = stderrors.New("btree: invalid page")
@@ -509,7 +510,7 @@ func BTreePageNotNodePage(pageID uint64) error {
 }
 
 func BTreePageNotFound(pageID uint64) error {
-	return WrapUint64(ErrBTreeInvalidPage, "page not found in pageLocs (not yet loaded from AO)", pageID)
+	return WrapUint64(ErrBTreePageNotInAO, "page not found in pageLocs (not yet loaded from AO)", pageID)
 }
 
 // BTree Leaf Page 错误

@@ -57,17 +57,18 @@ func (rm *RecoveryManager) Recover(ctx context.Context, bt BTreeAccessor, vs *mv
 
 	// Phase A.3: Find latest checkpoint and parse pageLocs (Phase 4 format support)
 	var checkpointStartLSN LSN
-	var rootPageID model.PageID
+
 	var pageLocs map[model.PageID]model.ChunkPosition
 	for _, e := range entries {
 		if e.Type == WALTypeCheckpoint {
 			if len(e.Key) >= 1 && e.Key[0] == 0x04 {
 				// Phase 4 format: [FormatVersion:1][StartLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]
+				// rootPageID is implicitly the max PageID in pageLocs (root always allocated last)
 				if len(e.Key) >= 13 {
 					cksn := LSN(binary.BigEndian.Uint64(e.Key[1:9]))
 					if cksn > checkpointStartLSN {
 						checkpointStartLSN = cksn
-						rootPageID = model.PageID(binary.BigEndian.Uint64(e.Key[1:9]))
+
 						pageCount := binary.BigEndian.Uint32(e.Key[9:13])
 						pageLocs = make(map[model.PageID]model.ChunkPosition, pageCount)
 						offset := 13
@@ -89,7 +90,7 @@ func (rm *RecoveryManager) Recover(ctx context.Context, bt BTreeAccessor, vs *mv
 		}
 	}
 
-	_ = rootPageID
+	_ = pageLocs
 	_ = pageLocs
 
 	// Phase C: Replay WAL (existing RecoverFromWAL logic, modified for Phase 4)

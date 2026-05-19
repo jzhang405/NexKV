@@ -146,21 +146,20 @@ func (m *Manager) FuzzyCheckpoint() error {
 }
 
 // encodeCheckpointKey encodes the checkpoint key.
-// Phase 3 format (no pageLocs): [startLSN:8]
-// Phase 4 format (with pageLocs): [FormatVersion:1=0x04][startLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]
+// Phase 3 format (WALTypeCheckpoint): [startLSN:8]
+// Phase 4 format (WALTypeCheckpointV2): [startLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]
 func encodeCheckpointKey(startLSN uint64, pageLocs map[model.PageID]model.ChunkPosition) []byte {
 	if len(pageLocs) == 0 {
 		key := make([]byte, 8)
 		binary.BigEndian.PutUint64(key, startLSN)
 		return key
 	}
-	// Phase 4 format
-	n := 1 + 8 + 4 + len(pageLocs)*16
+	// Phase 4 format (no FormatVersion prefix — type field distinguishes)
+	n := 8 + 4 + len(pageLocs)*16
 	key := make([]byte, n)
-	key[0] = 0x04 // FormatVersion: Phase 4
-	binary.BigEndian.PutUint64(key[1:9], startLSN)
-	binary.BigEndian.PutUint32(key[9:13], uint32(len(pageLocs)))
-	offset := 13
+	binary.BigEndian.PutUint64(key[0:8], startLSN)
+	binary.BigEndian.PutUint32(key[8:12], uint32(len(pageLocs)))
+	offset := 12
 	for pageID, pos := range pageLocs {
 		binary.BigEndian.PutUint64(key[offset:offset+8], uint64(pageID))
 		binary.BigEndian.PutUint64(key[offset+8:offset+16], uint64(pos))

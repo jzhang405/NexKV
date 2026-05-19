@@ -55,45 +55,40 @@ func (rm *RecoveryManager) Recover(ctx context.Context, bt BTreeAccessor, vs *mv
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].LSN < entries[j].LSN })
 
-	// Phase A.3: Find latest checkpoint and parse pageLocs (Phase 4 format support)
+	// Phase A.3: Find latest checkpoint and parse pageLocs
 	var checkpointStartLSN LSN
-
 	var pageLocs map[model.PageID]model.ChunkPosition
-	for _, e := range entries {
-		if e.Type == WALTypeCheckpoint {
-			if len(e.Key) >= 1 && e.Key[0] == 0x04 {
-				// Phase 4 format: [FormatVersion:1][StartLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]
-				// rootPageID is implicitly the max PageID in pageLocs (root always allocated last)
-				if len(e.Key) >= 13 {
-					cksn := LSN(binary.BigEndian.Uint64(e.Key[1:9]))
-					if cksn > checkpointStartLSN {
-						checkpointStartLSN = cksn
 
-						pageCount := binary.BigEndian.Uint32(e.Key[9:13])
-						pageLocs = make(map[model.PageID]model.ChunkPosition, pageCount)
-						offset := 13
-						for i := uint32(0); i < pageCount && offset+16 <= len(e.Key); i++ {
-							pid := model.PageID(binary.BigEndian.Uint64(e.Key[offset : offset+8]))
-							cpos := model.ChunkPosition(binary.BigEndian.Uint64(e.Key[offset+8 : offset+16]))
-							pageLocs[pid] = cpos
-							offset += 16
-						}
-					}
-				}
-			} else if len(e.Key) == 8 {
-				// Phase 3 format: [StartLSN:8]
-				cksn := LSN(binary.BigEndian.Uint64(e.Key))
+	for _, e := range entries {
+		if e.Type == WALTypeCheckpointV2 {
+			// Phase 4 format: [StartLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]
+			if len(e.Key) >= 12 {
+				cksn := LSN(binary.BigEndian.Uint64(e.Key[0:8]))
 				if cksn > checkpointStartLSN {
 					checkpointStartLSN = cksn
+					pageCount := binary.BigEndian.Uint32(e.Key[8:12])
+					pageLocs = make(map[model.PageID]model.ChunkPosition, pageCount)
+					offset := 12
+					for i := uint32(0); i < pageCount && offset+16 <= len(e.Key); i++ {
+						pid := model.PageID(binary.BigEndian.Uint64(e.Key[offset : offset+8]))
+						cpos := model.ChunkPosition(binary.BigEndian.Uint64(e.Key[offset+8 : offset+16]))
+						pageLocs[pid] = cpos
+						offset += 16
+					}
 				}
+			}
+		} else if e.Type == WALTypeCheckpoint && len(e.Key) == 8 {
+			// Phase 3 format: [StartLSN:8]
+			cksn := LSN(binary.BigEndian.Uint64(e.Key))
+			if cksn > checkpointStartLSN {
+				checkpointStartLSN = cksn
 			}
 		}
 	}
 
-	_ = pageLocs
-	_ = pageLocs
+	_ = pageLocs // Phase B: used for BTree rebuild
 
-	// Phase C: Replay WAL (existing RecoverFromWAL logic, modified for Phase 4)
+	// Phase C: Replay WAL from checkpointStartLSN
 	committedTxIDs, replayedCount, err := rm.replayWAL(ctx, entries, checkpointStartLSN, bt, vs)
 	if err != nil {
 		return nil, fmt.Errorf("recovery: replay WAL: %w", err)
@@ -108,7 +103,6 @@ func (rm *RecoveryManager) Recover(ctx context.Context, bt BTreeAccessor, vs *mv
 
 // replayWAL replays committed transactions starting from checkpointStartLSN.
 func (rm *RecoveryManager) replayWAL(ctx context.Context, entries []*WALEntry, replayStart LSN, bt BTreeAccessor, vs *mvcc.VersionStore) (map[uint64]uint64, int, error) {
-	// Group by TxID
 	type txGroup struct {
 		entries   []*WALEntry
 		commitTS  uint64

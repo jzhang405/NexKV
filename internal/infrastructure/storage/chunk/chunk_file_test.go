@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestWriteHeader_TooLarge(t *testing.T) {
+func TestWriteHeader_NormalHeaderFits(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.ao")
 	f, err := os.Create(path)
@@ -22,23 +22,7 @@ func TestWriteHeader_TooLarge(t *testing.T) {
 
 	c := &ChunkFile{file: f}
 	h := &ChunkHeader{ID: 1}
-
-	// Build a header with a huge field that exceeds ChunkBlockSize via mapSize
-	// Since encode uses fmt.Fprintf, the total size is controlled by field values.
-	// A mapSize of 10^200 would overflow, but mapSize is int64.
-	// Instead, specify an impossibly large string via text injection isn't possible;
-	// test by directly encoding a too-large buffer.
-	largeText := make([]byte, ChunkBlockSize+1)
-	for i := range largeText {
-		largeText[i] = 'x'
-	}
-	// Manually create a header with large ID value to test
-	// Actually, the simplest way: just verify the check path.
-	// writeHeader checks len(text) > ChunkBlockSize.
-	// The encode output is always well under ChunkBlockSize for normal values.
-	// We test by writing a too-large payload directly to verify the guard.
-	err = c.writeHeader(h)
-	require.NoError(t, err) // normal header always fits
+	require.NoError(t, c.writeHeader(h))
 }
 
 func TestReadHeader_Success(t *testing.T) {

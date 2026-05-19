@@ -7,6 +7,8 @@ package chunk
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -30,6 +32,7 @@ type DiskChunkManager struct {
 	maxSeq    uint64                // global max sequence number
 	chunkIDs  *chunkIDBitSet        // chunk ID bit field (Lealone BitField)
 	idToChunk map[uint32]*ChunkFile // chunkID → ChunkFile
+	seqToID   map[uint64]uint32     // seq → chunkID (recovery: seq→chunkID reverse lookup)
 
 	closed   atomic.Bool
 	readOps  atomic.Int64
@@ -53,6 +56,7 @@ func NewDiskChunkManager(dir string, chunkSize int64) (*DiskChunkManager, error)
 		chunkSize: chunkSize,
 		chunkIDs:  newChunkIDBitSet(),
 		idToChunk: make(map[uint32]*ChunkFile),
+		seqToID:   make(map[uint64]uint32),
 	}
 	return cm, nil
 }
@@ -73,42 +77,48 @@ func (cm *DiskChunkManager) Allocate(size int, pageType uint8) (model.ChunkPosit
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	// Try to append to the last chunk; create a new one if full or absent
+	// Determine the chunk and offset; create a new chunk if the last is full or absent
+	var c *ChunkFile
+	var offset uint32
 	if cm.lastChunk != nil && cm.lastChunk.nextOffset+int64(size) <= cm.lastChunk.capacity {
-		pos, err := model.EncodeChunkPosition(cm.lastChunk.id, uint32(cm.lastChunk.nextOffset), pageType)
+		c = cm.lastChunk
+		offset = uint32(c.nextOffset)
+	} else {
+		var err error
+		c, err = cm.createChunk()
 		if err != nil {
 			return 0, err
 		}
-		cm.lastChunk.nextOffset += int64(size)
-		return pos, nil
+		offset = ChunkHeaderSize
 	}
 
-	// Create a new chunk
-	c, err := cm.createChunk()
-	if err != nil {
-		return 0, err
-	}
-
-	offset := uint32(ChunkHeaderSize)
-	c.nextOffset = int64(offset) + int64(size)
 	pos, err := model.EncodeChunkPosition(c.id, offset, pageType)
 	if err != nil {
 		return 0, err
 	}
+	c.nextOffset = int64(offset) + int64(size)
 	return pos, nil
+}
+
+// lookupChunk returns the chunk for chunkID. Caller must hold cm.mu (at least RLock).
+func (cm *DiskChunkManager) lookupChunk(chunkID uint32) (*ChunkFile, error) {
+	if cm.closed.Load() {
+		return nil, ErrChunkClosed
+	}
+	c, ok := cm.idToChunk[chunkID]
+	if !ok {
+		return nil, fmt.Errorf("chunk: chunk %d not found", chunkID)
+	}
+	return c, nil
 }
 
 // WritePage writes serialized page data at the given position.
 func (cm *DiskChunkManager) WritePage(pos model.ChunkPosition, data []byte) error {
-	chunkID := pos.ChunkID()
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	if cm.closed.Load() {
-		return ErrChunkClosed
-	}
-	c, ok := cm.idToChunk[chunkID]
-	if !ok {
-		return fmt.Errorf("chunk: WritePage: chunk %d not found", chunkID)
+	c, err := cm.lookupChunk(pos.ChunkID())
+	if err != nil {
+		return err
 	}
 
 	// Per-chunk lock protects pagePosToLen map and serializes I/O
@@ -126,15 +136,11 @@ func (cm *DiskChunkManager) WritePage(pos model.ChunkPosition, data []byte) erro
 
 // ReadPage reads serialized page data from the given position.
 func (cm *DiskChunkManager) ReadPage(pos model.ChunkPosition) ([]byte, error) {
-	chunkID := pos.ChunkID()
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	if cm.closed.Load() {
-		return nil, ErrChunkClosed
-	}
-	c, ok := cm.idToChunk[chunkID]
-	if !ok {
-		return nil, fmt.Errorf("chunk: ReadPage: chunk %d not found", chunkID)
+	c, err := cm.lookupChunk(pos.ChunkID())
+	if err != nil {
+		return nil, err
 	}
 
 	c.mu.Lock()
@@ -156,15 +162,11 @@ func (cm *DiskChunkManager) ReadPage(pos model.ChunkPosition) ([]byte, error) {
 
 // FreePage marks a page position as removed.
 func (cm *DiskChunkManager) FreePage(pos model.ChunkPosition) error {
-	chunkID := pos.ChunkID()
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	if cm.closed.Load() {
-		return ErrChunkClosed
-	}
-	c, ok := cm.idToChunk[chunkID]
-	if !ok {
-		return fmt.Errorf("chunk: FreePage: chunk %d not found", chunkID)
+	c, err := cm.lookupChunk(pos.ChunkID())
+	if err != nil {
+		return err
 	}
 
 	c.mu.Lock()
@@ -231,7 +233,10 @@ func (cm *DiskChunkManager) Close() error {
 	var firstErr error
 	for _, c := range cm.chunks {
 		c.mu.Lock()
-		// Write final header before closing (Lealone: header written at finalization)
+		// Write final header before closing.
+		// TODO(phase4.3): Fill RootPagePos, SumOfPageLength, SumOfLivePageLength,
+		//   PagePositionAndLengthOffset, RemovedPageOffset, LastTransactionID, MapSize
+		//   from the BTree state at checkpoint time.
 		h := &ChunkHeader{
 			ID:               c.id,
 			PageCount:        int32(len(c.pagePosToLen)),
@@ -269,6 +274,7 @@ func (cm *DiskChunkManager) createChunk() (*ChunkFile, error) {
 
 	c := &ChunkFile{
 		id:           chunkID,
+		seq:          cm.maxSeq,
 		file:         f,
 		capacity:     cm.chunkSize,
 		nextOffset:   ChunkHeaderSize,
@@ -278,8 +284,169 @@ func (cm *DiskChunkManager) createChunk() (*ChunkFile, error) {
 
 	cm.chunks = append(cm.chunks, c)
 	cm.idToChunk[chunkID] = c
+	cm.seqToID[cm.maxSeq] = chunkID
 	cm.lastChunk = c
 	return c, nil
+}
+
+// chunkFilenameRe is the expected format: btree_[chunkId]_[seq].ao
+
+// parseChunkFilename parses a chunk filename into chunkID and seq.
+// Expected format: "btree_0_1.ao" → (chunkID=0, seq=1).
+// Rejects files with trailing content (e.g., "btree_0_1.ao.tmp", "btree_0_1.ao.backup").
+func parseChunkFilename(name string) (chunkID uint32, seq uint64, err error) {
+	var cid, s uint64
+	n, err := fmt.Sscanf(name, "btree_%d_%d.ao", &cid, &s)
+	if err != nil || n != 2 {
+		return 0, 0, fmt.Errorf("chunk: invalid chunk filename %q", name)
+	}
+	// Reject files with trailing content (e.g., .tmp, .backup)
+	if name != fmt.Sprintf("btree_%d_%d.ao", cid, s) {
+		return 0, 0, fmt.Errorf("chunk: invalid chunk filename %q", name)
+	}
+	return uint32(cid), s, nil
+}
+
+// RestoreDiskChunkManager recovers a DiskChunkManager from existing .ao chunk files.
+// Aligns with Lealone ChunkManager.init() recovery protocol:
+//
+//  1. Scan directory: list all btree_*_*.ao files
+//  2. Delete zero-length files (created by crash during open)
+//  3. Parse filenames: btree_[chunkId]_[seq].ao → chunkID + seq
+//     Handle duplicate chunkIDs: keep highest seq (backup recovery)
+//  4. Sort chunks by seq ascending
+//  5. Open highest-seq chunk as lastChunk
+//  6. Validate dual-block header for each chunk:
+//     - Block 0 valid → parse header
+//     - Block 0 corrupted, block 1 valid → recover from duplicate
+//     - Both corrupted → mark as corrupted, skip
+//  7. Recover metadata from headers
+//  8. Rebuild in-memory structures: chunkIDs BitSet, idToChunk, seqToID, chunks
+//
+// If no valid chunk files exist, delegates to NewDiskChunkManager (first-start scenario).
+// chunkSize is used when creating new chunks after recovery (0 = use DefaultChunkCapacity).
+func RestoreDiskChunkManager(dir string, chunkSize int64) (*DiskChunkManager, error) {
+	// Step 1: Scan directory
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return NewDiskChunkManager(dir, chunkSize)
+		}
+		return nil, fmt.Errorf("chunk: restore: read dir %s: %w", dir, err)
+	}
+
+	// Step 2-3: Parse filenames, delete zero-length files, dedup by chunkID
+	type fileEntry struct {
+		name    string
+		chunkID uint32
+		seq     uint64
+	}
+	bestByID := make(map[uint32]fileEntry)
+
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, infoErr := e.Info()
+		if infoErr != nil {
+			continue
+		}
+		// Step 2: Delete zero-length files (crash residue, best-effort)
+		if info.Size() == 0 {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+			continue
+		}
+		// Step 3a: Parse filename
+		cid, s, parseErr := parseChunkFilename(e.Name())
+		if parseErr != nil {
+			continue // skip non-chunk files
+		}
+		fe := fileEntry{name: e.Name(), chunkID: cid, seq: s}
+		// Step 3c: Handle duplicate chunkID — keep highest seq (best-effort removal)
+		if existing, ok := bestByID[cid]; ok {
+			if s > existing.seq {
+				_ = os.Remove(filepath.Join(dir, existing.name))
+				bestByID[cid] = fe
+			} else {
+				_ = os.Remove(filepath.Join(dir, fe.name))
+			}
+		} else {
+			bestByID[cid] = fe
+		}
+	}
+
+	// No valid chunk files → first start
+	if len(bestByID) == 0 {
+		return NewDiskChunkManager(dir, chunkSize)
+	}
+
+	// Step 4: Sort by seq ascending
+	sorted := make([]fileEntry, 0, len(bestByID))
+	for _, fe := range bestByID {
+		sorted = append(sorted, fe)
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].seq < sorted[j].seq })
+
+	// Determine chunkSize from the first valid file we open
+	if chunkSize <= 0 {
+		chunkSize = DefaultChunkCapacity
+	}
+
+	cm := &DiskChunkManager{
+		dir:       dir,
+		chunkSize: chunkSize,
+		maxSeq:    sorted[len(sorted)-1].seq,
+		chunkIDs:  newChunkIDBitSet(),
+		idToChunk: make(map[uint32]*ChunkFile),
+		seqToID:   make(map[uint64]uint32),
+	}
+
+	// Step 5-7: Open each chunk, validate header, recover metadata
+	for _, fe := range sorted {
+		path := filepath.Join(dir, fe.name)
+		f, openErr := os.OpenFile(path, os.O_RDWR, 0600)
+		if openErr != nil {
+			continue
+		}
+
+		st, statErr := f.Stat()
+		if statErr != nil {
+			f.Close()
+			continue
+		}
+
+		c := &ChunkFile{
+			id:           fe.chunkID,
+			seq:          fe.seq,
+			file:         f,
+			capacity:     st.Size(),
+			nextOffset:   ChunkHeaderSize,
+			pagePosToLen: make(map[model.ChunkPosition]int32),
+			removedPages: make(map[model.ChunkPosition]struct{}),
+		}
+
+		// Step 6: Validate dual-block header
+		// TODO(phase4.3): Recover pagePosToLen from PagePositionAndLengthOffset,
+		//   removedPages from RemovedPageOffset, and RootPagePos from header.
+		if _, err := c.readHeader(); err != nil {
+			f.Close()
+			continue
+		}
+
+		// Step 7: Adopt chunk into manager
+		cm.chunks = append(cm.chunks, c)
+		cm.idToChunk[fe.chunkID] = c
+		cm.seqToID[fe.seq] = fe.chunkID
+		cm.chunkIDs.set(fe.chunkID)
+		cm.lastChunk = c
+	}
+
+	// No valid chunks after validation → first start
+	if len(cm.chunks) == 0 {
+		return NewDiskChunkManager(dir, chunkSize)
+	}
+
+	return cm, nil
 }
 
 // chunkIDBitSet is a simple bitset for tracking used chunk IDs.
@@ -292,17 +459,19 @@ func newChunkIDBitSet() *chunkIDBitSet {
 	return &chunkIDBitSet{words: make([]uint64, (model.MaxChunkID+63)/64)}
 }
 
+func (b *chunkIDBitSet) ensureWord(word uint32) {
+	if word >= uint32(len(b.words)) {
+		newWords := make([]uint64, word+1)
+		copy(newWords, b.words)
+		b.words = newWords
+	}
+}
+
 func (b *chunkIDBitSet) nextClearBit(start uint32) (uint32, error) {
 	for i := uint32(start); i <= model.MaxChunkID; i++ {
 		word := i / 64
-		bit := i % 64
-		if word >= uint32(len(b.words)) {
-			// Extend
-			newWords := make([]uint64, word+1)
-			copy(newWords, b.words)
-			b.words = newWords
-		}
-		if b.words[word]&(1<<bit) == 0 {
+		b.ensureWord(word)
+		if b.words[word]&(1<<(i%64)) == 0 {
 			return i, nil
 		}
 	}
@@ -311,11 +480,7 @@ func (b *chunkIDBitSet) nextClearBit(start uint32) (uint32, error) {
 
 func (b *chunkIDBitSet) set(id uint32) {
 	word := id / 64
-	if word >= uint32(len(b.words)) {
-		newWords := make([]uint64, word+1)
-		copy(newWords, b.words)
-		b.words = newWords
-	}
+	b.ensureWord(word)
 	b.words[word] |= 1 << (id % 64)
 }
 

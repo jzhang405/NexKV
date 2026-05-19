@@ -59,7 +59,7 @@ func TestDecodeHeader_Success(t *testing.T) {
 }
 
 func TestDecodeHeader_BadBlockSize(t *testing.T) {
-	data := []byte("id:1\nblockSize:1234\nformat:1\n")
+	data := []byte("id:1\nrootPagePos:0\nblockSize:1234\nformat:1\npageCount:0\nsumOfPageLength:0\nsumOfLivePageLength:0\npagePositionAndLengthOffset:0\nremovedPageOffset:0\nremovedPageCount:0\nlastTransactionId:0\nmapSize:0\n")
 	_, err := decodeHeader(data)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported block size")
@@ -70,41 +70,73 @@ func TestDecodeHeader_BadFormat(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestDecodeHeader_ParseError(t *testing.T) {
+	data := []byte("id:notanumber\nblockSize:4096\nformat:1\n")
+	_, err := decodeHeader(data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse")
+}
+
 func TestParseUint32_Valid(t *testing.T) {
-	assert.Equal(t, uint32(42), parseUint32("42"))
-	assert.Equal(t, uint32(0), parseUint32("0"))
+	v, err := parseUint32("42")
+	require.NoError(t, err)
+	assert.Equal(t, uint32(42), v)
+
+	v, err = parseUint32("0")
+	require.NoError(t, err)
+	assert.Equal(t, uint32(0), v)
 }
 
 func TestParseUint32_Invalid(t *testing.T) {
-	assert.Equal(t, uint32(0), parseUint32("abc"))
-	assert.Equal(t, uint32(0), parseUint32(""))
+	_, err := parseUint32("abc")
+	require.Error(t, err)
+	_, err = parseUint32("")
+	require.Error(t, err)
 }
 
 func TestParseInt32_Valid(t *testing.T) {
-	assert.Equal(t, int32(-1), parseInt32("-1"))
-	assert.Equal(t, int32(100), parseInt32("100"))
+	v, err := parseInt32("-1")
+	require.NoError(t, err)
+	assert.Equal(t, int32(-1), v)
+
+	v, err = parseInt32("100")
+	require.NoError(t, err)
+	assert.Equal(t, int32(100), v)
 }
 
 func TestParseInt32_Invalid(t *testing.T) {
-	assert.Equal(t, int32(0), parseInt32(""))
+	_, err := parseInt32("")
+	require.Error(t, err)
 }
 
 func TestParseInt64_Valid(t *testing.T) {
-	assert.Equal(t, int64(1234567890123), parseInt64("1234567890123"))
-	assert.Equal(t, int64(-1), parseInt64("-1"))
+	v, err := parseInt64("1234567890123")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1234567890123), v)
+
+	v, err = parseInt64("-1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(-1), v)
 }
 
 func TestParseInt64_Invalid(t *testing.T) {
-	assert.Equal(t, int64(0), parseInt64(""))
+	_, err := parseInt64("")
+	require.Error(t, err)
 }
 
 func TestParseHexUint64_Valid(t *testing.T) {
-	assert.Equal(t, uint64(0xDEADBEEF), parseHexUint64("deadbeef"))
-	assert.Equal(t, uint64(0), parseHexUint64("0"))
+	v, err := parseHexUint64("deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0xDEADBEEF), v)
+
+	v, err = parseHexUint64("0")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), v)
 }
 
 func TestParseHexUint64_Invalid(t *testing.T) {
-	assert.Equal(t, uint64(0), parseHexUint64(""))
+	_, err := parseHexUint64("")
+	require.Error(t, err)
 }
 
 func TestEncode_Roundtrip(t *testing.T) {

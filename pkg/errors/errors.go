@@ -508,6 +508,10 @@ func BTreePageNotNodePage(pageID uint64) error {
 	return WrapUint64(ErrBTreeInvalidPage, "page is not a node page", pageID)
 }
 
+func BTreePageNotFound(pageID uint64) error {
+	return WrapUint64(ErrBTreeInvalidPage, "page not found in pageLocs (not yet loaded from AO)", pageID)
+}
+
 // BTree Leaf Page 错误
 func BTreeLeafInsertAlloc(err error) error {
 	return Wrap(err, "leaf insert alloc")

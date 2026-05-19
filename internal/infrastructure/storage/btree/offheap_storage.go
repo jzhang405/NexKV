@@ -5,21 +5,28 @@
 package btree
 
 import (
-	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"math"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
+
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/chunk"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
 )
 
 // OffheapBTreeStorage implements BTreeStorage using mmap-backed offheap pages.
 // It is the sole bridge between btree and the offheap layer.
 type OffheapBTreeStorage struct {
-	pm     *offheap.PageManager
-	pa     *offheap.PageAccessor
-	closed atomic.Bool
+	pm         *offheap.PageManager
+	pa         *offheap.PageAccessor
+	cm         service.ChunkManager    // Phase 4.3: .ao chunk persistence
+	serializer *chunk.PageSerializer   // Phase 4.3: page serialization
+	pageLocs   sync.Map                // Phase 4.3: map[model.PageID]model.ChunkPosition
+	closed     atomic.Bool
 }
 
 // NewOffheapBTreeStorage creates a new storage backed by an mmap region of mmapSize bytes.
@@ -148,6 +155,8 @@ func (s *OffheapBTreeStorage) FreePage(pageID model.PageID) error {
 	if err != nil {
 		return err
 	}
+	// Phase 4.3: Delete stale pageLocs entry before freeing pageID
+	s.pageLocs.Delete(pageID)
 	return s.pm.Free(rawID)
 }
 
@@ -177,6 +186,51 @@ func (s *OffheapBTreeStorage) Close() error {
 		return nil // already closed
 	}
 	return s.pm.Close()
+}
+
+// --- Phase 4.3: ChunkManager Integration ---
+
+// SetChunkManager injects the ChunkManager and PageSerializer for AO persistence.
+func (s *OffheapBTreeStorage) SetChunkManager(cm service.ChunkManager, serializer *chunk.PageSerializer) {
+	s.cm = cm
+	s.serializer = serializer
+}
+
+// UpdatePageLocs atomically updates the pageID→ChunkPosition mapping after checkpoint.
+func (s *OffheapBTreeStorage) UpdatePageLocs(mapping map[model.PageID]model.ChunkPosition) {
+	for pageID, pos := range mapping {
+		s.pageLocs.Store(pageID, pos)
+	}
+}
+
+// LoadPage lazily loads a page from AO storage into mmap.
+func (s *OffheapBTreeStorage) LoadPage(pageID model.PageID) (unsafe.Pointer, error) {
+	if s.cm == nil || s.serializer == nil {
+		return nil, errpkg.BTreePageNotFound(uint64(pageID))
+	}
+	v, ok := s.pageLocs.Load(pageID)
+	if !ok {
+		return nil, errpkg.BTreePageNotFound(uint64(pageID))
+	}
+	pos := v.(model.ChunkPosition)
+	if pos.IsZero() {
+		return nil, errpkg.BTreePageNotFound(uint64(pageID))
+	}
+	rawID, err := s.pm.Alloc()
+	if err != nil {
+		return nil, errpkg.BTreeAllocLeafPage(err)
+	}
+	data, err := s.cm.ReadPage(pos)
+	if err != nil {
+		s.pm.Free(rawID)
+		return nil, err
+	}
+	dst := s.pm.PageIDToPtr(rawID)
+	if _, err := s.serializer.Deserialize(data, dst); err != nil {
+		s.pm.Free(rawID)
+		return nil, err
+	}
+	return dst, nil
 }
 
 // Compile-time interface satisfaction

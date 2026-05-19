@@ -13,6 +13,7 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/chunk"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 )
 
@@ -87,6 +88,11 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 	bt.txMgr = cfg.buildTxManager(newStorageAdapter(bt))
 
 	return bt, nil
+}
+
+// SetChunkManager injects the ChunkManager and PageSerializer for AO persistence (Phase 4.3).
+func (b *BTree) SetChunkManager(cm service.ChunkManager, serializer *chunk.PageSerializer) {
+	b.storage.SetChunkManager(cm, serializer)
 }
 
 // checkOpen returns ErrTreeClosed if the tree is closed.

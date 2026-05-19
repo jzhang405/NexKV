@@ -13,14 +13,15 @@ import (
 	"time"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/domain/service"
 )
 
-// WALWriter is the minimal WAL interface needed for checkpoint.
+// WALWriter is the minimal WAL interface needed for checkpoint (interface segregation).
 type WALWriter interface {
-	Append(entry *WALEntry) (LSN, error)
+	Append(entry *service.WALEntry) (service.LSN, error)
 	Sync() error
-	Truncate(lsn LSN) error
-	CurrentLSN() LSN
+	Truncate(lsn service.LSN) error
+	CurrentLSN() service.LSN
 }
 
 // BTreeScanner provides read-only access to the BTree for checkpoint DFS.
@@ -35,18 +36,6 @@ type PageRef interface {
 	ChildIDs() []model.PageID
 }
 
-// LSN is a log sequence number.
-type LSN uint64
-
-// WALEntry is a lightweight WAL entry for checkpoint use.
-type WALEntry struct {
-	LSN  LSN
-	Type uint8
-	Key  []byte
-}
-
-const WALTypeCheckpoint uint8 = 5
-
 // Stats tracks checkpoint metrics.
 type Stats struct {
 	LastCheckpointLSN atomic.Uint64
@@ -55,9 +44,13 @@ type Stats struct {
 }
 
 // Manager orchestrates Fuzzy and Sharp checkpoints.
+// Phase 4.3: cm (ChunkManager) is used for AO page persistence during checkpoint.
+// Serialization is handled internally by BTree.EnumeratePages (returns pre-serialized PageData),
+// so the Manager does not need a PageSerializer reference.
 type Manager struct {
 	wal    WALWriter
 	btree  BTreeScanner
+	cm     service.ChunkManager // Phase 4.3: AO chunk persistence
 	config *Config
 	stats  Stats
 	ctx    context.Context
@@ -66,11 +59,12 @@ type Manager struct {
 }
 
 // NewManager creates a checkpoint manager.
-func NewManager(wal WALWriter, btree BTreeScanner, config *Config) *Manager {
+func NewManager(wal WALWriter, btree BTreeScanner, cm service.ChunkManager, config *Config) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
 		wal:    wal,
 		btree:  btree,
+		cm:     cm,
 		config: config,
 		ctx:    ctx,
 		cancel: cancel,
@@ -111,7 +105,7 @@ func (m *Manager) FuzzyCheckpoint() error {
 	// Step 5: Write Checkpoint WAL entry (authorization for truncation)
 	ckpKey := make([]byte, 8)
 	binary.BigEndian.PutUint64(ckpKey, startLSN)
-	ckpEntry := &WALEntry{Type: WALTypeCheckpoint, Key: ckpKey}
+	ckpEntry := &service.WALEntry{Type: service.WALTypeCheckpoint, Key: ckpKey}
 	if _, err := m.wal.Append(ckpEntry); err != nil {
 		return fmt.Errorf("checkpoint: append entry: %w", err)
 	}
@@ -122,7 +116,7 @@ func (m *Manager) FuzzyCheckpoint() error {
 	}
 
 	// Step 7: Truncate WAL segments below checkpointStartLSN
-	if err := m.wal.Truncate(LSN(startLSN)); err != nil {
+	if err := m.wal.Truncate(service.LSN(startLSN)); err != nil {
 		return fmt.Errorf("checkpoint: truncate: %w", err)
 	}
 
@@ -139,21 +133,18 @@ func (m *Manager) SharpCheckpoint() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// For Sharp checkpoint: pause writes (drain inflight), flush all.
-	// checkpointStartLSN == checkpointEndLSN since no writes occur during.
 	startLSN := uint64(m.wal.CurrentLSN())
 
-	// Write Checkpoint entry
 	ckpKey := make([]byte, 8)
 	binary.BigEndian.PutUint64(ckpKey, startLSN)
-	ckpEntry := &WALEntry{Type: WALTypeCheckpoint, Key: ckpKey}
+	ckpEntry := &service.WALEntry{Type: service.WALTypeCheckpoint, Key: ckpKey}
 	if _, err := m.wal.Append(ckpEntry); err != nil {
 		return fmt.Errorf("checkpoint: append entry: %w", err)
 	}
 	if err := m.wal.Sync(); err != nil {
 		return fmt.Errorf("checkpoint: sync: %w", err)
 	}
-	if err := m.wal.Truncate(LSN(startLSN)); err != nil {
+	if err := m.wal.Truncate(service.LSN(startLSN)); err != nil {
 		return fmt.Errorf("checkpoint: truncate: %w", err)
 	}
 
@@ -181,13 +172,10 @@ func (m *Manager) Run() {
 // Shutdown gracefully stops the background checkpoint goroutine.
 func (m *Manager) Shutdown() error {
 	m.cancel()
-	// Perform a final Sharp Checkpoint on shutdown.
 	return m.SharpCheckpoint()
 }
 
 // enumeratePages traverses all pages reachable from root and returns their IDs.
-// COW semantics: old root subtree is intact, concurrent writes create new pages
-// that are NOT reachable from the old root. Checkpoint covers all pages in old rootRef.
 func (m *Manager) enumeratePages(root PageRef) []model.PageID {
 	visited := make(map[model.PageID]bool)
 	var ids []model.PageID
@@ -200,10 +188,7 @@ func (m *Manager) enumeratePages(root PageRef) []model.PageID {
 		ids = append(ids, p.PageID())
 		if !p.IsLeaf() {
 			for _, childID := range p.ChildIDs() {
-				// For COW BTree: childIDs are stable once captured from rootRef.
-				// We don't need to re-lookup child pages — their IDs are sufficient
-				// for checkpoint enumeration.
-				dfs(&checkpointPageRef{id: childID, isLeaf: false /* unknown at this level */})
+				dfs(&checkpointPageRef{id: childID, isLeaf: false})
 			}
 		}
 	}

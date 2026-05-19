@@ -6,6 +6,7 @@ package btree
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -110,22 +111,31 @@ func (b *BTree) EnumeratePages(_ checkpoint.PageRef) ([]checkpoint.PageFlushItem
 }
 
 func (b *BTree) enumeratePagesInternal(root *RootPageRef) ([]checkpoint.PageFlushItem, error) {
+	// visited guards against infinite recursion from structural bugs (安全网)
+	visited := make(map[model.PageID]bool)
 	var items []checkpoint.PageFlushItem
-	var dfs func(ref *PageRef)
+	var dfs func(ref *PageRef) error
 
-	dfs = func(ref *PageRef) {
+	dfs = func(ref *PageRef) error {
+		pi := ref.GetPageInfo()
+		if visited[pi.PageID] {
+			return nil
+		}
+		visited[pi.PageID] = true
+
 		// Retain to prevent concurrent Free during DFS
 		ref.Retain()
 		defer ref.Release()
 
-		pi := ref.GetPageInfo()
 		// Post-order: process children first
 		if !pi.IsLeaf {
 			cc := ref.GetChildren()
 			if cc != nil {
 				for _, childRef := range cc.Children {
 					if childRef != nil {
-						dfs(childRef)
+						if err := dfs(childRef); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -148,16 +158,18 @@ func (b *BTree) enumeratePagesInternal(root *RootPageRef) ([]checkpoint.PageFlus
 			ptr := b.storage.pm.PageIDToPtr(uint32(pi.PageID))
 			data, serErr := b.storage.serializer.Serialize(ptr, chunk.MaxPagePayload)
 			if serErr != nil {
-				return
+				return fmt.Errorf("checkpoint: serialize page %d: %w", pi.PageID, serErr)
 			}
 			item.PageData = data
 		}
-		// ChunkPos != 0: already persisted, PageData remains nil (skipped by checkpoint)
 
 		items = append(items, item)
+		return nil
 	}
 
-	dfs(&root.PageRef)
+	if err := dfs(&root.PageRef); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 

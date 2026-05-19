@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
@@ -18,74 +17,6 @@ const (
 	PageTypeIndex = 0 // 索引节点（内部节点）
 	PageTypeLeaf  = 1 // 叶子节点
 )
-
-// Value Flag constants.
-// Deprecated: Use mvcc.FlagNormal and mvcc.FlagTombstone instead.
-// Removal: v0.4.0 — no external callers outside offheap tests.
-const (
-	FlagNormal    byte = 0x00 // Normal data
-	FlagTombstone byte = 0x01 // Logically deleted (tombstone marker)
-)
-
-// ParseValueWithFlag 解析带 Flag 的 Value。
-// 纯函数，无共享状态，天然 goroutine 安全。
-func ParseValueWithFlag(val []byte) (flag byte, realVal []byte) {
-	if len(val) == 0 {
-		return FlagNormal, nil // 防御性：空 Value 视为 Normal
-	}
-	return val[0], val[1:]
-}
-
-// tombstoneValue 是预分配的 Tombstone 值（私有，只读，可安全共享）。
-// OverwriteLeafValue 会将内容拷贝到 mmap 页面，不修改此切片本身。
-var tombstoneValue = []byte{FlagTombstone}
-
-// BuildValueWithFlag 构建带 Flag 的 Value。
-// 纯函数，无共享状态，天然 goroutine 安全。
-// Tombstone 场景（flag=FlagTombstone, realVal=nil）返回共享常量，避免重复分配。
-//
-// Deprecated: Phase 2 MVCC 路径使用 mvcc.BuildMVCC 替代.
-// Removal: v0.4.0 — no external callers outside offheap tests.
-func BuildValueWithFlag(flag byte, realVal []byte) []byte {
-	if flag == FlagTombstone && len(realVal) == 0 {
-		return tombstoneValue
-	}
-	result := make([]byte, 1+len(realVal))
-	result[0] = flag
-	copy(result[1:], realVal)
-	return result
-}
-
-// MVCCHeaderSize is the fixed header size for MVCC values.
-// Deprecated: Use mvcc.MVCCHeaderSize instead.
-// Removal: v0.4.0.
-const MVCCHeaderSize = mvcc.MVCCHeaderSize
-
-// ParseValueWithMVCC decodes a Phase 2 MVCC value into flag, beginTS, and realVal.
-// Panics on values shorter than MVCCHeaderSize or invalid flag — all B+Tree values must be MVCC-encoded.
-//
-// Deprecated: Use mvcc.ParseMVCC instead (returns error instead of panic).
-// Removal: v0.4.0 — no external callers outside offheap tests.
-func ParseValueWithMVCC(val []byte) (flag byte, beginTS uint64, realVal []byte) {
-	mvccVal, err := mvcc.ParseMVCC(val)
-	if err != nil {
-		panic(fmt.Sprintf("mvcc: %v", err))
-	}
-	return mvccVal.Flag, mvccVal.BeginTS, mvccVal.RealVal
-}
-
-// BuildMVCCValue encodes a Phase 2 MVCC value: [1B Flag][8B beginTS][realVal].
-// Panics on invalid flag or zero beginTS.
-//
-// Deprecated: Use mvcc.BuildMVCC instead (returns error instead of panic).
-// Removal: v0.4.0 — no external callers outside offheap tests.
-func BuildMVCCValue(flag byte, beginTS uint64, realVal []byte) []byte {
-	result, err := mvcc.BuildMVCC(flag, beginTS, realVal)
-	if err != nil {
-		panic(fmt.Sprintf("mvcc: %v", err))
-	}
-	return result
-}
 
 // 4KB 页面布局：
 // ┌──────────────┬──────────────┬──────────────┬──────────────┐

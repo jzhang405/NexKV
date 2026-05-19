@@ -243,39 +243,6 @@ func TestCheckpoint_Stats(t *testing.T) {
 	assert.GreaterOrEqual(t, mgr.stats.LastDurationMs.Load(), int64(0))
 }
 
-func TestEnumeratePages(t *testing.T) {
-	wal := newMockWAL()
-	btree := newTestBTree()
-	cfg := DefaultConfig()
-
-	mgr := NewManager(wal, btree, nil, cfg)
-	ids := mgr.enumeratePages(btree.root)
-
-	assert.NotEmpty(t, ids)
-	// Root page (id=1) + 2 children should be visited
-	assert.GreaterOrEqual(t, len(ids), 3)
-}
-
-func TestEnumeratePages_Dedup(t *testing.T) {
-	wal := newMockWAL()
-
-	// Tree with diamond reference
-	btree := &mockBTreeScanner{
-		root: &mockPageRef{
-			id:   model.RootPageID,
-			leaf: false,
-			kids: []model.PageID{2, 2}, // duplicate child
-		},
-	}
-	cfg := DefaultConfig()
-
-	mgr := NewManager(wal, btree, nil, cfg)
-	ids := mgr.enumeratePages(btree.root)
-
-	// Should only count page 2 once
-	assert.Equal(t, 2, len(ids))
-}
-
 // FuzzCheckpointRecovery tests checkpoint consistency under random WAL states.
 func FuzzCheckpointRecovery(f *testing.F) {
 	f.Add(int(5), int(3))

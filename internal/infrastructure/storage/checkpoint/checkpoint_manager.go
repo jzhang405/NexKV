@@ -120,22 +120,19 @@ func (m *Manager) FuzzyCheckpoint() error {
 		}
 	}
 
-	// Step 4: Record end LSN (stats only)
-	_ = uint64(m.wal.CurrentLSN())
-
-	// Step 5: Write Checkpoint WAL entry
+	// Step 4: Write Checkpoint WAL entry
 	ckpKey := encodeCheckpointKey(startLSN, pageLocs)
 	ckpEntry := &service.WALEntry{Type: service.WALTypeCheckpoint, Key: ckpKey}
 	if _, err := m.wal.Append(ckpEntry); err != nil {
 		return fmt.Errorf("checkpoint: append entry: %w", err)
 	}
 
-	// Step 6: Sync WAL
+	// Step 5: Sync WAL
 	if err := m.wal.Sync(); err != nil {
 		return fmt.Errorf("checkpoint: sync: %w", err)
 	}
 
-	// Step 7: Truncate WAL segments below checkpointStartLSN
+	// Step 6: Truncate WAL segments below checkpointStartLSN
 	if err := m.wal.Truncate(service.LSN(startLSN)); err != nil {
 		return fmt.Errorf("checkpoint: truncate: %w", err)
 	}
@@ -218,35 +215,3 @@ func (m *Manager) Shutdown() error {
 	m.cancel()
 	return m.SharpCheckpoint()
 }
-
-// enumeratePages traverses all pages reachable from root and returns their IDs.
-// Deprecated: Use BTreeScanner.EnumeratePages for Phase 4.3 AO integration.
-func (m *Manager) enumeratePages(root PageRef) []model.PageID {
-	visited := make(map[model.PageID]bool)
-	var ids []model.PageID
-	var dfs func(p PageRef)
-	dfs = func(p PageRef) {
-		if p == nil || visited[p.PageID()] {
-			return
-		}
-		visited[p.PageID()] = true
-		ids = append(ids, p.PageID())
-		if !p.IsLeaf() {
-			for _, childID := range p.ChildIDs() {
-				dfs(&checkpointPageRef{id: childID, isLeaf: false})
-			}
-		}
-	}
-	dfs(root)
-	return ids
-}
-
-// checkpointPageRef is a lightweight PageRef for DFS enumeration.
-type checkpointPageRef struct {
-	id     model.PageID
-	isLeaf bool
-}
-
-func (p *checkpointPageRef) PageID() model.PageID     { return p.id }
-func (p *checkpointPageRef) IsLeaf() bool             { return p.isLeaf }
-func (p *checkpointPageRef) ChildIDs() []model.PageID { return nil }

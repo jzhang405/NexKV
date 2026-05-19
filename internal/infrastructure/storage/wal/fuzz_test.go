@@ -39,14 +39,14 @@ func FuzzWALFormat(f *testing.F) {
 			PrevLSN:   LSNInvalid,
 		}
 
-		data, err := entry.Marshal()
+		data, err := MarshalWALEntry(entry)
 		if err != nil {
 			t.Fatalf("Marshal failed: %v", err)
 		}
 
 		// Round-trip
 		decoded := &WALEntry{}
-		if err := decoded.Unmarshal(data); err != nil {
+		if err := UnmarshalWALEntry(decoded, data); err != nil {
 			t.Fatalf("Unmarshal failed for valid data: %v", err)
 		}
 		if decoded.Type != entry.Type {
@@ -72,7 +72,7 @@ func FuzzWALFormatCorrupted(f *testing.F) {
 			LSN: LSN(i + 1), TxID: uint64(i + 1), Type: WALType(i % 7),
 			Key: []byte{byte(i)}, Value: []byte{byte(i + 100)},
 		}
-		data, _ := entry.Marshal()
+		data, _ := MarshalWALEntry(entry)
 		f.Add(data)
 
 		// Corrupted variants
@@ -89,7 +89,7 @@ func FuzzWALFormatCorrupted(f *testing.F) {
 			return
 		}
 		entry := &WALEntry{}
-		_ = entry.Unmarshal(data) // must not panic
+		_ = UnmarshalWALEntry(entry, data) // must not panic
 	})
 }
 

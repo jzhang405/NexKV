@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"sync/atomic"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
@@ -16,7 +17,8 @@ import (
 // Aligns with Lealone ChunkCompactor.java.
 type ChunkCompactor struct {
 	cm          *DiskChunkManager
-	minFillRate int // minimum fill rate (default 30%, max 50%)
+	minFillRate int         // minimum fill rate (default 30%, max 50%)
+	compacting  atomic.Bool // prevents concurrent Compact() runs
 }
 
 const maxRewriteSize = 64 * 1024 * 1024 // 64MB — single compaction I/O budget
@@ -42,7 +44,7 @@ func (c *ChunkCompactor) NeedCompaction() bool {
 			continue
 		}
 		cf.mu.Lock()
-		fr := c.getFillRate(cf)
+		fr, _ := c.getFillRate(cf)
 		cf.mu.Unlock()
 		if fr <= c.minFillRate {
 			return true
@@ -51,9 +53,9 @@ func (c *ChunkCompactor) NeedCompaction() bool {
 	return false
 }
 
-// getFillRate returns the chunk fill rate: 1 = empty, 99 = full (Lealone integer math).
-// Caller must hold cf.mu.
-func (c *ChunkCompactor) getFillRate(cf *ChunkFile) int {
+// getFillRate returns the chunk fill rate: 1 = empty, 99 = full (Lealone integer math),
+// and the total live size in bytes. Caller must hold cf.mu.
+func (c *ChunkCompactor) getFillRate(cf *ChunkFile) (int, int64) {
 	var totalLen, liveLen int64
 	for pos, length := range cf.pagePosToLen {
 		totalLen += int64(length)
@@ -62,26 +64,31 @@ func (c *ChunkCompactor) getFillRate(cf *ChunkFile) int {
 		}
 	}
 	if totalLen == 0 {
-		return 1
+		return 1, 0
 	}
-	return 1 + int(98*liveLen/totalLen)
+	return 1 + int(98*liveLen/totalLen), liveLen
 }
 
 // Compact performs one compaction cycle using the Lealone algorithm.
 //
-//	1. Collect all removedPages (global snapshot)
-//	2. Skip if empty
-//	3. Classify: fillRate==1 → unused; fillRate<=minFillRate → rewritable (skip lastChunk)
-//	4. Sort rewritable by (fillRate asc, liveSize asc)
-//	5. Greedy select: cumulative liveSize <= maxRewriteSize
-//	6. Mark selected chunks compacting (write barrier)
-//	7. Snapshot live pages per chunk (hold cf.mu, copy pagePosToLen - removedPages)
-//	8. Rewrite live pages to new chunk
-//	9. Sync new chunk
-//	10. Clean cm.removedPages for old chunks
-//	11. Delete old chunks (rename → .ao.deleting → os.Remove)
-//	12. Clear compacting marks
+//  1. Collect all removedPages (global snapshot)
+//  2. Skip if empty
+//  3. Classify: fillRate==1 → unused; fillRate<=minFillRate → rewritable (skip lastChunk)
+//  4. Sort rewritable by (fillRate asc, liveSize asc)
+//  5. Greedy select: cumulative liveSize <= maxRewriteSize
+//  6. Mark selected chunks compacting (write barrier)
+//  7. Snapshot live pages per chunk (hold cf.mu, copy pagePosToLen - removedPages)
+//  8. Rewrite live pages to new chunk
+//  9. Sync new chunk
+//  10. Clean cm.removedPages for old chunks
+//  11. Delete old chunks (rename → .ao.deleting → os.Remove)
+//  12. Clear compacting marks
 func (c *ChunkCompactor) Compact() error {
+	if !c.compacting.CompareAndSwap(false, true) {
+		return nil // another compaction already in progress
+	}
+	defer c.compacting.Store(false)
+
 	// Step 1: Collect global removedPages
 	c.cm.mu.RLock()
 	removed := make(map[model.ChunkPosition]struct{}, len(c.cm.removedPages))
@@ -101,7 +108,7 @@ func (c *ChunkCompactor) Compact() error {
 		fillRate int
 		liveSize int64
 	}
-	var unused, rewritable []*ChunkFile
+	var unused []*ChunkFile
 	var candidates []candidate
 
 	c.cm.mu.RLock()
@@ -110,25 +117,18 @@ func (c *ChunkCompactor) Compact() error {
 			continue
 		}
 		cf.mu.Lock()
-		fr := c.getFillRate(cf)
-		var liveSize int64
-		for pos, l := range cf.pagePosToLen {
-			if _, rem := cf.removedPages[pos]; !rem {
-				liveSize += int64(l)
-			}
-		}
+		fr, liveSize := c.getFillRate(cf)
 		cf.mu.Unlock()
 
 		if fr == 1 {
 			unused = append(unused, cf)
 		} else if fr <= c.minFillRate {
-			rewritable = append(rewritable, cf)
 			candidates = append(candidates, candidate{cf: cf, fillRate: fr, liveSize: liveSize})
 		}
 	}
 	c.cm.mu.RUnlock()
 
-	if len(unused) == 0 && len(rewritable) == 0 {
+	if len(unused) == 0 && len(candidates) == 0 {
 		return nil
 	}
 
@@ -203,16 +203,16 @@ func (c *ChunkCompactor) Compact() error {
 	}
 	c.cm.mu.Unlock()
 
-	// Step 11: Delete old chunks (rename → .ao.deleting → os.Remove)
+	// Step 11: Delete old chunks (rename → close → remove)
 	for _, cf := range selected {
 		cf.mu.Lock()
 		oldPath := cf.file.Name()
-		cf.file.Close()
 		deletingPath := oldPath + ".deleting"
 		if err := os.Rename(oldPath, deletingPath); err != nil {
 			cf.mu.Unlock()
 			continue
 		}
+		cf.file.Close()
 		os.Remove(deletingPath)
 		cf.mu.Unlock()
 

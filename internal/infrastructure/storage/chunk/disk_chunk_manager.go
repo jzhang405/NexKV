@@ -26,13 +26,13 @@ type DiskChunkManager struct {
 	dir       string // chunk file directory
 	chunkSize int64  // per-chunk capacity
 
-	mu        sync.RWMutex
-	chunks    []*ChunkFile          // active chunks (sorted by seq)
-	lastChunk *ChunkFile            // most recently written chunk
-	maxSeq    uint64                // global max sequence number
-	chunkIDs  *chunkIDBitSet        // chunk ID bit field (Lealone BitField)
-	idToChunk map[uint32]*ChunkFile // chunkID → ChunkFile
-	seqToID      map[uint64]uint32               // seq → chunkID (recovery)
+	mu           sync.RWMutex
+	chunks       []*ChunkFile                     // active chunks (sorted by seq)
+	lastChunk    *ChunkFile                       // most recently written chunk
+	maxSeq       uint64                           // global max sequence number
+	chunkIDs     *chunkIDBitSet                   // chunk ID bit field (Lealone BitField)
+	idToChunk    map[uint32]*ChunkFile            // chunkID → ChunkFile
+	seqToID      map[uint64]uint32                // seq → chunkID (recovery)
 	removedPages map[model.ChunkPosition]struct{} // Phase 4.4: global removed set
 
 	closed   atomic.Bool
@@ -53,11 +53,11 @@ func NewDiskChunkManager(dir string, chunkSize int64) (*DiskChunkManager, error)
 	}
 
 	cm := &DiskChunkManager{
-		dir:       dir,
-		chunkSize: chunkSize,
-		chunkIDs:  newChunkIDBitSet(),
-		idToChunk: make(map[uint32]*ChunkFile),
-		seqToID:   make(map[uint64]uint32),
+		dir:          dir,
+		chunkSize:    chunkSize,
+		chunkIDs:     newChunkIDBitSet(),
+		idToChunk:    make(map[uint32]*ChunkFile),
+		seqToID:      make(map[uint64]uint32),
 		removedPages: make(map[model.ChunkPosition]struct{}),
 	}
 	return cm, nil
@@ -247,12 +247,12 @@ func (cm *DiskChunkManager) Close() error {
 			}
 		}
 		h := &ChunkHeader{
-			ID:               c.id,
-				SumOfLivePageLength: sumLiveLen,
-			PageCount:        int32(len(c.pagePosToLen)),
-			BlockSize:        ChunkBlockSize,
-			FormatVersion:    1,
-			RemovedPageCount: int32(len(c.removedPages)),
+			ID:                  c.id,
+			SumOfLivePageLength: sumLiveLen,
+			PageCount:           int32(len(c.pagePosToLen)),
+			BlockSize:           ChunkBlockSize,
+			FormatVersion:       1,
+			RemovedPageCount:    int32(len(c.removedPages)),
 		}
 		if err := c.writeHeader(h); err != nil && firstErr == nil {
 			firstErr = err
@@ -296,9 +296,6 @@ func (cm *DiskChunkManager) createChunk() (*ChunkFile, error) {
 	cm.idToChunk[chunkID] = c
 	cm.seqToID[cm.maxSeq] = chunkID
 	cm.lastChunk = c
-		for pos := range c.removedPages {
-			cm.removedPages[pos] = struct{}{}
-		}
 	return c, nil
 }
 
@@ -406,12 +403,12 @@ func RestoreDiskChunkManager(dir string, chunkSize int64) (*DiskChunkManager, er
 	}
 
 	cm := &DiskChunkManager{
-		dir:       dir,
-		chunkSize: chunkSize,
-		maxSeq:    sorted[len(sorted)-1].seq,
-		chunkIDs:  newChunkIDBitSet(),
-		idToChunk: make(map[uint32]*ChunkFile),
-		seqToID:   make(map[uint64]uint32),
+		dir:          dir,
+		chunkSize:    chunkSize,
+		maxSeq:       sorted[len(sorted)-1].seq,
+		chunkIDs:     newChunkIDBitSet(),
+		idToChunk:    make(map[uint32]*ChunkFile),
+		seqToID:      make(map[uint64]uint32),
 		removedPages: make(map[model.ChunkPosition]struct{}),
 	}
 

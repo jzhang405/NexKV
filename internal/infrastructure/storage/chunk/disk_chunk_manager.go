@@ -26,13 +26,14 @@ type DiskChunkManager struct {
 	dir       string // chunk file directory
 	chunkSize int64  // per-chunk capacity
 
-	mu        sync.RWMutex
-	chunks    []*ChunkFile          // active chunks (sorted by seq)
-	lastChunk *ChunkFile            // most recently written chunk
-	maxSeq    uint64                // global max sequence number
-	chunkIDs  *chunkIDBitSet        // chunk ID bit field (Lealone BitField)
-	idToChunk map[uint32]*ChunkFile // chunkID → ChunkFile
-	seqToID   map[uint64]uint32     // seq → chunkID (recovery: seq→chunkID reverse lookup)
+	mu           sync.RWMutex
+	chunks       []*ChunkFile                     // active chunks (sorted by seq)
+	lastChunk    *ChunkFile                       // most recently written chunk
+	maxSeq       uint64                           // global max sequence number
+	chunkIDs     *chunkIDBitSet                   // chunk ID bit field (Lealone BitField)
+	idToChunk    map[uint32]*ChunkFile            // chunkID → ChunkFile
+	seqToID      map[uint64]uint32                // seq → chunkID (recovery)
+	removedPages map[model.ChunkPosition]struct{} // Phase 4.4: global removed set
 
 	closed   atomic.Bool
 	readOps  atomic.Int64
@@ -52,11 +53,12 @@ func NewDiskChunkManager(dir string, chunkSize int64) (*DiskChunkManager, error)
 	}
 
 	cm := &DiskChunkManager{
-		dir:       dir,
-		chunkSize: chunkSize,
-		chunkIDs:  newChunkIDBitSet(),
-		idToChunk: make(map[uint32]*ChunkFile),
-		seqToID:   make(map[uint64]uint32),
+		dir:          dir,
+		chunkSize:    chunkSize,
+		chunkIDs:     newChunkIDBitSet(),
+		idToChunk:    make(map[uint32]*ChunkFile),
+		seqToID:      make(map[uint64]uint32),
+		removedPages: make(map[model.ChunkPosition]struct{}),
 	}
 	return cm, nil
 }
@@ -175,6 +177,7 @@ func (cm *DiskChunkManager) FreePage(pos model.ChunkPosition) error {
 		return fmt.Errorf("chunk: FreePage: position %s not allocated", pos)
 	}
 	c.removedPages[pos] = struct{}{}
+	cm.removedPages[pos] = struct{}{} // Phase 4.4: global
 	return nil
 }
 
@@ -237,12 +240,19 @@ func (cm *DiskChunkManager) Close() error {
 		// TODO(phase4.3): Fill RootPagePos, SumOfPageLength, SumOfLivePageLength,
 		//   PagePositionAndLengthOffset, RemovedPageOffset, LastTransactionID, MapSize
 		//   from the BTree state at checkpoint time.
+		var sumLiveLen int64
+		for pos, l := range c.pagePosToLen {
+			if _, removed := c.removedPages[pos]; !removed {
+				sumLiveLen += int64(l)
+			}
+		}
 		h := &ChunkHeader{
-			ID:               c.id,
-			PageCount:        int32(len(c.pagePosToLen)),
-			BlockSize:        ChunkBlockSize,
-			FormatVersion:    1,
-			RemovedPageCount: int32(len(c.removedPages)),
+			ID:                  c.id,
+			SumOfLivePageLength: sumLiveLen,
+			PageCount:           int32(len(c.pagePosToLen)),
+			BlockSize:           ChunkBlockSize,
+			FormatVersion:       1,
+			RemovedPageCount:    int32(len(c.removedPages)),
 		}
 		if err := c.writeHeader(h); err != nil && firstErr == nil {
 			firstErr = err
@@ -393,12 +403,13 @@ func RestoreDiskChunkManager(dir string, chunkSize int64) (*DiskChunkManager, er
 	}
 
 	cm := &DiskChunkManager{
-		dir:       dir,
-		chunkSize: chunkSize,
-		maxSeq:    sorted[len(sorted)-1].seq,
-		chunkIDs:  newChunkIDBitSet(),
-		idToChunk: make(map[uint32]*ChunkFile),
-		seqToID:   make(map[uint64]uint32),
+		dir:          dir,
+		chunkSize:    chunkSize,
+		maxSeq:       sorted[len(sorted)-1].seq,
+		chunkIDs:     newChunkIDBitSet(),
+		idToChunk:    make(map[uint32]*ChunkFile),
+		seqToID:      make(map[uint64]uint32),
+		removedPages: make(map[model.ChunkPosition]struct{}),
 	}
 
 	// Step 5-7: Open each chunk, validate header, recover metadata
@@ -439,6 +450,9 @@ func RestoreDiskChunkManager(dir string, chunkSize int64) (*DiskChunkManager, er
 		cm.seqToID[fe.seq] = fe.chunkID
 		cm.chunkIDs.set(fe.chunkID)
 		cm.lastChunk = c
+		for pos := range c.removedPages {
+			cm.removedPages[pos] = struct{}{}
+		}
 	}
 
 	// No valid chunks after validation → first start

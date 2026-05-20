@@ -159,6 +159,11 @@ func (m *Manager) FuzzyCheckpoint() error {
 		go func() { _ = m.compactor.Compact() }()
 	}
 
+	// Phase 6.5 (G5): Async BTree tombstone compaction (does not block checkpoint)
+	if tc, ok := m.btree.(interface{ TryCompact() error }); ok {
+		go func() { _ = tc.TryCompact() }()
+	}
+
 	return nil
 }
 

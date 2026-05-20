@@ -34,6 +34,7 @@ type BTree struct {
 	tracer         Tracer                   // operation tracer for debugging (optional)
 	tsGen          mvcc.TSGenerator         // MVCC timestamp generator (Phase 2a)
 	txMgr          mvcc.TxManager           // MVCC transaction manager (Phase 2b)
+	compactWp      WatermarkProvider        // Phase 6.5: GC-safe watermark for compaction
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -505,4 +506,25 @@ func (b *BTree) ReleaseSnapshot(_ context.Context, _ service.SnapshotID) error {
 
 func (b *BTree) Stats(_ context.Context) (*service.StoreStats, error) {
 	return nil, ErrNotImplemented
+}
+
+// SetCompactionWatermark sets the watermark provider for tombstone compaction.
+// After set, TryCompact() can be called to reclaim space from pages with
+// high tombstone ratios. Callers should wire this to ActiveTxRegistry.Watermark()
+// at server startup, and trigger TryCompact() after each Checkpoint.
+func (b *BTree) SetCompactionWatermark(wp WatermarkProvider) {
+	b.compactWp = wp
+}
+
+// TryCompact performs a single tombstone compaction cycle if a watermark
+// provider has been configured. Best-effort: returns nil even if compaction
+// is skipped (no provider, tree closed) or partially fails.
+func (b *BTree) TryCompact() error {
+	if b.compactWp == nil {
+		return nil
+	}
+	if err := b.checkOpen(); err != nil {
+		return nil
+	}
+	return b.Compact(b.compactWp)
 }

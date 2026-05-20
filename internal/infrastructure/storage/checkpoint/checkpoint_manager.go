@@ -53,16 +53,28 @@ type Stats struct {
 	TotalCheckpoints  atomic.Uint64
 }
 
+// Compactor triggers chunk space reclamation after checkpoint.
+type Compactor interface {
+	NeedCompaction() bool
+	Compact() error
+}
+
 // Manager orchestrates Fuzzy and Sharp checkpoints.
 type Manager struct {
-	wal    WALWriter
-	btree  BTreeScanner
-	cm     service.ChunkManager // Phase 4.3: AO chunk persistence
-	config *Config
-	stats  Stats
-	ctx    context.Context
-	cancel context.CancelFunc
-	mu     sync.Mutex // prevents concurrent checkpoints
+	wal       WALWriter
+	btree     BTreeScanner
+	cm        service.ChunkManager // Phase 4.3: AO chunk persistence
+	compactor Compactor            // Phase 4.4: chunk space reclamation
+	config    *Config
+	stats     Stats
+	ctx       context.Context
+	cancel    context.CancelFunc
+	mu        sync.Mutex // prevents concurrent checkpoints
+}
+
+// SetCompactor injects the chunk compactor for post-checkpoint space reclamation.
+func (m *Manager) SetCompactor(c Compactor) {
+	m.compactor = c
 }
 
 // NewManager creates a checkpoint manager.
@@ -141,6 +153,11 @@ func (m *Manager) FuzzyCheckpoint() error {
 	m.stats.LastCheckpointLSN.Store(startLSN)
 	m.stats.LastDurationMs.Store(elapsed.Milliseconds())
 	m.stats.TotalCheckpoints.Add(1)
+
+	// Phase 4.4: Async chunk compaction (does not block checkpoint)
+	if m.compactor != nil && m.compactor.NeedCompaction() {
+		go func() { _ = m.compactor.Compact() }()
+	}
 
 	return nil
 }

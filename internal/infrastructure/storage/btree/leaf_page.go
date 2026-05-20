@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
 )
 
@@ -240,9 +241,31 @@ func (h *leafPageHandle) Split() (LeafPage, LeafPage, []byte, error) {
 	}
 	h.pa.SetVersion(rightRawID, srcVersion+1)
 
+	// Phase 6.5 (G6): propagate tombstone counts to split halves
+	leftTC := countTombstonesInRange(h, 0, mid)
+	rightTC := countTombstonesInRange(h, mid, count)
+	h.pa.SetTombstoneCount(leftRawID, leftTC)
+	h.pa.SetTombstoneCount(rightRawID, rightTC)
+
 	left := &leafPageHandle{id: model.PageID(leftRawID), pa: h.pa, storage: h.storage}
 	right := &leafPageHandle{id: model.PageID(rightRawID), pa: h.pa, storage: h.storage}
 	return left, right, splitKeyCopy, nil
+}
+
+// countTombstonesInRange counts MVCC tombstone entries in the given range.
+func countTombstonesInRange(h *leafPageHandle, start, end int) uint16 {
+	var tc uint16
+	for i := start; i < end; i++ {
+		val := h.GetValue(i)
+		mv, err := mvcc.ParseMVCC(val)
+		if err != nil {
+			continue // conservative: don't count parse errors as tombstones
+		}
+		if mv.IsTombstone() {
+			tc++
+		}
+	}
+	return tc
 }
 
 // IncrementTombstone increments the tombstone count on the COW page.

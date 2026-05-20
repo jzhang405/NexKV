@@ -44,6 +44,11 @@ func (s *OffheapBTreeStorage) MergeLeaves(left, right LeafPage) (LeafPage, error
 		}
 	}
 
+	// Phase 6.5 (G7): sum tombstone counts from both source pages
+	leftTC := s.pa.GetTombstoneCount(uint32(left.PageID()))
+	rightTC := s.pa.GetTombstoneCount(uint32(right.PageID()))
+	s.pa.SetTombstoneCount(newRawID, leftTC+rightTC)
+
 	newID := model.PageID(newRawID)
 	return &leafPageHandle{id: newID, pa: s.pa, storage: s}, nil
 }

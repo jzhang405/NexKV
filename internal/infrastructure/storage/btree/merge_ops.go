@@ -16,8 +16,9 @@ import (
 // When the physical page is reused by the allocator, stale PageRefs see count=0.
 //
 // Fix requires either:
-//   a. Epoch-based page reclamation (delayed free until all referers drain), or
-//   b. Async merge in background goroutine (not blocking Delete hot path)
+//
+//	a. Epoch-based page reclamation (delayed free until all referers drain), or
+//	b. Async merge in background goroutine (not blocking Delete hot path)
 //
 // mergeChildRefsInCache correctly handles the children cache update (G1 fixed).
 // handleLeafMerge can be called safely from explicit/manual compaction paths.
@@ -156,7 +157,6 @@ func (b *BTree) handleLeafMerge(path SearchPath, sparseRef *PageRef, leafPI *Pag
 	// Phase 4: Mark old pages NodeRedirect (must set Redirect:true — searchPath checks this field)
 	refA.CAS(markA, &PageInfo{PageID: piA.PageID, Version: markA.Version + 1, IsLeaf: true, NodeState: NodeRedirect, Redirect: true})
 	refB.CAS(markB, &PageInfo{PageID: piB.PageID, Version: markB.Version + 1, IsLeaf: true, NodeState: NodeRedirect, Redirect: true})
-
 
 	_ = b.storage.FreePage(piA.PageID)
 	_ = b.storage.FreePage(piB.PageID)

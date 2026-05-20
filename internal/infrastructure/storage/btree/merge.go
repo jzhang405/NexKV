@@ -129,8 +129,6 @@ func (s *OffheapBTreeStorage) BorrowFromLeftLeaf(self, sibling LeafPage) (LeafPa
 	if borrowedIsTombstone {
 		selfTC++
 		sibTC--
-	} else {
-		// borrowed entry is normal (non-tombstone), counts unchanged
 	}
 	s.pa.SetTombstoneCount(newSelfRawID, selfTC)
 	s.pa.SetTombstoneCount(newSibRawID, sibTC)
@@ -196,8 +194,6 @@ func (s *OffheapBTreeStorage) BorrowFromRightLeaf(self, sibling LeafPage) (LeafP
 	if borrowedIsTombstone {
 		selfTC++
 		sibTC--
-	} else {
-		// borrowed entry is normal (non-tombstone), counts unchanged
 	}
 	s.pa.SetTombstoneCount(newSelfRawID, selfTC)
 	s.pa.SetTombstoneCount(newSibRawID, sibTC)

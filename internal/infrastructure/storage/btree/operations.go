@@ -738,16 +738,16 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	// Step 3: Mutate target (double-COW)
 	mutation, err := mutate(target)
 
-		// Phase 6.5 (G4): apply tombstoneDelta to COW target page (double-COW in split path)
-		if mutation.tombstoneDelta != 0 {
-			rawID := uint32(mutation.newPageID)
-			tc := b.storage.pa.GetTombstoneCount(rawID)
-			newTC := int16(tc) + mutation.tombstoneDelta
-			if newTC < 0 {
-				newTC = 0
-			}
-			b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
+	// Phase 6.5 (G4): apply tombstoneDelta to COW target page (double-COW in split path)
+	if mutation.tombstoneDelta != 0 {
+		rawID := uint32(mutation.newPageID)
+		tc := b.storage.pa.GetTombstoneCount(rawID)
+		newTC := int16(tc) + mutation.tombstoneDelta
+		if newTC < 0 {
+			newTC = 0
 		}
+		b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
+	}
 	if err != nil {
 		// Cleanup split pages
 		_ = b.storage.FreePage(leftPage.PageID())
@@ -879,16 +879,16 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 	// Step 3: Mutate target (double-COW)
 	mutation, err := mutate(target)
 
-		// Phase 6.5 (G4): apply tombstoneDelta to COW target page (double-COW in split path)
-		if mutation.tombstoneDelta != 0 {
-			rawID := uint32(mutation.newPageID)
-			tc := b.storage.pa.GetTombstoneCount(rawID)
-			newTC := int16(tc) + mutation.tombstoneDelta
-			if newTC < 0 {
-				newTC = 0
-			}
-			b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
+	// Phase 6.5 (G4): apply tombstoneDelta to COW target page (double-COW in split path)
+	if mutation.tombstoneDelta != 0 {
+		rawID := uint32(mutation.newPageID)
+		tc := b.storage.pa.GetTombstoneCount(rawID)
+		newTC := int16(tc) + mutation.tombstoneDelta
+		if newTC < 0 {
+			newTC = 0
 		}
+		b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
+	}
 	if err != nil {
 		_ = b.storage.FreePage(leftPage.PageID())
 		_ = b.storage.FreePage(rightPage.PageID())

@@ -212,6 +212,17 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			return fmt.Errorf("btree: write operation mutate key %q: %w", key, err)
 		}
 
+		// Phase 6.5: apply tombstoneDelta to COW page header before CAS publish
+		if result.tombstoneDelta != 0 {
+			rawID := uint32(result.newPageID)
+			tc := b.storage.pa.GetTombstoneCount(rawID)
+			newTC := int16(tc) + result.tombstoneDelta
+			if newTC < 0 {
+				newTC = 0
+			}
+			b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
+		}
+
 		newInfo := &PageInfo{
 			PageID:  result.newPageID,
 			Version: oldInfo.Version + 1,
@@ -229,8 +240,6 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			continue
 		}
 
-		// Phase 6.5 TODO: Lazy Merge — trigger b.handleLeafMerge when
-		// leaf utilization drops below MergeThreshold after a Delete.
 		path.ReleaseAll()
 		b.size.Add(result.delta)
 		return nil

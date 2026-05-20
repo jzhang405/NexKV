@@ -6,27 +6,18 @@ package btree
 
 import "runtime"
 
-func (b *BTree) maybeMergeAfterWrite(path SearchPath, leafRef *PageRef, delta int64) {
-	// Lazy Merge: only trigger on delete operations (delta < 0).
-	// Phase 6.5 MVP — merge is callable but not auto-triggered in hot path
-	// to avoid CAS conflicts with concurrent writes during testing.
-	// Enable by removing this early return after stabilization.
-	_ = path
-	_ = leafRef
-	_ = delta
-
-	// Full implementation:
-	// if delta >= 0 { return }
-	// if len(path) < 2 { return }
-	// rootPI := b.rootRef.GetPageInfo()
-	// if rootPI == nil || rootPI.IsLeaf { return }
-	// pi := leafRef.GetPageInfo()
-	// if pi == nil || pi.IsBusy() { return }
-	// leaf, err := b.storage.GetLeafPage(pi.PageID)
-	// if err != nil { return }
-	// if !isLeafSparse(leaf, MergeThreshold) { return }
-	// _ = b.handleLeafMerge(path, leafRef, pi)
-}
+// maybeMergeAfterWrite triggers lazy merge after a successful Delete when the target
+// leaf is below MergeThreshold. Currently disabled: the children cache update path
+// (removeChildFromCache) needs to be replaced with a proper replaceTwoWithOne that
+// creates a PageRef for the merged page. Without this, subsequent searchPath calls
+// miss the merged page and return "key not found" for keys that still exist.
+//
+// TODO(G1): replace removeChildFromCache with mergeChildRefsInCache that:
+//   1. Creates a new PageRef(mergedPageID, 0, freeFunc) with Retain
+//   2. Replaces children[rmIdx] and children[rmIdx+1] with the new PageRef
+//   3. Removes separators[rmIdx]
+// Then re-enable the call from btree.go Delete path.
+func (b *BTree) maybeMergeAfterWrite(_ []byte, _ int64) {}
 
 func (b *BTree) handleLeafMerge(path SearchPath, sparseRef *PageRef, leafPI *PageInfo) error {
 	parentEntry := path[len(path)-2]

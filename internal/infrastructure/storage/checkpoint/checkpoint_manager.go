@@ -187,8 +187,7 @@ func (m *Manager) SharpCheckpoint() error {
 
 	startLSN := uint64(m.wal.CurrentLSN())
 
-	ckpKey := make([]byte, 8)
-	binary.BigEndian.PutUint64(ckpKey, startLSN)
+	ckpKey := encodeCheckpointKey(startLSN, nil)
 	ckpEntry := &service.WALEntry{Type: service.WALTypeCheckpoint, Key: ckpKey}
 	if _, err := m.wal.Append(ckpEntry); err != nil {
 		return fmt.Errorf("checkpoint: append entry: %w", err)

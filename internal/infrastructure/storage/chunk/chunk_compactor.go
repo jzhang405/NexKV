@@ -97,12 +97,7 @@ func (c *ChunkCompactor) Compact() error {
 	}
 	c.cm.mu.RUnlock()
 
-	// Step 2: Skip if nothing removed
-	if len(removed) == 0 {
-		return nil
-	}
-
-	// Step 3: Classify chunks
+	// Step 2: Classify chunks (even if removed is empty — empty chunks need cleanup)
 	type candidate struct {
 		cf       *ChunkFile
 		fillRate int
@@ -194,30 +189,13 @@ func (c *ChunkCompactor) Compact() error {
 		return fmt.Errorf("chunk: compact: sync: %w", err)
 	}
 
-	// Step 10: Clean global removedPages for old chunks
-	c.cm.mu.Lock()
+	// Step 10-11: Delete old chunks + clean removedPages atomically
 	for _, cf := range selected {
-		for pos := range cf.removedPages {
-			delete(c.cm.removedPages, pos)
-		}
-	}
-	c.cm.mu.Unlock()
-
-	// Step 11: Delete old chunks (rename → close → remove)
-	for _, cf := range selected {
-		cf.mu.Lock()
-		oldPath := cf.file.Name()
-		deletingPath := oldPath + ".deleting"
-		if err := os.Rename(oldPath, deletingPath); err != nil {
-			cf.mu.Unlock()
-			continue
-		}
-		cf.file.Close()
-		os.Remove(deletingPath)
-		cf.mu.Unlock()
-
-		// Remove from manager
+		// Lock ordering: cm.mu → cf.mu
 		c.cm.mu.Lock()
+		cf.mu.Lock()
+
+		// Remove from manager first (prevents new FreePage on this chunk)
 		delete(c.cm.idToChunk, cf.id)
 		delete(c.cm.seqToID, cf.seq)
 		for i, ch := range c.cm.chunks {
@@ -227,7 +205,23 @@ func (c *ChunkCompactor) Compact() error {
 			}
 		}
 		c.cm.chunkIDs.clear(cf.id)
+
+		// Clean removedPages for this chunk (safe: idToChunk gone, lookupChunk fails)
+		for pos := range cf.removedPages {
+			delete(c.cm.removedPages, pos)
+		}
 		c.cm.mu.Unlock()
+
+		// Rename → close → remove (cm.mu released, cf.mu still held)
+		oldPath := cf.file.Name()
+		deletingPath := oldPath + ".deleting"
+		if err := os.Rename(oldPath, deletingPath); err != nil {
+			cf.mu.Unlock()
+			continue
+		}
+		cf.file.Close()
+		_ = os.Remove(deletingPath)
+		cf.mu.Unlock()
 	}
 
 	return nil

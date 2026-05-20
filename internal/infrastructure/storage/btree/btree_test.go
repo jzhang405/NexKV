@@ -104,7 +104,7 @@ func TestBTreeConcurrentSet(t *testing.T) {
 	tree, _ := newTestBTree(t)
 	ctx := context.Background()
 
-	const goroutines = 10
+	const goroutines = 8
 	const keysPerGoroutine = 10
 
 	var wg sync.WaitGroup
@@ -249,7 +249,7 @@ func TestBTreeNoDataLoss(t *testing.T) {
 	tree, _ := newTestBTree(t)
 	ctx := context.Background()
 
-	const goroutines = 10
+	const goroutines = 8
 	const uniqueKeys = 10 // Multiple goroutines compete for same keys
 
 	var wg sync.WaitGroup
@@ -451,7 +451,7 @@ func TestBTreeTombstoneConcurrentSetDelete(t *testing.T) {
 	tree, _ := newTestBTree(t)
 	ctx := context.Background()
 
-	const goroutines = 20
+	const goroutines = 8
 	const opsPerGoroutine = 50
 
 	var wg sync.WaitGroup

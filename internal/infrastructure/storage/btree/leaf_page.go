@@ -171,6 +171,18 @@ func (h *leafPageHandle) Update(idx int, value []byte) (LeafPage, error) {
 		}
 	}
 
+	// Phase 6.5: propagate tombstoneCount through rebuild path.
+	// Delta-based approach: start from old count, adjust for replaced entry.
+	tc := h.pa.GetTombstoneCount(rawID)
+	oldVal := h.GetValue(idx)
+	if mv, err := mvcc.ParseMVCC(oldVal); err == nil && mv.IsTombstone() {
+		tc-- // old tombstone entry removed
+	}
+	if mv, err := mvcc.ParseMVCC(value); err == nil && mv.IsTombstone() {
+		tc++ // new tombstone entry inserted
+	}
+	h.pa.SetTombstoneCount(rebuildRawID, tc)
+
 	return &leafPageHandle{id: model.PageID(rebuildRawID), pa: h.pa, storage: h.storage}, nil
 }
 
@@ -253,15 +265,18 @@ func (h *leafPageHandle) Split() (LeafPage, LeafPage, []byte, error) {
 }
 
 // countTombstonesInRange counts MVCC tombstone entries in the given range.
+// Uses direct mmap read of the flag byte (pa.GetValue with len=1) to avoid
+// per-value heap allocation in the Split hot path.
 func countTombstonesInRange(h *leafPageHandle, start, end int) uint16 {
 	var tc uint16
+	rawID := uint32(h.id)
 	for i := start; i < end; i++ {
-		val := h.GetValue(i)
-		mv, err := mvcc.ParseMVCC(val)
-		if err != nil {
-			continue // conservative: don't count parse errors as tombstones
+		_, _, valOff, valLen := h.pa.GetLeafEntryOffset(rawID, i)
+		if valLen < 1 {
+			continue
 		}
-		if mv.IsTombstone() {
+		raw := h.pa.GetValue(rawID, valOff, 1)
+		if raw[0] == mvcc.FlagTombstone {
 			tc++
 		}
 	}

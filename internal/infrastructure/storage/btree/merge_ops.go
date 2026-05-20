@@ -196,7 +196,7 @@ func (b *BTree) mergeChildRefsInCache(parentRef *PageRef, rmIdx int, mergedPageI
 		}
 
 		// Create new merged PageRef
-		mergedRef := NewPageRef(mergedPageID, 0, b.rootRef.freeFunc)
+		mergedRef := NewPageRef(mergedPageID, 0, nil) // nil freeFunc: page lifecycle managed by tree, not cache
 		mergedRef.Retain()
 
 		// Build new children: [0..rmIdx) + mergedRef + (rmIdx+2..]

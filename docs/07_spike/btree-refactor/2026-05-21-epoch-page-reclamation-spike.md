@@ -761,11 +761,69 @@ Epoch 在 BTree COW 高频写、海量小页更迭场景下**完胜** RefCount�
 
 使用 `atomic` 轮询分配（非 `cpuID()`），64 slot 超冗余隔离，Mutex 竞争趋近于 0。
 
-### 6.5 状态
+---
 
-✅ 方案已通过 3 轮多 Agent 审查，所有 CRITICAL/HIGH 缺陷已修复。**可进入实现阶段**。
+## 七、性能基线
+
+> 测试日期：2026-05-21
+> 环境：Mac M-series, pageSize=4KB, 512MB mmap (NexKV) / 64MB cache (Lealone)
+> 工具：`cmd/tools/btree_bench` (NexKV) / `BTreeMapBenchmarkRunner` (Lealone)
+
+### 7.1 NexKV BTree 吞吐（500K ops，单线程）
+
+| 测试 | QPS | 说明 |
+|------|-----|------|
+| seq-put | **1,119,049** | 纯写，MVCC 编码开销 |
+| seq-get | **2,585,092** | 纯读，lock-free 路径 |
+| seq-put-get | **1,262,215** | 50% 写 + 50% 读 |
+| mixed-8-r80 | **1,786,370** | 80% 读 + 20% 写 |
+
+### 7.2 NexKV BTree 吞吐（300K ops，2 线程）
+
+| 测试 | QPS | 说明 |
+|------|-----|------|
+| par-put-4 | **1,655,246** | 2 线程写，CAS 重试 |
+| par-get-4 | **3,109,913** | 2 线程读，近乎线性扩展 |
+| mixed-8-r80 | **2,152,508** | 2 线程 80% 读 |
+
+> ⚠️ 4+ 线程并发分裂路径偶发 panic——已知的 BTree split CAS 竞争问题（commit `1afd306`）
+
+### 7.3 Lealone BTreeMap 吞吐（1M ops，单线程，inMemory）
+
+| 测试 | QPS | 说明 |
+|------|-----|------|
+| seq-put | **3,694,524** | 纯写 |
+| seq-get | **11,889,658** | 纯读 |
+| par-put-8 | **4,495,519** | 8 线程写 |
+| par-get-8 | **12,970,989** | 8 线程读 |
+| mixed-8-r80 | **3,747,998** | 80% 读 + 20% 写 |
+
+### 7.4 对比分析
+
+| 维度 | NexKV | Lealone | 比值 |
+|------|-------|---------|------|
+| 单线程写 | 1.12M | 3.69M | ~0.30x |
+| 单线程读 | 2.59M | 11.89M | ~0.22x |
+| 多线程读 | 3.11M (2t) | 12.97M (8t) | ~0.24x |
+
+**差距来源**：
+1. **MVCC 编码开销**：NexKV 每次 Set 执行 `BuildMVCC(Flag+beginTS+val)`，每次 Get 执行 `ParseMVCC`（~6% CPU）
+2. **Go vs Java mmap**：NexKV 使用 `unsafe.Pointer` 直接内存访问，但 Go 的 GC + escape analysis 在热路径产生额外分配
+3. **Page 布局**：NexKV 4KB 页面含 32-byte header + leaf entry overhead，Lealone 使用更紧凑的 Chunk 内序列化格式
+4. **并发模型**：NexKV COW + CAS 每次写分配新页面（pageID 分配 + memcpy 4KB），Lealone 的 inMemory 模式可能使用 JVM heap ByteBuffer 避免物理页分配
+5. **Epoch 开销尚未应用**：当前测试无 EpochManager（每个读操作尚未有 2 atomic ops 增量）。预期 epoch 开销 < 3%
+
+### 7.5 epoch 引入后的预期影响
+
+| 指标 | 当前 | epoch 后 (预估) |
+|------|------|----------------|
+| 单线程读 | 2.59M | ~2.52M (-3%) |
+| 单线程写 | 1.12M | ~1.10M (-2%) |
+| 页面泄漏率 | 4KB/op | **0** |
+
+Epoch 引入的 3 atomic ops（读路径）+ 1 atomic op（写路径）在吞吐中占比 < 3%，换来页面泄漏从 4KB/op 降为 0。
 
 ---
 
-**文档版本**：v4.0
+**文档版本**：v5.0
 **状态**：Approved

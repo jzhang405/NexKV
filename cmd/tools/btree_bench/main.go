@@ -18,10 +18,11 @@ import (
 )
 
 var (
-	mmapMB  = flag.Int("mmap", 512, "mmap size in MB")
-	ops     = flag.Int("n", 1_000_000, "operations per benchmark")
-	threads = flag.Int("t", 0, "goroutines (0=auto: GOMAXPROCS)")
-	warmup  = flag.Int("warmup", 100_000, "warmup ops")
+	mmapMB    = flag.Int("mmap", 512, "mmap size in MB")
+	ops       = flag.Int("n", 1_000_000, "operations per benchmark")
+	threads   = flag.Int("t", 0, "goroutines (0=auto: GOMAXPROCS)")
+	warmup    = flag.Int("warmup", 100_000, "warmup ops")
+	enableEpoch = flag.Bool("epoch", false, "enable epoch-based page reclamation")
 )
 
 func main() {
@@ -34,8 +35,12 @@ func main() {
 	}
 	n := *ops
 
+	epochLabel := "off"
+	if *enableEpoch {
+		epochLabel = "on"
+	}
 	fmt.Printf("=== NexKV BTree KV Benchmark ===\n")
-	fmt.Printf("ops=%d  goroutines=%d  mmap=%dMB  pageSize=4KB\n\n", n, t, *mmapMB)
+	fmt.Printf("ops=%d  goroutines=%d  mmap=%dMB  pageSize=4KB  epoch=%s\n\n", n, t, *mmapMB, epochLabel)
 
 	run("seq-put", n, 1, false, mmapSize)
 	run("seq-get", n, 1, true, mmapSize)
@@ -61,7 +66,11 @@ func run(label string, n, threads int, getOnly bool, mmapSize int, readRatios ..
 		fmt.Fprintf(os.Stderr, "create storage: %v\n", err)
 		return
 	}
-	tree, err := btree.NewBTree(storage)
+	opts := []btree.BTreeOption{}
+	if *enableEpoch {
+		opts = append(opts, btree.WithEpoch())
+	}
+	tree, err := btree.NewBTree(storage, opts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create btree: %v\n", err)
 		return

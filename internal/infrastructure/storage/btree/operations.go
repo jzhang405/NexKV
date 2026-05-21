@@ -115,6 +115,11 @@ func (b *BTree) handleParentCASWithSpin(
 //
 // After MaxCASRetries failures, returns ErrCASConflict.
 func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
+	var epochSlot int
+	if b.epochMgr != nil {
+		epochSlot = b.epochMgr.AllocSlot()
+	}
+
 	var searchRetryCount, splittingRetry, attempt int
 	for attempt = range MaxCASRetries {
 		// Step 1: Search path to leaf (lock-free)
@@ -239,6 +244,12 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			}
 			continue
 		}
+
+
+			// CAS success — retire old page (P-page, may still be referenced by readers)
+			if b.epochMgr != nil {
+				b.epochMgr.Retire(epochSlot, oldInfo.PageID)
+			}
 
 		path.ReleaseAll()
 		b.size.Add(result.delta)
@@ -422,6 +433,12 @@ func (b *BTree) handleInternalSplit(
 			// Remove last 2 entries from toRelease
 			toRelease = toRelease[:len(toRelease)-2]
 			return ErrCASConflict
+
+		// Retire old grandparent page (P-page)
+		if b.epochMgr != nil {
+			b.epochMgr.Retire(b.epochMgr.AllocSlot(), grandparentInfo.PageID)
+		}
+
 		}
 
 		// CAS succeeded — remove integrated entries from cleanup tracking
@@ -535,6 +552,12 @@ func (b *BTree) handleRootInternalSplit(
 		// Explicitly free newRootPage since it has no PageRef managing it
 		return ErrCASConflict
 	}
+
+	// Retire old root page (P-page)
+	if b.epochMgr != nil {
+		b.epochMgr.Retire(b.epochMgr.AllocSlot(), rootInfo.PageID)
+	}
+
 
 	// CAS succeeded — remove integrated entries from cleanup tracking
 	// Remove leftID, rightID, newRootID, newRootPageID from toFree
@@ -963,6 +986,12 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 		_ = b.storage.FreePage(newRootPage.PageID()) // InsertChild COW output page
 		return ErrCASConflict
 	}
+
+	// Retire old root page (P-page)
+	if b.epochMgr != nil {
+		b.epochMgr.Retire(b.epochMgr.AllocSlot(), rootInfo.PageID)
+	}
+
 
 	// Step 8: children cache already set atomically by ReplaceRoot (race condition fix)
 	// No separate children.Store needed — ReplaceRoot does it immediately after CAS

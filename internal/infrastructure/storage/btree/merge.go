@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
 )
 
@@ -43,6 +44,11 @@ func (s *OffheapBTreeStorage) MergeLeaves(left, right LeafPage) (LeafPage, error
 			return nil, fmt.Errorf("btree: merge leaves insert right: %w", err)
 		}
 	}
+
+	// Phase 6.5 (G7): sum tombstone counts from both source pages
+	leftTC := s.pa.GetTombstoneCount(uint32(left.PageID()))
+	rightTC := s.pa.GetTombstoneCount(uint32(right.PageID()))
+	s.pa.SetTombstoneCount(newRawID, leftTC+rightTC)
 
 	newID := model.PageID(newRawID)
 	return &leafPageHandle{id: newID, pa: s.pa, storage: s}, nil
@@ -116,6 +122,17 @@ func (s *OffheapBTreeStorage) BorrowFromLeftLeaf(self, sibling LeafPage) (LeafPa
 		}
 	}
 
+	// Phase 6.5: propagate tombstoneCount through borrow
+	borrowedIsTombstone := len(borrowedVal) > 0 && borrowedVal[0] == mvcc.FlagTombstone
+	selfTC := s.pa.GetTombstoneCount(selfRawID)
+	sibTC := s.pa.GetTombstoneCount(sibRawID)
+	if borrowedIsTombstone {
+		selfTC++
+		sibTC--
+	}
+	s.pa.SetTombstoneCount(newSelfRawID, selfTC)
+	s.pa.SetTombstoneCount(newSibRawID, sibTC)
+
 	newSelf := &leafPageHandle{id: model.PageID(newSelfRawID), pa: s.pa, storage: s}
 	newSib := &leafPageHandle{id: model.PageID(newSibRawID), pa: s.pa, storage: s}
 	return newSelf, newSib, nil
@@ -169,6 +186,17 @@ func (s *OffheapBTreeStorage) BorrowFromRightLeaf(self, sibling LeafPage) (LeafP
 			return nil, nil, fmt.Errorf("btree: borrow right leaf sib rebuild: %w", err)
 		}
 	}
+
+	// Phase 6.5: propagate tombstoneCount through borrow
+	borrowedIsTombstone := len(borrowedVal) > 0 && borrowedVal[0] == mvcc.FlagTombstone
+	selfTC := s.pa.GetTombstoneCount(selfRawID)
+	sibTC := s.pa.GetTombstoneCount(sibRawID)
+	if borrowedIsTombstone {
+		selfTC++
+		sibTC--
+	}
+	s.pa.SetTombstoneCount(newSelfRawID, selfTC)
+	s.pa.SetTombstoneCount(newSibRawID, sibTC)
 
 	newSelf := &leafPageHandle{id: model.PageID(newSelfRawID), pa: s.pa, storage: s}
 	newSib := &leafPageHandle{id: model.PageID(newSibRawID), pa: s.pa, storage: s}

@@ -115,6 +115,12 @@ func (b *BTree) handleParentCASWithSpin(
 //
 // After MaxCASRetries failures, returns ErrCASConflict.
 func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
+	var epochSlot int
+	var retiredPages []model.PageID
+	if b.epochMgr != nil {
+		epochSlot = b.epochMgr.AllocSlot()
+	}
+
 	var searchRetryCount, splittingRetry, attempt int
 	for attempt = range MaxCASRetries {
 		// Step 1: Search path to leaf (lock-free)
@@ -212,6 +218,17 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			return fmt.Errorf("btree: write operation mutate key %q: %w", key, err)
 		}
 
+		// Phase 6.5: apply tombstoneDelta to COW page header before CAS publish
+		if result.tombstoneDelta != 0 {
+			rawID := uint32(result.newPageID)
+			tc := b.storage.pa.GetTombstoneCount(rawID)
+			newTC := int16(tc) + result.tombstoneDelta
+			if newTC < 0 {
+				newTC = 0
+			}
+			b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
+		}
+
 		newInfo := &PageInfo{
 			PageID:  result.newPageID,
 			Version: oldInfo.Version + 1,
@@ -229,9 +246,18 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			continue
 		}
 
-		// Phase 6.5 TODO: Lazy Merge — trigger b.handleLeafMerge when
-		// leaf utilization drops below MergeThreshold after a Delete.
+		// CAS success — mark for batch retirement (flushed via defer)
+		if b.epochMgr != nil {
+			retiredPages = append(retiredPages, oldInfo.PageID)
+		}
+
 		path.ReleaseAll()
+
+		// Flush batched retired pages
+		if b.epochMgr != nil && len(retiredPages) > 0 {
+			b.epochMgr.RetireBatch(epochSlot, retiredPages...)
+		}
+
 		b.size.Add(result.delta)
 		return nil
 	}
@@ -415,6 +441,11 @@ func (b *BTree) handleInternalSplit(
 			return ErrCASConflict
 		}
 
+		// Retire old grandparent page (P-page)
+		if b.epochMgr != nil {
+			b.epochMgr.Retire(b.epochMgr.AllocSlot(), grandparentInfo.PageID)
+		}
+
 		// CAS succeeded — remove integrated entries from cleanup tracking
 		// left/right pages are now owned by grandparent's children
 		// newGrandparent page is now the live parent page
@@ -525,6 +556,11 @@ func (b *BTree) handleRootInternalSplit(
 		// CAS failed — cleanup handled by defer in handleInternalSplit
 		// Explicitly free newRootPage since it has no PageRef managing it
 		return ErrCASConflict
+	}
+
+	// Retire old root page (P-page)
+	if b.epochMgr != nil {
+		b.epochMgr.Retire(b.epochMgr.AllocSlot(), rootInfo.PageID)
 	}
 
 	// CAS succeeded — remove integrated entries from cleanup tracking
@@ -728,6 +764,17 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 
 	// Step 3: Mutate target (double-COW)
 	mutation, err := mutate(target)
+
+	// Phase 6.5 (G4): apply tombstoneDelta to COW target page (double-COW in split path)
+	if mutation.tombstoneDelta != 0 {
+		rawID := uint32(mutation.newPageID)
+		tc := b.storage.pa.GetTombstoneCount(rawID)
+		newTC := int16(tc) + mutation.tombstoneDelta
+		if newTC < 0 {
+			newTC = 0
+		}
+		b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
+	}
 	if err != nil {
 		// Cleanup split pages
 		_ = b.storage.FreePage(leftPage.PageID())
@@ -858,6 +905,17 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 
 	// Step 3: Mutate target (double-COW)
 	mutation, err := mutate(target)
+
+	// Phase 6.5 (G4): apply tombstoneDelta to COW target page (double-COW in split path)
+	if mutation.tombstoneDelta != 0 {
+		rawID := uint32(mutation.newPageID)
+		tc := b.storage.pa.GetTombstoneCount(rawID)
+		newTC := int16(tc) + mutation.tombstoneDelta
+		if newTC < 0 {
+			newTC = 0
+		}
+		b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
+	}
 	if err != nil {
 		_ = b.storage.FreePage(leftPage.PageID())
 		_ = b.storage.FreePage(rightPage.PageID())
@@ -931,6 +989,11 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 		_ = b.storage.FreePage(newRootID)            // InsertChild COW replaced blank NodePage
 		_ = b.storage.FreePage(newRootPage.PageID()) // InsertChild COW output page
 		return ErrCASConflict
+	}
+
+	// Retire old root page (P-page)
+	if b.epochMgr != nil {
+		b.epochMgr.Retire(b.epochMgr.AllocSlot(), rootInfo.PageID)
 	}
 
 	// Step 8: children cache already set atomically by ReplaceRoot (race condition fix)

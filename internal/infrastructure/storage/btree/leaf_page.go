@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
 )
 
@@ -170,6 +171,18 @@ func (h *leafPageHandle) Update(idx int, value []byte) (LeafPage, error) {
 		}
 	}
 
+	// Phase 6.5: propagate tombstoneCount through rebuild path.
+	// Delta-based approach: start from old count, adjust for replaced entry.
+	tc := h.pa.GetTombstoneCount(rawID)
+	oldVal := h.GetValue(idx)
+	if mv, err := mvcc.ParseMVCC(oldVal); err == nil && mv.IsTombstone() {
+		tc-- // old tombstone entry removed
+	}
+	if mv, err := mvcc.ParseMVCC(value); err == nil && mv.IsTombstone() {
+		tc++ // new tombstone entry inserted
+	}
+	h.pa.SetTombstoneCount(rebuildRawID, tc)
+
 	return &leafPageHandle{id: model.PageID(rebuildRawID), pa: h.pa, storage: h.storage}, nil
 }
 
@@ -240,9 +253,34 @@ func (h *leafPageHandle) Split() (LeafPage, LeafPage, []byte, error) {
 	}
 	h.pa.SetVersion(rightRawID, srcVersion+1)
 
+	// Phase 6.5 (G6): propagate tombstone counts to split halves
+	leftTC := countTombstonesInRange(h, 0, mid)
+	rightTC := countTombstonesInRange(h, mid, count)
+	h.pa.SetTombstoneCount(leftRawID, leftTC)
+	h.pa.SetTombstoneCount(rightRawID, rightTC)
+
 	left := &leafPageHandle{id: model.PageID(leftRawID), pa: h.pa, storage: h.storage}
 	right := &leafPageHandle{id: model.PageID(rightRawID), pa: h.pa, storage: h.storage}
 	return left, right, splitKeyCopy, nil
+}
+
+// countTombstonesInRange counts MVCC tombstone entries in the given range.
+// Uses direct mmap read of the flag byte (pa.GetValue with len=1) to avoid
+// per-value heap allocation in the Split hot path.
+func countTombstonesInRange(h *leafPageHandle, start, end int) uint16 {
+	var tc uint16
+	rawID := uint32(h.id)
+	for i := start; i < end; i++ {
+		_, _, valOff, valLen := h.pa.GetLeafEntryOffset(rawID, i)
+		if valLen < 1 {
+			continue
+		}
+		raw := h.pa.GetValue(rawID, valOff, 1)
+		if raw[0] == mvcc.FlagTombstone {
+			tc++
+		}
+	}
+	return tc
 }
 
 // IncrementTombstone increments the tombstone count on the COW page.

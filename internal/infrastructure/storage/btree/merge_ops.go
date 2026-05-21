@@ -4,29 +4,25 @@
 
 package btree
 
-import "runtime"
+import (
+	"runtime"
 
-func (b *BTree) maybeMergeAfterWrite(path SearchPath, leafRef *PageRef, delta int64) {
-	// Lazy Merge: only trigger on delete operations (delta < 0).
-	// Phase 6.5 MVP — merge is callable but not auto-triggered in hot path
-	// to avoid CAS conflicts with concurrent writes during testing.
-	// Enable by removing this early return after stabilization.
-	_ = path
-	_ = leafRef
-	_ = delta
+	"github.com/jzhang405/NexKV/internal/domain/model"
+)
 
-	// Full implementation:
-	// if delta >= 0 { return }
-	// if len(path) < 2 { return }
-	// rootPI := b.rootRef.GetPageInfo()
-	// if rootPI == nil || rootPI.IsLeaf { return }
-	// pi := leafRef.GetPageInfo()
-	// if pi == nil || pi.IsBusy() { return }
-	// leaf, err := b.storage.GetLeafPage(pi.PageID)
-	// if err != nil { return }
-	// if !isLeafSparse(leaf, MergeThreshold) { return }
-	// _ = b.handleLeafMerge(path, leafRef, pi)
-}
+// maybeMergeAfterWrite is the entry point for lazy merge after a Delete.
+// Currently disabled for auto-trigger: handleLeafMerge calls FreePage on old pages,
+// which races with searchPath referers that hold PageRefs to the same pageID.
+// When the physical page is reused by the allocator, stale PageRefs see count=0.
+//
+// Fix requires either:
+//
+//	a. Epoch-based page reclamation (delayed free until all referers drain), or
+//	b. Async merge in background goroutine (not blocking Delete hot path)
+//
+// mergeChildRefsInCache correctly handles the children cache update (G1 fixed).
+// handleLeafMerge can be called safely from explicit/manual compaction paths.
+func (b *BTree) maybeMergeAfterWrite(_ []byte, _ int64) {}
 
 func (b *BTree) handleLeafMerge(path SearchPath, sparseRef *PageRef, leafPI *PageInfo) error {
 	parentEntry := path[len(path)-2]
@@ -155,8 +151,8 @@ func (b *BTree) handleLeafMerge(path SearchPath, sparseRef *PageRef, leafPI *Pag
 		return nil
 	}
 
-	// Update parent children cache — remove the merged sibling
-	b.removeChildFromCache(parentRef, removeIdx)
+	// Phase 6.5: update parent children cache with merged page ref
+	b.mergeChildRefsInCache(parentRef, removeIdx, merged.PageID())
 
 	// Phase 4: Mark old pages NodeRedirect (must set Redirect:true — searchPath checks this field)
 	refA.CAS(markA, &PageInfo{PageID: piA.PageID, Version: markA.Version + 1, IsLeaf: true, NodeState: NodeRedirect, Redirect: true})
@@ -185,23 +181,35 @@ func (b *BTree) handleInternalMerge(path SearchPath, nodeRef *PageRef, _ *PageIn
 	return nil
 }
 
-func (b *BTree) removeChildFromCache(parentRef *PageRef, removeIdx int) {
+// mergeChildRefsInCache replaces two children at [rmIdx, rmIdx+1] with one PageRef
+// for the merged page, and removes the separator at rmIdx.
+// Unlike removeChildFromCache (which just drops refs), this inserts the merged
+// page's PageRef so searchPath can navigate through the post-merge tree correctly.
+func (b *BTree) mergeChildRefsInCache(parentRef *PageRef, rmIdx int, mergedPageID model.PageID) {
 	for {
 		curCache := parentRef.children.Load()
-		if curCache == nil || removeIdx >= len(curCache.Children) {
+		if curCache == nil || rmIdx+1 >= len(curCache.Children) {
+			return
+		}
+		if rmIdx >= len(curCache.Separators) {
 			return
 		}
 
-		newChildren := make([]*PageRef, 0, len(curCache.Children)-1)
-		newSeps := make([][]byte, 0, len(curCache.Separators))
-		for i, child := range curCache.Children {
-			if i == removeIdx+1 || i == removeIdx {
-				continue
-			}
-			newChildren = append(newChildren, child)
-		}
+		// Create new merged PageRef
+		mergedRef := NewPageRef(mergedPageID, 0, nil) // nil freeFunc: page lifecycle managed by tree, not cache
+		mergedRef.Retain()
+
+		// Build new children: [0..rmIdx) + mergedRef + (rmIdx+2..]
+		newLen := len(curCache.Children) - 1
+		newChildren := make([]*PageRef, newLen)
+		copy(newChildren, curCache.Children[:rmIdx])
+		newChildren[rmIdx] = mergedRef
+		copy(newChildren[rmIdx+1:], curCache.Children[rmIdx+2:])
+
+		// Build new separators: all except rmIdx
+		newSeps := make([][]byte, 0, len(curCache.Separators)-1)
 		for i, sep := range curCache.Separators {
-			if i == removeIdx {
+			if i == rmIdx {
 				continue
 			}
 			newSeps = append(newSeps, sep)
@@ -210,7 +218,8 @@ func (b *BTree) removeChildFromCache(parentRef *PageRef, removeIdx int) {
 		if parentRef.children.CompareAndSwap(curCache, &ChildrenCache{Children: newChildren, Separators: newSeps}) {
 			return
 		}
-		// CAS failed — another goroutine updated the cache; retry with latest state
+		// CAS failed — another goroutine updated the cache; release mergedRef and retry
+		mergedRef.Release()
 	}
 }
 
@@ -269,4 +278,4 @@ func (b *BTree) mergeRoot() error {
 var _ = (*BTree).maybeMergeAfterWrite
 var _ = (*BTree).handleLeafMerge
 var _ = (*BTree).handleInternalMerge
-var _ = (*BTree).removeChildFromCache
+var _ = (*BTree).mergeChildRefsInCache

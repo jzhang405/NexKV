@@ -7,6 +7,7 @@ package btree
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -34,6 +35,10 @@ type BTree struct {
 	tracer         Tracer                   // operation tracer for debugging (optional)
 	tsGen          mvcc.TSGenerator         // MVCC timestamp generator (Phase 2a)
 	txMgr          mvcc.TxManager           // MVCC transaction manager (Phase 2b)
+	compactWp      WatermarkProvider        // Phase 6.5: GC-safe watermark for compaction
+	compactMu      sync.Mutex
+	epochMgr       *EpochManager // COW old page reclamation (nil if disabled)
+	epochCancel    context.CancelFunc
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -70,9 +75,6 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 		return nil, errpkg.BTreeInitRootLeaf(err)
 	}
 
-	// Phase 5: COW场景下页面由writeOperation显式管理
-	// PageRef.freeFunc仅在PageRef销毁时调用（如树关闭时）
-	// 包装storage.FreePage以匹配func(model.PageID)签名
 	rootRef := NewRootPageRef(pageID, 1, func(id model.PageID) {
 		_ = storage.FreePage(id)
 	})
@@ -85,9 +87,16 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 		tracer:         cfg.tracer,
 		tsGen:          cfg.tsGen,
 	}
-	// TxManager uses btreeStorageAdapter (bypasses BTree's MVCC encoding)
-	// — transaction layer handles BuildMVCC/ParseMVCC internally.
 	bt.txMgr = cfg.buildTxManager(newStorageAdapter(bt))
+
+	// EpochManager: optional COW old-page reclamation
+	if cfg.enableEpoch {
+		em := NewEpochManager(func(id model.PageID) { _ = storage.FreePage(id) })
+		ctx, cancel := context.WithCancel(context.Background())
+		em.StartBackgroundReclaim(ctx)
+		bt.epochMgr = em
+		bt.epochCancel = cancel
+	}
 
 	return bt, nil
 }
@@ -194,6 +203,14 @@ func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	// Epoch: protect the full read (searchPath + page data access)
+	var epochSlot int
+	if b.epochMgr != nil {
+		epochSlot = b.epochMgr.AllocSlot()
+		b.epochMgr.EnterRead(epochSlot)
+		defer b.epochMgr.ExitRead(epochSlot)
+	}
+
 	// Search path to leaf (retains all PageRefs)
 	path, err := searchPath(b.rootRef, key)
 	if err != nil {
@@ -241,6 +258,13 @@ func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
 func (b *BTree) getRawBytes(key []byte) ([]byte, error) {
 	if err := b.checkOpen(); err != nil {
 		return nil, err
+	}
+
+	var epochSlot int
+	if b.epochMgr != nil {
+		epochSlot = b.epochMgr.AllocSlot()
+		b.epochMgr.EnterRead(epochSlot)
+		defer b.epochMgr.ExitRead(epochSlot)
 	}
 
 	path, err := searchPath(b.rootRef, key)
@@ -437,7 +461,19 @@ func (b *BTree) Close() error {
 	if !b.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	if b.epochCancel != nil {
+		b.epochCancel()       // signal background goroutine to stop
+		b.epochMgr.Shutdown() // wait for exit + final reclamation
+	}
 	return b.storage.Close()
+}
+
+// AfterCheckpoint triggers an explicit reclamation pass after a checkpoint.
+// Best-effort: no-op if EpochManager is not enabled.
+func (b *BTree) AfterCheckpoint() {
+	if b.epochMgr != nil {
+		b.epochMgr.tryReclaim()
+	}
 }
 
 // --- service.KVStore stubs (not in Phase 5 scope) ---
@@ -505,4 +541,30 @@ func (b *BTree) ReleaseSnapshot(_ context.Context, _ service.SnapshotID) error {
 
 func (b *BTree) Stats(_ context.Context) (*service.StoreStats, error) {
 	return nil, ErrNotImplemented
+}
+
+// SetCompactionWatermark sets the watermark provider for tombstone compaction.
+// After set, TryCompact() can be called to reclaim space from pages with
+// high tombstone ratios. Callers should wire this to ActiveTxRegistry.Watermark()
+// at server startup, and trigger TryCompact() after each Checkpoint.
+func (b *BTree) SetCompactionWatermark(wp WatermarkProvider) {
+	b.compactMu.Lock()
+	b.compactWp = wp
+	b.compactMu.Unlock()
+}
+
+// TryCompact performs a single tombstone compaction cycle if a watermark
+// provider has been configured. Best-effort: returns nil even if compaction
+// is skipped (no provider, tree closed) or partially fails.
+func (b *BTree) TryCompact() error {
+	b.compactMu.Lock()
+	wp := b.compactWp
+	b.compactMu.Unlock()
+	if wp == nil {
+		return nil
+	}
+	if err := b.checkOpen(); err != nil {
+		return nil
+	}
+	return b.Compact(wp)
 }

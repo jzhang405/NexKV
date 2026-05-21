@@ -18,6 +18,7 @@ type btreeConfig struct {
 	tsGen          mvcc.TSGenerator
 	txMgr          mvcc.TxManager
 	latencyMetrics *BTreeMetricsWithLatency
+	enableEpoch    bool
 }
 
 // newBTreeConfig applies all options and fills in defaults.
@@ -76,6 +77,15 @@ func WithTxManager(txMgr mvcc.TxManager) BTreeOption {
 		if txMgr != nil {
 			cfg.txMgr = txMgr
 		}
+	}
+}
+
+// WithEpoch enables epoch-based COW old-page reclamation.
+// When enabled, CAS-replaced pages are deferred and safely freed after all
+// concurrent readers have exited. Without this, every CAS leaks one page (4KB).
+func WithEpoch() BTreeOption {
+	return func(cfg *btreeConfig) {
+		cfg.enableEpoch = true
 	}
 }
 

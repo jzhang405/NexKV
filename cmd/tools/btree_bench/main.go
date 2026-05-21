@@ -18,10 +18,10 @@ import (
 )
 
 var (
-	mmapMB    = flag.Int("mmap", 512, "mmap size in MB")
-	ops       = flag.Int("n", 1_000_000, "operations per benchmark")
-	threads   = flag.Int("t", 0, "goroutines (0=auto: GOMAXPROCS)")
-	warmup    = flag.Int("warmup", 100_000, "warmup ops")
+	mmapMB      = flag.Int("mmap", 512, "mmap size in MB")
+	ops         = flag.Int("n", 1_000_000, "operations per benchmark")
+	threads     = flag.Int("t", 0, "goroutines (0=auto: GOMAXPROCS)")
+	warmup      = flag.Int("warmup", 100_000, "warmup ops")
 	enableEpoch = flag.Bool("epoch", false, "enable epoch-based page reclamation")
 )
 

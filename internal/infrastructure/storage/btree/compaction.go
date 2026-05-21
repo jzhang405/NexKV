@@ -244,12 +244,11 @@ func (b *BTree) compactPageWithParent(
 	}
 	if !leafRef.CAS(compactingInfo, finalPI) {
 		return false, nil
+	}
 
 	// Phase E success — retire old leaf page (P-page)
 	if b.epochMgr != nil {
 		b.epochMgr.Retire(b.epochMgr.AllocSlot(), oldPI.PageID)
-	}
-
 	}
 
 	cleanup = false

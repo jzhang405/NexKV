@@ -246,11 +246,10 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			continue
 		}
 
-
-			// CAS success — mark for batch retirement (flushed via defer)
-			if b.epochMgr != nil {
-				retiredPages = append(retiredPages, oldInfo.PageID)
-			}
+		// CAS success — mark for batch retirement (flushed via defer)
+		if b.epochMgr != nil {
+			retiredPages = append(retiredPages, oldInfo.PageID)
+		}
 
 		path.ReleaseAll()
 
@@ -440,12 +439,11 @@ func (b *BTree) handleInternalSplit(
 			// Remove last 2 entries from toRelease
 			toRelease = toRelease[:len(toRelease)-2]
 			return ErrCASConflict
+		}
 
 		// Retire old grandparent page (P-page)
 		if b.epochMgr != nil {
 			b.epochMgr.Retire(b.epochMgr.AllocSlot(), grandparentInfo.PageID)
-		}
-
 		}
 
 		// CAS succeeded — remove integrated entries from cleanup tracking
@@ -564,7 +562,6 @@ func (b *BTree) handleRootInternalSplit(
 	if b.epochMgr != nil {
 		b.epochMgr.Retire(b.epochMgr.AllocSlot(), rootInfo.PageID)
 	}
-
 
 	// CAS succeeded — remove integrated entries from cleanup tracking
 	// Remove leftID, rightID, newRootID, newRootPageID from toFree
@@ -998,7 +995,6 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 	if b.epochMgr != nil {
 		b.epochMgr.Retire(b.epochMgr.AllocSlot(), rootInfo.PageID)
 	}
-
 
 	// Step 8: children cache already set atomically by ReplaceRoot (race condition fix)
 	// No separate children.Store needed — ReplaceRoot does it immediately after CAS

@@ -34,19 +34,19 @@ type EpochManager struct {
 // epochSlot uses a bounded ring buffer for retired pages.
 //
 // Writer protocol (Retire):
-//   1. CAS on tail to claim a position (multi-producer safe)
-//   2. Write pageID (plain store)
-//   3. epoch.Store(epoch) — atomic release, publishes the entry
-//   4. If buffer full (tail-head >= ringSize), spin-wait for reader to advance head
+//  1. CAS on tail to claim a position (multi-producer safe)
+//  2. Write pageID (plain store)
+//  3. epoch.Store(epoch) — atomic release, publishes the entry
+//  4. If buffer full (tail-head >= ringSize), spin-wait for reader to advance head
 //
 // Reader protocol (tryReclaim):
-//   1. Load tail, read head
-//   2. For each position in [head, tail):
-//      a. epoch.Load() — atomic acquire, 0 = not yet committed
-//      b. If epoch >= safeEpoch → stop (can't advance past unsafe entry)
-//      c. Read pageID (plain, visible after acquire)
-//      d. Free if epoch < safeEpoch
-//   3. Advance head to maxHead
+//  1. Load tail, read head
+//  2. For each position in [head, tail):
+//     a. epoch.Load() — atomic acquire, 0 = not yet committed
+//     b. If epoch >= safeEpoch → stop (can't advance past unsafe entry)
+//     c. Read pageID (plain, visible after acquire)
+//     d. Free if epoch < safeEpoch
+//  3. Advance head to maxHead
 //
 // Release-acquire ordering (epoch.Store → epoch.Load) guarantees pageID is visible.
 type epochSlot struct {
@@ -97,8 +97,8 @@ func (em *EpochManager) Retire(slot int, pageID model.PageID) {
 		}
 		if s.tail.CompareAndSwap(tail, tail+1) {
 			idx := tail % ringSize
-			s.buf[idx].pageID = pageID          // plain store
-			s.buf[idx].epoch.Store(epoch)       // atomic release — publish
+			s.buf[idx].pageID = pageID    // plain store
+			s.buf[idx].epoch.Store(epoch) // atomic release — publish
 			return
 		}
 	}

@@ -37,7 +37,7 @@ type BTree struct {
 	txMgr          mvcc.TxManager           // MVCC transaction manager (Phase 2b)
 	compactWp      WatermarkProvider        // Phase 6.5: GC-safe watermark for compaction
 	compactMu      sync.Mutex
-	epochMgr       *EpochManager    // COW old page reclamation (nil if disabled)
+	epochMgr       *EpochManager // COW old page reclamation (nil if disabled)
 	epochCancel    context.CancelFunc
 }
 
@@ -462,8 +462,8 @@ func (b *BTree) Close() error {
 		return nil
 	}
 	if b.epochCancel != nil {
-		b.epochCancel()         // signal background goroutine to stop
-		b.epochMgr.Shutdown()   // wait for exit + final reclamation
+		b.epochCancel()       // signal background goroutine to stop
+		b.epochMgr.Shutdown() // wait for exit + final reclamation
 	}
 	return b.storage.Close()
 }

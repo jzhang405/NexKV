@@ -116,6 +116,7 @@ func (b *BTree) handleParentCASWithSpin(
 // After MaxCASRetries failures, returns ErrCASConflict.
 func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 	var epochSlot int
+	var retiredPages []model.PageID
 	if b.epochMgr != nil {
 		epochSlot = b.epochMgr.AllocSlot()
 	}
@@ -246,12 +247,18 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		}
 
 
-			// CAS success — retire old page (P-page, may still be referenced by readers)
+			// CAS success — mark for batch retirement (flushed via defer)
 			if b.epochMgr != nil {
-				b.epochMgr.Retire(epochSlot, oldInfo.PageID)
+				retiredPages = append(retiredPages, oldInfo.PageID)
 			}
 
 		path.ReleaseAll()
+
+		// Flush batched retired pages
+		if b.epochMgr != nil && len(retiredPages) > 0 {
+			b.epochMgr.RetireBatch(epochSlot, retiredPages...)
+		}
+
 		b.size.Add(result.delta)
 		return nil
 	}

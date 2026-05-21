@@ -17,54 +17,59 @@ import (
 const (
 	epochInit      = 1
 	maxReaderSlots = 64
+	ringSize       = 16384 // per-slot ring buffer capacity (~256KB)
 )
 
 // EpochManager provides epoch-based safe page reclamation for COW old pages.
-//
-// Readers register their epoch before reading pages; writers retire old pageIDs
-// after CAS via lock-free Treiber stacks. A background goroutine periodically
-// advances the global epoch, snapshots active reader epochs, and frees retired
-// pages whose epoch is strictly less than the safe epoch.
 type EpochManager struct {
 	globalEpoch atomic.Uint64
 	readers     [maxReaderSlots]atomic.Uint64
 	slots       [maxReaderSlots]epochSlot
 	freeFn      func(model.PageID)
 
-	nodePool sync.Pool // *retiredNode
-
 	nextSlot atomic.Uint64
 	wg       sync.WaitGroup
 }
 
-// epochSlot uses a Treiber stack (lock-free CAS-linked list) for retired pages.
-// Writers push via CAS on head; the reclaimer atomically swaps head to nil.
+// epochSlot uses a bounded ring buffer for retired pages.
+//
+// Writer protocol (Retire):
+//   1. CAS on tail to claim a position (multi-producer safe)
+//   2. Write pageID (plain store)
+//   3. epoch.Store(epoch) — atomic release, publishes the entry
+//   4. If buffer full (tail-head >= ringSize), spin-wait for reader to advance head
+//
+// Reader protocol (tryReclaim):
+//   1. Load tail, read head
+//   2. For each position in [head, tail):
+//      a. epoch.Load() — atomic acquire, 0 = not yet committed
+//      b. If epoch >= safeEpoch → stop (can't advance past unsafe entry)
+//      c. Read pageID (plain, visible after acquire)
+//      d. Free if epoch < safeEpoch
+//   3. Advance head to maxHead
+//
+// Release-acquire ordering (epoch.Store → epoch.Load) guarantees pageID is visible.
 type epochSlot struct {
-	head atomic.Pointer[retiredNode]
+	buf  [ringSize]retiredEntry
+	head atomic.Uint64 // reader position, written by tryReclaim, read by Retire
+	tail atomic.Uint64 // writer position, next write index (CAS-claimed)
 }
 
-type retiredNode struct {
+type retiredEntry struct {
 	pageID model.PageID
-	epoch  uint64
-	next   atomic.Pointer[retiredNode]
+	epoch  atomic.Uint64 // 0 = not committed; committed = epoch value (≥1)
 }
 
-// NewEpochManager creates an EpochManager. freeFn is called to release retired pages.
 func NewEpochManager(freeFn func(model.PageID)) *EpochManager {
-	em := &EpochManager{
-		freeFn: freeFn,
-		nodePool: sync.Pool{New: func() any { return new(retiredNode) }},
-	}
+	em := &EpochManager{freeFn: freeFn}
 	em.globalEpoch.Store(epochInit)
 	return em
 }
 
-// AllocSlot allocates a reader/writer slot via atomic round-robin.
 func (em *EpochManager) AllocSlot() int {
 	return int(em.nextSlot.Add(1) % maxReaderSlots)
 }
 
-// EnterRead registers this reader with the current global epoch.
 func (em *EpochManager) EnterRead(slot int) {
 	epoch := em.globalEpoch.Load()
 	em.readers[slot].Store(epoch)
@@ -73,30 +78,56 @@ func (em *EpochManager) EnterRead(slot int) {
 	}
 }
 
-// ExitRead unregisters this reader.
 func (em *EpochManager) ExitRead(slot int) {
 	em.readers[slot].Store(0)
 }
 
-// Retire pushes a COW-replaced page onto the slot's Treiber stack.
-// Lock-free: CAS loop on head. Node from sync.Pool to avoid per-op allocation.
+// Retire writes a COW-replaced page into the slot's ring buffer.
+// Hot-path: 1 CAS (claim) + 2 plain stores + 1 atomic store (commit). Zero allocs.
 func (em *EpochManager) Retire(slot int, pageID model.PageID) {
-	node := em.nodePool.Get().(*retiredNode)
-	node.pageID = pageID
-	node.epoch = em.globalEpoch.Load()
-	node.next.Store(nil)
 	s := &em.slots[slot]
+	epoch := em.globalEpoch.Load()
+
 	for {
-		old := s.head.Load()
-		node.next.Store(old)
-		if s.head.CompareAndSwap(old, node) {
+		tail := s.tail.Load()
+		head := s.head.Load()
+		if tail-head >= ringSize {
+			// Buffer full — reader hasn't kept up. Brief spin.
+			continue
+		}
+		if s.tail.CompareAndSwap(tail, tail+1) {
+			idx := tail % ringSize
+			s.buf[idx].pageID = pageID          // plain store
+			s.buf[idx].epoch.Store(epoch)       // atomic release — publish
 			return
 		}
 	}
 }
 
-// tryReclaim advances the global epoch, snapshots reader slots, and frees
-// pages whose epoch < safeEpoch.
+// RetireBatch retires multiple pages sharing one epoch snapshot.
+func (em *EpochManager) RetireBatch(slot int, pageIDs ...model.PageID) {
+	if len(pageIDs) == 0 {
+		return
+	}
+	epoch := em.globalEpoch.Load()
+	s := &em.slots[slot]
+	for _, pid := range pageIDs {
+		for {
+			tail := s.tail.Load()
+			if tail-s.head.Load() >= ringSize {
+				continue
+			}
+			if s.tail.CompareAndSwap(tail, tail+1) {
+				idx := tail % ringSize
+				s.buf[idx].pageID = pid
+				s.buf[idx].epoch.Store(epoch)
+				break
+			}
+		}
+	}
+}
+
+// tryReclaim advances the global epoch, snapshots readers, and frees safe pages.
 func (em *EpochManager) tryReclaim() {
 	newEpoch := em.globalEpoch.Add(1)
 
@@ -106,55 +137,33 @@ func (em *EpochManager) tryReclaim() {
 			minActive = e
 		}
 	}
-
-	var safeEpoch uint64
-	if minActive == math.MaxUint64 {
-		safeEpoch = newEpoch
-	} else {
+	safeEpoch := newEpoch
+	if minActive != math.MaxUint64 {
 		safeEpoch = minActive
 	}
 
 	var toFree []model.PageID
 	for i := range em.slots {
 		s := &em.slots[i]
-		// Atomically detach all nodes from the Treiber stack.
-		var head *retiredNode
-		for {
-			head = s.head.Load()
-			if s.head.CompareAndSwap(head, nil) {
-				break
-			}
+		tail := s.tail.Load()
+		head := s.head.Load()
+		if head >= tail {
+			continue
 		}
-
-		// Walk the detached list; collect unsafe nodes for re-push.
-		var unsafeHead, unsafeTail *retiredNode
-		for n := head; n != nil; {
-			next := n.next.Load() // save before clearing
-			if n.epoch < safeEpoch {
-				toFree = append(toFree, n.pageID)
-				em.nodePool.Put(n) // recycle node
-			} else {
-				n.next.Store(nil)
-				if unsafeHead == nil {
-					unsafeHead = n
-				} else {
-					unsafeTail.next.Store(n)
-				}
-				unsafeTail = n
+		maxHead := head
+		for j := head; j < tail; j++ {
+			idx := j % ringSize
+			epoch := s.buf[idx].epoch.Load() // atomic acquire
+			if epoch == 0 {
+				break // hole: writer claimed slot but not yet committed
 			}
-			n = next
-		}
-
-		// Push back unsafe nodes (batch push: link tail to current head, CAS).
-		if unsafeHead != nil {
-			for {
-				old := s.head.Load()
-				unsafeTail.next.Store(old)
-				if s.head.CompareAndSwap(old, unsafeHead) {
-					break
-				}
+			if epoch >= safeEpoch {
+				break // unsafe: can't advance past entries readers still reference
 			}
+			toFree = append(toFree, s.buf[idx].pageID)
+			maxHead = j + 1
 		}
+		s.head.Store(maxHead)
 	}
 
 	for _, pageID := range toFree {
@@ -162,8 +171,6 @@ func (em *EpochManager) tryReclaim() {
 	}
 }
 
-// StartBackgroundReclaim launches a background goroutine that periodically
-// calls tryReclaim.
 func (em *EpochManager) StartBackgroundReclaim(ctx context.Context) {
 	em.wg.Add(1)
 	go func() {
@@ -173,7 +180,7 @@ func (em *EpochManager) StartBackgroundReclaim(ctx context.Context) {
 				_ = r
 			}
 		}()
-		ticker := time.NewTicker(100 * time.Millisecond)
+		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		for {
 			select {
@@ -186,7 +193,6 @@ func (em *EpochManager) StartBackgroundReclaim(ctx context.Context) {
 	}()
 }
 
-// Shutdown waits for the background goroutine to exit, then drains all slots.
 func (em *EpochManager) Shutdown() {
 	em.wg.Wait()
 	em.tryReclaim()

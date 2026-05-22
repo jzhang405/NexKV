@@ -251,6 +251,9 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			retiredPages = append(retiredPages, oldInfo.PageID)
 		}
 
+		// Phase 6.5: lazy merge after Delete (G1/G2/G3)
+		b.maybeMergeAfterWrite(path, result.delta)
+
 		path.ReleaseAll()
 
 		// Flush batched retired pages
@@ -764,6 +767,12 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 
 	// Step 3: Mutate target (double-COW)
 	mutation, err := mutate(target)
+	if err != nil {
+		// Cleanup split pages
+		_ = b.storage.FreePage(leftPage.PageID())
+		_ = b.storage.FreePage(rightPage.PageID())
+		return err
+	}
 
 	// Phase 6.5 (G4): apply tombstoneDelta to COW target page (double-COW in split path)
 	if mutation.tombstoneDelta != 0 {
@@ -774,12 +783,6 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 			newTC = 0
 		}
 		b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
-	}
-	if err != nil {
-		// Cleanup split pages
-		_ = b.storage.FreePage(leftPage.PageID())
-		_ = b.storage.FreePage(rightPage.PageID())
-		return err
 	}
 
 	// ★ B6 fix: Track orphan page (double-COW replaced original split page)
@@ -905,6 +908,11 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 
 	// Step 3: Mutate target (double-COW)
 	mutation, err := mutate(target)
+	if err != nil {
+		_ = b.storage.FreePage(leftPage.PageID())
+		_ = b.storage.FreePage(rightPage.PageID())
+		return err
+	}
 
 	// Phase 6.5 (G4): apply tombstoneDelta to COW target page (double-COW in split path)
 	if mutation.tombstoneDelta != 0 {
@@ -915,11 +923,6 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 			newTC = 0
 		}
 		b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
-	}
-	if err != nil {
-		_ = b.storage.FreePage(leftPage.PageID())
-		_ = b.storage.FreePage(rightPage.PageID())
-		return err
 	}
 
 	// ★ B10 fix: Track orphan page (double-COW replaced original split page)
@@ -1034,4 +1037,4 @@ func isNodeSparse(node NodePage, threshold float64) bool {
 	return float64(node.ChildCount())/float64(MaxInternalKeys) < threshold
 }
 
-// isNodeSparse is used by handleLeafMerge (Phase 6.5) — see merge_ops.go
+// isNodeSparse is used by handleLeafMerge and handleInternalMerge (Phase 6.5)

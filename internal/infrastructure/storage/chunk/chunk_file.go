@@ -5,11 +5,14 @@
 package chunk
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"sync"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/wal"
 )
 
 const (
@@ -107,4 +110,43 @@ func (c *ChunkFile) readHeader() (*ChunkHeader, error) {
 		return nil, fmt.Errorf("chunk: both header blocks corrupted: %w", ErrInvalidChunkHeader)
 	}
 	return h, nil
+}
+
+// scanPageFrames walks the chunk body at fixed stride (MaxDiskPageSize=4100)
+// and rebuilds pagePosToLen by CRC32C + pageType verification.
+// Assumes pages are serialized with MaxPagePayload (current Checkpoint behavior).
+// Frame format: [CRC32C:4][pageData:4096].
+func (c *ChunkFile) scanPageFrames() map[model.ChunkPosition]int32 {
+	result := make(map[model.ChunkPosition]int32)
+	buf := make([]byte, MaxDiskPageSize)
+
+	const consecutiveMissLimit = 16
+	consecutiveMiss := 0
+
+	for offset := int64(ChunkHeaderSize); offset+MaxDiskPageSize <= c.capacity; offset += MaxDiskPageSize {
+		_, err := c.file.ReadAt(buf, offset)
+		if err != nil {
+			break
+		}
+
+		expected := binary.LittleEndian.Uint32(buf[0:CRCSize])
+		actual := wal.CRC32C(buf[CRCSize:])
+		pageType := buf[CRCSize+offheap.PageTypeFieldOffset]
+
+		if expected != actual || (pageType != offheap.PageTypeIndex && pageType != offheap.PageTypeLeaf) {
+			consecutiveMiss++
+			if consecutiveMiss > consecutiveMissLimit {
+				break
+			}
+			continue
+		}
+
+		consecutiveMiss = 0
+		pos, err := model.EncodeChunkPosition(c.id, uint32(offset), pageType)
+		if err != nil {
+			continue
+		}
+		result[pos] = MaxDiskPageSize
+	}
+	return result
 }

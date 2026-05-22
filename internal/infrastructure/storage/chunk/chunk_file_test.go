@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unsafe"
 
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -109,4 +111,126 @@ func TestWriteHeader_ErrorOnWrite(t *testing.T) {
 	h := &ChunkHeader{ID: 1, BlockSize: ChunkBlockSize, FormatVersion: 1}
 	err = c.writeHeader(h)
 	require.Error(t, err)
+}
+
+func TestScanPageFrames_AllValidFrames(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "btree_0_1.ao")
+
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	require.NoError(t, err)
+	defer f.Close()
+
+	// Preallocate to simulate real chunk
+	require.NoError(t, f.Truncate(ChunkHeaderSize+3*MaxDiskPageSize))
+
+	c := &ChunkFile{file: f, id: 0, capacity: ChunkHeaderSize + 3*MaxDiskPageSize}
+
+	// Write header
+	h := &ChunkHeader{ID: 0, PageCount: 3, BlockSize: ChunkBlockSize, FormatVersion: 1}
+	require.NoError(t, c.writeHeader(h))
+
+	// Create 3 valid frames via PageSerializer
+	serializer := &PageSerializer{}
+	pageBuf := make([]byte, MaxPagePayload)
+	// Set pageType = PageTypeLeaf (offset 26 in PageHeader)
+	pageBuf[offheap.PageTypeFieldOffset] = offheap.PageTypeLeaf
+
+	for i := 0; i < 3; i++ {
+		data, serErr := serializer.Serialize(unsafe.Pointer(&pageBuf[0]), MaxPagePayload)
+		require.NoError(t, serErr)
+		assert.Equal(t, MaxDiskPageSize, len(data))
+		_, err = f.WriteAt(data, ChunkHeaderSize+int64(i)*MaxDiskPageSize)
+		require.NoError(t, err)
+	}
+
+	// Scan
+	result := c.scanPageFrames()
+	assert.Equal(t, 3, len(result))
+}
+
+func TestScanPageFrames_CorruptedFrameSkipped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "btree_0_1.ao")
+
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	require.NoError(t, err)
+	defer f.Close()
+
+	require.NoError(t, f.Truncate(ChunkHeaderSize+5*MaxDiskPageSize))
+	c := &ChunkFile{file: f, id: 0, capacity: ChunkHeaderSize + 5*MaxDiskPageSize}
+
+	h := &ChunkHeader{ID: 0, PageCount: 5, BlockSize: ChunkBlockSize, FormatVersion: 1}
+	require.NoError(t, c.writeHeader(h))
+
+	serializer := &PageSerializer{}
+	pageBuf := make([]byte, MaxPagePayload)
+	pageBuf[offheap.PageTypeFieldOffset] = offheap.PageTypeLeaf
+
+	// Write valid frames at positions 0, 2, 4 (skip 1 and 3 are corrupted)
+	for _, i := range []int{0, 2, 4} {
+		data, _ := serializer.Serialize(unsafe.Pointer(&pageBuf[0]), MaxPagePayload)
+		f.WriteAt(data, ChunkHeaderSize+int64(i)*MaxDiskPageSize)
+	}
+
+	// Write garbage at positions 1 and 3
+	garbage := make([]byte, MaxDiskPageSize)
+	for i := range garbage {
+		garbage[i] = 0xFF
+	}
+	f.WriteAt(garbage, ChunkHeaderSize+1*MaxDiskPageSize)
+	f.WriteAt(garbage, ChunkHeaderSize+3*MaxDiskPageSize)
+
+	// Scan should find 3 valid frames and skip the corrupted ones
+	result := c.scanPageFrames()
+	assert.Equal(t, 3, len(result))
+}
+
+func TestScanPageFrames_EarlyExitOnZeroFill(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "btree_0_1.ao")
+
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	require.NoError(t, err)
+	defer f.Close()
+
+	// Large capacity but only 2 valid frames
+	require.NoError(t, f.Truncate(ChunkHeaderSize+100*MaxDiskPageSize))
+	c := &ChunkFile{file: f, id: 0, capacity: ChunkHeaderSize + 100*MaxDiskPageSize}
+
+	h := &ChunkHeader{ID: 0, BlockSize: ChunkBlockSize, FormatVersion: 1}
+	require.NoError(t, c.writeHeader(h))
+
+	serializer := &PageSerializer{}
+	pageBuf := make([]byte, MaxPagePayload)
+	pageBuf[offheap.PageTypeFieldOffset] = offheap.PageTypeLeaf
+
+	// Write only 2 frames at the start
+	for i := 0; i < 2; i++ {
+		data, _ := serializer.Serialize(unsafe.Pointer(&pageBuf[0]), MaxPagePayload)
+		f.WriteAt(data, ChunkHeaderSize+int64(i)*MaxDiskPageSize)
+	}
+
+	// Scan should exit early after 16 consecutive misses in zero-fill
+	result := c.scanPageFrames()
+	assert.Equal(t, 2, len(result))
+}
+
+func TestScanPageFrames_EmptyChunk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "btree_0_1.ao")
+
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	require.NoError(t, err)
+	defer f.Close()
+
+	require.NoError(t, f.Truncate(ChunkHeaderSize+10*MaxDiskPageSize))
+	c := &ChunkFile{file: f, id: 0, capacity: ChunkHeaderSize + 10*MaxDiskPageSize}
+
+	h := &ChunkHeader{ID: 0, BlockSize: ChunkBlockSize, FormatVersion: 1}
+	require.NoError(t, c.writeHeader(h))
+
+	// No frames written — only zero-fill
+	result := c.scanPageFrames()
+	assert.Equal(t, 0, len(result))
 }

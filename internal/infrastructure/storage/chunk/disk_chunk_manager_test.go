@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
@@ -476,4 +478,57 @@ func TestRestoreDiskChunkManager_SeqToIDMapping(t *testing.T) {
 	// seqToID should be restored
 	assert.NotNil(t, cm2.seqToID)
 	assert.Equal(t, uint32(0), cm2.seqToID[cm2.maxSeq])
+}
+
+func TestRestoreDiskChunkManager_ScanPageFramesIntegration(t *testing.T) {
+	dir := t.TempDir()
+
+	// Manually create a chunk file with serialized pages (bypasses Allocate size limit)
+	path := filepath.Join(dir, "btree_0_1.ao")
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	require.NoError(t, err)
+
+	// Preallocate 1MB
+	require.NoError(t, f.Truncate(1024*1024))
+
+	// Write chunk header
+	c := &ChunkFile{file: f, id: 0, capacity: 1024 * 1024}
+	h := &ChunkHeader{ID: 0, PageCount: 3, BlockSize: ChunkBlockSize, FormatVersion: 1}
+	require.NoError(t, c.writeHeader(h))
+
+	// Write 3 serialized pages at known offsets
+	serializer := &PageSerializer{}
+	pageBuf := make([]byte, MaxPagePayload)
+	pageBuf[offheap.PageTypeFieldOffset] = offheap.PageTypeLeaf
+
+	var expectedPositions []model.ChunkPosition
+	for i := 0; i < 3; i++ {
+		data, serErr := serializer.Serialize(unsafe.Pointer(&pageBuf[0]), MaxPagePayload)
+		require.NoError(t, serErr)
+		offset := ChunkHeaderSize + int64(i)*int64(MaxDiskPageSize)
+		_, err = f.WriteAt(data, offset)
+		require.NoError(t, err)
+		pos, _ := model.EncodeChunkPosition(0, uint32(offset), offheap.PageTypeLeaf)
+		expectedPositions = append(expectedPositions, pos)
+	}
+	require.NoError(t, f.Close())
+
+	// Restore
+	cm, err := RestoreDiskChunkManager(dir, 0)
+	require.NoError(t, err)
+	defer cm.Close()
+
+	assert.Equal(t, 1, len(cm.chunks))
+	restored := cm.lastChunk
+	assert.Equal(t, 3, len(restored.pagePosToLen))
+
+	// Verify all pages readable
+	for i, pos := range expectedPositions {
+		data, readErr := cm.ReadPage(pos)
+		require.NoError(t, readErr, "page %d should be readable", i)
+		assert.Equal(t, MaxDiskPageSize, len(data))
+	}
+
+	// nextOffset should be after all 3 pages
+	assert.Equal(t, ChunkHeaderSize+3*int64(MaxDiskPageSize), restored.nextOffset)
 }

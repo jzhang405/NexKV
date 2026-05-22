@@ -2,7 +2,7 @@
 
 > 从头理解 NexKV 的存储引擎、WAL、AO 落盘、MVCC 事务、Checkpoint 与崩溃恢复
 > 创建日期：2026-05-23
-> 覆盖范围：Page 物理布局 → BTree COW → WAL 日志 → AO Chunk 落盘 → MVCC 事务 → Checkpoint → Recovery
+> 覆盖范围：Page 物理布局 → BTree COW → AO Chunk 落盘 → WAL 日志 → Checkpoint → MVCC 事务 → Recovery
 > 图表格式：Mermaid（可在 GitHub、Obsidian 等支持 Mermaid 的 Markdown 渲染器中直接查看）
 
 ---
@@ -21,6 +21,8 @@
 10. [第九层：崩溃恢复](#十第九层崩溃恢复)
 11. [完整数据流：一条 Put 的旅程](#十一完整数据流一条-put-的旅程)
 12. [关键设计决策汇总](#十二关键设计决策汇总)
+13. [附录 A：关键文件索引](#附录-a关键文件索引)
+14. [附录 B：磁盘文件格式速查](#附录-b磁盘文件格式速查)
 
 ---
 
@@ -218,13 +220,12 @@ child = (version << 32) | pageID
 flowchart TB
     subgraph InternalNode["Internal Node (Count=3)"]
         direction TB
-        C0["Child[0] → 子树 Key < 'apple'"]
-        K0["Key[0] = 'apple'"]
-        C1["Child[1] → 'apple' ≤ 子树 Key < 'orange'"]
-        K1["Key[1] = 'orange'"]
-        C2["Child[2] → 'orange' ≤ 子树 Key < 'zebra'"]
-        K2["Key[2] = 'zebra'"]
-        C3["Child[3] → 子树 Key ≥ 'zebra'<br/>(extraChild in PageHeader)"]
+        C0["Child[0] → 子树 Key < 'apple'"] --> K0["Key[0] = 'apple'"]
+        K0 --> C1["Child[1] → 'apple' ≤ 子树 Key < 'orange'"]
+        C1 --> K1["Key[1] = 'orange'"]
+        K1 --> C2["Child[2] → 'orange' ≤ 子树 Key < 'zebra'"]
+        C2 --> K2["Key[2] = 'zebra'"]
+        K2 --> C3["Child[3] → 子树 Key ≥ 'zebra'<br/>(extraChild in PageHeader)"]
     end
 ```
 
@@ -239,7 +240,7 @@ flowchart TB
 若 需要 > 可用空间 → 页面满 → 触发 Split
 ```
 
-**最大容量估算**：一个 4KB 页面约可存储 ~168 个 12-byte key + 12-byte value 的叶子条目。
+**最大容量估算**：一个 4KB 页面约可存储 ~168 个 4-byte key + 4-byte value 的叶子条目（或 ~101 个 12-byte key + 12-byte value）。
 
 ---
 
@@ -268,8 +269,11 @@ flowchart LR
 **PageID 到指针的转换**（O(1)）：
 ```go
 // page_manager.go:157
-func (pm *PageManager) PageIDToPtr(pageID model.PageID) unsafe.Pointer {
-    return unsafe.Add(pm.base, uintptr(pageID) * PageSize)
+func (pm *PageManager) PageIDToPtr(pageID uint32) unsafe.Pointer {
+    if pageID >= pm.total {
+        panic("offheap: pageID out of range")
+    }
+    return unsafe.Add(pm.base, uintptr(pageID)*PageSize)
 }
 ```
 
@@ -356,7 +360,10 @@ type PageInfo struct {
 
 ```mermaid
 stateDiagram-v2
+    [*] --> NodeRoot: 初始化根页
     [*] --> Normal
+    NodeRoot --> Normal: 根分裂后降级
+    NodeRoot --> Splitting: Split 触发
     Normal --> Splitting: Split 触发
     Normal --> Merging: Merge 触发
     Normal --> Compacting: Compact 触发
@@ -379,11 +386,15 @@ type BTree struct {
     rootRef        *RootPageRef           // 根页面引用（CAS 替换）
     storage        *OffheapBTreeStorage   // mmap 存储管理
     size           atomic.Int64           // 逻辑 key 数量
+    closed         atomic.Bool            // 生命周期守卫
     metrics        *BTreeMetrics          // 性能指标
     epochMgr       *EpochManager          // 旧页延迟回收
+    epochCancel    context.CancelFunc     // Epoch 后台 goroutine 生命周期
     tsGen          mvcc.TSGenerator       // MVCC 时间戳生成
     txMgr          mvcc.TxManager         // 事务管理器
     compactWp      WatermarkProvider      // Compaction 水位
+    compactMu      sync.Mutex             // Compaction 串行化
+    // tracer, latencyMetrics 等仪器化字段省略
 }
 ```
 
@@ -527,9 +538,10 @@ block-beta
         columns 1
         block:header["Header Block 0 (4096 bytes) - offset 0x0000"]
             columns 1
-            H0A["id:0<br/>rootPagePos:0<br/>pageCount:42<br/>sumOfPageLength:172200<br/>blockSize:4096<br/>format:1<br/>removedPageCount:3<br/>(key:value 文本格式，对齐 Lealone)"]
+            H0A["id:0<br/>rootPagePos:0<br/>pageCount:42<br/>sumOfPageLength:172200<br/>sumOfLivePageLength:164000<br/>pagePositionAndLengthOffset:0<br/>blockSize:4096<br/>format:1<br/>removedPageOffset:0<br/>removedPageCount:3<br/>lastTransactionId:0<br/>mapSize:0<br/>(key:value 文本格式，共 12 字段，对齐 Lealone)"]
         end
         block:header2["Header Block 1 (4096 bytes) - offset 0x1000<br/>完全相同，用于崩溃恢复"]
+        end
         block:frames["Page Frames (offset 0x2000 → EOF)"]
             columns 1
             F0["Frame 0 (4100 bytes): [CRC32C:4][PageHeader:56][...KV Data...]"]
@@ -578,12 +590,13 @@ CRC32C 覆盖 payload 部分。与 WAL 使用相同的 Castagnoli 多项式，�
 
 ```go
 // page_serializer.go:Serialize
-func (ps *PageSerializer) Serialize(ptr unsafe.Pointer, pageLength int) []byte {
-    buf := make([]byte, CRCSize+pageLength)       // [4 + N] 字节
-    copy(buf[CRCSize:], mmap[ptr : ptr+pageLength]) // 从 mmap 复制
-    crc := wal.CRC32C(buf[CRCSize:])                // 计算 CRC
-    binary.LittleEndian.PutUint32(buf[:CRCSize], crc) // 小端序
-    return buf
+func (s *PageSerializer) Serialize(ptr unsafe.Pointer, pageLength int) ([]byte, error) {
+    buf := make([]byte, CRCSize+pageLength)             // [4 + N] 字节
+    src := unsafe.Slice((*byte)(ptr), pageLength)        // 从 mmap 构造切片
+    copy(buf[CRCSize:], src)                              // 复制页面数据
+    crc := wal.CRC32C(buf[CRCSize:])                     // 计算 CRC
+    binary.LittleEndian.PutUint32(buf[:CRCSize], crc)    // 小端序写入 CRC
+    return buf, nil
 }
 ```
 
@@ -671,7 +684,7 @@ block-beta
     columns 1
     block:wal["WAL Entry 物理布局 (BE = Big Endian)"]
         columns 2
-        block:meta["元数据 (43 bytes fixed)"]
+        block:meta["元数据 (45 bytes fixed, LSN through ValLen)"]
             columns 4
             M1["CRC32C<br/>4B BE"]
             M2["Length<br/>4B BE"]
@@ -826,14 +839,11 @@ MVCC 是 NexKV 事务支持的基石。代码位置：`internal/infrastructure/s
 ```mermaid
 block-beta
     columns 3
-    F["Flag<br/>1 byte<br/>0x00=Normal<br/>0x01=Tombstone"]
-    B["beginTS<br/>8 bytes BE<br/>版本时间戳"]
-    R["RealVal<br/>N bytes<br/>用户实际数据"]
-    
     block:total["MVCCHeader = 9 bytes"]
-    F
-    B
-    R
+        F["Flag<br/>1 byte<br/>0x00=Normal<br/>0x01=Tombstone"]
+        B["beginTS<br/>8 bytes BE<br/>版本时间戳"]
+        R["RealVal<br/>1-4087 bytes<br/>用户实际数据"]
+    end
 ```
 
 **为什么 Flag 在 BTree 内部？** B+Tree 只存每个 Key 的单版本最新值。Flag 内联意味着 Get 可以直接判断 key 是否存在（FlagTombstone → ErrKeyNotFound），Set 可以直接判断是否需要创建 VersionChain。
@@ -1035,26 +1045,34 @@ func (em *EpochManager) EnterRead(slot int) {
 
 ```mermaid
 flowchart TB
-    Crash["💥 崩溃"] --> PhaseA["Phase A: 基础设施初始化"]
+    Crash["💥 崩溃"] --> PhaseA
     
-    subgraph PhaseASub["Phase A"]
-        A1["1. RestoreDiskChunkManager(dir)<br/>扫描 .ao 文件 → 重建 pagePosToLen"]
+    subgraph PhaseA["Phase A: 基础设施初始化"]
+        direction TB
+        A1["1. RestoreDiskChunkManager(dir, chunkSize)<br/>扫描 .ao 文件 → 重建 pagePosToLen"]
         A2["2. PageManager 初始化 (空 mmap 池)"]
         A3["3. WAL 扫描 → 找最新 CheckpointEntry"]
+        A1 --> A2 --> A3
     end
     
-    PhaseA --> PhaseB["Phase B: BTree 结构重建"]
-    subgraph PhaseBSub["Phase B"]
+    PhaseA --> PhaseB
+    
+    subgraph PhaseB["Phase B: BTree 结构重建"]
+        direction TB
         B1["4. 解析 CheckpointEntry<br/>→ rootPageID + pageLocs"]
         B2["5. OffheapBTreeStorage.pageLocs ← 映射"]
         B3["6. RebuildBTree(rootPageID)<br/>惰性加载 PageRef 图"]
+        B1 --> B2 --> B3
     end
     
-    PhaseB --> PhaseC["Phase C: 增量 WAL 回放"]
-    subgraph PhaseCSub["Phase C"]
+    PhaseB --> PhaseC
+    
+    subgraph PhaseC["Phase C: 增量 WAL 回放"]
+        direction TB
         C1["7. 从 checkpointStartLSN 扫描 WAL"]
         C2["8. 按 TxID 分组<br/>丢弃无 Commit 标记的事务"]
         C3["9. 已提交事务回放<br/>三阶段幂等性检查<br/>重建 BTree + VersionChain"]
+        C1 --> C2 --> C3
     end
     
     PhaseC --> Done["✅ 恢复完成<br/>BTree 可服务"]
@@ -1063,6 +1081,7 @@ flowchart TB
 ### 10.2 WAL 恢复协议
 
 ```go
+// 伪代码 — 实际函数为 RecoverFromWAL，签名更复杂，此处为简化逻辑
 func recoverFromWAL(entries []WALEntry) {
     txGroups := groupByTxID(entries)
     
@@ -1098,19 +1117,18 @@ flowchart TB
     Jump --> Check{"读 4 字节 == 0xDEADBEEF?<br/>CRC 匹配?"}
     Check -->|"是"| Recover["找到 Entry 边界<br/>继续正常读取"]
     Check -->|"否"| Next["下一个 8 字节"]
-    Next --> MissCheck{"连续 16 次未命中?"}
-    MissCheck -->|"否"| Jump
-    MissCheck -->|"是"| GiveUp["放弃剩余文件<br/>恢复已找到的所有 Entry"]
+    Next --> FoundCheck{"找到有效 Entry?"}
+    FoundCheck -->|"是"| Recover2["恢复: Entry 0, 1, K, K+1, ..., N ✓"]
+    FoundCheck -->|"否"| Next
     
     NormalScan --> Done2["Entry 0, 1 ✓"]
     CRCFail --> Done2
-    Recover --> Done3["Entry 0, 1, K, K+1, ..., N ✓"]
 ```
 
 ### 10.4 .ao 文件恢复
 
 ```go
-func RestoreDiskChunkManager(dir string) *DiskChunkManager {
+func RestoreDiskChunkManager(dir string, chunkSize int64) (*DiskChunkManager, error) {
     // Step 1-2: 扫描目录，删除零长度文件
     // Step 3: 解析文件名，去重（同 chunkID 留最高 seq）
     // Step 4-6: 按 seq 排序，打开文件，验证双 Block Header
@@ -1130,64 +1148,73 @@ func RestoreDiskChunkManager(dir string) *DiskChunkManager {
 
 ```mermaid
 flowchart TB
-    Step1["1. Client: btree.Set('balance', '100')"] --> Step2
+    Step1["1. Client: btree.Set('balance', '100')"]
     
-    subgraph Step2Box["2. MVCC 编码 (事务内)"]
+    subgraph Step2["2. MVCC 编码 (事务内)"]
+        direction TB
         S2A["tx.Put('balance', '100')<br/>→ WriteBuffer['balance'] = {Op:Insert, Value:'100'}"]
         S2B["tx.Commit()<br/>→ commitTS = 1000<br/>→ encoded = BuildMVCC(Normal, 1000, '100')"]
         S2C["WAL.Append({Type:Insert, Key:'balance', Value:encoded})"]
         S2D["WAL.Sync() ← fsync"]
+        S2A --> S2B --> S2C --> S2D
     end
     
-    Step2 --> Step3
-    
-    subgraph Step3Box["3. BTree writeOperation"]
+    subgraph Step3["3. BTree writeOperation"]
+        direction TB
         S3A["searchPath → leafRef (PageID=5)"]
         S3B["oldLeaf = GetLeafPage(5)"]
         S3C["COW: AllocLeafPage → 99<br/>newLeaf = copy(oldLeaf) + Insert"]
         S3D["CAS: leafRef.CAS(oldInfo→newInfo) ✓"]
         S3E["Retire(5) → Epoch 延迟"]
+        S3A --> S3B --> S3C --> S3D --> S3E
     end
     
-    Step3 --> Step4
-    
-    subgraph Step4Box["4. Page 99 mmap 布局"]
+    subgraph Step4["4. Page 99 mmap 布局"]
         S4A["PageHeader: version=11, count=1, pageType=Leaf"]
         S4B["LeafEntry[0]: key='balance', val=[0x00][1000]['100']"]
     end
     
-    Step4 --> Step5
-    
-    subgraph Step5Box["5. Checkpoint (30s 后)"]
+    subgraph Step5["5. Checkpoint (30s 后)"]
+        direction TB
         S5A["enumeratePages → PageFlushItem{99}"]
         S5B["cm.Allocate(4100) → ChunkPos(chunk=0, off=8192)"]
         S5C["cm.WritePage(pos, serialize(Page 99))"]
         S5D["cm.Sync() → .ao 文件持久化"]
+        S5A --> S5B --> S5C --> S5D
     end
+    
+    Step1 --> Step2 --> Step3 --> Step4 --> Step5
 ```
 
 ### 11.2 读取路径
 
 ```mermaid
 flowchart TB
-    R1["1. Client: btree.Get('balance')"] --> R2
-    subgraph R2Box["2. Epoch 注册"]
+    R1["1. Client: btree.Get('balance')"]
+    
+    subgraph R2["2. Epoch 注册"]
         R2A["slot = AllocSlot()"]
         R2B["EnterRead(slot) / defer ExitRead"]
+        R2A --> R2B
     end
-    R2 --> R3
-    subgraph R3Box["3. searchPath + Page Access"]
+    
+    subgraph R3["3. searchPath + Page Access"]
+        direction TB
         R3A["root → child → leafRef (PageID=99)"]
         R3B["GetLeafPage(99) → mmap ptr"]
         R3C["leaf.Search('balance') → idx=0"]
         R3D["rawVal = [0x00][1000]['100']"]
+        R3A --> R3B --> R3C --> R3D
     end
-    R3 --> R4
-    subgraph R4Box["4. MVCC 解析"]
+    
+    subgraph R4["4. MVCC 解析"]
         R4A["ParseMVCC: flag=Normal, beginTS=1000"]
         R4B["snapshotTS=1200 → beginTS(1000) ≤ 1200 → 可见"]
         R4C["返回 '100'"]
+        R4A --> R4B --> R4C
     end
+    
+    R1 --> R2 --> R3 --> R4
 ```
 
 ### 11.3 崩溃恢复路径
@@ -1278,4 +1305,4 @@ flowchart TB
 
 **文档版本**：v2.0 (Mermaid 图版)
 **创建日期**：2026-05-23
-**字数**：~18,000 中文 + ~30 Mermaid 图表 = 约 25,000 字等价内容
+**字数**：~18,000 中文 + ~39 Mermaid 图表 = 约 25,000 字等价内容

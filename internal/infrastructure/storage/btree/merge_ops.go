@@ -10,19 +10,30 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/model"
 )
 
-// maybeMergeAfterWrite is the entry point for lazy merge after a Delete.
-// Currently disabled for auto-trigger: handleLeafMerge calls FreePage on old pages,
-// which races with searchPath referers that hold PageRefs to the same pageID.
-// When the physical page is reused by the allocator, stale PageRefs see count=0.
+// maybeMergeAfterWrite triggers lazy leaf merge after a Delete when the target leaf
+// becomes sparse. Called from writeOperation CAS success path before path.ReleaseAll().
 //
-// Fix requires either:
-//
-//	a. Epoch-based page reclamation (delayed free until all referers drain), or
-//	b. Async merge in background goroutine (not blocking Delete hot path)
-//
-// mergeChildRefsInCache correctly handles the children cache update (G1 fixed).
-// handleLeafMerge can be called safely from explicit/manual compaction paths.
-func (b *BTree) maybeMergeAfterWrite(_ []byte, _ int64) {}
+// Prerequisites (satisfied by Epoch-based Page Reclamation):
+// handleLeafMerge retires old pages via epochMgr.Retire() — no direct FreePage race.
+func (b *BTree) maybeMergeAfterWrite(path SearchPath, delta int64) {
+	if b.epochMgr == nil || delta >= 0 {
+		return
+	}
+	leafEntry := path.Leaf()
+	leafRef := leafEntry.Ref
+	leafPI := leafRef.GetPageInfo()
+	if leafPI == nil || leafPI.IsBusy() {
+		return
+	}
+	leaf, err := b.storage.GetLeafPage(leafPI.PageID)
+	if err != nil {
+		return
+	}
+	if !isLeafSparse(leaf, MergeThreshold) {
+		return
+	}
+	_ = b.handleLeafMerge(path, leafRef, leafPI)
+}
 
 func (b *BTree) handleLeafMerge(path SearchPath, sparseRef *PageRef, leafPI *PageInfo) error {
 	parentEntry := path[len(path)-2]
@@ -49,30 +60,29 @@ func (b *BTree) handleLeafMerge(path SearchPath, sparseRef *PageRef, leafPI *Pag
 
 	if leafIdx > 0 {
 		sibIdx = leafIdx - 1
-		sibRef = NewPageRef(parent.GetChild(sibIdx), 0, b.rootRef.freeFunc)
-		sibRef.Retain()
-		sibPI = sibRef.GetPageInfo()
-		if sibPI == nil || !sibPI.IsLeaf || sibPI.IsBusy() {
-			sibRef.Release()
-			return nil
-		}
-		sibLeaf, err = b.storage.GetLeafPage(sibPI.PageID)
 		selfIsLeft = false
 	} else if leafIdx < parent.ChildCount()-1 {
 		sibIdx = leafIdx + 1
-		sibRef = NewPageRef(parent.GetChild(sibIdx), 0, b.rootRef.freeFunc)
-		sibRef.Retain()
-		sibPI = sibRef.GetPageInfo()
-		if sibPI == nil || !sibPI.IsLeaf || sibPI.IsBusy() {
-			sibRef.Release()
-			return nil
-		}
-		sibLeaf, err = b.storage.GetLeafPage(sibPI.PageID)
 		selfIsLeft = true
 	} else {
 		return nil
 	}
+
+	// Get sibling from parent's children cache (not NewPageRef — must CAS the real PageRef)
+	cache := parentRef.GetChildren()
+	if cache == nil || sibIdx >= len(cache.Children) {
+		return nil
+	}
+	sibRef = cache.Children[sibIdx]
+	sibRef.Retain()
+	sibPI = sibRef.GetPageInfo()
+	if sibPI == nil || !sibPI.IsLeaf || sibPI.IsBusy() {
+		sibRef.Release()
+		return nil
+	}
+	sibLeaf, err = b.storage.GetLeafPage(sibPI.PageID)
 	if err != nil {
+		sibRef.Release()
 		return err
 	}
 	defer sibRef.Release()
@@ -158,8 +168,14 @@ func (b *BTree) handleLeafMerge(path SearchPath, sparseRef *PageRef, leafPI *Pag
 	refA.CAS(markA, &PageInfo{PageID: piA.PageID, Version: markA.Version + 1, IsLeaf: true, NodeState: NodeRedirect, Redirect: true})
 	refB.CAS(markB, &PageInfo{PageID: piB.PageID, Version: markB.Version + 1, IsLeaf: true, NodeState: NodeRedirect, Redirect: true})
 
-	_ = b.storage.FreePage(piA.PageID)
-	_ = b.storage.FreePage(piB.PageID)
+	if b.epochMgr != nil {
+		slot := b.epochMgr.AllocSlot()
+		b.epochMgr.Retire(slot, piA.PageID)
+		b.epochMgr.Retire(slot, piB.PageID)
+	} else {
+		_ = b.storage.FreePage(piA.PageID)
+		_ = b.storage.FreePage(piB.PageID)
+	}
 
 	// Underflow check
 	if isNodeSparse(newParent, MergeThreshold) && len(path) >= 3 {
@@ -172,12 +188,161 @@ func (b *BTree) handleLeafMerge(path SearchPath, sparseRef *PageRef, leafPI *Pag
 	return nil
 }
 
-func (b *BTree) handleInternalMerge(path SearchPath, nodeRef *PageRef, _ *PageInfo) error {
+func (b *BTree) handleInternalMerge(path SearchPath, nodeRef *PageRef, nodePI *PageInfo) error {
 	if len(path) < 2 {
 		return nil
 	}
-	_ = path
-	_ = nodeRef
+	parentEntry := path[len(path)-2]
+	parentRef := parentEntry.Ref
+	nodeIdx := parentEntry.Index
+
+	parentPI := parentRef.GetPageInfo()
+	if parentPI == nil || parentPI.IsBusy() {
+		return nil
+	}
+	parentRef.Retain()
+	defer parentRef.Release()
+
+	parent, err := b.storage.GetNodePage(parentPI.PageID)
+	if err != nil {
+		return err
+	}
+
+	var sibRef *PageRef
+	var sibNode NodePage
+	var sibPI *PageInfo
+	var sibIdx int
+	var selfIsLeft bool
+	var separator []byte
+
+	if nodeIdx > 0 {
+		sibIdx = nodeIdx - 1
+		selfIsLeft = false
+		separator = parent.GetKey(sibIdx)
+	} else if nodeIdx < parent.ChildCount()-1 {
+		sibIdx = nodeIdx + 1
+		selfIsLeft = true
+		separator = parent.GetKey(nodeIdx)
+	} else {
+		return nil
+	}
+
+	// Get sibling from parent's children cache (not NewPageRef — must CAS the real PageRef)
+	cache := parentRef.GetChildren()
+	if cache == nil || sibIdx >= len(cache.Children) {
+		return nil
+	}
+	sibRef = cache.Children[sibIdx]
+	sibRef.Retain()
+	sibPI = sibRef.GetPageInfo()
+	if sibPI == nil || sibPI.IsLeaf || sibPI.IsBusy() {
+		sibRef.Release()
+		return nil
+	}
+	sibNode, err = b.storage.GetNodePage(sibPI.PageID)
+	if err != nil {
+		sibRef.Release()
+		return err
+	}
+	defer sibRef.Release()
+
+	if !isNodeSparse(sibNode, MergeThreshold) {
+		return nil
+	}
+
+	selfNode, err := b.storage.GetNodePage(nodePI.PageID)
+	if err != nil {
+		return err
+	}
+
+	// Phase 1: CAS NodeMerging (PageID ascending)
+	var refA, refB *PageRef
+	var piA, piB, markA, markB *PageInfo
+	if nodeRef.PageID() < sibRef.PageID() {
+		refA, refB = nodeRef, sibRef
+		piA, piB = nodePI, sibPI
+	} else {
+		refA, refB = sibRef, nodeRef
+		piA, piB = sibPI, nodePI
+	}
+
+	markA = &PageInfo{PageID: piA.PageID, Version: piA.Version + 1, IsLeaf: false, NodeState: NodeMerging}
+	if !refA.CAS(piA, markA) {
+		return nil
+	}
+	markB = &PageInfo{PageID: piB.PageID, Version: piB.Version + 1, IsLeaf: false, NodeState: NodeMerging}
+	if !refB.CAS(piB, markB) {
+		refA.CAS(markA, piA)
+		return nil
+	}
+
+	// Phase 2: MergeNodes (merge-only — two sparse internal nodes always fit in one page:
+	// Count <= 61+61+1 = 123 <= MaxInternalKeys=126)
+	var merged NodePage
+	if selfIsLeft {
+		merged, err = b.storage.MergeNodes(selfNode, sibNode, separator)
+	} else {
+		merged, err = b.storage.MergeNodes(sibNode, selfNode, separator)
+	}
+	if err != nil {
+		refA.CAS(markA, piA)
+		refB.CAS(markB, piB)
+		return err
+	}
+
+	// Phase 3: COW parent — RemoveChild + ReplaceChild
+	var newParent NodePage
+	removeIdx := nodeIdx
+	if !selfIsLeft {
+		removeIdx = sibIdx
+	}
+	newParent, err = parent.RemoveChild(removeIdx)
+	if err != nil {
+		refA.CAS(markA, piA)
+		refB.CAS(markB, piB)
+		return err
+	}
+	newParent, err = newParent.ReplaceChild(removeIdx, merged.PageID())
+	if err != nil {
+		refA.CAS(markA, piA)
+		refB.CAS(markB, piB)
+		_ = b.storage.FreePage(newParent.PageID())
+		return err
+	}
+
+	newParPI := &PageInfo{PageID: newParent.PageID(), Version: parentPI.Version + 1, IsLeaf: false, NodeState: parentPI.NodeState}
+	if !parentRef.CAS(parentPI, newParPI) {
+		refA.CAS(markA, piA)
+		refB.CAS(markB, piB)
+		_ = b.storage.FreePage(newParent.PageID())
+		return nil
+	}
+
+	// Update children cache
+	b.mergeChildRefsInCache(parentRef, removeIdx, merged.PageID())
+
+	// Phase 4: Mark old pages NodeRedirect
+	refA.CAS(markA, &PageInfo{PageID: piA.PageID, Version: markA.Version + 1, IsLeaf: false, NodeState: NodeRedirect, Redirect: true})
+	refB.CAS(markB, &PageInfo{PageID: piB.PageID, Version: markB.Version + 1, IsLeaf: false, NodeState: NodeRedirect, Redirect: true})
+
+	if b.epochMgr != nil {
+		slot := b.epochMgr.AllocSlot()
+		b.epochMgr.Retire(slot, piA.PageID)
+		b.epochMgr.Retire(slot, piB.PageID)
+	} else {
+		_ = b.storage.FreePage(piA.PageID)
+		_ = b.storage.FreePage(piB.PageID)
+	}
+
+	// Underflow: recurse upward if parent is now sparse
+	if isNodeSparse(newParent, MergeThreshold) && len(path) >= 3 {
+		npi := parentRef.GetPageInfo()
+		if npi != nil {
+			_ = b.handleInternalMerge(path[:len(path)-1], parentRef, npi)
+		}
+	}
+
+	_ = b.mergeRoot()
 	return nil
 }
 
@@ -249,7 +414,7 @@ func (b *BTree) mergeRoot() error {
 			}
 		}
 		if childRef == nil {
-			childRef = NewPageRef(childID, 0, b.rootRef.freeFunc)
+			childRef = NewPageRef(childID, 0, nil)
 		}
 		childRef.Retain()
 		childPI := childRef.GetPageInfo()
@@ -264,7 +429,8 @@ func (b *BTree) mergeRoot() error {
 			IsLeaf:    childPI.IsLeaf,
 			NodeState: NodeRoot,
 		}
-		if b.rootRef.ReplaceRoot(oldRootPI, newRootPI, nil) {
+		childCache := childRef.GetChildren()
+		if b.rootRef.ReplaceRoot(oldRootPI, newRootPI, childCache) {
 			childRef.Release()
 			_ = b.storage.FreePage(oldRootPI.PageID)
 			return nil
@@ -275,7 +441,3 @@ func (b *BTree) mergeRoot() error {
 }
 
 // Phase 6.5: infrastructure functions, used when lazy merge is fully enabled
-var _ = (*BTree).maybeMergeAfterWrite
-var _ = (*BTree).handleLeafMerge
-var _ = (*BTree).handleInternalMerge
-var _ = (*BTree).mergeChildRefsInCache

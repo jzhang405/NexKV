@@ -299,8 +299,6 @@ func (cm *DiskChunkManager) createChunk() (*ChunkFile, error) {
 	return c, nil
 }
 
-// chunkFilenameRe is the expected format: btree_[chunkId]_[seq].ao
-
 // parseChunkFilename parses a chunk filename into chunkID and seq.
 // Expected format: "btree_0_1.ao" → (chunkID=0, seq=1).
 // Rejects files with trailing content (e.g., "btree_0_1.ao.tmp", "btree_0_1.ao.backup").
@@ -437,22 +435,28 @@ func RestoreDiskChunkManager(dir string, chunkSize int64) (*DiskChunkManager, er
 		}
 
 		// Step 6: Validate dual-block header
-		// TODO(phase4.3): Recover pagePosToLen from PagePositionAndLengthOffset,
-		//   removedPages from RemovedPageOffset, and RootPagePos from header.
+		// TODO(phase4.3): Recover removedPages from RemovedPageOffset + RootPagePos from header.
+		// pagePosToLen recovered by scanPageFrames (Phase 4.2); Phase 4.3 reads header offset.
 		if _, err := c.readHeader(); err != nil {
 			f.Close()
 			continue
 		}
 
-		// Step 7: Adopt chunk into manager
+		// Step 6a: Recover pagePosToLen by scanning chunk body PageFrames
+		pageLens := c.scanPageFrames()
+		if len(pageLens) > 0 {
+			c.pagePosToLen = pageLens
+			// All frames are MaxDiskPageSize — simple arithmetic
+			c.nextOffset = ChunkHeaderSize + int64(len(pageLens))*int64(MaxDiskPageSize)
+		}
+
+		// Step 7: Adopt chunk into manager.
+		// TODO(phase4.4): Recover removedPages from RemovedPageOffset in chunk header.
 		cm.chunks = append(cm.chunks, c)
 		cm.idToChunk[fe.chunkID] = c
 		cm.seqToID[fe.seq] = fe.chunkID
 		cm.chunkIDs.set(fe.chunkID)
 		cm.lastChunk = c
-		for pos := range c.removedPages {
-			cm.removedPages[pos] = struct{}{}
-		}
 	}
 
 	// No valid chunks after validation → first start

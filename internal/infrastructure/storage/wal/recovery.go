@@ -52,13 +52,21 @@ func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor, vs *mvcc
 			groups[e.TxID] = g
 		}
 		switch e.Type {
-		case WALTypeCommit:
+		case WALTypeCommit, WALTypeTxCommit:
 			g.hasCommit = true
-			if len(e.Key) >= 12 {
-				g.commitTS = binary.BigEndian.Uint64(e.Key)
+			// Phase 3.2 TxCommit Key=[txID:8][commitTS:8][entryCount:4]; old Commit Key=[commitTS:8]
+			commitTSOff := 0
+			if e.Type == WALTypeTxCommit && len(e.Key) >= 16 {
+				commitTSOff = 8
 			}
-		case WALTypeRollback:
+			if len(e.Key) >= commitTSOff+8 {
+				g.commitTS = binary.BigEndian.Uint64(e.Key[commitTSOff:])
+			}
+		case WALTypeRollback, WALTypeTxRollback:
 			g.hasCommit = false // explicit rollback
+		case WALTypeTxBegin:
+			// Phase 3.2: TxBegin marks transaction start. Full ActiveTxRegistry rebuild
+			// (using Value=[beginTS:8]) deferred to Recovery Phase C extension.
 		default:
 			g.entries = append(g.entries, e)
 		}

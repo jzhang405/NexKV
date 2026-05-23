@@ -1,8 +1,8 @@
 # Phase 3: MVCC 剩余 5 项补全预研
 
-> 创建日期：2026-05-23（v2.0 修订：2026-05-23，两 Agent 审查后重写）
-> 前置：MVCC Phase 2 已完成（`mvcc/` 22 文件）、Epoch-based Page Reclamation 已就位（`28ec388`）、Phase 4 WAL+AO 已就位（`12b338e`/`397d4d7`）
-> 状态：Ready for Review（v2.0）
+> 创建日期：2026-05-23（v3.0 修订：2026-05-23，Phase 3.1 完成，Phase 3.2 进行中）
+> 前置：MVCC Phase 2 已完成（`mvcc/` 22 文件）、Epoch-based Page Reclamation 已就位（`28ec388`）、Phase 4 WAL+AO 已就位（`12b338e`/`397d4d7`）、Phase 3.1 ✅（`d48bc70`）
+> 状态：Phase 3.1 ✅ | Phase 3.2 🔄 | Phase 3.3 📋
 > 来源：`2026-04-10-mvcc-phase2-plan.md` Phase 3 延后项
 
 ---
@@ -644,8 +644,8 @@ flowchart TB
 
 ---
 
-**文档版本**：v2.2（第三轮审查后 + 性能基线）
-**状态**：Ready for Implementation
+**文档版本**：v3.0（Phase 3.1 ✅ | Phase 3.2 🔄 | Phase 3.3 📋）
+**状态**：Phase 3.2 In Progress — 分支 `feature/phase3.2-commit-ts-wal-tx-types`
 
 **v2.0 修订记录**（相对于 v1.0）：
 - C1 修复：移除 `endTS` 字段的不实声明，改为准确描述 `rolledBack`/`reclaimed` atomic.Bool

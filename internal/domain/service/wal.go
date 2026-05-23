@@ -56,4 +56,8 @@ const (
 	WALTypeRollback
 	WALTypeCheckpoint // 5 — Phase 4: [startLSN:8][PageCount:4][(PageID:8,ChunkPos:8)*N]; PageCount=0 = no pageLocs
 	WALTypeSplit      // 6
+	WALTypeTxBegin    // 7 — Phase 3.2: Key=[txID:8]; Value=[beginTS:8]
+	WALTypeTxWrite    // 8 — Phase 3.2: Key=[txID:8][key]; Value=[oldFlag:1][oldBeginTS:8][newFlag:1][newValue:N]
+	WALTypeTxCommit   // 9 — Phase 3.2: Key=[txID:8][commitTS:8][entryCount:4]; Value=nil
+	WALTypeTxRollback // 10 — Phase 3.2: Key=[txID:8]; Value=nil
 )

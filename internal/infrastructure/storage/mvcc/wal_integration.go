@@ -46,8 +46,17 @@ func (wb *WriteBuffer) Snapshot() *WriteBufferSnapshot {
 // ToWALEntries converts the write buffer to WAL entries with the given commitTS.
 // The last entry is a Commit marker with commitTS encoded in the Key field.
 func (wb *WriteBuffer) ToWALEntries(commitTS uint64) []*service.WALEntry {
+	entries := wb.WriteEntries()
+	entries = append(entries, CommitEntry(commitTS))
+	return entries
+}
+
+// WriteEntries returns the WAL entries for all keys in the write buffer,
+// WITHOUT a trailing Commit marker. Caller must append CommitEntry separately
+// after commitTS is allocated (Phase 3.2: commitTS after WAL sync).
+func (wb *WriteBuffer) WriteEntries() []*service.WALEntry {
 	keys := wb.OrderedKeys()
-	entries := make([]*service.WALEntry, 0, len(keys)+1)
+	entries := make([]*service.WALEntry, 0, len(keys))
 
 	for _, key := range keys {
 		e, ok := wb.entries[key]
@@ -70,15 +79,17 @@ func (wb *WriteBuffer) ToWALEntries(commitTS uint64) []*service.WALEntry {
 		})
 	}
 
-	// Commit marker: Key=commitTS (8 bytes big-endian), KeyLen=8, ValueLen=0
+	return entries
+}
+
+// CommitEntry creates a WAL Commit marker entry with commitTS in the Key field.
+func CommitEntry(commitTS uint64) *service.WALEntry {
 	commitKey := make([]byte, 8)
 	binary.BigEndian.PutUint64(commitKey, commitTS)
-	entries = append(entries, &service.WALEntry{
+	return &service.WALEntry{
 		Type: service.WALTypeCommit,
 		Key:  commitKey,
-	})
-
-	return entries
+	}
 }
 
 // OrderedKeys returns keys from the snapshot in insertion order.

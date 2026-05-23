@@ -421,15 +421,13 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 		return err
 	}
 
-	// Phase 2: Allocate commitTS
-	commitTS := tx.engine.tsGen.NextTS()
-
-	// Phase 3: WAL Append + Sync (before Apply — all-or-nothing durability)
+	// Phase 2: WAL Append (write entries) + Sync — before commitTS allocation
+	// Phase 3.2: commitTS is allocated AFTER WAL sync to guarantee strict monotonicity.
 	tx.engine.walMu.Lock()
 	wal := tx.engine.wal
 	tx.engine.walMu.Unlock()
 	if wal != nil {
-		entries := tx.writeBuffer.ToWALEntries(commitTS)
+		entries := tx.writeBuffer.WriteEntries()
 		if _, err := wal.AppendBatch(entries); err != nil {
 			tx.cleanup()
 			return fmt.Errorf("wal append: %w", err)
@@ -440,10 +438,28 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 		}
 	}
 
-	// Phase 4: Apply WriteBuffer (WAL already durable)
-	if err := tx.applyWriteBuffer(ctx, commitTS); err != nil {
+	// Phase 3: Allocate commitTS — after WAL sync (Phase 3.2)
+	commitTS := tx.engine.tsGen.NextTS()
+
+	// Phase 4: Apply WriteBuffer (WAL already durable, commitTS allocated)
+	undoBuf, err := tx.applyWriteBuffer(ctx, commitTS)
+	if err != nil {
 		tx.cleanup()
 		return err
+	}
+
+	// Phase 5: WAL Commit marker (after Apply success)
+	if wal != nil {
+		if _, err := wal.Append(CommitEntry(commitTS)); err != nil {
+			_ = tx.rollbackApplied(undoBuf) // CRITICAL: rollback BTree changes
+			tx.cleanup()
+			return fmt.Errorf("wal commit marker: %w", err)
+		}
+		if err := wal.Sync(); err != nil {
+			_ = tx.rollbackApplied(undoBuf) // CRITICAL: rollback BTree changes
+			tx.cleanup()
+			return fmt.Errorf("wal commit sync: %w", err)
+		}
 	}
 
 	tx.cleanup()
@@ -477,7 +493,7 @@ func (tx *SnapshotTx) preCheck(ctx context.Context) error {
 }
 
 // applyWriteBuffer applies all WriteBuffer entries to B+Tree and VersionChain.
-func (tx *SnapshotTx) applyWriteBuffer(ctx context.Context, commitTS uint64) error {
+func (tx *SnapshotTx) applyWriteBuffer(ctx context.Context, commitTS uint64) ([]UndoEntry, error) {
 	keys := tx.writeBuffer.OrderedKeys()
 	sort.Strings(keys) // prevent deadlock
 
@@ -497,14 +513,14 @@ func (tx *SnapshotTx) applyWriteBuffer(ctx context.Context, commitTS uint64) err
 			}
 			if len(undoBuf) > 0 {
 				if rollbackErr := tx.rollbackApplied(undoBuf); rollbackErr != nil {
-					return fmt.Errorf("apply failed: %w, rollback also failed: %v", err, rollbackErr)
+					return nil, fmt.Errorf("apply failed: %w, rollback also failed: %v", err, rollbackErr)
 				}
 			}
-			return err
+			return nil, err
 		}
 		undoBuf = append(undoBuf, *undoEntry)
 	}
-	return nil
+	return undoBuf, nil
 }
 
 // commitKey atomically commits a single key under KeyLock protection.

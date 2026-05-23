@@ -16,10 +16,10 @@ import (
 // next is an atomic pointer to support safe concurrent unlink during Prune.
 type VersionNode struct {
 	commitTS   uint64
-	value      []byte                  // deepCopy'd value (excludes Flag); nil for Tombstone
-	flag       byte                    // FlagNormal / FlagTombstone
-	rolledBack atomic.Bool             // marks this node's transaction as rolled back; snapshot reads skip it
-	reclaimed  atomic.Bool             // Phase 3 GC: marked by Prune, skipped by snapshotGet
+	value      []byte                      // deepCopy'd value (excludes Flag); nil for Tombstone
+	flag       byte                        // FlagNormal / FlagTombstone
+	rolledBack atomic.Bool                 // marks this node's transaction as rolled back; snapshot reads skip it
+	reclaimed  atomic.Bool                 // Phase 3 GC: marked by Prune, skipped by snapshotGet
 	next       atomic.Pointer[VersionNode] // pointer to older version; atomic for CAS unlink in Prune
 }
 

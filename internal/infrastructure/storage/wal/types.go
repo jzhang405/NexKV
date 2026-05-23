@@ -24,6 +24,10 @@ const (
 	WALTypeRollback   = service.WALTypeRollback
 	WALTypeCheckpoint = service.WALTypeCheckpoint
 	WALTypeSplit      = service.WALTypeSplit
+	WALTypeTxBegin    = service.WALTypeTxBegin
+	WALTypeTxWrite    = service.WALTypeTxWrite
+	WALTypeTxCommit   = service.WALTypeTxCommit
+	WALTypeTxRollback = service.WALTypeTxRollback
 )
 
 // WALTypeString returns the human-readable name of a WALType.
@@ -43,6 +47,14 @@ func WALTypeString(wt WALType) string {
 		return "Checkpoint"
 	case WALTypeSplit:
 		return "Split"
+	case WALTypeTxBegin:
+		return "TxBegin"
+	case WALTypeTxWrite:
+		return "TxWrite"
+	case WALTypeTxCommit:
+		return "TxCommit"
+	case WALTypeTxRollback:
+		return "TxRollback"
 	default:
 		return "Unknown"
 	}

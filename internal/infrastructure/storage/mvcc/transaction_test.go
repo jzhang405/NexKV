@@ -354,7 +354,7 @@ func TestSnapshotTx_InsertVersionChain(t *testing.T) {
 			foundNormalNode = true
 			break
 		}
-		node = node.next
+		node = node.next.Load()
 	}
 	if !foundNormalNode {
 		t.Fatal("expected at least one Normal node in version chain (from Update)")

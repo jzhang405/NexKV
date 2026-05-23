@@ -71,7 +71,7 @@ func TestVersionChain_Prune(t *testing.T) {
 	// Prune with watermark=450: V5 retained (head), V4 retained (Tombstone before WM),
 	// V3 retained (first non-Tombstone before Tombstone), V2 reclaimed, V1 reclaimed
 	marked := chain.Prune(450)
-	chain.generation.Add(1)
+	// generation now in chainHead, bump via CAS(1)
 	assert.Equal(t, 2, marked)
 
 	// Verify snapshotGet skips reclaimed
@@ -82,7 +82,7 @@ func TestVersionChain_Prune(t *testing.T) {
 	assert.False(t, head.rolledBack.Load())
 
 	// V2, V1 should be reclaimed
-	v2 := head.next.next.next // V3 → V2
+	v2 := head.next.Load().next.Load().next.Load() // V3 → V2
 	require.NotNil(t, v2)
 	assert.Equal(t, uint64(200), v2.commitTS)
 	assert.True(t, v2.reclaimed.Load())
@@ -137,7 +137,7 @@ func FuzzVersionChainPrune(f *testing.F) {
 			chain.Prepend(uint64(100+10*i), []byte{byte(i)}, FlagNormal)
 		}
 		chain.Prune(watermark)
-		chain.generation.Add(1)
+		// generation now in chainHead, bump via CAS(1)
 
 		head := chain.Load()
 		require.NotNil(t, head)

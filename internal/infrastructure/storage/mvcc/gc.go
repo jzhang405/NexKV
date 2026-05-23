@@ -73,7 +73,14 @@ func (tm *txManager) gcCycle() {
 	tm.versionStore.Range(func(key string, chain *VersionChain) bool {
 		reclaimed := chain.Prune(watermark)
 		totalReclaimed += reclaimed
-		chain.generation.Add(1) // ensure snapshotGet detects logical chain change
+		// CAS-bump generation so snapshotGet detects the logical chain change
+		for {
+			cur := chain.head.Load()
+			newHead := &chainHead{node: cur.node, generation: cur.generation + 1}
+			if chain.head.CompareAndSwap(cur, newHead) {
+				break
+			}
+		}
 		return true
 	})
 

@@ -227,7 +227,7 @@ func TestIntegration_VersionChain_LongHistory(t *testing.T) {
 	node := chain.Load()
 	for node != nil {
 		nodeCount++
-		node = node.next
+		node = node.next.Load()
 	}
 	// Each update creates a chain node for the old value
 	// The B+Tree holds the latest version directly, chain has old versions

@@ -394,7 +394,6 @@ type BTree struct {
     txMgr          mvcc.TxManager         // 事务管理器
     compactWp      WatermarkProvider      // Compaction 水位
     compactMu      sync.Mutex             // Compaction 串行化
-    // tracer, latencyMetrics 等仪器化字段省略
 }
 ```
 
@@ -449,7 +448,7 @@ flowchart LR
     Before --> After
 ```
 
-**Split 的 CAS 协议**（`handleLeafSplit`，`operations.go:736-878`）：
+**Split 的 CAS 协议**（`handleLeafSplit`，`operations.go:744-878`）：
 
 ```mermaid
 sequenceDiagram
@@ -477,7 +476,7 @@ sequenceDiagram
 
 ### 4.4 Merge 合并流程（树收缩）
 
-当页面利用率低于 50%，触发 Lazy Merge（`handleLeafMerge`, `merge_ops.go:27-173`）：
+当页面利用率低于 50%，触发 Lazy Merge（`handleLeafMerge`, `merge_ops.go:38-189`）：
 
 ```mermaid
 flowchart LR
@@ -760,12 +759,14 @@ flowchart LR
     subgraph Without["没有 Checkpoint"]
         W1["WAL 无限增长 → 磁盘耗尽"]
         W2["重启回放所有 WAL → 恢复时间无限增长"]
+        W1 --> W2
     end
     
     subgraph With["有了 Checkpoint"]
         C1["定期页面持久化到 AO"]
         C2["WAL 仅保留 Checkpoint 后增量"]
         C3["恢复: 加载 AO + 少量 WAL → 快速恢复"]
+        C1 --> C2 --> C3
     end
     
     Without --> With
@@ -865,7 +866,7 @@ flowchart TB
         H --> M --> T
     end
     
-    BTree2 -.->|"快照读 (snapshotTS=250):<br/>beginTS=300 > 250 不可见<br/>→ 查链 → commitTS=200 可见<br/>→ 返回 '100'"| Chain
+    BTree2 -.->|"快照读 (snapshotTS=250):<br/>beginTS=300 > 250 不可见<br/>→ 查链 → commitTS=300 > 250<br/>→ bestNode.value = '250'"| Chain
 ```
 
 ### 8.3 事务生命周期
@@ -950,7 +951,7 @@ flowchart TB
     CheckFlag -->|"Tombstone"| NotFound["return ErrKeyNotFound"]
     
     Check -->|"否"| LoadChain["VersionStore.Load(key)<br/>记录 generation"]
-    LoadChain --> Walk["遍历链表: 找 commitTS ≤ snapshotTS<br/>跳过 rolledBack + reclaimed"]
+    LoadChain --> Walk["遍历链表: 找 commitTS > snapshotTS (最小值)<br/>跳过 rolledBack + reclaimed<br/>该节点的 value = 快照时的活跃值"]
     Walk --> GenCheck{"generation 未变?"}
     GenCheck -->|"否"| Retry2["retry (max 3)"]
     GenCheck -->|"是"| Found{"找到节点?"}
@@ -1013,7 +1014,7 @@ sequenceDiagram
     R4->>EM: EnterRead(slot)<br/>epoch = globalEpoch (=5)<br/>readers[slot] = 5
     
     W4->>W4: CAS(old→new) ✓
-    W4->>EM: Retire(slot, oldPageID, epoch=5)
+    W4->>EM: Retire(slot, oldPageID)<br/>Note over EM: epoch = globalEpoch.Load()
     
     R4->>EM: ExitRead(slot)<br/>readers[slot] = 0
     
@@ -1172,6 +1173,7 @@ flowchart TB
     subgraph Step4["4. Page 99 mmap 布局"]
         S4A["PageHeader: version=11, count=1, pageType=Leaf"]
         S4B["LeafEntry[0]: key='balance', val=[0x00][1000]['100']"]
+        S4A --> S4B
     end
     
     subgraph Step5["5. Checkpoint (30s 后)"]
@@ -1296,7 +1298,7 @@ flowchart TB
 
 | 文件类型 | 命名 | 格式 |
 |---------|------|------|
-| WAL Segment | `%020d.wal` | `[CRC32C:4][Length:4][Header:43][Key:?][Value:?][Pad:?][0xDEADBEEF:4]` |
+| WAL Segment | `%020d.wal` | `[CRC32C:4][Length:4][Header:45][Key:?][Value:?][Pad:?][0xDEADBEEF:4]` |
 | AO Chunk | `btree_{id}_{seq}.ao` | `[Header:4096][Header:4096][Frame:4100]...[Frame:4100]` |
 | Chunk Header | (同上) | Text: `key:value\n` × 12 fields, padded to 4096B |
 | Page Frame | (同上) | `[CRC32C:4 LE][PageHeader:56][Entries:16×N][KVData:?]` |

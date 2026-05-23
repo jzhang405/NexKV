@@ -462,6 +462,88 @@ encoded, buildErr := mvcc.BuildMVCC(mvcc.FlagNormal, b.tsGen.NextTS(), value)
 
 ---
 
+### 5.7 Post-Pool Profiling（Handle + SearchPath 池化后）
+
+**测试条件**：`go run ./cmd/tools/btree_bench -n 50000 -only par-put -cpuprofile /tmp/parput2.prof`（epoch=off）
+
+**结果**：par-put-4=1.84M, par-put-8=1.21M, par-put-16=1.14M — **全部稳定 1M+**，无之前 50x 波动。
+
+#### CPU Profile Top 20（池化后）
+
+```
+Duration: 1.81s (vs 13.39s before, 7.4x faster!)
+Total samples: 4.05s (224% CPU, vs 258% before)
+
+  flat   flat%   function
+  1.24s  30.6%   offheap.clearPage           ← ★ 新 #1 瓶颈
+  0.81s  20.0%   runtime.madvise             ← ★ 新 #2
+  0.52s  12.8%   runtime.kevent
+  0.42s  10.4%   runtime.usleep
+  0.23s   5.7%   runtime.pthread_kill
+  0.19s   4.7%   runtime.pthread_cond_wait
+  0.07s   1.7%   runtime.pthread_cond_timedwait
+  0.06s   1.5%   runtime.pthread_cond_signal ← 从 17.7% 暴跌!
+  0.05s   1.2%   runtime.mallocgc
+  0.02s   0.5%   btree.searchPath            ← 从 2.7% 降到 0.5%
+```
+
+#### 池化前后对比
+
+```mermaid
+flowchart LR
+    subgraph Before["池化前 — GC 瓶颈"]
+        B1["pthread_cond_signal: 17.7%"]
+        B2["madvise: 16.6%"]
+        B3["clearPage: 7.8%"]
+        B4["usleep+cond_wait: 14.8%"]
+        B5["调度开销: 35%"]
+        B6["Duration: 13.4s"]
+    end
+    
+    subgraph After["池化后 — mmap 瓶颈"]
+        A1["clearPage: 30.6% ← #1"]
+        A2["madvise: 20.0% ← #2"]
+        A3["kevent: 12.8%"]
+        A4["usleep+cond_wait: 15.1%"]
+        A5["调度开销: 21% (↓14%)"]
+        A6["Duration: 1.8s (7.4x)"]
+    end
+    
+    Before -->|"Handle+SearchPath 池化<br/>消除 Go 堆分配"| After
+```
+
+#### 关键洞察
+
+| 指标 | 池化前 | 池化后 | 变化 |
+|------|--------|--------|------|
+| 调度开销 | 35% | 21% | **-40%** |
+| pthread_cond_signal | 17.7% | **1.5%** | **-91%** |
+| clearPage | 7.8% | **30.6%** | +290% (相对占比) |
+| madvise | 16.6% | 20.0% | +20% |
+| mallocgc | 5.8% | **1.2%** | **-79%** |
+| searchPath | 2.7% | **0.5%** | **-81%** |
+| **Duration** | **13.4s** | **1.8s** | **7.4x 加速** |
+
+**结论**：
+1. Handle+SearchPath 池化**彻底消除了 GC 调度瓶颈**——`pthread_cond_signal` 从 17.7% → 1.5%
+2. `mallocgc` 从 5.8% → 1.2%（-79%）—— Go 堆分配几乎消失
+3. `searchPath` 从 2.7% → 0.5%（-81%）—— SearchPath pool 生效
+4. **剩余瓶颈转移到了 mmap 层**：`clearPage`(30.6%) + `madvise`(20.0%) = **50.6% CPU 花在 mmap 页面管理上**
+5. 这是 COW 架构的**物理极限**——每次写操作必须分配新页 + 清零 + OS 页表更新
+6. 要突破这个极限，需要减少 COW 频率（非满页原地更新）或预清零页池
+
+### 5.8 优化路线图更新
+
+| Phase | 内容 | 状态 |
+|-------|------|------|
+| P0 | Handle pool (leafPageHandle/nodePageHandle) | ✅ 完成 |
+| P0 | SearchPath pool | ✅ 完成 |
+| P1 | 预清零页池（后台 goroutine 预清零 FreeList 页） | 📋 可做 |
+| P1 | madvise 批量化 | 📋 可做 |
+| P2 | 减少 COW 频率（非满页原地更新） | ⏸ 架构变更 |
+
+---
+
 ## 六、参考
 
 - Phase 5.6 性能分析：`docs/07_spike/btree-refactor/2026-04-02-btree-refactor-roadmap.md` §Phase 5.6

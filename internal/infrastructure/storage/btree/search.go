@@ -6,6 +6,7 @@ package btree
 
 import (
 	"fmt"
+	"sync"
 )
 
 // PathEntry records one node on the search path from root to leaf.
@@ -20,14 +21,23 @@ type PathEntry struct {
 // when done (CAS failure retry, or after operation completes).
 type SearchPath []PathEntry
 
+var searchPathPool = sync.Pool{
+	New: func() any {
+		s := make(SearchPath, 0, 8)
+		return &s
+	},
+}
+
 // ReleaseAll decrements reference count for every PageRef on the path.
-// Must be called when the search path is no longer needed:
-//   - CAS failure before retry
-//   - Read operation after value is copied
-//   - Write operation after mutation is fully propagated
+// Must be called when the search path is no longer needed.
 func (p SearchPath) ReleaseAll() {
 	for _, entry := range p {
 		entry.Ref.Release()
+	}
+	// Return backing array to pool if eligible
+	if cap(p) >= 8 && cap(p) <= 32 {
+		cp := p[:0]
+		searchPathPool.Put(&cp)
 	}
 }
 
@@ -56,7 +66,8 @@ func (p SearchPath) ParentPath() []PathEntry {
 // All children caches are pre-populated by split/ReplaceRoot operations.
 // If cache is nil for a non-leaf node, returns ErrRetry (cache not yet ready).
 func searchPath(rootRef *RootPageRef, key []byte) (SearchPath, error) {
-	var path SearchPath
+	pp := searchPathPool.Get().(*SearchPath)
+	path := (*pp)[:0]
 
 	currentRef := &rootRef.PageRef
 	currentRef.Retain()

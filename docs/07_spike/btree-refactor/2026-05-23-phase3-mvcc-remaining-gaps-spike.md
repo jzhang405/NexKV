@@ -591,8 +591,61 @@ flowchart TB
 
 ---
 
-**文档版本**：v2.0（两 Agent 审查后重写）
-**状态**：Ready for Review
+---
+
+## 九、性能基线
+
+> 记录日期：2026-05-23
+> 环境：Mac M-series, 8-core, 512MB mmap, pageSize=4KB
+> 命令：`go run ./cmd/tools/btree_bench -n 300000 [-epoch]`
+
+### epoch=off (默认，当前生产配置)
+
+| 测试 | 线程 | QPS | 延迟 |
+|------|------|-----|------|
+| seq-put | 1 | 1,099,455 | 909 ns/op |
+| seq-get | 1 | 2,656,400 | 376 ns/op |
+| seq-put-get | 1 | 1,254,495 | 797 ns/op |
+| par-put-4 | 4 | 493,473 | — |
+| par-put-8 | 8 | 583,451 | — |
+| par-put-16 | 8 | 712,138 | — |
+| par-get-4 | 4 | 3,617,107 | — |
+| par-get-8 | 8 | 3,034,529 | — |
+| par-get-16 | 8 | 3,113,594 | — |
+| mixed-8-r80 | 8 | 1,986,697 | — |
+| mixed-16-r80 | 8 | 1,935,305 | — |
+
+### epoch=on (Epoch Page Reclamation)
+
+| 测试 | 线程 | QPS | vs epoch=off |
+|------|------|-----|-------------|
+| seq-put | 1 | 1,131,388 | +2.9% |
+| seq-get | 1 | 3,052,216 | +14.9% |
+| seq-put-get | 1 | 1,612,623 | +28.5% |
+| par-put-4 | 4 | 184,682 | -62.6% |
+| par-put-8 | 8 | 356,128 | -39.0% |
+| par-put-16 | 8 | 327,429 | -54.0% |
+| par-get-4 | 4 | 6,360,823 | +75.8% |
+| par-get-8 | 8 | 5,094,680 | +67.9% |
+| par-get-16 | 8 | 5,018,667 | +61.2% |
+| mixed-8-r80 | 8 | 4,126,134 | +107.7% |
+| mixed-16-r80 | 8 | 4,050,207 | +109.3% |
+
+**解读**：
+- epoch=on 读路径大幅提升（+15% ~ +76%），COW 旧页不再泄漏 → PageManager 压力降低
+- 写路径并发退化（-39% ~ -63%）是已知的 4+ 线程 CAS 竞争问题，非本次 Phase 3 引入
+- mixed 负载提升显著（+108%），说明读比重高的场景受益最大
+- 单线程写无退化（+2.9% 在噪声范围内）
+
+**Phase 3 实施后的预期影响**：
+- Item 1+4 (`chainHead`): Prepend 路径增加一次 `chainHead` 堆分配，预估 < 3% 写路径影响
+- Item 5 (commitTS 后置): 仅改变分配时机，无额外开销
+- Item 2+3 (Tx WAL types + 2PC): 增加一次 WAL Sync（Prepare + Commit 各一次），Group Commit 下影响可控
+
+---
+
+**文档版本**：v2.2（第三轮审查后 + 性能基线）
+**状态**：Ready for Implementation
 
 **v2.0 修订记录**（相对于 v1.0）：
 - C1 修复：移除 `endTS` 字段的不实声明，改为准确描述 `rolledBack`/`reclaimed` atomic.Bool

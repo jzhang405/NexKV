@@ -613,6 +613,7 @@ block-beta
             H0A["id:0<br/>rootPagePos:0<br/>pageCount:42<br/>sumOfPageLength:172200<br/>sumOfLivePageLength:164000<br/>pagePositionAndLengthOffset:0<br/>blockSize:4096<br/>format:1<br/>removedPageOffset:0<br/>removedPageCount:3<br/>lastTransactionId:0<br/>mapSize:0<br/>(key:value 文本格式，共 12 字段，对齐 Lealone)"]
         end
         block:header2["Header Block 1 (4096 bytes) - offset 0x1000<br/>完全相同，用于崩溃恢复"]
+        end
         block:frames["Page Frames (offset 0x2000 → EOF)"]
             columns 1
             F0["Frame 0 (4100 bytes): [CRC32C:4][PageHeader:56][...KV Data...]"]

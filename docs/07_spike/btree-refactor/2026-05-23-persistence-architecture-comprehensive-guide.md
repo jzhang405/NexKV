@@ -70,13 +70,13 @@ sequenceDiagram
     MV->>MV: WriteBuffer.Put()<br/>暂存到事务缓冲区
     C->>MV: Commit()
     MV->>MV: commitTS = tsGen.NextTS()
-    MV->>MV: BuildMVCC(FlagNormal, commitTS, value)
-    MV->>WA: Append(WALEntry{Insert, key, encoded})
-    WA->>DK: write() + fsync()
-    WA-->>MV: LSN
-    MV->>BT: Set(key, encodedMVCC)
-    BT->>BT: writeOperation:<br/>searchPath → COW → CAS
-    BT->>BT: Retire(oldPage) → Epoch
+    MV->>MV: ToWALEntries(commitTS) → entries[]
+    MV->>WA: AppendBatch(entries)<br/>所有 WriteBuffer 条目 + Commit 标记
+    Note over WA: 默认 SyncPolicyEveryWrite:<br/>write() 所有 entry → fsync()
+    Note over WA: Group Commit 模式:<br/>write() → 批量 fsync (1ms/16条)
+    WA-->>MV: []LSN
+    MV->>BT: applyWriteBuffer():<br/>逐 key commitKey (KeyLock)
+    BT->>BT: COW → CAS → Retire(oldPage)
     MV-->>C: commit OK
 
     Note over C,DK: 读路径 — Get("key")
@@ -118,28 +118,42 @@ NexKV 采用 **WAL + Checkpoint 双路径持久化**，借鉴了经典数据库�
 
 ```mermaid
 flowchart LR
-    subgraph Path1["路径 1: 实时持久化 (WAL)"]
+    subgraph Path1["路径 1: 实时持久化 (WAL) — SyncPolicyEveryWrite (默认)"]
         direction TB
-        A1["Put(key, value)"] --> A2["MVCC 编码"]
-        A2 --> A3["WAL.Append(entry)<br/>立即写入 WAL 文件"]
+        A1["Put(key, value)"] --> A2["MVCC 编码<br/>BuildMVCC(FlagNormal, commitTS, value)"]
+        A2 --> A3["WAL.AppendBatch(entries)<br/>批量写入 WAL 文件<br/>一次 AppendBatch = 一个事务"]
         A3 --> A4["WAL.Sync()<br/>fsync 强制落盘"]
-        A4 --> A5["返回成功给客户端"]
+        A4 --> A5["applyWriteBuffer<br/>逐 key 写入 BTree"]
+        A5 --> A6["返回成功给客户端"]
+    end
+    
+    subgraph Path1b["路径 1b: Group Commit (可选, SyncPolicyGroupCommit)"]
+        direction TB
+        G1["WAL.AppendAsync()"] --> G2["writeEntries()<br/>写入 OS 缓冲区 (不 fsync)"]
+        G2 --> G3["批量 fsync<br/>1ms 定时器 / 16 条触发"]
+        G3 --> G4["SignalSuccess()<br/>通知所有等待事务"]
     end
     
     subgraph Path2["路径 2: 定期持久化 (Checkpoint → AO)"]
         direction TB
-        B1["每 30 秒触发"] --> B2["扫描 BTree 脏页"]
-        B2 --> B3["序列化为 PageFrame"]
-        B3 --> B4["写入 .ao Chunk 文件"]
-        B4 --> B5["WAL 写入 Checkpoint 标记"]
-        B5 --> B6["截断旧的 WAL 文件"]
+        B1["每 30 秒触发"] --> B2["COW 根快照<br/>DFS 枚举脏页"]
+        B2 --> B3["序列化为 PageFrame<br/>[CRC32C:4][PageData:4096]"]
+        B3 --> B4["cm.Allocate + WritePage<br/>写入 .ao Chunk 文件"]
+        B4 --> B5["cm.Sync() → WAL Checkpoint"]
+        B5 --> B6["WAL.Truncate(oldLSN)"]
     end
 ```
 
-**为什么需要两条路径？**
+**WAL 同步策略说明**：
 
-- **WAL**：低延迟的顺序写，保证每个操作都不丢失。WAL 文件是临时的，Checkpoint 后会被截断。
-- **AO Chunk**：高吞吐的页面落盘，将内存中的 BTree 页面持久化。AO 文件是持久的，数据最终存在这里。
+| 策略 | 行为 | 类比 |
+|------|------|------|
+| `SyncPolicyEveryWrite` (默认) | 每次 `AppendBatch` 后立即 fsync。MVCC Commit 将事务所有 WAL Entry 打包为一次 `AppendBatch`，因此是**一个事务一次 fsync**，非每个 Entry 一次 | 类似于 Lealone `instant` 模式 |
+| `SyncPolicyGroupCommit` | 写入 OS 缓冲区不 fsync，由后台 task scheduler 批量 fsync（1ms ticker + 16 条目 batch 触发） | 类似于 Lealone `periodic` 模式（~3s 循环） |
+| `SyncPolicyEverySecond` | 每秒一次 fsync | — |
+| `SyncPolicyBatch` | 批量级别同步 | — |
+
+> **与 Lealone 的对比**：Lealone 默认使用 `periodic` 模式——后台线程每 ~3s 收集所有 pending RedoLogRecord 批量写入 + 一次 fsync，事务提交不等待 fsync 完成。NexKV 的默认 `SyncPolicyEveryWrite` 更保守（保证每个事务落盘），但 Group Commit 模式与 Lealone 的 `periodic`/`instant` 对齐——批量 fsync 而非逐条 sync。
 
 ### 1.3 关键数据结构速览
 
@@ -769,6 +783,10 @@ block-beta
 
 ### 6.3 Group Commit（批量提交）
 
+高并发场景下，每次写入都 fsync 效率低。NexKV 通过 `AppendAsync` + `TaskScheduler` + `WALAppendItem` 实现 Group Commit，将多个事务的 WAL 写入合并为一次 fsync。
+
+> **与 Lealone 的对比**：Lealone 默认 `periodic` 模式——后台线程每 ~3s 收集所有 pending `RedoLogRecord`，批量写入 + 一次 fsync，事务提交**不等待** fsync 完成。NexKV 的 `SyncPolicyGroupCommit` 采用相似思路，但粒度更细：`StartBatchFlusher` 以 1ms ticker + 16 条目 batch 边界作为**双重触发器**（time + size），而非 Lealone 的纯 time-driven ~3s 循环。
+
 ```mermaid
 sequenceDiagram
     participant Tx1 as Tx1
@@ -777,18 +795,29 @@ sequenceDiagram
     participant DW as DiskWAL
     participant Disk2 as Disk
     
-    Tx1->>DW: Append → OS buffer (no fsync)
-    Tx2->>DW: Append → OS buffer (no fsync)
-    Tx3->>DW: Append → OS buffer (no fsync)
+    Tx1->>DW: AppendAsync(entry) → TaskScheduler
+    Tx2->>DW: AppendAsync(entry) → TaskScheduler
+    Tx3->>DW: AppendAsync(entry) → TaskScheduler
     
-    Note over DW: 1ms timeout 或 16 条满
+    Note over DW: WALAppendItem 排队到 ShardID=1<br/>writeEntries() 写入 OS buffer (无 fsync)
     
-    DW->>Disk2: fsync()
+    Note over DW: 双重触发: 1ms ticker 或 16 条 batch 满
     
-    DW-->>Tx1: ✓ committed
-    DW-->>Tx2: ✓ committed
-    DW-->>Tx3: ✓ committed
+    DW->>Disk2: FlushBatch(): 单次 fsync()
+    
+    DW-->>Tx1: SignalSuccess()
+    DW-->>Tx2: SignalSuccess()
+    DW-->>Tx3: SignalSuccess()
 ```
+
+**四种 SyncPolicy 对比**：
+
+| Policy | fsync 时机 | 事务等待 fsync | 类比 |
+|--------|-----------|---------------|------|
+| `EveryWrite` (默认) | 每次 `AppendBatch` 后 | 是 | Lealone `instant` |
+| `GroupCommit` | 批量触发 (1ms/16条) | 否 (异步通知) | Lealone `periodic` |
+| `EverySecond` | 每秒一次 | 否 | — |
+| `Batch` | 批次边界 | 可配置 | — |
 
 ### 6.4 Truncate：安全截断
 
@@ -1303,7 +1332,7 @@ flowchart TB
 | 8 | **Dual-Block Header** | 崩溃时 Header 损坏 → Block 1 fallback | `chunk/chunk_file.go` |
 | 9 | **CRC32C (Castagnoli)** | WAL 和 AO 统一使用，硬件加速（SSE4.2 / ARM CRC32） | `wal/crc.go` |
 | 10 | **PageFrame = CRC + Payload** | 每个页面帧自校验，损坏只丢一帧 | `chunk/page_serializer.go` |
-| 11 | **Group Commit** | 批量 fsync，减少磁盘 I/O | `wal/wal_append_item.go` |
+| 11 | **Group Commit + 4 SyncPolicies** | EveryWrite(默认, 每次 AppendBatch fsync) / GroupCommit(1ms+16条双重触发, 对齐 Lealone periodic) / EverySecond / Batch | `wal/diskwal.go` |
 | 12 | **Rename-before-Delete** | 安全截断 WAL，崩溃可恢复 | `wal/diskwal.go` |
 | 13 | **Fuzzy Checkpoint (COW)** | 不暂停写入的快照式 Checkpoint | `checkpoint/` |
 | 14 | **惰性加载（Lazy Load）** | 恢复时不加载所有页面，按需从 AO 读取 | `btree/offheap_storage.go` |

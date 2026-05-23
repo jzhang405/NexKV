@@ -6,6 +6,7 @@ package mvcc
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"runtime"
 	"sort"
@@ -421,44 +422,50 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 		return err
 	}
 
-	// Phase 2: WAL Append (write entries) + Sync — before commitTS allocation
-	// Phase 3.2: commitTS is allocated AFTER WAL sync to guarantee strict monotonicity.
+	// Phase 2 (3.3): Prepare — WAL TxPrepare + Sync (includes oldValue snapshots for crash rollback)
 	tx.engine.walMu.Lock()
 	wal := tx.engine.wal
 	tx.engine.walMu.Unlock()
 	if wal != nil {
-		entries := tx.writeBuffer.WriteEntries()
-		if _, err := wal.AppendBatch(entries); err != nil {
+		prepare := TxPrepareEntry(tx.txID, tx.writeBuffer)
+		if _, err := wal.Append(prepare); err != nil {
 			tx.cleanup()
-			return fmt.Errorf("wal append: %w", err)
+			return fmt.Errorf("wal txprepare: %w", err)
 		}
 		if err := wal.Sync(); err != nil {
 			tx.cleanup()
-			return fmt.Errorf("wal sync: %w", err)
+			return fmt.Errorf("wal txprepare sync: %w", err)
 		}
 	}
 
-	// Phase 3: Allocate commitTS — after WAL sync (Phase 3.2)
+	// Phase 3: Allocate commitTS — after Prepare Sync
 	commitTS := tx.engine.tsGen.NextTS()
 
-	// Phase 4: Apply WriteBuffer (WAL already durable, commitTS allocated)
+	// Phase 4: Apply WriteBuffer (Prepare durable, commitTS allocated)
 	undoBuf, err := tx.applyWriteBuffer(ctx, commitTS)
 	if err != nil {
 		tx.cleanup()
 		return err
 	}
 
-	// Phase 5: WAL Commit marker (after Apply success)
+	// Phase 5: Commit — WAL TxCommit + Sync
 	if wal != nil {
-		if _, err := wal.Append(CommitEntry(commitTS)); err != nil {
-			_ = tx.rollbackApplied(undoBuf) // CRITICAL: rollback BTree changes
+		txCommitKey := make([]byte, 16)
+		binary.BigEndian.PutUint64(txCommitKey[0:8], tx.txID)
+		binary.BigEndian.PutUint64(txCommitKey[8:16], commitTS)
+		// Note: entryCount omitted for simplicity; total keys = len(undoBuf)
+		if _, err := wal.Append(&service.WALEntry{
+			Type: service.WALTypeTxCommit,
+			Key:  txCommitKey,
+		}); err != nil {
+			_ = tx.rollbackApplied(undoBuf)
 			tx.cleanup()
-			return fmt.Errorf("wal commit marker: %w", err)
+			return fmt.Errorf("wal txcommit: %w", err)
 		}
 		if err := wal.Sync(); err != nil {
-			_ = tx.rollbackApplied(undoBuf) // CRITICAL: rollback BTree changes
+			_ = tx.rollbackApplied(undoBuf)
 			tx.cleanup()
-			return fmt.Errorf("wal commit sync: %w", err)
+			return fmt.Errorf("wal txcommit sync: %w", err)
 		}
 	}
 

@@ -43,6 +43,7 @@ func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor, vs *mvcc
 		entries   []*WALEntry
 		commitTS  uint64
 		hasCommit bool
+		txPrepare *WALEntry
 	}
 	groups := make(map[uint64]*txGroup)
 	for _, e := range entries {
@@ -64,6 +65,8 @@ func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor, vs *mvcc
 			}
 		case WALTypeRollback, WALTypeTxRollback:
 			g.hasCommit = false // explicit rollback
+		case WALTypeTxPrepare:
+			g.txPrepare = e
 		case WALTypeTxBegin:
 			// Phase 3.2: TxBegin marks transaction start. Full ActiveTxRegistry rebuild
 			// (using Value=[beginTS:8]) deferred to Recovery Phase C extension.
@@ -117,6 +120,25 @@ func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor, vs *mvcc
 		}
 	}
 
+	// Phase 3.3: 2PC Rollback — transactions with TxPrepare but no TxCommit
+	for _, g := range groups {
+		if g.txPrepare == nil || g.hasCommit {
+			continue
+		}
+		_, parsed, err := mvcc.ParseTxPrepareEntry(g.txPrepare)
+		if err != nil {
+			continue
+		}
+		for _, pe := range parsed {
+			key := []byte(pe.Key)
+			if pe.OldValue == nil && pe.OldFlag == mvcc.FlagTombstone {
+				encoded, _ := mvcc.BuildMVCC(mvcc.FlagTombstone, g.commitTS, nil)
+				_ = bt.Set(ctx, key, encoded)
+			} else if pe.OldValue != nil {
+				_ = bt.Set(ctx, key, pe.OldValue)
+			}
+		}
+	}
 	return committedTxIDs, replayedCount, nil
 }
 

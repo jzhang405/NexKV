@@ -244,6 +244,81 @@ pie title CPU 时间分布
 
 3. **clearPage (7.8%) 排第三** — 每次 COW 分配新页面都要清零 4KB。无 Epoch 时旧页进入 FreeList 但不清零（被标记 deleted），下次 Alloc 从 FreeList 取出时清零。
 
+#### 5.3.1 调度开销的根因追踪：`usleep` 是谁调用的？
+
+`runtime.usleep` 不是我们的代码直接调用的——是 **Go runtime 内部锁竞争** 的产物。
+
+```mermaid
+flowchart TB
+    subgraph OurCode["NexKV 代码 (仅 4% CPU)"]
+        COW["COW 写操作<br/>writeOperation / handleLeafSplit"]
+        Alloc1["高频 Go 堆分配"]
+    end
+    
+    subgraph GCRuntime["Go Runtime (32.5% CPU)"]
+        Alloc1 --> GC["newobject → mallocgc<br/>触发 GC Assist"]
+        GC --> Lock["gcParkAssist<br/>→ runtime.lock2 竞争"]
+        Lock --> Yield["runtime.osyield<br/>→ usleep (7.4%)"]
+        Lock --> CondWait["pthread_cond_wait<br/>→ goroutine 休眠 (7.4%)"]
+        Lock --> CondSignal["pthread_cond_signal<br/>→ 唤醒 goroutine (17.7%)"]
+    end
+    
+    OurCode --> GCRuntime
+```
+
+**pprof trace 证据**（`go tool pprof -traces -focus="usleep"`）：
+
+```
+Trace 1: writeOperation → searchPath → growslice → mallocgc
+           → gcAssistAlloc → gcParkAssist
+           → runtime.lock2 → runtime.osyield → usleep
+
+Trace 2: writeOperation → handleLeafSplit → leafPageHandle.Split
+           → newobject → mallocgc
+           → gcAssistAlloc → gcParkAssist
+           → runtime.lock2 → runtime.osyield → usleep
+
+Trace 3: (goroutine parking) findRunnable → schedule
+           → park_m → runtime.lock2 → osyield → usleep
+```
+
+**每条 trace 的共同路径**：
+
+```
+writeOperation / handleLeafSplit    ← COW 分配新 Page (mmap) + 新 Handle (Go 堆)
+    ↓
+newobject / growslice               ← Go 堆对象分配 (leafPageHandle, nodePageHandle, SearchPath...)
+    ↓
+mallocgc                            ← Go 内存分配器
+    ↓
+gcAssistAlloc → gcParkAssist       ← GC 辅助扫描: goroutine 被迫帮 GC 干活
+    ↓
+runtime.lock2 → runtime.osyield     ← GC 内部锁竞争 → usleep!
+```
+
+**核心根因**：不是 BTree 算法慢，是 **COW 架构下的 Go 堆分配率**触发了 GC 压力恶性循环：
+
+```mermaid
+flowchart LR
+    A["每次 Set<br/>→ 1 次 mmap Alloc<br/>→ 2-3 个 Go 堆对象"] -->|"×4 goroutines<br/>×50K ops"| B["每秒 ~200K 次<br/>Go 堆分配"]
+    B --> C["Go GC 频繁触发"]
+    C --> D["GC Assist: goroutine<br/>被迫暂停帮 GC 扫描"]
+    D --> E["GC 内部锁竞争<br/>→ usleep/cond_wait"]
+    E -->|"goroutine 被暂停"| F["写吞吐下降"]
+    F -->|"队列积压"| A
+```
+
+**具体分配来源**（per writeOperation）：
+
+| 分配 | 位置 | 大小 |
+|------|------|------|
+| `leafPageHandle` | `offheap_storage.go:GetLeafPage` | ~48B |
+| `SearchPath` slice | `search.go:searchPath` | ~24B + 每层 16B |
+| `[]byte` key copy | `leaf_page.go:GetKey` | ~10-20B |
+| `[]byte` value copy | `leaf_page.go:GetValue` | ~10-100B |
+| `PageInfo` | `operations.go:CAS` | ~64B |
+| 重试时额外分配 | CAS 失败 → 再次 Alloc + 再次创建 Handle | ×N |
+
 ### 5.4 假设验证
 
 | 假设 | 结论 | 证据 |
@@ -255,18 +330,20 @@ pie title CPU 时间分布
 
 **修正后的根因**：瓶颈不在 BTree 算法，而在 **mmap + COW 的内存管理开销**——每写操作 = 1 次 Alloc(清零 4KB + madvise 页表更新) + 1 次 CAS(失败→goroutine 调度→信号开销)。这是架构层面的取舍，不是代码 bug。
 
-### 5.5 优化方向（基于真实数据）
+### 5.6 优化方向（基于真实根因）
+
+**核心洞察**：瓶颈不是 BTree 算法（仅 4% CPU），是 COW 架构下的 **Go 堆分配率** 触发 GC 压力 → 调度开销占 32.5%。
 
 | 优先级 | 方向 | 目标热点 | 预期收益 | 复杂度 |
 |--------|------|---------|---------|--------|
-| **P0** | **减少 COW 频率** — 非满页原地更新（放弃纯 COW） | clearPage(7.8%) + madvise(16.6%) | 消除 24% 开销 | 高（架构变更） |
-| **P0** | **预清零页池** — 后台 goroutine 预清零 FreeList 页面 | clearPage(7.8%) | 消除 7.8% | 低 |
-| **P1** | **CAS 退避优化** — 替换 Gosched 为 runtime.Gosched() → 减少调度 | pthread_cond_signal(17.7%) | 减少 5-10% | 低 |
+| **P0** | **Handle 对象池** — `sync.Pool` 复用 leafPageHandle/nodePageHandle | mallocgc(GC 压力) | 减少 40% Go 堆分配 | 低 |
+| **P0** | **SearchPath 对象池** — `sync.Pool` 复用 SearchPath slice | growslice(GC 压力) | 减少 30% Go 堆分配 | 低 |
+| **P1** | **预清零页池** — 后台 goroutine 预清零 FreeList 页面 | clearPage(7.8%) | 消除 7.8% | 低 |
 | **P1** | **madvise 批量化** — MADV_FREE 替代逐页 fault | madvise(16.6%) | 减少 10-15% | 中 |
-| **P2** | **PageRef 引用计数批量化** | atomic.Add(3.7%) | 减少 1-2% | 低 |
+| **P2** | **Value 零拷贝** — `GetValueUnsafe()` 不复制 | mallocgc(GC 压力) | 减少 20% Go 堆分配 | 低 |
 | — | **Benchmark 改进** — par-put 跳过 warmup（纯 Update 场景） | — | 更准确的 Update 性能 | 低 |
 
-**当前最佳行动**：P0 预清零页池 + P1 CAS 退避优化，两个低复杂度改动可能带来 ~15% 提升。
+**当前最佳行动**：P0 Handle+SearchPath 对象池 — 直接减少 Go 堆分配率，从源头缓解 GC 压力。两个改动的复杂度都很低，预期总计减少 ~70% Go 堆分配。
 
 ---
 

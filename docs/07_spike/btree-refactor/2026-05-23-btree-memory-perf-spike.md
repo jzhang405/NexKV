@@ -181,36 +181,92 @@ flowchart TB
 
 ---
 
-## 五、下一步计划
+## 五、精确 Profiling 结果
 
-### 5.1 精确 profiling（待执行）
+### 5.1 测试条件
 
 ```bash
-# 聚焦 par-put，加 cpuprofile
 go run ./cmd/tools/btree_bench -n 50000 -only par-put -cpuprofile /tmp/parput.prof
-
-# 分析
-go tool pprof -top -nodecount=30 /tmp/parput.prof
-go tool pprof -list 'split\|CAS\|searchPath' /tmp/parput.prof
 ```
 
-### 5.2 待验证的假设
+结果：par-put-4=831K, par-put-8=1.13M, par-put-16=47K
 
-| 假设 | 验证方法 |
-|------|---------|
-| Root CAS 是主要争用点 | pprof 看 `ReplaceRoot` / `handleRootInternalSplit` 占比 |
-| ChildrenCache 更新竞争 | 看 `updateChildrenCache` CAS 重试次数 |
-| warmup 阶段的 Split 级联触发恶性循环 | 对比 warmup=0 (跳过 warmup) 的 QPS |
-| PageRef CAS 重试频率 | 看 `writeOperation` 中 CAS 失败路径占比 |
+### 5.2 CPU Profile Top 30
 
-### 5.3 可能的优化方向
+```
+Duration: 13.39s, Total samples = 23.55s (175.84% CPU utilization)
 
-| 方向 | 预期收益 | 复杂度 |
-|------|---------|--------|
-| 跳过 warmup（par-put 不需要预填充） | 消除 Split 级联 | 低（改 benchmark） |
-| CAS 退避策略（指数退避 + 随机抖动） | 减少恶性循环 | 低（改 operations.go） |
-| ChildrenCache 批量更新 | 减少 CAS 重试 | 中 |
-| Per-goroutine key range 预分割 | 消除跨 goroutine leaf 共享 | 高 |
+  flat   flat%   function
+  4.17s  17.71%  runtime.pthread_cond_signal    ← 线程信号!
+  3.90s  16.56%  runtime.madvise                ← 内存 advice 系统调用!
+  1.83s   7.77%  offheap.clearPage              ← 页面清零
+  1.75s   7.43%  runtime.usleep                 ← 休眠等待!
+  1.73s   7.35%  runtime.pthread_cond_wait      ← 条件变量等待!
+  0.87s   3.69%  sync/atomic.(*Int32).Add        ← PageRef 引用计数
+  0.79s   3.35%  offheap.InsertLeafEntry          ← 叶子插入
+  0.56s   2.38%  runtime.pthread_kill            ← 线程 kill
+  0.50s   2.12%  runtime.kevent                  ← kqueue 事件
+  0.48s   2.04%  runtime.memmove                 ← 内存拷贝
+  0.40s   1.70%  cmpbody                         ← Key 比较
+  0.25s   1.06%  btree.(*PageRef).Release        ← PageRef 释放
+  0.22s   0.93%  btree.(*PageRef).Retain         ← PageRef 持有
+  0.20s   0.85%  btree.(*ChildrenCache).Search   ← 子节点搜索
+  0.14s   0.59%  btree.searchPath (cum 11.51%)   ← 路径遍历
+```
+
+### 5.3 关键发现
+
+```mermaid
+pie title CPU 时间分布
+    "调度/睡眠/等待" : 32.5
+    "内存管理 (madvise/mmap)" : 17.4
+    "页面操作 (clear/memmove/insert)" : 13.2
+    "引用计数 (Retain/Release)" : 4.8
+    "BTree 遍历 (searchPath/Search)" : 4.0
+    "其他" : 28.1
+```
+
+**核心结论**：**BTree 代码本身不是瓶颈**。
+
+| 类别 | 占比 | 根因 |
+|------|------|------|
+| 🔴 调度开销 | **32.5%** | pthread_cond_signal/wait/usleep — goroutine 在等锁/CAS |
+| 🔴 内存管理 | **17.4%** | madvise/mmap — mmap 页表的 OS 级开销 |
+| 🟡 页面操作 | 13.2% | clearPage(每次 Alloc 清零 4KB) + InsertLeafEntry + memmove |
+| 🟢 BTree 逻辑 | **4.0%** | searchPath + ChildrenCache.Search |
+| 🟢 引用计数 | 4.8% | PageRef.Retain/Release atomic.Add |
+
+**三个关键洞察**：
+
+1. **pthread_cond_signal (17.7%) 排第一** — Go 调度器在 goroutine 之间频繁发送信号。COW 路径中 CAS 失败 → goroutine 退避 → 调度器唤醒 → 信号开销。这不是 BTree 的问题，是 COW + 高并发 + CAS 退避的组合效应。
+
+2. **madvise (16.6%) 排第二** — mmap 内存区域的 page fault 和 OS 页表操作。每次 `Alloc` 分配新 PageID 后首次访问触发 page fault → OS 分配物理页 → madvise 更新页表。512MB mmap 池中密集分配导致 madvise 成为第二大热点。
+
+3. **clearPage (7.8%) 排第三** — 每次 COW 分配新页面都要清零 4KB。无 Epoch 时旧页进入 FreeList 但不清零（被标记 deleted），下次 Alloc 从 FreeList 取出时清零。
+
+### 5.4 假设验证
+
+| 假设 | 结论 | 证据 |
+|------|------|------|
+| Root CAS 是主要争用点 | ❌ **否定** — searchPath cum 仅 11.5%, flat 仅 0.59% | Root/Internal 操作不在 top 10 |
+| ChildrenCache 更新竞争 | ❌ **否定** — Search 仅 0.85% | ChildrenCache 不是热点 |
+| warmup Split 级联触发恶性循环 | ⚠️ **部分正确** — warmup 导致大量 Alloc → clearPage + madvise | Split 本身不在 top 30,但其副作用(Alloc)在 |
+| PageRef CAS 重试 | ⚠️ **间接体现** — pthread_cond_signal/wait 反映重试等待 | CAS 重试 → goroutine 调度 → 信号开销 |
+
+**修正后的根因**：瓶颈不在 BTree 算法，而在 **mmap + COW 的内存管理开销**——每写操作 = 1 次 Alloc(清零 4KB + madvise 页表更新) + 1 次 CAS(失败→goroutine 调度→信号开销)。这是架构层面的取舍，不是代码 bug。
+
+### 5.5 优化方向（基于真实数据）
+
+| 优先级 | 方向 | 目标热点 | 预期收益 | 复杂度 |
+|--------|------|---------|---------|--------|
+| **P0** | **减少 COW 频率** — 非满页原地更新（放弃纯 COW） | clearPage(7.8%) + madvise(16.6%) | 消除 24% 开销 | 高（架构变更） |
+| **P0** | **预清零页池** — 后台 goroutine 预清零 FreeList 页面 | clearPage(7.8%) | 消除 7.8% | 低 |
+| **P1** | **CAS 退避优化** — 替换 Gosched 为 runtime.Gosched() → 减少调度 | pthread_cond_signal(17.7%) | 减少 5-10% | 低 |
+| **P1** | **madvise 批量化** — MADV_FREE 替代逐页 fault | madvise(16.6%) | 减少 10-15% | 中 |
+| **P2** | **PageRef 引用计数批量化** | atomic.Add(3.7%) | 减少 1-2% | 低 |
+| — | **Benchmark 改进** — par-put 跳过 warmup（纯 Update 场景） | — | 更准确的 Update 性能 | 低 |
+
+**当前最佳行动**：P0 预清零页池 + P1 CAS 退避优化，两个低复杂度改动可能带来 ~15% 提升。
 
 ---
 

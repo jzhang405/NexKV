@@ -11,22 +11,31 @@ import (
 )
 
 // VersionNode is an immutable linked list node in the version chain.
-// After creation, commitTS/value/flag/next are never modified.
+// After creation, commitTS/value/flag are never modified.
 // rolledBack and reclaimed may only transition from false→true (monotonic) via atomic store.
+// next is an atomic pointer to support safe concurrent unlink during Prune.
 type VersionNode struct {
 	commitTS   uint64
-	value      []byte       // deepCopy'd value (excludes Flag); nil for Tombstone
-	flag       byte         // FlagNormal / FlagTombstone
-	rolledBack atomic.Bool  // marks this node's transaction as rolled back; snapshot reads skip it
-	reclaimed  atomic.Bool  // Phase 3 GC: marked by Prune, skipped by snapshotGet
-	next       *VersionNode // read-only pointer to older version
+	value      []byte                  // deepCopy'd value (excludes Flag); nil for Tombstone
+	flag       byte                    // FlagNormal / FlagTombstone
+	rolledBack atomic.Bool             // marks this node's transaction as rolled back; snapshot reads skip it
+	reclaimed  atomic.Bool             // Phase 3 GC: marked by Prune, skipped by snapshotGet
+	next       atomic.Pointer[VersionNode] // pointer to older version; atomic for CAS unlink in Prune
 }
 
-// VersionChain is a lock-free append-only linked list using atomic.Pointer.
+// chainHead wraps a VersionNode pointer with a generation counter for ABA protection.
+// The pair is stored in a single atomic.Pointer so that CAS atomically compares both.
+// This prevents ABA: even if Go reuses a *VersionNode address, the generation differs.
+type chainHead struct {
+	node       *VersionNode
+	generation uint64
+}
+
+// VersionChain is a lock-free append-only linked list using atomic.Pointer[chainHead].
 // Prepend uses CAS + retry to atomically insert at the head.
+// generation is embedded in chainHead for ABA protection.
 type VersionChain struct {
-	head       atomic.Pointer[VersionNode]
-	generation atomic.Uint64 // ABA protection for Phase 3 GC; Phase 2 only increments
+	head atomic.Pointer[chainHead]
 }
 
 // Prepend atomically inserts a new version at the head of the chain.
@@ -35,15 +44,24 @@ type VersionChain struct {
 func (vc *VersionChain) Prepend(commitTS uint64, value []byte, flag byte) error {
 	const maxRetries = 16
 	for i := 0; i < maxRetries; i++ {
-		oldHead := vc.head.Load()
+		old := vc.head.Load()
+		var oldNode *VersionNode
+		var oldGen uint64
+		if old != nil {
+			oldNode = old.node
+			oldGen = old.generation
+		}
 		newNode := &VersionNode{
 			commitTS: commitTS,
 			value:    value,
 			flag:     flag,
-			next:     oldHead,
 		}
-		if vc.head.CompareAndSwap(oldHead, newNode) {
-			vc.generation.Add(1)
+		newNode.next.Store(oldNode)
+		newHead := &chainHead{
+			node:       newNode,
+			generation: oldGen + 1,
+		}
+		if vc.head.CompareAndSwap(old, newHead) {
 			return nil
 		}
 		runtime.Gosched()
@@ -51,14 +69,22 @@ func (vc *VersionChain) Prepend(commitTS uint64, value []byte, flag byte) error 
 	return ErrVersionChainConflict
 }
 
-// Load returns the current head of the chain (may be nil).
+// Load returns the current head VersionNode (may be nil).
 func (vc *VersionChain) Load() *VersionNode {
-	return vc.head.Load()
+	h := vc.head.Load()
+	if h == nil {
+		return nil
+	}
+	return h.node
 }
 
 // Generation returns the current generation counter value.
 func (vc *VersionChain) Generation() uint64 {
-	return vc.generation.Load()
+	h := vc.head.Load()
+	if h == nil {
+		return 0
+	}
+	return h.generation
 }
 
 // VersionStore is a global version chain store mapping keys to their version chains.
@@ -98,9 +124,8 @@ func (vs *VersionStore) LoadOrStore(key string) *VersionChain {
 //  4. Older versions (commitTS < minRetainedCommitTS) are marked reclaimed
 //
 // Returns the number of nodes marked reclaimed.
-// Must be followed by vc.generation.Add(1) to ensure snapshotGet detects the change.
 func (vc *VersionChain) Prune(watermark uint64) int {
-	head := vc.head.Load()
+	head := vc.Load()
 	if head == nil {
 		return 0
 	}
@@ -110,7 +135,7 @@ func (vc *VersionChain) Prune(watermark uint64) int {
 		lastBeforeWatermark       *VersionNode
 		firstNonTombstoneBeforeWM *VersionNode
 	)
-	for node := head; node != nil; node = node.next {
+	for node := head; node != nil; node = node.next.Load() {
 		if node.commitTS < watermark {
 			if lastBeforeWatermark == nil {
 				lastBeforeWatermark = node
@@ -122,12 +147,10 @@ func (vc *VersionChain) Prune(watermark uint64) int {
 	}
 
 	// Compute minRetainedCommitTS: the minimum commitTS that must be kept.
-	// All nodes with commitTS < minRetainedCommitTS can be reclaimed.
 	minRetainedCommitTS := uint64(0)
 	if lastBeforeWatermark != nil {
 		minRetainedCommitTS = lastBeforeWatermark.commitTS
 		if lastBeforeWatermark.flag == FlagTombstone && firstNonTombstoneBeforeWM != nil {
-			// Also retain the first non-Tombstone covered by this Tombstone (rule 3).
 			if firstNonTombstoneBeforeWM.commitTS < minRetainedCommitTS {
 				minRetainedCommitTS = firstNonTombstoneBeforeWM.commitTS
 			}
@@ -136,7 +159,7 @@ func (vc *VersionChain) Prune(watermark uint64) int {
 
 	// Pass 2: mark all nodes (except head) with commitTS < minRetainedCommitTS.
 	var marked int
-	for node := head; node != nil; node = node.next {
+	for node := head; node != nil; node = node.next.Load() {
 		if node == head {
 			continue
 		}
@@ -154,14 +177,21 @@ func (vc *VersionChain) Prune(watermark uint64) int {
 // Returns the number of reclaimed nodes removed.
 func (vc *VersionChain) PrependWithCleanup(commitTS uint64, value []byte, flag byte) (int, error) {
 	const maxRetries = 16
-	cleaned := 0
+	var cleaned int
 	for i := 0; i < maxRetries; i++ {
-		oldHead := vc.head.Load()
+		cleaned = 0 // reset per attempt — CAS failure means cleanup was not applied
+		old := vc.head.Load()
+		var oldNode *VersionNode
+		var oldGen uint64
+		if old != nil {
+			oldNode = old.node
+			oldGen = old.generation
+		}
 
 		// Clean consecutive reclaimed nodes from the head
-		newOldHead := oldHead
+		newOldHead := oldNode
 		for newOldHead != nil && newOldHead.reclaimed.Load() {
-			newOldHead = newOldHead.next
+			newOldHead = newOldHead.next.Load()
 			cleaned++
 		}
 
@@ -169,15 +199,34 @@ func (vc *VersionChain) PrependWithCleanup(commitTS uint64, value []byte, flag b
 			commitTS: commitTS,
 			value:    value,
 			flag:     flag,
-			next:     newOldHead,
 		}
-		if vc.head.CompareAndSwap(oldHead, newNode) {
-			vc.generation.Add(1)
+		newNode.next.Store(newOldHead)
+		newHead := &chainHead{
+			node:       newNode,
+			generation: oldGen + 1,
+		}
+		if vc.head.CompareAndSwap(old, newHead) {
 			return cleaned, nil
 		}
 		runtime.Gosched()
 	}
-	return cleaned, ErrVersionChainConflict
+	return 0, ErrVersionChainConflict
+}
+
+// bumpGeneration atomically increments the generation counter for ABA protection.
+// This signals to concurrent snapshotGet readers that the chain has logically changed.
+// Safe to call on empty chains (head==nil): no-op.
+func (vc *VersionChain) bumpGeneration() {
+	for {
+		cur := vc.head.Load()
+		if cur == nil {
+			return
+		}
+		newHead := &chainHead{node: cur.node, generation: cur.generation + 1}
+		if vc.head.CompareAndSwap(cur, newHead) {
+			return
+		}
+	}
 }
 
 // Range calls fn for each chain in the store. If fn returns false, iteration stops.

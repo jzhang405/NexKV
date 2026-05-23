@@ -273,7 +273,7 @@ func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, erro
 					bestNode = node
 				}
 			}
-			node = node.next
+			node = node.next.Load()
 		}
 
 		// Optimistic validation: if generation changed, the chain was modified
@@ -740,26 +740,29 @@ func (tx *SnapshotTx) rollbackOneKey(entry UndoEntry) (retErr error) {
 		return nil
 	}
 
-	// Path 1: head still our node → CAS revert
-	currentHead := chain.Load()
-	if currentHead != nil && currentHead.commitTS == entry.CommitTS {
-		if chain.head.CompareAndSwap(currentHead, entry.PrePrependHead) {
-			chain.generation.Add(1)
+	// Path 1: head still our node → CAS revert via chainHead
+	old := chain.head.Load()
+	if old != nil && old.node != nil && old.node.commitTS == entry.CommitTS {
+		newHead := &chainHead{
+			node:       entry.PrePrependHead,
+			generation: old.generation + 1,
+		}
+		if chain.head.CompareAndSwap(old, newHead) {
 			return nil
 		}
 		// CAS failed: another Prepend raced us, fall through to Path 2
 	}
 
 	// Path 2: head changed by later commit or CAS lost → mark our node rolledBack
-	// Must increment generation so concurrent snapshotGet detects the chain modification.
+	// Must bump generation so concurrent snapshotGet detects the chain modification.
 	node := chain.Load() // re-load head after potential CAS failure
 	for node != nil {
 		if node.commitTS == entry.CommitTS {
 			node.rolledBack.Store(true)
-			chain.generation.Add(1)
+			chain.bumpGeneration()
 			return nil
 		}
-		node = node.next
+		node = node.next.Load()
 	}
 	return nil
 }

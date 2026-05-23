@@ -10,19 +10,20 @@
 ## 目录
 
 1. [总览：数据的一生](#一总览数据的一生)
-2. [第一层：物理 Page 布局](#二第一层物理-page-布局)
-3. [第二层：mmap 页面池与 COW](#三第二层mmap-页面池与-cow)
-4. [第三层：BTree 存储引擎](#四第三层btree-存储引擎)
-5. [第四层：AO Chunk 落盘](#五第四层ao-chunk-落盘)
-6. [第五层：WAL 日志](#六第五层wal-日志)
-7. [第六层：Checkpoint 检查点](#七第六层checkpoint-检查点)
-8. [第七层：MVCC 多版本并发控制](#八第七层mvcc-多版本并发控制)
-9. [第八层：Epoch 页面回收](#九第八层epoch-页面回收)
-10. [第九层：崩溃恢复](#十第九层崩溃恢复)
-11. [完整数据流：一条 Put 的旅程](#十一完整数据流一条-put-的旅程)
-12. [关键设计决策汇总](#十二关键设计决策汇总)
-13. [附录 A：关键文件索引](#附录-a关键文件索引)
-14. [附录 B：磁盘文件格式速查](#附录-b磁盘文件格式速查)
+2. [深入理解 WAL 与 AO](#14-深入理解-wal-与-ao)
+3. [第一层：物理 Page 布局](#二第一层物理-page-布局)
+4. [第二层：mmap 页面池与 COW](#三第二层mmap-页面池与-cow)
+5. [第三层：BTree 存储引擎](#四第三层btree-存储引擎)
+6. [第四层：AO Chunk 落盘](#五第四层ao-chunk-落盘)
+7. [第五层：WAL 日志](#六第五层wal-日志)
+8. [第六层：Checkpoint 检查点](#七第六层checkpoint-检查点)
+9. [第七层：MVCC 多版本并发控制](#八第七层mvcc-多版本并发控制)
+10. [第八层：Epoch 页面回收](#九第八层epoch-页面回收)
+11. [第九层：崩溃恢复](#十第九层崩溃恢复)
+12. [完整数据流：一条 Put 的旅程](#十一完整数据流一条-put-的旅程)
+13. [关键设计决策汇总](#十二关键设计决策汇总)
+14. [附录 A：关键文件索引](#附录-a关键文件索引)
+15. [附录 B：磁盘文件格式速查](#附录-b磁盘文件格式速查)
 
 ---
 
@@ -169,6 +170,215 @@ flowchart LR
 | `PageFrame` | .ao 文件体 | 页面序列化：CRC32C + PageHeader + KV Data |
 | `VersionChain` | Go 堆 | MVCC 版本链：head → node(commitTS, oldValue) → node(...) |
 | `ChunkPosition` (uint64) | 各处 | 页面在 .ao 文件中的定位编码 |
+
+---
+
+### 1.4 深入理解 WAL 与 AO
+
+在深入各层细节之前，必须先理解两个核心持久化机制——**WAL** 和 **AO**——是什么、为什么这样设计、以及它们如何协作。
+
+#### 1.4.1 WAL：Write-Ahead Logging（预写日志）
+
+**WAL 是什么？**
+
+WAL 是一条**只能追加、不可修改**的操作日志。在执行任何内存修改之前，必须先将操作记录写入 WAL 并持久化到磁盘。这是数据库领域的经典设计原则——**先记日志，后改数据**。
+
+```mermaid
+flowchart TB
+    subgraph WithoutWAL["没有 WAL 的数据库"]
+        direction TB
+        WA["Set('balance', '100')"] --> WB["修改内存 BTree"]
+        WB --> WC["返回成功"]
+        WC --> WD["异步刷盘..."]
+        WD --> WE["💥 崩溃！"]
+        WE --> WF["内存中的 '100' 丢失 ❌"]
+    end
+
+    subgraph WithWAL["有 WAL 的数据库"]
+        direction TB
+        GA["Set('balance', '100')"] --> GB["1. WAL.Append(操作记录)"]
+        GB --> GC["2. WAL.Sync() ← fsync 落盘"]
+        GC --> GD["3. 修改内存 BTree"]
+        GD --> GE["4. 返回成功"]
+        GE --> GF["💥 崩溃！"]
+        GF --> GG["重启: 从 WAL 重放操作<br/>→ 'balance' = '100' ✓"]
+    end
+```
+
+**WAL 解决了什么问题？**
+
+| 问题 | 没有 WAL | 有 WAL |
+|------|---------|--------|
+| 崩溃后数据 | 内存中未刷盘的数据**永久丢失** | 从 WAL 重放，**一条不丢** |
+| 写入原子性 | 部分写入不可检测 | Commit 标记保证**全部 or 全不** |
+| 恢复时间 | 需要全量扫描修复 | 从最后一个 Checkpoint 增量回放 |
+
+**WAL 的代价与权衡：**
+
+```mermaid
+flowchart LR
+    subgraph Tradeoff["WAL 设计权衡"]
+        direction TB
+        T1["每次写入 =<br/>1 次内存修改<br/>+ 1 次磁盘顺序写<br/>+ 1 次 fsync"]
+        T2["优势: 数据安全<br/>代价: 写入延迟增加"]
+        T3["缓解: Group Commit<br/>批量 fsync，分摊开销"]
+    end
+```
+
+- **顺序写**：WAL 是 append-only 文件，磁盘顺序写速度远超随机写（~100MB/s vs ~1MB/s）
+- **fsync 是瓶颈**：每次 fsync 等待磁盘确认，是最大的延迟来源
+- **Group Commit**：将多个事务的 WAL 写入合并为一次 fsync，大幅提升吞吐
+
+**WAL 文件的生命周期：**
+
+```mermaid
+sequenceDiagram
+    participant TX as 事务
+    participant WAL as WAL 文件
+    participant CK as Checkpoint
+    participant Disk as 磁盘空间
+
+    TX->>WAL: Append(操作1, 操作2, ...)
+    TX->>WAL: Sync()
+    Note over WAL: WAL 文件持续增长
+
+    CK->>CK: 每 30s 触发
+    CK->>Disk: 将 BTree 页面写入 AO 文件
+    CK->>WAL: Append(Checkpoint 标记)
+    CK->>WAL: Truncate(旧 LSN)
+    Note over WAL: 删除旧 Segment<br/>释放磁盘空间
+```
+
+WAL 文件是**临时的**——Checkpoint 确认数据已持久化到 AO 后，对应的 WAL 即可删除。
+
+#### 1.4.2 AO：Append-Only Chunk（只追加块文件）
+
+**AO 是什么？**
+
+AO（Append-Only）是一种**页面级持久化文件格式**。BTree 的内存页面（4KB）被序列化为 PageFrame 写入 `.ao` 文件——也只能追加，从不原地修改。
+
+```mermaid
+flowchart TB
+    subgraph AOConcept["AO Chunk 概念模型"]
+        direction TB
+        A1["BTree 内存页面 (4KB)<br/>PageHeader + KV Data"]
+        A2["序列化<br/>PageSerializer.Serialize()"]
+        A3["PageFrame = [CRC32C:4][PageData:4096]<br/>自校验、自描述的磁盘帧"]
+        A4["追加写入 .ao 文件<br/>WritePage(pos, data)"]
+        A5["每个 .ao 文件 = 1 个 Chunk<br/>最大 256MB，写满自动创建下一个"]
+
+        A1 --> A2 --> A3 --> A4 --> A5
+    end
+```
+
+**为什么叫 Append-Only？**
+
+```
+传统文件（可随机写）：           AO 文件（只追加）：
+┌───┬───┬───┬───┬───┐          ┌───┬───┬───┬───┬───┬───┬───┐
+│ A │   │ C │   │ E │          │ A │ B │ C │ D │ E │ F │ G │
+└───┴───┴───┴───┴───┘          └───┴───┴───┴───┴───┴───┴───┘
+  ↑ 删除B  ↑ 删除D               ← 只往后追加，从不删除或修改 →
+  产生空洞                       删除 = 标记 removedPages
+                                 回收 = ChunkCompactor 异步重写
+```
+
+- **不原地修改**：页面更新后写新位置，旧位置标记为 `removedPages`
+- **不原地删除**：FreePage 只标记不释放空间，由 `ChunkCompactor` 异步回收
+- **自校验**：每个 PageFrame 带 CRC32C，损坏只丢一帧
+
+**AO 解决了什么问题？**
+
+| 问题 | 只有 WAL | WAL + AO |
+|------|---------|----------|
+| WAL 无限增长 | 所有操作永久保留，磁盘耗尽 | Checkpoint 后截断 WAL |
+| 恢复速度 | 重放全部历史 WAL，恢复极慢 | 加载 AO + 少量 WAL 增量 |
+| 页面读取 | 只能在内存中 | 惰性加载：按需从 AO 读入 mmap |
+
+#### 1.4.3 WAL + AO 协作全景
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant BTree as BTree (内存)
+    participant WAL as WAL (日志)
+    participant AO as AO Chunk (页面)
+    participant Disk
+
+    Note over Client,Disk: 正常运行时的双路径协作
+
+    Client->>BTree: Set("k", "v")
+    BTree->>WAL: Append(操作记录)
+    WAL->>Disk: fsync()
+    BTree->>BTree: COW 修改内存页面
+    BTree-->>Client: OK
+
+    Note over Client,Disk: 30 秒后 — Checkpoint
+
+    BTree->>BTree: RootPage() COW 快照
+    loop 每个脏页
+        BTree->>AO: WritePage(pos, serializedPage)
+    end
+    AO->>Disk: fsync()
+    BTree->>WAL: Append(Checkpoint 标记 + pageLocs)
+    WAL->>Disk: Truncate(旧 Segment)
+
+    Note over Client,Disk: 崩溃后 — Recovery
+
+    Disk->>AO: RestoreDiskChunkManager()<br/>扫描 .ao → 重建 pagePosToLen
+    Disk->>WAL: Recover()<br/>找最新 Checkpoint → 惰性加载 BTree
+    Disk->>BTree: 增量 WAL 回放 → 重建 VersionChain
+```
+
+**为什么数据库都这样设计？**
+
+```
+这是数据库领域的经典分层：
+
+┌──────────────────────────────────────────────┐
+│              写入路径                         │
+│                                              │
+│  用户操作 ──→ WAL (实时, 低延迟, 顺序写)      │
+│                    │                         │
+│                    ▼                         │
+│              BTree (内存, 高性能读写)          │
+│                    │                         │
+│                    ▼ (定期, 30s)              │
+│              AO Chunk (持久, 页面落盘)         │
+└──────────────────────────────────────────────┘
+
+为什么不是直接写 AO？
+  → AO 页面是随机位置，直接写需要随机 I/O（慢）
+  → WAL 是顺序追加，磁盘顺序写 ~100MB/s
+  → 先写 WAL（快），再异步写 AO（后台）
+
+为什么不是只写 WAL？
+  → WAL 记录每次操作，无限增长
+  → 恢复需要重放全部历史（慢）
+  → AO 存页面快照，恢复只需加载 + 少量增量
+
+两条路径配合：
+  WAL = 低延迟安全网（操作级）
+  AO  = 高吞吐持久化（页面级）
+```
+
+**类比：就像记账**
+
+```
+WAL = 流水账本（每笔交易即时记录）
+  "2026-05-23 14:30:01  收入 +100  余额=1100"
+  "2026-05-23 14:30:05  支出 -50   余额=1050"
+  → 随时可查最新余额，但翻历史账很慢
+
+AO = 月度总账（定期汇总页面快照）
+  "2026年5月 第3页:  期初=1000, 收入合计=500, 支出合计=300, 期末=1200"
+  → 快速了解某月状态，但看不到每笔明细
+
+WAL + AO = 流水账 + 总账
+  → 今天查余额：看流水账最后一行（WAL 最新 LSN）
+  → 查上个月状态：直接翻总账第3页（AO Chunk）
+  → 上个月第3页之后的变化：从流水账增量回放（WAL Recovery）
+```
 
 ---
 

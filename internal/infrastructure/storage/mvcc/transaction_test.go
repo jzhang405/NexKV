@@ -391,3 +391,101 @@ func TestSnapshotTx_ConcurrentWriteDifferentKeys(t *testing.T) {
 		t.Fatalf("expected no conflicts for different keys, got %d errors", errors.Load())
 	}
 }
+
+func TestSnapshotTx_SnapshotTS(t *testing.T) {
+	store := newMockStorage()
+	tm := NewTxManager(store, NewLocalTS())
+	tx, err := tm.BeginTx(context.Background(), SnapshotIsolation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := tx.SnapshotTS()
+	if ts == 0 {
+		t.Error("SnapshotTS should be non-zero")
+	}
+}
+
+func TestTxManager_SetWAL(t *testing.T) {
+	store := newMockStorage()
+	tm := NewTxManager(store, NewLocalTS())
+	manager := tm.(*txManager)
+	if manager.wal != nil {
+		t.Error("wal should be nil initially")
+	}
+	// SetWAL with nil (disable WAL) is valid
+	manager.SetWAL(nil)
+}
+
+func TestSnapshotTx_CommitAndWait(t *testing.T) {
+	store := newMockStorage()
+	tm := NewTxManager(store, NewLocalTS())
+	tx, err := tm.BeginTx(context.Background(), SnapshotIsolation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Put([]byte("k"), []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	// CommitAndWait delegates to Commit in sync mode
+	stx := tx.(*SnapshotTx)
+	if err := stx.CommitAndWait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Key should be visible
+	val, err := store.GetRaw(context.Background(), []byte("k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val == nil {
+		t.Error("CommitAndWait should persist data")
+	}
+}
+
+func TestSnapshotTx_CheckActive_AfterCommit(t *testing.T) {
+	store := newMockStorage()
+	tm := NewTxManager(store, NewLocalTS())
+	tx, err := tm.BeginTx(context.Background(), SnapshotIsolation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// checkActive after commit should return error
+	stx := tx.(*SnapshotTx)
+	if err := stx.checkActive(); err == nil {
+		t.Error("checkActive should error after commit")
+	}
+}
+
+func TestSnapshotTx_CheckActive_AfterRollback(t *testing.T) {
+	store := newMockStorage()
+	tm := NewTxManager(store, NewLocalTS())
+	tx, err := tm.BeginTx(context.Background(), SnapshotIsolation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	stx := tx.(*SnapshotTx)
+	if err := stx.checkActive(); err == nil {
+		t.Error("checkActive should error after rollback")
+	}
+}
+
+func TestKeyLock_LockTimeout(t *testing.T) {
+
+	kl := &KeyLock{}
+
+	if err := kl.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	kl.Unlock()
+
+	// Second lock should also succeed
+	if err := kl.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	kl.Unlock()
+}

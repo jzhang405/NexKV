@@ -28,6 +28,7 @@ const (
 	WALTypeTxWrite    = service.WALTypeTxWrite
 	WALTypeTxCommit   = service.WALTypeTxCommit
 	WALTypeTxRollback = service.WALTypeTxRollback
+	WALTypeTxPrepare  = service.WALTypeTxPrepare
 )
 
 // WALTypeString returns the human-readable name of a WALType.
@@ -55,6 +56,8 @@ func WALTypeString(wt WALType) string {
 		return "TxCommit"
 	case WALTypeTxRollback:
 		return "TxRollback"
+	case WALTypeTxPrepare:
+		return "TxPrepare"
 	default:
 		return "Unknown"
 	}

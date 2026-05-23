@@ -296,3 +296,34 @@ func FuzzCheckpointRecovery(f *testing.F) {
 		assert.True(t, foundCheckpoint, "expected a checkpoint entry")
 	})
 }
+
+func TestEncodeCheckpointKey_Empty(t *testing.T) {
+	key := encodeCheckpointKey(100, nil)
+	if len(key) != 12 {
+		t.Fatalf("expected key len 12, got %d", len(key))
+	}
+	startLSN := binary.BigEndian.Uint64(key[0:8])
+	if startLSN != 100 {
+		t.Errorf("expected startLSN=100, got %d", startLSN)
+	}
+	pageCount := binary.BigEndian.Uint32(key[8:12])
+	if pageCount != 0 {
+		t.Errorf("expected pageCount=0, got %d", pageCount)
+	}
+}
+
+func TestEncodeCheckpointKey_WithPages(t *testing.T) {
+	locs := map[model.PageID]model.ChunkPosition{
+		1: 0x1000,
+		2: 0x2000,
+	}
+	key := encodeCheckpointKey(200, locs)
+	expectedLen := 12 + 2*16 // startLSN(8) + pageCount(4) + (PageID:8,ChunkPos:8)*2
+	if len(key) != expectedLen {
+		t.Fatalf("expected key len %d, got %d", expectedLen, len(key))
+	}
+	pageCount := binary.BigEndian.Uint32(key[8:12])
+	if pageCount != 2 {
+		t.Errorf("expected pageCount=2, got %d", pageCount)
+	}
+}

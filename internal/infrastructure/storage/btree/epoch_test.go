@@ -273,3 +273,30 @@ func TestEpochManager_EnterReadDoubleCheck(t *testing.T) {
 		t.Errorf("EnterRead double-check should catch TOCTOU, expected 200 got %d", epoch2)
 	}
 }
+
+func TestEpochManager_RetireBatch(t *testing.T) {
+	var mu sync.Mutex
+	var freed []model.PageID
+	em := NewEpochManager(func(id model.PageID) {
+		mu.Lock()
+		freed = append(freed, id)
+		mu.Unlock()
+	})
+
+	slot := em.AllocSlot()
+	em.RetireBatch(slot, 10, 20, 30)
+
+	em.tryReclaim()
+
+	mu.Lock()
+	n := len(freed)
+	mu.Unlock()
+	if n != 3 {
+		t.Errorf("RetireBatch: expected 3 freed pages, got %d", n)
+	}
+}
+
+func TestEpochManager_RetireBatch_Empty(t *testing.T) {
+	em := NewEpochManager(nil)
+	em.RetireBatch(0) // should not panic
+}

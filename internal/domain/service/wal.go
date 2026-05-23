@@ -60,4 +60,5 @@ const (
 	WALTypeTxWrite    // 8 — Phase 3.2: Key=[txID:8][key]; Value=[oldFlag:1][oldBeginTS:8][newFlag:1][newValue:N]
 	WALTypeTxCommit   // 9 — Phase 3.2: Key=[txID:8][commitTS:8][entryCount:4]; Value=nil
 	WALTypeTxRollback // 10 — Phase 3.2: Key=[txID:8]; Value=nil
+	WALTypeTxPrepare  // 11 — Phase 3.3: Key=[txID:8]; Value=[keyCount:4][(keyLen:4)(key)(oldFlag:1)(oldBeginTS:8)(oldValLen:4)(oldVal)(newFlag:1)(newValLen:4)(newVal)]*N
 )

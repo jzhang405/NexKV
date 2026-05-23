@@ -6,6 +6,8 @@ package mvcc
 
 import (
 	"encoding/binary"
+	"fmt"
+	"sort"
 
 	"github.com/jzhang405/NexKV/internal/domain/service"
 )
@@ -90,6 +92,175 @@ func CommitEntry(commitTS uint64) *service.WALEntry {
 		Type: service.WALTypeCommit,
 		Key:  commitKey,
 	}
+}
+
+// TxPrepareEntry creates a Phase 3.3 TxPrepare WAL entry containing oldValue snapshots
+// for all keys in the write buffer. This entry is written BEFORE commitTS allocation and
+// BTree Apply. On recovery, if TxPrepare exists without a matching TxCommit, the oldValues
+// are used to rollback any partially-applied keys.
+//
+// WAL entry format (Phase 3.3):
+//
+//	Key:   [txID:8 BE]
+//	Value: [keyCount:4 BE]
+//	       [(keyLen:4 BE)(key:keyLen)(op:1)(oldFlag:1)(oldBeginTS:8)(oldValLen:4 BE)(oldVal:oldValLen)(newFlag:1)(newValLen:4 BE)(newVal:newValLen)] × N
+func TxPrepareEntry(txID uint64, wb *WriteBuffer) *service.WALEntry {
+	keys := wb.OrderedKeys()
+	sort.Strings(keys) // deterministic order
+
+	// Calculate total value size
+	totalSize := 4 // keyCount
+	for _, key := range keys {
+		e, ok := wb.entries[key]
+		if !ok {
+			continue
+		}
+		// keyLen(4) + key + op(1) + oldFlag(1) + oldBeginTS(8) + oldValLen(4) + oldVal + newFlag(1) + newValLen(4) + newVal
+		totalSize += 4 + len(key) + 1 + 1 + 8 + 4 + len(e.OldValue) + 1 + 4 + len(e.Value)
+	}
+
+	buf := make([]byte, totalSize)
+	offset := 0
+
+	// keyCount
+	binary.BigEndian.PutUint32(buf[offset:], uint32(len(keys)))
+	offset += 4
+
+	for _, key := range keys {
+		e, ok := wb.entries[key]
+		if !ok {
+			continue
+		}
+
+		// keyLen + key
+		binary.BigEndian.PutUint32(buf[offset:], uint32(len(key)))
+		offset += 4
+		copy(buf[offset:], key)
+		offset += len(key)
+
+		// op
+		buf[offset] = byte(e.Op)
+		offset++
+
+		// oldFlag
+		buf[offset] = e.OldFlag
+		offset++
+
+		// oldBeginTS
+		binary.BigEndian.PutUint64(buf[offset:], e.OldBeginTS)
+		offset += 8
+
+		// oldValLen + oldVal
+		binary.BigEndian.PutUint32(buf[offset:], uint32(len(e.OldValue)))
+		offset += 4
+		copy(buf[offset:], e.OldValue)
+		offset += len(e.OldValue)
+
+		// newFlag (determined by Op)
+		newFlag := byte(FlagNormal)
+		if e.Op == OpDelete {
+			newFlag = FlagTombstone
+		}
+		buf[offset] = newFlag
+		offset++
+
+		// newValLen + newVal
+		binary.BigEndian.PutUint32(buf[offset:], uint32(len(e.Value)))
+		offset += 4
+		copy(buf[offset:], e.Value)
+		offset += len(e.Value)
+	}
+
+	txIDKey := make([]byte, 8)
+	binary.BigEndian.PutUint64(txIDKey, txID)
+
+	return &service.WALEntry{
+		Type:  service.WALTypeTxPrepare,
+		Key:   txIDKey,
+		Value: buf,
+	}
+}
+
+// ParseTxPrepareEntry parses a TxPrepare WAL entry back into a list of key/value pairs.
+// Returns the txID, and a slice of parsed entries for recovery rollback/replay.
+type TxPrepareParsedEntry struct {
+	Key        string
+	Op         WriteOp
+	OldFlag    byte
+	OldBeginTS uint64
+	OldValue   []byte
+	NewFlag    byte
+	NewValue   []byte
+}
+
+func ParseTxPrepareEntry(e *service.WALEntry) (txID uint64, entries []TxPrepareParsedEntry, err error) {
+	if e.Type != service.WALTypeTxPrepare {
+		return 0, nil, fmt.Errorf("not a TxPrepare entry")
+	}
+	if len(e.Key) < 8 {
+		return 0, nil, fmt.Errorf("TxPrepare: key too short")
+	}
+	txID = binary.BigEndian.Uint64(e.Key[0:8])
+
+	buf := e.Value
+	if len(buf) < 4 {
+		return 0, nil, fmt.Errorf("TxPrepare: value too short")
+	}
+	keyCount := binary.BigEndian.Uint32(buf[0:4])
+	offset := 4
+
+	for i := uint32(0); i < keyCount; i++ {
+		if offset+4 > len(buf) {
+			return 0, nil, fmt.Errorf("TxPrepare: truncated at key %d", i)
+		}
+		keyLen := binary.BigEndian.Uint32(buf[offset:])
+		offset += 4
+		if offset+int(keyLen) > len(buf) {
+			return 0, nil, fmt.Errorf("TxPrepare: truncated key data")
+		}
+		key := string(buf[offset : offset+int(keyLen)])
+		offset += int(keyLen)
+
+		if offset+12 > len(buf) {
+			return 0, nil, fmt.Errorf("TxPrepare: truncated at entry header")
+		}
+		op := WriteOp(buf[offset])
+		offset++
+		oldFlag := buf[offset]
+		offset++
+		oldBeginTS := binary.BigEndian.Uint64(buf[offset:])
+		offset += 8
+		oldValLen := binary.BigEndian.Uint32(buf[offset:])
+		offset += 4
+		if offset+int(oldValLen) > len(buf) {
+			return 0, nil, fmt.Errorf("TxPrepare: truncated oldVal")
+		}
+		oldVal := make([]byte, oldValLen)
+		copy(oldVal, buf[offset:offset+int(oldValLen)])
+		offset += int(oldValLen)
+
+		if offset+5 > len(buf) {
+			return 0, nil, fmt.Errorf("TxPrepare: truncated at newVal header")
+		}
+		newFlag := buf[offset]
+		offset++
+		newValLen := binary.BigEndian.Uint32(buf[offset:])
+		offset += 4
+		if offset+int(newValLen) > len(buf) {
+			return 0, nil, fmt.Errorf("TxPrepare: truncated newVal")
+		}
+		newVal := make([]byte, newValLen)
+		copy(newVal, buf[offset:offset+int(newValLen)])
+		offset += int(newValLen)
+
+		entries = append(entries, TxPrepareParsedEntry{
+			Key: key, Op: op,
+			OldFlag: oldFlag, OldBeginTS: oldBeginTS, OldValue: oldVal,
+			NewFlag: newFlag, NewValue: newVal,
+		})
+	}
+
+	return txID, entries, nil
 }
 
 // OrderedKeys returns keys from the snapshot in insertion order.

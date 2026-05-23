@@ -421,15 +421,13 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 		return err
 	}
 
-	// Phase 2: Allocate commitTS
-	commitTS := tx.engine.tsGen.NextTS()
-
-	// Phase 3: WAL Append + Sync (before Apply — all-or-nothing durability)
+	// Phase 2: WAL Append (write entries) + Sync — before commitTS allocation
+	// Phase 3.2: commitTS is allocated AFTER WAL sync to guarantee strict monotonicity.
 	tx.engine.walMu.Lock()
 	wal := tx.engine.wal
 	tx.engine.walMu.Unlock()
 	if wal != nil {
-		entries := tx.writeBuffer.ToWALEntries(commitTS)
+		entries := tx.writeBuffer.WriteEntries()
 		if _, err := wal.AppendBatch(entries); err != nil {
 			tx.cleanup()
 			return fmt.Errorf("wal append: %w", err)
@@ -440,10 +438,26 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 		}
 	}
 
-	// Phase 4: Apply WriteBuffer (WAL already durable)
+	// Phase 3: Allocate commitTS — after WAL sync (Phase 3.2)
+	commitTS := tx.engine.tsGen.NextTS()
+
+	// Phase 4: Apply WriteBuffer (WAL already durable, commitTS allocated)
 	if err := tx.applyWriteBuffer(ctx, commitTS); err != nil {
 		tx.cleanup()
+		// Best-effort rollback (Phase 3.2: rollback WAL entries already written)
 		return err
+	}
+
+	// Phase 5: WAL Commit marker (after Apply success)
+	if wal != nil {
+		if _, err := wal.Append(CommitEntry(commitTS)); err != nil {
+			tx.cleanup()
+			return fmt.Errorf("wal commit marker: %w", err)
+		}
+		if err := wal.Sync(); err != nil {
+			tx.cleanup()
+			return fmt.Errorf("wal commit sync: %w", err)
+		}
 	}
 
 	tx.cleanup()

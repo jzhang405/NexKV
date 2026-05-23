@@ -190,12 +190,19 @@ Prune(watermark) — 修订版:
 
 **推荐方案 A 的理由**：Epoch-based reclamation 的核心语义是 "节点退役后，所有看到该退役 epoch 的 reader 退出前，节点不被物理释放"。只要 Epoch 覆盖 Prepend 和 snapshotGet，reader 就不可能看到已释放后又被复用的节点指针——ABA 的物理前提不存在。
 
-**改动范围**（方案 A）：
-- `mvcc/version_chain.go`：`Prune()` 改为物理摘除 + `EpochManager.Retire`
-- `mvcc/version_chain.go`：`VersionNode.next` 改为 `atomic.Pointer[VersionNode]`（支持 CAS 摘除）
-- `mvcc/version_chain.go`：Prepend 路径纳入 Epoch 保护（`EnterRead`/`ExitRead`）
-- `mvcc/transaction.go`：snapshotGet 路径纳入 Epoch 保护
-- 可选：复用 `btree.EpochManager` 或为 VersionNode 创建独立 epoch 域
+**改动范围**（方案 B — `chainHead`，推荐）：
+
+> **说明**：采用 `chainHead` 后，`VersionNode.next` **保持为** `*VersionNode`（普通指针）。ABA 防护由 `chainHead.generation` 在 CAS 层面提供，`next` 不需要 CAS 能力。Prune 摘除节点时对 `next` 的修改改为 `atomic.Pointer` 以支持安全的并发摘除（见 Item 1）。
+
+| 文件 | 变更 |
+|------|------|
+| `mvcc/version_chain.go` | 新增 `chainHead{node *VersionNode, generation uint64}` 结构体 |
+| `mvcc/version_chain.go` | `VersionChain.head` 类型改为 `atomic.Pointer[chainHead]` |
+| `mvcc/version_chain.go` | 移除独立的 `generation atomic.Uint64` 字段 |
+| `mvcc/version_chain.go` | `VersionNode.next` 改为 `atomic.Pointer[VersionNode]`（Item 1 需要 CAS 摘除） |
+| `mvcc/version_chain.go` | `Prune()` 改为物理摘除 + `EpochManager.Retire` |
+| `mvcc/version_chain.go` | 更新 `Prepend`/`Load`/`PrependWithCleanup` 适配 `chainHead` |
+| `mvcc/transaction.go` | `snapshotGet` 中 generation 读取路径适配 + Epoch 保护 |
 
 ### 3.2 Item 2: WAL Recovery 显式事务恢复
 
@@ -230,7 +237,7 @@ WALTypeTxBegin (8):
 WALTypeTxWrite (9):
   Key:   [txID:8 BE][key]                         // 事务 ID + 业务 key
   Value: [oldFlag:1][oldBeginTS:8][newFlag:1][newValue:N]  // 旧值 + 新值
-  Type:  TxWrite
+  // Type 由 WALEntry.Type 字段编码，不重复出现在 Key/Value 中
 
 WALTypeTxCommit (10):
   Key:   [txID:8 BE][commitTS:8 BE][entryCount:4 BE]  // 事务 ID + commitTS + key 数量
@@ -378,15 +385,21 @@ type VersionChain struct {
 func (vc *VersionChain) Prepend(commitTS uint64, value []byte, flag byte) error {
     for retry := 0; retry < maxRetries; retry++ {
         old := vc.head.Load()
+        var oldNode *VersionNode
+        var oldGen uint64
+        if old != nil {
+            oldNode = old.node
+            oldGen = old.generation
+        }
         newNode := &VersionNode{
             commitTS: commitTS,
             value:    value,
             flag:     flag,
-            next:     old.node,
+            next:     oldNode,  // 空链时 oldNode = nil，安全
         }
         newHead := &chainHead{
             node:       newNode,
-            generation: old.generation + 1,
+            generation: oldGen + 1,
         }
         if vc.head.CompareAndSwap(old, newHead) {
             return nil
@@ -453,14 +466,14 @@ flowchart TB
         G1["[1] VersionChain GC<br/>物理摘除 + Epoch Retire<br/>[4] ABA 防护<br/>chainHead 联合结构体"]
     end
     
-    Phase31 --> Phase32
+    Phase31 --> Phase32b
     
     subgraph Phase32b["Phase 3.2: WAL + commitTS"]
         G5["[5] commitTS<br/>WAL sync 后分配<br/>★ 可与 Phase 3.1 并行"]
         G2["[2] WAL Recovery<br/>TxBegin/TxWrite/TxCommit/TxRollback<br/>+ Checkpoint VersionStore 持久化"]
     end
     
-    Phase32 --> Phase33
+    Phase32b --> Phase33b
     
     subgraph Phase33b["Phase 3.3: 2PC"]
         G3["[3] 跨 key 原子性<br/>TxPrepare + TxCommit<br/>+ 2PC Recovery Rollback"]
@@ -505,10 +518,10 @@ flowchart TB
 | `mvcc/transaction.go` | Commit 流程重组（commitTS 移到 WAL sync 后） |
 | `domain/service/wal.go` | 新增 `WALTypeTxBegin=8`, `TxWrite=9`, `TxCommit=10`, `TxRollback=11` |
 | `wal/types.go` | 同步新增 WALType 常量 + 序列化/反序列化适配 |
-| `mvcc/wal_integration.go` | 新增 `ToTxWALEntries()` + `TxPrepare` entry 构造 |
+| `mvcc/wal_integration.go` | 新增 `ToTxWALEntries()` 生成带事务边界的 WAL entries |
 | `wal/recovery.go` | Recovery 识别新类型 + 事务分组逻辑更新 |
 | `wal/recovery_manager.go` | Phase C 新增 ActiveTxRegistry 重建 + 未提交事务清理 |
-| `checkpoint/checkpoint_manager.go` | 可选：Checkpoint 持久化 VersionStore + ActiveTxRegistry |
+| `checkpoint/checkpoint_manager.go` | Checkpoint 持久化 VersionStore + ActiveTxRegistry（不阻塞功能但阻塞 WAL 截断——未持久化时 VersionChain 相关 WAL entries 不能截断） |
 | 测试文件 | Recovery 事务边界测试 + 崩溃注入测试 |
 
 **验证**：

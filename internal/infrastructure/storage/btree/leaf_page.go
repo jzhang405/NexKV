@@ -307,3 +307,8 @@ func (h *leafPageHandle) Validate() error {
 	}
 	return nil
 }
+
+// Release returns this handle to the pool for reuse.
+func (h *leafPageHandle) Release() {
+	h.storage.leafHandlePool.Put(h)
+}

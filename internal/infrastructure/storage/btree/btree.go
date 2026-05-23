@@ -229,6 +229,7 @@ func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer leaf.Release()
 
 	// Search for key
 	idx, found := leaf.Search(key)

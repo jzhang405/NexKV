@@ -27,6 +27,9 @@ type OffheapBTreeStorage struct {
 	serializer *chunk.PageSerializer // Phase 4.3: page serialization
 	pageLocs   sync.Map              // Phase 4.3: map[model.PageID]model.ChunkPosition
 	closed     atomic.Bool
+
+	leafHandlePool sync.Pool // *leafPageHandle
+	nodeHandlePool sync.Pool // *nodePageHandle
 }
 
 // NewOffheapBTreeStorage creates a new storage backed by an mmap region of mmapSize bytes.
@@ -134,6 +137,11 @@ func (s *OffheapBTreeStorage) GetLeafPage(pageID model.PageID) (LeafPage, error)
 	if !s.pa.IsLeaf(rawID) {
 		return nil, errpkg.BTreePageNotLeafPage(uint64(pageID))
 	}
+	if v := s.leafHandlePool.Get(); v != nil {
+		h := v.(*leafPageHandle)
+		h.id = pageID
+		return h, nil
+	}
 	return &leafPageHandle{id: pageID, pa: s.pa, storage: s}, nil
 }
 
@@ -144,6 +152,11 @@ func (s *OffheapBTreeStorage) GetNodePage(pageID model.PageID) (NodePage, error)
 	}
 	if s.pa.IsLeaf(rawID) {
 		return nil, errpkg.BTreePageNotNodePage(uint64(pageID))
+	}
+	if v := s.nodeHandlePool.Get(); v != nil {
+		h := v.(*nodePageHandle)
+		h.id = pageID
+		return h, nil
 	}
 	return &nodePageHandle{id: pageID, pa: s.pa, storage: s}, nil
 }

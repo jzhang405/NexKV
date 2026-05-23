@@ -37,6 +37,9 @@ type LeafPage interface {
 	Delete(idx int) (LeafPage, error)
 	Split() (left, right LeafPage, splitKey []byte, err error)
 
+	// Release returns this handle to the pool for reuse. Call when done with the page.
+	Release()
+
 	// Validation
 	Validate() error
 }
@@ -55,6 +58,9 @@ type NodePage interface {
 	InsertChild(idx int, splitKey []byte, left, right model.PageID) (NodePage, error)
 	RemoveChild(idx int) (NodePage, error)
 	Split() (left, right NodePage, splitKey []byte, err error)
+
+	// Release returns this handle to the pool for reuse. Call when done with the page.
+	Release()
 
 	// Validation
 	Validate() error

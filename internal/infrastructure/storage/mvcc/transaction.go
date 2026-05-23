@@ -759,14 +759,7 @@ func (tx *SnapshotTx) rollbackOneKey(entry UndoEntry) (retErr error) {
 	for node != nil {
 		if node.commitTS == entry.CommitTS {
 			node.rolledBack.Store(true)
-			// CAS-bump generation to trigger snapshotGet retry
-			for {
-				cur := chain.head.Load()
-				newHead := &chainHead{node: cur.node, generation: cur.generation + 1}
-				if chain.head.CompareAndSwap(cur, newHead) {
-					break
-				}
-			}
+			chain.bumpGeneration()
 			return nil
 		}
 		node = node.next.Load()

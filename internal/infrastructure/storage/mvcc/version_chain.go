@@ -177,8 +177,9 @@ func (vc *VersionChain) Prune(watermark uint64) int {
 // Returns the number of reclaimed nodes removed.
 func (vc *VersionChain) PrependWithCleanup(commitTS uint64, value []byte, flag byte) (int, error) {
 	const maxRetries = 16
-	cleaned := 0
+	var cleaned int
 	for i := 0; i < maxRetries; i++ {
+		cleaned = 0 // reset per attempt — CAS failure means cleanup was not applied
 		old := vc.head.Load()
 		var oldNode *VersionNode
 		var oldGen uint64
@@ -209,7 +210,23 @@ func (vc *VersionChain) PrependWithCleanup(commitTS uint64, value []byte, flag b
 		}
 		runtime.Gosched()
 	}
-	return cleaned, ErrVersionChainConflict
+	return 0, ErrVersionChainConflict
+}
+
+// bumpGeneration atomically increments the generation counter for ABA protection.
+// This signals to concurrent snapshotGet readers that the chain has logically changed.
+// Safe to call on empty chains (head==nil): no-op.
+func (vc *VersionChain) bumpGeneration() {
+	for {
+		cur := vc.head.Load()
+		if cur == nil {
+			return
+		}
+		newHead := &chainHead{node: cur.node, generation: cur.generation + 1}
+		if vc.head.CompareAndSwap(cur, newHead) {
+			return
+		}
+	}
 }
 
 // Range calls fn for each chain in the store. If fn returns false, iteration stops.

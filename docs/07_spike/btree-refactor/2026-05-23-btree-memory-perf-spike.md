@@ -308,16 +308,131 @@ flowchart LR
     F -->|"队列积压"| A
 ```
 
-**具体分配来源**（per writeOperation）：
+**具体分配来源**（per writeOperation，逐行追踪）：
 
-| 分配 | 位置 | 大小 |
-|------|------|------|
-| `leafPageHandle` | `offheap_storage.go:GetLeafPage` | ~48B |
-| `SearchPath` slice | `search.go:searchPath` | ~24B + 每层 16B |
-| `[]byte` key copy | `leaf_page.go:GetKey` | ~10-20B |
-| `[]byte` value copy | `leaf_page.go:GetValue` | ~10-100B |
-| `PageInfo` | `operations.go:CAS` | ~64B |
-| 重试时额外分配 | CAS 失败 → 再次 Alloc + 再次创建 Handle | ×N |
+```mermaid
+flowchart TB
+    subgraph Path["writeOperation 热路径 (非 Split)"]
+        direction TB
+        A["1. searchPath()"]
+        B["2. GetLeafPage()"]
+        C["3. leaf.GetKey() / GetValue()"]
+        D["4. leaf.Insert() / Update()"]
+        E["5. CAS newInfo"]
+        F["6. path.ReleaseAll()"]
+        A --> B --> C --> D --> E --> F
+    end
+    
+    subgraph Allocs["Go 堆分配 (每步)"]
+        A1["search.go:82,133<br/>path = append(path, PathEntry{})<br/>→ SearchPath slice 扩容"]
+        B1["offheap_storage.go:137<br/>return &leafPageHandle{...}<br/>→ 新 Handle 对象"]
+        C1["leaf_page.go:64/73<br/>cp := make([]byte, len(raw))<br/>→ key/value 副本"]
+        D1["leaf_page.go:80<br/>pm.Alloc() → newRawID<br/>→ mmap 页分配 (非 Go 堆)"]
+        D2["leaf_page.go:109<br/>return &leafPageHandle{...}<br/>→ COW 新 Handle"]
+        E1["operations.go:232<br/>newInfo := &PageInfo{...}<br/>→ 新 PageInfo"]
+        F1["page_ref.go:111<br/>refCount atomic 递减<br/>(无额外分配)"]
+    end
+    
+    Path --> Allocs
+```
+
+#### 按分配类型详列
+
+**#1 SearchPath 切片扩容** — `search.go:82,133`
+
+```go
+// search.go:82 — 每到达一个叶子页
+path = append(path, PathEntry{Ref: currentRef, Index: -1})
+
+// search.go:133 — 每经过一个内部节点
+path = append(path, PathEntry{Ref: currentRef, Index: actualIdx})
+```
+
+- 初始容量: 0，每层扩容一次（2→4→8...）
+- 2 层树: ~2 次 append，切片最终 ~32B
+- 3 层树: ~3 次 append + 可能触发 `growslice`（mallocgc）
+
+**#2 leafPageHandle 分配** — `offheap_storage.go:137`
+
+```go
+// offheap_storage.go:137 — GetLeafPage 每次创建新 Handle
+return &leafPageHandle{id: pageID, pa: s.pa, storage: s}, nil
+```
+
+- 每次 `GetLeafPage` 都 `&leafPageHandle{}` — **无条件堆分配**
+- 大小: ~48B（3 指针 + 1 uint32）
+- **这是单次写操作最大的 Go 堆分配来源**
+
+**#3 Key/Value 副本** — `leaf_page.go:64,73`
+
+```go
+// leaf_page.go:64 — GetKey
+cp := make([]byte, len(raw))
+copy(cp, raw)
+
+// leaf_page.go:73 — GetValue
+cp := make([]byte, len(raw))
+copy(cp, raw)
+```
+
+- 每次读 key/value 都 `make([]byte)` — 新堆分配
+- benchmark key: `"key-0000000000"` = 14B
+- benchmark value: `"value-0000000000"` = 16B
+- **合计 ~30B/op**，加上 slice header 24B
+
+**#4 COW 新 Handle** — `leaf_page.go:80,109`
+
+```go
+// leaf_page.go:80 — Insert/Update 内 COW 分配 mmap 页
+newRawID, err := h.storage.pm.Alloc()  // mmap 页,非 Go 堆
+
+// leaf_page.go:109 — 返回新页的 Handle
+return &leafPageHandle{id: newID, pa: h.pa, storage: h.storage}, nil
+```
+
+- `pm.Alloc()` — mmap 分配（不触发 Go GC）
+- `&leafPageHandle{}` — Go 堆分配（触发 GC）
+
+**#5 PageInfo** — `operations.go:232`
+
+```go
+// operations.go:232 — CAS 发布新页
+newInfo := &PageInfo{
+    PageID:  result.newPageID,
+    Version: oldInfo.Version + 1,
+    IsLeaf:  true,
+}
+```
+
+- 大小: ~64B（8 字段）
+- **每次 CAS 无论成功失败都分配**
+
+**#6 MVCC 编码**（仅事务模式） — `btree.go:334`
+
+```go
+// btree.go:334 — Set 内 MVCC 编码
+encoded, buildErr := mvcc.BuildMVCC(mvcc.FlagNormal, b.tsGen.NextTS(), value)
+```
+
+- `BuildMVCC` 内 `make([]byte, 9+len(value))` — 堆分配
+- benchmark 无事务时**不触发**（epoch=off 走简化路径）
+
+#### 单次写操作总分配（非 Split 路径，无事务）
+
+| # | 分配 | 文件:行 | 类型 | 大小 | 每 op 次数 |
+|---|------|---------|------|------|-----------|
+| 1 | SearchPath 扩容 | `search.go:82,133` | slice grow | ~32-64B | 1 |
+| 2 | leafPageHandle | `offheap_storage.go:137` | heap obj | ~48B | 1 |
+| 3 | key copy | `leaf_page.go:64` | `make([]byte)` | ~14B | 1 |
+| 4 | value copy | `leaf_page.go:73` | `make([]byte)` | ~16B | 1 |
+| 5 | COW handle | `leaf_page.go:109` | heap obj | ~48B | 1 |
+| 6 | PageInfo | `operations.go:232` | heap obj | ~64B | 1 |
+| **合计** | | | | **~220B/op** | |
+
+**par-put-4 (50K ops)**: 50K × 220B × 4 goroutines = **~44MB Go 堆分配**
+**par-put-4 (1M ops)**: 1M × 220B × 4 = **~880MB** — 已超过 512MB mmap 池
+
+这就是为什么 32.5% CPU 花在 GC 调度上——每秒 ~200K 次 Go 堆分配触发频繁 GC。
 
 ### 5.4 假设验证
 

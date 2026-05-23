@@ -273,70 +273,251 @@ Recovery Phase C（修订版）:
 | `wal/recovery.go` | Recovery 识别新类型，分组逻辑更新 |
 | `wal/recovery_manager.go` | Phase C 新增 ActiveTxRegistry 重建 + 未提交事务清理 |
 
-### 3.3 Item 3: 跨 key 原子性（2PC 协议）
+### 3.3 Item 3: 跨 key 原子性（WAL-based 2PC）
 
-**当前状态**（对比早期设计文档）：
+#### 3.3.1 什么是跨 key 原子性？
 
-| 早期假设 | 实际代码 |
-|---------|---------|
-| Commit 为 best-effort undo | `transaction.go:498-502` **已有**结构化 rollback（`rollbackApplied` + KeyLock CAS 验证） |
-| 无 WAL 保证原子性 | `transaction.go:429-441` **已有** WAL Append+Sync 在 Apply 之前 |
+数据库事务的核心承诺是 **ACID 中的 A——Atomicity（原子性）**：事务要么全部成功，要么全部失败。
 
-**真正的缺口**：当前 Commit 在**同一次** `AppendBatch` 中写入所有 WriteBuffer entries + Commit 标记，然后 sync。这保证了 "全部写入 WAL 后再 Apply"，但没有显式的 **Prepare/Commit 两阶段**。如果 Apply 中途崩溃：
-- Recovery 看到完整 batch（有 Commit 标记）→ 重放 → 成功
-- Recovery 看到部分 batch（无 Commit 标记）→ 丢弃 → 需要 Rollback
+对于**单 key 事务**（只修改一个 key），原子性很简单——KeyLock 保证同一 key 串行化，Commit 要么成功写入 BTree+VersionChain，要么失败什么都不留下。
 
-**问题**：当前 Recovery 丢弃无 Commit 标记的 batch 后，**不执行 Rollback**——因为 `TxID` 隐式分组无法区分 "事务未开始" 和 "事务 Prepare 后崩溃"。引入显式 TxBegin/TxCommit（Item 2）后，就可以精确判断。
+对于**多 key 事务**（一次修改多个 key，如转账），原子性要求：**要么所有 key 都修改成功，要么一个都不修改**。
 
-**2PC 协议设计**：
+```mermaid
+flowchart TB
+    subgraph Atomic["原子性要求"]
+        direction TB
+        A1["TX: transfer(A→B, 100)"]
+        A2["Put(A, balance-100)"]
+        A3["Put(B, balance+100)"]
+        A1 --> A2
+        A1 --> A3
+    end
+    
+    subgraph Good["正确结果"]
+        G1["A: -100 ✓<br/>B: +100 ✓"]
+        G2["A: 不变 ✓<br/>B: 不变 ✓"]
+    end
+    
+    subgraph Bad["错误结果 ❌"]
+        B1["A: -100 ✓<br/>B: 不变 ✗<br/>钱消失了！"]
+    end
+    
+    Atomic --> Good
+    Atomic --> Bad
+```
+
+#### 3.3.2 当前 Commit 的实际行为
+
+当前 `Commit()` 逐 key 调用 `commitKey()`，每个 key 原子地执行 Prepend + Set。但如果**中途失败**：
 
 ```mermaid
 sequenceDiagram
     participant TX as Transaction
-    participant WAL as WAL
+    participant A as KeyLock("A")
+    participant B as KeyLock("B")
     participant BT as BTree
     participant VC as VersionChain
     
-    Note over TX,VC: Phase 3.3: WAL-based 2PC
+    Note over TX,VC: 转账: A-100, B+100 (Commit 中途崩溃)
     
-    TX->>TX: PreCheck 所有 key
+    TX->>A: Lock()
+    TX->>BT: GetRaw("A") → conflict check ✓
+    TX->>VC: Prepend("A", oldVal, oldFlag)
+    TX->>BT: Set("A", BuildMVCC(Normal, commitTS, "A-100"))
+    TX->>A: Unlock()
+    Note over TX: ✅ A 已完成: -100
     
-    TX->>WAL: Append(TxPrepare)<br/>包含所有 WriteBuffer entries
-    TX->>WAL: Sync()
-    Note over WAL: Prepare 持久化完成
+    TX->>B: Lock()
+    TX->>BT: GetRaw("B") → conflict check ✓
+    TX->>VC: Prepend("B", oldVal, oldFlag)
+    TX->>BT: Set("B", BuildMVCC(Normal, commitTS, "B+100"))
+    Note over TX,BT: 💥 崩溃！(或内存不足、PageFull...)
+    TX->>B: Unlock() (未执行)
+    Note over TX: ❌ B 未完成
     
-    TX->>TX: commitTS = tsGen.Next()
-    
-    loop 每个 key (按 key 排序)
-        TX->>VC: LoadOrStore(chain)
-        TX->>TX: KeyLock.Lock()
-        TX->>BT: GetRaw(key) → 冲突检测
-        TX->>VC: Prepend(commitTS, oldValue, oldFlag)
-        TX->>BT: Set(key, BuildMVCC(...))
-        TX->>TX: KeyLock.Unlock()
-    end
-    
-    TX->>WAL: Append(TxCommit, commitTS, entryCount)
-    TX->>WAL: Sync()
-    Note over WAL: Commit 持久化完成
-    
-    Note over TX,VC: Recovery:
-    Note over TX,VC: 有 Prepare + 有 Commit → 重建 VersionChain
-    Note over TX,VC: 有 Prepare + 无 Commit → Rollback 已 Apply 的 key
+    Note over TX,VC: 结果: A 已扣款、B 未到账 — 钱凭空消失！
 ```
 
-**关键设计决策**：
+#### 3.3.3 当前的回滚机制及其局限
 
-- **Prepare 之后、Commit 之前崩溃**：Recovery 看到 `TxPrepare` 无 `TxCommit` → 对每个 key 执行 Rollback（用 Prepare 中记录的 oldValue 恢复 BTree + 回退 VersionChain）
-- **Commit 之后崩溃**：Recovery 看到完整 2PC → 正常重放
-- **Prepare 之前崩溃**：WriteBuffer 仅存在于内存，崩溃后自然丢失——无需 Recovery 动作
+当前代码**已有** `rollbackApplied(undoBuf)` 机制（`transaction.go:498-502`）。它在 Apply 中途失败时，按 `undoBuf` 反向逐个回滚已完成的 key。
 
-**改动范围**（依赖 Item 2 的 TxBegin/TxCommit 类型）：
+**它能工作的场景**：
+```
+Commit 在同一个 goroutine 中执行，applyWriteBuffer 内部失败
+→ undoBuf 还在栈上 → rollbackApplied 立即回滚 → OK ✓
+```
 
-- `mvcc/transaction.go`：Commit 路径拆分为 Prepare（WAL Append + Sync）+ Commit（Apply + WAL Commit + Sync）
-- `mvcc/wal_integration.go`：新增 `TxPrepare` WAL entry 构造
-- `wal/recovery.go`：2PC Recovery 协议（识别 TxPrepare → 检查 TxCommit → Rollback 或 Replay）
-- `mvcc/transaction.go`：`rollbackApplied` 增强——在 2PC Recovery 路径中基于 WAL oldValue 回滚（而非 undoBuf）
+**它不能工作的场景**：
+
+```mermaid
+flowchart TB
+    subgraph Scenario1["场景 1: 进程崩溃 (Power Loss / SIGKILL)"]
+        S1A["A 已 Apply, B 未 Apply → 💥 进程终止"]
+        S1B["undoBuf 在内存中 → 随进程一起消失"]
+        S1C["重启后: A=newVal, B=oldVal → 不一致 ❌"]
+    end
+    
+    subgraph Scenario2["场景 2: Commit goroutine panic"]
+        S2A["A 已 Apply, B Apply 时 panic"]
+        S2B["defer recover 可能捕获, 也可能不"]
+        S2C["recover 成功 → rollbackApplied ✓<br/>recover 失败 → 同场景 1 ❌"]
+    end
+    
+    subgraph Scenario3["场景 3: 运行时错误 (OOM, PageFull...)"]
+        S3A["A 已 Apply, B Apply 时 OOM"]
+        S3B["Go runtime 可能无法分配回滚所需内存"]
+        S3C["rollbackApplied 本身可能失败 → A 已改, B 未改 ❌"]
+    end
+```
+
+**根因**：`undoBuf` 是纯内存结构，没有持久化。进程崩溃 = 回滚信息丢失 = 跨 key 不一致。
+
+#### 3.3.4 WAL-based 2PC 解决方案
+
+**核心思路**：把回滚所需的信息（oldValue）**提前持久化到 WAL**。这样即使进程崩溃，Recovery 也能从 WAL 中读取 oldValue 并执行 Rollback。
+
+```mermaid
+sequenceDiagram
+    participant TX as Transaction
+    participant WAL as WAL (磁盘)
+    participant BT as BTree
+    participant VC as VersionChain
+    
+    Note over TX,VC: Phase 3.3: WAL-based 2PC — 转账 A-100, B+100
+    
+    rect rgb(200, 255, 200)
+        Note over TX,WAL: === Prepare Phase ===
+        TX->>TX: PreCheck A, B
+        TX->>WAL: Append(TxPrepare)<br/>Key=[txID:8]<br/>Value=[(key, oldRawVal, oldFlag, newVal) × N]
+        TX->>WAL: Sync()
+        Note over WAL: ✅ Prepare 持久化!<br/>包含 oldValue 快照供 Rollback 使用
+    end
+    
+    rect rgb(255, 255, 200)
+        Note over TX,VC: === Apply Phase (逐 key) ===
+        TX->>TX: commitTS = tsGen.Next()
+        
+        TX->>BT: commitKey("A", entryA, commitTS) ✓
+        Note over TX: A: -100 完成
+        
+        TX->>BT: commitKey("B", entryB, commitTS)
+        Note over TX,BT: 💥 崩溃!
+    end
+    
+    rect rgb(200, 200, 255)
+        Note over WAL,VC: === Recovery ===
+        Note over WAL: 扫描 WAL: 找到 TxPrepare, 无 TxCommit
+        Note over WAL: 从 Prepare 中提取 oldValue:
+        Note over WAL: A.oldRawVal = "A=1000" (恢复)
+        Note over WAL: B.oldRawVal = "B=500"  (恢复)
+        Note over BT: rollbackApplied(A, oldVal)
+        Note over BT: rollbackApplied(B, oldVal)
+        Note over BT,VC: ✅ A 和 B 都恢复到事务前状态!
+    end
+```
+
+#### 3.3.5 完整 2PC 协议
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active: BeginTx()
+    
+    state Active {
+        [*] --> Buffering: Put/Delete → WriteBuffer
+        Buffering --> Buffering: 更多操作
+    }
+    
+    Active --> PreCheck: Commit()
+    
+    state PreCheck {
+        [*] --> Verify: ValueHash 冲突检测
+    }
+    
+    PreCheck --> Prepare: PreCheck 通过
+    PreCheck --> Rollback: PreCheck 冲突
+    
+    state Prepare {
+        [*] --> WALWrite: WAL.Append(TxPrepare, entries + oldValue)
+        WALWrite --> WALSync: WAL.Sync()
+        WALSync --> Prepared: Prepare 持久化完成
+    }
+    
+    Prepare --> Apply: commitTS 分配
+    Note over Prepare,Apply: ★ 崩溃后从此恢复
+    
+    state Apply {
+        [*] --> KeyLoop: 逐 key (按 key 排序)
+        KeyLoop --> KeyLock: KeyLock.Lock()
+        KeyLock --> Validate: GetRaw → beginTS 校验
+        Validate --> PrependChain: Prepend(VersionChain)
+        PrependChain --> SetBTree: Set(BTree)
+        SetBTree --> KeyUnlock: KeyLock.Unlock()
+        KeyUnlock --> KeyLoop: 下一个 key
+        KeyLoop --> Applied: 所有 key 完成
+    }
+    
+    Apply --> Commit: Apply 成功
+    
+    state Commit {
+        [*] --> WALWriteCommit: WAL.Append(TxCommit, commitTS)
+        WALWriteCommit --> WALSyncCommit: WAL.Sync()
+        WALSyncCommit --> Committed: ✅ 事务完成
+    }
+    
+    Prepare --> RecoveryRollback: 💥 崩溃
+    Apply --> RecoveryRollback: 💥 崩溃
+    
+    state RecoveryRollback {
+        [*] --> ScanWAL: 扫描 WAL → 找 TxPrepare 无 TxCommit
+        ScanWAL --> ExtractOld: 提取 Prepare 中的 oldValue 快照
+        ExtractOld --> RollbackKeys: 逐 key Rollback (基于 WAL oldValue)
+        RollbackKeys --> RollbackDone: ✅ 全部回滚
+    }
+    
+    Rollback --> [*]: 事务放弃 (无 WAL 记录)
+    RecoveryRollback --> [*]: 恢复到事务前
+    Committed --> [*]
+```
+
+#### 3.3.6 崩溃时间线与 Recovery 动作
+
+| 崩溃时机 | WAL 状态 | BTree 状态 | Recovery 动作 |
+|---------|---------|-----------|--------------|
+| **PreCheck 阶段** | 无 WAL 记录 | 未修改 | 无操作（事务自然丢失） |
+| **Prepare WAL 写入中** | 部分 Prepare（无 Sync） | 未修改 | 无操作（Prepare 不完整，丢弃） |
+| **Prepare Sync 后、Apply 前** | TxPrepare 完整 | 未修改 | Rollback（实际无需操作，但 oldValue 记录了原始状态） |
+| **Apply 中途（key A 完成，key B 崩溃）** | TxPrepare 完整，无 TxCommit | A=newVal, B=oldVal | Rollback: 恢复 A→oldVal, 恢复 B→oldVal |
+| **Apply 完成后、TxCommit 写入中** | TxPrepare 完整，部分 TxCommit | 全部已修改 | Rollback: 全部恢复 |
+| **TxCommit Sync 后** | TxPrepare + TxCommit 完整 | 全部已修改 | Replay: 正常重放（幂等） |
+
+#### 3.3.7 TxPrepare Entry 格式
+
+```
+WALTypeTxPrepare (新 type，待分配):
+  Key:   [txID:8 BE]
+  Value: [keyCount:4 BE]
+         [(keyLen:4 BE)(key:keyLen)(oldFlag:1)(oldBeginTS:8)(oldValLen:4 BE)(oldVal:oldValLen)(newFlag:1)(newValLen:4 BE)(newVal:newValLen)] × N
+
+编码说明:
+  - keyCount: 事务涉及的 key 数量
+  - oldFlag/oldBeginTS/oldVal: BTree 当前值快照（用于 Rollback 恢复）
+  - newVal: 写入的新值（用于 Replay 重建）
+  - 所有长度字段确保变长 key/value 可正确解析
+```
+
+#### 3.3.8 改动范围
+
+| 文件 | 变更 |
+|------|------|
+| `mvcc/transaction.go` | Commit 拆分为 Prepare + Apply + Commit 三阶段；Prepare 写入 WAL oldValue 快照 |
+| `mvcc/wal_integration.go` | 新增 `TxPrepareEntry()` 构造（含所有 key 的 oldValue + newValue） |
+| `domain/service/wal.go` | 新增 `WALTypeTxPrepare` 类型常量 |
+| `wal/types.go` | 同步常量 + WALTypeString |
+| `wal/recovery.go` | 2PC Recovery：识别 TxPrepare → 检查 TxCommit → Rollback(基于 WAL oldValue) 或 Replay |
+
+**依赖**：Phase 3.2（TxBegin/TxWrite/TxCommit/TxRollback 类型 + commitTS 后置）— 已完成 ✅
 
 ### 3.4 Item 4: ABA 防护
 

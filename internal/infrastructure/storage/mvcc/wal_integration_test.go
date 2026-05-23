@@ -1,8 +1,8 @@
 package mvcc
 
 import (
-	"testing"
 	"github.com/jzhang405/NexKV/internal/domain/service"
+	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -58,8 +58,8 @@ func TestCommitEntry(t *testing.T) {
 func TestTxPrepareEntry_RoundTrip(t *testing.T) {
 	wb := NewWriteBuffer()
 	wb.Put("alpha", []byte("new-alpha"), []byte("old-alpha"), FlagNormal, 100)
-	wb.Put("beta", []byte("new-beta"), nil, 0, 0)                         // Insert
-	wb.Delete("gamma", []byte("old-gamma"), FlagTombstone, 300)           // Delete
+	wb.Put("beta", []byte("new-beta"), nil, 0, 0)               // Insert
+	wb.Delete("gamma", []byte("old-gamma"), FlagTombstone, 300) // Delete
 	wb.Put("delta", []byte("new-delta"), []byte("old-delta"), FlagNormal, 400)
 
 	txID := uint64(42)

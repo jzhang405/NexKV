@@ -475,7 +475,7 @@ func TestSnapshotTx_CheckActive_AfterRollback(t *testing.T) {
 }
 
 func TestKeyLock_LockTimeout(t *testing.T) {
-	
+
 	kl := &KeyLock{}
 
 	if err := kl.Lock(); err != nil {

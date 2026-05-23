@@ -53,6 +53,65 @@ flowchart TB
     AO --> Disk
 ```
 
+**组件交互全景**：
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant MV as MVCC Layer
+    participant BT as BTree Engine
+    participant WA as WAL
+    participant AO as AO Chunks
+    participant DK as Disk
+
+    Note over C,DK: 写路径 — Put("key", "value")
+
+    C->>MV: Put(key, value)
+    MV->>MV: WriteBuffer.Put()<br/>暂存到事务缓冲区
+    C->>MV: Commit()
+    MV->>MV: commitTS = tsGen.NextTS()
+    MV->>MV: BuildMVCC(FlagNormal, commitTS, value)
+    MV->>WA: Append(WALEntry{Insert, key, encoded})
+    WA->>DK: write() + fsync()
+    WA-->>MV: LSN
+    MV->>BT: Set(key, encodedMVCC)
+    BT->>BT: writeOperation:<br/>searchPath → COW → CAS
+    BT->>BT: Retire(oldPage) → Epoch
+    MV-->>C: commit OK
+
+    Note over C,DK: 读路径 — Get("key")
+
+    C->>MV: Get(key)
+    MV->>MV: WriteBuffer 优先 (RYOW)
+    MV->>BT: GetRaw(key)
+    BT->>BT: searchPath → GetLeafPage<br/>→ leaf.Search(key) → ParseMVCC
+    BT-->>MV: rawVal (9-byte header + realVal)
+    MV->>MV: snapshotGet 可见性判断
+    MV-->>C: "value"
+
+    Note over C,DK: Checkpoint 路径 — 每 30s
+
+    BT->>BT: RootPage() COW 快照
+    BT->>BT: EnumeratePages(root)<br/>后序 DFS 收集脏页
+    loop 每个脏页 (ChunkPos==0)
+        BT->>AO: Allocate(size, pageType) → pos
+        BT->>AO: WritePage(pos, serializedPage)
+        BT->>BT: pageLocs[pageID] = pos
+    end
+    AO->>DK: Sync() fsync all .ao files
+    BT->>WA: Append(CheckpointEntry)
+    WA->>DK: Sync() fsync WAL
+    WA->>DK: Truncate(old LSN)<br/>rename→.deleting→remove
+    
+    Note over C,DK: 崩溃恢复
+
+    DK->>AO: RestoreDiskChunkManager(dir)
+    AO->>AO: scanPageFrames() → pagePosToLen
+    DK->>WA: Recover() → 找最新 Checkpoint
+    WA->>BT: pageLocs 映射 → 惰性加载 BTree
+    WA->>BT: 增量 WAL 回放 → 重建 VersionChain
+```
+
 ### 1.2 数据的两条持久化路径
 
 NexKV 采用 **WAL + Checkpoint 双路径持久化**，借鉴了经典数据库的 Write-Ahead Logging 模式：

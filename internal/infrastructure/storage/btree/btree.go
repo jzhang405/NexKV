@@ -336,6 +336,23 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 			if buildErr != nil {
 				return nil, buildErr
 			}
+			// CAS-first in-place: check if new value fits old slot
+			if lh, ok := leaf.(*leafPageHandle); ok && lh.TryInPlace(idx, encoded) {
+				delta := int64(0)
+				tombstoneDelta := int16(0)
+				if mvccVal.IsTombstone() {
+					delta = +1
+					tombstoneDelta = -1
+				}
+				return &leafMutation{
+					newPageID:      lh.PageID(),
+					delta:          delta,
+					tombstoneDelta: tombstoneDelta,
+					inPlace:        true,
+					inPlaceIdx:     idx,
+					inPlaceValue:   encoded,
+				}, nil
+			}
 			newLeaf, updateErr := leaf.Update(idx, encoded)
 			if updateErr != nil {
 				return nil, updateErr

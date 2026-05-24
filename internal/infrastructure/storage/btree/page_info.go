@@ -15,7 +15,8 @@ const (
 	NodeRedirect   NodeState = 2 // 已分裂重定向（旧节点）
 	NodeSplitting  NodeState = 3 // 正在分裂（乐观锁标记，防止并发 split）
 	NodeMerging    NodeState = 4 // Phase 6.5: 正在合并/借用（乐观锁标记，防止并发 merge）
-	NodeCompacting NodeState = 5 // Phase 6.5+: compaction in progress
+	NodeCompacting    NodeState = 5 // Phase 6.5+: compaction in progress
+	NodeInplaceUpdate NodeState = 6 // CAS-first in-place leaf update in progress
 )
 
 // PageInfo is an immutable snapshot of a page's metadata.

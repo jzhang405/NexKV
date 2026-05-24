@@ -309,6 +309,14 @@ func (h *leafPageHandle) Validate() error {
 }
 
 // Release returns this handle to the pool for reuse.
+// TryInPlace checks if value fits in the old slot for CAS-first in-place update.
+// Returns true without modifying the page — the actual overwrite happens after CAS claim.
+func (h *leafPageHandle) TryInPlace(idx int, value []byte) bool {
+	rawID := uint32(h.id)
+	_, _, _, oldValLen := h.pa.GetLeafEntryOffset(rawID, idx)
+	return len(value) <= int(oldValLen)
+}
+
 func (h *leafPageHandle) Release() {
 	h.storage.leafHandlePool.Put(h)
 }

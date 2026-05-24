@@ -18,9 +18,12 @@ import (
 
 // leafMutation records the result of a leaf-level COW mutation.
 type leafMutation struct {
-	newPageID      model.PageID // the new leaf page ID after COW
+	newPageID      model.PageID // the new leaf page ID after COW (or same pageID for in-place)
 	delta          int64        // change in key count: +1 insert, -1 delete, 0 update
 	tombstoneDelta int16        // Phase 6.5: change in tombstone count
+	inPlace        bool         // CAS-first in-place update: value fits, no COW needed
+	inPlaceIdx     int          // index in leaf for in-place overwrite
+	inPlaceValue   []byte        // new value for in-place overwrite (applied after CAS claim)
 }
 
 // mutateFunc applies a COW mutation to a leaf page.
@@ -137,7 +140,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 
 		// Step 2: Lock-free PageInfo read
 		oldInfo := leafRef.GetPageInfo()
-		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || oldInfo.Redirect || !oldInfo.IsLeaf || oldInfo.NodeState == NodeMerging || oldInfo.NodeState == NodeCompacting {
+		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || oldInfo.Redirect || !oldInfo.IsLeaf || oldInfo.NodeState == NodeMerging || oldInfo.NodeState == NodeCompacting || oldInfo.NodeState == NodeInplaceUpdate {
 			path.ReleaseAll()
 			continue
 		}
@@ -216,6 +219,31 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		if err != nil {
 			path.ReleaseAll()
 			return fmt.Errorf("btree: write operation mutate key %q: %w", key, err)
+		}
+
+		// CAS-first in-place update: claim → overwrite → finalize
+		if result.inPlace {
+			rawID := uint32(oldInfo.PageID)
+			claimInfo := &PageInfo{
+				PageID:    oldInfo.PageID,
+				Version:   oldInfo.Version + 1,
+				IsLeaf:    true,
+				NodeState: NodeInplaceUpdate,
+			}
+			if leafRef.CAS(oldInfo, claimInfo) {
+				b.storage.pa.OverwriteLeafValue(rawID, result.inPlaceIdx, result.inPlaceValue)
+				finalInfo := &PageInfo{
+					PageID:    oldInfo.PageID,
+					Version:   oldInfo.Version + 2,
+					IsLeaf:    true,
+					NodeState: NodeNormal,
+				}
+				leafRef.CAS(claimInfo, finalInfo) // best-effort
+				path.ReleaseAll()
+				b.size.Add(result.delta)
+				return nil
+			}
+			continue // CAS failed → retry
 		}
 
 		// Phase 6.5: apply tombstoneDelta to COW page header before CAS publish

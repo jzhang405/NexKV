@@ -80,12 +80,6 @@ func (b *BTree) handleParentCASWithSpin(
 			return nil, nil, ErrCASConflict
 		}
 
-		// Double-check: parentRef may have been CAS'd by async worker
-		// (concurrent cascade via channel+worker) between GetNodePage and InsertChild.
-		if parentRef.GetPageInfo() != curInfo {
-			parentRef.Release()
-			continue
-		}
 		newParent, err := oldParent.InsertChild(actualIdx, splitKey, leftChildID, rightChildID)
 		if err != nil {
 			parentRef.Release()
@@ -502,32 +496,16 @@ func (b *BTree) handleInternalSplit(
 			b.metrics.IncrementSplit()
 		}
 
-	// Step 10: Check if grandparent is now full
-	if !newGrandparent.IsFull(0, 0) {
-		return nil // Done
-	}
-
-	// Lazy Split: grandparent full → async cascade via per-core worker.
-	// currentLevel > 1: enqueue (grandparent is NOT root).
-	// currentLevel <= 1: move up synchronously (grandparent IS root →
-	//   for-loop calls handleRootInternalSplit, ReplaceRoot must be atomic).
-	if currentLevel > 1 {
-		clonedPath := make(SearchPath, currentLevel)
-		copy(clonedPath, path[:currentLevel])
-		for _, entry := range clonedPath {
-			entry.Ref.Retain()
+		// Step 10: Check if grandparent is now full
+		if !newGrandparent.IsFull(0, 0) {
+			return nil // Done — no more cascading needed
 		}
-		b.enqueueSplit(splitTask{
-			parentRef: grandparentRef, parentInfo: newGrandparentInfo,
-			path: clonedPath, level: currentLevel - 1,
-		})
-		return nil // async — worker handles the next level
-	}
-	// Step 11: Move up one level (root-level split — synchronous)
-	currentRef = grandparentRef
-	currentInfo = newGrandparentInfo
-	currentLevel--
-	// Continue loop
+
+		// Step 11: Move up one level
+		currentRef = grandparentRef
+		currentInfo = newGrandparentInfo
+		currentLevel--
+		// Continue loop
 	}
 }
 
@@ -907,15 +885,7 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	// may have already split this parent in its own cascade (concurrent leaf splits
 	// under the same parent). If so, skip — the other goroutine already handled it.
 	if newParent.IsFull(0, 0) && parentRef.GetPageInfo() == newParentInfo {
-		clonedPath := make(SearchPath, len(path))
-		copy(clonedPath, path)
-		for _, entry := range clonedPath {
-			entry.Ref.Retain()
-		}
-		b.enqueueSplit(splitTask{
-			parentRef: parentRef, parentInfo: newParentInfo,
-			path: clonedPath, level: len(clonedPath) - 2,
-		})
+		_ = b.handleInternalSplit(parentRef, newParentInfo, path, len(path)-2)
 	}
 
 	// Step 9: Update metrics + size

@@ -7,7 +7,6 @@ package btree
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,18 +39,6 @@ type BTree struct {
 	compactMu      sync.Mutex
 	epochMgr       *EpochManager // COW old page reclamation (nil if disabled)
 	epochCancel    context.CancelFunc
-
-	// Lazy Split: per-core channel + worker pool for async cascade.
-	splitQueues []chan splitTask // len = GOMAXPROCS
-	splitWg     sync.WaitGroup
-}
-
-// splitTask is a cascade split request enqueued to the per-core worker pool.
-type splitTask struct {
-	parentRef  *PageRef
-	parentInfo *PageInfo
-	path       SearchPath // cloned, all PageRefs Retained
-	level      int
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -109,18 +96,6 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 		em.StartBackgroundReclaim(ctx)
 		bt.epochMgr = em
 		bt.epochCancel = cancel
-	}
-
-	// Lazy Split: per-core channel + worker pool. Must be the LAST step
-	// after all fallible init to avoid goroutine leaks (M4).
-	n := runtime.GOMAXPROCS(0)
-	bt.splitQueues = make([]chan splitTask, n)
-	for i := range bt.splitQueues {
-		bt.splitQueues[i] = make(chan splitTask, 64)
-	}
-	bt.splitWg.Add(n)
-	for i := range bt.splitQueues {
-		go bt.splitWorker(i)
 	}
 
 	return bt, nil
@@ -487,63 +462,11 @@ func (b *BTree) Close() error {
 	if !b.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	// 1. Stop accepting new split tasks
-	for i := range b.splitQueues {
-		close(b.splitQueues[i])
-	}
-	// 2. Wait for in-flight splits to complete before touching storage
-	b.splitWg.Wait()
-	// 3. Shutdown epoch manager
 	if b.epochCancel != nil {
-		b.epochCancel()
-		b.epochMgr.Shutdown()
+		b.epochCancel()       // signal background goroutine to stop
+		b.epochMgr.Shutdown() // wait for exit + final reclamation
 	}
 	return b.storage.Close()
-}
-
-// enqueueSplit routes a cascade split to the per-core worker pool.
-// parentPageID % N ensures same-parent splits are serialized (zero CAS contention),
-// while splits on different parents can proceed in parallel.
-func (b *BTree) enqueueSplit(task splitTask) {
-	id := int(task.parentInfo.PageID) % len(b.splitQueues)
-	// Fast path: non-blocking send
-	select {
-	case b.splitQueues[id] <- task:
-		return
-	default:
-	}
-	// Backoff retry: smooth burst drops under load spikes (H1).
-	for backoff := 1; backoff <= 4; backoff++ {
-		select {
-		case b.splitQueues[id] <- task:
-			return
-		default:
-			time.Sleep(time.Duration(backoff) * time.Microsecond)
-		}
-	}
-	// Still full → drop. Select-default on closed channel is safe:
-	// per Go spec, send on closed channel is not selectable.
-	if b.metrics != nil {
-		b.metrics.IncrementDroppedSplit()
-	}
-	task.path.ReleaseAll()
-}
-
-// splitWorker processes cascade split tasks from one per-core queue.
-func (b *BTree) splitWorker(id int) {
-	defer b.splitWg.Done()
-	for task := range b.splitQueues[id] {
-		if b.closed.Load() {
-			task.path.ReleaseAll()
-			continue
-		}
-		if task.parentRef.GetPageInfo() != task.parentInfo {
-			task.path.ReleaseAll()
-			continue
-		}
-		_ = b.handleInternalSplit(task.parentRef, task.parentInfo, task.path, task.level)
-		task.path.ReleaseAll()
-	}
 }
 
 // AfterCheckpoint triggers an explicit reclamation pass after a checkpoint.

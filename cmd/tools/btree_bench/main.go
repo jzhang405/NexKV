@@ -27,6 +27,11 @@ var (
 	enableEpoch = flag.Bool("epoch", false, "enable epoch-based page reclamation")
 	cpuProfile  = flag.String("cpuprofile", "", "write cpu profile to file")
 	only        = flag.String("only", "", "run only tests matching this prefix")
+	noPreGen    = flag.Bool("no-pregenerate", false, "use fmt.Sprintf per call (old behavior, GC-heavy)")
+
+	// keyPool and valPool are pre-generated in main to eliminate fmt.Sprintf GC pressure.
+	keyPool [][]byte
+	valPool [][]byte
 )
 
 func main() {
@@ -49,12 +54,31 @@ func main() {
 	}
 	n := *ops
 
+	// Pre-generate key/value pools to eliminate fmt.Sprintf GC pressure.
+	// Each fmt.Sprintf call allocates a new []byte; with 100K+ ops this creates
+	// massive GC pressure (~10MB/benchmark) that obscures real BTree performance.
+	// Pre-generating once is closer to production: keys/values arrive pre-serialized
+	// from the RPC layer, not manufactured per-operation.
+	poolSize := max(n, *warmup) + 1
+	if !*noPreGen {
+		keyPool = make([][]byte, poolSize)
+		valPool = make([][]byte, poolSize)
+		for i := 0; i < poolSize; i++ {
+			keyPool[i] = []byte(fmt.Sprintf("key-%010d", i))
+			valPool[i] = []byte(fmt.Sprintf("value-%010d", i))
+		}
+	}
+
 	epochLabel := "off"
 	if *enableEpoch {
 		epochLabel = "on"
 	}
+	poolLabel := "pre-gen"
+	if *noPreGen {
+		poolLabel = "fmt-per-call"
+	}
 	fmt.Printf("=== NexKV BTree KV Benchmark ===\n")
-	fmt.Printf("ops=%d  goroutines=%d  mmap=%dMB  pageSize=4KB  epoch=%s\n\n", n, t, *mmapMB, epochLabel)
+	fmt.Printf("ops=%d  goroutines=%d  mmap=%dMB  pageSize=4KB  epoch=%s  keygen=%s\n\n", n, t, *mmapMB, epochLabel, poolLabel)
 
 	tests := []struct {
 		label   string
@@ -218,9 +242,15 @@ func mixedLoop(n, threads int, tree *btree.BTree, ops *atomic.Int64, readRatio f
 }
 
 func keyOf(i int) []byte {
+	if !*noPreGen && i < len(keyPool) {
+		return keyPool[i]
+	}
 	return []byte(fmt.Sprintf("key-%010d", i))
 }
 
 func valOf(i int) []byte {
+	if !*noPreGen && i < len(valPool) {
+		return valPool[i]
+	}
 	return []byte(fmt.Sprintf("value-%010d", i))
 }

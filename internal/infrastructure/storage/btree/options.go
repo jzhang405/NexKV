@@ -19,7 +19,6 @@ type btreeConfig struct {
 	txMgr          mvcc.TxManager
 	latencyMetrics *BTreeMetricsWithLatency
 	enableEpoch            bool
-	enableAdaptiveLeafQueue bool
 }
 
 // newBTreeConfig applies all options and fills in defaults.
@@ -99,11 +98,4 @@ func WithLatencyMetrics() BTreeOption {
 	}
 }
 
-// WithAdaptiveLeafQueue enables per-core adaptive leaf queue for high-contention writes.
-// When enabled, CAS failures >= 10 route the write to a per-core worker for serial execution.
-// Default is disabled (nil leafQueues) — all writes use direct CAS retry.
-func WithAdaptiveLeafQueue() BTreeOption {
-	return func(cfg *btreeConfig) {
-		cfg.enableAdaptiveLeafQueue = true
-	}
-}
+

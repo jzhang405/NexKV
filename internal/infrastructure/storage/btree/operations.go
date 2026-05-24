@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"runtime"
 	"strings"
 	"time"
 
@@ -28,10 +27,8 @@ type leafMutation struct {
 // Returns the mutation result or a non-retryable error.
 type mutateFunc func(leaf LeafPage) (*leafMutation, error)
 
-// handleParentCASWithSpin uses spin-waiting with exponential backoff for parent CAS.
-// Phase 1: Gosched-based backoff replaces tight spin-loop (MaxParentCASSpins=50→180 retries).
-// Backoff on every failure path (Redirect, GetNodePage error, CAS failure) to break
-// synchronized contention patterns across goroutines.
+// handleParentCASWithSpin uses spin-waiting to handle parent CAS.
+// Each spin iteration re-reads the parent, re-InsertsChild, and re-generates newPageInfo.
 func (b *BTree) handleParentCASWithSpin(
 	parentRef *PageRef,
 	oldChildID model.PageID,
@@ -40,34 +37,25 @@ func (b *BTree) handleParentCASWithSpin(
 	childIdx int,
 	leftRef, rightRef *PageRef,
 ) (*PageInfo, NodePage, error) {
-	const maxRetry = 20
-	const baseBackoff = 1
-	retryCnt := 0
-	backoff := baseBackoff
-
-	for retryCnt < maxRetry {
+	for range MaxParentCASSpins {
 		curInfo := parentRef.GetPageInfo()
 		if curInfo == nil || curInfo.Redirect {
-			retryCnt++
-			for i := 0; i < backoff; i++ {
-				runtime.Gosched()
-			}
-			if backoff < 32 {
-				backoff <<= 1
-			}
-			continue
+			return nil, nil, ErrCASConflict
 		}
 
 		parentRef.Retain()
 		oldParent, err := b.storage.GetNodePage(curInfo.PageID)
 		if err != nil {
 			parentRef.Release()
-			retryCnt++
-			runtime.Gosched()
-			continue
+			// Retry if parent page type changed concurrently (common in splits)
+			if strings.Contains(err.Error(), "is not a node page") {
+				continue
+			}
+			return nil, nil, fmt.Errorf("btree: handleParentCASWithSpin get parent: %w", err)
 		}
 
-		// Re-derive childIdx from parent page (may be stale due to concurrent splits).
+		// ★ FIX: Re-derive childIdx from parent page — the original childIdx
+		// from searchPath may be stale due to concurrent splits on the same parent.
 		actualIdx := childIdx
 		for ci := range oldParent.ChildCount() {
 			if oldParent.GetChild(ci) == oldChildID {
@@ -77,7 +65,7 @@ func (b *BTree) handleParentCASWithSpin(
 		}
 		if actualIdx >= oldParent.ChildCount() {
 			parentRef.Release()
-			return nil, nil, ErrCASConflict
+			return nil, nil, ErrCASConflict // oldChildID not found — parent changed drastically
 		}
 
 		newParent, err := oldParent.InsertChild(actualIdx, splitKey, leftChildID, rightChildID)
@@ -90,24 +78,21 @@ func (b *BTree) handleParentCASWithSpin(
 			PageID:    newParent.PageID(),
 			Version:   curInfo.Version + 1,
 			IsLeaf:    false,
-			NodeState: curInfo.NodeState,
+			NodeState: curInfo.NodeState, // preserve root/normal
 		}
 
-		if parentRef.CAS(curInfo, newInfo) {
-			parentRef.Release()
+		success := parentRef.CAS(curInfo, newInfo)
+		parentRef.Release()
+
+		if success {
+			// ★ FIX: Update children cache immediately after CAS.
+			// handleParentCASWithSpin does InsertChild (n → n+1 children).
+			// Without this, concurrent searchPath reads stale children cache
+			// causing idx_out_of_bounds (idx=n but children cache only has n-1 entries).
 			updateChildrenCache(parentRef, oldChildID, leftRef, rightRef, splitKey)
 			return newInfo, newParent, nil
 		}
-		parentRef.Release()
-
-		// CAS failed → backoff
-		retryCnt++
-		for i := 0; i < backoff; i++ {
-			runtime.Gosched()
-		}
-		if backoff < 32 {
-			backoff <<= 1
-		}
+		// CAS failed → continue loop
 	}
 
 	return nil, nil, ErrCASConflict
@@ -351,17 +336,10 @@ func (b *BTree) handleInternalSplit(
 	}()
 
 	for {
-		// Step 1: Double-check currentRef still points to our info (concurrent cascade may have split it).
-		if currentRef.GetPageInfo() != currentInfo {
-			return nil
-		}
+		// Step 1: Split current internal node (move-up semantics)
 		currentNode, err := b.storage.GetNodePage(currentInfo.PageID)
 		if err != nil {
 			return fmt.Errorf("btree: handleInternalSplit get node: %w", err)
-		}
-		// Safety: node may have been cleared by concurrent split.
-		if currentNode.Count() < 2 {
-			return nil
 		}
 		currentLeft, currentRight, splitKey, err := currentNode.Split()
 		if err != nil {
@@ -880,12 +858,14 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 		return ErrCASConflict
 	}
 
-	// ★ Cascading split: parent full after InsertChild → propagate upward.
-	// Double-check parentRef still points to newParentInfo: another goroutine
-	// may have already split this parent in its own cascade (concurrent leaf splits
-	// under the same parent). If so, skip — the other goroutine already handled it.
-	if newParent.IsFull(0, 0) && parentRef.GetPageInfo() == newParentInfo {
+	// ★ Cascading split: parent full after InsertChild → propagate upward
+	// path structure: path[0]=root, ..., path[len-2]=parent, path[len-1]=leaf
+	// parentRef is at path[len(path)-2], cascading starts from parent level.
+	if newParent.IsFull(0, 0) {
 		_ = b.handleInternalSplit(parentRef, newParentInfo, path, len(path)-2)
+		// Best-effort: don't propagate error — CR-08 data is already committed
+		// (Redirect CAS + children cache updated). Parent overflow is transient;
+		// next write to this subtree will trigger another split attempt.
 	}
 
 	// Step 9: Update metrics + size

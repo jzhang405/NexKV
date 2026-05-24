@@ -75,8 +75,6 @@ func TestPageRefCASConflict(t *testing.T) {
 	assert.Equal(t, model.PageID(99), current.PageID)
 }
 
-
-
 func TestPageRefRedirect(t *testing.T) {
 	r, _ := newTestPageRef(t, 1, 1)
 	left, _ := newTestPageRef(t, 2, 1)
@@ -209,8 +207,6 @@ func TestConcurrentCAS(t *testing.T) {
 
 // --- C1: Release underflow protection ---
 
-
-
 func TestRootPageRefReplaceRootWithChildren(t *testing.T) {
 	root := NewRootPageRef(1, 1, func(model.PageID) {})
 
@@ -276,7 +272,6 @@ func TestPageInfoRedirectImmutable(t *testing.T) {
 // TestPageRef_Redirect_NewRefRefCount verifies that NewRef in PageInfo
 // does NOT need explicit Retain — it's just a pointer in an immutable PageInfo.
 // The PageRef lifecycle is managed by the parent's children cache.
-
 
 func TestHandleRootSplit_ReplaceRoot(t *testing.T) {
 	// This test will be implemented when handleRootSplit is added in Phase 6.0.4

@@ -23,7 +23,7 @@ type leafMutation struct {
 	tombstoneDelta int16        // Phase 6.5: change in tombstone count
 	inPlace        bool         // CAS-first in-place update: value fits, no COW needed
 	inPlaceIdx     int          // index in leaf for in-place overwrite
-	inPlaceValue   []byte        // new value for in-place overwrite (applied after CAS claim)
+	inPlaceValue   []byte       // new value for in-place overwrite (applied after CAS claim)
 }
 
 // mutateFunc applies a COW mutation to a leaf page.

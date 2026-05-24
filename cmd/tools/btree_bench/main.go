@@ -28,6 +28,7 @@ var (
 	cpuProfile  = flag.String("cpuprofile", "", "write cpu profile to file")
 	only        = flag.String("only", "", "run only tests matching this prefix")
 	noPreGen    = flag.Bool("no-pregenerate", false, "use fmt.Sprintf per call (old behavior, GC-heavy)")
+	leafQueue   = flag.Bool("leafqueue", false, "enable adaptive leaf queue (WithAdaptiveLeafQueue)")
 
 	// keyPool and valPool are pre-generated in main to eliminate fmt.Sprintf GC pressure.
 	keyPool [][]byte

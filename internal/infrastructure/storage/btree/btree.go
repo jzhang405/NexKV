@@ -7,6 +7,7 @@ package btree
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,6 +40,18 @@ type BTree struct {
 	compactMu      sync.Mutex
 	epochMgr       *EpochManager // COW old page reclamation (nil if disabled)
 	epochCancel    context.CancelFunc
+
+	// Adaptive Leaf Queue: per-core workers for high-contention same-page writes.
+	leafQueues []chan leafWriteTask // len = GOMAXPROCS, nil if disabled
+	leafWg     sync.WaitGroup
+}
+
+// leafWriteTask is a write request enqueued to a per-core leaf worker.
+type leafWriteTask struct {
+	key    []byte
+	pageID model.PageID
+	mutate mutateFunc
+	done   chan error
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -96,6 +109,19 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 		em.StartBackgroundReclaim(ctx)
 		bt.epochMgr = em
 		bt.epochCancel = cancel
+	}
+
+	// Adaptive Leaf Queue: last step after all fallible init, only when enabled.
+	if cfg.enableAdaptiveLeafQueue {
+		n := runtime.GOMAXPROCS(0)
+		bt.leafQueues = make([]chan leafWriteTask, n)
+		for i := range bt.leafQueues {
+			bt.leafQueues[i] = make(chan leafWriteTask, 64)
+		}
+		bt.leafWg.Add(n)
+		for i := range bt.leafQueues {
+			go bt.leafWorker(i)
+		}
 	}
 
 	return bt, nil
@@ -462,11 +488,93 @@ func (b *BTree) Close() error {
 	if !b.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	// 1. Stop leaf workers
+	for i := range b.leafQueues {
+		close(b.leafQueues[i])
+	}
+	b.leafWg.Wait()
+	// 2. Shutdown epoch manager
 	if b.epochCancel != nil {
-		b.epochCancel()       // signal background goroutine to stop
-		b.epochMgr.Shutdown() // wait for exit + final reclamation
+		b.epochCancel()
+		b.epochMgr.Shutdown()
 	}
 	return b.storage.Close()
+}
+
+// enqueueLeafWrite routes a contended write to a per-core leaf worker.
+func (b *BTree) enqueueLeafWrite(key []byte, pageID model.PageID, mutate mutateFunc) error {
+	if b.closed.Load() {
+		return ErrTreeClosed
+	}
+	q := b.leafQueues[int(pageID)%len(b.leafQueues)]
+	task := leafWriteTask{key: key, pageID: pageID, mutate: mutate, done: make(chan error, 1)}
+	select {
+	case q <- task:
+		return <-task.done
+	default:
+		return ErrCASConflict
+	}
+}
+
+// leafWorker processes write tasks for one per-core queue.
+func (b *BTree) leafWorker(id int) {
+	defer b.leafWg.Done()
+	for task := range b.leafQueues[id] {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					GlobalTracer.LogOp("leafWorker.panic", "workerID", id, "recover", r)
+					task.done <- fmt.Errorf("btree: leafWorker[%d] panic: %v", id, r)
+				}
+			}()
+			task.done <- b.directWrite(task.key, task.pageID, task.mutate)
+		}()
+	}
+}
+
+// directWrite executes a full write inside a leaf worker (serial per-page).
+func (b *BTree) directWrite(key []byte, pageID model.PageID, mutate mutateFunc) error {
+	for range 3 {
+		path, err := searchPath(b.rootRef, key)
+		if err != nil {
+			return err
+		}
+		defer path.ReleaseAll()
+
+		leafRef := path.Leaf().Ref
+		oldInfo := leafRef.GetPageInfo()
+		oldLeaf, err := b.storage.GetLeafPage(oldInfo.PageID)
+		if err != nil {
+			return fmt.Errorf("btree: directWrite get leaf: %w", err)
+		}
+
+		result, err := mutate(oldLeaf)
+		if err != nil {
+			return err
+		}
+
+		if result.tombstoneDelta != 0 {
+			rawID := uint32(result.newPageID)
+			tc := b.storage.pa.GetTombstoneCount(rawID)
+			newTC := int16(tc) + result.tombstoneDelta
+			if newTC < 0 {
+				newTC = 0
+			}
+			b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
+		}
+
+		newInfo := &PageInfo{
+			PageID:    result.newPageID,
+			Version:   oldInfo.Version + 1,
+			IsLeaf:    true,
+			NodeState: NodeNormal,
+		}
+		if leafRef.CAS(oldInfo, newInfo) {
+			return nil
+		}
+		_ = b.storage.FreePage(result.newPageID)
+	}
+	return ErrCASConflict
 }
 
 // AfterCheckpoint triggers an explicit reclamation pass after a checkpoint.

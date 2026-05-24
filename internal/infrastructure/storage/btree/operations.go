@@ -243,6 +243,14 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			if b.metrics != nil {
 				b.metrics.IncrementCASRetry()
 			}
+
+			// Adaptive Leaf Queue: CAS keeps failing → serialize via per-core worker.
+			if attempt >= 10 && b.leafQueues != nil {
+				pageID := oldInfo.PageID
+				if err := b.enqueueLeafWrite(key, pageID, mutate); err != ErrCASConflict {
+					return err
+				}
+			}
 			continue
 		}
 

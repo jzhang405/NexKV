@@ -822,385 +822,215 @@ func valOf(i int) []byte {
 
 ---
 
-## 六、Lazy Split 方案设计
+## 六、自适应 Leaf Queue 方案
 
-> 基于 NexKV 当前 `operations.go` 源码的逐行审计，提出最小化、可验证的 Lazy Split 改造方案。
+> 基于两次探索（goroutine 级联 ❌、channel+worker ⚠️）的教训，提出最小化方案。
 
-### 6.1 问题精准定位
+### 6.1 教训回顾
 
-#### 当前 Split 级联路径
+| 尝试 | 问题 | 根因 |
+|------|------|------|
+| goroutine 级联 | goroutine 风暴，更差 | 无并发控制 |
+| channel+worker | seq-put 退化 20x，par-put 仍波动 | 所有写都进 queue，热路径 clone path |
 
-```
-writeOperation
-  └→ doSplitWithSplitting
-       └→ handleLeafSplit (operations.go:744)
-            ├→ handleParentCASWithSpin   ← 父节点 CAS（50 次自旋）
-            └→ if parent.IsFull()        ← operations.go:864
-                 └→ handleInternalSplit  ← 级联到祖父节点
-                      └→ for { ... }     ← operations.go:338 循环向上
-                           └→ if grandparent.IsFull() → continue
-                           └→ else → return
-                           └→ ...直到 root...
-                                └→ handleRootInternalSplit
-                                     └→ ReplaceRoot CAS
-```
+**关键认识**：瓶颈在叶级 CAS。但**大部分写没有冲突**（不同 key → 不同 leaf）。只需要在冲突时才串行化。
 
-**根因**：一次叶子写入可能触发从叶子到根的**全链路 CAS 序列**。每个 CAS 都可能与其他 goroutine 冲突 → 自旋重试 → CPU 空转。这是 par-put 波动（39K-2.6M）的唯一剩余根因。
-
-#### 受影响代码位置
-
-| 文件 | 函数 | 行号 | 问题 |
-|------|------|------|------|
-| `operations.go` | `handleParentCASWithSpin` | 32-99 | 纯自旋 50 次，无退避 |
-| `operations.go` | `handleInternalSplit` | 317-488 | `for` 循环级联到根 |
-| `operations.go` | `handleLeafSplit` | 864-869 | 触发级联的入口 |
-| `operations.go` | `handleRootInternalSplit` | 493-599 | 根分裂的 ReplaceRoot CAS |
-| `constants.go` | `MaxParentCASSpins` | 53 | 50 次自旋，过高 |
-
-#### 已有基础
-
-当前架构已经为 Lazy Split 提供了关键基础设施：
-
-1. **Redirect 机制**：`searchPath`（`search.go:124-141`）已支持通过 Redirect 跟随分裂后的新节点
-2. **级联容错**：`handleLeafSplit` 的级联调用已用 `_` 忽略错误（`operations.go:865`）——失败不阻塞写入
-3. **ChildrenCache CAS**：`updateChildrenCache`（`operations.go:676-737`）已用不可变替换 + CAS 保证并发安全
-
----
-
-### 6.2 Lazy Split 核心原则（Lealone AOSE 源码分析修正版）
-
-> 参考：[Lealone AOSE Lazy Split 源码分析](`/Users/zhangcz/Documents/obsidian/jzh-hwp-vault/raw/1.Project/NexKV-wal/2026-05-24-lealone-aose-lazy-split-source-analysis.md`)
-
-#### 关键发现
-
-**Lealone 的"Lazy Split"不是不级联，而是异步级联**。分析 `PageOperations.java` `SplitPage.runLocked()`（line 403-463）发现：
-
-```java
-// Lealone SplitPage.runLocked() 核心流程:
-// Step 1: 叶子分裂 + COW 父节点 (InsertChild) — 同步，必须成功
-Page newParent = parentRef.getOrReadPage().copyAndInsertChild(tmpNodePage);
-replaceParentPage(parentRef, newParent, p, tmpNodePage);
-
-// Step 2: 标记旧页为重定向
-pRef.replacePage(pInfoOld, new SplittedPageInfo(parentRef, pInfoOld, ...));
-
-// Step 3: 级联分裂 — ★ 异步调度，不阻塞写入
-if (newParent.needSplit()) {
-    asyncSplitPage(scheduler, waitingIfLocked, null, parentRef);
-}
-parentRef.unlock();  // 立即释放锁
-return SUCCEEDED;
-```
-
-**三层设计**：
-
-| 层 | 操作 | 同步/异步 |
-|----|------|----------|
-| 叶子分裂 + 父节点 InsertChild | COW + CAS | **同步**，必须成功 |
-| 旧叶子重定向 | `SplittedPageInfo` CAS | **同步**，标记 Redirect |
-| 父节点自身的分裂 | `handleInternalSplit` | **异步 goroutine**，不阻塞写入 |
-
-#### 物理约束
-
-NexKV 固定 4KB 页面，`MaxInternalKeys=126` 是物理约束（4KB / ~32B per entry）。**不能无限容忍超限**——`InsertChild` 超出 4KB 会失败。父节点必须在接近物理极限前分裂。
-
-#### 修正后的模型
+### 6.2 方案：自适应 Leaf Queue
 
 ```
-旧模型（Eager Split）：
-  叶子满 → 拆叶子 → CAS 父节点 → 父节点满 → 同步级联到根
-  ★ 一次 Set 阻塞等待 N 层 CAS
+正常路径（大多数情况，无额外开销）:
+  searchPath → GetLeafPage → COW → CAS leaf ✅
 
-修正模型（Async Cascade Split）：
-  叶子满 → 拆叶子 → CAS 父节点 (同步) → Redirect (同步)
-       └→ if parent.IsFull() → go handleInternalSplit(...)  ← 异步 goroutine
-            └→ CAS grandparent (同步) → Redirect (同步)
-                 └→ if grandparent.IsFull() → go handleInternalSplit(...) ← 继续异步
-  ★ 写入立即返回，级联通过 goroutine 链异步传播
+冲突路径（连续 CAS 失败 ≥3 次）:
+  ... → CAS leaf ❌ (×3)
+    → leafQueue[pageID % GOMAXPROCS]  // 入队
+      → worker 串行执行 → CAS leaf ✅
 ```
 
-**"懒"的定义**：不是不级联，而是每层级联通过**独立 goroutine** 异步执行。写入路径不等待上层分裂完成。
+**pageID 来自 searchPath 结果**（`oldInfo.PageID`）——不需要 Range Index。
+**改动量**：`writeOperation` 的 CAS 循环中加一段冲突检测 + `enqueueLeafWrite`，~15 行。
 
-#### 与截断方案的对比
+### 6.3 详细设计
 
-| 方案 | 父节点超限 | 物理安全 | 实现复杂度 |
-|------|-----------|---------|-----------|
-| ❌ 完全截断（原方案） | 无限堆积，最终 InsertChild 失败 | **不安全** | 极低 |
-| ✅ **异步级联（修正方案）** | goroutine 异步分裂，写入不等待 | **安全** | 低 |
-| Lealone AOSE | Scheduler 队列异步分裂 | 安全 | 高（需调度器） |
+#### 6.3.1 集成到 `writeOperation`
 
----
-
-### 6.3 改造 1：`handleLeafSplit` 级联异步化
-
-**文件**：`internal/infrastructure/storage/btree/operations.go`
-
-**当前代码**（line 862-869）：
 ```go
-// ★ Cascading split: parent full after InsertChild → propagate upward
-if newParent.IsFull(0, 0) {
-    _ = b.handleInternalSplit(parentRef, newParentInfo, path, len(path)-2)
-}
-```
+func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
+    path, err := searchPath(b.rootRef, key)
+    // ... existing code ...
 
-**改造后**：
-```go
-// ★ Async cascade: parent full after InsertChild → split in background goroutine.
-// Write operation returns immediately; parent split proceeds independently.
-// This is the Lealone asyncSplitPage pattern adapted to Go's goroutine model.
-if newParent.IsFull(0, 0) {
-    // Clone path: Retain all PageRefs so the goroutine has a valid traversal.
-    clonedPath := make(SearchPath, len(path))
-    copy(clonedPath, path)
-    for _, entry := range clonedPath {
-        entry.Ref.Retain()
+    for attempt := range MaxCASRetries {
+        // ... GetLeafPage, mutate ...
+        if leafRef.CAS(oldInfo, newInfo) {
+            return nil
+        }
+        _ = b.storage.FreePage(result.newPageID)
+        path.ReleaseAll()  // ★ release before potential enqueue (C1)
+
+        const fastRetries = 10  // CAS fail threshold before enqueue
+        if attempt >= fastRetries && b.leafQueues != nil {
+            pageID := oldInfo.PageID
+            err := b.enqueueLeafWrite(key, pageID, mutate)
+            if err == ErrCASConflict {
+                continue  // queue full → back to CAS loop (M5)
+            }
+            return err
+        }
+        continue
     }
-    go func() {
-        defer clonedPath.ReleaseAll()
-        _ = b.handleInternalSplit(parentRef, newParentInfo, clonedPath, len(clonedPath)-2)
-    }()
+    return ErrCASConflict
 }
 ```
 
-**正确性论证**：
-- 父节点 CAS 已成功——`leftRef`/`rightRef` 已注册到父节点的 children cache
-- 旧叶子已通过 `SplittedPageInfo`-equivalent Redirect（`leafRef.CAS(leafInfo, redirectInfo)` at line 850）指向新节点
-- 异步 goroutine 持有独立的 path clone（所有 PageRef Retained），不受调用方 `ReleaseAll` 影响
-- 即使 goroutine 中的 `handleInternalSplit` 失败（CAS 冲突），父节点仍可被后续操作重新触发分裂——下一次 leaf split 到同一父节点时再次触发
-
-**竞争分析**：
-- 多个 goroutine 可能同时对同一父节点触发 `handleInternalSplit`——第一个 CAS 成功，其余失败返回 `ErrCASConflict`（由 defer cleanup 清理）
-- 与 Lealone `beforeRun()` 二次校验等效：`handleInternalSplit` 的第一步 `GetNodePage` + `Split()` 基于最新页面状态，在异步执行时页面可能已被其他 goroutine 分裂——`InsertChild` 会检测到 `oldChildID` 不在父节点中，返回 `ErrCASConflict` 安全退出
-
----
-
-### 6.4 改造 2：`handleInternalSplit` for 循环改为单次 + 异步递归
-
-**文件**：`internal/infrastructure/storage/btree/operations.go`
-
-**当前代码**（line 338-487）：`for { ... }` 循环同步级联向上
-
-**改造后**：每层只做一次分裂。如果 grandparent 也满了，通过**异步 goroutine** 传播（与 `handleLeafSplit` 模式一致）：
+#### 6.3.2 入队 + Worker
 
 ```go
-// Step 10 (line 477-486) — 替换为异步级联:
-if newGrandparent.IsFull(0, 0) {
-    // Async cascade to grandparent — same pattern as handleLeafSplit
-    clonedPath := make(SearchPath, currentLevel)
-    copy(clonedPath, path[:currentLevel])
-    for _, entry := range clonedPath {
-        entry.Ref.Retain()
-    }
-    go func() {
-        defer clonedPath.ReleaseAll()
-        _ = b.handleInternalSplit(grandparentRef, newGrandparentInfo, clonedPath, currentLevel-1)
-    }()
+type BTree struct {
+    leafQueues []chan leafWriteTask
+    leafWg     sync.WaitGroup
 }
-return nil  // Current level done, grandparent split is async
+
+type leafWriteTask struct {
+    key    []byte
+    pageID model.PageID
+    mutate mutateFunc
+    done   chan error
+}
+
+func (b *BTree) enqueueLeafWrite(key []byte, pageID model.PageID, mutate mutateFunc) error {
+    if b.closed.Load() {
+        return ErrTreeClosed
+    }
+    q := b.leafQueues[pageID%len(b.leafQueues)]  // route by pageID from searchPath
+    task := leafWriteTask{key: key, pageID: pageID, mutate: mutate, done: make(chan error, 1)}
+    select {
+    case q <- task:
+        return <-task.done
+    default:
+        return ErrCASConflict
+    }
+}
+
+func (b *BTree) leafWorker(id int) {
+    defer b.leafWg.Done()
+    for task := range b.leafQueues[id] {
+        func() {
+            defer func() {
+                if r := recover(); r != nil {
+                    // Log panic for debugging (L8), don't re-panic
+                    stack := make([]byte, 4096)
+                    stack = stack[:runtime.Stack(stack, false)]
+                    GlobalTracer.LogOp("leafWorker.panic", "workerID", id, "recover", r, "stack", string(stack))
+                    task.done <- fmt.Errorf("btree: leafWorker[%d] panic: %v", id, r)
+                }
+            }()
+            task.done <- b.directWrite(task.key, task.pageID, task.mutate)
+        }()
+    }
+}
+
+// directWrite executed inside worker (serial per-page, zero CAS contention).
+// Worker re-derives the leaf via searchPath: if the page was split between
+// enqueue and execution, searchPath follows the new tree topology correctly (M6).
+func (b *BTree) directWrite(key []byte, pageID model.PageID, mutate mutateFunc) error {
+    // Limited retry: worker has near-exclusive access, 3 attempts cover rare races (H4)
+    for range 3 {
+        path, err := searchPath(b.rootRef, key)
+        if err != nil { return err }
+        defer path.ReleaseAll()
+
+        leafRef := path.Leaf().Ref
+        oldInfo := leafRef.GetPageInfo()
+        oldLeaf, err := b.storage.GetLeafPage(oldInfo.PageID)
+        if err != nil { return fmt.Errorf("btree: directWrite get leaf: %w", err) } // M7
+
+        result, err := mutate(oldLeaf)
+        if err != nil { return err }
+
+        // Apply tombstoneDelta — must match writeOperation path (C2)
+        if result.tombstoneDelta != 0 {
+            rawID := uint32(result.newPageID)
+            tc := b.storage.pa.GetTombstoneCount(rawID)
+            newTC := int16(tc) + result.tombstoneDelta
+            if newTC < 0 { newTC = 0 }
+            b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
+        }
+
+        newInfo := &PageInfo{PageID: result.newPageID, Version: oldInfo.Version + 1, IsLeaf: true}
+        if leafRef.CAS(oldInfo, newInfo) {
+            return nil
+        }
+        _ = b.storage.FreePage(result.newPageID)
+    }
+    return ErrCASConflict
+}
 ```
 
-**注意**：`handleRootInternalSplit`（line 493-599）保持**同步**——root 分裂涉及 `ReplaceRoot` CAS，必须原子完成后才对其他操作可见。root 分裂本身很快（单次 CAS），不会成为瓶颈。
+#### 6.3.3 路由规则
 
----
+| pageID % N | 效果 |
+|------------|------|
+| 同一 page → 同一 worker | 串行，零 CAS 冲突 |
+| 不同 page → 不同 worker (大概率) | 并行，无相互影响 |
+| page 在入队后被 split | Worker 的 searchPath 自动跟随新拓扑 (M6) |
 
-### 6.5 改造 3：`handleParentCASWithSpin` 指数退避
-
-**文件**：`internal/infrastructure/storage/btree/operations.go`
-
-**当前代码**（line 32-99）：`for range MaxParentCASSpins` (50 次)，纯自旋无退避。
-
-**改造后**：
+#### 6.3.4 初始化 + Close
 
 ```go
-func (b *BTree) handleParentCASWithSpin(
-    parentRef *PageRef,
-    oldChildID model.PageID,
-    leftChildID, rightChildID model.PageID,
-    splitKey []byte,
-    childIdx int,
-    leftRef, rightRef *PageRef,
-) (*PageInfo, NodePage, error) {
-    // ★ 从 MaxParentCASSpins(50) 降至 8
-    // 原因: 异步级联 (改造 1) 消除了级联等待——父节点 CAS 不再需要
-    // 承担整个级联链的成功压力。8 次足够覆盖单层 CAS 的 P99 场景。
-    const spinLimit = 8
-    const spinBackoff = 4  // 前 4 次纯自旋，后 4 次指数退避
-    backoff := 1
-
-    for i := 0; i < spinLimit; i++ {
-        curInfo := parentRef.GetPageInfo()
-        if curInfo == nil || curInfo.Redirect {
-            return nil, nil, ErrCASConflict
-        }
-
-        parentRef.Retain()
-        oldParent, err := b.storage.GetNodePage(curInfo.PageID)
-        if err != nil {
-            parentRef.Release()
-            if strings.Contains(err.Error(), "is not a node page") {
-                goto backoff
-            }
-            return nil, nil, fmt.Errorf("btree: handleParentCASWithSpin get parent: %w", err)
-        }
-
-        actualIdx := childIdx
-        for ci := range oldParent.ChildCount() {
-            if oldParent.GetChild(ci) == oldChildID {
-                actualIdx = ci; break
-            }
-        }
-        if actualIdx >= oldParent.ChildCount() {
-            parentRef.Release()
-            return nil, nil, ErrCASConflict
-        }
-
-        newParent, err := oldParent.InsertChild(actualIdx, splitKey, leftChildID, rightChildID)
-        if err != nil {
-            parentRef.Release()
-            return nil, nil, err
-        }
-
-        newInfo := &PageInfo{
-            PageID: newParent.PageID(), Version: curInfo.Version + 1,
-            IsLeaf: false, NodeState: curInfo.NodeState,
-        }
-
-        if parentRef.CAS(curInfo, newInfo) {
-            parentRef.Release()
-            updateChildrenCache(parentRef, oldChildID, leftRef, rightRef, splitKey)
-            return newInfo, newParent, nil
-        }
-        parentRef.Release()
-
-    backoff:
-        // Phase 1 (0-3): 纯自旋 (runtime.procyieldAsm, ~ns 级)
-        // Phase 2 (4-7): 指数退避 1→2→4→8 次 Gosched
-        if i >= spinBackoff {
-            for k := 0; k < backoff; k++ {
-                // 30-cycle pause (~10ns), no OS scheduler involvement
-                // 等价于 Java 的 LockSupport.parkNanos(1)
-            }
-            if backoff < 16 {
-                backoff <<= 1
-            }
-        }
-    }
-    return nil, nil, ErrCASConflict
+// NewBTree: last step after all fallible init
+n := runtime.GOMAXPROCS(0)
+b.leafQueues = make([]chan leafWriteTask, n)
+for i := range b.leafQueues {
+    b.leafQueues[i] = make(chan leafWriteTask, 64)
 }
+b.leafWg.Add(n)
+for i := range b.leafQueues {
+    go b.leafWorker(i)
+}
+
+// Close: stop accepting → drain → shutdown storage
+if !b.closed.CompareAndSwap(false, true) { return nil }
+for i := range b.leafQueues { close(b.leafQueues[i]) }
+b.leafWg.Wait()  // after this, no worker touches storage
+// ... then epoch shutdown, storage.Close()
 ```
 
-**参数选择**：
-- `spinLimit = 8`（从 50 降）：异步级联使父节点 CAS 不再承担整个链的成功压力。8 并发 goroutine 同抢一个父节点时，8 次尝试覆盖 P99 场景
-- `spinBackoff = 4`：前 4 次纳秒级自旋（CAS 冲突通常在 1-2 次重试内解决），后 4 次指数退避（长时间冲突时避免 CPU 空转）
 
-**与 Lealone 的对应关系**：
+### 6.4 为什么这次会成功
 
-| Lealone | NexKV |
-|---------|-------|
-| `tryLock(parentRef)` 失败 → 入 Scheduler 队列 | `handleParentCASWithSpin` 退避 → 返回 `ErrCASConflict` |
-| 写入不等待 parent split | 写入不等待 `go handleInternalSplit(...)` goroutine |
-| Scheduler 保证最终执行 | goroutine 保证最终执行 |
+| 之前的尝试 | 问题 | 自适应 Leaf Queue 如何解决 |
+|-----------|------|--------------------------|
+| goroutine 级联 | goroutine 风暴 | 不入队——直接 CAS |
+| channel+worker | 所有写都进 queue | **仅冲突时入队**，大部分写走原路径 |
+| handleParentCASWithSpin 退避 | 仍在 CAS 上循环 | 冲突 >=3 次后串行化，不再自旋 |
 
----
+**根本区别**：不改变正常路径。只在检测到争用时才介入。
 
-### 6.6 改造影响分析
-
-#### 改造清单
-
-| # | 改动 | 文件:行 | 复杂度 | 风险 |
-|---|------|---------|--------|------|
-| 1 | `handleLeafSplit` 异步级联 goroutine | `operations.go:862-869` | 低（~15 行） | 低 |
-| 2 | `handleInternalSplit` 去循环 + 异步递归 | `operations.go:477-486` | 低（~15 行） | 低 |
-| 3 | `handleParentCASWithSpin` 退避 | `operations.go:32-99` | 中（重写自旋逻辑） | 低 |
-
-**总改动**：~60 行，3 个函数。不触碰 `search.go`、`page_ref.go`、`btree.go`。
-
-#### 正确性保障
-
-| 场景 | 保障机制 |
-|------|---------|
-| 父节点 InsertChild | 同步 CAS（50→8 次退避），成功后立即 `updateChildrenCache` |
-| 旧叶子 Redirect | `leafRef.CAS(leafInfo, redirectInfo)` 同步标记——与改造前一致 |
-| 父节点超限 | goroutine 异步执行 `handleInternalSplit`——写入已返回 |
-| 并发 goroutine 分裂同一父节点 | CAS 保证只有一个成功，其余 `ErrCASConflict` 安全退出 |
-| 异步 goroutine 中 path 有效性 | path clone + Retain 所有 PageRef——页面不会被回收 |
-| Root 分裂 | `handleRootSplit`/`handleRootInternalSplit` **同步**——`ReplaceRoot` 必须原子 |
-| Epoch 页面回收 | 异步 goroutine 持有 PageRef Retain → 旧页不会被提前回收 |
-
-#### 预期性能
-
-| 场景 | 改造前 (波动) | 改造后 (预期) | 改善 |
-|------|--------------|--------------|------|
-| par-put 快速运行 | 2.6M QPS | **2.6M+ QPS** | 持平（快速运行本就无竞争） |
-| par-put 慢速运行 | 39K QPS | **>1M QPS** | **消除级联恶性循环** |
-| par-put 波动范围 | 67x (39K-2.6M) | **<3x** | 消除非确定性 |
-| par-get | 10.1M QPS | 10.1M QPS | **不变**（读路径未改） |
-| seq-put | 1.3M QPS | 1.3M QPS | 不变 |
-
-#### 风险
-
-1. **Goroutine 泄漏**：每次 leaf split 可能 spawn 一个 goroutine。极端场景（100K sequential insert → ~1000 leaf splits → ~1000 goroutines）。Go runtime 可轻松处理数千 goroutines；实际树深度 2-3 层，goroutine 数量有限。
-
-2. **异步分裂失败静默**：goroutine 中的 `handleInternalSplit` 失败被 `_` 忽略。超限父节点不会被立即分裂，但下一次 leaf split 触发新的 goroutine 时会重试。这是设计意图——与 Lealone `asyncSplitPage` 的 fire-and-forget 语义一致。
-
----
-
-### 6.7 分阶段实施计划
-
-```mermaid
-flowchart LR
-    subgraph Phase1["Phase 1: 核心改动"]
-        P1A["改造 1: 异步级联<br/>(~15 行)"]
-        P1B["改造 2: 去循环<br/>(~15 行)"]
-        P1C["改造 3: 退避<br/>(~30 行)"]
-    end
-
-    subgraph Phase2["Phase 2: 安全网"]
-        P2A["硬阈值 + 同步分裂<br/>防止 goroutine 堆积"]
-    end
-
-    subgraph Verify["验证"]
-        V1["par-put × 20 次<br/>波动范围检查"]
-        V2["全量 benchmark<br/>回归测试"]
-        V3["go test -race ./..."]
-    end
-
-    Phase1 --> Verify
-    Phase2 --> Verify
+```
+正常: searchPath → COW → CAS (零额外开销)
+冲突: ... CAS ×3 → leafQueue[pageID % N] → worker 串行
 ```
 
-**Phase 1 预期**：异步级联 + 退避，消除写入路径的级联等待。par-put 波动从 67x 降至 <5x。
-
-**Phase 2 预期**：硬阈值（`MaxInternalKeys × 1.3 ≈ 164`）——极端场景下，如果 goroutine 堆积导致父节点持续膨胀超过硬阈值，写路径触发同步强制分裂，防止 InsertChild 因物理页面溢出而失败。
-
-**回滚策略**：通过 `btree.WithLazySplit()` option 控制。Phase 1 改动集中在一个文件（`operations.go`），回滚成本极低。
+**par-put measure 阶段**：key 已存在 → 无 split → 无级联。4 goroutine 各写独立 range → 不同 leaf → CAS 几乎无冲突 → 不走 queue → 性能接近 seq-put × 4。
 
 ---
 
-### 6.8 Lealone AOSE vs NexKV 全景对比
+### 6.5 改动清单
 
-| 维度 | NexKV 当前 | Lealone AOSE | NexKV Lazy Split 后 |
-|------|-----------|-------------|---------------------|
-| **叶子分裂** | 同步 COW + CAS | 同步 COW + Lock | 不变（同步，必须成功） |
-| **父节点 InsertChild** | 同步 CAS 自旋 50 次 | 同步 Lock + COW | 同步 CAS 退避 8 次 |
-| **级联传播** | `for` 循环同步到根 | `asyncSplitPage` → Scheduler 队列 | **goroutine 异步链** |
-| **旧页标记** | `Redirect + NewRef → leftRef` | `SplittedPageInfo + pRefNew → parentRef` | 不变（重定向到 leftRef） |
-| **调度模型** | 无调度器，CAS 自旋 | 自研 Scheduler + 任务窃取 | goroutine (Go 内置调度) |
-| **锁模型** | CAS 乐观锁 | 页级 SchedulerLock | 不变（CAS 乐观锁） |
-| **分裂阈值** | Key 数量 > 126 | 内存使用 > pageSize | 不变 |
+| 文件 | 改动 | 行数 |
+|------|------|------|
+| `btree.go` | `leafQueues` + `leafWg` + 初始化 + Close 顺序 | ~25 |
+| `operations.go` | CAS 冲突检测 + `enqueueLeafWrite` + `directWrite` + `leafWorker` | ~45 |
 
-**关键差异与借鉴**：
+**总改动**：~70 行。不依赖外部包，不修改 searchPath。
 
-| Lealone 特性 | NexKV 可否借鉴 | 理由 |
-|-------------|--------------|------|
-| `asyncSplitPage` 异步调度 | ✅ **已借鉴** | 改造 1/2 的 goroutine 模式 |
-| `beforeRun()` 二次校验 | ✅ **隐式借鉴** | `handleInternalSplit` 第一步会检测页面是否已变 |
-| `SplittedPageInfo → parentRef` 重定向 | ❌ 不需要 | NexKV `Redirect → leftRef` 更高效（少一层跳转） |
-| 自研 Scheduler + 任务窃取 | ❌ 过度设计 | Go goroutine scheduler 已足够 |
-| 基于内存的 `needSplit()` | ❌ 不需要 | 固定 4KB 页面 + key 数量阈值已足够 |
-| 页级分片 (Leaf-Page-Sharding) | ❌ 架构差异 | NexKV 用共享 goroutine 池 + CAS |
+### 6.6 实施计划
 
----
+| Phase | 内容 | 验证 |
+|-------|------|------|
+| **P1** | `leafQueues` + 冲突检测 + worker | `go test -race`, benchmark × 20 |
+
+
 
 ## 七、参考
 

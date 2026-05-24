@@ -375,8 +375,8 @@ func (b *BTree) handleInternalSplit(
 		idx := path[currentLevel-1].Index
 
 		// Step 3a: Create PageRefs for split children
-		currentLeftRef := NewPageRef(currentLeft.PageID(), 0, b.rootRef.freeFunc)
-		currentRightRef := NewPageRef(currentRight.PageID(), 0, b.rootRef.freeFunc)
+		currentLeftRef := NewPageRef(currentLeft.PageID(), 0, nil)
+		currentRightRef := NewPageRef(currentRight.PageID(), 0, nil)
 		// internal split 子节点 → IsLeaf=false（刚创建无竞争，直接 Store）
 		currentLeftRef.pInfo.Store(&PageInfo{
 			PageID:    currentLeft.PageID(),
@@ -507,8 +507,8 @@ func (b *BTree) handleRootInternalSplit(
 	toRelease *[]*PageRef,
 ) error {
 	// Step 1: Create PageRefs for left/right children of new root
-	leftRef := NewPageRef(leftPage.PageID(), 0, b.rootRef.freeFunc)
-	rightRef := NewPageRef(rightPage.PageID(), 0, b.rootRef.freeFunc)
+	leftRef := NewPageRef(leftPage.PageID(), 0, nil)
+	rightRef := NewPageRef(rightPage.PageID(), 0, nil)
 	// internal split 子节点 → IsLeaf=false（刚创建无竞争，直接 Store）
 	leftRef.pInfo.Store(&PageInfo{
 		PageID:    leftPage.PageID(),
@@ -798,13 +798,13 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	var orphanPageID model.PageID
 	if bytes.Compare(key, splitKey) < 0 {
 		// target = left → left was mutated
-		leftRef = NewPageRef(mutation.newPageID, 0, b.rootRef.freeFunc)
-		rightRef = NewPageRef(rightPage.PageID(), 0, b.rootRef.freeFunc)
+		leftRef = NewPageRef(mutation.newPageID, 0, nil)
+		rightRef = NewPageRef(rightPage.PageID(), 0, nil)
 		orphanPageID = leftPage.PageID() // leftPage replaced by double-COW
 	} else {
 		// target = right → right was mutated
-		leftRef = NewPageRef(leftPage.PageID(), 0, b.rootRef.freeFunc)
-		rightRef = NewPageRef(mutation.newPageID, 0, b.rootRef.freeFunc)
+		leftRef = NewPageRef(leftPage.PageID(), 0, nil)
+		rightRef = NewPageRef(mutation.newPageID, 0, nil)
 		orphanPageID = rightPage.PageID() // rightPage replaced by double-COW
 	}
 	leftRef.Retain()  // refCount: 0 → 1
@@ -973,8 +973,8 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 	}
 
 	// Step 6: Create PageRefs as children of root
-	leftRef := NewPageRef(leftChildID, 0, b.rootRef.freeFunc)
-	rightRef := NewPageRef(rightChildID, 0, b.rootRef.freeFunc)
+	leftRef := NewPageRef(leftChildID, 0, nil)
+	rightRef := NewPageRef(rightChildID, 0, nil)
 	leftRef.Retain()
 	rightRef.Retain()
 

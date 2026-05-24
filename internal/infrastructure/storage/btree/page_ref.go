@@ -5,7 +5,6 @@
 package btree
 
 import (
-	"fmt"
 	"strings"
 	"sync/atomic"
 
@@ -20,23 +19,30 @@ import (
 //
 // Lifecycle: exists as long as the page is part of the tree.
 // Created during split/merge propagation or tree initialization.
+
+// Retain is a no-op (page lifetime managed by EpochManager RCU-style).
+func (r *PageRef) Retain() {}
+
+// Release is a no-op (page lifetime managed by EpochManager RCU-style).
+func (r *PageRef) Release() {}
+
+// RefCount returns 0 (refCount removed, epoch-based reclamation).
+func (r *PageRef) RefCount() int32 { return 0 }
+
 type PageRef struct {
-	pageID   model.PageID                  // bound at creation, immutable — used by Release
+	pageID   model.PageID                  // bound at creation, immutable
 	pInfo    atomic.Pointer[PageInfo]      // atomically replaced page info
 	children atomic.Pointer[ChildrenCache] // child refs with embedded separator keys; updated via CAS
-	refCount atomic.Int32                  // reference count; zero triggers freeFunc
-	freeFunc func(model.PageID)            // bound at creation; called when refCount reaches 0
+	// refCount removed: page lifetime managed by EpochManager RCU-style.
+	// Pages are freed via epoch-gated deferred reclamation, not reference counting.
 }
 
 // NewPageRef creates a new PageRef with the given page identity.
 // freeFunc is called when the refCount reaches zero (typically storage.FreePage).
 // pageID is bound at creation and never changes — Release uses it directly
 // to avoid TOCTOU race with concurrent CAS replacing pInfo (C1 fix).
-func NewPageRef(pageID model.PageID, version uint64, freeFunc func(model.PageID)) *PageRef {
-	r := &PageRef{
-		pageID:   pageID,
-		freeFunc: freeFunc,
-	}
+func NewPageRef(pageID model.PageID, version uint64, _ ...any) *PageRef {
+	r := &PageRef{pageID: pageID}
 	r.pInfo.Store(&PageInfo{
 		PageID:    pageID,
 		Version:   version,
@@ -93,35 +99,9 @@ func (r *PageRef) CAS(old, newInfo *PageInfo) bool {
 	}
 	return success
 }
+// Release removed: page lifetime managed by EpochManager RCU-style.
 
-// Retain increments the reference count.
-// Called during searchPath for each PageRef on the traversal path.
-func (r *PageRef) Retain() {
-	old := r.refCount.Add(1)
-	if old < 0 {
-		panic(fmt.Sprintf("Retain on pageRef with negative refCount: %d, pageID=%d", old, r.pageID))
-	}
-}
 
-// Release decrements the reference count.
-// When refCount reaches zero, calls the bound freeFunc with the immutable pageID
-// to reclaim the page. Uses r.pageID (bound at creation) instead of reading
-// from pInfo to avoid TOCTOU race with concurrent CAS (C1 fix).
-// Panics if called when refCount is already zero (use-after-free bug).
-func (r *PageRef) Release() {
-	v := r.refCount.Add(-1)
-	if v < 0 {
-		panic(fmt.Sprintf("btree: PageRef.Release: refCount underflow: pageID=%d", r.pageID))
-	}
-	if v == 0 && r.freeFunc != nil && r.pageID != model.InvalidPageID {
-		r.freeFunc(r.pageID)
-	}
-}
-
-// RefCount returns the current reference count (for testing/debugging).
-func (r *PageRef) RefCount() int32 {
-	return r.refCount.Load()
-}
 
 // GetChildren returns the existing ChildrenCache for this PageRef.
 // Returns nil if no cache has been set (leaf pages, or internal node

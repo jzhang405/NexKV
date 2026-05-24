@@ -1323,5 +1323,135 @@ result, err := mutate(oldLeaf)
 
 ---
 
+## 九、Epoch + refCount 瓶颈分析
+
+### 9.1 数据
+
+| 线程 | 无 epoch QPS | 有 epoch QPS | 差距 |
+|------|-------------|-------------|------|
+| 1 | 1.27M | 1.32M | 1.0x |
+| 2 | 1.86M | 1.86M | 1.0x |
+| 3 | 2.19M | 2.19M | 1.0x |
+| 4 | 2.68M | 2.68M | 1.0x |
+| **5** | **2.46M** | **87K** | **28x** |
+
+4→5 线程时，epoch 触发断崖式崩溃。5 线程有 epoch 的 profile：
+
+```
+atomic.Add (refCount)   19%  ← #1 热点
+searchPath              37%
+ChildrenCache.Search    13%
+PageRef.Release         12%
+mallocgc                19%
+```
+
+### 9.2 根因
+
+每条 searchPath（每层一个 PageRef）：
+
+```go
+// search.go — 热路径，每次读/写都调用
+childRef.Retain()  // atomic.Add(&refCount, +1)  ← 原子写
+// ... 遍历 ...
+path.ReleaseAll()   // atomic.Add(&refCount, -1)  ← 原子写
+```
+
+Write path 额外：
+
+```go
+// operations.go
+epochSlot = b.epochMgr.AllocSlot()    // atomic.Add  ← 原子写
+epochMgr.RetireBatch(slot, pages...)  // CAS 入环形缓冲区 ← 原子写
+```
+
+5 线程时，hot path 上的多个 `atomic.Add` 竞争同一 cache line → 原子操作排队 → 19% CPU 在 `atomic.Add`。
+
+**核心矛盾**：refCount 保护 page 不被提前释放，但每次 searchPath 都要原子加减。epoch 跟踪 reader 进度，但 refCount 是额外的、更频繁的原子操作。
+
+### 9.3 解决方向：去掉 refCount，用 epoch 保护读端
+
+```
+当前:
+  searchPath: Retain(page) → ... → Release(page)  ← 2N 次 atomic.Add
+  写路径:      AllocSlot → RetireBatch             ← 2 次 atomic
+
+目标:
+  searchPath: EnterRead  → ... → ExitRead           ← 0 次 atomic (per-core counter)
+  写路径:      记录 epoch → 旧页延迟释放             ← epoch 内部 CAS
+```
+
+**核心思路**：读者不修改 page 上的任何东西。只记录"我在读"（per-core epoch counter）。写者退休旧页时标记 epoch。后台线程发现某 epoch 之前的所有读者都已退出 → 释放该 epoch 的旧页。
+
+这和 Linux RCU 原理一致：读者零开销（无原子操作），写者承担回收延迟。
+
+### 9.4 实现概要
+
+```go
+// page_ref.go — 简化
+type PageRef struct {
+    pageID model.PageID
+    pInfo  atomic.Pointer[PageInfo]
+    children atomic.Pointer[ChildrenCache]
+    // ★ 删除 refCount atomic.Int32
+    // ★ 删除 freeFunc
+}
+
+// epoch.go — 新增读端保护
+func (em *EpochManager) EnterRead() int {
+    epoch := em.globalEpoch.Load()         // 读当前 epoch
+    em.readers[procID()].Store(epoch)       // 标记"我在这个 epoch 开始读"
+    return epoch
+}
+
+func (em *EpochManager) ExitRead() {
+    em.readers[procID()].Store(0)           // 标记"我不在读"
+}
+
+// epoch.go — 安全释放判断
+func (em *EpochManager) canFree(retiredEpoch uint64) bool {
+    for i := range em.readers {
+        r := em.readers[i].Load()
+        if r != 0 && r <= retiredEpoch {
+            return false  // 有读者还在用这个 epoch 的页
+        }
+    }
+    return true
+}
+```
+
+### 9.5 改动清单
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `page_ref.go` | 删除 `refCount`、`Retain()`、`Release()`、`freeFunc` | ~-30 行 |
+| `search.go` | 删除 `Retain/ReleaseAll`，替换为 `EnterRead/ExitRead` | ~-10/+5 |
+| `operations.go` | 删除 `epochSlot`，简化 `RetireBatch` | ~-5 |
+| `epoch.go` | 新增 `EnterRead/ExitRead`，`canFree` | ~+30 |
+| `root_ref.go` | 删除 `freeFunc` 参数 | ~-5 |
+
+**净改动**：~-15 行。
+
+### 9.6 风险
+
+| 风险 | 缓解 |
+|------|------|
+| 慢读者阻塞回收 | 设置 max read time（1ms），超时强制推进 epoch |
+| 内存积压 | 监控 retired page count，超阈值触发强制回收 |
+| 读写并发 | epoch 计数器 CPU 缓存友好（per-core），不跨核竞争 |
+
+### 9.7 预期效果
+
+| | 当前 (epoch on) | 无 epoch | RCU epoch |
+|---|---|---|---|
+| 5 线程 QPS | 87K | 2.46M | **~2.4M** |
+| 页面回收 | ✅ | ❌ (泄漏) | ✅ |
+| searchPath 原子操作 | 2N 次 | 2N 次 | **0 次** |
+
+理想结果：并发写性能接近无 epoch，同时保留安全页面回收。
+
+---
+
+---
+
 **文档版本**：v4.0
 **状态**：Investigation — P0+P1(Benchmark) 完成，Lazy Split 方案设计完成（§六），待实施验证

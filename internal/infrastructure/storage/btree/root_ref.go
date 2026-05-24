@@ -17,7 +17,6 @@ type RootPageRef struct {
 func NewRootPageRef(pageID model.PageID, version uint64, freeFunc func(model.PageID)) *RootPageRef {
 	r := &RootPageRef{}
 	r.pageID = pageID
-	r.freeFunc = freeFunc
 	r.pInfo.Store(&PageInfo{
 		PageID:    pageID,
 		Version:   version,

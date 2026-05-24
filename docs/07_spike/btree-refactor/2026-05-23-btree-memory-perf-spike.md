@@ -2,7 +2,7 @@
 
 > 创建日期：2026-05-23
 > 最后更新：2026-05-24
-> 状态：Investigation — **P0 全完成，P1 Benchmark 完成，Lazy Split 方案设计完成，待实施**
+> 状态：Investigation — **P0 完成，自适应 Leaf Queue 已实施，Lealone 对比分析完成（§七）**
 > 分支：`spike/btree-memory-perf`
 
 ---
@@ -1032,7 +1032,289 @@ b.leafWg.Wait()  // after this, no worker touches storage
 
 
 
-## 七、参考
+## 七、Lealone vs NexKV 写路径对比分析
+
+> 基于 Lealone BTreeMapBenchmark + NexKV seq-put pprof 实测数据
+
+### 7.1 性能差距
+
+| 测试 | Lealone (实测) | NexKV (实测) | 差距 |
+|------|---------------|-------------|------|
+| seq-put | 3,671K QPS | 1,277K QPS | **2.9x** |
+| par-put-16 | 5,634K QPS | 52K-1,862K | **3-108x** |
+| par-get-8 | 13,735K QPS | 6,224K QPS | **2.2x** |
+
+### 7.2 单线程写的操作分解
+
+**NexKV seq-put 每写操作**（pprof 实测，504ms Duration / 380ms CPU samples）：
+
+```mermaid
+flowchart TB
+    subgraph NexKV["NexKV Set(key,value)"]
+        N1["1. searchPath<br/>root→internal→leaf<br/>~16% CPU"] --> N2["2. GetLeafPage<br/>mmap 读旧页<br/>21% CPU"]
+        N2 --> N3["3. COW mutate<br/>Alloc新页(44%) + 拷贝旧数据"]
+        N3 --> N4["4. CAS leafRef<br/>原子发布新页"]
+    end
+```
+
+| 步骤 | 操作 | CPU 占比 | 代价 |
+|------|------|---------|------|
+| 1 | `searchPath` | ~16% | 遍历 root→internal→leaf，每层 `ChildrenCache.Search` 二分 |
+| 2 | `GetLeafPage` | 21% | mmap 读取旧页、`IsLeaf` 检查 |
+| 3 | `Alloc` | **44%** | freeList Dequeue + 清零 Header 56B + version 写入 |
+| 4 | COW 拷贝 + Insert/Update | 32% | `BulkInitLeafFromSource` 拷贝旧数据 + 写入新 entry |
+| 5 | `CAS leafRef` | ~3% | 原子 CAS 发布新页 |
+| 6 | 其他 | ~5% | refCount Release、metrics |
+
+**Lealone seq-put 每写操作**（源码分析）：
+
+```mermaid
+flowchart TB
+    subgraph Lealone["Lealone put(key,value)"]
+        L1["1. gotoLeafPage → pRef"] --> L2["2. pRef.tryLock()"]
+        L2 -->|"锁可用"| L3["3. binarySearch"]
+        L3 --> L4{"index < 0?"}
+        L4 -->|"YES (新key)"| L5["copyAndInsertLeaf() COW"]
+        L4 -->|"NO  (已有key)"| L6["setValue() 原地修改"]
+        L2 -->|"锁不可用"| L7["scheduler 入队等待"]
+    end
+```
+
+| 步骤 | 操作 | 代价 |
+|------|------|------|
+| 1 | `gotoLeafPage` | 遍历 BTree，有 page cache |
+| 2 | `getOrReadPage` | Java 堆内对象直接读，**无 mmap** |
+| 3 | `binarySearch` | 二分查找插入位置 |
+| 4 | `copyAndInsert` | 非满页：**原地修改**（零 Alloc）；满页：新页分配 |
+
+### 7.3 关键差异
+
+| 维度 | Lealone | NexKV |
+|------|---------|-------|
+| **内存模型** | Java 堆内 Page 对象 | mmap 文件映射 |
+| **非满页更新** | **原地修改**（0 次 Alloc） | **COW**（1 次 Alloc + 1 次拷贝） |
+| **页读取** | `pageRef.page` 直接引用 | `GetLeafPage(pageID)` mmap 寻址 |
+| **页清零** | 无（Java GC 管理） | `memclrNoHeapPointers(56B)` |
+| **并发控制** | Scheduler 串行化同页写 | **CAS 乐观锁 + 自旋重试** |
+| **每写 Alloc** | **0 次**（非满页） | **1 次**（必须） |
+
+### 7.4 根因
+
+```
+NexKV 单线程 seq-put 1.28M QPS = 0.78μs/op，其中：
+  Alloc (新页分配)    = 0.34μs (44%)
+  GetLeafPage (mmap读)= 0.16μs (21%)
+  COW 拷贝+插入       = 0.25μs (32%)
+  searchPath           = 0.12μs (16%)
+  CAS + 其他          = 0.05μs (7%)
+
+Lealone 单线程 seq-put 3.67M QPS = 0.27μs/op：
+  非满页 = 0 Alloc + 0 COW拷贝 + 0 mmap读
+  = 只有 binarySearch + 原地修改
+```
+
+**NexKV COW 税**：每写必定 Alloc + 拷贝旧页 + 发布新页。即使单线程无并发读者，也必须走完整 COW 路径。
+
+**Lealone 不交 COW 税**：非满页原地修改，只分配新页当页满时。
+
+### 7.5 改进方向
+
+| 方向 | 预期收益 | 复杂度 |
+|------|---------|--------|
+| **非满页原地更新**（无并发读者时） | seq-put 1.3M→3M+ | 高（需检测并发读者） |
+| **预分配页池**（后台清零） | Alloc 降 50% | 低 |
+| **更大页**（8KB/16KB） | 减少 Alloc 频率 | 低（改常量） |
+| **PageScheduler 串行化**（§六） | 消除 par-put 波动 | 中（~100行） |
+
+
+---
+
+**文档版本**：v4.0
+**状态**：Investigation — P0+P1(Benchmark) 完成，Lazy Split 方案设计完成（§六），待实施验证#### Lealone 写操作逐行分析（PageOperations.java + LeafPage.java）
+
+```java
+// WriteOperation.run() — PageOperations.java:82
+public PageOperationResult run(InternalScheduler scheduler, boolean waitingIfLocked) {
+    pRef = gotoLeafPage().getRef();                   // 1. 导航到 leaf page
+    if (pRef.tryLock(scheduler, waitingIfLocked)) {   // 2. 页级锁
+        p = pRef.getPage();
+        return writeLocal(scheduler);                 // 3. 执行写
+    } else {
+        return PageOperationResult.LOCKED; // 锁被占 → 入 scheduler 队列
+    }
+}
+
+// Put.writeLocal() — PageOperations.java:191
+protected Object writeLocal(int index, InternalScheduler scheduler) {
+    if (index < 0) {
+        insertLeaf(index, value);  // → copyAndInsertLeaf() ★ COW (新 key)
+    } else {
+        return p.setValue(index, value); // → values[index] = value ★ 原地修改！
+    }
+}
+
+// LeafPage.setValue() — LeafPage.java:47
+public Object setValue(int index, Object value) {
+    Object old = getValues()[index];
+    getValues()[index] = value;  // ★ 直接数组赋值，0 Alloc！
+    return old;
+}
+```
+
+| 操作 | Lealone 方法 | 是否 COW | 原因 |
+|------|-------------|---------|------|
+| **新增 key** | `copyAndInsertLeaf()` | ✅ COW | 页可能满，需分配新页 |
+| **更新已有 key** | `setValue()` | ❌ **原地修改** | `values[index] = value`，0 Alloc |
+| **删除 key** | `p.copy().remove()` | ✅ COW | 避免并发读问题 |
+
+#### NexKV 写操作（operations.go）
+
+```go
+func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
+    path, _ := searchPath(b.rootRef, key)  // 遍历 BTree
+    // ...
+    result, _ := mutate(oldLeaf)   // ★ Insert/Update 都走 COW
+    // Alloc 新页 → 拷贝旧数据 → 修改 → CAS 发布
+}
+```
+
+**NexKV：所有写都 COW**。新增还是更新，都分配新页 + 拷贝 + CAS。
+
+### 7.3 seq-put 性能拆解
+
+benchmark measure 阶段：warmup 后所有 key 已存在 → **100% 更新**操作（无新增 key，无 Split）。
+
+| | Lealone | NexKV |
+|---|---|---|
+| 每次更新 | `setValue()` 原地数组赋值 | `mutate()` COW 新页 |
+| Alloc 次数 | **0** | **1** (每写) |
+| 页面拷贝 | **0** | **1** (BulkInit 全页 4KB) |
+| 单次更新耗时 | ~0.27μs | ~0.78μs |
+| **QPS** | **3.67M** | **1.28M** |
+
+### 7.4 NexKV seq-put CPU 足迹（pprof 实测，504ms）
+
+```
+Alloc (新页分配)     = 170ms (44%)  ← 更新不需要新页，但 COW 必须
+GetLeafPage (mmap读) =  80ms (21%)  ← 更新不需要读旧页全量
+COW 拷贝+修改        = 120ms (32%)  ← 原地修改只需 1 次数组赋值
+searchPath            =  60ms (16%)
+CAS + 其他           =  70ms (18%)
+```
+
+### 7.5 根本差异
+
+**Lealone 分离了 insert 和 update**：insert 走 COW（必须），update 走原地（性能）。
+
+**Lealone `setValue()` 三种情况**：
+
+| value 变化 | `addMemory(delta)` | memory | 是否溢出 | 处理 |
+|-----------|-------------------|--------|---------|------|
+| **等长** | delta=0 | 不变 | 否 | ✅ 原地修改 |
+| **变短** | delta<0 | 减小 | 否 | ✅ 原地修改 |
+| **变长** | delta>0 | 增加 | **可能** | ⚠️ **不处理** |
+
+变长时 `needSplit()` 不被调用——`writeLocal()` 里 `index < 0`（新 key）才检查 split。注释明确：*"暂时不考虑被更新的值过大，导致超过 page size 的情况"*。变长更新可能默默超出 pageSize。
+
+**NexKV 不分离**：insert/update 都走 COW。变长 value 自然处理——新页大小自适应。代价是每写必 Alloc。
+
+**benchmark 场景**：value 固定 `"value-0000000000"` = 16B，等长。Lealone 原地更新完美适用。这是 3.67M vs 1.28M 的根源。
+
+### 7.6 改进方向
+
+| 方向 | 思路 | 预期 | 复杂度 |
+|------|------|------|--------|
+| **Update 跳过 COW** | 无并发读者时原地修改 mmap 页 | seq-put →3M+ | 中（检测 refCount==0） |
+| 预分配页池 | 后台清零 | Alloc -50% | 低 |
+| PageScheduler | 同页串行化 | par-put 波动消除 | 中 |
+
+---
+
+---
+
+## 八、In-Place Update 提案
+
+> 基于 Lealone `setValue()` 源码分析 + NexKV `leaf.Update()` 已有 fast path
+
+### 8.1 当前代码已经有了 90%
+
+`leaf_page.go:120-136` 的 `Update` 已经实现了 "新 value <= 旧 slot" 的快速路径：
+
+```go
+// leaf_page.go:121-136 — 当前代码
+if len(value) <= int(oldValLen) {
+    newRawID, _ := h.storage.pm.Alloc()  // ← 仍然 COW！
+    copy(dst, src)                         // ← 全页 4KB 拷贝
+    h.pa.OverwriteLeafValue(newRawID, idx, value)  // ← 在新页上覆写
+    return newHandle, nil
+}
+```
+
+**问题**：仍然 Alloc + 4KB 拷贝。只需要把 `OverwriteLeafValue` 直接作用于**原页**即可。
+
+### 8.2 改造：跳过 COW，原地覆写
+
+```go
+func (h *leafPageHandle) UpdateInPlace(idx int, value []byte) error {
+    rawID := uint32(h.id)
+    _, _, _, oldValLen := h.pa.GetLeafEntryOffset(rawID, idx)
+    if len(value) > int(oldValLen) {
+        return errValueTooLarge // fallback to COW path
+    }
+    // 直接覆写原页上的 value，0 Alloc，0 拷贝
+    h.pa.OverwriteLeafValue(rawID, idx, value)
+    h.pa.IncVersion(rawID) // 递增版本号，保持一致性
+    return nil
+}
+```
+
+### 8.3 何时可以安全使用
+
+| 条件 | 检查方式 |
+|------|---------|
+| 无并发读者 | `epochMgr == nil`（benchmark 默认）或 epoch slot 无活跃读者 |
+| 新 value <= 旧 slot | `len(value) <= int(oldValLen)` |
+| 非 split 路径 | `!oldLeaf.IsFull(len(key), 0)` |
+
+### 8.4 集成到 `writeOperation`
+
+```go
+// operations.go writeOperation 非 split 路径
+if b.epochMgr == nil {  // 无并发读者 → 可以原地修改
+    if err := oldLeaf.UpdateInPlace(idx, value); err == nil {
+        // 成功！0 Alloc，0 拷贝，0 CAS
+        path.ReleaseAll()
+        return nil
+    }
+    // value 太长 → 回退到 COW
+}
+// 有并发读者 → COW（现有路径不变）
+result, err := mutate(oldLeaf)
+```
+
+### 8.5 预期效果
+
+**seq-put measure 阶段**：100K 次 update，value 等长（16B），全部命中原地修改：
+
+| | 当前 | 原地修改 | 
+|---|---|---|
+| Alloc | 100K 次 | **0 次** |
+| 4KB 拷贝 | 100K 次 × 4KB = 400MB | **0** |
+| CAS leafRef | 100K 次 | **0 次**（页版本号递增） |
+| CPU (pprof) | 504ms | **~200ms**（减半） |
+| **QPS** | **1.28M** | **~2.5M-3M** |
+
+### 8.6 风险
+
+| 风险 | 缓解 |
+|------|------|
+| 并发读者读到半写数据 | 仅 `epochMgr==nil` 时启用（无并发读者） |
+| value 变长回退 | `UpdateInPlace` 返回 error → 走 COW 慢路径 |
+| 页版本号溢出 | uint64，永远不会 |
+
+---
+
+## 九、参考
 
 - Phase 5.6 性能分析：`docs/07_spike/btree-refactor/2026-04-02-btree-refactor-roadmap.md` §Phase 5.6
 - Epoch 性能基线：`docs/07_spike/btree-refactor/2026-05-21-epoch-page-reclamation-spike.md` §7

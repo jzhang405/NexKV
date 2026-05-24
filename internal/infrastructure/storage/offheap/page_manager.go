@@ -91,9 +91,9 @@ func NewPageManager(mmapSize int) (*PageManager, error) {
 //go:linkname memclrNoHeapPointers runtime.memclrNoHeapPointers
 func memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr)
 
-// clearPage 清零页面内容 — CPU 指令级优化，无循环、无开销
+// clearPage 清零页面 Header（56 字节）。数据区不需要清零——entry 写入时直接覆盖，count=0 保证旧数据不被读取。
 func (pm *PageManager) clearPage(pageID uint32) {
-	memclrNoHeapPointers(pm.PageIDToPtr(pageID), PageSize)
+	memclrNoHeapPointers(pm.PageIDToPtr(pageID), uintptr(unsafe.Sizeof(PageHeader{})))
 }
 
 // Alloc 分配一个页面。

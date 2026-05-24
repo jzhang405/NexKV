@@ -18,7 +18,7 @@ type btreeConfig struct {
 	tsGen          mvcc.TSGenerator
 	txMgr          mvcc.TxManager
 	latencyMetrics *BTreeMetricsWithLatency
-	enableEpoch            bool
+	enableEpoch    bool
 }
 
 // newBTreeConfig applies all options and fills in defaults.
@@ -97,5 +97,3 @@ func WithLatencyMetrics() BTreeOption {
 		cfg.latencyMetrics = NewBTreeMetricsWithLatency()
 	}
 }
-
-

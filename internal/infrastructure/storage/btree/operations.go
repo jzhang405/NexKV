@@ -244,7 +244,6 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 				b.metrics.IncrementCASRetry()
 			}
 
-
 			continue
 		}
 

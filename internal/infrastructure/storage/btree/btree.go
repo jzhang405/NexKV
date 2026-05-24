@@ -39,7 +39,6 @@ type BTree struct {
 	compactMu      sync.Mutex
 	epochMgr       *EpochManager // COW old page reclamation (nil if disabled)
 	epochCancel    context.CancelFunc
-
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -98,7 +97,6 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 		bt.epochMgr = em
 		bt.epochCancel = cancel
 	}
-
 
 	return bt, nil
 }

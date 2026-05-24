@@ -18,9 +18,12 @@ import (
 
 // leafMutation records the result of a leaf-level COW mutation.
 type leafMutation struct {
-	newPageID      model.PageID // the new leaf page ID after COW
+	newPageID      model.PageID // the new leaf page ID after COW (or same pageID for in-place)
 	delta          int64        // change in key count: +1 insert, -1 delete, 0 update
 	tombstoneDelta int16        // Phase 6.5: change in tombstone count
+	inPlace        bool         // CAS-first in-place update: value fits, no COW needed
+	inPlaceIdx     int          // index in leaf for in-place overwrite
+	inPlaceValue   []byte       // new value for in-place overwrite (applied after CAS claim)
 }
 
 // mutateFunc applies a COW mutation to a leaf page.
@@ -137,7 +140,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 
 		// Step 2: Lock-free PageInfo read
 		oldInfo := leafRef.GetPageInfo()
-		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || oldInfo.Redirect || !oldInfo.IsLeaf || oldInfo.NodeState == NodeMerging || oldInfo.NodeState == NodeCompacting {
+		if oldInfo == nil || oldInfo.NodeState == NodeRedirect || oldInfo.Redirect || !oldInfo.IsLeaf || oldInfo.NodeState == NodeMerging || oldInfo.NodeState == NodeCompacting || oldInfo.NodeState == NodeInplaceUpdate {
 			path.ReleaseAll()
 			continue
 		}
@@ -218,6 +221,31 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			return fmt.Errorf("btree: write operation mutate key %q: %w", key, err)
 		}
 
+		// CAS-first in-place update: claim → overwrite → finalize
+		if result.inPlace {
+			rawID := uint32(oldInfo.PageID)
+			claimInfo := &PageInfo{
+				PageID:    oldInfo.PageID,
+				Version:   oldInfo.Version + 1,
+				IsLeaf:    true,
+				NodeState: NodeInplaceUpdate,
+			}
+			if leafRef.CAS(oldInfo, claimInfo) {
+				b.storage.pa.OverwriteLeafValue(rawID, result.inPlaceIdx, result.inPlaceValue)
+				finalInfo := &PageInfo{
+					PageID:    oldInfo.PageID,
+					Version:   oldInfo.Version + 2,
+					IsLeaf:    true,
+					NodeState: NodeNormal,
+				}
+				leafRef.CAS(claimInfo, finalInfo) // best-effort
+				path.ReleaseAll()
+				b.size.Add(result.delta)
+				return nil
+			}
+			continue // CAS failed → retry
+		}
+
 		// Phase 6.5: apply tombstoneDelta to COW page header before CAS publish
 		if result.tombstoneDelta != 0 {
 			rawID := uint32(result.newPageID)
@@ -243,6 +271,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			if b.metrics != nil {
 				b.metrics.IncrementCASRetry()
 			}
+
 			continue
 		}
 
@@ -367,8 +396,8 @@ func (b *BTree) handleInternalSplit(
 		idx := path[currentLevel-1].Index
 
 		// Step 3a: Create PageRefs for split children
-		currentLeftRef := NewPageRef(currentLeft.PageID(), 0, b.rootRef.freeFunc)
-		currentRightRef := NewPageRef(currentRight.PageID(), 0, b.rootRef.freeFunc)
+		currentLeftRef := NewPageRef(currentLeft.PageID(), 0, nil)
+		currentRightRef := NewPageRef(currentRight.PageID(), 0, nil)
 		// internal split 子节点 → IsLeaf=false（刚创建无竞争，直接 Store）
 		currentLeftRef.pInfo.Store(&PageInfo{
 			PageID:    currentLeft.PageID(),
@@ -499,8 +528,8 @@ func (b *BTree) handleRootInternalSplit(
 	toRelease *[]*PageRef,
 ) error {
 	// Step 1: Create PageRefs for left/right children of new root
-	leftRef := NewPageRef(leftPage.PageID(), 0, b.rootRef.freeFunc)
-	rightRef := NewPageRef(rightPage.PageID(), 0, b.rootRef.freeFunc)
+	leftRef := NewPageRef(leftPage.PageID(), 0, nil)
+	rightRef := NewPageRef(rightPage.PageID(), 0, nil)
 	// internal split 子节点 → IsLeaf=false（刚创建无竞争，直接 Store）
 	leftRef.pInfo.Store(&PageInfo{
 		PageID:    leftPage.PageID(),
@@ -790,13 +819,13 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	var orphanPageID model.PageID
 	if bytes.Compare(key, splitKey) < 0 {
 		// target = left → left was mutated
-		leftRef = NewPageRef(mutation.newPageID, 0, b.rootRef.freeFunc)
-		rightRef = NewPageRef(rightPage.PageID(), 0, b.rootRef.freeFunc)
+		leftRef = NewPageRef(mutation.newPageID, 0, nil)
+		rightRef = NewPageRef(rightPage.PageID(), 0, nil)
 		orphanPageID = leftPage.PageID() // leftPage replaced by double-COW
 	} else {
 		// target = right → right was mutated
-		leftRef = NewPageRef(leftPage.PageID(), 0, b.rootRef.freeFunc)
-		rightRef = NewPageRef(mutation.newPageID, 0, b.rootRef.freeFunc)
+		leftRef = NewPageRef(leftPage.PageID(), 0, nil)
+		rightRef = NewPageRef(mutation.newPageID, 0, nil)
 		orphanPageID = rightPage.PageID() // rightPage replaced by double-COW
 	}
 	leftRef.Retain()  // refCount: 0 → 1
@@ -965,8 +994,8 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 	}
 
 	// Step 6: Create PageRefs as children of root
-	leftRef := NewPageRef(leftChildID, 0, b.rootRef.freeFunc)
-	rightRef := NewPageRef(rightChildID, 0, b.rootRef.freeFunc)
+	leftRef := NewPageRef(leftChildID, 0, nil)
+	rightRef := NewPageRef(rightChildID, 0, nil)
 	leftRef.Retain()
 	rightRef.Retain()
 

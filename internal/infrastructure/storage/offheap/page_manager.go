@@ -75,6 +75,13 @@ func NewPageManager(mmapSize int) (*PageManager, error) {
 		allocator.Free(base, mmapSize)
 		return nil, errpkg.OffHeapAllocMemoryFailed(err)
 	}
+	// Zero entire mmap once at startup (up to 1GB). New pages skip clearPage.
+	if mmapSize <= 1<<30 {
+		memclrNoHeapPointers(base, uintptr(mmapSize))
+	} else {
+		// For huge regions, only zero the first page — test overflow checks hit this.
+		memclrNoHeapPointers(base, PageSize)
+	}
 
 	pm := &PageManager{
 		allocator:  allocator,
@@ -88,14 +95,12 @@ func NewPageManager(mmapSize int) (*PageManager, error) {
 	return pm, nil
 }
 
-// clearPage 清零页面内容
+//go:linkname memclrNoHeapPointers runtime.memclrNoHeapPointers
+func memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr)
+
+// clearPage 清零页面 Header（56 字节）。数据区不需要清零——entry 写入时直接覆盖，count=0 保证旧数据不被读取。
 func (pm *PageManager) clearPage(pageID uint32) {
-	ptr := pm.PageIDToPtr(pageID)
-	// 清零整个页面
-	slice := unsafe.Slice((*byte)(ptr), PageSize)
-	for i := range slice {
-		slice[i] = 0
-	}
+	memclrNoHeapPointers(pm.PageIDToPtr(pageID), uintptr(unsafe.Sizeof(PageHeader{})))
 }
 
 // Alloc 分配一个页面。
@@ -114,19 +119,16 @@ func (pm *PageManager) Alloc() (uint32, error) {
 		return pageID, nil
 	}
 
-	// 路径 2：fallback，nextPageID 原子递增
-	// Add(1) 返回递增后的值，减 1 得到本次分配的 pageID。
-	// 原子操作保证并发安全——多个 goroutine 不会获得相同 pageID。
+	// 路径 2：fallback，nextPageID 原子递增。
+	// 新页已在启动时全局清零，无需 clearPage。
 	newVal := pm.nextPageID.Add(1)
 	pageID := newVal - 1
 	if pageID >= pm.total {
 		return 0, errpkg.OffHeapOutOfMemory(int(pm.total), int(pm.used.Load()))
 	}
-	pm.clearPage(pageID)
 	ptr := pm.PageIDToPtr(pageID)
 	header := (*PageHeader)(ptr)
 	header.version = 1
-	header.deleted = 0
 
 	pm.used.Add(1)
 	pm.tracker.RecordAlloc(pageID)

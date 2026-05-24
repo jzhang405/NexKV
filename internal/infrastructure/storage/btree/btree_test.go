@@ -579,8 +579,8 @@ func TestBTreeMVCC_ConcurrentTSAssignment(t *testing.T) {
 	tree, _ := newTestBTree(t)
 	ctx := context.Background()
 
-	const goroutines = 20
-	const keysPerGoroutine = 50
+	const goroutines = 8
+	const keysPerGoroutine = 200
 
 	var wg sync.WaitGroup
 	for g := 0; g < goroutines; g++ {
@@ -588,7 +588,7 @@ func TestBTreeMVCC_ConcurrentTSAssignment(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < keysPerGoroutine; j++ {
-				key := fmt.Appendf(nil, "key-%d", j)
+				key := fmt.Appendf(nil, "key-%d-%d", id, j)
 				value := fmt.Appendf(nil, "val-%d-%d", id, j)
 				err := tree.Set(ctx, key, value)
 				require.NoError(t, err)
@@ -597,15 +597,17 @@ func TestBTreeMVCC_ConcurrentTSAssignment(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Verify all keys exist with valid MVCC values
-	for j := 0; j < keysPerGoroutine; j++ {
-		key := fmt.Appendf(nil, "key-%d", j)
-		mvccVal, err := tree.GetRaw(ctx, key)
-		require.NoError(t, err, "key-%d should exist", j)
-		assert.Equal(t, mvcc.FlagNormal, mvccVal.Flag)
-		assert.Greater(t, mvccVal.BeginTS, uint64(0), "key-%d should have beginTS", j)
-		assert.NotEmpty(t, mvccVal.RealVal)
+	// Verify one key from each goroutine exists with valid MVCC values
+	for g := 0; g < goroutines; g++ {
+		for j := 0; j < keysPerGoroutine; j++ {
+			key := fmt.Appendf(nil, "key-%d-%d", g, j)
+			mvccVal, err := tree.GetRaw(ctx, key)
+			require.NoError(t, err, "key-%d-%d should exist", g, j)
+			assert.Equal(t, mvcc.FlagNormal, mvccVal.Flag)
+			assert.Greater(t, mvccVal.BeginTS, uint64(0), "key-%d-%d should have beginTS", g, j)
+			assert.NotEmpty(t, mvccVal.RealVal)
+		}
 	}
 
-	assert.Equal(t, int64(keysPerGoroutine), tree.Size())
+	assert.Equal(t, int64(goroutines*keysPerGoroutine), tree.Size())
 }

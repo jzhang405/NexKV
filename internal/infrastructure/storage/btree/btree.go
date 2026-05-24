@@ -229,6 +229,7 @@ func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer leaf.Release()
 
 	// Search for key
 	idx, found := leaf.Search(key)
@@ -334,6 +335,23 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 			encoded, buildErr := mvcc.BuildMVCC(mvcc.FlagNormal, b.tsGen.NextTS(), value)
 			if buildErr != nil {
 				return nil, buildErr
+			}
+			// CAS-first in-place: check if new value fits old slot
+			if lh, ok := leaf.(*leafPageHandle); ok && lh.TryInPlace(idx, encoded) {
+				delta := int64(0)
+				tombstoneDelta := int16(0)
+				if mvccVal.IsTombstone() {
+					delta = +1
+					tombstoneDelta = -1
+				}
+				return &leafMutation{
+					newPageID:      lh.PageID(),
+					delta:          delta,
+					tombstoneDelta: tombstoneDelta,
+					inPlace:        true,
+					inPlaceIdx:     idx,
+					inPlaceValue:   encoded,
+				}, nil
 			}
 			newLeaf, updateErr := leaf.Update(idx, encoded)
 			if updateErr != nil {
@@ -461,9 +479,10 @@ func (b *BTree) Close() error {
 	if !b.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	// Shutdown epoch manager
 	if b.epochCancel != nil {
-		b.epochCancel()       // signal background goroutine to stop
-		b.epochMgr.Shutdown() // wait for exit + final reclamation
+		b.epochCancel()
+		b.epochMgr.Shutdown()
 	}
 	return b.storage.Close()
 }

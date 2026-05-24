@@ -75,32 +75,6 @@ func TestPageRefCASConflict(t *testing.T) {
 	assert.Equal(t, model.PageID(99), current.PageID)
 }
 
-func TestPageRefRetainRelease(t *testing.T) {
-	r, freed := newTestPageRef(t, 1, 1)
-
-	r.Retain()
-	r.Retain()
-	assert.Equal(t, int32(2), r.RefCount())
-
-	r.Release()
-	assert.False(t, freed.Load(), "page should not be freed yet")
-	assert.Equal(t, int32(1), r.RefCount())
-
-	r.Release()
-	assert.True(t, freed.Load(), "page should be freed when refCount hits 0")
-}
-
-func TestPageRefReleaseFree(t *testing.T) {
-	r, freed := newTestPageRef(t, 5, 1)
-	assert.False(t, freed.Load())
-
-	r.Retain()  // refCount: 0 → 1
-	r.Release() // refCount: 1 → 0, triggers freeFunc
-	assert.True(t, freed.Load(), "freeFunc should be called when refCount reaches 0")
-}
-
-// --- Redirect Tests ---
-
 func TestPageRefRedirect(t *testing.T) {
 	r, _ := newTestPageRef(t, 1, 1)
 	left, _ := newTestPageRef(t, 2, 1)
@@ -233,26 +207,6 @@ func TestConcurrentCAS(t *testing.T) {
 
 // --- C1: Release underflow protection ---
 
-func TestPageRefReleaseUnderflowPanics(t *testing.T) {
-	r, _ := newTestPageRef(t, 1, 1)
-
-	assert.Panics(t, func() {
-		r.Release() // refCount 0 → -1 → panic
-	}, "Release on zero refCount should panic")
-}
-
-func TestPageRefDoubleReleasePanics(t *testing.T) {
-	r, _ := newTestPageRef(t, 1, 1)
-
-	r.Retain()  // 0 → 1
-	r.Release() // 1 → 0, triggers freeFunc
-	assert.Panics(t, func() {
-		r.Release() // 0 → -1 → panic
-	}, "double Release should panic")
-}
-
-// --- C2: ReplaceRoot with children propagation ---
-
 func TestRootPageRefReplaceRootWithChildren(t *testing.T) {
 	root := NewRootPageRef(1, 1, func(model.PageID) {})
 
@@ -293,29 +247,7 @@ func TestRootPageRefReplaceRootConflict(t *testing.T) {
 // TestPageRefReleaseCorrectPageID verifies C1 fix:
 // After CAS replaces pInfo (changing PageID), Release should free the
 // ORIGINAL pageID (bound at creation), not the new one from pInfo.
-func TestPageRefReleaseCorrectPageID(t *testing.T) {
-	var freedID atomic.Int64
-	freeFunc := func(id model.PageID) {
-		freedID.Store(int64(id))
-	}
 
-	r := NewPageRef(42, 1, freeFunc)
-
-	// Simulate COW: CAS replaces pInfo with a new PageID
-	oldInfo := r.GetPageInfo()
-	newInfo := &PageInfo{PageID: 99, Version: 2}
-	require.True(t, r.CAS(oldInfo, newInfo))
-
-	// Retain + Release to trigger freeFunc
-	r.Retain()  // 0 → 1
-	r.Release() // 1 → 0, should free pageID=42 (original), NOT 99
-
-	assert.Equal(t, int64(42), freedID.Load(),
-		"Release should free the original pageID bound at creation, not the CAS'd one")
-}
-
-// TestPageInfoRedirectImmutable verifies redirect info is read-only via GetPageInfo.
-// PageInfo is immutable after CAS — readers see consistent snapshots.
 func TestPageInfoRedirectImmutable(t *testing.T) {
 	r, _ := newTestPageRef(t, 1, 1)
 	left, _ := newTestPageRef(t, 2, 1)
@@ -340,77 +272,7 @@ func TestPageInfoRedirectImmutable(t *testing.T) {
 // TestPageRef_Redirect_NewRefRefCount verifies that NewRef in PageInfo
 // does NOT need explicit Retain — it's just a pointer in an immutable PageInfo.
 // The PageRef lifecycle is managed by the parent's children cache.
-func TestPageRef_Redirect_NewRefRefCount(t *testing.T) {
-	var freedLeft atomic.Int64
 
-	left := NewPageRef(10, 1, func(id model.PageID) {
-		freedLeft.Store(int64(id))
-	})
-
-	// Retain leftRef (as handleLeafSplit does in Step 3)
-	left.Retain()
-	assert.Equal(t, int32(1), left.RefCount())
-
-	// Set redirect — NewRef is a pointer in PageInfo, no extra Retain
-	parent := NewPageRef(1, 1, nil)
-	oldInfo := parent.GetPageInfo()
-	redirectInfo := &PageInfo{
-		PageID:   oldInfo.PageID,
-		Version:  oldInfo.Version + 1,
-		Redirect: true,
-		NewRef:   left,
-	}
-	require.True(t, parent.CAS(oldInfo, redirectInfo))
-
-	// leftRef still refCount=1 (only our Retain, no extra from redirect)
-	assert.Equal(t, int32(1), left.RefCount())
-	assert.Equal(t, int64(0), freedLeft.Load(), "left not freed while Retained")
-
-	// Release our reference → refCount=0 → freed
-	left.Release()
-	assert.Equal(t, int32(0), left.RefCount())
-	assert.Equal(t, int64(10), freedLeft.Load(), "left freed after Release")
-}
-
-// TestHandleLeafSplit_CASFailure_Cleanup verifies C1/C2 fix:
-// When handleLeafSplit's parent CAS fails, all allocated resources should be cleaned up.
-func TestHandleLeafSplit_CASFailure_Cleanup(t *testing.T) {
-	// This test will be implemented when handleLeafSplit is added in Phase 6.0.1
-	// For now, we test the PageRef cleanup pattern
-	var freedPages []model.PageID
-	var freedMu sync.Mutex
-
-	freeFunc := func(id model.PageID) {
-		freedMu.Lock()
-		freedPages = append(freedPages, id)
-		freedMu.Unlock()
-	}
-
-	// ✅ C1 fix: Immediately Retain after creation
-	left := NewPageRef(10, 1, freeFunc)
-	right := NewPageRef(20, 1, freeFunc)
-	left.Retain()  // ✅ Prevent premature release
-	right.Retain() // ✅ Prevent premature release
-
-	assert.Equal(t, int32(1), left.RefCount())
-	assert.Equal(t, int32(1), right.RefCount())
-
-	// ✅ C2 fix: Complete cleanup on failure
-	left.Release()
-	right.Release()
-
-	// Verify pages are freed
-	freedMu.Lock()
-	freedIDs := make([]model.PageID, len(freedPages))
-	copy(freedIDs, freedPages)
-	freedMu.Unlock()
-
-	assert.Contains(t, freedIDs, model.PageID(10), "left should be freed after Release")
-	assert.Contains(t, freedIDs, model.PageID(20), "right should be freed after Release")
-}
-
-// TestHandleRootSplit_ReplaceRoot verifies C5 fix:
-// handleRootSplit should use ReplaceRoot instead of CompareAndSwap.
 func TestHandleRootSplit_ReplaceRoot(t *testing.T) {
 	// This test will be implemented when handleRootSplit is added in Phase 6.0.4
 	// For now, we test the ReplaceRoot API

@@ -263,3 +263,8 @@ func (h *nodePageHandle) Validate() error {
 	}
 	return nil
 }
+
+// Release returns this handle to the pool for reuse.
+func (h *nodePageHandle) Release() {
+	h.storage.nodeHandlePool.Put(h)
+}

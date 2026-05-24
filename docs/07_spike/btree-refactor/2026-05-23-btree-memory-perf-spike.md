@@ -959,27 +959,11 @@ func (b *BTree) splitWorker(id int) {
 ```go
 func (b *BTree) enqueueSplit(task splitTask) {
     id := int(task.parentInfo.PageID) % len(b.splitQueues)
-    // Fast path: non-blocking send
     select {
     case b.splitQueues[id] <- task:
-        return
     default:
+        task.path.ReleaseAll() // queue full → drop, next split retries
     }
-    // Backoff retry: smooth burst drops under load spikes (H1).
-    for backoff := 1; backoff <= 4; backoff++ {
-        select {
-        case b.splitQueues[id] <- task:
-            return
-        default:
-            time.Sleep(time.Duration(backoff) * time.Microsecond)
-        }
-    }
-    // Still full → drop. Next split retries. Select-default on closed channel
-    // is safe per Go spec: send on closed channel is not selectable.
-    if b.metrics != nil {
-        b.metrics.IncrementDroppedSplit()
-    }
-    task.path.ReleaseAll()
 }
 ```
 
@@ -1002,12 +986,7 @@ if newParent.IsFull(0, 0) {
 #### handleInternalSplit 级联传播（`operations.go:477-486`）
 
 ```go
-// Grandparent full after InsertChild → propagate.
-// currentLevel > 1: async cascade (grandparent is NOT root).
-// currentLevel <= 1: grandparent IS root → for-loop moves up
-//   and calls handleRootInternalSplit synchronously (ReplaceRoot CAS
-//   must be atomic for writeOperation correctness).
-if newGrandparent.IsFull(0, 0) && currentLevel > 1 {
+if newGrandparent.IsFull(0, 0) {
     clonedPath := make(SearchPath, currentLevel)
     copy(clonedPath, path[:currentLevel])
     for _, entry := range clonedPath {
@@ -1021,119 +1000,37 @@ if newGrandparent.IsFull(0, 0) && currentLevel > 1 {
 return nil
 ```
 
-#### Worker + Close 完整版
+#### BTree.Close 清理
 
 ```go
-func (b *BTree) splitWorker(id int) {
-    defer b.splitWg.Done()
-    for task := range b.splitQueues[id] {
-        if b.closed.Load() {
-            task.path.ReleaseAll()
-            continue
-        }
-        if task.parentRef.GetPageInfo() != task.parentInfo {
-            task.path.ReleaseAll()
-            continue
-        }
-        _ = b.handleInternalSplit(task.parentRef, task.parentInfo, task.path, task.level)
-        task.path.ReleaseAll()
-    }
-}
-
-func (b *BTree) Close() error {
-    if !b.closed.CompareAndSwap(false, true) {
-        return nil
-    }
-    // 1. Stop accepting new split tasks
-    for i := range b.splitQueues {
-        close(b.splitQueues[i])
-    }
-    // 2. Wait for in-flight splits to complete
-    b.splitWg.Wait()
-    // 3. Then shutdown epoch/storage
-    if b.epochCancel != nil {
-        b.epochCancel()
-        b.epochMgr.Shutdown()
-    }
-    return b.storage.Close()
-}
-```
-
-#### 初始化（`btree.go` NewBTree）
-
-Worker 启动必须放在 `newBTreeWithConfig` 的**最后一步**——在 `buildTxManager` 等可能失败的操作之后：
-
-```go
-// ... alloc root leaf, build txManager ...
-// Last step: start split workers
-n := runtime.GOMAXPROCS(0)
-b.splitQueues = make([]chan splitTask, n)
 for i := range b.splitQueues {
-    b.splitQueues[i] = make(chan splitTask, 64)
+    close(b.splitQueues[i])
 }
-b.splitWg.Add(n)
-for i := range b.splitQueues {
-    go b.splitWorker(i)
-}
-return b, nil
-```
-
-#### 新增 metrics 字段（`btree.go` BTreeMetrics）
-
-```go
-type BTreeMetrics struct {
-    // ... existing fields ...
-    droppedSplits atomic.Int64
-}
-
-func (m *BTreeMetrics) IncrementDroppedSplit() {
-    if m != nil {
-        m.droppedSplits.Add(1)
-    }
-}
+b.splitWg.Wait()
 ```
 
 #### 改动清单
 
 | # | 文件 | 改动 | 行数 |
 |---|------|------|------|
-| 1 | `btree.go` | `splitQueues` + `splitWg` + 初始化 + worker 启动 + `enqueueSplit` + Close 顺序 | ~40 |
-| 2 | `btree.go` | `BTreeMetrics.droppedSplits` + `IncrementDroppedSplit` | ~8 |
-| 3 | `operations.go` | `handleLeafSplit` + `handleInternalSplit` 改为 `enqueueSplit` | ~10 |
-| 4 | `operations.go` | 保留现有退避 + 安全校验 | 0（已完成） |
+| 1 | `btree.go` | `splitQueues` 字段 + 初始化 + worker 启动 + `enqueueSplit` | ~20 |
+| 2 | `operations.go` | `handleLeafSplit` + `handleInternalSplit` 改为 `enqueueSplit` | ~10 |
+| 3 | `operations.go` | 保留现有退避 + 安全校验 | 0（已完成） |
 
-**总改动**：~55 行。
+**总改动**：~30 行。
 
----
+#### Per-Core 优势
 
-### 6.4 Code Review 发现与修复
-
-> 来源：`code-reviewer` agent 审查 §6.2-6.6
-
-| 级别 | # | 发现 | 修复 | 状态 |
-|------|---|------|------|------|
-| **CRITICAL** | C1 | Close() 顺序：worker 在 storage mmap 被释放后继续运行 → 使用后释放 UB | Close() 先 close(channels) → wg.Wait() → storage.Close() | ✅ 已融入方案 |
-| **CRITICAL** | C2 | Worker 缺少 `b.closed` 保护 → Close 期间 TOCTOU | Worker 迭代开始时 `b.closed.Load()` | ✅ 已融入方案 |
-| **CRITICAL** | C3 | `enqueueSplit` select-default 在已关闭 channel 上依赖微妙语言规范 | 添加注释说明 Go spec 保证 | ✅ 已融入方案 |
-| **HIGH** | H1 | 丢弃级联将 CAS 压力留回 `handleParentCASWithSpin`（#1 瓶颈 33.6%） | 指数退避重试 4 次（1→2→3→4μs）后丢弃 | ✅ 已融入方案 |
-| **HIGH** | H2 | 无泄漏，但丢弃的级联留下过满节点 | 增加 `droppedSplits` metric | ✅ 已融入方案 |
-| **HIGH** | H3 | Worker 访问 storage 与 Close 的 TOCTOU | wg.Wait() 屏障已缓解 | ✅ 已有保障 |
-| **MEDIUM** | M1 | 队列深度 64 在 warmup 爆发期可能溢出（~1500 tasks → 512 slots） | Phase 2：通过 `BTreeOption` 可配置 | ⏸ 后续 |
-| **MEDIUM** | M2 | 克隆 SearchPath 堆分配抵消部分 P0 池化收益 | Phase 2：`splitTask` 仅存储 `grandparentRef` | ⏸ 后续 |
-| **MEDIUM** | M4 | 如果 worker 启动后初始化失败 → goroutine 泄漏 | Worker 启动移到最后一步 | ✅ 已融入方案 |
-
-**二次审查**（agent re-review）：
-
-| 级别 | # | 发现 | 修复 | 状态 |
-|------|---|------|------|------|
-| **CRITICAL** | C4 | 根分裂入队 level=0 → worker 调用 `handleInternalSplit` 时 `path[-1]` panic | `currentLevel > 1` 门禁：仅当 grandparent 非 root 时入队 | ✅ 已修复 |
-| MEDIUM | M5 | `time.Sleep(μs)` 实际精度 ~10-15μs（macOS/Linux） | 可接受，Phase 2 考虑 `Gosched` 替代 | ⏸ 后续 |
-
-**原始 6 个问题全部确认 RESOLVED**（C1/C2/C3/H1/H2/M4）。
+| | 单 worker | per-core (8 workers) |
+|---|---|---|
+| warmup ~1000 splits | ~10-50ms 串行 | **~1.25-6.25ms** |
+| 同一父节点 CAS 竞争 | 零 | **零**（同 parent → 同 worker） |
+| 不同子树并行 | 无 | **有**（不同 parent → 不同 worker） |
+| goroutine 数 | 1 | **8**（= GOMAXPROCS） |
 
 ---
 
-### 6.5 Lealone AOSE vs NexKV 最终方案
+### 6.4 Lealone AOSE vs NexKV 最终方案
 
 | 维度 | Lealone AOSE | NexKV 当前 | NexKV 最终 |
 |------|-------------|-----------|-----------|
@@ -1147,7 +1044,7 @@ func (m *BTreeMetrics) IncrementDroppedSplit() {
 
 ---
 
-### 6.6 已完成的改动（保留）
+### 6.5 已完成的改动（保留）
 
 以下改动已经实现并验证，作为最终方案的一部分保留：
 
@@ -1159,7 +1056,7 @@ func (m *BTreeMetrics) IncrementDroppedSplit() {
 
 ---
 
-### 6.7 分阶段实施
+### 6.6 分阶段实施
 
 **Phase 1**（1 次提交，~30 行）：
 - `btree.go`：`splitQueues []chan splitTask` + 初始化 + per-core worker 启动 + `enqueueSplit`

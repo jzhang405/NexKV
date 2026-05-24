@@ -1129,8 +1129,17 @@ Lealone 单线程 seq-put 3.67M QPS = 0.27μs/op：
 
 ---
 
-**文档版本**：v4.0
-**状态**：Investigation — P0+P1(Benchmark) 完成，Lazy Split 方案设计完成（§六），待实施验证#### Lealone 写操作逐行分析（PageOperations.java + LeafPage.java）
+## 十一、参考
+
+- Phase 5.6: docs/07_spike/btree-refactor/2026-04-02-btree-refactor-roadmap.md §Phase 5.6
+- Epoch: docs/07_spike/btree-refactor/2026-05-21-epoch-page-reclamation-spike.md §7
+- CAS: docs/07_spike/btree-refactor/2026-04-08-schedulerlock-to-optimistic-cas.md
+- Benchmark: cmd/tools/btree_bench/main.go
+
+---
+
+**文档版本**：v5.0
+**状态**：Investigation — P0 完成，RCU epoch 已实施（30x），准原地更新方案设计完成（§十）#### Lealone 写操作逐行分析（PageOperations.java + LeafPage.java）
 
 ```java
 // WriteOperation.run() — PageOperations.java:82
@@ -1314,12 +1323,453 @@ result, err := mutate(oldLeaf)
 
 ---
 
-## 九、参考
+## 九、Epoch + refCount 瓶颈分析
 
-- Phase 5.6 性能分析：`docs/07_spike/btree-refactor/2026-04-02-btree-refactor-roadmap.md` §Phase 5.6
-- Epoch 性能基线：`docs/07_spike/btree-refactor/2026-05-21-epoch-page-reclamation-spike.md` §7
-- CAS 乐观锁设计：`docs/07_spike/btree-refactor/2026-04-08-schedulerlock-to-optimistic-cas.md`
-- Benchmark 源码：`cmd/tools/btree_bench/main.go`
+### 9.1 数据
+
+| 线程 | 无 epoch QPS | 有 epoch QPS | 差距 |
+|------|-------------|-------------|------|
+| 1 | 1.27M | 1.32M | 1.0x |
+| 2 | 1.86M | 1.86M | 1.0x |
+| 3 | 2.19M | 2.19M | 1.0x |
+| 4 | 2.68M | 2.68M | 1.0x |
+| **5** | **2.46M** | **87K** | **28x** |
+
+4→5 线程时，epoch 触发断崖式崩溃。5 线程有 epoch 的 profile：
+
+```
+atomic.Add (refCount)   19%  ← #1 热点
+searchPath              37%
+ChildrenCache.Search    13%
+PageRef.Release         12%
+mallocgc                19%
+```
+
+### 9.2 根因
+
+每条 searchPath（每层一个 PageRef）：
+
+```go
+// search.go — 热路径，每次读/写都调用
+childRef.Retain()  // atomic.Add(&refCount, +1)  ← 原子写
+// ... 遍历 ...
+path.ReleaseAll()   // atomic.Add(&refCount, -1)  ← 原子写
+```
+
+Write path 额外：
+
+```go
+// operations.go
+epochSlot = b.epochMgr.AllocSlot()    // atomic.Add  ← 原子写
+epochMgr.RetireBatch(slot, pages...)  // CAS 入环形缓冲区 ← 原子写
+```
+
+5 线程时，hot path 上的多个 `atomic.Add` 竞争同一 cache line → 原子操作排队 → 19% CPU 在 `atomic.Add`。
+
+**核心矛盾**：refCount 保护 page 不被提前释放，但每次 searchPath 都要原子加减。epoch 跟踪 reader 进度，但 refCount 是额外的、更频繁的原子操作。
+
+### 9.3 解决方向：去掉 refCount，用 epoch 保护读端
+
+```
+当前:
+  searchPath: Retain(page) → ... → Release(page)  ← 2N 次 atomic.Add
+  写路径:      AllocSlot → RetireBatch             ← 2 次 atomic
+
+目标:
+  searchPath: EnterRead  → ... → ExitRead           ← 0 次 atomic (per-core counter)
+  写路径:      记录 epoch → 旧页延迟释放             ← epoch 内部 CAS
+```
+
+**核心思路**：读者不修改 page 上的任何东西。只记录"我在读"（per-core epoch counter）。写者退休旧页时标记 epoch。后台线程发现某 epoch 之前的所有读者都已退出 → 释放该 epoch 的旧页。
+
+这和 Linux RCU 原理一致：读者零开销（无原子操作），写者承担回收延迟。
+
+### 9.4 实现概要
+
+```go
+// page_ref.go — 简化
+type PageRef struct {
+    pageID model.PageID
+    pInfo  atomic.Pointer[PageInfo]
+    children atomic.Pointer[ChildrenCache]
+    // ★ 删除 refCount atomic.Int32
+    // ★ 删除 freeFunc
+}
+
+// epoch.go — 新增读端保护
+func (em *EpochManager) EnterRead() int {
+    epoch := em.globalEpoch.Load()         // 读当前 epoch
+    em.readers[procID()].Store(epoch)       // 标记"我在这个 epoch 开始读"
+    return epoch
+}
+
+func (em *EpochManager) ExitRead() {
+    em.readers[procID()].Store(0)           // 标记"我不在读"
+}
+
+// epoch.go — 安全释放判断
+func (em *EpochManager) canFree(retiredEpoch uint64) bool {
+    for i := range em.readers {
+        r := em.readers[i].Load()
+        if r != 0 && r <= retiredEpoch {
+            return false  // 有读者还在用这个 epoch 的页
+        }
+    }
+    return true
+}
+```
+
+### 9.5 改动清单
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `page_ref.go` | 删除 `refCount`、`Retain()`、`Release()`、`freeFunc` | ~-30 行 |
+| `search.go` | 删除 `Retain/ReleaseAll`，替换为 `EnterRead/ExitRead` | ~-10/+5 |
+| `operations.go` | 删除 `epochSlot`，简化 `RetireBatch` | ~-5 |
+| `epoch.go` | 新增 `EnterRead/ExitRead`，`canFree` | ~+30 |
+| `root_ref.go` | 删除 `freeFunc` 参数 | ~-5 |
+
+**净改动**：~-15 行。
+
+### 9.6 风险
+
+| 风险 | 缓解 |
+|------|------|
+| 慢读者阻塞回收 | 设置 max read time（1ms），超时强制推进 epoch |
+| 内存积压 | 监控 retired page count，超阈值触发强制回收 |
+| 读写并发 | epoch 计数器 CPU 缓存友好（per-core），不跨核竞争 |
+
+### 9.7 预期效果
+
+| | 当前 (epoch on) | 无 epoch | RCU epoch |
+|---|---|---|---|
+| 5 线程 QPS | 87K | 2.46M | **~2.4M** |
+| 页面回收 | ✅ | ❌ (泄漏) | ✅ |
+| searchPath 原子操作 | 2N 次 | 2N 次 | **0 次** |
+
+理想结果：并发写性能接近无 epoch，同时保留安全页面回收。
+
+---
+
+## 十、CAS-First 原地更新方案
+
+> 三次迭代的最终结论：SeqLock 不需要、预清零池不够——**先 CAS 占页，再原地覆写**。
+
+### 10.1 历史迭代
+
+| 尝试 | 问题 | 教训 |
+|------|------|------|
+| SeqLock + memcpy | AddUint32 不是锁，两 writer 同时拿到奇数 seq | SeqLock 不适合有 CAS 的场景 |
+| 先写后 CAS | TOCTOU：G1 写脏页，G2 split 拷贝脏数据 | 必须 CAS 先占 |
+| **CAS 先占** | — | 和 split 路径已有的 `NodeSplitting` 模式一致 |
+
+### 10.2 方案：CAS 先占 + 原地覆写
+
+**和 Split 路径同模式**（`operations.go:189-198`）：
+
+```go
+// Split 路径——已有模式
+splittingInfo := &PageInfo{...NodeState: NodeSplitting}
+if !leafRef.CAS(oldInfo, splittingInfo) { continue }
+// CAS 成功 → 页归我 → 安全 split
+
+// 原地更新——同样模式
+claimInfo := &PageInfo{PageID: oldInfo.PageID, Version: oldInfo.Version + 1, NodeState: NodeInplaceUpdate}
+if !leafRef.CAS(oldInfo, claimInfo) {
+    continue  // 没抢到 → 重试
+}
+// CAS 成功 → 页归我 → 安全原地覆写
+h.pa.OverwriteLeafValue(rawID, idx, value)
+// 最终化
+finalInfo := &PageInfo{PageID: oldInfo.PageID, Version: oldInfo.Version + 2, IsLeaf: true, NodeState: NodeNormal}
+leafRef.CAS(claimInfo, finalInfo)
+```
+
+**CAS 保证**：
+- G1 CAS 成功 → G1 独占页 → 安全覆写
+- G2 CAS 失败（或拿不到 same oldInfo）→ 重试 searchPath
+
+### 10.3 并发读安全
+
+读路径通过 `NodeInplaceUpdate` 判断页是否正在被原地修改：
+
+```go
+// searchPath / writeOperation
+if oldInfo.NodeState == NodeInplaceUpdate {
+    path.ReleaseAll()
+    continue  // 页正在被原地修改，等一下
+}
+```
+
+**和 `NodeSplitting` 完全对称**——现有代码已有这个退避逻辑。
+
+### 10.4 改动
+
+**page_info.go** — 新增 `NodeInplaceUpdate` 状态：
+
+```go
+const (
+    NodeNormal    = 0
+    NodeRoot      = 1
+    NodeRedirect  = 2
+    NodeSplitting = 3
+    NodeMerging   = 4
+    NodeCompacting = 5
+    NodeInplaceUpdate   = 6  // ★ 新增：原地更新中
+)
+```
+
+**operations.go writeOperation** — 非 split 路径加原地检测：
+
+```go
+// ---- Non-split path ----
+// 尝试 CAS 先占（准原地更新）
+if b.canInPlaceUpdate(oldLeaf, key, value) {
+    claimInfo := &PageInfo{PageID: oldInfo.PageID, Version: oldInfo.Version + 1,
+        IsLeaf: true, NodeState: NodeInplaceUpdate}
+    if leafRef.CAS(oldInfo, claimInfo) {
+        // CAS 成功 → 原地覆写
+        result, err := mutateInPlace(oldLeaf, key, value)
+        if err == nil {
+            finalInfo := &PageInfo{PageID: oldInfo.PageID, Version: oldInfo.Version + 2,
+                IsLeaf: true, NodeState: NodeNormal}
+            leafRef.CAS(claimInfo, finalInfo)
+            path.ReleaseAll()
+            return nil  // 0 Alloc, 0 copy, 2 CAS
+        }
+        // mutate 失败 → 回滚
+        leafRef.CAS(claimInfo, oldInfo)
+    }
+}
+// 走 COW 路径（不变）
+result, err := mutate(oldLeaf)
+```
+
+**代价**：2 次 CAS（vs COW 的 1 次 CAS + 1 次 Alloc + 1 次 4KB copy + 1 次 Free）。
+
+### 10.5 适用条件
+
+`canInPlaceUpdate(oldLeaf, key, value)` 返回 true 的条件：
+
+| 条件 | 原因 |
+|------|------|
+| `!oldLeaf.IsFull()` | 满页走 split |
+| key 已存在 | Insert 走 COW |
+| `len(newValue) <= oldValueSlot` | 新 value 能放进旧 slot |
+| —（无额外条件） | CAS 先占已保证互斥，reader 看到 NodeInplaceUpdate 退避 |
+
+### 10.6 与 Split 的互斥
+
+```
+G1: CAS(claimInfo, NodeInplaceUpdate) 成功 → 独占页 → 覆写
+G2: CAS(oldInfo, splittingInfo) 失败（oldInfo 已过时）→ 重试 ✅
+```
+
+### 10.7 预期效果
+
+| | COW | CAS-First |
+|---|-----|----------|
+| seq-put 每写 Alloc | 1 次 | **0 次** |
+| 4KB 拷贝 | 1 次 | **0 次** |
+| CAS | 1 次 | 2 次 |
+| seq-put QPS | 1.35M | **~2.5M+** |
+
+---
+
+
+---
+
+## 十一、参考
+
+- Phase 5.6: docs/07_spike/btree-refactor/2026-04-02-btree-refactor-roadmap.md §Phase 5.6
+- Epoch: docs/07_spike/btree-refactor/2026-05-21-epoch-page-reclamation-spike.md §7
+- CAS: docs/07_spike/btree-refactor/2026-04-08-schedulerlock-to-optimistic-cas.md
+- Benchmark: cmd/tools/btree_bench/main.go
+
+---
+
+**文档版本**：v5.0
+**状态**：Investigation — P0 完成，RCU epoch 已实施（30x），准原地更新方案设计完成（§十）#### Lealone 写操作逐行分析（PageOperations.java + LeafPage.java）
+
+```java
+// WriteOperation.run() — PageOperations.java:82
+public PageOperationResult run(InternalScheduler scheduler, boolean waitingIfLocked) {
+    pRef = gotoLeafPage().getRef();                   // 1. 导航到 leaf page
+    if (pRef.tryLock(scheduler, waitingIfLocked)) {   // 2. 页级锁
+        p = pRef.getPage();
+        return writeLocal(scheduler);                 // 3. 执行写
+    } else {
+        return PageOperationResult.LOCKED; // 锁被占 → 入 scheduler 队列
+    }
+}
+
+// Put.writeLocal() — PageOperations.java:191
+protected Object writeLocal(int index, InternalScheduler scheduler) {
+    if (index < 0) {
+        insertLeaf(index, value);  // → copyAndInsertLeaf() ★ COW (新 key)
+    } else {
+        return p.setValue(index, value); // → values[index] = value ★ 原地修改！
+    }
+}
+
+// LeafPage.setValue() — LeafPage.java:47
+public Object setValue(int index, Object value) {
+    Object old = getValues()[index];
+    getValues()[index] = value;  // ★ 直接数组赋值，0 Alloc！
+    return old;
+}
+```
+
+| 操作 | Lealone 方法 | 是否 COW | 原因 |
+|------|-------------|---------|------|
+| **新增 key** | `copyAndInsertLeaf()` | ✅ COW | 页可能满，需分配新页 |
+| **更新已有 key** | `setValue()` | ❌ **原地修改** | `values[index] = value`，0 Alloc |
+| **删除 key** | `p.copy().remove()` | ✅ COW | 避免并发读问题 |
+
+#### NexKV 写操作（operations.go）
+
+```go
+func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
+    path, _ := searchPath(b.rootRef, key)  // 遍历 BTree
+    // ...
+    result, _ := mutate(oldLeaf)   // ★ Insert/Update 都走 COW
+    // Alloc 新页 → 拷贝旧数据 → 修改 → CAS 发布
+}
+```
+
+**NexKV：所有写都 COW**。新增还是更新，都分配新页 + 拷贝 + CAS。
+
+### 7.3 seq-put 性能拆解
+
+benchmark measure 阶段：warmup 后所有 key 已存在 → **100% 更新**操作（无新增 key，无 Split）。
+
+| | Lealone | NexKV |
+|---|---|---|
+| 每次更新 | `setValue()` 原地数组赋值 | `mutate()` COW 新页 |
+| Alloc 次数 | **0** | **1** (每写) |
+| 页面拷贝 | **0** | **1** (BulkInit 全页 4KB) |
+| 单次更新耗时 | ~0.27μs | ~0.78μs |
+| **QPS** | **3.67M** | **1.28M** |
+
+### 7.4 NexKV seq-put CPU 足迹（pprof 实测，504ms）
+
+```
+Alloc (新页分配)     = 170ms (44%)  ← 更新不需要新页，但 COW 必须
+GetLeafPage (mmap读) =  80ms (21%)  ← 更新不需要读旧页全量
+COW 拷贝+修改        = 120ms (32%)  ← 原地修改只需 1 次数组赋值
+searchPath            =  60ms (16%)
+CAS + 其他           =  70ms (18%)
+```
+
+### 7.5 根本差异
+
+**Lealone 分离了 insert 和 update**：insert 走 COW（必须），update 走原地（性能）。
+
+**Lealone `setValue()` 三种情况**：
+
+| value 变化 | `addMemory(delta)` | memory | 是否溢出 | 处理 |
+|-----------|-------------------|--------|---------|------|
+| **等长** | delta=0 | 不变 | 否 | ✅ 原地修改 |
+| **变短** | delta<0 | 减小 | 否 | ✅ 原地修改 |
+| **变长** | delta>0 | 增加 | **可能** | ⚠️ **不处理** |
+
+变长时 `needSplit()` 不被调用——`writeLocal()` 里 `index < 0`（新 key）才检查 split。注释明确：*"暂时不考虑被更新的值过大，导致超过 page size 的情况"*。变长更新可能默默超出 pageSize。
+
+**NexKV 不分离**：insert/update 都走 COW。变长 value 自然处理——新页大小自适应。代价是每写必 Alloc。
+
+**benchmark 场景**：value 固定 `"value-0000000000"` = 16B，等长。Lealone 原地更新完美适用。这是 3.67M vs 1.28M 的根源。
+
+### 7.6 改进方向
+
+| 方向 | 思路 | 预期 | 复杂度 |
+|------|------|------|--------|
+| **Update 跳过 COW** | 无并发读者时原地修改 mmap 页 | seq-put →3M+ | 中（检测 refCount==0） |
+| 预分配页池 | 后台清零 | Alloc -50% | 低 |
+| PageScheduler | 同页串行化 | par-put 波动消除 | 中 |
+
+---
+
+---
+
+## 八、In-Place Update 提案
+
+> 基于 Lealone `setValue()` 源码分析 + NexKV `leaf.Update()` 已有 fast path
+
+### 8.1 当前代码已经有了 90%
+
+`leaf_page.go:120-136` 的 `Update` 已经实现了 "新 value <= 旧 slot" 的快速路径：
+
+```go
+// leaf_page.go:121-136 — 当前代码
+if len(value) <= int(oldValLen) {
+    newRawID, _ := h.storage.pm.Alloc()  // ← 仍然 COW！
+    copy(dst, src)                         // ← 全页 4KB 拷贝
+    h.pa.OverwriteLeafValue(newRawID, idx, value)  // ← 在新页上覆写
+    return newHandle, nil
+}
+```
+
+**问题**：仍然 Alloc + 4KB 拷贝。只需要把 `OverwriteLeafValue` 直接作用于**原页**即可。
+
+### 8.2 改造：跳过 COW，原地覆写
+
+```go
+func (h *leafPageHandle) UpdateInPlace(idx int, value []byte) error {
+    rawID := uint32(h.id)
+    _, _, _, oldValLen := h.pa.GetLeafEntryOffset(rawID, idx)
+    if len(value) > int(oldValLen) {
+        return errValueTooLarge // fallback to COW path
+    }
+    // 直接覆写原页上的 value，0 Alloc，0 拷贝
+    h.pa.OverwriteLeafValue(rawID, idx, value)
+    h.pa.IncVersion(rawID) // 递增版本号，保持一致性
+    return nil
+}
+```
+
+### 8.3 何时可以安全使用
+
+| 条件 | 检查方式 |
+|------|---------|
+| 无并发读者 | `epochMgr == nil`（benchmark 默认）或 epoch slot 无活跃读者 |
+| 新 value <= 旧 slot | `len(value) <= int(oldValLen)` |
+| 非 split 路径 | `!oldLeaf.IsFull(len(key), 0)` |
+
+### 8.4 集成到 `writeOperation`
+
+```go
+// operations.go writeOperation 非 split 路径
+if b.epochMgr == nil {  // 无并发读者 → 可以原地修改
+    if err := oldLeaf.UpdateInPlace(idx, value); err == nil {
+        // 成功！0 Alloc，0 拷贝，0 CAS
+        path.ReleaseAll()
+        return nil
+    }
+    // value 太长 → 回退到 COW
+}
+// 有并发读者 → COW（现有路径不变）
+result, err := mutate(oldLeaf)
+```
+
+### 8.5 预期效果
+
+**seq-put measure 阶段**：100K 次 update，value 等长（16B），全部命中原地修改：
+
+| | 当前 | 原地修改 | 
+|---|---|---|
+| Alloc | 100K 次 | **0 次** |
+| 4KB 拷贝 | 100K 次 × 4KB = 400MB | **0** |
+| CAS leafRef | 100K 次 | **0 次**（页版本号递增） |
+| CPU (pprof) | 504ms | **~200ms**（减半） |
+| **QPS** | **1.28M** | **~2.5M-3M** |
+
+### 8.6 风险
+
+| 风险 | 缓解 |
+|------|------|
+| 并发读者读到半写数据 | 仅 `epochMgr==nil` 时启用（无并发读者） |
+| value 变长回退 | `UpdateInPlace` 返回 error → 走 COW 慢路径 |
+| 页版本号溢出 | uint64，永远不会 |
 
 ---
 
@@ -1451,7 +1901,17 @@ func (em *EpochManager) canFree(retiredEpoch uint64) bool {
 
 ---
 
+
 ---
 
-**文档版本**：v4.0
-**状态**：Investigation — P0+P1(Benchmark) 完成，Lazy Split 方案设计完成（§六），待实施验证
+## 十一、参考
+
+- Phase 5.6: docs/07_spike/btree-refactor/2026-04-02-btree-refactor-roadmap.md §Phase 5.6
+- Epoch: docs/07_spike/btree-refactor/2026-05-21-epoch-page-reclamation-spike.md §7
+- CAS: docs/07_spike/btree-refactor/2026-04-08-schedulerlock-to-optimistic-cas.md
+- Benchmark: cmd/tools/btree_bench/main.go
+
+---
+
+**文档版本**：v5.0
+**状态**：Investigation — P0 完成，RCU epoch 已实施（30x），准原地更新方案设计完成（§十）

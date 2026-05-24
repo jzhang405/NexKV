@@ -36,6 +36,9 @@ type BTreeMetrics struct {
 
 	// CompactionCount tracks the number of compaction cycles (Phase 6.5).
 	CompactionCount atomic.Int64
+
+	// DroppedSplitCount tracks how many cascade splits were dropped (split queue full).
+	DroppedSplitCount atomic.Int64
 }
 
 // NewBTreeMetrics creates a new metrics instance with all counters initialized to 0.
@@ -83,6 +86,13 @@ func (m *BTreeMetrics) IncrementCompact() {
 	m.CompactionCount.Add(1)
 }
 
+// IncrementDroppedSplit atomically increments the dropped split counter.
+func (m *BTreeMetrics) IncrementDroppedSplit() {
+	if m != nil {
+		m.DroppedSplitCount.Add(1)
+	}
+}
+
 // Snapshot returns a point-in-time snapshot of all metrics.
 // The returned values are consistent but not transactional.
 func (m *BTreeMetrics) Snapshot() MetricsSnapshot {
@@ -94,7 +104,8 @@ func (m *BTreeMetrics) Snapshot() MetricsSnapshot {
 		SplitCount:      m.SplitCount.Load(),
 		MergeCount:      m.MergeCount.Load(),
 		TreeHeightCount: m.TreeHeightCount.Load(),
-		CompactionCount: m.CompactionCount.Load(),
+		CompactionCount:  m.CompactionCount.Load(),
+		DroppedSplitCount: m.DroppedSplitCount.Load(),
 	}
 }
 
@@ -109,6 +120,7 @@ func (m *BTreeMetrics) Reset() {
 	m.MergeCount.Store(0)
 	m.TreeHeightCount.Store(0)
 	m.CompactionCount.Store(0)
+	m.DroppedSplitCount.Store(0)
 }
 
 // MetricsSnapshot is an immutable snapshot of BTreeMetrics.
@@ -120,15 +132,16 @@ type MetricsSnapshot struct {
 	SplitCount      int64
 	MergeCount      int64
 	CompactionCount int64
-	TreeHeightCount int64
+	TreeHeightCount   int64
+	DroppedSplitCount int64
 }
 
 // String returns a formatted string representation of the metrics.
 func (s MetricsSnapshot) String() string {
 	return fmt.Sprintf(
-		"Read=%d Write=%d Delete=%d CASRetries=%d Splits=%d Merges=%d Compactions=%d TreeHeight=%d",
+		"Read=%d Write=%d Delete=%d CASRetries=%d Splits=%d Merges=%d Compactions=%d TreeHeight=%d DroppedSplits=%d",
 		s.ReadCount, s.WriteCount, s.DeleteCount,
-		s.CASRetryCount, s.SplitCount, s.MergeCount, s.CompactionCount, s.TreeHeightCount,
+		s.CASRetryCount, s.SplitCount, s.MergeCount, s.CompactionCount, s.TreeHeightCount, s.DroppedSplitCount,
 	)
 }
 

@@ -291,6 +291,6 @@ func TestBTreeMetrics_String(t *testing.T) {
 		MergeCount:    2,
 	}
 
-	expected := "Read=100 Write=50 Delete=25 CASRetries=10 Splits=5 Merges=2 Compactions=0 TreeHeight=0"
+	expected := "Read=100 Write=50 Delete=25 CASRetries=10 Splits=5 Merges=2 Compactions=0 TreeHeight=0 DroppedSplits=0"
 	assert.Equal(t, expected, snapshot.String())
 }

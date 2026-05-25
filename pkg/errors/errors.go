@@ -141,7 +141,7 @@ var (
 	// Pipeline 层错误
 	ErrPipelineClosed          = stderrors.New("pipeline: closed")
 	ErrPipelineShutdownTimeout = stderrors.New("pipeline: graceful shutdown timeout")
-	// BTree 核心错误（新版)
+	// BTree 错误
 	ErrBTreeCASConflict       = stderrors.New("btree: cas conflict after max retries")
 	ErrBTreeRetry             = stderrors.New("btree: retry operation")
 	ErrBTreePageFreed         = stderrors.New("btree: page already freed")
@@ -155,6 +155,9 @@ var (
 	ErrBTreeNotImplemented    = stderrors.New("btree: not implemented")
 	ErrBTreeBorrowSourceEmpty = stderrors.New("btree: borrow source page is empty")
 	ErrBTreeMergeNoSibling    = stderrors.New("btree: merge requires sibling page")
+	ErrBTreeValidationError   = stderrors.New("btree: validation error")
+	ErrBTreeSearchError       = stderrors.New("btree: search error")
+	ErrBTreeDebugError        = stderrors.New("btree: debug error")
 	// OffHeap 错误
 	ErrOffHeapAllocatorSizeInvalid  = stderrors.New("offheap: allocator size must be positive")
 	ErrOffHeapAllocExceedsSize      = stderrors.New("offheap: alloc size exceeds allocator size")
@@ -166,7 +169,9 @@ var (
 	ErrOffHeapConstraintViolation   = stderrors.New("offheap: constraint violation")
 	ErrOffHeapCreateAllocatorFailed = stderrors.New("offheap: create allocator failed")
 	ErrOffHeapAllocMemoryFailed     = stderrors.New("offheap: allocate memory failed")
-	// Chunk 层错误
+	ErrOffHeapInvalidRange          = stderrors.New("offheap: invalid range")
+	ErrOffHeapSystemError           = stderrors.New("offheap: system error")
+	// Chunk 错误
 	ErrChunkInvalidHeader  = stderrors.New("chunk: invalid chunk header")
 	ErrChunkCRCMismatch    = stderrors.New("chunk: crc mismatch")
 	ErrChunkPageNotFound   = stderrors.New("chunk: page not found")
@@ -174,7 +179,12 @@ var (
 	ErrChunkNilDestination = stderrors.New("chunk: nil destination pointer")
 	ErrChunkInvalidLength  = stderrors.New("chunk: invalid page length")
 	ErrChunkIDExhausted    = stderrors.New("chunk: all chunk IDs exhausted")
-	// WAL 层错误
+	ErrChunkHeaderError    = stderrors.New("chunk: header error")
+	ErrChunkIOError        = stderrors.New("chunk: I/O error")
+	ErrChunkFormatError    = stderrors.New("chunk: format error")
+	ErrChunkInvalidParam   = stderrors.New("chunk: invalid parameter")
+	ErrChunkNotFound       = stderrors.New("chunk: not found")
+	// WAL 错误
 	ErrWALClosed              = stderrors.New("wal: closed")
 	ErrWALCorrupted           = stderrors.New("wal: corrupted")
 	ErrWALEntryCorrupted      = stderrors.New("wal: entry corrupted")
@@ -183,7 +193,9 @@ var (
 	ErrWALInvalidConfig       = stderrors.New("wal: invalid config")
 	ErrWALSegmentFull         = stderrors.New("wal: segment full")
 	ErrWALTruncatedEntry      = stderrors.New("wal: truncated entry")
-	// MVCC 层错误
+	ErrWALIOError             = stderrors.New("wal: I/O error")
+	ErrWALRecovery            = stderrors.New("wal: recovery error")
+	// MVCC 错误
 	ErrMVCCKeyNotFound          = stderrors.New("mvcc: key not found")
 	ErrMVCCValueTooShort        = stderrors.New("mvcc: value too short")
 	ErrMVCCInvalidFlag          = stderrors.New("mvcc: invalid flag")
@@ -193,43 +205,24 @@ var (
 	ErrMVCCLockTimeout          = stderrors.New("mvcc: key lock timeout")
 	ErrMVCCTxCommitted          = stderrors.New("mvcc: transaction already committed")
 	ErrMVCCTxRolledBack         = stderrors.New("mvcc: transaction already rolled back")
-	// Chunk 通用辅助错误
-	ErrChunkHeaderError    = stderrors.New("chunk: header error")
-	ErrChunkIOError        = stderrors.New("chunk: I/O error")
-	ErrChunkFormatError    = stderrors.New("chunk: format error")
-	// WAL 通用辅助错误
-	ErrWALIOError   = stderrors.New("wal: I/O error")
-	ErrWALRecovery  = stderrors.New("wal: recovery error")
-	// MVCC 通用辅助错误
-	ErrMVCCEncodeError    = stderrors.New("mvcc: encode error")
-	ErrMVCCSnapshotError  = stderrors.New("mvcc: snapshot error")
-	ErrMVCCTxPrepareError = stderrors.New("mvcc: tx prepare error")
-	ErrMVCCApplyError     = stderrors.New("mvcc: apply error")
-	ErrMVCCRollbackError  = stderrors.New("mvcc: rollback error")
-	ErrMVCCPutError       = stderrors.New("mvcc: put error")
-	ErrMVCCGetError       = stderrors.New("mvcc: get error")
-	ErrMVCCDeleteError    = stderrors.New("mvcc: delete error")
+	ErrMVCCEncodeError          = stderrors.New("mvcc: encode error")
+	ErrMVCCSnapshotError        = stderrors.New("mvcc: snapshot error")
+	ErrMVCCTxPrepareError       = stderrors.New("mvcc: tx prepare error")
+	ErrMVCCApplyError           = stderrors.New("mvcc: apply error")
+	ErrMVCCRollbackError        = stderrors.New("mvcc: rollback error")
+	ErrMVCCPutError             = stderrors.New("mvcc: put error")
+	ErrMVCCGetError             = stderrors.New("mvcc: get error")
+	ErrMVCCDeleteError          = stderrors.New("mvcc: delete error")
+	ErrMVCCTxPrepareCorrupted   = stderrors.New("mvcc: tx prepare corrupted")
+	ErrMVCCPanicRecovered       = stderrors.New("mvcc: panic recovered")
 	// Checkpoint 错误
-	ErrCheckpointNilRoot     = stderrors.New("checkpoint: nil root page")
-	ErrCheckpointEnumerate   = stderrors.New("checkpoint: enumerate pages failed")
-	ErrCheckpointAlloc       = stderrors.New("checkpoint: allocate page failed")
-	ErrCheckpointWrite       = stderrors.New("checkpoint: write page failed")
-	ErrCheckpointSync        = stderrors.New("checkpoint: sync chunks failed")
-	ErrCheckpointAppend      = stderrors.New("checkpoint: append entry failed")
-	ErrCheckpointTruncate    = stderrors.New("checkpoint: truncate failed")
-	// BTree 调试/验证错误
-	ErrBTreeValidationError  = stderrors.New("btree: validation error")
-	ErrBTreeSearchError      = stderrors.New("btree: search error")
-	ErrBTreeDebugError       = stderrors.New("btree: debug error")
-	// Chunk/Page 通用错误
-	ErrChunkInvalidParam     = stderrors.New("chunk: invalid parameter")
-	ErrChunkNotFound         = stderrors.New("chunk: not found")
-	// Offheap 通用错误
-	ErrOffHeapInvalidRange   = stderrors.New("offheap: invalid range")
-	ErrOffHeapSystemError    = stderrors.New("offheap: system error")
-	// MVCC 编解码错误
-	ErrMVCCTxPrepareCorrupted = stderrors.New("mvcc: tx prepare corrupted")
-	ErrMVCCPanicRecovered     = stderrors.New("mvcc: panic recovered")
+	ErrCheckpointNilRoot   = stderrors.New("checkpoint: nil root page")
+	ErrCheckpointEnumerate = stderrors.New("checkpoint: enumerate pages failed")
+	ErrCheckpointAlloc     = stderrors.New("checkpoint: allocate page failed")
+	ErrCheckpointWrite     = stderrors.New("checkpoint: write page failed")
+	ErrCheckpointSync      = stderrors.New("checkpoint: sync chunks failed")
+	ErrCheckpointAppend    = stderrors.New("checkpoint: append entry failed")
+	ErrCheckpointTruncate  = stderrors.New("checkpoint: truncate failed")
 )
 
 // ===========================

@@ -5,8 +5,9 @@
 package mvcc
 
 import (
-	errpkg "github.com/jzhang405/NexKV/pkg/errors"
+	"fmt"
 	"encoding/binary"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 )
 
 // Value flag constants for MVCC-encoded values.
@@ -37,12 +38,12 @@ func (v *MVCCValue) IsTombstone() bool {
 // Returns ErrInvalidFlag if the flag is not FlagNormal or FlagTombstone.
 func ParseMVCC(val []byte) (*MVCCValue, error) {
 	if len(val) < MVCCHeaderSize {
-		return nil, errpkg.Wrapf(ErrValueTooShort, "got %d bytes, need %d", len(val), MVCCHeaderSize)
+		return nil, errpkg.Wrap(ErrValueTooShort, fmt.Sprintf("got %d bytes, need %d", len(val), MVCCHeaderSize))
 	}
 
 	flag := val[0]
 	if flag != FlagNormal && flag != FlagTombstone {
-		return nil, errpkg.Wrapf(ErrInvalidFlag, "0x%02X", flag)
+		return nil, errpkg.Wrap(ErrInvalidFlag, fmt.Sprintf("0x%02X", flag))
 	}
 
 	beginTS := binary.BigEndian.Uint64(val[1:9])
@@ -59,7 +60,7 @@ func ParseMVCC(val []byte) (*MVCCValue, error) {
 // Returns ErrZeroTimestamp if beginTS is 0.
 func BuildMVCC(flag byte, beginTS uint64, realVal []byte) ([]byte, error) {
 	if flag != FlagNormal && flag != FlagTombstone {
-		return nil, errpkg.Wrapf(ErrInvalidFlag, "0x%02X", flag)
+		return nil, errpkg.Wrap(ErrInvalidFlag, fmt.Sprintf("0x%02X", flag))
 	}
 	if beginTS == 0 {
 		return nil, ErrZeroTimestamp

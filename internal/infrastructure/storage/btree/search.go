@@ -5,6 +5,7 @@
 package btree
 
 import (
+	"fmt"
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"sync"
 )
@@ -76,7 +77,7 @@ func searchPath(rootRef *RootPageRef, key []byte) (SearchPath, error) {
 		pInfo := currentRef.GetPageInfo()
 		if pInfo == nil {
 			path.ReleaseAll()
-			return nil, errpkg.Wrapf(ErrBTreeSearchError, "btree: searchPath: nil PageInfo on page %d", currentRef.pageID)
+			return nil, errpkg.Wrap(ErrBTreeSearchError, fmt.Sprintf("btree: searchPath: nil PageInfo on page %d", currentRef.pageID))
 		}
 
 		// Check if leaf — stop descending

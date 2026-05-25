@@ -5,6 +5,7 @@
 package btree
 
 import (
+	"fmt"
 	"bytes"
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"unsafe"
@@ -110,7 +111,7 @@ func (h *leafPageHandle) Insert(key, value []byte) (LeafPage, error) {
 
 func (h *leafPageHandle) Update(idx int, value []byte) (LeafPage, error) {
 	if idx < 0 || idx >= h.Count() {
-		return nil, errpkg.Wrapf(ErrKeyNotFound, "btree: leaf update: index %d out of range [0, %d)", idx, h.Count())
+		return nil, errpkg.Wrap(ErrKeyNotFound, fmt.Sprintf("btree: leaf update: index %d out of range [0, %d)", idx, h.Count()))
 	}
 
 	rawID := uint32(h.id)
@@ -188,7 +189,7 @@ func (h *leafPageHandle) Update(idx int, value []byte) (LeafPage, error) {
 func (h *leafPageHandle) Delete(idx int) (LeafPage, error) {
 	count := h.Count()
 	if idx < 0 || idx >= count {
-		return nil, errpkg.Wrapf(ErrKeyNotFound, "btree: leaf delete: index %d out of range [0, %d)", idx, count)
+		return nil, errpkg.Wrap(ErrKeyNotFound, fmt.Sprintf("btree: leaf delete: index %d out of range [0, %d)", idx, count))
 	}
 
 	keys, vals := h.pa.CollectKVExcept(uint32(h.id), idx)

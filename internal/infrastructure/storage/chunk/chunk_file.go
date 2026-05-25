@@ -5,6 +5,7 @@
 package chunk
 
 import (
+	"fmt"
 	"encoding/binary"
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"os"
@@ -53,17 +54,17 @@ func openChunkFile(path string, capacity int64) (*os.File, error) {
 			// Open existing chunk file
 			f, err = os.OpenFile(path, os.O_RDWR, 0600)
 			if err != nil {
-				return nil, errpkg.Wrapf(err, "chunk: open existing file %s", path)
+				return nil, errpkg.Wrap(err, fmt.Sprintf("chunk: open existing file %s", path))
 			}
 			return f, nil
 		}
-		return nil, errpkg.Wrapf(err, "chunk: create file %s", path)
+		return nil, errpkg.Wrap(err, fmt.Sprintf("chunk: create file %s", path))
 	}
 	// Pre-allocate space for crash consistency
 	if err := preallocate(f, capacity); err != nil {
 		f.Close()
 		os.Remove(path)
-		return nil, errpkg.Wrapf(err, "chunk: preallocate")
+		return nil, errpkg.Wrap(err, "chunk: preallocate")
 	}
 	return f, nil
 }
@@ -73,7 +74,7 @@ func openChunkFile(path string, capacity int64) (*os.File, error) {
 func (c *ChunkFile) writeHeader(h *ChunkHeader) error {
 	text := h.encode()
 	if len(text) > ChunkBlockSize {
-		return errpkg.Wrapf(ErrChunkHeaderError, "chunk: header text too large: %d > %d", len(text), ChunkBlockSize)
+		return errpkg.Wrap(ErrChunkHeaderError, fmt.Sprintf("chunk: header text too large: %d > %d", len(text), ChunkBlockSize))
 	}
 	// Pad to block size
 	buf := make([]byte, ChunkBlockSize)
@@ -81,11 +82,11 @@ func (c *ChunkFile) writeHeader(h *ChunkHeader) error {
 
 	// Write block 1 at offset 0
 	if _, err := c.file.WriteAt(buf, 0); err != nil {
-		return errpkg.Wrapf(err, "chunk: write header block 1")
+		return errpkg.Wrap(err, "chunk: write header block 1")
 	}
 	// Write block 2 at offset 4096 (crash-safe duplicate)
 	if _, err := c.file.WriteAt(buf, ChunkBlockSize); err != nil {
-		return errpkg.Wrapf(err, "chunk: write header block 2")
+		return errpkg.Wrap(err, "chunk: write header block 2")
 	}
 	return nil
 }
@@ -95,7 +96,7 @@ func (c *ChunkFile) writeHeader(h *ChunkHeader) error {
 func (c *ChunkFile) readHeader() (*ChunkHeader, error) {
 	buf := make([]byte, ChunkHeaderSize)
 	if _, err := c.file.ReadAt(buf, 0); err != nil {
-		return nil, errpkg.Wrapf(err, "chunk: read header")
+		return nil, errpkg.Wrap(err, "chunk: read header")
 	}
 
 	// Try block 0 first
@@ -107,7 +108,7 @@ func (c *ChunkFile) readHeader() (*ChunkHeader, error) {
 	// Fall back to block 1 (crash-safe duplicate)
 	h, err = decodeHeader(buf[ChunkBlockSize:])
 	if err != nil {
-		return nil, errpkg.Wrapf(ErrInvalidChunkHeader, "chunk: both header blocks corrupted")
+		return nil, errpkg.Wrap(ErrInvalidChunkHeader, "chunk: both header blocks corrupted")
 	}
 	return h, nil
 }

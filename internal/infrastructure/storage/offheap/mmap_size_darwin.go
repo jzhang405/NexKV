@@ -7,8 +7,8 @@
 package offheap
 
 import (
-	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"fmt"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -41,7 +41,7 @@ func GetRecommendedMmapSize(ratio float64) (int, error) {
 func getPhysicalMemoryDarwin() (uint64, error) {
 	val, err := unix.SysctlUint64("hw.memsize")
 	if err != nil {
-		return 0, errpkg.Wrapf(err, "sysctl hw.memsize")
+		return 0, errpkg.Wrap(err, "sysctl hw.memsize")
 	}
 	return val, nil
 }

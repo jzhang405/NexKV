@@ -8,13 +8,13 @@ import (
 )
 
 var (
-	ErrWALClosed                = errpkg.ErrWALClosed
-	ErrWALCorrupted             = errpkg.ErrWALCorrupted
-	ErrWALEntryCorrupted        = errpkg.ErrWALEntryCorrupted
-	ErrWALChecksumMismatch      = errpkg.ErrWALChecksumMismatch
-	ErrWALLSNGap                = errpkg.ErrWALLSNGap
-	ErrInvalidWALConfig         = errpkg.ErrWALInvalidConfig
-	ErrWALSegmentFull           = errpkg.ErrWALSegmentFull
+	ErrWALClosed                  = errpkg.ErrWALClosed
+	ErrWALCorrupted               = errpkg.ErrWALCorrupted
+	ErrWALEntryCorrupted          = errpkg.ErrWALEntryCorrupted
+	ErrWALChecksumMismatch        = errpkg.ErrWALChecksumMismatch
+	ErrWALLSNGap                  = errpkg.ErrWALLSNGap
+	ErrInvalidWALConfig           = errpkg.ErrWALInvalidConfig
+	ErrWALSegmentFull             = errpkg.ErrWALSegmentFull
 	ErrWALCorruptedTruncatedEntry = errpkg.ErrWALTruncatedEntry
 )
 

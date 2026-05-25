@@ -186,7 +186,7 @@ func (b *BTree) compactPageWithParent(
 	var err error
 	newRawID, err = b.storage.pm.Alloc()
 	if err != nil {
-		return false, errpkg.Wrapf(err, "btree: compact alloc")
+		return false, errpkg.Wrap(err, "btree: compact alloc")
 	}
 
 	srcVersion := b.storage.pa.GetVersion(rawID)
@@ -197,7 +197,7 @@ func (b *BTree) compactPageWithParent(
 	dataEnd := uint16(0)
 	for i := range cr.keepKeys {
 		if err := b.storage.pa.InsertLeafEntry(newRawID, i, cr.keepKeys[i], cr.keepVals[i], &dataEnd); err != nil {
-			return false, errpkg.Wrapf(err, "btree: compact insert")
+			return false, errpkg.Wrap(err, "btree: compact insert")
 		}
 	}
 	b.storage.pa.SetTombstoneCount(newRawID, 0)

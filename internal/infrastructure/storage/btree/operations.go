@@ -5,6 +5,7 @@
 package btree
 
 import (
+	"fmt"
 	"bytes"
 	"errors"
 	"strings"
@@ -53,7 +54,7 @@ func (b *BTree) handleParentCASWithSpin(
 			if strings.Contains(err.Error(), "is not a node page") {
 				continue
 			}
-			return nil, nil, errpkg.Wrapf(err, "btree: handleParentCASWithSpin get parent")
+			return nil, nil, errpkg.Wrap(err, "btree: handleParentCASWithSpin get parent")
 		}
 
 		// ★ FIX: Re-derive childIdx from parent page — the original childIdx
@@ -217,7 +218,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 		result, err := mutate(oldLeaf)
 		if err != nil {
 			path.ReleaseAll()
-			return errpkg.Wrapf(err, "btree: write operation mutate key %q", key)
+			return errpkg.Wrap(err, fmt.Sprintf("btree: write operation mutate key %q", key))
 		}
 
 		// CAS-first in-place update: claim → overwrite → finalize
@@ -367,11 +368,11 @@ func (b *BTree) handleInternalSplit(
 		// Step 1: Split current internal node (move-up semantics)
 		currentNode, err := b.storage.GetNodePage(currentInfo.PageID)
 		if err != nil {
-			return errpkg.Wrapf(err, "btree: handleInternalSplit get node")
+			return errpkg.Wrap(err, "btree: handleInternalSplit get node")
 		}
 		currentLeft, currentRight, splitKey, err := currentNode.Split()
 		if err != nil {
-			return errpkg.Wrapf(err, "btree: handleInternalSplit split node")
+			return errpkg.Wrap(err, "btree: handleInternalSplit split node")
 		}
 		toFree = append(toFree, currentLeft.PageID(), currentRight.PageID())
 
@@ -427,7 +428,7 @@ func (b *BTree) handleInternalSplit(
 		// Step 5: Grandparent InsertChild (COW)
 		oldGrandparent, err := b.storage.GetNodePage(grandparentInfo.PageID)
 		if err != nil {
-			return errpkg.Wrapf(err, "btree: handleInternalSplit get grandparent")
+			return errpkg.Wrap(err, "btree: handleInternalSplit get grandparent")
 		}
 
 		// ★ FIX: Re-derive idx from physical page — path[currentLevel-1].Index
@@ -446,7 +447,7 @@ func (b *BTree) handleInternalSplit(
 
 		newGrandparent, err := oldGrandparent.InsertChild(actualIdx, splitKey, currentLeft.PageID(), currentRight.PageID())
 		if err != nil {
-			return errpkg.Wrapf(err, "btree: handleInternalSplit insert child")
+			return errpkg.Wrap(err, "btree: handleInternalSplit insert child")
 		}
 		toFree = append(toFree, newGrandparent.PageID())
 
@@ -554,19 +555,19 @@ func (b *BTree) handleRootInternalSplit(
 	// Step 2: Create new root node page
 	newRootID, err := b.storage.AllocNodePage()
 	if err != nil {
-		return errpkg.Wrapf(err, "btree: handleRootInternalSplit alloc root")
+		return errpkg.Wrap(err, "btree: handleRootInternalSplit alloc root")
 	}
 	*toFree = append(*toFree, newRootID)
 
 	newRootPage, err := b.storage.GetNodePage(newRootID)
 	if err != nil {
-		return errpkg.Wrapf(err, "btree: handleRootInternalSplit get new root")
+		return errpkg.Wrap(err, "btree: handleRootInternalSplit get new root")
 	}
 
 	// Insert left/right as children of new root
 	newRootPage, err = newRootPage.InsertChild(0, splitKey, leftPage.PageID(), rightPage.PageID())
 	if err != nil {
-		return errpkg.Wrapf(err, "btree: handleRootInternalSplit insert child")
+		return errpkg.Wrap(err, "btree: handleRootInternalSplit insert child")
 	}
 	*toFree = append(*toFree, newRootPage.PageID())
 
@@ -775,7 +776,7 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 	// Step 1: Split leaf → left + right + splitKey
 	leaf, err := b.storage.GetLeafPage(leafInfo.PageID)
 	if err != nil {
-		return errpkg.Wrapf(err, "btree: handleLeafSplit get leaf")
+		return errpkg.Wrap(err, "btree: handleLeafSplit get leaf")
 	}
 	leftPage, rightPage, splitKey, err := leaf.Split()
 	if err != nil {
@@ -919,7 +920,7 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 	// Step 1: Split root leaf → left + right + splitKey
 	rootLeaf, err := b.storage.GetLeafPage(rootInfo.PageID)
 	if err != nil {
-		return errpkg.Wrapf(err, "btree: handleRootSplit get leaf")
+		return errpkg.Wrap(err, "btree: handleRootSplit get leaf")
 	}
 	leftPage, rightPage, splitKey, err := rootLeaf.Split()
 	if err != nil {

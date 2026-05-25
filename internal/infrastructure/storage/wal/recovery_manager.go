@@ -5,9 +5,9 @@
 package wal
 
 import (
-	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"context"
 	"encoding/binary"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"sort"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -51,7 +51,7 @@ func (rm *RecoveryManager) Recover(ctx context.Context, bt BTreeAccessor, vs *mv
 	// Phase A: WAL scan
 	entries, err := rm.wal.Recover()
 	if err != nil {
-		return nil, errpkg.Wrapf(err, "recovery: scan WAL")
+		return nil, errpkg.Wrap(err, "recovery: scan WAL")
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].LSN < entries[j].LSN })
 
@@ -82,7 +82,7 @@ func (rm *RecoveryManager) Recover(ctx context.Context, bt BTreeAccessor, vs *mv
 	// Phase C: Replay WAL from checkpointStartLSN
 	committedTxIDs, replayedCount, err := rm.replayWAL(ctx, entries, checkpointStartLSN, bt, vs)
 	if err != nil {
-		return nil, errpkg.Wrapf(err, "recovery: replay WAL")
+		return nil, errpkg.Wrap(err, "recovery: replay WAL")
 	}
 
 	return &RecoverResult{

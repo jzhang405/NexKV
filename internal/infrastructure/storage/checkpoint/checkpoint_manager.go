@@ -5,9 +5,10 @@
 package checkpoint
 
 import (
-	errpkg "github.com/jzhang405/NexKV/pkg/errors"
+	"fmt"
 	"context"
 	"encoding/binary"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -103,7 +104,7 @@ func (m *Manager) FuzzyCheckpoint() error {
 	// Step 2: Capture COW root snapshot
 	root := m.btree.RootPage()
 	if root == nil {
-		return errpkg.Wrapf(errpkg.ErrCheckpointNilRoot, "checkpoint: nil root page")
+		return errpkg.Wrap(errpkg.ErrCheckpointNilRoot, "checkpoint: nil root page")
 	}
 
 	// Step 3: Enumerate pages + flush dirty pages to AO (Phase 4.3)
@@ -111,7 +112,7 @@ func (m *Manager) FuzzyCheckpoint() error {
 	if m.cm != nil {
 		items, err := m.btree.EnumeratePages(root)
 		if err != nil {
-			return errpkg.Wrapf(err, "checkpoint: enumerate pages")
+			return errpkg.Wrap(err, "checkpoint: enumerate pages")
 		}
 		pageLocs = make(map[model.PageID]model.ChunkPosition, len(items))
 		for _, item := range items {
@@ -119,16 +120,16 @@ func (m *Manager) FuzzyCheckpoint() error {
 			if item.ChunkPos == 0 && item.PageData != nil {
 				pos, err := m.cm.Allocate(len(item.PageData), item.PageType)
 				if err != nil {
-					return errpkg.Wrapf(err, "checkpoint: allocate page %d", item.PageID)
+					return errpkg.Wrap(err, fmt.Sprintf("checkpoint: allocate page %d", item.PageID))
 				}
 				if err := m.cm.WritePage(pos, item.PageData); err != nil {
-					return errpkg.Wrapf(err, "checkpoint: write page %d", item.PageID)
+					return errpkg.Wrap(err, fmt.Sprintf("checkpoint: write page %d", item.PageID))
 				}
 				pageLocs[item.PageID] = pos
 			}
 		}
 		if err := m.cm.Sync(); err != nil {
-			return errpkg.Wrapf(err, "checkpoint: sync chunks")
+			return errpkg.Wrap(err, "checkpoint: sync chunks")
 		}
 	}
 
@@ -136,17 +137,17 @@ func (m *Manager) FuzzyCheckpoint() error {
 	ckpKey := encodeCheckpointKey(startLSN, pageLocs)
 	ckpEntry := &service.WALEntry{Type: service.WALTypeCheckpoint, Key: ckpKey}
 	if _, err := m.wal.Append(ckpEntry); err != nil {
-		return errpkg.Wrapf(err, "checkpoint: append entry")
+		return errpkg.Wrap(err, "checkpoint: append entry")
 	}
 
 	// Step 5: Sync WAL
 	if err := m.wal.Sync(); err != nil {
-		return errpkg.Wrapf(err, "checkpoint: sync")
+		return errpkg.Wrap(err, "checkpoint: sync")
 	}
 
 	// Step 6: Truncate WAL segments below checkpointStartLSN
 	if err := m.wal.Truncate(service.LSN(startLSN)); err != nil {
-		return errpkg.Wrapf(err, "checkpoint: truncate")
+		return errpkg.Wrap(err, "checkpoint: truncate")
 	}
 
 	elapsed := time.Since(start)
@@ -195,13 +196,13 @@ func (m *Manager) SharpCheckpoint() error {
 	ckpKey := encodeCheckpointKey(startLSN, nil)
 	ckpEntry := &service.WALEntry{Type: service.WALTypeCheckpoint, Key: ckpKey}
 	if _, err := m.wal.Append(ckpEntry); err != nil {
-		return errpkg.Wrapf(err, "checkpoint: append entry")
+		return errpkg.Wrap(err, "checkpoint: append entry")
 	}
 	if err := m.wal.Sync(); err != nil {
-		return errpkg.Wrapf(err, "checkpoint: sync")
+		return errpkg.Wrap(err, "checkpoint: sync")
 	}
 	if err := m.wal.Truncate(service.LSN(startLSN)); err != nil {
-		return errpkg.Wrapf(err, "checkpoint: truncate")
+		return errpkg.Wrap(err, "checkpoint: truncate")
 	}
 
 	m.stats.LastCheckpointLSN.Store(startLSN)

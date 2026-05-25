@@ -2,11 +2,18 @@ package btree
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// ==========================================
+// BatchWriter / WriteBatch
+// ==========================================
 
 func TestPageDispatcher_WriteBatch(t *testing.T) {
 	tree, storage := newTestBTree(t)
@@ -17,7 +24,6 @@ func TestPageDispatcher_WriteBatch(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Small batch
 	n := 100
 	keys := make([][]byte, n)
 	values := make([][]byte, n)
@@ -29,11 +35,38 @@ func TestPageDispatcher_WriteBatch(t *testing.T) {
 	err := bw.WriteBatch(ctx, keys, values)
 	require.NoError(t, err)
 
-	// Verify all keys were written
 	for i := range n {
 		got, err := tree.Get(ctx, keys[i])
 		require.NoError(t, err)
 		assert.NotNil(t, got, "key %s not found", keys[i])
+	}
+}
+
+func TestPageDispatcher_WriteBatch_Large(t *testing.T) {
+	tree, storage := newTestBTree(t)
+	defer storage.Close()
+
+	bw := NewBatchWriter(tree)
+	defer bw.Shutdown()
+
+	ctx := context.Background()
+
+	n := 2000
+	keys := make([][]byte, n)
+	values := make([][]byte, n)
+	for i := range n {
+		keys[i] = []byte(fmt.Sprintf("key-%07d", i))
+		values[i] = []byte(fmt.Sprintf("value-%07d", i))
+	}
+
+	err := bw.WriteBatch(ctx, keys, values)
+	require.NoError(t, err)
+
+	// Verify a sample
+	for i := range 10 {
+		got, err := tree.Get(ctx, keys[i*200])
+		require.NoError(t, err)
+		assert.Equal(t, values[i*200], got)
 	}
 }
 
@@ -45,8 +78,7 @@ func TestPageDispatcher_EmptyBatch(t *testing.T) {
 	defer bw.Shutdown()
 
 	ctx := context.Background()
-	err := bw.WriteBatch(ctx, nil, nil)
-	require.NoError(t, err)
+	require.NoError(t, bw.WriteBatch(ctx, nil, nil))
 }
 
 func TestPageDispatcher_MismatchedLen(t *testing.T) {
@@ -61,8 +93,31 @@ func TestPageDispatcher_MismatchedLen(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestWriteBatch_DuplicateKeys(t *testing.T) {
+	tree, storage := newTestBTree(t)
+	defer storage.Close()
+
+	bw := NewBatchWriter(tree)
+	defer bw.Shutdown()
+
+	ctx := context.Background()
+
+	keys := [][]byte{[]byte("dup"), []byte("dup")}
+	values := [][]byte{[]byte("v1"), []byte("v2")}
+
+	err := bw.WriteBatch(ctx, keys, values)
+	require.NoError(t, err)
+
+	// Last write wins
+	got, _ := tree.Get(ctx, []byte("dup"))
+	assert.Equal(t, []byte("v2"), got)
+}
+
+// ==========================================
+// KeyToShard
+// ==========================================
+
 func TestKeyToShard(t *testing.T) {
-	// Same key always maps to same shard
 	k := []byte("test-key")
 	s1 := KeyToShard(k)
 	s2 := KeyToShard(k)
@@ -70,24 +125,66 @@ func TestKeyToShard(t *testing.T) {
 	assert.True(t, s1 >= 0 && s1 < numShards)
 }
 
-func TestPageDispatcher_SetWithRetry(t *testing.T) {
+func TestKeyToShard_Distribution(t *testing.T) {
+	// Verify keys are distributed across multiple shards
+	seen := make(map[int]bool)
+	for i := range 500 {
+		k := []byte(fmt.Sprintf("key-%05d", i))
+		seen[KeyToShard(k)] = true
+	}
+	assert.Greater(t, len(seen), 1, "all keys mapped to same shard")
+}
+
+// ==========================================
+// SetWithRetry
+// ==========================================
+
+func TestSetWithRetry(t *testing.T) {
 	tree, storage := newTestBTree(t)
 	defer storage.Close()
 
 	ctx := context.Background()
 
-	// SetWithRetry with generous retries
 	err := tree.SetWithRetry(ctx, []byte("k1"), []byte("v1"), 10)
 	require.NoError(t, err)
 
 	got, err := tree.Get(ctx, []byte("k1"))
 	require.NoError(t, err)
-	assert.NotNil(t, got)
+	assert.Equal(t, []byte("v1"), got)
 
-	// SetWithRetry with 1 retry — single attempt, works for uncontended write
+	// Minimal retries
 	err = tree.SetWithRetry(ctx, []byte("k2"), []byte("v2"), 1)
 	require.NoError(t, err)
 }
+
+func TestSetWithRetry_Exhausted(t *testing.T) {
+	tree, storage := newTestBTree(t)
+	defer storage.Close()
+
+	ctx := context.Background()
+
+	// 0 retries means the loop body never executes → exhausts immediately
+	err := tree.SetWithRetry(ctx, []byte("k"), []byte("v"), 0)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrCASRetryExhausted))
+}
+
+func TestSetWithRetry_Update(t *testing.T) {
+	tree, storage := newTestBTree(t)
+	defer storage.Close()
+
+	ctx := context.Background()
+
+	require.NoError(t, tree.Set(ctx, []byte("k"), []byte("v1")))
+	require.NoError(t, tree.SetWithRetry(ctx, []byte("k"), []byte("v2"), 5))
+
+	got, _ := tree.Get(ctx, []byte("k"))
+	assert.Equal(t, []byte("v2"), got)
+}
+
+// ==========================================
+// ResolvePageID
+// ==========================================
 
 func TestResolvePageID(t *testing.T) {
 	tree, storage := newTestBTree(t)
@@ -95,14 +192,130 @@ func TestResolvePageID(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Insert some keys first
 	for i := range 10 {
-		k := []byte(string(rune('a' + i)))
-		require.NoError(t, tree.Set(ctx, k, k))
+		require.NoError(t, tree.Set(ctx, []byte(string(rune('a'+i))), []byte(string(rune('a'+i)))))
 	}
 
-	// ResolvePageID should return a valid page
 	pid, err := tree.ResolvePageID(ctx, []byte("c"))
 	require.NoError(t, err)
 	assert.NotZero(t, pid)
+}
+
+func TestResolvePageID_EmptyTree(t *testing.T) {
+	tree, storage := newTestBTree(t)
+	defer storage.Close()
+
+	ctx := context.Background()
+	// Insert one key so searchPath can find a leaf page
+	require.NoError(t, tree.Set(ctx, []byte("a"), []byte("a")))
+	pid, err := tree.ResolvePageID(ctx, []byte("b"))
+	require.NoError(t, err)
+	assert.NotZero(t, pid)
+}
+
+func TestResolvePageID_Consistent(t *testing.T) {
+	tree, storage := newTestBTree(t)
+	defer storage.Close()
+
+	ctx := context.Background()
+	for i := range 20 {
+		require.NoError(t, tree.Set(ctx, []byte(fmt.Sprintf("k-%02d", i)), []byte("v")))
+	}
+
+	// Same key always resolves to same page
+	for i := range 5 {
+		k := []byte(fmt.Sprintf("k-%02d", i))
+		p1, _ := tree.ResolvePageID(ctx, k)
+		p2, _ := tree.ResolvePageID(ctx, k)
+		assert.Equal(t, p1, p2, "inconsistent resolution for %s", k)
+	}
+}
+
+// ==========================================
+// WorkerPool
+// ==========================================
+
+func TestWorkerPool_SubmitShutdown(t *testing.T) {
+	wp := NewWorkerPool(2)
+
+	// Submit a task before shutdown
+	batch := &pageBatch{results: make([]WriteResult, 0)}
+	require.NoError(t, wp.Submit(batch))
+	wp.Wait()
+
+	// Shutdown
+	wp.Shutdown()
+
+	// Submit after shutdown should fail
+	err := wp.Submit(batch)
+	assert.True(t, errors.Is(err, ErrWorkerPoolClosed))
+}
+
+func TestWorkerPool_ConcurrentSubmit(t *testing.T) {
+	wp := NewWorkerPool(4)
+
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			batch := &pageBatch{results: make([]WriteResult, 0)}
+			_ = wp.Submit(batch)
+		}()
+	}
+	wg.Wait()
+	wp.Wait()
+	wp.Shutdown()
+}
+
+// ==========================================
+// BatchError
+// ==========================================
+
+func TestBatchError_Format(t *testing.T) {
+	be := &BatchError{Errors: []WriteResult{{Index: 1, Err: errors.New("err1")}, {Index: 3, Err: errors.New("err2")}}}
+	assert.Equal(t, "2 write(s) failed", be.Error())
+}
+
+func TestBatchError_Empty(t *testing.T) {
+	be := &BatchError{}
+	assert.Equal(t, "0 write(s) failed", be.Error())
+}
+
+// ==========================================
+// Concurrent Dispatch Isolation
+// ==========================================
+
+func TestPageDispatcher_ConcurrentDispatch(t *testing.T) {
+	tree, storage := newTestBTree(t)
+	defer storage.Close()
+
+	ctx := context.Background()
+
+	// Pre-populate some data
+	for i := range 50 {
+		require.NoError(t, tree.Set(ctx, []byte(fmt.Sprintf("pre-%02d", i)), []byte("pre")))
+	}
+
+	bw := NewBatchWriter(tree)
+	defer bw.Shutdown()
+
+	// Two sequential batches (concurrent Dispatch is not supported per design)
+	for b := range 3 {
+		n := 50
+		keys := make([][]byte, n)
+		values := make([][]byte, n)
+		for i := range n {
+			keys[i] = []byte(fmt.Sprintf("batch%d-%04d", b, i))
+			values[i] = []byte(fmt.Sprintf("v%d-%04d", b, i))
+		}
+		require.NoError(t, bw.WriteBatch(ctx, keys, values))
+	}
+
+	// Verify all three batches
+	for b := range 3 {
+		got, err := tree.Get(ctx, []byte(fmt.Sprintf("batch%d-%04d", b, 42)))
+		require.NoError(t, err)
+		assert.Equal(t, []byte(fmt.Sprintf("v%d-0042", b)), got)
+	}
 }

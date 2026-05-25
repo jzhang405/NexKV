@@ -34,9 +34,7 @@ const (
 	MergeThreshold = 0.5
 
 	// MaxCASRetries is the maximum number of CAS retry attempts in writeOperation.
-	// Kept at 200: concurrent 100-goroutine tests need full budget during tree growth.
-	// SplitBackoffMaxRetries reduces CPU by limiting split-level spinning.
-	MaxCASRetries = 200
+	MaxCASRetries = 10
 
 	// SpinLockBackoffThreshold is the retry count at which splitting backoff
 	// transitions from spin (low-latency) to exponential sleep (1us→1ms).

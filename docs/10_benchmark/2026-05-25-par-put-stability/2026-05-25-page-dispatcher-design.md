@@ -273,6 +273,69 @@ func (wp *WorkerPool) Shutdown() {
 - Lealone：`try 3 times → register to scheduler wait queue → next loop retry`
 - PageDispatcher：`try 3 times → Submit(batch) re-enqueue → next worker picks up`
 
+**工作原理**：
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Dispatch as PageDispatcher.Dispatch
+    participant Shard as Shard Goroutines
+    participant Merge as Merge Phase
+    participant WP as WorkerPool
+    participant Worker as Worker Goroutine
+    participant BTree as tree.Set
+
+    Client->>Dispatch: WriteBatch(ctx, keys, values)
+
+    Note over Dispatch: Phase 1: Hash 分桶 (O(N))
+    Dispatch->>Shard: 启动 numShards 个 goroutine
+
+    Note over Shard: Phase 2: 桶内排序 + resolvePageIDs
+    Shard->>Shard: sort(keys) + ResolvePageID
+    Shard-->>Merge: map[PageID][]writeTask (via channel)
+
+    Note over Merge: 主 goroutine 串行 merge
+    Merge->>Merge: 跨桶 merge → map[PageID]*pageBatch
+
+    loop 每个 PageID
+        Merge->>WP: Submit(pageBatch)
+        WP->>WP: wg.Add(1)
+        WP->>WP: taskCh <- pageBatch
+    end
+
+    Note over WP,Worker: Worker Pool (常驻 goroutine × CPU核数)
+    WP->>Worker: runWorker: batch := <-taskCh
+
+    rect rgb(240, 248, 255)
+        Note over Worker,BTree: CAS 重试策略 (借鉴 Lealone)
+        loop batch 内每个 writeTask
+            Worker->>BTree: tree.Set(ctx, key, value)
+
+            alt CAS 成功
+                BTree-->>Worker: nil
+                Worker->>Worker: results[i] = ok
+            else CAS 失败 & batch.retries < 3
+                BTree-->>Worker: ErrCASRetry
+                Worker->>Worker: batch.retries++
+                Worker->>WP: Submit(batch) 重新入队
+                Note over Worker: 当前 worker 让出, 不继续自旋
+            else CAS 失败 & batch.retries >= 3
+                BTree-->>Worker: ErrCASRetry
+                Worker->>Worker: results[i] = ErrCASRetryExhausted
+            end
+        end
+    end
+
+    Worker->>WP: wg.Done()
+
+    Merge->>WP: pool.Wait()
+    WP-->>Merge: 所有 pageBatch 完成
+
+    Note over Merge: 事务阶段
+    Merge->>Merge: 所有事务 txn.Execute(ctx)
+    Merge-->>Client: []WriteResult / *BatchError
+```
+
 **关键设计决策**：
 
 1. **常驻 goroutine** 而非 per-task `go func()`：避免高频 goroutine 创建/销毁开销

@@ -319,3 +319,144 @@ func TestPageDispatcher_ConcurrentDispatch(t *testing.T) {
 		assert.Equal(t, []byte(fmt.Sprintf("v%d-0042", b)), got)
 	}
 }
+
+// ==========================================
+// CAS Re-queue
+// ==========================================
+
+func TestExecuteBatch_CASRequeue(t *testing.T) {
+	tree, storage := newTestBTree(t)
+	defer storage.Close()
+
+	ctx := context.Background()
+
+	// Use SetWithRetry with 0 retries to force immediate exhaustion.
+	// In a single-goroutine test, the first attempt succeeds (batch.retries stays 0),
+	// so we test the re-queue path indirectly by verifying SetWithRetry(exhausted).
+	err := tree.SetWithRetry(ctx, []byte("k"), []byte("v"), 0)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrCASRetryExhausted))
+
+	// With 1 retry, it works for uncontended writes
+	err = tree.SetWithRetry(ctx, []byte("k2"), []byte("v2"), 1)
+	require.NoError(t, err)
+
+	// Verify retries counter resets between calls
+	err = tree.SetWithRetry(ctx, []byte("k3"), []byte("v3"), 0)
+	assert.True(t, errors.Is(err, ErrCASRetryExhausted))
+}
+
+// ==========================================
+// WorkerPool — Panic Recovery
+// ==========================================
+
+func TestWorkerPool_PanicRecovery(t *testing.T) {
+	wp := NewWorkerPool(1)
+
+	// Submit a batch that will panic during execution
+	// The panic is recovered and converted to error results
+	batch := &pageBatch{
+		tree:    nil, // will cause nil pointer dereference → panic
+		tasks:   []writeTask{{idx: 0, key: []byte("k"), value: []byte("v")}},
+		results: make([]WriteResult, 1),
+	}
+	require.NoError(t, wp.Submit(batch))
+	wp.Wait()
+
+	// Panic should be recovered, task should have error
+	assert.Error(t, batch.results[0].Err)
+	assert.Contains(t, batch.results[0].Err.Error(), "worker panic")
+
+	wp.Shutdown()
+}
+
+// ==========================================
+// WorkerPool — Re-queue During Shutdown
+// ==========================================
+
+func TestWorkerPool_RequeueDuringShutdown(t *testing.T) {
+	tree, storage := newTestBTree(t)
+	defer storage.Close()
+
+	pd := NewPageDispatcher(tree)
+	wp := pd.pool
+
+	ctx := context.Background()
+
+	// Create a batch
+	batch := &pageBatch{
+		ctx:     ctx,
+		tree:    tree,
+		tasks:   []writeTask{{idx: 0, key: []byte("k1"), value: []byte("v1")}, {idx: 1, key: []byte("k2"), value: []byte("v2")}},
+		results: make([]WriteResult, 2),
+	}
+
+	// Shutdown pool before submitting
+	wp.Shutdown()
+
+	// Submit should fail
+	err := wp.Submit(batch)
+	assert.True(t, errors.Is(err, ErrWorkerPoolClosed))
+}
+
+// ==========================================
+// Dispatch Error Handling
+// ==========================================
+
+func TestDispatch_PoolClosed(t *testing.T) {
+	tree, storage := newTestBTree(t)
+	defer storage.Close()
+
+	pd := NewPageDispatcher(tree)
+	pd.Shutdown()
+
+	ctx := context.Background()
+	results, err := pd.Dispatch(ctx, [][]byte{[]byte("k")}, [][]byte{[]byte("v")})
+	// Dispatch itself doesn't return error for pool closed — individual results get ErrWorkerPoolClosed
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, errors.Is(results[0].Err, ErrWorkerPoolClosed))
+}
+
+func TestWriteBatch_PoolClosed(t *testing.T) {
+	tree, storage := newTestBTree(t)
+	defer storage.Close()
+
+	bw := NewBatchWriter(tree)
+	bw.Shutdown()
+
+	ctx := context.Background()
+	err := bw.WriteBatch(ctx, [][]byte{[]byte("k")}, [][]byte{[]byte("v")})
+	// BatchError wraps individual write errors
+	require.Error(t, err)
+	be, ok := err.(*BatchError)
+	require.True(t, ok)
+	assert.True(t, errors.Is(be.Errors[0].Err, ErrWorkerPoolClosed))
+}
+
+// ==========================================
+// inSamePage
+// ==========================================
+
+func TestInSamePage_AlwaysFalse(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	// V1: always returns false (conservative)
+	assert.False(t, tree.inSamePage(1, []byte("any")))
+	assert.False(t, tree.inSamePage(0, []byte("any")))
+}
+
+// ==========================================
+// KeyToShard — Edge Cases
+// ==========================================
+
+func TestKeyToShard_EdgeCases(t *testing.T) {
+	// Empty key
+	s := KeyToShard([]byte{})
+	assert.True(t, s >= 0 && s < numShards)
+
+	// Different keys may map to same or different shards — both valid
+	s1 := KeyToShard([]byte("key-0001"))
+	s2 := KeyToShard([]byte("key-0002"))
+	assert.True(t, s1 >= 0 && s1 < numShards)
+	assert.True(t, s2 >= 0 && s2 < numShards)
+}

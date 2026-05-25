@@ -1,6 +1,6 @@
 # BTree 并行写入调度器设计
 
-> 状态：v4 | 日期：2026-05-25 | 分支：`fix/btree-par-put-stability`
+> 状态：v5（Agent 评审修订） | 日期：2026-05-25 | 分支：`fix/btree-par-put-stability`
 
 ## 1. 问题定义
 
@@ -146,6 +146,7 @@ type pageBatch struct {
     pageID    PageID
     tasks     []writeTask
     results   []WriteResult
+    nextIdx   int              // 下次执行起始位置（re-queue 时跳过已完成的 key）
     retries   int              // CAS 失败重新入队计数（上限 3）
 }
 
@@ -183,8 +184,8 @@ type WriteResult struct {
 │     └─ 桶N: 排序 + resolveShardPageIDs → 主 goroutine 收集        │
 │         │                                             │
 │         ▼                                             │
-│  3. 串行合并: 主 goroutine 收集所有桶结果后 merge                 │
-│     （无竞态：所有 shard goroutine 已返回，主 goroutine 独占）     │
+│  3. 串行合并: 主 goroutine WaitGroup.Wait() 所有 shard 完成         │
+│     后逐桶 merge（推荐用 errgroup.Group 管理 shard goroutine）       │
 │         │                                             │
 │         ▼                                             │
 │  4. 提交: 每个 PageID → WorkerPool.Submit(pageBatch) │
@@ -220,29 +221,36 @@ func (wp *WorkerPool) runWorker() {
 
 // executeBatch 串行执行同一 Page 的所有写入
 // 借鉴 Lealone 双层重试策略：CAS 失败 3 次后重新入队而非自旋
+// nextIdx 确保 re-queue 后跳过已完成的 key（幂等安全）
 func (wp *WorkerPool) executeBatch(batch *pageBatch) {
     defer wp.wg.Done()
+
+    var panicked any
     defer func() {
         if r := recover(); r != nil {
-            for i := range batch.tasks {
-                if batch.results[i].Err == nil {
-                    batch.results[i] = WriteResult{
-                        Index: batch.tasks[i].idx,
-                        Err:   fmt.Errorf("worker panic: %v", r),
-                    }
+            panicked = r // 只设标志，不在 recover 内做复杂操作
+        }
+        if panicked != nil {
+            // 仅标记未完成的 task（nextIdx 及之后的）
+            for i := batch.nextIdx; i < len(batch.tasks); i++ {
+                batch.results[i] = WriteResult{
+                    Index: batch.tasks[i].idx,
+                    Err:   fmt.Errorf("worker panic: %v", panicked),
                 }
             }
         }
     }()
-    for i := range batch.tasks {
+
+    for i := batch.nextIdx; i < len(batch.tasks); i++ {
         t := &batch.tasks[i]
         err := batch.tree.Set(batch.ctx, t.key, t.value)
 
         // 借鉴 Lealone：CAS 失败不是继续自旋，而是让出线程，重新入队等待下一轮
         if err != nil && isCASRetryErr(err) && batch.retries < maxCASRequeue {
+            batch.nextIdx = i  // 跳过已完成的 [0..i-1]，下次从第 i 个继续
             batch.retries++
-            wp.Submit(batch) // 重新入队，等待下一轮调度
-            return            // 当前 worker 让出
+            wp.Submit(batch)   // 重新入队，等待下一轮调度
+            return             // 当前 worker 让出
         }
 
         batch.results[i] = WriteResult{Index: t.idx, Err: err}
@@ -344,8 +352,10 @@ sequenceDiagram
 1. **常驻 goroutine** 而非 per-task `go func()`：避免高频 goroutine 创建/销毁开销
 2. **wg.Add(1) 在 Submit 中，在 taskCh 发送之前**：消除 `dispatchNormal` 循环结束后 `Wait()` 的竞态
 3. **无 semaphore**：常驻 worker 数量固定 = CPU 核数，自然限流
-4. **panic recovery**：`executeBatch` 内 recover，panic 转为 error 写入 results
-5. **CAS 失败→重新入队而非自旋**：消除 involuntary CS 的根源。`tree.Set` 需要暴露 `SetWithMaxRetry` 或可配置的最大 CAS 次数，将 CAS 自旋限制在 3 次以内
+4. **panic recovery**：recover 内只设标志，循环结束后批量处理，防止嵌套 panic 泄漏 `wg.Done()`
+5. **CAS 失败→重新入队而非自旋**：消除 involuntary CS 的根源。`tree.Set` 需要暴露 `SetWithRetry(ctx, key, value, maxRetries)` 方法
+6. **`nextIdx` 偏移**：re-queue 后跳过已完成的 key，避免重复执行。`tree.Set` 幂等性保证即使极端情况下也安全
+7. **隐式背压**：`taskCh` buffer 为 `n*4`（8 核 → 32）。Page 数 > buffer 时 `Submit` 阻塞，主 goroutine 等待——这是预期行为，不必显式控制。若 Page 数极大（> 10K），可 `make(chan *pageBatch, max(n*8, len(pageGroups)/2))`
 
 ### 4.4 关键并发保证
 
@@ -399,6 +409,7 @@ V2 事务调度器需独立设计，至少覆盖：
 3. **WAL 集成**：利用现有 TxPrepare/TxCommit WAL 类型保证跨 key 原子性
 4. **回滚路径**：Abort 时 WriteBuffer 丢弃 + VersionChain 回退
 5. **事务内并发**：不同 Page 的写操作在 barrier 间可并发（类似 Palm Tree Stage 3-4）
+6. **统一调度器**：事务调度与 PageDispatcher 共享 WorkerPool，避免多 pool 上下文切换开销
 
 V2 设计不在本文档范围内。
 
@@ -487,7 +498,8 @@ Client
 - **同 Page 操作顺序执行**：不会有两个 goroutine 同时 CAS 同一 Page
 - **零 CAS 重试**（理想情况）：每个 Page 只有一个写者，CAS 一次成功
 - **跨 Page 真并发**：不同 Page 的写入完全并行，没有共享竞争
-- **同 Page 跨 batch 可并发**（两个 `WriteBatch` 调用中同一 Page 可能由不同 worker 处理，此时退化到原有 CAS 竞争——但单次 batch 内 100% 无竞争）
+- **同 Page 跨 batch 可并发**：两个 `WriteBatch` 调用中同一 Page 可能由不同 worker 处理，此时退化到原有 CAS 竞争——但单次 batch 内 100% 无竞争
+- **调用者约束**：`WriteBatch` 和 `tree.Set` 混用同一 Page 会引入 CAS 竞争。V1 期望调用者按路径隔离：批量写入走 `WriteBatch`，单 key 写入走 `tree.Set`，不要在同一 Page 上混用
 
 ## 8. 关键设计决策
 
@@ -537,7 +549,9 @@ tree.Set CAS 失败
        └─ batch.retries >= 3 → 返回 ErrCASRetryExhausted
 ```
 
-**需要的 BTree API 变更**：`tree.Set` 需要支持可配置的最大 CAS 重试次数（当前硬编码 200），或新增 `tree.SetWithMaxRetry(ctx, key, value, maxRetries int)` 方法。V1 实现中先将 `MaxCASRetries` 从 200 降低为可配置参数。
+**需要的 BTree API 变更**：`tree.Set` 内部 CAS 最大重试次数当前硬编码为 `MaxCASRetries = 200`。V1 需新增 `tree.SetWithRetry(ctx, key, value, maxRetries int)` 方法，允许 PageDispatcher 将 CAS 自旋限制在 3 次以内。原有 `tree.Set` 保持默认 200 次向后兼容。
+
+**幂等性保证**：`tree.Set(key, value)` 是幂等的——同 key-value 写入两次等于一次。`nextIdx` + re-queue 保证已完成的 key 不会重复执行，但即使极端情况下重复写入也是安全的。此语义在文档中显式声明。
 
 **预期效果**：同 Page 只有一个写者，CAS 竞争已消除。CAS 失败仅发生在 COW 分裂期间（split 导致 PageInfo 变化）。此时重新入队让出 worker 比自旋等 split 完成更高效——worker 可以处理其他 pageBatch，不浪费 CPU。
 
@@ -674,25 +688,7 @@ SEDA 的问题是每个阶段的子任务放入不同队列 + 线程唤醒都有
 
 #### A.1.2 调度器事件循环（Scheduler Loop）
 
-每个 `Scheduler` 运行在专属 `SchedulerThread` 中，主循环每次迭代按严格顺序执行：
-
-```
-1. Register Acceptor       ← 接受新 NIO 连接
-2. Session Init            ← 创建会话
-3. Misc Tasks              ← 一次性异步任务
-4. Page Operations         ← 锁定页面操作重试 ★ Page→线程绑定的实现位置
-5. Session Tasks           ← 排空每会话任务队列
-6. Pending Transactions    ← 恢复等待中的事务
-7. GC Completed            ← 清理已完成任务
-8. Execute Statement       ← 选取最高优先级命令
-9. Periodic Tasks          ← 定时周期性工作
-10. Event Loop             ← NIO select + 读写
-```
-
-**关键设计**：
-- **Page Operations 在专用阶段处理**（第 4 步）——页操作失败后不立即重试，而是在下一轮循环中重试，避免 CAS 自旋浪费 CPU
-- **每会话绑定固定调度器**（Session→Scheduler affinity），消除会话间锁竞争
-- **协作式让步**（`yieldIfNeeded()`）：长查询主动检查是否有更高优先级命令等待，有则保存状态让出线程
+主循环 10 阶段，其中 **Page Operations（第 4 步）是 Page→线程绑定的实现位置**——页操作失败后不立即重试，而是在下一轮循环中重试，避免 CAS 自旋。此外：每会话绑定固定调度器消除锁竞争，`yieldIfNeeded()` 支持长查询主动让出。
 
 #### A.1.3 页操作管道（Page Operation Pipeline）
 
@@ -760,16 +756,9 @@ func (bw *BatchWriter) WriteBatch(ctx context.Context, keys, values [][]byte) er
 func (bw *BatchWriter) WriteBatchAsync(ctx context.Context, keys, values [][]byte) <-chan BatchResult
 ```
 
-#### A.1.5 统一调度器 —— 未来方向
+#### A.1.5 统一调度器 —— 留待 V2
 
-Lealone 将所有异步任务（网络 I/O、SQL 执行、Page 操作、事务、GC）统一到一个调度器中，避免了多种线程池带来的上下文切换和协调开销。
-
-PageDispatcher 当前的设计中，WorkerPool 是**独立的** goroutine pool。但 NexKV 未来会有更多异步任务：WAL 写入、checkpoint、compaction、epoch-based GC。如果每种任务都有独立的 goroutine pool，会导致：
-- 总 goroutine 数膨胀
-- 不同 pool 之间无法协调优先级
-- 上下文切换开销增大
-
-**V1 不做**，但在设计中预留统一调度器的扩展点：`WorkerPool` 的接口设计为通用的 `Submit(task)` 而非 `SubmitPage(batch)`。
+Lealone 将所有异步任务统一调度。NexKV 未来 WAL/checkpoint/compaction/GC 若各有独立 pool，goroutine 数和上下文切换会膨胀。PageDispatcher V1 独立 WorkerPool 起步，V2 考虑与 TaskScheduler 融合。
 
 #### A.1.6 NexKV TaskScheduler vs Lealone Scheduler 对比
 

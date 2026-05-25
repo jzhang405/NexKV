@@ -1,6 +1,6 @@
 # BTree 并行写入调度器设计
 
-> 状态：v7（Kimi 评审修订） | 日期：2026-05-25 | 分支：`fix/btree-par-put-stability`
+> 状态：v8（代码对齐审查） | 日期：2026-05-25 | 分支：`fix/btree-par-put-stability`
 
 ## 1. 问题定义
 
@@ -56,7 +56,7 @@ KV 写入请求 ─→ 按 Page 分片 ─┼─ Page-B Queue → Worker-B (串�
 | B. 批量排序遍历 | 100% | O(N log N) 一次 | 批量写入 |
 | C. **Hash 分桶** | N/A (非映射，纯扇出) | O(1) | 通用 |
 | D. Root ChildrenCache 路由 | 粗粒度 | O(log M) | M = 根节点子页数 |
-| E. KeyRangeIndex.Lookup | ~95% | O(log L) | **已实现**，批量写入优化；L = leaf page 数 (<< N) |
+| E. KeyRangeIndex.Lookup | ~95% | O(log L) | **V1 可选**：预构建 leaf page key range 索引；L = leaf page 数 (<< N) |
 
 ### 3.2 推荐方案：Hash 分桶 + 桶内排序遍历（C + B）
 
@@ -237,7 +237,7 @@ func (wp *WorkerPool) executeBatch(batch *pageBatch) {
             for i := batch.nextIdx; i < len(batch.tasks); i++ {
                 batch.results[i] = WriteResult{
                     Index: batch.tasks[i].idx,
-                    Err:   fmt.Errorf("worker panic: %v", panicked),
+                    Err:   errpkg.Wrap(ErrWorkerPanic, fmt.Sprintf("worker panic: %v", panicked)),
                 }
             }
         }
@@ -506,7 +506,7 @@ Client
 ### 7.2 关键保证
 
 - **同 Page 操作顺序执行**：不会有两个 goroutine 同时 CAS 同一 Page
-- **最小 CAS 重试**：单 Page 无竞争时，仅 split 触发重试（searchPath→新 page→CAS），远少于原模型的 CAS 风暴
+- **最小 CAS 重试**：单 Page 无写入者竞争时，仅 split 传播的 parent CAS + searchPath 瞬时故障 (ErrRetry/NodeRedirect) 触发重试，远少于原模型的 CAS 风暴。后台合并/压缩也可能触发少量重试
 - **跨 Page 真并发**：不同 Page 的写入完全并行，没有共享竞争
 - **同 Page 跨 batch 可并发**：两个 `WriteBatch` 调用中同一 Page 可能由不同 worker 处理，此时退化到原有 CAS 竞争——但单次 batch 内 100% 无竞争
 - **调用者约束**：`WriteBatch` 和 `tree.Set` 混用同一 Page 会引入 CAS 竞争。V1 期望调用者按路径隔离：批量写入走 `WriteBatch`，单 key 写入走 `tree.Set`，不要在同一 Page 上混用
@@ -628,13 +628,17 @@ COW 写操作可能触发 Page 分裂：
 - [ ] `KeyToShard` hash 分桶
 - [ ] `resolveShardPageIDs`：桶内排序 + 批量遍历
 - [ ] 跨桶 merge → `map[PageID][]writeTask`
-- [ ] **BTree 依赖项**：新增 `ResolvePageID(ctx, key)` 和 `inSamePage(pageID, key)` 方法；`ResolvePageID` 须支持 ctx cancel 时立即返回 error
+- [ ] **BTree 依赖项（阻塞）**：
+  - 新增 `ResolvePageID(ctx, key)` — 遍历 BTree 返回 key 所在的 leaf PageID，支持 ctx cancel
+  - 新增 `inSamePage(pageID, key)` — 快速判断 key 是否在 page 范围内（纯读优化）
+  - 新增 `SetWithRetry(ctx, key, value, maxRetries int)` — 可配置 CAS 最大重试次数
+  - 新增 `ErrCASRetryExhausted` 错误类型 — CAS 重试耗尽时返回（区别于 `ErrCASConflict`）
+  - 当前 `writeOperation` 硬编码 `MaxCASRetries=200`，失败返回 `ErrCASConflict`，不暴露中间 CAS 错误——以上 4 项是 V1 的**阻塞性依赖**
 
 ### Phase 2：集成 BTree（1 天）
 
-- [ ] `BatchWriter` API 实现
+- [ ] `BatchWriter` API 实现：`WriteBatch` 内部通过 WorkerPool 逐 key 调用 `tree.SetWithRetry`（非 `tree.SetBatch`，后者当前返回 `ErrNotImplemented`）
 - [ ] `Dispatch` 主流程：hash → resolve → submit → wait → collect
-- [ ] `SetWithRetry(ctx, key, value, maxRetries)` + `ErrCASRetryExhausted` 错误类型
 - [ ] COW 分裂路径验证
 
 ### Phase 3：验证（1 天）

@@ -5,9 +5,9 @@
 package checkpoint
 
 import (
-	"fmt"
 	"context"
 	"encoding/binary"
+	"fmt"
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"sync"
 	"sync/atomic"

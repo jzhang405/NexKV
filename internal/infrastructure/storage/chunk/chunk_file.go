@@ -5,8 +5,8 @@
 package chunk
 
 import (
-	"fmt"
 	"encoding/binary"
+	"fmt"
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"os"
 	"sync"

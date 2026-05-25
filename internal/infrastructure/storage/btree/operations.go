@@ -5,9 +5,9 @@
 package btree
 
 import (
-	"fmt"
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 

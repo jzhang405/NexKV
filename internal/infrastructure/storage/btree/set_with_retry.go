@@ -10,7 +10,7 @@ import (
 
 // SetWithRetry 类似 Set，但 CAS 最大重试次数可配置。
 // maxRetries 控制 writeOperation 内部 CAS 重试上限。
-// 超过 maxRetries 返回 ErrCASRetryExhausted；原 Set 默认 100 次。
+// 超过 maxRetries 返回 ErrCASRetryExhausted；原 Set 默认 10 次。
 func (b *BTree) SetWithRetry(ctx context.Context, key, value []byte, maxRetries int) error {
 	if err := ctx.Err(); err != nil {
 		return err

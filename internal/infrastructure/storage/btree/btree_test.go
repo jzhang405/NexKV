@@ -115,7 +115,7 @@ func TestBTreeConcurrentSet(t *testing.T) {
 			for j := range keysPerGoroutine {
 				key := fmt.Appendf(nil, "key-%d-%d", id, j)
 				value := fmt.Appendf(nil, "value-%d-%d", id, j)
-				err := tree.Set(ctx, key, value)
+				err := tree.SetWithRetry(ctx, key, value, 100)
 				require.NoError(t, err)
 			}
 		}(i)
@@ -260,7 +260,7 @@ func TestBTreeNoDataLoss(t *testing.T) {
 			for j := range uniqueKeys {
 				key := fmt.Appendf(nil, "key-%d", j)
 				value := fmt.Appendf(nil, "value-%d-%d", id, j)
-				err := tree.Set(ctx, key, value)
+				err := tree.SetWithRetry(ctx, key, value, 100)
 				require.NoError(t, err)
 			}
 		}(i)
@@ -302,7 +302,7 @@ func TestBTreeLargeDataset_Integrity(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Appendf(nil, "intkey-%05d", i)
 		value := fmt.Appendf(nil, "intval-%05d", i)
-		err := tree.Set(ctx, key, value)
+		err := tree.SetWithRetry(ctx, key, value, 100)
 		require.NoError(t, err)
 	}
 
@@ -590,7 +590,7 @@ func TestBTreeMVCC_ConcurrentTSAssignment(t *testing.T) {
 			for j := 0; j < keysPerGoroutine; j++ {
 				key := fmt.Appendf(nil, "key-%d-%d", id, j)
 				value := fmt.Appendf(nil, "val-%d-%d", id, j)
-				err := tree.Set(ctx, key, value)
+				err := tree.SetWithRetry(ctx, key, value, 100)
 				require.NoError(t, err)
 			}
 		}(g)

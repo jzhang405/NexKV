@@ -53,7 +53,7 @@ func TestConstantValues(t *testing.T) {
 	assert.Equal(t, 4096, PageSize, "PageSize must be 4096")
 	assert.Equal(t, 4096-56, UsableSize, "UsableSize must be PageSize - HeaderSize")
 	assert.Equal(t, 0.5, MergeThreshold, "MergeThreshold must be 0.5")
-	assert.Equal(t, 100, MaxCASRetries, "MaxCASRetries must be 100")
+	assert.Equal(t, 10, MaxCASRetries, "MaxCASRetries must be 10")
 	assert.Equal(t, 50, MaxParentCASSpins, "MaxParentCASSpins must be 50")
 	assert.Equal(t, 96, SplitBackoffMaxRetries, "SplitBackoffMaxRetries must be 96")
 }

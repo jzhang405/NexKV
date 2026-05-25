@@ -686,6 +686,76 @@ PageDispatcher 当前的设计中，WorkerPool 是**独立的** goroutine pool�
 
 **V1 不做**，但在设计中预留统一调度器的扩展点：`WorkerPool` 的接口设计为通用的 `Submit(task)` 而非 `SubmitPage(batch)`。
 
+#### A.1.6 NexKV TaskScheduler vs Lealone Scheduler 对比
+
+NexKV 已有自己的统一任务调度器（`internal/infrastructure/concurrency/task_scheduler.go`，908 行），采用 Per-Core 模型。以下与 Lealone 调度器做系统对比。
+
+**架构对比**：
+
+| 维度 | NexKV TaskScheduler | Lealone Scheduler |
+|------|-------------------|-------------------|
+| 线程模型 | **Per-Core**：每个 CPU 核一个 SchedulerCore goroutine + LockOSThread + CPU pinning | **Per-Scheduler**：每个 Scheduler 一个专属 SchedulerThread |
+| 核数绑定 | 强制绑核，`pinToCore()` | 不绑核，调度器数量可配置 |
+| 任务模型 | **ShardTask**：每个 task 有独立 MPSC 无锁环形队列 | **WriteOperation**：Put/PutIfAbsent/Remove/Append，统一走 runPageOperation 管道 |
+| 队列模型 | Per-task MPSCExtQueue（无锁数组+链表扩展） | Per-session LinkableList + 调度器全局等待队列 |
+| 优先级 | 10 级 bitmap O(1) 遍历 + starvation boost | SQL 优先级 + 抢占式 yieldIfNeeded() |
+| 负载均衡 | 双路径：低负载 RoundRobin O(1) / 高负载 LeastLoaded | 三种策略：RoundRobin / Random / LoadBalance |
+| 批量处理 | tryProcessBatch: PeekN→executeBatch→DequeueN | Append 操作批量加载，常规操作无批量 |
+| 重试策略 | ShardItem.IncAttempts / MaxRetries + TaskRetrying 状态 | **快速路径 3 次 → 慢速路径调度器等待队列** |
+| 抢占 | **无**：纯协作式，长任务阻塞同核所有其他任务 | **有**：yieldIfNeeded() 主动让出 + 高优先级抢占 |
+| 阶段分离 | 单循环：bitmap 遍历所有优先级桶 | **10 阶段**：Page Operations 在专用阶段处理 |
+| 会话绑定 | 无会话概念，item 按 ShardID 路由 | Session→Scheduler 生命周期绑定，无锁 session-local 状态 |
+| 统一性 | 通用任务调度器，Page/WAL/GC 需各自接入 | **统一调度**：网络 I/O、SQL、Page 操作、事务、GC 共享同一调度器 |
+
+**关键差距分析**：
+
+**1. Page→线程绑定缺失**
+
+NexKV TaskScheduler 是通用调度器，没有 Page→线程的亲和性概念。Lealone 将 Page 更新绑定到固定线程是其核心设计原则。PageDispatcher 需要在 TaskScheduler 之上**增加这一层**：将同一 PageID 的 pageBatch 固定路由到同一 Core。
+
+```
+当前 TaskScheduler 路由：
+  ShardID → CoreIndex = ShardID % coreCount
+
+PageDispatcher 需要的路由：
+  PageID → CoreIndex = PageID % coreCount  （同 Page 到同 Core）
+  同一个 Core 内，同 Page 的 batch 串行执行
+```
+
+**2. 重试策略差距最大**
+
+| | NexKV | Lealone |
+|---|-------|---------|
+| 快速尝试 | 无限制（依赖 tree.Set 内部 CAS retry，最多 200 次） | 最多 3 次 |
+| 失败后 | 自旋重试，耗尽 CPU 时间片 → involuntary CS | **注册到调度器等待队列，下次循环再试** |
+| CPU 浪费 | 高（CAS 自旋） | 低（让出线程） |
+
+这是 PageDispatcher 应该从 Lealone 借鉴的最关键设计。当前 `tree.Set` 的 CAS retry（最多 200 次）是 involuntary CS 的根源。PageDispatcher 的 worker 应该在 tree.Set CAS 失败时主动让出，将 task 重新入队等待下一轮。
+
+**3. 阶段分离不足**
+
+NexKV runLoop 是单循环 bitmap 遍历，所有优先级的任务混在一起。Lealone 的 10 阶段循环明确将 Page Operations 放在专用阶段，确保：
+- 所有 page 操作在同一阶段处理（批量效应）
+- 新到达的 page 操作等下一轮（避免饥饿）
+
+PageDispatcher 如果在 TaskScheduler 的 runLoop 中运行，需要类似的阶段隔离——至少确保同一 batch 的所有 pageBatch 在同一个"阶段"内完成。
+
+**4. 抢占机制缺失**
+
+NexKV 无抢占，长事务会阻塞同核所有其他任务。Lealone 的 `yieldIfNeeded()` 允许长查询主动让出。对于事务（可能涉及多 page 的长时间操作），这是重要特性。
+
+**建议的改进方向**：
+
+| 优先级 | 改进 | 说明 |
+|:---:|------|------|
+| **P0** | Page→Core 亲和路由 | PageDispatcher 将同 PageID 的 batch 固定路由到同一 Core |
+| **P0** | CAS 失败→重新入队而非自旋 | worker 内 tree.Set 失败后不依赖 CAS retry，将 task 重新入队等待下一轮 |
+| **P1** | Page Operations 专用阶段 | 在 runLoop 中增加 Page Operations 阶段，批量处理 pageBatch |
+| **P2** | 事务 yieldIfNeeded | 长事务在检查点主动让出，允许同核其他操作交错执行 |
+| **P3** | 统一 WorkerPool | PageDispatcher 的 WorkerPool 融入 TaskScheduler，消除独立的 goroutine pool |
+
+**当前结论**：NexKV TaskScheduler 是一个**设计良好的通用 Per-Core 任务调度器**，在优先级管理（bitmap O(1)）、负载均衡（双路径）、批量处理（PeekN/DequeueN）方面甚至优于 Lealone。但 Lealone 在 **Page→线程绑定、重试策略、阶段分离、抢占调度** 四个方面值得借鉴。PageDispatcher V1 在独立 WorkerPool 中运行是合理的起步方案，V2 应与 TaskScheduler 深度融合。
+
 ### A.2 Intel Palm Tree（2015）
 
 Intel 提出的 Palm Tree 是一种**无锁并发 B+Tree 算法**，发表于 2015 年。核心思路是 Bulk Synchronized Parallelism (BSP)，将一批操作分阶段并行处理。

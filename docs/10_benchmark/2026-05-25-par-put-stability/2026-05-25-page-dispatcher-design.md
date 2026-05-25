@@ -1,6 +1,6 @@
 # BTree 并行写入调度器设计
 
-> 状态：草稿 → 修订 v2（评审后） | 日期：2026-05-25 | 分支：`fix/btree-par-put-stability`
+> 状态：v3（评审修订） | 日期：2026-05-25 | 分支：`fix/btree-par-put-stability`
 
 ## 1. 问题定义
 
@@ -100,6 +100,8 @@ func (tree *BTree) resolveShardPageIDs(ctx context.Context, keys []keyWithIndex)
 }
 ```
 
+**错误路径**：若 `ctx` 被取消，`resolveShardPageIDs` 通过 `ResolvePageID(ctx, key)` 感知取消并提前返回 error。主 goroutine 收集所有 shard 结果（通过 channel 或 error slice），任一 shard 失败则整体快速失败。
+
 `inSamePage` 是一个纯读优化：从 page 的 key range 元数据快速判断 key 是否在范围内。**错误判定的后果可控**：
 - False positive（认为在范围内但实际已分裂）→ 下游 `tree.Set` 通过 `searchPath` 正确路由到新 Page，正确性不受影响，仅性能略降
 - False negative（认为不在范围内但实际在）→ 重新 `ResolvePageID`，仅性能略降
@@ -133,9 +135,11 @@ type WorkerPool struct {
 
 // pageBatch 单个 Page 的批量写入任务
 type pageBatch struct {
+    ctx     context.Context // 传递给 tree.Set
+    tree    *btree.BTree    // 执行写入的 BTree 实例
     pageID  PageID
     tasks   []writeTask
-    results []WriteResult      // 写入结果（预分配，按 task 原始索引）
+    results []WriteResult   // 写入结果（预分配，按 task 原始索引）
 }
 
 // writeTask 单个写入任务（不含 channel，纯数据）
@@ -166,13 +170,14 @@ type WriteResult struct {
 │  1. Hash 分桶: O(N)，key 扇出到 numShards 个桶       │
 │         │                                             │
 │         ▼                                             │
-│  2. 桶间并行: 每个桶开 goroutine                      │
-│     ├─ 桶0: 排序 + resolveShardPageIDs               │
-│     ├─ 桶1: 排序 + resolveShardPageIDs               │
-│     └─ 桶N: 排序 + resolveShardPageIDs               │
+│  2. 桶间并行: 每个桶开 goroutine，通过 sync.WaitGroup 等待     │
+│     ├─ 桶0: 排序 + resolveShardPageIDs → 返回 map[PageID][]int    │
+│     ├─ 桶1: 排序 + resolveShardPageIDs → 通过 channel/slice 返回  │
+│     └─ 桶N: 排序 + resolveShardPageIDs → 主 goroutine 收集        │
 │         │                                             │
 │         ▼                                             │
-│  3. 合并: 跨桶 merge → map[PageID][]writeTask        │
+│  3. 串行合并: 主 goroutine 收集所有桶结果后 merge                 │
+│     （无竞态：所有 shard goroutine 已返回，主 goroutine 独占）     │
 │         │                                             │
 │         ▼                                             │
 │  4. 提交: 每个 PageID → WorkerPool.Submit(pageBatch) │
@@ -210,9 +215,21 @@ func (wp *WorkerPool) runWorker() {
 // 包含 panic recovery，避免一个 write 的 panic 崩溃整个 worker
 func (wp *WorkerPool) executeBatch(batch *pageBatch) {
     defer wp.wg.Done()
+    defer func() {
+        if r := recover(); r != nil {
+            for i := range batch.tasks {
+                if batch.results[i].Err == nil {
+                    batch.results[i] = WriteResult{
+                        Index: batch.tasks[i].idx,
+                        Err:   fmt.Errorf("worker panic: %v", r),
+                    }
+                }
+            }
+        }
+    }()
     for i := range batch.tasks {
         t := &batch.tasks[i]
-        err := batch.execute(t) // 调用 tree.Set
+        err := batch.tree.Set(batch.ctx, t.key, t.value)
         batch.results[i] = WriteResult{Index: t.idx, Err: err}
     }
 }
@@ -301,8 +318,8 @@ func (pd *PageDispatcher) Dispatch(ctx context.Context, ops []WriteOp) ([]WriteR
 
 **事务执行期间的行为**：
 - `Dispatch` 在事务执行期间占用调用者 goroutine
-- 事务执行期间不会有新的普通写入被提交（调用者是串行的）
-- 如果调用者需要并发调用 `Dispatch`，外部需要自己的序列化层
+- 事务执行期间不会有新的普通写入被提交（调用者串行调用）
+- `Dispatch` **不支持并发调用**：如果两个 goroutine 同时调用 `Dispatch`，第一个的 `Wait()` 会错误地等待第二个提交的 batch。调用者需保证串行调用或外部加锁。
 
 ### 5.3 事务内部优化（未来）
 
@@ -313,10 +330,16 @@ func (pd *PageDispatcher) Dispatch(ctx context.Context, ops []WriteOp) ([]WriteR
 ### 6.1 调度器接口
 
 ```go
+// WriteOp 写入操作（union 类型：普通写入或事务）
+type WriteOp struct {
+    Key, Value []byte
+    IsTxn      bool
+    Txn        *Transaction // 仅 IsTxn=true 时有效
+}
+
 // BatchWriter 批量写入调度器
 type BatchWriter struct {
-    dispatcher *PageDispatcher
-    tree       *btree.BTree
+    dispatcher *PageDispatcher // PageDispatcher 内含 tree，此处不重复
 }
 
 // WriteBatch 批量写入（非事务）
@@ -431,33 +454,7 @@ V1 实现 **串行快照隔离（Serializable Snapshot Isolation）**：
 
 ### 8.4 panic recovery
 
-Worker goroutine 内必须 recover：
-
-```go
-func (wp *WorkerPool) executeBatch(batch *pageBatch) {
-    defer wp.wg.Done()
-    defer func() {
-        if r := recover(); r != nil {
-            // 将 panic 转为所有未完成 task 的 error
-            for i := range batch.tasks {
-                if batch.results[i].Err == nil {
-                    batch.results[i] = WriteResult{
-                        Index: batch.tasks[i].idx,
-                        Err:   fmt.Errorf("panic: %v", r),
-                    }
-                }
-            }
-        }
-    }()
-    for i := range batch.tasks {
-        t := &batch.tasks[i]
-        batch.results[i] = WriteResult{
-            Index: t.idx,
-            Err:   batch.tree.Set(ctx, t.key, t.value),
-        }
-    }
-}
-```
+实现在 4.3 节 `executeBatch`（见上文），此处不重复。
 
 ## 9. 风险与缓解
 
@@ -529,6 +526,16 @@ COW 写操作可能触发 Page 分裂：
 - [ ] CPU profile 验证 involuntary CS 消除
 - [ ] 性能对比：调度器开销 vs 原有直接并发
 - [ ] 压测 100 轮确认无双峰
+
+**关键测试场景**（实现前设计）：
+
+| 场景 | 验证点 | 预期结果 |
+|------|--------|---------|
+| 单 Page（所有 key 同 page） | 退化为单 worker 串行，无竞争 | 零 CAS retry |
+| 多 Page 均衡分布 | 各 worker 负载均匀 | 接近线性扩展 |
+| 事务排空 | `Wait()` → 事务执行 → 期间无普通写入 | Serializable |
+| 并发 Dispatch 冲突 | 两个 goroutine 同时 Dispatch | V1 期望调用者串行；否则 `Wait()` 语义未定义 |
+| Shutdown 时 Submit | `Shutdown()` 后再 `Submit()` | panic（V1 前提：调用者保证 Stop 后无 Submit） |
 
 ## 11. 预期效果
 
@@ -707,104 +714,24 @@ NexKV 已有自己的统一任务调度器（`internal/infrastructure/concurrenc
 | 会话绑定 | 无会话概念，item 按 ShardID 路由 | Session→Scheduler 生命周期绑定，无锁 session-local 状态 |
 | 统一性 | 通用任务调度器，Page/WAL/GC 需各自接入 | **统一调度**：网络 I/O、SQL、Page 操作、事务、GC 共享同一调度器 |
 
-**关键差距分析**：
+**关键差距**：
 
-**1. Page→线程绑定缺失**
+| 差距 | Lealone | NexKV | 优先级 |
+|------|---------|-------|:---:|
+| Page→线程绑定 | 核心设计原则 | 无此概念，通用路由 | P0 |
+| CAS 失败处理 | 3 次快速尝试→调度器等待队列 | CAS 自旋最多 200 次 | P0 |
+| 阶段分离 | Page Operations 专用阶段 | bitmap 统一遍历 | P1 |
+| 抢占 | yieldIfNeeded() 主动让出 | 纯协作，无抢占 | P2 |
 
-NexKV TaskScheduler 是通用调度器，没有 Page→线程的亲和性概念。Lealone 将 Page 更新绑定到固定线程是其核心设计原则。PageDispatcher 需要在 TaskScheduler 之上**增加这一层**：将同一 PageID 的 pageBatch 固定路由到同一 Core。
+NexKV TaskScheduler 在 bitmap O(1) 优先级、双路径负载均衡、PeekN/DequeueN 批量处理方面优于 Lealone，但 Page→线程绑定和 CAS 失败重新入队是 Lealone 的核心启示。PageDispatcher V1 用独立 WorkerPool 起步，V2 与 TaskScheduler 深度融合。
 
-```
-当前 TaskScheduler 路由：
-  ShardID → CoreIndex = ShardID % coreCount
+#### A.1.7 TaskScheduler 开销与 PageDispatcher 决策
 
-PageDispatcher 需要的路由：
-  PageID → CoreIndex = PageID % coreCount  （同 Page 到同 Core）
-  同一个 Core 内，同 Page 的 batch 串行执行
-```
+基准实测 `ShardTask.Enqueue` = 86 ns/op, 2 allocs/op (11.6 Mqps 单核)。
 
-**2. 重试策略差距最大**
+PageDispatcher 按 Page 批量提交时（1M key → ~10K pageBatch → 10K 次 Enqueue），调度开销 0.86ms，仅占 tree.Set 总耗时 300ms 的 **0.3%**。性能不是瓶颈。
 
-| | NexKV | Lealone |
-|---|-------|---------|
-| 快速尝试 | 无限制（依赖 tree.Set 内部 CAS retry，最多 200 次） | 最多 3 次 |
-| 失败后 | 自旋重试，耗尽 CPU 时间片 → involuntary CS | **注册到调度器等待队列，下次循环再试** |
-| CPU 浪费 | 高（CAS 自旋） | 低（让出线程） |
-
-这是 PageDispatcher 应该从 Lealone 借鉴的最关键设计。当前 `tree.Set` 的 CAS retry（最多 200 次）是 involuntary CS 的根源。PageDispatcher 的 worker 应该在 tree.Set CAS 失败时主动让出，将 task 重新入队等待下一轮。
-
-**3. 阶段分离不足**
-
-NexKV runLoop 是单循环 bitmap 遍历，所有优先级的任务混在一起。Lealone 的 10 阶段循环明确将 Page Operations 放在专用阶段，确保：
-- 所有 page 操作在同一阶段处理（批量效应）
-- 新到达的 page 操作等下一轮（避免饥饿）
-
-PageDispatcher 如果在 TaskScheduler 的 runLoop 中运行，需要类似的阶段隔离——至少确保同一 batch 的所有 pageBatch 在同一个"阶段"内完成。
-
-**4. 抢占机制缺失**
-
-NexKV 无抢占，长事务会阻塞同核所有其他任务。Lealone 的 `yieldIfNeeded()` 允许长查询主动让出。对于事务（可能涉及多 page 的长时间操作），这是重要特性。
-
-**建议的改进方向**：
-
-| 优先级 | 改进 | 说明 |
-|:---:|------|------|
-| **P0** | Page→Core 亲和路由 | PageDispatcher 将同 PageID 的 batch 固定路由到同一 Core |
-| **P0** | CAS 失败→重新入队而非自旋 | worker 内 tree.Set 失败后不依赖 CAS retry，将 task 重新入队等待下一轮 |
-| **P1** | Page Operations 专用阶段 | 在 runLoop 中增加 Page Operations 阶段，批量处理 pageBatch |
-| **P2** | 事务 yieldIfNeeded | 长事务在检查点主动让出，允许同核其他操作交错执行 |
-| **P3** | 统一 WorkerPool | PageDispatcher 的 WorkerPool 融入 TaskScheduler，消除独立的 goroutine pool |
-
-**当前结论**：NexKV TaskScheduler 是一个**设计良好的通用 Per-Core 任务调度器**，在优先级管理（bitmap O(1)）、负载均衡（双路径）、批量处理（PeekN/DequeueN）方面甚至优于 Lealone。但 Lealone 在 **Page→线程绑定、重试策略、阶段分离、抢占调度** 四个方面值得借鉴。PageDispatcher V1 在独立 WorkerPool 中运行是合理的起步方案，V2 应与 TaskScheduler 深度融合。
-
-#### A.1.7 Mqps 换算：TaskScheduler 是否适合 PageDispatcher 热路径
-
-基准测试 (`task_scheduler_bench_test.go`) 实测数据：
-
-| 操作 | ns/op | allocs/op | Mqps (单核) |
-|------|------:|:---:|------:|
-| `ShardTask.Enqueue` (int) | 86 | 2 | **11.6** |
-| `ShardTask.Enqueue` (lightweight) | 85 | 2 | **11.8** |
-| `ShardTask.Peek` + `Dequeue` | 10.9 | 0 | **91.7** |
-
-**场景 1：如果逐条入队（不推荐）**
-
-```
-每条 Enqueue:        86 ns
-每条 Peek+Dequeue:   11 ns
-每条 tree.Set:      ~300 ns (seq-put 3.4M qps)
-─────────────────────────
-每条总开销:         ~397 ns → 2.5 Mqps 单核
-```
-
-TaskScheduler 自身开销吃掉 ~25% 吞吐，且每次 2 次内存分配，1M key = 87MB GC 压力。**太重**。
-
-**场景 2：PageDispatcher 按 Page 批量提交**
-
-```
-1M key → ~10,000 pageBatch → 10,000 次 Enqueue
-
-10,000 × 86 ns  =     0.86 ms (调度开销)
-1M × 300 ns     =   300.00 ms (实际工作: tree.Set)
-─────────────────────────────
-调度开销占比:    0.86/300 = 0.3%
-```
-
-0.3% 可以忽略。TaskScheduler 性能**绰绰有余**。
-
-**结论**：性能不是问题，**复杂度才是**。
-
-| PageDispatcher 需要 | TaskScheduler 提供 |
-|------|------|
-| `chan *pageBatch` | MPSC 无锁环形队列 |
-| `sync.WaitGroup` | cond.Wait 信号唤醒 |
-| 8 个 goroutine | LockOSThread + CPU pinning |
-| FIFO | 10 级优先级 bitmap + 饥饿防护 |
-| — | 双路径负载均衡 + PeekN/DequeueN |
-| **~50 行** | **908 行** |
-
-PageDispatcher 不需要 LockOSThread、优先级、starvation detection。这些是 NexKV 全局统一调度器需要的（网络 I/O、WAL、checkpoint），但对「提交 N 个 batch 到 M 个 worker」来说过度设计了。
-
-**最终决策**：PageDispatcher V1 使用独立轻量 WorkerPool（~50 行 channel + WaitGroup），不依赖 TaskScheduler。V2 若需与全局调度器统一，再将 WorkerPool 替换为 TaskScheduler 的简化接入。
+但 TaskScheduler 908 行重型机制（LockOSThread、CPU pinning、10 级优先级、饥饿防护、cond.Wait）对「提交 N 个 batch 到 M 个 worker，等结果」来说过度设计。**决策：V1 用 ~50 行轻量 channel + WaitGroup worker pool，不依赖 TaskScheduler。**
 
 ### A.2 Intel Palm Tree（2015）
 

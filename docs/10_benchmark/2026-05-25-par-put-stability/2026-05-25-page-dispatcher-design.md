@@ -116,7 +116,7 @@ func (tree *BTree) resolveShardPageIDs(ctx context.Context, keys []keyWithIndex)
 ### 3.3 分片数与桶数
 
 ```
-numShards = GOMAXPROCS * 4   // 固定 64 桶（M2 8 核 → 32）
+numShards = GOMAXPROCS * 8   // 固定 64 桶（M2 8 核 → 64）
 ```
 
 - 桶数固定为 CPU 核数 × 4，不随 key 数量变化

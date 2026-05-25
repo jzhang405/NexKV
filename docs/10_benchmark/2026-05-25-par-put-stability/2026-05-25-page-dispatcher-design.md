@@ -1,6 +1,6 @@
 # BTree 并行写入调度器设计
 
-> 状态：v3（评审修订） | 日期：2026-05-25 | 分支：`fix/btree-par-put-stability`
+> 状态：v4 | 日期：2026-05-25 | 分支：`fix/btree-par-put-stability`
 
 ## 1. 问题定义
 
@@ -20,8 +20,17 @@ BTree 写操作基于乐观锁（CAS on PageInfo），高并发下多个 gorouti
 
 - 同 Page 写入**串行化**，消除 CAS 竞争
 - 跨 Page 写入**并发**，保持多核利用
-- 事务写入**全局串行**，保证隔离性
 - 消除双峰分布，CV 降到 5% 以下
+
+### V1 范围（明确边界）
+
+**V1 包含**：批量非事务写入的并行调度（`WriteBatch`）。
+
+**V1 不包含**：
+- **事务支持**：NexKV 已有完整的 MVCC 事务层（SnapshotTx、WAL-based 2PC、VersionChain GC），PageDispatcher V1 不介入事务调度。事务写入直接走现有 `tree.Set` + MVCC 路径，不经 PageDispatcher。
+- **单 key 写入**：`tree.Set` 单次调用走现有 CAS 路径不变。
+
+事务调度（事务内跨 Page 读一致性、事务/非事务混批、与 WAL 集成）留待 V2 独立设计。
 
 ## 2. 核心思想
 
@@ -30,15 +39,12 @@ BTree 写操作基于乐观锁（CAS on PageInfo），高并发下多个 gorouti
                     │
 KV 写入请求 ─→ 按 Page 分片 ─┼─ Page-B Queue → Worker-B (串行)
                     │
-                    ├─ Page-C Queue → Worker-C (串行)
-                    │
-                    └─ Txn Queue     → Txn Worker  (串行)
+                    └─ Page-C Queue → Worker-C (串行)
 ```
 
 **原则**：
 - **同 Page 串行**：同一 Page 的 Set 操作排入该 Page 的队列，单 goroutine 消费
 - **跨 Page 并发**：不同 Page 的队列由不同 goroutine 消费，互不干扰
-- **事务全局串行**：事务涉及多个 Page，走独立事务队列，整个事务序列化执行
 
 ## 3. Key → Page 映射策略
 
@@ -330,10 +336,7 @@ sequenceDiagram
 
     Merge->>WP: pool.Wait()
     WP-->>Merge: 所有 pageBatch 完成
-
-    Note over Merge: 事务阶段
-    Merge->>Merge: 所有事务 txn.Execute(ctx)
-    Merge-->>Client: []WriteResult / *BatchError
+    Merge-->>Client: nil / *BatchError
 ```
 
 **关键设计决策**：
@@ -353,89 +356,66 @@ Invariant 1: 同一 PageID 的所有写入在同一个 goroutine 中顺序执行
 Invariant 2: 不同 PageID 的写入分布到不同 worker 并发执行
     → 保证：不同 pageBatch 进入 taskCh，由 N 个 worker 并行消费
 
-Invariant 3: 事务写入独占执行，不与任何普通写入并发
-    → 保证：Dispatch 内先 Wait() 排空所有 pageBatch，再顺序执行事务
-
-Invariant 4: 跨 Dispatch 调用的同 Page 写入不保证在同一 goroutine
+Invariant 3: 跨 Dispatch 调用的同 Page 写入不保证在同一 goroutine
     → 说明：每次 Dispatch 独立提交 pageBatch，
       同一 Page 在不同 batch 中可能由不同 worker 处理。
       但同一 batch 内不变式 1 保证了串行。
 ```
 
-## 5. 事务兼容
+## 5. 事务兼容（V2 规划）
 
-### 5.1 隔离模型
+### 5.1 V1 定位：纯批量写入优化器
+
+PageDispatcher V1 **不介入事务调度**。NexKV 已有完整的 MVCC 事务层：
 
 ```
-正常写入：Page 级并行
-    Page-A ──→ Worker-1
-    Page-B ──→ Worker-2  } 并发
-    Page-C ──→ Worker-3
+mvcc 事务路径（V1 不变）:
+  BeginTx → WriteBuffer (Put/Delete) → PreCheck
+  → WAL TxPrepare → get commitTS → applyWriteBuffer
+  → BTree.Set per-key (under KeyLock) → WAL TxCommit
 
-事务写入：全局串行
-    Txn{T1, T2, T3} ──→ Dispatch goroutine（内联执行）
-                        ↑
-                    所有 Page Worker 必须在此之前排空（Wait）
+PageDispatcher 路径（V1 新增）:
+  WriteBatch(keys, values) → Hash分桶 → resolvePageIDs
+  → WorkerPool.Submit → 每 Page 串行 tree.Set
 ```
 
-### 5.2 调度策略
+事务写入仍走现有 `tree.Set` + MVCC 路径。PageDispatcher 的 `WriteBatch` 仅用于非事务批量写入。
 
-```go
-func (pd *PageDispatcher) Dispatch(ctx context.Context, ops []WriteOp) ([]WriteResult, error) {
-    // 分离事务和非事务操作
-    txns, normal := partition(ops)
+**为什么 V1 不做事务调度**：
 
-    // 1. 先处理所有非事务写入（Page 级并发）
-    results := pd.dispatchNormal(ctx, normal)
+| 缺失能力 | 说明 | 依赖 |
+|---------|------|------|
+| 跨 Page 读一致性 | 事务内 Scan 多 Page 需要一个全局快照点，与调度器的分 Page 并发模型冲突 | 需事务快照隔离层 |
+| 事务回滚 | V1 Dispatch 只有「成功写」和「CAS 失败重入队」，无 Abort/Rollback 语义 | 需与 WAL + VersionChain 集成 |
+| 事务/非事务混批原子性 | 同一 batch 中 K1 成功、Txn 失败时 K1 不可回滚 | 需 2PC 跨 key 原子性 |
+| 与现有 WAL 2PC 衔接 | Phase 3.2-3.3 已实现 TxPrepare/TxCommit WAL 类型 | 需事务调度器感知 WAL 边界 |
 
-    // 2. 等待所有 Page Worker 完成
-    pd.pool.Wait()
+### 5.2 V2 方向
 
-    // 3. 顺序执行事务（在调用者 goroutine 中内联）
-    for _, txn := range txns {
-        if err := txn.Execute(ctx); err != nil {
-            return results, err
-        }
-    }
+V2 事务调度器需独立设计，至少覆盖：
 
-    return results, nil
-}
-```
+1. **事务读快照建立**：事务开始时在 BTree COW 树上建立读快照点
+2. **阶段化调度**：Begin → ReadSet → WriteBuffer → PreCheck → Commit（而非黑盒 Execute）
+3. **WAL 集成**：利用现有 TxPrepare/TxCommit WAL 类型保证跨 key 原子性
+4. **回滚路径**：Abort 时 WriteBuffer 丢弃 + VersionChain 回退
+5. **事务内并发**：不同 Page 的写操作在 barrier 间可并发（类似 Palm Tree Stage 3-4）
 
-**事务执行期间的行为**：
-- `Dispatch` 在事务执行期间占用调用者 goroutine
-- 事务执行期间不会有新的普通写入被提交（调用者串行调用）
-- `Dispatch` **不支持并发调用**：如果两个 goroutine 同时调用 `Dispatch`，第一个的 `Wait()` 会错误地等待第二个提交的 batch。调用者需保证串行调用或外部加锁。
-
-### 5.3 事务内部优化（未来）
-
-事务内部如果涉及多个 Page，且这些 Page 之间没有冲突（不同 key range），理论上可以并行——但需要事务冲突检测。**V1 不做**，保持事务全局串行确保正确性。
+V2 设计不在本文档范围内。
 
 ## 6. API 设计
 
 ### 6.1 调度器接口
 
 ```go
-// WriteOp 写入操作（union 类型：普通写入或事务）
-type WriteOp struct {
-    Key, Value []byte
-    IsTxn      bool
-    Txn        *Transaction // 仅 IsTxn=true 时有效
-}
-
-// BatchWriter 批量写入调度器
+// BatchWriter 批量写入调度器（V1：纯非事务批量写入）
 type BatchWriter struct {
     dispatcher *PageDispatcher // PageDispatcher 内含 tree，此处不重复
 }
 
 // WriteBatch 批量写入（非事务）
 // 内部自动按 Page 分组、并发调度
-// 返回聚合 error：所有 key 写入成功返回 nil，
-// 任一失败返回包含所有错误的 *BatchError
+// 返回 error：全部成功返回 nil，部分失败返回 *BatchError
 func (bw *BatchWriter) WriteBatch(ctx context.Context, keys, values [][]byte) error
-
-// WriteTxn 事务写入
-func (bw *BatchWriter) WriteTxn(ctx context.Context, txn *Transaction) error
 
 // BatchError 聚合多个写入错误
 type BatchError struct {
@@ -531,12 +511,9 @@ workers = min(runtime.GOMAXPROCS(0), numShards/2)
 - Worker 数不超过 Page 分组数的一半（Page 太少时不需要全部 worker）
 - 常驻 goroutine 模型 — 无需动态扩缩
 
-### 8.3 事务隔离级别
+### 8.3 V1 范围边界
 
-V1 实现 **串行快照隔离（Serializable Snapshot Isolation）**：
-- 事务开始时所有普通写入已排空（Wait 保证）
-- 事务期间无新写入（Dispatch 同步执行）
-- 事务提交后下一个 Dispatch 的写入开始
+PageDispatcher V1 是**纯批量写入优化器**，不处理事务。事务写入走现有 `mvcc.SnapshotTx` + WAL-based 2PC 路径。
 
 ### 8.4 panic recovery
 
@@ -573,7 +550,6 @@ tree.Set CAS 失败
 | 内部节点 CAS 竞争 | 中 | 多个 page 同时 split 争抢 parent CAS | parent split 频率 << leaf write，影响可控 |
 | Page 过少时并发度不足 | 高 | 同 page 的所有 key 一个 worker 处理，退化为单线程 | 无可避免——page 少意味着 key 范围小 |
 | 桶间 merge 开销 | 低 | map 合并有内存分配 | key 总数确定时预分配 merge map |
-| 事务执行时间长阻塞后续写入 | 中 | 后续 WriteBatch 被阻塞 | V1 接受；V2 仅 drain 事务涉及的 page |
 | Worker panic 导致 goroutine 退出 | 低 | 丢失 worker | panic recovery + 自动重启 worker |
 | CAS 重新入队饥饿 | 低 | batch 反复 CAS 失败，多次重新入队 | 上限 3 次，超限返回错误；同 Page 无竞争故概率极低 |
 
@@ -623,13 +599,7 @@ COW 写操作可能触发 Page 分裂：
 - [ ] `Dispatch` 主流程：hash → resolve → submit → wait → collect
 - [ ] COW 分裂路径验证
 
-### Phase 3：事务支持（1 天）
-
-- [ ] `partition` 分离事务/非事务
-- [ ] `Wait + 内联执行` 事务隔离
-- [ ] 隔离性测试
-
-### Phase 4：验证（1 天）
+### Phase 3：验证（1 天）
 
 - [ ] 8T/16T/32T 稳定性回归测试（CV < 5% 目标）
 - [ ] CPU profile 验证 involuntary CS 消除
@@ -642,7 +612,6 @@ COW 写操作可能触发 Page 分裂：
 |------|--------|---------|
 | 单 Page（所有 key 同 page） | 退化为单 worker 串行，无竞争 | 零 CAS retry |
 | 多 Page 均衡分布 | 各 worker 负载均匀 | 接近线性扩展 |
-| 事务排空 | `Wait()` → 事务执行 → 期间无普通写入 | Serializable |
 | 并发 Dispatch 冲突 | 两个 goroutine 同时 Dispatch | V1 期望调用者串行；否则 `Wait()` 语义未定义 |
 | Shutdown 时 Submit | `Shutdown()` 后再 `Submit()` | panic（V1 前提：调用者保证 Stop 后无 Submit） |
 

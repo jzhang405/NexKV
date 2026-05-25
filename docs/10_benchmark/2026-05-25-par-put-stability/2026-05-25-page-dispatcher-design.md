@@ -1,6 +1,6 @@
 # BTree 并行写入调度器设计
 
-> 状态：v5（Agent 评审修订） | 日期：2026-05-25 | 分支：`fix/btree-par-put-stability`
+> 状态：v6（豆包评审修订） | 日期：2026-05-25 | 分支：`fix/btree-par-put-stability`
 
 ## 1. 问题定义
 
@@ -61,7 +61,7 @@ KV 写入请求 ─→ 按 Page 分片 ─┼─ Page-B Queue → Worker-B (串�
 
 **设计原则**：Phase 1 用 hash 将 key 均匀扇出到 N 个桶（O(1) per key，无锁），桶间并行处理。Phase 2 在桶内排序 key 后一次 BTree 遍历解析 PageID。
 
-**为什么不用前缀分桶**：benchmark key 全部以 `"key-"` 开头，前缀分桶把所有 key 分入同一桶，Phase 1 退化为空操作。hash 分桶保证任意 key 分布下的均匀性。
+**为什么不用前缀分桶**：benchmark key 全部以 `"key-"` 开头，前缀分桶把所有 key 分入同一桶，Phase 1 退化为空操作。**Hash 分桶是唯一能在「顺序 key、随机 key、前缀集中 key」三种场景下都保持均匀分片的方案**。
 
 **Phase 1 — Hash 分桶（策略 C）**：
 
@@ -137,6 +137,7 @@ type PageDispatcher struct {
 type WorkerPool struct {
     taskCh    chan *pageBatch   // 所有 worker 共享的任务通道
     wg        sync.WaitGroup   // 追踪所有提交的任务
+    closed    atomic.Bool      // Shutdown 后置为 true，防止 Submit 向已关闭 channel 发送
 }
 
 // pageBatch 单个 Page 的批量写入任务
@@ -258,9 +259,14 @@ func (wp *WorkerPool) executeBatch(batch *pageBatch) {
 }
 
 // Submit 提交一个 pageBatch，不阻塞调用者
-func (wp *WorkerPool) Submit(batch *pageBatch) {
+// Shutdown 后返回 ErrWorkerPoolClosed
+func (wp *WorkerPool) Submit(batch *pageBatch) error {
+    if wp.closed.Load() {
+        return ErrWorkerPoolClosed
+    }
     wp.wg.Add(1)
     wp.taskCh <- batch
+    return nil
 }
 
 // Wait 等待所有已提交任务完成
@@ -268,10 +274,13 @@ func (wp *WorkerPool) Wait() {
     wp.wg.Wait()
 }
 
-// Shutdown 优雅关闭
+// Shutdown 优雅关闭：先设 closed 标志阻止新 Submit，再 close taskCh
 func (wp *WorkerPool) Shutdown() {
+    wp.closed.Store(true)
     close(wp.taskCh)
 }
+
+var ErrWorkerPoolClosed = errors.New("worker pool closed")
 ```
 
 **CAS 重试策略（借鉴 Lealone）**：
@@ -549,7 +558,18 @@ tree.Set CAS 失败
        └─ batch.retries >= 3 → 返回 ErrCASRetryExhausted
 ```
 
-**需要的 BTree API 变更**：`tree.Set` 内部 CAS 最大重试次数当前硬编码为 `MaxCASRetries = 200`。V1 需新增 `tree.SetWithRetry(ctx, key, value, maxRetries int)` 方法，允许 PageDispatcher 将 CAS 自旋限制在 3 次以内。原有 `tree.Set` 保持默认 200 次向后兼容。
+**需要的 BTree API 变更**：`tree.Set` 内部 CAS 最大重试次数当前硬编码为 `MaxCASRetries = 200`。V1 需新增：
+
+```go
+// ErrCASRetryExhausted 在 CAS 重试耗尽 maxRetries 后被 BTree 返回
+var ErrCASRetryExhausted = errors.New("btree: CAS retry exhausted")
+
+// SetWithRetry 类似 Set，但 CAS 最大重试次数可配置
+// 原 Set(ctx, k, v) 行为不变（默认 200 次向后兼容）
+func (b *BTree) SetWithRetry(ctx context.Context, key, value []byte, maxRetries int) error
+```
+
+PageDispatcher 调用 `SetWithRetry(ctx, k, v, 3)` 将 CAS 自旋限制在 3 次。`isCASRetryErr` 检查 `errors.Is(err, ErrCASRetryExhausted)`。
 
 **幂等性保证**：`tree.Set(key, value)` 是幂等的——同 key-value 写入两次等于一次。`nextIdx` + re-queue 保证已完成的 key 不会重复执行，但即使极端情况下重复写入也是安全的。此语义在文档中显式声明。
 
@@ -565,7 +585,8 @@ tree.Set CAS 失败
 | Page 过少时并发度不足 | 高 | 同 page 的所有 key 一个 worker 处理，退化为单线程 | 无可避免——page 少意味着 key 范围小 |
 | 桶间 merge 开销 | 低 | map 合并有内存分配 | key 总数确定时预分配 merge map |
 | Worker panic 导致 goroutine 退出 | 低 | 丢失 worker | panic recovery + 自动重启 worker |
-| CAS 重新入队饥饿 | 低 | batch 反复 CAS 失败，多次重新入队 | 上限 3 次，超限返回错误；同 Page 无竞争故概率极低 |
+| CAS 重新入队饥饿 | 低 | batch 反复 CAS 失败，多次重新入队 | 上限 3 次，超限返回 `ErrCASRetryExhausted` |
+| 跨 Batch 同 Page 竞争 | 中 | 两个并发 `WriteBatch` 操作同一 Page → 退化到 CAS 竞争 | V1 不解决；V2 可做 Page 级互斥锁 |
 
 ### 9.1 COW 分裂处理（详细）
 

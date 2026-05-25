@@ -756,6 +756,56 @@ NexKV 无抢占，长事务会阻塞同核所有其他任务。Lealone 的 `yiel
 
 **当前结论**：NexKV TaskScheduler 是一个**设计良好的通用 Per-Core 任务调度器**，在优先级管理（bitmap O(1)）、负载均衡（双路径）、批量处理（PeekN/DequeueN）方面甚至优于 Lealone。但 Lealone 在 **Page→线程绑定、重试策略、阶段分离、抢占调度** 四个方面值得借鉴。PageDispatcher V1 在独立 WorkerPool 中运行是合理的起步方案，V2 应与 TaskScheduler 深度融合。
 
+#### A.1.7 Mqps 换算：TaskScheduler 是否适合 PageDispatcher 热路径
+
+基准测试 (`task_scheduler_bench_test.go`) 实测数据：
+
+| 操作 | ns/op | allocs/op | Mqps (单核) |
+|------|------:|:---:|------:|
+| `ShardTask.Enqueue` (int) | 86 | 2 | **11.6** |
+| `ShardTask.Enqueue` (lightweight) | 85 | 2 | **11.8** |
+| `ShardTask.Peek` + `Dequeue` | 10.9 | 0 | **91.7** |
+
+**场景 1：如果逐条入队（不推荐）**
+
+```
+每条 Enqueue:        86 ns
+每条 Peek+Dequeue:   11 ns
+每条 tree.Set:      ~300 ns (seq-put 3.4M qps)
+─────────────────────────
+每条总开销:         ~397 ns → 2.5 Mqps 单核
+```
+
+TaskScheduler 自身开销吃掉 ~25% 吞吐，且每次 2 次内存分配，1M key = 87MB GC 压力。**太重**。
+
+**场景 2：PageDispatcher 按 Page 批量提交**
+
+```
+1M key → ~10,000 pageBatch → 10,000 次 Enqueue
+
+10,000 × 86 ns  =     0.86 ms (调度开销)
+1M × 300 ns     =   300.00 ms (实际工作: tree.Set)
+─────────────────────────────
+调度开销占比:    0.86/300 = 0.3%
+```
+
+0.3% 可以忽略。TaskScheduler 性能**绰绰有余**。
+
+**结论**：性能不是问题，**复杂度才是**。
+
+| PageDispatcher 需要 | TaskScheduler 提供 |
+|------|------|
+| `chan *pageBatch` | MPSC 无锁环形队列 |
+| `sync.WaitGroup` | cond.Wait 信号唤醒 |
+| 8 个 goroutine | LockOSThread + CPU pinning |
+| FIFO | 10 级优先级 bitmap + 饥饿防护 |
+| — | 双路径负载均衡 + PeekN/DequeueN |
+| **~50 行** | **908 行** |
+
+PageDispatcher 不需要 LockOSThread、优先级、starvation detection。这些是 NexKV 全局统一调度器需要的（网络 I/O、WAL、checkpoint），但对「提交 N 个 batch 到 M 个 worker」来说过度设计了。
+
+**最终决策**：PageDispatcher V1 使用独立轻量 WorkerPool（~50 行 channel + WaitGroup），不依赖 TaskScheduler。V2 若需与全局调度器统一，再将 WorkerPool 替换为 TaskScheduler 的简化接入。
+
 ### A.2 Intel Palm Tree（2015）
 
 Intel 提出的 Palm Tree 是一种**无锁并发 B+Tree 算法**，发表于 2015 年。核心思路是 Bulk Synchronized Parallelism (BSP)，将一批操作分阶段并行处理。

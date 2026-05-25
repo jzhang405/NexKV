@@ -135,11 +135,12 @@ type WorkerPool struct {
 
 // pageBatch 单个 Page 的批量写入任务
 type pageBatch struct {
-    ctx     context.Context // 传递给 tree.Set
-    tree    *btree.BTree    // 执行写入的 BTree 实例
-    pageID  PageID
-    tasks   []writeTask
-    results []WriteResult   // 写入结果（预分配，按 task 原始索引）
+    ctx       context.Context
+    tree      *btree.BTree
+    pageID    PageID
+    tasks     []writeTask
+    results   []WriteResult
+    retries   int              // CAS 失败重新入队计数（上限 3）
 }
 
 // writeTask 单个写入任务（不含 channel，纯数据）
@@ -212,7 +213,7 @@ func (wp *WorkerPool) runWorker() {
 }
 
 // executeBatch 串行执行同一 Page 的所有写入
-// 包含 panic recovery，避免一个 write 的 panic 崩溃整个 worker
+// 借鉴 Lealone 双层重试策略：CAS 失败 3 次后重新入队而非自旋
 func (wp *WorkerPool) executeBatch(batch *pageBatch) {
     defer wp.wg.Done()
     defer func() {
@@ -230,6 +231,14 @@ func (wp *WorkerPool) executeBatch(batch *pageBatch) {
     for i := range batch.tasks {
         t := &batch.tasks[i]
         err := batch.tree.Set(batch.ctx, t.key, t.value)
+
+        // 借鉴 Lealone：CAS 失败不是继续自旋，而是让出线程，重新入队等待下一轮
+        if err != nil && isCASRetryErr(err) && batch.retries < maxCASRequeue {
+            batch.retries++
+            wp.Submit(batch) // 重新入队，等待下一轮调度
+            return            // 当前 worker 让出
+        }
+
         batch.results[i] = WriteResult{Index: t.idx, Err: err}
     }
 }
@@ -251,12 +260,26 @@ func (wp *WorkerPool) Shutdown() {
 }
 ```
 
+**CAS 重试策略（借鉴 Lealone）**：
+
+```
+快速路径：tree.Set 内部 CAS 尝试（当前最多 200 次→改为最多 3 次）
+慢速路径：3 次 CAS 失败 → 不再自旋 → Submit(batch) 重新入队 → 当前 worker 让出
+         → 下一轮 runWorker 从 taskCh 拿到 batch → 再次尝试
+         → 最多重新入队 3 次 → 仍失败则返回错误
+```
+
+与 Lealone 的对应：
+- Lealone：`try 3 times → register to scheduler wait queue → next loop retry`
+- PageDispatcher：`try 3 times → Submit(batch) re-enqueue → next worker picks up`
+
 **关键设计决策**：
 
 1. **常驻 goroutine** 而非 per-task `go func()`：避免高频 goroutine 创建/销毁开销
-2. **wg.Add(1) 在 Submit 中，在 taskCh 发送之前**：消除 `dispatchNormal` 循环结束后 `Wait()` 的竞态（所有 pageBatch 提交完毕时 wg 计数已准确）
+2. **wg.Add(1) 在 Submit 中，在 taskCh 发送之前**：消除 `dispatchNormal` 循环结束后 `Wait()` 的竞态
 3. **无 semaphore**：常驻 worker 数量固定 = CPU 核数，自然限流
 4. **panic recovery**：`executeBatch` 内 recover，panic 转为 error 写入 results
+5. **CAS 失败→重新入队而非自旋**：消除 involuntary CS 的根源。`tree.Set` 需要暴露 `SetWithMaxRetry` 或可配置的最大 CAS 次数，将 CAS 自旋限制在 3 次以内
 
 ### 4.4 关键并发保证
 
@@ -456,17 +479,40 @@ V1 实现 **串行快照隔离（Serializable Snapshot Isolation）**：
 
 实现在 4.3 节 `executeBatch`（见上文），此处不重复。
 
+### 8.5 CAS 重试策略（借鉴 Lealone）
+
+**问题**：当前 `tree.Set` 内部 CAS 重试最多 200 次，自旋耗尽 CPU 时间片 → involuntary CS 爆炸。
+
+**Lealone 的方案**：快速路径 3 次 → 慢速路径注册到调度器等待队列 → 下次事件循环重试。
+
+**PageDispatcher 采纳**：
+
+```
+tree.Set CAS 失败
+  │
+  ├─ 3 次以内 → 正常 CAS 重试（快速路径）
+  │
+  └─ 超过 3 次 → 停止自旋
+       ├─ batch.retries < 3 → Submit(batch) 重新入队 → worker 让出
+       └─ batch.retries >= 3 → 返回 ErrCASRetryExhausted
+```
+
+**需要的 BTree API 变更**：`tree.Set` 需要支持可配置的最大 CAS 重试次数（当前硬编码 200），或新增 `tree.SetWithMaxRetry(ctx, key, value, maxRetries int)` 方法。V1 实现中先将 `MaxCASRetries` 从 200 降低为可配置参数。
+
+**预期效果**：同 Page 只有一个写者，CAS 竞争已消除。CAS 失败仅发生在 COW 分裂期间（split 导致 PageInfo 变化）。此时重新入队让出 worker 比自旋等 split 完成更高效——worker 可以处理其他 pageBatch，不浪费 CPU。
+
 ## 9. 风险与缓解
 
 | 风险 | 概率 | 影响 | 缓解 |
 |------|:---:|:---:|------|
 | Hash 分桶负载不均 | 低 | 部分桶 key 多，并行度降低 | FNV-1a 分布均匀；桶数 >> 核数 |
 | COW 分裂导致 PageID 变化 | 中 | 同 page 的两部分 key 被分到不同 pageBatch | worker 内 tree.Set 的 searchPath 实时路由，正确性不受影响 |
-| 内部节点 CAS 竞争 | 中 | 多个 page 同时 split 争抢 parent CAS | parent split 频率 << leaf write，影响可控；V2 暂接受 |
-| Page 过少时并发度不足 | 高 | 同一 page 的所有 key 一个 worker 处理，退化为单线程 | 无可避免——page 少意味着 key 范围小，串行是正确选择 |
+| 内部节点 CAS 竞争 | 中 | 多个 page 同时 split 争抢 parent CAS | parent split 频率 << leaf write，影响可控 |
+| Page 过少时并发度不足 | 高 | 同 page 的所有 key 一个 worker 处理，退化为单线程 | 无可避免——page 少意味着 key 范围小 |
 | 桶间 merge 开销 | 低 | map 合并有内存分配 | key 总数确定时预分配 merge map |
-| 事务执行时间长阻塞后续写入 | 中 | 后续 WriteBatch 被阻塞 | V1 接受；V2 考虑仅 drain 事务涉及的 page |
+| 事务执行时间长阻塞后续写入 | 中 | 后续 WriteBatch 被阻塞 | V1 接受；V2 仅 drain 事务涉及的 page |
 | Worker panic 导致 goroutine 退出 | 低 | 丢失 worker | panic recovery + 自动重启 worker |
+| CAS 重新入队饥饿 | 低 | batch 反复 CAS 失败，多次重新入队 | 上限 3 次，超限返回错误；同 Page 无竞争故概率极低 |
 
 ### 9.1 COW 分裂处理（详细）
 
@@ -640,7 +686,7 @@ AOSE 的 `runPageOperation` 使用**双层重试策略**：
 | 语言 | Java | Go |
 | 线程模型 | 全链路异步 + 每调度器专属 SchedulerThread | 常驻 goroutine pool |
 | Page→线程映射 | Page 更新绑定到固定线程 | pageBatch 提交到 worker pool，同 Page 串行 |
-| 重试策略 | **快速路径 3 次 → 慢速路径排队等待** | 依赖 tree.Set 内部 CAS retry（最多 200 次） |
+| 重试策略 | **快速路径 3 次 → 慢速路径排队等待** | **已采纳**：CAS 失败 3 次后重新入队而非自旋（见 8.5） |
 | Key→Page 映射 | 未公开细节 | Hash 分桶 + KeyRangeIndex.Lookup |
 | 事务 | AOTE 异步事务引擎 | 全局排空 + 内联串行执行 |
 | 同步/异步 | **同时提供 sync + async API** | 当前仅 sync（Dispatch 阻塞）；未来可加 async |
@@ -719,7 +765,7 @@ NexKV 已有自己的统一任务调度器（`internal/infrastructure/concurrenc
 | 差距 | Lealone | NexKV | 优先级 |
 |------|---------|-------|:---:|
 | Page→线程绑定 | 核心设计原则 | 无此概念，通用路由 | P0 |
-| CAS 失败处理 | 3 次快速尝试→调度器等待队列 | CAS 自旋最多 200 次 | P0 |
+| CAS 失败处理 | 3 次快速尝试→调度器等待队列 | **已采纳**（见 8.5） | — |
 | 阶段分离 | Page Operations 专用阶段 | bitmap 统一遍历 | P1 |
 | 抢占 | yieldIfNeeded() 主动让出 | 纯协作，无抢占 | P2 |
 

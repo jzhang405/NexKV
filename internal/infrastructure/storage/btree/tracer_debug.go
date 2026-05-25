@@ -7,6 +7,7 @@
 package btree
 
 import (
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"context"
 	"fmt"
 	"os"
@@ -213,7 +214,7 @@ func (t *TestTracer) DumpToFile(path string) error {
 
 	f, err := os.Create(path)
 	if err != nil {
-		return fmt.Errorf("create tracer dump file: %w", err)
+		return errpkg.Wrapf(err, "create tracer dump file")
 	}
 	defer f.Close()
 
@@ -222,14 +223,14 @@ func (t *TestTracer) DumpToFile(path string) error {
 		buf = append(buf, fmt.Sprintf("%d\t%s\n", i, log)...)
 		if len(buf) >= 4096 {
 			if _, err := f.Write(buf); err != nil {
-				return fmt.Errorf("write log entries: %w", err)
+				return errpkg.Wrapf(err, "write log entries")
 			}
 			buf = buf[:0]
 		}
 	}
 	if len(buf) > 0 {
 		if _, err := f.Write(buf); err != nil {
-			return fmt.Errorf("write remaining log entries: %w", err)
+			return errpkg.Wrapf(err, "write remaining log entries")
 		}
 	}
 	return nil

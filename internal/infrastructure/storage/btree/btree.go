@@ -6,7 +6,6 @@ package btree
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -167,7 +166,7 @@ func (b *BTree) enumeratePagesInternal(root *RootPageRef) ([]checkpoint.PageFlus
 			ptr := b.storage.pm.PageIDToPtr(uint32(pi.PageID))
 			data, serErr := b.storage.serializer.Serialize(ptr, chunk.MaxPagePayload)
 			if serErr != nil {
-				return fmt.Errorf("checkpoint: serialize page %d: %w", pi.PageID, serErr)
+				return errpkg.Wrapf(serErr, "checkpoint: serialize page %d", pi.PageID)
 			}
 			item.PageData = data
 		}

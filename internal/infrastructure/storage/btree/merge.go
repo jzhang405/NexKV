@@ -5,7 +5,7 @@
 package btree
 
 import (
-	"fmt"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -21,7 +21,7 @@ func (s *OffheapBTreeStorage) MergeLeaves(left, right LeafPage) (LeafPage, error
 
 	newRawID, err := s.pm.Alloc()
 	if err != nil {
-		return nil, fmt.Errorf("btree: merge leaves alloc: %w", err)
+		return nil, errpkg.Wrapf(err, "btree: merge leaves alloc")
 	}
 
 	srcVersion := s.pa.GetVersion(uint32(left.PageID()))
@@ -34,14 +34,14 @@ func (s *OffheapBTreeStorage) MergeLeaves(left, right LeafPage) (LeafPage, error
 	for i := range leftKeys {
 		if err := s.pa.InsertLeafEntry(newRawID, i, leftKeys[i], leftVals[i], &dataEnd); err != nil {
 			s.pm.Free(newRawID)
-			return nil, fmt.Errorf("btree: merge leaves insert left: %w", err)
+			return nil, errpkg.Wrapf(err, "btree: merge leaves insert left")
 		}
 	}
 	for i := range rightKeys {
 		idx := len(leftKeys) + i
 		if err := s.pa.InsertLeafEntry(newRawID, idx, rightKeys[i], rightVals[i], &dataEnd); err != nil {
 			s.pm.Free(newRawID)
-			return nil, fmt.Errorf("btree: merge leaves insert right: %w", err)
+			return nil, errpkg.Wrapf(err, "btree: merge leaves insert right")
 		}
 	}
 
@@ -86,7 +86,7 @@ func (s *OffheapBTreeStorage) BorrowFromLeftLeaf(self, sibling LeafPage) (LeafPa
 	// InsertLeafEntry shifts existing entries right automatically
 	newSelfRawID, err := s.pm.Alloc()
 	if err != nil {
-		return nil, nil, fmt.Errorf("btree: borrow left leaf self alloc: %w", err)
+		return nil, nil, errpkg.Wrapf(err, "btree: borrow left leaf self alloc")
 	}
 	srcSlice := unsafe.Slice((*byte)(s.pm.PageIDToPtr(selfRawID)), offheap.PageSize)
 	dstSlice := unsafe.Slice((*byte)(s.pm.PageIDToPtr(newSelfRawID)), offheap.PageSize)
@@ -99,7 +99,7 @@ func (s *OffheapBTreeStorage) BorrowFromLeftLeaf(self, sibling LeafPage) (LeafPa
 	dataEnd := s.pa.GetDataEnd(newSelfRawID)
 	if err := s.pa.InsertLeafEntry(newSelfRawID, 0, borrowedKey, borrowedVal, &dataEnd); err != nil {
 		s.pm.Free(newSelfRawID)
-		return nil, nil, fmt.Errorf("btree: borrow left leaf self insert: %w", err)
+		return nil, nil, errpkg.Wrapf(err, "btree: borrow left leaf self insert")
 	}
 
 	sibRawID := uint32(sibling.PageID())
@@ -108,7 +108,7 @@ func (s *OffheapBTreeStorage) BorrowFromLeftLeaf(self, sibling LeafPage) (LeafPa
 	newSibRawID, err := s.pm.Alloc()
 	if err != nil {
 		s.pm.Free(newSelfRawID)
-		return nil, nil, fmt.Errorf("btree: borrow left leaf sib alloc: %w", err)
+		return nil, nil, errpkg.Wrapf(err, "btree: borrow left leaf sib alloc")
 	}
 	sibVersion := s.pa.GetVersion(sibRawID)
 	s.pa.InitLeafPage(newSibRawID, sibVersion+1)
@@ -118,7 +118,7 @@ func (s *OffheapBTreeStorage) BorrowFromLeftLeaf(self, sibling LeafPage) (LeafPa
 		if err := s.pa.InsertLeafEntry(newSibRawID, i, sibKeys[i], sibVals[i], &sibDataEnd); err != nil {
 			s.pm.Free(newSelfRawID)
 			s.pm.Free(newSibRawID)
-			return nil, nil, fmt.Errorf("btree: borrow left leaf sib rebuild: %w", err)
+			return nil, nil, errpkg.Wrapf(err, "btree: borrow left leaf sib rebuild")
 		}
 	}
 
@@ -152,7 +152,7 @@ func (s *OffheapBTreeStorage) BorrowFromRightLeaf(self, sibling LeafPage) (LeafP
 	selfRawID := uint32(self.PageID())
 	newSelfRawID, err := s.pm.Alloc()
 	if err != nil {
-		return nil, nil, fmt.Errorf("btree: borrow right leaf self alloc: %w", err)
+		return nil, nil, errpkg.Wrapf(err, "btree: borrow right leaf self alloc")
 	}
 	srcSlice := unsafe.Slice((*byte)(s.pm.PageIDToPtr(selfRawID)), offheap.PageSize)
 	dstSlice := unsafe.Slice((*byte)(s.pm.PageIDToPtr(newSelfRawID)), offheap.PageSize)
@@ -164,7 +164,7 @@ func (s *OffheapBTreeStorage) BorrowFromRightLeaf(self, sibling LeafPage) (LeafP
 	dataEnd := s.pa.GetDataEnd(newSelfRawID)
 	if err := s.pa.InsertLeafEntry(newSelfRawID, self.Count(), borrowedKey, borrowedVal, &dataEnd); err != nil {
 		s.pm.Free(newSelfRawID)
-		return nil, nil, fmt.Errorf("btree: borrow right leaf self insert: %w", err)
+		return nil, nil, errpkg.Wrapf(err, "btree: borrow right leaf self insert")
 	}
 
 	sibRawID := uint32(sibling.PageID())
@@ -173,7 +173,7 @@ func (s *OffheapBTreeStorage) BorrowFromRightLeaf(self, sibling LeafPage) (LeafP
 	newSibRawID, err := s.pm.Alloc()
 	if err != nil {
 		s.pm.Free(newSelfRawID)
-		return nil, nil, fmt.Errorf("btree: borrow right leaf sib alloc: %w", err)
+		return nil, nil, errpkg.Wrapf(err, "btree: borrow right leaf sib alloc")
 	}
 	sibVersion := s.pa.GetVersion(sibRawID)
 	s.pa.InitLeafPage(newSibRawID, sibVersion+1)
@@ -183,7 +183,7 @@ func (s *OffheapBTreeStorage) BorrowFromRightLeaf(self, sibling LeafPage) (LeafP
 		if err := s.pa.InsertLeafEntry(newSibRawID, i, sibKeys[i], sibVals[i], &sibDataEnd); err != nil {
 			s.pm.Free(newSelfRawID)
 			s.pm.Free(newSibRawID)
-			return nil, nil, fmt.Errorf("btree: borrow right leaf sib rebuild: %w", err)
+			return nil, nil, errpkg.Wrapf(err, "btree: borrow right leaf sib rebuild")
 		}
 	}
 
@@ -211,7 +211,7 @@ func (s *OffheapBTreeStorage) MergeNodes(left, right NodePage, separator []byte)
 
 	newRawID, err := s.pm.Alloc()
 	if err != nil {
-		return nil, fmt.Errorf("btree: merge nodes alloc: %w", err)
+		return nil, errpkg.Wrapf(err, "btree: merge nodes alloc")
 	}
 
 	srcVersion := s.pa.GetVersion(uint32(left.PageID()))
@@ -226,14 +226,14 @@ func (s *OffheapBTreeStorage) MergeNodes(left, right NodePage, separator []byte)
 		key := s.pa.GetKey(leftRawID, keyOff, keyLen)
 		if err := s.pa.InsertIndexEntry(newRawID, i, key, uint32(childU64), &dataEnd); err != nil {
 			s.pm.Free(newRawID)
-			return nil, fmt.Errorf("btree: merge nodes insert left: %w", err)
+			return nil, errpkg.Wrapf(err, "btree: merge nodes insert left")
 		}
 	}
 
 	leftExtraChild := uint32(s.pa.GetChild(leftRawID, leftCount))
 	if err := s.pa.InsertIndexEntry(newRawID, leftCount, separator, leftExtraChild, &dataEnd); err != nil {
 		s.pm.Free(newRawID)
-		return nil, fmt.Errorf("btree: merge nodes insert separator: %w", err)
+		return nil, errpkg.Wrapf(err, "btree: merge nodes insert separator")
 	}
 
 	for i := 0; i < rightCount; i++ {
@@ -241,7 +241,7 @@ func (s *OffheapBTreeStorage) MergeNodes(left, right NodePage, separator []byte)
 		key := s.pa.GetKey(rightRawID, keyOff, keyLen)
 		if err := s.pa.InsertIndexEntry(newRawID, leftCount+1+i, key, uint32(childU64), &dataEnd); err != nil {
 			s.pm.Free(newRawID)
-			return nil, fmt.Errorf("btree: merge nodes insert right: %w", err)
+			return nil, errpkg.Wrapf(err, "btree: merge nodes insert right")
 		}
 	}
 
@@ -284,7 +284,7 @@ func (s *OffheapBTreeStorage) BorrowFromLeftNode(self, sibling NodePage, _ []byt
 
 	newSelfRawID, err := s.pm.Alloc()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("btree: borrow left node self alloc: %w", err)
+		return nil, nil, nil, errpkg.Wrapf(err, "btree: borrow left node self alloc")
 	}
 	selfVersion := s.pa.GetVersion(selfRawID)
 	s.pa.InitIndexPage(newSelfRawID, selfVersion+1)
@@ -292,12 +292,12 @@ func (s *OffheapBTreeStorage) BorrowFromLeftNode(self, sibling NodePage, _ []byt
 	dataEnd := uint16(0)
 	if err := s.pa.InsertIndexEntry(newSelfRawID, 0, sibLastKey, sibExtraChild, &dataEnd); err != nil {
 		s.pm.Free(newSelfRawID)
-		return nil, nil, nil, fmt.Errorf("btree: borrow left node self insert: %w", err)
+		return nil, nil, nil, errpkg.Wrapf(err, "btree: borrow left node self insert")
 	}
 	for i := 0; i < selfCount; i++ {
 		if err := s.pa.InsertIndexEntry(newSelfRawID, i+1, selfKeys[i], selfChildren[i], &dataEnd); err != nil {
 			s.pm.Free(newSelfRawID)
-			return nil, nil, nil, fmt.Errorf("btree: borrow left node self rebuild: %w", err)
+			return nil, nil, nil, errpkg.Wrapf(err, "btree: borrow left node self rebuild")
 		}
 	}
 	s.pa.SetChild(newSelfRawID, selfCount+1, selfExtraChild)
@@ -305,7 +305,7 @@ func (s *OffheapBTreeStorage) BorrowFromLeftNode(self, sibling NodePage, _ []byt
 	newSibRawID, err := s.pm.Alloc()
 	if err != nil {
 		s.pm.Free(newSelfRawID)
-		return nil, nil, nil, fmt.Errorf("btree: borrow left node sib alloc: %w", err)
+		return nil, nil, nil, errpkg.Wrapf(err, "btree: borrow left node sib alloc")
 	}
 	sibVersion := s.pa.GetVersion(sibRawID)
 	s.pa.InitIndexPage(newSibRawID, sibVersion+1)
@@ -317,7 +317,7 @@ func (s *OffheapBTreeStorage) BorrowFromLeftNode(self, sibling NodePage, _ []byt
 		if err := s.pa.InsertIndexEntry(newSibRawID, i, key, uint32(chU64), &sibDataEnd); err != nil {
 			s.pm.Free(newSelfRawID)
 			s.pm.Free(newSibRawID)
-			return nil, nil, nil, fmt.Errorf("btree: borrow left node sib rebuild: %w", err)
+			return nil, nil, nil, errpkg.Wrapf(err, "btree: borrow left node sib rebuild")
 		}
 	}
 	newSibExtraChild := uint32(s.pa.GetChild(sibRawID, lastIdx))
@@ -351,7 +351,7 @@ func (s *OffheapBTreeStorage) BorrowFromRightNode(self, sibling NodePage, _ []by
 
 	newSelfRawID, err := s.pm.Alloc()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("btree: borrow right node self alloc: %w", err)
+		return nil, nil, nil, errpkg.Wrapf(err, "btree: borrow right node self alloc")
 	}
 	srcSlice := unsafe.Slice((*byte)(s.pm.PageIDToPtr(selfRawID)), offheap.PageSize)
 	dstSlice := unsafe.Slice((*byte)(s.pm.PageIDToPtr(newSelfRawID)), offheap.PageSize)
@@ -363,14 +363,14 @@ func (s *OffheapBTreeStorage) BorrowFromRightNode(self, sibling NodePage, _ []by
 	dataEnd := s.pa.GetDataEnd(newSelfRawID)
 	if err := s.pa.InsertIndexEntry(newSelfRawID, selfCount, sibFirstKey, sibFirstChild, &dataEnd); err != nil {
 		s.pm.Free(newSelfRawID)
-		return nil, nil, nil, fmt.Errorf("btree: borrow right node self insert: %w", err)
+		return nil, nil, nil, errpkg.Wrapf(err, "btree: borrow right node self insert")
 	}
 	s.pa.SetChild(newSelfRawID, selfCount+1, selfExtraChild)
 
 	newSibRawID, err := s.pm.Alloc()
 	if err != nil {
 		s.pm.Free(newSelfRawID)
-		return nil, nil, nil, fmt.Errorf("btree: borrow right node sib alloc: %w", err)
+		return nil, nil, nil, errpkg.Wrapf(err, "btree: borrow right node sib alloc")
 	}
 	sibVersion := s.pa.GetVersion(sibRawID)
 	s.pa.InitIndexPage(newSibRawID, sibVersion+1)
@@ -382,7 +382,7 @@ func (s *OffheapBTreeStorage) BorrowFromRightNode(self, sibling NodePage, _ []by
 		if err := s.pa.InsertIndexEntry(newSibRawID, i-1, key, uint32(chU64), &sibDataEnd); err != nil {
 			s.pm.Free(newSelfRawID)
 			s.pm.Free(newSibRawID)
-			return nil, nil, nil, fmt.Errorf("btree: borrow right node sib rebuild: %w", err)
+			return nil, nil, nil, errpkg.Wrapf(err, "btree: borrow right node sib rebuild")
 		}
 	}
 	sibOrigExtraChild := uint32(s.pa.GetChild(sibRawID, sibCount))

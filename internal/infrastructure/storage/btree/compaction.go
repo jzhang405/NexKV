@@ -5,7 +5,7 @@
 package btree
 
 import (
-	"fmt"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
@@ -186,7 +186,7 @@ func (b *BTree) compactPageWithParent(
 	var err error
 	newRawID, err = b.storage.pm.Alloc()
 	if err != nil {
-		return false, fmt.Errorf("btree: compact alloc: %w", err)
+		return false, errpkg.Wrapf(err, "btree: compact alloc")
 	}
 
 	srcVersion := b.storage.pa.GetVersion(rawID)
@@ -197,7 +197,7 @@ func (b *BTree) compactPageWithParent(
 	dataEnd := uint16(0)
 	for i := range cr.keepKeys {
 		if err := b.storage.pa.InsertLeafEntry(newRawID, i, cr.keepKeys[i], cr.keepVals[i], &dataEnd); err != nil {
-			return false, fmt.Errorf("btree: compact insert: %w", err)
+			return false, errpkg.Wrapf(err, "btree: compact insert")
 		}
 	}
 	b.storage.pa.SetTombstoneCount(newRawID, 0)

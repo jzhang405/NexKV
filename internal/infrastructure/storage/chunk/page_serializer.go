@@ -6,7 +6,7 @@ package chunk
 
 import (
 	"encoding/binary"
-	"fmt"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"unsafe"
 
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/offheap"
@@ -45,8 +45,8 @@ func (s *PageSerializer) Serialize(ptr unsafe.Pointer, pageLength int) ([]byte, 
 		return nil, ErrNilDestination
 	}
 	if pageLength < MinPagePayload || pageLength > MaxPagePayload {
-		return nil, fmt.Errorf("page_serializer: invalid pageLength %d (range [%d,%d]): %w",
-			pageLength, MinPagePayload, MaxPagePayload, ErrInvalidPageLength)
+		return nil, errpkg.Wrapf(ErrInvalidPageLength,
+			"page_serializer: invalid pageLength %d (range [%d,%d])", pageLength, MinPagePayload, MaxPagePayload)
 	}
 
 	diskLen := CRCSize + pageLength
@@ -72,8 +72,8 @@ func (s *PageSerializer) Serialize(ptr unsafe.Pointer, pageLength int) ([]byte, 
 func (s *PageSerializer) Deserialize(data []byte, dst unsafe.Pointer) (int, error) {
 	// Bounds check: lower (minimum valid page) + upper (prevent abnormally large data)
 	if len(data) < MinDiskPageSize || len(data) > MaxDiskPageSize {
-		return 0, fmt.Errorf("page_serializer: invalid data len %d (range [%d,%d])",
-			len(data), MinDiskPageSize, MaxDiskPageSize)
+		return 0, errpkg.Wrapf(ErrChunkFormatError,
+			"page_serializer: invalid data len %d (range [%d,%d])", len(data), MinDiskPageSize, MaxDiskPageSize)
 	}
 	if dst == nil {
 		return 0, ErrNilDestination
@@ -91,7 +91,7 @@ func (s *PageSerializer) Deserialize(data []byte, dst unsafe.Pointer) (int, erro
 	// Validate pageType before copying to mmap (avoids corrupting dst on invalid data)
 	pageType := data[CRCSize+offheap.PageTypeFieldOffset]
 	if pageType != offheap.PageTypeIndex && pageType != offheap.PageTypeLeaf {
-		return 0, fmt.Errorf("page_serializer: invalid pageType %d", pageType)
+		return 0, errpkg.Wrapf(ErrChunkFormatError, "page_serializer: invalid pageType %d", pageType)
 	}
 
 	// Copy PageHeader + Data to mmap

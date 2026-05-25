@@ -47,4 +47,7 @@ var (
 	// Phase 6.5: Merge/Borrow errors
 	ErrBorrowSourceEmpty = errpkg.ErrBTreeBorrowSourceEmpty
 	ErrMergeNoSibling    = errpkg.ErrBTreeMergeNoSibling
+	ErrBTreeDebugError   = errpkg.ErrBTreeDebugError
+	ErrBTreeSearchError  = errpkg.ErrBTreeSearchError
+	ErrBTreeValidationError = errpkg.ErrBTreeValidationError
 )

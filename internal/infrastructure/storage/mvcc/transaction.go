@@ -5,9 +5,9 @@
 package mvcc
 
 import (
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"context"
 	"encoding/binary"
-	"fmt"
 	"runtime"
 	"sort"
 	"sync"
@@ -189,7 +189,7 @@ func (tx *SnapshotTx) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(key) == 0 {
-		return nil, fmt.Errorf("get: empty key")
+		return nil, errpkg.Wrapf(errpkg.ErrMVCCGetError, "get: empty key")
 	}
 	keyStr := string(key)
 
@@ -234,7 +234,7 @@ func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, erro
 			if err == ErrKeyNotFound {
 				return nil, ErrKeyNotFound
 			}
-			return nil, fmt.Errorf("snapshot get: storage read failed for key %s: %w", keyStr, err)
+			return nil, errpkg.Wrapf(err, "snapshot get: storage read failed for key %s", keyStr)
 		}
 
 		mvccVal, parseErr := ParseMVCC(raw)
@@ -300,8 +300,8 @@ func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, erro
 	// Exhausted retries — highly unlikely under normal operation.
 	// This indicates extreme contention on this key. Return a contention error
 	// rather than ErrKeyNotFound to avoid confusing the caller about key existence.
-	return nil, fmt.Errorf("snapshot read contention for key %s after %d retries: %w",
-		keyStr, snapshotGetMaxRetries, ErrVersionChainConflict)
+	return nil, errpkg.Wrapf(ErrVersionChainConflict, "snapshot read contention for key %s after %d retries",
+		keyStr, snapshotGetMaxRetries)
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +314,7 @@ func (tx *SnapshotTx) Put(key, value []byte) error {
 		return err
 	}
 	if len(key) == 0 {
-		return fmt.Errorf("put: empty key")
+		return errpkg.Wrapf(errpkg.ErrMVCCPutError, "put: empty key")
 	}
 	keyStr := string(key)
 
@@ -351,7 +351,7 @@ func (tx *SnapshotTx) Delete(key []byte) error {
 		return err
 	}
 	if len(key) == 0 {
-		return fmt.Errorf("delete: empty key")
+		return errpkg.Wrapf(errpkg.ErrMVCCDeleteError, "delete: empty key")
 	}
 	keyStr := string(key)
 
@@ -430,11 +430,11 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 		prepare := TxPrepareEntry(tx.txID, tx.writeBuffer)
 		if _, err := wal.Append(prepare); err != nil {
 			tx.cleanup()
-			return fmt.Errorf("wal txprepare: %w", err)
+			return errpkg.Wrapf(err, "wal txprepare")
 		}
 		if err := wal.Sync(); err != nil {
 			tx.cleanup()
-			return fmt.Errorf("wal txprepare sync: %w", err)
+			return errpkg.Wrapf(err, "wal txprepare sync")
 		}
 	}
 
@@ -460,12 +460,12 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 		}); err != nil {
 			_ = tx.rollbackApplied(undoBuf)
 			tx.cleanup()
-			return fmt.Errorf("wal txcommit: %w", err)
+			return errpkg.Wrapf(err, "wal txcommit")
 		}
 		if err := wal.Sync(); err != nil {
 			_ = tx.rollbackApplied(undoBuf)
 			tx.cleanup()
-			return fmt.Errorf("wal txcommit sync: %w", err)
+			return errpkg.Wrapf(err, "wal txcommit sync")
 		}
 	}
 
@@ -489,7 +489,7 @@ func (tx *SnapshotTx) preCheck(ctx context.Context) error {
 		}
 		current, err := tx.engine.storage.GetRaw(ctx, []byte(keyStr))
 		if err != nil {
-			return fmt.Errorf("precheck: key %s not found: %w", keyStr, ErrConflict)
+			return errpkg.Wrapf(ErrConflict, "precheck: key %s not found", keyStr)
 		}
 		currentFP := NewReadFingerprint(current)
 		if currentFP.ValueHash != fp.ValueHash {
@@ -520,7 +520,7 @@ func (tx *SnapshotTx) applyWriteBuffer(ctx context.Context, commitTS uint64) ([]
 			}
 			if len(undoBuf) > 0 {
 				if rollbackErr := tx.rollbackApplied(undoBuf); rollbackErr != nil {
-					return nil, fmt.Errorf("apply failed: %w, rollback also failed: %v", err, rollbackErr)
+					return nil, errpkg.Wrapf(err, "apply failed, rollback also failed: %v", rollbackErr)
 				}
 			}
 			return nil, err
@@ -546,7 +546,7 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 	lockVal, _ := tm.keyLocks.LoadOrStore(key, &KeyLock{})
 	kl := lockVal.(*KeyLock)
 	if err := kl.Lock(); err != nil {
-		return nil, fmt.Errorf("key %s lock timeout: %w", key, err)
+		return nil, errpkg.Wrapf(err, "key %s lock timeout", key)
 	}
 	defer kl.Unlock()
 
@@ -554,7 +554,7 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 	// from propagating. The caller (applyWriteBuffer) will attempt rollback via undoBuf.
 	defer func() {
 		if r := recover(); r != nil {
-			retErr = fmt.Errorf("commit key %s: panic: %v", key, r)
+			retErr = errpkg.Wrapf(errpkg.ErrMVCCPanicRecovered, "commit key %s: panic: %v", key, r)
 		}
 	}()
 
@@ -572,7 +572,7 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 		if oldRawVal != nil {
 			mvccVal, parseErr := ParseMVCC(oldRawVal)
 			if parseErr != nil {
-				return nil, fmt.Errorf("parse old value for key %s: %w", key, parseErr)
+				return nil, errpkg.Wrapf(parseErr, "parse old value for key %s", key)
 			}
 			if mvccVal.Flag != FlagTombstone {
 				return nil, ErrConflict
@@ -584,7 +584,7 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 		}
 		mvccVal, parseErr := ParseMVCC(oldRawVal)
 		if parseErr != nil {
-			return nil, fmt.Errorf("parse old value for key %s: %w", key, parseErr)
+			return nil, errpkg.Wrapf(parseErr, "parse old value for key %s", key)
 		}
 		if mvccVal.BeginTS != entry.OldBeginTS {
 			return nil, ErrConflict
@@ -611,13 +611,13 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 		if err := tm.versionStore.Prepend(key, commitTS, nil, FlagTombstone); err != nil {
 			return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
 					PrePrependHead: prePrependHead, PrependSucceeded: false},
-				fmt.Errorf("version chain prepend (insert marker) failed for key %s: %w", key, err)
+				errpkg.Wrapf(err, "version chain prepend (insert marker) failed for key %s", key)
 		}
 	case OpUpdate, OpDelete:
 		if err := tm.versionStore.Prepend(key, commitTS, entry.OldValue, entry.OldFlag); err != nil {
 			return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
 					PrePrependHead: prePrependHead, PrependSucceeded: false},
-				fmt.Errorf("version chain prepend failed for key %s: %w", key, err)
+				errpkg.Wrapf(err, "version chain prepend failed for key %s", key)
 		}
 	}
 
@@ -626,12 +626,12 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 	if buildErr != nil {
 		return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
 				PrePrependHead: prePrependHead, PrependSucceeded: true},
-			fmt.Errorf("build mvcc for key %s: %w", key, buildErr)
+			errpkg.Wrapf(buildErr, "build mvcc for key %s", key)
 	}
 	if err := tm.storage.Set(ctx, []byte(key), encoded); err != nil {
 		return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
 				PrePrependHead: prePrependHead, PrependSucceeded: true},
-			fmt.Errorf("btree set failed for key %s: %w", key, err)
+			errpkg.Wrapf(err, "btree set failed for key %s", key)
 	}
 
 	// ===== Critical section end =====
@@ -708,14 +708,14 @@ func (tx *SnapshotTx) rollbackOneKey(entry UndoEntry) (retErr error) {
 	lockVal, _ := tx.engine.keyLocks.LoadOrStore(entry.Key, &KeyLock{})
 	kl := lockVal.(*KeyLock)
 	if err := kl.Lock(); err != nil {
-		return fmt.Errorf("rollback key %s: lock timeout: %w", entry.Key, err)
+		return errpkg.Wrapf(err, "rollback key %s: lock timeout", entry.Key)
 	}
 	defer kl.Unlock()
 
 	// Recover from panic in critical section
 	defer func() {
 		if r := recover(); r != nil {
-			retErr = fmt.Errorf("rollback key %s: panic: %v", entry.Key, r)
+			retErr = errpkg.Wrapf(errpkg.ErrMVCCPanicRecovered, "rollback key %s: panic: %v", entry.Key, r)
 		}
 	}()
 
@@ -727,11 +727,11 @@ func (tx *SnapshotTx) rollbackOneKey(entry UndoEntry) (retErr error) {
 		if getErr == ErrKeyNotFound {
 			return nil // key already cleaned up, nothing to roll back
 		}
-		return fmt.Errorf("rollback key %s: GetRaw failed: %w", entry.Key, getErr)
+		return errpkg.Wrapf(getErr, "rollback key %s: GetRaw failed", entry.Key)
 	}
 	mvccVal, parseErr := ParseMVCC(current)
 	if parseErr != nil {
-		return fmt.Errorf("rollback key %s: parse failed: %w", entry.Key, parseErr)
+		return errpkg.Wrapf(parseErr, "rollback key %s: parse failed", entry.Key)
 	}
 	if mvccVal.BeginTS != entry.CommitTS {
 		return nil // current value already updated by another transaction, skip
@@ -742,14 +742,14 @@ func (tx *SnapshotTx) rollbackOneKey(entry UndoEntry) (retErr error) {
 		// Original key didn't exist → write Tombstone (not physical delete)
 		tombstone, buildErr := BuildMVCC(FlagTombstone, entry.CommitTS, nil)
 		if buildErr != nil {
-			return fmt.Errorf("rollback key %s: build tombstone failed: %w", entry.Key, buildErr)
+			return errpkg.Wrapf(buildErr, "rollback key %s: build tombstone failed", entry.Key)
 		}
 		if opErr := tx.engine.storage.Set(rollbackCtx, []byte(entry.Key), tombstone); opErr != nil {
-			return fmt.Errorf("rollback key %s: set tombstone failed: %w", entry.Key, opErr)
+			return errpkg.Wrapf(opErr, "rollback key %s: set tombstone failed", entry.Key)
 		}
 	} else {
 		if opErr := tx.engine.storage.Set(rollbackCtx, []byte(entry.Key), entry.OldRawVal); opErr != nil {
-			return fmt.Errorf("rollback key %s: restore failed: %w", entry.Key, opErr)
+			return errpkg.Wrapf(opErr, "rollback key %s: restore failed", entry.Key)
 		}
 	}
 

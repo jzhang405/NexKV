@@ -777,7 +777,7 @@ func (pa *PageAccessor) BulkInitLeafFromSource(
 	totalCount := int(srcHeader.count)
 
 	if startIdx < 0 || endIdx > totalCount || startIdx >= endIdx {
-		return 0, fmt.Errorf("invalid range [%d, %d) (count: %d)", startIdx, endIdx, totalCount)
+		return 0, errpkg.Wrapf(errpkg.ErrOffHeapInvalidRange, "invalid range [%d, %d) (count: %d)", startIdx, endIdx, totalCount)
 	}
 
 	// 初始化目标页面
@@ -850,7 +850,7 @@ func (pa *PageAccessor) BulkInitIndexFromSource(
 	totalCount := int(srcHeader.count)
 
 	if startIdx < 0 || endIdx > totalCount || startIdx >= endIdx {
-		return 0, fmt.Errorf("invalid range [%d, %d) (count: %d)", startIdx, endIdx, totalCount)
+		return 0, errpkg.Wrapf(errpkg.ErrOffHeapInvalidRange, "invalid range [%d, %d) (count: %d)", startIdx, endIdx, totalCount)
 	}
 
 	// 初始化目标页面

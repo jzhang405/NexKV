@@ -7,6 +7,7 @@
 package offheap
 
 import (
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"fmt"
 	"os"
 
@@ -40,7 +41,7 @@ func GetRecommendedMmapSize(ratio float64) (int, error) {
 func getPhysicalMemoryDarwin() (uint64, error) {
 	val, err := unix.SysctlUint64("hw.memsize")
 	if err != nil {
-		return 0, fmt.Errorf("sysctl hw.memsize: %w", err)
+		return 0, errpkg.Wrapf(err, "sysctl hw.memsize")
 	}
 	return val, nil
 }

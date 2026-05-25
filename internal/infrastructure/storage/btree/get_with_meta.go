@@ -7,7 +7,7 @@ package btree
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 )
@@ -24,7 +24,7 @@ func (b *BTree) GetWithMeta(ctx context.Context, key []byte) (raw []byte, beginT
 		return nil, 0, err
 	}
 	if len(raw) < mvcc.MVCCHeaderSize {
-		return nil, 0, fmt.Errorf("btree: GetWithMeta: value too short: %d bytes", len(raw))
+		return nil, 0, errpkg.Wrapf(ErrBTreeValidationError, "btree: GetWithMeta: value too short: %d bytes", len(raw))
 	}
 	beginTS = binary.BigEndian.Uint64(raw[1:9])
 	return raw, beginTS, nil

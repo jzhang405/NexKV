@@ -7,6 +7,7 @@
 package offheap
 
 import (
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -47,7 +48,7 @@ func getPhysicalMemoryWindows() (uint64, error) {
 
 	ret, _, _ := kernel32.Call(uintptr(unsafe.Pointer(&status[0])))
 	if ret == 0 {
-		return 0, fmt.Errorf("GlobalMemoryStatusEx failed")
+		return 0, errpkg.Wrapf(ErrOffHeapSystemError, "GlobalMemoryStatusEx failed")
 	}
 
 	// ullTotalPhys 位于 offset 16（dwLength[0:4] + dwMemoryLoad[4:8] + ullTotalPhys[8:16]）

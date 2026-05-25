@@ -6,6 +6,7 @@ package chunk
 
 import (
 	"fmt"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -46,10 +47,10 @@ func NewDiskChunkManager(dir string, chunkSize int64) (*DiskChunkManager, error)
 		chunkSize = DefaultChunkCapacity
 	}
 	if chunkSize > (1<<32)-1 {
-		return nil, fmt.Errorf("chunk: chunkSize %d exceeds maximum 4GB (FileOffset is uint32)", chunkSize)
+		return nil, errpkg.Wrapf(ErrChunkFormatError, "chunk: chunkSize %d exceeds maximum 4GB (FileOffset is uint32)", chunkSize)
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("chunk: create dir %s: %w", dir, err)
+		return nil, errpkg.Wrapf(err, "chunk: create dir %s", dir)
 	}
 
 	cm := &DiskChunkManager{
@@ -69,11 +70,11 @@ func (cm *DiskChunkManager) Allocate(size int, pageType uint8) (model.ChunkPosit
 		return 0, ErrChunkClosed
 	}
 	if size < MinPagePayload || size > MaxPagePayload {
-		return 0, fmt.Errorf("chunk: invalid page size %d (range [%d,%d]): %w",
-			size, MinPagePayload, MaxPagePayload, ErrInvalidPageLength)
+		return 0, errpkg.Wrapf(ErrInvalidPageLength,
+			"chunk: invalid page size %d (range [%d,%d])", size, MinPagePayload, MaxPagePayload)
 	}
 	if pageType != offheap.PageTypeIndex && pageType != offheap.PageTypeLeaf {
-		return 0, fmt.Errorf("chunk: invalid pageType %d (expected 0 or 1)", pageType)
+		return 0, errpkg.Wrapf(ErrChunkFormatError, "chunk: invalid pageType %d (expected 0 or 1)", pageType)
 	}
 
 	cm.mu.Lock()
@@ -109,7 +110,7 @@ func (cm *DiskChunkManager) lookupChunk(chunkID uint32) (*ChunkFile, error) {
 	}
 	c, ok := cm.idToChunk[chunkID]
 	if !ok {
-		return nil, fmt.Errorf("chunk: chunk %d not found", chunkID)
+		return nil, errpkg.Wrapf(ErrChunkNotFound, "chunk: chunk %d not found", chunkID)
 	}
 	return c, nil
 }
@@ -129,7 +130,7 @@ func (cm *DiskChunkManager) WritePage(pos model.ChunkPosition, data []byte) erro
 
 	offset := int64(pos.FileOffset())
 	if _, err := c.file.WriteAt(data, offset); err != nil {
-		return fmt.Errorf("chunk: WritePage: %w", err)
+		return errpkg.Wrapf(err, "chunk: WritePage")
 	}
 	cm.writeOps.Add(1)
 	c.pagePosToLen[pos] = int32(len(data))
@@ -156,7 +157,7 @@ func (cm *DiskChunkManager) ReadPage(pos model.ChunkPosition) ([]byte, error) {
 
 	buf := make([]byte, length)
 	if _, err := c.file.ReadAt(buf, offset); err != nil {
-		return nil, fmt.Errorf("chunk: ReadPage: %w", err)
+		return nil, errpkg.Wrapf(err, "chunk: ReadPage")
 	}
 	cm.readOps.Add(1)
 	return buf, nil
@@ -174,7 +175,7 @@ func (cm *DiskChunkManager) FreePage(pos model.ChunkPosition) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, exists := c.pagePosToLen[pos]; !exists {
-		return fmt.Errorf("chunk: FreePage: position %s not allocated", pos)
+		return errpkg.Wrapf(ErrChunkFormatError, "chunk: FreePage: position %s not allocated", pos)
 	}
 	c.removedPages[pos] = struct{}{}
 	cm.removedPages[pos] = struct{}{} // Phase 4.4: global
@@ -188,7 +189,7 @@ func (cm *DiskChunkManager) Sync() error {
 
 	for _, c := range cm.chunks {
 		if err := c.file.Sync(); err != nil {
-			return fmt.Errorf("chunk: sync chunk %d: %w", c.id, err)
+			return errpkg.Wrapf(err, "chunk: sync chunk %d", c.id)
 		}
 	}
 	return nil
@@ -306,11 +307,11 @@ func parseChunkFilename(name string) (chunkID uint32, seq uint64, err error) {
 	var cid, s uint64
 	n, err := fmt.Sscanf(name, "btree_%d_%d.ao", &cid, &s)
 	if err != nil || n != 2 {
-		return 0, 0, fmt.Errorf("chunk: invalid chunk filename %q", name)
+		return 0, 0, errpkg.Wrapf(ErrChunkHeaderError, "chunk: invalid chunk filename %q", name)
 	}
 	// Reject files with trailing content (e.g., .tmp, .backup)
 	if name != fmt.Sprintf("btree_%d_%d.ao", cid, s) {
-		return 0, 0, fmt.Errorf("chunk: invalid chunk filename %q", name)
+		return 0, 0, errpkg.Wrapf(ErrChunkHeaderError, "chunk: invalid chunk filename %q", name)
 	}
 	return uint32(cid), s, nil
 }
@@ -340,7 +341,7 @@ func RestoreDiskChunkManager(dir string, chunkSize int64) (*DiskChunkManager, er
 		if os.IsNotExist(err) {
 			return NewDiskChunkManager(dir, chunkSize)
 		}
-		return nil, fmt.Errorf("chunk: restore: read dir %s: %w", dir, err)
+		return nil, errpkg.Wrapf(err, "chunk: restore: read dir %s", dir)
 	}
 
 	// Step 2-3: Parse filenames, delete zero-length files, dedup by chunkID
@@ -493,7 +494,7 @@ func (b *chunkIDBitSet) nextClearBit(start uint32) (uint32, error) {
 			return i, nil
 		}
 	}
-	return 0, fmt.Errorf("chunk: %d IDs exhausted: %w", model.MaxChunkID+1, ErrChunkIDExhausted)
+	return 0, errpkg.Wrapf(ErrChunkIDExhausted, "chunk: %d IDs exhausted", model.MaxChunkID+1)
 }
 
 func (b *chunkIDBitSet) set(id uint32) {

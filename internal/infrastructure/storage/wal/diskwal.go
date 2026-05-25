@@ -2,6 +2,7 @@
 package wal
 
 import (
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -38,7 +39,7 @@ func NewDiskWAL(config *WALConfig) (*DiskWAL, error) {
 		return nil, err
 	}
 	if err := os.MkdirAll(config.Dir, 0755); err != nil {
-		return nil, fmt.Errorf("wal: create dir: %w", err)
+		return nil, errpkg.Wrapf(err, "wal: create dir")
 	}
 
 	dw := &DiskWAL{
@@ -66,7 +67,7 @@ func (w *DiskWAL) openSegment() error {
 	w.filePath = filepath.Join(w.dir, fileName)
 	f, err := os.OpenFile(w.filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		return fmt.Errorf("wal: open segment %s: %w", fileName, err)
+		return errpkg.Wrapf(err, "wal: open segment %s", fileName)
 	}
 	w.file = f
 	w.writtenBytes.Store(0)
@@ -104,7 +105,7 @@ func (w *DiskWAL) Sync() error {
 
 func (w *DiskWAL) syncLocked() error {
 	if err := w.file.Sync(); err != nil {
-		return fmt.Errorf("wal: sync: %w", err)
+		return errpkg.Wrapf(err, "wal: sync")
 	}
 	w.syncCount.Add(1)
 	return nil
@@ -136,7 +137,7 @@ func (w *DiskWAL) AppendBatch(entries []*WALEntry) ([]LSN, error) {
 
 		data, err := MarshalWALEntry(entry)
 		if err != nil {
-			return nil, fmt.Errorf("wal: marshal: %w", err)
+			return nil, errpkg.Wrapf(err, "wal: marshal")
 		}
 
 		// Segment rotation check
@@ -145,7 +146,7 @@ func (w *DiskWAL) AppendBatch(entries []*WALEntry) ([]LSN, error) {
 		}
 
 		if _, err := w.file.Write(data); err != nil {
-			return nil, fmt.Errorf("wal: write: %w", err)
+			return nil, errpkg.Wrapf(err, "wal: write")
 		}
 
 		w.stats.TotalEntries++
@@ -171,13 +172,13 @@ func (w *DiskWAL) writeEntries(entries []*WALEntry) error {
 	for _, entry := range entries {
 		data, err := MarshalWALEntry(entry)
 		if err != nil {
-			return fmt.Errorf("wal: marshal: %w", err)
+			return errpkg.Wrapf(err, "wal: marshal")
 		}
 		if err := w.checkRotate(len(data)); err != nil {
 			return err
 		}
 		if _, err := w.file.Write(data); err != nil {
-			return fmt.Errorf("wal: write: %w", err)
+			return errpkg.Wrapf(err, "wal: write")
 		}
 		w.stats.TotalEntries++
 		w.stats.TotalBytes += int64(len(data))
@@ -230,7 +231,7 @@ func (w *DiskWAL) CurrentLSN() LSN {
 func (w *DiskWAL) scanSegments() ([]*WALEntry, error) {
 	files, err := os.ReadDir(w.dir)
 	if err != nil {
-		return nil, fmt.Errorf("wal: read dir: %w", err)
+		return nil, errpkg.Wrapf(err, "wal: read dir")
 	}
 
 	// Sort by filename (LSN prefix) for deterministic recovery order
@@ -393,7 +394,7 @@ func (w *DiskWAL) Close() error {
 	}
 	if w.file != nil {
 		if err := w.file.Close(); err != nil {
-			return fmt.Errorf("wal: close: %w", err)
+			return errpkg.Wrapf(err, "wal: close")
 		}
 	}
 	return nil

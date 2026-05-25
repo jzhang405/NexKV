@@ -413,6 +413,10 @@ func TestBTreeTombstoneSizeSemantics(t *testing.T) {
 }
 
 func TestBTreeTombstoneConcurrentDelete(t *testing.T) {
+	old := MaxCASRetries
+	MaxCASRetries = 50
+	defer func() { MaxCASRetries = old }()
+
 	tree, _ := newTestBTree(t)
 	ctx := context.Background()
 

@@ -49,4 +49,4 @@ const (
 )
 
 // MaxCASRetries is the maximum number of CAS retry attempts in writeOperation.
-var MaxCASRetries = 10
+var MaxCASRetries = 3

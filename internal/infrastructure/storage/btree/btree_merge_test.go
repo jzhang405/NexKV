@@ -148,7 +148,7 @@ func TestMergeThreshold_SparseDetection(t *testing.T) {
 
 func TestConcurrentMerge_DeleteAndGet(t *testing.T) {
 	old := MaxCASRetries
-	MaxCASRetries = 100
+	MaxCASRetries = 50
 	defer func() { MaxCASRetries = old }()
 
 	tree, _ := newTestBTree(t)

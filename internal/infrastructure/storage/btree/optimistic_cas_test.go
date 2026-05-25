@@ -257,7 +257,7 @@ func TestCascadingSplitWithOptimisticCAS(t *testing.T) {
 // under optimistic CAS (non-split path).
 func TestDeleteWithOptimisticCAS(t *testing.T) {
 	old := MaxCASRetries
-	MaxCASRetries = 100
+	MaxCASRetries = 50
 	defer func() { MaxCASRetries = old }()
 
 	tree, _ := newTestBTree(t)

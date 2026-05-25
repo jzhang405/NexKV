@@ -541,7 +541,111 @@ COW 写操作可能触发 Page 分裂：
 | 慢组 QPS 地板 | ~270K | 接近均值 |
 | Involuntary CS | 37K (慢轮) | < 5K |
 
-## 附录 A：v1 → v2 变更摘要
+## 附录 A：业界参考与方案验证
+
+### A.1 Lealone 异步化无锁 BTree（2018）
+
+Lealone 作者 codefollower 在 2018 年提出了**与 PageDispatcher 完全相同的核心思想**，并已在 Lealone 数据库中开源实现。
+
+> **技术思想**（引自 [Issue #22](https://github.com/codefollower/My-Blog/issues/22)）：
+> "在 B-Tree 上实现高性能的无锁操作是一件很复杂的事情，考虑到 B-Tree 由一个个的 Page 组成，**如果针对某个 Page 的更新操作都固定分配给唯一的线程执行，那么在这个 Page 上就不存在并发冲突了**。"
+
+**关键论断**：
+1. **CAS 重试根因确认**：Lealone 作者实测 H2 数据库的非阻塞 B-Tree，发现 "在 root page 那里大量使用了 CAS，当并发很高时可能会产生大量重试" — 与我们诊断的 CAS 重试风暴完全一致。
+2. **Page→线程绑定**：核心方案与我们的"同 Page 串行"等价。每个 Page 的写入由唯一线程执行，跨 Page 并发。
+3. **热点平衡**：作者指出 "如果热点都落在同一个 Page 上，那么由一个线程处理这 1000 行记录的更新与多个线程同时修改这个 Page 达到的效果也许并不会差太多" — 这与我们的"Page 过少时退化为单线程"分析一致。
+4. **全链路异步**：Lealone 采用全链路异步架构，用少量线程处理大量并发。我们使用 Go goroutine pool 实现类似效果。
+
+**与 NexKV PageDispatcher 的对比**：
+
+| 维度 | Lealone | NexKV PageDispatcher |
+|------|---------|---------------------|
+| 语言 | Java | Go |
+| 线程模型 | 全链路异步 + 少量线程 | 常驻 goroutine pool |
+| Page→线程映射 | Page 更新绑定到固定线程 | pageBatch 提交到 worker pool，同 Page 串行 |
+| Key→Page 映射 | 未公开细节 | Hash 分桶 + KeyRangeIndex.Lookup |
+| 事务 | AOTE 异步事务引擎 | 全局排空 + 内联串行执行 |
+| 开源状态 | 2019 年已开源 | 设计中 |
+
+**核心启示**：我们的方案不是凭空设计——Lealone 用相同思路在 Java 生态中已经验证了可行性。这大大降低了方案风险。
+
+### A.2 Intel Palm Tree（2015）
+
+Intel 提出的 Palm Tree 是一种**无锁并发 B+Tree 算法**，发表于 2015 年。核心思路是 Bulk Synchronized Parallelism (BSP)，将一批操作分阶段并行处理。
+
+**四阶段模型**：
+
+```
+Stage 1: Divide & Search
+  ├─ 将 batch 内 key 平均分配给 N 个线程
+  └─ 每个线程独立下降到叶子节点（只读，无锁）
+
+Stage 2: Redistribute-Work & Resolve-Hazards & Modify Leaves
+  ├─ 重新分配：保证同一节点只由一个线程读写
+  ├─ 解决冲突：对操作重排，满足 serializability
+  └─ 修改叶子节点（无锁，每个节点只属于一个线程）
+
+Stage 3: Redistribute & Modify Internal Nodes
+  ├─ 分裂/合并信息反映到上层节点
+  └─ 逐层向上，每层进行 redistribute → modify → sync
+
+Stage 4: Modify Root
+  └─ 根节点分裂/合并，仅由一个线程处理
+```
+
+**与 PageDispatcher 的对应关系**：
+
+```
+Palm Tree                    PageDispatcher
+─────────────────────────────────────────────────
+Stage 1: Divide & Search  →  Hash 分桶 + resolveShardPageIDs
+Stage 2: Redistribute     →  跨桶 merge → map[PageID][]writeTask
+Stage 2: Modify Leaves    →  WorkerPool.Submit(pageBatch)
+Stage 2: Sync             →  pool.Wait()
+Stage 3: Internal Nodes   →  (隐含在 tree.Set 内部 split 传播)
+Stage 4: Modify Root      →  (隐含在 tree.Set 内部)
+```
+
+**Palm Tree 的优化值得我们借鉴**：
+
+| Palm Tree 优化 | 描述 | PageDispatcher 采纳 |
+|:--|------|:--:|
+| **Pre-Sort** | batch 内 key 提前排序，同一线程落在紧凑的叶子节点范围，减少 cache miss | 桶内排序已采纳 |
+| **Point-to-Point Sync** | 相邻线程间同步替代全局 barrier：线程 i 只需等待 i-1 和 i+1 | V2 用全局 Wait()；V3 可优化 |
+| **显式 Root 阶段** | 根节点分裂/合并由单一专有线程处理，不与 leaf 修改并发 | 当前依赖 tree.Set 内联处理；可考虑独立 root worker |
+
+**Palm Tree 的核心原则**（与 PageDispatcher 完全一致）：
+
+> "同一个节点只由一个线程进行读写操作" — 无锁不是目的，消除竞争才是。
+
+**关键区别**：Palm Tree 是**无锁算法**（不用 CAS，不用 MVCC），依赖 Barrier 同步。PageDispatcher 是**CAS 消除方案**（保留 CAS 但消除竞争）。前者对 batch 内的操作顺序有更强的保证（serializability），后者更轻量。
+
+### A.3 B-Link Tree（Lehman & Yao, 1981）
+
+B-Link Tree 是经典的并发 B+Tree 算法，PostgreSQL 的 BTree 索引基于此实现。
+
+**核心机制**：
+- 每个 Page 增加 **right-link** 指针指向右兄弟
+- 每个 Page 增加 **high key**（该 page 允许的最大 key）
+- **搜索无锁**：right-link + high key 使得并发 split 可以被检测到，无需读锁
+- **写操作**：仅对修改的 page 加写锁，不需要对父节点加锁
+
+**与 PageDispatcher 的关系**：
+- B-Link Tree 解决的是"split 时不需要持有父节点锁"，通过 right-link 提供替代路径
+- PageDispatcher 解决的是"同一 page 的 CAS 竞争"，通过调度消除并发写者
+- 两者解决的是**不同层次的问题**，可以组合使用
+
+### A.4 方案验证总结
+
+| 来源 | 年份 | 核心思想 | 与我们的关系 |
+|------|:---:|------|------|
+| **Lealone** | 2018 | Page 更新绑定固定线程，消除 CAS 竞争 | **独立验证**：相同问题、相同方案 |
+| **Palm Tree** | 2015 | BSP 分阶段批量处理，同节点单线程修改 | **架构参考**：Pre-Sort、Point-to-Point Sync |
+| **B-Link Tree** | 1981 | right-link + high key，搜索无锁 | **互补方案**：可组合消除内部节点 CAS 竞争 |
+
+**结论**：PageDispatcher 的"同 Page 串行、跨 Page 并发"思路不是凭空设计，而是在不同语言、不同时代被独立提出并验证过的方案。Lealone 在 Java 生态中的成功实践是最直接的可行性证明。
+
+## 附录 B：v1 → v2 变更摘要
 
 | 变更 | v1 问题 | v2 修复 |
 |------|---------|---------|

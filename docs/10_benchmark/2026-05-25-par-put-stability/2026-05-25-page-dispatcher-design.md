@@ -1,6 +1,6 @@
 # BTree 并行写入调度器设计
 
-> 状态：v6（豆包评审修订） | 日期：2026-05-25 | 分支：`fix/btree-par-put-stability`
+> 状态：v7（Kimi 评审修订） | 日期：2026-05-25 | 分支：`fix/btree-par-put-stability`
 
 ## 1. 问题定义
 
@@ -56,6 +56,7 @@ KV 写入请求 ─→ 按 Page 分片 ─┼─ Page-B Queue → Worker-B (串�
 | B. 批量排序遍历 | 100% | O(N log N) 一次 | 批量写入 |
 | C. **Hash 分桶** | N/A (非映射，纯扇出) | O(1) | 通用 |
 | D. Root ChildrenCache 路由 | 粗粒度 | O(log M) | M = 根节点子页数 |
+| E. KeyRangeIndex.Lookup | ~95% | O(log L) | **已实现**，批量写入优化；L = leaf page 数 (<< N) |
 
 ### 3.2 推荐方案：Hash 分桶 + 桶内排序遍历（C + B）
 
@@ -106,7 +107,7 @@ func (tree *BTree) resolveShardPageIDs(ctx context.Context, keys []keyWithIndex)
 }
 ```
 
-**错误路径**：若 `ctx` 被取消，`resolveShardPageIDs` 通过 `ResolvePageID(ctx, key)` 感知取消并提前返回 error。主 goroutine 收集所有 shard 结果（通过 channel 或 error slice），任一 shard 失败则整体快速失败。
+**错误路径**：`ResolvePageID(ctx, key)` 须支持 context cancel——cancel 时立即返回 error，不做额外重试。主 goroutine 通过 `errgroup` 收集所有 shard 结果，任一 shard cancel 则全局快速失败。
 
 `inSamePage` 是一个纯读优化：从 page 的 key range 元数据快速判断 key 是否在范围内。**错误判定的后果可控**：
 - False positive（认为在范围内但实际已分裂）→ 下游 `tree.Set` 通过 `searchPath` 正确路由到新 Page，正确性不受影响，仅性能略降
@@ -286,7 +287,7 @@ var ErrWorkerPoolClosed = errors.New("worker pool closed")
 **CAS 重试策略（借鉴 Lealone）**：
 
 ```
-快速路径：tree.Set 内部 CAS 尝试（当前最多 200 次→改为最多 3 次）
+快速路径：tree.Set 内部 CAS 尝试（当前最多 200 次→通过 `SetWithRetry(ctx, k, v, 3)` 限制为最多 3 次）
 慢速路径：3 次 CAS 失败 → 不再自旋 → Submit(batch) 重新入队 → 当前 worker 让出
          → 下一轮 runWorker 从 taskCh 拿到 batch → 再次尝试
          → 最多重新入队 3 次 → 仍失败则返回错误
@@ -364,7 +365,7 @@ sequenceDiagram
 4. **panic recovery**：recover 内只设标志，循环结束后批量处理，防止嵌套 panic 泄漏 `wg.Done()`
 5. **CAS 失败→重新入队而非自旋**：消除 involuntary CS 的根源。`tree.Set` 需要暴露 `SetWithRetry(ctx, key, value, maxRetries)` 方法
 6. **`nextIdx` 偏移**：re-queue 后跳过已完成的 key，避免重复执行。`tree.Set` 幂等性保证即使极端情况下也安全
-7. **隐式背压**：`taskCh` buffer 为 `n*4`（8 核 → 32）。Page 数 > buffer 时 `Submit` 阻塞，主 goroutine 等待——这是预期行为，不必显式控制。若 Page 数极大（> 10K），可 `make(chan *pageBatch, max(n*8, len(pageGroups)/2))`
+7. **隐式背压**：`taskCh` buffer 为 `n*4`（8 核 → 32）。Page 数 > buffer 时 `Submit` 阻塞，主 goroutine 等待——这是预期行为。若 Page 数极大，buffer 上限取 `min(max(n*8, len(pageGroups)/2), 10000)` 防溢出
 
 ### 4.4 关键并发保证
 
@@ -505,7 +506,7 @@ Client
 ### 7.2 关键保证
 
 - **同 Page 操作顺序执行**：不会有两个 goroutine 同时 CAS 同一 Page
-- **零 CAS 重试**（理想情况）：每个 Page 只有一个写者，CAS 一次成功
+- **最小 CAS 重试**：单 Page 无竞争时，仅 split 触发重试（searchPath→新 page→CAS），远少于原模型的 CAS 风暴
 - **跨 Page 真并发**：不同 Page 的写入完全并行，没有共享竞争
 - **同 Page 跨 batch 可并发**：两个 `WriteBatch` 调用中同一 Page 可能由不同 worker 处理，此时退化到原有 CAS 竞争——但单次 batch 内 100% 无竞争
 - **调用者约束**：`WriteBatch` 和 `tree.Set` 混用同一 Page 会引入 CAS 竞争。V1 期望调用者按路径隔离：批量写入走 `WriteBatch`，单 key 写入走 `tree.Set`，不要在同一 Page 上混用
@@ -617,7 +618,7 @@ COW 写操作可能触发 Page 分裂：
 - 调度器保证了 leaf 级无竞争，split 触发率更低
 - Parent split 只在 leaf split 时触发，频率更低
 
-**V1 接受此风险**，通过 benchmark 验证实际影响。若成为瓶颈，V2 可对内部节点也引入 page 级调度。
+**V1 接受此风险**，通过 benchmark 指标 `parent CAS retry count` 量化；若成为瓶颈，V2 可引入 B-Link Tree 的 right-link + high key 机制消除 parent CAS 竞争。
 
 ## 10. 实现计划
 
@@ -627,11 +628,13 @@ COW 写操作可能触发 Page 分裂：
 - [ ] `KeyToShard` hash 分桶
 - [ ] `resolveShardPageIDs`：桶内排序 + 批量遍历
 - [ ] 跨桶 merge → `map[PageID][]writeTask`
+- [ ] **BTree 依赖项**：新增 `ResolvePageID(ctx, key)` 和 `inSamePage(pageID, key)` 方法；`ResolvePageID` 须支持 ctx cancel 时立即返回 error
 
 ### Phase 2：集成 BTree（1 天）
 
 - [ ] `BatchWriter` API 实现
 - [ ] `Dispatch` 主流程：hash → resolve → submit → wait → collect
+- [ ] `SetWithRetry(ctx, key, value, maxRetries)` + `ErrCASRetryExhausted` 错误类型
 - [ ] COW 分裂路径验证
 
 ### Phase 3：验证（1 天）

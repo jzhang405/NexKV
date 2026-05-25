@@ -155,6 +155,7 @@ var (
 	ErrBTreeNotImplemented    = stderrors.New("btree: not implemented")
 	ErrBTreeBorrowSourceEmpty = stderrors.New("btree: borrow source page is empty")
 	ErrBTreeMergeNoSibling    = stderrors.New("btree: merge requires sibling page")
+	ErrBTreeCASRetryExhausted = stderrors.New("btree: CAS retry exhausted after max attempts")
 	ErrBTreeValidationError   = stderrors.New("btree: validation error")
 	ErrBTreeSearchError       = stderrors.New("btree: search error")
 	ErrBTreeDebugError        = stderrors.New("btree: debug error")

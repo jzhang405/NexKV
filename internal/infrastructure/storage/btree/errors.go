@@ -49,5 +49,6 @@ var (
 	ErrMergeNoSibling       = errpkg.ErrBTreeMergeNoSibling
 	ErrBTreeDebugError      = errpkg.ErrBTreeDebugError
 	ErrBTreeSearchError     = errpkg.ErrBTreeSearchError
-	ErrBTreeValidationError = errpkg.ErrBTreeValidationError
+	ErrBTreeValidationError   = errpkg.ErrBTreeValidationError
+	ErrCASRetryExhausted      = errpkg.ErrBTreeCASRetryExhausted
 )

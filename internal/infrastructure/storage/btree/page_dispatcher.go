@@ -23,7 +23,7 @@ import (
 // WorkerPool 常驻 worker goroutine 池，消费 per-page 写入任务。
 type WorkerPool struct {
 	taskCh chan *pageBatch
-	done   chan struct{}   // closed on Shutdown, prevents TOCTOU send on closed taskCh
+	done   chan struct{} // closed on Shutdown, prevents TOCTOU send on closed taskCh
 	wg     sync.WaitGroup
 	closed atomic.Bool
 }

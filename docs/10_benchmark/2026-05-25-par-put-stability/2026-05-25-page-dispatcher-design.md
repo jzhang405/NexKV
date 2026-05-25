@@ -552,22 +552,139 @@ Lealone 作者 codefollower 在 2018 年提出了**与 PageDispatcher 完全相�
 
 **关键论断**：
 1. **CAS 重试根因确认**：Lealone 作者实测 H2 数据库的非阻塞 B-Tree，发现 "在 root page 那里大量使用了 CAS，当并发很高时可能会产生大量重试" — 与我们诊断的 CAS 重试风暴完全一致。
-2. **Page→线程绑定**：核心方案与我们的"同 Page 串行"等价。每个 Page 的写入由唯一线程执行，跨 Page 并发。
-3. **热点平衡**：作者指出 "如果热点都落在同一个 Page 上，那么由一个线程处理这 1000 行记录的更新与多个线程同时修改这个 Page 达到的效果也许并不会差太多" — 这与我们的"Page 过少时退化为单线程"分析一致。
-4. **全链路异步**：Lealone 采用全链路异步架构，用少量线程处理大量并发。我们使用 Go goroutine pool 实现类似效果。
+2. **Page→线程绑定**：核心方案与我们的"同 Page 串行"等价。
+3. **随机写扩展性**：在物理 CPU 核数内，每增加一个线程带来 20%-80% 性能提升。
+4. **顺序写**：提升不如随机写显著，因为二分查找的结束位置难以跨线程维持。
 
-**与 NexKV PageDispatcher 的对比**：
+#### A.1.1 全链路异步架构（2015-）
 
-| 维度 | Lealone | NexKV PageDispatcher |
-|------|---------|---------------------|
+Lealone 从 2015 年开始采用**全链路异步化**，核心原则：
+
+```
+传统模型：每连接每线程
+  Connection-1 → Thread-1 (阻塞等待)
+  Connection-2 → Thread-2 (阻塞等待)
+
+Lealone 异步模型：
+  线程与连接分离，事务与线程分离
+  整个处理流程按阶段打散成子任务，各阶段由不同线程组处理
+```
+
+**SEDA 架构（Staged Event-Driven Architecture）**：
+
+```
+Client → [NetServer事件循环] → [命令处理器] → [SQL执行] → ... → [日志同步] → 响应
+         读取字节流           解析SQL         执行查询             写入redo
+         线程组A              线程组B         线程组C              线程组D
+```
+
+**统一异步任务调度器**（2019 年开源）：
+
+SEDA 的问题是每个阶段的子任务放入不同队列 + 线程唤醒都有开销，CPU 核数 < 阶段数时上下文切换开销大。Lealone 的统一调度器将所有异步子任务一视同仁，用**少量线程组**统一处理。
+
+核心机制：
+- 子任务在合适的**检查点让出线程**
+- 高优先级任务到达时低优先级任务**让出线程**
+- **抢占式调度**，而非协作式
+
+#### A.1.2 调度器事件循环（Scheduler Loop）
+
+每个 `Scheduler` 运行在专属 `SchedulerThread` 中，主循环每次迭代按严格顺序执行：
+
+```
+1. Register Acceptor       ← 接受新 NIO 连接
+2. Session Init            ← 创建会话
+3. Misc Tasks              ← 一次性异步任务
+4. Page Operations         ← 锁定页面操作重试 ★ Page→线程绑定的实现位置
+5. Session Tasks           ← 排空每会话任务队列
+6. Pending Transactions    ← 恢复等待中的事务
+7. GC Completed            ← 清理已完成任务
+8. Execute Statement       ← 选取最高优先级命令
+9. Periodic Tasks          ← 定时周期性工作
+10. Event Loop             ← NIO select + 读写
+```
+
+**关键设计**：
+- **Page Operations 在专用阶段处理**（第 4 步）——页操作失败后不立即重试，而是在下一轮循环中重试，避免 CAS 自旋浪费 CPU
+- **每会话绑定固定调度器**（Session→Scheduler affinity），消除会话间锁竞争
+- **协作式让步**（`yieldIfNeeded()`）：长查询主动检查是否有更高优先级命令等待，有则保存状态让出线程
+
+#### A.1.3 页操作管道（Page Operation Pipeline）
+
+AOSE 的 `runPageOperation` 使用**双层重试策略**：
+
+```
+快速路径（Fast Path）：
+  → 尝试执行页操作最多 3 次
+  → 检查 PageOperationResult
+  → 成功 → 返回
+
+慢速路径（Slow Path）：
+  → 3 次快速尝试仍被锁定
+  → 将操作注册到调度器的等待队列
+  → 异步处理器：立即返回（不阻塞）
+  → 同步处理器：通过 SchedulerListener.await() 阻塞等待
+```
+
+**与 PageDispatcher 的对比**：
+
+| 维度 | Lealone AOSE | NexKV PageDispatcher |
+|------|-------------|---------------------|
 | 语言 | Java | Go |
-| 线程模型 | 全链路异步 + 少量线程 | 常驻 goroutine pool |
+| 线程模型 | 全链路异步 + 每调度器专属 SchedulerThread | 常驻 goroutine pool |
 | Page→线程映射 | Page 更新绑定到固定线程 | pageBatch 提交到 worker pool，同 Page 串行 |
+| 重试策略 | **快速路径 3 次 → 慢速路径排队等待** | 依赖 tree.Set 内部 CAS retry（最多 200 次） |
 | Key→Page 映射 | 未公开细节 | Hash 分桶 + KeyRangeIndex.Lookup |
 | 事务 | AOTE 异步事务引擎 | 全局排空 + 内联串行执行 |
+| 同步/异步 | **同时提供 sync + async API** | 当前仅 sync（Dispatch 阻塞）；未来可加 async |
+| 调度器统一性 | Page 操作、网络 I/O、SQL 执行共享同一调度器 | PageDispatcher.WorkerPool 当前独立 |
 | 开源状态 | 2019 年已开源 | 设计中 |
 
-**核心启示**：我们的方案不是凭空设计——Lealone 用相同思路在 Java 生态中已经验证了可行性。这大大降低了方案风险。
+#### A.1.4 同步 vs 异步 —— 对 PageDispatcher 的启示
+
+Lealone 在 BTreeMap API 层面**同时提供**同步和异步接口：
+
+```java
+// 同步：阻塞调用者线程
+V put(K key, V value);
+
+// 异步：不阻塞，通过回调返回结果
+void put(K key, V value, AsyncResultHandler<V> handler);
+```
+
+同步 API 内部使用调度器的 `SchedulerListener.await()` 等待——但等待期间调度器线程可以处理其他任务，不是 OS 级别的线程阻塞。
+
+**对 NexKV 的启示**：
+
+| 场景 | 推荐模式 | 原因 |
+|------|:------:|------|
+| 批量写入 benchmark | **同步 Dispatch** | batch 内所有 key 的结果需要一起返回，同步等 WaitGroup 最直接 |
+| 单 key 写入 | 直接用 `tree.Set`，不经过调度器 | 单 key 没有批量和分组的必要 |
+| 高吞吐流式写入 | **异步 Dispatch** | 调用者不等结果，fire-and-forget，通过 callback/future 收集结果 |
+| 事务写入 | 同步 | 事务需要确认提交成功 |
+
+**Go 的优势**：goroutine 是用户态轻量线程，`sync.WaitGroup.Wait()` 的开销远小于 Java 的线程阻塞。Go 的 runtime 在 Wait 期间可以将 P 让给其他 goroutine，不会浪费 CPU。因此 **V1 用同步 WaitGroup 是合理的**，性能不会比异步回调差。
+
+**未来 V2 加异步 API**：
+
+```go
+// 同步（V1）
+func (bw *BatchWriter) WriteBatch(ctx context.Context, keys, values [][]byte) error
+
+// 异步（V2）
+func (bw *BatchWriter) WriteBatchAsync(ctx context.Context, keys, values [][]byte) <-chan BatchResult
+```
+
+#### A.1.5 统一调度器 —— 未来方向
+
+Lealone 将所有异步任务（网络 I/O、SQL 执行、Page 操作、事务、GC）统一到一个调度器中，避免了多种线程池带来的上下文切换和协调开销。
+
+PageDispatcher 当前的设计中，WorkerPool 是**独立的** goroutine pool。但 NexKV 未来会有更多异步任务：WAL 写入、checkpoint、compaction、epoch-based GC。如果每种任务都有独立的 goroutine pool，会导致：
+- 总 goroutine 数膨胀
+- 不同 pool 之间无法协调优先级
+- 上下文切换开销增大
+
+**V1 不做**，但在设计中预留统一调度器的扩展点：`WorkerPool` 的接口设计为通用的 `Submit(task)` 而非 `SubmitPage(batch)`。
 
 ### A.2 Intel Palm Tree（2015）
 

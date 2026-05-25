@@ -92,6 +92,7 @@ func main() {
 		{"par-put-4", n, min(t, 4), false, 0},
 		{"par-put-8", n, min(t, 8), false, 0},
 		{"par-put-16", n, min(t, 16), false, 0},
+		{"par-put-32", n, min(t, 32), false, 0},
 		{"par-get-4", n, min(t, 4), true, 0},
 		{"par-get-8", n, min(t, 8), true, 0},
 		{"par-get-16", n, min(t, 16), true, 0},

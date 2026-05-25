@@ -418,6 +418,26 @@ func TestDispatch_PoolClosed(t *testing.T) {
 	assert.True(t, errors.Is(results[0].Err, ErrWorkerPoolClosed))
 }
 
+func TestDispatch_PoolClosed_MultiKey(t *testing.T) {
+	tree, storage := newTestBTree(t)
+	defer storage.Close()
+
+	pd := NewPageDispatcher(tree)
+	pd.Shutdown()
+
+	ctx := context.Background()
+	// 3 keys that map to the same page (sequential, same prefix)
+	keys := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
+	values := [][]byte{[]byte("va"), []byte("vb"), []byte("vc")}
+	results, err := pd.Dispatch(ctx, keys, values)
+	// No panic from batch.results[t.idx] out of bounds
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+	for _, r := range results {
+		assert.True(t, errors.Is(r.Err, ErrWorkerPoolClosed))
+	}
+}
+
 func TestWriteBatch_PoolClosed(t *testing.T) {
 	tree, storage := newTestBTree(t)
 	defer storage.Close()

@@ -34,7 +34,7 @@ const (
 	MergeThreshold = 0.5
 
 	// MaxCASRetries is the maximum number of CAS retry attempts in writeOperation.
-	MaxCASRetries = 10
+	MaxCASRetries = 100
 
 	// SpinLockBackoffThreshold is the retry count at which splitting backoff
 	// transitions from spin (low-latency) to exponential sleep (1us→1ms).

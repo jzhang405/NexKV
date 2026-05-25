@@ -23,6 +23,7 @@ import (
 // WorkerPool 常驻 worker goroutine 池，消费 per-page 写入任务。
 type WorkerPool struct {
 	taskCh chan *pageBatch
+	done   chan struct{}   // closed on Shutdown, prevents TOCTOU send on closed taskCh
 	wg     sync.WaitGroup
 	closed atomic.Bool
 }
@@ -31,6 +32,7 @@ type WorkerPool struct {
 func NewWorkerPool(n int) *WorkerPool {
 	wp := &WorkerPool{
 		taskCh: make(chan *pageBatch, n*4),
+		done:   make(chan struct{}),
 	}
 	for range n {
 		go wp.runWorker()
@@ -72,7 +74,10 @@ func (wp *WorkerPool) executeBatch(batch *pageBatch) {
 			batch.nextIdx = i
 			batch.retries++
 			if wp.Submit(batch) != nil {
-				return // pool closed, can't re-queue
+				for j := i; j < len(batch.tasks); j++ {
+					batch.results[j] = WriteResult{Index: batch.tasks[j].idx, Err: ErrWorkerPoolClosed}
+				}
+				return
 			}
 			return
 		}
@@ -81,22 +86,29 @@ func (wp *WorkerPool) executeBatch(batch *pageBatch) {
 	}
 }
 
-// Submit 提交 pageBatch，Shutdown 后返回 ErrWorkerPoolClosed。
+// Submit 提交 pageBatch。Shutdown 后返回 ErrWorkerPoolClosed。
+// 使用 select+done channel 消除 TOCTOU：closed.Load 和 taskCh<-batch 之间的窗口。
 func (wp *WorkerPool) Submit(batch *pageBatch) error {
 	if wp.closed.Load() {
 		return ErrWorkerPoolClosed
 	}
 	wp.wg.Add(1)
-	wp.taskCh <- batch
-	return nil
+	select {
+	case <-wp.done:
+		wp.wg.Add(-1)
+		return ErrWorkerPoolClosed
+	case wp.taskCh <- batch:
+		return nil
+	}
 }
 
 // Wait 等待所有已提交任务完成。
 func (wp *WorkerPool) Wait() { wp.wg.Wait() }
 
-// Shutdown 优雅关闭。
+// Shutdown 优雅关闭：先标记 closed，再 close done channel（解除 Submit 阻塞），最后 close taskCh。
 func (wp *WorkerPool) Shutdown() {
 	wp.closed.Store(true)
+	close(wp.done)
 	close(wp.taskCh)
 }
 

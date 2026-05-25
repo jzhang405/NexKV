@@ -25,7 +25,10 @@ func (bw *BatchWriter) WriteBatch(ctx context.Context, keys, values [][]byte) er
 		return fmt.Errorf("btree: keys and values length mismatch: %d != %d", len(keys), len(values))
 	}
 
-	results, _ := bw.dispatcher.Dispatch(ctx, keys, values)
+	results, err := bw.dispatcher.Dispatch(ctx, keys, values)
+	if err != nil {
+		return fmt.Errorf("btree: dispatch failed: %w", err)
+	}
 
 	var errs []WriteResult
 	for _, r := range results {

@@ -9,7 +9,11 @@ import (
 
 // ResolvePageID traverses the BTree to find the leaf PageID that would contain key.
 // Used by PageDispatcher to group keys by target page before dispatching writes.
-func (b *BTree) ResolvePageID(_ context.Context, key []byte) (model.PageID, error) {
+// Respects context cancellation: returns ctx.Err() if ctx is done.
+func (b *BTree) ResolvePageID(ctx context.Context, key []byte) (model.PageID, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	path, err := searchPath(b.rootRef, key)
 	if err != nil {
 		return 0, err
@@ -21,12 +25,12 @@ func (b *BTree) ResolvePageID(_ context.Context, key []byte) (model.PageID, erro
 
 // inSamePage is a fast check: is key likely still in the page identified by pageID?
 // Pure read optimization: false positives/negatives only affect performance, not correctness.
-// Used by resolveShardPageIDs to avoid redundant ResolvePageID calls for adjacent sorted keys.
+//
+// TODO(V2): implement key range check using leaf page metadata from KeyRangeIndex.
+// Currently always returns false (conservative), so every adjacent sorted key pays
+// a full ResolvePageID traversal. This is correct but suboptimal for large batches.
 func (b *BTree) inSamePage(pageID model.PageID, key []byte) bool {
-	if pageID == 0 {
-		return false
-	}
-	// Quick estimate: ResolvePageID is the definitive answer.
-	// We avoid the double traversal cost here; callers batch-check.
+	_ = pageID
+	_ = key
 	return false
 }

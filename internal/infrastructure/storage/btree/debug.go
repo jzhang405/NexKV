@@ -6,6 +6,7 @@ package btree
 
 import (
 	"fmt"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"strings"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
@@ -59,7 +60,7 @@ func (b *BTree) printSubtree(pageID model.PageID, isLeaf bool, depth int, sb *st
 func (b *BTree) AssertInvariants() error {
 	rootPI := b.RootPage().GetPageInfo()
 	if rootPI == nil {
-		return fmt.Errorf("btree: nil root")
+		return errpkg.Wrap(ErrBTreeDebugError, "btree: nil root")
 	}
 	return b.assertNodeInvariants(rootPI.PageID, rootPI.IsLeaf, nil, nil)
 }
@@ -74,22 +75,22 @@ func (b *BTree) assertNodeInvariants(pageID model.PageID, isLeaf bool, minKey, m
 func (b *BTree) assertLeafInvariants(pageID model.PageID, minKey, maxKey []byte) error {
 	leaf, err := b.storage.GetLeafPage(pageID)
 	if err != nil {
-		return fmt.Errorf("btree: get leaf %d: %w", pageID, err)
+		return errpkg.Wrap(err, fmt.Sprintf("btree: get leaf %d", pageID))
 	}
 	count := leaf.Count()
 	for i := 1; i < count; i++ {
 		prev := leaf.GetKey(i - 1)
 		curr := leaf.GetKey(i)
 		if string(prev) >= string(curr) {
-			return fmt.Errorf("btree: leaf %d: key[%d]=%q >= key[%d]=%q",
-				pageID, i-1, prev, i, curr)
+			return errpkg.Wrap(ErrBTreeDebugError, fmt.Sprintf("btree: leaf %d: key[%d]=%q >= key[%d]=%q",
+				pageID, i-1, prev, i, curr))
 		}
 	}
 	if minKey != nil && count > 0 && string(leaf.GetKey(0)) < string(minKey) {
-		return fmt.Errorf("btree: leaf %d: first key %q < min key %q", pageID, leaf.GetKey(0), minKey)
+		return errpkg.Wrap(ErrBTreeDebugError, fmt.Sprintf("btree: leaf %d: first key %q < min key %q", pageID, leaf.GetKey(0), minKey))
 	}
 	if maxKey != nil && count > 0 && string(leaf.GetKey(count-1)) > string(maxKey) {
-		return fmt.Errorf("btree: leaf %d: last key %q > max key %q", pageID, leaf.GetKey(count-1), maxKey)
+		return errpkg.Wrap(ErrBTreeDebugError, fmt.Sprintf("btree: leaf %d: last key %q > max key %q", pageID, leaf.GetKey(count-1), maxKey))
 	}
 	return nil
 }
@@ -97,20 +98,20 @@ func (b *BTree) assertLeafInvariants(pageID model.PageID, minKey, maxKey []byte)
 func (b *BTree) assertInternalInvariants(pageID model.PageID, minKey, maxKey []byte) error {
 	node, err := b.storage.GetNodePage(pageID)
 	if err != nil {
-		return fmt.Errorf("btree: get node %d: %w", pageID, err)
+		return errpkg.Wrap(err, fmt.Sprintf("btree: get node %d", pageID))
 	}
 	count := node.Count()
 	for i := 1; i < count; i++ {
 		prev := node.GetKey(i - 1)
 		curr := node.GetKey(i)
 		if string(prev) >= string(curr) {
-			return fmt.Errorf("btree: node %d: key[%d]=%q >= key[%d]=%q",
-				pageID, i-1, prev, i, curr)
+			return errpkg.Wrap(ErrBTreeDebugError, fmt.Sprintf("btree: node %d: key[%d]=%q >= key[%d]=%q",
+				pageID, i-1, prev, i, curr))
 		}
 	}
 	if node.ChildCount() != count+1 {
-		return fmt.Errorf("btree: node %d: child count %d != key count %d + 1",
-			pageID, node.ChildCount(), count)
+		return errpkg.Wrap(ErrBTreeDebugError, fmt.Sprintf("btree: node %d: child count %d != key count %d + 1",
+			pageID, node.ChildCount(), count))
 	}
 	// Recurse into children with key range constraints.
 	// Uses storage.IsLeafPage to read physical page type — avoids the

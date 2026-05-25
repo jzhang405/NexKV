@@ -86,7 +86,7 @@ func (h *nodePageHandle) ChildCount() int {
 func (h *nodePageHandle) ReplaceChild(idx int, newChildID model.PageID) (NodePage, error) {
 	count := h.Count()
 	if idx < 0 || idx > count {
-		return nil, fmt.Errorf("btree: node replace child: index %d out of range [0, %d]", idx, count)
+		return nil, errpkg.Wrap(ErrBTreeValidationError, fmt.Sprintf("btree: node replace child: index %d out of range [0, %d]", idx, count))
 	}
 
 	newRawID, err := h.storage.pm.Alloc()
@@ -111,7 +111,7 @@ func (h *nodePageHandle) ReplaceChild(idx int, newChildID model.PageID) (NodePag
 func (h *nodePageHandle) InsertChild(idx int, splitKey []byte, left, right model.PageID) (NodePage, error) {
 	count := h.Count()
 	if idx < 0 || idx > count {
-		return nil, fmt.Errorf("btree: node insert child: index %d out of range [0, %d]", idx, count)
+		return nil, errpkg.Wrap(ErrBTreeValidationError, fmt.Sprintf("btree: node insert child: index %d out of range [0, %d]", idx, count))
 	}
 
 	newRawID, err := h.storage.pm.Alloc()
@@ -154,11 +154,11 @@ func (h *nodePageHandle) InsertChild(idx int, splitKey []byte, left, right model
 func (h *nodePageHandle) RemoveChild(idx int) (NodePage, error) {
 	count := h.Count()
 	if idx < 0 || idx > count {
-		return nil, fmt.Errorf("btree: node remove child: index %d out of range [0, %d]", idx, count)
+		return nil, errpkg.Wrap(ErrBTreeValidationError, fmt.Sprintf("btree: node remove child: index %d out of range [0, %d]", idx, count))
 	}
 
 	if count == 1 {
-		return nil, fmt.Errorf("btree: remove child: cannot remove only entry, node would be empty")
+		return nil, errpkg.Wrap(ErrBTreeValidationError, "btree: remove child: cannot remove only entry, node would be empty")
 	}
 
 	rawID := uint32(h.id)
@@ -259,7 +259,7 @@ func (h *nodePageHandle) Validate() error {
 		}
 	}
 	if h.ChildCount() != count+1 {
-		return fmt.Errorf("btree: node validate: child count %d != key count %d + 1", h.ChildCount(), count)
+		return errpkg.Wrap(ErrBTreeValidationError, fmt.Sprintf("btree: node validate: child count %d != key count %d + 1", h.ChildCount(), count))
 	}
 	return nil
 }

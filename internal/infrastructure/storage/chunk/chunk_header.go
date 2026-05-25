@@ -6,6 +6,7 @@ package chunk
 
 import (
 	"fmt"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"strconv"
 	"strings"
 )
@@ -54,7 +55,7 @@ func parseHeader(text string) (map[string]string, error) {
 		}
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) != 2 {
-			return nil, fmt.Errorf("chunk: malformed header line: %q", line)
+			return nil, errpkg.Wrap(ErrChunkHeaderError, fmt.Sprintf("chunk: malformed header line: %q", line))
 		}
 		result[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 	}
@@ -106,7 +107,7 @@ func decodeHeader(data []byte) (*ChunkHeader, error) {
 	}
 
 	if h.BlockSize != ChunkBlockSize {
-		return nil, fmt.Errorf("chunk: unsupported block size %d", h.BlockSize)
+		return nil, errpkg.Wrap(ErrChunkHeaderError, fmt.Sprintf("chunk: unsupported block size %d", h.BlockSize))
 	}
 	return h, nil
 }
@@ -124,7 +125,7 @@ func parseField[T any](m map[string]string, key string, dst *T, fn func(string) 
 func parseUint32(s string) (uint32, error) {
 	v, err := strconv.ParseUint(s, 10, 32)
 	if err != nil {
-		return 0, fmt.Errorf("chunk: parse uint32 %q: %w", s, err)
+		return 0, errpkg.Wrap(err, fmt.Sprintf("chunk: parse uint32 %q", s))
 	}
 	return uint32(v), nil
 }
@@ -132,7 +133,7 @@ func parseUint32(s string) (uint32, error) {
 func parseInt32(s string) (int32, error) {
 	v, err := strconv.ParseInt(s, 10, 32)
 	if err != nil {
-		return 0, fmt.Errorf("chunk: parse int32 %q: %w", s, err)
+		return 0, errpkg.Wrap(err, fmt.Sprintf("chunk: parse int32 %q", s))
 	}
 	return int32(v), nil
 }
@@ -140,7 +141,7 @@ func parseInt32(s string) (int32, error) {
 func parseInt64(s string) (int64, error) {
 	v, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("chunk: parse int64 %q: %w", s, err)
+		return 0, errpkg.Wrap(err, fmt.Sprintf("chunk: parse int64 %q", s))
 	}
 	return v, nil
 }
@@ -148,7 +149,7 @@ func parseInt64(s string) (int64, error) {
 func parseHexUint64(s string) (uint64, error) {
 	v, err := strconv.ParseUint(s, 16, 64)
 	if err != nil {
-		return 0, fmt.Errorf("chunk: parse hex uint64 %q: %w", s, err)
+		return 0, errpkg.Wrap(err, fmt.Sprintf("chunk: parse hex uint64 %q", s))
 	}
 	return v, nil
 }

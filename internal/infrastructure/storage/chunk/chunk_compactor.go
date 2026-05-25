@@ -6,6 +6,7 @@ package chunk
 
 import (
 	"fmt"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"os"
 	"sort"
 	"sync/atomic"
@@ -171,22 +172,22 @@ func (c *ChunkCompactor) Compact() error {
 		for _, p := range pages {
 			data := make([]byte, p.length)
 			if _, err := cf.file.ReadAt(data, int64(p.pos.FileOffset())); err != nil {
-				return fmt.Errorf("chunk: compact: read page %s: %w", p.pos, err)
+				return errpkg.Wrap(err, fmt.Sprintf("chunk: compact: read page %s", p.pos))
 			}
 			// Allocate + write in new chunk (lastChunk or new chunk)
 			newPos, err := c.cm.Allocate(int(p.length), p.pos.PageType())
 			if err != nil {
-				return fmt.Errorf("chunk: compact: allocate: %w", err)
+				return errpkg.Wrap(err, "chunk: compact: allocate")
 			}
 			if err := c.cm.WritePage(newPos, data); err != nil {
-				return fmt.Errorf("chunk: compact: write page: %w", err)
+				return errpkg.Wrap(err, "chunk: compact: write page")
 			}
 		}
 	}
 
 	// Step 9: Sync new chunk
 	if err := c.cm.Sync(); err != nil {
-		return fmt.Errorf("chunk: compact: sync: %w", err)
+		return errpkg.Wrap(err, "chunk: compact: sync")
 	}
 
 	// Step 10-11: Delete old chunks + clean removedPages atomically

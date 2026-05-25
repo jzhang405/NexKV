@@ -2,30 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Package chunk provides Append-Only (AO) chunk file management for BTree page persistence.
 package chunk
 
-import "errors"
+import errpkg "github.com/jzhang405/NexKV/pkg/errors"
 
 var (
-	// ErrInvalidChunkHeader indicates the chunk header is corrupted or unreadable.
-	ErrInvalidChunkHeader = errors.New("chunk: invalid chunk header")
-
-	// ErrCRCMismatch indicates CRC verification failed on deserialized data.
-	ErrCRCMismatch = errors.New("chunk: crc mismatch")
-
-	// ErrPageNotFound indicates the requested page position was not found.
-	ErrPageNotFound = errors.New("chunk: page not found")
-
-	// ErrChunkClosed indicates an operation was attempted on a closed chunk manager.
-	ErrChunkClosed = errors.New("chunk: chunk manager closed")
-
-	// ErrNilDestination indicates a nil pointer was passed to Deserialize.
-	ErrNilDestination = errors.New("chunk: nil destination pointer")
-
-	// ErrInvalidPageLength indicates pageLength is outside the valid range.
-	ErrInvalidPageLength = errors.New("chunk: invalid page length")
-
-	// ErrChunkIDExhausted indicates all chunk IDs (0..MaxChunkID) are in use.
-	ErrChunkIDExhausted = errors.New("chunk: all chunk IDs exhausted")
+	ErrInvalidChunkHeader = errpkg.ErrChunkInvalidHeader
+	ErrCRCMismatch        = errpkg.ErrChunkCRCMismatch
+	ErrPageNotFound       = errpkg.ErrChunkPageNotFound
+	ErrChunkClosed        = errpkg.ErrChunkClosed
+	ErrNilDestination     = errpkg.ErrChunkNilDestination
+	ErrInvalidPageLength  = errpkg.ErrChunkInvalidLength
+	ErrChunkIDExhausted   = errpkg.ErrChunkIDExhausted
+	ErrChunkHeaderError   = errpkg.ErrChunkHeaderError
+	ErrChunkIOError       = errpkg.ErrChunkIOError
+	ErrChunkFormatError   = errpkg.ErrChunkFormatError
+	ErrChunkNotFound      = errpkg.ErrChunkNotFound
 )

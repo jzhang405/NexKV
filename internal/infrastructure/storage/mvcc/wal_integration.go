@@ -7,6 +7,7 @@ package mvcc
 import (
 	"encoding/binary"
 	"fmt"
+	errpkg "github.com/jzhang405/NexKV/pkg/errors"
 	"sort"
 
 	"github.com/jzhang405/NexKV/internal/domain/service"
@@ -195,34 +196,34 @@ type TxPrepareParsedEntry struct {
 
 func ParseTxPrepareEntry(e *service.WALEntry) (txID uint64, entries []TxPrepareParsedEntry, err error) {
 	if e.Type != service.WALTypeTxPrepare {
-		return 0, nil, fmt.Errorf("not a TxPrepare entry")
+		return 0, nil, errpkg.Wrap(errpkg.ErrMVCCTxPrepareCorrupted, "not a TxPrepare entry")
 	}
 	if len(e.Key) < 8 {
-		return 0, nil, fmt.Errorf("TxPrepare: key too short")
+		return 0, nil, errpkg.Wrap(errpkg.ErrMVCCTxPrepareCorrupted, "TxPrepare: key too short")
 	}
 	txID = binary.BigEndian.Uint64(e.Key[0:8])
 
 	buf := e.Value
 	if len(buf) < 4 {
-		return 0, nil, fmt.Errorf("TxPrepare: value too short")
+		return 0, nil, errpkg.Wrap(errpkg.ErrMVCCTxPrepareCorrupted, "TxPrepare: value too short")
 	}
 	keyCount := binary.BigEndian.Uint32(buf[0:4])
 	offset := 4
 
 	for i := uint32(0); i < keyCount; i++ {
 		if offset+4 > len(buf) {
-			return 0, nil, fmt.Errorf("TxPrepare: truncated at key %d", i)
+			return 0, nil, errpkg.Wrap(errpkg.ErrMVCCTxPrepareCorrupted, fmt.Sprintf("TxPrepare: truncated at key %d", i))
 		}
 		keyLen := binary.BigEndian.Uint32(buf[offset:])
 		offset += 4
 		if offset+int(keyLen) > len(buf) {
-			return 0, nil, fmt.Errorf("TxPrepare: truncated key data")
+			return 0, nil, errpkg.Wrap(errpkg.ErrMVCCTxPrepareCorrupted, "TxPrepare: truncated key data")
 		}
 		key := string(buf[offset : offset+int(keyLen)])
 		offset += int(keyLen)
 
 		if offset+12 > len(buf) {
-			return 0, nil, fmt.Errorf("TxPrepare: truncated at entry header")
+			return 0, nil, errpkg.Wrap(errpkg.ErrMVCCTxPrepareCorrupted, "TxPrepare: truncated at entry header")
 		}
 		op := WriteOp(buf[offset])
 		offset++
@@ -233,21 +234,21 @@ func ParseTxPrepareEntry(e *service.WALEntry) (txID uint64, entries []TxPrepareP
 		oldValLen := binary.BigEndian.Uint32(buf[offset:])
 		offset += 4
 		if offset+int(oldValLen) > len(buf) {
-			return 0, nil, fmt.Errorf("TxPrepare: truncated oldVal")
+			return 0, nil, errpkg.Wrap(errpkg.ErrMVCCTxPrepareCorrupted, "TxPrepare: truncated oldVal")
 		}
 		oldVal := make([]byte, oldValLen)
 		copy(oldVal, buf[offset:offset+int(oldValLen)])
 		offset += int(oldValLen)
 
 		if offset+5 > len(buf) {
-			return 0, nil, fmt.Errorf("TxPrepare: truncated at newVal header")
+			return 0, nil, errpkg.Wrap(errpkg.ErrMVCCTxPrepareCorrupted, "TxPrepare: truncated at newVal header")
 		}
 		newFlag := buf[offset]
 		offset++
 		newValLen := binary.BigEndian.Uint32(buf[offset:])
 		offset += 4
 		if offset+int(newValLen) > len(buf) {
-			return 0, nil, fmt.Errorf("TxPrepare: truncated newVal")
+			return 0, nil, errpkg.Wrap(errpkg.ErrMVCCTxPrepareCorrupted, "TxPrepare: truncated newVal")
 		}
 		newVal := make([]byte, newValLen)
 		copy(newVal, buf[offset:offset+int(newValLen)])

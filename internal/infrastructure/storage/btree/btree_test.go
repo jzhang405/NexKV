@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 )
 
@@ -180,21 +181,6 @@ func TestBTreeSize(t *testing.T) {
 func TestBTreeStubMethods(t *testing.T) {
 	tree, _ := newTestBTree(t)
 	ctx := context.Background()
-
-	t.Run("GetBatch", func(t *testing.T) {
-		_, err := tree.GetBatch(ctx, [][]byte{[]byte("key")})
-		assert.ErrorIs(t, err, ErrNotImplemented)
-	})
-
-	t.Run("SetBatch", func(t *testing.T) {
-		err := tree.SetBatch(ctx, nil)
-		assert.ErrorIs(t, err, ErrNotImplemented)
-	})
-
-	t.Run("DeleteBatch", func(t *testing.T) {
-		err := tree.DeleteBatch(ctx, nil)
-		assert.ErrorIs(t, err, ErrNotImplemented)
-	})
 
 	t.Run("RangeScan", func(t *testing.T) {
 		_, err := tree.RangeScan(ctx, nil, nil)
@@ -614,4 +600,334 @@ func TestBTreeMVCC_ConcurrentTSAssignment(t *testing.T) {
 	}
 
 	assert.Equal(t, int64(goroutines*keysPerGoroutine), tree.Size())
+}
+
+// ==========================================
+// GetBatch
+// ==========================================
+
+func TestGetBatch_Empty(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	results, err := tree.GetBatch(ctx, nil)
+	require.NoError(t, err)
+	assert.Nil(t, results)
+}
+
+func TestGetBatch_AllExist(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	n := 50
+	keys := make([][]byte, n)
+	values := make([][]byte, n)
+	for i := range n {
+		keys[i] = []byte(fmt.Sprintf("key-%03d", i))
+		values[i] = []byte(fmt.Sprintf("val-%03d", i))
+		require.NoError(t, tree.Set(ctx, keys[i], values[i]))
+	}
+
+	results, err := tree.GetBatch(ctx, keys)
+	require.NoError(t, err)
+	assert.Equal(t, n, len(results))
+	for i := range n {
+		assert.Equal(t, values[i], results[i], "key %s", keys[i])
+	}
+}
+
+func TestGetBatch_PartialMissing(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	tree.Set(ctx, []byte("k1"), []byte("v1"))
+	tree.Set(ctx, []byte("k3"), []byte("v3"))
+	// k2 and k4 are missing
+
+	keys := [][]byte{[]byte("k1"), []byte("k2"), []byte("k3"), []byte("k4")}
+	results, err := tree.GetBatch(ctx, keys)
+	require.NoError(t, err)
+	assert.Equal(t, 4, len(results))
+	assert.Equal(t, []byte("v1"), results[0])
+	assert.Nil(t, results[1], "k2 should be nil (not found)")
+	assert.Equal(t, []byte("v3"), results[2])
+	assert.Nil(t, results[3], "k4 should be nil (not found)")
+}
+
+func TestGetBatch_Tombstone(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	tree.Set(ctx, []byte("k1"), []byte("v1"))
+	tree.Set(ctx, []byte("k2"), []byte("v2"))
+	tree.Delete(ctx, []byte("k2")) // tombstone
+
+	keys := [][]byte{[]byte("k1"), []byte("k2")}
+	results, err := tree.GetBatch(ctx, keys)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("v1"), results[0])
+	assert.Nil(t, results[1], "tombstone key should return nil")
+}
+
+func TestGetBatch_SingleKey(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	tree.Set(ctx, []byte("k"), []byte("v"))
+	results, err := tree.GetBatch(ctx, [][]byte{[]byte("k")})
+	require.NoError(t, err)
+	assert.Equal(t, []byte("v"), results[0])
+}
+
+func TestGetBatch_TreeClosed(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	tree.Close()
+	_, err := tree.GetBatch(ctx, [][]byte{[]byte("k")})
+	assert.ErrorIs(t, err, ErrTreeClosed)
+}
+
+func TestGetBatch_ContextCancel(t *testing.T) {
+	tree, _ := newTestBTree(t)
+
+	// Pre-populate keys so Get has work to do
+	for i := range 500 {
+		tree.Set(context.Background(), []byte(fmt.Sprintf("k-%05d", i)), []byte(fmt.Sprintf("v-%05d", i)))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	keys := make([][]byte, 500)
+	for i := range 500 {
+		keys[i] = []byte(fmt.Sprintf("k-%05d", i))
+	}
+	_, err := tree.GetBatch(ctx, keys)
+	assert.Error(t, err, "canceled context should return error")
+}
+
+// ==========================================
+// SetBatch
+// ==========================================
+
+func TestSetBatch_Empty(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	err := tree.SetBatch(ctx, nil)
+	require.NoError(t, err)
+}
+
+func TestSetBatch_Single(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	err := tree.SetBatch(ctx, []service.KVPair{{Key: []byte("k"), Value: []byte("v")}})
+	require.NoError(t, err)
+
+	val, err := tree.Get(ctx, []byte("k"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("v"), val)
+}
+
+func TestSetBatch_Basic(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	n := 200
+	pairs := make([]service.KVPair, n)
+	for i := range n {
+		pairs[i] = service.KVPair{
+			Key:   []byte(fmt.Sprintf("setbatch-%05d", i)),
+			Value: []byte(fmt.Sprintf("value-%05d", i)),
+		}
+	}
+
+	err := tree.SetBatch(ctx, pairs)
+	require.NoError(t, err)
+
+	for i := range n {
+		val, err := tree.Get(ctx, pairs[i].Key)
+		require.NoError(t, err, "key %s", pairs[i].Key)
+		assert.Equal(t, pairs[i].Value, val)
+	}
+	assert.Equal(t, int64(n), tree.Size())
+}
+
+func TestSetBatch_TreeClosed(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	tree.Close()
+	err := tree.SetBatch(ctx, []service.KVPair{{Key: []byte("k"), Value: []byte("v")}})
+	assert.ErrorIs(t, err, ErrTreeClosed)
+}
+
+func TestSetBatch_Reuse(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	// Two sequential calls to verify BatchWriter is reused, not re-created
+	err := tree.SetBatch(ctx, []service.KVPair{{Key: []byte("a"), Value: []byte("1")}})
+	require.NoError(t, err)
+	err = tree.SetBatch(ctx, []service.KVPair{{Key: []byte("b"), Value: []byte("2")}})
+	require.NoError(t, err)
+
+	va, _ := tree.Get(ctx, []byte("a"))
+	vb, _ := tree.Get(ctx, []byte("b"))
+	assert.Equal(t, []byte("1"), va)
+	assert.Equal(t, []byte("2"), vb)
+}
+
+// ==========================================
+// DeleteBatch
+// ==========================================
+
+func TestDeleteBatch_Empty(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	err := tree.DeleteBatch(ctx, nil)
+	require.NoError(t, err)
+}
+
+func TestDeleteBatch_AllExist(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	keys := make([][]byte, 20)
+	for i := range 20 {
+		keys[i] = []byte(fmt.Sprintf("del-%03d", i))
+		tree.Set(ctx, keys[i], []byte(fmt.Sprintf("v-%03d", i)))
+	}
+
+	err := tree.DeleteBatch(ctx, keys)
+	require.NoError(t, err)
+
+	for _, k := range keys {
+		_, err := tree.Get(ctx, k)
+		assert.ErrorIs(t, err, ErrKeyNotFound, "key %s should be deleted", k)
+	}
+	assert.Equal(t, int64(0), tree.Size())
+}
+
+func TestDeleteBatch_PartialMissing(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	tree.Set(ctx, []byte("k1"), []byte("v1"))
+	tree.Set(ctx, []byte("k2"), []byte("v2"))
+	// k3 does not exist
+
+	keys := [][]byte{[]byte("k1"), []byte("k2"), []byte("k3")}
+	err := tree.DeleteBatch(ctx, keys)
+	require.NoError(t, err, "partial missing should not fail")
+
+	_, err = tree.Get(ctx, []byte("k1"))
+	assert.ErrorIs(t, err, ErrKeyNotFound)
+	_, err = tree.Get(ctx, []byte("k2"))
+	assert.ErrorIs(t, err, ErrKeyNotFound)
+}
+
+func TestDeleteBatch_TreeClosed(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	tree.Close()
+	err := tree.DeleteBatch(ctx, [][]byte{[]byte("k")})
+	assert.ErrorIs(t, err, ErrTreeClosed)
+}
+
+// ==========================================
+// Batch concurrency safety
+// ==========================================
+
+func TestGetBatch_ConcurrentWithSet(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	// Pre-populate
+	n := 300
+	keys := make([][]byte, n)
+	for i := range n {
+		keys[i] = []byte(fmt.Sprintf("conc-%05d", i))
+		tree.Set(ctx, keys[i], []byte(fmt.Sprintf("v-%05d", i)))
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Concurrent reads and writes to different keys
+	go func() {
+		defer wg.Done()
+		readKeys := keys[:150]
+		results, err := tree.GetBatch(ctx, readKeys)
+		assert.NoError(t, err)
+		assert.Equal(t, 150, len(results))
+	}()
+
+	go func() {
+		defer wg.Done()
+		newPairs := make([]service.KVPair, 50)
+		for i := range 50 {
+			newPairs[i] = service.KVPair{
+				Key:   []byte(fmt.Sprintf("conc-new-%05d", i)),
+				Value: []byte(fmt.Sprintf("v-new-%05d", i)),
+			}
+		}
+		err := tree.SetBatch(ctx, newPairs)
+		assert.NoError(t, err)
+	}()
+
+	wg.Wait()
+}
+
+func TestGetBatch_SetBatch_DeleteBatch_Concurrent(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	// Pre-populate
+	for i := range 200 {
+		tree.Set(ctx, []byte(fmt.Sprintf("all-%05d", i)), []byte(fmt.Sprintf("v-%05d", i)))
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		keys := make([][]byte, 50)
+		for i := range 50 {
+			keys[i] = []byte(fmt.Sprintf("all-%05d", i))
+		}
+		results, err := tree.GetBatch(ctx, keys)
+		assert.NoError(t, err)
+		assert.Equal(t, 50, len(results))
+	}()
+
+	go func() {
+		defer wg.Done()
+		pairs := make([]service.KVPair, 30)
+		for i := range 30 {
+			pairs[i] = service.KVPair{
+				Key:   []byte(fmt.Sprintf("batch-%05d", i)),
+				Value: []byte(fmt.Sprintf("bv-%05d", i)),
+			}
+		}
+		err := tree.SetBatch(ctx, pairs)
+		assert.NoError(t, err)
+	}()
+
+	go func() {
+		defer wg.Done()
+		delKeys := make([][]byte, 20)
+		for i := 100; i < 120; i++ {
+			delKeys[i-100] = []byte(fmt.Sprintf("all-%05d", i))
+		}
+		err := tree.DeleteBatch(ctx, delKeys)
+		assert.NoError(t, err)
+	}()
+
+	wg.Wait()
 }

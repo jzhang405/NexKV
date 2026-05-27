@@ -45,6 +45,9 @@ func (bw *BatchWriter) WriteBatch(ctx context.Context, keys, values [][]byte) er
 // Shutdown 关闭调度器。
 func (bw *BatchWriter) Shutdown() { bw.dispatcher.Shutdown() }
 
+// Wait 等待所有已提交任务完成。在 Shutdown 之后调用。
+func (bw *BatchWriter) Wait() { bw.dispatcher.Wait() }
+
 // BatchError 聚合多个写入错误。
 type BatchError struct {
 	Errors []WriteResult

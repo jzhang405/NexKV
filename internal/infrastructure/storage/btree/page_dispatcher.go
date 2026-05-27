@@ -181,6 +181,9 @@ func NewPageDispatcher(tree *BTree) *PageDispatcher {
 // Shutdown 关闭调度器。
 func (pd *PageDispatcher) Shutdown() { pd.pool.Shutdown() }
 
+// Wait 等待所有已提交任务完成。在 Shutdown 之后调用，确保 worker 排空。
+func (pd *PageDispatcher) Wait() { pd.pool.Wait() }
+
 // Dispatch 批量写入主流程。
 func (pd *PageDispatcher) Dispatch(ctx context.Context, keys, values [][]byte) ([]WriteResult, error) {
 	n := len(keys)

@@ -60,7 +60,13 @@ func (b *BTree) mutateUpdate(leaf LeafPage, idx int, value []byte) (*leafMutatio
 	if err != nil {
 		return nil, err
 	}
-	return &leafMutation{newPageID: newLeaf.PageID(), delta: 0}, nil
+	delta := int64(0)
+	tombstoneDelta := int16(0)
+	if mvccVal.IsTombstone() {
+		delta = +1
+		tombstoneDelta = -1
+	}
+	return &leafMutation{newPageID: newLeaf.PageID(), delta: delta, tombstoneDelta: tombstoneDelta}, nil
 }
 
 // mutateInsert handles inserting a new key-value pair.

@@ -34,7 +34,7 @@ func (b *BTree) SetBatch(_ context.Context, _ []service.KVPair) error {
 
 ### 1.3 目标
 
-1. **GetBatch**：利用 PageDispatcher 的 Hash 分桶 + resolvePageIDs 模式，实现高性能批量读取
+1. **GetBatch**：读路径 lock-free，直接 `errgroup` + 并行 `Get` 即可，无需 PageDispatcher
 2. **SetBatch**：对接已有 `BatchWriter.WriteBatch`，完成 `KVStore` 接口实现
 3. **DeleteBatch**：暂不实现，留待 compaction 成熟后统一处理
 
@@ -42,247 +42,28 @@ func (b *BTree) SetBatch(_ context.Context, _ []service.KVPair) error {
 
 ## 2. GetBatch 设计
 
-### 2.1 与 WriteBatch 的本质差异
+### 2.1 为什么不需要 PageDispatcher
 
-| 维度 | WriteBatch (已实现) | GetBatch (本设计) |
-|------|-------------------|-------------------|
-| 操作性质 | 写（CAS + COW） | 读（lock-free） |
-| 并发竞争 | 同 Page 多写者 CAS 冲突 | 无竞争 |
-| 重试需求 | CAS 失败 → 重新入队 | 无重试 |
-| Worker 模型 | 常驻 WorkerPool + taskCh | 轻量 errgroup + goroutine |
-| Epoch 保护 | 写路径不涉及 epoch | 每次读需 EnterRead/ExitRead |
-| 调度目标 | 消除 CAS 竞争 | 最大化并行度 |
+PageDispatcher 的复杂度是为解决**写路径的 CAS 竞争**。读路径的根本区别：
 
-核心结论：**GetBatch 不需要 WorkerPool**。读操作无 CAS 竞争，直接 goroutine 并行即可。但**按 Page 分组的 Hash 分桶策略仍然有效**——同 Page 的 key 排序后批量读可以减少 searchPath 遍历次数。
+| 维度 | WriteBatch | GetBatch |
+|------|-----------|---------|
+| 操作性质 | CAS + COW（有锁） | searchPath + leaf read（lock-free） |
+| 同 Page 并发 | 多写者 CAS 冲突 → 需要串行化 | 无竞争 |
+| 需要 WorkerPool？ | 是（CAS 重试 + 重新入队） | 否 |
+| 需要 Hash 分桶 + resolvePageIDs？ | 是（按 Page 分组消除争抢） | 否（直接并行 Get 就行） |
 
-### 2.2 核心设计：ReadBatchDispatcher
+**结论：读无锁 → 直接并行走，不需要任何 PageDispatcher 机制。**
 
-```
-                         GetBatch(ctx, keys)
-                              │
-              ┌───────────────┴───────────────┐
-              │  Phase 1: Hash 分桶 (FNV-1a)   │
-              │  64 shards, O(N)               │
-              └───────────────┬───────────────┘
-                              │
-              ┌───────────────┴───────────────┐
-              │  Phase 2: 桶内排序 +           │
-              │  resolvePageIDs (errgroup)     │
-              │  复用 PageDispatcher 逻辑       │
-              └───────────────┬───────────────┘
-                              │
-              ┌───────────────┴───────────────┐
-              │  Phase 3: 跨桶 merge            │
-              │  map[PageID][]readTask          │
-              └───────────────┬───────────────┘
-                              │
-              ┌───────────────┴───────────────┐
-              │  Phase 4: 按 Page 并行读        │
-              │  errgroup + goroutine per page  │
-              │  每 Page 内顺序读（searchPath   │
-              │  复用 + MVCC 解码）             │
-              └───────────────┬───────────────┘
-                              │
-              ┌───────────────┴───────────────┐
-              │  Phase 5: 收集结果              │
-              │  results[i] = value (按 idx)    │
-              └───────────────────────────────┘
-```
+尽管理论上排序 + 同 Page 复用 searchPath 可以节省遍历开销，但 `inSamePage` 当前是 stub（永远返回 false），这个优化根本不生效。花 ~200 行代码买一个没启用的优化是过度设计。
 
-### 2.3 数据结构
+### 2.2 实现
 
 ```go
-// readTask 单个读取任务。
-type readTask struct {
-    idx int    // 在原始 keys 数组中的位置
-    key []byte
-}
-
-// pageReadBatch 单个 Page 的批量读取任务。
-type pageReadBatch struct {
-    pageID  model.PageID
-    tasks   []readTask
-    results [][]byte // results[i] 对应 tasks[i].idx（预分配，索引写入）
-}
-```
-
-### 2.4 每 Page 读执行流程
-
-```go
-// executePageRead 在单个 Page 内顺序执行所有读操作。
-// 同 Page 内 key 已排序，相邻 key 大概率在同一 leaf page，
-// 可通过 inSamePage 快速判断减少 searchPath 遍历。
-//
-// 错误处理：
-//   - 缺失 key / tombstone / MVCC 解码失败 → results[i] = nil（静默，不中断整批）
-//   - searchPath ErrRetry（瞬态） → 重试一次，仍失败则 results[i] = nil
-//   - ctx.Err() / ErrTreeClosed（非瞬态） → 返回 error（中断整批）
-func (b *BTree) executePageRead(ctx context.Context, batch *pageReadBatch) error {
-    // Epoch 保护：整批读共享一个 epoch slot
-    var epochSlot int
-    if b.epochMgr != nil {
-        epochSlot = b.epochMgr.AllocSlot()
-        b.epochMgr.EnterRead(epochSlot)
-        defer b.epochMgr.ExitRead(epochSlot)
-    }
-
-    var lastPath SearchPath
-    var lastLeaf LeafPage
-    var lastPageID model.PageID
-
-    // releaseLast 释放缓存的上一个 path 和 leaf handle（幂等，panic 安全）
-    releaseLast := func() {
-        if lastLeaf != nil {
-            lastLeaf.Release()
-            lastLeaf = nil
-        }
-        if lastPath != nil {
-            lastPath.ReleaseAll()
-            lastPath = nil
-        }
-    }
-    defer releaseLast() // panic 安全：确保 epoch 退出前释放资源
-
-    for i, t := range batch.tasks {
-        // 检查 context（每 key 检查，不阻塞取消）
-        if err := ctx.Err(); err != nil {
-            releaseLast()
-            return err
-        }
-
-        // 快速路径：与前一个 key 同 page，直接在当前 leaf 中搜索
-        if lastLeaf != nil && b.inSamePage(lastPageID, t.key) {
-            idx, found := lastLeaf.Search(t.key)
-            if found {
-                raw := lastLeaf.GetValue(idx)
-                mvccVal, err := mvcc.ParseMVCC(raw)
-                if err == nil && !mvccVal.IsTombstone() {
-                    batch.results[i] = mvccVal.RealVal
-                }
-                // 未找到或 tombstone：results[i] 保持 nil
-                continue
-            }
-            // false positive from inSamePage：释放旧缓存，走慢速路径
-            releaseLast()
-        }
-
-        // 慢速路径：searchPath → getLeaf → search → parse MVCC
-        path, err := searchPath(b.rootRef, t.key)
-        if err != nil {
-            if errors.Is(err, ErrRetry) {
-                // 瞬态错误（mid-split）：重试一次
-                path, err = searchPath(b.rootRef, t.key)
-            }
-            if err != nil {
-                continue // 仍然失败 → 该 key 结果为 nil
-            }
-        }
-
-        leafEntry := path.Leaf()
-        pInfo := leafEntry.Ref.GetPageInfo()
-        if pInfo == nil {
-            path.ReleaseAll()
-            continue
-        }
-
-        leaf, err := b.storage.GetLeafPage(pInfo.PageID)
-        if err != nil {
-            path.ReleaseAll()
-            continue
-        }
-
-        idx, found := leaf.Search(t.key)
-        if found {
-            raw := leaf.GetValue(idx)
-            mvccVal, err := mvcc.ParseMVCC(raw)
-            if err == nil && !mvccVal.IsTombstone() {
-                batch.results[i] = mvccVal.RealVal
-            }
-        }
-
-        // 释放旧 path/leaf，缓存当前的供下一个 key 复用
-        releaseLast()
-        lastPath = path
-        lastLeaf = leaf
-        lastPageID = pInfo.PageID
-
-        // 注意：如果 key 未找到，leaf 已释放但 lastPath 仍被缓存。
-        // 下一个 key 的 inSamePage(lastPageID) 会判定是否在范围内。
-        if !found {
-            // 未找到 key 时释放 leaf handle（数据已无用），但保留 path 引用用于 inSamePage
-            if lastLeaf != nil {
-                lastLeaf.Release()
-                lastLeaf = nil
-            }
-        }
-    }
-
-    releaseLast()
-    return nil
-}
-```
-
-### 2.5 关键设计决策
-
-#### 2.5.1 inSamePage 优化
-
-当前 `inSamePage` 是 stub（永远返回 false）。在 GetBatch 场景中，同 Page 内的 key 序列化执行，searchPath 复用收益显著。
-
-**决策**：GetBatch V1 不依赖 `inSamePage`。排序后的 key 通过 searchPath 顺序遍历，利用 BTree 缓存局部性已能获得大部分收益。`inSamePage` 实现作为 V2 优化项。
-
-#### 2.5.2 缺失 key 处理
-
-`Get` 单 key 返回 `ErrKeyNotFound`。但批量场景下，一个 key 缺失不应该让整个 batch 失败。
-
-**决策**：`GetBatch` 对缺失/tombstone 的 key 在结果数组中返回 `nil`，不返回 error。调用方通过 `results[i] == nil` 判断 key 不存在。
-
-> **⚠️ API 不对称性**：`Get(key)` 对缺失 key 返回 `ErrKeyNotFound`，但 `GetBatch(keys)` 返回 `nil`。这是因为批量 API 中，单 key 失败不应中断整批。调用方务必检查 `results[i] == nil`，而非依赖 error 判断 key 存在性。
-
-但以下**非瞬态错误**仍需返回（中断整批）：
-- `ctx.Err()` — context 取消
-- `ErrTreeClosed` — 树已关闭
-
-#### 2.5.3 并行度控制
-
-读操作无锁，理论上可以无限并行。但过多 goroutine 导致调度开销；且 EpochManager 仅有 64 个 slot，并发数不应超过 slot 数。
-
-**决策**：
-```go
-maxConcurrency = min(runtime.GOMAXPROCS(0)*4, len(pageGroups), 64)
-```
-
-- 上限 64（匹配 EpochManager slot 数，防止极端情况下 epoch 回收延迟）
-- Page 数量较少时，limit = pageGroups 数量
-
-#### 2.5.4 Epoch 保护
-
-写路径通过 `writeOperationWithRetry` 的 epoch slot 保护。读路径需要类似保护。
-
-**决策**：每个 `executePageRead` goroutine 一个 epoch slot（而非每 key）。整批 Page 读在同一个 EnterRead/ExitRead 窗口内完成，减少 epoch 分配开销。64 个 slot 足够覆盖最大并发 64 个 reader。
-
-#### 2.5.5 与 WriteBatch 共享基础设施
-
-Phase 1-3（Hash 分桶 → 排序 → resolvePageIDs → merge）与 WriteBatch 完全一致。
-
-**决策**：V1 不抽取公共函数。`GetBatch` 使用 `keyWithIndex`（已在 `page_dispatcher.go` 中定义），`WriteBatch` 使用 `writeTask`。两者类型不同，强行统一会增加泛型/接口复杂度。等两者稳定后再评估抽取收益。
-
-#### 2.5.6 非事务读语义（latest-committed）
-
-`GetBatch` 与 `Get` 一致，返回 B+Tree 上的**最新已提交值**，而非快照隔离读（snapshot-isolated）。这意味着：
-- 同一 batch 内不同 key 可能来自不同时间点（无一致性保证）
-- 与 `SnapshotTx.Get` 的快照语义不同
-
-**需要跨 key 一致性读的场景**：使用 `BeginTx(ctx, WithReadOnly())` 获取事务，在事务内逐 key 调用 `tx.Get`。
-
-> **文档要求**：`GetBatch` 的 GoDoc 必须显式说明此语义差异。
-
-### 2.6 API 设计
-
-```go
-// GetBatch 批量读取。
-// 返回的 values 与 keys 一一对应：values[i] 是 keys[i] 的值。
-// key 不存在或已 tombstone 时 values[i] == nil。
-// context 取消或 tree 关闭时返回 error。
+// GetBatch 批量读取。内部并行调用 Get。
+// 缺失/tombstone 的 key 在结果数组中返回 nil。
+// Callers MUST check results[i] == nil to distinguish missing keys.
+// ctx 取消或 tree 关闭时返回 error。
 func (b *BTree) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, error) {
     if err := b.checkOpen(); err != nil {
         return nil, err
@@ -291,68 +72,63 @@ func (b *BTree) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, error) {
         return nil, nil
     }
 
-    // Phase 1: Hash 分桶
-    shards := make([][]keyWithIndex, numShards)
-    for i, key := range keys {
-        s := KeyToShard(key)
-        shards[s] = append(shards[s], keyWithIndex{key: key, idx: i})
-    }
-
-    // Phase 2: 桶内排序 + resolvePageIDs（内联实现，见附录）
-    pageGroups, err := b.resolveKeysToPages(ctx, shards)
-    if err != nil {
-        return nil, err
-    }
-
-    // Phase 3: 按 Page 并行读
     results := make([][]byte, len(keys))
-    batches := make([]*pageReadBatch, 0, len(pageGroups))
-    for pid, tasks := range pageGroups {
-        batch := &pageReadBatch{
-            pageID:  pid,
-            tasks:   make([]readTask, len(tasks)),
-            results: results, // 共享 results slice（各 goroutine 写不相交的 idx）
-        }
-        for i, t := range tasks {
-            batch.tasks[i] = readTask{idx: t.idx, key: t.key}
-        }
-        batches = append(batches, batch)
-    }
-
     g, ctx := errgroup.WithContext(ctx)
-    g.SetLimit(min(runtime.GOMAXPROCS(0)*4, len(batches), 64))
-    for _, batch := range batches {
+    g.SetLimit(min(runtime.GOMAXPROCS(0)*4, 64))
+
+    for i, key := range keys {
         g.Go(func() error {
-            return b.executePageRead(ctx, batch)
+            if err := ctx.Err(); err != nil {
+                return err
+            }
+            val, err := b.Get(ctx, key)
+            if errors.Is(err, ErrKeyNotFound) {
+                return nil // key 不存在 → results[i] 保持 nil
+            }
+            if err != nil {
+                return err
+            }
+            results[i] = val
+            return nil
         })
     }
+
     if err := g.Wait(); err != nil {
-        // ctx 取消或 tree closed → 返回错误，调用方不应依赖 results
         return nil, err
     }
-
     return results, nil
 }
 ```
 
-### 2.7 错误处理策略
+~20 行。KISS。
 
-| 场景 | 行为 | 原因 |
-|------|------|------|
-| key 不存在 | `results[i] = nil` | 批量语义：单 key 失败不中断整批 |
-| key 已 tombstone | `results[i] = nil` | tombstone = 已删除 |
-| searchPath ErrRetry | 重试一次 → 仍失败则 `results[i] = nil` | 瞬态错误（mid-split），重试大概率成功 |
-| MVCC 解码失败 | `results[i] = nil` | 数据损坏或格式不匹配，不中断整批 |
-| GetLeafPage 失败 | `results[i] = nil` | 瞬态 page 类型变更，不中断整批 |
-| ctx 取消 | 返回 `ctx.Err()`，**中断整批** | 调用方主动取消，不应返回部分结果 |
-| tree 已关闭 | 返回 `ErrTreeClosed`，**中断整批** | 全局状态变更，后续读不安全 |
+### 2.3 关键设计决策
 
-**设计原则**：单 key 失败不影响其他 key。只有全局状态变更（ctx cancel / tree close）才中断整批。
+#### 2.3.1 缺失 key 处理
 
-**⚠️ 注意事项**：
-- `Get(key)` 返回 `ErrKeyNotFound`，但 `GetBatch(keys)` 返回 `nil`。这是 API 层面的不对称，调用方务必检查 `results[i] == nil`。
-- 静默跳过的错误（ErrRetry 重试后仍失败、MVCC 解码失败、GetLeafPage 失败）通过 `GlobalTracer.LogOp` 记录，便于排查。
-- `ErrTreeClosed` 的检测依赖 `GetBatch` 入口的 `checkOpen()` + EpochManager 的 page 回收保护。`searchPath` 本身不返回 `ErrTreeClosed`——它返回 `ErrRetry` 或 `ErrBTreeSearchError`。若 epoch 未启用且 tree 在 batch 执行中被关闭，极端情况下已关闭 tree 的读错误会被静默为 per-key nil。V1 接受此风险（epoch 在生产环境中默认启用）。
+`Get` 单 key 返回 `ErrKeyNotFound`，但 `GetBatch` 对缺失/tombstone key 返回 `nil`。单 key 失败不应中断整批。
+
+> **API 不对称**：`Get(key)` → `ErrKeyNotFound`，`GetBatch(keys)` → `results[i] = nil`。调用方务必检查 `results[i] == nil`。
+
+#### 2.3.2 并发度
+
+```go
+g.SetLimit(runtime.GOMAXPROCS(0) * 4)
+```
+
+读操作 CPU-bound（searchPath 二分查找），4×核数提供足够的流水线填充。
+
+#### 2.3.3 非事务语义（latest-committed）
+
+`GetBatch` 返回 B+Tree 最新已提交值，非快照隔离。同一 batch 内不同 key 可能来自不同时间点。需要跨 key 一致性读时使用 `BeginTx`。
+
+#### 2.3.4 V2 优化方向
+
+如果 profiling 显示 searchPath 是瓶颈，V2 可以加排序优化：
+1. 按 key 排序 → 相邻 key 大概率同 page
+2. 实现 `inSamePage` → 同 page key 直接在当前 leaf 搜索，省去 searchPath 遍历
+
+但 V1 不做——先用简单实现，benchmark 说话。
 
 ---
 
@@ -482,12 +258,10 @@ func (b *BTree) DeleteBatch(ctx context.Context, keys [][]byte) error {
 
 ## 5. 实现计划
 
-### Phase 1：GetBatch 核心（1-2 天）
+### Phase 1：GetBatch（0.5 天）
 
-- [ ] `readTask` / `pageReadBatch` 数据结构
-- [ ] `executePageRead`：单 Page 顺序读 + epoch 保护 + searchPath 复用
-- [ ] `groupKeysByPage`：从 PageDispatcher 抽取公共 Phase 1-3 逻辑
-- [ ] `GetBatch` 主流程：hash → resolve → errgroup → collect
+- [ ] `GetBatch` 实现：errgroup + 并行 Get（~20 行）
+- [ ] 基础单元测试
 
 ### Phase 2：SetBatch 对接（0.5 天）
 
@@ -498,21 +272,9 @@ func (b *BTree) DeleteBatch(ctx context.Context, keys [][]byte) error {
 
 ### Phase 3：测试（1 天）
 
-- [ ] GetBatch 单元测试：
-  - 空 keys
-  - 单 key
-  - 全部存在
-  - 部分缺失
-  - tombstone key
-  - 跨 Page 分布
-  - context cancel
-- [ ] SetBatch 单元测试：
-  - 空 pairs
-  - 单 pair
-  - 大批量（1K/10K/100K）
-  - 部分失败 → BatchError
+- [ ] GetBatch 单元测试
+- [ ] SetBatch 单元测试
 - [ ] GetBatch + SetBatch 并发安全性（`-race`）
-- [ ] Benchmark：单 key Get vs GetBatch(1K keys)
 
 ### Phase 4：DeleteBatch（0.5 天）
 
@@ -602,9 +364,8 @@ SetBatch 使用 `SetWithRetry`（writeOperationWithRetry），直接写 MVCC 编
 
 | Benchmark | 对比基线 | 目标 |
 |-----------|---------|:---:|
-| `GetBatch_1K` vs `Get×1K` | 串行 Get 循环 | >2x throughput |
-| `GetBatch_10K` vs `Get×10K` | 串行 Get 循环 | >3x throughput |
-| `SetBatch_10K` vs `Set×10K` | 串行 Set 循环 | >5x throughput (已有 PageDispatcher) |
+| `GetBatch_1K` vs `Get×1K` | 串行 Get 循环 | >4x throughput |
+| `SetBatch_10K` vs `Set×10K` | 串行 Set 循环 | >5x throughput（已有 PageDispatcher） |
 
 ### 7.3 竞态检测
 
@@ -614,87 +375,7 @@ go test -v -race -run "TestGetBatch|TestSetBatch" ./internal/infrastructure/stor
 
 ---
 
-## 8. 附录：Phase 2 实现细节
-
-### 8.1 resolveKeysToPages（GetBatch 专用）
-
-GetBatch 的 Phase 2 无法直接复用 `PageDispatcher.resolveShardPageIDs`（返回 `writeTask` 包含 value），因此需要自己的 resolve 逻辑。为保持实现内聚，直接在 BTree 上定义：
-
-```go
-// resolveKeysToPages 将 shard 分桶后的 keys 映射到 PageID。
-// 内部并行：每个非空 shard 一个 goroutine，桶内排序后 resolve。
-func (b *BTree) resolveKeysToPages(ctx context.Context, shards [][]keyWithIndex) (
-    map[model.PageID][]keyWithIndex, error) {
-
-    shardResults := make([]map[model.PageID][]keyWithIndex, numShards)
-    shardErr := make([]error, numShards)
-    var wg sync.WaitGroup
-
-    for s := range numShards {
-        if len(shards[s]) == 0 {
-            continue
-        }
-        wg.Add(1)
-        go func(shardIdx int) {
-            defer wg.Done()
-            shardResults[shardIdx], shardErr[shardIdx] = b.resolveShardKeys(ctx, shards[shardIdx])
-        }(s)
-    }
-    wg.Wait()
-
-    for _, err := range shardErr {
-        if err != nil {
-            return nil, err
-        }
-    }
-
-    // 跨桶 merge
-    result := make(map[model.PageID][]keyWithIndex)
-    for _, sr := range shardResults {
-        for pid, keys := range sr {
-            result[pid] = append(result[pid], keys...)
-        }
-    }
-    return result, nil
-}
-
-// resolveShardKeys 桶内排序 + 顺序 resolve PageID。
-func (b *BTree) resolveShardKeys(ctx context.Context, keys []keyWithIndex) (
-    map[model.PageID][]keyWithIndex, error) {
-
-    sort.Slice(keys, func(i, j int) bool {
-        return string(keys[i].key) < string(keys[j].key)
-    })
-
-    result := make(map[model.PageID][]keyWithIndex)
-    var lastPage model.PageID
-    for _, k := range keys {
-        var pid model.PageID
-        if lastPage != 0 && b.inSamePage(lastPage, k.key) {
-            pid = lastPage
-        } else {
-            var err error
-            pid, err = b.ResolvePageID(ctx, k.key)
-            if err != nil {
-                return nil, err
-            }
-            lastPage = pid
-        }
-        result[pid] = append(result[pid], k)
-    }
-    return result, nil
-}
-```
-
-与 `PageDispatcher.resolveShardPageIDs` 的核心区别：
-- 返回 `map[PageID][]keyWithIndex`（纯 key），而非 `map[PageID][]writeTask`（key + value）
-- 复用相同的算法骨架（排序 → 遍历 → inSamePage → ResolvePageID）
-
-**决策**：V1 不抽取公共函数。两段代码 ~40 行，类型不同（`keyWithIndex` vs `writeTask`），强行统一需要泛型/接口。等两者稳定后再评估抽取收益。`keyWithIndex` 已在 `page_dispatcher.go` 中定义，`GetBatch` 直接复用。
-
----
-
-## 9. 参考
+## 8. 参考
 
 - [PageDispatcher 设计文档](../../10_benchmark/2026-05-25-par-put-stability/2026-05-25-page-dispatcher-design.md) — Hash 分桶、WorkerPool、CAS 重试策略
 - [BTree 存储引擎设计](../../02_design/03_存储引擎设计.md)

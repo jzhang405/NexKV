@@ -3,7 +3,6 @@ package btree
 
 import (
 	"context"
-	"errors"
 
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 )
@@ -24,7 +23,7 @@ func (b *BTree) SetWithRetry(ctx context.Context, key, value []byte, maxRetries 
 		if found {
 			return b.mutateUpdate(leaf, idx, value)
 		}
-		return b.mutateInsert(leaf, idx, key, value)
+		return b.mutateInsert(leaf, key, value)
 	}, maxRetries)
 
 	return err
@@ -70,16 +69,13 @@ func (b *BTree) mutateUpdate(leaf LeafPage, idx int, value []byte) (*leafMutatio
 }
 
 // mutateInsert handles inserting a new key-value pair.
-func (b *BTree) mutateInsert(leaf LeafPage, idx int, key, value []byte) (*leafMutation, error) {
+func (b *BTree) mutateInsert(leaf LeafPage, key, value []byte) (*leafMutation, error) {
 	encoded, buildErr := mvcc.BuildMVCC(mvcc.FlagNormal, b.tsGen.NextTS(), value)
 	if buildErr != nil {
 		return nil, buildErr
 	}
 	newLeaf, err := leaf.Insert(key, encoded)
 	if err != nil {
-		if errors.Is(err, ErrDuplicateKey) {
-			return nil, err
-		}
 		return nil, err
 	}
 	return &leafMutation{newPageID: newLeaf.PageID(), delta: +1}, nil

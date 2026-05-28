@@ -490,6 +490,7 @@ func (b *BTree) Close() error {
 		b.epochMgr.Shutdown()
 	}
 	// Shutdown BatchWriter (if initialized): close channels, wait for workers to drain
+	b.batchWriterOnce.Do(func() {}) // ensures happens-before with getBatchWriter
 	if b.batchWriter != nil {
 		b.batchWriter.Shutdown()
 		b.batchWriter.Wait()

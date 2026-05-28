@@ -244,8 +244,8 @@ func (pd *PageDispatcher) Dispatch(ctx context.Context, keys, values [][]byte) (
 			results: make([]WriteResult, len(tasks)),
 		}
 		if err := pd.pool.Submit(batch); err != nil {
-			for _, t := range tasks {
-				batch.results[t.idx] = WriteResult{Index: t.idx, Err: err}
+			for i, t := range tasks {
+				batch.results[i] = WriteResult{Index: t.idx, Err: err}
 			}
 		}
 		batches = append(batches, batch)

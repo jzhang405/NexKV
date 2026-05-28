@@ -493,7 +493,6 @@ func (b *BTree) Close() error {
 	b.batchWriterOnce.Do(func() {}) // ensures happens-before with getBatchWriter
 	if b.batchWriter != nil {
 		b.batchWriter.Shutdown()
-		b.batchWriter.Wait()
 	}
 	return b.storage.Close()
 }

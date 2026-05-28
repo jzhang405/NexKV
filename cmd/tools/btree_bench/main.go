@@ -346,9 +346,6 @@ func batchLoop(n, threads int, tree *btree.BTree, ops *atomic.Int64, getOnly boo
 	ctx := context.Background()
 	numBatches := (n + batchSize - 1) / batchSize
 
-	// SetBatch uses a shared BatchWriter with non-concurrent-safe WorkerPool.
-	var setMu sync.Mutex
-
 	execBatch := func(b int) {
 		start := b * batchSize
 		end := min(start+batchSize, n)
@@ -363,9 +360,7 @@ func batchLoop(n, threads int, tree *btree.BTree, ops *atomic.Int64, getOnly boo
 			for i := range pairs {
 				pairs[i] = service.KVPair{Key: keyOf(start + i), Value: valOf(start + i)}
 			}
-			setMu.Lock()
 			_ = tree.SetBatch(ctx, pairs)
-			setMu.Unlock()
 		}
 		ops.Add(int64(end - start))
 	}

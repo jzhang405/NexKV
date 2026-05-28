@@ -23,8 +23,7 @@ import (
 // WorkerPool 常驻 worker goroutine 池，消费 per-page 写入任务。
 type WorkerPool struct {
 	taskCh chan *pageBatch
-	done   chan struct{} // closed on Shutdown, prevents TOCTOU send on closed taskCh
-	wg     sync.WaitGroup
+	done   chan struct{} // closed on Shutdown, prevents deadlock on full taskCh
 	closed atomic.Bool
 }
 
@@ -49,7 +48,7 @@ func (wp *WorkerPool) runWorker() {
 // executeBatch 串行执行同一 Page 的所有写入。
 // 借鉴 Lealone：CAS 失败 3 次后重新入队而非自旋。
 func (wp *WorkerPool) executeBatch(batch *pageBatch) {
-	defer wp.wg.Done()
+	defer batch.wg.Done()
 
 	var panicked any
 	defer func() {
@@ -73,6 +72,7 @@ func (wp *WorkerPool) executeBatch(batch *pageBatch) {
 		if err != nil && isCASRetryExhausted(err) && batch.retries < maxCASRequeue {
 			batch.nextIdx = i
 			batch.retries++
+			batch.wg.Add(1) // pair with defer wg.Done() in next executeBatch
 			if wp.Submit(batch) != nil {
 				for j := i; j < len(batch.tasks); j++ {
 					batch.results[j] = WriteResult{Index: batch.tasks[j].idx, Err: ErrWorkerPoolClosed}
@@ -87,29 +87,23 @@ func (wp *WorkerPool) executeBatch(batch *pageBatch) {
 }
 
 // Submit 提交 pageBatch。Shutdown 后返回 ErrWorkerPoolClosed。
-// 使用 select+done channel 消除 TOCTOU：closed.Load 和 taskCh<-batch 之间的窗口。
 func (wp *WorkerPool) Submit(batch *pageBatch) error {
 	if wp.closed.Load() {
 		return ErrWorkerPoolClosed
 	}
-	wp.wg.Add(1)
 	select {
 	case <-wp.done:
-		wp.wg.Add(-1)
 		return ErrWorkerPoolClosed
 	case wp.taskCh <- batch:
 		return nil
 	}
 }
 
-// Wait 等待所有已提交任务完成。
-func (wp *WorkerPool) Wait() { wp.wg.Wait() }
-
-// Shutdown 优雅关闭：先标记 closed，再 close done channel（解除 Submit 阻塞），最后 close taskCh。
+// Shutdown 优雅关闭：标记 closed 防止新提交，然后 close taskCh 让 worker 退出。
 func (wp *WorkerPool) Shutdown() {
 	wp.closed.Store(true)
-	close(wp.done)
-	close(wp.taskCh)
+	close(wp.done)   // unblock Submit waits
+	close(wp.taskCh) // let workers exit
 }
 
 // ==========================================
@@ -149,6 +143,7 @@ type pageBatch struct {
 	results []WriteResult
 	nextIdx int
 	retries int
+	wg      sync.WaitGroup // per-batch completion tracking
 }
 
 type writeTask struct {
@@ -180,9 +175,6 @@ func NewPageDispatcher(tree *BTree) *PageDispatcher {
 
 // Shutdown 关闭调度器。
 func (pd *PageDispatcher) Shutdown() { pd.pool.Shutdown() }
-
-// Wait 等待所有已提交任务完成。在 Shutdown 之后调用，确保 worker 排空。
-func (pd *PageDispatcher) Wait() { pd.pool.Wait() }
 
 // Dispatch 批量写入主流程。
 func (pd *PageDispatcher) Dispatch(ctx context.Context, keys, values [][]byte) ([]WriteResult, error) {
@@ -243,16 +235,20 @@ func (pd *PageDispatcher) Dispatch(ctx context.Context, keys, values [][]byte) (
 			tasks:   tasks,
 			results: make([]WriteResult, len(tasks)),
 		}
+		batch.wg.Add(1)
 		if err := pd.pool.Submit(batch); err != nil {
 			for i, t := range tasks {
 				batch.results[i] = WriteResult{Index: t.idx, Err: err}
 			}
+			batch.wg.Done()
 		}
 		batches = append(batches, batch)
 	}
 
-	// Phase 5: 等待完成
-	pd.pool.Wait()
+	// Phase 5: 等待本 Dispatch 提交的 batches 完成
+	for _, batch := range batches {
+		batch.wg.Wait()
+	}
 
 	// Phase 6: 收集结果
 	results := make([]WriteResult, n)

@@ -375,7 +375,303 @@ go test -v -race -run "TestGetBatch|TestSetBatch" ./internal/infrastructure/stor
 
 ---
 
-## 8. 参考
+## 8. SetBatch 并行化瓶颈分析（2026-05-28 补充）
+
+### 8.1 Benchmark 结果
+
+GetBatch + SetBatch 实现完成后的 benchmark 数据（500K ops, 8 核）：
+
+| 场景 | batch size | 线程 | QPS |
+|------|-----------|------|-----|
+| batch-get-256 | 256 | 1 | **1.50M** |
+| batch-get-1024 | 1024 | 1 | **1.87M** |
+| par-batch-set-256-8 | 256 | 8 | **1.30M** |
+| par-batch-get-256-8 | 256 | 8 | **4.27M** |
+| par-batch-set-1024-8 | 1024 | 8 | **1.70M** |
+| par-batch-get-1024-8 | 1024 | 8 | **4.51M** |
+
+**核心问题**：SetBatch 8 线程仅 1.30M QPS，GetBatch 8 线程达 4.27M QPS。SetBatch 并行扩展效率极低（1→8 线程仅 1.2x）。
+
+### 8.2 根因分析
+
+瓶颈分两层：
+
+#### 第一层：bench 外层 mutex（直接原因）
+
+```go
+// cmd/tools/btree_bench/main.go:349-368
+var setMu sync.Mutex  // 所有 goroutine 共享
+setMu.Lock()
+_ = tree.SetBatch(ctx, pairs)
+setMu.Unlock()
+```
+
+8 个 goroutine 中只有 1 个能拿到锁，其余全部阻塞。**直接退化为串行。**
+
+注释原因：`SetBatch uses a shared BatchWriter with non-concurrent-safe WorkerPool`。
+
+#### 第二层：SetBatch 内部同步阻塞（根本原因）
+
+调用链：
+
+```
+SetBatch → BatchWriter.WriteBatch → PageDispatcher.Dispatch → WorkerPool.Submit + Wait()
+```
+
+关键代码路径：
+
+1. **BTree 持有唯一 `batchWriter` 实例**（懒初始化，全局共享）
+
+   ```go
+   // btree.go:45
+   batchWriter *BatchWriter
+
+   // btree.go:589-593
+   func (b *BTree) getBatchWriter() *BatchWriter {
+       b.batchWriterOnce.Do(func() {
+           b.batchWriter = NewBatchWriter(b)
+       })
+       return b.batchWriter
+   }
+   ```
+
+2. **`BatchWriter` 内含唯一 `PageDispatcher`**，后者内含唯一 `WorkerPool`
+
+   ```go
+   // batch_writer.go:10-18
+   type BatchWriter struct {
+       dispatcher *PageDispatcher
+   }
+   func NewBatchWriter(tree *BTree) *BatchWriter {
+       return &BatchWriter{
+           dispatcher: NewPageDispatcher(tree),
+       }
+   }
+   ```
+
+3. **`PageDispatcher.Dispatch` 内部调用 `pd.pool.Wait()`（同步阻塞）**
+
+   ```go
+   // page_dispatcher.go:254-255
+   // Phase 5: 等待完成
+   pd.pool.Wait()
+   ```
+
+   这意味着每次 `Dispatch` 调用是**同步阻塞**的：提交所有 page batch 到 WorkerPool，然后 Wait() 等全部 worker 完成。两个并发 SetBatch 会共享同一个 WorkerPool 的 `sync.WaitGroup`，导致 Wait() 语义混乱。
+
+**结论**：即使去掉 bench 的外层 mutex，并发 SetBatch 也会因为共享 WorkerPool + Dispatch 内部 Wait() 而无法真正并行。
+
+#### 对比 GetBatch
+
+```go
+// GetBatch - 每次 errgroup 独立
+g, ctx := errgroup.WithContext(ctx)
+g.SetLimit(min(runtime.GOMAXPROCS(0)*4, 64))
+```
+
+GetBatch 用 errgroup 每次调用创建新 group，无共享状态，**真正并行**。
+
+### 8.3 架构对比
+
+```
+当前架构（串行）：
+BTree
+└── 1 个 BatchWriter（全局共享）
+    └── 1 个 PageDispatcher
+        └── 1 个 WorkerPool（N 个 worker goroutine）
+            ├── Dispatch() → Submit all batches → Wait() ← 同步阻塞点
+            └── 所有并发 SetBatch 调用排队等待
+
+GetBatch 架构（真并行）：
+BTree
+└── 每次 GetBatch 调用 → 独立 errgroup → 独立 goroutine 集合
+    └── 无共享状态 → 无阻塞 → 真并行
+```
+
+| 维度 | GetBatch | SetBatch |
+|------|----------|----------|
+| 并行模型 | errgroup，每次独立 | 共享 BatchWriter + WorkerPool |
+| 并发调用 | 多个 GetBatch 真并行 | 多个 SetBatch 被 Wait() 串行化 |
+| bench 外锁 | 无 | mutex（防御性） |
+| 实际效果 | 8线程 4.5M QPS | 8线程 1.3M QPS（≈1线程） |
+
+### 8.4 修复方案
+
+**核心思路**：去掉全局共享 BatchWriter，让每次 SetBatch 调用创建独立的 BatchWriter（含独立的 PageDispatcher + WorkerPool）。
+
+#### 方案 A：每次 SetBatch 创建独立 BatchWriter（KISS 最优）
+
+```go
+func (b *BTree) SetBatch(ctx context.Context, pairs []service.KVPair) error {
+    if err := b.checkOpen(); err != nil {
+        return err
+    }
+    if len(pairs) == 0 {
+        return nil
+    }
+
+    keys := make([][]byte, len(pairs))
+    values := make([][]byte, len(pairs))
+    for i, p := range pairs {
+        keys[i] = p.Key
+        values[i] = p.Value
+    }
+
+    // 关键：每次创建独立 BatchWriter，无共享状态
+    bw := NewBatchWriter(b)
+    defer bw.Shutdown()
+    return bw.WriteBatch(ctx, keys, values)
+}
+```
+
+**变更量**：
+- `btree.go`：删除 `batchWriter`、`batchWriterOnce` 字段，删除 `getBatchWriter()` 方法，简化 `Close()`
+- `btree_bench/main.go`：删除外层 `setMu` mutex
+
+**优点**：
+- 无锁、无共享状态、无复杂调度
+- 完全对齐 GetBatch 的独立上下文模式
+- 改动最小（删除代码 > 新增代码）
+
+**缺点**：
+- 每次 SetBatch 创建 WorkerPool（N 个 goroutine），单次调用有 goroutine 创建开销
+- 高频小 batch 场景（batch=1~10）可能不如方案 B
+
+#### 方案 B：共享 WorkerPool + 异步 Dispatch（更复杂但更优）
+
+将 `Dispatch` 改为异步提交（不内部 Wait），调用方在需要时统一 Wait：
+
+```go
+// DispatchAsync 提交任务但不等待完成，返回 WaitFunc
+func (pd *PageDispatcher) DispatchAsync(ctx context.Context, keys, values [][]byte) (func() ([]WriteResult, error), error)
+
+// SetBatch 内部
+future, err := pd.DispatchAsync(ctx, keys, values)
+// ... 其他逻辑
+results, err := future() // 此时才 Wait
+```
+
+**优点**：WorkerPool 常驻复用，无创建开销
+
+**缺点**：
+- 改动大，需要重构 PageDispatcher.Dispatch（影响面广）
+- 需要处理并发 DispatchAsync 的 WaitGroup 语义（当前 wg 是全局的）
+- 过度设计——当前没有证据表明 WorkerPool 创建是瓶颈
+
+### 8.5 推荐方案：方案 A
+
+**理由**：
+
+1. **KISS**：删除代码比新增代码更好
+2. **对齐现有模式**：GetBatch 已经证明了「每次独立上下文」的可行性
+3. **改动量极小**：~20 行变更，不触及 PageDispatcher / WorkerPool 内部逻辑
+4. **WorkerPool 创建开销可接受**：
+   - WorkerPool 创建 = `min(GOMAXPROCS, numShards/2)` = 4~8 个 goroutine
+   - goroutine 初始栈仅 2KB（Go 1.21+），创建成本 ~100ns
+   - 对比 Dispatch 本身的 SetWithRetry CAS 开销，goroutine 创建可忽略
+5. **benchmark 数据预期**：SetBatch 8线程 QPS 从 1.3M → 4.0~4.5M（与 GetBatch 持平）
+
+### 8.6 实施步骤
+
+#### Step 1：重构 SetBatch（btree.go）
+
+```diff
+ type BTree struct {
+-    batchWriter     *BatchWriter  // batch write dispatcher (lazy init)
+-    batchWriterOnce sync.Once
+     // ... 其他字段不变
+ }
+
+ func (b *BTree) SetBatch(ctx context.Context, pairs []service.KVPair) error {
+     if err := b.checkOpen(); err != nil {
+         return err
+     }
+     if len(pairs) == 0 {
+         return nil
+     }
+
+     keys := make([][]byte, len(pairs))
+     values := make([][]byte, len(pairs))
+     for i, p := range pairs {
+         keys[i] = p.Key
+         values[i] = p.Value
+     }
+
+-    bw := b.getBatchWriter()
+-    if err := b.checkOpen(); err != nil {
+-        return err
+-    }
+-    return bw.WriteBatch(ctx, keys, values)
++    bw := NewBatchWriter(b)
++    defer bw.Shutdown()
++    return bw.WriteBatch(ctx, keys, values)
+ }
+
+-// getBatchWriter 懒初始化并返回 BatchWriter。
+-func (b *BTree) getBatchWriter() *BatchWriter {
+-    b.batchWriterOnce.Do(func() {
+-        b.batchWriter = NewBatchWriter(b)
+-    })
+-    return b.batchWriter
+-}
+```
+
+#### Step 2：简化 Close()（btree.go）
+
+```diff
+ func (b *BTree) Close() error {
+     if !b.closed.CompareAndSwap(false, true) {
+         return nil
+     }
+-    b.batchWriterOnce.Do(func() {})
+-    if b.batchWriter != nil {
+-        b.batchWriter.Shutdown()
+-        b.batchWriter.Wait()
+-    }
+     // ... 其他 cleanup 不变
+ }
+```
+
+#### Step 3：去掉 bench 外层 mutex（cmd/tools/btree_bench/main.go）
+
+```diff
+ func batchLoop(n, threads int, tree *btree.BTree, ops *atomic.Int64, getOnly bool, batchSize, maxKey int) {
+     ctx := context.Background()
+     numBatches := (n + batchSize - 1) / batchSize
+-    var setMu sync.Mutex
+
+     execBatch := func(b int) {
+         // ...
+         } else {
+             pairs := make([]service.KVPair, end-start)
+             for i := range pairs {
+                 pairs[i] = service.KVPair{Key: keyOf(start + i), Value: valOf(start + i)}
+             }
+-            setMu.Lock()
+             _ = tree.SetBatch(ctx, pairs)
+-            setMu.Unlock()
+         }
+         // ...
+     }
+```
+
+#### Step 4：运行 benchmark 验证
+
+```bash
+go run ./cmd/tools/btree_bench -only par-batch -n 500000 -warmup 50000
+```
+
+预期：par-batch-set-256-8 QPS 从 ~1.3M 提升到 ~4.0M+。
+
+#### Step 5：运行测试确保无回归
+
+```bash
+go test -v -race -run "TestGetBatch|TestSetBatch" ./internal/infrastructure/storage/btree/
+```
+
+---
+
+## 9. 参考
 
 - [PageDispatcher 设计文档](../../10_benchmark/2026-05-25-par-put-stability/2026-05-25-page-dispatcher-design.md) — Hash 分桶、WorkerPool、CAS 重试策略
 - [BTree 存储引擎设计](../../02_design/03_存储引擎设计.md)

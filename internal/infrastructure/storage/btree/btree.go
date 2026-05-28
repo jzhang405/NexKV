@@ -6,11 +6,14 @@ package btree
 
 import (
 	"context"
+	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
@@ -38,6 +41,9 @@ type BTree struct {
 	compactMu      sync.Mutex
 	epochMgr       *EpochManager // COW old page reclamation (nil if disabled)
 	epochCancel    context.CancelFunc
+
+	batchWriter     *BatchWriter // batch write dispatcher (lazy init via getBatchWriter)
+	batchWriterOnce sync.Once
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -483,6 +489,11 @@ func (b *BTree) Close() error {
 		b.epochCancel()
 		b.epochMgr.Shutdown()
 	}
+	// Shutdown BatchWriter (if initialized): close channels, wait for workers to drain
+	b.batchWriterOnce.Do(func() {}) // ensures happens-before with getBatchWriter
+	if b.batchWriter != nil {
+		b.batchWriter.Shutdown()
+	}
 	return b.storage.Close()
 }
 
@@ -494,18 +505,91 @@ func (b *BTree) AfterCheckpoint() {
 	}
 }
 
-// --- service.KVStore stubs (not in Phase 5 scope) ---
+// --- service.KVStore batch operations ---
 
-func (b *BTree) GetBatch(_ context.Context, _ [][]byte) ([][]byte, error) {
-	return nil, ErrNotImplemented
+// GetBatch 批量读取。内部并行调用 Get。
+// 缺失/tombstone 的 key 在结果数组中返回 nil。
+// Callers MUST check results[i] == nil to distinguish missing keys.
+// ctx 取消或 tree 关闭时返回 error。
+func (b *BTree) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, error) {
+	if err := b.checkOpen(); err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	results := make([][]byte, len(keys))
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(min(runtime.GOMAXPROCS(0)*4, 64))
+
+	for i, key := range keys {
+		g.Go(func() error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			val, err := b.Get(ctx, key)
+			if errors.Is(err, ErrKeyNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			results[i] = val
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
-func (b *BTree) SetBatch(_ context.Context, _ []service.KVPair) error {
-	return ErrNotImplemented
+// SetBatch 批量写入（实现 service.KVStore 接口）。
+// 内部委托给 BatchWriter.WriteBatch。
+func (b *BTree) SetBatch(ctx context.Context, pairs []service.KVPair) error {
+	if err := b.checkOpen(); err != nil {
+		return err
+	}
+	if len(pairs) == 0 {
+		return nil
+	}
+
+	keys := make([][]byte, len(pairs))
+	values := make([][]byte, len(pairs))
+	for i, p := range pairs {
+		keys[i] = p.Key
+		values[i] = p.Value
+	}
+
+	bw := b.getBatchWriter()
+	return bw.WriteBatch(ctx, keys, values)
 }
 
-func (b *BTree) DeleteBatch(_ context.Context, _ [][]byte) error {
-	return ErrNotImplemented
+// DeleteBatch 批量删除。
+// V1 简单串行：逐 key 调用 Delete。
+func (b *BTree) DeleteBatch(ctx context.Context, keys [][]byte) error {
+	if err := b.checkOpen(); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if err := b.Delete(ctx, key); err != nil {
+			if errors.Is(err, ErrKeyNotFound) {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// getBatchWriter 懒初始化并返回 BatchWriter。
+func (b *BTree) getBatchWriter() *BatchWriter {
+	b.batchWriterOnce.Do(func() {
+		b.batchWriter = NewBatchWriter(b)
+	})
+	return b.batchWriter
 }
 
 func (b *BTree) RangeScan(_ context.Context, _, _ []byte) (service.Iterator, error) {

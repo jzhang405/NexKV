@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree"
 )
 
@@ -27,6 +28,7 @@ var (
 	enableEpoch = flag.Bool("epoch", false, "enable epoch-based page reclamation")
 	cpuProfile  = flag.String("cpuprofile", "", "write cpu profile to file")
 	only        = flag.String("only", "", "run only tests matching this prefix")
+	batchSizes  = flag.String("batch", "64,256,1024", "comma-separated batch sizes for batch benchmarks")
 	noPreGen    = flag.Bool("no-pregenerate", false, "use fmt.Sprintf per call (old behavior, GC-heavy)")
 
 	// keyPool and valPool are pre-generated in main to eliminate fmt.Sprintf GC pressure.
@@ -109,6 +111,43 @@ func main() {
 			run(tc.label, tc.n, tc.thr, tc.getOnly, mmapSize)
 		}
 	}
+
+	// Batch benchmarks
+	for _, bs := range parseBatchSizes(*batchSizes) {
+		batchN := n
+		if batchN < bs {
+			batchN = bs
+		}
+		for _, label := range []string{"batch-set", "batch-get"} {
+			if *only != "" && !strings.HasPrefix(label, *only) {
+				continue
+			}
+			runBatch(fmt.Sprintf("%s-%d", label, bs), batchN, 1, label == "batch-get", bs, mmapSize)
+		}
+		for _, conc := range []int{4, 8, 16} {
+			for _, label := range []string{"par-batch-set", "par-batch-get"} {
+				if *only != "" && !strings.HasPrefix(label, *only) {
+					continue
+				}
+				runBatch(fmt.Sprintf("%s-%d-%d", label, bs, min(t, conc)), batchN, min(t, conc), label == "par-batch-get", bs, mmapSize)
+			}
+		}
+	}
+}
+
+func parseBatchSizes(s string) []int {
+	parts := strings.Split(s, ",")
+	sizes := make([]int, 0, len(parts))
+	for _, p := range parts {
+		var v int
+		if _, err := fmt.Sscanf(strings.TrimSpace(p), "%d", &v); err == nil && v > 0 {
+			sizes = append(sizes, v)
+		}
+	}
+	if len(sizes) == 0 {
+		sizes = []int{64}
+	}
+	return sizes
 }
 
 func run(label string, n, threads int, getOnly bool, mmapSize int, readRatios ...float64) {
@@ -254,4 +293,100 @@ func valOf(i int) []byte {
 		return valPool[i]
 	}
 	return []byte(fmt.Sprintf("value-%010d", i))
+}
+
+// --- Batch benchmarks ---
+
+func runBatch(label string, n, threads int, getOnly bool, batchSize, mmapSize int) {
+	storage, err := btree.NewOffheapBTreeStorage(mmapSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create storage: %v\n", err)
+		return
+	}
+	opts := []btree.BTreeOption{}
+	if *enableEpoch {
+		opts = append(opts, btree.WithEpoch())
+	}
+	tree, err := btree.NewBTree(storage, opts...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create btree: %v\n", err)
+		return
+	}
+	ctx := context.Background()
+
+	// Preload for batch-get tests.
+	if getOnly {
+		for i := 0; i < n; i++ {
+			_ = tree.Set(ctx, keyOf(i), valOf(i))
+		}
+	}
+
+	// Warmup
+	var totalOps atomic.Int64
+	batchLoop(*warmup, threads, tree, &totalOps, getOnly, batchSize, n)
+	totalOps.Store(0)
+
+	// Measure
+	t0 := time.Now()
+	batchLoop(n, threads, tree, &totalOps, getOnly, batchSize, n)
+	elapsed := time.Since(t0)
+
+	qps := float64(totalOps.Load()) / elapsed.Seconds()
+	rw := "write"
+	if getOnly {
+		rw = "read"
+	}
+	fmt.Printf("%-28s t=%-2d op=%-8s batch=%-5d ops=%d time=%.3fs qps=%10.0f\n",
+		label, threads, rw, batchSize, totalOps.Load(), elapsed.Seconds(), qps)
+
+	_ = tree.Close()
+}
+
+func batchLoop(n, threads int, tree *btree.BTree, ops *atomic.Int64, getOnly bool, batchSize, maxKey int) {
+	ctx := context.Background()
+	numBatches := (n + batchSize - 1) / batchSize
+
+	execBatch := func(b int) {
+		start := b * batchSize
+		end := min(start+batchSize, n)
+		if getOnly {
+			keys := make([][]byte, end-start)
+			for i := range keys {
+				keys[i] = keyOf((start + i) % maxKey)
+			}
+			_, _ = tree.GetBatch(ctx, keys)
+		} else {
+			pairs := make([]service.KVPair, end-start)
+			for i := range pairs {
+				pairs[i] = service.KVPair{Key: keyOf(start + i), Value: valOf(start + i)}
+			}
+			_ = tree.SetBatch(ctx, pairs)
+		}
+		ops.Add(int64(end - start))
+	}
+
+	if threads <= 1 {
+		for b := 0; b < numBatches; b++ {
+			execBatch(b)
+		}
+		return
+	}
+
+	var wg sync.WaitGroup
+	per := numBatches / threads
+	for t := 0; t < threads; t++ {
+		bStart := t * per
+		bEnd := bStart + per
+		if t == threads-1 {
+			bEnd = numBatches
+		}
+		wg.Add(1)
+		go func(bStart, bEnd int) {
+			defer wg.Done()
+			for b := bStart; b < bEnd; b++ {
+				execBatch(b)
+			}
+		}(bStart, bEnd)
+	}
+	wg.Wait()
 }

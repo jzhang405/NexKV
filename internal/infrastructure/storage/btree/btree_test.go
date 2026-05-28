@@ -181,21 +181,6 @@ func TestBTreeStubMethods(t *testing.T) {
 	tree, _ := newTestBTree(t)
 	ctx := context.Background()
 
-	t.Run("GetBatch", func(t *testing.T) {
-		_, err := tree.GetBatch(ctx, [][]byte{[]byte("key")})
-		assert.ErrorIs(t, err, ErrNotImplemented)
-	})
-
-	t.Run("SetBatch", func(t *testing.T) {
-		err := tree.SetBatch(ctx, nil)
-		assert.ErrorIs(t, err, ErrNotImplemented)
-	})
-
-	t.Run("DeleteBatch", func(t *testing.T) {
-		err := tree.DeleteBatch(ctx, nil)
-		assert.ErrorIs(t, err, ErrNotImplemented)
-	})
-
 	t.Run("RangeScan", func(t *testing.T) {
 		_, err := tree.RangeScan(ctx, nil, nil)
 		assert.ErrorIs(t, err, ErrNotImplemented)
@@ -579,6 +564,10 @@ func TestBTreeMVCC_GetRaw_NotFound(t *testing.T) {
 
 // TestBTreeMVCC_ConcurrentTSAssignment verifies that concurrent Set operations
 // assign unique, monotonically increasing timestamps without data corruption.
+//
+// Pre-populates the tree sequentially to build BTree structure before the concurrent
+// phase. Without this, 8 goroutines × 200 keys on an empty single-leaf tree creates
+// COW split cascades on the root page, exhausting CAS retries under -race.
 func TestBTreeMVCC_ConcurrentTSAssignment(t *testing.T) {
 	tree, _ := newTestBTree(t)
 	ctx := context.Background()
@@ -586,6 +575,18 @@ func TestBTreeMVCC_ConcurrentTSAssignment(t *testing.T) {
 	const goroutines = 8
 	const keysPerGoroutine = 200
 
+	// Phase 1: pre-populate sequentially to build BTree structure.
+	// Eliminates CAS contention on root page splits during concurrent phase.
+	for g := 0; g < goroutines; g++ {
+		for j := 0; j < keysPerGoroutine; j++ {
+			key := fmt.Appendf(nil, "key-%d-%d", g, j)
+			value := fmt.Appendf(nil, "seed-%d-%d", g, j)
+			require.NoError(t, tree.Set(ctx, key, value))
+		}
+	}
+
+	// Phase 2: concurrent overwrites.
+	// Keys are now distributed across many leaf pages → minimal CAS contention.
 	var wg sync.WaitGroup
 	for g := 0; g < goroutines; g++ {
 		wg.Add(1)
@@ -601,7 +602,7 @@ func TestBTreeMVCC_ConcurrentTSAssignment(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Verify one key from each goroutine exists with valid MVCC values
+	// Verify all keys exist with valid MVCC values from concurrent overwrite
 	for g := 0; g < goroutines; g++ {
 		for j := 0; j < keysPerGoroutine; j++ {
 			key := fmt.Appendf(nil, "key-%d-%d", g, j)

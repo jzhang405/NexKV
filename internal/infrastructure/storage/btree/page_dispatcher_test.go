@@ -240,8 +240,9 @@ func TestWorkerPool_SubmitShutdown(t *testing.T) {
 
 	// Submit a task before shutdown
 	batch := &pageBatch{results: make([]WriteResult, 0)}
+	batch.wg.Add(1)
 	require.NoError(t, wp.Submit(batch))
-	wp.Wait()
+	batch.wg.Wait()
 
 	// Shutdown
 	wp.Shutdown()
@@ -254,17 +255,25 @@ func TestWorkerPool_SubmitShutdown(t *testing.T) {
 func TestWorkerPool_ConcurrentSubmit(t *testing.T) {
 	wp := NewWorkerPool(4)
 
+	var batches []*pageBatch
+	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for range 20 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			batch := &pageBatch{results: make([]WriteResult, 0)}
+			batch.wg.Add(1)
 			_ = wp.Submit(batch)
+			mu.Lock()
+			batches = append(batches, batch)
+			mu.Unlock()
 		}()
 	}
 	wg.Wait()
-	wp.Wait()
+	for _, b := range batches {
+		b.wg.Wait()
+	}
 	wp.Shutdown()
 }
 
@@ -360,8 +369,9 @@ func TestWorkerPool_PanicRecovery(t *testing.T) {
 		tasks:   []writeTask{{idx: 0, key: []byte("k"), value: []byte("v")}},
 		results: make([]WriteResult, 1),
 	}
+	batch.wg.Add(1)
 	require.NoError(t, wp.Submit(batch))
-	wp.Wait()
+	batch.wg.Wait()
 
 	// Panic should be recovered, task should have error
 	assert.Error(t, batch.results[0].Err)

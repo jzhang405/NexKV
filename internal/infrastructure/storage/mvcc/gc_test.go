@@ -144,3 +144,38 @@ func FuzzVersionChainPrune(f *testing.F) {
 		assert.False(t, head.reclaimed.Load())
 	})
 }
+
+func TestActiveTxRegistry_SetRemoteWatermark(t *testing.T) {
+	r := NewActiveTxRegistry()
+	// Remote watermarks do not affect local Watermark()
+	r.SetRemoteWatermark("node-1", 100)
+	r.SetRemoteWatermark("node-2", 200)
+	assert.Equal(t, uint64(0), r.Watermark(), "no local txs, watermark=0")
+
+	// Lower value overwritten
+	r.SetRemoteWatermark("node-1", 50)
+	r.RemoveRemoteWatermark("node-1")
+	r.RemoveRemoteWatermark("node-2")
+	// verify no panic
+}
+
+func TestWriteBuffer_Len(t *testing.T) {
+	wb := NewWriteBuffer()
+	assert.Equal(t, 0, wb.Len())
+
+	wb.Put("k1", []byte("v1"), nil, FlagNormal, 0)
+	assert.Equal(t, 1, wb.Len())
+
+	wb.Put("k2", []byte("v2"), nil, FlagNormal, 0)
+	assert.Equal(t, 2, wb.Len())
+
+	// Delete with old value (key exists in BTree): adds entry if key not in buffer
+	err := wb.Delete("k3", []byte("old"), FlagNormal, 1)
+	assert.NoError(t, err)
+	assert.Equal(t, 3, wb.Len()) // k3 added as OpDelete
+
+	// Delete key that was inserted in same buffer: cancels the insert
+	err = wb.Delete("k1", []byte("old"), FlagNormal, 1)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, wb.Len()) // k1 removed (Insert→Delete cancellation)
+}

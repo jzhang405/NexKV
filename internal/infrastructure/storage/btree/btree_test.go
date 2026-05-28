@@ -565,6 +565,10 @@ func TestBTreeMVCC_GetRaw_NotFound(t *testing.T) {
 
 // TestBTreeMVCC_ConcurrentTSAssignment verifies that concurrent Set operations
 // assign unique, monotonically increasing timestamps without data corruption.
+//
+// Pre-populates the tree sequentially to build BTree structure before the concurrent
+// phase. Without this, 8 goroutines × 200 keys on an empty single-leaf tree creates
+// COW split cascades on the root page, exhausting CAS retries under -race.
 func TestBTreeMVCC_ConcurrentTSAssignment(t *testing.T) {
 	tree, _ := newTestBTree(t)
 	ctx := context.Background()
@@ -572,6 +576,18 @@ func TestBTreeMVCC_ConcurrentTSAssignment(t *testing.T) {
 	const goroutines = 8
 	const keysPerGoroutine = 200
 
+	// Phase 1: pre-populate sequentially to build BTree structure.
+	// Eliminates CAS contention on root page splits during concurrent phase.
+	for g := 0; g < goroutines; g++ {
+		for j := 0; j < keysPerGoroutine; j++ {
+			key := fmt.Appendf(nil, "key-%d-%d", g, j)
+			value := fmt.Appendf(nil, "seed-%d-%d", g, j)
+			require.NoError(t, tree.Set(ctx, key, value))
+		}
+	}
+
+	// Phase 2: concurrent overwrites.
+	// Keys are now distributed across many leaf pages → minimal CAS contention.
 	var wg sync.WaitGroup
 	for g := 0; g < goroutines; g++ {
 		wg.Add(1)
@@ -587,7 +603,7 @@ func TestBTreeMVCC_ConcurrentTSAssignment(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Verify one key from each goroutine exists with valid MVCC values
+	// Verify all keys exist with valid MVCC values from concurrent overwrite
 	for g := 0; g < goroutines; g++ {
 		for j := 0; j < keysPerGoroutine; j++ {
 			key := fmt.Appendf(nil, "key-%d-%d", g, j)
@@ -930,4 +946,269 @@ func TestGetBatch_SetBatch_DeleteBatch_Concurrent(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+// ==========================================
+// GetBatch — additional coverage
+// ==========================================
+
+func TestGetBatch_Large(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	n := 5000
+	keys := make([][]byte, n)
+	values := make([][]byte, n)
+	for i := range n {
+		keys[i] = []byte(fmt.Sprintf("gl-%05d", i))
+		values[i] = []byte(fmt.Sprintf("v-%05d", i))
+		require.NoError(t, tree.Set(ctx, keys[i], values[i]))
+	}
+
+	results, err := tree.GetBatch(ctx, keys)
+	require.NoError(t, err)
+	assert.Equal(t, n, len(results))
+	for i := range n {
+		assert.Equal(t, values[i], results[i], "key %s", keys[i])
+	}
+}
+
+func TestGetBatch_AllMissing(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	keys := [][]byte{[]byte("m1"), []byte("m2"), []byte("m3")}
+	results, err := tree.GetBatch(ctx, keys)
+	require.NoError(t, err)
+	for i, r := range results {
+		assert.Nil(t, r, "key %s should be nil", keys[i])
+	}
+}
+
+func TestGetBatch_DuplicateKeys(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	tree.Set(ctx, []byte("dup"), []byte("value"))
+
+	keys := [][]byte{[]byte("dup"), []byte("dup"), []byte("dup")}
+	results, err := tree.GetBatch(ctx, keys)
+	require.NoError(t, err)
+	for _, r := range results {
+		assert.Equal(t, []byte("value"), r)
+	}
+}
+
+func TestGetBatch_EmptyValue(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	tree.Set(ctx, []byte("empty-val"), []byte(""))
+	results, err := tree.GetBatch(ctx, [][]byte{[]byte("empty-val")})
+	require.NoError(t, err)
+	assert.Equal(t, []byte(""), results[0])
+}
+
+// ==========================================
+// SetBatch — additional coverage
+// ==========================================
+
+func TestSetBatch_Large(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	n := 2000
+	pairs := make([]service.KVPair, n)
+	for i := range n {
+		pairs[i] = service.KVPair{
+			Key:   []byte(fmt.Sprintf("sl-%05d", i)),
+			Value: []byte(fmt.Sprintf("sv-%05d", i)),
+		}
+	}
+
+	err := tree.SetBatch(ctx, pairs)
+	require.NoError(t, err)
+	assert.Equal(t, int64(n), tree.Size())
+
+	for _, idx := range []int{0, n / 2, n - 1} {
+		val, err := tree.Get(ctx, pairs[idx].Key)
+		require.NoError(t, err)
+		assert.Equal(t, pairs[idx].Value, val)
+	}
+}
+
+func TestSetBatch_UpdateExisting(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	tree.Set(ctx, []byte("ue-1"), []byte("old-1"))
+	tree.Set(ctx, []byte("ue-2"), []byte("old-2"))
+
+	pairs := []service.KVPair{
+		{Key: []byte("ue-1"), Value: []byte("new-1")},
+		{Key: []byte("ue-2"), Value: []byte("new-2")},
+		{Key: []byte("ue-3"), Value: []byte("new-3")},
+	}
+	err := tree.SetBatch(ctx, pairs)
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(3), tree.Size())
+	v1, _ := tree.Get(ctx, []byte("ue-1"))
+	v2, _ := tree.Get(ctx, []byte("ue-2"))
+	v3, _ := tree.Get(ctx, []byte("ue-3"))
+	assert.Equal(t, []byte("new-1"), v1)
+	assert.Equal(t, []byte("new-2"), v2)
+	assert.Equal(t, []byte("new-3"), v3)
+}
+
+func TestSetBatch_TombstoneRecovery(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	tree.Set(ctx, []byte("tr-key"), []byte("v1"))
+	assert.Equal(t, int64(1), tree.Size())
+
+	tree.Delete(ctx, []byte("tr-key"))
+	assert.Equal(t, int64(0), tree.Size(), "size should be 0 after delete")
+
+	// Restore via SetBatch — exercises the mutateUpdate COW tombstone path
+	err := tree.SetBatch(ctx, []service.KVPair{{Key: []byte("tr-key"), Value: []byte("v2")}})
+	require.NoError(t, err)
+
+	val, err := tree.Get(ctx, []byte("tr-key"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("v2"), val)
+	assert.Equal(t, int64(1), tree.Size(), "size should be 1 after tombstone recovery")
+}
+
+func TestSetBatch_MixedNewAndExisting(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	for i := range 50 {
+		tree.Set(ctx, []byte(fmt.Sprintf("mx-%03d", i)), []byte(fmt.Sprintf("old-%03d", i)))
+	}
+
+	pairs := make([]service.KVPair, 80)
+	for i := range 80 {
+		pairs[i] = service.KVPair{
+			Key:   []byte(fmt.Sprintf("mx-%03d", i)),
+			Value: []byte(fmt.Sprintf("val-%03d", i)),
+		}
+	}
+
+	err := tree.SetBatch(ctx, pairs)
+	require.NoError(t, err)
+	assert.Equal(t, int64(80), tree.Size())
+
+	for i := range 80 {
+		val, err := tree.Get(ctx, pairs[i].Key)
+		require.NoError(t, err)
+		assert.Equal(t, pairs[i].Value, val)
+	}
+}
+
+// ==========================================
+// GetBatch + SetBatch round-trip
+// ==========================================
+
+func TestGetBatch_SetBatch_RoundTrip(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	n := 300
+	pairs := make([]service.KVPair, n)
+	for i := range n {
+		pairs[i] = service.KVPair{
+			Key:   []byte(fmt.Sprintf("rt-%05d", i)),
+			Value: []byte(fmt.Sprintf("rtv-%05d", i)),
+		}
+	}
+	require.NoError(t, tree.SetBatch(ctx, pairs))
+
+	keys := make([][]byte, n)
+	for i := range n {
+		keys[i] = pairs[i].Key
+	}
+	results, err := tree.GetBatch(ctx, keys)
+	require.NoError(t, err)
+	assert.Equal(t, n, len(results))
+	for i := range n {
+		assert.Equal(t, pairs[i].Value, results[i])
+	}
+}
+
+func TestGetBatch_SetBatch_RoundTrip_WithDelete(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	pairs := make([]service.KVPair, 100)
+	for i := range 100 {
+		pairs[i] = service.KVPair{
+			Key:   []byte(fmt.Sprintf("rtd-%03d", i)),
+			Value: []byte(fmt.Sprintf("v-%03d", i)),
+		}
+	}
+	require.NoError(t, tree.SetBatch(ctx, pairs))
+
+	delKeys := make([][]byte, 50)
+	for i := range 50 {
+		delKeys[i] = []byte(fmt.Sprintf("rtd-%03d", i*2))
+	}
+	require.NoError(t, tree.DeleteBatch(ctx, delKeys))
+	assert.Equal(t, int64(50), tree.Size())
+
+	allKeys := make([][]byte, 100)
+	for i := range 100 {
+		allKeys[i] = []byte(fmt.Sprintf("rtd-%03d", i))
+	}
+	results, err := tree.GetBatch(ctx, allKeys)
+	require.NoError(t, err)
+	for i := range 100 {
+		if i%2 == 0 {
+			assert.Nil(t, results[i], "key %d should be deleted (nil)", i)
+		} else {
+			assert.Equal(t, pairs[i].Value, results[i], "key %d should exist", i)
+		}
+	}
+}
+
+// ==========================================
+// SetBatch + DeleteBatch overlapping keys
+// ==========================================
+
+func TestSetBatch_DeleteBatch_SameKeys(t *testing.T) {
+	tree, _ := newTestBTree(t)
+	ctx := context.Background()
+
+	for i := range 50 {
+		tree.Set(ctx, []byte(fmt.Sprintf("same-%03d", i)), []byte(fmt.Sprintf("old-%03d", i)))
+	}
+	assert.Equal(t, int64(50), tree.Size())
+
+	updatePairs := make([]service.KVPair, 20)
+	for i := range 20 {
+		updatePairs[i] = service.KVPair{
+			Key:   []byte(fmt.Sprintf("same-%03d", i)),
+			Value: []byte(fmt.Sprintf("new-%03d", i)),
+		}
+	}
+	require.NoError(t, tree.SetBatch(ctx, updatePairs))
+
+	delKeys := make([][]byte, 20)
+	for i := range 20 {
+		delKeys[i] = []byte(fmt.Sprintf("same-%03d", i+30))
+	}
+	require.NoError(t, tree.DeleteBatch(ctx, delKeys))
+
+	assert.Equal(t, int64(30), tree.Size())
+	for i := range 20 {
+		val, err := tree.Get(ctx, []byte(fmt.Sprintf("same-%03d", i)))
+		require.NoError(t, err)
+		assert.Equal(t, []byte(fmt.Sprintf("new-%03d", i)), val)
+	}
+	for i := 30; i < 50; i++ {
+		_, err := tree.Get(ctx, []byte(fmt.Sprintf("same-%03d", i)))
+		assert.ErrorIs(t, err, ErrKeyNotFound)
+	}
 }

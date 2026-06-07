@@ -123,19 +123,44 @@ Set(key, value)
 
 > **结论**：当前 `btree_bench` 测的 `seq-put` 1,990,694 QPS 是纯内存 COW 吞吐量，与 WAL/AO 模块完全无关。本次 PR 需要在 benchmark 层面把三者串联。
 
-#### 3.1.2 本次 PR 接线方案：Benchmark-Loop 松耦合
+#### 3.1.2 接线方案演进：从 Benchmark-Loop 到 Decorator
 
-**两种可选接线方案**：
+> 方案经历了三轮演进，最终选择 **方案 D（装饰器模式）**。详细分析见 `docs/07_spike/btree-refactor/2026-06-07-lealone-persist-bench-refactor.md`。
 
-| | 方案 A：BTree 内部接线 | 方案 B：Benchmark Loop 接线（✅ 采用） |
-|---|---|---|
-| 接入点 | `BTree.Set()` 内部增加 WAL+AO 调用 | `persistSetLoop()` 中依次调用 |
-| BTree 改动 | 侵入核心路径，需增加 persist flag 分支 | **不改动** |
-| 优点 | 所有 Set 自动落盘，透明 | 不侵入 BTree，与纯内存 benchmark 完全隔离 |
-| 缺点 | 纯内存模式也有分支判断开销 | 调用方感知持久化细节 |
-| 架构影响 | 紧耦合 | **松耦合——持久化是 BTree 之上的一层** |
+**方案对比**：
 
-**采用方案 B**：在 `persist.go` 的 `persistSetLoop()` 中依次调用 BTree → WAL → AO，三个模块在 benchmark 层面串联，BTree 本身不受影响。
+| | 方案 A：BTree 内嵌 | 方案 B：Benchmark Loop | 方案 C：BTree Config | 方案 D：Decorator（✅） |
+|---|---|---|---|---|
+| 接入点 | `BTree.Set()` 内部 | `persistSetLoop()` | BTree config Option | `service.KVStore` 装饰器 |
+| BTree 改动 | 侵入核心路径 | 不改动 | +7 字段 | **0 行** |
+| SRP | ❌ | ✅ | ❌ 22 字段 | ✅ |
+| benchmark/生产一致 | ✅ | ❌ | ✅ | ✅ |
+| 对标 Lealone | ❌ | ❌ | ❌ 反模式 | ✅ 逐层对应 |
+| 采纳 | ❌ 否决 | ❌ 被替代 | ❌ 否决 | ✅ |
+
+**三轮演进**：
+
+1. **方案 B**：benchmark 层松耦合——持久化拼接在 `persistSetLoop()` 中。问题：benchmark 和生产路径不一致，每个调用方都要自己接线。
+
+2. **方案 C**：BTree config 内部化——通过 `WithPersistWAL()` / `WithPersistCheckpoint()` 注入。问题：BTree 字段从 15 膨胀到 22，违反 SRP；save() 在热路径同步阻塞导致 P99 长尾；与 Lealone 分层背道而驰（Lealone 的 BTreeMap 也无持久化）。
+
+3. **方案 D（✅ 最终）**：装饰器模式——`PersistWAL` / `PersistCheckpoint` 实现 `service.KVStore` 接口，外挂到 BTree 之上。BTree 保持纯内存 15 字段零改动，对标 Lealone `BTreeMap(纯内存) + BTreeStorage/AOTransaction(持久化层)` 分层。
+
+**方案 D 架构**：
+
+```
+               service.KVStore (统一接口)
+              ┌──────────┴──────────┐
+     PersistWAL              PersistCheckpoint
+     (WAL 装饰器)             (Checkpoint 装饰器)
+     tree.Set() + wal.Append  tree.Set() + go asyncSave()
+              └──────────┬──────────┘
+                     BTree (纯内存 15 字段, 零改动)
+```
+
+**本次 PR 范围**：`PersistWAL` 装饰器（WAL-per-op 模式）。`PersistCheckpoint` 装饰器在后续 PR 实现。
+
+> **关联 Spike**：`docs/07_spike/btree-refactor/2026-06-07-lealone-persist-bench-refactor.md` — 方案 C vs D 详细对比、Lealone 三大机制映射、AOSE/AOTE 分界分析、6 项决策记录。
 
 #### 3.1.3 并发模型
 
@@ -197,39 +222,54 @@ ao.avg_page_size    : 4096 bytes  # 平均序列化页面大小
 
 #### 3.5 代码结构
 
-**接线架构**（方案 B：Benchmark-Loop 松耦合）：
+**接线方案**（方案 D：Decorator）：
 
-```
-persistSetLoop() {
-    for i := 0..N {
-        tree.Set(key, value)             // ① BTree 纯内存 COW (不改动)
-        entry := marshalWALEntry(...)    // ② WAL Entry 序列化
-        wal.Append(entry)                // ③ WAL fwrite
-        if syncPolicy.ShouldSync(i) {
-            wal.Sync()                   // ④ 策略化 fsync
-            ops.Add(1)                   //    计数 (WAL 确认后)
-        }
-        chunkMgr.WritePage(...)          // ⑤ AO 异步写入 (不阻塞计数)
+> BTree 零改动。持久化通过 `PersistWAL` 装饰器实现 `service.KVStore` 接口，外挂到 BTree 之上。
+
+```go
+// persist_wal.go — PersistWAL 装饰器 (本次 PR)
+type PersistWAL struct {
+    tree     service.KVStore   // 被装饰的 BTree
+    wal      service.WAL
+    syncMode WalSyncMode
+    batchCh  chan *service.WALEntry   // 批量队列
+    // ...
+}
+
+func (p *PersistWAL) Set(ctx context.Context, key, value []byte) error {
+    p.tree.Set(ctx, key, value)   // ① BTree 纯内存 COW (不改动)
+    entry := getWALEntry()         // ② sync.Pool 复用
+    // ...
+    switch p.syncMode {
+    case WalSyncEveryWrite:
+        p.wal.Append(entry)       // ③ fwrite + fsync
+    case WalSyncGroupCommit:
+        p.batchCh <- clone        // ④ 批量队列 → 后台 goroutine sync
     }
 }
 ```
 
 ```
+internal/infrastructure/storage/
+├── btree/                        # 不改动！纯内存 15 字段
+│   ├── btree.go
+│   └── ...
+├── persist/                      # 新增 package
+│   ├── persist_wal.go            # PersistWAL 装饰器 (本次 PR)
+│   ├── persist_wal_test.go
+│   └── (persist_checkpoint.go    # PersistCheckpoint 装饰器, 后续 PR)
+
 cmd/tools/btree_bench/
-├── main.go              # 修改：+5 个 persist flag + 落盘场景入口逻辑（约 +30 行）
-├── main_test.go         # 新增：单元测试
-│   ├── TestPersistFlagDefaults()     # flag 默认值验证
-│   ├── TestPersistStorageCreation()  # 落盘存储创建正确性
-│   ├── TestPersistSetLoop()          # 单线程落盘 Set 逻辑
-│   ├── TestPersistTempDirCleanup()   # 临时目录清理
-│   └── TestNoPersistCompatibility()  # -persist=false 兼容性
-├── persist.go           # 新增：落盘相关逻辑
-│   ├── newPersistStorage()  # 创建 WAL + ChunkManager + BTree 三者并连线
-│   ├── persistSetLoop()     # 落盘 Set 循环（BTree→WAL→AO 串联）
-│   └── printPersistStats()  # 输出落盘统计
-└── wal_bench.go         # 新增：WAL 独立 benchmark
-    └── runWALBench()       # 纯 WAL Append 吞吐量测试
+├── main.go                       # 修改：通过 service.KVStore 接口运行 benchmark
+├── main_test.go                  # 修改：测试 PersistWAL 装饰器
+└── (不再需要 persist.go)
 ```
+
+| 文件 | 改动量 | 说明 |
+|------|:------:|------|
+| `btree/btree.go` | **0 行** | 完全不改 |
+| `persist/persist_wal.go` | +150 行 | 新文件 |
+| `main.go` | -20 行 +10 行 | 简化接线，改用 `service.KVStore` 接口 |
 
 ### 4. 预期结果与风险
 

@@ -31,6 +31,10 @@ type ChunkManager interface {
 	// Stats returns runtime statistics for the ChunkManager.
 	Stats() ChunkManagerStats
 
+	// RollbackLastBatch discards the last batch of written pages on failure.
+	// Used by PersistCheckpoint to rollback partial checkpoint writes.
+	RollbackLastBatch() error
+
 	// Close closes all chunk files.
 	Close() error
 }

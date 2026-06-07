@@ -69,9 +69,9 @@ func (cm *DiskChunkManager) Allocate(size int, pageType uint8) (model.ChunkPosit
 	if cm.closed.Load() {
 		return 0, ErrChunkClosed
 	}
-	if size < MinPagePayload || size > MaxPagePayload {
+	if size < MinDiskPageSize || size > MaxDiskPageSize {
 		return 0, errpkg.Wrap(ErrInvalidPageLength,
-			fmt.Sprintf("chunk: invalid page size %d (range [%d,%d])", size, MinPagePayload, MaxPagePayload))
+			fmt.Sprintf("chunk: invalid page size %d (range [%d,%d])", size, MinDiskPageSize, MaxDiskPageSize))
 	}
 	if pageType != offheap.PageTypeIndex && pageType != offheap.PageTypeLeaf {
 		return 0, errpkg.Wrap(ErrChunkFormatError, fmt.Sprintf("chunk: invalid pageType %d (expected 0 or 1)", pageType))
@@ -179,6 +179,14 @@ func (cm *DiskChunkManager) FreePage(pos model.ChunkPosition) error {
 	}
 	c.removedPages[pos] = struct{}{}
 	cm.removedPages[pos] = struct{}{} // Phase 4.4: global
+	return nil
+}
+
+// RollbackLastBatch handles partial checkpoint write failures.
+// Phase 4.3: no-op — pages are written at deterministic offsets; the caller
+// handles failure via logging. Future phase may implement page-level rollback
+// via FreePage.
+func (cm *DiskChunkManager) RollbackLastBatch() error {
 	return nil
 }
 

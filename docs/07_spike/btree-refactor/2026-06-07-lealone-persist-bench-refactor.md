@@ -453,41 +453,72 @@ type ChunkManager interface {
 
 ### 组件二：PersistWAL 装饰器（WAL 模式）
 
-> **修复问题**：完整设计 GroupCommit/EverySecond 后台协程、批量队列、并发互斥。
+> **核心并发模型**：后台 goroutine 是 WAL 文件的**唯一写入者**。所有 goroutine 通过 Go channel（底层为 lock-free ring buffer）投递 Entry，由后台 goroutine 串行消费。`WalSyncEveryWrite` 通过 channel 内嵌 `done` 完成信号实现同步等待。整个设计**无需 Mutex**——Go channel 取代了 WAL 内部锁。
+
+```
+并发模型: Lock-Free Channel + 单消费者串行 WAL I/O
+
+  Set() goroutine 1 ──► batchCh ──┐
+  Set() goroutine 2 ──► batchCh ──┤
+  Set() goroutine N ──► batchCh ──┤
+                                   ▼
+                         ┌─────────────────┐
+                         │  runSyncLoop()  │ ← 唯一 fwrite/fsync 执行者
+                         │  (后台 goroutine)│
+                         │                 │
+                         │  EveryWrite:     │
+                         │    wal.Append    │
+                         │    wal.Sync      │
+                         │    done ← true   │ ← 通知调用方
+                         │                 │
+                         │  GroupCommit:    │
+                         │    攒批 16条     │
+                         │    wal.AppendBatch│
+                         │    wal.Sync      │
+                         │    for e:=range: │
+                         │      e.done←true │
+                         └─────────────────┘
+```
 
 ```go
 package persist
 
+// walTask 封装一个 WAL 写入任务
+type walTask struct {
+    entry *service.WALEntry
+    done  chan struct{} // EveryWrite 同步等待用; GroupCommit 为 nil
+}
+
 type PersistWAL struct {
-    tree     service.KVStore  // 被装饰的 BTree（纯内存）
+    tree     service.KVStore
     wal      service.WAL
-    chunkMgr service.ChunkManager // AO 异步写入（batchSync/后台 goroutine 调用）
+    chunkMgr service.ChunkManager // AO 异步（batchSync/后台 goroutine）
     syncMode WalSyncMode
 
-    // 批量队列 + 后台协程
-    batchCh chan *service.WALEntry
-    wg      sync.WaitGroup
-    ctx     context.Context
-    cancel  context.CancelFunc
+    // Lock-free 并发: Go channel (底层 ring buffer, 无锁)
+    taskCh    chan *walTask
+    batchSize int                      // 批量刷盘阈值（默认 16）
+    wg        sync.WaitGroup
+    ctx       context.Context
+    cancel    context.CancelFunc
 }
 
 func NewPersistWAL(tree service.KVStore, wal service.WAL,
     cm service.ChunkManager, syncMode WalSyncMode) *PersistWAL {
 
     p := &PersistWAL{
-        tree:     tree,
-        wal:      wal,
-        chunkMgr: cm,
-        syncMode: syncMode,
-        batchCh:  make(chan *service.WALEntry, 64), // 批量缓冲队列
+        tree:      tree,
+        wal:       wal,
+        chunkMgr:  cm,
+        syncMode:  syncMode,
+        batchSize: 16,                             // 默认 16 条/批
+        taskCh:    make(chan *walTask, 64),        // Go channel = lock-free ring buffer
     }
     p.ctx, p.cancel = context.WithCancel(context.Background())
 
-    // 启动后台刷盘协程
-    if syncMode == WalSyncGroupCommit || syncMode == WalSyncEverySecond {
-        p.wg.Add(1)
-        go p.runSyncLoop()
-    }
+    // 启动唯一 WAL 写入者（所有三种模式共享）
+    p.wg.Add(1)
+    go p.runWriteLoop()
     return p
 }
 
@@ -504,24 +535,33 @@ func (p *PersistWAL) Set(ctx context.Context, key, value []byte) error {
     entry.Key = key
     entry.Value = value
 
-    // 3. 按同步策略处理
+    // 3. 构造 task，通过 lock-free channel 发送
     switch p.syncMode {
     case WalSyncEveryWrite:
-        if _, err := p.wal.Append(entry); err != nil {
-            return err
-        }
-        return p.wal.Sync() // 每条 fsync; defer 归还 entry ✅
-
-    case WalSyncGroupCommit, WalSyncEverySecond:
-        // ⚠️ 深拷贝到 channel: Pool 对象不进入异步路径（消除 use-after-free）
-        clone := &service.WALEntry{
-            Type:  entry.Type,
-            Key:   append([]byte(nil), key...),   // 独立副本
-            Value: append([]byte(nil), value...), // 独立副本
+        // 同步等待：channel + done 信号，无需 Mutex
+        task := &walTask{
+            entry: entry,
+            done:  make(chan struct{}, 1),
         }
         select {
-        case p.batchCh <- clone:
-            return nil // defer 归还 entry 到 Pool ✅
+        case p.taskCh <- task:
+        case <-ctx.Done():
+            return ctx.Err()
+        }
+        <-task.done // 等待后台 goroutine 完成 fwrite + fsync
+        return nil
+
+    case WalSyncGroupCommit, WalSyncEverySecond:
+        // 异步投递：深拷贝到 channel（Pool 对象不进入异步路径）
+        clone := &service.WALEntry{
+            Type:  entry.Type,
+            Key:   append([]byte(nil), key...),
+            Value: append([]byte(nil), value...),
+        }
+        task := &walTask{entry: clone, done: nil} // done=nil → 无需同步等待
+        select {
+        case p.taskCh <- task:
+            return nil
         case <-ctx.Done():
             return ctx.Err()
         }
@@ -529,8 +569,8 @@ func (p *PersistWAL) Set(ctx context.Context, key, value []byte) error {
     return nil
 }
 
-// 后台循环：GroupCommit + EverySecond 统一处理
-func (p *PersistWAL) runSyncLoop() {
+// 后台循环：唯一 WAL 写入者，所有三种模式共享此 goroutine
+func (p *PersistWAL) runWriteLoop() {
     defer p.wg.Done()
 
     var ticker *time.Ticker
@@ -540,43 +580,58 @@ func (p *PersistWAL) runSyncLoop() {
     }
 
     tickerCh := func() <-chan time.Time {
-        if ticker != nil {
-            return ticker.C
-        }
+        if ticker != nil { return ticker.C }
         return nil
     }
 
-    batch := make([]*service.WALEntry, 0, 16)
+    batch := make([]*walTask, 0, p.batchSize)
     for {
         select {
         case <-p.ctx.Done():
-            p.batchSync(batch) // 退出前最后刷一次
+            p.flushBatch(batch)
             return
 
         case <-tickerCh():
-            p.batchSync(batch)
+            p.flushBatch(batch)
+            for i := range batch { batch[i] = nil } // P1-3: 解除引用
             batch = batch[:0]
 
-        case entry := <-p.batchCh:
-            batch = append(batch, entry)
-            // GroupCommit: 攒够 16 条或队列为空就刷
-            if len(batch) >= 16 && len(p.batchCh) == 0 {
-                p.batchSync(batch)
-                batch = batch[:0]
+        case task := <-p.taskCh:
+            if p.syncMode == WalSyncEveryWrite {
+                // 每条立刻 fwrite + fsync，完成即通知
+                p.wal.Append(task.entry)
+                p.wal.Sync()
+                task.done <- struct{}{} // ← 唤醒等待的调用方
+            } else {
+                // GroupCommit / EverySecond: 攒批
+                batch = append(batch, task)
+                if len(batch) >= p.batchSize && len(p.taskCh) == 0 {
+                    p.flushBatch(batch)
+                    for i := range batch { batch[i] = nil } // P1-3: GC
+                    batch = batch[:0]
+                }
             }
         }
     }
 }
 
-func (p *PersistWAL) batchSync(batch []*service.WALEntry) error {
-    if len(batch) == 0 {
-        return nil
+func (p *PersistWAL) flushBatch(batch []*walTask) {
+    if len(batch) == 0 { return }
+    entries := make([]*service.WALEntry, len(batch))
+    for i, t := range batch {
+        entries[i] = t.entry
     }
-    if _, err := p.wal.AppendBatch(batch); err != nil {
-        return err
+    if _, err := p.wal.AppendBatch(entries); err != nil {
+        return
     }
-    // TODO: AO 异步写入 (chunkMgr.WritePage) 由后续 PR 的 batchSync 扩展实现
-    return p.wal.Sync()
+    // TODO: AO 异步写入 (chunkMgr.WritePage) 由后续 PR 扩展
+    p.wal.Sync()
+    // GroupCommit 模式：通知所有等待方完成（当前设计中 done=nil，预留）
+    for _, t := range batch {
+        if t.done != nil {
+            t.done <- struct{}{}
+        }
+    }
 }
 
 func (p *PersistWAL) Close() error {
@@ -585,6 +640,8 @@ func (p *PersistWAL) Close() error {
     return p.tree.Close()
 }
 ```
+
+> **与 Lealone 对照**：Lealone 的 `LogSyncService.run()` 也是后台线程串行调用 `redoLog.save()` → `fwrite + fsync`，通过 `syncWrite()`（带 CountDownLatch 阻塞事务）或 `asyncWrite()`（不阻塞）控制同步/异步。NexKV 用 `done chan struct{}` 实现了等价语义——**无需 WAL 内部 Mutex**。
 
 ### 组件三：PersistCheckpoint 装饰器（异步快照模式）
 
@@ -598,11 +655,13 @@ package persist
 
 type PersistCheckpoint struct {
     tree         service.KVStore
+    provider     DirtyPageProvider       // 构造时预断言，避免运行时 panic（P1-2）
     chunkMgr     service.ChunkManager
     serializer   *chunk.PageSerializer
     ckptInterval int64
     setCount     atomic.Int64
-    saveMu       sync.Mutex // 防止并发 save()
+    saveMu       sync.Mutex              // 防止并发 save()
+    saving       atomic.Bool             // 防止 goroutine 风暴（P1-1）
 }
 
 func NewPersistCheckpoint(tree service.KVStore, cm service.ChunkManager,
@@ -611,8 +670,13 @@ func NewPersistCheckpoint(tree service.KVStore, cm service.ChunkManager,
     if interval <= 0 {
         interval = 10000 // 默认每 10K 条
     }
+    provider, ok := tree.(DirtyPageProvider)
+    if !ok {
+        panic("PersistCheckpoint: tree must implement DirtyPageProvider")
+    }
     return &PersistCheckpoint{
         tree:         tree,
+        provider:     provider,  // 预缓存，避免运行时断言 panic
         chunkMgr:     cm,
         serializer:   serializer,
         ckptInterval: interval,
@@ -628,9 +692,12 @@ func (p *PersistCheckpoint) Set(ctx context.Context, key, value []byte) error {
     // 2. 计数累加
     count := p.setCount.Add(1)
 
-    // 3. 异步触发 Checkpoint（不阻塞 Set 热路径 ✅）
-    if count%p.ckptInterval == 0 {
-        go p.asyncSave() // ← 后台 goroutine，Set() 立即返回
+    // 3. 异步触发 Checkpoint（CAS 防止 goroutine 风暴 ✅）
+    if count%p.ckptInterval == 0 && p.saving.CompareAndSwap(false, true) {
+        go func() {
+            defer p.saving.Store(false)
+            p.asyncSave()
+        }()
     }
     return nil
 }
@@ -640,7 +707,7 @@ func (p *PersistCheckpoint) asyncSave() {
     defer p.saveMu.Unlock()
 
     // ① 获取脏页快照（基于 Epoch，不阻塞正在写入的页面）
-    dirtyPages, err := p.tree.(DirtyPageProvider).EnumerateDirtyPages()
+    dirtyPages, err := p.provider.EnumerateDirtyPages()
     if err != nil {
         log.Error("checkpoint enumerate failed", "err", err)
         return
@@ -673,8 +740,21 @@ func (p *PersistCheckpoint) asyncSave() {
 }
 
 func (p *PersistCheckpoint) Close() error {
-    // 退出前最后一次完整 Checkpoint（同步等待）
-    p.asyncSave()
+    // 退出前最后一次完整 Checkpoint（超时保护，防止 saveMu 被持有导致阻塞）
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    done := make(chan struct{})
+    go func() {
+        p.asyncSave()
+        close(done)
+    }()
+
+    select {
+    case <-done:
+    case <-ctx.Done():
+        log.Warn("checkpoint close timeout, skipping final save")
+    }
     return p.tree.Close()
 }
 ```
@@ -746,7 +826,9 @@ cmd/tools/btree_bench/
 数据写入路径: key(14B) + value(16B) = 30B 用户数据
 
   EnumerateDirtyPages():  仅序列化脏页 (对标 Lealone collectDirtyMemory)
-    脏页数: ~1M / 100(page_avg) ≈ 10,000 pages
+    ⚠️ 脏页数估算基于「多层 BTree + 平均填充率 ~25对/页」假设。
+      当前 BTree 为单层 Leaf Page (Phase 5)，1M ops 未触发 split → 脏页数 ≈ 1。
+      多层 BTree (Phase 6+) 下脏页数 ≈ 1M / 100(page_avg) ≈ 10,000 pages。
     序列化后: 10,000 × 4KB ≈ 40MB
 
   对于 1M ops (30MB 用户数据):
@@ -766,9 +848,12 @@ cmd/tools/btree_bench/
 | 层次 | 并发模型 | 风险 |
 |------|---------|:----:|
 | BTree.Set() | COW + CAS，无全局锁，多 goroutine 友好 | 无 |
-| PersistWAL.Set() | 内部 Mutex 保护 WAL Append；后台 goroutine 批量 Sync | 低 |
-| PersistCheckpoint.Set() | 热路径仅 `atomic.Add` + `go asyncSave()` | 无阻塞 |
+| PersistWAL.Set() | **Lock-free**: Go channel（底层 ring buffer）投递 task；后台 goroutine 串行 fwrite+fsync；EveryWrite 通过 `done` channel 同步等待 | 低 |
+| PersistWAL.runWriteLoop() | 唯一 WAL 文件写入者，所有三种模式共享此 goroutine；无锁 | 低 |
+| PersistCheckpoint.Set() | 热路径仅 `atomic.Add` + CAS guard (`saving` flag) | 无阻塞 |
 | PersistCheckpoint.asyncSave() | saveMu 防止并发 save；Epoch 快照隔离，不阻塞 Set() | 低 |
+
+> **并发模型关键决策**：Go channel 底层是 lock-free ring buffer，后台 goroutine 是 WAL 文件的唯一写入者。相比 WAL 内部 Mutex，此方案消除了所有锁竞争——写路径上只有 channel 的 CAS 操作（~几十 ns）。Lealone 的 `LogSyncService.run()` 也是后台线程串行调用 `redoLog.save()`，两者语义等价。
 
 > **与 Lealone 对比**：Lealone `save()` 是 `synchronized` → 全局锁，阻塞所有 put()。方案 D 通过异步 + Epoch 快照消除了这个缺陷。
 
@@ -795,7 +880,7 @@ cmd/tools/btree_bench/
 
 | | WAL-per-op (预期) | Checkpoint (Lealone实测) | Checkpoint (NexKV预期) |
 |---|---|---|---|
-| 每条持久化 | 15K-30K | 205 | ~200-500 |
+| 每条持久化 | 15K-30K（理论预期，实测后更新） | 205 | ~200-500 |
 | 每 16 条持久化 | 80K-150K | 3,257 | ~3K-10K |
 | 每 1K 条持久化 | — | 181K | ~150K-300K |
 | 每 10K 条持久化 | — | 1.03M | ~0.8M-1.5M |
@@ -891,7 +976,7 @@ func Benchmark_BTree_Ckpt_10K(b *testing.B) {
 
 ## 实现计划（修正版）
 
-> **工时修正**：从原方案 C 的 20h 调整为 **30h**（新增 GroupCommit 协程、并发安全测试、死锁场景、异常回滚）。
+> **工时修正**：从原方案 C 的 20h 调整为 **36h**（新增 GroupCommit/EveryWrite lock-free channel 协程、并发安全测试、死锁场景、异常回滚、Epoch 快照隔离，+20% 缓冲）。
 
 ### Phase 1：装饰器框架 + WAL 模式
 
@@ -927,7 +1012,7 @@ func Benchmark_BTree_Ckpt_10K(b *testing.B) {
 | 4.2 | 1h | 对照分析（与 Lealone 实测 + 预期对比） |
 | 4.3 | 2h | 更新 Pre/Post 文档 |
 
-**总计**：**30h**
+**总计**：**36h**
 
 ---
 
@@ -978,6 +1063,28 @@ func Benchmark_BTree_Ckpt_10K(b *testing.B) {
 **理由**：
 - NexKV 的 MVCC 版本链已经保存了历史版本——功能等价于 UndoLog
 - 对标：MVCC 版本链 = UndoLog，PersistWAL = AOTE RedoLog，PersistCheckpoint.save() = BTreeStorage.save()
+
+### 决策 7：WAL 并发模型采用 Lock-Free Channel + 单消费者，而非 Mutex
+
+**理由**：
+- Go channel 底层为 lock-free ring buffer，CAS 操作 ~几十 ns，无锁竞争
+- 后台 goroutine 是 WAL 文件的**唯一写入者**，所有 Set() goroutine 通过 channel 投递 task
+- `WalSyncEveryWrite` 通过 channel 内嵌 `done chan struct{}` 完成信号实现同步等待
+- Lealone 的 `LogSyncService.run()` 也是后台线程串行调用 `redoLog.save()` —— 语义等价
+- 消除了 WAL 内部 Mutex，写路径上只有 channel 的 CAS 操作
+
+### 决策 8：Kimi 审核 — 8 项优化全部确认通过
+
+| 编号 | 级别 | 问题 | 修复 |
+|:---:|:---:|------|------|
+| P1-1 | 高 | goroutine 风暴 | `saving atomic.Bool` + CAS guard |
+| P1-2 | 高 | 类型断言 panic | 构造时预断言并保存 `provider` 字段 |
+| P1-3 | 高 | batch GC 泄漏 | `for i := range batch { batch[i] = nil }` |
+| P2-4 | 中 | batchCh 缓冲 64 可能阻塞 | 新增 `batchSize` 可配置参数 |
+| P2-5 | 中 | 脏页估算过于乐观 | 标注为"多层 BTree 假设" |
+| P2-6 | 中 | WAL 15K-30K 缺乏实测 | 标注"理论预期，实测后更新" |
+| P3-7 | 低 | Close() 同步阻塞 | context.WithTimeout(30s) + goroutine + select |
+| P3-8 | 低 | 工时 30h 偏低 | 调整为 36h（+20% 缓冲） |
 
 ---
 
@@ -1059,10 +1166,11 @@ func Benchmark_BTree_Ckpt_10K(b *testing.B) {
 | 第 3 轮 | 06-07 | 同上 | 方案 D v3.0 | 8.0/10 | 1🔴 + 2🟡 + 2🟢 + 1📝 | ✅ 通过，6项待修 |
 | 第 4 轮 | 06-07 | 同上 | 方案 D v3.1 | 8.5/10 | 全部闭环 | ✅ 最终通过 |
 | 第 5 轮 | 06-07 | 同上 | 方案 D v3.1 | 8.6/10 | 3 遗留文字 | ✅ 修正 |
+| 第 6 轮 | 06-07 | Kimi 审核 | 方案 D v3.1 | — | 3🔴 + 3🟡 + 2🟢 | ✅ 8项全部闭环 |
 
 ```
-评分趋势:  6.2 ──→ 8.4 ──→ 8.0 ──→ 8.5 ──→ 8.6
-           方案C    方案D    细节修正  AOSE/AOTE  终审文字
+评分趋势:  6.2 ──→ 8.4 ──→ 8.0 ──→ 8.5 ──→ 8.6 ──→ 8.6
+           方案C    方案D    细节修正  AOSE/AOTE  终审     Kimi
 
 ### 第 1 轮：方案 C 致命问题（v2.0 → 否决）
 

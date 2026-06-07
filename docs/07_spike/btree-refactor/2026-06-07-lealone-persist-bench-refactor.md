@@ -213,7 +213,17 @@ Lealone 分层：
 | 数据结构层 | BTreeMap（纯内存） | BTree（纯内存） | ✅ 完全一致 |
 | 存储管理层 | BTreeStorage | PersistCheckpoint 装饰器 | ✅ 完全一致 |
 | 事务/持久化层 | AOTransaction (UndoLog + RedoLog) | PersistWAL 装饰器 | ✅ 逻辑对齐 |
-| Page 操作日志 | AOSE Chunk RedoLog | 暂不实现 | — |
+| Page 操作日志 | AOSE Chunk RedoLog | 不实现（WAL 替代，见下方分析） | — |
+
+#### AOSE Chunk RedoLog 为何不实现
+
+> Lealone 的 AOSE Chunk RedoLog 在 `save()` 过程中记录 page 级的结构变更（split/merge），仅 fwrite，依赖 `save()` 的整体 fsync。它是 AOSE 和 AOTE 两个独立子系统各自演进的历史产物。
+
+NexKV **不需要**这套独立日志，三个原因：
+
+1. **单一日志通道**：NexKV 的 WAL 已预定义 `WALTypeSplit`（`wal.go:57`）等 page 操作类型。未来 split/merge 操作包装成 WAL Entry 即可，不需要第二个日志系统。
+2. **当前 BTree 为单层 Leaf Page**：`BTree.Set()` 只涉及单页 COW，无 split/merge。Page 结构变更在后续 Phase 引入时走 WAL Entry 通道。
+3. **与生产路径一致**：所有变更统一走 WAL —— KV 操作和 page 操作共享同一份日志，恢复时只需一处回放。
 
 ### NexKV DDD 五层分层（严格遵守）
 
@@ -1003,7 +1013,7 @@ func Benchmark_BTree_Ckpt_10K(b *testing.B) {
 |---------|-------------|:----:|
 | ① UndoLog (纯内存) | MVCC 版本链 | ✅ 已有 |
 | ② AOTE RedoLog (有 fsync) | PersistWAL 装饰器 | 🚧 本次实现 |
-| ③ AOSE Chunk RedoLog (无 fsync) | 暂不实现 | — |
+| ③ AOSE Chunk RedoLog (无 fsync) | 不实现（WAL 替代: 单一日志通道, WALTypeSplit 已预留） | — |
 | BTreeMap (纯内存 put) | BTree (纯内存 Set) | ✅ 已有 |
 | BTreeStorage.save() | PersistCheckpoint.asyncSave() | 🚧 本次实现 |
 | LogSyncService (后台 sync) | PersistWAL.runSyncLoop() | 🚧 本次实现 |

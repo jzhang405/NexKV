@@ -161,59 +161,90 @@ func (p *PersistCheckpoint) Close() error {
 - 场景 C 的空闲部分: waiter 保底触发，不依赖新写入
 - **修复**: `lastSavedCount` 防止「写入正在进行但 CAS 暂失败」被误判为 idle
 
-### 机制③：脏页阈值 — save 内部告警 + 脏页跟踪（当前限制）
+### 机制③：脏页阈值 — Lealone 方式（page allocator 计数器, O(1)）
 
-> **⚠️ 当前限制**：`EnumeratePages` 遍历全树，通过 `ChunkPos == 0` 判断脏页。**没有独立的脏页计数器**——`totalBytes` 是在 save **遍历过程中**计算的，不是 save 之前。这与 Lealone 的 `collectDirtyMemory()` 不同：Lealone 在 `save()` 调用时已经知道脏了多少字节（通过 BTree 页面写操作时标记），可以提前决定 append vs new chunk。
+> **核心思路**：对标 Lealone 的 `page.setDirty() → dirtyMemory += pageSize → collectDirtyMemory()`。每次 COW 分配新页面时在 page allocator 层累加计数器，外层 O(1) 读取。
 
-```
-当前实现（遍历时统计）:
-  saveInternal()
-    → EnumeratePages(root)     ← 遍历全树, 每个页面检查 ChunkPos==0
-      收集 items               ← 同时统计 totalBytes
-    → 告警/写入
-
-Lealone 做法（写操作时标记）:
-  put()
-    → setPageDirty(page)       ← 每次写入标记脏页
-    → dirtyMemory += pageSize  ← 累加脏页字节数
-  save()
-    → dirtyMemory = collectDirtyMemory()  ← 读计数器
-    → dirtyMemory < maxChunkSize → append
-    → dirtyMemory >= maxChunkSize → new chunk
-```
-
-**本次实现**：在 `saveInternal` 的遍历中统计并告警（不阻塞）。独立的脏页计数器和基于计数的前置触发（对标 Lealone）需要 BTree 页面写操作时标记，是 Phase 2 优化项。
+#### 新增 BTree 方法（`OffheapBTreeStorage`）
 
 ```go
-// 对标 Lealone BTreeStorage.executeSave() 中的 dirtyMemory + maxChunkSize 判断
+// offheap_storage.go — 新增
 
-const (
-    maxDirtyBytesPerSave = 256 * 1024 * 1024 // 256MB，对标 Lealone MAX_CHUNK_SIZE
-)
-
-type PersistCheckpoint struct {
+type OffheapBTreeStorage struct {
     // ... 现有字段 ...
-    dirtyWarned atomic.Bool  // 防止日志洪水（修复：仅首次超标告警）
+    dirtyBytes atomic.Uint64  // COW 分配的脏页字节数（对标 Lealone dirtyMemory）
 }
 
-func (p *PersistCheckpoint) saveInternal() error {
-    // ... enumerate 后:
-
-    // 遍历中统计脏页量（当前限制：ChunkPos==0 遍历时判断，非前置计数器）
-    var totalBytes int64
-    for _, item := range items {
-        totalBytes += int64(len(item.PageData))
+// 每次 COW 分配页面时累加
+func (s *OffheapBTreeStorage) AllocLeafPage() (model.PageID, *leafPageHandle, error) {
+    pageID, handle, err := s.allocLeafPage()
+    if err == nil {
+        s.dirtyBytes.Add(PageSize) // 4KB
     }
+    return pageID, handle, err
+}
 
-    // 脏页总量超标 → 日志告警（不截断本次，通过调整 ckptInterval 控制）
+func (s *OffheapBTreeStorage) AllocInternalPage() (model.PageID, *nodePageHandle, error) {
+    pageID, handle, err := s.allocInternalPage()
+    if err == nil {
+        s.dirtyBytes.Add(PageSize) // 4KB
+    }
+    return pageID, handle, err
+}
+
+// DirtyBytes 返回自上次 Reset 以来的脏页字节数（O(1)）
+func (b *BTree) DirtyBytes() uint64 {
+    return b.storage.dirtyBytes.Load()
+}
+
+// ResetDirtyBytes 在 save 成功后重置（对标 Lealone save 后截断）
+func (b *BTree) ResetDirtyBytes() {
+    b.storage.dirtyBytes.Store(0)
+}
+```
+
+> TryInPlace（原地 CAS）不分配新页面 → 不计入 `dirtyBytes`。页面首次 COW 时已计入，后续原地替换不改变 dirty 状态。
+
+#### PersistCheckpoint 中使用
+
+```go
+// 内置 dirtyBytesReader 接口（与 DirtyPageProvider 分离）
+type dirtyBytesReader interface{ DirtyBytes() uint64 }
+
+// 改造前: totalBytes += len(item.PageData) (遍历中统计)
+// 改造后: O(1) 原子读
+func (p *PersistCheckpoint) saveInternal() error {
+    // ... enumerate 后写入逻辑 ...
+
+    // 脏页量检查（O(1)，对标 Lealone collectDirtyMemory）
+    totalBytes := int64(p.dirtyReader.DirtyBytes())
     if totalBytes > maxDirtyBytesPerSave && p.dirtyWarned.CompareAndSwap(false, true) {
         log.Printf("persist checkpoint: dirty bytes %d > max %d, "+
             "consider reducing ckptInterval (current=%d)", totalBytes, maxDirtyBytesPerSave, p.ckptInterval)
     } else if totalBytes <= maxDirtyBytesPerSave {
-        p.dirtyWarned.Store(false) // 恢复正常，重置告警标记
+        p.dirtyWarned.Store(false)
     }
-    // ... 继续正常写入
+
+    // ... 写入完成后重置
+    p.dirtyReader.ResetDirtyBytes()
+    p.lastSavedCount.Store(p.setCount.Load())
 }
+```
+
+#### 与 Lealone 对标
+
+```
+Lealone                                NexKV（方案 C）
+───────                                ──────────────
+put() → page.setDirty()                COW alloc → dirtyBytes.Add(4KB)
+        dirtyMemory += pageSize
+
+save() → collectDirtyMemory()          DirtyBytes() ← O(1) 原子读
+       → dirtyMemory < maxChunkSize     → totalBytes > 256MB → warn
+       → dirtyMemory >= maxChunkSize    → totalBytes <= 256MB → ok
+       → new Chunk / append             → (append Phase 2)
+
+save 后 → dirtyMemory 重置              ResetDirtyBytes()
 ```
 
 ### 默认参数
@@ -262,8 +293,9 @@ Lealone                                NexKV（修复后）
 
 | 文件 | 改动量 | 说明 |
 |------|:------:|------|
-| `persist/persist_checkpoint.go` | +60 行 | +idle goroutine + maxDirtyBytes 告警 + Close 更新 |
-| `persist/persist_checkpoint_test.go` | +50 行 | TestPersistCheckpoint_IdleSave + TestPersistCheckpoint_DirtyBytesWarning |
+| `persist/persist_checkpoint.go` | +70 行 | +idle goroutine + maxDirtyBytes 告警 + dirtyBytesReader 接口 + Close 更新 |
+| `btree/offheap_storage.go` | **+6 行** | AllocLeafPage/AllocInternalPage 中 `dirtyBytes.Add(PageSize)` + DirtyBytes/ResetDirtyBytes |
+| `persist/persist_checkpoint_test.go` | +50 行 | TestPersistCheckpoint_IdleSave + TestPersistCheckpoint_DirtyBytes |
 
 ---
 
@@ -292,6 +324,43 @@ Lealone                                NexKV（修复后）
 - 截断需要 ChunkManager 支持 append 模式（Lealone `lastChunk.size() + dirtyMemory < maxChunkSize`）
 - 告警已覆盖脏页膨胀的监控需求——用户看到告警后调整 `ckptInterval`
 - Chunk append 作为后续优化（对标 Lealone chunk append 逻辑）
+
+### 决策 3：脏页统计采用方案 C — Lealone 方式（page allocator 计数器）
+
+> **前置分析**：三种脏页统计方式对比
+
+| 方案 | 统计方式 | 复杂度 | 精度 | 改动 |
+|------|---------|:---:|:---:|------|
+| A. 遍历统计 | `EnumeratePages` 中 `ChunkPos==0` 判断 | O(N) | 精确 | 0（当前） |
+| B. 操作数估算 | `setCount - lastSavedCount` 估算 | O(1) | 近似 | persist +3行 |
+| C. Lealone 方式（✅） | page allocator 每次 COW 分配 `dirtyBytes += pageSize` | **O(1)** | **精确** | BTree + persist |
+
+**选 C 的理由**：
+- Lealone 通过 `map.collectDirtyMemory()` 在 save 时直接读计数器，O(1) 判断——完全对标
+- BTree 的 `OffheapBTreeStorage.AllocLeafPage/AllocInternalPage` 是 C 方案的天然插入点——每次 COW 分配新页面时累加
+- 外层 PersistCheckpoint 通过 `DirtyBytes() uint64` 方法读取原子变量，无需遍历、无需估算
+- 改动集中在 page allocator（+6 行）+ persist（调用 `DirtyBytes()` 替代遍历统计）
+
+**实现方式**：
+```
+BTree 层:
+  OffheapBTreeStorage.dirtyBytes atomic.Uint64    ← 新增字段
+  AllocLeafPage()    → dirtyBytes.Add(pageSize)  ← 每次 COW 分配
+  AllocInternalPage() → dirtyBytes.Add(pageSize)  ← 每次 COW 分配
+  DirtyBytes() uint64  → dirtyBytes.Load()         ← 新增方法
+  ResetDirtyBytes()    → dirtyBytes.Store(0)       ← save 成功后重置
+
+Persist 层:
+  改造前: totalBytes += len(item.PageData) (遍历中统计)
+  改造后: totalBytes = tree.DirtyBytes() (O(1) 原子读)
+  save 成功后: tree.ResetDirtyBytes()
+
+与 Lealone 对标:
+  Lealone: page.setDirty() → dirtyMemory += pageSize → collectDirtyMemory()
+  NexKV:   AllocLeafPage() → dirtyBytes.Add(4KB)   → DirtyBytes()
+```
+
+> 注意：TryInPlace（原地 CAS）不分配新页面，不计入 `dirtyBytes`。这是因为页面在第一次 COW 分配时已计入——后续原地替换不改变页面状态。
 
 ---
 

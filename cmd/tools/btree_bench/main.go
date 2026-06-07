@@ -18,6 +18,8 @@ import (
 
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/persist"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/wal"
 )
 
 var (
@@ -30,6 +32,11 @@ var (
 	only        = flag.String("only", "", "run only tests matching this prefix")
 	batchSizes  = flag.String("batch", "64,256,1024", "comma-separated batch sizes for batch benchmarks")
 	noPreGen    = flag.Bool("no-pregenerate", false, "use fmt.Sprintf per call (old behavior, GC-heavy)")
+
+	// Persistence flags
+	persistMode = flag.String("persist", "", "persistence mode: wal (empty=memory-only)")
+	walSync     = flag.String("wal-sync", "group-commit", "WAL sync strategy: every-write, group-commit, every-second")
+	walDir      = flag.String("wal-dir", "", "WAL directory (default: os.TempDir)")
 
 	// keyPool and valPool are pre-generated in main to eliminate fmt.Sprintf GC pressure.
 	keyPool [][]byte
@@ -131,6 +138,32 @@ func main() {
 				}
 				runBatch(fmt.Sprintf("%s-%d-%d", label, bs, min(t, conc)), batchN, min(t, conc), label == "par-batch-get", bs, mmapSize)
 			}
+		}
+	}
+
+	// Persist WAL benchmarks
+	if *persistMode == "wal" {
+		syncMode := parseWalSyncMode(*walSync)
+		modeLabel := fmt.Sprintf("wal-%s", syncMode)
+		walDir := *walDir
+		if walDir == "" {
+			walDir = os.TempDir() + "/nexkv-bench-wal"
+		}
+		fmt.Printf("\n--- Mode: persist (%s) ---\n", modeLabel)
+
+		scenes := []struct {
+			label   string
+			n, thr  int
+			getOnly bool
+		}{
+			{fmt.Sprintf("seq-put-persist-%s", syncMode), n, 1, false},
+			{fmt.Sprintf("par-put-persist-%s-8", syncMode), n, min(t, 8), false},
+		}
+		for _, sc := range scenes {
+			if *only != "" && !strings.HasPrefix(sc.label, *only) {
+				continue
+			}
+			runPersistWAL(sc.label, sc.n, sc.thr, sc.getOnly, mmapSize, syncMode, walDir)
 		}
 	}
 }
@@ -389,4 +422,120 @@ func batchLoop(n, threads int, tree *btree.BTree, ops *atomic.Int64, getOnly boo
 		}(bStart, bEnd)
 	}
 	wg.Wait()
+}
+
+// --- Persist WAL benchmark ---
+
+func parseWalSyncMode(s string) persist.WalSyncMode {
+	switch s {
+	case "every-write":
+		return persist.WalSyncEveryWrite
+	case "every-second":
+		return persist.WalSyncEverySecond
+	default:
+		return persist.WalSyncGroupCommit
+	}
+}
+
+func runPersistWAL(label string, n, threads int, getOnly bool, mmapSize int, syncMode persist.WalSyncMode, walDir string) {
+	storage, err := btree.NewOffheapBTreeStorage(mmapSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create storage: %v\n", err)
+		return
+	}
+	opts := []btree.BTreeOption{}
+	if *enableEpoch {
+		opts = append(opts, btree.WithEpoch())
+	}
+	tree, err := btree.NewBTree(storage, opts...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create btree: %v\n", err)
+		return
+	}
+
+	w, err := wal.NewDiskWAL(&wal.WALConfig{
+		Dir:         walDir,
+		SegmentSize: 64 * 1024 * 1024,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create wal: %v\n", err)
+		return
+	}
+
+	kv := persist.NewPersistWAL(tree, w, syncMode)
+	ctx := context.Background()
+
+	// Preload for read tests.
+	if getOnly {
+		for i := 0; i < n; i++ {
+			_ = kv.Set(ctx, keyOf(i), valOf(i))
+		}
+	}
+
+	// Warmup.
+	var totalOps atomic.Int64
+	for i := 0; i < *warmup; i++ {
+		if getOnly {
+			_, _ = kv.Get(ctx, keyOf(i%n))
+		} else {
+			_ = kv.Set(ctx, keyOf(i), valOf(i))
+		}
+		totalOps.Add(1)
+	}
+	totalOps.Store(0)
+
+	// Measure.
+	t0 := time.Now()
+	if threads <= 1 {
+		if getOnly {
+			for i := 0; i < n; i++ {
+				_, _ = kv.Get(ctx, keyOf(i%n))
+				totalOps.Add(1)
+			}
+		} else {
+			for i := 0; i < n; i++ {
+				_ = kv.Set(ctx, keyOf(i), valOf(i))
+				totalOps.Add(1)
+			}
+		}
+	} else {
+		var wg sync.WaitGroup
+		per := n / threads
+		for t := 0; t < threads; t++ {
+			start := t * per
+			end := start + per
+			if t == threads-1 {
+				end = n
+			}
+			wg.Add(1)
+			go func(start, end int) {
+				defer wg.Done()
+				if getOnly {
+					for i := start; i < end; i++ {
+						_, _ = kv.Get(ctx, keyOf(i%n))
+						totalOps.Add(1)
+					}
+				} else {
+					for i := start; i < end; i++ {
+						_ = kv.Set(ctx, keyOf(i), valOf(i))
+						totalOps.Add(1)
+					}
+				}
+			}(start, end)
+		}
+		wg.Wait()
+	}
+	elapsed := time.Since(t0)
+
+	qps := float64(totalOps.Load()) / elapsed.Seconds()
+	rw := "write"
+	if getOnly {
+		rw = "read"
+	}
+	modeLabel := "persist"
+	fmt.Printf("%-28s mode=%-7s t=%-2d op=%-6s ops=%d time=%.3fs qps=%10.0f\n",
+		label, modeLabel, threads, rw, totalOps.Load(), elapsed.Seconds(), qps)
+
+	_ = kv.Close()
+	_ = tree.Close()
 }

@@ -595,7 +595,7 @@ func runPersistCheckpoint(label string, n, threads int, getOnly bool, mmapSize i
 		tree,
 		func() checkpoint.PageRef { return tree.RootPage() },
 		tree.EnumeratePages,
-		cm, ckptInterval,
+		cm, persist.WithCkptInterval(ckptInterval),
 	)
 	ctx := context.Background()
 

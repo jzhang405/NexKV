@@ -28,6 +28,8 @@ type OffheapBTreeStorage struct {
 	pageLocs   sync.Map              // Phase 4.3: map[model.PageID]model.ChunkPosition
 	closed     atomic.Bool
 
+	dirtyBytes atomic.Uint64 // COW-allocated bytes (Lealone dirtyMemory equiv)
+
 	leafHandlePool sync.Pool // *leafPageHandle
 	nodeHandlePool sync.Pool // *nodePageHandle
 }
@@ -62,6 +64,7 @@ func (s *OffheapBTreeStorage) AllocLeafPage() (model.PageID, error) {
 		return 0, errpkg.BTreeAllocLeafPage(err)
 	}
 	s.pa.InitLeafPage(rawID, 1)
+	s.dirtyBytes.Add(uint64(offheap.PageSize))
 	return model.PageID(rawID), nil
 }
 
@@ -74,6 +77,7 @@ func (s *OffheapBTreeStorage) AllocNodePage() (model.PageID, error) {
 		return 0, errpkg.BTreeAllocNodePage(err)
 	}
 	s.pa.InitIndexPage(rawID, 1)
+	s.dirtyBytes.Add(uint64(offheap.PageSize))
 	return model.PageID(rawID), nil
 }
 
@@ -97,6 +101,7 @@ func (s *OffheapBTreeStorage) copyPage(rawSrcID uint32) (uint32, error) {
 
 	copy(dstSlice, srcSlice)
 	s.pa.SetVersion(newRawID, srcVersion+1)
+	s.dirtyBytes.Add(uint64(offheap.PageSize)) // COW hot path: Lealone dirtyMemory equiv
 
 	return newRawID, nil
 }

@@ -36,8 +36,8 @@ var (
 	noPreGen    = flag.Bool("no-pregenerate", false, "use fmt.Sprintf per call (old behavior, GC-heavy)")
 
 	// Persistence flags
-	persistMode = flag.String("persist", "", "persistence mode: wal (empty=memory-only)")
-	walSync     = flag.String("wal-sync", "group-commit", "WAL sync strategy: every-write, group-commit, every-second")
+	persistMode  = flag.String("persist", "", "persistence mode: wal (empty=memory-only)")
+	walSync      = flag.String("wal-sync", "group-commit", "WAL sync strategy: every-write, group-commit, every-second")
 	walDir       = flag.String("wal-dir", "", "WAL/chunk directory (default: os.TempDir)")
 	ckptInterval = flag.Int("ckpt-interval", 10000, "checkpoint save interval (ops per save)")
 

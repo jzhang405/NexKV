@@ -23,9 +23,9 @@ import (
 type PersistCheckpoint struct {
 	service.KVStore
 
-	enumerateFn func(checkpoint.PageRef) ([]checkpoint.PageFlushItem, error)
-	rootFn      func() checkpoint.PageRef
-	chunkMgr    service.ChunkManager
+	enumerateFn  func(checkpoint.PageRef) ([]checkpoint.PageFlushItem, error)
+	rootFn       func() checkpoint.PageRef
+	chunkMgr     service.ChunkManager
 	ckptInterval int64
 	setCount     atomic.Uint64
 	saving       atomic.Bool

@@ -184,21 +184,37 @@ cmd/tools/btree_bench/
 
 > 同一台机器运行 Lealone `BTreeMapBenchmarkRunner`，作为 BTree KV 存储引擎的跨语言跨实现对照。
 
-| 场景 | Lealone inMemory | Lealone disk (no WAL) | NexKV mem | NexKV/Lealone mem |
-|------|:-:|:-:|:-:|:-:|
-| `seq-put` | 4,209,726 | 4,564,751 | 1,990,694 | 0.47x |
-| `seq-get` | 10,383,928 | 7,547,616 | 6,238,264 | 0.60x |
-| `par-put-4` | 4,682,044 | — | 4,747,568 | 1.01x |
-| `par-put-8` | 6,567,093 | 3,327,498 | 8,531,713 | 1.30x |
-| `par-put-16` | 6,519,533 | — | 5,334,792 | 0.82x |
-| `par-get-8` | 13,675,190 | 12,356,834 | 13,557,905 | 0.99x |
-| `mixed-8-r80` | 3,421,102 | — | 11,278,672 | 3.30x |
+**Lealone 持久化模型（源码分析）**：
+
+| 参数 | 值 | 源码位置 |
+|------|-----|---------|
+| 写入模型 | **Checkpoint，非 WAL-per-op** | `BTreeStorage.save()` |
+| Page Cache | **32MB** | `Constants.DEFAULT_CACHE_SIZE=32` × 1MB |
+| Max Chunk 大小 | **256MB** | `StorageSetting.MAX_CHUNK_SIZE` |
+| sync 触发时机 | **显式 save()/close()**，无后台线程、无 Timer | `BTreeStorage.java:294,302` |
+| `put()` 路径 | **纯内存 BTree COW**，无 fwrite/fsync/RedoLog | `PageOperations.Put.writeLocal()` |
+| `save()` 路径 | 序列化所有脏页 → 写新 Chunk 文件 → `FileChannel.force(true)` | `BTreeStorage.java:319-401, Chunk.java:308-317` |
+
+> Lealone disk 模式的 `put()` 操作**不走任何磁盘 I/O**，只在显式 `save()` 时才批量写盘并 sync。benchmark 中 `seq-put+save` 那一次 `save()` 耗时 0.349s（1M ops），即单次 checkpoint 将所有脏页写入一个新 chunk 文件 + fsync。
+
+**对照表**：
+
+| 场景 | Lealone inMemory | Lealone disk (checkpoint) | NexKV mem | NexKV/Lealone mem | 说明 |
+|------|:-:|:-:|:-:|:-:|------|
+| `seq-put` | 4,209,726 | 4,564,751 | 1,990,694 | 0.47x | disk≈mem，两者均为纯内存 COW |
+| `seq-get` | 10,383,928 | 7,547,616 | 6,238,264 | 0.60x | |
+| `par-put-4` | 4,682,044 | — | 4,747,568 | 1.01x | |
+| `par-put-8` | 6,567,093 | 3,327,498 | 8,531,713 | 1.30x | |
+| `par-put-16` | 6,519,533 | — | 5,334,792 | 0.82x | |
+| `par-get-8` | 13,675,190 | 12,356,834 | 13,557,905 | 0.99x | |
+| `mixed-8-r80` | 3,421,102 | — | 11,278,672 | 3.30x | |
 
 > **对照要点**：
-> - Lealone disk 模式走 **page cache → 异步刷盘**，无 WAL fsync，代表「无 WAL 场景的 BTree 落盘吞吐量上限」（~4.5M QPS）
+> - Lealone "disk" 模式 ≠ NexKV "persist" 模式。Lealone 采用 **Checkpoint 模型**（批量 save），NexKV 采用 **WAL-per-operation + AO 异步写入** 模型。两者不可直接对比落盘性能
+> - Lealone disk mode `seq-put` 4.56M QPS 实际上代表了 **BTree 纯内存 COW 吞吐量**（`put()` 路径无任何磁盘 I/O），可作为 NexKV 纯内存 `seq-put` 2.0M 的跨实现对照 —— Lealone 快 2.1x，可能源于 Java JIT 优化 vs Go mmap COW 路径差异
+> - Lealone 的单次 `save()` 0.349s/1M ops ≈ 批量序列化所有脏页 + 写一个 chunk + fsync，类似 NexKV every-second 模式中去掉 WAL fwrite 后的纯 AO 批量刷盘路径
 > - NexKV `par-put-8` 领先 Lealone 30%，说明 Go goroutine + CAS 并发模型在多线程竞争写入下优于 Java 线程模型
 > - NexKV `mixed-8-r80` 领先 Lealone 3.3x，COW 快照隔离在读多写少场景下有显著优势
-> - Lealone `seq-put` 单线程写入是 NexKV 的 2.1x，可能源于 Java JIT 优化 vs Go mmap COW 路径差异
 
 #### 4.3 落盘模式预期性能
 

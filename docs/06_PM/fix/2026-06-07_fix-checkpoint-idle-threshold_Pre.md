@@ -104,8 +104,18 @@ type PersistCheckpoint struct {
 }
 
 // 启动时:
-func NewPersistCheckpoint(...) *PersistCheckpoint {
+func NewPersistCheckpoint(tree service.KVStore,
+    rootFn func() checkpoint.PageRef,
+    enumFn func(checkpoint.PageRef) ([]checkpoint.PageFlushItem, error),
+    cm service.ChunkManager,
+    opts ...CheckpointOption,
+) *PersistCheckpoint {
+    cfg := defaultCheckpointConfig()
+    for _, opt := range opts { opt(cfg) }
     // ...
+    p.ckptInterval = cfg.ckptInterval
+    p.maxIdleDuration = cfg.maxIdleDuration
+    p.maxDirtyBytesPerSave = cfg.maxDirtyBytesPerSave
     p.ctx, p.cancel = context.WithCancel(context.Background())
     p.wg.Add(1)
     go p.runIdleCheckLoop()
@@ -234,7 +244,14 @@ func (b *BTree) ResetDirtyBytes() {
 }
 ```
 
-> TryInPlace（原地 CAS）不分配新页面 → 不计入 `dirtyBytes`。处理现有 key 的 UPDATE 场景走 `copyPage()`（大热点）——这是 dirtyBytes 计数的主要来源。
+> 注意：TryInPlace（原地 CAS）不分配新页面 → 不计入 `dirtyBytes`。处理现有 key 的 UPDATE 场景走 `copyPage()`（大热点）——这是 dirtyBytes 计数的主要来源。
+
+### 决策 4：三个阈值通过 Functional Option 注入（对标 BTree 风格）
+
+**理由**：
+- BTree 已有 `WithEpoch()`/`WithMetrics()`/`WithTracer()` 的 Option 模式先例
+- 不同 workload 需要不同阈值：OLTP（小间隔 1K）、批量导入（大间隔 100K）、开发调试（短 idle 1s）
+- `NewPersistCheckpoint` 签名从 `(tree, rootFn, enumFn, cm, interval)` 变为 `(tree, rootFn, enumFn, cm, opts...)`——向后兼容（默认值不变）
 
 #### PersistCheckpoint 中使用
 
@@ -285,6 +302,81 @@ save 后 → dirtyMemory 重置              ResetDirtyBytes()
 | `ckptInterval` | 10000 | — |
 | `maxIdleDuration` | **3s** | `LogSyncService.loopInterval = 3000ms` |
 | `maxDirtyBytesPerSave` | **256MB** | `MAX_CHUNK_SIZE = 256MB` |
+
+### Option 模式（对标 BTree 的 `WithEpoch()` 风格）
+
+> 三个阈值通过 Functional Option 注入，保持与 BTree `WithMetrics()`/`WithEpoch()` 一致的 API 风格。
+
+```go
+// CheckpointOption 配置 Checkpoint 行为
+type CheckpointOption func(*checkpointConfig)
+
+type checkpointConfig struct {
+    ckptInterval       int64
+    maxIdleDuration    time.Duration
+    maxDirtyBytesPerSave int64
+}
+
+func defaultCheckpointConfig() *checkpointConfig {
+    return &checkpointConfig{
+        ckptInterval:        10000,
+        maxIdleDuration:     3 * time.Second,
+        maxDirtyBytesPerSave: 256 * 1024 * 1024, // 256MB
+    }
+}
+
+func WithCkptInterval(n int64) CheckpointOption {
+    return func(c *checkpointConfig) { c.ckptInterval = n }
+}
+
+func WithMaxIdleDuration(d time.Duration) CheckpointOption {
+    return func(c *checkpointConfig) { c.maxIdleDuration = d }
+}
+
+func WithMaxDirtyBytes(n int64) CheckpointOption {
+    return func(c *checkpointConfig) { c.maxDirtyBytesPerSave = n }
+}
+
+// NewPersistCheckpoint 签名更新
+func NewPersistCheckpoint(
+    tree service.KVStore,
+    rootFn func() checkpoint.PageRef,
+    enumFn func(checkpoint.PageRef) ([]checkpoint.PageFlushItem, error),
+    cm service.ChunkManager,
+    opts ...CheckpointOption,  // ← 变为可选
+) *PersistCheckpoint {
+    cfg := defaultCheckpointConfig()
+    for _, opt := range opts {
+        opt(cfg)
+    }
+    // ...
+    p.ckptInterval = cfg.ckptInterval
+    p.maxIdleDuration = cfg.maxIdleDuration
+    // ...
+    return p
+}
+```
+
+使用示例：
+```go
+// 默认: 10K 操作 / 3s idle / 256MB dirty
+kv := persist.NewPersistCheckpoint(tree, rootFn, enumFn, cm)
+
+// 高频写入: 每 1K 条 save, 2s idle, 128MB 告警
+kv := persist.NewPersistCheckpoint(tree, rootFn, enumFn, cm,
+    persist.WithCkptInterval(1000),
+    persist.WithMaxIdleDuration(2*time.Second),
+    persist.WithMaxDirtyBytes(128*1024*1024),
+)
+```
+
+btree_bench CLI：
+```
+-persist checkpoint \
+  -ckpt-interval 10000 \          # ← 对应 WithCkptInterval
+  -ckpt-max-idle 3s \             # ← 对应 WithMaxIdleDuration
+  -ckpt-max-dirty-bytes 268435456 # ← 对应 WithMaxDirtyBytes (256MB)
+```
 
 ### 修复后效果
 

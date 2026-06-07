@@ -229,6 +229,68 @@ Layer 1  基础设施
 - 装饰器位于 **Layer 3/4**，持有 BTree 实例（Layer 2）+ WAL/ChunkManager（Layer 3）
 - 所有跨层依赖通过 `service.KVStore` 抽象接口，遵守 DIP
 
+### Lealone AOSE vs AOTE 分界分析
+
+> Lealone 内部将存储引擎分为两层：AOSE（AO Storage Engine，存储抽象）和 AOTE（AO Transaction Engine，事务抽象）。AOTE 依赖 AOSE，但 AOSE 不依赖 AOTE——单向依赖。
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  AOTE (事务层)                                           │
+│  ─────────────                                          │
+│  接口: Transaction { commit(), rollback() }              │
+│  实现: AOTransaction → UndoLog + writeRedoLog()         │
+│        LogSyncService → periodic / instant / nosync     │
+│        RedoLog → fwrite + fsync                         │
+│                                                         │
+│  依赖 AOSE: ✅ (通过 StorageMap 接口)                    │
+├─────────────────────────────────────────────────────────┤
+│  AOSE (存储层)                                           │
+│  ─────────────                                          │
+│  接口: StorageMap { put(), get(), save(), sync() }       │
+│  实现: BTreeMap → 纯内存 COW                            │
+│        BTreeStorage → save() + chunk management         │
+│        ChunkManager → chunk 文件分配                    │
+│                                                         │
+│  依赖 AOTE: ❌ (完全独立于事务层)                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+**关键发现**：
+
+| | AOSE | AOTE |
+|---|---|---|
+| 管什么 | 页面怎么分配、chunk 怎么写、快照怎么做 | 操作是否正确、能否回滚、崩溃后能否恢复 |
+| 依赖方向 | 不依赖 AOTE | 依赖 AOSE（需要知道数据在哪） |
+| Lealone 对应 | BTreeMap + BTreeStorage + ChunkManager | AOTransaction + UndoLog + RedoLog + LogSyncService |
+
+**是否要在 NexKV 中引入独立的 AOSE/AOTE package？**
+
+| 选项 | 做法 | 评估 |
+|------|------|------|
+| A: 照搬 | 创建 `aose/` `aote/` 两个新 package | ❌ 增加目录深度，不带来新抽象价值 |
+| B: 借用思想，复用现有接口 | `persist/` 包组合现有领域接口 | ✅ 采纳 |
+
+**决策 B 的理由**：
+
+NexKV 通过 `service.WAL`、`service.ChunkManager` 等领域服务接口已经实现了 AOSE/AOTE 的等价抽象——**接口即边界**：
+
+```
+NexKV 现有抽象 (无需新增 package):
+
+  AOSE 等价:                          AOTE 等价:
+  ────────                           ────────
+  BTree           (纯内存 COW)       MVCC 版本链     (UndoLog)
+  ChunkManager    (chunk 管理)       WAL             (RedoLog)
+  PageSerializer  (页面序列化)       LogSyncService  → persist/ 中实现
+  EnumeratePages  (脏页遍历)         
+  
+  persist/ 包的角色 = 组合 AOSE + AOTE 的装饰器层:
+    wal.go        → 组合 BTree(AOSE) + WAL(AOTE)
+    checkpoint.go → 组合 BTree(AOSE) + ChunkManager(AOSE)
+```
+
+**结论**：不引入 `aose/` / `aote/` 新 package。`persist/` 通过组合 `service.WAL` + `service.ChunkManager` + `service.KVStore` 三个已有接口，已经自然落入了 AOSE/AOTE 的分层逻辑。额外的 package 只会增加目录深度，不带来新的抽象——领域服务接口就是边界。
+
 ---
 
 ## 核心类型定义（类型安全 + GC 优化）
@@ -899,6 +961,22 @@ func Benchmark_BTree_Ckpt_10K(b *testing.B) {
 **理由**：
 - NexKV 的 MVCC 版本链已经保存了历史版本——功能等价于 UndoLog
 - 对标：MVCC 版本链 = UndoLog，PersistWAL = AOTE RedoLog，PersistCheckpoint.save() = BTreeStorage.save()
+
+### 决策 6：不引入独立的 AOSE / AOTE package，借用现有领域服务接口
+
+**理由**：
+- NexKV 的 `service.WAL`、`service.ChunkManager` 等领域接口已经实现了 AOSE/AOTE 的等价抽象——**接口即边界**
+- `persist/` 包通过组合 `service.KVStore` + `service.WAL` + `service.ChunkManager` 三个已有接口，自然落入 AOSE/AOTE 的分层逻辑
+- 额外创建 `aose/` / `aote/` package 只会增加目录深度，不带来新的抽象价值
+- Lealone 的 AOTE 依赖 AOSE（单向依赖）——NexKV 通过 `persist/` 装饰器显式组合两者，依赖方向一致
+
+| Lealone 分层 | Lealone 组件 | NexKV 现有抽象 | 对应 package |
+|-------------|-------------|---------------|-------------|
+| AOSE | BTreeMap | BTree | `btree/` |
+| AOSE | BTreeStorage | ChunkManager + PageSerializer | `chunk/` |
+| AOTE | UndoLog | MVCC 版本链 | `mvcc/` |
+| AOTE | RedoLog + LogSyncService | WAL | `wal/` |
+| 组合层 | AOTransaction | PersistWAL / PersistCheckpoint | `persist/` ✨ |
 
 ---
 

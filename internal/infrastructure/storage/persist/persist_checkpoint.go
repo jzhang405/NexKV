@@ -33,7 +33,7 @@ type PersistCheckpoint struct {
 	rootFn      func() checkpoint.PageRef
 	chunkMgr    service.ChunkManager
 	ckptInterval int64
-	setCount     atomic.Int64
+	setCount     atomic.Uint64
 	saving       atomic.Bool
 	saveMu       sync.Mutex
 	stats        CkptStats
@@ -79,7 +79,7 @@ func (p *PersistCheckpoint) Set(ctx context.Context, key, value []byte) error {
 		return err
 	}
 	count := p.setCount.Add(1)
-	if count%p.ckptInterval == 0 && p.saving.CompareAndSwap(false, true) {
+	if count%uint64(p.ckptInterval) == 0 && p.saving.CompareAndSwap(false, true) {
 		go func() {
 			defer p.saving.Store(false)
 			p.asyncSave()
@@ -93,8 +93,8 @@ func (p *PersistCheckpoint) SetBatch(ctx context.Context, pairs []service.KVPair
 	if err := p.KVStore.SetBatch(ctx, pairs); err != nil {
 		return err
 	}
-	count := p.setCount.Add(int64(len(pairs)))
-	if count%p.ckptInterval == 0 && p.saving.CompareAndSwap(false, true) {
+	count := p.setCount.Add(uint64(len(pairs)))
+	if count%uint64(p.ckptInterval) == 0 && p.saving.CompareAndSwap(false, true) {
 		go func() {
 			defer p.saving.Store(false)
 			p.asyncSave()

@@ -135,7 +135,7 @@ func TestPersistWAL_Close(t *testing.T) {
 	}
 }
 
-func TestPersistWAL_WalStats(t *testing.T) {
+func TestPersistWAL_WalMetrics(t *testing.T) {
 	ctx := context.Background()
 	tree := newTestBTree(t)
 	w := newTestWAL(t)
@@ -144,8 +144,8 @@ func TestPersistWAL_WalStats(t *testing.T) {
 	defer kv.Close()
 
 	kv.Set(ctx, []byte("k"), []byte("v"))
-	stats := kv.WalStats()
-	if stats.LSN == 0 {
+	m := kv.WalMetrics()
+	if m.LSN == 0 {
 		t.Fatal("expected non-zero LSN after write")
 	}
 }

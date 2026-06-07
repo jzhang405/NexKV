@@ -159,10 +159,10 @@ func (p *PersistWAL) SetBatch(ctx context.Context, pairs []service.KVPair) error
 // Sync explicitly flushes any buffered entries.
 func (p *PersistWAL) Sync() error { return p.wal.Sync() }
 
-// WalStats returns WAL-level statistics for benchmark output.
-func (p *PersistWAL) WalStats() *WALStats {
+// WalMetrics returns WAL-level statistics for benchmark output.
+func (p *PersistWAL) WalMetrics() *WalMetrics {
 	lsn := p.wal.CurrentLSN()
-	return &WALStats{LSN: lsn}
+	return &WalMetrics{LSN: lsn}
 }
 
 // Close shuts down the background goroutine and the underlying store.
@@ -198,6 +198,7 @@ func (p *PersistWAL) runWriteLoop() {
 		select {
 		case <-p.ctx.Done():
 			p.flushBatch(batch)
+			p.releaseBatch(batch) // notify sync waiters
 			return
 
 		case <-tickerCh():
@@ -250,11 +251,11 @@ func (p *PersistWAL) releaseBatch(batch []*walTask) {
 }
 
 // ---------------------------------------------------------------------------
-// WALStats
+// WalMetrics
 // ---------------------------------------------------------------------------
 
-// WALStats exposes WAL-level statistics for benchmark output.
-type WALStats struct {
+// WalMetrics exposes WAL-level statistics for benchmark output.
+type WalMetrics struct {
 	LSN service.LSN
 }
 

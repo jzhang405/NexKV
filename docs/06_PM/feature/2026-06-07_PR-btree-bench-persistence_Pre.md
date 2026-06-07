@@ -30,7 +30,7 @@
 
 #### 2.2 目标
 
-1. **准确性**：benchmark 度量结果反映真实落盘路径的吞吐量，包含 WAL 序列化/写入/Sync 和 AO 页面写入的完整耗时。
+1. **准确性**：benchmark 度量结果反映真实落盘路径的吞吐量，包含 WAL 序列化/写入/Sync 的核心耗时（AO 页面写入异步执行，不阻塞操作计数，简化说明见 §3.1.2）。
 2. **可控性**：通过命令行 flag 控制 WAL Sync 策略（EveryWrite / GroupCommit / EverySecond）、AO 文件大小、是否启用落盘，方便对比纯内存 vs 落盘性能。
 3. **可观测性**：输出落盘相关的关键指标：WAL 写入字节数、Sync 次数、AO 文件写入次数、ChunkManager 统计信息。
 
@@ -137,7 +137,7 @@ benchmark 中为简化度量，采用以下时序约定：
 === Persistence Stats ===
 wal.segments        : 1           # WAL 段文件数量
 wal.written_bytes   : 256MB       # WAL 总写入字节
-wal.sync_count      : 1024        # fsync 调用次数
+wal.sync_count      : 62500       # fsync 调用次数（group-commit: 1M ops / 16条/批）
 wal.avg_entry_size  : 53 bytes    # benchmark key=14B + value=16B + WAL header=23B（生产环境更长）
 ao.chunks           : 2           # AO chunk 文件数量
 ao.written_pages    : 65536       # 持久化页面数量
@@ -220,10 +220,10 @@ cmd/tools/btree_bench/
 #### 4.4 落盘性能衰减链（理论模型）
 
 ```
-纯内存 BTree COW           ~2,000,000 QPS  (基线)
-  + WAL 序列化 + fwrite    ~400,000 QPS    (every-second，syscall 瓶颈)
-  + 批量 fsync             ~120,000 QPS    (group-commit，IO 瓶颈)
-  + 每条 fsync             ~20,000 QPS     (every-write，磁盘延迟瓶颈)
+纯内存 BTree COW           ~2,000,000 QPS    (基线)
+  + WAL 序列化 + fwrite    ~200,000–400,000  (every-second，syscall 瓶颈)
+  + 批量 fsync             ~80,000–150,000   (group-commit，IO 瓶颈)
+  + 每条 fsync             ~15,000–30,000    (every-write，磁盘延迟瓶颈)
 ```
 
 各 Sync 策略之间的 QPS 落差来自 fsync 调用频率，反映了「持久化保证」与「吞吐量」之间的 trade-off。
@@ -261,6 +261,7 @@ cmd/tools/btree_bench/
 |----------|----------|--------|---------|---------|---------|
 | 第1轮 | 2026-06-07 | AI 专家团队（存储引擎 + Go + 分布式 KV） | 综合评分 6.5/10，3 个高风险 + 5 个中风险 + 3 个低风险。详见 §6.1 评审详情 | 见下方修改措施 | ✅ 修改完成 |
 | 第2轮 | 2026-06-07 | AI 专家团队 | 综合评分 8.1/10，2 个中风险 + 1 个低风险，均已修正。✅ 通过 | ① §5 评审状态更新 ② WAL Entry 大小修正 ③ §4.3 场景补充 | ✅ 修改完成 |
+| 第3轮 | 2026-06-07 | AI 专家团队 | 综合评分 8.3/10，1 个中风险 + 2 个低风险，均已修正。✅ 最终通过 | ① §2.2 目标与 §3.1.2 矛盾修正 ② §4.4 衰减链改为范围 ③ §3.4 sync_count 示例修正 | ✅ 修改完成 |
 
 #### 6.1 第 1 轮评审详情
 
@@ -304,7 +305,7 @@ cmd/tools/btree_bench/
 | 节点 | 完成日期 | 具体内容 | 交付物 |
 |------|----------|----------|--------|
 | Pre文档编写 | 2026-06-07 | 编写前置规划文档 | 本文件（第一部分） |
-| 架构师Pre批准 | 2026-06-07 | 架构师评审Pre文档 | 有条件通过（3 个 P0 问题已修正） |
+| 架构师Pre批准 | 2026-06-07 | 架构师评审Pre文档 | ✅ 最终通过（三轮评审：6.5→8.1→8.3） |
 | 代码实现 | （待定） | 实现 persist.go + wal_bench.go | 代码 |
 | 代码评审 | （待定） | code-reviewer 评审 | 评审意见 |
 | Post文档编写 | （待定） | 编写后置总结文档 | 本文件（第三部分） |

@@ -87,7 +87,57 @@ Set(key, value)
 └──────────────────────────────────────────────────┘
 ```
 
-#### 3.1.1 并发模型
+> **⚠️ 重要：上述数据流是本次 PR 的设计目标，不是当前代码的现状。**  
+> 当前 `BTree.Set()` 是纯内存 COW 操作——不调用 WAL，不调用 ChunkManager。  
+> WAL 只在 MVCC Transaction.Commit 路径中使用，ChunkManager 只在 Checkpoint (EnumeratePages) 中使用。  
+> 本次 PR 在 `persistSetLoop()` 中把三者串联起来（见 §3.1.3）。
+
+#### 3.1.1 当前架构：BTree / WAL / AO 三者分离
+
+> **源码确认**：当前 NexKV 的 BTree、WAL、AO 是三个独立模块，`BTree.Set()` 路径中**无任何 WAL 调用，无任何 ChunkManager 调用**。
+
+```
+当前 Set() 路径 (源码分析):
+
+  BTree.Set()                          ← btree.go:321-370
+      ├─ COW 页面分配                   ← OffheapBTreeStorage.AllocXXX
+      ├─ MVCC 值编码                    ← mvcc.BuildMVCC
+      ├─ CAS 页面替换                   ← leafPageHandle.TryInPlace / Update
+      └─ return                        ← 结束。纯内存，无磁盘 I/O
+
+  WAL 模块 (service.WAL + DiskWAL)      ← 当前仅在以下路径使用：
+      └─ MVCC Transaction.Commit()      ← mvcc/wal_integration.go
+          └─ BTree.Set() 不走事务路径时不调用
+
+  ChunkManager (service.ChunkManager + DiskChunkManager)
+      └─ BTree.EnumeratePages()         ← 仅在 Checkpoint 时使用
+          └─ BTree.Set() 不调用 ChunkManager
+
+  BTree struct {                        ← btree.go:30-47
+      rootRef        *RootPageRef
+      storage        *OffheapBTreeStorage
+      // ❌ 没有 WAL 字段
+      // ❌ 没有 ChunkManager 字段 (仅 SetChunkManager 注入点)
+  }
+```
+
+> **结论**：当前 `btree_bench` 测的 `seq-put` 1,990,694 QPS 是纯内存 COW 吞吐量，与 WAL/AO 模块完全无关。本次 PR 需要在 benchmark 层面把三者串联。
+
+#### 3.1.2 本次 PR 接线方案：Benchmark-Loop 松耦合
+
+**两种可选接线方案**：
+
+| | 方案 A：BTree 内部接线 | 方案 B：Benchmark Loop 接线（✅ 采用） |
+|---|---|---|
+| 接入点 | `BTree.Set()` 内部增加 WAL+AO 调用 | `persistSetLoop()` 中依次调用 |
+| BTree 改动 | 侵入核心路径，需增加 persist flag 分支 | **不改动** |
+| 优点 | 所有 Set 自动落盘，透明 | 不侵入 BTree，与纯内存 benchmark 完全隔离 |
+| 缺点 | 纯内存模式也有分支判断开销 | 调用方感知持久化细节 |
+| 架构影响 | 紧耦合 | **松耦合——持久化是 BTree 之上的一层** |
+
+**采用方案 B**：在 `persist.go` 的 `persistSetLoop()` 中依次调用 BTree → WAL → AO，三个模块在 benchmark 层面串联，BTree 本身不受影响。
+
+#### 3.1.3 并发模型
 
 多 goroutine 并发写入时，落盘路径的线程安全保证：
 
@@ -98,7 +148,7 @@ Set(key, value)
 
 benchmark 中的并发写入路径与实际生产环境使用的同步机制一致。
 
-#### 3.1.2 WAL/AO 写入原子性（Benchmark 简化假设）
+#### 3.1.4 WAL/AO 写入原子性（Benchmark 简化假设）
 
 benchmark 中为简化度量，采用以下时序约定：
 
@@ -147,6 +197,23 @@ ao.avg_page_size    : 4096 bytes  # 平均序列化页面大小
 
 #### 3.5 代码结构
 
+**接线架构**（方案 B：Benchmark-Loop 松耦合）：
+
+```
+persistSetLoop() {
+    for i := 0..N {
+        tree.Set(key, value)             // ① BTree 纯内存 COW (不改动)
+        entry := marshalWALEntry(...)    // ② WAL Entry 序列化
+        wal.Append(entry)                // ③ WAL fwrite
+        if syncPolicy.ShouldSync(i) {
+            wal.Sync()                   // ④ 策略化 fsync
+            ops.Add(1)                   //    计数 (WAL 确认后)
+        }
+        chunkMgr.WritePage(...)          // ⑤ AO 异步写入 (不阻塞计数)
+    }
+}
+```
+
 ```
 cmd/tools/btree_bench/
 ├── main.go              # 修改：+5 个 persist flag + 落盘场景入口逻辑（约 +30 行）
@@ -157,8 +224,8 @@ cmd/tools/btree_bench/
 │   ├── TestPersistTempDirCleanup()   # 临时目录清理
 │   └── TestNoPersistCompatibility()  # -persist=false 兼容性
 ├── persist.go           # 新增：落盘相关逻辑
-│   ├── newPersistStorage()  # 创建带 WAL+AO 的 OffheapBTreeStorage
-│   ├── persistSetLoop()     # 落盘 Set 循环
+│   ├── newPersistStorage()  # 创建 WAL + ChunkManager + BTree 三者并连线
+│   ├── persistSetLoop()     # 落盘 Set 循环（BTree→WAL→AO 串联）
 │   └── printPersistStats()  # 输出落盘统计
 └── wal_bench.go         # 新增：WAL 独立 benchmark
     └── runWALBench()       # 纯 WAL Append 吞吐量测试

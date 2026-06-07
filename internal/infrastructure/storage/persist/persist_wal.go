@@ -97,41 +97,45 @@ func (p *PersistWAL) Set(ctx context.Context, key, value []byte) error {
 	entry.Value = value
 
 	// ③ Dispatch through lock-free channel.
-	switch p.syncMode {
-	case WalSyncEveryWrite:
-		// Synchronous: wait for the background goroutine to fwrite+fsync.
-		task := &walTask{entry: entry, done: make(chan struct{}, 1)}
-		select {
-		case p.taskCh <- task:
-		case <-ctx.Done():
-			releaseWALEntry(entry)
-			return ctx.Err()
-		}
-		select {
-		case <-task.done:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		releaseWALEntry(entry)
-		return nil
+	if p.syncMode == WalSyncEveryWrite {
+		return p.sendSync(ctx, entry)
+	}
+	return p.sendAsync(ctx, key, value, entry)
+}
 
-	default:
-		// Async: deep-copy so the Pool entry can be reused immediately.
-		clone := &service.WALEntry{
-			Type:      entry.Type,
-			TxID:      entry.TxID,
-			Timestamp: entry.Timestamp,
-			Key:       copyBytes(key),
-			Value:     copyBytes(value),
-		}
+// sendSync dispatches synchronously: block until fwrite+fsync completes.
+func (p *PersistWAL) sendSync(ctx context.Context, entry *service.WALEntry) error {
+	task := &walTask{entry: entry, done: make(chan struct{}, 1)}
+	select {
+	case p.taskCh <- task:
+	case <-ctx.Done():
 		releaseWALEntry(entry)
-		task := &walTask{entry: clone}
-		select {
-		case p.taskCh <- task:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+		return ctx.Err()
+	}
+	select {
+	case <-task.done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	releaseWALEntry(entry)
+	return nil
+}
+
+// sendAsync deep-copies the pooled entry and sends it asynchronously.
+func (p *PersistWAL) sendAsync(ctx context.Context, key, value []byte, entry *service.WALEntry) error {
+	clone := &service.WALEntry{
+		Type:      entry.Type,
+		TxID:      entry.TxID,
+		Timestamp: entry.Timestamp,
+		Key:       copyBytes(key),
+		Value:     copyBytes(value),
+	}
+	releaseWALEntry(entry)
+	select {
+	case p.taskCh <- &walTask{entry: clone}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

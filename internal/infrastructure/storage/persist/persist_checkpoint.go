@@ -18,12 +18,6 @@ import (
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/checkpoint"
 )
 
-// Re-exported types for callers that need the checkpoint.PageRef signature.
-type (
-	PageRef       = checkpoint.PageRef
-	PageFlushItem = checkpoint.PageFlushItem
-)
-
 // PersistCheckpoint is a KVStore decorator that periodically flushes dirty BTree
 // pages to AO chunk files (cf. Lealone's BTreeStorage.save()).
 type PersistCheckpoint struct {
@@ -78,13 +72,7 @@ func (p *PersistCheckpoint) Set(ctx context.Context, key, value []byte) error {
 	if err := p.KVStore.Set(ctx, key, value); err != nil {
 		return err
 	}
-	count := p.setCount.Add(1)
-	if count%uint64(p.ckptInterval) == 0 && p.saving.CompareAndSwap(false, true) {
-		go func() {
-			defer p.saving.Store(false)
-			p.asyncSave()
-		}()
-	}
+	p.maybeTriggerCkpt(p.setCount.Add(1))
 	return nil
 }
 
@@ -93,14 +81,17 @@ func (p *PersistCheckpoint) SetBatch(ctx context.Context, pairs []service.KVPair
 	if err := p.KVStore.SetBatch(ctx, pairs); err != nil {
 		return err
 	}
-	count := p.setCount.Add(uint64(len(pairs)))
+	p.maybeTriggerCkpt(p.setCount.Add(uint64(len(pairs))))
+	return nil
+}
+
+func (p *PersistCheckpoint) maybeTriggerCkpt(count uint64) {
 	if count%uint64(p.ckptInterval) == 0 && p.saving.CompareAndSwap(false, true) {
 		go func() {
 			defer p.saving.Store(false)
 			p.asyncSave()
 		}()
 	}
-	return nil
 }
 
 // Save triggers a synchronous checkpoint.

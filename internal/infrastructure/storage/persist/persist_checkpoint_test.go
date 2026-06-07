@@ -202,7 +202,8 @@ func TestPersistCheckpoint_DirtyBytes(t *testing.T) {
 		func() checkpoint.PageRef { return tree.RootPage() },
 		tree.EnumeratePages,
 		cm,
-		persist.WithCkptInterval(50),
+		persist.WithCkptInterval(200), // >100 writes — avoid auto-checkpoint resetting dirtyBytes
+		persist.WithMaxIdleDuration(time.Hour), // prevent idle goroutine from resetting dirtyBytes
 	)
 	defer kv.Close()
 

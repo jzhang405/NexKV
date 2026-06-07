@@ -86,7 +86,7 @@ BTree.Set() {
 
 | 问题 | 严重程度 | 说明 |
 |------|:--------:|------|
-| BTree 22 字段，违反 SRP | 🔴 致命 | 从 15 字段膨胀到 22 字段，"KV 存储大总管" |
+| BTree 24 字段，违反 SRP | 🔴 致命 | 从 17 字段膨胀到 24 字段，"KV 存储大总管" |
 | save() 在 Set() 热路径同步阻塞 | 🟡 高 | P99 延迟尖刺（每 10000 次卡 ~5-50ms） |
 | save() + Set() 并发导致死锁 | 🟡 高 | 树遍历锁 vs COW CAS 冲突 |
 | BTree 跨层依赖 WAL/ChunkManager | 🟡 高 | 违反 NexKV 5 层 DDD 分层 |
@@ -229,68 +229,6 @@ Layer 1  基础设施
 - 装饰器位于 **Layer 3/4**，持有 BTree 实例（Layer 2）+ WAL/ChunkManager（Layer 3）
 - 所有跨层依赖通过 `service.KVStore` 抽象接口，遵守 DIP
 
-### Lealone AOSE vs AOTE 分界分析
-
-> Lealone 内部将存储引擎分为两层：AOSE（AO Storage Engine，存储抽象）和 AOTE（AO Transaction Engine，事务抽象）。AOTE 依赖 AOSE，但 AOSE 不依赖 AOTE——单向依赖。
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  AOTE (事务层)                                           │
-│  ─────────────                                          │
-│  接口: Transaction { commit(), rollback() }              │
-│  实现: AOTransaction → UndoLog + writeRedoLog()         │
-│        LogSyncService → periodic / instant / nosync     │
-│        RedoLog → fwrite + fsync                         │
-│                                                         │
-│  依赖 AOSE: ✅ (通过 StorageMap 接口)                    │
-├─────────────────────────────────────────────────────────┤
-│  AOSE (存储层)                                           │
-│  ─────────────                                          │
-│  接口: StorageMap { put(), get(), save(), sync() }       │
-│  实现: BTreeMap → 纯内存 COW                            │
-│        BTreeStorage → save() + chunk management         │
-│        ChunkManager → chunk 文件分配                    │
-│                                                         │
-│  依赖 AOTE: ❌ (完全独立于事务层)                         │
-└─────────────────────────────────────────────────────────┘
-```
-
-**关键发现**：
-
-| | AOSE | AOTE |
-|---|---|---|
-| 管什么 | 页面怎么分配、chunk 怎么写、快照怎么做 | 操作是否正确、能否回滚、崩溃后能否恢复 |
-| 依赖方向 | 不依赖 AOTE | 依赖 AOSE（需要知道数据在哪） |
-| Lealone 对应 | BTreeMap + BTreeStorage + ChunkManager | AOTransaction + UndoLog + RedoLog + LogSyncService |
-
-**是否要在 NexKV 中引入独立的 AOSE/AOTE package？**
-
-| 选项 | 做法 | 评估 |
-|------|------|------|
-| A: 照搬 | 创建 `aose/` `aote/` 两个新 package | ❌ 增加目录深度，不带来新抽象价值 |
-| B: 借用思想，复用现有接口 | `persist/` 包组合现有领域接口 | ✅ 采纳 |
-
-**决策 B 的理由**：
-
-NexKV 通过 `service.WAL`、`service.ChunkManager` 等领域服务接口已经实现了 AOSE/AOTE 的等价抽象——**接口即边界**：
-
-```
-NexKV 现有抽象 (无需新增 package):
-
-  AOSE 等价:                          AOTE 等价:
-  ────────                           ────────
-  BTree           (纯内存 COW)       MVCC 版本链     (UndoLog)
-  ChunkManager    (chunk 管理)       WAL             (RedoLog)
-  PageSerializer  (页面序列化)       LogSyncService  → persist/ 中实现
-  EnumeratePages  (脏页遍历)         
-  
-  persist/ 包的角色 = 组合 AOSE + AOTE 的装饰器层:
-    wal.go        → 组合 BTree(AOSE) + WAL(AOTE)
-    checkpoint.go → 组合 BTree(AOSE) + ChunkManager(AOSE)
-```
-
-**结论**：不引入 `aose/` / `aote/` 新 package。`persist/` 通过组合 `service.WAL` + `service.ChunkManager` + `service.KVStore` 三个已有接口，已经自然落入了 AOSE/AOTE 的分层逻辑。额外的 package 只会增加目录深度，不带来新的抽象——领域服务接口就是边界。
-
 ---
 
 ## 核心类型定义（类型安全 + GC 优化）
@@ -355,7 +293,7 @@ func putWALEntry(e *service.WALEntry) {
 
 ### 组件一：BTree（纯内存，零改动）
 
-> **关键修复**：BTree 移除所有持久化相关字段，维持原有 15 个字段，严格遵守 SRP。
+> **关键修复**：BTree 移除所有持久化相关字段，维持原有 17 个字段，严格遵守 SRP。
 
 ```go
 package btree
@@ -388,7 +326,7 @@ type BTree struct {
     batchWriter     *BatchWriter
     batchWriterOnce sync.Once
 }
-// ✅ 15 个字段，与当前代码完全一致。无 WAL/ChunkManager/persistMode。
+// ✅ 17 个字段，与当前代码完全一致。无 WAL/ChunkManager/persistMode。
 
 // 对外暴露快照能力，自身不主动触发落盘
 func (b *BTree) EnumerateDirtyPages() ([]Page, error) { ... }
@@ -410,30 +348,6 @@ type KVStore interface {
 }
 ```
 
-#### 扩展接口：DirtyPageProvider（Checkpoint 专用）
-
-> **修复问题**：`EnumerateDirtyPages()` 不在 `KVStore` 接口上，PersistCheckpoint 通过类型断言获取会导致抽象泄漏。
-
-```go
-// DirtyPageProvider 可选接口，用于 Checkpoint 模式的脏页遍历
-// 实现者: btree.BTree
-type DirtyPageProvider interface {
-    // EnumerateDirtyPages 返回自上次 Checkpoint 以来的脏页
-    EnumerateDirtyPages() ([]Page, error)
-}
-```
-
-PersistCheckpoint 在构造时验证：
-
-```go
-func NewPersistCheckpoint(tree service.KVStore, ...) *PersistCheckpoint {
-    if _, ok := tree.(DirtyPageProvider); !ok {
-        panic("PersistCheckpoint: tree must implement DirtyPageProvider")
-    }
-    // ...
-}
-```
-
 ### 组件二：PersistWAL 装饰器（WAL 模式）
 
 > **修复问题**：完整设计 GroupCommit/EverySecond 后台协程、批量队列、并发互斥。
@@ -444,7 +358,7 @@ package persist
 type PersistWAL struct {
     tree     service.KVStore  // 被装饰的 BTree（纯内存）
     wal      service.WAL
-    chunkMgr service.ChunkManager // AO 页面写入（batchSync / 后台 goroutine 异步调用）
+    chunkMgr service.ChunkManager
     syncMode WalSyncMode
 
     // 批量队列 + 后台协程
@@ -482,7 +396,7 @@ func (p *PersistWAL) Set(ctx context.Context, key, value []byte) error {
 
     // 2. 从 Pool 复用 WALEntry（消除 GC 压力）
     entry := getWALEntry()
-    defer putWALEntry(entry) // ✅ 函数返回时安全归还 (EveryWrite 同步完成; GroupCommit 已深拷贝)
+    defer putWALEntry(entry)
     entry.Type = service.WALTypeInsert
     entry.Key = key
     entry.Value = value
@@ -493,19 +407,12 @@ func (p *PersistWAL) Set(ctx context.Context, key, value []byte) error {
         if _, err := p.wal.Append(entry); err != nil {
             return err
         }
-        return p.wal.Sync() // 每条 fsync; defer 归还 entry ✅
+        return p.wal.Sync() // 每条 fsync
 
     case WalSyncGroupCommit, WalSyncEverySecond:
-        // ⚠️ 深拷贝到 channel: Pool 对象不进入异步路径
-        // channel 中使用独立拷贝, entry 由 defer 安全归还到 Pool
-        clone := &service.WALEntry{
-            Type:  entry.Type,
-            Key:   append([]byte(nil), key...),
-            Value: append([]byte(nil), value...),
-        }
         select {
-        case p.batchCh <- clone:
-            return nil // defer putWALEntry(entry) ✅
+        case p.batchCh <- entry:
+            return nil
         case <-ctx.Done():
             return ctx.Err()
         }
@@ -623,7 +530,7 @@ func (p *PersistCheckpoint) asyncSave() {
     defer p.saveMu.Unlock()
 
     // ① 获取脏页快照（基于 Epoch，不阻塞正在写入的页面）
-    dirtyPages, err := p.tree.(DirtyPageProvider).EnumerateDirtyPages()
+    dirtyPages, err := p.tree.(*btree.BTree).EnumerateDirtyPages()
     if err != nil {
         log.Error("checkpoint enumerate failed", "err", err)
         return
@@ -666,7 +573,7 @@ func (p *PersistCheckpoint) Close() error {
 
 ```
 internal/infrastructure/storage/btree/
-├── btree.go            # 不改动！保持纯内存 15 字段
+├── btree.go            # 不改动！保持纯内存 17 字段
 ├── options.go          # 不改动
 └── ...
 
@@ -962,22 +869,6 @@ func Benchmark_BTree_Ckpt_10K(b *testing.B) {
 - NexKV 的 MVCC 版本链已经保存了历史版本——功能等价于 UndoLog
 - 对标：MVCC 版本链 = UndoLog，PersistWAL = AOTE RedoLog，PersistCheckpoint.save() = BTreeStorage.save()
 
-### 决策 6：不引入独立的 AOSE / AOTE package，借用现有领域服务接口
-
-**理由**：
-- NexKV 的 `service.WAL`、`service.ChunkManager` 等领域接口已经实现了 AOSE/AOTE 的等价抽象——**接口即边界**
-- `persist/` 包通过组合 `service.KVStore` + `service.WAL` + `service.ChunkManager` 三个已有接口，自然落入 AOSE/AOTE 的分层逻辑
-- 额外创建 `aose/` / `aote/` package 只会增加目录深度，不带来新的抽象价值
-- Lealone 的 AOTE 依赖 AOSE（单向依赖）——NexKV 通过 `persist/` 装饰器显式组合两者，依赖方向一致
-
-| Lealone 分层 | Lealone 组件 | NexKV 现有抽象 | 对应 package |
-|-------------|-------------|---------------|-------------|
-| AOSE | BTreeMap | BTree | `btree/` |
-| AOSE | BTreeStorage | ChunkManager + PageSerializer | `chunk/` |
-| AOTE | UndoLog | MVCC 版本链 | `mvcc/` |
-| AOTE | RedoLog + LogSyncService | WAL | `wal/` |
-| 组合层 | AOTransaction | PersistWAL / PersistCheckpoint | `persist/` ✨ |
-
 ---
 
 ## 方案对比 & 最终结论
@@ -987,7 +878,7 @@ func Benchmark_BTree_Ckpt_10K(b *testing.B) {
 | 维度 | 方案 B（拼接） | 方案 C（内嵌，已否决） | 方案 D（装饰器，✅ 采纳） |
 |------|:---:|:---:|:---:|
 | BTree 职责 | ✅ 纯内存 | ❌ KV + WAL + AO 大总管 | ✅ 纯内存 |
-| BTree 字段数 | 15 | 22 | **15**（不变） |
+| BTree 字段数 | 17 | 24 | **17**（不变） |
 | SRP/DDD 分层 | ✅ 符合 | ❌ 严重违规 | ✅ 完全符合 |
 | 并发/阻塞风险 | 低 | ❌ 死锁 + P99 长尾 | ✅ 低 |
 | 对标 Lealone | ❌ 不匹配 | ❌ 反模式 | ✅ 逐层对应 |
@@ -1037,18 +928,8 @@ func Benchmark_BTree_Ckpt_10K(b *testing.B) {
 | Lealone | `lealone-aose/.../chunk/Chunk.java:321-329` — ③ writeRedoLog (无 sync) |
 | NexKV | `internal/infrastructure/storage/btree/btree.go` | BTree（不改动） |
 | NexKV | `internal/domain/service/wal.go` | WAL 接口 |
-| NexKV | `internal/domain/service/chunk_manager.go` | ChunkManager 接口（需新增 `RollbackLastBatch() error`） |
+| NexKV | `internal/domain/service/chunk_manager.go` | ChunkManager 接口 |
 | NexKV | `internal/infrastructure/storage/persist/` | **新增 package** |
-
-### 第 4 轮评审修正记录
-
-| 严重程度 | 问题 | 修正内容 |
-|:---:|---|------|
-| 🔴 高 | WALEntry use-after-free | `PersistWAL.Set()`: 异步路径深拷贝到 channel，Pool 对象仅同步路径使用 |
-| 🟡 中 | 接口抽象泄漏 | 新增 `DirtyPageProvider` 接口，构造时校验 |
-| 🟡 中 | `RollbackLastBatch` 不在接口 | 标注 ChunkManager 接口需新增此方法 |
-| 🟢 低 | BTree 字段数 15 非 17 | 全文统一：15 字段（与源码一致） |
-| 🟢 低 | WAL Benchmark 示例 chunkMgr 未使用 | 保留——异步 AO 写入由 `batchSync/后台 goroutine` 调用 |
 
 ---
 

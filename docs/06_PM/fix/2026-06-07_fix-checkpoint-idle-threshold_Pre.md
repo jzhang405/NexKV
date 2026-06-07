@@ -165,31 +165,62 @@ func (p *PersistCheckpoint) Close() error {
 
 > **核心思路**：对标 Lealone 的 `page.setDirty() → dirtyMemory += pageSize → collectDirtyMemory()`。每次 COW 分配新页面时在 page allocator 层累加计数器，外层 O(1) 读取。
 
-#### 新增 BTree 方法（`OffheapBTreeStorage`）
+#### 新增 BTree 方法（`OffheapBTreeStorage`，3 处 insertion point）
+
+> **关键**：COW 分配有三条路径，都需计数：
+> | 路径 | 触发场景 | `dirtyBytes` 插入点 |
+> |------|---------|-------------------|
+> | `AllocLeafPage()` | 首次分配叶子页（INSERT） | `return pageID, nil` 前 |
+> | `AllocNodePage()` | 首次分配内部页（split） | `return pageID, nil` 前 |
+> | `copyPage()` | **COW 复制已有页（大热点）** | `pm.Alloc()` 后 |
+>
+> `TryInPlace`（CAS 原地替换）不分配新页面——不计入。`LoadPage()`（AO 恢复）不计入——非脏写。
 
 ```go
-// offheap_storage.go — 新增
-
+// offheap_storage.go — 新增字段
 type OffheapBTreeStorage struct {
     // ... 现有字段 ...
     dirtyBytes atomic.Uint64  // COW 分配的脏页字节数（对标 Lealone dirtyMemory）
 }
 
-// 每次 COW 分配页面时累加
-func (s *OffheapBTreeStorage) AllocLeafPage() (model.PageID, *leafPageHandle, error) {
-    pageID, handle, err := s.allocLeafPage()
-    if err == nil {
-        s.dirtyBytes.Add(PageSize) // 4KB
+// ① AllocLeafPage: 首次分配叶子页
+func (s *OffheapBTreeStorage) AllocLeafPage() (model.PageID, error) {
+    if err := s.checkOpen(); err != nil {
+        return 0, err
     }
-    return pageID, handle, err
+    rawID, err := s.pm.Alloc()
+    if err != nil {
+        return 0, errpkg.BTreeAllocLeafPage(err)
+    }
+    s.pa.InitLeafPage(rawID, 1)
+    s.dirtyBytes.Add(uint64(offheap.PageSize)) // ← 新增
+    return model.PageID(rawID), nil
 }
 
-func (s *OffheapBTreeStorage) AllocInternalPage() (model.PageID, *nodePageHandle, error) {
-    pageID, handle, err := s.allocInternalPage()
-    if err == nil {
-        s.dirtyBytes.Add(PageSize) // 4KB
+// ② AllocNodePage: 首次分配内部页
+func (s *OffheapBTreeStorage) AllocNodePage() (model.PageID, error) {
+    if err := s.checkOpen(); err != nil {
+        return 0, err
     }
-    return pageID, handle, err
+    rawID, err := s.pm.Alloc()
+    if err != nil {
+        return 0, errpkg.BTreeAllocNodePage(err)
+    }
+    s.pa.InitIndexPage(rawID, 1)
+    s.dirtyBytes.Add(uint64(offheap.PageSize)) // ← 新增
+    return model.PageID(rawID), nil
+}
+
+// ③ copyPage: COW 复制已有页面（大热点——每次 Update/Insert 都走这里）
+func (s *OffheapBTreeStorage) copyPage(rawSrcID uint32) (uint32, error) {
+    srcVersion := s.pa.GetVersion(rawSrcID)
+    newRawID, err := s.pm.Alloc()
+    if err != nil {
+        return 0, errpkg.BTreeAllocForCOW(err)
+    }
+    // ... 拷贝逻辑 ...
+    s.dirtyBytes.Add(uint64(offheap.PageSize)) // ← 新增：COW 热点
+    return newRawID, nil
 }
 
 // DirtyBytes 返回自上次 Reset 以来的脏页字节数（O(1)）
@@ -203,7 +234,7 @@ func (b *BTree) ResetDirtyBytes() {
 }
 ```
 
-> TryInPlace（原地 CAS）不分配新页面 → 不计入 `dirtyBytes`。页面首次 COW 时已计入，后续原地替换不改变 dirty 状态。
+> TryInPlace（原地 CAS）不分配新页面 → 不计入 `dirtyBytes`。处理现有 key 的 UPDATE 场景走 `copyPage()`（大热点）——这是 dirtyBytes 计数的主要来源。
 
 #### PersistCheckpoint 中使用
 
@@ -294,7 +325,7 @@ Lealone                                NexKV（修复后）
 | 文件 | 改动量 | 说明 |
 |------|:------:|------|
 | `persist/persist_checkpoint.go` | +70 行 | +idle goroutine + maxDirtyBytes 告警 + dirtyBytesReader 接口 + Close 更新 |
-| `btree/offheap_storage.go` | **+6 行** | AllocLeafPage/AllocInternalPage 中 `dirtyBytes.Add(PageSize)` + DirtyBytes/ResetDirtyBytes |
+| `btree/offheap_storage.go` | **+8 行** | AllocLeafPage/AllocNodePage/copyPage 中 `dirtyBytes.Add(PageSize)` + DirtyBytes/ResetDirtyBytes（3 处 COW 入口全覆盖） |
 | `persist/persist_checkpoint_test.go` | +50 行 | TestPersistCheckpoint_IdleSave + TestPersistCheckpoint_DirtyBytes |
 
 ---

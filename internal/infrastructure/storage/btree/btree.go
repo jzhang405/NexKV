@@ -111,6 +111,13 @@ func (b *BTree) SetChunkManager(cm service.ChunkManager, serializer *chunk.PageS
 	b.storage.SetChunkManager(cm, serializer)
 }
 
+// DirtyBytes returns the number of COW-allocated bytes since the last ResetDirtyBytes.
+// O(1) atomic read — Lealone collectDirtyMemory() equivalent.
+func (b *BTree) DirtyBytes() uint64 { return b.storage.dirtyBytes.Load() }
+
+// ResetDirtyBytes resets the dirty byte counter after a successful checkpoint save.
+func (b *BTree) ResetDirtyBytes() { b.storage.dirtyBytes.Store(0) }
+
 // EnumeratePages performs post-order DFS from the BTree root, returning pre-serialized page data.
 // Children appear before parents (Children-First semantics) so parent writes are safe.
 // Each page is Retained during traversal and Released after children are processed,

@@ -18,19 +18,83 @@ import (
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/checkpoint"
 )
 
+const maxDirtyBytesPerSave = 256 * 1024 * 1024 // 256MB (Lealone MAX_CHUNK_SIZE equiv)
+
+// dirtyBytesReader exposes the Lealone collectDirtyMemory() equivalent.
+type dirtyBytesReader interface{ DirtyBytes() uint64 }
+
+// resetDirtyBytesWriter allows resetting the dirty byte counter after save.
+type resetDirtyBytesWriter interface{ ResetDirtyBytes() }
+
+// ---------------------------------------------------------------------------
+// CheckpointOption — Functional Options (Lealone-style tuning)
+// ---------------------------------------------------------------------------
+
+// CheckpointOption configures PersistCheckpoint behaviour.
+type CheckpointOption func(*checkpointConfig)
+
+type checkpointConfig struct {
+	ckptInterval         int64
+	maxIdleDuration      time.Duration
+	maxDirtyBytesPerSave int64
+}
+
+func defaultCheckpointConfig() *checkpointConfig {
+	return &checkpointConfig{
+		ckptInterval:         10000,
+		maxIdleDuration:      3 * time.Second,
+		maxDirtyBytesPerSave: maxDirtyBytesPerSave,
+	}
+}
+
+// WithCkptInterval sets the number of Set() ops between async checkpoints.
+func WithCkptInterval(n int64) CheckpointOption {
+	return func(c *checkpointConfig) { c.ckptInterval = n }
+}
+
+// WithMaxIdleDuration sets the maximum idle time before a forced save.
+func WithMaxIdleDuration(d time.Duration) CheckpointOption {
+	return func(c *checkpointConfig) { c.maxIdleDuration = d }
+}
+
+// WithMaxDirtyBytes sets the dirty byte threshold for warning logs.
+func WithMaxDirtyBytes(n int64) CheckpointOption {
+	return func(c *checkpointConfig) { c.maxDirtyBytesPerSave = n }
+}
+
+// ---------------------------------------------------------------------------
+// PersistCheckpoint — KVStore decorator (Lealone BTreeStorage.save() equiv)
+// ---------------------------------------------------------------------------
+
 // PersistCheckpoint is a KVStore decorator that periodically flushes dirty BTree
 // pages to AO chunk files (cf. Lealone's BTreeStorage.save()).
+//
+// Three trigger dimensions (Lealone LogSyncService equivalent):
+//  1. count:  setCount % ckptInterval == 0 → asyncSave
+//  2. time:   idle > maxIdleDuration → forced save (background goroutine)
+//  3. memory: dirtyBytes > maxDirtyBytesPerSave → warning log
 type PersistCheckpoint struct {
 	service.KVStore
 
-	enumerateFn  func(checkpoint.PageRef) ([]checkpoint.PageFlushItem, error)
-	rootFn       func() checkpoint.PageRef
-	chunkMgr     service.ChunkManager
-	ckptInterval int64
-	setCount     atomic.Uint64
-	saving       atomic.Bool
-	saveMu       sync.Mutex
-	stats        CkptStats
+	enumerateFn          func(checkpoint.PageRef) ([]checkpoint.PageFlushItem, error)
+	rootFn               func() checkpoint.PageRef
+	chunkMgr             service.ChunkManager
+	dirtyReader          dirtyBytesReader
+	dirtyReset           resetDirtyBytesWriter
+	ckptInterval         int64
+	maxIdleDuration      time.Duration
+	maxDirtyBytesPerSave int64
+	setCount             atomic.Uint64
+	lastSavedCount       atomic.Uint64 // saved-at count (prevents idle-check false positive)
+	saving               atomic.Bool
+	dirtyWarned          atomic.Bool // suppresses duplicate dirty-byte warnings
+	saveMu               sync.Mutex
+	stats                CkptStats
+
+	// idle goroutine (Lealone LogSyncService.run() equiv)
+	wg     sync.WaitGroup
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // CkptStats holds runtime checkpoint statistics for benchmark output.
@@ -42,30 +106,43 @@ type CkptStats struct {
 }
 
 // NewPersistCheckpoint creates a Checkpoint decorator.
-//
-//	tree      — KVStore backend (e.g. BTree)
-//	rootFn    — returns the current root page (e.g. btree.RootPage)
-//	enumFn    — enumerates dirty pages from a root (e.g. btree.EnumeratePages)
-//	chunkMgr  — AO chunk storage
-//	interval  — how many Set() ops between async saves (0 = default 10K)
 func NewPersistCheckpoint(
 	tree service.KVStore,
 	rootFn func() checkpoint.PageRef,
 	enumFn func(checkpoint.PageRef) ([]checkpoint.PageFlushItem, error),
 	cm service.ChunkManager,
-	interval int64,
+	opts ...CheckpointOption,
 ) *PersistCheckpoint {
-	if interval <= 0 {
-		interval = 10000
+	cfg := defaultCheckpointConfig()
+	for _, opt := range opts {
+		opt(cfg)
 	}
-	return &PersistCheckpoint{
-		KVStore:      tree,
-		rootFn:       rootFn,
-		enumerateFn:  enumFn,
-		chunkMgr:     cm,
-		ckptInterval: interval,
+
+	dr, _ := tree.(dirtyBytesReader)
+	dw, _ := tree.(resetDirtyBytesWriter)
+
+	p := &PersistCheckpoint{
+		KVStore:              tree,
+		rootFn:               rootFn,
+		enumerateFn:          enumFn,
+		chunkMgr:             cm,
+		dirtyReader:          dr,
+		dirtyReset:           dw,
+		ckptInterval:         cfg.ckptInterval,
+		maxIdleDuration:      cfg.maxIdleDuration,
+		maxDirtyBytesPerSave: cfg.maxDirtyBytesPerSave,
 	}
+	p.ctx, p.cancel = context.WithCancel(context.Background())
+
+	// Start background idle-check goroutine (Lealone LogSyncService.run() equiv)
+	p.wg.Add(1)
+	go p.runIdleCheckLoop()
+	return p
 }
+
+// ---------------------------------------------------------------------------
+// KVStore interceptors
+// ---------------------------------------------------------------------------
 
 // Set intercepts KVStore.Set to count writes and trigger async checkpoint.
 func (p *PersistCheckpoint) Set(ctx context.Context, key, value []byte) error {
@@ -107,6 +184,42 @@ func (p *PersistCheckpoint) asyncSave() {
 	_ = p.saveInternal()
 }
 
+// ---------------------------------------------------------------------------
+// idle checkpoint goroutine (Lealone LogSyncService.run() equiv)
+// ---------------------------------------------------------------------------
+
+func (p *PersistCheckpoint) runIdleCheckLoop() {
+	defer p.wg.Done()
+	ticker := time.NewTicker(p.maxIdleDuration)
+	defer ticker.Stop()
+
+	lastTickCount := p.setCount.Load()
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			cur := p.setCount.Load()
+			// Trigger forced save if:
+			//   cur == lastTickCount  → no new writes since last tick
+			//   cur > lastSavedCount  → there is unpersisted data
+			//   CAS succeeds          → no save already in progress
+			if cur == lastTickCount && cur > p.lastSavedCount.Load() &&
+				p.saving.CompareAndSwap(false, true) {
+				go func() {
+					defer p.saving.Store(false)
+					p.asyncSave()
+				}()
+			}
+			lastTickCount = cur
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// save core
+// ---------------------------------------------------------------------------
+
 func (p *PersistCheckpoint) saveInternal() error {
 	start := time.Now()
 	root := p.rootFn()
@@ -118,6 +231,18 @@ func (p *PersistCheckpoint) saveInternal() error {
 	if err != nil {
 		log.Printf("persist checkpoint: enumerate failed: %v", err)
 		return err
+	}
+
+	// Dirty-byte threshold check (O(1) atomic read, Lealone collectDirtyMemory equiv)
+	if p.dirtyReader != nil {
+		totalBytes := int64(p.dirtyReader.DirtyBytes())
+		if totalBytes > p.maxDirtyBytesPerSave && p.dirtyWarned.CompareAndSwap(false, true) {
+			log.Printf("persist checkpoint: dirty bytes %d > max %d, "+
+				"consider reducing ckptInterval (current=%d)", totalBytes,
+				p.maxDirtyBytesPerSave, p.ckptInterval)
+		} else if totalBytes <= p.maxDirtyBytesPerSave {
+			p.dirtyWarned.Store(false)
+		}
 	}
 
 	var pageCount int64
@@ -144,12 +269,22 @@ func (p *PersistCheckpoint) saveInternal() error {
 		return err
 	}
 
+	// Reset dirty counter after successful save (Lealone reset dirtyMemory equiv)
+	if p.dirtyReset != nil {
+		p.dirtyReset.ResetDirtyBytes()
+	}
+	p.lastSavedCount.Store(p.setCount.Load())
+
 	elapsed := time.Since(start)
 	atomic.StoreInt64(&p.stats.LastSaveMs, elapsed.Milliseconds())
 	atomic.AddInt64(&p.stats.TotalSaves, 1)
 	atomic.StoreInt64(&p.stats.PageCount, pageCount)
 	return nil
 }
+
+// ---------------------------------------------------------------------------
+// stats / lifecycle
+// ---------------------------------------------------------------------------
 
 // CkptStats returns checkpoint statistics.
 func (p *PersistCheckpoint) CkptStats() CkptStats {
@@ -179,11 +314,15 @@ func (p *PersistCheckpoint) Close() error {
 	case <-ctx.Done():
 		log.Printf("persist checkpoint: close timeout: %v", ctx.Err())
 	}
+
+	p.cancel()
+	p.wg.Wait()
 	return p.KVStore.Close()
 }
 
 // String returns a human-readable description.
 func (p *PersistCheckpoint) String() string {
-	return fmt.Sprintf("PersistCheckpoint(interval=%d sets=%d saves=%d)",
-		p.ckptInterval, p.setCount.Load(), atomic.LoadInt64(&p.stats.TotalSaves))
+	return fmt.Sprintf("PersistCheckpoint(interval=%d sets=%d saves=%d idle=%v)",
+		p.ckptInterval, p.setCount.Load(), atomic.LoadInt64(&p.stats.TotalSaves),
+		p.maxIdleDuration)
 }

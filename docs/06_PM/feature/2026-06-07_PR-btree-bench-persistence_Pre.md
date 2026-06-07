@@ -195,7 +195,27 @@ cmd/tools/btree_bench/
 | `put()` 路径 | **纯内存 BTree COW**，无 fwrite/fsync/RedoLog | `PageOperations.Put.writeLocal()` |
 | `save()` 路径 | 序列化所有脏页 → 写新 Chunk 文件 → `FileChannel.force(true)` | `BTreeStorage.java:319-401, Chunk.java:308-317` |
 
-> Lealone disk 模式的 `put()` 操作**不走任何磁盘 I/O**，只在显式 `save()` 时才批量写盘并 sync。benchmark 中 `seq-put+save` 那一次 `save()` 耗时 0.349s（1M ops），即单次 checkpoint 将所有脏页写入一个新 chunk 文件 + fsync。
+> Lealone disk 模式的 `put()` 操作**不走任何磁盘 I/O**，只在显式 `save()` 时才批量写盘并 sync。
+
+**Lealone 周期性 save() 实测（同一台机器）**：
+
+> 每 N 条 put 后执行一次 `save()`，度量不同批量大小下的有效 QPS。每次 save() 创建新 Chunk 文件 + FileChannel.force(true)。
+
+| Batch 大小 | put 耗时 | save 耗时 | 总耗时 | put QPS | **有效 QPS** | 说明 |
+|:-:|:-:|:-:|:-:|:-:|:-:|------|
+| 1 | 0.001ms | 4.88ms | 4.88ms | 726K | **205** | 每条 fsync（最低开销 ~5ms） |
+| 16 | 0.007ms | 4.98ms | 4.98ms | 2.4M | **3,211** | 16条/批，save() 开销碾压 put |
+| 100 | 0.036ms | 5.01ms | 5.04ms | 2.8M | **19,835** | |
+| 1,000 | 0.34ms | 5.48ms | 5.82ms | 3.0M | **171,956** | 开始达到有意义的吞吐 |
+| 10,000 | 1.80ms | 7.84ms | 9.63ms | 5.6M | **1,038,032** | |
+| 100,000 | 17.9ms | 42.8ms | 60.7ms | 5.6M | **1,647,678** | |
+| 1,000,000 | 201ms | 338ms | 540ms | 5.0M | **1,853,065** | 当前 `seq-put+save` |
+
+> **关键发现**：
+> - Lealone `save()` 有 **~5ms 固定开销**（创建 Chunk 文件 + 写 header + FileChannel.force），无论脏页多少
+> - 小 batch（≤100）下 save() 开销占主导，有效 QPS 极低（205-19K）
+> - 大 batch（≥100K）下 put 开始摊销 save 成本，但最高也只能到 ~1.85M QPS
+> - **与 NexKV 预期对比**：NexKV every-write 预期 15K-30K QPS 基于 WAL fwrite+fsync ~0.03ms，而 Lealone save() 每条约 5ms（167x 慢），因为 Lealone 每批都写完整 Chunk header 而非增量 WAL Entry
 
 **对照表**：
 

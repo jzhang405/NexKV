@@ -111,7 +111,7 @@ func TestPersistCheckpoint_Concurrent(t *testing.T) {
 		func() checkpoint.PageRef { return tree.RootPage() },
 		tree.EnumeratePages,
 		cm,
-		persist.WithCkptInterval(100),      // large enough to avoid frequent EnumeratePages
+		persist.WithCkptInterval(100), // large enough to avoid frequent EnumeratePages
 		persist.WithMaxIdleDuration(5*time.Second), // don't trigger idle saves during test
 	)
 	defer kv.Close()
@@ -168,7 +168,7 @@ func TestPersistCheckpoint_IdleSave(t *testing.T) {
 		func() checkpoint.PageRef { return tree.RootPage() },
 		tree.EnumeratePages,
 		cm,
-		persist.WithCkptInterval(10000),            // large interval, count won't trigger
+		persist.WithCkptInterval(10000), // large interval, count won't trigger
 		persist.WithMaxIdleDuration(100*time.Millisecond), // idle trigger
 	)
 	defer kv.Close()

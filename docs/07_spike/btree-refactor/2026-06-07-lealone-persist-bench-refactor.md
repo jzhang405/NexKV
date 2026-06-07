@@ -5,7 +5,7 @@
 > **作者**：jzhang405  
 > **关联 PR**：`docs/btree-bench-persistence-benchmark`  
 > **关联分支**：`spike/btree-bench-lealone-persist`  
-> **评审状态**：✅ 已通过（综合评分 8.5/10，方案 D 完整版）  
+> **Spike 状态**：✅ 已通过  
 > **关键词**：装饰器模式, SRP, DDD, Checkpoint, WAL, BTree, 持久化, Lealone
 
 ---
@@ -82,7 +82,7 @@ BTree.Set() {
 }
 ```
 
-**否决理由**（专家评审致命问题）：
+**否决理由**：
 
 | 问题 | 严重程度 | 说明 |
 |------|:--------:|------|
@@ -1040,22 +1040,63 @@ func Benchmark_BTree_Ckpt_10K(b *testing.B) {
 | NexKV | `internal/domain/service/chunk_manager.go` | ChunkManager 接口（需新增 `RollbackLastBatch() error`） |
 | NexKV | `internal/infrastructure/storage/persist/` | **新增 package** |
 
-### 第 5 轮评审修正记录
+---
 
-| 严重程度 | 问题 | 修正内容 |
-|:---:|---|------|
-| 🔴 高 | WALEntry use-after-free | `PersistWAL.Set()`: 异步路径深拷贝 Entry 入 channel，Pool 对象仅同步路径使用 |
-| 🟡 中 | 接口抽象泄漏 `(*btree.BTree)` | 新增 `DirtyPageProvider` 接口，构造时校验；所有引用改用接口断言 |
-| 🟡 中 | `RollbackLastBatch()` 不在接口 | 标注 `service.ChunkManager` 需新增此方法 |
-| 🟢 低 | 字段数 17→15 | 全文 6 处统一修正，22→24 同步修正 |
-| 🟢 低 | WAL `chunkMgr` 未使用 | 字段注释标注"batchSync/后台 goroutine 异步 AO 写入" |
-| 📝 分析 | AOSE/AOTE 分界分析 | §4 新增完整分析 + 决策 6 + 5 组件映射表 |
+> **Spike 状态**：✅ 评审通过  
+> **下一步**：启动 Phase 1（persist 包 + PersistWAL 装饰器）
 
 ---
 
-> **文档版本**：v3.0（方案 D · 装饰器版 · 评审修复版）  
-> **创建日期**：2026-06-07  
-> **最后更新**：2026-06-07  
-> **Spike 状态**：✅ 评审通过  
-> **评审评分**：8.5/10  
-> **下一步**：启动 Phase 1（persist 包 + PersistWAL 装饰器）
+## 附录 B：评审记录
+
+### 评审轨迹
+
+| 轮次 | 日期 | 评审人 | 方案版本 | 综合评分 | 发现问题 | 结论 |
+|:----:|------|--------|:--------:|:--------:|------|:----:|
+| 第 1 轮 | 06-07 | 存储 + Go + DDD 三专家 | 方案 C v2.0 | 6.2/10 | 1🔴 + 5🟡 + 5🟢 | ⚠️ 架构方案需调整 |
+| 第 2 轮 | 06-07 | 同上 | 方案 D v3.0 | 8.4/10 | 1🔴 + 2🟡 + 2🟢 | ✅ 通过，5项待修 |
+| 第 3 轮 | 06-07 | 同上 | 方案 D v3.0 | 8.0/10 | 1🔴 + 2🟡 + 2🟢 + 1📝 | ✅ 通过，6项待修 |
+| 第 4 轮 | 06-07 | 同上 | 方案 D v3.1 | 8.5/10 | 全部闭环 | ✅ 最终通过 |
+
+```
+评分趋势:  6.2 ──→ 8.4 ──→ 8.0 ──→ 8.5
+           方案C    方案D    细节修正  AOSE/AOTE + 全面闭环
+```
+
+### 第 1 轮：方案 C 致命问题（v2.0 → 否决）
+
+| 严重程度 | 问题 |
+|:---:|------|
+| 🔴 致命 | BTree 22 字段违反 SRP（从 15→22） |
+| 🟡 高 | save() 在 Set() 热路径同步阻塞（P99 长尾） |
+| 🟡 高 | save() + Set() 并发导致死锁风险 |
+| 🟡 高 | BTree 跨层依赖 WAL/ChunkManager（违反 DDD） |
+| 🟡 高 | 与 Lealone 架构背道而驰（BTreeMap 也无持久化） |
+| 🟡 中 | WALEntry 频繁堆分配（1M ops = 1M 次 GC） |
+| 🟡 中 | 写放大量化缺失 |
+| 🟢 低 | int enum 类型不安全、工时偏低、benchmark 构造不完整 |
+
+**修正**：全线放弃方案 C，切换为方案 D（装饰器模式）。
+
+### 第 2 轮：方案 D v3.0 细节问题
+
+| 严重程度 | 问题 | 修正 |
+|:---:|------|------|
+| 🔴 高 | WALEntry Pool use-after-free（`defer put` + `batchCh <- entry` 竞态） | 异步路径深拷贝入 channel |
+| 🟡 中 | `p.tree.(*btree.BTree)` 类型断言泄漏抽象 | 新增 `DirtyPageProvider` 接口 |
+| 🟡 中 | `RollbackLastBatch()` 不在 `service.ChunkManager` 接口 | 标注需新增 |
+| 🟢 低 | 字段数 17→15 | 全文 6 处统一修正 |
+| 🟢 低 | WAL `chunkMgr` 字段未使用 | 注释标注用途 |
+
+### 第 3 轮：AOSE/AOTE 分界 + 补充分析
+
+| 严重程度 | 问题 | 修正 |
+|:---:|------|------|
+| 📝 分析 | AOSE/AOTE 分界要不要引入 | §4 新增完整分析 + 决策 6 + 5 组件映射表 |
+| 📝 分析 | AOSE Chunk RedoLog 为何不实现 | 补充 3 点原因（单一日志通道、单层 Leaf Page、WALTypeSplit 预留） |
+| 🔴 同上 | WALEntry use-after-free | 已在上轮修复 |
+| 🟡 同上 | 类型断言 + 接口缺失 | 已在上轮修复 |
+
+### 第 4 轮：终审通过
+
+所有问题已闭环。方案 D 核心架构决策（BTree 纯内存 + 装饰器对标 Lealone 分层）经过 3 轮专家评审确认无误。6 项决策完整记录于 §13。

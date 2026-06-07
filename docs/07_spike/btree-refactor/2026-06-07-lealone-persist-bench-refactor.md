@@ -86,7 +86,7 @@ BTree.Set() {
 
 | 问题 | 严重程度 | 说明 |
 |------|:--------:|------|
-| BTree 24 字段，违反 SRP | 🔴 致命 | 从 17 字段膨胀到 24 字段，"KV 存储大总管" |
+| BTree 22 字段，违反 SRP | 🔴 致命 | 从 15 字段膨胀到 22 字段，"KV 存储大总管" |
 | save() 在 Set() 热路径同步阻塞 | 🟡 高 | P99 延迟尖刺（每 10000 次卡 ~5-50ms） |
 | save() + Set() 并发导致死锁 | 🟡 高 | 树遍历锁 vs COW CAS 冲突 |
 | BTree 跨层依赖 WAL/ChunkManager | 🟡 高 | 违反 NexKV 5 层 DDD 分层 |
@@ -293,7 +293,7 @@ func putWALEntry(e *service.WALEntry) {
 
 ### 组件一：BTree（纯内存，零改动）
 
-> **关键修复**：BTree 移除所有持久化相关字段，维持原有 17 个字段，严格遵守 SRP。
+> **关键修复**：BTree 移除所有持久化相关字段，维持原有 15 个字段，严格遵守 SRP。
 
 ```go
 package btree
@@ -326,7 +326,7 @@ type BTree struct {
     batchWriter     *BatchWriter
     batchWriterOnce sync.Once
 }
-// ✅ 17 个字段，与当前代码完全一致。无 WAL/ChunkManager/persistMode。
+// ✅ 15 个字段，与当前代码完全一致。无 WAL/ChunkManager/persistMode。
 
 // 对外暴露快照能力，自身不主动触发落盘
 func (b *BTree) EnumerateDirtyPages() ([]Page, error) { ... }
@@ -348,6 +348,30 @@ type KVStore interface {
 }
 ```
 
+#### 扩展接口：DirtyPageProvider（Checkpoint 专用）
+
+> **修复问题**：`EnumerateDirtyPages()` 不在 `KVStore` 接口上，PersistCheckpoint 通过类型断言获取会导致抽象泄漏。
+
+```go
+// DirtyPageProvider 可选接口，用于 Checkpoint 模式的脏页遍历
+// 实现者: btree.BTree
+type DirtyPageProvider interface {
+    // EnumerateDirtyPages 返回自上次 Checkpoint 以来的脏页
+    EnumerateDirtyPages() ([]Page, error)
+}
+```
+
+PersistCheckpoint 在构造时验证：
+
+```go
+func NewPersistCheckpoint(tree service.KVStore, ...) *PersistCheckpoint {
+    if _, ok := tree.(DirtyPageProvider); !ok {
+        panic("PersistCheckpoint: tree must implement DirtyPageProvider")
+    }
+    // ...
+}
+```
+
 ### 组件二：PersistWAL 装饰器（WAL 模式）
 
 > **修复问题**：完整设计 GroupCommit/EverySecond 后台协程、批量队列、并发互斥。
@@ -358,7 +382,7 @@ package persist
 type PersistWAL struct {
     tree     service.KVStore  // 被装饰的 BTree（纯内存）
     wal      service.WAL
-    chunkMgr service.ChunkManager
+    chunkMgr service.ChunkManager // AO 页面写入（batchSync / 后台 goroutine 异步调用）
     syncMode WalSyncMode
 
     // 批量队列 + 后台协程
@@ -396,7 +420,7 @@ func (p *PersistWAL) Set(ctx context.Context, key, value []byte) error {
 
     // 2. 从 Pool 复用 WALEntry（消除 GC 压力）
     entry := getWALEntry()
-    defer putWALEntry(entry)
+    defer putWALEntry(entry) // ✅ 函数返回时安全归还 (EveryWrite 同步完成; GroupCommit 已深拷贝)
     entry.Type = service.WALTypeInsert
     entry.Key = key
     entry.Value = value
@@ -407,12 +431,19 @@ func (p *PersistWAL) Set(ctx context.Context, key, value []byte) error {
         if _, err := p.wal.Append(entry); err != nil {
             return err
         }
-        return p.wal.Sync() // 每条 fsync
+        return p.wal.Sync() // 每条 fsync; defer 归还 entry ✅
 
     case WalSyncGroupCommit, WalSyncEverySecond:
+        // ⚠️ 深拷贝到 channel: Pool 对象不进入异步路径
+        // channel 中使用独立拷贝, entry 由 defer 安全归还到 Pool
+        clone := &service.WALEntry{
+            Type:  entry.Type,
+            Key:   append([]byte(nil), key...),
+            Value: append([]byte(nil), value...),
+        }
         select {
-        case p.batchCh <- entry:
-            return nil
+        case p.batchCh <- clone:
+            return nil // defer putWALEntry(entry) ✅
         case <-ctx.Done():
             return ctx.Err()
         }
@@ -530,7 +561,7 @@ func (p *PersistCheckpoint) asyncSave() {
     defer p.saveMu.Unlock()
 
     // ① 获取脏页快照（基于 Epoch，不阻塞正在写入的页面）
-    dirtyPages, err := p.tree.(*btree.BTree).EnumerateDirtyPages()
+    dirtyPages, err := p.tree.(DirtyPageProvider).EnumerateDirtyPages()
     if err != nil {
         log.Error("checkpoint enumerate failed", "err", err)
         return
@@ -573,7 +604,7 @@ func (p *PersistCheckpoint) Close() error {
 
 ```
 internal/infrastructure/storage/btree/
-├── btree.go            # 不改动！保持纯内存 17 字段
+├── btree.go            # 不改动！保持纯内存 15 字段
 ├── options.go          # 不改动
 └── ...
 
@@ -878,7 +909,7 @@ func Benchmark_BTree_Ckpt_10K(b *testing.B) {
 | 维度 | 方案 B（拼接） | 方案 C（内嵌，已否决） | 方案 D（装饰器，✅ 采纳） |
 |------|:---:|:---:|:---:|
 | BTree 职责 | ✅ 纯内存 | ❌ KV + WAL + AO 大总管 | ✅ 纯内存 |
-| BTree 字段数 | 17 | 24 | **17**（不变） |
+| BTree 字段数 | 15 | 22 | **15**（不变） |
 | SRP/DDD 分层 | ✅ 符合 | ❌ 严重违规 | ✅ 完全符合 |
 | 并发/阻塞风险 | 低 | ❌ 死锁 + P99 长尾 | ✅ 低 |
 | 对标 Lealone | ❌ 不匹配 | ❌ 反模式 | ✅ 逐层对应 |
@@ -928,8 +959,18 @@ func Benchmark_BTree_Ckpt_10K(b *testing.B) {
 | Lealone | `lealone-aose/.../chunk/Chunk.java:321-329` — ③ writeRedoLog (无 sync) |
 | NexKV | `internal/infrastructure/storage/btree/btree.go` | BTree（不改动） |
 | NexKV | `internal/domain/service/wal.go` | WAL 接口 |
-| NexKV | `internal/domain/service/chunk_manager.go` | ChunkManager 接口 |
+| NexKV | `internal/domain/service/chunk_manager.go` | ChunkManager 接口（需新增 `RollbackLastBatch() error`） |
 | NexKV | `internal/infrastructure/storage/persist/` | **新增 package** |
+
+### 第 4 轮评审修正记录
+
+| 严重程度 | 问题 | 修正内容 |
+|:---:|---|------|
+| 🔴 高 | WALEntry use-after-free | `PersistWAL.Set()`: 异步路径深拷贝到 channel，Pool 对象仅同步路径使用 |
+| 🟡 中 | 接口抽象泄漏 | 新增 `DirtyPageProvider` 接口，构造时校验 |
+| 🟡 中 | `RollbackLastBatch` 不在接口 | 标注 ChunkManager 接口需新增此方法 |
+| 🟢 低 | BTree 字段数 15 非 17 | 全文统一：15 字段（与源码一致） |
+| 🟢 低 | WAL Benchmark 示例 chunkMgr 未使用 | 保留——异步 AO 写入由 `batchSync/后台 goroutine` 调用 |
 
 ---
 

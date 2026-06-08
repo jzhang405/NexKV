@@ -4,6 +4,8 @@
 
 package mvcc
 
+import "sync"
+
 // WriteOp represents the type of write operation in a WriteBuffer entry.
 type WriteOp uint8
 
@@ -34,6 +36,39 @@ func NewWriteBuffer() *WriteBuffer {
 	return &WriteBuffer{
 		entries: make(map[string]WriteEntry),
 	}
+}
+
+// wbPool pools WriteBuffer objects to reduce GC pressure from per-transaction map allocations.
+// After Commit/Rollback, the buffer is Reset and returned to the pool for reuse.
+var wbPool = sync.Pool{
+	New: func() any {
+		return &WriteBuffer{
+			entries: make(map[string]WriteEntry, 64),
+			ordered: make([]string, 0, 64),
+		}
+	},
+}
+
+// getWriteBuffer returns a pooled WriteBuffer.
+func getWriteBuffer() *WriteBuffer {
+	return wbPool.Get().(*WriteBuffer)
+}
+
+// putWriteBuffer resets wb and returns it to the pool.
+func putWriteBuffer(wb *WriteBuffer) {
+	if wb == nil {
+		return
+	}
+	wb.Reset()
+	wbPool.Put(wb)
+}
+
+// Reset clears the WriteBuffer for reuse while preserving underlying map/slice capacity.
+func (wb *WriteBuffer) Reset() {
+	for k := range wb.entries {
+		delete(wb.entries, k)
+	}
+	wb.ordered = wb.ordered[:0]
 }
 
 // Put records a write operation for the given key.

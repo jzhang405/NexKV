@@ -232,6 +232,15 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			}
 			if leafRef.CAS(oldInfo, claimInfo) {
 				b.storage.pa.OverwriteLeafValue(rawID, result.inPlaceIdx, result.inPlaceValue)
+				// Phase 6.5: apply tombstoneDelta in-place (same page, no COW)
+				if result.tombstoneDelta != 0 {
+					tc := b.storage.pa.GetTombstoneCount(rawID)
+					newTC := int16(tc) + result.tombstoneDelta
+					if newTC < 0 {
+						newTC = 0
+					}
+					b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
+				}
 				finalInfo := &PageInfo{
 					PageID:    oldInfo.PageID,
 					Version:   oldInfo.Version + 2,
@@ -803,8 +812,8 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 		return err
 	}
 
-	// Phase 6.5 (G4): apply tombstoneDelta to COW target page (double-COW in split path)
-	if mutation.tombstoneDelta != 0 {
+	// Phase 6.5 (G4): apply tombstoneDelta (skip when inPlace — page not replaced)
+	if mutation.tombstoneDelta != 0 && !mutation.inPlace {
 		rawID := uint32(mutation.newPageID)
 		tc := b.storage.pa.GetTombstoneCount(rawID)
 		newTC := int16(tc) + mutation.tombstoneDelta
@@ -814,25 +823,34 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 		b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
 	}
 
-	// ★ B6 fix: Track orphan page (double-COW replaced original split page)
+	// ★ B6 fix: Track orphan page (inPlace: no COW, no orphan)
 	var leftRef, rightRef *PageRef
 	var orphanPageID model.PageID
 	if bytes.Compare(key, splitKey) < 0 {
-		// target = left → left was mutated
-		leftRef = NewPageRef(mutation.newPageID, 0, nil)
+		// target = left
+		if mutation.inPlace {
+			leftRef = NewPageRef(leftPage.PageID(), 0, nil)
+		} else {
+			leftRef = NewPageRef(mutation.newPageID, 0, nil)
+			orphanPageID = leftPage.PageID()
+		}
 		rightRef = NewPageRef(rightPage.PageID(), 0, nil)
-		orphanPageID = leftPage.PageID() // leftPage replaced by double-COW
 	} else {
-		// target = right → right was mutated
+		// target = right
 		leftRef = NewPageRef(leftPage.PageID(), 0, nil)
-		rightRef = NewPageRef(mutation.newPageID, 0, nil)
-		orphanPageID = rightPage.PageID() // rightPage replaced by double-COW
+		if mutation.inPlace {
+			rightRef = NewPageRef(rightPage.PageID(), 0, nil)
+		} else {
+			rightRef = NewPageRef(mutation.newPageID, 0, nil)
+			orphanPageID = rightPage.PageID()
+		}
 	}
-	leftRef.Retain()  // refCount: 0 → 1
-	rightRef.Retain() // refCount: 0 → 1
+	leftRef.Retain()
+	rightRef.Retain()
 
-	// Recycle orphan page (original split page not referenced by any PageRef)
-	_ = b.storage.FreePage(orphanPageID)
+	if orphanPageID != 0 {
+		_ = b.storage.FreePage(orphanPageID)
+	}
 
 	// Step 4: Parent InsertChild (COW)
 	parentEntry := path[len(path)-2] // leaf's parent
@@ -845,14 +863,24 @@ func (b *BTree) handleLeafSplit(leafRef *PageRef, leafInfo *PageInfo,
 		return ErrCASConflict
 	}
 
-	// Determine child IDs for InsertChild
+	// Determine child IDs for InsertChild (inPlace: no COW, use original page ID)
 	var leftChildID, rightChildID model.PageID
 	if bytes.Compare(key, splitKey) < 0 {
-		leftChildID = mutation.newPageID  // target=left, left mutated
-		rightChildID = rightPage.PageID() // right unchanged
+		// target = left
+		if mutation.inPlace {
+			leftChildID = leftPage.PageID()
+		} else {
+			leftChildID = mutation.newPageID
+		}
+		rightChildID = rightPage.PageID()
 	} else {
-		leftChildID = leftPage.PageID()   // left unchanged
-		rightChildID = mutation.newPageID // target=right, right mutated
+		// target = right
+		leftChildID = leftPage.PageID()
+		if mutation.inPlace {
+			rightChildID = rightPage.PageID()
+		} else {
+			rightChildID = mutation.newPageID
+		}
 	}
 
 	// Step 5: Parent CAS with spin-waiting
@@ -943,8 +971,8 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 		return err
 	}
 
-	// Phase 6.5 (G4): apply tombstoneDelta to COW target page (double-COW in split path)
-	if mutation.tombstoneDelta != 0 {
+	// Phase 6.5 (G4): apply tombstoneDelta (skip when inPlace — page not replaced)
+	if mutation.tombstoneDelta != 0 && !mutation.inPlace {
 		rawID := uint32(mutation.newPageID)
 		tc := b.storage.pa.GetTombstoneCount(rawID)
 		newTC := int16(tc) + mutation.tombstoneDelta
@@ -954,22 +982,34 @@ func (b *BTree) handleRootSplit(_ *PageRef, rootInfo *PageInfo,
 		b.storage.pa.SetTombstoneCount(rawID, uint16(newTC))
 	}
 
-	// ★ B10 fix: Track orphan page (double-COW replaced original split page)
+	// ★ B10 fix: Track orphan page (skip when inPlace — page was not COW-replaced)
 	var orphanPageID model.PageID
-	if bytes.Compare(key, splitKey) < 0 {
-		orphanPageID = leftPage.PageID() // leftPage replaced by double-COW
-	} else {
-		orphanPageID = rightPage.PageID() // rightPage replaced by double-COW
+	if !mutation.inPlace {
+		if bytes.Compare(key, splitKey) < 0 {
+			orphanPageID = leftPage.PageID() // leftPage replaced by double-COW
+		} else {
+			orphanPageID = rightPage.PageID() // rightPage replaced by double-COW
+		}
 	}
 
-	// Step 4: Determine final left/right child IDs
+	// Step 4: Determine final left/right child IDs (inPlace: use original page ID)
 	var leftChildID, rightChildID model.PageID
 	if bytes.Compare(key, splitKey) < 0 {
-		leftChildID = mutation.newPageID  // left mutated
-		rightChildID = rightPage.PageID() // right unchanged
+		// target = left
+		if mutation.inPlace {
+			leftChildID = leftPage.PageID()
+		} else {
+			leftChildID = mutation.newPageID
+		}
+		rightChildID = rightPage.PageID()
 	} else {
-		leftChildID = leftPage.PageID()   // left unchanged
-		rightChildID = mutation.newPageID // right mutated
+		// target = right
+		leftChildID = leftPage.PageID()
+		if mutation.inPlace {
+			rightChildID = rightPage.PageID()
+		} else {
+			rightChildID = mutation.newPageID
+		}
 	}
 
 	// Step 5: Create new root node page

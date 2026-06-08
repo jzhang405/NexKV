@@ -51,10 +51,21 @@ func (m *mockStorage) Delete(_ context.Context, key []byte) error {
 	return nil
 }
 
+func (m *mockStorage) SetBatch(_ context.Context, pairs []KVPair) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, p := range pairs {
+		cp := make([]byte, len(p.Value))
+		copy(cp, p.Value)
+		m.data[string(p.Key)] = cp
+	}
+	return len(pairs), nil
+}
+
 func (m *mockStorage) rawSet(key string, flag byte, ts uint64, val []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	encoded, _ := BuildMVCC(flag, ts, val)
+	encoded, _ := BuildMVCC(flag, ts, val, 0, 0, nil)
 	m.data[key] = encoded
 }
 
@@ -148,24 +159,25 @@ func TestSnapshotTx_ConflictDetection(t *testing.T) {
 	// Pre-populate k1
 	storage.rawSet("k1", FlagNormal, 1, []byte("original"))
 
+	// TX1 acquires lock on k1 at Put, then commits
 	tx1, _ := tm.BeginTx(context.Background(), SnapshotIsolation)
-	tx2, _ := tm.BeginTx(context.Background(), SnapshotIsolation)
-
-	// TX1 reads and writes k1
 	tx1.Put([]byte("k1"), []byte("from_tx1"))
-
-	// TX2 also writes k1 (conflicting write)
-	tx2.Put([]byte("k1"), []byte("from_tx2"))
-
-	// TX1 commits first
 	if err := tx1.Commit(context.Background()); err != nil {
 		t.Fatalf("TX1 Commit failed: %v", err)
 	}
 
-	// TX2 commits → should conflict (TX1 changed beginTS)
-	err := tx2.Commit(context.Background())
-	if err != ErrConflict {
-		t.Fatalf("expected ErrConflict, got %v", err)
+	// TX2 acquires lock on k1 (released after TX1 commit), sees TX1's new value
+	tx2, _ := tm.BeginTx(context.Background(), SnapshotIsolation)
+	tx2.Put([]byte("k1"), []byte("from_tx2"))
+	if err := tx2.Commit(context.Background()); err != nil {
+		t.Fatalf("TX2 Commit failed: %v", err)
+	}
+
+	// Verify: last write wins (pessimistic locking gives serial order)
+	v, _ := storage.GetRaw(context.Background(), []byte("k1"))
+	mv, _ := ParseMVCC(v)
+	if string(mv.RealVal) != "from_tx2" {
+		t.Fatalf("expected from_tx2 (last write wins), got %s", mv.RealVal)
 	}
 }
 
@@ -262,32 +274,28 @@ func TestSnapshotTx_PartialRollback(t *testing.T) {
 	storage.rawSet("k1", FlagNormal, 1, []byte("v1"))
 	storage.rawSet("k2", FlagNormal, 1, []byte("v2"))
 
+	// TX1: Put + Commit first (releases locks)
 	tx1, _ := tm.BeginTx(context.Background(), SnapshotIsolation)
 	tx1.Put([]byte("k1"), []byte("new1"))
 	tx1.Put([]byte("k2"), []byte("new2"))
+	if err := tx1.Commit(context.Background()); err != nil {
+		t.Fatalf("TX1 Commit failed: %v", err)
+	}
 
-	// Concurrently modify k1 to cause TX1 conflict on second key
-	// (after TX1 commits first key, conflict on second key triggers rollback)
-	// Actually, let's use a simpler approach: have TX2 modify k1 before TX1 commits
-
+	// TX2: overwrites k1 after TX1 committed
 	tx2, _ := tm.BeginTx(context.Background(), SnapshotIsolation)
 	tx2.Put([]byte("k1"), []byte("concurrent"))
 	_ = tx2.Commit(context.Background())
 
-	err := tx1.Commit(context.Background())
-	if err == nil {
-		t.Fatal("expected conflict error")
-	}
-
-	// k1 should be TX2's value, k2 should be unchanged
+	// k1 = TX2's value (last write), k2 = TX1's value (unchanged by TX2)
 	tx3, _ := tm.BeginTx(context.Background(), SnapshotIsolation)
 	val1, _ := tx3.Get(context.Background(), []byte("k1"))
 	if string(val1) != "concurrent" {
-		t.Fatalf("expected k1=concurrent after rollback, got %s", val1)
+		t.Fatalf("expected k1=concurrent (TX2 last write), got %s", val1)
 	}
 	val2, _ := tx3.Get(context.Background(), []byte("k2"))
-	if string(val2) != "v2" {
-		t.Fatalf("expected k2=v2 (unchanged), got %s", val2)
+	if string(val2) != "new2" {
+		t.Fatalf("expected k2=new2 (TX1 write), got %s", val2)
 	}
 	tx3.Rollback()
 }
@@ -342,22 +350,20 @@ func TestSnapshotTx_InsertVersionChain(t *testing.T) {
 	tx2.Put([]byte("k1"), []byte("v2"))
 	_ = tx2.Commit(context.Background())
 
-	// Verify version chain was built by Update
-	chain := tm.(*txManager).versionStore.Load("k1")
-	if chain == nil {
-		t.Fatal("expected version chain for k1")
+	// Verify previous version is embedded in BTree value (v1 stored as prev after v2 update)
+	raw, err := storage.GetRaw(context.Background(), []byte("k1"))
+	if err != nil {
+		t.Fatal("expected k1 to exist")
 	}
-	node := chain.Load()
-	foundNormalNode := false
-	for node != nil {
-		if node.flag == FlagNormal {
-			foundNormalNode = true
-			break
-		}
-		node = node.next.Load()
+	mv, _ := ParseMVCC(raw)
+	if mv.PrevBeginTS == 0 {
+		t.Fatal("expected prev version in BTree value after Update")
 	}
-	if !foundNormalNode {
-		t.Fatal("expected at least one Normal node in version chain (from Update)")
+	if string(mv.RealVal) != "v2" {
+		t.Fatalf("current = v2 expected, got %s", mv.RealVal)
+	}
+	if string(mv.PrevVal) != "v1" {
+		t.Fatalf("prev = v1 expected, got %s", mv.PrevVal)
 	}
 }
 
@@ -488,4 +494,148 @@ func TestKeyLock_LockTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	kl.Unlock()
+}
+
+// ============================================================================
+// Phase 1: Pessimistic Locking Tests (Lealone RowLock equiv)
+// ============================================================================
+
+// newPessimisticTx creates a pessimistic transaction for testing.
+func newPessimisticTx(storage *mockStorage, level IsolationLevel) *SnapshotTx {
+	tsGen := NewLocalTS()
+	tm, _ := NewTxManagerWithGC(storage, tsGen, nil).(*txManager)
+	tx, _ := tm.BeginPessimisticTx(context.Background(), level)
+	return tx.(*SnapshotTx)
+}
+
+func TestPessimisticTx_Basic_PutGet(t *testing.T) {
+	storage := newMockStorage()
+	storage.rawSet("k1", FlagNormal, 1, []byte("oldVal"))
+	tx := newPessimisticTx(storage, SnapshotIsolation)
+	_ = tx.Put([]byte("k1"), []byte("v1"))
+	_ = tx.Commit(context.Background())
+
+	v, _ := tx.engine.storage.GetRaw(context.Background(), []byte("k1"))
+	mv, _ := ParseMVCC(v)
+	if string(mv.RealVal) != "v1" {
+		t.Fatalf("expected v1, got %s", mv.RealVal)
+	}
+	if tx.heldLocks != nil {
+		t.Fatal("heldLocks should be nil after Commit")
+	}
+}
+
+func TestPessimisticTx_RollbackReleasesLocks(t *testing.T) {
+	storage := newMockStorage()
+	storage.rawSet("k1", FlagNormal, 1, []byte("oldVal"))
+	tx := newPessimisticTx(storage, SnapshotIsolation)
+	_ = tx.Put([]byte("k1"), []byte("v1"))
+	_ = tx.Rollback()
+
+	if tx.heldLocks != nil {
+		t.Fatal("heldLocks should be nil after Rollback")
+	}
+	v, _ := storage.GetRaw(context.Background(), []byte("k1"))
+	mv, _ := ParseMVCC(v)
+	if string(mv.RealVal) != "oldVal" {
+		t.Fatalf("rollback should preserve old value, got %s", mv.RealVal)
+	}
+}
+
+func TestPessimisticTx_DuplicatePutSameKey(t *testing.T) {
+	storage := newMockStorage()
+	storage.rawSet("k1", FlagNormal, 1, []byte("oldVal"))
+	tx := newPessimisticTx(storage, SnapshotIsolation)
+	_ = tx.Put([]byte("k1"), []byte("v1"))
+	_ = tx.Put([]byte("k1"), []byte("v2")) // same key — no deadlock
+	_ = tx.Commit(context.Background())
+
+	v, _ := storage.GetRaw(context.Background(), []byte("k1"))
+	mv, _ := ParseMVCC(v)
+	if string(mv.RealVal) != "v2" {
+		t.Fatalf("second Put should win, got %s", mv.RealVal)
+	}
+	if tx.heldLocks != nil {
+		t.Fatal("heldLocks should be nil after Commit")
+	}
+}
+
+func TestPessimisticTx_VsOptimistic(t *testing.T) {
+	storage := newMockStorage()
+	storage.rawSet("k1", FlagNormal, 1, []byte("oldVal"))
+
+	// Both BeginTx and BeginPessimisticTx now create pessimistic transactions.
+	// Verify they behave identically.
+	ptx := newPessimisticTx(storage, SnapshotIsolation)
+	_ = ptx.Put([]byte("k1"), []byte("v1"))
+	_ = ptx.Commit(context.Background())
+
+	// BeginTx also creates pessimistic now (Phase 1 unified)
+	om := newTestTxManager(storage)
+	otx, _ := om.BeginTx(context.Background(), SnapshotIsolation)
+	_ = otx.Put([]byte("k1"), []byte("v2"))
+	// Verify pessimistic BEFORE Commit (releaseHeldLocks sets nil after)
+	if otx.(*SnapshotTx).heldLocks == nil {
+		t.Fatal("BeginTx should now create pessimistic tx (non-nil heldLocks)")
+	}
+	_ = otx.Commit(context.Background())
+
+	v, _ := storage.GetRaw(context.Background(), []byte("k1"))
+	mv, _ := ParseMVCC(v)
+	if string(mv.RealVal) != "v2" {
+		t.Fatalf("last write should win, got %s", mv.RealVal)
+	}
+}
+
+func TestPessimisticTx_MixedReadWrite(t *testing.T) {
+	ctx := context.Background()
+	storage := newMockStorage()
+	tsGen := NewLocalTS()
+	preloadTS := tsGen.NextTS()
+	storage.rawSet("k1", FlagNormal, preloadTS, []byte("oldVal"))
+	storage.rawSet("k2", FlagNormal, preloadTS+1, []byte("oldVal2"))
+	_ = tsGen.NextTS() // advance past preload
+
+	tm, _ := NewTxManagerWithGC(storage, tsGen, nil).(*txManager)
+	tx, _ := tm.BeginPessimisticTx(ctx, SnapshotIsolation)
+
+	v, _ := tx.Get(ctx, []byte("k1"))
+	if string(v) != "oldVal" {
+		t.Fatalf("Get k1: expected oldVal, got %s", v)
+	}
+	_ = tx.Put([]byte("k2"), []byte("v2"))
+	_ = tx.Put([]byte("k3"), []byte("v3"))
+	_ = tx.Commit(ctx)
+	if tx.(*SnapshotTx).heldLocks != nil {
+		t.Fatal("heldLocks should be nil after Commit")
+	}
+}
+
+func TestPessimisticTx_DefaultPessimistic(t *testing.T) {
+	storage := newMockStorage()
+	tm := newTestTxManager(storage)
+	tx, _ := tm.BeginTx(context.Background(), SnapshotIsolation)
+	// Since Phase 1 unified: BeginTx always creates a pessimistic transaction
+	if tx.(*SnapshotTx).heldLocks == nil {
+		t.Fatal("BeginTx should always create pessimistic tx (non-nil heldLocks)")
+	}
+	_ = tx.Put([]byte("k1"), []byte("v1"))
+	_ = tx.Commit(context.Background())
+}
+
+func TestPessimisticTx_Delete(t *testing.T) {
+	storage := newMockStorage()
+	storage.rawSet("k1", FlagNormal, 1, []byte("oldVal"))
+	tx := newPessimisticTx(storage, SnapshotIsolation)
+	_ = tx.Delete([]byte("k1"))
+	_ = tx.Commit(context.Background())
+
+	v, _ := storage.GetRaw(context.Background(), []byte("k1"))
+	mv, _ := ParseMVCC(v)
+	if !mv.IsTombstone() {
+		t.Fatal("expected tombstone after delete")
+	}
+	if tx.heldLocks != nil {
+		t.Fatal("heldLocks should be nil after Commit")
+	}
 }

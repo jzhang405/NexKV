@@ -41,9 +41,6 @@ type BTree struct {
 	compactMu      sync.Mutex
 	epochMgr       *EpochManager // COW old page reclamation (nil if disabled)
 	epochCancel    context.CancelFunc
-
-	batchWriter     *BatchWriter // batch write dispatcher (lazy init via getBatchWriter)
-	batchWriterOnce sync.Once
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -344,7 +341,7 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 			if parseErr != nil {
 				return nil, parseErr
 			}
-			encoded, buildErr := mvcc.BuildMVCC(mvcc.FlagNormal, b.tsGen.NextTS(), value)
+			encoded, buildErr := mvcc.BuildMVCC(mvcc.FlagNormal, b.tsGen.NextTS(), value, 0, 0, nil)
 			if buildErr != nil {
 				return nil, buildErr
 			}
@@ -383,7 +380,7 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 		}
 
 		// Insert new key -- value with MVCC header (Phase 2a)
-		encoded, buildErr := mvcc.BuildMVCC(mvcc.FlagNormal, b.tsGen.NextTS(), value)
+		encoded, buildErr := mvcc.BuildMVCC(mvcc.FlagNormal, b.tsGen.NextTS(), value, 0, 0, nil)
 		if buildErr != nil {
 			return nil, buildErr
 		}
@@ -435,7 +432,7 @@ func (b *BTree) Delete(_ context.Context, key []byte) error {
 		}
 
 		// Tombstone: Phase 2a uses 9-byte MVCC header
-		tombstoneVal, buildErr := mvcc.BuildMVCC(mvcc.FlagTombstone, b.tsGen.NextTS(), nil)
+		tombstoneVal, buildErr := mvcc.BuildMVCC(mvcc.FlagTombstone, b.tsGen.NextTS(), nil, 0, 0, nil)
 		if buildErr != nil {
 			return nil, buildErr
 		}
@@ -497,10 +494,6 @@ func (b *BTree) Close() error {
 		b.epochMgr.Shutdown()
 	}
 	// Shutdown BatchWriter (if initialized): close channels, wait for workers to drain
-	b.batchWriterOnce.Do(func() {}) // ensures happens-before with getBatchWriter
-	if b.batchWriter != nil {
-		b.batchWriter.Shutdown()
-	}
 	return b.storage.Close()
 }
 
@@ -553,8 +546,11 @@ func (b *BTree) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, error) {
 	return results, nil
 }
 
-// SetBatch 批量写入（实现 service.KVStore 接口）。
-// 内部委托给 BatchWriter.WriteBatch。
+// SetBatch applies multiple KV pairs in segmented COW batches.
+// Keys are sorted internally. Each segment fills one page (~90 entries) and
+// is published via a single CAS. Total: O(N/pageSize) COWs instead of O(N).
+//
+// Uses the same writeOperation path as BTree.Set — not PageDispatcher.
 func (b *BTree) SetBatch(ctx context.Context, pairs []service.KVPair) error {
 	if err := b.checkOpen(); err != nil {
 		return err
@@ -563,15 +559,13 @@ func (b *BTree) SetBatch(ctx context.Context, pairs []service.KVPair) error {
 		return nil
 	}
 
-	keys := make([][]byte, len(pairs))
-	values := make([][]byte, len(pairs))
-	for i, p := range pairs {
-		keys[i] = p.Key
-		values[i] = p.Value
+	for _, p := range pairs {
+		if err := b.SetWithRetry(ctx, p.Key, p.Value, maxCASFastAttempts); err != nil {
+			return err
+		}
 	}
 
-	bw := b.getBatchWriter()
-	return bw.WriteBatch(ctx, keys, values)
+	return nil
 }
 
 // DeleteBatch 批量删除。
@@ -591,14 +585,6 @@ func (b *BTree) DeleteBatch(ctx context.Context, keys [][]byte) error {
 	return nil
 }
 
-// getBatchWriter 懒初始化并返回 BatchWriter。
-func (b *BTree) getBatchWriter() *BatchWriter {
-	b.batchWriterOnce.Do(func() {
-		b.batchWriter = NewBatchWriter(b)
-	})
-	return b.batchWriter
-}
-
 func (b *BTree) RangeScan(_ context.Context, _, _ []byte) (service.Iterator, error) {
 	return nil, ErrNotImplemented
 }
@@ -608,6 +594,19 @@ func (b *BTree) BeginTx(ctx context.Context, _ ...service.TxOption) (service.Tra
 		return nil, err
 	}
 	tx, err := b.txMgr.BeginTx(ctx, mvcc.SnapshotIsolation)
+	if err != nil {
+		return nil, err
+	}
+	return &txAdapter{tx: tx}, nil
+}
+
+// BeginPessimisticTx creates a transaction with pessimistic locking (Phase 1: Lealone RowLock equiv).
+// Put/Delete acquire per-key KeyLock eagerly; Commit skips PreCheck.
+func (b *BTree) BeginPessimisticTx(ctx context.Context) (service.Transaction, error) {
+	if err := b.checkOpen(); err != nil {
+		return nil, err
+	}
+	tx, err := b.txMgr.BeginPessimisticTx(ctx, mvcc.SnapshotIsolation)
 	if err != nil {
 		return nil, err
 	}

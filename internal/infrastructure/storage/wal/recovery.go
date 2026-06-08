@@ -16,7 +16,7 @@ import (
 // and replays them with three-phase idempotency checks.
 //
 // Returns the set of committed TxIDs and the total entries replayed.
-func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor, vs *mvcc.VersionStore) (committedTxIDs map[uint64]uint64, replayedCount int, err error) {
+func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor) (committedTxIDs map[uint64]uint64, replayedCount int, err error) {
 	// Step 1: Scan all .wal segments and collect entries
 	entries, err := dw.Recover()
 	if err != nil {
@@ -75,9 +75,8 @@ func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor, vs *mvcc
 		}
 	}
 
-	// Step 4: Replay committed transactions with three-phase idempotency
+	// Step 4: Replay committed transactions
 	committedTxIDs = make(map[uint64]uint64) // txID → commitTS
-	dedup := newCommitTSDedupSet()
 
 	for txID, g := range groups {
 		select {
@@ -92,30 +91,23 @@ func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor, vs *mvcc
 		committedTxIDs[txID] = g.commitTS
 
 		for _, e := range g.entries {
-			// Skip entries already covered by Checkpoint (C1 CRITICAL: replay from checkpointStartLSN)
+			// Skip entries already covered by Checkpoint
 			if replayStart != LSNInvalid && e.LSN < replayStart {
 				continue
 			}
-			// Phase 1: Read current BTree state
+			// Phase 1: Read current BTree state for idempotency
 			raw, beginTS, getErr := bt.GetWithMeta(ctx, e.Key)
 			keyExists := getErr == nil
 
-			// Phase 2: Three-phase idempotency check
+			// Phase 2: Idempotency check
 			if keyExists && beginTS > g.commitTS {
 				continue // newer version exists, skip
 			}
 			if keyExists && beginTS == g.commitTS {
-				// Check VersionChain — if node already exists, skip
-				if dedup.AlreadyPrepended(string(e.Key), g.commitTS) {
-					continue
-				}
-				// btree done, chain not done — just Prepend
-				replaySingleKey(ctx, bt, vs, e, g.commitTS, raw, dedup)
-				replayedCount++
-				continue
+				continue // already applied, skip
 			}
-			// beginTS < commitTS or key not found: full replay
-			replaySingleKey(ctx, bt, vs, e, g.commitTS, raw, dedup)
+			// beginTS < commitTS or key not found: replay
+			replaySingleKey(ctx, bt, e, g.commitTS, raw)
 			replayedCount++
 		}
 	}
@@ -132,7 +124,7 @@ func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor, vs *mvcc
 		for _, pe := range parsed {
 			key := []byte(pe.Key)
 			if pe.OldValue == nil && pe.OldFlag == mvcc.FlagTombstone {
-				encoded, _ := mvcc.BuildMVCC(mvcc.FlagTombstone, g.commitTS, nil)
+				encoded, _ := mvcc.BuildMVCC(mvcc.FlagTombstone, g.commitTS, nil, 0, 0, nil)
 				_ = bt.Set(ctx, key, encoded)
 			} else if pe.OldValue != nil {
 				_ = bt.Set(ctx, key, pe.OldValue)
@@ -142,80 +134,39 @@ func RecoverFromWAL(ctx context.Context, dw *DiskWAL, bt BTreeAccessor, vs *mvcc
 	return committedTxIDs, replayedCount, nil
 }
 
-// replaySingleKey replays a single WAL entry against BTree + VersionChain.
-func replaySingleKey(ctx context.Context, bt BTreeAccessor, vs *mvcc.VersionStore, e *WALEntry, commitTS uint64, oldRaw []byte, dedup *commitTSDedupSet) {
-	keyStr := string(e.Key)
+// replaySingleKey replays a single WAL entry against BTree (version-inline, no VersionChain needed).
+func replaySingleKey(ctx context.Context, bt BTreeAccessor, e *WALEntry, commitTS uint64, oldRaw []byte) {
+	oldVal, oldFlag, oldBeginTS := extractOldValueWithTS(oldRaw)
 
 	switch e.Type {
 	case WALTypeInsert:
-		// Insert: Mark BTree with MVCC-encoded value, Prepend Tombstone marker.
-		encoded, _ := mvcc.BuildMVCC(mvcc.FlagNormal, commitTS, e.Value)
+		encoded, _ := mvcc.BuildMVCC(mvcc.FlagNormal, commitTS, e.Value, 0, 0, nil)
 		_ = bt.Set(ctx, e.Key, encoded)
-		if !dedup.AlreadyPrepended(keyStr, commitTS) {
-			_ = vs.Prepend(keyStr, commitTS, nil, mvcc.FlagTombstone)
-		}
 
 	case WALTypeUpdate:
-		// Update: Get new value from entry, old value from BTree or raw.
-		encoded, _ := mvcc.BuildMVCC(mvcc.FlagNormal, commitTS, e.Value)
+		encoded, _ := mvcc.BuildMVCC(mvcc.FlagNormal, commitTS, e.Value, oldFlag, oldBeginTS, oldVal)
 		_ = bt.Set(ctx, e.Key, encoded)
-		if !dedup.AlreadyPrepended(keyStr, commitTS) {
-			oldVal, oldFlag := extractOldValue(oldRaw)
-			_ = vs.Prepend(keyStr, commitTS, oldVal, oldFlag)
-		}
 
 	case WALTypeDelete:
-		// Delete: Write Tombstone to BTree, Prepend old value.
-		encoded, _ := mvcc.BuildMVCC(mvcc.FlagTombstone, commitTS, nil)
+		encoded, _ := mvcc.BuildMVCC(mvcc.FlagTombstone, commitTS, nil, oldFlag, oldBeginTS, oldVal)
 		_ = bt.Set(ctx, e.Key, encoded)
-		if !dedup.AlreadyPrepended(keyStr, commitTS) {
-			oldVal, oldFlag := extractOldValue(oldRaw)
-			_ = vs.Prepend(keyStr, commitTS, oldVal, oldFlag)
-		}
 	}
 }
 
-// extractOldValue extracts the old value and flag from raw MVCC-encoded bytes.
-func extractOldValue(raw []byte) ([]byte, byte) {
+// extractOldValueWithTS extracts old value, flag, and beginTS from raw MVCC bytes.
+func extractOldValueWithTS(raw []byte) ([]byte, byte, uint64) {
 	if raw == nil {
-		return nil, mvcc.FlagTombstone
+		return nil, mvcc.FlagTombstone, 0
 	}
 	mv, err := mvcc.ParseMVCC(raw)
 	if err != nil {
-		return nil, mvcc.FlagTombstone
+		return nil, mvcc.FlagTombstone, 0
 	}
-	return deepCopySlice(mv.RealVal), mv.Flag
+	return mv.RealVal, mv.Flag, mv.BeginTS
 }
 
 // BTreeAccessor is the minimal BTree interface needed for recovery.
 type BTreeAccessor interface {
 	GetWithMeta(ctx context.Context, key []byte) (raw []byte, beginTS uint64, err error)
 	Set(ctx context.Context, key, value []byte) error
-}
-
-// commitTSDedupSet prevents duplicate Prepend during recovery.
-type commitTSDedupSet struct {
-	seen map[string]uint64 // key → max commitTS already prepended
-}
-
-func newCommitTSDedupSet() *commitTSDedupSet {
-	return &commitTSDedupSet{seen: make(map[string]uint64)}
-}
-
-func (d *commitTSDedupSet) AlreadyPrepended(key string, commitTS uint64) bool {
-	prev, ok := d.seen[key]
-	if ok && prev >= commitTS {
-		return true
-	}
-	d.seen[key] = commitTS
-	return false
-}
-
-func deepCopySlice(src []byte) []byte {
-	if src == nil {
-		return nil
-	}
-	dst := make([]byte, len(src))
-	copy(dst, src)
-	return dst
 }

@@ -106,6 +106,87 @@ func (a *btreeStorageAdapter) Set(_ context.Context, key, value []byte) error {
 	return err
 }
 
+// SetBatch applies multiple key-value pairs with segmented COW batching.
+// Pairs are processed in segments that fit in a single page (~100 keys/page).
+// Each segment uses one writeOperation → one COW + one CAS.
+// Total: O(N/pageSize) COWs instead of O(N) with single-key Set.
+//
+// Keys must be sorted before calling — the caller (applyWriteBuffer) already sorts.
+func (a *btreeStorageAdapter) SetBatch(_ context.Context, pairs []mvcc.KVPair) (int, error) {
+	if err := a.tree.checkOpen(); err != nil {
+		return 0, err
+	}
+	if len(pairs) == 0 {
+		return 0, nil
+	}
+
+	count := 0
+	for offset := 0; offset < len(pairs); {
+		// Each segment: as many keys as fit in current page (~100),
+		// start from pairs[offset]. CAS retries restart from same offset.
+		segStart := offset
+		err := writeOperation(a.tree, pairs[segStart].Key, func(leaf LeafPage) (*leafMutation, error) {
+			var totalDelta int64
+			current := leaf
+			n := 0
+
+			for i := segStart; i < len(pairs); i++ {
+				p := pairs[i]
+				idx, found := current.Search(p.Key)
+				if found {
+					oldVal := current.GetValue(idx)
+					if oldMVCC, parseErr := mvcc.ParseMVCC(oldVal); parseErr == nil && oldMVCC.IsTombstone() {
+						if newMVCC, newParseErr := mvcc.ParseMVCC(p.Value); newParseErr == nil && !newMVCC.IsTombstone() {
+							totalDelta++
+						}
+					}
+					newLeaf, updateErr := current.Update(idx, p.Value)
+					if updateErr != nil {
+						return nil, updateErr
+					}
+					current = newLeaf
+				} else {
+					// Insert: check page capacity first
+					if current.IsFull(len(p.Key), len(p.Value)) {
+						break // segment full, return what we have
+					}
+					newLeaf, insertErr := current.Insert(p.Key, p.Value)
+					if insertErr != nil {
+						return nil, insertErr
+					}
+					current = newLeaf
+					totalDelta++
+				}
+				n++
+			}
+
+			// Advance offset after this segment (re-applied on CAS retry)
+			offset = segStart + n
+
+			return &leafMutation{
+				newPageID: current.PageID(),
+				delta:     totalDelta,
+			}, nil
+		})
+
+		if err != nil {
+			return count, err
+		}
+		advanced := offset - segStart
+		count += advanced
+		if advanced == 0 {
+			offset++ // safety: force-advance to avoid infinite loop
+			count++
+		}
+	}
+
+	if a.tree.metrics != nil {
+		a.tree.metrics.WriteCount.Add(int64(count))
+	}
+
+	return count, nil
+}
+
 // Delete physically removes the key from the B+Tree.
 // For MVCC transactions, tombstone encoding is handled by the transaction layer;
 // this adapter only handles the case where the transaction needs to physically

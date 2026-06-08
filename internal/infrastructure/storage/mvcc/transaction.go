@@ -9,7 +9,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
-	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -29,6 +28,18 @@ type StorageBackend interface {
 	GetRaw(ctx context.Context, key []byte) ([]byte, error)
 	Set(ctx context.Context, key, value []byte) error
 	Delete(ctx context.Context, key []byte) error
+
+	// SetBatch applies multiple key-value pairs in a single COW+writeOperation pass.
+	// All keys are applied to one COW copy of the leaf page, then CAS-published once.
+	// Keys must already be sorted (caller responsibility) to avoid redundant binary searches.
+	// Returns the count of operations applied and any error.
+	SetBatch(ctx context.Context, pairs []KVPair) (int, error)
+}
+
+// KVPair is a key-value pair for batched writes.
+type KVPair struct {
+	Key   []byte
+	Value []byte
 }
 
 // ---------------------------------------------------------------------------
@@ -64,6 +75,9 @@ type Tx interface {
 // TxManager creates and manages transactions.
 type TxManager interface {
 	BeginTx(ctx context.Context, level IsolationLevel) (Tx, error)
+	// BeginPessimisticTx creates a transaction with pessimistic locking (Phase 1: Lealone RowLock equiv).
+	// Put/Delete acquire per-key KeyLock eagerly; Commit skips PreCheck and GetRaw in commitKey.
+	BeginPessimisticTx(ctx context.Context, level IsolationLevel) (Tx, error)
 }
 
 // NewTxManager creates a new transaction manager bound to the given storage and TSGenerator.
@@ -77,7 +91,6 @@ func NewTxManagerWithGC(storage StorageBackend, tsGen TSGenerator, gcCfg *GCConf
 	return &txManager{
 		storage:          storage,
 		tsGen:            tsGen,
-		versionStore:     &VersionStore{},
 		activeTxRegistry: NewActiveTxRegistry(),
 		gcCfg:            gcCfg,
 	}
@@ -86,7 +99,6 @@ func NewTxManagerWithGC(storage StorageBackend, tsGen TSGenerator, gcCfg *GCConf
 type txManager struct {
 	storage          StorageBackend
 	tsGen            TSGenerator
-	versionStore     *VersionStore
 	activeTxRegistry *ActiveTxRegistry
 	txIDCounter      atomic.Uint64
 	siCount          atomic.Int32
@@ -124,8 +136,15 @@ func (tm *txManager) SetWAL(w WALWriter) {
 }
 
 func (tm *txManager) BeginTx(ctx context.Context, level IsolationLevel) (Tx, error) {
-	// Allocate snapshotTS and register txID under the same Mutex to eliminate
-	// the GC window where a transaction is visible but its snapshotTS isn't tracked.
+	return tm.beginTx(ctx, level)
+}
+
+// BeginPessimisticTx is deprecated; use BeginTx (always pessimistic since Phase 1).
+func (tm *txManager) BeginPessimisticTx(ctx context.Context, level IsolationLevel) (Tx, error) {
+	return tm.beginTx(ctx, level)
+}
+
+func (tm *txManager) beginTx(ctx context.Context, level IsolationLevel) (Tx, error) {
 	tm.activeTxRegistry.mu.Lock()
 	snapshotTS := tm.tsGen.NextTS()
 	txID := tm.txIDCounter.Add(1)
@@ -135,15 +154,16 @@ func (tm *txManager) BeginTx(ctx context.Context, level IsolationLevel) (Tx, err
 	if level == SnapshotIsolation {
 		tm.siCount.Add(1)
 	}
-	return &SnapshotTx{
+	tx := &SnapshotTx{
 		engine:         tm,
 		snapshotTS:     snapshotTS,
 		txID:           txID,
 		isolationLevel: level,
-		writeBuffer:    NewWriteBuffer(),
-		readSet:        make(map[string]ReadFingerprint),
+		writeBuffer:    getWriteBuffer(),
+		heldLocks:      make(map[string]*KeyLock),
 		ctx:            ctx,
-	}, nil
+	}
+	return tx, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -152,11 +172,11 @@ func (tm *txManager) BeginTx(ctx context.Context, level IsolationLevel) (Tx, err
 
 // UndoEntry records state needed to roll back a single key after a partial commit.
 type UndoEntry struct {
-	Key              string
-	OldRawVal        []byte       // B+Tree value before apply (deepCopy); nil means key didn't exist
-	CommitTS         uint64       // commitTS used for this key
-	PrePrependHead   *VersionNode // VersionChain head before Prepend
-	PrependSucceeded bool         // whether Prepend succeeded
+	Key        string
+	OldRawVal  []byte // B+Tree value before apply (deepCopy); nil means key didn't exist
+	CommitTS   uint64 // commitTS used for this key
+	EncodedKey []byte // B+Tree key (for batch Set)
+	EncodedVal []byte // B+Tree value (for batch Set)
 }
 
 // ---------------------------------------------------------------------------
@@ -170,9 +190,12 @@ type SnapshotTx struct {
 	txID           uint64 // Phase 3: unique transaction ID for GC tracking
 	isolationLevel IsolationLevel
 	writeBuffer    *WriteBuffer
-	readSet        map[string]ReadFingerprint
 	ctx            context.Context
 	completed      atomic.Bool // true after Commit or Rollback
+
+	// heldLocks holds per-key KeyLocks acquired eagerly in Put/Delete (Lealone RowLock equiv).
+	// Always non-nil since Phase 1 unified to pessimistic-only path.
+	heldLocks map[string]*KeyLock
 }
 
 // SnapshotTS returns the snapshot timestamp of this transaction.
@@ -207,101 +230,38 @@ func (tx *SnapshotTx) Get(ctx context.Context, key []byte) ([]byte, error) {
 	return tx.snapshotGet(ctx, key)
 }
 
-// snapshotGet implements the core snapshot read algorithm using optimistic retry.
-//
-// The read path is lock-free: it reads B+Tree then traverses VersionChain without
-// acquiring KeyLock. To handle the Set-before-Prepend window (where B+Tree is updated
-// but VersionChain hasn't been prepended yet) and rollback concurrency, we use an
-// optimistic consistency check: record the chain's Generation() before traversal,
-// and re-check after. If generation changed (a concurrent commit or rollback modified
-// the chain), we retry the entire read.
-//
-// This avoids read-path locking overhead while guaranteeing snapshot consistency.
-const snapshotGetMaxRetries = 3
-
+// snapshotGet implements snapshot read using inline prev version (Phase 3: version-inline).
+// Eliminates VersionChain traversal entirely — prev version is embedded in BTree value.
 func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, error) {
-	keyStr := string(key)
-
-	for range snapshotGetMaxRetries {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
-		// Step 1: Read B+Tree (atomic single read)
-		raw, err := tx.engine.storage.GetRaw(ctx, key)
-		if err != nil {
-			if err == ErrKeyNotFound {
-				return nil, ErrKeyNotFound
-			}
-			return nil, errpkg.Wrap(err, fmt.Sprintf("snapshot get: storage read failed for key %s", keyStr))
-		}
-
-		mvccVal, parseErr := ParseMVCC(raw)
-		if parseErr != nil {
-			return nil, parseErr
-		}
-
-		// Step 2: B+Tree version visible → return directly (no chain involvement)
-		if mvccVal.BeginTS <= tx.snapshotTS {
-			if mvccVal.IsTombstone() {
-				return nil, ErrKeyNotFound
-			}
-			return deepCopy(mvccVal.RealVal), nil
-		}
-
-		// Step 3: B+Tree version too new → traverse VersionChain
-		chainVal := tx.engine.versionStore.Load(keyStr)
-		if chainVal == nil {
-			// Chain not yet created — the B+Tree was updated but commitKey's
-			// LoadOrStore hasn't executed yet. This should be extremely rare since
-			// LoadOrStore runs before KeyLock acquisition in commitKey.
-			runtime.Gosched()
-			continue
-		}
-
-		// Record generation before traversal for optimistic consistency check.
-		// If a concurrent commit (Prepend) or rollback (CAS revert) changes the chain
-		// during our traversal, generation will differ and we retry.
-		genBefore := chainVal.Generation()
-
-		// Step 4: Traverse chain, find bestNode (min commitTS > snapshotTS, not rolledBack)
-		var bestNode *VersionNode
-		node := chainVal.Load()
-		for node != nil {
-			if node.commitTS > tx.snapshotTS && !node.rolledBack.Load() && !node.reclaimed.Load() {
-				if bestNode == nil || node.commitTS < bestNode.commitTS {
-					bestNode = node
-				}
-			}
-			node = node.next.Load()
-		}
-
-		// Optimistic validation: if generation changed, the chain was modified
-		// during our traversal (Set-before-Prepend window or rollback). Retry.
-		if chainVal.Generation() != genBefore {
-			runtime.Gosched()
-			continue
-		}
-
-		if bestNode != nil {
-			if bestNode.flag == FlagTombstone {
-				return nil, ErrKeyNotFound
-			}
-			return deepCopy(bestNode.value), nil
-		}
-
-		// bestNode == nil: no visible version in chain.
-		// This can happen for Insert (Insert doesn't Prepend, so chain has no nodes
-		// for the snapshot's key). The key didn't exist at snapshot time.
-		return nil, ErrKeyNotFound
+	raw, err := tx.engine.storage.GetRaw(ctx, key)
+	if err != nil {
+		return nil, err
 	}
 
-	// Exhausted retries — highly unlikely under normal operation.
-	// This indicates extreme contention on this key. Return a contention error
-	// rather than ErrKeyNotFound to avoid confusing the caller about key existence.
-	return nil, errpkg.Wrap(ErrVersionChainConflict, fmt.Sprintf("snapshot read contention for key %s after %d retries", keyStr, snapshotGetMaxRetries))
+	mv, parseErr := ParseMVCC(raw)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+
+	// Path 1: current version visible → return directly
+	if mv.BeginTS <= tx.snapshotTS {
+		if mv.IsTombstone() {
+			return nil, ErrKeyNotFound
+		}
+		return deepCopy(mv.RealVal), nil
+	}
+
+	// Path 2: current too new → check embedded previous version
+	// PrevBeginTS != 0 means a valid previous version exists
+	if mv.PrevBeginTS != 0 && mv.PrevBeginTS <= tx.snapshotTS {
+		if mv.PrevFlag == FlagTombstone {
+			return nil, ErrKeyNotFound
+		}
+		return deepCopy(mv.PrevVal), nil
+	}
+
+	// Path 3: neither version visible → key didn't exist at snapshot time
+	return nil, ErrKeyNotFound
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +269,10 @@ func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, erro
 // ---------------------------------------------------------------------------
 
 // Put writes to the WriteBuffer. Does not touch B+Tree until Commit.
+//
+// Phase 1 (pessimistic locking): if tx.heldLocks is non-nil, acquires per-key KeyLock
+// eagerly (Lealone RowLock equiv). This allows Commit to skip PreCheck and commitKey
+// to skip GetRaw — the conflict detection already happened here.
 func (tx *SnapshotTx) Put(key, value []byte) error {
 	if err := tx.checkActive(); err != nil {
 		return err
@@ -317,6 +281,16 @@ func (tx *SnapshotTx) Put(key, value []byte) error {
 		return errpkg.Wrap(errpkg.ErrMVCCPutError, "put: empty key")
 	}
 	keyStr := string(key)
+
+	// Acquire KeyLock eagerly (Lealone RowLock equiv)
+	if _, exists := tx.heldLocks[keyStr]; !exists {
+		lockVal, _ := tx.engine.keyLocks.LoadOrStore(keyStr, &KeyLock{})
+		kl := lockVal.(*KeyLock)
+		if err := kl.Lock(); err != nil {
+			return errpkg.Wrap(err, fmt.Sprintf("pessimistic lock key %s: timeout", keyStr))
+		}
+		tx.heldLocks[keyStr] = kl
+	}
 
 	// Read B+Tree latest committed value (write path RC)
 	var btreeOldValue []byte
@@ -336,11 +310,6 @@ func (tx *SnapshotTx) Put(key, value []byte) error {
 		}
 	}
 
-	// Record ReadFingerprint (prevent blind write Lost Update)
-	if raw != nil && btreeOldFlag == FlagNormal {
-		tx.readSet[keyStr] = NewReadFingerprint(raw)
-	}
-
 	tx.writeBuffer.Put(keyStr, value, btreeOldValue, btreeOldFlag, btreeOldBeginTS)
 	return nil
 }
@@ -354,6 +323,16 @@ func (tx *SnapshotTx) Delete(key []byte) error {
 		return errpkg.Wrap(errpkg.ErrMVCCDeleteError, "delete: empty key")
 	}
 	keyStr := string(key)
+
+	// Acquire KeyLock eagerly
+	if _, exists := tx.heldLocks[keyStr]; !exists {
+		lockVal, _ := tx.engine.keyLocks.LoadOrStore(keyStr, &KeyLock{})
+		kl := lockVal.(*KeyLock)
+		if err := kl.Lock(); err != nil {
+			return errpkg.Wrap(err, fmt.Sprintf("pessimistic lock key %s: timeout", keyStr))
+		}
+		tx.heldLocks[keyStr] = kl
+	}
 
 	// Check WriteBuffer first (Read-Your-Own-Writes)
 	if wbEntry, has := tx.writeBuffer.Get(keyStr); has {
@@ -392,9 +371,6 @@ func (tx *SnapshotTx) Delete(key []byte) error {
 	btreeOldFlag := mvccVal.Flag
 	btreeOldBeginTS := mvccVal.BeginTS
 
-	// Record ReadFingerprint
-	tx.readSet[keyStr] = NewReadFingerprint(raw)
-
 	return tx.writeBuffer.Delete(keyStr, btreeOldValue, btreeOldFlag, btreeOldBeginTS)
 }
 
@@ -410,14 +386,9 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 		return nil
 	}
 	defer tx.engine.activeTxRegistry.Unregister(tx.txID)
+	defer tx.releaseHeldLocks() // Phase 1: release pessimistic locks on all exit paths
 
 	if err := tx.checkActive(); err != nil {
-		tx.cleanup()
-		return err
-	}
-
-	// Phase 1: PreCheck — verify read set
-	if err := tx.preCheck(ctx); err != nil {
 		tx.cleanup()
 		return err
 	}
@@ -472,49 +443,28 @@ func (tx *SnapshotTx) Commit(ctx context.Context) error {
 	tx.cleanup()
 	// Clear references after cleanup so checkActive can distinguish Committed from RolledBack.
 	// cleanup sets completed=true (CAS), providing happens-before for these writes.
+	putWriteBuffer(tx.writeBuffer)
 	tx.writeBuffer = nil
-	tx.readSet = nil
-	return nil
-}
-
-// preCheck verifies that all keys in the read set have unchanged ValueHash.
-// NOTE: PreCheck is a best-effort fast-fail optimization. The definitive conflict
-// detection happens in commitKey under KeyLock (beginTS validation).
-func (tx *SnapshotTx) preCheck(ctx context.Context) error {
-	for keyStr, fp := range tx.readSet {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		current, err := tx.engine.storage.GetRaw(ctx, []byte(keyStr))
-		if err != nil {
-			return errpkg.Wrap(ErrConflict, fmt.Sprintf("precheck: key %s not found", keyStr))
-		}
-		currentFP := NewReadFingerprint(current)
-		if currentFP.ValueHash != fp.ValueHash {
-			return ErrConflict
-		}
-	}
 	return nil
 }
 
 // applyWriteBuffer applies all WriteBuffer entries to B+Tree and VersionChain.
+// Phase 2 optimization: batches BTree writes — all MVCC Prepend work is done per-key,
+// but BTree.Set calls are grouped into ONE SetBatch → ONE COW + ONE CAS per transaction.
 func (tx *SnapshotTx) applyWriteBuffer(ctx context.Context, commitTS uint64) ([]UndoEntry, error) {
 	keys := tx.writeBuffer.OrderedKeys()
 	sort.Strings(keys) // prevent deadlock
 
+	// Phase 1: MVCC Prepend + collect BTree write pairs (always pessimistic)
+	pairs := make([]KVPair, 0, len(keys))
 	undoBuf := make([]UndoEntry, 0, len(keys))
-
 	for _, key := range keys {
 		entry, exists := tx.writeBuffer.entries[key]
 		if !exists {
-			continue // Insert→Delete removed from entries
+			continue
 		}
-
 		undoEntry, err := tx.engine.commitKey(ctx, key, entry, commitTS)
 		if err != nil {
-			// commitKey may have returned a partial UndoEntry (Prepend failed after Set)
 			if undoEntry != nil {
 				undoBuf = append(undoBuf, *undoEntry)
 			}
@@ -525,73 +475,44 @@ func (tx *SnapshotTx) applyWriteBuffer(ctx context.Context, commitTS uint64) ([]
 			}
 			return nil, err
 		}
-		undoBuf = append(undoBuf, *undoEntry)
+		if undoEntry != nil {
+			undoBuf = append(undoBuf, *undoEntry)
+		}
+		// Collect BTree write: commitFn already Prepend'd VersionChain; now batch the Set
+		pairs = append(pairs, KVPair{Key: []byte(key), Value: undoEntry.EncodedVal})
 	}
+
+	// Phase 2: Batch BTree writes — one COW + one CAS per transaction
+	// Keys already sorted (sort.Strings above), matching SetBatch contract.
+	if len(pairs) > 0 {
+		if _, err := tx.engine.storage.SetBatch(ctx, pairs); err != nil {
+			// Batch Set failed — rollback all applied Prepends
+			if rollbackErr := tx.rollbackApplied(undoBuf); rollbackErr != nil {
+				return nil, errpkg.Wrap(err, fmt.Sprintf("batch set failed, rollback also failed: %v", rollbackErr))
+			}
+			return nil, err
+		}
+	}
+
 	return undoBuf, nil
 }
 
-// commitKey atomically commits a single key under KeyLock protection.
-// Executes GetRaw → validate → Prepend → Set within the lock.
-//
-// Phase 3 (NEW-2 CRITICAL): Prepend-before-Set order eliminates half-Apply OldValue loss.
-// In the old order (Set-before-Prepend), a crash after Set but before Prepend overwrites
-// the BTree old value, making Recovery unable to derive Prepend's OldValue. The new order
-// (Prepend-before-Set) ensures that a crash after Prepend but before Set leaves the BTree
-// with the old value intact — Recovery simply redoes Set (idempotent).
+// commitKey commits a key whose KeyLock was already acquired in Put/Delete (pessimistic).
+// Skips lock acquisition and GetRaw — the conflicted value was already validated at Put time.
 func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry, commitTS uint64) (retUndo *UndoEntry, retErr error) {
-	// Ensure VersionChain exists before acquiring KeyLock (avoid sync.Map mutex in critical section)
-	tm.versionStore.LoadOrStore(key)
-
-	// Acquire per-key KeyLock
-	lockVal, _ := tm.keyLocks.LoadOrStore(key, &KeyLock{})
-	kl := lockVal.(*KeyLock)
-	if err := kl.Lock(); err != nil {
-		return nil, errpkg.Wrap(err, fmt.Sprintf("key %s lock timeout", key))
-	}
-	defer kl.Unlock()
-
-	// Recover from panic in critical section to prevent B+Tree/VersionChain inconsistency
-	// from propagating. The caller (applyWriteBuffer) will attempt rollback via undoBuf.
 	defer func() {
 		if r := recover(); r != nil {
 			retErr = errpkg.Wrap(errpkg.ErrMVCCPanicRecovered, fmt.Sprintf("commit key %s: panic: %v", key, r))
 		}
 	}()
 
-	// ===== Critical section: strictly serialized per-key =====
-
-	// Step 1: Read current B+Tree value (no TOCTOU inside lock)
+	// Reconstruct old BTree value for rollback
 	var oldRawVal []byte
-	if current, err := tm.storage.GetRaw(ctx, []byte(key)); err == nil {
-		oldRawVal = current // already a heap copy from GetRaw
+	if entry.Op != OpInsert {
+		oldRawVal, _ = BuildMVCC(entry.OldFlag, entry.OldBeginTS, entry.OldValue, 0, 0, nil)
 	}
 
-	// Step 2: Validate
-	switch entry.Op {
-	case OpInsert:
-		if oldRawVal != nil {
-			mvccVal, parseErr := ParseMVCC(oldRawVal)
-			if parseErr != nil {
-				return nil, errpkg.Wrap(parseErr, fmt.Sprintf("parse old value for key %s", key))
-			}
-			if mvccVal.Flag != FlagTombstone {
-				return nil, ErrConflict
-			}
-		}
-	case OpUpdate, OpDelete:
-		if oldRawVal == nil {
-			return nil, ErrConflict
-		}
-		mvccVal, parseErr := ParseMVCC(oldRawVal)
-		if parseErr != nil {
-			return nil, errpkg.Wrap(parseErr, fmt.Sprintf("parse old value for key %s", key))
-		}
-		if mvccVal.BeginTS != entry.OldBeginTS {
-			return nil, ErrConflict
-		}
-	}
-
-	// Step 3: Determine write content
+	// Determine write content
 	flag := FlagNormal
 	newVal := entry.Value
 	if entry.Op == OpDelete {
@@ -599,45 +520,15 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 		newVal = nil
 	}
 
-	// Step 4: Prepend to VersionChain FIRST (NEW-2: Prepend-before-Set)
-	var prePrependHead *VersionNode
-	chain := tm.versionStore.Load(key)
-	if chain != nil {
-		prePrependHead = chain.Load()
-	}
-
-	switch entry.Op {
-	case OpInsert:
-		if err := tm.versionStore.Prepend(key, commitTS, nil, FlagTombstone); err != nil {
-			return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
-					PrePrependHead: prePrependHead, PrependSucceeded: false},
-				errpkg.Wrap(err, fmt.Sprintf("version chain prepend (insert marker) failed for key %s", key))
-		}
-	case OpUpdate, OpDelete:
-		if err := tm.versionStore.Prepend(key, commitTS, entry.OldValue, entry.OldFlag); err != nil {
-			return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
-					PrePrependHead: prePrependHead, PrependSucceeded: false},
-				errpkg.Wrap(err, fmt.Sprintf("version chain prepend failed for key %s", key))
-		}
-	}
-
-	// Step 5: Write to B+Tree (AFTER Prepend — NEW-2)
-	encoded, buildErr := BuildMVCC(flag, commitTS, newVal)
+	// Encode with prev version inline (SET delegated to caller — applyWriteBuffer batch-Set)
+	encoded, buildErr := BuildMVCC(flag, commitTS, newVal, entry.OldFlag, entry.OldBeginTS, entry.OldValue)
 	if buildErr != nil {
-		return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
-				PrePrependHead: prePrependHead, PrependSucceeded: true},
+		return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS},
 			errpkg.Wrap(buildErr, fmt.Sprintf("build mvcc for key %s", key))
 	}
-	if err := tm.storage.Set(ctx, []byte(key), encoded); err != nil {
-		return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
-				PrePrependHead: prePrependHead, PrependSucceeded: true},
-			errpkg.Wrap(err, fmt.Sprintf("btree set failed for key %s", key))
-	}
-
-	// ===== Critical section end =====
 
 	return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
-		PrePrependHead: prePrependHead, PrependSucceeded: true}, nil
+		EncodedKey: []byte(key), EncodedVal: encoded}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -650,14 +541,26 @@ func (tx *SnapshotTx) Rollback() error {
 		return nil
 	}
 	defer tx.engine.activeTxRegistry.Unregister(tx.txID)
+	defer tx.releaseHeldLocks() // Phase 1: unlock all keys
 
 	if err := tx.checkActive(); err != nil {
 		return err
 	}
+	putWriteBuffer(tx.writeBuffer)
 	tx.writeBuffer = nil
-	tx.readSet = nil
 	tx.cleanup()
 	return nil
+}
+
+// releaseHeldLocks unlocks all per-key KeyLocks acquired in Put/Delete (pessimistic mode).
+func (tx *SnapshotTx) releaseHeldLocks() {
+	if tx.heldLocks == nil {
+		return
+	}
+	for _, kl := range tx.heldLocks {
+		kl.Unlock()
+	}
+	tx.heldLocks = nil
 }
 
 // cleanup decrements siCount (CAS-guarded against double cleanup).
@@ -702,30 +605,34 @@ func (tx *SnapshotTx) rollbackApplied(undoBuf []UndoEntry) (firstErr error) {
 	return firstErr
 }
 
-// rollbackOneKey rolls back a single key's B+Tree value and VersionChain head.
-// Runs as an independent sub-function so defer Unlock fires immediately per key.
+// rollbackOneKey rolls back a single key's B+Tree value.
 func (tx *SnapshotTx) rollbackOneKey(entry UndoEntry) (retErr error) {
-	lockVal, _ := tx.engine.keyLocks.LoadOrStore(entry.Key, &KeyLock{})
-	kl := lockVal.(*KeyLock)
-	if err := kl.Lock(); err != nil {
-		return errpkg.Wrap(err, fmt.Sprintf("rollback key %s: lock timeout", entry.Key))
+	var kl *KeyLock
+	var alreadyHeld bool
+	if tx.heldLocks != nil {
+		_, alreadyHeld = tx.heldLocks[entry.Key]
 	}
-	defer kl.Unlock()
+	if !alreadyHeld {
+		lockVal, _ := tx.engine.keyLocks.LoadOrStore(entry.Key, &KeyLock{})
+		kl = lockVal.(*KeyLock)
+		if err := kl.Lock(); err != nil {
+			return errpkg.Wrap(err, fmt.Sprintf("rollback key %s: lock timeout", entry.Key))
+		}
+		defer kl.Unlock()
+	}
 
-	// Recover from panic in critical section
 	defer func() {
 		if r := recover(); r != nil {
 			retErr = errpkg.Wrap(errpkg.ErrMVCCPanicRecovered, fmt.Sprintf("rollback key %s: panic: %v", entry.Key, r))
 		}
 	}()
 
-	// Step A: commitTS validation — only roll back our own write
-	// Rollback uses context.Background() — internal recovery must not be affected by client context cancellation
+	// commitTS validation — only roll back our own write
 	rollbackCtx := context.Background()
 	current, getErr := tx.engine.storage.GetRaw(rollbackCtx, []byte(entry.Key))
 	if getErr != nil {
 		if getErr == ErrKeyNotFound {
-			return nil // key already cleaned up, nothing to roll back
+			return nil
 		}
 		return errpkg.Wrap(getErr, fmt.Sprintf("rollback key %s: GetRaw failed", entry.Key))
 	}
@@ -734,13 +641,12 @@ func (tx *SnapshotTx) rollbackOneKey(entry UndoEntry) (retErr error) {
 		return errpkg.Wrap(parseErr, fmt.Sprintf("rollback key %s: parse failed", entry.Key))
 	}
 	if mvccVal.BeginTS != entry.CommitTS {
-		return nil // current value already updated by another transaction, skip
+		return nil // not our write, skip
 	}
 
-	// Step B: Restore B+Tree
+	// Restore B+Tree to old value
 	if entry.OldRawVal == nil {
-		// Original key didn't exist → write Tombstone (not physical delete)
-		tombstone, buildErr := BuildMVCC(FlagTombstone, entry.CommitTS, nil)
+		tombstone, buildErr := BuildMVCC(FlagTombstone, entry.CommitTS, nil, 0, 0, nil)
 		if buildErr != nil {
 			return errpkg.Wrap(buildErr, fmt.Sprintf("rollback key %s: build tombstone failed", entry.Key))
 		}
@@ -751,41 +657,6 @@ func (tx *SnapshotTx) rollbackOneKey(entry UndoEntry) (retErr error) {
 		if opErr := tx.engine.storage.Set(rollbackCtx, []byte(entry.Key), entry.OldRawVal); opErr != nil {
 			return errpkg.Wrap(opErr, fmt.Sprintf("rollback key %s: restore failed", entry.Key))
 		}
-	}
-
-	// Step C: Rollback VersionChain
-	if !entry.PrependSucceeded {
-		return nil // Prepend never happened, chain unchanged
-	}
-
-	chain := tx.engine.versionStore.Load(entry.Key)
-	if chain == nil {
-		return nil
-	}
-
-	// Path 1: head still our node → CAS revert via chainHead
-	old := chain.head.Load()
-	if old != nil && old.node != nil && old.node.commitTS == entry.CommitTS {
-		newHead := &chainHead{
-			node:       entry.PrePrependHead,
-			generation: old.generation + 1,
-		}
-		if chain.head.CompareAndSwap(old, newHead) {
-			return nil
-		}
-		// CAS failed: another Prepend raced us, fall through to Path 2
-	}
-
-	// Path 2: head changed by later commit or CAS lost → mark our node rolledBack
-	// Must bump generation so concurrent snapshotGet detects the chain modification.
-	node := chain.Load() // re-load head after potential CAS failure
-	for node != nil {
-		if node.commitTS == entry.CommitTS {
-			node.rolledBack.Store(true)
-			chain.bumpGeneration()
-			return nil
-		}
-		node = node.next.Load()
 	}
 	return nil
 }

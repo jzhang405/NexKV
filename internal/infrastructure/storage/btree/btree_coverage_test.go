@@ -255,7 +255,7 @@ func TestStorageAdapter_Set(t *testing.T) {
 	adapter := newStorageAdapter(tree)
 
 	// Encode value manually
-	encoded, err := mvcc.BuildMVCC(mvcc.FlagNormal, 42, []byte("adapter-val"))
+	encoded, err := mvcc.BuildMVCC(mvcc.FlagNormal, 42, []byte("adapter-val"), 0, 0, nil)
 	require.NoError(t, err)
 	require.NoError(t, adapter.Set(ctx, []byte("sa-set"), encoded))
 
@@ -273,12 +273,12 @@ func TestStorageAdapter_Set_TombstoneRecovery(t *testing.T) {
 	adapter := newStorageAdapter(tree)
 
 	// Write tombstone via adapter
-	tombstone, err := mvcc.BuildMVCC(mvcc.FlagTombstone, 1, nil)
+	tombstone, err := mvcc.BuildMVCC(mvcc.FlagTombstone, 1, nil, 0, 0, nil)
 	require.NoError(t, err)
 	require.NoError(t, adapter.Set(ctx, []byte("sa-ts-key"), tombstone))
 
 	// Now overwrite with normal value via adapter
-	normal, err := mvcc.BuildMVCC(mvcc.FlagNormal, 2, []byte("recovered"))
+	normal, err := mvcc.BuildMVCC(mvcc.FlagNormal, 2, []byte("recovered"), 0, 0, nil)
 	require.NoError(t, err)
 	require.NoError(t, adapter.Set(ctx, []byte("sa-ts-key"), normal))
 
@@ -296,7 +296,7 @@ func TestStorageAdapter_Delete(t *testing.T) {
 
 	adapter := newStorageAdapter(tree)
 
-	encoded, _ := mvcc.BuildMVCC(mvcc.FlagNormal, 1, []byte("v"))
+	encoded, _ := mvcc.BuildMVCC(mvcc.FlagNormal, 1, []byte("v"), 0, 0, nil)
 	require.NoError(t, adapter.Set(ctx, []byte("sa-del"), encoded))
 
 	require.NoError(t, adapter.Delete(ctx, []byte("sa-del")))

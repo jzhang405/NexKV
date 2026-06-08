@@ -19,6 +19,9 @@ const (
 	MaxMmapSize = 6 << 30
 	// MaxPageID 最大 PageID（32 位限制）
 	MaxPageID = uint32(0xFFFFFFFF)
+	// maxPreTouchPages 预热页面上限（128GB = 32M pages）。
+	// 超过此值的 mmap 跳过预热，避免启动时分配过多物理内存。
+	maxPreTouchPages = 32 << 20 // 32M pages × 4KB = 128GB
 )
 
 var (
@@ -92,11 +95,36 @@ func NewPageManager(mmapSize int) (*PageManager, error) {
 		tracker:    NewPageInspector(false),
 	}
 
+	// Pre-touch all pages: trigger physical page allocation once at startup,
+	// eliminating first-touch page faults during hot-path Alloc().
+	// Walk is purely pointer arithmetic — zero heap allocations, zero GC pressure.
+	// Skip when mmap exceeds maxPreTouchPages to avoid excessive physical allocation.
+	if pm.total <= maxPreTouchPages {
+		pm.preTouchPages()
+	}
+
 	return pm, nil
 }
 
 //go:linkname memclrNoHeapPointers runtime.memclrNoHeapPointers
 func memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr)
+
+// preTouchPages touches every page header to force physical memory allocation.
+// Pages remain in Path 2 (nextPageID) flow — no freeList, no GC objects.
+func (pm *PageManager) preTouchPages() {
+	total := pm.total
+	for pageID := uint32(0); pageID < total; pageID++ {
+		ptr := pm.PageIDToPtr(pageID)
+		header := (*PageHeader)(ptr)
+		// Write to trigger first-touch page fault (kernel maps physical page)
+		header.version = 0
+		header.deleted = 0
+	}
+	// Note: pages are NOT enqueued in freeList.
+	// They flow through Alloc → Path 2 (nextPageID), same as before.
+	// The only difference: header.version=1 in Alloc is now an in-cache write,
+	// not a first-touch page fault (~100ns vs ~1µs).
+}
 
 // clearPage 清零页面 Header（56 字节）。数据区不需要清零——entry 写入时直接覆盖，count=0 保证旧数据不被读取。
 func (pm *PageManager) clearPage(pageID uint32) {

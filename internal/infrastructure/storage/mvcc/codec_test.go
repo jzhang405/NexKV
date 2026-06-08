@@ -13,7 +13,7 @@ import (
 )
 
 func TestMVCCHeaderSize(t *testing.T) {
-	assert.Equal(t, 9, MVCCHeaderSize, "MVCCHeaderSize = 1(Flag) + 8(beginTS) = 9 bytes")
+	assert.Equal(t, 12, MVCCHeaderSize, "MVCCHeaderSize = 1(Flag) + 1(prevFlag) + 8(prevBeginTS) + 2(prevValLen) = 12 bytes")
 }
 
 func TestMVCCValue_IsTombstone(t *testing.T) {
@@ -25,7 +25,7 @@ func TestMVCCValue_IsTombstone(t *testing.T) {
 }
 
 func TestParseMVCC_Normal(t *testing.T) {
-	raw, err := BuildMVCC(FlagNormal, 42, []byte("hello"))
+	raw, err := BuildMVCC(FlagNormal, 42, []byte("hello"), 0, 0, nil)
 	require.NoError(t, err)
 
 	val, err := ParseMVCC(raw)
@@ -36,7 +36,7 @@ func TestParseMVCC_Normal(t *testing.T) {
 }
 
 func TestParseMVCC_Tombstone(t *testing.T) {
-	raw, err := BuildMVCC(FlagTombstone, 100, nil)
+	raw, err := BuildMVCC(FlagTombstone, 100, nil, 0, 0, nil)
 	require.NoError(t, err)
 
 	val, err := ParseMVCC(raw)
@@ -47,7 +47,7 @@ func TestParseMVCC_Tombstone(t *testing.T) {
 }
 
 func TestParseMVCC_EmptyRealVal(t *testing.T) {
-	raw, err := BuildMVCC(FlagNormal, 1, nil)
+	raw, err := BuildMVCC(FlagNormal, 1, nil, 0, 0, nil)
 	require.NoError(t, err)
 
 	val, err := ParseMVCC(raw)
@@ -55,7 +55,7 @@ func TestParseMVCC_EmptyRealVal(t *testing.T) {
 	assert.Equal(t, FlagNormal, val.Flag)
 	assert.Equal(t, uint64(1), val.BeginTS)
 	assert.Empty(t, val.RealVal)
-	assert.Equal(t, MVCCHeaderSize, len(raw))
+	assert.Equal(t, MVCCHeaderSize+8, len(raw)) // header(12) + beginTS(8) = 20 bytes minimum
 }
 
 func TestParseMVCC_ValueTooShort(t *testing.T) {
@@ -71,7 +71,7 @@ func TestParseMVCC_ValueTooShort(t *testing.T) {
 }
 
 func TestParseMVCC_InvalidFlag(t *testing.T) {
-	raw, err := BuildMVCC(FlagNormal, 1, []byte("data"))
+	raw, err := BuildMVCC(FlagNormal, 1, []byte("data"), 0, 0, nil)
 	require.NoError(t, err)
 	// Corrupt flag byte
 	raw[0] = 0xFF
@@ -81,12 +81,12 @@ func TestParseMVCC_InvalidFlag(t *testing.T) {
 }
 
 func TestBuildMVCC_InvalidFlag(t *testing.T) {
-	_, err := BuildMVCC(0xFF, 1, []byte("data"))
+	_, err := BuildMVCC(0xFF, 1, []byte("data"), 0, 0, nil)
 	assert.ErrorIs(t, err, ErrInvalidFlag)
 }
 
 func TestBuildMVCC_ZeroTimestamp(t *testing.T) {
-	_, err := BuildMVCC(FlagNormal, 0, []byte("data"))
+	_, err := BuildMVCC(FlagNormal, 0, []byte("data"), 0, 0, nil)
 	assert.ErrorIs(t, err, ErrZeroTimestamp)
 }
 
@@ -104,9 +104,9 @@ func TestBuildMVCC_RoundTrip(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			built, err := BuildMVCC(tc.flag, tc.beginTS, tc.realVal)
+			built, err := BuildMVCC(tc.flag, tc.beginTS, tc.realVal, 0, 0, nil)
 			require.NoError(t, err)
-			assert.Equal(t, MVCCHeaderSize+len(tc.realVal), len(built))
+			assert.Equal(t, MVCCHeaderSize+8+len(tc.realVal), len(built)) // header(12) + beginTS(8) + realVal
 
 			val, err := ParseMVCC(built)
 			require.NoError(t, err)

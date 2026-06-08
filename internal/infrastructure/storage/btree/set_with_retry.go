@@ -36,7 +36,7 @@ func (b *BTree) mutateUpdate(leaf LeafPage, idx int, value []byte) (*leafMutatio
 	if parseErr != nil {
 		return nil, parseErr
 	}
-	encoded, buildErr := mvcc.BuildMVCC(mvcc.FlagNormal, b.tsGen.NextTS(), value)
+	encoded, buildErr := mvcc.BuildMVCC(mvcc.FlagNormal, b.tsGen.NextTS(), value, 0, 0, nil)
 	if buildErr != nil {
 		return nil, buildErr
 	}
@@ -70,7 +70,7 @@ func (b *BTree) mutateUpdate(leaf LeafPage, idx int, value []byte) (*leafMutatio
 
 // mutateInsert handles inserting a new key-value pair.
 func (b *BTree) mutateInsert(leaf LeafPage, key, value []byte) (*leafMutation, error) {
-	encoded, buildErr := mvcc.BuildMVCC(mvcc.FlagNormal, b.tsGen.NextTS(), value)
+	encoded, buildErr := mvcc.BuildMVCC(mvcc.FlagNormal, b.tsGen.NextTS(), value, 0, 0, nil)
 	if buildErr != nil {
 		return nil, buildErr
 	}

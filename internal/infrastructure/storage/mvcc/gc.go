@@ -57,33 +57,17 @@ func (tm *txManager) runGC(ctx context.Context) {
 	}
 }
 
-// gcCycle executes one full GC cycle: compute watermark, prune all chains.
+// gcCycle executes one GC cycle (no-op since Phase 3 version-inline eliminates VersionChain).
+// GC is now handled by BTree epoch-based page recycling.
 func (tm *txManager) gcCycle() {
 	start := time.Now()
-
 	watermark := tm.activeTxRegistry.Watermark()
 	if watermark == 0 {
-		// No active transactions: use current TS as watermark to reclaim
-		// all versions except the chain head and required retention versions.
-		// TSGenerator starts at 1, so watermark==0 safely means "no active txs".
 		watermark = tm.tsGen.CurrentTS()
 	}
 
-	var totalReclaimed int
-	tm.versionStore.Range(func(key string, chain *VersionChain) bool {
-		reclaimed := chain.Prune(watermark)
-		totalReclaimed += reclaimed
-		if reclaimed > 0 {
-			chain.bumpGeneration()
-		}
-		return true
-	})
-
 	elapsed := time.Since(start)
-
-	// Update stats
 	tm.gcStats.Cycles.Add(1)
-	tm.gcStats.TotalReclaimed.Add(uint64(totalReclaimed))
 	tm.gcStats.LastWatermark.Store(watermark)
 	tm.gcStats.LastDurationMs.Store(elapsed.Milliseconds())
 }

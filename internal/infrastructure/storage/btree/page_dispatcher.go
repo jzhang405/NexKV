@@ -73,12 +73,19 @@ func (wp *WorkerPool) executeBatch(batch *pageBatch) {
 			batch.nextIdx = i
 			batch.retries++
 			batch.wg.Add(1) // pair with defer wg.Done() in next executeBatch
-			if wp.Submit(batch) != nil {
-				for j := i; j < len(batch.tasks); j++ {
-					batch.results[j] = WriteResult{Index: batch.tasks[j].idx, Err: ErrWorkerPoolClosed}
+			// Async requeue: Submit via goroutine to prevent worker-pool deadlock.
+			// If all workers are blocked on reqeueue Submit, taskCh fills up and no one
+			// can consume from it. Spawning a goroutine keeps the worker pool alive.
+			req := batch
+			savedI := i
+			go func() {
+				if wp.Submit(req) != nil {
+					for j := savedI; j < len(req.tasks); j++ {
+						req.results[j] = WriteResult{Index: req.tasks[j].idx, Err: ErrWorkerPoolClosed}
+					}
+					req.wg.Done()
 				}
-				return
-			}
+			}()
 			return
 		}
 

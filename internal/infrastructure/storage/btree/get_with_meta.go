@@ -14,19 +14,21 @@ import (
 )
 
 // GetWithMeta returns the raw wire-format value and its beginTS (commitTS).
-// Wire format: [Flag:1][beginTS:8][RealValue:N].
-// Used by WAL recovery for the three-phase idempotency check.
+// Wire format (Phase 3 version-inline):
 //
-// Extracts beginTS directly from the raw MVCC header to avoid the
-// ParseMVCC → BuildMVCC round-trip present in the old implementation.
+//	[Flag:1][prevFlag:1][prevBeginTS:8][prevValLen:2][prevVal:N][beginTS:8][realVal:M]
+//
+// Used by WAL recovery for idempotency check.
 func (b *BTree) GetWithMeta(ctx context.Context, key []byte) (raw []byte, beginTS uint64, err error) {
 	raw, err = b.getRawBytes(key)
 	if err != nil {
 		return nil, 0, err
 	}
-	if len(raw) < mvcc.MVCCHeaderSize {
+	if len(raw) < mvcc.MVCCHeaderSize+8 {
 		return nil, 0, errpkg.Wrap(ErrBTreeValidationError, fmt.Sprintf("btree: GetWithMeta: value too short: %d bytes", len(raw)))
 	}
-	beginTS = binary.BigEndian.Uint64(raw[1:9])
+	// beginTS is after prevVal: offset = 12 + prevValLen
+	prevValLen := binary.BigEndian.Uint16(raw[10:12])
+	beginTS = binary.BigEndian.Uint64(raw[12+prevValLen : 12+prevValLen+8])
 	return raw, beginTS, nil
 }

@@ -42,10 +42,6 @@ type Config struct {
 	// Default: 256
 	FsyncQueueSize int
 
-	// CleanerInterval is the interval for the background empty-directory cleaner.
-	// Set to 0 to disable. Default: 5 minutes
-	CleanerInterval time.Duration
-
 	// MaxLOBRetiredLen is the upper bound on pending LOB retire entries in the epoch queue.
 	// When exceeded, a forced tryReclaim is triggered to drain the queue.
 	// Default: 65536
@@ -62,7 +58,6 @@ func DefaultConfig() Config {
 		FsyncInterval:     1 * time.Millisecond,
 		FsyncMaxBatch:     32,
 		FsyncQueueSize:    256,
-		CleanerInterval:   5 * time.Minute,
 		MaxLOBRetiredLen:  65536,
 	}
 }
@@ -103,11 +98,6 @@ func WithFsyncMaxBatch(n int) Option {
 // WithFsyncQueueSize sets the fsync entry channel buffer size.
 func WithFsyncQueueSize(n int) Option {
 	return func(c *Config) { c.FsyncQueueSize = n }
-}
-
-// WithCleanerInterval sets the empty-dir cleaner interval. 0 disables.
-func WithCleanerInterval(d time.Duration) Option {
-	return func(c *Config) { c.CleanerInterval = d }
 }
 
 // WithMaxLOBRetiredLen sets the pending LOB retire queue limit.

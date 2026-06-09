@@ -6,7 +6,6 @@ package lob
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
@@ -291,19 +290,15 @@ func TestLOBFileStore_CleanupTmp(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Create a leftover .tmp- file manually
-	tmpDir := filepath.Join(dir, "00000", "00000")
-	if err := os.MkdirAll(tmpDir, 0750); err != nil {
-		t.Fatal(err)
-	}
-	tmpFile := filepath.Join(tmpDir, ".tmp-00000000000000000001")
+	// Create orphan lob_tmp_*.ao file in flat directory
+	tmpFile := lobTmpPath(dir, 1)
 	if err := os.WriteFile(tmpFile, []byte("orphan"), 0640); err != nil {
 		t.Fatal(err)
 	}
 
-	// Also create a normal .lob file — should NOT be cleaned
-	lobFile := filepath.Join(tmpDir, "00000000000000000001.lob")
-	if err := os.WriteFile(lobFile, []byte("real"), 0640); err != nil {
+	// Also create a real lob_*.ao file — should NOT be cleaned
+	realFile := lobFilePath(dir, 100000)
+	if err := os.WriteFile(realFile, []byte("real"), 0640); err != nil {
 		t.Fatal(err)
 	}
 
@@ -311,13 +306,11 @@ func TestLOBFileStore_CleanupTmp(t *testing.T) {
 		t.Fatalf("CleanupTmp failed: %v", err)
 	}
 
-	// .tmp- file should be gone
 	if _, err := os.Stat(tmpFile); !os.IsNotExist(err) {
-		t.Fatal("expected .tmp- file to be removed")
+		t.Fatal("expected lob_tmp_ file to be removed")
 	}
-	// .lob file should remain
-	if _, err := os.Stat(lobFile); err != nil {
-		t.Fatal("expected .lob file to remain")
+	if _, err := os.Stat(realFile); err != nil {
+		t.Fatal("expected lob_ file to remain")
 	}
 }
 
@@ -329,15 +322,10 @@ func TestLOBFileStore_CleanupTmp_ShortFilename(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Create files with very short names — should NOT panic
-	shortDir := filepath.Join(dir, "00000", "00000")
-	if err := os.MkdirAll(shortDir, 0750); err != nil {
-		t.Fatal(err)
-	}
-
-	shortNames := []string{"a", "ab", ".tm", ".t"}
+	// Create files with short names — should NOT panic or be removed
+	shortNames := []string{"a", "ab", "lo", "lob"}
 	for _, name := range shortNames {
-		p := filepath.Join(shortDir, name)
+		p := dir + "/" + name
 		if err := os.WriteFile(p, []byte("short"), 0640); err != nil {
 			t.Fatal(err)
 		}
@@ -348,9 +336,9 @@ func TestLOBFileStore_CleanupTmp_ShortFilename(t *testing.T) {
 		t.Fatalf("CleanupTmp failed on short filenames: %v", err)
 	}
 
-	// Short files should still exist (they don't match ".tmp-" prefix)
+	// Short files should still exist (they don't match "lob_tmp_" prefix)
 	for _, name := range shortNames {
-		p := filepath.Join(shortDir, name)
+		p := dir + "/" + name
 		if _, err := os.Stat(p); os.IsNotExist(err) {
 			t.Fatalf("short file %q should not be removed", name)
 		}
@@ -384,73 +372,6 @@ func TestLOBFileStore_ReadNonExistent(t *testing.T) {
 	_, err = store.Read(mvcc.LOBFileRef{LOBID: 99999, TotalLen: 10})
 	if err == nil {
 		t.Fatal("expected error reading non-existent file")
-	}
-}
-
-func TestLOBFileStore_CleanEmptyDirs(t *testing.T) {
-	dir := t.TempDir()
-	store, err := newLOBFileStore(dir, DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-
-	// Create nested shard dirs with a .lob file
-	shardLeaf := filepath.Join(dir, "00001", "00002")
-	if err := os.MkdirAll(shardLeaf, 0750); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(shardLeaf, "00001.lob"), []byte("data"), 0640); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create an empty leaf dir that should be cleaned
-	emptyLeaf := filepath.Join(dir, "00001", "00003")
-	if err := os.MkdirAll(emptyLeaf, 0750); err != nil {
-		t.Fatal(err)
-	}
-
-	// Another empty leaf under a different top-level
-	emptyLeaf2 := filepath.Join(dir, "00002", "00001")
-	if err := os.MkdirAll(emptyLeaf2, 0750); err != nil {
-		t.Fatal(err)
-	}
-
-	store.cleanEmptyDirs()
-
-	// Empty dirs should be removed
-	if _, err := os.Stat(emptyLeaf); !os.IsNotExist(err) {
-		t.Error("empty leaf dir should be removed")
-	}
-	if _, err := os.Stat(emptyLeaf2); !os.IsNotExist(err) {
-		t.Error("empty leaf dir should be removed")
-	}
-	// Non-empty dir should remain
-	if _, err := os.Stat(shardLeaf); err != nil {
-		t.Error("non-empty leaf dir should remain")
-	}
-}
-
-func TestLOBFileStore_CleanEmptyDirs_RemovesParentIfEmpty(t *testing.T) {
-	dir := t.TempDir()
-	store, err := newLOBFileStore(dir, DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-
-	// Create a top-level shard dir with one empty leaf
-	emptyLeaf := filepath.Join(dir, "00005", "00001")
-	if err := os.MkdirAll(emptyLeaf, 0750); err != nil {
-		t.Fatal(err)
-	}
-
-	store.cleanEmptyDirs()
-
-	// Leaf removed, parent (00005) should also be removed since it's now empty
-	parent := filepath.Join(dir, "00005")
-	if _, err := os.Stat(parent); !os.IsNotExist(err) {
-		t.Error("empty parent shard dir should be removed")
 	}
 }
 

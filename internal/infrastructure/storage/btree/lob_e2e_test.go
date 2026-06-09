@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree"
@@ -99,7 +99,7 @@ func TestLOBFileEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dataSize := 100 * 1024
+	dataSize := 300 * 1024 // >256KB to trigger Tier 2
 	largeValue := make([]byte, dataSize)
 	for i := range largeValue {
 		largeValue[i] = byte(i % 256)
@@ -156,18 +156,15 @@ func TestLOBFileEndToEnd(t *testing.T) {
 		t.Fatalf("LOB file roundtrip mismatch")
 	}
 
-	// Verify file on disk
+	// Verify file on disk (flat directory, lob_*.ao suffix)
 	found := false
-	filepath.Walk(lobDir, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if !info.IsDir() && filepath.Ext(p) == ".lob" {
+	entries, _ := os.ReadDir(lobDir)
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "lob_") && strings.HasSuffix(e.Name(), ".ao") {
 			found = true
-			return filepath.SkipAll
+			break
 		}
-		return nil
-	})
+	}
 	if !found {
 		t.Fatal("LOB file not found on disk")
 	}
@@ -178,16 +175,13 @@ func TestLOBFileEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	found = false
-	filepath.Walk(lobDir, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if !info.IsDir() && filepath.Ext(p) == ".lob" {
+	entries, _ = os.ReadDir(lobDir)
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "lob_") && strings.HasSuffix(e.Name(), ".ao") {
 			found = true
-			return filepath.SkipAll
+			break
 		}
-		return nil
-	})
+	}
 	if found {
 		t.Fatal("LOB file should be deleted")
 	}

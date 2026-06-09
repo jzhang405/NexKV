@@ -57,16 +57,13 @@ func TestDefaultLOBFileManager_CleanupTmp(t *testing.T) {
 	}
 	defer mgr.Close()
 
-	// Create orphan .tmp- file
-	// Use a lobID that the manager can create dirs for
-	ref, _ := mgr.Create([]byte("trigger"))
-	_ = ref
-
-	// Manually create a .tmp file in the shard dir
-	tmpPath := mgr.store.tmpPath(99999)
-	dir2 := mgr.store.shardDir(99999)
-	os.MkdirAll(dir2, 0750)
+	// Create an orphan lob_tmp_*.ao file manually in the flat directory
+	tmpPath := lobTmpPath(dir, 99999)
 	os.WriteFile(tmpPath, []byte("orphan"), 0640)
+
+	// Also create a real lob_*.ao — should NOT be cleaned
+	realPath := lobFilePath(dir, 100000)
+	os.WriteFile(realPath, []byte("real"), 0640)
 
 	if err := mgr.CleanupTmp(); err != nil {
 		t.Fatalf("CleanupTmp failed: %v", err)
@@ -74,6 +71,9 @@ func TestDefaultLOBFileManager_CleanupTmp(t *testing.T) {
 
 	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
 		t.Error("expected tmp file to be cleaned up")
+	}
+	if _, err := os.Stat(realPath); err != nil {
+		t.Error("expected real lob file to remain")
 	}
 }
 

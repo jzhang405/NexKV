@@ -185,8 +185,8 @@ func (em *EpochManager) tryReclaim() {
 		em.freeFn(pageID)
 	}
 
-		// Phase 6: drain retired LOB resources
-		em.drainLOBRetired(safeEpoch)
+	// Phase 6: drain retired LOB resources
+	em.drainLOBRetired(safeEpoch)
 }
 
 func (em *EpochManager) StartBackgroundReclaim(ctx context.Context) {

@@ -48,7 +48,7 @@ var (
 	// keyPool and valPool are pre-generated in main to eliminate fmt.Sprintf GC pressure.
 	keyPool [][]byte
 	valPool [][]byte
-	lobVal []byte // single pre-allocated LOB value (reused across operations)
+	lobVal  []byte // single pre-allocated LOB value (reused across operations)
 )
 
 func main() {
@@ -152,8 +152,8 @@ func main() {
 	// === LOB (non-transactional, large value via EncodeValue/DecodeValue) ===
 	if *runLOBBench {
 		lobScenes := []struct {
-			label  string
-			n, thr int
+			label   string
+			n, thr  int
 			getOnly bool
 		}{
 			{fmt.Sprintf("lob-put-%dk", *lobSize/1024), n, 1, false},

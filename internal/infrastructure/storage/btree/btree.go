@@ -41,7 +41,7 @@ type BTree struct {
 	compactMu      sync.Mutex
 	epochMgr       *EpochManager // COW old page reclamation (nil if disabled)
 	epochCancel    context.CancelFunc
-	lobFileCloser  func()        // Phase 6: closes LOB file store (cleaner + fd cache)
+	lobFileCloser  func() // Phase 6: closes LOB file store (cleaner + fd cache)
 }
 
 // Verify BTree implements service.KVStore at compile time.

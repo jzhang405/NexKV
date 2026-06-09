@@ -126,9 +126,9 @@ type txManager struct {
 	gcStats          GCStats
 	wal              WALWriter // Phase 3: WAL for crash recovery (nil = no persistence)
 	walMu            sync.Mutex
-	lobManager       LOBManager       // Phase 6: LOB overflow page management (nil = disabled)
-	lobFileManager   LOBFileManager   // Phase 6: LOB file storage (nil = disabled)
-	lobEpoch         LOBEpochRetirer  // Phase 6: epoch-based LOB retirement (nil = immediate free)
+	lobManager       LOBManager      // Phase 6: LOB overflow page management (nil = disabled)
+	lobFileManager   LOBFileManager  // Phase 6: LOB file storage (nil = disabled)
+	lobEpoch         LOBEpochRetirer // Phase 6: epoch-based LOB retirement (nil = immediate free)
 }
 
 // LOBEpochRetirer provides epoch-based safe retirement of LOB resources.
@@ -704,6 +704,14 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 	if buildErr != nil {
 		return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS},
 			errpkg.Wrap(buildErr, fmt.Sprintf("build mvcc for key %s", key))
+	}
+
+	// Phase 6: retire LOB resources from dropped old-prev version
+	switch entry.OldPrevFlag {
+	case FlagLOBNormal, FlagLOBTombstone:
+		tm.retireLOBOverflow(entry.OldPrevVal)
+	case FlagLOBFile, FlagLOBFileTombstone:
+		tm.retireLOBFile(entry.OldPrevVal)
 	}
 
 	return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,

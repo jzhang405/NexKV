@@ -13,12 +13,12 @@ import (
 
 // Value flag constants for MVCC-encoded values.
 const (
-	FlagNormal            byte = 0x00 // Normal data (inline)
-	FlagTombstone         byte = 0x01 // Logically deleted (tombstone marker)
-	FlagLOBNormal         byte = 0x02 // LOB Tier 1 — value stored in overflow page chain (mmap)
-	FlagLOBTombstone      byte = 0x03 // LOB Tier 1 Tombstone (0x02 | 0x01)
-	FlagLOBFile           byte = 0x04 // LOB Tier 2 — value stored in independent file (disk)
-	FlagLOBFileTombstone  byte = 0x05 // LOB Tier 2 Tombstone (0x04 | 0x01)
+	FlagNormal           byte = 0x00 // Normal data (inline)
+	FlagTombstone        byte = 0x01 // Logically deleted (tombstone marker)
+	FlagLOBNormal        byte = 0x02 // LOB Tier 1 — value stored in overflow page chain (mmap)
+	FlagLOBTombstone     byte = 0x03 // LOB Tier 1 Tombstone (0x02 | 0x01)
+	FlagLOBFile          byte = 0x04 // LOB Tier 2 — value stored in independent file (disk)
+	FlagLOBFileTombstone byte = 0x05 // LOB Tier 2 Tombstone (0x04 | 0x01)
 )
 
 // LOBRef is a reference to a LOB stored in overflow page chains (Tier 1).
@@ -110,14 +110,15 @@ func ParseMVCC(val []byte) (MVCCValue, error) {
 	// Phase 6: if LOB, parse the LOB reference from realVal
 	var lob *LOBRef
 	var lobFile *LOBFileRef
-	if flag == FlagLOBNormal || flag == FlagLOBTombstone {
+	switch flag {
+	case FlagLOBNormal, FlagLOBTombstone:
 		// Tier 1: realVal = [lobRefLen:2][FirstPageID:4][TotalLen:4]
 		if len(realVal) >= 10 {
 			firstPageID := binary.BigEndian.Uint32(realVal[2:6])
 			totalLen := binary.BigEndian.Uint32(realVal[6:10])
 			lob = &LOBRef{FirstPageID: firstPageID, TotalLen: totalLen}
 		}
-	} else if flag == FlagLOBFile || flag == FlagLOBFileTombstone {
+	case FlagLOBFile, FlagLOBFileTombstone:
 		// Tier 2: realVal = [lobRefLen:2][LOBID:8][TotalLen:8]
 		if len(realVal) >= 18 {
 			lobID := binary.BigEndian.Uint64(realVal[2:10])

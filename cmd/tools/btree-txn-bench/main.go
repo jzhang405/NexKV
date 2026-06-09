@@ -173,7 +173,6 @@ func main() {
 		}
 	}
 
-
 	// Memory profiling
 	if *memProfile != "" {
 		f, err := os.Create(*memProfile)

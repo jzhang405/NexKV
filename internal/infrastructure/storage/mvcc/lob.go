@@ -83,10 +83,11 @@ func EncodeValue(value []byte, beginTS uint64, prevFlag byte, prevBeginTS uint64
 func EncodeDeleteValue(beginTS uint64, oldFlag byte, oldBeginTS uint64, oldVal []byte, prevFlag byte, prevBeginTS uint64, prevVal []byte) ([]byte, error) {
 	flag := FlagTombstone
 	newVal := []byte(nil)
-	if oldFlag == FlagLOBNormal || oldFlag == FlagLOBTombstone {
+	switch oldFlag {
+	case FlagLOBNormal, FlagLOBTombstone:
 		flag = FlagLOBTombstone
 		newVal = oldVal // preserve LOB ref for GC
-	} else if oldFlag == FlagLOBFile || oldFlag == FlagLOBFileTombstone {
+	case FlagLOBFile, FlagLOBFileTombstone:
 		flag = FlagLOBFileTombstone
 		newVal = oldVal // preserve LOB file ref for GC
 	}

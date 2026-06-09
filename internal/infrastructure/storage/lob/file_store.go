@@ -22,17 +22,17 @@ import (
 const lobFileHeaderSize = 40
 
 const (
-	lobMagic     = "NXLB"
-	lobVersion1  = uint16(1)
+	lobMagic       = "NXLB"
+	lobVersion1    = uint16(1)
 	lobFlagDeleted = uint16(1) // bit 0: deleted (tombstone)
 )
 
 // lobFDCacheEntry is a cached open file descriptor for a LOB file.
 type lobFDCacheEntry struct {
-	f    *os.File
+	f     *os.File
 	lobID uint64
-	prev *lobFDCacheEntry
-	next *lobFDCacheEntry
+	prev  *lobFDCacheEntry
+	next  *lobFDCacheEntry
 }
 
 // FDCacheStats holds fd cache hit/miss counters.
@@ -191,12 +191,12 @@ type fsyncGroup struct {
 }
 
 type fsyncEntry struct {
-	fd      *os.File
-	doneCh  chan error
+	fd     *os.File
+	doneCh chan error
 }
 
 const fsyncGroupInterval = 1 * time.Millisecond // batch window
-const fsyncGroupMaxBatch = 32                    // max batch size before forced flush
+const fsyncGroupMaxBatch = 32                   // max batch size before forced flush
 
 func newFsyncGroup(ctx context.Context) *fsyncGroup {
 	ctx, cancel := context.WithCancel(ctx)
@@ -374,19 +374,6 @@ func (s *lobFileStore) cleanEmptyDirs() {
 	}
 }
 
-// StoreStats holds runtime metrics for the LOB file store.
-type StoreStats struct {
-	FDCache  FDCacheStats
-	FsyncQLen int // pending fsync queue depth
-}
-
-func (s *lobFileStore) stats() StoreStats {
-	return StoreStats{
-		FDCache:  s.fdCache.stats(),
-		FsyncQLen: len(s.fsync.entries),
-	}
-}
-
 // Close releases all resources held by the store.
 func (s *lobFileStore) Close() {
 	s.stopEmptyDirCleaner()
@@ -513,7 +500,7 @@ func (s *lobFileStore) Read(ref mvcc.LOBFileRef) ([]byte, error) {
 
 	// Read data region
 	var (
-		data []byte
+		data  []byte
 		rdErr error
 	)
 	if dataLen > LOBFileMMapThreshold {
@@ -602,8 +589,5 @@ func (s *lobFileStore) CleanupTmp() error {
 		}
 		return nil
 	})
-	if count > 0 {
-		// log or just silently clean up
-	}
 	return err
 }

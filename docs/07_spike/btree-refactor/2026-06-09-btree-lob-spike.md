@@ -1,10 +1,14 @@
-# Spike：BTree LOB（Large Object）溢出页方案
+# Spike：BTree LOB（Large Object）两级存储方案
 
 > **日期**：2026-06-09  
 > **分支**：`spike/btree-lob`  
-> **参考**：[[2026-06-09-lob-scheme-investigation]] — Lealone LOB 方案深度调查  
-> **参考**：[[2026-06-09-lob-implementation-design]] — LOB 实现详细设计（Ledgers 集成）  
+> **Tier 1 参考**：[[2026-06-09-lob-implementation-design]] — Overflow Page 设计（Ledgers 集成、PageHeader 格式、GC 策略）  
+> **Tier 1 参考**：[[2026-06-09-lob-scheme-investigation]] — Lealone LOB 方案深度调查  
 > **背景**：当前 NexKV BTree 每条 record 必须在 4KB 单页内存储。MVCC value 约 50B，页面可存 ~80 entries。若 value 超过 ~3.9KB，insert 直接失败。
+
+**两级存储策略**：
+- **Tier 1 — Overflow Page（2KB ~ 64KB）**：数据存储在 mmap 溢出页链中，BTree 叶子页存 8B 引用。✅ 已实现
+- **Tier 2 — LOB File（> 64KB）**：数据存储在独立文件中，BTree 叶子页存 16B 文件引用。📐 设计阶段
 
 ---
 
@@ -24,11 +28,15 @@
 
 ### 1.2 需求场景
 
-| 场景 | value 大小 | 频率 |
-|------|:--:|:--:|
-| 普通 KV | < 100B | 99% |
-| 中等对象 | 4KB ~ 64KB | 0.9% |
-| 大对象 (LOB) | 64KB ~ 1MB | 0.1% |
+| 场景 | value 大小 | 频率 | 存储方式 |
+|------|:--:|:--:|------|
+| 普通 KV | < 2KB | 99% | BTree 行内存储 |
+| 中等对象 | 2KB ~ 64KB | 0.9% | **Overflow Page**（mmap 溢出页链）✅ |
+| 大对象 (LOB) | 64KB ~ 1MB+ | 0.1% | **LOB File**（独立文件系统存储）📐 |
+
+**两级分层理由**：
+- Overflow Page（mmap 内）：适合中小对象，零系统调用，纳秒级延迟。但占用 mmap 配额，上限受 mmap 大小约束
+- LOB File（文件系统）：适合大对象，不占 mmap 配额，利用 OS page cache。支持流式读写、GB 级对象
 
 ### 1.3 Lealone 方案（简要）
 
@@ -64,21 +72,28 @@ Lealone 在 `BTreeStorage` 层实现 LOB——**BTree 感知** LOB 存在：
 ┌─────────────────────────────────────────┐
 │          Ledgers / Application          │
 ├─────────────────────────────────────────┤
-│         ValueEncoder (codec)            │ ← LOB 检测, 编解码, 数据拼接
-│         LOBManager (lifecycle)          │ ← 溢出页分配, GC 回收 (epoch-based)
+│         ValueEncoder (codec)            │ ← LOB 检测, 路由, 编解码
+│         LOBManager (lifecycle)          │ ← 两级路由: OverflowPage / LOBFile
+├─────────────────────────────────────────┤
+│     ┌──────────────┐ ┌──────────────┐   │
+│     │ OverflowPage  │ │  LOBFile     │   │ ← 两级存储后端
+│     │ (mmap pages)  │ │  (disk files)│   │
+│     └──────────────┘ └──────────────┘   │
 ├─────────────────────────────────────────┤
 │         BTree (index only)              │ ← Key 索引, Split/Merge, CAS 并发
 │         PageManager (storage)           │ ← 页面分配/释放/读写
-│         mmap (offheap)                  │ ← 物理内存
+│         mmap (offheap)                  │ ← 索引页 + 溢出页物理内存
+│         File System (data/lob/)         │ ← LOB 文件物理存储
 └─────────────────────────────────────────┘
 ```
 
 | 模块 | 职责 | LOB 相关接口 |
 |------|------|------|
 | **BTree** | Key 索引、页面组织、CAS 并发 | 无——完全透明 |
-| **ValueEncoder** | Value 编解码、LOB 检测、数据拼接 | `Encode/Decode`, `IsLOB` |
-| **LOBManager** | 溢出页生命周期、epoch 回收 | `Allocate/Read/Free/Update/Size` |
-| **PageManager** | 页面分配/释放/读写 | `AllocOverflow/FreeOverflow/ReadOverflow` |
+| **ValueEncoder** | Value 编解码、两级路由、数据拼接 | `Encode/Decode`, `IsLOB` |
+| **LOBManager** | 两级路由、生命周期管理 | `Allocate/Read/Free/Update` |
+| **OverflowPage** | mmap 溢出页链（2KB~64KB）| `AllocOverflow/FreeOverflow/ReadOverflow` |
+| **LOBFileManager** | LOB 文件存储（>64KB）| `CreateLOB/ReadLOB/DeleteLOB` |
 
 ### 2.3 LOBManager 接口
 
@@ -214,19 +229,261 @@ OverflowPage 1004:  NextPageID=0     ChunkSize=2928  Data=[12072..14999]
 空间计算：ceil(15000 / 4024) = 4 页
 ```
 
-### 3.4 LOB 阈值
+### 3.4 两级阈值
 
 | 阈值 | 值 | 说明 |
 |------|:--:|------|
-| `LOBSizeThreshold` | 2048 (2KB) | value > 2KB 启用溢出页存储 |
+| `LOBSizeThreshold` | 2048 (2KB) | value > 2KB → Overflow Page（mmap 溢出页链）|
+| `LOBFileThreshold` | 65536 (64KB) | value > 64KB → LOB File（独立文件系统存储）|
 
-> 2KB 阈值：Phase 3 版本内嵌后 value ~50B，页面可存 ~80 entries。阈值在 ValueEncoder 层通过 `len(value) > LOBSizeThreshold` 固定判断，后续可按需调整常量值（3-4KB）。BTree 不感知 LOB 阈值。
+> **两级路由逻辑**（ValueEncoder 层）：
+> ```
+> len(value) ≤ 2KB     → BTree 行内存储
+> 2KB < len(value) ≤ 64KB → Overflow Page（mmap 溢出页链）
+> len(value) > 64KB    → LOB File（独立文件系统）
+> ```
+> 64KB 阈值确保 mmap 空间不会被少量大对象耗尽。默认 6GB mmap 中，64KB 阈值下即使 100% 溢出页也需 ~10 万个大对象才可能触及 mmap 上限。
 
 ---
 
-## 四、核心流程
+## 四、Tier 2 — LOB 文件存储格式 📐
 
-### 4.1 写入流程
+> **状态**：设计阶段，待实现
+> **参考**：[[2026-06-09-lob-implementation-design]] — 遵循相同的 LOBManager 接口模式、删除顺序约束、GC 策略
+
+### 4.1 设计目标
+
+| 目标 | 说明 |
+|------|------|
+| **不占 mmap 配额** | LOB 文件存储在文件系统中，mmap 只存 BTree 索引页 + 溢出页 |
+| **支持大对象** | 64KB ~ GB 级，流式读写 |
+| **不可变写入** | 每个 LOB 写入后不可变（COW 语义），更新 = 新文件 + 旧文件 epoch GC |
+| **崩溃安全** | 文件写入 + fsync 后原子可见 |
+| **简单 GC** | epoch-based，unlink 即可回收 |
+| **OS page cache** | 利用文件系统缓存，热点 LOB 自动驻留内存 |
+
+### 4.2 存储布局
+
+```
+data/lob/                          ← LOB 根目录
+├── 00/                            ← 目录分片（高 2 字节）
+│   ├── 00/                        ← 目录分片（次高 2 字节）
+│   │   ├── 0000000000000001.lob   ← LOB 文件（LOBID 为文件名）
+│   │   ├── 0000000000000002.lob
+│   │   └── ...
+│   └── 01/
+│       └── ...
+├── 01/
+│   └── ...
+└── ff/
+    └── ff/
+        └── ffffffffffffffff.lob
+```
+
+**目录分片**：取 LOBID 的高 4 字节，拆为两级目录（每级 1 字节 = 256 个目录）。
+
+- 每级 256 个目录 × 二级 256 个 = 65,536 个叶子目录
+- 假设 100 万 LOB，每目录 ~15 个文件——无性能压力
+- 避免单目录百万文件的文件系统瓶颈
+
+### 4.3 LOB 文件格式
+
+每个 `.lob` 文件是一个独立的不可变文件：
+
+```
+┌──────────────────────────────────────┐
+│          LOB File Header (32B)       │
+├──────────────────────────────────────┤
+│  Magic:      [4]byte = "NXLB"       │
+│  Version:    uint16 = 1             │
+│  Flags:      uint16                 │
+│    bit 0: Tombstone (已删除)         │
+│    bits 1-15: reserved              │
+│  LOBID:      uint64                 │
+│  DataLen:    uint64 (原始数据长度)    │
+│  Checksum:   uint32 (CRC32C of data)│
+│  Reserved:   [2]byte                │
+├──────────────────────────────────────┤
+│          Raw Data (DataLen bytes)    │
+│          [byte][byte]...            │
+└──────────────────────────────────────┘
+```
+
+**Header 字段说明**：
+
+| 字段 | 大小 | 说明 |
+|------|:--:|------|
+| Magic | 4B | `NXLB` — 文件类型标识，防止误读 |
+| Version | 2B | 格式版本，当前 = 1 |
+| Flags | 2B | bit0=Tombstone（GC 标记），其余保留 |
+| LOBID | 8B | 唯一标识，与文件名一致（冗余校验） |
+| DataLen | 8B | 原始数据字节数 |
+| Checksum | 4B | CRC32C 数据校验和 |
+
+**关键设计决策**：
+
+- **Header 内嵌 LOBID**：即使文件被误移动/重命名，仍可自描述校验
+- **DataLen 为 uint64**：支持 GB 级对象（overflow page 的 TotalLen 只需 uint32）
+- **Checksum 只覆盖 data**：Header 校验通过 Magic + LOBID 一致性检查完成
+- **无压缩**：压缩可选在 ValueEncoder 层做（snappy/zstd），LOB 文件存压缩后的 data
+- **无加密**：加密由上层（Ledgers）负责
+
+### 4.4 BTree 中的 LOB File 引用
+
+BTree 叶子页存储 **16B LOBFileRef**（vs overflow page 的 8B LOBRef）：
+
+```
+MVCC 编码扩展:
+  普通 value:  [Flag:0x00][prev...][beginTS:8][realVal]
+  Overflow:    [Flag:0x02][prev...][beginTS:8][lobRefLen:2=8][FirstPageID:4][TotalLen:4]
+  LOB File:    [Flag:0x04][prev...][beginTS:8][lobRefLen:2=16][LOBID:8][TotalLen:8]
+```
+
+新增 Flag 常量：
+
+| Flag | 值 | 含义 |
+|------|:--:|------|
+| `FlagLOBFile` | `0x04` | LOB 文件存储（Tier 2）|
+| `FlagLOBFileTombstone` | `0x05` | LOB 文件 Tombstone（`0x04｜0x01`）|
+
+**LOBFileRef 结构**：
+
+```go
+type LOBFileRef struct {
+    LOBID    uint64 // 唯一 LOB 标识（即文件名中的 LOBID）
+    TotalLen uint64 // 原始数据长度（最大 16EB，实际受文件系统限制）
+}
+```
+
+**MVCCValue 扩展**：
+
+```go
+type MVCCValue struct {
+    // ... existing fields ...
+    LOB     *LOBRef     // non-nil for FlagLOBNormal/FlagLOBTombstone (Tier 1)
+    LOBFile *LOBFileRef // non-nil for FlagLOBFile/FlagLOBFileTombstone (Tier 2)
+}
+```
+
+### 4.5 LOBFileManager 接口
+
+```go
+// LOBFileManager manages large objects stored as independent files.
+type LOBFileManager interface {
+    // Create writes data to a new LOB file and returns its reference.
+    // The file is fsync'd before returning — crash-safe.
+    Create(data []byte) (LOBFileRef, error)
+
+    // Read reads the full data of a LOB file.
+    // Uses mmap for files > 64KB, pread for smaller.
+    Read(ref LOBFileRef) ([]byte, error)
+
+    // Delete marks a LOB file as deleted (Tombstone flag) for epoch GC.
+    // Does NOT unlink immediately — epoch protects concurrent readers.
+    Delete(ref LOBFileRef) error
+
+    // Retire unlinks retired LOB files after epoch advances past all readers.
+    Retire(lobIDs []uint64) error
+
+    // CreateStream returns a writer for streaming large LOB data.
+    // Caller writes chunks, then Close() finalizes checksum + fsync.
+    CreateStream() (LOBStreamWriter, error)
+}
+
+// LOBStreamWriter supports chunked write for very large objects.
+type LOBStreamWriter interface {
+    Write(chunk []byte) (int, error)
+    Close() (LOBFileRef, error) // finalize checksum + fsync
+}
+```
+
+### 4.6 CRUD 流程
+
+**写入（Create）**：
+
+```
+ValueEncoder.Encode(value):
+  if len(value) > LOBFileThreshold:
+    ref, err := lobFileMgr.Create(value)
+    // ref = {LOBID: <monotonic>, TotalLen: len(value)}
+    return BuildMVCC(FlagLOBFile, ts, lobFileRefBytes(ref), prev...)
+
+LOBFileManager.Create(data):
+  1. lobID = atomic.AddUint64(&nextLOBID, 1)
+  2. dir = shardDir(lobID)  // data/lob/00/00/
+  3. os.MkdirAll(dir)
+  4. tmp = dir + "/.tmp-{lobID}"  // 临时文件
+  5. write header + data to tmp
+  6. f.Sync()
+  7. os.Rename(tmp, dir + "/{lobID}.lob")  // 原子重命名
+  8. return LOBFileRef{LOBID: lobID, TotalLen: len(data)}
+```
+
+**读取（Read）**：
+
+```
+LOBFileManager.Read(ref):
+  1. path = lobPath(ref.LOBID)
+  2. f = os.Open(path)
+  3. validate header (magic + lobID + checksum)
+  4. if ref.TotalLen > mmapThreshold:
+       return mmap file region           // 零拷贝大对象
+     else:
+       return pread full data            // 小对象直接读
+  5. return data
+```
+
+**删除（Delete）**：
+
+```
+EpochManager.RetireBatch(lobIDs):
+  1. 批量 unlink：os.Remove(lobPath(id)) for each id
+  2. 清理空目录（可选，后台协程）
+```
+
+**更新（Update）**：
+
+```
+// 不可变语义：创建新 LOB 文件 + epoch 回收旧文件
+oldRef := mv.LOBFile
+newRef := lobFileMgr.Create(newValue)
+// BTree.Set 将 value 指向新 ref
+// 旧 ref 推入 epoch retire 队列
+```
+
+### 4.7 并发安全
+
+```
+Reader:
+  snapshotGet → DecodeValue → lobFileMgr.Read(ref)
+  - 文件打开后持有 fd，unlink 不影响已打开 fd 的读取
+  - POSIX 语义：unlink 只删除目录项，inode 在最后一个 fd 关闭后才释放
+
+Writer:
+  - Create: tmp + rename 原子操作，reader 看不到半写文件
+  - Delete: 不立即 unlink，epoch 结束后 retire 批量 unlink
+  - Update: Create new → BTree CAS → Retire old
+
+GC:
+  - EpochManager.RetireBatch(lobIDs) → os.Remove
+  - 在 watermark 推进后调用，保证无 reader 持有旧 ref
+```
+
+### 4.8 性能考量
+
+| 操作 | 延迟来源 | 优化 |
+|------|------|------|
+| Create 小 LOB (<256KB) | write + fsync | batch fsync（group commit） |
+| Create 大 LOB (>1MB) | write 吞吐 | 流式写入，按 chunk fsync |
+| Read 热点 LOB | open + pread | fd 缓存池（LRU），mmap 大文件 |
+| Read 冷 LOB | open + pread | OS page cache 自然淘汰 |
+| Delete | os.Remove（极快） | 批量 unlink，后台清理空目录 |
+
+---
+
+## 五、Tier 1 核心流程（overflow page）
+
+### 5.1 写入流程
 
 ```
 Ledgers.Put(key, largeValue):
@@ -248,7 +505,7 @@ Ledgers.Put(key, largeValue):
   2. BTree.Set(key, encoded)  ← BTree 无感知, ~31B 正常插入
 ```
 
-### 4.2 读取流程
+### 5.2 读取流程
 
 ```
 Ledgers.Get(key):
@@ -264,7 +521,7 @@ Ledgers.Get(key):
         → 返回 mv.RealVal
 ```
 
-### 4.3 删除流程（关键约束）
+### 5.3 删除流程（关键约束）
 
 根据 D10：
 
@@ -297,7 +554,7 @@ Ledgers.Delete(key):
       → UndoEntry 包含 LOB ref → FreeOverflow
 ```
 
-### 4.4 更新流程（非事务路径）
+### 5.4 更新流程（非事务路径）
 
 ```
 Ledgers.Put(key, newLargeValue) [existing key, 非事务]:
@@ -311,9 +568,9 @@ Ledgers.Put(key, newLargeValue) [existing key, 非事务]:
 
 ---
 
-## 五、并发控制与 GC
+## 六、并发控制与 GC
 
-### 5.1 Epoch-Based GC（复用现有 BTree GC）
+### 6.1 Epoch-Based GC（复用现有 BTree GC）
 
 当前 NexKV BTree 已有 epoch-based GC（`EpochManager` + `AllocSlot/EnterRead/ExitRead/RetireBatch`）。
 LOB 溢出页复用同一套机制——不需要引用计数。
@@ -357,7 +614,7 @@ func (pm *PageManager) RetireOverflowChain(firstPageID uint32) {
 
 > 事务 Delete 路径中，旧 LOB 链通过 `RetireOverflowChain` 推入 epoch 队列，与 BTree 页面的 COW 旧页共用同一回收周期。
 
-### 5.2 LOB 页面生命周期
+### 6.2 LOB 页面生命周期
 
 | 操作 | 页面状态 | 回收时机 |
 |------|------|------|
@@ -367,7 +624,7 @@ func (pm *PageManager) RetireOverflowChain(firstPageID uint32) {
 | Rollback | 本事务分配的溢出的页立即 free（无 reader） | 立即 |
 | BTree Split/COW | 被替换的 BTree 页面 Retire → 推入 epoch | 同上 |
 
-### 5.3 CAS 原子操作（与现有 BTree 一致）
+### 6.3 CAS 原子操作（与现有 BTree 一致）
 
 ```
 Reader:  无锁读 (mmap sub-slice + epoch 保护)
@@ -378,9 +635,9 @@ GC:      epoch 结束后批量回收 retired 页面（BTree 页 + LOB 溢出页�
 
 ---
 
-## 六、性能优化
+## 七、性能优化
 
-### 6.1 批量预分配
+### 7.1 批量预分配
 
 写入大对象时一次性分配所有溢出页（而非逐页分配+写入），减少 alloc 开销：
 
@@ -393,7 +650,7 @@ func AllocOverflowChain(totalLen uint32) (firstPageID uint32, pageIDs []uint32) 
 }
 ```
 
-### 6.2 顺序写入优化
+### 7.2 顺序写入优化
 
 溢出页 Data 写入时直接操作 mmap 指针（`unsafe.Slice`），避免中间 Go heap 拷贝：
 
@@ -404,7 +661,7 @@ dataPtr := unsafe.Add(ptr, SizeofPageHeader + 8 + 4 + 4)
 copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 ```
 
-### 6.3 未来优化方向
+### 7.3 未来优化方向
 
 | 优化 | 说明 | 优先级 |
 |------|------|:--:|
@@ -414,9 +671,9 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 
 ---
 
-## 七、实现计划
+## 八、实现计划
 
-### 实施状态：✅ 全部完成（2026-06-09）
+### Tier 1 — Overflow Page 实施状态：✅ 全部完成（2026-06-09）
 
 | Step | 内容 | 行数 | 文件 | 状态 |
 |------|------|:--:|------|:--:|
@@ -427,7 +684,21 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | — | **BTree 无需改动**：Get 返回 raw bytes，LOB 展开在上层完成 | 0 | — | ✅ |
 | 5 | MVCC 事务层集成 (Get/GetBatch/commitKey/rollbackOneKey) | ~80 | `mvcc/transaction.go` | ✅ |
 | 6 | 阈值配置 + benchmark (4KB LOB) | ~130 | `cmd/tools/btree-txn-bench` | ✅ |
-| **合计** | | **~400** | |
+| **Tier 1 合计** | | **~400** | |
+
+### Tier 2 — LOB File 实施计划 📐
+
+| Step | 内容 | 行数 | 文件 |
+|------|------|:--:|------|
+| 7 | `FlagLOBFile=0x04` / `FlagLOBFileTombstone=0x05` + LOBFileRef + ParseMVCC | ~25 | `mvcc/codec.go` |
+| 8 | `LOBFileManager` 接口 + 实现 (Create/Read/Delete/Retire/CreateStream) | ~120 | `storage/lob/file_manager.go` (新) |
+| 9 | LOB 文件存储后端：目录分片 + tmp→rename 原子写入 + mmap 读取 | ~100 | `storage/lob/file_store.go` (新) |
+| 10 | ValueEncoder 两级路由：2KB→inline, 2~64KB→overflow, >64KB→lobFile | ~30 | `mvcc/lob.go` |
+| 11 | LOBFileManager 注入 TxManager + SnapshotTx（与 overflow LOBManager 共存） | ~30 | `mvcc/transaction.go` |
+| 12 | Epoch GC 集成：RetireLOB 批量 unlink + 空目录清理 | ~40 | `storage/btree/epoch*.go` |
+| 13 | Benchmark：64KB/256KB/1MB LOB 文件读写 | ~50 | `cmd/tools/btree_bench` |
+| **Tier 2 合计** | | **~395** | |
+| **总合计** | | **~795** | |
 
 ### 实施细节
 
@@ -459,7 +730,9 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 
 ---
 
-## 八、设计决策
+## 九、设计决策
+
+### Tier 1 决策（Overflow Page）
 
 | 决策点 | 方案 | 理由 |
 |--------|------|------|
@@ -471,27 +744,44 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | LOB 引用大小 | 8B (ID:4 + Len:4) | BTree 叶子页最小化存储开销 |
 | 溢出页数据量 | 4024B/page (4096-56-8-4-4) | 最大化数据密度 |
 | GC 策略 | Epoch-based（复用 BTree EpochManager） | 与 BTree 页面统一批次回收, 无需引用计数 |
-| 阈值 | 2KB | Lealone 同值，平衡 leaf page 容量和溢出页开销 |
+| Tier 1 阈值 | 2KB | Lealone 同值，平衡 leaf page 容量和溢出页开销 |
+
+### Tier 2 决策（LOB File）
+
+| 决策点 | 方案 | 理由 |
+|--------|------|------|
+| 存储介质 | 独立文件系统（非 mmap） | 不占 mmap 配额，利用 OS page cache |
+| 文件粒度 | 一个 LOB = 一个文件 | 简单可靠，unlink = 回收，无碎片 |
+| 目录分片 | LOBID 高 4 字节 → `XX/YY/` 两级目录 | 256×256=65K 叶子目录，百万文件无压力 |
+| 原子写入 | tmp 文件 + rename | POSIX 原子操作，reader 看不到半写文件 |
+| 读取方式 | mmap（>64KB） / pread（≤64KB） | mmap 零拷贝大文件，pread 避免小文件 mmap 开销 |
+| LOB Flag | 0x04(Normal)/0x05(Tombstone) | 与 overflow 0x02/0x03 区分 |
+| LOB 引用大小 | 16B (LOBID:8 + TotalLen:8) | 支持 GB 级对象，uint64 TotalLen |
+| GC 策略 | Epoch-based（与 overflow 同一 EpochManager） | 统一回收周期，RetireBatch 批量 unlink |
+| Tier 2 阈值 | 64KB | 确保 mmap 不被少量大对象耗尽 |
+| 校验 | Header CRC32C self-check + Data CRC32C | 防止文件损坏或误识别 |
 
 ---
 
-## 九、与 Lealone 方案对比
+## 十、与 Lealone 方案对比
 
-| 维度 | Lealone (Java) | NexKV (本方案) |
-|------|---------------|----------------|
-| LOB 感知层 | `BTreeStorage` (BTree 感知) | `MVCC codec` (BTree 透明) |
-| BTree 改动 | 需要 `isLargeValue` 判断 | **零改动** |
-| 溢出页管理 | `BTreeStorage.largeValue` | `PageManager.AllocOverflow` |
-| LOB Flag | `0x80` (1 byte) | `0x02`(Normal)/`0x03`(Tomb) (新增) |
-| 引用大小 | 21B | **8B** (仅 ID+Len) |
-| 溢出页数据 | 4084B | 4024B |
-| 并发控制 | `AtomicReferenceFieldUpdater` | `atomic.Pointer` + CAS |
+| 维度 | Lealone (Java) | NexKV Tier 1 (Overflow) | NexKV Tier 2 (LOB File) |
+|------|---------------|------------------------|--------------------------|
+| LOB 感知层 | `BTreeStorage` (BTree 感知) | `MVCC codec` (BTree 透明) | `MVCC codec` (BTree 透明) |
+| BTree 改动 | 需要 `isLargeValue` 判断 | **零改动** | **零改动** |
+| 存储介质 | mmap 溢出页 | mmap 溢出页 | **独立文件系统** |
+| LOB Flag | `0x80` (1 byte) | `0x02`/`0x03` | `0x04`/`0x05` |
+| 引用大小 | 21B | **8B** | 16B |
+| 最大对象 | 4GB (uint32) | 4GB (uint32) | 16EB (uint64) |
+| 并发控制 | `AtomicReferenceFieldUpdater` | `atomic.Pointer` + CAS | epoch + rename 原子操作 |
+| GC 机制 | JVM GC + 引用计数 | Epoch-based GC | Epoch-based unlink |
+| mmap 占用 | 数据+索引全在 mmap | 索引+溢出页在 mmap | **只索引在 mmap** |
 | GC 机制 | JVM GC + 引用计数 | Epoch-based GC (复用 BTree) |
 | 删除 | BTree 自动处理 | 上层先 free LOB 再 delete BTree |
 
 ---
 
-## 十、关联文档
+## 十一、关联文档
 
 - [[2026-06-09-lob-scheme-investigation]] — Lealone LOB 方案深度调查  
 - [[2026-06-09-lob-implementation-design]] — LOB 实现详细设计（Ledgers 集成）  

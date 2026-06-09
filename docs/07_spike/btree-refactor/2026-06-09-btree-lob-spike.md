@@ -1040,16 +1040,56 @@ func (s *lobFileStore) Read(ref mvcc.LOBFileRef) ([]byte, error) {
 
 ### 12.5 缓存策略
 
+#### 12.5.1 核心认知：BigCache 是纯读缓存
+
+```
+LOB 文件生命周期:
+  Create(data) ──→ newLobID = monotonic ++    ← BigCache 不能跳过落盘！
+                ──→ tmp write + fsync + rename ← 不可变写入
+                ──→ 文件一旦创建，永不修改
+
+  Read(ref{LOBID:42}):
+    首次: BigCache miss → mmap/pread 磁盘 → 填充 BigCache
+    二次: BigCache hit  → 内存返回（~100ns，vs ~50μs mmap）
+```
+
+> **Write 路径 BigCache 无用**：每个 LOB 文件是独立的、不可变的、ID 单调递增的。Cache 不能替代磁盘写入——数据必须经过 `write+fsync+rename` 才能崩溃安全。写路径的性能优化只能靠 **Group Fsync (§十二)**，不能靠缓存。
+>
+> **Read 路径 BigCache 有显著价值**：同一个 lobID 可能被多次读取（MVCC prev 版本展开、并发事务快照读、热点 key 重复查询）。OS page cache 已缓存磁盘页，但 BigCache 在 Go 堆内，避免了系统调用和内存拷贝。
+
+#### 12.5.2 策略决策
+
 | 决策 | 方案 | 理由 |
 |------|------|------|
+| 缓存类型 | **纯读缓存** (write-through 不适用) | LOB 不可变写入，无"更新"语义 |
 | 缓存位置 | `lobFileStore.Read()` 内部 | 对上层完全透明 |
-| 缓存键 | `lobID` (uint64 → 8 bytes BigEndian) | LOB 不可变，无版本号 |
-| 淘汰策略 | BigCache 内置 TTL (`LifeWindow`) + HardMax LRU | 自动淘汰，无需手动管理 |
+| 缓存键 | `lobID` (uint64 → 8 bytes BigEndian) | 文件不可变，无版本号，lobID 唯一 |
+| 写入行为 | `Create()` **不填充** cache | 写后几乎不立即读回，填充浪费 |
+| 淘汰策略 | BigCache 内置 TTL + HardMax LRU | 自动淘汰，无需手动管理 |
 | 大条目旁路 | > `LOBCacheMaxEntrySize` 不缓存 | 避免 50MB LOB 挤掉 100 条 128KB |
-| 写入不缓存 | `Create` 不填充 cache | LOB 写入后极少立即读回 |
-| 删除失效 | `Delete` 时主动 `cache.del(lobID)` | 防止返回已删除数据 |
-| 内存上限 | 512MB（可配置） | 防止 OOM，BigCache 自动淘汰 |
+| 删除失效 | `Delete` 时主动 `cache.del(lobID)` | lobID 不会重用（monotonic），但防御性清理 |
+| 内存上限 | 512MB（可配置 0=禁用） | 防止 OOM，BigCache HardMax 自动淘汰 |
 | TTL | 10min（可配置） | 与 epoch-GC 窗口对齐 |
+
+#### 12.5.3 与 OS Page Cache 的关系
+
+```
+┌─────────────────────────────────────────┐
+│  BigCache (Go heap, ~100ns)            │  ← 最热层：显式管理，不受 OS 淘汰
+├─────────────────────────────────────────┤
+│  OS Page Cache (kernel, ~1-5μs)        │  ← 中间层：自动缓存所有文件 I/O
+├─────────────────────────────────────────┤
+│  Disk (NVMe ~50μs, SATA ~500μs)        │  ← 最底层：冷数据
+└─────────────────────────────────────────┘
+```
+
+| 场景 | 无 BigCache | 有 BigCache |
+|------|:----------:|:----------:|
+| 冷 LOB 首次读 | ~1ms (mmap 映射) | ~1ms（无变化，cache miss） |
+| 热 LOB 二次读 (OS cache hit) | ~50μs (mmap 拷贝到 Go heap) | **~100ns** (BigCache hit) |
+| 热 LOB 重复读 (OS cache 被换出) | ~1ms | **~100ns** (BigCache 保护) |
+
+> **关键**：BigCache 不受 OS 内存压力影响。当 OS 为其他进程回收 page cache 时，BigCache 中的数据仍然有效。这在多租户/混合部署场景中有额外价值。
 
 ### 12.6 Benchmark 预期
 

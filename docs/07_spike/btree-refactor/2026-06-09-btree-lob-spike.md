@@ -85,8 +85,9 @@ Lealone 在 `BTreeStorage` 层实现 LOB——**BTree 感知** LOB 存在：
 ```go
 // LOBManager 管理大对象的存储和生命周期
 type LOBManager interface {
-    // Allocate 分配溢出页面存储大对象，返回 BTree 可存储的 MVCC 编码字节
-    Allocate(data []byte) ([]byte, error)
+    // Allocate 分配溢出页面存储大对象，返回 LOB 引用。
+    // MVCC 编码由 ValueEncoder.BuildMVCC 完成——LOBManager 不感知 MVCC 格式。
+    Allocate(data []byte) (LOBRef, error)
 
     // Read 根据 LOB 引用读取完整数据（MVCC 解析由上层 ParseMVCC 完成）
     Read(ref LOBRef) ([]byte, error)
@@ -108,7 +109,20 @@ type LOBManager interface {
 
 ### 3.1 页面头部格式（统一 Page Header）[新设计, 待实现]
 
-所有页面（叶子页、索引页、溢出页）共享 56 字节头部：
+当前 `page_layout.go` 的 PageHeader 不包含 Magic/Checksum/PageType/ParentID/LSN 字段。
+需要新增/修改的字段：
+
+| 操作 | 字段 | 说明 |
+|:--:|------|------|
+| **新增** | Magic(4B) | 固定魔数 `0x4E45584B`，页面完整性校验 |
+| **新增** | Checksum(2B) | 头部 CRC16，检测 mmap 数据损坏 |
+| **修改** | pageType(1B) | 现有 0=Leaf/1=Node，**新增 2=Overflow** |
+| **新增** | ParentID(8B) | 父页面 ID，溢出页=0 |
+| **新增** | LSN(8B) | WAL 日志序列号，溢出页可复用为 lastModifiedTS |
+
+需要重新排列或移除的现有字段：`prevPage`/`nextPage`（溢出页不用双向链表）→ 重新映射为 NextPageID（溢出页metadata区）。注意总 size 必须保持 56 字节对齐（Go unsafe.Sizeof 兼容性）。
+
+合并后的目标格式（56 字节）：
 
 | 偏移 | 大小 | 字段 | 说明 |
 |------|------|------|------|
@@ -149,6 +163,7 @@ LOB value:   [Flag:0x02][prevFlag][prevBeginTS][prevValLen][prevVal][beginTS]
 > **注意**：`Flag 0x02` 是新增常量。当前 `ParseMVCC` 显式拒绝所有非 0x00/0x01 的 Flag（`mvcc/codec.go:56`）。实现时需修改 ParseMVCC/BuildMVCC 的 Flag 验证逻辑，允许 0x02/0x03（见 H4）。  
 > Phase 3 版本内嵌复用 `FlagNormal=0x00/FlagTombstone=0x01`，通过 `PrevBeginTS != 0` 区分有无 prev，没有引入新 Flag。  
 > prev 字段正常使用——大 value 的旧版本如果是 LOB，指向旧版溢出页链。
+> **prev LOB 解引用**：`ParseMVCC` 的路径 2（当前版本 BeginTS > snapshotTS）检查 `PrevBeginTS` 时，如果 prev 版本也是 LOB，`MVCCValue.PrevVal` 内容为 LOB 引用字节 `[FirstPageID:4][TotalLen:4]`。上层调用方需检查 prev Flag → 如果是 0x02/0x03 → `LOBManager.Read(prevLOBRef)` 展开完整 prev 值。
 
 **`MVCCValue` 扩展**：
 
@@ -212,7 +227,7 @@ OverflowPage 1004:  NextPageID=0     ChunkSize=2928  Data=[12072..14999]
 ```
 Ledgers.Put(key, largeValue):
   1. ValueEncoder.Encode:
-     a. if len(value) > 2KB:
+     a. if leaf.IsFull(len(key), len(value)): // 动态判断，非硬编码阈值
         → LOBManager.Allocate(value)
            → PageManager.AllocOverflow(size)
               → 计算 N = ceil(size / 4024)
@@ -259,6 +274,23 @@ Ledgers.Delete(key):
         → PageManager.FreeOverflow(FirstPageID)
            → 沿链释放所有溢出页
   3. BTree.Delete(key)  ← 只删叶子条目
+
+事务 Delete（MVCC Tombstone 写入）:
+  SnapshotTx.Delete(key):
+    1. Put 阶段: 记录 OldValue → WriteBuffer (含 LOB ref)
+    2. Commit → BuildMVCC(FlagLOBTombstone=0x03, ..., lobRef=oldLOBRef)
+       → BTree.Set(key, encoded)  ← Tombstone 内含 LOB ref
+    3. LOB 溢出页**不立即释放**: 旧 snapshot 读可能需要旧 LOB 数据
+    4. epoch GC 延迟回收: 当 watermark > commitTS 后,
+       FreeOverflow 由 GC 回调触发
+
+  Tombstone 恢复 (Put after Delete):
+    旧 Tombstone(0x03) → 新 Put(0x02): 复用旧 LOB ref (溢出页链不变)
+
+  回滚:
+    Commit 失败 → rollbackOneKey:
+      本事务新分配的 LOB 溢出页立即 free (无 reader)
+      → UndoEntry 包含 LOB ref → FreeOverflow
 ```
 
 ### 4.4 更新流程（非事务路径）
@@ -289,9 +321,11 @@ Reader:
   ReadOverflow(FirstPageID)  ← 安全读, 页面不会被 free
   epochMgr.ExitRead(epochSlot)
 
-Writer:
-  COW 拷贝 → CAS 替换 → 旧页面推入 epochMgr.RetireBatch
-  epoch 结束后 EpochManager 自动 Free 旧页面
+Writer (BTree value 更新):
+  LOBManager.Allocate → 分配新溢出页链 → 数据写入新页
+  BTree.Set(key, encoded) → CAS 更新叶子页 value (指向新 LOB ref)
+  旧 LOB ref → 旧溢出页链 → 推入 epochMgr.RetireBatch
+  epoch 结束后 EpochManager 批量 Free 旧溢出页
 
 GC:
   EpochManager 周期性 tryReclaim → 批量回收 retired 页面
@@ -364,12 +398,12 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | 4 | ValueEncoder 实现 (Encode/Decode + LOB 展开, 调用 LOBManager) | ~40 | `mvcc/codec.go` (ValueEncoder 部分) |
 | — | **BTree 无需改动**：Get 返回 raw bytes，LOB 展开在上层完成 | 0 | — |
 | 5 | MVCC 事务层集成 (Put/Get/commitKey/rollbackOneKey) | ~40 | `mvcc/transaction.go` |
-
-事务层要点：
-- `SnapshotTx.Put`: value > 阈值 → LOBManager.Allocate → 存储 lobRef 到 WriteBuffer
-- `SnapshotTx.Get`: GetRaw → ParseMVCC → if LOB → LOBManager.Read → 返回完整值
-- `rollbackOneKey`: 回滚时释放事务内新分配的 LOB 溢出页（UndoEntry 记录 LOB ref）
 | 6 | 阈值配置 + benchmark (4KB/64KB/1MB) | ~40 | `cmd/tools/btree_bench` |
+
+> 事务层要点：
+> - `SnapshotTx.Put`: value > 阈值 → LOBManager.Allocate → 存储 lobRef 到 WriteBuffer
+> - `SnapshotTx.Get`: GetRaw → ParseMVCC → if LOB → LOBManager.Read → 返回完整值
+> - `rollbackOneKey`: 回滚时释放事务内新分配的 LOB 溢出页（UndoEntry 记录 LOB ref）
 | **合计** | | **~230** | |
 
 ---

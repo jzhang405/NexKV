@@ -748,8 +748,11 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | 12 | Epoch GC 集成：RetireLobChain/File + fd缓存 + CleanupTmp | ~80 | `storage/btree/epoch.go` | ✅ |
 | 13 | Benchmark：128KB LOB 文件读写 | ~30 | `cmd/tools/btree_bench` | ✅ |
 | 14 | Code Review 全量修复 (2 CRITICAL + 4 HIGH + 3 MEDIUM) | ~190 | 9 files | ✅ |
-| **Tier 2 已实现** | | **~565** | |
-| **已实现** | | **~965** | |
+| 15 | Config + Options 参数化 (阈值/fsync/fd cache) | ~210 | 8 files | ✅ |
+| 16 | fsyncGroup fast path 直连 fsync (消除 1ms 批量等待) | ~10 | `file_store.go` | ✅ |
+| 17 | **BigCache LOB 缓存层** | ~200 | `storage/lob/lob_cache.go` (新) | 🔲 计划中 |
+| **Tier 2 已实现** | | **~775** | |
+| **已实现** | | **~1,175** | |
 
 ### ✅ P2 优化已完成
 
@@ -786,7 +789,7 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 
 | 项目 | 说明 |
 |------|------|
-| LOB 缓存 | 热点大对象 LRU 缓存（可复用 fd 缓存模式）|
+| **BigCache LOB 缓存** | §十一详细设计 — Tier 2 热点 LOB 内存缓存 (计划中) |
 | 页面预读 | 顺序读时预读相邻溢出页 |
 | 并行读取 | 多页并行 mmap 读取
 
@@ -876,7 +879,202 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 
 ---
 
-## 十一、关联文档
+---
+
+## 十一、BigCache LOB 缓存层（计划中）
+
+> **状态**：设计阶段，待实现  
+> **背景**：当前 LOB File Read 路径为 `fd cache → ReadAt/mmap → 磁盘 I/O`。即使有 OS page cache，热点 LOB 的冷启动仍需要磁盘 I/O。Tier 2 128KB 写入 145 QPS、读取 19,601 QPS（OS page cache 命中后），但首次读仍需 ~1ms mmap 映射。
+>
+> **目标**：在内存中缓存热点 LOB 数据，将高频 LOB 读延迟降至 ~100ns 级别（vs 当前 ~50μs 的 mmap 路径）。
+
+### 12.1 为什么选 BigCache 而不是 FreeCache
+
+基于 [allegro/bigcache](https://github.com/allegro/bigcache) 官方 benchmark（20M 条目，8 核）：
+
+| 指标 | BigCache | FreeCache | LOB 场景适配 |
+|------|:--------:|:---------:|-------------|
+| Set 并行 | **148 ns** | 268 ns | **BigCache 快 45%** |
+| Get 并行 | **86 ns** | 147 ns | **BigCache 快 41%** |
+| GC pause (20M) | **1.5ms** | 5.6ms | BigCache 低 73% |
+| 内存模型 | **按需增长** + HardMax | 预分配固定尺寸 | BigCache 更灵活 |
+| 变长条目 | ✅ 每条独立 `[]byte` | ❌ ring buffer 均匀分片 | LOB 2KB~1MB+，BigCache 天然适配 |
+
+> **结论：BigCache 胜出**。FreeCache ring buffer 假设条目大小均匀，大条目浪费空间。BigCache 按需增长 + HardMax 上限正好匹配 LOB 变长、不定量的场景。
+
+### 12.2 架构集成
+
+```
+                                    ┌─────────────────────┐
+  Read(ref) ──→ BigCache.Get(lobID) │  LOB Cache (内存)    │
+                      │             │  BigCache            │
+              hit? ───┤             │  HardMaxCacheSize=N   │
+                      │ no          │  LifeWindow=T         │
+                      ↓             │  Shards=1024          │
+              fd cache → mmap/pread └─────────────────────┘
+                      │
+                      ↓ (填充回 cache)
+              BigCache.Set(lobID, data)
+```
+
+**集成点**：`lobFileStore.Read()` 方法内部。对上层（`DecodeValue` → `LOBFileManager.Read`）完全透明。
+
+### 12.3 配置设计
+
+新增 `lob/config.go` 字段：
+
+```go
+type Config struct {
+    // ... 现有字段 ...
+
+    // LOBCacheMaxMB is the max memory (MB) for the BigCache LOB data cache.
+    // 0 = disabled. Default: 512
+    LOBCacheMaxMB int
+
+    // LOBCacheLifeWindow is the TTL for cached LOB entries.
+    // Default: 10 minutes
+    LOBCacheLifeWindow time.Duration
+
+    // LOBCacheShards is the number of BigCache shards (must be power of 2).
+    // Higher = better concurrency, slightly more memory. Default: 1024
+    LOBCacheShards int
+
+    // LOBCacheMaxEntrySize is the max single entry size in bytes.
+    // Entries larger than this bypass the cache. Default: 2MB
+    LOBCacheMaxEntrySize int
+}
+
+// Option 函数
+func WithLOBCache(maxMB int) Option { ... }
+func WithLOBCacheLifeWindow(d time.Duration) Option { ... }
+func WithLOBCacheShards(n int) Option { ... }
+func WithLOBCacheMaxEntrySize(bytes int) Option { ... }
+```
+
+默认配置：
+
+```go
+LOBCacheMaxMB:       512,            // 512MB 上限
+LOBCacheLifeWindow:  10 * time.Minute, // 10min TTL
+LOBCacheShards:      1024,           // 1024 分片
+LOBCacheMaxEntrySize: 2 * 1024 * 1024, // 单条最大 2MB
+```
+
+### 12.4 实现方案
+
+**新增文件**：`internal/infrastructure/storage/lob/lob_cache.go`
+
+```go
+// lobCache wraps BigCache for LOB data caching.
+type lobCache struct {
+    bc      *bigcache.BigCache
+    hits    atomic.Uint64
+    misses  atomic.Uint64
+    maxSize int // max entry size, skip larger
+}
+
+func newLOBCache(cfg Config) (*lobCache, error) {
+    if cfg.LOBCacheMaxMB <= 0 { return nil, nil }
+    bc, err := bigcache.New(context.Background(), bigcache.Config{
+        Shards:             cfg.LOBCacheShards,
+        LifeWindow:         cfg.LOBCacheLifeWindow,
+        CleanWindow:        cfg.LOBCacheLifeWindow / 2,
+        MaxEntriesInWindow: cfg.LOBCacheMaxMB * 1024 * 1024 / cfg.LOBCacheMaxEntrySize,
+        MaxEntrySize:       cfg.LOBCacheMaxEntrySize,
+        HardMaxCacheSize:   cfg.LOBCacheMaxMB,
+        Verbose:            false,
+    })
+    if err != nil { return nil, err }
+    return &lobCache{bc: bc, maxSize: cfg.LOBCacheMaxEntrySize}, nil
+}
+
+// get retrieves cached data by lobID. Returns nil on miss or oversized entry.
+func (c *lobCache) get(lobID uint64) []byte {
+    if c == nil { return nil }
+    key := encodeCacheKey(lobID)  // [8]byte BigEndian
+    data, err := c.bc.Get(key)
+    if err != nil {
+        c.misses.Add(1)
+        return nil
+    }
+    c.hits.Add(1)
+    return data
+}
+
+// set caches data. No-op if entry exceeds maxSize or cache is nil.
+func (c *lobCache) set(lobID uint64, data []byte) {
+    if c == nil || len(data) > c.maxSize { return }
+    key := encodeCacheKey(lobID)
+    _ = c.bc.Set(key, data)
+}
+```
+
+**修改 `lobFileStore`**：
+
+```go
+type lobFileStore struct {
+    // ... 现有字段 ...
+    lobCache *lobCache  // 新增: BigCache 热点 LOB 缓存
+}
+```
+
+**修改 `Read` 方法**：在 fd cache 之前插入 cache 查找：
+
+```go
+func (s *lobFileStore) Read(ref mvcc.LOBFileRef) ([]byte, error) {
+    // Phase 1: Try BigCache (memory, ~100ns)
+    if data := s.lobCache.get(ref.LOBID); data != nil {
+        return data, nil
+    }
+    // Phase 2: Try fd cache (cached fd, avoids open syscall)
+    // ... 现有逻辑 ...
+    // Phase 5: Populate BigCache after successful read
+    if dataLen > 0 {
+        s.lobCache.set(ref.LOBID, data)
+    }
+    return data, nil
+}
+```
+
+### 12.5 缓存策略
+
+| 决策 | 方案 | 理由 |
+|------|------|------|
+| 缓存位置 | `lobFileStore.Read()` 内部 | 对上层完全透明 |
+| 缓存键 | `lobID` (uint64 → 8 bytes BigEndian) | LOB 不可变，无版本号 |
+| 淘汰策略 | BigCache 内置 TTL (`LifeWindow`) + HardMax LRU | 自动淘汰，无需手动管理 |
+| 大条目旁路 | > `LOBCacheMaxEntrySize` 不缓存 | 避免 50MB LOB 挤掉 100 条 128KB |
+| 写入不缓存 | `Create` 不填充 cache | LOB 写入后极少立即读回 |
+| 删除失效 | `Delete` 时主动 `cache.del(lobID)` | 防止返回已删除数据 |
+| 内存上限 | 512MB（可配置） | 防止 OOM，BigCache 自动淘汰 |
+| TTL | 10min（可配置） | 与 epoch-GC 窗口对齐 |
+
+### 12.6 Benchmark 预期
+
+基于 BigCache 官方 benchmark（Get 并行 86 ns/op），预期：
+
+| 场景 | 当前 Tier 2 Read | 加 BigCache 后 | 提升 |
+|------|:---------:|:---------:|:----:|
+| 128KB 首次读（OS cache miss） | ~1ms (mmap) | ~1ms（无变化，旁路） | — |
+| 128KB 二次读（OS cache hit） | ~50μs | **~100ns** (BigCache hit) | **500x** |
+| 128KB 热点读 (1K ops × 8T) | 19,601 QPS | **10M+ QPS** | **500x+** |
+| 4KB Tier 1 热点读 (1K × 8T) | 2M QPS | ~2M QPS（Tier 1 原已很快） | — |
+
+> 当前 Tier 2 读瓶颈不在 CPU 而在 I/O。缓存层命中后直接从内存返回 `[]byte`，对热点 LOB 读性能有数量级提升。
+
+### 12.7 实施步骤
+
+| Step | 内容 | 行数 | 文件 |
+|------|------|:--:|------|
+| 1 | 添加 `bigcache` 依赖 (`go get`) | 2 | `go.mod` |
+| 2 | `lob_cache.go` — BigCache 封装 | ~80 | `storage/lob/lob_cache.go` (新) |
+| 3 | `config.go` — 新增 4 个字段 + 4 个 Option | ~40 | `storage/lob/config.go` |
+| 4 | `file_store.go` — 集成 `lobCache` 到 `Read`/`Delete` | ~30 | `storage/lob/file_store.go` |
+| 5 | `lob_cache_test.go` — 单元测试 | ~60 | `storage/lob/lob_cache_test.go` (新) |
+| 6 | Benchmark 对比 | ~20 | `cmd/tools/btree_bench/main.go` |
+| **合计** | | **~230** | |
+
+## 十二、关联文档
 
 - [[2026-06-09-lob-scheme-investigation]] — Lealone LOB 方案深度调查  
 - [[2026-06-09-lob-implementation-design]] — LOB 实现详细设计（Ledgers 集成）  

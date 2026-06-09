@@ -51,16 +51,8 @@ var (
 func main() {
 	flag.Parse()
 
-	// CPU profiling
-	if *cpuProfile != "" {
-		f, err := os.Create(*cpuProfile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "create cpu profile: %v\n", err)
-			os.Exit(1)
-		}
-		pprof.StartCPUProfile(f)
-		defer pprof.StopCPUProfile()
-	}
+	// CPU profiling: start in bench() AFTER preload+warmup to exclude setup noise.
+	// See bench() for actual StartCPUProfile call.
 
 	mmapSize := *mmapMB * 1024 * 1024
 	n := *nFlag
@@ -117,6 +109,13 @@ func main() {
 			}
 			bench(label, n, batch, "read", 0, mmapSize, ctx)
 		}
+	}
+	for _, batch := range []int{10, 100} {
+		label := fmt.Sprintf("txn-get-batch-%d", batch)
+		if *only != "" && !strings.HasPrefix(label, *only) {
+			continue
+		}
+		bench(label, n, batch, "readbatch", 0, mmapSize, ctx)
 	}
 
 	// === Mixed ===
@@ -203,11 +202,33 @@ func bench(label string, n, batch int, mode string, readRatio float64, mmapSize 
 	// Warmup
 	runTxnLoop(tree, kv, *warmupFlag, batch, mode, readRatio, nil, ctx)
 
+	// Start profiling AFTER preload + warmup (only measure benchmark path)
+	var cpuFile *os.File
+	if *cpuProfile != "" {
+		cpuFile, _ = os.Create(*cpuProfile)
+		if cpuFile != nil {
+			pprof.StartCPUProfile(cpuFile)
+		}
+	}
+
 	// Measure
 	var totalOps atomic.Int64
 	t0 := time.Now()
 	runTxnLoop(tree, kv, n, batch, mode, readRatio, &totalOps, ctx)
 	elapsed := time.Since(t0)
+
+	// Stop profiling BEFORE cleanup (avoids capturing tree.Close in profile)
+	if cpuFile != nil {
+		pprof.StopCPUProfile()
+		cpuFile.Close()
+	}
+	if *memProfile != "" {
+		memFile, _ := os.Create(*memProfile)
+		if memFile != nil {
+			pprof.WriteHeapProfile(memFile)
+			memFile.Close()
+		}
+	}
 
 	qps := float64(totalOps.Load()) / elapsed.Seconds()
 	fmt.Printf("%-24s batch=%-6d ops=%d time=%.3fs qps=%10.0f\n",
@@ -230,23 +251,39 @@ func runTxnLoop(tree *btree.BTree, kv *persist.PersistWAL, n, batch int,
 	for i := 0; i < n; i += batch {
 		tx := beginTx(tree, ctx)
 		count := 0
-		for j := 0; j < batch && i+j < n; j++ {
-			switch mode {
-			case "write":
-				_ = tx.Set(ctx, keyOf(i+j), valOf(i+j))
-			case "read":
-				_, _ = tx.Get(ctx, keyOf((i+j)%n))
-			case "mixed":
-				if rng.Float64() < readRatio {
-					_, _ = tx.Get(ctx, keyOf(rng.IntN(n)))
-				} else {
-					_ = tx.Set(ctx, keyOf(writeIdx), valOf(writeIdx))
-					writeIdx++
+
+		// readbatch: one GetBatch call replaces entire per-key loop
+		if mode == "readbatch" {
+			batchTx, ok := tx.(interface {
+				GetBatch(context.Context, [][]byte) ([][]byte, error)
+			})
+			if ok {
+				keys := make([][]byte, batch)
+				for k := 0; k < batch && i+k < n; k++ {
+					keys[k] = keyOf((i + k) % n)
 				}
-			case "rollback":
-				_ = tx.Set(ctx, keyOf(i+j), valOf(i+j))
+				_, _ = batchTx.GetBatch(ctx, keys)
+				count = len(keys)
 			}
-			count++
+		} else {
+			for j := 0; j < batch && i+j < n; j++ {
+				switch mode {
+				case "write":
+					_ = tx.Set(ctx, keyOf(i+j), valOf(i+j))
+				case "read":
+					_, _ = tx.Get(ctx, keyOf((i+j)%n))
+				case "mixed":
+					if rng.Float64() < readRatio {
+						_, _ = tx.Get(ctx, keyOf(rng.IntN(n)))
+					} else {
+						_ = tx.Set(ctx, keyOf(writeIdx), valOf(writeIdx))
+						writeIdx++
+					}
+				case "rollback":
+					_ = tx.Set(ctx, keyOf(i+j), valOf(i+j))
+				}
+				count++
+			}
 		}
 		if mode == "rollback" {
 			_ = tx.Rollback(ctx)
@@ -271,23 +308,39 @@ func runPersistTxnLoop(tree *btree.BTree, kv *persist.PersistWAL, n, batch int,
 		// BeginTx on the underlying tree, not PersistWAL
 		tx := beginTx(tree, ctx)
 		count := 0
-		for j := 0; j < batch && i+j < n; j++ {
-			switch mode {
-			case "write":
-				_ = tx.Set(ctx, keyOf(i+j), valOf(i+j))
-			case "read":
-				_, _ = tx.Get(ctx, keyOf((i+j)%n))
-			case "mixed":
-				if rng.Float64() < readRatio {
-					_, _ = tx.Get(ctx, keyOf(rng.IntN(n)))
-				} else {
-					_ = tx.Set(ctx, keyOf(writeIdx), valOf(writeIdx))
-					writeIdx++
+
+		// readbatch: one GetBatch call replaces entire per-key loop
+		if mode == "readbatch" {
+			batchTx, ok := tx.(interface {
+				GetBatch(context.Context, [][]byte) ([][]byte, error)
+			})
+			if ok {
+				keys := make([][]byte, batch)
+				for k := 0; k < batch && i+k < n; k++ {
+					keys[k] = keyOf((i + k) % n)
 				}
-			case "rollback":
-				_ = tx.Set(ctx, keyOf(i+j), valOf(i+j))
+				_, _ = batchTx.GetBatch(ctx, keys)
+				count = len(keys)
 			}
-			count++
+		} else {
+			for j := 0; j < batch && i+j < n; j++ {
+				switch mode {
+				case "write":
+					_ = tx.Set(ctx, keyOf(i+j), valOf(i+j))
+				case "read":
+					_, _ = tx.Get(ctx, keyOf((i+j)%n))
+				case "mixed":
+					if rng.Float64() < readRatio {
+						_, _ = tx.Get(ctx, keyOf(rng.IntN(n)))
+					} else {
+						_ = tx.Set(ctx, keyOf(writeIdx), valOf(writeIdx))
+						writeIdx++
+					}
+				case "rollback":
+					_ = tx.Set(ctx, keyOf(i+j), valOf(i+j))
+				}
+				count++
+			}
 		}
 		if mode == "rollback" {
 			_ = tx.Rollback(ctx)

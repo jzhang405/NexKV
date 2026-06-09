@@ -45,14 +45,16 @@ func (v *MVCCValue) IsTombstone() bool {
 //
 // prevFlag is normalized to 0x00/0x01 (prevFlag & 0x01).
 // prevBeginTS==0 means no previous version (Insert).
-func ParseMVCC(val []byte) (*MVCCValue, error) {
+//
+// Returns MVCCValue by value (stack-allocated when not escaping).
+func ParseMVCC(val []byte) (MVCCValue, error) {
 	if len(val) < MVCCHeaderSize {
-		return nil, errpkg.Wrap(ErrValueTooShort, fmt.Sprintf("got %d bytes, need %d", len(val), MVCCHeaderSize))
+		return MVCCValue{}, errpkg.Wrap(ErrValueTooShort, fmt.Sprintf("got %d bytes, need %d", len(val), MVCCHeaderSize))
 	}
 
 	flag := val[0]
 	if flag != FlagNormal && flag != FlagTombstone {
-		return nil, errpkg.Wrap(ErrInvalidFlag, fmt.Sprintf("0x%02X", flag))
+		return MVCCValue{}, errpkg.Wrap(ErrInvalidFlag, fmt.Sprintf("0x%02X", flag))
 	}
 
 	prevFlag := val[1] & 0x01 // normalize: only 0x00 or 0x01
@@ -63,7 +65,7 @@ func ParseMVCC(val []byte) (*MVCCValue, error) {
 	var prevVal []byte
 	if prevBeginTS != 0 && prevValLen > 0 {
 		if int(pos+prevValLen) > len(val) {
-			return nil, errpkg.Wrap(ErrValueTooShort, fmt.Sprintf("prevValLen=%d exceeds remaining bytes", prevValLen))
+			return MVCCValue{}, errpkg.Wrap(ErrValueTooShort, fmt.Sprintf("prevValLen=%d exceeds remaining bytes", prevValLen))
 		}
 		prevVal = val[pos : pos+prevValLen]
 		pos += prevValLen
@@ -71,14 +73,14 @@ func ParseMVCC(val []byte) (*MVCCValue, error) {
 
 	// Read current version: [beginTS:8][realVal]
 	if int(pos+8) > len(val) {
-		return nil, errpkg.Wrap(ErrValueTooShort, "missing beginTS for current version")
+		return MVCCValue{}, errpkg.Wrap(ErrValueTooShort, "missing beginTS for current version")
 	}
 	beginTS := binary.BigEndian.Uint64(val[pos : pos+8])
 	pos += 8
 
 	realVal := val[pos:]
 
-	return &MVCCValue{
+	return MVCCValue{
 		Flag:        flag,
 		BeginTS:     beginTS,
 		RealVal:     realVal,

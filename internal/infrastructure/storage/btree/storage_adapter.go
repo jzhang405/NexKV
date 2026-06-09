@@ -52,8 +52,17 @@ func (a *btreeStorageAdapter) GetRaw(_ context.Context, key []byte) ([]byte, err
 		return nil, mvcc.ErrKeyNotFound
 	}
 
-	// leaf.GetValue already returns a heap copy (mmap-safe)
-	return leaf.GetValue(idx), nil
+	// leaf.GetValue returns mmap sub-slice. Copy for safety — caller may retain copy.
+	raw := leaf.GetValue(idx)
+	cp := make([]byte, len(raw))
+	copy(cp, raw)
+	return cp, nil
+}
+
+// GetBatchRaw returns raw MVCC-encoded values for multiple keys in one
+// searchPath+epoch window. Used by SnapshotTx.GetBatch for batch snapshot reads.
+func (a *btreeStorageAdapter) GetBatchRaw(ctx context.Context, keys [][]byte) ([][]byte, error) {
+	return a.tree.getBatchRawBytes(ctx, keys)
 }
 
 // Set writes a pre-encoded MVCC value to the B+Tree.
@@ -97,7 +106,7 @@ func (a *btreeStorageAdapter) Set(_ context.Context, key, value []byte) error {
 			newPageID: newLeaf.PageID(),
 			delta:     1,
 		}, nil
-	})
+	}, MaxCASRetries)
 
 	if err == nil && a.tree.metrics != nil {
 		a.tree.metrics.WriteCount.Add(1)
@@ -167,7 +176,7 @@ func (a *btreeStorageAdapter) SetBatch(_ context.Context, pairs []mvcc.KVPair) (
 				newPageID: current.PageID(),
 				delta:     totalDelta,
 			}, nil
-		})
+		}, MaxCASRetries)
 
 		if err != nil {
 			return count, err
@@ -211,7 +220,7 @@ func (a *btreeStorageAdapter) Delete(_ context.Context, key []byte) error {
 			newPageID: newLeaf.PageID(),
 			delta:     -1,
 		}, nil
-	})
+	}, MaxCASRetries)
 
 	if err == nil && a.tree.metrics != nil {
 		a.tree.metrics.DeleteCount.Add(1)

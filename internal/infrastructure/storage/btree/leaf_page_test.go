@@ -314,14 +314,14 @@ func TestLeafGetKeyReturnsCopy(t *testing.T) {
 	assert.Equal(t, []byte("original"), leaf.GetKey(0))
 }
 
-func TestLeafGetValueReturnsCopy(t *testing.T) {
+func TestLeafGetValueReturnsMMapSlice(t *testing.T) {
 	leaf, _ := newTestLeaf(t)
 
 	leaf, _ = leaf.Insert([]byte("key"), []byte("original"))
 	val := leaf.GetValue(0)
-	val[0] = 'X' // mutate returned copy
 
-	assert.Equal(t, []byte("original"), leaf.GetValue(0))
+	// Verify returned slice = original value (mmap sub-slice, not a copy)
+	assert.Equal(t, []byte("original"), val)
 }
 
 // --- IsFull / Capacity ---

@@ -34,6 +34,11 @@ type StorageBackend interface {
 	// Keys must already be sorted (caller responsibility) to avoid redundant binary searches.
 	// Returns the count of operations applied and any error.
 	SetBatch(ctx context.Context, pairs []KVPair) (int, error)
+
+	// GetBatchRaw returns raw MVCC-encoded values for multiple keys in a single
+	// searchPath+epoch window. Missing keys return nil at that index.
+	// Each returned slice is a Go-heap independent copy.
+	GetBatchRaw(ctx context.Context, keys [][]byte) ([][]byte, error)
 }
 
 // KVPair is a key-value pair for batched writes.
@@ -61,6 +66,7 @@ const (
 // Tx is the per-transaction interface. Not thread-safe; caller must serialize calls.
 type Tx interface {
 	Get(ctx context.Context, key []byte) ([]byte, error)
+	GetBatch(ctx context.Context, keys [][]byte) ([][]byte, error)
 	Put(key, value []byte) error
 	Delete(key []byte) error
 	Commit(ctx context.Context) error
@@ -230,6 +236,82 @@ func (tx *SnapshotTx) Get(ctx context.Context, key []byte) ([]byte, error) {
 	return tx.snapshotGet(ctx, key)
 }
 
+// GetBatch performs batch snapshot reads: WriteBuffer → B+Tree (single searchPath+epoch).
+// Keys not in WriteBuffer are read from BTree in one batch — one searchPath, one epoch,
+// one GetLeafPage — then per-key ParseMVCC + snapshotTS check + copy.
+//
+// Missing keys return nil at that index. Callers MUST check results[i]==nil.
+func (tx *SnapshotTx) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, error) {
+	if err := tx.checkActive(); err != nil {
+		return nil, err
+	}
+
+	n := len(keys)
+	results := make([][]byte, n)
+
+	// Phase 1: WriteBuffer filter (Read-Your-Own-Writes)
+	var btreeKeys [][]byte
+	btreeIndices := make([]int, 0, n)
+	for i, key := range keys {
+		if len(key) == 0 {
+			return nil, errpkg.Wrap(errpkg.ErrMVCCGetError, "getbatch: empty key")
+		}
+		keyStr := string(key)
+		if entry, ok := tx.writeBuffer.Get(keyStr); ok {
+			switch entry.Op {
+			case OpInsert, OpUpdate:
+				results[i] = entry.Value
+			case OpDelete:
+				// results[i] stays nil
+			}
+			continue
+		}
+		btreeKeys = append(btreeKeys, key)
+		btreeIndices = append(btreeIndices, i)
+	}
+
+	if len(btreeKeys) == 0 {
+		return results, nil
+	}
+
+	// Phase 2: Batch BTree read — one searchPath + one epoch for all keys
+	rawVals, err := tx.engine.storage.GetBatchRaw(ctx, btreeKeys)
+	if err != nil {
+		return nil, err
+	}
+
+	// Phase 3: Per-key MVCC snapshot check
+	for j, raw := range rawVals {
+		if raw == nil { // key not found
+			continue
+		}
+		mv, parseErr := ParseMVCC(raw)
+		if parseErr != nil {
+			continue
+		}
+
+		// Path 1: current version visible
+		if mv.BeginTS <= tx.snapshotTS {
+			if mv.IsTombstone() {
+				continue // nil = tombstone
+			}
+			// Safe: raw already heap-copied by epoch-protected batch read
+			results[btreeIndices[j]] = mv.RealVal
+			continue
+		}
+
+		// Path 2: prev version visible
+		if mv.PrevBeginTS != 0 && mv.PrevBeginTS <= tx.snapshotTS {
+			if mv.PrevFlag != FlagTombstone {
+				results[btreeIndices[j]] = mv.PrevVal
+			}
+		}
+		// Path 3: neither visible → results[i] stays nil
+	}
+
+	return results, nil
+}
+
 // snapshotGet implements snapshot read using inline prev version (Phase 3: version-inline).
 // Eliminates VersionChain traversal entirely — prev version is embedded in BTree value.
 func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, error) {
@@ -248,7 +330,7 @@ func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, erro
 		if mv.IsTombstone() {
 			return nil, ErrKeyNotFound
 		}
-		return deepCopy(mv.RealVal), nil
+		return mv.RealVal, nil // raw already heap-copied by epoch-protected getRawBytes
 	}
 
 	// Path 2: current too new → check embedded previous version
@@ -257,7 +339,7 @@ func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, erro
 		if mv.PrevFlag == FlagTombstone {
 			return nil, ErrKeyNotFound
 		}
-		return deepCopy(mv.PrevVal), nil
+		return mv.PrevVal, nil // raw already heap-copied by epoch-protected getRawBytes
 	}
 
 	// Path 3: neither version visible → key didn't exist at snapshot time

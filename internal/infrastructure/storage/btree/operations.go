@@ -101,23 +101,13 @@ func (b *BTree) handleParentCASWithSpin(
 	return nil, nil, ErrCASConflict
 }
 
-// writeOperation is the CAS retry template for leaf mutations.
+// writeOperation is the unified CAS retry template for leaf mutations.
 // Uses optimistic locking: lock-free read → mutate → CAS → retry on failure.
 //
-// Algorithm:
-//  1. searchPath → find the leaf PageRef (lock-free)
-//  2. Read current PageInfo (lock-free, atomic load)
-//  3. Check Splitting state → backoff if another goroutine is splitting
-//  4. Get current leaf page from storage (lock-free, I/O)
-//  5. Double-check PageInfo not concurrently modified
-//  6. If full: CAS Splitting marker → doSplitWithSplitting (defer rollback)
-//     If not full: mutate → CAS
-//  7. Non-transient errors (ErrDuplicateKey etc.) return immediately
-//     Transient errors (ErrCASConflict, ErrRetry) retry from step 1
-//  8. Update size counter
-//
-// After MaxCASRetries failures, returns ErrCASConflict.
-func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
+// maxRetries controls the max CAS attempts. Use MaxCASRetries for normal
+// Set/Delete/SetBatch operations. Use maxCASFastAttempts for PageDispatcher
+// (enables Lealone-style re-queue after exhaustion).
+func writeOperation(b *BTree, key []byte, mutate mutateFunc, maxRetries int) error {
 	var epochSlot int
 	var retiredPages []model.PageID
 	if b.epochMgr != nil {
@@ -125,7 +115,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 	}
 
 	var searchRetryCount, splittingRetry, attempt int
-	for attempt = range MaxCASRetries {
+	for attempt = range maxRetries {
 		// Step 1: Search path to leaf (lock-free)
 		path, err := searchPath(b.rootRef, key)
 		if err != nil {
@@ -150,7 +140,7 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 			splittingRetry++
 			path.ReleaseAll()
 			if splittingRetry > SplitBackoffMaxRetries {
-				return ErrCASConflict
+				return ErrCASRetryExhausted
 			}
 			if splittingRetry > SpinLockBackoffThreshold {
 				backoff := time.Duration(1<<min(splittingRetry-SpinLockBackoffThreshold, 20)) * time.Microsecond
@@ -304,8 +294,8 @@ func writeOperation(b *BTree, key []byte, mutate mutateFunc) error {
 	}
 
 	GlobalTracer.LogOp("writeOp.EXHAUSTED", "key", string(key), "attempt", attempt,
-		"searchRetry", searchRetryCount, "splittingRetry", splittingRetry)
-	return ErrCASConflict
+		"searchRetry", searchRetryCount, "splittingRetry", splittingRetry, "maxRetries", maxRetries)
+	return ErrCASRetryExhausted
 }
 
 // doSplitWithSplitting executes the Split operation after Splitting CAS succeeds.

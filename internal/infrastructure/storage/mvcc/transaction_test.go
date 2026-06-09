@@ -62,6 +62,20 @@ func (m *mockStorage) SetBatch(_ context.Context, pairs []KVPair) (int, error) {
 	return len(pairs), nil
 }
 
+func (m *mockStorage) GetBatchRaw(_ context.Context, keys [][]byte) ([][]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	results := make([][]byte, len(keys))
+	for i, key := range keys {
+		if val, ok := m.data[string(key)]; ok {
+			cp := make([]byte, len(val))
+			copy(cp, val)
+			results[i] = cp
+		}
+	}
+	return results, nil
+}
+
 func (m *mockStorage) rawSet(key string, flag byte, ts uint64, val []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

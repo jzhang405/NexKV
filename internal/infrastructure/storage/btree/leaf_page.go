@@ -66,13 +66,13 @@ func (h *leafPageHandle) GetKey(idx int) []byte {
 	return cp
 }
 
+// GetValue returns the raw value bytes as an mmap sub-slice.
+// Callers with epoch protection (BTree.Get, getRawBytes) must copy before
+// releasing the epoch. Callers without epoch protection must copy immediately.
 func (h *leafPageHandle) GetValue(idx int) []byte {
 	rawID := uint32(h.id)
 	_, _, valOff, valLen := h.pa.GetLeafEntryOffset(rawID, idx)
-	raw := h.pa.GetValue(rawID, valOff, valLen)
-	cp := make([]byte, len(raw))
-	copy(cp, raw)
-	return cp
+	return h.pa.GetValue(rawID, valOff, valLen)
 }
 
 func (h *leafPageHandle) Insert(key, value []byte) (LeafPage, error) {

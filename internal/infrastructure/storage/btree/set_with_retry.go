@@ -7,9 +7,8 @@ import (
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 )
 
-// SetWithRetry 类似 Set，但 CAS 最大重试次数可配置。
-// maxRetries 控制 writeOperation 内部 CAS 重试上限。
-// 超过 maxRetries 返回 ErrCASRetryExhausted；原 Set 默认 3 次。
+// SetWithRetry calls writeOperation with configurable maxRetries.
+// Used by PageDispatcher for Lealone-style CAS retry + re-queue.
 func (b *BTree) SetWithRetry(ctx context.Context, key, value []byte, maxRetries int) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -18,15 +17,13 @@ func (b *BTree) SetWithRetry(ctx context.Context, key, value []byte, maxRetries 
 		return err
 	}
 
-	err := writeOperationWithRetry(b, key, func(leaf LeafPage) (*leafMutation, error) {
+	return writeOperation(b, key, func(leaf LeafPage) (*leafMutation, error) {
 		idx, found := leaf.Search(key)
 		if found {
 			return b.mutateUpdate(leaf, idx, value)
 		}
 		return b.mutateInsert(leaf, key, value)
 	}, maxRetries)
-
-	return err
 }
 
 // mutateUpdate handles updating an existing key.

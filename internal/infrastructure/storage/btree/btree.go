@@ -7,13 +7,12 @@ package btree
 import (
 	"context"
 	"errors"
-	"runtime"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	errpkg "github.com/jzhang405/NexKV/pkg/errors"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/jzhang405/NexKV/internal/domain/model"
 	"github.com/jzhang405/NexKV/internal/domain/service"
@@ -251,7 +250,8 @@ func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
 		b.metrics.ReadCount.Add(1)
 	}
 
-	// Decode MVCC value (Phase 2a): Flag + beginTS + realVal
+	// GetValue returns mmap sub-slice (zero-copy). Copy before returning:
+	// epoch ExitRead runs via defer at end of Get, invalidating mmap slice.
 	raw := leaf.GetValue(idx)
 	mvccVal, err := mvcc.ParseMVCC(raw)
 	if err != nil {
@@ -260,7 +260,9 @@ func (b *BTree) Get(_ context.Context, key []byte) ([]byte, error) {
 	if mvccVal.IsTombstone() {
 		return nil, ErrKeyNotFound
 	}
-	return mvccVal.RealVal, nil
+	val := make([]byte, len(mvccVal.RealVal))
+	copy(val, mvccVal.RealVal)
+	return val, nil
 }
 
 // getRawBytes returns the raw MVCC-encoded bytes for key directly from the leaf page.
@@ -303,17 +305,21 @@ func (b *BTree) getRawBytes(key []byte) ([]byte, error) {
 		b.metrics.ReadCount.Add(1)
 	}
 
-	return leaf.GetValue(idx), nil
+	// Copy mmap sub-slice before epoch ExitRead (defer above)
+	raw := leaf.GetValue(idx)
+	cp := make([]byte, len(raw))
+	copy(cp, raw)
+	return cp, nil
 }
 
 // GetRaw returns the complete MVCC-encoded value for the given key.
 // Unlike Get, it does not filter Tombstone entries -- callers see Flag + beginTS + realVal.
 // Returns ErrKeyNotFound only if the key does not physically exist in the tree.
 // Used by MVCC readers that need to inspect beginTS or Tombstone status.
-func (b *BTree) GetRaw(_ context.Context, key []byte) (*mvcc.MVCCValue, error) {
+func (b *BTree) GetRaw(_ context.Context, key []byte) (mvcc.MVCCValue, error) {
 	raw, err := b.getRawBytes(key)
 	if err != nil {
-		return nil, err
+		return mvcc.MVCCValue{}, err
 	}
 	return mvcc.ParseMVCC(raw)
 }
@@ -393,7 +399,7 @@ func (b *BTree) Set(_ context.Context, key, value []byte) error {
 			delta:          1,
 			tombstoneDelta: 0,
 		}, nil
-	})
+	}, MaxCASRetries)
 
 	if err == nil && b.metrics != nil {
 		b.metrics.WriteCount.Add(1)
@@ -445,7 +451,7 @@ func (b *BTree) Delete(_ context.Context, key []byte) error {
 			delta:          -1,
 			tombstoneDelta: 1,
 		}, nil
-	})
+	}, MaxCASRetries)
 
 	if err == nil && b.metrics != nil {
 		b.metrics.DeleteCount.Add(1)
@@ -507,10 +513,11 @@ func (b *BTree) AfterCheckpoint() {
 
 // --- service.KVStore batch operations ---
 
-// GetBatch 批量读取。内部并行调用 Get。
-// 缺失/tombstone 的 key 在结果数组中返回 nil。
-// Callers MUST check results[i] == nil to distinguish missing keys.
-// ctx 取消或 tree 关闭时返回 error。
+// GetBatch reads multiple keys in a single epoch+searchPath window.
+// All keys are processed on the same leaf page (single-layer Phase 5 BTree),
+// sharing one epoch Acquire→ExitRead for all values.
+//
+// Missing/tombstone keys return nil in results. Callers MUST check results[i]==nil.
 func (b *BTree) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, error) {
 	if err := b.checkOpen(); err != nil {
 		return nil, err
@@ -519,30 +526,195 @@ func (b *BTree) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, error) {
 		return nil, nil
 	}
 
-	results := make([][]byte, len(keys))
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(min(runtime.GOMAXPROCS(0)*4, 64))
+	n := len(keys)
 
-	for i, key := range keys {
-		g.Go(func() error {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			val, err := b.Get(ctx, key)
-			if errors.Is(err, ErrKeyNotFound) {
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-			results[i] = val
-			return nil
-		})
+	// If root is internal (multi-layer), fall back to individual Gets.
+	// Single-page optimization only works when all keys are on the root leaf.
+	if !b.rootRef.GetPageInfo().IsLeaf {
+		return b.getBatchMultiPage(ctx, keys)
 	}
 
-	if err := g.Wait(); err != nil {
+	// --- Single-page optimized path (root is leaf) ---
+
+	// Track original positions: sort by key for sequential leaf access,
+	// then map back after retrieval.
+	type indexedKey struct {
+		idx int
+		key []byte
+	}
+	indexed := make([]indexedKey, n)
+	for i, k := range keys {
+		indexed[i] = indexedKey{idx: i, key: k}
+	}
+	sort.Slice(indexed, func(i, j int) bool {
+		return string(indexed[i].key) < string(indexed[j].key)
+	})
+
+	// Single epoch window for all keys
+	var epochSlot int
+	if b.epochMgr != nil {
+		epochSlot = b.epochMgr.AllocSlot()
+		b.epochMgr.EnterRead(epochSlot)
+		defer b.epochMgr.ExitRead(epochSlot)
+	}
+
+	// Single searchPath — all keys on same page (root is leaf)
+	path, err := searchPath(b.rootRef, indexed[0].key)
+	if err != nil {
 		return nil, err
 	}
+	defer path.ReleaseAll()
+
+	pInfo := path.Leaf().Ref.GetPageInfo()
+	if pInfo == nil {
+		return nil, ErrPageFreed
+	}
+
+	leaf, err := b.storage.GetLeafPage(pInfo.PageID)
+	if err != nil {
+		return nil, err
+	}
+	defer leaf.Release()
+
+	// Batch Search + GetValue + ParseMVCC + tombstone check
+	rawResults := make([][]byte, n)
+	for i, ik := range indexed {
+		idx, found := leaf.Search(ik.key)
+		if !found {
+			continue // nil = missing
+		}
+		raw := leaf.GetValue(idx) // mmap sub-slice
+
+		mv, parseErr := mvcc.ParseMVCC(raw)
+		if parseErr != nil || mv.IsTombstone() {
+			continue // nil = tombstone / parse error
+		}
+
+		// Copy before epoch ExitRead (defer above)
+		val := make([]byte, len(mv.RealVal))
+		copy(val, mv.RealVal)
+		rawResults[i] = val
+	}
+
+	// Map back to original key order
+	results := make([][]byte, n)
+	for i, ik := range indexed {
+		results[ik.idx] = rawResults[i]
+	}
+
+	if b.metrics != nil {
+		b.metrics.ReadCount.Add(int64(n))
+	}
+
+	return results, nil
+}
+
+// getBatchMultiPage reads keys individually when root is internal (multi-layer BTree).
+func (b *BTree) getBatchMultiPage(ctx context.Context, keys [][]byte) ([][]byte, error) {
+	results := make([][]byte, len(keys))
+	for i, key := range keys {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		val, err := b.Get(ctx, key)
+		if errors.Is(err, ErrKeyNotFound) {
+			continue // nil = missing/tombstone
+		}
+		if err != nil {
+			return nil, err
+		}
+		results[i] = val
+	}
+	return results, nil
+}
+
+// getBatchRawBytes reads raw MVCC-encoded bytes for multiple keys in one
+// searchPath+epoch window. Used by SnapshotTx.GetBatch via btreeStorageAdapter.
+func (b *BTree) getBatchRawBytes(ctx context.Context, keys [][]byte) ([][]byte, error) {
+	if err := b.checkOpen(); err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	n := len(keys)
+
+	// If root is internal, fall back to individual gets
+	if !b.rootRef.GetPageInfo().IsLeaf {
+		results := make([][]byte, n)
+		for i, key := range keys {
+			val, err := b.getRawBytes(key)
+			if errors.Is(err, ErrKeyNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			results[i] = val
+		}
+		return results, nil
+	}
+
+	// --- Single-page batch path ---
+	type indexedKey struct {
+		idx int
+		key []byte
+	}
+	indexed := make([]indexedKey, n)
+	for i, k := range keys {
+		indexed[i] = indexedKey{idx: i, key: k}
+	}
+	sort.Slice(indexed, func(i, j int) bool {
+		return string(indexed[i].key) < string(indexed[j].key)
+	})
+
+	// Single epoch window
+	var epochSlot int
+	if b.epochMgr != nil {
+		epochSlot = b.epochMgr.AllocSlot()
+		b.epochMgr.EnterRead(epochSlot)
+		defer b.epochMgr.ExitRead(epochSlot)
+	}
+
+	path, err := searchPath(b.rootRef, indexed[0].key)
+	if err != nil {
+		return nil, err
+	}
+	defer path.ReleaseAll()
+
+	pInfo := path.Leaf().Ref.GetPageInfo()
+	if pInfo == nil {
+		return nil, ErrPageFreed
+	}
+
+	leaf, err := b.storage.GetLeafPage(pInfo.PageID)
+	if err != nil {
+		return nil, err
+	}
+	defer leaf.Release()
+
+	rawResults := make([][]byte, n)
+	for i, ik := range indexed {
+		idx, found := leaf.Search(ik.key)
+		if !found {
+			continue // nil = missing
+		}
+		raw := leaf.GetValue(idx) // mmap sub-slice
+		// Copy before epoch ExitRead
+		cp := make([]byte, len(raw))
+		copy(cp, raw)
+		rawResults[i] = cp
+	}
+
+	// Map back to original order
+	results := make([][]byte, n)
+	for i, ik := range indexed {
+		results[ik.idx] = rawResults[i]
+	}
+
 	return results, nil
 }
 
@@ -621,6 +793,10 @@ type txAdapter struct {
 
 func (a *txAdapter) Get(ctx context.Context, key []byte) ([]byte, error) {
 	return a.tx.Get(ctx, key)
+}
+
+func (a *txAdapter) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, error) {
+	return a.tx.GetBatch(ctx, keys)
 }
 
 func (a *txAdapter) Set(_ context.Context, key, value []byte) error {

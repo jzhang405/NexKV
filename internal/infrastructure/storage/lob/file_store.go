@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
@@ -24,12 +25,135 @@ const (
 	lobFlagDeleted = uint16(1) // bit 0: deleted (tombstone)
 )
 
+// lobFDCacheEntry is a cached open file descriptor for a LOB file.
+type lobFDCacheEntry struct {
+	f    *os.File
+	lobID uint64
+	prev *lobFDCacheEntry
+	next *lobFDCacheEntry
+}
+
+// lobFDCache is a bounded LRU cache of open LOB file descriptors.
+// Avoids repeated open/close for frequently accessed LOBs.
+type lobFDCache struct {
+	mu       sync.Mutex
+	capacity int
+	entries  map[uint64]*lobFDCacheEntry
+	head     *lobFDCacheEntry // most recently used
+	tail     *lobFDCacheEntry // least recently used
+}
+
+func newLobFDCache(capacity int) *lobFDCache {
+	return &lobFDCache{
+		capacity: capacity,
+		entries:  make(map[uint64]*lobFDCacheEntry, capacity),
+	}
+}
+
+func (c *lobFDCache) get(lobID uint64) *os.File {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[lobID]
+	if !ok {
+		return nil
+	}
+	c.moveToHead(e)
+	return e.f
+}
+
+func (c *lobFDCache) put(lobID uint64, f *os.File) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[lobID]; ok {
+		e.f = f
+		c.moveToHead(e)
+		return
+	}
+	e := &lobFDCacheEntry{f: f, lobID: lobID}
+	c.entries[lobID] = e
+	c.addToHead(e)
+	if len(c.entries) > c.capacity {
+		c.evictTail()
+	}
+}
+
+func (c *lobFDCache) remove(lobID uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[lobID]; ok {
+		c.unlink(e)
+		e.f.Close()
+		delete(c.entries, lobID)
+	}
+}
+
+func (c *lobFDCache) closeAll() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range c.entries {
+		e.f.Close()
+	}
+	c.entries = make(map[uint64]*lobFDCacheEntry)
+	c.head = nil
+	c.tail = nil
+}
+
+func (c *lobFDCache) addToHead(e *lobFDCacheEntry) {
+	e.next = c.head
+	e.prev = nil
+	if c.head != nil {
+		c.head.prev = e
+	}
+	c.head = e
+	if c.tail == nil {
+		c.tail = e
+	}
+}
+
+func (c *lobFDCache) moveToHead(e *lobFDCacheEntry) {
+	if c.head == e {
+		return
+	}
+	c.unlink(e)
+	c.addToHead(e)
+}
+
+func (c *lobFDCache) unlink(e *lobFDCacheEntry) {
+	if e.prev != nil {
+		e.prev.next = e.next
+	}
+	if e.next != nil {
+		e.next.prev = e.prev
+	}
+	if c.head == e {
+		c.head = e.next
+	}
+	if c.tail == e {
+		c.tail = e.prev
+	}
+	e.prev = nil
+	e.next = nil
+}
+
+func (c *lobFDCache) evictTail() {
+	if c.tail == nil {
+		return
+	}
+	e := c.tail
+	c.unlink(e)
+	e.f.Close()
+	delete(c.entries, e.lobID)
+}
+
+const lobFDCacheCapacity = 64
+
 // lobFileStore manages the filesystem storage of LOB files.
 // Thread-safe: Create and Delete are serialized via atomic counter + OS-level
 // atomic rename/unlink.
 type lobFileStore struct {
 	rootDir   string
 	nextLOBID atomic.Uint64
+	fdCache   *lobFDCache
 }
 
 // newLOBFileStore creates a new LOB file store rooted at rootDir.
@@ -38,7 +162,10 @@ func newLOBFileStore(rootDir string) (*lobFileStore, error) {
 	if err := os.MkdirAll(rootDir, 0750); err != nil {
 		return nil, fmt.Errorf("lob: create root dir %s: %w", rootDir, err)
 	}
-	return &lobFileStore{rootDir: rootDir}, nil
+	return &lobFileStore{
+		rootDir: rootDir,
+		fdCache: newLobFDCache(lobFDCacheCapacity),
+	}, nil
 }
 
 // shardDir returns the sharded directory path for a LOB ID.
@@ -117,37 +244,40 @@ func (s *lobFileStore) Create(data []byte) (mvcc.LOBFileRef, error) {
 }
 
 // Read reads the full data of a LOB file.
-// Uses mmap for files > 64KB, pread for smaller files.
+// Uses fd cache for hot LOBs, mmap for files > 64KB, pread for smaller.
 func (s *lobFileStore) Read(ref mvcc.LOBFileRef) ([]byte, error) {
-	path := s.lobPath(ref.LOBID)
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("lob: file not found: %s", path)
+	// Try fd cache first
+	f := s.fdCache.get(ref.LOBID)
+	fresh := f == nil
+	if fresh {
+		var err error
+		f, err = os.Open(s.lobPath(ref.LOBID))
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("lob: file not found: %d", ref.LOBID)
+			}
+			return nil, fmt.Errorf("lob: open %d: %w", ref.LOBID, err)
 		}
-		return nil, fmt.Errorf("lob: open %s: %w", path, err)
+	} else {
+		// Cached fd — seek to 0 (previous read may have advanced pos)
+		f.Seek(0, 0)
 	}
-	defer f.Close()
 
 	// Validate header
 	header := make([]byte, lobFileHeaderSize)
 	if _, err := f.Read(header); err != nil {
-		return nil, fmt.Errorf("lob: read header %s: %w", path, err)
+		return nil, fmt.Errorf("lob: read header %d: %w", ref.LOBID, err)
 	}
-
-	// Magic check
 	if string(header[0:4]) != lobMagic {
-		return nil, fmt.Errorf("lob: bad magic in %s", path)
+		return nil, fmt.Errorf("lob: bad magic in %d", ref.LOBID)
 	}
-	// LOBID check
 	storedID := binary.BigEndian.Uint64(header[8:16])
 	if storedID != ref.LOBID {
 		return nil, fmt.Errorf("lob: LOBID mismatch: expected %d, got %d", ref.LOBID, storedID)
 	}
-	// Tombstone flag check
 	flags := binary.BigEndian.Uint16(header[6:8])
 	if flags&lobFlagDeleted != 0 {
-		return nil, fmt.Errorf("lob: file %s is deleted (tombstone)", path)
+		return nil, fmt.Errorf("lob: %d is deleted (tombstone)", ref.LOBID)
 	}
 
 	dataLen := binary.BigEndian.Uint64(header[16:24])
@@ -155,15 +285,25 @@ func (s *lobFileStore) Read(ref mvcc.LOBFileRef) ([]byte, error) {
 		return nil, nil
 	}
 
-	// Use mmap for large files (> 64KB)
+	// Read data region
+	var (
+		data []byte
+		rdErr error
+	)
 	if dataLen > LOBFileMMapThreshold {
-		return s.mmapRead(f, int64(lobFileHeaderSize), int64(dataLen))
+		data, rdErr = s.mmapRead(f, int64(lobFileHeaderSize), int64(dataLen))
+	} else {
+		data = make([]byte, dataLen)
+		_, rdErr = f.ReadAt(data, lobFileHeaderSize)
 	}
-
-	// pread for smaller files
-	data := make([]byte, dataLen)
-	if _, err := f.ReadAt(data, lobFileHeaderSize); err != nil {
-		return nil, fmt.Errorf("lob: read data %s: %w", path, err)
+	if rdErr != nil {
+		if fresh {
+			f.Close()
+		}
+		return nil, fmt.Errorf("lob: read data: %w", rdErr)
+	}
+	if fresh {
+		s.fdCache.put(ref.LOBID, f) // cache for next read
 	}
 	return data, nil
 }
@@ -199,6 +339,7 @@ func (s *lobFileStore) mmapRead(f *os.File, offset, length int64) ([]byte, error
 
 // Delete unlinks a LOB file.
 func (s *lobFileStore) Delete(ref mvcc.LOBFileRef) error {
+	s.fdCache.remove(ref.LOBID) // evict from cache before unlink
 	path := s.lobPath(ref.LOBID)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("lob: unlink %s: %w", path, err)

@@ -39,12 +39,12 @@ func newBTreeConfig(opts ...BTreeOption) *btreeConfig {
 // buildTxManager creates a TxManager from config, using the provided StorageBackend.
 // If WithTxManager was called, uses that; otherwise creates a default one.
 // If lobMgr is non-nil, enables LOB large object support in transactions.
-func (cfg *btreeConfig) buildTxManager(storage mvcc.StorageBackend, lobMgr mvcc.LOBManager, lobFileMgr mvcc.LOBFileManager) mvcc.TxManager {
+func (cfg *btreeConfig) buildTxManager(storage mvcc.StorageBackend, lobMgr mvcc.LOBManager, lobFileMgr mvcc.LOBFileManager, lobEpoch mvcc.LOBEpochRetirer) mvcc.TxManager {
 	if cfg.txMgr != nil {
 		return cfg.txMgr
 	}
 	if lobMgr != nil {
-		return mvcc.NewTxManagerWithLOB(storage, cfg.tsGen, lobMgr, lobFileMgr)
+		return mvcc.NewTxManagerWithLOB(storage, cfg.tsGen, lobMgr, lobFileMgr, lobEpoch)
 	}
 	return mvcc.NewTxManager(storage, cfg.tsGen)
 }

@@ -21,14 +21,29 @@ const (
 )
 
 // EpochManager provides epoch-based safe page reclamation for COW old pages.
+// Phase 6: also manages LOB resource retirement (overflow page chains + LOB files).
 type EpochManager struct {
 	globalEpoch atomic.Uint64
 	readers     [maxReaderSlots]atomic.Uint64
 	slots       [maxReaderSlots]epochSlot
 	freeFn      func(model.PageID)
 
+	// Phase 6: LOB resource retirement
+	lobFreeFn     func(firstPageID uint32) // free overflow page chain
+	lobFileFreeFn func(lobID uint64)       // unlink LOB file
+	lobMu         sync.Mutex
+	lobRetired    []lobRetiredEntry
+
 	nextSlot atomic.Uint64
 	wg       sync.WaitGroup
+}
+
+// lobRetiredEntry tracks a retired LOB resource with its retirement epoch.
+// firstPageID != 0 → overflow page chain; lobID != 0 → LOB file.
+type lobRetiredEntry struct {
+	firstPageID uint32
+	lobID       uint64
+	epoch       uint64
 }
 
 // epochSlot uses a bounded ring buffer for retired pages.
@@ -169,6 +184,9 @@ func (em *EpochManager) tryReclaim() {
 	for _, pageID := range toFree {
 		em.freeFn(pageID)
 	}
+
+		// Phase 6: drain retired LOB resources
+		em.drainLOBRetired(safeEpoch)
 }
 
 func (em *EpochManager) StartBackgroundReclaim(ctx context.Context) {
@@ -196,4 +214,66 @@ func (em *EpochManager) StartBackgroundReclaim(ctx context.Context) {
 func (em *EpochManager) Shutdown() {
 	em.wg.Wait()
 	em.tryReclaim()
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6: LOB resource epoch retirement
+// ---------------------------------------------------------------------------
+
+// SetLOBFreeFns configures LOB resource free functions for epoch-based GC.
+// lobFreeFn is called for overflow page chains (firstPageID → FreeOverflow).
+// lobFileFreeFn is called for LOB files (lobID → os.Remove).
+func (em *EpochManager) SetLOBFreeFns(overflowFn func(uint32), lobFileFn func(uint64)) {
+	em.lobFreeFn = overflowFn
+	em.lobFileFreeFn = lobFileFn
+}
+
+// RetireLobChain pushes an overflow page chain into the epoch retirement queue.
+// The chain is walked and freed only after the current epoch advances past all readers.
+func (em *EpochManager) RetireLobChain(firstPageID uint32) {
+	if firstPageID == 0 || em.lobFreeFn == nil {
+		return
+	}
+	epoch := em.globalEpoch.Load()
+	em.lobMu.Lock()
+	em.lobRetired = append(em.lobRetired, lobRetiredEntry{
+		firstPageID: firstPageID,
+		epoch:       epoch,
+	})
+	em.lobMu.Unlock()
+}
+
+// RetireLobFile pushes a LOB file ID into the epoch retirement queue.
+// The file is unlinked only after the current epoch advances past all readers.
+func (em *EpochManager) RetireLobFile(lobID uint64) {
+	if lobID == 0 || em.lobFileFreeFn == nil {
+		return
+	}
+	epoch := em.globalEpoch.Load()
+	em.lobMu.Lock()
+	em.lobRetired = append(em.lobRetired, lobRetiredEntry{
+		lobID: lobID,
+		epoch: epoch,
+	})
+	em.lobMu.Unlock()
+}
+
+// drainLOBRetired drains retired LOB resources whose epoch is safe.
+func (em *EpochManager) drainLOBRetired(safeEpoch uint64) {
+	em.lobMu.Lock()
+	var keep []lobRetiredEntry
+	for _, e := range em.lobRetired {
+		if e.epoch < safeEpoch {
+			if e.firstPageID != 0 && em.lobFreeFn != nil {
+				em.lobFreeFn(e.firstPageID)
+			}
+			if e.lobID != 0 && em.lobFileFreeFn != nil {
+				em.lobFileFreeFn(e.lobID)
+			}
+		} else {
+			keep = append(keep, e)
+		}
+	}
+	em.lobRetired = keep
+	em.lobMu.Unlock()
 }

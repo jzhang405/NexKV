@@ -104,13 +104,14 @@ func NewTxManagerWithGC(storage StorageBackend, tsGen TSGenerator, gcCfg *GCConf
 
 // NewTxManagerWithLOB creates a new transaction manager with LOB large object support.
 // Both Tier 1 (overflow page) and Tier 2 (file) managers may be nil to disable.
-func NewTxManagerWithLOB(storage StorageBackend, tsGen TSGenerator, lobMgr LOBManager, lobFileMgr LOBFileManager) TxManager {
+func NewTxManagerWithLOB(storage StorageBackend, tsGen TSGenerator, lobMgr LOBManager, lobFileMgr LOBFileManager, lobEpoch LOBEpochRetirer) TxManager {
 	return &txManager{
 		storage:          storage,
 		tsGen:            tsGen,
 		activeTxRegistry: NewActiveTxRegistry(),
 		lobManager:       lobMgr,
 		lobFileManager:   lobFileMgr,
+		lobEpoch:         lobEpoch,
 	}
 }
 
@@ -125,8 +126,16 @@ type txManager struct {
 	gcStats          GCStats
 	wal              WALWriter // Phase 3: WAL for crash recovery (nil = no persistence)
 	walMu            sync.Mutex
-	lobManager       LOBManager // Phase 6: LOB overflow page management (nil = disabled)
-	lobFileManager    LOBFileManager // Phase 6: LOB file storage (nil = disabled)
+	lobManager       LOBManager       // Phase 6: LOB overflow page management (nil = disabled)
+	lobFileManager   LOBFileManager   // Phase 6: LOB file storage (nil = disabled)
+	lobEpoch         LOBEpochRetirer  // Phase 6: epoch-based LOB retirement (nil = immediate free)
+}
+
+// LOBEpochRetirer provides epoch-based safe retirement of LOB resources.
+// When non-nil, LOB resources are queued for deferred free instead of immediate delete.
+type LOBEpochRetirer interface {
+	RetireLobChain(firstPageID uint32)
+	RetireLobFile(lobID uint64)
 }
 
 // WALWriter is the minimal WAL interface for the transaction engine.
@@ -152,23 +161,35 @@ const (
 // retireLOBOverflow extracts the LOB ref from oldPrevVal and frees the overflow page chain.
 // Called when the old prev version (which is being dropped) was a Tier 1 LOB.
 func (tm *txManager) retireLOBOverflow(oldPrevVal []byte) {
-	if tm.lobManager == nil || len(oldPrevVal) < 10 {
+	if len(oldPrevVal) < 10 {
 		return
 	}
 	firstPageID := binary.BigEndian.Uint32(oldPrevVal[2:6])
-	if firstPageID != 0 {
+	if firstPageID == 0 {
+		return
+	}
+	// Prefer epoch-based deferred GC; fall back to immediate free
+	if tm.lobEpoch != nil {
+		tm.lobEpoch.RetireLobChain(firstPageID)
+	} else if tm.lobManager != nil {
 		_ = tm.lobManager.Free(LOBRef{FirstPageID: firstPageID, TotalLen: 0})
 	}
 }
 
-// retireLOBFile extracts the LOB file ID from oldPrevVal and unlinks the file.
+// retireLOBFile extracts the LOB file ID from oldPrevVal and retires it.
 // Called when the old prev version (which is being dropped) was a Tier 2 LOB file.
 func (tm *txManager) retireLOBFile(oldPrevVal []byte) {
-	if tm.lobFileManager == nil || len(oldPrevVal) < 18 {
+	if len(oldPrevVal) < 18 {
 		return
 	}
 	lobID := binary.BigEndian.Uint64(oldPrevVal[2:10])
-	if lobID != 0 {
+	if lobID == 0 {
+		return
+	}
+	// Prefer epoch-based deferred GC; fall back to immediate unlink
+	if tm.lobEpoch != nil {
+		tm.lobEpoch.RetireLobFile(lobID)
+	} else if tm.lobFileManager != nil {
 		_ = tm.lobFileManager.Delete(LOBFileRef{LOBID: lobID, TotalLen: 0})
 	}
 }

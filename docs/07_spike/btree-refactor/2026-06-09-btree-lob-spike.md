@@ -869,6 +869,10 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | lob-get-128k | 128KB | Tier 2 file | **1,514** | — |
 | **lob-overflow-put-128k** | 128KB | **Tier 1** (强制溢出页) | **15,493** | **11,974** |
 | **lob-overflow-get-128k** | 128KB | **Tier 1** (强制溢出页) | **5,717,893** | **11,627,630** |
+| **lob-tier2-put-512k** | 512KB | Tier 2 file | **183** | **232** |
+| **lob-tier2-get-512k** | 512KB | Tier 2 file | **7,768** | **11,987** |
+| **lob-tier1-put-512k** | 512KB | **Tier 1** (强制溢出页) | **27,899** | **40,548** |
+| **lob-tier1-get-512k** | 512KB | **Tier 1** (强制溢出页) | **7,059** | **10,858** |
 
 > **关键发现（2026-06-09 补充）**：
 >
@@ -897,9 +901,10 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 >                          └──────────────────────────────────────┘
 > ```
 >
-> - **Tier 1 (mmap overflow page)**：4KB→1.3M QPS，64KB→654K QPS，128KB→15K QPS（退化为 32 页链式分配+COW）。全部在内存中，零 fsync。
-> - **Tier 2 (disk file)**：>256KB 超大对象，写入受 fsync 限制约 127 QPS/线程。可通过 Group Fsync 并行化 + WAL 集成优化（见 §十二）。
-> - **前后对比**：inline KV put ~2M QPS。4KB LOB 写入仅降低 ~33%，因为溢出页分配在 mmap 内开销极低。
+> - **Tier 1 (mmap overflow page)**：4KB→1.3M QPS，64KB→654K QPS，128KB→15K QPS，512KB→27K QPS。全部在内存中，零 fsync。
+> - **Tier 2 (disk file)**：128KB→127 QPS，512KB→183 QPS。写入受 fsync 限制（~3.5ms/op），与数据大小无关。
+> - **GET 相近**：512KB Tier1 vs Tier2 读都是 ~7K QPS——两者都走 mmap，差别在 Go heap 拷贝 vs 内核态拷贝。
+> - **PUT 天壤**：512KB Tier1 比 Tier2 快 **152x**（27,899 vs 183）。差距全部来自 fsync。
 
 ---
 

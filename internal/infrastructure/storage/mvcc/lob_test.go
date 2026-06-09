@@ -136,8 +136,8 @@ func TestEncodeValue_Tier2File(t *testing.T) {
 	lobMgr := newMockLOBManager()
 	fileMgr := newMockLOBFileManager()
 
-	// 100KB → Tier 2 LOB file
-	data := make([]byte, 100_000)
+	// 300KB → Tier 2 LOB file
+	data := make([]byte, 300_000)
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
@@ -167,7 +167,7 @@ func TestEncodeValue_Tier2File(t *testing.T) {
 
 func TestEncodeValue_DisabledTiers(t *testing.T) {
 	// No LOB managers → everything inline regardless of size
-	data := make([]byte, 100_000)
+	data := make([]byte, 300_000)
 	encoded, err := EncodeValue(data, 100, 0, 0, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -56,7 +56,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		OverflowThreshold: 2048,
-		FileThreshold:     65536,
+		FileThreshold:     262144, // 256KB — 128KB Tier1 比 Tier2 快 106x (15,493 vs 145 QPS)
 		FileMMapThreshold: 65536,
 		FDCacheCapacity:   64,
 		FsyncInterval:     1 * time.Millisecond,

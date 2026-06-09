@@ -234,21 +234,28 @@ OverflowPage 1004:  NextPageID=0     ChunkSize=2928  Data=[12072..14999]
 空间计算：ceil(15000 / 4024) = 4 页
 ```
 
-### 3.4 两级阈值
+### 3.4 两级阈值（基于 Benchmark 重评估后调整）
 
-| 阈值 | 值 | 说明 |
-|------|:--:|------|
-| `LOBSizeThreshold` | 2048 (2KB) | value > 2KB → Overflow Page（mmap 溢出页链）|
-| `LOBFileThreshold` | 65536 (64KB) | value > 64KB → LOB File（独立文件系统存储）|
+| 阈值 | 旧值 | **新建议** | 说明 |
+|------|:--:|:--:|------|
+| `LOBSizeThreshold` | 2048 (2KB) | 2048 (2KB) | 不变：value > 2KB → Overflow Page |
+| `LOBFileThreshold` | 65536 (64KB) | **262144 (256KB)** | 上调：128KB 走 Tier 1 比 Tier 2 快 **106x** |
 
 > **两级路由逻辑**（ValueEncoder 层）：
 > ```
-> len(value) ≤ 2KB     → BTree 行内存储
-> 2KB < len(value) ≤ 64KB → Overflow Page（mmap 溢出页链）
-> len(value) > 64KB    → LOB File（独立文件系统）
+> len(value) ≤ 2KB       → BTree 行内存储 (inline)
+> 2KB < len(value) ≤ 256KB → Overflow Page（mmap 溢出页链, 零 fsync）
+> len(value) > 256KB     → LOB File（独立文件系统）
 > ```
-> 64KB 阈值确保 mmap 空间不会被少量大对象耗尽。默认 6GB mmap 中，64KB 阈值下即使 100% 溢出页也需 ~10 万个大对象才可能触及 mmap 上限。
-> **注意**：溢出页当前不计算 CRC32C 校验和——mmap 内数据损坏极少发生，且上层可自行校验。Reserved 字段保留用于未来实现。
+>
+> **为什么阈值从 64KB 上调到 256KB**：
+> - Benchmark 实测：128KB 走 Tier 1 (overflow page) = 15,493 QPS，走 Tier 2 (file+fsync) = 145 QPS。106x 差距。
+> - 256KB 约需 64 个溢出页（ceil(256K/4024)）。20K 条 256KB = ~5GB mmap。生产 mmap 6-10GB 绰绰有余。
+> - mmap 空间不是瓶颈，**fsync 才是**。能走 mmap 就走 mmap。
+> - Tier 2 定位收窄为：**超大对象（>256KB，真正 GB 级场景）或 mmap 空间极度紧张时**。
+
+> **注意**：溢出页不计算 CRC32C 校验和——mmap 内数据损坏极少发生，且上层可自行校验。Reserved 字段保留用于未来实现。
+> 阈值可通过 `mvcc.LOBSizeThreshold` / `mvcc.LOBFileThreshold`（var）init 时覆盖，或通过 `lob.Config.OverflowThreshold` / `lob.Config.FileThreshold` 配置。
 
 ---
 
@@ -823,10 +830,23 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | lob-put-64k | 64KB | Tier 1 上限 | **654,079** | — |
 | lob-put-128k | 128KB | Tier 2 file | **127** | — |
 | lob-get-128k | 128KB | Tier 2 file | **1,514** | — |
+| **lob-overflow-put-128k** | 128KB | **Tier 1** (强制溢出页) | **15,493** | **11,974** |
+| **lob-overflow-get-128k** | 128KB | **Tier 1** (强制溢出页) | **5,717,893** | **11,627,630** |
 
-> **分析**：
-> - **Tier 1 (mmap overflow page)**：4KB 写入 1.3M QPS，读取 1.5M QPS。64KB 写入 654K QPS（退化为 16 页链式分配）。全部在内存中，零系统调用。
-> - **Tier 2 (disk file)**：128KB 写入仅 127 QPS（每条含 tmp 写入 + fsync + rename，~7.9ms/op）。读取 1,514 QPS（利用 OS page cache + mmap）。写入瓶颈在 fsync；可进一步用 group commit batch fsync 提升。
+> **关键发现（2026-06-09 补充）**：
+>
+> 将 `LOBSizeThreshold` 临时调至 256KB，强制 128KB 走 Tier 1 overflow page（纯 mmap，零 fsync）后：
+>
+> | 128KB | Tier 2 (file + fsync) | Tier 1 (overflow page) | 提升 |
+> |-------|:---:|:---:|:---:|
+> | PUT 单线程 | 145 QPS | **15,493 QPS** | **106x** |
+> | GET 单线程 | 1,514 QPS | **5,717,893 QPS** | **3,777x** |
+>
+> **结论：fsync 是唯一瓶颈**。128KB 在 2GB mmap 里 20K 条仅占 ~2.5GB。生产 mmap 可达 6-10GB，中等对象（64KB-512KB）强制走 overflow page 比 LOB file 快 **100x**。
+>
+> - **Tier 1 (mmap overflow page)**：4KB 写入 1.3M QPS，64KB 写入 654K QPS，128KB 写入 15K QPS（退化为 32 页链式分配+COW）。全部在内存中，零系统调用，零 fsync。
+> - **Tier 2 (disk file)**：128KB 写入仅 127 QPS（每条含 tmp 写入 + fsync + rename，~7.9ms/op，fsync 占 87%）。读取 1,514 QPS（利用 OS page cache + mmap）。写入瓶颈完全在 fsync。
+> - **阈值重评估**：当前默认 64KB 可能过低。建议调整为 256KB 或更高，让更多场景享受 mmap 零 fsync 的 100x 优势。Tier 2 保留给 >512KB 的真大对象场景。
 > - **前后对比**：inline KV put ~2M QPS。4KB LOB 写入仅降低 ~33%（1.96M→1.34M），因为溢出页分配在 mmap 内开销极低。
 
 ---
@@ -859,7 +879,7 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | LOB Flag | 0x04(Normal)/0x05(Tombstone) | 与 overflow 0x02/0x03 区分 |
 | LOB 引用大小 | 16B (LOBID:8 + TotalLen:8) | 支持 GB 级对象，uint64 TotalLen |
 | GC 策略 | Epoch-based（与 overflow 同一 EpochManager） | 统一回收周期，RetireBatch 批量 unlink |
-| Tier 2 阈值 | 64KB | 确保 mmap 不被少量大对象耗尽 |
+| Tier 2 阈值 | **256KB**（从 64KB 上调） | 基于 benchmark: 128KB Tier1 比 Tier2 快 106x, fsync 是唯一瓶颈 |
 | 校验 | Header CRC32C self-check + Data CRC32C | 防止文件损坏或误识别 |
 
 ---

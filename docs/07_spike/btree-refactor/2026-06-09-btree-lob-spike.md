@@ -907,16 +907,17 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 ### 12.2 架构集成
 
 ```
-                                    ┌─────────────────────┐
-  Read(ref) ──→ BigCache.Get(lobID) │  LOB Cache (内存)    │
-                      │             │  BigCache            │
-              hit? ───┤             │  HardMaxCacheSize=N   │
-                      │ no          │  LifeWindow=T         │
-                      ↓             │  Shards=1024          │
-              fd cache → mmap/pread └─────────────────────┘
-                      │
-                      ↓ (填充回 cache)
-              BigCache.Set(lobID, data)
+                               ┌──────────────────────────┐
+  Create(data) ──────────────→ │  BigCache.Set(id, data)   │ ← write-through
+                 │             │  (data 已在手, 零额外 I/O) │
+                 ↓             └──────────────────────────┘
+          tmp write + fsync
+                 │
+          Read(ref) ──→ BigCache.Get(lobID) ──→ hit: ~100ns
+                      │                   │
+                      │ miss             fd cache → mmap/pread
+                      │                   │
+                      └── 填充回 cache ───┘
 ```
 
 **集成点**：`lobFileStore.Read()` 方法内部。对上层（`DecodeValue` → `LOBFileManager.Read`）完全透明。
@@ -1040,22 +1041,29 @@ func (s *lobFileStore) Read(ref mvcc.LOBFileRef) ([]byte, error) {
 
 ### 12.5 缓存策略
 
-#### 12.5.1 核心认知：BigCache 是纯读缓存
+#### 12.5.1 核心认知：Write-Through 读写缓存
 
 ```
 LOB 文件生命周期:
-  Create(data) ──→ newLobID = monotonic ++    ← BigCache 不能跳过落盘！
-                ──→ tmp write + fsync + rename ← 不可变写入
-                ──→ 文件一旦创建，永不修改
+  Create(data) ──→ ① BigCache.Set(lobID, data)       ← data 已在手, 零额外 I/O!
+                ──→ ② newLobID = monotonic ++
+                ──→ ③ tmp write + fsync + rename        ← 必须落盘(崩溃安全)
+                ──→ ④ 文件不可变, 永不修改
+                ──→ ⑤ 事务 Commit → BTree.Set → 对其他事务可见
 
   Read(ref{LOBID:42}):
-    首次: BigCache miss → mmap/pread 磁盘 → 填充 BigCache
-    二次: BigCache hit  → 内存返回（~100ns，vs ~50μs mmap）
+    首次: BigCache hit → 内存返回 ~100ns   ← Create 时已缓存!
+    后续: BigCache hit → 内存返回 ~100ns   ← TTL 内都命中
+    淘汰后: BigCache miss → mmap/pread 磁盘 → 重新填充
 ```
 
-> **Write 路径 BigCache 无用**：每个 LOB 文件是独立的、不可变的、ID 单调递增的。Cache 不能替代磁盘写入——数据必须经过 `write+fsync+rename` 才能崩溃安全。写路径的性能优化只能靠 **Group Fsync (§十二)**，不能靠缓存。
+> **Write-Through**：`Create()` 把数据同时写入磁盘和 BigCache。data 已经在内存中（调用方传入的 `[]byte`），`cache.Set()` 只是一次 map 插入——**零额外 I/O，但消除了所有后续 Read 的磁盘 I/O**。
 >
-> **Read 路径 BigCache 有显著价值**：同一个 lobID 可能被多次读取（MVCC prev 版本展开、并发事务快照读、热点 key 重复查询）。OS page cache 已缓存磁盘页，但 BigCache 在 Go 堆内，避免了系统调用和内存拷贝。
+> 这与传统 write-through 的区别：传统 write-through 是"写缓存 + 同步写磁盘"（延迟不减少），这里是"写磁盘是必须的（崩溃安全），顺手写缓存是免费的（数据已在内存）"。
+>
+> **收益场景**：
+> - 事务 A 写入 LOB 并 Commit → 事务 B 读同一 key → `DecodeValue` → `Read(lobID)` → **BigCache hit，跳过磁盘** ✅
+> - MVCC prev 版本展开：`PrevVal` 可能引用旧的 LOB → `DecodeValue(prevVal)` → `Read(oldLOBID)` → 热点旧版本也命中 ✅
 
 #### 12.5.2 策略决策
 
@@ -1064,7 +1072,7 @@ LOB 文件生命周期:
 | 缓存类型 | **纯读缓存** (write-through 不适用) | LOB 不可变写入，无"更新"语义 |
 | 缓存位置 | `lobFileStore.Read()` 内部 | 对上层完全透明 |
 | 缓存键 | `lobID` (uint64 → 8 bytes BigEndian) | 文件不可变，无版本号，lobID 唯一 |
-| 写入行为 | `Create()` **不填充** cache | 写后几乎不立即读回，填充浪费 |
+| 写入行为 | `Create()` **Write-Through 填充** cache | data 已在手，零额外 I/O，消除后续读磁盘 |
 | 淘汰策略 | BigCache 内置 TTL + HardMax LRU | 自动淘汰，无需手动管理 |
 | 大条目旁路 | > `LOBCacheMaxEntrySize` 不缓存 | 避免 50MB LOB 挤掉 100 条 128KB |
 | 删除失效 | `Delete` 时主动 `cache.del(lobID)` | lobID 不会重用（monotonic），但防御性清理 |
@@ -1097,7 +1105,7 @@ LOB 文件生命周期:
 
 | 场景 | 当前 Tier 2 Read | 加 BigCache 后 | 提升 |
 |------|:---------:|:---------:|:----:|
-| 128KB 首次读（OS cache miss） | ~1ms (mmap) | ~1ms（无变化，旁路） | — |
+| 128KB 首次读（Create 后） | ~1ms (mmap) | **~100ns** (BigCache write-through hit) | **10,000x** |
 | 128KB 二次读（OS cache hit） | ~50μs | **~100ns** (BigCache hit) | **500x** |
 | 128KB 热点读 (1K ops × 8T) | 19,601 QPS | **10M+ QPS** | **500x+** |
 | 4KB Tier 1 热点读 (1K × 8T) | 2M QPS | ~2M QPS（Tier 1 原已很快） | — |

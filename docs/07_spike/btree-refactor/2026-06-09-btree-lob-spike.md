@@ -1125,216 +1125,198 @@ LOB 文件生命周期:
 | **合计** | | **~230** | |
 ---
 
-## 十二、Group Write Fsync 优化（计划中）
+## 十二、LOB 写入性能深度分析与架构优化
 
-> **状态**：设计阶段，待实现  
-> **背景**：当前 `fsyncGroup` 已实现批量收集 + fast path 直连。但 `flush()` 内部仍串行 fsync，10 并发写入 = 10 次串行 `f.Sync()`。每个 128KB LOB 的 fsync 约 3-4ms，10 并发串行总延迟 30-40ms，实际 QPS 仅 ~250。
->
-> **目标**：并行化 batch 内 fsync，将 N 并发写入的延迟从 O(N·FsyncCost) 降至 O(FsyncCost + N/Parallelism)。
+> **状态**：分析阶段，讨论中  
+> **核心问题**：128KB Tier 2 LOB 写入仅 127-145 QPS，比 inline KV（~2M QPS）慢 14,000 倍。瓶颈在哪里？能突破吗？
 
-### 12.1 现有瓶颈分析
+### 12.1 延迟构成（Apple M2 Pro SSD，128KB LOB）
 
 ```
-当前 fsyncGroup 流程（10 并发 128KB LOB 写入）:
-
-  Writer W1 ──→ channel ──┐
-  Writer W2 ──→ channel ──┤
-  ...                      ├── ticker(1ms) ──→ flush()
-  Writer W10 ──→ channel ──┘                      │
-                                                   ├── fd1.Sync()  3.5ms ──→ doneCh
-                                                   ├── fd2.Sync()  3.5ms ──→ doneCh   ← 串行！
-                                                   ├── ...
-                                                   └── fd10.Sync() 3.5ms ──→ doneCh
-                                                        总延迟: ~35ms
+操作                   延迟       占比
+─────────────────────────────────────────
+MkdirAll (shard dir)   ~10μs     <0.1%
+OpenFile (tmp)         ~15μs     <0.1%
+Write header (40B)     ~2μs      <0.1%
+Write data (128KB)     ~300μs     4%
+f.Sync() ★              ~3,500μs  87%  ← 瓶颈
+Close                  ~5μs      <0.1%
+Rename                 ~50μs      1%
+BTree.Set + MVCC       ~100μs     3%
+其他 (GC, alloc)        ~400μs     5%
+─────────────────────────────────────────
+总计                    ~4,400μs  → 227 QPS (理论最优单线程)
+Benchmark 实测:                         127-145 QPS
 ```
 
-| 环节 | 延迟 | 占比 |
-|------|-----:|-----|
-| channel 等待 (1ms ticker) | ~0.5ms | 1.4% |
-| **串行 fsync × 10** | **~35ms** | **97%** ← 瓶颈 |
-| rename | ~0.1ms | 0.3% |
-| **总计** | **~36ms** | → ~277 QPS |
+> **结论：fsync 吃掉 87% 的延迟。** Write/Open/Rename 加起来才 8%。Group Fsync（并行化 batch 内 fsync）能提升并发 QPS，但对单线程毫无帮助——单线程永远只有自己一个 writer，没有他人可以合并。
 
-> 当前单线程已通过 fast path 绕过（145 QPS），但并发场景未优化。
-
-### 12.2 优化方案
-
-#### Phase 1：并行 flush（核心优化）
-
-将 `flush()` 中的串行 `f.Sync()` 改为 `errgroup` 并行：
-
-```go
-import "golang.org/x/sync/errgroup"
-
-func (g *fsyncGroup) flush() {
-    if len(g.batch) == 0 { return }
-    var eg errgroup.Group
-    eg.SetLimit(g.parallelism) // 默认 = min(batch_size, GOMAXPROCS)
-    for _, e := range g.batch {
-        e := e
-        eg.Go(func() error { return e.fd.Sync() })
-    }
-    // Wait all → then signal all doneCh
-    _ = eg.Wait()
-    for _, e := range g.batch {
-        e.doneCh <- nil
-    }
-    g.batch = g.batch[:0]
-}
-```
-
-**预期效果**：10 并发 fsync 从 ~35ms 降至 ~3.5ms（并行）。QPS 从 ~277 → ~2,857（10x）。
-
-#### Phase 2：Group Rename + Directory Fsync
-
-当前每个 writer 独立 `fsync → rename`。改为批量 rename + 一次目录 fsync：
+### 12.2 为什么现在必须 fsync？
 
 ```
-当前:
-  W1: fsync → rename
-  W2: fsync → rename
-  ...
+当前一致性模型 (Create):
+  ① write(tmp, header+data)      // 写入页缓存, 未落盘
+  ② f.Sync()                     // ★ 强制落盘
+  ③ rename(tmp, final)           // 原子可见
+  ④ BTree.Set(key, encoded)      // CAS 写入 BTree
 
-优化后:
-  所有 W: 写入 tmp 文件 → channel
-  flush: 并行 fsync 全部 fd
-  目录 fsync (dir.Sync())       ← 一次
-  并行 rename
-  通知所有 W: done
+为什么 ② 必须在 ③ 之前:
+  如果崩溃在 ③ 之后, ④ 之前:
+    文件在磁盘上 → OK, rename 已持久化
+  如果崩溃在 ② 之后, ③ 之前:
+    tmp 文件在磁盘上 → 重启后 CleanupTmp 清理
+  如果崩溃在 ① 之后, ② 之前:
+    页缓存数据丢失 → tmp 内容损坏/不完整
+    CleanupTmp 清理 → OK
+  
+为什么 ② 必须在 ④ 之前:
+  ④ 是"事务已提交"的信号
+  如果 ② 崩溃但 ④ 已执行:
+    BTree 指向 lobID=X, 但文件不存在或损坏 → 数据丢失!
 ```
 
-```go
-type fsyncEntry struct {
-    fd       *os.File
-    tmpPath  string
-    finalPath string
-    dir      *os.File  // parent dir fd
-    doneCh   chan error
-}
+> `fsync` 是不可削减的——它是"数据已安全落盘"的唯一保证。去掉它意味着崩溃后 BTree 可能指向不存在的文件。
 
-func (g *fsyncGroup) flush() {
-    // Phase 1: parallel fsync all data files
-    var eg errgroup.Group
-    eg.SetLimit(g.parallelism)
-    for _, e := range g.batch {
-        e := e
-        eg.Go(func() error { return e.fd.Sync() })
-    }
-    eg.Wait()
+### 12.3 真正的解法：不要把 LOB 文件单独 fsync
 
-    // Phase 2: sync parent directories (deduplicated)
-    dirs := dedupDirs(g.batch)
-    for _, d := range dirs {
-        d.Sync()
-    }
+核心洞察：**BTree 本身已经有 WAL（Phase 3），WAL 已经在做 fsync 了。为什么要对 LOB 文件再做一次？**
 
-    // Phase 3: parallel rename (atomic, no fsync needed)
-    for _, e := range g.batch {
-        os.Rename(e.tmpPath, e.finalPath)
-        e.doneCh <- nil
-    }
-}
+#### 方案 A：WAL-Integrated LOB Write（推荐）
+
+```
+不要:
+  LOB write → fsync
+  BTree write → WAL append → WAL fsync
+  = 两次 fsync
+
+要:
+  LOB data → WAL-LOB segment (append only, 64MB per segment)
+  BTree write → WAL append → WAL fsync (一次! 包含 LOB 引用)
+  = 一次 fsync
 ```
 
-#### Phase 3（可选）：Linux `sync_file_range` 异步 I/O
+**架构**：
 
-`sync_file_range()` 允许非阻塞写入，不需要等待磁盘完成：
+```
+Write 路径:
+  Create(data):
+    ① lobID = nextLOBID++
+    ② WAL-LOB.Append(lobID, data)  // 写入 LOB-WAL 段, 顺序追加
+    ③ 返回 lobID                    // 不阻塞! 不 fsync!
+    
+  Commit:
+    ④ BTree values 写入 WAL
+    ⑤ WAL.Sync()                    // ★ 唯一一次 fsync
+    ⑥ BTree.Set()                   // COW + CAS
+    
+  Background:
+    ⑦ WAL-LOB flusher: 当 WAL 段满 (64MB) 或超时 (100ms)
+       → fsync WAL-LOB 段
+       → 从 WAL 段提取各 LOB → 写入独立 .lob 文件
+       → 删除 WAL 段
 
-```go
-//go:build linux
-func syncFileRange(fd uintptr, offset int64, n int64) error {
-    // SYNC_FILE_RANGE_WRITE = 2
-    // 仅提交 dirty pages 到磁盘队列，不等待完成
-    return unix.SyncFileRange(int(fd), offset, n, 2)
-}
+Read 路径:
+  Read(ref):
+    ① 检查独立 .lob 文件? → 有: mmap/pread 返回
+    ② 没找到 → 查 WAL-LOB 段: 找到 → 返回
+    ③ 都没找到 → 错误
 ```
 
-与 `f.Sync()` (= `fsync`) 对比：
+**崩溃恢复**：
 
-| 方式 | 行为 | 延迟 | 风险 |
-|------|------|-----|------|
-| `f.Sync()` | 阻塞等待数据落盘 | ~3.5ms | 安全 |
-| `sync_file_range(WRITE)` | 提交到磁盘队列，立即返回 | ~0.1ms | 需要后续 `fdatasync` 确认 |
-| `sync_file_range(WRITE)` + dir sync | 提交 + 目录同步 | ~0.5ms | 崩溃时可能丢失未完成写入 |
-
-> **建议**：Phase 3 暂缓。Phase 1+2 已能获得 10x 并发提升，且保持崩溃安全语义。
-
-### 12.3 配置设计
-
-新增 `lob/config.go` 字段：
-
-```go
-type Config struct {
-    // ... 现有字段 ...
-
-    // FsyncParallelism controls how many concurrent fsync calls are made during flush.
-    // 0 = auto (GOMAXPROCS), 1 = serial (current behavior).
-    // Default: 0 (auto)
-    FsyncParallelism int
-
-    // FsyncGroupRename enables group rename + directory fsync optimization.
-    // When true, renames are batched and preceded by a single directory sync.
-    // Default: true
-    FsyncGroupRename bool
-}
-
-func WithFsyncParallelism(n int) Option { ... }
-func WithFsyncGroupRename(v bool) Option { ... }
+```
+Recover:
+  ① 重放 BTree WAL → 恢复 BTree 状态
+  ② BTree 引用的 lobID → 检查 .lob 文件是否存在
+     - 存在: OK
+     - 不存在: 从 WAL-LOB 段重建 (背景 flush 还没做)
+  ③ 重建完成 → 清理 WAL-LOB 段
 ```
 
-默认值：
+**延迟对比**：
 
-```go
-FsyncParallelism:  0,      // auto = GOMAXPROCS
-FsyncGroupRename:  true,   // batch rename enabled
+| 操作 | 当前 (独立 fsync) | 方案 A (WAL-Integrated) |
+|------|:------:|:------:|
+| Create() 返回 | ~4ms (含 fsync) | **~0.3ms** (只写内存) |
+| Commit() | ~0.3ms (WAL+Set) | ~3.5ms (一次 WAL fsync) |
+| **总延迟 / 事务** | **~4.3ms** | **~3.8ms** |
+| **10 事务批处理** | 10 × 4.3ms = **43ms** | 1 × 3.5ms = **3.5ms** ✨ |
+
+> **关键差异**：单事务延迟相近（都是 ~4ms），但批量提交时 WAL 方案只需一次 fsync 覆盖全部 LOB！
+
+#### 方案 B：Async LOB + 两阶段提交
+
+```
+Create(data):
+  ① write(tmp, data)              // 不 fsync!
+  ② rename(tmp, final)            // 不 fsync!
+  ③ return lobID                   // ~0.3ms 即返回!
+  
+Commit:
+  ④ BTree values → WAL
+  ⑤ WAL entry: "LOB lobID committed, checksum=X"
+  ⑥ WAL.Sync()                     // 唯一一次 fsync
+  ⑦ BTree.Set()
+
+Recovery:
+  BTree 引用 lobID=N:
+    .lob 文件存在 + 校验通过 → OK
+    .lob 文件损坏/不完整 → WAL 说"已提交, checksum=X"
+      → 数据已丢失 (崩溃时页缓存未落盘)
+      → 需要从其他地方恢复 (如上游重放)
 ```
 
-### 12.4 实现方案
+> **风险**：如果 OS 在 `rename` 后立即崩溃，文件数据可能还在页缓存中（未落盘），导致文件存在但内容不完整。需要校验和检测并上报。对于多数业务场景，依赖上游重试是可接受的。
 
-**修改文件**：`internal/infrastructure/storage/lob/file_store.go`（无需新建文件）
+#### 方案 C：最简单的优化——fdatasync + Group Commit（最低风险）
 
-**变更清单**：
+只改一行：`f.Sync()` → `syscall.Fdatasync(f.Fd())`
 
-| 变更 | 说明 |
-|------|------|
-| `fsyncEntry` 扩展 | 新增 `tmpPath`、`finalPath`、`dir` 字段 |
-| `newFsyncGroup` | 传入 `parallelism` 参数 |
-| `flush()` 重写 | 串行 → 并行 errgroup + 目录 sync + 批量 rename |
-| `Sync()` 签名 | 增加 `tmpPath`/`finalPath` 参数 |
-| `dedupDirs()` | 新增：从 batch 提取唯一目录 fd |
+```
+fdatasync vs fsync:
+  fsync:      刷新数据 + 刷新 inode (mtime, size, ...) → ~3.5ms
+  fdatasync:  仅刷新数据, 不刷新 inode 元数据         → ~2.0ms (-43%)
+  
+  适用条件: 文件大小不变 (我们已知 TotalLen, 不依赖 inode size 字段)
+```
 
-**关键设计决策**：
+结合 Group Fsync 并行化：
 
-| 决策 | 方案 | 理由 |
-|------|------|------|
-| 并行策略 | `errgroup` + `SetLimit` | 限制并发数防止 I/O 风暴 |
-| 并行度 | GOMAXPROCS（可配置） | NVMe 支持更高并发，SATA 应设低 |
-| 目录 fsync | 去重后一次 | 同一个目录只 sync 一次 |
-| fast path 保留 | channel 空时直连 | 单线程无开销 |
-| Phase 3 推迟 | 不引入 `sync_file_range` | 崩溃恢复复杂度 vs 收益不成比例 |
+| 场景 | 当前 | fdatasync | fdatasync + Group |
+|------|------:|:------:|:------:|
+| 1 并发 128KB | 145 QPS | **~220 QPS** (+52%) | — (无批可合) |
+| 8 并发 128KB | 277 QPS | **~400 QPS** | **~3,200 QPS** |
+| 16 并发 128KB | 277 QPS | **~400 QPS** | **~6,400 QPS** |
 
-### 12.5 Benchmark 预期
+### 12.4 方案对比
 
-| 场景 | 当前 fsyncGroup | Phase 1 (并行) | Phase 1+2 (并行+目录) |
-|------|:------:|:-----:|:------:|
-| 1 并发 128KB 写 | **145 QPS** (fast path) | 145 QPS | 145 QPS |
-| 8 并发 128KB 写 | ~277 QPS (串行 fsync) | **~2,300 QPS** (8x) | **~2,500 QPS** |
-| 16 并发 128KB 写 | ~277 QPS | **~4,600 QPS** (16x) | **~4,800 QPS** |
-| 32 并发 4KB 写 | — | 10M+ QPS (Tier 1) | — (不涉及 fsync) |
+| 维度 | A: WAL-Integrated | B: Async+2PC | C: fdatasync+Group | 当前 |
+|------|:--:|:--:|:--:|:--:|
+| 单线程 128KB QPS | ~260 | ~3,000 | ~220 | 145 |
+| 并发 8 线程 128KB QPS | ~2,300 | ~24,000 | ~3,200 | 277 |
+| 代码量 | ~500 行 | ~80 行 | ~50 行 | — |
+| 崩溃安全 | ✅ 完全 | ⚠️ 需上游重试 | ✅ 完全 | ✅ |
+| 架构改动 | 大 (新增 LOB-WAL) | 小 (加 checksum) | 极小 | — |
+| 向后兼容 | 需要迁移 | 完全兼容 | 完全兼容 | — |
 
-> **核心收益**：并发写入 QPS 提升 **8x-15x**，消除串行 fsync 瓶颈。
+### 12.5 推荐路径
 
-### 12.6 实施步骤
+```
+Phase 1 (立即): 方案 C — fdatasync + Group Fsync
+  → 1 并发 145→220 QPS (+52%)
+  → 8 并发 277→3,200 QPS (+11x)
+  → 成本: ~50 行, 零风险
 
-| Step | 内容 | 行数 | 文件 |
-|------|------|:--:|------|
-| 1 | `fsyncEntry` 扩展字段 + `fsyncGroup` 加 `parallelism` | ~15 | `file_store.go` |
-| 2 | `flush()` 重写：并行 errgroup + 去重目录 sync + 批量 rename | ~40 | `file_store.go` |
-| 3 | `Sync()` 签名调整 + `Create()` 适配新参数 | ~20 | `file_store.go` |
-| 4 | `config.go` 新增 2 个字段 + 2 个 Option | ~15 | `config.go` |
-| 5 | Benchmark 对比 | ~10 | `cmd/tools/btree_bench/main.go` |
-| **合计** | | **~100** | |
+Phase 2 (下个迭代): 方案 B — Async + Checksum 校验
+  → 单线程 145→3,000 QPS (+20x)
+  → 成本: ~80 行, 低风险
 
+Phase 3 (未来): 方案 A — WAL-Integrated
+  → 与 BTree WAL 统一持久化, 消除双重 fsync
+  → 成本: ~500 行, 中风险, 需要 WAL 段管理器
+```
+
+> **当前 Spike 范围**：先做 Phase 1（fdatasync + Group Fsync），立即见效。Phase 2/3 作为后续 feature 分支的规划。
 
 
 ## 十三、关联文档

@@ -29,6 +29,16 @@ func (m *DefaultLOBFileManager) CleanupTmp() error {
 	return m.store.CleanupTmp()
 }
 
+// Close releases all resources: stops background cleaner + closes fd cache.
+func (m *DefaultLOBFileManager) Close() {
+	m.store.Close()
+}
+
+// FDCacheStats returns fd cache hit/miss statistics.
+func (m *DefaultLOBFileManager) FDCacheStats() FDCacheStats {
+	return m.store.fdCache.stats()
+}
+
 // Create writes data to a new LOB file and returns its reference.
 func (m *DefaultLOBFileManager) Create(data []byte) (mvcc.LOBFileRef, error) {
 	return m.store.Create(data)

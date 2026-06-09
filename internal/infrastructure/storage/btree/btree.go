@@ -41,6 +41,7 @@ type BTree struct {
 	compactMu      sync.Mutex
 	epochMgr       *EpochManager // COW old page reclamation (nil if disabled)
 	epochCancel    context.CancelFunc
+	lobFileCloser  func()        // Phase 6: closes LOB file store (cleaner + fd cache)
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -99,8 +100,9 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 			storage.Close()
 			return nil, errpkg.BTreeCreatePageManager(err)
 		}
-		_ = mgr.CleanupTmp() // remove leftover .tmp files from crashes
+		_ = mgr.CleanupTmp()
 		lobFileMgr = mgr
+		bt.lobFileCloser = mgr.Close
 	}
 
 	// EpochManager: optional COW old-page reclamation + LOB resource GC
@@ -519,6 +521,10 @@ func (b *BTree) Close() error {
 	if b.epochCancel != nil {
 		b.epochCancel()
 		b.epochMgr.Shutdown()
+	}
+	// Shutdown LOB file store (background cleaner + fd cache)
+	if b.lobFileCloser != nil {
+		b.lobFileCloser()
 	}
 	// Shutdown BatchWriter (if initialized): close channels, wait for workers to drain
 	return b.storage.Close()

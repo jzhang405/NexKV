@@ -5,12 +5,14 @@
 package lob
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 	"golang.org/x/sys/unix"
@@ -33,6 +35,22 @@ type lobFDCacheEntry struct {
 	next *lobFDCacheEntry
 }
 
+// FDCacheStats holds fd cache hit/miss counters.
+type FDCacheStats struct {
+	Hits   uint64
+	Misses uint64
+	Size   int
+}
+
+// HitRate returns the cache hit rate (0.0 ~ 1.0).
+func (s FDCacheStats) HitRate() float64 {
+	total := s.Hits + s.Misses
+	if total == 0 {
+		return 0
+	}
+	return float64(s.Hits) / float64(total)
+}
+
 // lobFDCache is a bounded LRU cache of open LOB file descriptors.
 // Avoids repeated open/close for frequently accessed LOBs.
 type lobFDCache struct {
@@ -41,6 +59,8 @@ type lobFDCache struct {
 	entries  map[uint64]*lobFDCacheEntry
 	head     *lobFDCacheEntry // most recently used
 	tail     *lobFDCacheEntry // least recently used
+	hits     uint64
+	misses   uint64
 }
 
 func newLobFDCache(capacity int) *lobFDCache {
@@ -55,10 +75,23 @@ func (c *lobFDCache) get(lobID uint64) *os.File {
 	defer c.mu.Unlock()
 	e, ok := c.entries[lobID]
 	if !ok {
+		c.misses++
 		return nil
 	}
+	c.hits++
 	c.moveToHead(e)
 	return e.f
+}
+
+// Stats returns cache hit/miss counters and current size.
+func (c *lobFDCache) stats() FDCacheStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return FDCacheStats{
+		Hits:   c.hits,
+		Misses: c.misses,
+		Size:   len(c.entries),
+	}
 }
 
 func (c *lobFDCache) put(lobID uint64, f *os.File) {
@@ -147,6 +180,101 @@ func (c *lobFDCache) evictTail() {
 
 const lobFDCacheCapacity = 64
 
+// fsyncGroup batches f.Sync() calls to amortize fsync latency.
+// Writers submit fd → background goroutine calls f.Sync() in batches →
+// writers get notified via channel → rename.
+type fsyncGroup struct {
+	entries chan fsyncEntry
+	ctx     context.Context
+	cancel  context.CancelFunc
+	closed  atomic.Bool
+}
+
+type fsyncEntry struct {
+	fd      *os.File
+	doneCh  chan error
+}
+
+const fsyncGroupInterval = 1 * time.Millisecond // batch window
+const fsyncGroupMaxBatch = 32                    // max batch size before forced flush
+
+func newFsyncGroup(ctx context.Context) *fsyncGroup {
+	ctx, cancel := context.WithCancel(ctx)
+	g := &fsyncGroup{
+		entries: make(chan fsyncEntry, 256),
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+	go g.loop()
+	return g
+}
+
+func (g *fsyncGroup) loop() {
+	var batch []fsyncEntry
+	ticker := time.NewTicker(fsyncGroupInterval)
+	defer ticker.Stop()
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		// fsync all fds in the batch
+		for _, e := range batch {
+			e.doneCh <- e.fd.Sync()
+		}
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case e := <-g.entries:
+			batch = append(batch, e)
+			if len(batch) >= fsyncGroupMaxBatch {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		case <-g.ctx.Done():
+			// Drain remaining entries before shutdown
+			for {
+				select {
+				case e := <-g.entries:
+					batch = append(batch, e)
+				default:
+					flush()
+					for _, e := range batch {
+						e.doneCh <- e.fd.Sync()
+					}
+					return
+				}
+			}
+		}
+	}
+}
+
+func (g *fsyncGroup) Sync(fd *os.File) error {
+	if g.closed.Load() {
+		return fd.Sync() // group closed, direct fsync
+	}
+	doneCh := make(chan error, 1)
+	select {
+	case g.entries <- fsyncEntry{fd: fd, doneCh: doneCh}:
+	case <-g.ctx.Done():
+		return fd.Sync() // fallback: direct fsync
+	}
+	select {
+	case err := <-doneCh:
+		return err
+	case <-g.ctx.Done():
+		return fd.Sync() // fallback: direct fsync if group shutting down
+	}
+}
+
+func (g *fsyncGroup) close() {
+	g.closed.Store(true)
+	g.cancel()
+}
+
 // lobFileStore manages the filesystem storage of LOB files.
 // Thread-safe: Create and Delete are serialized via atomic counter + OS-level
 // atomic rename/unlink.
@@ -154,6 +282,10 @@ type lobFileStore struct {
 	rootDir   string
 	nextLOBID atomic.Uint64
 	fdCache   *lobFDCache
+	fsync     *fsyncGroup
+
+	cleanupCtx    context.Context
+	cleanupCancel context.CancelFunc
 }
 
 // newLOBFileStore creates a new LOB file store rooted at rootDir.
@@ -162,10 +294,104 @@ func newLOBFileStore(rootDir string) (*lobFileStore, error) {
 	if err := os.MkdirAll(rootDir, 0750); err != nil {
 		return nil, fmt.Errorf("lob: create root dir %s: %w", rootDir, err)
 	}
-	return &lobFileStore{
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &lobFileStore{
 		rootDir: rootDir,
 		fdCache: newLobFDCache(lobFDCacheCapacity),
-	}, nil
+	}
+	s.cleanupCtx = ctx
+	s.cleanupCancel = cancel
+	s.fsync = newFsyncGroup(ctx)
+	s.startEmptyDirCleaner(5 * time.Minute) // auto-start background cleaner
+	return s, nil
+}
+
+// startEmptyDirCleaner runs a background goroutine that periodically removes
+// empty leaf directories. Interval must be > 0. Call stopEmptyDirCleaner to shut down.
+func (s *lobFileStore) startEmptyDirCleaner(interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				s.cleanEmptyDirs()
+			case <-s.cleanupCtx.Done():
+				return
+			}
+		}
+	}()
+}
+
+// stopEmptyDirCleaner stops the background cleaner goroutine.
+func (s *lobFileStore) stopEmptyDirCleaner() {
+	s.cleanupCancel()
+}
+
+// cleanEmptyDirs walks the LOB directory tree bottom-up and removes empty
+// leaf directories (the shard level 2 directories that contain individual .lob files).
+// Does NOT remove shard level 1 directories or the root.
+func (s *lobFileStore) cleanEmptyDirs() {
+	// Collect empty dirs first, then remove bottom-up
+	var emptyDirs []string
+	filepath.Walk(s.rootDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || !info.IsDir() || p == s.rootDir {
+			return nil
+		}
+		entries, err := os.ReadDir(p)
+		if err != nil {
+			return nil
+		}
+		hasSubdirs := false
+		for _, e := range entries {
+			if e.IsDir() {
+				hasSubdirs = true
+				break
+			}
+		}
+		// Only remove leaf directories (no subdirectories)
+		if !hasSubdirs && len(entries) == 0 {
+			emptyDirs = append(emptyDirs, p)
+		}
+		return nil
+	})
+
+	// Remove empty dirs (reverse order for bottom-up)
+	for i := len(emptyDirs) - 1; i >= 0; i-- {
+		_ = os.Remove(emptyDirs[i])
+	}
+	// Then try to remove parent dirs that may have become empty
+	// (the shard level 1 dirs: data/lob/00000/)
+	for i := len(emptyDirs) - 1; i >= 0; i-- {
+		parent := filepath.Dir(emptyDirs[i])
+		if parent == s.rootDir {
+			continue
+		}
+		entries, _ := os.ReadDir(parent)
+		if len(entries) == 0 {
+			_ = os.Remove(parent)
+		}
+	}
+}
+
+// StoreStats holds runtime metrics for the LOB file store.
+type StoreStats struct {
+	FDCache  FDCacheStats
+	FsyncQLen int // pending fsync queue depth
+}
+
+func (s *lobFileStore) stats() StoreStats {
+	return StoreStats{
+		FDCache:  s.fdCache.stats(),
+		FsyncQLen: len(s.fsync.entries),
+	}
+}
+
+// Close releases all resources held by the store.
+func (s *lobFileStore) Close() {
+	s.stopEmptyDirCleaner()
+	s.fsync.close()
+	s.fdCache.closeAll()
 }
 
 // shardDir returns the sharded directory path for a LOB ID.
@@ -225,8 +451,8 @@ func (s *lobFileStore) Create(data []byte) (mvcc.LOBFileRef, error) {
 		return mvcc.LOBFileRef{}, fmt.Errorf("lob: write data: %w", err)
 	}
 
-	// fsync before rename — crash-safe
-	if err := f.Sync(); err != nil {
+	// Group-commit fsync — batched for low-latency writes
+	if err := s.fsync.Sync(f); err != nil {
 		f.Close()
 		os.Remove(tmpPath)
 		return mvcc.LOBFileRef{}, fmt.Errorf("lob: fsync tmp: %w", err)

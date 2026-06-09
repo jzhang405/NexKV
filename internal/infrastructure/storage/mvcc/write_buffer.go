@@ -124,12 +124,12 @@ func (wb *WriteBuffer) Delete(key string, btreeOldValue []byte, btreeOldFlag byt
 			return ErrKeyNotFound
 		}
 		wb.entries[key] = WriteEntry{
-			Op:         OpDelete,
-			OldValue:   deepCopy(btreeOldValue),
-			OldFlag:    btreeOldFlag,
+			Op:          OpDelete,
+			OldValue:    deepCopy(btreeOldValue),
+			OldFlag:     btreeOldFlag,
 			OldBeginTS:  btreeOldBeginTS,
-				OldPrevFlag: oldPrevFlag,
-				OldPrevVal:  deepCopy(oldPrevVal),
+			OldPrevFlag: oldPrevFlag,
+			OldPrevVal:  deepCopy(oldPrevVal),
 		}
 		wb.ordered = append(wb.ordered, key)
 	} else {

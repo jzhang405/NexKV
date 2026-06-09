@@ -385,6 +385,27 @@ func (pm *PageManager) ReadOverflow(firstPageID uint32, totalLen uint32) ([]byte
 	return result, nil
 }
 
+// RetireOverflowChain walks an overflow page chain and collects all page IDs.
+// Returns nil if firstPageID is 0. Used by epoch GC to retire an entire chain at once.
+func (pm *PageManager) RetireOverflowChain(firstPageID uint32) []uint32 {
+	if firstPageID == 0 {
+		return nil
+	}
+	var ids []uint32
+	pageID := firstPageID
+	for {
+		ids = append(ids, pageID)
+		ptr := pm.PageIDToPtr(pageID)
+		nextID, _ := overflowMeta(ptr)
+		next := uint32(*nextID)
+		if next == 0 {
+			break
+		}
+		pageID = next
+	}
+	return ids
+}
+
 // GetFreeListSize 返回 freeList 的大小（调试用）
 func (pm *PageManager) GetFreeListSize() int {
 	return pm.freeList.Size()

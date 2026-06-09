@@ -10,9 +10,9 @@ import (
 
 func TestWriteEntries(t *testing.T) {
 	wb := NewWriteBuffer()
-	wb.Put("key1", []byte("val1"), []byte("old1"), FlagNormal, 100)
-	wb.Put("key2", []byte("val2"), nil, 0, 0) // Insert
-	wb.Delete("key3", []byte("old3"), FlagNormal, 300)
+	wb.Put("key1", []byte("val1"), []byte("old1"), FlagNormal, 100, 0, nil)
+	wb.Put("key2", []byte("val2"), nil, 0, 0, 0, nil) // Insert
+	wb.Delete("key3", []byte("old3"), FlagNormal, 300, 0, nil)
 
 	entries := wb.WriteEntries()
 	require.Len(t, entries, 3)
@@ -31,7 +31,7 @@ func TestWriteEntries(t *testing.T) {
 
 func TestWriteEntries_NoCommitMarker(t *testing.T) {
 	wb := NewWriteBuffer()
-	wb.Put("key1", []byte("val1"), []byte("old1"), FlagNormal, 100)
+	wb.Put("key1", []byte("val1"), []byte("old1"), FlagNormal, 100, 0, nil)
 
 	entries := wb.WriteEntries()
 	require.Len(t, entries, 1)
@@ -57,10 +57,10 @@ func TestCommitEntry(t *testing.T) {
 
 func TestTxPrepareEntry_RoundTrip(t *testing.T) {
 	wb := NewWriteBuffer()
-	wb.Put("alpha", []byte("new-alpha"), []byte("old-alpha"), FlagNormal, 100)
-	wb.Put("beta", []byte("new-beta"), nil, 0, 0)               // Insert
-	wb.Delete("gamma", []byte("old-gamma"), FlagTombstone, 300) // Delete
-	wb.Put("delta", []byte("new-delta"), []byte("old-delta"), FlagNormal, 400)
+	wb.Put("alpha", []byte("new-alpha"), []byte("old-alpha"), FlagNormal, 100, 0, nil)
+	wb.Put("beta", []byte("new-beta"), nil, 0, 0, 0, nil)               // Insert
+	wb.Delete("gamma", []byte("old-gamma"), FlagTombstone, 300, 0, nil) // Delete
+	wb.Put("delta", []byte("new-delta"), []byte("old-delta"), FlagNormal, 400, 0, nil)
 
 	txID := uint64(42)
 	e := TxPrepareEntry(txID, wb)
@@ -131,14 +131,14 @@ func TestTxPrepareEntry_Empty(t *testing.T) {
 func TestTxPrepareEntry_OrderDeterministic(t *testing.T) {
 	// Verify TxPrepare produces deterministic output (sorted keys)
 	wb1 := NewWriteBuffer()
-	wb1.Put("z", []byte("v"), []byte("old"), FlagNormal, 1)
-	wb1.Put("a", []byte("v"), []byte("old"), FlagNormal, 1)
-	wb1.Put("m", []byte("v"), []byte("old"), FlagNormal, 1)
+	wb1.Put("z", []byte("v"), []byte("old"), FlagNormal, 1, 0, nil)
+	wb1.Put("a", []byte("v"), []byte("old"), FlagNormal, 1, 0, nil)
+	wb1.Put("m", []byte("v"), []byte("old"), FlagNormal, 1, 0, nil)
 
 	wb2 := NewWriteBuffer()
-	wb2.Put("m", []byte("v"), []byte("old"), FlagNormal, 1)
-	wb2.Put("a", []byte("v"), []byte("old"), FlagNormal, 1)
-	wb2.Put("z", []byte("v"), []byte("old"), FlagNormal, 1)
+	wb2.Put("m", []byte("v"), []byte("old"), FlagNormal, 1, 0, nil)
+	wb2.Put("a", []byte("v"), []byte("old"), FlagNormal, 1, 0, nil)
+	wb2.Put("z", []byte("v"), []byte("old"), FlagNormal, 1, 0, nil)
 
 	_, entries1, _ := ParseTxPrepareEntry(TxPrepareEntry(1, wb1))
 	_, entries2, _ := ParseTxPrepareEntry(TxPrepareEntry(1, wb2))

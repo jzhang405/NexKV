@@ -149,6 +149,30 @@ const (
 
 // SetWAL sets the WAL writer for crash recovery. If nil, WAL is disabled.
 // Safe for concurrent use.
+// retireLOBOverflow extracts the LOB ref from oldPrevVal and frees the overflow page chain.
+// Called when the old prev version (which is being dropped) was a Tier 1 LOB.
+func (tm *txManager) retireLOBOverflow(oldPrevVal []byte) {
+	if tm.lobManager == nil || len(oldPrevVal) < 10 {
+		return
+	}
+	firstPageID := binary.BigEndian.Uint32(oldPrevVal[2:6])
+	if firstPageID != 0 {
+		_ = tm.lobManager.Free(LOBRef{FirstPageID: firstPageID, TotalLen: 0})
+	}
+}
+
+// retireLOBFile extracts the LOB file ID from oldPrevVal and unlinks the file.
+// Called when the old prev version (which is being dropped) was a Tier 2 LOB file.
+func (tm *txManager) retireLOBFile(oldPrevVal []byte) {
+	if tm.lobFileManager == nil || len(oldPrevVal) < 18 {
+		return
+	}
+	lobID := binary.BigEndian.Uint64(oldPrevVal[2:10])
+	if lobID != 0 {
+		_ = tm.lobFileManager.Delete(LOBFileRef{LOBID: lobID, TotalLen: 0})
+	}
+}
+
 func (tm *txManager) SetWAL(w WALWriter) {
 	tm.walMu.Lock()
 	tm.wal = w
@@ -415,6 +439,8 @@ func (tx *SnapshotTx) Put(key, value []byte) error {
 	var btreeOldValue []byte
 	var btreeOldFlag byte
 	var btreeOldBeginTS uint64
+	var oldPrevFlag byte
+	var oldPrevVal []byte
 	var raw []byte
 
 	if v, err := tx.engine.storage.GetRaw(tx.ctx, key); err == nil {
@@ -426,10 +452,15 @@ func (tx *SnapshotTx) Put(key, value []byte) error {
 			if mvccVal.Flag == FlagNormal || mvccVal.Flag == FlagLOBNormal {
 				btreeOldValue = deepCopy(mvccVal.RealVal)
 			}
+			// Capture old prev for LOB GC (the version that will be dropped)
+			oldPrevFlag = mvccVal.PrevFlag
+			if mvccVal.PrevBeginTS != 0 && len(mvccVal.PrevVal) > 0 {
+				oldPrevVal = deepCopy(mvccVal.PrevVal)
+			}
 		}
 	}
 
-	tx.writeBuffer.Put(keyStr, value, btreeOldValue, btreeOldFlag, btreeOldBeginTS)
+	tx.writeBuffer.Put(keyStr, value, btreeOldValue, btreeOldFlag, btreeOldBeginTS, oldPrevFlag, oldPrevVal)
 	return nil
 }
 
@@ -459,7 +490,7 @@ func (tx *SnapshotTx) Delete(key []byte) error {
 		case OpInsert:
 			// Insert→Delete: cancel insert
 			tx.writeBuffer.entries[keyStr] = WriteEntry{Op: OpInsert} // will be removed by Delete
-			return tx.writeBuffer.Delete(keyStr, nil, 0, 0)
+			return tx.writeBuffer.Delete(keyStr, nil, 0, 0, 0, nil)
 		case OpDelete:
 			return nil // idempotent
 		case OpUpdate:
@@ -490,7 +521,13 @@ func (tx *SnapshotTx) Delete(key []byte) error {
 	btreeOldFlag := mvccVal.Flag
 	btreeOldBeginTS := mvccVal.BeginTS
 
-	return tx.writeBuffer.Delete(keyStr, btreeOldValue, btreeOldFlag, btreeOldBeginTS)
+	oldPrevFlag := mvccVal.PrevFlag
+	var oldPrevVal []byte
+	if mvccVal.PrevBeginTS != 0 && len(mvccVal.PrevVal) > 0 {
+		oldPrevVal = deepCopy(mvccVal.PrevVal)
+	}
+
+	return tx.writeBuffer.Delete(keyStr, btreeOldValue, btreeOldFlag, btreeOldBeginTS, oldPrevFlag, oldPrevVal)
 }
 
 // ---------------------------------------------------------------------------

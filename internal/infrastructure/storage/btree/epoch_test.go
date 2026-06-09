@@ -300,3 +300,153 @@ func TestEpochManager_RetireBatch_Empty(t *testing.T) {
 	em := NewEpochManager(nil)
 	em.RetireBatch(0) // should not panic
 }
+
+func TestEpochManager_RetireLobChain(t *testing.T) {
+	var freed []uint32
+	var mu sync.Mutex
+	em := NewEpochManager(func(id model.PageID) {})
+	em.SetLOBFreeFns(
+		func(firstPageID uint32) {
+			mu.Lock()
+			freed = append(freed, firstPageID)
+			mu.Unlock()
+		},
+		nil,
+	)
+
+	em.RetireLobChain(100)
+	em.RetireLobChain(200)
+
+	// Reclaim with no active readers
+	em.tryReclaim()
+
+	mu.Lock()
+	got := freed
+	mu.Unlock()
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 freed chains, got %d: %v", len(got), got)
+	}
+	found100, found200 := false, false
+	for _, id := range got {
+		if id == 100 {
+			found100 = true
+		}
+		if id == 200 {
+			found200 = true
+		}
+	}
+	if !found100 || !found200 {
+		t.Fatalf("expected chains 100 and 200, got %v", got)
+	}
+}
+
+func TestEpochManager_RetireLobFile(t *testing.T) {
+	var freed []uint64
+	var mu sync.Mutex
+	em := NewEpochManager(func(id model.PageID) {})
+	em.SetLOBFreeFns(
+		nil,
+		func(lobID uint64) {
+			mu.Lock()
+			freed = append(freed, lobID)
+			mu.Unlock()
+		},
+	)
+
+	em.RetireLobFile(1001)
+	em.RetireLobFile(2002)
+
+	em.tryReclaim()
+
+	mu.Lock()
+	got := freed
+	mu.Unlock()
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 freed files, got %d: %v", len(got), got)
+	}
+	found1001, found2002 := false, false
+	for _, id := range got {
+		if id == 1001 {
+			found1001 = true
+		}
+		if id == 2002 {
+			found2002 = true
+		}
+	}
+	if !found1001 || !found2002 {
+		t.Fatalf("expected files 1001 and 2002, got %v", got)
+	}
+}
+
+func TestEpochManager_LobRetireOverflowProtection(t *testing.T) {
+	var freedCount atomic.Int32
+	em := NewEpochManager(func(id model.PageID) {})
+	em.SetLOBFreeFns(
+		func(firstPageID uint32) {
+			freedCount.Add(1)
+		},
+		func(lobID uint64) {
+			freedCount.Add(1)
+		},
+	)
+
+	// Push more than maxLobRetiredLen entries
+	for i := uint32(0); i < maxLobRetiredLen+10; i++ {
+		em.RetireLobChain(i)
+	}
+
+	// The overflow should have triggered tryReclaim internally
+	// After external reclaim, all should be freed
+	em.tryReclaim()
+
+	count := freedCount.Load()
+	if count < int32(maxLobRetiredLen) {
+		t.Errorf("expected at least %d freed entries, got %d", maxLobRetiredLen, count)
+	}
+}
+
+func TestEpochManager_RetireLobChain_SafeEpoch(t *testing.T) {
+	var freed []uint32
+	var mu sync.Mutex
+	em := NewEpochManager(func(id model.PageID) {})
+	em.SetLOBFreeFns(
+		func(firstPageID uint32) {
+			mu.Lock()
+			freed = append(freed, firstPageID)
+			mu.Unlock()
+		},
+		nil,
+	)
+
+	// Register an active reader
+	slot := em.AllocSlot()
+	em.EnterRead(slot)
+
+	// Retire a LOB chain while reader is active
+	em.RetireLobChain(42)
+
+	// tryReclaim — should NOT free because reader is active
+	em.tryReclaim()
+
+	mu.Lock()
+	n := len(freed)
+	mu.Unlock()
+	if n != 0 {
+		t.Errorf("expected 0 freed with active reader, got %d", n)
+	}
+
+	// Reader exits
+	em.ExitRead(slot)
+
+	// Now reclaim should succeed
+	em.tryReclaim()
+
+	mu.Lock()
+	n = len(freed)
+	mu.Unlock()
+	if n != 1 {
+		t.Errorf("expected 1 freed after reader exits, got %d", n)
+	}
+}

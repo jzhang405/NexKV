@@ -157,3 +157,49 @@ func TestWriteBuffer_OrderedKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteBuffer_Delete_WithOldPrevFields(t *testing.T) {
+	wb := NewWriteBuffer()
+	// Delete from B+Tree state with LOB prev version info
+	err := wb.Delete("k1", []byte("oldVal"), FlagLOBNormal, 100, FlagLOBFile, []byte("prevLOBRef"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	entry, ok := wb.Get("k1")
+	if !ok {
+		t.Fatal("expected entry for k1")
+	}
+	if entry.Op != OpDelete {
+		t.Fatalf("expected OpDelete, got %d", entry.Op)
+	}
+	if entry.OldPrevFlag != FlagLOBFile {
+		t.Fatalf("expected OldPrevFlag=FlagLOBFile(0x%02X), got 0x%02X", FlagLOBFile, entry.OldPrevFlag)
+	}
+	if string(entry.OldPrevVal) != "prevLOBRef" {
+		t.Fatalf("expected OldPrevVal='prevLOBRef', got %s", entry.OldPrevVal)
+	}
+	if string(entry.OldValue) != "oldVal" {
+		t.Fatalf("expected OldValue='oldVal', got %s", entry.OldValue)
+	}
+	if entry.OldFlag != FlagLOBNormal {
+		t.Fatalf("expected OldFlag=FlagLOBNormal, got 0x%02X", entry.OldFlag)
+	}
+	if entry.OldBeginTS != 100 {
+		t.Fatalf("expected OldBeginTS=100, got %d", entry.OldBeginTS)
+	}
+}
+
+func TestWriteBuffer_Delete_NilOldPrevFields(t *testing.T) {
+	wb := NewWriteBuffer()
+	err := wb.Delete("k1", []byte("val"), FlagNormal, 50, 0, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	entry, _ := wb.Get("k1")
+	if entry.OldPrevFlag != 0 {
+		t.Fatalf("expected OldPrevFlag=0, got 0x%02X", entry.OldPrevFlag)
+	}
+	if entry.OldPrevVal != nil {
+		t.Fatalf("expected nil OldPrevVal, got %v", entry.OldPrevVal)
+	}
+}

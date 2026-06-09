@@ -747,8 +747,9 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | 11 | LOBFileManager 注入 TxManager + SnapshotTx + BTree | ~30 | `mvcc/transaction.go`, `btree/options.go`, `btree/btree.go` | ✅ |
 | 12 | Epoch GC 集成：RetireLobChain/File + fd缓存 + CleanupTmp | ~80 | `storage/btree/epoch.go` | ✅ |
 | 13 | Benchmark：128KB LOB 文件读写 | ~30 | `cmd/tools/btree_bench` | ✅ |
-| **Tier 2 已实现** | | **~375** | |
-| **已实现** | | **~775** | |
+| 14 | Code Review 全量修复 (2 CRITICAL + 4 HIGH + 3 MEDIUM) | ~190 | 9 files | ✅ |
+| **Tier 2 已实现** | | **~565** | |
+| **已实现** | | **~965** | |
 
 ### ✅ P2 优化已完成
 
@@ -757,6 +758,29 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | 空目录清理 | 后台协程定期清除 data/lob/ 下空目录 | ✅ 5min 间隔，自底向上 |
 | Group commit fsync | 批量 fsync 减少 LOB 写入延迟 | ✅ 1ms 窗口，最大批量 32 |
 | fd 缓存监控 | 缓存命中率指标暴露 | ✅ FDCacheStats + HitRate() |
+| fd cache 并发安全 | 引用计数 + ReadAt 替换 Seek+Read + pendingClose map | ✅ C1+C2 修复 |
+| LOB flag 完整性 | Put/Delete/rollback 所有 flag 的 OldValue/OldPrev 正确保存 | ✅ H1+H3+H4 修复 |
+| CleanupTmp 安全 | 短文件名 len>=5 检查防止 slice 越界 panic | ✅ H2 修复 |
+| nextLOBID 随机起点 | crypto/rand 初始化高 32 位避免重启 ID 冲突 | ✅ M1 修复 |
+| lobRetired 上限 | maxLobRetiredLen=65536 + 溢出强制 reclaim | ✅ M2 修复 |
+| 辅助函数提取 | IsLOBFlag/IsLOBFileFlag/isValidFlag 消除重复 | ✅ M3+M4 修复 |
+| YAGNI 清理 | 移除 Retire/Update/Size/CommitAndWait 死代码 | ✅ L1-L5 清理 |
+
+### 测试覆盖率
+
+| 包 | 覆盖率 |
+|----|--------|
+| `offheap` | **80.2%** |
+| `persist` | **80.5%** |
+| `lob` | **76.5%** |
+| `chunk` | **73.7%** |
+| `btree` | **63.3%** |
+| `mvcc` | **61.7%** |
+| `checkpoint` | **56.2%** |
+| `wal` | **48.3%** |
+| **storage total** | **66.0%** |
+
+> 新增测试用例：lob 19 个 + mvcc 15 个 + btree 4 个 = **38 个**。lint 0 issues，全部通过 `-race` 竞态检测。
 
 ### 未来 P3 方向
 
@@ -785,21 +809,20 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 - 新格式：prevFlag 存储原始值（0x00=Normal, 0x01=Tombstone, 0x02=LOBNormal, 0x03=LOBTombstone, 0x04=LOBFile, 0x05=LOBFileTombstone）
 - 向前兼容：旧数据 prevFlag=0x00/0x01，新 ParseMVCC 不再标准化，IsTombstoneFlag 处理 bit 0
 
-### LOB Benchmark 初步结果（4KB value, 500 ops）
+### LOB Benchmark 结果（100K ops, warmup 10K, mmap=512MB, M2 Pro）
 
-| Benchmark | Batch | QPS |
-|-----------|-------|-----|
-| txn-put-lob-4k | 1 | 475,700 op/s |
-| txn-put-lob-4k | 10 | 663,093 op/s |
-| txn-get-lob-4k | 1 | 1,697,073 op/s |
-| txn-get-lob-4k | 10 | 3,964,321 op/s |
+| Benchmark | LOB Size | Tier | QPS (单线程) | QPS (8 线程) |
+|-----------|:--:|:--:|------:|------:|
+| lob-put-4k | 4KB | Tier 1 | **1,335,730** | **3,168,204** |
+| lob-get-4k | 4KB | Tier 1 | **1,486,858** | **2,034,911** |
+| lob-put-64k | 64KB | Tier 1 上限 | **654,079** | — |
+| lob-put-128k | 128KB | Tier 2 file | **127** | — |
+| lob-get-128k | 128KB | Tier 2 file | **1,514** | — |
 
-### Tier 2 LOB File Benchmark（128KB value, 1000 ops）
-
-| Benchmark | QPS | 说明 |
-|-----------|-----|------|
-| lob-put-128k | **168** op/s | 每条写入含 fsync（Tier 2 file），延迟 ~6ms/op |
-| lob-get-128k | **18,387** op/s | mmap 零拷贝读 + OS page cache 缓存
+> **分析**：
+> - **Tier 1 (mmap overflow page)**：4KB 写入 1.3M QPS，读取 1.5M QPS。64KB 写入 654K QPS（退化为 16 页链式分配）。全部在内存中，零系统调用。
+> - **Tier 2 (disk file)**：128KB 写入仅 127 QPS（每条含 tmp 写入 + fsync + rename，~7.9ms/op）。读取 1,514 QPS（利用 OS page cache + mmap）。写入瓶颈在 fsync；可进一步用 group commit batch fsync 提升。
+> - **前后对比**：inline KV put ~2M QPS。4KB LOB 写入仅降低 ~33%（1.96M→1.34M），因为溢出页分配在 mmap 内开销极低。
 
 ---
 

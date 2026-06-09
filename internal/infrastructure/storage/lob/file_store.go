@@ -238,16 +238,16 @@ func (c *lobFDCache) evictTail() {
 	}
 }
 
-const lobFDCacheCapacity = 64
-
 // fsyncGroup batches f.Sync() calls to amortize fsync latency.
 // Writers submit fd → background goroutine calls f.Sync() in batches →
 // writers get notified via channel → rename.
 type fsyncGroup struct {
-	entries chan fsyncEntry
-	ctx     context.Context
-	cancel  context.CancelFunc
-	closed  atomic.Bool
+	entries  chan fsyncEntry
+	interval time.Duration
+	maxBatch int
+	ctx      context.Context
+	cancel   context.CancelFunc
+	closed   atomic.Bool
 }
 
 type fsyncEntry struct {
@@ -255,15 +255,14 @@ type fsyncEntry struct {
 	doneCh chan error
 }
 
-const fsyncGroupInterval = 1 * time.Millisecond // batch window
-const fsyncGroupMaxBatch = 32                   // max batch size before forced flush
-
-func newFsyncGroup(ctx context.Context) *fsyncGroup {
+func newFsyncGroup(ctx context.Context, cfg Config) *fsyncGroup {
 	ctx, cancel := context.WithCancel(ctx)
 	g := &fsyncGroup{
-		entries: make(chan fsyncEntry, 256),
-		ctx:     ctx,
-		cancel:  cancel,
+		entries:  make(chan fsyncEntry, cfg.FsyncQueueSize),
+		interval: cfg.FsyncInterval,
+		maxBatch: cfg.FsyncMaxBatch,
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 	go g.loop()
 	return g
@@ -271,7 +270,7 @@ func newFsyncGroup(ctx context.Context) *fsyncGroup {
 
 func (g *fsyncGroup) loop() {
 	var batch []fsyncEntry
-	ticker := time.NewTicker(fsyncGroupInterval)
+	ticker := time.NewTicker(g.interval)
 	defer ticker.Stop()
 
 	flush := func() {
@@ -288,7 +287,7 @@ func (g *fsyncGroup) loop() {
 		select {
 		case e := <-g.entries:
 			batch = append(batch, e)
-			if len(batch) >= fsyncGroupMaxBatch {
+			if len(batch) >= g.maxBatch {
 				flush()
 			}
 		case <-ticker.C:
@@ -311,6 +310,12 @@ func (g *fsyncGroup) loop() {
 func (g *fsyncGroup) Sync(fd *os.File) error {
 	if g.closed.Load() {
 		return fd.Sync() // group closed, direct fsync
+	}
+	// Fast path: if no pending entries in the batch channel, do direct fsync.
+	// This avoids the 1ms ticker latency for single-threaded workloads while
+	// still allowing concurrent writers to batch via the channel slow path.
+	if len(g.entries) == 0 {
+		return fd.Sync()
 	}
 	doneCh := make(chan error, 1)
 	select {
@@ -335,6 +340,7 @@ func (g *fsyncGroup) close() {
 // Thread-safe: Create and Delete are serialized via atomic counter + OS-level
 // atomic rename/unlink.
 type lobFileStore struct {
+	cfg       Config
 	rootDir   string
 	nextLOBID atomic.Uint64
 	fdCache   *lobFDCache
@@ -344,27 +350,28 @@ type lobFileStore struct {
 	cleanupCancel context.CancelFunc
 }
 
-// newLOBFileStore creates a new LOB file store rooted at rootDir.
-// Creates the directory if it does not exist.
-func newLOBFileStore(rootDir string) (*lobFileStore, error) {
+// newLOBFileStore creates a new LOB file store rooted at rootDir with the given config.
+func newLOBFileStore(rootDir string, cfg Config) (*lobFileStore, error) {
 	if err := os.MkdirAll(rootDir, 0750); err != nil {
 		return nil, fmt.Errorf("lob: create root dir %s: %w", rootDir, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &lobFileStore{
+		cfg:           cfg,
 		rootDir:       rootDir,
-		fdCache:       newLobFDCache(lobFDCacheCapacity),
+		fdCache:       newLobFDCache(cfg.FDCacheCapacity),
 		cleanupCtx:    ctx,
 		cleanupCancel: cancel,
-		fsync:         newFsyncGroup(ctx),
+		fsync:         newFsyncGroup(ctx, cfg),
 	}
 	// Initialize nextLOBID with random high 32 bits to avoid ID collisions after restart.
-	// Low 32 bits start from 0 for monotonic increment within the session.
 	var randBuf [4]byte
 	if _, err := rand.Read(randBuf[:]); err == nil {
 		s.nextLOBID.Store(uint64(binary.BigEndian.Uint32(randBuf[:]))<<32 | 1)
 	}
-	s.startEmptyDirCleaner(5 * time.Minute) // auto-start background cleaner
+	if cfg.CleanerInterval > 0 {
+		s.startEmptyDirCleaner(cfg.CleanerInterval)
+	}
 	return s, nil
 }
 
@@ -566,7 +573,7 @@ func (s *lobFileStore) Read(ref mvcc.LOBFileRef) ([]byte, error) {
 		data  []byte
 		rdErr error
 	)
-	if dataLen > LOBFileMMapThreshold {
+	if dataLen > uint64(s.cfg.FileMMapThreshold) {
 		data, rdErr = s.mmapRead(f, int64(lobFileHeaderSize), int64(dataLen))
 	} else {
 		data = make([]byte, dataLen)
@@ -589,9 +596,6 @@ func (s *lobFileStore) Read(ref mvcc.LOBFileRef) ([]byte, error) {
 	}
 	return data, nil
 }
-
-// LOBFileMMapThreshold is the file size above which mmap is used for reading.
-const LOBFileMMapThreshold = 65536
 
 // mmapRead reads the data region of a LOB file using mmap (with page-aligned offset).
 // Falls back to ReadAt if mmap fails.

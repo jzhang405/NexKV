@@ -8,14 +8,14 @@ import (
 	"encoding/binary"
 )
 
-// LOBSizeThreshold is the byte size above which values are stored in overflow page chains.
-// Values ≤ 2KB are stored inline in the BTree leaf page.
-// Values > 2KB trigger LOB allocation via LOBManager.Allocate.
-const LOBSizeThreshold = 2048
+// LOBSizeThreshold is the byte size above which values are stored in overflow page chains (Tier 1).
+// Values ≤ threshold are stored inline. Default: 2048 (2KB). Can be overridden at init time.
+var LOBSizeThreshold = 2048
 
-// LOBFileThreshold is the byte size above which values are stored in independent files.
-// Values > 64KB use LOB File (Tier 2) instead of overflow page chain (Tier 1).
-const LOBFileThreshold = 65536
+// LOBFileThreshold is the byte size above which values are stored in independent files (Tier 2).
+// Values ≤ threshold use overflow page chains (if > LOBSizeThreshold) or inline storage.
+// Default: 65536 (64KB). Can be overridden at init time.
+var LOBFileThreshold = 65536
 
 // ---------------------------------------------------------------------------
 // Tier 1: LOBManager (overflow page chain, 2KB ~ 64KB)

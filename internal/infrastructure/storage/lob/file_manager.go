@@ -9,19 +9,25 @@ import (
 )
 
 // DefaultLOBFileManager is the default implementation of mvcc.LOBFileManager.
-// It delegates file operations to lobFileStore.
 type DefaultLOBFileManager struct {
 	store *lobFileStore
+	cfg   Config
 }
 
-// NewDefaultLOBFileManager creates a new DefaultLOBFileManager rooted at dir.
-// Call CleanupTmp() after creation to remove leftover tmp files from crashes.
-func NewDefaultLOBFileManager(dir string) (*DefaultLOBFileManager, error) {
-	store, err := newLOBFileStore(dir)
+// NewDefaultLOBFileManager creates a new DefaultLOBFileManager rooted at dir
+// with the given options. If no options are provided, defaults are used.
+func NewDefaultLOBFileManager(dir string, opts ...Option) (*DefaultLOBFileManager, error) {
+	cfg := DefaultConfig().Apply(opts...)
+	store, err := newLOBFileStore(dir, cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &DefaultLOBFileManager{store: store}, nil
+	return &DefaultLOBFileManager{store: store, cfg: cfg}, nil
+}
+
+// Config returns a copy of the current config.
+func (m *DefaultLOBFileManager) Config() Config {
+	return m.cfg
 }
 
 // CleanupTmp removes leftover .tmp-* files from prior crashes.

@@ -392,8 +392,8 @@ func TestEpochManager_LobRetireOverflowProtection(t *testing.T) {
 		},
 	)
 
-	// Push more than maxLobRetiredLen entries
-	for i := uint32(0); i < maxLobRetiredLen+10; i++ {
+	// Push more than defaultMaxLobRetired entries
+	for i := uint32(0); i < defaultMaxLobRetired+10; i++ {
 		em.RetireLobChain(i)
 	}
 
@@ -402,8 +402,8 @@ func TestEpochManager_LobRetireOverflowProtection(t *testing.T) {
 	em.tryReclaim()
 
 	count := freedCount.Load()
-	if count < int32(maxLobRetiredLen) {
-		t.Errorf("expected at least %d freed entries, got %d", maxLobRetiredLen, count)
+	if count < int32(defaultMaxLobRetired) {
+		t.Errorf("expected at least %d freed entries, got %d", defaultMaxLobRetired, count)
 	}
 }
 

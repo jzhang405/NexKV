@@ -184,7 +184,7 @@ func TestLobFDCache_Stats(t *testing.T) {
 
 func TestNewLOBFileStore_RandomInit(t *testing.T) {
 	dir := t.TempDir()
-	store, err := newLOBFileStore(dir)
+	store, err := newLOBFileStore(dir, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestNewLOBFileStore_RandomInit(t *testing.T) {
 
 func TestLOBFileStore_CreateAndRead(t *testing.T) {
 	dir := t.TempDir()
-	store, err := newLOBFileStore(dir)
+	store, err := newLOBFileStore(dir, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestLOBFileStore_CreateAndRead(t *testing.T) {
 
 func TestLOBFileStore_LargeFile(t *testing.T) {
 	dir := t.TempDir()
-	store, err := newLOBFileStore(dir)
+	store, err := newLOBFileStore(dir, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,7 @@ func TestLOBFileStore_LargeFile(t *testing.T) {
 
 func TestLOBFileStore_Delete(t *testing.T) {
 	dir := t.TempDir()
-	store, err := newLOBFileStore(dir)
+	store, err := newLOBFileStore(dir, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestLOBFileStore_Delete(t *testing.T) {
 
 func TestLOBFileStore_CleanupTmp(t *testing.T) {
 	dir := t.TempDir()
-	store, err := newLOBFileStore(dir)
+	store, err := newLOBFileStore(dir, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestLOBFileStore_CleanupTmp(t *testing.T) {
 
 func TestLOBFileStore_CleanupTmp_ShortFilename(t *testing.T) {
 	dir := t.TempDir()
-	store, err := newLOBFileStore(dir)
+	store, err := newLOBFileStore(dir, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestLOBFileStore_CleanupTmp_ShortFilename(t *testing.T) {
 
 func TestLOBFileStore_CreateIncrementsLOBID(t *testing.T) {
 	dir := t.TempDir()
-	store, err := newLOBFileStore(dir)
+	store, err := newLOBFileStore(dir, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestLOBFileStore_CreateIncrementsLOBID(t *testing.T) {
 
 func TestLOBFileStore_ReadNonExistent(t *testing.T) {
 	dir := t.TempDir()
-	store, err := newLOBFileStore(dir)
+	store, err := newLOBFileStore(dir, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +389,7 @@ func TestLOBFileStore_ReadNonExistent(t *testing.T) {
 
 func TestLOBFileStore_CleanEmptyDirs(t *testing.T) {
 	dir := t.TempDir()
-	store, err := newLOBFileStore(dir)
+	store, err := newLOBFileStore(dir, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ func TestLOBFileStore_CleanEmptyDirs(t *testing.T) {
 
 func TestLOBFileStore_CleanEmptyDirs_RemovesParentIfEmpty(t *testing.T) {
 	dir := t.TempDir()
-	store, err := newLOBFileStore(dir)
+	store, err := newLOBFileStore(dir, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +456,7 @@ func TestLOBFileStore_CleanEmptyDirs_RemovesParentIfEmpty(t *testing.T) {
 
 func TestLOBFileStore_CachedRead(t *testing.T) {
 	dir := t.TempDir()
-	store, err := newLOBFileStore(dir)
+	store, err := newLOBFileStore(dir, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +495,7 @@ func TestLOBFileStore_CachedRead(t *testing.T) {
 
 func TestLOBFileStore_CreateErrorPaths(t *testing.T) {
 	dir := t.TempDir()
-	store, err := newLOBFileStore(dir)
+	store, err := newLOBFileStore(dir, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +510,7 @@ func TestLOBFileStore_CreateErrorPaths(t *testing.T) {
 
 func TestLOBFileStore_DoubleDelete(t *testing.T) {
 	dir := t.TempDir()
-	store, err := newLOBFileStore(dir)
+	store, err := newLOBFileStore(dir, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

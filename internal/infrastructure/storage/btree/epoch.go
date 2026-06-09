@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	epochInit        = 1
-	maxReaderSlots   = 64
-	ringSize         = 16384 // per-slot ring buffer capacity (~256KB)
-	maxLobRetiredLen = 65536 // upper bound on pending LOB retire entries
+	epochInit            = 1
+	maxReaderSlots       = 64
+	ringSize             = 16384 // per-slot ring buffer capacity (~256KB)
+	defaultMaxLobRetired = 65536 // default upper bound on pending LOB retire entries
 )
 
 // EpochManager provides epoch-based safe page reclamation for COW old pages.
@@ -30,10 +30,11 @@ type EpochManager struct {
 	freeFn      func(model.PageID)
 
 	// Phase 6: LOB resource retirement
-	lobFreeFn     func(firstPageID uint32) // free overflow page chain
-	lobFileFreeFn func(lobID uint64)       // unlink LOB file
-	lobMu         sync.Mutex
-	lobRetired    []lobRetiredEntry
+	lobFreeFn        func(firstPageID uint32) // free overflow page chain
+	lobFileFreeFn    func(lobID uint64)       // unlink LOB file
+	maxLobRetiredLen int                      // upper bound, 0 means no limit
+	lobMu            sync.Mutex
+	lobRetired       []lobRetiredEntry
 
 	nextSlot atomic.Uint64
 	wg       sync.WaitGroup
@@ -77,9 +78,18 @@ type retiredEntry struct {
 }
 
 func NewEpochManager(freeFn func(model.PageID)) *EpochManager {
-	em := &EpochManager{freeFn: freeFn}
+	em := &EpochManager{
+		freeFn:           freeFn,
+		maxLobRetiredLen: defaultMaxLobRetired,
+	}
 	em.globalEpoch.Store(epochInit)
 	return em
+}
+
+// SetMaxLOBRetiredLen sets the upper bound on pending LOB retire entries.
+// When exceeded, a forced tryReclaim is triggered. 0 means no limit.
+func (em *EpochManager) SetMaxLOBRetiredLen(n int) {
+	em.maxLobRetiredLen = n
 }
 
 func (em *EpochManager) AllocSlot() int {
@@ -237,7 +247,7 @@ func (em *EpochManager) RetireLobChain(firstPageID uint32) {
 	}
 	epoch := em.globalEpoch.Load()
 	em.lobMu.Lock()
-	if len(em.lobRetired) >= maxLobRetiredLen {
+	if len(em.lobRetired) >= em.maxLobRetiredLen {
 		// Overflow: force immediate reclaim to unblock
 		em.lobMu.Unlock()
 		em.tryReclaim()
@@ -258,7 +268,7 @@ func (em *EpochManager) RetireLobFile(lobID uint64) {
 	}
 	epoch := em.globalEpoch.Load()
 	em.lobMu.Lock()
-	if len(em.lobRetired) >= maxLobRetiredLen {
+	if len(em.lobRetired) >= em.maxLobRetiredLen {
 		em.lobMu.Unlock()
 		em.tryReclaim()
 		em.lobMu.Lock()

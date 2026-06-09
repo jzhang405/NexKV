@@ -44,8 +44,8 @@ func (m *mockLOBManager) Free(ref LOBRef) error {
 
 // mockLOBFileManager implements LOBFileManager for testing.
 type mockLOBFileManager struct {
-	created []LOBFileRef
-	deleted []LOBFileRef
+	created  []LOBFileRef
+	deleted  []LOBFileRef
 	readData map[uint64][]byte
 }
 

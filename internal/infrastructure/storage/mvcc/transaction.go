@@ -102,6 +102,19 @@ func NewTxManagerWithGC(storage StorageBackend, tsGen TSGenerator, gcCfg *GCConf
 	}
 }
 
+// NewTxManagerWithLOB creates a new transaction manager with LOB large object support.
+// Both Tier 1 (overflow page) and Tier 2 (file) managers may be nil to disable.
+func NewTxManagerWithLOB(storage StorageBackend, tsGen TSGenerator, lobMgr LOBManager, lobFileMgr LOBFileManager, lobEpoch LOBEpochRetirer) TxManager {
+	return &txManager{
+		storage:          storage,
+		tsGen:            tsGen,
+		activeTxRegistry: NewActiveTxRegistry(),
+		lobManager:       lobMgr,
+		lobFileManager:   lobFileMgr,
+		lobEpoch:         lobEpoch,
+	}
+}
+
 type txManager struct {
 	storage          StorageBackend
 	tsGen            TSGenerator
@@ -113,6 +126,16 @@ type txManager struct {
 	gcStats          GCStats
 	wal              WALWriter // Phase 3: WAL for crash recovery (nil = no persistence)
 	walMu            sync.Mutex
+	lobManager       LOBManager      // Phase 6: LOB overflow page management (nil = disabled)
+	lobFileManager   LOBFileManager  // Phase 6: LOB file storage (nil = disabled)
+	lobEpoch         LOBEpochRetirer // Phase 6: epoch-based LOB retirement (nil = immediate free)
+}
+
+// LOBEpochRetirer provides epoch-based safe retirement of LOB resources.
+// When non-nil, LOB resources are queued for deferred free instead of immediate delete.
+type LOBEpochRetirer interface {
+	RetireLobChain(firstPageID uint32)
+	RetireLobFile(lobID uint64)
 }
 
 // WALWriter is the minimal WAL interface for the transaction engine.
@@ -135,6 +158,42 @@ const (
 
 // SetWAL sets the WAL writer for crash recovery. If nil, WAL is disabled.
 // Safe for concurrent use.
+// retireLOBOverflow extracts the LOB ref from oldPrevVal and frees the overflow page chain.
+// Called when the old prev version (which is being dropped) was a Tier 1 LOB.
+func (tm *txManager) retireLOBOverflow(oldPrevVal []byte) {
+	if len(oldPrevVal) < 10 {
+		return
+	}
+	firstPageID := binary.BigEndian.Uint32(oldPrevVal[2:6])
+	if firstPageID == 0 {
+		return
+	}
+	// Prefer epoch-based deferred GC; fall back to immediate free
+	if tm.lobEpoch != nil {
+		tm.lobEpoch.RetireLobChain(firstPageID)
+	} else if tm.lobManager != nil {
+		_ = tm.lobManager.Free(LOBRef{FirstPageID: firstPageID, TotalLen: 0})
+	}
+}
+
+// retireLOBFile extracts the LOB file ID from oldPrevVal and retires it.
+// Called when the old prev version (which is being dropped) was a Tier 2 LOB file.
+func (tm *txManager) retireLOBFile(oldPrevVal []byte) {
+	if len(oldPrevVal) < 18 {
+		return
+	}
+	lobID := binary.BigEndian.Uint64(oldPrevVal[2:10])
+	if lobID == 0 {
+		return
+	}
+	// Prefer epoch-based deferred GC; fall back to immediate unlink
+	if tm.lobEpoch != nil {
+		tm.lobEpoch.RetireLobFile(lobID)
+	} else if tm.lobFileManager != nil {
+		_ = tm.lobFileManager.Delete(LOBFileRef{LOBID: lobID, TotalLen: 0})
+	}
+}
+
 func (tm *txManager) SetWAL(w WALWriter) {
 	tm.walMu.Lock()
 	tm.wal = w
@@ -168,6 +227,8 @@ func (tm *txManager) beginTx(ctx context.Context, level IsolationLevel) (Tx, err
 		writeBuffer:    getWriteBuffer(),
 		heldLocks:      make(map[string]*KeyLock),
 		ctx:            ctx,
+		lobManager:     tm.lobManager,
+		lobFileManager: tm.lobFileManager,
 	}
 	return tx, nil
 }
@@ -202,6 +263,13 @@ type SnapshotTx struct {
 	// heldLocks holds per-key KeyLocks acquired eagerly in Put/Delete (Lealone RowLock equiv).
 	// Always non-nil since Phase 1 unified to pessimistic-only path.
 	heldLocks map[string]*KeyLock
+
+	// lobManager enables LOB overflow page expansion in Get/snapshotGet.
+	// nil means LOB is disabled (all values treated as inline).
+	lobManager LOBManager
+
+	// lobFileManager enables Tier 2 LOB file expansion in Get/snapshotGet.
+	lobFileManager LOBFileManager
 }
 
 // SnapshotTS returns the snapshot timestamp of this transaction.
@@ -280,30 +348,36 @@ func (tx *SnapshotTx) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, er
 		return nil, err
 	}
 
-	// Phase 3: Per-key MVCC snapshot check
+	// Phase 3: Per-key MVCC snapshot check + LOB expansion
 	for j, raw := range rawVals {
 		if raw == nil { // key not found
 			continue
 		}
-		mv, parseErr := ParseMVCC(raw)
+		mv, parseErr := DecodeValue(raw, tx.lobManager, tx.lobFileManager)
 		if parseErr != nil {
 			continue
 		}
 
-		// Path 1: current version visible
+		// Path 1: current version visible (LOB already expanded by DecodeValue)
 		if mv.BeginTS <= tx.snapshotTS {
 			if mv.IsTombstone() {
 				continue // nil = tombstone
 			}
-			// Safe: raw already heap-copied by epoch-protected batch read
 			results[btreeIndices[j]] = mv.RealVal
 			continue
 		}
 
 		// Path 2: prev version visible
 		if mv.PrevBeginTS != 0 && mv.PrevBeginTS <= tx.snapshotTS {
-			if mv.PrevFlag != FlagTombstone {
-				results[btreeIndices[j]] = mv.PrevVal
+			if !IsTombstoneFlag(mv.PrevFlag) {
+				// Expand LOB in prev version if needed
+				if IsLOBFlag(mv.PrevFlag) {
+					if prevMV, err := DecodeValue(mv.PrevVal, tx.lobManager, tx.lobFileManager); err == nil {
+						results[btreeIndices[j]] = prevMV.RealVal
+					}
+				} else {
+					results[btreeIndices[j]] = mv.PrevVal
+				}
 			}
 		}
 		// Path 3: neither visible → results[i] stays nil
@@ -314,32 +388,40 @@ func (tx *SnapshotTx) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, er
 
 // snapshotGet implements snapshot read using inline prev version (Phase 3: version-inline).
 // Eliminates VersionChain traversal entirely — prev version is embedded in BTree value.
+// Phase 6: LOB expansion via DecodeValue (non-LOB values pass through to ParseMVCC).
 func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, error) {
 	raw, err := tx.engine.storage.GetRaw(ctx, key)
 	if err != nil {
 		return nil, err
 	}
 
-	mv, parseErr := ParseMVCC(raw)
+	mv, parseErr := DecodeValue(raw, tx.lobManager, tx.lobFileManager)
 	if parseErr != nil {
 		return nil, parseErr
 	}
 
-	// Path 1: current version visible → return directly
+	// Path 1: current version visible → return directly (LOB already expanded by DecodeValue)
 	if mv.BeginTS <= tx.snapshotTS {
 		if mv.IsTombstone() {
 			return nil, ErrKeyNotFound
 		}
-		return mv.RealVal, nil // raw already heap-copied by epoch-protected getRawBytes
+		return mv.RealVal, nil
 	}
 
 	// Path 2: current too new → check embedded previous version
-	// PrevBeginTS != 0 means a valid previous version exists
 	if mv.PrevBeginTS != 0 && mv.PrevBeginTS <= tx.snapshotTS {
-		if mv.PrevFlag == FlagTombstone {
+		if IsTombstoneFlag(mv.PrevFlag) {
 			return nil, ErrKeyNotFound
 		}
-		return mv.PrevVal, nil // raw already heap-copied by epoch-protected getRawBytes
+		// Expand LOB in prev version if needed
+		if IsLOBFlag(mv.PrevFlag) {
+			prevMV, err := DecodeValue(mv.PrevVal, tx.lobManager, tx.lobFileManager)
+			if err != nil {
+				return nil, err
+			}
+			return prevMV.RealVal, nil
+		}
+		return mv.PrevVal, nil
 	}
 
 	// Path 3: neither version visible → key didn't exist at snapshot time
@@ -378,6 +460,8 @@ func (tx *SnapshotTx) Put(key, value []byte) error {
 	var btreeOldValue []byte
 	var btreeOldFlag byte
 	var btreeOldBeginTS uint64
+	var oldPrevFlag byte
+	var oldPrevVal []byte
 	var raw []byte
 
 	if v, err := tx.engine.storage.GetRaw(tx.ctx, key); err == nil {
@@ -386,13 +470,18 @@ func (tx *SnapshotTx) Put(key, value []byte) error {
 		if parseErr == nil {
 			btreeOldFlag = mvccVal.Flag
 			btreeOldBeginTS = mvccVal.BeginTS
-			if mvccVal.Flag == FlagNormal {
+			if mvccVal.Flag == FlagNormal || mvccVal.Flag == FlagLOBNormal || mvccVal.Flag == FlagLOBFile {
 				btreeOldValue = deepCopy(mvccVal.RealVal)
+			}
+			// Capture old prev for LOB GC (the version that will be dropped)
+			oldPrevFlag = mvccVal.PrevFlag
+			if mvccVal.PrevBeginTS != 0 && len(mvccVal.PrevVal) > 0 {
+				oldPrevVal = deepCopy(mvccVal.PrevVal)
 			}
 		}
 	}
 
-	tx.writeBuffer.Put(keyStr, value, btreeOldValue, btreeOldFlag, btreeOldBeginTS)
+	tx.writeBuffer.Put(keyStr, value, btreeOldValue, btreeOldFlag, btreeOldBeginTS, oldPrevFlag, oldPrevVal)
 	return nil
 }
 
@@ -422,7 +511,7 @@ func (tx *SnapshotTx) Delete(key []byte) error {
 		case OpInsert:
 			// Insert→Delete: cancel insert
 			tx.writeBuffer.entries[keyStr] = WriteEntry{Op: OpInsert} // will be removed by Delete
-			return tx.writeBuffer.Delete(keyStr, nil, 0, 0)
+			return tx.writeBuffer.Delete(keyStr, nil, 0, 0, 0, nil)
 		case OpDelete:
 			return nil // idempotent
 		case OpUpdate:
@@ -453,7 +542,13 @@ func (tx *SnapshotTx) Delete(key []byte) error {
 	btreeOldFlag := mvccVal.Flag
 	btreeOldBeginTS := mvccVal.BeginTS
 
-	return tx.writeBuffer.Delete(keyStr, btreeOldValue, btreeOldFlag, btreeOldBeginTS)
+	oldPrevFlag := mvccVal.PrevFlag
+	var oldPrevVal []byte
+	if mvccVal.PrevBeginTS != 0 && len(mvccVal.PrevVal) > 0 {
+		oldPrevVal = deepCopy(mvccVal.PrevVal)
+	}
+
+	return tx.writeBuffer.Delete(keyStr, btreeOldValue, btreeOldFlag, btreeOldBeginTS, oldPrevFlag, oldPrevVal)
 }
 
 // ---------------------------------------------------------------------------
@@ -594,19 +689,29 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 		oldRawVal, _ = BuildMVCC(entry.OldFlag, entry.OldBeginTS, entry.OldValue, 0, 0, nil)
 	}
 
-	// Determine write content
-	flag := FlagNormal
-	newVal := entry.Value
+	// Encode with prev version inline (LOB-aware, SET delegated to caller)
+	var encoded []byte
+	var buildErr error
 	if entry.Op == OpDelete {
-		flag = FlagTombstone
-		newVal = nil
+		encoded, buildErr = EncodeDeleteValue(commitTS,
+			entry.OldFlag, entry.OldBeginTS, entry.OldValue,
+			entry.OldFlag, entry.OldBeginTS, entry.OldValue)
+	} else {
+		encoded, buildErr = EncodeValue(entry.Value, commitTS,
+			entry.OldFlag, entry.OldBeginTS, entry.OldValue,
+			tm.lobManager, tm.lobFileManager)
 	}
-
-	// Encode with prev version inline (SET delegated to caller — applyWriteBuffer batch-Set)
-	encoded, buildErr := BuildMVCC(flag, commitTS, newVal, entry.OldFlag, entry.OldBeginTS, entry.OldValue)
 	if buildErr != nil {
 		return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS},
 			errpkg.Wrap(buildErr, fmt.Sprintf("build mvcc for key %s", key))
+	}
+
+	// Phase 6: retire LOB resources from dropped old-prev version
+	switch entry.OldPrevFlag {
+	case FlagLOBNormal, FlagLOBTombstone: // IsLOBFlag
+		tm.retireLOBOverflow(entry.OldPrevVal)
+	case FlagLOBFile, FlagLOBFileTombstone:
+		tm.retireLOBFile(entry.OldPrevVal)
 	}
 
 	return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS,
@@ -653,17 +758,6 @@ func (tx *SnapshotTx) cleanup() {
 	if tx.isolationLevel == SnapshotIsolation {
 		tx.engine.siCount.Add(-1)
 	}
-}
-
-// CommitAndWait commits the transaction and waits for async BTree Apply to complete.
-// In sync mode (default), this is equivalent to Commit().
-// In async mode, this blocks until the BTreeApplyItem finishes.
-func (tx *SnapshotTx) CommitAndWait(ctx context.Context) error {
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	// In sync mode, Commit already applied — return immediately.
-	return nil
 }
 
 // checkActive returns an error if the transaction is already completed.
@@ -724,6 +818,13 @@ func (tx *SnapshotTx) rollbackOneKey(entry UndoEntry) (retErr error) {
 	}
 	if mvccVal.BeginTS != entry.CommitTS {
 		return nil // not our write, skip
+	}
+
+	// Phase 6: free LOB overflow pages if current value is a LOB
+	if IsLOBFlag(mvccVal.Flag) && mvccVal.LOB != nil {
+		if tx.lobManager != nil {
+			_ = tx.lobManager.Free(*mvccVal.LOB)
+		}
 	}
 
 	// Restore B+Tree to old value

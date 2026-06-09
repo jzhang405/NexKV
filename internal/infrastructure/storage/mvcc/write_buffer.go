@@ -22,6 +22,13 @@ type WriteEntry struct {
 	OldValue   []byte // B+Tree old value at first Put time (deepCopy'd), nil for OpInsert
 	OldFlag    byte   // B+Tree old flag at first Put time (0 for OpInsert)
 	OldBeginTS uint64 // B+Tree old beginTS at first Put time (0 for OpInsert)
+
+	// OldPrev* capture the version that will be DROPPED when this write commits.
+	// When the new value is encoded, the old current version becomes prev,
+	// and the old prev version is dropped. If it was a LOB, its resources
+	// must be retired via epoch GC.
+	OldPrevFlag byte   // B+Tree old prev flag at first Put time (0 for first version)
+	OldPrevVal  []byte // B+Tree old prev value at first Put time (deepCopy'd), nil if no prev
 }
 
 // WriteBuffer is a per-transaction write buffer. NOT thread-safe.
@@ -74,7 +81,7 @@ func (wb *WriteBuffer) Reset() {
 // Put records a write operation for the given key.
 // btreeOldValue/btreeOldFlag/btreeOldBeginTS are the B+Tree state at the time of first Put.
 // For subsequent Puts on the same key, only Value is updated; OldValue/OldFlag/OldBeginTS are preserved.
-func (wb *WriteBuffer) Put(key string, value []byte, btreeOldValue []byte, btreeOldFlag byte, btreeOldBeginTS uint64) {
+func (wb *WriteBuffer) Put(key string, value []byte, btreeOldValue []byte, btreeOldFlag byte, btreeOldBeginTS uint64, oldPrevFlag byte, oldPrevVal []byte) {
 	existing, has := wb.entries[key]
 	if !has {
 		// First write to this key: determine Op based on B+Tree state
@@ -82,11 +89,13 @@ func (wb *WriteBuffer) Put(key string, value []byte, btreeOldValue []byte, btree
 			wb.entries[key] = WriteEntry{Op: OpInsert, Value: value}
 		} else {
 			wb.entries[key] = WriteEntry{
-				Op:         OpUpdate,
-				Value:      value,
-				OldValue:   deepCopy(btreeOldValue),
-				OldFlag:    btreeOldFlag,
-				OldBeginTS: btreeOldBeginTS,
+				Op:          OpUpdate,
+				Value:       value,
+				OldValue:    deepCopy(btreeOldValue),
+				OldFlag:     btreeOldFlag,
+				OldBeginTS:  btreeOldBeginTS,
+				OldPrevFlag: oldPrevFlag,
+				OldPrevVal:  deepCopy(oldPrevVal),
 			}
 		}
 		wb.ordered = append(wb.ordered, key)
@@ -107,7 +116,7 @@ func (wb *WriteBuffer) Put(key string, value []byte, btreeOldValue []byte, btree
 
 // Delete records a delete operation for the given key.
 // Returns ErrKeyNotFound if the key does not exist in either WriteBuffer or B+Tree.
-func (wb *WriteBuffer) Delete(key string, btreeOldValue []byte, btreeOldFlag byte, btreeOldBeginTS uint64) error {
+func (wb *WriteBuffer) Delete(key string, btreeOldValue []byte, btreeOldFlag byte, btreeOldBeginTS uint64, oldPrevFlag byte, oldPrevVal []byte) error {
 	existing, has := wb.entries[key]
 	if !has {
 		// Key not in WriteBuffer: check B+Tree state
@@ -115,10 +124,12 @@ func (wb *WriteBuffer) Delete(key string, btreeOldValue []byte, btreeOldFlag byt
 			return ErrKeyNotFound
 		}
 		wb.entries[key] = WriteEntry{
-			Op:         OpDelete,
-			OldValue:   deepCopy(btreeOldValue),
-			OldFlag:    btreeOldFlag,
-			OldBeginTS: btreeOldBeginTS,
+			Op:          OpDelete,
+			OldValue:    deepCopy(btreeOldValue),
+			OldFlag:     btreeOldFlag,
+			OldBeginTS:  btreeOldBeginTS,
+			OldPrevFlag: oldPrevFlag,
+			OldPrevVal:  deepCopy(oldPrevVal),
 		}
 		wb.ordered = append(wb.ordered, key)
 	} else {

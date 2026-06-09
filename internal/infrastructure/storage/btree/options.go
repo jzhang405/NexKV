@@ -19,6 +19,7 @@ type btreeConfig struct {
 	txMgr          mvcc.TxManager
 	latencyMetrics *BTreeMetricsWithLatency
 	enableEpoch    bool
+	lobDir         string // Phase 6 Tier 2: LOB file storage root directory (empty = disabled)
 }
 
 // newBTreeConfig applies all options and fills in defaults.
@@ -37,9 +38,13 @@ func newBTreeConfig(opts ...BTreeOption) *btreeConfig {
 
 // buildTxManager creates a TxManager from config, using the provided StorageBackend.
 // If WithTxManager was called, uses that; otherwise creates a default one.
-func (cfg *btreeConfig) buildTxManager(storage mvcc.StorageBackend) mvcc.TxManager {
+// If lobMgr is non-nil, enables LOB large object support in transactions.
+func (cfg *btreeConfig) buildTxManager(storage mvcc.StorageBackend, lobMgr mvcc.LOBManager, lobFileMgr mvcc.LOBFileManager, lobEpoch mvcc.LOBEpochRetirer) mvcc.TxManager {
 	if cfg.txMgr != nil {
 		return cfg.txMgr
+	}
+	if lobMgr != nil {
+		return mvcc.NewTxManagerWithLOB(storage, cfg.tsGen, lobMgr, lobFileMgr, lobEpoch)
 	}
 	return mvcc.NewTxManager(storage, cfg.tsGen)
 }
@@ -86,6 +91,14 @@ func WithTxManager(txMgr mvcc.TxManager) BTreeOption {
 func WithEpoch() BTreeOption {
 	return func(cfg *btreeConfig) {
 		cfg.enableEpoch = true
+	}
+}
+
+// WithLOBDir enables Tier 2 LOB file storage at the given directory.
+// Empty string (default) disables LOB file storage.
+func WithLOBDir(dir string) BTreeOption {
+	return func(cfg *btreeConfig) {
+		cfg.lobDir = dir
 	}
 }
 

@@ -13,37 +13,79 @@ import (
 
 // Value flag constants for MVCC-encoded values.
 const (
-	FlagNormal    byte = 0x00 // Normal data
-	FlagTombstone byte = 0x01 // Logically deleted (tombstone marker)
+	FlagNormal           byte = 0x00 // Normal data (inline)
+	FlagTombstone        byte = 0x01 // Logically deleted (tombstone marker)
+	FlagLOBNormal        byte = 0x02 // LOB Tier 1 — value stored in overflow page chain (mmap)
+	FlagLOBTombstone     byte = 0x03 // LOB Tier 1 Tombstone (0x02 | 0x01)
+	FlagLOBFile          byte = 0x04 // LOB Tier 2 — value stored in independent file (disk)
+	FlagLOBFileTombstone byte = 0x05 // LOB Tier 2 Tombstone (0x04 | 0x01)
 )
+
+// LOBRef is a reference to a LOB stored in overflow page chains (Tier 1).
+// The BTree leaf page stores only this 8-byte reference, not the actual data.
+type LOBRef struct {
+	FirstPageID uint32 // first overflow page ID in the chain
+	TotalLen    uint32 // total original data length (max 4GB)
+}
+
+// LOBFileRef is a reference to a LOB stored as an independent file (Tier 2).
+// Stored as 16 bytes in the BTree leaf page.
+type LOBFileRef struct {
+	LOBID    uint64 // unique LOB identifier (monotonic counter)
+	TotalLen uint64 // original data length (max 16EB, limited by filesystem)
+}
 
 // MVCCHeaderSize is the fixed header size for the new format: 1(Flag) + 1(prevFlag) + 8(prevBeginTS) + 2(prevValLen) = 12.
 const MVCCHeaderSize = 12
 
 // MVCCValue represents a decoded MVCC value with its metadata.
-// The new format embeds the previous version inline, eliminating VersionChain traversal.
 type MVCCValue struct {
 	Flag    byte
 	BeginTS uint64
-	RealVal []byte // sub-slice of input; caller must copy if mutation needed
+	RealVal []byte
 
-	// Embedded previous version (Phase 3: version-inline, eliminates VersionChain).
-	// PrevBeginTS == 0 means no previous version (key was Insert'd).
 	PrevFlag    byte
 	PrevBeginTS uint64
-	PrevVal     []byte // sub-slice of input; nil if PrevBeginTS == 0
+	PrevVal     []byte
+
+	LOB     *LOBRef     // non-nil when Flag is FlagLOBNormal or FlagLOBTombstone (Tier 1)
+	LOBFile *LOBFileRef // non-nil when Flag is FlagLOBFile or FlagLOBFileTombstone (Tier 2)
 }
 
-// IsTombstone returns true if the value is a tombstone marker.
+// IsTombstone returns true if the value is a tombstone marker (includes all tombstone flags).
 func (v *MVCCValue) IsTombstone() bool {
-	return v.Flag == FlagTombstone
+	return IsTombstoneFlag(v.Flag)
+}
+
+// IsTombstoneFlag returns true if the flag byte represents a tombstone.
+// Bit 0 distinguishes normal (0x00, 0x02, 0x04) from tombstone (0x01, 0x03, 0x05).
+func IsTombstoneFlag(flag byte) bool {
+	return flag&0x01 == FlagTombstone
+}
+
+// IsLOBFlag returns true if the flag represents a Tier 1 LOB (normal or tombstone).
+func IsLOBFlag(flag byte) bool {
+	return flag == FlagLOBNormal || flag == FlagLOBTombstone
+}
+
+// IsLOBFileFlag returns true if the flag represents a Tier 2 LOB file (normal or tombstone).
+func IsLOBFileFlag(flag byte) bool {
+	return flag == FlagLOBFile || flag == FlagLOBFileTombstone
+}
+
+// isValidFlag checks whether a flag byte is one of the defined MVCC flag constants.
+func isValidFlag(flag byte) bool {
+	return flag == FlagNormal || flag == FlagTombstone ||
+		flag == FlagLOBNormal || flag == FlagLOBTombstone ||
+		flag == FlagLOBFile || flag == FlagLOBFileTombstone
 }
 
 // ParseMVCC decodes the version-inline MVCC format:
 //
 //	[Flag:1][prevFlag:1][prevBeginTS:8][prevValLen:2][prevVal:N][beginTS:8][realVal:M]
 //
-// prevFlag is normalized to 0x00/0x01 (prevFlag & 0x01).
+// prevFlag is stored as raw value (0x00/0x01/0x02/0x03/0x04/0x05) to preserve LOB information.
+// Use IsTombstoneFlag(prevFlag) instead of == FlagTombstone.
 // prevBeginTS==0 means no previous version (Insert).
 //
 // Returns MVCCValue by value (stack-allocated when not escaping).
@@ -53,11 +95,11 @@ func ParseMVCC(val []byte) (MVCCValue, error) {
 	}
 
 	flag := val[0]
-	if flag != FlagNormal && flag != FlagTombstone {
+	if !isValidFlag(flag) {
 		return MVCCValue{}, errpkg.Wrap(ErrInvalidFlag, fmt.Sprintf("0x%02X", flag))
 	}
 
-	prevFlag := val[1] & 0x01 // normalize: only 0x00 or 0x01
+	prevFlag := val[1] // raw flag — preserves LOB information for prev version expansion
 	prevBeginTS := binary.BigEndian.Uint64(val[2:10])
 	prevValLen := binary.BigEndian.Uint16(val[10:12])
 
@@ -80,6 +122,26 @@ func ParseMVCC(val []byte) (MVCCValue, error) {
 
 	realVal := val[pos:]
 
+	// Phase 6: if LOB, parse the LOB reference from realVal
+	var lob *LOBRef
+	var lobFile *LOBFileRef
+	switch flag {
+	case FlagLOBNormal, FlagLOBTombstone:
+		// Tier 1: realVal = [lobRefLen:2][FirstPageID:4][TotalLen:4]
+		if len(realVal) >= 10 {
+			firstPageID := binary.BigEndian.Uint32(realVal[2:6])
+			totalLen := binary.BigEndian.Uint32(realVal[6:10])
+			lob = &LOBRef{FirstPageID: firstPageID, TotalLen: totalLen}
+		}
+	case FlagLOBFile, FlagLOBFileTombstone:
+		// Tier 2: realVal = [lobRefLen:2][LOBID:8][TotalLen:8]
+		if len(realVal) >= 18 {
+			lobID := binary.BigEndian.Uint64(realVal[2:10])
+			totalLen := binary.BigEndian.Uint64(realVal[10:18])
+			lobFile = &LOBFileRef{LOBID: lobID, TotalLen: totalLen}
+		}
+	}
+
 	return MVCCValue{
 		Flag:        flag,
 		BeginTS:     beginTS,
@@ -87,6 +149,8 @@ func ParseMVCC(val []byte) (MVCCValue, error) {
 		PrevFlag:    prevFlag,
 		PrevBeginTS: prevBeginTS,
 		PrevVal:     prevVal,
+		LOB:         lob,
+		LOBFile:     lobFile,
 	}, nil
 }
 
@@ -94,17 +158,17 @@ func ParseMVCC(val []byte) (MVCCValue, error) {
 //
 //	[Flag:1][prevFlag:1][prevBeginTS:8][prevValLen:2][prevVal:N][beginTS:8][realVal:M]
 //
-// prevFlag is normalized to 0x00/0x01 internally.
+// prevFlag is stored as raw value (0x00/0x01/0x02/0x03/0x04/0x05) — no normalization.
+// This preserves LOB Tier 1/2 information for prev version expansion.
 // For Insert (no previous version): pass prevFlag=0, prevBeginTS=0, prevVal=nil.
 func BuildMVCC(flag byte, beginTS uint64, realVal []byte, prevFlag byte, prevBeginTS uint64, prevVal []byte) ([]byte, error) {
-	if flag != FlagNormal && flag != FlagTombstone {
+	if !isValidFlag(flag) {
 		return nil, errpkg.Wrap(ErrInvalidFlag, fmt.Sprintf("0x%02X", flag))
 	}
 	if beginTS == 0 {
 		return nil, ErrZeroTimestamp
 	}
 
-	prevFlag = prevFlag & 0x01 // normalize
 	prevValLen := uint16(len(prevVal))
 	totalSize := MVCCHeaderSize + int(prevValLen) + 8 + len(realVal)
 

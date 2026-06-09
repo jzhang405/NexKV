@@ -18,6 +18,7 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/checkpoint"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/chunk"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/lob"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 )
 
@@ -40,6 +41,7 @@ type BTree struct {
 	compactMu      sync.Mutex
 	epochMgr       *EpochManager // COW old page reclamation (nil if disabled)
 	epochCancel    context.CancelFunc
+	lobFileCloser  func() // Phase 6: closes LOB file store (cleaner + fd cache)
 }
 
 // Verify BTree implements service.KVStore at compile time.
@@ -88,16 +90,37 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 		tracer:         cfg.tracer,
 		tsGen:          cfg.tsGen,
 	}
-	bt.txMgr = cfg.buildTxManager(newStorageAdapter(bt))
+	lobMgr := lob.NewDefaultLOBManager(storage.GetPageManager())
 
-	// EpochManager: optional COW old-page reclamation
+	// Phase 6 Tier 2: LOB file storage (nil if no lobDir configured)
+	var lobFileMgr mvcc.LOBFileManager
+	if cfg.lobDir != "" {
+		mgr, err := lob.NewDefaultLOBFileManager(cfg.lobDir)
+		if err != nil {
+			storage.Close()
+			return nil, errpkg.BTreeCreatePageManager(err)
+		}
+		_ = mgr.CleanupTmp()
+		lobFileMgr = mgr
+		bt.lobFileCloser = mgr.Close
+	}
+
+	// EpochManager: optional COW old-page reclamation + LOB resource GC
+	var lobEpoch mvcc.LOBEpochRetirer
 	if cfg.enableEpoch {
 		em := NewEpochManager(func(id model.PageID) { _ = storage.FreePage(id) })
+		em.SetLOBFreeFns(
+			func(firstPageID uint32) { _ = lobMgr.Free(mvcc.LOBRef{FirstPageID: firstPageID}) },
+			func(lobID uint64) { _ = lobFileMgr.Delete(mvcc.LOBFileRef{LOBID: lobID}) },
+		)
 		ctx, cancel := context.WithCancel(context.Background())
 		em.StartBackgroundReclaim(ctx)
 		bt.epochMgr = em
 		bt.epochCancel = cancel
+		lobEpoch = em
 	}
+
+	bt.txMgr = cfg.buildTxManager(newStorageAdapter(bt), lobMgr, lobFileMgr, lobEpoch)
 
 	return bt, nil
 }
@@ -498,6 +521,10 @@ func (b *BTree) Close() error {
 	if b.epochCancel != nil {
 		b.epochCancel()
 		b.epochMgr.Shutdown()
+	}
+	// Shutdown LOB file store (background cleaner + fd cache)
+	if b.lobFileCloser != nil {
+		b.lobFileCloser()
 	}
 	// Shutdown BatchWriter (if initialized): close channels, wait for workers to drain
 	return b.storage.Close()

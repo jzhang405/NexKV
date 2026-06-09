@@ -20,6 +20,8 @@ import (
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/btree"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/checkpoint"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/chunk"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/lob"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/persist"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/wal"
 )
@@ -34,6 +36,8 @@ var (
 	only        = flag.String("only", "", "run only tests matching this prefix")
 	batchSizes  = flag.String("batch", "64,256,1024", "comma-separated batch sizes for batch benchmarks")
 	noPreGen    = flag.Bool("no-pregenerate", false, "use fmt.Sprintf per call (old behavior, GC-heavy)")
+	runLOBBench = flag.Bool("lob", false, "run LOB large-object benchmarks")
+	lobSize     = flag.Int("lob-size", 4096, "LOB value size in bytes (default 4KB)")
 
 	// Persistence flags
 	persistMode  = flag.String("persist", "", "persistence mode: wal (empty=memory-only)")
@@ -44,6 +48,7 @@ var (
 	// keyPool and valPool are pre-generated in main to eliminate fmt.Sprintf GC pressure.
 	keyPool [][]byte
 	valPool [][]byte
+	lobVal  []byte // single pre-allocated LOB value (reused across operations)
 )
 
 func main() {
@@ -144,6 +149,26 @@ func main() {
 		}
 	}
 
+	// === LOB (non-transactional, large value via EncodeValue/DecodeValue) ===
+	if *runLOBBench {
+		lobScenes := []struct {
+			label   string
+			n, thr  int
+			getOnly bool
+		}{
+			{fmt.Sprintf("lob-put-%dk", *lobSize/1024), n, 1, false},
+			{fmt.Sprintf("lob-get-%dk", *lobSize/1024), n, 1, true},
+			{fmt.Sprintf("par-lob-put-%dk-8", *lobSize/1024), n, min(t, 8), false},
+			{fmt.Sprintf("par-lob-get-%dk-8", *lobSize/1024), n, min(t, 8), true},
+		}
+		for _, sc := range lobScenes {
+			if *only != "" && !strings.HasPrefix(sc.label, *only) {
+				continue
+			}
+			runLOB(sc.label, sc.n, sc.thr, sc.getOnly, mmapSize)
+		}
+	}
+
 	// Persist WAL benchmarks
 	if *persistMode == "wal" {
 		syncMode := parseWalSyncMode(*walSync)
@@ -207,6 +232,116 @@ func parseBatchSizes(s string) []int {
 		sizes = []int{64}
 	}
 	return sizes
+}
+
+// runLOB benchmarks non-transactional LOB Get/Set with EncodeValue/DecodeValue.
+func runLOB(label string, n, threads int, getOnly bool, mmapSize int) {
+	storage, err := btree.NewOffheapBTreeStorage(mmapSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create storage: %v\n", err)
+		return
+	}
+	opts := []btree.BTreeOption{}
+	if *enableEpoch {
+		opts = append(opts, btree.WithEpoch())
+	}
+	tree, err := btree.NewBTree(storage, opts...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create btree: %v\n", err)
+		return
+	}
+	ctx := context.Background()
+
+	// Preload for read tests
+	val := lobValOf()
+	lobMgr := lob.NewDefaultLOBManager(storage.GetPageManager())
+	var lobFileMgr mvcc.LOBFileManager
+	if *lobSize > 65536 {
+		lobDir, _ := os.MkdirTemp("", "nexkv-lob-bench-*")
+		defer os.RemoveAll(lobDir)
+		lobFileMgr, _ = lob.NewDefaultLOBFileManager(lobDir)
+	}
+	if getOnly {
+		for i := 0; i < n; i++ {
+			encoded, _ := mvcc.EncodeValue(val, uint64(i+1), 0, 0, nil, lobMgr, lobFileMgr)
+			_ = tree.Set(ctx, keyOf(i), encoded)
+		}
+	}
+
+	// Warmup
+	totalOps := atomic.Int64{}
+	lobLoop(*warmup, threads, tree, &totalOps, getOnly, n, lobMgr, lobFileMgr)
+	totalOps.Store(0)
+
+	// Measure
+	t0 := time.Now()
+	lobLoop(n, threads, tree, &totalOps, getOnly, n, lobMgr, lobFileMgr)
+	elapsed := time.Since(t0)
+
+	qps := float64(totalOps.Load()) / elapsed.Seconds()
+	rw := "write"
+	if getOnly {
+		rw = "read"
+	}
+	fmt.Printf("%-28s t=%-2d op=%-8s lob=%dB ops=%d time=%.3fs qps=%10.0f\n",
+		label, threads, rw, len(val), totalOps.Load(), elapsed.Seconds(), qps)
+
+	_ = tree.Close()
+}
+
+// lobLoop runs LOB Get/Set operations with EncodeValue/DecodeValue wrapping.
+func lobLoop(n, threads int, tree *btree.BTree, ops *atomic.Int64, getOnly bool, maxKey int, lobMgr mvcc.LOBManager, lobFileMgr mvcc.LOBFileManager) {
+	ctx := context.Background()
+	val := lobValOf()
+
+	if threads == 1 {
+		if getOnly {
+			for i := 0; i < n; i++ {
+				raw, err := tree.Get(ctx, keyOf(i%maxKey))
+				if err == nil {
+					_, _ = mvcc.DecodeValue(raw, lobMgr, lobFileMgr)
+				}
+				ops.Add(1)
+			}
+		} else {
+			for i := 0; i < n; i++ {
+				encoded, _ := mvcc.EncodeValue(val, uint64(i+1), 0, 0, nil, lobMgr, lobFileMgr)
+				_ = tree.Set(ctx, keyOf(i), encoded)
+				ops.Add(1)
+			}
+		}
+		return
+	}
+
+	var wg sync.WaitGroup
+	per := n / threads
+	for t := 0; t < threads; t++ {
+		start := t * per
+		end := start + per
+		if t == threads-1 {
+			end = n
+		}
+		wg.Add(1)
+		go func(start, end int) {
+			defer wg.Done()
+			if getOnly {
+				for i := start; i < end; i++ {
+					raw, err := tree.Get(ctx, keyOf(i%maxKey))
+					if err == nil {
+						_, _ = mvcc.DecodeValue(raw, lobMgr, lobFileMgr)
+					}
+					ops.Add(1)
+				}
+			} else {
+				for i := start; i < end; i++ {
+					encoded, _ := mvcc.EncodeValue(val, uint64(i+1), 0, 0, nil, lobMgr, lobFileMgr)
+					_ = tree.Set(ctx, keyOf(i), encoded)
+					ops.Add(1)
+				}
+			}
+		}(start, end)
+	}
+	wg.Wait()
 }
 
 func run(label string, n, threads int, getOnly bool, mmapSize int, readRatios ...float64) {
@@ -338,6 +473,16 @@ func mixedLoop(n, threads int, tree *btree.BTree, ops *atomic.Int64, readRatio f
 		}(start, end)
 	}
 	wg.Wait()
+}
+
+func lobValOf() []byte {
+	if lobVal == nil {
+		lobVal = make([]byte, *lobSize)
+		for i := range lobVal {
+			lobVal[i] = byte(i % 256)
+		}
+	}
+	return lobVal
 }
 
 func keyOf(i int) []byte {

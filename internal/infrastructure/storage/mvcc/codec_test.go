@@ -129,3 +129,33 @@ func TestSentinelErrors_AreDistinct(t *testing.T) {
 		assert.True(t, errors.Is(sentinels[i], sentinels[i]))
 	}
 }
+
+func TestIsLOBFlag(t *testing.T) {
+	assert.True(t, IsLOBFlag(FlagLOBNormal), "FlagLOBNormal should be a LOB flag")
+	assert.True(t, IsLOBFlag(FlagLOBTombstone), "FlagLOBTombstone should be a LOB flag")
+	assert.False(t, IsLOBFlag(FlagNormal), "FlagNormal should not be a LOB flag")
+	assert.False(t, IsLOBFlag(FlagTombstone), "FlagTombstone should not be a LOB flag")
+	assert.False(t, IsLOBFlag(FlagLOBFile), "FlagLOBFile should not be a LOB flag")
+	assert.False(t, IsLOBFlag(FlagLOBFileTombstone), "FlagLOBFileTombstone should not be a LOB flag")
+}
+
+func TestIsLOBFileFlag(t *testing.T) {
+	assert.True(t, IsLOBFileFlag(FlagLOBFile), "FlagLOBFile should be a LOB file flag")
+	assert.True(t, IsLOBFileFlag(FlagLOBFileTombstone), "FlagLOBFileTombstone should be a LOB file flag")
+	assert.False(t, IsLOBFileFlag(FlagNormal), "FlagNormal should not be a LOB file flag")
+	assert.False(t, IsLOBFileFlag(FlagTombstone), "FlagTombstone should not be a LOB file flag")
+	assert.False(t, IsLOBFileFlag(FlagLOBNormal), "FlagLOBNormal should not be a LOB file flag")
+	assert.False(t, IsLOBFileFlag(FlagLOBTombstone), "FlagLOBTombstone should not be a LOB file flag")
+}
+
+func TestIsValidFlag(t *testing.T) {
+	validFlags := []byte{FlagNormal, FlagTombstone, FlagLOBNormal, FlagLOBTombstone, FlagLOBFile, FlagLOBFileTombstone}
+	for _, f := range validFlags {
+		assert.True(t, isValidFlag(f), "flag 0x%02X should be valid", f)
+	}
+
+	invalidFlags := []byte{0x06, 0x07, 0x08, 0xFF, 0x80}
+	for _, f := range invalidFlags {
+		assert.False(t, isValidFlag(f), "flag 0x%02X should be invalid", f)
+	}
+}

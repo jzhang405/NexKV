@@ -184,6 +184,11 @@ func (s *OffheapBTreeStorage) GetPageAccessor() *offheap.PageAccessor {
 	return s.pa
 }
 
+// GetPageManager 返回底层的 PageManager，用于 LOB overflow page 等高级操作。
+func (s *OffheapBTreeStorage) GetPageManager() *offheap.PageManager {
+	return s.pm
+}
+
 // AllocatedPageCount 返回已分配过的页面数量上限（pageID ∈ [1, AllocatedPageCount())）。
 func (s *OffheapBTreeStorage) AllocatedPageCount() uint32 {
 	return s.pm.NextPageID()

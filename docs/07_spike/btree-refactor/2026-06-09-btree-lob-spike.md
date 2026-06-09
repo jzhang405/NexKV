@@ -65,7 +65,7 @@ Lealone 在 `BTreeStorage` 层实现 LOB——**BTree 感知** LOB 存在：
 │          Ledgers / Application          │
 ├─────────────────────────────────────────┤
 │         ValueEncoder (codec)            │ ← LOB 检测, 编解码, 数据拼接
-│         LOBManager (lifecycle)          │ ← 溢出页分配, 引用计数, GC 回收
+│         LOBManager (lifecycle)          │ ← 溢出页分配, GC 回收 (epoch-based)
 ├─────────────────────────────────────────┤
 │         BTree (index only)              │ ← Key 索引, Split/Merge, CAS 并发
 │         PageManager (storage)           │ ← 页面分配/释放/读写
@@ -77,7 +77,7 @@ Lealone 在 `BTreeStorage` 层实现 LOB——**BTree 感知** LOB 存在：
 |------|------|------|
 | **BTree** | Key 索引、页面组织、CAS 并发 | 无——完全透明 |
 | **ValueEncoder** | Value 编解码、LOB 检测、数据拼接 | `Encode/Decode`, `IsLOB` |
-| **LOBManager** | 溢出页生命周期、引用计数、GC | `Allocate/Read/Free/Update/Size` |
+| **LOBManager** | 溢出页生命周期、epoch 回收 | `Allocate/Read/Free/Update/Size` |
 | **PageManager** | 页面分配/释放/读写 | `AllocOverflow/FreeOverflow/ReadOverflow` |
 
 ### 2.3 LOBManager 接口
@@ -85,17 +85,20 @@ Lealone 在 `BTreeStorage` 层实现 LOB——**BTree 感知** LOB 存在：
 ```go
 // LOBManager 管理大对象的存储和生命周期
 type LOBManager interface {
-    // Allocate 分配溢出页面存储大对象，返回 BTree 可存储的 LOB 引用字节
+    // Allocate 分配溢出页面存储大对象，返回 BTree 可存储的 MVCC 编码字节
     Allocate(data []byte) ([]byte, error)
 
-    // Read 根据 BTree value 中的 LOB 引用读取完整数据
-    Read(encodedValue []byte) ([]byte, error)
+    // Read 根据 LOB 引用读取完整数据（MVCC 解析由上层 ParseMVCC 完成）
+    Read(ref LOBRef) ([]byte, error)
 
-    // Free 释放大对象占用的所有溢出页面
-    Free(encodedValue []byte) error
+    // Free 释放 LOB 引用指向的所有溢出页面
+    Free(ref LOBRef) error
 
-    // Size 返回大对象的字节大小
-    Size(encodedValue []byte) (int64, error)
+    // Update 更新大对象（释放旧溢出页 + 分配新溢出页）
+    Update(data []byte, oldRef LOBRef) ([]byte, error)
+
+    // Size 返回 LOB 引用的字节大小
+    Size(ref LOBRef) int64
 }
 ```
 
@@ -103,7 +106,7 @@ type LOBManager interface {
 
 ## 三、存储格式
 
-### 3.1 页面头部格式（统一 Page Header）
+### 3.1 页面头部格式（统一 Page Header）[新设计, 待实现]
 
 所有页面（叶子页、索引页、溢出页）共享 56 字节头部：
 
@@ -123,7 +126,16 @@ type LOBManager interface {
 
 ### 3.2 MVCC LOB 编码
 
-新增 `FlagLOBNormal = 0x02`（区别于 `FlagNormal=0x00` / `FlagTombstone=0x01`）。
+新增以下 Flag 常量（当前代码不支持非 0x00/0x01 的 Flag，需修改 ParseMVCC 验证逻辑）：
+
+| Flag | 值 | 含义 |
+|------|:--:|------|
+| `FlagNormal` | `0x00` | 普通数据 |
+| `FlagTombstone` | `0x01` | 逻辑删除 |
+| `FlagLOBNormal` | `0x02` | LOB 大对象（新增） |
+| `FlagLOBTombstone` | `0x03` | LOB 大对象 Tombstone（新增，`0x02｜0x01`） |
+
+> `FlagLOBTombstone=0x03` 用于 Delete LOB key 时写入 Tombstone 并保留 LOB 引用，供 epoch GC 延迟回收溢出页。Tombstone 恢复（重新 Put 后）时从旧 Tombstone 提取 LOB flag。
 
 ```
 普通 value:  [Flag:0x00][prevFlag][prevBeginTS][prevValLen][prevVal][beginTS][realVal]
@@ -134,7 +146,8 @@ LOB value:   [Flag:0x02][prevFlag][prevBeginTS][prevValLen][prevVal][beginTS]
   BTree 叶子页存储: ~31B (MVCC header 20B + lobRefLen 2B + lobRef 8B + beginTS 8B)
 ```
 
-> Flag 0x02 已在 ParseMVCC/BuildMVCC 中保留（Phase 3 版本内嵌时已规划）。  
+> **注意**：`Flag 0x02` 是新增常量。当前 `ParseMVCC` 显式拒绝所有非 0x00/0x01 的 Flag（`mvcc/codec.go:56`）。实现时需修改 ParseMVCC/BuildMVCC 的 Flag 验证逻辑，允许 0x02/0x03（见 H4）。  
+> Phase 3 版本内嵌复用 `FlagNormal=0x00/FlagTombstone=0x01`，通过 `PrevBeginTS != 0` 区分有无 prev，没有引入新 Flag。  
 > prev 字段正常使用——大 value 的旧版本如果是 LOB，指向旧版溢出页链。
 
 **`MVCCValue` 扩展**：
@@ -188,7 +201,7 @@ OverflowPage 1004:  NextPageID=0     ChunkSize=2928  Data=[12072..14999]
 |------|:--:|------|
 | `LOBSizeThreshold` | 2048 (2KB) | value > 2KB 启用溢出页存储 |
 
-> 2KB 阈值：小于 1/2 页面容量，普通 value 有充足空间。大于 2KB 后溢出页链的开销（56B header + 16B metadata = 72B/page）被更大 value 摊销。
+> 2KB 阈值：Phase 3 版本内嵌后 value ~50B，页面可存 ~80 entries。阈值可按需调整为 3-4KB（不固定）——实现时可用 `leaf.IsFull` 动态判断，而非硬编码常量。仅当值**确实**超出页面容量时才走 LOB 路径。
 
 ---
 
@@ -221,10 +234,9 @@ Ledgers.Put(key, largeValue):
 ```
 Ledgers.Get(key):
   1. BTree.Get(key) → raw (mmap copy)
-  2. ParseMVCC(raw) → mv
-     a. if mv.Flag == 0x02 (LOB):
-        → LOBManager.Read(raw)
-           → Parse lobRef: FirstPageID + TotalLen
+  2. ParseMVCC(raw) → mv  (返回 MVCCValue, 含 LOB ref)
+     a. if mv.Flag == 0x02 || mv.Flag == 0x03 (LOB / LOB-Tombstone):
+        → LOBManager.Read(mv.LOB)
            → PageManager.ReadOverflow(FirstPageID, TotalLen)
               → 沿链读取各页 Data chunk
               → concatenate
@@ -243,58 +255,64 @@ Ledgers.Get(key):
 Ledgers.Delete(key):
   1. BTree.Get(key) → oldValue
   2. ParseMVCC(oldValue) → if mv.LOB != nil:
-     → LOBManager.Free(oldValue)
+     → LOBManager.Free(mv.LOB)
         → PageManager.FreeOverflow(FirstPageID)
            → 沿链释放所有溢出页
   3. BTree.Delete(key)  ← 只删叶子条目
 ```
 
-### 4.4 更新流程
+### 4.4 更新流程（非事务路径）
 
 ```
-Ledgers.Put(key, newLargeValue) [existing key]:
+Ledgers.Put(key, newLargeValue) [existing key, 非事务]:
   1. BTree.Get(key) → oldValue
-  2. ParseMVCC(oldValue) → if LOB → LOBManager.Free(oldValue)  ← 先释放旧版溢出页
+  2. ParseMVCC(oldValue) → if LOB → LOBManager.Free(mv.LOB)  ← 先释放旧版溢出页
   3. ValueEncoder.Encode(newValue) → LOBManager.Allocate(data)  ← 分配新版溢出页
   4. BTree.Set(key, encoded)                                    ← 写入新值
+
+事务路径下旧 LOB 溢出页与 BTree 旧版本页面通过 epoch GC 一起延迟回收。
 ```
 
 ---
 
 ## 五、并发控制与 GC
 
-### 5.1 引用计数机制
+### 5.1 Epoch-Based GC（复用现有 BTree GC）
 
-```go
-// 每个溢出页面通过 PageRef 管理引用计数
-Reader:  PageRef.Retain()  → 读取数据 → PageRef.Release()
-Writer:  分配新页面 → 写入 → 原子更新引用 → 旧页面 refCount--
-GC:      扫描 refCount==0 的页面 → 释放
-```
-
-### 5.2 分层 GC 策略
+当前 NexKV BTree 已有 epoch-based GC（`EpochManager` + `AllocSlot/EnterRead/ExitRead/RetireBatch`）。
+LOB 溢出页复用同一套机制——不需要引用计数。
 
 ```
-L1: Per-Transaction GC
-  事务提交/回滚 → 释放事务内临时分配的溢出页
+Reader:
+  epochSlot = epochMgr.AllocSlot()
+  epochMgr.EnterRead(epochSlot)
+  ReadOverflow(FirstPageID)  ← 安全读, 页面不会被 free
+  epochMgr.ExitRead(epochSlot)
 
-L2: Reference-Based GC
-  refCount 归零 → 立即释放页面
+Writer:
+  COW 拷贝 → CAS 替换 → 旧页面推入 epochMgr.RetireBatch
+  epoch 结束后 EpochManager 自动 Free 旧页面
 
-L3: Periodic GC (每 5 分钟)
-  扫描孤立页面 → 安全释放
-
-L4: Compaction GC
-  后台压缩 → 合并碎片 → 释放空闲空间
+GC:
+  EpochManager 周期性 tryReclaim → 批量回收 retired 页面
+  LOB 溢出页与 BTree 叶子页/索引页共用同一回收周期
 ```
 
-> 当前 NexKV 已有 epoch-based GC（BTree 页面回收）。LOB 溢出页可复用同一套机制——`FreeOverflow` 将页面标记为 `retired`，epoch 结束后由 `EpochManager` 统一回收。
+### 5.2 LOB 页面生命周期
+
+| 操作 | 页面状态 | 回收时机 |
+|------|------|------|
+| Allocate | 新页面进入活跃集 | 不会被 free（直到被 Release） |
+| Update (写新值) | 旧 LOB 链标记 retired → 推入 epoch 队列 | epoch 结束后批量 free |
+| Delete (Tombstone) | 旧 LOB 链标记 retired → 推入 epoch 队列 | 同上 |
+| Rollback | 本事务分配的溢出的页立即 free（无 reader） | 立即 |
+| BTree Split/COW | 被替换的 BTree 页面 Retire → 推入 epoch | 同上 |
 
 ### 5.3 CAS 原子操作（与现有 BTree 一致）
 
 ```
 Reader:  无锁读 (mmap sub-slice + epoch 保护)
-Writer:  COW 拷贝 → CAS 替换 → 页面引用计数管理
+Writer:  COW 拷贝 → CAS 替换 → RetireBatch → epoch GC
 GC:      epoch 结束后批量回收 retired 页面
 ```
 
@@ -321,7 +339,8 @@ func AllocOverflowChain(totalLen uint32) (firstPageID uint32, pageIDs []uint32) 
 
 ```go
 ptr := pm.PageIDToPtr(pageID)
-dataPtr := unsafe.Add(ptr, 72) // skip header + metadata
+// 偏移 = PageHeader(56B) + NextPageID(8B) + ChunkSize(4B) + Checksum(4B) = 72B
+dataPtr := unsafe.Add(ptr, SizeofPageHeader + 8 + 4 + 4)
 copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 ```
 
@@ -342,8 +361,14 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | 1 | MVCC LOB Flag + 编码 (`FlagLOBNormal=0x02`, LOBRef, Parse/Build) | ~30 | `mvcc/codec.go` |
 | 2 | 溢出页面 AllocOverflow/FreeOverflow/ReadOverflow | ~60 | `offheap/page_manager.go` |
 | 3 | LOBManager 接口 + 实现 (Allocate/Read/Free/Size) | ~50 | `storage/lob/manager.go` (新) |
-| 4 | BTree 集成 (Get/Delete 中处理 LOB ref) | ~20 | `btree/btree.go` |
-| 5 | MVCC 事务层集成 (Put/Get/commitKey/rollback) | ~30 | `mvcc/transaction.go` |
+| 4 | ValueEncoder 实现 (Encode/Decode + LOB 展开, 调用 LOBManager) | ~40 | `mvcc/codec.go` (ValueEncoder 部分) |
+| — | **BTree 无需改动**：Get 返回 raw bytes，LOB 展开在上层完成 | 0 | — |
+| 5 | MVCC 事务层集成 (Put/Get/commitKey/rollbackOneKey) | ~40 | `mvcc/transaction.go` |
+
+事务层要点：
+- `SnapshotTx.Put`: value > 阈值 → LOBManager.Allocate → 存储 lobRef 到 WriteBuffer
+- `SnapshotTx.Get`: GetRaw → ParseMVCC → if LOB → LOBManager.Read → 返回完整值
+- `rollbackOneKey`: 回滚时释放事务内新分配的 LOB 溢出页（UndoEntry 记录 LOB ref）
 | 6 | 阈值配置 + benchmark (4KB/64KB/1MB) | ~40 | `cmd/tools/btree_bench` |
 | **合计** | | **~230** | |
 
@@ -357,10 +382,10 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | LOB 感知层 | MVCC codec 层 | BTree 零改动，编解码自然扩展 |
 | 溢出页管理 | PageManager 扩展 | 复用现有页面分配/释放/epoch 机制 |
 | 删除顺序 | 先释放 LOB 页，再删 BTree 条目 | 防止溢出页泄漏 |
-| LOB Flag | 0x02（复用 MVCC Flag 体系） | 与 Phase 3 版本内嵌的 Flag 预留一致 |
+| LOB Flag | 0x02(Normal)/0x03(Tombstone) | 新增常量, 需修改 ParseMVCC 验证 |
 | LOB 引用大小 | 8B (ID:4 + Len:4) | BTree 叶子页最小化存储开销 |
 | 溢出页数据量 | 4024B/page (4096-56-8-4-4) | 最大化数据密度 |
-| GC 策略 | Epoch-based（复用现有 BTree GC） | 一致的生命周期管理 |
+| GC 策略 | Epoch-based（复用 BTree EpochManager） | 与 BTree 页面统一批次回收, 无需引用计数 |
 | 阈值 | 2KB | Lealone 同值，平衡 leaf page 容量和溢出页开销 |
 
 ---
@@ -372,11 +397,11 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | LOB 感知层 | `BTreeStorage` (BTree 感知) | `MVCC codec` (BTree 透明) |
 | BTree 改动 | 需要 `isLargeValue` 判断 | **零改动** |
 | 溢出页管理 | `BTreeStorage.largeValue` | `PageManager.AllocOverflow` |
-| LOB Flag | `0x80` (1 byte) | `0x02` (复用 MVCC Flag) |
+| LOB Flag | `0x80` (1 byte) | `0x02`(Normal)/`0x03`(Tomb) (新增) |
 | 引用大小 | 21B | **8B** (仅 ID+Len) |
 | 溢出页数据 | 4084B | 4024B |
 | 并发控制 | `AtomicReferenceFieldUpdater` | `atomic.Pointer` + CAS |
-| GC 机制 | JVM GC + 引用计数 | Epoch-based GC |
+| GC 机制 | JVM GC + 引用计数 | Epoch-based GC (复用 BTree) |
 | 删除 | BTree 自动处理 | 上层先 free LOB 再 delete BTree |
 
 ---

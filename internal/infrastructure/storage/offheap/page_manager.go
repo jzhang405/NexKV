@@ -317,6 +317,9 @@ func (pm *PageManager) AllocOverflow(data []byte) (firstPageID uint32, err error
 
 		// Write data chunk
 		ptr := pm.PageIDToPtr(pageID)
+		header := (*PageHeader)(ptr)
+		header.pageType = PageTypeOverflow
+
 		chunkStart := int(i) * OverflowPageDataSize
 		chunkEnd := min(chunkStart+OverflowPageDataSize, totalLen)
 		chunk := data[chunkStart:chunkEnd]

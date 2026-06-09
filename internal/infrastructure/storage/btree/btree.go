@@ -90,7 +90,19 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 		tsGen:          cfg.tsGen,
 	}
 	lobMgr := lob.NewDefaultLOBManager(storage.GetPageManager())
-	bt.txMgr = cfg.buildTxManager(newStorageAdapter(bt), lobMgr)
+
+	// Phase 6 Tier 2: LOB file storage (nil if no lobDir configured)
+	var lobFileMgr mvcc.LOBFileManager
+	if cfg.lobDir != "" {
+		var err error
+		lobFileMgr, err = lob.NewDefaultLOBFileManager(cfg.lobDir)
+		if err != nil {
+			storage.Close()
+			return nil, errpkg.BTreeCreatePageManager(err)
+		}
+	}
+
+	bt.txMgr = cfg.buildTxManager(newStorageAdapter(bt), lobMgr, lobFileMgr)
 
 	// EpochManager: optional COW old-page reclamation
 	if cfg.enableEpoch {

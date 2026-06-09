@@ -103,13 +103,14 @@ func NewTxManagerWithGC(storage StorageBackend, tsGen TSGenerator, gcCfg *GCConf
 }
 
 // NewTxManagerWithLOB creates a new transaction manager with LOB large object support.
-// If lobMgr is nil, LOB is disabled (same as NewTxManager).
-func NewTxManagerWithLOB(storage StorageBackend, tsGen TSGenerator, lobMgr LOBManager) TxManager {
+// Both Tier 1 (overflow page) and Tier 2 (file) managers may be nil to disable.
+func NewTxManagerWithLOB(storage StorageBackend, tsGen TSGenerator, lobMgr LOBManager, lobFileMgr LOBFileManager) TxManager {
 	return &txManager{
 		storage:          storage,
 		tsGen:            tsGen,
 		activeTxRegistry: NewActiveTxRegistry(),
 		lobManager:       lobMgr,
+		lobFileManager:   lobFileMgr,
 	}
 }
 
@@ -125,6 +126,7 @@ type txManager struct {
 	wal              WALWriter // Phase 3: WAL for crash recovery (nil = no persistence)
 	walMu            sync.Mutex
 	lobManager       LOBManager // Phase 6: LOB overflow page management (nil = disabled)
+	lobFileManager    LOBFileManager // Phase 6: LOB file storage (nil = disabled)
 }
 
 // WALWriter is the minimal WAL interface for the transaction engine.
@@ -181,6 +183,7 @@ func (tm *txManager) beginTx(ctx context.Context, level IsolationLevel) (Tx, err
 		heldLocks:      make(map[string]*KeyLock),
 		ctx:            ctx,
 		lobManager:     tm.lobManager,
+		lobFileManager: tm.lobFileManager,
 	}
 	return tx, nil
 }
@@ -219,6 +222,9 @@ type SnapshotTx struct {
 	// lobManager enables LOB overflow page expansion in Get/snapshotGet.
 	// nil means LOB is disabled (all values treated as inline).
 	lobManager LOBManager
+
+	// lobFileManager enables Tier 2 LOB file expansion in Get/snapshotGet.
+	lobFileManager LOBFileManager
 }
 
 // SnapshotTS returns the snapshot timestamp of this transaction.
@@ -302,7 +308,7 @@ func (tx *SnapshotTx) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, er
 		if raw == nil { // key not found
 			continue
 		}
-		mv, parseErr := DecodeValue(raw, tx.lobManager)
+		mv, parseErr := DecodeValue(raw, tx.lobManager, tx.lobFileManager)
 		if parseErr != nil {
 			continue
 		}
@@ -321,7 +327,7 @@ func (tx *SnapshotTx) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, er
 			if !IsTombstoneFlag(mv.PrevFlag) {
 				// Expand LOB in prev version if needed
 				if mv.PrevFlag == FlagLOBNormal || mv.PrevFlag == FlagLOBTombstone {
-					if prevMV, err := DecodeValue(mv.PrevVal, tx.lobManager); err == nil {
+					if prevMV, err := DecodeValue(mv.PrevVal, tx.lobManager, tx.lobFileManager); err == nil {
 						results[btreeIndices[j]] = prevMV.RealVal
 					}
 				} else {
@@ -344,7 +350,7 @@ func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, erro
 		return nil, err
 	}
 
-	mv, parseErr := DecodeValue(raw, tx.lobManager)
+	mv, parseErr := DecodeValue(raw, tx.lobManager, tx.lobFileManager)
 	if parseErr != nil {
 		return nil, parseErr
 	}
@@ -364,7 +370,7 @@ func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, erro
 		}
 		// Expand LOB in prev version if needed
 		if mv.PrevFlag == FlagLOBNormal || mv.PrevFlag == FlagLOBTombstone {
-			prevMV, err := DecodeValue(mv.PrevVal, tx.lobManager)
+			prevMV, err := DecodeValue(mv.PrevVal, tx.lobManager, tx.lobFileManager)
 			if err != nil {
 				return nil, err
 			}
@@ -635,7 +641,7 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 	} else {
 		encoded, buildErr = EncodeValue(entry.Value, commitTS,
 			entry.OldFlag, entry.OldBeginTS, entry.OldValue,
-			tm.lobManager)
+			tm.lobManager, tm.lobFileManager)
 	}
 	if buildErr != nil {
 		return &UndoEntry{Key: key, OldRawVal: oldRawVal, CommitTS: commitTS},

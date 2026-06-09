@@ -255,21 +255,27 @@ func runLOB(label string, n, threads int, getOnly bool, mmapSize int) {
 	// Preload for read tests
 	val := lobValOf()
 	lobMgr := lob.NewDefaultLOBManager(storage.GetPageManager())
+	var lobFileMgr mvcc.LOBFileManager
+	if *lobSize > 65536 {
+		lobDir, _ := os.MkdirTemp("", "nexkv-lob-bench-*")
+		defer os.RemoveAll(lobDir)
+		lobFileMgr, _ = lob.NewDefaultLOBFileManager(lobDir)
+	}
 	if getOnly {
 		for i := 0; i < n; i++ {
-			encoded, _ := mvcc.EncodeValue(val, uint64(i+1), 0, 0, nil, lobMgr)
+			encoded, _ := mvcc.EncodeValue(val, uint64(i+1), 0, 0, nil, lobMgr, lobFileMgr)
 			_ = tree.Set(ctx, keyOf(i), encoded)
 		}
 	}
 
 	// Warmup
 	totalOps := atomic.Int64{}
-	lobLoop(*warmup, threads, tree, &totalOps, getOnly, n, lobMgr)
+	lobLoop(*warmup, threads, tree, &totalOps, getOnly, n, lobMgr, lobFileMgr)
 	totalOps.Store(0)
 
 	// Measure
 	t0 := time.Now()
-	lobLoop(n, threads, tree, &totalOps, getOnly, n, lobMgr)
+	lobLoop(n, threads, tree, &totalOps, getOnly, n, lobMgr, lobFileMgr)
 	elapsed := time.Since(t0)
 
 	qps := float64(totalOps.Load()) / elapsed.Seconds()
@@ -284,7 +290,7 @@ func runLOB(label string, n, threads int, getOnly bool, mmapSize int) {
 }
 
 // lobLoop runs LOB Get/Set operations with EncodeValue/DecodeValue wrapping.
-func lobLoop(n, threads int, tree *btree.BTree, ops *atomic.Int64, getOnly bool, maxKey int, lobMgr mvcc.LOBManager) {
+func lobLoop(n, threads int, tree *btree.BTree, ops *atomic.Int64, getOnly bool, maxKey int, lobMgr mvcc.LOBManager, lobFileMgr mvcc.LOBFileManager) {
 	ctx := context.Background()
 	val := lobValOf()
 
@@ -293,13 +299,13 @@ func lobLoop(n, threads int, tree *btree.BTree, ops *atomic.Int64, getOnly bool,
 			for i := 0; i < n; i++ {
 				raw, err := tree.Get(ctx, keyOf(i%maxKey))
 				if err == nil {
-					_, _ = mvcc.DecodeValue(raw, lobMgr)
+					_, _ = mvcc.DecodeValue(raw, lobMgr, lobFileMgr)
 				}
 				ops.Add(1)
 			}
 		} else {
 			for i := 0; i < n; i++ {
-				encoded, _ := mvcc.EncodeValue(val, uint64(i+1), 0, 0, nil, lobMgr)
+				encoded, _ := mvcc.EncodeValue(val, uint64(i+1), 0, 0, nil, lobMgr, lobFileMgr)
 				_ = tree.Set(ctx, keyOf(i), encoded)
 				ops.Add(1)
 			}
@@ -322,13 +328,13 @@ func lobLoop(n, threads int, tree *btree.BTree, ops *atomic.Int64, getOnly bool,
 				for i := start; i < end; i++ {
 					raw, err := tree.Get(ctx, keyOf(i%maxKey))
 					if err == nil {
-						_, _ = mvcc.DecodeValue(raw, lobMgr)
+						_, _ = mvcc.DecodeValue(raw, lobMgr, lobFileMgr)
 					}
 					ops.Add(1)
 				}
 			} else {
 				for i := start; i < end; i++ {
-					encoded, _ := mvcc.EncodeValue(val, uint64(i+1), 0, 0, nil, nil)
+					encoded, _ := mvcc.EncodeValue(val, uint64(i+1), 0, 0, nil, lobMgr, lobFileMgr)
 					_ = tree.Set(ctx, keyOf(i), encoded)
 					ops.Add(1)
 				}

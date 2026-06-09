@@ -14,8 +14,9 @@ import (
 
 // 页面类型常量
 const (
-	PageTypeIndex = 0 // 索引节点（内部节点）
-	PageTypeLeaf  = 1 // 叶子节点
+	PageTypeIndex    = 0 // 索引节点（内部节点）
+	PageTypeLeaf     = 1 // 叶子节点
+	PageTypeOverflow = 2 // 溢出页（LOB chain）
 )
 
 // 4KB 页面布局：
@@ -35,7 +36,7 @@ type PageHeader struct {
 	nextPage       uint32  // 后一个页面 pageID
 	extraChild     uint64  // 索引节点的 N+1 child（pageID + version）
 	count          uint16  // 条目数
-	pageType       uint8   // 页面类型（0=索引 1=叶子）
+	pageType       uint8   // 页面类型（0=索引 1=叶子 2=溢出）
 	deleted        uint8   // 标记为已删除（0=正常, 1=已删除）
 	tombstoneCount uint16  // Phase 6.5: 页面内 Tombstone 条目数（write-path metadata, maintained under COW atomicity guarantee）
 	deleteEpoch    uint64  // Phase 6.5: 安全物理回收 epoch（reserved for Phase 4+）

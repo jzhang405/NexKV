@@ -95,28 +95,21 @@ Lealone 在 `BTreeStorage` 层实现 LOB——**BTree 感知** LOB 存在：
 | **OverflowPage** | mmap 溢出页链（2KB~64KB）| `AllocOverflow/FreeOverflow/ReadOverflow` |
 | **LOBFileManager** | LOB 文件存储（>64KB）| `CreateLOB/ReadLOB/DeleteLOB` |
 
-### 2.3 LOBManager 接口
+### 2.3 LOBManager 接口（Tier 1）
 
 ```go
-// LOBManager 管理大对象的存储和生命周期
+// LOBManager 管理大对象的存储和生命周期（Tier 1: overflow page chain）。
 type LOBManager interface {
-    // Allocate 分配溢出页面存储大对象，返回 LOB 引用。
-    // MVCC 编码由 ValueEncoder.BuildMVCC 完成——LOBManager 不感知 MVCC 格式。
-    Allocate(data []byte) (LOBRef, error)
-
-    // Read 根据 LOB 引用读取完整数据（MVCC 解析由上层 ParseMVCC 完成）
-    Read(ref LOBRef) ([]byte, error)
-
-    // Free 释放 LOB 引用指向的所有溢出页面
-    Free(ref LOBRef) error
-
-    // Update 更新大对象（释放旧溢出页 + 分配新溢出页）
-    Update(data []byte, oldRef LOBRef) (LOBRef, error)
-
-    // Size 返回 LOB 引用的字节大小
-    Size(ref LOBRef) int64
+    Allocate(data []byte) (LOBRef, error)  // overflow page chain 分配
+    Read(ref LOBRef) ([]byte, error)       // 沿链读取
+    Free(ref LOBRef) error                 // 释放链式页面
+    Update(data []byte, oldRef LOBRef) (LOBRef, error) // 释放旧→分配新
+    Size(ref LOBRef) int64                 // 返回 TotalLen
 }
 ```
+
+> **Tier 2 扩展**：LOBFileManager（§4.5）独立接口，SnapshotTx 同时持有两个 Manager。
+> ValueEncoder 根据阈值做两级路由（§3.4），Flags 0x02/0x03→LOBManager, 0x04/0x05→LOBFileManager。
 
 ---
 
@@ -143,7 +136,11 @@ LOB 溢出页**不引入新 PageHeader 格式**——复用现有 56 字节 Page
 | `FlagLOBNormal` | `0x02` | LOB 大对象（新增） |
 | `FlagLOBTombstone` | `0x03` | LOB 大对象 Tombstone（新增，`0x02｜0x01`） |
 
-> `FlagLOBTombstone=0x03` 用于 Delete LOB key 时写入 Tombstone 并保留 LOB 引用，供 epoch GC 延迟回收溢出页。Tombstone 恢复（重新 Put 后）时从旧 Tombstone 提取 LOB flag。
+> `FlagLOBTombstone=0x03` 用于 Delete LOB key 时写入 Tombstone 并保留 LOB 引用，供 epoch GC 延迟回收溢出页。
+
+> **Tier 2 Flags**（设计阶段，ParseMVCC/BuildMVCC 验证已支持）：
+> `FlagLOBFile=0x04` (LOB 文件), `FlagLOBFileTombstone=0x05` (0x04|0x01)。
+> Tombstone 恢复（重新 Put 后）时从旧 Tombstone 提取 LOB flag。
 
 ```
 普通 value:  [Flag:0x00][prevFlag][prevBeginTS][prevValLen][prevVal][beginTS][realVal]
@@ -173,7 +170,8 @@ type MVCCValue struct {
     PrevFlag    byte
     PrevBeginTS uint64
     PrevVal     []byte
-    LOB *LOBRef // nil for non-LOB values
+    LOB     *LOBRef     // non-nil when Flag is FlagLOBNormal or FlagLOBTombstone (Tier 1)
+    LOBFile *LOBFileRef // non-nil when Flag is FlagLOBFile or FlagLOBFileTombstone (Tier 2)
 }
 ```
 
@@ -189,12 +187,19 @@ func ParseMVCC(val []byte) (MVCCValue, error) {
     // ... existing header parsing ...
 
     if flag == FlagLOBNormal || flag == FlagLOBTombstone {
-        // realVal 内容是 LOB 引用（非原始 value）
-        // 格式: [lobRefLen:2][FirstPageID:4][TotalLen:4]
-        if len(realVal) >= 8 {
+        // Tier 1: realVal = [lobRefLen:2][FirstPageID:4][TotalLen:4]
+        if len(realVal) >= 10 {
             mv.LOB = &LOBRef{
                 FirstPageID: binary.BigEndian.Uint32(realVal[2:6]),
                 TotalLen:    binary.BigEndian.Uint32(realVal[6:10]),
+            }
+        }
+    } else if flag == FlagLOBFile || flag == FlagLOBFileTombstone {
+        // Tier 2: realVal = [lobRefLen:2][LOBID:8][TotalLen:8]
+        if len(realVal) >= 18 {
+            mv.LOBFile = &LOBFileRef{
+                LOBID:    binary.BigEndian.Uint64(realVal[2:10]),
+                TotalLen: binary.BigEndian.Uint64(realVal[10:18]),
             }
         }
     }
@@ -207,11 +212,11 @@ func ParseMVCC(val []byte) (MVCCValue, error) {
 
 ```
 Overflow Page (4KB):
-  [PageHeader:56B][NextPageID:8B][ChunkSize:4B][Checksum:4B][Data:4024B]
+  [PageHeader:56B][NextPageID:8B][ChunkSize:4B][Reserved:4B][Data:4024B]
 
   NextPageID: uint64, 0 = 链尾
   ChunkSize:  uint32, 本页实际数据大小（≤4024）
-  Checksum:   uint32, 数据校验和（CRC32C，4 bytes）
+  Reserved:   uint32, 保留位（未来 CRC32C 校验和或压缩标志）
 ```
 
 **完整 LOB 链式存储示例（15KB value）**：
@@ -243,6 +248,7 @@ OverflowPage 1004:  NextPageID=0     ChunkSize=2928  Data=[12072..14999]
 > len(value) > 64KB    → LOB File（独立文件系统）
 > ```
 > 64KB 阈值确保 mmap 空间不会被少量大对象耗尽。默认 6GB mmap 中，64KB 阈值下即使 100% 溢出页也需 ~10 万个大对象才可能触及 mmap 上限。
+> **注意**：溢出页当前不计算 CRC32C 校验和——mmap 内数据损坏极少发生，且上层可自行校验。Reserved 字段保留用于未来实现。
 
 ---
 
@@ -280,10 +286,12 @@ data/lob/                          ← LOB 根目录
         └── ffffffffffffffff.lob
 ```
 
-**目录分片**：取 LOBID 的高 4 字节，拆为两级目录（每级 1 字节 = 256 个目录）。
+**目录分片**：取 LOBID 的高 4 字节，拆为两级目录（每级 2 字节 = 65536 个目录）。
 
-- 每级 256 个目录 × 二级 256 个 = 65,536 个叶子目录
-- 假设 100 万 LOB，每目录 ~15 个文件——无性能压力
+- 第一级：LOBID >> 16 & 0xFFFF（高 2 字节）
+- 第二级：LOBID & 0xFFFF（低 2 字节）
+- 每级 65536 个目录，总计 4G 个潜在叶子目录（实际按需创建）
+- 假设 100 万 LOB，每目录 ~1 个文件——无性能压力
 - 避免单目录百万文件的文件系统瓶颈
 
 ### 4.3 LOB 文件格式
@@ -292,17 +300,20 @@ data/lob/                          ← LOB 根目录
 
 ```
 ┌──────────────────────────────────────┐
-│          LOB File Header (32B)       │
+│          LOB File Header (40B)       │
 ├──────────────────────────────────────┤
 │  Magic:      [4]byte = "NXLB"       │
 │  Version:    uint16 = 1             │
 │  Flags:      uint16                 │
 │    bit 0: Tombstone (已删除)         │
 │    bits 1-15: reserved              │
-│  LOBID:      uint64                 │
-│  DataLen:    uint64 (原始数据长度)    │
-│  Checksum:   uint32 (CRC32C of data)│
-│  Reserved:   [2]byte                │
+│  LOBID:      uint64 (8B)            │
+│  DataLen:    uint64 (8B)            │
+│  DataCRC:    uint32 (4B, CRC32C)    │
+│  Reserved:   [6]byte (padding)      │
+│                                     │
+│  Total: 4+2+2+8+8+4+6 = 34B        │
+│  → aligned to 40B (round up)        │
 ├──────────────────────────────────────┤
 │          Raw Data (DataLen bytes)    │
 │          [byte][byte]...            │
@@ -318,7 +329,8 @@ data/lob/                          ← LOB 根目录
 | Flags | 2B | bit0=Tombstone（GC 标记），其余保留 |
 | LOBID | 8B | 唯一标识，与文件名一致（冗余校验） |
 | DataLen | 8B | 原始数据字节数 |
-| Checksum | 4B | CRC32C 数据校验和 |
+| DataCRC | 4B | CRC32C 数据校验和（仅覆盖 data） |
+| Reserved | 6B | 对齐填充至 40B |
 
 **关键设计决策**：
 
@@ -566,6 +578,35 @@ Ledgers.Put(key, newLargeValue) [existing key, 非事务]:
 事务路径下旧 LOB 溢出页与 BTree 旧版本页面通过 epoch GC 一起延迟回收。
 ```
 
+### 5.5 prevVal LOB 展开说明
+
+`snapshotGet` 和 `GetBatch` 中，当当前版本对快照不可见、需要回退到 prev 版本时：
+
+```go
+// PrevVal 是完整的 MVCC 编码字节（含 Flag + Header + beginTS + realVal）
+// DecodeValue → ParseMVCC 可以正确解析——PrevVal 本身就是一段 MVCC 编码
+if mv.PrevFlag == FlagLOBNormal || mv.PrevFlag == FlagLOBTombstone {
+    prevMV, err := DecodeValue(mv.PrevVal, tx.lobManager)
+    // prevMV.RealVal 即展开后的完整 value
+}
+```
+
+> **关键**：`PrevVal` 不是裸 value，是完整 MVCC 编码 `[prevFlag][prevBeginTS][prevValLen][prevVal][beginTS][realVal]`。
+> `DecodeValue` 调用 `ParseMVCC` 重新解析并展开 LOB。这是**递归解析**而非直接解释字节。
+
+### 5.6 EncodeDeleteValue 语义
+
+```go
+// EncodeDeleteValue 用于事务 Delete 路径的 MVCC 编码。
+// 当旧 value 是 LOB 时，Tombstone 保留旧 LOB ref → epoch GC 延迟回收溢出页。
+// commitKey 中的调用：两次传入 entry.OldFlag/OldBeginTS/OldValue——
+//   - 前一组：当前版本的 old flag/ts/value（用于编码 Tombstone 的 flag 判断）
+//   - 后一组：作为 prev 版本嵌入新 Tombstone 的 prev 字段
+encoded, _ = EncodeDeleteValue(commitTS,
+    entry.OldFlag, entry.OldBeginTS, entry.OldValue,   // 当前版本信息
+    entry.OldFlag, entry.OldBeginTS, entry.OldValue)   // prev 版本嵌入
+```
+
 ---
 
 ## 六、并发控制与 GC
@@ -686,19 +727,24 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | 6 | 阈值配置 + benchmark (4KB LOB) | ~130 | `cmd/tools/btree-txn-bench` | ✅ |
 | **Tier 1 合计** | | **~400** | |
 
-### Tier 2 — LOB File 实施计划 📐
+### 待实现：RetireOverflowChain GC 集成
 
-| Step | 内容 | 行数 | 文件 |
-|------|------|:--:|------|
-| 7 | `FlagLOBFile=0x04` / `FlagLOBFileTombstone=0x05` + LOBFileRef + ParseMVCC | ~25 | `mvcc/codec.go` |
-| 8 | `LOBFileManager` 接口 + 实现 (Create/Read/Delete/Retire/CreateStream) | ~120 | `storage/lob/file_manager.go` (新) |
-| 9 | LOB 文件存储后端：目录分片 + tmp→rename 原子写入 + mmap 读取 | ~100 | `storage/lob/file_store.go` (新) |
-| 10 | ValueEncoder 两级路由：2KB→inline, 2~64KB→overflow, >64KB→lobFile | ~30 | `mvcc/lob.go` |
-| 11 | LOBFileManager 注入 TxManager + SnapshotTx（与 overflow LOBManager 共存） | ~30 | `mvcc/transaction.go` |
-| 12 | Epoch GC 集成：RetireLOB 批量 unlink + 空目录清理 | ~40 | `storage/btree/epoch*.go` |
-| 13 | Benchmark：64KB/256KB/1MB LOB 文件读写 | ~50 | `cmd/tools/btree_bench` |
-| **Tier 2 合计** | | **~395** | |
-| **总合计** | | **~795** | |
+当前事务 Delete 路径将 LOB ref 写入 Tombstone，但 **epoch GC 回调尚未实现**——旧 LOB 溢出页不会自动回收。
+需新增 Step 6.5：`RetireOverflowChain` 在 epoch 推进后批量 free 溢出页链。
+
+### Tier 2 — LOB File 实施状态：✅ Step 7-10 完成（2026-06-09）
+
+| Step | 内容 | 行数 | 文件 | 状态 |
+|------|------|:--:|------|:--:|
+| 7 | `FlagLOBFile=0x04`/`0x05` + LOBFileRef + ParseMVCC 解析 | ~25 | `mvcc/codec.go` | ✅ |
+| 8 | `LOBFileManager` 接口 + DefaultLOBFileManager | ~50 | `storage/lob/file_manager.go` (新) | ✅ |
+| 9 | LOB 文件存储引擎：目录分片 + tmp→rename + mmap/pread | ~180 | `storage/lob/file_store.go` (新) | ✅ |
+| 10 | ValueEncoder 两级路由 + DecodeValue 两级展开 | ~60 | `mvcc/lob.go` | ✅ |
+| 11 | LOBFileManager 注入 TxManager + SnapshotTx + BTree | ~30 | `mvcc/transaction.go`, `btree/options.go`, `btree/btree.go` | ✅ |
+| 12 | Epoch GC 集成：RetireLOB 批量 unlink | ~40 | `storage/btree/epoch*.go` | 📐 |
+| 13 | Benchmark：128KB LOB 文件读写 | ~30 | `cmd/tools/btree_bench` | ✅ |
+| **Tier 2 已实现** | | **~375** | |
+| **总合计** | | **~775** | |
 
 ### 实施细节
 
@@ -716,7 +762,7 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 
 **prevFlag 格式变更**：
 - 旧格式：prevFlag 标准化为 0x00/0x01（`& 0x01`）
-- 新格式：prevFlag 存储原始值（0x00=Normal, 0x01=Tombstone, 0x02=LOBNormal, 0x03=LOBTombstone）
+- 新格式：prevFlag 存储原始值（0x00=Normal, 0x01=Tombstone, 0x02=LOBNormal, 0x03=LOBTombstone, 0x04=LOBFile, 0x05=LOBFileTombstone）
 - 向前兼容：旧数据 prevFlag=0x00/0x01，新 ParseMVCC 不再标准化，IsTombstoneFlag 处理 bit 0
 
 ### LOB Benchmark 初步结果（4KB value, 500 ops）
@@ -727,6 +773,13 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | txn-put-lob-4k | 10 | 663,093 op/s |
 | txn-get-lob-4k | 1 | 1,697,073 op/s |
 | txn-get-lob-4k | 10 | 3,964,321 op/s |
+
+### Tier 2 LOB File Benchmark（128KB value, 1000 ops）
+
+| Benchmark | QPS | 说明 |
+|-----------|-----|------|
+| lob-put-128k | **168** op/s | 每条写入含 fsync（Tier 2 file），延迟 ~6ms/op |
+| lob-get-128k | **18,387** op/s | mmap 零拷贝读 + OS page cache 缓存
 
 ---
 
@@ -776,8 +829,7 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | 并发控制 | `AtomicReferenceFieldUpdater` | `atomic.Pointer` + CAS | epoch + rename 原子操作 |
 | GC 机制 | JVM GC + 引用计数 | Epoch-based GC | Epoch-based unlink |
 | mmap 占用 | 数据+索引全在 mmap | 索引+溢出页在 mmap | **只索引在 mmap** |
-| GC 机制 | JVM GC + 引用计数 | Epoch-based GC (复用 BTree) |
-| 删除 | BTree 自动处理 | 上层先 free LOB 再 delete BTree |
+| 删除方式 | BTree 自动处理 | 上层先 free LOB 再 delete BTree | 上层先 delete LOB file 再 delete BTree |
 
 ---
 

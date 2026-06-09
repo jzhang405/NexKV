@@ -52,3 +52,8 @@ func (m *DefaultLOBManager) Update(data []byte, oldRef mvcc.LOBRef) (mvcc.LOBRef
 	}
 	return m.Allocate(data)
 }
+
+// Size returns the total byte size of a LOB reference.
+func (m *DefaultLOBManager) Size(ref mvcc.LOBRef) int64 {
+	return int64(ref.TotalLen)
+}

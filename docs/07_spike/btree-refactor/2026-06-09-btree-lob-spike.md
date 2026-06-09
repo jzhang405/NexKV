@@ -751,6 +751,7 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | 15 | Config + Options 参数化 (阈值/fsync/fd cache) | ~210 | 8 files | ✅ |
 | 16 | fsyncGroup fast path 直连 fsync (消除 1ms 批量等待) | ~10 | `file_store.go` | ✅ |
 | 17 | **BigCache LOB 缓存层** | ~200 | `storage/lob/lob_cache.go` (新) | 🔲 计划中 |
+| 18 | **Group Write Fsync 优化** | ~80 | `storage/lob/file_store.go` | 🔲 计划中 |
 | **Tier 2 已实现** | | **~775** | |
 | **已实现** | | **~1,175** | |
 
@@ -790,6 +791,7 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | 项目 | 说明 |
 |------|------|
 | **BigCache LOB 缓存** | §十一详细设计 — Tier 2 热点 LOB 内存缓存 (计划中) |
+| **Group Write Fsync** | §十二详细设计 — 并行 fsync + rename 批量提交 (计划中) |
 | 页面预读 | 顺序读时预读相邻溢出页 |
 | 并行读取 | 多页并行 mmap 读取
 
@@ -1073,8 +1075,221 @@ func (s *lobFileStore) Read(ref mvcc.LOBFileRef) ([]byte, error) {
 | 5 | `lob_cache_test.go` — 单元测试 | ~60 | `storage/lob/lob_cache_test.go` (新) |
 | 6 | Benchmark 对比 | ~20 | `cmd/tools/btree_bench/main.go` |
 | **合计** | | **~230** | |
+---
 
-## 十二、关联文档
+## 十二、Group Write Fsync 优化（计划中）
+
+> **状态**：设计阶段，待实现  
+> **背景**：当前 `fsyncGroup` 已实现批量收集 + fast path 直连。但 `flush()` 内部仍串行 fsync，10 并发写入 = 10 次串行 `f.Sync()`。每个 128KB LOB 的 fsync 约 3-4ms，10 并发串行总延迟 30-40ms，实际 QPS 仅 ~250。
+>
+> **目标**：并行化 batch 内 fsync，将 N 并发写入的延迟从 O(N·FsyncCost) 降至 O(FsyncCost + N/Parallelism)。
+
+### 12.1 现有瓶颈分析
+
+```
+当前 fsyncGroup 流程（10 并发 128KB LOB 写入）:
+
+  Writer W1 ──→ channel ──┐
+  Writer W2 ──→ channel ──┤
+  ...                      ├── ticker(1ms) ──→ flush()
+  Writer W10 ──→ channel ──┘                      │
+                                                   ├── fd1.Sync()  3.5ms ──→ doneCh
+                                                   ├── fd2.Sync()  3.5ms ──→ doneCh   ← 串行！
+                                                   ├── ...
+                                                   └── fd10.Sync() 3.5ms ──→ doneCh
+                                                        总延迟: ~35ms
+```
+
+| 环节 | 延迟 | 占比 |
+|------|-----:|-----|
+| channel 等待 (1ms ticker) | ~0.5ms | 1.4% |
+| **串行 fsync × 10** | **~35ms** | **97%** ← 瓶颈 |
+| rename | ~0.1ms | 0.3% |
+| **总计** | **~36ms** | → ~277 QPS |
+
+> 当前单线程已通过 fast path 绕过（145 QPS），但并发场景未优化。
+
+### 12.2 优化方案
+
+#### Phase 1：并行 flush（核心优化）
+
+将 `flush()` 中的串行 `f.Sync()` 改为 `errgroup` 并行：
+
+```go
+import "golang.org/x/sync/errgroup"
+
+func (g *fsyncGroup) flush() {
+    if len(g.batch) == 0 { return }
+    var eg errgroup.Group
+    eg.SetLimit(g.parallelism) // 默认 = min(batch_size, GOMAXPROCS)
+    for _, e := range g.batch {
+        e := e
+        eg.Go(func() error { return e.fd.Sync() })
+    }
+    // Wait all → then signal all doneCh
+    _ = eg.Wait()
+    for _, e := range g.batch {
+        e.doneCh <- nil
+    }
+    g.batch = g.batch[:0]
+}
+```
+
+**预期效果**：10 并发 fsync 从 ~35ms 降至 ~3.5ms（并行）。QPS 从 ~277 → ~2,857（10x）。
+
+#### Phase 2：Group Rename + Directory Fsync
+
+当前每个 writer 独立 `fsync → rename`。改为批量 rename + 一次目录 fsync：
+
+```
+当前:
+  W1: fsync → rename
+  W2: fsync → rename
+  ...
+
+优化后:
+  所有 W: 写入 tmp 文件 → channel
+  flush: 并行 fsync 全部 fd
+  目录 fsync (dir.Sync())       ← 一次
+  并行 rename
+  通知所有 W: done
+```
+
+```go
+type fsyncEntry struct {
+    fd       *os.File
+    tmpPath  string
+    finalPath string
+    dir      *os.File  // parent dir fd
+    doneCh   chan error
+}
+
+func (g *fsyncGroup) flush() {
+    // Phase 1: parallel fsync all data files
+    var eg errgroup.Group
+    eg.SetLimit(g.parallelism)
+    for _, e := range g.batch {
+        e := e
+        eg.Go(func() error { return e.fd.Sync() })
+    }
+    eg.Wait()
+
+    // Phase 2: sync parent directories (deduplicated)
+    dirs := dedupDirs(g.batch)
+    for _, d := range dirs {
+        d.Sync()
+    }
+
+    // Phase 3: parallel rename (atomic, no fsync needed)
+    for _, e := range g.batch {
+        os.Rename(e.tmpPath, e.finalPath)
+        e.doneCh <- nil
+    }
+}
+```
+
+#### Phase 3（可选）：Linux `sync_file_range` 异步 I/O
+
+`sync_file_range()` 允许非阻塞写入，不需要等待磁盘完成：
+
+```go
+//go:build linux
+func syncFileRange(fd uintptr, offset int64, n int64) error {
+    // SYNC_FILE_RANGE_WRITE = 2
+    // 仅提交 dirty pages 到磁盘队列，不等待完成
+    return unix.SyncFileRange(int(fd), offset, n, 2)
+}
+```
+
+与 `f.Sync()` (= `fsync`) 对比：
+
+| 方式 | 行为 | 延迟 | 风险 |
+|------|------|-----|------|
+| `f.Sync()` | 阻塞等待数据落盘 | ~3.5ms | 安全 |
+| `sync_file_range(WRITE)` | 提交到磁盘队列，立即返回 | ~0.1ms | 需要后续 `fdatasync` 确认 |
+| `sync_file_range(WRITE)` + dir sync | 提交 + 目录同步 | ~0.5ms | 崩溃时可能丢失未完成写入 |
+
+> **建议**：Phase 3 暂缓。Phase 1+2 已能获得 10x 并发提升，且保持崩溃安全语义。
+
+### 12.3 配置设计
+
+新增 `lob/config.go` 字段：
+
+```go
+type Config struct {
+    // ... 现有字段 ...
+
+    // FsyncParallelism controls how many concurrent fsync calls are made during flush.
+    // 0 = auto (GOMAXPROCS), 1 = serial (current behavior).
+    // Default: 0 (auto)
+    FsyncParallelism int
+
+    // FsyncGroupRename enables group rename + directory fsync optimization.
+    // When true, renames are batched and preceded by a single directory sync.
+    // Default: true
+    FsyncGroupRename bool
+}
+
+func WithFsyncParallelism(n int) Option { ... }
+func WithFsyncGroupRename(v bool) Option { ... }
+```
+
+默认值：
+
+```go
+FsyncParallelism:  0,      // auto = GOMAXPROCS
+FsyncGroupRename:  true,   // batch rename enabled
+```
+
+### 12.4 实现方案
+
+**修改文件**：`internal/infrastructure/storage/lob/file_store.go`（无需新建文件）
+
+**变更清单**：
+
+| 变更 | 说明 |
+|------|------|
+| `fsyncEntry` 扩展 | 新增 `tmpPath`、`finalPath`、`dir` 字段 |
+| `newFsyncGroup` | 传入 `parallelism` 参数 |
+| `flush()` 重写 | 串行 → 并行 errgroup + 目录 sync + 批量 rename |
+| `Sync()` 签名 | 增加 `tmpPath`/`finalPath` 参数 |
+| `dedupDirs()` | 新增：从 batch 提取唯一目录 fd |
+
+**关键设计决策**：
+
+| 决策 | 方案 | 理由 |
+|------|------|------|
+| 并行策略 | `errgroup` + `SetLimit` | 限制并发数防止 I/O 风暴 |
+| 并行度 | GOMAXPROCS（可配置） | NVMe 支持更高并发，SATA 应设低 |
+| 目录 fsync | 去重后一次 | 同一个目录只 sync 一次 |
+| fast path 保留 | channel 空时直连 | 单线程无开销 |
+| Phase 3 推迟 | 不引入 `sync_file_range` | 崩溃恢复复杂度 vs 收益不成比例 |
+
+### 12.5 Benchmark 预期
+
+| 场景 | 当前 fsyncGroup | Phase 1 (并行) | Phase 1+2 (并行+目录) |
+|------|:------:|:-----:|:------:|
+| 1 并发 128KB 写 | **145 QPS** (fast path) | 145 QPS | 145 QPS |
+| 8 并发 128KB 写 | ~277 QPS (串行 fsync) | **~2,300 QPS** (8x) | **~2,500 QPS** |
+| 16 并发 128KB 写 | ~277 QPS | **~4,600 QPS** (16x) | **~4,800 QPS** |
+| 32 并发 4KB 写 | — | 10M+ QPS (Tier 1) | — (不涉及 fsync) |
+
+> **核心收益**：并发写入 QPS 提升 **8x-15x**，消除串行 fsync 瓶颈。
+
+### 12.6 实施步骤
+
+| Step | 内容 | 行数 | 文件 |
+|------|------|:--:|------|
+| 1 | `fsyncEntry` 扩展字段 + `fsyncGroup` 加 `parallelism` | ~15 | `file_store.go` |
+| 2 | `flush()` 重写：并行 errgroup + 去重目录 sync + 批量 rename | ~40 | `file_store.go` |
+| 3 | `Sync()` 签名调整 + `Create()` 适配新参数 | ~20 | `file_store.go` |
+| 4 | `config.go` 新增 2 个字段 + 2 个 Option | ~15 | `config.go` |
+| 5 | Benchmark 对比 | ~10 | `cmd/tools/btree_bench/main.go` |
+| **合计** | | **~100** | |
+
+
+
+## 十三、关联文档
 
 - [[2026-06-09-lob-scheme-investigation]] — Lealone LOB 方案深度调查  
 - [[2026-06-09-lob-implementation-design]] — LOB 实现详细设计（Ledgers 集成）  

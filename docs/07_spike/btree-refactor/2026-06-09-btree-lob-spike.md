@@ -32,7 +32,7 @@
 |------|:--:|:--:|------|
 | 普通 KV | < 2KB | 99% | BTree 行内存储 |
 | 中等对象 | 2KB ~ 64KB | 0.9% | **Overflow Page**（mmap 溢出页链）✅ |
-| 大对象 (LOB) | 64KB ~ 1MB+ | 0.1% | **LOB File**（独立文件系统存储）✅ |
+| 大对象 (LOB) | 64KB ~ 1MB+ | 0.1% | **LOB File**（独立 .ao 文件存储）✅ |
 
 **两级分层理由**：
 - Overflow Page（mmap 内）：适合中小对象，零系统调用，纳秒级延迟。但占用 mmap 配额，上限受 mmap 大小约束
@@ -83,7 +83,7 @@ Lealone 在 `BTreeStorage` 层实现 LOB——**BTree 感知** LOB 存在：
 │         BTree (index only)              │ ← Key 索引, Split/Merge, CAS 并发
 │         PageManager (storage)           │ ← 页面分配/释放/读写
 │         mmap (offheap)                  │ ← 索引页 + 溢出页物理内存
-│         File System (data/lob/)         │ ← LOB 文件物理存储
+│         File System (data/)         │ ← LOB 文件物理存储
 └─────────────────────────────────────────┘
 ```
 
@@ -290,46 +290,57 @@ OverflowPage 1004:  NextPageID=0     ChunkSize=2928  Data=[12072..14999]
 | **简单 GC** | epoch-based，unlink 即可回收 |
 | **OS page cache** | 利用文件系统缓存，热点 LOB 自动驻留内存 |
 
-### 4.2 存储布局（与 .ao Chunk 文件共存同一目录）
+### 4.2 存储布局（统一 .ao Append-Only 文件体系）
 
-LOB 文件与 BTree 的 `.ao` chunk 文件放在同一个数据目录下，共享目录结构和生命周期管理：
+LOB 文件和 BTree chunk 文件都是 **append-only、不可变**的——语义完全一致。放在同一个 `data/` 目录下，统一命名、统一管理。
 
 ```
-data/                               ← 统一数据根目录 (与 BTree chunk 共享)
-├── btree_0_1.ao                   ← BTree chunk 文件 (append-only)
+data/                                ← 唯一数据目录（无子目录隔离）
+├── btree_0_1.ao                    ← BTree page chunk (append-only)
 ├── btree_0_2.ao
+├── btree_1_1.ao
 ├── ...
-├── lob/                            ← LOB 子目录（与 chunk 平级）
-│   ├── 00/                         ← 目录分片（高 2 字节）
-│   │   ├── 00/                     ← 目录分片（次高 2 字节）
-│   │   │   ├── 0000000000000001.lob  ← LOB 文件（LOBID 为文件名）
-│   │   │   └── ...
-│   │   └── ff/
-│   └── ff/
-│       └── ff/
-│           └── ffffffffffffffff.lob
+├── lob_0000000000000001.ao          ← LOB 文件 (append-only, 同后缀!)
+├── lob_0000000000000002.ao
+├── lob_0000000000000003.ao
+└── ...
 ```
 
-**设计理由**：
+**为什么统一 `.ao` 后缀**：
 
-| 维度 | 说明 |
+| 维度 | BTree chunk | LOB 文件 | 结论 |
+|------|:--:|:--:|------|
+| 写入方式 | append-only | append-only | **完全相同** |
+| 可变性 | 不可变 (COW) | 不可变 (write once) | **完全相同** |
+| GC 策略 | epoch-based 删除 | epoch-based unlink | **完全相同** |
+| 崩溃恢复 | chunk WAL → 重放 | tmp→rename 原子 | 可统一 |
+| 文件后缀 | `.ao` | `.ao` | **统一!** |
+
+**文件命名**：
+
+```
+btree_<chunkID>_<seq>.ao     ← BTree page chunk (已有格式)
+lob_<lobID>.ao               ← LOB 文件 (新增格式)
+lob_tmp_<lobID>.ao           ← LOB 临时文件 (写入中, 崩溃后清理)
+```
+
+**区分方式**：通过 `lob_` 前缀区分 BTree 和 LOB，无需子目录隔离。`RestoreDiskChunkManager` 扫描时跳过 `lob_*` 文件。
+
+**关键收益**：
+
+| 收益 | 说明 |
 |------|------|
-| **统一根目录** | `data/` 是 BTree chunk（`.ao`）+ LOB（`.lob`）的统一根，方便备份/迁移/监控 |
-| **子目录隔离** | LOB 文件在 `data/lob/` 子目录下，`.lob` 和 `.ao` 不混在一起，避免扫描干扰 |
-| **目录分片** | 与之前相同：LOBID 高 4 字节 → 两级目录，每级 65536 个槽位，总计 4G 潜在叶子目录 |
-| **与 chunk 协同** | BTree checkpoint 备份时，`data/lob/` 一起打包；恢复时一起还原 |
-| **CleanupTmp 安全** | 只清理 `.tmp-*` 文件，不会误删 `.ao` chunk 文件 |
+| **单一目录** | 没有 `data/` 子目录，减少 inode 开销和路径拼接 |
+| **统一扫描** | `ls data/*.ao` 看到所有文件，无需遍历子目录 |
+| **统一备份** | `cp data/*.ao /backup/` 一命令搞定 |
+| **去掉分片** | 不需要 65536×65536 二级目录（BTree chunk 不分片，LOB 凭什么分片？） |
+| **去掉 `lob_<id>.ao` 后缀** | 减少代码中的文件格式类型判断 |
 
-**目录分片**：取 LOBID 的高 4 字节，拆为两级目录（每级 2 字节 = 65536 个目录）。
-
-- 第一级：LOBID >> 16 & 0xFFFF（高 2 字节）
-- 第二级：LOBID & 0xFFFF（低 2 字节）
-- 每级 65536 个目录，总计 4G 个潜在叶子目录（实际按需创建）
-- 假设 100 万 LOB，每目录 ~1 个文件——无性能压力
+> **为什么不需要分片**：BTree chunk 已经有 ~256MB/chunk 的粗粒度文件，百万 chunk 也只需平坦目录。LOB 文件同理——ext4/xfs 单目录百万文件不是问题（现代文件系统使用 HTree/B+Tree 目录索引）。
 
 ### 4.3 LOB 文件格式
 
-每个 `.lob` 文件是一个独立的不可变文件：
+每个 `lob_<id>.ao` 文件是一个独立的不可变 append-only 文件：
 
 ```
 ┌──────────────────────────────────────┐
@@ -455,12 +466,12 @@ ValueEncoder.Encode(value):
 
 LOBFileManager.Create(data):
   1. lobID = atomic.AddUint64(&nextLOBID, 1)
-  2. dir = shardDir(lobID)  // data/lob/00/00/
+  2. dir = shardDir(lobID)  // data/00/00/
   3. os.MkdirAll(dir)
   4. tmp = dir + "/.tmp-{lobID}"  // 临时文件
   5. write header + data to tmp
   6. f.Sync()
-  7. os.Rename(tmp, dir + "/{lobID}.lob")  // 原子重命名
+  7. os.Rename(tmp, dir + "/lob_{lobID}.ao")  // 原子重命名, 从 tmp 变为正式 .ao 文件
   8. return LOBFileRef{LOBID: lobID, TotalLen: len(data)}
 ```
 
@@ -792,7 +803,7 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 
 | 项目 | 说明 | 实现 |
 |------|------|------|
-| 空目录清理 | 后台协程定期清除 data/lob/ 下空目录 | ✅ 5min 间隔，自底向上 |
+| 空目录清理 | 后台协程定期清除 data/ 下空目录 | ✅ 5min 间隔，自底向上 |
 | Group commit fsync | 批量 fsync 减少 LOB 写入延迟 | ✅ 1ms 窗口，最大批量 32 |
 | fd 缓存监控 | 缓存命中率指标暴露 | ✅ FDCacheStats + HitRate() |
 | fd cache 并发安全 | 引用计数 + ReadAt 替换 Seek+Read + pendingClose map | ✅ C1+C2 修复 |

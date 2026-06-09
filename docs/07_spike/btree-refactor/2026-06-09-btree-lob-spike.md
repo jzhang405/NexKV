@@ -96,7 +96,7 @@ type LOBManager interface {
     Free(ref LOBRef) error
 
     // Update 更新大对象（释放旧溢出页 + 分配新溢出页）
-    Update(data []byte, oldRef LOBRef) ([]byte, error)
+    Update(data []byte, oldRef LOBRef) (LOBRef, error)
 
     // Size 返回 LOB 引用的字节大小
     Size(ref LOBRef) int64
@@ -160,10 +160,9 @@ LOB value:   [Flag:0x02][prevFlag][prevBeginTS][prevValLen][prevVal][beginTS]
   BTree 叶子页存储: ~31B (MVCC header 20B + lobRefLen 2B + lobRef 8B + beginTS 8B)
 ```
 
-> **注意**：`Flag 0x02` 是新增常量。当前 `ParseMVCC` 显式拒绝所有非 0x00/0x01 的 Flag（`mvcc/codec.go:56`）。实现时需修改 ParseMVCC/BuildMVCC 的 Flag 验证逻辑，允许 0x02/0x03（见 H4）。  
-> Phase 3 版本内嵌复用 `FlagNormal=0x00/FlagTombstone=0x01`，通过 `PrevBeginTS != 0` 区分有无 prev，没有引入新 Flag。  
-> prev 字段正常使用——大 value 的旧版本如果是 LOB，指向旧版溢出页链。
-> **prev LOB 解引用**：`ParseMVCC` 的路径 2（当前版本 BeginTS > snapshotTS）检查 `PrevBeginTS` 时，如果 prev 版本也是 LOB，`MVCCValue.PrevVal` 内容为 LOB 引用字节 `[FirstPageID:4][TotalLen:4]`。上层调用方需检查 prev Flag → 如果是 0x02/0x03 → `LOBManager.Read(prevLOBRef)` 展开完整 prev 值。
+
+> **BuildMVCC 兼容性**：`lobRef = [FirstPageID:4][TotalLen:4]` (8 字节 `[]byte`) 作为现有 `BuildMVCC(flag, ts, realVal, prevFlag, prevBeginTS, prevVal)` 的 `realVal` 参数传入。**无需新增参数**——Flag 0x02 标识 `realVal` 是一份 LOB 引用而非原始 value。`ParseMVCC` 根据 Flag 决定如何解释 `realVal`（普通 value vs LOB 引用）。
+
 
 **`MVCCValue` 扩展**：
 
@@ -181,6 +180,27 @@ type MVCCValue struct {
     PrevBeginTS uint64
     PrevVal     []byte
     LOB *LOBRef // nil for non-LOB values
+}
+```
+
+**ParseMVCC Flag→LOBRef 解析**（`mvcc/codec.go` 中实现）：
+
+```go
+func ParseMVCC(val []byte) (MVCCValue, error) {
+    // ... existing header parsing ...
+
+    if flag == FlagLOBNormal || flag == FlagLOBTombstone {
+        // realVal 内容是 LOB 引用（非原始 value）
+        // 格式: [lobRefLen:2][FirstPageID:4][TotalLen:4]
+        if len(realVal) >= 8 {
+            mv.LOB = &LOBRef{
+                FirstPageID: binary.BigEndian.Uint32(realVal[2:6]),
+                TotalLen:    binary.BigEndian.Uint32(realVal[6:10]),
+            }
+        }
+    }
+
+    return mv, nil
 }
 ```
 
@@ -346,8 +366,9 @@ GC:
 
 ```
 Reader:  无锁读 (mmap sub-slice + epoch 保护)
-Writer:  COW 拷贝 → CAS 替换 → RetireBatch → epoch GC
-GC:      epoch 结束后批量回收 retired 页面
+Writer (BTree value 更新): 分配新页 → 写入数据 → BTree.Set CAS 更新 value ref → RetireBatch
+Writer (LOB 溢出页): 分配新页 → 写入数据 (只追加，无 COW) → CAS 更新的仅是 BTree 叶子页 value
+GC:      epoch 结束后批量回收 retired 页面（BTree 页 + LOB 溢出页，统一回收）
 ```
 
 ---

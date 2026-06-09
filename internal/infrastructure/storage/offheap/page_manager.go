@@ -258,6 +258,130 @@ func (pm *PageManager) GetPageTrackingStats() map[string]any {
 	return pm.tracker.Stats()
 }
 
+// =============================================================================
+// LOB Overflow Page Management (Phase 6)
+// =============================================================================
+
+const (
+	// OverflowPageMetaSize = sizeof(NextPageID:8 + ChunkSize:4 + Reserved:4) = 16.
+	OverflowPageMetaSize = 16
+	// OverflowPageDataSize = PageSize - SizeofPageHeader - OverflowPageMetaSize = 4024.
+	OverflowPageDataSize = PageSize - SizeofPageHeader - OverflowPageMetaSize
+)
+
+// overflowMeta returns pointers to the overflow page metadata fields.
+// The metadata is stored immediately after the PageHeader (56 bytes).
+func overflowMeta(ptr unsafe.Pointer) (nextPageID *uint64, chunkSize *uint32) {
+	metaPtr := unsafe.Add(ptr, SizeofPageHeader)
+	nextPageID = (*uint64)(metaPtr)
+	chunkSize = (*uint32)(unsafe.Add(metaPtr, 8))
+	return
+}
+
+// AllocOverflow allocates a chain of overflow pages and writes data into them.
+// Returns the first page ID in the chain. The chain is linked via NextPageID
+// embedded in each page (immediately after PageHeader). NextPageID=0 marks end.
+//
+// Allocated pages are NOT COW — they are write-once, read-many data pages.
+// Pages flow through the standard allocator and are freed via FreeOverflow or
+// epoch-based GC (RetireOverflowChain).
+func (pm *PageManager) AllocOverflow(data []byte) (firstPageID uint32, err error) {
+	totalLen := len(data)
+	if totalLen == 0 {
+		return 0, nil
+	}
+
+	// Calculate pages needed
+	n := uint32((totalLen + OverflowPageDataSize - 1) / OverflowPageDataSize)
+	var prevPageID uint32
+
+	for i := uint32(0); i < n; i++ {
+		pageID, allocErr := pm.Alloc()
+		if allocErr != nil {
+			// Cleanup pages already allocated on failure
+			if firstPageID != 0 {
+				pm.FreeOverflow(firstPageID)
+			}
+			return 0, allocErr
+		}
+		if i == 0 {
+			firstPageID = pageID
+		}
+
+		// Link previous page to this one
+		if i > 0 {
+			ptr := pm.PageIDToPtr(prevPageID)
+			nextID, _ := overflowMeta(ptr)
+			*nextID = uint64(pageID)
+		}
+
+		// Write data chunk
+		ptr := pm.PageIDToPtr(pageID)
+		chunkStart := int(i) * OverflowPageDataSize
+		chunkEnd := min(chunkStart+OverflowPageDataSize, totalLen)
+		chunk := data[chunkStart:chunkEnd]
+
+		_, cs := overflowMeta(ptr)
+		*cs = uint32(len(chunk))
+
+		dataPtr := unsafe.Add(ptr, SizeofPageHeader+OverflowPageMetaSize)
+		copy(unsafe.Slice((*byte)(dataPtr), len(chunk)), chunk)
+
+		prevPageID = pageID
+	}
+
+	return firstPageID, nil
+}
+
+// FreeOverflow walks an overflow page chain and frees all pages.
+func (pm *PageManager) FreeOverflow(firstPageID uint32) error {
+	if firstPageID == 0 {
+		return nil
+	}
+	pageID := firstPageID
+	for {
+		ptr := pm.PageIDToPtr(pageID)
+		nextID, _ := overflowMeta(ptr)
+		nextPageID := uint32(*nextID)
+
+		if err := pm.Free(pageID); err != nil {
+			return err
+		}
+		if nextPageID == 0 {
+			return nil
+		}
+		pageID = nextPageID
+	}
+}
+
+// ReadOverflow walks an overflow page chain, reads and concatenates data chunks.
+// totalLen specifies expected total bytes (caller determines this from LOBRef.TotalLen).
+func (pm *PageManager) ReadOverflow(firstPageID uint32, totalLen uint32) ([]byte, error) {
+	if totalLen == 0 {
+		return nil, nil
+	}
+
+	result := make([]byte, 0, totalLen)
+	pageID := firstPageID
+	for {
+		ptr := pm.PageIDToPtr(pageID)
+		nextID, chunkSize := overflowMeta(ptr)
+
+		dataPtr := unsafe.Add(ptr, SizeofPageHeader+OverflowPageMetaSize)
+		chunk := make([]byte, *chunkSize)
+		copy(chunk, unsafe.Slice((*byte)(dataPtr), *chunkSize))
+		result = append(result, chunk...)
+
+		nextPageID := uint32(*nextID)
+		if nextPageID == 0 {
+			break
+		}
+		pageID = nextPageID
+	}
+
+	return result, nil
+}
+
 // GetFreeListSize 返回 freeList 的大小（调试用）
 func (pm *PageManager) GetFreeListSize() int {
 	return pm.freeList.Size()

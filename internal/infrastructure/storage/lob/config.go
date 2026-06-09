@@ -42,6 +42,10 @@ type Config struct {
 	// Default: 256
 	FsyncQueueSize int
 
+	// FsyncEnabled controls whether fsync is called during LOB file creation.
+	// Set to false only for benchmarking. Default: true
+	FsyncEnabled bool
+
 	// MaxLOBRetiredLen is the upper bound on pending LOB retire entries in the epoch queue.
 	// When exceeded, a forced tryReclaim is triggered to drain the queue.
 	// Default: 65536
@@ -98,6 +102,11 @@ func WithFsyncMaxBatch(n int) Option {
 // WithFsyncQueueSize sets the fsync entry channel buffer size.
 func WithFsyncQueueSize(n int) Option {
 	return func(c *Config) { c.FsyncQueueSize = n }
+}
+
+// WithFsyncEnabled sets whether fsync is enabled (false = skip for benchmarking).
+func WithFsyncEnabled(v bool) Option {
+	return func(c *Config) { c.FsyncEnabled = v }
 }
 
 // WithMaxLOBRetiredLen sets the pending LOB retire queue limit.

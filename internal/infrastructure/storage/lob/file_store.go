@@ -256,6 +256,7 @@ func (c *lobFDCache) evictTail() {
 // ---------------------------------------------------------------------------
 
 type fsyncGroup struct {
+	enabled  bool // skip fsync when false (benchmark only)
 	entries  chan fsyncEntry
 	interval time.Duration
 	maxBatch int
@@ -272,7 +273,8 @@ type fsyncEntry struct {
 func newFsyncGroup(ctx context.Context, cfg Config) *fsyncGroup {
 	ctx, cancel := context.WithCancel(ctx)
 	g := &fsyncGroup{
-		entries:  make(chan fsyncEntry, cfg.FsyncQueueSize),
+		enabled:  cfg.FsyncEnabled,
+			entries:  make(chan fsyncEntry, cfg.FsyncQueueSize),
 		interval: cfg.FsyncInterval,
 		maxBatch: cfg.FsyncMaxBatch,
 		ctx:      ctx,
@@ -321,11 +323,14 @@ func (g *fsyncGroup) loop() {
 }
 
 func (g *fsyncGroup) Sync(fd *os.File) error {
+	if !g.enabled {
+		return nil // fsync disabled (benchmark mode)
+	}
 	if g.closed.Load() {
 		return fd.Sync()
 	}
 	if len(g.entries) == 0 {
-		return fd.Sync() // fast path: no pending entries, direct fsync
+		return fd.Sync() // fast path: direct fdatasync
 	}
 	doneCh := make(chan error, 1)
 	select {

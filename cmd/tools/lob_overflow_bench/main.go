@@ -27,6 +27,7 @@ func main() {
 	threads := flag.Int("t", 0, "goroutines")
 	lobSize := flag.Int("size", 131072, "LOB size in bytes")
 	flag.BoolVar(&tier2Flag, "tier2", false, "route to Tier 2 (LOB file) instead of Tier 1")
+	noFsync := flag.Bool("no-fsync", false, "skip fsync (benchmark only, UNSAFE)")
 	flag.Parse()
 
 	if *threads <= 0 {
@@ -36,7 +37,7 @@ func main() {
 	if tier2Flag {
 		// 使用默认阈值: 数据走 Tier 2 (LOB file + fsync)
 		mvcc.LOBSizeThreshold = 2048
-		mvcc.LOBFileThreshold = 262144
+		mvcc.LOBFileThreshold = 65536 // force 128KB to Tier 2
 	} else {
 		// 强制走 Tier 1 overflow page (mmap, 无 fsync)
 		mvcc.LOBSizeThreshold = 256 * 1024
@@ -60,7 +61,11 @@ func main() {
 	lobMgr := lob.NewDefaultLOBManager(storage.GetPageManager())
 	var lobFileMgr mvcc.LOBFileManager
 	if tier2Flag {
-		lobFileMgr, err = lob.NewDefaultLOBFileManager("data")
+		var lopts []lob.Option
+		if *noFsync {
+			lopts = append(lopts, lob.WithFsyncEnabled(false))
+		}
+		lobFileMgr, err = lob.NewDefaultLOBFileManager("data", lopts...)
 		if err != nil {
 			panic(err)
 		}

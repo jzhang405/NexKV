@@ -727,10 +727,14 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | 6 | 阈值配置 + benchmark (4KB LOB) | ~130 | `cmd/tools/btree-txn-bench` | ✅ |
 | **Tier 1 合计** | | **~400** | |
 
-### 待实现：RetireOverflowChain GC 集成
+### ✅ epoch-GC 已实现
 
-当前事务 Delete 路径将 LOB ref 写入 Tombstone，但 **epoch GC 回调尚未实现**——旧 LOB 溢出页不会自动回收。
-需新增 Step 6.5：`RetireOverflowChain` 在 epoch 推进后批量 free 溢出页链。
+- `EpochManager.RetireLobChain(firstPageID)` / `RetireLobFile(lobID)` 延迟回收
+- `SetLOBFreeFns` 连接 EpochManager → LOB 管理器
+- `commitKey` 优先使用 epoch-GC，fallback 立即释放
+- `drainLOBRetired` 在 `tryReclaim` 后处理安全 epoch 的资源
+- fd 缓存 LRU 64 条目，热点 LOB 避免重复 open
+- `CleanupTmp` 启动时清理崩溃遗留 .tmp 文件
 
 ### Tier 2 — LOB File 实施状态：✅ Step 7-10 完成（2026-06-09）
 
@@ -741,10 +745,18 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | 9 | LOB 文件存储引擎：目录分片 + tmp→rename + mmap/pread | ~180 | `storage/lob/file_store.go` (新) | ✅ |
 | 10 | ValueEncoder 两级路由 + DecodeValue 两级展开 | ~60 | `mvcc/lob.go` | ✅ |
 | 11 | LOBFileManager 注入 TxManager + SnapshotTx + BTree | ~30 | `mvcc/transaction.go`, `btree/options.go`, `btree/btree.go` | ✅ |
-| 12 | Epoch GC 集成：RetireLOB 批量 unlink | ~40 | `storage/btree/epoch*.go` | 📐 |
+| 12 | Epoch GC 集成：RetireLobChain/File + fd缓存 + CleanupTmp | ~80 | `storage/btree/epoch.go` | ✅ |
 | 13 | Benchmark：128KB LOB 文件读写 | ~30 | `cmd/tools/btree_bench` | ✅ |
 | **Tier 2 已实现** | | **~375** | |
-| **总合计** | | **~775** | |
+| **已实现** | | **~775** | |
+
+### 待优化（P2）
+
+| 项目 | 说明 |
+|------|------|
+| 空目录清理 | 后台协程定期清除 data/lob/ 下空目录 |
+| Group commit fsync | 批量 fsync 减少 LOB 写入延迟（当前单条 6ms）|
+| fd 缓存监控 | 缓存命中率指标暴露
 
 ### 实施细节
 

@@ -274,7 +274,7 @@ func newFsyncGroup(ctx context.Context, cfg Config) *fsyncGroup {
 	ctx, cancel := context.WithCancel(ctx)
 	g := &fsyncGroup{
 		enabled:  cfg.FsyncEnabled,
-			entries:  make(chan fsyncEntry, cfg.FsyncQueueSize),
+		entries:  make(chan fsyncEntry, cfg.FsyncQueueSize),
 		interval: cfg.FsyncInterval,
 		maxBatch: cfg.FsyncMaxBatch,
 		ctx:      ctx,

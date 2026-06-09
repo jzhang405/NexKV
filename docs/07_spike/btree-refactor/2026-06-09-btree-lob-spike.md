@@ -107,36 +107,15 @@ type LOBManager interface {
 
 ## 三、存储格式
 
-### 3.1 页面头部格式（统一 Page Header）[新设计, 待实现]
+### 3.1 页面头部格式（复用现有 PageHeader）
 
-当前 `page_layout.go` 的 PageHeader 不包含 Magic/Checksum/PageType/ParentID/LSN 字段。
-需要新增/修改的字段：
+LOB 溢出页**不引入新 PageHeader 格式**——复用现有 56 字节 PageHeader（`page_layout.go`）。
 
-| 操作 | 字段 | 说明 |
-|:--:|------|------|
-| **新增** | Magic(4B) | 固定魔数 `0x4E45584B`，页面完整性校验 |
-| **新增** | Checksum(2B) | 头部 CRC16，检测 mmap 数据损坏 |
-| **修改** | pageType(1B) | 现有 0=Leaf/1=Node，**新增 2=Overflow** |
-| **新增** | ParentID(8B) | 父页面 ID，溢出页=0 |
-| **新增** | LSN(8B) | WAL 日志序列号，溢出页可复用为 lastModifiedTS |
+唯一变更：`pageType` 字段新增 `PageTypeOverflow = 2`（现有 0=Index/1=Leaf）。
 
-需要重新排列或移除的现有字段：`prevPage`/`nextPage`（溢出页不用双向链表）→ 重新映射为 NextPageID（溢出页metadata区）。注意总 size 必须保持 56 字节对齐（Go unsafe.Sizeof 兼容性）。
+溢出页的 NextPageID/ChunkSize/Checksum 存储于 metadata 区（Header 之后），不修改 PageHeader 结构体。
 
-合并后的目标格式（56 字节）：
-
-| 偏移 | 大小 | 字段 | 说明 |
-|------|------|------|------|
-| 0 | 4 | Magic | 魔数 `0x4E45584B`（NEXK） |
-| 4 | 1 | PageType | 0=Leaf, 1=Node, **2=Overflow** |
-| 5 | 1 | Reserved | 保留 |
-| 6 | 2 | Checksum | 头部校验和 |
-| 8 | 8 | Version | MVCC 版本号 |
-| 16 | 8 | PageID | 页面唯一标识 |
-| 24 | 8 | ParentID | 父页面 ID（0=根） |
-| 32 | 4 | Count | 当前条目数 |
-| 36 | 4 | Flags | 状态标志位 |
-| 40 | 4 | TombstoneCount | 墓碑条目计数 |
-| 44 | 12 | Padding | 对齐填充 |
+> **向前兼容**：BTree 叶子页/索引页的 PageHeader 格式不变。Checkpoint/WAL Recovery/Compaction 代码不受影响。
 
 ### 3.2 MVCC LOB 编码
 
@@ -183,6 +162,11 @@ type MVCCValue struct {
 }
 ```
 
+> **RealVal 语义说明**：
+> - `FlagNormal/Tombstone`: `RealVal` = 用户原始 value（mmap sub-slice）
+> - `FlagLOBNormal/LOBTombstone`: `RealVal` = LOB 引用字节 `[lobRefLen:2][FirstPageID:4][TotalLen:4]`（8-10 bytes）
+> - 调用方**不可**直接用 `mv.RealVal` 作为返回值——必须先检查 `mv.Flag & 0x02` 然后 `LOBManager.Read(mv.LOB)` 展开。推荐封装 `ValueEncoder.Decode(mv)` 统一处理。
+
 **ParseMVCC Flag→LOBRef 解析**（`mvcc/codec.go` 中实现）：
 
 ```go
@@ -212,7 +196,7 @@ Overflow Page (4KB):
 
   NextPageID: uint64, 0 = 链尾
   ChunkSize:  uint32, 本页实际数据大小（≤4024）
-  Checksum:   uint32, 数据校验和（CRC32）
+  Checksum:   uint32, 数据校验和（CRC32C，4 bytes）
 ```
 
 **完整 LOB 链式存储示例（15KB value）**：
@@ -247,7 +231,7 @@ OverflowPage 1004:  NextPageID=0     ChunkSize=2928  Data=[12072..14999]
 ```
 Ledgers.Put(key, largeValue):
   1. ValueEncoder.Encode:
-     a. if leaf.IsFull(len(key), len(value)): // 动态判断，非硬编码阈值
+     a. if len(value) > LOBSizeThreshold: // 固定阈值 2KB, ValueEncoder 层判断
         → LOBManager.Allocate(value)
            → PageManager.AllocOverflow(size)
               → 计算 N = ceil(size / 4024)
@@ -351,6 +335,27 @@ GC:
   EpochManager 周期性 tryReclaim → 批量回收 retired 页面
   LOB 溢出页与 BTree 叶子页/索引页共用同一回收周期
 ```
+
+#### RetireOverflowChain — 链式 LOB 页面批量回收
+
+`EpochManager.RetireBatch` 接受 `...PageID` 列表，不理解链结构。需新增方法：
+
+```go
+// RetireOverflowChain 遍历 LOB 溢出页链，将所有页面推入 epoch 回收队列。
+func (pm *PageManager) RetireOverflowChain(firstPageID uint32) {
+    for pageID := firstPageID; pageID != 0; {
+        // 读取本页 NextPageID（必须在 Free 之前读取）
+        ptr := pm.PageIDToPtr(pageID)
+        offset := SizeofPageHeader // skip 56B header
+        nextPageID := *(*uint32)(unsafe.Add(ptr, offset))
+        // 推入 epoch 队列（与 BTree 页面统一回收）
+        pm.epochMgr.RetireBatch(epochSlot, model.PageID(pageID))
+        pageID = nextPageID
+    }
+}
+```
+
+> 事务 Delete 路径中，旧 LOB 链通过 `RetireOverflowChain` 推入 epoch 队列，与 BTree 页面的 COW 旧页共用同一回收周期。
 
 ### 5.2 LOB 页面生命周期
 

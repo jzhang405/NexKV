@@ -26,8 +26,6 @@ type LOBManager interface {
 	Allocate(data []byte) (LOBRef, error)
 	Read(ref LOBRef) ([]byte, error)
 	Free(ref LOBRef) error
-	Update(data []byte, oldRef LOBRef) (LOBRef, error)
-	Size(ref LOBRef) int64
 }
 
 // ---------------------------------------------------------------------------
@@ -46,12 +44,6 @@ type LOBFileManager interface {
 
 	// Delete unlinks a LOB file. Called after epoch GC confirms no readers.
 	Delete(ref LOBFileRef) error
-
-	// Retire unlinks retired LOB files in batch after epoch advances.
-	Retire(lobIDs []uint64) error
-
-	// Size returns the total byte size of a LOB file reference.
-	Size(ref LOBFileRef) int64
 }
 
 // =============================================================================
@@ -84,10 +76,10 @@ func EncodeDeleteValue(beginTS uint64, oldFlag byte, oldBeginTS uint64, oldVal [
 	flag := FlagTombstone
 	newVal := []byte(nil)
 	switch oldFlag {
-	case FlagLOBNormal, FlagLOBTombstone:
+	case FlagLOBNormal, FlagLOBTombstone: // IsLOBFlag
 		flag = FlagLOBTombstone
 		newVal = oldVal // preserve LOB ref for GC
-	case FlagLOBFile, FlagLOBFileTombstone:
+	case FlagLOBFile, FlagLOBFileTombstone: // IsLOBFileFlag
 		flag = FlagLOBFileTombstone
 		newVal = oldVal // preserve LOB file ref for GC
 	}

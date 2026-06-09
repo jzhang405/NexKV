@@ -44,16 +44,3 @@ func (m *DefaultLOBManager) Read(ref mvcc.LOBRef) ([]byte, error) {
 func (m *DefaultLOBManager) Free(ref mvcc.LOBRef) error {
 	return m.pm.FreeOverflow(ref.FirstPageID)
 }
-
-// Update replaces old LOB data with new data.
-func (m *DefaultLOBManager) Update(data []byte, oldRef mvcc.LOBRef) (mvcc.LOBRef, error) {
-	if err := m.pm.FreeOverflow(oldRef.FirstPageID); err != nil {
-		return mvcc.LOBRef{}, err
-	}
-	return m.Allocate(data)
-}
-
-// Size returns the total byte size of a LOB reference.
-func (m *DefaultLOBManager) Size(ref mvcc.LOBRef) int64 {
-	return int64(ref.TotalLen)
-}

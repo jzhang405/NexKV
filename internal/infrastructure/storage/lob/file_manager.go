@@ -53,13 +53,3 @@ func (m *DefaultLOBFileManager) Read(ref mvcc.LOBFileRef) ([]byte, error) {
 func (m *DefaultLOBFileManager) Delete(ref mvcc.LOBFileRef) error {
 	return m.store.Delete(ref)
 }
-
-// Retire unlinks retired LOB files in batch.
-func (m *DefaultLOBFileManager) Retire(lobIDs []uint64) error {
-	return m.store.Retire(lobIDs)
-}
-
-// Size returns the total byte size of a LOB file reference.
-func (m *DefaultLOBFileManager) Size(ref mvcc.LOBFileRef) int64 {
-	return int64(ref.TotalLen)
-}

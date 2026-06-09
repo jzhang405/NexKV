@@ -63,6 +63,23 @@ func IsTombstoneFlag(flag byte) bool {
 	return flag&0x01 == FlagTombstone
 }
 
+// IsLOBFlag returns true if the flag represents a Tier 1 LOB (normal or tombstone).
+func IsLOBFlag(flag byte) bool {
+	return flag == FlagLOBNormal || flag == FlagLOBTombstone
+}
+
+// IsLOBFileFlag returns true if the flag represents a Tier 2 LOB file (normal or tombstone).
+func IsLOBFileFlag(flag byte) bool {
+	return flag == FlagLOBFile || flag == FlagLOBFileTombstone
+}
+
+// isValidFlag checks whether a flag byte is one of the defined MVCC flag constants.
+func isValidFlag(flag byte) bool {
+	return flag == FlagNormal || flag == FlagTombstone ||
+		flag == FlagLOBNormal || flag == FlagLOBTombstone ||
+		flag == FlagLOBFile || flag == FlagLOBFileTombstone
+}
+
 // ParseMVCC decodes the version-inline MVCC format:
 //
 //	[Flag:1][prevFlag:1][prevBeginTS:8][prevValLen:2][prevVal:N][beginTS:8][realVal:M]
@@ -78,9 +95,7 @@ func ParseMVCC(val []byte) (MVCCValue, error) {
 	}
 
 	flag := val[0]
-	if flag != FlagNormal && flag != FlagTombstone &&
-		flag != FlagLOBNormal && flag != FlagLOBTombstone &&
-		flag != FlagLOBFile && flag != FlagLOBFileTombstone {
+	if !isValidFlag(flag) {
 		return MVCCValue{}, errpkg.Wrap(ErrInvalidFlag, fmt.Sprintf("0x%02X", flag))
 	}
 
@@ -147,9 +162,7 @@ func ParseMVCC(val []byte) (MVCCValue, error) {
 // This preserves LOB Tier 1/2 information for prev version expansion.
 // For Insert (no previous version): pass prevFlag=0, prevBeginTS=0, prevVal=nil.
 func BuildMVCC(flag byte, beginTS uint64, realVal []byte, prevFlag byte, prevBeginTS uint64, prevVal []byte) ([]byte, error) {
-	if flag != FlagNormal && flag != FlagTombstone &&
-		flag != FlagLOBNormal && flag != FlagLOBTombstone &&
-		flag != FlagLOBFile && flag != FlagLOBFileTombstone {
+	if !isValidFlag(flag) {
 		return nil, errpkg.Wrap(ErrInvalidFlag, fmt.Sprintf("0x%02X", flag))
 	}
 	if beginTS == 0 {

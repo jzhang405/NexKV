@@ -6,6 +6,7 @@ package lob
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -29,10 +30,11 @@ const (
 
 // lobFDCacheEntry is a cached open file descriptor for a LOB file.
 type lobFDCacheEntry struct {
-	f     *os.File
-	lobID uint64
-	prev  *lobFDCacheEntry
-	next  *lobFDCacheEntry
+	f        *os.File
+	lobID    uint64
+	refCount int // active borrowers — fd closed only when evicted with refCount == 0
+	prev     *lobFDCacheEntry
+	next     *lobFDCacheEntry
 }
 
 // FDCacheStats holds fd cache hit/miss counters.
@@ -51,25 +53,36 @@ func (s FDCacheStats) HitRate() float64 {
 	return float64(s.Hits) / float64(total)
 }
 
-// lobFDCache is a bounded LRU cache of open LOB file descriptors.
+// lobFDCache is a bounded LRU cache of open LOB file descriptors with reference counting.
 // Avoids repeated open/close for frequently accessed LOBs.
+//
+// Protocol:
+//   - get(id) → fd, refCount++; caller MUST call release(id) when done
+//   - release(id) → refCount--; if entry pending removal and refCount==0, close fd
+//   - add(id, fd) → insert new entry
+//   - remove(id) → unlink from LRU; if refCount==0 close immediately, else defer to release
 type lobFDCache struct {
-	mu       sync.Mutex
-	capacity int
-	entries  map[uint64]*lobFDCacheEntry
-	head     *lobFDCacheEntry // most recently used
-	tail     *lobFDCacheEntry // least recently used
-	hits     uint64
-	misses   uint64
+	mu           sync.Mutex
+	capacity     int
+	entries      map[uint64]*lobFDCacheEntry
+	pendingClose map[uint64]*lobFDCacheEntry // entries removed from LRU but still borrowed
+	head         *lobFDCacheEntry            // most recently used
+	tail         *lobFDCacheEntry            // least recently used
+	hits         uint64
+	misses       uint64
 }
 
 func newLobFDCache(capacity int) *lobFDCache {
 	return &lobFDCache{
-		capacity: capacity,
-		entries:  make(map[uint64]*lobFDCacheEntry, capacity),
+		capacity:     capacity,
+		entries:      make(map[uint64]*lobFDCacheEntry, capacity),
+		pendingClose: make(map[uint64]*lobFDCacheEntry),
 	}
 }
 
+// get returns a cached fd and increments its reference count.
+// Caller MUST call release(lobID) when done with the fd.
+// Returns nil if not cached.
 func (c *lobFDCache) get(lobID uint64) *os.File {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -79,8 +92,35 @@ func (c *lobFDCache) get(lobID uint64) *os.File {
 		return nil
 	}
 	c.hits++
+	e.refCount++
 	c.moveToHead(e)
 	return e.f
+}
+
+// release decrements the reference count for a previously get'd fd.
+// If the entry was removed from LRU (pending close), closes the fd when refCount reaches 0.
+func (c *lobFDCache) release(lobID uint64) {
+	c.mu.Lock()
+	e, ok := c.entries[lobID]
+	if ok {
+		e.refCount--
+		c.mu.Unlock()
+		return
+	}
+	// Not in entries — check pendingClose
+	e, ok = c.pendingClose[lobID]
+	if !ok {
+		c.mu.Unlock()
+		return
+	}
+	e.refCount--
+	if e.refCount <= 0 {
+		delete(c.pendingClose, lobID)
+		c.mu.Unlock()
+		e.f.Close()
+		return
+	}
+	c.mu.Unlock()
 }
 
 // Stats returns cache hit/miss counters and current size.
@@ -94,7 +134,8 @@ func (c *lobFDCache) stats() FDCacheStats {
 	}
 }
 
-func (c *lobFDCache) put(lobID uint64, f *os.File) {
+// add inserts a new fd into the cache for the given lobID.
+func (c *lobFDCache) add(lobID uint64, f *os.File) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e, ok := c.entries[lobID]; ok {
@@ -110,13 +151,24 @@ func (c *lobFDCache) put(lobID uint64, f *os.File) {
 	}
 }
 
+// remove unlinks a fd from the cache.
+// If refCount > 0 (active borrowers), defers close to release(); otherwise closes immediately.
 func (c *lobFDCache) remove(lobID uint64) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if e, ok := c.entries[lobID]; ok {
-		c.unlink(e)
+	e, ok := c.entries[lobID]
+	if !ok {
+		c.mu.Unlock()
+		return
+	}
+	c.unlink(e)
+	delete(c.entries, lobID)
+	if e.refCount > 0 {
+		// Active borrowers — defer close until last release()
+		c.pendingClose[lobID] = e
+		c.mu.Unlock()
+	} else {
+		c.mu.Unlock()
 		e.f.Close()
-		delete(c.entries, lobID)
 	}
 }
 
@@ -126,7 +178,11 @@ func (c *lobFDCache) closeAll() {
 	for _, e := range c.entries {
 		e.f.Close()
 	}
+	for _, e := range c.pendingClose {
+		e.f.Close()
+	}
 	c.entries = make(map[uint64]*lobFDCacheEntry)
+	c.pendingClose = make(map[uint64]*lobFDCacheEntry)
 	c.head = nil
 	c.tail = nil
 }
@@ -174,8 +230,12 @@ func (c *lobFDCache) evictTail() {
 	}
 	e := c.tail
 	c.unlink(e)
-	e.f.Close()
 	delete(c.entries, e.lobID)
+	if e.refCount > 0 {
+		c.pendingClose[e.lobID] = e
+	} else {
+		e.f.Close()
+	}
 }
 
 const lobFDCacheCapacity = 64
@@ -218,7 +278,6 @@ func (g *fsyncGroup) loop() {
 		if len(batch) == 0 {
 			return
 		}
-		// fsync all fds in the batch
 		for _, e := range batch {
 			e.doneCh <- e.fd.Sync()
 		}
@@ -242,9 +301,6 @@ func (g *fsyncGroup) loop() {
 					batch = append(batch, e)
 				default:
 					flush()
-					for _, e := range batch {
-						e.doneCh <- e.fd.Sync()
-					}
 					return
 				}
 			}
@@ -296,12 +352,18 @@ func newLOBFileStore(rootDir string) (*lobFileStore, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &lobFileStore{
-		rootDir: rootDir,
-		fdCache: newLobFDCache(lobFDCacheCapacity),
+		rootDir:       rootDir,
+		fdCache:       newLobFDCache(lobFDCacheCapacity),
+		cleanupCtx:    ctx,
+		cleanupCancel: cancel,
+		fsync:         newFsyncGroup(ctx),
 	}
-	s.cleanupCtx = ctx
-	s.cleanupCancel = cancel
-	s.fsync = newFsyncGroup(ctx)
+	// Initialize nextLOBID with random high 32 bits to avoid ID collisions after restart.
+	// Low 32 bits start from 0 for monotonic increment within the session.
+	var randBuf [4]byte
+	if _, err := rand.Read(randBuf[:]); err == nil {
+		s.nextLOBID.Store(uint64(binary.BigEndian.Uint32(randBuf[:]))<<32 | 1)
+	}
 	s.startEmptyDirCleaner(5 * time.Minute) // auto-start background cleaner
 	return s, nil
 }
@@ -332,7 +394,6 @@ func (s *lobFileStore) stopEmptyDirCleaner() {
 // leaf directories (the shard level 2 directories that contain individual .lob files).
 // Does NOT remove shard level 1 directories or the root.
 func (s *lobFileStore) cleanEmptyDirs() {
-	// Collect empty dirs first, then remove bottom-up
 	var emptyDirs []string
 	filepath.Walk(s.rootDir, func(p string, info os.FileInfo, err error) error {
 		if err != nil || !info.IsDir() || p == s.rootDir {
@@ -349,19 +410,15 @@ func (s *lobFileStore) cleanEmptyDirs() {
 				break
 			}
 		}
-		// Only remove leaf directories (no subdirectories)
 		if !hasSubdirs && len(entries) == 0 {
 			emptyDirs = append(emptyDirs, p)
 		}
 		return nil
 	})
 
-	// Remove empty dirs (reverse order for bottom-up)
 	for i := len(emptyDirs) - 1; i >= 0; i-- {
 		_ = os.Remove(emptyDirs[i])
 	}
-	// Then try to remove parent dirs that may have become empty
-	// (the shard level 1 dirs: data/lob/00000/)
 	for i := len(emptyDirs) - 1; i >= 0; i-- {
 		parent := filepath.Dir(emptyDirs[i])
 		if parent == s.rootDir {
@@ -382,26 +439,21 @@ func (s *lobFileStore) Close() {
 }
 
 // shardDir returns the sharded directory path for a LOB ID.
-// Uses the high 4 bytes: first 2 bytes = top-level, next 2 bytes = sub-level.
-// 65536 × 65536 = 4G potential leaf directories (created on demand).
 func (s *lobFileStore) shardDir(lobID uint64) string {
-	hi := uint32(lobID >> 16) // high 2 bytes
-	lo := uint32(lobID)       // low 2 bytes
+	hi := uint32(lobID >> 16)
+	lo := uint32(lobID)
 	return filepath.Join(s.rootDir, fmt.Sprintf("%05d", hi), fmt.Sprintf("%05d", lo))
 }
 
-// lobPath returns the full path to a LOB file.
 func (s *lobFileStore) lobPath(lobID uint64) string {
 	return filepath.Join(s.shardDir(lobID), fmt.Sprintf("%020d.lob", lobID))
 }
 
-// tmpPath returns the temporary path for atomic write.
 func (s *lobFileStore) tmpPath(lobID uint64) string {
 	return filepath.Join(s.shardDir(lobID), fmt.Sprintf(".tmp-%020d", lobID))
 }
 
 // Create writes data to a new LOB file atomically.
-// Steps: allocate lobID → mkdir shard dir → write to tmp → fsync → rename → return ref.
 func (s *lobFileStore) Create(data []byte) (mvcc.LOBFileRef, error) {
 	lobID := s.nextLOBID.Add(1)
 
@@ -416,29 +468,22 @@ func (s *lobFileStore) Create(data []byte) (mvcc.LOBFileRef, error) {
 		return mvcc.LOBFileRef{}, fmt.Errorf("lob: create tmp %s: %w", tmpPath, err)
 	}
 
-	// Write header
 	header := make([]byte, lobFileHeaderSize)
 	copy(header[0:4], lobMagic)
 	binary.BigEndian.PutUint16(header[4:6], lobVersion1)
-	// Flags: 0 (not deleted)
 	binary.BigEndian.PutUint64(header[8:16], lobID)
 	binary.BigEndian.PutUint64(header[16:24], uint64(len(data)))
-	// DataCRC at offset 24:4 — zero for now, computed on read
 
 	if _, err := f.Write(header); err != nil {
 		f.Close()
 		os.Remove(tmpPath)
 		return mvcc.LOBFileRef{}, fmt.Errorf("lob: write header: %w", err)
 	}
-
-	// Write data
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		os.Remove(tmpPath)
 		return mvcc.LOBFileRef{}, fmt.Errorf("lob: write data: %w", err)
 	}
-
-	// Group-commit fsync — batched for low-latency writes
 	if err := s.fsync.Sync(f); err != nil {
 		f.Close()
 		os.Remove(tmpPath)
@@ -446,7 +491,6 @@ func (s *lobFileStore) Create(data []byte) (mvcc.LOBFileRef, error) {
 	}
 	f.Close()
 
-	// Atomic rename
 	finalPath := s.lobPath(lobID)
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		os.Remove(tmpPath)
@@ -457,12 +501,12 @@ func (s *lobFileStore) Create(data []byte) (mvcc.LOBFileRef, error) {
 }
 
 // Read reads the full data of a LOB file.
-// Uses fd cache for hot LOBs, mmap for files > 64KB, pread for smaller.
+// Uses fd cache for hot LOBs, mmap for files > 64KB, ReadAt for smaller.
 func (s *lobFileStore) Read(ref mvcc.LOBFileRef) ([]byte, error) {
-	// Try fd cache first
+	// Try fd cache first (increments refCount on hit)
 	f := s.fdCache.get(ref.LOBID)
-	fresh := f == nil
-	if fresh {
+	cached := f != nil
+	if !cached {
 		var err error
 		f, err = os.Open(s.lobPath(ref.LOBID))
 		if err != nil {
@@ -471,34 +515,53 @@ func (s *lobFileStore) Read(ref mvcc.LOBFileRef) ([]byte, error) {
 			}
 			return nil, fmt.Errorf("lob: open %d: %w", ref.LOBID, err)
 		}
-	} else {
-		// Cached fd — seek to 0 (previous read may have advanced pos)
-		f.Seek(0, 0)
 	}
 
-	// Validate header
+	// Always use ReadAt — stateless, no Seek position, safe on shared cached fds
 	header := make([]byte, lobFileHeaderSize)
-	if _, err := f.Read(header); err != nil {
+	if _, err := f.ReadAt(header, 0); err != nil {
+		if !cached {
+			f.Close()
+		} else {
+			s.fdCache.release(ref.LOBID)
+		}
 		return nil, fmt.Errorf("lob: read header %d: %w", ref.LOBID, err)
 	}
 	if string(header[0:4]) != lobMagic {
+		if !cached {
+			f.Close()
+		} else {
+			s.fdCache.release(ref.LOBID)
+		}
 		return nil, fmt.Errorf("lob: bad magic in %d", ref.LOBID)
 	}
 	storedID := binary.BigEndian.Uint64(header[8:16])
 	if storedID != ref.LOBID {
+		if !cached {
+			f.Close()
+		} else {
+			s.fdCache.release(ref.LOBID)
+		}
 		return nil, fmt.Errorf("lob: LOBID mismatch: expected %d, got %d", ref.LOBID, storedID)
 	}
 	flags := binary.BigEndian.Uint16(header[6:8])
 	if flags&lobFlagDeleted != 0 {
+		if !cached {
+			f.Close()
+		} else {
+			s.fdCache.release(ref.LOBID)
+		}
 		return nil, fmt.Errorf("lob: %d is deleted (tombstone)", ref.LOBID)
 	}
 
 	dataLen := binary.BigEndian.Uint64(header[16:24])
 	if dataLen == 0 {
+		if cached {
+			s.fdCache.release(ref.LOBID)
+		}
 		return nil, nil
 	}
 
-	// Read data region
 	var (
 		data  []byte
 		rdErr error
@@ -509,14 +572,20 @@ func (s *lobFileStore) Read(ref mvcc.LOBFileRef) ([]byte, error) {
 		data = make([]byte, dataLen)
 		_, rdErr = f.ReadAt(data, lobFileHeaderSize)
 	}
+
 	if rdErr != nil {
-		if fresh {
+		if !cached {
 			f.Close()
+		} else {
+			s.fdCache.release(ref.LOBID)
 		}
 		return nil, fmt.Errorf("lob: read data: %w", rdErr)
 	}
-	if fresh {
-		s.fdCache.put(ref.LOBID, f) // cache for next read
+
+	if cached {
+		s.fdCache.release(ref.LOBID)
+	} else {
+		s.fdCache.add(ref.LOBID, f) // cache for next read
 	}
 	return data, nil
 }
@@ -525,25 +594,21 @@ func (s *lobFileStore) Read(ref mvcc.LOBFileRef) ([]byte, error) {
 const LOBFileMMapThreshold = 65536
 
 // mmapRead reads the data region of a LOB file using mmap (with page-aligned offset).
-// Falls back to pread if mmap fails (e.g., offset not page-aligned on some platforms).
+// Falls back to ReadAt if mmap fails.
 func (s *lobFileStore) mmapRead(f *os.File, offset, length int64) ([]byte, error) {
-	// mmap requires page-aligned offset — map from 0 and slice
 	pageSize := int64(os.Getpagesize())
 	mmapLen := offset + length
-	// Round up to page boundary
 	if remainder := mmapLen % pageSize; remainder != 0 {
 		mmapLen += pageSize - remainder
 	}
 
 	data, err := unix.Mmap(int(f.Fd()), 0, int(mmapLen), unix.PROT_READ, unix.MAP_SHARED)
 	if err != nil {
-		// Fallback to pread
-		f.Seek(offset, 0)
+		// Fallback to ReadAt — safe on shared fds (no Seek needed)
 		buf := make([]byte, length)
-		_, readErr := f.Read(buf)
+		_, readErr := f.ReadAt(buf, offset)
 		return buf, readErr
 	}
-	// Copy data region to Go heap and munmap
 	result := make([]byte, length)
 	copy(result, data[offset:offset+length])
 	unix.Munmap(data)
@@ -560,34 +625,25 @@ func (s *lobFileStore) Delete(ref mvcc.LOBFileRef) error {
 	return nil
 }
 
-// Retire unlinks multiple LOB files in batch.
-func (s *lobFileStore) Retire(lobIDs []uint64) error {
-	var firstErr error
-	for _, id := range lobIDs {
-		path := s.lobPath(id)
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	return firstErr
-}
-
 // CleanupTmp removes leftover .tmp-* files from crashes.
 // Call at startup to clean up any abandoned tmp files.
 func (s *lobFileStore) CleanupTmp() error {
 	var count int
 	err := filepath.Walk(s.rootDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil // skip inaccessible
+			return nil
 		}
-		if !info.IsDir() && filepath.Base(path)[:5] == ".tmp-" {
-			if err := os.Remove(path); err == nil {
+		if info.IsDir() {
+			return nil
+		}
+		base := filepath.Base(path)
+		if len(base) >= 5 && base[:5] == ".tmp-" {
+			if rmErr := os.Remove(path); rmErr == nil {
 				count++
 			}
 		}
 		return nil
 	})
+	_ = count // used for logging if needed
 	return err
 }

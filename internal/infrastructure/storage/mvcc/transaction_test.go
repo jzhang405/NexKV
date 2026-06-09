@@ -436,7 +436,7 @@ func TestTxManager_SetWAL(t *testing.T) {
 	manager.SetWAL(nil)
 }
 
-func TestSnapshotTx_CommitAndWait(t *testing.T) {
+func TestSnapshotTx_CommitSync(t *testing.T) {
 	store := newMockStorage()
 	tm := NewTxManager(store, NewLocalTS())
 	tx, err := tm.BeginTx(context.Background(), SnapshotIsolation)
@@ -446,9 +446,8 @@ func TestSnapshotTx_CommitAndWait(t *testing.T) {
 	if err := tx.Put([]byte("k"), []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	// CommitAndWait delegates to Commit in sync mode
-	stx := tx.(*SnapshotTx)
-	if err := stx.CommitAndWait(context.Background()); err != nil {
+	// Commit applies synchronously in default mode
+	if err := tx.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	// Key should be visible
@@ -457,7 +456,7 @@ func TestSnapshotTx_CommitAndWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	if val == nil {
-		t.Error("CommitAndWait should persist data")
+		t.Error("Commit should persist data")
 	}
 }
 

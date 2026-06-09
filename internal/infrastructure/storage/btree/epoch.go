@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	epochInit      = 1
-	maxReaderSlots = 64
-	ringSize       = 16384 // per-slot ring buffer capacity (~256KB)
+	epochInit        = 1
+	maxReaderSlots   = 64
+	ringSize         = 16384 // per-slot ring buffer capacity (~256KB)
+	maxLobRetiredLen = 65536 // upper bound on pending LOB retire entries
 )
 
 // EpochManager provides epoch-based safe page reclamation for COW old pages.
@@ -236,6 +237,12 @@ func (em *EpochManager) RetireLobChain(firstPageID uint32) {
 	}
 	epoch := em.globalEpoch.Load()
 	em.lobMu.Lock()
+	if len(em.lobRetired) >= maxLobRetiredLen {
+		// Overflow: force immediate reclaim to unblock
+		em.lobMu.Unlock()
+		em.tryReclaim()
+		em.lobMu.Lock()
+	}
 	em.lobRetired = append(em.lobRetired, lobRetiredEntry{
 		firstPageID: firstPageID,
 		epoch:       epoch,
@@ -251,6 +258,11 @@ func (em *EpochManager) RetireLobFile(lobID uint64) {
 	}
 	epoch := em.globalEpoch.Load()
 	em.lobMu.Lock()
+	if len(em.lobRetired) >= maxLobRetiredLen {
+		em.lobMu.Unlock()
+		em.tryReclaim()
+		em.lobMu.Lock()
+	}
 	em.lobRetired = append(em.lobRetired, lobRetiredEntry{
 		lobID: lobID,
 		epoch: epoch,

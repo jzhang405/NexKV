@@ -371,7 +371,7 @@ func (tx *SnapshotTx) GetBatch(ctx context.Context, keys [][]byte) ([][]byte, er
 		if mv.PrevBeginTS != 0 && mv.PrevBeginTS <= tx.snapshotTS {
 			if !IsTombstoneFlag(mv.PrevFlag) {
 				// Expand LOB in prev version if needed
-				if mv.PrevFlag == FlagLOBNormal || mv.PrevFlag == FlagLOBTombstone {
+				if IsLOBFlag(mv.PrevFlag) {
 					if prevMV, err := DecodeValue(mv.PrevVal, tx.lobManager, tx.lobFileManager); err == nil {
 						results[btreeIndices[j]] = prevMV.RealVal
 					}
@@ -414,7 +414,7 @@ func (tx *SnapshotTx) snapshotGet(ctx context.Context, key []byte) ([]byte, erro
 			return nil, ErrKeyNotFound
 		}
 		// Expand LOB in prev version if needed
-		if mv.PrevFlag == FlagLOBNormal || mv.PrevFlag == FlagLOBTombstone {
+		if IsLOBFlag(mv.PrevFlag) {
 			prevMV, err := DecodeValue(mv.PrevVal, tx.lobManager, tx.lobFileManager)
 			if err != nil {
 				return nil, err
@@ -470,7 +470,7 @@ func (tx *SnapshotTx) Put(key, value []byte) error {
 		if parseErr == nil {
 			btreeOldFlag = mvccVal.Flag
 			btreeOldBeginTS = mvccVal.BeginTS
-			if mvccVal.Flag == FlagNormal || mvccVal.Flag == FlagLOBNormal {
+			if mvccVal.Flag == FlagNormal || mvccVal.Flag == FlagLOBNormal || mvccVal.Flag == FlagLOBFile {
 				btreeOldValue = deepCopy(mvccVal.RealVal)
 			}
 			// Capture old prev for LOB GC (the version that will be dropped)
@@ -708,7 +708,7 @@ func (tm *txManager) commitKey(ctx context.Context, key string, entry WriteEntry
 
 	// Phase 6: retire LOB resources from dropped old-prev version
 	switch entry.OldPrevFlag {
-	case FlagLOBNormal, FlagLOBTombstone:
+	case FlagLOBNormal, FlagLOBTombstone: // IsLOBFlag
 		tm.retireLOBOverflow(entry.OldPrevVal)
 	case FlagLOBFile, FlagLOBFileTombstone:
 		tm.retireLOBFile(entry.OldPrevVal)
@@ -758,17 +758,6 @@ func (tx *SnapshotTx) cleanup() {
 	if tx.isolationLevel == SnapshotIsolation {
 		tx.engine.siCount.Add(-1)
 	}
-}
-
-// CommitAndWait commits the transaction and waits for async BTree Apply to complete.
-// In sync mode (default), this is equivalent to Commit().
-// In async mode, this blocks until the BTreeApplyItem finishes.
-func (tx *SnapshotTx) CommitAndWait(ctx context.Context) error {
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	// In sync mode, Commit already applied — return immediately.
-	return nil
 }
 
 // checkActive returns an error if the transaction is already completed.
@@ -832,7 +821,7 @@ func (tx *SnapshotTx) rollbackOneKey(entry UndoEntry) (retErr error) {
 	}
 
 	// Phase 6: free LOB overflow pages if current value is a LOB
-	if (mvccVal.Flag == FlagLOBNormal || mvccVal.Flag == FlagLOBTombstone) && mvccVal.LOB != nil {
+	if IsLOBFlag(mvccVal.Flag) && mvccVal.LOB != nil {
 		if tx.lobManager != nil {
 			_ = tx.lobManager.Free(*mvccVal.LOB)
 		}

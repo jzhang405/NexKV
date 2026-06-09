@@ -236,20 +236,35 @@ OverflowPage 1004:  NextPageID=0     ChunkSize=2928  Data=[12072..14999]
 
 ### 3.4 两级阈值（基于 Benchmark 重评估后调整）
 
-| 阈值 | 旧值 | **新建议** | 说明 |
-|------|:--:|:--:|------|
-| `LOBSizeThreshold` | 2048 (2KB) | 2048 (2KB) | 不变：value > 2KB → Overflow Page |
-| `LOBFileThreshold` | 65536 (64KB) | **262144 (256KB)** | 上调：128KB 走 Tier 1 比 Tier 2 快 **106x** |
+```
+                         ┌──────────────────────────────────────┐
+  len ≤ 2KB              │  Inline (BTree 叶子页直接存)         │  ~2M QPS
+                         ├──────────────────────────────────────┤
+  2KB < len ≤ 256KB      │  Tier 1 Overflow Page (mmap, 零fsync)│  15K~1.3M QPS
+                         ├──────────────────────────────────────┤
+  len > 256KB            │  Tier 2 LOB File (磁盘文件, 含fsync)  │  ~127 QPS
+                         └──────────────────────────────────────┘
+```
 
-> **两级路由逻辑**（ValueEncoder 层）：
+| 阈值 | 值 | 说明 |
+|------|:--:|------|
+| `LOBSizeThreshold` | **2048** (2KB) | value > 2KB → Overflow Page |
+| `LOBFileThreshold` | **262144** (256KB) | value > 256KB → LOB File |
+
+> **为什么阈值从 64KB 上调到 256KB**：
+>
+> 128KB 强制走 Tier 1 overflow page 的 benchmark 结果（M2 Pro, 2GB mmap, 20K ops）：
+>
 > ```
-> len(value) ≤ 2KB       → BTree 行内存储 (inline)
-> 2KB < len(value) ≤ 256KB → Overflow Page（mmap 溢出页链, 零 fsync）
-> len(value) > 256KB     → LOB File（独立文件系统）
+> ┌────────────┬───────────────────────┬────────────────────────┬────────┐
+> │            │ Tier 2 (file + fsync) │ Tier 1 (overflow page) │  提升  │
+> ├────────────┼───────────────────────┼────────────────────────┼────────┤
+> │ PUT 单线程 │ 127 QPS               │ 15,493 QPS             │ 106x   │
+> ├────────────┼───────────────────────┼────────────────────────┼────────┤
+> │ GET 单线程 │ 1,514 QPS             │ 5,717,893 QPS          │ 3,777x │
+> └────────────┴───────────────────────┴────────────────────────┴────────┘
 > ```
 >
-> **为什么阈值从 64KB 上调到 256KB**：
-> - Benchmark 实测：128KB 走 Tier 1 (overflow page) = 15,493 QPS，走 Tier 2 (file+fsync) = 145 QPS。106x 差距。
 > - 256KB 约需 64 个溢出页（ceil(256K/4024)）。20K 条 256KB = ~5GB mmap。生产 mmap 6-10GB 绰绰有余。
 > - mmap 空间不是瓶颈，**fsync 才是**。能走 mmap 就走 mmap。
 > - Tier 2 定位收窄为：**超大对象（>256KB，真正 GB 级场景）或 mmap 空间极度紧张时**。
@@ -275,23 +290,35 @@ OverflowPage 1004:  NextPageID=0     ChunkSize=2928  Data=[12072..14999]
 | **简单 GC** | epoch-based，unlink 即可回收 |
 | **OS page cache** | 利用文件系统缓存，热点 LOB 自动驻留内存 |
 
-### 4.2 存储布局
+### 4.2 存储布局（与 .ao Chunk 文件共存同一目录）
+
+LOB 文件与 BTree 的 `.ao` chunk 文件放在同一个数据目录下，共享目录结构和生命周期管理：
 
 ```
-data/lob/                          ← LOB 根目录
-├── 00/                            ← 目录分片（高 2 字节）
-│   ├── 00/                        ← 目录分片（次高 2 字节）
-│   │   ├── 0000000000000001.lob   ← LOB 文件（LOBID 为文件名）
-│   │   ├── 0000000000000002.lob
-│   │   └── ...
-│   └── 01/
-│       └── ...
-├── 01/
-│   └── ...
-└── ff/
-    └── ff/
-        └── ffffffffffffffff.lob
+data/                               ← 统一数据根目录 (与 BTree chunk 共享)
+├── btree_0_1.ao                   ← BTree chunk 文件 (append-only)
+├── btree_0_2.ao
+├── ...
+├── lob/                            ← LOB 子目录（与 chunk 平级）
+│   ├── 00/                         ← 目录分片（高 2 字节）
+│   │   ├── 00/                     ← 目录分片（次高 2 字节）
+│   │   │   ├── 0000000000000001.lob  ← LOB 文件（LOBID 为文件名）
+│   │   │   └── ...
+│   │   └── ff/
+│   └── ff/
+│       └── ff/
+│           └── ffffffffffffffff.lob
 ```
+
+**设计理由**：
+
+| 维度 | 说明 |
+|------|------|
+| **统一根目录** | `data/` 是 BTree chunk（`.ao`）+ LOB（`.lob`）的统一根，方便备份/迁移/监控 |
+| **子目录隔离** | LOB 文件在 `data/lob/` 子目录下，`.lob` 和 `.ao` 不混在一起，避免扫描干扰 |
+| **目录分片** | 与之前相同：LOBID 高 4 字节 → 两级目录，每级 65536 个槽位，总计 4G 潜在叶子目录 |
+| **与 chunk 协同** | BTree checkpoint 备份时，`data/lob/` 一起打包；恢复时一起还原 |
+| **CleanupTmp 安全** | 只清理 `.tmp-*` 文件，不会误删 `.ao` chunk 文件 |
 
 **目录分片**：取 LOBID 的高 4 字节，拆为两级目录（每级 2 字节 = 65536 个目录）。
 
@@ -299,7 +326,6 @@ data/lob/                          ← LOB 根目录
 - 第二级：LOBID & 0xFFFF（低 2 字节）
 - 每级 65536 个目录，总计 4G 个潜在叶子目录（实际按需创建）
 - 假设 100 万 LOB，每目录 ~1 个文件——无性能压力
-- 避免单目录百万文件的文件系统瓶颈
 
 ### 4.3 LOB 文件格式
 
@@ -837,17 +863,32 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 >
 > 将 `LOBSizeThreshold` 临时调至 256KB，强制 128KB 走 Tier 1 overflow page（纯 mmap，零 fsync）后：
 >
-> | 128KB | Tier 2 (file + fsync) | Tier 1 (overflow page) | 提升 |
-> |-------|:---:|:---:|:---:|
-> | PUT 单线程 | 145 QPS | **15,493 QPS** | **106x** |
-> | GET 单线程 | 1,514 QPS | **5,717,893 QPS** | **3,777x** |
+> ```
+> ┌────────────┬───────────────────────┬────────────────────────┬────────┐
+> │            │ Tier 2 (file + fsync) │ Tier 1 (overflow page) │  提升  │
+> ├────────────┼───────────────────────┼────────────────────────┼────────┤
+> │ PUT 单线程 │ 127 QPS               │ 15,493 QPS             │ 106x   │
+> ├────────────┼───────────────────────┼────────────────────────┼────────┤
+> │ GET 单线程 │ 1,514 QPS             │ 5,717,893 QPS          │ 3,777x │
+> └────────────┴───────────────────────┴────────────────────────┴────────┘
+> ```
 >
 > **结论：fsync 是唯一瓶颈**。128KB 在 2GB mmap 里 20K 条仅占 ~2.5GB。生产 mmap 可达 6-10GB，中等对象（64KB-512KB）强制走 overflow page 比 LOB file 快 **100x**。
 >
-> - **Tier 1 (mmap overflow page)**：4KB 写入 1.3M QPS，64KB 写入 654K QPS，128KB 写入 15K QPS（退化为 32 页链式分配+COW）。全部在内存中，零系统调用，零 fsync。
-> - **Tier 2 (disk file)**：128KB 写入仅 127 QPS（每条含 tmp 写入 + fsync + rename，~7.9ms/op，fsync 占 87%）。读取 1,514 QPS（利用 OS page cache + mmap）。写入瓶颈完全在 fsync。
-> - **阈值重评估**：当前默认 64KB 可能过低。建议调整为 256KB 或更高，让更多场景享受 mmap 零 fsync 的 100x 优势。Tier 2 保留给 >512KB 的真大对象场景。
-> - **前后对比**：inline KV put ~2M QPS。4KB LOB 写入仅降低 ~33%（1.96M→1.34M），因为溢出页分配在 mmap 内开销极低。
+> **两级路由分区（最终版）**：
+> ```
+>                          ┌──────────────────────────────────────┐
+>   len ≤ 2KB              │  Inline (BTree 叶子页直接存)         │  ~2M QPS
+>                          ├──────────────────────────────────────┤
+>   2KB < len ≤ 256KB      │  Tier 1 Overflow Page (mmap, 零fsync)│  15K~1.3M QPS
+>                          ├──────────────────────────────────────┤
+>   len > 256KB            │  Tier 2 LOB File (磁盘文件, 含fsync)  │  ~127 QPS
+>                          └──────────────────────────────────────┘
+> ```
+>
+> - **Tier 1 (mmap overflow page)**：4KB→1.3M QPS，64KB→654K QPS，128KB→15K QPS（退化为 32 页链式分配+COW）。全部在内存中，零 fsync。
+> - **Tier 2 (disk file)**：>256KB 超大对象，写入受 fsync 限制约 127 QPS/线程。可通过 Group Fsync 并行化 + WAL 集成优化（见 §十二）。
+> - **前后对比**：inline KV put ~2M QPS。4KB LOB 写入仅降低 ~33%，因为溢出页分配在 mmap 内开销极低。
 
 ---
 

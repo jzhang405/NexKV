@@ -386,3 +386,143 @@ func TestLOBFileStore_ReadNonExistent(t *testing.T) {
 		t.Fatal("expected error reading non-existent file")
 	}
 }
+
+func TestLOBFileStore_CleanEmptyDirs(t *testing.T) {
+	dir := t.TempDir()
+	store, err := newLOBFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	// Create nested shard dirs with a .lob file
+	shardLeaf := filepath.Join(dir, "00001", "00002")
+	if err := os.MkdirAll(shardLeaf, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shardLeaf, "00001.lob"), []byte("data"), 0640); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an empty leaf dir that should be cleaned
+	emptyLeaf := filepath.Join(dir, "00001", "00003")
+	if err := os.MkdirAll(emptyLeaf, 0750); err != nil {
+		t.Fatal(err)
+	}
+
+	// Another empty leaf under a different top-level
+	emptyLeaf2 := filepath.Join(dir, "00002", "00001")
+	if err := os.MkdirAll(emptyLeaf2, 0750); err != nil {
+		t.Fatal(err)
+	}
+
+	store.cleanEmptyDirs()
+
+	// Empty dirs should be removed
+	if _, err := os.Stat(emptyLeaf); !os.IsNotExist(err) {
+		t.Error("empty leaf dir should be removed")
+	}
+	if _, err := os.Stat(emptyLeaf2); !os.IsNotExist(err) {
+		t.Error("empty leaf dir should be removed")
+	}
+	// Non-empty dir should remain
+	if _, err := os.Stat(shardLeaf); err != nil {
+		t.Error("non-empty leaf dir should remain")
+	}
+}
+
+func TestLOBFileStore_CleanEmptyDirs_RemovesParentIfEmpty(t *testing.T) {
+	dir := t.TempDir()
+	store, err := newLOBFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	// Create a top-level shard dir with one empty leaf
+	emptyLeaf := filepath.Join(dir, "00005", "00001")
+	if err := os.MkdirAll(emptyLeaf, 0750); err != nil {
+		t.Fatal(err)
+	}
+
+	store.cleanEmptyDirs()
+
+	// Leaf removed, parent (00005) should also be removed since it's now empty
+	parent := filepath.Join(dir, "00005")
+	if _, err := os.Stat(parent); !os.IsNotExist(err) {
+		t.Error("empty parent shard dir should be removed")
+	}
+}
+
+func TestLOBFileStore_CachedRead(t *testing.T) {
+	dir := t.TempDir()
+	store, err := newLOBFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	data := []byte("cached data test")
+	ref, err := store.Create(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First read — cold (miss)
+	read1, err := store.Read(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats1 := store.fdCache.stats()
+	if stats1.Misses != 1 {
+		t.Fatalf("expected 1 miss on first read, got %d", stats1.Misses)
+	}
+
+	// Second read — should hit cache
+	read2, err := store.Read(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats2 := store.fdCache.stats()
+	if stats2.Hits != 1 {
+		t.Fatalf("expected 1 hit on second read, got %d", stats2.Hits)
+	}
+
+	if string(read1) != string(read2) {
+		t.Fatal("cached read should return same data")
+	}
+}
+
+func TestLOBFileStore_CreateErrorPaths(t *testing.T) {
+	dir := t.TempDir()
+	store, err := newLOBFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	// Verify read on non-existent file gives proper error
+	_, err = store.Read(mvcc.LOBFileRef{LOBID: 99999, TotalLen: 10})
+	if err == nil {
+		t.Fatal("expected error for non-existent file")
+	}
+}
+
+func TestLOBFileStore_DoubleDelete(t *testing.T) {
+	dir := t.TempDir()
+	store, err := newLOBFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ref, _ := store.Create([]byte("double-delete"))
+
+	if err := store.Delete(ref); err != nil {
+		t.Fatalf("first delete failed: %v", err)
+	}
+	// Second delete should not error (idempotent)
+	if err := store.Delete(ref); err != nil {
+		t.Fatalf("second delete should be idempotent, got: %v", err)
+	}
+}

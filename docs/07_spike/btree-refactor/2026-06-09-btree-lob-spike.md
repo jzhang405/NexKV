@@ -399,12 +399,12 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | — | **BTree 无需改动**：Get 返回 raw bytes，LOB 展开在上层完成 | 0 | — |
 | 5 | MVCC 事务层集成 (Put/Get/commitKey/rollbackOneKey) | ~40 | `mvcc/transaction.go` |
 | 6 | 阈值配置 + benchmark (4KB/64KB/1MB) | ~40 | `cmd/tools/btree_bench` |
+| **合计** | | **~230** | |
 
 > 事务层要点：
 > - `SnapshotTx.Put`: value > 阈值 → LOBManager.Allocate → 存储 lobRef 到 WriteBuffer
 > - `SnapshotTx.Get`: GetRaw → ParseMVCC → if LOB → LOBManager.Read → 返回完整值
 > - `rollbackOneKey`: 回滚时释放事务内新分配的 LOB 溢出页（UndoEntry 记录 LOB ref）
-| **合计** | | **~230** | |
 
 ---
 

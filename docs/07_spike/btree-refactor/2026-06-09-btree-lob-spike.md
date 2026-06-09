@@ -220,7 +220,7 @@ OverflowPage 1004:  NextPageID=0     ChunkSize=2928  Data=[12072..14999]
 |------|:--:|------|
 | `LOBSizeThreshold` | 2048 (2KB) | value > 2KB 启用溢出页存储 |
 
-> 2KB 阈值：Phase 3 版本内嵌后 value ~50B，页面可存 ~80 entries。阈值可按需调整为 3-4KB（不固定）——实现时可用 `leaf.IsFull` 动态判断，而非硬编码常量。仅当值**确实**超出页面容量时才走 LOB 路径。
+> 2KB 阈值：Phase 3 版本内嵌后 value ~50B，页面可存 ~80 entries。阈值在 ValueEncoder 层通过 `len(value) > LOBSizeThreshold` 固定判断，后续可按需调整常量值（3-4KB）。BTree 不感知 LOB 阈值。
 
 ---
 
@@ -233,8 +233,8 @@ Ledgers.Put(key, largeValue):
   1. ValueEncoder.Encode:
      a. if len(value) > LOBSizeThreshold: // 固定阈值 2KB, ValueEncoder 层判断
         → LOBManager.Allocate(value)
-           → PageManager.AllocOverflow(size)
-              → 计算 N = ceil(size / 4024)
+           → PageManager.AllocOverflow(totalLen)
+              → 计算 N = ceil(totalLen / 4024)
               → 分配 N 个溢出页，构建链
               → 逐页写入 Data chunk
               → 返回 FirstPageID
@@ -322,7 +322,7 @@ LOB 溢出页复用同一套机制——不需要引用计数。
 Reader:
   epochSlot = epochMgr.AllocSlot()
   epochMgr.EnterRead(epochSlot)
-  ReadOverflow(FirstPageID)  ← 安全读, 页面不会被 free
+  ReadOverflow(FirstPageID, totalLen)  ← 安全读, 页面不会被 free
   epochMgr.ExitRead(epochSlot)
 
 Writer (BTree value 更新):
@@ -347,7 +347,7 @@ func (pm *PageManager) RetireOverflowChain(firstPageID uint32) {
         // 读取本页 NextPageID（必须在 Free 之前读取）
         ptr := pm.PageIDToPtr(pageID)
         offset := SizeofPageHeader // skip 56B header
-        nextPageID := *(*uint32)(unsafe.Add(ptr, offset))
+        nextPageID := *(*uint64)(unsafe.Add(ptr, offset)) // NextPageID is uint64, 兼容 model.PageID
         // 推入 epoch 队列（与 BTree 页面统一回收）
         pm.epochMgr.RetireBatch(epochSlot, model.PageID(pageID))
         pageID = nextPageID

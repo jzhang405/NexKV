@@ -32,6 +32,8 @@ var (
 	txnBatch    = flag.Int("txn-batch", 0, "ops per txn (0=run all batch sizes)")
 	runWrite    = flag.Bool("write", true, "run pure-write txn benchmarks")
 	runRead     = flag.Bool("read", true, "run read-only txn benchmarks")
+	runLOB      = flag.Bool("lob", false, "run LOB large-object benchmarks")
+	lobSize     = flag.Int("lob-size", 4096, "LOB value size in bytes (default 4KB)")
 	runMixed    = flag.Bool("mixed", true, "run mixed r/w txn benchmarks")
 	runRollback = flag.Bool("rollback", false, "run rollback benchmarks")
 
@@ -145,6 +147,33 @@ func main() {
 		}
 	}
 
+	// === LOB ===
+	if *runLOB {
+		for _, batch := range []int{1, 10} {
+			nLOB := n
+			if *lobSize >= 65536 {
+				nLOB = n / 10 // fewer ops for large LOBs
+			}
+			label := fmt.Sprintf("txn-put-lob-%dk-%d", *lobSize/1024, batch)
+			if *only != "" && !strings.HasPrefix(label, *only) {
+				continue
+			}
+			benchLOB(label, nLOB, batch, "write", mmapSize, ctx)
+		}
+		for _, batch := range []int{1, 10} {
+			nLOB := n
+			if *lobSize >= 65536 {
+				nLOB = n / 10
+			}
+			label := fmt.Sprintf("txn-get-lob-%dk-%d", *lobSize/1024, batch)
+			if *only != "" && !strings.HasPrefix(label, *only) {
+				continue
+			}
+			benchLOB(label, nLOB, batch, "read", mmapSize, ctx)
+		}
+	}
+
+
 	// Memory profiling
 	if *memProfile != "" {
 		f, err := os.Create(*memProfile)
@@ -233,6 +262,92 @@ func bench(label string, n, batch int, mode string, readRatio float64, mmapSize 
 	qps := float64(totalOps.Load()) / elapsed.Seconds()
 	fmt.Printf("%-24s batch=%-6d ops=%d time=%.3fs qps=%10.0f\n",
 		label, batch, totalOps.Load(), elapsed.Seconds(), qps)
+}
+
+// benchLOB runs a LOB benchmark with large values.
+func benchLOB(label string, n, batch int, mode string, mmapSize int, ctx context.Context) {
+	storage, err := btree.NewOffheapBTreeStorage(mmapSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create storage: %v\n", err)
+		return
+	}
+
+	opts := []btree.BTreeOption{btree.WithTSGenerator(mvcc.NewLocalTS())}
+	tree, err := btree.NewBTree(storage, opts...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create btree: %v\n", err)
+		return
+	}
+	defer tree.Close()
+
+	// Preload for reads
+	if mode == "read" {
+		for i := 0; i < n; i++ {
+			tx, _ := tree.BeginTx(ctx)
+			tx.Set(ctx, keyOf(i), lobValOf())
+			tx.Commit(ctx)
+		}
+	}
+
+	// Warmup
+	w := *warmupFlag
+	if mode == "write" {
+		for i := 0; i < w; i++ {
+			tx, _ := tree.BeginTx(ctx)
+			tx.Set(ctx, keyOf(n+i), lobValOf())
+			tx.Commit(ctx)
+		}
+	} else {
+		for i := 0; i < w; i++ {
+			tx, _ := tree.BeginTx(ctx)
+			tx.Get(ctx, keyOf(i%n))
+			tx.Rollback(ctx)
+		}
+	}
+
+	elapsed, ops := runLOBWriteLoop(tree, n, batch, mode)
+	qps := float64(ops) / elapsed.Seconds()
+	fmt.Printf("%-32s %10s %10d %13.0f op/s\n", label, "ok", ops, qps)
+}
+
+func runLOBWriteLoop(tree *btree.BTree, n, batch int, mode string) (time.Duration, int) {
+	ctx := context.Background()
+	val := lobValOf()
+	var totalOps atomic.Int64
+	var start time.Time
+
+	if mode == "read" {
+		start = time.Now()
+		for i := 0; i < n; i += batch {
+			tx, _ := tree.BeginTx(ctx)
+			end := i + batch
+			if end > n {
+				end = n
+			}
+			for j := i; j < end; j++ {
+				tx.Get(ctx, keyOf(j))
+			}
+			tx.Commit(ctx)
+			totalOps.Add(int64(end - i))
+		}
+		return time.Since(start), int(totalOps.Load())
+	}
+
+	// Write mode
+	start = time.Now()
+	for i := 0; i < n; i += batch {
+		tx, _ := tree.BeginTx(ctx)
+		end := i + batch
+		if end > n {
+			end = n
+		}
+		for j := i; j < end; j++ {
+			tx.Set(ctx, keyOf(j), val)
+		}
+		tx.Commit(ctx)
+		totalOps.Add(int64(end - i))
+	}
+	return time.Since(start), int(totalOps.Load())
 }
 
 func runTxnLoop(tree *btree.BTree, kv *persist.PersistWAL, n, batch int,
@@ -371,6 +486,20 @@ func valOf(i int) []byte {
 		return valPool[i]
 	}
 	return []byte(fmt.Sprintf("value-%010d", i))
+}
+
+// lobValOf returns a large value for LOB benchmarks, reusing the same slice for all calls
+// to avoid per-bench allocation overhead. Content is deterministic.
+var lobValPool []byte
+
+func lobValOf() []byte {
+	if lobValPool == nil {
+		lobValPool = make([]byte, *lobSize)
+		for i := range lobValPool {
+			lobValPool[i] = byte(i % 256)
+		}
+	}
+	return lobValPool
 }
 
 func beginTx(tree *btree.BTree, ctx context.Context) service.Transaction {

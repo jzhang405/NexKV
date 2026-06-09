@@ -44,14 +44,21 @@ type MVCCValue struct {
 
 // IsTombstone returns true if the value is a tombstone marker (includes LOB tombstones).
 func (v *MVCCValue) IsTombstone() bool {
-	return v.Flag == FlagTombstone || v.Flag == FlagLOBTombstone
+	return IsTombstoneFlag(v.Flag)
+}
+
+// IsTombstoneFlag returns true if the flag byte represents a tombstone.
+// Bit 0 distinguishes normal (0x00, 0x02) from tombstone (0x01, 0x03).
+func IsTombstoneFlag(flag byte) bool {
+	return flag&0x01 == FlagTombstone
 }
 
 // ParseMVCC decodes the version-inline MVCC format:
 //
 //	[Flag:1][prevFlag:1][prevBeginTS:8][prevValLen:2][prevVal:N][beginTS:8][realVal:M]
 //
-// prevFlag is normalized to 0x00/0x01 (prevFlag & 0x01).
+// prevFlag is stored as raw value (0x00/0x01/0x02/0x03) to preserve LOB information.
+// Use IsTombstoneFlag(prevFlag) instead of == FlagTombstone.
 // prevBeginTS==0 means no previous version (Insert).
 //
 // Returns MVCCValue by value (stack-allocated when not escaping).
@@ -65,7 +72,7 @@ func ParseMVCC(val []byte) (MVCCValue, error) {
 		return MVCCValue{}, errpkg.Wrap(ErrInvalidFlag, fmt.Sprintf("0x%02X", flag))
 	}
 
-	prevFlag := val[1] & 0x01 // normalize: only 0x00 or 0x01
+	prevFlag := val[1] // raw flag — preserves LOB information for prev version expansion
 	prevBeginTS := binary.BigEndian.Uint64(val[2:10])
 	prevValLen := binary.BigEndian.Uint16(val[10:12])
 
@@ -114,7 +121,8 @@ func ParseMVCC(val []byte) (MVCCValue, error) {
 //
 //	[Flag:1][prevFlag:1][prevBeginTS:8][prevValLen:2][prevVal:N][beginTS:8][realVal:M]
 //
-// prevFlag is normalized to 0x00/0x01 internally.
+// prevFlag is stored as raw value (0x00/0x01/0x02/0x03) — no normalization.
+// This preserves LOB information so prev version expansion can detect FlagLOBNormal/FlagLOBTombstone.
 // For Insert (no previous version): pass prevFlag=0, prevBeginTS=0, prevVal=nil.
 func BuildMVCC(flag byte, beginTS uint64, realVal []byte, prevFlag byte, prevBeginTS uint64, prevVal []byte) ([]byte, error) {
 	if flag != FlagNormal && flag != FlagTombstone && flag != FlagLOBNormal && flag != FlagLOBTombstone {
@@ -124,7 +132,6 @@ func BuildMVCC(flag byte, beginTS uint64, realVal []byte, prevFlag byte, prevBeg
 		return nil, ErrZeroTimestamp
 	}
 
-	prevFlag = prevFlag & 0x01 // normalize
 	prevValLen := uint16(len(prevVal))
 	totalSize := MVCCHeaderSize + int(prevValLen) + 8 + len(realVal)
 

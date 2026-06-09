@@ -416,21 +416,46 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 
 ## 七、实现计划
 
-| Step | 内容 | 行数 | 文件 |
-|------|------|:--:|------|
-| 1 | MVCC LOB Flag + 编码 (`FlagLOBNormal=0x02`, LOBRef, Parse/Build) | ~30 | `mvcc/codec.go` |
-| 2 | 溢出页面 AllocOverflow/FreeOverflow/ReadOverflow | ~60 | `offheap/page_manager.go` |
-| 3 | LOBManager 接口 + 实现 (Allocate/Read/Free/Size) | ~50 | `storage/lob/manager.go` (新) |
-| 4 | ValueEncoder 实现 (Encode/Decode + LOB 展开, 调用 LOBManager) | ~40 | `mvcc/codec.go` (ValueEncoder 部分) |
-| — | **BTree 无需改动**：Get 返回 raw bytes，LOB 展开在上层完成 | 0 | — |
-| 5 | MVCC 事务层集成 (Put/Get/commitKey/rollbackOneKey) | ~40 | `mvcc/transaction.go` |
-| 6 | 阈值配置 + benchmark (4KB/64KB/1MB) | ~40 | `cmd/tools/btree_bench` |
-| **合计** | | **~230** | |
+### 实施状态：✅ 全部完成（2026-06-09）
 
-> 事务层要点：
-> - `SnapshotTx.Put`: value > 阈值 → LOBManager.Allocate → 存储 lobRef 到 WriteBuffer
-> - `SnapshotTx.Get`: GetRaw → ParseMVCC → if LOB → LOBManager.Read → 返回完整值
-> - `rollbackOneKey`: 回滚时释放事务内新分配的 LOB 溢出页（UndoEntry 记录 LOB ref）
+| Step | 内容 | 行数 | 文件 | 状态 |
+|------|------|:--:|------|:--:|
+| 1 | MVCC LOB Flag + 编码 (`FlagLOBNormal=0x02`, LOBRef, Parse/Build) | ~30 | `mvcc/codec.go` | ✅ |
+| 2 | 溢出页面 AllocOverflow/FreeOverflow/ReadOverflow | ~60 | `offheap/page_manager.go` | ✅ |
+| 3 | LOBManager 接口 + 实现 (Allocate/Read/Free/Update) | ~50 | `storage/lob/manager.go` (新) | ✅ |
+| 4 | ValueEncoder 实现 (EncodeValue/DecodeValue + LOB 展开) | ~50 | `mvcc/lob.go` (新) | ✅ |
+| — | **BTree 无需改动**：Get 返回 raw bytes，LOB 展开在上层完成 | 0 | — | ✅ |
+| 5 | MVCC 事务层集成 (Get/GetBatch/commitKey/rollbackOneKey) | ~80 | `mvcc/transaction.go` | ✅ |
+| 6 | 阈值配置 + benchmark (4KB LOB) | ~130 | `cmd/tools/btree-txn-bench` | ✅ |
+| **合计** | | **~400** | |
+
+### 实施细节
+
+**新增文件**：
+- `internal/infrastructure/storage/mvcc/lob.go` — LOBManager 接口 + LOBSizeThreshold + EncodeValue/DecodeValue
+- `internal/infrastructure/storage/lob/manager.go` — DefaultLOBManager 实现
+- `internal/infrastructure/storage/btree/lob_e2e_test.go` — LOB 端到端测试
+
+**关键设计决策实施**：
+- LOB 分配在 Commit 时（commitKey 中），不在 Put 时——回滚无需释放 LOB 页
+- prevFlag 不再标准化（存储原始值 0x00/0x01/0x02/0x03），保留 LOB 信息
+- IsTombstoneFlag() 使用 bit 0 判断：`flag & 0x01 == FlagTombstone`
+- BTree 零改动，LOB 逻辑全在 MVCC 层
+- LOBManager 通过 TxManager → SnapshotTx 注入，nil = LOB 禁用（向后兼容）
+
+**prevFlag 格式变更**：
+- 旧格式：prevFlag 标准化为 0x00/0x01（`& 0x01`）
+- 新格式：prevFlag 存储原始值（0x00=Normal, 0x01=Tombstone, 0x02=LOBNormal, 0x03=LOBTombstone）
+- 向前兼容：旧数据 prevFlag=0x00/0x01，新 ParseMVCC 不再标准化，IsTombstoneFlag 处理 bit 0
+
+### LOB Benchmark 初步结果（4KB value, 500 ops）
+
+| Benchmark | Batch | QPS |
+|-----------|-------|-----|
+| txn-put-lob-4k | 1 | 475,700 op/s |
+| txn-put-lob-4k | 10 | 663,093 op/s |
+| txn-get-lob-4k | 1 | 1,697,073 op/s |
+| txn-get-lob-4k | 10 | 3,964,321 op/s |
 
 ---
 

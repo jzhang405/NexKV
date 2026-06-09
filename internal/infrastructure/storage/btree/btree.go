@@ -18,6 +18,7 @@ import (
 	"github.com/jzhang405/NexKV/internal/domain/service"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/checkpoint"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/chunk"
+	"github.com/jzhang405/NexKV/internal/infrastructure/storage/lob"
 	"github.com/jzhang405/NexKV/internal/infrastructure/storage/mvcc"
 )
 
@@ -88,7 +89,8 @@ func newBTreeWithConfig(storage *OffheapBTreeStorage, cfg *btreeConfig) (*BTree,
 		tracer:         cfg.tracer,
 		tsGen:          cfg.tsGen,
 	}
-	bt.txMgr = cfg.buildTxManager(newStorageAdapter(bt))
+	lobMgr := lob.NewDefaultLOBManager(storage.GetPageManager())
+	bt.txMgr = cfg.buildTxManager(newStorageAdapter(bt), lobMgr)
 
 	// EpochManager: optional COW old-page reclamation
 	if cfg.enableEpoch {

@@ -8,7 +8,7 @@
 
 **两级存储策略**：
 - **Tier 1 — Overflow Page（2KB ~ 64KB）**：数据存储在 mmap 溢出页链中，BTree 叶子页存 8B 引用。✅ 已实现
-- **Tier 2 — LOB File（> 64KB）**：数据存储在独立文件中，BTree 叶子页存 16B 文件引用。📐 设计阶段
+- **Tier 2 — LOB File（> 64KB）**：数据存储在独立文件中，BTree 叶子页存 16B 文件引用。✅ 已实现
 
 ---
 
@@ -32,7 +32,7 @@
 |------|:--:|:--:|------|
 | 普通 KV | < 2KB | 99% | BTree 行内存储 |
 | 中等对象 | 2KB ~ 64KB | 0.9% | **Overflow Page**（mmap 溢出页链）✅ |
-| 大对象 (LOB) | 64KB ~ 1MB+ | 0.1% | **LOB File**（独立文件系统存储）📐 |
+| 大对象 (LOB) | 64KB ~ 1MB+ | 0.1% | **LOB File**（独立文件系统存储）✅ |
 
 **两级分层理由**：
 - Overflow Page（mmap 内）：适合中小对象，零系统调用，纳秒级延迟。但占用 mmap 配额，上限受 mmap 大小约束
@@ -252,7 +252,7 @@ OverflowPage 1004:  NextPageID=0     ChunkSize=2928  Data=[12072..14999]
 
 ---
 
-## 四、Tier 2 — LOB 文件存储格式 📐
+## 四、Tier 2 — LOB 文件存储格式 ✅
 
 > **状态**：设计阶段，待实现
 > **参考**：[[2026-06-09-lob-implementation-design]] — 遵循相同的 LOBManager 接口模式、删除顺序约束、GC 策略
@@ -750,13 +750,21 @@ copy(unsafe.Slice((*byte)(dataPtr), 4024), chunk)
 | **Tier 2 已实现** | | **~375** | |
 | **已实现** | | **~775** | |
 
-### 待优化（P2）
+### ✅ P2 优化已完成
+
+| 项目 | 说明 | 实现 |
+|------|------|------|
+| 空目录清理 | 后台协程定期清除 data/lob/ 下空目录 | ✅ 5min 间隔，自底向上 |
+| Group commit fsync | 批量 fsync 减少 LOB 写入延迟 | ✅ 1ms 窗口，最大批量 32 |
+| fd 缓存监控 | 缓存命中率指标暴露 | ✅ FDCacheStats + HitRate() |
+
+### 未来 P3 方向
 
 | 项目 | 说明 |
 |------|------|
-| 空目录清理 | 后台协程定期清除 data/lob/ 下空目录 |
-| Group commit fsync | 批量 fsync 减少 LOB 写入延迟（当前单条 6ms）|
-| fd 缓存监控 | 缓存命中率指标暴露
+| LOB 缓存 | 热点大对象 LRU 缓存（可复用 fd 缓存模式）|
+| 页面预读 | 顺序读时预读相邻溢出页 |
+| 并行读取 | 多页并行 mmap 读取
 
 ### 实施细节
 
